@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { BlockRegistry } from '../../src/core/registry.js';
-import { BaseBlock, type IBlock, type BlockCapabilities } from '../../src/core/block.js';
+import { BaseBlock, type BlockCapabilities } from '../../src/core/block.js';
 
 class MockBlock extends BaseBlock {
   readonly type = 'mock';
@@ -18,9 +18,11 @@ class MockBlock extends BaseBlock {
   async execute(command: string, args: Record<string, unknown>): Promise<unknown> {
     switch (command) {
       case 'echo':
+      {
         const msg = args.message as string;
         this.updateState({ data: { message: msg } });
         return { echoed: msg };
+      }
       case 'ping':
         return { pong: true };
       default:
@@ -34,13 +36,14 @@ describe('BlockRegistry', () => {
 
   beforeEach(() => {
     // Create fresh registry for each test
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     registry = new (BlockRegistry as any)();
   });
 
   it('should register a block type', () => {
     registry.register({
       type: 'mock',
-      factory: (config) => new MockBlock(config.id as string),
+      factory: (config) => new MockBlock(config.id as string, 'mock'),
       version: '1.0.0'
     });
 
@@ -50,7 +53,7 @@ describe('BlockRegistry', () => {
   it('should create block instance', () => {
     registry.register({
       type: 'mock',
-      factory: (config) => new MockBlock(config.id as string),
+      factory: (config) => new MockBlock(config.id as string, 'mock'),
       version: '1.0.0'
     });
 
@@ -66,13 +69,13 @@ describe('BlockRegistry', () => {
   it('should throw for duplicate registration', () => {
     registry.register({
       type: 'mock',
-      factory: (config) => new MockBlock(config.id as string),
+      factory: (config) => new MockBlock(config.id as string, 'mock'),
       version: '1.0.0'
     });
 
     expect(() => registry.register({
       type: 'mock',
-      factory: (config) => new MockBlock(config.id as string),
+      factory: (config) => new MockBlock(config.id as string, 'mock'),
       version: '1.0.0'
     })).toThrow('already registered');
   });
@@ -80,7 +83,7 @@ describe('BlockRegistry', () => {
   it('should execute block command', async () => {
     registry.register({
       type: 'mock',
-      factory: (config) => new MockBlock(config.id as string),
+      factory: (config) => new MockBlock(config.id as string, 'mock'),
       version: '1.0.0'
     });
 
@@ -94,7 +97,7 @@ describe('BlockRegistry', () => {
   it('should generate CLI routes', async () => {
     registry.register({
       type: 'mock',
-      factory: (config) => new MockBlock(config.id as string),
+      factory: (config) => new MockBlock(config.id as string, 'mock'),
       version: '1.0.0'
     });
 
@@ -113,7 +116,7 @@ describe('BaseBlock', () => {
   let block: MockBlock;
 
   beforeEach(() => {
-    block = new MockBlock('test-block');
+    block = new MockBlock('test-block', 'mock');
   });
 
   it('should initialize with idle status', async () => {

@@ -67,10 +67,10 @@ export abstract class BaseBlock implements IBlock {
 
   protected state: BlockState;
 
-  constructor(public readonly id: string) {
+  constructor(public readonly id: string, type: string) {
     this.state = {
       id,
-      type: this.type,
+      type,
       status: 'idle',
       health: 'healthy',
       data: {},
