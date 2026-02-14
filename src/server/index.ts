@@ -196,7 +196,7 @@ app.get('/api/state', (req, res) => {
   if (!block || block.type !== 'state') {
     return res.status(404).json({ error: 'State block not available' });
   }
-  block.execute('get', { key: null })
+  block.execute('snapshot', {})
     .then(state => res.json(state))
     .catch(err => res.status(500).json({ error: err.message }));
 });
