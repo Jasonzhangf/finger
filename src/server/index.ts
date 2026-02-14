@@ -1,4 +1,6 @@
 import express from 'express';
+import { fileURLToPath } from 'url';
+import { dirname, join } from 'path';
 import { registry } from '../core/registry.js';
 import { execSync } from 'child_process';
 import { createServer } from 'net';
@@ -14,6 +16,9 @@ import {
   OrchestratorBlock,
   WebSocketBlock
 } from '../blocks/index.js';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
 
 const PORT = process.env.PORT ? parseInt(process.env.PORT) : 8080;
 
@@ -43,7 +48,6 @@ async function isPortInUse(port: number): Promise<boolean> {
  */
 function killProcessOnPort(port: number): void {
   try {
-    // Try to find and kill process using the port
     const cmd = `lsof -ti:${port} | xargs kill -9 2>/dev/null || true`;
     execSync(cmd, { stdio: 'ignore' });
     console.log(`[Server] Cleared port ${port}`);
@@ -59,7 +63,6 @@ async function ensureSingleInstance(port: number): Promise<void> {
   if (await isPortInUse(port)) {
     console.log(`[Server] Port ${port} is in use, killing existing process...`);
     killProcessOnPort(port);
-    // Wait a moment for the port to be released
     await new Promise(resolve => setTimeout(resolve, 500));
   }
 }
@@ -67,6 +70,14 @@ async function ensureSingleInstance(port: number): Promise<void> {
 const app = express();
 
 app.use(express.json());
+
+// Serve static UI files
+app.use(express.static(join(__dirname, '../../ui/dist')));
+
+// Serve index.html for root path
+app.get('/', (req, res) => {
+  res.sendFile(join(__dirname, '../../ui/dist/index.html'));
+});
 
 // Request logger for debugging
 app.use((req, res, next) => {
@@ -185,7 +196,6 @@ app.get('/api/state', (req, res) => {
   if (!block || block.type !== 'state') {
     return res.status(404).json({ error: 'State block not available' });
   }
-  // state block should have a method to get full state
   block.execute('get', { key: null })
     .then(state => res.json(state))
     .catch(err => res.status(500).json({ error: err.message }));
