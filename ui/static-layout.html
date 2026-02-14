@@ -1,0 +1,205 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Finger Orchestrator · 布局原型 (调整后)</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; font-family: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif; }
+        body { background: #0e1217; color: #e4e7eb; height: 100vh; display: flex; }
+        .app-layout { display: flex; width: 100%; height: 100%; }
+
+        /* 左侧边栏 */
+        .sidebar { width: 240px; background: #1a1f2a; border-right: 1px solid #2d3748; display: flex; flex-direction: column; padding: 16px 0; }
+        .sidebar-header { padding: 0 16px 16px; font-weight: 600; color: #9aa4b5; border-bottom: 1px solid #2d3748; }
+        .nav-item { padding: 10px 16px; margin: 4px 8px; border-radius: 6px; cursor: default; color: #b4bccb; }
+        .nav-item.active { background: #2b313e; color: white; }
+        .nav-item .badge { float: right; background: #2d3748; padding: 2px 8px; border-radius: 12px; font-size: 0.75rem; }
+
+        /* 主工作区 (右侧区域) */
+        .main-area { flex: 1; display: flex; flex-direction: column; overflow: hidden; position: relative; }
+
+        /* 顶部栏 (简化) */
+        .top-bar { height: 48px; background: #1a1f2a; border-bottom: 1px solid #2d3748; display: flex; align-items: center; padding: 0 20px; color: #9aa4b5; }
+
+        /* 中间区域 (Canvas + 右侧面板) */
+        .middle-row { flex: 1; display: flex; min-height: 0; }
+
+        /* Canvas 容器 */
+        .canvas-container { flex: 1; background: #0b0e14; position: relative; overflow: auto; }
+        .canvas-placeholder { display: flex; align-items: center; justify-content: center; height: 100%; color: #4a5568; font-size: 1.2rem; background: repeating-linear-gradient(45deg, #1a1f2a 0px, #1a1f2a 20px, #222834 20px, #222834 40px); }
+
+        /* 右侧面板 (宽度翻倍: 640px) */
+        .right-panel { width: 640px; background: #1a1f2a; border-left: 1px solid #2d3748; display: flex; flex-direction: column; }
+        .panel-header { padding: 16px; border-bottom: 1px solid #2d3748; font-weight: 500; display: flex; justify-content: space-between; }
+        .chat-area { flex: 1; padding: 16px; overflow-y: auto; display: flex; flex-direction: column; gap: 12px; }
+        .message { padding: 8px 12px; border-radius: 16px; max-width: 80%; }
+        .message.user { background: #2b6e9e; align-self: flex-end; }
+        .message.assistant { background: #2d3748; align-self: flex-start; }
+        .bd-status { border-top: 1px solid #2d3748; padding: 16px; font-size: 0.95rem; background: #131823; height: 200px; overflow-y: auto; }
+        .bd-status ul { margin-top: 8px; list-style: none; }
+        .bd-status li { padding: 4px 0; border-bottom: 1px solid #2d3748; }
+        .input-area { padding: 12px; border-top: 1px solid #2d3748; display: flex; gap: 8px; }
+        .input-area input { flex: 1; background: #0b0e14; border: 1px solid #2d3748; padding: 10px 14px; border-radius: 24px; color: white; font-size: 0.95rem; }
+        .input-area button { background: #2b6e9e; border: none; color: white; padding: 10px 20px; border-radius: 24px; cursor: default; font-weight: 500; }
+
+        /* 底部面板 (高度增加到 450px) */
+        .bottom-panel { height: 450px; background: #1a1f2a; border-top: 1px solid #2d3748; display: flex; flex-direction: column; }
+        .tabs { display: flex; padding: 8px 16px 0; gap: 16px; border-bottom: 1px solid #2d3748; }
+        .tab { padding: 10px 0; color: #9aa4b5; border-bottom: 2px solid transparent; cursor: default; font-size: 0.95rem; }
+        .tab.active { color: white; border-bottom-color: #2b6e9e; }
+        .dashboard-content { flex: 1; padding: 16px; display: flex; gap: 24px; overflow-x: auto; align-items: flex-start; }
+        .stat-card { background: #0b0e14; padding: 16px 20px; border-radius: 10px; min-width: 180px; }
+        .stat-label { font-size: 0.85rem; color: #9aa4b5; text-transform: uppercase; letter-spacing: 0.5px; }
+        .stat-value { font-size: 2rem; font-weight: 600; margin: 8px 0 4px; }
+        .agent-list { display: flex; gap: 16px; flex-wrap: wrap; }
+        .agent-item { background: #0b0e14; padding: 12px 16px; border-radius: 30px; display: flex; align-items: center; gap: 12px; border: 1px solid #2d3748; cursor: default; }
+        .agent-item:hover { border-color: #4a5568; }
+        .agent-dot { width: 10px; height: 10px; border-radius: 50%; background: #2ecc71; }
+        .agent-stats { font-size: 0.8rem; color: #9aa4b5; }
+
+        /* 模态框占位 (模拟点击后展开) */
+        .modal-placeholder { margin-top: 12px; padding: 12px; background: #0b0e14; border-radius: 8px; border: 1px dashed #4a5568; color: #9aa4b5; text-align: center; font-size: 0.9rem; }
+
+        /* 面板控制按钮 (模拟) */
+        .toggle-buttons { position: fixed; bottom: 20px; right: 20px; display: flex; gap: 8px; }
+        .toggle-btn { width: 44px; height: 44px; border-radius: 50%; background: #2b6e9e; border: none; color: white; font-size: 1.3rem; cursor: default; box-shadow: 0 2px 8px rgba(0,0,0,0.3); }
+    </style>
+</head>
+<body>
+<div class="app-layout">
+    <!-- 左侧边栏 -->
+    <div class="sidebar">
+        <div class="sidebar-header">📁 项目管理</div>
+        <div class="nav-item active">📋 Orchestration</div>
+        <div class="nav-item">🤖 Agents <span class="badge">3</span></div>
+        <div class="nav-item">✅ Tasks <span class="badge">12</span></div>
+        <div style="flex:1"></div>
+        <div class="nav-item">⚙️ Settings</div>
+        <div class="nav-item" style="border-top:1px solid #2d3748; margin-top:8px;">🔌 AI Providers</div>
+        <div class="nav-item" style="font-size:0.8rem; color:#6b7280;">~/.finger/sessions/</div>
+    </div>
+
+    <!-- 主工作区 -->
+    <div class="main-area">
+        <!-- 顶部简易栏 (可忽略) -->
+        <div class="top-bar">
+            <span>current project: /Users/finger/projects/demo</span>
+        </div>
+
+        <!-- 中间行 (Canvas + 右侧面板) -->
+        <div class="middle-row">
+            <!-- Canvas 区 -->
+            <div class="canvas-container">
+                <div class="canvas-placeholder">
+                    🧩 React Flow Canvas<br>
+                    (编排节点将显示于此)
+                </div>
+            </div>
+            <!-- 右侧面板 (对话 + bd 状态) -->
+            <div class="right-panel">
+                <div class="panel-header">
+                    <span>💬 对话历史</span>
+                    <span style="color:#9aa4b5;">🕒</span>
+                </div>
+                <div class="chat-area">
+                    <div class="message user">设计登录模块的架构</div>
+                    <div class="message assistant">架构设计已完成，包括API接口和数据库模型。</div>
+                    <div class="message user">需要增加单元测试</div>
+                    <div class="message assistant">已添加登录测试用例，覆盖率92%。</div>
+                    <div class="message user">使用JWT还是Session？</div>
+                    <div class="message assistant">根据安全要求，建议采用JWT + 短期session混合。</div>
+                </div>
+                <div class="bd-status">
+                    <strong>📌 bd 任务执行状态</strong>
+                    <ul>
+                        <li>🔵 finger-3 (in_progress) · 设计登录架构 (assignee: architect-1)</li>
+                        <li>🟡 finger-4 (review) · 实现登录API (reviewer: reviewer-1)</li>
+                        <li>⚪ finger-5 (open) · 编写测试 (waiting for dependency)</li>
+                        <li>🔴 finger-6 (blocked) · 安全审计 (blocked by finger-4)</li>
+                        <li>🟢 finger-7 (closed) · 需求分析</li>
+                    </ul>
+                </div>
+                <div class="input-area">
+                    <input type="text" placeholder="输入消息..." value="需要补充错误处理" disabled>
+                    <button disabled>发送</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- 底部面板 (仪表盘, 高度450px) -->
+        <div class="bottom-panel">
+            <div class="tabs">
+                <span class="tab active">📊 任务统计</span>
+                <span class="tab">🤖 Agent 管理</span>
+                <span class="tab">📈 负载监控</span>
+                <span class="tab">⚙️ 配置</span>
+            </div>
+            <div class="dashboard-content">
+                <div class="stat-card">
+                    <div class="stat-label">总任务</div>
+                    <div class="stat-value">24</div>
+                    <div style="font-size:0.9rem; color:#2ecc71;">+6 今日</div>
+                    <div style="font-size:0.8rem; margin-top:8px;">已完成: 18</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-label">活跃 Agent</div>
+                    <div class="stat-value">5/8</div>
+                    <div style="font-size:0.9rem;">空闲: 3</div>
+                    <div style="font-size:0.8rem; margin-top:8px;">orchestrator:1 busy</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-label">错误率</div>
+                    <div class="stat-value">2.3%</div>
+                    <div style="font-size:0.9rem; color:#e67e22;">最近1h</div>
+                    <div style="font-size:0.8rem; margin-top:8px;">重试: 4次</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-label">Token 消耗</div>
+                    <div class="stat-value">1.2M</div>
+                    <div style="font-size:0.9rem;">今日 +82k</div>
+                    <div style="font-size:0.8rem; margin-top:8px;">预估成本 $2.40</div>
+                </div>
+                <div class="agent-list">
+                    <div class="agent-item">
+                        <span class="agent-dot"></span>
+                        <span>orchestrator-1</span>
+                        <span class="agent-stats">负载 45%</span>
+                    </div>
+                    <div class="agent-item">
+                        <span class="agent-dot" style="background:#f1c40f;"></span>
+                        <span>executor-2</span>
+                        <span class="agent-stats">繁忙 · 2任务</span>
+                    </div>
+                    <div class="agent-item">
+                        <span class="agent-dot"></span>
+                        <span>reviewer-1</span>
+                        <span class="agent-stats">空闲</span>
+                    </div>
+                    <div class="agent-item">
+                        <span class="agent-dot"></span>
+                        <span>architect-1</span>
+                        <span class="agent-stats">负载 12%</span>
+                    </div>
+                    <div class="agent-item">
+                        <span class="agent-dot" style="background:#e74c3c;"></span>
+                        <span>tester-3</span>
+                        <span class="agent-stats">错误 · 重试</span>
+                    </div>
+                </div>
+            </div>
+            <!-- 模态框占位 (点击Agent卡片后可展开) -->
+            <div class="modal-placeholder">
+                🔍 点击 Agent 卡片可打开详细模态框 (显示完整统计、日志、配置)
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- 面板开关 (模拟) -->
+<div class="toggle-buttons">
+    <button class="toggle-btn">💬</button>
+    <button class="toggle-btn">📊</button>
+</div>
+</body>
+</html>

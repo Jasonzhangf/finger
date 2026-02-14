@@ -1,0 +1,32 @@
+.canvas-wrapper {
+  width: 100%;
+  height: 100%;
+  position: relative;
+  background: #0b0e14;
+  background-image: 
+    radial-gradient(circle at 1px 1px, #2d3748 1px, transparent 0);
+  background-size: 20px 20px;
+}
+
+.canvas-placeholder-text {
+  position: absolute;
+  top: 10px;
+  left: 10px;
+  color: #4a5568;
+  font-size: 0.8rem;
+  z-index: 10;
+}
+
+.canvas-svg {
+  width: 100%;
+  height: 100%;
+}
+
+.node-rect {
+  cursor: pointer;
+  transition: filter 0.2s;
+}
+
+.node-rect:hover {
+  filter: brightness(1.2);
+}
