@@ -1,5 +1,5 @@
 // iFlow SDK Provider Implementation
-import { AgentSDK, RequestOptions } from '../types.js';
+import { AgentSDK, RequestOptions } from '../shared/types.js';
 
 export interface IFlowConfig {
   baseUrl: string;
