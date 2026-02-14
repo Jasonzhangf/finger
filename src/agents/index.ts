@@ -30,7 +30,7 @@ export abstract class BaseRole {
   constructor(protected sdk: AgentSDK) {}
 
   // ReAct loop for role execution
-  async executeTask(task: string, context?: Record<string, unknown>): Promise<{
+  async executeTask(task: string, _context?: Record<string, unknown>): Promise<{
     result: string;
     reasoning: string[];
     actions: string[];
@@ -39,11 +39,11 @@ export abstract class BaseRole {
     const actions: string[] = [];
 
     // Thought
-    const thought = await this.think(task, context);
+    const thought = await this.think(task, _context);
     reasoning.push(thought);
 
     // Action
-    const action = await this.act(thought, context);
+    const action = await this.act(thought, _context);
     actions.push(action);
 
     // Observation (in real implementation, this would be the result of the action)
@@ -56,16 +56,16 @@ export abstract class BaseRole {
     return { result, reasoning, actions };
   }
 
-  protected async think(task: string, context?: Record<string, unknown>): Promise<string> {
-    const prompt = this.buildThinkPrompt(task, context);
+  protected async think(task: string, _context?: Record<string, unknown>): Promise<string> {
+    const prompt = this.buildThinkPrompt(task, _context);
     return this.sdk.request(prompt, {
       systemPrompt: this.config.systemPrompt,
       temperature: 0.7,
     });
   }
 
-  protected async act(thought: string, context?: Record<string, unknown>): Promise<string> {
-    const prompt = this.buildActPrompt(thought, context);
+  protected async act(thought: string, _context?: Record<string, unknown>): Promise<string> {
+    const prompt = this.buildActPrompt(thought, _context);
     return this.sdk.request(prompt, {
       systemPrompt: this.config.systemPrompt,
       temperature: 0.3,
@@ -88,8 +88,8 @@ ${actions.join('\n')}`;
     });
   }
 
-  protected abstract buildThinkPrompt(task: string, context?: Record<string, unknown>): string;
-  protected abstract buildActPrompt(thought: string, context?: Record<string, unknown>): string;
+  protected abstract buildThinkPrompt(task: string, _context?: Record<string, unknown>): string;
+  protected abstract buildActPrompt(thought: string, _context?: Record<string, unknown>): string;
 }
 
 // Role definitions
@@ -110,13 +110,13 @@ Always think step by step and plan before acting.`,
     permissionMode: 'plan',
   };
 
-  protected buildThinkPrompt(task: string, context?: Record<string, unknown>): string {
+  protected buildThinkPrompt(task: string, _context?: Record<string, unknown>): string {
     return `Task to orchestrate: ${task}
-Context: ${JSON.stringify(context || {})}
+Context: ${JSON.stringify(_context || {})}
 Think about how to break this down into subtasks and assign them.`;
   }
 
-  protected buildActPrompt(thought: string, context?: Record<string, unknown>): string {
+  protected buildActPrompt(thought: string, _context?: Record<string, unknown>): string {
     return `Based on your thought: ${thought}
 What specific actions should you take to orchestrate this task?
 Consider creating subtasks, assigning to agents, or monitoring progress.`;
@@ -140,13 +140,13 @@ Focus on precise execution and error handling.`,
     allowedTools: ['file', 'terminal', 'git'],
   };
 
-  protected buildThinkPrompt(task: string, context?: Record<string, unknown>): string {
+  protected buildThinkPrompt(task: string, _context?: Record<string, unknown>): string {
     return `Execution task: ${task}
-Context: ${JSON.stringify(context || {})}
+Context: ${JSON.stringify(_context || {})}
 Think about the implementation approach and potential issues.`;
   }
 
-  protected buildActPrompt(thought: string, context?: Record<string, unknown>): string {
+  protected buildActPrompt(thought: string, _context?: Record<string, unknown>): string {
     return `Based on your thought: ${thought}
 What code or files should you create/modify?
 Provide specific implementation steps.`;
@@ -169,13 +169,13 @@ Be thorough and detail-oriented in your reviews.`,
     permissionMode: 'default',
   };
 
-  protected buildThinkPrompt(task: string, context?: Record<string, unknown>): string {
+  protected buildThinkPrompt(task: string, _context?: Record<string, unknown>): string {
     return `Review task: ${task}
-Context: ${JSON.stringify(context || {})}
+Context: ${JSON.stringify(_context || {})}
 Think about what aspects need review and potential issues.`;
   }
 
-  protected buildActPrompt(thought: string, context?: Record<string, unknown>): string {
+  protected buildActPrompt(thought: string, _context?: Record<string, unknown>): string {
     return `Based on your thought: ${thought}
 What specific review actions should you take?
 Identify issues, suggest improvements, or approve.`;
@@ -199,13 +199,13 @@ Ensure thorough testing and clear reporting.`,
     allowedTools: ['file', 'terminal'],
   };
 
-  protected buildThinkPrompt(task: string, context?: Record<string, unknown>): string {
+  protected buildThinkPrompt(task: string, _context?: Record<string, unknown>): string {
     return `Testing task: ${task}
-Context: ${JSON.stringify(context || {})}
+Context: ${JSON.stringify(_context || {})}
 Think about test cases needed and testing strategy.`;
   }
 
-  protected buildActPrompt(thought: string, context?: Record<string, unknown>): string {
+  protected buildActPrompt(thought: string, _context?: Record<string, unknown>): string {
     return `Based on your thought: ${thought}
 What tests should you write or execute?
 Provide specific test cases and expected results.`;
@@ -228,13 +228,13 @@ Focus on high-level design and clear documentation.`,
     permissionMode: 'plan',
   };
 
-  protected buildThinkPrompt(task: string, context?: Record<string, unknown>): string {
+  protected buildThinkPrompt(task: string, _context?: Record<string, unknown>): string {
     return `Architecture task: ${task}
-Context: ${JSON.stringify(context || {})}
+Context: ${JSON.stringify(_context || {})}
 Think about design patterns, trade-offs, and system structure.`;
   }
 
-  protected buildActPrompt(thought: string, context?: Record<string, unknown>): string {
+  protected buildActPrompt(thought: string, _context?: Record<string, unknown>): string {
     return `Based on your thought: ${thought}
 What architectural decisions and designs should you document?
 Provide clear specifications and rationale.`;
