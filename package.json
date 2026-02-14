@@ -1,0 +1,48 @@
+{
+  "name": "finger",
+  "version": "0.1.0",
+  "description": "Finger - AI Agent Orchestrator with bd project management",
+  "main": "dist/cli/index.js",
+  "type": "module",
+  "scripts": {
+    "build": "tsc --noEmit false",
+    "dev": "tsx watch src/cli/index.ts",
+    "start": "node dist/server/index.js",
+    "cli": "node dist/cli/index.js",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "lint": "eslint src tests --ext .ts",
+    "lint:fix": "eslint src tests --ext .ts --fix",
+    "bd:init": "bd init --no-db",
+    "bd:ready": "bd --no-db ready",
+    "bd:create": "bd --no-db create",
+    "check": "npm run lint && npm run test && npm run build"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.36.0",
+    "express": "^4.21.0",
+    "ws": "^8.18.0",
+    "sqlite3": "^5.1.7",
+    "commander": "^13.0.0",
+    "chalk": "^5.4.0",
+    "ora": "^8.1.0",
+    "zod": "^3.24.0"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.0",
+    "@types/node": "^22.10.0",
+    "@types/ws": "^8.5.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.7.0",
+    "vitest": "^3.0.0",
+    "eslint": "^9.18.0",
+    "@eslint/js": "^9.18.0",
+    "typescript-eslint": "^8.20.0"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "bin": {
+    "finger": "./dist/cli/index.js"
+  }
+}
