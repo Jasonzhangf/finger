@@ -1,19 +1,19 @@
-import React, { useState } from 'react';
+import { useState, type ReactNode } from 'react';
 import './AppLayout.css';
 
 interface AppLayoutProps {
-  leftSidebar: React.ReactNode;
-  canvas: React.ReactNode;
-  rightPanel: React.ReactNode;
-  bottomPanel: React.ReactNode;
+  leftSidebar: ReactNode;
+  canvas: ReactNode;
+  rightPanel: ReactNode;
+  bottomPanel: ReactNode;
 }
 
-export const AppLayout: React.FC<AppLayoutProps> = ({
+export const AppLayout = ({
   leftSidebar,
   canvas,
   rightPanel,
   bottomPanel,
-}) => {
+}: AppLayoutProps) => {
   const [rightPanelCollapsed, setRightPanelCollapsed] = useState(false);
   const [bottomPanelCollapsed, setBottomPanelCollapsed] = useState(false);
 

@@ -1,60 +1,77 @@
-import React, { useState } from 'react';
+import { useMemo, useState } from 'react';
 import './LeftSidebar.css';
 
-type Tab = 'project' | 'ai-provider' | 'settings';
+type SidebarTab = 'project' | 'ai-provider' | 'settings';
 
-export const LeftSidebar: React.FC = () => {
-  const [activeTab, setActiveTab] = useState<Tab>('project');
+const TABS: Array<{ key: SidebarTab; label: string }> = [
+  { key: 'project', label: 'Project' },
+  { key: 'ai-provider', label: 'AI Provider' },
+  { key: 'settings', label: 'Settings' },
+];
+
+export const LeftSidebar = () => {
+  const [activeTab, setActiveTab] = useState<SidebarTab | null>(null);
+
+  const panelTitle = useMemo(() => {
+    if (activeTab === 'project') return 'Project Management';
+    if (activeTab === 'ai-provider') return 'AI Provider';
+    if (activeTab === 'settings') return 'System Settings';
+    return '';
+  }, [activeTab]);
+
+  const onTabClick = (tab: SidebarTab) => {
+    setActiveTab((prev) => (prev === tab ? null : tab));
+  };
 
   return (
-    <div className="left-sidebar-container">
-      <div className="sidebar-tabs">
-        <button
-          className={`tab-btn ${activeTab === 'project' ? 'active' : ''}`}
-          onClick={() => setActiveTab('project')}
-        >
-          Project
-        </button>
-        <button
-          className={`tab-btn ${activeTab === 'ai-provider' ? 'active' : ''}`}
-          onClick={() => setActiveTab('ai-provider')}
-        >
-          AI Provider
-        </button>
-        <button
-          className={`tab-btn ${activeTab === 'settings' ? 'active' : ''}`}
-          onClick={() => setActiveTab('settings')}
-        >
-          Settings
-        </button>
-      </div>
+    <div className="left-rail-shell">
+      <nav className="left-rail" aria-label="Sidebar tabs">
+        {TABS.map((tab) => (
+          <button
+            key={tab.key}
+            className={`left-rail-tab ${activeTab === tab.key ? 'active' : ''}`}
+            onClick={() => onTabClick(tab.key)}
+            type="button"
+          >
+            {tab.label}
+          </button>
+        ))}
+      </nav>
 
-      <div className="sidebar-content">
-        {activeTab === 'project' && <ProjectTab />}
-        {activeTab === 'ai-provider' && <AIProviderTab />}
-        {activeTab === 'settings' && <SettingsTab />}
-      </div>
+      {activeTab && (
+        <aside className="left-flyout">
+          <header className="left-flyout-header">{panelTitle}</header>
+          <div className="left-flyout-content">
+            {activeTab === 'project' && <ProjectTab />}
+            {activeTab === 'ai-provider' && <AIProviderTab />}
+            {activeTab === 'settings' && <SettingsTab />}
+          </div>
+        </aside>
+      )}
     </div>
   );
 };
 
-const ProjectTab: React.FC = () => (
+const ProjectTab = () => (
   <div className="tab-content">
-    <h3>Project Management</h3>
     <div className="folder-picker">
-      <button>Select Project Folder</button>
+      <button type="button">Select Project Folder</button>
     </div>
+
     <div className="session-list">
       <h4>Sessions</h4>
-      <div className="session-item active">~/.finger/sessions/project-demo</div>
-      <div className="session-item">~/.finger/sessions/another-project</div>
+      <button type="button" className="session-item active">
+        ~/.finger/sessions/project-demo
+      </button>
+      <button type="button" className="session-item">
+        ~/.finger/sessions/another-project
+      </button>
     </div>
   </div>
 );
 
-const AIProviderTab: React.FC = () => (
+const AIProviderTab = () => (
   <div className="tab-content">
-    <h3>AI Providers</h3>
     <div className="provider-list">
       <div className="provider-item">
         <span>OpenAI</span>
@@ -69,26 +86,25 @@ const AIProviderTab: React.FC = () => (
         <span className="status disconnected">Offline</span>
       </div>
     </div>
-    <button className="add-provider-btn">+ Add Provider</button>
+    <button className="add-provider-btn" type="button">+ Add Provider</button>
   </div>
 );
 
-const SettingsTab: React.FC = () => (
+const SettingsTab = () => (
   <div className="tab-content">
-    <h3>System Settings</h3>
     <div className="setting-item">
-      <label>Theme</label>
-      <select>
-        <option>Dark</option>
-        <option>Light</option>
+      <label htmlFor="theme-select">Theme</label>
+      <select id="theme-select" defaultValue="Dark">
+        <option value="Dark">Dark</option>
+        <option value="Light">Light</option>
       </select>
     </div>
     <div className="setting-item">
-      <label>Log Level</label>
-      <select>
-        <option>Info</option>
-        <option>Debug</option>
-        <option>Warn</option>
+      <label htmlFor="log-level-select">Log Level</label>
+      <select id="log-level-select" defaultValue="Info">
+        <option value="Info">Info</option>
+        <option value="Debug">Debug</option>
+        <option value="Warn">Warn</option>
       </select>
     </div>
   </div>
