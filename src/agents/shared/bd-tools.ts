@@ -32,7 +32,7 @@ export interface BdTask {
 }
 
 export interface Deliverable {
-  type: 'file' | 'result' | 'log' | 'doc' | 'summary' | 'stats';
+  type: 'file' | 'result' | 'log' | 'doc' | 'summary' | 'stats' | 'review';
   path?: string;
   content?: string;
   checksum?: string;

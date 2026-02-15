@@ -14,6 +14,8 @@ export interface OrchestratorModuleConfig {
   mode: 'auto' | 'manual';
   systemPrompt?: string;
   cwd?: string;
+  reviewAgentId?: string;   // 自审 Agent ID
+  summaryAgentId?: string;  // 总结 Agent ID
 }
 
 interface TaskDecomposition {
@@ -22,6 +24,7 @@ interface TaskDecomposition {
   tools: string[];
   priority: number;
   assignTo?: string;
+  deadlineMs?: number;      // 任务执行超时（毫秒）
 }
 
 /**
@@ -43,6 +46,8 @@ export function createRealOrchestratorModule(
   const agent = new Agent(agentConfig);
   const bdTools = new BdTools();
   let initialized = false;
+  const reviewAgentId = config.reviewAgentId;
+  const summaryAgentId = config.summaryAgentId;
 
   /**
    * 使用 iFlow SDK 拆解任务
@@ -56,6 +61,7 @@ export function createRealOrchestratorModule(
 1. 每个子任务必须是可独立执行的
 2. 按依赖顺序排列
 3. 标记关键路径任务
+4. 为每个子任务分配合理的超时时间（毫秒），基于任务复杂度，默认 60000
 
 请按以下JSON格式返回:
 [
@@ -64,7 +70,8 @@ export function createRealOrchestratorModule(
     "description": "子任务描述",
     "tools": ["file", "code"],
     "priority": 1,
-    "assignTo": "executor-mock"
+    "assignTo": "executor-mock",
+    "deadlineMs": 60000
   }
 ]
 
@@ -113,6 +120,7 @@ export function createRealOrchestratorModule(
         description: dec.description,
         tools: dec.tools,
         priority: dec.priority,
+        deadline: dec.deadlineMs,
       });
 
       console.log(`[Orchestrator] Created sub-task: ${bdTask.id} -> ${dec.description}`);
@@ -127,18 +135,27 @@ export function createRealOrchestratorModule(
   async function dispatchTask(
     task: TaskAssignment,
     executorId: string
-  ): Promise<void> {
+  ): Promise<{ task: TaskAssignment; result: any; error?: string }> {
     if (task.bdTaskId) {
       await bdTools.updateStatus(task.bdTaskId, 'in_progress');
     }
 
+    const timeoutMs = task.deadline || 60000;
+    let timeoutHandle: NodeJS.Timeout | undefined;
+    const timeoutPromise = new Promise<never>((_, reject) => {
+      timeoutHandle = setTimeout(() => reject(new Error(`Task ${task.taskId} timeout after ${timeoutMs}ms`)), timeoutMs);
+    });
+
     try {
-      const result = await hub.sendToModule(executorId, {
-        taskId: task.taskId,
-        bdTaskId: task.bdTaskId,
-        description: task.description,
-        tools: task.tools,
-      });
+      const result = await Promise.race([
+        hub.sendToModule(executorId, {
+          taskId: task.taskId,
+          bdTaskId: task.bdTaskId,
+          description: task.description,
+          tools: task.tools,
+        }),
+        timeoutPromise,
+      ]);
 
       console.log(`[Orchestrator] Task ${task.taskId} result:`, result);
 
@@ -152,12 +169,63 @@ export function createRealOrchestratorModule(
           await bdTools.addComment(task.bdTaskId, `执行失败: ${result.error || 'Unknown'}`);
         }
       }
+      if (timeoutHandle) clearTimeout(timeoutHandle);
+      return { task, result };
     } catch (err) {
       console.error(`[Orchestrator] Task ${task.taskId} failed:`, err);
       if (task.bdTaskId) {
         await bdTools.updateStatus(task.bdTaskId, 'blocked');
         await bdTools.addComment(task.bdTaskId, `派发失败: ${err}`);
       }
+      if (timeoutHandle) clearTimeout(timeoutHandle);
+      return { task, result: null, error: err instanceof Error ? err.message : String(err) };
+    }
+  }
+
+  /**
+   * 调用自审 Agent
+   */
+  async function runSelfReview(epicId: string, tasks: TaskAssignment[], results: any[]): Promise<any> {
+    if (!reviewAgentId) {
+      console.log('[Orchestrator] No self-review agent configured, skipping review');
+      return null;
+    }
+    console.log(`[Orchestrator] Running self-review via ${reviewAgentId}...`);
+    await bdTools.addComment(epicId, `[Orchestrator] 启动自审...`);
+    try {
+      const reviewResult = await hub.sendToModule(reviewAgentId, {
+        epicId,
+        tasks: tasks.map(t => ({ id: t.bdTaskId, description: t.description })),
+        results,
+      });
+      console.log('[Orchestrator] Self-review completed:', reviewResult);
+      return reviewResult;
+    } catch (err) {
+      console.error('[Orchestrator] Self-review failed:', err);
+      return null;
+    }
+  }
+
+  /**
+   * 调用总结 Agent
+   */
+  async function runSummary(epicId: string, reviewOutput: any): Promise<any> {
+    if (!summaryAgentId) {
+      console.log('[Orchestrator] No summary agent configured, skipping summary');
+      return null;
+    }
+    console.log(`[Orchestrator] Running summary via ${summaryAgentId}...`);
+    await bdTools.addComment(epicId, `[Orchestrator] 生成总结...`);
+    try {
+      const summaryResult = await hub.sendToModule(summaryAgentId, {
+        epicId,
+        reviewOutput,
+      });
+      console.log('[Orchestrator] Summary completed:', summaryResult);
+      return summaryResult;
+    } catch (err) {
+      console.error('[Orchestrator] Summary failed:', err);
+      return null;
     }
   }
 
@@ -192,26 +260,65 @@ export function createRealOrchestratorModule(
     // 3. 创建 bd 子任务
     const tasks = await createBdTasks(epic.id, decompositions);
 
-    // 4. 派发任务
+    // 4. 并行派发任务
     await bdTools.addComment(epic.id, `[Orchestrator] 开始派发任务...`);
-    for (const task of tasks) {
-      const executorId = decompositions.find((d) => d.taskId === task.taskId)?.assignTo || 'executor-mock';
-      await dispatchTask(task, executorId);
+
+    const dispatchPromises = tasks.map(task => {
+      const executorId = decompositions.find(d => d.taskId === task.taskId)?.assignTo || 'executor-mock';
+      return dispatchTask(task, executorId);
+    });
+
+    const settledResults = await Promise.allSettled(dispatchPromises);
+    const successResults = [];
+    const failedTasks = [];
+
+    for (let i = 0; i < settledResults.length; i++) {
+      const res = settledResults[i];
+      const task = tasks[i];
+      if (res.status === 'fulfilled') {
+        successResults.push(res.value);
+      } else {
+        failedTasks.push({ task, reason: res.reason });
+        if (task.bdTaskId) {
+          await bdTools.updateStatus(task.bdTaskId, 'blocked');
+          await bdTools.addComment(task.bdTaskId, `派发失败: ${res.reason}`);
+        }
+      }
     }
 
-    // 5. 更新 Epic 进度并关闭
+    // 5. 运行自审（如果配置了）
+    const reviewOutput = await runSelfReview(epic.id, tasks, successResults);
+
+    // 6. 运行总结（如果配置了）
+    const summaryOutput = await runSummary(epic.id, reviewOutput);
+
+    // 7. 更新 Epic 进度并尝试关闭
     const progress = await bdTools.getEpicProgress(epic.id);
     console.log(`[Orchestrator] Epic progress: ${progress.completed}/${progress.total}`);
 
-    if (progress.completed === progress.total) {
+    // Prepare deliverables with proper typing
+    const deliverables: { type: 'summary' | 'review'; content: string }[] = [
+      { type: 'summary', content: `完成 ${progress.completed} 个子任务` },
+    ];
+    if (reviewOutput) {
+      deliverables.push({ type: 'review', content: JSON.stringify(reviewOutput) });
+    }
+    if (summaryOutput) {
+      deliverables.push({ type: 'summary', content: JSON.stringify(summaryOutput) });
+    }
+
+    if (progress.completed === progress.total && progress.completed > 0) {
       await bdTools.closeTask(
         epic.id,
         '所有子任务已完成',
-        [
-          { type: 'summary', content: `完成 ${progress.completed} 个子任务` },
-        ]
+        deliverables
       );
       console.log(`[Orchestrator] Epic ${epic.id} closed`);
+    } else {
+      // 如果未完成，添加注释说明失败任务
+      if (failedTasks.length > 0) {
+        await bdTools.addComment(epic.id, `[Orchestrator] 有 ${failedTasks.length} 个子任务失败: ${failedTasks.map(f => f.task.description).join(', ')}`);
+      }
     }
 
     return {
@@ -219,6 +326,8 @@ export function createRealOrchestratorModule(
       totalTasks: tasks.length,
       completed: progress.completed,
       tasks: tasks.map((t) => ({ id: t.bdTaskId, description: t.description })),
+      review: reviewOutput,
+      summary: summaryOutput,
     };
   }
 
@@ -242,6 +351,12 @@ export function createRealOrchestratorModule(
     },
 
     handle: async (message: unknown, callback?: (result: unknown) => void) => {
+      // Ensure agent is initialized before handling
+      if (!initialized) {
+        await agent.initialize();
+        initialized = true;
+      }
+      
       const msg = message as Record<string, unknown>;
       const userTask = String(msg.content ?? msg.task ?? msg.text ?? '');
 

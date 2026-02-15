@@ -66,7 +66,7 @@ export class Agent {
     };
 
     this.client = client ?? new IFlowClient(options);
-    this.base = new IflowBaseAgent(client ?? options);
+    this.base = new IflowBaseAgent(this.client);
     this.interactive = new IflowInteractiveAgent(this.client);
 
     this.status = {
