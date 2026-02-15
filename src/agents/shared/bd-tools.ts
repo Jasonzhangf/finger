@@ -134,7 +134,7 @@ export class BdTools {
    */
   async addComment(taskId: string, content: string): Promise<void> {
     // bd 使用 notes 字段存储评论
-    await this.run(`update ${taskId} --note "${content.replace(/"/g, '\\"')}"`);
+    await this.run(`update ${taskId} --append-notes "${content.replace(/"/g, '\\"')}"`);
   }
 
   /**

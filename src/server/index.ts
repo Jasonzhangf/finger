@@ -7,7 +7,7 @@ import { createServer } from 'net';
 import { MessageHub } from '../orchestration/message-hub.js';
 import { ModuleRegistry } from '../orchestration/module-registry.js';
 import { echoInput, echoOutput } from '../agents/test/mock-echo-agent.js';
-import { createIflowAgentOutputModule } from '../agents/daemon/iflow-agent-module.js';
+import { createRealOrchestratorModule } from '../agents/daemon/orchestrator-module.js';
 import type { OutputModule } from '../orchestration/module-registry.js';
 import {
   TaskBlock,
@@ -99,19 +99,19 @@ const moduleRegistry = new ModuleRegistry(hub);
 await moduleRegistry.register(echoInput);
 await moduleRegistry.register(echoOutput);
 
- // 注册编排者（Orchestrator）- 使用 iFlow SDK 真实拆解任务
- const { module: orchestratorModule } = createIflowAgentOutputModule({
+ // 注册真正的编排者 - 集成 iFlow SDK + bd 任务管理
+ const { module: realOrchestrator } = createRealOrchestratorModule({
    id: 'orchestrator-1',
-   name: 'Orchestrator',
+   name: 'Real Orchestrator',
    mode: 'auto',
-   systemPrompt: '你是一个任务编排专家，负责拆解用户任务并分配给执行者。',
- });
- await orchestratorModule.initialize?.(hub as any);
- await moduleRegistry.register(orchestratorModule);
- console.log('[Server] Orchestrator module registered: orchestrator-1');
+   systemPrompt: '你是一个任务编排专家。请将用户任务拆解为可执行的子任务，并以JSON格式返回。',
+ }, hub);
+ await realOrchestrator.initialize?.(hub);
+ await moduleRegistry.register(realOrchestrator);
+ console.log('[Server] Real Orchestrator module registered: orchestrator-1');
 
- // 注册 mock 执行者
- const executorMock: OutputModule = {
+// 注册 mock 执行者
+const executorMock: OutputModule = {
    id: 'executor-mock',
    type: 'output',
    name: 'Mock Executor',
