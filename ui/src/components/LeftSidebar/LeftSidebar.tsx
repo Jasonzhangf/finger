@@ -1,4 +1,5 @@
 import { useMemo, useState } from 'react';
+import { useSessions } from '../../hooks/useSessions.js';
 import './LeftSidebar.css';
 
 type SidebarTab = 'project' | 'ai-provider' | 'settings';
@@ -52,23 +53,46 @@ export const LeftSidebar = () => {
   );
 };
 
-const ProjectTab = () => (
-  <div className="tab-content">
-    <div className="folder-picker">
-      <button type="button">Select Project Folder</button>
-    </div>
+const ProjectTab = () => {
+  const { sessions, currentSession, isLoading, create, switchSession } = useSessions();
+  const [newProjectPath, setNewProjectPath] = useState('');
 
-    <div className="session-list">
-      <h4>Sessions</h4>
-      <button type="button" className="session-item active">
-        ~/.finger/sessions/project-demo
-      </button>
-      <button type="button" className="session-item">
-        ~/.finger/sessions/another-project
-      </button>
+  const handleCreate = async () => {
+    if (newProjectPath.trim()) {
+      await create(newProjectPath.trim());
+      setNewProjectPath('');
+    }
+  };
+
+  return (
+    <div className="tab-content">
+      <div className="folder-picker">
+        <input
+          type="text"
+          placeholder="Enter project path..."
+          value={newProjectPath}
+          onChange={(e) => setNewProjectPath(e.target.value)}
+        />
+        <button type="button" onClick={handleCreate}>Create Session</button>
+      </div>
+
+      <div className="session-list">
+        <h4>Sessions</h4>
+        {isLoading && <div className="loading">Loading...</div>}
+        {sessions.map((session) => (
+          <button
+            key={session.id}
+            type="button"
+            className={`session-item ${currentSession?.id === session.id ? 'active' : ''}`}
+            onClick={() => switchSession(session.id)}
+          >
+            {session.name}
+          </button>
+        ))}
+      </div>
     </div>
-  </div>
-);
+  );
+};
 
 const AIProviderTab = () => (
   <div className="tab-content">
