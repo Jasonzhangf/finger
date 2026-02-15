@@ -97,7 +97,7 @@ export class BdTools {
     const output = await this.run(args.join(' '));
     
     // 解析输出获取 task id
-    const idMatch = output.match(/(finger-\d+)/);
+    const idMatch = output.match(/(finger-\d+(?:\.\d+)?)/);
     if (!idMatch) {
       throw new Error(`Failed to parse task id from: ${output}`);
     }
@@ -186,7 +186,7 @@ export class BdTools {
       // 解析文本格式
       const lines = output.split('\n').filter(l => l.includes('finger-'));
       return lines.map(line => {
-        const idMatch = line.match(/(finger-\d+)/);
+        const idMatch = line.match(/(finger-\d+(?:\.\d+)?)/);
         return {
           id: idMatch?.[1] ?? '',
           title: line,
