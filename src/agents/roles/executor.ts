@@ -56,18 +56,27 @@ export class ExecutorRole {
     this.bdTools = new BdTools(config.cwd);
   }
 
-  async initialize(): Promise<void> {
-    await this.agent.initialize();
+  /** 获取当前配置 */
+  getConfig(): ExecutorRoleConfig {
+    return { ...this.config };
   }
 
-  async disconnect(): Promise<void> {
-    await this.agent.disconnect();
-  }
-
+  /** 获取当前状态 */
   getState(): ExecutorState {
     return this.state;
   }
 
+  /** 初始化 Agent */
+  async initialize(): Promise<void> {
+    await this.agent.initialize();
+  }
+
+  /** 断开连接 */
+  async disconnect(): Promise<void> {
+    await this.agent.disconnect();
+  }
+
+  /** 执行任务 */
   async execute(task: TaskAssignment): Promise<ExecutionResult> {
     const startTime = Date.now();
     this.state = 'claiming';

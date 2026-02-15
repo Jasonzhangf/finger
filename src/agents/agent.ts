@@ -16,6 +16,7 @@ export interface AgentConfig {
   disallowedTools?: string[];
   permissionMode?: 'default' | 'autoEdit' | 'yolo' | 'plan';
   maxTurns?: number;
+  resumeSession?: boolean;
   cwd?: string;
   addDirs?: string[];
 }
@@ -33,6 +34,7 @@ export interface AgentStatus {
 export interface TaskResult {
   success: boolean;
   output: string;
+  sessionId?: string;
   stopReason?: string;
   error?: string;
 }
@@ -82,7 +84,10 @@ export class Agent {
 
   /** 初始化 Agent */
   async initialize(): Promise<AgentStatus> {
-    const info = await this.base.initialize();
+    // resumeSession: true (default) -> skipSession = false (reuse session)
+    // resumeSession: false -> skipSession = true (new session)
+    const skipSession = this.config.resumeSession === false;
+    const info = await this.base.initialize(skipSession);
     this.status.connected = info.connected;
     this.status.sessionId = info.sessionId;
     this.status.capabilities = [

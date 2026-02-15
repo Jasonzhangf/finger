@@ -50,6 +50,9 @@ export class IflowInteractiveAgent {
     files: Array<{ path?: string; image?: string }> = []
   ): Promise<{ stopReason?: string; finalOutput: string }> {
     if (this.isRunning) throw new Error('Agent is already in an interaction loop');
+    
+    // Ensure connection before interacting
+    await this.client.connect({ skipSession: true });
     this.isRunning = true;
 
     let finalOutput = '';
