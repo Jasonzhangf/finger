@@ -166,14 +166,16 @@ export function registerDaemonCommand(program: Command): void {
       }
     });
 
-  daemon
-    .command('chat')
-    .description('Interactive mode: send messages and watch status via WebSocket')
-    .requiredOption('-t, --target <id>', 'Target module ID')
-    .option('-s, --sender <name>', 'Sender name', 'cli-user')
-    .action(async (options: ChatOptions) => {
-      const wsUrl = 'ws://localhost:5522';
-      const ws = new WebSocket(wsUrl);
+ daemon
+   .command('chat')
+   .description('Interactive mode: send messages and watch status via WebSocket')
+   .requiredOption('-t, --target <id>', 'Target module ID')
+   .option('-s, --sender <name>', 'Sender name', 'cli-user')
+   .action(async (options: ChatOptions) => {
+     const wsUrl = 'ws://localhost:5522';
+     const ws = new WebSocket(wsUrl);
+
+      const completedMessages = new Set<string>();
 
       await new Promise<void>((resolve, reject) => {
         ws.on('open', () => resolve());
@@ -183,23 +185,22 @@ export function registerDaemonCommand(program: Command): void {
       console.log(`Connected to ${wsUrl}`);
       console.log('Interactive mode. Type message and press Enter. Ctrl+C to exit.');
 
-      ws.on('message', (data) => {
-        try {
-          const msg = JSON.parse(data.toString());
-          if (msg.type === 'messageUpdate' && msg.message) {
-            const m = msg.message;
-            console.log(`\n[${m.id}] ${renderStatus(m.status)}`);
-            if (m.status === 'completed' && m.result) {
-              console.log(JSON.stringify(m.result, null, 2));
-            }
-            if (m.status === 'failed' && m.error) {
-              console.error(`[${m.id}] Error: ${m.error}`);
-            }
-          }
-          if (msg.type === 'messageCompleted') {
-            console.log(`\n[${msg.messageId}] ✅ completed`);
-            if (msg.result) {
-              console.log(JSON.stringify(msg.result, null, 2));
+     ws.on('message', (data) => {
+       try {
+         const msg = JSON.parse(data.toString());
+         if (msg.type === 'messageUpdate' && msg.message) {
+           const m = msg.message;
+           console.log(`\n[${m.id}] ${renderStatus(m.status)}`);
+           if (m.status === 'failed' && m.error) {
+             console.error(`[${m.id}] Error: ${m.error}`);
+           }
+         }
+         if (msg.type === 'messageCompleted') {
+            if (completedMessages.has(msg.messageId)) return;
+            completedMessages.add(msg.messageId);
+           console.log(`\n[${msg.messageId}] ✅ completed`);
+           if (msg.result) {
+             console.log(JSON.stringify(msg.result, null, 2));
             }
           }
         } catch {
