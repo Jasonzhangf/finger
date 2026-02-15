@@ -1,5 +1,6 @@
 import { Command } from 'commander';
 import { OrchestrationDaemon } from '../orchestration/daemon.js';
+import { AgentPool } from '../orchestration/agent-pool.js';
 import fetch from 'node-fetch';
 
 interface SendOptions {
@@ -10,6 +11,16 @@ interface SendOptions {
 
 interface ModuleFileOptions {
   file: string;
+}
+
+interface AgentAddOptions {
+  id: string;
+  name: string;
+  mode: 'auto' | 'manual';
+  port: number;
+  systemPrompt?: string;
+  cwd?: string;
+  autoStart?: boolean;
 }
 
 export function registerDaemonCommand(program: Command): void {
@@ -120,5 +131,104 @@ export function registerDaemonCommand(program: Command): void {
       } catch (err) {
         console.error('Failed to list modules:', err);
       }
+    });
+
+  // Agent pool commands
+  const agent = daemon.command('agent').description('Runtime agent management');
+
+  agent
+    .command('add')
+    .description('Add an agent to the pool')
+    .requiredOption('--id <id>', 'Agent ID')
+    .requiredOption('--name <name>', 'Agent name')
+    .requiredOption('--mode <mode>', 'Agent mode (auto|manual)')
+    .requiredOption('--port <port>', 'Agent daemon port')
+    .option('--system-prompt <prompt>', 'System prompt')
+    .option('--cwd <dir>', 'Working directory')
+    .option('--auto-start', 'Auto start when daemon starts')
+    .action((options: AgentAddOptions) => {
+      const pool = new AgentPool();
+      pool.addAgent({
+        id: options.id,
+        name: options.name,
+        mode: options.mode,
+        port: options.port,
+        systemPrompt: options.systemPrompt,
+        cwd: options.cwd,
+        autoStart: options.autoStart,
+      });
+      console.log(`Agent ${options.id} added`);
+    });
+
+  agent
+    .command('remove <id>')
+    .description('Remove an agent from the pool')
+    .action(async (id: string) => {
+      const pool = new AgentPool();
+      await pool.removeAgent(id);
+      console.log(`Agent ${id} removed`);
+    });
+
+  agent
+    .command('start <id>')
+    .description('Start an agent')
+    .action(async (id: string) => {
+      const pool = new AgentPool();
+      await pool.startAgent(id);
+      console.log(`Agent ${id} started`);
+    });
+
+  agent
+    .command('stop <id>')
+    .description('Stop an agent')
+    .action(async (id: string) => {
+      const pool = new AgentPool();
+      await pool.stopAgent(id);
+      console.log(`Agent ${id} stopped`);
+    });
+
+  agent
+    .command('restart <id>')
+    .description('Restart an agent')
+    .action(async (id: string) => {
+      const pool = new AgentPool();
+      await pool.restartAgent(id);
+      console.log(`Agent ${id} restarted`);
+    });
+
+  agent
+    .command('list')
+    .description('List all agents')
+    .action(() => {
+      const pool = new AgentPool();
+      const agents = pool.listAgents();
+      console.log(JSON.stringify(agents.map(a => ({
+        id: a.config.id,
+        name: a.config.name,
+        mode: a.config.mode,
+        port: a.config.port,
+        status: a.status,
+        autoStart: a.config.autoStart,
+      })), null, 2));
+    });
+
+  agent
+    .command('status <id>')
+    .description('Show agent status')
+    .action((id: string) => {
+      const pool = new AgentPool();
+      const agent = pool.getAgentStatus(id);
+      if (!agent) {
+        console.error(`Agent ${id} not found`);
+        return;
+      }
+      console.log(JSON.stringify({
+        id: agent.config.id,
+        name: agent.config.name,
+        mode: agent.config.mode,
+        port: agent.config.port,
+        status: agent.status,
+        startedAt: agent.startedAt,
+      }, null, 2));
     });
 }

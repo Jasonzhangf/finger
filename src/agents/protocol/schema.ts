@@ -1,9 +1,61 @@
 // Agent Communication Protocol Schema
 // Based on ReACT pattern: Thought → Action → Observation
 
-export type MessageMode = 'plan' | 'execute' | 'review' | 'test';
+export type MessageMode = 'plan' | 'execute' | 'review' | 'test' | 'ask';
 export type MessageStatus = 'pending' | 'sent' | 'running' | 'completed' | 'failed' | 'timeout';
 export type ExecutionMode = 'sync' | 'async';
+
+export interface ProtocolMessageMeta {
+  traceId?: string;
+  parentMessageId?: string;
+  createdBy?: string;
+}
+
+export interface ProtocolMessageTiming {
+  createdAt: string;
+  deadlineAt?: string;
+  executionTimeMs?: number;
+}
+
+export interface TaskDefinition {
+  title: string;
+  description: string;
+  acceptanceCriteria?: string[];
+}
+
+export interface ToolSpec {
+  name: string;
+  argsSchema?: Record<string, unknown>;
+}
+
+export interface TaskStatusPayload {
+  state: MessageStatus;
+  detail?: string;
+}
+
+export interface TaskResultPayload {
+  success: boolean;
+  output: string;
+  error?: string;
+}
+
+export interface AskPayload {
+  question: string;
+  required?: boolean;
+}
+
+export interface ProtocolEnvelope {
+  sender: string;
+  receiver: string;
+  mode: MessageMode;
+  task: TaskDefinition;
+  tools: ToolSpec[];
+  timing: ProtocolMessageTiming;
+  status: TaskStatusPayload;
+  result?: TaskResultPayload;
+  ask?: AskPayload;
+  meta?: ProtocolMessageMeta;
+}
 
 export interface AgentMessage {
   id: string;
@@ -14,6 +66,7 @@ export interface AgentMessage {
   status: MessageStatus;
   executionTime?: number;
   payload: MessagePayload;
+  envelope?: ProtocolEnvelope;
 }
 
 export interface MessagePayload {

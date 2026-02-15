@@ -2,6 +2,7 @@ import { Command } from 'commander';
 import { IflowBaseAgent } from '../agents/sdk/iflow-base.js';
 import { IflowInteractiveAgent } from '../agents/sdk/iflow-interactive.js';
 import { runIflowCapabilityTest } from '../agents/sdk/iflow-capability-test.js';
+import { IFlowClient } from '@iflow-ai/iflow-cli-sdk';
 import * as readline from 'readline';
 
 interface CommonOptions {
@@ -126,12 +127,12 @@ export function registerIflowCommand(program: Command): void {
     .option('--add-dir <dirs...>', '额外包含目录')
     .option('-c, --capability <path>', '能力描述文件路径（暂未实现）')
     .action(async (options: CommonOptions & { task: string }) => {
-      const agent = new IflowInteractiveAgent({ 
+      const client = new IFlowClient({
         autoStartProcess: true, 
-        permissionMode: 'auto',
         cwd: options.cwd,
         sessionSettings: options.addDir ? { add_dirs: options.addDir } : undefined,
       });
+      const agent = new IflowInteractiveAgent(client);
       try {
         await agent.initialize();
         console.log('Executing task...');
@@ -154,12 +155,12 @@ export function registerIflowCommand(program: Command): void {
     .option('-d, --cwd <dir>', '工作目录')
     .option('--add-dir <dirs...>', '额外包含目录')
     .action(async (options: CommonOptions) => {
-      const agent = new IflowInteractiveAgent({ 
+      const client = new IFlowClient({
         autoStartProcess: true, 
-        permissionMode: 'auto',
         cwd: options.cwd,
         sessionSettings: options.addDir ? { add_dirs: options.addDir } : undefined,
       });
+      const agent = new IflowInteractiveAgent(client);
       const rl = readline.createInterface({
         input: process.stdin,
         output: process.stdout,

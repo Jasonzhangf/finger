@@ -31,13 +31,8 @@ export class IflowInteractiveAgent {
   private client: IFlowClient;
   private isRunning = false;
 
-  constructor(clientOrOptions?: IFlowClient | IFlowOptions, _options?: IFlowOptions) {
-    if (clientOrOptions instanceof IFlowClient) {
-      this.client = clientOrOptions;
-      return;
-    }
-
-    this.client = new IFlowClient(clientOrOptions);
+  constructor(client: IFlowClient) {
+    this.client = client;
   }
 
   async initialize(skipSession = false): Promise<void> {

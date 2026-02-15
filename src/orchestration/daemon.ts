@@ -3,6 +3,7 @@ import fs from 'fs';
 import path from 'path';
 import os from 'os';
 import { fileURLToPath } from 'url';
+import { AgentPool } from './agent-pool.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -19,6 +20,7 @@ export class OrchestrationDaemon {
   private process: ChildProcess | null = null;
   private config: DaemonConfig;
   private running = false;
+  private agentPool: AgentPool;
 
   constructor(config?: Partial<DaemonConfig>) {
     const home = os.homedir();
@@ -35,6 +37,8 @@ export class OrchestrationDaemon {
     if (!fs.existsSync(fingerDir)) {
       fs.mkdirSync(fingerDir, { recursive: true });
     }
+
+    this.agentPool = new AgentPool();
   }
 
   async start(): Promise<void> {
@@ -83,13 +87,21 @@ export class OrchestrationDaemon {
           fs.writeFileSync(this.config.pidFile, this.process.pid.toString());
           this.running = true;
           console.log(`Daemon started with PID ${this.process.pid}`);
+          resolve();
         }
-        resolve();
       }, 500);
     });
+
+    // 启动自动启动的 runtime agents
+    console.log('[Daemon] Starting auto-start agents...');
+    await this.agentPool.startAllAuto();
   }
 
   async stop(): Promise<void> {
+    // 先停止所有 runtime agents
+    console.log('[Daemon] Stopping runtime agents...');
+    await this.agentPool.stopAll();
+
     if (!fs.existsSync(this.config.pidFile)) {
       console.log('No PID file found, daemon not running');
       return;
@@ -137,5 +149,9 @@ export class OrchestrationDaemon {
       fs.unlinkSync(this.config.pidFile);
       return false;
     }
+  }
+
+  getAgentPool(): AgentPool {
+    return this.agentPool;
   }
 }

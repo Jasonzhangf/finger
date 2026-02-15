@@ -7,6 +7,8 @@ import { createServer } from 'net';
 import { MessageHub } from '../orchestration/message-hub.js';
 import { ModuleRegistry } from '../orchestration/module-registry.js';
 import { echoInput, echoOutput } from '../agents/test/mock-echo-agent.js';
+import { createIflowAgentOutputModule } from '../agents/daemon/iflow-agent-module.js';
+import type { OutputModule } from '../orchestration/module-registry.js';
 import {
   TaskBlock,
   AgentBlock,
@@ -96,12 +98,45 @@ const hub = new MessageHub();
 const moduleRegistry = new ModuleRegistry(hub);
 await moduleRegistry.register(echoInput);
 await moduleRegistry.register(echoOutput);
+
+ // 注册编排者（Orchestrator）- 使用 iFlow SDK 真实拆解任务
+ const { module: orchestratorModule } = createIflowAgentOutputModule({
+   id: 'orchestrator-1',
+   name: 'Orchestrator',
+   mode: 'auto',
+   systemPrompt: '你是一个任务编排专家，负责拆解用户任务并分配给执行者。',
+ });
+ await orchestratorModule.initialize?.(hub as any);
+ await moduleRegistry.register(orchestratorModule);
+ console.log('[Server] Orchestrator module registered: orchestrator-1');
+
+ // 注册 mock 执行者
+ const executorMock: OutputModule = {
+   id: 'executor-mock',
+   type: 'output',
+   name: 'Mock Executor',
+   version: '1.0.0',
+   handle: async (message: any, callback) => {
+     const task = message.task || message;
+     console.log('[MockExecutor] executing task:', task.description || task);
+     const result = {
+       taskId: task.taskId || message.taskId,
+       success: true,
+       output: `执行完成：${task.description || JSON.stringify(task)}`,
+     };
+     if (callback) callback(result);
+     return result;
+   },
+ };
+ await moduleRegistry.register(executorMock);
+ console.log('[Server] Mock Executor module registered: executor-mock');
+
 moduleRegistry.createRoute(() => true, 'echo-output', {
   blocking: false,
   priority: 0,
   description: 'default route to echo-output'
 });
-console.log('[Server] Orchestration modules initialized: echo-input, echo-output');
+console.log('[Server] Orchestration modules initialized: echo-input, echo-output, orchestrator-1, executor-mock');
 
 app.get('/health', (_req, res) => {
   res.json({ status: 'healthy', timestamp: new Date().toISOString() });

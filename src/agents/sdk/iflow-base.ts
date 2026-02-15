@@ -30,10 +30,17 @@ export class IflowBaseAgent {
     availableMcpServers: [],
   };
 
-  constructor(options?: IFlowOptions) {
-    this.client = new IFlowClient(options);
-    if (options?.cwd) this.info.cwd = options.cwd;
-    if (options?.sessionSettings?.add_dirs) this.info.addDirs = [...options.sessionSettings.add_dirs];
+  constructor(clientOrOptions?: IFlowClient | IFlowOptions) {
+    if (clientOrOptions instanceof IFlowClient) {
+      this.client = clientOrOptions;
+      return;
+    }
+
+    this.client = new IFlowClient(clientOrOptions);
+    if (clientOrOptions?.cwd) this.info.cwd = clientOrOptions.cwd;
+    if (clientOrOptions?.sessionSettings?.add_dirs) {
+      this.info.addDirs = [...clientOrOptions.sessionSettings.add_dirs];
+    }
   }
 
   /** 初始化连接并创建/加载 session */
