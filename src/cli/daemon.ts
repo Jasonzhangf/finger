@@ -2,11 +2,19 @@ import { Command } from 'commander';
 import { OrchestrationDaemon } from '../orchestration/daemon.js';
 import { AgentPool } from '../orchestration/agent-pool.js';
 import fetch from 'node-fetch';
+import WebSocket from 'ws';
+import ora from 'ora';
 
 interface SendOptions {
   target: string;
   message: string;
   blocking?: boolean;
+  sender?: string;
+}
+
+interface ChatOptions {
+  target: string;
+  sender?: string;
 }
 
 interface ModuleFileOptions {
@@ -21,6 +29,61 @@ interface AgentAddOptions {
   systemPrompt?: string;
   cwd?: string;
   autoStart?: boolean;
+}
+
+function parseJsonMessage(raw: string): unknown {
+  try {
+    return JSON.parse(raw);
+  } catch {
+    // fallback: treat as plain text
+    return { content: raw };
+  }
+}
+
+async function sendMessage(
+  target: string,
+  message: unknown,
+  blocking: boolean,
+  sender?: string
+): Promise<any> {
+  const url = 'http://localhost:5521/api/v1/message';
+  const body = {
+    target,
+    message,
+    blocking,
+    sender,
+  };
+
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+
+  return await res.json();
+}
+
+async function getMailboxMessage(messageId: string): Promise<any> {
+  const res = await fetch(`http://localhost:5521/api/v1/mailbox/${messageId}`);
+  if (!res.ok) {
+    throw new Error(`Failed to get mailbox message: ${res.status}`);
+  }
+  return await res.json();
+}
+
+function renderStatus(status: string): string {
+  switch (status) {
+    case 'pending':
+      return '⏳ pending';
+    case 'processing':
+      return '🔄 processing';
+    case 'completed':
+      return '✅ completed';
+    case 'failed':
+      return '❌ failed';
+    default:
+      return status;
+  }
 }
 
 export function registerDaemonCommand(program: Command): void {
@@ -71,31 +134,116 @@ export function registerDaemonCommand(program: Command): void {
 
   daemon
     .command('send')
-    .description('Send a message to a module')
+    .description('Send a message to a module (default: non-blocking)')
     .requiredOption('-t, --target <id>', 'Target module ID (input/output)')
-    .requiredOption('-m, --message <json>', 'Message JSON string')
-    .option('-b, --blocking', 'Wait for response (blocking mode)')
+    .requiredOption('-m, --message <json-or-text>', 'Message JSON string or plain text')
+    .option('-b, --blocking', 'Wait for immediate response (blocking mode)')
+    .option('-s, --sender <name>', 'Sender name')
     .action(async (options: SendOptions) => {
       try {
-        const message = JSON.parse(options.message);
-        const url = `http://localhost:5521/api/v1/message`;
-        const body = {
-          target: options.target,
-          message,
-          blocking: options.blocking || false
-        };
+        const payload = parseJsonMessage(options.message);
+        const result = await sendMessage(
+          options.target,
+          payload,
+          options.blocking || false,
+          options.sender
+        );
 
-        const res = await fetch(url, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(body)
-        });
+        // Non-blocking returns messageId
+        if (!options.blocking && result.messageId) {
+          console.log(JSON.stringify({
+            success: true,
+            queued: true,
+            messageId: result.messageId,
+            hint: `Use: fingerdaemon mailbox get ${result.messageId}`,
+          }, null, 2));
+          return;
+        }
 
-        const result = await res.json();
         console.log(JSON.stringify(result, null, 2));
       } catch (err) {
         console.error('Send failed:', err);
       }
+    });
+
+  daemon
+    .command('chat')
+    .description('Interactive mode: send messages and watch status via WebSocket')
+    .requiredOption('-t, --target <id>', 'Target module ID')
+    .option('-s, --sender <name>', 'Sender name', 'cli-user')
+    .action(async (options: ChatOptions) => {
+      const wsUrl = 'ws://localhost:5522';
+      const ws = new WebSocket(wsUrl);
+
+      await new Promise<void>((resolve, reject) => {
+        ws.on('open', () => resolve());
+        ws.on('error', (err) => reject(err));
+      });
+
+      console.log(`Connected to ${wsUrl}`);
+      console.log('Interactive mode. Type message and press Enter. Ctrl+C to exit.');
+
+      ws.on('message', (data) => {
+        try {
+          const msg = JSON.parse(data.toString());
+          if (msg.type === 'messageUpdate' && msg.message) {
+            const m = msg.message;
+            console.log(`\n[${m.id}] ${renderStatus(m.status)}`);
+            if (m.status === 'completed' && m.result) {
+              console.log(JSON.stringify(m.result, null, 2));
+            }
+            if (m.status === 'failed' && m.error) {
+              console.error(`[${m.id}] Error: ${m.error}`);
+            }
+          }
+          if (msg.type === 'messageCompleted') {
+            console.log(`\n[${msg.messageId}] ✅ completed`);
+            if (msg.result) {
+              console.log(JSON.stringify(msg.result, null, 2));
+            }
+          }
+        } catch {
+          // ignore parsing errors
+        }
+      });
+
+      process.stdin.setEncoding('utf-8');
+      process.stdin.resume();
+      process.stdout.write('> ');
+
+      process.stdin.on('data', async (input) => {
+        const text = String(input).trim();
+        if (!text) {
+          process.stdout.write('> ');
+          return;
+        }
+
+        const spinner = ora('Sending...').start();
+        try {
+          const result = await sendMessage(
+            options.target,
+            { content: text },
+            false,
+            options.sender
+          );
+          spinner.succeed(`Sent. messageId: ${result.messageId}`);
+
+          // Subscribe this messageId
+          ws.send(JSON.stringify({
+            type: 'subscribe',
+            messageId: result.messageId,
+          }));
+        } catch (err) {
+          spinner.fail(`Send failed: ${err}`);
+        }
+
+        process.stdout.write('> ');
+      });
+
+      process.on('SIGINT', () => {
+        ws.close();
+        process.exit(0);
+      });
     });
 
   daemon

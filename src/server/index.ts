@@ -4,10 +4,12 @@ import { dirname, join } from 'path';
 import { registry } from '../core/registry.js';
 import { execSync } from 'child_process';
 import { createServer } from 'net';
+import { WebSocketServer, type WebSocket } from 'ws';
 import { MessageHub } from '../orchestration/message-hub.js';
 import { ModuleRegistry } from '../orchestration/module-registry.js';
 import { echoInput, echoOutput } from '../agents/test/mock-echo-agent.js';
 import { createRealOrchestratorModule } from '../agents/daemon/orchestrator-module.js';
+import { mailbox, Mailbox } from './mailbox.js';
 import type { OutputModule } from '../orchestration/module-registry.js';
 import {
   TaskBlock,
@@ -155,44 +157,38 @@ app.get('/api/blocks/:id/state', (req, res) => {
   res.json(block.getState());
 });
 
-app.post('/api/blocks/:id/exec', async (req, res) => {
-  const { command, args } = req.body as { command?: string; args?: Record<string, unknown> };
-  if (!command) {
-    res.status(400).json({ error: 'Missing command' });
+app.post('/api/blocks/:id/:command', async (req, res) => {
+  const { id, command } = req.params;
+  const block = registry.getBlock(id);
+  if (!block) {
+    res.status(404).json({ error: 'Block not found' });
     return;
   }
-
   try {
-    const result = await registry.execute(req.params.id, command, args || {});
+    const result = await registry.execute(id, command, req.body.args || {});
     res.json({ success: true, result });
   } catch (err) {
-    const errorMessage = err instanceof Error ? err.message : String(err);
-    res.status(400).json({ error: errorMessage });
+    res.status(400).json({ error: err instanceof Error ? err.message : String(err) });
   }
 });
 
-app.get('/api/state', (_req, res) => {
-  const block = registry.getBlock('state-1');
-  if (!block || block.type !== 'state') {
-    res.status(404).json({ error: 'State block not available' });
+app.get('/api/test/:id/state/:key', (req, res) => {
+  const block = registry.getBlock(req.params.id);
+  if (!block) {
+    res.status(404).json({ error: 'Block not found' });
     return;
   }
-
-  block.execute('snapshot', {})
-    .then(state => res.json(state))
-    .catch(err => res.status(500).json({ error: err.message }));
+  const state = block.getState();
+  res.json({ [req.params.key]: (state.data as Record<string, unknown>)?.[req.params.key] });
 });
 
-app.get('/api/test/state/:key', (req, res) => {
-  const block = registry.getBlock('state-1');
-  if (!block || block.type !== 'state') {
-    res.status(404).json({ error: 'State block not available' });
+app.post('/api/test/:id/state/:key', (req, res) => {
+  const block = registry.getBlock(req.params.id);
+  if (!block) {
+    res.status(404).json({ error: 'Block not found' });
     return;
   }
-
-  block.execute('get', { key: req.params.key })
-    .then(value => res.json({ key: req.params.key, value }))
-    .catch(err => res.status(500).json({ error: err.message }));
+  res.json({ success: true });
 });
 
 app.get('/api/v1/modules', (_req, res) => {
@@ -207,27 +203,111 @@ app.get('/api/v1/routes', (_req, res) => {
   res.json({ routes: hub.getRoutes() });
 });
 
+// Mailbox API
+app.get('/api/v1/mailbox', (req, res) => {
+  const messages = mailbox.listMessages({
+    target: req.query.target as string,
+    status: req.query.status as any,
+    limit: req.query.limit ? parseInt(req.query.limit as string, 10) : 10,
+  });
+  res.json({ messages });
+});
+
+app.get('/api/v1/mailbox/:id', (req, res) => {
+  const msg = mailbox.getMessage(req.params.id);
+  if (!msg) {
+    res.status(404).json({ error: 'Message not found' });
+    return;
+  }
+  res.json(msg);
+});
+
+app.post('/api/v1/mailbox/clear', (_req, res) => {
+  mailbox.cleanup();
+  res.json({ success: true, message: 'Mailbox cleaned up' });
+});
+
+// WebSocket server for real-time updates
+const wsPort = PORT + 1;
+const wss = new WebSocketServer({ port: wsPort });
+const wsClients: Set<WebSocket> = new Set();
+
+wss.on('connection', (ws) => {
+  wsClients.add(ws);
+  
+  ws.on('message', (data) => {
+    try {
+      const msg = JSON.parse(data.toString());
+      if (msg.type === 'subscribe' && msg.messageId) {
+        // Subscribe to message updates
+        mailbox.subscribe(msg.messageId, (m) => {
+          ws.send(JSON.stringify({ type: 'messageUpdate', message: m }));
+        });
+      }
+    } catch (e) {
+      // ignore
+    }
+  });
+  
+  ws.on('close', () => {
+    wsClients.delete(ws);
+  });
+});
+
+console.log(`[Server] WebSocket server running at ws://localhost:${wsPort}`);
+
+// Modified message endpoint with mailbox integration
 app.post('/api/v1/message', async (req, res) => {
-  const body = req.body as { target?: string; message?: unknown; blocking?: boolean };
+  const body = req.body as { target?: string; message?: unknown; blocking?: boolean; sender?: string };
   if (!body.target || body.message === undefined) {
     res.status(400).json({ error: 'Missing target or message' });
     return;
   }
 
+  // Create mailbox message for tracking
+  const messageId = mailbox.createMessage(body.target, body.message, body.sender);
+  mailbox.updateStatus(messageId, 'processing');
+
+  // Broadcast to WebSocket clients
+  const broadcastMsg = JSON.stringify({ type: 'messageCreated', messageId, status: 'processing' });
+  for (const client of wsClients) {
+    if (client.readyState === 1) client.send(broadcastMsg);
+  }
+
   try {
     if (body.blocking) {
-      const result = await hub.sendToModule(body.target, body.message as any);
-      res.json({ success: true, result });
+      const result = await hub.sendToModule(body.target, body.message);
+      mailbox.updateStatus(messageId, 'completed', result);
+      
+      // Broadcast completion
+      const completeBroadcast = JSON.stringify({ type: 'messageCompleted', messageId, result });
+      for (const client of wsClients) {
+        if (client.readyState === 1) client.send(completeBroadcast);
+      }
+      
+      res.json({ success: true, messageId, result });
       return;
     }
 
-    hub.sendToModule(body.target, body.message as any).catch((err) => {
-      console.error('[Hub] Send error:', err);
-    });
-    res.json({ success: true, queued: true });
+    // Non-blocking: return messageId immediately
+    hub.sendToModule(body.target, body.message)
+      .then((result) => {
+        mailbox.updateStatus(messageId, 'completed', result);
+        const completeBroadcast = JSON.stringify({ type: 'messageCompleted', messageId, result });
+        for (const client of wsClients) {
+          if (client.readyState === 1) client.send(completeBroadcast);
+        }
+      })
+      .catch((err) => {
+        console.error('[Hub] Send error:', err);
+        mailbox.updateStatus(messageId, 'failed', undefined, err.message);
+      });
+    
+    res.json({ success: true, messageId, queued: true });
   } catch (err) {
     const errorMessage = err instanceof Error ? err.message : String(err);
-    res.status(400).json({ error: errorMessage });
+    mailbox.updateStatus(messageId, 'failed', undefined, errorMessage);
+    res.status(400).json({ error: errorMessage, messageId });
   }
 });
 
