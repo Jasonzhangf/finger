@@ -3,6 +3,7 @@
  * 负责任务依赖图、状态机、资源分配
  */
 
+import { saveWorkflow } from './workflow-persistence.js';
 export type TaskStatus = 'pending' | 'blocked' | 'ready' | 'in_progress' | 'completed' | 'failed';
 
 export interface TaskNode {
@@ -76,6 +77,7 @@ export class WorkflowManager {
       updatedAt: now,
     };
     this.workflows.set(id, workflow);
+    saveWorkflow(workflow);
     return workflow;
   }
 
@@ -98,6 +100,7 @@ export class WorkflowManager {
 
     workflow.tasks.set(task.id, taskNode);
     workflow.updatedAt = new Date().toISOString();
+    saveWorkflow(workflow);
     return taskNode;
   }
 
@@ -127,6 +130,7 @@ export class WorkflowManager {
 
     workflow.updatedAt = new Date().toISOString();
     this.updateWorkflowStatus(workflow);
+    saveWorkflow(workflow);
     return true;
   }
 
@@ -159,6 +163,7 @@ export class WorkflowManager {
     task.assignee = agentId;
     this.resourcePool.busyAgents.add(agentId);
     workflow.updatedAt = new Date().toISOString();
+    saveWorkflow(workflow);
     return true;
   }
 

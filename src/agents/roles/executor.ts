@@ -141,5 +141,3 @@ ${thought.output}
     }
   }
 }
-
-export type { ExecutorRoleConfig };
