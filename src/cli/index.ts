@@ -2,14 +2,16 @@
 
 import { program } from 'commander';
 import { registerLoopTestCommand } from './loop-test.js';
+import { registerIflowCommand } from './iflow.js';
 
 program
   .name('finger')
   .description('Finger - AI Agent Orchestrator')
   .version('0.1.0');
 
-// Register loop-test command
+// Register commands
 registerLoopTestCommand(program);
+registerIflowCommand(program);
 
 // Block commands
 program

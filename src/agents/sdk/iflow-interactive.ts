@@ -1,11 +1,12 @@
 import { IflowBaseAgent } from './iflow-base.js';
 import {
-  IFlowClient,
   MessageType,
   ToolCallMessage,
   AskUserQuestionsMessage,
   ExitPlanModeMessage,
   PermissionRequestMessage,
+  TaskFinishMessage,
+  ErrorMessage,
 } from '@iflow-ai/iflow-cli-sdk';
 
 export type InteractionHandler = (chunk: string) => void;
@@ -48,9 +49,9 @@ export class IflowInteractiveAgent extends IflowBaseAgent {
       for await (const msg of (this as any).client.receiveMessages()) {
         switch (msg.type) {
           case MessageType.ASSISTANT:
-            if (msg.chunk?.text) {
-              finalOutput += msg.chunk.text;
-              callbacks.onAssistantChunk?.(msg.chunk.text);
+            if ((msg as any).chunk?.text) {
+              finalOutput += (msg as any).chunk.text;
+              callbacks.onAssistantChunk?.((msg as any).chunk.text);
             }
             break;
 
@@ -63,36 +64,42 @@ export class IflowInteractiveAgent extends IflowBaseAgent {
           case MessageType.ASK_USER_QUESTIONS:
             if (callbacks.onQuestions) {
               const answers = await callbacks.onQuestions(msg as AskUserQuestionsMessage);
-              await (this as any).client.respondToAskUserQuestions((msg as AskUserQuestionsMessage).requestId, answers);
+              // SDK 内部自动处理 requestId, 不需要传入
+              await (this as any).client.respondToAskUserQuestions(answers);
             }
             break;
 
           case MessageType.EXIT_PLAN_MODE:
             if (callbacks.onPlan) {
               const approved = await callbacks.onPlan(msg as ExitPlanModeMessage);
-              await (this as any).client.respondToExitPlanMode((msg as ExitPlanModeMessage).requestId, approved);
+              // SDK 内部自动处理 requestId
+              await (this as any).client.respondToExitPlanMode(approved);
             }
             break;
 
           case MessageType.PERMISSION_REQUEST:
             if (callbacks.onPermission) {
               const optionId = await callbacks.onPermission(msg as PermissionRequestMessage);
-              await (this as any).client.respondToToolConfirmation((msg as PermissionRequestMessage).requestId, optionId);
+              // SDK 内部自动处理 requestId
+              await (this as any).client.respondToToolConfirmation(optionId);
             } else {
-              // 默认取消
-              await (this as any).client.cancelToolConfirmation((msg as PermissionRequestMessage).requestId);
+              // 默认取消, SDK 内部处理
+              await (this as any).client.cancelToolConfirmation();
             }
             break;
 
           case MessageType.TASK_FINISH:
             this.isRunning = false;
-            return { stopReason: msg.stopReason, finalOutput };
+            return { stopReason: (msg as TaskFinishMessage).stopReason, finalOutput };
 
           case MessageType.ERROR:
             this.isRunning = false;
-            throw new Error(`iFlow error: ${msg.message}`);
+            throw new Error(`iFlow error: ${(msg as ErrorMessage).message}`);
         }
       }
+    } catch (err) {
+      this.isRunning = false;
+      throw err;
     } finally {
       this.isRunning = false;
     }
