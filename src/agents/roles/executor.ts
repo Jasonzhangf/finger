@@ -1,236 +1,145 @@
-import { IFlowProvider } from '../providers/iflow-provider.js';
-import { AgentMessage, TaskAssignment, MessageMode, ExecutionFeedback } from '../protocol/schema.js';
-import { ToolRegistry } from '../shared/tool-registry.js';
+import { Agent, AgentConfig } from '../agent.js';
 import { BdTools } from '../shared/bd-tools.js';
+import type { TaskAssignment } from '../protocol/schema.js';
 
-export interface ExecutorConfig {
+export interface ExecutorRoleConfig {
   id: string;
-  systemPrompt: string;
-  provider: {
-    baseUrl: string;
-    apiKey: string;
-    defaultModel: string;
-  };
-  toolRegistry: ToolRegistry;
+  name: string;
+  mode: 'auto' | 'manual';
+  systemPrompt?: string;
+  cwd?: string;
 }
 
-export enum ExecutorState {
-  idle = 'idle',
-  claiming = 'claiming',
-  thinking = 'thinking',
-  acting = 'acting',
-  observing = 'observing',
-  completing = 'completing',
-  failed = 'failed',
-}
+export type ExecutorState = 'idle' | 'claiming' | 'thinking' | 'acting' | 'observing' | 'completed' | 'failed';
 
 export interface ExecutionResult {
   success: boolean;
-  feedback?: ExecutionFeedback;
+  output: string;
   error?: string;
+  duration: number;
 }
 
+const DEFAULT_SYSTEM_PROMPT = `你是一个任务执行者 Agent，负责完成具体的执行任务。
+
+你的职责:
+1. 理解任务要求，分析需要做什么
+2. 使用 ReAct 循环: Thought -> Action -> Observation
+3. 完成代码编写、文件操作、命令执行等任务
+4. 返回执行结果和总结
+
+工具使用原则:
+- file.read: 读取文件内容
+- file.write: 写入/创建文件
+- file.list: 列出目录
+- shell.exec: 执行命令
+- bd.query: 查询任务状态
+
+执行完成后，返回 JSON 格式的结果。`;
+
 export class ExecutorRole {
-  private config: ExecutorConfig;
-  private provider: IFlowProvider;
-  private toolRegistry: ToolRegistry;
-  private bdTools?: BdTools;
-  private state: ExecutorState = ExecutorState.idle;
-  private currentTask?: TaskAssignment;
+  private config: ExecutorRoleConfig;
+  private agent: Agent;
+  private bdTools: BdTools;
+  private state: ExecutorState = 'idle';
 
-  constructor(config: ExecutorConfig, bdTools?: BdTools) {
+  constructor(config: ExecutorRoleConfig) {
     this.config = config;
-    this.provider = new IFlowProvider(config.provider);
-    this.toolRegistry = config.toolRegistry;
-    this.bdTools = bdTools;
+    const agentConfig: AgentConfig = {
+      id: config.id,
+      name: config.name,
+      mode: config.mode,
+      provider: 'iflow',
+      systemPrompt: config.systemPrompt ?? DEFAULT_SYSTEM_PROMPT,
+      cwd: config.cwd,
+    };
+    this.agent = new Agent(agentConfig);
+    this.bdTools = new BdTools(config.cwd);
   }
 
-  /**
-   * 执行者核心循环：Thought → Action → Observation
-   */
-  async executeTask(task: TaskAssignment): Promise<ExecutionResult> {
-    this.currentTask = task;
-    
-    // 领取任务
-    if (task.bdTaskId && this.bdTools) {
-      await this.claimTask(task.bdTaskId);
-    }
-
-    const startTime = Date.now();
-
-    try {
-      // Thought: 构建执行思路
-      this.state = ExecutorState.thinking;
-      const thinkPrompt = this.buildThinkPrompt(task);
-      const thought = await this.provider.request(thinkPrompt, {
-        systemPrompt: this.config.systemPrompt,
-      });
-
-      // Action: 决定具体行动
-      this.state = ExecutorState.acting;
-      const actPrompt = this.buildActPrompt(task, thought);
-      const action = await this.provider.request(actPrompt, {
-        systemPrompt: this.config.systemPrompt,
-      });
-
-      // 执行工具调用（如果有）
-      this.state = ExecutorState.observing;
-      const observation = await this.executeTools(task);
-
-      // 构建反馈
-      const feedback: ExecutionFeedback = {
-        taskId: task.taskId,
-        success: true,
-        result: action,
-        observation,
-        metrics: {
-          duration: Date.now() - startTime,
-        },
-      };
-
-      // 完成任务
-      this.state = ExecutorState.completing;
-      if (task.bdTaskId && this.bdTools) {
-        await this.bdTools.closeTask(task.bdTaskId, '执行成功完成', [
-          { type: 'result', content: action },
-          { type: 'log', content: observation },
-        ]);
-      }
-
-      return { success: true, feedback };
-    } catch (error) {
-      this.state = ExecutorState.failed;
-      const feedback: ExecutionFeedback = {
-        taskId: task.taskId,
-        success: false,
-        result: '',
-        observation: error instanceof Error ? error.message : 'Execution failed',
-        metrics: {
-          duration: Date.now() - startTime,
-        },
-      };
-
-      if (task.bdTaskId && this.bdTools) {
-        await this.bdTools.updateStatus(task.bdTaskId, 'blocked');
-        await this.bdTools.addComment(task.bdTaskId, 
-          `[Executor] 执行失败: ${feedback.observation}`
-        );
-      }
-
-      return {
-        success: false,
-        feedback,
-        error: feedback.observation,
-      };
-    } finally {
-      this.state = ExecutorState.idle;
-      this.currentTask = undefined;
-    }
+  async initialize(): Promise<void> {
+    await this.agent.initialize();
   }
 
-  /**
-   * 领取任务
-   */
-  private async claimTask(taskId: string): Promise<void> {
-    this.state = ExecutorState.claiming;
-    if (this.bdTools) {
-      await this.bdTools.updateStatus(taskId, 'in_progress');
-      await this.bdTools.addComment(taskId, 
-        `[${this.config.id}] 领取任务，开始执行`
-      );
-    }
+  async disconnect(): Promise<void> {
+    await this.agent.disconnect();
   }
 
-  /**
-   * 获取当前状态
-   */
   getState(): ExecutorState {
     return this.state;
   }
 
-  /**
-   * 获取当前任务
-   */
-  getCurrentTask(): TaskAssignment | undefined {
-    return this.currentTask;
-  }
+  async execute(task: TaskAssignment): Promise<ExecutionResult> {
+    const startTime = Date.now();
+    this.state = 'claiming';
 
-  /**
-   * 创建执行反馈消息
-   */
-  createFeedbackMessage(
-    orchestratorId: string,
-    feedback: ExecutionFeedback
-  ): AgentMessage {
-    return {
-      id: `msg-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
-      timestamp: new Date().toISOString(),
-      sender: this.config.id,
-      receiver: orchestratorId,
-      mode: 'execute' as MessageMode,
-      status: 'completed',
-      payload: { feedback },
-    };
-  }
-
-  getRole(): string {
-    return 'executor';
-  }
-
-  /**
-   * 构建思考提示词
-   */
-  private buildThinkPrompt(task: TaskAssignment): string {
-    const grantedTools = this.toolRegistry.listGranted(this.config.id);
-    const toolsDesc = grantedTools.map(t => t.toolName).join(', ');
-
-    return `你是一个任务执行者。请思考如何完成以下任务。
-
-任务: ${task.description}
-可用工具: ${toolsDesc || '无'}
-
-请分析:
-1. 任务目标是什么
-2. 需要哪些步骤
-3. 每一步需要什么工具
-4. 可能遇到的问题和解决方案`;
-  }
-
-  /**
-   * 构建行动提示词
-   */
-  private buildActPrompt(task: TaskAssignment, thought: string): string {
-    return `基于你的思考:
-${thought}
-
-请执行任务: ${task.description}
-
-输出执行结果。`;
-  }
-
-  /**
-   * 执行工具调用
-   */
-  private async executeTools(task: TaskAssignment): Promise<string> {
-    const results: string[] = [];
-
-    for (const toolName of task.tools) {
-      if (!this.toolRegistry.canUse(this.config.id, toolName)) {
-        results.push(`[DENIED] Tool '${toolName}' not granted`);
-        continue;
-      }
-
-      const execResult = await this.toolRegistry.execute(this.config.id, toolName, {
-        taskId: task.taskId,
-      });
-
-      if (execResult.success) {
-        results.push(`[OK] ${toolName}: ${JSON.stringify(execResult.result)}`);
-      } else {
-        results.push(`[FAIL] ${toolName}: ${execResult.error}`);
-      }
+    if (task.bdTaskId) {
+      await this.bdTools.updateStatus(task.bdTaskId, 'in_progress');
+      await this.bdTools.addComment(task.bdTaskId, `[${this.config.id}] 开始执行任务`);
     }
 
-    return results.join('\n');
+    try {
+      this.state = 'thinking';
+      const thinkPrompt = `分析以下任务，制定执行计划:
+
+任务: ${task.description}
+可用工具: ${task.tools.join(', ')}
+
+请输出执行步骤和需要的工具。`;
+
+      const thought = await this.agent.execute(thinkPrompt);
+      if (!thought.success) {
+        throw new Error('Thought failed: ' + thought.error);
+      }
+
+      this.state = 'acting';
+      const actionPrompt = `基于以下分析执行任务:
+
+分析结果:
+${thought.output}
+
+任务: ${task.description}
+
+请执行并完成此任务，返回结果。`;
+
+      const action = await this.agent.execute(actionPrompt);
+
+      this.state = 'completed';
+      const duration = Date.now() - startTime;
+
+      let output = action.output;
+      try {
+        const jsonMatch = action.output.match(/\{[\s\S]*\}/);
+        if (jsonMatch) {
+          const result = JSON.parse(jsonMatch[0]);
+          output = JSON.stringify(result, null, 2);
+        }
+      } catch {
+        // Use raw output
+      }
+
+      if (task.bdTaskId) {
+        await this.bdTools.closeTask(task.bdTaskId, '执行成功', [
+          { type: 'result', content: output },
+        ]);
+      }
+
+      return { success: true, output, duration };
+
+    } catch (error) {
+      this.state = 'failed';
+      const duration = Date.now() - startTime;
+      const errorMsg = error instanceof Error ? error.message : String(error);
+
+      if (task.bdTaskId) {
+        await this.bdTools.updateStatus(task.bdTaskId, 'blocked');
+        await this.bdTools.addComment(task.bdTaskId, '[' + this.config.id + '] 执行失败: ' + errorMsg);
+      }
+
+      return { success: false, output: '', error: errorMsg, duration };
+    } finally {
+      this.state = 'idle';
+    }
   }
 }
+
+export type { ExecutorRoleConfig };
