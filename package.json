@@ -1,5 +1,5 @@
 {
-  "name": "finger",
+  "name": "fingerdaemon",
   "version": "0.1.0",
   "description": "Finger - AI Agent Orchestrator with bd project management",
   "main": "dist/cli/index.js",
@@ -48,6 +48,6 @@
     "node": ">=20.0.0"
   },
   "bin": {
-    "finger": "./dist/cli/index.js"
+    "fingerdaemon": "./dist/cli/index.js"
   }
 }

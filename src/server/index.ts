@@ -4,6 +4,9 @@ import { dirname, join } from 'path';
 import { registry } from '../core/registry.js';
 import { execSync } from 'child_process';
 import { createServer } from 'net';
+import { MessageHub } from '../orchestration/message-hub.js';
+import { ModuleRegistry } from '../orchestration/module-registry.js';
+import { echoInput, echoOutput } from '../agents/test/mock-echo-agent.js';
 import {
   TaskBlock,
   AgentBlock,
@@ -19,22 +22,12 @@ import {
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
+const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 8080;
 
-const PORT = process.env.PORT ? parseInt(process.env.PORT) : 8080;
-
-/**
- * Check if port is in use
- */
 async function isPortInUse(port: number): Promise<boolean> {
   return new Promise((resolve) => {
     const server = createServer();
-    server.once('error', (err: NodeJS.ErrnoException) => {
-      if (err.code === 'EADDRINUSE') {
-        resolve(true);
-      } else {
-        resolve(false);
-      }
-    });
+    server.once('error', (err: NodeJS.ErrnoException) => resolve(err.code === 'EADDRINUSE'));
     server.once('listening', () => {
       server.close();
       resolve(false);
@@ -43,22 +36,14 @@ async function isPortInUse(port: number): Promise<boolean> {
   });
 }
 
-/**
- * Kill process using the specified port
- */
 function killProcessOnPort(port: number): void {
   try {
-    const cmd = `lsof -ti:${port} | xargs kill -9 2>/dev/null || true`;
-    execSync(cmd, { stdio: 'ignore' });
-    console.log(`[Server] Cleared port ${port}`);
+    execSync(`lsof -ti:${port} | xargs kill -9 2>/dev/null || true`, { stdio: 'ignore' });
   } catch {
-    // Ignore errors - process might not exist
+    // noop
   }
 }
 
-/**
- * Ensure single instance by killing any process on the port
- */
 async function ensureSingleInstance(port: number): Promise<void> {
   if (await isPortInUse(port)) {
     console.log(`[Server] Port ${port} is in use, killing existing process...`);
@@ -68,81 +53,33 @@ async function ensureSingleInstance(port: number): Promise<void> {
 }
 
 const app = express();
-
 app.use(express.json());
 
-// Serve static UI files
 app.use(express.static(join(__dirname, '../../ui/dist')));
-
-// Serve index.html for root path
-app.get('/', (req, res) => {
+app.get('/', (_req, res) => {
   res.sendFile(join(__dirname, '../../ui/dist/index.html'));
 });
 
-// Request logger for debugging
-app.use((req, res, next) => {
+app.use((req, _res, next) => {
   console.log(`[${new Date().toISOString()}] ${req.method} ${req.url}`);
   next();
 });
 
-// Test route to verify routing works
-app.get('/api/test', (req, res) => {
+app.get('/api/test', (_req, res) => {
   res.json({ ok: true, message: 'Test route works' });
 });
 
-// Register all block types
-registry.register({
-  type: 'task',
-  factory: (config) => new TaskBlock(config.id as string),
-  version: '1.0.0'
-});
-registry.register({
-  type: 'agent',
-  factory: (config) => new AgentBlock(config.id as string),
-  version: '1.0.0'
-});
-registry.register({
-  type: 'eventbus',
-  factory: (config) => new EventBusBlock(config.id as string),
-  version: '1.0.0'
-});
-registry.register({
-  type: 'storage',
-  factory: (config) => new StorageBlock(config.id as string),
-  version: '1.0.0'
-});
-registry.register({
-  type: 'session',
-  factory: (config) => new SessionBlock(config.id as string),
-  version: '1.0.0'
-});
-registry.register({
-  type: 'ai',
-  factory: (config) => new AIBlock(config.id as string),
-  version: '1.0.0'
-});
-registry.register({
-  type: 'project',
-  factory: (config) => new ProjectBlock(config.id as string),
-  version: '1.0.0'
-});
-registry.register({
-  type: 'state',
-  factory: (config) => new StateBlock(config.id as string),
-  version: '1.0.0'
-});
-registry.register({
-  type: 'orchestrator',
-  factory: (config) => new OrchestratorBlock(config.id as string),
-  version: '1.0.0'
-});
-registry.register({
-  type: 'websocket',
-  factory: (config) => new WebSocketBlock(config.id as string),
-  version: '1.0.0'
-});
+registry.register({ type: 'task', factory: (config) => new TaskBlock(config.id as string), version: '1.0.0' });
+registry.register({ type: 'agent', factory: (config) => new AgentBlock(config.id as string), version: '1.0.0' });
+registry.register({ type: 'eventbus', factory: (config) => new EventBusBlock(config.id as string), version: '1.0.0' });
+registry.register({ type: 'storage', factory: (config) => new StorageBlock(config.id as string), version: '1.0.0' });
+registry.register({ type: 'session', factory: (config) => new SessionBlock(config.id as string), version: '1.0.0' });
+registry.register({ type: 'ai', factory: (config) => new AIBlock(config.id as string), version: '1.0.0' });
+registry.register({ type: 'project', factory: (config) => new ProjectBlock(config.id as string), version: '1.0.0' });
+registry.register({ type: 'state', factory: (config) => new StateBlock(config.id as string), version: '1.0.0' });
+registry.register({ type: 'orchestrator', factory: (config) => new OrchestratorBlock(config.id as string), version: '1.0.0' });
+registry.register({ type: 'websocket', factory: (config) => new WebSocketBlock(config.id as string), version: '1.0.0' });
 
-// Create default instances
 registry.createInstance('state', 'state-1');
 registry.createInstance('task', 'task-1');
 registry.createInstance('agent', 'agent-1');
@@ -153,15 +90,24 @@ registry.createInstance('ai', 'ai-1');
 registry.createInstance('project', 'project-1');
 registry.createInstance('orchestrator', 'orchestrator-1');
 registry.createInstance('websocket', 'websocket-1');
-
 await registry.initializeAll();
 
-// API Routes
-app.get('/health', (req, res) => {
+const hub = new MessageHub();
+const moduleRegistry = new ModuleRegistry(hub);
+await moduleRegistry.register(echoInput);
+await moduleRegistry.register(echoOutput);
+moduleRegistry.createRoute(() => true, 'echo-output', {
+  blocking: false,
+  priority: 0,
+  description: 'default route to echo-output'
+});
+console.log('[Server] Orchestration modules initialized: echo-input, echo-output');
+
+app.get('/health', (_req, res) => {
   res.json({ status: 'healthy', timestamp: new Date().toISOString() });
 });
 
-app.get('/api/blocks', (req, res) => {
+app.get('/api/blocks', (_req, res) => {
   res.json(registry.generateApiEndpoints());
 });
 
@@ -175,7 +121,7 @@ app.get('/api/blocks/:id/state', (req, res) => {
 });
 
 app.post('/api/blocks/:id/exec', async (req, res) => {
-  const { command, args } = req.body;
+  const { command, args } = req.body as { command?: string; args?: Record<string, unknown> };
   if (!command) {
     res.status(400).json({ error: 'Missing command' });
     return;
@@ -190,33 +136,83 @@ app.post('/api/blocks/:id/exec', async (req, res) => {
   }
 });
 
-// Get full state from state block
-app.get('/api/state', (req, res) => {
-  const block = registry.getBlock('state-1');
-  if (!block || block.type !== 'state') {
-    return res.status(404).json({ error: 'State block not available' });
-  }
-  block.execute('snapshot', {})
-    .then(state => res.json(state))
-    .catch(err => res.status(500).json({ error: err.message }));
-});
-
-// For state API testing - get current value of a specific key from state block
-app.get('/api/test/state/:key', (req, res) => {
-  const key = req.params.key;
+app.get('/api/state', (_req, res) => {
   const block = registry.getBlock('state-1');
   if (!block || block.type !== 'state') {
     res.status(404).json({ error: 'State block not available' });
     return;
   }
 
-  block.execute('get', { key })
-    .then(value => res.json({ key, value }))
+  block.execute('snapshot', {})
+    .then(state => res.json(state))
     .catch(err => res.status(500).json({ error: err.message }));
 });
 
-await ensureSingleInstance(PORT);
+app.get('/api/test/state/:key', (req, res) => {
+  const block = registry.getBlock('state-1');
+  if (!block || block.type !== 'state') {
+    res.status(404).json({ error: 'State block not available' });
+    return;
+  }
 
+  block.execute('get', { key: req.params.key })
+    .then(value => res.json({ key: req.params.key, value }))
+    .catch(err => res.status(500).json({ error: err.message }));
+});
+
+app.get('/api/v1/modules', (_req, res) => {
+  res.json({
+    inputs: hub.getInputs().map((i) => ({ id: i.id, routes: i.routes })),
+    outputs: hub.getOutputs().map((o) => ({ id: o.id })),
+    modules: moduleRegistry.getAllModules().map((m) => ({ id: m.id, type: m.type, name: m.name }))
+  });
+});
+
+app.get('/api/v1/routes', (_req, res) => {
+  res.json({ routes: hub.getRoutes() });
+});
+
+app.post('/api/v1/message', async (req, res) => {
+  const body = req.body as { target?: string; message?: unknown; blocking?: boolean };
+  if (!body.target || body.message === undefined) {
+    res.status(400).json({ error: 'Missing target or message' });
+    return;
+  }
+
+  try {
+    if (body.blocking) {
+      const result = await hub.sendToModule(body.target, body.message as any);
+      res.json({ success: true, result });
+      return;
+    }
+
+    hub.sendToModule(body.target, body.message as any).catch((err) => {
+      console.error('[Hub] Send error:', err);
+    });
+    res.json({ success: true, queued: true });
+  } catch (err) {
+    const errorMessage = err instanceof Error ? err.message : String(err);
+    res.status(400).json({ error: errorMessage });
+  }
+});
+
+app.post('/api/v1/module/register', async (req, res) => {
+  const body = req.body as { filePath?: string };
+  if (!body.filePath) {
+    res.status(400).json({ error: 'Missing filePath' });
+    return;
+  }
+
+  try {
+    await moduleRegistry.loadFromFile(body.filePath);
+    res.json({ success: true, message: `Module loaded from ${body.filePath}` });
+  } catch (err) {
+    const errorMessage = err instanceof Error ? err.message : String(err);
+    res.status(400).json({ error: errorMessage });
+  }
+});
+
+await ensureSingleInstance(PORT);
 const server = app.listen(PORT, () => {
   console.log(`Finger server running at http://localhost:${PORT}`);
 });

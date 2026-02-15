@@ -3,15 +3,17 @@
 import { program } from 'commander';
 import { registerLoopTestCommand } from './loop-test.js';
 import { registerIflowCommand } from './iflow.js';
+import { registerDaemonCommand } from './daemon.js';
 
 program
-  .name('finger')
+  .name('fingerdaemon')
   .description('Finger - AI Agent Orchestrator')
   .version('0.1.0');
 
 // Register commands
 registerLoopTestCommand(program);
 registerIflowCommand(program);
+registerDaemonCommand(program);
 
 // Block commands
 program

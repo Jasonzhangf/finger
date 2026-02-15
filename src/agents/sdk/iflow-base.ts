@@ -76,4 +76,25 @@ export class IflowBaseAgent {
     await this.client.disconnect();
     this.info.connected = false;
   }
+
+  async getModels(): Promise<Array<{
+    id: string;
+    name?: string;
+    description?: string;
+    capabilities?: { thinking?: boolean; image?: boolean; audio?: boolean; video?: boolean };
+  }>> {
+    const models = await this.client.config.get<{
+      availableModels?: Array<{
+        id: string;
+        name?: string;
+        description?: string;
+        capabilities?: { thinking?: boolean; image?: boolean; audio?: boolean; video?: boolean };
+      }>;
+    }>('models');
+    return models?.availableModels ?? [];
+  }
+
+  async setModel(modelId: string): Promise<void> {
+    await this.client.config.set('model', modelId);
+  }
 }
