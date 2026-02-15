@@ -56,6 +56,20 @@ export class BdTools {
     this.cwd = cwd ?? process.cwd();
   }
 
+  private normalizePriority(priority?: number): number {
+    if (typeof priority !== 'number' || Number.isNaN(priority)) {
+      return 1;
+    }
+    const normalized = Math.round(priority);
+    if (normalized < 0) return 0;
+    if (normalized > 4) return 4;
+    return normalized;
+  }
+
+  private escapeArg(value: string): string {
+    return value.replace(/"/g, '\\"');
+  }
+
   /**
    * 执行 bd 命令
    */
@@ -75,8 +89,9 @@ export class BdTools {
    */
   async createTask(options: BdTaskOptions): Promise<BdTask> {
     const args: string[] = ['create', `"${options.title}"`];
-    
-    args.push('-p', String(options.priority ?? 1));
+
+    const priority = this.normalizePriority(options.priority);
+    args.push('-p', String(priority));
     
     if (options.type) {
       args.push('--type', options.type);
@@ -84,6 +99,10 @@ export class BdTools {
     
     if (options.parent) {
       args.push('--parent', options.parent);
+    }
+
+    if (options.description) {
+      args.push('--description', `"${this.escapeArg(options.description)}"`);
     }
     
     if (options.assignee) {
@@ -109,7 +128,7 @@ export class BdTools {
       parent: options.parent,
       assignee: options.assignee,
       labels: options.labels ?? [],
-      priority: options.priority ?? 1,
+      priority,
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
     };

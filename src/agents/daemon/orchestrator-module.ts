@@ -107,6 +107,7 @@ export function createRealOrchestratorModule(
     for (const dec of decompositions) {
       const bdTask = await bdTools.createTask({
         title: dec.description,
+        description: `子任务: ${dec.description}\n工具: ${dec.tools.join(', ')}`,
         type: 'task',
         parent: epicId,
         priority: dec.priority,
@@ -238,6 +239,7 @@ export function createRealOrchestratorModule(
     // 1. 创建 Epic
     const epic = await bdTools.createTask({
       title: userTask,
+      description: `用户任务: ${userTask}`,
       type: 'epic',
       priority: 0,
       labels: ['orchestration'],
