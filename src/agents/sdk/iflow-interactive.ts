@@ -1,4 +1,3 @@
-import { IflowBaseAgent } from './iflow-base.js';
 import {
   MessageType,
   ToolCallMessage,
@@ -7,13 +6,15 @@ import {
   PermissionRequestMessage,
   TaskFinishMessage,
   ErrorMessage,
+  IFlowClient,
+  IFlowOptions,
 } from '@iflow-ai/iflow-cli-sdk';
 
 export type InteractionHandler = (chunk: string) => void;
 export type ToolCallHandler = (toolCall: ToolCallMessage) => Promise<void>;
 export type QuestionHandler = (questions: AskUserQuestionsMessage) => Promise<Record<string, string | string[]>>;
-export type PlanHandler = (plan: ExitPlanModeMessage) => Promise<boolean>; // 返回 true 表示批准
-export type PermissionHandler = (req: PermissionRequestMessage) => Promise<string>; // 返回 optionId
+export type PlanHandler = (plan: ExitPlanModeMessage) => Promise<boolean>;
+export type PermissionHandler = (req: PermissionRequestMessage) => Promise<string>;
 
 export interface InteractionCallbacks {
   onAssistantChunk?: InteractionHandler;
@@ -26,8 +27,26 @@ export interface InteractionCallbacks {
 /**
  * 交互接口：进入 ReACT 循环，处理各种消息类型
  */
-export class IflowInteractiveAgent extends IflowBaseAgent {
+export class IflowInteractiveAgent {
+  private client: IFlowClient;
   private isRunning = false;
+
+  constructor(clientOrOptions?: IFlowClient | IFlowOptions, _options?: IFlowOptions) {
+    if (clientOrOptions instanceof IFlowClient) {
+      this.client = clientOrOptions;
+      return;
+    }
+
+    this.client = new IFlowClient(clientOrOptions);
+  }
+
+  async initialize(skipSession = false): Promise<void> {
+    await this.client.connect({ skipSession });
+  }
+
+  async disconnect(): Promise<void> {
+    await this.client.disconnect();
+  }
 
   /** 发送用户消息，并进入消息处理循环，直到 task_finish 或主动取消 */
   async interact(
@@ -41,10 +60,8 @@ export class IflowInteractiveAgent extends IflowBaseAgent {
     let finalOutput = '';
 
     try {
-      // 发送用户消息
-      await this.client.sendMessage(userMessage, files as never[]);
+      await this.client.sendMessage(userMessage, files as []);
 
-      // 循环接收消息
       for await (const msg of this.client.receiveMessages()) {
         switch (msg.type) {
           case MessageType.ASSISTANT:
@@ -63,7 +80,6 @@ export class IflowInteractiveAgent extends IflowBaseAgent {
           case MessageType.ASK_USER_QUESTIONS:
             if (callbacks.onQuestions) {
               const answers = await callbacks.onQuestions(msg as AskUserQuestionsMessage);
-              // SDK 内部自动处理 requestId, 不需要传入
               await this.client.respondToAskUserQuestions(answers);
             }
             break;
@@ -71,7 +87,6 @@ export class IflowInteractiveAgent extends IflowBaseAgent {
           case MessageType.EXIT_PLAN_MODE:
             if (callbacks.onPlan) {
               const approved = await callbacks.onPlan(msg as ExitPlanModeMessage);
-              // SDK 内部自动处理 requestId
               await this.client.respondToExitPlanMode(approved);
             }
             break;
@@ -79,10 +94,8 @@ export class IflowInteractiveAgent extends IflowBaseAgent {
           case MessageType.PERMISSION_REQUEST:
             if (callbacks.onPermission) {
               const optionId = await callbacks.onPermission(msg as PermissionRequestMessage);
-              // SDK 内部自动处理 requestId
               await this.client.respondToToolConfirmation((msg as PermissionRequestMessage).requestId, optionId);
             } else {
-              // 默认取消, SDK 内部处理
               await this.client.cancelToolConfirmation((msg as PermissionRequestMessage).requestId);
             }
             break;
