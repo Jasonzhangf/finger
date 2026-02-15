@@ -1,11 +1,15 @@
 #!/usr/bin/env node
 
 import { program } from 'commander';
+import { registerLoopTestCommand } from './loop-test.js';
 
 program
   .name('finger')
   .description('Finger - AI Agent Orchestrator')
   .version('0.1.0');
+
+// Register loop-test command
+registerLoopTestCommand(program);
 
 // Block commands
 program
