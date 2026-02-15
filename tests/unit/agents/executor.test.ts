@@ -2,10 +2,19 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { ExecutorRole, ExecutorConfig } from '../../../src/agents/roles/executor.js';
 import { ToolRegistry } from '../../../src/agents/shared/tool-registry.js';
 import { TaskAssignment } from '../../../src/agents/protocol/schema.js';
+import { BdTools } from '../../../src/agents/shared/bd-tools.js';
+
+// Mock child_process for BdTools
+vi.mock('child_process', () => ({
+  exec: vi.fn((cmd: string, _options: any, callback: any) => {
+    callback(null, { stdout: '' });
+  }),
+}));
 
 describe('ExecutorRole', () => {
   let config: ExecutorConfig;
   let toolRegistry: ToolRegistry;
+  let bdTools: BdTools;
 
   beforeEach(() => {
     toolRegistry = new ToolRegistry();
@@ -26,15 +35,19 @@ describe('ExecutorRole', () => {
       },
       toolRegistry,
     };
+    bdTools = new BdTools();
+    vi.spyOn(bdTools, 'addComment').mockResolvedValue();
+    vi.spyOn(bdTools, 'updateStatus').mockResolvedValue();
+    vi.spyOn(bdTools, 'closeTask').mockResolvedValue();
   });
 
   it('returns executor role', () => {
-    const executor = new ExecutorRole(config);
+    const executor = new ExecutorRole(config, bdTools);
     expect(executor.getRole()).toBe('executor');
   });
 
   it('creates feedback message', () => {
-    const executor = new ExecutorRole(config);
+    const executor = new ExecutorRole(config, bdTools);
     const feedback = {
       taskId: 't1',
       success: true,
@@ -50,7 +63,7 @@ describe('ExecutorRole', () => {
   });
 
   it('executes task with granted tool', async () => {
-    const executor = new ExecutorRole(config);
+    const executor = new ExecutorRole(config, bdTools);
     toolRegistry.grant('executor-1', { toolName: 'file.read', action: 'grant' });
 
     const mockResponse = {
@@ -76,7 +89,7 @@ describe('ExecutorRole', () => {
   });
 
   it('marks denied tools in observation', async () => {
-    const executor = new ExecutorRole(config);
+    const executor = new ExecutorRole(config, bdTools);
 
     const mockResponse = {
       choices: [{ message: { content: 'AI response' } }],
@@ -100,7 +113,7 @@ describe('ExecutorRole', () => {
   });
 
   it('handles provider failure', async () => {
-    const executor = new ExecutorRole(config);
+    const executor = new ExecutorRole(config, bdTools);
     global.fetch = vi.fn().mockRejectedValue(new Error('provider unavailable'));
 
     const task: TaskAssignment = {

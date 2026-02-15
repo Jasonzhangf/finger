@@ -1,6 +1,7 @@
 import { IFlowProvider } from '../providers/iflow-provider.js';
 import { AgentMessage, TaskAssignment, MessageMode, ExecutionFeedback } from '../protocol/schema.js';
 import { ToolRegistry } from '../shared/tool-registry.js';
+import { BdTools } from '../shared/bd-tools.js';
 
 export interface ExecutorConfig {
   id: string;
@@ -13,6 +14,16 @@ export interface ExecutorConfig {
   toolRegistry: ToolRegistry;
 }
 
+export enum ExecutorState {
+  idle = 'idle',
+  claiming = 'claiming',
+  thinking = 'thinking',
+  acting = 'acting',
+  observing = 'observing',
+  completing = 'completing',
+  failed = 'failed',
+}
+
 export interface ExecutionResult {
   success: boolean;
   feedback?: ExecutionFeedback;
@@ -23,33 +34,47 @@ export class ExecutorRole {
   private config: ExecutorConfig;
   private provider: IFlowProvider;
   private toolRegistry: ToolRegistry;
+  private bdTools?: BdTools;
+  private state: ExecutorState = ExecutorState.idle;
+  private currentTask?: TaskAssignment;
 
-  constructor(config: ExecutorConfig) {
+  constructor(config: ExecutorConfig, bdTools?: BdTools) {
     this.config = config;
     this.provider = new IFlowProvider(config.provider);
     this.toolRegistry = config.toolRegistry;
+    this.bdTools = bdTools;
   }
 
   /**
    * 执行者核心循环：Thought → Action → Observation
    */
   async executeTask(task: TaskAssignment): Promise<ExecutionResult> {
+    this.currentTask = task;
+    
+    // 领取任务
+    if (task.bdTaskId && this.bdTools) {
+      await this.claimTask(task.bdTaskId);
+    }
+
     const startTime = Date.now();
 
     try {
       // Thought: 构建执行思路
+      this.state = ExecutorState.thinking;
       const thinkPrompt = this.buildThinkPrompt(task);
       const thought = await this.provider.request(thinkPrompt, {
         systemPrompt: this.config.systemPrompt,
       });
 
       // Action: 决定具体行动
+      this.state = ExecutorState.acting;
       const actPrompt = this.buildActPrompt(task, thought);
       const action = await this.provider.request(actPrompt, {
         systemPrompt: this.config.systemPrompt,
       });
 
       // 执行工具调用（如果有）
+      this.state = ExecutorState.observing;
       const observation = await this.executeTools(task);
 
       // 构建反馈
@@ -63,8 +88,18 @@ export class ExecutorRole {
         },
       };
 
+      // 完成任务
+      this.state = ExecutorState.completing;
+      if (task.bdTaskId && this.bdTools) {
+        await this.bdTools.closeTask(task.bdTaskId, '执行成功完成', [
+          { type: 'result', content: action },
+          { type: 'log', content: observation },
+        ]);
+      }
+
       return { success: true, feedback };
     } catch (error) {
+      this.state = ExecutorState.failed;
       const feedback: ExecutionFeedback = {
         taskId: task.taskId,
         success: false,
@@ -75,12 +110,49 @@ export class ExecutorRole {
         },
       };
 
+      if (task.bdTaskId && this.bdTools) {
+        await this.bdTools.updateStatus(task.bdTaskId, 'blocked');
+        await this.bdTools.addComment(task.bdTaskId, 
+          `[Executor] 执行失败: ${feedback.observation}`
+        );
+      }
+
       return {
         success: false,
         feedback,
         error: feedback.observation,
       };
+    } finally {
+      this.state = ExecutorState.idle;
+      this.currentTask = undefined;
     }
+  }
+
+  /**
+   * 领取任务
+   */
+  private async claimTask(taskId: string): Promise<void> {
+    this.state = ExecutorState.claiming;
+    if (this.bdTools) {
+      await this.bdTools.updateStatus(taskId, 'in_progress');
+      await this.bdTools.addComment(taskId, 
+        `[${this.config.id}] 领取任务，开始执行`
+      );
+    }
+  }
+
+  /**
+   * 获取当前状态
+   */
+  getState(): ExecutorState {
+    return this.state;
+  }
+
+  /**
+   * 获取当前任务
+   */
+  getCurrentTask(): TaskAssignment | undefined {
+    return this.currentTask;
   }
 
   /**

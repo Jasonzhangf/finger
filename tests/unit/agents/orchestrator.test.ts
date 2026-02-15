@@ -1,8 +1,18 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { OrchestratorRole, AgentConfig } from '../../../src/agents/roles/orchestrator.js';
+import { BdTools } from '../../../src/agents/shared/bd-tools.js';
+import { vi } from 'vitest';
+
+// Mock child_process for BdTools
+vi.mock('child_process', () => ({
+  exec: vi.fn((cmd: string, _options: any, callback: any) => {
+    callback(null, { stdout: 'finger-100' });
+  }),
+}));
 
 describe('OrchestratorRole', () => {
   let config: AgentConfig;
+  let bdTools: BdTools;
 
   beforeEach(() => {
     config = {
@@ -14,10 +24,24 @@ describe('OrchestratorRole', () => {
         defaultModel: 'test-model',
       },
     };
+    bdTools = new BdTools();
+    // Mock BdTools methods to avoid actual bd calls
+    vi.spyOn(bdTools, 'addComment').mockResolvedValue();
+    vi.spyOn(bdTools, 'createTask').mockResolvedValue({
+      id: 'finger-100',
+      title: 'Test',
+      status: 'open',
+      labels: [],
+      priority: 1,
+      createdAt: '',
+      updatedAt: '',
+    });
+    vi.spyOn(bdTools, 'updateStatus').mockResolvedValue();
+    vi.spyOn(bdTools, 'closeTask').mockResolvedValue();
   });
 
   it('creates task message with correct structure', async () => {
-    const orchestrator = new OrchestratorRole(config);
+    const orchestrator = new OrchestratorRole(config, bdTools);
     const task = {
       taskId: 't1',
       description: 'Test task',
@@ -35,12 +59,15 @@ describe('OrchestratorRole', () => {
   });
 
   it('returns orchestrator role', () => {
-    const orchestrator = new OrchestratorRole(config);
+    const orchestrator = new OrchestratorRole(config, bdTools);
     expect(orchestrator.getRole()).toBe('orchestrator');
   });
 
   it('decomposes task using AI provider', async () => {
-    const orchestrator = new OrchestratorRole(config);
+    const orchestrator = new OrchestratorRole(config, bdTools);
+    // Need to set epic first
+    vi.spyOn(bdTools, 'addComment').mockResolvedValue();
+    await orchestrator.startOrchestration('Test epic');
 
     // Mock fetch for the provider
     const mockResponse = {
@@ -79,7 +106,8 @@ describe('OrchestratorRole', () => {
   });
 
   it('handles provider error gracefully', async () => {
-    const orchestrator = new OrchestratorRole(config);
+    const orchestrator = new OrchestratorRole(config, bdTools);
+    await orchestrator.startOrchestration('Test epic');
 
     global.fetch = vi.fn().mockRejectedValue(new Error('Network error'));
 
@@ -94,7 +122,8 @@ describe('OrchestratorRole', () => {
   });
 
   it('replans based on execution feedback', async () => {
-    const orchestrator = new OrchestratorRole(config);
+    const orchestrator = new OrchestratorRole(config, bdTools);
+    await orchestrator.startOrchestration('Test epic');
 
     const mockResponse = {
       choices: [

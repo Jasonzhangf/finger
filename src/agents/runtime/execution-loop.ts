@@ -2,6 +2,7 @@ import { MessageBus } from './message-bus.js';
 import { ToolRegistry } from '../shared/tool-registry.js';
 import { OrchestratorRole, AgentConfig } from '../roles/orchestrator.js';
 import { ExecutorRole, ExecutorConfig } from '../roles/executor.js';
+import { BdTools } from '../shared/bd-tools.js';
 import { TaskAssignment, ExecutionFeedback, AgentMessage } from '../protocol/schema.js';
 
 export interface LoopConfig {
@@ -24,6 +25,7 @@ export class ExecutionLoop {
   private messageBus: MessageBus;
   private toolRegistry: ToolRegistry;
   private loopConfig: LoopConfig;
+  private bdTools: BdTools;
 
   constructor(
     messageBus: MessageBus,
@@ -33,14 +35,15 @@ export class ExecutionLoop {
     this.messageBus = messageBus;
     this.toolRegistry = toolRegistry;
     this.loopConfig = config;
-    this.orchestrator = new OrchestratorRole(config.orchestrator);
+    this.bdTools = new BdTools();
+    this.orchestrator = new OrchestratorRole(config.orchestrator, this.bdTools);
   }
 
   /**
    * 注册执行者
    */
   registerExecutor(config: ExecutorConfig): void {
-    const executor = new ExecutorRole(config);
+    const executor = new ExecutorRole(config, this.bdTools);
     this.executors.set(config.id, executor);
 
     // 订阅该执行者的消息
