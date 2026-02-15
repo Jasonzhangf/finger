@@ -9,6 +9,8 @@ import { MessageHub } from '../orchestration/message-hub.js';
 import { ModuleRegistry } from '../orchestration/module-registry.js';
 import { echoInput, echoOutput } from '../agents/test/mock-echo-agent.js';
 import { createRealOrchestratorModule } from '../agents/daemon/orchestrator-module.js';
+import { createOrchestratorLoop } from '../agents/daemon/orchestrator-loop.js';
+import { createExecutorLoop } from '../agents/daemon/executor-loop.js';
 import { mailbox, Mailbox } from './mailbox.js';
 import type { OutputModule } from '../orchestration/module-registry.js';
 import {
@@ -340,3 +342,27 @@ server.on('error', (err: NodeJS.ErrnoException) => {
   console.error('[Server] Failed to start:', err.message);
   process.exit(1);
 });
+
+// 注册 ReACT 循环版本的编排者和执行者
+const { module: orchestratorLoop } = createOrchestratorLoop({
+  id: 'orchestrator-loop',
+  name: 'Orchestrator ReACT Loop',
+  mode: 'auto',
+  cwd: process.cwd(),
+  maxRounds: 10,
+}, hub);
+await orchestratorLoop.initialize?.(hub);
+await moduleRegistry.register(orchestratorLoop);
+console.log('[Server] OrchestratorLoop module registered: orchestrator-loop');
+
+const { module: executorLoop } = createExecutorLoop({
+  id: 'executor-loop',
+  name: 'Executor ReACT Loop',
+  mode: 'auto',
+  cwd: process.cwd(),
+  maxIterations: 5,
+});
+await moduleRegistry.register(executorLoop);
+console.log('[Server] ExecutorLoop module registered: executor-loop');
+
+console.log('[Server] ReACT Loop modules ready: orchestrator-loop, executor-loop');
