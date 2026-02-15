@@ -3,7 +3,7 @@ import { EventBusBlock } from '../blocks/eventbus-block/index.js';
 import { MessageBus } from '../agents/runtime/message-bus.js';
 import { ToolRegistry } from '../agents/shared/tool-registry.js';
 import { ExecutionLoop, LoopConfig } from '../agents/runtime/execution-loop.js';
-import { ExecutorConfig } from '../agents/roles/executor.js';
+import { type ExecutorRoleConfig } from '../agents/roles/executor.js';
 import { getAllTools } from '../agents/shared/tools.js';
 
 /**
@@ -56,26 +56,18 @@ export function registerLoopTestCommand(program: Command): void {
         console.log('✓ 编排循环已初始化');
 
         // 3. 注册执行者
-        const executor1: ExecutorConfig = {
+        const executor1: ExecutorRoleConfig = {
           id: 'executor-1',
+          name: 'Executor 1',
+          mode: 'auto',
           systemPrompt: '你是一个任务执行者。请完成分配给你的任务。',
-          provider: {
-            baseUrl: options.url,
-            apiKey: options.key,
-            defaultModel: options.model,
-          },
-          toolRegistry,
         };
 
-        const executor2: ExecutorConfig = {
+        const executor2: ExecutorRoleConfig = {
           id: 'executor-2',
+          name: 'Executor 2',
+          mode: 'auto',
           systemPrompt: '你是一个任务执行者。请完成分配给你的任务。',
-          provider: {
-            baseUrl: options.url,
-            apiKey: options.key,
-            defaultModel: options.model,
-          },
-          toolRegistry,
         };
 
         loop.registerExecutor(executor1);

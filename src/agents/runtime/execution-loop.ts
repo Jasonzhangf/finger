@@ -1,7 +1,7 @@
 import { MessageBus } from './message-bus.js';
 import { ToolRegistry } from '../shared/tool-registry.js';
 import { OrchestratorRole, AgentConfig } from '../roles/orchestrator.js';
-import { ExecutorRole, ExecutorConfig } from '../roles/executor.js';
+import { ExecutorRole, type ExecutorRoleConfig } from '../roles/executor.js';
 import { BdTools } from '../shared/bd-tools.js';
 import { TaskAssignment, ExecutionFeedback, AgentMessage } from '../protocol/schema.js';
 
@@ -42,8 +42,8 @@ export class ExecutionLoop {
   /**
    * 注册执行者
    */
-  registerExecutor(config: ExecutorConfig): void {
-    const executor = new ExecutorRole(config, this.bdTools);
+  registerExecutor(config: ExecutorRoleConfig): void {
+    const executor = new ExecutorRole(config);
     this.executors.set(config.id, executor);
 
     // 订阅该执行者的消息
@@ -165,12 +165,24 @@ export class ExecutionLoop {
     const executor = this.executors.get(executorId);
     if (!executor) return;
 
-    const result = await executor.executeTask(msg.payload.task);
-    if (result.feedback) {
-      const feedbackMsg = executor.createFeedbackMessage(
-        this.loopConfig.orchestrator.id,
-        result.feedback
-      );
+    const result = await executor.execute(msg.payload.task);
+    if (result) {
+      const feedbackMsg: AgentMessage = {
+        id: `msg-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+        sender: executorId,
+        receiver: this.loopConfig.orchestrator.id,
+        mode: 'execute',
+        status: 'completed',
+        payload: {
+          feedback: {
+            taskId: msg.payload.task.taskId,
+            success: result.success,
+            result: result.output,
+            observation: result.error,
+          }
+        },
+        timestamp: new Date().toISOString(),
+      };
       await this.messageBus.send(feedbackMsg);
     }
   }
