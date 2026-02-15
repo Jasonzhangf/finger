@@ -28,13 +28,12 @@ export interface InteractionCallbacks {
  */
 export class IflowInteractiveAgent extends IflowBaseAgent {
   private isRunning = false;
-  private currentTaskId: string | null = null;
 
   /** 发送用户消息，并进入消息处理循环，直到 task_finish 或主动取消 */
   async interact(
     userMessage: string,
     callbacks: InteractionCallbacks = {},
-    files: any[] = []
+    files: Array<{ path?: string; image?: string }> = []
   ): Promise<{ stopReason?: string; finalOutput: string }> {
     if (this.isRunning) throw new Error('Agent is already in an interaction loop');
     this.isRunning = true;
@@ -43,15 +42,15 @@ export class IflowInteractiveAgent extends IflowBaseAgent {
 
     try {
       // 发送用户消息
-      await (this as any).client.sendMessage(userMessage, files);
+      await this.client.sendMessage(userMessage, files as never[]);
 
       // 循环接收消息
-      for await (const msg of (this as any).client.receiveMessages()) {
+      for await (const msg of this.client.receiveMessages()) {
         switch (msg.type) {
           case MessageType.ASSISTANT:
-            if ((msg as any).chunk?.text) {
-              finalOutput += (msg as any).chunk.text;
-              callbacks.onAssistantChunk?.((msg as any).chunk.text);
+            if ('chunk' in msg && msg.chunk?.text) {
+              finalOutput += msg.chunk.text;
+              callbacks.onAssistantChunk?.(msg.chunk.text);
             }
             break;
 
@@ -65,7 +64,7 @@ export class IflowInteractiveAgent extends IflowBaseAgent {
             if (callbacks.onQuestions) {
               const answers = await callbacks.onQuestions(msg as AskUserQuestionsMessage);
               // SDK 内部自动处理 requestId, 不需要传入
-              await (this as any).client.respondToAskUserQuestions(answers);
+              await this.client.respondToAskUserQuestions(answers);
             }
             break;
 
@@ -73,7 +72,7 @@ export class IflowInteractiveAgent extends IflowBaseAgent {
             if (callbacks.onPlan) {
               const approved = await callbacks.onPlan(msg as ExitPlanModeMessage);
               // SDK 内部自动处理 requestId
-              await (this as any).client.respondToExitPlanMode(approved);
+              await this.client.respondToExitPlanMode(approved);
             }
             break;
 
@@ -81,10 +80,10 @@ export class IflowInteractiveAgent extends IflowBaseAgent {
             if (callbacks.onPermission) {
               const optionId = await callbacks.onPermission(msg as PermissionRequestMessage);
               // SDK 内部自动处理 requestId
-              await (this as any).client.respondToToolConfirmation(optionId);
+              await this.client.respondToToolConfirmation((msg as PermissionRequestMessage).requestId, optionId);
             } else {
               // 默认取消, SDK 内部处理
-              await (this as any).client.cancelToolConfirmation();
+              await this.client.cancelToolConfirmation((msg as PermissionRequestMessage).requestId);
             }
             break;
 
@@ -110,7 +109,7 @@ export class IflowInteractiveAgent extends IflowBaseAgent {
   /** 中断当前任务 */
   async interrupt(): Promise<void> {
     if (this.isRunning) {
-      await (this as any).client.interrupt();
+      await this.client.interrupt();
       this.isRunning = false;
     }
   }

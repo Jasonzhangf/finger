@@ -6,6 +6,8 @@ import { IFlowClient, IFlowOptions } from '@iflow-ai/iflow-cli-sdk';
 export interface IflowAgentInfo {
   sessionId: string;
   connected: boolean;
+  cwd: string;
+  addDirs: string[];
   availableCommands: string[];
   availableAgents: string[];
   availableSkills: string[];
@@ -16,10 +18,12 @@ export interface IflowAgentInfo {
  * 基础接口：只负责连接、session、能力查询，不涉及任务执行
  */
 export class IflowBaseAgent {
-  private client: IFlowClient;
-  private info: IflowAgentInfo = {
+  protected client: IFlowClient;
+  protected info: IflowAgentInfo = {
     sessionId: '',
     connected: false,
+    cwd: '',
+    addDirs: [],
     availableCommands: [],
     availableAgents: [],
     availableSkills: [],
@@ -28,6 +32,8 @@ export class IflowBaseAgent {
 
   constructor(options?: IFlowOptions) {
     this.client = new IFlowClient(options);
+    if (options?.cwd) this.info.cwd = options.cwd;
+    if (options?.sessionSettings?.add_dirs) this.info.addDirs = [...options.sessionSettings.add_dirs];
   }
 
   /** 初始化连接并创建/加载 session */

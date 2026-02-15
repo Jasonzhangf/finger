@@ -1,10 +1,21 @@
 import { Command } from 'commander';
 import { IflowBaseAgent } from '../agents/sdk/iflow-base.js';
 import { IflowInteractiveAgent } from '../agents/sdk/iflow-interactive.js';
+import { runIflowCapabilityTest } from '../agents/sdk/iflow-capability-test.js';
 import * as readline from 'readline';
 
 interface CommonOptions {
+  cwd?: string;
+  addDir?: string[];
   capability?: string;
+}
+
+function buildBaseAgent(options: CommonOptions): IflowBaseAgent {
+  return new IflowBaseAgent({
+    autoStartProcess: true,
+    cwd: options.cwd,
+    sessionSettings: options.addDir ? { add_dirs: options.addDir } : undefined,
+  });
 }
 
 export function registerIflowCommand(program: Command): void {
@@ -14,13 +25,17 @@ export function registerIflowCommand(program: Command): void {
   iflow
     .command('status')
     .description('查询 iFlow 连接状态和 session 信息')
-    .action(async () => {
-      const agent = new IflowBaseAgent({ autoStartProcess: true });
+    .option('-d, --cwd <dir>', '工作目录')
+    .option('--add-dir <dirs...>', '额外包含目录')
+    .action(async (options: CommonOptions) => {
+      const agent = buildBaseAgent(options);
       try {
         const info = await agent.initialize();
         console.log(JSON.stringify({
           connected: info.connected,
           sessionId: info.sessionId,
+          cwd: info.cwd,
+          addDirs: info.addDirs,
           commands: info.availableCommands.length,
           agents: info.availableAgents.length,
           skills: info.availableSkills.length,
@@ -38,11 +53,15 @@ export function registerIflowCommand(program: Command): void {
   iflow
     .command('tools')
     .description('查询 iFlow 可用工具列表 (MCP Servers)')
-    .action(async () => {
-      const agent = new IflowBaseAgent({ autoStartProcess: true });
+    .option('-d, --cwd <dir>', '工作目录')
+    .option('--add-dir <dirs...>', '额外包含目录')
+    .action(async (options: CommonOptions) => {
+      const agent = buildBaseAgent(options);
       try {
         const info = await agent.initialize();
         console.log(JSON.stringify({
+          cwd: info.cwd,
+          addDirs: info.addDirs,
           tools: info.availableMcpServers,
           count: info.availableMcpServers.length,
         }, null, 2));
@@ -58,11 +77,15 @@ export function registerIflowCommand(program: Command): void {
   iflow
     .command('capabilities')
     .description('查询 iFlow commands/agents/skills 能力列表')
-    .action(async () => {
-      const agent = new IflowBaseAgent({ autoStartProcess: true });
+    .option('-d, --cwd <dir>', '工作目录')
+    .option('--add-dir <dirs...>', '额外包含目录')
+    .action(async (options: CommonOptions) => {
+      const agent = buildBaseAgent(options);
       try {
         const info = await agent.initialize();
         console.log(JSON.stringify({
+          cwd: info.cwd,
+          addDirs: info.addDirs,
           commands: info.availableCommands,
           agents: info.availableAgents,
           skills: info.availableSkills,
@@ -76,16 +99,38 @@ export function registerIflowCommand(program: Command): void {
       }
     });
 
+  iflow
+    .command('capability-test')
+    .description('执行 iFlow SDK 标准能力测试并输出能力清单')
+    .option('-d, --cwd <dir>', '工作目录')
+    .option('--add-dir <dirs...>', '额外包含目录')
+    .action(async (options: CommonOptions) => {
+      try {
+        const report = await runIflowCapabilityTest({
+          cwd: options.cwd,
+          addDir: options.addDir,
+        });
+        console.log(JSON.stringify(report, null, 2));
+      } catch (err) {
+        console.error('Capability test failed:', err instanceof Error ? err.message : String(err));
+        process.exit(1);
+      }
+    });
+
   // run: 交互接口 - 非交互式任务执行
   iflow
     .command('run')
     .description('执行任务并返回结果')
     .requiredOption('-t, --task <task>', '任务内容')
+    .option('-d, --cwd <dir>', '工作目录')
+    .option('--add-dir <dirs...>', '额外包含目录')
     .option('-c, --capability <path>', '能力描述文件路径（暂未实现）')
     .action(async (options: CommonOptions & { task: string }) => {
       const agent = new IflowInteractiveAgent({ 
         autoStartProcess: true, 
-        permissionMode: 'auto' 
+        permissionMode: 'auto',
+        cwd: options.cwd,
+        sessionSettings: options.addDir ? { add_dirs: options.addDir } : undefined,
       });
       try {
         await agent.initialize();
@@ -106,10 +151,14 @@ export function registerIflowCommand(program: Command): void {
   iflow
     .command('chat')
     .description('进入交互式聊天模式')
-    .action(async () => {
+    .option('-d, --cwd <dir>', '工作目录')
+    .option('--add-dir <dirs...>', '额外包含目录')
+    .action(async (options: CommonOptions) => {
       const agent = new IflowInteractiveAgent({ 
         autoStartProcess: true, 
-        permissionMode: 'auto' 
+        permissionMode: 'auto',
+        cwd: options.cwd,
+        sessionSettings: options.addDir ? { add_dirs: options.addDir } : undefined,
       });
       const rl = readline.createInterface({
         input: process.stdin,
