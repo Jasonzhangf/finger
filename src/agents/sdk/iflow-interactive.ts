@@ -49,11 +49,15 @@ export class IflowInteractiveAgent {
     callbacks: InteractionCallbacks = {},
     files: Array<{ path?: string; image?: string }> = []
   ): Promise<{ stopReason?: string; finalOutput: string }> {
-    if (this.isRunning) throw new Error('Agent is already in an interaction loop');
-    
-    // Connection should be managed by the caller (Agent class)
-    // We assume the client is already connected when interact() is called
-    this.isRunning = true;
+   if (this.isRunning) throw new Error('Agent is already in an interaction loop');
+   
+   // Check if client is connected
+   const connected = this.client.isConnected?.() ?? false;
+   if (!connected) {
+     throw new Error('iFlow client is not connected. Please call initialize() first.');
+   }
+
+   this.isRunning = true;
 
     let finalOutput = '';
 
