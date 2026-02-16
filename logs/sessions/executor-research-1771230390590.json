@@ -1,0 +1,17 @@
+{
+  "sessionId": "executor-research-1771230390590",
+  "agentId": "executor-research",
+  "agentRole": "react-loop",
+  "userTask": "下载DeepSeek发布的技术白皮书和关键新闻文档",
+  "startTime": "2026-02-16T08:26:30.590Z",
+  "success": false,
+  "iterations": [],
+  "totalRounds": 0,
+  "stats": {
+    "totalActions": 0,
+    "successActions": 0,
+    "failedActions": 0,
+    "rejectedActions": 0,
+    "avgDurationPerRound": 0
+  }
+}

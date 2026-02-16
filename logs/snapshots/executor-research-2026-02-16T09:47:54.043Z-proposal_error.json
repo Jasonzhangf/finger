@@ -1,0 +1,12 @@
+{
+  "timestamp": "2026-02-16T09:47:54.043Z",
+  "iteration": 8,
+  "phase": "proposal_error",
+  "input": {
+    "task": "搜索 DeepSeek 过去一年的重大技术发布和里程碑事件",
+    "round": 8
+  },
+  "output": null,
+  "error": "Planner execution failed: iFlow error: Internal Error: 生成数据错误: HTTP 错误！状态：400，响应：{\"error\":{\"message\":\"Bad request!: {\\\"routify_response\\\":{\\\"trace_id\\\":\\\"2105776a17712352729094999d1261\\\",\\\"request_id\\\":\\\"c327586893174052b17b28f2951a3251\\\",\\\"success\\\":false,\\\"status\\\":400,\\\"error_source\\\":\\\"CLIENT_ERROR\\\",\\\"error_message\\\":\\\"AllModelsFailed: 请求供应商服务器失败\\\",\\\"error_detail\\\":{\\\"error\\\":{\\\"code\\\":\\\"1210\\\",\\\"message\\\":\\\"API 调用参数有误，请检查文档。Requested token count exceeds the model's maximum context length of 202752 tokens. You requested a total of 203148 tokens: 137612 tokens from the input messages and 65536 tokens for the completion. Please reduce the number of tokens in the input messages or the completion to fit within the limit.\\\"}}}}\",\"type\":\"BadRequest\",\"code\":\"400\"}} TraceID：00-3c7b5096328a886d458e8c965007d84e-591a08973835257c-01, detail: 生成数据错误: HTTP 错误！状态：400，响应：{\"error\":{\"message\":\"Bad request!: {\\\"routify_response\\\":{\\\"trace_id\\\":\\\"2105776a17712352729094999d1261\\\",\\\"request_id\\\":\\\"c327586893174052b17b28f2951a3251\\\",\\\"success\\\":false,\\\"status\\\":400,\\\"error_source\\\":\\\"CLIENT_ERROR\\\",\\\"error_message\\\":\\\"AllModelsFailed: 请求供应商服务器失败\\\",\\\"error_detail\\\":{\\\"error\\\":{\\\"code\\\":\\\"1210\\\",\\\"message\\\":\\\"API 调用参数有误，请检查文档。Requested token count exceeds the model's maximum context length of 202752 tokens. You requested a total of 203148 tokens: 137612 tokens from the input messages and 65536 tokens for the completion. Please reduce the number of tokens in the input messages or the completion to fit within the limit.\\\"}}}}\",\"type\":\"BadRequest\",\"code\":\"400\"}} TraceID：00-3c7b5096328a886d458e8c965007d84e-591a08973835257c-01",
+  "agentId": "executor-research"
+}

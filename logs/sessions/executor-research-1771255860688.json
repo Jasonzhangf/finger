@@ -1,0 +1,17 @@
+{
+  "sessionId": "executor-research-1771255860688",
+  "agentId": "executor-research",
+  "agentRole": "react-loop",
+  "userTask": "搜索 DeepSeek 过去一年的技术发布和里程碑（模型发布、技术论文、重要公告）",
+  "startTime": "2026-02-16T15:31:00.688Z",
+  "success": false,
+  "iterations": [],
+  "totalRounds": 0,
+  "stats": {
+    "totalActions": 0,
+    "successActions": 0,
+    "failedActions": 0,
+    "rejectedActions": 0,
+    "avgDurationPerRound": 0
+  }
+}

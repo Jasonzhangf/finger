@@ -1,0 +1,17 @@
+{
+  "sessionId": "executor-research-1771232450057",
+  "agentId": "executor-research",
+  "agentRole": "react-loop",
+  "userTask": "检查本地已有资料：读取output/deepseek-research目录下的现有文件，了解已收集的信息",
+  "startTime": "2026-02-16T09:00:50.057Z",
+  "success": false,
+  "iterations": [],
+  "totalRounds": 0,
+  "stats": {
+    "totalActions": 0,
+    "successActions": 0,
+    "failedActions": 0,
+    "rejectedActions": 0,
+    "avgDurationPerRound": 0
+  }
+}

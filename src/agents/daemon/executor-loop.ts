@@ -1,11 +1,24 @@
 /**
- * 执行者 ReACT 循环 - 最小闭环实现
+ * 执行者 ReACT 循环 - 基于通用 ReACT Loop
+ * 无硬编码 switch/case
  */
 
 import { Agent } from '../agent.js';
+import { ReviewerRole } from '../roles/reviewer.js';
 import { BdTools } from '../shared/bd-tools.js';
 import { createSnapshotLogger, SnapshotLogger } from '../shared/snapshot-logger.js';
 import type { OutputModule } from '../../orchestration/module-registry.js';
+import {
+  ActionRegistry,
+  createExecutorActions,
+  type ActionResult,
+} from '../core/action-registry-simple.js';
+import {
+  ReActLoop,
+  type LoopConfig,
+  type ReActResult,
+  type ReActState,
+} from '../runtime/react-loop.js';
 
 export interface ExecutorLoopConfig {
   id: string;
@@ -14,50 +27,23 @@ export interface ExecutorLoopConfig {
   systemPrompt?: string;
   cwd?: string;
   maxIterations?: number;
+  enableReview?: boolean;
 }
 
-export interface ExecutionState {
+interface ExecutorState extends ReActState {
   taskId: string;
   description: string;
-  status: 'thinking' | 'acting' | 'observing' | 'completed' | 'failed';
-  iteration: number;
+  bdTaskId?: string;
   observations: string[];
-  result?: string;
-  error?: string;
 }
 
 export function createExecutorLoop(config: ExecutorLoopConfig): { agent: Agent; module: OutputModule } {
-  const systemPrompt = config.systemPrompt ?? `
-你是一个任务执行者。你的工作是完成具体的执行任务。
-
-## ReACT 循环
-
-每次循环你需要：
-1. Thought: 分析任务和已有观察，决定下一步行动
-2. Action: 执行具体操作
-3. Observation: 获取结果
-
-## 可用行动
-
-- WRITE_FILE: 创建文件，参数 { path: "文件路径", content: "内容" }
-- COMPLETE: 任务完成，参数 { output: "完成说明" }
-- FAIL: 任务失败，参数 { reason: "失败原因" }
-
-## 输出格式（必须严格遵循）
-
-只输出 JSON，不要其他文字：
-{"thought": "分析", "action": "WRITE_FILE|COMPLETE|FAIL", "params": {"path": "xxx", "content": "xxx"}}
-
-示例：
-{"thought": "需要创建文件", "action": "WRITE_FILE", "params": {"path": "/tmp/test.txt", "content": "Hello"}}
-{"thought": "任务完成", "action": "COMPLETE", "params": {"output": "文件已创建"}}`;
-
   const agent = new Agent({
     id: config.id,
     name: config.name,
     mode: config.mode,
     provider: 'iflow',
-    systemPrompt,
+    systemPrompt: config.systemPrompt,
     cwd: config.cwd,
     resumeSession: false,
   });
@@ -65,249 +51,145 @@ export function createExecutorLoop(config: ExecutorLoopConfig): { agent: Agent; 
   const bdTools = new BdTools(config.cwd);
   const logger: SnapshotLogger = createSnapshotLogger(config.id);
   let initialized = false;
+  let initPromise: Promise<void> | null = null;
 
-  async function reactLoop(
-    taskId: string,
-    description: string,
-    bdTaskId?: string
-  ): Promise<{ success: boolean; output?: string; error?: string }> {
-    const state: ExecutionState = {
-      taskId,
-      description,
-      status: 'thinking',
-      iteration: 0,
-      observations: [],
+  const actionRegistry = new ActionRegistry();
+  const actions = createExecutorActions(config.cwd);
+
+  // 将具体动作逻辑注册到统一注册表，并挂接 bd/observation 同步
+  for (const action of actions) {
+    const originalHandler = action.handler;
+    action.handler = async (params, context): Promise<ActionResult> => {
+      const loopContext = context as { state?: ExecutorState };
+      const state = loopContext.state;
+
+      const result = await originalHandler(params, context);
+
+      if (state && result.observation) {
+        state.observations.push(result.observation);
+      }
+
+      if (state?.bdTaskId) {
+        if (result.success && result.stopReason === 'complete') {
+          await bdTools.closeTask(state.bdTaskId, '执行完成', [
+            { type: 'result', content: result.observation },
+          ]);
+        } else if (!result.success && result.stopReason === 'fail') {
+          await bdTools.updateStatus(state.bdTaskId, 'blocked');
+          await bdTools.addComment(state.bdTaskId, `执行失败: ${result.error || result.observation}`);
+        } else if (result.observation) {
+          await bdTools.addComment(state.bdTaskId, result.observation);
+        }
+      }
+
+      return result;
     };
 
-    const maxIterations = config.maxIterations ?? 5;
-    const startTime = Date.now();
-
-    console.log(`[ExecutorLoop ${config.id}] Starting task: ${taskId}`);
-    
-    // Ensure agent is initialized before executing
-    if (!initialized) {
-      console.log(`[ExecutorLoop ${config.id}] Initializing agent...`);
-      try {
-        const status = await agent.initialize();
-        console.log(`[ExecutorLoop ${config.id}] Agent initialized, connected: ${status.connected}`);
-        initialized = true;
-      } catch (initErr) {
-        const errorMsg = initErr instanceof Error ? initErr.message : String(initErr);
-        console.error(`[ExecutorLoop ${config.id}] Failed to initialize agent:`, errorMsg);
-        return { success: false, error: `Agent initialization failed: ${errorMsg}` };
-      }
-    }
-
-    logger.log({
-      timestamp: new Date().toISOString(),
-      iteration: 0,
-      phase: 'start',
-      input: { taskId, description, bdTaskId },
-      output: null,
-    });
-
-    while (state.iteration < maxIterations) {
-      state.iteration++;
-      state.status = 'thinking';
-      const iterStart = Date.now();
-
-      // THOUGHT
-      const statePrompt = `## 任务
-${description}
-
-## 已有观察
-${state.observations.length > 0 ? state.observations.map((o, i) => `${i + 1}. ${o}`).join('\n') : '暂无'}
-
-## 当前状态
-回合: ${state.iteration}/${maxIterations}
-
-请立即输出 JSON 格式的决策（只输出 JSON，不要其他文字）：`;
-
-      console.log(`[ExecutorLoop ${config.id}] Round ${state.iteration}: thinking...`);
-      
-      let decision;
-      try {
-        const agentStatus = agent.getStatus();
-        console.log(`[ExecutorLoop ${config.id}] Agent status before execute: connected=${agentStatus.connected}, running=${agentStatus.running}`);
-        
-        decision = await agent.execute(statePrompt, {
-          onAssistantChunk: (chunk) => process.stdout.write(chunk),
-        });
-      } catch (execErr) {
-        const errorMsg = execErr instanceof Error ? execErr.message : String(execErr);
-        console.error(`[ExecutorLoop ${config.id}] Execute error:`, errorMsg);
-        
-        // Try to reinitialize and retry once
-        console.log(`[ExecutorLoop ${config.id}] Attempting to reinitialize...`);
-        try {
-          await agent.initialize();
-          decision = await agent.execute(statePrompt);
-        } catch (retryErr) {
-          return { success: false, error: `Execution failed after retry: ${retryErr}` };
-        }
-      }
-
-      const thoughtDuration = Date.now() - iterStart;
-
-      if (!decision.success) {
-        console.error(`[ExecutorLoop ${config.id}] Decision failed:`, decision.error);
-        state.status = 'failed';
-        state.error = decision.error;
-        
-        logger.log({
-          timestamp: new Date().toISOString(),
-          iteration: state.iteration,
-          phase: 'decision_failed',
-          input: statePrompt,
-          output: decision,
-          duration: thoughtDuration,
-          error: decision.error,
-        });
-        break;
-      }
-
-      // Log AI response
-      logger.log({
-        timestamp: new Date().toISOString(),
-        iteration: state.iteration,
-        phase: 'thought',
-        input: statePrompt,
-        output: decision.output,
-        duration: thoughtDuration,
-      });
-
-      // Parse action
-      let action: { thought: string; action: string; params?: Record<string, string> };
-      try {
-        const jsonMatch = decision.output.match(/\{[\s\S]*\}/);
-        if (!jsonMatch) {
-          throw new Error('No JSON found in response');
-        }
-        action = JSON.parse(jsonMatch[0]);
-        console.log(`[ExecutorLoop ${config.id}] Round ${state.iteration}: action=${action.action}`);
-      } catch (parseError) {
-        const errorMsg = parseError instanceof Error ? parseError.message : 'Parse error';
-        console.error(`[ExecutorLoop ${config.id}] Parse error:`, errorMsg);
-        console.error(`[ExecutorLoop ${config.id}] Raw output:`, decision.output.substring(0, 500));
-        
-        logger.log({
-          timestamp: new Date().toISOString(),
-          iteration: state.iteration,
-          phase: 'parse_error',
-          input: decision.output,
-          output: null,
-          error: errorMsg,
-        });
-        
-        // Try to continue with FAIL action
-        action = { action: 'FAIL', thought: `Parse error: ${errorMsg}`, params: { reason: errorMsg } };
-      }
-
-      // ACTION
-      state.status = 'acting';
-
-      switch (action.action) {
-        case 'WRITE_FILE': {
-          if (action.params?.path && action.params?.content) {
-            const fs = await import('fs');
-            const path = await import('path');
-            const filePath = path.resolve(config.cwd || process.cwd(), action.params.path);
-
-            try {
-              await fs.promises.mkdir(path.dirname(filePath), { recursive: true });
-              await fs.promises.writeFile(filePath, action.params.content, 'utf-8');
-              const obs = `文件已创建: ${action.params.path}`;
-              state.observations.push(obs);
-              console.log(`[ExecutorLoop ${config.id}] ${obs}`);
-              
-              if (bdTaskId) {
-                await bdTools.addComment(bdTaskId, obs);
-              }
-            } catch (e) {
-              const obs = `文件创建失败: ${e}`;
-              state.observations.push(obs);
-              console.error(`[ExecutorLoop ${config.id}] ${obs}`);
-            }
-          }
-          break;
-        }
-
-        case 'COMPLETE': {
-          state.status = 'completed';
-          state.result = action.params?.output || action.thought || 'Task completed';
-
-          logger.log({
-            timestamp: new Date().toISOString(),
-            iteration: state.iteration,
-            phase: 'complete',
-            input: null,
-            output: { result: state.result },
-            duration: Date.now() - startTime,
-          });
-
-          if (bdTaskId) {
-            await bdTools.closeTask(bdTaskId, '执行完成', [
-              { type: 'result', content: state.result },
-            ]);
-          }
-
-          console.log(`[ExecutorLoop ${config.id}] Task completed: ${state.result}`);
-          return { success: true, output: state.result };
-        }
-
-        case 'FAIL': {
-          state.status = 'failed';
-          state.error = action.params?.reason || action.thought || 'Task failed';
-
-          logger.log({
-            timestamp: new Date().toISOString(),
-            iteration: state.iteration,
-            phase: 'fail',
-            input: null,
-            output: { error: state.error },
-            duration: Date.now() - startTime,
-          });
-
-          if (bdTaskId) {
-            await bdTools.updateStatus(bdTaskId, 'blocked');
-            await bdTools.addComment(bdTaskId, `执行失败: ${state.error}`);
-          }
-
-          console.log(`[ExecutorLoop ${config.id}] Task failed: ${state.error}`);
-          return { success: false, error: state.error };
-        }
-
-        default:
-          console.warn(`[ExecutorLoop ${config.id}] Unknown action: ${action.action}`);
-          state.observations.push(`未知行动: ${action.action}`);
-      }
-
-      // OBSERVATION
-      state.status = 'observing';
-    }
-
-    // Exceeded iterations
-    state.status = 'failed';
-    state.error = `Exceeded maximum iterations (${maxIterations})`;
-
-    logger.log({
-      timestamp: new Date().toISOString(),
-      iteration: state.iteration,
-      phase: 'timeout',
-      input: null,
-      output: { observations: state.observations },
-      duration: Date.now() - startTime,
-      error: state.error,
-    });
-
-    if (bdTaskId) {
-      await bdTools.updateStatus(bdTaskId, 'blocked');
-      await bdTools.addComment(bdTaskId, `执行超时: ${state.error}`);
-    }
-
-    console.error(`[ExecutorLoop ${config.id}] ${state.error}`);
-    return { success: false, error: state.error };
+    actionRegistry.register(action);
   }
+
+ async function runTask(
+   taskId: string,
+   description: string,
+   bdTaskId?: string
+ ): Promise<{ success: boolean; output?: string; error?: string }> {
+   // Force a fresh session for each dispatched task to avoid context bloat.
+   try { await agent.disconnect(); } catch { /* ignore */ }
+   initialized = false;
+   initPromise = null;
+
+   // Re-initialize agent for this task
+   if (!initPromise) {
+     initPromise = agent.initialize().then(() => {
+       initialized = true;
+     });
+   }
+   await initPromise;
+   
+   // Verify connection state after initialization
+   const status = agent.getStatus();
+   console.log(`[executor-loop] Agent status after initialize: connected=${status.connected}, sessionId=${status.sessionId}`);
+
+   let reviewer: ReviewerRole | undefined;
+   if (config.enableReview) {
+     reviewer = new ReviewerRole({
+       id: `${config.id}-reviewer`,
+       name: `${config.name} Reviewer`,
+       mode: config.mode,
+       cwd: config.cwd,
+     });
+     await reviewer.initialize();
+   }
+
+   const loopConfig: LoopConfig = {
+     planner: {
+       agent,
+       actionRegistry,
+       freshSessionPerRound: true,
+     },
+     reviewer: reviewer
+       ? {
+           agent: reviewer,
+           enabled: true,
+         }
+       : undefined,
+     stopConditions: {
+       completeActions: ['COMPLETE'],
+       failActions: ['FAIL'],
+       maxRounds: config.maxIterations ?? 5,
+       onConvergence: true,
+       onStuck: 3,
+       maxRejections: 4,
+     },
+     formatFix: {
+       maxRetries: 3,
+       schema: {
+         type: 'object',
+         required: ['thought', 'action', 'params'],
+         properties: {
+           thought: { type: 'string' },
+           action: { type: 'string' },
+           params: { type: 'object' },
+           expectedOutcome: { type: 'string' },
+           risk: { type: 'string' },
+         },
+       },
+     },
+     snapshotLogger: logger,
+     agentId: config.id,
+   };
+
+   const loop = new ReActLoop(loopConfig, description);
+   (loop as unknown as { state: ExecutorState }).state = {
+     task: description,
+     iterations: [],
+     convergence: {
+       rejectionStreak: 0,
+       sameRejectionReason: '',
+       stuckCount: 0,
+     },
+     taskId,
+     description,
+     bdTaskId,
+     observations: [],
+   };
+
+   try {
+     const result: ReActResult = await loop.run();
+     return {
+       success: result.success,
+       output: result.finalObservation,
+       error: result.finalError,
+     };
+   } finally {
+     try { await agent.disconnect(); } catch { /* ignore */ }
+     initialized = false;
+     initPromise = null;
+     if (reviewer) {
+       await reviewer.disconnect();
+     }
+   }
+ }
 
   const module: OutputModule = {
     id: config.id,
@@ -318,25 +200,23 @@ ${state.observations.length > 0 ? state.observations.map((o, i) => `${i + 1}. ${
 
     initialize: async () => {
       if (initialized) return;
-      console.log(`[ExecutorLoop ${config.id}] Initializing...`);
-      try {
-        const status = await agent.initialize();
-        console.log(`[ExecutorLoop ${config.id}] Initialized, connected: ${status.connected}, session: ${status.sessionId}`);
-        initialized = true;
-      } catch (err) {
-        console.error(`[ExecutorLoop ${config.id}] Initialization failed:`, err);
-        throw err;
+      if (!initPromise) {
+        initPromise = agent.initialize().then(() => {
+          initialized = true;
+        });
       }
+      await initPromise;
     },
 
     destroy: async () => {
       await agent.disconnect();
       initialized = false;
+      initPromise = null;
     },
 
     handle: async (message: unknown, callback?: (result: unknown) => void) => {
       const msg = message as Record<string, unknown>;
-      const taskId = String(msg.taskId || 'task-' + Date.now());
+      const taskId = String(msg.taskId || `task-${Date.now()}`);
       const description = String(msg.description || msg.content || '');
       const bdTaskId = msg.bdTaskId ? String(msg.bdTaskId) : undefined;
 
@@ -347,7 +227,7 @@ ${state.observations.length > 0 ? state.observations.map((o, i) => `${i + 1}. ${
       }
 
       try {
-        const result = await reactLoop(taskId, description, bdTaskId);
+        const result = await runTask(taskId, description, bdTaskId);
         if (callback) callback(result);
         return result;
       } catch (err) {

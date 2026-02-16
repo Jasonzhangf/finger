@@ -1,0 +1,17 @@
+{
+  "sessionId": "executor-research-1771230472520",
+  "agentId": "executor-research",
+  "agentRole": "react-loop",
+  "userTask": "生成MD报告到指定路径",
+  "startTime": "2026-02-16T08:27:52.520Z",
+  "success": false,
+  "iterations": [],
+  "totalRounds": 0,
+  "stats": {
+    "totalActions": 0,
+    "successActions": 0,
+    "failedActions": 0,
+    "rejectedActions": 0,
+    "avgDurationPerRound": 0
+  }
+}

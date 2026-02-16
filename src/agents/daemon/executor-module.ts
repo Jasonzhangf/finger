@@ -1,7 +1,7 @@
 import type { OutputModule } from '../../orchestration/module-registry.js';
 import type { MessageHub } from '../../orchestration/message-hub.js';
 import { Agent, AgentConfig } from '../agent.js';
-import { ExecutorRole, type ExecutorRoleConfig } from '../roles/executor.js';
+import { ExecutorRole } from '../roles/executor.js';
 import type { TaskAssignment } from '../protocol/schema.js';
 
 export interface ExecutorModuleConfig {

@@ -1,7 +1,7 @@
 import type { OutputModule } from '../../orchestration/module-registry.js';
 import type { MessageHub } from '../../orchestration/message-hub.js';
 import { Agent, AgentConfig } from '../agent.js';
-import { ReviewerRole, type ReviewerRoleConfig } from '../roles/reviewer.js';
+import { ReviewerRole } from '../roles/reviewer.js';
 
 export interface ReviewerModuleConfig {
   id: string;

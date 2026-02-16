@@ -1,6 +1,12 @@
 node_modules/
 dist/
 .beads/beads.db
+.beads/*.db
+.beads/*.db-shm
+.beads/*.db-wal
+.beads/last-touched
+.beads/daemon.log
 .env
 *.log
 .DS_Store
+*.pid

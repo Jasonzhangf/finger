@@ -1,0 +1,10 @@
+{
+  "timestamp": "2026-02-16T10:19:19.648Z",
+  "iteration": 0,
+  "phase": "start",
+  "input": {
+    "task": "搜索DeepSeek过去一年的技术发布、里程碑和重大新闻"
+  },
+  "output": null,
+  "agentId": "executor-research"
+}

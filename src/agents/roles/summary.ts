@@ -1,5 +1,4 @@
 import { IFlowProvider } from '../providers/iflow-provider.js';
-import { AgentMessage, MessageMode } from '../protocol/schema.js';
 import { BdTools } from '../shared/bd-tools.js';
 
 export interface SummaryConfig {

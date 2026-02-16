@@ -1,0 +1,12 @@
+{
+  "timestamp": "2026-02-16T03:50:40.068Z",
+  "iteration": 1,
+  "phase": "timeout",
+  "input": null,
+  "output": {
+    "observations": []
+  },
+  "duration": 0,
+  "error": "Exceeded maximum iterations (5)",
+  "agentId": "executor-loop"
+}

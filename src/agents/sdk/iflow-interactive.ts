@@ -7,7 +7,6 @@ import {
   TaskFinishMessage,
   ErrorMessage,
   IFlowClient,
-  IFlowOptions,
 } from '@iflow-ai/iflow-cli-sdk';
 
 export type InteractionHandler = (chunk: string) => void;

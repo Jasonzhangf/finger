@@ -1,0 +1,17 @@
+{
+  "sessionId": "executor-research-1771232906347",
+  "agentId": "executor-research",
+  "agentRole": "react-loop",
+  "userTask": "下载关键的技术白皮书和新闻资料",
+  "startTime": "2026-02-16T09:08:26.347Z",
+  "success": false,
+  "iterations": [],
+  "totalRounds": 0,
+  "stats": {
+    "totalActions": 0,
+    "successActions": 0,
+    "failedActions": 0,
+    "rejectedActions": 0,
+    "avgDurationPerRound": 0
+  }
+}

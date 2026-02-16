@@ -1,0 +1,17 @@
+{
+  "sessionId": "executor-research-1771232944233",
+  "agentId": "executor-research",
+  "agentRole": "react-loop",
+  "userTask": "使用web_search搜索DeepSeek V3发布信息和技术特点",
+  "startTime": "2026-02-16T09:09:04.233Z",
+  "success": false,
+  "iterations": [],
+  "totalRounds": 0,
+  "stats": {
+    "totalActions": 0,
+    "successActions": 0,
+    "failedActions": 0,
+    "rejectedActions": 0,
+    "avgDurationPerRound": 0
+  }
+}

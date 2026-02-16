@@ -11,7 +11,7 @@ import { echoInput, echoOutput } from '../agents/test/mock-echo-agent.js';
 import { createRealOrchestratorModule } from '../agents/daemon/orchestrator-module.js';
 import { createOrchestratorLoop } from '../agents/daemon/orchestrator-loop.js';
 import { createExecutorLoop } from '../agents/daemon/executor-loop.js';
-import { mailbox, Mailbox } from './mailbox.js';
+import { mailbox } from './mailbox.js';
 import type { OutputModule } from '../orchestration/module-registry.js';
 import {
   TaskBlock,
@@ -246,7 +246,7 @@ wss.on('connection', (ws) => {
           ws.send(JSON.stringify({ type: 'messageUpdate', message: m }));
         });
       }
-    } catch (e) {
+    } catch {
       // ignore
     }
   });

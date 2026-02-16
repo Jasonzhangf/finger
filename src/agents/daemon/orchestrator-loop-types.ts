@@ -1,8 +1,3 @@
-import { Agent } from '../agent.js';
-import { BdTools } from '../shared/bd-tools.js';
-import { MessageHub } from '../../orchestration/message-hub.js';
-import type { OutputModule } from '../../orchestration/module-registry.js';
-
 export interface TaskResult {
   taskId: string;
   success: boolean;

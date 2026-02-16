@@ -7,7 +7,7 @@ import type { MessageHub } from '../../orchestration/message-hub.js';
 import { Agent, AgentConfig } from '../agent.js';
 import { BdTools } from '../shared/bd-tools.js';
 import { TaskAssignment } from '../protocol/schema.js';
-import { WorkflowManager, type TaskNode } from '../../orchestration/workflow-manager.js';
+import { WorkflowManager } from '../../orchestration/workflow-manager.js';
 import { SessionManager } from '../../orchestration/session-manager.js';
 import { AgentPool } from '../../orchestration/agent-pool.js';
 

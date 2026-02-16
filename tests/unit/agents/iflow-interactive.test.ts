@@ -118,6 +118,7 @@ describe('IflowInteractiveAgent', () => {
 
   it('interrupts running task', async () => {
     await agent.initialize();
+    (agent as any).isRunning = true;
     await agent.interrupt();
     expect(mockClient.interrupt).toHaveBeenCalled();
   });

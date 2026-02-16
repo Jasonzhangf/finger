@@ -1,5 +1,5 @@
-import { Agent, AgentConfig, TaskResult } from '../agent.js';
-import { TaskAssignment, MessageMode } from '../protocol/schema.js';
+import { Agent, AgentConfig } from '../agent.js';
+import { TaskAssignment } from '../protocol/schema.js';
 import { BdTools } from '../shared/bd-tools.js';
 
 export interface DecomposeResult {

@@ -1,0 +1,21 @@
+{
+  "sessionId": "executor-research-1771233552865",
+  "agentId": "executor-research",
+  "agentRole": "react-loop",
+  "userTask": "搜索 DeepSeek 过去一年的技术发布和里程碑新闻",
+  "startTime": "2026-02-16T09:19:12.865Z",
+  "success": false,
+  "iterations": [],
+  "totalRounds": 0,
+  "stats": {
+    "totalActions": 0,
+    "successActions": 0,
+    "failedActions": 0,
+    "rejectedActions": 0,
+    "avgDurationPerRound": 0
+  },
+  "stopReason": "proposal_error",
+  "finalError": "Planner execution failed: Not connected. Call connect() first.",
+  "endTime": "2026-02-16T09:19:12.870Z",
+  "duration": 5
+}

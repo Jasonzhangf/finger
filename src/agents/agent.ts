@@ -88,6 +88,14 @@ export class Agent {
     // resumeSession: false -> skipSession = true (new session)
     const skipSession = this.config.resumeSession === false;
     const info = await this.base.initialize(skipSession);
+
+    // When skipSession=true, SDK connects without creating/loading session.
+    // Agent execution requires an active session, so create one explicitly.
+    if (skipSession) {
+      const sessionId = await this.client.newSession();
+      info.sessionId = sessionId;
+    }
+
     this.status.connected = info.connected;
     this.status.sessionId = info.sessionId;
     this.status.capabilities = [
@@ -99,16 +107,32 @@ export class Agent {
     return { ...this.status };
   }
 
+  /** 创建全新会话，清理历史上下文但保持连接 */
+  async startFreshSession(): Promise<string> {
+    await this.ensureConnected();
+    const sessionId = await this.client.newSession();
+    this.status.connected = true;
+    this.status.sessionId = sessionId;
+    return sessionId;
+  }
+
   private async ensureConnected(): Promise<void> {
-    // Check actual connection state from client
-    const isActuallyConnected = this.client.isConnected?.() ?? false;
-    if (isActuallyConnected) {
-      this.status.connected = true;
-      return;
-    }
-    
-    console.log(`[Agent ${this.config.id}] Not connected, initializing...`);
-    await this.initialize();
+   // Check actual connection state from client
+   const isActuallyConnected = this.client.isConnected?.() ?? false;
+   if (isActuallyConnected) {
+     this.status.connected = true;
+     return;
+   }
+   
+   // 重连前先重置状态，避免 client.isConnected() 返回过时的 true。
+   this.status.connected = false;
+   console.log(`[Agent ${this.config.id}] Not connected (client.isConnected=${isActuallyConnected}), initializing...`);
+   await this.initialize();
+  }
+
+  private isConnectionError(message: string): boolean {
+    const normalized = message.toLowerCase();
+    return normalized.includes('not connected') || normalized.includes('call connect() first');
   }
 
   /** 获取当前状态 */
@@ -153,7 +177,7 @@ export class Agent {
           result = await runAuto();
         } catch (err) {
           const message = err instanceof Error ? err.message : String(err);
-          if (!message.includes('Not connected')) {
+          if (!this.isConnectionError(message)) {
             throw err;
           }
 
@@ -178,7 +202,7 @@ export class Agent {
         result = await runManual();
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
-        if (!message.includes('Not connected')) {
+        if (!this.isConnectionError(message)) {
           throw err;
         }
 

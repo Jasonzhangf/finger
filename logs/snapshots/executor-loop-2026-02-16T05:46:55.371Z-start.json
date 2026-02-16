@@ -1,0 +1,10 @@
+{
+  "timestamp": "2026-02-16T05:46:55.371Z",
+  "iteration": 0,
+  "phase": "start",
+  "input": {
+    "task": "task-3"
+  },
+  "output": null,
+  "agentId": "executor-loop"
+}

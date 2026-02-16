@@ -1,7 +1,7 @@
 import type { OutputModule } from '../../orchestration/module-registry.js';
 import type { MessageHub } from '../../orchestration/message-hub.js';
 import { Agent, AgentConfig } from '../agent.js';
-import { SummaryRole, SummaryConfig } from '../roles/summary.js';
+import { SummaryRole } from "../roles/summary.js";
 import { BdTools } from '../shared/bd-tools.js';
 
 export interface SummaryModuleConfig {

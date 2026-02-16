@@ -1,7 +1,7 @@
 import type { OutputModule } from '../../orchestration/module-registry.js';
 import type { MessageHub } from '../../orchestration/message-hub.js';
 import { Agent, AgentConfig } from '../agent.js';
-import { SelfReviewRole, SelfReviewConfig } from '../roles/self-review.js';
+import { SelfReviewRole } from "../roles/self-review.js";
 import { BdTools } from '../shared/bd-tools.js';
 
 export interface SelfReviewModuleConfig {

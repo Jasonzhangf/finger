@@ -38,7 +38,7 @@ describe('OrchestratorRoleRefactored', () => {
     const orchestrator = new OrchestratorRoleRefactored(config);
     await orchestrator.initialize();
 
-    const epicId = await orchestrator.startOrchestration('Test epic');
+    await orchestrator.startOrchestration('Test epic');
 
     // Manually add a pending task
     orchestrator['context'].pendingTasks.push({

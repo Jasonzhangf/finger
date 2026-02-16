@@ -1,0 +1,10 @@
+{
+  "timestamp": "2026-02-16T09:16:51.305Z",
+  "iteration": 0,
+  "phase": "start",
+  "input": {
+    "task": "下载关键技术新闻和技术白皮书"
+  },
+  "output": null,
+  "agentId": "executor-research"
+}

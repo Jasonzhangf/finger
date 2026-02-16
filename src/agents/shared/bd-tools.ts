@@ -76,7 +76,7 @@ export class BdTools {
   private async run(args: string): Promise<string> {
     const cmd = `bd --no-db ${args}`;
     try {
-      const { stdout } = await execAsync(cmd, { cwd: this.cwd });
+      const { stdout } = await execAsync(cmd, { cwd: this.cwd, maxBuffer: 10 * 1024 * 1024 });
       return stdout;
     } catch (err) {
       const error = err as { stderr?: string; message?: string };
@@ -116,7 +116,7 @@ export class BdTools {
     const output = await this.run(args.join(' '));
     
     // 解析输出获取 task id
-    const idMatch = output.match(/(finger-\d+(?:\.\d+)?)/);
+    const idMatch = output.match(/([a-zA-Z0-9_-]+-[A-Za-z0-9_-]+(?:\.\d+)?)/);
     if (!idMatch) {
       throw new Error(`Failed to parse task id from: ${output}`);
     }
@@ -152,8 +152,9 @@ export class BdTools {
    * 添加评论/进度记录
    */
   async addComment(taskId: string, content: string): Promise<void> {
-    // bd 使用 notes 字段存储评论
-    await this.run(`update ${taskId} --append-notes "${content.replace(/"/g, '\\"')}"`);
+    // bd 使用 notes 字段存储评论，限制长度避免命令过长
+    const safeContent = content.substring(0, 400).replace(/"/g, '\\"').replace(/\n/g, ' ');
+    await this.run(`update ${taskId} --append-notes "${safeContent}"`);
   }
 
   /**
@@ -203,9 +204,9 @@ export class BdTools {
       return JSON.parse(output);
     } catch {
       // 解析文本格式
-      const lines = output.split('\n').filter(l => l.includes('finger-'));
+      const lines = output.split('\n').filter(l => /[a-zA-Z0-9_-]+-[A-Za-z0-9_-]+/.test(l));
       return lines.map(line => {
-        const idMatch = line.match(/(finger-\d+(?:\.\d+)?)/);
+        const idMatch = line.match(/([a-zA-Z0-9_-]+-[A-Za-z0-9_-]+(?:\.\d+)?)/);
         return {
           id: idMatch?.[1] ?? '',
           title: line,

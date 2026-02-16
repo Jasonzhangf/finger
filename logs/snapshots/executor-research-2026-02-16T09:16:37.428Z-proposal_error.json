@@ -1,0 +1,12 @@
+{
+  "timestamp": "2026-02-16T09:16:37.428Z",
+  "iteration": 1,
+  "phase": "proposal_error",
+  "input": {
+    "task": "搜索DeepSeek过去一年的新技术发布和里程碑",
+    "round": 1
+  },
+  "output": null,
+  "error": "Planner execution failed: Not connected. Call connect() first.",
+  "agentId": "executor-research"
+}

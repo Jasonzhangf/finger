@@ -1,0 +1,21 @@
+{
+  "sessionId": "orchestrator-e2e-1771255814763",
+  "agentId": "orchestrator-e2e",
+  "agentRole": "react-loop",
+  "userTask": "创建一个 Node.js 项目，包含: 1) package.json 2) src/index.js 主入口 3) README.md",
+  "startTime": "2026-02-16T15:30:14.763Z",
+  "success": false,
+  "iterations": [],
+  "totalRounds": 0,
+  "stats": {
+    "totalActions": 0,
+    "successActions": 0,
+    "failedActions": 0,
+    "rejectedActions": 0,
+    "avgDurationPerRound": 0
+  },
+  "stopReason": "proposal_error",
+  "finalError": "Planner execution failed: iFlow error: Internal Error: 您当前的账号已达到平台并发限制，系统将重试请求，请控制单并发使用, detail: 您当前的账号已达到平台并发限制，系统将重试请求，请控制单并发使用",
+  "endTime": "2026-02-16T15:30:41.415Z",
+  "duration": 26652
+}

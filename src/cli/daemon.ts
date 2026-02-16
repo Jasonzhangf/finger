@@ -63,13 +63,6 @@ async function sendMessage(
   return await res.json();
 }
 
-async function getMailboxMessage(messageId: string): Promise<any> {
-  const res = await fetch(`http://localhost:5521/api/v1/mailbox/${messageId}`);
-  if (!res.ok) {
-    throw new Error(`Failed to get mailbox message: ${res.status}`);
-  }
-  return await res.json();
-}
 
 function renderStatus(status: string): string {
   switch (status) {

@@ -1,0 +1,12 @@
+{
+  "timestamp": "2026-02-16T09:19:29.049Z",
+  "iteration": 1,
+  "phase": "proposal_error",
+  "input": {
+    "task": "搜索并获取 DeepSeek 技术白皮书（特别是 V3, R1 等模型）",
+    "round": 1
+  },
+  "output": null,
+  "error": "Planner execution failed: Not connected. Call connect() first.",
+  "agentId": "executor-research"
+}
