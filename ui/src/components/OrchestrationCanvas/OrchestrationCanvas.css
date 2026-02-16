@@ -1,89 +1,243 @@
 .canvas-wrapper {
   width: 100%;
   height: 100%;
-  position: relative;
   background: #0b0e14;
+  position: relative;
 }
 
-.canvas-loading {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  height: 100%;
-  color: #6b7280;
-  font-size: 14px;
-}
-
+/* Agent Node Styles */
 .agent-node {
-  padding: 12px 16px;
-  border-radius: 8px;
-  background: #1a1f2a;
-  border: 2px solid #4a5568;
-  min-width: 140px;
+  min-width: 220px;
+  background: #111827;
+  border: 2px solid #374151;
+  border-radius: 10px;
+  padding: 12px;
+  position: relative;
+  cursor: pointer;
+  transition: all 0.2s;
+  overflow: hidden;
 }
 
-.agent-node-orchestrator {
-  border-color: #9b59b6;
+.agent-node:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 8px 20px rgba(0, 0, 0, 0.4);
 }
 
-.agent-node-executor {
-  border-color: #3498db;
+.agent-node.status-idle {
+  border-color: #3b82f6; /* 蓝色 - 待执行 */
+  background: linear-gradient(135deg, #111827 0%, rgba(59, 130, 246, 0.1) 100%);
 }
 
-.agent-node-reviewer {
-  border-color: #2ecc71;
+.agent-node.status-running {
+  border-color: #10b981; /* 绿色 - 执行中 */
+  background: linear-gradient(135deg, #111827 0%, rgba(16, 185, 129, 0.1) 100%);
 }
 
-.agent-node-other {
-  border-color: #f1c40f;
+.agent-node.status-error {
+  border-color: #ef4444; /* 红色 - 错误 */
+  background: linear-gradient(135deg, #111827 0%, rgba(239, 68, 68, 0.1) 100%);
+}
+
+.agent-node.status-paused {
+  border-color: #f59e0b;
+  background: linear-gradient(135deg, #111827 0%, rgba(245, 158, 11, 0.1) 100%);
+}
+
+/* Marquee animation for running agent */
+.agent-marquee {
+  position: absolute;
+  inset: -2px;
+  border-radius: 10px;
+  background: linear-gradient(
+    90deg,
+    transparent,
+    transparent,
+    #10b981,
+    transparent,
+    transparent
+  );
+  animation: marquee-border 2s linear infinite;
+  pointer-events: none;
+}
+
+@keyframes marquee-border {
+  0% {
+    transform: translateX(-100%);
+  }
+  100% {
+    transform: translateX(100%);
+  }
 }
 
 .agent-node-header {
   display: flex;
   align-items: center;
   gap: 8px;
-  margin-bottom: 8px;
+  margin-bottom: 10px;
 }
 
 .status-dot {
-  width: 8px;
-  height: 8px;
+  width: 10px;
+  height: 10px;
   border-radius: 50%;
-}
-
-.status-idle {
-  background: #6b7280;
+  flex-shrink: 0;
 }
 
 .status-running {
+  background: #10b981;
+  box-shadow: 0 0 10px #10b981;
+  animation: pulse 1.5s infinite;
+}
+
+.status-idle {
   background: #3b82f6;
 }
 
 .status-error {
   background: #ef4444;
+  box-shadow: 0 0 10px #ef4444;
+}
+
+.status-paused {
+  background: #f59e0b;
+}
+
+@keyframes pulse {
+  0%, 100% {
+    transform: scale(1);
+    opacity: 1;
+  }
+  50% {
+    transform: scale(1.2);
+    opacity: 0.8;
+  }
 }
 
 .agent-name {
   font-weight: 600;
-  font-size: 13px;
-  color: #e4e7eb;
+  color: #f3f4f6;
+  font-size: 0.95rem;
+  flex: 1;
 }
 
-.agent-node-body {
+.instance-badge {
+  background: #374151;
+  color: #d1d5db;
+  padding: 2px 6px;
+  border-radius: 10px;
+  font-size: 0.75rem;
+}
+
+.agent-type {
+  color: #9ca3af;
+  font-size: 0.8rem;
+  text-transform: uppercase;
+  margin-bottom: 8px;
+}
+
+.agent-metrics {
   display: flex;
-  flex-direction: column;
-  gap: 4px;
+  justify-content: space-between;
+  color: #d1d5db;
+  font-size: 0.78rem;
 }
 
-.agent-role {
-  font-size: 11px;
-  color: #9aa4b5;
-  text-transform: capitalize;
+.current-task {
+  margin-top: 8px;
+  padding: 4px 8px;
+  background: rgba(245, 158, 11, 0.2);
+  border: 1px solid rgba(245, 158, 11, 0.4);
+  border-radius: 4px;
+  color: #fbbf24;
+  font-size: 0.75rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
-.agent-stats {
+/* Start/End Nodes */
+.start-end-node {
+  min-width: 120px;
+  padding: 14px 20px;
+  border-radius: 24px;
+  text-align: center;
+  font-weight: 600;
+  color: white;
+}
+
+.start-end-node.start {
+  background: linear-gradient(135deg, #10b981, #059669);
+  box-shadow: 0 4px 12px rgba(16, 185, 129, 0.4);
+}
+
+.start-end-node.end {
+  background: linear-gradient(135deg, #6366f1, #4f46e5);
+  box-shadow: 0 4px 12px rgba(99, 102, 241, 0.4);
+}
+
+.start-end-label {
+  font-size: 0.95rem;
+}
+
+/* Node handles */
+.node-handle {
+  width: 10px;
+  height: 10px;
+  border: 2px solid #1f2937;
+  background: #60a5fa;
+}
+
+/* Animated flowing edges */
+.react-flow__edge.animated path {
+  stroke-dasharray: 8, 4;
+  animation: flow-arrow 1s linear infinite;
+}
+
+@keyframes flow-arrow {
+  from {
+    stroke-dashoffset: 0;
+  }
+  to {
+    stroke-dashoffset: -12;
+  }
+}
+
+/* Canvas action buttons */
+.canvas-actions {
+  position: absolute;
+  top: 16px;
+  right: 16px;
   display: flex;
-  gap: 12px;
-  font-size: 10px;
+  gap: 10px;
+  z-index: 10;
+}
+
+.action-btn {
+  padding: 10px 16px;
+  border: none;
+  border-radius: 8px;
+  font-size: 0.875rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.report-btn {
+  background: #3b82f6;
+  color: white;
+}
+
+.report-btn:hover {
+  background: #2563eb;
+  transform: translateY(-1px);
+}
+
+/* Loading */
+.canvas-loading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
   color: #6b7280;
+  font-size: 1.1rem;
 }

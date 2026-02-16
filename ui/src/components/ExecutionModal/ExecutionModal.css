@@ -1,0 +1,160 @@
+.execution-modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.7);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+}
+
+.execution-modal {
+  width: min(900px, 90vw);
+  max-height: 85vh;
+  background: #111827;
+  border: 1px solid #374151;
+  border-radius: 12px;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.execution-modal-header {
+  padding: 20px;
+  border-bottom: 1px solid #374151;
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+}
+
+.execution-modal-header h2 {
+  margin: 0;
+  color: #f9fafb;
+  font-size: 1.5rem;
+}
+
+.agent-id {
+  color: #9ca3af;
+  font-size: 0.875rem;
+}
+
+.close-btn {
+  background: transparent;
+  border: none;
+  color: #9ca3af;
+  font-size: 1.5rem;
+  cursor: pointer;
+}
+
+.execution-summary {
+  padding: 20px;
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 16px;
+  border-bottom: 1px solid #374151;
+}
+
+.summary-item {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.summary-item .label {
+  color: #9ca3af;
+  font-size: 0.75rem;
+  text-transform: uppercase;
+}
+
+.summary-item .value {
+  color: #f3f4f6;
+  font-size: 0.95rem;
+}
+
+.execution-steps {
+  flex: 1;
+  padding: 20px;
+  overflow-y: auto;
+}
+
+.execution-steps h3 {
+  margin: 0 0 16px;
+  color: #f9fafb;
+}
+
+.empty-steps {
+  color: #6b7280;
+  text-align: center;
+  padding: 40px;
+}
+
+.steps-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.step-card {
+  background: #1f2937;
+  border: 1px solid #374151;
+  border-radius: 8px;
+  padding: 14px;
+}
+
+.step-header {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  margin-bottom: 8px;
+}
+
+.step-round {
+  color: #60a5fa;
+  font-weight: 600;
+}
+
+.step-status {
+  font-size: 0.85rem;
+  padding: 2px 8px;
+  border-radius: 4px;
+}
+
+.step-status.success {
+  background: rgba(16, 185, 129, 0.2);
+  color: #10b981;
+}
+
+.step-status.error {
+  background: rgba(239, 68, 68, 0.2);
+  color: #ef4444;
+}
+
+.step-time {
+  color: #9ca3af;
+  font-size: 0.8rem;
+  margin-left: auto;
+}
+
+.step-action {
+  color: #e5e7eb;
+  font-weight: 500;
+  margin-bottom: 6px;
+}
+
+.step-thought,
+.step-observation {
+  color: #9ca3af;
+  font-size: 0.875rem;
+  line-height: 1.4;
+  margin-top: 4px;
+}
+
+.execution-footer {
+  padding: 16px 20px;
+  border-top: 1px solid #374151;
+}
+
+.execution-footer a {
+  color: #60a5fa;
+  text-decoration: none;
+}

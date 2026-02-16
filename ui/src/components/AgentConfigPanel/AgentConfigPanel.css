@@ -1,0 +1,181 @@
+.agent-config-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.75);
+  display: flex;
+  justify-content: flex-end;
+  z-index: 1001;
+}
+
+.agent-config-panel {
+  width: min(700px, 90vw);
+  height: 100vh;
+  background: #111827;
+  border-left: 1px solid #374151;
+  display: flex;
+  flex-direction: column;
+}
+
+.agent-config-header {
+  padding: 20px;
+  border-bottom: 1px solid #374151;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.agent-config-header h2 {
+  margin: 0;
+  color: #f9fafb;
+  font-size: 1.25rem;
+}
+
+.agent-config-tabs {
+  display: flex;
+  border-bottom: 1px solid #374151;
+}
+
+.agent-config-tabs button {
+  flex: 1;
+  padding: 14px;
+  background: transparent;
+  border: none;
+  color: #9ca3af;
+  cursor: pointer;
+  border-bottom: 2px solid transparent;
+}
+
+.agent-config-tabs button.active {
+  color: #60a5fa;
+  border-bottom-color: #60a5fa;
+}
+
+.agent-config-content {
+  flex: 1;
+  overflow-y: auto;
+  padding: 20px;
+}
+
+.config-section {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.form-group {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.form-group label {
+  color: #d1d5db;
+  font-size: 0.875rem;
+  font-weight: 500;
+}
+
+.form-group input[type="text"],
+.form-group input[type="number"],
+.form-group select,
+.form-group textarea {
+  padding: 10px 12px;
+  background: #1f2937;
+  border: 1px solid #374151;
+  border-radius: 6px;
+  color: #f3f4f6;
+  font-size: 0.9rem;
+}
+
+.form-group textarea {
+  resize: vertical;
+  font-family: inherit;
+}
+
+.form-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+
+.tools-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
+  padding: 12px;
+  background: #1f2937;
+  border: 1px solid #374151;
+  border-radius: 6px;
+}
+
+.tool-checkbox {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: #d1d5db;
+  font-size: 0.85rem;
+}
+
+.highlight {
+  padding: 16px;
+  background: rgba(96, 165, 250, 0.1);
+  border: 1px solid rgba(96, 165, 250, 0.3);
+  border-radius: 8px;
+}
+
+.instance-control {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  margin-top: 8px;
+}
+
+.instance-control button {
+  width: 36px;
+  height: 36px;
+  background: #374151;
+  border: none;
+  border-radius: 6px;
+  color: #f3f4f6;
+  font-size: 1.2rem;
+  cursor: pointer;
+}
+
+.instance-count {
+  font-size: 1.5rem;
+  font-weight: 600;
+  color: #60a5fa;
+  min-width: 50px;
+  text-align: center;
+}
+
+.agent-config-footer {
+  padding: 20px;
+  border-top: 1px solid #374151;
+  display: flex;
+  gap: 12px;
+  justify-content: flex-end;
+}
+
+.btn-secondary,
+.btn-primary {
+  padding: 10px 20px;
+  border-radius: 6px;
+  border: none;
+  cursor: pointer;
+  font-weight: 500;
+}
+
+.btn-secondary {
+  background: #374151;
+  color: #d1d5db;
+}
+
+.btn-primary {
+  background: #2563eb;
+  color: white;
+}
+
+.btn-primary:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}

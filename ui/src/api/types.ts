@@ -15,6 +15,10 @@ export interface ModuleInfo {
   name: string;
   version: string;
   metadata?: Record<string, unknown>;
+  status?: 'idle' | 'running' | 'error';
+  config?: AgentConfig;
+  load?: number;
+  errorRate?: number;
 }
 
 export interface ModuleListResponse {
@@ -57,15 +61,134 @@ export interface SessionInfo {
   activeWorkflows: string[];
 }
 
+// ========== Workflow Runtime Types ==========
+
+export type WorkflowStatus = 'planning' | 'executing' | 'completed' | 'failed' | 'partial' | 'paused';
+export type TaskStatus = 'pending' | 'blocked' | 'ready' | 'in_progress' | 'completed' | 'failed' | 'paused';
+export type AgentRuntimeStatus = 'idle' | 'running' | 'error' | 'paused';
+
 export interface WorkflowInfo {
   id: string;
   sessionId: string;
   epicId?: string;
-  status: 'planning' | 'executing' | 'completed' | 'failed' | 'partial';
+  status: WorkflowStatus;
   taskCount: number;
   completedTasks: number;
+  failedTasks: number;
   createdAt: string;
   updatedAt: string;
+  userTask: string;
+}
+
+export interface TaskInfo {
+  id: string;
+  bdTaskId?: string;
+  description: string;
+  status: TaskStatus;
+  assignee?: string;
+  dependencies: string[];
+  result?: {
+    success: boolean;
+    output?: string;
+    error?: string;
+  };
+  startedAt?: string;
+  completedAt?: string;
+}
+
+export interface TaskNode {
+  id: string;
+  bdTaskId?: string;
+  description: string;
+  status: TaskStatus;
+  assignee?: string;
+  dependencies: string[];
+  result?: {
+    success: boolean;
+    output?: string;
+    error?: string;
+  };
+  startedAt?: string;
+  completedAt?: string;
+}
+
+export interface AgentRuntime {
+  id: string;
+  name: string;
+  type: 'executor' | 'reviewer' | 'orchestrator';
+  status: AgentRuntimeStatus;
+  load: number;
+  errorRate: number;
+  requestCount: number;
+  tokenUsage: number;
+  currentTaskId?: string;
+  config?: AgentConfig;
+  instanceCount?: number;
+  version?: string;
+}
+
+export interface AgentConfig {
+  id?: string;
+  name: string;
+  mode: 'auto' | 'manual';
+  provider: 'iflow' | 'openai' | 'anthropic';
+  model?: string;
+  systemPrompt?: string;
+  allowedTools?: string[];
+  disallowedTools?: string[];
+  permissionMode?: 'default' | 'autoEdit' | 'yolo' | 'plan';
+  maxTurns?: number;
+  maxIterations?: number;
+  maxRounds?: number;
+  enableReview?: boolean;
+  cwd?: string;
+  resumeSession?: boolean;
+}
+
+export interface ExecutionStep {
+  round: number;
+  action: string;
+  thought?: string;
+  params?: Record<string, unknown>;
+  observation?: string;
+  success: boolean;
+  timestamp: string;
+  duration?: number;
+}
+
+export interface AgentExecutionDetail {
+  agentId: string;
+  agentName: string;
+  taskId?: string;
+  taskDescription?: string;
+  status: AgentRuntimeStatus;
+  steps: ExecutionStep[];
+  currentRound: number;
+  totalRounds: number;
+  startTime: string;
+  endTime?: string;
+  sessionFilePath?: string;
+}
+
+export interface WorkflowExecutionState {
+  workflowId: string;
+  status: WorkflowStatus;
+  orchestrator: {
+    id: string;
+    currentRound: number;
+    maxRounds: number;
+    thought?: string;
+  };
+  agents: AgentRuntime[];
+  tasks: TaskNode[];
+  executionPath: Array<{
+    from: string;
+    to: string;
+    status: 'active' | 'completed' | 'error' | 'pending';
+    message?: string;
+  }>;
+  paused: boolean;
+  userInput?: string;
 }
 
 export type ProviderType = 'iflow' | 'openai' | 'anthropic' | 'custom';
@@ -78,17 +201,6 @@ export interface ProviderConfig {
   apiKey?: string;
   defaultModel?: string;
   status: 'connected' | 'disconnected' | 'error';
-}
-
-export interface TaskInfo {
-  id: string;
-  bdTaskId?: string;
-  description: string;
-  status: 'pending' | 'blocked' | 'ready' | 'in_progress' | 'completed' | 'failed';
-  assignee?: string;
-  dependencies: string[];
-  result?: unknown;
-  error?: string;
 }
 
 export interface AgentStats {
@@ -104,7 +216,53 @@ export interface AgentStats {
 }
 
 export interface WsMessage {
-  type: 'status' | 'task_update' | 'message' | 'error';
+  type: 'status' | 'task_update' | 'message' | 'error' | 'workflow_update' | 'agent_update' | 'execution_step';
   payload: unknown;
   timestamp: string;
+}
+
+export interface WorkflowUpdatePayload {
+  workflowId: string;
+  status: WorkflowStatus;
+  orchestratorState?: {
+    round: number;
+    thought?: string;
+    action?: string;
+  };
+  taskUpdates?: TaskNode[];
+  agentUpdates?: AgentRuntime[];
+  executionPath?: WorkflowExecutionState['executionPath'];
+}
+
+export interface AgentUpdatePayload {
+  agentId: string;
+  status: AgentRuntimeStatus;
+  currentTaskId?: string;
+  load: number;
+  step?: ExecutionStep;
+}
+
+export interface TaskReport {
+  workflowId: string;
+  epicId?: string;
+  userTask: string;
+  status: WorkflowStatus;
+  summary: {
+    totalTasks: number;
+    completed: number;
+    failed: number;
+    success: boolean;
+    rounds: number;
+    duration: number;
+  };
+  taskDetails: Array<{
+    taskId: string;
+    description: string;
+    status: TaskStatus;
+    assignee?: string;
+    output?: string;
+    error?: string;
+  }>;
+  createdAt: string;
+  completedAt?: string;
 }
