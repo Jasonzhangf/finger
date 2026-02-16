@@ -45,12 +45,24 @@
       "success": true,
       "duration": 0,
       "timestamp": "2026-02-16T15:31:01.796Z"
+    },
+    {
+      "round": 3,
+      "action": "DISPATCH",
+      "thought": "历史进度：Round 1 已规划 3 个子任务，Round 2 任务 1（package.json）已派发并执行成功。当前轮次 3，需要继续派发任务 2：创建 src/index.js 主入口文件。",
+      "params": {
+        "taskId": "2"
+      },
+      "observation": "任务 2 已派发并执行成功",
+      "success": true,
+      "duration": 0,
+      "timestamp": "2026-02-16T15:32:18.158Z"
     }
   ],
-  "totalRounds": 2,
+  "totalRounds": 3,
   "stats": {
-    "totalActions": 2,
-    "successActions": 2,
+    "totalActions": 3,
+    "successActions": 3,
     "failedActions": 0,
     "rejectedActions": 0,
     "avgDurationPerRound": 0

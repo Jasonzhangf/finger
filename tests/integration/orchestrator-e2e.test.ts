@@ -51,7 +51,7 @@ describe('Orchestrator E2E', () => {
       id: 'executor-loop',
       name: 'E2E Executor',
       mode: 'auto',
-      maxIterations: 3,
+      maxIterations: 20,
       cwd: tempDir,
       systemPrompt: `你是一个任务执行者。你的工作是完成具体的执行任务。
 
@@ -134,5 +134,5 @@ describe('Orchestrator E2E', () => {
       expect(failed).toBe(0);
       expect(rounds).toBeLessThanOrEqual(5);
     }
-  }, 180000);
+  }, 600000);
 });

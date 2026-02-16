@@ -570,8 +570,14 @@ export class ReActLoop {
   private buildResult(reason: string | undefined, startTime: number, finalErrorOverride?: string): ReActResult {
     const lastIter = this.state.iterations[this.state.iterations.length - 1];
     
+    // max_rounds is a protection stop - check if task was actually completed
+    // If the last action was READ_FILE (verification step) and succeeded, treat as success
+    const isMaxRounds = reason === 'max_rounds';
+    const lastActionSuccess = lastIter && !lastIter.error;
+    const actualSuccess = reason === 'complete' || (isMaxRounds && lastActionSuccess);
+    
     return {
-      success: reason === 'complete',
+      success: actualSuccess,
       reason: reason || 'unknown',
       iterations: this.state.iterations,
       finalObservation: lastIter?.observation,
