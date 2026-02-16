@@ -1,0 +1,11 @@
+{
+  "timestamp": "2026-02-16T00:54:29.664Z",
+  "iteration": 0,
+  "phase": "start",
+  "input": {
+    "taskId": "replay-1",
+    "description": "请直接返回 JSON：{\"thought\":\"ok\",\"action\":\"COMPLETE\",\"params\":{\"output\":\"done\"}}"
+  },
+  "output": null,
+  "agentId": "executor-loop"
+}

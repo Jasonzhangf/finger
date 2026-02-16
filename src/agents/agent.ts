@@ -100,9 +100,14 @@ export class Agent {
   }
 
   private async ensureConnected(): Promise<void> {
-    if (this.status.connected) {
+    // Check actual connection state from client
+    const isActuallyConnected = this.client.isConnected?.() ?? false;
+    if (isActuallyConnected) {
+      this.status.connected = true;
       return;
     }
+    
+    console.log(`[Agent ${this.config.id}] Not connected, initializing...`);
     await this.initialize();
   }
 
@@ -130,16 +135,32 @@ export class Agent {
     try {
       await this.ensureConnected();
 
+      const runAuto = async () => this.interactive.interact(
+        task,
+        {
+          ...callbacks,
+          onPlan: callbacks?.onPlan ?? (async () => true),
+          onPermission: callbacks?.onPermission ?? (async () => 'allow'),
+        },
+        files
+      );
+
+      const runManual = async () => this.interactive.interact(task, callbacks, files);
+
       if (this.config.mode === 'auto') {
-        const result = await this.interactive.interact(
-          task,
-          {
-            ...callbacks,
-            onPlan: callbacks?.onPlan ?? (async () => true),
-            onPermission: callbacks?.onPermission ?? (async () => 'allow'),
-          },
-          files
-        );
+        let result;
+        try {
+          result = await runAuto();
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
+          if (!message.includes('Not connected')) {
+            throw err;
+          }
+
+          this.status.connected = false;
+          await this.initialize();
+          result = await runAuto();
+        }
 
         return {
           success: true,
@@ -152,7 +173,19 @@ export class Agent {
         throw new Error('Manual mode requires callbacks');
       }
 
-      const result = await this.interactive.interact(task, callbacks, files);
+      let result;
+      try {
+        result = await runManual();
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        if (!message.includes('Not connected')) {
+          throw err;
+        }
+
+        this.status.connected = false;
+        await this.initialize();
+        result = await runManual();
+      }
 
       return {
         success: true,

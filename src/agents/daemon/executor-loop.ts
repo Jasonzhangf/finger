@@ -127,6 +127,9 @@ ${state.observations.length > 0 ? state.observations.map((o, i) => `${i + 1}. ${
       
       let decision;
       try {
+        const agentStatus = agent.getStatus();
+        console.log(`[ExecutorLoop ${config.id}] Agent status before execute: connected=${agentStatus.connected}, running=${agentStatus.running}`);
+        
         decision = await agent.execute(statePrompt, {
           onAssistantChunk: (chunk) => process.stdout.write(chunk),
         });
