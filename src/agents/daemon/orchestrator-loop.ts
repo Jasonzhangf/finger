@@ -4,22 +4,16 @@
 
 import { Agent } from '../agent.js';
 import { BdTools } from '../shared/bd-tools.js';
+import { createSnapshotLogger, SnapshotLogger } from '../shared/snapshot-logger.js';
 import { MessageHub } from '../../orchestration/message-hub.js';
 import type { OutputModule } from '../../orchestration/module-registry.js';
-
-export interface TaskResult {
-  taskId: string;
-  success: boolean;
-  output?: string;
-  error?: string;
-}
 
 export interface TaskNode {
   id: string;
   description: string;
   status: 'pending' | 'ready' | 'in_progress' | 'completed' | 'failed';
   assignee?: string;
-  result?: TaskResult;
+  result?: { taskId: string; success: boolean; output?: string; error?: string };
   bdTaskId?: string;
 }
 
@@ -45,8 +39,22 @@ export function createOrchestratorLoop(
   config: OrchestratorLoopConfig,
   hub: MessageHub
 ): { agent: Agent; module: OutputModule } {
-  
-  const systemPrompt = config.systemPrompt ?? `你是一个任务编排专家...`;
+  const systemPrompt = config.systemPrompt ?? `
+你是一个任务编排专家。
+
+## 可用行动
+
+- PLAN: 拆解任务，返回 JSON 数组 [{ "id": "task-1", "description": "描述" }]
+- COMPLETE: 任务完成，输出结果
+- FAIL: 任务失败
+
+## 输出格式（必须严格遵循）
+
+只输出 JSON：
+{"thought": "分析", "action": "PLAN|COMPLETE|FAIL", "output": "结果说明"}
+
+示例：
+{"thought": "需要创建文件", "action": "PLAN", "output": "拆解为子任务"}`;
 
   const agent = new Agent({
     id: config.id,
@@ -59,26 +67,26 @@ export function createOrchestratorLoop(
   });
 
   const bdTools = new BdTools(config.cwd);
+  const logger: SnapshotLogger = createSnapshotLogger(config.id);
   let initialized = false;
 
   function buildStatePrompt(state: OrchestrationState): string {
-    return `
-## 当前编排状态
+    return `## 当前状态
 阶段: ${state.phase}
 回合: ${state.round}/${config.maxRounds ?? 10}
 
-任务图谱:
-${state.taskGraph.map((t: TaskNode) => 
-  `- ${t.id}: ${t.description} [${t.status}]${t.assignee ? ` @${t.assignee}` : ''}${t.result ? ` → ${t.result.success ? '✓' : '✗'}` : ''}`
-).join('\n')}
+任务列表:
+${state.taskGraph.length > 0 
+  ? state.taskGraph.map((t: TaskNode) => `- ${t.id}: ${t.description} [${t.status}]`).join('\n')
+  : '暂无'}
 
 已完成: ${state.completedTasks.join(', ') || '无'}
 失败: ${state.failedTasks.join(', ') || '无'}
 
-## 用户原始任务
+## 用户任务
 ${state.userTask}
 
-请返回 JSON 格式的决策。`;
+请立即输出 JSON 格式的决策（只输出 JSON）：`;
   }
 
   async function reactLoop(userTask: string): Promise<unknown> {
@@ -91,55 +99,101 @@ ${state.userTask}
       round: 0,
     };
 
+    const startTime = Date.now();
+    console.log(`[OrchestratorLoop ${config.id}] Starting: ${userTask.substring(0, 50)}...`);
+
+    logger.log({
+      timestamp: new Date().toISOString(),
+      iteration: 0,
+      phase: 'start',
+      input: { userTask },
+      output: null,
+    });
+
     const epic = await bdTools.createTask({
-      title: userTask,
+      title: userTask.substring(0, 100),
       type: 'epic',
       priority: 0,
       labels: ['orchestration', 'react-loop'],
     });
 
-    await bdTools.addComment(epic.id, `[Orchestrator] 启动 ReACT 循环`);
+    await bdTools.addComment(epic.id, `[OrchestratorLoop] 启动`);
 
     const maxRounds = config.maxRounds ?? 10;
 
     while (state.round < maxRounds) {
       state.round++;
-      
+      const iterStart = Date.now();
+
+      // THOUGHT
       const statePrompt = buildStatePrompt(state);
-      
+      console.log(`[OrchestratorLoop ${config.id}] Round ${state.round}: ${state.phase}`);
+
       const decision = await agent.execute(statePrompt, {
         onAssistantChunk: (chunk) => process.stdout.write(chunk),
       });
 
       if (!decision.success) {
+        console.error(`[OrchestratorLoop ${config.id}] Decision failed:`, decision.error);
         state.phase = 'failed';
+        logger.log({
+          timestamp: new Date().toISOString(),
+          iteration: state.round,
+          phase: 'decision_failed',
+          input: statePrompt,
+          output: decision,
+          error: decision.error,
+        });
         break;
       }
 
-      let action: { thought: string; action: string; taskId?: string; assignee?: string; output?: string };
+      logger.log({
+        timestamp: new Date().toISOString(),
+        iteration: state.round,
+        phase: 'thought',
+        input: statePrompt,
+        output: decision.output,
+        duration: Date.now() - iterStart,
+      });
+
+      // Parse action
+      let action: { thought: string; action: string; output?: string };
       try {
         const jsonMatch = decision.output.match(/\{[\s\S]*\}/);
-        action = jsonMatch ? JSON.parse(jsonMatch[0]) : { action: 'FAIL', thought: 'Parse error' };
-      } catch {
-        action = { action: 'FAIL', thought: 'Invalid JSON response' };
+        if (!jsonMatch) throw new Error('No JSON in response');
+        action = JSON.parse(jsonMatch[0]);
+        console.log(`[OrchestratorLoop ${config.id}] Action: ${action.action}`);
+      } catch (e) {
+        console.error(`[OrchestratorLoop ${config.id}] Parse error:`, e);
+        console.error(`[OrchestratorLoop ${config.id}] Raw:`, decision.output.substring(0, 500));
+        action = { action: 'FAIL', thought: 'Parse error' };
       }
 
-      console.log(`[Orchestrator] Action: ${action.action}`);
-      await bdTools.addComment(epic.id, `[Round ${state.round}] ${action.action}: ${action.thought}`);
-
+      // ACTION
       switch (action.action) {
         case 'PLAN': {
-          const plan = await agent.execute(`拆解任务: ${userTask}`);
+          const planPrompt = `拆解任务: ${userTask}\n\n返回 JSON 数组: [{"id": "task-1", "description": "描述"}]`;
+          const plan = await agent.execute(planPrompt);
+          
+          logger.log({
+            timestamp: new Date().toISOString(),
+            iteration: state.round,
+            phase: 'plan',
+            input: planPrompt,
+            output: plan.output,
+          });
+
           if (plan.success) {
             try {
-              const tasks = JSON.parse(plan.output.match(/\[[\s\S]*\]/)?.[0] || '[]');
+              const jsonMatch = plan.output.match(/\[[\s\S]*\]/);
+              const tasks = jsonMatch ? JSON.parse(jsonMatch[0]) : [];
               state.taskGraph = tasks.map((t: { id: string; description: string }) => ({
                 id: t.id,
                 description: t.description,
                 status: 'ready' as const,
               }));
               state.phase = 'executing';
-              
+
               for (const task of state.taskGraph) {
                 const bdTask = await bdTools.createTask({
                   title: task.description,
@@ -149,42 +203,10 @@ ${state.userTask}
                 });
                 task.bdTaskId = bdTask.id;
               }
+
+              await bdTools.addComment(epic.id, `拆解完成: ${state.taskGraph.length} 个任务`);
             } catch (e) {
-              console.error('[Orchestrator] Plan parse error:', e);
-            }
-          }
-          break;
-        }
-
-        case 'DISPATCH': {
-          const task = state.taskGraph.find((t: TaskNode) => t.id === action.taskId);
-          if (task && task.status === 'ready') {
-            task.status = 'in_progress';
-            task.assignee = action.assignee || 'executor-loop';
-            
-            await bdTools.updateStatus(task.bdTaskId!, 'in_progress');
-            
-            const result = await hub.sendToModule(task.assignee, {
-              taskId: task.id,
-              description: task.description,
-              bdTaskId: task.bdTaskId,
-            });
-
-            task.result = {
-              taskId: task.id,
-              success: result.success !== false,
-              output: result.output || result.result,
-              error: result.error,
-            };
-
-            if (task.result.success) {
-              task.status = 'completed';
-              state.completedTasks.push(task.id);
-              await bdTools.closeTask(task.bdTaskId!, '执行成功', [{ type: 'result', content: task.result.output }]);
-            } else {
-              task.status = 'failed';
-              state.failedTasks.push(task.id);
-              await bdTools.updateStatus(task.bdTaskId!, 'blocked');
+              console.error(`[OrchestratorLoop ${config.id}] Plan parse error:`, e);
             }
           }
           break;
@@ -192,38 +214,91 @@ ${state.userTask}
 
         case 'COMPLETE': {
           state.phase = 'completed';
-          await bdTools.closeTask(epic.id, '所有任务完成');
-          return { success: true, epicId: epic.id, completed: state.completedTasks.length, failed: state.failedTasks.length, rounds: state.round, output: action.output };
+          await bdTools.closeTask(epic.id, '完成');
+          
+          logger.log({
+            timestamp: new Date().toISOString(),
+            iteration: state.round,
+            phase: 'complete',
+            input: null,
+            output: action.output,
+            duration: Date.now() - startTime,
+          });
+
+          return {
+            success: true,
+            epicId: epic.id,
+            completed: state.completedTasks.length,
+            failed: state.failedTasks.length,
+            rounds: state.round,
+            output: action.output,
+          };
         }
 
         case 'FAIL': {
           state.phase = 'failed';
-          await bdTools.closeTask(epic.id, '编排失败');
+          await bdTools.closeTask(epic.id, '失败');
           return { success: false, epicId: epic.id, error: action.thought, rounds: state.round };
         }
       }
 
-      // 自动派发 ready 任务
+      // Auto-dispatch ready tasks
       const readyTask = state.taskGraph.find((t: TaskNode) => t.status === 'ready');
-      if (readyTask && action.action !== 'DISPATCH') {
+      if (readyTask) {
         readyTask.status = 'in_progress';
         readyTask.assignee = 'executor-loop';
-        const result = await hub.sendToModule('executor-loop', { taskId: readyTask.id, description: readyTask.description });
-        readyTask.result = { taskId: readyTask.id, success: result.success !== false, output: result.output || result.result, error: result.error };
-        readyTask.status = readyTask.result.success ? 'completed' : 'failed';
-        if (readyTask.result.success) state.completedTasks.push(readyTask.id);
-        else state.failedTasks.push(readyTask.id);
+
+        console.log(`[OrchestratorLoop ${config.id}] Dispatching: ${readyTask.id}`);
+        
+        const result = await hub.sendToModule('executor-loop', {
+          taskId: readyTask.id,
+          description: readyTask.description,
+          bdTaskId: readyTask.bdTaskId,
+        });
+
+        readyTask.result = {
+          taskId: readyTask.id,
+          success: result.success !== false,
+          output: result.output || result.result,
+          error: result.error,
+        };
+
+        logger.log({
+          timestamp: new Date().toISOString(),
+          iteration: state.round,
+          phase: 'dispatch',
+          input: { taskId: readyTask.id, description: readyTask.description },
+          output: readyTask.result,
+        });
+
+        if (readyTask.result.success) {
+          readyTask.status = 'completed';
+          state.completedTasks.push(readyTask.id);
+        } else {
+          readyTask.status = 'failed';
+          state.failedTasks.push(readyTask.id);
+        }
       }
 
-      const allDone = state.taskGraph.length > 0 && state.taskGraph.every((t: TaskNode) => t.status === 'completed' || t.status === 'failed');
-      if (allDone && state.failedTasks.length === 0) {
-        state.phase = 'completed';
-        await bdTools.closeTask(epic.id, '所有任务完成');
-        return { success: true, epicId: epic.id, completed: state.completedTasks.length, failed: 0, rounds: state.round };
+      // Check completion
+      const allDone = state.taskGraph.length > 0 &&
+        state.taskGraph.every((t: TaskNode) => t.status === 'completed' || t.status === 'failed');
+
+      if (allDone) {
+        state.phase = state.failedTasks.length === 0 ? 'completed' : 'failed';
+        await bdTools.closeTask(epic.id, state.phase === 'completed' ? '所有任务完成' : '部分任务失败');
+        
+        return {
+          success: state.failedTasks.length === 0,
+          epicId: epic.id,
+          completed: state.completedTasks.length,
+          failed: state.failedTasks.length,
+          rounds: state.round,
+        };
       }
     }
 
-    return { success: false, epicId: epic.id, error: 'Exceeded maximum rounds', rounds: state.round };
+    return { success: false, epicId: epic.id, error: 'Exceeded max rounds', rounds: state.round };
   }
 
   const module: OutputModule = {
@@ -255,7 +330,7 @@ ${state.userTask}
       const userTask = String(msg.content ?? msg.task ?? msg.text ?? '');
 
       if (!userTask) {
-        const error = { success: false, error: 'No task content provided' };
+        const error = { success: false, error: 'No task content' };
         if (callback) callback(error);
         return error;
       }

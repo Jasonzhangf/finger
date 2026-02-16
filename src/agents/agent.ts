@@ -99,6 +99,13 @@ export class Agent {
     return { ...this.status };
   }
 
+  private async ensureConnected(): Promise<void> {
+    if (this.status.connected) {
+      return;
+    }
+    await this.initialize();
+  }
+
   /** 获取当前状态 */
   getStatus(): AgentStatus {
     return { ...this.status };
@@ -121,6 +128,8 @@ export class Agent {
     this.status.running = true;
 
     try {
+      await this.ensureConnected();
+
       if (this.config.mode === 'auto') {
         const result = await this.interactive.interact(
           task,
@@ -132,7 +141,6 @@ export class Agent {
           files
         );
 
-        this.status.running = false;
         return {
           success: true,
           output: result.finalOutput,
@@ -146,19 +154,20 @@ export class Agent {
 
       const result = await this.interactive.interact(task, callbacks, files);
 
-      this.status.running = false;
       return {
         success: true,
         output: result.finalOutput,
         stopReason: result.stopReason,
       };
     } catch (err) {
-      this.status.running = false;
+      this.status.connected = false;
       return {
         success: false,
         output: '',
         error: err instanceof Error ? err.message : String(err),
       };
+    } finally {
+      this.status.running = false;
     }
   }
 

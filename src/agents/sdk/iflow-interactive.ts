@@ -51,8 +51,8 @@ export class IflowInteractiveAgent {
   ): Promise<{ stopReason?: string; finalOutput: string }> {
     if (this.isRunning) throw new Error('Agent is already in an interaction loop');
     
-    // Ensure connection before interacting
-    await this.client.connect({ skipSession: true });
+    // Connection should already be established by initialize()
+    // If not connected, the client will handle reconnection internally
     this.isRunning = true;
 
     let finalOutput = '';

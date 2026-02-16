@@ -1,15 +1,10 @@
 /**
  * 执行者 ReACT 循环 - 最小闭环实现
- * 
- * 流程：
- * 1. Thought: 分析任务要求，制定执行计划
- * 2. Action: 执行具体操作（文件、命令等）
- * 3. Observation: 获取执行结果
- * 4. 循环直到任务完成
  */
 
 import { Agent } from '../agent.js';
 import { BdTools } from '../shared/bd-tools.js';
+import { createSnapshotLogger, SnapshotLogger } from '../shared/snapshot-logger.js';
 import type { OutputModule } from '../../orchestration/module-registry.js';
 
 export interface ExecutorLoopConfig {
@@ -31,62 +26,51 @@ export interface ExecutionState {
   error?: string;
 }
 
-/**
- * 创建带 ReACT 循环的执行者模块
- */
-export function createExecutorLoop(
-  config: ExecutorLoopConfig
-): { agent: Agent; module: OutputModule } {
-  
+export function createExecutorLoop(config: ExecutorLoopConfig): { agent: Agent; module: OutputModule } {
   const systemPrompt = config.systemPrompt ?? `
 你是一个任务执行者。你的工作是完成具体的执行任务。
 
 ## ReACT 循环
 
 每次循环你需要：
-1. **Thought**: 分析任务和已有观察，决定下一步行动
-2. **Action**: 执行具体操作
-3. **Observation**: 获取结果，更新认知
+1. Thought: 分析任务和已有观察，决定下一步行动
+2. Action: 执行具体操作
+3. Observation: 获取结果
 
 ## 可用行动
 
-- WRITE_FILE: 创建或修改文件
-- READ_FILE: 读取文件内容
-- RUN_COMMAND: 执行命令
-- COMPLETE: 任务完成，返回结果
-- FAIL: 任务失败，说明原因
+- WRITE_FILE: 创建文件，参数 { path: "文件路径", content: "内容" }
+- COMPLETE: 任务完成，参数 { output: "完成说明" }
+- FAIL: 任务失败，参数 { reason: "失败原因" }
 
-## 输出格式
+## 输出格式（必须严格遵循）
 
-返回 JSON：
-{
-  "thought": "分析和决策",
-  "action": "WRITE_FILE|READ_FILE|RUN_COMMAND|COMPLETE|FAIL",
-  "params": { "path": "文件路径", "content": "内容" },
-  "output": "最终输出（COMPLETE时）"
-}`;
+只输出 JSON，不要其他文字：
+{"thought": "分析", "action": "WRITE_FILE|COMPLETE|FAIL", "params": {"path": "xxx", "content": "xxx"}}
 
-  const agentConfig = {
+示例：
+{"thought": "需要创建文件", "action": "WRITE_FILE", "params": {"path": "/tmp/test.txt", "content": "Hello"}}
+{"thought": "任务完成", "action": "COMPLETE", "params": {"output": "文件已创建"}}`;
+
+  const agent = new Agent({
     id: config.id,
     name: config.name,
     mode: config.mode,
-    provider: 'iflow' as const,
+    provider: 'iflow',
     systemPrompt,
     cwd: config.cwd,
-    resumeSession: false, // 每个任务新会话
-  };
+    resumeSession: false,
+  });
 
-  const agent = new Agent(agentConfig);
   const bdTools = new BdTools(config.cwd);
+  const logger: SnapshotLogger = createSnapshotLogger(config.id);
   let initialized = false;
 
-  // ReACT 循环核心
   async function reactLoop(
     taskId: string,
     description: string,
     bdTaskId?: string
   ): Promise<{ success: boolean; output?: string; error?: string }> {
-    
     const state: ExecutionState = {
       taskId,
       description,
@@ -96,14 +80,39 @@ export function createExecutorLoop(
     };
 
     const maxIterations = config.maxIterations ?? 5;
+    const startTime = Date.now();
+
+    console.log(`[ExecutorLoop ${config.id}] Starting task: ${taskId}`);
+    
+    // Ensure agent is initialized before executing
+    if (!initialized) {
+      console.log(`[ExecutorLoop ${config.id}] Initializing agent...`);
+      try {
+        const status = await agent.initialize();
+        console.log(`[ExecutorLoop ${config.id}] Agent initialized, connected: ${status.connected}`);
+        initialized = true;
+      } catch (initErr) {
+        const errorMsg = initErr instanceof Error ? initErr.message : String(initErr);
+        console.error(`[ExecutorLoop ${config.id}] Failed to initialize agent:`, errorMsg);
+        return { success: false, error: `Agent initialization failed: ${errorMsg}` };
+      }
+    }
+
+    logger.log({
+      timestamp: new Date().toISOString(),
+      iteration: 0,
+      phase: 'start',
+      input: { taskId, description, bdTaskId },
+      output: null,
+    });
 
     while (state.iteration < maxIterations) {
       state.iteration++;
       state.status = 'thinking';
+      const iterStart = Date.now();
 
-      // === THOUGHT ===
-      const statePrompt = `
-## 任务
+      // THOUGHT
+      const statePrompt = `## 任务
 ${description}
 
 ## 已有观察
@@ -112,36 +121,86 @@ ${state.observations.length > 0 ? state.observations.map((o, i) => `${i + 1}. ${
 ## 当前状态
 回合: ${state.iteration}/${maxIterations}
 
-请返回 JSON 格式的决策。`;
+请立即输出 JSON 格式的决策（只输出 JSON，不要其他文字）：`;
 
-      const decision = await agent.execute(statePrompt, {
-        onAssistantChunk: (chunk) => process.stdout.write(chunk),
-      });
+      console.log(`[ExecutorLoop ${config.id}] Round ${state.iteration}: thinking...`);
+      
+      let decision;
+      try {
+        decision = await agent.execute(statePrompt, {
+          onAssistantChunk: (chunk) => process.stdout.write(chunk),
+        });
+      } catch (execErr) {
+        const errorMsg = execErr instanceof Error ? execErr.message : String(execErr);
+        console.error(`[ExecutorLoop ${config.id}] Execute error:`, errorMsg);
+        
+        // Try to reinitialize and retry once
+        console.log(`[ExecutorLoop ${config.id}] Attempting to reinitialize...`);
+        try {
+          await agent.initialize();
+          decision = await agent.execute(statePrompt);
+        } catch (retryErr) {
+          return { success: false, error: `Execution failed after retry: ${retryErr}` };
+        }
+      }
+
+      const thoughtDuration = Date.now() - iterStart;
 
       if (!decision.success) {
+        console.error(`[ExecutorLoop ${config.id}] Decision failed:`, decision.error);
         state.status = 'failed';
         state.error = decision.error;
+        
+        logger.log({
+          timestamp: new Date().toISOString(),
+          iteration: state.iteration,
+          phase: 'decision_failed',
+          input: statePrompt,
+          output: decision,
+          duration: thoughtDuration,
+          error: decision.error,
+        });
         break;
       }
 
-      // 解析决策
-      let action: {
-        thought: string;
-        action: string;
-        params?: Record<string, string>;
-        output?: string;
-      };
+      // Log AI response
+      logger.log({
+        timestamp: new Date().toISOString(),
+        iteration: state.iteration,
+        phase: 'thought',
+        input: statePrompt,
+        output: decision.output,
+        duration: thoughtDuration,
+      });
 
+      // Parse action
+      let action: { thought: string; action: string; params?: Record<string, string> };
       try {
         const jsonMatch = decision.output.match(/\{[\s\S]*\}/);
-        action = jsonMatch ? JSON.parse(jsonMatch[0]) : { action: 'FAIL', thought: 'Parse error' };
-      } catch {
-        action = { action: 'FAIL', thought: 'Invalid JSON' };
+        if (!jsonMatch) {
+          throw new Error('No JSON found in response');
+        }
+        action = JSON.parse(jsonMatch[0]);
+        console.log(`[ExecutorLoop ${config.id}] Round ${state.iteration}: action=${action.action}`);
+      } catch (parseError) {
+        const errorMsg = parseError instanceof Error ? parseError.message : 'Parse error';
+        console.error(`[ExecutorLoop ${config.id}] Parse error:`, errorMsg);
+        console.error(`[ExecutorLoop ${config.id}] Raw output:`, decision.output.substring(0, 500));
+        
+        logger.log({
+          timestamp: new Date().toISOString(),
+          iteration: state.iteration,
+          phase: 'parse_error',
+          input: decision.output,
+          output: null,
+          error: errorMsg,
+        });
+        
+        // Try to continue with FAIL action
+        action = { action: 'FAIL', thought: `Parse error: ${errorMsg}`, params: { reason: errorMsg } };
       }
 
-      console.log(`[Executor ${config.id}] Round ${state.iteration}: ${action.action}`);
-
-      // === ACTION ===
+      // ACTION
       state.status = 'acting';
 
       switch (action.action) {
@@ -150,91 +209,100 @@ ${state.observations.length > 0 ? state.observations.map((o, i) => `${i + 1}. ${
             const fs = await import('fs');
             const path = await import('path');
             const filePath = path.resolve(config.cwd || process.cwd(), action.params.path);
-            
+
             try {
               await fs.promises.mkdir(path.dirname(filePath), { recursive: true });
               await fs.promises.writeFile(filePath, action.params.content, 'utf-8');
-              state.observations.push(`文件已创建: ${action.params.path}`);
+              const obs = `文件已创建: ${action.params.path}`;
+              state.observations.push(obs);
+              console.log(`[ExecutorLoop ${config.id}] ${obs}`);
               
               if (bdTaskId) {
-                await bdTools.addComment(bdTaskId, `创建文件: ${action.params.path}`);
+                await bdTools.addComment(bdTaskId, obs);
               }
             } catch (e) {
-              state.observations.push(`文件创建失败: ${e}`);
+              const obs = `文件创建失败: ${e}`;
+              state.observations.push(obs);
+              console.error(`[ExecutorLoop ${config.id}] ${obs}`);
             }
-          }
-          break;
-        }
-
-        case 'READ_FILE': {
-          if (action.params?.path) {
-            const fs = await import('fs');
-            const path = await import('path');
-            const filePath = path.resolve(config.cwd || process.cwd(), action.params.path);
-            
-            try {
-              const content = await fs.promises.readFile(filePath, 'utf-8');
-              state.observations.push(`文件内容:\n${content.substring(0, 1000)}...`);
-            } catch (e) {
-              state.observations.push(`读取失败: ${e}`);
-            }
-          }
-          break;
-        }
-
-        case 'RUN_COMMAND': {
-          if (action.params?.command) {
-            const { exec } = await import('child_process');
-            const result = await new Promise<string>((resolve) => {
-              exec(action.params!.command, { cwd: config.cwd }, (err, stdout, stderr) => {
-                if (err) resolve(`错误: ${stderr || err.message}`);
-                else resolve(stdout || '命令执行成功');
-              });
-            });
-            state.observations.push(`命令输出:\n${result}`);
           }
           break;
         }
 
         case 'COMPLETE': {
           state.status = 'completed';
-          state.result = action.output || action.thought;
-          
+          state.result = action.params?.output || action.thought || 'Task completed';
+
+          logger.log({
+            timestamp: new Date().toISOString(),
+            iteration: state.iteration,
+            phase: 'complete',
+            input: null,
+            output: { result: state.result },
+            duration: Date.now() - startTime,
+          });
+
           if (bdTaskId) {
             await bdTools.closeTask(bdTaskId, '执行完成', [
               { type: 'result', content: state.result },
             ]);
           }
-          
+
+          console.log(`[ExecutorLoop ${config.id}] Task completed: ${state.result}`);
           return { success: true, output: state.result };
         }
 
         case 'FAIL': {
           state.status = 'failed';
-          state.error = action.thought;
-          
+          state.error = action.params?.reason || action.thought || 'Task failed';
+
+          logger.log({
+            timestamp: new Date().toISOString(),
+            iteration: state.iteration,
+            phase: 'fail',
+            input: null,
+            output: { error: state.error },
+            duration: Date.now() - startTime,
+          });
+
           if (bdTaskId) {
             await bdTools.updateStatus(bdTaskId, 'blocked');
-            await bdTools.addComment(bdTaskId, `执行失败: ${action.thought}`);
+            await bdTools.addComment(bdTaskId, `执行失败: ${state.error}`);
           }
-          
+
+          console.log(`[ExecutorLoop ${config.id}] Task failed: ${state.error}`);
           return { success: false, error: state.error };
         }
+
+        default:
+          console.warn(`[ExecutorLoop ${config.id}] Unknown action: ${action.action}`);
+          state.observations.push(`未知行动: ${action.action}`);
       }
 
-      // === OBSERVATION ===
+      // OBSERVATION
       state.status = 'observing';
     }
 
-    // 超出最大迭代
+    // Exceeded iterations
     state.status = 'failed';
-    state.error = 'Exceeded maximum iterations';
-    
+    state.error = `Exceeded maximum iterations (${maxIterations})`;
+
+    logger.log({
+      timestamp: new Date().toISOString(),
+      iteration: state.iteration,
+      phase: 'timeout',
+      input: null,
+      output: { observations: state.observations },
+      duration: Date.now() - startTime,
+      error: state.error,
+    });
+
     if (bdTaskId) {
       await bdTools.updateStatus(bdTaskId, 'blocked');
-      await bdTools.addComment(bdTaskId, `执行超时: 超过最大迭代次数`);
+      await bdTools.addComment(bdTaskId, `执行超时: ${state.error}`);
     }
-    
+
+    console.error(`[ExecutorLoop ${config.id}] ${state.error}`);
     return { success: false, error: state.error };
   }
 
@@ -247,8 +315,15 @@ ${state.observations.length > 0 ? state.observations.map((o, i) => `${i + 1}. ${
 
     initialize: async () => {
       if (initialized) return;
-      await agent.initialize();
-      initialized = true;
+      console.log(`[ExecutorLoop ${config.id}] Initializing...`);
+      try {
+        const status = await agent.initialize();
+        console.log(`[ExecutorLoop ${config.id}] Initialized, connected: ${status.connected}, session: ${status.sessionId}`);
+        initialized = true;
+      } catch (err) {
+        console.error(`[ExecutorLoop ${config.id}] Initialization failed:`, err);
+        throw err;
+      }
     },
 
     destroy: async () => {
@@ -257,11 +332,6 @@ ${state.observations.length > 0 ? state.observations.map((o, i) => `${i + 1}. ${
     },
 
     handle: async (message: unknown, callback?: (result: unknown) => void) => {
-      if (!initialized) {
-        await agent.initialize();
-        initialized = true;
-      }
-
       const msg = message as Record<string, unknown>;
       const taskId = String(msg.taskId || 'task-' + Date.now());
       const description = String(msg.description || msg.content || '');
