@@ -24,6 +24,7 @@ interface UseSessionResumeReturn {
   hasResumeableSession: boolean | null;
   resumeContext: ResumeContext | null;
   error: string | null;
+  isResuming: boolean;
   checkForResumeableSession: (sessionId: string) => Promise<boolean>;
   resumeSession: (sessionId: string, checkpointId?: string) => Promise<ResumeContext | null>;
   createCheckpoint: (sessionId: string, data: {
@@ -36,6 +37,7 @@ interface UseSessionResumeReturn {
 
 export function useSessionResume(): UseSessionResumeReturn {
   const [isChecking, setIsChecking] = useState(false);
+  const [isResuming, setIsResuming] = useState(false);
   const [hasResumeableSession, setHasResumeableSession] = useState<boolean | null>(null);
   const [resumeContext, setResumeContext] = useState<ResumeContext | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -63,7 +65,7 @@ export function useSessionResume(): UseSessionResumeReturn {
   }, []);
 
   const resumeSession = useCallback(async (sessionId: string, checkpointId?: string): Promise<ResumeContext | null> => {
-    setIsChecking(true);
+    setIsResuming(true);
     setError(null);
     try {
       const res = await fetch('/api/v1/session/resume', {
@@ -79,7 +81,7 @@ export function useSessionResume(): UseSessionResumeReturn {
       setError(e instanceof Error ? e.message : 'Resume failed');
       return null;
     } finally {
-      setIsChecking(false);
+      setIsResuming(false);
     }
   }, []);
 
@@ -109,6 +111,7 @@ export function useSessionResume(): UseSessionResumeReturn {
 
   return {
     isChecking,
+    isResuming,
     hasResumeableSession,
     resumeContext,
     error,

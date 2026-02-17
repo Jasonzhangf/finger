@@ -14,6 +14,17 @@ interface RightPanelProps {
   onResume: () => void;
   isPaused: boolean;
   isConnected: boolean;
+  resumePrompt?: {
+    visible: boolean;
+    summary: string;
+    progress: number;
+    pendingCount: number;
+    requireConfirm: boolean;
+    isResuming: boolean;
+    onResumeNow: () => void;
+    onDismiss: () => void;
+    onToggleRequireConfirm: (value: boolean) => void;
+  };
 }
 
 function createPreviewImages(files: FileList | null): RuntimeImage[] {
@@ -37,6 +48,7 @@ export const RightPanel: React.FC<RightPanelProps> = ({
   onResume,
   isPaused,
   isConnected,
+  resumePrompt,
 }) => {
   const [input, setInput] = useState('');
   const [images, setImages] = useState<RuntimeImage[]>([]);
@@ -121,6 +133,30 @@ export const RightPanel: React.FC<RightPanelProps> = ({
       </div>
 
       <div className="chat-section">
+        {resumePrompt?.visible && (
+          <div className="resume-banner">
+            <div className="resume-title">检测到可恢复会话</div>
+            <div className="resume-meta">进度 {resumePrompt.progress}% · 待处理任务 {resumePrompt.pendingCount}</div>
+            <div className="resume-summary">{resumePrompt.summary}</div>
+            <label className="resume-confirm-toggle">
+              <input
+                type="checkbox"
+                checked={resumePrompt.requireConfirm}
+                onChange={(e) => resumePrompt.onToggleRequireConfirm(e.target.checked)}
+              />
+              恢复前需要确认
+            </label>
+            <div className="resume-actions">
+              <button className="resume-btn primary" onClick={resumePrompt.onResumeNow} disabled={resumePrompt.isResuming}>
+                {resumePrompt.isResuming ? '恢复中...' : '继续恢复'}
+              </button>
+              <button className="resume-btn" onClick={resumePrompt.onDismiss}>
+                稍后处理
+              </button>
+            </div>
+          </div>
+        )}
+
         <div className="chat-messages" ref={chatRef}>
           {grouped.length === 0 ? (
             <div className="empty-chat">
