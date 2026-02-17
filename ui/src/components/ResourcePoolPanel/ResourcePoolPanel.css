@@ -1,0 +1,117 @@
+.resource-pool-panel {
+  position: absolute;
+  top: 76px;
+  left: 14px;
+  z-index: 35;
+  width: 300px;
+  max-height: calc(100vh - 140px);
+  overflow: auto;
+  border: 1px solid rgba(148, 163, 184, 0.28);
+  border-radius: 14px;
+  background: rgba(15, 23, 42, 0.86);
+  backdrop-filter: blur(8px);
+  box-shadow: 0 18px 34px rgba(2, 6, 23, 0.45);
+  padding: 12px;
+}
+
+.resource-pool-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 12px;
+}
+
+.resource-pool-header h3 {
+  margin: 0;
+  color: #f8fafc;
+  font-size: 0.9rem;
+  letter-spacing: 0.03em;
+}
+
+.resource-counts {
+  display: flex;
+  gap: 8px;
+  font-size: 0.7rem;
+  color: #bfdbfe;
+}
+
+.resource-section {
+  margin-bottom: 12px;
+}
+
+.resource-section h4 {
+  margin: 0 0 8px;
+  color: #93c5fd;
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.resource-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.resource-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  border-radius: 10px;
+  padding: 8px 10px;
+  border: 1px solid rgba(148, 163, 184, 0.25);
+}
+
+.resource-item.available {
+  background: rgba(37, 99, 235, 0.14);
+}
+
+.resource-item.deployed {
+  background: rgba(16, 185, 129, 0.14);
+}
+
+.resource-info {
+  display: grid;
+  gap: 2px;
+}
+
+.resource-name {
+  color: #f1f5f9;
+  font-size: 0.8rem;
+  font-weight: 600;
+}
+
+.resource-type {
+  color: #cbd5e1;
+  font-size: 0.68rem;
+}
+
+.resource-action {
+  border: 1px solid transparent;
+  border-radius: 8px;
+  padding: 4px 8px;
+  font-size: 0.7rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.resource-action.deploy {
+  background: rgba(59, 130, 246, 0.85);
+  border-color: rgba(96, 165, 250, 0.6);
+  color: #eff6ff;
+}
+
+.resource-action.release {
+  background: rgba(16, 185, 129, 0.85);
+  border-color: rgba(52, 211, 153, 0.65);
+  color: #ecfdf5;
+}
+
+.empty-resource {
+  color: #94a3b8;
+  font-size: 0.72rem;
+  padding: 8px;
+  text-align: center;
+  border: 1px dashed rgba(148, 163, 184, 0.3);
+  border-radius: 8px;
+}
