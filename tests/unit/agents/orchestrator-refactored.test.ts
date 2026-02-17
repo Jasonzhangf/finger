@@ -6,6 +6,14 @@ vi.mock('child_process', () => ({
   exec: vi.fn((_cmd: string, _options: any, callback: any) => {
     callback(null, { stdout: 'finger-200' });
   }),
+  spawn: vi.fn(() => {
+    const mockChild = {
+      stdout: { on: vi.fn((event, cb) => { if (event === 'data') cb('finger-200'); }) },
+      stderr: { on: vi.fn() },
+      on: vi.fn((event, cb) => { if (event === 'close') cb(0); }),
+    };
+    return mockChild;
+  }),
 }));
 
 describe('OrchestratorRoleRefactored', () => {
