@@ -3,3 +3,4 @@ export { TaskDecomposer, type DecomposedTask, type DecompositionResult } from '.
 export { Scheduler, type SchedulingResult } from './scheduler.js';
 export { RecoveryManager, type RecoveryAction } from './recovery-manager.js';
 export { WorkflowEngine, type WorkflowContext, type WorkflowEvent } from './workflow-engine.js';
+export { runAppCLI, type AppCLIOptions } from './cli.js';

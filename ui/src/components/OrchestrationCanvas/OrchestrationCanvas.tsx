@@ -26,7 +26,9 @@ import { ExecutionModal } from '../ExecutionModal/ExecutionModal.js';
 import { RoundDetailModal } from '../RoundDetailModal/RoundDetailModal.js';
 import { AgentConfigPanel } from '../AgentConfigPanel/AgentConfigPanel.js';
 import { TaskReport } from '../TaskReport/TaskReport.js';
+import { ResourcePoolPanel } from '../ResourcePoolPanel/ResourcePoolPanel.js';
 import type { TaskReport as TaskReportType } from '../../api/types.js';
+import { useResourcePool } from '../../hooks/useResourcePool.js';
 
 type AgentNodeData = {
   agent: AgentRuntime;
@@ -147,6 +149,7 @@ export const OrchestrationCanvas = ({
   const [showConfigPanel, setShowConfigPanel] = useState(false);
   const [showTaskReport, setShowTaskReport] = useState(false);
   const [executionDetail, setExecutionDetail] = useState<AgentExecutionDetail | null>(null);
+  const { availableResources, deployedResources, deployResource, releaseResource } = useResourcePool();
 
   const [nodes, setNodes, onNodesChange] = useNodesState<Node>([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
@@ -469,6 +472,19 @@ export const OrchestrationCanvas = ({
             <span className="legend-item legend-error">Error {errorCount}</span>
           </div>
         </div>
+
+        <ResourcePoolPanel
+          availableResources={availableResources.map((r) => ({ id: r.id, name: r.config.name, type: r.id.includes('orchestrator') ? 'orchestrator' : 'executor', status: r.status }))}
+          deployedResources={deployedResources.map((r) => ({ id: r.id, name: r.config.name, type: r.id.includes('orchestrator') ? 'orchestrator' : 'executor', status: r.status }))}
+          hidden={Boolean(executionState && executionState.tasks.length > 0)}
+          onDeploy={(resourceId) => {
+            if (!executionState) return;
+            void deployResource(resourceId, executionState.workflowId, executionState.workflowId);
+          }}
+          onRelease={(resourceId) => {
+            void releaseResource(resourceId);
+          }}
+        />
 
         <ReactFlow
           nodes={nodes}

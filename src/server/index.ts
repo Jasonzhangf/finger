@@ -5,6 +5,9 @@ import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
 import { existsSync, readFileSync } from 'fs';
 import { registry } from '../core/registry.js';
+import { globalEventBus } from '../runtime/event-bus.js';
+import { globalToolRegistry } from '../runtime/tool-registry.js';
+import { RuntimeFacade } from '../runtime/runtime-facade.js';
 import { execSync } from 'child_process';
 import { createServer } from 'net';
 import { WebSocketServer, type WebSocket } from 'ws';
@@ -112,6 +115,7 @@ const hub = new MessageHub();
 const moduleRegistry = new ModuleRegistry(hub);
 const sessionManager = new SessionManager();
 const workflowManager = new WorkflowManager(hub, sessionManager);
+const runtime = new RuntimeFacade(globalEventBus, sessionManager, globalToolRegistry);
 await moduleRegistry.register(echoInput);
 await moduleRegistry.register(echoOutput);
 
@@ -248,15 +252,25 @@ const wsClients: Set<WebSocket> = new Set();
 
 wss.on('connection', (ws) => {
   wsClients.add(ws);
+  globalEventBus.registerWsClient(ws);
   
   ws.on('message', (data) => {
     try {
       const msg = JSON.parse(data.toString());
-      if (msg.type === 'subscribe' && msg.messageId) {
-        // Subscribe to message updates
-        mailbox.subscribe(msg.messageId, (m) => {
-          ws.send(JSON.stringify({ type: 'messageUpdate', message: m }));
-        });
+      if (msg.type === 'subscribe') {
+        if (Array.isArray(msg.events) && msg.events.length > 0) {
+          const unsub = globalEventBus.subscribeMultiple(msg.events, (event) => {
+            if (ws.readyState === 1) {
+              ws.send(JSON.stringify(event));
+            }
+          });
+          ws.on('close', unsub);
+        } else if (msg.messageId) {
+          // Legacy: Subscribe to message updates
+          mailbox.subscribe(msg.messageId, (m) => {
+            ws.send(JSON.stringify({ type: 'messageUpdate', message: m }));
+          });
+        }
       }
     } catch {
       // ignore
@@ -466,6 +480,118 @@ app.delete('/api/v1/sessions/:id', (req, res) => {
     return;
   }
   res.json({ success: true });
+});
+
+// Session messages
+app.get('/api/v1/sessions/:sessionId/messages', (req, res) => {
+  const limit = req.query.limit ? parseInt(req.query.limit as string, 10) : 50;
+  const messages = sessionManager.getMessages(req.params.sessionId, limit);
+  res.json({ success: true, messages });
+});
+
+app.post('/api/v1/sessions/:sessionId/messages', async (req, res) => {
+  const { content, attachments } = req.body;
+  if (!content) {
+    res.status(400).json({ error: 'Missing content' });
+    return;
+  }
+  try {
+    const result = await runtime.sendMessage(req.params.sessionId, content, attachments);
+    res.json({ success: true, messageId: result.messageId });
+  } catch (e) {
+    res.status(400).json({ error: e instanceof Error ? e.message : String(e) });
+  }
+});
+
+// Session pause/resume
+app.post('/api/v1/sessions/:sessionId/pause', (req, res) => {
+  const success = sessionManager.pauseSession(req.params.sessionId);
+  if (!success) {
+    res.status(404).json({ error: 'Session not found' });
+    return;
+  }
+  globalEventBus.emit({
+    type: 'session_paused',
+    sessionId: req.params.sessionId,
+    timestamp: new Date().toISOString(),
+    payload: {},
+  });
+  res.json({ success: true });
+});
+
+app.post('/api/v1/sessions/:sessionId/resume', (req, res) => {
+  const success = sessionManager.resumeSession(req.params.sessionId);
+  if (!success) {
+    res.status(404).json({ error: 'Session not found' });
+    return;
+  }
+  globalEventBus.emit({
+    type: 'session_resumed',
+    sessionId: req.params.sessionId,
+    timestamp: new Date().toISOString(),
+    payload: { messageCount: sessionManager.getMessages(req.params.sessionId).length },
+  });
+  res.json({ success: true });
+});
+
+// Session compress
+app.post('/api/v1/sessions/:sessionId/compress', async (req, res) => {
+  try {
+    const summary = await sessionManager.compressContext(req.params.sessionId);
+    const status = sessionManager.getCompressionStatus(req.params.sessionId);
+    res.json({ success: true, summary, originalCount: status.originalCount });
+  } catch (e) {
+    res.status(400).json({ error: e instanceof Error ? e.message : String(e) });
+  }
+});
+
+// Session context
+app.get('/api/v1/sessions/:sessionId/context', (req, res) => {
+  const context = sessionManager.getFullContext(req.params.sessionId);
+  const status = sessionManager.getCompressionStatus(req.params.sessionId);
+  res.json({
+    success: true,
+    messages: context.messages,
+    compressedSummary: context.compressedSummary,
+    compressed: status.compressed,
+    originalCount: status.originalCount,
+  });
+});
+
+// Tool policy
+app.get('/api/v1/tools', (_req, res) => {
+  const tools = globalToolRegistry.list();
+  res.json({ success: true, tools });
+});
+
+app.put('/api/v1/tools/:name/policy', (req, res) => {
+  const { policy } = req.body;
+  if (policy !== 'allow' && policy !== 'deny') {
+    res.status(400).json({ error: 'Invalid policy. Must be "allow" or "deny"' });
+    return;
+  }
+  const success = globalToolRegistry.setPolicy(req.params.name, policy);
+  if (!success) {
+    res.status(404).json({ error: 'Tool not found' });
+    return;
+  }
+  res.json({ success: true, name: req.params.name, policy });
+});
+
+app.post('/api/v1/tools/register', (req, res) => {
+  const { name, description, inputSchema, handler, policy } = req.body;
+  if (!name || typeof handler !== 'function') {
+    res.status(400).json({ error: 'Missing name or handler' });
+    return;
+  }
+  globalToolRegistry.register({
+    name,
+    description: description || '',
+    inputSchema: inputSchema || {},
+    policy: policy || 'allow',
+    handler,
+  });
+  res.json({ success: true, name, policy: policy || 'allow' });
 });
 
 // ========== Workflow Management API ==========

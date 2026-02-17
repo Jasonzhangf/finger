@@ -13,8 +13,8 @@ export interface SessionInfo {
   id: string;
   name: string;
   projectPath: string;
-  status: 'active' | 'paused' | 'completed' | 'error';
-  messageCount: number;
+  status?: 'active' | 'paused' | 'completed' | 'error';
+  messageCount?: number;
   createdAt: string;
   updatedAt: string;
 }
@@ -30,17 +30,19 @@ export interface ProgressReport {
 
 // 会话管理器接口
 export interface ISessionManager {
-  createSession(projectPath: string, name?: string): Promise<SessionInfo>;
+  createSession(projectPath: string, name?: string): SessionInfo | Promise<SessionInfo>;
   getSession(sessionId: string): SessionInfo | undefined;
   getCurrentSession(): SessionInfo | null;
   setCurrentSession(sessionId: string): boolean;
   listSessions(): SessionInfo[];
-  addMessage(sessionId: string, role: string, content: string, metadata?: { attachments?: Attachment[] }): { id: string; timestamp: string };
+  addMessage(sessionId: string, role: string, content: string, metadata?: { attachments?: Attachment[] }): { id: string; timestamp: string } | null;
   getMessages(sessionId: string, limit?: number): Array<{ id: string; role: string; content: string; timestamp: string }>;
   deleteSession(sessionId: string): boolean;
   pauseSession?(sessionId: string): boolean;
   resumeSession?(sessionId: string): boolean;
-  compressContext?(sessionId: string): Promise<string>;
+  compressContext?(sessionId: string, summarizer?: unknown): Promise<string>;
+  getCompressionStatus?(sessionId: string): { compressed: boolean; summary?: string; originalCount?: number };
+  isPaused?(sessionId: string): boolean;
 }
 
 export class RuntimeFacade {
@@ -64,7 +66,8 @@ export class RuntimeFacade {
    * 创建会话
    */
   async createSession(projectPath: string, name?: string): Promise<SessionInfo> {
-    const session = await this.sessionManager.createSession(projectPath, name);
+    const result = this.sessionManager.createSession(projectPath, name);
+    const session = result instanceof Promise ? await result : result;
     this.currentSessionId = session.id;
 
     this.eventBus.emit({
@@ -140,6 +143,9 @@ export class RuntimeFacade {
     }
 
     const message = this.sessionManager.addMessage(sessionId, 'user', content, { attachments });
+    if (!message) {
+      throw new Error(`Failed to append message to session ${sessionId}`);
+    }
 
     this.eventBus.emit({
       type: 'user_message',
@@ -396,7 +402,7 @@ export class RuntimeFacade {
       throw new Error(`Session not found: ${sessionId}`);
     }
 
-    const originalSize = session.messageCount;
+    const originalSize = session.messageCount ?? 0;
     const summary = await this.sessionManager.compressContext(sessionId);
     const compressedSize = summary.length;
 
