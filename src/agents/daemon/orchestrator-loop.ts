@@ -434,6 +434,12 @@ target.status = 'in_progress';
 
     (loop as unknown as { state: LoopState }).state = loopState;
 
+    // Run initial checkpoint on reentry
+    await registry.execute('CHECKPOINT', { trigger: 'reentry' }, { state: loopState });
+
+    console.log(`[OrchestratorLoop] Initial checkpoint complete, phase=${loopState.phase}`);
+
+
     try {
       const result: ReActResult = await loop.run();
       const allDone = loopState.taskGraph.length > 0 && loopState.taskGraph.every(
