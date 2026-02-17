@@ -8,6 +8,7 @@ import { ReviewerRole } from '../roles/reviewer.js';
 import { BdTools } from '../shared/bd-tools.js';
 import { createSnapshotLogger, SnapshotLogger } from '../shared/snapshot-logger.js';
 import { MessageHub } from '../../orchestration/message-hub.js';
+import { globalEventBus } from '../../runtime/event-bus.js';
 import type { OutputModule } from '../../orchestration/module-registry.js';
 import {
   ActionRegistry,
@@ -39,6 +40,7 @@ export interface OrchestratorLoopConfig {
   maxRounds?: number;
   enableReview?: boolean;
   targetExecutorId?: string;
+  sessionId?: string;
 }
 
 interface LoopState extends ReActState {
