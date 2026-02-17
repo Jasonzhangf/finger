@@ -438,6 +438,34 @@ export class ReActLoop {
       return { valid: false, error: 'params must be an object' };
     }
 
+    // 增强验证：检查 action 名称是否在允许列表中
+    const allowedActions = ['READ_FILE', 'WRITE_FILE', 'SHELL_EXEC', 'WEB_SEARCH', 
+                            'FETCH_URL', 'COMPLETE', 'FAIL', 'PLAN', 'DISPATCH'];
+    if (!allowedActions.includes(p.action)) {
+      return { valid: false, error: `Action ${p.action} not in allowed list` };
+    }
+
+    // 增强验证：检查必需参数是否存在
+    const requiredParams: Record<string, string[]> = {
+      READ_FILE: ['path'],
+      WRITE_FILE: ['path', 'content'],
+      SHELL_EXEC: ['command'],
+      WEB_SEARCH: ['query'],
+      FETCH_URL: ['url'],
+      COMPLETE: ['output'],
+      FAIL: ['reason'],
+      PLAN: ['tasks'],
+      DISPATCH: ['taskId'],
+    };
+
+    const required = requiredParams[p.action];
+    if (required) {
+      const missing = required.filter(key => !(key in p.params));
+      if (missing.length > 0) {
+        return { valid: false, error: `Missing required params for ${p.action}: ${missing.join(', ')}` };
+      }
+    }
+
     return { valid: true };
   }
 

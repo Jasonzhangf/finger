@@ -5,9 +5,13 @@
 
 import * as readline from 'readline';
 import { SessionManager } from '../orchestration/session-manager.js';
+import { MessageHub } from '../orchestration/message-hub.js';
+import { ModuleRegistry } from '../orchestration/module-registry.js';
 import { globalEventBus } from '../runtime/event-bus.js';
 import { globalToolRegistry } from '../runtime/tool-registry.js';
 import { RuntimeFacade } from '../runtime/runtime-facade.js';
+import { createOrchestratorLoop } from '../agents/daemon/orchestrator-loop.js';
+import { createExecutorLoop } from '../agents/daemon/executor-loop.js';
 import type { RuntimeEvent } from '../runtime/events.js';
 
 export interface AppCLIOptions {
@@ -21,6 +25,8 @@ let currentSessionId: string | null = null;
 let sessionManager: SessionManager | null = null;
 let runtime: RuntimeFacade | null = null;
 let rl: readline.Interface | null = null;
+let hub: MessageHub | null = null;
+let moduleRegistry: ModuleRegistry | null = null;
 
 /**
  * 运行 App CLI
@@ -30,7 +36,31 @@ export async function runAppCLI(args: string[]): Promise<void> {
 
   // 初始化
   sessionManager = new SessionManager();
+  hub = new MessageHub();
+  moduleRegistry = new ModuleRegistry(hub);
   runtime = new RuntimeFacade(globalEventBus, sessionManager, globalToolRegistry);
+
+  // 注册 orchestrator-loop 和 executor-loop
+  const { module: orchestratorLoop } = createOrchestratorLoop({
+    id: 'orchestrator-loop',
+    name: 'Orchestrator ReACT Loop',
+    mode: 'auto',
+    cwd: process.cwd(),
+    maxRounds: 10,
+  }, hub);
+  await orchestratorLoop.initialize?.(hub);
+  await moduleRegistry.register(orchestratorLoop);
+
+  const { module: executorLoop } = createExecutorLoop({
+    id: 'executor-loop',
+    name: 'Executor ReACT Loop',
+    mode: 'auto',
+    cwd: process.cwd(),
+    maxIterations: 5,
+  });
+  await moduleRegistry.register(executorLoop);
+
+  console.log('[App] ReACT Loop modules ready: orchestrator-loop, executor-loop');
 
   // 订阅事件打印
   globalEventBus.subscribeAll(printEvent);
@@ -94,13 +124,22 @@ function parseArgs(args: string[]): AppCLIOptions {
  * 执行单个 prompt
  */
 async function executePrompt(prompt: string): Promise<void> {
-  if (!runtime || !currentSessionId) return;
+  if (!runtime || !currentSessionId || !hub) return;
 
   console.log(`\n> ${prompt}\n`);
   await runtime.sendMessage(currentSessionId, prompt);
 
-  // TODO: 调用 Agent 执行
-  console.log('[App] Prompt sent. Waiting for response...');
+  // 通过 MessageHub 发送任务给 orchestrator-loop
+  try {
+    console.log('[App] Sending task to orchestrator-loop...');
+    const result = await hub.sendToModule('orchestrator-loop', {
+      task: prompt,
+      sessionId: currentSessionId,
+    });
+    console.log('[App] Orchestrator result:', result);
+  } catch (err) {
+    console.error('[App] Failed to execute orchestrator:', err);
+  }
 }
 
 /**

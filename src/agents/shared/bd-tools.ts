@@ -2,8 +2,9 @@
  * bd CLI 工具封装 - 为 Agent 系统提供任务管理能力
  */
 
-import { exec } from 'child_process';
+import { spawn } from 'child_process';
 import { promisify } from 'util';
+import { exec } from 'child_process';
 
 const execAsync = promisify(exec);
 
@@ -71,17 +72,51 @@ export class BdTools {
   }
 
   /**
-   * 执行 bd 命令
+   * 执行 bd 命令 - 使用 spawn 避免 shell 解析问题
    */
   private async run(args: string): Promise<string> {
-    const cmd = `bd --no-db ${args}`;
-    try {
-      const { stdout } = await execAsync(cmd, { cwd: this.cwd, maxBuffer: 10 * 1024 * 1024 });
-      return stdout;
-    } catch (err) {
-      const error = err as { stderr?: string; message?: string };
-      throw new Error(`bd command failed: ${error.stderr ?? error.message}`);
-    }
+    return new Promise((resolve, reject) => {
+      // 将 args 字符串拆分为数组，处理引号包裹的参数
+      const argList: string[] = [];
+      const parts = args.match(/(?:[^\s"]+|"[^"]*")+/g) || [];
+      
+      for (const part of parts) {
+        if (part.startsWith('"') && part.endsWith('"')) {
+          // 移除引号，保留内容
+          argList.push(part.slice(1, -1));
+        } else {
+          argList.push(part);
+        }
+      }
+      
+      const child = spawn('bd', ['--no-db', ...argList], {
+        cwd: this.cwd,
+        shell: false, // 不使用 shell，避免转义问题
+      });
+      
+      let stdout = '';
+      let stderr = '';
+      
+      child.stdout?.on('data', (data) => {
+        stdout += data.toString();
+      });
+      
+      child.stderr?.on('data', (data) => {
+        stderr += data.toString();
+      });
+      
+      child.on('close', (code) => {
+        if (code !== 0) {
+          reject(new Error(`bd command failed with code ${code}: ${stderr || stdout}`));
+        } else {
+          resolve(stdout);
+        }
+      });
+      
+      child.on('error', (err) => {
+        reject(new Error(`bd command failed: ${err.message}`));
+      });
+    });
   }
 
   /**
@@ -196,7 +231,7 @@ export class BdTools {
   }
 
   /**
-   * 获取���执行任务（无 blocker 的 open/in_progress）
+   * 获取可执行任务（无 blocker 的 open/in_progress）
    */
   async getReadyTasks(): Promise<BdTask[]> {
     const output = await this.run('ready --json');
