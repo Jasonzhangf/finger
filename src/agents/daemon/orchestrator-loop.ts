@@ -9,6 +9,8 @@ import { BdTools } from '../shared/bd-tools.js';
 import { createSnapshotLogger, SnapshotLogger } from '../shared/snapshot-logger.js';
 import { MessageHub } from '../../orchestration/message-hub.js';
 import { globalEventBus } from '../../runtime/event-bus.js';
+import { runtimeInstructionBus } from '../../orchestration/runtime-instruction-bus.js';
+
 import type { OutputModule } from '../../orchestration/module-registry.js';
 import {
   ActionRegistry,
@@ -43,12 +45,37 @@ export interface OrchestratorLoopConfig {
   sessionId?: string;
 }
 
+type OrchestratorPhase =
+  | 'planning'
+  | 'high_design'
+  | 'detail_design'
+  | 'task_allocation'
+  | 'execution'
+  | 'review'
+  | 'completed'
+  | 'failed';
+
+type CheckpointTrigger = 'reentry' | 'task_failure';
+
+interface CheckpointState {
+  totalChecks: number;
+  lastTrigger?: CheckpointTrigger;
+  lastCheckAt?: string;
+  majorChange: boolean;
+}
+
+
 interface LoopState extends ReActState {
   epicId: string;
   userTask: string;
   taskGraph: TaskNode[];
   completedTasks: string[];
   failedTasks: string[];
+  phase: OrchestratorPhase;
+  blockedTasks: string[];
+  recoveryPointTaskId?: string;
+  lastError?: string;
+  checkpoint: CheckpointState;
   round: number;
   hub: MessageHub;
   targetExecutorId: string;
@@ -329,6 +356,10 @@ target.status = 'in_progress';
       taskGraph: [],
       completedTasks: [],
       failedTasks: [],
+      phase: 'planning',
+      blockedTasks: [],
+      checkpoint: { totalChecks: 0, majorChange: false },
+
       round: 0,
       hub,
       targetExecutorId: config.targetExecutorId || 'executor-loop',
