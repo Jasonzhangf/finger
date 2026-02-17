@@ -291,6 +291,70 @@ target.status = 'in_progress';
     };
 
     registry.register(action);
+
+  // CHECKPOINT action for phase validation and rollback evaluation
+  registry.register({
+    name: 'CHECKPOINT',
+    description: '阶段检查点：评估当前进度，判断是否需要回退或修复',
+    paramsSchema: {
+      trigger: { type: 'string', enum: ['reentry', 'task_failure', 'manual'], default: 'manual' },
+    },
+    handler: async (params, context): Promise<ActionResult> => {
+      const loopContext = context as { state?: LoopState };
+      const state = loopContext.state;
+      if (!state) {
+        return { success: false, observation: 'CHECKPOINT failed: no state' };
+      }
+      const trigger = (params.trigger as CheckpointTrigger) || 'manual';
+      
+      state.checkpoint.totalChecks++;
+      state.checkpoint.lastTrigger = trigger;
+      state.checkpoint.lastCheckAt = new Date().toISOString();
+      
+      console.log(`[OrchestratorLoop] CHECKPOINT #${state.checkpoint.totalChecks} (trigger=${trigger}, phase=${state.phase})`);
+      
+      // Evaluation logic - simplified for now
+      const shouldRollback = state.lastError && 
+                             state.checkpoint.totalChecks > 1 && 
+                             state.failedTasks.length > 0;
+      
+      if (shouldRollback) {
+        const previousPhase = state.phase;
+        state.phase = 'planning';
+        state.checkpoint.majorChange = true;
+        
+        const feedback = `检测到重大变更，从 ${previousPhase} 回退到 planning 阶段`;
+        console.log(`[OrchestratorLoop] ${feedback}`);
+        
+        return {
+          success: true,
+          observation: feedback,
+          shouldStop: true,
+          stopReason: 'escalate',
+        };
+      }
+      
+      if (state.lastError) {
+        runtimeInstructionBus.push(state.epicId, `检查点发现需要修复: ${state.lastError}`);
+        return { success: true, observation: `Checkpoint: issues found, will attempt fix` };
+      }
+      
+      return { success: true, observation: `Checkpoint: phase=${state.phase}, all good` };
+    },
+  });
+
+  // Resume from epic support
+  async function runLoopWithResume(
+    userTask: string,
+    resumeFromEpicId?: string
+  ): Promise<unknown> {
+    if (resumeFromEpicId) {
+      console.log(`[OrchestratorLoop] Resuming from epic ${resumeFromEpicId}`);
+      const tasks = await bdTools.getEpicTasks(resumeFromEpicId);
+      console.log(`[OrchestratorLoop] Found ${tasks.length} existing tasks`);
+    }
+    return runLoop(userTask);
+  }
   }
 
   async function runLoop(userTask: string): Promise<unknown> {
