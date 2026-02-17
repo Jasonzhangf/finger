@@ -1,37 +1,43 @@
-import { useEffect, useRef } from 'react';
+import { useCallback, useRef, useState, useEffect } from 'react';
 import { getWebSocket } from '../api/websocket.js';
 import type { WsMessage } from '../api/types.js';
 
-type MessageHandler = (msg: WsMessage) => void;
-
-export function useWebSocket(onMessage?: MessageHandler): {
-  send: (msg: unknown) => void;
-  isConnected: () => boolean;
-} {
-  const ws = getWebSocket();
-  const unsubscribeRef = useRef<(() => void) | null>(null);
+export function useWebSocket(onMessage: (msg: WsMessage) => void) {
+  const wsRef = useRef(getWebSocket());
+  const [isConnected, setIsConnected] = useState(false);
 
   useEffect(() => {
-    if (!ws.isConnected()) {
-      ws.connect().catch((e) => console.error('[WS] Connection failed:', e));
-    }
-
-    if (onMessage) {
-      unsubscribeRef.current = ws.onMessage(onMessage);
-    }
-
-    return () => {
-      if (unsubscribeRef.current) {
-        unsubscribeRef.current();
+    const ws = wsRef.current;
+    
+    const connect = async () => {
+      try {
+        await ws.connect();
+        setIsConnected(true);
+      } catch (e) {
+        console.error('WebSocket connect error:', e);
+        setIsConnected(false);
       }
     };
-  }, [ws, onMessage]);
 
-  const send = (msg: unknown) => {
-    ws.send(msg);
+    if (!ws.isConnected()) {
+      connect();
+    } else {
+      setIsConnected(true);
+    }
+
+    const unsubscribe = ws.onMessage((msg) => {
+      onMessage(msg);
+    });
+
+    return () => {
+      unsubscribe();
+    };
+  }, [onMessage]);
+
+  return {
+    isConnected: () => isConnected,
+    send: useCallback((msg: unknown) => {
+      wsRef.current.send(msg);
+    }, []),
   };
-
-  const isConnected = () => ws.isConnected();
-
-  return { send, isConnected };
 }

@@ -48,11 +48,16 @@ export function buildPlannerPrompt(params: {
   tools: Array<{ name: string; description: string; params: Record<string, unknown> }>;
   history: string;
   round: number;
+  runtimeInstructions?: string[];
   examples?: string;
 }): string {
   const toolsList = params.tools
     .map(t => `- ${t.name}: ${t.description}\n  参数: ${JSON.stringify(t.params)}`)
     .join('\n');
+
+  const runtimeInstructionSection = params.runtimeInstructions && params.runtimeInstructions.length > 0
+    ? `\n## 运行时新增用户指令（最高优先级）\n\n${params.runtimeInstructions.map((item, idx) => `${idx + 1}. ${item}`).join('\n')}\n\n请优先响应这些新增指令，并在 thought 中说明如何调整当前计划。\n`
+    : '';
 
   return PLANNER_SYSTEM_PROMPT.replace('{{TOOLS}}', toolsList) + `
 
@@ -63,6 +68,8 @@ ${params.task}
 ## 历史记录（最近5轮）
 
 ${params.history || '暂无'}
+
+${runtimeInstructionSection}
 
 ${params.examples ? `## 示例\n${params.examples}\n` : ''}
 

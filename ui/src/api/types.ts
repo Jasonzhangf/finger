@@ -189,8 +189,29 @@ export interface WorkflowExecutionState {
   }>;
   paused: boolean;
   userInput?: string;
+  executionRounds?: ExecutionRound[];
 }
 
+export interface ExecutionRound {
+  roundId: string;
+  timestamp: string;
+  agents: AgentRoundInfo[];
+  edges: RoundEdgeInfo[];
+}
+
+export interface AgentRoundInfo {
+  agentId: string;
+  status: 'idle' | 'running' | 'error' | 'completed';
+  taskId?: string;
+  taskDescription?: string;
+}
+
+export interface RoundEdgeInfo {
+  from: string;
+  to: string;
+  status: 'active' | 'completed' | 'error' | 'pending';
+  message?: string;
+}
 export type ProviderType = 'iflow' | 'openai' | 'anthropic' | 'custom';
 
 export interface ProviderConfig {
@@ -221,6 +242,36 @@ export interface WsMessage {
   timestamp: string;
 }
 
+export interface RuntimeEvent {
+  id: string;
+  role: 'user' | 'agent' | 'system';
+  content: string;
+  timestamp: string;
+  agentId?: string;
+  agentName?: string;
+  kind?: 'thought' | 'action' | 'observation' | 'status';
+  images?: RuntimeImage[];
+}
+
+export interface RuntimeImage {
+  id: string;
+  name: string;
+  url: string;
+}
+
+export interface UserRound {
+  roundId: string;
+  timestamp: string;
+  summary: string;
+  fullText: string;
+  images?: RuntimeImage[];
+}
+
+export interface UserInputPayload {
+  text: string;
+  images?: RuntimeImage[];
+}
+
 export interface WorkflowUpdatePayload {
   workflowId: string;
   status: WorkflowStatus;
@@ -232,6 +283,7 @@ export interface WorkflowUpdatePayload {
   taskUpdates?: TaskNode[];
   agentUpdates?: AgentRuntime[];
   executionPath?: WorkflowExecutionState['executionPath'];
+  userInput?: string;
 }
 
 export interface AgentUpdatePayload {

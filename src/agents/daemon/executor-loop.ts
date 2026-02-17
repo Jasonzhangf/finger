@@ -52,9 +52,45 @@ export function createExecutorLoop(config: ExecutorLoopConfig): { agent: Agent; 
   const logger: SnapshotLogger = createSnapshotLogger(config.id);
   let initialized = false;
   let initPromise: Promise<void> | null = null;
+  let disconnectTimeout: ReturnType<typeof setTimeout> | null = null;
 
   const actionRegistry = new ActionRegistry();
   const actions = createExecutorActions(config.cwd);
+  
+  // 延迟断开机制
+  const scheduleDisconnect = () => {
+    if (disconnectTimeout) {
+      clearTimeout(disconnectTimeout);
+    }
+    disconnectTimeout = setTimeout(async () => {
+      if (initialized) {
+        console.log('[ExecutorLoop] Disconnecting due to inactivity');
+        try {
+          await agent.disconnect();
+        } catch {
+          // ignore
+        }
+        initialized = false;
+        initPromise = null;
+      }
+    }, 60000); // 60秒无活动后断开
+  };
+
+  // 确保已连接（复用现有连接或新建）
+  const ensureConnected = async (): Promise<void> => {
+    if (disconnectTimeout) {
+      clearTimeout(disconnectTimeout);
+    }
+    
+    if (!initialized) {
+      if (!initPromise) {
+        initPromise = agent.initialize().then(() => {
+          initialized = true;
+        });
+      }
+      await initPromise;
+    }
+  };
 
   // 将具体动作逻辑注册到统一注册表，并挂接 bd/observation 同步
   for (const action of actions) {
@@ -88,23 +124,13 @@ export function createExecutorLoop(config: ExecutorLoopConfig): { agent: Agent; 
     actionRegistry.register(action);
   }
 
- async function runTask(
-   taskId: string,
-   description: string,
-   bdTaskId?: string
- ): Promise<{ success: boolean; output?: string; error?: string }> {
-   // Force a fresh session for each dispatched task to avoid context bloat.
-   try { await agent.disconnect(); } catch { /* ignore */ }
-   initialized = false;
-   initPromise = null;
-
-   // Re-initialize agent for this task
-   if (!initPromise) {
-     initPromise = agent.initialize().then(() => {
-       initialized = true;
-     });
-   }
-   await initPromise;
+async function runTask(
+  taskId: string,
+  description: string,
+  bdTaskId?: string
+): Promise<{ success: boolean; output?: string; error?: string }> {
+   // 确保连接（复用或新建）
+   await ensureConnected();
    
    // Verify connection state after initialization
    const status = agent.getStatus();
@@ -181,15 +207,14 @@ export function createExecutorLoop(config: ExecutorLoopConfig): { agent: Agent; 
        output: result.finalObservation,
        error: result.finalError,
      };
-   } finally {
-     try { await agent.disconnect(); } catch { /* ignore */ }
-     initialized = false;
-     initPromise = null;
-     if (reviewer) {
-       await reviewer.disconnect();
-     }
-   }
- }
+  } finally {
+    if (reviewer) {
+      await reviewer.disconnect();
+    }
+    // 调度延迟断开，而非立即断开
+    scheduleDisconnect();
+  }
+}
 
   const module: OutputModule = {
     id: config.id,
@@ -199,16 +224,13 @@ export function createExecutorLoop(config: ExecutorLoopConfig): { agent: Agent; 
     metadata: { mode: config.mode, provider: 'iflow', type: 'executor-loop' },
 
     initialize: async () => {
-      if (initialized) return;
-      if (!initPromise) {
-        initPromise = agent.initialize().then(() => {
-          initialized = true;
-        });
-      }
-      await initPromise;
+      await ensureConnected();
     },
 
     destroy: async () => {
+      if (disconnectTimeout) {
+        clearTimeout(disconnectTimeout);
+      }
       await agent.disconnect();
       initialized = false;
       initPromise = null;

@@ -1,4 +1,5 @@
 import { spawn, ChildProcess } from 'child_process';
+import { lifecycleManager } from '../agents/core/agent-lifecycle.js';
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
@@ -250,6 +251,39 @@ export class AgentPool {
     });
 
     child.unref();
+    
+    // Register with lifecycle manager for proper cleanup
+    lifecycleManager.registerProcess(`agent-${agentId}`, child, 'other', { 
+      type: 'agent-runner', 
+      agentId 
+    });
+
+    // 监听子进程退出，清理状态
+    child.on('exit', (code, signal) => {
+      console.log(`[AgentPool] Agent ${agentId} exited with code ${code}, signal ${signal}`);
+      agent.status = 'stopped';
+      agent.process = null;
+      agent.pid = undefined;
+      
+      // 清理PID文件
+      const pidFile = this.getPidFile(agentId);
+      try {
+        if (fs.existsSync(pidFile)) {
+          fs.unlinkSync(pidFile);
+        }
+      } catch {
+        // ignore
+      }
+    });
+
+    // 监听错误
+    child.on('error', (err) => {
+      console.error(`[AgentPool] Agent ${agentId} error:`, err.message);
+      agent.status = 'error';
+      agent.lastError = err.message;
+      agent.process = null;
+      agent.pid = undefined;
+    });
 
     if (!child.pid) {
       agent.status = 'error';
@@ -297,11 +331,8 @@ export class AgentPool {
       return;
     }
 
-    try {
-      process.kill(pid, 'SIGTERM');
-    } catch {
-      // ignore if already dead
-    }
+    // Use lifecycle manager for proper cleanup
+    lifecycleManager.killProcess(`agent-${agentId}`, 'user-request');
 
     if (fs.existsSync(pidFile)) {
       fs.unlinkSync(pidFile);

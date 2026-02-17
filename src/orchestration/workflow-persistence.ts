@@ -14,10 +14,12 @@ interface SerializedWorkflow {
   id: string;
   sessionId: string;
   epicId?: string;
+  userTask: string;
   tasks: Array<[string, TaskNode]>;
   status: Workflow['status'];
   createdAt: string;
   updatedAt: string;
+  context?: Record<string, unknown>;
 }
 
 function ensureDir(): void {
@@ -42,10 +44,12 @@ export function saveWorkflow(workflow: Workflow): void {
     id: workflow.id,
     sessionId: workflow.sessionId,
     epicId: workflow.epicId,
+    userTask: workflow.userTask,
     tasks: Array.from(workflow.tasks.entries()),
     status: workflow.status,
     createdAt: workflow.createdAt,
     updatedAt: workflow.updatedAt,
+    context: workflow.context,
   };
   const filePath = getWorkflowPath(workflow.id);
   fs.writeFileSync(filePath, JSON.stringify(serialized, null, 2));

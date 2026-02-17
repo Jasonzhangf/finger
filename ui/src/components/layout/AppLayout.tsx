@@ -16,6 +16,8 @@ export const AppLayout = ({
 }: AppLayoutProps) => {
   const [rightPanelCollapsed, setRightPanelCollapsed] = useState(false);
   const [bottomPanelCollapsed, setBottomPanelCollapsed] = useState(false);
+  const expandedRightPanelWidth = 'clamp(480px, 22vw, 640px)';
+  const expandedBottomPanelHeight = 'clamp(280px, 32vh, 420px)';
 
   return (
     <div className="app-layout">
@@ -33,10 +35,10 @@ export const AppLayout = ({
             {canvas}
           </main>
 
-          {/* Right Panel - 640px */}
+          {/* Right Panel - optimized for 1920x1080+ */}
           <aside 
             className={`right-panel ${rightPanelCollapsed ? 'collapsed' : ''}`}
-            style={{ width: rightPanelCollapsed ? 40 : 640 }}
+            style={{ width: rightPanelCollapsed ? 44 : expandedRightPanelWidth }}
           >
             <button 
               className="panel-toggle"
@@ -48,10 +50,10 @@ export const AppLayout = ({
           </aside>
         </div>
 
-        {/* Bottom Panel - 450px */}
+        {/* Bottom Panel - optimized for 1920x1080+ */}
         <div 
           className={`bottom-panel ${bottomPanelCollapsed ? 'collapsed' : ''}`}
-          style={{ height: bottomPanelCollapsed ? 40 : 450 }}
+          style={{ height: bottomPanelCollapsed ? 44 : expandedBottomPanelHeight }}
         >
           <button 
             className="panel-toggle-bottom"

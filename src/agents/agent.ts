@@ -50,6 +50,7 @@ export class Agent {
   private client: IFlowClient;
   private config: AgentConfig;
   private status: AgentStatus;
+  private initializing = false;
 
   constructor(config: AgentConfig, client?: IFlowClient) {
     this.config = config;
@@ -117,17 +118,32 @@ export class Agent {
   }
 
   private async ensureConnected(): Promise<void> {
+    // 防止并发初始化
+    if (this.initializing) {
+      console.log(`[Agent ${this.config.id}] Already initializing, waiting...`);
+      await new Promise(resolve => setTimeout(resolve, 100));
+      if (this.status.connected) {
+        return;
+      }
+    }
+    
    // Check actual connection state from client
    const isActuallyConnected = this.client.isConnected?.() ?? false;
    if (isActuallyConnected) {
      this.status.connected = true;
      return;
    }
-   
+  
    // 重连前先重置状态，避免 client.isConnected() 返回过时的 true。
    this.status.connected = false;
    console.log(`[Agent ${this.config.id}] Not connected (client.isConnected=${isActuallyConnected}), initializing...`);
-   await this.initialize();
+
+    this.initializing = true;
+    try {
+    await this.initialize();
+    } finally {
+      this.initializing = false;
+    }
   }
 
   private isConnectionError(message: string): boolean {

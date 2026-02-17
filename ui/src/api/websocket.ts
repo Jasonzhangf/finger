@@ -114,7 +114,7 @@ export function getWebSocket(): WebSocketClient {
   if (!wsInstance) {
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     const host = window.location.hostname;
-    const port = 5521;
+    const port = 8081;  // WebSocket server is on PORT + 1 (8080 + 1 = 8081)
     wsInstance = new WebSocketClient(`${protocol}//${host}:${port}`);
   }
   return wsInstance;

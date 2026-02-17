@@ -76,9 +76,44 @@ export function createOrchestratorLoop(
   const logger: SnapshotLogger = createSnapshotLogger(config.id);
   let initialized = false;
   let initPromise: Promise<void> | null = null;
+  let disconnectTimeout: ReturnType<typeof setTimeout> | null = null;
 
   const registry = new ActionRegistry();
   const baseActions = createOrchestratorActions();
+  
+  // 延迟断开，避免频繁重连
+  const scheduleDisconnect = () => {
+    if (disconnectTimeout) {
+      clearTimeout(disconnectTimeout);
+    }
+    disconnectTimeout = setTimeout(async () => {
+      if (initialized) {
+        console.log('[OrchestratorLoop] Disconnecting due to inactivity');
+        try {
+          await agent.disconnect();
+        } catch {
+          // ignore
+        }
+        initialized = false;
+        initPromise = null;
+      }
+    }, 60000); // 60秒无活动后断开
+  };
+
+  const ensureConnected = async (): Promise<void> => {
+    if (disconnectTimeout) {
+      clearTimeout(disconnectTimeout);
+    }
+    
+    if (!initialized) {
+      if (!initPromise) {
+        initPromise = agent.initialize().then(() => {
+          initialized = true;
+        });
+      }
+      await initPromise;
+    }
+  };
 
   for (const action of baseActions) {
     const original = action.handler;
@@ -179,14 +214,7 @@ export function createOrchestratorLoop(
   }
 
   async function runLoop(userTask: string): Promise<unknown> {
-    if (!initialized) {
-      if (!initPromise) {
-        initPromise = agent.initialize().then(() => {
-          initialized = true;
-        });
-      }
-      await initPromise;
-    }
+    await ensureConnected();
 
     const epic = await bdTools.createTask({
       title: userTask.substring(0, 100),
@@ -273,6 +301,8 @@ export function createOrchestratorLoop(
       if (reviewer) {
         await reviewer.disconnect();
       }
+      // 调度延迟断开，避免频繁重连
+      scheduleDisconnect();
     }
   }
 
@@ -284,16 +314,13 @@ export function createOrchestratorLoop(
     metadata: { mode: config.mode, provider: 'iflow', type: 'orchestrator-loop' },
 
     initialize: async () => {
-      if (initialized) return;
-      if (!initPromise) {
-        initPromise = agent.initialize().then(() => {
-          initialized = true;
-        });
-      }
-      await initPromise;
+      await ensureConnected();
     },
 
     destroy: async () => {
+      if (disconnectTimeout) {
+        clearTimeout(disconnectTimeout);
+      }
       await agent.disconnect();
       initialized = false;
       initPromise = null;

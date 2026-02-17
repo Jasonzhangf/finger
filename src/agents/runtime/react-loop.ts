@@ -16,6 +16,7 @@
  */
 
 import { Agent } from '../agent.js';
+import { parseActionProposal } from './proposal-parser.js';
 import { ReviewerRole } from '../roles/reviewer.js';
 import type { PreActReviewOutput } from '../roles/reviewer.js';
 import { SnapshotLogger } from '../shared/snapshot-logger.js';
@@ -306,6 +307,39 @@ export class ReActLoop {
       return summary;
     }).join('\n');
 
+    // Load any pending runtime instructions for current workflow/agent context.
+    let runtimeInstructions: string[] | undefined;
+    try {
+      const { runtimeInstructionBus } = await import('../../orchestration/runtime-instruction-bus.js');
+      const instructionKeys = new Set<string>();
+
+      if (this.config.agentId) {
+        instructionKeys.add(this.config.agentId);
+      }
+
+      const stateLike = this.state as ReActState & { epicId?: string; workflowId?: string };
+      if (typeof stateLike.epicId === 'string' && stateLike.epicId) {
+        instructionKeys.add(stateLike.epicId);
+      }
+      if (typeof stateLike.workflowId === 'string' && stateLike.workflowId) {
+        instructionKeys.add(stateLike.workflowId);
+      }
+
+      const collected: string[] = [];
+      for (const key of instructionKeys) {
+        const items = runtimeInstructionBus.consume(key);
+        for (const item of items) {
+          if (!collected.includes(item)) {
+            collected.push(item);
+          }
+        }
+      }
+
+      runtimeInstructions = collected.length > 0 ? collected : undefined;
+    } catch {
+      runtimeInstructions = undefined;
+    }
+
     const tools = this.config.planner.actionRegistry.list().map(h => ({
       name: h.name,
       description: h.description,
@@ -318,50 +352,72 @@ export class ReActLoop {
       history,
       round,
       examples: this.config.planner.fewShotExamples || PLANNER_EXAMPLES,
+      runtimeInstructions,
     });
 
     if (this.config.planner.freshSessionPerRound) {
       await this.config.planner.agent.startFreshSession();
     }
-    
-    const response = await this.config.planner.agent.execute(prompt);
 
-    if (!response.success) {
-      const detail = response.error || response.stopReason || 'unknown';
-      throw new Error(`Planner execution failed: ${detail}`);
-    }
+    const maxRetries = this.config.formatFix.maxRetries;
+    let currentPrompt = prompt;
+    let lastRawOutput = '';
+    let lastParseError = '';
 
-    const rawOutput = response.output?.trim() || '';
-    if (!rawOutput) {
-      throw new Error(`Planner output is empty (stopReason=${response.stopReason || 'unknown'})`);
-    }
-    
-    // 提取 JSON
-    const jsonMatch = rawOutput.match(/\{[\s\S]*\}/);
-    if (!jsonMatch) {
-      // 尝试一些常见的 JSON 修复策略
-      const trimmedOutput = rawOutput;
-      // 可能是代码块包裹的 JSON
-      const codeBlockMatch = trimmedOutput.match(/```(?:json)?\s*(\{[\s\S]*?\})\s*```/);
-      if (codeBlockMatch) {
-        return JSON.parse(codeBlockMatch[1]) as ActionProposal;
+    for (let attempt = 0; attempt <= maxRetries; attempt += 1) {
+      const response = await this.config.planner.agent.execute(currentPrompt);
+
+      if (!response.success) {
+        const detail = response.error || response.stopReason || 'unknown';
+        throw new Error(`Planner execution failed: ${detail}`);
       }
-      // 可能是 markdown 文本末尾的 JSON
-      const lastBraceMatch = trimmedOutput.match(/\{[^{}]*\}/g);
-      if (lastBraceMatch && lastBraceMatch.length > 0) {
-        try {
-          return JSON.parse(lastBraceMatch[lastBraceMatch.length - 1]) as ActionProposal;
-        } catch {
-          // Continue to throw error
+
+      lastRawOutput = response.output?.trim() || '';
+      if (!lastRawOutput) {
+        lastParseError = `Planner output is empty (stopReason=${response.stopReason || 'unknown'})`;
+      } else {
+        const parsed = parseActionProposal(lastRawOutput);
+        if (parsed.success && parsed.proposal) {
+          this.logToConsole('🧩 Proposal parsed', {
+            round,
+            method: parsed.method || 'unknown',
+            attempt,
+          });
+          return parsed.proposal as ActionProposal;
         }
+        lastParseError = parsed.error || 'failed to parse planner output';
       }
-      const preview = trimmedOutput.length > 300
-        ? `${trimmedOutput.slice(0, 300)}...[truncated]`
-        : trimmedOutput;
-      throw new Error(`No JSON found in planner output: ${preview}`);
+
+      if (attempt >= maxRetries) {
+        break;
+      }
+
+      const outputPreview = this.truncateForPrompt(lastRawOutput, 500);
+      currentPrompt = `${prompt}
+
+你上一条回复未通过系统解析（已尝试掩码提取和自动修复，均失败）。
+解析错误：${lastParseError}
+上一条输出：${outputPreview || '[empty]'}
+
+请重新回复，严格遵循以下要求：
+1. 仅输出一个 JSON 对象
+2. 必须包含 thought/action/params 字段
+3. action 必须来自可用工具列表
+4. params 必须是 JSON object
+5. 不要输出 markdown、代码块、解释文字
+`;
+
+      this.logToConsole('🛠️ Request planner reformat', {
+        round,
+        retry: attempt + 1,
+        error: this.truncateForPrompt(lastParseError, 200),
+      });
     }
 
-    return JSON.parse(jsonMatch[0]) as ActionProposal;
+    const finalPreview = this.truncateForPrompt(lastRawOutput, 400);
+    throw new Error(
+      `Failed to parse planner output after ${maxRetries + 1} attempts: ${lastParseError}; output=${finalPreview}`
+    );
   }
 
   private async validateFormat(proposal: unknown): Promise<{ valid: boolean; error?: string }> {

@@ -4,6 +4,11 @@
  */
 
 import { saveWorkflow } from './workflow-persistence.js';
+import { MessageHub } from './message-hub.js';
+import type { SessionManager } from './session-manager.js';
+import { resourcePool } from './resource-pool.js';
+import { resumableSessionManager } from './resumable-session.js';
+import type { TaskProgress, SessionCheckpoint } from './resumable-session.js';
 export type TaskStatus = 'pending' | 'blocked' | 'ready' | 'in_progress' | 'completed' | 'failed';
 
 export interface TaskNode {
@@ -26,10 +31,12 @@ export interface Workflow {
   id: string;
   sessionId: string;
   epicId?: string;
+  userTask: string;
   tasks: Map<string, TaskNode>;
-  status: 'planning' | 'executing' | 'completed' | 'failed' | 'partial';
+  status: 'planning' | 'executing' | 'completed' | 'failed' | 'partial' | 'paused';
   createdAt: string;
   updatedAt: string;
+  context?: Record<string, unknown>;
 }
 
 export interface ResourcePool {
@@ -41,8 +48,13 @@ export interface ResourcePool {
 export class WorkflowManager {
   private workflows: Map<string, Workflow> = new Map();
   private resourcePool: ResourcePool;
+  private hub: MessageHub | null = null;
+  private sessionManager: SessionManager | null = null;
+  private activeCheckpoints: Map<string, string> = new Map(); // workflowId -> checkpointId
 
-  constructor() {
+  constructor(hub?: MessageHub, sessionManager?: SessionManager) {
+    this.hub = hub || null;
+    this.sessionManager = sessionManager || null;
     this.resourcePool = {
       executors: [],
       reviewers: [],
@@ -71,6 +83,7 @@ export class WorkflowManager {
       id,
       sessionId,
       epicId,
+      userTask: '',
       tasks: new Map(),
       status: 'planning',
       createdAt: now,
@@ -197,6 +210,144 @@ export class WorkflowManager {
 
   getWorkflow(workflowId: string): Workflow | undefined {
     return this.workflows.get(workflowId);
+  }
+
+  listWorkflows(): Workflow[] {
+    return Array.from(this.workflows.values()).sort(
+      (a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime()
+    );
+  }
+
+  pauseWorkflow(workflowId: string, _hard = false): boolean {
+    const workflow = this.workflows.get(workflowId);
+    if (!workflow) return false;
+    workflow.status = 'paused';
+    workflow.updatedAt = new Date().toISOString();
+    saveWorkflow(workflow);
+    return true;
+  }
+
+  resumeWorkflow(workflowId: string): boolean {
+    const workflow = this.workflows.get(workflowId);
+    if (!workflow) return false;
+    
+    // Try to restore from checkpoint
+    const checkpoint = resumableSessionManager.findLatestCheckpoint(workflow.sessionId);
+    if (checkpoint) {
+      this.restoreFromCheckpoint(workflow, checkpoint);
+    }
+    
+    workflow.status = 'executing';
+    workflow.updatedAt = new Date().toISOString();
+    saveWorkflow(workflow);
+    return true;
+  }
+
+  /**
+   * Create checkpoint for current workflow state
+   */
+  createCheckpoint(workflowId: string, agentStates: SessionCheckpoint['agentStates'] = {}): string | null {
+    const workflow = this.workflows.get(workflowId);
+    if (!workflow) return null;
+
+    const taskProgress: TaskProgress[] = Array.from(workflow.tasks.values()).map(task => ({
+      taskId: task.id,
+      description: task.description,
+      status: task.status as TaskProgress['status'],
+      assignedAgent: task.assignee,
+      startedAt: task.startedAt,
+      completedAt: task.completedAt,
+      result: task.result as TaskProgress['result'],
+      iterationCount: 0, // Will be updated from agent logs
+      maxIterations: 10,
+    }));
+
+    const checkpoint = resumableSessionManager.createCheckpoint(
+      workflow.sessionId,
+      workflow.userTask,
+      taskProgress,
+      agentStates,
+      workflow.context
+    );
+
+    this.activeCheckpoints.set(workflowId, checkpoint.checkpointId);
+    return checkpoint.checkpointId;
+  }
+
+  /**
+   * Restore workflow state from checkpoint
+   */
+  private restoreFromCheckpoint(workflow: Workflow, checkpoint: SessionCheckpoint): void {
+    console.log(`[WorkflowManager] Restoring workflow ${workflow.id} from checkpoint ${checkpoint.checkpointId}`);
+    
+    // Restore completed tasks
+    for (const taskId of checkpoint.completedTaskIds) {
+      const checkpointTask = checkpoint.taskProgress.find(t => t.taskId === taskId);
+      if (checkpointTask) {
+        const task = workflow.tasks.get(taskId);
+        if (task) {
+          task.status = 'completed';
+          task.completedAt = checkpointTask.completedAt;
+          task.result = checkpointTask.result;
+        }
+      }
+    }
+
+    // Mark pending tasks
+    for (const taskId of checkpoint.pendingTaskIds) {
+      const task = workflow.tasks.get(taskId);
+      if (task && task.status !== 'completed') {
+        task.status = 'pending';
+      }
+    }
+
+    // Update dependent statuses
+    for (const task of workflow.tasks.values()) {
+      if (task.status === 'completed') {
+        this.updateDependentStatuses(workflow, task.id);
+      }
+    }
+
+    // Re-claim resources for in-progress tasks
+    for (const task of checkpoint.taskProgress.filter(t => t.status === 'in_progress')) {
+      if (task.assignedAgent) {
+        resourcePool.setResourceBusy(task.assignedAgent);
+      }
+    }
+  }
+
+  /**
+   * Auto-save checkpoint periodically
+   */
+  enableAutoCheckpoint(workflowId: string, intervalMs: number = 30000): void {
+    const workflow = this.workflows.get(workflowId);
+    if (!workflow) return;
+
+    const interval = setInterval(() => {
+      if (workflow.status === 'executing') {
+        this.createCheckpoint(workflowId);
+      } else if (workflow.status === 'completed' || workflow.status === 'failed') {
+        clearInterval(interval);
+      }
+    }, intervalMs);
+  }
+
+  updateWorkflowContext(workflowId: string, context: Record<string, unknown>): boolean {
+    const workflow = this.workflows.get(workflowId);
+    if (!workflow) return false;
+    workflow.context = { ...workflow.context, ...context };
+    workflow.updatedAt = new Date().toISOString();
+    saveWorkflow(workflow);
+    return true;
+  }
+
+  setUserTask(workflowId: string, userTask: string): boolean {
+    const workflow = this.workflows.get(workflowId);
+    if (!workflow) return false;
+    workflow.userTask = userTask;
+    workflow.updatedAt = new Date().toISOString();
+    saveWorkflow(workflow);
+    return true;
   }
 
   getResourcePool(): ResourcePool {

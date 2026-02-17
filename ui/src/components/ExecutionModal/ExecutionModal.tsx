@@ -8,83 +8,95 @@ interface ExecutionModalProps {
   detail: AgentExecutionDetail | null;
 }
 
-export const ExecutionModal: React.FC<ExecutionModalProps> = ({ isOpen, onClose, detail }) => {
+function statusText(status: string): string {
+  if (status === 'running') return 'Running';
+  if (status === 'error') return 'Error';
+  if (status === 'paused') return 'Paused';
+  return 'Pending';
+}
+
+function statusClass(status: string): string {
+  if (status === 'running') return 'status-running';
+  if (status === 'error') return 'status-error';
+  if (status === 'paused') return 'status-paused';
+  return 'status-idle';
+}
+
+const MemoizedStepCard = React.memo(function StepCard({
+  step,
+}: {
+  step: AgentExecutionDetail['steps'][0];
+}) {
+  return (
+    <div className={`step-card ${step.success ? 'success' : 'error'}`}>
+      <div className="step-header">
+        <span className="step-round">Round {step.round}</span>
+        <span className={`step-status ${step.success ? 'success' : 'error'}`}>
+          {step.success ? 'Success' : 'Failed'}
+        </span>
+        <span className="step-time">{new Date(step.timestamp).toLocaleTimeString()}</span>
+      </div>
+      <div className="step-action">Action: {step.action}</div>
+      {step.thought && <div className="step-thought">Thought: {step.thought}</div>}
+      {step.observation && <div className="step-observation">Observation: {step.observation}</div>}
+    </div>
+  );
+});
+
+export const ExecutionModal = ({ isOpen, onClose, detail }: ExecutionModalProps) => {
   if (!isOpen || !detail) return null;
 
-  const getStatusColor = (status: string): string => {
-    switch (status) {
-      case 'running': return '#10b981';
-      case 'error': return '#ef4444';
-      case 'paused': return '#f59e0b';
-      default: return '#3b82f6';
-    }
-  };
+  const startedAt = new Date(detail.startTime).toLocaleString();
+  const finishedAt = detail.endTime ? new Date(detail.endTime).toLocaleString() : 'In Progress';
 
   return (
     <div className="execution-modal-overlay" onClick={onClose}>
-      <div className="execution-modal" onClick={(e) => e.stopPropagation()}>
+      <div className="execution-modal" onClick={(event) => event.stopPropagation()}>
         <div className="execution-modal-header">
-          <div>
+          <div className="header-title-wrap">
             <h2>{detail.agentName}</h2>
             <span className="agent-id">{detail.agentId}</span>
           </div>
-          <button className="close-btn" onClick={onClose}>✕</button>
+          <button className="close-btn" onClick={onClose}>
+            x
+          </button>
         </div>
 
         <div className="execution-summary">
           <div className="summary-item">
-            <span className="label">状态</span>
-            <span className="value" style={{ color: getStatusColor(detail.status) }}>
-              {detail.status}
-            </span>
+            <span className="label">Status</span>
+            <span className={`value status-pill ${statusClass(detail.status)}`}>{statusText(detail.status)}</span>
           </div>
           <div className="summary-item">
-            <span className="label">当前轮次</span>
+            <span className="label">Round</span>
             <span className="value">{detail.currentRound}/{detail.totalRounds}</span>
           </div>
           <div className="summary-item">
-            <span className="label">任务</span>
-            <span className="value">{detail.taskDescription || detail.taskId || 'N/A'}</span>
+            <span className="label">Task</span>
+            <span className="value task-text">{detail.taskDescription || detail.taskId || 'N/A'}</span>
           </div>
           <div className="summary-item">
-            <span className="label">开始时间</span>
-            <span className="value">{new Date(detail.startTime).toLocaleString()}</span>
+            <span className="label">Started</span>
+            <span className="value">{startedAt}</span>
+          </div>
+          <div className="summary-item">
+            <span className="label">Finished</span>
+            <span className="value">{finishedAt}</span>
           </div>
         </div>
 
         <div className="execution-steps">
-          <h3>执行迭代详情</h3>
+          <h3>Execution Timeline</h3>
           {detail.steps.length === 0 ? (
-            <div className="empty-steps">暂无执行步骤数据</div>
+            <div className="empty-steps">No execution steps yet.</div>
           ) : (
             <div className="steps-list">
               {detail.steps.map((step) => (
-                <div key={`${step.round}-${step.timestamp}`} className="step-card">
-                  <div className="step-header">
-                    <span className="step-round">Round {step.round}</span>
-                    <span className={`step-status ${step.success ? 'success' : 'error'}`}>
-                      {step.success ? '✓ 成功' : '✗ 失败'}
-                    </span>
-                    <span className="step-time">
-                      {new Date(step.timestamp).toLocaleTimeString()}
-                    </span>
-                  </div>
-                  <div className="step-action">Action: {step.action}</div>
-                  {step.thought && <div className="step-thought">Thought: {step.thought}</div>}
-                  {step.observation && <div className="step-observation">Observation: {step.observation}</div>}
-                </div>
+                <MemoizedStepCard key={`${step.round}-${step.timestamp}`} step={step} />
               ))}
             </div>
           )}
         </div>
-
-        {detail.sessionFilePath && (
-          <div className="execution-footer">
-            <a href={`file://${detail.sessionFilePath}`} target="_blank" rel="noreferrer">
-              查看完整日志文件 →
-            </a>
-          </div>
-        )}
       </div>
     </div>
   );

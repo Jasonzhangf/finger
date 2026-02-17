@@ -1,12 +1,30 @@
-node_modules/
+# Build artifacts and temporary files
 dist/
-.beads/beads.db
-.beads/*.db
-.beads/*.db-shm
-.beads/*.db-wal
-.beads/last-touched
-.beads/daemon.log
-.env
+node_modules/
 *.log
-.DS_Store
+logs/*.jsonl
+logs/sessions/
+logs/snapshots/
 *.pid
+.beads/*.jsonl
+.beads/last-touched
+
+# Temporary test files
+*.test.ts.tmp
+coverage/
+
+# UI build
+ui/dist/
+ui/node_modules/
+
+# Local screenshots
+*.png
+*.html
+
+# Secrets and local config
+.env
+.env.local
+*.key
+*.pem
+.DS_Store
+server.js

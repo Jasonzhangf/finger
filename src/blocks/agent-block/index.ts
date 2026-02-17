@@ -1,4 +1,5 @@
 import { spawn, type ChildProcess } from 'child_process';
+import { lifecycleManager } from '../../agents/core/agent-lifecycle.js';
 import { BaseBlock, type BlockCapabilities } from '../../core/block.js';
 import type { Agent, AgentRole, SpecialistType } from '../../core/types.js';
 
@@ -97,6 +98,13 @@ export class AgentBlock extends BaseBlock {
     const proc = spawn(cmd, ['-p', args.prompt], {
       stdio: ['ignore', 'pipe', 'pipe']
     });
+    
+    // Register with lifecycle manager
+    lifecycleManager.registerProcess(`sdk-${args.agentId}`, proc, 'other', {
+      type: 'agent-sdk',
+      agentId: args.agentId,
+      sdk: cmd
+    });
 
     this.processes.set(args.agentId, proc);
 
@@ -107,6 +115,7 @@ export class AgentBlock extends BaseBlock {
       proc.stdout?.on('data', (data) => {
         output += data.toString();
         agent.lastHeartbeat = new Date();
+        lifecycleManager.updateActivity(`sdk-${args.agentId}`);
       });
 
       proc.stderr?.on('data', (data) => {
@@ -118,6 +127,9 @@ export class AgentBlock extends BaseBlock {
         agent.currentTask = undefined;
         agent.lastHeartbeat = new Date();
         this.processes.delete(args.agentId);
+        
+        // Update lifecycle manager activity
+        lifecycleManager.updateActivity(`sdk-${args.agentId}`);
 
         resolve({
           status: code === 0 ? 'completed' : 'failed',
@@ -132,11 +144,11 @@ export class AgentBlock extends BaseBlock {
   }
 
   private kill(agentId: string): { killed: boolean } {
-    const proc = this.processes.get(agentId);
-    if (!proc) return { killed: false };
-
-    proc.kill('SIGTERM');
-    this.processes.delete(agentId);
+    const killed = lifecycleManager.killProcess(`sdk-${agentId}`, 'user-request');
+    
+    if (killed) {
+      this.processes.delete(agentId);
+    }
 
     const agent = this.agents.get(agentId);
     if (agent) {

@@ -1,12 +1,20 @@
 import express from 'express';
+import { readdir, readFile } from 'fs/promises';
+import { homedir } from 'os';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
+import { existsSync, readFileSync } from 'fs';
 import { registry } from '../core/registry.js';
 import { execSync } from 'child_process';
 import { createServer } from 'net';
 import { WebSocketServer, type WebSocket } from 'ws';
 import { MessageHub } from '../orchestration/message-hub.js';
 import { ModuleRegistry } from '../orchestration/module-registry.js';
+import { SessionManager } from '../orchestration/session-manager.js';
+import { WorkflowManager } from '../orchestration/workflow-manager.js';
+import { runtimeInstructionBus } from '../orchestration/runtime-instruction-bus.js';
+import { resourcePool } from '../orchestration/resource-pool.js';
+import { resumableSessionManager } from '../orchestration/resumable-session.js';
 import { echoInput, echoOutput } from '../agents/test/mock-echo-agent.js';
 import { createRealOrchestratorModule } from '../agents/daemon/orchestrator-module.js';
 import { createOrchestratorLoop } from '../agents/daemon/orchestrator-loop.js';
@@ -25,6 +33,8 @@ import {
   OrchestratorBlock,
   WebSocketBlock
 } from '../blocks/index.js';
+
+const FINGER_HOME = join(homedir(), '.finger');
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -100,6 +110,8 @@ await registry.initializeAll();
 
 const hub = new MessageHub();
 const moduleRegistry = new ModuleRegistry(hub);
+const sessionManager = new SessionManager();
+const workflowManager = new WorkflowManager(hub, sessionManager);
 await moduleRegistry.register(echoInput);
 await moduleRegistry.register(echoOutput);
 
@@ -257,6 +269,639 @@ wss.on('connection', (ws) => {
 });
 
 console.log(`[Server] WebSocket server running at ws://localhost:${wsPort}`);
+// ========== Session Data API ==========
+// Real-time session data from ~/.finger/sessions
+
+const SESSIONS_DIR = join(homedir(), '.finger', 'sessions');
+const LOGS_SESSIONS_DIR = join(process.cwd(), 'logs', 'sessions');
+
+interface SessionLog {
+  sessionId: string;
+  agentId: string;
+  agentRole: string;
+  userTask: string;
+  startTime: string;
+  endTime?: string;
+  success: boolean;
+  iterations: Array<{
+    round: number;
+    action: string;
+    thought?: string;
+    params?: Record<string, unknown>;
+    observation?: string;
+    success: boolean;
+    timestamp: string;
+  }>;
+  totalRounds: number;
+  finalOutput?: string;
+  finalError?: string;
+}
+
+async function loadSessionLog(sessionId: string): Promise<SessionLog | null> {
+  try {
+    const files = await readdir(LOGS_SESSIONS_DIR);
+    const sessionFile = files.find(f => f.startsWith(sessionId) || f.includes(sessionId));
+    if (!sessionFile) return null;
+    
+    const content = await readFile(join(LOGS_SESSIONS_DIR, sessionFile), 'utf-8');
+    return JSON.parse(content) as SessionLog;
+  } catch {
+    return null;
+  }
+}
+
+async function loadAllSessionLogs(): Promise<SessionLog[]> {
+  try {
+    const files = await readdir(LOGS_SESSIONS_DIR);
+    const logs: SessionLog[] = [];
+    
+    for (const file of files) {
+      if (!file.endsWith('.json')) continue;
+      try {
+        const content = await readFile(join(LOGS_SESSIONS_DIR, file), 'utf-8');
+        logs.push(JSON.parse(content) as SessionLog);
+      } catch {
+        // skip invalid files
+      }
+    }
+    
+    return logs.sort((a, b) => 
+      new Date(b.startTime).getTime() - new Date(a.startTime).getTime()
+    );
+  } catch {
+    return [];
+  }
+}
+
+// Get current session execution state
+app.get('/api/v1/sessions/:sessionId/execution', async (req, res) => {
+  const sessionId = req.params.sessionId;
+  
+  try {
+    // Load session info
+    const sessionFile = join(SESSIONS_DIR, `${sessionId}.json`);
+    const sessionContent = await readFile(sessionFile, 'utf-8');
+    const session = JSON.parse(sessionContent);
+    
+    // Load related execution logs
+    const logs = await loadAllSessionLogs();
+    const relatedLogs = logs.filter(l => l.sessionId?.includes(sessionId) || sessionId.includes(l.sessionId));
+    
+    res.json({
+      success: true,
+      session: {
+        id: session.id,
+        name: session.name,
+        projectPath: session.projectPath,
+        messages: session.messages,
+        activeWorkflows: session.activeWorkflows,
+      },
+      executionLogs: relatedLogs,
+    });
+  } catch (e) {
+    res.status(404).json({ error: 'Session not found', details: e instanceof Error ? e.message : String(e) });
+  }
+});
+
+// Get all execution logs
+app.get('/api/v1/execution-logs', async (_req, res) => {
+  const logs = await loadAllSessionLogs();
+  res.json({ success: true, logs });
+});
+
+// Get specific execution log
+app.get('/api/v1/execution-logs/:sessionId', async (req, res) => {
+  const log = await loadSessionLog(req.params.sessionId);
+  if (!log) {
+    res.status(404).json({ error: 'Log not found' });
+    return;
+  }
+  res.json({ success: true, log });
+});
+
+// ========== Session Management API ==========
+app.get('/api/v1/sessions', (_req, res) => {
+  const sessions = sessionManager.listSessions();
+  res.json(sessions.map(s => ({
+    id: s.id,
+    name: s.name,
+    projectPath: s.projectPath,
+    createdAt: s.createdAt,
+    updatedAt: s.updatedAt,
+    lastAccessedAt: s.lastAccessedAt,
+    messageCount: s.messages.length,
+    activeWorkflows: s.activeWorkflows,
+  })));
+});
+
+app.get('/api/v1/sessions/current', (_req, res) => {
+  const session = sessionManager.getCurrentSession();
+  if (!session) {
+    res.status(404).json({ error: 'No current session' });
+    return;
+  }
+  res.json({
+    id: session.id,
+    name: session.name,
+    projectPath: session.projectPath,
+    createdAt: session.createdAt,
+    updatedAt: session.updatedAt,
+    lastAccessedAt: session.lastAccessedAt,
+    messageCount: session.messages.length,
+    activeWorkflows: session.activeWorkflows,
+  });
+});
+
+app.post('/api/v1/sessions/current', (req, res) => {
+  const { sessionId } = req.body;
+  if (!sessionId) {
+    res.status(400).json({ error: 'Missing sessionId' });
+    return;
+  }
+  const success = sessionManager.setCurrentSession(sessionId);
+  if (!success) {
+    res.status(404).json({ error: 'Session not found' });
+    return;
+  }
+  res.json({ success: true });
+});
+
+app.post('/api/v1/sessions', (req, res) => {
+  const { projectPath, name } = req.body;
+  const session = sessionManager.createSession(projectPath || process.cwd(), name);
+  res.json({
+    id: session.id,
+    name: session.name,
+    projectPath: session.projectPath,
+    createdAt: session.createdAt,
+    updatedAt: session.updatedAt,
+    lastAccessedAt: session.lastAccessedAt,
+    messageCount: 0,
+    activeWorkflows: [],
+  });
+});
+
+app.get('/api/v1/sessions/:id', (req, res) => {
+  const session = sessionManager.getSession(req.params.id);
+  if (!session) {
+    res.status(404).json({ error: 'Session not found' });
+    return;
+  }
+  res.json({
+    id: session.id,
+    name: session.name,
+    projectPath: session.projectPath,
+    createdAt: session.createdAt,
+    updatedAt: session.updatedAt,
+    lastAccessedAt: session.lastAccessedAt,
+    messageCount: session.messages.length,
+    activeWorkflows: session.activeWorkflows,
+  });
+});
+
+app.delete('/api/v1/sessions/:id', (req, res) => {
+  const success = sessionManager.deleteSession(req.params.id);
+  if (!success) {
+    res.status(404).json({ error: 'Session not found' });
+    return;
+  }
+  res.json({ success: true });
+});
+
+// ========== Workflow Management API ==========
+app.get('/api/v1/workflows', (_req, res) => {
+  const workflows = workflowManager.listWorkflows();
+  res.json(workflows.map(w => ({
+    id: w.id,
+    sessionId: w.sessionId,
+    epicId: w.epicId,
+    status: w.status,
+    taskCount: w.tasks.size,
+    completedTasks: Array.from(w.tasks.values()).filter(t => t.status === 'completed').length,
+    failedTasks: Array.from(w.tasks.values()).filter(t => t.status === 'failed').length,
+    createdAt: w.createdAt,
+    updatedAt: w.updatedAt,
+    userTask: w.userTask,
+  })));
+});
+
+app.get('/api/v1/workflows/:id', (req, res) => {
+  const workflow = workflowManager.getWorkflow(req.params.id);
+  if (!workflow) {
+    res.status(404).json({ error: 'Workflow not found' });
+    return;
+  }
+  const tasks = Array.from(workflow.tasks.values());
+  res.json({
+    id: workflow.id,
+    sessionId: workflow.sessionId,
+    epicId: workflow.epicId,
+    status: workflow.status,
+    taskCount: workflow.tasks.size,
+    completedTasks: tasks.filter(t => t.status === 'completed').length,
+    failedTasks: tasks.filter(t => t.status === 'failed').length,
+    createdAt: workflow.createdAt,
+    updatedAt: workflow.updatedAt,
+    userTask: workflow.userTask,
+  });
+});
+
+app.get('/api/v1/workflows/:id/tasks', (req, res) => {
+  const workflow = workflowManager.getWorkflow(req.params.id);
+  if (!workflow) {
+    res.status(404).json({ error: 'Workflow not found' });
+    return;
+  }
+  const tasks = Array.from(workflow.tasks.values());
+  res.json(tasks);
+});
+
+app.post('/api/v1/workflow/pause', async (req, res) => {
+  const { workflowId, hard } = req.body;
+  if (!workflowId) {
+    res.status(400).json({ error: 'Missing workflowId' });
+    return;
+  }
+  const workflow = workflowManager.getWorkflow(workflowId);
+  if (!workflow) {
+    res.status(404).json({ error: 'Workflow not found' });
+    return;
+  }
+  workflowManager.pauseWorkflow(workflowId, hard);
+  
+  // Broadcast pause to WebSocket clients
+  const broadcastMsg = JSON.stringify({
+    type: 'workflow_update',
+    payload: { workflowId, status: 'paused' },
+    timestamp: new Date().toISOString(),
+  });
+  for (const client of wsClients) {
+    if (client.readyState === 1) client.send(broadcastMsg);
+  }
+  
+  res.json({ success: true, workflowId, status: 'paused' });
+});
+
+app.post('/api/v1/workflow/resume', async (req, res) => {
+  const { workflowId } = req.body;
+  if (!workflowId) {
+    res.status(400).json({ error: 'Missing workflowId' });
+    return;
+  }
+  const workflow = workflowManager.getWorkflow(workflowId);
+  if (!workflow) {
+    res.status(404).json({ error: 'Workflow not found' });
+    return;
+  }
+  workflowManager.resumeWorkflow(workflowId);
+  
+  // Broadcast resume to WebSocket clients
+  const broadcastMsg = JSON.stringify({
+    type: 'workflow_update',
+    payload: { workflowId, status: 'executing' },
+    timestamp: new Date().toISOString(),
+  });
+  for (const client of wsClients) {
+    if (client.readyState === 1) client.send(broadcastMsg);
+  }
+  
+  res.json({ success: true, workflowId, status: 'executing' });
+});
+
+app.post('/api/v1/workflow/input', async (req, res) => {
+  const { workflowId, input } = req.body;
+  if (!workflowId || !input) {
+    res.status(400).json({ error: 'Missing workflowId or input' });
+    return;
+  }
+  const workflow = workflowManager.getWorkflow(workflowId);
+  if (!workflow) {
+    res.status(404).json({ error: 'Workflow not found' });
+    return;
+  }
+  
+  // Store user input in workflow context and route runtime instruction to loop parser.
+  workflowManager.updateWorkflowContext(workflowId, { lastUserInput: input });
+  runtimeInstructionBus.push(workflowId, String(input));
+
+  const workflowEpicId = workflow.epicId;
+  if (workflowEpicId) {
+    runtimeInstructionBus.push(workflowEpicId, String(input));
+  }
+  
+  // Broadcast input to WebSocket clients
+  const broadcastMsg = JSON.stringify({
+    type: 'workflow_update',
+    payload: { workflowId, userInput: input },
+    timestamp: new Date().toISOString(),
+  });
+  for (const client of wsClients) {
+    if (client.readyState === 1) client.send(broadcastMsg);
+  }
+  
+  res.json({ success: true, workflowId });
+});
+
+// ========== Agent Deployment API ==========
+interface AgentDeployment {
+  id: string;
+  config: Record<string, unknown>;
+  sessionId: string;
+  scope: 'session' | 'global';
+  instanceCount: number;
+  status: 'idle' | 'running' | 'error';
+  createdAt: string;
+}
+
+const agentDeployments: Map<string, AgentDeployment> = new Map();
+
+app.get('/api/v1/agents', (_req, res) => {
+  // Return resource pool view (single process per agent)
+  const resources = resourcePool.getAllResources();
+  res.json(resources.map(r => ({
+    id: r.id,
+    type: r.id.includes('orchestrator') ? 'orchestrator' : 'executor',
+    name: r.config.name || r.id,
+    status: r.status,
+    sessionId: r.currentSessionId,
+    workflowId: r.currentWorkflowId,
+    totalDeployments: r.totalDeployments,
+  })));
+});
+
+// Resource pool: get available resources
+app.get('/api/v1/resources', (_req, res) => {
+  const available = resourcePool.getAvailableResources();
+  res.json({
+    available: available.map(r => ({
+      id: r.id,
+      name: r.config.name || r.id,
+      type: r.id.includes('orchestrator') ? 'orchestrator' : 'executor',
+      status: r.status,
+    })),
+    count: available.length,
+  });
+});
+
+// Resource pool: deploy resource to session
+app.post('/api/v1/resources/deploy', (req, res) => {
+  const { resourceId, sessionId, workflowId } = req.body;
+  if (!resourceId || !sessionId || !workflowId) {
+    res.status(400).json({ error: 'Missing resourceId, sessionId, or workflowId' });
+    return;
+  }
+  
+  const resource = resourcePool.deployResource(resourceId, sessionId, workflowId);
+  if (!resource) {
+    res.status(409).json({ error: 'Resource not available or already deployed' });
+    return;
+  }
+  
+  // Broadcast to WebSocket
+  const broadcastMsg = JSON.stringify({
+    type: 'resource_update',
+    payload: {
+      resourceId,
+      status: resource.status,
+      sessionId,
+      workflowId,
+    },
+    timestamp: new Date().toISOString(),
+  });
+  for (const client of wsClients) {
+    if (client.readyState === 1) client.send(broadcastMsg);
+  }
+  
+  res.json({ success: true, resource });
+});
+
+// Resource pool: release resource back to pool
+app.post('/api/v1/resources/release', (req, res) => {
+  const { resourceId } = req.body;
+  if (!resourceId) {
+    res.status(400).json({ error: 'Missing resourceId' });
+    return;
+  }
+  
+  const resource = resourcePool.releaseResource(resourceId);
+  if (!resource) {
+    res.status(404).json({ error: 'Resource not found' });
+    return;
+  }
+  
+  // Broadcast to WebSocket
+  const broadcastMsg = JSON.stringify({
+    type: 'resource_update',
+    payload: {
+      resourceId,
+      status: resource.status,
+    },
+    timestamp: new Date().toISOString(),
+  });
+  for (const client of wsClients) {
+    if (client.readyState === 1) client.send(broadcastMsg);
+  }
+  
+  res.json({ success: true, resource });
+});
+
+// Session: create checkpoint
+app.post('/api/v1/session/checkpoint', (req, res) => {
+  const { sessionId, originalTask, taskProgress, agentStates, context } = req.body;
+  if (!sessionId || !originalTask || !taskProgress) {
+    res.status(400).json({ error: 'Missing required fields' });
+    return;
+  }
+  
+  const checkpoint = resumableSessionManager.createCheckpoint(
+    sessionId,
+    originalTask,
+    taskProgress,
+    agentStates || {},
+    context || {}
+  );
+  
+  res.json({ success: true, checkpointId: checkpoint.checkpointId });
+});
+
+// Session: load checkpoint
+app.get('/api/v1/session/checkpoint/:checkpointId', (req, res) => {
+  const checkpoint = resumableSessionManager.loadCheckpoint(req.params.checkpointId);
+  if (!checkpoint) {
+    res.status(404).json({ error: 'Checkpoint not found' });
+    return;
+  }
+  res.json(checkpoint);
+});
+
+// Session: find latest checkpoint
+app.get('/api/v1/session/:sessionId/checkpoint/latest', (req, res) => {
+  const checkpoint = resumableSessionManager.findLatestCheckpoint(req.params.sessionId);
+  if (!checkpoint) {
+    res.status(404).json({ error: 'No checkpoint found for session' });
+    return;
+  }
+  
+  const resumeContext = resumableSessionManager.buildResumeContext(checkpoint);
+  res.json({
+    checkpoint,
+    resumeContext,
+  });
+});
+
+// Session: resume with context
+app.post('/api/v1/session/resume', (req, res) => {
+  const { sessionId, checkpointId } = req.body;
+  
+  let checkpoint: ReturnType<typeof resumableSessionManager.loadCheckpoint>;
+  
+  if (checkpointId) {
+    checkpoint = resumableSessionManager.loadCheckpoint(checkpointId);
+  } else {
+    checkpoint = resumableSessionManager.findLatestCheckpoint(sessionId);
+  }
+  
+  if (!checkpoint) {
+    res.status(404).json({ error: 'Checkpoint not found' });
+    return;
+  }
+  
+  const resumeContext = resumableSessionManager.buildResumeContext(checkpoint);
+  
+  // Broadcast resume event
+  const broadcastMsg = JSON.stringify({
+    type: 'session_resume',
+    payload: {
+      sessionId: checkpoint.sessionId,
+      checkpointId: checkpoint.checkpointId,
+      progress: resumeContext.estimatedProgress,
+      pendingTasks: checkpoint.pendingTaskIds.length,
+    },
+    timestamp: new Date().toISOString(),
+  });
+  for (const client of wsClients) {
+    if (client.readyState === 1) client.send(broadcastMsg);
+  }
+  
+  res.json({
+    success: true,
+    sessionId: checkpoint.sessionId,
+    resumeContext,
+  });
+});
+
+// Agent progress: get detailed progress
+app.get('/api/v1/agent/:agentId/progress', (req, res) => {
+  const resource = resourcePool.getAllResources().find(r => r.id === req.params.agentId);
+  if (!resource) {
+    res.status(404).json({ error: 'Agent not found' });
+    return;
+  }
+  
+  // Get execution logs for this agent
+  const executionLogPath = join(FINGER_HOME, 'logs', `${req.params.agentId}.jsonl`);
+  let iterations: unknown[] = [];
+  
+  try {
+    if (existsSync(executionLogPath)) {
+      const content = readFileSync(executionLogPath, 'utf-8');
+      iterations = content
+        .split('\n')
+        .filter(line => line.trim())
+        .map(line => JSON.parse(line))
+        .slice(-50); // Last 50 iterations
+    }
+  } catch {
+    // Ignore errors
+  }
+  
+  res.json({
+    agentId: resource.id,
+    status: resource.status,
+    sessionId: resource.currentSessionId,
+    workflowId: resource.currentWorkflowId,
+    totalDeployments: resource.totalDeployments,
+    iterations,
+    lastDeployedAt: resource.lastDeployedAt,
+    lastReleasedAt: resource.lastReleasedAt,
+  });
+});
+
+// Legacy agent deployment (kept for compatibility)
+app.post('/api/v1/agents/deploy', async (req, res) => {
+});
+
+app.post('/api/v1/agents/deploy', async (req, res) => {
+  const { sessionId, config, scope, instanceCount = 1 } = req.body;
+  if (!config || !config.name) {
+    res.status(400).json({ error: 'Missing agent config' });
+    return;
+  }
+  
+  const deploymentId = `deployment-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+  const deployment: AgentDeployment = {
+    id: deploymentId,
+    config,
+    sessionId: sessionId || 'default',
+    scope: scope || 'session',
+    instanceCount,
+    status: 'idle',
+    createdAt: new Date().toISOString(),
+  };
+  
+  agentDeployments.set(deploymentId, deployment);
+  
+  // Broadcast deployment to WebSocket clients
+  const broadcastMsg = JSON.stringify({
+    type: 'agent_update',
+    payload: {
+      agentId: deploymentId,
+      status: 'idle',
+      config,
+      instanceCount,
+    },
+    timestamp: new Date().toISOString(),
+  });
+  for (const client of wsClients) {
+    if (client.readyState === 1) client.send(broadcastMsg);
+  }
+  
+  res.json({ success: true, deploymentId, deployment });
+});
+
+app.get('/api/v1/agents/stats', (_req, res) => {
+  const stats = Array.from(agentDeployments.values()).map(d => ({
+    id: d.id,
+    name: d.config.name as string,
+    type: 'executor' as const,
+    status: d.status,
+    load: 0,
+    errorRate: 0,
+    requestCount: 0,
+    tokenUsage: 0,
+    workTime: 0,
+  }));
+  res.json(stats);
+});
+
+app.get('/api/v1/agents/:id/stats', (req, res) => {
+  const deployment = agentDeployments.get(req.params.id);
+  if (!deployment) {
+    res.status(404).json({ error: 'Agent deployment not found' });
+    return;
+  }
+  res.json({
+    id: deployment.id,
+    name: deployment.config.name,
+    type: 'executor' as const,
+    status: deployment.status,
+    load: 0,
+    errorRate: 0,
+    requestCount: 0,
+    tokenUsage: 0,
+    workTime: 0,
+  });
+});
 
 // Modified message endpoint with mailbox integration
 app.post('/api/v1/message', async (req, res) => {

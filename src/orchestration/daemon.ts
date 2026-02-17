@@ -1,4 +1,6 @@
 import { spawn, ChildProcess } from 'child_process';
+import { lifecycleManager } from '../agents/core/agent-lifecycle.js';
+import { HeartbeatBroker, cleanupOrphanProcesses } from '../agents/core/agent-lifecycle.js';
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
@@ -21,6 +23,7 @@ export class OrchestrationDaemon {
   private config: DaemonConfig;
   private running = false;
   private agentPool: AgentPool;
+  private heartbeatBroker: HeartbeatBroker;
 
   constructor(config?: Partial<DaemonConfig>) {
     const home = os.homedir();
@@ -39,12 +42,22 @@ export class OrchestrationDaemon {
     }
 
     this.agentPool = new AgentPool();
+    this.heartbeatBroker = new HeartbeatBroker();
   }
 
   async start(): Promise<void> {
     if (this.running) {
       console.log('Daemon already running (in-process)');
       return;
+    }
+
+    // Clean up orphan processes from previous sessions
+    const orphans = cleanupOrphanProcesses();
+    if (orphans.killed.length > 0) {
+      console.log(`[Daemon] Cleaned up ${orphans.killed.length} orphan processes: ${orphans.killed.join(', ')}`);
+    }
+    if (orphans.errors.length > 0) {
+      console.error('[Daemon] Errors during orphan cleanup:', orphans.errors);
     }
 
     if (fs.existsSync(this.config.pidFile)) {
@@ -80,6 +93,11 @@ export class OrchestrationDaemon {
     });
 
     this.process.unref();
+    
+    // Register with lifecycle manager
+    lifecycleManager.registerProcess('daemon-server', this.process, 'other', {
+      type: 'orchestration-daemon'
+    });
 
     await new Promise<void>((resolve) => {
       setTimeout(() => {
@@ -95,12 +113,19 @@ export class OrchestrationDaemon {
     // 启动自动启动的 runtime agents
     console.log('[Daemon] Starting auto-start agents...');
     await this.agentPool.startAllAuto();
+
+    // Start heartbeat broadcaster
+    this.heartbeatBroker.start();
+    console.log('[Daemon] Heartbeat broadcaster started');
   }
 
   async stop(): Promise<void> {
     // 先停止所有 runtime agents
     console.log('[Daemon] Stopping runtime agents...');
     await this.agentPool.stopAll();
+
+    // Stop heartbeat broadcaster
+    this.heartbeatBroker.stop();
 
     if (!fs.existsSync(this.config.pidFile)) {
       console.log('No PID file found, daemon not running');
@@ -114,16 +139,14 @@ export class OrchestrationDaemon {
       return;
     }
 
-    try {
-      process.kill(pid, 'SIGTERM');
+    // Use lifecycle manager for proper cleanup
+    lifecycleManager.killProcess('daemon-server', 'user-request');
+    
+    if (fs.existsSync(this.config.pidFile)) {
       fs.unlinkSync(this.config.pidFile);
-      this.running = false;
-      console.log(`Daemon with PID ${pid} stopped`);
-    } catch (err) {
-      fs.unlinkSync(this.config.pidFile);
-      this.running = false;
-      console.error(`Failed to stop daemon process ${pid}, stale PID removed: ${err}`);
     }
+    this.running = false;
+    console.log(`Daemon stopped`);
   }
 
   async restart(): Promise<void> {

@@ -3,6 +3,7 @@ import fs from 'fs';
 import path from 'path';
 import os from 'os';
 import { Agent, AgentConfig } from '../agent.js';
+import { HeartbeatMonitor } from '../core/heartbeat-broker.js';
 
 export interface AgentDaemonConfig {
   agentId: string;
@@ -35,6 +36,7 @@ export class AgentDaemon {
   private app = express();
   private server?: ReturnType<typeof this.app.listen>;
   private isRunning = false;
+  private heartbeatMonitor: HeartbeatMonitor;
 
   constructor(config: AgentDaemonConfig) {
     this.config = config;
@@ -54,6 +56,8 @@ export class AgentDaemon {
     if (!fs.existsSync(AGENT_PID_DIR)) {
       fs.mkdirSync(AGENT_PID_DIR, { recursive: true });
     }
+
+    this.heartbeatMonitor = new HeartbeatMonitor();
   }
 
   async start(): Promise<void> {
@@ -82,6 +86,21 @@ export class AgentDaemon {
     process.on('SIGTERM', async () => {
       await this.stop();
       process.exit(0);
+    });
+
+    process.on('SIGINT', async () => {
+      await this.stop();
+      process.exit(0);
+    });
+
+    // Start heartbeat monitor - self-destruct if master dies
+    this.heartbeatMonitor.start(() => {
+      console.error(`[AgentDaemon ${this.config.agentId}] Master heartbeat lost, initiating self-destruct`);
+      this.stop().then(() => {
+        process.exit(1);
+      }).catch(() => {
+        process.exit(1);
+      });
     });
   }
 
@@ -143,12 +162,23 @@ export class AgentDaemon {
       return;
     }
 
-    await this.agent.disconnect();
+    this.heartbeatMonitor.stop();
+
+    try {
+      await Promise.race([
+        this.agent.disconnect(),
+        new Promise<void>((_, reject) => 
+          setTimeout(() => reject(new Error('disconnect timeout')), 5000)
+        ),
+      ]);
+    } catch (err) {
+      console.error(`[AgentDaemon ${this.config.agentId}] Disconnect error:`, err);
+    }
 
     if (this.server) {
-      await new Promise<void>((resolve) => {
-        this.server?.close(() => resolve());
-      });
+     await new Promise<void>((resolve) => {
+       this.server?.close(() => resolve());
+     });
       this.server = undefined;
     }
 
