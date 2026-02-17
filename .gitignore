@@ -8,6 +8,7 @@ logs/snapshots/
 *.pid
 .beads/*.jsonl
 .beads/last-touched
+.beads/export-state/
 
 # Temporary test files
 *.test.ts.tmp
