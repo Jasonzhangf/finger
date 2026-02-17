@@ -360,7 +360,7 @@ target.status = 'in_progress';
   }
   }
 
-  async function runLoop(userTask: string): Promise<unknown> {
+  async function runLoop(userTask: string, resumeFromEpicId?: string): Promise<unknown> {
     await ensureConnected();
 
     const epic = await bdTools.createTask({
@@ -494,7 +494,8 @@ target.status = 'in_progress';
       }
 
       try {
-        const result = await runLoop(userTask);
+        const resumeFromEpicId = msg.resumeFromEpicId as string | undefined;
+        const result = await runLoop(userTask, resumeFromEpicId);
         const wrapped = { success: true, result };
         if (callback) callback(wrapped);
         return wrapped;
