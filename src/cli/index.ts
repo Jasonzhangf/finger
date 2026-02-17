@@ -5,6 +5,7 @@ import { registerLoopTestCommand } from './loop-test.js';
 import { registerIflowCommand } from './iflow.js';
 import { registerDaemonCommand } from './daemon.js';
 import { registerMailboxCommand } from './mailbox.js';
+import { registerAppCommand } from './app.js';
 
 program
   .name('fingerdaemon')
@@ -16,6 +17,7 @@ registerLoopTestCommand(program);
 registerIflowCommand(program);
 registerDaemonCommand(program);
 registerMailboxCommand(program);
+registerAppCommand(program);
 
 // Block commands
 program
