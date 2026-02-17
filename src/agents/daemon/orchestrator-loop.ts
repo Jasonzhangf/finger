@@ -231,6 +231,9 @@ target.status = 'in_progress';
         } else {
           target.status = 'failed';
           state.failedTasks.push(target.id);
+          state.lastError = target.result.error || 'unknown error';
+          // Trigger checkpoint on task failure
+          await registry.execute('CHECKPOINT', { trigger: 'task_failure' }, { state });
 
           // Emit task failed event
           globalEventBus.emit({
