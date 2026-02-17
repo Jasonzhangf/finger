@@ -1,11 +1,12 @@
 /**
  * Session Manager - 会话管理
- * 负责会话创建、恢复、隔离
+ * 负责会话创建、恢复、隔离、上下文压缩
  */
 
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
+import type { Attachment } from '../runtime/events.js';
 
 const FINGER_HOME = path.join(os.homedir(), '.finger');
 const SESSIONS_DIR = path.join(FINGER_HOME, 'sessions');
@@ -29,11 +30,14 @@ export interface SessionMessage {
   timestamp: string;
   workflowId?: string;
   taskId?: string;
+  attachments?: Attachment[];
+  type?: 'text' | 'command' | 'plan_update' | 'task_update';
 }
 
 export class SessionManager {
   private sessions: Map<string, Session> = new Map();
   private currentSessionId: string | null = null;
+  private readonly COMPRESS_THRESHOLD = 50;
 
   constructor() {
     this.ensureDirs();
@@ -140,7 +144,7 @@ export class SessionManager {
     sessionId: string,
     role: SessionMessage['role'],
     content: string,
-    metadata?: { workflowId?: string; taskId?: string }
+    metadata?: { workflowId?: string; taskId?: string; attachments?: Attachment[] }
   ): SessionMessage | null {
     const session = this.sessions.get(sessionId);
     if (!session) return null;
@@ -151,6 +155,7 @@ export class SessionManager {
       content,
       timestamp: new Date().toISOString(),
       ...metadata,
+      attachments: metadata?.attachments,
     };
 
     session.messages.push(message);
@@ -169,6 +174,104 @@ export class SessionManager {
     const session = this.sessions.get(sessionId);
     if (!session) return [];
     return session.messages.slice(-limit);
+  }
+
+  /**
+   * 获取完整上下文 (包含压缩摘要)
+   */
+  getFullContext(sessionId: string): { messages: SessionMessage[]; compressedSummary?: string } {
+    const session = this.sessions.get(sessionId);
+    if (!session) return { messages: [] };
+
+    const compressed = session.context.compressedHistory as { summary?: string } | undefined;
+    return {
+      messages: session.messages,
+      compressedSummary: compressed?.summary,
+    };
+  }
+
+  /**
+   * 上下文压缩 (摘要式)
+   */
+  async compressContext(sessionId: string, summarizer?: (messages: SessionMessage[]) => Promise<string>): Promise<string> {
+    const session = this.sessions.get(sessionId);
+    if (!session) throw new Error(`Session not found: ${sessionId}`);
+
+    if (session.messages.length <= this.COMPRESS_THRESHOLD) {
+      return 'No compression needed';
+    }
+
+    const earlyMessages = session.messages.slice(0, -this.COMPRESS_THRESHOLD);
+    const recentMessages = session.messages.slice(-this.COMPRESS_THRESHOLD);
+
+    let summary: string;
+    if (summarizer) {
+      summary = await summarizer(earlyMessages);
+    } else {
+      summary = this.defaultSummarize(earlyMessages);
+    }
+
+    session.context = {
+      ...session.context,
+      compressedHistory: {
+        timestamp: new Date().toISOString(),
+        originalCount: earlyMessages.length,
+        summary,
+      },
+    };
+    session.messages = recentMessages;
+
+    this.saveSession(session);
+    console.log(`[SessionManager] Compressed ${earlyMessages.length} messages for session ${sessionId}`);
+
+    return summary;
+  }
+
+  private defaultSummarize(messages: SessionMessage[]): string {
+    const userMessages = messages.filter(m => m.role === 'user');
+    const assistantMessages = messages.filter(m => m.role === 'assistant' || m.role === 'orchestrator');
+
+    const parts: string[] = [];
+    if (userMessages.length > 0) {
+      parts.push(`用户请求: ${userMessages.map(m => m.content.slice(0, 100)).join('; ')}`);
+    }
+    if (assistantMessages.length > 0) {
+      parts.push(`助手响应: ${assistantMessages.length} 条`);
+    }
+    const taskIds = new Set(messages.map(m => m.taskId).filter(Boolean));
+    if (taskIds.size > 0) {
+      parts.push(`涉及任务: ${Array.from(taskIds).join(', ')}`);
+    }
+
+    return parts.join('\n');
+  }
+
+  getCompressionStatus(sessionId: string): { compressed: boolean; summary?: string; originalCount?: number } {
+    const session = this.sessions.get(sessionId);
+    if (!session) return { compressed: false };
+    const compressed = session.context.compressedHistory as { summary?: string; originalCount?: number } | undefined;
+    return { compressed: !!compressed, summary: compressed?.summary, originalCount: compressed?.originalCount };
+  }
+
+  pauseSession(sessionId: string): boolean {
+    const session = this.sessions.get(sessionId);
+    if (!session) return false;
+    session.context = { ...session.context, paused: true, pausedAt: new Date().toISOString() };
+    this.saveSession(session);
+    return true;
+  }
+
+  resumeSession(sessionId: string): boolean {
+    const session = this.sessions.get(sessionId);
+    if (!session) return false;
+    session.context = { ...session.context, paused: false, resumedAt: new Date().toISOString() };
+    this.saveSession(session);
+    return true;
+  }
+
+  isPaused(sessionId: string): boolean {
+    const session = this.sessions.get(sessionId);
+    return session?.context.paused === true;
   }
 
   updateContext(sessionId: string, context: Record<string, unknown>): boolean {
