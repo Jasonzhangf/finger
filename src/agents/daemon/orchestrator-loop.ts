@@ -160,7 +160,18 @@ export function createOrchestratorLoop(
           };
         }
 
-        target.status = 'in_progress';
+        
+        // Emit task started event
+        globalEventBus.emit({
+          type: 'task_started',
+          sessionId: config.sessionId || state.epicId,
+          taskId: target.id,
+          agentId: config.id,
+          timestamp: new Date().toISOString(),
+          payload: { title: target.description },
+        });
+
+target.status = 'in_progress';
         target.assignee = state.targetExecutorId;
 
         const result = await state.hub.sendToModule(state.targetExecutorId, {
@@ -179,10 +190,50 @@ export function createOrchestratorLoop(
         if (target.result.success) {
           target.status = 'completed';
           state.completedTasks.push(target.id);
+
+          // Emit task completed event
+          globalEventBus.emit({
+            type: 'task_completed',
+            sessionId: config.sessionId || state.epicId,
+            taskId: target.id,
+            agentId: state.targetExecutorId,
+            timestamp: new Date().toISOString(),
+            payload: { result: target.result.output },
+          });
+
         } else {
           target.status = 'failed';
           state.failedTasks.push(target.id);
+
+          // Emit task failed event
+          globalEventBus.emit({
+            type: 'task_failed',
+            sessionId: config.sessionId || state.epicId,
+            taskId: target.id,
+            agentId: state.targetExecutorId,
+            timestamp: new Date().toISOString(),
+            payload: { error: target.result.error || 'unknown error' },
+          });
+
         }
+
+        // Emit workflow progress event
+        const progress = state.taskGraph.length > 0
+          ? (state.completedTasks.length / state.taskGraph.length) * 100
+          : 0;
+        globalEventBus.emit({
+          type: 'workflow_progress',
+          sessionId: config.sessionId || state.epicId,
+          timestamp: new Date().toISOString(),
+          payload: {
+            overallProgress: progress,
+            activeAgents: [config.id, state.targetExecutorId],
+            pendingTasks: state.taskGraph.length - state.completedTasks.length - state.failedTasks.length,
+            completedTasks: state.completedTasks.length,
+            failedTasks: state.failedTasks.length,
+          },
+        });
+
 
         // Return real dispatch result so loop state and task statistics stay consistent.
         return {
