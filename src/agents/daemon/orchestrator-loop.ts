@@ -30,6 +30,7 @@ export interface TaskNode {
   assignee?: string;
   result?: { taskId: string; success: boolean; output?: string; error?: string };
   bdTaskId?: string;
+  blockedBy?: string[];
 }
 
 export interface OrchestratorLoopConfig {
@@ -208,6 +209,174 @@ export function createOrchestratorLoop(
         return { success: target.result.success, observation: target.result.success ? `任务 ${target.id} 已派发并执行成功` : `任务 ${target.id} 派发后执行失败: ${target.result.error || 'unknown error'}`, error: target.result.success ? undefined : target.result.error };
       }
 
+
+      // Handle HIGH_DESIGN action
+      if (action.name === 'HIGH_DESIGN' && state) {
+        state.highDesign = {
+          architecture: String(params.architecture || ''),
+          techStack: Array.isArray(params.techStack) ? params.techStack as string[] : [],
+          modules: Array.isArray(params.modules) ? params.modules as string[] : [],
+          rationale: params.rationale ? String(params.rationale) : undefined,
+        };
+        state.phase = 'high_design';
+        await bdTools.addComment(state.epicId, `概要设计完成：架构=${state.highDesign.architecture.substring(0, 50)}..., 模块数=${state.highDesign.modules.length}`);
+        return { success: true, observation: `概要设计已保存`, data: state.highDesign };
+      }
+
+      // Handle DETAIL_DESIGN action
+      if (action.name === 'DETAIL_DESIGN' && state) {
+        state.detailDesign = {
+          interfaces: Array.isArray(params.interfaces) ? params.interfaces as string[] : [],
+          dataModels: Array.isArray(params.dataModels) ? params.dataModels as string[] : [],
+          implementation: String(params.implementation || ''),
+        };
+        state.phase = 'detail_design';
+        await bdTools.addComment(state.epicId, `详细设计完成：接口数=${state.detailDesign.interfaces.length}, 数据模型数=${state.detailDesign.dataModels.length}`);
+        return { success: true, observation: `详细设计已保存`, data: state.detailDesign };
+      }
+
+      // Handle DELIVERABLES action
+      if (action.name === 'DELIVERABLES' && state) {
+        state.deliverables = {
+          acceptanceCriteria: Array.isArray(params.acceptanceCriteria) ? params.acceptanceCriteria as string[] : [],
+          testRequirements: Array.isArray(params.testRequirements) ? params.testRequirements as string[] : [],
+          artifacts: Array.isArray(params.artifacts) ? params.artifacts as string[] : [],
+        };
+        state.phase = 'deliverables';
+        await bdTools.addComment(state.epicId, `交付清单完成：交付物数=${state.deliverables.artifacts.length}`);
+        return { success: true, observation: `交付清单已保存`, data: state.deliverables };
+      }
+
+      // Handle PARALLEL_DISPATCH action
+      if (action.name === 'PARALLEL_DISPATCH' && state) {
+        const taskIds = Array.isArray(params.taskIds) ? params.taskIds as string[] : [];
+        if (taskIds.length === 0) {
+          return { success: false, observation: 'PARALLEL_DISPATCH failed: no taskIds' };
+        }
+        const targetExecutorId = String(params.targetExecutorId || state.targetExecutorId);
+        let successCount = 0;
+        let failCount = 0;
+        
+        for (const taskId of taskIds) {
+          const task = state.taskGraph.find(t => t.id === taskId);
+          if (!task || task.status !== 'ready') continue;
+          
+          task.status = 'in_progress';
+          task.assignee = targetExecutorId;
+          
+          try {
+            const result = await state.hub.sendToModule(targetExecutorId, {
+              taskId,
+              description: task.description,
+              bdTaskId: task.bdTaskId,
+            });
+            task.result = { taskId, success: result.success !== false, output: result.output, error: result.error };
+            
+            if (result.success !== false) {
+              task.status = 'completed';
+              state.completedTasks.push(taskId);
+              successCount++;
+            } else {
+              task.status = 'failed';
+              state.failedTasks.push(taskId);
+              failCount++;
+            }
+          } catch (err) {
+            task.status = 'failed';
+            state.failedTasks.push(taskId);
+            failCount++;
+          }
+        }
+        
+        state.phase = 'parallel_dispatch';
+        return { success: successCount > 0, observation: `并行派发完成：成功${successCount}/${taskIds.length}, 失败${failCount}` };
+      }
+
+      // Handle BLOCKED_REVIEW action
+      if (action.name === 'BLOCKED_REVIEW' && state) {
+        let blockedTaskIds = Array.isArray(params.blockedTaskIds) 
+          ? params.blockedTaskIds as string[] 
+          : state.blockedTasks || [];
+        
+        if (blockedTaskIds.length === 0) {
+          return { success: true, observation: '无阻塞任务需要处理' };
+        }
+        
+        const targetExecutorId = String(params.strongestResourceId || state.targetExecutorId);
+        let handledCount = 0;
+        
+        for (const taskId of blockedTaskIds) {
+          const task = state.taskGraph.find(t => t.id === taskId);
+          if (!task) continue;
+          
+          // Check dependencies
+          const depsResolved = !task.blockedBy || task.blockedBy.every((depId: string) => {
+            const depTask = state.taskGraph.find(t => t.id === depId);
+            return depTask && depTask.status === 'completed';
+          });
+          
+          if (!depsResolved) continue;
+          
+          task.status = 'in_progress';
+          task.assignee = targetExecutorId;
+          
+          try {
+            const result = await state.hub.sendToModule(targetExecutorId, {
+              taskId,
+              description: task.description,
+              bdTaskId: task.bdTaskId,
+            });
+            
+            if (result.success !== false) {
+              task.status = 'completed';
+              state.completedTasks.push(taskId);
+              state.blockedTasks = state.blockedTasks.filter(id => id !== taskId);
+              handledCount++;
+            }
+          } catch {
+            // Keep in blockedTasks
+          }
+        }
+        
+        state.phase = 'blocked_review';
+        return { success: true, observation: `阻塞任务审查完成：处理${handledCount}/${blockedTaskIds.length}个` };
+      }
+
+      // Handle VERIFY action
+      if (action.name === 'VERIFY' && state) {
+        if (!state.deliverables) {
+          return { success: false, observation: 'VERIFY failed: no deliverables defined' };
+        }
+        
+        const totalTasks = state.taskGraph.length;
+        const completedTasks = state.completedTasks.length;
+        const completionRate = totalTasks > 0 ? completedTasks / totalTasks : 0;
+        
+        // Check if all deliverables are complete
+        const allDeliverablesComplete = state.deliverables.artifacts.every(artifact => 
+          state.taskGraph.some(t => t.description.includes(artifact) && t.status === 'completed')
+        );
+        
+        const highCompletionRate = completionRate >= 0.8;
+        const passed = allDeliverablesComplete && highCompletionRate;
+        
+        state.phase = 'verify';
+        
+        if (passed) {
+          await bdTools.closeTask(state.epicId, '所有交付物验证通过');
+          return { 
+            success: true, 
+            observation: `交付物验证通过：完成率${Math.round(completionRate * 100)}%`,
+            shouldStop: true,
+            stopReason: 'complete',
+          };
+        } else {
+          return { 
+            success: false, 
+            observation: `交付物验证失败：完成率${Math.round(completionRate * 100)}%，需要重规划`,
+          };
+        }
+      }
       if (action.name === 'COMPLETE' && state) {
         const allDone = state.taskGraph.length > 0 && state.taskGraph.every(t => t.status === 'completed' || t.status === 'failed');
         if (!allDone) return { success: false, observation: 'COMPLETE rejected: still has unfinished tasks', error: 'unfinished tasks' };
