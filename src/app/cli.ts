@@ -192,6 +192,7 @@ async function handleCommand(commandLine: string): Promise<void> {
       console.log('[App] Goodbye!');
       rl?.close();
       process.exit(0);
+      break;
 
     case 'status':
       printStatus();
@@ -226,7 +227,7 @@ function handleSessionCommand(args: string[]): void {
   const subCmd = args[0];
 
   switch (subCmd) {
-    case 'list':
+    case 'list': {
       const sessions = sessionManager.listSessions();
       console.log('\nSessions:');
       sessions.forEach((s, i) => {
@@ -234,15 +235,15 @@ function handleSessionCommand(args: string[]): void {
         console.log(`  ${i + 1}. ${s.name}${current} - ${s.messages.length} messages`);
       });
       break;
-
-    case 'new':
+    }
+    case 'new': {
       const name = args[1] || 'New Session';
       const session = sessionManager.createSession(process.cwd(), name);
       currentSessionId = session.id;
       console.log(`[App] Created and switched to: ${session.name}`);
       break;
-
-    case 'switch':
+    }
+    case 'switch': {
       const targetId = args[1];
       if (sessionManager.getSession(targetId)) {
         currentSessionId = targetId;
@@ -252,7 +253,7 @@ function handleSessionCommand(args: string[]): void {
         console.log(`[App] Session not found: ${targetId}`);
       }
       break;
-
+    }
     default:
       console.log(`[App] Unknown session command: ${subCmd}`);
       console.log('  Available: list, new, switch');
@@ -327,10 +328,11 @@ function printEvent(event: RuntimeEvent): void {
       console.log(`[${timestamp}] Task failed: ${(event as { payload: { error: string } }).payload.error}`);
       break;
 
-    case 'workflow_progress':
+    case 'workflow_progress': {
       const p = (event as { payload: { overallProgress: number; completedTasks: number; pendingTasks: number } }).payload;
       console.log(`[${timestamp}] Progress: ${p.overallProgress}% (${p.completedTasks}/${p.completedTasks + p.pendingTasks})`);
       break;
+    }
   }
 }
 

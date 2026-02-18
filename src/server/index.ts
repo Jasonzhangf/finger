@@ -953,10 +953,6 @@ app.get('/api/v1/agent/:agentId/progress', (req, res) => {
   });
 });
 
-// Legacy agent deployment (kept for compatibility)
-app.post('/api/v1/agents/deploy', async (req, res) => {
-});
-
 app.post('/api/v1/agents/deploy', async (req, res) => {
   const { sessionId, config, scope, instanceCount = 1 } = req.body;
   if (!config || !config.name) {

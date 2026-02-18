@@ -155,8 +155,6 @@ export class ResumableSessionManager {
   buildResumeContext(checkpoint: SessionCheckpoint): ResumeContext {
     const total = checkpoint.taskProgress.length;
     const completed = checkpoint.completedTaskIds.length;
-    const failed = checkpoint.failedTaskIds.length;
-    const pending = checkpoint.pendingTaskIds.length;
 
     const estimatedProgress = total > 0 ? Math.round((completed / total) * 100) : 0;
 
