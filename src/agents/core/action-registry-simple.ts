@@ -272,6 +272,50 @@ export function createExecutorActions(cwd?: string): ActionDefinition[] {
 export function createOrchestratorActions(): ActionDefinition[] {
   return [
     {
+      name: 'HIGH_DESIGN',
+      description: '进行概要设计：输出高层架构、技术选型、模块划分',
+      paramsSchema: {
+        architecture: { type: 'string', required: true, description: '高层架构描述' },
+        techStack: { type: 'array', required: true, description: '技术选型列表' },
+        modules: { type: 'array', required: true, description: '模块划分列表' },
+        rationale: { type: 'string', required: false, description: '设计理由' },
+      },
+      handler: async (params) => ({
+        success: true,
+        observation: `概要设计完成：架构=${params.architecture}, 模块数=${(params.modules as unknown[]).length}`,
+        data: { phase: 'high_design', ...params },
+      }),
+    },
+    {
+      name: 'DETAIL_DESIGN',
+      description: '进行详细设计：输出接口定义、数据结构、实现细节',
+      paramsSchema: {
+        interfaces: { type: 'array', required: true, description: '接口定义列表' },
+        dataModels: { type: 'array', required: true, description: '数据模型列表' },
+        implementation: { type: 'string', required: true, description: '实现细节' },
+      },
+      handler: async (params) => ({
+        success: true,
+        observation: `详细设计完成：接口数=${(params.interfaces as unknown[]).length}, 数据模型数=${(params.dataModels as unknown[]).length}`,
+        data: { phase: 'detail_design', ...params },
+      }),
+    },
+    {
+      name: 'DELIVERABLES',
+      description: '定义交付清单：输出验收标准、测试要求、交付物列表',
+      paramsSchema: {
+        acceptanceCriteria: { type: 'array', required: true, description: '验收标准列表' },
+        testRequirements: { type: 'array', required: true, description: '测试要求列表' },
+        artifacts: { type: 'array', required: true, description: '交付物列表' },
+      },
+      handler: async (params) => ({
+        success: true,
+        observation: `交付清单完成：交付物数=${(params.artifacts as unknown[]).length}`,
+        data: { phase: 'deliverables', ...params },
+      }),
+    },
+
+    {
       name: 'PLAN',
       description: '拆解任务为子任务列表',
       paramsSchema: { tasks: { type: 'array', required: true } },
