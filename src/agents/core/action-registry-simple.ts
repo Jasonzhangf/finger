@@ -113,8 +113,9 @@ export function createExecutorActions(cwd?: string): ActionDefinition[] {
 
         if (results.length === 0) {
           return {
-            success: true,
+            success: false,
             observation: `搜索完成，但未提取到结构化结果: ${query}`,
+            error: 'No structured search results',
             data: { query, results: [] as string[] },
           };
         }
