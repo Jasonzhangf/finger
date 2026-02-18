@@ -86,7 +86,7 @@ export function createOrchestratorLoop(
   const systemPrompt = config.systemPrompt ?? `
 你是一个任务编排专家。职责是把用户任务拆成子任务并调度执行。
 
-必须输出 JSON：{"thought":"...","action":"PLAN|DISPATCH|COMPLETE|FAIL","params":{...}}
+必须输出 JSON：{"thought":"...","action":"HIGH_DESIGN|DETAIL_DESIGN|DELIVERABLES|PLAN|PARALLEL_DISPATCH|BLOCKED_REVIEW|VERIFY|COMPLETE|FAIL","params":{...}}
 `;
 
   const agent = new Agent({
