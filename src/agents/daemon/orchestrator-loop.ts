@@ -45,14 +45,17 @@ export interface OrchestratorLoopConfig {
 }
 
 type OrchestratorPhase =
-  | 'planning'
+  | 'understanding'
   | 'high_design'
   | 'detail_design'
-  | 'task_allocation'
-  | 'execution'
-  | 'review'
+  | 'deliverables'
+  | 'plan'
+  | 'parallel_dispatch'
+  | 'blocked_review'
+  | 'verify'
   | 'completed'
-  | 'failed';
+  | 'failed'
+  | 'replanning';
 
 type CheckpointTrigger = 'reentry' | 'task_failure';
 
@@ -77,6 +80,9 @@ interface LoopState extends ReActState {
   round: number;
   hub: MessageHub;
   targetExecutorId: string;
+  highDesign?: { architecture: string; techStack: string[]; modules: string[]; rationale?: string };
+  detailDesign?: { interfaces: string[]; dataModels: string[]; implementation: string };
+  deliverables?: { acceptanceCriteria: string[]; testRequirements: string[]; artifacts: string[] };
 }
 
 export function createOrchestratorLoop(
@@ -227,7 +233,7 @@ export function createOrchestratorLoop(
       const shouldRollback = state.lastError && state.checkpoint.totalChecks > 1 && state.failedTasks.length > 0;
       if (shouldRollback) {
         const previousPhase = state.phase;
-        state.phase = 'planning';
+        state.phase = 'replanning';
         state.checkpoint.majorChange = true;
         const feedback = `检测到重大变更，从 ${previousPhase} 回退到 planning 阶段`;
         return { success: true, observation: feedback, shouldStop: true, stopReason: 'escalate' };
@@ -256,7 +262,7 @@ export function createOrchestratorLoop(
     const loop = new ReActLoop(loopConfig, userTask);
     const loopState: LoopState = {
       task: userTask, iterations: [], convergence: { rejectionStreak: 0, sameRejectionReason: '', stuckCount: 0 },
-      epicId: epic.id, userTask, taskGraph: [], completedTasks: [], failedTasks: [], phase: 'planning', blockedTasks: [],
+      epicId: epic.id, userTask, taskGraph: [], completedTasks: [], failedTasks: [], phase: 'replanning', blockedTasks: [],
       checkpoint: { totalChecks: 0, majorChange: false }, round: 0, hub, targetExecutorId: config.targetExecutorId || 'executor-loop',
     };
     (loop as unknown as { state: LoopState }).state = loopState;
