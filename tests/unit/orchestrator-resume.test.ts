@@ -5,13 +5,13 @@
 import { describe, it, expect } from 'vitest';
 import {
   isValidPhaseTransition,
-  determineResumePhase,
   buildRecoveryContext,
   generateResumePrompt,
   shouldCheckpointAtPhase,
   PHASE_TRANSITIONS,
   type OrchestratorPhase,
 } from '../../src/agents/daemon/orchestrator-resume.js';
+import { determineResumePhase } from '../../src/orchestration/resumable-session.js';
 import type { SessionCheckpoint } from '../../src/orchestration/resumable-session.js';
 
 describe('Orchestrator Resume Logic', () => {
