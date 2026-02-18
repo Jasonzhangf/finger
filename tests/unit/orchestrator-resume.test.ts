@@ -58,59 +58,89 @@ describe('Orchestrator Resume Logic', () => {
     });
   });
 
-  describe('determineResumePhase', () => {
-    it('returns plan when there are failed tasks', () => {
-      const checkpoint = {
-        failedTaskIds: ['task-1'],
-        taskProgress: [],
-        completedTaskIds: [],
-        pendingTaskIds: [],
-        context: {},
-      } as unknown as SessionCheckpoint;
-      
-      expect(determineResumePhase(checkpoint)).toBe('plan');
-    });
+ describe('determineResumePhase', () => {
+   it('returns plan when there are failed tasks', () => {
+     const checkpoint = {
+       failedTaskIds: ['task-1'],
+       taskProgress: [],
+       completedTaskIds: [],
+       pendingTaskIds: [],
+       context: {},
+     } as unknown as SessionCheckpoint;
+     
+     expect(determineResumePhase(checkpoint)).toBe('plan');
+   });
 
-    it('returns parallel_dispatch when there are in-progress tasks', () => {
+   it('returns parallel_dispatch when there are in-progress tasks', () => {
+     const checkpoint = {
+       failedTaskIds: [],
+       taskProgress: [
+         { taskId: 'task-1', status: 'in_progress', description: 'Test' },
+       ],
+       completedTaskIds: [],
+       pendingTaskIds: [],
+       context: {},
+     } as unknown as SessionCheckpoint;
+     
+     expect(determineResumePhase(checkpoint)).toBe('parallel_dispatch');
+   });
+
+   it('returns verify when all tasks completed', () => {
+     const checkpoint = {
+       failedTaskIds: [],
+       taskProgress: [
+         { taskId: 'task-1', status: 'completed', description: 'Test' },
+       ],
+       completedTaskIds: ['task-1'],
+       pendingTaskIds: [],
+       context: {},
+     } as unknown as SessionCheckpoint;
+     
+     expect(determineResumePhase(checkpoint)).toBe('verify');
+   });
+
+   it('returns saved phase from context otherwise', () => {
+     const checkpoint = {
+       failedTaskIds: [],
+       taskProgress: [],
+       completedTaskIds: [],
+       pendingTaskIds: ['task-1'],
+       context: { phase: 'detail_design' },
+     } as unknown as SessionCheckpoint;
+     
+     expect(determineResumePhase(checkpoint)).toBe('detail_design');
+   });
+    
+    it('returns phaseHistory latest phase when available', () => {
       const checkpoint = {
         failedTaskIds: [],
-        taskProgress: [
-          { taskId: 'task-1', status: 'in_progress', description: 'Test' },
-        ],
-        completedTaskIds: [],
-        pendingTaskIds: [],
-        context: {},
-      } as unknown as SessionCheckpoint;
-      
-      expect(determineResumePhase(checkpoint)).toBe('parallel_dispatch');
-    });
-
-    it('returns verify when all tasks completed', () => {
-      const checkpoint = {
-        failedTaskIds: [],
-        taskProgress: [
-          { taskId: 'task-1', status: 'completed', description: 'Test' },
-        ],
-        completedTaskIds: ['task-1'],
-        pendingTaskIds: [],
-        context: {},
-      } as unknown as SessionCheckpoint;
-      
-      expect(determineResumePhase(checkpoint)).toBe('verify');
-    });
-
-    it('returns saved phase from context otherwise', () => {
-      const checkpoint = {
-        failedTaskIds: [],
-        taskProgress: [],
+        taskProgress: [{ taskId: 'task-1', status: 'pending', description: 'Test' }],
         completedTaskIds: [],
         pendingTaskIds: ['task-1'],
-        context: { phase: 'detail_design' },
+        context: { phase: 'understanding' },
+        phaseHistory: [
+          { phase: 'understanding', timestamp: '2024-01-01T00:00:00Z', action: 'start' },
+          { phase: 'high_design', timestamp: '2024-01-01T00:01:00Z', action: 'design_completed' },
+        ],
       } as unknown as SessionCheckpoint;
       
-      expect(determineResumePhase(checkpoint)).toBe('detail_design');
+      expect(determineResumePhase(checkpoint)).toBe('high_design');
     });
-  });
+    
+    it('prefers phaseHistory over context.phase', () => {
+      const checkpoint = {
+        failedTaskIds: [],
+        taskProgress: [{ taskId: 'task-1', status: 'pending', description: 'Test' }],
+        completedTaskIds: [],
+        pendingTaskIds: ['task-1'],
+        context: { phase: 'plan' },
+        phaseHistory: [{ phase: 'high_design', timestamp: '2024-01-01T00:00:00Z', action: 'design' }],
+      } as unknown as SessionCheckpoint;
+      
+      // Should prefer checkpoint.phaseHistory over context.phaseHistory
+      expect(determineResumePhase(checkpoint)).toBe('high_design');
+    });
+ });
 
   describe('buildRecoveryContext', () => {
     it('builds correct recovery context', () => {

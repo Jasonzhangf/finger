@@ -304,6 +304,11 @@ export const resumableSessionManager = new ResumableSessionManager();
  * Determine which phase to resume from based on checkpoint state
  */
 export function determineResumePhase(checkpoint: SessionCheckpoint): string {
+  // Failed tasks always force rollback to plan phase
+  if (checkpoint.failedTaskIds.length > 0) {
+    return 'plan';
+  }
+
   // If checkpoint has phase history, use the latest phase
   if (checkpoint.phaseHistory && checkpoint.phaseHistory.length > 0) {
     const latestEntry = checkpoint.phaseHistory[checkpoint.phaseHistory.length - 1];
@@ -320,11 +325,6 @@ export function determineResumePhase(checkpoint: SessionCheckpoint): string {
   // Fallback: infer from context
   const context = checkpoint.context as { phase?: string } | undefined;
   const savedPhase = context?.phase || 'understanding';
-  
-  // If there are failed tasks, go back to plan phase to reassess
-  if (checkpoint.failedTaskIds.length > 0) {
-    return 'plan';
-  }
   
   // If there are in-progress tasks, resume from parallel_dispatch
   const inProgress = checkpoint.taskProgress.filter(t => t.status === 'in_progress');
