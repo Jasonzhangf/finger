@@ -168,6 +168,8 @@ export function createOrchestratorLoop(
       action: reason,
       checkpointId: checkpoint.checkpointId,
     });
+    // Cleanup old checkpoints after each save, keep last 10
+    resumableSessionManager.cleanupOldCheckpoints(sessionId, 10);
 
     console.log(`[Orchestrator] Checkpoint saved: ${checkpoint.checkpointId} (phase=${state.phase}, reason=${reason})`);
   }
