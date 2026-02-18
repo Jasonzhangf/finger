@@ -261,7 +261,7 @@ export function createOrchestratorLoop(
       planner: { agent, actionRegistry: registry },
       reviewer: reviewer ? { agent: reviewer, enabled: true } : undefined,
       stopConditions: { completeActions: ['COMPLETE'], failActions: ['FAIL'], maxRounds: config.maxRounds ?? 10, onConvergence: true, onStuck: 3, maxRejections: 4 },
-      formatFix: { maxRetries: 3, schema: { type: 'object', required: ['thought', 'action', 'params'], properties: { thought: { type: 'string' }, action: { type: 'string' }, params: { type: 'object' }, expectedOutcome: { type: 'string' }, risk: { type: 'string' } } } },
+      formatFix: { maxRetries: 10, schema: { type: 'object', required: ['thought', 'action', 'params'], properties: { thought: { type: 'string' }, action: { type: 'string' }, params: { type: 'object' }, expectedOutcome: { type: 'string' }, risk: { type: 'string' } } } },
       snapshotLogger: logger,
       agentId: config.id,
     };

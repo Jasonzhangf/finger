@@ -144,7 +144,7 @@ export function createExecutorLoop(config: ExecutorLoopConfig): { agent: Agent; 
         maxRejections: 4,
       },
       formatFix: {
-        maxRetries: 3,
+        maxRetries: 10,
         schema: {
           type: 'object',
           required: ['thought', 'action', 'params'],
