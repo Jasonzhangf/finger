@@ -103,24 +103,12 @@ export function createOrchestratorLoop(
   const logger: SnapshotLogger = createSnapshotLogger(config.id);
   let initialized = false;
   let initPromise: Promise<void> | null = null;
-  let disconnectTimeout: ReturnType<typeof setTimeout> | null = null;
 
   const registry = new ActionRegistry();
   const baseActions = createOrchestratorActions();
 
-  const scheduleDisconnect = () => {
-    if (disconnectTimeout) clearTimeout(disconnectTimeout);
-    disconnectTimeout = setTimeout(async () => {
-      if (initialized) {
-        try { await agent.disconnect(); } catch { /* ignore */ }
-        initialized = false;
-        initPromise = null;
-      }
-    }, 60000);
-  };
 
   const ensureConnected = async (): Promise<void> => {
-    if (disconnectTimeout) clearTimeout(disconnectTimeout);
     if (!initialized) {
       if (!initPromise) {
         initPromise = agent.initialize().then(() => { initialized = true; });
@@ -279,7 +267,6 @@ export function createOrchestratorLoop(
       return { success: result.success && allDone && loopState.failedTasks.length === 0, epicId: epic.id, completed: loopState.completedTasks.length, failed: loopState.failedTasks.length, rounds: result.totalRounds, output: result.finalObservation };
     } finally {
       if (reviewer) await reviewer.disconnect();
-      scheduleDisconnect();
     }
   }
 
@@ -291,7 +278,6 @@ export function createOrchestratorLoop(
     metadata: { mode: config.mode, provider: 'iflow', type: 'orchestrator-loop' },
     initialize: async () => { await ensureConnected(); },
     destroy: async () => {
-      if (disconnectTimeout) clearTimeout(disconnectTimeout);
       await agent.disconnect();
       initialized = false;
       initPromise = null;
