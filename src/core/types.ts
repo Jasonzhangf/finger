@@ -116,7 +116,7 @@ export const DEFAULT_CONFIG: OrchestratorConfig = {
   serverPort: 8080,
   dbPath: './data/finger.db',
   retryConfig: {
-    maxRetries: 3,
+    maxRetries: 10,
     retryDelayMs: 1000,
     retryBackoff: 'exponential',
     retryableErrors: ['TIMEOUT', 'NETWORK_ERROR', 'RATE_LIMIT']
