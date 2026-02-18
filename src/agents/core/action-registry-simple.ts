@@ -314,6 +314,66 @@ export function createOrchestratorActions(): ActionDefinition[] {
         data: { phase: 'deliverables', ...params },
       }),
     },
+    {
+      name: 'PARALLEL_DISPATCH',
+      description: '并行派发非阻塞任务给多个执行者',
+      paramsSchema: {
+        taskIds: { type: 'array', required: true, description: '要派发的任务 ID 列表' },
+        targetExecutorId: { type: 'string', required: false, description: '目标执行者 ID' },
+      },
+      handler: async (params, context) => {
+        const loopContext = context as { state?: any };
+        const state = loopContext?.state;
+        if (!state) {
+          return { success: false, observation: 'PARALLEL_DISPATCH failed: no state', error: 'no state' };
+        }
+        const taskIds = Array.isArray(params.taskIds) ? params.taskIds as string[] : [];
+        if (taskIds.length === 0) {
+          return { success: false, observation: 'PARALLEL_DISPATCH failed: no taskIds', error: 'empty taskIds' };
+        }
+        const targetExecutorId = String(params.targetExecutorId || state.targetExecutorId || 'executor-loop');
+        
+        const dispatchPromises = taskIds.map(async (taskId) => {
+          const task = state.taskGraph.find((t: any) => t.id === taskId);
+          if (!task || task.status !== 'ready') {
+            return { taskId, success: false, error: 'task not ready' };
+          }
+          task.status = 'in_progress';
+          task.assignee = targetExecutorId;
+          try {
+            const result = await state.hub.sendToModule(targetExecutorId, {
+              taskId,
+              description: task.description,
+              bdTaskId: task.bdTaskId,
+            });
+            task.result = { taskId, success: result.success !== false, output: result.output, error: result.error };
+            if (result.success !== false) {
+              task.status = 'completed';
+              state.completedTasks.push(taskId);
+            } else {
+              task.status = 'failed';
+              state.failedTasks.push(taskId);
+            }
+            return { taskId, success: result.success !== false, result };
+          } catch (err) {
+            task.status = 'failed';
+            task.result = { taskId, success: false, error: String(err) };
+            state.failedTasks.push(taskId);
+            return { taskId, success: false, error: String(err) };
+          }
+        });
+        
+        const results = await Promise.allSettled(dispatchPromises);
+        const successCount = results.filter(r => r.status === 'fulfilled' && r.value.success).length;
+        const failCount = results.filter(r => r.status === 'fulfilled' && !r.value.success).length;
+        
+        return {
+          success: successCount > 0,
+          observation: `并行派发完成：成功${successCount}/${taskIds.length}, 失败${failCount}`,
+          data: { dispatched: taskIds.length, success: successCount, failed: failCount, results },
+        };
+      },
+    },
 
     {
       name: 'PLAN',
