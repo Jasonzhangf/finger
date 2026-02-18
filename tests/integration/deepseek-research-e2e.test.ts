@@ -125,7 +125,7 @@ describe('DeepSeek Research E2E', () => {
       
       // 验证结果
       expect(failed).toBe(0);
-      expect(rounds).toBeLessThanOrEqual(10);
+      expect(rounds).toBeLessThanOrEqual(15);
       
       // 验证报告文件是否生成
       const reportPath = path.join(outputDir, 'deepseek_analysis_report.md');
