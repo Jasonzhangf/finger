@@ -26,6 +26,13 @@ export interface TaskProgress {
   maxIterations: number;
 }
 
+export interface PhaseHistoryEntry {
+  phase: string;
+  timestamp: string;
+  action: string;
+  checkpointId?: string;
+}
+
 export interface SessionCheckpoint {
   checkpointId: string;
   sessionId: string;
@@ -42,6 +49,7 @@ export interface SessionCheckpoint {
     round: number;
     thought?: string;
   }>;
+  phaseHistory?: PhaseHistoryEntry[];
   context: Record<string, unknown>;
 }
 
@@ -289,3 +297,37 @@ export class ResumableSessionManager {
 
 // Singleton instance
 export const resumableSessionManager = new ResumableSessionManager();
+
+/**
+ * Determine which phase to resume from based on checkpoint state
+ */
+export function determineResumePhase(checkpoint: SessionCheckpoint): string {
+  // If checkpoint has phase history, use the latest phase
+  if (checkpoint.phaseHistory && checkpoint.phaseHistory.length > 0) {
+    const latestEntry = checkpoint.phaseHistory[checkpoint.phaseHistory.length - 1];
+    return latestEntry.phase;
+  }
+  
+  // Fallback: infer from context
+  const context = checkpoint.context as { phase?: string } | undefined;
+  const savedPhase = context?.phase || 'understanding';
+  
+  // If there are failed tasks, go back to plan phase to reassess
+  if (checkpoint.failedTaskIds.length > 0) {
+    return 'plan';
+  }
+  
+  // If there are in-progress tasks, resume from parallel_dispatch
+  const inProgress = checkpoint.taskProgress.filter(t => t.status === 'in_progress');
+  if (inProgress.length > 0) {
+    return 'parallel_dispatch';
+  }
+  
+  // If all tasks completed, go to verify
+  if (checkpoint.pendingTaskIds.length === 0 && checkpoint.completedTaskIds.length > 0) {
+    return 'verify';
+  }
+  
+  // Otherwise resume from saved phase
+  return savedPhase;
+}
