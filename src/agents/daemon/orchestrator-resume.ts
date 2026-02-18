@@ -77,13 +77,26 @@ export function isValidPhaseTransition(from: OrchestratorPhase, to: Orchestrator
  * Determine which phase to resume from based on checkpoint state
  */
 export function determineResumePhase(checkpoint: SessionCheckpoint): OrchestratorPhase {
-  const context = checkpoint.context as { phase?: OrchestratorPhase } | undefined;
-  const savedPhase = context?.phase || 'understanding';
-  
-  // If there are failed tasks, go back to plan phase to reassess
+  // Failed tasks always force rollback to plan phase.
   if (checkpoint.failedTaskIds.length > 0) {
     return 'plan';
   }
+
+  // Prefer explicit phase history when available.
+  if (checkpoint.phaseHistory && checkpoint.phaseHistory.length > 0) {
+    const latestEntry = checkpoint.phaseHistory[checkpoint.phaseHistory.length - 1];
+    return latestEntry.phase as OrchestratorPhase;
+  }
+
+  // Fallback: context-carried phase history.
+  const ctxWithHistory = checkpoint.context as { phaseHistory?: Array<{ phase: OrchestratorPhase }> } | undefined;
+  if (ctxWithHistory?.phaseHistory && ctxWithHistory.phaseHistory.length > 0) {
+    const latestEntry = ctxWithHistory.phaseHistory[ctxWithHistory.phaseHistory.length - 1];
+    return latestEntry.phase;
+  }
+
+  const context = checkpoint.context as { phase?: OrchestratorPhase } | undefined;
+  const savedPhase = context?.phase || 'understanding';
   
   // If there are in-progress tasks, resume from parallel_dispatch
   const inProgress = checkpoint.taskProgress.filter(t => t.status === 'in_progress');
