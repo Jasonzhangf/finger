@@ -374,6 +374,89 @@ export function createOrchestratorActions(): ActionDefinition[] {
         };
       },
     },
+    {
+      name: 'BLOCKED_REVIEW',
+      description: '审查阻塞任务并分配最强力资源攻关',
+      paramsSchema: {
+        blockedTaskIds: { type: 'array', required: false, description: '要处理的阻塞任务 ID 列表 (不传则自动处理所有 blockedTasks)' },
+        strongestResourceId: { type: 'string', required: false, description: '指定最强力资源 ID (可选)' },
+      },
+      handler: async (params, context) => {
+        const loopContext = context as { state?: any };
+        const state = loopContext?.state;
+        if (!state) {
+          return { success: false, observation: 'BLOCKED_REVIEW failed: no state', error: 'no state' };
+        }
+        
+        // 获取阻塞任务列表
+        let blockedTaskIds = Array.isArray(params.blockedTaskIds) 
+          ? params.blockedTaskIds as string[] 
+          : state.blockedTasks || [];
+        
+        if (blockedTaskIds.length === 0) {
+          return { success: true, observation: '无阻塞任务需要处理', data: { handled: 0 } };
+        }
+        
+        const targetExecutorId = String(params.strongestResourceId || state.targetExecutorId || 'executor-loop');
+        const handledTasks: Array<{ taskId: string; success: boolean; error?: string }> = [];
+        
+        for (const taskId of blockedTaskIds) {
+          const task = state.taskGraph.find((t: any) => t.id === taskId);
+          if (!task) {
+            handledTasks.push({ taskId, success: false, error: 'task not found' });
+            continue;
+          }
+          
+          // 检查依赖是否已解决
+          const dependenciesResolved = !task.blockedBy || task.blockedBy.every((depId: string) => {
+            const depTask = state.taskGraph.find((t: any) => t.id === depId);
+            return depTask && depTask.status === 'completed';
+          });
+          
+          if (!dependenciesResolved) {
+            handledTasks.push({ taskId, success: false, error: 'dependencies not resolved' });
+            continue;
+          }
+          
+          // 依赖已解决，重新派发
+          task.status = 'in_progress';
+          task.assignee = targetExecutorId;
+          
+          try {
+            const result = await state.hub.sendToModule(targetExecutorId, {
+              taskId,
+              description: task.description,
+              bdTaskId: task.bdTaskId,
+            });
+            
+            task.result = { taskId, success: result.success !== false, output: result.output, error: result.error };
+            
+            if (result.success !== false) {
+              task.status = 'completed';
+              state.completedTasks.push(taskId);
+              // 从 blockedTasks 移除
+              state.blockedTasks = state.blockedTasks.filter((id: string) => id !== taskId);
+              handledTasks.push({ taskId, success: true });
+            } else {
+              task.status = 'failed';
+              handledTasks.push({ taskId, success: false, error: result.error || 'execution failed' });
+            }
+          } catch (err) {
+            task.status = 'failed';
+            handledTasks.push({ taskId, success: false, error: String(err) });
+          }
+        }
+        
+        const successCount = handledTasks.filter(t => t.success).length;
+        const failCount = handledTasks.filter(t => !t.success).length;
+        
+        return {
+          success: successCount > 0 || blockedTaskIds.length === 0,
+          observation: `阻塞任务审查完成：处理${blockedTaskIds.length}个，成功${successCount}个，失败${failCount}个`,
+          data: { handled: handledTasks, remainingBlocked: state.blockedTasks.length },
+        };
+      },
+    },
 
     {
       name: 'PLAN',
