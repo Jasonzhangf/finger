@@ -6,9 +6,11 @@
   "type": "module",
   "scripts": {
     "build": "tsc --noEmit false",
+    "build:dev": "npm run build",
     "dev": "tsx watch src/cli/index.ts",
     "start": "node dist/server/index.js",
     "cli": "node dist/cli/index.js",
+    "install:global": "npm install -g .",
     "server:dev": "tsx watch src/server/index.ts",
     "test": "vitest run",
     "test:watch": "vitest",
