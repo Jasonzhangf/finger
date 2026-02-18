@@ -483,16 +483,61 @@ export function createOrchestratorLoop(
     },
   });
 
-  async function runLoop(userTask: string): Promise<unknown> {
-    await ensureConnected();
-    const epic = await bdTools.createTask({ title: userTask.substring(0, 100), type: 'epic', priority: 0, labels: ['orchestration', 'react-loop'] });
-    const resumeSessionId = config.sessionId || config.id;
-    const latestCheckpoint = resumableSessionManager.findLatestCheckpoint(resumeSessionId);
-    const resumedPhase = latestCheckpoint
-      ? (determineResumePhase(latestCheckpoint) as OrchestratorPhase)
-      : 'replanning';
-    const reviewer = config.enableReview ? new ReviewerRole({ id: `${config.id}-reviewer`, name: `${config.name} Reviewer`, mode: config.mode, cwd: config.cwd }) : undefined;
-    if (reviewer) await reviewer.initialize();
+ async function runLoop(userTask: string): Promise<unknown> {
+   await ensureConnected();
+   const epic = await bdTools.createTask({ title: userTask.substring(0, 100), type: 'epic', priority: 0, labels: ['orchestration', 'react-loop'] });
+   const resumeSessionId = config.sessionId || config.id;
+   const latestCheckpoint = resumableSessionManager.findLatestCheckpoint(resumeSessionId);
+   const resumedPhase = latestCheckpoint
+     ? (determineResumePhase(latestCheckpoint) as OrchestratorPhase)
+     : 'replanning';
+    
+    // Restore state from checkpoint if available
+    let initialTaskGraph: TaskNode[] = [];
+    let initialCompletedTasks: string[] = [];
+    let initialFailedTasks: string[] = [];
+    let initialBlockedTasks: string[] = [];
+    let initialHighDesign: LoopState['highDesign'] = undefined;
+    let initialDetailDesign: LoopState['detailDesign'] = undefined;
+    let initialDeliverables: LoopState['deliverables'] = undefined;
+    
+    if (latestCheckpoint) {
+      console.log(`[Orchestrator] Restoring from checkpoint ${latestCheckpoint.checkpointId}...`);
+      
+      // Restore task graph
+      initialTaskGraph = latestCheckpoint.taskProgress.map(tp => ({
+        id: tp.taskId,
+        description: tp.description,
+        status: tp.status as TaskNode['status'],
+        assignee: tp.assignedAgent,
+        result: tp.result ? { taskId: tp.taskId, success: tp.result.success, output: tp.result.output, error: tp.result.error } : undefined,
+        bdTaskId: undefined, // Will be re-linked if needed
+      }));
+      
+      // Restore completed/failed task lists
+      initialCompletedTasks = [...latestCheckpoint.completedTaskIds];
+      initialFailedTasks = [...latestCheckpoint.failedTaskIds];
+      
+      // Restore blocked tasks (pending but not completed)
+      initialBlockedTasks = latestCheckpoint.pendingTaskIds.filter(id => 
+        !initialCompletedTasks.includes(id) && !initialFailedTasks.includes(id)
+      );
+      
+      // Restore design artifacts from context
+      const ctx = latestCheckpoint.context as {
+        highDesign?: LoopState['highDesign'];
+        detailDesign?: LoopState['detailDesign'];
+        deliverables?: LoopState['deliverables'];
+      };
+      initialHighDesign = ctx.highDesign;
+      initialDetailDesign = ctx.detailDesign;
+      initialDeliverables = ctx.deliverables;
+      
+      console.log(`[Orchestrator] Restored: phase=${resumedPhase}, tasks=${initialTaskGraph.length}, completed=${initialCompletedTasks.length}, failed=${initialFailedTasks.length}`);
+    }
+    
+   const reviewer = config.enableReview ? new ReviewerRole({ id: `${config.id}-reviewer`, name: `${config.name} Reviewer`, mode: config.mode, cwd: config.cwd }) : undefined;
+   if (reviewer) await reviewer.initialize();
     const loopConfig: LoopConfig = {
       planner: { agent, actionRegistry: registry },
       reviewer: reviewer ? { agent: reviewer, enabled: true } : undefined,
@@ -504,7 +549,8 @@ export function createOrchestratorLoop(
     const loop = new ReActLoop(loopConfig, userTask);
     const loopState: LoopState = {
       task: userTask, iterations: [], convergence: { rejectionStreak: 0, sameRejectionReason: '', stuckCount: 0 },
-      epicId: epic.id, userTask, taskGraph: [], completedTasks: [], failedTasks: [], phase: resumedPhase, blockedTasks: [],
+      epicId: epic.id, userTask, taskGraph: initialTaskGraph, completedTasks: initialCompletedTasks, failedTasks: initialFailedTasks, phase: resumedPhase, blockedTasks: initialBlockedTasks,
+      highDesign: initialHighDesign, detailDesign: initialDetailDesign, deliverables: initialDeliverables,
       checkpoint: { totalChecks: 0, majorChange: false }, round: 0, hub, targetExecutorId: config.targetExecutorId || 'executor-loop',
     };
     (loop as unknown as { state: LoopState }).state = loopState;
