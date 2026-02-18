@@ -1,31 +1,57 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { EventEmitter } from 'events';
 import { BdTools } from '../../../src/agents/shared/bd-tools.js';
 
-// Mock exec
-vi.mock('child_process', () => ({
-  exec: vi.fn((cmd: string, _options: any, callback: any) => {
-    // 模拟 bd CLI 响应
-    if (cmd.includes('bd --no-db create')) {
-      callback(null, { stdout: 'Created task: finger-100\nfinger-100' });
-    } else if (cmd.includes('bd --no-db ready')) {
-      callback(null, { stdout: '[]' });
-    } else if (cmd.includes('bd --no-db show')) {
-      callback(null, { stdout: JSON.stringify({
-        id: 'finger-100',
-        title: 'Test Task',
-        status: 'open',
-        priority: 1,
-        labels: [],
-        created_at: '2025-01-01T00:00:00Z',
-        updated_at: '2025-01-01T00:00:00Z',
-      }) });
-    } else if (cmd.includes('bd --no-db list --parent')) {
-      callback(null, { stdout: '[]' });
-    } else {
-      callback(null, { stdout: '' });
-    }
-  }),
-}));
+// Mock child_process for spawn-based bd runner
+vi.mock('child_process', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('child_process')>();
+
+  const createSpawnMock = (args: string[]) => {
+    const stdout = new EventEmitter();
+    const stderr = new EventEmitter();
+    const child = new EventEmitter() as EventEmitter & {
+      stdout: EventEmitter;
+      stderr: EventEmitter;
+      kill: () => void;
+      pid: number;
+    };
+
+    child.stdout = stdout;
+    child.stderr = stderr;
+    child.kill = () => undefined;
+    child.pid = 12345;
+
+    const fullArgs = args.join(' ');
+
+    setTimeout(() => {
+      if (fullArgs.includes('create')) {
+        stdout.emit('data', Buffer.from('Created task: finger-100\nfinger-100\n'));
+      } else if (fullArgs.includes('show')) {
+        stdout.emit('data', Buffer.from(JSON.stringify({
+          id: 'finger-100',
+          title: 'Test Task',
+          status: 'open',
+          priority: 1,
+          labels: [],
+          created_at: '2025-01-01T00:00:00Z',
+          updated_at: '2025-01-01T00:00:00Z',
+        })));
+      } else if (fullArgs.includes('list')) {
+        stdout.emit('data', Buffer.from('[]'));
+      } else {
+        stdout.emit('data', Buffer.from(''));
+      }
+      child.emit('close', 0);
+    }, 0);
+
+    return child;
+  };
+
+  return {
+    ...actual,
+    spawn: vi.fn((_cmd: string, args: string[]) => createSpawnMock(args)),
+  };
+});
 
 describe('BdTools', () => {
   let bdTools: BdTools;
