@@ -136,5 +136,5 @@ describe('DeepSeek Research E2E', () => {
         expect(content.length).toBeGreaterThan(0);
       }
     }
-  }, 600000);
+  }, 1200000);
 });
