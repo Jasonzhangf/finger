@@ -52,36 +52,12 @@ export function createExecutorLoop(config: ExecutorLoopConfig): { agent: Agent; 
   const logger: SnapshotLogger = createSnapshotLogger(config.id);
   let initialized = false;
   let initPromise: Promise<void> | null = null;
-  let disconnectTimeout: ReturnType<typeof setTimeout> | null = null;
 
   const actionRegistry = new ActionRegistry();
   const actions = createExecutorActions(config.cwd);
-  
-  // 延迟断开机制
-  const scheduleDisconnect = () => {
-    if (disconnectTimeout) {
-      clearTimeout(disconnectTimeout);
-    }
-    disconnectTimeout = setTimeout(async () => {
-      if (initialized) {
-        console.log('[ExecutorLoop] Disconnecting due to inactivity');
-        try {
-          await agent.disconnect();
-        } catch {
-          // ignore
-        }
-        initialized = false;
-        initPromise = null;
-      }
-    }, 60000); // 60秒无活动后断开
-  };
 
   // 确保已连接（复用现有连接或新建）
   const ensureConnected = async (): Promise<void> => {
-    if (disconnectTimeout) {
-      clearTimeout(disconnectTimeout);
-    }
-    
     if (!initialized) {
       if (!initPromise) {
         initPromise = agent.initialize().then(() => {
@@ -124,97 +100,95 @@ export function createExecutorLoop(config: ExecutorLoopConfig): { agent: Agent; 
     actionRegistry.register(action);
   }
 
-async function runTask(
-  taskId: string,
-  description: string,
-  bdTaskId?: string
-): Promise<{ success: boolean; output?: string; error?: string }> {
-   // 确保连接（复用或新建）
-   await ensureConnected();
-   
-   // Verify connection state after initialization
-   const status = agent.getStatus();
-   console.log(`[executor-loop] Agent status after initialize: connected=${status.connected}, sessionId=${status.sessionId}`);
+  async function runTask(
+    taskId: string,
+    description: string,
+    bdTaskId?: string
+  ): Promise<{ success: boolean; output?: string; error?: string }> {
+    // 确保连接（复用或新建）
+    await ensureConnected();
 
-   let reviewer: ReviewerRole | undefined;
-   if (config.enableReview) {
-     reviewer = new ReviewerRole({
-       id: `${config.id}-reviewer`,
-       name: `${config.name} Reviewer`,
-       mode: config.mode,
-       cwd: config.cwd,
-     });
-     await reviewer.initialize();
-   }
+    // Verify connection state after initialization
+    const status = agent.getStatus();
+    console.log(`[executor-loop] Agent status after initialize: connected=${status.connected}, sessionId=${status.sessionId}`);
 
-   const loopConfig: LoopConfig = {
-     planner: {
-       agent,
-       actionRegistry,
-       freshSessionPerRound: true,
-     },
-     reviewer: reviewer
-       ? {
-           agent: reviewer,
-           enabled: true,
-         }
-       : undefined,
-     stopConditions: {
-       completeActions: ['COMPLETE'],
-       failActions: ['FAIL'],
-       maxRounds: config.maxIterations ?? 5,
-       onConvergence: true,
-       onStuck: 3,
-       maxRejections: 4,
-     },
-     formatFix: {
-       maxRetries: 3,
-       schema: {
-         type: 'object',
-         required: ['thought', 'action', 'params'],
-         properties: {
-           thought: { type: 'string' },
-           action: { type: 'string' },
-           params: { type: 'object' },
-           expectedOutcome: { type: 'string' },
-           risk: { type: 'string' },
-         },
-       },
-     },
-     snapshotLogger: logger,
-     agentId: config.id,
-   };
-
-   const loop = new ReActLoop(loopConfig, description);
-   (loop as unknown as { state: ExecutorState }).state = {
-     task: description,
-     iterations: [],
-     convergence: {
-       rejectionStreak: 0,
-       sameRejectionReason: '',
-       stuckCount: 0,
-     },
-     taskId,
-     description,
-     bdTaskId,
-     observations: [],
-   };
-
-   try {
-     const result: ReActResult = await loop.run();
-     return {
-       success: result.success,
-       output: result.finalObservation,
-       error: result.finalError,
-     };
-  } finally {
-    if (reviewer) {
-      await reviewer.disconnect();
+    let reviewer: ReviewerRole | undefined;
+    if (config.enableReview) {
+      reviewer = new ReviewerRole({
+        id: `${config.id}-reviewer`,
+        name: `${config.name} Reviewer`,
+        mode: config.mode,
+        cwd: config.cwd,
+      });
+      await reviewer.initialize();
     }
-    // 调度延迟断开，而非立即断开
-    scheduleDisconnect();
+
+    const loopConfig: LoopConfig = {
+      planner: {
+        agent,
+        actionRegistry,
+        freshSessionPerRound: true,
+      },
+      reviewer: reviewer
+        ? {
+            agent: reviewer,
+            enabled: true,
+          }
+        : undefined,
+      stopConditions: {
+        completeActions: ['COMPLETE'],
+        failActions: ['FAIL'],
+        maxRounds: config.maxIterations ?? 5,
+        onConvergence: true,
+        onStuck: 3,
+        maxRejections: 4,
+      },
+      formatFix: {
+        maxRetries: 3,
+        schema: {
+          type: 'object',
+          required: ['thought', 'action', 'params'],
+          properties: {
+            thought: { type: 'string' },
+            action: { type: 'string' },
+            params: { type: 'object' },
+            expectedOutcome: { type: 'string' },
+            risk: { type: 'string' },
+          },
+        },
+      },
+      snapshotLogger: logger,
+      agentId: config.id,
+    };
+
+    const loop = new ReActLoop(loopConfig, description);
+    (loop as unknown as { state: ExecutorState }).state = {
+      task: description,
+      iterations: [],
+      convergence: {
+        rejectionStreak: 0,
+        sameRejectionReason: '',
+        stuckCount: 0,
+      },
+      taskId,
+      description,
+      bdTaskId,
+      observations: [],
+    };
+
+    try {
+      const result: ReActResult = await loop.run();
+      return {
+        success: result.success,
+        output: result.finalObservation,
+        error: result.finalError,
+      };
+    } finally {
+      if (reviewer) {
+        await reviewer.disconnect();
+      }
+    }
   }
-}
 
   const module: OutputModule = {
     id: config.id,
@@ -228,9 +202,6 @@ async function runTask(
     },
 
     destroy: async () => {
-      if (disconnectTimeout) {
-        clearTimeout(disconnectTimeout);
-      }
       await agent.disconnect();
       initialized = false;
       initPromise = null;
