@@ -9,6 +9,7 @@ import { createSnapshotLogger, SnapshotLogger } from '../shared/snapshot-logger.
 import { MessageHub } from '../../orchestration/message-hub.js';
 import { globalEventBus } from '../../runtime/event-bus.js';
 import { runtimeInstructionBus } from '../../orchestration/runtime-instruction-bus.js';
+import { determineResumePhase, resumableSessionManager } from '../../orchestration/resumable-session.js';
 
 import type { OutputModule } from '../../orchestration/module-registry.js';
 import {
@@ -418,6 +419,11 @@ export function createOrchestratorLoop(
   async function runLoop(userTask: string): Promise<unknown> {
     await ensureConnected();
     const epic = await bdTools.createTask({ title: userTask.substring(0, 100), type: 'epic', priority: 0, labels: ['orchestration', 'react-loop'] });
+    const resumeSessionId = config.sessionId || config.id;
+    const latestCheckpoint = resumableSessionManager.findLatestCheckpoint(resumeSessionId);
+    const resumedPhase = latestCheckpoint
+      ? (determineResumePhase(latestCheckpoint) as OrchestratorPhase)
+      : 'replanning';
     const reviewer = config.enableReview ? new ReviewerRole({ id: `${config.id}-reviewer`, name: `${config.name} Reviewer`, mode: config.mode, cwd: config.cwd }) : undefined;
     if (reviewer) await reviewer.initialize();
     const loopConfig: LoopConfig = {
@@ -431,7 +437,7 @@ export function createOrchestratorLoop(
     const loop = new ReActLoop(loopConfig, userTask);
     const loopState: LoopState = {
       task: userTask, iterations: [], convergence: { rejectionStreak: 0, sameRejectionReason: '', stuckCount: 0 },
-      epicId: epic.id, userTask, taskGraph: [], completedTasks: [], failedTasks: [], phase: 'replanning', blockedTasks: [],
+      epicId: epic.id, userTask, taskGraph: [], completedTasks: [], failedTasks: [], phase: resumedPhase, blockedTasks: [],
       checkpoint: { totalChecks: 0, majorChange: false }, round: 0, hub, targetExecutorId: config.targetExecutorId || 'executor-loop',
     };
     (loop as unknown as { state: LoopState }).state = loopState;
