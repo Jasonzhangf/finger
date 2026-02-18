@@ -257,7 +257,7 @@ export function createExecutorActions(cwd?: string): ActionDefinition[] {
     {
       name: 'COMPLETE',
       description: '任务完成',
-      paramsSchema: { output: { type: 'string', required: true } },
+      paramsSchema: { output: { type: 'string', required: false }, summary: { type: 'string', required: false } },
       handler: async (params) => ({
         success: true,
         observation: `任务完成: ${params.output}`,
