@@ -452,7 +452,7 @@ export class ReActLoop {
       SHELL_EXEC: ['command'],
       WEB_SEARCH: ['query'],
       FETCH_URL: ['url'],
-      COMPLETE: ['output'],
+      COMPLETE: [],
       FAIL: ['reason'],
       PLAN: ['tasks'],
       DISPATCH: ['taskId'],
