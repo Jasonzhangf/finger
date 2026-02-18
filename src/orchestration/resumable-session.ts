@@ -83,7 +83,8 @@ export class ResumableSessionManager {
     originalTask: string,
     taskProgress: TaskProgress[],
     agentStates: SessionCheckpoint['agentStates'],
-    context: Record<string, unknown> = {}
+    context: Record<string, unknown> = {},
+    phaseHistory: PhaseHistoryEntry[] = []
   ): SessionCheckpoint {
     const checkpointId = `chk-${sessionId}-${Date.now()}`;
     
@@ -109,6 +110,7 @@ export class ResumableSessionManager {
       failedTaskIds,
       pendingTaskIds,
       agentStates,
+      phaseHistory: phaseHistory.length > 0 ? phaseHistory : undefined,
       context,
     };
 
@@ -305,6 +307,13 @@ export function determineResumePhase(checkpoint: SessionCheckpoint): string {
   // If checkpoint has phase history, use the latest phase
   if (checkpoint.phaseHistory && checkpoint.phaseHistory.length > 0) {
     const latestEntry = checkpoint.phaseHistory[checkpoint.phaseHistory.length - 1];
+    return latestEntry.phase;
+  }
+
+  // Fallback: read phase history from context if present
+  const ctx = checkpoint.context as { phaseHistory?: PhaseHistoryEntry[] } | undefined;
+  if (ctx?.phaseHistory && ctx.phaseHistory.length > 0) {
+    const latestEntry = ctx.phaseHistory[ctx.phaseHistory.length - 1];
     return latestEntry.phase;
   }
   

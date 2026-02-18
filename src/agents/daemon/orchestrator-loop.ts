@@ -151,7 +151,8 @@ export function createOrchestratorLoop(
       state.userTask,
       taskProgress,
       agentStates,
-      context
+      context,
+      state.phaseHistory ?? []
     );
 
     state.checkpoint.lastCheckpointId = checkpoint.checkpointId;
@@ -561,6 +562,8 @@ export function createOrchestratorLoop(
       return { success: result.success && allDone && loopState.failedTasks.length === 0, epicId: epic.id, completed: loopState.completedTasks.length, failed: loopState.failedTasks.length, rounds: result.totalRounds, output: result.finalObservation };
     } finally {
       if (reviewer) await reviewer.disconnect();
+      // Clean up old checkpoints, keep last 10
+      resumableSessionManager.cleanupOldCheckpoints(resumeSessionId, 10);
     }
   }
 
