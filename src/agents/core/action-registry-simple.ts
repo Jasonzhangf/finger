@@ -1,5 +1,7 @@
 // 简化版 Action Registry - 统一接口
 
+import { performWebSearch } from '../../server/tools/web-search.js';
+
 export interface ActionResult {
   success: boolean;
   observation: string;
@@ -59,71 +61,56 @@ export function createExecutorActions(cwd?: string): ActionDefinition[] {
   return [
     {
       name: 'WEB_SEARCH',
-      description: '使用 DuckDuckGo 进行网络搜索',
+      description: '进行网络搜索并返回结构化结果',
       paramsSchema: {
         query: { type: 'string', required: true },
       },
       riskLevel: 'low',
       handler: async (params) => {
-        const https = await import('https');
         const query = String(params.query || '').trim();
 
         if (!query) {
           return { success: false, observation: '搜索关键词为空', error: 'Empty query' };
         }
 
-        const url = `https://html.duckduckgo.com/html/?q=${encodeURIComponent(query)}`;
-        const html = await new Promise<string>((resolve, reject) => {
-          const req = https.get(url, { timeout: 15000 }, (res) => {
-              let data = '';
-              res.on('data', (chunk) => {
-                data += String(chunk);
-              });
-              res.on('end', () => resolve(data));
-            });
-
-          req.on('error', (err) => reject(err));
-          req.on('timeout', () => {
-            req.destroy(new Error('Request timeout'));
-          });
-        });
-
-        const results: string[] = [];
-        const regex = /<a[^>]*class="result__a"[^>]*href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/g;
-        let match: RegExpExecArray | null = regex.exec(html);
-
-        while (match && results.length < 5) {
-          const href = match[1]
-            .replace(/&amp;/g, '&')
-            .replace(/&quot;/g, '"');
-          const title = match[2]
-            .replace(/<[^>]+>/g, '')
-            .replace(/&amp;/g, '&')
-            .replace(/&quot;/g, '"')
-            .replace(/&#39;/g, "'")
-            .replace(/\s+/g, ' ')
-            .trim();
-
-          if (title) {
-            results.push(`- ${title} | ${href}`);
-          }
-
-          match = regex.exec(html);
+        const result = await performWebSearch(query, { maxResults: 5, timeoutMs: 15000 });
+        if (!result.success) {
+          return {
+            success: false,
+            observation: `搜索失败: ${result.error || 'unknown error'}`,
+            error: result.error || 'search failed',
+            data: {
+              query,
+              provider: result.provider,
+              attemptedProviders: result.attemptedProviders,
+            },
+          };
         }
 
-        if (results.length === 0) {
+        if (result.results.length === 0) {
           return {
             success: false,
             observation: `搜索完成，但未提取到结构化结果: ${query}`,
             error: 'No structured search results',
-            data: { query, results: [] as string[] },
+            data: {
+              query,
+              provider: result.provider,
+              attemptedProviders: result.attemptedProviders,
+              results: [] as string[],
+            },
           };
         }
 
+        const formatted = result.results.map(item => `- ${item.title} | ${item.url}`);
         return {
           success: true,
-          observation: `搜索结果 (${query}):\n${results.join('\n')}`,
-          data: { query, results },
+          observation: `搜索结果 (${query}):\n${formatted.join('\n')}`,
+          data: {
+            query,
+            provider: result.provider,
+            attemptedProviders: result.attemptedProviders,
+            results: result.results,
+          },
         };
       },
     },
