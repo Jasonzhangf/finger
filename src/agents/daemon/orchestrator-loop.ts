@@ -9,7 +9,7 @@ import { createSnapshotLogger, SnapshotLogger } from '../shared/snapshot-logger.
 import { MessageHub } from '../../orchestration/message-hub.js';
 import { globalEventBus } from '../../runtime/event-bus.js';
 import { runtimeInstructionBus } from '../../orchestration/runtime-instruction-bus.js';
-import { determineResumePhase, resumableSessionManager } from '../../orchestration/resumable-session.js';
+import { resumableSessionManager, determineResumePhase, type TaskProgress } from '../../orchestration/resumable-session.js';
 
 import type { OutputModule } from '../../orchestration/module-registry.js';
 import {
@@ -66,6 +66,8 @@ interface CheckpointState {
   lastTrigger?: CheckpointTrigger;
   lastCheckAt?: string;
   majorChange: boolean;
+  lastCheckpointId?: string;
+  lastCheckpointAt?: string;
 }
 
 interface LoopState extends ReActState {
@@ -85,6 +87,7 @@ interface LoopState extends ReActState {
   highDesign?: { architecture: string; techStack: string[]; modules: string[]; rationale?: string };
   detailDesign?: { interfaces: string[]; dataModels: string[]; implementation: string };
   deliverables?: { acceptanceCriteria: string[]; testRequirements: string[]; artifacts: string[] };
+  phaseHistory?: Array<{ phase: OrchestratorPhase; timestamp: string; action: string; checkpointId?: string }>;
 }
 
 export function createOrchestratorLoop(
@@ -111,6 +114,62 @@ export function createOrchestratorLoop(
   const logger: SnapshotLogger = createSnapshotLogger(config.id);
   let initialized = false;
   let initPromise: Promise<void> | null = null;
+
+  // Helper: Create checkpoint for current state
+  async function saveCheckpoint(state: LoopState, reason: string = 'phase_transition'): Promise<void> {
+    const sessionId = config.sessionId || config.id;
+    const taskProgress: TaskProgress[] = state.taskGraph.map(task => ({
+      taskId: task.id,
+      description: task.description,
+      status: task.status as TaskProgress['status'],
+      assignedAgent: task.assignee,
+      startedAt: task.result ? new Date().toISOString() : undefined,
+      completedAt: task.status === 'completed' || task.status === 'failed' ? new Date().toISOString() : undefined,
+      result: task.result ? { success: task.result.success, output: task.result.output, error: task.result.error } : undefined,
+      iterationCount: 1,
+      maxIterations: 10,
+    }));
+
+    const agentStates: Record<string, { agentId: string; currentTaskId?: string; status: string; round: number; thought?: string }> = {
+      [config.id]: {
+        agentId: config.id,
+        status: state.phase,
+        round: state.round,
+      },
+    };
+
+    const context = {
+      phase: state.phase,
+      highDesign: state.highDesign,
+      detailDesign: state.detailDesign,
+      deliverables: state.deliverables,
+      reason,
+    };
+
+    const checkpoint = resumableSessionManager.createCheckpoint(
+      sessionId,
+      state.userTask,
+      taskProgress,
+      agentStates,
+      context
+    );
+
+    state.checkpoint.lastCheckpointId = checkpoint.checkpointId;
+    state.checkpoint.lastCheckpointAt = new Date().toISOString();
+
+    // Add to phase history
+    if (!state.phaseHistory) {
+      state.phaseHistory = [];
+    }
+    state.phaseHistory.push({
+      phase: state.phase,
+      timestamp: checkpoint.timestamp,
+      action: reason,
+      checkpointId: checkpoint.checkpointId,
+    });
+
+    console.log(`[Orchestrator] Checkpoint saved: ${checkpoint.checkpointId} (phase=${state.phase}, reason=${reason})`);
+  }
 
   const registry = new ActionRegistry();
   const baseActions = createOrchestratorActions();
@@ -150,6 +209,8 @@ export function createOrchestratorLoop(
           task.bdTaskId = bdTask.id;
         }
         await bdTools.addComment(state.epicId, `拆解完成: ${state.taskGraph.length} 个任务`);
+        state.phase = 'plan';
+        await saveCheckpoint(state, 'plan_completed');
       }
 
       if (action.name === 'DISPATCH' && state) {
@@ -221,6 +282,7 @@ export function createOrchestratorLoop(
         };
         state.phase = 'high_design';
         await bdTools.addComment(state.epicId, `概要设计完成：架构=${state.highDesign.architecture.substring(0, 50)}..., 模块数=${state.highDesign.modules.length}`);
+        await saveCheckpoint(state, 'high_design_completed');
         return { success: true, observation: `概要设计已保存`, data: state.highDesign };
       }
 
@@ -233,6 +295,7 @@ export function createOrchestratorLoop(
         };
         state.phase = 'detail_design';
         await bdTools.addComment(state.epicId, `详细设计完成：接口数=${state.detailDesign.interfaces.length}, 数据模型数=${state.detailDesign.dataModels.length}`);
+        await saveCheckpoint(state, 'detail_design_completed');
         return { success: true, observation: `详细设计已保存`, data: state.detailDesign };
       }
 
@@ -245,6 +308,7 @@ export function createOrchestratorLoop(
         };
         state.phase = 'deliverables';
         await bdTools.addComment(state.epicId, `交付清单完成：交付物数=${state.deliverables.artifacts.length}`);
+        await saveCheckpoint(state, 'deliverables_completed');
         return { success: true, observation: `交付清单已保存`, data: state.deliverables };
       }
 
@@ -290,6 +354,7 @@ export function createOrchestratorLoop(
         }
         
         state.phase = 'parallel_dispatch';
+        await saveCheckpoint(state, 'parallel_dispatch_completed');
         return { success: successCount > 0, observation: `并行派发完成：成功${successCount}/${taskIds.length}, 失败${failCount}` };
       }
 
@@ -340,6 +405,7 @@ export function createOrchestratorLoop(
         }
         
         state.phase = 'blocked_review';
+        await saveCheckpoint(state, 'blocked_review_completed');
         return { success: true, observation: `阻塞任务审查完成：处理${handledCount}/${blockedTaskIds.length}个` };
       }
 
@@ -362,7 +428,8 @@ export function createOrchestratorLoop(
         const passed = allDeliverablesComplete && highCompletionRate;
         
         state.phase = 'verify';
-        
+        await saveCheckpoint(state, 'verify_completed');
+
         if (passed) {
           await bdTools.closeTask(state.epicId, '所有交付物验证通过');
           return { 
