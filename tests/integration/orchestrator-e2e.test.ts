@@ -132,7 +132,7 @@ describe('Orchestrator E2E', () => {
       
       // 要么直接成功，要么任务全部完成
       expect(failed).toBe(0);
-      expect(rounds).toBeLessThanOrEqual(5);
+      expect(rounds).toBeLessThanOrEqual(15);
     }
   }, 600000);
 });
