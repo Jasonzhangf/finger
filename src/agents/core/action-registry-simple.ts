@@ -459,6 +459,109 @@ export function createOrchestratorActions(): ActionDefinition[] {
     },
 
     {
+      name: 'VERIFY',
+      description: '验证交付物完成情况，决定是否完成或重规划',
+      paramsSchema: {
+        acceptanceCriteria: { type: 'array', required: false, description: '验收标准列表' },
+        testResults: { type: 'array', required: false, description: '测试结果列表' },
+        artifacts: { type: 'array', required: false, description: '交付物列表' },
+      },
+      handler: async (params, context) => {
+        const loopContext = context as { state?: any };
+        const state = loopContext?.state;
+        if (!state) {
+          return { success: false, observation: 'VERIFY failed: no state', error: 'no state' };
+        }
+        
+        const deliverables = state.deliverables;
+        if (!deliverables) {
+          return { success: false, observation: 'VERIFY failed: no deliverables defined', error: 'no deliverables' };
+        }
+        
+        const verificationResult = {
+          passed: true,
+          missingDeliverables: [] as string[],
+          failedTests: [] as string[],
+          completedArtifacts: [] as string[],
+        };
+        
+        // 检查交付物
+        const expectedArtifacts = deliverables.artifacts || [];
+        for (const artifact of expectedArtifacts) {
+          // 简单检查：如果任务图中有对应完成的任务则认为交付物存在
+          const relatedTask = state.taskGraph.find((t: any) => 
+            t.description.includes(artifact) && t.status === 'completed'
+          );
+          if (relatedTask) {
+            verificationResult.completedArtifacts.push(artifact);
+          } else {
+            verificationResult.missingDeliverables.push(artifact);
+            verificationResult.passed = false;
+          }
+        }
+        
+        // 检查测试结果
+        const testResults = Array.isArray(params.testResults) ? params.testResults as any[] : [];
+        for (const result of testResults) {
+          if (!result.success) {
+            verificationResult.failedTests.push(result.name || 'unknown test');
+            verificationResult.passed = false;
+          }
+        }
+        
+        // 检查任务完成率
+        const totalTasks = state.taskGraph.length;
+        const completedTasks = state.completedTasks.length;
+        const failedTasks = state.failedTasks.length;
+        const completionRate = totalTasks > 0 ? completedTasks / totalTasks : 0;
+        
+        // 判定标准：所有交付物完成 + 无失败测试 + 完成率>80%
+        const allDeliverablesComplete = verificationResult.missingDeliverables.length === 0;
+        const noFailedTests = verificationResult.failedTests.length === 0;
+        const highCompletionRate = completionRate >= 0.8;
+        
+        const overallPassed = allDeliverablesComplete && noFailedTests && highCompletionRate;
+        
+        if (overallPassed) {
+          return {
+            success: true,
+            observation: `交付物验证通过：交付物${completedTasks}/${totalTasks}完成，无失败测试`,
+            data: { 
+              passed: true, 
+              completionRate: Math.round(completionRate * 100) + '%',
+              completedArtifacts: verificationResult.completedArtifacts,
+              shouldComplete: true,
+            },
+            shouldStop: true,
+            stopReason: 'complete',
+          };
+        } else {
+          const issues = [];
+          if (verificationResult.missingDeliverables.length > 0) {
+            issues.push(`缺失交付物：${verificationResult.missingDeliverables.join(', ')}`);
+          }
+          if (verificationResult.failedTests.length > 0) {
+            issues.push(`失败测试：${verificationResult.failedTests.join(', ')}`);
+          }
+          if (!highCompletionRate) {
+            issues.push(`完成率过低：${Math.round(completionRate * 100)}%`);
+          }
+          
+          return {
+            success: false,
+            observation: `交付物验证失败：${issues.join('; ')}`,
+            data: { 
+              passed: false, 
+              missingDeliverables: verificationResult.missingDeliverables,
+              failedTests: verificationResult.failedTests,
+              completionRate: Math.round(completionRate * 100) + '%',
+              shouldReplan: true,
+            },
+          };
+        }
+      },
+    },
+    {
       name: 'PLAN',
       description: '拆解任务为子任务列表',
       paramsSchema: { tasks: { type: 'array', required: true } },
