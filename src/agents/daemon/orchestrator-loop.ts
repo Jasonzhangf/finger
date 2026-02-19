@@ -96,7 +96,7 @@ export function createOrchestratorLoop(
   const systemPrompt = config.systemPrompt ?? `
 你是一个任务编排专家。职责是把用户任务拆成子任务并调度执行。
 
-必须输出 JSON：{"thought":"...","action":"HIGH_DESIGN|DETAIL_DESIGN|DELIVERABLES|PLAN|PARALLEL_DISPATCH|BLOCKED_REVIEW|VERIFY|COMPLETE|FAIL","params":{...}}
+必须输出 JSON：{"thought":"...","action":"HIGH_DESIGN|DETAIL_DESIGN|DELIVERABLES|PLAN|PARALLEL_DISPATCH|BLOCKED_REVIEW|VERIFY|COMPLETE|FAIL|STOP|START","params":{...}}
 
 ## 任务拆解原则
 
@@ -105,6 +105,15 @@ export function createOrchestratorLoop(
 3. **自包含性**：每个子任务应该包含完成该工作所需的全部上下文，执行者无需多次往返询问
 4. **合理数量**：一般任务拆解为 3-7 个子任务即可，避免创建数十个微小任务
 5. **依赖清晰**：明确标注任务间的依赖关系，便于并行派发
+
+## 编排控制命令
+
+- **STOP**: 暂停任务派发，等待执行中的任务完成。用于资源不足或需要人工干预时
+- **START**: 恢复任务派发，继续执行剩余任务
+
+示例：
+- {"thought":"资源不足，暂停派发","action":"STOP","params":{"reason":"等待资源释放"}}
+- {"thought":"资源已就绪","action":"START","params":{}}
 
 示例（好的粗粒度）：
 - "搜索并收集 DeepSeek 官方发布的所有技术论文和产品信息"（而非分成"搜索官网"、"搜索 arXiv"、"搜索 GitHub"等细粒度任务）
@@ -352,19 +361,24 @@ export function createOrchestratorLoop(
           return { success: false, observation: 'PARALLEL_DISPATCH failed: no taskIds' };
         }
         const targetExecutorId = String(params.targetExecutorId || state.targetExecutorId);
+        const maxConcurrency = Number(params.maxConcurrency || 3); // Default to 3 concurrent tasks
         
-        // Mark all tasks as in_progress before dispatching
+        // Get ready tasks
         const tasksToDispatch = taskIds
           .map(id => state.taskGraph.find(t => t.id === id))
           .filter((t): t is NonNullable<typeof t> => t !== undefined && t.status === 'ready');
         
-        for (const task of tasksToDispatch) {
+        // Limit concurrency based on resource pool
+        const batchedTasks = tasksToDispatch.slice(0, maxConcurrency);
+        const remainingTasks = tasksToDispatch.slice(maxConcurrency);
+        
+        for (const task of batchedTasks) {
           task.status = 'in_progress';
           task.assignee = targetExecutorId;
         }
         
-        // Dispatch all tasks in parallel using Promise.allSettled
-        const dispatchPromises = tasksToDispatch.map(async (task) => {
+        // Dispatch batch in parallel using Promise.allSettled
+        const dispatchPromises = batchedTasks.map(async (task) => {
           try {
             const result = await state.hub.sendToModule(targetExecutorId, {
               taskId: task.id,
@@ -394,8 +408,20 @@ export function createOrchestratorLoop(
         const successCount = results.filter(r => r.status === 'fulfilled' && r.value.success).length;
         const failCount = results.filter(r => r.status === 'fulfilled' && !r.value.success).length;
         
+        // If there are remaining tasks, they will be dispatched in next round
+        const remainingCount = remainingTasks.length;
+        
         state.phase = 'parallel_dispatch';
         await saveCheckpoint(state, 'parallel_dispatch_completed');
+        
+        if (remainingCount > 0) {
+          return { 
+            success: successCount > 0, 
+            observation: `并行派发完成：成功${successCount}/${batchedTasks.length}, 失败${failCount}, 等待${remainingCount}个任务`,
+            data: { dispatched: batchedTasks.length, remaining: remainingCount, total: tasksToDispatch.length },
+          };
+        }
+        
         return { success: successCount > 0, observation: `并行派发完成：成功${successCount}/${tasksToDispatch.length}, 失败${failCount}` };
       }
 
@@ -491,6 +517,35 @@ export function createOrchestratorLoop(
         if (!allDone) return { success: false, observation: 'COMPLETE rejected: still has unfinished tasks', error: 'unfinished tasks' };
         await bdTools.closeTask(state.epicId, state.failedTasks.length === 0 ? '所有任务完成' : '部分任务失败');
       }
+      
+      // Handle STOP action - pause task dispatching
+      if (action.name === 'STOP' && state) {
+        const reason = String(params.reason || 'manual');
+        state.phase = 'paused';
+        await saveCheckpoint(state, `stopped: ${reason}`);
+        await bdTools.addComment(state.epicId, `编排已暂停：${reason}`);
+        return { 
+          success: true, 
+          observation: `编排已暂停：${reason}`,
+          data: { paused: true, reason, pendingTasks: state.taskGraph.filter(t => t.status === 'ready').length },
+        };
+      }
+      
+      // Handle START action - resume task dispatching
+      if (action.name === 'START' && state) {
+        if (state.phase !== 'paused') {
+          return { success: false, observation: 'START rejected: not paused', error: 'not paused' };
+        }
+        state.phase = 'parallel_dispatch';
+        await saveCheckpoint(state, 'resumed');
+        await bdTools.addComment(state.epicId, '编排已恢复');
+        return { 
+          success: true, 
+          observation: '编排已恢复，继续派发任务',
+          data: { paused: false, pendingTasks: state.taskGraph.filter(t => t.status === 'ready').length },
+        };
+      }
+      
       return original(params, context);
     };
     registry.register(action);
