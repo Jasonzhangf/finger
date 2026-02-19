@@ -11,6 +11,7 @@ import { globalEventBus } from '../../runtime/event-bus.js';
 import { runtimeInstructionBus } from '../../orchestration/runtime-instruction-bus.js';
 import { resumableSessionManager, determineResumePhase, type TaskProgress } from '../../orchestration/resumable-session.js';
 import { resourcePool, type ResourceRequirement } from '../../orchestration/resource-pool.js';
+import { sharedWorkflowManager as workflowManager } from '../../orchestration/shared-instances.js';
 import { buildAgentContext, generateDynamicSystemPrompt } from '../../orchestration/agent-context.js';
 
 import type { OutputModule } from '../../orchestration/module-registry.js';
@@ -777,6 +778,14 @@ Agent 的能力由其拥有的工具决定：
    await ensureConnected();
    const epic = await bdTools.createTask({ title: userTask.substring(0, 100), type: 'epic', priority: 0, labels: ['orchestration', 'react-loop'] });
    const resumeSessionId = config.sessionId || config.id;
+   
+   // Register workflow with shared WorkflowManager so UI can query it
+   const workflowId = `workflow-${config.id}-${Date.now()}`;
+   workflowManager.createWorkflow(workflowId, resumeSessionId, epic.id, userTask, 'planning');
+    // Update session with new active workflow
+    resumableSessionManager.updateSession(resumeSessionId, { activeWorkflows: [workflowId] });
+   console.log(`[OrchestratorLoop] Created workflow: ${workflowId} (epic=${epic.id})`);
+   
    const latestCheckpoint = resumableSessionManager.findLatestCheckpoint(resumeSessionId);
    const resumedPhase = latestCheckpoint
      ? (determineResumePhase(latestCheckpoint) as OrchestratorPhase)
@@ -854,6 +863,12 @@ Agent 的能力由其拥有的工具决定：
     try {
       const result: ReActResult = await loop.run();
       const allDone = loopState.taskGraph.length > 0 && loopState.taskGraph.every(t => t.status === 'completed' || t.status === 'failed');
+      
+      // Update workflow status based on result
+      const finalStatus = result.success && allDone && loopState.failedTasks.length === 0 ? 'completed' 
+        : loopState.failedTasks.length > 0 ? 'failed' 
+        : 'partial';
+      workflowManager.updateWorkflowStatus(workflowId, finalStatus);
       return { success: result.success && allDone && loopState.failedTasks.length === 0, epicId: epic.id, completed: loopState.completedTasks.length, failed: loopState.failedTasks.length, rounds: result.totalRounds, output: result.finalObservation };
     } finally {
       if (reviewer) await reviewer.disconnect();

@@ -76,20 +76,34 @@ export class WorkflowManager {
     this.resourcePool.busyAgents.delete(agentId);
   }
 
-  createWorkflow(sessionId: string, epicId?: string): Workflow {
-    const id = `workflow-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  createWorkflow(workflowId?: string, sessionId?: string, epicId?: string, userTask?: string, status?: Workflow['status']): Workflow {
+    // Handle both old and new call patterns for backward compatibility
+    const actualWorkflowId = workflowId || `workflow-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const actualSessionId = sessionId || workflowId || '';
+    const actualEpicId = epicId;
+    const actualUserTask = userTask || '';
+    const actualStatus = status || 'planning';
+    
+    // If a workflow with this ID already exists, return it (idempotent)
+    if (this.workflows.has(actualWorkflowId)) {
+      const existingWorkflow = this.workflows.get(actualWorkflowId)!;
+      if (userTask) existingWorkflow.userTask = userTask;
+      if (status) existingWorkflow.status = status;
+      return existingWorkflow;
+    }
+
     const now = new Date().toISOString();
     const workflow: Workflow = {
-      id,
-      sessionId,
-      epicId,
-      userTask: '',
+      id: actualWorkflowId,
+      sessionId: actualSessionId,
+      epicId: actualEpicId,
+      userTask: actualUserTask,
       tasks: new Map(),
-      status: 'planning',
+      status: actualStatus,
       createdAt: now,
       updatedAt: now,
     };
-    this.workflows.set(id, workflow);
+    this.workflows.set(actualWorkflowId, workflow);
     saveWorkflow(workflow);
     return workflow;
   }
@@ -142,7 +156,7 @@ export class WorkflowManager {
     }
 
     workflow.updatedAt = new Date().toISOString();
-    this.updateWorkflowStatus(workflow);
+    this._updateWorkflowStatusInternal(workflow);
     saveWorkflow(workflow);
     return true;
   }
@@ -194,7 +208,7 @@ export class WorkflowManager {
     return agents.filter(id => !this.resourcePool.busyAgents.has(id));
   }
 
-  private updateWorkflowStatus(workflow: Workflow): void {
+  private _updateWorkflowStatusInternal(workflow: Workflow): void {
     const tasks = Array.from(workflow.tasks.values());
     const allCompleted = tasks.every(t => t.status === 'completed');
     const anyFailed = tasks.some(t => t.status === 'failed');
@@ -330,6 +344,15 @@ export class WorkflowManager {
         clearInterval(interval);
       }
     }, intervalMs);
+  }
+
+  updateWorkflowStatus(workflowId: string, status: Workflow['status']): boolean {
+    const workflow = this.workflows.get(workflowId);
+    if (!workflow) return false;
+    workflow.status = status;
+    workflow.updatedAt = new Date().toISOString();
+    saveWorkflow(workflow);
+    return true;
   }
 
   updateWorkflowContext(workflowId: string, context: Record<string, unknown>): boolean {

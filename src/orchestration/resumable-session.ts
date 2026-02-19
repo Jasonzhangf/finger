@@ -26,6 +26,15 @@ export interface TaskProgress {
   maxIterations: number;
 }
 
+export interface SessionMetadata {
+  id: string;
+  name: string;
+  projectPath: string;
+  createdAt: string;
+  updatedAt: string;
+  activeWorkflows: string[];
+}
+
 export interface PhaseHistoryEntry {
   phase: string;
   timestamp: string;
@@ -128,6 +137,40 @@ export class ResumableSessionManager {
 
     console.log(`[ResumableSession] Created checkpoint ${checkpointId} for session ${sessionId}`);
     return checkpoint;
+  }
+
+  /**
+   * Update session metadata, specifically activeWorkflows.
+   */
+  updateSession(sessionId: string, updates: Partial<SessionMetadata>): void {
+    const sessionFilePath = path.join(SESSION_STATE_DIR, `session-${sessionId}.json`);
+    let session: SessionMetadata | null = null;
+
+    if (fs.existsSync(sessionFilePath)) {
+      try {
+        session = JSON.parse(fs.readFileSync(sessionFilePath, 'utf-8'));
+      } catch (error) {
+        console.error(`[ResumableSession] Failed to read session file ${sessionId}:`, error);
+        return;
+      }
+    }
+
+    if (!session) {
+      // Create new session metadata if doesn't exist
+      session = {
+        id: sessionId,
+        name: sessionId,
+        projectPath: '',
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        activeWorkflows: [],
+      };
+    }
+
+    Object.assign(session, updates);
+    session.updatedAt = new Date().toISOString();
+    fs.writeFileSync(sessionFilePath, JSON.stringify(session, null, 2));
+    console.log(`[ResumableSession] Updated session ${sessionId}`);
   }
 
   /**
