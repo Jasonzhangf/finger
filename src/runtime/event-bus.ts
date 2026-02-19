@@ -1,10 +1,20 @@
 /**
  * UnifiedEventBus - 统一事件总线
- * 支持本地订阅和 WebSocket 广播
+ * 支持按类型/按组订阅、WebSocket 广播、事件历史查询
+ * 
+ * 使用指南：
+ * 1. 订阅单类型：bus.subscribe('task_completed', handler)
+ * 2. 订阅多类型：bus.subscribeMultiple(['task_started', 'task_completed'], handler)
+ * 3. 订阅分组：bus.subscribeByGroup('HUMAN_IN_LOOP', handler) 或 bus.subscribeByGroup('RESOURCE', handler)
+ * 4. 订阅所有：bus.subscribeAll(handler)
  */
 
 import { WebSocket } from 'ws';
 import type { RuntimeEvent } from './events.js';
+import { EVENT_GROUPS, getEventTypesByGroup, getSupportedEventGroups } from './events.js';
+import { getSupportedEventTypes } from './events.js';
+import { appendFile, mkdir } from 'fs/promises';
+import { join } from 'path';
 
 export type EventHandler = (event: RuntimeEvent) => void;
 
@@ -12,6 +22,7 @@ export interface EventBusStats {
   totalHandlers: number;
   wsClients: number;
   eventsEmitted: number;
+  persistenceEnabled: boolean;
 }
 
 export class UnifiedEventBus {
@@ -20,6 +31,11 @@ export class UnifiedEventBus {
   private eventsEmitted = 0;
   private history: RuntimeEvent[] = [];
   private readonly maxHistory = 100;
+  
+  // 持久化配置
+  private persistenceEnabled = false;
+  private persistenceDir = '';
+  private sessionId: string | null = null;
 
   /**
    * 订阅特定类型事件
@@ -30,8 +46,6 @@ export class UnifiedEventBus {
       this.handlers.set(eventType, new Set());
     }
     this.handlers.get(eventType)!.add(handler);
-
-    // 返回取消订阅函数
     return () => {
       this.handlers.get(eventType)?.delete(handler);
     };
@@ -47,6 +61,17 @@ export class UnifiedEventBus {
   }
 
   /**
+   * 按分组订阅事件
+   * @param group 分组名（如 'HUMAN_IN_LOOP', 'RESOURCE', 'TASK' 等）
+   * @param handler 事件处理函数
+   * @returns 取消订阅函数
+   */
+  subscribeByGroup(group: keyof typeof EVENT_GROUPS, handler: EventHandler): () => void {
+    const types = getEventTypesByGroup(group);
+    return this.subscribeMultiple([...types], handler);
+  }
+
+  /**
    * 订阅所有事件
    * @returns 取消订阅函数
    */
@@ -57,16 +82,21 @@ export class UnifiedEventBus {
   /**
    * 发送事件
    */
-  emit(event: RuntimeEvent): void {
+  async emit(event: RuntimeEvent): Promise<void> {
     this.eventsEmitted++;
 
-    // 1. 保存到历史
+    // 1. 保存到内存历史
     this.history.push(event);
     if (this.history.length > this.maxHistory) {
       this.history.shift();
     }
 
-    // 2. 触发特定类型订阅者
+    // 2. 持久化到文件（如果启用）
+    if (this.persistenceEnabled && this.sessionId) {
+      await this.persistEvent(event);
+    }
+
+    // 3. 触发特定类型订阅者
     const handlers = this.handlers.get(event.type);
     handlers?.forEach(h => {
       try {
@@ -76,7 +106,7 @@ export class UnifiedEventBus {
       }
     });
 
-    // 3. 触发通配符订阅者
+    // 4. 触发通配符订阅者
     const wildcardHandlers = this.handlers.get('*');
     wildcardHandlers?.forEach(h => {
       try {
@@ -86,11 +116,43 @@ export class UnifiedEventBus {
       }
     });
 
-    // 4. 广播到 WebSocket 客户端
+    // 5. 广播到 WebSocket 客户端（服务端过滤）
+    this.broadcastToWsClients(event);
+  }
+
+  /**
+   * 广播事件到 WebSocket 客户端（带订阅过滤）
+   */
+  private broadcastToWsClients(event: RuntimeEvent): void {
     const msg = JSON.stringify(event);
     this.wsClients.forEach(ws => {
       try {
         if (ws.readyState === WebSocket.OPEN) {
+          // 检查客户端订阅过滤
+          const filter = (ws as WebSocket & { eventFilter?: { types?: string[]; groups?: string[] } }).eventFilter;
+          if (filter) {
+            const { types, groups } = filter;
+            let shouldSend = false;
+            
+            // 如果订阅了特定类型
+            if (types && types.includes(event.type)) {
+              shouldSend = true;
+            }
+            
+            // 如果订阅了分组，检查事件是否属于该分组
+            if (groups && !shouldSend) {
+              for (const group of groups) {
+                const groupTypes = getEventTypesByGroup(group as keyof typeof EVENT_GROUPS);
+                if (groupTypes.includes(event.type)) {
+                  shouldSend = true;
+                  break;
+                }
+              }
+            }
+            
+            if (!shouldSend) return;
+          }
+          
           ws.send(msg);
         }
       } catch (err) {
@@ -100,7 +162,7 @@ export class UnifiedEventBus {
   }
 
   /**
-   * 注册 WebSocket 客户端
+   * 注册 WebSocket 客户端（支持订阅过滤）
    */
   registerWsClient(ws: WebSocket): void {
     this.wsClients.add(ws);
@@ -115,10 +177,49 @@ export class UnifiedEventBus {
   }
 
   /**
+   * 设置 WebSocket 客户端的事件过滤
+   */
+  setWsClientFilter(ws: WebSocket, filter: { types?: string[]; groups?: string[] }): void {
+    (ws as WebSocket & { eventFilter?: { types?: string[]; groups?: string[] } }).eventFilter = filter;
+  }
+
+  /**
    * 移除 WebSocket 客户端
    */
   removeWsClient(ws: WebSocket): void {
     this.wsClients.delete(ws);
+  }
+
+  /**
+   * 启用事件持久化
+   * @param sessionId 会话 ID（用于生成日志文件名）
+   * @param logsDir 日志目录（默认 logs/events）
+   */
+  enablePersistence(sessionId: string, logsDir?: string): void {
+    this.sessionId = sessionId;
+    this.persistenceDir = logsDir || join(process.cwd(), 'logs', 'events');
+    this.persistenceEnabled = true;
+    
+    mkdir(this.persistenceDir, { recursive: true }).catch(() => {});
+  }
+
+  /**
+   * 禁用事件持久化
+   */
+  disablePersistence(): void {
+    this.persistenceEnabled = false;
+  }
+
+  /**
+   * 持久化事件到文件
+   */
+  private async persistEvent(event: RuntimeEvent): Promise<void> {
+    try {
+      const logFile = join(this.persistenceDir, `${this.sessionId}-events.jsonl`);
+      await appendFile(logFile, JSON.stringify(event) + '\n');
+    } catch (err) {
+      console.error('[EventBus] Persist event error:', err);
+    }
   }
 
   /**
@@ -129,6 +230,29 @@ export class UnifiedEventBus {
       return this.history.slice(-limit);
     }
     return [...this.history];
+  }
+
+  /**
+   * 按类型获取事件历史
+   */
+  getHistoryByType(type: string, limit?: number): RuntimeEvent[] {
+    const filtered = this.history.filter(e => e.type === type);
+    if (limit && limit < filtered.length) {
+      return filtered.slice(-limit);
+    }
+    return filtered;
+  }
+
+  /**
+   * 按分组获取事件历史
+   */
+  getHistoryByGroup(group: keyof typeof EVENT_GROUPS, limit?: number): RuntimeEvent[] {
+    const types = getEventTypesByGroup(group);
+    const filtered = this.history.filter(e => types.includes(e.type));
+    if (limit && limit < filtered.length) {
+      return filtered.slice(-limit);
+    }
+    return filtered;
   }
 
   /**
@@ -162,7 +286,22 @@ export class UnifiedEventBus {
       totalHandlers,
       wsClients: this.wsClients.size,
       eventsEmitted: this.eventsEmitted,
+      persistenceEnabled: this.persistenceEnabled,
     };
+  }
+
+ /**
+  * 获取支持的分组列表
+  */
+ getSupportedGroups(): string[] {
+   return getSupportedEventGroups();
+ }
+
+  /**
+   * 获取支持的事件类型列表
+   */
+  getSupportedTypes(): string[] {
+    return getSupportedEventTypes();
   }
 
   /**
@@ -173,6 +312,7 @@ export class UnifiedEventBus {
     this.wsClients.clear();
     this.history = [];
     this.eventsEmitted = 0;
+    this.persistenceEnabled = false;
   }
 }
 

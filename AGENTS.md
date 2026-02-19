@@ -213,3 +213,30 @@ finger daemon status   # 查看状态及已注册模块
 ---
 
 > 本文件作为项目核心约束，后续修改需通过 PR 更新。
+
+## 8. EventBus 与事件系统
+
+### 8.1 事件分组
+所有事件按功能分组，UI 可按组订阅：
+- `SESSION`: 会话生命周期
+- `TASK`: 任务执行状态
+- `TOOL`: 工具调用
+- `DIALOG`: 对话流
+- `PROGRESS`: 整体进度
+- `PHASE`: 编排阶段
+- `RESOURCE`: 资源池状态
+- `HUMAN_IN_LOOP`: 需用户决策（核心交互闭环）
+- `SYSTEM`: 系统级错误
+
+### 8.2 订阅 API
+```typescript
+globalEventBus.subscribeByGroup('HUMAN_IN_LOOP', handler);
+// WebSocket: { "type": "subscribe", "groups": ["HUMAN_IN_LOOP"] }
+```
+
+### 8.3 REST API
+- `GET /api/v1/events/types` - 返回所有事件类型
+- `GET /api/v1/events/groups` - 返回所有分组
+- `GET /api/v1/events/history?type=xxx&group=xxx` - 按类型或分组查询历史
+
+详细设计见 [docs/EVENT_BUS_DESIGN.md](./docs/EVENT_BUS_DESIGN.md)

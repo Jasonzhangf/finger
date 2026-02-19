@@ -221,6 +221,39 @@ app.get('/api/v1/routes', (_req, res) => {
   res.json({ routes: hub.getRoutes() });
 });
 
+// Event metadata for UI subscriptions (types + groups)
+app.get('/api/v1/events/types', (_req, res) => {
+  res.json({
+    success: true,
+    types: globalEventBus.getSupportedTypes(),
+  });
+});
+
+app.get('/api/v1/events/groups', (_req, res) => {
+  res.json({
+    success: true,
+    groups: globalEventBus.getSupportedGroups(),
+  });
+});
+
+app.get('/api/v1/events/history', (req, res) => {
+  const type = typeof req.query.type === 'string' ? req.query.type : undefined;
+  const group = typeof req.query.group === 'string' ? req.query.group : undefined;
+  const limit = typeof req.query.limit === 'string' ? parseInt(req.query.limit, 10) : undefined;
+  
+  if (type) {
+    res.json({ success: true, events: globalEventBus.getHistoryByType(type, limit) });
+    return;
+  }
+  
+  if (group) {
+    res.json({ success: true, events: globalEventBus.getHistoryByGroup(group as Parameters<typeof globalEventBus.getHistoryByGroup>[0], limit) });
+    return;
+  }
+  
+  res.json({ success: true, events: globalEventBus.getHistory(limit) });
+});
+
 // Mailbox API
 app.get('/api/v1/mailbox', (req, res) => {
   const messages = mailbox.listMessages({
@@ -258,19 +291,31 @@ wss.on('connection', (ws) => {
     try {
       const msg = JSON.parse(data.toString());
       if (msg.type === 'subscribe') {
-        if (Array.isArray(msg.events) && msg.events.length > 0) {
-          const unsub = globalEventBus.subscribeMultiple(msg.events, (event) => {
-            if (ws.readyState === 1) {
-              ws.send(JSON.stringify(event));
-            }
-          });
-          ws.on('close', unsub);
+        // 新协议：支持按分组和按类型订阅
+        const types = msg.types || msg.events || [];
+        const groups = msg.groups || [];
+
+        if (groups.length > 0 || types.length > 0) {
+          // 设置客户端过滤
+          globalEventBus.setWsClientFilter(ws, { types, groups });
+
+          // 发送确认
+          ws.send(JSON.stringify({
+            type: 'subscribe_confirmed',
+            types,
+            groups,
+            timestamp: new Date().toISOString(),
+          }));
         } else if (msg.messageId) {
           // Legacy: Subscribe to message updates
           mailbox.subscribe(msg.messageId, (m) => {
             ws.send(JSON.stringify({ type: 'messageUpdate', message: m }));
           });
         }
+      } else if (msg.type === 'unsubscribe') {
+        // 清除过滤
+        globalEventBus.setWsClientFilter(ws, {});
+        ws.send(JSON.stringify({ type: 'unsubscribe_confirmed', timestamp: new Date().toISOString() }));
       }
     } catch {
       // ignore
