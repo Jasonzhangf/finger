@@ -19,6 +19,7 @@ import {
 } from '../core/action-registry-simple.js';
 import {
   ReActLoop,
+  type LoopConfig,
   type ReActResult,
   type ReActState,
 } from '../runtime/react-loop.js';
@@ -165,8 +166,6 @@ export function createOrchestratorLoop(
       phase: state.phase,
       timestamp: checkpoint.timestamp,
       action: reason,
-      checkpointId: checkpoint.checkpointId,
-    });
 
     // Emit phase transition event for real-time monitoring
     const currentPhaseIndex = state.phaseHistory.findIndex(entry => entry.checkpointId === checkpoint.checkpointId);
@@ -185,6 +184,8 @@ export function createOrchestratorLoop(
         checkpointId: checkpoint.checkpointId,
         round: state.round,
       },
+    });
+      checkpointId: checkpoint.checkpointId,
     });
     // Cleanup old checkpoints after each save, keep last 10
     resumableSessionManager.cleanupOldCheckpoints(sessionId, 10);

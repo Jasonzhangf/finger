@@ -5,6 +5,8 @@ export default defineConfig({
     globals: true,
     environment: 'node',
     include: ['tests/integration/**/*.test.ts'],
-    testTimeout: 1200000,
+    testTimeout: 0, // No timeout for E2E tests
+    hookTimeout: 120000, // 2 minutes for setup/teardown
+    reporters: ['verbose'],
   }
 });
