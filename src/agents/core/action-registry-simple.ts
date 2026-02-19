@@ -389,7 +389,7 @@ export function createOrchestratorActions(): ActionDefinition[] {
         }
         
         // 获取阻塞任务列表
-        let blockedTaskIds = Array.isArray(params.blockedTaskIds) 
+        const blockedTaskIds = Array.isArray(params.blockedTaskIds) 
           ? params.blockedTaskIds as string[] 
           : state.blockedTasks || [];
         
@@ -512,7 +512,7 @@ export function createOrchestratorActions(): ActionDefinition[] {
         // 检查任务完成率
         const totalTasks = state.taskGraph.length;
         const completedTasks = state.completedTasks.length;
-        const failedTasks = state.failedTasks.length;
+        // const failedTasks = state.failedTasks.length;
         const completionRate = totalTasks > 0 ? completedTasks / totalTasks : 0;
         
         // 判定标准：所有交付物完成 + 无失败测试 + 完成率>80%

@@ -349,7 +349,7 @@ export function createOrchestratorLoop(
               state.failedTasks.push(taskId);
               failCount++;
             }
-          } catch (err) {
+          } catch {
             task.status = 'failed';
             state.failedTasks.push(taskId);
             failCount++;
@@ -363,7 +363,7 @@ export function createOrchestratorLoop(
 
       // Handle BLOCKED_REVIEW action
       if (action.name === 'BLOCKED_REVIEW' && state) {
-        let blockedTaskIds = Array.isArray(params.blockedTaskIds) 
+        const blockedTaskIds = Array.isArray(params.blockedTaskIds) 
           ? params.blockedTaskIds as string[] 
           : state.blockedTasks || [];
         
