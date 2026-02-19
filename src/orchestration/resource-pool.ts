@@ -450,7 +450,8 @@ export class ResourcePool {
     for (const resource of this.resources.values()) {
       if (resource.status === 'error') continue; // Skip error resources
       
-      for (const cap of resource.capabilities) {
+      const capabilities = Array.isArray(resource.capabilities) ? resource.capabilities : [];
+      for (const cap of capabilities) {
         if (!capabilityMap.has(cap.type)) {
           capabilityMap.set(cap.type, []);
         }
