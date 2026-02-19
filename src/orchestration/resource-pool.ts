@@ -188,7 +188,7 @@ export class ResourcePool {
     for (const req of requirements) {
       const matchingResources = this.getAvailableResources().filter(r => {
         if (r.type !== req.type) return false;
-        if ((req.minLevel ?? 0) > 0 && r.capabilities.some(c => c.level < (req.minLevel ?? 0))) return false;
+        if ((req.minLevel ?? 0) > 0 && r.capabilities.length > 0 && !r.capabilities.some(c => c.level >= (req.minLevel ?? 0))) return false;
         if (req.capabilities) {
           const hasAllCaps = req.capabilities.every(cap => 
             r.capabilities.some(c => c.type === cap)
@@ -338,11 +338,11 @@ export class ResourcePool {
   }
 
   /**
-   * Get available resources (not deployed or busy)
+   * Get allocatable resources (available or deployed, but not busy/error/blocked)
    */
   getAvailableResources(): ResourceInstance[] {
     return Array.from(this.resources.values())
-      .filter(r => r.status === 'available');
+      .filter(r => r.status === 'available' || r.status === 'deployed');
   }
 
   /**

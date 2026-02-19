@@ -1,1 +1,26 @@
-[]
+[
+  {
+    "phase": "plan",
+    "timestamp": "2026-02-19T10:29:04.166Z",
+    "action": "transition",
+    "checkpointId": "chk-deepseek-research-1771496919487-1771496944166"
+  },
+  {
+    "phase": "blocked_review",
+    "timestamp": "2026-02-19T10:29:20.739Z",
+    "action": "transition",
+    "checkpointId": "chk-deepseek-research-1771496919487-1771496960739"
+  },
+  {
+    "phase": "plan",
+    "timestamp": "2026-02-19T10:40:39.024Z",
+    "action": "transition",
+    "checkpointId": "chk-deepseek-research-1771496919487-1771497639023"
+  },
+  {
+    "phase": "blocked_review",
+    "timestamp": "2026-02-19T10:40:53.866Z",
+    "action": "transition",
+    "checkpointId": "chk-deepseek-research-1771496919487-1771497653866"
+  }
+]
