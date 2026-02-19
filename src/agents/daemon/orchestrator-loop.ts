@@ -352,43 +352,51 @@ export function createOrchestratorLoop(
           return { success: false, observation: 'PARALLEL_DISPATCH failed: no taskIds' };
         }
         const targetExecutorId = String(params.targetExecutorId || state.targetExecutorId);
-        let successCount = 0;
-        let failCount = 0;
         
-        for (const taskId of taskIds) {
-          const task = state.taskGraph.find(t => t.id === taskId);
-          if (!task || task.status !== 'ready') continue;
-          
+        // Mark all tasks as in_progress before dispatching
+        const tasksToDispatch = taskIds
+          .map(id => state.taskGraph.find(t => t.id === id))
+          .filter((t): t is NonNullable<typeof t> => t !== undefined && t.status === 'ready');
+        
+        for (const task of tasksToDispatch) {
           task.status = 'in_progress';
           task.assignee = targetExecutorId;
-          
+        }
+        
+        // Dispatch all tasks in parallel using Promise.allSettled
+        const dispatchPromises = tasksToDispatch.map(async (task) => {
           try {
             const result = await state.hub.sendToModule(targetExecutorId, {
-              taskId,
+              taskId: task.id,
               description: task.description,
               bdTaskId: task.bdTaskId,
             });
-            task.result = { taskId, success: result.success !== false, output: result.output, error: result.error };
+            task.result = { taskId: task.id, success: result.success !== false, output: result.output, error: result.error };
             
             if (result.success !== false) {
               task.status = 'completed';
-              state.completedTasks.push(taskId);
-              successCount++;
+              state.completedTasks.push(task.id);
+              return { taskId: task.id, success: true, result };
             } else {
               task.status = 'failed';
-              state.failedTasks.push(taskId);
-              failCount++;
+              state.failedTasks.push(task.id);
+              return { taskId: task.id, success: false, error: result.error };
             }
-          } catch {
+          } catch (err) {
             task.status = 'failed';
-            state.failedTasks.push(taskId);
-            failCount++;
+            task.result = { taskId: task.id, success: false, error: String(err) };
+            state.failedTasks.push(task.id);
+            return { taskId: task.id, success: false, error: String(err) };
           }
-        }
+        });
+        
+        const results = await Promise.allSettled(dispatchPromises);
+        const successCount = results.filter(r => r.status === 'fulfilled' && r.value.success).length;
+        const failCount = results.filter(r => r.status === 'fulfilled' && !r.value.success).length;
         
         state.phase = 'parallel_dispatch';
         await saveCheckpoint(state, 'parallel_dispatch_completed');
-        return { success: successCount > 0, observation: `并行派发完成：成功${successCount}/${taskIds.length}, 失败${failCount}` };
+        return { success: successCount > 0, observation: `并行派发完成：成功${successCount}/${tasksToDispatch.length}, 失败${failCount}` };
       }
 
       // Handle BLOCKED_REVIEW action
