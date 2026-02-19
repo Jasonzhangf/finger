@@ -59,6 +59,14 @@ describe('DeepSeek Research - Full Phase E2E', () => {
       await fs.mkdir(path.join(TASK_OUTPUT_DIR, phase), { recursive: true });
     }
 
+    // Initialize bd in output directory
+    const { execSync } = await import('child_process');
+    try {
+      execSync('bd init --no-db', { cwd: TASK_OUTPUT_DIR, stdio: 'ignore' });
+    } catch {
+      // Ignore if already initialized
+    }
+
     // 2. Setup iFlow client (auto-managed process)
     console.log('[Setup] Initializing iFlow client...');
     iflowClient = new IFlowClient({
@@ -121,6 +129,7 @@ describe('DeepSeek Research - Full Phase E2E', () => {
       maxRounds: 50,
       cwd: TASK_OUTPUT_DIR,
       sessionId: `deepseek-research-${Date.now()}`,
+      targetExecutorId: 'deepseek-executor',
     }, hub);
     orchestratorModule = orchModule;
     await orchestratorModule.initialize?.();

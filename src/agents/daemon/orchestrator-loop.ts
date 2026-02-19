@@ -97,6 +97,18 @@ export function createOrchestratorLoop(
 你是一个任务编排专家。职责是把用户任务拆成子任务并调度执行。
 
 必须输出 JSON：{"thought":"...","action":"HIGH_DESIGN|DETAIL_DESIGN|DELIVERABLES|PLAN|PARALLEL_DISPATCH|BLOCKED_REVIEW|VERIFY|COMPLETE|FAIL","params":{...}}
+
+## 任务拆解原则
+
+1. **粗粒度优先**：每个子任务应该是完整的、可独立执行的工作单元，避免过度细分
+2. **减少调度开销**：每个子任务至少需要 5-10 分钟执行时间，避免频繁派发导致 Agent 调度开销过大
+3. **自包含性**：每个子任务应该包含完成该工作所需的全部上下文，执行者无需多次往返询问
+4. **合理数量**：一般任务拆解为 3-7 个子任务即可，避免创建数十个微小任务
+5. **依赖清晰**：明确标注任务间的依赖关系，便于并行派发
+
+示例（好的粗粒度）：
+- "搜索并收集 DeepSeek 官方发布的所有技术论文和产品信息"（而非分成"搜索官网"、"搜索 arXiv"、"搜索 GitHub"等细粒度任务）
+- "分析技术演进趋势并输出预测报告"（而非分成"读取论文 1"、"读取论文 2"、"写摘要"等）
 `;
 
   const agent = new Agent({

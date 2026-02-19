@@ -439,7 +439,7 @@ export class ReActLoop {
     }
 
     // 增强验证：检查 action 名称是否在允许列表中
-    const allowedActions = ['HIGH_DESIGN', 'DETAIL_DESIGN', 'DELIVERABLES', 'READ_FILE', 'WRITE_FILE', 'SHELL_EXEC', 'WEB_SEARCH', 
+    const allowedActions = ['HIGH_DESIGN', 'DETAIL_DESIGN', 'DELIVERABLES', 'PARALLEL_DISPATCH', 'BLOCKED_REVIEW', 'VERIFY', 'CHECKPOINT', 'READ_FILE', 'WRITE_FILE', 'SHELL_EXEC', 'WEB_SEARCH', 
                             'FETCH_URL', 'COMPLETE', 'FAIL', 'PLAN', 'DISPATCH'];
     if (!allowedActions.includes(p.action)) {
       return { valid: false, error: `Action ${p.action} not in allowed list` };
@@ -456,6 +456,10 @@ export class ReActLoop {
       FAIL: ['reason'],
       PLAN: ['tasks'],
       DISPATCH: ['taskId'],
+      PARALLEL_DISPATCH: ['taskIds'],
+      BLOCKED_REVIEW: [],
+      VERIFY: [],
+      CHECKPOINT: [],
     };
 
     const required = requiredParams[p.action];
