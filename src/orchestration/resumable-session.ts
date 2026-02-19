@@ -86,7 +86,14 @@ export class ResumableSessionManager {
     context: Record<string, unknown> = {},
     phaseHistory: PhaseHistoryEntry[] = []
   ): SessionCheckpoint {
-    const checkpointId = `chk-${sessionId}-${Date.now()}`;
+    // Ensure unique checkpoint ID even in tight loops
+    const baseCheckpointId = `chk-${sessionId}-${Date.now()}`;
+    let checkpointId = baseCheckpointId;
+    let counter = 0;
+    while (fs.existsSync(this.getCheckpointPath(checkpointId))) {
+      counter++;
+      checkpointId = `${baseCheckpointId}-${counter}`;
+    }
     
     const completedTaskIds = taskProgress
       .filter(t => t.status === 'completed')
