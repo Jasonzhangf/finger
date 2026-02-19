@@ -13,6 +13,7 @@ import {
   createExecutorActions,
   type ActionResult,
 } from '../core/action-registry-simple.js';
+import { buildAgentContext, generateDynamicSystemPrompt } from '../../orchestration/agent-context.js';
 import {
   ReActLoop,
   type LoopConfig,
@@ -212,12 +213,23 @@ export function createExecutorLoop(config: ExecutorLoopConfig): { agent: Agent; 
       const taskId = String(msg.taskId || `task-${Date.now()}`);
       const description = String(msg.description || msg.content || '');
       const bdTaskId = msg.bdTaskId ? String(msg.bdTaskId) : undefined;
+      const context = msg.context as Record<string, unknown> | undefined;
 
       if (!description) {
         const error = { success: false, error: 'No task description provided' };
         if (callback) callback(error);
         return error;
       }
+      
+      // Refresh agent context with task-specific info
+      const taskContext = buildAgentContext({
+        taskId,
+        taskDescription: description,
+        bdTaskId,
+        orchestratorNote: context?.orchestratorNote as string,
+      });
+      const dynamicPrompt = generateDynamicSystemPrompt(config.systemPrompt || '', taskContext);
+      agent.systemPrompt = dynamicPrompt;
 
       try {
         const result = await runTask(taskId, description, bdTaskId);

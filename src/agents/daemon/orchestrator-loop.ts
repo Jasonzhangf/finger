@@ -11,6 +11,7 @@ import { globalEventBus } from '../../runtime/event-bus.js';
 import { runtimeInstructionBus } from '../../orchestration/runtime-instruction-bus.js';
 import { resumableSessionManager, determineResumePhase, type TaskProgress } from '../../orchestration/resumable-session.js';
 import { resourcePool, type ResourceRequirement } from '../../orchestration/resource-pool.js';
+import { buildAgentContext, generateDynamicSystemPrompt } from '../../orchestration/agent-context.js';
 
 import type { OutputModule } from '../../orchestration/module-registry.js';
 import {
@@ -143,12 +144,16 @@ Agent 的能力由其拥有的工具决定：
 - "生成分析报告" → 需要 report_generation 能力 → 分配 executor-research
 `;
 
+  // Build initial agent context with resource pool info
+  const initialContext = buildAgentContext();
+  const dynamicSystemPrompt = generateDynamicSystemPrompt(systemPrompt, initialContext);
+  
   const agent = new Agent({
     id: config.id,
     name: config.name,
     mode: config.mode,
     provider: 'iflow',
-    systemPrompt,
+    systemPrompt: dynamicSystemPrompt,
     cwd: config.cwd,
     resumeSession: true,
   });
@@ -452,17 +457,27 @@ Agent 的能力由其拥有的工具决定：
           };
         }
         
-        // Dispatch tasks with allocated resources
+        // Dispatch tasks with allocated resources and context
         const dispatchPromises = tasksWithResources.map(async (task) => {
           const targetExecutorId = task.allocatedResources[0] || state.targetExecutorId;
           
           try {
             resourcePool.markTaskExecuting(task.id);
             
+            // Build task-specific context for the executor
+            const taskContext = buildAgentContext({
+              taskId: task.id,
+              taskDescription: task.description,
+              requiredCapabilities: inferResourceRequirements(task.description).map(r => r.capabilities?.[0] || r.type).filter(Boolean),
+              bdTaskId: task.bdTaskId,
+              orchestratorNote: `请使用 ${targetExecutorId} 执行此任务，已分配资源：${task.allocatedResources.join(', ')}`,
+            });
+            
             const result = await state.hub.sendToModule(targetExecutorId, {
               taskId: task.id,
               description: task.description,
               bdTaskId: task.bdTaskId,
+              context: taskContext, // Include context for task-aware execution
             });
             task.result = { taskId: task.id, success: result.success !== false, output: result.output, error: result.error };
             
@@ -827,6 +842,12 @@ Agent 的能力由其拥有的工具决定：
       checkpoint: { totalChecks: 0, majorChange: false }, round: 0, hub, targetExecutorId: config.targetExecutorId || 'executor-loop',
     };
     (loop as unknown as { state: LoopState }).state = loopState;
+    
+    // Refresh agent context with latest resource pool state before starting
+    const refreshedContext = buildAgentContext();
+    const refreshedPrompt = generateDynamicSystemPrompt(systemPrompt, refreshedContext);
+    agent.systemPrompt = refreshedPrompt;
+    
     await registry.execute('CHECKPOINT', { trigger: 'reentry' }, { state: loopState });
     try {
       const result: ReActResult = await loop.run();
