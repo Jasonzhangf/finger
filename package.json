@@ -13,6 +13,8 @@
     "install:global": "npm install -g .",
     "server:dev": "tsx watch src/server/index.ts",
     "test": "vitest run",
+    "start:services": "./scripts/start-services.sh",
+    "start:iflow": "tsx scripts/start-iflow.ts",
     "test:watch": "vitest",
     "lint": "eslint src tests --ext .ts",
     "lint:fix": "eslint src tests --ext .ts --fix",

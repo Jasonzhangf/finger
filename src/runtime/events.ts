@@ -200,13 +200,58 @@ export interface WorkflowProgressEvent extends BaseEvent {
 
 export type ProgressEvent = PlanUpdatedEvent | WorkflowProgressEvent;
 
+// Phase 事件 - 编排者阶段流转
+export interface PhaseTransitionEvent extends BaseEvent {
+  type: 'phase_transition';
+  agentId: string;
+  payload: {
+    from: string;
+    to: string;
+    triggerAction: string;
+    checkpointId?: string;
+    round: number;
+  };
+}
+
+export interface PhaseOutputSavedEvent extends BaseEvent {
+  type: 'phase_output_saved';
+  agentId: string;
+  payload: {
+    phase: string;
+    outputPath: string;
+    files: string[];
+  };
+}
+
+export interface DecisionTreeNodeEvent extends BaseEvent {
+  type: 'decision_tree_node';
+  agentId: string;
+  payload: {
+    phase: string;
+    round: number;
+    thought: string;
+    action: string;
+    params: Record<string, unknown>;
+    observation?: string;
+    outputFiles: string[];
+  };
+}
+
+export type PhaseEvent = PhaseTransitionEvent | PhaseOutputSavedEvent | DecisionTreeNodeEvent;
+
+// Phase 事件类型集合
+export const PhaseEventTypes = {
+  PHASE: ['phase_transition', 'phase_output_saved', 'decision_tree_node'] as const,
+} as const;
+
 // 统一事件类型
 export type RuntimeEvent =
   | SessionEvent
   | TaskEvent
   | ToolEvent
   | DialogEvent
-  | ProgressEvent;
+  | ProgressEvent
+  | PhaseEvent;
 
 // 事件类型集合 (用于订阅过滤)
 export const EventTypes = {
@@ -236,4 +281,8 @@ export function isDialogEvent(event: RuntimeEvent): event is DialogEvent {
 
 export function isProgressEvent(event: RuntimeEvent): event is ProgressEvent {
   return EventTypes.PROGRESS.includes(event.type as typeof EventTypes.PROGRESS[number]);
+}
+
+export function isPhaseEvent(event: RuntimeEvent): event is PhaseEvent {
+  return PhaseEventTypes.PHASE.includes(event.type as typeof PhaseEventTypes.PHASE[number]);
 }
