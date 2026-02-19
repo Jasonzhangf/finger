@@ -200,6 +200,8 @@ export function useWorkflowExecution(sessionId: string): UseWorkflowExecutionRet
           content: `Workflow 状态更新: ${payload.status}`,
           timestamp: new Date().toISOString(),
           kind: 'status',
+          agentId: 'orchestrator',
+          agentName: 'Orchestrator',
         }),
       );
       return;
