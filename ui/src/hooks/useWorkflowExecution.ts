@@ -274,11 +274,37 @@ export function useWorkflowExecution(sessionId: string): UseWorkflowExecutionRet
 
       const preferredWorkflowId = executionStateRef.current?.workflowId || workflow?.id;
       const selectedWorkflow = pickWorkflowForSession(workflows, sessionId, preferredWorkflowId);
+      
+      // Always set workflow state, even if empty
+      setWorkflow(selectedWorkflow);
+      
       if (!selectedWorkflow) {
+        // No workflow found - show empty state with default orchestrator agent
+        setExecutionState({
+          workflowId: `empty-${sessionId}`,
+          status: 'planning',
+          orchestrator: {
+            id: 'orchestrator-loop',
+            currentRound: 0,
+            maxRounds: 10,
+          },
+          agents: [{
+            id: 'orchestrator-loop',
+            name: 'orchestrator-loop',
+            type: 'orchestrator',
+            status: 'idle',
+            load: 0,
+            errorRate: 0,
+            requestCount: 0,
+            tokenUsage: 0,
+          }],
+          tasks: [],
+          executionPath: [],
+          paused: false,
+          executionRounds: [],
+        });
         return;
       }
-
-      setWorkflow(selectedWorkflow);
 
       const tasksRes = await fetch(`/api/v1/workflows/${selectedWorkflow.id}/tasks`);
       const taskList = tasksRes.ok ? ((await tasksRes.json()) as TaskNode[]) : [];

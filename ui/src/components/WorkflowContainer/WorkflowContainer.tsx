@@ -11,8 +11,9 @@ import { useSessionResume } from '../../hooks/useSessionResume.js';
 import type { UserInputPayload } from '../../api/types.js';
 
 export const WorkflowContainer: React.FC = () => {
-  const { currentSession } = useSessions();
-  const sessionId = currentSession?.id || 'default-session';
+  const { currentSession, sessions } = useSessions();
+  const sessionId = currentSession?.id || (sessions.length > 0 ? sessions[0].id : 'default-session');
+  console.log('[WorkflowContainer] sessionId:', sessionId, 'currentSession:', currentSession, 'sessions:', sessions);
   const [inspectSignal, setInspectSignal] = React.useState(0);
   const [inspectAgentId, setInspectAgentId] = React.useState<string | null>(null);
   const [requireConfirm, setRequireConfirm] = React.useState(() => {
@@ -122,16 +123,22 @@ export const WorkflowContainer: React.FC = () => {
 
   if (isLoading) {
     return (
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100vh', color: '#9ca3af' }}>
-        Loading workflow runtime...
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100vh', width: '100vw', background: '#0e1217', color: '#9ca3af' }}>
+        <div>
+          <div style={{ fontSize: '24px', marginBottom: '16px' }}>⏳</div>
+          <div>Loading workflow runtime...</div>
+        </div>
       </div>
     );
   }
 
   if (error) {
     return (
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100vh', color: '#ef4444' }}>
-        Error: {error}
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100vh', width: '100vw', background: '#0e1217', color: '#ef4444' }}>
+        <div>
+          <div style={{ fontSize: '24px', marginBottom: '16px' }}>❌</div>
+          <div>Error: {error}</div>
+        </div>
       </div>
     );
   }
@@ -166,17 +173,17 @@ export const WorkflowContainer: React.FC = () => {
           onResume={resumeWorkflow}
           isPaused={executionState?.paused || false}
           isConnected={isConnected}
-          resumePrompt={{
+          resumePrompt={showResumePrompt ? {
             visible: showResumePrompt,
             summary: resumeContext?.summary || '',
             progress: resumeContext?.estimatedProgress || 0,
             pendingCount: resumeContext?.checkpoint?.pendingTaskIds?.length || 0,
-            requireConfirm,
-            isResuming,
+            requireConfirm: requireConfirm,
+            isResuming: isResuming,
             onResumeNow: handleResumeNow,
             onDismiss: handleDismissResume,
             onToggleRequireConfirm: handleToggleRequireConfirm,
-          }}
+          } : undefined}
        />
      }
       bottomPanel={<BottomPanel />}

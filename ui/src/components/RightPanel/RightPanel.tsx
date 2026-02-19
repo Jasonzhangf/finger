@@ -133,7 +133,7 @@ export const RightPanel: React.FC<RightPanelProps> = ({
       </div>
 
       <div className="chat-section">
-        {resumePrompt?.visible && (
+        {resumePrompt && resumePrompt.visible && (
           <div className="resume-banner">
             <div className="resume-title">检测到可恢复会话</div>
             <div className="resume-meta">进度 {resumePrompt.progress}% · 待处理任务 {resumePrompt.pendingCount}</div>
