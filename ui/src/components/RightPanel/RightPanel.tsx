@@ -45,11 +45,12 @@ const MessageItem = React.memo<{
 }>(({ event, isSelected, agentStatus, onAgentClick }) => {
   const isUser = event.role === 'user';
   const isAgent = event.role === 'agent';
+  const isSystemWithAgent = event.role === 'system' && event.agentId;
   
   return (
     <div className={`message ${isUser ? 'user' : isAgent ? 'agent' : 'system'} ${isSelected ? 'selected' : ''}`}>
       <div className="message-avatar">
-        {isUser ? '👤' : isAgent ? '🤖' : 'ℹ️'}
+        {isUser ? '👤' : isAgent ? '🤖' : isSystemWithAgent ? '🤖' : 'ℹ️'}
       </div>
       <div className="message-content-wrapper">
         <div className="message-header">
@@ -70,7 +71,10 @@ const MessageItem = React.memo<{
             </>
           )}
           {isUser && <span className="sender-label">You</span>}
-          {event.role === 'system' && <span className="sender-label">System</span>}
+          {isSystemWithAgent && event.agentId && (
+            <span className="sender-label">{event.agentName || event.agentId}</span>
+          )}
+          {event.role === 'system' && !isSystemWithAgent && <span className="sender-label">System</span>}
           <span className="message-time">{new Date(event.timestamp).toLocaleTimeString()}</span>
         </div>
         
