@@ -42,7 +42,7 @@ export interface ResourceRequirement {
 export interface TaskResourceAllocation {
   taskId: string;
   allocatedResources: string[]; // resource IDs
-  status: 'pending' | 'allocated' | 'executing' | 'completed' | 'blocked' | 'failed';
+  status: 'pending' | 'allocated' | 'executing' | 'completed' | 'blocked' | 'failed' | 'released';
   blockedReason?: string;
   allocatedAt?: string;
   releasedAt?: string;
@@ -188,7 +188,7 @@ export class ResourcePool {
     for (const req of requirements) {
       const matchingResources = this.getAvailableResources().filter(r => {
         if (r.type !== req.type) return false;
-        if (req.minLevel && r.capabilities.some(c => c.level < req.minLevel)) return false;
+        if ((req.minLevel ?? 0) > 0 && r.capabilities.some(c => c.level < (req.minLevel ?? 0))) return false;
         if (req.capabilities) {
           const hasAllCaps = req.capabilities.every(cap => 
             r.capabilities.some(c => c.type === cap)
@@ -299,12 +299,17 @@ export class ResourcePool {
     }
 
     // Update allocation record
-    allocation.status = reason === 'completed' ? 'completed' : 'released';
-    allocation.releasedAt = new Date().toISOString();
-    if (reason === 'blocked') {
+    if (reason === 'completed') {
+      allocation.status = 'completed';
+    } else if (reason === 'failed') {
+      allocation.status = 'failed';
+    } else if (reason === 'blocked') {
       allocation.status = 'blocked';
       allocation.blockedReason = reason;
+    } else {
+      allocation.status = 'released';
     }
+    allocation.releasedAt = new Date().toISOString();
 
     this.savePool();
     console.log(`[ResourcePool] Released resources for task ${taskId}`);
@@ -393,6 +398,40 @@ export class ResourcePool {
     this.resources.delete(resourceId);
     this.savePool();
     console.log(`[ResourcePool] Removed resource ${resourceId}`);
+    return true;
+  }
+
+  /** Set resource busy status */
+  setResourceBusy(resourceId: string, busy: boolean): boolean {
+    const resource = this.resources.get(resourceId);
+    if (!resource) return false;
+    resource.status = busy ? 'busy' : 'available';
+    this.savePool();
+    return true;
+  }
+
+  /** Deploy resource to session/workflow */
+  deployResource(resourceId: string, sessionId?: string, workflowId?: string): boolean {
+    const resource = this.resources.get(resourceId);
+    if (!resource || resource.status !== 'available') return false;
+    resource.status = 'deployed';
+    resource.currentSessionId = sessionId;
+    resource.currentWorkflowId = workflowId;
+    resource.deployedAt = new Date().toISOString();
+    resource.totalDeployments++;
+    this.savePool();
+    return true;
+  }
+
+  /** Release single resource */
+  releaseResource(resourceId: string): boolean {
+    const resource = this.resources.get(resourceId);
+    if (!resource) return false;
+    resource.status = 'available';
+    resource.currentSessionId = undefined;
+    resource.currentWorkflowId = undefined;
+    resource.currentTaskId = undefined;
+    this.savePool();
     return true;
   }
 

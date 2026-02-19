@@ -21,6 +21,7 @@ import {
 } from '../core/action-registry-simple.js';
 import {
   ReActLoop,
+  type LoopConfig,
   type ReActResult,
   type ReActState,
 } from '../runtime/react-loop.js';
@@ -48,6 +49,7 @@ export interface OrchestratorLoopConfig {
 }
 
 type OrchestratorPhase =
+  | 'paused'
   | 'understanding'
   | 'high_design'
   | 'detail_design'
@@ -846,7 +848,7 @@ Agent 的能力由其拥有的工具决定：
     // Refresh agent context with latest resource pool state before starting
     const refreshedContext = buildAgentContext();
     const refreshedPrompt = generateDynamicSystemPrompt(systemPrompt, refreshedContext);
-    agent.systemPrompt = refreshedPrompt;
+    agent.updateSystemPrompt(refreshedPrompt);
     
     await registry.execute('CHECKPOINT', { trigger: 'reentry' }, { state: loopState });
     try {

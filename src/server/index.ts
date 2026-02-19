@@ -747,7 +747,7 @@ app.get('/api/v1/agents', (_req, res) => {
   res.json(resources.map(r => ({
     id: r.id,
     type: r.id.includes('orchestrator') ? 'orchestrator' : 'executor',
-    name: r.config.name || r.id,
+    name: r.name || r.id,
     status: r.status,
     sessionId: r.currentSessionId,
     workflowId: r.currentWorkflowId,
@@ -761,7 +761,7 @@ app.get('/api/v1/resources', (_req, res) => {
   res.json({
     available: available.map(r => ({
       id: r.id,
-      name: r.config.name || r.id,
+      name: r.name || r.id,
       type: r.id.includes('orchestrator') ? 'orchestrator' : 'executor',
       status: r.status,
     })),
@@ -777,7 +777,8 @@ app.post('/api/v1/resources/deploy', (req, res) => {
     return;
   }
   
-  const resource = resourcePool.deployResource(resourceId, sessionId, workflowId);
+  resourcePool.deployResource(resourceId, sessionId, workflowId);
+  const resource = resourcePool.getAllResources().find(r => r.id === resourceId);
   if (!resource) {
     res.status(409).json({ error: 'Resource not available or already deployed' });
     return;
@@ -809,7 +810,8 @@ app.post('/api/v1/resources/release', (req, res) => {
     return;
   }
   
-  const resource = resourcePool.releaseResource(resourceId);
+  resourcePool.releaseResource(resourceId);
+  const resource = resourcePool.getAllResources().find(r => r.id === resourceId);
   if (!resource) {
     res.status(404).json({ error: 'Resource not found' });
     return;
@@ -948,8 +950,7 @@ app.get('/api/v1/agent/:agentId/progress', (req, res) => {
     workflowId: resource.currentWorkflowId,
     totalDeployments: resource.totalDeployments,
     iterations,
-    lastDeployedAt: resource.lastDeployedAt,
-    lastReleasedAt: resource.lastReleasedAt,
+    lastDeployedAt: resource.deployedAt,
   });
 });
 

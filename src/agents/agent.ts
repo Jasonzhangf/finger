@@ -156,6 +156,16 @@ export class Agent {
     return { ...this.status };
   }
 
+  /** Get system prompt */
+  get systemPrompt(): string | undefined {
+    return this.config.systemPrompt;
+  }
+
+  /** Update system prompt */
+  updateSystemPrompt(prompt: string): void {
+    this.config.systemPrompt = prompt;
+  }
+
   /**
    * 执行任务
    * - auto 模式：直接返回结果

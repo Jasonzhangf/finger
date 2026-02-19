@@ -229,7 +229,7 @@ export function createExecutorLoop(config: ExecutorLoopConfig): { agent: Agent; 
         orchestratorNote: context?.orchestratorNote as string,
       });
       const dynamicPrompt = generateDynamicSystemPrompt(config.systemPrompt || '', taskContext);
-      agent.systemPrompt = dynamicPrompt;
+      agent.updateSystemPrompt(dynamicPrompt);
 
       try {
         const result = await runTask(taskId, description, bdTaskId);

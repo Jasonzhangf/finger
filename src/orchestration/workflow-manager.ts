@@ -311,7 +311,7 @@ export class WorkflowManager {
     // Re-claim resources for in-progress tasks
     for (const task of checkpoint.taskProgress.filter(t => t.status === 'in_progress')) {
       if (task.assignedAgent) {
-        resourcePool.setResourceBusy(task.assignedAgent);
+        resourcePool.setResourceBusy(task.assignedAgent, true);
       }
     }
   }
