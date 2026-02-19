@@ -10,6 +10,7 @@ import { MessageHub } from '../../orchestration/message-hub.js';
 import { globalEventBus } from '../../runtime/event-bus.js';
 import { runtimeInstructionBus } from '../../orchestration/runtime-instruction-bus.js';
 import { resumableSessionManager, determineResumePhase, type TaskProgress } from '../../orchestration/resumable-session.js';
+import { resourcePool, type ResourceRequirement } from '../../orchestration/resource-pool.js';
 
 import type { OutputModule } from '../../orchestration/module-registry.js';
 import {
@@ -101,23 +102,35 @@ export function createOrchestratorLoop(
 ## 任务拆解原则
 
 1. **粗粒度优先**：每个子任务应该是完整的、可独立执行的工作单元，避免过度细分
-2. **减少调度开销**：每个子任务至少需要 5-10 分钟执行时间，避免频繁派发导致 Agent 调度开销过大
-3. **自包含性**：每个子任务应该包含完成该工作所需的全部上下文，执行者无需多次往返询问
-4. **合理数量**：一般任务拆解为 3-7 个子任务即可，避免创建数十个微小任务
-5. **依赖清晰**：明确标注任务间的依赖关系，便于并行派发
+2. **资源匹配**：任务拆解时需考虑所需资源类型（executor-general、executor-research、executor-coding 等）
+3. **减少调度开销**：每个子任务至少需要 5-10 分钟执行时间，避免频繁派发
+4. **自包含性**：每个子任务应包含完成工作所需的全部上下文
+5. **合理数量**：一般任务拆解为 3-7 个子任务
+6. **依赖清晰**：明确标注任务间的依赖关系
 
-## 编排控制命令
+## 资源管理
 
-- **STOP**: 暂停任务派发，等待执行中的任务完成。用于资源不足或需要人工干预时
-- **START**: 恢复任务派发，继续执行剩余任务
+### 资源类型
+- **executor-general**: 通用执行（文件操作、shell 命令、基础搜索）
+- **executor-research**: 研究执行（深度搜索、数据分析、报告生成）
+- **executor-coding**: 代码执行（代码生成、文件操作、编译运行）
+- **orchestrator**: 任务编排
+- **reviewer**: 质量审查
 
-示例：
-- {"thought":"资源不足，暂停派发","action":"STOP","params":{"reason":"等待资源释放"}}
-- {"thought":"资源已就绪","action":"START","params":{}}
+### 任务资源需求
+每个子任务应标注所需资源类型：
+- 网络搜索任务 → executor-research
+- 代码编写任务 → executor-coding
+- 文件处理任务 → executor-general
 
-示例（好的粗粒度）：
-- "搜索并收集 DeepSeek 官方发布的所有技术论文和产品信息"（而非分成"搜索官网"、"搜索 arXiv"、"搜索 GitHub"等细粒度任务）
-- "分析技术演进趋势并输出预测报告"（而非分成"读取论文 1"、"读取论文 2"、"写摘要"等）
+### 资源缺乏处理
+如果资源不足，使用 STOP 命令报告：
+{"thought":"缺乏 executor-research 资源","action":"STOP","params":{"reason":"资源缺乏：需要 executor-research 执行网络搜索任务"}}
+
+示例（好的粗粒度 + 资源匹配）：
+- "搜索并收集 DeepSeek 官方发布的所有技术论文和产品信息" → executor-research
+- "分析技术演进趋势并输出预测报告" → executor-research
+- "创建 Node.js 项目并实现核心功能" → executor-coding
 `;
 
   const agent = new Agent({
@@ -354,32 +367,66 @@ export function createOrchestratorLoop(
         return { success: true, observation: `交付清单已保存`, data: state.deliverables };
       }
 
-      // Handle PARALLEL_DISPATCH action
+      // Handle PARALLEL_DISPATCH action with resource pool
       if (action.name === 'PARALLEL_DISPATCH' && state) {
         const taskIds = Array.isArray(params.taskIds) ? params.taskIds as string[] : [];
         if (taskIds.length === 0) {
           return { success: false, observation: 'PARALLEL_DISPATCH failed: no taskIds' };
         }
-        const targetExecutorId = String(params.targetExecutorId || state.targetExecutorId);
-        const maxConcurrency = Number(params.maxConcurrency || 3); // Default to 3 concurrent tasks
         
         // Get ready tasks
         const tasksToDispatch = taskIds
           .map(id => state.taskGraph.find(t => t.id === id))
           .filter((t): t is NonNullable<typeof t> => t !== undefined && t.status === 'ready');
         
-        // Limit concurrency based on resource pool
-        const batchedTasks = tasksToDispatch.slice(0, maxConcurrency);
-        const remainingTasks = tasksToDispatch.slice(maxConcurrency);
+        // Allocate resources for each task based on task description
+        const allocationResults: Array<{ taskId: string; success: boolean; resources?: string[]; error?: string }> = [];
+        const tasksWithResources: Array<typeof tasksToDispatch[number] & { allocatedResources: string[] }> = [];
         
-        for (const task of batchedTasks) {
-          task.status = 'in_progress';
-          task.assignee = targetExecutorId;
+        for (const task of tasksToDispatch) {
+          // Infer resource requirements from task description
+          const requirements: ResourceRequirement[] = inferResourceRequirements(task.description);
+          const allocation = resourcePool.allocateResources(task.id, requirements);
+          
+          if (allocation.success && allocation.allocatedResources) {
+            allocationResults.push({ taskId: task.id, success: true, resources: allocation.allocatedResources });
+            tasksWithResources.push({ ...task, allocatedResources: allocation.allocatedResources });
+          } else {
+            allocationResults.push({ 
+              taskId: task.id, 
+              success: false, 
+              error: allocation.error || 'Allocation failed',
+            });
+          }
         }
         
-        // Dispatch batch in parallel using Promise.allSettled
-        const dispatchPromises = batchedTasks.map(async (task) => {
+        // Check if any tasks failed allocation
+        const failedAllocations = allocationResults.filter(r => !r.success);
+        if (failedAllocations.length > 0) {
+          // Report resource shortage and enter BLOCKED state
+          const missingInfo = failedAllocations.map(r => `Task ${r.taskId}: ${r.error}`).join('; ');
+          state.phase = 'blocked_review';
+          await saveCheckpoint(state, 'resource_shortage');
+          await bdTools.addComment(state.epicId, `资源缺乏：${missingInfo}`);
+          
+          return {
+            success: false,
+            observation: `资源缺乏，无法派发任务：${missingInfo}`,
+            error: 'resource_shortage',
+            data: { 
+              failedAllocations,
+              suggestion: '请添加所需资源或调整任务拆解',
+            },
+          };
+        }
+        
+        // Dispatch tasks with allocated resources
+        const dispatchPromises = tasksWithResources.map(async (task) => {
+          const targetExecutorId = task.allocatedResources[0] || state.targetExecutorId;
+          
           try {
+            resourcePool.markTaskExecuting(task.id);
+            
             const result = await state.hub.sendToModule(targetExecutorId, {
               taskId: task.id,
               description: task.description,
@@ -390,16 +437,19 @@ export function createOrchestratorLoop(
             if (result.success !== false) {
               task.status = 'completed';
               state.completedTasks.push(task.id);
+              resourcePool.releaseResources(task.id, 'completed');
               return { taskId: task.id, success: true, result };
             } else {
               task.status = 'failed';
               state.failedTasks.push(task.id);
+              resourcePool.releaseResources(task.id, 'error');
               return { taskId: task.id, success: false, error: result.error };
             }
           } catch (err) {
             task.status = 'failed';
             task.result = { taskId: task.id, success: false, error: String(err) };
             state.failedTasks.push(task.id);
+            resourcePool.releaseResources(task.id, 'error');
             return { taskId: task.id, success: false, error: String(err) };
           }
         });
@@ -408,21 +458,40 @@ export function createOrchestratorLoop(
         const successCount = results.filter(r => r.status === 'fulfilled' && r.value.success).length;
         const failCount = results.filter(r => r.status === 'fulfilled' && !r.value.success).length;
         
-        // If there are remaining tasks, they will be dispatched in next round
-        const remainingCount = remainingTasks.length;
-        
         state.phase = 'parallel_dispatch';
         await saveCheckpoint(state, 'parallel_dispatch_completed');
         
-        if (remainingCount > 0) {
-          return { 
-            success: successCount > 0, 
-            observation: `并行派发完成：成功${successCount}/${batchedTasks.length}, 失败${failCount}, 等待${remainingCount}个任务`,
-            data: { dispatched: batchedTasks.length, remaining: remainingCount, total: tasksToDispatch.length },
-          };
+        return { 
+          success: successCount > 0, 
+          observation: `并行派发完成：成功${successCount}/${tasksToDispatch.length}, 失败${failCount}`,
+          data: { dispatched: tasksToDispatch.length, success: successCount, failed: failCount },
+        };
+      }
+
+      // Helper function to infer resource requirements from task description
+      function inferResourceRequirements(description: string): ResourceRequirement[] {
+        const desc = description.toLowerCase();
+        const requirements: ResourceRequirement[] = [];
+        
+        if (desc.includes('搜索') || desc.includes('search') || desc.includes('调研') || desc.includes('分析')) {
+          requirements.push({ type: 'executor', minLevel: 7, capabilities: ['web_search'] });
+        }
+        if (desc.includes('代码') || desc.includes('code') || desc.includes('编程') || desc.includes('开发')) {
+          requirements.push({ type: 'executor', minLevel: 7, capabilities: ['code_generation'] });
+        }
+        if (desc.includes('文件') || desc.includes('file') || desc.includes('保存') || desc.includes('创建')) {
+          requirements.push({ type: 'executor', minLevel: 5, capabilities: ['file_ops'] });
+        }
+        if (desc.includes('报告') || desc.includes('report') || desc.includes('总结')) {
+          requirements.push({ type: 'executor', minLevel: 7, capabilities: ['report_generation'] });
         }
         
-        return { success: successCount > 0, observation: `并行派发完成：成功${successCount}/${tasksToDispatch.length}, 失败${failCount}` };
+        // Default to general executor if no specific requirements
+        if (requirements.length === 0) {
+          requirements.push({ type: 'executor', minLevel: 5 });
+        }
+        
+        return requirements;
       }
 
       // Handle BLOCKED_REVIEW action
@@ -521,28 +590,86 @@ export function createOrchestratorLoop(
       // Handle STOP action - pause task dispatching
       if (action.name === 'STOP' && state) {
         const reason = String(params.reason || 'manual');
-        state.phase = 'paused';
-        await saveCheckpoint(state, `stopped: ${reason}`);
-        await bdTools.addComment(state.epicId, `编排已暂停：${reason}`);
-        return { 
-          success: true, 
-          observation: `编排已暂停：${reason}`,
-          data: { paused: true, reason, pendingTasks: state.taskGraph.filter(t => t.status === 'ready').length },
-        };
+        const isResourceShortage = reason.includes('资源缺乏') || reason.includes('resource');
+        
+        if (isResourceShortage) {
+          state.phase = 'blocked_review';
+          await saveCheckpoint(state, `blocked: ${reason}`);
+          await bdTools.updateStatus(state.epicId, 'blocked');
+          await bdTools.addComment(state.epicId, `资源缺乏：${reason}`);
+          
+          return {
+            success: true,
+            observation: `资源缺乏，任务阻塞：${reason}`,
+            error: 'resource_shortage',
+            data: { 
+              blocked: true, 
+              reason, 
+              pendingTasks: state.taskGraph.filter(t => t.status === 'ready').length,
+              resourceStatus: resourcePool.getStatusReport(),
+              recoveryAction: '添加所需资源后使用 START 命令恢复',
+            },
+          };
+        } else {
+          state.phase = 'paused';
+          await saveCheckpoint(state, `stopped: ${reason}`);
+          await bdTools.addComment(state.epicId, `编排已暂停：${reason}`);
+          
+          return { 
+            success: true, 
+            observation: `编排已暂停：${reason}`,
+            data: { paused: true, reason, pendingTasks: state.taskGraph.filter(t => t.status === 'ready').length },
+          };
+        }
       }
       
       // Handle START action - resume task dispatching
       if (action.name === 'START' && state) {
-        if (state.phase !== 'paused') {
-          return { success: false, observation: 'START rejected: not paused', error: 'not paused' };
+        if (state.phase !== 'paused' && state.phase !== 'blocked_review') {
+          return { success: false, observation: 'START rejected: not paused or blocked', error: 'invalid state' };
         }
+        
+        // Check if resources are now available for blocked tasks
+        if (state.phase === 'blocked_review') {
+          const readyTasks = state.taskGraph.filter(t => t.status === 'ready');
+          const resourceCheckResults: Array<{ taskId: string; satisfied: boolean; missing?: string[] }> = [];
+          
+          for (const task of readyTasks) {
+            const requirements = inferResourceRequirements(task.description);
+            const check = resourcePool.checkResourceRequirements(requirements);
+            
+            if (!check.satisfied) {
+              resourceCheckResults.push({
+                taskId: task.id,
+                satisfied: false,
+                missing: check.missingResources.map(r => r.type),
+              });
+            }
+          }
+          
+          if (resourceCheckResults.length > 0) {
+            return {
+              success: false,
+              observation: `资源仍然不足，无法恢复：${resourceCheckResults.map(r => `Task ${r.taskId} 缺少 ${r.missing?.join(',')}`).join('; ')}`,
+              error: 'resource_still_shortage',
+              data: { resourceCheckResults, suggestion: '请先添加所需资源' },
+            };
+          }
+        }
+        
         state.phase = 'parallel_dispatch';
         await saveCheckpoint(state, 'resumed');
-        await bdTools.addComment(state.epicId, '编排已恢复');
+        await bdTools.updateStatus(state.epicId, 'in_progress');
+        await bdTools.addComment(state.epicId, '编排已恢复，资源已就绪');
+        
         return { 
           success: true, 
           observation: '编排已恢复，继续派发任务',
-          data: { paused: false, pendingTasks: state.taskGraph.filter(t => t.status === 'ready').length },
+          data: { 
+            paused: false, 
+            pendingTasks: state.taskGraph.filter(t => t.status === 'ready').length,
+            resourceStatus: resourcePool.getStatusReport(),
+          },
         };
       }
       

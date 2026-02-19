@@ -1,65 +1,65 @@
 /**
  * Resource Pool - 资源池管理
- * 管理可部署的 Agent 资源，跟踪资源使用情况
+ * 支持资源类别、属性匹配、临时占用和释放
  */
 
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
-// AgentConfig defined locally to avoid cross-boundary imports
-interface AgentConfig {
-  id: string;
-  name: string;
-  mode: 'auto' | 'manual';
-  provider?: 'iflow' | 'codex' | 'anthropic';
-  model?: string;
-  systemPrompt?: string;
-  allowedTools?: string[];
-  disallowedTools?: string[];
-  permissionMode?: 'default' | 'autoEdit' | 'yolo' | 'plan';
-  maxTurns?: number;
-  maxIterations?: number;
-  maxRounds?: number;
-  enableReview?: boolean;
-  cwd?: string;
-  resumeSession?: boolean;
+
+export type ResourceType = 'executor' | 'orchestrator' | 'reviewer' | 'tool' | 'api' | 'database';
+export type ResourceStatus = 'available' | 'deployed' | 'busy' | 'blocked' | 'error' | 'released';
+
+export interface ResourceCapability {
+  type: string;
+  level: number; // 1-10
+  metadata?: Record<string, unknown>;
 }
 
-interface AgentRuntime {
+export interface ResourceInstance {
   id: string;
   name: string;
-  type: 'orchestrator' | 'executor' | 'reviewer';
-  status: 'idle' | 'running' | 'error' | 'paused';
-  load: number;
-  errorRate: number;
-  requestCount: number;
-  tokenUsage: number;
+  type: ResourceType;
+  capabilities: ResourceCapability[];
+  status: ResourceStatus;
+  currentSessionId?: string;
+  currentWorkflowId?: string;
   currentTaskId?: string;
-  config?: AgentConfig;
+  deployedAt?: string;
+  totalDeployments: number;
+  errorCount: number;
+  lastErrorAt?: string;
+  lastErrorReason?: string;
+}
+
+export interface ResourceRequirement {
+  type: ResourceType;
+  minLevel?: number;
+  capabilities?: string[];
+  optional?: boolean; // 是否可选资源
+}
+
+export interface TaskResourceAllocation {
+  taskId: string;
+  allocatedResources: string[]; // resource IDs
+  status: 'pending' | 'allocated' | 'executing' | 'completed' | 'blocked' | 'failed';
+  blockedReason?: string;
+  allocatedAt?: string;
+  releasedAt?: string;
+}
+
+export interface ResourcePoolState {
+  resources: ResourceInstance[];
+  allocations: TaskResourceAllocation[];
+  version: number;
 }
 
 const FINGER_HOME = path.join(os.homedir(), '.finger');
 const RESOURCE_POOL_FILE = path.join(FINGER_HOME, 'resource-pool.json');
 
-export interface ResourceInstance {
-  id: string;
-  config: AgentConfig;
-  status: 'available' | 'deployed' | 'busy' | 'error';
-  currentSessionId?: string;
-  currentWorkflowId?: string;
-  lastDeployedAt?: string;
-  lastReleasedAt?: string;
-  totalDeployments: number;
-}
-
-export interface ResourcePoolState {
-  resources: ResourceInstance[];
-  version: number;
-}
-
 export class ResourcePool {
   private resources: Map<string, ResourceInstance> = new Map();
-  private deployedResources: Map<string, Set<string>> = new Map(); // sessionId -> resourceIds
+  private allocations: Map<string, TaskResourceAllocation> = new Map(); // taskId -> allocation
 
   constructor() {
     this.ensureDirs();
@@ -85,7 +85,10 @@ export class ResourcePool {
       for (const resource of state.resources) {
         this.resources.set(resource.id, resource);
       }
-      console.log(`[ResourcePool] Loaded ${this.resources.size} resources`);
+      for (const allocation of state.allocations || []) {
+        this.allocations.set(allocation.taskId, allocation);
+      }
+      console.log(`[ResourcePool] Loaded ${this.resources.size} resources, ${this.allocations.size} allocations`);
     } catch (err) {
       console.error('[ResourcePool] Failed to load pool:', err);
       this.initDefaultPool();
@@ -95,140 +98,242 @@ export class ResourcePool {
   private savePool(): void {
     const state: ResourcePoolState = {
       resources: Array.from(this.resources.values()),
+      allocations: Array.from(this.allocations.values()),
       version: Date.now(),
     };
     fs.writeFileSync(RESOURCE_POOL_FILE, JSON.stringify(state, null, 2));
   }
 
   private initDefaultPool(): void {
-    // Default orchestrator resource
+    // Default orchestrator
     this.resources.set('orchestrator-default', {
       id: 'orchestrator-default',
-      config: {
-        id: 'orchestrator-default',
-        name: 'Orchestrator',
-        mode: 'auto',
-        provider: 'iflow',
-        maxRounds: 10,
-        enableReview: true,
-      },
+      name: 'Default Orchestrator',
+      type: 'orchestrator',
+      capabilities: [{ type: 'planning', level: 8 }, { type: 'coordination', level: 9 }],
       status: 'available',
       totalDeployments: 0,
+      errorCount: 0,
     });
 
-    // Default executor resources (3 instances)
-    for (let i = 1; i <= 3; i++) {
-      this.resources.set(`executor-${i}`, {
-        id: `executor-${i}`,
-        config: {
-          id: `executor-${i}`,
-          name: `Executor ${i}`,
-          mode: 'auto',
-          provider: 'iflow',
-        },
-        status: 'available',
-        totalDeployments: 0,
-      });
-    }
+    // Default executors with different capabilities
+    this.resources.set('executor-general', {
+      id: 'executor-general',
+      name: 'General Executor',
+      type: 'executor',
+      capabilities: [
+        { type: 'web_search', level: 8 },
+        { type: 'file_ops', level: 9 },
+        { type: 'shell_exec', level: 7 },
+      ],
+      status: 'available',
+      totalDeployments: 0,
+      errorCount: 0,
+    });
+
+    this.resources.set('executor-research', {
+      id: 'executor-research',
+      name: 'Research Executor',
+      type: 'executor',
+      capabilities: [
+        { type: 'web_search', level: 10 },
+        { type: 'data_analysis', level: 8 },
+        { type: 'report_generation', level: 9 },
+      ],
+      status: 'available',
+      totalDeployments: 0,
+      errorCount: 0,
+    });
+
+    this.resources.set('executor-coding', {
+      id: 'executor-coding',
+      name: 'Coding Executor',
+      type: 'executor',
+      capabilities: [
+        { type: 'code_generation', level: 9 },
+        { type: 'file_ops', level: 10 },
+        { type: 'shell_exec', level: 8 },
+      ],
+      status: 'available',
+      totalDeployments: 0,
+      errorCount: 0,
+    });
+
+    // Default reviewer
+    this.resources.set('reviewer-default', {
+      id: 'reviewer-default',
+      name: 'Default Reviewer',
+      type: 'reviewer',
+      capabilities: [{ type: 'code_review', level: 8 }, { type: 'quality_check', level: 9 }],
+      status: 'available',
+      totalDeployments: 0,
+      errorCount: 0,
+    });
 
     this.savePool();
     console.log(`[ResourcePool] Initialized with ${this.resources.size} default resources`);
   }
 
   /**
-   * Deploy a resource to a session/workflow
+   * Check if resources meet task requirements
    */
-  deployResource(
-    resourceId: string,
-    sessionId: string,
-    workflowId: string
-  ): ResourceInstance | null {
-    const resource = this.resources.get(resourceId);
-    if (!resource) {
-      console.error(`[ResourcePool] Resource ${resourceId} not found`);
-      return null;
+  checkResourceRequirements(requirements: ResourceRequirement[]): {
+    satisfied: boolean;
+    missingResources: ResourceRequirement[];
+    availableResources: ResourceInstance[];
+  } {
+    const missingResources: ResourceRequirement[] = [];
+    const availableResources: ResourceInstance[] = [];
+
+    for (const req of requirements) {
+      const matchingResources = this.getAvailableResources().filter(r => {
+        if (r.type !== req.type) return false;
+        if (req.minLevel && r.capabilities.some(c => c.level < req.minLevel)) return false;
+        if (req.capabilities) {
+          const hasAllCaps = req.capabilities.every(cap => 
+            r.capabilities.some(c => c.type === cap)
+          );
+          if (!hasAllCaps) return false;
+        }
+        return true;
+      });
+
+      if (matchingResources.length === 0) {
+        if (!req.optional) {
+          missingResources.push(req);
+        }
+      } else {
+        availableResources.push(...matchingResources);
+      }
     }
 
-    if (resource.status !== 'available') {
-      console.error(`[ResourcePool] Resource ${resourceId} is not available (status: ${resource.status})`);
-      return null;
-    }
-
-    resource.status = 'deployed';
-    resource.currentSessionId = sessionId;
-    resource.currentWorkflowId = workflowId;
-    resource.lastDeployedAt = new Date().toISOString();
-    resource.totalDeployments++;
-
-    // Track deployment by session
-    if (!this.deployedResources.has(sessionId)) {
-      this.deployedResources.set(sessionId, new Set());
-    }
-    this.deployedResources.get(sessionId)!.add(resourceId);
-
-    this.savePool();
-    console.log(`[ResourcePool] Deployed ${resourceId} to session ${sessionId}, workflow ${workflowId}`);
-    
-    return resource;
+    return {
+      satisfied: missingResources.length === 0,
+      missingResources,
+      availableResources,
+    };
   }
 
   /**
-   * Mark a resource as busy (actively working)
+   * Allocate resources for a task
    */
-  setResourceBusy(resourceId: string): boolean {
-    const resource = this.resources.get(resourceId);
-    if (!resource) return false;
+  allocateResources(
+    taskId: string,
+    requirements: ResourceRequirement[]
+  ): {
+    success: boolean;
+    allocatedResources?: string[];
+    error?: string;
+    missingResources?: ResourceRequirement[];
+  } {
+    // Check if already allocated
+    const existing = this.allocations.get(taskId);
+    if (existing && existing.status === 'allocated') {
+      return { success: true, allocatedResources: existing.allocatedResources };
+    }
+
+    const check = this.checkResourceRequirements(requirements);
     
-    resource.status = 'busy';
+    if (!check.satisfied) {
+      return {
+        success: false,
+        error: `资源不足：缺少 ${check.missingResources.map(r => r.type).join(', ')}`,
+        missingResources: check.missingResources,
+      };
+    }
+
+    // Allocate unique resources (one per requirement type)
+    const allocatedIds = new Set<string>();
+    for (const req of requirements) {
+      const available = check.availableResources.filter(
+        r => r.type === req.type && !allocatedIds.has(r.id)
+      );
+      if (available.length > 0) {
+        allocatedIds.add(available[0].id);
+      }
+    }
+
+    // Update resource status
+    for (const resourceId of allocatedIds) {
+      const resource = this.resources.get(resourceId);
+      if (resource) {
+        resource.status = 'deployed';
+        resource.currentTaskId = taskId;
+      }
+    }
+
+    // Create allocation record
+    const allocation: TaskResourceAllocation = {
+      taskId,
+      allocatedResources: Array.from(allocatedIds),
+      status: 'allocated',
+      allocatedAt: new Date().toISOString(),
+    };
+    this.allocations.set(taskId, allocation);
+
+    this.savePool();
+    console.log(`[ResourcePool] Allocated ${allocatedIds.size} resources for task ${taskId}`);
+    
+    return { success: true, allocatedResources: Array.from(allocatedIds) };
+  }
+
+  /**
+   * Release resources for a task
+   */
+  releaseResources(taskId: string, reason?: string): boolean {
+    const allocation = this.allocations.get(taskId);
+    if (!allocation) return false;
+
+    // Update resource status
+    for (const resourceId of allocation.allocatedResources) {
+      const resource = this.resources.get(resourceId);
+      if (resource) {
+        resource.status = 'available';
+        resource.currentTaskId = undefined;
+        if (reason === 'error') {
+          resource.errorCount++;
+          resource.lastErrorAt = new Date().toISOString();
+          resource.lastErrorReason = reason;
+        }
+      }
+    }
+
+    // Update allocation record
+    allocation.status = reason === 'completed' ? 'completed' : 'released';
+    allocation.releasedAt = new Date().toISOString();
+    if (reason === 'blocked') {
+      allocation.status = 'blocked';
+      allocation.blockedReason = reason;
+    }
+
+    this.savePool();
+    console.log(`[ResourcePool] Released resources for task ${taskId}`);
+    
+    return true;
+  }
+
+  /**
+   * Mark task as executing (resources are in use)
+   */
+  markTaskExecuting(taskId: string): boolean {
+    const allocation = this.allocations.get(taskId);
+    if (!allocation) return false;
+
+    allocation.status = 'executing';
+    
+    for (const resourceId of allocation.allocatedResources) {
+      const resource = this.resources.get(resourceId);
+      if (resource) {
+        resource.status = 'busy';
+      }
+    }
+
     this.savePool();
     return true;
   }
 
   /**
-   * Release a resource back to the pool
-   */
-  releaseResource(resourceId: string): ResourceInstance | null {
-    const resource = this.resources.get(resourceId);
-    if (!resource) return null;
-
-    const sessionId = resource.currentSessionId;
-    
-    resource.status = 'available';
-    resource.currentSessionId = undefined;
-    resource.currentWorkflowId = undefined;
-    resource.lastReleasedAt = new Date().toISOString();
-
-    // Remove from session tracking
-    if (sessionId) {
-      this.deployedResources.get(sessionId)?.delete(resourceId);
-    }
-
-    this.savePool();
-    console.log(`[ResourcePool] Released ${resourceId} back to pool`);
-    
-    return resource;
-  }
-
-  /**
-   * Release all resources for a session
-   */
-  releaseSessionResources(sessionId: string): string[] {
-    const deployed = this.deployedResources.get(sessionId);
-    if (!deployed) return [];
-
-    const released: string[] = [];
-    for (const resourceId of deployed) {
-      if (this.releaseResource(resourceId)) {
-        released.push(resourceId);
-      }
-    }
-
-    this.deployedResources.delete(sessionId);
-    return released;
-  }
-
-  /**
-   * Get available resources (not deployed)
+   * Get available resources (not deployed or busy)
    */
   getAvailableResources(): ResourceInstance[] {
     return Array.from(this.resources.values())
@@ -243,74 +348,80 @@ export class ResourcePool {
   }
 
   /**
-   * Get deployed resources for a session
+   * Get resources by type
    */
-  getSessionResources(sessionId: string): ResourceInstance[] {
-    const deployed = this.deployedResources.get(sessionId);
-    if (!deployed) return [];
-    
-    return Array.from(deployed)
-      .map(id => this.resources.get(id))
-      .filter((r): r is ResourceInstance => r !== undefined);
+  getResourcesByType(type: ResourceType): ResourceInstance[] {
+    return this.getAllResources().filter(r => r.type === type);
   }
 
   /**
-   * Convert resources to AgentRuntime[] for UI
+   * Get allocation for a task
    */
-  toAgentRuntimes(): AgentRuntime[] {
-    return Array.from(this.resources.values()).map(resource => ({
-      id: resource.id,
-      name: resource.config.name || resource.id,
-      type: resource.id.includes('orchestrator') ? 'orchestrator' : 'executor',
-      status: resource.status === 'available' ? 'idle' : 
-              resource.status === 'busy' ? 'running' : 
-              resource.status === 'error' ? 'error' : 'idle',
-      load: resource.status === 'busy' ? 80 : resource.status === 'deployed' ? 20 : 0,
-      errorRate: resource.status === 'error' ? 100 : 0,
-      requestCount: resource.totalDeployments,
-      tokenUsage: 0,
-      currentTaskId: resource.currentWorkflowId,
-      config: resource.config,
-    }));
+  getAllocation(taskId: string): TaskResourceAllocation | undefined {
+    return this.allocations.get(taskId);
   }
 
   /**
-   * Add a new resource to the pool
+   * Get all allocations
    */
-  addResource(config: AgentConfig): ResourceInstance {
-    const id = config.id || `resource-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-    
-    const resource: ResourceInstance = {
-      id,
-      config: { ...config, id },
-      status: 'available',
+  getAllAllocations(): TaskResourceAllocation[] {
+    return Array.from(this.allocations.values());
+  }
+
+  /**
+   * Add a new resource
+   */
+  addResource(resource: Omit<ResourceInstance, 'totalDeployments' | 'errorCount'>): ResourceInstance {
+    const newResource: ResourceInstance = {
+      ...resource,
       totalDeployments: 0,
+      errorCount: 0,
     };
-
-    this.resources.set(id, resource);
+    this.resources.set(resource.id, newResource);
     this.savePool();
-    console.log(`[ResourcePool] Added resource ${id}`);
-    
-    return resource;
+    console.log(`[ResourcePool] Added resource ${resource.id}`);
+    return newResource;
   }
 
   /**
-   * Remove a resource from the pool
+   * Remove a resource
    */
   removeResource(resourceId: string): boolean {
     const resource = this.resources.get(resourceId);
-    if (!resource) return false;
-    
-    if (resource.status !== 'available') {
-      console.error(`[ResourcePool] Cannot remove ${resourceId} - currently ${resource.status}`);
-      return false;
-    }
+    if (!resource || resource.status !== 'available') return false;
 
     this.resources.delete(resourceId);
     this.savePool();
     console.log(`[ResourcePool] Removed resource ${resourceId}`);
-    
     return true;
+  }
+
+  /**
+   * Get pool status report
+   */
+  getStatusReport(): {
+    totalResources: number;
+    available: number;
+    deployed: number;
+    busy: number;
+    blocked: number;
+    error: number;
+    totalAllocations: number;
+    pendingAllocations: number;
+    blockedAllocations: number;
+  } {
+    const resources = this.getAllResources();
+    return {
+      totalResources: resources.length,
+      available: resources.filter(r => r.status === 'available').length,
+      deployed: resources.filter(r => r.status === 'deployed').length,
+      busy: resources.filter(r => r.status === 'busy').length,
+      blocked: resources.filter(r => r.status === 'blocked').length,
+      error: resources.filter(r => r.status === 'error').length,
+      totalAllocations: this.allocations.size,
+      pendingAllocations: Array.from(this.allocations.values()).filter(a => a.status === 'pending').length,
+      blockedAllocations: Array.from(this.allocations.values()).filter(a => a.status === 'blocked').length,
+    };
   }
 }
 
