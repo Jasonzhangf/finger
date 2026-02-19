@@ -116,8 +116,13 @@ describe('Orchestrator Phase Resume Integration', () => {
     }
     
     // Verify 15 checkpoints exist
-    const checkpointsBeforeCleanup = fs.readdirSync(SESSION_STATE_DIR)
-      .filter(f => f.startsWith(testSessionId));
+    let checkpointsBeforeCleanup: string[] = [];
+    // macOS fs sync can be delayed by a few ms; retry briefly to avoid flake
+    for (let retry = 0; retry < 10 && checkpointsBeforeCleanup.length < 15; retry++) {
+      await new Promise(r => setTimeout(r, 10));
+      checkpointsBeforeCleanup = fs.readdirSync(SESSION_STATE_DIR)
+        .filter(f => f.startsWith(testSessionId));
+    }
     expect(checkpointsBeforeCleanup.length).toBe(15);
     
     // Run cleanup
