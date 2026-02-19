@@ -97,40 +97,50 @@ export function createOrchestratorLoop(
   const systemPrompt = config.systemPrompt ?? `
 你是一个任务编排专家。职责是把用户任务拆成子任务并调度执行。
 
-必须输出 JSON：{"thought":"...","action":"HIGH_DESIGN|DETAIL_DESIGN|DELIVERABLES|PLAN|PARALLEL_DISPATCH|BLOCKED_REVIEW|VERIFY|COMPLETE|FAIL|STOP|START","params":{...}}
+必须输出 JSON：{"thought":"...","action":"HIGH_DESIGN|DETAIL_DESIGN|DELIVERABLES|PLAN|PARALLEL_DISPATCH|BLOCKED_REVIEW|VERIFY|COMPLETE|FAIL|STOP|START|QUERY_CAPABILITIES","params":{...}}
 
 ## 任务拆解原则
 
-1. **粗粒度优先**：每个子任务应该是完整的、可独立执行的工作单元，避免过度细分
-2. **资源匹配**：任务拆解时需考虑所需资源类型（executor-general、executor-research、executor-coding 等）
-3. **减少调度开销**：每个子任务至少需要 5-10 分钟执行时间，避免频繁派发
-4. **自包含性**：每个子任务应包含完成工作所需的全部上下文
+1. **粗粒度优先**：每个子任务应该是完整的、可独立执行的工作单元
+2. **能力匹配**：根据资源池能力目录 (capability catalog) 分配任务
+3. **动态工具**：Agent 能力基于其拥有的工具，工具可动态赋予
+4. **减少调度开销**：每个子任务至少需要 5-10 分钟执行时间
 5. **合理数量**：一般任务拆解为 3-7 个子任务
-6. **依赖清晰**：明确标注任务间的依赖关系
 
-## 资源管理
+## 资源能力目录
 
-### 资源类型
-- **executor-general**: 通用执行（文件操作、shell 命令、基础搜索）
-- **executor-research**: 研究执行（深度搜索、数据分析、报告生成）
-- **executor-coding**: 代码执行（代码生成、文件操作、编译运行）
-- **orchestrator**: 任务编排
-- **reviewer**: 质量审查
+资源池提供动态能力目录，通过 resourcePool.getCapabilityCatalog() 获取。
 
-### 任务资源需求
-每个子任务应标注所需资源类型：
-- 网络搜索任务 → executor-research
-- 代码编写任务 → executor-coding
-- 文件处理任务 → executor-general
 
-### 资源缺乏处理
-如果资源不足，使用 STOP 命令报告：
-{"thought":"缺乏 executor-research 资源","action":"STOP","params":{"reason":"资源缺乏：需要 executor-research 执行网络搜索任务"}}
+### 能力与工具映射
 
-示例（好的粗粒度 + 资源匹配）：
-- "搜索并收集 DeepSeek 官方发布的所有技术论文和产品信息" → executor-research
-- "分析技术演进趋势并输出预测报告" → executor-research
-- "创建 Node.js 项目并实现核心功能" → executor-coding
+Agent 的能力由其拥有的工具决定：
+- **web_search**: 拥有 web_search 工具的 Agent
+- **file_ops**: 拥有 read_file, write_file 工具的 Agent
+- **code_generation**: 拥有代码生成工具的 Agent
+- **shell_exec**: 拥有 shell 执行工具的 Agent
+- **report_generation**: 拥有报告生成工具的 Agent
+
+### 动态工具赋予
+
+后续将支持定时工具赋予机制：
+1. 创建定时任务资源
+2. 将定时工具派发给 Agent
+3. Agent 获得新的 schedule_task 能力
+4. 资源池自动更新能力目录
+
+### 任务派发流程
+
+1. 查询能力目录：resourcePool.getCapabilityCatalog()
+2. 根据任务需求匹配能力
+3. 分配具备该能力的 Agent
+4. 执行任务
+5. 释放资源
+
+示例（基于能力的任务分配）：
+- "搜索 DeepSeek 论文" → 需要 web_search 能力 → 分配 executor-research
+- "创建项目文件" → 需要 file_ops 能力 → 分配 executor-general 或 executor-coding
+- "生成分析报告" → 需要 report_generation 能力 → 分配 executor-research
 `;
 
   const agent = new Agent({
@@ -374,29 +384,51 @@ export function createOrchestratorLoop(
           return { success: false, observation: 'PARALLEL_DISPATCH failed: no taskIds' };
         }
         
+        // First, query capability catalog to understand available resources
+        const capabilityCatalog = resourcePool.getCapabilityCatalog();
+        console.log(`[Orchestrator] Capability catalog: ${capabilityCatalog.map(c => `${c.capability}(${c.availableCount}/${c.resourceCount})`).join(', ')}`);
+        
         // Get ready tasks
         const tasksToDispatch = taskIds
           .map(id => state.taskGraph.find(t => t.id === id))
           .filter((t): t is NonNullable<typeof t> => t !== undefined && t.status === 'ready');
         
-        // Allocate resources for each task based on task description
+        // Allocate resources for each task based on task description and capability catalog
         const allocationResults: Array<{ taskId: string; success: boolean; resources?: string[]; error?: string }> = [];
         const tasksWithResources: Array<typeof tasksToDispatch[number] & { allocatedResources: string[] }> = [];
         
         for (const task of tasksToDispatch) {
           // Infer resource requirements from task description
           const requirements: ResourceRequirement[] = inferResourceRequirements(task.description);
-          const allocation = resourcePool.allocateResources(task.id, requirements);
           
-          if (allocation.success && allocation.allocatedResources) {
-            allocationResults.push({ taskId: task.id, success: true, resources: allocation.allocatedResources });
-            tasksWithResources.push({ ...task, allocatedResources: allocation.allocatedResources });
-          } else {
+          // Check if required capabilities are available
+          const missingCapabilities: string[] = [];
+          for (const req of requirements) {
+            const capEntry = capabilityCatalog.find(c => c.capability === (req.capabilities?.[0] || req.type));
+            if (!capEntry || capEntry.availableCount === 0) {
+              missingCapabilities.push(req.capabilities?.[0] || req.type);
+            }
+          }
+          
+          if (missingCapabilities.length > 0) {
             allocationResults.push({ 
               taskId: task.id, 
               success: false, 
-              error: allocation.error || 'Allocation failed',
+              error: `缺乏能力：${missingCapabilities.join(', ')}`,
             });
+          } else {
+            const allocation = resourcePool.allocateResources(task.id, requirements);
+            
+            if (allocation.success && allocation.allocatedResources) {
+              allocationResults.push({ taskId: task.id, success: true, resources: allocation.allocatedResources });
+              tasksWithResources.push({ ...task, allocatedResources: allocation.allocatedResources });
+            } else {
+              allocationResults.push({ 
+                taskId: task.id, 
+                success: false, 
+                error: allocation.error || 'Allocation failed',
+              });
+            }
           }
         }
         
@@ -669,6 +701,24 @@ export function createOrchestratorLoop(
             paused: false, 
             pendingTasks: state.taskGraph.filter(t => t.status === 'ready').length,
             resourceStatus: resourcePool.getStatusReport(),
+          },
+        };
+      }
+      
+      // Handle QUERY_CAPABILITIES action - get current capability catalog
+      if (action.name === 'QUERY_CAPABILITIES' && state) {
+        const capabilityCatalog = resourcePool.getCapabilityCatalog();
+        const resourceStatus = resourcePool.getStatusReport();
+        
+        return {
+          success: true,
+          observation: `能力目录查询完成：${capabilityCatalog.length} 种能力，${resourceStatus.totalResources} 个资源`,
+          data: {
+            capabilityCatalog,
+            resourceStatus,
+            availableCapabilities: capabilityCatalog
+              .filter(c => c.availableCount > 0)
+              .map(c => ({ capability: c.capability, availableCount: c.availableCount })),
           },
         };
       }

@@ -397,6 +397,51 @@ export class ResourcePool {
   }
 
   /**
+   * Get capability catalog - list of all available capabilities across resources
+   * This is used by orchestrator to understand what capabilities are available
+   */
+  getCapabilityCatalog(): Array<{
+    capability: string;
+    resourceCount: number;
+    availableCount: number;
+    resources: Array<{ id: string; name: string; level: number; status: ResourceStatus }>;
+  }> {
+    const capabilityMap = new Map<string, Array<{ id: string; name: string; level: number; status: ResourceStatus }>>();
+    
+    for (const resource of this.resources.values()) {
+      if (resource.status === 'error') continue; // Skip error resources
+      
+      for (const cap of resource.capabilities) {
+        if (!capabilityMap.has(cap.type)) {
+          capabilityMap.set(cap.type, []);
+        }
+        capabilityMap.get(cap.type)!.push({
+          id: resource.id,
+          name: resource.name,
+          level: cap.level,
+          status: resource.status,
+        });
+      }
+    }
+    
+    return Array.from(capabilityMap.entries()).map(([capability, resources]) => ({
+      capability,
+      resourceCount: resources.length,
+      availableCount: resources.filter(r => r.status === 'available' || r.status === 'deployed').length,
+      resources,
+    })).sort((a, b) => b.resourceCount - a.resourceCount);
+  }
+
+  /**
+   * Get resources by capability
+   */
+  getResourcesByCapability(capability: string, minLevel: number = 1): ResourceInstance[] {
+    return this.getAvailableResources().filter(r =>
+      r.capabilities.some(c => c.type === capability && c.level >= minLevel)
+    );
+  }
+
+  /**
    * Get pool status report
    */
   getStatusReport(): {
@@ -409,8 +454,15 @@ export class ResourcePool {
     totalAllocations: number;
     pendingAllocations: number;
     blockedAllocations: number;
+    capabilityCatalog?: Array<{ capability: string; resourceCount: number; availableCount: number }>;
   } {
     const resources = this.getAllResources();
+    const capabilityCatalog = this.getCapabilityCatalog().map(c => ({
+      capability: c.capability,
+      resourceCount: c.resourceCount,
+      availableCount: c.availableCount,
+    }));
+    
     return {
       totalResources: resources.length,
       available: resources.filter(r => r.status === 'available').length,
@@ -421,6 +473,7 @@ export class ResourcePool {
       totalAllocations: this.allocations.size,
       pendingAllocations: Array.from(this.allocations.values()).filter(a => a.status === 'pending').length,
       blockedAllocations: Array.from(this.allocations.values()).filter(a => a.status === 'blocked').length,
+      capabilityCatalog,
     };
   }
 }
