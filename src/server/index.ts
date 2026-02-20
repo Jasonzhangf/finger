@@ -11,7 +11,6 @@ import { RuntimeFacade } from '../runtime/runtime-facade.js';
 import { execSync } from 'child_process';
 import { createServer } from 'net';
 import { WebSocketServer, type WebSocket } from 'ws';
-import { MessageHub } from '../orchestration/message-hub.js';
 import { ModuleRegistry } from '../orchestration/module-registry.js';
 import { SessionManager } from '../orchestration/session-manager.js';
 import { WorkflowManager, sharedWorkflowManager, sharedMessageHub, sharedSessionManager } from '../orchestration/shared-instances.js';
