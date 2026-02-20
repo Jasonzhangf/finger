@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { AgentPool, AgentInstanceConfig, AgentInstance } from '../../../src/orchestration/agent-pool.js';
+import { AgentPool, AgentInstanceConfig } from '../../../src/orchestration/agent-pool.js';
 
 // Mock fs module
 vi.mock('fs', () => ({
@@ -174,6 +174,29 @@ describe('AgentPool', () => {
   describe('restartAgent', () => {
     it('should throw for non-existent agent', async () => {
       await expect(pool.restartAgent('nonexistent')).rejects.toThrow('not found');
+    });
+  });
+
+  describe('startAllAuto', () => {
+    it('should complete without error', async () => {
+      // Mock fetch to resolve immediately (health check passes)
+      (global.fetch as any).mockResolvedValue({ ok: true });
+      // Mock fs to return false (no PID file, agent not running)
+      const fsMock = await import('fs');
+      (fsMock.existsSync as any).mockReturnValue(false);
+      
+      await pool.startAllAuto();
+      expect(global.fetch).toHaveBeenCalled();
+    });
+  });
+
+  describe('stopAll', () => {
+    it('should complete without error', async () => {
+      const fsMock = await import('fs');
+      (fsMock.existsSync as any).mockReturnValue(false);
+      
+      await pool.stopAll();
+      // Should complete without error
     });
   });
 });
