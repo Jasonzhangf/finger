@@ -375,12 +375,12 @@ return (
         )}
       </div>
 
-      {/* Input Area */}
-      <ChatInput
-        onSend={handleSend}
-        isPaused={isPaused}
-        disabled={!isConnected}
-      />
+     {/* Input Area */}
+     <ChatInput
+       onSend={handleSend}
+       isPaused={isPaused}
+       disabled={false}
+     />
     </div>
   );
 };
