@@ -18,14 +18,74 @@ export interface DaemonConfig {
   serverScript: string;
 }
 
+/**
+ * Adapter interface for process operations - enables dependency injection for testing
+ */
+export interface ProcessAdapter {
+  spawn: typeof spawn;
+  isPidRunning: (pid: number) => boolean;
+  killProcess: (id: string, reason: string) => void;
+  registerProcess: (id: string, process: ChildProcess, type: string, metadata: Record<string, unknown>) => void;
+  cleanupOrphans: () => { killed: string[]; errors: Error[] };
+}
+
+/**
+ * Adapter interface for filesystem operations
+ */
+export interface FsAdapter {
+  existsSync: (path: string) => boolean;
+  mkdirSync: (path: string, options?: { recursive?: boolean }) => void;
+  readFileSync: (path: string, encoding: string) => string;
+  writeFileSync: (path: string, content: string) => void;
+  openSync: (path: string, flags: string) => number;
+  unlinkSync: (path: string) => void;
+}
+
+/**
+ * Default process adapter - uses real dependencies
+ */
+const defaultProcessAdapter: ProcessAdapter = {
+  spawn: spawn,
+  isPidRunning: (pid: number) => {
+    try {
+      process.kill(pid, 0);
+      return true;
+    } catch {
+      return false;
+    }
+  },
+  killProcess: (id: string, reason: string) => lifecycleManager.killProcess(id, reason),
+  registerProcess: (id: string, proc: ChildProcess, type: string, metadata: Record<string, unknown>) => 
+    lifecycleManager.registerProcess(id, proc, type as 'iflow-cli' | 'browser' | 'other', metadata),
+  cleanupOrphans: cleanupOrphanProcesses,
+};
+
+/**
+ * Default filesystem adapter - uses real fs module
+ */
+const defaultFsAdapter: FsAdapter = {
+  existsSync: fs.existsSync,
+  mkdirSync: (p: string, options?: { recursive?: boolean }) => fs.mkdirSync(p, options),
+  readFileSync: (p: string, encoding: string) => fs.readFileSync(p, encoding as BufferEncoding),
+  writeFileSync: fs.writeFileSync,
+  openSync: fs.openSync,
+  unlinkSync: fs.unlinkSync,
+};
+
 export class OrchestrationDaemon {
   private process: ChildProcess | null = null;
   private config: DaemonConfig;
   private running = false;
   private agentPool: AgentPool;
   private heartbeatBroker: HeartbeatBroker;
+  private processAdapter: ProcessAdapter;
+  private fsAdapter: FsAdapter;
 
-  constructor(config?: Partial<DaemonConfig>) {
+  constructor(
+    config?: Partial<DaemonConfig>,
+    processAdapter?: ProcessAdapter,
+    fsAdapter?: FsAdapter
+  ) {
     const home = os.homedir();
     const fingerDir = path.join(home, '.finger');
     this.config = {
@@ -37,8 +97,11 @@ export class OrchestrationDaemon {
       ...config
     };
 
-    if (!fs.existsSync(fingerDir)) {
-      fs.mkdirSync(fingerDir, { recursive: true });
+    this.processAdapter = processAdapter ?? defaultProcessAdapter;
+    this.fsAdapter = fsAdapter ?? defaultFsAdapter;
+
+    if (!this.fsAdapter.existsSync(fingerDir)) {
+      this.fsAdapter.mkdirSync(fingerDir, { recursive: true });
     }
 
     this.agentPool = new AgentPool();
@@ -52,7 +115,7 @@ export class OrchestrationDaemon {
     }
 
     // Clean up orphan processes from previous sessions
-    const orphans = cleanupOrphanProcesses();
+    const orphans = this.processAdapter.cleanupOrphans();
     if (orphans.killed.length > 0) {
       console.log(`[Daemon] Cleaned up ${orphans.killed.length} orphan processes: ${orphans.killed.join(', ')}`);
     }
@@ -60,28 +123,27 @@ export class OrchestrationDaemon {
       console.error('[Daemon] Errors during orphan cleanup:', orphans.errors);
     }
 
-    if (fs.existsSync(this.config.pidFile)) {
-      const pid = parseInt(fs.readFileSync(this.config.pidFile, 'utf-8'), 10);
+    if (this.fsAdapter.existsSync(this.config.pidFile)) {
+      const pid = parseInt(this.fsAdapter.readFileSync(this.config.pidFile, 'utf-8'), 10);
       if (Number.isFinite(pid)) {
-        try {
-          process.kill(pid, 0);
+        if (this.processAdapter.isPidRunning(pid)) {
           console.log(`Daemon already running with PID ${pid}`);
           this.running = true;
           return;
-        } catch {
-          fs.unlinkSync(this.config.pidFile);
+        } else {
+          this.fsAdapter.unlinkSync(this.config.pidFile);
         }
       }
     }
 
     const serverPath = this.config.serverScript;
-    if (!fs.existsSync(serverPath)) {
+    if (!this.fsAdapter.existsSync(serverPath)) {
       console.error(`Server script not found: ${serverPath}. Build first with 'npm run build'.`);
       return;
     }
 
-    const logFd = fs.openSync(this.config.logFile, 'a');
-    this.process = spawn('node', [serverPath], {
+    const logFd = this.fsAdapter.openSync(this.config.logFile, 'a');
+    this.process = this.processAdapter.spawn('node', [serverPath], {
       detached: true,
       stdio: ['ignore', logFd, logFd],
       env: {
@@ -95,14 +157,14 @@ export class OrchestrationDaemon {
     this.process.unref();
     
     // Register with lifecycle manager
-    lifecycleManager.registerProcess('daemon-server', this.process, 'other', {
+    this.processAdapter.registerProcess('daemon-server', this.process, 'other', {
       type: 'orchestration-daemon'
     });
 
     await new Promise<void>((resolve) => {
       setTimeout(() => {
         if (this.process?.pid) {
-          fs.writeFileSync(this.config.pidFile, this.process.pid.toString());
+          this.fsAdapter.writeFileSync(this.config.pidFile, this.process.pid.toString());
           this.running = true;
           console.log(`Daemon started with PID ${this.process.pid}`);
           resolve();
@@ -127,23 +189,23 @@ export class OrchestrationDaemon {
     // Stop heartbeat broadcaster
     this.heartbeatBroker.stop();
 
-    if (!fs.existsSync(this.config.pidFile)) {
+    if (!this.fsAdapter.existsSync(this.config.pidFile)) {
       console.log('No PID file found, daemon not running');
       return;
     }
 
-    const pid = parseInt(fs.readFileSync(this.config.pidFile, 'utf-8'), 10);
+    const pid = parseInt(this.fsAdapter.readFileSync(this.config.pidFile, 'utf-8'), 10);
     if (!Number.isFinite(pid)) {
-      fs.unlinkSync(this.config.pidFile);
+      this.fsAdapter.unlinkSync(this.config.pidFile);
       console.log('Invalid PID file removed');
       return;
     }
 
     // Use lifecycle manager for proper cleanup
-    lifecycleManager.killProcess('daemon-server', 'user-request');
+    this.processAdapter.killProcess('daemon-server', 'user-request');
     
-    if (fs.existsSync(this.config.pidFile)) {
-      fs.unlinkSync(this.config.pidFile);
+    if (this.fsAdapter.existsSync(this.config.pidFile)) {
+      this.fsAdapter.unlinkSync(this.config.pidFile);
     }
     this.running = false;
     console.log(`Daemon stopped`);
@@ -155,26 +217,38 @@ export class OrchestrationDaemon {
   }
 
   isRunning(): boolean {
-    if (!fs.existsSync(this.config.pidFile)) {
+    if (!this.fsAdapter.existsSync(this.config.pidFile)) {
       return false;
     }
 
-    const pid = parseInt(fs.readFileSync(this.config.pidFile, 'utf-8'), 10);
+    const pid = parseInt(this.fsAdapter.readFileSync(this.config.pidFile, 'utf-8'), 10);
     if (!Number.isFinite(pid)) {
-      fs.unlinkSync(this.config.pidFile);
+      this.fsAdapter.unlinkSync(this.config.pidFile);
       return false;
     }
 
-    try {
-      process.kill(pid, 0);
-      return true;
-    } catch {
-      fs.unlinkSync(this.config.pidFile);
-      return false;
+    const running = this.processAdapter.isPidRunning(pid);
+    if (!running) {
+      this.fsAdapter.unlinkSync(this.config.pidFile);
     }
+    return running;
   }
 
   getAgentPool(): AgentPool {
     return this.agentPool;
+  }
+
+  /**
+   * Get the running state (for testing)
+   */
+  getRunningState(): boolean {
+    return this.running;
+  }
+
+  /**
+   * Set the running state (for testing)
+   */
+  setRunningState(running: boolean): void {
+    this.running = running;
   }
 }
