@@ -59,14 +59,19 @@ export function useResourcePool(): UseResourcePoolReturn {
       if (!res.ok) throw new Error('Failed to fetch resources');
       const data = await res.json();
       const availableResources = data.available || [];
-      const processedResources: ResourceInstance[] = availableResources.map((r: any) => ({
-        ...r,
-        config: r.config || {
-          name: r.name || r.id || 'unnamed',
-          mode: 'auto',
-          provider: 'iflow'
-        }
-      }));
+      const processedResources: ResourceInstance[] = availableResources.map((r: any) => {
+        const config = r.config || {};
+        return {
+          ...r,
+          config: {
+            id: config.id || r.id,
+            name: config.name || r.name || r.id || 'unnamed',
+            mode: config.mode || 'auto',
+            provider: config.provider || 'iflow',
+            ...config
+          }
+        };
+      });
       setResources(processedResources);
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Unknown error');

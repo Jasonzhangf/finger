@@ -59,7 +59,7 @@ const MessageItem = React.memo<{
               <button
                 type="button"
                 className="agent-name-btn"
-                onClick={() => onAgentClick(event.agentId as string)}
+                onClick={() => event.agentId && onAgentClick(event.agentId)}
               >
                 {event.agentName || event.agentId}
               </button>
@@ -360,7 +360,7 @@ export const RightPanel: React.FC<RightPanelProps> = ({
                 key={event.id}
                 event={{ ...event, className: '' }}
                 isSelected={highlightedAgentId === event.agentId}
-                agentStatus={event.agentId ? agentStatusMap.get(event.agentId) : undefined}
+                agentStatus={event.agentId ? (agentStatusMap.get(event.agentId) ?? 'unknown') : undefined}
                 onAgentClick={handleAgentClick}
               />
             ))}

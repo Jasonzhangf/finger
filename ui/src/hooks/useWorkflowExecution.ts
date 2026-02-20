@@ -242,7 +242,7 @@ export function useWorkflowExecution(sessionId: string): UseWorkflowExecutionRet
         const event: Omit<RuntimeEvent, 'id'> = {
           role: 'agent',
           agentId: payload.agentId,
-          agentName: payload.agentId,
+          agentName: executionStateRef.current?.agents.find(a => a.id === payload.agentId)?.name ?? payload.agentId,
           kind: payload.step?.thought ? 'thought' : payload.step?.action ? 'action' : 'status',
           content: payload.step?.thought
             ? payload.step.thought
@@ -543,7 +543,9 @@ export function useWorkflowExecution(sessionId: string): UseWorkflowExecutionRet
         },
       ]);
 
-      if (!executionState) {
+      // Check if executionState is empty/placeholder or has a real workflow
+      const hasRealWorkflow = executionState && !executionState.workflowId.startsWith('empty-') && !executionState.workflowId.startsWith('pending-');
+      if (!hasRealWorkflow) {
         if (text) {
           await startWorkflow(text);
         }
