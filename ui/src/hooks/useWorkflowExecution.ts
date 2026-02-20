@@ -517,10 +517,11 @@ export function useWorkflowExecution(sessionId: string): UseWorkflowExecutionRet
     }
   }, [executionState]);
 
-  const sendUserInput = useCallback(
-    async (inputPayload: UserInputPayload) => {
-      const text = inputPayload.text.trim();
-      if (!text && (!inputPayload.images || inputPayload.images.length === 0)) return;
+ const sendUserInput = useCallback(
+   async (inputPayload: UserInputPayload) => {
+     const text = inputPayload.text.trim();
+     console.log('[sendUserInput] called, text:', text);
+     if (!text && (!inputPayload.images || inputPayload.images.length === 0)) return;
 
       const eventTime = new Date().toISOString();
       setRuntimeEvents((prev) =>
@@ -531,6 +532,7 @@ export function useWorkflowExecution(sessionId: string): UseWorkflowExecutionRet
           timestamp: eventTime,
         }),
       );
+      console.log('[sendUserInput] added user message, text:', text);
 
       setUserRounds((prev) => [
         ...prev,
@@ -654,8 +656,8 @@ export function useWorkflowExecution(sessionId: string): UseWorkflowExecutionRet
     resumeWorkflow,
     sendUserInput,
     getAgentDetail,
-    getTaskReport,
-    isConnected: isConnected(),
+  getTaskReport,
+   isConnected,
   };
 }
 

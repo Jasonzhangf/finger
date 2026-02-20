@@ -129,6 +129,7 @@ const ChatInput: React.FC<{
     setText(e.target.value);
     // Auto-resize
     if (textareaRef.current) {
+      console.log('[ChatInput] text changed:', e.target.value);
       textareaRef.current.style.height = 'auto';
       textareaRef.current.style.height = `${Math.min(textareaRef.current.scrollHeight, 200)}px`;
     }
@@ -223,6 +224,8 @@ export const RightPanel: React.FC<RightPanelProps> = ({
   isConnected,
   resumePrompt,
 }) => {
+  console.log('[RightPanel] events size:', events.length);
+  console.log('[RightPanel] first 3 events:', events.slice(0, 3));
   const chatRef = useRef<HTMLDivElement>(null);
   const [showScrollToBottom, setShowScrollToBottom] = useState(false);
 
@@ -266,17 +269,22 @@ export const RightPanel: React.FC<RightPanelProps> = ({
     return map;
   }, [agents]);
 
-  const progress = useMemo(() => {
-    if (!executionState) return null;
-    const current = executionState.orchestrator.currentRound;
-    const max = executionState.orchestrator.maxRounds;
-    return { current, max, percent: Math.round((current / Math.max(1, max)) * 100) };
-  }, [executionState]);
+ const progress = useMemo(() => {
+   if (!executionState) return null;
+   const current = executionState.orchestrator.currentRound;
+   const max = executionState.orchestrator.maxRounds;
+   return { current, max, percent: Math.round((current / Math.max(1, max)) * 100) };
+ }, [executionState]);
 
-  return (
-    <div className="right-panel">
-      {/* Header */}
-      <div className="panel-header">
+  // Debug: log connection state
+  useEffect(() => {
+    console.log('[RightPanel] isConnected changed:', isConnected);
+  }, [isConnected]);
+
+return (
+  <div className="right-panel">
+     {/* Header */}
+     <div className="panel-header">
         <div className="header-title">
           <span className="title-text">对话面板</span>
           {!isConnected && <span className="connection-badge offline">离线</span>}
