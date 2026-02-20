@@ -240,3 +240,35 @@ globalEventBus.subscribeByGroup('HUMAN_IN_LOOP', handler);
 - `GET /api/v1/events/history?type=xxx&group=xxx` - 按类型或分组查询历史
 
 详细设计见 [docs/EVENT_BUS_DESIGN.md](./docs/EVENT_BUS_DESIGN.md)
+
+## 8. 提交约束
+- 禁止提交构建物（`dist/`、`node_modules/`、`*.tsbuildinfo`）
+- 禁止提交临时文件（`*.tmp`、`*.temp`、`.tmp_*`）
+- 禁止提交敏感信息（`.env`、`secrets.json`、API Key）
+- 禁止提交测试覆盖率报告（`coverage/` 目录）
+
+## 9. 测试覆盖要求
+### 9.1 覆盖率目标
+- **总体目标**：核心功能（`src/`）测试覆盖率 ≥ 80%
+- **UI 测试**：关键组件和 hooks 必须有单元测试
+- **WebSocket 集成**：消息流必须有端到端测试
+
+### 9.2 必测模块
+| 模块 | 要求 | 优先级 |
+|------|------|--------|
+| Backend Core | ≥ 80% | P0 |
+| Backend Agents | ≥ 80% | P0 |
+| Backend Runtime | ≥ 75% | P0 |
+| Frontend Hooks | ≥ 70% | P1 |
+| Frontend Components | ≥ 60% | P1 |
+| WebSocket Integration | E2E 测试 | P1 |
+
+### 9.3 CI 门禁
+- 提交前必须通过 `npm run check`（lint + test + build）
+- 测试覆盖率不达标时禁止合并到 main
+- UI 修改需同时更新对应测试
+
+## 10. 开发优先级
+- **测试先行**：基础功能 CI 覆盖率达到 80%+ 后再开发编排特性
+- **核心优先**：Backend Core > Backend Agents > Frontend
+- **集成最后**：端到端测试在单元测试稳定后补充

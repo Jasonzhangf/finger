@@ -21,7 +21,8 @@
     "bd:init": "bd init --no-db",
     "bd:ready": "bd --no-db ready",
     "bd:create": "bd --no-db create",
-    "check": "npm run lint && npm run test && npm run build"
+    "check": "npm run lint && npm run test && npm run build",
+    "test:ui": "vitest run --workspace ui --coverage"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.36.0",
