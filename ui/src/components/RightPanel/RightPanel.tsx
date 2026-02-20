@@ -224,8 +224,6 @@ export const RightPanel: React.FC<RightPanelProps> = ({
   isConnected,
   resumePrompt,
 }) => {
-  console.log('[RightPanel] events size:', events.length);
-  console.log('[RightPanel] first 3 events:', events.slice(0, 3));
   const chatRef = useRef<HTMLDivElement>(null);
   const [showScrollToBottom, setShowScrollToBottom] = useState(false);
 
@@ -275,11 +273,6 @@ export const RightPanel: React.FC<RightPanelProps> = ({
    const max = executionState.orchestrator.maxRounds;
    return { current, max, percent: Math.round((current / Math.max(1, max)) * 100) };
  }, [executionState]);
-
-  // Debug: log connection state
-  useEffect(() => {
-    console.log('[RightPanel] isConnected changed:', isConnected);
-  }, [isConnected]);
 
 return (
   <div className="right-panel">

@@ -517,22 +517,20 @@ export function useWorkflowExecution(sessionId: string): UseWorkflowExecutionRet
     }
   }, [executionState]);
 
- const sendUserInput = useCallback(
-   async (inputPayload: UserInputPayload) => {
-     const text = inputPayload.text.trim();
-     console.log('[sendUserInput] called, text:', text);
-     if (!text && (!inputPayload.images || inputPayload.images.length === 0)) return;
+const sendUserInput = useCallback(
+  async (inputPayload: UserInputPayload) => {
+    const text = inputPayload.text.trim();
+    if (!text && (!inputPayload.images || inputPayload.images.length === 0)) return;
 
-      const eventTime = new Date().toISOString();
-      setRuntimeEvents((prev) =>
-        pushEvent(prev, {
-          role: 'user',
-          content: text || '[图片输入]',
-          images: inputPayload.images,
-          timestamp: eventTime,
-        }),
-      );
-      console.log('[sendUserInput] added user message, text:', text);
+     const eventTime = new Date().toISOString();
+     setRuntimeEvents((prev) =>
+       pushEvent(prev, {
+         role: 'user',
+         content: text || '[图片输入]',
+         images: inputPayload.images,
+         timestamp: eventTime,
+       }),
+     );
 
       setUserRounds((prev) => [
         ...prev,
