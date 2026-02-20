@@ -12,8 +12,8 @@ import { execSync } from 'child_process';
 import { createServer } from 'net';
 import { WebSocketServer, type WebSocket } from 'ws';
 import { ModuleRegistry } from '../orchestration/module-registry.js';
-import { SessionManager } from '../orchestration/session-manager.js';
-import { WorkflowManager, sharedWorkflowManager, sharedMessageHub, sharedSessionManager } from '../orchestration/shared-instances.js';
+// SessionManager accessed via shared-instances
+import { sharedWorkflowManager, sharedMessageHub, sharedSessionManager } from '../orchestration/shared-instances.js';
 import { runtimeInstructionBus } from '../orchestration/runtime-instruction-bus.js';
 import { resourcePool } from '../orchestration/resource-pool.js';
 import { resumableSessionManager } from '../orchestration/resumable-session.js';
