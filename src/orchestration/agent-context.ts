@@ -54,6 +54,8 @@ export interface AgentContext {
     description: string;
     requiredCapabilities?: string[];
     bdTaskId?: string;
+    epicId?: string;
+    executionLoopId?: string;
   };
   
   /** 编排者指令（可选） */
@@ -85,6 +87,8 @@ export function buildAgentContext(options?: {
   requiredCapabilities?: string[];
   bdTaskId?: string;
   orchestratorNote?: string;
+  epicId?: string;
+  executionLoopId?: string;
 }): AgentContext {
   const summary = getResourcePoolSummary();
   
@@ -115,6 +119,8 @@ export function buildAgentContext(options?: {
       description: options.taskDescription || '',
       requiredCapabilities: options.requiredCapabilities,
       bdTaskId: options.bdTaskId,
+      epicId: options.epicId,
+      executionLoopId: options.executionLoopId,
     };
   }
   
