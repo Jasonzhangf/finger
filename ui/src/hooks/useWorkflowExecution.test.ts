@@ -11,17 +11,13 @@ vi.mock('./useWebSocket.js', () => ({
   }),
 }));
 
-// Mock fetch API
-vi.mock('../api/client.js', () => ({
-  fetch: vi.fn(),
-}));
+// Mock global fetch
+const mockFetch = vi.fn();
+(globalThis as Record<string, unknown>).fetch = mockFetch;
 
 describe('useWorkflowExecution', () => {
-  let mockFetch: ReturnType<typeof vi.fn>;
-
-  beforeEach(async () => {
+  beforeEach(() => {
     vi.clearAllMocks();
-    mockFetch = vi.mocked((await import('../api/client.js')).fetch);
   });
 
   it('should initialize with empty state', () => {

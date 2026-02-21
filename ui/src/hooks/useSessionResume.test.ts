@@ -3,7 +3,7 @@ import { renderHook, act } from '@testing-library/react';
 
 // Mock fetch
 const mockFetch = vi.fn();
-global.fetch = mockFetch;
+(globalThis as Record<string, unknown>).fetch = mockFetch;
 
 // Import after mock
 import { useSessionResume } from './useSessionResume.js';

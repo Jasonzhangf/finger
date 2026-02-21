@@ -59,13 +59,12 @@ import type { WorkflowExecutionState } from '../../api/types.js';
 describe('OrchestrationCanvas', () => {
   const mockExecutionState: WorkflowExecutionState = {
     workflowId: 'wf-1',
-    sessionId: 'session-1',
     status: 'executing',
     agents: [
-      { id: 'agent-1', name: 'Agent 1', status: 'running', type: 'executor', load: 50 },
+      { id: 'agent-1', name: 'Agent 1', status: 'running', type: 'executor', load: 50, errorRate: 0, requestCount: 0, tokenUsage: 0 },
     ],
     tasks: [
-      { id: 'task-1', description: 'Task 1', status: 'in_progress', assignee: 'agent-1' },
+      { id: 'task-1', description: 'Task 1', status: 'in_progress', assignee: 'agent-1', dependencies: [] },
     ],
     orchestrator: { id: 'orch-1', currentRound: 1, maxRounds: 10 },
     executionPath: [],

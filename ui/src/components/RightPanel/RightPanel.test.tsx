@@ -7,11 +7,10 @@ import type { RuntimeEvent, WorkflowExecutionState } from '../../api/types.js';
 describe('RightPanel', () => {
   const mockExecutionState: WorkflowExecutionState = {
     workflowId: 'wf-123',
-    sessionId: 'sess-456',
     status: 'executing',
     agents: [
-      { id: 'agent-1', name: 'Agent Alpha', status: 'running', type: 'executor', load: 0 },
-      { id: 'agent-2', name: 'Agent Beta', status: 'idle', type: 'reviewer', load: 0 },
+      { id: 'agent-1', name: 'Agent Alpha', type: 'executor', status: 'running', load: 0, errorRate: 0, requestCount: 0, tokenUsage: 0 },
+      { id: 'agent-2', name: 'Agent Beta', type: 'reviewer', status: 'idle', load: 0, errorRate: 0, requestCount: 0, tokenUsage: 0 },
     ],
     tasks: [],
     orchestrator: { id: 'orch-1', currentRound: 1, maxRounds: 10 },
