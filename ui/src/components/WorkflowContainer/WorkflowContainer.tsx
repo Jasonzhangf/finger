@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useMemo } from 'react';
 import { OrchestrationCanvas } from '../OrchestrationCanvas/OrchestrationCanvas.js';
 import { ChatInterface } from '../ChatInterface/ChatInterface.js';
 import { AppLayout } from '../layout/AppLayout.js';
@@ -7,30 +7,13 @@ import { BottomPanel } from '../BottomPanel/BottomPanel.js';
 import { useWorkflowExecution } from '../../hooks/useWorkflowExecution.js';
 import { useAgents } from '../../hooks/useAgents.js';
 import { useSessions } from '../../hooks/useSessions.js';
-import { useSessionResume } from '../../hooks/useSessionResume.js';
 import type { UserInputPayload } from '../../api/types.js';
 
 export const WorkflowContainer: React.FC = () => {
   const { currentSession, sessions } = useSessions();
   const sessionId = currentSession?.id || (sessions.length > 0 ? sessions[0].id : 'default-session');
-  console.log('[WorkflowContainer] sessionId:', sessionId, 'currentSession:', currentSession, 'sessions:', sessions);
   const [inspectSignal, setInspectSignal] = React.useState(0);
   const [inspectAgentId, setInspectAgentId] = React.useState<string | null>(null);
-  const [requireConfirm, setRequireConfirm] = React.useState(() => {
-    try {
-      return localStorage.getItem('finger-resume-require-confirm') !== 'false';
-    } catch {
-      return true;
-    }
-  });
-  const [showResumePrompt, setShowResumePrompt] = React.useState(false);
-
-  const {
-    checkForResumeableSession,
-    resumeSession,
-    resumeContext,
-    isResuming,
-  } = useSessionResume();
 
   const {
     executionState,
@@ -51,40 +34,6 @@ export const WorkflowContainer: React.FC = () => {
 
   const { agents: agentModules } = useAgents();
 
-  // Check for resumable session on mount
-  React.useEffect(() => {
-    checkForResumeableSession(sessionId).then((hasResume) => {
-      if (hasResume && requireConfirm) setShowResumePrompt(true);
-      if (hasResume && !requireConfirm) autoResume();
-    });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sessionId]);
-
-  const autoResume = async () => {
-    await resumeSession(sessionId);
-  };
-
-  const handleResumeNow = async () => {
-    await resumeSession(sessionId);
-    setShowResumePrompt(false);
-  };
-
-  const handleDismissResume = () => {
-    setShowResumePrompt(false);
-  };
-
-  const handleToggleRequireConfirm = (value: boolean) => {
-    setRequireConfirm(value);
-    try {
-      localStorage.setItem('finger-resume-require-confirm', String(value));
-    } catch {
-      // ignore
-    }
-    if (!value && resumeContext) {
-      autoResume();
-    }
-  };
-
   const runtimeAgents = React.useMemo(() => {
     return executionState?.agents ||
       agentModules.map((module) => ({
@@ -99,27 +48,15 @@ export const WorkflowContainer: React.FC = () => {
       }));
   }, [executionState, agentModules]);
 
-  const handleSendMessage = async (payload: UserInputPayload) => {
+  const handleSendMessage = React.useCallback(async (payload: UserInputPayload) => {
     await sendUserInput(payload);
-  };
+  }, [sendUserInput]);
 
-  const handleInspectAgent = (agentId: string) => {
+  const handleInspectAgent = React.useCallback((agentId: string) => {
     setSelectedAgentId(agentId);
     setInspectAgentId(agentId);
     setInspectSignal((value) => value + 1);
-  };
-
-  const handleDeployAgent = async (config: unknown) => {
-    await fetch('/api/v1/agents/deploy', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        sessionId,
-        config,
-        scope: 'session',
-      }),
-    });
-  };
+  }, [setSelectedAgentId]);
 
   if (isLoading) {
     return (
@@ -143,35 +80,39 @@ export const WorkflowContainer: React.FC = () => {
     );
   }
 
+  const canvasElement = useMemo(() => (
+    <OrchestrationCanvas
+      executionState={executionState}
+      agents={runtimeAgents}
+      userRounds={userRounds}
+      executionRounds={executionRounds}
+      onDeployAgent={async () => {}}
+      getAgentDetail={getAgentDetail}
+      getTaskReport={getTaskReport}
+      selectedAgentId={selectedAgentId}
+      inspectRequest={inspectAgentId ? { agentId: inspectAgentId, signal: inspectSignal } : null}
+    />
+  ), [executionState, runtimeAgents, userRounds, executionRounds, getAgentDetail, getTaskReport, selectedAgentId, inspectAgentId, inspectSignal]);
+
+  const rightPanelElement = useMemo(() => (
+    <ChatInterface
+      executionState={executionState}
+      agents={runtimeAgents}
+      events={runtimeEvents}
+      onSendMessage={handleSendMessage}
+      onPause={pauseWorkflow}
+      onResume={resumeWorkflow}
+      isPaused={executionState?.paused || false}
+      isConnected={isConnected}
+      onAgentClick={handleInspectAgent}
+    />
+  ), [executionState, runtimeAgents, runtimeEvents, handleSendMessage, pauseWorkflow, resumeWorkflow, isConnected, handleInspectAgent]);
+
   return (
     <AppLayout
       leftSidebar={<LeftSidebar />}
-      canvas={
-        <OrchestrationCanvas
-          executionState={executionState}
-          agents={runtimeAgents}
-          userRounds={userRounds}
-          executionRounds={executionRounds}
-          onDeployAgent={handleDeployAgent}
-          getAgentDetail={getAgentDetail}
-          getTaskReport={getTaskReport}
-          selectedAgentId={selectedAgentId}
-          
-          inspectRequest={inspectAgentId ? { agentId: inspectAgentId, signal: inspectSignal } : null}
-        />
-      }
-      rightPanel={
-        <ChatInterface
-          executionState={executionState}
-          agents={runtimeAgents}
-          events={runtimeEvents}
-          onSendMessage={handleSendMessage}
-          onPause={pauseWorkflow}
-          onResume={resumeWorkflow}
-          isPaused={executionState?.paused || false}
-          isConnected={isConnected}
-       />
-     }
+      canvas={canvasElement}
+      rightPanel={rightPanelElement}
       bottomPanel={<BottomPanel />}
     />
   );

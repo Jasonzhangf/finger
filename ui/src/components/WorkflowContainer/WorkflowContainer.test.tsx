@@ -1,10 +1,13 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, waitFor } from '@testing-library/react';
-import React from 'react';
 
 // Mock child components
 vi.mock('../OrchestrationCanvas/OrchestrationCanvas.tsx', () => ({
   OrchestrationCanvas: () => <div data-testid="orchestration-canvas">Canvas</div>,
+}));
+
+vi.mock('../ChatInterface/ChatInterface.tsx', () => ({
+  ChatInterface: () => <div data-testid="chat-interface">Chat</div>,
 }));
 
 vi.mock('../RightPanel/RightPanel.tsx', () => ({
@@ -74,27 +77,12 @@ describe('WorkflowContainer', () => {
   });
 
   it('should render main layout', () => {
-    render(<WorkflowContainer sessionId="test-session" />);
-    
+    render(<WorkflowContainer />);
+
     waitFor(() => {
       expect(screen.getByTestId('orchestration-canvas')).toBeInTheDocument();
-      expect(screen.getByTestId('right-panel')).toBeInTheDocument();
+      expect(screen.getByTestId('chat-interface')).toBeInTheDocument();
       expect(screen.getByTestId('left-sidebar')).toBeInTheDocument();
-    });
-  });
-
-  it('should accept sessionId prop', () => {
-    const { rerender } = render(<WorkflowContainer sessionId="session-1" />);
-    rerender(<WorkflowContainer sessionId="session-2" />);
-    waitFor(() => {
-      expect(screen.getByTestId('right-panel')).toBeInTheDocument();
-    });
-  });
-
-  it('should render without sessionId', () => {
-    render(<WorkflowContainer />);
-    waitFor(() => {
-      expect(screen.getByTestId('right-panel')).toBeInTheDocument();
     });
   });
 });

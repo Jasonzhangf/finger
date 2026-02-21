@@ -174,6 +174,10 @@ export function useWorkflowExecution(sessionId: string): UseWorkflowExecutionRet
   const handleWebSocketMessage = useCallback((msg: WsMessage) => {
     if (msg.type === 'workflow_update') {
       const payload = msg.payload as WorkflowUpdatePayload;
+
+      if (payload.taskUpdates && payload.taskUpdates.length > 0) {
+        setExecutionRounds(buildExecutionRoundsFromTasks(payload.taskUpdates, executionStateRef.current?.agents || []));
+      }
       setExecutionState((prev) => {
         if (!prev || prev.workflowId !== payload.workflowId) return prev;
         return {
@@ -573,14 +577,35 @@ const sendUserInput = useCallback(
         throw new Error(`HTTP ${res.status}`);
       }
 
-      // 5. API 成功：更新事件状态为 confirmed
-      setRuntimeEvents((prev) =>
-        prev.map((e) =>
+      // 5. API 成功：更新事件状态为 confirmed 并追加反馈
+      let feedback: string | null = null;
+      try {
+        const responseData = await res.json() as { response?: string; event?: string; data?: unknown } | null;
+        feedback =
+          responseData?.response ||
+          responseData?.event ||
+          (typeof responseData?.data === 'string' ? responseData.data : null);
+      } catch {
+        // ignore json parse errors
+      }
+
+      setRuntimeEvents((prev) => {
+        const confirmed = prev.map((e) =>
           e.role === 'user' && e.timestamp === eventTime
             ? { ...e, agentId: 'confirmed' }
-            : e
-        ),
-      );
+            : e,
+        );
+
+        if (feedback) {
+          return pushEvent(confirmed, {
+            role: 'system',
+            content: feedback,
+            timestamp: new Date().toISOString(),
+            kind: 'status',
+          });
+        }
+        return confirmed;
+      });
 
       setExecutionState((prev) => (prev ? { ...prev, userInput: text } : prev));
     } catch (err) {

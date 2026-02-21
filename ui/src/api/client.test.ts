@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 // Mock global fetch
 const mockFetch = vi.fn();
-global.fetch = mockFetch;
+(globalThis as Record<string, unknown>).fetch = mockFetch;
 
 describe('API Client', () => {
   beforeEach(() => {
@@ -33,7 +33,7 @@ describe('API Client', () => {
         json: async () => ({ success: true }),
       });
 
-      const response = await fetch('/api/v1/test', {
+      await fetch('/api/v1/test', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ name: 'test' }),

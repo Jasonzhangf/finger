@@ -11,6 +11,7 @@ interface ChatInterfaceProps {
   onResume: () => void;
   isPaused: boolean;
   isConnected: boolean;
+  onAgentClick?: (agentId: string) => void;
 }
 
 function createPreviewImages(files: FileList | null): RuntimeImage[] {
@@ -25,11 +26,13 @@ function createPreviewImages(files: FileList | null): RuntimeImage[] {
 const MessageItem = React.memo<{
   event: RuntimeEvent;
   agentStatus?: string;
-}>(({ event, agentStatus }) => {
+  onAgentClick?: (agentId: string) => void;
+}>(({ event, agentStatus, onAgentClick }) => {
   const isUser = event.role === 'user';
   const isAgent = event.role === 'agent';
   const isSystem = event.role === 'system';
   
+  // Handle pending/confirmed/error states for user messages
   const isPending = event.agentId === 'pending';
   const isConfirmed = event.agentId === 'confirmed';
   const isError = event.agentId === 'error';
@@ -44,6 +47,12 @@ const MessageItem = React.memo<{
   
   const messageStatus = getMessageStatus();
   
+  const handleAgentClick = useCallback(() => {
+    if (event.agentId && onAgentClick && (isAgent || (isSystem && event.agentId))) {
+      onAgentClick(event.agentId);
+    }
+  }, [event.agentId, onAgentClick, isAgent, isSystem]);
+  
   return (
     <div className={`message ${isUser ? 'user' : isAgent ? 'agent' : 'system'} ${messageStatus || ''}`}>
       <div className="message-avatar">
@@ -53,7 +62,13 @@ const MessageItem = React.memo<{
         <div className="message-header">
           {isAgent && event.agentId && (
             <>
-              <span className="agent-name">{event.agentName || event.agentId}</span>
+              <button
+                type="button"
+                className="agent-name-btn"
+                onClick={handleAgentClick}
+              >
+                {event.agentName || event.agentId}
+              </button>
               {agentStatus && (
                 <span className={`agent-status-badge ${agentStatus}`}>
                   {agentStatus}
@@ -65,7 +80,15 @@ const MessageItem = React.memo<{
           {isUser && isPending && <span className="status-indicator pending">发送中...</span>}
           {isUser && isConfirmed && <span className="status-indicator confirmed">已发送</span>}
           {isUser && isError && <span className="status-indicator error">发送失败</span>}
-          {isSystem && event.agentId && <span className="sender-label">{event.agentName || event.agentId}</span>}
+          {isSystem && event.agentId && (
+            <button
+              type="button"
+              className="agent-name-btn"
+              onClick={handleAgentClick}
+            >
+              {event.agentName || event.agentId}
+            </button>
+          )}
           {isSystem && !event.agentId && <span className="sender-label">System</span>}
           <span className="message-time">{new Date(event.timestamp).toLocaleTimeString()}</span>
         </div>
@@ -110,7 +133,8 @@ const ChatInput: React.FC<{
   }, [text, images, onSend]);
   
   const handleKeyDown = useCallback((e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-    if (e.key === 'Enter' && !e.shiftKey) {
+    // Handle Enter without Shift, but not during IME composition
+    if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
       e.preventDefault();
       handleSend();
     }
@@ -208,6 +232,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
   onResume,
   isPaused,
   isConnected,
+  onAgentClick,
 }) => {
   const chatRef = useRef<HTMLDivElement>(null);
   const [showScrollToBottom, setShowScrollToBottom] = useState(false);
@@ -253,6 +278,14 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
     return { current, max, percent: Math.round((current / Math.max(1, max)) * 100) };
   }, [executionState]);
 
+  // Generate stable keys for events
+  const eventsWithKeys = useMemo(() => {
+    return events.map((event, index) => ({
+      ...event,
+      key: event.id || `${event.timestamp}-${event.role}-${index}`,
+    }));
+  }, [events]);
+
   return (
     <div className="chat-interface">
       <div className="chat-header">
@@ -288,11 +321,12 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
             <div className="empty-text">开始对话，输入任务指令...</div>
           </div>
         ) : (
-          events.map((event, index) => (
+          eventsWithKeys.map((event) => (
             <MessageItem
-              key={event.id || index}
+              key={event.key}
               event={event}
-              agentStatus={event.agentId ? agentStatusMap.get(event.agentId) : undefined}
+              agentStatus={event.agentId ? (agentStatusMap.get(event.agentId) ?? 'unknown') : undefined}
+              onAgentClick={onAgentClick}
             />
           ))
         )}
