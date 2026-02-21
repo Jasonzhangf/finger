@@ -428,4 +428,59 @@ describe('SessionManager', () => {
       expect(manager.getCurrentSession()?.id).toBe(s1.id);
     });
   });
+
+  describe('getFullContext', () => {
+    it('returns messages and undefined summary initially', () => {
+      const session = manager.createSession('/path');
+      manager.addMessage(session.id, 'user', 'Hello');
+      
+      const ctx = manager.getFullContext(session.id);
+      expect(ctx.messages.length).toBe(1);
+      expect(ctx.compressedSummary).toBeUndefined();
+    });
+
+    it('returns empty for non-existent session', () => {
+      const ctx = manager.getFullContext('nonexistent');
+      expect(ctx.messages).toEqual([]);
+      expect(ctx.compressedSummary).toBeUndefined();
+    });
+  });
+
+  describe('compressContext', () => {
+    it('does not compress when under threshold', async () => {
+      const session = manager.createSession('/path');
+      for (let i = 0; i < 10; i++) {
+        manager.addMessage(session.id, 'user', `Msg ${i}`);
+      }
+      
+      const result = await manager.compressContext(session.id);
+      expect(result).toBe('No compression needed');
+    });
+
+    it('compresses when over threshold', async () => {
+      const session = manager.createSession('/path');
+      for (let i = 0; i < 60; i++) {
+        manager.addMessage(session.id, 'user', `Msg ${i}`);
+      }
+      
+      const result = await manager.compressContext(session.id);
+      expect(result).toContain('用户请求:');
+    });
+
+    it('uses custom summarizer when provided', async () => {
+      const session = manager.createSession('/path');
+      for (let i = 0; i < 60; i++) {
+        manager.addMessage(session.id, 'user', `Msg ${i}`);
+      }
+      
+      const customSummary = async () => 'Custom summary';
+      const result = await manager.compressContext(session.id, customSummary);
+      expect(result).toBe('Custom summary');
+    });
+
+    it('throws for non-existent session', async () => {
+      await expect(manager.compressContext('nonexistent')).rejects.toThrow('Session not found');
+    });
+  });
+
 });
