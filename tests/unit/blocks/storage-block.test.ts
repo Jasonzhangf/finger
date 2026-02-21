@@ -7,6 +7,43 @@ describe('StorageBlock', () => {
   beforeEach(() => {
     block = new StorageBlock('test-storage', 'memory');
   });
+  
+  describe('file backend', () => {
+    let fileBlock: StorageBlock;
+    
+    beforeEach(() => {
+      fileBlock = new StorageBlock('test-file-storage', 'file', './test-data');
+    });
+    
+    it('should save to file backend', () => {
+      const result = fileBlock.save({ key: 'file-key', value: { data: 'test' } });
+      expect(result.saved).toBe(true);
+    });
+    
+    it('should load from file backend', () => {
+      fileBlock.save({ key: 'file-key', value: 'file-value' });
+      const loaded = fileBlock.load({ key: 'file-key' });
+      expect(loaded).toBe('file-value');
+    });
+    
+    it('should delete from file backend', () => {
+      fileBlock.save({ key: 'file-key', value: 'value' });
+      const result = fileBlock.delete('file-key');
+      expect(result.deleted).toBe(true);
+    });
+    
+    it('should check exists in file backend', () => {
+      fileBlock.save({ key: 'file-key', value: 'value' });
+      const result = fileBlock.exists('file-key');
+      expect(result.exists).toBe(true);
+    });
+    
+    it('should return empty list for file backend', () => {
+      fileBlock.save({ key: 'key1', value: 'v1' });
+      const keys = fileBlock.list();
+      expect(keys).toEqual([]);
+    });
+  });
 
   describe('constructor', () => {
     it('should initialize with id and type', () => {

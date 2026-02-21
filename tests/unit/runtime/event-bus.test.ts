@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest';
 import { UnifiedEventBus } from '../../../src/runtime/event-bus.js';
 import type { RuntimeEvent } from '../../../src/runtime/events.js';
 import { WebSocket } from 'ws';
@@ -13,7 +13,12 @@ describe('UnifiedEventBus', () => {
   let bus: UnifiedEventBus;
 
   beforeEach(() => {
+    vi.clearAllMocks();
     bus = new UnifiedEventBus();
+  });
+
+  afterEach(() => {
+    bus.clear();
   });
 
   describe('subscribe', () => {
@@ -58,6 +63,19 @@ describe('UnifiedEventBus', () => {
     });
   });
 
+  describe('subscribeByGroup', () => {
+    it('subscribes to events by group', () => {
+      const received: RuntimeEvent[] = [];
+      bus.subscribeByGroup('TASK', (e) => received.push(e));
+
+      bus.emit({ type: 'task_started' as any, sessionId: 's1', timestamp: '', payload: {} });
+      bus.emit({ type: 'task_completed' as any, sessionId: 's1', timestamp: '', payload: {} });
+      bus.emit({ type: 'system_error' as any, sessionId: 's1', timestamp: '', payload: {} });
+
+      expect(received).toHaveLength(2);
+    });
+  });
+
   describe('subscribeAll', () => {
     it('subscribes to all events via wildcard', () => {
       const received: RuntimeEvent[] = [];
@@ -67,6 +85,84 @@ describe('UnifiedEventBus', () => {
       bus.emit({ type: 'event_b' as any, sessionId: 's1', timestamp: '', payload: {} });
 
       expect(received).toHaveLength(2);
+    });
+  });
+
+  describe('emit with persistence', () => {
+    it('persists events when enabled', async () => {
+      const { appendFile } = await import('fs/promises');
+      bus.enablePersistence('test-session');
+      
+      bus.emit({ type: 'test_event' as any, sessionId: 's1', timestamp: '', payload: {} });
+      
+      expect(appendFile).toHaveBeenCalled();
+    });
+
+    it('does not persist when disabled', async () => {
+      const { appendFile } = await import('fs/promises');
+      bus.disablePersistence();
+      
+      bus.emit({ type: 'test_event' as any, sessionId: 's1', timestamp: '', payload: {} });
+      
+      expect(appendFile).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('broadcastToWsClients', () => {
+    it('broadcasts to connected clients', () => {
+      const mockWs = { 
+        readyState: 1, 
+        on: vi.fn(), 
+        send: vi.fn() 
+      } as unknown as WebSocket;
+      bus.registerWsClient(mockWs);
+      
+      bus.emit({ type: 'test_event' as any, sessionId: 's1', timestamp: '', payload: {} });
+      
+      expect(mockWs.send).toHaveBeenCalled();
+    });
+
+    it('does not broadcast to disconnected clients', () => {
+      const mockWs = { 
+        readyState: WebSocket.CLOSED, 
+        on: vi.fn(), 
+        send: vi.fn() 
+      } as unknown as WebSocket;
+      bus.registerWsClient(mockWs);
+      
+      bus.emit({ type: 'test_event' as any, sessionId: 's1', timestamp: '', payload: {} });
+      
+      expect(mockWs.send).not.toHaveBeenCalled();
+    });
+
+    it('filters events by client subscription types', () => {
+      const mockWs = { 
+        readyState: 1, 
+        on: vi.fn(), 
+        send: vi.fn() 
+      } as unknown as WebSocket;
+      bus.registerWsClient(mockWs);
+      bus.setWsClientFilter(mockWs, { types: ['task_started'] });
+      
+      bus.emit({ type: 'task_started' as any, sessionId: 's1', timestamp: '', payload: {} });
+      bus.emit({ type: 'task_completed' as any, sessionId: 's1', timestamp: '', payload: {} });
+      
+      expect(mockWs.send).toHaveBeenCalledTimes(1);
+    });
+
+    it('filters events by client subscription groups', () => {
+      const mockWs = { 
+        readyState: 1, 
+        on: vi.fn(), 
+        send: vi.fn() 
+      } as unknown as WebSocket;
+      bus.registerWsClient(mockWs);
+      bus.setWsClientFilter(mockWs, { groups: ['TASK'] });
+      
+      bus.emit({ type: 'task_started' as any, sessionId: 's1', timestamp: '', payload: {} });
+      bus.emit({ type: 'system_error' as any, sessionId: 's1', timestamp: '', payload: {} });
+      
+      expect(mockWs.send).toHaveBeenCalledTimes(1);
     });
   });
 
@@ -102,6 +198,15 @@ describe('UnifiedEventBus', () => {
       bus.emit({ type: 'type_a' as any, sessionId: 's1', timestamp: '', payload: {} });
 
       const history = bus.getHistoryByType('type_a');
+      expect(history).toHaveLength(2);
+    });
+
+    it('filters history by group', () => {
+      bus.emit({ type: 'task_started' as any, sessionId: 's1', timestamp: '', payload: {} });
+      bus.emit({ type: 'task_completed' as any, sessionId: 's1', timestamp: '', payload: {} });
+      bus.emit({ type: 'system_error' as any, sessionId: 's1', timestamp: '', payload: {} });
+
+      const history = bus.getHistoryByGroup('TASK');
       expect(history).toHaveLength(2);
     });
 
@@ -170,7 +275,6 @@ describe('UnifiedEventBus', () => {
       bus.registerWsClient(mockWs);
       bus.setWsClientFilter(mockWs, { types: ['task_started'], groups: ['RESOURCE'] });
       
-      // Should complete without error
       expect(true).toBe(true);
     });
   });
@@ -200,10 +304,8 @@ describe('UnifiedEventBus', () => {
       bus.subscribe('test', errorHandler);
       bus.subscribe('test', successHandler);
       
-      // Should not throw
       bus.emit({ type: 'test' as any, sessionId: 's1', timestamp: '', payload: {} });
       
-      // Second handler should still be called
       expect(successHandler).toHaveBeenCalled();
     });
   });
