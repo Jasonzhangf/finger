@@ -1,6 +1,6 @@
 import React from 'react';
 import { OrchestrationCanvas } from '../OrchestrationCanvas/OrchestrationCanvas.js';
-import { RightPanel } from '../RightPanel/RightPanel.js';
+import { ChatInterface } from '../ChatInterface/ChatInterface.js';
 import { AppLayout } from '../layout/AppLayout.js';
 import { LeftSidebar } from '../LeftSidebar/LeftSidebar.js';
 import { BottomPanel } from '../BottomPanel/BottomPanel.js';
@@ -156,34 +156,20 @@ export const WorkflowContainer: React.FC = () => {
           getAgentDetail={getAgentDetail}
           getTaskReport={getTaskReport}
           selectedAgentId={selectedAgentId}
-          onSelectAgent={setSelectedAgentId}
+          
           inspectRequest={inspectAgentId ? { agentId: inspectAgentId, signal: inspectSignal } : null}
         />
       }
       rightPanel={
-        <RightPanel
+        <ChatInterface
           executionState={executionState}
           agents={runtimeAgents}
           events={runtimeEvents}
-          highlightedAgentId={selectedAgentId}
-          onSelectAgent={setSelectedAgentId}
-          onInspectAgent={handleInspectAgent}
           onSendMessage={handleSendMessage}
           onPause={pauseWorkflow}
           onResume={resumeWorkflow}
           isPaused={executionState?.paused || false}
           isConnected={isConnected}
-          resumePrompt={showResumePrompt ? {
-            visible: showResumePrompt,
-            summary: resumeContext?.summary || '',
-            progress: resumeContext?.estimatedProgress || 0,
-            pendingCount: resumeContext?.checkpoint?.pendingTaskIds?.length || 0,
-            requireConfirm: requireConfirm,
-            isResuming: isResuming,
-            onResumeNow: handleResumeNow,
-            onDismiss: handleDismissResume,
-            onToggleRequireConfirm: handleToggleRequireConfirm,
-          } : undefined}
        />
      }
       bottomPanel={<BottomPanel />}
