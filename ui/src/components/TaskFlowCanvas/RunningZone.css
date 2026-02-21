@@ -1,0 +1,82 @@
+.running-zone .zone-body {
+  overflow-x: auto;
+}
+
+.loop-row {
+  min-width: 600px;
+  margin-bottom: 10px;
+  border: 1px solid #2a3248;
+  border-radius: 10px;
+  background: linear-gradient(180deg, #111a2b, #101726);
+  cursor: pointer;
+}
+
+.loop-row.selected {
+  border-color: #4d9dff;
+  box-shadow: 0 0 8px rgba(77,157,255,.3);
+}
+
+.loop-row-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 10px;
+  background: rgba(15,21,34,0.95);
+  border-bottom: 1px solid #2a3248;
+}
+
+.loop-id {
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.loop-phase-badge {
+  font-size: 10px;
+  padding: 2px 6px;
+  border-radius: 999px;
+  border: 1px solid #2a3248;
+  color: #9aa5bf;
+}
+
+.loop-node-count {
+  font-size: 10px;
+  color: #9aa5bf;
+  margin-left: auto;
+}
+
+.loop-content {
+  display: flex;
+  align-items: stretch;
+  padding: 8px;
+  gap: 6px;
+  overflow-x: auto;
+  min-height: 110px;
+}
+
+.arrow {
+  min-width: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #9aa5bf;
+  font-size: 12px;
+  flex-shrink: 0;
+}
+
+.arrow.success {
+  color: #39d98a;
+}
+
+.arrow.failed {
+  color: #ff5d73;
+}
+
+.arrow.running {
+  color: #4d9dff;
+  animation: pulse 1s infinite;
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}

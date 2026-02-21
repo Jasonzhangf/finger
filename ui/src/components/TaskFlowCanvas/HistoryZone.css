@@ -1,0 +1,4 @@
+.history-zone .zone-body {
+  overflow-x: auto;
+  white-space: nowrap;
+}

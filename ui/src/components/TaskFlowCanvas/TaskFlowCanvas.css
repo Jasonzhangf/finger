@@ -1,0 +1,78 @@
+.task-flow-canvas {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  background: #0c1017;
+  color: #e7ecf7;
+}
+
+.canvas-header {
+  height: 50px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0 14px;
+  border-bottom: 1px solid #2a3248;
+  background: #0f1522;
+  position: sticky;
+  top: 0;
+  z-index: 50;
+}
+
+.canvas-title {
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.canvas-epic-id {
+  font-size: 11px;
+  color: #9aa5bf;
+  padding: 4px 8px;
+  border-radius: 999px;
+  border: 1px solid #2a3248;
+}
+
+.canvas-zones {
+  flex: 1;
+  display: grid;
+  grid-template-rows: 1.2fr 1.8fr 1fr;
+  overflow: hidden;
+}
+
+.zone {
+  border-bottom: 1px solid #2a3248;
+  position: relative;
+  overflow: hidden;
+  background: #121826;
+  display: flex;
+  flex-direction: column;
+}
+
+.zone:last-child {
+  border-bottom: 0;
+}
+
+.zone-header {
+  height: 34px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 12px;
+  border-bottom: 1px solid #2a3248;
+  color: #9aa5bf;
+  background: #0f1522;
+  font-size: 12px;
+}
+
+.zone-body {
+  flex: 1;
+  overflow: auto;
+  padding: 8px;
+}
+
+.empty-message {
+  text-align: center;
+  color: #9aa5bf;
+  padding: 20px;
+  font-size: 12px;
+}
