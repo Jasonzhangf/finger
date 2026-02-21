@@ -14,6 +14,16 @@ import { resourcePool, type ResourceRequirement } from '../../orchestration/reso
 import { sharedWorkflowManager as workflowManager } from '../../orchestration/shared-instances.js';
 import { buildAgentContext, generateDynamicSystemPrompt } from '../../orchestration/agent-context.js';
 
+import {
+  createPlanLoop,
+  completePlanLoop,
+  completeDesignLoop,
+  addDeliverablesNode,
+  addExecNode,
+  completeExecNode,
+  completeExecutionLoop,
+} from './orchestrator-loop-adapter.js';
+
 import type { OutputModule } from '../../orchestration/module-registry.js';
 import {
   ActionRegistry,
@@ -77,6 +87,9 @@ interface CheckpointState {
 interface LoopState extends ReActState {
   epicId: string;
   userTask: string;
+  planLoopId?: string;
+  designLoopId?: string;
+  executionLoopId?: string;
   taskGraph: TaskNode[];
   completedTasks: string[];
   failedTasks: string[];
@@ -356,6 +369,12 @@ Agent 的能力由其拥有的工具决定：
         state.phase = 'high_design';
         await bdTools.addComment(state.epicId, `概要设计完成：架构=${state.highDesign.architecture.substring(0, 50)}..., 模块数=${state.highDesign.modules.length}`);
         await saveCheckpoint(state, 'high_design_completed');
+        
+        // Complete plan loop and transition to design loop
+        if (state.planLoopId) {
+          state.designLoopId = completePlanLoop(state.epicId, state.planLoopId, state.highDesign.architecture);
+        }
+
         return { success: true, observation: `概要设计已保存`, data: state.highDesign };
       }
 
@@ -369,6 +388,12 @@ Agent 的能力由其拥有的工具决定：
         state.phase = 'detail_design';
         await bdTools.addComment(state.epicId, `详细设计完成：接口数=${state.detailDesign.interfaces.length}, 数据模型数=${state.detailDesign.dataModels.length}`);
         await saveCheckpoint(state, 'detail_design_completed');
+        
+        // Complete design loop and transition to execution loop
+        if (state.designLoopId) {
+          state.executionLoopId = completeDesignLoop(state.epicId, state.designLoopId, state.detailDesign.interfaces.length);
+        }
+
         return { success: true, observation: `详细设计已保存`, data: state.detailDesign };
       }
 
@@ -382,6 +407,12 @@ Agent 的能力由其拥有的工具决定：
         state.phase = 'deliverables';
         await bdTools.addComment(state.epicId, `交付清单完成：交付物数=${state.deliverables.artifacts.length}`);
         await saveCheckpoint(state, 'deliverables_completed');
+        
+        // Add deliverables node to execution loop
+        if (state.executionLoopId) {
+          addDeliverablesNode(state.executionLoopId, state.deliverables.artifacts.length);
+        }
+
         return { success: true, observation: `交付清单已保存`, data: state.deliverables };
       }
 
@@ -463,6 +494,9 @@ Agent 的能力由其拥有的工具决定：
         // Dispatch tasks with allocated resources and context
         const dispatchPromises = tasksWithResources.map(async (task) => {
           const targetExecutorId = task.allocatedResources[0] || state.targetExecutorId;
+          if (state.executionLoopId) {
+            addExecNode(state.executionLoopId, task.id, task.description, targetExecutorId);
+          }
           
           try {
             resourcePool.markTaskExecuting(task.id);
@@ -488,11 +522,17 @@ Agent 的能力由其拥有的工具决定：
               task.status = 'completed';
               state.completedTasks.push(task.id);
               resourcePool.releaseResources(task.id, 'completed');
+              if (state.executionLoopId) {
+                completeExecNode(state.executionLoopId, task.id, true);
+              }
               return { taskId: task.id, success: true, result };
             } else {
               task.status = 'failed';
               state.failedTasks.push(task.id);
               resourcePool.releaseResources(task.id, 'error');
+              if (state.executionLoopId) {
+                completeExecNode(state.executionLoopId, task.id, false);
+              }
               return { taskId: task.id, success: false, error: result.error };
             }
           } catch (err) {
@@ -500,6 +540,9 @@ Agent 的能力由其拥有的工具决定：
             task.result = { taskId: task.id, success: false, error: String(err) };
             state.failedTasks.push(task.id);
             resourcePool.releaseResources(task.id, 'error');
+            if (state.executionLoopId) {
+              completeExecNode(state.executionLoopId, task.id, false);
+            }
             return { taskId: task.id, success: false, error: String(err) };
           }
         });
@@ -635,6 +678,11 @@ Agent 的能力由其拥有的工具决定：
         const allDone = state.taskGraph.length > 0 && state.taskGraph.every(t => t.status === 'completed' || t.status === 'failed');
         if (!allDone) return { success: false, observation: 'COMPLETE rejected: still has unfinished tasks', error: 'unfinished tasks' };
         await bdTools.closeTask(state.epicId, state.failedTasks.length === 0 ? '所有任务完成' : '部分任务失败');
+        
+        // Complete execution loop
+        if (state.executionLoopId) {
+          completeExecutionLoop(state.epicId, state.executionLoopId, state.failedTasks.length);
+        }
       }
       
       // Handle STOP action - pause task dispatching
@@ -774,10 +822,11 @@ Agent 的能力由其拥有的工具决定：
     },
   });
 
- async function runLoop(userTask: string): Promise<unknown> {
-   await ensureConnected();
-   const epic = await bdTools.createTask({ title: userTask.substring(0, 100), type: 'epic', priority: 0, labels: ['orchestration', 'react-loop'] });
-   const resumeSessionId = config.sessionId || config.id;
+async function runLoop(userTask: string): Promise<unknown> {
+  await ensureConnected();
+  const epic = await bdTools.createTask({ title: userTask.substring(0, 100), type: 'epic', priority: 0, labels: ['orchestration', 'react-loop'] });
+  const planLoopId = createPlanLoop(epic.id, userTask);
+  const resumeSessionId = config.sessionId || config.id;
    
    // Register workflow with shared WorkflowManager so UI can query it
    const workflowId = `workflow-${config.id}-${Date.now()}`;
@@ -848,7 +897,7 @@ Agent 的能力由其拥有的工具决定：
     const loop = new ReActLoop(loopConfig, userTask);
     const loopState: LoopState = {
       task: userTask, iterations: [], convergence: { rejectionStreak: 0, sameRejectionReason: '', stuckCount: 0 },
-      epicId: epic.id, userTask, taskGraph: initialTaskGraph, completedTasks: initialCompletedTasks, failedTasks: initialFailedTasks, phase: resumedPhase, blockedTasks: initialBlockedTasks,
+      epicId: epic.id, userTask, planLoopId, taskGraph: initialTaskGraph, completedTasks: initialCompletedTasks, failedTasks: initialFailedTasks, phase: resumedPhase, blockedTasks: initialBlockedTasks,
       highDesign: initialHighDesign, detailDesign: initialDetailDesign, deliverables: initialDeliverables,
       checkpoint: { totalChecks: 0, majorChange: false }, round: 0, hub, targetExecutorId: config.targetExecutorId || 'executor-loop',
     };
