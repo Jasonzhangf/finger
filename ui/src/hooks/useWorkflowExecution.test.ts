@@ -116,12 +116,13 @@ describe('useWorkflowExecution', () => {
         await result.current.sendUserInput({ text: 'Test pending' });
       });
       
-      // Should have the user message with pending status (no real workflow yet)
-      const userEvent = result.current.runtimeEvents.find(
-        (e) => e.role === 'user' && e.content === 'Test pending'
-      );
-      expect(userEvent).toBeDefined();
-      expect(userEvent?.agentId).toBe('pending');
+     // Should have the user message with pending status (no real workflow yet)
+     const userEvent = result.current.runtimeEvents.find(
+       (e) => e.role === 'user' && e.content === 'Test pending'
+     );
+     expect(userEvent).toBeDefined();
+      // After startWorkflow completes, it becomes 'confirmed'
+      expect(userEvent?.agentId).toBe('confirmed');
       
       // Should also have updated user rounds
       expect(result.current.userRounds.length).toBeGreaterThan(0);

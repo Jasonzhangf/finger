@@ -559,6 +559,13 @@ const sendUserInput = useCallback(
       if (text) {
         await startWorkflow(text);
       }
+      setRuntimeEvents((prev) =>
+        prev.map((e) =>
+          e.role === 'user' && e.timestamp === eventTime
+            ? { ...e, agentId: 'confirmed' }
+            : e,
+        ),
+      );
       return;
     }
 
