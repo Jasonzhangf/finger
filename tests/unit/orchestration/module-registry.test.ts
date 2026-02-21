@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { ModuleRegistry, type InputModule, type OutputModule, type AgentModule } from '../../../src/orchestration/module-registry.js';
 import { MessageHub } from '../../../src/orchestration/message-hub.js';
 
