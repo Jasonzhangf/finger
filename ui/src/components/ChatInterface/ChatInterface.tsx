@@ -120,7 +120,7 @@ const ChatInput: React.FC<{
   const [text, setText] = useState('');
   const [images, setImages] = useState<RuntimeImage[]>([]);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
-  
+
   const handleSend = useCallback(() => {
     const trimmed = text.trim();
     if (!trimmed && images.length === 0) return;
@@ -208,11 +208,11 @@ const ChatInput: React.FC<{
           />
         </div>
         
-        <button
-          className="send-btn"
-          onClick={handleSend}
-          disabled={!canSend || disabled}
-        >
+       <button
+         className="send-btn"
+         onClick={handleSend}
+         disabled={!canSend || disabled}
+       >
           <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
             <line x1="22" y1="2" x2="11" y2="13" />
             <polygon points="22 2 15 22 11 13 2 9 22 2" />

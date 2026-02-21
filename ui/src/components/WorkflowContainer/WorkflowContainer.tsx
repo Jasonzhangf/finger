@@ -15,22 +15,22 @@ export const WorkflowContainer: React.FC = () => {
   const [inspectSignal, setInspectSignal] = React.useState(0);
   const [inspectAgentId, setInspectAgentId] = React.useState<string | null>(null);
 
-  const {
-    executionState,
-    runtimeEvents,
-    userRounds,
-    executionRounds,
-    selectedAgentId,
-    setSelectedAgentId,
-    isLoading,
-    error,
-    pauseWorkflow,
-    resumeWorkflow,
-    sendUserInput,
-    getAgentDetail,
-    getTaskReport,
-    isConnected,
-  } = useWorkflowExecution(sessionId);
+ const {
+   executionState,
+   runtimeEvents,
+   userRounds,
+   executionRounds,
+   selectedAgentId,
+   setSelectedAgentId,
+   isLoading,
+   error,
+   pauseWorkflow,
+   resumeWorkflow,
+   sendUserInput,
+   getAgentDetail,
+   getTaskReport,
+   isConnected,
+ } = useWorkflowExecution(sessionId);
 
   const { agents: agentModules } = useAgents();
 

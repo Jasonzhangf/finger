@@ -532,14 +532,14 @@ const sendUserInput = useCallback(
     // 1. 先本地插入 pending 状态的用户事件（立即可见）
     setRuntimeEvents((prev) =>
       pushEvent(prev, {
-        role: 'user',
-        content: text || '[图片输入]',
-        images: inputPayload.images,
-        timestamp: eventTime,
-        kind: 'status',
-        agentId: 'pending',
-      }),
-    );
+       role: 'user',
+       content: text || '[图片输入]',
+       images: inputPayload.images,
+       timestamp: eventTime,
+       kind: 'status',
+       agentId: 'pending',
+     }),
+   );
 
     // 2. 同步更新用户轮次
     setUserRounds((prev) => [
@@ -709,24 +709,24 @@ const sendUserInput = useCallback(
     };
   }, [workflow, executionState]);
 
-  return {
-    workflow,
-    executionState,
-    runtimeEvents,
-    userRounds,
-    executionRounds,
-    selectedAgentId,
-    setSelectedAgentId,
-    isLoading,
-    error,
-    startWorkflow,
-    pauseWorkflow,
-    resumeWorkflow,
-    sendUserInput,
-    getAgentDetail,
-  getTaskReport,
+ return {
+   workflow,
+   executionState,
+   runtimeEvents,
+   userRounds,
+   executionRounds,
+   selectedAgentId,
+   setSelectedAgentId,
+   isLoading,
+   error,
+   startWorkflow,
+   pauseWorkflow,
+   resumeWorkflow,
+   sendUserInput,
+   getAgentDetail,
+   getTaskReport,
    isConnected,
-  };
+ };
 }
 
 function buildExecutionRoundsFromTasks(
