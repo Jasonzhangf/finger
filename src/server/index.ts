@@ -280,11 +280,13 @@ app.post('/api/v1/mailbox/clear', (_req, res) => {
 // WebSocket server for real-time updates
 const wsPort = PORT + 1;
 const wss = new WebSocketServer({ port: wsPort });
+console.log(`[Server] Starting WebSocket server on port ${wsPort} (PORT=${PORT})`);
 const wsClients: Set<WebSocket> = new Set();
 
 wss.on('connection', (ws) => {
-  wsClients.add(ws);
-  globalEventBus.registerWsClient(ws);
+ wsClients.add(ws);
+  console.log('[Server] WebSocket client connected, total clients:', wsClients.size);
+ globalEventBus.registerWsClient(ws);
   
   ws.on('message', (data) => {
     try {
@@ -326,8 +328,11 @@ wss.on('connection', (ws) => {
   });
 });
 
-console.log(`[Server] WebSocket server running at ws://localhost:${wsPort}`);
-// ========== Session Data API ==========
+ console.log(`[Server] WebSocket server running at ws://localhost:${wsPort}`);
+  // Log actual bound address
+  const addresses = wss.address();
+  console.log(`[Server] WebSocket server bound to:`, addresses);
+ // ========== Session Data API ==========
 // Real-time session data from ~/.finger/sessions
 
 const SESSIONS_DIR = join(homedir(), '.finger', 'sessions');
