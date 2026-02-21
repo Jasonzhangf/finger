@@ -90,4 +90,57 @@ describe('ToolRegistry', () => {
     registry.unregister('temp');
     expect(registry.size).toBe(0);
   });
+  it('should call allowAll to set all tools to allow', () => {
+    registry.register({
+      name: 'tool-allow',
+      description: 'Allow test',
+      inputSchema: {},
+      policy: 'deny',
+      handler: vi.fn(),
+    });
+    expect(registry.getPolicy('tool-allow')).toBe('deny');
+    registry.allowAll();
+    expect(registry.getPolicy('tool-allow')).toBe('allow');
+  });
+  it('should call denyAll to set all tools to deny', () => {
+    registry.register({
+      name: 'tool-deny',
+      description: 'Deny test',
+      inputSchema: {},
+      policy: 'allow',
+      handler: vi.fn(),
+    });
+    expect(registry.getPolicy('tool-deny')).toBe('allow');
+    registry.denyAll();
+    expect(registry.getPolicy('tool-deny')).toBe('deny');
+  });
+  it('should clear registry', () => {
+    registry.register({
+      name: 'clear-tool',
+      description: 'To be cleared',
+      inputSchema: {},
+      policy: 'allow',
+      handler: vi.fn(),
+    });
+    expect(registry.size).toBe(1);
+    registry.clear();
+    expect(registry.size).toBe(0);
+  });
+  it('should return size correctly', () => {
+    registry.register({
+      name: 'size-tool-1',
+      description: 'Size 1',
+      inputSchema: {},
+      policy: 'allow',
+      handler: vi.fn(),
+    });
+    registry.register({
+      name: 'size-tool-2',
+      description: 'Size 2',
+      inputSchema: {},
+      policy: 'allow',
+      handler: vi.fn(),
+    });
+    expect(registry.size).toBe(2);
+  });
 });
