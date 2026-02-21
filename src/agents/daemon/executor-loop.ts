@@ -14,6 +14,7 @@ import {
   type ActionResult,
 } from '../core/action-registry-simple.js';
 import { buildAgentContext, generateDynamicSystemPrompt } from '../../orchestration/agent-context.js';
+import { globalEventBus } from '../../runtime/event-bus.js';
 import {
   ReActLoop,
   type LoopConfig,
@@ -36,6 +37,8 @@ interface ExecutorState extends ReActState {
   description: string;
   bdTaskId?: string;
   observations: string[];
+  epicId?: string;
+  executionLoopId?: string;
 }
 
 export function createExecutorLoop(config: ExecutorLoopConfig): { agent: Agent; module: OutputModule } {
@@ -57,7 +60,6 @@ export function createExecutorLoop(config: ExecutorLoopConfig): { agent: Agent; 
   const actionRegistry = new ActionRegistry();
   const actions = createExecutorActions(config.cwd);
 
-  // 确保已连接（复用现有连接或新建）
   const ensureConnected = async (): Promise<void> => {
     if (!initialized) {
       if (!initPromise) {
@@ -69,7 +71,6 @@ export function createExecutorLoop(config: ExecutorLoopConfig): { agent: Agent; 
     }
   };
 
-  // 将具体动作逻辑注册到统一注册表，并挂接 bd/observation 同步
   for (const action of actions) {
     const originalHandler = action.handler;
     action.handler = async (params, context): Promise<ActionResult> => {
@@ -82,6 +83,30 @@ export function createExecutorLoop(config: ExecutorLoopConfig): { agent: Agent; 
         state.observations.push(result.observation);
       }
 
+      // Emit loop node update event for UI
+      if (state?.epicId && state.executionLoopId && state.taskId) {
+        globalEventBus.emit({
+          type: 'loop.node.updated',
+          sessionId: state.epicId,
+          timestamp: new Date().toISOString(),
+          epicId: state.epicId,
+          loopId: state.executionLoopId,
+          nodeId: `${state.taskId}-${Date.now()}`,
+          payload: {
+            node: {
+              id: `${state.taskId}-${Date.now()}`,
+              type: 'exec' as const,
+              status: result.success ? 'done' : 'failed',
+              title: state.taskId,
+              text: result.observation?.substring(0, 100) || (result.error || 'executing'),
+              agentId: config.id,
+              timestamp: new Date().toISOString(),
+            },
+            previousStatus: 'running',
+          },
+        });
+      }
+
       if (state?.bdTaskId) {
         if (result.success && result.stopReason === 'complete') {
           await bdTools.closeTask(state.bdTaskId, '执行完成', [
@@ -89,7 +114,7 @@ export function createExecutorLoop(config: ExecutorLoopConfig): { agent: Agent; 
           ]);
         } else if (!result.success && result.stopReason === 'fail') {
           await bdTools.updateStatus(state.bdTaskId, 'blocked');
-          await bdTools.addComment(state.bdTaskId, `执行失败: ${result.error || result.observation}`);
+          await bdTools.addComment(state.bdTaskId, `执行失败：${result.error || result.observation}`);
         } else if (result.observation) {
           await bdTools.addComment(state.bdTaskId, result.observation);
         }
@@ -104,12 +129,12 @@ export function createExecutorLoop(config: ExecutorLoopConfig): { agent: Agent; 
   async function runTask(
     taskId: string,
     description: string,
-    bdTaskId?: string
+    bdTaskId?: string,
+    epicId?: string,
+    executionLoopId?: string
   ): Promise<{ success: boolean; output?: string; error?: string }> {
-    // 确保连接（复用或新建）
     await ensureConnected();
 
-    // Verify connection state after initialization
     const status = agent.getStatus();
     console.log(`[executor-loop] Agent status after initialize: connected=${status.connected}, sessionId=${status.sessionId}`);
 
@@ -175,6 +200,8 @@ export function createExecutorLoop(config: ExecutorLoopConfig): { agent: Agent; 
       description,
       bdTaskId,
       observations: [],
+      epicId,
+      executionLoopId,
     };
 
     try {
@@ -220,8 +247,7 @@ export function createExecutorLoop(config: ExecutorLoopConfig): { agent: Agent; 
         if (callback) callback(error);
         return error;
       }
-      
-      // Refresh agent context with task-specific info
+
       const taskContext = buildAgentContext({
         taskId,
         taskDescription: description,

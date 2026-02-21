@@ -8,6 +8,8 @@
  * 3. 类型守卫：if (isResourceEvent(event)) { ... }
  */
 
+import type { LoopEvent, EpicEvent, ContextEvent } from '../orchestration/loop/events.js';
+
 // =============================================================================
 // 基础类型定义
 // =============================================================================
@@ -355,7 +357,10 @@ export type RuntimeEvent =
   | PhaseEvent
   | ResourceEvent
   | HumanInLoopEvent
-  | SystemEvent;
+  | SystemEvent
+  | LoopEvent
+  | EpicEvent
+  | ContextEvent;
 
 // =============================================================================
 // 事件类型常量定义（用于订阅过滤）
