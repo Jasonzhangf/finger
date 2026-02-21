@@ -166,4 +166,60 @@ describe('ModuleRegistry', () => {
       expect(routeId).toBe('route-1');
     });
   });
+
+  describe('initialize and destroy', () => {
+    it('should call module initialize hook', async () => {
+      const initFn = vi.fn();
+      const inputModule: InputModule = {
+        id: 'input-init',
+        type: 'input',
+        name: 'Init Input',
+        version: '1.0.0',
+        handle: vi.fn().mockResolvedValue({}),
+        initialize: initFn,
+      };
+
+      await registry.register(inputModule);
+      expect(initFn).toHaveBeenCalledWith(mockHub);
+    });
+
+    it('should call module destroy hook on unregister', async () => {
+      const destroyFn = vi.fn();
+      const inputModule: InputModule = {
+        id: 'input-destroy',
+        type: 'input',
+        name: 'Destroy Input',
+        version: '1.0.0',
+        handle: vi.fn().mockResolvedValue({}),
+        destroy: destroyFn,
+      };
+
+      await registry.register(inputModule);
+      await registry.unregister('input-destroy');
+      expect(destroyFn).toHaveBeenCalled();
+    });
+  });
+
+  describe('getModule', () => {
+    it('should return undefined for non-existent module', () => {
+      const result = registry.getModule('non-existent');
+      expect(result).toBeUndefined();
+    });
+  });
+
+  describe('createRoute with function pattern', () => {
+    it('should support function patterns', () => {
+      const routeId = registry.createRoute(
+        (msg) => msg.priority > 5,
+        'output-high',
+        { blocking: true, priority: 10 }
+      );
+      expect(routeId).toBe('route-1');
+    });
+
+    it('should support RegExp patterns', () => {
+      const routeId = registry.createRoute(/api\..+/, 'output-api');
+      expect(routeId).toBe('route-1');
+    });
+  });
 });
