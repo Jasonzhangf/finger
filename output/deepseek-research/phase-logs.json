@@ -1,26 +1,44 @@
 [
   {
-    "phase": "parallel_dispatch",
-    "timestamp": "2026-02-21T07:19:32.442Z",
+    "phase": "plan",
+    "timestamp": "2026-02-21T07:25:34.171Z",
     "action": "transition",
-    "checkpointId": "chk-deepseek-research-1771658322311-1771658372442"
+    "checkpointId": "chk-deepseek-research-1771658694704-1771658734171"
+  },
+  {
+    "phase": "parallel_dispatch",
+    "timestamp": "2026-02-21T07:25:55.581Z",
+    "action": "transition",
+    "checkpointId": "chk-deepseek-research-1771658694704-1771658755581"
   },
   {
     "phase": "plan",
-    "timestamp": "2026-02-21T07:19:54.689Z",
+    "timestamp": "2026-02-21T08:02:47.809Z",
     "action": "transition",
-    "checkpointId": "chk-deepseek-research-1771658322311-1771658394688"
+    "checkpointId": "chk-deepseek-research-1771658694704-1771660967807"
+  },
+  {
+    "phase": "blocked_review",
+    "timestamp": "2026-02-21T08:15:20.353Z",
+    "action": "transition",
+    "checkpointId": "chk-deepseek-research-1771658694704-1771661720352"
   },
   {
     "phase": "deliverables",
-    "timestamp": "2026-02-21T07:24:29.459Z",
+    "timestamp": "2026-02-21T08:16:00.843Z",
     "action": "transition",
-    "checkpointId": "chk-deepseek-research-1771658322311-1771658669458"
+    "checkpointId": "chk-deepseek-research-1771658694704-1771661760843"
   },
   {
-    "phase": "parallel_dispatch",
-    "timestamp": "2026-02-21T07:24:48.334Z",
+    "phase": "verify",
+    "timestamp": "2026-02-21T08:22:05.751Z",
     "action": "transition",
-    "checkpointId": "chk-deepseek-research-1771658322311-1771658688334"
+    "checkpointId": "chk-deepseek-research-1771658694704-1771662125751"
+  },
+  {
+    "phase": "plan",
+    "timestamp": "2026-02-21T08:22:30.328Z",
+    "action": "transition",
+    "checkpointId": "chk-deepseek-research-1771658694704-1771662150328"
   }
 ]
