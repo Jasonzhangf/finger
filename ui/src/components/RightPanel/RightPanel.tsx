@@ -47,10 +47,26 @@ const MessageItem = React.memo<{
   const isAgent = event.role === 'agent';
   const isSystemWithAgent = event.role === 'system' && event.agentId;
   
+  // Handle pending/confirmed/error states for user messages
+  const isPending = event.agentId === 'pending';
+  const isConfirmed = event.agentId === 'confirmed';
+  const isError = event.agentId === 'error';
+  
+  // Determine message status for visual feedback
+  const getMessageStatus = () => {
+    if (isPending) return 'pending';
+    if (isConfirmed) return 'confirmed';
+    if (isError) return 'error';
+    if (agentStatus) return agentStatus;
+    return undefined;
+  };
+  
+  const messageStatus = getMessageStatus();
+  
   return (
-    <div className={`message ${isUser ? 'user' : isAgent ? 'agent' : 'system'} ${isSelected ? 'selected' : ''}`}>
+    <div className={`message ${isUser ? 'user' : isAgent ? 'agent' : 'system'} ${isSelected ? 'selected' : ''} ${messageStatus || ''}`}>
       <div className="message-avatar">
-        {isUser ? '👤' : isAgent ? '🤖' : isSystemWithAgent ? '🤖' : 'ℹ️'}
+        {isPending ? '⏳' : isError ? '❌' : isUser ? '👤' : isAgent ? '🤖' : isSystemWithAgent ? '🤖' : 'ℹ️'}
       </div>
       <div className="message-content-wrapper">
         <div className="message-header">
@@ -71,6 +87,9 @@ const MessageItem = React.memo<{
             </>
           )}
           {isUser && <span className="sender-label">You</span>}
+          {isUser && isPending && <span className="status-indicator pending">发送中...</span>}
+          {isUser && isConfirmed && <span className="status-indicator confirmed">已发送</span>}
+          {isUser && isError && <span className="status-indicator error">发送失败</span>}
           {isSystemWithAgent && event.agentId && (
             <span className="sender-label">{event.agentName || event.agentId}</span>
           )}

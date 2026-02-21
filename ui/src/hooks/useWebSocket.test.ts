@@ -1,44 +1,31 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { renderHook, act } from '@testing-library/react';
 import { useWebSocket } from './useWebSocket.js';
+import { getWebSocket } from '../api/websocket.js';
 
-// Mock WebSocket
-class MockWebSocket {
-  static instances: MockWebSocket[] = [];
-  url: string;
-  readyState: number = WebSocket.CONNECTING;
-  onopen: ((event: Event) => void) | null = null;
-  onclose: ((event: CloseEvent) => void) | null = null;
-  onmessage: ((event: MessageEvent) => void) | null = null;
-  onerror: ((event: Event) => void) | null = null;
-
-  constructor(url: string) {
-    this.url = url;
-    MockWebSocket.instances.push(this);
-    setTimeout(() => {
-      this.readyState = WebSocket.OPEN;
-      this.onopen?.(new Event('open'));
-    }, 0);
-  }
-
-  send(data: string) {
-    if (this.readyState !== WebSocket.OPEN) {
-      throw new Error('WebSocket is not open');
-    }
-  }
-
-  close() {
-    this.readyState = WebSocket.CLOSED;
-    this.onclose?.(new CloseEvent('close'));
-  }
-}
-
-vi.stubGlobal('WebSocket', MockWebSocket);
+// Mock the WebSocketClient
+vi.mock('../api/websocket.js', () => {
+  const mockWs = {
+    connect: vi.fn().mockResolvedValue(undefined),
+    disconnect: vi.fn(),
+    send: vi.fn(),
+    isConnected: vi.fn().mockReturnValue(false),
+    onMessage: vi.fn().mockReturnValue(() => {}),
+    onError: vi.fn().mockReturnValue(() => {}),
+  };
+  
+  return {
+    WebSocketClient: vi.fn(() => mockWs),
+    getWebSocket: vi.fn(() => mockWs),
+  };
+});
 
 describe('useWebSocket', () => {
+  let mockWs: ReturnType<typeof getWebSocket>;
+
   beforeEach(() => {
-    MockWebSocket.instances = [];
     vi.clearAllMocks();
+    mockWs = getWebSocket();
   });
 
   afterEach(() => {
@@ -46,65 +33,46 @@ describe('useWebSocket', () => {
   });
 
   it('should initialize with disconnected state', () => {
-    const { result } = renderHook(() => useWebSocket('ws://localhost:8081'));
+    const onMessage = vi.fn();
+    const { result } = renderHook(() => useWebSocket(onMessage));
 
-    // Initially not connected (will connect after timeout)
     expect(result.current.isConnected).toBe(false);
   });
 
-  it('should connect to WebSocket', async () => {
-    const { result } = renderHook(() => useWebSocket('ws://localhost:8081'));
+  it('should connect to WebSocket on mount', async () => {
+    const onMessage = vi.fn();
+    renderHook(() => useWebSocket(onMessage));
 
-    await act(async () => {
-      await new Promise(resolve => setTimeout(resolve, 10));
-    });
-
-    expect(MockWebSocket.instances.length).toBe(1);
-    expect(MockWebSocket.instances[0].url).toBe('ws://localhost:8081');
+    expect(mockWs.connect).toHaveBeenCalled();
+    expect(mockWs.onMessage).toHaveBeenCalled();
   });
 
-  it('should send messages', async () => {
-    const { result } = renderHook(() => useWebSocket('ws://localhost:8081'));
-
-    await act(async () => {
-      await new Promise(resolve => setTimeout(resolve, 10));
-    });
-
-    const ws = MockWebSocket.instances[0];
-    const sendSpy = vi.spyOn(ws, 'send');
+  it('should send messages', () => {
+    const onMessage = vi.fn();
+    const { result } = renderHook(() => useWebSocket(onMessage));
 
     act(() => {
       result.current.send({ type: 'test', payload: { data: 'hello' } });
     });
 
-    expect(sendSpy).toHaveBeenCalledWith(JSON.stringify({ type: 'test', payload: { data: 'hello' } }));
+    expect(mockWs.send).toHaveBeenCalledWith({ type: 'test', payload: { data: 'hello' } });
   });
 
-  it('should handle subscriptions', async () => {
-    const { result } = renderHook(() => useWebSocket('ws://localhost:8081'));
+  it('should register message handler', () => {
+    const onMessage = vi.fn();
+    renderHook(() => useWebSocket(onMessage));
 
-    const handler = vi.fn();
-
-    act(() => {
-      result.current.subscribe(handler);
-    });
-
-    // Subscribe should register the handler
-    expect(result.current.isConnected).toBeDefined();
+    expect(mockWs.onMessage).toHaveBeenCalled();
   });
 
-  it('should close connection on unmount', async () => {
-    const { unmount } = renderHook(() => useWebSocket('ws://localhost:8081'));
-
-    await act(async () => {
-      await new Promise(resolve => setTimeout(resolve, 10));
-    });
-
-    const ws = MockWebSocket.instances[0];
-    const closeSpy = vi.spyOn(ws, 'close');
-
+  it('should unsubscribe on unmount', () => {
+    const onMessage = vi.fn();
+    const unsubscribe = vi.fn();
+    (mockWs.onMessage as ReturnType<typeof vi.fn>).mockReturnValue(unsubscribe);
+    
+    const { unmount } = renderHook(() => useWebSocket(onMessage));
     unmount();
 
-    expect(closeSpy).toHaveBeenCalled();
+    expect(unsubscribe).toHaveBeenCalled();
   });
 });

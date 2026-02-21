@@ -229,8 +229,8 @@ export const OrchestrationCanvas = ({
       </div>
 
       <ResourcePoolPanel
-        availableResources={availableResources.map((r) => ({ id: r.id, name: r.config?.name || r.id, type: r.id.includes('orchestrator') ? 'orchestrator' : 'executor', status: r.status }))}
-        deployedResources={deployedResources.map((r) => ({ id: r.id, name: r.config?.name || r.id, type: r.id.includes('orchestrator') ? 'orchestrator' : 'executor', status: r.status }))}
+        availableResources={(availableResources || []).map((r) => ({ id: r.id, name: r.config?.name || r.id, type: r.id.includes('orchestrator') ? 'orchestrator' : 'executor', status: r.status }))}
+        deployedResources={(deployedResources || []).map((r) => ({ id: r.id, name: r.config?.name || r.id, type: r.id.includes('orchestrator') ? 'orchestrator' : 'executor', status: r.status }))}
         hidden={false}
         onDeploy={(resourceId) => {
           if (!executionState) return;

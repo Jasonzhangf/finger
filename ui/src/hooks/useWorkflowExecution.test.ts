@@ -1,7 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { renderHook, act } from '@testing-library/react';
 import { useWorkflowExecution } from './useWorkflowExecution.js';
-import type { WsMessage, WorkflowUpdatePayload, AgentUpdatePayload } from '../api/types.js';
 
 // Mock useWebSocket
 vi.mock('./useWebSocket.js', () => ({
@@ -12,9 +11,17 @@ vi.mock('./useWebSocket.js', () => ({
   }),
 }));
 
+// Mock fetch API
+vi.mock('../api/client.js', () => ({
+  fetch: vi.fn(),
+}));
+
 describe('useWorkflowExecution', () => {
-  beforeEach(() => {
+  let mockFetch: ReturnType<typeof vi.fn>;
+
+  beforeEach(async () => {
     vi.clearAllMocks();
+    mockFetch = vi.mocked((await import('../api/client.js')).fetch);
   });
 
   it('should initialize with empty state', () => {
@@ -38,18 +45,21 @@ describe('useWorkflowExecution', () => {
   });
 
   it('should start workflow and update state', async () => {
+    mockFetch.mockResolvedValue({
+      ok: true,
+      json: async () => ({ success: true }),
+    });
+
     const { result } = renderHook(() => useWorkflowExecution('test-session'));
 
     await act(async () => {
       await result.current.startWorkflow('Test task');
     });
 
-    // After starting, isLoading should be false
     expect(result.current.isLoading).toBe(false);
   });
 
   it('should infer agent type from agentId', () => {
-    // Testing internal helper via behavior
     const { result } = renderHook(() => useWorkflowExecution('test-session'));
 
     expect(result.current.getAgentDetail('non-existent')).toBeNull();
@@ -75,19 +85,97 @@ describe('useWorkflowExecution', () => {
     expect(result.current.isLoading).toBe(false);
   });
 
-  it('should send user input', async () => {
+  it('should send user input with text field', async () => {
+    mockFetch.mockResolvedValue({
+      ok: true,
+      json: async () => ({ success: true, message: 'OK' }),
+    });
+
     const { result } = renderHook(() => useWorkflowExecution('test-session'));
 
     await act(async () => {
-      await result.current.sendUserInput({ content: 'Test input' });
+      await result.current.sendUserInput({ text: 'Test input' });
     });
 
-    expect(result.current.isLoading).toBe(false);
+    // Should have the user message
+    expect(result.current.runtimeEvents.some(e => e.role === 'user' && e.content === 'Test input')).toBe(true);
   });
 
   it('should report connection status', () => {
     const { result } = renderHook(() => useWorkflowExecution('test-session'));
 
     expect(result.current.isConnected).toBe(true);
+  });
+  
+  describe('sendUserInput pending/confirmed/error flow', () => {
+    it('should insert pending event before API call', async () => {
+      mockFetch.mockResolvedValue({
+        ok: true,
+        json: async () => ({ success: true, message: 'OK' }),
+      });
+      
+      const { result } = renderHook(() => useWorkflowExecution('test-session'));
+      
+      await act(async () => {
+        await result.current.sendUserInput({ text: 'Test pending' });
+      });
+      
+      // Should have the user message with pending status (no real workflow yet)
+      const userEvent = result.current.runtimeEvents.find(
+        (e) => e.role === 'user' && e.content === 'Test pending'
+      );
+      expect(userEvent).toBeDefined();
+      expect(userEvent?.agentId).toBe('pending');
+      
+      // Should also have updated user rounds
+      expect(result.current.userRounds.length).toBeGreaterThan(0);
+    });
+    
+    it('should handle user input when workflow exists', async () => {
+      mockFetch.mockResolvedValue({
+        ok: true,
+        json: async () => ({ success: true, message: 'OK' }),
+      });
+      
+      const { result } = renderHook(() => useWorkflowExecution('test-session'));
+      
+      // First start a workflow (this creates pending workflow state)
+      await act(async () => {
+        await result.current.startWorkflow('Setup workflow');
+      });
+      
+      // At this point executionState exists but workflowId starts with 'pending-'
+      // so sendUserInput will trigger startWorkflow again
+      await act(async () => {
+        await result.current.sendUserInput({ text: 'Test with workflow' });
+      });
+      
+      // Should have both events
+      const events = result.current.runtimeEvents.filter(e => e.role === 'user');
+      expect(events.length).toBeGreaterThanOrEqual(1);
+    });
+    
+    it('should allow sending multiple messages', async () => {
+      mockFetch.mockResolvedValue({
+        ok: true,
+        json: async () => ({ success: true }),
+      });
+      
+      const { result } = renderHook(() => useWorkflowExecution('test-session'));
+      
+      // Send first message
+      await act(async () => {
+        await result.current.sendUserInput({ text: 'First' });
+      });
+      
+      // Send second message
+      await act(async () => {
+        await result.current.sendUserInput({ text: 'Second' });
+      });
+      
+      // Both events should be present
+      expect(result.current.runtimeEvents.filter((e) => e.role === 'user')).toHaveLength(2);
+      expect(result.current.userRounds).toHaveLength(2);
+    });
   });
 });

@@ -522,53 +522,91 @@ const sendUserInput = useCallback(
     const text = inputPayload.text.trim();
     if (!text && (!inputPayload.images || inputPayload.images.length === 0)) return;
 
-     const eventTime = new Date().toISOString();
-     setRuntimeEvents((prev) =>
-       pushEvent(prev, {
-         role: 'user',
-         content: text || '[图片输入]',
-         images: inputPayload.images,
-         timestamp: eventTime,
-       }),
-     );
+    const eventTime = new Date().toISOString();
+    const roundId = `user-round-${Date.now()}`;
 
-      setUserRounds((prev) => [
-        ...prev,
-        {
-          roundId: `user-round-${prev.length + 1}`,
-          timestamp: eventTime,
-          summary: text ? (text.length > 24 ? `${text.slice(0, 24)}...` : text) : '[图片输入]',
-          fullText: text,
-          images: inputPayload.images,
-        },
-      ]);
+    // 1. 先本地插入 pending 状态的用户事件（立即可见）
+    setRuntimeEvents((prev) =>
+      pushEvent(prev, {
+        role: 'user',
+        content: text || '[图片输入]',
+        images: inputPayload.images,
+        timestamp: eventTime,
+        kind: 'status',
+        agentId: 'pending',
+      }),
+    );
 
-      // Check if executionState is empty/placeholder or has a real workflow
-      const hasRealWorkflow = executionState && !executionState.workflowId.startsWith('empty-') && !executionState.workflowId.startsWith('pending-');
-      if (!hasRealWorkflow) {
-        if (text) {
-          await startWorkflow(text);
-        }
-        return;
+    // 2. 同步更新用户轮次
+    setUserRounds((prev) => [
+      ...prev,
+      {
+        roundId,
+        timestamp: eventTime,
+        summary: text ? (text.length > 24 ? `${text.slice(0, 24)}...` : text) : '[图片输入]',
+        fullText: text,
+        images: inputPayload.images,
+      },
+    ]);
+
+    // 3. 检查是否需要启动新 workflow
+    const hasRealWorkflow = executionState && !executionState.workflowId.startsWith('empty-') && !executionState.workflowId.startsWith('pending-');
+    if (!hasRealWorkflow) {
+      if (text) {
+        await startWorkflow(text);
+      }
+      return;
+    }
+
+    // 4. 发送 API 请求
+    try {
+      const res = await fetch('/api/v1/workflow/input', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          workflowId: executionState.workflowId,
+          input: text || '[图片输入]',
+        }),
+      });
+
+      if (!res.ok) {
+        throw new Error(`HTTP ${res.status}`);
       }
 
-      try {
-        await fetch('/api/v1/workflow/input', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            workflowId: executionState.workflowId,
-            input: text || '[图片输入]',
-          }),
-        });
+      // 5. API 成功：更新事件状态为 confirmed
+      setRuntimeEvents((prev) =>
+        prev.map((e) =>
+          e.role === 'user' && e.timestamp === eventTime
+            ? { ...e, agentId: 'confirmed' }
+            : e
+        ),
+      );
 
-        setExecutionState((prev) => (prev ? { ...prev, userInput: text } : prev));
-      } catch {
-        // ignore input failure in UI
-      }
-    },
-    [executionState, startWorkflow],
-  );
+      setExecutionState((prev) => (prev ? { ...prev, userInput: text } : prev));
+    } catch (err) {
+      // 6. API 失败：更新事件为 error 并追加错误事件
+      setRuntimeEvents((prev) =>
+        prev.map((e) =>
+          e.role === 'user' && e.timestamp === eventTime
+            ? { ...e, agentId: 'error', kind: 'status' }
+            : e
+        ),
+      );
+
+      const errorMsg = err instanceof Error ? err.message : '发送失败';
+      setRuntimeEvents((prev) =>
+        pushEvent(prev, {
+          role: 'system',
+          content: `发送失败：${errorMsg}`,
+          timestamp: new Date().toISOString(),
+          kind: 'status',
+          agentId: 'error',
+        }),
+      );
+    }
+  },
+  [executionState, startWorkflow],
+);
 
   const getAgentDetail = useCallback(
     (agentId: string): AgentExecutionDetail | null => {

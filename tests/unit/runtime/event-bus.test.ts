@@ -1,6 +1,13 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { UnifiedEventBus } from '../../../src/runtime/event-bus.js';
 import type { RuntimeEvent } from '../../../src/runtime/events.js';
+import { WebSocket } from 'ws';
+
+// Mock fs/promises for persistence
+vi.mock('fs/promises', () => ({
+  appendFile: vi.fn(),
+  mkdir: vi.fn().mockResolvedValue(undefined),
+}));
 
 describe('UnifiedEventBus', () => {
   let bus: UnifiedEventBus;
@@ -9,56 +16,195 @@ describe('UnifiedEventBus', () => {
     bus = new UnifiedEventBus();
   });
 
-  it('subscribes and receives events', () => {
-    const received: RuntimeEvent[] = [];
-    bus.subscribe('test_event', (e) => received.push(e));
+  describe('subscribe', () => {
+    it('subscribes and receives events', () => {
+      const received: RuntimeEvent[] = [];
+      bus.subscribe('test_event', (e) => received.push(e));
 
-    bus.emit({
-      type: 'test_event' as any,
-      sessionId: 's1',
-      timestamp: new Date().toISOString(),
-      payload: { data: 'hello' },
+      bus.emit({
+        type: 'test_event' as any,
+        sessionId: 's1',
+        timestamp: new Date().toISOString(),
+        payload: { data: 'hello' },
+      });
+
+      expect(received).toHaveLength(1);
+      expect(received[0].sessionId).toBe('s1');
     });
 
-    expect(received).toHaveLength(1);
-    expect(received[0].sessionId).toBe('s1');
+    it('returns unsubscribe function', () => {
+      const received: RuntimeEvent[] = [];
+      const unsub = bus.subscribe('test', (e) => received.push(e));
+
+      bus.emit({ type: 'test' as any, sessionId: 's1', timestamp: '', payload: {} });
+      expect(received).toHaveLength(1);
+
+      unsub();
+      bus.emit({ type: 'test' as any, sessionId: 's1', timestamp: '', payload: {} });
+      expect(received).toHaveLength(1);
+    });
   });
 
-  it('subscribes to multiple events', () => {
-    const received: RuntimeEvent[] = [];
-    bus.subscribeMultiple(['event_a', 'event_b'], (e) => received.push(e));
+  describe('subscribeMultiple', () => {
+    it('subscribes to multiple events', () => {
+      const received: RuntimeEvent[] = [];
+      bus.subscribeMultiple(['event_a', 'event_b'], (e) => received.push(e));
 
-    bus.emit({ type: 'event_a' as any, sessionId: 's1', timestamp: '', payload: {} });
-    bus.emit({ type: 'event_b' as any, sessionId: 's1', timestamp: '', payload: {} });
-    bus.emit({ type: 'event_c' as any, sessionId: 's1', timestamp: '', payload: {} });
+      bus.emit({ type: 'event_a' as any, sessionId: 's1', timestamp: '', payload: {} });
+      bus.emit({ type: 'event_b' as any, sessionId: 's1', timestamp: '', payload: {} });
+      bus.emit({ type: 'event_c' as any, sessionId: 's1', timestamp: '', payload: {} });
 
-    expect(received).toHaveLength(2);
+      expect(received).toHaveLength(2);
+    });
   });
 
-  it('stores history', () => {
-    bus.emit({ type: 'e1' as any, sessionId: 's1', timestamp: '', payload: {} });
-    bus.emit({ type: 'e2' as any, sessionId: 's1', timestamp: '', payload: {} });
+  describe('subscribeAll', () => {
+    it('subscribes to all events via wildcard', () => {
+      const received: RuntimeEvent[] = [];
+      bus.subscribeAll((e) => received.push(e));
 
-    expect(bus.getHistory()).toHaveLength(2);
+      bus.emit({ type: 'event_a' as any, sessionId: 's1', timestamp: '', payload: {} });
+      bus.emit({ type: 'event_b' as any, sessionId: 's1', timestamp: '', payload: {} });
+
+      expect(received).toHaveLength(2);
+    });
   });
 
-  it('filters session history', () => {
-    bus.emit({ type: 'e1' as any, sessionId: 's1', timestamp: '', payload: {} });
-    bus.emit({ type: 'e2' as any, sessionId: 's2', timestamp: '', payload: {} });
-    bus.emit({ type: 'e3' as any, sessionId: 's1', timestamp: '', payload: {} });
+  describe('history', () => {
+    it('stores history', () => {
+      bus.emit({ type: 'e1' as any, sessionId: 's1', timestamp: '', payload: {} });
+      bus.emit({ type: 'e2' as any, sessionId: 's1', timestamp: '', payload: {} });
 
-    expect(bus.getSessionHistory('s1')).toHaveLength(2);
+      expect(bus.getHistory()).toHaveLength(2);
+    });
+
+    it('filters session history', () => {
+      bus.emit({ type: 'e1' as any, sessionId: 's1', timestamp: '', payload: {} });
+      bus.emit({ type: 'e2' as any, sessionId: 's2', timestamp: '', payload: {} });
+      bus.emit({ type: 'e3' as any, sessionId: 's1', timestamp: '', payload: {} });
+
+      expect(bus.getSessionHistory('s1')).toHaveLength(2);
+    });
+
+    it('limits history', () => {
+      bus.emit({ type: 'e1' as any, sessionId: 's1', timestamp: '', payload: {} });
+      bus.emit({ type: 'e2' as any, sessionId: 's1', timestamp: '', payload: {} });
+      bus.emit({ type: 'e3' as any, sessionId: 's1', timestamp: '', payload: {} });
+
+      const history = bus.getHistory(2);
+      expect(history).toHaveLength(2);
+      expect(history[0].type).toBe('e2');
+    });
+
+    it('filters history by type', () => {
+      bus.emit({ type: 'type_a' as any, sessionId: 's1', timestamp: '', payload: {} });
+      bus.emit({ type: 'type_b' as any, sessionId: 's1', timestamp: '', payload: {} });
+      bus.emit({ type: 'type_a' as any, sessionId: 's1', timestamp: '', payload: {} });
+
+      const history = bus.getHistoryByType('type_a');
+      expect(history).toHaveLength(2);
+    });
+
+    it('clears history', () => {
+      bus.emit({ type: 'e1' as any, sessionId: 's1', timestamp: '', payload: {} });
+      bus.clearHistory();
+      expect(bus.getHistory()).toHaveLength(0);
+    });
   });
 
-  it('returns unsubscribe function', () => {
-    const received: RuntimeEvent[] = [];
-    const unsub = bus.subscribe('test', (e) => received.push(e));
+  describe('getStats', () => {
+    it('returns correct stats', () => {
+      bus.subscribe('test', () => {});
+      bus.subscribe('test', () => {});
+      bus.subscribe('other', () => {});
 
-    bus.emit({ type: 'test' as any, sessionId: 's1', timestamp: '', payload: {} });
-    expect(received).toHaveLength(1);
+      const stats = bus.getStats();
+      expect(stats.totalHandlers).toBe(3);
+      expect(stats.wsClients).toBe(0);
+      expect(stats.eventsEmitted).toBe(0);
+    });
+  });
 
-    unsub();
-    bus.emit({ type: 'test' as any, sessionId: 's1', timestamp: '', payload: {} });
-    expect(received).toHaveLength(1); // still 1, unsubscribed
+  describe('clear', () => {
+    it('clears all handlers and history', () => {
+      bus.subscribe('test', () => {});
+      bus.emit({ type: 'test' as any, sessionId: 's1', timestamp: '', payload: {} });
+      
+      bus.clear();
+      
+      expect(bus.getHistory()).toHaveLength(0);
+      expect(bus.getStats().totalHandlers).toBe(0);
+    });
+  });
+
+  describe('getSupportedGroups', () => {
+    it('returns array of groups', () => {
+      const groups = bus.getSupportedGroups();
+      expect(Array.isArray(groups)).toBe(true);
+      expect(groups.length).toBeGreaterThan(0);
+    });
+  });
+
+  describe('getSupportedTypes', () => {
+    it('returns array of types', () => {
+      const types = bus.getSupportedTypes();
+      expect(Array.isArray(types)).toBe(true);
+      expect(types.length).toBeGreaterThan(0);
+    });
+  });
+
+  describe('WebSocket clients', () => {
+    it('registers and removes ws clients', () => {
+      const mockWs = { readyState: 1, on: vi.fn(), send: vi.fn() } as unknown as WebSocket;
+      bus.registerWsClient(mockWs);
+      
+      const stats = bus.getStats();
+      expect(stats.wsClients).toBe(1);
+      
+      bus.removeWsClient(mockWs);
+      expect(bus.getStats().wsClients).toBe(0);
+    });
+
+    it('sets ws client filter', () => {
+      const mockWs = { readyState: 1, on: vi.fn(), send: vi.fn() } as unknown as WebSocket;
+      bus.registerWsClient(mockWs);
+      bus.setWsClientFilter(mockWs, { types: ['task_started'], groups: ['RESOURCE'] });
+      
+      // Should complete without error
+      expect(true).toBe(true);
+    });
+  });
+
+  describe('persistence', () => {
+    it('enables persistence', () => {
+      bus.enablePersistence('test-session');
+      const stats = bus.getStats();
+      expect(stats.persistenceEnabled).toBe(true);
+    });
+
+    it('disables persistence', () => {
+      bus.enablePersistence('test-session');
+      bus.disablePersistence();
+      const stats = bus.getStats();
+      expect(stats.persistenceEnabled).toBe(false);
+    });
+  });
+
+  describe('error handling', () => {
+    it('handles handler errors gracefully', () => {
+      const errorHandler = () => {
+        throw new Error('Handler error');
+      };
+      const successHandler = vi.fn();
+      
+      bus.subscribe('test', errorHandler);
+      bus.subscribe('test', successHandler);
+      
+      // Should not throw
+      bus.emit({ type: 'test' as any, sessionId: 's1', timestamp: '', payload: {} });
+      
+      // Second handler should still be called
+      expect(successHandler).toHaveBeenCalled();
+    });
   });
 });

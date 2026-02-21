@@ -26,7 +26,7 @@ export interface ProcessAdapter {
   isPidRunning: (pid: number) => boolean;
   killProcess: (id: string, reason: string) => void;
   registerProcess: (id: string, process: ChildProcess, type: string, metadata: Record<string, unknown>) => void;
-  cleanupOrphans: () => { killed: string[]; errors: Error[] };
+  cleanupOrphans: () => { killed: string[]; errors: string[] };
 }
 
 /**
