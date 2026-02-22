@@ -556,16 +556,22 @@ const sendUserInput = useCallback(
     // 3. 检查是否需要启动新 workflow
     const hasRealWorkflow = executionState && !executionState.workflowId.startsWith('empty-') && !executionState.workflowId.startsWith('pending-');
     if (!hasRealWorkflow) {
-      if (text) {
-        await startWorkflow(text);
+      if (text && startWorkflow) {
+        try {
+          await startWorkflow(text);
+        } catch (startErr) {
+          // Keep UI responsive even if backend start call is unstable.
+          console.error('[sendUserInput] startWorkflow error:', startErr);
+        }
       }
-      setRuntimeEvents((prev) =>
-        prev.map((e) =>
-          e.role === 'user' && e.timestamp === eventTime
-            ? { ...e, agentId: 'confirmed' }
-            : e,
-        ),
-      );
+
+      setRuntimeEvents((prev) => {
+        const idx = prev.findIndex((e) => e.role === 'user' && e.timestamp === eventTime);
+        if (idx < 0) return prev;
+        const updated = [...prev];
+        updated[idx] = { ...updated[idx], agentId: 'confirmed' };
+        return updated;
+      });
       return;
     }
 

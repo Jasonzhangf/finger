@@ -65,7 +65,7 @@ export function useResourcePool(): UseResourcePoolReturn {
           ...r,
           config: {
             id: config.id || r.id,
-            name: config.name || r.name || r.id || 'unnamed',
+            name: config?.name || r?.name || r?.id || 'unnamed',
             mode: config.mode || 'auto',
             provider: config.provider || 'iflow',
             ...config
