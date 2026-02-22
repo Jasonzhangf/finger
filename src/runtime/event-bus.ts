@@ -125,6 +125,7 @@ export class UnifiedEventBus {
    */
   private broadcastToWsClients(event: RuntimeEvent): void {
     const msg = JSON.stringify(event);
+    console.log(`[EventBus] Broadcasting event: ${event.type}`, JSON.stringify(event).substring(0, 200));
     this.wsClients.forEach(ws => {
       try {
         if (ws.readyState === WebSocket.OPEN) {
@@ -153,6 +154,7 @@ export class UnifiedEventBus {
             if (!shouldSend) return;
           }
           
+          console.log(`[EventBus] Sending to client: ${event.type}`);
           ws.send(msg);
         }
       } catch (err) {
