@@ -420,7 +420,6 @@ export const DIALOG_EVENT_TYPES = [
   'user_message',
   'assistant_chunk',
   'assistant_complete',
-  'agent_step_completed',
 ] as const;
 
 /** Progress 事件类型集合 */

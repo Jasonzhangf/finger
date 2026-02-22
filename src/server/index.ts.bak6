@@ -1339,7 +1339,7 @@ globalEventBus.subscribe(
     const wsMsg = {
       type: 'agent_update',
       payload: {
-        agentId: ('agentId' in event ? (event as { agentId?: string }).agentId : undefined) || event.sessionId,
+        agentId: event.agentId || event.sessionId,
         status: (payload?.success as boolean) !== false ? 'running' : 'error',
         currentTaskId: payload?.taskId as string | undefined,
         load: 50,

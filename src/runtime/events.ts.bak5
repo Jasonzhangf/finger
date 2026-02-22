@@ -204,6 +204,7 @@ export interface AssistantChunkEvent extends BaseEvent {
 
 export interface AssistantCompleteEvent extends BaseEvent {
   type: 'assistant_complete';
+  'agent_step_completed',
   agentId: string;
   payload: {
     messageId: string;

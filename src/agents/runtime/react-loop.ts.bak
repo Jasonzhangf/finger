@@ -290,23 +290,6 @@ export class ReActLoop {
         timestamp: new Date().toISOString(),
       };
       this.sessionLogger?.addIteration(sessionIteration);
-
-      // Emit iteration event to EventBus for real-time UI updates
-      const stateLike = this.state as ReActState & { epicId?: string; workflowId?: string };
-      globalEventBus.emit({
-        type: 'agent_step_completed',
-        sessionId: stateLike.epicId || stateLike.workflowId || this.config.agentId || 'unknown',
-        agentId: this.config.agentId || 'unknown-agent',
-        timestamp: new Date().toISOString(),
-        payload: {
-          round,
-          thought: proposal.thought,
-          action: proposal.action,
-          observation: result.observation,
-          success: result.success,
-        },
-      });
-
       
       // 6. 检查停止条件
       const stopCheck = this.checkStopConditions();

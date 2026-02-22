@@ -212,23 +212,10 @@ export interface AssistantCompleteEvent extends BaseEvent {
   };
 }
 
-export interface AgentStepCompletedEvent extends BaseEvent {
-  type: 'agent_step_completed';
-  agentId: string;
-  payload: {
-    round: number;
-    thought: string;
-    action: string;
-    observation?: string;
-    success: boolean;
-  };
-}
-
 export type DialogEvent =
   | UserMessageEvent
   | AssistantChunkEvent
-  | AssistantCompleteEvent
-  | AgentStepCompletedEvent;
+  | AssistantCompleteEvent;
 
 // =============================================================================
 // Progress 事件
@@ -420,7 +407,6 @@ export const DIALOG_EVENT_TYPES = [
   'user_message',
   'assistant_chunk',
   'assistant_complete',
-  'agent_step_completed',
 ] as const;
 
 /** Progress 事件类型集合 */
