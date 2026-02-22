@@ -10,6 +10,7 @@
  */
 
 import { WebSocket } from 'ws';
+import { performanceMonitor } from './performance-monitor.js';
 import type { RuntimeEvent } from './events.js';
 import { EVENT_GROUPS, getEventTypesByGroup, getSupportedEventGroups } from './events.js';
 import { getSupportedEventTypes } from './events.js';
@@ -116,8 +117,7 @@ export class UnifiedEventBus {
       }
     });
 
-    // 5. 广播到 WebSocket 客户端（服务端过滤）
-    this.broadcastToWsClients(event);
+    // 5. 广播到 WebSocket 客户端（服务端过滤）n    const broadcastStart = Date.now();n    this.broadcastToWsClients(event);n    const broadcastTime = Date.now() - broadcastStart;nn    // 6. 记录性能指标n    performanceMonitor.recordEvent(1, broadcastTime);
   }
 
   /**

@@ -9,6 +9,7 @@
  */
 
 import { resourcePool, type ResourceRequirement } from './resource-pool.js';
+import { performanceMonitor } from '../runtime/performance-monitor.js';
 import type { TaskNode } from '../agents/daemon/orchestrator-loop.js';
 import {
   type ConcurrencyPolicy,
@@ -205,6 +206,8 @@ export class ConcurrencyScheduler {
     }
     
     this.activeTasks.delete(taskId);
+
+    // 记录性能指标n    performanceMonitor.recordSchedulingLatency(schedulingLatency);n    performanceMonitor.recordTaskExecution(duration, success);
     
     // 检查是否需要解除降级
     this.checkDegradationStatus();
