@@ -1,5 +1,4 @@
 import React, { useMemo } from 'react';
-import { OrchestrationCanvas } from '../OrchestrationCanvas/OrchestrationCanvas.js';
 import { ChatInterface } from '../ChatInterface/ChatInterface.js';
 import { AppLayout } from '../layout/AppLayout.js';
 import { LeftSidebar } from '../LeftSidebar/LeftSidebar.js';
@@ -7,30 +6,23 @@ import { BottomPanel } from '../BottomPanel/BottomPanel.js';
 import { useWorkflowExecution } from '../../hooks/useWorkflowExecution.js';
 import { useAgents } from '../../hooks/useAgents.js';
 import { useSessions } from '../../hooks/useSessions.js';
-import type { UserInputPayload } from '../../api/types.js';
+import { TaskFlowCanvas } from '../TaskFlowCanvas/TaskFlowCanvas.js';
+import type { Loop } from '../TaskFlowCanvas/types.js';
 
 export const WorkflowContainer: React.FC = () => {
   const { currentSession, sessions } = useSessions();
   const sessionId = currentSession?.id || (sessions.length > 0 ? sessions[0].id : 'default-session');
-  const [inspectSignal, setInspectSignal] = React.useState(0);
-  const [inspectAgentId, setInspectAgentId] = React.useState<string | null>(null);
 
- const {
-   executionState,
-   runtimeEvents,
-   userRounds,
-   executionRounds,
-   selectedAgentId,
-   setSelectedAgentId,
-   isLoading,
-   error,
-   pauseWorkflow,
-   resumeWorkflow,
-   sendUserInput,
-   getAgentDetail,
-   getTaskReport,
-   isConnected,
- } = useWorkflowExecution(sessionId);
+  const {
+    executionState,
+    runtimeEvents,
+    isLoading,
+    error,
+    pauseWorkflow,
+    resumeWorkflow,
+    sendUserInput,
+    isConnected,
+  } = useWorkflowExecution(sessionId);
 
   const { agents: agentModules } = useAgents();
 
@@ -48,22 +40,12 @@ export const WorkflowContainer: React.FC = () => {
       }));
   }, [executionState, agentModules]);
 
-  const handleSendMessage = React.useCallback(async (payload: UserInputPayload) => {
-    await sendUserInput(payload);
-  }, [sendUserInput]);
-
-  const handleInspectAgent = React.useCallback((agentId: string) => {
-    setSelectedAgentId(agentId);
-    setInspectAgentId(agentId);
-    setInspectSignal((value) => value + 1);
-  }, [setSelectedAgentId]);
-
   if (isLoading) {
     return (
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100vh', width: '100vw', background: '#0e1217', color: '#9ca3af' }}>
         <div>
           <div style={{ fontSize: '24px', marginBottom: '16px' }}>⏳</div>
-          <div>Loading workflow runtime...</div>
+          <div>加载中...</div>
         </div>
       </div>
     );
@@ -80,33 +62,45 @@ export const WorkflowContainer: React.FC = () => {
     );
   }
 
+  const taskFlowProps = React.useMemo(() => {
+    const planHistory: Loop[] = [];
+    const designHistory: Loop[] = [];
+    const executionHistory: Loop[] = [];
+    const queue: Loop[] = [];
+
+    return {
+      epicId: executionState?.workflowId || 'new-workflow',
+      planHistory,
+      designHistory,
+      executionHistory,
+      runningLoop: undefined,
+      queue,
+    };
+  }, [executionState?.workflowId]);
+
   const canvasElement = useMemo(() => (
-    <OrchestrationCanvas
-      executionState={executionState}
-      agents={runtimeAgents}
-      userRounds={userRounds}
-      executionRounds={executionRounds}
-      onDeployAgent={async () => {}}
-      getAgentDetail={getAgentDetail}
-      getTaskReport={getTaskReport}
-      selectedAgentId={selectedAgentId}
-      inspectRequest={inspectAgentId ? { agentId: inspectAgentId, signal: inspectSignal } : null}
+    <TaskFlowCanvas
+      epicId={taskFlowProps.epicId}
+      planHistory={taskFlowProps.planHistory}
+      designHistory={taskFlowProps.designHistory}
+      executionHistory={taskFlowProps.executionHistory}
+      runningLoop={taskFlowProps.runningLoop}
+      queue={taskFlowProps.queue}
     />
-  ), [executionState, runtimeAgents, userRounds, executionRounds, getAgentDetail, getTaskReport, selectedAgentId, inspectAgentId, inspectSignal]);
+  ), [taskFlowProps]);
 
   const rightPanelElement = useMemo(() => (
     <ChatInterface
       executionState={executionState}
       agents={runtimeAgents}
       events={runtimeEvents}
-      onSendMessage={handleSendMessage}
+      onSendMessage={sendUserInput}
       onPause={pauseWorkflow}
       onResume={resumeWorkflow}
       isPaused={executionState?.paused || false}
       isConnected={isConnected}
-      onAgentClick={handleInspectAgent}
     />
-  ), [executionState, runtimeAgents, runtimeEvents, handleSendMessage, pauseWorkflow, resumeWorkflow, isConnected, handleInspectAgent]);
+  ), [executionState, runtimeAgents, runtimeEvents, sendUserInput, pauseWorkflow, resumeWorkflow, isConnected]);
 
   return (
     <AppLayout

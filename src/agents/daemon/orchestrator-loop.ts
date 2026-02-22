@@ -11,6 +11,7 @@ import { globalEventBus } from '../../runtime/event-bus.js';
 import { runtimeInstructionBus } from '../../orchestration/runtime-instruction-bus.js';
 import { resumableSessionManager, determineResumePhase, type TaskProgress } from '../../orchestration/resumable-session.js';
 import { resourcePool, type ResourceRequirement } from '../../orchestration/resource-pool.js';
+import { concurrencyScheduler } from '../../orchestration/concurrency-scheduler.js';
 import { sharedWorkflowManager as workflowManager } from '../../orchestration/shared-instances.js';
 import { buildAgentContext, generateDynamicSystemPrompt } from '../../orchestration/agent-context.js';
 

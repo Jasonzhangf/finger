@@ -180,6 +180,7 @@ export class ResourcePool {
   checkResourceRequirements(requirements: ResourceRequirement[]): {
     satisfied: boolean;
     missingResources: ResourceRequirement[];
+    satisfiedResources: ResourceInstance[];
     availableResources: ResourceInstance[];
   } {
     const missingResources: ResourceRequirement[] = [];
@@ -209,6 +210,7 @@ export class ResourcePool {
 
     return {
       satisfied: missingResources.length === 0,
+      satisfiedResources: availableResources,
       missingResources,
       availableResources,
     };
