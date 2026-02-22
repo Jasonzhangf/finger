@@ -176,10 +176,29 @@ export class ReActLoop {
       this.logToConsole('📋 Session logger', { sessionId: this.sessionLogger.getSessionId() });
     }
 
+    // Check for runtime instructions before each round
+    const checkRuntimeInstructions = async (): Promise<string[]> => {
+      try {
+        const { runtimeInstructionBus } = await import('../../orchestration/runtime-instruction-bus.js');
+        const stateLike = this.state as ReActState & { epicId?: string; workflowId?: string };
+        const keys = [this.config.agentId, stateLike.epicId, stateLike.workflowId].filter(Boolean) as string[];
+        const collected: string[] = [];
+        for (const key of keys) collected.push(...runtimeInstructionBus.consume(key));
+        return collected.filter((v, i, a) => a.indexOf(v) === i);
+      } catch { return []; }
+    };
+
     while (true) {
       const round = this.state.iterations.length + 1;
       
       this.logToConsole(`💭 Round ${round}: Generating proposal...`);
+      
+      // Check for new user input before generating proposal
+      const newInstructions = await checkRuntimeInstructions();
+      if (newInstructions.length > 0) {
+        this.logToConsole(`📬 New runtime instructions (Round ${round})`, { instructions: newInstructions });
+        // Instructions will be included in the next prompt via runtimeInstructions parameter
+      }
       
       // 1. Planner 产出方案
       let proposal: ActionProposal;
