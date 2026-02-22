@@ -1020,13 +1020,16 @@ async function runLoop(userTask: string): Promise<unknown> {
       initPromise = null;
     },
     handle: async (message: unknown, callback?: (result: unknown) => void) => {
+      console.log('[OrchestratorLoop.handle] Received message:', JSON.stringify(message).substring(0, 100));
       const msg = message as Record<string, unknown>;
       const userTask = String(msg.content ?? msg.task ?? msg.text ?? '');
       if (!userTask) {
+        console.log('[OrchestratorLoop.handle] No task content');
         const error = { success: false, error: 'No task content' };
         if (callback) callback(error);
         return error;
       }
+      console.log('[OrchestratorLoop.handle] Starting runLoop with task:', userTask.substring(0, 50));
       try {
         const result = await runLoop(userTask);
         const wrapped = { success: true, result };

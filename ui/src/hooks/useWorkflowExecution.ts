@@ -201,7 +201,7 @@ export function useWorkflowExecution(sessionId: string): UseWorkflowExecutionRet
       setRuntimeEvents((prev) =>
         pushEvent(prev, {
           role: 'system',
-          content: payload.status ? `Workflow 状态更新: ${payload.status}` : `Workflow 更新: Round ${payload.orchestratorState?.round ?? ""}`,
+          content: payload.status ? `Workflow 状态更新: ${payload.status}` : `Workflow 更新: Round ${payload.orchestratorState?.round ?? payload.round ?? '-'}`,
           timestamp: new Date().toISOString(),
           kind: 'status',
           agentId: 'orchestrator',

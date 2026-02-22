@@ -275,6 +275,7 @@ export interface UserInputPayload {
 export interface WorkflowUpdatePayload {
   workflowId: string;
   status: WorkflowStatus;
+  round?: number;
   orchestratorState?: {
     round: number;
     thought?: string;
