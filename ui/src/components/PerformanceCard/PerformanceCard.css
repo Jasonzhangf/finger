@@ -1,0 +1,121 @@
+.performance-card {
+  position: absolute;
+  top: 16px;
+  left: 16px;
+  width: 280px;
+  background: rgba(15, 23, 42, 0.92);
+  border: 1px solid rgba(148, 163, 184, 0.24);
+  border-radius: 12px;
+  padding: 16px;
+  color: #e2e8f0;
+  font-size: 13px;
+  backdrop-filter: blur(12px);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+  z-index: 100;
+  transition: opacity 0.3s ease;
+}
+
+.performance-card.collapsed {
+  opacity: 0.6;
+}
+
+.performance-card:hover {
+  opacity: 1;
+}
+
+.performance-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 12px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid rgba(148, 163, 184, 0.16);
+}
+
+.performance-title {
+  font-weight: 600;
+  font-size: 14px;
+  color: #60a5fa;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.performance-indicator {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #22c55e;
+  animation: pulse 2s ease-in-out infinite;
+}
+
+.performance-indicator.warning {
+  background: #f59e0b;
+}
+
+.performance-indicator.critical {
+  background: #ef4444;
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+
+.performance-toggle {
+  background: transparent;
+  border: none;
+  color: #94a3b8;
+  cursor: pointer;
+  padding: 4px;
+  font-size: 12px;
+  transition: color 0.2s;
+}
+
+.performance-toggle:hover {
+  color: #e2e8f0;
+}
+
+.performance-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+
+.metric-row {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.metric-label {
+  font-size: 11px;
+  color: #64748b;
+}
+
+.metric-value {
+  font-weight: 500;
+  color: #e2e8f0;
+}
+
+.metric-value.good {
+  color: #22c55e;
+}
+
+.metric-value.warning {
+  color: #f59e0b;
+}
+
+.metric-value.critical {
+  color: #ef4444;
+}
+
+.performance-footer {
+  margin-top: 12px;
+  padding-top: 8px;
+  border-top: 1px solid rgba(148, 163, 184, 0.16);
+  display: flex;
+  justify-content: space-between;
+  font-size: 11px;
+  color: #64748b;
+}

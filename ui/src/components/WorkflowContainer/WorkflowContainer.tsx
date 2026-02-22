@@ -1,4 +1,5 @@
 import React, { useMemo } from 'react';
+import { PerformanceCard } from '../PerformanceCard/PerformanceCard.js';
 import { ChatInterface } from '../ChatInterface/ChatInterface.js';
 import { AppLayout } from '../layout/AppLayout.js';
 import { LeftSidebar } from '../LeftSidebar/LeftSidebar.js';
@@ -79,14 +80,17 @@ export const WorkflowContainer: React.FC = () => {
   }, [executionState?.workflowId]);
 
   const canvasElement = useMemo(() => (
-    <TaskFlowCanvas
-      epicId={taskFlowProps.epicId}
-      planHistory={taskFlowProps.planHistory}
-      designHistory={taskFlowProps.designHistory}
-      executionHistory={taskFlowProps.executionHistory}
-      runningLoop={taskFlowProps.runningLoop}
-      queue={taskFlowProps.queue}
-    />
+    <div style={{ position: 'relative', width: '100%', height: '100%' }}>
+      <TaskFlowCanvas
+        epicId={taskFlowProps.epicId}
+        planHistory={taskFlowProps.planHistory}
+        designHistory={taskFlowProps.designHistory}
+        executionHistory={taskFlowProps.executionHistory}
+        runningLoop={taskFlowProps.runningLoop}
+        queue={taskFlowProps.queue}
+      />
+      <PerformanceCard />
+    </div>
   ), [taskFlowProps]);
 
   const rightPanelElement = useMemo(() => (
