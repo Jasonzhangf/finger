@@ -417,84 +417,111 @@ Agent 的能力由其拥有的工具决定：
         return { success: true, observation: `交付清单已保存`, data: state.deliverables };
       }
 
-      // Handle PARALLEL_DISPATCH action with resource pool
+      // Handle PARALLEL_DISPATCH action with concurrency scheduler
       if (action.name === 'PARALLEL_DISPATCH' && state) {
         const taskIds = Array.isArray(params.taskIds) ? params.taskIds as string[] : [];
         if (taskIds.length === 0) {
           return { success: false, observation: 'PARALLEL_DISPATCH failed: no taskIds' };
         }
         
-        // First, query capability catalog to understand available resources
+        // Get capability catalog for logging
         const capabilityCatalog = resourcePool.getCapabilityCatalog();
         console.log(`[Orchestrator] Capability catalog: ${capabilityCatalog.map(c => `${c.capability}(${c.availableCount}/${c.resourceCount})`).join(', ')}`);
+        
+        // Get scheduler stats for logging
+        const schedulerStats = concurrencyScheduler.getStats();
+        console.log(`[Orchestrator] Scheduler stats: active=${schedulerStats.activeTasks}, queued=${schedulerStats.queuedTasks}, avgLatency=${schedulerStats.avgSchedulingLatencyMs}ms`);
         
         // Get ready tasks
         const tasksToDispatch = taskIds
           .map(id => state.taskGraph.find(t => t.id === id))
           .filter((t): t is NonNullable<typeof t> => t !== undefined && t.status === 'ready');
         
-        // Allocate resources for each task based on task description and capability catalog
-        const allocationResults: Array<{ taskId: string; success: boolean; resources?: string[]; error?: string }> = [];
-        const tasksWithResources: Array<typeof tasksToDispatch[number] & { allocatedResources: string[] }> = [];
+        // Use concurrency scheduler to evaluate each task
+        const schedulingDecisions: Array<{ 
+          taskId: string; 
+          task: typeof tasksToDispatch[number];
+          requirements: ResourceRequirement[];
+          decision: { allowed: boolean; reason: string; estimatedStartTime: number; estimatedDurationMs: number; benefitScore: number; resourceAllocation?: { resourceIds: string[]; estimatedReleaseTime: number } };
+        }> = [];
         
         for (const task of tasksToDispatch) {
-          // Infer resource requirements from task description
-          const requirements: ResourceRequirement[] = inferResourceRequirements(task.description);
+          const requirements = inferResourceRequirements(task.description);
+          const decision = concurrencyScheduler.evaluateScheduling(task, requirements);
+          schedulingDecisions.push({ taskId: task.id, task, requirements, decision });
           
-          // Check if required capabilities are available
-          const missingCapabilities: string[] = [];
-          for (const req of requirements) {
-            const capEntry = capabilityCatalog.find(c => c.capability === (req.capabilities?.[0] || req.type));
-            if (!capEntry || capEntry.availableCount === 0) {
-              missingCapabilities.push(req.capabilities?.[0] || req.type);
-            }
-          }
-          
-          if (missingCapabilities.length > 0) {
-            allocationResults.push({ 
-              taskId: task.id, 
-              success: false, 
-              error: `缺乏能力：${missingCapabilities.join(', ')}`,
-            });
-          } else {
-            const allocation = resourcePool.allocateResources(task.id, requirements);
-            
-            if (allocation.success && allocation.allocatedResources) {
-              allocationResults.push({ taskId: task.id, success: true, resources: allocation.allocatedResources });
-              tasksWithResources.push({ ...task, allocatedResources: allocation.allocatedResources });
-            } else {
-              allocationResults.push({ 
-                taskId: task.id, 
-                success: false, 
-                error: allocation.error || 'Allocation failed',
-              });
-            }
-          }
+          console.log(`[Orchestrator] Task ${task.id}: allowed=${decision.allowed}, reason=${decision.reason}, benefit=${decision.benefitScore.toFixed(2)}`);
         }
         
-        // Check if any tasks failed allocation
-        const failedAllocations = allocationResults.filter(r => !r.success);
-        if (failedAllocations.length > 0) {
-          // Report resource shortage and enter BLOCKED state
-          const missingInfo = failedAllocations.map(r => `Task ${r.taskId}: ${r.error}`).join('; ');
-          state.phase = 'blocked_review';
-          await saveCheckpoint(state, 'resource_shortage');
-          await bdTools.addComment(state.epicId, `资源缺乏：${missingInfo}`);
+        // Separate allowed and blocked tasks
+        const allowedTasks = schedulingDecisions.filter(d => d.decision.allowed);
+        const blockedTasks = schedulingDecisions.filter(d => !d.decision.allowed);
+        
+        // Handle blocked tasks - enqueue them with priority based on benefit score
+        for (const { task, requirements, decision } of blockedTasks) {
+          const priority = Math.round((1 - decision.benefitScore) * 10); // Higher benefit = lower priority number
+          concurrencyScheduler.enqueue(task, requirements, priority);
+          
+          globalEventBus.emit({
+            type: 'task_blocked',
+            sessionId: config.sessionId || state.epicId,
+            taskId: task.id,
+            agentId: config.id,
+            timestamp: new Date().toISOString(),
+            payload: {
+              reason: decision.reason,
+              estimatedStartTime: decision.estimatedStartTime,
+              benefitScore: decision.benefitScore,
+            },
+          });
+        }
+        
+        if (blockedTasks.length > 0) {
+          await bdTools.addComment(state.epicId, `${blockedTasks.length} 个任务因资源不足进入等待队列`);
+        }
+        
+        // If no tasks can be dispatched, report resource shortage
+        if (allowedTasks.length === 0) {
+          const blockedInfo = blockedTasks.map(b => `Task ${b.taskId}: ${b.decision.reason}`).join('; ');
+          
+          // Check if we should enter blocked_review phase
+          const currentStats = concurrencyScheduler.getStats();
+          const allBlocked = currentStats.queuedTasks > 0 && currentStats.activeTasks === 0;
+          if (allBlocked) {
+            state.phase = 'blocked_review';
+            await saveCheckpoint(state, 'resource_shortage');
+            
+            return {
+              success: false,
+              observation: `所有任务被阻塞：${blockedInfo}`,
+              error: 'resource_shortage',
+              data: {
+                blockedTasks: blockedTasks.map(b => ({ taskId: b.taskId, reason: b.decision.reason })),
+                schedulerStats: currentStats,
+                suggestion: '请添加所需资源或调整任务拆解',
+              },
+            };
+          }
           
           return {
             success: false,
-            observation: `资源缺乏，无法派发任务：${missingInfo}`,
-            error: 'resource_shortage',
-            data: { 
-              failedAllocations,
-              suggestion: '请添加所需资源或调整任务拆解',
+            observation: `部分任务被阻塞：${blockedInfo}`,
+            error: 'partial_blockage',
+            data: {
+              blockedTasks: blockedTasks.map(b => ({ taskId: b.taskId, reason: b.decision.reason })),
+              queuedTasks: currentStats.queuedTasks,
             },
           };
         }
         
-        // Dispatch tasks with allocated resources and context
-        const dispatchPromises = tasksWithResources.map(async (task) => {
-          const targetExecutorId = task.allocatedResources[0] || state.targetExecutorId;
+        // Dispatch allowed tasks with concurrency control
+        const dispatchPromises = allowedTasks.map(async ({ task, requirements, decision }) => {
+          const resourceIds = decision.resourceAllocation?.resourceIds || [];
+          const targetExecutorId = resourceIds[0] || state.targetExecutorId;
+          
+          // Mark task as started in scheduler
+          concurrencyScheduler.startTask(task.id, resourceIds);
+          
           if (state.executionLoopId) {
             addExecNode(state.executionLoopId, task.id, task.description, targetExecutorId);
           }
@@ -502,38 +529,63 @@ Agent 的能力由其拥有的工具决定：
           try {
             resourcePool.markTaskExecuting(task.id);
             
-            // Build task-specific context for the executor
+            // Build task-specific context
             const taskContext = buildAgentContext({
               taskId: task.id,
               taskDescription: task.description,
-              requiredCapabilities: inferResourceRequirements(task.description).map(r => r.capabilities?.[0] || r.type).filter(Boolean),
+              requiredCapabilities: requirements.map(r => r.capabilities?.[0] || r.type).filter(Boolean),
               bdTaskId: task.bdTaskId,
-              orchestratorNote: `请使用 ${targetExecutorId} 执行此任务，已分配资源：${task.allocatedResources.join(', ')}`,
+              orchestratorNote: `请使用 ${targetExecutorId} 执行此任务，预计时长: ${decision.estimatedDurationMs}ms`,
             });
             
             const result = await state.hub.sendToModule(targetExecutorId, {
               taskId: task.id,
               description: task.description,
               bdTaskId: task.bdTaskId,
-              context: taskContext, // Include context for task-aware execution
+              context: taskContext,
             });
+            
             task.result = { taskId: task.id, success: result.success !== false, output: result.output, error: result.error };
             
             if (result.success !== false) {
               task.status = 'completed';
               state.completedTasks.push(task.id);
               resourcePool.releaseResources(task.id, 'completed');
+              concurrencyScheduler.completeTask(task.id, true);
+              
               if (state.executionLoopId) {
                 completeExecNode(state.executionLoopId, task.id, true);
               }
+              
+              globalEventBus.emit({
+                type: 'task_completed',
+                sessionId: config.sessionId || state.epicId,
+                taskId: task.id,
+                agentId: targetExecutorId,
+                timestamp: new Date().toISOString(),
+                payload: { result: task.result.output },
+              });
+              
               return { taskId: task.id, success: true, result };
             } else {
               task.status = 'failed';
               state.failedTasks.push(task.id);
               resourcePool.releaseResources(task.id, 'error');
+              concurrencyScheduler.completeTask(task.id, false);
+              
               if (state.executionLoopId) {
                 completeExecNode(state.executionLoopId, task.id, false);
               }
+              
+              globalEventBus.emit({
+                type: 'task_failed',
+                sessionId: config.sessionId || state.epicId,
+                taskId: task.id,
+                agentId: targetExecutorId,
+                timestamp: new Date().toISOString(),
+                payload: { error: task.result.error || 'unknown error' },
+              });
+              
               return { taskId: task.id, success: false, error: result.error };
             }
           } catch (err) {
@@ -541,24 +593,52 @@ Agent 的能力由其拥有的工具决定：
             task.result = { taskId: task.id, success: false, error: String(err) };
             state.failedTasks.push(task.id);
             resourcePool.releaseResources(task.id, 'error');
+            concurrencyScheduler.completeTask(task.id, false);
+            
             if (state.executionLoopId) {
               completeExecNode(state.executionLoopId, task.id, false);
             }
+            
             return { taskId: task.id, success: false, error: String(err) };
           }
         });
         
         const results = await Promise.allSettled(dispatchPromises);
-        const successCount = results.filter(r => r.status === 'fulfilled' && r.value.success).length;
-        const failCount = results.filter(r => r.status === 'fulfilled' && !r.value.success).length;
+        const successCount = results.filter(r => r.status === 'fulfilled' && (r.value as { success: boolean }).success).length;
+        const failCount = results.filter(r => r.status === 'fulfilled' && !(r.value as { success: boolean }).success).length;
+        const blockedCount = blockedTasks.length;
         
         state.phase = 'parallel_dispatch';
         await saveCheckpoint(state, 'parallel_dispatch_completed');
         
-        return { 
-          success: successCount > 0, 
-          observation: `并行派发完成：成功${successCount}/${tasksToDispatch.length}, 失败${failCount}`,
-          data: { dispatched: tasksToDispatch.length, success: successCount, failed: failCount },
+        // Emit workflow progress event
+        const progress = state.taskGraph.length > 0 
+          ? (state.completedTasks.length / state.taskGraph.length) * 100 
+          : 0;
+        globalEventBus.emit({
+          type: 'workflow_progress',
+          sessionId: config.sessionId || state.epicId,
+          timestamp: new Date().toISOString(),
+          payload: {
+            overallProgress: progress,
+            activeAgents: [config.id, ...allowedTasks.map(t => t.decision.resourceAllocation?.resourceIds?.[0] || state.targetExecutorId)],
+            pendingTasks: state.taskGraph.length - state.completedTasks.length - state.failedTasks.length,
+            completedTasks: state.completedTasks.length,
+            failedTasks: state.failedTasks.length,
+            queuedTasks: blockedCount,
+          },
+        });
+        
+        return {
+          success: successCount > 0,
+          observation: `并行派发完成：成功${successCount}/${tasksToDispatch.length}，失败${failCount}，等待${blockedCount}`,
+          data: {
+            dispatched: allowedTasks.length,
+            success: successCount,
+            failed: failCount,
+            queued: blockedCount,
+            schedulerStats: concurrencyScheduler.getStats(),
+          },
         };
       }
 

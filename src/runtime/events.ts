@@ -124,12 +124,23 @@ export interface TaskFailedEvent extends BaseEvent {
     retryable?: boolean;
   };
 }
+export interface TaskBlockedEvent extends BaseEvent {
+  type: 'task_blocked';
+  taskId: string;
+  agentId?: string;
+  payload: {
+    reason: string;
+    estimatedStartTime?: number;
+    benefitScore?: number;
+  };
+}
 
 export type TaskEvent =
   | TaskStartedEvent
   | TaskProgressEvent
   | TaskCompletedEvent
-  | TaskFailedEvent;
+  | TaskFailedEvent
+  | TaskBlockedEvent;
 
 // =============================================================================
 // Tool 事件
@@ -228,6 +239,7 @@ export interface WorkflowProgressEvent extends BaseEvent {
     pendingTasks: number;
     completedTasks: number;
     failedTasks: number;
+    queuedTasks?: number;
   };
 }
 
@@ -380,6 +392,7 @@ export const TASK_EVENT_TYPES = [
   'task_progress',
   'task_completed',
   'task_failed',
+  'task_blocked',
 ] as const;
 
 /** Tool 事件类型集合 */
