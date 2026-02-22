@@ -272,3 +272,74 @@ globalEventBus.subscribeByGroup('HUMAN_IN_LOOP', handler);
 - **测试先行**：基础功能 CI 覆盖率达到 80%+ 后再开发编排特性
 - **核心优先**：Backend Core > Backend Agents > Frontend
 - **集成最后**：端到端测试在单元测试稳定后补充
+
+## 11. 并发调度策略
+
+### 11.1 核心原则
+
+任务并发调度遵循以下刚性规则：
+
+| 规则 | 描述 | 检查时机 |
+|------|------|----------|
+| **可并行** | 任务在 DAG 上无未完成前置依赖 | 任务派发前 |
+| **资源齐全** | 任务声明的 `requiredCapabilities` 全部可从资源池分配 | 任务派发前 |
+| **值得并发** | 预计执行时长 > 调度开销阈值（默认 2s） | 收益评估 |
+| **不过载** | 不超过每类资源并发上限和系统总并发预算 | 资源分配 |
+| **可回收** | 线程结束后释放资源；超时/失败进入重试或人工决策 | 任务完成 |
+| **阻塞处理** | 资源被占用则进入等待队列，不抢占关键任务 | 队列管理 |
+| **缺资源上报** | 不可恢复缺资源立即上报用户，不进入盲等 | 错误处理 |
+
+### 11.2 策略配置
+
+系统提供三种预设策略：
+
+- `DEFAULT_CONCURRENCY_POLICY`: 平衡模式（默认）
+- `HIGH_PERFORMANCE_POLICY`: 高性能模式（资源充足环境）
+- `CONSERVATIVE_POLICY`: 保守模式（资源受限环境）
+
+配置项详见 `src/orchestration/concurrency-policy.ts`。
+
+### 11.3 调度器 API
+
+```typescript
+import { concurrencyScheduler } from './orchestration/concurrency-scheduler.js';
+
+// 评估任务是否应该并发执行
+const decision = concurrencyScheduler.evaluateScheduling(task, requirements);
+
+// 将任务加入等待队列
+concurrencyScheduler.enqueue(task, requirements, priority);
+
+// 从队列取出可执行任务
+const readyTask = concurrencyScheduler.dequeue();
+
+// 标记任务状态
+concurrencyScheduler.startTask(taskId, resources);
+concurrencyScheduler.completeTask(taskId, success);
+
+// 获取统计信息
+const stats = concurrencyScheduler.getStats();
+```
+
+### 11.4 执行时间预估
+
+支持三种预估模式：
+
+- `static`: 基于静态配置的时长映射
+- `adaptive`: 加权平均历史数据（默认）
+- `llm_estimate`: LLM 预估（需要调用方提供）
+
+### 11.5 队列策略
+
+- `fifo`: 先进先出
+- `priority`: 基于优先级排序
+- `aging`: 优先级老化机制（防止饿死）
+
+### 11.6 动态降级
+
+当资源使用率超过阈值时自动启用降级：
+
+- 降低最大并发数
+- 可选暂停新任务派发
+- 记录降级事件
+
