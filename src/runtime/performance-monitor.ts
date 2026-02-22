@@ -10,6 +10,8 @@
  */
 
 import { EventEmitter } from 'events';
+import { concurrencyScheduler } from '../orchestration/concurrency-scheduler.js';
+import { resourcePool } from '../orchestration/resource-pool.js';
 
 export interface PerformanceMetrics {
   timestamp: number;
@@ -182,7 +184,7 @@ export class PerformanceMonitor extends EventEmitter {
     return {
       memoryUsedMB: Math.round(memUsage.heapUsed / 1024 / 1024),
       memoryTotalMB: Math.round(memUsage.heapTotal / 1024 / 1024),
-      cpuUsagePercent: Math.round(process.cpuUsage().user / 1000000), // 转换为秒
+      cpuUsagePercent: Math.round(process.cpuUsage().user / 1000000),
       uptimeSeconds: Math.round((Date.now() - this.startTime) / 1000),
     };
   }
@@ -194,20 +196,25 @@ export class PerformanceMonitor extends EventEmitter {
     const eventBus = this.getEventThroughput();
     const system = this.getSystemStats();
     
-    // 资源池状态（从全局实例获取）
+    // 从调度器和资源池获取实时状态
+    const schedulerStats = concurrencyScheduler.getStats();
+    const poolStats = resourcePool.getStatusReport();
+    const totalResources = Math.max(1, poolStats.totalResources);
+    const busyResources = poolStats.busy + poolStats.deployed;
+    
     const resourcePoolStats = {
-      utilizationRate: 0,
-      availableCount: 0,
-      busyCount: 0,
-      blockedCount: 0,
+      utilizationRate: Math.round((busyResources / totalResources) * 100) / 100,
+      availableCount: poolStats.available,
+      busyCount: poolStats.busy + poolStats.deployed,
+      blockedCount: poolStats.blocked,
     };
     
     return {
       timestamp: Date.now(),
       scheduling: {
         ...scheduling,
-        queuedTasks: 0, // 从调度器获取
-        activeTasks: 0,
+        queuedTasks: schedulerStats.queuedTasks,
+        activeTasks: schedulerStats.activeTasks,
       },
       execution,
       eventBus: {
@@ -224,15 +231,12 @@ export class PerformanceMonitor extends EventEmitter {
     setInterval(() => {
       this.metrics = this.calculateMetrics();
       this.emit('metrics', this.metrics);
-      
-      // 检查性能阈值
       this.checkThresholds(this.metrics);
     }, this.samplingIntervalMs);
   }
   
   /** 检查性能阈值 */
   private checkThresholds(metrics: PerformanceMetrics): void {
-    // 调度延迟过高
     if (metrics.scheduling.p95LatencyMs > 5000) {
       this.emit('alert', {
         type: 'high_scheduling_latency',
@@ -241,7 +245,6 @@ export class PerformanceMonitor extends EventEmitter {
       });
     }
     
-    // 内存使用过高
     if (metrics.system.memoryUsedMB > 512) {
       this.emit('alert', {
         type: 'high_memory_usage',
@@ -250,8 +253,7 @@ export class PerformanceMonitor extends EventEmitter {
       });
     }
     
-    // 任务失败率过高
-    if (metrics.execution.successRate < 0.8) {
+    if (metrics.execution.successRate < 0.8 && metrics.execution.totalCompleted + metrics.execution.totalFailed > 10) {
       this.emit('alert', {
         type: 'low_success_rate',
         message: `任务成功率过低: ${(metrics.execution.successRate * 100).toFixed(1)}%`,
@@ -273,6 +275,7 @@ export class PerformanceMonitor extends EventEmitter {
 - P95延迟: ${m.scheduling.p95LatencyMs}ms
 - P99延迟: ${m.scheduling.p99LatencyMs}ms
 - 总派发: ${m.scheduling.totalDispatches}
+- 活跃/排队: ${m.scheduling.activeTasks}/${m.scheduling.queuedTasks}
 
 【任务执行】
 - 平均时长: ${m.execution.avgDurationMs}ms
@@ -285,6 +288,10 @@ export class PerformanceMonitor extends EventEmitter {
 - 平均处理: ${m.eventBus.avgProcessingTimeMs}ms
 - 总事件: ${m.eventBus.totalEvents}
 
+【资源池】
+- 利用率: ${(m.resourcePool.utilizationRate * 100).toFixed(1)}%
+- 可用/忙碌/阻塞: ${m.resourcePool.availableCount}/${m.resourcePool.busyCount}/${m.resourcePool.blockedCount}
+
 【系统资源】
 - 内存: ${m.system.memoryUsedMB}/${m.system.memoryTotalMB}MB
 - CPU: ${m.system.cpuUsagePercent}%
@@ -293,5 +300,4 @@ export class PerformanceMonitor extends EventEmitter {
   }
 }
 
-// 单例实例
 export const performanceMonitor = new PerformanceMonitor();
