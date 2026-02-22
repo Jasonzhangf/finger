@@ -34,6 +34,12 @@ export class WebSocketClient {
        this.ws.onopen = () => {
          console.log('[WS] Connected to', this.url);
          this.reconnectAttempts = 0;
+
+          // Subscribe to workflow and agent updates
+          this.ws?.send(JSON.stringify({
+            type: 'subscribe',
+            types: ['workflow_update', 'agent_update', 'task_started', 'task_completed', 'task_failed'],
+          }));
          resolve();
        };
 
