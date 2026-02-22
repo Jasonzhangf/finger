@@ -90,18 +90,20 @@ export const WorkflowContainer: React.FC = () => {
   const { agents: agentModules } = useAgents();
 
   const runtimeAgents = React.useMemo(() => {
-    return executionState?.agents ||
-      agentModules.map((module) => ({
-        id: module.id,
-        name: module.name,
-        type: ((module.metadata?.type as string) || 'executor') as 'executor' | 'reviewer' | 'orchestrator',
-        status: (module.status || 'idle') as 'idle' | 'running' | 'error' | 'paused',
-        load: module.load || 0,
-        errorRate: module.errorRate || 0,
-        requestCount: 0,
-        tokenUsage: 0,
-      }));
-  }, [executionState, agentModules]);
+    if (executionState?.agents && executionState.agents.length > 0) {
+      return executionState.agents;
+    }
+    return agentModules.map((module) => ({
+      id: module.id,
+      name: module.name,
+      type: ((module.metadata?.type as string) || 'executor') as 'executor' | 'reviewer' | 'orchestrator',
+      status: (module.status || 'idle') as 'idle' | 'running' | 'error' | 'paused',
+      load: module.load || 0,
+      errorRate: module.errorRate || 0,
+      requestCount: 0,
+      tokenUsage: 0,
+    }));
+  }, [executionState?.agents, agentModules]);
 
   if (isLoading) {
     return (
