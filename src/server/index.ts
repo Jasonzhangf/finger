@@ -1183,3 +1183,40 @@ await moduleRegistry.register(executorLoop);
 console.log('[Server] ExecutorLoop module registered: executor-loop');
 
 console.log('[Server] ReACT Loop modules ready: orchestrator-loop, executor-loop');
+
+// =============================================================================
+// 性能监控 API
+// =============================================================================
+
+import { performanceMonitor } from '../runtime/performance-monitor.js';
+
+app.get('/api/v1/performance', (_req, res) => {
+  const metrics = performanceMonitor.getMetrics();
+  res.json({
+    success: true,
+    metrics,
+  });
+});
+
+app.get('/api/v1/performance/report', (_req, res) => {
+  const report = performanceMonitor.generateReport();
+  res.type('text/plain').send(report);
+});
+
+// 定期发送性能指标到 WebSocket 客户端
+setInterval(() => {
+  const metrics = performanceMonitor.getMetrics();
+  const msg = JSON.stringify({
+    type: 'performance_metrics',
+    payload: metrics,
+    timestamp: new Date().toISOString(),
+  });
+  
+  for (const client of wsClients) {
+    if (client.readyState === 1) {
+      client.send(msg);
+    }
+  }
+}, 5000); // 每5秒发送一次
+
+console.log('[Server] Performance monitoring enabled');
