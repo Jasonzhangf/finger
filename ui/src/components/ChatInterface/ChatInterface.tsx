@@ -197,7 +197,7 @@ const ChatInput: React.FC<{
         </label>
         
         <div className="textarea-wrapper">
-          <textarea
+          <textarea data-testid="chat-input"
             ref={textareaRef}
             value={text}
             onChange={handleTextChange}
