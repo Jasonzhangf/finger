@@ -1220,3 +1220,111 @@ setInterval(() => {
 }, 5000); // 每5秒发送一次
 
 console.log('[Server] Performance monitoring enabled');
+
+// =============================================================================
+// EventBus 订阅转发到 WebSocket
+// =============================================================================
+
+globalEventBus.subscribeMultiple(
+  ['task_started', 'task_completed', 'task_failed', 'workflow_progress', 'phase_transition'],
+  (event) => {
+    // 将 EventBus 事件转换为前端理解的 workflow_update 格式
+    const wsMsg = {
+      type: 'workflow_update',
+      payload: {
+        workflowId: event.sessionId,
+        taskId: (event.payload as any)?.taskId,
+        status: event.type === 'task_completed' ? 'completed' : event.type === 'task_failed' ? 'failed' : 'executing',
+        orchestratorState: event.type === 'phase_transition' ? { round: (event.payload as any)?.round } : undefined,
+        taskUpdates: event.type === 'task_started' || event.type === 'task_completed' || event.type === 'task_failed' ? [{
+          id: (event.payload as any)?.taskId,
+          status: event.type === 'task_started' ? 'in_progress' : event.type === 'task_completed' ? 'completed' : 'failed',
+        }] : undefined,
+      },
+      timestamp: event.timestamp,
+    };
+    
+    const msg = JSON.stringify(wsMsg);
+    for (const client of wsClients) {
+      if (client.readyState === 1) {
+        client.send(msg);
+      }
+    }
+  }
+);
+
+console.log('[Server] EventBus subscription enabled: task_started, task_completed, task_failed, workflow_progress, phase_transition');
+
+// 转发 agent 执行事件到前端，确保对话面板可以看到 thought/action/observation
+// 使用 runtime-facade 和 orchestrator-loop 中实际使用的事件类型
+globalEventBus.subscribeMultiple(
+  ['task_started', 'task_completed', 'task_failed', 'workflow_progress', 'phase_transition'],
+  (event) => {
+    const payload = event.payload as Record<string, unknown> | undefined;
+    const taskDetails = payload?.task || payload?.result;
+
+    // 当任务完成或失败时，将详细的 thought/action/observation 转发给前端
+    const wsMsg = {
+      type: 'agent_update',
+      payload: {
+        agentId: (payload?.agentId as string | undefined) || event.sessionId,
+        status: event.type === 'task_completed' ? 'idle' : event.type === 'task_failed' ? 'error' : 'running',
+        currentTaskId: payload?.taskId as string | undefined,
+        load: ((payload?.progress as number | undefined) ?? 0),
+        step: {
+          round: (payload?.round as number | undefined) ?? 1,
+          thought: (taskDetails as any)?.thought,
+          action: (taskDetails as any)?.action,
+          observation: (taskDetails as any)?.observation || (taskDetails as any)?.result,
+          success: event.type !== 'task_failed',
+          timestamp: event.timestamp,
+        },
+      },
+      timestamp: event.timestamp,
+    };
+
+    const msg = JSON.stringify(wsMsg);
+    for (const client of wsClients) {
+      if (client.readyState === 1) {
+        client.send(msg);
+      }
+    }
+  }
+);
+
+globalEventBus.subscribeMultiple(
+  ['task_started', 'task_completed', 'task_failed', 'workflow_progress', 'phase_transition'],
+  (event) => {
+    const payload = event.payload as Record<string, unknown> | undefined;
+    const step = (payload?.step as Record<string, unknown> | undefined) ?? {};
+
+    const wsMsg = {
+      type: 'agent_update',
+      payload: {
+        agentId: (payload?.agentId as string | undefined) || event.sessionId,
+        status: (payload?.status as string | undefined) || 'running',
+        currentTaskId: payload?.taskId as string | undefined,
+        load: ((payload?.load as number | undefined) ?? (payload?.progress as number | undefined) ?? 0),
+        step: {
+          round: ((payload?.round as number | undefined) ?? (step.round as number | undefined) ?? 1),
+          action: (payload?.action as string | undefined) || (step.action as string | undefined),
+          thought: (payload?.thought as string | undefined) || (step.thought as string | undefined),
+          observation: (payload?.observation as string | undefined) || (step.observation as string | undefined),
+          params: (payload?.params as Record<string, unknown> | undefined) || (step.params as Record<string, unknown> | undefined),
+          success: (payload?.success as boolean | undefined) !== false,
+          timestamp: event.timestamp,
+        },
+      },
+      timestamp: event.timestamp,
+    };
+
+    const msg = JSON.stringify(wsMsg);
+    for (const client of wsClients) {
+      if (client.readyState === 1) {
+        client.send(msg);
+      }
+    }
+  }
+);
+
+console.log('[Server] EventBus agent forwarding enabled: agent_thought, agent_action, agent_observation, agent_step_completed');
