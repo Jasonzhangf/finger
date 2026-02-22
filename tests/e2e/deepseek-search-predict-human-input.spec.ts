@@ -12,6 +12,7 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { execSync, spawn } from 'child_process';
 import fs from 'fs';
 import path from 'path';
+import WebSocket from 'ws';
 
 // E2E test config
 const UI_URL = 'http://localhost:8080';

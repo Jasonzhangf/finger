@@ -343,3 +343,27 @@ const stats = concurrencyScheduler.getStats();
 - 可选暂停新任务派发
 - 记录降级事件
 
+
+## 12. 进程管理约束
+
+### 12.1 禁止普杀命令
+- **禁止使用** `pkill node`、`killall node`、`pkill -9 node` 等普杀命令
+- **禁止使用** `pkill` 无参数或仅带通配符的命令
+- **原因**：会误杀其他无关进程（如 IDE、其他开发工具、后台服务等）
+
+### 12.2 安全的进程管理方式
+```bash
+# 正确：按端口精确查找并终止
+lsof -ti :8080 | xargs kill -9 2>/dev/null
+
+# 正确：按 PID 文件终止
+kill $(cat /tmp/server.pid) 2>/dev/null
+
+# 正确：按进程名精确匹配（带完整路径）
+pkill -f "node.*dist/server/index.js"
+```
+
+### 12.3 测试环境清理
+- E2E 测试应在独立端口运行，避免与开发环境冲突
+- 测试前检查端口是否被占用，选择性清理而非普杀
+- 测试后清理自己创建的进程，不影响其他服务
