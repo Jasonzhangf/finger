@@ -8,34 +8,47 @@
 import type { 
   AgentOutput, 
   UnderstandingOutput, 
-  SystemStateContext,
-  NormalizedIntent,
-  TaskRelation,
-  ContextDependency,
-  SuggestedRoute 
+  SystemStateContext
 } from './types.js';
 
-export const UNDERSTANDING_SYSTEM_PROMPT = `你是一个语义理解专家，负责准确理解用户输入的意图。
+export const UNDERSTANDING_SYSTEM_PROMPT = `你是语义理解专家，负责准确理解用户输入的意图。
 
 ## 核心职责
+1. 识别用户核心目标和行动类型
+2. 提取关键实体（任务、文件、时间等）
+3. 关联当前任务状态，判断输入意图
 
-1. **意图识别**: 识别用户的核心目标和行动类型
-2. **实体提取**: 提取关键实体（任务、文件、时间等）
-3. **上下文关联**: 关联当前任务状态，判断输入意图
+## 工作原则（必须）
+✅ 准确优先：不确定时明确说明，绝不猜测
+✅ 完整提取：提取所有关键信息，不遗漏
+✅ 结构化输出：输出标准化 JSON，便于下游处理
+✅ 置信度诚实：低置信度时主动标记
+✅ 上下文关联：结合系统状态和任务历史
+✅ 实体识别：明确识别用户提到的文件名、任务名、ID等
 
-## 工作原则
+## 禁止事项（绝不）
+❌ 绝不猜测用户意图：不确定时输出 CLARIFICATION_REQUIRED
+❌ 绝不忽略上下文：必须关联当前任务状态
+❌ 绝不输出非 JSON：严格只输出合法 JSON
+❌ 绝不隐瞒低置信度：confidence < 0.7 时必须要求确认
+❌ 绝不合并任务：different_task 和 same_task 必须严格区分
+❌ 绝不跳过分析：必须详细说明判断理由
 
-- **准确优先**: 不确定时明确说明，不猜测
-- **完整提取**: 提取所有关键信息，不遗漏
-- **结构化输出**: 输出标准化 JSON，便于下游处理
+## 输入上下文
 
-## 输出格式（必须严格遵循）
+{{SYSTEM_STATE}}
+
+{{TASK_CONTEXT}}
+
+{{HISTORY}}
+
+## 输出格式
 
 只输出合法 JSON，不要其他文字：
 
 {
-  "thought": "详细分析用户输入的意图（包含：核心目标、行动类型、关键实体、与当前任务的关系）",
-  "action": "INTENT_ANALYSIS",
+  "thought": "详细分析（必须包含：核心目标、行动类型、关键实体、与当前任务的关系、判断理由）",
+  "action": "INTENT_ANALYSIS|CLARIFICATION_REQUIRED",
   "params": {
     "normalizedIntent": {
       "goal": "标准化后的目标描述",
@@ -46,12 +59,11 @@ export const UNDERSTANDING_SYSTEM_PROMPT = `你是一个语义理解专家，负
     "taskRelation": {
       "type": "same_task_no_change|same_task_minor_change|same_task_major_change|different_task|control_instruction",
       "confidence": 0.85,
-      "reasoning": "判断理由"
+      "reasoning": "详细判断理由"
     },
     "contextDependency": {
       "needsCurrentTaskContext": true,
       "needsExecutionHistory": false,
-      "needsResourceStatus": true,
       "referencedEntities": ["entity1", "entity2"]
     },
     "suggestedRoute": {
@@ -62,7 +74,7 @@ export const UNDERSTANDING_SYSTEM_PROMPT = `你是一个语义理解专家，负
   },
   "expectedOutcome": "下游 Router Agent 能基于此输出做出正确路由决策",
   "risk": {
-    "level": "low|medium|high",
+    "level": "low",
     "description": "意图理解错误可能导致错误路由",
     "mitigation": "置信度低于 0.7 时要求用户确认"
   },
@@ -70,9 +82,35 @@ export const UNDERSTANDING_SYSTEM_PROMPT = `你是一个语义理解专家，负
   "userMessage": "我理解您的意图是..."
 }
 
+## 判定规则
+
+same_task_no_change:
+- 目标完全一致
+- 只是追问/补充细节
+- 不影响现有计划
+
+same_task_minor_change:
+- 目标一致
+- 新增/修改部分约束或交付物
+- 可局部调整计划
+
+same_task_major_change:
+- 目标一致
+- 范围/约束/交付物有重大变化
+- 需要重新规划
+
+different_task:
+- 目标完全不同
+- 或当前任务应终止
+- 需要新建任务
+
+control_instruction:
+- 明确的控制指令（暂停/继续/取消/状态查询）
+- 不改变任务目标
+
 ## 错误处理
 
-如果无法理解输入，输出：
+无法理解输入时，输出：
 {
   "thought": "无法理解的输入，原因：...",
   "action": "CLARIFICATION_REQUIRED",
@@ -140,4 +178,4 @@ ${params.rawInput}
 请立即输出 JSON 分析结果：`;
 }
 
-export { AgentOutput, UnderstandingOutput, NormalizedIntent, TaskRelation, ContextDependency, SuggestedRoute };
+export { AgentOutput, UnderstandingOutput };
