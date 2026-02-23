@@ -1,140 +1,175 @@
 /**
- * Agent CLI Commands - Async wrappers that call daemon API
+ * Agent CLI Commands - Message Hub wrappers
  * 
- * These commands send requests to the daemon and return immediately.
- * The daemon handles actual execution and broadcasts events via WebSocket.
+ * 所有命令通过 Message Hub (5521) 发送消息，符合 RUNTIME_SPEC.md 规范。
+ * CLI 是纯粹客户端：发送请求后立即退出（除非 --watch）。
  */
 
-const API_BASE = process.env.FINGER_API_URL || 'http://localhost:8080';
+const MESSAGE_HUB_URL = process.env.FINGER_HUB_URL || 'http://localhost:5521';
+const WEBSOCKET_URL = process.env.FINGER_WS_URL || 'ws://localhost:5522';
 
 export interface CommandOptions {
   sessionId?: string;
   blocking?: boolean;
   watch?: boolean;
+  json?: boolean;
 }
 
 /**
- * Send semantic understanding request to daemon
+ * 生成 callbackId 用于追踪非阻塞请求
  */
-export async function understandCommand(input: string, options: { sessionId?: string } = {}): Promise<void> {
-  const res = await fetch(`${API_BASE}/api/v1/agent/understand`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ input, sessionId: options.sessionId }),
-  });
-  
-  if (!res.ok) {
-    throw new Error(`Failed: ${res.statusText}`);
-  }
-  
-  const result = await res.json();
-  console.log('[CLI] Understanding request sent:', result);
+function generateCallbackId(): string {
+  const timestamp = Date.now();
+  const random = Math.random().toString(36).substring(2, 8);
+  return `cli-${timestamp}-${random}`;
 }
 
 /**
- * Send routing decision request to daemon
+ * 发送消息到 Message Hub
  */
-export async function routeCommand(intentAnalysis: string, options: { sessionId?: string } = {}): Promise<void> {
-  const res = await fetch(`${API_BASE}/api/v1/agent/route`, {
+async function sendMessageToHub(
+  target: string,
+  messageType: string,
+  payload: unknown,
+  options: { blocking?: boolean; sender?: string; callbackId?: string } = {}
+): Promise<{ messageId: string; status: string; result?: unknown; error?: string }> {
+  const res = await fetch(`${MESSAGE_HUB_URL}/api/v1/message`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ intentAnalysis: JSON.parse(intentAnalysis), sessionId: options.sessionId }),
-  });
-  
-  if (!res.ok) {
-    throw new Error(`Failed: ${res.statusText}`);
-  }
-  
-  const result = await res.json();
-  console.log('[CLI] Routing request sent:', result);
-}
-
-/**
- * Send task planning request to daemon
- */
-export async function planCommand(task: string, options: { sessionId?: string } = {}): Promise<void> {
-  const res = await fetch(`${API_BASE}/api/v1/agent/plan`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ task, sessionId: options.sessionId }),
-  });
-  
-  if (!res.ok) {
-    throw new Error(`Failed: ${res.statusText}`);
-  }
-  
-  const result = await res.json();
-  console.log('[CLI] Planning request sent:', result);
-}
-
-/**
- * Send task execution request to daemon
- */
-export async function executeCommand(task: string, options: { agent?: string; blocking?: boolean; sessionId?: string } = {}): Promise<void> {
-  const res = await fetch(`${API_BASE}/api/v1/agent/execute`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ 
-      task, 
-      agent: options.agent,
-      blocking: options.blocking,
-      sessionId: options.sessionId 
+    body: JSON.stringify({
+      target,
+      message: { type: messageType, ...(payload as Record<string, unknown>) },
+      blocking: options.blocking || false,
+      sender: options.sender || 'cli',
+      callbackId: options.callbackId,
     }),
   });
-  
+
   if (!res.ok) {
-    throw new Error(`Failed: ${res.statusText}`);
+    throw new Error(`Message Hub error: ${res.statusText}`);
   }
-  
-  const result = await res.json();
-  if (options.blocking) {
-    console.log('[CLI] Execution result:', result);
+
+  return res.json();
+}
+
+/**
+ * 格式化输出
+ */
+function formatOutput(result: unknown, json: boolean): void {
+  if (json) {
+    console.log(JSON.stringify(result, null, 2));
   } else {
-    console.log('[CLI] Execution request sent:', result);
+    console.log('[CLI] Result:', result);
   }
 }
 
 /**
- * Send review request to daemon
+ * 语义理解命令
+ * CLI: finger understand <input>
+ * Target: understanding-agent
  */
-export async function reviewCommand(proposal: string): Promise<void> {
-  const res = await fetch(`${API_BASE}/api/v1/agent/review`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ proposal: JSON.parse(proposal) }),
-  });
+export async function understandCommand(input: string, options: { sessionId?: string; json?: boolean } = {}): Promise<void> {
+  const callbackId = generateCallbackId();
   
-  if (!res.ok) {
-    throw new Error(`Failed: ${res.statusText}`);
-  }
-  
-  const result = await res.json();
-  console.log('[CLI] Review request sent:', result);
+  const result = await sendMessageToHub('understanding-agent', 'UNDERSTAND', {
+    input,
+    sessionId: options.sessionId,
+  }, { callbackId });
+
+  formatOutput({ ...result, callbackId }, options.json || false);
 }
 
 /**
- * Send orchestration request to daemon
+ * 路由决策命令
+ * CLI: finger route --intent <json>
+ * Target: router-agent
  */
-export async function orchestrateCommand(task: string, options: { sessionId?: string; watch?: boolean } = {}): Promise<void> {
-  const res = await fetch(`${API_BASE}/api/v1/agent/orchestrate`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ 
-      task, 
-      sessionId: options.sessionId,
-      watch: options.watch,
-    }),
+export async function routeCommand(intentAnalysis: string, options: { sessionId?: string; json?: boolean } = {}): Promise<void> {
+  const callbackId = generateCallbackId();
+  
+  const result = await sendMessageToHub('router-agent', 'ROUTE', {
+    intentAnalysis: JSON.parse(intentAnalysis),
+    sessionId: options.sessionId,
+  }, { callbackId });
+
+  formatOutput({ ...result, callbackId }, options.json || false);
+}
+
+/**
+ * 任务规划命令
+ * CLI: finger plan <task>
+ * Target: planner-agent
+ */
+export async function planCommand(task: string, options: { sessionId?: string; json?: boolean } = {}): Promise<void> {
+  const callbackId = generateCallbackId();
+  
+  const result = await sendMessageToHub('planner-agent', 'PLAN', {
+    task,
+    sessionId: options.sessionId,
+  }, { callbackId });
+
+  formatOutput({ ...result, callbackId }, options.json || false);
+}
+
+/**
+ * 任务执行命令
+ * CLI: finger execute --task <t>
+ * Target: executor-agent
+ */
+export async function executeCommand(task: string, options: { agent?: string; blocking?: boolean; sessionId?: string; json?: boolean } = {}): Promise<void> {
+  const callbackId = generateCallbackId();
+  
+  const result = await sendMessageToHub(options.agent || 'executor-agent', 'EXECUTE', {
+    task,
+    sessionId: options.sessionId,
+  }, { 
+    blocking: options.blocking,
+    callbackId: options.blocking ? undefined : callbackId,
   });
+
+  formatOutput({ ...result, callbackId }, options.json || false);
+}
+
+/**
+ * 质量审查命令
+ * CLI: finger review --proposal <json>
+ * Target: reviewer-agent
+ */
+export interface ReviewOptions {
+  json?: boolean;
+}
+
+export async function reviewCommand(proposal: string, options: ReviewOptions = {}): Promise<void> {
+  const callbackId = generateCallbackId();
   
-  if (!res.ok) {
-    throw new Error(`Failed: ${res.statusText}`);
-  }
+  const result = await sendMessageToHub('reviewer-agent', 'REVIEW', {
+    proposal: JSON.parse(proposal),
+  }, { callbackId });
+
+  formatOutput({ ...result, callbackId }, options.json || false);
+}
+
+/**
+ * 编排协调命令
+ * CLI: finger orchestrate <task>
+ * Target: orchestrator
+ */
+export async function orchestrateCommand(task: string, options: { sessionId?: string; watch?: boolean; json?: boolean } = {}): Promise<void> {
+  const callbackId = generateCallbackId();
   
-  const result = await res.json();
-  console.log('[CLI] Orchestration request sent:', result);
+  const result = await sendMessageToHub('orchestrator', 'ORCHESTRATE', {
+    task,
+    sessionId: options.sessionId,
+  }, { callbackId });
+
+  const workflowId = (result.result as { workflowId?: string })?.workflowId;
   
-  if (options.watch) {
-    console.log('[CLI] Watching events via WebSocket...');
-    // WebSocket streaming handled by server
+  formatOutput({ ...result, callbackId, workflowId }, options.json || false);
+  
+  if (options.watch && workflowId) {
+    console.log('[CLI] Watch mode enabled.');
+    console.log(`[CLI] WebSocket: ${WEBSOCKET_URL}`);
+    console.log(`[CLI] Subscribe: { "type": "subscribe", "workflowId": "${workflowId}" }`);
+    console.log(`[CLI] Or run: finger events ${workflowId} --watch`);
   }
 }
