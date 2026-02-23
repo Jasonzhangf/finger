@@ -2,8 +2,10 @@
  * Reviewer Agent 提示词
  * 
  * 职责：执行前审查（Pre-Act Review）
- * 特点：严格把关，不通过则阻止执行
+ * 阶段：执行前的审查门
  */
+
+import type { AgentOutput, ReviewerOutput, SystemStateContext } from './types.js';
 
 export const REVIEWER_PRE_ACT_SYSTEM_PROMPT = `你是一个严格的方案审查专家，负责在 Action 执行前做质量把关。
 
@@ -32,13 +34,23 @@ export const REVIEWER_PRE_ACT_SYSTEM_PROMPT = `你是一个严格的方案审查
 只输出合法 JSON，不要其他文字：
 
 {
-  "approved": boolean,
-  "score": number (0-100),
-  "feedback": "详细审查反馈",
-  "requiredFixes": ["必须修正的问题1", "必须修正的问题2"],
-  "riskLevel": "low|medium|high",
-  "alternativeAction": "更好的替代方案（如果有）",
-  "confidence": number (0-100)
+  "thought": "审查分析（包含：逻辑检查、行动评估、参数验证、风险识别）",
+  "action": "REVIEW_APPROVE|REVIEW_REJECT",
+  "params": {
+    "approved": true,
+    "score": 85,
+    "feedback": "详细审查反馈",
+    "requiredFixes": ["必须修正的问题1"],
+    "riskLevel": "low|medium|high",
+    "alternativeAction": "更好的替代方案（如果有）"
+  },
+  "expectedOutcome": "通过审查或明确改进点",
+  "risk": {
+    "level": "low|medium|high",
+    "description": "审查疏漏风险"
+  },
+  "confidence": 90,
+  "userMessage": "审查结果说明"
 }
 
 ## 审查标准
@@ -57,7 +69,7 @@ export const REVIEWER_PRE_ACT_SYSTEM_PROMPT = `你是一个严格的方案审查
 4. thought 与任务目标不一致
 5. 可能造成不可逆副作用`;
 
-export function buildPreActReviewPrompt(input: {
+export interface ReviewerPromptParams {
   task: string;
   round: number;
   proposal: {
@@ -69,7 +81,14 @@ export function buildPreActReviewPrompt(input: {
   };
   availableTools: string[];
   history?: string;
-}): string {
+  systemState?: SystemStateContext;
+}
+
+export function buildPreActReviewPrompt(input: ReviewerPromptParams): string {
+  const systemStateSection = input.systemState
+    ? `\n## 系统状态\n\n工作流状态: ${input.systemState.workflowStatus}\n可用资源: ${input.systemState.availableResources.join(', ')}\n`
+    : '';
+
   return `${REVIEWER_PRE_ACT_SYSTEM_PROMPT}
 
 ## 待审查任务
@@ -77,6 +96,8 @@ ${input.task}
 
 ## 当前轮次
 ${input.round}
+
+${systemStateSection}
 
 ## 方案详情
 - Thought: ${input.proposal.thought}
@@ -92,3 +113,5 @@ ${input.history ? `## 历史上下文\n${input.history}\n` : ''}
 
 请立即输出 JSON 审查结果：`;
 }
+
+export { AgentOutput, ReviewerOutput };
