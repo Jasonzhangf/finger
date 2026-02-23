@@ -1,1 +1,12 @@
-[]
+[
+  {
+    "phase": "round_1_proposal",
+    "timestamp": "2026-02-23T07:40:31.748Z",
+    "action": "transition"
+  },
+  {
+    "phase": "round_1_error",
+    "timestamp": "2026-02-23T07:40:57.298Z",
+    "action": "transition"
+  }
+]

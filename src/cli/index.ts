@@ -289,7 +289,7 @@ program
   .action(async (workflowId: string, options: { types?: string }) => {
     try {
       const WebSocket = (await import('ws')).default;
-      const ws = new WebSocket('ws://localhost:8081');
+      const ws = new WebSocket('ws://localhost:5522');
 
       ws.on('open', () => {
         console.log(`Connected. Subscribing to workflow ${workflowId}...`);
@@ -346,7 +346,7 @@ program
   .command('repl')
   .description('交互式模式：实时对话和任务管理')
   .option('--http-url <url>', 'HTTP API URL', 'http://localhost:8080')
-  .option('--ws-url <url>', 'WebSocket URL', 'ws://localhost:8081')
+  .option('--ws-url <url>', 'WebSocket URL', 'ws://localhost:5522')
   .action(async (options: { httpUrl: string; wsUrl: string }) => {
     try {
       const { startREPL } = await import('./repl.js');

@@ -26,7 +26,7 @@ export class WebSocketBlock extends BaseBlock {
   async execute(command: string, args: Record<string, unknown>): Promise<unknown> {
     switch (command) {
       case 'start':
-        return this.startServer(args.port as number || 8081);
+        return this.startServer(args.port as number || 5522);
       case 'stop':
         return this.stopServer();
       case 'broadcast':
@@ -38,7 +38,7 @@ export class WebSocketBlock extends BaseBlock {
     }
   }
 
-  startServer(port = 8081): { started: boolean; port: number } {
+  startServer(port = 5522): { started: boolean; port: number } {
     if (this.wss) return { started: false, port };
 
     this.wss = new WebSocketServer({ port });

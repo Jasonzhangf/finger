@@ -96,7 +96,7 @@ export class FingerClient {
 
   constructor(options: FingerClientOptions = {}) {
     this.httpUrl = options.httpUrl || process.env.FINGER_HTTP_URL || 'http://localhost:8080';
-    this.wsUrl = options.wsUrl || process.env.FINGER_WS_URL || 'ws://localhost:8081';
+    this.wsUrl = options.wsUrl || process.env.FINGER_WS_URL || 'ws://localhost:5522';
     this.reconnect = options.reconnect ?? true;
     this.reconnectInterval = options.reconnectInterval ?? 3000;
     this.maxReconnectAttempts = options.maxReconnectAttempts ?? 10;
