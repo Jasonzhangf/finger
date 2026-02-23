@@ -363,4 +363,101 @@ program
 // daemon 子命令
 registerDaemonCommand(program);
 
+// ========== Status Command (via Mailbox) ==========
+program
+  .command('status')
+  .description('查看消息/工作流状态 (通过 callbackId 或 messageId)')
+  .argument('<id>', 'callbackId 或 messageId')
+  .option('-j, --json', 'JSON 输出')
+  .option('-f, --follow', '持续监听状态变更')
+  .action(async (id: string, options: { json?: boolean; follow?: boolean }) => {
+    try {
+      const MESSAGE_HUB_URL = process.env.FINGER_HUB_URL || 'http://localhost:5521';
+      
+      // 先尝试从 mailbox 查询
+      const res = await fetch(`${MESSAGE_HUB_URL}/api/v1/mailbox/${id}`);
+      
+      if (res.status === 404) {
+        console.error(`[CLI Error] Message not found: ${id}`);
+        console.error('[CLI] Hint: Use mailbox list to see available messages');
+        process.exit(1);
+      }
+      
+      if (!res.ok) {
+        throw new Error(`Failed to get status: ${res.statusText}`);
+      }
+      
+      const data = await res.json();
+      
+      if (options.json) {
+        console.log(JSON.stringify(data, null, 2));
+      } else {
+        console.log(`\nMessage Status: ${data.id}`);
+        console.log('-'.repeat(50));
+        console.log(`Target:   ${data.target}`);
+        console.log(`Status:   ${data.status}`);
+        console.log(`Created:  ${new Date(data.createdAt).toLocaleString()}`);
+        console.log(`Updated:  ${new Date(data.updatedAt).toLocaleString()}`);
+        
+        if (data.callbackId) {
+          console.log(`Callback: ${data.callbackId}`);
+        }
+        
+        if (data.result) {
+          console.log('\nResult:');
+          console.log(JSON.stringify(data.result, null, 2));
+        }
+        
+        if (data.error) {
+          console.log('\nError:');
+          console.log(data.error);
+        }
+      }
+      
+      // --follow 模式: 通过 WebSocket 监听状态变更
+      if (options.follow && data.status !== 'completed' && data.status !== 'failed') {
+        const WebSocket = (await import('ws')).default;
+        const ws = new WebSocket('ws://localhost:5522');
+        
+        console.log('\n[CLI] Listening for status updates... (Ctrl+C to stop)');
+        
+        ws.on('open', () => {
+          ws.send(JSON.stringify({
+            type: 'subscribe',
+            messageId: id,
+          }));
+        });
+        
+        ws.on('message', (rawData: { toString(): string }) => {
+          const msg = JSON.parse(rawData.toString());
+          if (msg.type === 'messageUpdate' && msg.message?.id === id) {
+            const m = msg.message;
+            console.log(`[${new Date().toLocaleTimeString()}] Status: ${m.status}`);
+            
+            if (m.status === 'completed') {
+              console.log('Result:', JSON.stringify(m.result, null, 2));
+              ws.close();
+              process.exit(0);
+            }
+            if (m.status === 'failed') {
+              console.error('Error:', m.error);
+              ws.close();
+              process.exit(1);
+            }
+          }
+        });
+        
+        ws.on('error', (err: Error) => {
+          console.error('[CLI] WebSocket error:', err.message);
+          process.exit(1);
+        });
+        
+        process.on('SIGINT', () => ws.close());
+      }
+    } catch (error) {
+      console.error('[CLI Error]', error);
+      process.exit(1);
+    }
+  });
+
 program.parse();
