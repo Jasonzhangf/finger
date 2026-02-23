@@ -26,7 +26,7 @@ export type WorkflowState =
   | 'wait_user_decision'      // 等待用户决策
   | 'paused'                  // 已暂停
   | 'completed'               // 已完成
-  | 'failed';                 // 已失败
+  | 'failed' | '*';                 // 已失败
 
 /**
  * 任务状态枚举

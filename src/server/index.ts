@@ -1376,7 +1376,7 @@ import {
   unregisterWebSocketClient,
   getStateSnapshot,
   getAllStateSnapshots,
-} from './orchestration/workflow-state-bridge.js';
+} from '../orchestration/workflow-state-bridge.js';
 
 // 初始化状态桥接
 initializeStateBridge();
@@ -1398,8 +1398,8 @@ app.get('/api/v1/workflows/state', (_req, res) => {
 });
 
 // 注册 WebSocket 客户端
-const originalWsServer = wsServer; // 保存原始 wsServer 引用
-wsServer.on('connection', (ws) => {
+const originalWsServer = wss; // 保存原始 wsServer 引用
+wss.on('connection', (ws) => {
   registerWebSocketClient(ws);
   
   ws.on('close', () => {
@@ -1408,3 +1408,295 @@ wsServer.on('connection', (ws) => {
 });
 
 console.log('[Server] State Bridge integration enabled');
+
+// =============================================================================
+// Agent CLI API - UI 调用入口
+// =============================================================================
+
+// API: 语义理解
+app.post('/api/v1/agent/understand', async (req, res) => {
+  const { input, sessionId } = req.body;
+  if (!input) {
+    res.status(400).json({ error: 'Missing input' });
+    return;
+  }
+
+  try {
+    // 调用 Understanding Agent
+    const result = await understandCommand(input, { sessionId });
+    res.json({ success: true, result });
+  } catch (error) {
+    res.status(500).json({ error: String(error) });
+  }
+});
+
+// API: 路由决策
+app.post('/api/v1/agent/route', async (req, res) => {
+  const { intentAnalysis, sessionId } = req.body;
+  if (!intentAnalysis) {
+    res.status(400).json({ error: 'Missing intentAnalysis' });
+    return;
+  }
+
+  try {
+    const result = await routeCommand(JSON.stringify(intentAnalysis), { sessionId });
+    res.json({ success: true, result });
+  } catch (error) {
+    res.status(500).json({ error: String(error) });
+  }
+});
+
+// API: 任务规划
+app.post('/api/v1/agent/plan', async (req, res) => {
+  const { task, sessionId } = req.body;
+  if (!task) {
+    res.status(400).json({ error: 'Missing task' });
+    return;
+  }
+
+  try {
+    const result = await planCommand(task, { sessionId });
+    res.json({ success: true, result });
+  } catch (error) {
+    res.status(500).json({ error: String(error) });
+  }
+});
+
+// API: 任务执行
+app.post('/api/v1/agent/execute', async (req, res) => {
+  const { task, agent, blocking, sessionId } = req.body;
+  if (!task) {
+    res.status(400).json({ error: 'Missing task' });
+    return;
+  }
+
+  try {
+    const result = await executeCommand(task, { agent, blocking, sessionId });
+    res.json({ success: true, result });
+  } catch (error) {
+    res.status(500).json({ error: String(error) });
+  }
+});
+
+// API: 质量审查
+app.post('/api/v1/agent/review', async (req, res) => {
+  const { proposal } = req.body;
+  if (!proposal) {
+    res.status(400).json({ error: 'Missing proposal' });
+    return;
+  }
+
+  try {
+    const result = await reviewCommand(JSON.stringify(proposal));
+    res.json({ success: true, result });
+  } catch (error) {
+    res.status(500).json({ error: String(error) });
+  }
+});
+
+// API: 编排协调
+app.post('/api/v1/agent/orchestrate', async (req, res) => {
+  const { task, sessionId, watch } = req.body;
+  if (!task) {
+    res.status(400).json({ error: 'Missing task' });
+    return;
+  }
+
+  try {
+    // 如果 watch=true，通过 WebSocket 推送进度
+    if (watch) {
+      await orchestrateCommand(task, { sessionId, watch: true });
+      res.json({ success: true, message: 'Orchestration started, streaming via WebSocket' });
+    } else {
+      const result = await orchestrateCommand(task, { sessionId });
+      res.json({ success: true, result });
+    }
+  } catch (error) {
+    res.status(500).json({ error: String(error) });
+  }
+});
+
+// API: 触发状态转换
+app.post('/api/v1/workflow/:workflowId/transition', async (req, res) => {
+  const { workflowId } = req.params;
+  const { trigger, context } = req.body;
+  
+  if (!trigger) {
+    res.status(400).json({ error: 'Missing trigger' });
+    return;
+  }
+
+  try {
+    const fsm = getOrCreateWorkflowFSM({
+      workflowId,
+      sessionId: req.body.sessionId || workflowId,
+    });
+
+    const success = await fsm.trigger(trigger as any, context);
+    
+    if (!success) {
+      res.status(400).json({ error: 'Transition failed', trigger, currentState: fsm.getState() });
+      return;
+    }
+
+    res.json({
+      success: true,
+      currentState: fsm.getState(),
+      context: fsm.getContext(),
+    });
+  } catch (error) {
+    res.status(500).json({ error: String(error) });
+  }
+});
+
+console.log('[Server] Agent CLI API enabled');
+
+// =============================================================================
+// Agent CLI API - UI 调用入口
+// =============================================================================
+
+import {
+  understandCommand,
+  routeCommand,
+  planCommand,
+  executeCommand,
+  reviewCommand,
+  orchestrateCommand,
+} from '../cli/agent-commands.js';
+import { getOrCreateWorkflowFSM } from '../orchestration/workflow-fsm.js';
+
+// API: 语义理解
+app.post('/api/v1/agent/understand', async (req, res) => {
+  const { input, sessionId } = req.body;
+  if (!input) {
+    res.status(400).json({ error: 'Missing input' });
+    return;
+  }
+
+  try {
+    const result = await understandCommand(input, { sessionId });
+    res.json({ success: true, result });
+  } catch (error) {
+    res.status(500).json({ error: String(error) });
+  }
+});
+
+// API: 路由决策
+app.post('/api/v1/agent/route', async (req, res) => {
+  const { intentAnalysis, sessionId } = req.body;
+  if (!intentAnalysis) {
+    res.status(400).json({ error: 'Missing intentAnalysis' });
+    return;
+  }
+
+  try {
+    const result = await routeCommand(JSON.stringify(intentAnalysis), { sessionId });
+    res.json({ success: true, result });
+  } catch (error) {
+    res.status(500).json({ error: String(error) });
+  }
+});
+
+// API: 任务规划
+app.post('/api/v1/agent/plan', async (req, res) => {
+  const { task, sessionId } = req.body;
+  if (!task) {
+    res.status(400).json({ error: 'Missing task' });
+    return;
+  }
+
+  try {
+    const result = await planCommand(task, { sessionId });
+    res.json({ success: true, result });
+  } catch (error) {
+    res.status(500).json({ error: String(error) });
+  }
+});
+
+// API: 任务执行
+app.post('/api/v1/agent/execute', async (req, res) => {
+  const { task, agent, blocking, sessionId } = req.body;
+  if (!task) {
+    res.status(400).json({ error: 'Missing task' });
+    return;
+  }
+
+  try {
+    const result = await executeCommand(task, { agent, blocking, sessionId });
+    res.json({ success: true, result });
+  } catch (error) {
+    res.status(500).json({ error: String(error) });
+  }
+});
+
+// API: 质量审查
+app.post('/api/v1/agent/review', async (req, res) => {
+  const { proposal } = req.body;
+  if (!proposal) {
+    res.status(400).json({ error: 'Missing proposal' });
+    return;
+  }
+
+  try {
+    const result = await reviewCommand(JSON.stringify(proposal));
+    res.json({ success: true, result });
+  } catch (error) {
+    res.status(500).json({ error: String(error) });
+  }
+});
+
+// API: 编排协调
+app.post('/api/v1/agent/orchestrate', async (req, res) => {
+  const { task, sessionId, watch } = req.body;
+  if (!task) {
+    res.status(400).json({ error: 'Missing task' });
+    return;
+  }
+
+  try {
+    if (watch) {
+      await orchestrateCommand(task, { sessionId, watch: true });
+      res.json({ success: true, message: 'Orchestration started, streaming via WebSocket' });
+    } else {
+      const result = await orchestrateCommand(task, { sessionId });
+      res.json({ success: true, result });
+    }
+  } catch (error) {
+    res.status(500).json({ error: String(error) });
+  }
+});
+
+// API: 触发状态转换
+app.post('/api/v1/workflow/:workflowId/transition', async (req, res) => {
+  const { workflowId } = req.params;
+  const { trigger, context } = req.body;
+  
+  if (!trigger) {
+    res.status(400).json({ error: 'Missing trigger' });
+    return;
+  }
+
+  try {
+    const fsm = getOrCreateWorkflowFSM({
+      workflowId,
+      sessionId: req.body.sessionId || workflowId,
+    });
+
+    const success = await fsm.trigger(trigger as any, context);
+    
+    if (!success) {
+      res.status(400).json({ error: 'Transition failed', trigger, currentState: fsm.getState() });
+      return;
+    }
+
+    res.json({
+      success: true,
+      currentState: fsm.getState(),
+      context: fsm.getContext(),
+    });
+  } catch (error) {
+    res.status(500).json({ error: String(error) });
+  }
+});
+
+console.log('[Server] Agent CLI API enabled');

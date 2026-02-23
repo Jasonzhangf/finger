@@ -367,3 +367,91 @@ pkill -f "node.*dist/server/index.js"
 - E2E 测试应在独立端口运行，避免与开发环境冲突
 - 测试前检查端口是否被占用，选择性清理而非普杀
 - 测试后清理自己创建的进程，不影响其他服务
+
+## 13. CLI 设计规范
+
+### 13.1 架构原则
+
+CLI 是系统的统一入口，遵循以下原则：
+
+1. **异步启动**: `finger daemon start` 启动后台常驻进程
+2. **标准 API**: 所有调用通过 HTTP/WebSocket API
+3. **事件驱动**: 实时状态通过 WebSocket 推送
+4. **用户交互**: 需要用户决策时阻塞等待
+5. **状态机驱动**: 工作流状态由 FSM 管理
+
+### 13.2 命令接口
+
+```bash
+# Daemon 管理
+finger daemon start      # 启动后台进程
+finger daemon stop       # 停止进程
+finger daemon status     # 查看状态
+finger daemon logs       # 查看日志
+
+# Agent 命令
+finger understand "输入"           # 语义理解
+finger route --intent '{"..."}'    # 路由决策
+finger plan "任务"                 # 任务规划
+finger execute --task "xxx"        # 任务执行
+finger review --proposal '{"..."}' # 质量审查
+finger orchestrate "任务" --watch  # 编排协调
+
+# 工作流控制
+finger pause <workflowId>    # 暂停
+finger resume <workflowId>   # 恢复
+finger cancel <workflowId>   # 取消
+finger status <workflowId>   # 查看状态
+finger list                  # 列出所有工作流
+
+# 交互模式
+finger repl                  # 进入 REPL 模式
+```
+
+### 13.3 输入输出
+
+**输入源**:
+- 命令行参数: `finger plan "任务"`
+- 管道: `echo "任务" | finger plan`
+- 文件: `finger plan --file task.txt`
+- 交互式: `finger repl`
+
+**输出格式**:
+- 人类可读 (默认)
+- JSON (`--json`)
+- SSE 流 (`--stream`)
+
+### 13.4 用户决策
+
+当 Agent 需要用户输入时：
+
+```
+❓ 检测到网络访问，是否继续？(Y/n)
+> Y
+
+❓ 找到 5 篇论文，选择哪些？
+  1. paper1.pdf
+  2. paper2.pdf
+  3. paper3.pdf
+> 1,3
+```
+
+### 13.5 错误码
+
+| 退出码 | 说明 |
+|--------|------|
+| 0 | 成功 |
+| 1 | 通用错误 |
+| 2 | 参数错误 |
+| 3 | 连接错误（Daemon 未启动） |
+| 4 | 资源缺失 |
+| 5 | 任务失败 |
+| 6 | 用户取消 |
+| 7 | 超时 |
+
+### 13.6 详细设计
+
+详见：
+- [docs/CLI_DESIGN.md](./docs/CLI_DESIGN.md) - CLI 设计文档
+- [docs/CLI_IMPLEMENTATION_PLAN.md](./docs/CLI_IMPLEMENTATION_PLAN.md) - 实现计划
+- [docs/CLI_CALL_FLOW.md](./docs/CLI_CALL_FLOW.md) - 调用流程
