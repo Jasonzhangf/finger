@@ -10,7 +10,7 @@
  */
 
 import { WebSocket } from 'ws';
-import { performanceMonitor } from './performance-monitor.js';
+// import { performanceMonitor } from './performance-monitor.js';
 import type { RuntimeEvent } from './events.js';
 import { EVENT_GROUPS, getEventTypesByGroup, getSupportedEventGroups } from './events.js';
 import { getSupportedEventTypes } from './events.js';

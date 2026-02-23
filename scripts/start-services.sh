@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Finger 项目服务启动脚本
-# 自动启动所有必要的服务：iFlow CLI (SDK自动管理)、Finger Daemon
+# 自动启动所有必要的服务：iFlow CLI (SDK 自动管理)、Finger Daemon
 
 set -e
 
@@ -73,27 +73,38 @@ if [ -f "$PID_FILE" ]; then
         kill $OLD_PID 2>/dev/null || true
         sleep 2
     fi
+    rm -f "$PID_FILE"
 fi
 
 echo "Building project..."
 npm run build
 
 echo "Starting Finger Server..."
-nohup npm run start > /tmp/finger-daemon.log 2>&1 &
+nohup node dist/server/index.js > /tmp/finger-daemon.log 2>&1 &
 FINGER_PID=$!
 echo "$FINGER_PID" > "$PID_FILE"
 echo "Finger Daemon started (PID: $FINGER_PID)"
 echo "Log: /tmp/finger-daemon.log"
-sleep 3
 
-# 检查状态
-FINGER_STATUS=$(curl -s http://localhost:8080/health 2>/dev/null || echo "")
-if echo "$FINGER_STATUS" | grep -q "healthy"; then
-    echo "Status: $FINGER_STATUS"
-else
-    echo "Warning: Finger Daemon may not have started correctly."
-    echo "Check: /tmp/finger-daemon.log"
-fi
+# 等待服务启动
+echo "Waiting for server to start..."
+for i in {1..10}; do
+    if curl -sf http://localhost:8080/health > /dev/null 2>&1; then
+        echo "Server is ready!"
+        break
+    fi
+    if [ $i -eq 10 ]; then
+        echo "Warning: Server may not have started correctly."
+        echo "Check: /tmp/finger-daemon.log"
+        exit 1
+    fi
+    sleep 1
+done
+
+# 健康检查
+echo ""
+echo "Running health check..."
+bash scripts/health-check.sh
 
 # ========================================
 # Summary

@@ -189,8 +189,28 @@ export class ReActLoop {
       } catch { return []; }
     };
 
+    const stateLike = this.state as ReActState & { epicId?: string; workflowId?: string };
+    const workflowId = stateLike.workflowId || stateLike.epicId;
+    const sessionId = stateLike.epicId || stateLike.workflowId || this.config.agentId || 'unknown';
+    const agentId = this.config.agentId || 'unknown-agent';
+
     while (true) {
       const round = this.state.iterations.length + 1;
+      
+      // Emit phase transition for UI progress - round start
+      globalEventBus.emit({
+        type: 'phase_transition',
+        sessionId,
+        
+        agentId,
+        timestamp: new Date().toISOString(),
+        payload: {
+          from: `round_${round - 1}_complete`,
+          to: `round_${round}_proposal`,
+          triggerAction: 'round_start',
+          round,
+        },
+      });
       
       this.logToConsole(`💭 Round ${round}: Generating proposal...`);
       
@@ -198,7 +218,6 @@ export class ReActLoop {
       const newInstructions = await checkRuntimeInstructions();
       if (newInstructions.length > 0) {
         this.logToConsole(`📬 New runtime instructions (Round ${round})`, { instructions: newInstructions });
-        // Instructions will be included in the next prompt via runtimeInstructions parameter
       }
       
       // 1. Planner 产出方案
@@ -208,6 +227,22 @@ export class ReActLoop {
       } catch (error) {
         const errorMsg = error instanceof Error ? error.message : String(error);
         this.logToConsole(`❌ Proposal generation failed (Round ${round})`, { error: errorMsg });
+        
+        // Emit phase transition for error
+        globalEventBus.emit({
+          type: 'phase_transition',
+          sessionId,
+          
+          agentId,
+          timestamp: new Date().toISOString(),
+          payload: {
+            from: `round_${round}_proposal`,
+            to: `round_${round}_error`,
+            triggerAction: 'proposal_error',
+            round,
+          },
+        });
+        
         this.config.snapshotLogger.log({
           timestamp: new Date().toISOString(),
           iteration: round,

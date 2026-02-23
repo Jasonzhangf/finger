@@ -9,7 +9,7 @@
  */
 
 import { resourcePool, type ResourceRequirement } from './resource-pool.js';
-import { performanceMonitor } from '../runtime/performance-monitor.js';
+// import { performanceMonitor } from '../runtime/performance-monitor.js';
 import type { TaskNode } from '../agents/daemon/orchestrator-loop.js';
 import {
   type ConcurrencyPolicy,

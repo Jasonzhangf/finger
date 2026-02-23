@@ -197,17 +197,7 @@ export function useWorkflowExecution(sessionId: string): UseWorkflowExecutionRet
           paused: payload.status === 'paused' ? true : payload.status === 'executing' ? false : prev.paused,
         };
       });
-
-      setRuntimeEvents((prev) =>
-        pushEvent(prev, {
-          role: 'system',
-          content: payload.status ? `Workflow 状态更新: ${payload.status}` : `Workflow 更新: Round ${payload.orchestratorState?.round ?? payload.round ?? '-'}`,
-          timestamp: new Date().toISOString(),
-          kind: 'status',
-          agentId: 'orchestrator',
-          agentName: 'Orchestrator',
-        }),
-      );
+      // workflow_update 只用于状态更新，不再生成会话面板占位消息
       return;
     }
 
@@ -375,7 +365,6 @@ export function useWorkflowExecution(sessionId: string): UseWorkflowExecutionRet
         .sort((a, b) => new Date(b.startTime).getTime() - new Date(a.startTime).getTime())[0];
 
       const executionPath = buildRoundExecutionPath(taskList, 'orchestrator-loop');
-       // executionPath built via buildRoundExecutionPath helper
 
       setExecutionState((prev) => ({
         workflowId: selectedWorkflow.id,

@@ -4,7 +4,7 @@
  */
 
 import type { BaseEvent } from '../../runtime/events.js';
-import type { Loop, LoopNode, LoopPhase, LoopResult, LoopStatus, PendingUserInput, ResourceAllocationInfo } from './types.js';
+import type { Loop, LoopNode, LoopPhase, LoopResult, PendingUserInput, ResourceAllocationInfo } from './types.js';
 
 // =============================================================================
 // 循环事件

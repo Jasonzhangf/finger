@@ -1,5 +1,4 @@
-import React, { useMemo } from 'react';
-import { useEffect, useState } from 'react';
+import React, { useMemo, useEffect, useState } from 'react';
 import { PerformanceCard } from '../PerformanceCard/PerformanceCard.js';
 import { ChatInterface } from '../ChatInterface/ChatInterface.js';
 import { AppLayout } from '../layout/AppLayout.js';
@@ -89,6 +88,7 @@ export const WorkflowContainer: React.FC = () => {
 
   const { agents: agentModules } = useAgents();
 
+  // All hooks must be called before any conditional returns
   const runtimeAgents = React.useMemo(() => {
     if (executionState?.agents && executionState.agents.length > 0) {
       return executionState.agents;
@@ -104,28 +104,6 @@ export const WorkflowContainer: React.FC = () => {
       tokenUsage: 0,
     }));
   }, [executionState?.agents, agentModules]);
-
-  if (isLoading) {
-    return (
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100vh', width: '100vw', background: '#0e1217', color: '#9ca3af' }}>
-        <div>
-          <div style={{ fontSize: '24px', marginBottom: '16px' }}>⏳</div>
-          <div>加载中...</div>
-        </div>
-      </div>
-    );
-  }
-
-  if (error) {
-    return (
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100vh', width: '100vw', background: '#0e1217', color: '#ef4444' }}>
-        <div>
-          <div style={{ fontSize: '24px', marginBottom: '16px' }}>❌</div>
-          <div>Error: {error}</div>
-        </div>
-      </div>
-    );
-  }
 
   const taskFlowProps = React.useMemo(() => {
     const planHistory: Loop[] = [];
@@ -170,8 +148,29 @@ export const WorkflowContainer: React.FC = () => {
     />
   ), [executionState, runtimeAgents, runtimeEvents, sendUserInput, pauseWorkflow, resumeWorkflow, isConnected]);
 
+  // Use overlay instead of early return to maintain hook consistency
+  const loadingOverlay = isLoading ? (
+    <div style={{ position: 'fixed', inset: 0, zIndex: 9999, display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#0e1217', color: '#9ca3af' }}>
+      <div>
+        <div style={{ fontSize: '24px', marginBottom: '16px' }}>⏳</div>
+        <div>加载中...</div>
+      </div>
+    </div>
+  ) : null;
+
+  const errorOverlay = error ? (
+    <div style={{ position: 'fixed', inset: 0, zIndex: 9998, display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#0e1217', color: '#ef4444' }}>
+      <div>
+        <div style={{ fontSize: '24px', marginBottom: '16px' }}>❌</div>
+        <div>Error: {error}</div>
+      </div>
+    </div>
+  ) : null;
+
   return (
     <>
+      {loadingOverlay}
+      {errorOverlay}
       <AppLayout
         leftSidebar={<LeftSidebar />}
         canvas={canvasElement}
