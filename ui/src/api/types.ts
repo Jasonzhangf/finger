@@ -2,6 +2,218 @@
  * API Types - Finger Daemon 接口类型定义
  */
 
+// ========== FSM 状态类型（与后端 workflow-fsm.ts 一致） ==========
+
+/**
+ * 工作流状态（完整 FSM 状态）
+ */
+export type WorkflowFSMState =
+  | 'idle'                     // 空闲
+  | 'semantic_understanding'   // 语义理解中
+  | 'routing_decision'         // 路由决策中
+  | 'plan_loop'                // 任务规划循环
+  | 'execution'                // 任务执行中
+  | 'review'                   // 审查中
+  | 'replan_evaluation'        // 重规划评估
+  | 'wait_user_decision'       // 等待用户决策
+  | 'paused'                   // 已暂停
+  | 'completed'                // 已完成
+  | 'failed';                  // 已失败
+
+/**
+ * 任务状态（完整 FSM 状态）
+ */
+export type TaskFSMState =
+  | 'created'           // 已创建
+  | 'ready'             // 就绪
+  | 'dispatching'       // 派发中
+  | 'dispatched'        // 已派发（收到 ACK）
+  | 'dispatch_failed'   // 派发失败
+  | 'running'           // 执行中
+  | 'execution_failed'  // 执行失败
+  | 'execution_succeeded' // 执行成功
+  | 'reviewing'         // 审查中
+  | 'done'              // 完成
+  | 'rework_required'   // 需要返工
+  | 'blocked';          // 阻塞
+
+/**
+ * Agent 状态（完整 FSM 状态）
+ */
+export type AgentFSMState =
+  | 'idle'       // 空闲
+  | 'reserved'   // 已预留
+  | 'running'    // 执行中
+  | 'error'      // 错误
+  | 'released';  // 已释放
+
+// ========== 向后兼容的简化状态类型 ==========
+
+export type WorkflowStatus = 'planning' | 'executing' | 'completed' | 'failed' | 'partial' | 'paused';
+export type TaskStatus = 'pending' | 'blocked' | 'ready' | 'in_progress' | 'completed' | 'failed' | 'paused';
+export type AgentRuntimeStatus = 'idle' | 'running' | 'error' | 'paused';
+
+// ========== 状态映射工具 ==========
+
+/**
+ * FSM 状态 → 简化状态（用于 UI 显示）
+ */
+export function mapWorkflowFSMToStatus(fsmState: WorkflowFSMState): WorkflowStatus {
+  switch (fsmState) {
+    case 'idle':
+    case 'semantic_understanding':
+    case 'routing_decision':
+    case 'plan_loop':
+      return 'planning';
+    case 'execution':
+    case 'review':
+    case 'replan_evaluation':
+      return 'executing';
+    case 'wait_user_decision':
+      return 'paused';
+    case 'paused':
+      return 'paused';
+    case 'completed':
+      return 'completed';
+    case 'failed':
+      return 'failed';
+    default:
+      return 'executing';
+  }
+}
+
+/**
+ * FSM 状态 → 简化状态（用于 UI 显示）
+ */
+export function mapTaskFSMToStatus(fsmState: TaskFSMState): TaskStatus {
+  switch (fsmState) {
+    case 'created':
+    case 'ready':
+      return 'ready';
+    case 'dispatching':
+    case 'dispatched':
+      return 'in_progress';
+    case 'dispatch_failed':
+      return 'blocked';
+    case 'running':
+      return 'in_progress';
+    case 'execution_failed':
+      return 'failed';
+    case 'execution_succeeded':
+    case 'reviewing':
+    case 'done':
+      return 'completed';
+    case 'rework_required':
+      return 'blocked';
+    case 'blocked':
+      return 'blocked';
+    default:
+      return 'pending';
+  }
+}
+
+/**
+ * FSM 状态 → 简化状态（用于 UI 显示）
+ */
+export function mapAgentFSMToStatus(fsmState: AgentFSMState): AgentRuntimeStatus {
+  switch (fsmState) {
+    case 'idle':
+    case 'released':
+      return 'idle';
+    case 'reserved':
+    case 'running':
+      return 'running';
+    case 'error':
+      return 'error';
+    default:
+      return 'idle';
+  }
+}
+
+// ========== 状态掩码配置 ==========
+
+/**
+ * 状态掩码配置 - 控制哪些状态对用户可见
+ */
+export interface StateMaskConfig {
+  // 工作流状态掩码
+  workflowStates: {
+    hide: WorkflowFSMState[];  // 隐藏的状态
+    showAs: Partial<Record<WorkflowFSMState, WorkflowFSMState>>; // 映射显示（如将内部状态映射为用户友好的状态）
+  };
+  
+  // 任务状态掩码
+  taskStates: {
+    hide: TaskFSMState[];
+    showAs: Partial<Record<TaskFSMState, TaskFSMState>>;
+  };
+  
+  // Agent 状态掩码
+  agentStates: {
+    hide: AgentFSMState[];
+    showAs: Partial<Record<AgentFSMState, AgentFSMState>>;
+  };
+  
+  // 是否显示详细状态（开发模式）
+  showDetailedStates: boolean;
+}
+
+/**
+ * 默认状态掩码配置
+ */
+export const DEFAULT_STATE_MASK: StateMaskConfig = {
+  workflowStates: {
+    hide: ['semantic_understanding', 'routing_decision'], // 隐藏内部处理状态
+    showAs: {
+      'plan_loop': 'plan_loop',
+      'execution': 'execution',
+      'review': 'review',
+    },
+  },
+  taskStates: {
+    hide: ['dispatching', 'dispatched', 'execution_succeeded'], // 隐藏中间状态
+    showAs: {
+      'running': 'in_progress',
+      'done': 'completed',
+    },
+  },
+  agentStates: {
+    hide: ['reserved', 'released'],
+    showAs: {
+      'running': 'running',
+      'idle': 'idle',
+      'error': 'error',
+    },
+  },
+  showDetailedStates: false, // 默认关闭详细模式
+};
+
+/**
+ * 应用状态掩码
+ */
+export function applyStateMask<T extends string>(
+  state: T,
+  config: StateMaskConfig,
+  type: 'workflow' | 'task' | 'agent'
+): T | null {
+  const maskConfig = config[`${type}States`] as { hide: string[]; showAs: Record<string, string> };
+  
+  // 检查是否隐藏
+  if (maskConfig.hide.includes(state as string)) {
+    return null;
+  }
+  
+  // 检查是否需要映射
+  const mapped = maskConfig.showAs[state as string];
+  if (mapped) {
+    return mapped as T;
+  }
+  
+  return state;
+}
+
+// ========== 原有类型定义 ==========
+
 export interface DaemonStatus {
   status: 'running' | 'stopped';
   pid?: number;
@@ -63,15 +275,12 @@ export interface SessionInfo {
 
 // ========== Workflow Runtime Types ==========
 
-export type WorkflowStatus = 'planning' | 'executing' | 'completed' | 'failed' | 'partial' | 'paused';
-export type TaskStatus = 'pending' | 'blocked' | 'ready' | 'in_progress' | 'completed' | 'failed' | 'paused';
-export type AgentRuntimeStatus = 'idle' | 'running' | 'error' | 'paused';
-
 export interface WorkflowInfo {
   id: string;
   sessionId: string;
   epicId?: string;
   status: WorkflowStatus;
+  fsmState?: WorkflowFSMState; // 新增：完整 FSM 状态
   taskCount: number;
   completedTasks: number;
   failedTasks: number;
@@ -85,6 +294,7 @@ export interface TaskInfo {
   bdTaskId?: string;
   description: string;
   status: TaskStatus;
+  fsmState?: TaskFSMState; // 新增：完整 FSM 状态
   assignee?: string;
   dependencies: string[];
   result?: {
@@ -101,6 +311,7 @@ export interface TaskNode {
   bdTaskId?: string;
   description: string;
   status: TaskStatus;
+  fsmState?: TaskFSMState;
   assignee?: string;
   dependencies: string[];
   result?: {
@@ -117,6 +328,7 @@ export interface AgentRuntime {
   name: string;
   type: 'executor' | 'reviewer' | 'orchestrator';
   status: AgentRuntimeStatus;
+  fsmState?: AgentFSMState; // 新增：完整 FSM 状态
   load: number;
   errorRate: number;
   requestCount: number;
@@ -173,6 +385,7 @@ export interface AgentExecutionDetail {
 export interface WorkflowExecutionState {
   workflowId: string;
   status: WorkflowStatus;
+  fsmState?: WorkflowFSMState; // 新增：完整 FSM 状态
   orchestrator: {
     id: string;
     currentRound: number;
@@ -212,6 +425,7 @@ export interface RoundEdgeInfo {
   status: 'active' | 'completed' | 'error' | 'pending';
   message?: string;
 }
+
 export type ProviderType = 'iflow' | 'openai' | 'anthropic' | 'custom';
 
 export interface ProviderConfig {
@@ -237,7 +451,7 @@ export interface AgentStats {
 }
 
 export interface WsMessage {
-  type: 'status' | 'task_update' | 'message' | 'error' | 'workflow_update' | 'agent_update' | 'execution_step';
+  type: 'status' | 'task_update' | 'message' | 'error' | 'workflow_update' | 'agent_update' | 'execution_step' | 'phase_transition';
   payload: unknown;
   timestamp: string;
 }
@@ -251,6 +465,7 @@ export interface RuntimeEvent {
   agentName?: string;
   kind?: 'thought' | 'action' | 'observation' | 'status';
   images?: RuntimeImage[];
+  fsmState?: WorkflowFSMState | TaskFSMState | AgentFSMState; // 新增：FSM 状态
 }
 
 export interface RuntimeImage {
@@ -275,6 +490,7 @@ export interface UserInputPayload {
 export interface WorkflowUpdatePayload {
   workflowId: string;
   status: WorkflowStatus;
+  fsmState?: WorkflowFSMState; // 新增：完整 FSM 状态
   round?: number;
   orchestratorState?: {
     round: number;
@@ -290,6 +506,7 @@ export interface WorkflowUpdatePayload {
 export interface AgentUpdatePayload {
   agentId: string;
   status: AgentRuntimeStatus;
+  fsmState?: AgentFSMState; // 新增：完整 FSM 状态
   currentTaskId?: string;
   load: number;
   step?: ExecutionStep;

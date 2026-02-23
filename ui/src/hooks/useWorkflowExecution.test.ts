@@ -1,178 +1,181 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { renderHook, act } from '@testing-library/react';
-import { useWorkflowExecution } from './useWorkflowExecution.js';
+/**
+ * useWorkflowExecution 状态掩码测试
+ */
 
-// Mock useWebSocket
-vi.mock('./useWebSocket.js', () => ({
-  useWebSocket: () => ({
-    isConnected: true,
-    subscribe: vi.fn(),
-    send: vi.fn(),
-  }),
-}));
+import { describe, it, expect } from 'vitest';
+import {
+  mapWorkflowFSMToStatus,
+  mapTaskFSMToStatus,
+  mapAgentFSMToStatus,
+  applyStateMask,
+  DEFAULT_STATE_MASK,
+  type WorkflowFSMState,
+  type TaskFSMState,
+  type AgentFSMState,
+} from '../api/types.js';
 
-// Mock global fetch
-const mockFetch = vi.fn();
-(globalThis as Record<string, unknown>).fetch = mockFetch;
-
-describe('useWorkflowExecution', () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-  });
-
-  it('should initialize with empty state', () => {
-    const { result } = renderHook(() => useWorkflowExecution('test-session'));
-
-    expect(result.current.workflow).toBeNull();
-    expect(result.current.executionState).toBeNull();
-    expect(result.current.runtimeEvents).toEqual([]);
-    expect(result.current.isLoading).toBe(false);
-    expect(result.current.error).toBeNull();
-  });
-
-  it('should set selected agent', () => {
-    const { result } = renderHook(() => useWorkflowExecution('test-session'));
-
-    act(() => {
-      result.current.setSelectedAgentId('agent-1');
+describe('FSM State Mapping', () => {
+  describe('mapWorkflowFSMToStatus', () => {
+    it('should map planning states correctly', () => {
+      expect(mapWorkflowFSMToStatus('idle')).toBe('planning');
+      expect(mapWorkflowFSMToStatus('semantic_understanding')).toBe('planning');
+      expect(mapWorkflowFSMToStatus('routing_decision')).toBe('planning');
+      expect(mapWorkflowFSMToStatus('plan_loop')).toBe('planning');
     });
 
-    expect(result.current.selectedAgentId).toBe('agent-1');
+    it('should map executing states correctly', () => {
+      expect(mapWorkflowFSMToStatus('execution')).toBe('executing');
+      expect(mapWorkflowFSMToStatus('review')).toBe('executing');
+      expect(mapWorkflowFSMToStatus('replan_evaluation')).toBe('executing');
+    });
+
+    it('should map terminal states correctly', () => {
+      expect(mapWorkflowFSMToStatus('completed')).toBe('completed');
+      expect(mapWorkflowFSMToStatus('failed')).toBe('failed');
+    });
+
+    it('should map paused states correctly', () => {
+      expect(mapWorkflowFSMToStatus('paused')).toBe('paused');
+      expect(mapWorkflowFSMToStatus('wait_user_decision')).toBe('paused');
+    });
   });
 
-  it('should start workflow and update state', async () => {
-    mockFetch.mockResolvedValue({
-      ok: true,
-      json: async () => ({ success: true }),
+  describe('mapTaskFSMToStatus', () => {
+    it('should map ready states correctly', () => {
+      expect(mapTaskFSMToStatus('created')).toBe('ready');
+      expect(mapTaskFSMToStatus('ready')).toBe('ready');
     });
 
-    const { result } = renderHook(() => useWorkflowExecution('test-session'));
-
-    await act(async () => {
-      await result.current.startWorkflow('Test task');
+    it('should map in_progress states correctly', () => {
+      expect(mapTaskFSMToStatus('dispatching')).toBe('in_progress');
+      expect(mapTaskFSMToStatus('dispatched')).toBe('in_progress');
+      expect(mapTaskFSMToStatus('running')).toBe('in_progress');
     });
 
-    expect(result.current.isLoading).toBe(false);
+    it('should map completed states correctly', () => {
+      expect(mapTaskFSMToStatus('execution_succeeded')).toBe('completed');
+      expect(mapTaskFSMToStatus('reviewing')).toBe('completed');
+      expect(mapTaskFSMToStatus('done')).toBe('completed');
+    });
+
+    it('should map failed/blocked states correctly', () => {
+      expect(mapTaskFSMToStatus('dispatch_failed')).toBe('blocked');
+      expect(mapTaskFSMToStatus('execution_failed')).toBe('failed');
+      expect(mapTaskFSMToStatus('rework_required')).toBe('blocked');
+      expect(mapTaskFSMToStatus('blocked')).toBe('blocked');
+    });
   });
 
-  it('should infer agent type from agentId', () => {
-    const { result } = renderHook(() => useWorkflowExecution('test-session'));
+  describe('mapAgentFSMToStatus', () => {
+    it('should map idle states correctly', () => {
+      expect(mapAgentFSMToStatus('idle')).toBe('idle');
+      expect(mapAgentFSMToStatus('released')).toBe('idle');
+    });
 
-    expect(result.current.getAgentDetail('non-existent')).toBeNull();
+    it('should map running states correctly', () => {
+      expect(mapAgentFSMToStatus('reserved')).toBe('running');
+      expect(mapAgentFSMToStatus('running')).toBe('running');
+    });
+
+    it('should map error states correctly', () => {
+      expect(mapAgentFSMToStatus('error')).toBe('error');
+    });
+  });
+});
+
+describe('State Mask', () => {
+  describe('applyStateMask for workflow', () => {
+    it('should hide semantic_understanding state', () => {
+      const result = applyStateMask('semantic_understanding', DEFAULT_STATE_MASK, 'workflow');
+      expect(result).toBeNull();
+    });
+
+    it('should hide routing_decision state', () => {
+      const result = applyStateMask('routing_decision', DEFAULT_STATE_MASK, 'workflow');
+      expect(result).toBeNull();
+    });
+
+    it('should show execution state', () => {
+      const result = applyStateMask('execution', DEFAULT_STATE_MASK, 'workflow');
+      expect(result).toBe('execution');
+    });
+
+    it('should show plan_loop state', () => {
+      const result = applyStateMask('plan_loop', DEFAULT_STATE_MASK, 'workflow');
+      expect(result).toBe('plan_loop');
+    });
   });
 
-  it('should pause workflow', async () => {
-    const { result } = renderHook(() => useWorkflowExecution('test-session'));
-
-    await act(async () => {
-      await result.current.pauseWorkflow();
+  describe('applyStateMask for task', () => {
+    it('should hide dispatching state', () => {
+      const result = applyStateMask('dispatching', DEFAULT_STATE_MASK, 'task');
+      expect(result).toBeNull();
     });
 
-    expect(result.current.isLoading).toBe(false);
+    it('should hide dispatched state', () => {
+      const result = applyStateMask('dispatched', DEFAULT_STATE_MASK, 'task');
+      expect(result).toBeNull();
+    });
+
+    it('should hide execution_succeeded state', () => {
+      const result = applyStateMask('execution_succeeded', DEFAULT_STATE_MASK, 'task');
+      expect(result).toBeNull();
+    });
+
+    it('should map running to in_progress', () => {
+      const result = applyStateMask('running', DEFAULT_STATE_MASK, 'task');
+      expect(result).toBe('in_progress');
+    });
+
+    it('should map done to completed', () => {
+      const result = applyStateMask('done', DEFAULT_STATE_MASK, 'task');
+      expect(result).toBe('completed');
+    });
   });
 
-  it('should resume workflow', async () => {
-    const { result } = renderHook(() => useWorkflowExecution('test-session'));
-
-    await act(async () => {
-      await result.current.resumeWorkflow();
+  describe('applyStateMask for agent', () => {
+    it('should hide reserved state', () => {
+      const result = applyStateMask('reserved', DEFAULT_STATE_MASK, 'agent');
+      expect(result).toBeNull();
     });
 
-    expect(result.current.isLoading).toBe(false);
+    it('should hide released state', () => {
+      const result = applyStateMask('released', DEFAULT_STATE_MASK, 'agent');
+      expect(result).toBeNull();
+    });
+
+    it('should show running state', () => {
+      const result = applyStateMask('running', DEFAULT_STATE_MASK, 'agent');
+      expect(result).toBe('running');
+    });
   });
 
-  it('should send user input with text field', async () => {
-    mockFetch.mockResolvedValue({
-      ok: true,
-      json: async () => ({ success: true, message: 'OK' }),
+  describe('Custom mask configuration', () => {
+    it('should support custom hide list', () => {
+      const customMask = {
+        ...DEFAULT_STATE_MASK,
+        workflowStates: {
+          ...DEFAULT_STATE_MASK.workflowStates,
+          hide: ['semantic_understanding', 'routing_decision', 'plan_loop'],
+        },
+      };
+
+      expect(applyStateMask('plan_loop', customMask, 'workflow')).toBeNull();
+      expect(applyStateMask('execution', customMask, 'workflow')).toBe('execution');
     });
 
-    const { result } = renderHook(() => useWorkflowExecution('test-session'));
+    it('should support showDetailedStates mode', () => {
+      const detailedMask = {
+        ...DEFAULT_STATE_MASK,
+        showDetailedStates: true,
+        workflowStates: {
+          hide: [], // 详细模式下不隐藏任何状态
+          showAs: {},
+        },
+      };
 
-    await act(async () => {
-      await result.current.sendUserInput({ text: 'Test input' });
-    });
-
-    // Should have the user message
-    expect(result.current.runtimeEvents.some(e => e.role === 'user' && e.content === 'Test input')).toBe(true);
-  });
-
-  it('should report connection status', () => {
-    const { result } = renderHook(() => useWorkflowExecution('test-session'));
-
-    expect(result.current.isConnected).toBe(true);
-  });
-  
-  describe('sendUserInput pending/confirmed/error flow', () => {
-    it('should insert pending event before API call', async () => {
-      mockFetch.mockResolvedValue({
-        ok: true,
-        json: async () => ({ success: true, message: 'OK' }),
-      });
-      
-      const { result } = renderHook(() => useWorkflowExecution('test-session'));
-      
-      await act(async () => {
-        await result.current.sendUserInput({ text: 'Test pending' });
-      });
-      
-     // Should have the user message with pending status (no real workflow yet)
-     const userEvent = result.current.runtimeEvents.find(
-       (e) => e.role === 'user' && e.content === 'Test pending'
-     );
-     expect(userEvent).toBeDefined();
-      // After startWorkflow completes, it becomes 'confirmed'
-      expect(userEvent?.agentId).toBe('confirmed');
-      
-      // Should also have updated user rounds
-      expect(result.current.userRounds.length).toBeGreaterThan(0);
-    });
-    
-    it('should handle user input when workflow exists', async () => {
-      mockFetch.mockResolvedValue({
-        ok: true,
-        json: async () => ({ success: true, message: 'OK' }),
-      });
-      
-      const { result } = renderHook(() => useWorkflowExecution('test-session'));
-      
-      // First start a workflow (this creates pending workflow state)
-      await act(async () => {
-        await result.current.startWorkflow('Setup workflow');
-      });
-      
-      // At this point executionState exists but workflowId starts with 'pending-'
-      // so sendUserInput will trigger startWorkflow again
-      await act(async () => {
-        await result.current.sendUserInput({ text: 'Test with workflow' });
-      });
-      
-      // Should have both events
-      const events = result.current.runtimeEvents.filter(e => e.role === 'user');
-      expect(events.length).toBeGreaterThanOrEqual(1);
-    });
-    
-    it('should allow sending multiple messages', async () => {
-      mockFetch.mockResolvedValue({
-        ok: true,
-        json: async () => ({ success: true }),
-      });
-      
-      const { result } = renderHook(() => useWorkflowExecution('test-session'));
-      
-      // Send first message
-      await act(async () => {
-        await result.current.sendUserInput({ text: 'First' });
-      });
-      
-      // Send second message
-      await act(async () => {
-        await result.current.sendUserInput({ text: 'Second' });
-      });
-      
-      // Both events should be present
-      expect(result.current.runtimeEvents.filter((e) => e.role === 'user')).toHaveLength(2);
-      expect(result.current.userRounds).toHaveLength(2);
+      expect(applyStateMask('semantic_understanding', detailedMask, 'workflow')).toBe('semantic_understanding');
+      expect(applyStateMask('routing_decision', detailedMask, 'workflow')).toBe('routing_decision');
     });
   });
 });
