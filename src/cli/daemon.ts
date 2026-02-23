@@ -1,3 +1,6 @@
+import { readFileSync, existsSync } from 'fs';
+import { homedir } from 'os';
+import { join } from 'path';
 import { Command } from 'commander';
 import { OrchestrationDaemon } from '../orchestration/daemon.js';
 import { AgentPool } from '../orchestration/agent-pool.js';
@@ -109,19 +112,46 @@ export function registerDaemonCommand(program: Command): void {
   daemon
     .command('status')
     .description('Show daemon status and registered modules')
-    .action(async () => {
+    .option('-j, --json', 'Output as JSON')
+    .action(async (options: { json?: boolean }) => {
       const d = new OrchestrationDaemon();
       const running = d.isRunning();
-      console.log(`Daemon is ${running ? 'running' : 'stopped'}`);
-      if (!running) return;
-
-      try {
-        const res = await fetch('http://localhost:5521/api/v1/modules');
-        const data = await res.json();
-        console.log('\nRegistered Modules:');
-        console.log(JSON.stringify(data, null, 2));
-      } catch (err) {
-        console.error('Failed to fetch module list:', err);
+      
+      // Check PID file
+      let pid: number | null = null;
+      const pidFile = join(homedir(), '.finger', 'daemon.pid');
+      if (existsSync(pidFile)) {
+        const pidContent = readFileSync(pidFile, 'utf-8').trim();
+        pid = parseInt(pidContent, 10);
+      }
+      
+      const status = {
+        pid,
+        isRunning: running,
+        httpPort: 5521,
+        wsPort: 5522,
+        modules: null as unknown,
+      };
+      
+      if (running) {
+        try {
+          const res = await fetch('http://localhost:5521/api/v1/modules');
+          if (res.ok) {
+            status.modules = await res.json();
+          }
+        } catch (err) {
+          // Ignore fetch errors
+        }
+      }
+      
+      if (options.json) {
+        console.log(JSON.stringify(status, null, 2));
+      } else {
+        console.log(`Daemon is ${running ? 'running' : 'stopped'}`);
+        if (running && status.modules) {
+          console.log('\nRegistered Modules:');
+          console.log(JSON.stringify(status.modules, null, 2));
+        }
       }
     });
 
