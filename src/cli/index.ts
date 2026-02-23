@@ -187,3 +187,87 @@ program
   });
 
 program.parse();
+
+// ========== REPL Command ==========
+program
+  .command('repl')
+  .description('交互式模式：实时对话和任务管理')
+  .option('--http-url <url>', 'HTTP API URL', 'http://localhost:8080')
+  .option('--ws-url <url>', 'WebSocket URL', 'ws://localhost:8081')
+  .action(async (options: { httpUrl: string; wsUrl: string }) => {
+    try {
+      const { startREPL } = await import('./repl.js');
+      await startREPL({
+        httpUrl: options.httpUrl,
+        wsUrl: options.wsUrl,
+      });
+    } catch (error) {
+      console.error('[CLI Error]', error);
+      process.exit(1);
+    }
+  });
+
+// ========== Pause Command ==========
+program
+  .command('pause')
+  .description('暂停工作流')
+  .argument('<workflowId>', '工作流 ID')
+  .action(async (workflowId: string) => {
+    try {
+      const res = await fetch('http://localhost:8080/api/v1/workflow/pause', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ workflowId }),
+      });
+      const result = await res.json();
+      console.log('Workflow paused:', result);
+    } catch (error) {
+      console.error('[CLI Error]', error);
+      process.exit(1);
+    }
+  });
+
+// ========== Resume Command ==========
+program
+  .command('resume')
+  .description('恢复工作流')
+  .argument('<workflowId>', '工作流 ID')
+  .action(async (workflowId: string) => {
+    try {
+      const res = await fetch('http://localhost:8080/api/v1/workflow/resume', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ workflowId }),
+      });
+      const result = await res.json();
+      console.log('Workflow resumed:', result);
+    } catch (error) {
+      console.error('[CLI Error]', error);
+      process.exit(1);
+    }
+  });
+
+// ========== Input Command ==========
+program
+  .command('input')
+  .description('发送用户输入到工作流')
+  .argument('<workflowId>', '工作流 ID')
+  .argument('<input>', '输入内容')
+  .action(async (workflowId: string, input: string) => {
+    try {
+      const res = await fetch('http://localhost:8080/api/v1/workflow/input', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ workflowId, input }),
+      });
+      const result = await res.json();
+      console.log('Input sent:', result);
+    } catch (error) {
+      console.error('[CLI Error]', error);
+      process.exit(1);
+    }
+  });
+
+// ========== Daemon Commands ==========
+import { registerDaemonCommand } from './daemon.js';
+registerDaemonCommand(program);
