@@ -1,273 +1,140 @@
 /**
- * Agent CLI Commands
+ * Agent CLI Commands - Async wrappers that call daemon API
  * 
- * 每个 Agent 阶段封装为独立 CLI 命令：
- * - finger understand: 语义理解
- * - finger route: 路由决策
- * - finger plan: 任务规划
- * - finger execute: 任务执行
- * - finger review: 质量审查
- * - finger orchestrate: 编排协调
- * 
- * 通过 MessageHub 和 WebSocket 进行通信
+ * These commands send requests to the daemon and return immediately.
+ * The daemon handles actual execution and broadcasts events via WebSocket.
  */
 
-import { MessageHub } from '../orchestration/message-hub.js';
-import { globalEventBus } from '../runtime/event-bus.js';
-import { getOrCreateWorkflowFSM } from '../orchestration/workflow-fsm.js';
-import {
-  buildUnderstandingPrompt,
-  buildRouterPrompt,
-  buildPlannerPrompt,
-  buildExecutorPrompt,
-  buildPreActReviewPrompt,
-  buildOrchestratorPrompt,
-} from '../agents/prompts/index.js';
-import { Agent } from '../agents/agent.js';
+const API_BASE = process.env.FINGER_API_URL || 'http://localhost:8080';
 
-const hub = new MessageHub();
+export interface CommandOptions {
+  sessionId?: string;
+  blocking?: boolean;
+  watch?: boolean;
+}
 
-// ========== Understand Command ==========
+/**
+ * Send semantic understanding request to daemon
+ */
 export async function understandCommand(input: string, options: { sessionId?: string } = {}): Promise<void> {
-  console.log(`[CLI] Understanding: "${input}"`);
-
-  const sessionId = options.sessionId || `session-${Date.now()}`;
+  const res = await fetch(`${API_BASE}/api/v1/agent/understand`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ input, sessionId: options.sessionId }),
+  });
   
-  const understandingAgent = new Agent({
-    id: 'understanding-cli',
-    name: 'Understanding Agent',
-    mode: 'auto',
-    provider: 'iflow',
-    systemPrompt: '',
-  });
-
-  await understandingAgent.initialize();
-
-  const prompt = buildUnderstandingPrompt({
-    rawInput: input,
-    systemState: {
-      workflowStatus: 'idle',
-      lastActivity: new Date().toISOString(),
-      availableResources: ['executor-general'],
-    },
-    recentHistory: [],
-  });
-
-  const result = await understandingAgent.execute(prompt);
+  if (!res.ok) {
+    throw new Error(`Failed: ${res.statusText}`);
+  }
   
-  console.log('[CLI] Understanding result:');
-  console.log(JSON.stringify(result, null, 2));
-
-  await hub.sendToModule('router-cli', {
-    type: 'intent_analysis',
-    sessionId,
-    intentAnalysis: result,
-  });
-
-  await understandingAgent.disconnect();
+  const result = await res.json();
+  console.log('[CLI] Understanding request sent:', result);
 }
 
-// ========== Route Command ==========
+/**
+ * Send routing decision request to daemon
+ */
 export async function routeCommand(intentAnalysis: string, options: { sessionId?: string } = {}): Promise<void> {
-  console.log(`[CLI] Routing based on intent analysis`);
-
-  const sessionId = options.sessionId || `session-${Date.now()}`;
-  const intent = JSON.parse(intentAnalysis);
-
-  const routerAgent = new Agent({
-    id: 'router-cli',
-    name: 'Router Agent',
-    mode: 'auto',
-    provider: 'iflow',
+  const res = await fetch(`${API_BASE}/api/v1/agent/route`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ intentAnalysis: JSON.parse(intentAnalysis), sessionId: options.sessionId }),
   });
-
-  await routerAgent.initialize();
-
-  const prompt = buildRouterPrompt({
-    intentAnalysis: intent,
-    systemState: {
-      workflowStatus: 'idle',
-      lastActivity: new Date().toISOString(),
-      availableResources: ['executor-general'],
-    },
-  });
-
-  const result = await routerAgent.execute(prompt);
   
-  console.log('[CLI] Routing result:');
-  console.log(JSON.stringify(result, null, 2));
-
-  const fsm = getOrCreateWorkflowFSM({
-    workflowId: `wf-${Date.now()}`,
-    sessionId,
-  });
-
-  const route = (result as any).params?.route;
-  if (route) {
-    await fsm.trigger('routing_decided', {
-      routingDecision: { route },
-    });
+  if (!res.ok) {
+    throw new Error(`Failed: ${res.statusText}`);
   }
-
-  await routerAgent.disconnect();
+  
+  const result = await res.json();
+  console.log('[CLI] Routing request sent:', result);
 }
 
-// ========== Plan Command ==========
+/**
+ * Send task planning request to daemon
+ */
 export async function planCommand(task: string, options: { sessionId?: string } = {}): Promise<void> {
-  console.log(`[CLI] Planning task: "${task}"`);
-
-  const sessionId = options.sessionId || `session-${Date.now()}`;
-
-  const plannerAgent = new Agent({
-    id: 'planner-cli',
-    name: 'Planner Agent',
-    mode: 'auto',
-    provider: 'iflow',
+  const res = await fetch(`${API_BASE}/api/v1/agent/plan`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ task, sessionId: options.sessionId }),
   });
-
-  await plannerAgent.initialize();
-
-  const prompt = buildPlannerPrompt({
-    task,
-    tools: [
-      { name: 'WEB_SEARCH', description: '网络搜索', params: { query: 'string' } },
-      { name: 'READ_FILE', description: '读取文件', params: { path: 'string' } },
-      { name: 'WRITE_FILE', description: '写入文件', params: { path: 'string', content: 'string' } },
-    ],
-    history: '',
-    round: 1,
-  });
-
-  const result = await plannerAgent.execute(prompt);
   
-  console.log('[CLI] Planning result:');
-  console.log(JSON.stringify(result, null, 2));
-
-  await plannerAgent.disconnect();
-}
-
-// ========== Execute Command ==========
-export async function executeCommand(task: string, options: { agent?: string; blocking?: boolean; sessionId?: string } = {}): Promise<void> {
-  console.log(`[CLI] Executing task: "${task}"`);
-
-  const agentId = options.agent || 'executor-general';
-
-  const executorAgent = new Agent({
-    id: 'executor-cli',
-    name: 'Executor Agent',
-    mode: options.blocking ? 'manual' : 'auto',
-    provider: 'iflow',
-  });
-
-  await executorAgent.initialize();
-
-  const prompt = buildExecutorPrompt({
-    task: {
-      id: `task-${Date.now()}`,
-      description: task,
-    },
-    tools: [
-      { name: 'WEB_SEARCH', description: '网络搜索', params: { query: 'string' } },
-      { name: 'READ_FILE', description: '读取文件', params: { path: 'string' } },
-      { name: 'WRITE_FILE', description: '写入文件', params: { path: 'string', content: 'string' } },
-      { name: 'SHELL_EXEC', description: '执行 shell 命令', params: { command: 'string' } },
-    ],
-    round: 1,
-  });
-
-  const result = await executorAgent.execute(prompt);
-  
-  console.log('[CLI] Execution result:');
-  console.log(JSON.stringify(result, null, 2));
-
-  await executorAgent.disconnect();
-}
-
-// ========== Review Command ==========
-export async function reviewCommand(proposal: string): Promise<void> {
-  console.log(`[CLI] Reviewing proposal`);
-
-  const proposalObj = JSON.parse(proposal);
-
-  const reviewerAgent = new Agent({
-    id: 'reviewer-cli',
-    name: 'Reviewer Agent',
-    mode: 'auto',
-    provider: 'iflow',
-  });
-
-  await reviewerAgent.initialize();
-
-  const prompt = buildPreActReviewPrompt({
-    task: 'Review proposal',
-    round: 1,
-    proposal: proposalObj,
-    availableTools: ['WEB_SEARCH', 'READ_FILE', 'WRITE_FILE'],
-  });
-
-  const result = await reviewerAgent.execute(prompt);
-  
-  console.log('[CLI] Review result:');
-  console.log(JSON.stringify(result, null, 2));
-
-  await reviewerAgent.disconnect();
-}
-
-// ========== Orchestrate Command ==========
-export async function orchestrateCommand(task: string, options: { sessionId?: string; watch?: boolean; json?: boolean; stream?: boolean } = {}): Promise<void> {
-  console.log(`[CLI] Orchestrating task: "${task}"`);
-
-  const sessionId = options.sessionId || `session-${Date.now()}`;
-
-  const orchestratorAgent = new Agent({
-    id: 'orchestrator-cli',
-    name: 'Orchestrator Agent',
-    mode: 'auto',
-    provider: 'iflow',
-  });
-
-  await orchestratorAgent.initialize();
-
-  const prompt = buildOrchestratorPrompt({
-    workflowStatus: 'idle',
-    currentPhase: 'semantic_understanding',
-    taskProgress: {
-      total: 0,
-      completed: 0,
-      failed: 0,
-      inProgress: 0,
-      pending: 0,
-    },
-    resourceStatus: {
-      available: 1,
-      busy: 0,
-      blocked: 0,
-    },
-    recentEvents: [],
-  });
-
-  const result = await orchestratorAgent.execute(prompt);
-  
-  console.log('[CLI] Orchestration result:');
-  console.log(JSON.stringify(result, null, 2));
-
-  if (options.watch) {
-    console.log('[CLI] Watching for events...');
-    
-    globalEventBus.subscribe('phase_transition', (event) => {
-      console.log('[CLI] Phase transition:', event.payload);
-    });
-
-    globalEventBus.subscribe('task_started', (event) => {
-      console.log('[CLI] Task started:', event.payload);
-    });
-
-    globalEventBus.subscribe('task_completed', (event) => {
-      console.log('[CLI] Task completed:', event.payload);
-    });
-
-    await new Promise(() => {});
+  if (!res.ok) {
+    throw new Error(`Failed: ${res.statusText}`);
   }
+  
+  const result = await res.json();
+  console.log('[CLI] Planning request sent:', result);
+}
 
-  await orchestratorAgent.disconnect();
+/**
+ * Send task execution request to daemon
+ */
+export async function executeCommand(task: string, options: { agent?: string; blocking?: boolean; sessionId?: string } = {}): Promise<void> {
+  const res = await fetch(`${API_BASE}/api/v1/agent/execute`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ 
+      task, 
+      agent: options.agent,
+      blocking: options.blocking,
+      sessionId: options.sessionId 
+    }),
+  });
+  
+  if (!res.ok) {
+    throw new Error(`Failed: ${res.statusText}`);
+  }
+  
+  const result = await res.json();
+  if (options.blocking) {
+    console.log('[CLI] Execution result:', result);
+  } else {
+    console.log('[CLI] Execution request sent:', result);
+  }
+}
+
+/**
+ * Send review request to daemon
+ */
+export async function reviewCommand(proposal: string): Promise<void> {
+  const res = await fetch(`${API_BASE}/api/v1/agent/review`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ proposal: JSON.parse(proposal) }),
+  });
+  
+  if (!res.ok) {
+    throw new Error(`Failed: ${res.statusText}`);
+  }
+  
+  const result = await res.json();
+  console.log('[CLI] Review request sent:', result);
+}
+
+/**
+ * Send orchestration request to daemon
+ */
+export async function orchestrateCommand(task: string, options: { sessionId?: string; watch?: boolean } = {}): Promise<void> {
+  const res = await fetch(`${API_BASE}/api/v1/agent/orchestrate`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ 
+      task, 
+      sessionId: options.sessionId,
+      watch: options.watch,
+    }),
+  });
+  
+  if (!res.ok) {
+    throw new Error(`Failed: ${res.statusText}`);
+  }
+  
+  const result = await res.json();
+  console.log('[CLI] Orchestration request sent:', result);
+  
+  if (options.watch) {
+    console.log('[CLI] Watching events via WebSocket...');
+    // WebSocket streaming handled by server
+  }
 }
