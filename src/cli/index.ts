@@ -1,22 +1,6 @@
 #!/usr/bin/env node
 /**
  * Finger CLI
- * 
- * 命令行接口，封装所有 Agent 功能：
- * - finger understand: 语义理解
- * - finger route: 路由决策
- * - finger plan: 任务规划
- * - finger execute: 任务执行
- * - finger review: 质量审查
- * - finger orchestrate: 编排协调
- * 
- * 使用示例：
- *   finger understand "搜索 deepseek 最新发布"
- *   finger route --intent '{"normalizedIntent": {...}}'
- *   finger plan "搜索 deepseek 最新发布并生成报告"
- *   finger execute --task "创建配置文件" --blocking
- *   finger review --proposal '{"thought": "...", "action": "..."}'
- *   finger orchestrate --task "搜索 deepseek 最新发布" --watch
  */
 
 import { Command } from 'commander';
@@ -28,6 +12,7 @@ import {
   reviewCommand,
   orchestrateCommand,
 } from './agent-commands.js';
+import { registerDaemonCommand } from './daemon.js';
 
 const program = new Command();
 
@@ -36,7 +21,7 @@ program
   .description('AI Agent 编排系统 CLI')
   .version('1.0.0');
 
-// ========== Understand Command ==========
+// ========== Agent Commands ==========
 program
   .command('understand')
   .description('语义理解：分析用户输入意图')
@@ -51,7 +36,6 @@ program
     }
   });
 
-// ========== Route Command ==========
 program
   .command('route')
   .description('路由决策：基于语义分析结果决定任务流向')
@@ -70,7 +54,6 @@ program
     }
   });
 
-// ========== Plan Command ==========
 program
   .command('plan')
   .description('任务规划：将大任务拆解为可执行子任务')
@@ -85,14 +68,14 @@ program
     }
   });
 
-// ========== Execute Command ==========
 program
   .command('execute')
   .description('任务执行：调用工具完成具体任务')
   .option('-t, --task <description>', '任务描述')
   .option('-a, --agent <id>', '执行 Agent ID')
   .option('-b, --blocking', '阻塞模式（等待结果）')
-  .action(async (options: { task?: string; agent?: string; blocking?: boolean }) => {
+  .option('-s, --session <id>', '会话 ID')
+  .action(async (options: { task?: string; agent?: string; blocking?: boolean; session?: string }) => {
     try {
       if (!options.task) {
         console.error('[CLI Error] Missing --task option');
@@ -101,6 +84,7 @@ program
       await executeCommand(options.task, {
         agent: options.agent,
         blocking: options.blocking,
+        sessionId: options.session,
       });
     } catch (error) {
       console.error('[CLI Error]', error);
@@ -108,7 +92,6 @@ program
     }
   });
 
-// ========== Review Command ==========
 program
   .command('review')
   .description('质量审查：审查计划和执行结果')
@@ -126,7 +109,6 @@ program
     }
   });
 
-// ========== Orchestrate Command ==========
 program
   .command('orchestrate')
   .description('编排协调：管理整体任务流程')
@@ -145,7 +127,7 @@ program
     }
   });
 
-// ========== Status Command ==========
+// ========== Workflow Commands ==========
 program
   .command('status')
   .description('查看工作流状态')
@@ -157,7 +139,6 @@ program
         throw new Error(`Failed to get status: ${res.statusText}`);
       }
       const snapshot = await res.json();
-      console.log('Workflow Status:');
       console.log(JSON.stringify(snapshot, null, 2));
     } catch (error) {
       console.error('[CLI Error]', error);
@@ -165,7 +146,6 @@ program
     }
   });
 
-// ========== List Command ==========
 program
   .command('list')
   .description('列出所有工作流状态')
@@ -175,10 +155,9 @@ program
       if (!res.ok) {
         throw new Error(`Failed to list workflows: ${res.statusText}`);
       }
-      const { snapshots } = await res.json();
-      console.log('Workflows:');
-      snapshots.forEach((s: any) => {
-        console.log(`  - ${s.workflowId}: ${s.fsmState} (${s.simplifiedStatus})`);
+      const { snapshots } = await res.json() as { snapshots: Array<{ workflowId: string; fsmState: string; simplifiedStatus: string }> };
+      snapshots.forEach((s) => {
+        console.log(`- ${s.workflowId}: ${s.fsmState} (${s.simplifiedStatus})`);
       });
     } catch (error) {
       console.error('[CLI Error]', error);
@@ -186,28 +165,6 @@ program
     }
   });
 
-program.parse();
-
-// ========== REPL Command ==========
-program
-  .command('repl')
-  .description('交互式模式：实时对话和任务管理')
-  .option('--http-url <url>', 'HTTP API URL', 'http://localhost:8080')
-  .option('--ws-url <url>', 'WebSocket URL', 'ws://localhost:8081')
-  .action(async (options: { httpUrl: string; wsUrl: string }) => {
-    try {
-      const { startREPL } = await import('./repl.js');
-      await startREPL({
-        httpUrl: options.httpUrl,
-        wsUrl: options.wsUrl,
-      });
-    } catch (error) {
-      console.error('[CLI Error]', error);
-      process.exit(1);
-    }
-  });
-
-// ========== Pause Command ==========
 program
   .command('pause')
   .description('暂停工作流')
@@ -227,7 +184,6 @@ program
     }
   });
 
-// ========== Resume Command ==========
 program
   .command('resume')
   .description('恢复工作流')
@@ -247,7 +203,24 @@ program
     }
   });
 
-// ========== Input Command ==========
+program
+  .command('cancel')
+  .description('取消工作流')
+  .argument('<workflowId>', '工作流 ID')
+  .action(async (workflowId: string) => {
+    try {
+      const res = await fetch(`http://localhost:8080/api/v1/workflows/${workflowId}/cancel`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+      });
+      const result = await res.json();
+      console.log('Workflow cancelled:', result);
+    } catch (error) {
+      console.error('[CLI Error]', error);
+      process.exit(1);
+    }
+  });
+
 program
   .command('input')
   .description('发送用户输入到工作流')
@@ -268,6 +241,126 @@ program
     }
   });
 
-// ========== Daemon Commands ==========
-import { registerDaemonCommand } from './daemon.js';
+// ========== Runtime Commands ==========
+program
+  .command('agents')
+  .description('列出所有 Agent')
+  .action(async () => {
+    try {
+      const res = await fetch('http://localhost:8080/api/v1/agents');
+      if (!res.ok) {
+        throw new Error(`Failed to list agents: ${res.statusText}`);
+      }
+      const agents = await res.json() as Array<{ id: string; status: string; type?: string }>;
+      agents.forEach((a) => {
+        console.log(`- ${a.id}: ${a.status} (${a.type || 'agent'})`);
+      });
+    } catch (error) {
+      console.error('[CLI Error]', error);
+      process.exit(1);
+    }
+  });
+
+program
+  .command('resources')
+  .description('列出资源池状态')
+  .action(async () => {
+    try {
+      const res = await fetch('http://localhost:8080/api/v1/resources');
+      if (!res.ok) {
+        throw new Error(`Failed to list resources: ${res.statusText}`);
+      }
+      const payload = await res.json() as { available: Array<{ id: string; status: string; type?: string }>; count: number };
+      console.log(`Available Resources (${payload.count}):`);
+      payload.available.forEach((r) => {
+        console.log(`- ${r.id}: ${r.status} (${r.type || 'resource'})`);
+      });
+    } catch (error) {
+      console.error('[CLI Error]', error);
+      process.exit(1);
+    }
+  });
+
+program
+  .command('events')
+  .description('订阅工作流事件（实时流）')
+  .argument('<workflowId>', '工作流 ID')
+  .option('-t, --types <types>', '事件类型（逗号分隔）')
+  .action(async (workflowId: string, options: { types?: string }) => {
+    try {
+      const WebSocket = (await import('ws')).default;
+      const ws = new WebSocket('ws://localhost:8081');
+
+      ws.on('open', () => {
+        console.log(`Connected. Subscribing to workflow ${workflowId}...`);
+        ws.send(JSON.stringify({
+          type: 'subscribe',
+          workflowId,
+          types: options.types ? options.types.split(',') : ['*'],
+        }));
+      });
+
+      ws.on('message', (data: { toString(): string }) => {
+        const event = JSON.parse(data.toString()) as { type: string; payload?: unknown; timestamp?: string };
+        const timestamp = new Date(event.timestamp || Date.now()).toLocaleTimeString();
+        console.log(`[${timestamp}] ${event.type}: ${JSON.stringify(event.payload)}`);
+      });
+
+      ws.on('error', (err: Error) => {
+        console.error('WebSocket error:', err.message);
+        process.exit(1);
+      });
+
+      ws.on('close', () => {
+        console.log('Connection closed');
+        process.exit(0);
+      });
+
+      process.on('SIGINT', () => ws.close());
+    } catch (error) {
+      console.error('[CLI Error]', error);
+      process.exit(1);
+    }
+  });
+
+program
+  .command('sessions')
+  .description('列出会话')
+  .action(async () => {
+    try {
+      const res = await fetch('http://localhost:8080/api/v1/sessions');
+      if (!res.ok) {
+        throw new Error(`Failed to list sessions: ${res.statusText}`);
+      }
+      const sessions = await res.json() as Array<{ id: string; name?: string; status?: string }>;
+      sessions.forEach((s) => {
+        console.log(`- ${s.id}: ${s.name || 'unnamed'} (${s.status || 'active'})`);
+      });
+    } catch (error) {
+      console.error('[CLI Error]', error);
+      process.exit(1);
+    }
+  });
+
+program
+  .command('repl')
+  .description('交互式模式：实时对话和任务管理')
+  .option('--http-url <url>', 'HTTP API URL', 'http://localhost:8080')
+  .option('--ws-url <url>', 'WebSocket URL', 'ws://localhost:8081')
+  .action(async (options: { httpUrl: string; wsUrl: string }) => {
+    try {
+      const { startREPL } = await import('./repl.js');
+      await startREPL({
+        httpUrl: options.httpUrl,
+        wsUrl: options.wsUrl,
+      });
+    } catch (error) {
+      console.error('[CLI Error]', error);
+      process.exit(1);
+    }
+  });
+
+// daemon 子命令
 registerDaemonCommand(program);
+
+program.parse();
