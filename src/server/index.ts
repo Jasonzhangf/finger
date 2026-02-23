@@ -272,13 +272,22 @@ app.get('/api/v1/mailbox/:id', (req, res) => {
   res.json(msg);
 });
 
+app.get('/api/v1/mailbox/callback/:callbackId', (req, res) => {
+  const msg = mailbox.getMessageByCallbackId(req.params.callbackId);
+  if (!msg) {
+    res.status(404).json({ error: 'Message not found' });
+    return;
+  }
+  res.json(msg);
+});
+
 app.post('/api/v1/mailbox/clear', (_req, res) => {
   mailbox.cleanup();
   res.json({ success: true, message: 'Mailbox cleaned up' });
 });
 
 // WebSocket server for real-time updates
-const wsPort = PORT + 1;
+const wsPort = process.env.WS_PORT ? parseInt(process.env.WS_PORT, 10) : 5522;
 const wss = new WebSocketServer({ port: wsPort });
 console.log(`[Server] Starting WebSocket server on port ${wsPort} (PORT=${PORT})`);
 const wsClients: Set<WebSocket> = new Set();
@@ -1077,14 +1086,14 @@ app.get('/api/v1/agents/:id/stats', (req, res) => {
 
 // Modified message endpoint with mailbox integration
 app.post('/api/v1/message', async (req, res) => {
-  const body = req.body as { target?: string; message?: unknown; blocking?: boolean; sender?: string };
+  const body = req.body as { target?: string; message?: unknown; blocking?: boolean; sender?: string; callbackId?: string };
   if (!body.target || body.message === undefined) {
     res.status(400).json({ error: 'Missing target or message' });
     return;
   }
 
   // Create mailbox message for tracking
-  const messageId = mailbox.createMessage(body.target, body.message, body.sender);
+  const messageId = mailbox.createMessage(body.target, body.message, body.sender, body.callbackId);
   mailbox.updateStatus(messageId, 'processing');
 
   // Broadcast to WebSocket clients

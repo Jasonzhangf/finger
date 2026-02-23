@@ -13,16 +13,18 @@ export interface MailboxMessage {
   createdAt: string;
   updatedAt: string;
   sender?: string;
+  callbackId?: string;
 }
 
 export class Mailbox {
   private messages: Map<string, MailboxMessage> = new Map();
   private subscribers: Map<string, Set<(msg: MailboxMessage) => void>> = new Map();
+  private callbackIndex: Map<string, string> = new Map(); // callbackId -> messageId
 
   /**
    * 创建新消息
    */
-  createMessage(target: string, content: unknown, sender?: string): string {
+  createMessage(target: string, content: unknown, sender?: string, callbackId?: string): string {
     const id = `msg-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     const now = new Date().toISOString();
     const message: MailboxMessage = {
@@ -33,10 +35,23 @@ export class Mailbox {
       createdAt: now,
       updatedAt: now,
       sender,
+      callbackId,
     };
     this.messages.set(id, message);
+    if (callbackId) {
+      this.callbackIndex.set(callbackId, id);
+    }
     this.notifySubscribers(id, message);
     return id;
+  }
+
+  /**
+   * 通过 callbackId 获取消息
+   */
+  getMessageByCallbackId(callbackId: string): MailboxMessage | undefined {
+    const messageId = this.callbackIndex.get(callbackId);
+    if (!messageId) return undefined;
+    return this.messages.get(messageId);
   }
 
   /**
@@ -151,6 +166,11 @@ export class Mailbox {
     for (const [id] of toDelete) {
       this.messages.delete(id);
       this.subscribers.delete(id);
+      // 清理 callback 索引
+      const msg = this.messages.get(id);
+      if (msg?.callbackId) {
+        this.callbackIndex.delete(msg.callbackId);
+      }
     }
   }
 }

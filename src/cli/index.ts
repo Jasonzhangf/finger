@@ -374,8 +374,13 @@ program
     try {
       const MESSAGE_HUB_URL = process.env.FINGER_HUB_URL || 'http://localhost:5521';
       
-      // 先尝试从 mailbox 查询
-      const res = await fetch(`${MESSAGE_HUB_URL}/api/v1/mailbox/${id}`);
+      // 优先尝试 callbackId 查询
+      let res = await fetch(`${MESSAGE_HUB_URL}/api/v1/mailbox/callback/${id}`);
+      
+      // 如果 callbackId 不存在，回退到 messageId 查询
+      if (res.status === 404) {
+        res = await fetch(`${MESSAGE_HUB_URL}/api/v1/mailbox/${id}`);
+      }
       
       if (res.status === 404) {
         console.error(`[CLI Error] Message not found: ${id}`);

@@ -144,4 +144,37 @@ describe('Mailbox', () => {
       expect(messages.length).toBe(2);
     });
   });
+
+  describe('callbackId', () => {
+    it('should create message with callbackId', () => {
+      const id = mailbox.createMessage('agent-1', { data: 'test' }, 'user-1', 'cb-123');
+      const msg = mailbox.getMessage(id);
+      expect(msg?.callbackId).toBe('cb-123');
+    });
+
+    it('should find message by callbackId', () => {
+      mailbox.createMessage('agent-1', { data: 'test1' }, 'user-1', 'cb-1');
+      mailbox.createMessage('agent-2', { data: 'test2' }, 'user-2', 'cb-2');
+      
+      const msg = mailbox.getMessageByCallbackId('cb-2');
+      expect(msg).toBeDefined();
+      expect(msg?.callbackId).toBe('cb-2');
+      expect(msg?.content).toEqual({ data: 'test2' });
+    });
+
+    it('should return undefined for non-existent callbackId', () => {
+      const msg = mailbox.getMessageByCallbackId('non-existent');
+      expect(msg).toBeUndefined();
+    });
+
+    it('should clean up callback index when message is deleted', () => {
+      const id = mailbox.createMessage('agent', {}, 'user', 'cb-cleanup');
+      expect(mailbox.getMessageByCallbackId('cb-cleanup')).toBeDefined();
+      
+      mailbox.cleanup(0); // Force cleanup with 0 keep
+      
+      const msg = mailbox.getMessageByCallbackId('cb-cleanup');
+      expect(msg).toBeUndefined();
+    });
+  });
 });
