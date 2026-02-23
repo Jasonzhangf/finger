@@ -147,7 +147,7 @@ export async function planCommand(task: string, options: { sessionId?: string } 
 }
 
 // ========== Execute Command ==========
-export async function executeCommand(task: string, options: { agent?: string; blocking?: boolean } = {}): Promise<void> {
+export async function executeCommand(task: string, options: { agent?: string; blocking?: boolean; sessionId?: string } = {}): Promise<void> {
   console.log(`[CLI] Executing task: "${task}"`);
 
   const agentId = options.agent || 'executor-general';

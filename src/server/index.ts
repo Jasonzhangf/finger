@@ -1400,10 +1400,10 @@ app.get('/api/v1/workflows/state', (_req, res) => {
 // 注册 WebSocket 客户端
 const originalWsServer = wss; // 保存原始 wsServer 引用
 wss.on('connection', (ws) => {
-  registerWebSocketClient(ws);
+  registerWebSocketClient(ws as any);
   
   ws.on('close', () => {
-    unregisterWebSocketClient(ws);
+    unregisterWebSocketClient(ws as any);
   });
 });
 

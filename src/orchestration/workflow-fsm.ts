@@ -82,8 +82,8 @@ export type StateTransitionTrigger =
  * 状态转换定义
  */
 export interface StateTransition {
-  from: WorkflowState;
-  to: WorkflowState;
+  from: WorkflowState | '*';
+  to: WorkflowState | '*';
   trigger: StateTransitionTrigger;
   guard?: (context: WorkflowContext) => boolean;
   action?: (context: WorkflowContext) => void | Promise<void>;
@@ -380,11 +380,13 @@ export class WorkflowFSM {
     globalEventBus.emit({
       type: 'phase_transition',
       sessionId: this.context.sessionId,
+      agentId: 'orchestrator-loop',
       timestamp: new Date().toISOString(),
       payload: {
         from: oldState,
         to: newState,
-        trigger,
+        triggerAction: trigger,
+        round: this.stateHistory.length,
       },
     });
 
@@ -416,7 +418,7 @@ export class WorkflowFSM {
   /**
    * 获取状态历史
    */
-  getStateHistory(): Array<{ state: WorkflowState; timestamp: string; trigger: StateTransitionTrigger }> {
+  getStateHistory(): Array<{ state: WorkflowState; timestamp: string; trigger: string }> {
     return [...this.stateHistory];
   }
 
