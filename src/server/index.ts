@@ -1113,7 +1113,7 @@ app.post('/api/v1/message', async (req, res) => {
         if (client.readyState === 1) client.send(completeBroadcast);
       }
       
-      res.json({ success: true, messageId, result });
+      res.json({ messageId, status: 'completed', result });
       return;
     }
 
@@ -1131,11 +1131,11 @@ app.post('/api/v1/message', async (req, res) => {
         mailbox.updateStatus(messageId, 'failed', undefined, err.message);
       });
     
-    res.json({ success: true, messageId, queued: true });
+    res.json({ messageId, status: 'queued' });
   } catch (err) {
     const errorMessage = err instanceof Error ? err.message : String(err);
     mailbox.updateStatus(messageId, 'failed', undefined, errorMessage);
-    res.status(400).json({ error: errorMessage, messageId });
+    res.status(400).json({ messageId, status: 'failed', error: errorMessage });
   }
 });
 

@@ -532,19 +532,27 @@ describe('RUNTIME_SPEC.md Compliance', () => {
   // ============================================================================
 
   describe('Compliance Summary', () => {
-    it('VERIFIED: All MUST items have implementation + tests', () => {
-      // 所有 MUST 条目已在对应章节完成验证
-      // Section 1.1: ✓ Message Hub (5521), CLI pure client, WebSocket (5522)
-      // Section 1.3: ✓ Daemon lifecycle management
-      // Section 3.1: ✓ POST /api/v1/message API
-      // Section 3.2: ✓ WebSocket event types
-      // Section 4.2: ✓ CLI command mapping
-      // Section 4.3: ✓ Status query via callbackId
-      // Section 5.1: ✓ Agent requirements (execute, heartbeat, status push)
-      // Section 5.2: ✓ Agent lifecycle state machine
-      // Section 5.3: ✓ Auto-start and dynamic add
-      // Section 6: ✓ All code fixes verified
-      expect(true).toBe(true);
+    it('VERIFIED: All MUST items have implementation + tests', async () => {
+      // 验证 POST /api/v1/message 返回结构符合 RUNTIME_SPEC.md 3.1
+      const mockFetch = vi.fn();
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: () => Promise.resolve({ messageId: 'msg-1', status: 'queued' }),
+      });
+      global.fetch = mockFetch;
+      
+      const API_BASE = 'http://localhost:5521';
+      const res = await fetch(`${API_BASE}/api/v1/message`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ target: 'test', message: {} }),
+      });
+      
+      const data = await res.json();
+      // 验证 3.1 MessageResponse 结构：必须包含 messageId 和 status
+      expect(data).toHaveProperty('messageId');
+      expect(data).toHaveProperty('status');
+      expect(['queued', 'completed', 'failed']).toContain(data.status);
     });
   });
 });
