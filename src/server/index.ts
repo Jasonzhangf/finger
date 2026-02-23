@@ -1365,3 +1365,46 @@ globalEventBus.subscribe(
 );
 
 console.log('[Server] EventBus agent_step_completed forwarding enabled for detailed agent updates');
+
+// =============================================================================
+// State Bridge 集成
+// =============================================================================
+
+import { 
+  initializeStateBridge,
+  registerWebSocketClient,
+  unregisterWebSocketClient,
+  getStateSnapshot,
+  getAllStateSnapshots,
+} from './orchestration/workflow-state-bridge.js';
+
+// 初始化状态桥接
+initializeStateBridge();
+
+// API: 获取工作流状态快照
+app.get('/api/v1/workflows/:workflowId/state', (req, res) => {
+  const snapshot = getStateSnapshot(req.params.workflowId);
+  if (!snapshot) {
+    res.status(404).json({ error: 'State snapshot not found' });
+    return;
+  }
+  res.json(snapshot);
+});
+
+// API: 获取所有工作流状态快照
+app.get('/api/v1/workflows/state', (_req, res) => {
+  const snapshots = getAllStateSnapshots();
+  res.json({ snapshots });
+});
+
+// 注册 WebSocket 客户端
+const originalWsServer = wsServer; // 保存原始 wsServer 引用
+wsServer.on('connection', (ws) => {
+  registerWebSocketClient(ws);
+  
+  ws.on('close', () => {
+    unregisterWebSocketClient(ws);
+  });
+});
+
+console.log('[Server] State Bridge integration enabled');

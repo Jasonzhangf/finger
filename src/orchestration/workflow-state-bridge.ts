@@ -1,0 +1,344 @@
+/**
+ * Workflow State Bridge - 状态机与事件系统的桥梁
+ * 
+ * 负责：
+ * 1. 监听 FSM 状态转换事件
+ * 2. 将 FSM 状态转换为 UI 可消费的格式
+ * 3. 广播状态更新到 WebSocket 客户端
+ * 4. 维护状态快照供 UI 轮询
+ */
+
+import { globalEventBus } from '../runtime/event-bus.js';
+import { 
+  WorkflowFSM, 
+  TaskFSM, 
+  AgentFSM,
+  getOrCreateWorkflowFSM,
+  type WorkflowState as FSMWorkflowState,
+  type TaskState as FSMTaskState,
+  type AgentState as FSMAgentState,
+} from './workflow-fsm.js';
+import { sharedWorkflowManager } from './shared-instances.js';
+
+// WebSocket 客户端集合（由 server/index.ts 注入）
+export const wsClients: Set<WebSocket> = new Set();
+
+/**
+ * 状态快照（供 UI 轮询）
+ */
+export interface StateSnapshot {
+  workflowId: string;
+  sessionId: string;
+  fsmState: FSMWorkflowState;
+  simplifiedStatus: 'planning' | 'executing' | 'completed' | 'failed' | 'paused';
+  tasks: Array<{
+    id: string;
+    fsmState: FSMTaskState;
+    simplifiedStatus: string;
+    assignee?: string;
+  }>;
+  agents: Array<{
+    id: string;
+    fsmState: FSMAgentState;
+    simplifiedStatus: string;
+  }>;
+  timestamp: string;
+}
+
+/**
+ * 状态快照管理器
+ */
+class StateSnapshotManager {
+  private snapshots: Map<string, StateSnapshot> = new Map();
+
+  update(snapshot: StateSnapshot): void {
+    this.snapshots.set(snapshot.workflowId, snapshot);
+  }
+
+  get(workflowId: string): StateSnapshot | undefined {
+    return this.snapshots.get(workflowId);
+  }
+
+  getAll(): StateSnapshot[] {
+    return Array.from(this.snapshots.values());
+  }
+
+  clear(workflowId: string): void {
+    this.snapshots.delete(workflowId);
+  }
+}
+
+export const stateSnapshotManager = new StateSnapshotManager();
+
+/**
+ * 初始化状态桥接
+ * 
+ * 订阅 FSM 事件，转换为 UI 可消费的格式并广播
+ */
+export function initializeStateBridge(): void {
+  console.log('[StateBridge] Initializing state bridge...');
+
+  // 订阅 phase_transition 事件
+  globalEventBus.subscribe('phase_transition', (event) => {
+    handlePhaseTransition(event);
+  });
+
+  // 订阅任务状态事件
+  globalEventBus.subscribe('task_started', (event) => {
+    handleTaskEvent('task_started', event);
+  });
+
+  globalEventBus.subscribe('task_completed', (event) => {
+    handleTaskEvent('task_completed', event);
+  });
+
+  globalEventBus.subscribe('task_failed', (event) => {
+    handleTaskEvent('task_failed', event);
+  });
+
+  // 订阅 Agent 状态事件
+  globalEventBus.subscribe('agent_step_completed', (event) => {
+    handleAgentEvent('agent_step_completed', event);
+  });
+
+  console.log('[StateBridge] State bridge initialized');
+}
+
+/**
+ * 处理阶段转换事件
+ */
+function handlePhaseTransition(event: any): void {
+  const payload = event.payload as { from?: string; to?: string; trigger?: string };
+  const sessionId = event.sessionId;
+
+  console.log(`[StateBridge] Phase transition: ${payload.from} → ${payload.to} (trigger: ${payload.trigger})`);
+
+  // 获取或创建 FSM
+  const workflow = sharedWorkflowManager.getWorkflow(sessionId);
+  if (!workflow) {
+    console.warn(`[StateBridge] Workflow not found: ${sessionId}`);
+    return;
+  }
+
+  const fsm = getOrCreateWorkflowFSM({
+    workflowId: workflow.id,
+    sessionId,
+  });
+
+  // 更新 FSM 状态（如果事件来自外部）
+  const currentFSMState = fsm.getState();
+  if (currentFSMState !== payload.to) {
+    // FSM 状态与事件不一致，可能需要触发转换
+    // 这里假设事件是权威的，更新 FSM
+    fsm.updateContext({ currentState: payload.to as FSMWorkflowState });
+  }
+
+  // 创建状态快照
+  const snapshot = createSnapshot(workflow.id, sessionId, fsm);
+  stateSnapshotManager.update(snapshot);
+
+  // 广播到 WebSocket
+  broadcastToWebSocket({
+    type: 'workflow_update',
+    payload: {
+      workflowId: workflow.id,
+      status: mapFSMToSimplified(payload.to as FSMWorkflowState),
+      fsmState: payload.to,
+      orchestratorState: {
+        round: 1, // TODO: 从 FSM 上下文获取
+      },
+    },
+    timestamp: event.timestamp || new Date().toISOString(),
+  });
+}
+
+/**
+ * 处理任务事件
+ */
+function handleTaskEvent(eventType: string, event: any): void {
+  const payload = event.payload as { taskId?: string; agentId?: string };
+  const sessionId = event.sessionId;
+
+  console.log(`[StateBridge] Task event: ${eventType} for task ${payload.taskId}`);
+
+  // 获取工作流
+  const workflow = sharedWorkflowManager.getWorkflow(sessionId);
+  if (!workflow) return;
+
+  const fsm = getOrCreateWorkflowFSM({
+    workflowId: workflow.id,
+    sessionId,
+  });
+
+  // 更新任务 FSM（如果已注册）
+  // TODO: 维护任务 FSM 映射
+
+  // 创建状态快照
+  const snapshot = createSnapshot(workflow.id, sessionId, fsm);
+  stateSnapshotManager.update(snapshot);
+
+  // 广播到 WebSocket
+  broadcastToWebSocket({
+    type: 'task_update',
+    payload: {
+      workflowId: workflow.id,
+      taskId: payload.taskId,
+      status: eventType === 'task_started' ? 'in_progress' :
+              eventType === 'task_completed' ? 'completed' : 'failed',
+    },
+    timestamp: event.timestamp || new Date().toISOString(),
+  });
+}
+
+/**
+ * 处理 Agent 事件
+ */
+function handleAgentEvent(eventType: string, event: any): void {
+  const payload = event.payload as { round?: number; thought?: string; action?: string; observation?: string };
+  const sessionId = event.sessionId;
+  const agentId = event.agentId;
+
+  console.log(`[StateBridge] Agent event: ${eventType} for agent ${agentId}`);
+
+  // 广播到 WebSocket
+  broadcastToWebSocket({
+    type: 'agent_update',
+    payload: {
+      agentId,
+      status: 'running',
+      step: {
+        round: payload.round,
+        thought: payload.thought,
+        action: payload.action,
+        observation: payload.observation,
+      },
+    },
+    timestamp: event.timestamp || new Date().toISOString(),
+  });
+}
+
+/**
+ * 创建状态快照
+ */
+function createSnapshot(
+  workflowId: string,
+  sessionId: string,
+  fsm: WorkflowFSM
+): StateSnapshot {
+  const fsmState = fsm.getState();
+  const context = fsm.getContext();
+
+  return {
+    workflowId,
+    sessionId,
+    fsmState,
+    simplifiedStatus: mapFSMToSimplified(fsmState),
+    tasks: (context.tasks as any[] || []).map(task => ({
+      id: task.id,
+      fsmState: task.status as FSMTaskState,
+      simplifiedStatus: mapTaskFSMToSimplified(task.status as FSMTaskState),
+      assignee: task.assignee,
+    })),
+    agents: (context.activeAgents as string[] || []).map(agentId => ({
+      id: agentId,
+      fsmState: 'running' as FSMAgentState, // TODO: 从 Agent FSM 获取
+      simplifiedStatus: 'running',
+    })),
+    timestamp: new Date().toISOString(),
+  };
+}
+
+/**
+ * FSM 状态 → 简化状态
+ */
+function mapFSMToSimplified(fsmState: FSMWorkflowState): 'planning' | 'executing' | 'completed' | 'failed' | 'paused' {
+  switch (fsmState) {
+    case 'idle':
+    case 'semantic_understanding':
+    case 'routing_decision':
+    case 'plan_loop':
+      return 'planning';
+    case 'execution':
+    case 'review':
+    case 'replan_evaluation':
+      return 'executing';
+    case 'wait_user_decision':
+    case 'paused':
+      return 'paused';
+    case 'completed':
+      return 'completed';
+    case 'failed':
+      return 'failed';
+    default:
+      return 'executing';
+  }
+}
+
+/**
+ * 任务 FSM 状态 → 简化状态
+ */
+function mapTaskFSMToSimplified(fsmState: FSMTaskState): string {
+  switch (fsmState) {
+    case 'created':
+    case 'ready':
+      return 'ready';
+    case 'dispatching':
+    case 'dispatched':
+    case 'running':
+      return 'in_progress';
+    case 'dispatch_failed':
+    case 'rework_required':
+    case 'blocked':
+      return 'blocked';
+    case 'execution_failed':
+      return 'failed';
+    case 'execution_succeeded':
+    case 'reviewing':
+    case 'done':
+      return 'completed';
+    default:
+      return 'pending';
+  }
+}
+
+/**
+ * 广播到 WebSocket 客户端
+ */
+function broadcastToWebSocket(message: any): void {
+  const msg = JSON.stringify(message);
+  for (const client of wsClients) {
+    if (client.readyState === 1) { // WebSocket.OPEN
+      client.send(msg);
+    }
+  }
+}
+
+/**
+ * 获取状态快照（供 API 使用）
+ */
+export function getStateSnapshot(workflowId: string): StateSnapshot | undefined {
+  return stateSnapshotManager.get(workflowId);
+}
+
+/**
+ * 获取所有状态快照（供 API 使用）
+ */
+export function getAllStateSnapshots(): StateSnapshot[] {
+  return stateSnapshotManager.getAll();
+}
+
+/**
+ * 注册 WebSocket 客户端（由 server/index.ts 调用）
+ */
+export function registerWebSocketClient(client: WebSocket): void {
+  wsClients.add(client);
+  console.log(`[StateBridge] WebSocket client registered, total: ${wsClients.size}`);
+}
+
+/**
+ * 注销 WebSocket 客户端（由 server/index.ts 调用）
+ */
+export function unregisterWebSocketClient(client: WebSocket): void {
+  wsClients.delete(client);
+  console.log(`[StateBridge] WebSocket client unregistered, total: ${wsClients.size}`);
+}
