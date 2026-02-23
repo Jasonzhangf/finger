@@ -214,7 +214,7 @@ export async function reviewCommand(proposal: string): Promise<void> {
 }
 
 // ========== Orchestrate Command ==========
-export async function orchestrateCommand(task: string, options: { sessionId?: string; watch?: boolean } = {}): Promise<void> {
+export async function orchestrateCommand(task: string, options: { sessionId?: string; watch?: boolean; json?: boolean; stream?: boolean } = {}): Promise<void> {
   console.log(`[CLI] Orchestrating task: "${task}"`);
 
   const sessionId = options.sessionId || `session-${Date.now()}`;
