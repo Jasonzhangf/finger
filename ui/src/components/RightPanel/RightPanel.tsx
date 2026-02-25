@@ -98,6 +98,11 @@ const MessageItem = React.memo<{
         </div>
         
         <div className="message-body">
+          {event.kind && (event.kind === 'action' || event.kind === 'observation') && (
+            <div className={`tool-event-chip ${event.kind}`}>
+              <span className="tool-event-label">{event.kind === 'action' ? '执行中' : '工具结果'}</span>
+            </div>
+          )}
           {event.content}
           {event.images && event.images.length > 0 && (
             <div className="message-images">
@@ -124,12 +129,24 @@ const ChatInput: React.FC<{
 }> = ({ onSend, isPaused, disabled }) => {
   const [text, setText] = useState('');
   const [images, setImages] = useState<RuntimeImage[]>([]);
+  const [inputHistory, setInputHistory] = useState<string[]>([]);
+  const [historyCursor, setHistoryCursor] = useState<number | null>(null);
+  const [historySnapshot, setHistorySnapshot] = useState('');
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   
   const handleSend = useCallback(() => {
     const trimmed = text.trim();
     if (!trimmed && images.length === 0) return;
     onSend(trimmed, images);
+    if (trimmed.length > 0) {
+      setInputHistory((prev) => {
+        if (prev.length > 0 && prev[prev.length - 1] === trimmed) return prev;
+        const next = [...prev, trimmed];
+        return next.length > 100 ? next.slice(next.length - 100) : next;
+      });
+    }
+    setHistoryCursor(null);
+    setHistorySnapshot('');
     setText('');
     setImages([]);
     if (textareaRef.current) {
@@ -138,13 +155,47 @@ const ChatInput: React.FC<{
   }, [text, images, onSend]);
   
   const handleKeyDown = useCallback((e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-    if (e.key === 'Enter' && !e.shiftKey) {
+    if (e.altKey || e.ctrlKey || e.metaKey) return;
+    const textIsEmpty = text.trim().length === 0;
+    const isArrowUp = e.key === 'ArrowUp' || e.keyCode === 38;
+    const isArrowDown = e.key === 'ArrowDown' || e.keyCode === 40;
+    const isEnter = e.key === 'Enter' || e.keyCode === 13;
+
+    if (isArrowUp && inputHistory.length > 0 && (textIsEmpty || historyCursor !== null)) {
+      e.preventDefault();
+      const nextCursor = historyCursor === null ? inputHistory.length - 1 : Math.max(0, historyCursor - 1);
+      if (historyCursor === null) {
+        setHistorySnapshot(text);
+      }
+      setHistoryCursor(nextCursor);
+      setText(inputHistory[nextCursor]);
+      return;
+    }
+
+    if (isArrowDown && historyCursor !== null) {
+      e.preventDefault();
+      const nextCursor = historyCursor + 1;
+      if (nextCursor >= inputHistory.length) {
+        setHistoryCursor(null);
+        setText(historySnapshot);
+      } else {
+        setHistoryCursor(nextCursor);
+        setText(inputHistory[nextCursor]);
+      }
+      return;
+    }
+
+    if (isEnter && !e.shiftKey) {
       e.preventDefault();
       handleSend();
     }
-  }, [handleSend]);
+  }, [handleSend, historyCursor, historySnapshot, inputHistory, text]);
   
   const handleTextChange = useCallback((e: React.ChangeEvent<HTMLTextAreaElement>) => {
+    if (historyCursor !== null) {
+      setHistoryCursor(null);
+      setHistorySnapshot('');
+    }
     setText(e.target.value);
     // Auto-resize
     if (textareaRef.current) {
@@ -152,7 +203,7 @@ const ChatInput: React.FC<{
       textareaRef.current.style.height = 'auto';
       textareaRef.current.style.height = `${Math.min(textareaRef.current.scrollHeight, 200)}px`;
     }
-  }, []);
+  }, [historyCursor]);
   
   const handleImageChange = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
     const newImages = createPreviewImages(e.target.files);
@@ -209,7 +260,7 @@ const ChatInput: React.FC<{
             onChange={handleTextChange}
             onKeyDown={handleKeyDown}
             placeholder={isPaused ? '系统已暂停，输入指令后点击继续' : '输入任务指令... (Shift+Enter 换行)'}
-            rows={1}
+            rows={4}
             disabled={disabled}
           />
         </div>
