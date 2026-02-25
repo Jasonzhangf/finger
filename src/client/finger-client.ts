@@ -95,8 +95,8 @@ export class FingerClient {
   private stateChangeCallbacks: Set<(state: ConnectionState) => void> = new Set();
 
   constructor(options: FingerClientOptions = {}) {
-    this.httpUrl = options.httpUrl || process.env.FINGER_HTTP_URL || 'http://localhost:8080';
-    this.wsUrl = options.wsUrl || process.env.FINGER_WS_URL || 'ws://localhost:5522';
+    this.httpUrl = options.httpUrl || process.env.FINGER_HTTP_URL || process.env.FINGER_HUB_URL || 'http://localhost:9999';
+    this.wsUrl = options.wsUrl || process.env.FINGER_WS_URL || 'ws://localhost:9998';
     this.reconnect = options.reconnect ?? true;
     this.reconnectInterval = options.reconnectInterval ?? 3000;
     this.maxReconnectAttempts = options.maxReconnectAttempts ?? 10;

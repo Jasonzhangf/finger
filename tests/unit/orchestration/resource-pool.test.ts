@@ -1,5 +1,5 @@
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { ResourcePool, ResourceType, ResourceStatus, ResourceRequirement, ResourceInstance } from '../../../src/orchestration/resource-pool.js';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { ResourcePool, ResourceType, ResourceStatus, ResourceRequirement } from '../../../src/orchestration/resource-pool.js';
 
 // Mock fs module
 vi.mock('fs', () => ({

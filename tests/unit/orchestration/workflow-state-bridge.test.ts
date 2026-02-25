@@ -2,7 +2,7 @@
  * Workflow State Bridge 单元测试
  */
 
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach } from 'vitest';
 import {
   stateSnapshotManager,
   getStateSnapshot,

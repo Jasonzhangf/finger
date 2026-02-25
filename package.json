@@ -4,12 +4,13 @@
   "description": "Finger - AI Agent Orchestrator with bd project management",
   "main": "dist/cli/index.js",
   "bin": {
-    "finger": "./dist/cli/index.js"
+    "myfinger": "./dist/cli/index.js"
   },
   "type": "module",
   "scripts": {
     "build": "tsc --noEmit false",
     "build:dev": "npm run build",
+    "build:install": "bash scripts/build-and-install.sh",
     "dev": "tsx watch src/cli/index.ts",
     "start": "node dist/server/index.js",
     "cli": "node dist/cli/index.js",
@@ -31,7 +32,8 @@
     "finger:plan": "node dist/cli/index.js plan",
     "finger:execute": "node dist/cli/index.js execute",
     "finger:review": "node dist/cli/index.js review",
-    "finger:orchestrate": "node dist/cli/index.js orchestrate"
+    "finger:orchestrate": "node dist/cli/index.js orchestrate",
+    "build:install": "bash scripts/build-and-install.sh"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.36.0",

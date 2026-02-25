@@ -1,12 +1,12 @@
 /**
  * Agent CLI Commands - Message Hub wrappers
  * 
- * 所有命令通过 Message Hub (5521) 发送消息，符合 RUNTIME_SPEC.md 规范。
+ * 所有命令通过 Message Hub (9999) 发送消息，符合当前 daemon 默认端口规范。
  * CLI 是纯粹客户端：发送请求后立即退出（除非 --watch）。
  */
 
-const MESSAGE_HUB_URL = process.env.FINGER_HUB_URL || 'http://localhost:5521';
-const WEBSOCKET_URL = process.env.FINGER_WS_URL || 'ws://localhost:5522';
+const MESSAGE_HUB_URL = process.env.FINGER_HUB_URL || 'http://localhost:9999';
+const WEBSOCKET_URL = process.env.FINGER_WS_URL || 'ws://localhost:9998';
 
 export interface CommandOptions {
   sessionId?: string;

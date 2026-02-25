@@ -1,214 +1,239 @@
-import { spawn, ChildProcess } from 'child_process';
-import { lifecycleManager } from '../agents/core/agent-lifecycle.js';
-import { HeartbeatBroker, cleanupOrphanProcesses } from '../agents/core/agent-lifecycle.js';
-import fs from 'fs';
-import path from 'path';
-import os from 'os';
-import { fileURLToPath } from 'url';
-import { AgentPool } from './agent-pool.js';
+/**
+ * Finger Daemon Manager
+ * 
+ * 特性：
+ * - 唯一实例管理：新启动自动停止旧 daemon
+ * - 默认端口：HTTP 9999 / WebSocket 9998
+ * - 孤儿进程清理
+ * - 自动加载 autostart 目录模块
+ */
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
+import { spawn, execSync } from 'child_process';
+import { existsSync, readFileSync, writeFileSync, unlinkSync, openSync, mkdirSync, readdirSync } from 'fs';
+import { join } from 'path';
+import { homedir } from 'os';
+import { logger } from '../core/logger.js';
+import { loadModuleManifest } from './module-manifest.js';
 
 export interface DaemonConfig {
+  port: number;
+  wsPort: number;
+  host: string;
   pidFile: string;
   logFile: string;
-  port: number;
-  host: string;
   serverScript: string;
+  autostartDir: string;
 }
 
-/**
- * Adapter interface for process operations - enables dependency injection for testing
- */
-export interface ProcessAdapter {
-  spawn: typeof spawn;
-  isPidRunning: (pid: number) => boolean;
-  killProcess: (id: string, reason: string) => void;
-  registerProcess: (id: string, process: ChildProcess, type: string, metadata: Record<string, unknown>) => void;
-  cleanupOrphans: () => { killed: string[]; errors: string[] };
-}
+const DEFAULT_CONFIG: DaemonConfig = {
+  port: 9999,
+  wsPort: 9998,
+  host: '127.0.0.1',
+  pidFile: join(homedir(), '.finger', 'daemon.pid'),
+  logFile: join(homedir(), '.finger', 'daemon.log'),
+  serverScript: join(process.cwd(), 'dist', 'server', 'index.js'),
+  autostartDir: join(homedir(), '.finger', 'autostart'),
+};
 
-/**
- * Adapter interface for filesystem operations
- */
-export interface FsAdapter {
-  existsSync: (path: string) => boolean;
-  mkdirSync: (path: string, options?: { recursive?: boolean }) => void;
-  readFileSync: (path: string, encoding: string) => string;
-  writeFileSync: (path: string, content: string) => void;
-  openSync: (path: string, flags: string) => number;
-  unlinkSync: (path: string) => void;
-}
+const log = logger.module('Daemon');
 
-/**
- * Default process adapter - uses real dependencies
- */
-const defaultProcessAdapter: ProcessAdapter = {
-  spawn: spawn,
-  isPidRunning: (pid: number) => {
+export class OrchestrationDaemon {
+  private config: DaemonConfig;
+  private running = false;
+
+  constructor(config: Partial<DaemonConfig> = {}) {
+    this.config = { ...DEFAULT_CONFIG, ...config };
+    this.ensureDirs();
+  }
+
+  private ensureDirs(): void {
+    const fingerDir = join(homedir(), '.finger');
+    if (!existsSync(fingerDir)) {
+      mkdirSync(fingerDir, { recursive: true });
+    }
+    if (!existsSync(this.config.autostartDir)) {
+      mkdirSync(this.config.autostartDir, { recursive: true });
+    }
+  }
+
+  private isPortInUse(port: number): boolean {
     try {
-      process.kill(pid, 0);
+      execSync(`lsof -ti :${port}`, { stdio: 'ignore' });
       return true;
     } catch {
       return false;
     }
-  },
-  killProcess: (id: string, reason: string) => lifecycleManager.killProcess(id, reason),
-  registerProcess: (id: string, proc: ChildProcess, type: string, metadata: Record<string, unknown>) => 
-    lifecycleManager.registerProcess(id, proc, type as 'iflow-cli' | 'browser' | 'other', metadata),
-  cleanupOrphans: cleanupOrphanProcesses,
-};
+  }
 
-/**
- * Default filesystem adapter - uses real fs module
- */
-const defaultFsAdapter: FsAdapter = {
-  existsSync: fs.existsSync,
-  mkdirSync: (p: string, options?: { recursive?: boolean }) => fs.mkdirSync(p, options),
-  readFileSync: (p: string, encoding: string) => fs.readFileSync(p, encoding as BufferEncoding),
-  writeFileSync: fs.writeFileSync,
-  openSync: fs.openSync,
-  unlinkSync: fs.unlinkSync,
-};
+  private getPidOnPort(port: number): number | null {
+    try {
+      const output = execSync(`lsof -ti :${port}`, { encoding: 'utf-8' });
+      const pid = parseInt(output.trim(), 10);
+      return isNaN(pid) ? null : pid;
+    } catch {
+      return null;
+    }
+  }
 
-export class OrchestrationDaemon {
-  private process: ChildProcess | null = null;
-  private config: DaemonConfig;
-  private running = false;
-  private agentPool: AgentPool;
-  private heartbeatBroker: HeartbeatBroker;
-  private processAdapter: ProcessAdapter;
-  private fsAdapter: FsAdapter;
+  private killProcessOnPort(port: number): void {
+    const pid = this.getPidOnPort(port);
+    if (pid) {
+      try {
+        process.kill(pid, 'SIGTERM');
+        let attempts = 0;
+        while (this.isPortInUse(port) && attempts < 10) {
+          execSync('sleep 0.1');
+          attempts++;
+        }
+        if (this.isPortInUse(port)) {
+          process.kill(pid, 'SIGKILL');
+        }
+        log.info(`Killed old process on port ${port}`, { pid });
+      } catch {
+        // Ignore
+      }
+    }
+  }
 
-  constructor(
-    config?: Partial<DaemonConfig>,
-    processAdapter?: ProcessAdapter,
-    fsAdapter?: FsAdapter
-  ) {
-    const home = os.homedir();
-    const fingerDir = path.join(home, '.finger');
-    this.config = {
-      pidFile: path.join(fingerDir, 'daemon.pid'),
-      logFile: path.join(fingerDir, 'daemon.log'),
-      port: 5521,
-      host: 'localhost',
-      serverScript: path.resolve(__dirname, '../server/index.js'),
-      ...config
-    };
+  private cleanupOrphans(): void {
+    this.killProcessOnPort(this.config.port);
+    this.killProcessOnPort(this.config.wsPort);
+    
+    if (existsSync(this.config.pidFile)) {
+      try {
+        const pid = parseInt(readFileSync(this.config.pidFile, 'utf-8'), 10);
+        if (pid) {
+          try {
+            process.kill(pid, 0);
+            process.kill(pid, 'SIGTERM');
+            log.info('Killed old daemon', { pid });
+          } catch {
+            // Already dead
+          }
+        }
+        unlinkSync(this.config.pidFile);
+      } catch {
+        // Ignore
+      }
+    }
+  }
 
-    this.processAdapter = processAdapter ?? defaultProcessAdapter;
-    this.fsAdapter = fsAdapter ?? defaultFsAdapter;
-
-    if (!this.fsAdapter.existsSync(fingerDir)) {
-      this.fsAdapter.mkdirSync(fingerDir, { recursive: true });
+  /**
+   * 自动加载 autostart 目录中的所有模块
+   */
+  private async loadAutostartModules(): Promise<void> {
+    if (!existsSync(this.config.autostartDir)) {
+      log.info('Autostart directory not found, skipping');
+      return;
     }
 
-    this.agentPool = new AgentPool();
-    this.heartbeatBroker = new HeartbeatBroker();
+    const files = readdirSync(this.config.autostartDir).filter(
+      (f) => f.endsWith('.js') || f.endsWith('.module.json'),
+    );
+    
+    if (files.length === 0) {
+      log.info('No modules in autostart directory');
+      return;
+    }
+
+    log.info('Loading autostart modules', { count: files.length });
+
+    for (const file of files) {
+      const discoveredPath = join(this.config.autostartDir, file);
+      let filePath = discoveredPath;
+
+      if (file.endsWith('.module.json')) {
+        try {
+          const resolved = loadModuleManifest(discoveredPath);
+          if (resolved.manifest.type === 'cli-plugin') {
+            log.info('Skipping cli-plugin manifest in daemon autostart', { file });
+            continue;
+          }
+          if (resolved.manifest.enabled === false) {
+            log.info('Skipping disabled module manifest', { file, id: resolved.manifest.id });
+            continue;
+          }
+          filePath = resolved.entryPath;
+        } catch (err) {
+          log.error('Invalid module manifest: ' + file + ' - ' + (err instanceof Error ? err.message : String(err)));
+          continue;
+        }
+      }
+
+      try {
+        const res = await fetch(`http://localhost:${this.config.port}/api/v1/module/register`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ filePath })
+        });
+
+        const data = await res.json() as { success?: boolean; error?: string };
+        
+        if (data.success) {
+          log.info('Auto-registered module', { file });
+        } else {
+          log.error('Failed to register module: ' + file + ' - ' + (data.error || 'unknown'));
+        }
+      } catch (err) {
+        log.error('Failed to register module: ' + file + ' - ' + (err instanceof Error ? err.message : String(err)));
+      }
+    }
+
+    log.info('Autostart loading complete', { total: files.length });
   }
 
   async start(): Promise<void> {
     if (this.running) {
-      console.log('Daemon already running (in-process)');
+      log.warn('Daemon already running');
+      console.log('Daemon already running');
       return;
     }
 
-    // Clean up orphan processes from previous sessions
-    const orphans = this.processAdapter.cleanupOrphans();
-    if (orphans.killed.length > 0) {
-      console.log(`[Daemon] Cleaned up ${orphans.killed.length} orphan processes: ${orphans.killed.join(', ')}`);
-    }
-    if (orphans.errors.length > 0) {
-      console.error('[Daemon] Errors during orphan cleanup:', orphans.errors);
-    }
+    this.cleanupOrphans();
 
-    if (this.fsAdapter.existsSync(this.config.pidFile)) {
-      const pid = parseInt(this.fsAdapter.readFileSync(this.config.pidFile, 'utf-8'), 10);
-      if (Number.isFinite(pid)) {
-        if (this.processAdapter.isPidRunning(pid)) {
-          console.log(`Daemon already running with PID ${pid}`);
-          this.running = true;
-          return;
-        } else {
-          this.fsAdapter.unlinkSync(this.config.pidFile);
-        }
-      }
-    }
-
-    const serverPath = this.config.serverScript;
-    if (!this.fsAdapter.existsSync(serverPath)) {
-      console.error(`Server script not found: ${serverPath}. Build first with 'npm run build'.`);
+    if (!existsSync(this.config.serverScript)) {
+      const msg = `Server script not found: ${this.config.serverScript}. Run 'npm run build' first.`;
+      log.error(msg);
+      console.error(msg);
       return;
     }
 
-    const logFd = this.fsAdapter.openSync(this.config.logFile, 'a');
-    this.process = this.processAdapter.spawn('node', [serverPath], {
+    const logFd = openSync(this.config.logFile, 'a');
+
+    const child = spawn('node', [this.config.serverScript], {
       detached: true,
       stdio: ['ignore', logFd, logFd],
       env: {
         ...process.env,
         FINGER_DAEMON: '1',
         PORT: this.config.port.toString(),
-        HOST: this.config.host
-      }
+        WS_PORT: this.config.wsPort.toString(),
+        HOST: this.config.host,
+      },
     });
 
-    this.process.unref();
-    
-    // Register with lifecycle manager
-    this.processAdapter.registerProcess('daemon-server', this.process, 'other', {
-      type: 'orchestration-daemon'
-    });
+    writeFileSync(this.config.pidFile, child.pid?.toString() || '');
+    child.unref();
+    this.running = true;
 
-    await new Promise<void>((resolve) => {
-      setTimeout(() => {
-        if (this.process?.pid) {
-          this.fsAdapter.writeFileSync(this.config.pidFile, this.process.pid.toString());
-          this.running = true;
-          console.log(`Daemon started with PID ${this.process.pid}`);
-          resolve();
-        }
-      }, 500);
-    });
+    log.info('Daemon started', { pid: child.pid, port: this.config.port, wsPort: this.config.wsPort });
+    console.log(`[Daemon] Started with PID ${child.pid} on port ${this.config.port}`);
+    console.log(`[Daemon] WebSocket on port ${this.config.wsPort}`);
+    console.log(`[Daemon] Logs: ${this.config.logFile}`);
 
-    // 启动自动启动的 runtime agents
-    console.log('[Daemon] Starting auto-start agents...');
-    await this.agentPool.startAllAuto();
-
-    // Start heartbeat broadcaster
-    this.heartbeatBroker.start();
-    console.log('[Daemon] Heartbeat broadcaster started');
+    // 延迟加载 autostart 模块（等待 server 完全启动）
+    setTimeout(() => {
+      this.loadAutostartModules().catch(err => {
+        log.error('Failed to load autostart modules', err);
+      });
+    }, 2000);
   }
 
   async stop(): Promise<void> {
-    // 先停止所有 runtime agents
-    console.log('[Daemon] Stopping runtime agents...');
-    await this.agentPool.stopAll();
-
-    // Stop heartbeat broadcaster
-    this.heartbeatBroker.stop();
-
-    if (!this.fsAdapter.existsSync(this.config.pidFile)) {
-      console.log('No PID file found, daemon not running');
-      return;
-    }
-
-    const pid = parseInt(this.fsAdapter.readFileSync(this.config.pidFile, 'utf-8'), 10);
-    if (!Number.isFinite(pid)) {
-      this.fsAdapter.unlinkSync(this.config.pidFile);
-      console.log('Invalid PID file removed');
-      return;
-    }
-
-    // Use lifecycle manager for proper cleanup
-    this.processAdapter.killProcess('daemon-server', 'user-request');
-    
-    if (this.fsAdapter.existsSync(this.config.pidFile)) {
-      this.fsAdapter.unlinkSync(this.config.pidFile);
-    }
+    this.cleanupOrphans();
     this.running = false;
-    console.log(`Daemon stopped`);
+    log.info('Daemon stopped');
+    console.log('[Daemon] Stopped');
   }
 
   async restart(): Promise<void> {
@@ -217,38 +242,19 @@ export class OrchestrationDaemon {
   }
 
   isRunning(): boolean {
-    if (!this.fsAdapter.existsSync(this.config.pidFile)) {
-      return false;
+    if (existsSync(this.config.pidFile)) {
+      try {
+        const pid = parseInt(readFileSync(this.config.pidFile, 'utf-8'), 10);
+        process.kill(pid, 0);
+        return true;
+      } catch {
+        return false;
+      }
     }
-
-    const pid = parseInt(this.fsAdapter.readFileSync(this.config.pidFile, 'utf-8'), 10);
-    if (!Number.isFinite(pid)) {
-      this.fsAdapter.unlinkSync(this.config.pidFile);
-      return false;
-    }
-
-    const running = this.processAdapter.isPidRunning(pid);
-    if (!running) {
-      this.fsAdapter.unlinkSync(this.config.pidFile);
-    }
-    return running;
+    return false;
   }
 
-  getAgentPool(): AgentPool {
-    return this.agentPool;
-  }
-
-  /**
-   * Get the running state (for testing)
-   */
-  getRunningState(): boolean {
-    return this.running;
-  }
-
-  /**
-   * Set the running state (for testing)
-   */
-  setRunningState(running: boolean): void {
-    this.running = running;
+  getConfig(): DaemonConfig {
+    return { ...this.config };
   }
 }

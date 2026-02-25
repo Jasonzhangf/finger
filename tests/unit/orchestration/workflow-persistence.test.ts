@@ -1,6 +1,4 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import fs from 'fs';
-import os from 'os';
 import {
   deleteWorkflowFile,
   isTaskTimeout,

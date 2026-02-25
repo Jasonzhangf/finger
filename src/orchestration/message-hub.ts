@@ -1,27 +1,27 @@
 /**
  * 消息中枢 - 核心消息路由器
  * 负责所有组件之间的消息路由，支持阻塞/非阻塞模式
+ * 集成错误处理和结构化日志
  */
 
-export type Message = any;
-export type MessageHandler = (message: Message) => Promise<any> | any;
-export type MessageCallback = (result: any) => void;
+import { logger } from '../core/logger.js';
+import { errorHandler } from './error-handler.js';
+
+export type Message = unknown;
+export type MessageHandler = (message: Message) => Promise<unknown> | unknown;
+export type MessageCallback = (result: unknown) => void;
 
 /**
  * 路由规则条目
  */
 export interface RouteEntry {
   id: string;
-  /** 匹配模式：字符串类型名、正则表达式或自定义函数 */
   pattern: string | RegExp | ((message: Message) => boolean);
-  /** 处理函数 */
   handler: MessageHandler;
-  /** 是否阻塞（等待结果） */
   blocking: boolean;
-  /** 优先级（数字越大优先级越高） */
   priority: number;
-  /** 描述信息 */
   description?: string;
+  moduleId?: string;
 }
 
 /**
@@ -30,7 +30,7 @@ export interface RouteEntry {
 export interface InputRegistration {
   id: string;
   handler: MessageHandler;
-  routes: string[]; // 目标输出ID列表
+  routes: string[];
 }
 
 /**
@@ -38,7 +38,7 @@ export interface InputRegistration {
  */
 export interface OutputRegistration {
   id: string;
-  handler: (message: Message, callback?: MessageCallback) => Promise<any>;
+  handler: (message: Message, callback?: MessageCallback) => Promise<unknown>;
 }
 
 /**
@@ -60,162 +60,164 @@ export class MessageHub {
   private pendingCallbacks: Map<string, MessageCallback> = new Map();
   private messageQueue: QueueItem[] = [];
   private nextCallbackId = 1;
+  private log = logger.module('MessageHub');
 
-  /**
-   * 注册输入接口
-   */
   registerInput(id: string, handler: MessageHandler, routes: string[] = []): void {
     this.inputs.set(id, { id, handler, routes });
-    console.log(`[Hub] Input registered: ${id}`);
+    this.log.info('Input registered', { id, routes });
   }
 
-  /**
-   * 注册输出接口
-   */
-  registerOutput(id: string, handler: (message: Message, callback?: MessageCallback) => Promise<any>): void {
+  registerOutput(id: string, handler: (message: Message, callback?: MessageCallback) => Promise<unknown>): void {
     this.outputs.set(id, { id, handler });
-    console.log(`[Hub] Output registered: ${id}`);
+    this.log.info('Output registered', { id });
   }
 
-  /**
-   * 获取所有输入接口
-   */
   getInputs(): InputRegistration[] {
     return Array.from(this.inputs.values());
   }
 
-  /**
-   * 获取所有输出接口
-   */
   getOutputs(): OutputRegistration[] {
     return Array.from(this.outputs.values());
   }
 
-  /**
-   * 获取所有路由规则
-   */
   getRoutes(): RouteEntry[] {
     return [...this.routes];
   }
 
-  /**
-   * 添加路由规则
-   */
   addRoute(route: Omit<RouteEntry, 'id'> & { id?: string }): string {
-    const id = route.id || `route-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+    const id = route.id || 'route-' + Date.now() + '-' + Math.random().toString(36).slice(2, 10);
     this.routes.push({ ...route, id } as RouteEntry);
-    // 按优先级降序排序
     this.routes.sort((a, b) => (b.priority || 0) - (a.priority || 0));
-    console.log(`[Hub] Route added: ${id} (priority: ${route.priority})`);
+    this.log.info('Route added', { id, priority: route.priority, moduleId: route.moduleId });
     return id;
   }
 
-  /**
-   * 移除路由规则
-   */
   removeRoute(id: string): boolean {
     const index = this.routes.findIndex(r => r.id === id);
     if (index >= 0) {
       this.routes.splice(index, 1);
-      console.log(`[Hub] Route removed: ${id}`);
+      this.log.info('Route removed', { id });
       return true;
     }
     return false;
   }
 
-  /**
-   * 发送消息（入口）
-   */
-  async send(message: Message, callback?: MessageCallback): Promise<any> {
-    // 查找匹配的路由
+  async send(message: Message, callback?: MessageCallback): Promise<unknown> {
     const matchingRoutes = this.routes.filter(r => {
+      const msg = message as Record<string, unknown>;
+      
       if (typeof r.pattern === 'function') {
         return r.pattern(message);
       }
       if (r.pattern instanceof RegExp) {
         return r.pattern.test(JSON.stringify(message));
       }
-      // 字符串匹配：支持 message.type 或 message.route
-      return message.type === r.pattern || message.route === r.pattern;
+      
+      return msg.type === r.pattern || msg.route === r.pattern;
     });
 
     if (matchingRoutes.length === 0) {
-      // 无匹配路由，入队等待
       this.messageQueue.push({ message, callback, timestamp: Date.now() });
-      console.log(`[Hub] No matching route, message queued (queue length: ${this.messageQueue.length})`);
-      return;
+      this.log.info('No matching route, message queued', { queueLength: this.messageQueue.length });
+      return { queued: true, queueLength: this.messageQueue.length };
     }
 
-    let lastResult: any;
+    let lastResult: unknown;
+    
     for (const route of matchingRoutes) {
+      const moduleId = route.moduleId || route.id;
+      
       try {
         const result = await route.handler(message);
         lastResult = result;
         
-        // 如果有回调，调用回调
         if (callback) {
           callback(result);
         }
         
-        // 如果是阻塞路由，返回结果并停止继续处理
         if (route.blocking) {
-          console.log(`[Hub] Blocking route ${route.id} handled, returning result`);
+          this.log.info('Blocking route handled', { moduleId, routeId: route.id });
           return result;
         }
       } catch (err) {
-        console.error(`[Hub] Route ${route.id} handler error:`, err);
-        // 非阻塞路由出错不影响其他路由
+        const error = err instanceof Error ? err : new Error(String(err));
+        this.log.error('Route handler error', error, { moduleId, routeId: route.id });
+        
         if (route.blocking) {
-          throw err;
+          const retryFn = async (): Promise<void> => {
+            await route.handler(message);
+          };
+          
+          const errorResult = await errorHandler.handleError(error, moduleId, retryFn);
+          
+          if (errorResult.paused) {
+            return { 
+              error: true, 
+              paused: true, 
+              reason: errorResult.reason,
+              routeId: route.id 
+            };
+          }
+          
+          return { 
+            retryScheduled: true, 
+            moduleId,
+            routeId: route.id 
+          };
         }
       }
     }
 
-    // 如果没有阻塞路由，返回最后一个结果
     return lastResult;
   }
 
-  /**
-   * 路由到指定输出接口
-   */
-  async routeToOutput(outputId: string, message: Message, callback?: MessageCallback): Promise<any> {
+  async routeToOutput(outputId: string, message: Message, callback?: MessageCallback): Promise<unknown> {
     const output = this.outputs.get(outputId);
     if (!output) {
-      throw new Error(`Output ${outputId} not registered`);
+      const error = new Error('Output ' + outputId + ' not registered');
+      this.log.error('Route to output failed', error, { outputId });
+      throw error;
     }
     
-    // 如果需要回调，生成回调ID
     if (callback) {
-      const callbackId = `cb-${Date.now()}-${this.nextCallbackId++}`;
+      const callbackId = 'cb-' + Date.now() + '-' + this.nextCallbackId++;
       this.pendingCallbacks.set(callbackId, callback);
-      message._callbackId = callbackId;
+      (message as Record<string, unknown>)._callbackId = callbackId;
     }
     
-    return await output.handler(message, callback);
+    try {
+      return await output.handler(message, callback);
+    } catch (err) {
+      const error = err instanceof Error ? err : new Error(String(err));
+      this.log.error('Output handler error', error, { outputId });
+      throw err;
+    }
   }
 
-  /**
-   * 向任意模块（输入或输出）发送消息
-   */
-  async sendToModule(moduleId: string, message: Message, callback?: MessageCallback): Promise<any> {
-    // 先尝试作为输出
+  async sendToModule(moduleId: string, message: Message, callback?: MessageCallback): Promise<unknown> {
     const output = this.outputs.get(moduleId);
     if (output) {
       return this.routeToOutput(moduleId, message, callback);
     }
-    // 再尝试作为输入
+    
     const input = this.inputs.get(moduleId);
     if (input) {
-      const result = await input.handler(message);
-      if (callback) callback(result);
-      return result;
+      try {
+        const result = await input.handler(message);
+        if (callback) callback(result);
+        return result;
+      } catch (err) {
+        const error = err instanceof Error ? err : new Error(String(err));
+        this.log.error('Input handler error', error, { moduleId });
+        throw error;
+      }
     }
-    throw new Error(`Module ${moduleId} not registered as input or output`);
+    
+    const error = new Error('Module ' + moduleId + ' not registered as input or output');
+    this.log.error('Send to module failed', error, { moduleId });
+    throw error;
   }
 
-  /**
-   * 处理队列中的消息
-   */
   processQueue(): number {
     let processed = 0;
     const queue = [...this.messageQueue];
@@ -226,29 +228,23 @@ export class MessageHub {
         this.send(item.message, item.callback);
         processed++;
       } catch (err) {
-        console.error('[Hub] Failed to process queued message:', err);
-        // 重新入队
+        const error = err instanceof Error ? err : new Error(String(err));
+        this.log.error('Failed to process queued message', error);
         this.messageQueue.push(item);
       }
     }
 
     if (processed > 0) {
-      console.log(`[Hub] Processed ${processed} queued messages`);
+      this.log.info('Processed queued messages', { processed, remaining: this.messageQueue.length });
     }
     return processed;
   }
 
-  /**
-   * 获取队列长度
-   */
   getQueueLength(): number {
     return this.messageQueue.length;
   }
 
-  /**
-   * 执行回调（由输出接口调用）
-   */
-  executeCallback(callbackId: string, result: any): boolean {
+  executeCallback(callbackId: string, result: unknown): boolean {
     const callback = this.pendingCallbacks.get(callbackId);
     if (callback) {
       callback(result);
@@ -258,15 +254,22 @@ export class MessageHub {
     return false;
   }
 
-  /**
-   * 重置中枢（清空所有注册和队列）
-   */
   reset(): void {
     this.routes = [];
     this.inputs.clear();
     this.outputs.clear();
     this.pendingCallbacks.clear();
     this.messageQueue = [];
-    console.log('[Hub] Reset complete');
+    this.log.info('Reset complete');
+  }
+
+  getPausedModules() {
+    return errorHandler.getPausedModules();
+  }
+
+  async resumeModule(moduleId: string): Promise<boolean> {
+    return errorHandler.resumeModule(moduleId);
   }
 }
+
+export const messageHub = new MessageHub();

@@ -317,11 +317,12 @@ Agent 的能力由其拥有的工具决定：
           timestamp: new Date().toISOString(),
           payload: { title: target.description },
         });
-        const result = await state.hub.sendToModule(state.targetExecutorId, {
+        const rawResult = await state.hub.sendToModule(state.targetExecutorId, {
           taskId: target.id,
           description: target.description,
           bdTaskId: target.bdTaskId,
         });
+        const result = rawResult as { success?: boolean; output?: string; error?: string; result?: string };
         target.result = { taskId: target.id, success: result.success !== false, output: result.output || result.result, error: result.error };
         if (target.result.success) {
           target.status = 'completed';
@@ -538,12 +539,13 @@ Agent 的能力由其拥有的工具决定：
               orchestratorNote: `请使用 ${targetExecutorId} 执行此任务，预计时长: ${decision.estimatedDurationMs}ms`,
             });
             
-            const result = await state.hub.sendToModule(targetExecutorId, {
+            const rawResult = await state.hub.sendToModule(targetExecutorId, {
               taskId: task.id,
               description: task.description,
               bdTaskId: task.bdTaskId,
               context: taskContext,
             });
+            const result = rawResult as { success?: boolean; output?: string; error?: string };
             
             task.result = { taskId: task.id, success: result.success !== false, output: result.output, error: result.error };
             
@@ -703,7 +705,7 @@ Agent 的能力由其拥有的工具决定：
               bdTaskId: task.bdTaskId,
             });
             
-            if (result.success !== false) {
+            if ((result as { success?: boolean }).success !== false) {
               task.status = 'completed';
               state.completedTasks.push(taskId);
               state.blockedTasks = state.blockedTasks.filter(id => id !== taskId);

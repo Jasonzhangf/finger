@@ -11,6 +11,9 @@ import { join } from 'path';
 const FINGER_HOME = join(homedir(), '.finger');
 const DAEMON_LOG_FILE = join(FINGER_HOME, 'daemon.log');
 const DAEMON_PID_FILE = join(FINGER_HOME, 'daemon.pid');
+const DAEMON_HTTP_URL = process.env.FINGER_HUB_URL || 'http://localhost:9999';
+const DAEMON_HTTP_PORT = 9999;
+const DAEMON_WS_PORT = 9998;
 
 export function registerDaemonSubCommands(daemon: Command): void {
   // Logs command
@@ -81,7 +84,7 @@ export function registerDaemonSubCommands(daemon: Command): void {
         let fetchError: string | null = null;
         if (isRunning) {
           try {
-            const res = await fetch('http://localhost:5521/api/v1/modules');
+            const res = await fetch(`${DAEMON_HTTP_URL}/api/v1/modules`);
             if (res.ok) {
               modules = await res.json();
             }
@@ -93,8 +96,8 @@ export function registerDaemonSubCommands(daemon: Command): void {
         const status = {
           pid,
           isRunning,
-          httpPort: 5521,
-          wsPort: 5522,
+          httpPort: DAEMON_HTTP_PORT,
+          wsPort: DAEMON_WS_PORT,
           logFile: DAEMON_LOG_FILE,
           error: fetchError,
           modules,

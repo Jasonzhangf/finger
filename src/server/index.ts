@@ -8,16 +8,27 @@ import { registry } from '../core/registry.js';
 import { globalEventBus } from '../runtime/event-bus.js';
 import { globalToolRegistry } from '../runtime/tool-registry.js';
 import { RuntimeFacade } from '../runtime/runtime-facade.js';
+import { registerDefaultRuntimeTools } from '../runtime/default-tools.js';
+import {
+  AGENT_JSON_SCHEMA,
+  applyAgentJsonConfigs,
+  loadAgentJsonConfigs,
+  resolveDefaultAgentConfigDir,
+  type LoadedAgentConfig,
+} from '../runtime/agent-json-config.js';
 import { execSync } from 'child_process';
 import { createServer } from 'net';
 import { WebSocketServer, type WebSocket } from 'ws';
 import { ModuleRegistry } from '../orchestration/module-registry.js';
+import { GatewayManager } from '../gateway/gateway-manager.js';
 // SessionManager accessed via shared-instances
+import { loadAutostartAgents } from '../orchestration/autostart-loader.js';
 import { sharedWorkflowManager, sharedMessageHub, sharedSessionManager } from '../orchestration/shared-instances.js';
 import { runtimeInstructionBus } from '../orchestration/runtime-instruction-bus.js';
 import { resourcePool } from '../orchestration/resource-pool.js';
 import { resumableSessionManager } from '../orchestration/resumable-session.js';
 import { echoInput, echoOutput } from '../agents/test/mock-echo-agent.js';
+import { createChatCodexModule } from '../agents/chat-codex/chat-codex-module.js';
 import { createRealOrchestratorModule } from '../agents/daemon/orchestrator-module.js';
 import { createOrchestratorLoop } from '../agents/daemon/orchestrator-loop.js';
 import { createExecutorLoop } from '../agents/daemon/executor-loop.js';
@@ -37,10 +48,11 @@ import {
 } from '../blocks/index.js';
 
 const FINGER_HOME = join(homedir(), '.finger');
+const BLOCKING_MESSAGE_TIMEOUT_MS = 300000;
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
-const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 8080;
+const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 9999;
 
 async function isPortInUse(port: number): Promise<boolean> {
   return new Promise((resolve) => {
@@ -115,8 +127,34 @@ const moduleRegistry = new ModuleRegistry(hub);
 const sessionManager = sharedSessionManager;
 const workflowManager = sharedWorkflowManager;
 const runtime = new RuntimeFacade(globalEventBus, sessionManager, globalToolRegistry);
+const loadedTools = registerDefaultRuntimeTools(globalToolRegistry);
+console.log(`[Server] Runtime tools loaded: ${loadedTools.join(', ')}`);
+const gatewayManager = new GatewayManager(hub, moduleRegistry, {
+  daemonUrl: `http://127.0.0.1:${PORT}`,
+});
+let loadedAgentConfigs: LoadedAgentConfig[] = [];
+let loadedAgentConfigDir = resolveDefaultAgentConfigDir();
+
+function reloadAgentJsonConfigs(configDir = loadedAgentConfigDir): void {
+  const result = loadAgentJsonConfigs(configDir);
+  loadedAgentConfigDir = result.dir;
+  loadedAgentConfigs = result.loaded;
+  applyAgentJsonConfigs(runtime, result.loaded.map((item) => item.config));
+
+  console.log(`[Server] Agent JSON configs loaded: ${result.loaded.length} from ${result.dir}`);
+  if (result.errors.length > 0) {
+    for (const err of result.errors) {
+      console.error(`[Server] Agent config load error ${err.filePath}: ${err.error}`);
+    }
+  }
+}
+
+reloadAgentJsonConfigs();
 await moduleRegistry.register(echoInput);
 await moduleRegistry.register(echoOutput);
+const chatCodexModule = createChatCodexModule();
+await moduleRegistry.register(chatCodexModule);
+console.log('[Server] Chat Codex module registered: chat-codex');
 
  // 注册真正的编排者 - 集成 iFlow SDK + bd 任务管理
  const { module: realOrchestrator } = createRealOrchestratorModule({
@@ -150,12 +188,21 @@ const executorMock: OutputModule = {
  await moduleRegistry.register(executorMock);
  console.log('[Server] Mock Executor module registered: executor-mock');
 
+// 加载 autostart agents
+await loadAutostartAgents(moduleRegistry).catch(err => {
+  console.error('[Server] Failed to load autostart agents:', err);
+});
+
+await gatewayManager.start().catch((err) => {
+  console.error('[Server] Failed to start gateway manager:', err);
+});
+
 moduleRegistry.createRoute(() => true, 'echo-output', {
   blocking: false,
   priority: 0,
   description: 'default route to echo-output'
 });
-console.log('[Server] Orchestration modules initialized: echo-input, echo-output, orchestrator-1, executor-mock');
+console.log('[Server] Orchestration modules initialized: echo-input, echo-output, chat-codex, orchestrator-1, executor-mock');
 
 app.get('/health', (_req, res) => {
   res.json({ status: 'healthy', timestamp: new Date().toISOString() });
@@ -218,6 +265,115 @@ app.get('/api/v1/modules', (_req, res) => {
 
 app.get('/api/v1/routes', (_req, res) => {
   res.json({ routes: hub.getRoutes() });
+});
+
+app.get('/api/v1/gateways', (_req, res) => {
+  res.json({
+    success: true,
+    gateways: gatewayManager.list(),
+  });
+});
+
+app.get('/api/v1/gateways/:id', (req, res) => {
+  const gateway = gatewayManager.inspect(req.params.id);
+  if (!gateway) {
+    res.status(404).json({ error: `Gateway not found: ${req.params.id}` });
+    return;
+  }
+
+  res.json({
+    success: true,
+    gateway: {
+      ...gateway.manifest,
+      modulePath: gateway.modulePath,
+      moduleDir: gateway.moduleDir,
+      readmePath: gateway.readmePath,
+      cliDocPath: gateway.cliDocPath,
+      readmeExcerpt: gateway.readmeExcerpt,
+      cliDocExcerpt: gateway.cliDocExcerpt,
+    },
+  });
+});
+
+app.get('/api/v1/gateways/:id/probe', (req, res) => {
+  const probe = gatewayManager.probe(req.params.id);
+  if (!probe) {
+    res.status(404).json({ error: `Gateway not found: ${req.params.id}` });
+    return;
+  }
+  res.json({ success: true, probe });
+});
+
+app.post('/api/v1/gateways/register', async (req, res) => {
+  const gatewayPath = req.body?.path;
+  if (typeof gatewayPath !== 'string' || gatewayPath.trim().length === 0) {
+    res.status(400).json({ error: 'path is required' });
+    return;
+  }
+
+  try {
+    const installed = await gatewayManager.registerFromPath(gatewayPath);
+    res.json({
+      success: true,
+      gateway: {
+        id: installed.manifest.id,
+        modulePath: installed.modulePath,
+      },
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    res.status(400).json({ error: message });
+  }
+});
+
+app.post('/api/v1/gateways/reload', async (_req, res) => {
+  try {
+    await gatewayManager.reload();
+    res.json({ success: true, gateways: gatewayManager.list() });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    res.status(400).json({ error: message });
+  }
+});
+
+app.delete('/api/v1/gateways/:id', async (req, res) => {
+  try {
+    const removed = await gatewayManager.unregister(req.params.id);
+    if (!removed) {
+      res.status(404).json({ error: `Gateway not found: ${req.params.id}` });
+      return;
+    }
+    res.json({ success: true, id: req.params.id });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    res.status(400).json({ error: message });
+  }
+});
+
+app.post('/api/v1/gateways/:id/input', async (req, res) => {
+  const body = req.body as {
+    message?: unknown;
+    target?: string;
+    blocking?: boolean;
+    sender?: string;
+  };
+  if (body.message === undefined) {
+    res.status(400).json({ error: 'message is required' });
+    return;
+  }
+
+  try {
+    const result = await gatewayManager.dispatchInput(req.params.id, {
+      message: body.message,
+      target: typeof body.target === 'string' ? body.target : undefined,
+      sender: typeof body.sender === 'string' ? body.sender : undefined,
+      blocking: body.blocking === true,
+    });
+    res.json({ success: true, result });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    res.status(400).json({ error: message });
+  }
 });
 
 // Event metadata for UI subscriptions (types + groups)
@@ -287,7 +443,7 @@ app.post('/api/v1/mailbox/clear', (_req, res) => {
 });
 
 // WebSocket server for real-time updates
-const wsPort = process.env.WS_PORT ? parseInt(process.env.WS_PORT, 10) : 5522;
+const wsPort = process.env.WS_PORT ? parseInt(process.env.WS_PORT, 10) : 9998;
 const wss = new WebSocketServer({ port: wsPort });
 console.log(`[Server] Starting WebSocket server on port ${wsPort} (PORT=${PORT})`);
 const wsClients: Set<WebSocket> = new Set();
@@ -636,6 +792,81 @@ app.put('/api/v1/tools/:name/policy', (req, res) => {
   res.json({ success: true, name: req.params.name, policy });
 });
 
+app.put('/api/v1/tools/:name/authorization', (req, res) => {
+  const required = req.body?.required;
+  if (typeof required !== 'boolean') {
+    res.status(400).json({ error: 'required must be boolean' });
+    return;
+  }
+  runtime.setToolAuthorizationRequired(req.params.name, required);
+  res.json({ success: true, name: req.params.name, required });
+});
+
+app.post('/api/v1/tools/authorizations', (req, res) => {
+  const agentId = req.body?.agentId;
+  const toolName = req.body?.toolName;
+  const issuedBy = req.body?.issuedBy;
+  const ttlMs = req.body?.ttlMs;
+  const maxUses = req.body?.maxUses;
+
+  if (typeof agentId !== 'string' || agentId.trim().length === 0) {
+    res.status(400).json({ error: 'agentId is required' });
+    return;
+  }
+  if (typeof toolName !== 'string' || toolName.trim().length === 0) {
+    res.status(400).json({ error: 'toolName is required' });
+    return;
+  }
+  if (typeof issuedBy !== 'string' || issuedBy.trim().length === 0) {
+    res.status(400).json({ error: 'issuedBy is required' });
+    return;
+  }
+
+  const grant = runtime.issueToolAuthorization(agentId, toolName, issuedBy, {
+    ttlMs: typeof ttlMs === 'number' ? ttlMs : undefined,
+    maxUses: typeof maxUses === 'number' ? maxUses : undefined,
+  });
+
+  res.json({ success: true, authorization: grant });
+});
+
+app.delete('/api/v1/tools/authorizations/:token', (req, res) => {
+  const revoked = runtime.revokeToolAuthorization(req.params.token);
+  if (!revoked) {
+    res.status(404).json({ error: 'authorization token not found' });
+    return;
+  }
+  res.json({ success: true, token: req.params.token });
+});
+
+app.post('/api/v1/tools/execute', async (req, res) => {
+  const agentId = req.body?.agentId;
+  const toolName = req.body?.toolName;
+  const input = req.body?.input;
+  const authorizationToken = req.body?.authorizationToken;
+
+  if (typeof agentId !== 'string' || agentId.trim().length === 0) {
+    res.status(400).json({ error: 'agentId is required' });
+    return;
+  }
+  if (typeof toolName !== 'string' || toolName.trim().length === 0) {
+    res.status(400).json({ error: 'toolName is required' });
+    return;
+  }
+  if (authorizationToken !== undefined && typeof authorizationToken !== 'string') {
+    res.status(400).json({ error: 'authorizationToken must be string when provided' });
+    return;
+  }
+
+  try {
+    const result = await runtime.callTool(agentId, toolName, input, { authorizationToken });
+    res.json({ success: true, result });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    res.status(400).json({ error: message });
+  }
+});
+
 app.post('/api/v1/tools/register', (req, res) => {
   const { name, description, inputSchema, handler, policy } = req.body;
   if (!name || typeof handler !== 'function') {
@@ -650,6 +881,143 @@ app.post('/api/v1/tools/register', (req, res) => {
     handler,
   });
   res.json({ success: true, name, policy: policy || 'allow' });
+});
+
+// Agent tool whitelist / blacklist
+app.get('/api/v1/tools/agents/:agentId/policy', (req, res) => {
+  const policy = runtime.getAgentToolPolicy(req.params.agentId);
+  res.json({ success: true, policy });
+});
+
+app.put('/api/v1/tools/agents/:agentId/policy', (req, res) => {
+  const whitelistRaw = req.body?.whitelist;
+  const blacklistRaw = req.body?.blacklist;
+
+  if (whitelistRaw !== undefined && !Array.isArray(whitelistRaw)) {
+    res.status(400).json({ error: 'whitelist must be string[]' });
+    return;
+  }
+  if (blacklistRaw !== undefined && !Array.isArray(blacklistRaw)) {
+    res.status(400).json({ error: 'blacklist must be string[]' });
+    return;
+  }
+
+  const whitelist = Array.isArray(whitelistRaw) ? whitelistRaw.filter((item): item is string => typeof item === 'string') : undefined;
+  const blacklist = Array.isArray(blacklistRaw) ? blacklistRaw.filter((item): item is string => typeof item === 'string') : undefined;
+
+  if (whitelist) {
+    runtime.setAgentToolWhitelist(req.params.agentId, whitelist);
+  }
+  if (blacklist) {
+    runtime.setAgentToolBlacklist(req.params.agentId, blacklist);
+  }
+
+  const policy = runtime.getAgentToolPolicy(req.params.agentId);
+  res.json({ success: true, policy });
+});
+
+app.post('/api/v1/tools/agents/:agentId/grant', (req, res) => {
+  const toolName = req.body?.toolName;
+  if (typeof toolName !== 'string' || toolName.trim().length === 0) {
+    res.status(400).json({ error: 'toolName is required' });
+    return;
+  }
+  const policy = runtime.grantToolToAgent(req.params.agentId, toolName);
+  res.json({ success: true, policy });
+});
+
+app.post('/api/v1/tools/agents/:agentId/revoke', (req, res) => {
+  const toolName = req.body?.toolName;
+  if (typeof toolName !== 'string' || toolName.trim().length === 0) {
+    res.status(400).json({ error: 'toolName is required' });
+    return;
+  }
+  const policy = runtime.revokeToolFromAgent(req.params.agentId, toolName);
+  res.json({ success: true, policy });
+});
+
+app.post('/api/v1/tools/agents/:agentId/deny', (req, res) => {
+  const toolName = req.body?.toolName;
+  if (typeof toolName !== 'string' || toolName.trim().length === 0) {
+    res.status(400).json({ error: 'toolName is required' });
+    return;
+  }
+  const policy = runtime.denyToolForAgent(req.params.agentId, toolName);
+  res.json({ success: true, policy });
+});
+
+app.post('/api/v1/tools/agents/:agentId/allow', (req, res) => {
+  const toolName = req.body?.toolName;
+  if (typeof toolName !== 'string' || toolName.trim().length === 0) {
+    res.status(400).json({ error: 'toolName is required' });
+    return;
+  }
+  const policy = runtime.allowToolForAgent(req.params.agentId, toolName);
+  res.json({ success: true, policy });
+});
+
+app.get('/api/v1/tools/agents/presets', (_req, res) => {
+  res.json({ success: true, presets: runtime.listRoleToolPolicyPresets() });
+});
+
+app.post('/api/v1/tools/agents/:agentId/role-policy', (req, res) => {
+  const role = req.body?.role;
+  if (typeof role !== 'string' || role.trim().length === 0) {
+    res.status(400).json({ error: 'role is required' });
+    return;
+  }
+
+  try {
+    const policy = runtime.applyAgentRoleToolPolicy(req.params.agentId, role);
+    res.json({ success: true, role, policy });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    res.status(400).json({ error: message });
+  }
+});
+
+app.get('/api/v1/agents/configs', (_req, res) => {
+  res.json({
+    success: true,
+    dir: loadedAgentConfigDir,
+    schema: AGENT_JSON_SCHEMA,
+    agents: loadedAgentConfigs.map((item) => ({
+      filePath: item.filePath,
+      id: item.config.id,
+      name: item.config.name,
+      role: item.config.role,
+      tools: item.config.tools ?? {},
+    })),
+  });
+});
+
+app.get('/api/v1/agents/configs/schema', (_req, res) => {
+  res.json({ success: true, schema: AGENT_JSON_SCHEMA });
+});
+
+app.post('/api/v1/agents/configs/reload', (req, res) => {
+  const requestedDir = req.body?.dir;
+  if (requestedDir !== undefined && typeof requestedDir !== 'string') {
+    res.status(400).json({ error: 'dir must be string when provided' });
+    return;
+  }
+
+  try {
+    reloadAgentJsonConfigs(requestedDir || loadedAgentConfigDir);
+    res.json({
+      success: true,
+      dir: loadedAgentConfigDir,
+      count: loadedAgentConfigs.length,
+      agents: loadedAgentConfigs.map((item) => ({
+        filePath: item.filePath,
+        id: item.config.id,
+        role: item.config.role,
+      })),
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    res.status(400).json({ error: message });
+  }
 });
 
 // ========== Workflow Management API ==========
@@ -1104,21 +1472,65 @@ app.post('/api/v1/message', async (req, res) => {
 
   try {
     if (body.blocking) {
-      const result = await hub.sendToModule(body.target, body.message);
-      mailbox.updateStatus(messageId, 'completed', result);
+      let primaryResult: unknown;
+      let senderResponse: unknown | undefined;
+
+      // Send the message to the target module and await its direct return
+      try {
+        primaryResult = await Promise.race([
+          hub.sendToModule(body.target, body.message),
+          new Promise<never>((_, reject) => {
+            setTimeout(() => reject(new Error(`Timed out waiting for module response: ${body.target}`)), BLOCKING_MESSAGE_TIMEOUT_MS);
+          }),
+        ]);
+      } catch (err) {
+        const errorMessage = err instanceof Error ? err.message : String(err);
+        const statusCode = errorMessage.includes('Timed out') ? 504 : 400;
+        mailbox.updateStatus(messageId, 'failed', undefined, errorMessage);
+        res.status(statusCode).json({ messageId, status: 'failed', error: errorMessage });
+        return;
+      }
+
+      if (primaryResult === undefined) {
+        const errorMessage = `No result returned from module: ${body.target}`;
+        mailbox.updateStatus(messageId, 'failed', undefined, errorMessage);
+        res.status(502).json({ messageId, status: 'failed', error: errorMessage });
+        return;
+      }
+      
+      // If a sender is specified, attempt to route the primary result back to the sender module
+      if (body.sender) {
+        try {
+          senderResponse = await hub.sendToModule(body.sender, { 
+            type: 'callback', 
+            payload: primaryResult, 
+            originalMessageId: messageId 
+          });
+          console.log('[Server] Callback result sent to sender', body.sender, 'Response:', senderResponse);
+        } catch (err) {
+          console.error('[Server] Failed to route callback result to sender', body.sender, err);
+        }
+      }
+
+      const actualResult = primaryResult;
+      mailbox.updateStatus(messageId, 'completed', actualResult);
       
       // Broadcast completion
-      const completeBroadcast = JSON.stringify({ type: 'messageCompleted', messageId, result });
+      const completeBroadcast = JSON.stringify({ type: 'messageCompleted', messageId, result: actualResult, callbackResult: senderResponse });
       for (const client of wsClients) {
         if (client.readyState === 1) client.send(completeBroadcast);
       }
       
-      res.json({ messageId, status: 'completed', result });
+      res.json({ messageId, status: 'completed', result: actualResult, callbackResult: senderResponse });
       return;
     }
 
     // Non-blocking: return messageId immediately
-    hub.sendToModule(body.target, body.message)
+    hub.sendToModule(body.target, body.message, body.sender ? (result: any) => {
+        hub.sendToModule(body.sender!, { type: 'callback', payload: result, originalMessageId: messageId })
+          .catch(() => { /* Ignore sender callback errors */ });
+        return result;
+      } : undefined)
       .then((result) => {
         mailbox.updateStatus(messageId, 'completed', result);
         const completeBroadcast = JSON.stringify({ type: 'messageCompleted', messageId, result });
@@ -1407,7 +1819,7 @@ app.get('/api/v1/workflows/state', (_req, res) => {
 });
 
 // 注册 WebSocket 客户端
-const originalWsServer = wss; // 保存原始 wsServer 引用
+// WebSocket server reference available via wss
 wss.on('connection', (ws) => {
   registerWebSocketClient(ws as any);
   
@@ -1709,3 +2121,31 @@ app.post('/api/v1/workflow/:workflowId/transition', async (req, res) => {
 });
 
 console.log('[Server] Agent CLI API enabled');
+
+// API: Execute agent command (agent + command + params)
+app.post('/api/v1/agent/execute-command', async (req, res) => {
+  const { agent, command, params } = req.body;
+  if (!agent || !command) {
+    res.status(400).json({ error: 'Missing agent or command' });
+    return;
+  }
+
+  try {
+    // 直接调用 agent 模块的 execute 方法
+    const { ModuleRegistry } = await import('../orchestration/module-registry.js');
+    // 使用全局 registry 实例
+    const globalRegistry = (global as any).__moduleRegistry || new ModuleRegistry((global as any).__messageHub);
+    const modules = globalRegistry.getModulesByType('agent');
+    const agentModule: any = modules.find((m: any) => m.id === agent);
+    
+    if (!agentModule || !('execute' in agentModule)) {
+      res.status(404).json({ error: `Agent ${agent} not found` });
+      return;
+    }
+    
+    const result = await (agentModule as any).execute(command, params);
+    res.json({ success: true, result });
+  } catch (error) {
+    res.status(500).json({ error: String(error) });
+  }
+});

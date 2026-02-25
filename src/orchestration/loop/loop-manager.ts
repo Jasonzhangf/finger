@@ -221,7 +221,7 @@ export class LoopManager implements ILoopManager {
     return pending;
   }
 
-  receiveUserInput(epicId: string, response: string): void {
+  receiveUserInput(epicId: string, _response: string): void {
     const pending = this.pendingUserInputs.get(epicId);
     if (!pending) {
       throw new Error(`No pending user input for epic: ${epicId}`);

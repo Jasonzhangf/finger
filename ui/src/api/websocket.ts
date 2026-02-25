@@ -18,7 +18,7 @@ export class WebSocketClient {
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 
  constructor(
-   url: string = 'ws://localhost:5521',
+   url: string = 'ws://localhost:9998',
    options: { reconnectInterval?: number; maxReconnectAttempts?: number } = {}
  ) {
    this.url = url;
@@ -35,10 +35,25 @@ export class WebSocketClient {
          console.log('[WS] Connected to', this.url);
          this.reconnectAttempts = 0;
 
-          // Subscribe to workflow and agent updates
+          // Subscribe to both legacy workflow stream and grouped EventBus stream.
           this.ws?.send(JSON.stringify({
             type: 'subscribe',
-            types: ['workflow_update', 'agent_update', 'task_started', 'task_completed', 'task_failed'],
+            types: [
+              'workflow_update',
+              'agent_update',
+              'task_started',
+              'task_completed',
+              'task_failed',
+              'tool_call',
+              'tool_result',
+              'tool_error',
+              'assistant_chunk',
+              'assistant_complete',
+              'waiting_for_user',
+              'phase_transition',
+              'workflow_progress',
+            ],
+            groups: ['SESSION', 'TASK', 'TOOL', 'DIALOG', 'PROGRESS', 'PHASE', 'HUMAN_IN_LOOP', 'SYSTEM'],
           }));
          resolve();
        };
@@ -120,7 +135,7 @@ export function getWebSocket(): WebSocketClient {
   if (!wsInstance) {
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     const host = window.location.hostname;
-    const port = 8081;  // WebSocket server is on PORT + 1 (8080 + 1 = 8081)
+    const port = 9998;
     wsInstance = new WebSocketClient(`${protocol}//${host}:${port}`);
   }
   return wsInstance;

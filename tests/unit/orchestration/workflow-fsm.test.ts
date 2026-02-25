@@ -11,8 +11,6 @@ import {
   getOrCreateWorkflowFSM,
   removeWorkflowFSM,
   type WorkflowState,
-  type TaskState,
-  type AgentState,
 } from '../../../src/orchestration/workflow-fsm.js';
 
 describe('WorkflowFSM', () => {

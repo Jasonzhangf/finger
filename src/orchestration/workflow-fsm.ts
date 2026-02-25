@@ -283,7 +283,7 @@ export class WorkflowFSM {
       from: 'paused',
       to: '*',
       trigger: 'resume_requested',
-      action: (ctx) => {
+      action: (_ctx) => {
         // 恢复到暂停前的状态
         const previousState = this.stateHistory[this.stateHistory.length - 2]?.state;
         if (previousState && previousState !== 'paused') {
@@ -451,7 +451,7 @@ export class TaskFSM {
     this.currentState = initialState;
   }
 
-  transition(trigger: string, context?: unknown): boolean {
+  transition(trigger: string, _context?: unknown): boolean {
     const transitions: Record<TaskState, Record<string, TaskState>> = {
       'created': { 'deps_satisfied': 'ready' },
       'ready': { 'orchestrator_dispatch': 'dispatching' },

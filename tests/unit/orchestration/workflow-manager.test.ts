@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { WorkflowManager, TaskNode, Workflow, TaskStatus } from '../../../src/orchestration/workflow-manager.js';
+import { WorkflowManager } from '../../../src/orchestration/workflow-manager.js';
 
 // Mock dependencies
 vi.mock('../../../src/orchestration/workflow-persistence.js', () => ({

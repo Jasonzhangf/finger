@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { SessionManager, Session, SessionMessage } from '../../../src/orchestration/session-manager.js';
+import { SessionManager } from '../../../src/orchestration/session-manager.js';
 
 // Mock fs module
 vi.mock('fs', () => ({
@@ -122,7 +122,6 @@ describe('SessionManager', () => {
     });
 
     it('should return all sessions sorted by lastAccessedAt', async () => {
-      const s1 = manager.createSession('/path1');
       await new Promise(r => setTimeout(r, 10));
       const s2 = manager.createSession('/path2');
       

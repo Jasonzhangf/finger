@@ -12,7 +12,7 @@ export function setOutputFormat(format: OutputFormat): void {
   currentFormat = format;
 }
 
-export function getOutputFormat(): OutputFormat {
+export function _getOutputFormat(): OutputFormat {
   return currentFormat;
 }
 
@@ -36,27 +36,31 @@ export function printEvent(type: string, payload: unknown, timestamp?: string): 
   
   // Text format
   switch (type) {
-    case 'phase_transition':
+    case 'phase_transition': {
       const phasePayload = payload as { from?: string; to?: string; trigger?: string };
       console.log(`[${time}] Phase: ${phasePayload.from} → ${phasePayload.to}`);
       break;
-      
-    case 'task_started':
+    }
+    
+    case 'task_started': {
       const taskPayload = payload as { taskId?: string; description?: string };
       console.log(`[${time}] Task ${taskPayload.taskId}: started - ${taskPayload.description || ''}`);
       break;
-      
-    case 'task_completed':
+    }
+    
+    case 'task_completed': {
       const completedPayload = payload as { taskId?: string };
       console.log(`[${time}] Task ${completedPayload.taskId}: completed ✓`);
       break;
-      
-    case 'task_failed':
+    }
+    
+    case 'task_failed': {
       const failedPayload = payload as { taskId?: string; error?: string };
       console.log(`[${time}] Task ${failedPayload.taskId}: failed ✗ - ${failedPayload.error || ''}`);
       break;
-      
-    case 'agent_update':
+    }
+    
+    case 'agent_update': {
       const agentPayload = payload as { agentId?: string; status?: string; step?: { thought?: string; action?: string; observation?: string } };
       if (agentPayload.step?.thought) {
         console.log(`[${time}] [${agentPayload.agentId}] Thought: ${agentPayload.step.thought}`);
@@ -68,13 +72,15 @@ export function printEvent(type: string, payload: unknown, timestamp?: string): 
         console.log(`[${time}] [${agentPayload.agentId}] Observation: ${agentPayload.step.observation}`);
       }
       break;
-      
-    case 'workflow_update':
+    }
+    
+    case 'workflow_update': {
       const workflowPayload = payload as { workflowId?: string; status?: string };
       console.log(`[${time}] Workflow ${workflowPayload.workflowId}: ${workflowPayload.status}`);
       break;
+    }
       
-    case 'user_decision_required':
+    case 'user_decision_required': {
       const decisionPayload = payload as { message?: string; options?: string[] };
       console.log(`\n❓ ${decisionPayload.message}`);
       if (decisionPayload.options) {
@@ -83,6 +89,7 @@ export function printEvent(type: string, payload: unknown, timestamp?: string): 
         });
       }
       break;
+    }
       
     default:
       console.log(`[${time}] ${type}:`, payload);

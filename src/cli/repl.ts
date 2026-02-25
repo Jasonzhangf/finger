@@ -10,8 +10,8 @@
 
 import * as readline from 'readline';
 import { FingerClient, type RuntimeEvent, type UserDecision } from '../client/finger-client.js';
-import { printEvent, printWorkflowStatus, printError, printSuccess, setOutputFormat, getOutputFormat } from './output.js';
-import { ExitCode, FingerError } from './errors.js';
+import { printEvent, printWorkflowStatus, printError, printSuccess, setOutputFormat } from './output.js';
+import { ExitCode } from './errors.js';
 
 export interface REPLConfig {
   httpUrl?: string;

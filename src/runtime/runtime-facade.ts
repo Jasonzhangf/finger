@@ -7,6 +7,13 @@ import type { WebSocket } from 'ws';
 import { UnifiedEventBus } from './event-bus.js';
 import { ToolRegistry } from './tool-registry.js';
 import type { RuntimeEvent, Attachment } from './events.js';
+import { AgentToolAccessControl, type AgentToolPolicy } from './agent-tool-access.js';
+import { applyRoleToolPolicy, type RoleToolPolicyPresetMap } from './agent-tool-role-policy.js';
+import {
+  ToolAuthorizationManager,
+  type AuthorizationIssueOptions,
+  type ToolAuthorizationGrant,
+} from './tool-authorization.js';
 
 // Session 类型 (简化版，完整定义在 session-manager.ts)
 export interface SessionInfo {
@@ -47,6 +54,9 @@ export interface ISessionManager {
 
 export class RuntimeFacade {
   private currentSessionId: string | null = null;
+  private readonly toolAccessControl = new AgentToolAccessControl();
+  private readonly toolAuthorization = new ToolAuthorizationManager();
+  private roleToolPolicyPresets: RoleToolPolicyPresetMap = {};
 
   constructor(
     private eventBus: UnifiedEventBus,
@@ -203,15 +213,46 @@ export class RuntimeFacade {
     agentId: string,
     toolName: string,
     input: unknown,
+    options: { authorizationToken?: string } = {},
   ): Promise<unknown> {
     const startTime = Date.now();
     const toolId = `${agentId}-${toolName}-${startTime}`;
     const sessionId = this.currentSessionId || 'default';
 
+    const access = this.toolAccessControl.canUse(agentId, toolName);
+    if (!access.allowed) {
+      this.eventBus.emit({
+        type: 'tool_error',
+        toolId,
+        toolName,
+        agentId,
+        sessionId,
+        timestamp: new Date().toISOString(),
+        payload: { error: access.reason, duration: 0 },
+      });
+      throw new Error(access.reason);
+    }
+
     // 检查策略
     const policy = this.toolRegistry.getPolicy(toolName);
     if (policy === 'deny') {
       throw new Error(`Tool ${toolName} is not allowed`);
+    }
+
+    if (this.toolAuthorization.isToolRequired(toolName)) {
+      const auth = this.toolAuthorization.verifyAndConsume(options.authorizationToken, agentId, toolName);
+      if (!auth.allowed) {
+        this.eventBus.emit({
+          type: 'tool_error',
+          toolId,
+          toolName,
+          agentId,
+          sessionId,
+          timestamp: new Date().toISOString(),
+          payload: { error: auth.reason, duration: 0 },
+        });
+        throw new Error(auth.reason);
+      }
     }
 
     // 发送 tool_call 事件
@@ -290,6 +331,120 @@ export class RuntimeFacade {
    */
   listTools(): Array<{ name: string; description: string; policy: 'allow' | 'deny' }> {
     return this.toolRegistry.list();
+  }
+
+  /**
+   * 授予 agent 工具白名单权限
+   */
+  grantToolToAgent(agentId: string, toolName: string): AgentToolPolicy {
+    return this.toolAccessControl.grant(agentId, toolName);
+  }
+
+  /**
+   * 撤销 agent 工具白名单权限
+   */
+  revokeToolFromAgent(agentId: string, toolName: string): AgentToolPolicy {
+    return this.toolAccessControl.revoke(agentId, toolName);
+  }
+
+  /**
+   * 设置 agent 工具白名单
+   */
+  setAgentToolWhitelist(agentId: string, toolNames: string[]): AgentToolPolicy {
+    return this.toolAccessControl.setWhitelist(agentId, toolNames);
+  }
+
+  /**
+   * 设置 agent 工具黑名单
+   */
+  setAgentToolBlacklist(agentId: string, toolNames: string[]): AgentToolPolicy {
+    return this.toolAccessControl.setBlacklist(agentId, toolNames);
+  }
+
+  /**
+   * 将单个工具加入 agent 黑名单
+   */
+  denyToolForAgent(agentId: string, toolName: string): AgentToolPolicy {
+    return this.toolAccessControl.deny(agentId, toolName);
+  }
+
+  /**
+   * 从 agent 黑名单移除单个工具
+   */
+  allowToolForAgent(agentId: string, toolName: string): AgentToolPolicy {
+    return this.toolAccessControl.allow(agentId, toolName);
+  }
+
+  /**
+   * 获取 agent 工具权限策略
+   */
+  getAgentToolPolicy(agentId: string): AgentToolPolicy {
+    return this.toolAccessControl.getPolicy(agentId);
+  }
+
+  /**
+   * 清空 agent 工具权限策略
+   */
+  clearAgentToolPolicy(agentId: string): void {
+    this.toolAccessControl.clear(agentId);
+  }
+
+  /**
+   * 根据角色模板设置工具策略
+   */
+  applyAgentRoleToolPolicy(agentId: string, role: string): AgentToolPolicy {
+    return applyRoleToolPolicy(this.toolAccessControl, agentId, role, this.roleToolPolicyPresets);
+  }
+
+  /**
+   * 设置角色策略模板（由配置文件驱动）
+   */
+  setRoleToolPolicyPresets(presets: RoleToolPolicyPresetMap): string[] {
+    const next: RoleToolPolicyPresetMap = {};
+    for (const [key, preset] of Object.entries(presets)) {
+      const roleKey = key.trim().toLowerCase();
+      if (roleKey.length === 0) continue;
+      next[roleKey] = {
+        role: preset.role,
+        whitelist: [...preset.whitelist],
+        blacklist: [...preset.blacklist],
+      };
+    }
+    this.roleToolPolicyPresets = next;
+    return Object.keys(this.roleToolPolicyPresets).sort();
+  }
+
+  /**
+   * 返回可用角色策略名称
+   */
+  listRoleToolPolicyPresets(): string[] {
+    return Object.keys(this.roleToolPolicyPresets).sort();
+  }
+
+  /**
+   * 设置工具是否需要授权令牌
+   */
+  setToolAuthorizationRequired(toolName: string, required: boolean): void {
+    this.toolAuthorization.setToolRequired(toolName, required);
+  }
+
+  /**
+   * 为 agent + tool 签发一次性/多次授权令牌
+   */
+  issueToolAuthorization(
+    agentId: string,
+    toolName: string,
+    issuedBy: string,
+    options: AuthorizationIssueOptions = {},
+  ): ToolAuthorizationGrant {
+    return this.toolAuthorization.issue(agentId, toolName, issuedBy, options);
+  }
+
+  /**
+   * 吊销授权令牌
+   */
+  revokeToolAuthorization(token: string): boolean {
+    return this.toolAuthorization.revoke(token);
   }
 
   // ==================== 任务进度 ====================

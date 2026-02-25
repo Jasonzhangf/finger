@@ -10,7 +10,7 @@
  * 6. 资源池管理
  */
 
-import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { execSync, spawn, type ChildProcess } from 'child_process';
 import { createServer } from 'net';
 import fs from 'fs';
@@ -495,7 +495,7 @@ describe('Finger E2E Business Scenarios', () => {
 
     it('queries event history by group', async () => {
       // 先触发一些事件
-      const sessionId = await createSession('event-history-test');
+      await createSession('event-history-test');
 
       const msgRes = await fetch(`${UI_URL}/api/v1/message`, {
         method: 'POST',

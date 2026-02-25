@@ -250,11 +250,12 @@ ${state.userTask}
 
         console.log(`[OrchestratorLoop ${config.id}] Dispatching: ${readyTask.id}`);
         
-        const result = await hub.sendToModule('executor-loop', {
+        const rawResult = await hub.sendToModule('executor-loop', {
           taskId: readyTask.id,
           description: readyTask.description,
           bdTaskId: readyTask.bdTaskId,
         });
+        const result = rawResult as { success?: boolean; output?: string; error?: string; result?: string };
 
         readyTask.result = {
           taskId: readyTask.id,

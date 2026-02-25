@@ -18,6 +18,9 @@ import type {
   RoundEdgeInfo,
 } from '../api/types.js';
 
+const CHAT_PANEL_TARGET = (import.meta.env.VITE_CHAT_PANEL_TARGET as string | undefined)?.trim() || 'chat-codex-gateway';
+const DEFAULT_CHAT_AGENT_ID = 'chat-codex';
+
 interface SessionLog {
   sessionId: string;
   agentId: string;
@@ -155,6 +158,163 @@ function buildRoundExecutionPath(
   }));
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null;
+}
+
+function mapWsMessageToRuntimeEvent(msg: WsMessage, currentSessionId: string): Omit<RuntimeEvent, 'id'> | null {
+  const payload = isRecord(msg.payload) ? msg.payload : {};
+  const eventSessionId =
+    (typeof msg.sessionId === 'string' ? msg.sessionId : undefined) ||
+    (typeof payload.sessionId === 'string' ? payload.sessionId : undefined);
+
+  if (eventSessionId && eventSessionId !== currentSessionId) {
+    return null;
+  }
+
+  const timestamp = typeof msg.timestamp === 'string' ? msg.timestamp : new Date().toISOString();
+  const agentId =
+    (typeof msg.agentId === 'string' ? msg.agentId : undefined) ||
+    (typeof payload.agentId === 'string' ? payload.agentId : undefined);
+
+  switch (msg.type) {
+    case 'task_started':
+      return {
+        role: 'system',
+        kind: 'status',
+        content: `任务开始：${typeof payload.title === 'string' ? payload.title : '处理中'}`,
+        timestamp,
+      };
+    case 'task_completed':
+      return {
+        role: 'system',
+        kind: 'status',
+        content: '任务完成',
+        timestamp,
+      };
+    case 'task_failed':
+      return {
+        role: 'system',
+        kind: 'status',
+        content: `任务失败：${typeof payload.error === 'string' ? payload.error : 'unknown error'}`,
+        timestamp,
+      };
+    case 'tool_call':
+      return {
+        role: 'agent',
+        agentId: agentId || DEFAULT_CHAT_AGENT_ID,
+        agentName: agentId || DEFAULT_CHAT_AGENT_ID,
+        kind: 'action',
+        content: `调用工具：${typeof payload.toolName === 'string' ? payload.toolName : 'unknown'}`,
+        timestamp,
+      };
+    case 'tool_result':
+      return {
+        role: 'agent',
+        agentId: agentId || DEFAULT_CHAT_AGENT_ID,
+        agentName: agentId || DEFAULT_CHAT_AGENT_ID,
+        kind: 'observation',
+        content: `工具完成：${typeof payload.toolName === 'string' ? payload.toolName : 'unknown'}`,
+        timestamp,
+      };
+    case 'tool_error':
+      return {
+        role: 'agent',
+        agentId: agentId || DEFAULT_CHAT_AGENT_ID,
+        agentName: agentId || DEFAULT_CHAT_AGENT_ID,
+        kind: 'observation',
+        content: `工具失败：${typeof payload.error === 'string' ? payload.error : 'unknown error'}`,
+        timestamp,
+      };
+    case 'assistant_chunk':
+      if (typeof payload.content !== 'string' || payload.content.length === 0) return null;
+      return {
+        role: 'agent',
+        agentId: agentId || DEFAULT_CHAT_AGENT_ID,
+        agentName: agentId || DEFAULT_CHAT_AGENT_ID,
+        kind: 'observation',
+        content: payload.content,
+        timestamp,
+      };
+    case 'assistant_complete':
+      return {
+        role: 'agent',
+        agentId: agentId || DEFAULT_CHAT_AGENT_ID,
+        agentName: agentId || DEFAULT_CHAT_AGENT_ID,
+        kind: 'status',
+        content: typeof payload.content === 'string' ? payload.content : '回复完成',
+        timestamp,
+      };
+    case 'workflow_progress':
+      return {
+        role: 'system',
+        kind: 'status',
+        content:
+          typeof payload.overallProgress === 'number'
+            ? `进度：${Math.round(payload.overallProgress)}%`
+            : '工作流进度更新',
+        timestamp,
+      };
+    case 'phase_transition':
+      return {
+        role: 'system',
+        kind: 'status',
+        content: `阶段切换：${String((payload as Record<string, unknown>).from ?? '?')} -> ${String(
+          (payload as Record<string, unknown>).to ?? '?',
+        )}`,
+        timestamp,
+      };
+    case 'waiting_for_user':
+      return {
+        role: 'system',
+        kind: 'status',
+        content: `等待用户决策：${typeof payload.reason === 'string' ? payload.reason : '需要确认'}`,
+        timestamp,
+      };
+    case 'user_decision_received':
+      return {
+        role: 'system',
+        kind: 'status',
+        content: '已接收用户决策',
+        timestamp,
+      };
+    default:
+      return null;
+  }
+}
+
+function extractChatReply(result: unknown): { reply: string; agentId: string } {
+  const candidate = isRecord(result) && isRecord(result.output) ? result.output : result;
+
+  if (typeof candidate === 'string') {
+    return { reply: candidate, agentId: DEFAULT_CHAT_AGENT_ID };
+  }
+
+  if (!isRecord(candidate)) {
+    return { reply: JSON.stringify(candidate), agentId: DEFAULT_CHAT_AGENT_ID };
+  }
+
+  const agentId = typeof candidate.module === 'string' ? candidate.module : DEFAULT_CHAT_AGENT_ID;
+  if (candidate.success === false) {
+    const error = typeof candidate.error === 'string' ? candidate.error : 'chat-codex request failed';
+    throw new Error(error);
+  }
+
+  if (typeof candidate.response === 'string' && candidate.response.trim().length > 0) {
+    return { reply: candidate.response, agentId };
+  }
+
+  if (typeof candidate.output === 'string' && candidate.output.trim().length > 0) {
+    return { reply: candidate.output, agentId };
+  }
+
+  if (typeof candidate.error === 'string' && candidate.error.length > 0) {
+    throw new Error(candidate.error);
+  }
+
+  return { reply: JSON.stringify(candidate, null, 2), agentId };
+}
+
 export function useWorkflowExecution(sessionId: string): UseWorkflowExecutionReturn {
   const [workflow, setWorkflow] = useState<WorkflowInfo | null>(null);
   const [executionState, setExecutionState] = useState<WorkflowExecutionState | null>(null);
@@ -247,8 +407,13 @@ export function useWorkflowExecution(sessionId: string): UseWorkflowExecutionRet
         };
         return upsertAgentRuntimeEvent(prev, event);
       });
+      return;
     }
-  }, []);
+
+    const runtimeEvent = mapWsMessageToRuntimeEvent(msg, sessionId);
+    if (!runtimeEvent) return;
+    setRuntimeEvents((prev) => pushEvent(prev, runtimeEvent));
+  }, [sessionId]);
 
   const { isConnected } = useWebSocket(handleWebSocketMessage);
 
@@ -542,36 +707,28 @@ const sendUserInput = useCallback(
       },
     ]);
 
-    // 3. 检查是否需要启动新 workflow
-    const hasRealWorkflow = executionState && !executionState.workflowId.startsWith('empty-') && !executionState.workflowId.startsWith('pending-');
-    if (!hasRealWorkflow) {
-      if (text && startWorkflow) {
-        try {
-          await startWorkflow(text);
-        } catch (startErr) {
-          // Keep UI responsive even if backend start call is unstable.
-          console.error('[sendUserInput] startWorkflow error:', startErr);
-        }
-      }
-
-      setRuntimeEvents((prev) => {
-        const idx = prev.findIndex((e) => e.role === 'user' && e.timestamp === eventTime);
-        if (idx < 0) return prev;
-        const updated = [...prev];
-        updated[idx] = { ...updated[idx], agentId: 'confirmed' };
-        return updated;
-      });
-      return;
-    }
-
-    // 4. 发送 API 请求
+    // 3. 统一走 chat-codex gateway
     try {
-      const res = await fetch('/api/v1/workflow/input', {
+      const history = runtimeEvents
+        .filter((event) => event.role === 'user' || event.role === 'agent')
+        .slice(-20)
+        .map((event) => ({
+          role: event.role === 'user' ? 'user' : 'assistant',
+          content: event.content,
+        }));
+
+      const res = await fetch('/api/v1/message', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          workflowId: executionState.workflowId,
-          input: text || '[图片输入]',
+          target: CHAT_PANEL_TARGET,
+          blocking: true,
+          message: {
+            text: text || '[图片输入]',
+            sessionId,
+            history,
+            deliveryMode: 'sync',
+          },
         }),
       });
 
@@ -579,17 +736,11 @@ const sendUserInput = useCallback(
         throw new Error(`HTTP ${res.status}`);
       }
 
-      // 5. API 成功：更新事件状态为 confirmed 并追加反馈
-      let feedback: string | null = null;
-      try {
-        const responseData = await res.json() as { response?: string; event?: string; data?: unknown } | null;
-        feedback =
-          responseData?.response ||
-          responseData?.event ||
-          (typeof responseData?.data === 'string' ? responseData.data : null);
-      } catch {
-        // ignore json parse errors
+      const responseData = (await res.json()) as { result?: unknown; error?: string } | null;
+      if (!responseData || responseData.error) {
+        throw new Error(responseData?.error || 'Empty response from daemon');
       }
+      const { reply, agentId } = extractChatReply(responseData.result);
 
       setRuntimeEvents((prev) => {
         const confirmed = prev.map((e) =>
@@ -598,15 +749,14 @@ const sendUserInput = useCallback(
             : e,
         );
 
-        if (feedback) {
-          return pushEvent(confirmed, {
-            role: 'system',
-            content: feedback,
-            timestamp: new Date().toISOString(),
-            kind: 'status',
-          });
-        }
-        return confirmed;
+        return pushEvent(confirmed, {
+          role: 'agent',
+          agentId,
+          agentName: agentId,
+          content: reply,
+          timestamp: new Date().toISOString(),
+          kind: 'observation',
+        });
       });
 
       setExecutionState((prev) => (prev ? { ...prev, userInput: text } : prev));
@@ -632,7 +782,7 @@ const sendUserInput = useCallback(
       );
     }
   },
-  [executionState, startWorkflow],
+  [runtimeEvents, sessionId],
 );
 
   const getAgentDetail = useCallback(

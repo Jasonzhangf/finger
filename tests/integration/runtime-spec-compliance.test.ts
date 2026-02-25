@@ -5,7 +5,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { AgentRuntime, type AgentConfig, type HealthChecker } from '../../src/orchestration/runtime.js';
+import { AgentRuntime, type HealthChecker } from '../../src/orchestration/runtime.js';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
@@ -141,8 +141,7 @@ describe('RUNTIME_SPEC.md Compliance', () => {
         command: 'node',
       });
       
-      const states = runtime.getAllStates();
-      expect(states.size).toBeGreaterThan(0);
+      expect(runtime.getAllStates().size).toBeGreaterThan(0);
       
       const state = runtime.getState('lifecycle-agent');
       expect(state).toBeDefined();
@@ -245,8 +244,7 @@ describe('RUNTIME_SPEC.md Compliance', () => {
   });
 
   describe('Section 3.2 - WebSocket Events', () => {
-    const WS_URL = process.env.FINGER_WS_URL || 'ws://localhost:5522';
-
+    
     it('MUST: Support subscribe with { type, target?, workflowId? }', () => {
       // 验证订阅消息结构
       const subscribeMsg = {
@@ -312,7 +310,7 @@ describe('RUNTIME_SPEC.md Compliance', () => {
       const MESSAGE_HUB_URL = 'http://localhost:5521';
       const callbackId = 'cb-123';
       
-      let res = await fetch(`${MESSAGE_HUB_URL}/api/v1/mailbox/callback/${callbackId}`);
+      const res = await fetch(`${MESSAGE_HUB_URL}/api/v1/mailbox/callback/${callbackId}`);
       
       expect(mockFetch).toHaveBeenCalledWith(
         `${MESSAGE_HUB_URL}/api/v1/mailbox/callback/${callbackId}`
@@ -385,10 +383,7 @@ describe('RUNTIME_SPEC.md Compliance', () => {
     });
   });
   describe('Section 5.2 - Agent Lifecycle', () => {
-    const states: Array<'REGISTERED' | 'STARTING' | 'RUNNING' | 'STOPPING' | 'STOPPED' | 'FAILED'> = [
-      'REGISTERED', 'STARTING', 'RUNNING', 'STOPPING', 'STOPPED', 'FAILED'
-    ];
-
+    
     it('MUST: Agent transitions through REGISTERED -> STARTING -> RUNNING -> STOPPING -> STOPPED', async () => {
       runtime.register({
         id: 'lifecycle-agent',

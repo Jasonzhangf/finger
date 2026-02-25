@@ -1,0 +1,22 @@
+[workspace]
+members = [
+  "kernel-protocol",
+  "kernel-config",
+  "kernel-model",
+  "kernel-core",
+  "kernel-bridge-bin",
+]
+resolver = "2"
+
+[workspace.package]
+edition = "2021"
+license = "MIT"
+version = "0.1.0"
+
+[workspace.dependencies]
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+thiserror = "2.0"
+tokio = { version = "1.44", features = ["rt-multi-thread", "macros", "sync", "time", "io-util", "io-std"] }
+async-trait = "0.1"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }

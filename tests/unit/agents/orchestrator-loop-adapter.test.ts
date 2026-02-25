@@ -1,14 +1,4 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import {
-  createPlanLoop,
-  completePlanLoop,
-  completeDesignLoop,
-  addDeliverablesNode,
-  addExecNode,
-  completeExecNode,
-  completeExecutionLoop,
-  toLoopNodeStatus,
-} from '../../../dist/agents/daemon/orchestrator-loop-adapter.js';
 
 vi.mock('../../../dist/orchestration/loop/index.js', () => ({
   loopManager: {

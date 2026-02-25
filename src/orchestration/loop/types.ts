@@ -3,7 +3,7 @@
  * 支持 Epic 三阶段（Plan/Design/Execution）的循环生命周期管理
  */
 
-import type { ResourceStatus } from '../resource-pool.js';
+
 
 // =============================================================================
 // 循环节点类型

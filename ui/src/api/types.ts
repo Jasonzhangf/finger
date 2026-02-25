@@ -451,9 +451,13 @@ export interface AgentStats {
 }
 
 export interface WsMessage {
-  type: 'status' | 'task_update' | 'message' | 'error' | 'workflow_update' | 'agent_update' | 'execution_step' | 'phase_transition';
+  type: string;
   payload: unknown;
   timestamp: string;
+  sessionId?: string;
+  group?: string;
+  agentId?: string;
+  taskId?: string;
 }
 
 export interface RuntimeEvent {

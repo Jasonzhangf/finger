@@ -2,7 +2,7 @@
  * Unit tests for orchestrate command
  */
 
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect } from 'vitest';
 
 describe('orchestrate command', () => {
   it('should accept watch option', () => {

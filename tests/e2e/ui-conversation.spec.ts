@@ -7,7 +7,7 @@
  * 3. WebSocket 实时更新
  */
 
-import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, beforeEach} from 'vitest';
 import { execSync, spawn, type ChildProcess } from 'child_process';
 import { createServer } from 'net';
 import fs from 'fs';
@@ -316,9 +316,7 @@ describe('WebUI Conversation Panel', () => {
       await sleep(2000);
 
       // 验证只收到 workflow_update 类型的消息
-      const nonWorkflowTypes = Array.from(receivedTypes).filter(
-        (t) => t !== 'workflow_update' && t !== 'subscribe_confirmed'
-      );
+      
       console.log('[E2E] Received types:', Array.from(receivedTypes));
     }, 30000);
   });

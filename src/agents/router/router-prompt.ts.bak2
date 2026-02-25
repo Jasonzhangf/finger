@@ -1,0 +1,507 @@
+/**
+ * Router Prompt Templates - 标准化意图识别模板
+ * 
+ * 包含：
+ * 1. 输入消息标准化格式
+ * 2. 输出目标能力列表
+ * 3. 系统提示词模板
+ * 4. 输出格式规范
+ */
+
+// ========== 输入消息标准化格式 ==========
+
+/**
+ * 输入消息类型
+ */
+export interface RouterInputMessage {
+  /** 消息唯一 ID */
+  id: string;
+  /** 消息文本内容 */
+  text: string;
+  /** 消息类型 */
+  messageType: MessageType;
+  /** 发送者信息 */
+  sender?: {
+    id: string;
+    name?: string;
+    role?: string;
+  };
+  /** 会话上下文 */
+  context?: {
+    conversationId: string;
+    messageIndex: number;
+    previousMessages?: Array<{ role: string; content: string }>;
+  };
+  /** 内容特征 */
+  contentFeatures: {
+    /** 是否包含图片 */
+    hasImage: boolean;
+    /** 图片数量 */
+    imageCount: number;
+    /** 是否包含链接 */
+    hasLink: boolean;
+    /** 链接数量 */
+    linkCount: number;
+    /** 是否包含附件 */
+    hasAttachment: boolean;
+    /** 附件类型列表 */
+    attachmentTypes: string[];
+    /** 是否包含代码块 */
+    hasCode: boolean;
+    /** 代码语言列表 */
+    codeLanguages: string[];
+    /** 是否包含文件引用 */
+    hasFileReference: boolean;
+    /** 文件路径列表 */
+    filePaths: string[];
+  };
+  /** 时间戳 */
+  timestamp: string;
+  /** 原始消息对象 */
+  raw?: unknown;
+}
+
+/**
+ * 消息类型枚举
+ */
+export enum MessageType {
+  TEXT = 'text',
+  IMAGE = 'image',
+  FILE = 'file',
+  VOICE = 'voice',
+  VIDEO = 'video',
+  MIXED = 'mixed',
+}
+
+// ========== 输出目标能力定义 ==========
+
+/**
+ * 目标 Agent 能力描述
+ */
+export interface TargetCapability {
+  /** 能力 ID */
+  id: string;
+  /** 能力名称 */
+  name: string;
+  /** 能力描述 */
+  description: string;
+  /** 是否可用 */
+  available: boolean;
+  /** 当前负载 (0-1) */
+  currentLoad?: number;
+}
+
+/**
+ * 目标 Agent 信息
+ */
+export interface TargetAgent {
+  /** Agent ID */
+  id: string;
+  /** Agent 名称 */
+  name: string;
+  /** 描述 */
+  description: string;
+  /** 拥有的能力列表 */
+  capabilities: TargetCapability[];
+  /** 优先级 (数字越大优先级越高) */
+  priority: number;
+  /** 是否可用 */
+  available: boolean;
+}
+
+// ========== 系统提示词模板 ==========
+
+export const ROUTER_SYSTEM_PROMPT = `你是一个智能路由分类器，负责分析用户输入并决策最佳处理路径。
+
+## 工作职责
+
+1. **语义理解**: 深入理解用户输入的真实意图
+2. **意图分类**: 将输入分类到预定义的意图类型
+3. **能力匹配**: 根据意图匹配具备相应处理能力的目标 Agent
+4. **路由决策**: 返回明确的路由决策和理由
+
+## 输入信息
+
+你将收到以下格式的用户输入：
+
+\`\`\`json
+{
+  "id": "消息 ID",
+  "text": "用户输入的文本内容",
+  "messageType": "消息类型 (text/image/file/voice/video/mixed)",
+  "sender": {
+    "id": "发送者 ID",
+    "name": "发送者名称",
+    "role": "发送者角色"
+  },
+  "context": {
+    "conversationId": "会话 ID",
+    "messageIndex": 消息序号，
+    "previousMessages": [...]
+  },
+  "contentFeatures": {
+    "hasImage": true/false,
+    "imageCount": 0,
+    "hasLink": true/false,
+    "linkCount": 0,
+    "hasAttachment": true/false,
+    "attachmentTypes": [],
+    "hasCode": true/false,
+    "codeLanguages": [],
+    "hasFileReference": true/false,
+    "filePaths": []
+  },
+  "timestamp": "ISO8601 时间戳"
+}
+\`\`\`
+
+## 可用意图类型
+
+| 意图类型 | 说明 | 典型场景 |
+|---------|------|---------|
+| chat | 通用问答、闲聊 | "你好"、"今天天气怎么样" |
+| knowledge | 知识查询 | "什么是 TypeScript"、"解释一下 React hooks" |
+| code.create | 创建代码 | "帮我创建一个新组件"、"写一个函数" |
+| code.modify | 修改代码 | "修复这个 bug"、"优化这段代码" |
+| code.review | 代码审查 | "审查这段代码"、"有什么改进建议" |
+| code.explain | 代码解释 | "这段代码什么意思" |
+| file.read | 读取文件 | "查看 xxx 文件内容" |
+| file.write | 写入文件 | "保存到 xxx 文件" |
+| task.plan | 任务规划 | "帮我规划一下怎么做" |
+| task.execute | 任务执行 | "运行测试"、"构建项目" |
+| research | 研究搜索 | "搜索 xxx 相关论文"、"查找资料" |
+| system | 系统命令 | "重启服务"、"查看状态" |
+
+## 可用目标 Agent
+
+\`\`\`json
+{
+  "targets": [
+    {
+      "id": "chat-agent",
+      "name": "Chat Agent",
+      "description": "处理通用问答和闲聊",
+      "capabilities": [
+        {"id": "conversation", "name": "对话", "description": "自然语言对话"},
+        {"id": "knowledge-base", "name": "知识库", "description": "知识查询"}
+      ],
+      "priority": 100,
+      "available": true
+    },
+    {
+      "id": "task-orchestrator",
+      "name": "Task Orchestrator",
+      "description": "任务编排和执行",
+      "capabilities": [
+        {"id": "planning", "name": "规划", "description": "任务拆解和规划"},
+        {"id": "execution", "name": "执行", "description": "任务执行"},
+        {"id": "file-read", "name": "文件读取", "description": "读取文件内容"},
+        {"id": "file-write", "name": "文件写入", "description": "写入文件"},
+        {"id": "code-generation", "name": "代码生成", "description": "生成代码"},
+        {"id": "code-understanding", "name": "代码理解", "description": "理解代码逻辑"},
+        {"id": "tool-use", "name": "工具使用", "description": "使用外部工具"}
+      ],
+      "priority": 100,
+      "available": true
+    },
+    {
+      "id": "research-agent",
+      "name": "Research Agent",
+      "description": "研究搜索和资料收集",
+      "capabilities": [
+        {"id": "web-search", "name": "网络搜索", "description": "搜索网络资源"},
+        {"id": "document-analysis", "name": "文档分析", "description": "分析文档内容"}
+      ],
+      "priority": 100,
+      "available": true
+    }
+  ]
+}
+\`\`\`
+
+## 决策规则
+
+1. **内容特征优先**: 
+   - 包含图片/附件 → 优先路由到能处理多媒体的 Agent
+   - 包含代码块 → 优先路由到 code 相关 Agent
+   - 包含文件引用 → 优先路由到 file 相关 Agent
+
+2. **意图匹配**:
+   - 通用问题 → chat-agent
+   - 代码相关 → task-orchestrator
+   - 研究搜索 → research-agent
+
+3. **能力匹配**:
+   - 确保目标 Agent 具备处理该意图所需的所有能力
+   - 如果多个 Agent 都满足，选择优先级高的
+
+4. **置信度阈值**:
+   - confidence >= 0.8: 高置信度，直接路由
+   - 0.5 <= confidence < 0.8: 中等置信度，可路由
+   - confidence < 0.5: 低置信度，建议使用 fallback
+
+## 输出格式
+
+你必须严格返回以下 JSON 格式：
+
+\`\`\`json
+{
+  "intent": {
+    "type": "意图类型",
+    "confidence": 0.0-1.0,
+    "reasoning": "分类理由，说明为什么判断为该意图"
+  },
+  "target": {
+    "agentId": "目标 Agent ID",
+    "agentName": "目标 Agent 名称",
+    "matchedCapabilities": ["匹配到的能力 ID 列表"],
+    "reasoning": "选择该 Agent 的理由"
+  },
+  "metadata": {
+    "inputSummary": "输入内容摘要 (不超过 100 字)",
+    "keyFeatures": ["关键特征列表"],
+    "alternativeTargets": ["备选目标 Agent ID 列表"],
+    "requiresHumanReview": false
+  }
+}
+\`\`\`
+
+## 示例
+
+### 示例 1: 通用问答
+输入：{"text": "什么是 TypeScript?", "contentFeatures": {...}}
+输出：
+\`\`\`json
+{
+  "intent": {
+    "type": "knowledge",
+    "confidence": 0.95,
+    "reasoning": "用户在询问 TypeScript 的定义，属于知识查询类问题"
+  },
+  "target": {
+    "agentId": "chat-agent",
+    "agentName": "Chat Agent",
+    "matchedCapabilities": ["knowledge-base", "conversation"],
+    "reasoning": "chat-agent 具备知识库查询能力，适合回答概念性问题"
+  },
+  "metadata": {
+    "inputSummary": "用户询问 TypeScript 定义",
+    "keyFeatures": ["知识查询", "无代码", "无文件"],
+    "alternativeTargets": ["task-orchestrator"],
+    "requiresHumanReview": false
+  }
+}
+\`\`\`
+
+### 示例 2: 代码创建
+输入：{"text": "帮我创建一个 React 组件", "contentFeatures": {"hasCode": true, ...}}
+输出：
+\`\`\`json
+{
+  "intent": {
+    "type": "code.create",
+    "confidence": 0.92,
+    "reasoning": "用户明确要求创建代码，属于代码生成任务"
+  },
+  "target": {
+    "agentId": "task-orchestrator",
+    "agentName": "Task Orchestrator",
+    "matchedCapabilities": ["code-generation", "file-write", "planning"],
+    "reasoning": "task-orchestrator 具备代码生成和文件写入能力，可完成组件创建"
+  },
+  "metadata": {
+    "inputSummary": "用户请求创建 React 组件",
+    "keyFeatures": ["代码创建", "React", "文件写入"],
+    "alternativeTargets": [],
+    "requiresHumanReview": false
+  }
+}
+\`\`\`
+
+### 示例 3: 多模态输入
+输入：{"text": "分析这张截图里的代码", "contentFeatures": {"hasImage": true, "hasCode": true, ...}}
+输出：
+\`\`\`json
+{
+  "intent": {
+    "type": "code.explain",
+    "confidence": 0.88,
+    "reasoning": "用户要求分析图片中的代码，需要图像识别和代码理解能力"
+  },
+  "target": {
+    "agentId": "task-orchestrator",
+    "agentName": "Task Orchestrator",
+    "matchedCapabilities": ["code-understanding", "image-processing"],
+    "reasoning": "task-orchestrator 具备代码理解能力，可分析代码逻辑"
+  },
+  "metadata": {
+    "inputSummary": "用户请求分析图片中的代码",
+    "keyFeatures": ["图片输入", "代码分析", "多模态"],
+    "alternativeTargets": [],
+    "requiresHumanReview": false
+  }
+}
+\`\`\`
+
+## 注意事项
+
+1. **严格 JSON 格式**: 必须返回有效的 JSON，不要包含额外文本
+2. **置信度合理**: 根据输入清晰度给出合理的置信度
+3. **能力匹配**: 确保目标 Agent 确实具备所需能力
+4. **备选方案**: 提供备选目标以应对 Agent 不可用的情况
+5. **人工审核**: 如果输入模糊或敏感，标记 requiresHumanReview 为 true`;
+
+// ========== 提示词构建函数 ==========
+
+/**
+ * 构建完整的 Router Prompt
+ */
+export function buildRouterPrompt(
+  inputMessage: RouterInputMessage,
+  availableTargets: TargetAgent[]
+): string {
+  const targetsJson = JSON.stringify({ targets: availableTargets }, null, 2);
+  const inputJson = JSON.stringify(inputMessage, null, 2);
+
+  return `${ROUTER_SYSTEM_PROMPT}
+
+## 当前可用目标 Agent
+
+\`\`\`json
+${targetsJson}
+\`\`\`
+
+## 当前用户输入
+
+\`\`\`json
+${inputJson}
+\`\`\`
+
+请分析并返回路由决策 (仅返回 JSON):`;
+}
+
+/**
+ * 从原始消息提取内容特征
+ */
+export function extractContentFeatures(text: string): RouterInputMessage['contentFeatures'] {
+  const features: RouterInputMessage['contentFeatures'] = {
+    hasImage: false,
+    imageCount: 0,
+    hasLink: false,
+    linkCount: 0,
+    hasAttachment: false,
+    attachmentTypes: [],
+    hasCode: false,
+    codeLanguages: [],
+    hasFileReference: false,
+    filePaths: [],
+  };
+
+  // 检测链接
+  const linkPattern = /https?:\/\/[^\s]+/g;
+  const links = text.match(linkPattern);
+  if (links) {
+    features.hasLink = true;
+    features.linkCount = links.length;
+  }
+
+  // 检测代码块
+  const codeBlockPattern = /```(\w+)?[\s\S]*?```/g;
+  const codeBlocks = text.match(codeBlockPattern);
+  if (codeBlocks) {
+    features.hasCode = true;
+    // 提取代码语言
+    const langMatches = text.matchAll(/```(\w+)/g);
+    for (const match of langMatches) {
+      if (match[1] && !features.codeLanguages.includes(match[1])) {
+        features.codeLanguages.push(match[1]);
+      }
+    }
+  }
+
+  // 检测文件路径引用
+  const filePathPattern = /(?:\/[\w.-]+)+(?:\/[\w.-]+)*/g;
+  const filePaths = text.match(filePathPattern);
+  if (filePaths) {
+    features.hasFileReference = true;
+    features.filePaths = filePaths.slice(0, 10); // 限制数量
+  }
+
+  // 检测图片标记
+  if (text.includes('![image]') || text.includes('<img')) {
+    features.hasImage = true;
+    features.imageCount = (text.match(/!\[image\]/g) || []).length;
+  }
+
+  // 检测附件标记
+  if (text.includes('[attachment:') || text.includes('<file:')) {
+    features.hasAttachment = true;
+    const attMatches = text.match(/\[attachment:(\w+)\]/g);
+    if (attMatches) {
+      features.attachmentTypes = attMatches.map(m => {
+        const match = m.match(/\[attachment:(\w+)\]/);
+        return match ? match[1] : 'unknown';
+      });
+    }
+  }
+
+  return features;
+}
+
+/**
+ * 解析模型返回的路由决策
+ */
+export function parseRouterDecision(response: string): {
+  intent: { type: string; confidence: number; reasoning: string };
+  target: { agentId: string; agentName: string; matchedCapabilities: string[]; reasoning: string };
+  metadata: {
+    inputSummary: string;
+    keyFeatures: string[];
+    alternativeTargets: string[];
+    requiresHumanReview: boolean;
+  };
+} | null {
+  try {
+    // 提取 JSON
+    const jsonMatch = response.match(/\{[\s\S]*\}/);
+    if (!jsonMatch) {
+      return null;
+    }
+
+    const decision = JSON.parse(jsonMatch[0]);
+    
+    // 验证必要字段
+    if (!decision.intent || !decision.target) {
+      return null;
+    }
+
+    return {
+      intent: {
+        type: decision.intent.type || 'unknown',
+        confidence: parseFloat(decision.intent.confidence) || 0.5,
+        reasoning: decision.intent.reasoning || '',
+      },
+      target: {
+        agentId: decision.target.agentId || 'task-orchestrator',
+        agentName: decision.target.agentName || '',
+        matchedCapabilities: decision.target.matchedCapabilities || [],
+        reasoning: decision.target.reasoning || '',
+      },
+      metadata: {
+        inputSummary: decision.metadata?.inputSummary || '',
+        keyFeatures: decision.metadata?.keyFeatures || [],
+        alternativeTargets: decision.metadata?.alternativeTargets || [],
+        requiresHumanReview: decision.metadata?.requiresHumanReview || false,
+      },
+    };
+  } catch {
+    return null;
+  }
+}
+
+export default {
+  ROUTER_SYSTEM_PROMPT,
+  buildRouterPrompt,
+  extractContentFeatures,
+  parseRouterDecision,
+};

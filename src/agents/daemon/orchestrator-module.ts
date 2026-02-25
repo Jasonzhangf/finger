@@ -9,7 +9,7 @@ import { BdTools } from '../shared/bd-tools.js';
 import { TaskAssignment } from '../protocol/schema.js';
 import { WorkflowManager } from '../../orchestration/workflow-manager.js';
 import { SessionManager } from '../../orchestration/session-manager.js';
-import { AgentPool } from '../../orchestration/agent-pool.js';
+import { AgentPool, AgentInstance } from '../../orchestration/agent-pool.js';
 
 export interface OrchestratorModuleConfig {
   id: string;
@@ -81,13 +81,13 @@ export function createRealOrchestratorModule(
   const summaryAgentId = config.summaryAgentId;
 
   function syncResourcesFromAgentPool(): void {
-    const agents = agentPool.listAgents();
+    const agents = agentPool.getAllInstances();
     const executorAgents = agents
-      .filter(a => a.status === 'running' && a.config.id.includes('executor'))
-      .map(a => a.config.id);
+      .filter((a: AgentInstance) => a.status === 'running' && a.config.id.includes('executor'))
+      .map((a: AgentInstance) => a.config.id);
     const reviewerAgents = agents
-      .filter(a => a.status === 'running' && a.config.id.includes('reviewer'))
-      .map(a => a.config.id);
+      .filter((a: AgentInstance) => a.status === 'running' && a.config.id.includes('reviewer'))
+      .map((a: AgentInstance) => a.config.id);
 
     for (const id of executorAgents) {
       workflowManager.registerAgent(id, 'executor');

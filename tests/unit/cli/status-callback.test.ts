@@ -22,7 +22,7 @@ describe('CLI status command - callbackId support', () => {
     const MESSAGE_HUB_URL = 'http://localhost:5521';
     const callbackId = 'cb-123';
     
-    let res = await fetch(`${MESSAGE_HUB_URL}/api/v1/mailbox/callback/${callbackId}`);
+    const res = await fetch(`${MESSAGE_HUB_URL}/api/v1/mailbox/callback/${callbackId}`);
     
     expect(mockFetch).toHaveBeenCalledWith(
       'http://localhost:5521/api/v1/mailbox/callback/cb-123'

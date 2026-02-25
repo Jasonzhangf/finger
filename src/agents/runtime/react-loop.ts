@@ -190,8 +190,7 @@ export class ReActLoop {
     };
 
     const stateLike = this.state as ReActState & { epicId?: string; workflowId?: string };
-    const workflowId = stateLike.workflowId || stateLike.epicId;
-    const sessionId = stateLike.epicId || stateLike.workflowId || this.config.agentId || 'unknown';
+    const sessionId = stateLike.workflowId || stateLike.epicId || this.config.agentId || 'unknown';
     const agentId = this.config.agentId || 'unknown-agent';
 
     while (true) {

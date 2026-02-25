@@ -24,7 +24,7 @@ program
       port: parseInt(options.port, 10),
       systemPrompt: options.systemPrompt,
       cwd: options.cwd,
-      fingerDaemonUrl: options.fingerDaemonUrl || 'http://localhost:5521',
+      fingerDaemonUrl: options.fingerDaemonUrl || 'http://localhost:9999',
       allowedTools: undefined,
     });
 

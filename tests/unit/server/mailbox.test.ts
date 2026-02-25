@@ -1,5 +1,4 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { Mailbox, type MailboxMessage } from '../../../src/server/mailbox.js';
 
 describe('Mailbox', () => {
   let mailbox: Mailbox;
@@ -168,7 +167,8 @@ describe('Mailbox', () => {
     });
 
     it('should clean up callback index when message is deleted', () => {
-      const id = mailbox.createMessage('agent', {}, 'user', 'cb-cleanup');
+      // Create and cleanup test message
+      mailbox.createMessage('agent', {}, 'user', 'cb-cleanup');
       expect(mailbox.getMessageByCallbackId('cb-cleanup')).toBeDefined();
       
       mailbox.cleanup(0); // Force cleanup with 0 keep

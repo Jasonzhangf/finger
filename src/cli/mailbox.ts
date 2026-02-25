@@ -2,6 +2,8 @@ import { Command } from 'commander';
 import fetch from 'node-fetch';
 import ora from 'ora';
 
+const MAILBOX_BASE_URL = process.env.FINGER_HUB_URL || 'http://localhost:9999';
+
 function renderStatus(status: string): string {
   switch (status) {
     case 'pending':
@@ -33,7 +35,7 @@ export function registerMailboxCommand(program: Command): void {
         if (options.status) params.set('status', options.status);
         params.set('limit', options.limit);
 
-        const res = await fetch(`http://localhost:5521/api/v1/mailbox?${params}`);
+        const res = await fetch(`${MAILBOX_BASE_URL}/api/v1/mailbox?${params}`);
         const data = await res.json();
         
         console.log('\nMailbox Messages:');
@@ -56,7 +58,7 @@ export function registerMailboxCommand(program: Command): void {
     .description('Get message details')
     .action(async (id: string) => {
       try {
-        const res = await fetch(`http://localhost:5521/api/v1/mailbox/${id}`);
+        const res = await fetch(`${MAILBOX_BASE_URL}/api/v1/mailbox/${id}`);
         if (res.status === 404) {
           console.error(`Message ${id} not found`);
           return;
@@ -99,7 +101,7 @@ export function registerMailboxCommand(program: Command): void {
 
       const checkStatus = async (): Promise<void> => {
         try {
-          const res = await fetch(`http://localhost:5521/api/v1/mailbox/${id}`);
+          const res = await fetch(`${MAILBOX_BASE_URL}/api/v1/mailbox/${id}`);
           if (res.status === 404) {
             spinner.fail(`Message ${id} not found`);
             return;
@@ -142,7 +144,7 @@ export function registerMailboxCommand(program: Command): void {
     .description('Clear completed messages from mailbox')
     .action(async () => {
       try {
-        const res = await fetch('http://localhost:5521/api/v1/mailbox/clear', { method: 'POST' });
+        const res = await fetch(`${MAILBOX_BASE_URL}/api/v1/mailbox/clear`, { method: 'POST' });
         const data = await res.json();
         console.log(data.message || 'Mailbox cleared');
       } catch (err) {

@@ -150,7 +150,7 @@ describe('MessageHub', () => {
 
     it('should return result from blocking route', async () => {
       const handler = vi.fn().mockResolvedValue({ value: 42 });
-      hub.addRoute({ pattern: 'test', handler, blocking: true, priority: 0 });
+      hub.addRoute({ pattern: 'test', handler, blocking: true, priority: 0, moduleId: 'test-module' });
       
       const result = await hub.send({ type: 'test' });
       
@@ -220,11 +220,12 @@ describe('MessageHub', () => {
       expect(handler2).toHaveBeenCalled();
     });
 
-    it('should throw from blocking route on error', async () => {
+    it('should return paused status from blocking route on unrecoverable error', async () => {
       const handler = vi.fn().mockRejectedValue(new Error('Handler error'));
-      hub.addRoute({ pattern: 'test', handler, blocking: true, priority: 0 });
+      hub.addRoute({ pattern: 'test', handler, blocking: true, priority: 0, moduleId: 'test-module' });
       
-      await expect(hub.send({ type: 'test' })).rejects.toThrow('Handler error');
+      const result = await hub.send({ type: 'test' });
+      expect(result).toEqual({ error: true, paused: true, reason: 'unknown', routeId: expect.any(String) });
     });
 
     it('should not throw from non-blocking route on error', async () => {

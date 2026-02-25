@@ -29,3 +29,4 @@ ui/node_modules/
 *.pem
 .DS_Store
 server.js
+rust/target/

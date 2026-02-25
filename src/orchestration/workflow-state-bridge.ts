@@ -11,8 +11,6 @@
 import { globalEventBus } from '../runtime/event-bus.js';
 import { 
   WorkflowFSM, 
-  TaskFSM, 
-  AgentFSM,
   getOrCreateWorkflowFSM,
   type WorkflowState as FSMWorkflowState,
   type TaskState as FSMTaskState,
@@ -195,7 +193,6 @@ function handleTaskEvent(eventType: string, event: any): void {
  */
 function handleAgentEvent(eventType: string, event: any): void {
   const payload = event.payload as { round?: number; thought?: string; action?: string; observation?: string };
-  const sessionId = event.sessionId;
   const agentId = event.agentId;
 
   console.log(`[StateBridge] Agent event: ${eventType} for agent ${agentId}`);

@@ -5,7 +5,6 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
  import { RuntimeFacade, type ISessionManager, type SessionInfo } from '../../../src/runtime/runtime-facade.js';
  import { UnifiedEventBus } from '../../../src/runtime/event-bus.js';
  import { ToolRegistry } from '../../../src/runtime/tool-registry.js';
- import type { Attachment } from '../../../src/runtime/events.js';
 
 describe('RuntimeFacade', () => {
   let eventBus: UnifiedEventBus;
@@ -177,6 +176,7 @@ describe('RuntimeFacade', () => {
         policy: 'allow',
         handler: toolHandler,
       });
+      facade.grantToolToAgent('agent-1', 'emit-tool');
       const callHandler = vi.fn();
       const resultHandler = vi.fn();
       eventBus.subscribe('tool_call', callHandler);
@@ -197,6 +197,7 @@ describe('RuntimeFacade', () => {
         policy: 'allow',
         handler: vi.fn().mockRejectedValue(new Error('Tool failed')),
       });
+      facade.grantToolToAgent('agent-1', 'fail-tool');
       eventBus.subscribe('tool_error', errorHandler);
       await expect(facade.callTool('agent-1', 'fail-tool', {})).rejects.toThrow('Tool failed');
       expect(errorHandler).toHaveBeenCalled();
@@ -209,7 +210,76 @@ describe('RuntimeFacade', () => {
         policy: 'deny',
         handler: vi.fn(),
       });
+      facade.grantToolToAgent('agent-1', 'denied-tool');
       await expect(facade.callTool('agent-1', 'denied-tool', {})).rejects.toThrow('Tool denied-tool is not allowed');
+    });
+    it('should deny tool call when not granted in whitelist', async () => {
+      toolRegistry.register({
+        name: 'restricted-tool',
+        description: 'Restricted tool',
+        inputSchema: {},
+        policy: 'allow',
+        handler: vi.fn().mockResolvedValue('ok'),
+      });
+      await expect(facade.callTool('agent-2', 'restricted-tool', {})).rejects.toThrow(
+        "tool 'restricted-tool' is not granted for agent 'agent-2'",
+      );
+    });
+    it('should prioritize blacklist over whitelist', async () => {
+      toolRegistry.register({
+        name: 'blacklist-tool',
+        description: 'Blacklist tool',
+        inputSchema: {},
+        policy: 'allow',
+        handler: vi.fn().mockResolvedValue('ok'),
+      });
+      facade.grantToolToAgent('agent-3', 'blacklist-tool');
+      facade.denyToolForAgent('agent-3', 'blacklist-tool');
+      await expect(facade.callTool('agent-3', 'blacklist-tool', {})).rejects.toThrow(
+        "tool 'blacklist-tool' is blacklisted for agent 'agent-3'",
+      );
+    });
+    it('should return updated policy after grant and deny', () => {
+      facade.grantToolToAgent('agent-9', 'shell.exec');
+      facade.denyToolForAgent('agent-9', 'file.write');
+      const policy = facade.getAgentToolPolicy('agent-9');
+      expect(policy.whitelist).toEqual(['shell.exec']);
+      expect(policy.blacklist).toEqual(['file.write']);
+    });
+    it('should apply role preset policy when configured', () => {
+      facade.setRoleToolPolicyPresets({
+        reviewer: {
+          role: 'reviewer',
+          whitelist: ['file.read'],
+          blacklist: ['file.write'],
+        },
+      });
+      const policy = facade.applyAgentRoleToolPolicy('reviewer-1', 'reviewer');
+      expect(policy.whitelist).toEqual(['file.read']);
+      expect(policy.blacklist).toEqual(['file.write']);
+    });
+    it('should enforce token authorization when required', async () => {
+      toolRegistry.register({
+        name: 'secure-tool',
+        description: 'Secure tool',
+        inputSchema: {},
+        policy: 'allow',
+        handler: vi.fn().mockResolvedValue({ ok: true }),
+      });
+      facade.grantToolToAgent('agent-secure', 'secure-tool');
+      facade.setToolAuthorizationRequired('secure-tool', true);
+
+      await expect(facade.callTool('agent-secure', 'secure-tool', {})).rejects.toThrow(
+        "authorization token required for tool 'secure-tool'",
+      );
+
+      const grant = facade.issueToolAuthorization('agent-secure', 'secure-tool', 'tester', { ttlMs: 10000, maxUses: 1 });
+      const result = await facade.callTool('agent-secure', 'secure-tool', {}, { authorizationToken: grant.token });
+      expect(result).toEqual({ ok: true });
+
+      await expect(
+        facade.callTool('agent-secure', 'secure-tool', {}, { authorizationToken: grant.token }),
+      ).rejects.toThrow("authorization token not found for tool 'secure-tool'");
     });
     it('should set tool policy', () => {
       toolRegistry.register({

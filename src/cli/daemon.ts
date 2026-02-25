@@ -1,12 +1,7 @@
-import { readFileSync, existsSync } from 'fs';
-import { homedir } from 'os';
-import { join } from 'path';
 import { Command } from 'commander';
 import { OrchestrationDaemon } from '../orchestration/daemon.js';
-import { AgentPool } from '../orchestration/agent-pool.js';
 import fetch from 'node-fetch';
-import WebSocket from 'ws';
-import ora from 'ora';
+import { loadModuleManifest } from '../orchestration/module-manifest.js';
 
 interface SendOptions {
   target: string;
@@ -15,392 +10,263 @@ interface SendOptions {
   sender?: string;
 }
 
-interface ChatOptions {
-  target: string;
-  sender?: string;
+interface RegisterModuleOptions {
+  file?: string;
+  manifest?: string;
 }
 
-interface ModuleFileOptions {
-  file: string;
-}
-
-interface AgentAddOptions {
+interface AgentInstanceView {
   id: string;
-  name: string;
-  mode: 'auto' | 'manual';
-  port: number;
-  systemPrompt?: string;
-  cwd?: string;
-  autoStart?: boolean;
-}
-
-function parseJsonMessage(raw: string): unknown {
-  try {
-    return JSON.parse(raw);
-  } catch {
-    // fallback: treat as plain text
-    return { content: raw };
-  }
-}
-
-async function sendMessage(
-  target: string,
-  message: unknown,
-  blocking: boolean,
-  sender?: string
-): Promise<any> {
-  const url = 'http://localhost:5521/api/v1/message';
-  const body = {
-    target,
-    message,
-    blocking,
-    sender,
-  };
-
-  const res = await fetch(url, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-  });
-
-  return await res.json();
-}
-
-
-function renderStatus(status: string): string {
-  switch (status) {
-    case 'pending':
-      return '⏳ pending';
-    case 'processing':
-      return '🔄 processing';
-    case 'completed':
-      return '✅ completed';
-    case 'failed':
-      return '❌ failed';
-    default:
-      return status;
-  }
+  agentId: string;
+  status: string;
+  currentLoad: number;
 }
 
 export function registerDaemonCommand(program: Command): void {
-  const daemon = program.command('daemon').description('Orchestration daemon control');
+  const daemon = program
+    .command('daemon')
+    .description('Orchestration daemon control');
 
+  // All commands are non-blocking (fire and forget)
+  
   daemon
     .command('start')
-    .description('Start the orchestration daemon')
-    .action(async () => {
+    .description('Start the orchestration daemon (non-blocking)')
+    .action(() => {
       const d = new OrchestrationDaemon();
-      await d.start();
+      d.start().then(() => process.exit(0)).catch((err) => {
+        console.error('Failed to start daemon:', err);
+        process.exit(1);
+      });
     });
 
   daemon
     .command('stop')
     .description('Stop the orchestration daemon')
-    .action(async () => {
+    .action(() => {
       const d = new OrchestrationDaemon();
-      await d.stop();
+      d.stop().then(() => process.exit(0)).catch((err) => {
+        console.error('Failed to stop daemon:', err);
+        process.exit(1);
+      });
     });
 
   daemon
     .command('restart')
     .description('Restart the orchestration daemon')
-    .action(async () => {
+    .action(() => {
       const d = new OrchestrationDaemon();
-      await d.restart();
+      d.restart().then(() => process.exit(0)).catch((err) => {
+        console.error('Failed to restart daemon:', err);
+        process.exit(1);
+      });
     });
 
   daemon
     .command('status')
     .description('Show daemon status and registered modules')
     .option('-j, --json', 'Output as JSON')
-    .action(async (options: { json?: boolean }) => {
+    .action((options: { json?: boolean }) => {
       const d = new OrchestrationDaemon();
       const running = d.isRunning();
       
-      // Check PID file
-      let pid: number | null = null;
-      const pidFile = join(homedir(), '.finger', 'daemon.pid');
-      if (existsSync(pidFile)) {
-        const pidContent = readFileSync(pidFile, 'utf-8').trim();
-        pid = parseInt(pidContent, 10);
+      if (!running) {
+        console.log('Daemon: not running');
+        process.exit(0);
+        return;
       }
+
+      const config = d.getConfig();
       
-      const status = {
-        pid,
-        isRunning: running,
-        httpPort: 5521,
-        wsPort: 5522,
-        modules: null as unknown,
-      };
-      
-      if (running) {
-        try {
-          const res = await fetch('http://localhost:5521/api/v1/modules');
-          if (res.ok) {
-            status.modules = await res.json();
+      fetch(`http://localhost:${config.port}/api/v1/modules`, { timeout: 5000 })
+        .then(res => res.json())
+        .then(data => {
+          if (options.json) {
+            console.log(JSON.stringify({ running: true, port: config.port, ...data }, null, 2));
+          } else {
+            console.log(`Daemon: running on port ${config.port}`);
+            console.log(`WebSocket: port ${config.wsPort}`);
+            console.log(`\nInputs: ${(data as { inputs: { id: string }[] }).inputs.length}`);
+            (data as { inputs: { id: string }[] }).inputs.forEach((i) => console.log(`  - ${i.id}`));
+            console.log(`\nOutputs: ${(data as { outputs: { id: string }[] }).outputs.length}`);
+            (data as { outputs: { id: string }[] }).outputs.forEach((o) => console.log(`  - ${o.id}`));
           }
-        } catch (err) {
-          // Ignore fetch errors
-        }
-      }
-      
-      if (options.json) {
-        console.log(JSON.stringify(status, null, 2));
-      } else {
-        console.log(`Daemon is ${running ? 'running' : 'stopped'}`);
-        if (running && status.modules) {
-          console.log('\nRegistered Modules:');
-          console.log(JSON.stringify(status.modules, null, 2));
-        }
-      }
+          process.exit(0);
+        })
+        .catch(() => {
+          console.log('Daemon: process exists but not responding');
+          process.exit(1);
+        });
     });
 
   daemon
     .command('send')
     .description('Send a message to a module (default: non-blocking)')
-    .requiredOption('-t, --target <id>', 'Target module ID (input/output)')
-    .requiredOption('-m, --message <json-or-text>', 'Message JSON string or plain text')
-    .option('-b, --blocking', 'Wait for immediate response (blocking mode)')
-    .option('-s, --sender <name>', 'Sender name')
-    .action(async (options: SendOptions) => {
+    .requiredOption('-t, --target <id>', 'Target module ID')
+    .requiredOption('-m, --message <json>', 'Message as JSON string')
+    .option('-b, --blocking', 'Wait for result', false)
+    .option('-s, --sender <id>', 'Sender module ID (for callback)')
+    .action((options: SendOptions) => {
+      const d = new OrchestrationDaemon();
+      const config = d.getConfig();
+      
       try {
-        const payload = parseJsonMessage(options.message);
-        const result = await sendMessage(
-          options.target,
-          payload,
-          options.blocking || false,
-          options.sender
-        );
-
-        // Non-blocking returns messageId
-        if (!options.blocking && result.messageId) {
-          console.log(JSON.stringify({
-            success: true,
-            queued: true,
-            messageId: result.messageId,
-            hint: `Use: fingerdaemon mailbox get ${result.messageId}`,
-          }, null, 2));
-          return;
-        }
-
-        console.log(JSON.stringify(result, null, 2));
-      } catch (err) {
-        console.error('Send failed:', err);
+        const message = JSON.parse(options.message);
+        fetch(`http://localhost:${config.port}/api/v1/message`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            target: options.target,
+            message,
+            blocking: options.blocking,
+            sender: options.sender,
+          }),
+        })
+          .then(res => res.json())
+          .then(data => {
+            console.log(JSON.stringify(data, null, 2));
+            process.exit(0);
+          })
+          .catch(error => {
+            console.error('Failed to send message:', error);
+            process.exit(1);
+          });
+      } catch (error) {
+        console.error('Invalid JSON message:', error);
+        process.exit(1);
       }
-    });
-
- daemon
-   .command('chat')
-   .description('Interactive mode: send messages and watch status via WebSocket')
-   .requiredOption('-t, --target <id>', 'Target module ID')
-   .option('-s, --sender <name>', 'Sender name', 'cli-user')
-   .action(async (options: ChatOptions) => {
-     const wsUrl = 'ws://localhost:5522';
-     const ws = new WebSocket(wsUrl);
-
-      const completedMessages = new Set<string>();
-
-      await new Promise<void>((resolve, reject) => {
-        ws.on('open', () => resolve());
-        ws.on('error', (err) => reject(err));
-      });
-
-      console.log(`Connected to ${wsUrl}`);
-      console.log('Interactive mode. Type message and press Enter. Ctrl+C to exit.');
-
-     ws.on('message', (data) => {
-       try {
-         const msg = JSON.parse(data.toString());
-         if (msg.type === 'messageUpdate' && msg.message) {
-           const m = msg.message;
-           console.log(`\n[${m.id}] ${renderStatus(m.status)}`);
-           if (m.status === 'failed' && m.error) {
-             console.error(`[${m.id}] Error: ${m.error}`);
-           }
-         }
-         if (msg.type === 'messageCompleted') {
-            if (completedMessages.has(msg.messageId)) return;
-            completedMessages.add(msg.messageId);
-           console.log(`\n[${msg.messageId}] ✅ completed`);
-           if (msg.result) {
-             console.log(JSON.stringify(msg.result, null, 2));
-            }
-          }
-        } catch {
-          // ignore parsing errors
-        }
-      });
-
-      process.stdin.setEncoding('utf-8');
-      process.stdin.resume();
-      process.stdout.write('> ');
-
-      process.stdin.on('data', async (input) => {
-        const text = String(input).trim();
-        if (!text) {
-          process.stdout.write('> ');
-          return;
-        }
-
-        const spinner = ora('Sending...').start();
-        try {
-          const result = await sendMessage(
-            options.target,
-            { content: text },
-            false,
-            options.sender
-          );
-          spinner.succeed(`Sent. messageId: ${result.messageId}`);
-
-          // Subscribe this messageId
-          ws.send(JSON.stringify({
-            type: 'subscribe',
-            messageId: result.messageId,
-          }));
-        } catch (err) {
-          spinner.fail(`Send failed: ${err}`);
-        }
-
-        process.stdout.write('> ');
-      });
-
-      process.on('SIGINT', () => {
-        ws.close();
-        process.exit(0);
-      });
     });
 
   daemon
     .command('register-module')
-    .description('Register a module from a compiled JS file')
-    .requiredOption('-f, --file <path>', 'Path to module JS file')
-    .action(async (options: ModuleFileOptions) => {
-      try {
-        const url = 'http://localhost:5521/api/v1/module/register';
-        const body = { filePath: options.file };
+    .description('Register module from JS file or module.json')
+    .option('-f, --file <path>', 'Path to module JS file')
+    .option('-m, --manifest <path>', 'Path to module.json')
+    .action((options: RegisterModuleOptions) => {
+      const d = new OrchestrationDaemon();
+      const config = d.getConfig();
+      let filePath = options.file;
 
-        const res = await fetch(url, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(body)
-        });
-
-        const result = await res.json();
-        console.log(JSON.stringify(result, null, 2));
-      } catch (err) {
-        console.error('Register module failed:', err);
+      if (!filePath && !options.manifest) {
+        console.error('Missing option: --file <path> or --manifest <path>');
+        process.exit(1);
+        return;
       }
+
+      if (options.manifest) {
+        try {
+          const resolved = loadModuleManifest(options.manifest);
+          filePath = resolved.entryPath;
+        } catch (error) {
+          console.error('Invalid module manifest:', error instanceof Error ? error.message : String(error));
+          process.exit(1);
+          return;
+        }
+      }
+      
+      fetch(`http://localhost:${config.port}/api/v1/module/register`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ filePath }),
+      })
+        .then(res => res.json())
+        .then(data => {
+          console.log((data as { success?: boolean; error?: string }).success ? 'Module registered successfully' : 'Failed: ' + (data as { error?: string }).error);
+          process.exit(0);
+        })
+        .catch(error => {
+          console.error('Failed to register module:', error);
+          process.exit(1);
+        });
     });
 
   daemon
     .command('list')
     .description('List all registered modules')
-    .action(async () => {
-      try {
-        const res = await fetch('http://localhost:5521/api/v1/modules');
-        const data = await res.json();
-        console.log(JSON.stringify(data, null, 2));
-      } catch (err) {
-        console.error('Failed to list modules:', err);
-      }
+    .action(() => {
+      const d = new OrchestrationDaemon();
+      const config = d.getConfig();
+      
+      fetch(`http://localhost:${config.port}/api/v1/modules`)
+        .then(res => res.json())
+        .then(data => {
+          const d = data as { inputs: { id: string }[]; outputs: { id: string }[]; modules: { id: string; type: string }[] };
+          console.log('Inputs:');
+          d.inputs.forEach((i) => console.log(`  - ${i.id}`));
+          console.log('\nOutputs:');
+          d.outputs.forEach((o) => console.log(`  - ${o.id}`));
+          console.log('\nModules:');
+          d.modules.forEach((m) => console.log(`  - ${m.id} (${m.type})`));
+          process.exit(0);
+        })
+        .catch(() => {
+          console.log('Daemon not running');
+          process.exit(1);
+        });
     });
 
-  // Agent pool commands
-  const agent = daemon.command('agent').description('Runtime agent management');
+  // Agent pool management
+  const agent = daemon
+    .command('agent')
+    .description('Runtime agent management');
 
   agent
-    .command('add')
-    .description('Add an agent to the pool')
-    .requiredOption('--id <id>', 'Agent ID')
-    .requiredOption('--name <name>', 'Agent name')
-    .requiredOption('--mode <mode>', 'Agent mode (auto|manual)')
-    .requiredOption('--port <port>', 'Agent daemon port')
-    .option('--system-prompt <prompt>', 'System prompt')
-    .option('--cwd <dir>', 'Working directory')
-    .option('--auto-start', 'Auto start when daemon starts')
-    .action((options: AgentAddOptions) => {
-      const pool = new AgentPool();
-      pool.addAgent({
-        id: options.id,
-        name: options.name,
-        mode: options.mode,
-        port: options.port,
-        systemPrompt: options.systemPrompt,
-        cwd: options.cwd,
-        autoStart: options.autoStart,
-      });
-      console.log(`Agent ${options.id} added`);
-    });
-
-  agent
-    .command('remove <id>')
-    .description('Remove an agent from the pool')
-    .action(async (id: string) => {
-      const pool = new AgentPool();
-      await pool.removeAgent(id);
-      console.log(`Agent ${id} removed`);
-    });
-
-  agent
-    .command('start <id>')
-    .description('Start an agent')
-    .action(async (id: string) => {
-      const pool = new AgentPool();
-      await pool.startAgent(id);
-      console.log(`Agent ${id} started`);
-    });
-
-  agent
-    .command('stop <id>')
-    .description('Stop an agent')
-    .action(async (id: string) => {
-      const pool = new AgentPool();
-      await pool.stopAgent(id);
-      console.log(`Agent ${id} stopped`);
-    });
-
-  agent
-    .command('restart <id>')
-    .description('Restart an agent')
-    .action(async (id: string) => {
-      const pool = new AgentPool();
-      await pool.restartAgent(id);
-      console.log(`Agent ${id} restarted`);
+    .command('spawn <agentId>')
+    .description('Spawn a new agent instance')
+    .action((agentId: string) => {
+      import('../orchestration/agent-pool.js')
+        .then(async ({ AgentPool }) => {
+          const pool = AgentPool.getInstance();
+          const instance = await pool.spawnAgent(agentId, { maxConcurrent: 5 });
+          console.log(`Spawned agent ${agentId} with ID ${instance.id}`);
+          process.exit(0);
+        })
+        .catch(err => {
+          console.error('Failed to spawn agent:', err);
+          process.exit(1);
+        });
     });
 
   agent
     .command('list')
-    .description('List all agents')
+    .description('List all agent instances')
     .action(() => {
-      const pool = new AgentPool();
-      const agents = pool.listAgents();
-      console.log(JSON.stringify(agents.map(a => ({
-        id: a.config.id,
-        name: a.config.name,
-        mode: a.config.mode,
-        port: a.config.port,
-        status: a.status,
-        autoStart: a.config.autoStart,
-      })), null, 2));
+      import('../orchestration/agent-pool.js')
+        .then(({ AgentPool }) => {
+          const pool = AgentPool.getInstance();
+          const instances = pool.getAllInstances() as AgentInstanceView[];
+
+          if (instances.length === 0) {
+            console.log('No agent instances');
+            process.exit(0);
+            return;
+          }
+
+          instances.forEach((inst) => {
+            console.log(`${inst.agentId}:${inst.id} - ${inst.status} (load: ${inst.currentLoad})`);
+          });
+          process.exit(0);
+        })
+        .catch((err) => {
+          console.error('Failed to list agent instances:', err);
+          process.exit(1);
+        });
     });
 
   agent
-    .command('status <id>')
-    .description('Show agent status')
-    .action((id: string) => {
-      const pool = new AgentPool();
-      const agent = pool.getAgentStatus(id);
-      if (!agent) {
-        console.error(`Agent ${id} not found`);
-        return;
-      }
-      console.log(JSON.stringify({
-        id: agent.config.id,
-        name: agent.config.name,
-        mode: agent.config.mode,
-        port: agent.config.port,
-        status: agent.status,
-        startedAt: agent.startedAt,
-      }, null, 2));
+    .command('kill <instanceId>')
+    .description('Kill an agent instance')
+    .action((instanceId: string) => {
+      import('../orchestration/agent-pool.js')
+        .then(({ AgentPool }) => {
+          const pool = AgentPool.getInstance();
+          const killed = pool.killInstance(instanceId);
+          console.log(killed ? `Killed ${instanceId}` : `Instance ${instanceId} not found`);
+          process.exit(0);
+        })
+        .catch((err) => {
+          console.error('Failed to kill agent instance:', err);
+          process.exit(1);
+        });
     });
 }

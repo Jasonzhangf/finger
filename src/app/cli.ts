@@ -10,6 +10,7 @@ import { ModuleRegistry } from '../orchestration/module-registry.js';
 import { globalEventBus } from '../runtime/event-bus.js';
 import { globalToolRegistry } from '../runtime/tool-registry.js';
 import { RuntimeFacade } from '../runtime/runtime-facade.js';
+import { registerDefaultRuntimeTools } from '../runtime/default-tools.js';
 import { createOrchestratorLoop } from '../agents/daemon/orchestrator-loop.js';
 import { createExecutorLoop } from '../agents/daemon/executor-loop.js';
 import type { RuntimeEvent } from '../runtime/events.js';
@@ -39,6 +40,7 @@ export async function runAppCLI(args: string[]): Promise<void> {
   hub = new MessageHub();
   moduleRegistry = new ModuleRegistry(hub);
   runtime = new RuntimeFacade(globalEventBus, sessionManager, globalToolRegistry);
+  registerDefaultRuntimeTools(globalToolRegistry);
 
   // 注册 orchestrator-loop 和 executor-loop
   const { module: orchestratorLoop } = createOrchestratorLoop({

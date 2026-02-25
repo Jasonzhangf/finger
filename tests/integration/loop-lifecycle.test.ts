@@ -3,7 +3,6 @@
  * Tests the full flow from orchestrator creating loops to executor emitting events
  */
 
-import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { loopManager } from '../../src/orchestration/loop/loop-manager';
 import { globalEventBus } from '../../src/runtime/event-bus';
 

@@ -4,7 +4,6 @@
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { LoopManager } from '../../../../dist/orchestration/loop/loop-manager.js';
-import type { LoopPhase, LoopStatus, LoopResult } from '../../../../dist/orchestration/loop/types.js';
 
 // Mock globalEventBus
 vi.mock('../../../../dist/runtime/event-bus.js', () => ({

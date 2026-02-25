@@ -55,7 +55,7 @@ export const PerformanceCard: React.FC = () => {
     };
 
     // Connect to WebSocket for real-time updates
-    const ws = new WebSocket(`ws://${window.location.hostname}:8081`);
+    const ws = new WebSocket(`ws://${window.location.hostname}:9998`);
     ws.onmessage = handlePerformanceMetrics;
 
     return () => {

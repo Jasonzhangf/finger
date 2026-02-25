@@ -13,6 +13,17 @@ import {
   orchestrateCommand,
 } from './agent-commands.js';
 import { registerDaemonCommand } from './daemon.js';
+import { registerChatCommand } from './chat-mode.js';
+import { registerChatCodexCommand } from './chat-codex.js';
+import { registerSessionPanelCommand } from './session-panel.js';
+import { loadDynamicCliPlugins, registerPluginCommand } from './plugin-loader.js';
+import { registerCapabilityCommand, registerCliCapabilityAliases } from './cli-capability-loader.js';
+import { registerToolCommand } from './tool-command.js';
+import { registerGatewayCommand } from './gateway-command.js';
+import { registerGatewayWorkerCommand } from './gateway-worker.js';
+
+const DEFAULT_HTTP_BASE_URL = process.env.FINGER_HTTP_URL || process.env.FINGER_HUB_URL || 'http://localhost:9999';
+const DEFAULT_WS_URL = process.env.FINGER_WS_URL || 'ws://localhost:9998';
 
 const program = new Command();
 
@@ -129,29 +140,11 @@ program
 
 // ========== Workflow Commands ==========
 program
-  .command('status')
-  .description('查看工作流状态')
-  .argument('<workflowId>', '工作流 ID')
-  .action(async (workflowId: string) => {
-    try {
-      const res = await fetch(`http://localhost:8080/api/v1/workflows/${workflowId}/state`);
-      if (!res.ok) {
-        throw new Error(`Failed to get status: ${res.statusText}`);
-      }
-      const snapshot = await res.json();
-      console.log(JSON.stringify(snapshot, null, 2));
-    } catch (error) {
-      console.error('[CLI Error]', error);
-      process.exit(1);
-    }
-  });
-
-program
   .command('list')
   .description('列出所有工作流状态')
   .action(async () => {
     try {
-      const res = await fetch('http://localhost:8080/api/v1/workflows/state');
+      const res = await fetch(`${DEFAULT_HTTP_BASE_URL}/api/v1/workflows/state`);
       if (!res.ok) {
         throw new Error(`Failed to list workflows: ${res.statusText}`);
       }
@@ -171,7 +164,7 @@ program
   .argument('<workflowId>', '工作流 ID')
   .action(async (workflowId: string) => {
     try {
-      const res = await fetch('http://localhost:8080/api/v1/workflow/pause', {
+      const res = await fetch(`${DEFAULT_HTTP_BASE_URL}/api/v1/workflow/pause`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ workflowId }),
@@ -190,7 +183,7 @@ program
   .argument('<workflowId>', '工作流 ID')
   .action(async (workflowId: string) => {
     try {
-      const res = await fetch('http://localhost:8080/api/v1/workflow/resume', {
+      const res = await fetch(`${DEFAULT_HTTP_BASE_URL}/api/v1/workflow/resume`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ workflowId }),
@@ -209,7 +202,7 @@ program
   .argument('<workflowId>', '工作流 ID')
   .action(async (workflowId: string) => {
     try {
-      const res = await fetch(`http://localhost:8080/api/v1/workflows/${workflowId}/cancel`, {
+      const res = await fetch(`${DEFAULT_HTTP_BASE_URL}/api/v1/workflows/${workflowId}/cancel`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
       });
@@ -228,7 +221,7 @@ program
   .argument('<input>', '输入内容')
   .action(async (workflowId: string, input: string) => {
     try {
-      const res = await fetch('http://localhost:8080/api/v1/workflow/input', {
+      const res = await fetch(`${DEFAULT_HTTP_BASE_URL}/api/v1/workflow/input`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ workflowId, input }),
@@ -247,7 +240,7 @@ program
   .description('列出所有 Agent')
   .action(async () => {
     try {
-      const res = await fetch('http://localhost:8080/api/v1/agents');
+      const res = await fetch(`${DEFAULT_HTTP_BASE_URL}/api/v1/agents`);
       if (!res.ok) {
         throw new Error(`Failed to list agents: ${res.statusText}`);
       }
@@ -266,7 +259,7 @@ program
   .description('列出资源池状态')
   .action(async () => {
     try {
-      const res = await fetch('http://localhost:8080/api/v1/resources');
+      const res = await fetch(`${DEFAULT_HTTP_BASE_URL}/api/v1/resources`);
       if (!res.ok) {
         throw new Error(`Failed to list resources: ${res.statusText}`);
       }
@@ -289,7 +282,7 @@ program
   .action(async (workflowId: string, options: { types?: string }) => {
     try {
       const WebSocket = (await import('ws')).default;
-      const ws = new WebSocket('ws://localhost:5522');
+      const ws = new WebSocket(DEFAULT_WS_URL);
 
       ws.on('open', () => {
         console.log(`Connected. Subscribing to workflow ${workflowId}...`);
@@ -328,7 +321,7 @@ program
   .description('列出会话')
   .action(async () => {
     try {
-      const res = await fetch('http://localhost:8080/api/v1/sessions');
+      const res = await fetch(`${DEFAULT_HTTP_BASE_URL}/api/v1/sessions`);
       if (!res.ok) {
         throw new Error(`Failed to list sessions: ${res.statusText}`);
       }
@@ -345,8 +338,8 @@ program
 program
   .command('repl')
   .description('交互式模式：实时对话和任务管理')
-  .option('--http-url <url>', 'HTTP API URL', 'http://localhost:8080')
-  .option('--ws-url <url>', 'WebSocket URL', 'ws://localhost:5522')
+  .option('--http-url <url>', 'HTTP API URL', DEFAULT_HTTP_BASE_URL)
+  .option('--ws-url <url>', 'WebSocket URL', DEFAULT_WS_URL)
   .action(async (options: { httpUrl: string; wsUrl: string }) => {
     try {
       const { startREPL } = await import('./repl.js');
@@ -362,6 +355,14 @@ program
 
 // daemon 子命令
 registerDaemonCommand(program);
+registerChatCommand(program);
+registerChatCodexCommand(program);
+registerSessionPanelCommand(program);
+registerPluginCommand(program);
+registerCapabilityCommand(program);
+registerToolCommand(program);
+registerGatewayCommand(program);
+registerGatewayWorkerCommand(program);
 
 // ========== Status Command (via Mailbox) ==========
 program
@@ -372,7 +373,7 @@ program
   .option('-f, --follow', '持续监听状态变更')
   .action(async (id: string, options: { json?: boolean; follow?: boolean }) => {
     try {
-      const MESSAGE_HUB_URL = process.env.FINGER_HUB_URL || 'http://localhost:5521';
+      const MESSAGE_HUB_URL = process.env.FINGER_HUB_URL || DEFAULT_HTTP_BASE_URL;
       
       // 优先尝试 callbackId 查询
       let res = await fetch(`${MESSAGE_HUB_URL}/api/v1/mailbox/callback/${id}`);
@@ -422,7 +423,7 @@ program
       // --follow 模式: 通过 WebSocket 监听状态变更
       if (options.follow && data.status !== 'completed' && data.status !== 'failed') {
         const WebSocket = (await import('ws')).default;
-        const ws = new WebSocket('ws://localhost:5522');
+        const ws = new WebSocket(DEFAULT_WS_URL);
         
         console.log('\n[CLI] Listening for status updates... (Ctrl+C to stop)');
         
@@ -464,5 +465,22 @@ program
       process.exit(1);
     }
   });
+
+const pluginLoadResult = await loadDynamicCliPlugins(program, {
+  defaultHttpBaseUrl: DEFAULT_HTTP_BASE_URL,
+  defaultWsUrl: DEFAULT_WS_URL,
+  cliVersion: program.version() || '1.0.0',
+});
+
+if (pluginLoadResult.loaded.length > 0) {
+  console.log(`[CLI Plugin] Loaded: ${pluginLoadResult.loaded.join(', ')}`);
+}
+
+const capabilityAliasResult = await registerCliCapabilityAliases(program, {
+  daemonUrl: DEFAULT_HTTP_BASE_URL,
+});
+if (capabilityAliasResult.loaded.length > 0) {
+  console.log(`[Capability] Loaded CLI aliases: ${capabilityAliasResult.loaded.join(', ')}`);
+}
 
 program.parse();
