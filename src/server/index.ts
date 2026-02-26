@@ -858,7 +858,8 @@ app.delete('/api/v1/sessions/:id', (req, res) => {
 
 // Session messages
 app.get('/api/v1/sessions/:sessionId/messages', (req, res) => {
-  const limit = req.query.limit ? parseInt(req.query.limit as string, 10) : 50;
+  const parsedLimit = req.query.limit ? parseInt(req.query.limit as string, 10) : 50;
+  const limit = Number.isFinite(parsedLimit) ? parsedLimit : 50;
   const messages = sessionManager.getMessages(req.params.sessionId, limit);
   res.json({ success: true, messages });
 });
@@ -934,6 +935,34 @@ app.post('/api/v1/sessions/:sessionId/messages/append', (req, res) => {
   }
 
   res.json({ success: true, message });
+});
+
+app.patch('/api/v1/sessions/:sessionId/messages/:messageId', (req, res) => {
+  const { content } = req.body as { content?: string };
+  if (typeof content !== 'string' || content.trim().length === 0) {
+    res.status(400).json({ error: 'Missing content' });
+    return;
+  }
+
+  try {
+    const updated = sessionManager.updateMessage(req.params.sessionId, req.params.messageId, content);
+    if (!updated) {
+      res.status(404).json({ error: 'Message not found' });
+      return;
+    }
+    res.json({ success: true, message: updated });
+  } catch (error) {
+    res.status(400).json({ error: error instanceof Error ? error.message : 'Failed to update message' });
+  }
+});
+
+app.delete('/api/v1/sessions/:sessionId/messages/:messageId', (req, res) => {
+  const deleted = sessionManager.deleteMessage(req.params.sessionId, req.params.messageId);
+  if (!deleted) {
+    res.status(404).json({ error: 'Message not found' });
+    return;
+  }
+  res.json({ success: true });
 });
 
 // Session pause/resume
@@ -1671,12 +1700,26 @@ app.get('/api/v1/agents/:id/stats', (req, res) => {
   });
 });
 
+function extractSessionIdFromMessagePayload(message: unknown): string | null {
+  if (typeof message !== 'object' || message === null) return null;
+  if (!('sessionId' in message)) return null;
+  const sessionId = (message as { sessionId?: unknown }).sessionId;
+  if (typeof sessionId !== 'string') return null;
+  const normalized = sessionId.trim();
+  return normalized.length > 0 ? normalized : null;
+}
+
 // Modified message endpoint with mailbox integration
 app.post('/api/v1/message', async (req, res) => {
   const body = req.body as { target?: string; message?: unknown; blocking?: boolean; sender?: string; callbackId?: string };
   if (!body.target || body.message === undefined) {
     res.status(400).json({ error: 'Missing target or message' });
     return;
+  }
+
+  const requestSessionId = extractSessionIdFromMessagePayload(body.message);
+  if (requestSessionId) {
+    runtime.setCurrentSession(requestSessionId);
   }
 
   // Create mailbox message for tracking

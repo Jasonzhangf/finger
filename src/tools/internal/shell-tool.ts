@@ -77,13 +77,15 @@ function parseShellExecInput(input: unknown): ShellExecInput {
 }
 
 function normalizeInvocation(input: ShellExecInput): ShellInvocation {
+  const shellProgram = input.shellPath ?? process.env.SHELL ?? '/bin/zsh';
+
   if (typeof input.command === 'string') {
     const command = input.command.trim();
     if (command.length === 0) {
       throw new Error('shell.exec command cannot be empty');
     }
     return {
-      commandArray: [input.shellPath ?? process.env.SHELL ?? '/bin/zsh', '-lc', command],
+      commandArray: [shellProgram, '-lc', command],
       displayCommand: command,
     };
   }
@@ -92,10 +94,43 @@ function normalizeInvocation(input: ShellExecInput): ShellInvocation {
     throw new Error('shell.exec command array cannot be empty');
   }
 
+  const displayCommand = input.command.join(' ');
+  if (shouldRunArrayWithShell(input.command)) {
+    return {
+      commandArray: [shellProgram, '-lc', displayCommand],
+      displayCommand,
+    };
+  }
+
   return {
     commandArray: input.command,
-    displayCommand: input.command.join(' '),
+    displayCommand,
   };
+}
+
+function shouldRunArrayWithShell(command: string[]): boolean {
+  if (command.length === 1) {
+    const single = command[0].trim();
+    return /[\s;&|><]/.test(single);
+  }
+
+  const shellTokens = new Set(['&&', '||', '|', ';', '>', '>>', '<', '2>', '2>>']);
+  if (command.some((token) => shellTokens.has(token.trim()))) {
+    return true;
+  }
+
+  const first = command[0].trim().toLowerCase();
+  const shellBuiltins = new Set([
+    'cd',
+    'export',
+    'unset',
+    'alias',
+    'unalias',
+    'source',
+    '.',
+    'set',
+  ]);
+  return shellBuiltins.has(first);
 }
 
 export const shellExecTool: InternalTool<unknown, ShellExecOutput> = {

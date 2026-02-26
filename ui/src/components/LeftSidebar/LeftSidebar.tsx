@@ -59,7 +59,7 @@ export const LeftSidebar: FC<LeftSidebarProps> = ({
   onRenameSession,
   onSwitchSession,
 }) => {
-  const [activeTab, setActiveTab] = useState<SidebarTab | null>(null);
+  const [activeTab, setActiveTab] = useState<SidebarTab | null>('project');
 
   const panelTitle = useMemo(() => {
     if (activeTab === 'project') return 'Project Management';
@@ -69,7 +69,7 @@ export const LeftSidebar: FC<LeftSidebarProps> = ({
   }, [activeTab]);
 
   const onTabClick = (tab: SidebarTab) => {
-    setActiveTab((prev) => (prev === tab ? null : tab));
+    setActiveTab(tab);
   };
 
   return (

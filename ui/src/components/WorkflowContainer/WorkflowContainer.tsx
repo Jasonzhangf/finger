@@ -1,4 +1,4 @@
-import React, { useMemo, useEffect, useState } from 'react';
+import React, { useMemo, useEffect, useState, useCallback } from 'react';
 import { PerformanceCard } from '../PerformanceCard/PerformanceCard.js';
 import { ChatInterface } from '../ChatInterface/ChatInterface.js';
 import type { InputCapability } from '../ChatInterface/ChatInterface.js';
@@ -21,6 +21,7 @@ interface ResumeCheckResult {
 }
 
 const CHAT_GATEWAY_ID = 'chat-codex-gateway';
+const WORKDIR_STORAGE_KEY = 'finger-ui-workdir';
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null;
@@ -127,8 +128,19 @@ export const WorkflowContainer: React.FC = () => {
     pauseWorkflow,
     resumeWorkflow,
     sendUserInput,
+    editRuntimeEvent,
+    deleteRuntimeEvent,
+    agentRunStatus,
+    contextEditableEventIds,
     isConnected,
   } = useWorkflowExecution(sessionId);
+
+  const handleCreateNewSession = useCallback(async (): Promise<void> => {
+    const fromStorage = localStorage.getItem(WORKDIR_STORAGE_KEY)?.trim();
+    const projectPath = currentSession?.projectPath?.trim() || fromStorage || '/';
+    const created = await createSession(projectPath);
+    await switchSession(created.id);
+  }, [createSession, currentSession?.projectPath, switchSession]);
 
   const { agents: agentModules } = useAgents();
   const chatInputCapability = useMemo(
@@ -151,7 +163,7 @@ export const WorkflowContainer: React.FC = () => {
       requestCount: 0,
       tokenUsage: 0,
     }));
-  }, [executionState?.agents, agentModules]);
+  }, [executionState, agentModules]);
 
   const taskFlowProps = React.useMemo(() => {
     const planHistory: Loop[] = [];
@@ -185,17 +197,23 @@ export const WorkflowContainer: React.FC = () => {
 
   const rightPanelElement = useMemo(() => (
     <ChatInterface
+      key={sessionId}
       executionState={executionState}
       agents={runtimeAgents}
       events={runtimeEvents}
+      contextEditableEventIds={contextEditableEventIds}
+      agentRunStatus={agentRunStatus}
       onSendMessage={sendUserInput}
+      onEditMessage={editRuntimeEvent}
+      onDeleteMessage={deleteRuntimeEvent}
+      onCreateNewSession={handleCreateNewSession}
       onPause={pauseWorkflow}
       onResume={resumeWorkflow}
       isPaused={executionState?.paused || false}
       isConnected={isConnected}
       inputCapability={chatInputCapability}
     />
-  ), [executionState, runtimeAgents, runtimeEvents, sendUserInput, pauseWorkflow, resumeWorkflow, isConnected, chatInputCapability]);
+  ), [sessionId, executionState, runtimeAgents, runtimeEvents, contextEditableEventIds, agentRunStatus, sendUserInput, editRuntimeEvent, deleteRuntimeEvent, handleCreateNewSession, pauseWorkflow, resumeWorkflow, isConnected, chatInputCapability]);
 
   // Use overlay instead of early return to maintain hook consistency
   const loadingOverlay = isLoading || isLoadingSessions ? (

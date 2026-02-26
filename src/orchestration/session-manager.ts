@@ -220,11 +220,6 @@ export class SessionManager {
 
     session.messages.push(message);
     session.lastAccessedAt = new Date().toISOString();
-    
-    // Keep only last 100 messages
-    if (session.messages.length > 100) {
-      session.messages = session.messages.slice(-100);
-    }
 
     this.saveSession(session);
     return message;
@@ -233,7 +228,48 @@ export class SessionManager {
   getMessages(sessionId: string, limit = 50): SessionMessage[] {
     const session = this.sessions.get(sessionId);
     if (!session) return [];
+    if (!Number.isFinite(limit) || limit <= 0) {
+      return [...session.messages];
+    }
     return session.messages.slice(-limit);
+  }
+
+  updateMessage(sessionId: string, messageId: string, content: string): SessionMessage | null {
+    const session = this.sessions.get(sessionId);
+    if (!session) return null;
+
+    const normalized = content.trim();
+    if (normalized.length === 0) {
+      throw new Error('Message content cannot be empty');
+    }
+
+    const index = session.messages.findIndex((item) => item.id === messageId);
+    if (index < 0) return null;
+
+    const updated: SessionMessage = {
+      ...session.messages[index],
+      content: normalized,
+      timestamp: new Date().toISOString(),
+    };
+    session.messages[index] = updated;
+    session.lastAccessedAt = new Date().toISOString();
+    this.saveSession(session);
+    return updated;
+  }
+
+  deleteMessage(sessionId: string, messageId: string): boolean {
+    const session = this.sessions.get(sessionId);
+    if (!session) return false;
+
+    const next = session.messages.filter((item) => item.id !== messageId);
+    if (next.length === session.messages.length) {
+      return false;
+    }
+
+    session.messages = next;
+    session.lastAccessedAt = new Date().toISOString();
+    this.saveSession(session);
+    return true;
   }
 
   /**

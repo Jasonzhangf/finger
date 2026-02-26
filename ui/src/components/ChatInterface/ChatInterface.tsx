@@ -9,11 +9,22 @@ export interface InputCapability {
   acceptedFileMimePrefixes?: string[];
 }
 
+interface AgentRunStatus {
+  phase: 'idle' | 'running' | 'error';
+  text: string;
+  updatedAt: string;
+}
+
 interface ChatInterfaceProps {
   executionState: WorkflowExecutionState | null;
   agents: Array<{ id: string; name: string; status: string }>;
   events: RuntimeEvent[];
+  contextEditableEventIds?: string[];
+  agentRunStatus?: AgentRunStatus;
   onSendMessage: (payload: UserInputPayload) => void;
+  onEditMessage?: (eventId: string, content: string) => Promise<boolean>;
+  onDeleteMessage?: (eventId: string) => Promise<boolean>;
+  onCreateNewSession?: () => Promise<void> | void;
   onPause: () => void;
   onResume: () => void;
   isPaused: boolean;
@@ -35,6 +46,7 @@ interface DecoratedEvent extends RuntimeEvent {
 
 const CONTEXT_MENU_WIDTH = 220;
 const CONTEXT_MENU_HEIGHT = 240;
+const MESSAGE_PAGE_SIZE = 40;
 const DEFAULT_INPUT_CAPABILITY: InputCapability = {
   acceptText: true,
   acceptImages: true,
@@ -179,6 +191,17 @@ function formatTokenUsage(event: RuntimeEvent): string {
   if (typeof output === 'number') parts.push(`输出 ${output}`);
   if (parts.length === 0) return 'Token: N/A';
   return `${usage.estimated ? 'Token(估算):' : 'Token:'} ${parts.join(' · ')}`;
+}
+
+function formatToolInput(toolInput: unknown): string | null {
+  if (toolInput === undefined || toolInput === null) return null;
+  if (typeof toolInput === 'string') return toolInput.trim().length > 0 ? toolInput : null;
+  try {
+    const encoded = JSON.stringify(toolInput, null, 2);
+    return encoded.length > 0 ? encoded : null;
+  } catch {
+    return null;
+  }
 }
 
 function capabilityAllowsFile(file: RuntimeFile, capability: InputCapability): boolean {
@@ -372,6 +395,13 @@ const MessageItem = React.memo<{
             </div>
           )}
           {event.content}
+          {event.kind === 'action' && event.toolName && (() => {
+            const toolInput = formatToolInput(event.toolInput);
+            if (!toolInput) return null;
+            return (
+              <pre className="tool-input-block">{toolInput}</pre>
+            );
+          })()}
           {event.planSteps && event.planSteps.length > 0 && (
             <div className="message-plan">
               {event.planExplanation && (
@@ -443,11 +473,12 @@ const ChatInput: React.FC<{
   draft: UserInputPayload;
   onDraftChange: React.Dispatch<React.SetStateAction<UserInputPayload>>;
   onSend: (payload: UserInputPayload) => void;
+  onCreateNewSession?: () => Promise<void> | void;
   inputHistory: string[];
   inputCapability: InputCapability;
   isPaused: boolean;
   disabled?: boolean;
-}> = ({ draft, onDraftChange, onSend, inputHistory, inputCapability, isPaused, disabled }) => {
+}> = ({ draft, onDraftChange, onSend, onCreateNewSession, inputHistory, inputCapability, isPaused, disabled }) => {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const [inputWarning, setInputWarning] = useState<string | null>(null);
   const [historyCursor, setHistoryCursor] = useState<number | null>(null);
@@ -467,6 +498,26 @@ const ChatInput: React.FC<{
       setInputWarning(null);
     }
 
+    const normalizedText = sanitized.payload.text.trim();
+    const hasAttachments = (sanitized.payload.images?.length ?? 0) > 0 || (sanitized.payload.files?.length ?? 0) > 0;
+    if (normalizedText === '/new' && !hasAttachments) {
+      setHistoryCursor(null);
+      setHistorySnapshot('');
+      onDraftChange({ text: '', images: [], files: [] });
+      if (textareaRef.current) {
+        textareaRef.current.style.height = 'auto';
+      }
+      if (!onCreateNewSession) {
+        setInputWarning('当前界面未接入新会话创建能力');
+        return;
+      }
+      void Promise.resolve(onCreateNewSession()).catch((error: unknown) => {
+        const message = error instanceof Error ? error.message : '创建新会话失败';
+        setInputWarning(message);
+      });
+      return;
+    }
+
     onSend(sanitized.payload);
     setHistoryCursor(null);
     setHistorySnapshot('');
@@ -475,16 +526,19 @@ const ChatInput: React.FC<{
     if (textareaRef.current) {
       textareaRef.current.style.height = 'auto';
     }
-  }, [draft, inputCapability, onDraftChange, onSend]);
+  }, [draft, inputCapability, onCreateNewSession, onDraftChange, onSend]);
 
   const handleKeyDown = useCallback((e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.altKey || e.ctrlKey || e.metaKey) return;
-    const textIsEmpty = draft.text.trim().length === 0;
+    const textIsEmpty = draft.text.length === 0;
+    const caretAtFirstLine =
+      e.currentTarget.selectionStart === 0 &&
+      e.currentTarget.selectionEnd === 0;
     const isArrowUp = e.key === 'ArrowUp' || e.keyCode === 38;
     const isArrowDown = e.key === 'ArrowDown' || e.keyCode === 40;
     const isEnter = e.key === 'Enter' || e.keyCode === 13;
 
-    if (isArrowUp && inputHistory.length > 0 && (textIsEmpty || historyCursor !== null)) {
+    if (isArrowUp && inputHistory.length > 0 && (historyCursor !== null || (textIsEmpty && caretAtFirstLine))) {
       e.preventDefault();
       const nextCursor = historyCursor === null ? inputHistory.length - 1 : Math.max(0, historyCursor - 1);
       if (historyCursor === null) {
@@ -635,27 +689,7 @@ const ChatInput: React.FC<{
         </div>
       )}
 
-      <div className="input-row">
-        <label className="attach-btn" title="添加图片">
-          🖼
-          <input
-            type="file"
-            accept="image/*"
-            multiple
-            onChange={handleImageChange}
-            disabled={disabled}
-          />
-        </label>
-        <label className="attach-btn" title="添加文件">
-          📄
-          <input
-            type="file"
-            multiple
-            onChange={handleFileChange}
-            disabled={disabled}
-          />
-        </label>
-
+      <div className="composer-shell">
         <div className="textarea-wrapper">
           <textarea
             data-testid="chat-input"
@@ -663,22 +697,46 @@ const ChatInput: React.FC<{
             value={draft.text}
             onChange={handleTextChange}
             onKeyDown={handleKeyDown}
-            placeholder={isPaused ? '系统已暂停，输入指令后点击继续' : '输入任务指令... (Shift+Enter 换行)'}
+            placeholder={isPaused ? '系统已暂停，输入指令后点击继续' : '输入任务指令... (Shift+Enter 换行，/new 新会话)'}
             rows={4}
             disabled={disabled}
           />
         </div>
 
-        <button
-          className="send-btn"
-          onClick={handleSend}
-          disabled={!canSend || disabled}
-        >
-          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-            <line x1="22" y1="2" x2="11" y2="13" />
-            <polygon points="22 2 15 22 11 13 2 9 22 2" />
-          </svg>
-        </button>
+        <div className="composer-toolbar">
+          <div className="composer-tools">
+            <label className="attach-btn" title="添加图片">
+              🖼
+              <input
+                type="file"
+                accept="image/*"
+                multiple
+                onChange={handleImageChange}
+                disabled={disabled}
+              />
+            </label>
+            <label className="attach-btn" title="添加文件">
+              📄
+              <input
+                type="file"
+                multiple
+                onChange={handleFileChange}
+                disabled={disabled}
+              />
+            </label>
+          </div>
+
+          <button
+            className="send-btn"
+            onClick={handleSend}
+            disabled={!canSend || disabled}
+          >
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <line x1="22" y1="2" x2="11" y2="13" />
+              <polygon points="22 2 15 22 11 13 2 9 22 2" />
+            </svg>
+          </button>
+        </div>
       </div>
       {inputWarning && <div className="input-warning">{inputWarning}</div>}
     </div>
@@ -689,7 +747,12 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
   executionState,
   agents,
   events,
+  contextEditableEventIds,
+  agentRunStatus,
   onSendMessage,
+  onEditMessage,
+  onDeleteMessage,
+  onCreateNewSession,
   onPause,
   onResume,
   isPaused,
@@ -701,22 +764,15 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
   const [showScrollToBottom, setShowScrollToBottom] = useState(false);
   const [draft, setDraft] = useState<UserInputPayload>({ text: '', images: [], files: [] });
   const [inputHistory, setInputHistory] = useState<string[]>([]);
+  const [visibleEventCount, setVisibleEventCount] = useState<number>(MESSAGE_PAGE_SIZE);
   const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
-  const [hiddenMessageIds, setHiddenMessageIds] = useState<Set<string>>(new Set());
-  const [editedMessages, setEditedMessages] = useState<Record<string, Partial<Pick<RuntimeEvent, 'content' | 'images' | 'files'>>>>({});
+  const [operationMessage, setOperationMessage] = useState<string | null>(null);
   const [previewImage, setPreviewImage] = useState<RuntimeImage | null>(null);
   const effectiveInputCapability = inputCapability ?? DEFAULT_INPUT_CAPABILITY;
 
   useEffect(() => {
     if (!chatRef.current) return;
-    const { scrollTop, scrollHeight, clientHeight } = chatRef.current;
-    const isNearBottom = scrollHeight - scrollTop - clientHeight < 100;
-    if (isNearBottom) {
-      chatRef.current.scrollTop = chatRef.current.scrollHeight;
-      setShowScrollToBottom(false);
-    } else {
-      setShowScrollToBottom(true);
-    }
+    chatRef.current.scrollTop = chatRef.current.scrollHeight;
   }, [events]);
 
   useEffect(() => {
@@ -796,53 +852,80 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
     return events
       .map((event, index) => {
         const eventId = event.id || `${event.timestamp}-${event.role}-${index}`;
-        const edited = editedMessages[eventId];
-
         const merged: DecoratedEvent = {
           ...event,
-          ...edited,
           id: eventId,
           eventId,
           key: eventId,
-          content: edited?.content ?? event.content,
-          images: edited?.images ?? event.images,
-          files: edited?.files ?? event.files,
+          content: event.content,
+          images: event.images,
+          files: event.files,
         };
 
         return merged;
-      })
-      .filter((event) => !hiddenMessageIds.has(event.eventId));
-  }, [events, editedMessages, hiddenMessageIds]);
+      });
+  }, [events]);
+
+  const displayedEvents = useMemo(
+    () => eventsWithKeys.slice(-Math.max(1, visibleEventCount)),
+    [eventsWithKeys, visibleEventCount],
+  );
+
+  const hiddenEventsCount = eventsWithKeys.length - displayedEvents.length;
 
   const activeMenuEvent = useMemo<DecoratedEvent | null>(() => {
     if (!contextMenu) return null;
     return eventsWithKeys.find((event) => event.eventId === contextMenu.eventId) ?? null;
   }, [contextMenu, eventsWithKeys]);
 
+  const editableEventIds = useMemo(
+    () => new Set(contextEditableEventIds ?? eventsWithKeys.map((event) => event.eventId)),
+    [contextEditableEventIds, eventsWithKeys],
+  );
+
+  const activeMenuEventEditable = useMemo(() => {
+    if (!activeMenuEvent) return false;
+    if (activeMenuEvent.role !== 'user' && activeMenuEvent.role !== 'agent') return false;
+    return editableEventIds.has(activeMenuEvent.eventId);
+  }, [activeMenuEvent, editableEventIds]);
+
   const handleEditMessage = useCallback(() => {
     if (!activeMenuEvent) return;
+    if (!activeMenuEventEditable) {
+      setOperationMessage('该消息超出当前上下文窗口，不能编辑');
+      setContextMenu(null);
+      return;
+    }
+    if (!onEditMessage) return;
     const nextText = window.prompt('编辑消息内容', activeMenuEvent.content);
     if (nextText === null) return;
-
-    setEditedMessages((prev) => ({
-      ...prev,
-      [activeMenuEvent.eventId]: {
-        ...(prev[activeMenuEvent.eventId] ?? {}),
-        content: nextText,
-      },
-    }));
+    void onEditMessage(activeMenuEvent.eventId, nextText).then((ok) => {
+      if (!ok) {
+        setOperationMessage('消息编辑失败');
+      } else {
+        setOperationMessage(null);
+      }
+    });
     setContextMenu(null);
-  }, [activeMenuEvent]);
+  }, [activeMenuEvent, activeMenuEventEditable, onEditMessage]);
 
   const handleDeleteMessage = useCallback(() => {
     if (!activeMenuEvent) return;
-    setHiddenMessageIds((prev) => {
-      const next = new Set(prev);
-      next.add(activeMenuEvent.eventId);
-      return next;
+    if (!activeMenuEventEditable) {
+      setOperationMessage('该消息超出当前上下文窗口，不能删除');
+      setContextMenu(null);
+      return;
+    }
+    if (!onDeleteMessage) return;
+    void onDeleteMessage(activeMenuEvent.eventId).then((ok) => {
+      if (!ok) {
+        setOperationMessage('消息删除失败');
+      } else {
+        setOperationMessage(null);
+      }
     });
     setContextMenu(null);
-  }, [activeMenuEvent]);
+  }, [activeMenuEvent, activeMenuEventEditable, onDeleteMessage]);
 
   const handleCopyText = useCallback(async () => {
     if (!activeMenuEvent) return;
@@ -883,6 +966,10 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
     setContextMenu(null);
   }, [activeMenuEvent, onSendMessage]);
 
+  const handleLoadMoreEvents = useCallback(() => {
+    setVisibleEventCount((prev) => prev + MESSAGE_PAGE_SIZE);
+  }, []);
+
   return (
     <div className="chat-interface">
       <div className="chat-header">
@@ -910,17 +997,24 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
             <div className="empty-text">开始对话，输入任务指令...</div>
           </div>
         ) : (
-          eventsWithKeys.map((event) => (
-            <MessageItem
-              key={event.key}
-              event={event}
-              agentStatus={event.agentId ? agentStatusMap.get(event.agentId) : undefined}
-              onAgentClick={onAgentClick}
-              onRetry={handleRetryMessage}
-              onImageDoubleClick={setPreviewImage}
-              onContextMenu={handleMessageContextMenu}
-            />
-          ))
+          <>
+            {hiddenEventsCount > 0 && (
+              <button type="button" className="load-more-btn" onClick={handleLoadMoreEvents}>
+                加载更早消息（{hiddenEventsCount} 条）
+              </button>
+            )}
+            {displayedEvents.map((event) => (
+              <MessageItem
+                key={event.key}
+                event={event}
+                agentStatus={event.agentId ? agentStatusMap.get(event.agentId) : undefined}
+                onAgentClick={onAgentClick}
+                onRetry={handleRetryMessage}
+                onImageDoubleClick={setPreviewImage}
+                onContextMenu={handleMessageContextMenu}
+              />
+            ))}
+          </>
         )}
       </div>
 
@@ -930,6 +1024,13 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
         </button>
       )}
 
+      {agentRunStatus && (
+        <div className={`agent-run-status ${agentRunStatus.phase}`}>
+          <span className={`agent-run-dot ${agentRunStatus.phase === 'running' ? 'pulsing' : ''}`} />
+          <span className="agent-run-text">{agentRunStatus.text}</span>
+        </div>
+      )}
+
       {contextMenu && activeMenuEvent && (
         <div
           className="chat-context-menu"
@@ -937,8 +1038,8 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
           onClick={(e) => e.stopPropagation()}
           onContextMenu={(e) => e.preventDefault()}
         >
-          <button type="button" className="menu-item" onClick={handleEditMessage}>编辑消息</button>
-          <button type="button" className="menu-item" onClick={handleDeleteMessage}>删除消息</button>
+          <button type="button" className="menu-item" onClick={handleEditMessage} disabled={!activeMenuEventEditable}>编辑消息</button>
+          <button type="button" className="menu-item" onClick={handleDeleteMessage} disabled={!activeMenuEventEditable}>删除消息</button>
           <button type="button" className="menu-item" onClick={() => { void handleCopyText(); }}>复制文本</button>
           <button
             type="button"
@@ -957,11 +1058,13 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
         draft={draft}
         onDraftChange={setDraft}
         onSend={handleSend}
+        onCreateNewSession={onCreateNewSession}
         inputHistory={inputHistory}
         inputCapability={effectiveInputCapability}
         isPaused={isPaused}
         disabled={!isConnected}
       />
+      {operationMessage && <div className="operation-hint">{operationMessage}</div>}
 
       {previewImage && (
         <div className="image-preview-modal" onClick={() => setPreviewImage(null)}>

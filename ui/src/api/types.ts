@@ -469,6 +469,7 @@ export interface RuntimeEvent {
   agentName?: string;
   kind?: 'thought' | 'action' | 'observation' | 'status';
   toolName?: string;
+  toolInput?: unknown;
   toolDurationMs?: number;
   planSteps?: RuntimePlanStep[];
   planExplanation?: string;

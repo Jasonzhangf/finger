@@ -72,6 +72,43 @@ describe('ChatInterface context menu', () => {
 
     expect(onSendMessage).toHaveBeenCalledWith({ text: '需要重发' });
   });
+
+  it('disables edit/delete for events outside context index window', async () => {
+    const onSendMessage = vi.fn<(payload: unknown) => void>();
+    const onEditMessage = vi.fn<(eventId: string, content: string) => Promise<boolean>>(async () => true);
+    const onDeleteMessage = vi.fn<(eventId: string) => Promise<boolean>>(async () => true);
+    const events: RuntimeEvent[] = [
+      buildEvent({ id: 'old-event', role: 'user', content: '旧消息' }),
+      buildEvent({ id: 'new-event', role: 'user', content: '新消息' }),
+    ];
+
+    render(
+      <ChatInterface
+        executionState={null}
+        agents={[]}
+        events={events}
+        contextEditableEventIds={['new-event']}
+        onSendMessage={onSendMessage}
+        onEditMessage={onEditMessage}
+        onDeleteMessage={onDeleteMessage}
+        onPause={() => undefined}
+        onResume={() => undefined}
+        isPaused={false}
+        isConnected={true}
+      />,
+    );
+
+    fireEvent.contextMenu(screen.getByText('旧消息'));
+    expect(screen.getByRole('button', { name: '编辑消息' }).hasAttribute('disabled')).toBe(true);
+    expect(screen.getByRole('button', { name: '删除消息' }).hasAttribute('disabled')).toBe(true);
+
+    fireEvent.contextMenu(screen.getByText('新消息'));
+    expect(screen.getByRole('button', { name: '编辑消息' }).hasAttribute('disabled')).toBe(false);
+    fireEvent.click(screen.getByRole('button', { name: '删除消息' }));
+    await waitFor(() => {
+      expect(onDeleteMessage).toHaveBeenCalledWith('new-event');
+    });
+  });
 });
 
 describe('ChatInterface input behavior', () => {
@@ -152,6 +189,35 @@ describe('ChatInterface input behavior', () => {
       expect(input.value).toBe('');
     });
   });
+
+  it('creates new session on /new command without sending message', async () => {
+    const onSendMessage = vi.fn<(payload: unknown) => void>();
+    const onCreateNewSession = vi.fn<() => Promise<void>>(async () => undefined);
+
+    render(
+      <ChatInterface
+        executionState={null}
+        agents={[]}
+        events={[]}
+        onSendMessage={onSendMessage}
+        onCreateNewSession={onCreateNewSession}
+        onPause={() => undefined}
+        onResume={() => undefined}
+        isPaused={false}
+        isConnected={true}
+      />,
+    );
+
+    const input = screen.getByTestId('chat-input') as HTMLTextAreaElement;
+    fireEvent.change(input, { target: { value: '/new' } });
+    fireEvent.keyDown(input, { key: 'Enter', shiftKey: false });
+
+    await waitFor(() => {
+      expect(onCreateNewSession).toHaveBeenCalledTimes(1);
+    });
+    expect(onSendMessage).not.toHaveBeenCalled();
+    expect(input.value).toBe('');
+  });
 });
 
 describe('ChatInterface tool render', () => {
@@ -186,5 +252,27 @@ describe('ChatInterface tool render', () => {
     expect(screen.getByText('实现基础回环')).not.toBeNull();
     expect(screen.getByText('接入工具回填')).not.toBeNull();
     expect(screen.getByText('进行中')).not.toBeNull();
+  });
+
+  it('shows load-more hint when events exceed first page', () => {
+    const onSendMessage = vi.fn<(payload: unknown) => void>();
+    const events = Array.from({ length: 45 }, (_, index) =>
+      buildEvent({ id: `evt-${index}`, role: 'user', content: `msg-${index}` }),
+    );
+
+    render(
+      <ChatInterface
+        executionState={null}
+        agents={[]}
+        events={events}
+        onSendMessage={onSendMessage}
+        onPause={() => undefined}
+        onResume={() => undefined}
+        isPaused={false}
+        isConnected={true}
+      />,
+    );
+
+    expect(screen.getByRole('button', { name: '加载更早消息（5 条）' })).not.toBeNull();
   });
 });

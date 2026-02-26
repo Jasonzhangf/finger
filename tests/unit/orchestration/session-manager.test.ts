@@ -192,12 +192,12 @@ describe('SessionManager', () => {
       expect(msg1!.id).not.toBe(msg2!.id);
     });
 
-    it('should limit messages to 100', () => {
+    it('should keep full message history without truncation', () => {
       for (let i = 0; i < 150; i++) {
         manager.addMessage(sessionId, 'user', `Message ${i}`);
       }
       const session = manager.getSession(sessionId)!;
-      expect(session.messages.length).toBe(100);
+      expect(session.messages.length).toBe(150);
     });
   });
 
@@ -229,6 +229,60 @@ describe('SessionManager', () => {
     it('should return empty for non-existent session', () => {
       const messages = manager.getMessages('nonexistent');
       expect(messages).toEqual([]);
+    });
+
+    it('should return all messages when limit <= 0', () => {
+      for (let i = 0; i < 12; i++) {
+        manager.addMessage(sessionId, 'user', `Msg ${i}`);
+      }
+      const messages = manager.getMessages(sessionId, 0);
+      expect(messages.length).toBe(12);
+    });
+  });
+
+  describe('updateMessage', () => {
+    let sessionId: string;
+    let messageId: string;
+
+    beforeEach(() => {
+      const session = manager.createSession('/path');
+      sessionId = session.id;
+      const message = manager.addMessage(sessionId, 'user', 'original');
+      messageId = message!.id;
+    });
+
+    it('updates message content', () => {
+      const updated = manager.updateMessage(sessionId, messageId, 'changed');
+      expect(updated).not.toBeNull();
+      expect(updated?.content).toBe('changed');
+    });
+
+    it('returns null when message does not exist', () => {
+      const updated = manager.updateMessage(sessionId, 'missing', 'changed');
+      expect(updated).toBeNull();
+    });
+  });
+
+  describe('deleteMessage', () => {
+    let sessionId: string;
+    let messageId: string;
+
+    beforeEach(() => {
+      const session = manager.createSession('/path');
+      sessionId = session.id;
+      const message = manager.addMessage(sessionId, 'user', 'to-delete');
+      messageId = message!.id;
+    });
+
+    it('deletes message by id', () => {
+      const deleted = manager.deleteMessage(sessionId, messageId);
+      expect(deleted).toBe(true);
+      expect(manager.getMessages(sessionId).length).toBe(0);
+    });
+
+    it('returns false when message does not exist', () => {
+      const deleted = manager.deleteMessage(sessionId, 'missing');
+      expect(deleted).toBe(false);
     });
   });
 

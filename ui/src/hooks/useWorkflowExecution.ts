@@ -24,6 +24,13 @@ import type {
 const CHAT_PANEL_TARGET = (import.meta.env.VITE_CHAT_PANEL_TARGET as string | undefined)?.trim() || 'chat-codex-gateway';
 const DEFAULT_CHAT_AGENT_ID = 'chat-codex';
 const MAX_INLINE_FILE_TEXT_CHARS = 12000;
+const SESSION_MESSAGES_FETCH_LIMIT = 0;
+const DEFAULT_CONTEXT_HISTORY_WINDOW_SIZE = 40;
+const parsedContextWindowSize = Number(import.meta.env.VITE_CONTEXT_HISTORY_WINDOW_SIZE ?? '');
+const CONTEXT_HISTORY_WINDOW_SIZE =
+  Number.isFinite(parsedContextWindowSize) && parsedContextWindowSize > 0
+    ? Math.floor(parsedContextWindowSize)
+    : DEFAULT_CONTEXT_HISTORY_WINDOW_SIZE;
 
 type KernelInputItem =
   | { type: 'text'; text: string }
@@ -78,6 +85,12 @@ interface RuntimeTokenUsage {
   estimated?: boolean;
 }
 
+interface AgentRunStatus {
+  phase: 'idle' | 'running' | 'error';
+  text: string;
+  updatedAt: string;
+}
+
 interface UseWorkflowExecutionReturn {
   workflow: WorkflowInfo | null;
   executionState: WorkflowExecutionState | null;
@@ -92,9 +105,17 @@ interface UseWorkflowExecutionReturn {
   pauseWorkflow: () => Promise<void>;
   resumeWorkflow: () => Promise<void>;
   sendUserInput: (input: UserInputPayload) => Promise<void>;
+  editRuntimeEvent: (eventId: string, content: string) => Promise<boolean>;
+  deleteRuntimeEvent: (eventId: string) => Promise<boolean>;
+  agentRunStatus: AgentRunStatus;
+  contextEditableEventIds: string[];
   getAgentDetail: (agentId: string) => AgentExecutionDetail | null;
   getTaskReport: () => TaskReport | null;
   isConnected: boolean;
+}
+
+function isPersistedSessionMessageId(id: string): boolean {
+  return id.startsWith('msg-');
 }
 
 function inferAgentType(agentId: string): AgentRuntime['type'] {
@@ -138,10 +159,10 @@ function pickWorkflowForSession(workflows: WorkflowInfo[], sessionId: string, pr
     .sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime())[0] ?? null;
 }
 
-function pushEvent(current: RuntimeEvent[], event: Omit<RuntimeEvent, 'id'>): RuntimeEvent[] {
+function pushEvent(current: RuntimeEvent[], event: Omit<RuntimeEvent, 'id'> & { id?: string }): RuntimeEvent[] {
   const entry: RuntimeEvent = {
     ...event,
-    id: `${event.timestamp}-${Math.random().toString(36).slice(2, 8)}`,
+    id: event.id ?? `${event.timestamp}-${Math.random().toString(36).slice(2, 8)}`,
   };
   return [...current.slice(-299), entry];
 }
@@ -451,6 +472,30 @@ function buildKernelInputItems(text: string, images: RuntimeImage[], files: Runt
   return items;
 }
 
+function buildGatewayHistory(
+  events: RuntimeEvent[],
+  maxItems: number,
+): Array<{ role: 'user' | 'assistant'; content: string }> {
+  return events
+    .filter((event) => event.role === 'user' || event.role === 'agent')
+    .map((event) => {
+      const role: 'user' | 'assistant' = event.role === 'user' ? 'user' : 'assistant';
+      return {
+        role,
+        content: event.content,
+      };
+    })
+    .filter((event) => event.content.trim().length > 0)
+    .slice(-maxItems);
+}
+
+function buildContextEditableEventIds(events: RuntimeEvent[], maxItems: number): string[] {
+  return events
+    .filter((event) => (event.role === 'user' || event.role === 'agent') && typeof event.id === 'string' && event.id.length > 0)
+    .slice(-maxItems)
+    .map((event) => event.id);
+}
+
 export function mapWsMessageToRuntimeEvent(msg: WsMessage, currentSessionId: string): Omit<RuntimeEvent, 'id'> | null {
   const payload = isRecord(msg.payload) ? msg.payload : {};
   const eventSessionId =
@@ -498,6 +543,7 @@ export function mapWsMessageToRuntimeEvent(msg: WsMessage, currentSessionId: str
           agentName: agentId || DEFAULT_CHAT_AGENT_ID,
           kind: 'action',
           toolName,
+          toolInput: payload.input,
           content: inputPreview
             ? `调用工具：${toolName}\n${inputPreview}`
             : `调用工具：${toolName}`,
@@ -805,36 +851,87 @@ export function useWorkflowExecution(sessionId: string): UseWorkflowExecutionRet
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [logs, setLogs] = useState<SessionLog[]>([]);
+  const [agentRunStatus, setAgentRunStatus] = useState<AgentRunStatus>({
+    phase: 'idle',
+    text: '已就绪',
+    updatedAt: new Date().toISOString(),
+  });
   const executionStateRef = useRef<WorkflowExecutionState | null>(null);
+  const runtimeEventsRef = useRef<RuntimeEvent[]>([]);
+  const activeTurnRef = useRef<{ wsToolEvents: number } | null>(null);
 
   useEffect(() => {
     executionStateRef.current = executionState;
   }, [executionState]);
 
-  const handleWebSocketMessage = useCallback((msg: WsMessage) => {
-    if (msg.type === 'workflow_update') {
-      const payload = msg.payload as WorkflowUpdatePayload;
+  useEffect(() => {
+    runtimeEventsRef.current = runtimeEvents;
+  }, [runtimeEvents]);
 
-      if (payload.taskUpdates && payload.taskUpdates.length > 0) {
-        setExecutionRounds(buildExecutionRoundsFromTasks(payload.taskUpdates, executionStateRef.current?.agents || []));
+  const handleWebSocketMessage = useCallback((msg: WsMessage) => {
+    const payload = isRecord(msg.payload) ? msg.payload : {};
+
+    if (msg.type === 'tool_call') {
+      if (activeTurnRef.current) {
+        activeTurnRef.current.wsToolEvents += 1;
+      }
+      const toolName = typeof payload.toolName === 'string' ? payload.toolName : 'unknown';
+      setAgentRunStatus({
+        phase: 'running',
+        text: `正在执行工具：${toolName}`,
+        updatedAt: new Date().toISOString(),
+      });
+    } else if (msg.type === 'tool_result') {
+      if (activeTurnRef.current) {
+        activeTurnRef.current.wsToolEvents += 1;
+      }
+      const toolName = typeof payload.toolName === 'string' ? payload.toolName : 'unknown';
+      setAgentRunStatus({
+        phase: 'running',
+        text: `工具完成：${toolName}，继续处理中...`,
+        updatedAt: new Date().toISOString(),
+      });
+    } else if (msg.type === 'tool_error') {
+      if (activeTurnRef.current) {
+        activeTurnRef.current.wsToolEvents += 1;
+      }
+      const toolName = typeof payload.toolName === 'string' ? payload.toolName : 'unknown';
+      setAgentRunStatus({
+        phase: 'error',
+        text: `工具失败：${toolName}`,
+        updatedAt: new Date().toISOString(),
+      });
+    } else if (msg.type === 'assistant_complete') {
+      setAgentRunStatus({
+        phase: 'idle',
+        text: '本轮已完成',
+        updatedAt: new Date().toISOString(),
+      });
+    }
+
+    if (msg.type === 'workflow_update') {
+      const workflowPayload = msg.payload as WorkflowUpdatePayload;
+
+      if (workflowPayload.taskUpdates && workflowPayload.taskUpdates.length > 0) {
+        setExecutionRounds(buildExecutionRoundsFromTasks(workflowPayload.taskUpdates));
       }
       setExecutionState((prev) => {
-        if (!prev || prev.workflowId !== payload.workflowId) return prev;
+        if (!prev || prev.workflowId !== workflowPayload.workflowId) return prev;
         return {
           ...prev,
-          status: payload.status,
-          orchestrator: payload.orchestratorState
+          status: workflowPayload.status,
+          orchestrator: workflowPayload.orchestratorState
             ? {
                 ...prev.orchestrator,
-                currentRound: payload.orchestratorState.round,
-                thought: payload.orchestratorState.thought,
+                currentRound: workflowPayload.orchestratorState.round,
+                thought: workflowPayload.orchestratorState.thought,
               }
             : prev.orchestrator,
-          tasks: payload.taskUpdates || prev.tasks,
-          agents: payload.agentUpdates || prev.agents,
-          executionPath: payload.executionPath || prev.executionPath,
-          userInput: payload.userInput || prev.userInput,
-          paused: payload.status === 'paused' ? true : payload.status === 'executing' ? false : prev.paused,
+          tasks: workflowPayload.taskUpdates || prev.tasks,
+          agents: workflowPayload.agentUpdates || prev.agents,
+          executionPath: workflowPayload.executionPath || prev.executionPath,
+          userInput: workflowPayload.userInput || prev.userInput,
+          paused: workflowPayload.status === 'paused' ? true : workflowPayload.status === 'executing' ? false : prev.paused,
         };
       });
       // workflow_update 只用于状态更新，不再生成会话面板占位消息
@@ -899,7 +996,7 @@ export function useWorkflowExecution(sessionId: string): UseWorkflowExecutionRet
 
   const loadSessionMessages = useCallback(async () => {
     try {
-      const response = await fetch(`/api/v1/sessions/${sessionId}/messages?limit=100`);
+      const response = await fetch(`/api/v1/sessions/${sessionId}/messages?limit=${SESSION_MESSAGES_FETCH_LIMIT}`);
       if (!response.ok) return;
 
       const payload = (await response.json()) as { success?: boolean; messages?: SessionApiMessage[] };
@@ -922,9 +1019,9 @@ export function useWorkflowExecution(sessionId: string): UseWorkflowExecutionRet
       content: string,
       images: RuntimeImage[] = [],
       files: RuntimeFile[] = [],
-    ): Promise<void> => {
+    ): Promise<SessionApiMessage | null> => {
       const attachments = toSessionAttachments(images, files);
-      await fetch(`/api/v1/sessions/${sessionId}/messages/append`, {
+      const response = await fetch(`/api/v1/sessions/${sessionId}/messages/append`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -933,13 +1030,39 @@ export function useWorkflowExecution(sessionId: string): UseWorkflowExecutionRet
           ...(attachments.length > 0 ? { attachments } : {}),
         }),
       });
+      if (!response.ok) return null;
+      const payload = (await response.json()) as { success?: boolean; message?: SessionApiMessage };
+      if (!payload.success || !payload.message) return null;
+      return payload.message;
     },
     [sessionId],
   );
 
+  const patchSessionMessage = useCallback(async (messageId: string, content: string): Promise<boolean> => {
+    const response = await fetch(`/api/v1/sessions/${sessionId}/messages/${encodeURIComponent(messageId)}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ content }),
+    });
+    return response.ok;
+  }, [sessionId]);
+
+  const removeSessionMessage = useCallback(async (messageId: string): Promise<boolean> => {
+    const response = await fetch(`/api/v1/sessions/${sessionId}/messages/${encodeURIComponent(messageId)}`, {
+      method: 'DELETE',
+    });
+    return response.ok;
+  }, [sessionId]);
+
   useEffect(() => {
     setRuntimeEvents([]);
     setUserRounds([]);
+    activeTurnRef.current = null;
+    setAgentRunStatus({
+      phase: 'idle',
+      text: '已就绪',
+      updatedAt: new Date().toISOString(),
+    });
     void loadSessionMessages();
   }, [loadSessionMessages]);
 
@@ -1075,7 +1198,7 @@ export function useWorkflowExecution(sessionId: string): UseWorkflowExecutionRet
       }));
 
       // 根据任务状态构建执行轮次并更新状态
-      const rounds = buildExecutionRoundsFromTasks(taskList, agentsWithAssignees);
+      const rounds = buildExecutionRoundsFromTasks(taskList);
       setExecutionRounds(rounds);
     } catch {
       // keep current UI state if polling fails
@@ -1213,20 +1336,20 @@ const sendUserInput = useCallback(
     const eventTime = new Date().toISOString();
     const roundId = `user-round-${Date.now()}`;
     const processingEventId = `processing-${Date.now()}`;
+    activeTurnRef.current = { wsToolEvents: 0 };
+    const pendingUserEvent: Omit<RuntimeEvent, 'id'> = {
+      role: 'user',
+      content: displayText,
+      images,
+      files,
+      timestamp: eventTime,
+      kind: 'status',
+      agentId: 'pending',
+      tokenUsage: estimateTokenUsage(displayText),
+    };
 
     // 1. 先本地插入 pending 状态的用户事件（立即可见）
-    setRuntimeEvents((prev) =>
-      pushEvent(prev, {
-       role: 'user',
-       content: displayText,
-       images,
-       files,
-       timestamp: eventTime,
-       kind: 'status',
-       agentId: 'pending',
-       tokenUsage: estimateTokenUsage(displayText),
-     }),
-   );
+    setRuntimeEvents((prev) => pushEvent(prev, pendingUserEvent));
 
     // 2. 同步更新用户轮次
     setUserRounds((prev) => [
@@ -1252,16 +1375,24 @@ const sendUserInput = useCallback(
         timestamp: new Date().toISOString(),
       }),
     );
+    setAgentRunStatus({
+      phase: 'running',
+      text: 'chat-codex 正在思考...',
+      updatedAt: new Date().toISOString(),
+    });
 
     // 3. 统一走 chat-codex gateway
     try {
-      const history = runtimeEvents
-        .filter((event) => event.role === 'user' || event.role === 'agent')
-        .slice(-20)
-        .map((event) => ({
-          role: event.role === 'user' ? 'user' : 'assistant',
-          content: event.content,
-        }));
+      const history = buildGatewayHistory(
+        [
+          ...runtimeEventsRef.current,
+          {
+            id: `${eventTime}-pending-local`,
+            ...pendingUserEvent,
+          },
+        ],
+        CONTEXT_HISTORY_WINDOW_SIZE,
+      );
 
       const res = await fetch('/api/v1/message', {
         method: 'POST',
@@ -1290,54 +1421,86 @@ const sendUserInput = useCallback(
         throw new Error(responseData?.error || 'Empty response from daemon');
       }
       const { reply, agentId, tokenUsage } = extractChatReply(responseData.result);
-      const toolTraceEvents = buildToolTraceEvents(extractToolTrace(responseData.result), agentId);
+      const shouldFallbackToolTrace = (activeTurnRef.current?.wsToolEvents ?? 0) === 0;
+      const toolTraceEvents = shouldFallbackToolTrace
+        ? buildToolTraceEvents(extractToolTrace(responseData.result), agentId)
+        : [];
+      let persistedUserMessage: SessionApiMessage | null = null;
+      let persistedAssistantMessage: SessionApiMessage | null = null;
 
       try {
-        await appendSessionMessage('user', displayText, images, files);
-        await appendSessionMessage('assistant', reply);
+        persistedUserMessage = await appendSessionMessage('user', displayText, images, files);
+        persistedAssistantMessage = await appendSessionMessage('assistant', reply);
       } catch {
         // keep conversation running even if session persistence fails
       }
 
-      setRuntimeEvents((prev) => {
-        const confirmed = prev
+      const assistantEvent: Omit<RuntimeEvent, 'id'> & { id?: string } = {
+        ...(persistedAssistantMessage?.id ? { id: persistedAssistantMessage.id } : {}),
+        role: 'agent',
+        agentId,
+        agentName: agentId,
+        content: reply,
+        timestamp: persistedAssistantMessage?.timestamp ?? new Date().toISOString(),
+        kind: 'observation',
+        tokenUsage,
+      };
+
+      setRuntimeEvents((prev) =>
+        prev
           .filter((e) => e.id !== processingEventId)
           .map((e) =>
-          e.role === 'user' && e.timestamp === eventTime
-            ? { ...e, agentId: 'confirmed' }
-            : e,
-        );
+            e.role === 'user' && e.timestamp === eventTime
+              ? {
+                  ...e,
+                  ...(persistedUserMessage?.id ? { id: persistedUserMessage.id } : {}),
+                  ...(persistedUserMessage?.timestamp ? { timestamp: persistedUserMessage.timestamp } : {}),
+                  agentId: 'confirmed',
+                }
+              : e,
+          ),
+      );
 
-        let next = confirmed;
-        for (const toolEvent of toolTraceEvents) {
-          next = pushEvent(next, toolEvent);
-        }
-
-        return pushEvent(next, {
-          role: 'agent',
-          agentId,
-          agentName: agentId,
-          content: reply,
-          timestamp: new Date().toISOString(),
-          kind: 'observation',
-          tokenUsage,
+      if (toolTraceEvents.length > 0) {
+        const stepDelayMs = 120;
+        toolTraceEvents.forEach((toolEvent, index) => {
+          setTimeout(() => {
+            setRuntimeEvents((prev) => pushEvent(prev, toolEvent));
+          }, index * stepDelayMs);
         });
-      });
+        setTimeout(() => {
+          setRuntimeEvents((prev) => pushEvent(prev, assistantEvent));
+        }, toolTraceEvents.length * stepDelayMs);
+      } else {
+        setRuntimeEvents((prev) => pushEvent(prev, assistantEvent));
+      }
 
       setExecutionState((prev) => (prev ? { ...prev, userInput: displayText } : prev));
+      activeTurnRef.current = null;
+      setAgentRunStatus({
+        phase: 'idle',
+        text: '本轮已完成',
+        updatedAt: new Date().toISOString(),
+      });
     } catch (err) {
       // 6. API 失败：更新事件为 error 并追加错误事件
       setRuntimeEvents((prev) =>
         prev
           .filter((e) => e.id !== processingEventId)
           .map((e) =>
-          e.role === 'user' && e.timestamp === eventTime
-            ? { ...e, agentId: 'error', kind: 'status', errorMessage: err instanceof Error ? err.message : '发送失败' }
-            : e
-        ),
+            e.role === 'user' && e.timestamp === eventTime
+              ? { ...e, agentId: 'error', kind: 'status', errorMessage: err instanceof Error ? err.message : '发送失败' }
+              : e,
+          ),
       );
 
       const errorMsg = err instanceof Error ? err.message : '发送失败';
+      activeTurnRef.current = null;
+      setAgentRunStatus({
+        phase: 'error',
+        text: `执行失败：${errorMsg}`,
+        updatedAt: new Date().toISOString(),
+      });
       setRuntimeEvents((prev) =>
         pushEvent(prev, {
           role: 'system',
@@ -1349,7 +1512,57 @@ const sendUserInput = useCallback(
       );
     }
   },
-  [appendSessionMessage, runtimeEvents, sessionId],
+  [appendSessionMessage, sessionId],
+);
+
+const editRuntimeEvent = useCallback(async (eventId: string, content: string): Promise<boolean> => {
+  const normalized = content.trim();
+  if (normalized.length === 0) {
+    return false;
+  }
+
+  const current = runtimeEventsRef.current.find((event) => event.id === eventId);
+  if (!current || (current.role !== 'user' && current.role !== 'agent')) {
+    return false;
+  }
+
+  const previousContent = current.content;
+  setRuntimeEvents((prev) => prev.map((event) => (event.id === eventId ? { ...event, content: normalized } : event)));
+
+  if (!isPersistedSessionMessageId(eventId)) {
+    return true;
+  }
+
+  const updated = await patchSessionMessage(eventId, normalized);
+  if (!updated) {
+    setRuntimeEvents((prev) => prev.map((event) => (event.id === eventId ? { ...event, content: previousContent } : event)));
+    return false;
+  }
+  return true;
+}, [patchSessionMessage]);
+
+const deleteRuntimeEvent = useCallback(async (eventId: string): Promise<boolean> => {
+  const current = runtimeEventsRef.current.find((event) => event.id === eventId);
+  if (!current || (current.role !== 'user' && current.role !== 'agent')) {
+    return false;
+  }
+
+  setRuntimeEvents((prev) => prev.filter((event) => event.id !== eventId));
+  if (!isPersistedSessionMessageId(eventId)) {
+    return true;
+  }
+
+  const deleted = await removeSessionMessage(eventId);
+  if (!deleted) {
+    setRuntimeEvents((prev) => pushEvent(prev, current));
+    return false;
+  }
+  return true;
+}, [removeSessionMessage]);
+
+const contextEditableEventIds = buildContextEditableEventIds(
+  runtimeEvents,
+  CONTEXT_HISTORY_WINDOW_SIZE,
 );
 
   const getAgentDetail = useCallback(
@@ -1435,6 +1648,10 @@ const sendUserInput = useCallback(
    pauseWorkflow,
    resumeWorkflow,
    sendUserInput,
+   editRuntimeEvent,
+   deleteRuntimeEvent,
+   agentRunStatus,
+   contextEditableEventIds,
    getAgentDetail,
    getTaskReport,
    isConnected,
@@ -1443,7 +1660,6 @@ const sendUserInput = useCallback(
 
 function buildExecutionRoundsFromTasks(
   tasks: TaskNode[],
-  _agents: AgentRuntime[],
 ): ExecutionRound[] {
   const roundMap = new Map<string, ExecutionRound>();
 

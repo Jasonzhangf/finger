@@ -22,4 +22,14 @@ describe('shell internal tool', () => {
     expect(result.ok).toBe(false);
     expect(result.exitCode).toBe(3);
   });
+
+  it('runs shell expression command array via shell', async () => {
+    const result = await shellExecTool.execute(
+      { command: ['cd . && echo shell_array_ok'] },
+      { invocationId: 'test-3', cwd: process.cwd(), timestamp: new Date().toISOString() },
+    );
+
+    expect(result.ok).toBe(true);
+    expect(result.stdout).toContain('shell_array_ok');
+  });
 });

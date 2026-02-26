@@ -51,6 +51,7 @@ export class KernelAgentBase {
   private readonly runner: KernelAgentRunner;
   private readonly sessionManager: MemorySessionManager;
   private readonly apiHistoryByThread = new Map<string, unknown[]>();
+  private readonly externalSessionBindings = new Map<string, string>();
   private initialized = false;
 
   constructor(
@@ -85,7 +86,7 @@ export class KernelAgentBase {
     await this.ensureInitialized();
 
     try {
-      const session = await this.resolveSession(input);
+      const { session, responseSessionId } = await this.resolveSession(input);
       await this.sessionManager.addMessage(session.id, {
         role: 'user',
         content: input.text,
@@ -109,6 +110,23 @@ export class KernelAgentBase {
       const runtimeMetadata: Record<string, unknown> = {
         ...(input.metadata ?? {}),
         kernelMode: threadMode,
+        contextLedgerEnabled: input.metadata?.contextLedgerEnabled !== false,
+        contextLedgerAgentId:
+          typeof input.metadata?.contextLedgerAgentId === 'string'
+            ? input.metadata.contextLedgerAgentId
+            : this.config.moduleId,
+        contextLedgerRole:
+          typeof input.metadata?.contextLedgerRole === 'string'
+            ? input.metadata.contextLedgerRole
+            : roleProfile?.id,
+        contextLedgerCanReadAll:
+          input.metadata?.contextLedgerCanReadAll === true || roleProfile?.id === 'orchestrator',
+        contextLedgerFocusMaxChars:
+          typeof input.metadata?.contextLedgerFocusMaxChars === 'number'
+            ? input.metadata.contextLedgerFocusMaxChars
+            : 20_000,
+        contextLedgerFocusEnabled:
+          input.metadata?.contextLedgerFocusEnabled !== false,
         ...(contextSlots
           ? {
               contextSlotIds: contextSlots.slotIds,
@@ -150,7 +168,7 @@ export class KernelAgentBase {
         response: reply,
         module: this.config.moduleId,
         provider: this.config.provider,
-        sessionId: session.id,
+        sessionId: responseSessionId,
         messageId: runResult.messageId ?? assistantMessage.id,
         latencyMs: Date.now() - startedAt,
         metadata: {
@@ -183,21 +201,35 @@ export class KernelAgentBase {
     this.initialized = true;
   }
 
-  private async resolveSession(input: UnifiedAgentInput): Promise<Session> {
+  private async resolveSession(input: UnifiedAgentInput): Promise<{ session: Session; responseSessionId: string }> {
     if (input.createNewSession || !input.sessionId) {
-      return this.sessionManager.createSession({
+      const created = await this.sessionManager.createSession({
         title: input.text.substring(0, 50) || '新对话',
         metadata: input.metadata,
       });
+      const responseSessionId = input.sessionId ?? created.id;
+      if (input.sessionId) {
+        this.externalSessionBindings.set(input.sessionId, created.id);
+      }
+      return { session: created, responseSessionId };
     }
 
-    const existing = await this.sessionManager.getSession(input.sessionId);
-    if (existing) return existing;
+    const externalSessionId = input.sessionId;
+    const mappedInternalSessionId = this.externalSessionBindings.get(externalSessionId) ?? externalSessionId;
+    const existing = await this.sessionManager.getSession(mappedInternalSessionId);
+    if (existing) {
+      if (mappedInternalSessionId !== externalSessionId) {
+        this.externalSessionBindings.set(externalSessionId, mappedInternalSessionId);
+      }
+      return { session: existing, responseSessionId: externalSessionId };
+    }
 
-    return this.sessionManager.createSession({
+    const created = await this.sessionManager.createSession({
       title: input.text.substring(0, 50) || '新对话',
       metadata: input.metadata,
     });
+    this.externalSessionBindings.set(externalSessionId, created.id);
+    return { session: created, responseSessionId: externalSessionId };
   }
 
   private resolveRoleProfile(roleProfileId?: string): UnifiedAgentRoleProfile | undefined {
