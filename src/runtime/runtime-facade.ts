@@ -4,6 +4,8 @@
  */
 
 import type { WebSocket } from 'ws';
+import path from 'path';
+import { homedir } from 'os';
 import { UnifiedEventBus } from './event-bus.js';
 import { ToolRegistry } from './tool-registry.js';
 import type { RuntimeEvent, Attachment } from './events.js';
@@ -52,11 +54,51 @@ export interface ISessionManager {
   isPaused?(sessionId: string): boolean;
 }
 
+export interface AgentProviderRuntimeConfig {
+  type: string;
+  model?: string;
+  options?: Record<string, unknown>;
+}
+
+export interface AgentSessionRuntimeConfig {
+  bindingScope?: 'finger' | 'finger+agent';
+  resume?: boolean;
+  provider?: string;
+  agentId?: string;
+  mapPath?: string;
+}
+
+export interface AgentIflowGovernanceRuntimeConfig {
+  allowedTools?: string[];
+  disallowedTools?: string[];
+  approvalMode?: 'default' | 'autoEdit' | 'yolo' | 'plan';
+  injectCapabilities?: boolean;
+  capabilityIds?: string[];
+  commandNamespace?: string;
+}
+
+export interface AgentGovernanceRuntimeConfig {
+  iflow?: AgentIflowGovernanceRuntimeConfig;
+}
+
+export interface AgentRuntimeConfig {
+  id: string;
+  name?: string;
+  role?: string;
+  provider?: AgentProviderRuntimeConfig;
+  session?: AgentSessionRuntimeConfig;
+  governance?: AgentGovernanceRuntimeConfig;
+  model?: Record<string, unknown>;
+  runtime?: Record<string, unknown>;
+  metadata?: Record<string, unknown>;
+}
+
 export class RuntimeFacade {
   private currentSessionId: string | null = null;
   private readonly toolAccessControl = new AgentToolAccessControl();
   private readonly toolAuthorization = new ToolAuthorizationManager();
   private roleToolPolicyPresets: RoleToolPolicyPresetMap = {};
+  private readonly agentRuntimeConfigs = new Map<string, AgentRuntimeConfig>();
 
   constructor(
     private eventBus: UnifiedEventBus,
@@ -79,6 +121,7 @@ export class RuntimeFacade {
     const result = this.sessionManager.createSession(projectPath, name);
     const session = result instanceof Promise ? await result : result;
     this.currentSessionId = session.id;
+    this.eventBus.enablePersistence(session.id, path.join(homedir(), '.finger', 'events'));
 
     this.eventBus.emit({
       type: 'session_created',
@@ -115,6 +158,7 @@ export class RuntimeFacade {
     const result = this.sessionManager.setCurrentSession(sessionId);
     if (result) {
       this.currentSessionId = sessionId;
+      this.eventBus.enablePersistence(sessionId, path.join(homedir(), '.finger', 'events'));
     }
     return result;
   }
@@ -281,6 +325,10 @@ export class RuntimeFacade {
         payload: { output: result, duration },
       });
 
+      if (toolName === 'view_image') {
+        this.appendViewImageAttachmentEvent(sessionId, result);
+      }
+
       return result;
     } catch (error) {
       const duration = Date.now() - startTime;
@@ -298,6 +346,51 @@ export class RuntimeFacade {
 
       throw error;
     }
+  }
+
+  private appendViewImageAttachmentEvent(sessionId: string, toolResult: unknown): void {
+    const session = this.sessionManager.getSession(sessionId);
+    if (!session) return;
+
+    const attachment = this.extractViewImageAttachment(toolResult);
+    if (!attachment) return;
+
+    const content = `[view_image] ${attachment.name}`;
+    const message = this.sessionManager.addMessage(sessionId, 'user', content, {
+      attachments: [attachment],
+    });
+    if (!message) return;
+
+    this.eventBus.emit({
+      type: 'user_message',
+      sessionId,
+      timestamp: message.timestamp,
+      payload: {
+        messageId: message.id,
+        content,
+        attachments: [attachment],
+      },
+    });
+  }
+
+  private extractViewImageAttachment(toolResult: unknown): Attachment | null {
+    if (!isRecord(toolResult)) return null;
+    if (toolResult.ok !== true) return null;
+    if (typeof toolResult.path !== 'string' || toolResult.path.trim().length === 0) return null;
+    if (typeof toolResult.mimeType !== 'string' || !toolResult.mimeType.startsWith('image/')) return null;
+
+    const fullPath = toolResult.path.trim();
+    const fileName = path.basename(fullPath);
+    const attachment: Attachment = {
+      id: `view-image-${Date.now()}`,
+      name: fileName.length > 0 ? fileName : fullPath,
+      type: 'image',
+      url: fullPath,
+    };
+    if (typeof toolResult.sizeBytes === 'number' && Number.isFinite(toolResult.sizeBytes)) {
+      attachment.size = Math.max(0, Math.floor(toolResult.sizeBytes));
+    }
+    return attachment;
   }
 
   /**
@@ -387,6 +480,40 @@ export class RuntimeFacade {
    */
   clearAgentToolPolicy(agentId: string): void {
     this.toolAccessControl.clear(agentId);
+  }
+
+  /**
+   * 设置 agent 运行时配置（provider/session/governance）
+   */
+  setAgentRuntimeConfig(agentId: string, config: AgentRuntimeConfig): AgentRuntimeConfig {
+    const normalized: AgentRuntimeConfig = {
+      ...config,
+      id: agentId,
+    };
+    this.agentRuntimeConfigs.set(agentId, normalized);
+    return normalized;
+  }
+
+  /**
+   * 读取 agent 运行时配置
+   */
+  getAgentRuntimeConfig(agentId: string): AgentRuntimeConfig | null {
+    return this.agentRuntimeConfigs.get(agentId) ?? null;
+  }
+
+  /**
+   * 清空 agent 运行时配置
+   */
+  clearAgentRuntimeConfig(agentId: string): void {
+    this.agentRuntimeConfigs.delete(agentId);
+  }
+
+  /**
+   * 列出所有 agent 运行时配置
+   */
+  listAgentRuntimeConfigs(): AgentRuntimeConfig[] {
+    return Array.from(this.agentRuntimeConfigs.values())
+      .sort((a, b) => a.id.localeCompare(b.id));
   }
 
   /**
@@ -593,4 +720,8 @@ export class RuntimeFacade {
     }
     return this.eventBus.getHistory(limit);
   }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null;
 }

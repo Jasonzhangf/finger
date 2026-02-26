@@ -1,6 +1,7 @@
 import React, { useMemo, useEffect, useState } from 'react';
 import { PerformanceCard } from '../PerformanceCard/PerformanceCard.js';
 import { ChatInterface } from '../ChatInterface/ChatInterface.js';
+import type { InputCapability } from '../ChatInterface/ChatInterface.js';
 import { AppLayout } from '../layout/AppLayout.js';
 import { LeftSidebar } from '../LeftSidebar/LeftSidebar.js';
 import { BottomPanel } from '../BottomPanel/BottomPanel.js';
@@ -19,8 +20,51 @@ interface ResumeCheckResult {
   progress: number;
 }
 
+const CHAT_GATEWAY_ID = 'chat-codex-gateway';
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null;
+}
+
+function parseInputCapability(value: unknown): InputCapability | null {
+  if (!isRecord(value)) return null;
+  if (typeof value.acceptText !== 'boolean') return null;
+  if (typeof value.acceptImages !== 'boolean') return null;
+  if (typeof value.acceptFiles !== 'boolean') return null;
+  const prefixes = Array.isArray(value.acceptedFileMimePrefixes)
+    ? value.acceptedFileMimePrefixes.filter((item): item is string => typeof item === 'string' && item.length > 0)
+    : undefined;
+  return {
+    acceptText: value.acceptText,
+    acceptImages: value.acceptImages,
+    acceptFiles: value.acceptFiles,
+    ...(prefixes && prefixes.length > 0 ? { acceptedFileMimePrefixes: prefixes } : {}),
+  };
+}
+
+function resolveChatInputCapability(modules: Array<{ id: string; metadata?: Record<string, unknown> }>): InputCapability {
+  const module = modules.find((item) => item.id === CHAT_GATEWAY_ID);
+  const parsed = parseInputCapability(module?.metadata?.inputCapability);
+  if (parsed) return parsed;
+  return {
+    acceptText: true,
+    acceptImages: true,
+    acceptFiles: false,
+    acceptedFileMimePrefixes: ['image/'],
+  };
+}
+
 export const WorkflowContainer: React.FC = () => {
-  const { currentSession, sessions } = useSessions();
+  const {
+    currentSession,
+    sessions,
+    isLoading: isLoadingSessions,
+    error: sessionError,
+    create: createSession,
+    remove: removeSession,
+    rename: renameSession,
+    switchSession,
+  } = useSessions();
   const { checkForResumeableSession } = useSessionResume();
   const [showResumeDialog, setShowResumeDialog] = useState(false);
   const [resumeTarget, setResumeTarget] = useState<ResumeCheckResult | null>(null);
@@ -87,6 +131,10 @@ export const WorkflowContainer: React.FC = () => {
   } = useWorkflowExecution(sessionId);
 
   const { agents: agentModules } = useAgents();
+  const chatInputCapability = useMemo(
+    () => resolveChatInputCapability(agentModules),
+    [agentModules],
+  );
 
   // All hooks must be called before any conditional returns
   const runtimeAgents = React.useMemo(() => {
@@ -145,11 +193,12 @@ export const WorkflowContainer: React.FC = () => {
       onResume={resumeWorkflow}
       isPaused={executionState?.paused || false}
       isConnected={isConnected}
+      inputCapability={chatInputCapability}
     />
-  ), [executionState, runtimeAgents, runtimeEvents, sendUserInput, pauseWorkflow, resumeWorkflow, isConnected]);
+  ), [executionState, runtimeAgents, runtimeEvents, sendUserInput, pauseWorkflow, resumeWorkflow, isConnected, chatInputCapability]);
 
   // Use overlay instead of early return to maintain hook consistency
-  const loadingOverlay = isLoading ? (
+  const loadingOverlay = isLoading || isLoadingSessions ? (
     <div style={{ position: 'fixed', inset: 0, zIndex: 9999, display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#0e1217', color: '#9ca3af' }}>
       <div>
         <div style={{ fontSize: '24px', marginBottom: '16px' }}>⏳</div>
@@ -158,11 +207,11 @@ export const WorkflowContainer: React.FC = () => {
     </div>
   ) : null;
 
-  const errorOverlay = error ? (
+  const errorOverlay = error || sessionError ? (
     <div style={{ position: 'fixed', inset: 0, zIndex: 9998, display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#0e1217', color: '#ef4444' }}>
       <div>
         <div style={{ fontSize: '24px', marginBottom: '16px' }}>❌</div>
-        <div>Error: {error}</div>
+        <div>Error: {error || sessionError}</div>
       </div>
     </div>
   ) : null;
@@ -172,7 +221,17 @@ export const WorkflowContainer: React.FC = () => {
       {loadingOverlay}
       {errorOverlay}
       <AppLayout
-        leftSidebar={<LeftSidebar />}
+        leftSidebar={
+          <LeftSidebar
+            sessions={sessions}
+            currentSession={currentSession}
+            isLoadingSessions={isLoadingSessions}
+            onCreateSession={createSession}
+            onDeleteSession={removeSession}
+            onRenameSession={renameSession}
+            onSwitchSession={switchSession}
+          />
+        }
         canvas={canvasElement}
         rightPanel={rightPanelElement}
         bottomPanel={<BottomPanel />}

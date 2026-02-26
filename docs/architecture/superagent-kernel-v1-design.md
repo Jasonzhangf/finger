@@ -1,5 +1,7 @@
 # SuperAgent Kernel V1 设计（Rust Kernel + TS Orchestration）
 
+> 会话控制平面与能力治理细化设计见：`docs/design/superagent-session-governance-v1.md`
+
 ## 1. 目标与边界
 
 ### 1.1 目标

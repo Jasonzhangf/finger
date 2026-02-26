@@ -88,9 +88,11 @@ vi.mock('../../hooks/useSessions.js', () => ({
     sessions: [],
     currentSession: null,
     isLoading: false,
-    createSession: vi.fn(),
-    selectSession: vi.fn(),
-    deleteSession: vi.fn(),
+    error: null,
+    create: vi.fn(),
+    remove: vi.fn(),
+    rename: vi.fn(),
+    switchSession: vi.fn(),
   }),
 }));
 

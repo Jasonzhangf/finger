@@ -36,6 +36,7 @@ export interface SessionMessage {
 
 export class SessionManager {
   private sessions: Map<string, Session> = new Map();
+  private sessionFilePaths: Map<string, string> = new Map();
   private currentSessionId: string | null = null;
   private readonly COMPRESS_THRESHOLD = 50;
 
@@ -53,21 +54,61 @@ export class SessionManager {
     }
   }
 
-  private getSessionPath(sessionId: string): string {
-    return path.join(SESSIONS_DIR, `${sessionId}.json`);
+  private getProjectDirName(projectPath: string): string {
+    const normalizedPath = path.resolve(projectPath).replace(/\\/g, '/');
+    const encoded = normalizedPath.replace(/[/:]/g, '_');
+    return encoded.length > 0 ? encoded : '_';
+  }
+
+  private getProjectSessionsDir(projectPath: string): string {
+    return path.join(SESSIONS_DIR, this.getProjectDirName(projectPath));
+  }
+
+  private getSessionPath(session: Session): string {
+    return path.join(this.getProjectSessionsDir(session.projectPath), `${session.id}.json`);
+  }
+
+  private loadSessionFile(filePath: string): void {
+    const content = fs.readFileSync(filePath, 'utf-8');
+    const session = JSON.parse(content) as Session;
+    if (!session.id || !session.projectPath) {
+      throw new Error('Invalid session content');
+    }
+    session.projectPath = path.resolve(session.projectPath);
+    this.sessions.set(session.id, session);
+    this.sessionFilePaths.set(session.id, filePath);
+  }
+
+  private loadSessionsFromDir(dirPath: string): void {
+    const entries = fs.readdirSync(dirPath, { withFileTypes: true });
+    for (const entry of entries) {
+      if (!entry.isFile() || !entry.name.endsWith('.json')) continue;
+      const filePath = path.join(dirPath, entry.name);
+      try {
+        this.loadSessionFile(filePath);
+      } catch (err) {
+        console.error(`[SessionManager] Failed to load session ${filePath}:`, err);
+      }
+    }
   }
 
   private loadSessions(): void {
     if (!fs.existsSync(SESSIONS_DIR)) return;
 
-    const files = fs.readdirSync(SESSIONS_DIR).filter(f => f.endsWith('.json'));
-    for (const file of files) {
-      try {
-        const content = fs.readFileSync(path.join(SESSIONS_DIR, file), 'utf-8');
-        const session = JSON.parse(content) as Session;
-        this.sessions.set(session.id, session);
-      } catch (err) {
-        console.error(`[SessionManager] Failed to load session ${file}:`, err);
+    const entries = fs.readdirSync(SESSIONS_DIR, { withFileTypes: true });
+    for (const entry of entries) {
+      if (entry.isDirectory()) {
+        this.loadSessionsFromDir(path.join(SESSIONS_DIR, entry.name));
+        continue;
+      }
+      // Backward compatibility: load legacy flat session files.
+      if (entry.isFile() && entry.name.endsWith('.json')) {
+        const legacyFilePath = path.join(SESSIONS_DIR, entry.name);
+        try {
+          this.loadSessionFile(legacyFilePath);
+        } catch (err) {
+          console.error(`[SessionManager] Failed to load legacy session ${legacyFilePath}:`, err);
+        }
       }
     }
 
@@ -83,8 +124,19 @@ export class SessionManager {
 
   private saveSession(session: Session): void {
     session.updatedAt = new Date().toISOString();
-    const filePath = this.getSessionPath(session.id);
+    const sessionDir = this.getProjectSessionsDir(session.projectPath);
+    if (!fs.existsSync(sessionDir)) {
+      fs.mkdirSync(sessionDir, { recursive: true });
+    }
+
+    const filePath = this.getSessionPath(session);
     fs.writeFileSync(filePath, JSON.stringify(session, null, 2));
+
+    const previousPath = this.sessionFilePaths.get(session.id);
+    if (previousPath && previousPath !== filePath && fs.existsSync(previousPath)) {
+      fs.unlinkSync(previousPath);
+    }
+    this.sessionFilePaths.set(session.id, filePath);
   }
 
   createSession(projectPath: string, name?: string): Session {
@@ -137,6 +189,14 @@ export class SessionManager {
   listSessions(): Session[] {
     return Array.from(this.sessions.values()).sort(
       (a, b) => new Date(b.lastAccessedAt).getTime() - new Date(a.lastAccessedAt).getTime()
+    );
+  }
+
+  findSessionsByProjectPath(projectPath: string): Session[] {
+    const normalized = path.resolve(projectPath);
+    const prefix = normalized.endsWith(path.sep) ? normalized : `${normalized}${path.sep}`;
+    return this.listSessions().filter(
+      (session) => session.projectPath === normalized || session.projectPath.startsWith(prefix),
     );
   }
 
@@ -293,18 +353,42 @@ export class SessionManager {
   }
 
   deleteSession(sessionId: string): boolean {
-    if (!this.sessions.has(sessionId)) return false;
-    
-    const filePath = this.getSessionPath(sessionId);
-    if (fs.existsSync(filePath)) {
+    const session = this.sessions.get(sessionId);
+    if (!session) return false;
+
+    const candidatePaths = new Set<string>();
+    const trackedPath = this.sessionFilePaths.get(sessionId);
+    if (trackedPath) candidatePaths.add(trackedPath);
+    candidatePaths.add(this.getSessionPath(session));
+
+    for (const filePath of candidatePaths) {
+      if (!fs.existsSync(filePath)) continue;
       fs.unlinkSync(filePath);
+      const parentDir = path.dirname(filePath);
+      if (parentDir !== SESSIONS_DIR && fs.existsSync(parentDir) && fs.readdirSync(parentDir).length === 0) {
+        fs.rmdirSync(parentDir);
+      }
     }
-    
+
     this.sessions.delete(sessionId);
+    this.sessionFilePaths.delete(sessionId);
     if (this.currentSessionId === sessionId) {
       const remaining = this.listSessions();
       this.currentSessionId = remaining.length > 0 ? remaining[0].id : null;
     }
     return true;
+  }
+
+  renameSession(sessionId: string, nextName: string): Session | null {
+    const session = this.sessions.get(sessionId);
+    if (!session) return null;
+    const normalized = nextName.trim();
+    if (!normalized) {
+      throw new Error('Session name cannot be empty');
+    }
+    session.name = normalized;
+    session.lastAccessedAt = new Date().toISOString();
+    this.saveSession(session);
+    return session;
   }
 }

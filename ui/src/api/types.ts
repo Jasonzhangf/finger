@@ -468,7 +468,20 @@ export interface RuntimeEvent {
   agentId?: string;
   agentName?: string;
   kind?: 'thought' | 'action' | 'observation' | 'status';
+  toolName?: string;
+  toolDurationMs?: number;
+  planSteps?: RuntimePlanStep[];
+  planExplanation?: string;
+  planUpdatedAt?: string;
   images?: RuntimeImage[];
+  files?: RuntimeFile[];
+  tokenUsage?: {
+    inputTokens?: number;
+    outputTokens?: number;
+    totalTokens?: number;
+    estimated?: boolean;
+  };
+  errorMessage?: string;
   fsmState?: WorkflowFSMState | TaskFSMState | AgentFSMState; // 新增：FSM 状态
 }
 
@@ -476,6 +489,25 @@ export interface RuntimeImage {
   id: string;
   name: string;
   url: string;
+  dataUrl?: string;
+  mimeType?: string;
+  size?: number;
+}
+
+export interface RuntimeFile {
+  id: string;
+  name: string;
+  mimeType: string;
+  size: number;
+  dataUrl?: string;
+  textContent?: string;
+}
+
+export type RuntimePlanStepStatus = 'pending' | 'in_progress' | 'completed';
+
+export interface RuntimePlanStep {
+  step: string;
+  status: RuntimePlanStepStatus;
 }
 
 export interface UserRound {
@@ -484,11 +516,13 @@ export interface UserRound {
   summary: string;
   fullText: string;
   images?: RuntimeImage[];
+  files?: RuntimeFile[];
 }
 
 export interface UserInputPayload {
   text: string;
   images?: RuntimeImage[];
+  files?: RuntimeFile[];
 }
 
 export interface WorkflowUpdatePayload {

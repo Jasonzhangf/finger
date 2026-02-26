@@ -343,6 +343,33 @@
   word-break: break-word;
 }
 
+.tool-event-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  border: 1px solid #334155;
+  border-radius: 999px;
+  padding: 2px 10px;
+  margin-bottom: 8px;
+  font-size: 11px;
+}
+
+.tool-event-chip.action {
+  border-color: #1d4ed8;
+  color: #bfdbfe;
+  background: #0c243f;
+}
+
+.tool-event-chip.observation {
+  border-color: #166534;
+  color: #86efac;
+  background: #052e1c;
+}
+
+.tool-event-label {
+  font-weight: 600;
+}
+
 .message-images {
   display: flex;
   flex-wrap: wrap;
@@ -456,8 +483,8 @@
 
 .textarea-wrapper textarea {
   width: 100%;
-  min-height: 40px;
-  max-height: 200px;
+  min-height: 88px;
+  max-height: 240px;
   padding: 10px 14px;
   border-radius: 8px;
   border: 1px solid #374151;

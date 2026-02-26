@@ -7,3 +7,4 @@ export * from './tool-authorization.js';
 export * from './agent-json-config.js';
 export * from './runtime-facade.js';
 export * from './default-tools.js';
+export * from './session-control-plane.js';

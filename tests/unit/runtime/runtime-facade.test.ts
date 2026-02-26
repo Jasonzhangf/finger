@@ -188,6 +188,53 @@ describe('RuntimeFacade', () => {
       expect(callHandler).toHaveBeenCalled();
       expect(resultHandler).toHaveBeenCalled();
     });
+    it('should append view_image result to session messages and emit user_message', async () => {
+      const session = createMockSession('session-1', '/project/path');
+      vi.mocked(mockSessionManager.getSession).mockReturnValue(session);
+      vi.mocked(mockSessionManager.setCurrentSession).mockReturnValue(true);
+      vi.mocked(mockSessionManager.addMessage).mockReturnValue({
+        id: 'image-msg-1',
+        timestamp: new Date().toISOString(),
+      });
+
+      toolRegistry.register({
+        name: 'view_image',
+        description: 'View image',
+        inputSchema: {},
+        policy: 'allow',
+        handler: vi.fn().mockResolvedValue({
+          ok: true,
+          path: '/tmp/demo.png',
+          mimeType: 'image/png',
+          sizeBytes: 123,
+        }),
+      });
+      facade.grantToolToAgent('agent-1', 'view_image');
+      facade.setCurrentSession('session-1');
+
+      const messageHandler = vi.fn();
+      eventBus.subscribe('user_message', messageHandler);
+
+      await facade.callTool('agent-1', 'view_image', { path: '/tmp/demo.png' });
+
+      expect(mockSessionManager.addMessage).toHaveBeenCalledWith(
+        'session-1',
+        'user',
+        '[view_image] demo.png',
+        {
+          attachments: [
+            {
+              id: expect.stringContaining('view-image-'),
+              name: 'demo.png',
+              type: 'image',
+              url: '/tmp/demo.png',
+              size: 123,
+            },
+          ],
+        },
+      );
+      expect(messageHandler).toHaveBeenCalled();
+    });
     it('should emit tool_error on failure', async () => {
       const errorHandler = vi.fn();
       toolRegistry.register({

@@ -23,6 +23,26 @@ describe('agent json config', () => {
       {
         id: 'reviewer-1',
         role: 'reviewer',
+        provider: {
+          type: 'iflow',
+          model: 'gpt-5.3-codex',
+        },
+        session: {
+          bindingScope: 'finger+agent',
+          resume: true,
+          provider: 'iflow',
+          agentId: 'reviewer',
+        },
+        governance: {
+          iflow: {
+            allowedTools: ['read_file'],
+            disallowedTools: ['network'],
+            approvalMode: 'default',
+            injectCapabilities: true,
+            capabilityIds: ['bd'],
+            commandNamespace: 'cap_',
+          },
+        },
         tools: {
           whitelist: ['file.read'],
           blacklist: ['file.write'],
@@ -33,6 +53,9 @@ describe('agent json config', () => {
     );
     expect(parsed.id).toBe('reviewer-1');
     expect(parsed.tools?.whitelist).toEqual(['file.read']);
+    expect(parsed.provider?.type).toBe('iflow');
+    expect(parsed.session?.bindingScope).toBe('finger+agent');
+    expect(parsed.governance?.iflow?.approvalMode).toBe('default');
   });
 
   it('loads *.agent.json and */agent.json from directory', () => {
@@ -62,16 +85,41 @@ describe('agent json config', () => {
   it('applies agent tool policies to runtime facade', () => {
     const runtime = {
       clearAgentToolPolicy: vi.fn(),
+      clearAgentRuntimeConfig: vi.fn(),
       applyAgentRoleToolPolicy: vi.fn(),
       setAgentToolWhitelist: vi.fn(),
       setAgentToolBlacklist: vi.fn(),
       setToolAuthorizationRequired: vi.fn(),
+      setAgentRuntimeConfig: vi.fn(),
     };
 
     applyAgentJsonConfigs(runtime as unknown as RuntimeFacade, [
       {
         id: 'reviewer-1',
         role: 'reviewer',
+        provider: {
+          type: 'iflow',
+          model: 'gpt-5.3-codex',
+        },
+        session: {
+          bindingScope: 'finger+agent',
+          resume: true,
+          provider: 'iflow',
+          agentId: 'reviewer',
+        },
+        governance: {
+          iflow: {
+            allowedTools: ['read_file'],
+            disallowedTools: ['network'],
+            approvalMode: 'default',
+            injectCapabilities: true,
+            capabilityIds: ['bd'],
+            commandNamespace: 'cap_',
+          },
+        },
+        runtime: {
+          maxTurns: 8,
+        },
         tools: {
           whitelist: ['file.read'],
           blacklist: ['file.write'],
@@ -81,9 +129,30 @@ describe('agent json config', () => {
     ]);
 
     expect(runtime.clearAgentToolPolicy).toHaveBeenCalledWith('reviewer-1');
+    expect(runtime.clearAgentRuntimeConfig).toHaveBeenCalledWith('reviewer-1');
     expect(runtime.applyAgentRoleToolPolicy).toHaveBeenCalledWith('reviewer-1', 'reviewer');
     expect(runtime.setAgentToolWhitelist).toHaveBeenCalledWith('reviewer-1', ['file.read']);
     expect(runtime.setAgentToolBlacklist).toHaveBeenCalledWith('reviewer-1', ['file.write']);
     expect(runtime.setToolAuthorizationRequired).toHaveBeenCalledWith('shell.exec', true);
+    expect(runtime.setAgentRuntimeConfig).toHaveBeenCalledWith(
+      'reviewer-1',
+      expect.objectContaining({
+        id: 'reviewer-1',
+        role: 'reviewer',
+        provider: {
+          type: 'iflow',
+          model: 'gpt-5.3-codex',
+        },
+        session: {
+          bindingScope: 'finger+agent',
+          resume: true,
+          provider: 'iflow',
+          agentId: 'reviewer',
+        },
+        runtime: {
+          maxTurns: 8,
+        },
+      }),
+    );
   });
 });

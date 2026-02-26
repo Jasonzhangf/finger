@@ -67,6 +67,10 @@ export async function getSession(sessionId: string): Promise<SessionInfo> {
   return fetchApi<SessionInfo>(`/sessions/${sessionId}`);
 }
 
+export async function getCurrentSession(): Promise<SessionInfo> {
+  return fetchApi<SessionInfo>('/sessions/current');
+}
+
 export async function createSession(projectPath: string, name?: string): Promise<SessionInfo> {
   return fetchApi<SessionInfo>('/sessions', {
     method: 'POST',
@@ -76,11 +80,23 @@ export async function createSession(projectPath: string, name?: string): Promise
 }
 
 export async function setCurrentSession(sessionId: string): Promise<void> {
-  await fetchApi<void>(`/sessions/${sessionId}/current`, { method: 'POST' });
+  await fetchApi<void>('/sessions/current', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ sessionId }),
+  });
 }
 
 export async function deleteSession(sessionId: string): Promise<void> {
   await fetchApi<void>(`/sessions/${sessionId}`, { method: 'DELETE' });
+}
+
+export async function renameSession(sessionId: string, name: string): Promise<SessionInfo> {
+  return fetchApi<SessionInfo>(`/sessions/${sessionId}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name }),
+  });
 }
 
 // Workflows

@@ -4,7 +4,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 use finger_kernel_protocol::{
     ErrorEvent, Event, EventMsg, InputItem, Op, SessionConfiguredEvent, Submission, TaskCompleteEvent,
-    TaskStartedEvent, TurnAbortReason, TurnAbortedEvent,
+    TaskStartedEvent, TurnAbortReason, TurnAbortedEvent, UserTurnOptions,
 };
 use thiserror::Error;
 use tokio::sync::mpsc;
@@ -30,23 +30,32 @@ impl Default for KernelConfig {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct TurnRunResult {
     pub last_agent_message: Option<String>,
+    pub metadata_json: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct TurnRequest {
+    pub items: Vec<InputItem>,
+    pub options: UserTurnOptions,
 }
 
 #[async_trait]
 pub trait ChatEngine: Send + Sync {
-    async fn run_turn(&self, items: &[InputItem]) -> Result<TurnRunResult, String>;
+    async fn run_turn(&self, request: &TurnRequest) -> Result<TurnRunResult, String>;
 }
 
 pub struct EchoChatEngine;
 
 #[async_trait]
 impl ChatEngine for EchoChatEngine {
-    async fn run_turn(&self, items: &[InputItem]) -> Result<TurnRunResult, String> {
-        let last = items.iter().rev().find_map(|item| match item {
+    async fn run_turn(&self, request: &TurnRequest) -> Result<TurnRunResult, String> {
+        let last = request.items.iter().rev().find_map(|item| match item {
             InputItem::Text { text } => Some(text.clone()),
+            InputItem::Image { .. } | InputItem::LocalImage { .. } => None,
         });
         Ok(TurnRunResult {
             last_agent_message: last,
+            metadata_json: None,
         })
     }
 }
@@ -67,7 +76,7 @@ pub struct KernelRuntime {
 
 struct RunningTask {
     sub_id: String,
-    input_tx: mpsc::Sender<Vec<InputItem>>,
+    input_tx: mpsc::Sender<TurnRequest>,
     handle: JoinHandle<()>,
 }
 
@@ -135,19 +144,20 @@ async fn submission_loop(
         }
 
         match submission.op {
-            Op::UserTurn { mut items } => {
+            Op::UserTurn { items, options } => {
+                let mut request = TurnRequest { items, options };
                 if let Some(task) = running_task.as_ref() {
-                    match task.input_tx.send(items).await {
+                    match task.input_tx.send(request).await {
                         Ok(()) => continue,
                         Err(send_error) => {
-                            items = send_error.0;
+                            request = send_error.0;
                         }
                     }
                 }
 
                 let task = spawn_task(
                     submission.id,
-                    items,
+                    request,
                     config.task_idle_timeout,
                     event_tx.clone(),
                     Arc::clone(&chat_engine),
@@ -212,12 +222,12 @@ async fn submission_loop(
 
 fn spawn_task(
     sub_id: String,
-    initial_items: Vec<InputItem>,
+    initial_request: TurnRequest,
     task_idle_timeout: Duration,
     event_tx: mpsc::Sender<Event>,
     chat_engine: Arc<dyn ChatEngine>,
 ) -> RunningTask {
-    let (input_tx, mut input_rx) = mpsc::channel::<Vec<InputItem>>(32);
+    let (input_tx, mut input_rx) = mpsc::channel::<TurnRequest>(32);
     let task_sub_id = sub_id.clone();
 
     let handle = tokio::spawn(async move {
@@ -232,15 +242,19 @@ fn spawn_task(
         )
         .await;
 
-        let mut pending = initial_items;
+        let mut pending = initial_request;
         let mut last_agent_message: Option<String> = None;
+        let mut last_metadata_json: Option<String> = None;
 
         loop {
-            if !pending.is_empty() {
+            if !pending.items.is_empty() {
                 match chat_engine.run_turn(&pending).await {
                     Ok(turn_result) => {
                         if turn_result.last_agent_message.is_some() {
                             last_agent_message = turn_result.last_agent_message;
+                        }
+                        if turn_result.metadata_json.is_some() {
+                            last_metadata_json = turn_result.metadata_json;
                         }
                     }
                     Err(err) => {
@@ -257,12 +271,12 @@ fn spawn_task(
                         break;
                     }
                 }
-                pending.clear();
+                pending.items.clear();
             }
 
             match tokio::time::timeout(task_idle_timeout, input_rx.recv()).await {
-                Ok(Some(items)) => {
-                    pending = items;
+                Ok(Some(request)) => {
+                    pending = request;
                 }
                 Ok(None) | Err(_) => break,
             }
@@ -272,7 +286,10 @@ fn spawn_task(
             &event_tx,
             Event {
                 id: task_sub_id,
-                msg: EventMsg::TaskComplete(TaskCompleteEvent { last_agent_message }),
+                msg: EventMsg::TaskComplete(TaskCompleteEvent {
+                    last_agent_message,
+                    metadata_json: last_metadata_json,
+                }),
             },
         )
         .await;
@@ -292,7 +309,7 @@ async fn send_event(event_tx: &mpsc::Sender<Event>, event: Event) -> Result<(), 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use finger_kernel_protocol::{EventMsg, InputItem, Op, Submission, TurnAbortReason};
+    use finger_kernel_protocol::{EventMsg, InputItem, Op, Submission, TurnAbortReason, UserTurnOptions};
 
     async fn recv_event(rx: &mut mpsc::Receiver<Event>) -> Event {
         tokio::time::timeout(Duration::from_secs(2), rx.recv())
@@ -329,6 +346,7 @@ mod tests {
                     items: vec![InputItem::Text {
                         text: "hello".to_string(),
                     }],
+                    options: UserTurnOptions::default(),
                 },
             })
             .await
@@ -341,7 +359,8 @@ mod tests {
         assert!(matches!(
             completed.msg,
             EventMsg::TaskComplete(TaskCompleteEvent {
-                last_agent_message: Some(ref message)
+                last_agent_message: Some(ref message),
+                ..
             }) if message == "hello"
         ));
 
@@ -370,6 +389,7 @@ mod tests {
                     items: vec![InputItem::Text {
                         text: "long-running".to_string(),
                     }],
+                    options: UserTurnOptions::default(),
                 },
             })
             .await
@@ -417,6 +437,7 @@ mod tests {
                     items: vec![InputItem::Text {
                         text: "first".to_string(),
                     }],
+                    options: UserTurnOptions::default(),
                 },
             })
             .await
@@ -431,6 +452,7 @@ mod tests {
                     items: vec![InputItem::Text {
                         text: "second".to_string(),
                     }],
+                    options: UserTurnOptions::default(),
                 },
             })
             .await
@@ -440,7 +462,8 @@ mod tests {
         assert!(matches!(
             completed.msg,
             EventMsg::TaskComplete(TaskCompleteEvent {
-                last_agent_message: Some(ref message)
+                last_agent_message: Some(ref message),
+                ..
             }) if message == "second"
         ));
 

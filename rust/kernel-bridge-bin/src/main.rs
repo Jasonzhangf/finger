@@ -1,7 +1,7 @@
 use std::io;
 use std::sync::Arc;
 
-use finger_kernel_config::load_crsb_config;
+use finger_kernel_config::load_local_model_config;
 use finger_kernel_core::{ChatEngine, EchoChatEngine, KernelConfig, KernelRuntime};
 use finger_kernel_model::ResponsesChatEngine;
 use finger_kernel_protocol::{EventMsg, Submission};
@@ -9,7 +9,7 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
 #[tokio::main]
 async fn main() -> io::Result<()> {
-    let chat_engine: Arc<dyn ChatEngine> = match load_crsb_config() {
+    let chat_engine: Arc<dyn ChatEngine> = match load_local_model_config() {
         Ok(model_config) => Arc::new(ResponsesChatEngine::new(model_config)),
         Err(err) => {
             let _ = tokio::io::stderr()

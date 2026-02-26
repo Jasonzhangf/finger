@@ -181,6 +181,7 @@ export class GatewayManager {
   }
 
   private createOutputProxyModule(module: ResolvedGatewayModule): OutputModule {
+    const inputCapability = inferInputCapability(module.manifest.id);
     return {
       id: module.manifest.id,
       type: 'output',
@@ -192,6 +193,7 @@ export class GatewayManager {
         transport: module.manifest.transport,
         readmePath: module.readmePath,
         cliDocPath: module.cliDocPath,
+        inputCapability,
       },
       handle: async (message: unknown, callback?: (result: unknown) => void): Promise<unknown> => {
         const session = await this.ensureSession(module);
@@ -294,6 +296,36 @@ export class GatewayManager {
       });
     }
   }
+}
+
+function inferInputCapability(moduleId: string): {
+  acceptText: boolean;
+  acceptImages: boolean;
+  acceptFiles: boolean;
+  acceptedFileMimePrefixes?: string[];
+} {
+  if (moduleId === 'chat-codex-gateway') {
+    return {
+      acceptText: true,
+      acceptImages: true,
+      acceptFiles: false,
+      acceptedFileMimePrefixes: ['image/'],
+    };
+  }
+
+  if (moduleId === 'chat-gateway') {
+    return {
+      acceptText: true,
+      acceptImages: false,
+      acceptFiles: false,
+    };
+  }
+
+  return {
+    acceptText: true,
+    acceptImages: true,
+    acceptFiles: true,
+  };
 }
 
 function extractDeliveryMode(message: unknown): GatewayDeliveryMode | null {

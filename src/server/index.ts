@@ -2,8 +2,8 @@ import express from 'express';
 import { readdir, readFile } from 'fs/promises';
 import { homedir } from 'os';
 import { fileURLToPath } from 'url';
-import { dirname, join } from 'path';
-import { existsSync, readFileSync } from 'fs';
+import { dirname, extname, join } from 'path';
+import { appendFileSync, existsSync, mkdirSync, readFileSync, statSync } from 'fs';
 import { registry } from '../core/registry.js';
 import { globalEventBus } from '../runtime/event-bus.js';
 import { globalToolRegistry } from '../runtime/tool-registry.js';
@@ -28,12 +28,17 @@ import { runtimeInstructionBus } from '../orchestration/runtime-instruction-bus.
 import { resourcePool } from '../orchestration/resource-pool.js';
 import { resumableSessionManager } from '../orchestration/resumable-session.js';
 import { echoInput, echoOutput } from '../agents/test/mock-echo-agent.js';
-import { createChatCodexModule } from '../agents/chat-codex/chat-codex-module.js';
+import {
+  CHAT_CODEX_CODING_CLI_ALLOWED_TOOLS,
+  createChatCodexModule,
+  type ChatCodexLoopEvent,
+} from '../agents/chat-codex/chat-codex-module.js';
 import { createRealOrchestratorModule } from '../agents/daemon/orchestrator-module.js';
 import { createOrchestratorLoop } from '../agents/daemon/orchestrator-loop.js';
 import { createExecutorLoop } from '../agents/daemon/executor-loop.js';
 import { mailbox } from './mailbox.js';
 import type { OutputModule } from '../orchestration/module-registry.js';
+import type { Attachment } from '../runtime/events.js';
 import {
   TaskBlock,
   AgentBlock,
@@ -53,6 +58,57 @@ const BLOCKING_MESSAGE_TIMEOUT_MS = 300000;
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 9999;
+const HTTP_BODY_LIMIT = process.env.FINGER_HTTP_BODY_LIMIT || '20mb';
+const LOCAL_IMAGE_MIME_BY_EXT: Record<string, string> = {
+  '.png': 'image/png',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.gif': 'image/gif',
+  '.webp': 'image/webp',
+  '.bmp': 'image/bmp',
+  '.svg': 'image/svg+xml',
+};
+
+function encodeProjectPath(projectPath: string): string {
+  return projectPath.replace(/\\/g, '/').replace(/[/:]/g, '_');
+}
+
+function resolveSessionLoopLogPath(sessionId: string): string {
+  const session = sessionManager.getSession(sessionId);
+  const encodedDir = session ? encodeProjectPath(session.projectPath) : '_unknown';
+  const dir = join(FINGER_HOME, 'sessions', encodedDir);
+  if (!existsSync(dir)) {
+    mkdirSync(dir, { recursive: true });
+  }
+  return join(dir, `${sessionId}.loop.jsonl`);
+}
+
+function appendSessionLoopLog(event: ChatCodexLoopEvent): void {
+  try {
+    const logPath = resolveSessionLoopLogPath(event.sessionId);
+    appendFileSync(logPath, `${JSON.stringify(event)}\n`, 'utf-8');
+  } catch (error) {
+    console.error('[Server] append session loop log failed:', error);
+  }
+}
+
+function emitLoopEventToEventBus(event: ChatCodexLoopEvent): void {
+  if (!event.sessionId || event.sessionId === 'unknown') return;
+
+  if (event.phase === 'turn_error') {
+    void globalEventBus.emit({
+      type: 'system_error',
+      sessionId: event.sessionId,
+      timestamp: event.timestamp,
+      payload: {
+        error: typeof event.payload.error === 'string' ? event.payload.error : 'chat-codex loop error',
+        component: 'chat-codex-loop',
+        recoverable: true,
+      },
+    });
+    return;
+  }
+}
 
 async function isPortInUse(port: number): Promise<boolean> {
   return new Promise((resolve) => {
@@ -83,7 +139,7 @@ async function ensureSingleInstance(port: number): Promise<void> {
 }
 
 const app = express();
-app.use(express.json());
+app.use(express.json({ limit: HTTP_BODY_LIMIT }));
 
 app.use(express.static(join(__dirname, '../../ui/dist')));
 app.get('/', (_req, res) => {
@@ -152,9 +208,36 @@ function reloadAgentJsonConfigs(configDir = loadedAgentConfigDir): void {
 reloadAgentJsonConfigs();
 await moduleRegistry.register(echoInput);
 await moduleRegistry.register(echoOutput);
-const chatCodexModule = createChatCodexModule();
+const chatCodexModule = createChatCodexModule({
+  resolveToolSpecifications: async (toolNames) => {
+    const resolved: Array<{ name: string; description?: string; inputSchema?: Record<string, unknown> }> = [];
+    for (const name of toolNames) {
+      const tool = globalToolRegistry.get(name);
+      if (!tool || tool.policy !== 'allow') continue;
+      resolved.push({
+        name: tool.name,
+        description: tool.description,
+        inputSchema:
+          typeof tool.inputSchema === 'object' && tool.inputSchema !== null
+            ? (tool.inputSchema as Record<string, unknown>)
+            : { type: 'object', additionalProperties: true },
+      });
+    }
+    return resolved;
+  },
+  toolExecution: {
+    daemonUrl: `http://127.0.0.1:${PORT}`,
+    agentId: 'chat-codex',
+  },
+  onLoopEvent: (event) => {
+    appendSessionLoopLog(event);
+    emitLoopEventToEventBus(event);
+  },
+});
 await moduleRegistry.register(chatCodexModule);
 console.log('[Server] Chat Codex module registered: chat-codex');
+const chatCodexPolicy = runtime.setAgentToolWhitelist('chat-codex', CHAT_CODEX_CODING_CLI_ALLOWED_TOOLS);
+console.log('[Server] Chat Codex tool whitelist applied:', chatCodexPolicy.whitelist.join(', '));
 
  // 注册真正的编排者 - 集成 iFlow SDK + bd 任务管理
  const { module: realOrchestrator } = createRealOrchestratorModule({
@@ -206,6 +289,33 @@ console.log('[Server] Orchestration modules initialized: echo-input, echo-output
 
 app.get('/health', (_req, res) => {
   res.json({ status: 'healthy', timestamp: new Date().toISOString() });
+});
+
+app.get('/api/v1/files/local-image', (req, res) => {
+  const rawPath = typeof req.query.path === 'string' ? req.query.path.trim() : '';
+  if (rawPath.length === 0) {
+    res.status(400).json({ error: 'query.path is required' });
+    return;
+  }
+
+  const mimeType = LOCAL_IMAGE_MIME_BY_EXT[extname(rawPath).toLowerCase()];
+  if (!mimeType) {
+    res.status(415).json({ error: 'unsupported image extension' });
+    return;
+  }
+
+  const stat = statSync(rawPath, { throwIfNoEntry: false });
+  if (!stat || !stat.isFile()) {
+    res.status(404).json({ error: 'file not found' });
+    return;
+  }
+
+  res.setHeader('Content-Type', mimeType);
+  res.setHeader('Cache-Control', 'private, max-age=60');
+  res.sendFile(rawPath, (error) => {
+    if (!error || res.headersSent) return;
+    res.status(500).json({ error: `failed to read image: ${error.message}` });
+  });
 });
 
 app.get('/api/blocks', (_req, res) => {
@@ -500,7 +610,6 @@ wss.on('connection', (ws) => {
  // ========== Session Data API ==========
 // Real-time session data from ~/.finger/sessions
 
-const SESSIONS_DIR = join(homedir(), '.finger', 'sessions');
 const LOGS_SESSIONS_DIR = join(process.cwd(), 'logs', 'sessions');
 
 interface SessionLog {
@@ -566,10 +675,11 @@ app.get('/api/v1/sessions/:sessionId/execution', async (req, res) => {
   const sessionId = req.params.sessionId;
   
   try {
-    // Load session info
-    const sessionFile = join(SESSIONS_DIR, `${sessionId}.json`);
-    const sessionContent = await readFile(sessionFile, 'utf-8');
-    const session = JSON.parse(sessionContent);
+    const session = sessionManager.getSession(sessionId);
+    if (!session) {
+      res.status(404).json({ error: 'Session not found' });
+      return;
+    }
     
     // Load related execution logs
     const logs = await loadAllSessionLogs();
@@ -589,6 +699,28 @@ app.get('/api/v1/sessions/:sessionId/execution', async (req, res) => {
   } catch (e) {
     res.status(404).json({ error: 'Session not found', details: e instanceof Error ? e.message : String(e) });
   }
+});
+
+app.get('/api/v1/sessions/match', (req, res) => {
+  const projectPath = req.query.projectPath;
+  if (typeof projectPath !== 'string' || projectPath.trim().length === 0) {
+    res.status(400).json({ error: 'Missing projectPath' });
+    return;
+  }
+
+  const matched = sessionManager.findSessionsByProjectPath(projectPath);
+  res.json(
+    matched.map((session) => ({
+      id: session.id,
+      name: session.name,
+      projectPath: session.projectPath,
+      createdAt: session.createdAt,
+      updatedAt: session.updatedAt,
+      lastAccessedAt: session.lastAccessedAt,
+      messageCount: session.messages.length,
+      activeWorkflows: session.activeWorkflows,
+    })),
+  );
 });
 
 // Get all execution logs
@@ -687,6 +819,34 @@ app.get('/api/v1/sessions/:id', (req, res) => {
   });
 });
 
+app.patch('/api/v1/sessions/:id', (req, res) => {
+  const { name } = req.body as { name?: string };
+  if (typeof name !== 'string' || name.trim().length === 0) {
+    res.status(400).json({ error: 'Missing name' });
+    return;
+  }
+
+  try {
+    const session = sessionManager.renameSession(req.params.id, name);
+    if (!session) {
+      res.status(404).json({ error: 'Session not found' });
+      return;
+    }
+    res.json({
+      id: session.id,
+      name: session.name,
+      projectPath: session.projectPath,
+      createdAt: session.createdAt,
+      updatedAt: session.updatedAt,
+      lastAccessedAt: session.lastAccessedAt,
+      messageCount: session.messages.length,
+      activeWorkflows: session.activeWorkflows,
+    });
+  } catch (error) {
+    res.status(400).json({ error: error instanceof Error ? error.message : 'Failed to rename session' });
+  }
+});
+
 app.delete('/api/v1/sessions/:id', (req, res) => {
   const success = sessionManager.deleteSession(req.params.id);
   if (!success) {
@@ -703,6 +863,34 @@ app.get('/api/v1/sessions/:sessionId/messages', (req, res) => {
   res.json({ success: true, messages });
 });
 
+app.get('/api/v1/sessions/:sessionId/loop-logs', (req, res) => {
+  const limit = req.query.limit ? parseInt(req.query.limit as string, 10) : 200;
+  const logPath = resolveSessionLoopLogPath(req.params.sessionId);
+  if (!existsSync(logPath)) {
+    res.json({ success: true, logs: [] });
+    return;
+  }
+
+  try {
+    const lines = readFileSync(logPath, 'utf-8')
+      .split('\n')
+      .map((line) => line.trim())
+      .filter((line) => line.length > 0);
+    const parsed = lines
+      .slice(-Math.max(1, limit))
+      .map((line) => {
+        try {
+          return JSON.parse(line) as unknown;
+        } catch {
+          return { timestamp: new Date().toISOString(), phase: 'parse_error', raw: line };
+        }
+      });
+    res.json({ success: true, logs: parsed });
+  } catch (error) {
+    res.status(500).json({ error: error instanceof Error ? error.message : 'Failed to read loop logs' });
+  }
+});
+
 app.post('/api/v1/sessions/:sessionId/messages', async (req, res) => {
   const { content, attachments } = req.body;
   if (!content) {
@@ -715,6 +903,37 @@ app.post('/api/v1/sessions/:sessionId/messages', async (req, res) => {
   } catch (e) {
     res.status(400).json({ error: e instanceof Error ? e.message : String(e) });
   }
+});
+
+app.post('/api/v1/sessions/:sessionId/messages/append', (req, res) => {
+  const { role, content, attachments } = req.body as {
+    role?: 'user' | 'assistant' | 'system' | 'orchestrator';
+    content?: string;
+    attachments?: unknown;
+  };
+
+  if (!role || (role !== 'user' && role !== 'assistant' && role !== 'system' && role !== 'orchestrator')) {
+    res.status(400).json({ error: 'Invalid role' });
+    return;
+  }
+  if (typeof content !== 'string' || content.length === 0) {
+    res.status(400).json({ error: 'Missing content' });
+    return;
+  }
+
+  const message = sessionManager.addMessage(
+    req.params.sessionId,
+    role,
+    content,
+    Array.isArray(attachments) ? { attachments: attachments as Attachment[] } : undefined,
+  );
+
+  if (!message) {
+    res.status(404).json({ error: 'Session not found' });
+    return;
+  }
+
+  res.json({ success: true, message });
 });
 
 // Session pause/resume

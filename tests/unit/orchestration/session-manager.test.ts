@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
+import fs from 'fs';
 import { SessionManager } from '../../../src/orchestration/session-manager.js';
 
 // Mock fs module
@@ -10,6 +11,7 @@ vi.mock('fs', () => ({
     readFileSync: vi.fn(),
     writeFileSync: vi.fn(),
     unlinkSync: vi.fn(),
+    rmdirSync: vi.fn(),
   },
   existsSync: vi.fn(() => false),
   mkdirSync: vi.fn(),
@@ -17,6 +19,7 @@ vi.mock('fs', () => ({
   readFileSync: vi.fn(),
   writeFileSync: vi.fn(),
   unlinkSync: vi.fn(),
+  rmdirSync: vi.fn(),
 }));
 
 // Mock os module
@@ -72,6 +75,14 @@ describe('SessionManager', () => {
       const session = manager.createSession('/path');
       expect(session.messages).toEqual([]);
     });
+
+    it('should save session in project-based directory layout', () => {
+      const session = manager.createSession('/project/path');
+      const calls = vi.mocked(fs.writeFileSync).mock.calls;
+      const latestPath = String(calls[calls.length - 1]?.[0] ?? '');
+      expect(latestPath).toContain('/home/test/.finger/sessions/_project_path/');
+      expect(latestPath).toContain(`${session.id}.json`);
+    });
   });
 
   describe('getSession', () => {
@@ -122,12 +133,27 @@ describe('SessionManager', () => {
     });
 
     it('should return all sessions sorted by lastAccessedAt', async () => {
+      manager.createSession('/path1');
       await new Promise(r => setTimeout(r, 10));
       const s2 = manager.createSession('/path2');
       
       const list = manager.listSessions();
       expect(list.length).toBe(2);
       expect(list[0].id).toBe(s2.id);
+    });
+  });
+
+  describe('findSessionsByProjectPath', () => {
+    it('should return matched sessions under project directory', () => {
+      const s1 = manager.createSession('/repo/a');
+      const s2 = manager.createSession('/repo/a/sub');
+      manager.createSession('/repo/b');
+
+      const matched = manager.findSessionsByProjectPath('/repo/a');
+      const matchedIds = matched.map((session) => session.id);
+      expect(matchedIds).toContain(s1.id);
+      expect(matchedIds).toContain(s2.id);
+      expect(matchedIds.length).toBe(2);
     });
   });
 
