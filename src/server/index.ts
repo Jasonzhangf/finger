@@ -39,6 +39,13 @@ import { createExecutorLoop } from '../agents/daemon/executor-loop.js';
 import { mailbox } from './mailbox.js';
 import type { OutputModule } from '../orchestration/module-registry.js';
 import type { Attachment } from '../runtime/events.js';
+import { inputLockManager } from '../runtime/input-lock.js';
+import {
+  listKernelProviders,
+  selectKernelProvider,
+  testKernelProvider,
+  upsertKernelProvider,
+} from './provider-config.js';
 import {
   TaskBlock,
   AgentBlock,
@@ -92,8 +99,127 @@ function appendSessionLoopLog(event: ChatCodexLoopEvent): void {
   }
 }
 
+interface LoopToolTraceItem {
+  callId?: string;
+  tool: string;
+  status: 'ok' | 'error';
+  input?: unknown;
+  output?: unknown;
+  error?: string;
+  durationMs?: number;
+}
+
+function isObjectRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null;
+}
+
+function extractLoopToolTrace(raw: unknown): LoopToolTraceItem[] {
+  if (!Array.isArray(raw)) return [];
+  const items: LoopToolTraceItem[] = [];
+  for (const entry of raw) {
+    if (!isObjectRecord(entry)) continue;
+    const tool = typeof entry.tool === 'string' ? entry.tool.trim() : '';
+    if (!tool) continue;
+    const status: LoopToolTraceItem['status'] = entry.status === 'error' ? 'error' : 'ok';
+    const callId = typeof entry.callId === 'string' && entry.callId.trim().length > 0
+      ? entry.callId.trim()
+      : typeof entry.call_id === 'string' && entry.call_id.trim().length > 0
+        ? entry.call_id.trim()
+        : undefined;
+    const error = typeof entry.error === 'string' && entry.error.trim().length > 0 ? entry.error.trim() : undefined;
+    const durationMs = typeof entry.durationMs === 'number' && Number.isFinite(entry.durationMs)
+      ? Math.round(entry.durationMs)
+      : typeof entry.duration_ms === 'number' && Number.isFinite(entry.duration_ms)
+        ? Math.round(entry.duration_ms)
+        : undefined;
+    items.push({
+      ...(callId ? { callId } : {}),
+      tool,
+      status,
+      ...(entry.input !== undefined ? { input: entry.input } : {}),
+      ...(entry.output !== undefined ? { output: entry.output } : {}),
+      ...(error ? { error } : {}),
+      ...(durationMs !== undefined ? { durationMs } : {}),
+    });
+  }
+  return items;
+}
+
+function broadcastWsMessage(message: Record<string, unknown>): void {
+  const encoded = JSON.stringify(message);
+  for (const client of wsClients) {
+    if (client.readyState === 1) {
+      client.send(encoded);
+    }
+  }
+}
+
+function emitToolStepEventsFromLoopEvent(event: ChatCodexLoopEvent): void {
+  if (event.phase !== 'kernel_event') return;
+  // chat-codex module already emits realtime tool events (or synthetic recovery events
+  // when realtime events are missing). Keep legacy fallback disabled by default to
+  // avoid duplicate tool_result/tool_error entries in UI.
+  if (event.payload.enableLegacyToolTraceFallback !== true) return;
+  const eventType = typeof event.payload.type === 'string' ? event.payload.type : '';
+  if (eventType !== 'task_complete') return;
+  if (event.payload.syntheticToolEvents === true || event.payload.realtimeToolEvents === true) return;
+
+  const toolTrace = extractLoopToolTrace(event.payload.toolTrace);
+  if (toolTrace.length === 0) return;
+
+  const base = Date.parse(event.timestamp);
+  const baseMs = Number.isFinite(base) ? base : Date.now();
+  for (let i = 0; i < toolTrace.length; i += 1) {
+    const trace = toolTrace[i];
+    const toolId = trace.callId ?? `${event.sessionId}-tool-${i + 1}`;
+    const resultTimestamp = new Date(baseMs + i * 2 + 1).toISOString();
+
+    if (trace.status === 'ok') {
+      broadcastWsMessage({
+        type: 'tool_result',
+        sessionId: event.sessionId,
+        agentId: 'chat-codex',
+        timestamp: resultTimestamp,
+        payload: {
+          toolId,
+          toolName: trace.tool,
+          ...(trace.input !== undefined ? { input: trace.input } : {}),
+          ...(trace.output !== undefined ? { output: trace.output } : {}),
+          ...(typeof trace.durationMs === 'number' ? { duration: trace.durationMs } : {}),
+        },
+      });
+      continue;
+    }
+
+    broadcastWsMessage({
+      type: 'tool_error',
+      sessionId: event.sessionId,
+      agentId: 'chat-codex',
+      timestamp: resultTimestamp,
+      payload: {
+        toolId,
+        toolName: trace.tool,
+        ...(trace.input !== undefined ? { input: trace.input } : {}),
+        error: trace.error ?? `工具执行失败：${trace.tool}`,
+        ...(typeof trace.durationMs === 'number' ? { duration: trace.durationMs } : {}),
+      },
+    });
+  }
+}
+
 function emitLoopEventToEventBus(event: ChatCodexLoopEvent): void {
   if (!event.sessionId || event.sessionId === 'unknown') return;
+  emitToolStepEventsFromLoopEvent(event);
+
+  broadcastWsMessage({
+    type: 'chat_codex_turn',
+    sessionId: event.sessionId,
+    timestamp: event.timestamp,
+    payload: {
+      phase: event.phase,
+      ...event.payload,
+    },
+  });
 
   if (event.phase === 'turn_error') {
     void globalEventBus.emit({
@@ -289,6 +415,71 @@ console.log('[Server] Orchestration modules initialized: echo-input, echo-output
 
 app.get('/health', (_req, res) => {
   res.json({ status: 'healthy', timestamp: new Date().toISOString() });
+});
+
+app.get('/api/v1/providers', (_req, res) => {
+  res.json(listKernelProviders());
+});
+
+app.post('/api/v1/providers/upsert', (req, res) => {
+  const body = req.body as {
+    id?: string;
+    name?: string;
+    baseUrl?: string;
+    wireApi?: string;
+    envKey?: string;
+    model?: string;
+    select?: boolean;
+  };
+  if (typeof body.id !== 'string' || body.id.trim().length === 0) {
+    res.status(400).json({ error: 'provider id is required' });
+    return;
+  }
+  try {
+    const provider = upsertKernelProvider({
+      id: body.id,
+      ...(typeof body.name === 'string' ? { name: body.name } : {}),
+      ...(typeof body.baseUrl === 'string' ? { baseUrl: body.baseUrl } : {}),
+      ...(typeof body.wireApi === 'string' ? { wireApi: body.wireApi } : {}),
+      ...(typeof body.envKey === 'string' ? { envKey: body.envKey } : {}),
+      ...(typeof body.model === 'string' ? { model: body.model } : {}),
+      ...(typeof body.select === 'boolean' ? { select: body.select } : {}),
+    });
+    res.json({ success: true, provider });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    res.status(400).json({ error: message });
+  }
+});
+
+app.post('/api/v1/providers/:providerId/select', (req, res) => {
+  const providerId = req.params.providerId;
+  if (!providerId || providerId.trim().length === 0) {
+    res.status(400).json({ error: 'providerId is required' });
+    return;
+  }
+  try {
+    const provider = selectKernelProvider(providerId);
+    res.json({ success: true, provider });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    res.status(400).json({ error: message });
+  }
+});
+
+app.post('/api/v1/providers/:providerId/test', async (req, res) => {
+  const providerId = req.params.providerId;
+  if (!providerId || providerId.trim().length === 0) {
+    res.status(400).json({ error: 'providerId is required' });
+    return;
+  }
+  try {
+    const result = await testKernelProvider(providerId);
+    res.json(result);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    res.status(400).json({ success: false, message });
+  }
 });
 
 app.get('/api/v1/files/local-image', (req, res) => {
@@ -519,6 +710,18 @@ app.get('/api/v1/events/history', (req, res) => {
   res.json({ success: true, events: globalEventBus.getHistory(limit) });
 });
 
+// ========== Input Lock API ==========
+
+app.get('/api/v1/input-lock/:sessionId', (req, res) => {
+  const state = inputLockManager.getState(req.params.sessionId);
+  res.json({ success: true, state });
+});
+
+app.get('/api/v1/input-lock', (_req, res) => {
+  const locks = inputLockManager.getAllLocks();
+  res.json({ success: true, locks });
+});
+
 // Mailbox API
 app.get('/api/v1/mailbox', (req, res) => {
   const messages = mailbox.listMessages({
@@ -558,10 +761,27 @@ const wss = new WebSocketServer({ port: wsPort });
 console.log(`[Server] Starting WebSocket server on port ${wsPort} (PORT=${PORT})`);
 const wsClients: Set<WebSocket> = new Set();
 
-wss.on('connection', (ws) => {
+// 扩展 WebSocket 类型以包含 clientId
+interface WebSocketWithClientId extends WebSocket {
+  clientId?: string;
+}
+
+function generateClientId(): string {
+  return `client_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
+}
+
+wss.on('connection', (ws: WebSocketWithClientId) => {
  wsClients.add(ws);
-  console.log('[Server] WebSocket client connected, total clients:', wsClients.size);
+  ws.clientId = generateClientId();
+  console.log('[Server] WebSocket client connected, total clients:', wsClients.size, 'clientId:', ws.clientId);
  globalEventBus.registerWsClient(ws);
+  
+  // 发送 clientId 给客户端
+  ws.send(JSON.stringify({
+    type: 'client_id_assigned',
+    clientId: ws.clientId,
+    timestamp: new Date().toISOString(),
+  }));
   
   ws.on('message', (data) => {
     try {
@@ -592,6 +812,51 @@ wss.on('connection', (ws) => {
         // 清除过滤
         globalEventBus.setWsClientFilter(ws, {});
         ws.send(JSON.stringify({ type: 'unsubscribe_confirmed', timestamp: new Date().toISOString() }));
+      } else if (msg.type === 'input_lock_acquire') {
+        // 尝试获取输入锁
+        const sessionId = typeof msg.sessionId === 'string' ? msg.sessionId : '';
+        if (!sessionId) {
+          ws.send(JSON.stringify({
+            type: 'input_lock_result',
+            sessionId: '',
+            acquired: false,
+            clientId: ws.clientId,
+            error: 'sessionId is required',
+            timestamp: new Date().toISOString(),
+          }));
+          return;
+        }
+        const acquired = inputLockManager.acquire(sessionId, ws.clientId!);
+        ws.send(JSON.stringify({
+          type: 'input_lock_result',
+          sessionId,
+          acquired,
+          clientId: ws.clientId,
+          state: inputLockManager.getState(sessionId),
+          timestamp: new Date().toISOString(),
+        }));
+      } else if (msg.type === 'input_lock_heartbeat') {
+        const sessionId = typeof msg.sessionId === 'string' ? msg.sessionId : '';
+        if (!sessionId) return;
+        const alive = inputLockManager.heartbeat(sessionId, ws.clientId!);
+        ws.send(JSON.stringify({
+          type: 'input_lock_heartbeat_ack',
+          sessionId,
+          alive,
+          clientId: ws.clientId,
+          state: inputLockManager.getState(sessionId),
+          timestamp: new Date().toISOString(),
+        }));
+      } else if (msg.type === 'input_lock_release') {
+        // 释放输入锁
+        const sessionId = typeof msg.sessionId === 'string' ? msg.sessionId : '';
+        if (!sessionId) return;
+        inputLockManager.release(sessionId, ws.clientId!);
+      } else if (msg.type === 'typing_indicator') {
+        // 正在输入指示器
+        const sessionId = typeof msg.sessionId === 'string' ? msg.sessionId : '';
+        if (!sessionId) return;
+        inputLockManager.setTyping(sessionId, ws.clientId!, msg.typing === true);
       }
     } catch {
       // ignore
@@ -599,6 +864,8 @@ wss.on('connection', (ws) => {
   });
   
   ws.on('close', () => {
+    // 客户端断连时释放所有锁
+    inputLockManager.forceRelease(ws.clientId!);
     wsClients.delete(ws);
   });
 });
@@ -740,27 +1007,38 @@ app.get('/api/v1/execution-logs/:sessionId', async (req, res) => {
 });
 
 // ========== Session Management API ==========
-app.get('/api/v1/sessions', (_req, res) => {
-  const sessions = sessionManager.listSessions();
-  res.json(sessions.map(s => ({
-    id: s.id,
-    name: s.name,
-    projectPath: s.projectPath,
-    createdAt: s.createdAt,
-    updatedAt: s.updatedAt,
-    lastAccessedAt: s.lastAccessedAt,
-    messageCount: s.messages.length,
-    activeWorkflows: s.activeWorkflows,
-  })));
-});
+function summarizePreviewContent(content: string, maxChars = 80): string {
+  const normalized = content.replace(/\s+/g, ' ').trim();
+  if (normalized.length <= maxChars) return normalized;
+  return `${normalized.slice(0, maxChars)}...`;
+}
 
-app.get('/api/v1/sessions/current', (_req, res) => {
-  const session = sessionManager.getCurrentSession();
-  if (!session) {
-    res.status(404).json({ error: 'No current session' });
-    return;
-  }
-  res.json({
+function formatSessionPreview(session: ReturnType<typeof sessionManager.listSessions>[number]): {
+  previewSummary: string;
+  previewMessages: Array<{ role: string; timestamp: string; summary: string }>;
+  lastMessageAt?: string;
+} {
+  const previewMessages = session.messages
+    .slice(-3)
+    .map((item) => ({
+      role: item.role,
+      timestamp: item.timestamp,
+      summary: summarizePreviewContent(item.content),
+    }));
+
+  const previewSummary = previewMessages
+    .map((item) => `[${new Date(item.timestamp).toLocaleTimeString()}] ${item.role}: ${item.summary}`)
+    .join('\n');
+
+  return {
+    previewSummary,
+    previewMessages,
+    ...(previewMessages.length > 0 ? { lastMessageAt: previewMessages[previewMessages.length - 1].timestamp } : {}),
+  };
+}
+
+function toSessionResponse(session: ReturnType<typeof sessionManager.listSessions>[number]): Record<string, unknown> {
+  return {
     id: session.id,
     name: session.name,
     projectPath: session.projectPath,
@@ -769,7 +1047,22 @@ app.get('/api/v1/sessions/current', (_req, res) => {
     lastAccessedAt: session.lastAccessedAt,
     messageCount: session.messages.length,
     activeWorkflows: session.activeWorkflows,
-  });
+    ...formatSessionPreview(session),
+  };
+}
+
+app.get('/api/v1/sessions', (_req, res) => {
+  const sessions = sessionManager.listSessions();
+  res.json(sessions.map((session) => toSessionResponse(session)));
+});
+
+app.get('/api/v1/sessions/current', (_req, res) => {
+  const session = sessionManager.getCurrentSession();
+  if (!session) {
+    res.status(404).json({ error: 'No current session' });
+    return;
+  }
+  res.json(toSessionResponse(session));
 });
 
 app.post('/api/v1/sessions/current', (req, res) => {
@@ -789,16 +1082,7 @@ app.post('/api/v1/sessions/current', (req, res) => {
 app.post('/api/v1/sessions', (req, res) => {
   const { projectPath, name } = req.body;
   const session = sessionManager.createSession(projectPath || process.cwd(), name);
-  res.json({
-    id: session.id,
-    name: session.name,
-    projectPath: session.projectPath,
-    createdAt: session.createdAt,
-    updatedAt: session.updatedAt,
-    lastAccessedAt: session.lastAccessedAt,
-    messageCount: 0,
-    activeWorkflows: [],
-  });
+  res.json(toSessionResponse(session));
 });
 
 app.get('/api/v1/sessions/:id', (req, res) => {
@@ -807,16 +1091,7 @@ app.get('/api/v1/sessions/:id', (req, res) => {
     res.status(404).json({ error: 'Session not found' });
     return;
   }
-  res.json({
-    id: session.id,
-    name: session.name,
-    projectPath: session.projectPath,
-    createdAt: session.createdAt,
-    updatedAt: session.updatedAt,
-    lastAccessedAt: session.lastAccessedAt,
-    messageCount: session.messages.length,
-    activeWorkflows: session.activeWorkflows,
-  });
+  res.json(toSessionResponse(session));
 });
 
 app.patch('/api/v1/sessions/:id', (req, res) => {
@@ -832,16 +1107,7 @@ app.patch('/api/v1/sessions/:id', (req, res) => {
       res.status(404).json({ error: 'Session not found' });
       return;
     }
-    res.json({
-      id: session.id,
-      name: session.name,
-      projectPath: session.projectPath,
-      createdAt: session.createdAt,
-      updatedAt: session.updatedAt,
-      lastAccessedAt: session.lastAccessedAt,
-      messageCount: session.messages.length,
-      activeWorkflows: session.activeWorkflows,
-    });
+    res.json(toSessionResponse(session));
   } catch (error) {
     res.status(400).json({ error: error instanceof Error ? error.message : 'Failed to rename session' });
   }

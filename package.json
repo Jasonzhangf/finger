@@ -8,7 +8,11 @@
   },
   "type": "module",
   "scripts": {
-    "build": "tsc --noEmit false",
+    "build": "npm run build:backend && npm run build:ui && npm run build:rust && npm run build:bump-version",
+    "build:backend": "tsc --noEmit false",
+    "build:ui": "npm --prefix ui run build",
+    "build:rust": "cargo build --workspace --manifest-path rust/Cargo.toml",
+    "build:bump-version": "node scripts/bump-build-version.mjs",
     "build:dev": "npm run build",
     "build:install": "bash scripts/build-and-install.sh",
     "dev": "tsx watch src/cli/index.ts",
@@ -20,8 +24,8 @@
     "start:services": "./scripts/start-services.sh",
     "start:iflow": "tsx scripts/start-iflow.ts",
     "test:watch": "vitest",
-    "lint": "eslint src tests --ext .ts",
-    "lint:fix": "eslint src tests --ext .ts --fix",
+    "lint": "eslint src tests",
+    "lint:fix": "eslint src tests --fix",
     "bd:init": "bd init --no-db",
     "bd:ready": "bd --no-db ready",
     "bd:create": "bd --no-db create",
@@ -32,22 +36,27 @@
     "finger:plan": "node dist/cli/index.js plan",
     "finger:execute": "node dist/cli/index.js execute",
     "finger:review": "node dist/cli/index.js review",
-    "finger:orchestrate": "node dist/cli/index.js orchestrate",
-    "build:install": "bash scripts/build-and-install.sh"
+    "finger:orchestrate": "node dist/cli/index.js orchestrate"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.36.0",
     "@iflow-ai/iflow-cli-sdk": "^0.2.1-beta.5",
     "chalk": "^5.4.0",
     "commander": "^11.1.0",
-    "ws": "^8.18.0"
+    "express": "^5.2.1",
+    "ora": "^9.3.0",
+    "ws": "^8.18.0",
+    "yaml": "^2.8.2"
   },
   "devDependencies": {
+    "@types/express": "^5.0.6",
     "@types/node": "^20.10.0",
     "@types/ws": "^8.5.13",
     "eslint": "^8.57.0",
     "tsx": "^4.19.2",
     "typescript": "^5.3.3",
+    "typescript-eslint": "^8.56.1",
     "vitest": "^1.6.0"
-  }
+  },
+  "fingerBuildVersion": "0.1.0028"
 }
