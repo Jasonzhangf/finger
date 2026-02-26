@@ -16,6 +16,7 @@ export class WebSocketClient {
   private messageHandlers: Set<MessageHandler> = new Set();
   private errorHandlers: Set<ErrorHandler> = new Set();
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  clientId: string | null = null;
 
  constructor(
    url: string = 'ws://localhost:9998',
@@ -52,15 +53,26 @@ export class WebSocketClient {
               'waiting_for_user',
               'phase_transition',
               'workflow_progress',
+              'input_lock_changed',
+              'typing_indicator',
             ],
-            groups: ['SESSION', 'TASK', 'TOOL', 'DIALOG', 'PROGRESS', 'PHASE', 'HUMAN_IN_LOOP', 'SYSTEM'],
+            groups: ['SESSION', 'TASK', 'TOOL', 'DIALOG', 'PROGRESS', 'PHASE', 'HUMAN_IN_LOOP', 'SYSTEM', 'INPUT_LOCK'],
           }));
          resolve();
        };
 
-       this.ws.onmessage = (event) => {
-         try {
-           const msg = JSON.parse(event.data) as WsMessage;
+	       this.ws.onmessage = (event) => {
+	         try {
+	           const msg = JSON.parse(event.data) as WsMessage;
+	           
+	           // 处理 client_id_assigned 消息
+	           if (msg.type === 'client_id_assigned') {
+	             if (typeof msg.clientId === 'string' && msg.clientId.trim().length > 0) {
+	               this.clientId = msg.clientId;
+	               console.log('[WS] Assigned clientId:', this.clientId);
+	             }
+	           }
+           
            this.messageHandlers.forEach((h) => h(msg));
          } catch (e) {
            console.warn('[WS] Failed to parse message:', event.data);
@@ -125,6 +137,10 @@ export class WebSocketClient {
 
  isConnected(): boolean {
    return this.ws !== null && this.ws.readyState === WebSocket.OPEN;
+ }
+
+ getClientId(): string | null {
+   return this.clientId;
  }
 }
 

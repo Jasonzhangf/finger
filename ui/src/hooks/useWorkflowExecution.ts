@@ -93,6 +93,26 @@ interface AgentRunStatus {
   updatedAt: string;
 }
 
+interface RuntimeOverview {
+  reqTokens?: number;
+  respTokens?: number;
+  totalTokens?: number;
+  tokenUpdatedAtLocal?: string;
+  contextUsagePercent?: number;
+  contextTokensInWindow?: number;
+  contextMaxInputTokens?: number;
+  contextThresholdPercent?: number;
+  ledgerFocusMaxChars: number;
+  lastLedgerInsertChars?: number;
+  compactCount: number;
+  updatedAt: string;
+}
+
+interface ToolPanelOverview {
+  availableTools: string[];
+  exposedTools: string[];
+}
+
 interface UseWorkflowExecutionReturn {
   workflow: WorkflowInfo | null;
   executionState: WorkflowExecutionState | null;
@@ -106,10 +126,13 @@ interface UseWorkflowExecutionReturn {
   startWorkflow: (userTask: string) => Promise<void>;
   pauseWorkflow: () => Promise<void>;
   resumeWorkflow: () => Promise<void>;
+  interruptCurrentTurn: () => Promise<boolean>;
   sendUserInput: (input: UserInputPayload) => Promise<void>;
   editRuntimeEvent: (eventId: string, content: string) => Promise<boolean>;
   deleteRuntimeEvent: (eventId: string) => Promise<boolean>;
   agentRunStatus: AgentRunStatus;
+  runtimeOverview: RuntimeOverview;
+  toolPanelOverview: ToolPanelOverview;
   contextEditableEventIds: string[];
   getAgentDetail: (agentId: string) => AgentExecutionDetail | null;
   getTaskReport: () => TaskReport | null;
@@ -128,6 +151,11 @@ interface InputLockState {
   lastHeartbeatAt?: string | null;
   expiresAt?: string | null;
 }
+
+const DEFAULT_LEDGER_FOCUS_MAX_CHARS = 20_000;
+const SEND_RETRY_MAX_ATTEMPTS = 6;
+const SEND_RETRY_BASE_DELAY_MS = 800;
+type ToolCategoryLabel = '编辑' | '读取' | '写入' | '计划' | '搜索' | '网络搜索' | '其他';
 
 function isPersistedSessionMessageId(id: string): boolean {
   return id.startsWith('msg-');
@@ -246,6 +274,17 @@ function firstStringField(value: Record<string, unknown>, fields: string[]): str
   return undefined;
 }
 
+function parseJsonObjectString(value: string): Record<string, unknown> | null {
+  const trimmed = value.trim();
+  if (!trimmed.startsWith('{') || !trimmed.endsWith('}')) return null;
+  try {
+    const parsed = JSON.parse(trimmed) as unknown;
+    return isRecord(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
 function looksLikeExecOutput(value: unknown): boolean {
   if (!isRecord(value)) return false;
   if (typeof value.exitCode === 'number') return true;
@@ -255,35 +294,74 @@ function looksLikeExecOutput(value: unknown): boolean {
   return false;
 }
 
+function unwrapToolPayload(value: unknown): unknown {
+  if (!isRecord(value)) return value;
+  if (isRecord(value.input)) return value.input;
+  if (isRecord(value.args)) return value.args;
+  if (typeof value.arguments === 'string') {
+    const parsed = parseJsonObjectString(value.arguments);
+    if (parsed) return parsed;
+  }
+  return value;
+}
+
+function normalizeToolName(raw: string): string {
+  const normalized = raw.trim().toLowerCase();
+  if (normalized.length === 0) return 'unknown';
+  if (
+    normalized === 'shell'
+    || normalized === 'shell.exec'
+    || normalized === 'shell_command'
+    || normalized === 'local_shell'
+    || normalized === 'unified_exec'
+  ) {
+    return 'exec_command';
+  }
+  if (normalized === 'web_search_request') return 'web_search';
+  return normalized;
+}
+
 function inferToolName(input?: unknown, output?: unknown): string | undefined {
-  if (isRecord(input)) {
-    if (typeof input.cmd === 'string') return 'exec_command';
-    if (typeof input.command === 'string') return 'exec_command';
-    if (Array.isArray(input.command) && input.command.length > 0) return 'exec_command';
+  const normalizedInputRaw = unwrapToolPayload(input);
+  const normalizedInput = typeof normalizedInputRaw === 'string'
+    ? parseJsonObjectString(normalizedInputRaw) ?? normalizedInputRaw
+    : normalizedInputRaw;
+  if (isRecord(normalizedInput)) {
+    if (typeof normalizedInput.cmd === 'string') return 'exec_command';
+    if (typeof normalizedInput.command === 'string') return 'exec_command';
+    if (Array.isArray(normalizedInput.command) && normalizedInput.command.length > 0) return 'exec_command';
     if (
-      typeof input.chars === 'string' &&
-      (typeof input.session_id === 'string' || typeof input.sessionId === 'string')
+      typeof normalizedInput.chars === 'string' &&
+      (typeof normalizedInput.session_id === 'string' || typeof normalizedInput.sessionId === 'string')
     ) {
       return 'write_stdin';
     }
-    if (typeof input.path === 'string') return 'view_image';
-    if (typeof input.query === 'string' || typeof input.q === 'string') return 'web_search';
-    if (typeof input.action === 'string' && input.action === 'query') return 'context_ledger.memory';
+    if (typeof normalizedInput.path === 'string') return 'view_image';
+    if (typeof normalizedInput.query === 'string' || typeof normalizedInput.q === 'string') return 'web_search';
+    if (typeof normalizedInput.action === 'string' && normalizedInput.action === 'query') return 'context_ledger.memory';
   }
 
-  if (isRecord(output)) {
-    if (Array.isArray(output.plan)) return 'update_plan';
-    if (typeof output.path === 'string' && typeof output.mimeType === 'string' && output.mimeType.startsWith('image/')) {
+  const normalizedOutputRaw = unwrapToolPayload(output);
+  const normalizedOutput = typeof normalizedOutputRaw === 'string'
+    ? parseJsonObjectString(normalizedOutputRaw) ?? normalizedOutputRaw
+    : normalizedOutputRaw;
+  if (isRecord(normalizedOutput)) {
+    if (Array.isArray(normalizedOutput.plan)) return 'update_plan';
+    if (
+      typeof normalizedOutput.path === 'string'
+      && typeof normalizedOutput.mimeType === 'string'
+      && normalizedOutput.mimeType.startsWith('image/')
+    ) {
       return 'view_image';
     }
-    if (Array.isArray(output.results)) return 'web_search';
-    if (looksLikeExecOutput(output)) return 'exec_command';
-    if (isRecord(output.result)) {
-      if (looksLikeExecOutput(output.result)) return 'exec_command';
+    if (Array.isArray(normalizedOutput.results)) return 'web_search';
+    if (looksLikeExecOutput(normalizedOutput)) return 'exec_command';
+    if (isRecord(normalizedOutput.result)) {
+      if (looksLikeExecOutput(normalizedOutput.result)) return 'exec_command';
       if (
-        typeof output.result.path === 'string' &&
-        typeof output.result.mimeType === 'string' &&
-        output.result.mimeType.startsWith('image/')
+        typeof normalizedOutput.result.path === 'string' &&
+        typeof normalizedOutput.result.mimeType === 'string' &&
+        normalizedOutput.result.mimeType.startsWith('image/')
       ) {
         return 'view_image';
       }
@@ -295,13 +373,43 @@ function inferToolName(input?: unknown, output?: unknown): string | undefined {
 
 function resolveDisplayToolName(payload: Record<string, unknown>, input?: unknown, output?: unknown): string {
   const explicitName = firstStringField(payload, ['toolName', 'tool_name', 'tool']);
-  if (explicitName && explicitName !== 'unknown') {
-    if (explicitName === 'shell' || explicitName === 'shell.exec' || explicitName === 'shell_command') {
-      return inferToolName(input, output) ?? 'exec_command';
-    }
-    return explicitName;
+  if (explicitName) {
+    const normalized = normalizeToolName(explicitName);
+    if (normalized !== 'unknown') return normalized;
   }
   return inferToolName(input, output) ?? 'unknown';
+}
+
+function classifyExecCommand(command: string): ToolCategoryLabel {
+  const normalized = command.trim().toLowerCase();
+  if (normalized.length === 0) return '其他';
+
+  if (/(^|\s)(rg|grep|find|fd)\b/.test(normalized)) return '搜索';
+  if (/(^|\s)(cat|sed|head|tail|less|more|ls|pwd|stat|wc|du|git\s+(show|status|log|diff))\b/.test(normalized)) {
+    return '读取';
+  }
+  if (
+    /(^|\s)(echo|tee|cp|mv|rm|mkdir|rmdir|touch|chmod|chown|git\s+(add|commit|checkout|restore)|npm\s+install|pnpm\s+install|yarn\s+add)\b/.test(normalized)
+    || />\s*[^ ]/.test(normalized)
+  ) {
+    return '写入';
+  }
+  return '其他';
+}
+
+function resolveToolCategoryLabel(toolName: string, input?: unknown): ToolCategoryLabel {
+  if (toolName === 'apply_patch') return '编辑';
+  if (toolName === 'update_plan') return '计划';
+  if (toolName === 'context_ledger.memory') return '搜索';
+  if (toolName === 'web_search') return '网络搜索';
+  if (toolName === 'view_image') return '读取';
+  if (toolName === 'write_stdin') return '写入';
+  if (toolName === 'exec_command' || toolName === 'shell.exec') {
+    const command = extractExecCommand(input);
+    if (command) return classifyExecCommand(command);
+    return '其他';
+  }
+  return '其他';
 }
 
 function truncateInlineText(text: string, maxChars = 140): string {
@@ -319,15 +427,16 @@ function formatCommandArray(command: unknown[]): string {
 }
 
 function extractExecCommand(input: unknown): string | undefined {
-  if (!isRecord(input)) return undefined;
-  if (typeof input.cmd === 'string' && input.cmd.trim().length > 0) {
-    return truncateInlineText(input.cmd, 200);
+  const normalizedInput = unwrapToolPayload(input);
+  if (!isRecord(normalizedInput)) return undefined;
+  if (typeof normalizedInput.cmd === 'string' && normalizedInput.cmd.trim().length > 0) {
+    return truncateInlineText(normalizedInput.cmd, 200);
   }
-  if (typeof input.command === 'string' && input.command.trim().length > 0) {
-    return truncateInlineText(input.command, 200);
+  if (typeof normalizedInput.command === 'string' && normalizedInput.command.trim().length > 0) {
+    return truncateInlineText(normalizedInput.command, 200);
   }
-  if (Array.isArray(input.command)) {
-    const formatted = formatCommandArray(input.command);
+  if (Array.isArray(normalizedInput.command)) {
+    const formatted = formatCommandArray(normalizedInput.command);
     if (formatted.length > 0) return truncateInlineText(formatted, 200);
   }
   return undefined;
@@ -335,28 +444,46 @@ function extractExecCommand(input: unknown): string | undefined {
 
 function buildToolExecutionSummary(toolName: string, input?: unknown): string | undefined {
   const command = extractExecCommand(input);
-  if (command) return `命令 ${command}`;
+  if (command) return command;
 
-  if (!isRecord(input)) return undefined;
+  const normalizedInput = unwrapToolPayload(input);
+  if (!isRecord(normalizedInput)) return undefined;
 
-  if (toolName === 'write_stdin' && typeof input.chars === 'string') {
-    return `写入 ${input.chars.length} 字符`;
+  if (toolName === 'write_stdin' && typeof normalizedInput.chars === 'string') {
+    return `写入 ${normalizedInput.chars.length} 字符`;
   }
 
-  if (typeof input.path === 'string' && input.path.trim().length > 0) {
-    return `路径 ${truncateInlineText(input.path, 120)}`;
+  if (typeof normalizedInput.path === 'string' && normalizedInput.path.trim().length > 0) {
+    return `路径 ${truncateInlineText(normalizedInput.path, 120)}`;
   }
 
-  const query = typeof input.query === 'string' ? input.query : typeof input.q === 'string' ? input.q : '';
+  const query = typeof normalizedInput.query === 'string'
+    ? normalizedInput.query
+    : typeof normalizedInput.q === 'string'
+      ? normalizedInput.q
+      : '';
   if (query.trim().length > 0) {
     return `查询 ${truncateInlineText(query, 120)}`;
   }
 
-  if (typeof input.action === 'string' && input.action.trim().length > 0) {
-    return `动作 ${truncateInlineText(input.action, 80)}`;
+  if (typeof normalizedInput.action === 'string' && normalizedInput.action.trim().length > 0) {
+    return `动作 ${truncateInlineText(normalizedInput.action, 80)}`;
   }
 
   return undefined;
+}
+
+function resolveToolActionLabel(toolName: string, input?: unknown): string {
+  const summary = buildToolExecutionSummary(toolName, input);
+  if (summary && summary.trim().length > 0) return summary.trim();
+  if (toolName === 'update_plan') return '更新计划';
+  if (toolName === 'context_ledger.memory') return '查询记忆';
+  if (toolName === 'web_search') return '网络搜索';
+  if (toolName === 'apply_patch') return '应用补丁';
+  if (toolName === 'view_image') return '查看图片';
+  if (toolName === 'write_stdin') return '写入终端';
+  if (toolName === 'exec_command') return '执行命令';
+  return toolName;
 }
 
 function buildFileInputText(file: RuntimeFile): string {
@@ -574,12 +701,11 @@ function buildToolResultContent(
   input?: unknown,
 ): string {
   const durationText = typeof duration === 'number' ? ` (${duration}ms)` : '';
-  const summary = buildToolExecutionSummary(toolName, input);
-  const summaryText = summary ? ` · ${summary}` : '';
+  const actionLabel = resolveToolActionLabel(toolName, input);
   if (status === 'error') {
-    return errorText ?? `工具执行失败：${toolName}${summaryText}${durationText}`;
+    return errorText ?? `执行失败：${actionLabel}${durationText}`;
   }
-  return `工具执行成功：${toolName}${summaryText}${durationText}`;
+  return `执行成功：${actionLabel}${durationText}`;
 }
 
 function toSessionAttachments(images: RuntimeImage[], files: RuntimeFile[]): SessionApiAttachment[] {
@@ -803,7 +929,14 @@ export function mapWsMessageToRuntimeEvent(
         const output = payload.output;
         const toolInput = payload.input;
         const toolName = resolveDisplayToolName(payload, toolInput, output);
-        const toolId = typeof payload.toolId === 'string' ? payload.toolId : undefined;
+        const toolSeq = typeof payload.seq === 'number' && Number.isFinite(payload.seq)
+          ? Math.max(0, Math.floor(payload.seq))
+          : undefined;
+        const toolId = typeof payload.toolId === 'string'
+          ? payload.toolId
+          : toolSeq !== undefined
+            ? `seq-${toolSeq}`
+            : undefined;
         const duration = typeof payload.duration === 'number' ? payload.duration : undefined;
         const status = resolveToolResultStatus(output);
         const failureText = status === 'error'
@@ -823,6 +956,7 @@ export function mapWsMessageToRuntimeEvent(
               agentName: agentId || DEFAULT_CHAT_AGENT_ID,
               kind: 'observation',
               toolName,
+              toolCategory: resolveToolCategoryLabel(toolName, toolInput),
               toolStatus: 'success',
               toolDurationMs: duration,
               content: buildToolResultContent(toolName, 'success', duration, undefined, toolInput),
@@ -843,6 +977,7 @@ export function mapWsMessageToRuntimeEvent(
               agentName: agentId || DEFAULT_CHAT_AGENT_ID,
               kind: 'observation',
               toolName,
+              toolCategory: resolveToolCategoryLabel(toolName, toolInput),
               toolStatus: 'success',
               toolDurationMs: duration,
               content: buildToolResultContent(toolName, 'success', duration, undefined, toolInput),
@@ -862,6 +997,7 @@ export function mapWsMessageToRuntimeEvent(
           agentName: agentId || DEFAULT_CHAT_AGENT_ID,
           kind: 'observation',
           toolName,
+          toolCategory: resolveToolCategoryLabel(toolName, toolInput),
           toolStatus: status,
           toolOutput: humanOutput,
           toolDurationMs: duration,
@@ -874,7 +1010,14 @@ export function mapWsMessageToRuntimeEvent(
     case 'tool_error':
       {
         const toolName = resolveDisplayToolName(payload, payload.input, payload.output);
-        const toolId = typeof payload.toolId === 'string' ? payload.toolId : undefined;
+        const toolSeq = typeof payload.seq === 'number' && Number.isFinite(payload.seq)
+          ? Math.max(0, Math.floor(payload.seq))
+          : undefined;
+        const toolId = typeof payload.toolId === 'string'
+          ? payload.toolId
+          : toolSeq !== undefined
+            ? `seq-${toolSeq}`
+            : undefined;
         const failureText = humanizeToolError(toolName, payload.error);
         return {
           ...(toolId ? { id: `tool:${toolId}:error` } : {}),
@@ -883,6 +1026,7 @@ export function mapWsMessageToRuntimeEvent(
           agentName: agentId || DEFAULT_CHAT_AGENT_ID,
           kind: 'observation',
           toolName,
+          toolCategory: resolveToolCategoryLabel(toolName, payload.input),
           toolStatus: 'error',
           toolOutput: failureText,
           content: failureText,
@@ -947,7 +1091,12 @@ export function mapWsMessageToRuntimeEvent(
   }
 }
 
-function extractChatReply(result: unknown): { reply: string; agentId: string; tokenUsage?: RuntimeTokenUsage } {
+function extractChatReply(result: unknown): {
+  reply: string;
+  agentId: string;
+  tokenUsage?: RuntimeTokenUsage;
+  pendingInputAccepted?: boolean;
+} {
   const candidate = isRecord(result) && isRecord(result.output) ? result.output : result;
 
   if (typeof candidate === 'string') {
@@ -960,6 +1109,10 @@ function extractChatReply(result: unknown): { reply: string; agentId: string; to
   }
 
   const agentId = typeof candidate.module === 'string' ? candidate.module : DEFAULT_CHAT_AGENT_ID;
+  const metadata = isRecord(candidate.metadata) ? candidate.metadata : null;
+  const pendingInputAccepted =
+    candidate.pendingInputAccepted === true
+    || metadata?.pendingInputAccepted === true;
   if (candidate.success === false) {
     const error = typeof candidate.error === 'string' ? candidate.error : 'chat-codex request failed';
     throw new Error(error);
@@ -970,6 +1123,7 @@ function extractChatReply(result: unknown): { reply: string; agentId: string; to
       reply: candidate.response,
       agentId,
       tokenUsage: parseTokenUsage(candidate) ?? estimateTokenUsage(candidate.response),
+      ...(pendingInputAccepted ? { pendingInputAccepted: true } : {}),
     };
   }
 
@@ -978,6 +1132,7 @@ function extractChatReply(result: unknown): { reply: string; agentId: string; to
       reply: candidate.output,
       agentId,
       tokenUsage: parseTokenUsage(candidate) ?? estimateTokenUsage(candidate.output),
+      ...(pendingInputAccepted ? { pendingInputAccepted: true } : {}),
     };
   }
 
@@ -986,7 +1141,12 @@ function extractChatReply(result: unknown): { reply: string; agentId: string; to
   }
 
   const reply = JSON.stringify(candidate, null, 2);
-  return { reply, agentId, tokenUsage: parseTokenUsage(candidate) ?? estimateTokenUsage(reply) };
+  return {
+    reply,
+    agentId,
+    tokenUsage: parseTokenUsage(candidate) ?? estimateTokenUsage(reply),
+    ...(pendingInputAccepted ? { pendingInputAccepted: true } : {}),
+  };
 }
 
 function parseTokenUsage(candidate: Record<string, unknown>): RuntimeTokenUsage | undefined {
@@ -995,6 +1155,30 @@ function parseTokenUsage(candidate: Record<string, unknown>): RuntimeTokenUsage 
   if (isRecord(candidate.metadata)) {
     const fromMetadata = normalizeTokenUsage(candidate.metadata);
     if (fromMetadata) return fromMetadata;
+    const fromRoundTrace = extractTokenUsageFromRoundTrace(candidate.metadata);
+    if (fromRoundTrace) return fromRoundTrace;
+  }
+  const fromRoundTrace = extractTokenUsageFromRoundTrace(candidate);
+  if (fromRoundTrace) return fromRoundTrace;
+  return undefined;
+}
+
+function extractTokenUsageFromRoundTrace(source: Record<string, unknown>): RuntimeTokenUsage | undefined {
+  const traces = source.round_trace ?? source.roundTrace;
+  if (!Array.isArray(traces) || traces.length === 0) return undefined;
+  for (let i = traces.length - 1; i >= 0; i -= 1) {
+    const item = traces[i];
+    if (!isRecord(item)) continue;
+    const inputTokens = parseNumberLike(item.input_tokens, item.inputTokens);
+    const outputTokens = parseNumberLike(item.output_tokens, item.outputTokens);
+    const totalTokens = parseNumberLike(item.total_tokens, item.totalTokens);
+    if (inputTokens === undefined && outputTokens === undefined && totalTokens === undefined) continue;
+    return {
+      ...(inputTokens !== undefined ? { inputTokens } : {}),
+      ...(outputTokens !== undefined ? { outputTokens } : {}),
+      ...(totalTokens !== undefined ? { totalTokens } : {}),
+      estimated: false,
+    };
   }
   return undefined;
 }
@@ -1042,6 +1226,62 @@ function parseNumberLike(...values: unknown[]): number | undefined {
   return undefined;
 }
 
+function computeContextUsagePercent(
+  contextTokensInWindow: number | undefined,
+  contextMaxInputTokens: number | undefined,
+): number | undefined {
+  if (
+    typeof contextTokensInWindow !== 'number'
+    || !Number.isFinite(contextTokensInWindow)
+    || contextTokensInWindow < 0
+    || typeof contextMaxInputTokens !== 'number'
+    || !Number.isFinite(contextMaxInputTokens)
+    || contextMaxInputTokens <= 0
+  ) {
+    return undefined;
+  }
+  const ratio = Math.floor((contextTokensInWindow / contextMaxInputTokens) * 100);
+  return Math.max(0, Math.min(100, ratio));
+}
+
+function isAbortError(error: unknown): boolean {
+  if (error instanceof DOMException && error.name === 'AbortError') return true;
+  if (error instanceof Error && error.name === 'AbortError') return true;
+  const message = error instanceof Error ? error.message : String(error);
+  return message.toLowerCase().includes('aborted');
+}
+
+async function safeParseJson(response: Response): Promise<Record<string, unknown> | null> {
+  try {
+    const payload = (await response.json()) as unknown;
+    return isRecord(payload) ? payload : null;
+  } catch {
+    return null;
+  }
+}
+
+function extractErrorMessageFromBody(body: Record<string, unknown> | null): string | undefined {
+  if (!body) return undefined;
+  const direct = firstStringField(body, ['error', 'message']);
+  if (direct) return direct;
+  if (isRecord(body.result)) {
+    const nested = firstStringField(body.result, ['error', 'message']);
+    if (nested) return nested;
+  }
+  if (isRecord(body.payload)) {
+    const nested = firstStringField(body.payload, ['error', 'message']);
+    if (nested) return nested;
+  }
+  return undefined;
+}
+
+function extractCompactSummary(body: Record<string, unknown> | null): string | undefined {
+  if (!body) return undefined;
+  const summary = firstStringField(body, ['summary']);
+  if (!summary) return undefined;
+  return truncateInlineText(summary, 220);
+}
+
 function estimateTokenUsage(text: string): RuntimeTokenUsage {
   const trimmed = text.trim();
   if (trimmed.length === 0) {
@@ -1070,6 +1310,68 @@ function parseInputLockState(value: unknown): InputLockState | null {
   };
 }
 
+function normalizeToolNameList(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  const names = value
+    .filter((item): item is string => typeof item === 'string')
+    .map((item) => item.trim())
+    .filter((item) => item.length > 0)
+    .map(normalizeToolName);
+  return Array.from(new Set(names));
+}
+
+function parseRetryAfterMs(attempt: number): number {
+  const base = SEND_RETRY_BASE_DELAY_MS * Math.pow(2, Math.max(0, attempt - 1));
+  return Math.min(30_000, Math.floor(base));
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function shouldRetryChatRequest(statusCode: number | undefined, errorMessage: string): boolean {
+  const normalized = errorMessage.toLowerCase();
+  if (normalized.includes('daily_cost_limit_exceeded')) return false;
+  if (normalized.includes('insufficient_quota')) return false;
+  if (normalized.includes('unauthorized')) return false;
+  if (normalized.includes('forbidden')) return false;
+
+  if (typeof statusCode === 'number') {
+    return statusCode === 408
+      || statusCode === 409
+      || statusCode === 425
+      || statusCode === 429
+      || statusCode === 500
+      || statusCode === 502
+      || statusCode === 503
+      || statusCode === 504;
+  }
+
+  return normalized.includes('timeout')
+    || normalized.includes('timed out')
+    || normalized.includes('result timeout')
+    || normalized.includes('gateway')
+    || normalized.includes('fetch failed')
+    || normalized.includes('network')
+    || normalized.includes('econnreset')
+    || normalized.includes('econnrefused')
+    || normalized.includes('socket hang up');
+}
+
+function extractStatusCodeFromErrorMessage(message: string): number | undefined {
+  const httpMatch = message.match(/\bHTTP[_\s:]?(\d{3})\b/i);
+  if (httpMatch) {
+    const parsed = Number.parseInt(httpMatch[1], 10);
+    if (Number.isFinite(parsed)) return parsed;
+  }
+  const statusMatch = message.match(/\bstatus[:=\s]+(\d{3})\b/i);
+  if (statusMatch) {
+    const parsed = Number.parseInt(statusMatch[1], 10);
+    if (Number.isFinite(parsed)) return parsed;
+  }
+  return undefined;
+}
+
 export function useWorkflowExecution(sessionId: string): UseWorkflowExecutionReturn {
   const [workflow, setWorkflow] = useState<WorkflowInfo | null>(null);
   const [executionState, setExecutionState] = useState<WorkflowExecutionState | null>(null);
@@ -1085,8 +1387,18 @@ export function useWorkflowExecution(sessionId: string): UseWorkflowExecutionRet
     text: '已就绪',
     updatedAt: new Date().toISOString(),
   });
+  const [runtimeOverview, setRuntimeOverview] = useState<RuntimeOverview>({
+    ledgerFocusMaxChars: DEFAULT_LEDGER_FOCUS_MAX_CHARS,
+    compactCount: 0,
+    updatedAt: new Date().toISOString(),
+  });
+  const [toolPanelOverview, setToolPanelOverview] = useState<ToolPanelOverview>({
+    availableTools: [],
+    exposedTools: [],
+  });
   const executionStateRef = useRef<WorkflowExecutionState | null>(null);
   const runtimeEventsRef = useRef<RuntimeEvent[]>([]);
+  const inFlightSendAbortRef = useRef<AbortController | null>(null);
 
   useEffect(() => {
     executionStateRef.current = executionState;
@@ -1123,11 +1435,30 @@ export function useWorkflowExecution(sessionId: string): UseWorkflowExecutionRet
           typeof payload.modelContextWindow === 'number' && Number.isFinite(payload.modelContextWindow)
             ? Math.max(0, Math.floor(payload.modelContextWindow))
             : undefined;
+        if (modelContextWindow !== undefined && modelContextWindow > 0) {
+          setRuntimeOverview((prev) => ({
+            ...prev,
+            contextMaxInputTokens: modelContextWindow,
+            updatedAt: new Date().toISOString(),
+          }));
+        }
         setAgentRunStatus({
           phase: 'running',
           text: modelContextWindow
             ? `${label}开始执行... 上下文窗口 ${modelContextWindow} tokens`
             : `${label}开始执行...`,
+          updatedAt: new Date().toISOString(),
+        });
+      } else if (phase === 'kernel_event' && payload.type === 'pending_input_queued') {
+        setAgentRunStatus({
+          phase: 'running',
+          text: `${label}执行中，新的输入已排队，等待当前回合合并...`,
+          updatedAt: new Date().toISOString(),
+        });
+      } else if (phase === 'kernel_event' && payload.type === 'turn_interrupted') {
+        setAgentRunStatus({
+          phase: 'idle',
+          text: `${label}已停止`,
           updatedAt: new Date().toISOString(),
         });
       } else if (phase === 'kernel_event' && payload.type === 'model_round') {
@@ -1152,21 +1483,27 @@ export function useWorkflowExecution(sessionId: string): UseWorkflowExecutionRet
             typeof payload.thresholdPercent === 'number' && Number.isFinite(payload.thresholdPercent)
               ? Math.max(0, Math.floor(payload.thresholdPercent))
               : undefined;
+          const effectiveContextUsagePercent = contextUsagePercent
+            ?? computeContextUsagePercent(estimatedTokensInContextWindow, maxInputTokens);
           const fragments: string[] = [];
           if (finishReason.length > 0) {
             fragments.push(`finish=${finishReason}`);
           }
-          if (contextUsagePercent !== undefined) {
+          if (effectiveContextUsagePercent !== undefined) {
             if (estimatedTokensInContextWindow !== undefined && maxInputTokens !== undefined && maxInputTokens > 0) {
-              fragments.push(`上下文 ${contextUsagePercent}% (${estimatedTokensInContextWindow}/${maxInputTokens})`);
+              fragments.push(`上下文 ${effectiveContextUsagePercent}% (${estimatedTokensInContextWindow}/${maxInputTokens})`);
+            } else if (estimatedTokensInContextWindow !== undefined) {
+              fragments.push(`上下文 ${estimatedTokensInContextWindow} tokens`);
             } else {
-              fragments.push(`上下文 ${contextUsagePercent}%`);
+              fragments.push(`上下文 ${effectiveContextUsagePercent}%`);
             }
+          } else if (estimatedTokensInContextWindow !== undefined) {
+            fragments.push(`上下文 ${estimatedTokensInContextWindow} tokens`);
           }
           if (
             thresholdPercent !== undefined
-            && contextUsagePercent !== undefined
-            && contextUsagePercent >= thresholdPercent
+            && effectiveContextUsagePercent !== undefined
+            && effectiveContextUsagePercent >= thresholdPercent
           ) {
             fragments.push('接近上下文阈值');
           }
@@ -1175,8 +1512,54 @@ export function useWorkflowExecution(sessionId: string): UseWorkflowExecutionRet
             text: `${label}内部循环第 ${round} 轮${fragments.length > 0 ? ` · ${fragments.join(' · ')}` : ''}`,
             updatedAt: new Date().toISOString(),
           });
+
+          const inputTokens = parseNumberLike(payload.inputTokens, payload.input_tokens);
+          const outputTokens = parseNumberLike(payload.outputTokens, payload.output_tokens);
+          const totalTokens = parseNumberLike(payload.totalTokens, payload.total_tokens);
+          if (
+            inputTokens !== undefined
+            || outputTokens !== undefined
+            || totalTokens !== undefined
+            || effectiveContextUsagePercent !== undefined
+            || estimatedTokensInContextWindow !== undefined
+            || maxInputTokens !== undefined
+            || thresholdPercent !== undefined
+          ) {
+            setRuntimeOverview((prev) => ({
+              ...prev,
+              ...(inputTokens !== undefined ? { reqTokens: inputTokens } : {}),
+              ...(outputTokens !== undefined ? { respTokens: outputTokens } : {}),
+              ...(totalTokens !== undefined ? { totalTokens } : {}),
+              ...((inputTokens !== undefined || outputTokens !== undefined || totalTokens !== undefined)
+                ? { tokenUpdatedAtLocal: new Date().toLocaleString() }
+                : {}),
+              ...(effectiveContextUsagePercent !== undefined ? { contextUsagePercent: effectiveContextUsagePercent } : {}),
+              ...(estimatedTokensInContextWindow !== undefined
+                ? { contextTokensInWindow: estimatedTokensInContextWindow }
+                : {}),
+              ...(maxInputTokens !== undefined ? { contextMaxInputTokens: maxInputTokens } : {}),
+              ...(thresholdPercent !== undefined ? { contextThresholdPercent: thresholdPercent } : {}),
+              updatedAt: new Date().toISOString(),
+            }));
+          }
         }
+      } else if (phase === 'kernel_event' && payload.type === 'context_compact') {
+        setRuntimeOverview((prev) => ({
+          ...prev,
+          compactCount: prev.compactCount + 1,
+          updatedAt: new Date().toISOString(),
+        }));
       } else if (phase === 'turn_complete') {
+        const finalKernelEvent =
+          typeof payload.finalKernelEvent === 'string' ? payload.finalKernelEvent.trim() : '';
+        if (finalKernelEvent === 'pending_input_queued') {
+          setAgentRunStatus({
+            phase: 'running',
+            text: `${label}执行中，输入已排队，等待当前回合继续...`,
+            updatedAt: new Date().toISOString(),
+          });
+          return;
+        }
         setAgentRunStatus({
           phase: 'running',
           text: `${label}完成，等待下一步...`,
@@ -1194,26 +1577,43 @@ export function useWorkflowExecution(sessionId: string): UseWorkflowExecutionRet
 
     if (msg.type === 'tool_call') {
       if (!isCurrentSessionEvent) return;
-      const toolName = typeof payload.toolName === 'string' ? payload.toolName : 'unknown';
+      const toolName = resolveDisplayToolName(payload, payload.input, payload.output);
+      const actionLabel = resolveToolActionLabel(toolName, payload.input);
+      const category = resolveToolCategoryLabel(toolName, payload.input);
       setAgentRunStatus({
         phase: 'running',
-        text: `正在执行工具：${toolName}`,
+        text: `正在执行${category}工具：${actionLabel}`,
         updatedAt: new Date().toISOString(),
       });
     } else if (msg.type === 'tool_result') {
       if (!isCurrentSessionEvent) return;
-      const toolName = typeof payload.toolName === 'string' ? payload.toolName : 'unknown';
+      const toolName = resolveDisplayToolName(payload, payload.input, payload.output);
+      const actionLabel = resolveToolActionLabel(toolName, payload.input);
+      const category = resolveToolCategoryLabel(toolName, payload.input);
+      const output = isRecord(payload.output) ? payload.output : null;
+      if (toolName === 'context_ledger.memory' && output) {
+        const focusMaxChars = parseNumberLike(output.focus_max_chars, output.focusMaxChars);
+        const insertChars = parseNumberLike(output.chars);
+        setRuntimeOverview((prev) => ({
+          ...prev,
+          ...(focusMaxChars !== undefined ? { ledgerFocusMaxChars: focusMaxChars } : {}),
+          ...(insertChars !== undefined ? { lastLedgerInsertChars: insertChars } : {}),
+          updatedAt: new Date().toISOString(),
+        }));
+      }
       setAgentRunStatus({
         phase: 'running',
-        text: `工具完成：${toolName}，继续处理中...`,
+        text: `${category}工具完成：${actionLabel}，继续处理中...`,
         updatedAt: new Date().toISOString(),
       });
     } else if (msg.type === 'tool_error') {
       if (!isCurrentSessionEvent) return;
-      const toolName = typeof payload.toolName === 'string' ? payload.toolName : 'unknown';
+      const toolName = resolveDisplayToolName(payload, payload.input, payload.output);
+      const actionLabel = resolveToolActionLabel(toolName, payload.input);
+      const category = resolveToolCategoryLabel(toolName, payload.input);
       setAgentRunStatus({
         phase: 'error',
-        text: `工具失败：${toolName}`,
+        text: `${category}工具失败：${actionLabel}`,
         updatedAt: new Date().toISOString(),
       });
     } else if (msg.type === 'assistant_complete') {
@@ -1492,6 +1892,41 @@ export function useWorkflowExecution(sessionId: string): UseWorkflowExecutionRet
     }
   }, [sessionId]);
 
+  const refreshToolPanelOverview = useCallback(async () => {
+    try {
+      const [toolsRes, policyRes] = await Promise.all([
+        fetch('/api/v1/tools'),
+        fetch(`/api/v1/tools/agents/${encodeURIComponent(DEFAULT_CHAT_AGENT_ID)}/policy`),
+      ]);
+      if (!toolsRes.ok || !policyRes.ok) return;
+      const toolsPayload = (await toolsRes.json()) as { success?: boolean; tools?: Array<Record<string, unknown>> };
+      const policyPayload = (await policyRes.json()) as { success?: boolean; policy?: Record<string, unknown> };
+      if (!toolsPayload.success || !Array.isArray(toolsPayload.tools) || !policyPayload.success) return;
+
+      const availableTools = Array.from(new Set(
+        toolsPayload.tools
+          .filter((item) => isRecord(item))
+          .filter((item) => (typeof item.policy === 'string' ? item.policy : 'allow') === 'allow')
+          .map((item) => (typeof item.name === 'string' ? normalizeToolName(item.name) : ''))
+          .filter((name) => name.length > 0),
+      )).sort();
+
+      const policy = isRecord(policyPayload.policy) ? policyPayload.policy : {};
+      const whitelist = normalizeToolNameList(policy.whitelist);
+      const blacklistSet = new Set(normalizeToolNameList(policy.blacklist));
+      const exposedBase = whitelist.length > 0 ? whitelist : availableTools;
+      const exposedTools = exposedBase.filter((name) => !blacklistSet.has(name)).sort();
+
+      setToolPanelOverview((prev) => ({
+        ...prev,
+        availableTools,
+        exposedTools,
+      }));
+    } catch {
+      // ignore tool panel refresh failures
+    }
+  }, []);
+
   const appendSessionMessage = useCallback(
     async (
       role: SessionApiMessage['role'],
@@ -1536,13 +1971,23 @@ export function useWorkflowExecution(sessionId: string): UseWorkflowExecutionRet
   useEffect(() => {
     setRuntimeEvents([]);
     setUserRounds([]);
+    setRuntimeOverview({
+      ledgerFocusMaxChars: DEFAULT_LEDGER_FOCUS_MAX_CHARS,
+      compactCount: 0,
+      updatedAt: new Date().toISOString(),
+    });
+    setToolPanelOverview({
+      availableTools: [],
+      exposedTools: [],
+    });
     setAgentRunStatus({
       phase: 'idle',
       text: '已就绪',
       updatedAt: new Date().toISOString(),
     });
     void loadSessionMessages();
-  }, [loadSessionMessages]);
+    void refreshToolPanelOverview();
+  }, [loadSessionMessages, refreshToolPanelOverview]);
 
   const refreshRuntimeState = useCallback(async () => {
     try {
@@ -1802,13 +2247,114 @@ export function useWorkflowExecution(sessionId: string): UseWorkflowExecutionRet
     }
   }, [executionState]);
 
+  const interruptCurrentTurn = useCallback(async (): Promise<boolean> => {
+    const activeAbort = inFlightSendAbortRef.current;
+    if (activeAbort) {
+      activeAbort.abort();
+    }
+    try {
+      const res = await fetch(`/api/v1/chat-codex/sessions/${encodeURIComponent(sessionId)}/interrupt`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({}),
+      });
+      const body = await safeParseJson(res);
+      if (!res.ok) {
+        const message = extractErrorMessageFromBody(body) ?? `HTTP ${res.status}`;
+        throw new Error(message);
+      }
+      const interrupted = body?.interrupted === true;
+      setAgentRunStatus({
+        phase: 'idle',
+        text: interrupted ? '已停止当前回合' : '当前没有可停止的回合',
+        updatedAt: new Date().toISOString(),
+      });
+      setRuntimeEvents((prev) =>
+        pushEvent(prev, {
+          role: 'system',
+          kind: 'status',
+          content: interrupted ? '已发送停止信号，当前回合终止。' : '当前没有可停止的运行回合。',
+          timestamp: new Date().toISOString(),
+        }),
+      );
+      return interrupted;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : '停止当前回合失败';
+      setAgentRunStatus({
+        phase: 'error',
+        text: `停止失败：${message}`,
+        updatedAt: new Date().toISOString(),
+      });
+      setRuntimeEvents((prev) =>
+        pushEvent(prev, {
+          role: 'system',
+          kind: 'status',
+          content: `停止当前回合失败：${message}`,
+          timestamp: new Date().toISOString(),
+          agentId: 'error',
+        }),
+      );
+      return false;
+    }
+  }, [sessionId]);
+
 const sendUserInput = useCallback(
   async (inputPayload: UserInputPayload) => {
     const text = inputPayload.text.trim();
     const images = inputPayload.images ?? [];
     const files = inputPayload.files ?? [];
     const review = normalizeReviewSettings(inputPayload.review);
+    const planModeEnabled = inputPayload.planModeEnabled === true;
     if (!text && images.length === 0 && files.length === 0) return;
+    if (text === '/compact' && images.length === 0 && files.length === 0) {
+      try {
+        const compactRes = await fetch(`/api/v1/sessions/${encodeURIComponent(sessionId)}/compress`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+        });
+        const compactBody = await safeParseJson(compactRes);
+        if (!compactRes.ok) {
+          const compactError = extractErrorMessageFromBody(compactBody) ?? `HTTP ${compactRes.status}`;
+          throw new Error(compactError);
+        }
+        const summary = extractCompactSummary(compactBody);
+        setRuntimeOverview((prev) => ({
+          ...prev,
+          compactCount: prev.compactCount + 1,
+          updatedAt: new Date().toISOString(),
+        }));
+        setRuntimeEvents((prev) =>
+          pushEvent(prev, {
+            role: 'system',
+            kind: 'status',
+            content: `上下文已压缩${summary ? `：${summary}` : ''}`,
+            timestamp: new Date().toISOString(),
+          }),
+        );
+        setAgentRunStatus({
+          phase: 'idle',
+          text: '上下文压缩完成',
+          updatedAt: new Date().toISOString(),
+        });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : '上下文压缩失败';
+        setRuntimeEvents((prev) =>
+          pushEvent(prev, {
+            role: 'system',
+            kind: 'status',
+            content: `压缩失败：${message}`,
+            timestamp: new Date().toISOString(),
+            agentId: 'error',
+          }),
+        );
+        setAgentRunStatus({
+          phase: 'error',
+          text: `压缩失败：${message}`,
+          updatedAt: new Date().toISOString(),
+        });
+      }
+      return;
+    }
     const inputItems = buildKernelInputItems(text, images, files);
     const displayText = text || (images.length > 0 || files.length > 0 ? '[附件输入]' : '');
 
@@ -1844,8 +2390,8 @@ const sendUserInput = useCallback(
     setAgentRunStatus({
       phase: 'running',
       text: review
-        ? `chat-codex 正在思考（Review: ${review.strictness === 'strict' ? '严格' : '主线'}, 上限 ${review.maxTurns}）...`
-        : 'chat-codex 正在思考...',
+        ? `chat-codex 正在思考（${planModeEnabled ? '计划模式 · ' : ''}Review: ${review.strictness === 'strict' ? '严格' : '主线'}, 上限 ${review.maxTurns}）...`
+        : `chat-codex 正在思考${planModeEnabled ? '（计划模式）' : ''}...`,
       updatedAt: new Date().toISOString(),
     });
 
@@ -1862,38 +2408,180 @@ const sendUserInput = useCallback(
         CONTEXT_HISTORY_WINDOW_SIZE,
       );
 
-      const res = await fetch('/api/v1/message', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          target: CHAT_PANEL_TARGET,
-          blocking: true,
-          message: {
-            text: displayText,
-            sessionId,
-            history,
-            deliveryMode: 'sync',
-            metadata: {
-              inputItems,
-              ...(review
-                ? {
-                    review,
-                  }
-                : {}),
-            },
+      const abortController = new AbortController();
+      inFlightSendAbortRef.current = abortController;
+      const requestBody = {
+        target: CHAT_PANEL_TARGET,
+        blocking: true,
+        message: {
+          text: displayText,
+          sessionId,
+          history,
+          deliveryMode: 'sync',
+          metadata: {
+            inputItems,
+            mode: planModeEnabled ? 'plan' : 'main',
+            kernelMode: planModeEnabled ? 'plan' : 'main',
+            planModeEnabled,
+            includePlanTool: planModeEnabled,
+            ...(review
+              ? {
+                  review,
+                }
+              : {}),
           },
-        }),
-      });
+        },
+      };
 
-      if (!res.ok) {
-        throw new Error(`HTTP ${res.status}`);
+      let responseData: { result?: unknown; error?: string } | null = null;
+      let attempt = 1;
+      for (; attempt <= SEND_RETRY_MAX_ATTEMPTS; attempt += 1) {
+        let responseStatus: number | undefined;
+        try {
+          const res = await fetch('/api/v1/message', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            signal: abortController.signal,
+            body: JSON.stringify(requestBody),
+          });
+          responseStatus = res.status;
+          if (!res.ok) {
+            const failureBody = await safeParseJson(res);
+            const message = extractErrorMessageFromBody(failureBody) ?? `HTTP ${res.status}`;
+            const wrapped = message.startsWith('HTTP') ? message : `HTTP ${res.status}: ${message}`;
+            throw new Error(wrapped);
+          }
+          responseData = (await res.json()) as { result?: unknown; error?: string } | null;
+          if (!responseData || responseData.error) {
+            throw new Error(responseData?.error || 'Empty response from daemon');
+          }
+          break;
+        } catch (error) {
+          if (isAbortError(error)) throw error;
+          const errorMessage = error instanceof Error ? error.message : String(error);
+          const inferredStatus = responseStatus ?? extractStatusCodeFromErrorMessage(errorMessage);
+          const canRetry = attempt < SEND_RETRY_MAX_ATTEMPTS && shouldRetryChatRequest(inferredStatus, errorMessage);
+          if (!canRetry) {
+            throw error;
+          }
+          const backoffMs = parseRetryAfterMs(attempt);
+          const waitSeconds = Math.max(1, Math.ceil(backoffMs / 1000));
+          setAgentRunStatus({
+            phase: 'running',
+            text: `请求失败，${waitSeconds}s 后自动重试（${attempt}/${SEND_RETRY_MAX_ATTEMPTS - 1}）...`,
+            updatedAt: new Date().toISOString(),
+          });
+          await sleep(backoffMs);
+        }
       }
 
-      const responseData = (await res.json()) as { result?: unknown; error?: string } | null;
+      if (!responseData) {
+        throw new Error('Empty response from daemon');
+      }
+
       if (!responseData || responseData.error) {
         throw new Error(responseData?.error || 'Empty response from daemon');
       }
-      const { reply, agentId, tokenUsage } = extractChatReply(responseData.result);
+      const { reply, agentId, tokenUsage, pendingInputAccepted } = extractChatReply(responseData.result);
+      if (pendingInputAccepted) {
+        setRuntimeEvents((prev) =>
+          prev
+            .map((e) =>
+              e.role === 'user' && e.timestamp === eventTime
+                ? { ...e, agentId: 'confirmed', kind: 'status' }
+                : e,
+            ),
+        );
+        setRuntimeEvents((prev) =>
+          pushEvent(prev, {
+            role: 'system',
+            kind: 'status',
+            content: '输入已排队，等待当前回合合并处理。',
+            timestamp: new Date().toISOString(),
+          }),
+        );
+        setAgentRunStatus({
+          phase: 'running',
+          text: '当前回合仍在执行，输入已排队...',
+          updatedAt: new Date().toISOString(),
+        });
+        return;
+      }
+      if (tokenUsage) {
+        setRuntimeOverview((prev) => ({
+          ...prev,
+          ...(typeof tokenUsage.inputTokens === 'number' ? { reqTokens: tokenUsage.inputTokens } : {}),
+          ...(typeof tokenUsage.outputTokens === 'number' ? { respTokens: tokenUsage.outputTokens } : {}),
+          ...(typeof tokenUsage.totalTokens === 'number' ? { totalTokens: tokenUsage.totalTokens } : {}),
+          tokenUpdatedAtLocal: new Date().toLocaleString(),
+          updatedAt: new Date().toISOString(),
+        }));
+      }
+      if (isRecord(responseData.result) && isRecord(responseData.result.metadata)) {
+        const metadata = responseData.result.metadata;
+        const focusMaxChars = parseNumberLike(
+          metadata.contextLedgerFocusMaxChars,
+          metadata.context_ledger_focus_max_chars,
+        );
+        const contextUsagePercent = parseNumberLike(
+          metadata.context_usage_percent,
+          metadata.contextUsagePercent,
+          metadata.context_budget_usage_percent,
+        );
+        const contextTokens = parseNumberLike(
+          metadata.estimated_tokens_in_context_window,
+          metadata.estimatedTokensInContextWindow,
+          isRecord(metadata.context_budget) ? metadata.context_budget.estimated_tokens_in_context_window : undefined,
+        );
+        const contextMaxInputTokens = parseNumberLike(
+          metadata.max_input_tokens,
+          metadata.maxInputTokens,
+          isRecord(metadata.context_budget) ? metadata.context_budget.max_input_tokens : undefined,
+        );
+        const contextThresholdPercent = parseNumberLike(
+          metadata.threshold_percent,
+          metadata.thresholdPercent,
+          isRecord(metadata.context_budget) && typeof metadata.context_budget.threshold_ratio === 'number'
+            ? metadata.context_budget.threshold_ratio * 100
+            : undefined,
+        );
+        const effectiveContextUsagePercent = contextUsagePercent
+          ?? computeContextUsagePercent(contextTokens, contextMaxInputTokens);
+        const roundTraceUsage = extractTokenUsageFromRoundTrace(metadata);
+        const exposedToolsFromMetadata = normalizeToolNameList(metadata.tools);
+        if (exposedToolsFromMetadata.length > 0) {
+          setToolPanelOverview((prev) => ({
+            availableTools: prev.availableTools,
+            exposedTools: exposedToolsFromMetadata,
+          }));
+        }
+        if (
+          focusMaxChars !== undefined
+          || effectiveContextUsagePercent !== undefined
+          || contextTokens !== undefined
+          || contextMaxInputTokens !== undefined
+          || contextThresholdPercent !== undefined
+          || roundTraceUsage
+        ) {
+          setRuntimeOverview((prev) => ({
+            ...prev,
+            ...(focusMaxChars !== undefined ? { ledgerFocusMaxChars: focusMaxChars } : {}),
+            ...(effectiveContextUsagePercent !== undefined ? { contextUsagePercent: effectiveContextUsagePercent } : {}),
+            ...(contextTokens !== undefined ? { contextTokensInWindow: contextTokens } : {}),
+            ...(contextMaxInputTokens !== undefined ? { contextMaxInputTokens } : {}),
+            ...(contextThresholdPercent !== undefined ? { contextThresholdPercent } : {}),
+            ...(roundTraceUsage?.inputTokens !== undefined ? { reqTokens: roundTraceUsage.inputTokens } : {}),
+            ...(roundTraceUsage?.outputTokens !== undefined ? { respTokens: roundTraceUsage.outputTokens } : {}),
+            ...(roundTraceUsage?.totalTokens !== undefined ? { totalTokens: roundTraceUsage.totalTokens } : {}),
+            ...((roundTraceUsage?.inputTokens !== undefined
+              || roundTraceUsage?.outputTokens !== undefined
+              || roundTraceUsage?.totalTokens !== undefined)
+              ? { tokenUpdatedAtLocal: new Date().toLocaleString() }
+              : {}),
+            updatedAt: new Date().toISOString(),
+          }));
+        }
+      }
       let persistedUserMessage: SessionApiMessage | null = null;
       let persistedAssistantMessage: SessionApiMessage | null = null;
 
@@ -1938,6 +2626,48 @@ const sendUserInput = useCallback(
         updatedAt: new Date().toISOString(),
       });
     } catch (err) {
+      if (isAbortError(err)) {
+        setRuntimeEvents((prev) =>
+          prev
+            .map((e) =>
+              e.role === 'user' && e.timestamp === eventTime
+                ? { ...e, agentId: 'confirmed', kind: 'status' }
+                : e,
+            ),
+        );
+        setAgentRunStatus({
+          phase: 'idle',
+          text: '当前回合已中止',
+          updatedAt: new Date().toISOString(),
+        });
+        return;
+      }
+      const interruptedByUser =
+        err instanceof Error && err.message.toLowerCase().includes('interrupted by user');
+      if (interruptedByUser) {
+        setRuntimeEvents((prev) =>
+          prev
+            .map((e) =>
+              e.role === 'user' && e.timestamp === eventTime
+                ? { ...e, agentId: 'confirmed', kind: 'status' }
+                : e,
+            ),
+        );
+        setAgentRunStatus({
+          phase: 'idle',
+          text: '当前回合已停止',
+          updatedAt: new Date().toISOString(),
+        });
+        setRuntimeEvents((prev) =>
+          pushEvent(prev, {
+            role: 'system',
+            content: '当前回合已被停止。',
+            timestamp: new Date().toISOString(),
+            kind: 'status',
+          }),
+        );
+        return;
+      }
       // 6. API 失败：更新事件为 error 并追加错误事件
       setRuntimeEvents((prev) =>
         prev
@@ -1963,6 +2693,8 @@ const sendUserInput = useCallback(
           agentId: 'error',
         }),
       );
+    } finally {
+      inFlightSendAbortRef.current = null;
     }
   },
   [appendSessionMessage, sessionId],
@@ -2100,10 +2832,13 @@ const contextEditableEventIds = buildContextEditableEventIds(
    startWorkflow,
    pauseWorkflow,
    resumeWorkflow,
+   interruptCurrentTurn,
    sendUserInput,
    editRuntimeEvent,
    deleteRuntimeEvent,
    agentRunStatus,
+   runtimeOverview,
+   toolPanelOverview,
    contextEditableEventIds,
    getAgentDetail,
    getTaskReport,

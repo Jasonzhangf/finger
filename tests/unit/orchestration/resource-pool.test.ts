@@ -186,6 +186,36 @@ describe('ResourcePool', () => {
       const allocation = pool.getAllocation('task-6');
       expect(allocation!.status).toBe('failed');
     });
+
+    it('should keep deployed status after task release for deployed resource', () => {
+      const newResource = {
+        id: 'deployed-tool',
+        name: 'Deployed Tool',
+        type: 'tool' as ResourceType,
+        capabilities: [],
+        status: 'available' as ResourceStatus,
+      };
+      pool.addResource(newResource);
+      pool.deployResource('deployed-tool', 'session-1', 'workflow-1');
+
+      const requirements: ResourceRequirement[] = [{ type: 'tool' }];
+      pool.allocateResources('task-8', requirements);
+      pool.releaseResources('task-8', 'completed');
+
+      const resource = pool.getAllResources().find(r => r.id === 'deployed-tool');
+      expect(resource!.status).toBe('deployed');
+      expect(resource!.currentSessionId).toBe('session-1');
+      expect(resource!.currentWorkflowId).toBe('workflow-1');
+    });
+
+    it('should treat error reason as failed allocation status', () => {
+      const requirements: ResourceRequirement[] = [{ type: 'executor' }];
+      pool.allocateResources('task-9', requirements);
+      pool.releaseResources('task-9', 'error');
+
+      const allocation = pool.getAllocation('task-9');
+      expect(allocation!.status).toBe('failed');
+    });
   });
 
   describe('markTaskExecuting', () => {
@@ -283,6 +313,26 @@ describe('ResourcePool', () => {
       
       const resource = pool.getAllResources().find(r => r.id === 'busy-test-2');
       expect(resource!.status).toBe('available');
+    });
+
+    it('should restore deployed status when clearing busy state', () => {
+      const newResource = {
+        id: 'busy-deployed',
+        name: 'Busy Deployed',
+        type: 'executor' as ResourceType,
+        capabilities: [],
+        status: 'available' as ResourceStatus,
+      };
+      pool.addResource(newResource);
+      pool.deployResource('busy-deployed', 'session-1', 'workflow-1');
+
+      pool.setResourceBusy('busy-deployed', true);
+      pool.setResourceBusy('busy-deployed', false);
+
+      const resource = pool.getAllResources().find(r => r.id === 'busy-deployed');
+      expect(resource!.status).toBe('deployed');
+      expect(resource!.currentSessionId).toBe('session-1');
+      expect(resource!.currentWorkflowId).toBe('workflow-1');
     });
 
     it('should return false for non-existent resource', () => {

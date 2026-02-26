@@ -20,6 +20,7 @@ pub const FINGER_TOOL_DAEMON_URL_ENV: &str = "FINGER_TOOL_DAEMON_URL";
 pub const FINGER_TOOL_AGENT_ID_ENV: &str = "FINGER_TOOL_AGENT_ID";
 pub const DEFAULT_TOOL_DAEMON_URL: &str = "http://127.0.0.1:9999";
 pub const DEFAULT_TOOL_AGENT_ID: &str = "chat-codex";
+const LOCAL_DEV_API_KEY: &str = "local-dev-key";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LocalModelConfig {
@@ -88,7 +89,9 @@ pub fn load_crsb_config() -> Result<LocalModelConfig, ConfigError> {
     load_crsb_config_with(LocalModelOverrides::default())
 }
 
-pub fn load_crsb_config_with(overrides: LocalModelOverrides) -> Result<LocalModelConfig, ConfigError> {
+pub fn load_crsb_config_with(
+    overrides: LocalModelOverrides,
+) -> Result<LocalModelConfig, ConfigError> {
     load_local_model_config_with(LocalModelOverrides {
         provider_id: Some(DEFAULT_PROVIDER_ID.to_string()),
         ..overrides
@@ -99,19 +102,34 @@ pub fn load_local_model_config() -> Result<LocalModelConfig, ConfigError> {
     load_local_model_config_with(LocalModelOverrides::default())
 }
 
-pub fn load_local_model_config_with(overrides: LocalModelOverrides) -> Result<LocalModelConfig, ConfigError> {
+pub fn load_local_model_config_with(
+    overrides: LocalModelOverrides,
+) -> Result<LocalModelConfig, ConfigError> {
     let file_config = load_finger_user_config()?;
     let provider_id = resolve_provider_id(&overrides, file_config.as_ref());
     let mut defaults = provider_defaults(&provider_id);
     apply_file_provider_overrides(&mut defaults, file_config.as_ref(), &provider_id);
 
+    let resolved_base_url = overrides
+        .base_url
+        .clone()
+        .unwrap_or_else(|| defaults.base_url.clone());
     let env_key = overrides.env_key.unwrap_or(defaults.env_key);
-    let api_key = env::var(&env_key).map_err(|_| ConfigError::MissingEnvVar(env_key.clone()))?;
+    let api_key = match env::var(&env_key) {
+        Ok(value) => value,
+        Err(_) => {
+            if is_local_base_url(&resolved_base_url) {
+                LOCAL_DEV_API_KEY.to_string()
+            } else {
+                return Err(ConfigError::MissingEnvVar(env_key.clone()));
+            }
+        }
+    };
 
     Ok(LocalModelConfig {
         provider_id: defaults.provider_id,
         provider_name: defaults.provider_name,
-        base_url: overrides.base_url.unwrap_or(defaults.base_url),
+        base_url: resolved_base_url,
         wire_api: defaults.wire_api,
         env_key,
         api_key,
@@ -142,8 +160,16 @@ fn provider_defaults(provider_id: &str) -> ProviderDefaults {
     }
 }
 
-fn resolve_provider_id(overrides: &LocalModelOverrides, file_config: Option<&FingerUserConfig>) -> String {
-    if let Some(provider_id) = overrides.provider_id.as_ref().map(|v| v.trim()).filter(|v| !v.is_empty()) {
+fn resolve_provider_id(
+    overrides: &LocalModelOverrides,
+    file_config: Option<&FingerUserConfig>,
+) -> String {
+    if let Some(provider_id) = overrides
+        .provider_id
+        .as_ref()
+        .map(|v| v.trim())
+        .filter(|v| !v.is_empty())
+    {
         return provider_id.to_string();
     }
 
@@ -208,25 +234,57 @@ fn apply_file_provider_overrides(
     file_config: Option<&FingerUserConfig>,
     provider_id: &str,
 ) {
-    let Some(provider_cfg) = file_config.and_then(|cfg| cfg.kernel.providers.get(provider_id)) else {
+    let Some(provider_cfg) = file_config.and_then(|cfg| cfg.kernel.providers.get(provider_id))
+    else {
         return;
     };
 
-    if let Some(name) = provider_cfg.name.as_ref().map(|v| v.trim()).filter(|v| !v.is_empty()) {
+    if let Some(name) = provider_cfg
+        .name
+        .as_ref()
+        .map(|v| v.trim())
+        .filter(|v| !v.is_empty())
+    {
         defaults.provider_name = name.to_string();
     }
-    if let Some(base_url) = provider_cfg.base_url.as_ref().map(|v| v.trim()).filter(|v| !v.is_empty()) {
+    if let Some(base_url) = provider_cfg
+        .base_url
+        .as_ref()
+        .map(|v| v.trim())
+        .filter(|v| !v.is_empty())
+    {
         defaults.base_url = base_url.to_string();
     }
-    if let Some(wire_api) = provider_cfg.wire_api.as_ref().map(|v| v.trim()).filter(|v| !v.is_empty()) {
+    if let Some(wire_api) = provider_cfg
+        .wire_api
+        .as_ref()
+        .map(|v| v.trim())
+        .filter(|v| !v.is_empty())
+    {
         defaults.wire_api = wire_api.to_string();
     }
-    if let Some(env_key) = provider_cfg.env_key.as_ref().map(|v| v.trim()).filter(|v| !v.is_empty()) {
+    if let Some(env_key) = provider_cfg
+        .env_key
+        .as_ref()
+        .map(|v| v.trim())
+        .filter(|v| !v.is_empty())
+    {
         defaults.env_key = env_key.to_string();
     }
-    if let Some(model) = provider_cfg.model.as_ref().map(|v| v.trim()).filter(|v| !v.is_empty()) {
+    if let Some(model) = provider_cfg
+        .model
+        .as_ref()
+        .map(|v| v.trim())
+        .filter(|v| !v.is_empty())
+    {
         defaults.model = model.to_string();
     }
+}
+
+fn is_local_base_url(base_url: &str) -> bool {
+    let normalized = base_url.trim().to_ascii_lowercase();
+    normalized.starts_with("http://127.0.0.1")
+        || normalized.starts_with("http://localhost")
 }
 
 fn load_finger_user_config() -> Result<Option<FingerUserConfig>, ConfigError> {
@@ -271,7 +329,9 @@ mod tests {
     fn loads_crsb_with_overrides() {
         let key = "KERNEL_CONFIG_TEST_KEY";
         // SAFETY: test process owns this env var namespace.
-        unsafe { env::set_var(key, "test-key"); }
+        unsafe {
+            env::set_var(key, "test-key");
+        }
 
         let cfg = load_local_model_config_with(LocalModelOverrides {
             provider_id: Some("crsb".to_string()),
@@ -289,14 +349,18 @@ mod tests {
         assert_eq!(cfg.tool_agent_id, DEFAULT_TOOL_AGENT_ID);
 
         // SAFETY: test process owns this env var namespace.
-        unsafe { env::remove_var(key); }
+        unsafe {
+            env::remove_var(key);
+        }
     }
 
     #[test]
     fn loads_crsa_defaults() {
         let key = "KERNEL_CONFIG_TEST_KEY_CRSA";
         // SAFETY: test process owns this env var namespace.
-        unsafe { env::set_var(key, "test-key-crsa"); }
+        unsafe {
+            env::set_var(key, "test-key-crsa");
+        }
 
         let cfg = load_local_model_config_with(LocalModelOverrides {
             provider_id: Some("crsa".to_string()),
@@ -314,6 +378,8 @@ mod tests {
         assert_eq!(cfg.tool_agent_id, DEFAULT_TOOL_AGENT_ID);
 
         // SAFETY: test process owns this env var namespace.
-        unsafe { env::remove_var(key); }
+        unsafe {
+            env::remove_var(key);
+        }
     }
 }

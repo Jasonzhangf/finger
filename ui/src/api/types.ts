@@ -173,8 +173,8 @@ export const DEFAULT_STATE_MASK: StateMaskConfig = {
   taskStates: {
     hide: ['dispatching', 'dispatched', 'execution_succeeded'], // 隐藏中间状态
     showAs: {
-      'running': 'in_progress',
-      'done': 'completed',
+      'running': 'running',
+      'done': 'done',
     },
   },
   agentStates: {
@@ -210,6 +210,25 @@ export function applyStateMask<T extends string>(
   }
   
   return state;
+}
+
+export interface StateSnapshot {
+  workflowId: string;
+  sessionId: string;
+  fsmState: WorkflowFSMState;
+  simplifiedStatus: WorkflowStatus;
+  tasks: Array<{
+    id: string;
+    fsmState: TaskFSMState;
+    simplifiedStatus: TaskStatus;
+    assignee?: string;
+  }>;
+  agents: Array<{
+    id: string;
+    fsmState: AgentFSMState;
+    simplifiedStatus: AgentRuntimeStatus;
+  }>;
+  timestamp: string;
 }
 
 // ========== 原有类型定义 ==========
@@ -271,6 +290,13 @@ export interface SessionInfo {
   lastAccessedAt: string;
   messageCount: number;
   activeWorkflows: string[];
+  lastMessageAt?: string;
+  previewSummary?: string;
+  previewMessages?: Array<{
+    role: 'user' | 'assistant' | 'system' | 'orchestrator';
+    timestamp: string;
+    summary: string;
+  }>;
 }
 
 // ========== Workflow Runtime Types ==========
@@ -433,8 +459,12 @@ export interface ProviderConfig {
   name: string;
   type: ProviderType;
   baseUrl: string;
+  wireApi?: string;
+  envKey?: string;
+  model?: string;
   apiKey?: string;
   defaultModel?: string;
+  isActive?: boolean;
   status: 'connected' | 'disconnected' | 'error';
 }
 
@@ -452,12 +482,24 @@ export interface AgentStats {
 
 export interface WsMessage {
   type: string;
-  payload: unknown;
+  payload?: unknown;
   timestamp: string;
   sessionId?: string;
   group?: string;
   agentId?: string;
   taskId?: string;
+  clientId?: string;
+  acquired?: boolean;
+  alive?: boolean;
+  state?: {
+    sessionId: string;
+    lockedBy: string | null;
+    lockedAt: string | null;
+    typing: boolean;
+    lastHeartbeatAt?: string | null;
+    expiresAt?: string | null;
+  };
+  error?: string;
 }
 
 export interface RuntimeEvent {
@@ -469,7 +511,10 @@ export interface RuntimeEvent {
   agentName?: string;
   kind?: 'thought' | 'action' | 'observation' | 'status';
   toolName?: string;
+  toolCategory?: '编辑' | '读取' | '写入' | '计划' | '搜索' | '网络搜索' | '其他';
   toolInput?: unknown;
+  toolOutput?: unknown;
+  toolStatus?: 'running' | 'success' | 'error';
   toolDurationMs?: number;
   planSteps?: RuntimePlanStep[];
   planExplanation?: string;
@@ -520,10 +565,21 @@ export interface UserRound {
   files?: RuntimeFile[];
 }
 
+export type ReviewStrictness = 'strict' | 'mainline';
+
+export interface ReviewSettings {
+  enabled: boolean;
+  target: string;
+  strictness: ReviewStrictness;
+  maxTurns: number;
+}
+
 export interface UserInputPayload {
   text: string;
   images?: RuntimeImage[];
   files?: RuntimeFile[];
+  review?: ReviewSettings;
+  planModeEnabled?: boolean;
 }
 
 export interface WorkflowUpdatePayload {

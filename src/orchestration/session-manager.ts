@@ -112,6 +112,8 @@ export class SessionManager {
       }
     }
 
+    this.cleanupEmptySessionsAcrossProjects();
+
     // Auto-resume most recent session
     const sorted = this.listSessions().sort(
       (a, b) => new Date(b.lastAccessedAt).getTime() - new Date(a.lastAccessedAt).getTime()
@@ -140,10 +142,23 @@ export class SessionManager {
   }
 
   createSession(projectPath: string, name?: string): Session {
-    const id = `session-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-    const now = new Date().toISOString();
     const normalizedPath = path.resolve(projectPath);
-    
+    const now = new Date().toISOString();
+
+    this.cleanupEmptySessionsForProject(normalizedPath);
+    const reusable = this.findReusableEmptySession(normalizedPath);
+    if (reusable) {
+      if (typeof name === 'string' && name.trim().length > 0) {
+        reusable.name = name.trim();
+      }
+      reusable.lastAccessedAt = now;
+      this.saveSession(reusable);
+      this.currentSessionId = reusable.id;
+      console.log(`[SessionManager] Reused empty session: ${reusable.name} (${reusable.id})`);
+      return reusable;
+    }
+
+    const id = `session-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     const session: Session = {
       id,
       name: name || path.basename(normalizedPath),
@@ -162,6 +177,42 @@ export class SessionManager {
 
     console.log(`[SessionManager] Created session: ${session.name} (${id})`);
     return session;
+  }
+
+  private isEmptySession(session: Session): boolean {
+    return session.messages.length === 0 && session.activeWorkflows.length === 0;
+  }
+
+  private findReusableEmptySession(projectPath: string): Session | null {
+    const normalized = path.resolve(projectPath);
+    const candidates = this.listSessions()
+      .filter((session) => session.projectPath === normalized && this.isEmptySession(session))
+      .sort((a, b) => new Date(b.lastAccessedAt).getTime() - new Date(a.lastAccessedAt).getTime());
+    return candidates[0] ?? null;
+  }
+
+  private cleanupEmptySessionsAcrossProjects(): void {
+    const projectPaths = new Set(Array.from(this.sessions.values()).map((session) => session.projectPath));
+    for (const projectPath of projectPaths) {
+      this.cleanupEmptySessionsForProject(projectPath);
+    }
+  }
+
+  private cleanupEmptySessionsForProject(projectPath: string): void {
+    const normalized = path.resolve(projectPath);
+    const emptySessions = this.listSessions()
+      .filter((session) => session.projectPath === normalized && this.isEmptySession(session))
+      .sort((a, b) => new Date(b.lastAccessedAt).getTime() - new Date(a.lastAccessedAt).getTime());
+
+    if (emptySessions.length <= 1) return;
+    const keeper = emptySessions[0];
+    for (let i = 1; i < emptySessions.length; i += 1) {
+      this.deleteSession(emptySessions[i].id);
+    }
+
+    if (this.currentSessionId && !this.sessions.has(this.currentSessionId)) {
+      this.currentSessionId = keeper.id;
+    }
   }
 
   getSession(sessionId: string): Session | undefined {

@@ -4,4 +4,5 @@ This workspace contains the first migration slice of the non-UI agent loop kerne
 
 - `kernel-protocol`: shared Op/Event protocol contracts.
 - `kernel-core`: minimal submission loop and task lifecycle runtime.
+- `kernel-context-ledger`: append-only context ledger with query/focus-slot APIs.
 - `kernel-bridge-bin`: JSONL stdin/stdout bridge for integration with TypeScript orchestration.

@@ -16,7 +16,7 @@ vi.mock('../api/websocket.js', () => ({
 }));
 
 // Mock fetch
-global.fetch = vi.fn();
+globalThis.fetch = vi.fn();
 
 describe('useWorkflowFSM', () => {
   beforeEach(() => {
@@ -24,7 +24,7 @@ describe('useWorkflowFSM', () => {
   });
 
   it('should load initial state snapshot', async () => {
-    (global.fetch as any).mockResolvedValueOnce({
+    (globalThis.fetch as any).mockResolvedValueOnce({
       ok: true,
       json: () => Promise.resolve({
         workflowId: 'wf-1',
@@ -54,7 +54,7 @@ describe('useWorkflowFSM', () => {
   });
 
   it('should apply state mask to hide internal states', async () => {
-    (global.fetch as any).mockResolvedValueOnce({
+    (globalThis.fetch as any).mockResolvedValueOnce({
       ok: true,
       json: () => Promise.resolve({
         workflowId: 'wf-1',
@@ -80,7 +80,7 @@ describe('useWorkflowFSM', () => {
   });
 
   it('should handle 404 gracefully', async () => {
-    (global.fetch as any).mockResolvedValueOnce({
+    (globalThis.fetch as any).mockResolvedValueOnce({
       ok: false,
       status: 404,
     });
@@ -96,7 +96,7 @@ describe('useWorkflowFSM', () => {
   });
 
   it('should handle fetch error', async () => {
-    (global.fetch as any).mockRejectedValueOnce(new Error('Network error'));
+    (globalThis.fetch as any).mockRejectedValueOnce(new Error('Network error'));
 
     const { result } = renderHook(() => useWorkflowFSM('wf-1', 'session-1'));
 
@@ -108,7 +108,7 @@ describe('useWorkflowFSM', () => {
   });
 
   it('should allow setting custom mask config', async () => {
-    (global.fetch as any).mockResolvedValueOnce({
+    (globalThis.fetch as any).mockResolvedValueOnce({
       ok: true,
       json: () => Promise.resolve({
         workflowId: 'wf-1',

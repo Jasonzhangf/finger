@@ -76,6 +76,21 @@ describe('SessionManager', () => {
       expect(session.messages).toEqual([]);
     });
 
+    it('should reuse existing empty session for same project path', () => {
+      const first = manager.createSession('/project/same');
+      const second = manager.createSession('/project/same');
+      expect(second.id).toBe(first.id);
+      expect(manager.listSessions().length).toBe(1);
+    });
+
+    it('should create new session when existing session is not empty', () => {
+      const first = manager.createSession('/project/same');
+      manager.addMessage(first.id, 'user', 'hello');
+      const second = manager.createSession('/project/same');
+      expect(second.id).not.toBe(first.id);
+      expect(manager.listSessions().length).toBe(2);
+    });
+
     it('should save session in project-based directory layout', () => {
       const session = manager.createSession('/project/path');
       const calls = vi.mocked(fs.writeFileSync).mock.calls;

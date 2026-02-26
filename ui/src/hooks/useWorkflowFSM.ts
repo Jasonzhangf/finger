@@ -15,6 +15,7 @@ import type {
   AgentFSMState,
   StateMaskConfig,
   StateSnapshot,
+  WorkflowStatus,
 } from '../api/types.js';
 import {
   mapWorkflowFSMToStatus,
@@ -29,7 +30,7 @@ export interface FSMWorkflowState {
   workflowId: string;
   sessionId: string;
   fsmState: WorkflowFSMState;
-  simplifiedStatus: 'planning' | 'executing' | 'completed' | 'failed' | 'paused';
+  simplifiedStatus: WorkflowStatus;
   visibleState: WorkflowFSMState | null; // After mask
 }
 
@@ -61,7 +62,7 @@ export interface UseWorkflowFSMReturn {
 
 export function useWorkflowFSM(
   workflowId: string,
-  sessionId: string
+  _sessionId: string
 ): UseWorkflowFSMReturn {
   const [workflow, setWorkflow] = useState<FSMWorkflowState | null>(null);
   const [tasks, setTasks] = useState<FSMTaskState[]>([]);
@@ -112,7 +113,7 @@ export function useWorkflowFSM(
         visibleState: applyWorkflowMask(snapshot.fsmState),
       });
 
-      setTasks(snapshot.tasks.map(task => ({
+      setTasks(snapshot.tasks.map((task) => ({
         id: task.id,
         fsmState: task.fsmState,
         simplifiedStatus: task.simplifiedStatus,
@@ -120,7 +121,7 @@ export function useWorkflowFSM(
         assignee: task.assignee,
       })));
 
-      setAgents(snapshot.agents.map(agent => ({
+      setAgents(snapshot.agents.map((agent) => ({
         id: agent.id,
         fsmState: agent.fsmState,
         simplifiedStatus: agent.simplifiedStatus,

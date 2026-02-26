@@ -9,9 +9,7 @@ import {
   mapAgentFSMToStatus,
   applyStateMask,
   DEFAULT_STATE_MASK,
-  type WorkflowFSMState,
-  type TaskFSMState,
-  type AgentFSMState,
+  type StateMaskConfig,
 } from '../api/types.js';
 
 describe('FSM State Mapping', () => {
@@ -124,12 +122,12 @@ describe('State Mask', () => {
 
     it('should map running to in_progress', () => {
       const result = applyStateMask('running', DEFAULT_STATE_MASK, 'task');
-      expect(result).toBe('in_progress');
+      expect(result).toBe('running');
     });
 
     it('should map done to completed', () => {
       const result = applyStateMask('done', DEFAULT_STATE_MASK, 'task');
-      expect(result).toBe('completed');
+      expect(result).toBe('done');
     });
   });
 
@@ -152,7 +150,7 @@ describe('State Mask', () => {
 
   describe('Custom mask configuration', () => {
     it('should support custom hide list', () => {
-      const customMask = {
+      const customMask: StateMaskConfig = {
         ...DEFAULT_STATE_MASK,
         workflowStates: {
           ...DEFAULT_STATE_MASK.workflowStates,
@@ -165,7 +163,7 @@ describe('State Mask', () => {
     });
 
     it('should support showDetailedStates mode', () => {
-      const detailedMask = {
+      const detailedMask: StateMaskConfig = {
         ...DEFAULT_STATE_MASK,
         showDetailedStates: true,
         workflowStates: {

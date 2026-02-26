@@ -322,7 +322,7 @@ export class RuntimeFacade {
         agentId,
         sessionId,
         timestamp: new Date().toISOString(),
-        payload: { output: result, duration },
+        payload: { input, output: result, duration },
       });
 
       if (toolName === 'view_image') {
@@ -341,7 +341,7 @@ export class RuntimeFacade {
         agentId,
         sessionId,
         timestamp: new Date().toISOString(),
-        payload: { error: String(error), duration },
+        payload: { input, error: String(error), duration },
       });
 
       throw error;

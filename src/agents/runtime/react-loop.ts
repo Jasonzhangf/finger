@@ -193,7 +193,7 @@ export class ReActLoop {
     const sessionId = stateLike.workflowId || stateLike.epicId || this.config.agentId || 'unknown';
     const agentId = this.config.agentId || 'unknown-agent';
 
-    while (true) {
+    for (;;) {
       const round = this.state.iterations.length + 1;
       
       // Emit phase transition for UI progress - round start

@@ -117,7 +117,8 @@ export class UnifiedEventBus {
       }
     });
 
-    // 5. 广播到 WebSocket 客户端（服务端过滤）n    const broadcastStart = Date.now();n    this.broadcastToWsClients(event);n    const broadcastTime = Date.now() - broadcastStart;nn    // 6. 记录性能指标n    performanceMonitor.recordEvent(1, broadcastTime);
+    // 5. 广播到 WebSocket 客户端（服务端过滤）
+    this.broadcastToWsClients(event);
   }
 
   /**

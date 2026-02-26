@@ -6,7 +6,7 @@
 import type { 
   RuntimeEvent, 
   WorkflowExecutionState,
-  AgentState,
+  AgentRuntime,
   WsMessage 
 } from '../api/types.js';
 import { getWebSocket, WebSocketClient } from '../api/websocket.js';
@@ -20,14 +20,13 @@ export interface TestAPI {
   getExecutionState(): Promise<WorkflowExecutionState>;
   subscribeToEvents(callback: (event: RuntimeEvent) => void): () => void;
   waitForWorkflowStatus(status: string, timeout?: number): Promise<boolean>;
-  listAgents(): Promise<AgentState[]>;
+  listAgents(): Promise<AgentRuntime[]>;
 }
 
 class TestAPIImpl implements TestAPI {
   private ws: WebSocketClient | null = null;
   private eventSubscribers: Set<(event: RuntimeEvent) => void> = new Set();
   private collectedEvents: RuntimeEvent[] = [];
-  private serverStarted = false;
 
   async startServer(): Promise<void> {
     // 检查服务器健康状态
@@ -35,8 +34,6 @@ class TestAPIImpl implements TestAPI {
     if (!health || !health.ok) {
       throw new Error('Server is not running. Please start server manually.');
     }
-    this.serverStarted = true;
-    
     // 建立 WebSocket 连接
     this.ws = getWebSocket();
     await this.ws.connect();
@@ -56,7 +53,6 @@ class TestAPIImpl implements TestAPI {
       this.ws.disconnect();
       this.ws = null;
     }
-    this.serverStarted = false;
   }
 
   async resetState(): Promise<void> {
@@ -149,7 +145,7 @@ class TestAPIImpl implements TestAPI {
     });
   }
 
-  async listAgents(): Promise<AgentState[]> {
+  async listAgents(): Promise<AgentRuntime[]> {
     const state = await this.getExecutionState();
     return state.agents;
   }
@@ -159,7 +155,6 @@ class TestAPIImpl implements TestAPI {
       const payload = msg.payload as Record<string, unknown>;
       return {
         id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-        type: 'agent_update',
         role: 'agent',
         agentId: payload.agentId as string,
         agentName: payload.agentId as string,
@@ -173,7 +168,6 @@ class TestAPIImpl implements TestAPI {
     
     return {
       id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-      type: msg.type,
       role: 'system',
       kind: 'status',
       content: JSON.stringify(msg.payload),

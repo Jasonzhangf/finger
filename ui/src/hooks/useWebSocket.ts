@@ -41,5 +41,8 @@ export function useWebSocket(onMessage: (msg: WsMessage) => void) {
    send: useCallback((msg: unknown) => {
      wsRef.current.send(msg);
    }, []),
+   getClientId: useCallback(() => {
+     return wsRef.current.getClientId();
+   }, []),
  };
 }

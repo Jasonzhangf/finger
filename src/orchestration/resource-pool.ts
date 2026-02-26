@@ -290,7 +290,7 @@ export class ResourcePool {
     for (const resourceId of allocation.allocatedResources) {
       const resource = this.resources.get(resourceId);
       if (resource) {
-        resource.status = 'available';
+        resource.status = (resource.currentSessionId || resource.currentWorkflowId) ? 'deployed' : 'available';
         resource.currentTaskId = undefined;
         if (reason === 'error') {
           resource.errorCount++;
@@ -303,7 +303,7 @@ export class ResourcePool {
     // Update allocation record
     if (reason === 'completed') {
       allocation.status = 'completed';
-    } else if (reason === 'failed') {
+    } else if (reason === 'failed' || reason === 'error') {
       allocation.status = 'failed';
     } else if (reason === 'blocked') {
       allocation.status = 'blocked';
@@ -407,7 +407,9 @@ export class ResourcePool {
   setResourceBusy(resourceId: string, busy: boolean): boolean {
     const resource = this.resources.get(resourceId);
     if (!resource) return false;
-    resource.status = busy ? 'busy' : 'available';
+    resource.status = busy
+      ? 'busy'
+      : ((resource.currentSessionId || resource.currentWorkflowId) ? 'deployed' : 'available');
     this.savePool();
     return true;
   }

@@ -114,7 +114,6 @@ class UITestHelperImpl implements UITestHelper {
 
   async waitForResponse(timeout = 30000): Promise<RuntimeEvent[]> {
     const events: RuntimeEvent[] = [];
-    const startTime = Date.now();
 
     return new Promise((resolve) => {
       const unsubscribe = this.subscribeToEvents((event) => {
@@ -183,10 +182,11 @@ class UITestHelperImpl implements UITestHelper {
     return 'system';
   }
 
-  private inferKind(type: string, payload: Record<string, unknown>): 'thought' | 'action' | 'observation' | 'status' {
-    if (payload.step?.thought) return 'thought';
-    if (payload.step?.action) return 'action';
-    if (payload.step?.observation) return 'observation';
+  private inferKind(_type: string, payload: Record<string, unknown>): 'thought' | 'action' | 'observation' | 'status' {
+    const step = isRecord(payload.step) ? payload.step : undefined;
+    if (typeof step?.thought === 'string' && step.thought.length > 0) return 'thought';
+    if (typeof step?.action === 'string' && step.action.length > 0) return 'action';
+    if (typeof step?.observation === 'string' && step.observation.length > 0) return 'observation';
     return 'status';
   }
 
@@ -201,6 +201,10 @@ class UITestHelperImpl implements UITestHelper {
 
 export function createUITestHelper(): UITestHelper {
   return new UITestHelperImpl();
+}
+
+function isRecord(value: unknown): value is Record<string, string> {
+  return typeof value === 'object' && value !== null;
 }
 
 // 导出单例

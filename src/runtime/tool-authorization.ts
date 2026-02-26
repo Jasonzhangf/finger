@@ -11,7 +11,7 @@ export interface ToolAuthorizationGrant {
   remainingUses: number;
 }
 
-interface ToolAuthorizationState extends ToolAuthorizationGrant {}
+type ToolAuthorizationState = ToolAuthorizationGrant;
 
 export interface AuthorizationDecision {
   allowed: boolean;

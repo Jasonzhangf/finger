@@ -146,12 +146,17 @@ describe('ChatInterface input behavior', () => {
 
   it('cycles input history with ArrowUp/ArrowDown when textarea is empty', async () => {
     const onSendMessage = vi.fn<(payload: unknown) => void>();
+    const events: RuntimeEvent[] = [
+      buildEvent({ id: 'h1', role: 'user', content: 'first command' }),
+      buildEvent({ id: 'h2', role: 'agent', content: 'ok' }),
+      buildEvent({ id: 'h3', role: 'user', content: 'second command' }),
+    ];
 
     render(
       <ChatInterface
         executionState={null}
         agents={[]}
-        events={[]}
+        events={events}
         onSendMessage={onSendMessage}
         onPause={() => undefined}
         onResume={() => undefined}
@@ -161,15 +166,6 @@ describe('ChatInterface input behavior', () => {
     );
 
     const input = screen.getByTestId('chat-input') as HTMLTextAreaElement;
-
-    fireEvent.change(input, { target: { value: 'first command' } });
-    fireEvent.keyDown(input, { key: 'Enter', shiftKey: false });
-    fireEvent.change(input, { target: { value: 'second command' } });
-    fireEvent.keyDown(input, { key: 'Enter', shiftKey: false });
-
-    await waitFor(() => {
-      expect(onSendMessage).toHaveBeenCalledTimes(2);
-    });
 
     expect(input.value).toBe('');
     fireEvent.keyDown(input, { key: 'ArrowUp' });
@@ -187,6 +183,41 @@ describe('ChatInterface input behavior', () => {
     fireEvent.keyDown(input, { key: 'ArrowDown' });
     await waitFor(() => {
       expect(input.value).toBe('');
+    });
+  });
+
+  it('replays current session user history from events with ArrowUp', async () => {
+    const onSendMessage = vi.fn<(payload: unknown) => void>();
+    const events: RuntimeEvent[] = [
+      buildEvent({ id: 'e1', role: 'user', content: 'session first' }),
+      buildEvent({ id: 'e2', role: 'agent', content: 'ok' }),
+      buildEvent({ id: 'e3', role: 'user', content: 'session second' }),
+    ];
+
+    render(
+      <ChatInterface
+        executionState={null}
+        agents={[]}
+        events={events}
+        onSendMessage={onSendMessage}
+        onPause={() => undefined}
+        onResume={() => undefined}
+        isPaused={false}
+        isConnected={true}
+      />,
+    );
+
+    const input = screen.getByTestId('chat-input') as HTMLTextAreaElement;
+    expect(input.value).toBe('');
+
+    fireEvent.keyDown(input, { key: 'ArrowUp' });
+    await waitFor(() => {
+      expect(input.value).toBe('session second');
+    });
+
+    fireEvent.keyDown(input, { key: 'ArrowUp' });
+    await waitFor(() => {
+      expect(input.value).toBe('session first');
     });
   });
 
@@ -274,5 +305,37 @@ describe('ChatInterface tool render', () => {
     );
 
     expect(screen.getByRole('button', { name: '加载更早消息（5 条）' })).not.toBeNull();
+  });
+
+  it('renders tool output collapsed by default', () => {
+    const onSendMessage = vi.fn<(payload: unknown) => void>();
+    const events: RuntimeEvent[] = [
+      buildEvent({
+        role: 'agent',
+        kind: 'observation',
+        toolName: 'exec_command',
+        toolStatus: 'success',
+        content: '工具执行成功：exec_command · 命令 pwd',
+        toolOutput: 'Output:\n/Volumes/extension/code/finger',
+      }),
+    ];
+
+    const { container } = render(
+      <ChatInterface
+        executionState={null}
+        agents={[]}
+        events={events}
+        onSendMessage={onSendMessage}
+        onPause={() => undefined}
+        onResume={() => undefined}
+        isPaused={false}
+        isConnected={true}
+      />,
+    );
+
+    const details = container.querySelector('details.tool-output-details');
+    expect(details).not.toBeNull();
+    expect(details?.hasAttribute('open')).toBe(false);
+    expect(screen.getByText(/查看工具输出：/)).not.toBeNull();
   });
 });

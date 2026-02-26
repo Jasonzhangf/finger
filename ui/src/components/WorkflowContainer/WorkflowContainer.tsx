@@ -127,10 +127,13 @@ export const WorkflowContainer: React.FC = () => {
     error,
     pauseWorkflow,
     resumeWorkflow,
+    interruptCurrentTurn,
     sendUserInput,
     editRuntimeEvent,
     deleteRuntimeEvent,
     agentRunStatus,
+    runtimeOverview,
+    toolPanelOverview,
     contextEditableEventIds,
     isConnected,
   } = useWorkflowExecution(sessionId);
@@ -203,17 +206,20 @@ export const WorkflowContainer: React.FC = () => {
       events={runtimeEvents}
       contextEditableEventIds={contextEditableEventIds}
       agentRunStatus={agentRunStatus}
+      runtimeOverview={runtimeOverview}
+      toolPanelOverview={toolPanelOverview}
       onSendMessage={sendUserInput}
       onEditMessage={editRuntimeEvent}
       onDeleteMessage={deleteRuntimeEvent}
       onCreateNewSession={handleCreateNewSession}
       onPause={pauseWorkflow}
       onResume={resumeWorkflow}
+      onInterruptTurn={interruptCurrentTurn}
       isPaused={executionState?.paused || false}
       isConnected={isConnected}
       inputCapability={chatInputCapability}
     />
-  ), [sessionId, executionState, runtimeAgents, runtimeEvents, contextEditableEventIds, agentRunStatus, sendUserInput, editRuntimeEvent, deleteRuntimeEvent, handleCreateNewSession, pauseWorkflow, resumeWorkflow, isConnected, chatInputCapability]);
+  ), [sessionId, executionState, runtimeAgents, runtimeEvents, contextEditableEventIds, agentRunStatus, runtimeOverview, sendUserInput, editRuntimeEvent, deleteRuntimeEvent, handleCreateNewSession, pauseWorkflow, resumeWorkflow, interruptCurrentTurn, isConnected, chatInputCapability]);
 
   // Use overlay instead of early return to maintain hook consistency
   const loadingOverlay = isLoading || isLoadingSessions ? (

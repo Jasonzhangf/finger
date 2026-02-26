@@ -102,6 +102,45 @@ describe('chat-codex module', () => {
     expect(payload.error).toBe('kernel failed');
   });
 
+  it('retries timeout errors and succeeds within retry window', async () => {
+    runTurnMock
+      .mockRejectedValueOnce(new Error('chat-codex timed out after 600000ms'))
+      .mockRejectedValueOnce(new Error('chat-codex timed out after 600000ms'))
+      .mockRejectedValueOnce(new Error('chat-codex timed out after 600000ms'))
+      .mockResolvedValueOnce({
+        reply: 'RETRY_OK',
+        events: [],
+        usedBinaryPath: '/tmp/finger-kernel-bridge-bin',
+      });
+    const onLoopEvent = vi.fn();
+    const module = createChatCodexModule({ onLoopEvent }, runner);
+
+    const result = await module.handle({ text: 'retry timeout' });
+    const payload = asRecord(result);
+
+    expect(payload.success).toBe(true);
+    expect(payload.response).toBe('RETRY_OK');
+    expect(runTurnMock).toHaveBeenCalledTimes(4);
+    const retryEvents = onLoopEvent.mock.calls
+      .map((call) => call[0] as Record<string, unknown>)
+      .filter((event) => event.phase === 'kernel_event')
+      .map((event) => asRecord(event.payload))
+      .filter((payload) => payload.type === 'turn_retry');
+    expect(retryEvents).toHaveLength(3);
+  });
+
+  it('stops after retry limit is exhausted', async () => {
+    runTurnMock.mockRejectedValue(new Error('chat-codex timed out after 600000ms'));
+    const module = createChatCodexModule({}, runner);
+
+    const result = await module.handle({ text: 'retry timeout fail' });
+    const payload = asRecord(result);
+
+    expect(runTurnMock).toHaveBeenCalledTimes(6);
+    expect(payload.success).toBe(false);
+    expect(payload.error).toBe('chat-codex timed out after 600000ms');
+  });
+
   it('forwards metadata.inputItems into kernel user turn items', async () => {
     runTurnMock.mockResolvedValue({
       reply: 'IMAGE_OK',
@@ -157,5 +196,197 @@ describe('chat-codex module', () => {
         ],
       }),
     );
+  });
+
+  it('emits synthetic tool events and keeps task_complete tool trace payload', async () => {
+    const onLoopEvent = vi.fn();
+    runTurnMock.mockResolvedValue({
+      reply: 'DONE',
+      events: [
+        {
+          id: 'turn-1',
+          msg: {
+            type: 'task_complete',
+            last_agent_message: 'DONE',
+            metadata_json: JSON.stringify({
+              tool_trace: [
+                {
+                  call_id: 'call_1',
+                  tool: 'shell.exec',
+                  status: 'ok',
+                  input: { cmd: 'pwd' },
+                  output: { stdout: '/tmp' },
+                  duration_ms: 12,
+                },
+              ],
+            }),
+          },
+        },
+      ],
+      usedBinaryPath: '/tmp/finger-kernel-bridge-bin',
+    });
+
+    const module = createChatCodexModule({ onLoopEvent }, runner);
+    await module.handle({ text: 'hello' });
+
+    const kernelEvents = onLoopEvent.mock.calls
+      .map((call) => call[0] as Record<string, unknown>)
+      .filter((event) => event.phase === 'kernel_event');
+    const eventTypes = kernelEvents
+      .map((event) => asRecord(event.payload).type)
+      .filter((type): type is string => typeof type === 'string');
+    expect(eventTypes).toContain('tool_call');
+    expect(eventTypes).toContain('tool_result');
+    expect(eventTypes).toContain('task_complete');
+
+    const taskComplete = kernelEvents.find((event) => asRecord(event.payload).type === 'task_complete');
+    expect(taskComplete).toBeDefined();
+    const payload = asRecord(taskComplete?.payload);
+    expect(payload.syntheticToolEvents).toBe(true);
+    expect(payload.toolTrace).toEqual([
+      {
+        callId: 'call_1',
+        tool: 'shell.exec',
+        status: 'ok',
+        input: { cmd: 'pwd' },
+        output: { stdout: '/tmp' },
+        durationMs: 12,
+      },
+    ]);
+  });
+
+  it('passes through realtime kernel tool events from rust protocol', async () => {
+    const onLoopEvent = vi.fn();
+    runTurnMock.mockResolvedValue({
+      reply: 'DONE',
+      events: [
+        {
+          id: 'turn-2',
+          msg: {
+            type: 'tool_call',
+            seq: 1,
+            call_id: 'call_rt_1',
+            tool_name: 'exec_command',
+            input: { cmd: 'pwd' },
+          },
+        },
+        {
+          id: 'turn-2',
+          msg: {
+            type: 'tool_result',
+            seq: 2,
+            call_id: 'call_rt_1',
+            tool_name: 'exec_command',
+            output: { ok: true },
+            duration_ms: 18,
+          },
+        },
+        {
+          id: 'turn-2',
+          msg: {
+            type: 'task_complete',
+            last_agent_message: 'DONE',
+          },
+        },
+      ],
+      usedBinaryPath: '/tmp/finger-kernel-bridge-bin',
+    });
+
+    const module = createChatCodexModule({ onLoopEvent }, runner);
+    await module.handle({ text: 'hello' });
+
+    const kernelEvents = onLoopEvent.mock.calls
+      .map((call) => call[0] as Record<string, unknown>)
+      .filter((event) => event.phase === 'kernel_event');
+    const toolCallPayload = kernelEvents
+      .map((event) => asRecord(event.payload))
+      .find((payload) => payload.type === 'tool_call');
+    const toolResultPayload = kernelEvents
+      .map((event) => asRecord(event.payload))
+      .find((payload) => payload.type === 'tool_result');
+
+    expect(toolCallPayload).toMatchObject({
+      type: 'tool_call',
+      seq: 1,
+      toolName: 'exec_command',
+      toolId: 'call_rt_1',
+      input: { cmd: 'pwd' },
+    });
+    expect(toolResultPayload).toMatchObject({
+      type: 'tool_result',
+      seq: 2,
+      toolName: 'exec_command',
+      toolId: 'call_rt_1',
+      duration: 18,
+      output: { ok: true },
+    });
+  });
+
+  it('marks task_complete with realtimeToolEvents when streamed tool events already emitted', async () => {
+    const onLoopEvent = vi.fn();
+    const streamingRunner: ChatCodexRunner = {
+      runTurn: async (_text, _items, context) => {
+        context?.onKernelEvent?.({
+          id: 'turn-stream',
+          msg: {
+            type: 'tool_call',
+            seq: 1,
+            call_id: 'call_stream_1',
+            tool_name: 'exec_command',
+            input: { cmd: 'pwd' },
+          },
+        });
+        context?.onKernelEvent?.({
+          id: 'turn-stream',
+          msg: {
+            type: 'tool_result',
+            seq: 2,
+            call_id: 'call_stream_1',
+            tool_name: 'exec_command',
+            output: { ok: true, result: { stdout: '/tmp' } },
+            duration_ms: 7,
+          },
+        });
+        const taskCompleteEvent = {
+          id: 'turn-stream',
+          msg: {
+            type: 'task_complete',
+            last_agent_message: 'DONE',
+            metadata_json: JSON.stringify({
+              tool_trace: [
+                {
+                  call_id: 'call_stream_1',
+                  tool: 'exec_command',
+                  status: 'ok',
+                  input: { cmd: 'pwd' },
+                  output: { ok: true, result: { stdout: '/tmp' } },
+                  duration_ms: 7,
+                },
+              ],
+            }),
+          },
+        } as const;
+        context?.onKernelEvent?.(taskCompleteEvent);
+        return {
+          reply: 'DONE',
+          events: [taskCompleteEvent],
+          usedBinaryPath: '/tmp/finger-kernel-bridge-bin',
+        };
+      },
+    };
+
+    const module = createChatCodexModule({ onLoopEvent }, streamingRunner);
+    await module.handle({ text: 'stream test' });
+
+    const kernelPayloads = onLoopEvent.mock.calls
+      .map((call) => call[0] as Record<string, unknown>)
+      .filter((event) => event.phase === 'kernel_event')
+      .map((event) => asRecord(event.payload));
+
+    expect(kernelPayloads.filter((payload) => payload.type === 'tool_call')).toHaveLength(1);
+    expect(kernelPayloads.filter((payload) => payload.type === 'tool_result')).toHaveLength(1);
+    const taskCompletePayload = kernelPayloads.find((payload) => payload.type === 'task_complete');
+    expect(taskCompletePayload).toBeDefined();
+    expect(taskCompletePayload?.realtimeToolEvents).toBe(true);
   });
 });

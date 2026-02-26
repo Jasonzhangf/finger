@@ -3,7 +3,7 @@
  * 验证 UI 和后端事件流的完整连接
  */
 
-import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { createUITestHelper } from './ui-test-helper.js';
 
 describe('UI Integration Tests', () => {

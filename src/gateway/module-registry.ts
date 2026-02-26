@@ -152,6 +152,8 @@ export function installGatewayFromCommand(options: {
   supportedModes: Array<'sync' | 'async'>;
   defaultMode: 'sync' | 'async';
   defaultTarget?: string;
+  requestTimeoutMs?: number;
+  ackTimeoutMs?: number;
   helpArgs?: string[];
   versionArgs?: string[];
 }): ResolvedGatewayModule {
@@ -174,6 +176,12 @@ export function installGatewayFromCommand(options: {
     process: {
       command: options.command,
       args: options.args ?? [],
+      ...(typeof options.requestTimeoutMs === 'number' && Number.isFinite(options.requestTimeoutMs)
+        ? { requestTimeoutMs: Math.max(1, Math.floor(options.requestTimeoutMs)) }
+        : {}),
+      ...(typeof options.ackTimeoutMs === 'number' && Number.isFinite(options.ackTimeoutMs)
+        ? { ackTimeoutMs: Math.max(1, Math.floor(options.ackTimeoutMs)) }
+        : {}),
       helpArgs: options.helpArgs ?? ['--help'],
       versionArgs: options.versionArgs ?? ['--version'],
     },

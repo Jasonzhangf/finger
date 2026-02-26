@@ -3,11 +3,11 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use finger_kernel_protocol::{
-    ErrorEvent, Event, EventMsg, InputItem, Op, SessionConfiguredEvent, Submission, TaskCompleteEvent,
-    TaskStartedEvent, TurnAbortReason, TurnAbortedEvent, UserTurnOptions,
+    ErrorEvent, Event, EventMsg, InputItem, Op, SessionConfiguredEvent, Submission,
+    TaskCompleteEvent, TaskStartedEvent, TurnAbortReason, TurnAbortedEvent, UserTurnOptions,
 };
 use thiserror::Error;
-use tokio::sync::mpsc;
+use tokio::sync::mpsc::{self, UnboundedSender};
 use tokio::task::JoinHandle;
 
 #[derive(Debug, Clone)]
@@ -41,14 +41,22 @@ pub struct TurnRequest {
 
 #[async_trait]
 pub trait ChatEngine: Send + Sync {
-    async fn run_turn(&self, request: &TurnRequest) -> Result<TurnRunResult, String>;
+    async fn run_turn(
+        &self,
+        request: &TurnRequest,
+        progress_tx: Option<UnboundedSender<EventMsg>>,
+    ) -> Result<TurnRunResult, String>;
 }
 
 pub struct EchoChatEngine;
 
 #[async_trait]
 impl ChatEngine for EchoChatEngine {
-    async fn run_turn(&self, request: &TurnRequest) -> Result<TurnRunResult, String> {
+    async fn run_turn(
+        &self,
+        request: &TurnRequest,
+        _progress_tx: Option<UnboundedSender<EventMsg>>,
+    ) -> Result<TurnRunResult, String> {
         let last = request.items.iter().rev().find_map(|item| match item {
             InputItem::Text { text } => Some(text.clone()),
             InputItem::Image { .. } | InputItem::LocalImage { .. } => None,
@@ -89,7 +97,12 @@ impl KernelRuntime {
         let (submission_tx, submission_rx) = mpsc::channel(config.channel_capacity);
         let (event_tx, event_rx) = mpsc::channel(config.channel_capacity);
 
-        let loop_handle = tokio::spawn(submission_loop(config, submission_rx, event_tx, chat_engine));
+        let loop_handle = tokio::spawn(submission_loop(
+            config,
+            submission_rx,
+            event_tx,
+            chat_engine,
+        ));
 
         Self {
             submission_tx,
@@ -139,7 +152,10 @@ async fn submission_loop(
     let mut running_task: Option<RunningTask> = None;
 
     while let Some(submission) = submission_rx.recv().await {
-        if running_task.as_ref().is_some_and(|task| task.handle.is_finished()) {
+        if running_task
+            .as_ref()
+            .is_some_and(|task| task.handle.is_finished())
+        {
             running_task = None;
         }
 
@@ -236,7 +252,11 @@ fn spawn_task(
             Event {
                 id: task_sub_id.clone(),
                 msg: EventMsg::TaskStarted(TaskStartedEvent {
-                    model_context_window: None,
+                    model_context_window: initial_request
+                        .options
+                        .context_window
+                        .as_ref()
+                        .and_then(|cfg| cfg.max_input_tokens),
                 }),
             },
         )
@@ -248,7 +268,36 @@ fn spawn_task(
 
         loop {
             if !pending.items.is_empty() {
-                match chat_engine.run_turn(&pending).await {
+                let (progress_tx, mut progress_rx) = mpsc::unbounded_channel::<EventMsg>();
+                let progress_event_tx = event_tx.clone();
+                let progress_event_id = task_sub_id.clone();
+                let forwarder = tokio::spawn(async move {
+                    while let Some(progress_msg) = progress_rx.recv().await {
+                        let _ = send_event(
+                            &progress_event_tx,
+                            Event {
+                                id: progress_event_id.clone(),
+                                msg: progress_msg,
+                            },
+                        )
+                        .await;
+                    }
+                });
+
+                let turn_result = chat_engine.run_turn(&pending, Some(progress_tx)).await;
+                if let Err(error) = forwarder.await {
+                    let message = format!("progress forwarder failed: {error}");
+                    eprintln!("{message}");
+                    let _ = send_event(
+                        &event_tx,
+                        Event {
+                            id: task_sub_id.clone(),
+                            msg: EventMsg::Error(ErrorEvent { message }),
+                        },
+                    )
+                    .await;
+                }
+                match turn_result {
                     Ok(turn_result) => {
                         if turn_result.last_agent_message.is_some() {
                             last_agent_message = turn_result.last_agent_message;
@@ -302,14 +351,20 @@ fn spawn_task(
     }
 }
 
-async fn send_event(event_tx: &mpsc::Sender<Event>, event: Event) -> Result<(), mpsc::error::SendError<Event>> {
+async fn send_event(
+    event_tx: &mpsc::Sender<Event>,
+    event: Event,
+) -> Result<(), mpsc::error::SendError<Event>> {
     event_tx.send(event).await
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use finger_kernel_protocol::{EventMsg, InputItem, Op, Submission, TurnAbortReason, UserTurnOptions};
+    use finger_kernel_protocol::{
+        EventMsg, InputItem, ModelRoundEvent, Op, Submission, ToolCallEvent, ToolResultEvent,
+        TurnAbortReason, UserTurnOptions,
+    };
 
     async fn recv_event(rx: &mut mpsc::Receiver<Event>) -> Event {
         tokio::time::timeout(Duration::from_secs(2), rx.recv())
@@ -466,6 +521,110 @@ mod tests {
                 ..
             }) if message == "second"
         ));
+
+        runtime
+            .submit(Submission {
+                id: "shutdown".to_string(),
+                op: Op::Shutdown,
+            })
+            .await
+            .expect("submit shutdown");
+        runtime.join().await.expect("join runtime");
+    }
+
+    struct ProgressTestEngine;
+
+    #[async_trait]
+    impl ChatEngine for ProgressTestEngine {
+        async fn run_turn(
+            &self,
+            _request: &TurnRequest,
+            progress_tx: Option<UnboundedSender<EventMsg>>,
+        ) -> Result<TurnRunResult, String> {
+            if let Some(tx) = progress_tx {
+                let _ = tx.send(EventMsg::ModelRound(ModelRoundEvent {
+                    seq: 1,
+                    round: 1,
+                    function_calls_count: 1,
+                    reasoning_count: 0,
+                    history_items_count: 2,
+                    has_output_text: false,
+                    finish_reason: Some("tool_calls".to_string()),
+                    response_status: Some("completed".to_string()),
+                    response_incomplete_reason: None,
+                    response_id: Some("resp_1".to_string()),
+                    input_tokens: Some(20),
+                    output_tokens: Some(10),
+                    total_tokens: Some(30),
+                    estimated_tokens_in_context_window: Some(30),
+                    estimated_tokens_compactable: Some(26),
+                    context_usage_percent: Some(10),
+                    max_input_tokens: Some(300),
+                    threshold_percent: Some(85),
+                }));
+                let _ = tx.send(EventMsg::ToolCall(ToolCallEvent {
+                    seq: 2,
+                    call_id: "call_1".to_string(),
+                    tool_name: "shell.exec".to_string(),
+                    input: serde_json::json!({"command":"pwd"}),
+                }));
+                let _ = tx.send(EventMsg::ToolResult(ToolResultEvent {
+                    seq: 3,
+                    call_id: "call_1".to_string(),
+                    tool_name: "shell.exec".to_string(),
+                    output: serde_json::json!({"ok": true}),
+                    duration_ms: 12,
+                }));
+            }
+            Ok(TurnRunResult {
+                last_agent_message: Some("done".to_string()),
+                metadata_json: None,
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn forwards_progress_events_before_task_complete() {
+        let mut runtime =
+            KernelRuntime::spawn_with_engine(KernelConfig::default(), Arc::new(ProgressTestEngine));
+        let _ = recv_event(runtime.events_mut()).await;
+
+        runtime
+            .submit(Submission {
+                id: "sub-progress".to_string(),
+                op: Op::UserTurn {
+                    items: vec![InputItem::Text {
+                        text: "hello".to_string(),
+                    }],
+                    options: UserTurnOptions::default(),
+                },
+            })
+            .await
+            .expect("submit turn");
+
+        let started = recv_event(runtime.events_mut()).await;
+        assert!(matches!(started.msg, EventMsg::TaskStarted(_)));
+
+        let round_event = recv_event(runtime.events_mut()).await;
+        assert!(matches!(
+            round_event.msg,
+            EventMsg::ModelRound(ModelRoundEvent { seq: 1, .. })
+        ));
+
+        let tool_call = recv_event(runtime.events_mut()).await;
+        assert!(matches!(
+            tool_call.msg,
+            EventMsg::ToolCall(ToolCallEvent { seq: 2, .. })
+        ));
+
+        let tool_result = recv_event(runtime.events_mut()).await;
+        assert!(matches!(
+            tool_result.msg,
+            EventMsg::ToolResult(ToolResultEvent { seq: 3, .. })
+        ));
+
+        let completed = recv_event(runtime.events_mut()).await;
+        assert!(matches!(completed.msg, EventMsg::TaskComplete(_)));
 
         runtime
             .submit(Submission {

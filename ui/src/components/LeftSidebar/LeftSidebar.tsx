@@ -1,5 +1,7 @@
 import { useMemo, useState, useEffect, useRef, useCallback, type FC, type MouseEvent as ReactMouseEvent } from 'react';
 import type { SessionInfo } from '../../api/types.js';
+import type { ProviderConfig } from '../../api/types.js';
+import { listProviders, selectProvider, testProvider, upsertProvider } from '../../api/client.js';
 import './LeftSidebar.css';
 
 type SidebarTab = 'project' | 'ai-provider' | 'settings';
@@ -34,6 +36,22 @@ const WORKDIR_STORAGE_KEY = 'finger-ui-workdir';
 
 function normalizePath(value: string): string {
   return value.trim().replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
+}
+
+function previewRoleLabel(role: 'user' | 'assistant' | 'system' | 'orchestrator'): string {
+  if (role === 'user') return '用户';
+  if (role === 'assistant') return '助手';
+  if (role === 'orchestrator') return '编排';
+  return '系统';
+}
+
+function buildSessionPreviewLines(session: SessionInfo): string[] {
+  const previewMessages = Array.isArray(session.previewMessages) ? session.previewMessages : [];
+  if (previewMessages.length === 0) return [];
+  return previewMessages.map((item) => {
+    const when = new Date(item.timestamp).toLocaleTimeString();
+    return `[${when}] ${previewRoleLabel(item.role)}: ${item.summary}`;
+  });
 }
 
 interface DirectoryPickerHandle {
@@ -448,6 +466,7 @@ const ProjectTab: FC<ProjectTabProps> = ({
             {filteredSessions.map((session) => {
               const isSelected = selectedSessionIds.has(session.id);
               const isActive = currentSession?.id === session.id;
+              const previewLines = buildSessionPreviewLines(session);
               return (
                 <button
                   key={session.id}
@@ -468,6 +487,9 @@ const ProjectTab: FC<ProjectTabProps> = ({
                   <span className="session-content">
                     <span className="session-name">{session.name}</span>
                     <span className="session-meta">{new Date(session.lastAccessedAt).toLocaleString()}</span>
+                    {previewLines.map((line, index) => (
+                      <span className="session-preview" key={`${session.id}-preview-${index}`}>{line}</span>
+                    ))}
                     <span className="session-meta">{session.id}</span>
                   </span>
                 </button>
@@ -520,25 +542,128 @@ const ProjectTab: FC<ProjectTabProps> = ({
   );
 };
 
-const AIProviderTab = () => (
-  <div className="tab-content">
-    <div className="provider-list">
-      <div className="provider-item">
-        <span>OpenAI</span>
-        <span className="status connected">Connected</span>
+const AIProviderTab: FC = () => {
+  const [providers, setProviders] = useState<ProviderConfig[]>([]);
+  const [isLoading, setIsLoading] = useState(false);
+  const [hint, setHint] = useState<string | null>(null);
+  const [busyProviderId, setBusyProviderId] = useState<string | null>(null);
+
+  const refreshProviders = useCallback(async () => {
+    setIsLoading(true);
+    try {
+      const next = await listProviders();
+      setProviders(next);
+      setHint(null);
+    } catch (error) {
+      setHint(error instanceof Error ? error.message : String(error));
+    } finally {
+      setIsLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    void refreshProviders();
+  }, [refreshProviders]);
+
+  const handleSelectProvider = useCallback(async (providerId: string) => {
+    setBusyProviderId(providerId);
+    try {
+      await selectProvider(providerId);
+      await refreshProviders();
+      setHint(`已切换 provider: ${providerId}`);
+    } catch (error) {
+      setHint(error instanceof Error ? error.message : String(error));
+    } finally {
+      setBusyProviderId(null);
+    }
+  }, [refreshProviders]);
+
+  const handleTestProvider = useCallback(async (providerId: string) => {
+    setBusyProviderId(providerId);
+    try {
+      const result = await testProvider(providerId);
+      setHint(`${providerId}: ${result.message}`);
+    } catch (error) {
+      setHint(error instanceof Error ? error.message : String(error));
+    } finally {
+      setBusyProviderId(null);
+    }
+  }, []);
+
+  const handleEnsureRoutecodex = useCallback(async () => {
+    setBusyProviderId('routecodex-5520');
+    try {
+      await upsertProvider({
+        id: 'routecodex-5520',
+        name: 'routecodex-local-5520',
+        baseUrl: 'http://127.0.0.1:5520',
+        wireApi: 'responses',
+        select: false,
+      });
+      await refreshProviders();
+      setHint('已写入 routecodex-5520 配置');
+    } catch (error) {
+      setHint(error instanceof Error ? error.message : String(error));
+    } finally {
+      setBusyProviderId(null);
+    }
+  }, [refreshProviders]);
+
+  return (
+    <div className="tab-content">
+      <div className="provider-list">
+        {providers.map((provider) => {
+          const active = provider.isActive === true;
+          const busy = busyProviderId === provider.id;
+          return (
+            <div key={provider.id} className={`provider-item ${active ? 'active' : ''}`}>
+              <div className="provider-main">
+                <span className="provider-name">
+                  {provider.name}
+                  {active ? ' (当前)' : ''}
+                </span>
+                <span className={`status ${provider.status}`}>
+                  {provider.status === 'connected' ? 'Connected' : provider.status === 'error' ? 'Error' : 'Idle'}
+                </span>
+              </div>
+              <div className="provider-meta">{provider.baseUrl}</div>
+              <div className="provider-meta">
+                {provider.model ? `model=${provider.model}` : 'model=default'}
+              </div>
+              <div className="provider-actions">
+                <button
+                  type="button"
+                  onClick={() => {
+                    void handleTestProvider(provider.id);
+                  }}
+                  disabled={busy}
+                >
+                  测试
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    void handleSelectProvider(provider.id);
+                  }}
+                  disabled={busy || active}
+                >
+                  切换
+                </button>
+              </div>
+            </div>
+          );
+        })}
       </div>
-      <div className="provider-item">
-        <span>Anthropic</span>
-        <span className="status disconnected">Not configured</span>
-      </div>
-      <div className="provider-item">
-        <span>Local (Ollama)</span>
-        <span className="status disconnected">Offline</span>
-      </div>
+      <button className="add-provider-btn" type="button" onClick={() => { void handleEnsureRoutecodex(); }} disabled={busyProviderId === 'routecodex-5520'}>
+        + 添加 5520 RouteCodex
+      </button>
+      <button className="add-provider-btn secondary" type="button" onClick={() => { void refreshProviders(); }} disabled={isLoading}>
+        刷新 Provider 列表
+      </button>
+      {hint && <div className="provider-hint">{hint}</div>}
     </div>
-    <button className="add-provider-btn" type="button">+ Add Provider</button>
-  </div>
-);
+  );
+};
 
 const SettingsTab = () => (
   <div className="tab-content">

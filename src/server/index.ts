@@ -30,6 +30,7 @@ import { resumableSessionManager } from '../orchestration/resumable-session.js';
 import { echoInput, echoOutput } from '../agents/test/mock-echo-agent.js';
 import {
   CHAT_CODEX_CODING_CLI_ALLOWED_TOOLS,
+  ProcessChatCodexRunner,
   createChatCodexModule,
   type ChatCodexLoopEvent,
 } from '../agents/chat-codex/chat-codex-module.js';
@@ -42,6 +43,7 @@ import type { Attachment } from '../runtime/events.js';
 import { inputLockManager } from '../runtime/input-lock.js';
 import {
   listKernelProviders,
+  resolveActiveKernelProviderId,
   selectKernelProvider,
   testKernelProvider,
   upsertKernelProvider,
@@ -60,7 +62,16 @@ import {
 } from '../blocks/index.js';
 
 const FINGER_HOME = join(homedir(), '.finger');
-const BLOCKING_MESSAGE_TIMEOUT_MS = 300000;
+const ERROR_SAMPLE_DIR = join(FINGER_HOME, 'errorsamples');
+const BLOCKING_MESSAGE_TIMEOUT_MS = Number.isFinite(Number(process.env.FINGER_BLOCKING_MESSAGE_TIMEOUT_MS))
+  ? Math.max(1000, Math.floor(Number(process.env.FINGER_BLOCKING_MESSAGE_TIMEOUT_MS)))
+  : 600_000;
+const BLOCKING_MESSAGE_MAX_RETRIES = Number.isFinite(Number(process.env.FINGER_BLOCKING_MESSAGE_MAX_RETRIES))
+  ? Math.max(0, Math.floor(Number(process.env.FINGER_BLOCKING_MESSAGE_MAX_RETRIES)))
+  : 5;
+const BLOCKING_MESSAGE_RETRY_BASE_MS = Number.isFinite(Number(process.env.FINGER_BLOCKING_MESSAGE_RETRY_BASE_MS))
+  ? Math.max(100, Math.floor(Number(process.env.FINGER_BLOCKING_MESSAGE_RETRY_BASE_MS)))
+  : 750;
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -96,6 +107,25 @@ function appendSessionLoopLog(event: ChatCodexLoopEvent): void {
     appendFileSync(logPath, `${JSON.stringify(event)}\n`, 'utf-8');
   } catch (error) {
     console.error('[Server] append session loop log failed:', error);
+  }
+}
+
+function writeMessageErrorSample(payload: Record<string, unknown>): void {
+  try {
+    if (!existsSync(ERROR_SAMPLE_DIR)) {
+      mkdirSync(ERROR_SAMPLE_DIR, { recursive: true });
+    }
+    const now = new Date();
+    const fileName = `message-error-${now.toISOString().replace(/[:.]/g, '-')}-${Math.random().toString(36).slice(2, 8)}.json`;
+    const filePath = join(ERROR_SAMPLE_DIR, fileName);
+    const content = {
+      timestamp: now.toISOString(),
+      localTime: now.toLocaleString(),
+      ...payload,
+    };
+    appendFileSync(filePath, `${JSON.stringify(content, null, 2)}\n`, 'utf-8');
+  } catch (error) {
+    console.error('[Server] write message error sample failed:', error);
   }
 }
 
@@ -332,8 +362,17 @@ function reloadAgentJsonConfigs(configDir = loadedAgentConfigDir): void {
 }
 
 reloadAgentJsonConfigs();
+const activeKernelProviderId = resolveActiveKernelProviderId();
+console.log(`[Server] Active kernel provider: ${activeKernelProviderId}`);
 await moduleRegistry.register(echoInput);
 await moduleRegistry.register(echoOutput);
+const chatCodexRunner = new ProcessChatCodexRunner({
+  timeoutMs: 600_000,
+  toolExecution: {
+    daemonUrl: `http://127.0.0.1:${PORT}`,
+    agentId: 'chat-codex',
+  },
+});
 const chatCodexModule = createChatCodexModule({
   resolveToolSpecifications: async (toolNames) => {
     const resolved: Array<{ name: string; description?: string; inputSchema?: Record<string, unknown> }> = [];
@@ -359,7 +398,7 @@ const chatCodexModule = createChatCodexModule({
     appendSessionLoopLog(event);
     emitLoopEventToEventBus(event);
   },
-});
+}, chatCodexRunner);
 await moduleRegistry.register(chatCodexModule);
 console.log('[Server] Chat Codex module registered: chat-codex');
 const chatCodexPolicy = runtime.setAgentToolWhitelist('chat-codex', CHAT_CODEX_CODING_CLI_ALLOWED_TOOLS);
@@ -1203,6 +1242,50 @@ app.post('/api/v1/sessions/:sessionId/messages/append', (req, res) => {
   res.json({ success: true, message });
 });
 
+app.post('/api/v1/chat-codex/sessions/:sessionId/interrupt', (req, res) => {
+  const sessionId = typeof req.params.sessionId === 'string' ? req.params.sessionId.trim() : '';
+  if (sessionId.length === 0) {
+    res.status(400).json({ error: 'sessionId is required' });
+    return;
+  }
+
+  const providerId = typeof req.body?.providerId === 'string' ? req.body.providerId.trim() : '';
+  const statesBefore = chatCodexRunner.listSessionStates(sessionId, providerId.length > 0 ? providerId : undefined);
+  const interrupted = chatCodexRunner.interruptSession(sessionId, providerId.length > 0 ? providerId : undefined);
+  const interruptedActiveTurns = interrupted.filter((item) => item.hadActiveTurn);
+
+  const timestamp = new Date().toISOString();
+  if (interruptedActiveTurns.length > 0) {
+    const interruptedIds = interruptedActiveTurns
+      .map((item) => item.activeTurnId)
+      .filter((item): item is string => typeof item === 'string');
+    const interruptedEvent: ChatCodexLoopEvent = {
+      sessionId,
+      phase: 'kernel_event',
+      timestamp,
+      payload: {
+        type: 'turn_interrupted',
+        reason: 'user_interrupt',
+        interruptedCount: interruptedActiveTurns.length,
+        ...(interruptedIds.length > 0 ? { interruptedTurnIds: interruptedIds } : {}),
+      },
+    };
+    appendSessionLoopLog(interruptedEvent);
+    emitLoopEventToEventBus(interruptedEvent);
+  }
+
+  res.json({
+    success: true,
+    sessionId,
+    providerId: providerId.length > 0 ? providerId : undefined,
+    interrupted: interruptedActiveTurns.length > 0,
+    interruptedCount: interruptedActiveTurns.length,
+    matchedSessions: statesBefore.length,
+    sessions: interrupted,
+    timestamp,
+  });
+});
+
 app.patch('/api/v1/sessions/:sessionId/messages/:messageId', (req, res) => {
   const { content } = req.body as { content?: string };
   if (typeof content !== 'string' || content.trim().length === 0) {
@@ -1975,10 +2058,81 @@ function extractSessionIdFromMessagePayload(message: unknown): string | null {
   return normalized.length > 0 ? normalized : null;
 }
 
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function extractHttpStatusFromError(errorMessage: string): number | undefined {
+  const fromHttpTag = errorMessage.match(/\bHTTP[_\s:]?(\d{3})\b/i);
+  if (fromHttpTag) {
+    const parsed = Number.parseInt(fromHttpTag[1], 10);
+    if (Number.isFinite(parsed) && parsed >= 100 && parsed <= 599) return parsed;
+  }
+
+  const fromStatusTag = errorMessage.match(/\bstatus[:=\s]+(\d{3})\b/i);
+  if (fromStatusTag) {
+    const parsed = Number.parseInt(fromStatusTag[1], 10);
+    if (Number.isFinite(parsed) && parsed >= 100 && parsed <= 599) return parsed;
+  }
+
+  return undefined;
+}
+
+function shouldRetryBlockingMessage(errorMessage: string): boolean {
+  const normalized = errorMessage.toLowerCase();
+  if (normalized.includes('daily_cost_limit_exceeded')) return false;
+  if (normalized.includes('insufficient_quota')) return false;
+  if (normalized.includes('unauthorized')) return false;
+  if (normalized.includes('forbidden')) return false;
+
+  const inferredStatus = extractHttpStatusFromError(errorMessage);
+  if (inferredStatus !== undefined) {
+    return inferredStatus === 408
+      || inferredStatus === 409
+      || inferredStatus === 425
+      || inferredStatus === 429
+      || inferredStatus === 500
+      || inferredStatus === 502
+      || inferredStatus === 503
+      || inferredStatus === 504;
+  }
+
+  return normalized.includes('timeout')
+    || normalized.includes('timed out')
+    || normalized.includes('gateway')
+    || normalized.includes('result timeout')
+    || normalized.includes('ack timeout')
+    || normalized.includes('fetch failed')
+    || normalized.includes('network')
+    || normalized.includes('econnreset')
+    || normalized.includes('econnrefused')
+    || normalized.includes('socket hang up')
+    || normalized.includes('temporarily unavailable');
+}
+
+function resolveBlockingErrorStatus(errorMessage: string): number {
+  const inferred = extractHttpStatusFromError(errorMessage);
+  if (inferred !== undefined) return inferred;
+  if (errorMessage.includes('Timed out') || errorMessage.toLowerCase().includes('timeout')) return 504;
+  return 400;
+}
+
 // Modified message endpoint with mailbox integration
 app.post('/api/v1/message', async (req, res) => {
   const body = req.body as { target?: string; message?: unknown; blocking?: boolean; sender?: string; callbackId?: string };
   if (!body.target || body.message === undefined) {
+    writeMessageErrorSample({
+      phase: 'request_validation',
+      responseStatus: 400,
+      error: 'Missing target or message',
+      request: {
+        target: body.target,
+        blocking: body.blocking === true,
+        sender: body.sender,
+        callbackId: body.callbackId,
+        message: body.message,
+      },
+    });
     res.status(400).json({ error: 'Missing target or message' });
     return;
   }
@@ -2002,18 +2156,57 @@ app.post('/api/v1/message', async (req, res) => {
     if (body.blocking) {
       let primaryResult: unknown;
       let senderResponse: unknown | undefined;
+      let attempt = 0;
+      let lastError: Error | null = null;
+      while (attempt <= BLOCKING_MESSAGE_MAX_RETRIES) {
+        try {
+          primaryResult = await Promise.race([
+            hub.sendToModule(body.target, body.message),
+            new Promise<never>((_, reject) => {
+              setTimeout(
+                () => reject(new Error(`Timed out waiting for module response: ${body.target}`)),
+                BLOCKING_MESSAGE_TIMEOUT_MS,
+              );
+            }),
+          ]);
+          lastError = null;
+          break;
+        } catch (err) {
+          const errorMessage = err instanceof Error ? err.message : String(err);
+          lastError = err instanceof Error ? err : new Error(errorMessage);
+          const canRetry = shouldRetryBlockingMessage(errorMessage) && attempt < BLOCKING_MESSAGE_MAX_RETRIES;
+          if (!canRetry) break;
+          const backoffMs = Math.min(
+            30_000,
+            Math.floor(BLOCKING_MESSAGE_RETRY_BASE_MS * Math.pow(2, attempt)),
+          );
+          attempt += 1;
+          await sleep(backoffMs);
+        }
+      }
 
-      // Send the message to the target module and await its direct return
-      try {
-        primaryResult = await Promise.race([
-          hub.sendToModule(body.target, body.message),
-          new Promise<never>((_, reject) => {
-            setTimeout(() => reject(new Error(`Timed out waiting for module response: ${body.target}`)), BLOCKING_MESSAGE_TIMEOUT_MS);
-          }),
-        ]);
-      } catch (err) {
-        const errorMessage = err instanceof Error ? err.message : String(err);
-        const statusCode = errorMessage.includes('Timed out') ? 504 : 400;
+      if (lastError) {
+        const errorMessage = lastError.message;
+        const statusCode = resolveBlockingErrorStatus(errorMessage);
+        writeMessageErrorSample({
+          phase: 'blocking_send_failed',
+          responseStatus: statusCode,
+          messageId,
+          error: errorMessage,
+          request: {
+            target: body.target,
+            blocking: body.blocking === true,
+            sender: body.sender,
+            callbackId: body.callbackId,
+            message: body.message,
+            timeoutMs: BLOCKING_MESSAGE_TIMEOUT_MS,
+            retryCount: BLOCKING_MESSAGE_MAX_RETRIES,
+          },
+          response: {
+            status: 'failed',
+            error: errorMessage,
+          },
+        });
         mailbox.updateStatus(messageId, 'failed', undefined, errorMessage);
         res.status(statusCode).json({ messageId, status: 'failed', error: errorMessage });
         return;
@@ -2074,6 +2267,23 @@ app.post('/api/v1/message', async (req, res) => {
     res.json({ messageId, status: 'queued' });
   } catch (err) {
     const errorMessage = err instanceof Error ? err.message : String(err);
+    writeMessageErrorSample({
+      phase: 'message_route_exception',
+      responseStatus: 400,
+      messageId,
+      error: errorMessage,
+      request: {
+        target: body.target,
+        blocking: body.blocking === true,
+        sender: body.sender,
+        callbackId: body.callbackId,
+        message: body.message,
+      },
+      response: {
+        status: 'failed',
+        error: errorMessage,
+      },
+    });
     mailbox.updateStatus(messageId, 'failed', undefined, errorMessage);
     res.status(400).json({ messageId, status: 'failed', error: errorMessage });
   }

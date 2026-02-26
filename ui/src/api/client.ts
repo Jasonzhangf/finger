@@ -130,6 +130,30 @@ export async function testProvider(providerId: string): Promise<{ success: boole
   return fetchApi<{ success: boolean; message: string }>(`/providers/${providerId}/test`, { method: 'POST' });
 }
 
+export async function selectProvider(providerId: string): Promise<{ success: boolean; provider: ProviderConfig }> {
+  return fetchApi<{ success: boolean; provider: ProviderConfig }>(`/providers/${providerId}/select`, {
+    method: 'POST',
+  });
+}
+
+export interface UpsertProviderRequest {
+  id: string;
+  name?: string;
+  baseUrl?: string;
+  wireApi?: string;
+  envKey?: string;
+  model?: string;
+  select?: boolean;
+}
+
+export async function upsertProvider(payload: UpsertProviderRequest): Promise<{ success: boolean; provider: ProviderConfig }> {
+  return fetchApi<{ success: boolean; provider: ProviderConfig }>('/providers/upsert', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+}
+
 // Legacy block API (for compatibility)
 export interface BlockInfo {
   type: string;

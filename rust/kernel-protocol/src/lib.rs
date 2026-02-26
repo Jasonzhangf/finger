@@ -17,8 +17,14 @@ pub enum Op {
     },
     Interrupt,
     Shutdown,
-    ExecApproval { id: String, decision: ReviewDecision },
-    PatchApproval { id: String, decision: ReviewDecision },
+    ExecApproval {
+        id: String,
+        decision: ReviewDecision,
+    },
+    PatchApproval {
+        id: String,
+        decision: ReviewDecision,
+    },
 }
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq)]
@@ -47,6 +53,10 @@ pub struct UserTurnOptions {
     pub compact: Option<CompactConfig>,
     #[serde(default)]
     pub fork_user_message_index: Option<usize>,
+    #[serde(default)]
+    pub context_ledger: Option<ContextLedgerOptions>,
+    #[serde(default)]
+    pub responses: Option<ResponsesRequestOptions>,
 }
 
 impl UserTurnOptions {
@@ -63,7 +73,67 @@ impl UserTurnOptions {
             && options.context_window.is_none()
             && options.compact.is_none()
             && options.fork_user_message_index.is_none()
+            && options.context_ledger.is_none()
+            && options.responses.is_none()
     }
+}
+
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq)]
+pub struct ResponsesRequestOptions {
+    #[serde(default)]
+    pub reasoning: Option<ResponsesReasoningOptions>,
+    #[serde(default)]
+    pub text: Option<ResponsesTextOptions>,
+    #[serde(default)]
+    pub include: Vec<String>,
+    #[serde(default)]
+    pub store: Option<bool>,
+    #[serde(default)]
+    pub parallel_tool_calls: Option<bool>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Eq)]
+pub struct ResponsesReasoningOptions {
+    #[serde(default)]
+    pub enabled: Option<bool>,
+    #[serde(default)]
+    pub effort: Option<String>,
+    #[serde(default)]
+    pub summary: Option<String>,
+    #[serde(default)]
+    pub include_encrypted_content: Option<bool>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq)]
+pub struct ResponsesTextOptions {
+    #[serde(default)]
+    pub enabled: Option<bool>,
+    #[serde(default)]
+    pub verbosity: Option<String>,
+    #[serde(default)]
+    pub output_schema: Option<Value>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Eq)]
+pub struct ContextLedgerOptions {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub root_dir: Option<String>,
+    #[serde(default)]
+    pub agent_id: Option<String>,
+    #[serde(default)]
+    pub role: Option<String>,
+    #[serde(default)]
+    pub mode: Option<String>,
+    #[serde(default)]
+    pub can_read_all: bool,
+    #[serde(default)]
+    pub readable_agents: Vec<String>,
+    #[serde(default)]
+    pub focus_enabled: bool,
+    #[serde(default)]
+    pub focus_max_chars: Option<usize>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Eq)]
@@ -132,6 +202,10 @@ pub struct Event {
 pub enum EventMsg {
     SessionConfigured(SessionConfiguredEvent),
     TaskStarted(TaskStartedEvent),
+    ModelRound(ModelRoundEvent),
+    ToolCall(ToolCallEvent),
+    ToolResult(ToolResultEvent),
+    ToolError(ToolErrorEvent),
     TaskComplete(TaskCompleteEvent),
     TurnAborted(TurnAbortedEvent),
     ShutdownComplete,
@@ -146,6 +220,66 @@ pub struct SessionConfiguredEvent {
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 pub struct TaskStartedEvent {
     pub model_context_window: Option<u64>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+pub struct ModelRoundEvent {
+    pub seq: u64,
+    pub round: u64,
+    pub function_calls_count: u64,
+    pub reasoning_count: u64,
+    pub history_items_count: u64,
+    pub has_output_text: bool,
+    #[serde(default)]
+    pub finish_reason: Option<String>,
+    #[serde(default)]
+    pub response_status: Option<String>,
+    #[serde(default)]
+    pub response_incomplete_reason: Option<String>,
+    #[serde(default)]
+    pub response_id: Option<String>,
+    #[serde(default)]
+    pub input_tokens: Option<u64>,
+    #[serde(default)]
+    pub output_tokens: Option<u64>,
+    #[serde(default)]
+    pub total_tokens: Option<u64>,
+    #[serde(default)]
+    pub estimated_tokens_in_context_window: Option<u64>,
+    #[serde(default)]
+    pub estimated_tokens_compactable: Option<u64>,
+    #[serde(default)]
+    pub context_usage_percent: Option<u64>,
+    #[serde(default)]
+    pub max_input_tokens: Option<u64>,
+    #[serde(default)]
+    pub threshold_percent: Option<u64>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+pub struct ToolCallEvent {
+    pub seq: u64,
+    pub call_id: String,
+    pub tool_name: String,
+    pub input: Value,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+pub struct ToolResultEvent {
+    pub seq: u64,
+    pub call_id: String,
+    pub tool_name: String,
+    pub output: Value,
+    pub duration_ms: u64,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+pub struct ToolErrorEvent {
+    pub seq: u64,
+    pub call_id: String,
+    pub tool_name: String,
+    pub error: String,
+    pub duration_ms: u64,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]

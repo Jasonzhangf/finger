@@ -55,4 +55,70 @@ describe('mapWsMessageToRuntimeEvent tool payload mapping', () => {
     expect(event?.planSteps?.length).toBe(2);
     expect(event?.planExplanation).toBe('先完成核心回环，再接入工具回填');
   });
+
+  it('ignores tool_call events in conversation stream', () => {
+    const msg: WsMessage = {
+      type: 'tool_call',
+      sessionId: 'session-1',
+      agentId: 'chat-codex',
+      timestamp: '2026-02-25T10:00:00.000Z',
+      payload: {
+        input: {
+          cmd: 'pwd',
+          login: true,
+          shell: '/bin/zsh',
+        },
+      },
+    };
+
+    const event = mapWsMessageToRuntimeEvent(msg, 'session-1');
+    expect(event).toBeNull();
+  });
+
+  it('includes command summary in tool_result content when input is provided', () => {
+    const msg: WsMessage = {
+      type: 'tool_result',
+      sessionId: 'session-1',
+      agentId: 'chat-codex',
+      timestamp: '2026-02-25T10:00:00.000Z',
+      payload: {
+        input: {
+          cmd: 'ls -la',
+        },
+        output: {
+          ok: true,
+          exitCode: 0,
+          output: 'total 0',
+        },
+      },
+    };
+
+    const event = mapWsMessageToRuntimeEvent(msg, 'session-1');
+    expect(event).not.toBeNull();
+    expect(event?.content).toContain('执行成功：ls -la');
+  });
+
+  it('infers exec_command result output shape and avoids unknown tool output rendering', () => {
+    const msg: WsMessage = {
+      type: 'tool_result',
+      sessionId: 'session-1',
+      agentId: 'chat-codex',
+      timestamp: '2026-02-25T10:00:00.000Z',
+      payload: {
+        output: {
+          ok: true,
+          exitCode: 0,
+          output: '/Users/fanzhang/Documents/code/finger\n',
+          wall_time_seconds: 0.034,
+          termination: { type: 'exited', exitCode: 0 },
+        },
+      },
+    };
+
+    const event = mapWsMessageToRuntimeEvent(msg, 'session-1');
+    expect(event).not.toBeNull();
+    expect(event?.toolName).toBe('exec_command');
+    expect(typeof event?.toolOutput).toBe('string');
+    expect(String(event?.toolOutput)).toContain('/Users/fanzhang/Documents/code/finger');
+  });
 });

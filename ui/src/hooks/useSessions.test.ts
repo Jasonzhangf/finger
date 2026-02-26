@@ -24,6 +24,7 @@ import { useSessions } from './useSessions.js';
 describe('useSessions', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    window.localStorage.clear();
     mockGetCurrentSession.mockRejectedValue(new Error('No current session'));
   });
 
@@ -67,6 +68,22 @@ describe('useSessions', () => {
     await waitFor(() => {
       expect(result.current.currentSession?.id).toBe('session-1');
     });
+  });
+
+  it('should prefer last session from localStorage when server current is missing', async () => {
+    const mockSessions = [
+      { id: 'session-1', name: 'Session 1', projectPath: '/path/1', createdAt: '2023-01-01T00:00:00Z', updatedAt: '2023-01-01T00:00:00Z', lastAccessedAt: '2023-01-01T00:00:00Z', messageCount: 0, activeWorkflows: [] },
+      { id: 'session-2', name: 'Session 2', projectPath: '/path/2', createdAt: '2023-01-01T00:00:00Z', updatedAt: '2023-01-01T00:00:00Z', lastAccessedAt: '2023-01-02T00:00:00Z', messageCount: 0, activeWorkflows: [] },
+    ];
+    window.localStorage.setItem('finger-last-session-id', 'session-1');
+    mockListSessions.mockResolvedValue(mockSessions);
+
+    const { result } = renderHook(() => useSessions());
+
+    await waitFor(() => {
+      expect(result.current.currentSession?.id).toBe('session-1');
+    });
+    expect(mockSetCurrentSession).toHaveBeenCalledWith('session-1');
   });
 
   it('should handle fetch errors', async () => {

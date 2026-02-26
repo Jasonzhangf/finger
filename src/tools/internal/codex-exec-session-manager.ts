@@ -219,7 +219,7 @@ export class CodexExecSessionManager {
     let cursor = startCursor;
     const deadline = Date.now() + Math.max(0, Math.floor(yieldTimeMs));
 
-    while (true) {
+    for (;;) {
       const drained = this.readOutputFromCursor(session, cursor);
       if (drained.text.length > 0) {
         chunks.push(drained.text);

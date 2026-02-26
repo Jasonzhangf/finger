@@ -9,6 +9,16 @@ import {
 } from '../api/client.js';
 import type { SessionInfo } from '../api/types.js';
 
+const LAST_SESSION_STORAGE_KEY = 'finger-last-session-id';
+
+function readLastSessionIdFromStorage(): string | null {
+  if (typeof window === 'undefined' || !window.localStorage) return null;
+  const raw = window.localStorage.getItem(LAST_SESSION_STORAGE_KEY);
+  if (!raw) return null;
+  const normalized = raw.trim();
+  return normalized.length > 0 ? normalized : null;
+}
+
 interface UseSessionsReturn {
   sessions: SessionInfo[];
   currentSession: SessionInfo | null;
@@ -36,18 +46,32 @@ export function useSessions(): UseSessionsReturn {
         getCurrentSession().catch(() => null),
       ]);
       setSessions(data);
-      if (serverCurrent && data.some((item) => item.id === serverCurrent.id)) {
-        setCurrent(serverCurrent);
-        return;
-      }
       if (data.length === 0) {
         setCurrent(null);
         return;
       }
+
+      const lastSessionId = readLastSessionIdFromStorage();
+      if (lastSessionId) {
+        const matched = data.find((item) => item.id === lastSessionId);
+        if (matched) {
+          setCurrent(matched);
+          await setCurrentSession(matched.id).catch(() => undefined);
+          return;
+        }
+      }
+
+      if (serverCurrent && data.some((item) => item.id === serverCurrent.id)) {
+        setCurrent(serverCurrent);
+        return;
+      }
+
       const sorted = [...data].sort(
         (a, b) => new Date(b.lastAccessedAt).getTime() - new Date(a.lastAccessedAt).getTime(),
       );
-      setCurrent(sorted[0]);
+      const fallback = sorted[0];
+      setCurrent(fallback);
+      await setCurrentSession(fallback.id).catch(() => undefined);
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Failed to load sessions');
     } finally {

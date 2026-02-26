@@ -162,6 +162,7 @@ export interface ToolResultEvent extends BaseEvent {
   toolName: string;
   agentId: string;
   payload: {
+    input?: unknown;
     output: unknown;
     duration: number; // ms
   };
@@ -173,6 +174,7 @@ export interface ToolErrorEvent extends BaseEvent {
   toolName: string;
   agentId: string;
   payload: {
+    input?: unknown;
     error: string;
     duration: number; // ms
   };
@@ -370,6 +372,30 @@ export interface SystemErrorEvent extends BaseEvent {
 export type SystemEvent = SystemErrorEvent;
 
 // =============================================================================
+// Input Lock 事件 - 跨端输入锁
+// =============================================================================
+
+export interface InputLockChangedEvent extends BaseEvent {
+  type: 'input_lock_changed';
+  payload: {
+    sessionId: string;
+    lockedBy: string | null;
+    lockedAt: string | null;
+    typing: boolean;
+  };
+}
+
+export interface TypingIndicatorEvent extends BaseEvent {
+  type: 'typing_indicator';
+  payload: {
+    clientId: string;
+    typing: boolean;
+  };
+}
+
+export type InputLockEvent = InputLockChangedEvent | TypingIndicatorEvent;
+
+// =============================================================================
 // 统一事件类型
 // =============================================================================
 
@@ -383,6 +409,7 @@ export type RuntimeEvent =
   | ResourceEvent
   | HumanInLoopEvent
   | SystemEvent
+  | InputLockEvent
   | LoopEvent
   | EpicEvent
   | ContextEvent;
@@ -453,6 +480,12 @@ export const SYSTEM_EVENT_TYPES = [
   'system_error',
 ] as const;
 
+/** Input Lock 事件类型集合 */
+export const INPUT_LOCK_EVENT_TYPES = [
+  'input_lock_changed',
+  'typing_indicator',
+] as const;
+
 /** 事件分组 - UI 可按组订阅 */
 export const EVENT_GROUPS = {
   SESSION: SESSION_EVENT_TYPES,
@@ -464,6 +497,7 @@ export const EVENT_GROUPS = {
   RESOURCE: RESOURCE_EVENT_TYPES,
   HUMAN_IN_LOOP: HUMAN_IN_LOOP_EVENT_TYPES,
   SYSTEM: SYSTEM_EVENT_TYPES,
+  INPUT_LOCK: INPUT_LOCK_EVENT_TYPES,
   ALL: [
     ...SESSION_EVENT_TYPES,
     ...TASK_EVENT_TYPES,
@@ -474,6 +508,7 @@ export const EVENT_GROUPS = {
     ...RESOURCE_EVENT_TYPES,
     ...HUMAN_IN_LOOP_EVENT_TYPES,
     ...SYSTEM_EVENT_TYPES,
+    ...INPUT_LOCK_EVENT_TYPES,
   ] as const,
 };
 
@@ -535,4 +570,8 @@ export function isHumanInLoopEvent(event: RuntimeEvent): event is HumanInLoopEve
 
 export function isSystemEvent(event: RuntimeEvent): event is SystemEvent {
   return SYSTEM_EVENT_TYPES.includes(event.type as typeof SYSTEM_EVENT_TYPES[number]);
+}
+
+export function isInputLockEvent(event: RuntimeEvent): event is InputLockEvent {
+  return INPUT_LOCK_EVENT_TYPES.includes(event.type as typeof INPUT_LOCK_EVENT_TYPES[number]);
 }

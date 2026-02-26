@@ -259,42 +259,40 @@ export class GatewayManager {
   private async installBuiltins(): Promise<void> {
     const cliPath = path.join(process.cwd(), 'dist', 'cli', 'index.js');
     const command = process.execPath;
+    const builtinRequestTimeoutMs = 600_000;
+    const builtinAckTimeoutMs = 10_000;
 
-    const existing = listGatewayModules();
-    const hasChat = existing.some((item) => item.manifest.id === 'chat-gateway');
-    const hasChatCodex = existing.some((item) => item.manifest.id === 'chat-codex-gateway');
+    installGatewayFromCommand({
+      id: 'chat-gateway',
+      name: 'Chat Gateway',
+      version: '1.0.0',
+      description: 'CLI gateway for router chat agent',
+      command,
+      args: [cliPath, 'gateway-worker', '--adapter', 'chat', '--daemon-url', this.daemonUrl, '--target', 'router-chat-agent'],
+      direction: 'output',
+      supportedModes: ['sync', 'async'],
+      defaultMode: 'sync',
+      requestTimeoutMs: builtinRequestTimeoutMs,
+      ackTimeoutMs: builtinAckTimeoutMs,
+      helpArgs: [cliPath, 'gateway-worker', '--help'],
+      versionArgs: [],
+    });
 
-    if (!hasChat) {
-      installGatewayFromCommand({
-        id: 'chat-gateway',
-        name: 'Chat Gateway',
-        version: '1.0.0',
-        description: 'CLI gateway for router chat agent',
-        command,
-        args: [cliPath, 'gateway-worker', '--adapter', 'chat', '--daemon-url', this.daemonUrl, '--target', 'router-chat-agent'],
-        direction: 'output',
-        supportedModes: ['sync', 'async'],
-        defaultMode: 'sync',
-        helpArgs: [cliPath, 'gateway-worker', '--help'],
-        versionArgs: [],
-      });
-    }
-
-    if (!hasChatCodex) {
-      installGatewayFromCommand({
-        id: 'chat-codex-gateway',
-        name: 'Chat Codex Gateway',
-        version: '1.0.0',
-        description: 'CLI gateway for chat-codex module',
-        command,
-        args: [cliPath, 'gateway-worker', '--adapter', 'chat-codex', '--daemon-url', this.daemonUrl, '--target', 'chat-codex'],
-        direction: 'output',
-        supportedModes: ['sync', 'async'],
-        defaultMode: 'sync',
-        helpArgs: [cliPath, 'gateway-worker', '--help'],
-        versionArgs: [],
-      });
-    }
+    installGatewayFromCommand({
+      id: 'chat-codex-gateway',
+      name: 'Chat Codex Gateway',
+      version: '1.0.0',
+      description: 'CLI gateway for chat-codex module',
+      command,
+      args: [cliPath, 'gateway-worker', '--adapter', 'chat-codex', '--daemon-url', this.daemonUrl, '--target', 'chat-codex'],
+      direction: 'output',
+      supportedModes: ['sync', 'async'],
+      defaultMode: 'sync',
+      requestTimeoutMs: builtinRequestTimeoutMs,
+      ackTimeoutMs: builtinAckTimeoutMs,
+      helpArgs: [cliPath, 'gateway-worker', '--help'],
+      versionArgs: [],
+    });
   }
 }
 

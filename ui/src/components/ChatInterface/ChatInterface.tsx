@@ -1,6 +1,14 @@
 import React, { useEffect, useMemo, useRef, useState, useCallback } from 'react';
 import './ChatInterface.css';
-import type { RuntimeEvent, RuntimeFile, RuntimeImage, UserInputPayload, WorkflowExecutionState } from '../../api/types.js';
+import type {
+  ReviewSettings,
+  ReviewStrictness,
+  RuntimeEvent,
+  RuntimeFile,
+  RuntimeImage,
+  UserInputPayload,
+  WorkflowExecutionState,
+} from '../../api/types.js';
 
 export interface InputCapability {
   acceptText: boolean;
@@ -15,22 +23,56 @@ interface AgentRunStatus {
   updatedAt: string;
 }
 
+interface RuntimeOverview {
+  reqTokens?: number;
+  respTokens?: number;
+  totalTokens?: number;
+  tokenUpdatedAtLocal?: string;
+  contextUsagePercent?: number;
+  contextTokensInWindow?: number;
+  contextMaxInputTokens?: number;
+  contextThresholdPercent?: number;
+  ledgerFocusMaxChars: number;
+  lastLedgerInsertChars?: number;
+  compactCount: number;
+  updatedAt: string;
+}
+
+interface ToolPanelOverview {
+  availableTools: string[];
+  exposedTools: string[];
+}
+
+interface InputLockState {
+  sessionId: string;
+  lockedBy: string | null;
+  lockedAt: string | null;
+  typing: boolean;
+}
+
 interface ChatInterfaceProps {
   executionState: WorkflowExecutionState | null;
   agents: Array<{ id: string; name: string; status: string }>;
   events: RuntimeEvent[];
   contextEditableEventIds?: string[];
   agentRunStatus?: AgentRunStatus;
-  onSendMessage: (payload: UserInputPayload) => void;
+  runtimeOverview?: RuntimeOverview;
+  toolPanelOverview?: ToolPanelOverview;
+  onSendMessage: (payload: UserInputPayload) => Promise<void> | void;
   onEditMessage?: (eventId: string, content: string) => Promise<boolean>;
   onDeleteMessage?: (eventId: string) => Promise<boolean>;
   onCreateNewSession?: () => Promise<void> | void;
   onPause: () => void;
   onResume: () => void;
+  onInterruptTurn?: () => Promise<boolean> | boolean;
   isPaused: boolean;
   isConnected: boolean;
   onAgentClick?: (agentId: string) => void;
   inputCapability?: InputCapability;
+  inputLockState?: InputLockState | null;
+  clientId?: string | null;
+  onAcquireInputLock?: () => Promise<boolean>;
+  onReleaseInputLock?: () => void;
 }
 
 interface ContextMenuState {
@@ -52,6 +94,20 @@ const DEFAULT_INPUT_CAPABILITY: InputCapability = {
   acceptImages: true,
   acceptFiles: true,
 };
+
+const DEFAULT_REVIEW_SETTINGS: ReviewSettings = {
+  enabled: false,
+  target: '',
+  strictness: 'mainline',
+  maxTurns: 10,
+};
+
+interface WebkitFileSystemEntry {
+  isDirectory: boolean;
+  isFile: boolean;
+  name: string;
+  fullPath?: string;
+}
 
 function createRuntimeId(file: File): string {
   return `${Date.now()}-${file.name}-${Math.random().toString(36).slice(2, 8)}`;
@@ -97,30 +153,13 @@ function shouldInlineText(file: File): boolean {
   );
 }
 
-async function createPreviewImages(files: FileList | null): Promise<RuntimeImage[]> {
+async function createPreviewFiles(files: File[] | FileList | null): Promise<RuntimeFile[]> {
   if (!files) return [];
+  const source = Array.isArray(files) ? files : Array.from(files);
+  if (source.length === 0) return [];
 
   const all = await Promise.all(
-    Array.from(files).map(async (file) => {
-      const dataUrl = await toDataUrl(file);
-      return {
-        id: createRuntimeId(file),
-        name: file.name,
-        url: dataUrl,
-        dataUrl,
-        mimeType: file.type || 'application/octet-stream',
-        size: file.size,
-      };
-    }),
-  );
-  return all;
-}
-
-async function createPreviewFiles(files: FileList | null): Promise<RuntimeFile[]> {
-  if (!files) return [];
-
-  const all = await Promise.all(
-    Array.from(files).map(async (file) => {
+    source.map(async (file) => {
       let textContent: string | undefined;
       if (shouldInlineText(file)) {
         try {
@@ -193,6 +232,10 @@ function formatTokenUsage(event: RuntimeEvent): string {
   return `${usage.estimated ? 'Token(估算):' : 'Token:'} ${parts.join(' · ')}`;
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null;
+}
+
 function formatToolInput(toolInput: unknown): string | null {
   if (toolInput === undefined || toolInput === null) return null;
   if (typeof toolInput === 'string') return toolInput.trim().length > 0 ? toolInput : null;
@@ -202,6 +245,259 @@ function formatToolInput(toolInput: unknown): string | null {
   } catch {
     return null;
   }
+}
+
+function unwrapToolInput(toolInput: unknown): unknown {
+  if (!isRecord(toolInput)) return toolInput;
+  if (isRecord(toolInput.input)) return toolInput.input;
+  if (isRecord(toolInput.args)) return toolInput.args;
+  return toolInput;
+}
+
+function toolChipLabel(event: RuntimeEvent): string {
+  if (event.kind === 'action') return '执行中';
+  if (event.toolStatus === 'error') return '执行失败';
+  if (event.toolStatus === 'success') return '执行成功';
+  return '工具结果';
+}
+
+function toolCategoryClass(category?: RuntimeEvent['toolCategory']): string {
+  if (category === '读取') return 'category-read';
+  if (category === '写入' || category === '编辑') return 'category-write';
+  if (category === '搜索' || category === '网络搜索') return 'category-search';
+  if (category === '计划') return 'category-plan';
+  return 'category-other';
+}
+
+function formatToolOutputForDisplay(event: RuntimeEvent): string | null {
+  if (event.toolStatus === 'error' && typeof event.errorMessage === 'string' && event.errorMessage.trim().length > 0) {
+    return event.errorMessage.trim();
+  }
+  return formatToolInput(event.toolOutput);
+}
+
+function buildToolOutputPreview(output: string, maxChars = 120): string {
+  const normalized = output.replace(/\s+/g, ' ').trim();
+  if (!normalized) return '无可展示输出';
+  if (normalized.length <= maxChars) return normalized;
+  return `${normalized.slice(0, maxChars)}...`;
+}
+
+function formatCommandArray(parts: unknown[]): string {
+  return parts
+    .filter((part): part is string | number | boolean => ['string', 'number', 'boolean'].includes(typeof part))
+    .map((part) => String(part))
+    .join(' ')
+    .trim();
+}
+
+function extractToolCommand(toolInput: unknown): string | null {
+  const normalizedInput = unwrapToolInput(toolInput);
+  if (!isRecord(normalizedInput)) return null;
+  const cmd = typeof normalizedInput.cmd === 'string' ? normalizedInput.cmd.trim() : '';
+  if (cmd.length > 0) return cmd;
+  const command = normalizedInput.command;
+  if (typeof command === 'string' && command.trim().length > 0) return command.trim();
+  if (Array.isArray(command)) {
+    const text = formatCommandArray(command);
+    if (text.length > 0) return text;
+  }
+  return null;
+}
+
+function buildToolChipName(event: RuntimeEvent): string {
+  const toolName = event.toolName ?? 'unknown';
+  const command = extractToolCommand(event.toolInput);
+  const category = event.toolCategory ? `[${event.toolCategory}] ` : '';
+  if (!command) return `${category}${toolName}`;
+  const compact = command.replace(/\s+/g, ' ').trim();
+  if (compact.length <= 80) return `${category}${toolName} · ${compact}`;
+  return `${category}${toolName} · ${compact.slice(0, 80)}...`;
+}
+
+function buildToolInputSummary(event: RuntimeEvent): string | null {
+  const toolInput = unwrapToolInput(event.toolInput);
+  if (toolInput === undefined || toolInput === null) return null;
+  if (typeof toolInput === 'string') {
+    const text = toolInput.trim();
+    if (text.length === 0) return null;
+    return text.length <= 180 ? `参数：${text}` : `参数：${text.slice(0, 180)}...`;
+  }
+  if (!isRecord(toolInput)) return null;
+
+  const cmd = typeof toolInput.cmd === 'string' ? toolInput.cmd.trim() : '';
+  if (cmd.length > 0) return `参数：cmd = ${cmd}`;
+
+  const command = toolInput.command;
+  if (typeof command === 'string' && command.trim().length > 0) {
+    return `参数：command = ${command.trim()}`;
+  }
+  if (Array.isArray(command)) {
+    const commandText = formatCommandArray(command);
+    if (commandText.length > 0) return `参数：command = ${commandText}`;
+  }
+
+  const action = typeof toolInput.action === 'string' ? toolInput.action.trim() : '';
+  if (action.length > 0) return `参数：action = ${action}`;
+  const path = typeof toolInput.path === 'string' ? toolInput.path.trim() : '';
+  if (path.length > 0) return `参数：path = ${path}`;
+  const query = typeof toolInput.query === 'string' ? toolInput.query.trim() : '';
+  if (query.length > 0) return `参数：query = ${query}`;
+  return null;
+}
+
+function shouldShowFullToolInput(event: RuntimeEvent): boolean {
+  const toolInput = unwrapToolInput(event.toolInput);
+  if (!isRecord(toolInput)) return true;
+  const toolName = (event.toolName ?? '').trim();
+  const keys = Object.keys(toolInput);
+  const simpleExecKeys = new Set(['cmd', 'login', 'max_output_tokens', 'shell', 'yield_time_ms']);
+  const cmd = typeof toolInput.cmd === 'string' ? toolInput.cmd.trim() : '';
+  const simpleExecCall = (
+    toolName === 'exec_command'
+    || toolName === 'shell.exec'
+    || toolName === 'shell'
+    || toolName === 'shell_command'
+  )
+    && cmd.length > 0
+    && cmd.length <= 120
+    && keys.length > 0
+    && keys.every((key) => simpleExecKeys.has(key));
+  return !simpleExecCall;
+}
+
+function inferToolCategoryFromName(toolName: string): string {
+  if (toolName === 'apply_patch') return '编辑';
+  if (toolName === 'update_plan') return '计划';
+  if (toolName === 'web_search') return '网络搜索';
+  if (toolName === 'context_ledger.memory') return '搜索';
+  if (toolName === 'view_image') return '读取';
+  if (toolName === 'write_stdin') return '写入';
+  if (toolName === 'exec_command' || toolName === 'shell.exec') return '其他';
+  return '其他';
+}
+
+function buildToolDashboard(
+  events: RuntimeEvent[],
+  availableTools: string[] = [],
+  exposedTools: string[] = [],
+): {
+  total: number;
+  success: number;
+  failed: number;
+  tools: Array<{
+    name: string;
+    category: string;
+    total: number;
+    success: number;
+    failed: number;
+    exposed: boolean;
+    available: boolean;
+    lastAt?: string;
+  }>;
+} {
+  const map = new Map<string, {
+    name: string;
+    category: string;
+    total: number;
+    success: number;
+    failed: number;
+    exposed: boolean;
+    available: boolean;
+    lastAt?: string;
+  }>();
+  const availableSet = new Set(availableTools.map((item) => item.trim()).filter((item) => item.length > 0));
+  const exposedSet = new Set(exposedTools.map((item) => item.trim()).filter((item) => item.length > 0));
+  let total = 0;
+  let success = 0;
+  let failed = 0;
+
+  for (const toolName of availableSet) {
+    map.set(toolName, {
+      name: toolName,
+      category: inferToolCategoryFromName(toolName),
+      total: 0,
+      success: 0,
+      failed: 0,
+      exposed: exposedSet.has(toolName),
+      available: true,
+    });
+  }
+
+  for (const event of events) {
+    if (!event.toolName) continue;
+    if (event.kind !== 'observation') continue;
+    if (event.toolStatus !== 'success' && event.toolStatus !== 'error') continue;
+    total += 1;
+    if (event.toolStatus === 'success') success += 1;
+    if (event.toolStatus === 'error') failed += 1;
+
+    const key = event.toolName;
+    const current = map.get(key) ?? {
+      name: event.toolName,
+      category: event.toolCategory ?? inferToolCategoryFromName(event.toolName),
+      total: 0,
+      success: 0,
+      failed: 0,
+      exposed: exposedSet.has(event.toolName),
+      available: availableSet.has(event.toolName),
+    };
+    current.total += 1;
+    if (event.toolStatus === 'success') current.success += 1;
+    if (event.toolStatus === 'error') current.failed += 1;
+    current.category = event.toolCategory ?? current.category;
+    current.exposed = current.exposed || exposedSet.has(event.toolName);
+    current.available = current.available || availableSet.has(event.toolName);
+    current.lastAt = event.timestamp;
+    map.set(key, current);
+  }
+
+  const tools = Array.from(map.values()).sort((a, b) => {
+    const exposedWeight = Number(b.exposed) - Number(a.exposed);
+    if (exposedWeight !== 0) return exposedWeight;
+    const totalWeight = b.total - a.total;
+    if (totalWeight !== 0) return totalWeight;
+    return a.name.localeCompare(b.name);
+  });
+  return { total, success, failed, tools };
+}
+
+function formatRuntimeOverview(overview?: RuntimeOverview): string {
+  if (!overview) return '上下文: N/A · Ledger: N/A';
+  const derivedUsagePercent = (
+    typeof overview.contextTokensInWindow === 'number'
+    && typeof overview.contextMaxInputTokens === 'number'
+    && overview.contextMaxInputTokens > 0
+  )
+    ? Math.max(0, Math.min(100, Math.floor((overview.contextTokensInWindow / overview.contextMaxInputTokens) * 100)))
+    : undefined;
+  const contextUsagePercent = typeof overview.contextUsagePercent === 'number'
+    ? overview.contextUsagePercent
+    : derivedUsagePercent;
+  const contextText = typeof contextUsagePercent === 'number'
+    ? (typeof overview.contextTokensInWindow === 'number' && typeof overview.contextMaxInputTokens === 'number'
+      ? `上下文 ${contextUsagePercent}% (${overview.contextTokensInWindow}/${overview.contextMaxInputTokens})`
+      : `上下文 ${contextUsagePercent}%`)
+    : (typeof overview.contextTokensInWindow === 'number'
+      ? `上下文 ${overview.contextTokensInWindow} tokens`
+      : '上下文 N/A');
+  const thresholdText = typeof overview.contextThresholdPercent === 'number'
+    ? `阈值 ${overview.contextThresholdPercent}%`
+    : '阈值 N/A';
+  const ledgerText = `Ledger ${overview.lastLedgerInsertChars ? `最近插入 ${overview.lastLedgerInsertChars} 字符` : '无最近插入'} · 焦点上限 ${overview.ledgerFocusMaxChars}`;
+  const compactText = `压缩 ${overview.compactCount}`;
+  return `${contextText} · ${thresholdText} · ${ledgerText} · ${compactText}`;
+}
+
+function formatRuntimeTokenSummary(overview?: RuntimeOverview): string {
+  if (!overview) return 'Token: N/A';
+  const parts: string[] = [];
+  if (typeof overview.totalTokens === 'number') parts.push(`总计 ${overview.totalTokens}`);
+  if (typeof overview.reqTokens === 'number') parts.push(`输入 ${overview.reqTokens}`);
+  if (typeof overview.respTokens === 'number') parts.push(`输出 ${overview.respTokens}`);
+  if (parts.length === 0) return 'Token: N/A';
+  const ts = overview.tokenUpdatedAtLocal ? ` @ ${overview.tokenUpdatedAtLocal}` : '';
+  return `Token: ${parts.join(' · ')}${ts}`;
 }
 
 function capabilityAllowsFile(file: RuntimeFile, capability: InputCapability): boolean {
@@ -386,20 +682,42 @@ const MessageItem = React.memo<{
 
         <div className="message-body">
           {event.toolName && (
-            <div className={`tool-event-chip ${event.kind || 'status'}`}>
-              <span className="tool-event-label">{event.kind === 'action' ? '执行中' : '工具结果'}</span>
-              <span className="tool-event-name">{event.toolName}</span>
+            <div className={`tool-event-chip ${event.kind || 'status'} ${event.toolStatus || ''} ${toolCategoryClass(event.toolCategory)}`}>
+              <span className="tool-event-label">{toolChipLabel(event)}</span>
+              <span className="tool-event-name">{buildToolChipName(event)}</span>
               {typeof event.toolDurationMs === 'number' && (
                 <span className="tool-event-duration">{event.toolDurationMs}ms</span>
               )}
             </div>
           )}
-          {event.content}
+          <div className="message-text">{event.content}</div>
           {event.kind === 'action' && event.toolName && (() => {
+            const toolInputSummary = buildToolInputSummary(event);
             const toolInput = formatToolInput(event.toolInput);
-            if (!toolInput) return null;
+            if (!toolInput && !toolInputSummary) return null;
+            const showFullInput = toolInput ? shouldShowFullToolInput(event) : false;
             return (
-              <pre className="tool-input-block">{toolInput}</pre>
+              <>
+                {toolInputSummary && <div className="tool-input-summary">{toolInputSummary}</div>}
+                {toolInput && showFullInput && (
+                  <details className="tool-input-details">
+                    <summary>完整参数</summary>
+                    <pre className="tool-input-block">{toolInput}</pre>
+                  </details>
+                )}
+              </>
+            );
+          })()}
+          {event.kind === 'observation' && event.toolName && (() => {
+            const toolOutput = formatToolOutputForDisplay(event);
+            if (!toolOutput) return null;
+            const preview = buildToolOutputPreview(toolOutput);
+            const summaryLabel = event.toolStatus === 'error' ? '查看错误输出' : '查看工具输出';
+            return (
+              <details className={`tool-output-details ${event.toolStatus === 'error' ? 'error' : 'success'}`}>
+                <summary>{`${summaryLabel}：${preview}`}</summary>
+                <pre className={`tool-output-block ${event.toolStatus === 'error' ? 'error' : 'success'}`}>{toolOutput}</pre>
+              </details>
             );
           })()}
           {event.planSteps && event.planSteps.length > 0 && (
@@ -477,12 +795,35 @@ const ChatInput: React.FC<{
   inputHistory: string[];
   inputCapability: InputCapability;
   isPaused: boolean;
+  isAgentRunning: boolean;
   disabled?: boolean;
-}> = ({ draft, onDraftChange, onSend, onCreateNewSession, inputHistory, inputCapability, isPaused, disabled }) => {
+  onPauseWorkflow?: () => void;
+  onResumeWorkflow?: () => void;
+  onInterruptTurn?: () => Promise<boolean> | boolean;
+}> = ({
+  draft,
+  onDraftChange,
+  onSend,
+  onCreateNewSession,
+  inputHistory,
+  inputCapability,
+  isPaused,
+  isAgentRunning,
+  disabled,
+  onPauseWorkflow,
+  onResumeWorkflow,
+  onInterruptTurn,
+}) => {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const [inputWarning, setInputWarning] = useState<string | null>(null);
   const [historyCursor, setHistoryCursor] = useState<number | null>(null);
   const [historySnapshot, setHistorySnapshot] = useState<string>('');
+  const [reviewEnabled, setReviewEnabled] = useState<boolean>(DEFAULT_REVIEW_SETTINGS.enabled);
+  const [reviewTarget, setReviewTarget] = useState<string>(DEFAULT_REVIEW_SETTINGS.target);
+  const [reviewStrictness, setReviewStrictness] = useState<ReviewStrictness>(DEFAULT_REVIEW_SETTINGS.strictness);
+  const [reviewMaxTurns, setReviewMaxTurns] = useState<number>(DEFAULT_REVIEW_SETTINGS.maxTurns);
+  const [planModeEnabled, setPlanModeEnabled] = useState<boolean>(false);
+  const [isDragOver, setIsDragOver] = useState<boolean>(false);
   const images = draft.images ?? [];
   const files = draft.files ?? [];
 
@@ -518,7 +859,30 @@ const ChatInput: React.FC<{
       return;
     }
 
-    onSend(sanitized.payload);
+    const normalizedTarget = reviewTarget.trim();
+    if (reviewEnabled && normalizedTarget.length === 0) {
+      setInputWarning('已启用 Review，请先填写 Review 目标');
+      return;
+    }
+    const normalizedMaxTurns = Number.isFinite(reviewMaxTurns)
+      ? Math.max(0, Math.floor(reviewMaxTurns))
+      : DEFAULT_REVIEW_SETTINGS.maxTurns;
+    const payload: UserInputPayload = {
+      ...sanitized.payload,
+      ...(planModeEnabled ? { planModeEnabled: true } : {}),
+      ...(reviewEnabled
+        ? {
+            review: {
+              enabled: true,
+              target: normalizedTarget,
+              strictness: reviewStrictness,
+              maxTurns: normalizedMaxTurns,
+            },
+          }
+        : {}),
+    };
+
+    onSend(payload);
     setHistoryCursor(null);
     setHistorySnapshot('');
 
@@ -526,7 +890,18 @@ const ChatInput: React.FC<{
     if (textareaRef.current) {
       textareaRef.current.style.height = 'auto';
     }
-  }, [draft, inputCapability, onCreateNewSession, onDraftChange, onSend]);
+  }, [
+    draft,
+    inputCapability,
+    onCreateNewSession,
+    onDraftChange,
+    onSend,
+    reviewEnabled,
+    reviewMaxTurns,
+    reviewStrictness,
+    reviewTarget,
+    planModeEnabled,
+  ]);
 
   const handleKeyDown = useCallback((e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.altKey || e.ctrlKey || e.metaKey) return;
@@ -581,6 +956,58 @@ const ChatInput: React.FC<{
     }
   }, [historyCursor, onDraftChange]);
 
+  const appendIncomingFiles = useCallback(async (incomingFiles: File[], folderPaths: string[] = []) => {
+    if (incomingFiles.length === 0 && folderPaths.length === 0) return;
+
+    const normalizedFolderPaths = folderPaths
+      .map((item) => item.trim())
+      .filter((item) => item.length > 0);
+    const newFiles = await createPreviewFiles(incomingFiles);
+    const normalizedFiles: RuntimeFile[] = [];
+    const normalizedImages: RuntimeImage[] = [];
+    let droppedCount = 0;
+
+    for (const file of newFiles) {
+      if (file.mimeType.startsWith('image/')) {
+        const image = buildImageFromFile(file);
+        if (image && inputCapability.acceptImages) {
+          normalizedImages.push(image);
+        } else {
+          droppedCount += 1;
+        }
+        continue;
+      }
+      if (capabilityAllowsFile(file, inputCapability)) {
+        normalizedFiles.push(file);
+      } else {
+        droppedCount += 1;
+      }
+    }
+
+    if (
+      normalizedFiles.length === 0
+      && normalizedImages.length === 0
+      && normalizedFolderPaths.length === 0
+      && droppedCount > 0
+    ) {
+      setInputWarning('当前 Agent 不支持该附件类型');
+      return;
+    }
+
+    const folderText = normalizedFolderPaths.join('\n');
+    onDraftChange((prev) => ({
+      ...prev,
+      ...(normalizedFiles.length > 0 ? { files: [...(prev.files ?? []), ...normalizedFiles] } : {}),
+      ...(normalizedImages.length > 0 ? { images: [...(prev.images ?? []), ...normalizedImages] } : {}),
+      ...(folderText.length > 0 ? { text: mergeDraftText(prev.text, folderText) } : {}),
+    }));
+    if (droppedCount > 0) {
+      setInputWarning(`已过滤 ${droppedCount} 个不受支持的附件`);
+    } else {
+      setInputWarning(null);
+    }
+  }, [inputCapability, onDraftChange]);
+
   const handleImageChange = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
     const fileList = e.target.files;
     if (!inputCapability.acceptImages) {
@@ -588,61 +1015,64 @@ const ChatInput: React.FC<{
       e.target.value = '';
       return;
     }
-    void (async () => {
-      const newImages = await createPreviewImages(fileList);
-      if (newImages.length === 0) return;
-      onDraftChange((prev) => ({
-        ...prev,
-        images: [...(prev.images ?? []), ...newImages],
-      }));
-      setInputWarning(null);
-    })();
+    const incoming = fileList ? Array.from(fileList) : [];
+    void appendIncomingFiles(incoming);
     e.target.value = '';
-  }, [inputCapability.acceptImages, onDraftChange]);
+  }, [appendIncomingFiles, inputCapability.acceptImages]);
 
   const handleFileChange = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
     const fileList = e.target.files;
-    void (async () => {
-      const newFiles = await createPreviewFiles(fileList);
-      const normalizedFiles: RuntimeFile[] = [];
-      const normalizedImages: RuntimeImage[] = [];
-      let droppedCount = 0;
-
-      for (const file of newFiles) {
-        if (file.mimeType.startsWith('image/')) {
-          const image = buildImageFromFile(file);
-          if (image && inputCapability.acceptImages) {
-            normalizedImages.push(image);
-          } else {
-            droppedCount += 1;
-          }
-          continue;
-        }
-        if (capabilityAllowsFile(file, inputCapability)) {
-          normalizedFiles.push(file);
-        } else {
-          droppedCount += 1;
-        }
-      }
-
-      if (normalizedFiles.length === 0 && normalizedImages.length === 0 && droppedCount > 0) {
-        setInputWarning('当前 Agent 不支持该附件类型');
-        return;
-      }
-
-      onDraftChange((prev) => ({
-        ...prev,
-        ...(normalizedFiles.length > 0 ? { files: [...(prev.files ?? []), ...normalizedFiles] } : {}),
-        ...(normalizedImages.length > 0 ? { images: [...(prev.images ?? []), ...normalizedImages] } : {}),
-      }));
-      if (droppedCount > 0) {
-        setInputWarning(`已过滤 ${droppedCount} 个不受支持的附件`);
-      } else {
-        setInputWarning(null);
-      }
-    })();
+    const incoming = fileList ? Array.from(fileList) : [];
+    void appendIncomingFiles(incoming);
     e.target.value = '';
-  }, [inputCapability, onDraftChange]);
+  }, [appendIncomingFiles]);
+
+  const handleTextareaPaste = useCallback((e: React.ClipboardEvent<HTMLTextAreaElement>) => {
+    const items = Array.from(e.clipboardData.items ?? []);
+    if (items.length === 0) return;
+    const filesFromClipboard: File[] = [];
+    for (const item of items) {
+      if (item.kind !== 'file') continue;
+      const file = item.getAsFile();
+      if (!file) continue;
+      filesFromClipboard.push(file);
+    }
+    if (filesFromClipboard.length === 0) return;
+    e.preventDefault();
+    void appendIncomingFiles(filesFromClipboard);
+  }, [appendIncomingFiles]);
+
+  const handleDragOver = useCallback((e: React.DragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    if (!isDragOver) setIsDragOver(true);
+  }, [isDragOver]);
+
+  const handleDragLeave = useCallback((e: React.DragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    const nextTarget = e.relatedTarget as Node | null;
+    if (nextTarget && e.currentTarget.contains(nextTarget)) return;
+    setIsDragOver(false);
+  }, []);
+
+  const handleDrop = useCallback((e: React.DragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    setIsDragOver(false);
+    const files = Array.from(e.dataTransfer.files ?? []);
+    const folderPaths: string[] = [];
+    const items = Array.from(e.dataTransfer.items ?? []);
+    for (const item of items) {
+      const withEntry = item as unknown as { webkitGetAsEntry?: () => WebkitFileSystemEntry | null };
+      const entry = withEntry.webkitGetAsEntry?.();
+      if (!entry || !entry.isDirectory) continue;
+      const fullPath = typeof entry.fullPath === 'string' ? entry.fullPath.trim() : '';
+      if (fullPath.length > 0) {
+        folderPaths.push(fullPath);
+      } else if (entry.name.trim().length > 0) {
+        folderPaths.push(entry.name.trim());
+      }
+    }
+    void appendIncomingFiles(files, folderPaths);
+  }, [appendIncomingFiles]);
 
   const removeImage = useCallback((id: string) => {
     onDraftChange((prev) => ({
@@ -665,6 +1095,19 @@ const ChatInput: React.FC<{
   }, [draft.text]);
 
   const canSend = draft.text.trim().length > 0 || images.length > 0 || files.length > 0;
+  const handleInterrupt = useCallback(() => {
+    if (!onInterruptTurn) return;
+    void Promise.resolve(onInterruptTurn()).then((stopped) => {
+      if (!stopped) {
+        setInputWarning('当前没有可停止的运行回合');
+      } else {
+        setInputWarning(null);
+      }
+    }).catch((error: unknown) => {
+      const message = error instanceof Error ? error.message : '停止失败';
+      setInputWarning(message);
+    });
+  }, [onInterruptTurn]);
 
   return (
     <div className="chat-input-container">
@@ -690,20 +1133,112 @@ const ChatInput: React.FC<{
       )}
 
       <div className="composer-shell">
-        <div className="textarea-wrapper">
+        <div
+          className={`textarea-wrapper ${isDragOver ? 'drag-over' : ''}`}
+          onDragOver={handleDragOver}
+          onDragLeave={handleDragLeave}
+          onDrop={handleDrop}
+        >
           <textarea
             data-testid="chat-input"
             ref={textareaRef}
             value={draft.text}
             onChange={handleTextChange}
             onKeyDown={handleKeyDown}
+            onPaste={handleTextareaPaste}
             placeholder={isPaused ? '系统已暂停，输入指令后点击继续' : '输入任务指令... (Shift+Enter 换行，/new 新会话)'}
             rows={4}
             disabled={disabled}
           />
         </div>
 
+        <div className="composer-review">
+          <div className="composer-mode-toggles">
+            <label className="composer-review-toggle">
+              <input
+                type="checkbox"
+                checked={planModeEnabled}
+                onChange={(e) => setPlanModeEnabled(e.target.checked)}
+                disabled={disabled}
+              />
+              <span>计划模式</span>
+            </label>
+            <label className="composer-review-toggle">
+              <input
+                type="checkbox"
+                checked={reviewEnabled}
+                onChange={(e) => setReviewEnabled(e.target.checked)}
+                disabled={disabled}
+              />
+              <span>启用 Review</span>
+            </label>
+            <span className="review-apply-hint">设置在发送时生效，运行中的回合不受影响</span>
+          </div>
+          {reviewEnabled && (
+            <div className="composer-review-fields">
+              <input
+                className="review-target-input"
+                type="text"
+                value={reviewTarget}
+                onChange={(e) => setReviewTarget(e.target.value)}
+                placeholder="Review 目标（必填）"
+                disabled={disabled}
+              />
+              <select
+                className="review-strictness-select"
+                value={reviewStrictness}
+                onChange={(e) => setReviewStrictness(e.target.value as ReviewStrictness)}
+                disabled={disabled}
+              >
+                <option value="mainline">主线合格即可</option>
+                <option value="strict">必须完全合格</option>
+              </select>
+              <label className="review-maxturns-field">
+                <span>最多轮次</span>
+                <input
+                  type="number"
+                  min={0}
+                  step={1}
+                  value={reviewMaxTurns}
+                  onChange={(e) => {
+                    const parsed = Number.parseInt(e.target.value, 10);
+                    if (!Number.isFinite(parsed) || parsed < 0) {
+                      setReviewMaxTurns(0);
+                      return;
+                    }
+                    setReviewMaxTurns(parsed);
+                  }}
+                  disabled={disabled}
+                />
+                <span className="review-maxturns-hint">0 = 无限</span>
+              </label>
+            </div>
+          )}
+        </div>
+
         <div className="composer-toolbar">
+          <div className="composer-controls">
+            <button
+              type="button"
+              className="control-btn danger"
+              onClick={handleInterrupt}
+              disabled={disabled || !isAgentRunning}
+              title="中断当前 chat-codex 回合"
+            >
+              停止当前回合
+            </button>
+            {(onPauseWorkflow && onResumeWorkflow) && (
+              <button
+                type="button"
+                className={`control-btn ${isPaused ? 'paused' : ''}`}
+                onClick={isPaused ? onResumeWorkflow : onPauseWorkflow}
+                disabled={disabled}
+                title="仅影响工作流状态机，不会中断当前 chat-codex 回合"
+              >
+                {isPaused ? '继续流程' : '暂停流程'}
+              </button>
+            )}
+          </div>
           <div className="composer-tools">
             <label className="attach-btn" title="添加图片">
               🖼
@@ -749,26 +1284,36 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
   events,
   contextEditableEventIds,
   agentRunStatus,
+  runtimeOverview,
+  toolPanelOverview,
   onSendMessage,
   onEditMessage,
   onDeleteMessage,
   onCreateNewSession,
   onPause,
   onResume,
+  onInterruptTurn,
   isPaused,
   isConnected,
   onAgentClick,
   inputCapability,
+  inputLockState,
+  clientId,
+  onAcquireInputLock,
+  onReleaseInputLock,
 }) => {
   const chatRef = useRef<HTMLDivElement>(null);
   const [showScrollToBottom, setShowScrollToBottom] = useState(false);
   const [draft, setDraft] = useState<UserInputPayload>({ text: '', images: [], files: [] });
-  const [inputHistory, setInputHistory] = useState<string[]>([]);
   const [visibleEventCount, setVisibleEventCount] = useState<number>(MESSAGE_PAGE_SIZE);
   const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
   const [operationMessage, setOperationMessage] = useState<string | null>(null);
   const [previewImage, setPreviewImage] = useState<RuntimeImage | null>(null);
   const effectiveInputCapability = inputCapability ?? DEFAULT_INPUT_CAPABILITY;
+  const toolDashboard = useMemo(
+    () => buildToolDashboard(events, toolPanelOverview?.availableTools ?? [], toolPanelOverview?.exposedTools ?? []),
+    [events, toolPanelOverview?.availableTools, toolPanelOverview?.exposedTools],
+  );
 
   useEffect(() => {
     if (!chatRef.current) return;
@@ -812,19 +1357,40 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
     }
   }, []);
 
-  const handleSend = useCallback((payload: UserInputPayload) => {
-    onSendMessage(payload);
-    const text = payload.text.trim();
-    if (text.length === 0) return;
-    setInputHistory((prev) => {
-      if (prev.length > 0 && prev[prev.length - 1] === text) return prev;
-      const next = [...prev, text];
-      return next.length > 100 ? next.slice(next.length - 100) : next;
-    });
-  }, [onSendMessage]);
+  const inputHistory = useMemo(() => {
+    const collected: string[] = [];
+    for (const event of events) {
+      if (event.role !== 'user') continue;
+      const text = event.content.trim();
+      if (text.length === 0) continue;
+      if (collected.length > 0 && collected[collected.length - 1] === text) continue;
+      collected.push(text);
+    }
+    return collected.length > 100 ? collected.slice(collected.length - 100) : collected;
+  }, [events]);
+
+  const handleSend = useCallback(async (payload: UserInputPayload) => {
+    // 尝试获取输入锁
+    if (onAcquireInputLock) {
+      const acquired = await onAcquireInputLock();
+      if (!acquired) {
+        console.warn('[ChatInterface] Failed to acquire input lock, another client is typing');
+        return;
+      }
+    }
+    
+    try {
+      await Promise.resolve(onSendMessage(payload));
+    } finally {
+      // 释放输入锁
+      if (onReleaseInputLock) {
+        onReleaseInputLock();
+      }
+    }
+  }, [onSendMessage, onAcquireInputLock, onReleaseInputLock]);
 
   const handleRetryMessage = useCallback((event: RuntimeEvent) => {
-    onSendMessage({
+    void onSendMessage({
       text: event.content,
       ...(event.images && event.images.length > 0 ? { images: event.images } : {}),
       ...(event.files && event.files.length > 0 ? { files: event.files } : {}),
@@ -962,9 +1528,9 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
       ...(activeMenuEvent.images && activeMenuEvent.images.length > 0 ? { images: activeMenuEvent.images } : {}),
       ...(activeMenuEvent.files && activeMenuEvent.files.length > 0 ? { files: activeMenuEvent.files } : {}),
     };
-    onSendMessage(payload);
+    void handleSend(payload);
     setContextMenu(null);
-  }, [activeMenuEvent, onSendMessage]);
+  }, [activeMenuEvent, handleSend]);
 
   const handleLoadMoreEvents = useCallback(() => {
     setVisibleEventCount((prev) => prev + MESSAGE_PAGE_SIZE);
@@ -977,17 +1543,18 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
           <span className="title-text">对话面板</span>
           {!isConnected && <span className="connection-badge offline">离线</span>}
         </div>
-
-        {executionState && (
-          <div className="header-controls">
-            <button
-              className={`control-btn ${isPaused ? 'paused' : ''}`}
-              onClick={isPaused ? onResume : onPause}
-            >
-              {isPaused ? '▶ 继续' : '⏸ 暂停'}
-            </button>
-          </div>
-        )}
+        <div className="header-status">
+          <span className={`header-status-dot ${agentRunStatus?.phase ?? 'idle'}`} />
+          <span className="header-status-text">
+            {agentRunStatus?.phase === 'running'
+              ? '运行中'
+              : agentRunStatus?.phase === 'error'
+                ? '异常'
+                : isPaused
+                  ? '流程已暂停'
+                  : '就绪'}
+          </span>
+        </div>
       </div>
 
       <div className="chat-messages" ref={chatRef} onScroll={handleScroll}>
@@ -1030,6 +1597,39 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
           <span className="agent-run-text">{agentRunStatus.text}</span>
         </div>
       )}
+      <div className="runtime-overview-bar">
+        <div className="runtime-overview-line">{formatRuntimeTokenSummary(runtimeOverview)}</div>
+        <div className="runtime-overview-line">{formatRuntimeOverview(runtimeOverview)}</div>
+      </div>
+      <div className="tool-dashboard">
+        <div className="tool-dashboard-summary">
+          <span>可用 {toolPanelOverview?.availableTools.length ?? 0}</span>
+          <span>暴露 {toolPanelOverview?.exposedTools.length ?? 0}</span>
+          <span>工具调用 {toolDashboard.total}</span>
+          <span className="ok">成功 {toolDashboard.success}</span>
+          <span className="fail">失败 {toolDashboard.failed}</span>
+        </div>
+        {toolDashboard.tools.length > 0 && (
+          <div className="tool-dashboard-list">
+            {toolDashboard.tools.slice(0, 8).map((tool) => (
+              <div key={`${tool.category}-${tool.name}`} className={`tool-dashboard-item ${tool.exposed ? 'exposed' : ''}`}>
+                <span className="tool-name">
+                  [{tool.category}] {tool.name}
+                  {tool.exposed ? ' · 已暴露' : tool.available ? ' · 可用' : ''}
+                </span>
+                <span className="tool-count">总 {tool.total} / 成 {tool.success} / 败 {tool.failed}</span>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {inputLockState && inputLockState.lockedBy && inputLockState.lockedBy !== clientId && (
+        <div className="input-lock-indicator">
+          <span className="lock-icon">🔒</span>
+          <span className="lock-text">其他端（{inputLockState.lockedBy}）正在输入...</span>
+        </div>
+      )}
 
       {contextMenu && activeMenuEvent && (
         <div
@@ -1062,7 +1662,11 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
         inputHistory={inputHistory}
         inputCapability={effectiveInputCapability}
         isPaused={isPaused}
-        disabled={!isConnected}
+        isAgentRunning={agentRunStatus?.phase === 'running'}
+        onPauseWorkflow={executionState ? onPause : undefined}
+        onResumeWorkflow={executionState ? onResume : undefined}
+        onInterruptTurn={onInterruptTurn}
+        disabled={!isConnected || (inputLockState?.lockedBy !== null && inputLockState?.lockedBy !== clientId)}
       />
       {operationMessage && <div className="operation-hint">{operationMessage}</div>}
 

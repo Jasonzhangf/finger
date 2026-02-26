@@ -458,7 +458,7 @@ export function registerIflowCommand(program: Command): void {
         }
         console.log('Connected to iFlow. Type "exit" to quit.\n');
 
-        while (true) {
+        for (;;) {
           const input = await question('You: ');
           if (input.toLowerCase() === 'exit') break;
 

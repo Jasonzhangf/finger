@@ -86,7 +86,7 @@ async function interactiveTest(): Promise<void> {
     });
   };
 
-  while (true) {
+  for (;;) {
     const text = await prompt('> ');
     
     if (text.toLowerCase() === 'exit' || text.toLowerCase() === 'quit') {

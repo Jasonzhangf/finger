@@ -2,6 +2,7 @@
 members = [
   "kernel-protocol",
   "kernel-config",
+  "kernel-context-ledger",
   "kernel-model",
   "kernel-core",
   "kernel-bridge-bin",
