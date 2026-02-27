@@ -180,6 +180,45 @@ Agent 的能力由其拥有的工具决定：
   let initialized = false;
   let initPromise: Promise<void> | null = null;
 
+  const emitDispatchLifecycle = (params: {
+    dispatchId: string;
+    sourceAgentId: string;
+    targetAgentId: string;
+    status: 'queued' | 'completed' | 'failed';
+    sessionId?: string;
+    workflowId?: string;
+    assignment?: {
+      epicId?: string;
+      taskId?: string;
+      bdTaskId?: string;
+      assignerAgentId?: string;
+      assigneeAgentId?: string;
+      phase?: 'assigned' | 'queued' | 'started' | 'reviewing' | 'retry' | 'passed' | 'failed' | 'closed';
+      attempt?: number;
+    };
+    result?: unknown;
+    error?: string;
+  }): void => {
+    globalEventBus.emit({
+      type: 'agent_runtime_dispatch',
+      sessionId: params.sessionId ?? 'default',
+      agentId: params.targetAgentId,
+      timestamp: new Date().toISOString(),
+      payload: {
+        dispatchId: params.dispatchId,
+        sourceAgentId: params.sourceAgentId,
+        targetAgentId: params.targetAgentId,
+        status: params.status,
+        blocking: true,
+        ...(params.sessionId ? { sessionId: params.sessionId } : {}),
+        ...(params.workflowId ? { workflowId: params.workflowId } : {}),
+        ...(params.assignment ? { assignment: params.assignment } : {}),
+        ...(params.result !== undefined ? { result: params.result } : {}),
+        ...(params.error ? { error: params.error } : {}),
+      },
+    } as any);
+  };
+
   // Helper: Create checkpoint for current state
   async function saveCheckpoint(state: LoopState, reason: string = 'phase_transition'): Promise<void> {
     const sessionId = config.sessionId || config.id;
@@ -317,16 +356,52 @@ Agent 的能力由其拥有的工具决定：
           timestamp: new Date().toISOString(),
           payload: { title: target.description },
         });
+        const dispatchId = `dispatch-${target.id}-${Date.now()}`;
+        const assignment = {
+          epicId: state.epicId,
+          taskId: target.id,
+          bdTaskId: target.bdTaskId,
+          assignerAgentId: config.id,
+          assigneeAgentId: state.targetExecutorId,
+          phase: 'started' as const,
+          attempt: 1,
+        };
+        emitDispatchLifecycle({
+          dispatchId,
+          sourceAgentId: config.id,
+          targetAgentId: state.targetExecutorId,
+          status: 'queued',
+          sessionId: config.sessionId || state.epicId,
+          workflowId: state.epicId,
+          assignment,
+        });
         const rawResult = await state.hub.sendToModule(state.targetExecutorId, {
           taskId: target.id,
           description: target.description,
           bdTaskId: target.bdTaskId,
+          metadata: {
+            assignment,
+            sourceAgentId: config.id,
+            targetAgentId: state.targetExecutorId,
+            dispatchId,
+            orchestration: true,
+          },
         });
         const result = rawResult as { success?: boolean; output?: string; error?: string; result?: string };
         target.result = { taskId: target.id, success: result.success !== false, output: result.output || result.result, error: result.error };
         if (target.result.success) {
           target.status = 'completed';
           state.completedTasks.push(target.id);
+          emitDispatchLifecycle({
+            dispatchId,
+            sourceAgentId: config.id,
+            targetAgentId: state.targetExecutorId,
+            status: 'completed',
+            sessionId: config.sessionId || state.epicId,
+            workflowId: state.epicId,
+            assignment: { ...assignment, phase: 'closed' },
+            result,
+          });
           globalEventBus.emit({
             type: 'task_completed',
             sessionId: config.sessionId || state.epicId,
@@ -340,6 +415,16 @@ Agent 的能力由其拥有的工具决定：
           state.failedTasks.push(target.id);
           state.lastError = target.result.error || 'unknown error';
           await registry.execute('CHECKPOINT', { trigger: 'task_failure' }, { state });
+          emitDispatchLifecycle({
+            dispatchId,
+            sourceAgentId: config.id,
+            targetAgentId: state.targetExecutorId,
+            status: 'failed',
+            sessionId: config.sessionId || state.epicId,
+            workflowId: state.epicId,
+            assignment: { ...assignment, phase: 'failed' },
+            error: target.result.error || 'unknown error',
+          });
           globalEventBus.emit({
             type: 'task_failed',
             sessionId: config.sessionId || state.epicId,
@@ -529,6 +614,25 @@ Agent 的能力由其拥有的工具决定：
           
           try {
             resourcePool.markTaskExecuting(task.id);
+            const dispatchId = `dispatch-${task.id}-${Date.now()}`;
+            const assignment = {
+              epicId: state.epicId,
+              taskId: task.id,
+              bdTaskId: task.bdTaskId,
+              assignerAgentId: config.id,
+              assigneeAgentId: targetExecutorId,
+              phase: 'started' as const,
+              attempt: 1,
+            };
+            emitDispatchLifecycle({
+              dispatchId,
+              sourceAgentId: config.id,
+              targetAgentId: targetExecutorId,
+              status: 'queued',
+              sessionId: config.sessionId || state.epicId,
+              workflowId: state.epicId,
+              assignment,
+            });
             
             // Build task-specific context
             const taskContext = buildAgentContext({
@@ -544,6 +648,13 @@ Agent 的能力由其拥有的工具决定：
               description: task.description,
               bdTaskId: task.bdTaskId,
               context: taskContext,
+              metadata: {
+                assignment,
+                sourceAgentId: config.id,
+                targetAgentId: targetExecutorId,
+                dispatchId,
+                orchestration: true,
+              },
             });
             const result = rawResult as { success?: boolean; output?: string; error?: string };
             
@@ -554,6 +665,16 @@ Agent 的能力由其拥有的工具决定：
               state.completedTasks.push(task.id);
               resourcePool.releaseResources(task.id, 'completed');
               concurrencyScheduler.completeTask(task.id, true);
+              emitDispatchLifecycle({
+                dispatchId,
+                sourceAgentId: config.id,
+                targetAgentId: targetExecutorId,
+                status: 'completed',
+                sessionId: config.sessionId || state.epicId,
+                workflowId: state.epicId,
+                assignment: { ...assignment, phase: 'closed' },
+                result,
+              });
               
               if (state.executionLoopId) {
                 completeExecNode(state.executionLoopId, task.id, true);
@@ -574,6 +695,16 @@ Agent 的能力由其拥有的工具决定：
               state.failedTasks.push(task.id);
               resourcePool.releaseResources(task.id, 'error');
               concurrencyScheduler.completeTask(task.id, false);
+              emitDispatchLifecycle({
+                dispatchId,
+                sourceAgentId: config.id,
+                targetAgentId: targetExecutorId,
+                status: 'failed',
+                sessionId: config.sessionId || state.epicId,
+                workflowId: state.epicId,
+                assignment: { ...assignment, phase: 'failed' },
+                error: result.error || 'unknown error',
+              });
               
               if (state.executionLoopId) {
                 completeExecNode(state.executionLoopId, task.id, false);
@@ -596,6 +727,24 @@ Agent 的能力由其拥有的工具决定：
             state.failedTasks.push(task.id);
             resourcePool.releaseResources(task.id, 'error');
             concurrencyScheduler.completeTask(task.id, false);
+            emitDispatchLifecycle({
+              dispatchId: `dispatch-${task.id}-${Date.now()}`,
+              sourceAgentId: config.id,
+              targetAgentId: targetExecutorId,
+              status: 'failed',
+              sessionId: config.sessionId || state.epicId,
+              workflowId: state.epicId,
+              assignment: {
+                epicId: state.epicId,
+                taskId: task.id,
+                bdTaskId: task.bdTaskId,
+                assignerAgentId: config.id,
+                assigneeAgentId: targetExecutorId,
+                phase: 'failed',
+                attempt: 1,
+              },
+              error: String(err),
+            });
             
             if (state.executionLoopId) {
               completeExecNode(state.executionLoopId, task.id, false);
@@ -699,19 +848,84 @@ Agent 的能力由其拥有的工具决定：
           task.assignee = targetExecutorId;
           
           try {
+            const dispatchId = `dispatch-${taskId}-${Date.now()}`;
+            const assignment = {
+              epicId: state.epicId,
+              taskId,
+              bdTaskId: task.bdTaskId,
+              assignerAgentId: config.id,
+              assigneeAgentId: targetExecutorId,
+              phase: 'started' as const,
+              attempt: 1,
+            };
+            emitDispatchLifecycle({
+              dispatchId,
+              sourceAgentId: config.id,
+              targetAgentId: targetExecutorId,
+              status: 'queued',
+              sessionId: config.sessionId || state.epicId,
+              workflowId: state.epicId,
+              assignment,
+            });
             const result = await state.hub.sendToModule(targetExecutorId, {
               taskId,
               description: task.description,
               bdTaskId: task.bdTaskId,
+              metadata: {
+                assignment,
+                sourceAgentId: config.id,
+                targetAgentId: targetExecutorId,
+                dispatchId,
+                orchestration: true,
+              },
             });
             
             if ((result as { success?: boolean }).success !== false) {
               task.status = 'completed';
               state.completedTasks.push(taskId);
               state.blockedTasks = state.blockedTasks.filter(id => id !== taskId);
+              emitDispatchLifecycle({
+                dispatchId,
+                sourceAgentId: config.id,
+                targetAgentId: targetExecutorId,
+                status: 'completed',
+                sessionId: config.sessionId || state.epicId,
+                workflowId: state.epicId,
+                assignment: { ...assignment, phase: 'closed' },
+                result,
+              });
               handledCount++;
+            } else {
+              emitDispatchLifecycle({
+                dispatchId,
+                sourceAgentId: config.id,
+                targetAgentId: targetExecutorId,
+                status: 'failed',
+                sessionId: config.sessionId || state.epicId,
+                workflowId: state.epicId,
+                assignment: { ...assignment, phase: 'failed' },
+                error: (result as { error?: string }).error || 'unknown error',
+              });
             }
           } catch {
+            emitDispatchLifecycle({
+              dispatchId: `dispatch-${taskId}-${Date.now()}`,
+              sourceAgentId: config.id,
+              targetAgentId: targetExecutorId,
+              status: 'failed',
+              sessionId: config.sessionId || state.epicId,
+              workflowId: state.epicId,
+              assignment: {
+                epicId: state.epicId,
+                taskId,
+                bdTaskId: task.bdTaskId,
+                assignerAgentId: config.id,
+                assigneeAgentId: targetExecutorId,
+                phase: 'failed',
+                attempt: 1,
+              },
+              error: 'dispatch failed',
+            });
             // Keep in blockedTasks
           }
         }
