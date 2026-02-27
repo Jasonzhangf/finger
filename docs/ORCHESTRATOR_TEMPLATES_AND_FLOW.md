@@ -7,6 +7,16 @@
 - `review_retry`: Route execution output through reviewer and decide retry/pass.
 - `search_evidence`: Run retrieval-first evidence collection and source validation.
 
+## Template Suggestion Tool
+
+- Tool name: `orchestrator.loop_templates`
+- Purpose: classify tasks into loop templates and split blocking/non-blocking work.
+- Output includes:
+  - `primaryTemplate`
+  - `taskSuggestions`
+  - `blockingTaskIds`
+  - `nonBlockingTaskIds`
+
 ## Default Assignment Flow
 
 1. `orchestrator -> reviewer -> assignee` for epic plan admission.

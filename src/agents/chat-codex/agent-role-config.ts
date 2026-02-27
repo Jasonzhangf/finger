@@ -27,6 +27,7 @@ const ORCHESTRATION_TOOLS = [
   'agent.deploy',
   'agent.dispatch',
   'agent.control',
+  'orchestrator.loop_templates',
   'user.ask',
 ] as const;
 

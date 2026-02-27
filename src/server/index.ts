@@ -26,6 +26,7 @@ import { loadAutostartAgents } from '../orchestration/autostart-loader.js';
 import { sharedWorkflowManager, sharedMessageHub, sharedSessionManager } from '../orchestration/shared-instances.js';
 import { runtimeInstructionBus } from '../orchestration/runtime-instruction-bus.js';
 import { AskManager } from '../orchestration/ask/ask-manager.js';
+import { recommendLoopTemplates } from '../orchestration/loop/loop-template-registry.js';
 import { resourcePool } from '../orchestration/resource-pool.js';
 import { resumableSessionManager } from '../orchestration/resumable-session.js';
 import { echoInput, echoOutput } from '../agents/test/mock-echo-agent.js';
@@ -2372,6 +2373,69 @@ function registerAgentRuntimeTools(): string[] {
     },
   });
   loaded.push('agent.control');
+
+  runtime.registerTool({
+    name: 'orchestrator.loop_templates',
+    description:
+      'Suggest loop templates and blocking split for current task set. Templates: epic_planning|parallel_execution|review_retry|search_evidence.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        task: { type: 'string' },
+        tasks: {
+          type: 'array',
+          items: {
+            type: 'object',
+            properties: {
+              id: { type: 'string' },
+              description: { type: 'string' },
+              blockedBy: { type: 'array', items: { type: 'string' } },
+            },
+            required: ['description'],
+            additionalProperties: true,
+          },
+        },
+        context_consumption: { type: 'string', enum: ['low', 'medium', 'high'] },
+        requires_evidence: { type: 'boolean' },
+      },
+      additionalProperties: true,
+    },
+    handler: async (input: unknown): Promise<unknown> => {
+      if (!isObjectRecord(input)) {
+        throw new Error('orchestrator.loop_templates input must be object');
+      }
+      const contextConsumption = typeof input.context_consumption === 'string'
+        ? input.context_consumption
+        : typeof input.contextConsumption === 'string'
+          ? input.contextConsumption
+          : undefined;
+      const tasksRaw = Array.isArray(input.tasks)
+        ? input.tasks
+        : undefined;
+      const taskItems = tasksRaw?.map((item) => {
+        const record = isObjectRecord(item) ? item : {};
+        return {
+          ...(typeof record.id === 'string' ? { id: record.id } : {}),
+          description: typeof record.description === 'string'
+            ? record.description
+            : typeof record.task === 'string'
+              ? record.task
+              : '',
+          ...(Array.isArray(record.blockedBy) ? { blockedBy: record.blockedBy } : Array.isArray(record.blocked_by) ? { blockedBy: record.blocked_by } : {}),
+        };
+      }).filter((item) => typeof item.description === 'string' && item.description.trim().length > 0);
+
+      return recommendLoopTemplates({
+        ...(typeof input.task === 'string' && input.task.trim().length > 0 ? { task: input.task.trim() } : {}),
+        ...(taskItems && taskItems.length > 0 ? { tasks: taskItems } : {}),
+        ...(contextConsumption === 'low' || contextConsumption === 'medium' || contextConsumption === 'high'
+          ? { contextConsumption }
+          : {}),
+        ...(input.requires_evidence === true || input.requiresEvidence === true ? { requiresEvidence: true } : {}),
+      });
+    },
+  });
+  loaded.push('orchestrator.loop_templates');
 
   runtime.registerTool({
     name: 'user.ask',
