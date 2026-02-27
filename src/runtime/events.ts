@@ -419,6 +419,17 @@ export interface AgentRuntimeDispatchEvent extends BaseEvent {
     blocking: boolean;
     sessionId?: string;
     workflowId?: string;
+    queuePosition?: number;
+    assignment?: {
+      epicId?: string;
+      taskId?: string;
+      bdTaskId?: string;
+      assignerAgentId?: string;
+      assigneeAgentId?: string;
+      phase?: 'assigned' | 'queued' | 'started' | 'reviewing' | 'retry' | 'passed' | 'failed' | 'closed';
+      attempt?: number;
+    };
+    result?: unknown;
     error?: string;
   };
 }

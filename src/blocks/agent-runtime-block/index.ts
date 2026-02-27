@@ -7,7 +7,7 @@ import type { ModuleRegistry, OrchestrationModule } from '../../orchestration/mo
 import type { LoadedAgentConfig } from '../../runtime/agent-json-config.js';
 import type { ResourcePool } from '../../orchestration/resource-pool.js';
 
-export type AgentRoleType = 'executor' | 'reviewer' | 'orchestrator';
+export type AgentRoleType = 'executor' | 'reviewer' | 'orchestrator' | 'searcher';
 export type AgentCapabilityLayer = 'summary' | 'execution' | 'governance' | 'full';
 
 export interface AgentImplementation {
@@ -110,7 +110,20 @@ export interface AgentDispatchRequest {
   sessionId?: string;
   workflowId?: string;
   blocking?: boolean;
+  queueOnBusy?: boolean;
+  maxQueueWaitMs?: number;
+  assignment?: AgentAssignmentLifecycle;
   metadata?: Record<string, unknown>;
+}
+
+export interface AgentAssignmentLifecycle {
+  epicId?: string;
+  taskId?: string;
+  bdTaskId?: string;
+  assignerAgentId?: string;
+  assigneeAgentId?: string;
+  phase?: 'assigned' | 'queued' | 'started' | 'reviewing' | 'retry' | 'passed' | 'failed' | 'closed';
+  attempt?: number;
 }
 
 export interface AgentControlRequest {
@@ -155,6 +168,25 @@ export interface AgentDeployRequest {
 interface WorkflowTaskView {
   status: string;
   assignee?: string;
+}
+
+interface QueuedDispatchItem {
+  dispatchId: string;
+  input: AgentDispatchRequest;
+  targetModuleId: string;
+  assignment?: AgentAssignmentLifecycle;
+  resolve: (result: DispatchResult) => void;
+  timeoutHandle?: NodeJS.Timeout;
+}
+
+interface DispatchResult {
+  ok: boolean;
+  dispatchId: string;
+  status: 'queued' | 'completed' | 'failed';
+  result?: unknown;
+  error?: string;
+  targetModuleId?: string;
+  queuePosition?: number;
 }
 
 interface WorkflowLike {
@@ -215,6 +247,7 @@ function normalizeAgentType(value: unknown): AgentRoleType {
   const normalized = value.trim().toLowerCase();
   if (normalized.includes('orchestr')) return 'orchestrator';
   if (normalized.includes('review')) return 'reviewer';
+  if (normalized.includes('search')) return 'searcher';
   return 'executor';
 }
 
@@ -289,6 +322,8 @@ export class AgentRuntimeBlock extends BaseBlock {
   };
 
   private readonly deployments = new Map<string, AgentDeploymentRecord>();
+  private readonly activeDispatchCountByAgent = new Map<string, number>();
+  private readonly dispatchQueueByAgent = new Map<string, QueuedDispatchItem[]>();
 
   constructor(id: string, private readonly deps: AgentRuntimeBlockDeps) {
     super(id, 'agent_runtime');
@@ -729,12 +764,94 @@ export class AgentRuntimeBlock extends BaseBlock {
     return candidates[0];
   }
 
+  private resolveDispatchCapacity(agentId: string): number {
+    const deployment = this.resolveDeploymentByAgentId(agentId);
+    if (!deployment) return 0;
+    const count = Number.isFinite(deployment.instanceCount) ? Math.floor(deployment.instanceCount) : 1;
+    return Math.max(1, count);
+  }
+
+  private getActiveDispatchCount(agentId: string): number {
+    const current = this.activeDispatchCountByAgent.get(agentId);
+    if (!Number.isFinite(current)) return 0;
+    return Math.max(0, Math.floor(current as number));
+  }
+
+  private increaseActiveDispatch(agentId: string): void {
+    this.activeDispatchCountByAgent.set(agentId, this.getActiveDispatchCount(agentId) + 1);
+  }
+
+  private decreaseActiveDispatch(agentId: string): void {
+    const next = this.getActiveDispatchCount(agentId) - 1;
+    if (next <= 0) {
+      this.activeDispatchCountByAgent.delete(agentId);
+      return;
+    }
+    this.activeDispatchCountByAgent.set(agentId, next);
+  }
+
+  private normalizeAssignment(input: AgentDispatchRequest): AgentAssignmentLifecycle | undefined {
+    const assignment = isObjectRecord(input.assignment) ? input.assignment : {};
+    const taskRecord = isObjectRecord(input.task) ? input.task : {};
+    const taskIdFromTask = typeof taskRecord.taskId === 'string' ? taskRecord.taskId.trim() : '';
+    const taskIdFromTaskLower = typeof taskRecord.task_id === 'string' ? taskRecord.task_id.trim() : '';
+    const taskId = typeof assignment.taskId === 'string' && assignment.taskId.trim().length > 0
+      ? assignment.taskId.trim()
+      : taskIdFromTask
+        || taskIdFromTaskLower
+        || undefined;
+    const epicId = typeof assignment.epicId === 'string' && assignment.epicId.trim().length > 0
+      ? assignment.epicId.trim()
+      : typeof input.workflowId === 'string' && input.workflowId.trim().length > 0
+        ? input.workflowId.trim()
+        : undefined;
+    const bdTaskId = typeof assignment.bdTaskId === 'string' && assignment.bdTaskId.trim().length > 0
+      ? assignment.bdTaskId.trim()
+      : undefined;
+    const assignerAgentId = typeof assignment.assignerAgentId === 'string' && assignment.assignerAgentId.trim().length > 0
+      ? assignment.assignerAgentId.trim()
+      : input.sourceAgentId;
+    const assigneeAgentId = typeof assignment.assigneeAgentId === 'string' && assignment.assigneeAgentId.trim().length > 0
+      ? assignment.assigneeAgentId.trim()
+      : input.targetAgentId;
+    const phase = typeof assignment.phase === 'string' && assignment.phase.trim().length > 0
+      ? assignment.phase as AgentAssignmentLifecycle['phase']
+      : 'assigned';
+    const attemptRaw = typeof assignment.attempt === 'number' && Number.isFinite(assignment.attempt)
+      ? assignment.attempt
+      : 1;
+    const attempt = Math.max(1, Math.floor(attemptRaw));
+
+    return {
+      ...(epicId ? { epicId } : {}),
+      ...(taskId ? { taskId } : {}),
+      ...(bdTaskId ? { bdTaskId } : {}),
+      assignerAgentId,
+      assigneeAgentId,
+      phase,
+      attempt,
+    };
+  }
+
+  private withAssignmentPhase(
+    assignment: AgentAssignmentLifecycle | undefined,
+    phase: NonNullable<AgentAssignmentLifecycle['phase']>,
+  ): AgentAssignmentLifecycle | undefined {
+    if (!assignment) return undefined;
+    return {
+      ...assignment,
+      phase,
+    };
+  }
+
   private toDispatchPayload(input: AgentDispatchRequest, dispatchId: string): Record<string, unknown> {
+    const assignment = this.normalizeAssignment(input);
     const metadata = {
       ...(isObjectRecord(input.metadata) ? input.metadata : {}),
       dispatchId,
       sourceAgentId: input.sourceAgentId,
       targetAgentId: input.targetAgentId,
+      ...(assignment ? { assignment } : {}),
       orchestration: true,
     };
 
@@ -763,6 +880,9 @@ export class AgentRuntimeBlock extends BaseBlock {
     blocking: boolean;
     sessionId?: string;
     workflowId?: string;
+    queuePosition?: number;
+    assignment?: AgentAssignmentLifecycle;
+    result?: unknown;
     error?: string;
   }): void {
     void this.deps.eventBus.emit({
@@ -778,6 +898,9 @@ export class AgentRuntimeBlock extends BaseBlock {
         blocking: params.blocking,
         ...(params.sessionId ? { sessionId: params.sessionId } : {}),
         ...(params.workflowId ? { workflowId: params.workflowId } : {}),
+        ...(typeof params.queuePosition === 'number' ? { queuePosition: params.queuePosition } : {}),
+        ...(params.assignment ? { assignment: params.assignment } : {}),
+        ...(params.result !== undefined ? { result: params.result } : {}),
         ...(params.error ? { error: params.error } : {}),
       },
     });
@@ -820,14 +943,161 @@ export class AgentRuntimeBlock extends BaseBlock {
     });
   }
 
-  private async dispatchTask(input: AgentDispatchRequest): Promise<{
-    ok: boolean;
-    dispatchId: string;
-    status: 'queued' | 'completed' | 'failed';
-    result?: unknown;
-    error?: string;
-    targetModuleId?: string;
-  }> {
+  private removeQueuedDispatch(targetAgentId: string, dispatchId: string): QueuedDispatchItem | null {
+    const queue = this.dispatchQueueByAgent.get(targetAgentId);
+    if (!queue || queue.length === 0) return null;
+    const idx = queue.findIndex((item) => item.dispatchId === dispatchId);
+    if (idx < 0) return null;
+    const [removed] = queue.splice(idx, 1);
+    if (queue.length === 0) {
+      this.dispatchQueueByAgent.delete(targetAgentId);
+    } else {
+      this.dispatchQueueByAgent.set(targetAgentId, queue);
+    }
+    return removed;
+  }
+
+  private enqueueDispatch(targetAgentId: string, item: QueuedDispatchItem): number {
+    const queue = this.dispatchQueueByAgent.get(targetAgentId) ?? [];
+    queue.push(item);
+    this.dispatchQueueByAgent.set(targetAgentId, queue);
+    return queue.length;
+  }
+
+  private async executeDispatch(
+    input: AgentDispatchRequest,
+    dispatchId: string,
+    targetModuleId: string,
+    assignment?: AgentAssignmentLifecycle,
+  ): Promise<DispatchResult> {
+    const blocking = input.blocking === true;
+    const payload = this.toDispatchPayload({
+      ...input,
+      ...(assignment ? { assignment } : {}),
+    }, dispatchId);
+    this.increaseActiveDispatch(input.targetAgentId);
+
+    if (!blocking) {
+      void this.deps.hub.sendToModule(targetModuleId, payload)
+        .then((result) => {
+          this.emitDispatchEvent({
+            dispatchId,
+            sourceAgentId: input.sourceAgentId,
+            targetAgentId: input.targetAgentId,
+            status: 'completed',
+            blocking,
+            sessionId: input.sessionId,
+            workflowId: input.workflowId,
+            assignment: this.withAssignmentPhase(assignment, 'closed'),
+            result,
+          });
+        })
+        .catch((error: unknown) => {
+          const message = error instanceof Error ? error.message : String(error);
+          this.emitDispatchEvent({
+            dispatchId,
+            sourceAgentId: input.sourceAgentId,
+            targetAgentId: input.targetAgentId,
+            status: 'failed',
+            blocking,
+            sessionId: input.sessionId,
+            workflowId: input.workflowId,
+            assignment: this.withAssignmentPhase(assignment, 'failed'),
+            error: message,
+          });
+        })
+        .finally(() => {
+          this.decreaseActiveDispatch(input.targetAgentId);
+          this.drainDispatchQueue(input.targetAgentId);
+        });
+      return { ok: true, dispatchId, status: 'queued', targetModuleId };
+    }
+
+    try {
+      const result = await this.deps.hub.sendToModule(targetModuleId, payload);
+      this.emitDispatchEvent({
+        dispatchId,
+        sourceAgentId: input.sourceAgentId,
+        targetAgentId: input.targetAgentId,
+        status: 'completed',
+        blocking,
+        sessionId: input.sessionId,
+        workflowId: input.workflowId,
+        assignment: this.withAssignmentPhase(assignment, 'closed'),
+        result,
+      });
+      return { ok: true, dispatchId, status: 'completed', result, targetModuleId };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.emitDispatchEvent({
+        dispatchId,
+        sourceAgentId: input.sourceAgentId,
+        targetAgentId: input.targetAgentId,
+        status: 'failed',
+        blocking,
+        sessionId: input.sessionId,
+        workflowId: input.workflowId,
+        assignment: this.withAssignmentPhase(assignment, 'failed'),
+        error: message,
+      });
+      return { ok: false, dispatchId, status: 'failed', error: message, targetModuleId };
+    } finally {
+      this.decreaseActiveDispatch(input.targetAgentId);
+      this.drainDispatchQueue(input.targetAgentId);
+    }
+  }
+
+  private drainDispatchQueue(targetAgentId: string): void {
+    const queue = this.dispatchQueueByAgent.get(targetAgentId);
+    if (!queue || queue.length === 0) return;
+    const capacity = this.resolveDispatchCapacity(targetAgentId);
+    if (capacity <= 0) return;
+
+    while (this.getActiveDispatchCount(targetAgentId) < capacity) {
+      const next = queue.shift();
+      if (!next) break;
+      if (next.timeoutHandle) {
+        clearTimeout(next.timeoutHandle);
+        next.timeoutHandle = undefined;
+      }
+      if (queue.length === 0) {
+        this.dispatchQueueByAgent.delete(targetAgentId);
+      } else {
+        this.dispatchQueueByAgent.set(targetAgentId, queue);
+      }
+
+      this.emitDispatchEvent({
+        dispatchId: next.dispatchId,
+        sourceAgentId: next.input.sourceAgentId,
+        targetAgentId: next.input.targetAgentId,
+        status: 'queued',
+        blocking: next.input.blocking === true,
+        sessionId: next.input.sessionId,
+        workflowId: next.input.workflowId,
+        assignment: this.withAssignmentPhase(next.assignment, 'started'),
+      });
+
+      void this.executeDispatch(
+        next.input,
+        next.dispatchId,
+        next.targetModuleId,
+        this.withAssignmentPhase(next.assignment, 'started'),
+      ).then((result) => {
+        next.resolve(result);
+      }).catch((error: unknown) => {
+        const message = error instanceof Error ? error.message : String(error);
+        next.resolve({
+          ok: false,
+          dispatchId: next.dispatchId,
+          status: 'failed',
+          targetModuleId: next.targetModuleId,
+          error: message,
+        });
+      });
+    }
+  }
+
+  private async dispatchTask(input: AgentDispatchRequest): Promise<DispatchResult> {
     const target = input.targetAgentId.trim();
     if (!target) {
       return {
@@ -859,76 +1129,117 @@ export class AgentRuntimeBlock extends BaseBlock {
       };
     }
 
+    const normalizedInput: AgentDispatchRequest = {
+      ...input,
+      sourceAgentId: input.sourceAgentId.trim(),
+      targetAgentId: target,
+      queueOnBusy: input.queueOnBusy !== false,
+      maxQueueWaitMs: Number.isFinite(input.maxQueueWaitMs)
+        ? Math.max(1_000, Math.floor(input.maxQueueWaitMs as number))
+        : 300_000,
+    };
     const blocking = input.blocking === true;
     const dispatchId = `dispatch-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-    const payload = this.toDispatchPayload(input, dispatchId);
+    const assignment = this.normalizeAssignment(normalizedInput);
+    const activeCount = this.getActiveDispatchCount(target);
+    const capacity = this.resolveDispatchCapacity(target);
+
+    if (blocking && normalizedInput.sourceAgentId === target && activeCount >= capacity) {
+      return {
+        ok: false,
+        dispatchId,
+        status: 'failed',
+        targetModuleId,
+        error: `dispatch deadlock risk: source=${target} target=${target} capacity=${capacity}`,
+      };
+    }
+
+    if (activeCount >= capacity) {
+      if (normalizedInput.queueOnBusy === false) {
+        return {
+          ok: false,
+          dispatchId,
+          status: 'failed',
+          targetModuleId,
+          error: `target agent busy: ${target}`,
+        };
+      }
+
+      const pendingResult = new Promise<DispatchResult>((resolve) => {
+        const queued: QueuedDispatchItem = {
+          dispatchId,
+          input: normalizedInput,
+          targetModuleId,
+          assignment,
+          resolve,
+        };
+        queued.timeoutHandle = setTimeout(() => {
+          const removed = this.removeQueuedDispatch(target, dispatchId);
+          if (!removed) return;
+          this.emitDispatchEvent({
+            dispatchId,
+            sourceAgentId: normalizedInput.sourceAgentId,
+            targetAgentId: target,
+            status: 'failed',
+            blocking,
+            sessionId: normalizedInput.sessionId,
+            workflowId: normalizedInput.workflowId,
+            assignment: this.withAssignmentPhase(assignment, 'failed'),
+            error: 'dispatch queue timeout',
+          });
+          resolve({
+            ok: false,
+            dispatchId,
+            status: 'failed',
+            targetModuleId,
+            error: 'dispatch queue timeout',
+          });
+        }, normalizedInput.maxQueueWaitMs);
+        this.enqueueDispatch(target, queued);
+      });
+
+      const queuePosition = this.dispatchQueueByAgent.get(target)?.length ?? 1;
+      this.emitDispatchEvent({
+        dispatchId,
+        sourceAgentId: normalizedInput.sourceAgentId,
+        targetAgentId: target,
+        status: 'queued',
+        blocking,
+        sessionId: normalizedInput.sessionId,
+        workflowId: normalizedInput.workflowId,
+        queuePosition,
+        assignment: this.withAssignmentPhase(assignment, 'queued'),
+      });
+
+      if (blocking) {
+        return pendingResult;
+      }
+
+      return {
+        ok: true,
+        dispatchId,
+        status: 'queued',
+        targetModuleId,
+        queuePosition,
+      };
+    }
 
     this.emitDispatchEvent({
       dispatchId,
-      sourceAgentId: input.sourceAgentId,
+      sourceAgentId: normalizedInput.sourceAgentId,
       targetAgentId: target,
       status: 'queued',
       blocking,
-      sessionId: input.sessionId,
-      workflowId: input.workflowId,
+      sessionId: normalizedInput.sessionId,
+      workflowId: normalizedInput.workflowId,
+      assignment: this.withAssignmentPhase(assignment, 'started'),
     });
-
-    if (blocking) {
-      try {
-        const result = await this.deps.hub.sendToModule(targetModuleId, payload);
-        this.emitDispatchEvent({
-          dispatchId,
-          sourceAgentId: input.sourceAgentId,
-          targetAgentId: target,
-          status: 'completed',
-          blocking,
-          sessionId: input.sessionId,
-          workflowId: input.workflowId,
-        });
-        return { ok: true, dispatchId, status: 'completed', result, targetModuleId };
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        this.emitDispatchEvent({
-          dispatchId,
-          sourceAgentId: input.sourceAgentId,
-          targetAgentId: target,
-          status: 'failed',
-          blocking,
-          sessionId: input.sessionId,
-          workflowId: input.workflowId,
-          error: message,
-        });
-        return { ok: false, dispatchId, status: 'failed', error: message, targetModuleId };
-      }
-    }
-
-    void this.deps.hub.sendToModule(targetModuleId, payload)
-      .then(() => {
-        this.emitDispatchEvent({
-          dispatchId,
-          sourceAgentId: input.sourceAgentId,
-          targetAgentId: target,
-          status: 'completed',
-          blocking,
-          sessionId: input.sessionId,
-          workflowId: input.workflowId,
-        });
-      })
-      .catch((error: unknown) => {
-        const message = error instanceof Error ? error.message : String(error);
-        this.emitDispatchEvent({
-          dispatchId,
-          sourceAgentId: input.sourceAgentId,
-          targetAgentId: target,
-          status: 'failed',
-          blocking,
-          sessionId: input.sessionId,
-          workflowId: input.workflowId,
-          error: message,
-        });
-      });
-
-    return { ok: true, dispatchId, status: 'queued', targetModuleId };
+    return this.executeDispatch(
+      normalizedInput,
+      dispatchId,
+      targetModuleId,
+      this.withAssignmentPhase(assignment, 'started'),
+    );
   }
 
   private async controlRuntime(input: AgentControlRequest): Promise<AgentControlResult> {

@@ -25,6 +25,7 @@ import { GatewayManager } from '../gateway/gateway-manager.js';
 import { loadAutostartAgents } from '../orchestration/autostart-loader.js';
 import { sharedWorkflowManager, sharedMessageHub, sharedSessionManager } from '../orchestration/shared-instances.js';
 import { runtimeInstructionBus } from '../orchestration/runtime-instruction-bus.js';
+import { AskManager } from '../orchestration/ask/ask-manager.js';
 import { resourcePool } from '../orchestration/resource-pool.js';
 import { resumableSessionManager } from '../orchestration/resumable-session.js';
 import { echoInput, echoOutput } from '../agents/test/mock-echo-agent.js';
@@ -38,6 +39,7 @@ import { createRealOrchestratorModule } from '../agents/daemon/orchestrator-modu
 import { createOrchestratorLoop } from '../agents/daemon/orchestrator-loop.js';
 import { createExecutorLoop } from '../agents/daemon/executor-loop.js';
 import { mailbox } from './mailbox.js';
+import { BdTools } from '../agents/shared/bd-tools.js';
 import type { OutputModule } from '../orchestration/module-registry.js';
 import type { Attachment } from '../runtime/events.js';
 import { inputLockManager } from '../runtime/input-lock.js';
@@ -346,6 +348,12 @@ const moduleRegistry = new ModuleRegistry(hub);
 const sessionManager = sharedSessionManager;
 const workflowManager = sharedWorkflowManager;
 const runtime = new RuntimeFacade(globalEventBus, sessionManager, globalToolRegistry);
+const askManager = new AskManager(
+  Number.isFinite(Number(process.env.FINGER_ASK_TOOL_TIMEOUT_MS))
+    ? Math.max(1_000, Math.floor(Number(process.env.FINGER_ASK_TOOL_TIMEOUT_MS)))
+    : 600_000,
+);
+const bdTools = new BdTools(process.cwd());
 const loadedTools = registerDefaultRuntimeTools(globalToolRegistry);
 console.log(`[Server] Runtime tools loaded: ${loadedTools.join(', ')}`);
 const gatewayManager = new GatewayManager(hub, moduleRegistry, {
@@ -1483,7 +1491,15 @@ app.post('/api/v1/tools/execute', async (req, res) => {
   }
 
   try {
-    const result = await runtime.callTool(agentId, toolName, input, { authorizationToken });
+    const executionInput = toolName === 'user.ask' && isObjectRecord(input)
+      ? {
+          ...input,
+          ...(typeof input.agent_id === 'string' && input.agent_id.trim().length > 0
+            ? {}
+            : { agent_id: agentId }),
+        }
+      : input;
+    const result = await runtime.callTool(agentId, toolName, executionInput, { authorizationToken });
     res.json({ success: true, result });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
@@ -1755,6 +1771,18 @@ app.post('/api/v1/workflow/input', async (req, res) => {
     res.status(404).json({ error: 'Workflow not found' });
     return;
   }
+
+  const askResolution = askManager.resolveOldestByScope({
+    agentId: 'chat-codex',
+    workflowId: String(workflowId),
+    ...(typeof workflow.epicId === 'string' && workflow.epicId.trim().length > 0 ? { epicId: workflow.epicId.trim() } : {}),
+    ...(typeof workflow.sessionId === 'string' && workflow.sessionId.trim().length > 0 ? { sessionId: workflow.sessionId.trim() } : {}),
+  }, String(input));
+
+  if (askResolution) {
+    res.json({ success: true, workflowId, askResolution });
+    return;
+  }
   
   // Store user input in workflow context and route runtime instruction to loop parser.
   workflowManager.updateWorkflowContext(workflowId, { lastUserInput: input });
@@ -1788,6 +1816,17 @@ interface AgentDispatchRequest {
   sessionId?: string;
   workflowId?: string;
   blocking?: boolean;
+  queueOnBusy?: boolean;
+  maxQueueWaitMs?: number;
+  assignment?: {
+    epicId?: string;
+    taskId?: string;
+    bdTaskId?: string;
+    assignerAgentId?: string;
+    assigneeAgentId?: string;
+    phase?: 'assigned' | 'queued' | 'started' | 'reviewing' | 'retry' | 'passed' | 'failed' | 'closed';
+    attempt?: number;
+  };
   metadata?: Record<string, unknown>;
 }
 
@@ -1826,15 +1865,18 @@ async function dispatchTaskToAgent(input: AgentDispatchRequest): Promise<{
   status: 'queued' | 'completed' | 'failed';
   result?: unknown;
   error?: string;
+  queuePosition?: number;
 }> {
-  const result = await agentRuntimeBlock.execute('dispatch', input as unknown as Record<string, unknown>);
-  return result as {
+  const result = await agentRuntimeBlock.execute('dispatch', input as unknown as Record<string, unknown>) as {
     ok: boolean;
     dispatchId: string;
     status: 'queued' | 'completed' | 'failed';
     result?: unknown;
     error?: string;
+    queuePosition?: number;
   };
+  await syncBdDispatchLifecycle(input, result);
+  return result;
 }
 
 async function controlAgentRuntime(input: AgentControlRequest): Promise<AgentControlResult> {
@@ -1842,10 +1884,197 @@ async function controlAgentRuntime(input: AgentControlRequest): Promise<AgentCon
   return result as AgentControlResult;
 }
 
+interface AskToolRequest {
+  question: string;
+  options?: string[];
+  context?: string;
+  agentId?: string;
+  sessionId?: string;
+  workflowId?: string;
+  epicId?: string;
+  timeoutMs?: number;
+}
+
+function parseAskToolInput(rawInput: unknown): AskToolRequest {
+  if (!isObjectRecord(rawInput)) {
+    throw new Error('user.ask input must be object');
+  }
+  const question = typeof rawInput.question === 'string' ? rawInput.question.trim() : '';
+  if (!question) {
+    throw new Error('user.ask question is required');
+  }
+  const options = Array.isArray(rawInput.options)
+    ? rawInput.options
+      .filter((item): item is string => typeof item === 'string')
+      .map((item) => item.trim())
+      .filter((item) => item.length > 0)
+    : undefined;
+  const timeoutMs = typeof rawInput.timeout_ms === 'number'
+    ? rawInput.timeout_ms
+    : typeof rawInput.timeoutMs === 'number'
+      ? rawInput.timeoutMs
+      : undefined;
+  const runtimeContext = isObjectRecord(rawInput._runtime_context) ? rawInput._runtime_context : {};
+  const agentId = typeof rawInput.agent_id === 'string'
+    ? rawInput.agent_id
+    : typeof rawInput.agentId === 'string'
+      ? rawInput.agentId
+      : typeof runtimeContext.agent_id === 'string'
+        ? runtimeContext.agent_id
+        : undefined;
+  return {
+    question,
+    ...(options && options.length > 0 ? { options } : {}),
+    ...(typeof rawInput.context === 'string' && rawInput.context.trim().length > 0 ? { context: rawInput.context.trim() } : {}),
+    ...(typeof agentId === 'string' && agentId.trim().length > 0 ? { agentId: agentId.trim() } : {}),
+    ...(typeof rawInput.session_id === 'string' && rawInput.session_id.trim().length > 0
+      ? { sessionId: rawInput.session_id.trim() }
+      : typeof rawInput.sessionId === 'string' && rawInput.sessionId.trim().length > 0
+        ? { sessionId: rawInput.sessionId.trim() }
+        : {}),
+    ...(typeof rawInput.workflow_id === 'string' && rawInput.workflow_id.trim().length > 0
+      ? { workflowId: rawInput.workflow_id.trim() }
+      : typeof rawInput.workflowId === 'string' && rawInput.workflowId.trim().length > 0
+        ? { workflowId: rawInput.workflowId.trim() }
+        : {}),
+    ...(typeof rawInput.epic_id === 'string' && rawInput.epic_id.trim().length > 0
+      ? { epicId: rawInput.epic_id.trim() }
+      : typeof rawInput.epicId === 'string' && rawInput.epicId.trim().length > 0
+        ? { epicId: rawInput.epicId.trim() }
+        : {}),
+    ...(typeof timeoutMs === 'number' && Number.isFinite(timeoutMs)
+      ? { timeoutMs: Math.max(1_000, Math.floor(timeoutMs)) }
+      : {}),
+  };
+}
+
+async function runBlockingAsk(request: AskToolRequest): Promise<{
+  ok: boolean;
+  requestId: string;
+  answer?: string;
+  selectedOption?: string;
+  timedOut?: boolean;
+}> {
+  const opened = askManager.open({
+    question: request.question,
+    options: request.options,
+    context: request.context,
+    agentId: request.agentId,
+    sessionId: request.sessionId ?? runtime.getCurrentSession()?.id,
+    workflowId: request.workflowId,
+    epicId: request.epicId,
+    timeoutMs: request.timeoutMs,
+  });
+
+  void globalEventBus.emit({
+    type: 'waiting_for_user',
+    workflowId: request.workflowId ?? request.epicId ?? 'ask',
+    sessionId: request.sessionId ?? runtime.getCurrentSession()?.id ?? 'default',
+    timestamp: new Date().toISOString(),
+    payload: {
+      reason: 'confirmation_required',
+      options: (request.options ?? []).map((label) => ({
+        id: label,
+        label,
+        description: 'orchestrator ask option',
+      })),
+      context: {
+        requestId: opened.pending.requestId,
+        question: opened.pending.question,
+        ...(opened.pending.options ? { options: opened.pending.options } : {}),
+        ...(opened.pending.context ? { context: opened.pending.context } : {}),
+        ...(opened.pending.epicId ? { epicId: opened.pending.epicId } : {}),
+        ...(opened.pending.agentId ? { agentId: opened.pending.agentId } : {}),
+      },
+    },
+  });
+
+  broadcastWsMessage({
+    type: 'user_question',
+    payload: opened.pending,
+    timestamp: new Date().toISOString(),
+  });
+
+  const resolved = await opened.result;
+  void globalEventBus.emit({
+    type: 'user_decision_received',
+    workflowId: request.workflowId ?? request.epicId ?? 'ask',
+    sessionId: request.sessionId ?? runtime.getCurrentSession()?.id ?? 'default',
+    timestamp: new Date().toISOString(),
+    payload: {
+      decision: resolved.answer ?? (resolved.timedOut ? 'timeout' : 'empty'),
+      context: {
+        requestId: resolved.requestId,
+        ...(resolved.selectedOption ? { selectedOption: resolved.selectedOption } : {}),
+        ...(resolved.timedOut ? { timedOut: true } : {}),
+      },
+    },
+  });
+
+  return {
+    ok: resolved.ok,
+    requestId: resolved.requestId,
+    ...(resolved.answer ? { answer: resolved.answer } : {}),
+    ...(resolved.selectedOption ? { selectedOption: resolved.selectedOption } : {}),
+    ...(resolved.timedOut ? { timedOut: true } : {}),
+  };
+}
+
+async function syncBdDispatchLifecycle(input: AgentDispatchRequest, result: {
+  ok: boolean;
+  dispatchId: string;
+  status: 'queued' | 'completed' | 'failed';
+  error?: string;
+}): Promise<void> {
+  const assignment = input.assignment ?? {};
+  const bdTaskId = typeof assignment.bdTaskId === 'string' && assignment.bdTaskId.trim().length > 0
+    ? assignment.bdTaskId.trim()
+    : undefined;
+  if (!bdTaskId) return;
+
+  const assigner = assignment.assignerAgentId ?? input.sourceAgentId;
+  const assignee = assignment.assigneeAgentId ?? input.targetAgentId;
+  const attempt = typeof assignment.attempt === 'number' && Number.isFinite(assignment.attempt)
+    ? Math.max(1, Math.floor(assignment.attempt))
+    : 1;
+
+  try {
+    await bdTools.assignTask(bdTaskId, assignee);
+    if (result.status === 'queued') {
+      await bdTools.addComment(
+        bdTaskId,
+        `[dispatch queued] dispatch=${result.dispatchId} assigner=${assigner} assignee=${assignee} attempt=${attempt}`,
+      );
+      return;
+    }
+    if (result.status === 'completed' && result.ok) {
+      await bdTools.updateStatus(bdTaskId, 'review');
+      await bdTools.addComment(
+        bdTaskId,
+        `[dispatch completed] dispatch=${result.dispatchId} assigner=${assigner} assignee=${assignee} attempt=${attempt}`,
+      );
+      return;
+    }
+
+    await bdTools.updateStatus(bdTaskId, 'blocked');
+    await bdTools.addComment(
+      bdTaskId,
+      `[dispatch failed] dispatch=${result.dispatchId} assigner=${assigner} assignee=${assignee} attempt=${attempt} error=${result.error ?? 'unknown'}`,
+    );
+  } catch {
+    // Best-effort only.
+  }
+}
+
 function parseAgentDispatchToolInput(rawInput: unknown): AgentDispatchRequest {
   if (!isObjectRecord(rawInput)) {
     throw new Error('agent.dispatch input must be object');
   }
+  const sourceAgentId = typeof rawInput.source_agent_id === 'string'
+    ? rawInput.source_agent_id
+    : typeof rawInput.sourceAgentId === 'string'
+      ? rawInput.sourceAgentId
+      : 'chat-codex';
   const targetAgentId = typeof rawInput.target_agent_id === 'string'
     ? rawInput.target_agent_id
     : typeof rawInput.targetAgentId === 'string'
@@ -1869,13 +2098,58 @@ function parseAgentDispatchToolInput(rawInput: unknown): AgentDispatchRequest {
       ? rawInput.workflowId
       : undefined;
   const blocking = rawInput.blocking === true;
+  const queueOnBusy = rawInput.queue_on_busy !== false && rawInput.queueOnBusy !== false;
+  const maxQueueWaitMs = typeof rawInput.max_queue_wait_ms === 'number'
+    ? rawInput.max_queue_wait_ms
+    : typeof rawInput.maxQueueWaitMs === 'number'
+      ? rawInput.maxQueueWaitMs
+      : undefined;
+  const assignmentInput = isObjectRecord(rawInput.assignment) ? rawInput.assignment : {};
+  const assignment = {
+    ...(typeof assignmentInput.epic_id === 'string'
+      ? { epicId: assignmentInput.epic_id }
+      : typeof assignmentInput.epicId === 'string'
+        ? { epicId: assignmentInput.epicId }
+        : {}),
+    ...(typeof assignmentInput.task_id === 'string'
+      ? { taskId: assignmentInput.task_id }
+      : typeof assignmentInput.taskId === 'string'
+        ? { taskId: assignmentInput.taskId }
+        : {}),
+    ...(typeof assignmentInput.bd_task_id === 'string'
+      ? { bdTaskId: assignmentInput.bd_task_id }
+      : typeof assignmentInput.bdTaskId === 'string'
+        ? { bdTaskId: assignmentInput.bdTaskId }
+        : {}),
+    ...(typeof assignmentInput.assigner_agent_id === 'string'
+      ? { assignerAgentId: assignmentInput.assigner_agent_id }
+      : typeof assignmentInput.assignerAgentId === 'string'
+        ? { assignerAgentId: assignmentInput.assignerAgentId }
+        : {}),
+    ...(typeof assignmentInput.assignee_agent_id === 'string'
+      ? { assigneeAgentId: assignmentInput.assignee_agent_id }
+      : typeof assignmentInput.assigneeAgentId === 'string'
+        ? { assigneeAgentId: assignmentInput.assigneeAgentId }
+        : {}),
+    ...(typeof assignmentInput.phase === 'string'
+      ? { phase: assignmentInput.phase as 'assigned' | 'queued' | 'started' | 'reviewing' | 'retry' | 'passed' | 'failed' | 'closed' }
+      : {}),
+    ...(typeof assignmentInput.attempt === 'number' && Number.isFinite(assignmentInput.attempt)
+      ? { attempt: Math.max(1, Math.floor(assignmentInput.attempt)) }
+      : {}),
+  };
   return {
-    sourceAgentId: 'chat-codex',
+    sourceAgentId: sourceAgentId.trim().length > 0 ? sourceAgentId.trim() : 'chat-codex',
     targetAgentId: targetAgentId.trim(),
     task,
     ...(typeof sessionId === 'string' && sessionId.trim().length > 0 ? { sessionId: sessionId.trim() } : {}),
     ...(typeof workflowId === 'string' && workflowId.trim().length > 0 ? { workflowId: workflowId.trim() } : {}),
     blocking,
+    queueOnBusy,
+    ...(typeof maxQueueWaitMs === 'number' && Number.isFinite(maxQueueWaitMs)
+      ? { maxQueueWaitMs: Math.max(1_000, Math.floor(maxQueueWaitMs)) }
+      : {}),
+    ...(Object.keys(assignment).length > 0 ? { assignment } : {}),
     ...(isObjectRecord(rawInput.metadata) ? { metadata: rawInput.metadata } : {}),
   };
 }
@@ -2054,11 +2328,15 @@ function registerAgentRuntimeTools(): string[] {
     inputSchema: {
       type: 'object',
       properties: {
+        source_agent_id: { type: 'string' },
         target_agent_id: { type: 'string' },
         task: {},
         session_id: { type: 'string' },
         workflow_id: { type: 'string' },
         blocking: { type: 'boolean' },
+        queue_on_busy: { type: 'boolean' },
+        max_queue_wait_ms: { type: 'number' },
+        assignment: { type: 'object' },
         metadata: { type: 'object' },
       },
       required: ['target_agent_id', 'task'],
@@ -2095,6 +2373,32 @@ function registerAgentRuntimeTools(): string[] {
   });
   loaded.push('agent.control');
 
+  runtime.registerTool({
+    name: 'user.ask',
+    description:
+      'Ask user for clarification/decision in blocking mode. Returns when answer is provided or timeout is reached.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        question: { type: 'string' },
+        options: { type: 'array', items: { type: 'string' } },
+        context: { type: 'string' },
+        agent_id: { type: 'string' },
+        session_id: { type: 'string' },
+        workflow_id: { type: 'string' },
+        epic_id: { type: 'string' },
+        timeout_ms: { type: 'number' },
+      },
+      required: ['question'],
+      additionalProperties: true,
+    },
+    handler: async (input: unknown): Promise<unknown> => {
+      const askInput = parseAskToolInput(input);
+      return runBlockingAsk(askInput);
+    },
+  });
+  loaded.push('user.ask');
+
   return loaded;
 }
 
@@ -2125,6 +2429,66 @@ app.get('/api/v1/agents/catalog', (req, res) => {
   });
 });
 
+app.get('/api/v1/agents/ask/pending', (req, res) => {
+  const requestId = typeof req.query.requestId === 'string' ? req.query.requestId.trim() : '';
+  const agentId = typeof req.query.agentId === 'string' ? req.query.agentId.trim() : '';
+  const workflowId = typeof req.query.workflowId === 'string' ? req.query.workflowId.trim() : '';
+  const sessionId = typeof req.query.sessionId === 'string' ? req.query.sessionId.trim() : '';
+  const epicId = typeof req.query.epicId === 'string' ? req.query.epicId.trim() : '';
+  const pending = askManager.listPending({
+    ...(requestId ? { requestId } : {}),
+    ...(agentId ? { agentId } : {}),
+    ...(workflowId ? { workflowId } : {}),
+    ...(sessionId ? { sessionId } : {}),
+    ...(epicId ? { epicId } : {}),
+  });
+  res.json({
+    success: true,
+    count: pending.length,
+    pending,
+  });
+});
+
+app.post('/api/v1/agents/ask/respond', (req, res) => {
+  const body = req.body as {
+    requestId?: string;
+    agentId?: string;
+    answer?: string;
+    workflowId?: string;
+    sessionId?: string;
+    epicId?: string;
+  };
+  const answer = typeof body.answer === 'string' ? body.answer : '';
+  if (answer.trim().length === 0) {
+    res.status(400).json({ success: false, error: 'answer is required' });
+    return;
+  }
+
+  let resolved = typeof body.requestId === 'string' && body.requestId.trim().length > 0
+    ? askManager.resolveByRequestId(body.requestId.trim(), answer)
+    : null;
+  if (!resolved) {
+    if (!(typeof body.agentId === 'string' && body.agentId.trim().length > 0) && !(typeof body.workflowId === 'string' && body.workflowId.trim().length > 0)) {
+      res.status(400).json({ success: false, error: 'requestId or (agentId + scope) is required' });
+      return;
+    }
+    resolved = askManager.resolveOldestByScope({
+      ...(typeof body.agentId === 'string' && body.agentId.trim().length > 0 ? { agentId: body.agentId.trim() } : {}),
+      ...(typeof body.workflowId === 'string' && body.workflowId.trim().length > 0 ? { workflowId: body.workflowId.trim() } : {}),
+      ...(typeof body.sessionId === 'string' && body.sessionId.trim().length > 0 ? { sessionId: body.sessionId.trim() } : {}),
+      ...(typeof body.epicId === 'string' && body.epicId.trim().length > 0 ? { epicId: body.epicId.trim() } : {}),
+    }, answer);
+  }
+  if (!resolved) {
+    res.status(404).json({ success: false, error: 'pending ask request not found' });
+    return;
+  }
+  res.json({
+    success: true,
+    resolution: resolved,
+  });
+});
+
 app.post('/api/v1/agents/dispatch', async (req, res) => {
   const body = req.body as {
     sourceAgentId?: string;
@@ -2133,6 +2497,9 @@ app.post('/api/v1/agents/dispatch', async (req, res) => {
     sessionId?: string;
     workflowId?: string;
     blocking?: boolean;
+    queueOnBusy?: boolean;
+    maxQueueWaitMs?: number;
+    assignment?: AgentDispatchRequest['assignment'];
     metadata?: Record<string, unknown>;
   };
 
@@ -2154,6 +2521,11 @@ app.post('/api/v1/agents/dispatch', async (req, res) => {
     ...(typeof body.sessionId === 'string' && body.sessionId.trim().length > 0 ? { sessionId: body.sessionId.trim() } : {}),
     ...(typeof body.workflowId === 'string' && body.workflowId.trim().length > 0 ? { workflowId: body.workflowId.trim() } : {}),
     blocking: body.blocking === true,
+    queueOnBusy: body.queueOnBusy !== false,
+    ...(typeof body.maxQueueWaitMs === 'number' && Number.isFinite(body.maxQueueWaitMs)
+      ? { maxQueueWaitMs: Math.max(1_000, Math.floor(body.maxQueueWaitMs)) }
+      : {}),
+    ...(isObjectRecord(body.assignment) ? { assignment: body.assignment } : {}),
     ...(isObjectRecord(body.metadata) ? { metadata: body.metadata } : {}),
   };
 
@@ -2215,7 +2587,7 @@ app.get('/api/v1/agents', (_req, res) => {
       id: string;
       agentId: string;
       name: string;
-      type: 'executor' | 'reviewer' | 'orchestrator';
+      type: 'executor' | 'reviewer' | 'orchestrator' | 'searcher';
       status: 'idle' | 'running' | 'error' | 'paused';
       sessionId?: string;
       workflowId?: string;
@@ -2243,7 +2615,7 @@ app.get('/api/v1/resources', (_req, res) => {
     available: available.map(r => ({
       id: r.id,
       name: r.name || r.id,
-      type: r.id.includes('orchestrator') ? 'orchestrator' : 'executor',
+      type: r.type,
       status: r.status,
     })),
     count: available.length,
@@ -3012,6 +3384,50 @@ globalEventBus.subscribe(
 );
 
 console.log('[Server] EventBus agent_step_completed forwarding enabled for detailed agent updates');
+
+globalEventBus.subscribe(
+  'agent_runtime_dispatch',
+  (event) => {
+    const payload = event.payload as Record<string, unknown>;
+    const status = typeof payload.status === 'string' ? payload.status : '';
+    if (status !== 'completed' && status !== 'failed') return;
+    const assignment = isObjectRecord(payload.assignment) ? payload.assignment : null;
+    if (!assignment) return;
+
+    const feedback = {
+      role: 'user',
+      from: typeof payload.targetAgentId === 'string' ? payload.targetAgentId : 'unknown-assignee',
+      status: status === 'completed' ? 'complete' : 'error',
+      dispatchId: typeof payload.dispatchId === 'string' ? payload.dispatchId : '',
+      task: typeof assignment.taskId === 'string' ? assignment.taskId : undefined,
+      sourceAgentId: typeof payload.sourceAgentId === 'string' ? payload.sourceAgentId : undefined,
+      assignment,
+      ...(payload.result !== undefined ? { result: payload.result } : {}),
+      ...(typeof payload.error === 'string' && payload.error.trim().length > 0 ? { error: payload.error } : {}),
+    };
+    const feedbackText = JSON.stringify(feedback);
+    const workflowId = typeof payload.workflowId === 'string' && payload.workflowId.trim().length > 0
+      ? payload.workflowId.trim()
+      : undefined;
+    const epicId = typeof assignment.epicId === 'string' && assignment.epicId.trim().length > 0
+      ? assignment.epicId.trim()
+      : undefined;
+    if (workflowId) {
+      runtimeInstructionBus.push(workflowId, feedbackText);
+    }
+    if (epicId && epicId !== workflowId) {
+      runtimeInstructionBus.push(epicId, feedbackText);
+    }
+
+    broadcastWsMessage({
+      type: 'orchestrator_feedback',
+      payload: feedback,
+      timestamp: event.timestamp,
+    });
+  },
+);
+
+console.log('[Server] EventBus orchestrator feedback forwarding enabled: agent_runtime_dispatch');
 
 // =============================================================================
 // State Bridge 集成

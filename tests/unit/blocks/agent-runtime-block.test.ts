@@ -10,6 +10,16 @@ interface TestContext {
   resourcePoolEntries: Array<{ id: string; status: string }>;
 }
 
+function createDeferred<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+}
+
 async function createContext(): Promise<TestContext> {
   const loadedAgentConfigs: LoadedAgentConfig[] = [{
     filePath: '/tmp/executor-a.agent.json',
@@ -208,5 +218,125 @@ describe('AgentRuntimeBlock', () => {
     });
 
     expect(ctx.emittedEvents).toHaveBeenCalled();
+  });
+
+  it('queues dispatch when target capacity is busy and drains after release', async () => {
+    const first = createDeferred<{ ok: boolean }>();
+    ctx.hubSendToModule.mockImplementationOnce(() => first.promise);
+    ctx.hubSendToModule.mockResolvedValueOnce({ ok: true });
+
+    await ctx.block.execute('deploy', {
+      targetAgentId: 'executor-a',
+      targetImplementationId: 'native-main',
+      sessionId: 'session-1',
+      instanceCount: 1,
+      launchMode: 'orchestrator',
+    });
+
+    const firstDispatch = await ctx.block.execute('dispatch', {
+      sourceAgentId: 'chat-codex',
+      targetAgentId: 'executor-a',
+      task: { text: 't1' },
+      blocking: false,
+    }) as { ok: boolean; status: string };
+    expect(firstDispatch.ok).toBe(true);
+    expect(firstDispatch.status).toBe('queued');
+
+    const secondDispatch = await ctx.block.execute('dispatch', {
+      sourceAgentId: 'chat-codex',
+      targetAgentId: 'executor-a',
+      task: { text: 't2' },
+      blocking: false,
+      queueOnBusy: true,
+    }) as { ok: boolean; status: string; queuePosition?: number };
+    expect(secondDispatch.ok).toBe(true);
+    expect(secondDispatch.status).toBe('queued');
+    expect(secondDispatch.queuePosition).toBe(1);
+    expect(ctx.hubSendToModule).toHaveBeenCalledTimes(1);
+
+    first.resolve({ ok: true });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(ctx.hubSendToModule).toHaveBeenCalledTimes(2);
+  });
+
+  it('guards against self-dispatch blocking deadlock when capacity is exhausted', async () => {
+    const first = createDeferred<{ ok: boolean }>();
+    ctx.hubSendToModule.mockImplementationOnce(() => first.promise);
+
+    await ctx.block.execute('deploy', {
+      targetAgentId: 'executor-a',
+      targetImplementationId: 'native-main',
+      sessionId: 'session-1',
+      instanceCount: 1,
+      launchMode: 'orchestrator',
+    });
+
+    await ctx.block.execute('dispatch', {
+      sourceAgentId: 'executor-a',
+      targetAgentId: 'executor-a',
+      task: { text: 't1' },
+      blocking: false,
+    });
+
+    const blocked = await ctx.block.execute('dispatch', {
+      sourceAgentId: 'executor-a',
+      targetAgentId: 'executor-a',
+      task: { text: 't2' },
+      blocking: true,
+    }) as { ok: boolean; status: string; error?: string };
+    expect(blocked.ok).toBe(false);
+    expect(blocked.status).toBe('failed');
+    expect(blocked.error).toContain('deadlock');
+
+    first.resolve({ ok: true });
+  });
+
+  it('propagates assignment lifecycle metadata through dispatch payload and events', async () => {
+    await ctx.block.execute('deploy', {
+      targetAgentId: 'executor-a',
+      targetImplementationId: 'native-main',
+      sessionId: 'session-1',
+      instanceCount: 1,
+      launchMode: 'orchestrator',
+    });
+
+    await ctx.block.execute('dispatch', {
+      sourceAgentId: 'chat-codex',
+      targetAgentId: 'executor-a',
+      task: { text: 'task with assignment', taskId: 'task-42' },
+      blocking: true,
+      assignment: {
+        epicId: 'epic-1',
+        taskId: 'task-42',
+        assignerAgentId: 'chat-codex',
+        assigneeAgentId: 'executor-a',
+        attempt: 2,
+      },
+    });
+
+    expect(ctx.hubSendToModule).toHaveBeenCalledWith(
+      'executor-a-loop',
+      expect.objectContaining({
+        metadata: expect.objectContaining({
+          assignment: expect.objectContaining({
+            epicId: 'epic-1',
+            taskId: 'task-42',
+            assignerAgentId: 'chat-codex',
+            assigneeAgentId: 'executor-a',
+            attempt: 2,
+          }),
+        }),
+      }),
+    );
+
+    const completedEvent = ctx.emittedEvents.mock.calls
+      .map((call) => call[0])
+      .find((event: any) => event?.type === 'agent_runtime_dispatch' && event?.payload?.status === 'completed');
+    expect(completedEvent).toBeDefined();
+    expect(completedEvent.payload.assignment).toEqual(expect.objectContaining({
+      taskId: 'task-42',
+      phase: 'closed',
+      attempt: 2,
+    }));
   });
 });
