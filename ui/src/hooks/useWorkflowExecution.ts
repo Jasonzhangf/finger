@@ -760,7 +760,7 @@ function mapSessionMessageToRuntimeEvent(message: SessionApiMessage): RuntimeEve
   }
 
   if (message.role === 'assistant' || message.role === 'orchestrator') {
-    const agentId = message.role === 'orchestrator' ? 'orchestrator-loop' : DEFAULT_CHAT_AGENT_ID;
+    const agentId = DEFAULT_CHAT_AGENT_ID;
     return {
       id: message.id,
       role: 'agent',
@@ -2017,13 +2017,13 @@ export function useWorkflowExecution(sessionId: string): UseWorkflowExecutionRet
           workflowId: `empty-${sessionId}`,
           status: 'planning',
           orchestrator: {
-            id: 'orchestrator-loop',
+            id: DEFAULT_CHAT_AGENT_ID,
             currentRound: 0,
             maxRounds: 10,
           },
           agents: [{
-            id: 'orchestrator-loop',
-            name: 'orchestrator-loop',
+            id: DEFAULT_CHAT_AGENT_ID,
+            name: DEFAULT_CHAT_AGENT_ID,
             type: 'orchestrator',
             status: 'idle',
             load: 0,
@@ -2086,8 +2086,8 @@ export function useWorkflowExecution(sessionId: string): UseWorkflowExecutionRet
 
       if (!agentsWithAssignees.some((agent) => agent.type === 'orchestrator')) {
         agentsWithAssignees.push({
-          id: 'orchestrator-loop',
-          name: 'orchestrator-loop',
+          id: DEFAULT_CHAT_AGENT_ID,
+          name: DEFAULT_CHAT_AGENT_ID,
           type: 'orchestrator',
           status: selectedWorkflow.status === 'failed' ? 'error' : selectedWorkflow.status === 'paused' ? 'paused' : 'running',
           load: 0,
@@ -2101,13 +2101,13 @@ export function useWorkflowExecution(sessionId: string): UseWorkflowExecutionRet
         .filter((log) => inferAgentType(log.agentId) === 'orchestrator')
         .sort((a, b) => new Date(b.startTime).getTime() - new Date(a.startTime).getTime())[0];
 
-      const executionPath = buildRoundExecutionPath(taskList, 'orchestrator-loop');
+      const executionPath = buildRoundExecutionPath(taskList, DEFAULT_CHAT_AGENT_ID);
 
       setExecutionState((prev) => ({
         workflowId: selectedWorkflow.id,
         status: selectedWorkflow.status,
         orchestrator: {
-          id: 'orchestrator-loop',
+          id: DEFAULT_CHAT_AGENT_ID,
           currentRound: orchestratorLog?.iterations.length || prev?.orchestrator.currentRound || 0,
           maxRounds: Math.max(orchestratorLog?.totalRounds || 10, 1),
           thought: orchestratorLog?.iterations[orchestratorLog.iterations.length - 1]?.thought,
@@ -2146,8 +2146,8 @@ export function useWorkflowExecution(sessionId: string): UseWorkflowExecutionRet
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            target: 'orchestrator-loop',
-            message: { content: userTask, sessionId },
+            target: CHAT_PANEL_TARGET,
+            message: { text: userTask, content: userTask, sessionId },
             blocking: false,
           }),
         });
@@ -2160,14 +2160,14 @@ export function useWorkflowExecution(sessionId: string): UseWorkflowExecutionRet
           workflowId: workflow?.id || `pending-${Date.now()}`,
           status: 'planning',
           orchestrator: {
-            id: 'orchestrator-loop',
+            id: DEFAULT_CHAT_AGENT_ID,
             currentRound: 0,
             maxRounds: 10,
           },
           agents: [
             {
-              id: 'orchestrator-loop',
-              name: 'orchestrator-loop',
+              id: DEFAULT_CHAT_AGENT_ID,
+              name: DEFAULT_CHAT_AGENT_ID,
               type: 'orchestrator',
               status: 'running',
               load: 1,
@@ -2878,7 +2878,7 @@ function buildExecutionRoundsFromTasks(
     }
 
     const edgeInfo: RoundEdgeInfo = {
-      from: 'orchestrator-loop',
+      from: DEFAULT_CHAT_AGENT_ID,
       to: task.assignee || 'executor-loop',
       status: task.status === 'completed' ? 'completed' : task.status === 'failed' ? 'error' : task.status === 'in_progress' ? 'active' : 'pending',
       message: `${task.id}: ${task.description.slice(0, 32)}`,

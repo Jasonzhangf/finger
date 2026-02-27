@@ -17,6 +17,7 @@ import WebSocket from 'ws';
 export interface FingerClientOptions {
   httpUrl?: string;
   wsUrl?: string;
+  orchestratorTarget?: string;
   reconnect?: boolean;
   reconnectInterval?: number;
   maxReconnectAttempts?: number;
@@ -79,6 +80,7 @@ export class FingerClient {
   private httpUrl: string;
   private wsUrl: string;
   private ws: WebSocket | null = null;
+  private orchestratorTarget: string;
   private connectionState: ConnectionState = 'disconnected';
   private reconnectAttempts = 0;
   private reconnectTimer: NodeJS.Timeout | null = null;
@@ -97,6 +99,7 @@ export class FingerClient {
   constructor(options: FingerClientOptions = {}) {
     this.httpUrl = options.httpUrl || process.env.FINGER_HTTP_URL || process.env.FINGER_HUB_URL || 'http://localhost:9999';
     this.wsUrl = options.wsUrl || process.env.FINGER_WS_URL || 'ws://localhost:9998';
+    this.orchestratorTarget = options.orchestratorTarget || process.env.FINGER_PRIMARY_ORCHESTRATOR_TARGET || 'chat-codex-gateway';
     this.reconnect = options.reconnect ?? true;
     this.reconnectInterval = options.reconnectInterval ?? 3000;
     this.maxReconnectAttempts = options.maxReconnectAttempts ?? 10;
@@ -319,8 +322,8 @@ export class FingerClient {
     const result = await this.fetchAPI<{ success: boolean; messageId: string; workflowId?: string }>('/api/v1/message', {
       method: 'POST',
       body: JSON.stringify({
-        target: 'orchestrator-loop',
-        message: { content: task },
+        target: this.orchestratorTarget,
+        message: { text: task, content: task },
         blocking: options.blocking ?? false,
         sender: options.sessionId,
       }),

@@ -14,12 +14,11 @@ import type { ModuleRegistry } from './module-registry.js';
 
 const log = logger.module('AutostartLoader');
 
-// 预定义的自动启动 Agent 列表
-const AUTOSTART_AGENTS = [
-  'router-chat-agent',    // Router + Chat Agent
-  'echo-service-agent',   // Echo 测试服务
-  // 添加更多需要自动启动的 agent
-];
+// 默认不自动启动任何 Agent，除非显式配置 FINGER_AUTOSTART_AGENTS
+const AUTOSTART_AGENTS = (process.env.FINGER_AUTOSTART_AGENTS || '')
+  .split(',')
+  .map((item) => item.trim())
+  .filter((item) => item.length > 0);
 
 // 获取项目根目录
 function getProjectRoot(): string {

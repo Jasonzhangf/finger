@@ -9,3 +9,4 @@ export { ProjectBlock } from './project-block/index.js';
 export { StateBlock } from './state-block/index.js';
 export { OrchestratorBlock } from './orchestrator-block/index.js';
 export { WebSocketBlock } from './websocket-block/index.js';
+export { AgentRuntimeBlock } from './agent-runtime-block/index.js';

@@ -58,6 +58,24 @@ describe('agent json config', () => {
     expect(parsed.governance?.iflow?.approvalMode).toBe('default');
   });
 
+  it('parses multi-implementation definitions', () => {
+    const parsed = parseAgentJsonConfig(
+      {
+        id: 'executor-1',
+        implementations: [
+          { id: 'iflow-main', kind: 'iflow', provider: 'iflow', enabled: true },
+          { id: 'native-main', kind: 'native', moduleId: 'executor-loop', enabled: true },
+        ],
+      },
+      '/tmp/executor/agent.json',
+    );
+
+    expect(parsed.implementations).toEqual([
+      { id: 'iflow-main', kind: 'iflow', provider: 'iflow', enabled: true },
+      { id: 'native-main', kind: 'native', moduleId: 'executor-loop', enabled: true },
+    ]);
+  });
+
   it('loads *.agent.json and */agent.json from directory', () => {
     const dir = mkdtempSync(path.join(os.tmpdir(), 'finger-agent-json-'));
     tmpDirs.push(dir);

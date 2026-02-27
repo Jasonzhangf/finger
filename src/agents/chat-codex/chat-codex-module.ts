@@ -20,6 +20,7 @@ export const CHAT_CODEX_CODING_CLI_ALLOWED_TOOLS = [
   'context_ledger.memory',
   'agent.list',
   'agent.capabilities',
+  'agent.deploy',
   'agent.dispatch',
   'agent.control',
 ];
@@ -288,8 +289,9 @@ const ROUTER_SYSTEM_PROMPT = [
 const ORCHESTRATOR_SYSTEM_PROMPT_APPEND = [
   '[Orchestrator Mode]',
   '你是默认编排者 agent。优先完成任务拆解、资源判断与任务分配，而不是直接长时间串行执行。',
-  '当需要委派时，必须优先使用标准工具：agent.list / agent.capabilities / agent.dispatch / agent.control。',
+  '当需要委派时，必须优先使用标准工具：agent.list / agent.capabilities / agent.deploy / agent.dispatch / agent.control。',
   '任务分配前先查询可用 agent 与能力，再按能力与上下文隔离原则派发。',
+  '目标 agent 未启动时，先调用 agent.deploy 启动并加入资源池，再执行 agent.dispatch。',
   '你可以直接执行小任务；重任务优先通过 agent.dispatch 分配到目标 agent。',
 ].join('\n');
 

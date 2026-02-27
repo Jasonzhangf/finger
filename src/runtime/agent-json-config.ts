@@ -15,6 +15,14 @@ export interface AgentToolsConfig {
   authorizationRequired?: string[];
 }
 
+export interface AgentJsonImplementationConfig {
+  id: string;
+  kind: 'iflow' | 'native';
+  moduleId?: string;
+  provider?: string;
+  enabled?: boolean;
+}
+
 export type AgentJsonProviderConfig = AgentProviderRuntimeConfig;
 
 export type AgentJsonSessionConfig = AgentSessionRuntimeConfig;
@@ -25,6 +33,7 @@ export interface AgentJsonConfig {
   id: string;
   name?: string;
   role?: string;
+  implementations?: AgentJsonImplementationConfig[];
   provider?: AgentJsonProviderConfig;
   session?: AgentJsonSessionConfig;
   governance?: AgentJsonGovernanceConfig;
@@ -55,6 +64,21 @@ export const AGENT_JSON_SCHEMA: Record<string, unknown> = {
     id: { type: 'string' },
     name: { type: 'string' },
     role: { type: 'string' },
+    implementations: {
+      type: 'array',
+      items: {
+        type: 'object',
+        required: ['id', 'kind'],
+        properties: {
+          id: { type: 'string' },
+          kind: { type: 'string', enum: ['iflow', 'native'] },
+          moduleId: { type: 'string' },
+          provider: { type: 'string' },
+          enabled: { type: 'boolean' },
+        },
+        additionalProperties: false,
+      },
+    },
     provider: {
       type: 'object',
       required: ['type'],
@@ -213,6 +237,9 @@ export function parseAgentJsonConfig(value: unknown, sourcePath: string): AgentJ
 
   if (typeof value.name === 'string') config.name = value.name;
   if (typeof value.role === 'string') config.role = value.role;
+  if (value.implementations !== undefined) {
+    config.implementations = parseImplementations(value.implementations, sourcePath);
+  }
   if (value.provider !== undefined) {
     config.provider = parseProviderConfig(value.provider, sourcePath);
   }
@@ -243,6 +270,29 @@ export function parseAgentJsonConfig(value: unknown, sourcePath: string): AgentJ
   if (isRecord(value.metadata)) config.metadata = value.metadata;
 
   return config;
+}
+
+function parseImplementations(value: unknown, sourcePath: string): AgentJsonImplementationConfig[] {
+  if (!Array.isArray(value)) {
+    throw new Error(`Invalid agent.json at ${sourcePath}: implementations must be array`);
+  }
+
+  const implementations: AgentJsonImplementationConfig[] = [];
+  for (const item of value) {
+    if (!isRecord(item)) {
+      throw new Error(`Invalid agent.json at ${sourcePath}: implementations item must be object`);
+    }
+    const id = requireString(item, 'id', sourcePath);
+    const kind = parseEnumValue(item.kind, ['iflow', 'native'] as const, 'implementations.kind', sourcePath);
+    implementations.push({
+      id,
+      kind,
+      ...(typeof item.moduleId === 'string' && item.moduleId.trim().length > 0 ? { moduleId: item.moduleId.trim() } : {}),
+      ...(typeof item.provider === 'string' && item.provider.trim().length > 0 ? { provider: item.provider.trim() } : {}),
+      ...(typeof item.enabled === 'boolean' ? { enabled: item.enabled } : {}),
+    });
+  }
+  return implementations;
 }
 
 function parseStringArray(

@@ -1,4 +1,4 @@
-import express from 'express';
+import express, { type Request } from 'express';
 import { readdir, readFile } from 'fs/promises';
 import { homedir } from 'os';
 import { fileURLToPath } from 'url';
@@ -38,7 +38,7 @@ import { createRealOrchestratorModule } from '../agents/daemon/orchestrator-modu
 import { createOrchestratorLoop } from '../agents/daemon/orchestrator-loop.js';
 import { createExecutorLoop } from '../agents/daemon/executor-loop.js';
 import { mailbox } from './mailbox.js';
-import type { OrchestrationModule, OutputModule } from '../orchestration/module-registry.js';
+import type { OutputModule } from '../orchestration/module-registry.js';
 import type { Attachment } from '../runtime/events.js';
 import { inputLockManager } from '../runtime/input-lock.js';
 import {
@@ -58,7 +58,8 @@ import {
   ProjectBlock,
   StateBlock,
   OrchestratorBlock,
-  WebSocketBlock
+  WebSocketBlock,
+  AgentRuntimeBlock,
 } from '../blocks/index.js';
 
 const FINGER_HOME = join(homedir(), '.finger');
@@ -72,6 +73,12 @@ const BLOCKING_MESSAGE_MAX_RETRIES = Number.isFinite(Number(process.env.FINGER_B
 const BLOCKING_MESSAGE_RETRY_BASE_MS = Number.isFinite(Number(process.env.FINGER_BLOCKING_MESSAGE_RETRY_BASE_MS))
   ? Math.max(100, Math.floor(Number(process.env.FINGER_BLOCKING_MESSAGE_RETRY_BASE_MS)))
   : 750;
+const PRIMARY_ORCHESTRATOR_TARGET = (
+  process.env.FINGER_PRIMARY_ORCHESTRATOR_TARGET
+  || process.env.VITE_CHAT_PANEL_TARGET
+  || 'chat-codex-gateway'
+).trim();
+const ALLOW_DIRECT_AGENT_ROUTE = process.env.FINGER_ALLOW_DIRECT_AGENT_ROUTE === '1';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -341,11 +348,10 @@ const workflowManager = sharedWorkflowManager;
 const runtime = new RuntimeFacade(globalEventBus, sessionManager, globalToolRegistry);
 const loadedTools = registerDefaultRuntimeTools(globalToolRegistry);
 console.log(`[Server] Runtime tools loaded: ${loadedTools.join(', ')}`);
-const agentRuntimeTools = registerAgentRuntimeTools();
-console.log(`[Server] Agent runtime tools loaded: ${agentRuntimeTools.join(', ')}`);
 const gatewayManager = new GatewayManager(hub, moduleRegistry, {
   daemonUrl: `http://127.0.0.1:${PORT}`,
 });
+let agentRuntimeBlock: AgentRuntimeBlock;
 let loadedAgentConfigs: LoadedAgentConfig[] = [];
 let loadedAgentConfigDir = resolveDefaultAgentConfigDir();
 
@@ -405,6 +411,24 @@ await moduleRegistry.register(chatCodexModule);
 console.log('[Server] Chat Codex module registered: chat-codex');
 const chatCodexPolicy = runtime.setAgentToolWhitelist('chat-codex', CHAT_CODEX_CODING_CLI_ALLOWED_TOOLS);
 console.log('[Server] Chat Codex tool whitelist applied:', chatCodexPolicy.whitelist.join(', '));
+
+agentRuntimeBlock = new AgentRuntimeBlock('agent-runtime-1', {
+  moduleRegistry,
+  hub,
+  runtime,
+  toolRegistry: globalToolRegistry,
+  eventBus: globalEventBus,
+  workflowManager,
+  sessionManager,
+  chatCodexRunner,
+  resourcePool,
+  getLoadedAgentConfigs: () => loadedAgentConfigs,
+  primaryOrchestratorAgentId: 'chat-codex',
+});
+await agentRuntimeBlock.initialize();
+await agentRuntimeBlock.start();
+const agentRuntimeTools = registerAgentRuntimeTools();
+console.log(`[Server] Agent runtime tools loaded: ${agentRuntimeTools.join(', ')}`);
 
  // 注册真正的编排者 - 集成 iFlow SDK + bd 任务管理
  const { module: realOrchestrator } = createRealOrchestratorModule({
@@ -1754,82 +1778,8 @@ app.post('/api/v1/workflow/input', async (req, res) => {
   res.json({ success: true, workflowId });
 });
 
-// ========== Agent Deployment API ==========
-interface AgentDeployment {
-  id: string;
-  config: Record<string, unknown>;
-  sessionId: string;
-  scope: 'session' | 'global';
-  instanceCount: number;
-  status: 'idle' | 'running' | 'error';
-  createdAt: string;
-}
-
-const agentDeployments: Map<string, AgentDeployment> = new Map();
-
-interface AgentRuntimeViewItem {
-  id: string;
-  name: string;
-  type: 'executor' | 'reviewer' | 'orchestrator';
-  status: 'idle' | 'running' | 'error' | 'paused';
-  source: 'agent-json' | 'runtime-config' | 'module' | 'deployment';
-  instanceCount: number;
-  deployedCount: number;
-  availableCount: number;
-  lastSessionId?: string;
-}
-
-interface AgentRuntimeViewInstance {
-  id: string;
-  agentId: string;
-  name: string;
-  type: 'executor' | 'reviewer' | 'orchestrator';
-  status: 'idle' | 'running' | 'error' | 'paused';
-  sessionId?: string;
-  workflowId?: string;
-  source: 'deployment';
-  deploymentId: string;
-  createdAt: string;
-}
-
+// ========== Agent Runtime API ==========
 type AgentCapabilityLayer = 'summary' | 'execution' | 'governance' | 'full';
-
-interface AgentCatalogCapabilities {
-  summary: {
-    role: string;
-    source: string;
-    status: 'idle' | 'running' | 'error' | 'paused';
-    tags: string[];
-  };
-  execution?: {
-    exposedTools: string[];
-    dispatchTargets: string[];
-    supportsDispatch: boolean;
-    supportsControl: Array<'status' | 'pause' | 'resume' | 'interrupt' | 'cancel'>;
-  };
-  governance?: {
-    whitelist: string[];
-    blacklist: string[];
-    authorizationRequired: string[];
-    provider?: string;
-    sessionBindingScope?: string;
-    iflowApprovalMode?: string;
-    capabilityIds?: string[];
-  };
-}
-
-interface AgentCatalogEntry {
-  id: string;
-  name: string;
-  type: 'executor' | 'reviewer' | 'orchestrator';
-  status: 'idle' | 'running' | 'error' | 'paused';
-  source: string;
-  instanceCount: number;
-  deployedCount: number;
-  availableCount: number;
-  lastSessionId?: string;
-  capabilities: AgentCatalogCapabilities;
-}
 
 interface AgentDispatchRequest {
   sourceAgentId: string;
@@ -1861,230 +1811,6 @@ interface AgentControlResult {
   error?: string;
 }
 
-function normalizeAgentType(value: unknown): 'executor' | 'reviewer' | 'orchestrator' {
-  if (typeof value !== 'string') return 'executor';
-  const normalized = value.trim().toLowerCase();
-  if (normalized.includes('orchestr')) return 'orchestrator';
-  if (normalized.includes('review')) return 'reviewer';
-  return 'executor';
-}
-
-function normalizeAgentStatus(value: unknown): 'idle' | 'running' | 'error' | 'paused' {
-  if (typeof value !== 'string') return 'idle';
-  const normalized = value.trim().toLowerCase();
-  if (normalized === 'running' || normalized === 'busy' || normalized === 'deployed') return 'running';
-  if (normalized === 'error' || normalized === 'failed' || normalized === 'blocked') return 'error';
-  if (normalized === 'paused') return 'paused';
-  return 'idle';
-}
-
-function isIgnorableRuntimeModule(moduleId: string): boolean {
-  return moduleId.includes('mock')
-    || moduleId.includes('echo')
-    || moduleId === 'chat-codex-gateway';
-}
-
-function moduleHasAgentRuntimeIdentity(module: OrchestrationModule): boolean {
-  if (module.type === 'agent') return true;
-  if (module.type !== 'output') return false;
-  const metadata = isObjectRecord(module.metadata) ? module.metadata : null;
-  const metadataType = typeof metadata?.type === 'string' ? metadata.type.toLowerCase() : '';
-  const metadataRole = typeof metadata?.role === 'string' ? metadata.role.toLowerCase() : '';
-  const provider = typeof metadata?.provider === 'string' ? metadata.provider.toLowerCase() : '';
-  const bridge = typeof metadata?.bridge === 'string' ? metadata.bridge.toLowerCase() : '';
-  const moduleId = module.id.toLowerCase();
-  if (
-    metadataType.includes('loop')
-    || metadataType.includes('orchestr')
-    || metadataType.includes('executor')
-    || metadataType.includes('review')
-    || metadataRole.includes('orchestr')
-    || metadataRole.includes('executor')
-    || metadataRole.includes('review')
-  ) {
-    return true;
-  }
-  if (bridge.includes('rust-kernel')) {
-    return true;
-  }
-  if (provider === 'codex' && moduleId.includes('chat-codex')) {
-    return true;
-  }
-  return moduleId.includes('-loop') || moduleId.includes('chat-codex');
-}
-
-function resolveDeploymentAgentIdentity(deployment: AgentDeployment): {
-  agentId: string;
-  agentName: string;
-  agentType: 'executor' | 'reviewer' | 'orchestrator';
-} {
-  const config = deployment.config;
-  const fromId = typeof config.id === 'string' && config.id.trim().length > 0 ? config.id.trim() : null;
-  const fromName = typeof config.name === 'string' && config.name.trim().length > 0 ? config.name.trim() : null;
-  const fromRole = typeof config.role === 'string' && config.role.trim().length > 0 ? config.role.trim() : null;
-
-  const agentId = fromId || fromName || deployment.id;
-  const agentName = fromName || fromId || deployment.id;
-  const agentType = normalizeAgentType(fromRole || config.type);
-  return { agentId, agentName, agentType };
-}
-
-function collectRunningAgentIds(): Set<string> {
-  const running = new Set<string>();
-  for (const workflow of workflowManager.listWorkflows()) {
-    for (const task of workflow.tasks.values()) {
-      if (task.status !== 'in_progress') continue;
-      if (typeof task.assignee !== 'string') continue;
-      const assignee = task.assignee.trim();
-      if (assignee.length > 0) running.add(assignee);
-    }
-  }
-  return running;
-}
-
-function buildAgentRuntimeView(): {
-  agents: AgentRuntimeViewItem[];
-  instances: AgentRuntimeViewInstance[];
-  configs: Array<{ id: string; name: string; role?: string; filePath: string; tools?: Record<string, unknown> }>;
-} {
-  const runningAgentIds = collectRunningAgentIds();
-  const instances: AgentRuntimeViewInstance[] = [];
-  const workflowBySessionId = new Map<string, string>();
-  for (const workflow of workflowManager.listWorkflows()) {
-    if (typeof workflow.sessionId === 'string' && workflow.sessionId.trim().length > 0) {
-      workflowBySessionId.set(workflow.sessionId, workflow.id);
-    }
-  }
-
-  for (const deployment of agentDeployments.values()) {
-    const identity = resolveDeploymentAgentIdentity(deployment);
-    const baseStatus = normalizeAgentStatus(deployment.status);
-    const instanceTotal = Math.max(1, Number.isFinite(deployment.instanceCount) ? Math.floor(deployment.instanceCount) : 1);
-    for (let idx = 0; idx < instanceTotal; idx += 1) {
-      const instanceId = instanceTotal === 1 ? deployment.id : `${deployment.id}#${idx + 1}`;
-      const status = runningAgentIds.has(identity.agentId)
-        ? 'running'
-        : baseStatus;
-      const workflowId = workflowBySessionId.get(deployment.sessionId);
-      instances.push({
-        id: instanceId,
-        agentId: identity.agentId,
-        name: instanceTotal === 1 ? identity.agentName : `${identity.agentName}#${idx + 1}`,
-        type: identity.agentType,
-        status,
-        ...(deployment.sessionId ? { sessionId: deployment.sessionId } : {}),
-        ...(workflowId ? { workflowId } : {}),
-        source: 'deployment',
-        deploymentId: deployment.id,
-        createdAt: deployment.createdAt,
-      });
-    }
-  }
-
-  const byAgentId = new Map<string, AgentRuntimeViewInstance[]>();
-  for (const instance of instances) {
-    const list = byAgentId.get(instance.agentId) ?? [];
-    list.push(instance);
-    byAgentId.set(instance.agentId, list);
-  }
-
-  const agentMap = new Map<string, AgentRuntimeViewItem>();
-  const upsertAgent = (
-    id: string,
-    patch: Partial<Omit<AgentRuntimeViewItem, 'id'>>,
-  ): void => {
-    const normalizedId = id.trim();
-    if (normalizedId.length === 0) return;
-    const previous = agentMap.get(normalizedId);
-    const next: AgentRuntimeViewItem = {
-      id: normalizedId,
-      name: patch.name ?? previous?.name ?? normalizedId,
-      type: patch.type ?? previous?.type ?? 'executor',
-      status: patch.status ?? previous?.status ?? 'idle',
-      source: patch.source ?? previous?.source ?? 'runtime-config',
-      instanceCount: patch.instanceCount ?? previous?.instanceCount ?? 0,
-      deployedCount: patch.deployedCount ?? previous?.deployedCount ?? 0,
-      availableCount: patch.availableCount ?? previous?.availableCount ?? 0,
-      ...(patch.lastSessionId ?? previous?.lastSessionId ? { lastSessionId: patch.lastSessionId ?? previous?.lastSessionId } : {}),
-    };
-    agentMap.set(normalizedId, next);
-  };
-
-  for (const item of loadedAgentConfigs) {
-    const type = normalizeAgentType(item.config.role);
-    upsertAgent(item.config.id, {
-      name: item.config.name ?? item.config.id,
-      type,
-      status: runningAgentIds.has(item.config.id) ? 'running' : 'idle',
-      source: 'agent-json',
-    });
-  }
-
-  for (const config of runtime.listAgentRuntimeConfigs()) {
-    upsertAgent(config.id, {
-      name: config.name ?? config.id,
-      type: normalizeAgentType(config.role),
-      status: runningAgentIds.has(config.id) ? 'running' : 'idle',
-      source: 'runtime-config',
-    });
-  }
-
-  for (const module of moduleRegistry.getAllModules()) {
-    if (isIgnorableRuntimeModule(module.id)) continue;
-    if (!moduleHasAgentRuntimeIdentity(module)) continue;
-    upsertAgent(module.id, {
-      name: module.name,
-      type: normalizeAgentType(module.metadata?.role ?? module.metadata?.type ?? module.id),
-      source: 'module',
-    });
-  }
-
-  for (const instance of instances) {
-    const related = byAgentId.get(instance.agentId) ?? [];
-    const deployedCount = related.filter((item) => item.status === 'running' || item.status === 'paused').length;
-    const latestSession = related
-      .slice()
-      .sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt))
-      .find((item) => typeof item.sessionId === 'string' && item.sessionId.length > 0)
-      ?.sessionId;
-    upsertAgent(instance.agentId, {
-      name: instance.name.replace(/#\d+$/, ''),
-      type: instance.type,
-      status: related.some((item) => item.status === 'error')
-        ? 'error'
-        : related.some((item) => item.status === 'running')
-          ? 'running'
-          : 'idle',
-      source: 'deployment',
-      instanceCount: related.length,
-      deployedCount,
-      availableCount: Math.max(0, related.length - deployedCount),
-      ...(latestSession ? { lastSessionId: latestSession } : {}),
-    });
-  }
-
-  for (const [agentId, item] of agentMap.entries()) {
-    if (runningAgentIds.has(agentId) && item.status !== 'error') {
-      item.status = 'running';
-      agentMap.set(agentId, item);
-    }
-  }
-
-  const configs = loadedAgentConfigs.map((item) => ({
-    id: item.config.id,
-    name: item.config.name ?? item.config.id,
-    ...(item.config.role ? { role: item.config.role } : {}),
-    filePath: item.filePath,
-    ...(item.config.tools ? { tools: item.config.tools as Record<string, unknown> } : {}),
-  }));
-
-  return {
-    agents: Array.from(agentMap.values()).sort((a, b) => a.name.localeCompare(b.name)),
-    instances: instances.sort((a, b) => a.name.localeCompare(b.name)),
-    configs,
-  };
-}
-
 function resolveAgentCapabilityLayer(value: unknown): AgentCapabilityLayer {
   if (typeof value !== 'string') return 'summary';
   const normalized = value.trim().toLowerCase();
@@ -2094,206 +1820,6 @@ function resolveAgentCapabilityLayer(value: unknown): AgentCapabilityLayer {
   return 'summary';
 }
 
-function normalizeStringArray(value: unknown): string[] {
-  if (!Array.isArray(value)) return [];
-  return Array.from(
-    new Set(
-      value
-        .filter((item): item is string => typeof item === 'string')
-        .map((item) => item.trim())
-        .filter((item) => item.length > 0),
-    ),
-  ).sort((a, b) => a.localeCompare(b));
-}
-
-function resolveAgentDispatchTargets(): string[] {
-  return moduleRegistry
-    .getAllModules()
-    .filter((module) => !isIgnorableRuntimeModule(module.id))
-    .filter((module) => moduleHasAgentRuntimeIdentity(module))
-    .map((module) => module.id)
-    .sort((a, b) => a.localeCompare(b));
-}
-
-function resolveAgentConfigById(agentId: string): LoadedAgentConfig | null {
-  const found = loadedAgentConfigs.find((item) => item.config.id === agentId);
-  return found ?? null;
-}
-
-function resolveAgentEffectiveTools(agentId: string): {
-  exposedTools: string[];
-  whitelist: string[];
-  blacklist: string[];
-  authorizationRequired: string[];
-} {
-  const toolPolicy = runtime.getAgentToolPolicy(agentId);
-  const allowedGlobalTools = globalToolRegistry
-    .list()
-    .filter((tool) => tool.policy === 'allow')
-    .map((tool) => tool.name);
-  const deniedByPolicy = new Set(toolPolicy.blacklist);
-
-  const exposedTools = (toolPolicy.whitelist.length > 0
-    ? toolPolicy.whitelist
-    : allowedGlobalTools
-  ).filter((toolName) => !deniedByPolicy.has(toolName));
-
-  const config = resolveAgentConfigById(agentId);
-  const authorizationRequired = normalizeStringArray(config?.config.tools?.authorizationRequired);
-
-  return {
-    exposedTools: Array.from(new Set(exposedTools)).sort((a, b) => a.localeCompare(b)),
-    whitelist: [...toolPolicy.whitelist].sort((a, b) => a.localeCompare(b)),
-    blacklist: [...toolPolicy.blacklist].sort((a, b) => a.localeCompare(b)),
-    authorizationRequired,
-  };
-}
-
-function buildAgentCatalog(layer: AgentCapabilityLayer): AgentCatalogEntry[] {
-  const runtimeView = buildAgentRuntimeView();
-  const dispatchTargets = resolveAgentDispatchTargets();
-  const supportsControl: Array<'status' | 'pause' | 'resume' | 'interrupt' | 'cancel'> = [
-    'status',
-    'pause',
-    'resume',
-    'interrupt',
-    'cancel',
-  ];
-
-  return runtimeView.agents.map((agent) => {
-    const runtimeConfig = runtime.getAgentRuntimeConfig(agent.id);
-    const loadedConfig = resolveAgentConfigById(agent.id);
-    const toolAccess = resolveAgentEffectiveTools(agent.id);
-
-    const summaryTags = Array.from(
-      new Set([
-        agent.type,
-        ...(toolAccess.exposedTools.includes('agent.dispatch') ? ['dispatch'] : []),
-        ...(toolAccess.exposedTools.includes('agent.control') ? ['control'] : []),
-        ...(toolAccess.exposedTools.includes('agent.list') ? ['catalog'] : []),
-      ]),
-    );
-
-    const capabilities: AgentCatalogCapabilities = {
-      summary: {
-        role: runtimeConfig?.role ?? loadedConfig?.config.role ?? agent.type,
-        source: agent.source,
-        status: agent.status,
-        tags: summaryTags,
-      },
-    };
-
-    if (layer === 'execution' || layer === 'full') {
-      capabilities.execution = {
-        exposedTools: toolAccess.exposedTools,
-        dispatchTargets,
-        supportsDispatch: toolAccess.exposedTools.includes('agent.dispatch'),
-        supportsControl,
-      };
-    }
-
-    if (layer === 'governance' || layer === 'full') {
-      capabilities.governance = {
-        whitelist: toolAccess.whitelist,
-        blacklist: toolAccess.blacklist,
-        authorizationRequired: toolAccess.authorizationRequired,
-        ...(typeof runtimeConfig?.provider?.type === 'string' ? { provider: runtimeConfig.provider.type } : {}),
-        ...(typeof runtimeConfig?.session?.bindingScope === 'string'
-          ? { sessionBindingScope: runtimeConfig.session.bindingScope }
-          : {}),
-        ...(typeof runtimeConfig?.governance?.iflow?.approvalMode === 'string'
-          ? { iflowApprovalMode: runtimeConfig.governance.iflow.approvalMode }
-          : {}),
-        ...(Array.isArray(runtimeConfig?.governance?.iflow?.capabilityIds)
-          ? { capabilityIds: normalizeStringArray(runtimeConfig?.governance?.iflow?.capabilityIds) }
-          : {}),
-      };
-    }
-
-    return {
-      id: agent.id,
-      name: agent.name,
-      type: agent.type,
-      status: agent.status,
-      source: agent.source,
-      instanceCount: agent.instanceCount,
-      deployedCount: agent.deployedCount,
-      availableCount: agent.availableCount,
-      ...(agent.lastSessionId ? { lastSessionId: agent.lastSessionId } : {}),
-      capabilities,
-    };
-  });
-}
-
-function emitAgentRuntimeCatalogEvent(layer: AgentCapabilityLayer, catalog: AgentCatalogEntry[]): void {
-  void globalEventBus.emit({
-    type: 'agent_runtime_catalog',
-    sessionId: runtime.getCurrentSession()?.id ?? 'default',
-    timestamp: new Date().toISOString(),
-    payload: {
-      layer,
-      count: catalog.length,
-      agentIds: catalog.map((item) => item.id),
-    },
-  });
-}
-
-function toDispatchPayload(input: AgentDispatchRequest, dispatchId: string): Record<string, unknown> {
-  const task = input.task;
-  const metadata = {
-    ...(isObjectRecord(input.metadata) ? input.metadata : {}),
-    dispatchId,
-    sourceAgentId: input.sourceAgentId,
-    targetAgentId: input.targetAgentId,
-    orchestration: true,
-  };
-
-  if (isObjectRecord(task)) {
-    const next: Record<string, unknown> = { ...task };
-    if (typeof next.sessionId !== 'string' && typeof input.sessionId === 'string' && input.sessionId.trim().length > 0) {
-      next.sessionId = input.sessionId;
-    }
-    const originalMetadata = isObjectRecord(next.metadata) ? next.metadata : {};
-    next.metadata = { ...originalMetadata, ...metadata };
-    return next;
-  }
-
-  const text = typeof task === 'string' ? task : JSON.stringify(task);
-  return {
-    text,
-    ...(typeof input.sessionId === 'string' && input.sessionId.trim().length > 0 ? { sessionId: input.sessionId } : {}),
-    metadata,
-  };
-}
-
-function emitAgentRuntimeDispatchEvent(params: {
-  dispatchId: string;
-  sourceAgentId: string;
-  targetAgentId: string;
-  status: 'queued' | 'completed' | 'failed';
-  blocking: boolean;
-  sessionId?: string;
-  workflowId?: string;
-  error?: string;
-}): void {
-  void globalEventBus.emit({
-    type: 'agent_runtime_dispatch',
-    sessionId: params.sessionId ?? runtime.getCurrentSession()?.id ?? 'default',
-    agentId: params.targetAgentId,
-    timestamp: new Date().toISOString(),
-    payload: {
-      dispatchId: params.dispatchId,
-      sourceAgentId: params.sourceAgentId,
-      targetAgentId: params.targetAgentId,
-      status: params.status,
-      blocking: params.blocking,
-      ...(params.sessionId ? { sessionId: params.sessionId } : {}),
-      ...(params.workflowId ? { workflowId: params.workflowId } : {}),
-      ...(params.error ? { error: params.error } : {}),
-    },
-  });
-}
-
 async function dispatchTaskToAgent(input: AgentDispatchRequest): Promise<{
   ok: boolean;
   dispatchId: string;
@@ -2301,324 +1827,19 @@ async function dispatchTaskToAgent(input: AgentDispatchRequest): Promise<{
   result?: unknown;
   error?: string;
 }> {
-  const target = input.targetAgentId.trim();
-  if (target.length === 0) {
-    return {
-      ok: false,
-      dispatchId: `dispatch-${Date.now()}-invalid`,
-      status: 'failed',
-      error: 'targetAgentId is required',
-    };
-  }
-
-  const targetModule = moduleRegistry.getModule(target);
-  if (!targetModule) {
-    return {
-      ok: false,
-      dispatchId: `dispatch-${Date.now()}-missing`,
-      status: 'failed',
-      error: `target agent/module not found: ${target}`,
-    };
-  }
-
-  const blocking = input.blocking === true;
-  const dispatchId = `dispatch-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-  const payload = toDispatchPayload(input, dispatchId);
-  emitAgentRuntimeDispatchEvent({
-    dispatchId,
-    sourceAgentId: input.sourceAgentId,
-    targetAgentId: target,
-    status: 'queued',
-    blocking,
-    sessionId: input.sessionId,
-    workflowId: input.workflowId,
-  });
-
-  if (blocking) {
-    try {
-      const result = await hub.sendToModule(target, payload);
-      emitAgentRuntimeDispatchEvent({
-        dispatchId,
-        sourceAgentId: input.sourceAgentId,
-        targetAgentId: target,
-        status: 'completed',
-        blocking,
-        sessionId: input.sessionId,
-        workflowId: input.workflowId,
-      });
-      return { ok: true, dispatchId, status: 'completed', result };
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      emitAgentRuntimeDispatchEvent({
-        dispatchId,
-        sourceAgentId: input.sourceAgentId,
-        targetAgentId: target,
-        status: 'failed',
-        blocking,
-        sessionId: input.sessionId,
-        workflowId: input.workflowId,
-        error: message,
-      });
-      return { ok: false, dispatchId, status: 'failed', error: message };
-    }
-  }
-
-  void hub.sendToModule(target, payload)
-    .then(() => {
-      emitAgentRuntimeDispatchEvent({
-        dispatchId,
-        sourceAgentId: input.sourceAgentId,
-        targetAgentId: target,
-        status: 'completed',
-        blocking,
-        sessionId: input.sessionId,
-        workflowId: input.workflowId,
-      });
-    })
-    .catch((error: unknown) => {
-      const message = error instanceof Error ? error.message : String(error);
-      emitAgentRuntimeDispatchEvent({
-        dispatchId,
-        sourceAgentId: input.sourceAgentId,
-        targetAgentId: target,
-        status: 'failed',
-        blocking,
-        sessionId: input.sessionId,
-        workflowId: input.workflowId,
-        error: message,
-      });
-    });
-
-  return { ok: true, dispatchId, status: 'queued' };
-}
-
-function emitAgentRuntimeControlEvent(result: AgentControlResult): void {
-  void globalEventBus.emit({
-    type: 'agent_runtime_control',
-    sessionId: result.sessionId ?? runtime.getCurrentSession()?.id ?? 'default',
-    agentId: result.targetAgentId,
-    timestamp: new Date().toISOString(),
-    payload: {
-      action: result.action,
-      status: result.status,
-      ...(result.sessionId ? { sessionId: result.sessionId } : {}),
-      ...(result.workflowId ? { workflowId: result.workflowId } : {}),
-      ...(result.error ? { error: result.error } : {}),
-    },
-  });
-}
-
-function emitAgentRuntimeStatusEvent(params: {
-  sessionId?: string;
-  workflowId?: string;
-  status: 'ok' | 'error';
-  error?: string;
-}): void {
-  const runningAgents = collectRunningAgentIds();
-  void globalEventBus.emit({
-    type: 'agent_runtime_status',
-    sessionId: params.sessionId ?? runtime.getCurrentSession()?.id ?? 'default',
-    timestamp: new Date().toISOString(),
-    payload: {
-      scope: params.workflowId ? 'workflow' : params.sessionId ? 'session' : 'global',
-      status: params.status,
-      ...(params.sessionId ? { sessionId: params.sessionId } : {}),
-      ...(params.workflowId ? { workflowId: params.workflowId } : {}),
-      runningAgents: Array.from(runningAgents).sort((a, b) => a.localeCompare(b)),
-      ...(params.error ? { error: params.error } : {}),
-    },
-  });
+  const result = await agentRuntimeBlock.execute('dispatch', input as unknown as Record<string, unknown>);
+  return result as {
+    ok: boolean;
+    dispatchId: string;
+    status: 'queued' | 'completed' | 'failed';
+    result?: unknown;
+    error?: string;
+  };
 }
 
 async function controlAgentRuntime(input: AgentControlRequest): Promise<AgentControlResult> {
-  const action = input.action;
-  const targetAgentId = typeof input.targetAgentId === 'string' ? input.targetAgentId.trim() : undefined;
-  const sessionId = typeof input.sessionId === 'string' && input.sessionId.trim().length > 0
-    ? input.sessionId.trim()
-    : undefined;
-  const workflowId = typeof input.workflowId === 'string' && input.workflowId.trim().length > 0
-    ? input.workflowId.trim()
-    : undefined;
-
-  try {
-    if (action === 'status') {
-      const catalog = buildAgentCatalog('summary');
-      const result = {
-        ok: true,
-        action,
-        status: 'completed' as const,
-        ...(targetAgentId ? { targetAgentId } : {}),
-        ...(sessionId ? { sessionId } : {}),
-        ...(workflowId ? { workflowId } : {}),
-        result: {
-          catalog,
-          runtimeView: buildAgentRuntimeView(),
-          chatCodexSessions: chatCodexRunner.listSessionStates(sessionId, input.providerId),
-        },
-      };
-      emitAgentRuntimeStatusEvent({
-        sessionId,
-        workflowId,
-        status: 'ok',
-      });
-      return result;
-    }
-
-    if (action === 'pause') {
-      if (workflowId) {
-        const paused = workflowManager.pauseWorkflow(workflowId, input.hard === true);
-        if (!paused) {
-          return {
-            ok: false,
-            action,
-            status: 'failed',
-            workflowId,
-            targetAgentId,
-            error: `workflow not found: ${workflowId}`,
-          };
-        }
-        return {
-          ok: true,
-          action,
-          status: 'completed',
-          workflowId,
-          targetAgentId,
-          result: { workflowId, status: 'paused' },
-        };
-      }
-
-      if (!sessionId) {
-        return {
-          ok: false,
-          action,
-          status: 'failed',
-          targetAgentId,
-          error: 'pause requires sessionId or workflowId',
-        };
-      }
-      const paused = sessionManager.pauseSession(sessionId);
-      if (!paused) {
-        return {
-          ok: false,
-          action,
-          status: 'failed',
-          sessionId,
-          targetAgentId,
-          error: `session not found: ${sessionId}`,
-        };
-      }
-      return {
-        ok: true,
-        action,
-        status: 'completed',
-        sessionId,
-        targetAgentId,
-        result: { sessionId, status: 'paused' },
-      };
-    }
-
-    if (action === 'resume') {
-      if (workflowId) {
-        const resumed = workflowManager.resumeWorkflow(workflowId);
-        if (!resumed) {
-          return {
-            ok: false,
-            action,
-            status: 'failed',
-            workflowId,
-            targetAgentId,
-            error: `workflow not found: ${workflowId}`,
-          };
-        }
-        return {
-          ok: true,
-          action,
-          status: 'completed',
-          workflowId,
-          targetAgentId,
-          result: { workflowId, status: 'executing' },
-        };
-      }
-
-      if (!sessionId) {
-        return {
-          ok: false,
-          action,
-          status: 'failed',
-          targetAgentId,
-          error: 'resume requires sessionId or workflowId',
-        };
-      }
-      const resumed = sessionManager.resumeSession(sessionId);
-      if (!resumed) {
-        return {
-          ok: false,
-          action,
-          status: 'failed',
-          sessionId,
-          targetAgentId,
-          error: `session not found: ${sessionId}`,
-        };
-      }
-      return {
-        ok: true,
-        action,
-        status: 'completed',
-        sessionId,
-        targetAgentId,
-        result: { sessionId, status: 'active' },
-      };
-    }
-
-    if (action === 'interrupt' || action === 'cancel') {
-      if (!sessionId) {
-        return {
-          ok: false,
-          action,
-          status: 'failed',
-          targetAgentId,
-          error: 'interrupt/cancel requires sessionId',
-        };
-      }
-      const results = chatCodexRunner.interruptSession(sessionId, input.providerId);
-      return {
-        ok: true,
-        action,
-        status: 'completed',
-        sessionId,
-        targetAgentId,
-        result: {
-          interruptedCount: results.filter((item) => item.interrupted).length,
-          sessions: results,
-        },
-      };
-    }
-
-    return {
-      ok: false,
-      action,
-      status: 'failed',
-      targetAgentId,
-      error: `unsupported control action: ${action}`,
-    };
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    emitAgentRuntimeStatusEvent({
-      sessionId,
-      workflowId,
-      status: 'error',
-      error: message,
-    });
-    return {
-      ok: false,
-      action,
-      status: 'failed',
-      ...(sessionId ? { sessionId } : {}),
-      ...(workflowId ? { workflowId } : {}),
-      ...(targetAgentId ? { targetAgentId } : {}),
-      error: message,
-    };
-  }
+  const result = await agentRuntimeBlock.execute('control', input as unknown as Record<string, unknown>);
+  return result as AgentControlResult;
 }
 
 function parseAgentDispatchToolInput(rawInput: unknown): AgentDispatchRequest {
@@ -2697,6 +1918,58 @@ function parseAgentControlToolInput(rawInput: unknown): AgentControlRequest {
   return request;
 }
 
+function parseAgentDeployToolInput(rawInput: unknown): Record<string, unknown> {
+  if (!isObjectRecord(rawInput)) {
+    throw new Error('agent.deploy input must be object');
+  }
+  const targetAgentId = typeof rawInput.target_agent_id === 'string'
+    ? rawInput.target_agent_id.trim()
+    : typeof rawInput.targetAgentId === 'string'
+      ? rawInput.targetAgentId.trim()
+      : '';
+  const instanceCountRaw = typeof rawInput.instance_count === 'number'
+    ? rawInput.instance_count
+    : typeof rawInput.instanceCount === 'number'
+      ? rawInput.instanceCount
+      : 1;
+  const config = isObjectRecord(rawInput.config) ? rawInput.config : {};
+  const provider = typeof rawInput.provider === 'string' ? rawInput.provider : undefined;
+  const request: Record<string, unknown> = {
+    ...(targetAgentId.length > 0 ? { targetAgentId } : {}),
+    ...(Number.isFinite(instanceCountRaw) ? { instanceCount: Math.max(1, Math.floor(instanceCountRaw)) } : {}),
+    ...(provider ? { config: { ...config, provider } } : { config }),
+    ...(typeof rawInput.session_id === 'string'
+      ? { sessionId: rawInput.session_id }
+      : typeof rawInput.sessionId === 'string'
+        ? { sessionId: rawInput.sessionId }
+        : {}),
+    ...(typeof rawInput.scope === 'string' && (rawInput.scope === 'session' || rawInput.scope === 'global')
+      ? { scope: rawInput.scope }
+      : {}),
+    ...(typeof rawInput.launch_mode === 'string' && (rawInput.launch_mode === 'manual' || rawInput.launch_mode === 'orchestrator')
+      ? { launchMode: rawInput.launch_mode }
+      : typeof rawInput.launchMode === 'string' && (rawInput.launchMode === 'manual' || rawInput.launchMode === 'orchestrator')
+        ? { launchMode: rawInput.launchMode }
+        : {}),
+    ...(typeof rawInput.target_implementation_id === 'string'
+      ? { targetImplementationId: rawInput.target_implementation_id }
+      : typeof rawInput.targetImplementationId === 'string'
+        ? { targetImplementationId: rawInput.targetImplementationId }
+        : {}),
+  };
+
+  const configRecord = isObjectRecord(request.config) ? request.config : null;
+  const hasConfigIdentity = configRecord !== null && (
+    (typeof configRecord.id === 'string' && configRecord.id.trim().length > 0)
+    || (typeof configRecord.name === 'string' && configRecord.name.trim().length > 0)
+  );
+  if (!targetAgentId && !hasConfigIdentity) {
+    throw new Error('agent.deploy target_agent_id or config.id/config.name is required');
+  }
+
+  return request;
+}
+
 function registerAgentRuntimeTools(): string[] {
   const loaded: string[] = [];
 
@@ -2713,14 +1986,7 @@ function registerAgentRuntimeTools(): string[] {
     },
     handler: async (input: unknown): Promise<unknown> => {
       const layer = resolveAgentCapabilityLayer(isObjectRecord(input) ? input.layer : undefined);
-      const catalog = buildAgentCatalog(layer);
-      emitAgentRuntimeCatalogEvent(layer, catalog);
-      return {
-        ok: true,
-        layer,
-        count: catalog.length,
-        agents: catalog,
-      };
+      return agentRuntimeBlock.execute('catalog', { layer });
     },
   });
   loaded.push('agent.list');
@@ -2751,15 +2017,35 @@ function registerAgentRuntimeTools(): string[] {
         throw new Error('agent.capabilities agent_id is required');
       }
       const layer = resolveAgentCapabilityLayer(input.layer);
-      const catalog = buildAgentCatalog(layer);
-      const agent = catalog.find((item) => item.id === agentId);
-      if (!agent) {
-        return { ok: false, layer, error: `agent not found: ${agentId}` };
-      }
-      return { ok: true, layer, agent };
+      return agentRuntimeBlock.execute('capabilities', { agentId, layer });
     },
   });
   loaded.push('agent.capabilities');
+
+  runtime.registerTool({
+    name: 'agent.deploy',
+    description:
+      'Activate/start an agent target in resource pool. Use before dispatch when target is not started.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        target_agent_id: { type: 'string' },
+        target_implementation_id: { type: 'string' },
+        provider: { type: 'string' },
+        instance_count: { type: 'number' },
+        scope: { type: 'string', enum: ['session', 'global'] },
+        launch_mode: { type: 'string', enum: ['manual', 'orchestrator'] },
+        session_id: { type: 'string' },
+        config: { type: 'object' },
+      },
+      additionalProperties: true,
+    },
+    handler: async (input: unknown): Promise<unknown> => {
+      const deployInput = parseAgentDeployToolInput(input);
+      return agentRuntimeBlock.execute('deploy', deployInput);
+    },
+  });
+  loaded.push('agent.deploy');
 
   runtime.registerTool({
     name: 'agent.dispatch',
@@ -2804,9 +2090,7 @@ function registerAgentRuntimeTools(): string[] {
     },
     handler: async (input: unknown): Promise<unknown> => {
       const controlInput = parseAgentControlToolInput(input);
-      const result = await controlAgentRuntime(controlInput);
-      emitAgentRuntimeControlEvent(result);
-      return result;
+      return controlAgentRuntime(controlInput);
     },
   });
   loaded.push('agent.control');
@@ -2815,24 +2099,29 @@ function registerAgentRuntimeTools(): string[] {
 }
 
 app.get('/api/v1/agents/runtime-view', (_req, res) => {
-  const snapshot = buildAgentRuntimeView();
-  res.json({
-    success: true,
-    generatedAt: new Date().toISOString(),
-    ...snapshot,
+  void agentRuntimeBlock.execute('runtime_view', {}).then((snapshot) => {
+    res.json({
+      success: true,
+      generatedAt: new Date().toISOString(),
+      ...(snapshot as Record<string, unknown>),
+    });
+  }).catch((error: unknown) => {
+    const message = error instanceof Error ? error.message : String(error);
+    res.status(500).json({ success: false, error: message });
   });
 });
 
 app.get('/api/v1/agents/catalog', (req, res) => {
   const layer = resolveAgentCapabilityLayer(req.query.layer);
-  const catalog = buildAgentCatalog(layer);
-  emitAgentRuntimeCatalogEvent(layer, catalog);
-  res.json({
-    success: true,
-    generatedAt: new Date().toISOString(),
-    layer,
-    count: catalog.length,
-    agents: catalog,
+  void agentRuntimeBlock.execute('catalog', { layer }).then((result) => {
+    res.json({
+      success: true,
+      generatedAt: new Date().toISOString(),
+      ...(result as Record<string, unknown>),
+    });
+  }).catch((error: unknown) => {
+    const message = error instanceof Error ? error.message : String(error);
+    res.status(500).json({ success: false, error: message });
   });
 });
 
@@ -2913,7 +2202,6 @@ app.post('/api/v1/agents/control', async (req, res) => {
   };
 
   const result = await controlAgentRuntime(request);
-  emitAgentRuntimeControlEvent(result);
   if (!result.ok) {
     res.status(400).json(result);
     return;
@@ -2922,17 +2210,30 @@ app.post('/api/v1/agents/control', async (req, res) => {
 });
 
 app.get('/api/v1/agents', (_req, res) => {
-  // Return resource pool view (single process per agent)
-  const resources = resourcePool.getAllResources();
-  res.json(resources.map(r => ({
-    id: r.id,
-    type: r.id.includes('orchestrator') ? 'orchestrator' : 'executor',
-    name: r.name || r.id,
-    status: r.status,
-    sessionId: r.currentSessionId,
-    workflowId: r.currentWorkflowId,
-    totalDeployments: r.totalDeployments,
-  })));
+  void agentRuntimeBlock.execute('runtime_view', {}).then((raw) => {
+    const snapshot = raw as { instances?: Array<{
+      id: string;
+      agentId: string;
+      name: string;
+      type: 'executor' | 'reviewer' | 'orchestrator';
+      status: 'idle' | 'running' | 'error' | 'paused';
+      sessionId?: string;
+      workflowId?: string;
+    }> };
+    const instances = snapshot.instances ?? [];
+    res.json(instances.map((item) => ({
+      id: item.agentId,
+      type: item.type,
+      name: item.name,
+      status: item.status,
+      sessionId: item.sessionId,
+      workflowId: item.workflowId,
+      totalDeployments: 1,
+    })));
+  }).catch((error: unknown) => {
+    const message = error instanceof Error ? error.message : String(error);
+    res.status(500).json({ error: message });
+  });
 });
 
 // Resource pool: get available resources
@@ -3135,79 +2436,79 @@ app.get('/api/v1/agent/:agentId/progress', (req, res) => {
 });
 
 app.post('/api/v1/agents/deploy', async (req, res) => {
-  const { sessionId, config, scope, instanceCount = 1 } = req.body;
-  if (!config || !config.name) {
-    res.status(400).json({ error: 'Missing agent config' });
-    return;
-  }
-  
-  const deploymentId = `deployment-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
-  const deployment: AgentDeployment = {
-    id: deploymentId,
-    config,
-    sessionId: sessionId || 'default',
-    scope: scope || 'session',
-    instanceCount,
-    status: 'idle',
-    createdAt: new Date().toISOString(),
+  const { sessionId, config, scope, instanceCount = 1, targetAgentId, targetImplementationId, launchMode } = req.body as {
+    sessionId?: string;
+    config?: Record<string, unknown>;
+    scope?: 'session' | 'global';
+    instanceCount?: number;
+    targetAgentId?: string;
+    targetImplementationId?: string;
+    launchMode?: 'manual' | 'orchestrator';
   };
-  
-  agentDeployments.set(deploymentId, deployment);
-  
-  // Broadcast deployment to WebSocket clients
-  const broadcastMsg = JSON.stringify({
-    type: 'agent_update',
-    payload: {
-      agentId: deploymentId,
-      status: 'idle',
-      config,
-      instanceCount,
-    },
-    timestamp: new Date().toISOString(),
-  });
-  for (const client of wsClients) {
-    if (client.readyState === 1) client.send(broadcastMsg);
-  }
 
-  emitAgentRuntimeStatusEvent({
-    sessionId: deployment.sessionId,
-    status: 'ok',
-  });
-  
-  res.json({ success: true, deploymentId, deployment });
+  try {
+    const result = await agentRuntimeBlock.execute('deploy', {
+      ...(typeof sessionId === 'string' ? { sessionId } : {}),
+      ...(isObjectRecord(config) ? { config } : {}),
+      ...(scope ? { scope } : {}),
+      ...(Number.isFinite(instanceCount) ? { instanceCount } : {}),
+      ...(typeof targetAgentId === 'string' ? { targetAgentId } : {}),
+      ...(typeof targetImplementationId === 'string' ? { targetImplementationId } : {}),
+      ...(launchMode ? { launchMode } : {}),
+    });
+    res.json({
+      success: true,
+      ...(result as Record<string, unknown>),
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    res.status(400).json({ success: false, error: message });
+  }
 });
 
 app.get('/api/v1/agents/stats', (_req, res) => {
-  const stats = Array.from(agentDeployments.values()).map(d => ({
-    id: d.id,
-    name: d.config.name as string,
-    type: 'executor' as const,
-    status: d.status,
-    load: 0,
-    errorRate: 0,
-    requestCount: 0,
-    tokenUsage: 0,
-    workTime: 0,
-  }));
-  res.json(stats);
+  void agentRuntimeBlock.execute('runtime_view', {}).then((raw) => {
+    const snapshot = raw as { agents?: Array<{ id: string; name: string; type: string; status: string }> };
+    const stats = (snapshot.agents ?? []).map((item) => ({
+      id: item.id,
+      name: item.name,
+      type: item.type,
+      status: item.status,
+      load: 0,
+      errorRate: 0,
+      requestCount: 0,
+      tokenUsage: 0,
+      workTime: 0,
+    }));
+    res.json(stats);
+  }).catch((error: unknown) => {
+    const message = error instanceof Error ? error.message : String(error);
+    res.status(500).json({ error: message });
+  });
 });
 
 app.get('/api/v1/agents/:id/stats', (req, res) => {
-  const deployment = agentDeployments.get(req.params.id);
-  if (!deployment) {
-    res.status(404).json({ error: 'Agent deployment not found' });
-    return;
-  }
-  res.json({
-    id: deployment.id,
-    name: deployment.config.name,
-    type: 'executor' as const,
-    status: deployment.status,
-    load: 0,
-    errorRate: 0,
-    requestCount: 0,
-    tokenUsage: 0,
-    workTime: 0,
+  void agentRuntimeBlock.execute('runtime_view', {}).then((raw) => {
+    const snapshot = raw as { agents?: Array<{ id: string; name: string; type: string; status: string }> };
+    const agent = (snapshot.agents ?? []).find((item) => item.id === req.params.id);
+    if (!agent) {
+      res.status(404).json({ error: 'Agent deployment not found' });
+      return;
+    }
+    res.json({
+      id: agent.id,
+      name: agent.name,
+      type: agent.type,
+      status: agent.status,
+      load: 0,
+      errorRate: 0,
+      requestCount: 0,
+      tokenUsage: 0,
+      workTime: 0,
+    });
+  }).catch((error: unknown) => {
+    const message = error instanceof Error ? error.message : String(error);
+    res.status(500).json({ error: message });
   });
 });
 
@@ -3279,6 +2580,19 @@ function resolveBlockingErrorStatus(errorMessage: string): number {
   return 400;
 }
 
+function isDirectAgentRouteAllowed(req: Request): boolean {
+  if (ALLOW_DIRECT_AGENT_ROUTE) return true;
+  if (process.env.NODE_ENV === 'test') return true;
+  const mode = req.header('x-finger-route-mode');
+  return typeof mode === 'string' && mode.trim().toLowerCase() === 'test';
+}
+
+function isPrimaryOrchestratorTarget(target: string): boolean {
+  const normalized = target.trim();
+  if (normalized.length === 0) return false;
+  return normalized === PRIMARY_ORCHESTRATOR_TARGET || normalized === 'chat-codex';
+}
+
 // Modified message endpoint with mailbox integration
 app.post('/api/v1/message', async (req, res) => {
   const body = req.body as { target?: string; message?: unknown; blocking?: boolean; sender?: string; callbackId?: string };
@@ -3296,6 +2610,18 @@ app.post('/api/v1/message', async (req, res) => {
       },
     });
     res.status(400).json({ error: 'Missing target or message' });
+    return;
+  }
+
+  const sender = typeof body.sender === 'string' ? body.sender.trim().toLowerCase() : '';
+  const isCliRoute = sender === 'cli' || sender.startsWith('cli-');
+  if (!isPrimaryOrchestratorTarget(body.target) && !isCliRoute && !isDirectAgentRouteAllowed(req)) {
+    res.status(403).json({
+      error: `Direct target routing is disabled. Use primary orchestrator target: ${PRIMARY_ORCHESTRATOR_TARGET}`,
+      code: 'DIRECT_ROUTE_DISABLED',
+      target: body.target,
+      primaryTarget: PRIMARY_ORCHESTRATOR_TARGET,
+    });
     return;
   }
 

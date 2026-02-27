@@ -48,15 +48,29 @@ Body:
 - `providerId?: string`
 - `hard?: boolean`
 
+### 2.4 `POST /api/v1/agents/deploy`
+
+激活/启动 agent 到资源池（支持手动和编排器触发）。
+
+Body:
+- `targetAgentId?: string`
+- `targetImplementationId?: string`
+- `sessionId?: string`
+- `scope?: session | global`
+- `instanceCount?: number`
+- `launchMode?: manual | orchestrator`
+- `config?: object`
+
 ## 3. 标准工具调用
 
 已注册运行时工具：
 - `agent.list`
 - `agent.capabilities`
+- `agent.deploy`
 - `agent.dispatch`
 - `agent.control`
 
-默认 `chat-codex` 允许工具集合包含上述四个工具，并作为默认 role profile `orchestrator`。
+默认 `chat-codex` 允许工具集合包含上述五个工具，并作为默认 role profile `orchestrator`。
 
 ## 4. WS 事件
 
