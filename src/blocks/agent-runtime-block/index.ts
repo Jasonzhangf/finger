@@ -189,6 +189,38 @@ interface DispatchResult {
   queuePosition?: number;
 }
 
+function resolveTerminalAssignmentPhase(
+  assignment: AgentAssignmentLifecycle | undefined,
+  ok: boolean,
+  result?: unknown,
+): AgentAssignmentLifecycle | undefined {
+  if (!assignment) return undefined;
+  if (!ok) {
+    return { ...assignment, phase: 'failed' };
+  }
+  const record = isObjectRecord(result) ? result : {};
+  const reviewDecisionRaw = typeof record.reviewDecision === 'string'
+    ? record.reviewDecision
+    : typeof record.review_decision === 'string'
+      ? record.review_decision
+      : typeof record.reviewStatus === 'string'
+        ? record.reviewStatus
+        : typeof record.review_status === 'string'
+          ? record.review_status
+          : '';
+  const reviewDecision = reviewDecisionRaw.trim().toLowerCase();
+  if (reviewDecision === 'retry' || reviewDecision === 'rework' || reviewDecision === 'reject') {
+    return { ...assignment, phase: 'retry' };
+  }
+  if (reviewDecision === 'pass' || reviewDecision === 'passed' || reviewDecision === 'approved') {
+    return { ...assignment, phase: 'passed' };
+  }
+  if (reviewDecision === 'reviewing') {
+    return { ...assignment, phase: 'reviewing' };
+  }
+  return { ...assignment, phase: 'closed' };
+}
+
 interface WorkflowLike {
   id: string;
   sessionId: string;
@@ -988,7 +1020,7 @@ export class AgentRuntimeBlock extends BaseBlock {
             blocking,
             sessionId: input.sessionId,
             workflowId: input.workflowId,
-            assignment: this.withAssignmentPhase(assignment, 'closed'),
+            assignment: resolveTerminalAssignmentPhase(assignment, true, result),
             result,
           });
         })
@@ -1023,7 +1055,7 @@ export class AgentRuntimeBlock extends BaseBlock {
         blocking,
         sessionId: input.sessionId,
         workflowId: input.workflowId,
-        assignment: this.withAssignmentPhase(assignment, 'closed'),
+        assignment: resolveTerminalAssignmentPhase(assignment, true, result),
         result,
       });
       return { ok: true, dispatchId, status: 'completed', result, targetModuleId };

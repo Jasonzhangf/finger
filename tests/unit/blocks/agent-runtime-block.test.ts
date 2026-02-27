@@ -339,4 +339,40 @@ describe('AgentRuntimeBlock', () => {
       attempt: 2,
     }));
   });
+
+  it('maps reviewer decision to assignment terminal phase', async () => {
+    ctx.hubSendToModule.mockResolvedValueOnce({
+      success: true,
+      reviewDecision: 'retry',
+    });
+
+    await ctx.block.execute('deploy', {
+      targetAgentId: 'executor-a',
+      targetImplementationId: 'native-main',
+      sessionId: 'session-1',
+      instanceCount: 1,
+      launchMode: 'orchestrator',
+    });
+
+    await ctx.block.execute('dispatch', {
+      sourceAgentId: 'chat-codex',
+      targetAgentId: 'executor-a',
+      task: { text: 'task with review decision', taskId: 'task-r1' },
+      blocking: true,
+      assignment: {
+        taskId: 'task-r1',
+        assignerAgentId: 'chat-codex',
+        assigneeAgentId: 'executor-a',
+      },
+    });
+
+    const completedEvent = ctx.emittedEvents.mock.calls
+      .map((call) => call[0])
+      .find((event: any) => event?.type === 'agent_runtime_dispatch' && event?.payload?.status === 'completed');
+    expect(completedEvent).toBeDefined();
+    expect(completedEvent.payload.assignment).toEqual(expect.objectContaining({
+      taskId: 'task-r1',
+      phase: 'retry',
+    }));
+  });
 });
