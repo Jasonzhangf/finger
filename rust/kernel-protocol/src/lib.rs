@@ -42,6 +42,8 @@ pub struct UserTurnOptions {
     #[serde(default)]
     pub history_items: Vec<Value>,
     #[serde(default)]
+    pub developer_instructions: Option<String>,
+    #[serde(default)]
     pub user_instructions: Option<String>,
     #[serde(default)]
     pub environment_context: Option<String>,
@@ -67,6 +69,7 @@ impl UserTurnOptions {
             && options.session_id.is_none()
             && options.mode.is_none()
             && options.history_items.is_empty()
+            && options.developer_instructions.is_none()
             && options.user_instructions.is_none()
             && options.environment_context.is_none()
             && options.turn_context.is_none()

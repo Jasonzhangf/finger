@@ -119,6 +119,7 @@ interface KernelUserTurnOptions {
   session_id?: string;
   mode?: string;
   history_items?: Array<Record<string, unknown>>;
+  developer_instructions?: string;
   user_instructions?: string;
   environment_context?: string;
   turn_context?: {
@@ -1454,7 +1455,6 @@ function buildKernelUserTurnOptions(
 
   if (context?.systemPrompt && context.systemPrompt.trim().length > 0) {
     options.system_prompt = context.systemPrompt.trim();
-    options.user_instructions = context.systemPrompt.trim();
   }
 
   if (context?.sessionId && context.sessionId.trim().length > 0) {
@@ -1467,6 +1467,16 @@ function buildKernelUserTurnOptions(
   const historyItems = resolveHistoryItems(context?.history, metadata);
   if (historyItems.length > 0) {
     options.history_items = historyItems;
+  }
+
+  const developerInstructions = resolveDeveloperInstructions(metadata);
+  if (developerInstructions) {
+    options.developer_instructions = developerInstructions;
+  }
+
+  const userInstructions = resolveUserInstructions(metadata);
+  if (userInstructions) {
+    options.user_instructions = userInstructions;
   }
 
   const turnContext = resolveTurnContext(metadata);
@@ -1525,6 +1535,7 @@ function buildKernelUserTurnOptions(
     !options.session_id &&
     !options.mode &&
     !options.history_items &&
+    !options.developer_instructions &&
     !options.user_instructions &&
     !options.environment_context &&
     !options.turn_context &&
@@ -1606,6 +1617,40 @@ function resolveHistoryItems(
     }));
 }
 
+function resolveDeveloperInstructions(
+  metadata: Record<string, unknown> | undefined,
+): string | undefined {
+  const explicit = parseOptionalString(metadata?.developerInstructions)
+    ?? parseOptionalString(metadata?.developer_instructions);
+  const collaborationMode = parseOptionalString(metadata?.collaborationMode)
+    ?? parseOptionalString(metadata?.collaboration_mode);
+  const modelSwitchHint = parseOptionalString(metadata?.modelSwitchHint)
+    ?? parseOptionalString(metadata?.model_switch_hint);
+
+  const hints: string[] = [];
+  if (collaborationMode) hints.push(`collaboration_mode=${collaborationMode}`);
+  if (modelSwitchHint) hints.push(`model_switch_hint=${modelSwitchHint}`);
+
+  if (!explicit && hints.length === 0) return undefined;
+  if (!explicit) return hints.join('\n');
+  if (hints.length === 0) return explicit;
+  return `${hints.join('\n')}\n${explicit}`;
+}
+
+function resolveUserInstructions(
+  metadata: Record<string, unknown> | undefined,
+): string | undefined {
+  const candidates = [
+    parseOptionalString(metadata?.agentsInstructions),
+    parseOptionalString(metadata?.agents_instructions),
+    parseOptionalString(metadata?.userInstructions),
+    parseOptionalString(metadata?.user_instructions),
+  ].filter((item): item is string => typeof item === 'string' && item.trim().length > 0);
+  if (candidates.length === 0) return undefined;
+  const merged = Array.from(new Set(candidates.map((item) => item.trim())));
+  return merged.join('\n\n');
+}
+
 function resolveTurnContext(
   metadata: Record<string, unknown> | undefined,
 ): KernelUserTurnOptions['turn_context'] | undefined {
@@ -1632,8 +1677,6 @@ function resolveEnvironmentContext(
 
   const lines = [
     `cwd=${turnContext.cwd ?? process.cwd()}`,
-    `approval=${turnContext.approval ?? 'never'}`,
-    `sandbox=${turnContext.sandbox ?? 'danger-full-access'}`,
     `shell=${process.env.SHELL ?? 'unknown'}`,
   ];
   if (turnContext.model) lines.push(`model=${turnContext.model}`);

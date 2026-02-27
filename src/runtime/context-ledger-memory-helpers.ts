@@ -126,7 +126,8 @@ export async function safeReadText(filePath: string): Promise<string> {
 
 export function containsPromptLikeBlock(text: string): boolean {
   const lowered = text.toLowerCase();
-  return lowered.includes('<user_instructions>')
+  return lowered.includes('<developer_instructions>')
+    || lowered.includes('<user_instructions>')
     || lowered.includes('<environment_context>')
     || lowered.includes('<turn_context>')
     || lowered.includes('<context_ledger_focus>')

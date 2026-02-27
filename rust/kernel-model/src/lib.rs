@@ -117,6 +117,7 @@ impl ResponsesChatEngine {
                     &mut rolling_input,
                     "context_ledger_focus",
                     Some(recall_block.as_str()),
+                    "user",
                 );
                 safe_append_ledger(
                     ledger,
@@ -1369,17 +1370,31 @@ fn build_initial_input(
 
     maybe_inject_context_block(
         &mut input,
+        "developer_instructions",
+        options.developer_instructions.as_deref(),
+        "developer",
+    );
+    if let Some(turn_context_text) = render_turn_context_block(options.turn_context.as_ref()) {
+        maybe_inject_context_block(
+            &mut input,
+            "turn_context",
+            Some(turn_context_text.as_str()),
+            "developer",
+        );
+    }
+
+    maybe_inject_context_block(
+        &mut input,
         "user_instructions",
         options.user_instructions.as_deref(),
+        "user",
     );
     maybe_inject_context_block(
         &mut input,
         "environment_context",
         options.environment_context.as_deref(),
+        "user",
     );
-    if let Some(turn_context_text) = render_turn_context_block(options.turn_context.as_ref()) {
-        maybe_inject_context_block(&mut input, "turn_context", Some(turn_context_text.as_str()));
-    }
 
     input.push(build_user_message_input(items)?);
     Ok(input)
@@ -1393,7 +1408,12 @@ fn normalize_history_items(history_items: &[Value]) -> Vec<Value> {
         .collect()
 }
 
-fn maybe_inject_context_block(input: &mut Vec<Value>, block_name: &str, content: Option<&str>) {
+fn maybe_inject_context_block(
+    input: &mut Vec<Value>,
+    block_name: &str,
+    content: Option<&str>,
+    role: &str,
+) {
     let Some(raw_content) = content else {
         return;
     };
@@ -1405,7 +1425,7 @@ fn maybe_inject_context_block(input: &mut Vec<Value>, block_name: &str, content:
     if history_contains_block(input, block_name, &block) {
         return;
     }
-    input.push(build_text_user_message(block));
+    input.push(build_text_message(role, block));
 }
 
 fn history_contains_block(history: &[Value], block_name: &str, full_block_text: &str) -> bool {
@@ -1417,9 +1437,9 @@ fn history_contains_block(history: &[Value], block_name: &str, full_block_text: 
     })
 }
 
-fn build_text_user_message(text: String) -> Value {
+fn build_text_message(role: &str, text: String) -> Value {
     json!({
-        "role": "user",
+        "role": role,
         "content": [
             {
                 "type": "input_text",
@@ -1668,7 +1688,8 @@ fn compact_history(history: &[Value], compact_cfg: Option<&CompactConfig>) -> Co
 }
 
 fn is_initial_context_block(text: &str) -> bool {
-    text.contains("<user_instructions>")
+    text.contains("<developer_instructions>")
+        || text.contains("<user_instructions>")
         || text.contains("<environment_context>")
         || text.contains("<turn_context>")
         || text.contains("<context_ledger_focus>")
@@ -2032,6 +2053,66 @@ mod tests {
         assert_eq!(result.len(), 1);
         let image_url = result[0]["image_url"].as_str().expect("image_url");
         assert!(image_url.starts_with("data:image/png;base64,"));
+    }
+
+    #[test]
+    fn build_initial_input_partitions_context_into_developer_and_user_blocks() {
+        let options = UserTurnOptions {
+            developer_instructions: Some("permissions=sandboxed".to_string()),
+            user_instructions: Some("# AGENTS.md instructions for /repo".to_string()),
+            environment_context: Some("cwd=/repo".to_string()),
+            turn_context: Some(TurnContext {
+                cwd: Some("/repo".to_string()),
+                approval: Some("never".to_string()),
+                sandbox: Some("danger-full-access".to_string()),
+                model: Some("gpt-5.3-codex".to_string()),
+            }),
+            ..UserTurnOptions::default()
+        };
+
+        let input = build_initial_input(
+            &[InputItem::Text {
+                text: "hello".to_string(),
+            }],
+            &options,
+        )
+        .expect("build initial input");
+
+        assert_eq!(input.len(), 5);
+        assert_eq!(input[0]["role"], "developer");
+        assert_eq!(input[1]["role"], "developer");
+        assert_eq!(input[2]["role"], "user");
+        assert_eq!(input[3]["role"], "user");
+        assert_eq!(input[4]["role"], "user");
+
+        let first_text = input[0]["content"][0]["text"]
+            .as_str()
+            .expect("developer instructions text");
+        let second_text = input[1]["content"][0]["text"]
+            .as_str()
+            .expect("turn context text");
+        let third_text = input[2]["content"][0]["text"]
+            .as_str()
+            .expect("user instructions text");
+        let fourth_text = input[3]["content"][0]["text"]
+            .as_str()
+            .expect("environment context text");
+        let user_input_text = input[4]["content"][0]["text"]
+            .as_str()
+            .expect("user input text");
+
+        assert!(first_text.contains("<developer_instructions>"));
+        assert!(second_text.contains("<turn_context>"));
+        assert!(third_text.contains("<user_instructions>"));
+        assert!(fourth_text.contains("<environment_context>"));
+        assert_eq!(user_input_text, "hello");
+    }
+
+    #[test]
+    fn initial_context_block_detection_includes_developer_instructions() {
+        assert!(is_initial_context_block(
+            "<developer_instructions>\npolicy\n</developer_instructions>"
+        ));
     }
 
     #[test]

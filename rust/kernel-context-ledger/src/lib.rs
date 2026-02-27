@@ -583,7 +583,8 @@ fn build_preview(input: &str, max_chars: usize) -> String {
 
 fn contains_prompt_like_block(text: &str) -> bool {
     let lowered = text.to_lowercase();
-    lowered.contains("<user_instructions>")
+    lowered.contains("<developer_instructions>")
+        || lowered.contains("<user_instructions>")
         || lowered.contains("<environment_context>")
         || lowered.contains("<turn_context>")
         || lowered.contains("<context_ledger_focus>")
