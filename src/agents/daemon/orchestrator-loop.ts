@@ -3,7 +3,6 @@
  */
 
 import { Agent } from '../agent.js';
-import { ReviewerRole } from '../roles/reviewer.js';
 import { BdTools } from '../shared/bd-tools.js';
 import { createSnapshotLogger, SnapshotLogger } from '../shared/snapshot-logger.js';
 import { MessageHub } from '../../orchestration/message-hub.js';
@@ -42,6 +41,8 @@ export interface TaskNode {
   id: string;
   description: string;
   status: 'pending' | 'ready' | 'in_progress' | 'completed' | 'failed';
+  attempt?: number;
+  maxAttempts?: number;
   assignee?: string;
   result?: { taskId: string; success: boolean; output?: string; error?: string };
   bdTaskId?: string;
@@ -55,8 +56,8 @@ export interface OrchestratorLoopConfig {
   systemPrompt?: string;
   cwd?: string;
   maxRounds?: number;
-  enableReview?: boolean;
   targetExecutorId?: string;
+  targetReviewerId?: string;
   sessionId?: string;
 }
 
@@ -102,11 +103,14 @@ interface LoopState extends ReActState {
   round: number;
   hub: MessageHub;
   targetExecutorId: string;
+  targetReviewerId: string;
   highDesign?: { architecture: string; techStack: string[]; modules: string[]; rationale?: string };
   detailDesign?: { interfaces: string[]; dataModels: string[]; implementation: string };
   deliverables?: { acceptanceCriteria: string[]; testRequirements: string[]; artifacts: string[] };
   phaseHistory?: Array<{ phase: OrchestratorPhase; timestamp: string; action: string; checkpointId?: string }>;
 }
+
+const MAX_ASSIGNMENT_ATTEMPTS = 3;
 
 export function createOrchestratorLoop(
   config: OrchestratorLoopConfig,
@@ -217,6 +221,83 @@ Agent 的能力由其拥有的工具决定：
         ...(params.error ? { error: params.error } : {}),
       },
     } as any);
+  };
+
+  const isObjectRecord = (value: unknown): value is Record<string, unknown> => (
+    typeof value === 'object' && value !== null
+  );
+
+  const pushUnique = (items: string[], item: string): void => {
+    if (!items.includes(item)) {
+      items.push(item);
+    }
+  };
+
+  const normalizeExecutionResult = (
+    rawResult: unknown,
+  ): { success: boolean; output?: string; error?: string; raw: unknown } => {
+    const record = isObjectRecord(rawResult) ? rawResult : {};
+    const nested = isObjectRecord(record.result) ? record.result : null;
+    const source = nested ?? record;
+    const success = source.success !== false;
+    const output = typeof source.output === 'string'
+      ? source.output
+      : typeof source.result === 'string'
+        ? source.result
+        : undefined;
+    const error = typeof source.error === 'string' ? source.error : undefined;
+    return { success, output, error, raw: source };
+  };
+
+  const runReviewerNode = async (
+    state: LoopState,
+    task: TaskNode,
+    assigneeId: string,
+    executionResult: { success: boolean; output?: string; error?: string },
+  ): Promise<{ decision: 'pass' | 'retry'; reviewResult?: unknown; feedback?: string }> => {
+    if (!state.targetReviewerId) {
+      return { decision: executionResult.success ? 'pass' : 'retry' };
+    }
+
+    try {
+      const raw = await state.hub.sendToModule(state.targetReviewerId, {
+        epicId: state.epicId,
+        tasks: [{ id: task.id, description: task.description }],
+        results: [{
+          taskId: task.id,
+          success: executionResult.success,
+          output: executionResult.output,
+          error: executionResult.error,
+          assignee: assigneeId,
+        }],
+      });
+      const wrapper = isObjectRecord(raw) ? raw : {};
+      const reviewResult = isObjectRecord(wrapper.result) ? wrapper.result : wrapper;
+      const reviewDecision = typeof reviewResult.reviewDecision === 'string'
+        ? reviewResult.reviewDecision.toLowerCase()
+        : typeof reviewResult.review_status === 'string'
+          ? reviewResult.review_status.toLowerCase()
+          : '';
+      const passed = reviewResult.passed === true
+        || reviewResult.approved === true
+        || reviewDecision === 'pass'
+        || reviewDecision === 'passed'
+        || reviewDecision === 'approved';
+      if (passed && executionResult.success) {
+        return { decision: 'pass', reviewResult };
+      }
+      const feedback = typeof reviewResult.comments === 'string'
+        ? reviewResult.comments
+        : typeof reviewResult.feedback === 'string'
+          ? reviewResult.feedback
+          : undefined;
+      return { decision: 'retry', reviewResult, feedback };
+    } catch (error) {
+      return {
+        decision: 'retry',
+        feedback: error instanceof Error ? error.message : String(error),
+      };
+    }
   };
 
   // Helper: Create checkpoint for current state
@@ -346,6 +427,9 @@ Agent 的能力由其拥有的工具决定：
         if (!target) {
           return { success: false, observation: `DISPATCH failed: task not ready (${taskId})`, error: 'task not ready' };
         }
+        const attempt = Math.max(1, (target.attempt ?? 0) + 1);
+        const maxAttempts = Math.max(1, target.maxAttempts ?? MAX_ASSIGNMENT_ATTEMPTS);
+        target.attempt = attempt;
         target.status = 'in_progress';
         target.assignee = state.targetExecutorId;
         globalEventBus.emit({
@@ -364,7 +448,7 @@ Agent 的能力由其拥有的工具决定：
           assignerAgentId: config.id,
           assigneeAgentId: state.targetExecutorId,
           phase: 'started' as const,
-          attempt: 1,
+          attempt,
         };
         emitDispatchLifecycle({
           dispatchId,
@@ -375,23 +459,52 @@ Agent 的能力由其拥有的工具决定：
           workflowId: state.epicId,
           assignment,
         });
-        const rawResult = await state.hub.sendToModule(state.targetExecutorId, {
+        let executionResult: { success: boolean; output?: string; error?: string; raw: unknown };
+        try {
+          const rawResult = await state.hub.sendToModule(state.targetExecutorId, {
+            taskId: target.id,
+            description: target.description,
+            bdTaskId: target.bdTaskId,
+            metadata: {
+              assignment,
+              sourceAgentId: config.id,
+              targetAgentId: state.targetExecutorId,
+              dispatchId,
+              orchestration: true,
+            },
+          });
+          executionResult = normalizeExecutionResult(rawResult);
+        } catch (error) {
+          executionResult = {
+            success: false,
+            error: error instanceof Error ? error.message : String(error),
+            raw: null,
+          };
+        }
+        target.result = {
           taskId: target.id,
-          description: target.description,
-          bdTaskId: target.bdTaskId,
-          metadata: {
-            assignment,
-            sourceAgentId: config.id,
-            targetAgentId: state.targetExecutorId,
-            dispatchId,
-            orchestration: true,
-          },
+          success: executionResult.success,
+          output: executionResult.output,
+          error: executionResult.error,
+        };
+        emitDispatchLifecycle({
+          dispatchId,
+          sourceAgentId: config.id,
+          targetAgentId: state.targetExecutorId,
+          status: 'queued',
+          sessionId: config.sessionId || state.epicId,
+          workflowId: state.epicId,
+          assignment: { ...assignment, phase: 'reviewing' },
+          result: executionResult.raw,
         });
-        const result = rawResult as { success?: boolean; output?: string; error?: string; result?: string };
-        target.result = { taskId: target.id, success: result.success !== false, output: result.output || result.result, error: result.error };
-        if (target.result.success) {
+        const review = await runReviewerNode(state, target, state.targetExecutorId, {
+          success: executionResult.success,
+          output: executionResult.output,
+          error: executionResult.error,
+        });
+        if (review.decision === 'pass') {
           target.status = 'completed';
-          state.completedTasks.push(target.id);
+          pushUnique(state.completedTasks, target.id);
           emitDispatchLifecycle({
             dispatchId,
             sourceAgentId: config.id,
@@ -399,8 +512,12 @@ Agent 的能力由其拥有的工具决定：
             status: 'completed',
             sessionId: config.sessionId || state.epicId,
             workflowId: state.epicId,
-            assignment: { ...assignment, phase: 'closed' },
-            result,
+            assignment: { ...assignment, phase: 'passed' },
+            result: {
+              execution: executionResult.raw,
+              review: review.reviewResult,
+              reviewDecision: 'pass',
+            },
           });
           globalEventBus.emit({
             type: 'task_completed',
@@ -411,28 +528,56 @@ Agent 的能力由其拥有的工具决定：
             payload: { result: target.result.output },
           });
         } else {
-          target.status = 'failed';
-          state.failedTasks.push(target.id);
-          state.lastError = target.result.error || 'unknown error';
-          await registry.execute('CHECKPOINT', { trigger: 'task_failure' }, { state });
-          emitDispatchLifecycle({
-            dispatchId,
-            sourceAgentId: config.id,
-            targetAgentId: state.targetExecutorId,
-            status: 'failed',
-            sessionId: config.sessionId || state.epicId,
-            workflowId: state.epicId,
-            assignment: { ...assignment, phase: 'failed' },
-            error: target.result.error || 'unknown error',
-          });
-          globalEventBus.emit({
-            type: 'task_failed',
-            sessionId: config.sessionId || state.epicId,
-            taskId: target.id,
-            agentId: state.targetExecutorId,
-            timestamp: new Date().toISOString(),
-            payload: { error: target.result.error || 'unknown error' },
-          });
+          const retryError = review.feedback || target.result.error || 'review requested retry';
+          if (attempt < maxAttempts) {
+            target.status = 'ready';
+            target.assignee = undefined;
+            target.result = { ...target.result, success: false, error: retryError };
+            state.lastError = retryError;
+            emitDispatchLifecycle({
+              dispatchId,
+              sourceAgentId: config.id,
+              targetAgentId: state.targetExecutorId,
+              status: 'failed',
+              sessionId: config.sessionId || state.epicId,
+              workflowId: state.epicId,
+              assignment: { ...assignment, phase: 'retry' },
+              error: retryError,
+              result: {
+                execution: executionResult.raw,
+                review: review.reviewResult,
+                reviewDecision: 'retry',
+              },
+            });
+          } else {
+            target.status = 'failed';
+            pushUnique(state.failedTasks, target.id);
+            state.lastError = retryError;
+            await registry.execute('CHECKPOINT', { trigger: 'task_failure' }, { state });
+            emitDispatchLifecycle({
+              dispatchId,
+              sourceAgentId: config.id,
+              targetAgentId: state.targetExecutorId,
+              status: 'failed',
+              sessionId: config.sessionId || state.epicId,
+              workflowId: state.epicId,
+              assignment: { ...assignment, phase: 'failed' },
+              error: retryError,
+              result: {
+                execution: executionResult.raw,
+                review: review.reviewResult,
+                reviewDecision: 'failed',
+              },
+            });
+            globalEventBus.emit({
+              type: 'task_failed',
+              sessionId: config.sessionId || state.epicId,
+              taskId: target.id,
+              agentId: state.targetExecutorId,
+              timestamp: new Date().toISOString(),
+              payload: { error: retryError },
+            });
+          }
         }
         const progress = state.taskGraph.length > 0 ? (state.completedTasks.length / state.taskGraph.length) * 100 : 0;
         globalEventBus.emit({
@@ -441,7 +586,21 @@ Agent 的能力由其拥有的工具决定：
           timestamp: new Date().toISOString(),
           payload: { overallProgress: progress, activeAgents: [config.id, state.targetExecutorId], pendingTasks: state.taskGraph.length - state.completedTasks.length - state.failedTasks.length, completedTasks: state.completedTasks.length, failedTasks: state.failedTasks.length },
         });
-        return { success: target.result.success, observation: target.result.success ? `任务 ${target.id} 已派发并执行成功` : `任务 ${target.id} 派发后执行失败: ${target.result.error || 'unknown error'}`, error: target.result.success ? undefined : target.result.error };
+        if (target.status === 'completed') {
+          return { success: true, observation: `任务 ${target.id} 已通过 reviewer 审核并完成` };
+        }
+        if (target.status === 'ready') {
+          return {
+            success: false,
+            observation: `任务 ${target.id} reviewer 要求重试 (${attempt}/${maxAttempts}): ${target.result?.error || 'unknown error'}`,
+            error: target.result?.error,
+          };
+        }
+        return {
+          success: false,
+          observation: `任务 ${target.id} 达到最大重试次数后失败: ${target.result?.error || 'unknown error'}`,
+          error: target.result?.error,
+        };
       }
 
 
@@ -604,6 +763,11 @@ Agent 的能力由其拥有的工具决定：
         const dispatchPromises = allowedTasks.map(async ({ task, requirements, decision }) => {
           const resourceIds = decision.resourceAllocation?.resourceIds || [];
           const targetExecutorId = resourceIds[0] || state.targetExecutorId;
+          const attempt = Math.max(1, (task.attempt ?? 0) + 1);
+          const maxAttempts = Math.max(1, task.maxAttempts ?? MAX_ASSIGNMENT_ATTEMPTS);
+          task.attempt = attempt;
+          task.status = 'in_progress';
+          task.assignee = targetExecutorId;
           
           // Mark task as started in scheduler
           concurrencyScheduler.startTask(task.id, resourceIds);
@@ -622,7 +786,7 @@ Agent 的能力由其拥有的工具决定：
               assignerAgentId: config.id,
               assigneeAgentId: targetExecutorId,
               phase: 'started' as const,
-              attempt: 1,
+              attempt,
             };
             emitDispatchLifecycle({
               dispatchId,
@@ -656,13 +820,28 @@ Agent 的能力由其拥有的工具决定：
                 orchestration: true,
               },
             });
-            const result = rawResult as { success?: boolean; output?: string; error?: string };
-            
-            task.result = { taskId: task.id, success: result.success !== false, output: result.output, error: result.error };
-            
-            if (result.success !== false) {
+            const executionResult = normalizeExecutionResult(rawResult);
+            task.result = { taskId: task.id, success: executionResult.success, output: executionResult.output, error: executionResult.error };
+            emitDispatchLifecycle({
+              dispatchId,
+              sourceAgentId: config.id,
+              targetAgentId: targetExecutorId,
+              status: 'queued',
+              sessionId: config.sessionId || state.epicId,
+              workflowId: state.epicId,
+              assignment: { ...assignment, phase: 'reviewing' },
+              result: executionResult.raw,
+            });
+
+            const review = await runReviewerNode(state, task, targetExecutorId, {
+              success: executionResult.success,
+              output: executionResult.output,
+              error: executionResult.error,
+            });
+
+            if (review.decision === 'pass') {
               task.status = 'completed';
-              state.completedTasks.push(task.id);
+              pushUnique(state.completedTasks, task.id);
               resourcePool.releaseResources(task.id, 'completed');
               concurrencyScheduler.completeTask(task.id, true);
               emitDispatchLifecycle({
@@ -672,8 +851,12 @@ Agent 的能力由其拥有的工具决定：
                 status: 'completed',
                 sessionId: config.sessionId || state.epicId,
                 workflowId: state.epicId,
-                assignment: { ...assignment, phase: 'closed' },
-                result,
+                assignment: { ...assignment, phase: 'passed' },
+                result: {
+                  execution: executionResult.raw,
+                  review: review.reviewResult,
+                  reviewDecision: 'pass',
+                },
               });
               
               if (state.executionLoopId) {
@@ -689,11 +872,16 @@ Agent 的能力由其拥有的工具决定：
                 payload: { result: task.result.output },
               });
               
-              return { taskId: task.id, success: true, result };
-            } else {
-              task.status = 'failed';
-              state.failedTasks.push(task.id);
-              resourcePool.releaseResources(task.id, 'error');
+              return { taskId: task.id, success: true, result: executionResult.raw };
+            }
+
+            const retryError = review.feedback || task.result.error || 'review requested retry';
+            if (attempt < maxAttempts) {
+              task.status = 'ready';
+              task.assignee = undefined;
+              task.result = { ...task.result, success: false, error: retryError };
+              state.lastError = retryError;
+              resourcePool.releaseResources(task.id, 'retry');
               concurrencyScheduler.completeTask(task.id, false);
               emitDispatchLifecycle({
                 dispatchId,
@@ -702,8 +890,40 @@ Agent 的能力由其拥有的工具决定：
                 status: 'failed',
                 sessionId: config.sessionId || state.epicId,
                 workflowId: state.epicId,
+                assignment: { ...assignment, phase: 'retry' },
+                error: retryError,
+                result: {
+                  execution: executionResult.raw,
+                  review: review.reviewResult,
+                  reviewDecision: 'retry',
+                },
+              });
+              if (state.executionLoopId) {
+                completeExecNode(state.executionLoopId, task.id, false);
+              }
+              return { taskId: task.id, success: false, retry: true, error: retryError };
+            }
+
+              task.status = 'failed';
+              pushUnique(state.failedTasks, task.id);
+              state.lastError = retryError;
+              resourcePool.releaseResources(task.id, 'error');
+              concurrencyScheduler.completeTask(task.id, false);
+              await registry.execute('CHECKPOINT', { trigger: 'task_failure' }, { state });
+              emitDispatchLifecycle({
+                dispatchId,
+                sourceAgentId: config.id,
+                targetAgentId: targetExecutorId,
+                status: 'failed',
+                sessionId: config.sessionId || state.epicId,
+                workflowId: state.epicId,
                 assignment: { ...assignment, phase: 'failed' },
-                error: result.error || 'unknown error',
+                error: retryError,
+                result: {
+                  execution: executionResult.raw,
+                  review: review.reviewResult,
+                  reviewDecision: 'failed',
+                },
               });
               
               if (state.executionLoopId) {
@@ -716,16 +936,24 @@ Agent 的能力由其拥有的工具决定：
                 taskId: task.id,
                 agentId: targetExecutorId,
                 timestamp: new Date().toISOString(),
-                payload: { error: task.result.error || 'unknown error' },
+                payload: { error: retryError },
               });
               
-              return { taskId: task.id, success: false, error: result.error };
-            }
+              return { taskId: task.id, success: false, error: retryError };
           } catch (err) {
-            task.status = 'failed';
-            task.result = { taskId: task.id, success: false, error: String(err) };
-            state.failedTasks.push(task.id);
-            resourcePool.releaseResources(task.id, 'error');
+            const executionError = err instanceof Error ? err.message : String(err);
+            task.result = { taskId: task.id, success: false, error: executionError };
+            state.lastError = executionError;
+            const shouldRetry = attempt < maxAttempts;
+            if (shouldRetry) {
+              task.status = 'ready';
+              task.assignee = undefined;
+            } else {
+              task.status = 'failed';
+              pushUnique(state.failedTasks, task.id);
+              await registry.execute('CHECKPOINT', { trigger: 'task_failure' }, { state });
+            }
+            resourcePool.releaseResources(task.id, shouldRetry ? 'retry' : 'error');
             concurrencyScheduler.completeTask(task.id, false);
             emitDispatchLifecycle({
               dispatchId: `dispatch-${task.id}-${Date.now()}`,
@@ -740,17 +968,28 @@ Agent 的能力由其拥有的工具决定：
                 bdTaskId: task.bdTaskId,
                 assignerAgentId: config.id,
                 assigneeAgentId: targetExecutorId,
-                phase: 'failed',
-                attempt: 1,
+                phase: shouldRetry ? 'retry' : 'failed',
+                attempt,
               },
-              error: String(err),
+              error: executionError,
             });
             
             if (state.executionLoopId) {
               completeExecNode(state.executionLoopId, task.id, false);
             }
             
-            return { taskId: task.id, success: false, error: String(err) };
+            if (!shouldRetry) {
+              globalEventBus.emit({
+                type: 'task_failed',
+                sessionId: config.sessionId || state.epicId,
+                taskId: task.id,
+                agentId: targetExecutorId,
+                timestamp: new Date().toISOString(),
+                payload: { error: executionError },
+              });
+            }
+
+            return { taskId: task.id, success: false, retry: shouldRetry, error: executionError };
           }
         });
         
@@ -844,6 +1083,9 @@ Agent 的能力由其拥有的工具决定：
           
           if (!depsResolved) continue;
           
+          const attempt = Math.max(1, (task.attempt ?? 0) + 1);
+          const maxAttempts = Math.max(1, task.maxAttempts ?? MAX_ASSIGNMENT_ATTEMPTS);
+          task.attempt = attempt;
           task.status = 'in_progress';
           task.assignee = targetExecutorId;
           
@@ -856,7 +1098,7 @@ Agent 的能力由其拥有的工具决定：
               assignerAgentId: config.id,
               assigneeAgentId: targetExecutorId,
               phase: 'started' as const,
-              attempt: 1,
+              attempt,
             };
             emitDispatchLifecycle({
               dispatchId,
@@ -879,10 +1121,27 @@ Agent 的能力由其拥有的工具决定：
                 orchestration: true,
               },
             });
-            
-            if ((result as { success?: boolean }).success !== false) {
+            const executionResult = normalizeExecutionResult(result);
+            task.result = { taskId, success: executionResult.success, output: executionResult.output, error: executionResult.error };
+            emitDispatchLifecycle({
+              dispatchId,
+              sourceAgentId: config.id,
+              targetAgentId: targetExecutorId,
+              status: 'queued',
+              sessionId: config.sessionId || state.epicId,
+              workflowId: state.epicId,
+              assignment: { ...assignment, phase: 'reviewing' },
+              result: executionResult.raw,
+            });
+            const review = await runReviewerNode(state, task, targetExecutorId, {
+              success: executionResult.success,
+              output: executionResult.output,
+              error: executionResult.error,
+            });
+
+            if (review.decision === 'pass') {
               task.status = 'completed';
-              state.completedTasks.push(taskId);
+              pushUnique(state.completedTasks, taskId);
               state.blockedTasks = state.blockedTasks.filter(id => id !== taskId);
               emitDispatchLifecycle({
                 dispatchId,
@@ -891,11 +1150,44 @@ Agent 的能力由其拥有的工具决定：
                 status: 'completed',
                 sessionId: config.sessionId || state.epicId,
                 workflowId: state.epicId,
-                assignment: { ...assignment, phase: 'closed' },
-                result,
+                assignment: { ...assignment, phase: 'passed' },
+                result: {
+                  execution: executionResult.raw,
+                  review: review.reviewResult,
+                  reviewDecision: 'pass',
+                },
               });
               handledCount++;
             } else {
+              const retryError = review.feedback || task.result.error || 'review requested retry';
+              if (attempt < maxAttempts) {
+                task.status = 'ready';
+                task.assignee = undefined;
+                task.result = { ...task.result, success: false, error: retryError };
+                state.lastError = retryError;
+                state.blockedTasks = state.blockedTasks.filter(id => id !== taskId);
+                emitDispatchLifecycle({
+                  dispatchId,
+                  sourceAgentId: config.id,
+                  targetAgentId: targetExecutorId,
+                  status: 'failed',
+                  sessionId: config.sessionId || state.epicId,
+                  workflowId: state.epicId,
+                  assignment: { ...assignment, phase: 'retry' },
+                  error: retryError,
+                  result: {
+                    execution: executionResult.raw,
+                    review: review.reviewResult,
+                    reviewDecision: 'retry',
+                  },
+                });
+                continue;
+              }
+              task.status = 'failed';
+              pushUnique(state.failedTasks, taskId);
+              state.lastError = retryError;
+              await registry.execute('CHECKPOINT', { trigger: 'task_failure' }, { state });
+              state.blockedTasks = state.blockedTasks.filter(id => id !== taskId);
               emitDispatchLifecycle({
                 dispatchId,
                 sourceAgentId: config.id,
@@ -904,10 +1196,28 @@ Agent 的能力由其拥有的工具决定：
                 sessionId: config.sessionId || state.epicId,
                 workflowId: state.epicId,
                 assignment: { ...assignment, phase: 'failed' },
-                error: (result as { error?: string }).error || 'unknown error',
+                error: retryError,
+                result: {
+                  execution: executionResult.raw,
+                  review: review.reviewResult,
+                  reviewDecision: 'failed',
+                },
               });
             }
-          } catch {
+          } catch (error) {
+            const executionError = error instanceof Error ? error.message : String(error);
+            const shouldRetry = attempt < maxAttempts;
+            task.result = { taskId, success: false, error: executionError };
+            state.lastError = executionError;
+            if (shouldRetry) {
+              task.status = 'ready';
+              task.assignee = undefined;
+            } else {
+              task.status = 'failed';
+              pushUnique(state.failedTasks, taskId);
+              await registry.execute('CHECKPOINT', { trigger: 'task_failure' }, { state });
+              state.blockedTasks = state.blockedTasks.filter(id => id !== taskId);
+            }
             emitDispatchLifecycle({
               dispatchId: `dispatch-${taskId}-${Date.now()}`,
               sourceAgentId: config.id,
@@ -921,10 +1231,10 @@ Agent 的能力由其拥有的工具决定：
                 bdTaskId: task.bdTaskId,
                 assignerAgentId: config.id,
                 assigneeAgentId: targetExecutorId,
-                phase: 'failed',
-                attempt: 1,
+                phase: shouldRetry ? 'retry' : 'failed',
+                attempt,
               },
-              error: 'dispatch failed',
+              error: executionError,
             });
             // Keep in blockedTasks
           }
@@ -1181,11 +1491,8 @@ async function runLoop(userTask: string): Promise<unknown> {
       console.log(`[Orchestrator] Restored: phase=${resumedPhase}, tasks=${initialTaskGraph.length}, completed=${initialCompletedTasks.length}, failed=${initialFailedTasks.length}`);
     }
     
-   const reviewer = config.enableReview ? new ReviewerRole({ id: `${config.id}-reviewer`, name: `${config.name} Reviewer`, mode: config.mode, cwd: config.cwd }) : undefined;
-   if (reviewer) await reviewer.initialize();
     const loopConfig: LoopConfig = {
       planner: { agent, actionRegistry: registry },
-      reviewer: reviewer ? { agent: reviewer, enabled: true } : undefined,
       stopConditions: { completeActions: ['COMPLETE'], failActions: ['FAIL'], maxRounds: config.maxRounds ?? 10, onConvergence: true, onStuck: 3, maxRejections: 4 },
       formatFix: { maxRetries: 10, schema: { type: 'object', required: ['thought', 'action', 'params'], properties: { thought: { type: 'string' }, action: { type: 'string' }, params: { type: 'object' }, expectedOutcome: { type: 'string' }, risk: { type: 'string' } } } },
       snapshotLogger: logger,
@@ -1196,7 +1503,9 @@ async function runLoop(userTask: string): Promise<unknown> {
       task: userTask, iterations: [], convergence: { rejectionStreak: 0, sameRejectionReason: '', stuckCount: 0 },
       epicId: epic.id, userTask, planLoopId, taskGraph: initialTaskGraph, completedTasks: initialCompletedTasks, failedTasks: initialFailedTasks, phase: resumedPhase, blockedTasks: initialBlockedTasks,
       highDesign: initialHighDesign, detailDesign: initialDetailDesign, deliverables: initialDeliverables,
-      checkpoint: { totalChecks: 0, majorChange: false }, round: 0, hub, targetExecutorId: config.targetExecutorId || 'executor-loop',
+      checkpoint: { totalChecks: 0, majorChange: false }, round: 0, hub,
+      targetExecutorId: config.targetExecutorId || 'executor-loop',
+      targetReviewerId: config.targetReviewerId || 'reviewer-loop',
     };
     (loop as unknown as { state: LoopState }).state = loopState;
     
@@ -1217,7 +1526,6 @@ async function runLoop(userTask: string): Promise<unknown> {
       workflowManager.updateWorkflowStatus(workflowId, finalStatus);
       return { success: result.success && allDone && loopState.failedTasks.length === 0, epicId: epic.id, completed: loopState.completedTasks.length, failed: loopState.failedTasks.length, rounds: result.totalRounds, output: result.finalObservation };
     } finally {
-      if (reviewer) await reviewer.disconnect();
       // Clean up old checkpoints, keep last 10
       resumableSessionManager.cleanupOldCheckpoints(resumeSessionId, 10);
     }

@@ -34,6 +34,7 @@ export interface KernelAgentBaseConfig {
   defaultSystemPrompt?: string;
   defaultSystemPromptResolver?: () => string | undefined;
   defaultRoleProfileId?: string;
+  appendContextSlotsToSystemPrompt?: boolean;
   maxContextMessages: number;
   roleProfiles?: Record<string, UnifiedAgentRoleProfile>;
 }
@@ -42,6 +43,7 @@ const DEFAULT_KERNEL_AGENT_CONFIG: Omit<KernelAgentBaseConfig, 'moduleId'> = {
   provider: 'kernel',
   defaultSystemPrompt: undefined,
   defaultRoleProfileId: undefined,
+  appendContextSlotsToSystemPrompt: true,
   maxContextMessages: 20,
   roleProfiles: {},
 };
@@ -131,7 +133,10 @@ export class KernelAgentBase {
         tools,
         metadata: input.metadata,
       });
-      const systemPrompt = this.buildSystemPrompt(roleProfile, contextSlots?.rendered);
+      const systemPrompt = this.buildSystemPrompt(
+        roleProfile,
+        this.config.appendContextSlotsToSystemPrompt === false ? undefined : contextSlots?.rendered,
+      );
       const slotMetadata = contextSlots
         ? {
             contextSlotIds: contextSlots.slotIds,
@@ -144,6 +149,10 @@ export class KernelAgentBase {
         mode: threadMode,
         threadKey,
         slotMetadata,
+        contextSlotsRendered:
+          this.config.appendContextSlotsToSystemPrompt === false
+            ? contextSlots?.rendered
+            : undefined,
       });
 
       let runResult = await this.runner.runTurn(input.text, {
@@ -186,18 +195,8 @@ export class KernelAgentBase {
         current: runResult,
       });
 
-      runResult = await this.applyReviewLoop({
-        input,
-        roleProfileId: roleProfile?.id,
-        sessionId: runnerSessionId,
-        userInput: input.text,
-        systemPrompt,
-        history: toUnifiedHistory(mergedHistory),
-        tools,
-        slotMetadata,
-        mainThreadKey: threadKey,
-        current: runResult,
-      });
+      // Kernel-level inline review loop is disabled.
+      // Review must be executed by explicit reviewer agent nodes in orchestration flow.
 
       const reply = runResult.reply?.trim();
       if (!reply) {
@@ -288,10 +287,12 @@ export class KernelAgentBase {
     mode: string;
     threadKey: string;
     slotMetadata?: Record<string, unknown>;
+    contextSlotsRendered?: string;
     extra?: Record<string, unknown>;
   }): Record<string, unknown> {
     const metadata: Record<string, unknown> = {
       ...(params.inputMetadata ?? {}),
+      ...(params.roleProfileId ? { roleProfile: params.roleProfileId } : {}),
       kernelMode: params.mode,
       mode: params.mode,
       contextLedgerEnabled: params.inputMetadata?.contextLedgerEnabled !== false,
@@ -311,6 +312,9 @@ export class KernelAgentBase {
           : 20_000,
       contextLedgerFocusEnabled:
         params.inputMetadata?.contextLedgerFocusEnabled !== false,
+      ...(typeof params.contextSlotsRendered === 'string' && params.contextSlotsRendered.trim().length > 0
+        ? { contextSlotsRendered: params.contextSlotsRendered }
+        : {}),
       ...(params.slotMetadata ?? {}),
       ...(params.extra ?? {}),
     };

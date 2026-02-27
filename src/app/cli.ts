@@ -13,6 +13,7 @@ import { RuntimeFacade } from '../runtime/runtime-facade.js';
 import { registerDefaultRuntimeTools } from '../runtime/default-tools.js';
 import { createOrchestratorLoop } from '../agents/daemon/orchestrator-loop.js';
 import { createExecutorLoop } from '../agents/daemon/executor-loop.js';
+import { createReviewerModule } from '../agents/daemon/reviewer-module.js';
 import type { RuntimeEvent } from '../runtime/events.js';
 
 export interface AppCLIOptions {
@@ -49,9 +50,19 @@ export async function runAppCLI(args: string[]): Promise<void> {
     mode: 'auto',
     cwd: process.cwd(),
     maxRounds: 10,
+    targetReviewerId: 'reviewer-loop',
   }, hub);
   await orchestratorLoop.initialize?.(hub);
   await moduleRegistry.register(orchestratorLoop);
+
+  const { module: reviewerLoop } = createReviewerModule({
+    id: 'reviewer-loop',
+    name: 'Reviewer Module',
+    mode: 'auto',
+    cwd: process.cwd(),
+  }, hub);
+  await reviewerLoop.initialize?.(hub);
+  await moduleRegistry.register(reviewerLoop);
 
   const { module: executorLoop } = createExecutorLoop({
     id: 'executor-loop',
@@ -62,7 +73,7 @@ export async function runAppCLI(args: string[]): Promise<void> {
   });
   await moduleRegistry.register(executorLoop);
 
-  console.log('[App] ReACT Loop modules ready: orchestrator-loop, executor-loop');
+  console.log('[App] ReACT Loop modules ready: orchestrator-loop, reviewer-loop, executor-loop');
 
   // 订阅事件打印
   globalEventBus.subscribeAll(printEvent);

@@ -4,7 +4,6 @@
  */
 
 import { Agent } from '../agent.js';
-import { ReviewerRole } from '../roles/reviewer.js';
 import { BdTools } from '../shared/bd-tools.js';
 import { createSnapshotLogger, SnapshotLogger } from '../shared/snapshot-logger.js';
 import type { OutputModule } from '../../orchestration/module-registry.js';
@@ -29,7 +28,6 @@ export interface ExecutorLoopConfig {
   systemPrompt?: string;
   cwd?: string;
   maxIterations?: number;
-  enableReview?: boolean;
 }
 
 interface ExecutorState extends ReActState {
@@ -138,29 +136,12 @@ export function createExecutorLoop(config: ExecutorLoopConfig): { agent: Agent; 
     const status = agent.getStatus();
     console.log(`[executor-loop] Agent status after initialize: connected=${status.connected}, sessionId=${status.sessionId}`);
 
-    let reviewer: ReviewerRole | undefined;
-    if (config.enableReview) {
-      reviewer = new ReviewerRole({
-        id: `${config.id}-reviewer`,
-        name: `${config.name} Reviewer`,
-        mode: config.mode,
-        cwd: config.cwd,
-      });
-      await reviewer.initialize();
-    }
-
     const loopConfig: LoopConfig = {
       planner: {
         agent,
         actionRegistry,
         freshSessionPerRound: true,
       },
-      reviewer: reviewer
-        ? {
-            agent: reviewer,
-            enabled: true,
-          }
-        : undefined,
       stopConditions: {
         completeActions: ['COMPLETE'],
         failActions: ['FAIL'],
@@ -211,10 +192,11 @@ export function createExecutorLoop(config: ExecutorLoopConfig): { agent: Agent; 
         output: result.finalObservation,
         error: result.finalError,
       };
-    } finally {
-      if (reviewer) {
-        await reviewer.disconnect();
-      }
+    } catch (error) {
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : String(error),
+      };
     }
   }
 

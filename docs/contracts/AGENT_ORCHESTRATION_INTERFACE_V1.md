@@ -31,6 +31,8 @@ Query:
 
 Response:
 - `agents[]`：每个 agent 的运行状态、实例计数、`capabilities` 分层字段
+- `startupTargets[]`：已定义但尚未启动到资源池的 agent 目标
+- `startupTemplates[]`：基础启动模板（默认包含 `orchestrator-loop` / `reviewer-loop` / `executor-loop`）
 
 ### 2.2 `POST /api/v1/agents/dispatch`
 

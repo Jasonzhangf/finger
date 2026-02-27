@@ -39,6 +39,7 @@ import {
 import { createRealOrchestratorModule } from '../agents/daemon/orchestrator-module.js';
 import { createOrchestratorLoop } from '../agents/daemon/orchestrator-loop.js';
 import { createExecutorLoop } from '../agents/daemon/executor-loop.js';
+import { createReviewerModule } from '../agents/daemon/reviewer-module.js';
 import { mailbox } from './mailbox.js';
 import { BdTools } from '../agents/shared/bd-tools.js';
 import type { OutputModule } from '../orchestration/module-registry.js';
@@ -3250,10 +3251,21 @@ const { module: orchestratorLoop } = createOrchestratorLoop({
   mode: 'auto',
   cwd: process.cwd(),
   maxRounds: 10,
+  targetReviewerId: 'reviewer-loop',
 }, hub);
 await orchestratorLoop.initialize?.(hub);
 await moduleRegistry.register(orchestratorLoop);
 console.log('[Server] OrchestratorLoop module registered: orchestrator-loop');
+
+const { module: reviewerLoop } = createReviewerModule({
+  id: 'reviewer-loop',
+  name: 'Reviewer Module',
+  mode: 'auto',
+  cwd: process.cwd(),
+}, hub);
+await reviewerLoop.initialize?.(hub);
+await moduleRegistry.register(reviewerLoop);
+console.log('[Server] Reviewer module registered: reviewer-loop');
 
 const { module: executorLoop } = createExecutorLoop({
   id: 'executor-loop',
@@ -3265,7 +3277,7 @@ const { module: executorLoop } = createExecutorLoop({
 await moduleRegistry.register(executorLoop);
 console.log('[Server] ExecutorLoop module registered: executor-loop');
 
-console.log('[Server] ReACT Loop modules ready: orchestrator-loop, executor-loop');
+console.log('[Server] ReACT Loop modules ready: orchestrator-loop, reviewer-loop, executor-loop');
 
 // =============================================================================
 // 性能监控 API

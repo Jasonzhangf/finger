@@ -266,30 +266,9 @@ export class ReActLoop {
 
       this.logToConsole(`✅ Format valid`, {});
       
-      // 3. Pre-Act Review (执行前审查)
+      // 3. Kernel-level pre-act review is disabled.
+      // Review must be modeled as explicit reviewer node in orchestration.
       let review: PreActReviewOutput | undefined;
-      if (this.config.reviewer?.enabled) {
-        this.logToConsole(`🔍 Round ${round}: Pre-Act Review...`, { action: proposal.action });
-        
-        review = await this.preActReview(proposal, round);
-        
-        this.logToConsole(`🔍 Review result`, { approved: review.approved, riskLevel: review.riskLevel });
-        
-        if (!review.approved) {
-          this.logToConsole(`⛔ Review Rejected (Round ${round})`, { 
-            feedback: review.feedback?.substring(0, 100)
-          });
-          await this.handleRejection(proposal, review, round);
-          
-          // 检查停止条件：连续拒绝
-          const stopCheck = this.checkStopConditions();
-          if (stopCheck.stop) {
-            this.sessionLogger?.complete(false, stopCheck.reason || 'unknown', undefined, 'Max rejections reached');
-            return this.buildResult(stopCheck.reason, startTime);
-          }
-          continue;
-        }
-      }
 
       // 4. 执行 Action
       this.logToConsole(`⚡ Round ${round}: Executing action "${proposal.action}"...`);

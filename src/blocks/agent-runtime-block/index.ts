@@ -27,6 +27,16 @@ export interface AgentDefinition {
   tags: string[];
 }
 
+export interface AgentStartupTemplate {
+  id: string;
+  name: string;
+  role: AgentRoleType;
+  defaultImplementationId: string;
+  defaultModuleId: string;
+  defaultInstanceCount: number;
+  launchMode: 'manual' | 'orchestrator';
+}
+
 export interface AgentDeploymentRecord {
   id: string;
   agentId: string;
@@ -51,6 +61,36 @@ interface AgentRuntimeViewItem {
   availableCount: number;
   lastSessionId?: string;
 }
+
+const BASE_STARTUP_TEMPLATES: AgentStartupTemplate[] = [
+  {
+    id: 'orchestrator-loop',
+    name: 'Orchestrator',
+    role: 'orchestrator',
+    defaultImplementationId: 'native:orchestrator-loop',
+    defaultModuleId: 'orchestrator-loop',
+    defaultInstanceCount: 1,
+    launchMode: 'orchestrator',
+  },
+  {
+    id: 'reviewer-loop',
+    name: 'Reviewer',
+    role: 'reviewer',
+    defaultImplementationId: 'native:reviewer-loop',
+    defaultModuleId: 'reviewer-loop',
+    defaultInstanceCount: 1,
+    launchMode: 'manual',
+  },
+  {
+    id: 'executor-loop',
+    name: 'Executor',
+    role: 'executor',
+    defaultImplementationId: 'native:executor-loop',
+    defaultModuleId: 'executor-loop',
+    defaultInstanceCount: 1,
+    launchMode: 'manual',
+  },
+];
 
 interface AgentRuntimeViewInstance {
   id: string;
@@ -344,6 +384,7 @@ export class AgentRuntimeBlock extends BaseBlock {
       'deploy',
       'list_definitions',
       'list_startup_targets',
+      'list_startup_templates',
     ],
     cli: [],
     stateSchema: {
@@ -382,6 +423,8 @@ export class AgentRuntimeBlock extends BaseBlock {
         return Array.from(this.buildDefinitions().values());
       case 'list_startup_targets':
         return this.listStartupTargets();
+      case 'list_startup_templates':
+        return this.listStartupTemplates();
       default:
         throw new Error(`Unknown command: ${command}`);
     }
@@ -440,6 +483,7 @@ export class AgentRuntimeBlock extends BaseBlock {
     const definitions = new Map<string, AgentDefinition>();
     const loadedConfigs = this.deps.getLoadedAgentConfigs();
     const modules = this.deps.moduleRegistry.getAllModules();
+    const availableModuleIds = new Set(modules.map((module) => module.id));
 
     const ensureDefinition = (id: string, patch: Partial<AgentDefinition>): AgentDefinition => {
       const normalizedId = id.trim();
@@ -561,6 +605,22 @@ export class AgentRuntimeBlock extends BaseBlock {
       }
     }
 
+    for (const template of BASE_STARTUP_TEMPLATES) {
+      const existing = definitions.get(template.id);
+      ensureDefinition(template.id, {
+        name: existing?.name ?? template.name,
+        role: existing?.role ?? template.role,
+        source: existing?.source ?? 'runtime-config',
+        tags: Array.from(new Set([...(existing?.tags ?? []), template.role, 'startup-template'])),
+      });
+      appendImplementation(template.id, {
+        id: template.defaultImplementationId,
+        kind: 'native',
+        moduleId: template.defaultModuleId,
+        status: availableModuleIds.has(template.defaultModuleId) ? 'available' : 'unavailable',
+      });
+    }
+
     for (const [agentId, def] of definitions.entries()) {
       if (def.implementations.length === 0) {
         def.implementations.push({ id: 'native:unbound', kind: 'native', status: 'unavailable' });
@@ -578,6 +638,7 @@ export class AgentRuntimeBlock extends BaseBlock {
     configs: Array<{ id: string; name: string; role?: string; filePath: string; tools?: Record<string, unknown> }>;
     definitions: AgentDefinition[];
     startupTargets: AgentDefinition[];
+    startupTemplates: AgentStartupTemplate[];
   } {
     const runningAgentIds = this.collectRunningAgentIds();
     const definitions = this.buildDefinitions();
@@ -665,6 +726,7 @@ export class AgentRuntimeBlock extends BaseBlock {
       configs,
       definitions: Array.from(definitions.values()).sort((a, b) => a.name.localeCompare(b.name)),
       startupTargets,
+      startupTemplates: this.listStartupTemplates(),
     };
   }
 
@@ -674,6 +736,7 @@ export class AgentRuntimeBlock extends BaseBlock {
     count: number;
     agents: AgentCatalogEntry[];
     startupTargets: AgentDefinition[];
+    startupTemplates: AgentStartupTemplate[];
   } {
     const runtimeView = this.getRuntimeView();
     const supportsControl: Array<'status' | 'pause' | 'resume' | 'interrupt' | 'cancel'> = [
@@ -779,6 +842,7 @@ export class AgentRuntimeBlock extends BaseBlock {
       count: catalog.length,
       agents: catalog,
       startupTargets: runtimeView.startupTargets,
+      startupTemplates: runtimeView.startupTemplates,
     };
   }
 
@@ -1484,12 +1548,18 @@ export class AgentRuntimeBlock extends BaseBlock {
     success: boolean;
     deployment?: AgentDeploymentRecord;
     startupTargets: AgentDefinition[];
+    startupTemplates: AgentStartupTemplate[];
     error?: string;
   } {
     const definitions = this.buildDefinitions();
     const definition = this.resolveDefinitionForDeploy(request, definitions);
     if (!definition) {
-      return { success: false, startupTargets: this.listStartupTargets(), error: 'target agent is required' };
+      return {
+        success: false,
+        startupTargets: this.listStartupTargets(),
+        startupTemplates: this.listStartupTemplates(),
+        error: 'target agent is required',
+      };
     }
 
     const impl = this.resolveDeploymentImplementation(definition, request);
@@ -1535,11 +1605,16 @@ export class AgentRuntimeBlock extends BaseBlock {
       success: true,
       deployment,
       startupTargets: this.listStartupTargets(),
+      startupTemplates: this.listStartupTemplates(),
     };
   }
 
   private listStartupTargets(): AgentDefinition[] {
     const view = this.getRuntimeView();
     return view.startupTargets;
+  }
+
+  private listStartupTemplates(): AgentStartupTemplate[] {
+    return BASE_STARTUP_TEMPLATES.map((item) => ({ ...item }));
   }
 }

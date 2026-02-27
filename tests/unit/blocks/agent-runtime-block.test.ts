@@ -141,6 +141,15 @@ describe('AgentRuntimeBlock', () => {
     ]));
   });
 
+  it('returns base startup templates for orchestrator/reviewer/executor', async () => {
+    const templates = await ctx.block.execute('list_startup_templates', {}) as Array<{ id: string; role: string }>;
+    expect(templates).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: 'orchestrator-loop', role: 'orchestrator' }),
+      expect.objectContaining({ id: 'reviewer-loop', role: 'reviewer' }),
+      expect.objectContaining({ id: 'executor-loop', role: 'executor' }),
+    ]));
+  });
+
   it('enforces deploy-before-dispatch and dispatches via selected implementation module', async () => {
     const beforeDeploy = await ctx.block.execute('dispatch', {
       sourceAgentId: 'chat-codex',
