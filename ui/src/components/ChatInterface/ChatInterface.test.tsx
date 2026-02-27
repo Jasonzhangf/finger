@@ -249,6 +249,58 @@ describe('ChatInterface input behavior', () => {
     expect(onSendMessage).not.toHaveBeenCalled();
     expect(input.value).toBe('');
   });
+
+  it('forwards /compact as local compact command payload', async () => {
+    const onSendMessage = vi.fn<(payload: unknown) => void>();
+
+    render(
+      <ChatInterface
+        executionState={null}
+        agents={[]}
+        events={[]}
+        onSendMessage={onSendMessage}
+        onPause={() => undefined}
+        onResume={() => undefined}
+        isPaused={false}
+        isConnected={true}
+      />,
+    );
+
+    const input = screen.getByTestId('chat-input') as HTMLTextAreaElement;
+    fireEvent.change(input, { target: { value: '/compact' } });
+    fireEvent.keyDown(input, { key: 'Enter', shiftKey: false });
+
+    await waitFor(() => {
+      expect(onSendMessage).toHaveBeenCalledTimes(1);
+    });
+    expect(onSendMessage).toHaveBeenCalledWith({ text: '/compact' });
+  });
+
+  it('recognizes codex slash command placeholders without sending', async () => {
+    const onSendMessage = vi.fn<(payload: unknown) => void>();
+
+    render(
+      <ChatInterface
+        executionState={null}
+        agents={[]}
+        events={[]}
+        onSendMessage={onSendMessage}
+        onPause={() => undefined}
+        onResume={() => undefined}
+        isPaused={false}
+        isConnected={true}
+      />,
+    );
+
+    const input = screen.getByTestId('chat-input') as HTMLTextAreaElement;
+    fireEvent.change(input, { target: { value: '/model' } });
+    fireEvent.keyDown(input, { key: 'Enter', shiftKey: false });
+
+    await waitFor(() => {
+      expect(screen.getByText('/model 已识别，暂未接入（codex /commands 迁移中）')).not.toBeNull();
+    });
+    expect(onSendMessage).not.toHaveBeenCalled();
+  });
 });
 
 describe('ChatInterface tool render', () => {

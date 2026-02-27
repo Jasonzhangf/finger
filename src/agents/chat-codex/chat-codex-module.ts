@@ -18,6 +18,10 @@ export const CHAT_CODEX_CODING_CLI_ALLOWED_TOOLS = [
   'web_search',
   'update_plan',
   'context_ledger.memory',
+  'agent.list',
+  'agent.capabilities',
+  'agent.dispatch',
+  'agent.control',
 ];
 
 export interface ChatCodexToolSpecification {
@@ -279,6 +283,14 @@ const ROUTER_SYSTEM_PROMPT = [
   '1. 优先准确路由，无法判定时返回澄清问题。',
   '2. 输出结构化结论，包含目标、原因、备选目标。',
   '3. 不执行重工具任务，仅负责分流与策略决策。',
+].join('\n');
+
+const ORCHESTRATOR_SYSTEM_PROMPT_APPEND = [
+  '[Orchestrator Mode]',
+  '你是默认编排者 agent。优先完成任务拆解、资源判断与任务分配，而不是直接长时间串行执行。',
+  '当需要委派时，必须优先使用标准工具：agent.list / agent.capabilities / agent.dispatch / agent.control。',
+  '任务分配前先查询可用 agent 与能力，再按能力与上下文隔离原则派发。',
+  '你可以直接执行小任务；重任务优先通过 agent.dispatch 分配到目标 agent。',
 ].join('\n');
 
 function safeNotifyLoopEvent(
@@ -654,6 +666,11 @@ export function createChatCodexModule(
   };
 
   const resolveCodingPrompt = (): string => resolveCodingCliSystemPrompt(mergedConfig.codingPromptPath);
+  const resolveOrchestratorPrompt = (): string => {
+    const codingPrompt = resolveCodingPrompt();
+    if (!codingPrompt) return ORCHESTRATOR_SYSTEM_PROMPT_APPEND;
+    return `${codingPrompt}\n\n${ORCHESTRATOR_SYSTEM_PROMPT_APPEND}`;
+  };
   const activeRunner =
     runner ??
     new ProcessChatCodexRunner({
@@ -1003,10 +1020,15 @@ export function createChatCodexModule(
     {
       moduleId: mergedConfig.id,
       provider: 'codex',
-      defaultSystemPromptResolver: resolveCodingPrompt,
-      defaultRoleProfileId: 'coding-cli',
+      defaultSystemPromptResolver: resolveOrchestratorPrompt,
+      defaultRoleProfileId: 'orchestrator',
       maxContextMessages: 20,
       roleProfiles: {
+        orchestrator: {
+          id: 'orchestrator',
+          systemPromptResolver: resolveOrchestratorPrompt,
+          allowedTools: CHAT_CODEX_CODING_CLI_ALLOWED_TOOLS,
+        },
         'coding-cli': {
           id: 'coding-cli',
           systemPromptResolver: resolveCodingPrompt,

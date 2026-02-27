@@ -105,6 +105,18 @@ vi.mock('../../hooks/useAgents.js', () => ({
   }),
 }));
 
+vi.mock('../../hooks/useAgentRuntimePanel.js', () => ({
+  useAgentRuntimePanel: () => ({
+    agents: [],
+    instances: [],
+    configs: [],
+    isLoading: false,
+    error: null,
+    refresh: vi.fn(),
+    controlAgent: vi.fn().mockResolvedValue({ ok: true, action: 'status', status: 'completed' }),
+  }),
+}));
+
 import { WorkflowContainer } from './WorkflowContainer.tsx';
 
 describe('WorkflowContainer', () => {

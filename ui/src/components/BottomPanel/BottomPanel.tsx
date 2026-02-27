@@ -1,91 +1,114 @@
-import React, { useState } from 'react';
+import React, { useMemo, useState } from 'react';
+import type { AgentRuntime } from '../../api/types.js';
+import type { AgentConfigSummary, AgentRuntimeInstance } from '../../hooks/useAgentRuntimePanel.js';
+import { findConfigForAgent, isActiveInstanceStatus, matchInstanceToAgent } from './agentRuntimeUtils.js';
 import './BottomPanel.css';
 
-type Tab = 'stats' | 'agents' | 'load' | 'config';
+type Tab = 'overview' | 'agents' | 'instances';
 
-interface Agent {
-  id: string;
-  name: string;
-  role: string;
-  status: 'idle' | 'busy' | 'error';
-  load: number;
-  tasks: number;
-  errorRate: number;
-  tokens: number;
-  uptime: number;
+interface BottomPanelProps {
+  agents: AgentRuntime[];
+  instances: AgentRuntimeInstance[];
+  configs: AgentConfigSummary[];
+  selectedAgentId?: string | null;
+  currentSessionId?: string | null;
+  isLoading?: boolean;
+  error?: string | null;
+  onSelectAgent?: (agentId: string) => void;
+  onSelectInstance?: (instance: AgentRuntimeInstance) => void;
+  onRefresh?: () => void;
 }
 
-export const BottomPanel: React.FC = () => {
+function getStatusColor(status: string): string {
+  const normalized = status.trim().toLowerCase();
+  if (normalized === 'error' || normalized === 'blocked') return '#ef4444';
+  if (normalized === 'running' || normalized === 'deployed' || normalized === 'busy') return '#f59e0b';
+  return '#22c55e';
+}
+
+function formatInstanceStatus(status: string): string {
+  const normalized = status.trim().toLowerCase();
+  if (normalized === 'deployed') return '已部署';
+  if (normalized === 'busy' || normalized === 'running') return '运行中';
+  if (normalized === 'blocked') return '阻塞';
+  if (normalized === 'error') return '异常';
+  if (normalized === 'released') return '已释放';
+  return '空闲';
+}
+
+export const BottomPanel: React.FC<BottomPanelProps> = ({
+  agents,
+  instances,
+  configs,
+  selectedAgentId,
+  currentSessionId,
+  isLoading = false,
+  error = null,
+  onSelectAgent,
+  onSelectInstance,
+  onRefresh,
+}) => {
   const [activeTab, setActiveTab] = useState<Tab>('agents');
 
-  const stats = {
-    total: 24,
-    completed: 18,
-    today: 6,
-    activeAgents: 5,
-    totalAgents: 8,
-    errorRate: 2.3,
-    tokens: 1.2,
-  };
-
-  const agents: Agent[] = [
-    { id: 'orch-1', name: 'orchestrator-1', role: 'orchestrator', status: 'busy', load: 45, tasks: 2, errorRate: 0, tokens: 32000, uptime: 3600 },
-    { id: 'exec-2', name: 'executor-2', role: 'executor', status: 'busy', load: 78, tasks: 3, errorRate: 1.2, tokens: 85000, uptime: 7200 },
-    { id: 'rev-1', name: 'reviewer-1', role: 'reviewer', status: 'idle', load: 0, tasks: 0, errorRate: 0, tokens: 12000, uptime: 1800 },
-    { id: 'test-3', name: 'tester-3', role: 'tester', status: 'error', load: 12, tasks: 1, errorRate: 15, tokens: 5000, uptime: 900 },
-    { id: 'arch-1', name: 'architect-1', role: 'architect', status: 'idle', load: 5, tasks: 0, errorRate: 0, tokens: 45000, uptime: 5400 },
-  ];
-
-  const getStatusColor = (status: Agent['status']) => {
-    switch (status) {
-      case 'idle': return '#2ecc71';
-      case 'busy': return '#f1c40f';
-      case 'error': return '#e74c3c';
-    }
-  };
-
-  const formatUptime = (seconds: number) => {
-    const h = Math.floor(seconds / 3600);
-    const m = Math.floor((seconds % 3600) / 60);
-    return `${h}h ${m}m`;
-  };
+  const overview = useMemo(() => {
+    const activeInstances = instances.filter((instance) => isActiveInstanceStatus(instance.status)).length;
+    const boundSessions = instances.filter((instance) => typeof instance.sessionId === 'string' && instance.sessionId.length > 0).length;
+    const erroredInstances = instances.filter((instance) => instance.status.toLowerCase() === 'error').length;
+    return {
+      totalAgents: agents.length,
+      totalInstances: instances.length,
+      activeInstances,
+      idleInstances: Math.max(0, instances.length - activeInstances),
+      boundSessions,
+      erroredInstances,
+      totalConfigs: configs.length,
+    };
+  }, [agents.length, configs.length, instances]);
 
   return (
     <div className="bottom-panel-container">
       <div className="panel-tabs">
-        <button className={activeTab === 'stats' ? 'active' : ''} onClick={() => setActiveTab('stats')}>Task Stats</button>
-        <button className={activeTab === 'agents' ? 'active' : ''} onClick={() => setActiveTab('agents')}>Agent Management</button>
-        <button className={activeTab === 'load' ? 'active' : ''} onClick={() => setActiveTab('load')}>Load Monitor</button>
-        <button className={activeTab === 'config' ? 'active' : ''} onClick={() => setActiveTab('config')}>Config</button>
+        <button className={activeTab === 'overview' ? 'active' : ''} onClick={() => setActiveTab('overview')}>Overview</button>
+        <button className={activeTab === 'agents' ? 'active' : ''} onClick={() => setActiveTab('agents')}>Agent</button>
+        <button className={activeTab === 'instances' ? 'active' : ''} onClick={() => setActiveTab('instances')}>Instance</button>
+        <button className="refresh-btn" onClick={onRefresh} disabled={!onRefresh || isLoading}>刷新</button>
       </div>
 
       <div className="panel-content">
-        {activeTab === 'stats' && (
+        {error && <div className="panel-error">⚠ {error}</div>}
+        {isLoading && <div className="panel-loading">同步中...</div>}
+
+        {activeTab === 'overview' && (
           <div className="stats-grid">
             <div className="stat-card">
-              <div className="stat-label">Total Tasks</div>
-              <div className="stat-value">{stats.total}</div>
-              <div className="stat-sub">+{stats.today} today</div>
+              <div className="stat-label">Agent</div>
+              <div className="stat-value">{overview.totalAgents}</div>
+              <div className="stat-sub">可管理角色</div>
             </div>
             <div className="stat-card">
-              <div className="stat-label">Completed</div>
-              <div className="stat-value">{stats.completed}</div>
-              <div className="stat-sub">{((stats.completed / stats.total) * 100).toFixed(0)}% rate</div>
+              <div className="stat-label">Instance</div>
+              <div className="stat-value">{overview.totalInstances}</div>
+              <div className="stat-sub">运行实例总数</div>
             </div>
             <div className="stat-card">
-              <div className="stat-label">Active Agents</div>
-              <div className="stat-value">{stats.activeAgents}/{stats.totalAgents}</div>
-              <div className="stat-sub">{stats.totalAgents - stats.activeAgents} idle</div>
+              <div className="stat-label">Running</div>
+              <div className="stat-value">{overview.activeInstances}</div>
+              <div className="stat-sub">活跃实例</div>
             </div>
             <div className="stat-card">
-              <div className="stat-label">Error Rate</div>
-              <div className="stat-value">{stats.errorRate}%</div>
-              <div className="stat-sub">Last 1h</div>
+              <div className="stat-label">Idle</div>
+              <div className="stat-value">{overview.idleInstances}</div>
+              <div className="stat-sub">空闲实例</div>
             </div>
             <div className="stat-card">
-              <div className="stat-label">Token Usage</div>
-              <div className="stat-value">{stats.tokens}M</div>
-              <div className="stat-sub">Est. ${((stats.tokens * 0.002)).toFixed(2)}</div>
+              <div className="stat-label">Bound Session</div>
+              <div className="stat-value">{overview.boundSessions}</div>
+              <div className="stat-sub">绑定会话</div>
+            </div>
+            <div className="stat-card">
+              <div className="stat-label">Error</div>
+              <div className="stat-value">{overview.erroredInstances}</div>
+              <div className="stat-sub">异常实例</div>
             </div>
           </div>
         )}
@@ -94,78 +117,97 @@ export const BottomPanel: React.FC = () => {
           <div className="agents-container">
             <div className="agents-grid">
               {agents.map((agent) => (
-                <div key={agent.id} className={`agent-card ${agent.status}`}>
+                <button
+                  key={agent.id}
+                  className={`agent-card ${agent.status} ${selectedAgentId === agent.id ? 'selected' : ''}`}
+                  onClick={() => onSelectAgent?.(agent.id)}
+                  type="button"
+                >
                   <div className="agent-header">
                     <span className="agent-dot" style={{ background: getStatusColor(agent.status) }} />
                     <span className="agent-name">{agent.name}</span>
-                    <span className="agent-role">{agent.role}</span>
+                    <span className="agent-role">{agent.type}</span>
                   </div>
                   <div className="agent-metrics">
                     <div className="metric">
-                      <span className="metric-label">Load</span>
-                      <span className="metric-value">{agent.load}%</span>
+                      <span className="metric-label">状态</span>
+                      <span className="metric-value">{agent.status}</span>
                     </div>
                     <div className="metric">
-                      <span className="metric-label">Tasks</span>
-                      <span className="metric-value">{agent.tasks}</span>
+                      <span className="metric-label">可用实例</span>
+                      <span className="metric-value">
+                        {instances.filter((instance) => matchInstanceToAgent(agent, instance)).length}
+                      </span>
                     </div>
                     <div className="metric">
-                      <span className="metric-label">Errors</span>
-                      <span className="metric-value">{agent.errorRate}%</span>
-                    </div>
-                    <div className="metric">
-                      <span className="metric-label">Tokens</span>
-                      <span className="metric-value">{(agent.tokens / 1000).toFixed(0)}k</span>
-                    </div>
-                    <div className="metric">
-                      <span className="metric-label">Uptime</span>
-                      <span className="metric-value">{formatUptime(agent.uptime)}</span>
+                      <span className="metric-label">已部署</span>
+                      <span className="metric-value">
+                        {instances.filter((instance) => matchInstanceToAgent(agent, instance) && isActiveInstanceStatus(instance.status)).length}
+                      </span>
                     </div>
                   </div>
-                  <button className="add-to-canvas-btn">+ Add to Canvas</button>
-                </div>
+                  <div className="agent-config-ref">
+                    {(() => {
+                      const config = findConfigForAgent(agent, configs);
+                      if (!config) return '无配置文件映射';
+                      return `配置: ${config.id}`;
+                    })()}
+                  </div>
+                </button>
               ))}
             </div>
-            <button className="add-agent-btn">+ New Agent</button>
+            {agents.length === 0 && <div className="empty-state">当前没有可用 Agent</div>}
           </div>
         )}
 
-        {activeTab === 'load' && (
-          <div className="load-container">
-            <div className="load-bars">
-              {agents.map((agent) => (
-                <div key={agent.id} className="load-row">
-                  <span className="load-name">{agent.name}</span>
-                  <div className="load-bar-bg">
-                    <div 
-                      className="load-bar-fill" 
-                      style={{ 
-                        width: `${agent.load}%`,
-                        background: agent.load > 80 ? '#e74c3c' : agent.load > 50 ? '#f1c40f' : '#2ecc71'
-                      }} 
-                    />
-                  </div>
-                  <span className="load-value">{agent.load}%</span>
-                </div>
-              ))}
-            </div>
+        {activeTab === 'instances' && (
+          <div className="instances-container">
+            {instances.length === 0 && <div className="empty-state">暂无实例</div>}
+            {instances.length > 0 && (
+              <div className="instance-list">
+                {instances.map((instance) => {
+                  const switchable = typeof instance.sessionId === 'string' && instance.sessionId.length > 0;
+                  const active = switchable && instance.sessionId === currentSessionId;
+                  return (
+                    <button
+                      key={instance.id}
+                      type="button"
+                      className={`instance-row ${active ? 'active' : ''}`}
+                      disabled={!switchable}
+                      onClick={() => onSelectInstance?.(instance)}
+                    >
+                      <span className="instance-dot" style={{ background: getStatusColor(instance.status) }} />
+                      <span className="instance-main">
+                        <span className="instance-name">{instance.name}</span>
+                        <span className="instance-meta">
+                          {instance.id} · {formatInstanceStatus(instance.status)}
+                          {instance.sessionId ? ` · 会话 ${instance.sessionId}` : ' · 未绑定会话'}
+                        </span>
+                      </span>
+                      <span className="instance-switch">{switchable ? '切换会话' : '不可切换'}</span>
+                    </button>
+                  );
+                })}
+              </div>
+            )}
           </div>
         )}
 
-        {activeTab === 'config' && (
-          <div className="config-container">
-            <div className="config-item">
-              <label>Max Concurrent Tasks</label>
-              <input type="number" defaultValue={5} />
-            </div>
-            <div className="config-item">
-              <label>Auto-retry on Error</label>
-              <input type="checkbox" defaultChecked />
-            </div>
-            <div className="config-item">
-              <label>Task Timeout (minutes)</label>
-              <input type="number" defaultValue={30} />
-            </div>
+        {activeTab === 'agents' && (
+          <div className="agent-hint">
+            点击 Agent 卡片打开左侧配置抽屉；点击 Instance 行可切换右侧会话面板。
+          </div>
+        )}
+
+        {activeTab === 'instances' && (
+          <div className="instance-hint">
+            仅已绑定 `sessionId` 的实例支持会话切换。
+          </div>
+        )}
+
+        {activeTab === 'overview' && (
+          <div className="overview-hint">
+            当前已加载配置 {overview.totalConfigs} 条。
           </div>
         )}
       </div>

@@ -404,8 +404,6 @@ export class KernelAgentBase {
     });
     this.captureApiHistory(reviewThreadKey, reviewStartMetadata);
 
-    const previousReplies: string[] = [];
-
     const hasLimit = reviewSettings.maxTurns > 0;
     const traces: Array<Record<string, unknown>> = [];
     let iteration = 0;

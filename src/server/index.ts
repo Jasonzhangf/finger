@@ -38,7 +38,7 @@ import { createRealOrchestratorModule } from '../agents/daemon/orchestrator-modu
 import { createOrchestratorLoop } from '../agents/daemon/orchestrator-loop.js';
 import { createExecutorLoop } from '../agents/daemon/executor-loop.js';
 import { mailbox } from './mailbox.js';
-import type { OutputModule } from '../orchestration/module-registry.js';
+import type { OrchestrationModule, OutputModule } from '../orchestration/module-registry.js';
 import type { Attachment } from '../runtime/events.js';
 import { inputLockManager } from '../runtime/input-lock.js';
 import {
@@ -341,6 +341,8 @@ const workflowManager = sharedWorkflowManager;
 const runtime = new RuntimeFacade(globalEventBus, sessionManager, globalToolRegistry);
 const loadedTools = registerDefaultRuntimeTools(globalToolRegistry);
 console.log(`[Server] Runtime tools loaded: ${loadedTools.join(', ')}`);
+const agentRuntimeTools = registerAgentRuntimeTools();
+console.log(`[Server] Agent runtime tools loaded: ${agentRuntimeTools.join(', ')}`);
 const gatewayManager = new GatewayManager(hub, moduleRegistry, {
   daemonUrl: `http://127.0.0.1:${PORT}`,
 });
@@ -415,26 +417,27 @@ console.log('[Server] Chat Codex tool whitelist applied:', chatCodexPolicy.white
  await moduleRegistry.register(realOrchestrator);
  console.log('[Server] Real Orchestrator module registered: orchestrator-1');
 
-// 注册 mock 执行者
-const executorMock: OutputModule = {
-   id: 'executor-mock',
-   type: 'output',
-   name: 'Mock Executor',
-   version: '1.0.0',
-   handle: async (message: any, callback) => {
-     const task = message.task || message;
-     console.log('[MockExecutor] executing task:', task.description || task);
-     const result = {
-       taskId: task.taskId || message.taskId,
-       success: true,
-       output: `执行完成：${task.description || JSON.stringify(task)}`,
-     };
-     if (callback) callback(result);
-     return result;
-   },
- };
- await moduleRegistry.register(executorMock);
- console.log('[Server] Mock Executor module registered: executor-mock');
+if (process.env.FINGER_ENABLE_MOCK_EXECUTOR === '1') {
+  const executorMock: OutputModule = {
+    id: 'executor-mock',
+    type: 'output',
+    name: 'Mock Executor',
+    version: '1.0.0',
+    handle: async (message: any, callback) => {
+      const task = message.task || message;
+      console.log('[MockExecutor] executing task:', task.description || task);
+      const result = {
+        taskId: task.taskId || message.taskId,
+        success: true,
+        output: `执行完成：${task.description || JSON.stringify(task)}`,
+      };
+      if (callback) callback(result);
+      return result;
+    },
+  };
+  await moduleRegistry.register(executorMock);
+  console.log('[Server] Mock Executor module registered: executor-mock');
+}
 
 // 加载 autostart agents
 await loadAutostartAgents(moduleRegistry).catch(err => {
@@ -450,7 +453,7 @@ moduleRegistry.createRoute(() => true, 'echo-output', {
   priority: 0,
   description: 'default route to echo-output'
 });
-console.log('[Server] Orchestration modules initialized: echo-input, echo-output, chat-codex, orchestrator-1, executor-mock');
+console.log('[Server] Orchestration modules initialized: echo-input, echo-output, chat-codex, orchestrator-1');
 
 app.get('/health', (_req, res) => {
   res.json({ status: 'healthy', timestamp: new Date().toISOString() });
@@ -1764,6 +1767,1160 @@ interface AgentDeployment {
 
 const agentDeployments: Map<string, AgentDeployment> = new Map();
 
+interface AgentRuntimeViewItem {
+  id: string;
+  name: string;
+  type: 'executor' | 'reviewer' | 'orchestrator';
+  status: 'idle' | 'running' | 'error' | 'paused';
+  source: 'agent-json' | 'runtime-config' | 'module' | 'deployment';
+  instanceCount: number;
+  deployedCount: number;
+  availableCount: number;
+  lastSessionId?: string;
+}
+
+interface AgentRuntimeViewInstance {
+  id: string;
+  agentId: string;
+  name: string;
+  type: 'executor' | 'reviewer' | 'orchestrator';
+  status: 'idle' | 'running' | 'error' | 'paused';
+  sessionId?: string;
+  workflowId?: string;
+  source: 'deployment';
+  deploymentId: string;
+  createdAt: string;
+}
+
+type AgentCapabilityLayer = 'summary' | 'execution' | 'governance' | 'full';
+
+interface AgentCatalogCapabilities {
+  summary: {
+    role: string;
+    source: string;
+    status: 'idle' | 'running' | 'error' | 'paused';
+    tags: string[];
+  };
+  execution?: {
+    exposedTools: string[];
+    dispatchTargets: string[];
+    supportsDispatch: boolean;
+    supportsControl: Array<'status' | 'pause' | 'resume' | 'interrupt' | 'cancel'>;
+  };
+  governance?: {
+    whitelist: string[];
+    blacklist: string[];
+    authorizationRequired: string[];
+    provider?: string;
+    sessionBindingScope?: string;
+    iflowApprovalMode?: string;
+    capabilityIds?: string[];
+  };
+}
+
+interface AgentCatalogEntry {
+  id: string;
+  name: string;
+  type: 'executor' | 'reviewer' | 'orchestrator';
+  status: 'idle' | 'running' | 'error' | 'paused';
+  source: string;
+  instanceCount: number;
+  deployedCount: number;
+  availableCount: number;
+  lastSessionId?: string;
+  capabilities: AgentCatalogCapabilities;
+}
+
+interface AgentDispatchRequest {
+  sourceAgentId: string;
+  targetAgentId: string;
+  task: unknown;
+  sessionId?: string;
+  workflowId?: string;
+  blocking?: boolean;
+  metadata?: Record<string, unknown>;
+}
+
+interface AgentControlRequest {
+  action: 'status' | 'pause' | 'resume' | 'interrupt' | 'cancel';
+  targetAgentId?: string;
+  sessionId?: string;
+  workflowId?: string;
+  providerId?: string;
+  hard?: boolean;
+}
+
+interface AgentControlResult {
+  ok: boolean;
+  action: AgentControlRequest['action'];
+  status: 'accepted' | 'completed' | 'failed';
+  sessionId?: string;
+  workflowId?: string;
+  targetAgentId?: string;
+  result?: unknown;
+  error?: string;
+}
+
+function normalizeAgentType(value: unknown): 'executor' | 'reviewer' | 'orchestrator' {
+  if (typeof value !== 'string') return 'executor';
+  const normalized = value.trim().toLowerCase();
+  if (normalized.includes('orchestr')) return 'orchestrator';
+  if (normalized.includes('review')) return 'reviewer';
+  return 'executor';
+}
+
+function normalizeAgentStatus(value: unknown): 'idle' | 'running' | 'error' | 'paused' {
+  if (typeof value !== 'string') return 'idle';
+  const normalized = value.trim().toLowerCase();
+  if (normalized === 'running' || normalized === 'busy' || normalized === 'deployed') return 'running';
+  if (normalized === 'error' || normalized === 'failed' || normalized === 'blocked') return 'error';
+  if (normalized === 'paused') return 'paused';
+  return 'idle';
+}
+
+function isIgnorableRuntimeModule(moduleId: string): boolean {
+  return moduleId.includes('mock')
+    || moduleId.includes('echo')
+    || moduleId === 'chat-codex-gateway';
+}
+
+function moduleHasAgentRuntimeIdentity(module: OrchestrationModule): boolean {
+  if (module.type === 'agent') return true;
+  if (module.type !== 'output') return false;
+  const metadata = isObjectRecord(module.metadata) ? module.metadata : null;
+  const metadataType = typeof metadata?.type === 'string' ? metadata.type.toLowerCase() : '';
+  const metadataRole = typeof metadata?.role === 'string' ? metadata.role.toLowerCase() : '';
+  const provider = typeof metadata?.provider === 'string' ? metadata.provider.toLowerCase() : '';
+  const bridge = typeof metadata?.bridge === 'string' ? metadata.bridge.toLowerCase() : '';
+  const moduleId = module.id.toLowerCase();
+  if (
+    metadataType.includes('loop')
+    || metadataType.includes('orchestr')
+    || metadataType.includes('executor')
+    || metadataType.includes('review')
+    || metadataRole.includes('orchestr')
+    || metadataRole.includes('executor')
+    || metadataRole.includes('review')
+  ) {
+    return true;
+  }
+  if (bridge.includes('rust-kernel')) {
+    return true;
+  }
+  if (provider === 'codex' && moduleId.includes('chat-codex')) {
+    return true;
+  }
+  return moduleId.includes('-loop') || moduleId.includes('chat-codex');
+}
+
+function resolveDeploymentAgentIdentity(deployment: AgentDeployment): {
+  agentId: string;
+  agentName: string;
+  agentType: 'executor' | 'reviewer' | 'orchestrator';
+} {
+  const config = deployment.config;
+  const fromId = typeof config.id === 'string' && config.id.trim().length > 0 ? config.id.trim() : null;
+  const fromName = typeof config.name === 'string' && config.name.trim().length > 0 ? config.name.trim() : null;
+  const fromRole = typeof config.role === 'string' && config.role.trim().length > 0 ? config.role.trim() : null;
+
+  const agentId = fromId || fromName || deployment.id;
+  const agentName = fromName || fromId || deployment.id;
+  const agentType = normalizeAgentType(fromRole || config.type);
+  return { agentId, agentName, agentType };
+}
+
+function collectRunningAgentIds(): Set<string> {
+  const running = new Set<string>();
+  for (const workflow of workflowManager.listWorkflows()) {
+    for (const task of workflow.tasks.values()) {
+      if (task.status !== 'in_progress') continue;
+      if (typeof task.assignee !== 'string') continue;
+      const assignee = task.assignee.trim();
+      if (assignee.length > 0) running.add(assignee);
+    }
+  }
+  return running;
+}
+
+function buildAgentRuntimeView(): {
+  agents: AgentRuntimeViewItem[];
+  instances: AgentRuntimeViewInstance[];
+  configs: Array<{ id: string; name: string; role?: string; filePath: string; tools?: Record<string, unknown> }>;
+} {
+  const runningAgentIds = collectRunningAgentIds();
+  const instances: AgentRuntimeViewInstance[] = [];
+  const workflowBySessionId = new Map<string, string>();
+  for (const workflow of workflowManager.listWorkflows()) {
+    if (typeof workflow.sessionId === 'string' && workflow.sessionId.trim().length > 0) {
+      workflowBySessionId.set(workflow.sessionId, workflow.id);
+    }
+  }
+
+  for (const deployment of agentDeployments.values()) {
+    const identity = resolveDeploymentAgentIdentity(deployment);
+    const baseStatus = normalizeAgentStatus(deployment.status);
+    const instanceTotal = Math.max(1, Number.isFinite(deployment.instanceCount) ? Math.floor(deployment.instanceCount) : 1);
+    for (let idx = 0; idx < instanceTotal; idx += 1) {
+      const instanceId = instanceTotal === 1 ? deployment.id : `${deployment.id}#${idx + 1}`;
+      const status = runningAgentIds.has(identity.agentId)
+        ? 'running'
+        : baseStatus;
+      const workflowId = workflowBySessionId.get(deployment.sessionId);
+      instances.push({
+        id: instanceId,
+        agentId: identity.agentId,
+        name: instanceTotal === 1 ? identity.agentName : `${identity.agentName}#${idx + 1}`,
+        type: identity.agentType,
+        status,
+        ...(deployment.sessionId ? { sessionId: deployment.sessionId } : {}),
+        ...(workflowId ? { workflowId } : {}),
+        source: 'deployment',
+        deploymentId: deployment.id,
+        createdAt: deployment.createdAt,
+      });
+    }
+  }
+
+  const byAgentId = new Map<string, AgentRuntimeViewInstance[]>();
+  for (const instance of instances) {
+    const list = byAgentId.get(instance.agentId) ?? [];
+    list.push(instance);
+    byAgentId.set(instance.agentId, list);
+  }
+
+  const agentMap = new Map<string, AgentRuntimeViewItem>();
+  const upsertAgent = (
+    id: string,
+    patch: Partial<Omit<AgentRuntimeViewItem, 'id'>>,
+  ): void => {
+    const normalizedId = id.trim();
+    if (normalizedId.length === 0) return;
+    const previous = agentMap.get(normalizedId);
+    const next: AgentRuntimeViewItem = {
+      id: normalizedId,
+      name: patch.name ?? previous?.name ?? normalizedId,
+      type: patch.type ?? previous?.type ?? 'executor',
+      status: patch.status ?? previous?.status ?? 'idle',
+      source: patch.source ?? previous?.source ?? 'runtime-config',
+      instanceCount: patch.instanceCount ?? previous?.instanceCount ?? 0,
+      deployedCount: patch.deployedCount ?? previous?.deployedCount ?? 0,
+      availableCount: patch.availableCount ?? previous?.availableCount ?? 0,
+      ...(patch.lastSessionId ?? previous?.lastSessionId ? { lastSessionId: patch.lastSessionId ?? previous?.lastSessionId } : {}),
+    };
+    agentMap.set(normalizedId, next);
+  };
+
+  for (const item of loadedAgentConfigs) {
+    const type = normalizeAgentType(item.config.role);
+    upsertAgent(item.config.id, {
+      name: item.config.name ?? item.config.id,
+      type,
+      status: runningAgentIds.has(item.config.id) ? 'running' : 'idle',
+      source: 'agent-json',
+    });
+  }
+
+  for (const config of runtime.listAgentRuntimeConfigs()) {
+    upsertAgent(config.id, {
+      name: config.name ?? config.id,
+      type: normalizeAgentType(config.role),
+      status: runningAgentIds.has(config.id) ? 'running' : 'idle',
+      source: 'runtime-config',
+    });
+  }
+
+  for (const module of moduleRegistry.getAllModules()) {
+    if (isIgnorableRuntimeModule(module.id)) continue;
+    if (!moduleHasAgentRuntimeIdentity(module)) continue;
+    upsertAgent(module.id, {
+      name: module.name,
+      type: normalizeAgentType(module.metadata?.role ?? module.metadata?.type ?? module.id),
+      source: 'module',
+    });
+  }
+
+  for (const instance of instances) {
+    const related = byAgentId.get(instance.agentId) ?? [];
+    const deployedCount = related.filter((item) => item.status === 'running' || item.status === 'paused').length;
+    const latestSession = related
+      .slice()
+      .sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt))
+      .find((item) => typeof item.sessionId === 'string' && item.sessionId.length > 0)
+      ?.sessionId;
+    upsertAgent(instance.agentId, {
+      name: instance.name.replace(/#\d+$/, ''),
+      type: instance.type,
+      status: related.some((item) => item.status === 'error')
+        ? 'error'
+        : related.some((item) => item.status === 'running')
+          ? 'running'
+          : 'idle',
+      source: 'deployment',
+      instanceCount: related.length,
+      deployedCount,
+      availableCount: Math.max(0, related.length - deployedCount),
+      ...(latestSession ? { lastSessionId: latestSession } : {}),
+    });
+  }
+
+  for (const [agentId, item] of agentMap.entries()) {
+    if (runningAgentIds.has(agentId) && item.status !== 'error') {
+      item.status = 'running';
+      agentMap.set(agentId, item);
+    }
+  }
+
+  const configs = loadedAgentConfigs.map((item) => ({
+    id: item.config.id,
+    name: item.config.name ?? item.config.id,
+    ...(item.config.role ? { role: item.config.role } : {}),
+    filePath: item.filePath,
+    ...(item.config.tools ? { tools: item.config.tools as Record<string, unknown> } : {}),
+  }));
+
+  return {
+    agents: Array.from(agentMap.values()).sort((a, b) => a.name.localeCompare(b.name)),
+    instances: instances.sort((a, b) => a.name.localeCompare(b.name)),
+    configs,
+  };
+}
+
+function resolveAgentCapabilityLayer(value: unknown): AgentCapabilityLayer {
+  if (typeof value !== 'string') return 'summary';
+  const normalized = value.trim().toLowerCase();
+  if (normalized === 'execution') return 'execution';
+  if (normalized === 'governance') return 'governance';
+  if (normalized === 'full') return 'full';
+  return 'summary';
+}
+
+function normalizeStringArray(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return Array.from(
+    new Set(
+      value
+        .filter((item): item is string => typeof item === 'string')
+        .map((item) => item.trim())
+        .filter((item) => item.length > 0),
+    ),
+  ).sort((a, b) => a.localeCompare(b));
+}
+
+function resolveAgentDispatchTargets(): string[] {
+  return moduleRegistry
+    .getAllModules()
+    .filter((module) => !isIgnorableRuntimeModule(module.id))
+    .filter((module) => moduleHasAgentRuntimeIdentity(module))
+    .map((module) => module.id)
+    .sort((a, b) => a.localeCompare(b));
+}
+
+function resolveAgentConfigById(agentId: string): LoadedAgentConfig | null {
+  const found = loadedAgentConfigs.find((item) => item.config.id === agentId);
+  return found ?? null;
+}
+
+function resolveAgentEffectiveTools(agentId: string): {
+  exposedTools: string[];
+  whitelist: string[];
+  blacklist: string[];
+  authorizationRequired: string[];
+} {
+  const toolPolicy = runtime.getAgentToolPolicy(agentId);
+  const allowedGlobalTools = globalToolRegistry
+    .list()
+    .filter((tool) => tool.policy === 'allow')
+    .map((tool) => tool.name);
+  const deniedByPolicy = new Set(toolPolicy.blacklist);
+
+  const exposedTools = (toolPolicy.whitelist.length > 0
+    ? toolPolicy.whitelist
+    : allowedGlobalTools
+  ).filter((toolName) => !deniedByPolicy.has(toolName));
+
+  const config = resolveAgentConfigById(agentId);
+  const authorizationRequired = normalizeStringArray(config?.config.tools?.authorizationRequired);
+
+  return {
+    exposedTools: Array.from(new Set(exposedTools)).sort((a, b) => a.localeCompare(b)),
+    whitelist: [...toolPolicy.whitelist].sort((a, b) => a.localeCompare(b)),
+    blacklist: [...toolPolicy.blacklist].sort((a, b) => a.localeCompare(b)),
+    authorizationRequired,
+  };
+}
+
+function buildAgentCatalog(layer: AgentCapabilityLayer): AgentCatalogEntry[] {
+  const runtimeView = buildAgentRuntimeView();
+  const dispatchTargets = resolveAgentDispatchTargets();
+  const supportsControl: Array<'status' | 'pause' | 'resume' | 'interrupt' | 'cancel'> = [
+    'status',
+    'pause',
+    'resume',
+    'interrupt',
+    'cancel',
+  ];
+
+  return runtimeView.agents.map((agent) => {
+    const runtimeConfig = runtime.getAgentRuntimeConfig(agent.id);
+    const loadedConfig = resolveAgentConfigById(agent.id);
+    const toolAccess = resolveAgentEffectiveTools(agent.id);
+
+    const summaryTags = Array.from(
+      new Set([
+        agent.type,
+        ...(toolAccess.exposedTools.includes('agent.dispatch') ? ['dispatch'] : []),
+        ...(toolAccess.exposedTools.includes('agent.control') ? ['control'] : []),
+        ...(toolAccess.exposedTools.includes('agent.list') ? ['catalog'] : []),
+      ]),
+    );
+
+    const capabilities: AgentCatalogCapabilities = {
+      summary: {
+        role: runtimeConfig?.role ?? loadedConfig?.config.role ?? agent.type,
+        source: agent.source,
+        status: agent.status,
+        tags: summaryTags,
+      },
+    };
+
+    if (layer === 'execution' || layer === 'full') {
+      capabilities.execution = {
+        exposedTools: toolAccess.exposedTools,
+        dispatchTargets,
+        supportsDispatch: toolAccess.exposedTools.includes('agent.dispatch'),
+        supportsControl,
+      };
+    }
+
+    if (layer === 'governance' || layer === 'full') {
+      capabilities.governance = {
+        whitelist: toolAccess.whitelist,
+        blacklist: toolAccess.blacklist,
+        authorizationRequired: toolAccess.authorizationRequired,
+        ...(typeof runtimeConfig?.provider?.type === 'string' ? { provider: runtimeConfig.provider.type } : {}),
+        ...(typeof runtimeConfig?.session?.bindingScope === 'string'
+          ? { sessionBindingScope: runtimeConfig.session.bindingScope }
+          : {}),
+        ...(typeof runtimeConfig?.governance?.iflow?.approvalMode === 'string'
+          ? { iflowApprovalMode: runtimeConfig.governance.iflow.approvalMode }
+          : {}),
+        ...(Array.isArray(runtimeConfig?.governance?.iflow?.capabilityIds)
+          ? { capabilityIds: normalizeStringArray(runtimeConfig?.governance?.iflow?.capabilityIds) }
+          : {}),
+      };
+    }
+
+    return {
+      id: agent.id,
+      name: agent.name,
+      type: agent.type,
+      status: agent.status,
+      source: agent.source,
+      instanceCount: agent.instanceCount,
+      deployedCount: agent.deployedCount,
+      availableCount: agent.availableCount,
+      ...(agent.lastSessionId ? { lastSessionId: agent.lastSessionId } : {}),
+      capabilities,
+    };
+  });
+}
+
+function emitAgentRuntimeCatalogEvent(layer: AgentCapabilityLayer, catalog: AgentCatalogEntry[]): void {
+  void globalEventBus.emit({
+    type: 'agent_runtime_catalog',
+    sessionId: runtime.getCurrentSession()?.id ?? 'default',
+    timestamp: new Date().toISOString(),
+    payload: {
+      layer,
+      count: catalog.length,
+      agentIds: catalog.map((item) => item.id),
+    },
+  });
+}
+
+function toDispatchPayload(input: AgentDispatchRequest, dispatchId: string): Record<string, unknown> {
+  const task = input.task;
+  const metadata = {
+    ...(isObjectRecord(input.metadata) ? input.metadata : {}),
+    dispatchId,
+    sourceAgentId: input.sourceAgentId,
+    targetAgentId: input.targetAgentId,
+    orchestration: true,
+  };
+
+  if (isObjectRecord(task)) {
+    const next: Record<string, unknown> = { ...task };
+    if (typeof next.sessionId !== 'string' && typeof input.sessionId === 'string' && input.sessionId.trim().length > 0) {
+      next.sessionId = input.sessionId;
+    }
+    const originalMetadata = isObjectRecord(next.metadata) ? next.metadata : {};
+    next.metadata = { ...originalMetadata, ...metadata };
+    return next;
+  }
+
+  const text = typeof task === 'string' ? task : JSON.stringify(task);
+  return {
+    text,
+    ...(typeof input.sessionId === 'string' && input.sessionId.trim().length > 0 ? { sessionId: input.sessionId } : {}),
+    metadata,
+  };
+}
+
+function emitAgentRuntimeDispatchEvent(params: {
+  dispatchId: string;
+  sourceAgentId: string;
+  targetAgentId: string;
+  status: 'queued' | 'completed' | 'failed';
+  blocking: boolean;
+  sessionId?: string;
+  workflowId?: string;
+  error?: string;
+}): void {
+  void globalEventBus.emit({
+    type: 'agent_runtime_dispatch',
+    sessionId: params.sessionId ?? runtime.getCurrentSession()?.id ?? 'default',
+    agentId: params.targetAgentId,
+    timestamp: new Date().toISOString(),
+    payload: {
+      dispatchId: params.dispatchId,
+      sourceAgentId: params.sourceAgentId,
+      targetAgentId: params.targetAgentId,
+      status: params.status,
+      blocking: params.blocking,
+      ...(params.sessionId ? { sessionId: params.sessionId } : {}),
+      ...(params.workflowId ? { workflowId: params.workflowId } : {}),
+      ...(params.error ? { error: params.error } : {}),
+    },
+  });
+}
+
+async function dispatchTaskToAgent(input: AgentDispatchRequest): Promise<{
+  ok: boolean;
+  dispatchId: string;
+  status: 'queued' | 'completed' | 'failed';
+  result?: unknown;
+  error?: string;
+}> {
+  const target = input.targetAgentId.trim();
+  if (target.length === 0) {
+    return {
+      ok: false,
+      dispatchId: `dispatch-${Date.now()}-invalid`,
+      status: 'failed',
+      error: 'targetAgentId is required',
+    };
+  }
+
+  const targetModule = moduleRegistry.getModule(target);
+  if (!targetModule) {
+    return {
+      ok: false,
+      dispatchId: `dispatch-${Date.now()}-missing`,
+      status: 'failed',
+      error: `target agent/module not found: ${target}`,
+    };
+  }
+
+  const blocking = input.blocking === true;
+  const dispatchId = `dispatch-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const payload = toDispatchPayload(input, dispatchId);
+  emitAgentRuntimeDispatchEvent({
+    dispatchId,
+    sourceAgentId: input.sourceAgentId,
+    targetAgentId: target,
+    status: 'queued',
+    blocking,
+    sessionId: input.sessionId,
+    workflowId: input.workflowId,
+  });
+
+  if (blocking) {
+    try {
+      const result = await hub.sendToModule(target, payload);
+      emitAgentRuntimeDispatchEvent({
+        dispatchId,
+        sourceAgentId: input.sourceAgentId,
+        targetAgentId: target,
+        status: 'completed',
+        blocking,
+        sessionId: input.sessionId,
+        workflowId: input.workflowId,
+      });
+      return { ok: true, dispatchId, status: 'completed', result };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      emitAgentRuntimeDispatchEvent({
+        dispatchId,
+        sourceAgentId: input.sourceAgentId,
+        targetAgentId: target,
+        status: 'failed',
+        blocking,
+        sessionId: input.sessionId,
+        workflowId: input.workflowId,
+        error: message,
+      });
+      return { ok: false, dispatchId, status: 'failed', error: message };
+    }
+  }
+
+  void hub.sendToModule(target, payload)
+    .then(() => {
+      emitAgentRuntimeDispatchEvent({
+        dispatchId,
+        sourceAgentId: input.sourceAgentId,
+        targetAgentId: target,
+        status: 'completed',
+        blocking,
+        sessionId: input.sessionId,
+        workflowId: input.workflowId,
+      });
+    })
+    .catch((error: unknown) => {
+      const message = error instanceof Error ? error.message : String(error);
+      emitAgentRuntimeDispatchEvent({
+        dispatchId,
+        sourceAgentId: input.sourceAgentId,
+        targetAgentId: target,
+        status: 'failed',
+        blocking,
+        sessionId: input.sessionId,
+        workflowId: input.workflowId,
+        error: message,
+      });
+    });
+
+  return { ok: true, dispatchId, status: 'queued' };
+}
+
+function emitAgentRuntimeControlEvent(result: AgentControlResult): void {
+  void globalEventBus.emit({
+    type: 'agent_runtime_control',
+    sessionId: result.sessionId ?? runtime.getCurrentSession()?.id ?? 'default',
+    agentId: result.targetAgentId,
+    timestamp: new Date().toISOString(),
+    payload: {
+      action: result.action,
+      status: result.status,
+      ...(result.sessionId ? { sessionId: result.sessionId } : {}),
+      ...(result.workflowId ? { workflowId: result.workflowId } : {}),
+      ...(result.error ? { error: result.error } : {}),
+    },
+  });
+}
+
+function emitAgentRuntimeStatusEvent(params: {
+  sessionId?: string;
+  workflowId?: string;
+  status: 'ok' | 'error';
+  error?: string;
+}): void {
+  const runningAgents = collectRunningAgentIds();
+  void globalEventBus.emit({
+    type: 'agent_runtime_status',
+    sessionId: params.sessionId ?? runtime.getCurrentSession()?.id ?? 'default',
+    timestamp: new Date().toISOString(),
+    payload: {
+      scope: params.workflowId ? 'workflow' : params.sessionId ? 'session' : 'global',
+      status: params.status,
+      ...(params.sessionId ? { sessionId: params.sessionId } : {}),
+      ...(params.workflowId ? { workflowId: params.workflowId } : {}),
+      runningAgents: Array.from(runningAgents).sort((a, b) => a.localeCompare(b)),
+      ...(params.error ? { error: params.error } : {}),
+    },
+  });
+}
+
+async function controlAgentRuntime(input: AgentControlRequest): Promise<AgentControlResult> {
+  const action = input.action;
+  const targetAgentId = typeof input.targetAgentId === 'string' ? input.targetAgentId.trim() : undefined;
+  const sessionId = typeof input.sessionId === 'string' && input.sessionId.trim().length > 0
+    ? input.sessionId.trim()
+    : undefined;
+  const workflowId = typeof input.workflowId === 'string' && input.workflowId.trim().length > 0
+    ? input.workflowId.trim()
+    : undefined;
+
+  try {
+    if (action === 'status') {
+      const catalog = buildAgentCatalog('summary');
+      const result = {
+        ok: true,
+        action,
+        status: 'completed' as const,
+        ...(targetAgentId ? { targetAgentId } : {}),
+        ...(sessionId ? { sessionId } : {}),
+        ...(workflowId ? { workflowId } : {}),
+        result: {
+          catalog,
+          runtimeView: buildAgentRuntimeView(),
+          chatCodexSessions: chatCodexRunner.listSessionStates(sessionId, input.providerId),
+        },
+      };
+      emitAgentRuntimeStatusEvent({
+        sessionId,
+        workflowId,
+        status: 'ok',
+      });
+      return result;
+    }
+
+    if (action === 'pause') {
+      if (workflowId) {
+        const paused = workflowManager.pauseWorkflow(workflowId, input.hard === true);
+        if (!paused) {
+          return {
+            ok: false,
+            action,
+            status: 'failed',
+            workflowId,
+            targetAgentId,
+            error: `workflow not found: ${workflowId}`,
+          };
+        }
+        return {
+          ok: true,
+          action,
+          status: 'completed',
+          workflowId,
+          targetAgentId,
+          result: { workflowId, status: 'paused' },
+        };
+      }
+
+      if (!sessionId) {
+        return {
+          ok: false,
+          action,
+          status: 'failed',
+          targetAgentId,
+          error: 'pause requires sessionId or workflowId',
+        };
+      }
+      const paused = sessionManager.pauseSession(sessionId);
+      if (!paused) {
+        return {
+          ok: false,
+          action,
+          status: 'failed',
+          sessionId,
+          targetAgentId,
+          error: `session not found: ${sessionId}`,
+        };
+      }
+      return {
+        ok: true,
+        action,
+        status: 'completed',
+        sessionId,
+        targetAgentId,
+        result: { sessionId, status: 'paused' },
+      };
+    }
+
+    if (action === 'resume') {
+      if (workflowId) {
+        const resumed = workflowManager.resumeWorkflow(workflowId);
+        if (!resumed) {
+          return {
+            ok: false,
+            action,
+            status: 'failed',
+            workflowId,
+            targetAgentId,
+            error: `workflow not found: ${workflowId}`,
+          };
+        }
+        return {
+          ok: true,
+          action,
+          status: 'completed',
+          workflowId,
+          targetAgentId,
+          result: { workflowId, status: 'executing' },
+        };
+      }
+
+      if (!sessionId) {
+        return {
+          ok: false,
+          action,
+          status: 'failed',
+          targetAgentId,
+          error: 'resume requires sessionId or workflowId',
+        };
+      }
+      const resumed = sessionManager.resumeSession(sessionId);
+      if (!resumed) {
+        return {
+          ok: false,
+          action,
+          status: 'failed',
+          sessionId,
+          targetAgentId,
+          error: `session not found: ${sessionId}`,
+        };
+      }
+      return {
+        ok: true,
+        action,
+        status: 'completed',
+        sessionId,
+        targetAgentId,
+        result: { sessionId, status: 'active' },
+      };
+    }
+
+    if (action === 'interrupt' || action === 'cancel') {
+      if (!sessionId) {
+        return {
+          ok: false,
+          action,
+          status: 'failed',
+          targetAgentId,
+          error: 'interrupt/cancel requires sessionId',
+        };
+      }
+      const results = chatCodexRunner.interruptSession(sessionId, input.providerId);
+      return {
+        ok: true,
+        action,
+        status: 'completed',
+        sessionId,
+        targetAgentId,
+        result: {
+          interruptedCount: results.filter((item) => item.interrupted).length,
+          sessions: results,
+        },
+      };
+    }
+
+    return {
+      ok: false,
+      action,
+      status: 'failed',
+      targetAgentId,
+      error: `unsupported control action: ${action}`,
+    };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    emitAgentRuntimeStatusEvent({
+      sessionId,
+      workflowId,
+      status: 'error',
+      error: message,
+    });
+    return {
+      ok: false,
+      action,
+      status: 'failed',
+      ...(sessionId ? { sessionId } : {}),
+      ...(workflowId ? { workflowId } : {}),
+      ...(targetAgentId ? { targetAgentId } : {}),
+      error: message,
+    };
+  }
+}
+
+function parseAgentDispatchToolInput(rawInput: unknown): AgentDispatchRequest {
+  if (!isObjectRecord(rawInput)) {
+    throw new Error('agent.dispatch input must be object');
+  }
+  const targetAgentId = typeof rawInput.target_agent_id === 'string'
+    ? rawInput.target_agent_id
+    : typeof rawInput.targetAgentId === 'string'
+      ? rawInput.targetAgentId
+      : '';
+  const task = rawInput.task ?? rawInput.input ?? rawInput.message;
+  if (!targetAgentId || targetAgentId.trim().length === 0) {
+    throw new Error('agent.dispatch target_agent_id is required');
+  }
+  if (task === undefined) {
+    throw new Error('agent.dispatch task is required');
+  }
+  const sessionId = typeof rawInput.session_id === 'string'
+    ? rawInput.session_id
+    : typeof rawInput.sessionId === 'string'
+      ? rawInput.sessionId
+      : runtime.getCurrentSession()?.id;
+  const workflowId = typeof rawInput.workflow_id === 'string'
+    ? rawInput.workflow_id
+    : typeof rawInput.workflowId === 'string'
+      ? rawInput.workflowId
+      : undefined;
+  const blocking = rawInput.blocking === true;
+  return {
+    sourceAgentId: 'chat-codex',
+    targetAgentId: targetAgentId.trim(),
+    task,
+    ...(typeof sessionId === 'string' && sessionId.trim().length > 0 ? { sessionId: sessionId.trim() } : {}),
+    ...(typeof workflowId === 'string' && workflowId.trim().length > 0 ? { workflowId: workflowId.trim() } : {}),
+    blocking,
+    ...(isObjectRecord(rawInput.metadata) ? { metadata: rawInput.metadata } : {}),
+  };
+}
+
+function parseAgentControlToolInput(rawInput: unknown): AgentControlRequest {
+  if (!isObjectRecord(rawInput)) {
+    throw new Error('agent.control input must be object');
+  }
+  const rawAction = typeof rawInput.action === 'string' ? rawInput.action.trim().toLowerCase() : '';
+  if (!rawAction) {
+    throw new Error('agent.control action is required');
+  }
+  if (rawAction !== 'status' && rawAction !== 'pause' && rawAction !== 'resume' && rawAction !== 'interrupt' && rawAction !== 'cancel') {
+    throw new Error('agent.control action must be status|pause|resume|interrupt|cancel');
+  }
+  const request: AgentControlRequest = {
+    action: rawAction,
+    ...(typeof rawInput.target_agent_id === 'string'
+      ? { targetAgentId: rawInput.target_agent_id }
+      : typeof rawInput.targetAgentId === 'string'
+        ? { targetAgentId: rawInput.targetAgentId }
+        : {}),
+    ...(typeof rawInput.session_id === 'string'
+      ? { sessionId: rawInput.session_id }
+      : typeof rawInput.sessionId === 'string'
+        ? { sessionId: rawInput.sessionId }
+        : {}),
+    ...(typeof rawInput.workflow_id === 'string'
+      ? { workflowId: rawInput.workflow_id }
+      : typeof rawInput.workflowId === 'string'
+        ? { workflowId: rawInput.workflowId }
+        : {}),
+    ...(typeof rawInput.provider_id === 'string'
+      ? { providerId: rawInput.provider_id }
+      : typeof rawInput.providerId === 'string'
+        ? { providerId: rawInput.providerId }
+        : {}),
+    ...(typeof rawInput.hard === 'boolean' ? { hard: rawInput.hard } : {}),
+  };
+  return request;
+}
+
+function registerAgentRuntimeTools(): string[] {
+  const loaded: string[] = [];
+
+  runtime.registerTool({
+    name: 'agent.list',
+    description:
+      'List available agents with layered capability exposure. layer: summary|execution|governance|full.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        layer: { type: 'string', enum: ['summary', 'execution', 'governance', 'full'] },
+      },
+      additionalProperties: false,
+    },
+    handler: async (input: unknown): Promise<unknown> => {
+      const layer = resolveAgentCapabilityLayer(isObjectRecord(input) ? input.layer : undefined);
+      const catalog = buildAgentCatalog(layer);
+      emitAgentRuntimeCatalogEvent(layer, catalog);
+      return {
+        ok: true,
+        layer,
+        count: catalog.length,
+        agents: catalog,
+      };
+    },
+  });
+  loaded.push('agent.list');
+
+  runtime.registerTool({
+    name: 'agent.capabilities',
+    description:
+      'Get capability details for one target agent. Supports layered exposure with layer=summary|execution|governance|full.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        agent_id: { type: 'string' },
+        layer: { type: 'string', enum: ['summary', 'execution', 'governance', 'full'] },
+      },
+      required: ['agent_id'],
+      additionalProperties: false,
+    },
+    handler: async (input: unknown): Promise<unknown> => {
+      if (!isObjectRecord(input)) {
+        throw new Error('agent.capabilities input must be object');
+      }
+      const agentId = typeof input.agent_id === 'string'
+        ? input.agent_id.trim()
+        : typeof input.agentId === 'string'
+          ? input.agentId.trim()
+          : '';
+      if (agentId.length === 0) {
+        throw new Error('agent.capabilities agent_id is required');
+      }
+      const layer = resolveAgentCapabilityLayer(input.layer);
+      const catalog = buildAgentCatalog(layer);
+      const agent = catalog.find((item) => item.id === agentId);
+      if (!agent) {
+        return { ok: false, layer, error: `agent not found: ${agentId}` };
+      }
+      return { ok: true, layer, agent };
+    },
+  });
+  loaded.push('agent.capabilities');
+
+  runtime.registerTool({
+    name: 'agent.dispatch',
+    description:
+      'Dispatch a task to another agent/module through standard runtime routing. Required: target_agent_id + task.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        target_agent_id: { type: 'string' },
+        task: {},
+        session_id: { type: 'string' },
+        workflow_id: { type: 'string' },
+        blocking: { type: 'boolean' },
+        metadata: { type: 'object' },
+      },
+      required: ['target_agent_id', 'task'],
+      additionalProperties: true,
+    },
+    handler: async (input: unknown): Promise<unknown> => {
+      const dispatchInput = parseAgentDispatchToolInput(input);
+      return dispatchTaskToAgent(dispatchInput);
+    },
+  });
+  loaded.push('agent.dispatch');
+
+  runtime.registerTool({
+    name: 'agent.control',
+    description:
+      'Control or query runtime state. action: status|pause|resume|interrupt|cancel. Use session_id/workflow_id as scope.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        action: { type: 'string', enum: ['status', 'pause', 'resume', 'interrupt', 'cancel'] },
+        target_agent_id: { type: 'string' },
+        session_id: { type: 'string' },
+        workflow_id: { type: 'string' },
+        provider_id: { type: 'string' },
+        hard: { type: 'boolean' },
+      },
+      required: ['action'],
+      additionalProperties: true,
+    },
+    handler: async (input: unknown): Promise<unknown> => {
+      const controlInput = parseAgentControlToolInput(input);
+      const result = await controlAgentRuntime(controlInput);
+      emitAgentRuntimeControlEvent(result);
+      return result;
+    },
+  });
+  loaded.push('agent.control');
+
+  return loaded;
+}
+
+app.get('/api/v1/agents/runtime-view', (_req, res) => {
+  const snapshot = buildAgentRuntimeView();
+  res.json({
+    success: true,
+    generatedAt: new Date().toISOString(),
+    ...snapshot,
+  });
+});
+
+app.get('/api/v1/agents/catalog', (req, res) => {
+  const layer = resolveAgentCapabilityLayer(req.query.layer);
+  const catalog = buildAgentCatalog(layer);
+  emitAgentRuntimeCatalogEvent(layer, catalog);
+  res.json({
+    success: true,
+    generatedAt: new Date().toISOString(),
+    layer,
+    count: catalog.length,
+    agents: catalog,
+  });
+});
+
+app.post('/api/v1/agents/dispatch', async (req, res) => {
+  const body = req.body as {
+    sourceAgentId?: string;
+    targetAgentId?: string;
+    task?: unknown;
+    sessionId?: string;
+    workflowId?: string;
+    blocking?: boolean;
+    metadata?: Record<string, unknown>;
+  };
+
+  if (typeof body.targetAgentId !== 'string' || body.targetAgentId.trim().length === 0) {
+    res.status(400).json({ error: 'targetAgentId is required' });
+    return;
+  }
+  if (body.task === undefined) {
+    res.status(400).json({ error: 'task is required' });
+    return;
+  }
+
+  const dispatchInput: AgentDispatchRequest = {
+    sourceAgentId: typeof body.sourceAgentId === 'string' && body.sourceAgentId.trim().length > 0
+      ? body.sourceAgentId.trim()
+      : 'chat-codex',
+    targetAgentId: body.targetAgentId.trim(),
+    task: body.task,
+    ...(typeof body.sessionId === 'string' && body.sessionId.trim().length > 0 ? { sessionId: body.sessionId.trim() } : {}),
+    ...(typeof body.workflowId === 'string' && body.workflowId.trim().length > 0 ? { workflowId: body.workflowId.trim() } : {}),
+    blocking: body.blocking === true,
+    ...(isObjectRecord(body.metadata) ? { metadata: body.metadata } : {}),
+  };
+
+  const result = await dispatchTaskToAgent(dispatchInput);
+  if (!result.ok) {
+    res.status(400).json(result);
+    return;
+  }
+  res.json(result);
+});
+
+app.post('/api/v1/agents/control', async (req, res) => {
+  const body = req.body as {
+    action?: string;
+    targetAgentId?: string;
+    sessionId?: string;
+    workflowId?: string;
+    providerId?: string;
+    hard?: boolean;
+  };
+  if (typeof body.action !== 'string' || body.action.trim().length === 0) {
+    res.status(400).json({ error: 'action is required' });
+    return;
+  }
+  const action = body.action.trim().toLowerCase();
+  if (action !== 'status' && action !== 'pause' && action !== 'resume' && action !== 'interrupt' && action !== 'cancel') {
+    res.status(400).json({ error: 'action must be status|pause|resume|interrupt|cancel' });
+    return;
+  }
+
+  const request: AgentControlRequest = {
+    action,
+    ...(typeof body.targetAgentId === 'string' && body.targetAgentId.trim().length > 0
+      ? { targetAgentId: body.targetAgentId.trim() }
+      : {}),
+    ...(typeof body.sessionId === 'string' && body.sessionId.trim().length > 0
+      ? { sessionId: body.sessionId.trim() }
+      : {}),
+    ...(typeof body.workflowId === 'string' && body.workflowId.trim().length > 0
+      ? { workflowId: body.workflowId.trim() }
+      : {}),
+    ...(typeof body.providerId === 'string' && body.providerId.trim().length > 0
+      ? { providerId: body.providerId.trim() }
+      : {}),
+    ...(typeof body.hard === 'boolean' ? { hard: body.hard } : {}),
+  };
+
+  const result = await controlAgentRuntime(request);
+  emitAgentRuntimeControlEvent(result);
+  if (!result.ok) {
+    res.status(400).json(result);
+    return;
+  }
+  res.json(result);
+});
+
 app.get('/api/v1/agents', (_req, res) => {
   // Return resource pool view (single process per agent)
   const resources = resourcePool.getAllResources();
@@ -2011,6 +3168,11 @@ app.post('/api/v1/agents/deploy', async (req, res) => {
   for (const client of wsClients) {
     if (client.readyState === 1) client.send(broadcastMsg);
   }
+
+  emitAgentRuntimeStatusEvent({
+    sessionId: deployment.sessionId,
+    status: 'ok',
+  });
   
   res.json({ success: true, deploymentId, deployment });
 });

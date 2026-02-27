@@ -9,6 +9,11 @@ import type {
   UserInputPayload,
   WorkflowExecutionState,
 } from '../../api/types.js';
+import {
+  getSlashCommandDefinition,
+  listImplementedSlashCommands,
+  parseSlashCommandInput,
+} from './slashCommands.js';
 
 export interface InputCapability {
   acceptText: boolean;
@@ -841,22 +846,103 @@ const ChatInput: React.FC<{
 
     const normalizedText = sanitized.payload.text.trim();
     const hasAttachments = (sanitized.payload.images?.length ?? 0) > 0 || (sanitized.payload.files?.length ?? 0) > 0;
-    if (normalizedText === '/new' && !hasAttachments) {
-      setHistoryCursor(null);
-      setHistorySnapshot('');
-      onDraftChange({ text: '', images: [], files: [] });
-      if (textareaRef.current) {
-        textareaRef.current.style.height = 'auto';
-      }
-      if (!onCreateNewSession) {
-        setInputWarning('当前界面未接入新会话创建能力');
+    const slashCommand = !hasAttachments ? parseSlashCommandInput(normalizedText) : null;
+    if (slashCommand && !hasAttachments) {
+      const resetDraft = () => {
+        setHistoryCursor(null);
+        setHistorySnapshot('');
+        onDraftChange({ text: '', images: [], files: [] });
+        if (textareaRef.current) {
+          textareaRef.current.style.height = 'auto';
+        }
+      };
+
+      if (slashCommand.name === 'new' || slashCommand.name === 'clear') {
+        resetDraft();
+        if (!onCreateNewSession) {
+          setInputWarning('当前界面未接入新会话创建能力');
+          return;
+        }
+        void Promise.resolve(onCreateNewSession()).catch((error: unknown) => {
+          const message = error instanceof Error ? error.message : '创建新会话失败';
+          setInputWarning(message);
+        });
         return;
       }
-      void Promise.resolve(onCreateNewSession()).catch((error: unknown) => {
-        const message = error instanceof Error ? error.message : '创建新会话失败';
-        setInputWarning(message);
-      });
-      return;
+
+      if (slashCommand.name === 'compact') {
+        onSend({ text: '/compact' });
+        resetDraft();
+        setInputWarning(null);
+        return;
+      }
+
+      if (slashCommand.name === 'plan') {
+        const option = slashCommand.args[0]?.toLowerCase();
+        const nextEnabled = option === 'off' || option === 'disable' || option === 'false'
+          ? false
+          : option === 'on' || option === 'enable' || option === 'true'
+            ? true
+            : true;
+        setPlanModeEnabled(nextEnabled);
+        resetDraft();
+        setInputWarning(`计划模式已${nextEnabled ? '开启' : '关闭'}`);
+        return;
+      }
+
+      if (slashCommand.name === 'review') {
+        const [firstArg, ...restArgs] = slashCommand.args;
+        const first = firstArg?.toLowerCase() ?? '';
+        if (first === 'off' || first === 'disable' || first === 'false') {
+          setReviewEnabled(false);
+          resetDraft();
+          setInputWarning('Review 已关闭');
+          return;
+        }
+
+        if (first === 'strict' || first === 'mainline') {
+          setReviewStrictness(first);
+          const target = restArgs.join(' ').trim();
+          if (target.length > 0) setReviewTarget(target);
+          setReviewEnabled(true);
+          resetDraft();
+          setInputWarning(`Review 已开启（${first === 'strict' ? '严格' : '主线'}）`);
+          return;
+        }
+
+        if (slashCommand.rawArgs.length > 0) {
+          setReviewTarget(slashCommand.rawArgs);
+        }
+        setReviewEnabled(true);
+        resetDraft();
+        setInputWarning('Review 已开启');
+        return;
+      }
+
+      if (slashCommand.name === 'status') {
+        const reviewStatus = reviewEnabled
+          ? `开启（${reviewStrictness === 'strict' ? '严格' : '主线'}，上限 ${reviewMaxTurns}）`
+          : '关闭';
+        setInputWarning(`状态：计划模式=${planModeEnabled ? '开启' : '关闭'}；Review=${reviewStatus}`);
+        return;
+      }
+
+      if (slashCommand.name === 'help') {
+        const implemented = listImplementedSlashCommands().map((item) => `/${item.name}`).join(' ');
+        setInputWarning(`已接入命令：${implemented}`);
+        return;
+      }
+
+      if (slashCommand.name === 'quit' || slashCommand.name === 'exit') {
+        setInputWarning('Web 会话中不支持退出进程，请直接关闭页面或切换会话。');
+        return;
+      }
+
+      const commandMeta = getSlashCommandDefinition(slashCommand.name);
+      if (commandMeta) {
+        setInputWarning(`/${slashCommand.name} 已识别，暂未接入（codex /commands 迁移中）`);
+        return;
+      }
     }
 
     const normalizedTarget = reviewTarget.trim();
@@ -901,6 +987,7 @@ const ChatInput: React.FC<{
     reviewStrictness,
     reviewTarget,
     planModeEnabled,
+    reviewMaxTurns,
   ]);
 
   const handleKeyDown = useCallback((e: React.KeyboardEvent<HTMLTextAreaElement>) => {

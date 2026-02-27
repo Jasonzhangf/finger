@@ -396,6 +396,65 @@ export interface TypingIndicatorEvent extends BaseEvent {
 export type InputLockEvent = InputLockChangedEvent | TypingIndicatorEvent;
 
 // =============================================================================
+// Agent Runtime 事件 - 编排/分配/控制/状态
+// =============================================================================
+
+export interface AgentRuntimeCatalogEvent extends BaseEvent {
+  type: 'agent_runtime_catalog';
+  payload: {
+    layer: 'summary' | 'execution' | 'governance' | 'full';
+    count: number;
+    agentIds: string[];
+  };
+}
+
+export interface AgentRuntimeDispatchEvent extends BaseEvent {
+  type: 'agent_runtime_dispatch';
+  agentId?: string;
+  payload: {
+    dispatchId: string;
+    sourceAgentId: string;
+    targetAgentId: string;
+    status: 'queued' | 'completed' | 'failed';
+    blocking: boolean;
+    sessionId?: string;
+    workflowId?: string;
+    error?: string;
+  };
+}
+
+export interface AgentRuntimeControlEvent extends BaseEvent {
+  type: 'agent_runtime_control';
+  agentId?: string;
+  payload: {
+    action: 'status' | 'pause' | 'resume' | 'interrupt' | 'cancel';
+    status: 'accepted' | 'completed' | 'failed';
+    sessionId?: string;
+    workflowId?: string;
+    error?: string;
+  };
+}
+
+export interface AgentRuntimeStatusEvent extends BaseEvent {
+  type: 'agent_runtime_status';
+  agentId?: string;
+  payload: {
+    scope: 'session' | 'workflow' | 'global';
+    status: 'ok' | 'error';
+    sessionId?: string;
+    workflowId?: string;
+    runningAgents: string[];
+    error?: string;
+  };
+}
+
+export type AgentRuntimeEvent =
+  | AgentRuntimeCatalogEvent
+  | AgentRuntimeDispatchEvent
+  | AgentRuntimeControlEvent
+  | AgentRuntimeStatusEvent;
+
+// =============================================================================
 // 统一事件类型
 // =============================================================================
 
@@ -410,6 +469,7 @@ export type RuntimeEvent =
   | HumanInLoopEvent
   | SystemEvent
   | InputLockEvent
+  | AgentRuntimeEvent
   | LoopEvent
   | EpicEvent
   | ContextEvent;
@@ -486,6 +546,14 @@ export const INPUT_LOCK_EVENT_TYPES = [
   'typing_indicator',
 ] as const;
 
+/** Agent Runtime 事件类型集合 */
+export const AGENT_RUNTIME_EVENT_TYPES = [
+  'agent_runtime_catalog',
+  'agent_runtime_dispatch',
+  'agent_runtime_control',
+  'agent_runtime_status',
+] as const;
+
 /** 事件分组 - UI 可按组订阅 */
 export const EVENT_GROUPS = {
   SESSION: SESSION_EVENT_TYPES,
@@ -498,6 +566,7 @@ export const EVENT_GROUPS = {
   HUMAN_IN_LOOP: HUMAN_IN_LOOP_EVENT_TYPES,
   SYSTEM: SYSTEM_EVENT_TYPES,
   INPUT_LOCK: INPUT_LOCK_EVENT_TYPES,
+  AGENT_RUNTIME: AGENT_RUNTIME_EVENT_TYPES,
   ALL: [
     ...SESSION_EVENT_TYPES,
     ...TASK_EVENT_TYPES,
@@ -509,6 +578,7 @@ export const EVENT_GROUPS = {
     ...HUMAN_IN_LOOP_EVENT_TYPES,
     ...SYSTEM_EVENT_TYPES,
     ...INPUT_LOCK_EVENT_TYPES,
+    ...AGENT_RUNTIME_EVENT_TYPES,
   ] as const,
 };
 
@@ -574,4 +644,8 @@ export function isSystemEvent(event: RuntimeEvent): event is SystemEvent {
 
 export function isInputLockEvent(event: RuntimeEvent): event is InputLockEvent {
   return INPUT_LOCK_EVENT_TYPES.includes(event.type as typeof INPUT_LOCK_EVENT_TYPES[number]);
+}
+
+export function isAgentRuntimeEvent(event: RuntimeEvent): event is AgentRuntimeEvent {
+  return AGENT_RUNTIME_EVENT_TYPES.includes(event.type as typeof AGENT_RUNTIME_EVENT_TYPES[number]);
 }

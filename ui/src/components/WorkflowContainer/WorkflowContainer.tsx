@@ -5,13 +5,17 @@ import type { InputCapability } from '../ChatInterface/ChatInterface.js';
 import { AppLayout } from '../layout/AppLayout.js';
 import { LeftSidebar } from '../LeftSidebar/LeftSidebar.js';
 import { BottomPanel } from '../BottomPanel/BottomPanel.js';
+import { AgentConfigDrawer } from '../AgentConfigDrawer/AgentConfigDrawer.js';
 import { SessionResumeDialog } from '../SessionResumeDialog/SessionResumeDialog.js';
 import { useSessionResume } from '../../hooks/useSessionResume.js';
 import { useSessions } from '../../hooks/useSessions.js';
 import { useWorkflowExecution } from '../../hooks/useWorkflowExecution.js';
 import { useAgents } from '../../hooks/useAgents.js';
+import { useAgentRuntimePanel } from '../../hooks/useAgentRuntimePanel.js';
 import { TaskFlowCanvas } from '../TaskFlowCanvas/TaskFlowCanvas.js';
 import type { Loop } from '../TaskFlowCanvas/types.js';
+import { findConfigForAgent, matchInstanceToAgent } from '../BottomPanel/agentRuntimeUtils.js';
+import type { AgentConfig, AgentRuntime } from '../../api/types.js';
 
 interface ResumeCheckResult {
   sessionId: string;
@@ -123,6 +127,8 @@ export const WorkflowContainer: React.FC = () => {
   const {
     executionState,
     runtimeEvents,
+    selectedAgentId,
+    setSelectedAgentId,
     isLoading,
     error,
     pauseWorkflow,
@@ -137,6 +143,17 @@ export const WorkflowContainer: React.FC = () => {
     contextEditableEventIds,
     isConnected,
   } = useWorkflowExecution(sessionId);
+  const {
+    agents: agentPanelAgents,
+    instances: runtimeInstances,
+    configs: agentConfigItems,
+    isLoading: isLoadingAgentPanel,
+    error: agentPanelError,
+    refresh: refreshAgentPanel,
+    controlAgent,
+  } = useAgentRuntimePanel();
+  const [drawerAgentId, setDrawerAgentId] = useState<string | null>(null);
+  const effectiveDrawerAgentId = drawerAgentId ?? selectedAgentId ?? null;
 
   const handleCreateNewSession = useCallback(async (): Promise<void> => {
     const fromStorage = localStorage.getItem(WORKDIR_STORAGE_KEY)?.trim();
@@ -153,20 +170,109 @@ export const WorkflowContainer: React.FC = () => {
 
   // All hooks must be called before any conditional returns
   const runtimeAgents = React.useMemo(() => {
-    if (executionState?.agents && executionState.agents.length > 0) {
-      return executionState.agents;
+    const merged = new Map<string, AgentRuntime>();
+
+    for (const agent of agentPanelAgents) {
+      merged.set(agent.id, {
+        id: agent.id,
+        name: agent.name,
+        type: agent.type,
+        status: agent.status,
+        load: 0,
+        errorRate: 0,
+        requestCount: 0,
+        tokenUsage: 0,
+        ...(agent.instanceCount > 0 ? { instanceCount: agent.instanceCount } : {}),
+      });
     }
-    return agentModules.map((module) => ({
-      id: module.id,
-      name: module.name,
-      type: ((module.metadata?.type as string) || 'executor') as 'executor' | 'reviewer' | 'orchestrator',
-      status: (module.status || 'idle') as 'idle' | 'running' | 'error' | 'paused',
-      load: module.load || 0,
-      errorRate: module.errorRate || 0,
-      requestCount: 0,
-      tokenUsage: 0,
-    }));
-  }, [executionState, agentModules]);
+
+    if (executionState?.agents) {
+      for (const liveAgent of executionState.agents) {
+        const current = merged.get(liveAgent.id);
+        if (!current) {
+          merged.set(liveAgent.id, liveAgent);
+          continue;
+        }
+        merged.set(liveAgent.id, {
+          ...current,
+          ...liveAgent,
+          instanceCount:
+            typeof liveAgent.instanceCount === 'number'
+              ? liveAgent.instanceCount
+              : current.instanceCount,
+        });
+      }
+    }
+
+    return Array.from(merged.values()).sort((a, b) => a.name.localeCompare(b.name));
+  }, [executionState?.agents, agentPanelAgents]);
+
+  const selectedDrawerAgent = useMemo(
+    () => runtimeAgents.find((agent) => agent.id === effectiveDrawerAgentId) ?? null,
+    [effectiveDrawerAgentId, runtimeAgents],
+  );
+
+  const selectedDrawerConfig = useMemo(
+    () => (selectedDrawerAgent ? findConfigForAgent(selectedDrawerAgent, agentConfigItems) : null),
+    [agentConfigItems, selectedDrawerAgent],
+  );
+
+  const selectedDrawerCapabilities = useMemo(
+    () => agentPanelAgents.find((item) => item.id === effectiveDrawerAgentId)?.capabilities ?? null,
+    [agentPanelAgents, effectiveDrawerAgentId],
+  );
+
+  const selectedDrawerInstances = useMemo(
+    () => (selectedDrawerAgent
+      ? runtimeInstances.filter((instance) => matchInstanceToAgent(selectedDrawerAgent, instance))
+      : []),
+    [runtimeInstances, selectedDrawerAgent],
+  );
+
+  const handleSelectAgent = useCallback((agentId: string) => {
+    setSelectedAgentId(agentId);
+    setDrawerAgentId(agentId);
+  }, [setSelectedAgentId]);
+
+  const handleSelectInstance = useCallback(async (instanceIdOrPayload: string | { sessionId?: string }): Promise<void> => {
+    const sessionIdToSwitch = typeof instanceIdOrPayload === 'string'
+      ? runtimeInstances.find((item) => item.id === instanceIdOrPayload)?.sessionId
+      : instanceIdOrPayload.sessionId;
+    if (!sessionIdToSwitch) return;
+    await switchSession(sessionIdToSwitch);
+  }, [runtimeInstances, switchSession]);
+
+  const handleDeployAgent = useCallback(async (payload: { config: AgentConfig; instanceCount: number }): Promise<void> => {
+    const targetSessionId = currentSession?.id || sessionId;
+    const response = await fetch('/api/v1/agents/deploy', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        sessionId: targetSessionId,
+        config: payload.config,
+        scope: 'session',
+        instanceCount: payload.instanceCount,
+      }),
+    });
+    if (!response.ok) {
+      const message = await response.text().catch(() => `HTTP ${response.status}`);
+      throw new Error(message || `HTTP ${response.status}`);
+    }
+    await refreshAgentPanel();
+  }, [currentSession?.id, refreshAgentPanel, sessionId]);
+
+  const handleAgentControl = useCallback(async (payload: {
+    action: 'status' | 'pause' | 'resume' | 'interrupt' | 'cancel';
+    targetAgentId?: string;
+    sessionId?: string;
+    workflowId?: string;
+    providerId?: string;
+    hard?: boolean;
+  }) => {
+    const result = await controlAgent(payload);
+    await refreshAgentPanel();
+    return result;
+  }, [controlAgent, refreshAgentPanel]);
 
   const taskFlowProps = React.useMemo(() => {
     const planHistory: Loop[] = [];
@@ -217,9 +323,10 @@ export const WorkflowContainer: React.FC = () => {
       onInterruptTurn={interruptCurrentTurn}
       isPaused={executionState?.paused || false}
       isConnected={isConnected}
+      onAgentClick={handleSelectAgent}
       inputCapability={chatInputCapability}
     />
-  ), [sessionId, executionState, runtimeAgents, runtimeEvents, contextEditableEventIds, agentRunStatus, runtimeOverview, sendUserInput, editRuntimeEvent, deleteRuntimeEvent, handleCreateNewSession, pauseWorkflow, resumeWorkflow, interruptCurrentTurn, isConnected, chatInputCapability]);
+  ), [sessionId, executionState, runtimeAgents, runtimeEvents, contextEditableEventIds, agentRunStatus, runtimeOverview, toolPanelOverview, sendUserInput, editRuntimeEvent, deleteRuntimeEvent, handleCreateNewSession, pauseWorkflow, resumeWorkflow, interruptCurrentTurn, isConnected, handleSelectAgent, chatInputCapability]);
 
   // Use overlay instead of early return to maintain hook consistency
   const loadingOverlay = isLoading || isLoadingSessions ? (
@@ -258,7 +365,32 @@ export const WorkflowContainer: React.FC = () => {
         }
         canvas={canvasElement}
         rightPanel={rightPanelElement}
-        bottomPanel={<BottomPanel />}
+        bottomPanel={
+          <BottomPanel
+            agents={runtimeAgents}
+            instances={runtimeInstances}
+            configs={agentConfigItems}
+            selectedAgentId={selectedAgentId}
+            currentSessionId={currentSession?.id ?? null}
+            isLoading={isLoadingAgentPanel}
+            error={agentPanelError}
+            onSelectAgent={handleSelectAgent}
+            onSelectInstance={(instance) => { void handleSelectInstance(instance); }}
+            onRefresh={() => { void refreshAgentPanel(); }}
+          />
+        }
+      />
+      <AgentConfigDrawer
+        isOpen={selectedDrawerAgent !== null}
+        agent={selectedDrawerAgent}
+        capabilities={selectedDrawerCapabilities}
+        config={selectedDrawerConfig}
+        instances={selectedDrawerInstances}
+        currentSessionId={currentSession?.id ?? null}
+        onClose={() => setDrawerAgentId(null)}
+        onSwitchInstance={(instance) => { void handleSelectInstance(instance); }}
+        onDeployConfig={handleDeployAgent}
+        onControlAgent={handleAgentControl}
       />
       <SessionResumeDialog
         isOpen={showResumeDialog}

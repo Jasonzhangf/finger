@@ -55,8 +55,12 @@ export class WebSocketClient {
               'workflow_progress',
               'input_lock_changed',
               'typing_indicator',
+              'agent_runtime_catalog',
+              'agent_runtime_dispatch',
+              'agent_runtime_control',
+              'agent_runtime_status',
             ],
-            groups: ['SESSION', 'TASK', 'TOOL', 'DIALOG', 'PROGRESS', 'PHASE', 'HUMAN_IN_LOOP', 'SYSTEM', 'INPUT_LOCK'],
+            groups: ['SESSION', 'TASK', 'TOOL', 'DIALOG', 'PROGRESS', 'PHASE', 'HUMAN_IN_LOOP', 'SYSTEM', 'INPUT_LOCK', 'AGENT_RUNTIME'],
           }));
          resolve();
        };
