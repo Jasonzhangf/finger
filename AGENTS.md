@@ -34,3 +34,10 @@ It intentionally avoids project-specific architecture, API, roadmap, and busines
 - Update docs when behavior, interfaces, or workflows change.
 - Keep documentation concise, accurate, and implementation-agnostic where possible.
 - Use one canonical docs directory naming convention per repo (choose `Docs/` or `docs/` and keep it consistent).
+
+## 三层架构铁律（强制）
+- 代码必须严格三层：`blocks`（基础能力层）/ `orchestration app`（编排层）/ `ui`（呈现层）。
+- `blocks` 只提供基础能力与通用机制，不承载业务流程逻辑；它是全局唯一真源（Single Source of Truth）。
+- `orchestration app` 只做 block 的组合、调度与流程编排，不承载业务规则本体。
+- `ui` 只负责展示与交互，不承载业务编排逻辑；必须与业务实现解耦。
+- 任何新增需求都应优先下沉到 `blocks` 抽象，避免在编排层或 UI 层复制业务语义。
