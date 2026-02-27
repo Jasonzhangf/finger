@@ -25,6 +25,8 @@ import type {
 
 const CHAT_PANEL_TARGET = (import.meta.env.VITE_CHAT_PANEL_TARGET as string | undefined)?.trim() || 'chat-codex-gateway';
 const DEFAULT_CHAT_AGENT_ID = 'chat-codex';
+const ENABLE_UI_DIRECT_AGENT_TEST_ROUTE =
+  (import.meta.env.VITE_UI_DIRECT_AGENT_TEST_ROUTE as string | undefined)?.trim() === '1';
 const MAX_INLINE_FILE_TEXT_CHARS = 12000;
 const SESSION_MESSAGES_FETCH_LIMIT = 0;
 const DEFAULT_CONTEXT_HISTORY_WINDOW_SIZE = 40;
@@ -1400,6 +1402,26 @@ export function useWorkflowExecution(sessionId: string): UseWorkflowExecutionRet
   const runtimeEventsRef = useRef<RuntimeEvent[]>([]);
   const inFlightSendAbortRef = useRef<AbortController | null>(null);
 
+  const resolveMessageRoute = useCallback((): {
+    target: string;
+    headers: Record<string, string>;
+    directTest: boolean;
+  } => {
+    const selected = typeof selectedAgentId === 'string' ? selectedAgentId.trim() : '';
+    const directTest = ENABLE_UI_DIRECT_AGENT_TEST_ROUTE
+      && selected.length > 0
+      && selected !== DEFAULT_CHAT_AGENT_ID
+      && selected !== CHAT_PANEL_TARGET;
+    return {
+      target: directTest ? selected : CHAT_PANEL_TARGET,
+      headers: {
+        'Content-Type': 'application/json',
+        ...(directTest ? { 'x-finger-route-mode': 'test' } : {}),
+      },
+      directTest,
+    };
+  }, [selectedAgentId]);
+
   useEffect(() => {
     executionStateRef.current = executionState;
   }, [executionState]);
@@ -2142,11 +2164,12 @@ export function useWorkflowExecution(sessionId: string): UseWorkflowExecutionRet
       setError(null);
 
       try {
+        const route = resolveMessageRoute();
         const res = await fetch('/api/v1/message', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: route.headers,
           body: JSON.stringify({
-            target: CHAT_PANEL_TARGET,
+            target: route.target,
             message: { text: userTask, content: userTask, sessionId },
             blocking: false,
           }),
@@ -2189,7 +2212,7 @@ export function useWorkflowExecution(sessionId: string): UseWorkflowExecutionRet
         setIsLoading(false);
       }
     },
-    [refreshRuntimeState, sessionId, workflow?.id],
+    [refreshRuntimeState, resolveMessageRoute, sessionId, workflow?.id],
   );
 
   const pauseWorkflow = useCallback(async () => {
@@ -2387,11 +2410,14 @@ const sendUserInput = useCallback(
       },
     ]);
 
+    const route = resolveMessageRoute();
     setAgentRunStatus({
       phase: 'running',
-      text: review
-        ? `chat-codex 正在思考（${planModeEnabled ? '计划模式 · ' : ''}Review: ${review.strictness === 'strict' ? '严格' : '主线'}, 上限 ${review.maxTurns}）...`
-        : `chat-codex 正在思考${planModeEnabled ? '（计划模式）' : ''}...`,
+      text: route.directTest
+        ? `测试直连 ${route.target} 执行中...`
+        : review
+          ? `chat-codex 正在思考（${planModeEnabled ? '计划模式 · ' : ''}Review: ${review.strictness === 'strict' ? '严格' : '主线'}, 上限 ${review.maxTurns}）...`
+          : `chat-codex 正在思考${planModeEnabled ? '（计划模式）' : ''}...`,
       updatedAt: new Date().toISOString(),
     });
 
@@ -2411,7 +2437,7 @@ const sendUserInput = useCallback(
       const abortController = new AbortController();
       inFlightSendAbortRef.current = abortController;
       const requestBody = {
-        target: CHAT_PANEL_TARGET,
+        target: route.target,
         blocking: true,
         message: {
           text: displayText,
@@ -2440,7 +2466,7 @@ const sendUserInput = useCallback(
         try {
           const res = await fetch('/api/v1/message', {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: route.headers,
             signal: abortController.signal,
             body: JSON.stringify(requestBody),
           });
@@ -2697,7 +2723,7 @@ const sendUserInput = useCallback(
       inFlightSendAbortRef.current = null;
     }
   },
-  [appendSessionMessage, sessionId],
+  [appendSessionMessage, resolveMessageRoute, sessionId],
 );
 
 const editRuntimeEvent = useCallback(async (eventId: string, content: string): Promise<boolean> => {

@@ -13,6 +13,15 @@
 
 ## 2. REST 接口
 
+### 2.0 `POST /api/v1/message`（入口约束）
+
+- 默认业务入口必须使用主编排目标（默认 `chat-codex-gateway`）。
+- 非主编排目标直连默认拒绝（`403`, `code=DIRECT_ROUTE_DISABLED`）。
+- 仅测试路径允许直连：
+  - 请求头 `x-finger-route-mode: test`，或
+  - `NODE_ENV=test`，或
+  - sender 为 CLI。
+
 ### 2.1 `GET /api/v1/agents/catalog`
 
 查询 agent 目录与分层能力。
