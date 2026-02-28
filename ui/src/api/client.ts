@@ -12,6 +12,7 @@ import type {
   ProviderConfig,
   AgentStats,
   TaskInfo,
+  PickDirectoryResponse,
 } from './types.js';
 
 const API_BASE = '/api/v1';
@@ -76,6 +77,22 @@ export async function createSession(projectPath: string, name?: string): Promise
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ projectPath, name }),
+  });
+}
+
+export async function pickProjectDirectory(prompt?: string): Promise<PickDirectoryResponse> {
+  return fetchApi<PickDirectoryResponse>('/projects/pick-directory', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ prompt }),
+  });
+}
+
+export async function deleteProjectSessions(projectPath: string): Promise<{ success: boolean; removed: string[] }> {
+  return fetchApi<{ success: boolean; removed: string[] }>('/sessions/project/delete', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ projectPath }),
   });
 }
 

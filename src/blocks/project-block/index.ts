@@ -1,18 +1,26 @@
-import { exec } from 'child_process';
+import { exec, execFile } from 'child_process';
 import { promisify } from 'util';
 import { BaseBlock, type BlockCapabilities } from '../../core/block.js';
 import type { Project } from '../../core/types.js';
 
 const execAsync = promisify(exec);
+const execFileAsync = promisify(execFile);
+
+interface PickDirectoryResult {
+  path: string | null;
+  canceled: boolean;
+  error?: string;
+}
 
 export class ProjectBlock extends BaseBlock {
   readonly type = 'project';
   readonly capabilities: BlockCapabilities = {
-    functions: ['create', 'get', 'update', 'delete', 'list', 'sync'],
+    functions: ['create', 'get', 'update', 'delete', 'list', 'sync', 'pick-directory'],
     cli: [
       { name: 'create', description: 'Create project', args: [] },
       { name: 'list', description: 'List projects', args: [] },
-      { name: 'sync', description: 'Sync to bd', args: [] }
+      { name: 'sync', description: 'Sync to bd', args: [] },
+      { name: 'pick-directory', description: 'Pick project directory', args: [] }
     ],
     stateSchema: {
       projects: { type: 'number', readonly: true, description: 'Total projects' },
@@ -40,6 +48,8 @@ export class ProjectBlock extends BaseBlock {
         return this.list();
       case 'sync':
         return this.sync(args.projectId as string | undefined);
+      case 'pick-directory':
+        return this.pickDirectory(args.prompt as string | undefined);
       default:
         throw new Error(`Unknown command: ${command}`);
     }
@@ -106,5 +116,88 @@ export class ProjectBlock extends BaseBlock {
 
     this.updateState({ data: { lastSync: new Date().toISOString() } });
     return { synced, errors };
+  }
+
+  async pickDirectory(prompt?: string): Promise<PickDirectoryResult> {
+    const dialogPrompt = typeof prompt === 'string' && prompt.trim().length > 0
+      ? prompt.trim()
+      : 'Select project directory';
+    if (process.platform === 'darwin') {
+      return this.pickDirectoryDarwin(dialogPrompt);
+    }
+    if (process.platform === 'linux') {
+      return this.pickDirectoryLinux(dialogPrompt);
+    }
+    if (process.platform === 'win32') {
+      return this.pickDirectoryWindows(dialogPrompt);
+    }
+    return { path: null, canceled: false, error: `Unsupported platform: ${process.platform}` };
+  }
+
+  private async pickDirectoryDarwin(prompt: string): Promise<PickDirectoryResult> {
+    const script = `POSIX path of (choose folder with prompt ${JSON.stringify(prompt)})`;
+    try {
+      const { stdout } = await execFileAsync('osascript', ['-e', script]);
+      const selected = stdout.trim();
+      if (!selected) {
+        return { path: null, canceled: true };
+      }
+      return { path: selected.replace(/\/+$/, ''), canceled: false };
+    } catch (err) {
+      return this.handlePickerError(err);
+    }
+  }
+
+  private async pickDirectoryLinux(prompt: string): Promise<PickDirectoryResult> {
+    try {
+      const { stdout } = await execFileAsync('zenity', ['--file-selection', '--directory', `--title=${prompt}`]);
+      const selected = stdout.trim();
+      if (!selected) {
+        return { path: null, canceled: true };
+      }
+      return { path: selected, canceled: false };
+    } catch (err) {
+      const primary = this.handlePickerError(err);
+      if (primary.canceled || primary.error?.includes('ENOENT')) {
+        return primary;
+      }
+      return primary;
+    }
+  }
+
+  private async pickDirectoryWindows(prompt: string): Promise<PickDirectoryResult> {
+    const script = [
+      'Add-Type -AssemblyName System.Windows.Forms;',
+      '$dialog = New-Object System.Windows.Forms.FolderBrowserDialog;',
+      `$dialog.Description = ${JSON.stringify(prompt)};`,
+      '$dialog.ShowNewFolderButton = $true;',
+      'if ($dialog.ShowDialog() -ne [System.Windows.Forms.DialogResult]::OK) { exit 1 }',
+      'Write-Output $dialog.SelectedPath;',
+    ].join(' ');
+    try {
+      const { stdout } = await execFileAsync('powershell', ['-NoProfile', '-Command', script]);
+      const selected = stdout.trim();
+      if (!selected) {
+        return { path: null, canceled: true };
+      }
+      return { path: selected, canceled: false };
+    } catch (err) {
+      return this.handlePickerError(err);
+    }
+  }
+
+  private handlePickerError(err: unknown): PickDirectoryResult {
+    const message = [
+      err instanceof Error ? err.message : String(err),
+      (err as { stderr?: string }).stderr ?? '',
+      (err as { stdout?: string }).stdout ?? '',
+    ].join(' ').trim();
+    if (message.toLowerCase().includes('user canceled') || message.toLowerCase().includes('cancelled')) {
+      return { path: null, canceled: true };
+    }
+    if (message.length === 0) {
+      return { path: null, canceled: true };
+    }
+    return { path: null, canceled: false, error: message };
   }
 }

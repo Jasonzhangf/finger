@@ -1,9 +1,8 @@
 import express, { type Request } from 'express';
 import { readdir, readFile } from 'fs/promises';
-import { homedir } from 'os';
 import { fileURLToPath } from 'url';
 import { dirname, extname, join } from 'path';
-import { appendFileSync, existsSync, mkdirSync, readFileSync, statSync } from 'fs';
+import { appendFileSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'fs';
 import { registry } from '../core/registry.js';
 import { globalEventBus } from '../runtime/event-bus.js';
 import { globalToolRegistry } from '../runtime/tool-registry.js';
@@ -28,23 +27,45 @@ import { runtimeInstructionBus } from '../orchestration/runtime-instruction-bus.
 import { AskManager } from '../orchestration/ask/ask-manager.js';
 import { recommendLoopTemplates } from '../orchestration/loop/loop-template-registry.js';
 import { resourcePool } from '../orchestration/resource-pool.js';
+import {
+  loadOrchestrationConfig,
+  normalizeReviewPolicy,
+  saveOrchestrationConfig,
+  type OrchestrationConfigV1,
+  type OrchestrationReviewPolicy,
+} from '../orchestration/orchestration-config.js';
 import { resumableSessionManager } from '../orchestration/resumable-session.js';
 import { echoInput, echoOutput } from '../agents/test/mock-echo-agent.js';
 import {
-  CHAT_CODEX_CODING_CLI_ALLOWED_TOOLS,
+  FINGER_CODER_AGENT_ID,
+  FINGER_CODER_ALLOWED_TOOLS,
+  FINGER_EXECUTOR_AGENT_ID,
+  FINGER_EXECUTOR_ALLOWED_TOOLS,
+  FINGER_GENERAL_AGENT_ID,
+  FINGER_GENERAL_ALLOWED_TOOLS,
+  FINGER_ORCHESTRATOR_AGENT_ID,
+  FINGER_ORCHESTRATOR_ALLOWED_TOOLS,
+  FINGER_RESEARCHER_AGENT_ID,
+  FINGER_RESEARCHER_ALLOWED_TOOLS,
+  FINGER_REVIEWER_AGENT_ID,
+  FINGER_REVIEWER_ALLOWED_TOOLS,
   ProcessChatCodexRunner,
-  createChatCodexModule,
+  createFingerGeneralModule,
+  type ChatCodexKernelEvent,
+  type ChatCodexRunContext,
+  type ChatCodexRunResult,
+  type ChatCodexRunner,
+  type ChatCodexRunnerInterruptResult,
+  type ChatCodexRunnerSessionState,
+  type KernelInputItem,
   type ChatCodexLoopEvent,
-} from '../agents/chat-codex/chat-codex-module.js';
-import { createRealOrchestratorModule } from '../agents/daemon/orchestrator-module.js';
-import { createOrchestratorLoop } from '../agents/daemon/orchestrator-loop.js';
-import { createExecutorLoop } from '../agents/daemon/executor-loop.js';
-import { createReviewerModule } from '../agents/daemon/reviewer-module.js';
+} from '../agents/finger-general/finger-general-module.js';
 import { mailbox } from './mailbox.js';
 import { BdTools } from '../agents/shared/bd-tools.js';
 import type { OutputModule } from '../orchestration/module-registry.js';
-import type { Attachment } from '../runtime/events.js';
+import type { Attachment, ToolCallEvent, ToolResultEvent, ToolErrorEvent, AgentStepCompletedEvent } from '../runtime/events.js';
 import { inputLockManager } from '../runtime/input-lock.js';
+import { FINGER_PATHS, ensureFingerLayout, normalizeSessionDirName } from '../core/finger-paths.js';
 import {
   listKernelProviders,
   resolveActiveKernelProviderId,
@@ -66,8 +87,7 @@ import {
   AgentRuntimeBlock,
 } from '../blocks/index.js';
 
-const FINGER_HOME = join(homedir(), '.finger');
-const ERROR_SAMPLE_DIR = join(FINGER_HOME, 'errorsamples');
+const ERROR_SAMPLE_DIR = FINGER_PATHS.logs.errorsamplesDir;
 const BLOCKING_MESSAGE_TIMEOUT_MS = Number.isFinite(Number(process.env.FINGER_BLOCKING_MESSAGE_TIMEOUT_MS))
   ? Math.max(1000, Math.floor(Number(process.env.FINGER_BLOCKING_MESSAGE_TIMEOUT_MS)))
   : 600_000;
@@ -77,12 +97,59 @@ const BLOCKING_MESSAGE_MAX_RETRIES = Number.isFinite(Number(process.env.FINGER_B
 const BLOCKING_MESSAGE_RETRY_BASE_MS = Number.isFinite(Number(process.env.FINGER_BLOCKING_MESSAGE_RETRY_BASE_MS))
   ? Math.max(100, Math.floor(Number(process.env.FINGER_BLOCKING_MESSAGE_RETRY_BASE_MS)))
   : 750;
+const PRIMARY_ORCHESTRATOR_AGENT_ID = FINGER_ORCHESTRATOR_AGENT_ID;
+const PRIMARY_ORCHESTRATOR_GATEWAY_ID = 'finger-orchestrator-gateway';
+const LEGACY_ORCHESTRATOR_AGENT_ID = 'chat-codex';
+const LEGACY_ORCHESTRATOR_GATEWAY_ID = 'chat-codex-gateway';
 const PRIMARY_ORCHESTRATOR_TARGET = (
   process.env.FINGER_PRIMARY_ORCHESTRATOR_TARGET
   || process.env.VITE_CHAT_PANEL_TARGET
-  || 'chat-codex-gateway'
+  || PRIMARY_ORCHESTRATOR_GATEWAY_ID
 ).trim();
 const ALLOW_DIRECT_AGENT_ROUTE = process.env.FINGER_ALLOW_DIRECT_AGENT_ROUTE === '1';
+
+function resolveBoolFlag(name: string, fallback: boolean): boolean {
+  const raw = process.env[name];
+  if (typeof raw !== 'string' || raw.trim().length === 0) {
+    return fallback;
+  }
+  const normalized = raw.trim().toLowerCase();
+  if (normalized === '1' || normalized === 'true' || normalized === 'yes' || normalized === 'on') {
+    return true;
+  }
+  if (normalized === '0' || normalized === 'false' || normalized === 'no' || normalized === 'off') {
+    return false;
+  }
+  return fallback;
+}
+
+const ENABLE_FULL_MOCK_MODE = resolveBoolFlag('FINGER_FULL_MOCK_MODE', false);
+const ENABLE_RUNTIME_DEBUG_MODE = resolveBoolFlag('FINGER_RUNTIME_DEBUG_MODE', false);
+const ENABLE_LEGACY_CHAT_CODEX_ALIAS = resolveBoolFlag('FINGER_ENABLE_LEGACY_CHAT_CODEX_ALIAS', false);
+const ENABLE_MOCK_EXECUTOR = resolveBoolFlag(
+  'FINGER_ENABLE_MOCK_EXECUTOR',
+  false,
+);
+const ENABLE_MOCK_REVIEWER = resolveBoolFlag(
+  'FINGER_ENABLE_MOCK_REVIEWER',
+  false,
+);
+const ENABLE_MOCK_SEARCHER = resolveBoolFlag(
+  'FINGER_ENABLE_MOCK_SEARCHER',
+  false,
+);
+const USE_MOCK_EXECUTOR_LOOP = resolveBoolFlag('FINGER_MOCK_EXECUTOR_LOOP', ENABLE_FULL_MOCK_MODE);
+const USE_MOCK_REVIEWER_LOOP = resolveBoolFlag('FINGER_MOCK_REVIEWER_LOOP', ENABLE_FULL_MOCK_MODE);
+const USE_MOCK_SEARCHER_LOOP = resolveBoolFlag(
+  'FINGER_MOCK_SEARCHER_LOOP',
+  true,
+);
+let runtimeDebugMode = resolveBoolFlag(
+  'FINGER_RUNTIME_DEBUG_MODE',
+  false,
+);
+
+ensureFingerLayout();
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -98,18 +165,10 @@ const LOCAL_IMAGE_MIME_BY_EXT: Record<string, string> = {
   '.svg': 'image/svg+xml',
 };
 
-function encodeProjectPath(projectPath: string): string {
-  return projectPath.replace(/\\/g, '/').replace(/[/:]/g, '_');
-}
-
 function resolveSessionLoopLogPath(sessionId: string): string {
-  const session = sessionManager.getSession(sessionId);
-  const encodedDir = session ? encodeProjectPath(session.projectPath) : '_unknown';
-  const dir = join(FINGER_HOME, 'sessions', encodedDir);
-  if (!existsSync(dir)) {
-    mkdirSync(dir, { recursive: true });
-  }
-  return join(dir, `${sessionId}.loop.jsonl`);
+  const dirs = resolveSessionWorkspaceDirsForMessage(sessionId);
+  const diagnosticsDir = ensureDir(join(dirs.sessionWorkspaceRoot, 'diagnostics'));
+  return join(diagnosticsDir, `${PRIMARY_ORCHESTRATOR_AGENT_ID}.loop.jsonl`);
 }
 
 function appendSessionLoopLog(event: ChatCodexLoopEvent): void {
@@ -152,6 +211,510 @@ interface LoopToolTraceItem {
 
 function isObjectRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null;
+}
+
+interface MockDispatchAssertion {
+  id: string;
+  timestamp: string;
+  agentId: string;
+  agentRole: 'executor' | 'reviewer' | 'searcher';
+  sessionId?: string;
+  workflowId?: string;
+  taskId?: string;
+  content: string;
+  payload: unknown;
+  result: {
+    ok: boolean;
+    summary: string;
+  };
+}
+
+const mockDispatchAssertions: MockDispatchAssertion[] = [];
+const MAX_MOCK_ASSERTIONS = 400;
+type MockAgentRole = 'executor' | 'reviewer' | 'searcher';
+type MockOutcome = 'success' | 'failure';
+
+function parseMockOutcome(raw: string | undefined): MockOutcome {
+  const normalized = (raw ?? '').trim().toLowerCase();
+  return normalized === 'failure' || normalized === 'fail' || normalized === 'error'
+    ? 'failure'
+    : 'success';
+}
+
+const mockRolePolicy: Record<MockAgentRole, MockOutcome> = {
+  executor: parseMockOutcome(process.env.FINGER_MOCK_EXECUTOR_OUTCOME),
+  reviewer: parseMockOutcome(process.env.FINGER_MOCK_REVIEWER_OUTCOME),
+  searcher: parseMockOutcome(process.env.FINGER_MOCK_SEARCHER_OUTCOME),
+};
+
+let activeOrchestrationReviewPolicy: OrchestrationReviewPolicy = { enabled: false };
+
+function firstNonEmptyString(...values: unknown[]): string | undefined {
+  for (const value of values) {
+    if (typeof value !== 'string') continue;
+    const trimmed = value.trim();
+    if (trimmed.length === 0) continue;
+    return trimmed;
+  }
+  return undefined;
+}
+
+interface AgentDispatchResultLike {
+  ok: boolean;
+  dispatchId: string;
+  status: 'queued' | 'completed' | 'failed';
+  result?: unknown;
+  error?: string;
+  queuePosition?: number;
+}
+
+type DispatchTaskLike = (input: {
+  sourceAgentId: string;
+  targetAgentId: string;
+  task: unknown;
+  sessionId?: string;
+  workflowId?: string;
+  blocking?: boolean;
+  queueOnBusy?: boolean;
+  metadata?: Record<string, unknown>;
+}) => Promise<AgentDispatchResultLike>;
+
+type ChatCodexRunnerController = ChatCodexRunner & {
+  listSessionStates(sessionId?: string, providerId?: string): ChatCodexRunnerSessionState[];
+  interruptSession(sessionId: string, providerId?: string): ChatCodexRunnerInterruptResult[];
+};
+
+function shouldUseMockChatCodexRunner(): boolean {
+  return ENABLE_FULL_MOCK_MODE;
+}
+
+class MockChatCodexRunner implements ChatCodexRunnerController {
+  private readonly dispatchTask: DispatchTaskLike;
+  private readonly sessions = new Map<string, { sessionId: string; providerId: string }>();
+
+  constructor(dispatchTask: DispatchTaskLike) {
+    this.dispatchTask = dispatchTask;
+  }
+
+  async runTurn(text: string, _items?: KernelInputItem[], context?: ChatCodexRunContext): Promise<ChatCodexRunResult> {
+    const sessionId = typeof context?.sessionId === 'string' && context.sessionId.trim().length > 0
+      ? context.sessionId.trim()
+      : 'mock-session';
+    const metadata = isObjectRecord(context?.metadata) ? context.metadata : {};
+    const roleProfile = firstNonEmptyString(
+      metadata.roleProfile,
+      metadata.role_profile,
+      metadata.contextLedgerRole,
+      metadata.context_ledger_role,
+      metadata.role,
+    ) ?? 'orchestrator';
+    const workflowId = firstNonEmptyString(metadata.workflowId, metadata.workflow_id) ?? `wf-mock-${Date.now()}`;
+    const content = text.trim().length > 0 ? text.trim() : '[empty input]';
+    const turnId = `mock-turn-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+
+    this.sessions.set(sessionId, { sessionId, providerId: 'mock' });
+
+    const normalizedRole = roleProfile.trim().toLowerCase();
+    if (!normalizedRole.includes('orchestr') && normalizedRole !== 'general') {
+      return this.runRoleTurn(normalizedRole, {
+        sessionId,
+        workflowId,
+        content,
+        turnId,
+        historyCount: Array.isArray(context?.history) ? context.history.length : 0,
+      });
+    }
+
+    const searchTask = {
+      description: `research: ${content}`,
+      content,
+      text: content,
+      sessionId,
+      workflowId,
+      taskId: `task-research-${Date.now()}`,
+      metadata: {
+        role: 'searcher',
+        source: 'finger-general-mock-runner',
+      },
+    };
+    const searchDispatch = await this.dispatch(FINGER_RESEARCHER_AGENT_ID, searchTask, sessionId, workflowId, 'searcher');
+
+    const executorTask = {
+      description: `execute: ${content}`,
+      content,
+      text: content,
+      sessionId,
+      workflowId,
+      taskId: `task-executor-${Date.now()}`,
+      metadata: {
+        role: 'executor',
+        source: 'finger-general-mock-runner',
+        research: searchDispatch.result,
+      },
+    };
+    const executorDispatch = await this.dispatch(FINGER_EXECUTOR_AGENT_ID, executorTask, sessionId, workflowId, 'executor');
+
+    const reviewerTask = {
+      description: `review: ${content}`,
+      content,
+      text: content,
+      sessionId,
+      workflowId,
+      taskId: `task-review-${Date.now()}`,
+      metadata: {
+        role: 'reviewer',
+        source: 'finger-general-mock-runner',
+        claims: executorDispatch.result,
+        evidence: executorDispatch.result,
+      },
+    };
+    const reviewerDispatch = await this.dispatch(FINGER_REVIEWER_AGENT_ID, reviewerTask, sessionId, workflowId, 'reviewer');
+
+    const reviewerResult = isObjectRecord(reviewerDispatch.result) ? reviewerDispatch.result : {};
+    const reviewerPassed = reviewerResult.passed === true || reviewerResult.reviewDecision === 'pass';
+    const reply = reviewerPassed
+      ? `[mock runner] 执行完成: ${content}`
+      : `[mock runner] 需要重试: ${content}`;
+
+    const kernelMetadata: Record<string, unknown> = {
+      stop_reason: reviewerPassed ? 'mock_pass' : 'mock_retry',
+      pendingInputAccepted: false,
+      tool_trace: [
+        {
+          seq: 1,
+          call_id: searchDispatch.dispatchId,
+          tool: `agent.dispatch.${FINGER_RESEARCHER_AGENT_ID}`,
+          status: searchDispatch.ok ? 'ok' : 'error',
+          input: searchTask,
+          ...(searchDispatch.ok ? { output: searchDispatch.result } : { error: searchDispatch.error ?? 'dispatch failed' }),
+        },
+        {
+          seq: 2,
+          call_id: executorDispatch.dispatchId,
+          tool: `agent.dispatch.${FINGER_EXECUTOR_AGENT_ID}`,
+          status: executorDispatch.ok ? 'ok' : 'error',
+          input: executorTask,
+          ...(executorDispatch.ok ? { output: executorDispatch.result } : { error: executorDispatch.error ?? 'dispatch failed' }),
+        },
+        {
+          seq: 3,
+          call_id: reviewerDispatch.dispatchId,
+          tool: `agent.dispatch.${FINGER_REVIEWER_AGENT_ID}`,
+          status: reviewerDispatch.ok ? 'ok' : 'error',
+          input: reviewerTask,
+          ...(reviewerDispatch.ok ? { output: reviewerDispatch.result } : { error: reviewerDispatch.error ?? 'dispatch failed' }),
+        },
+      ],
+      round_trace: [
+        {
+          seq: 1,
+          round: 1,
+          function_calls_count: 3,
+          reasoning_count: 1,
+          history_items_count: Array.isArray(context?.history) ? context.history.length : 0,
+          has_output_text: true,
+          finish_reason: reviewerPassed ? 'completed' : 'review_retry',
+          response_status: reviewerPassed ? 'success' : 'retry',
+        },
+      ],
+      dispatches: {
+        searcher: searchDispatch,
+        executor: executorDispatch,
+        reviewer: reviewerDispatch,
+      },
+    };
+
+    const events: ChatCodexKernelEvent[] = [
+      {
+        id: turnId,
+        msg: {
+          type: 'task_started',
+          message: 'mock runner started',
+          model_context_window: 128000,
+        },
+      },
+      {
+        id: turnId,
+        msg: {
+          type: 'model_round',
+          round: 1,
+          function_calls_count: 3,
+          reasoning_count: 1,
+          has_output_text: true,
+          finish_reason: reviewerPassed ? 'completed' : 'review_retry',
+          response_status: reviewerPassed ? 'success' : 'retry',
+        },
+      },
+      {
+        id: turnId,
+        msg: {
+          type: 'task_complete',
+          last_agent_message: reply,
+          metadata_json: JSON.stringify(kernelMetadata),
+        },
+      },
+    ];
+
+    return {
+      reply,
+      events,
+      usedBinaryPath: 'mock://finger-general-runner',
+      kernelMetadata,
+    };
+  }
+
+  private async runRoleTurn(
+    roleProfile: string,
+    input: {
+      sessionId: string;
+      workflowId: string;
+      content: string;
+      turnId: string;
+      historyCount: number;
+    },
+  ): Promise<ChatCodexRunResult> {
+    if (roleProfile.includes('review')) {
+      const reply = `[mock reviewer] reviewed: ${input.content}`;
+      return {
+        reply,
+        events: [
+          {
+            id: input.turnId,
+            msg: {
+              type: 'task_complete',
+              last_agent_message: reply,
+              metadata_json: JSON.stringify({
+                stop_reason: 'mock_reviewer_pass',
+                pendingInputAccepted: false,
+                round_trace: [{
+                  seq: 1,
+                  round: 1,
+                  function_calls_count: 0,
+                  reasoning_count: 1,
+                  history_items_count: input.historyCount,
+                  has_output_text: true,
+                  finish_reason: 'completed',
+                  response_status: 'success',
+                }],
+              }),
+            },
+          },
+        ],
+        usedBinaryPath: 'mock://finger-general-runner',
+      };
+    }
+
+    if (roleProfile.includes('search') || roleProfile.includes('research')) {
+      const reply = `[mock researcher] summary for: ${input.content}`;
+      return {
+        reply,
+        events: [
+          {
+            id: input.turnId,
+            msg: {
+              type: 'task_complete',
+              last_agent_message: reply,
+              metadata_json: JSON.stringify({
+                stop_reason: 'mock_search_done',
+                pendingInputAccepted: false,
+                round_trace: [{
+                  seq: 1,
+                  round: 1,
+                  function_calls_count: 0,
+                  reasoning_count: 1,
+                  history_items_count: input.historyCount,
+                  has_output_text: true,
+                  finish_reason: 'completed',
+                  response_status: 'success',
+                }],
+              }),
+            },
+          },
+        ],
+        usedBinaryPath: 'mock://finger-general-runner',
+      };
+    }
+
+    const reply = `[mock executor] completed: ${input.content}`;
+    return {
+      reply,
+      events: [
+        {
+          id: input.turnId,
+          msg: {
+            type: 'task_complete',
+            last_agent_message: reply,
+            metadata_json: JSON.stringify({
+              stop_reason: 'mock_executor_done',
+              pendingInputAccepted: false,
+              round_trace: [{
+                seq: 1,
+                round: 1,
+                function_calls_count: 0,
+                reasoning_count: 1,
+                history_items_count: input.historyCount,
+                has_output_text: true,
+                finish_reason: 'completed',
+                response_status: 'success',
+              }],
+            }),
+          },
+        },
+      ],
+      usedBinaryPath: 'mock://finger-general-runner',
+    };
+  }
+
+  listSessionStates(sessionId?: string, providerId?: string): ChatCodexRunnerSessionState[] {
+    const normalizedSessionId = typeof sessionId === 'string' ? sessionId.trim() : '';
+    const normalizedProviderId = typeof providerId === 'string' ? providerId.trim() : '';
+    const states: ChatCodexRunnerSessionState[] = [];
+    for (const session of this.sessions.values()) {
+      if (normalizedSessionId.length > 0 && session.sessionId !== normalizedSessionId) continue;
+      if (normalizedProviderId.length > 0 && session.providerId !== normalizedProviderId) continue;
+      states.push({
+        sessionKey: `${session.sessionId}::provider=${session.providerId}`,
+        sessionId: session.sessionId,
+        providerId: session.providerId,
+        hasActiveTurn: false,
+      });
+    }
+    return states;
+  }
+
+  interruptSession(sessionId: string, providerId?: string): ChatCodexRunnerInterruptResult[] {
+    const normalizedSessionId = sessionId.trim();
+    if (normalizedSessionId.length === 0) return [];
+    const normalizedProviderId = typeof providerId === 'string' ? providerId.trim() : '';
+    const session = this.sessions.get(normalizedSessionId);
+    if (!session) return [];
+    if (normalizedProviderId.length > 0 && session.providerId !== normalizedProviderId) return [];
+    this.sessions.delete(normalizedSessionId);
+    return [{
+      sessionKey: `${session.sessionId}::provider=${session.providerId}`,
+      sessionId: session.sessionId,
+      providerId: session.providerId,
+      hadActiveTurn: false,
+      interrupted: false,
+    }];
+  }
+
+  private async dispatch(
+    targetAgentId: string,
+    task: Record<string, unknown>,
+    sessionId: string,
+    workflowId: string,
+    role: MockAgentRole,
+  ): Promise<AgentDispatchResultLike> {
+    try {
+      return await this.dispatchTask({
+        sourceAgentId: PRIMARY_ORCHESTRATOR_AGENT_ID,
+        targetAgentId,
+        task,
+        sessionId,
+        workflowId,
+        blocking: true,
+        queueOnBusy: true,
+        metadata: {
+          role,
+          source: 'finger-general-mock-runner',
+        },
+      });
+    } catch (error) {
+      return {
+        ok: false,
+        dispatchId: `dispatch-${targetAgentId}-${Date.now()}-error`,
+        status: 'failed',
+        error: error instanceof Error ? error.message : String(error),
+      };
+    }
+  }
+}
+
+class AdaptiveChatCodexRunner implements ChatCodexRunnerController {
+  private readonly realRunner: ProcessChatCodexRunner;
+  private readonly mockRunner: MockChatCodexRunner;
+  private readonly shouldUseMock: () => boolean;
+
+  constructor(realRunner: ProcessChatCodexRunner, mockRunner: MockChatCodexRunner, shouldUseMock: () => boolean) {
+    this.realRunner = realRunner;
+    this.mockRunner = mockRunner;
+    this.shouldUseMock = shouldUseMock;
+  }
+
+  runTurn(text: string, items?: KernelInputItem[], context?: ChatCodexRunContext): Promise<ChatCodexRunResult> {
+    return (this.shouldUseMock() ? this.mockRunner : this.realRunner).runTurn(text, items, context);
+  }
+
+  listSessionStates(sessionId?: string, providerId?: string): ChatCodexRunnerSessionState[] {
+    return (this.shouldUseMock() ? this.mockRunner : this.realRunner).listSessionStates(sessionId, providerId);
+  }
+
+  interruptSession(sessionId: string, providerId?: string): ChatCodexRunnerInterruptResult[] {
+    return (this.shouldUseMock() ? this.mockRunner : this.realRunner).interruptSession(sessionId, providerId);
+  }
+}
+
+function pickMessageContext(
+  message: unknown,
+): {
+  sessionId?: string;
+  workflowId?: string;
+  taskId?: string;
+  content: string;
+  assignment?: Record<string, unknown>;
+} {
+  const record = isObjectRecord(message) ? message : {};
+  const metadata = isObjectRecord(record.metadata) ? record.metadata : {};
+  const assignment = isObjectRecord(metadata.assignment) ? metadata.assignment : undefined;
+  const sessionId = firstNonEmptyString(record.sessionId, record.session_id, metadata.sessionId, metadata.session_id);
+  const workflowId = firstNonEmptyString(record.workflowId, record.workflow_id, metadata.workflowId, metadata.workflow_id);
+  const taskId = firstNonEmptyString(record.taskId, record.task_id, metadata.taskId, metadata.task_id, assignment?.taskId, assignment?.task_id);
+  const content = firstNonEmptyString(record.description, record.text, record.content, taskId) ?? '[empty task]';
+  return {
+    ...(sessionId ? { sessionId } : {}),
+    ...(workflowId ? { workflowId } : {}),
+    ...(taskId ? { taskId } : {}),
+    content,
+    ...(assignment ? { assignment } : {}),
+  };
+}
+
+function recordMockDispatchAssertion(input: {
+  agentId: string;
+  agentRole: MockAgentRole;
+  message: unknown;
+  result: { ok: boolean; summary: string };
+}): MockDispatchAssertion {
+  const timestamp = new Date().toISOString();
+  const context = pickMessageContext(input.message);
+  const assertion: MockDispatchAssertion = {
+    id: `assert-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    timestamp,
+    agentId: input.agentId,
+    agentRole: input.agentRole,
+    ...(context.sessionId ? { sessionId: context.sessionId } : {}),
+    ...(context.workflowId ? { workflowId: context.workflowId } : {}),
+    ...(context.taskId ? { taskId: context.taskId } : {}),
+    content: context.content,
+    payload: input.message,
+    result: input.result,
+  };
+
+  mockDispatchAssertions.push(assertion);
+  while (mockDispatchAssertions.length > MAX_MOCK_ASSERTIONS) {
+    mockDispatchAssertions.shift();
+  }
+
+  broadcastWsMessage({
+    type: 'agent_runtime_mock_assertion',
+    sessionId: assertion.sessionId ?? 'default',
+    agentId: assertion.agentId,
+    timestamp,
+    payload: assertion,
+  });
+
+  return assertion;
 }
 
 function extractLoopToolTrace(raw: unknown): LoopToolTraceItem[] {
@@ -197,7 +760,7 @@ function broadcastWsMessage(message: Record<string, unknown>): void {
 
 function emitToolStepEventsFromLoopEvent(event: ChatCodexLoopEvent): void {
   if (event.phase !== 'kernel_event') return;
-  // chat-codex module already emits realtime tool events (or synthetic recovery events
+  // finger-general module already emits realtime tool events (or synthetic recovery events
   // when realtime events are missing). Keep legacy fallback disabled by default to
   // avoid duplicate tool_result/tool_error entries in UI.
   if (event.payload.enableLegacyToolTraceFallback !== true) return;
@@ -219,7 +782,7 @@ function emitToolStepEventsFromLoopEvent(event: ChatCodexLoopEvent): void {
       broadcastWsMessage({
         type: 'tool_result',
         sessionId: event.sessionId,
-        agentId: 'chat-codex',
+        agentId: FINGER_GENERAL_AGENT_ID,
         timestamp: resultTimestamp,
         payload: {
           toolId,
@@ -235,7 +798,7 @@ function emitToolStepEventsFromLoopEvent(event: ChatCodexLoopEvent): void {
     broadcastWsMessage({
       type: 'tool_error',
       sessionId: event.sessionId,
-      agentId: 'chat-codex',
+      agentId: FINGER_GENERAL_AGENT_ID,
       timestamp: resultTimestamp,
       payload: {
         toolId,
@@ -268,8 +831,8 @@ function emitLoopEventToEventBus(event: ChatCodexLoopEvent): void {
       sessionId: event.sessionId,
       timestamp: event.timestamp,
       payload: {
-        error: typeof event.payload.error === 'string' ? event.payload.error : 'chat-codex loop error',
-        component: 'chat-codex-loop',
+        error: typeof event.payload.error === 'string' ? event.payload.error : 'finger-general runner error',
+        component: 'finger-general-runner',
         recoverable: true,
       },
     });
@@ -365,6 +928,298 @@ let agentRuntimeBlock: AgentRuntimeBlock;
 let loadedAgentConfigs: LoadedAgentConfig[] = [];
 let loadedAgentConfigDir = resolveDefaultAgentConfigDir();
 
+function asString(value: unknown): string | undefined {
+  return typeof value === 'string' && value.trim().length > 0 ? value.trim() : undefined;
+}
+
+function sanitizeWorkspaceComponent(raw: string): string {
+  return raw.trim().replace(/[^a-zA-Z0-9._-]/g, '_');
+}
+
+function ensureDir(dirPath: string): string {
+  if (!existsSync(dirPath)) {
+    mkdirSync(dirPath, { recursive: true });
+  }
+  return dirPath;
+}
+
+function ensureSessionBeadsWorkspace(sessionWorkspaceRoot: string): void {
+  const beadsDir = ensureDir(join(sessionWorkspaceRoot, '.beads'));
+  const beadsConfigPath = join(beadsDir, 'config.yaml');
+  if (!existsSync(beadsConfigPath)) {
+    writeFileSync(beadsConfigPath, 'mode: git-portable\n', 'utf8');
+  }
+}
+
+function resolveSessionWorkspaceRoot(sessionId: string): string {
+  const resolved = sessionManager.resolveSessionWorkspaceRoot(sessionId);
+  if (resolved) return resolved;
+  const fallback = join(
+    FINGER_PATHS.sessions.dir,
+    '_unknown',
+    normalizeSessionDirName(sanitizeWorkspaceComponent(sessionId)),
+    'workspace',
+  );
+  ensureDir(fallback);
+  return fallback;
+}
+
+function resolveSessionAgentWorkspace(sessionWorkspaceRoot: string, agentId: string): string {
+  return join(sessionWorkspaceRoot, 'agents', sanitizeWorkspaceComponent(agentId));
+}
+
+function resolveAgentSessionWorkspace(agentWorkspaceRoot: string, agentSessionId: string): string {
+  return join(agentWorkspaceRoot, 'session', sanitizeWorkspaceComponent(agentSessionId));
+}
+
+interface AgentSessionWorkspaceDirs {
+  agentWorkspaceRoot: string;
+  agentSessionWorkspace: string;
+  memoryDir: string;
+  deliverablesDir: string;
+  exchangeDir: string;
+}
+
+function ensureAgentSessionWorkspaceDirs(agentWorkspaceRoot: string, agentSessionId: string): AgentSessionWorkspaceDirs {
+  const normalizedAgentWorkspaceRoot = ensureDir(agentWorkspaceRoot);
+  const agentSessionWorkspace = ensureDir(resolveAgentSessionWorkspace(normalizedAgentWorkspaceRoot, agentSessionId));
+  ensureSessionBeadsWorkspace(agentSessionWorkspace);
+  const memoryDir = ensureDir(join(agentSessionWorkspace, 'memory'));
+  const deliverablesDir = ensureDir(join(agentSessionWorkspace, 'deliverables'));
+  const exchangeDir = ensureDir(join(agentSessionWorkspace, 'exchange'));
+  return {
+    agentWorkspaceRoot: normalizedAgentWorkspaceRoot,
+    agentSessionWorkspace,
+    memoryDir,
+    deliverablesDir,
+    exchangeDir,
+  };
+}
+
+interface SessionWorkspaceDirs {
+  sessionWorkspaceRoot: string;
+  agentWorkspaceRoot: string;
+  memoryDir: string;
+  deliverablesDir: string;
+  exchangeDir: string;
+}
+
+function ensureSessionWorkspaceDirs(sessionId: string): SessionWorkspaceDirs {
+  const sessionWorkspaceRoot = ensureDir(resolveSessionWorkspaceRoot(sessionId));
+  ensureSessionBeadsWorkspace(sessionWorkspaceRoot);
+  const agentWorkspaceRoot = ensureDir(join(sessionWorkspaceRoot, 'agents'));
+  const memoryDir = ensureDir(join(sessionWorkspaceRoot, 'memory'));
+  const deliverablesDir = ensureDir(join(sessionWorkspaceRoot, 'deliverables'));
+  const exchangeDir = ensureDir(join(sessionWorkspaceRoot, 'exchange'));
+  return {
+    sessionWorkspaceRoot,
+    agentWorkspaceRoot,
+    memoryDir,
+    deliverablesDir,
+    exchangeDir,
+  };
+}
+
+interface RootSessionInfo {
+  id: string;
+  projectPath: string;
+  sessionWorkspaceRoot: string;
+  memoryDir: string;
+  deliverablesDir: string;
+  exchangeDir: string;
+}
+
+function hydrateSessionWorkspace(sessionId: string): RootSessionInfo {
+  const session = sessionManager.getSession(sessionId);
+  if (!session) {
+    throw new Error(`session not found: ${sessionId}`);
+  }
+  const dirs = ensureSessionWorkspaceDirs(session.id);
+  sessionManager.updateContext(session.id, {
+    sessionWorkspaceRoot: dirs.sessionWorkspaceRoot,
+    agentWorkspaceRoot: dirs.agentWorkspaceRoot,
+    memoryDir: dirs.memoryDir,
+    deliverablesDir: dirs.deliverablesDir,
+    exchangeDir: dirs.exchangeDir,
+  });
+  const refreshed = sessionManager.getSession(session.id) ?? session;
+  return {
+    id: refreshed.id,
+    projectPath: refreshed.projectPath,
+    sessionWorkspaceRoot: dirs.sessionWorkspaceRoot,
+    memoryDir: dirs.memoryDir,
+    deliverablesDir: dirs.deliverablesDir,
+    exchangeDir: dirs.exchangeDir,
+  };
+}
+
+function resolveWorkspaceForAgent(agentId: string): string {
+  const root = ensureOrchestratorRootSession();
+  return ensureDir(resolveSessionAgentWorkspace(root.sessionWorkspaceRoot, agentId));
+}
+
+function isRuntimeChildSession(session: { context?: Record<string, unknown> } | null | undefined): boolean {
+  if (!session || typeof session !== 'object') return false;
+  const context = isObjectRecord(session.context) ? session.context : {};
+  return context.sessionTier === 'runtime' || typeof context.parentSessionId === 'string';
+}
+
+function ensureOrchestratorRootSession(): RootSessionInfo {
+  const current = sessionManager.getCurrentSession();
+  if (current && !isRuntimeChildSession(current)) {
+    const hydrated = hydrateSessionWorkspace(current.id);
+    sessionManager.updateContext(current.id, { sessionTier: 'orchestrator-root' });
+    return hydrated;
+  }
+
+  if (current && isRuntimeChildSession(current)) {
+    const rootSessionId = asString((current.context as Record<string, unknown>)?.rootSessionId);
+    if (rootSessionId) {
+      const rootSession = sessionManager.getSession(rootSessionId);
+      if (rootSession && !isRuntimeChildSession(rootSession)) {
+        sessionManager.setCurrentSession(rootSession.id);
+        const hydrated = hydrateSessionWorkspace(rootSession.id);
+        sessionManager.updateContext(rootSession.id, { sessionTier: 'orchestrator-root' });
+        return hydrated;
+      }
+    }
+  }
+
+  const created = sessionManager.createSession(process.cwd(), 'orchestrator', { allowReuse: false });
+  const hydrated = hydrateSessionWorkspace(created.id);
+  sessionManager.updateContext(created.id, {
+    sessionTier: 'orchestrator-root',
+  });
+  return hydrated;
+}
+
+function findRuntimeChildSession(rootSessionId: string, agentId: string): { id: string; projectPath: string } | null {
+  const sessions = sessionManager.listSessions();
+  for (const session of sessions) {
+    const context = isObjectRecord(session.context) ? session.context : {};
+    if (context.sessionTier !== 'runtime') continue;
+    if (asString(context.parentSessionId) !== rootSessionId) continue;
+    if (asString(context.ownerAgentId) !== agentId) continue;
+    return {
+      id: session.id,
+      projectPath: session.projectPath,
+    };
+  }
+  return null;
+}
+
+function ensureRuntimeChildSession(root: RootSessionInfo, agentId: string): { id: string; projectPath: string } {
+  const agentWorkspaceRoot = ensureDir(resolveSessionAgentWorkspace(root.sessionWorkspaceRoot, agentId));
+  const existing = findRuntimeChildSession(root.id, agentId);
+  if (existing) {
+    const dirs = ensureAgentSessionWorkspaceDirs(agentWorkspaceRoot, existing.id);
+    sessionManager.updateContext(existing.id, {
+      sessionTier: 'runtime',
+      parentSessionId: root.id,
+      rootSessionId: root.id,
+      ownerAgentId: agentId,
+      sessionWorkspaceRoot: root.sessionWorkspaceRoot,
+      memoryDir: dirs.memoryDir,
+      deliverablesDir: dirs.deliverablesDir,
+      exchangeDir: dirs.exchangeDir,
+      agentWorkspaceRoot,
+      agentSessionWorkspace: dirs.agentSessionWorkspace,
+    });
+    return {
+      id: existing.id,
+      projectPath: sessionManager.getSession(existing.id)?.projectPath ?? dirs.agentSessionWorkspace,
+    };
+  }
+
+  const created = sessionManager.createSession(root.projectPath, `${agentId} runtime`, { allowReuse: false });
+  const dirs = ensureAgentSessionWorkspaceDirs(agentWorkspaceRoot, created.id);
+  sessionManager.updateContext(created.id, {
+    sessionTier: 'runtime',
+    parentSessionId: root.id,
+    rootSessionId: root.id,
+    ownerAgentId: agentId,
+    sessionWorkspaceRoot: root.sessionWorkspaceRoot,
+    memoryDir: dirs.memoryDir,
+    deliverablesDir: dirs.deliverablesDir,
+    exchangeDir: dirs.exchangeDir,
+    agentWorkspaceRoot,
+    agentSessionWorkspace: dirs.agentSessionWorkspace,
+  });
+  sessionManager.setCurrentSession(root.id);
+  return {
+    id: created.id,
+    projectPath: sessionManager.getSession(created.id)?.projectPath ?? dirs.agentSessionWorkspace,
+  };
+}
+
+async function applyOrchestrationConfig(config: OrchestrationConfigV1): Promise<{
+  applied: number;
+  agents: string[];
+  profileId: string;
+}> {
+  const profile = config.profiles.find((item) => item.id === config.activeProfileId);
+  if (!profile) {
+    throw new Error(`active orchestration profile not found: ${config.activeProfileId}`);
+  }
+  activeOrchestrationReviewPolicy = normalizeReviewPolicy(profile.reviewPolicy);
+  const rootSession = ensureOrchestratorRootSession();
+  const appliedAgents: string[] = [];
+  const activeAgentIds = new Set(
+    profile.agents.filter((item) => item.enabled !== false).map((item) => item.targetAgentId),
+  );
+  const runtimeView = await agentRuntimeBlock.execute('runtime_view', {}) as {
+    agents?: Array<{ id: string; instanceCount?: number }>;
+  };
+  const currentlyStartedAgentIds = (runtimeView.agents ?? [])
+    .filter((item) => (Number.isFinite(item.instanceCount) ? (item.instanceCount as number) > 0 : false))
+    .map((item) => item.id);
+
+  for (const staleAgentId of currentlyStartedAgentIds) {
+    if (activeAgentIds.has(staleAgentId)) continue;
+    const staleSession = findRuntimeChildSession(rootSession.id, staleAgentId);
+    await agentRuntimeBlock.execute('deploy', {
+      sessionId: staleSession?.id ?? rootSession.id,
+      scope: 'session',
+      targetAgentId: staleAgentId,
+      config: {
+        id: staleAgentId,
+        name: staleAgentId,
+        enabled: false,
+      },
+    });
+  }
+
+  for (const entry of profile.agents) {
+    if (entry.enabled === false) continue;
+    const targetSessionId = entry.role === 'orchestrator'
+      ? rootSession.id
+      : ensureRuntimeChildSession(rootSession, entry.targetAgentId).id;
+    await agentRuntimeBlock.execute('deploy', {
+      sessionId: targetSessionId,
+      scope: 'session',
+      targetAgentId: entry.targetAgentId,
+      ...(typeof entry.targetImplementationId === 'string'
+        ? { targetImplementationId: entry.targetImplementationId }
+        : {}),
+      instanceCount: entry.instanceCount ?? 1,
+      launchMode: entry.launchMode ?? (entry.role === 'orchestrator' ? 'orchestrator' : 'manual'),
+      config: {
+        id: entry.targetAgentId,
+        name: entry.targetAgentId,
+        role: entry.role,
+        enabled: true,
+      },
+    });
+    appliedAgents.push(entry.targetAgentId);
+  }
+  sessionManager.setCurrentSession(rootSession.id);
+  return {
+    applied: appliedAgents.length,
+    agents: appliedAgents,
+    profileId: profile.id,
+  };
+}
+
 function reloadAgentJsonConfigs(configDir = loadedAgentConfigDir): void {
   const result = loadAgentJsonConfigs(configDir);
   loadedAgentConfigDir = result.dir;
@@ -384,43 +1239,88 @@ const activeKernelProviderId = resolveActiveKernelProviderId();
 console.log(`[Server] Active kernel provider: ${activeKernelProviderId}`);
 await moduleRegistry.register(echoInput);
 await moduleRegistry.register(echoOutput);
-const chatCodexRunner = new ProcessChatCodexRunner({
+const processChatCodexRunner = new ProcessChatCodexRunner({
   timeoutMs: 600_000,
   toolExecution: {
     daemonUrl: `http://127.0.0.1:${PORT}`,
-    agentId: 'chat-codex',
+    agentId: FINGER_GENERAL_AGENT_ID,
   },
 });
-const chatCodexModule = createChatCodexModule({
-  resolveToolSpecifications: async (toolNames) => {
-    const resolved: Array<{ name: string; description?: string; inputSchema?: Record<string, unknown> }> = [];
-    for (const name of toolNames) {
-      const tool = globalToolRegistry.get(name);
-      if (!tool || tool.policy !== 'allow') continue;
-      resolved.push({
-        name: tool.name,
-        description: tool.description,
-        inputSchema:
-          typeof tool.inputSchema === 'object' && tool.inputSchema !== null
-            ? (tool.inputSchema as Record<string, unknown>)
-            : { type: 'object', additionalProperties: true },
-      });
-    }
-    return resolved;
-  },
-  toolExecution: {
-    daemonUrl: `http://127.0.0.1:${PORT}`,
-    agentId: 'chat-codex',
-  },
-  onLoopEvent: (event) => {
-    appendSessionLoopLog(event);
-    emitLoopEventToEventBus(event);
-  },
-}, chatCodexRunner);
-await moduleRegistry.register(chatCodexModule);
-console.log('[Server] Chat Codex module registered: chat-codex');
-const chatCodexPolicy = runtime.setAgentToolWhitelist('chat-codex', CHAT_CODEX_CODING_CLI_ALLOWED_TOOLS);
-console.log('[Server] Chat Codex tool whitelist applied:', chatCodexPolicy.whitelist.join(', '));
+const mockChatCodexRunner = new MockChatCodexRunner(dispatchTaskToAgent);
+const chatCodexRunner: ChatCodexRunnerController = new AdaptiveChatCodexRunner(
+  processChatCodexRunner,
+  mockChatCodexRunner,
+  shouldUseMockChatCodexRunner,
+);
+const resolveFingerToolSpecifications = async (toolNames: string[]) => {
+  const resolved: Array<{ name: string; description?: string; inputSchema?: Record<string, unknown> }> = [];
+  for (const name of toolNames) {
+    const tool = globalToolRegistry.get(name);
+    if (!tool || tool.policy !== 'allow') continue;
+    resolved.push({
+      name: tool.name,
+      description: tool.description,
+      inputSchema:
+        typeof tool.inputSchema === 'object' && tool.inputSchema !== null
+          ? (tool.inputSchema as Record<string, unknown>)
+          : { type: 'object', additionalProperties: true },
+    });
+  }
+  return resolved;
+};
+
+const registerFingerRoleModule = async (
+  id: string,
+  roleProfile: 'general' | 'orchestrator' | 'researcher' | 'executor' | 'coder' | 'reviewer',
+  allowedTools: string[],
+): Promise<void> => {
+  const roleModule = createFingerGeneralModule({
+    id,
+    name: id,
+    roleProfile,
+    resolveToolSpecifications: resolveFingerToolSpecifications,
+    toolExecution: {
+      daemonUrl: `http://127.0.0.1:${PORT}`,
+      agentId: id,
+    },
+    onLoopEvent: (event) => {
+      appendSessionLoopLog(event);
+      emitLoopEventToEventBus(event);
+    },
+  }, chatCodexRunner);
+  await moduleRegistry.register(roleModule);
+  const policy = runtime.setAgentToolWhitelist(id, allowedTools);
+  console.log(`[Server] ${id} module registered, tools=${policy.whitelist.join(', ')}`);
+};
+
+await registerFingerRoleModule(FINGER_GENERAL_AGENT_ID, 'general', FINGER_GENERAL_ALLOWED_TOOLS);
+await registerFingerRoleModule(FINGER_ORCHESTRATOR_AGENT_ID, 'orchestrator', FINGER_ORCHESTRATOR_ALLOWED_TOOLS);
+await registerFingerRoleModule(FINGER_RESEARCHER_AGENT_ID, 'researcher', FINGER_RESEARCHER_ALLOWED_TOOLS);
+await registerFingerRoleModule(FINGER_EXECUTOR_AGENT_ID, 'executor', FINGER_EXECUTOR_ALLOWED_TOOLS);
+await registerFingerRoleModule(FINGER_CODER_AGENT_ID, 'coder', FINGER_CODER_ALLOWED_TOOLS);
+await registerFingerRoleModule(FINGER_REVIEWER_AGENT_ID, 'reviewer', FINGER_REVIEWER_ALLOWED_TOOLS);
+
+if (ENABLE_LEGACY_CHAT_CODEX_ALIAS) {
+  const legacyChatCodexAlias = createFingerGeneralModule({
+    id: LEGACY_ORCHESTRATOR_AGENT_ID,
+    name: LEGACY_ORCHESTRATOR_AGENT_ID,
+    roleProfile: 'general',
+    resolveToolSpecifications: async (toolNames) => {
+      return resolveFingerToolSpecifications(toolNames);
+    },
+    toolExecution: {
+      daemonUrl: `http://127.0.0.1:${PORT}`,
+      agentId: LEGACY_ORCHESTRATOR_AGENT_ID,
+    },
+    onLoopEvent: (event) => {
+      appendSessionLoopLog(event);
+      emitLoopEventToEventBus(event);
+    },
+  }, chatCodexRunner);
+  await moduleRegistry.register(legacyChatCodexAlias);
+  runtime.setAgentToolWhitelist(LEGACY_ORCHESTRATOR_AGENT_ID, FINGER_GENERAL_ALLOWED_TOOLS);
+}
+console.log(`[Server] Finger runner mode: ${shouldUseMockChatCodexRunner() ? 'mock' : 'real'} (profile/env aware)`);
 
 agentRuntimeBlock = new AgentRuntimeBlock('agent-runtime-1', {
   moduleRegistry,
@@ -433,45 +1333,194 @@ agentRuntimeBlock = new AgentRuntimeBlock('agent-runtime-1', {
   chatCodexRunner,
   resourcePool,
   getLoadedAgentConfigs: () => loadedAgentConfigs,
-  primaryOrchestratorAgentId: 'chat-codex',
+  primaryOrchestratorAgentId: PRIMARY_ORCHESTRATOR_AGENT_ID,
 });
 await agentRuntimeBlock.initialize();
 await agentRuntimeBlock.start();
 const agentRuntimeTools = registerAgentRuntimeTools();
 console.log(`[Server] Agent runtime tools loaded: ${agentRuntimeTools.join(', ')}`);
 
- // 注册真正的编排者 - 集成 iFlow SDK + bd 任务管理
- const { module: realOrchestrator } = createRealOrchestratorModule({
-   id: 'orchestrator-1',
-   name: 'Real Orchestrator',
-   mode: 'auto',
-   systemPrompt: '你是一个任务编排专家。请将用户任务拆解为可执行的子任务，并以JSON格式返回。',
- }, hub);
- await realOrchestrator.initialize?.(hub);
- await moduleRegistry.register(realOrchestrator);
- console.log('[Server] Real Orchestrator module registered: orchestrator-1');
+const createMockRuntimeRoleModule = (params: {
+  id: string;
+  name: string;
+  role: MockAgentRole;
+}): OutputModule => ({
+  id: params.id,
+  type: 'output',
+  name: params.name,
+  version: '1.0.0',
+  metadata: {
+    role: params.role,
+    type: `${params.role}-agent`,
+    mode: 'mock',
+    provider: 'mock',
+  },
+  handle: async (message: unknown, callback?: (result: unknown) => void) => {
+    const taskPayload = isObjectRecord(message) && message.task !== undefined ? message.task : message;
+    const context = pickMessageContext(taskPayload);
+    const timestamp = new Date().toISOString();
+    const outcome = mockRolePolicy[params.role];
+    const ok = outcome === 'success';
+    const runStatus = ok ? 'ok' : 'error';
 
-if (process.env.FINGER_ENABLE_MOCK_EXECUTOR === '1') {
-  const executorMock: OutputModule = {
+    void globalEventBus.emit({
+      type: 'agent_runtime_status',
+      sessionId: context.sessionId ?? 'default',
+      agentId: params.id,
+      timestamp,
+      payload: {
+        scope: context.workflowId ? 'workflow' : 'session',
+        status: runStatus,
+        ...(context.workflowId ? { workflowId: context.workflowId } : {}),
+        runningAgents: [params.id],
+      },
+    });
+
+    let result: Record<string, unknown>;
+    if (params.role === 'reviewer') {
+      result = ok
+        ? {
+            success: true,
+            reviewDecision: 'pass',
+            passed: true,
+            summary: `[mock:reviewer] approved ${context.taskId ?? context.content}`,
+          }
+        : {
+            success: true,
+            reviewDecision: 'retry',
+            passed: false,
+            comments: `[mock:reviewer] forced retry for ${context.taskId ?? context.content}`,
+            summary: `[mock:reviewer] retry ${context.taskId ?? context.content}`,
+          };
+    } else if (params.role === 'searcher') {
+      result = ok
+        ? {
+            success: true,
+            taskId: context.taskId,
+            summary: `[mock:searcher] summary for ${context.taskId ?? context.content}`,
+            artifacts: {
+              summaryPath: `mock://${params.id}/summary.md`,
+              memoryPath: `mock://${params.id}/memory.jsonl`,
+            },
+          }
+        : {
+            success: false,
+            taskId: context.taskId,
+            error: `[mock:searcher] forced failure for ${context.taskId ?? context.content}`,
+          };
+    } else {
+      result = ok
+        ? {
+            success: true,
+            taskId: context.taskId,
+            output: `[mock:executor] completed ${context.content}`,
+          }
+        : {
+            success: false,
+            taskId: context.taskId,
+            error: `[mock:executor] forced failure for ${context.content}`,
+          };
+    }
+    const summary = ok
+      ? `[mock:${params.role}] success ${context.taskId ?? context.content}`
+      : `[mock:${params.role}] failure ${context.taskId ?? context.content}`;
+    recordMockDispatchAssertion({
+      agentId: params.id,
+      agentRole: params.role,
+      message: taskPayload,
+      result: { ok, summary },
+    });
+
+    void globalEventBus.emit({
+      type: 'agent_runtime_status',
+      sessionId: context.sessionId ?? 'default',
+      agentId: params.id,
+      timestamp: new Date().toISOString(),
+      payload: {
+        scope: context.workflowId ? 'workflow' : 'session',
+        status: runStatus,
+        ...(context.workflowId ? { workflowId: context.workflowId } : {}),
+        runningAgents: [],
+      },
+    });
+
+    if (callback) callback(result);
+    return result;
+  },
+});
+
+const DEBUG_RUNTIME_MODULE_IDS = ['executor-debug-agent', 'reviewer-debug-agent', 'searcher-debug-agent'] as const;
+
+async function ensureDebugRuntimeModules(enabled: boolean): Promise<void> {
+  const executorId = 'executor-debug-agent';
+  const reviewerId = 'reviewer-debug-agent';
+  const searcherId = 'searcher-debug-agent';
+  if (enabled) {
+    if (!moduleRegistry.getModule(executorId)) {
+      await moduleRegistry.register(createMockRuntimeRoleModule({
+        id: executorId,
+        name: 'Executor Debug Agent',
+        role: 'executor',
+      }));
+      console.log('[Server] Debug Executor module registered: executor-debug-agent');
+    }
+    if (!moduleRegistry.getModule(reviewerId)) {
+      await moduleRegistry.register(createMockRuntimeRoleModule({
+        id: reviewerId,
+        name: 'Reviewer Debug Agent',
+        role: 'reviewer',
+      }));
+      console.log('[Server] Debug Reviewer module registered: reviewer-debug-agent');
+    }
+    if (!moduleRegistry.getModule(searcherId)) {
+      await moduleRegistry.register(createMockRuntimeRoleModule({
+        id: searcherId,
+        name: 'Searcher Debug Agent',
+        role: 'searcher',
+      }));
+      console.log('[Server] Debug Searcher module registered: searcher-debug-agent');
+    }
+    return;
+  }
+
+  for (const moduleId of DEBUG_RUNTIME_MODULE_IDS) {
+    if (!moduleRegistry.getModule(moduleId)) continue;
+    await moduleRegistry.unregister(moduleId);
+    console.log(`[Server] Debug module unregistered: ${moduleId}`);
+  }
+}
+
+if (ENABLE_MOCK_EXECUTOR) {
+  const executorMock = createMockRuntimeRoleModule({
     id: 'executor-mock',
-    type: 'output',
     name: 'Mock Executor',
-    version: '1.0.0',
-    handle: async (message: any, callback) => {
-      const task = message.task || message;
-      console.log('[MockExecutor] executing task:', task.description || task);
-      const result = {
-        taskId: task.taskId || message.taskId,
-        success: true,
-        output: `执行完成：${task.description || JSON.stringify(task)}`,
-      };
-      if (callback) callback(result);
-      return result;
-    },
-  };
+    role: 'executor',
+  });
   await moduleRegistry.register(executorMock);
   console.log('[Server] Mock Executor module registered: executor-mock');
 }
+
+if (ENABLE_MOCK_REVIEWER) {
+  const reviewerMock = createMockRuntimeRoleModule({
+    id: 'reviewer-mock',
+    name: 'Mock Reviewer',
+    role: 'reviewer',
+  });
+  await moduleRegistry.register(reviewerMock);
+  console.log('[Server] Mock Reviewer module registered: reviewer-mock');
+}
+
+if (ENABLE_MOCK_SEARCHER) {
+  const searcherMock = createMockRuntimeRoleModule({
+    id: 'searcher-mock',
+    name: 'Mock Searcher',
+    role: 'searcher',
+  });
+  await moduleRegistry.register(searcherMock);
+  console.log('[Server] Mock Searcher module registered: searcher-mock');
+}
+
+await ensureDebugRuntimeModules(runtimeDebugMode);
 
 // 加载 autostart agents
 await loadAutostartAgents(moduleRegistry).catch(err => {
@@ -487,7 +1536,7 @@ moduleRegistry.createRoute(() => true, 'echo-output', {
   priority: 0,
   description: 'default route to echo-output'
 });
-console.log('[Server] Orchestration modules initialized: echo-input, echo-output, chat-codex, orchestrator-1');
+console.log('[Server] Orchestration modules initialized: echo-input, echo-output, finger-general, finger-orchestrator');
 
 app.get('/health', (_req, res) => {
   res.json({ status: 'healthy', timestamp: new Date().toISOString() });
@@ -1114,6 +2163,12 @@ function formatSessionPreview(session: ReturnType<typeof sessionManager.listSess
 }
 
 function toSessionResponse(session: ReturnType<typeof sessionManager.listSessions>[number]): Record<string, unknown> {
+  const context = isObjectRecord(session.context) ? session.context : {};
+  const sessionTier = asString(context.sessionTier);
+  const ownerAgentId = asString(context.ownerAgentId);
+  const rootSessionId = asString(context.rootSessionId);
+  const parentSessionId = asString(context.parentSessionId);
+  const sessionWorkspaceRoot = asString(context.sessionWorkspaceRoot);
   return {
     id: session.id,
     name: session.name,
@@ -1123,16 +2178,23 @@ function toSessionResponse(session: ReturnType<typeof sessionManager.listSession
     lastAccessedAt: session.lastAccessedAt,
     messageCount: session.messages.length,
     activeWorkflows: session.activeWorkflows,
+    ...(sessionTier ? { sessionTier } : {}),
+    ...(ownerAgentId ? { ownerAgentId } : {}),
+    ...(rootSessionId ? { rootSessionId } : {}),
+    ...(parentSessionId ? { parentSessionId } : {}),
+    ...(sessionWorkspaceRoot ? { sessionWorkspaceRoot } : {}),
     ...formatSessionPreview(session),
   };
 }
 
 app.get('/api/v1/sessions', (_req, res) => {
-  const sessions = sessionManager.listSessions();
+  sessionManager.refreshSessionsFromDisk();
+  const sessions = sessionManager.listRootSessions();
   res.json(sessions.map((session) => toSessionResponse(session)));
 });
 
 app.get('/api/v1/sessions/current', (_req, res) => {
+  sessionManager.refreshSessionsFromDisk();
   const session = sessionManager.getCurrentSession();
   if (!session) {
     res.status(404).json({ error: 'No current session' });
@@ -1161,7 +2223,43 @@ app.post('/api/v1/sessions', (req, res) => {
   res.json(toSessionResponse(session));
 });
 
+app.post('/api/v1/projects/pick-directory', async (req, res) => {
+  const prompt = typeof req.body?.prompt === 'string' ? req.body.prompt : undefined;
+  const projectBlock = registry.getBlocksByType('project')[0];
+  if (!projectBlock) {
+    res.status(500).json({ error: 'Project block not available' });
+    return;
+  }
+  try {
+    const result = await projectBlock.execute('pick-directory', { prompt });
+    res.json(result);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    res.status(500).json({ error: message });
+  }
+});
+
+app.post('/api/v1/sessions/project/delete', (req, res) => {
+  const { projectPath, allowActive } = req.body as { projectPath?: string; allowActive?: boolean };
+  if (!projectPath || typeof projectPath !== 'string' || projectPath.trim().length === 0) {
+    res.status(400).json({ error: 'Missing projectPath' });
+    return;
+  }
+  sessionManager.refreshSessionsFromDisk();
+  const result = sessionManager.deleteProjectSessions(projectPath, { allowActive: allowActive === true });
+  if (result.hadActive) {
+    res.status(409).json({ error: 'Project has active workflows' });
+    return;
+  }
+  res.json({
+    success: true,
+    removed: result.removed,
+    projectDir: result.projectDir,
+  });
+});
+
 app.get('/api/v1/sessions/:id', (req, res) => {
+  sessionManager.refreshSessionsFromDisk();
   const session = sessionManager.getSession(req.params.id);
   if (!session) {
     res.status(404).json({ error: 'Session not found' });
@@ -1200,6 +2298,7 @@ app.delete('/api/v1/sessions/:id', (req, res) => {
 
 // Session messages
 app.get('/api/v1/sessions/:sessionId/messages', (req, res) => {
+  sessionManager.refreshSessionsFromDisk();
   const parsedLimit = req.query.limit ? parseInt(req.query.limit as string, 10) : 50;
   const limit = Number.isFinite(parsedLimit) ? parsedLimit : 50;
   const messages = sessionManager.getMessages(req.params.sessionId, limit);
@@ -1279,7 +2378,7 @@ app.post('/api/v1/sessions/:sessionId/messages/append', (req, res) => {
   res.json({ success: true, message });
 });
 
-app.post('/api/v1/chat-codex/sessions/:sessionId/interrupt', (req, res) => {
+const interruptFingerRunnerSession = (req: Request, res: express.Response): void => {
   const sessionId = typeof req.params.sessionId === 'string' ? req.params.sessionId.trim() : '';
   if (sessionId.length === 0) {
     res.status(400).json({ error: 'sessionId is required' });
@@ -1321,7 +2420,10 @@ app.post('/api/v1/chat-codex/sessions/:sessionId/interrupt', (req, res) => {
     sessions: interrupted,
     timestamp,
   });
-});
+};
+
+app.post('/api/v1/finger-general/sessions/:sessionId/interrupt', interruptFingerRunnerSession);
+app.post('/api/v1/chat-codex/sessions/:sessionId/interrupt', interruptFingerRunnerSession);
 
 app.patch('/api/v1/sessions/:sessionId/messages/:messageId', (req, res) => {
   const { content } = req.body as { content?: string };
@@ -1775,7 +2877,7 @@ app.post('/api/v1/workflow/input', async (req, res) => {
   }
 
   const askResolution = askManager.resolveOldestByScope({
-    agentId: 'chat-codex',
+    agentId: PRIMARY_ORCHESTRATOR_AGENT_ID,
     workflowId: String(workflowId),
     ...(typeof workflow.epicId === 'string' && workflow.epicId.trim().length > 0 ? { epicId: workflow.epicId.trim() } : {}),
     ...(typeof workflow.sessionId === 'string' && workflow.sessionId.trim().length > 0 ? { sessionId: workflow.sessionId.trim() } : {}),
@@ -1869,7 +2971,8 @@ async function dispatchTaskToAgent(input: AgentDispatchRequest): Promise<{
   error?: string;
   queuePosition?: number;
 }> {
-  const result = await agentRuntimeBlock.execute('dispatch', input as unknown as Record<string, unknown>) as {
+  const normalizedInput = withDispatchWorkspaceDefaults(input);
+  const result = await agentRuntimeBlock.execute('dispatch', normalizedInput as unknown as Record<string, unknown>) as {
     ok: boolean;
     dispatchId: string;
     status: 'queued' | 'completed' | 'failed';
@@ -1877,8 +2980,55 @@ async function dispatchTaskToAgent(input: AgentDispatchRequest): Promise<{
     error?: string;
     queuePosition?: number;
   };
-  await syncBdDispatchLifecycle(input, result);
+  await syncBdDispatchLifecycle(normalizedInput, result);
   return result;
+}
+
+function withDispatchWorkspaceDefaults(input: AgentDispatchRequest): AgentDispatchRequest {
+  const taskRecord = isObjectRecord(input.task) ? input.task : null;
+  const inputMetadata = isObjectRecord(input.metadata) ? input.metadata : {};
+  const taskMetadata = taskRecord && isObjectRecord(taskRecord.metadata) ? taskRecord.metadata : {};
+  const sessionId = firstNonEmptyString(
+    input.sessionId,
+    taskRecord?.sessionId,
+    taskRecord?.session_id,
+    inputMetadata.sessionId,
+    inputMetadata.session_id,
+    taskMetadata.sessionId,
+    taskMetadata.session_id,
+  );
+  if (!sessionId) return input;
+
+  const dirs = resolveSessionWorkspaceDirsForMessage(sessionId);
+  const withWorkspaceMetadata = (metadata: Record<string, unknown>): Record<string, unknown> => ({
+    ...metadata,
+    ...(typeof metadata.contextLedgerRootDir === 'string' && metadata.contextLedgerRootDir.trim().length > 0
+      ? {}
+      : { contextLedgerRootDir: dirs.memoryDir }),
+    ...(typeof metadata.deliverablesDir === 'string' && metadata.deliverablesDir.trim().length > 0
+      ? {}
+      : { deliverablesDir: dirs.deliverablesDir }),
+    ...(typeof metadata.exchangeDir === 'string' && metadata.exchangeDir.trim().length > 0
+      ? {}
+      : { exchangeDir: dirs.exchangeDir }),
+  });
+
+  const normalizedTask = taskRecord
+    ? {
+      ...taskRecord,
+      ...(typeof taskRecord.sessionId === 'string' && taskRecord.sessionId.trim().length > 0
+        ? {}
+        : { sessionId }),
+      metadata: withWorkspaceMetadata(taskMetadata),
+    }
+    : input.task;
+
+  return {
+    ...input,
+    sessionId,
+    task: normalizedTask,
+    metadata: withWorkspaceMetadata(inputMetadata),
+  };
 }
 
 async function controlAgentRuntime(input: AgentControlRequest): Promise<AgentControlResult> {
@@ -2076,7 +3226,7 @@ function parseAgentDispatchToolInput(rawInput: unknown): AgentDispatchRequest {
     ? rawInput.source_agent_id
     : typeof rawInput.sourceAgentId === 'string'
       ? rawInput.sourceAgentId
-      : 'chat-codex';
+      : PRIMARY_ORCHESTRATOR_AGENT_ID;
   const targetAgentId = typeof rawInput.target_agent_id === 'string'
     ? rawInput.target_agent_id
     : typeof rawInput.targetAgentId === 'string'
@@ -2141,7 +3291,7 @@ function parseAgentDispatchToolInput(rawInput: unknown): AgentDispatchRequest {
       : {}),
   };
   return {
-    sourceAgentId: sourceAgentId.trim().length > 0 ? sourceAgentId.trim() : 'chat-codex',
+    sourceAgentId: sourceAgentId.trim().length > 0 ? sourceAgentId.trim() : PRIMARY_ORCHESTRATOR_AGENT_ID,
     targetAgentId: targetAgentId.trim(),
     task,
     ...(typeof sessionId === 'string' && sessionId.trim().length > 0 ? { sessionId: sessionId.trim() } : {}),
@@ -2480,6 +3630,74 @@ app.get('/api/v1/agents/runtime-view', (_req, res) => {
   });
 });
 
+app.get('/api/v1/orchestration/config', (_req, res) => {
+  try {
+    const loaded = loadOrchestrationConfig(process.cwd());
+    res.json({
+      success: true,
+      path: loaded.path,
+      created: loaded.created,
+      config: loaded.config,
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    res.status(400).json({ success: false, error: message });
+  }
+});
+
+app.put('/api/v1/orchestration/config', async (req, res) => {
+  try {
+    const saved = saveOrchestrationConfig(req.body, process.cwd());
+    const applied = await applyOrchestrationConfig(saved.config);
+    res.json({
+      success: true,
+      path: saved.path,
+      config: saved.config,
+      applied,
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    res.status(400).json({ success: false, error: message });
+  }
+});
+
+app.post('/api/v1/orchestration/config/switch', async (req, res) => {
+  const body = req.body as { profileId?: unknown };
+  const profileId = typeof body.profileId === 'string' ? body.profileId.trim() : '';
+  if (!profileId) {
+    res.status(400).json({ success: false, error: 'profileId is required' });
+    return;
+  }
+  try {
+    const loaded = loadOrchestrationConfig(process.cwd());
+    const switched = saveOrchestrationConfig({
+      ...loaded.config,
+      activeProfileId: profileId,
+    }, process.cwd());
+    const applied = await applyOrchestrationConfig(switched.config);
+    res.json({
+      success: true,
+      path: switched.path,
+      config: switched.config,
+      applied,
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    res.status(400).json({ success: false, error: message });
+  }
+});
+
+app.get('/api/v1/orchestrator/runtime-mode', (_req, res) => {
+  res.json({
+    success: true,
+    mode: 'finger-general-runner',
+    fsmV2Implemented: true,
+    runnerModuleId: PRIMARY_ORCHESTRATOR_AGENT_ID,
+    chatCodexRunnerMode: shouldUseMockChatCodexRunner() ? 'mock' : 'real',
+    updatedAt: new Date().toISOString(),
+  });
+});
+
 app.get('/api/v1/agents/catalog', (req, res) => {
   const layer = resolveAgentCapabilityLayer(req.query.layer);
   void agentRuntimeBlock.execute('catalog', { layer }).then((result) => {
@@ -2491,6 +3709,115 @@ app.get('/api/v1/agents/catalog', (req, res) => {
   }).catch((error: unknown) => {
     const message = error instanceof Error ? error.message : String(error);
     res.status(500).json({ success: false, error: message });
+  });
+});
+
+app.get('/api/v1/agents/debug/mode', (_req, res) => {
+  res.json({
+    success: true,
+    enabled: runtimeDebugMode,
+    modules: DEBUG_RUNTIME_MODULE_IDS.map((id) => ({
+      id,
+      active: Boolean(moduleRegistry.getModule(id)),
+    })),
+  });
+});
+
+app.post('/api/v1/agents/debug/mode', async (req, res) => {
+  const body = req.body as { enabled?: unknown };
+  if (typeof body.enabled !== 'boolean') {
+    res.status(400).json({ success: false, error: 'enabled(boolean) is required' });
+    return;
+  }
+  try {
+    runtimeDebugMode = body.enabled;
+    await ensureDebugRuntimeModules(runtimeDebugMode);
+    res.json({
+      success: true,
+      enabled: runtimeDebugMode,
+      modules: DEBUG_RUNTIME_MODULE_IDS.map((id) => ({
+        id,
+        active: Boolean(moduleRegistry.getModule(id)),
+      })),
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    res.status(500).json({ success: false, error: message });
+  }
+});
+
+app.get('/api/v1/agents/debug/mock-policy', (_req, res) => {
+  res.json({
+    success: true,
+    fullMockMode: ENABLE_FULL_MOCK_MODE,
+    useMockExecutorRole: USE_MOCK_EXECUTOR_LOOP,
+    useMockReviewerRole: USE_MOCK_REVIEWER_LOOP,
+    useMockSearcherRole: USE_MOCK_SEARCHER_LOOP,
+    useMockExecutorLoop: USE_MOCK_EXECUTOR_LOOP,
+    useMockReviewerLoop: USE_MOCK_REVIEWER_LOOP,
+    useMockSearcherLoop: USE_MOCK_SEARCHER_LOOP,
+    policy: mockRolePolicy,
+  });
+});
+
+app.post('/api/v1/agents/debug/mock-policy', (req, res) => {
+  const body = req.body as {
+    role?: string;
+    outcome?: string;
+  };
+  const roleRaw = typeof body.role === 'string' ? body.role.trim().toLowerCase() : '';
+  const outcomeRaw = typeof body.outcome === 'string' ? body.outcome.trim().toLowerCase() : '';
+  const isValidOutcome = outcomeRaw === 'success' || outcomeRaw === 'failure';
+  if (!isValidOutcome) {
+    res.status(400).json({ success: false, error: 'outcome must be success|failure' });
+    return;
+  }
+  const outcome = outcomeRaw as MockOutcome;
+
+  if (roleRaw === 'all') {
+    mockRolePolicy.executor = outcome;
+    mockRolePolicy.reviewer = outcome;
+    mockRolePolicy.searcher = outcome;
+  } else if (roleRaw === 'executor' || roleRaw === 'reviewer' || roleRaw === 'searcher') {
+    mockRolePolicy[roleRaw] = outcome;
+  } else {
+    res.status(400).json({ success: false, error: 'role must be executor|reviewer|searcher|all' });
+    return;
+  }
+
+  res.json({
+    success: true,
+    policy: mockRolePolicy,
+  });
+});
+
+app.post('/api/v1/agents/debug/assertions/clear', (_req, res) => {
+  mockDispatchAssertions.splice(0, mockDispatchAssertions.length);
+  res.json({
+    success: true,
+    count: 0,
+  });
+});
+
+app.get('/api/v1/agents/debug/assertions', (req, res) => {
+  const agentId = typeof req.query.agentId === 'string' ? req.query.agentId.trim() : '';
+  const workflowId = typeof req.query.workflowId === 'string' ? req.query.workflowId.trim() : '';
+  const sessionId = typeof req.query.sessionId === 'string' ? req.query.sessionId.trim() : '';
+  const limitRaw = typeof req.query.limit === 'string' ? Number(req.query.limit) : NaN;
+  const limit = Number.isFinite(limitRaw) ? Math.max(1, Math.min(200, Math.floor(limitRaw))) : 100;
+
+  const filtered = mockDispatchAssertions
+    .filter((item) => (agentId ? item.agentId === agentId : true))
+    .filter((item) => (workflowId ? item.workflowId === workflowId : true))
+    .filter((item) => (sessionId ? item.sessionId === sessionId : true))
+    .slice(-limit)
+    .reverse();
+
+  res.json({
+    success: true,
+    debugMode: runtimeDebugMode,
+    count: filtered.length,
+    assertions: filtered,
   });
 });
 
@@ -2580,7 +3907,7 @@ app.post('/api/v1/agents/dispatch', async (req, res) => {
   const dispatchInput: AgentDispatchRequest = {
     sourceAgentId: typeof body.sourceAgentId === 'string' && body.sourceAgentId.trim().length > 0
       ? body.sourceAgentId.trim()
-      : 'chat-codex',
+      : PRIMARY_ORCHESTRATOR_AGENT_ID,
     targetAgentId: body.targetAgentId.trim(),
     task: body.task,
     ...(typeof body.sessionId === 'string' && body.sessionId.trim().length > 0 ? { sessionId: body.sessionId.trim() } : {}),
@@ -2653,7 +3980,7 @@ app.get('/api/v1/agents', (_req, res) => {
       agentId: string;
       name: string;
       type: 'executor' | 'reviewer' | 'orchestrator' | 'searcher';
-      status: 'idle' | 'running' | 'error' | 'paused';
+      status: 'idle' | 'running' | 'error' | 'paused' | 'queued' | 'waiting_input' | 'completed' | 'failed' | 'interrupted';
       sessionId?: string;
       workflowId?: string;
     }> };
@@ -2845,7 +4172,7 @@ app.get('/api/v1/agent/:agentId/progress', (req, res) => {
   }
   
   // Get execution logs for this agent
-  const executionLogPath = join(FINGER_HOME, 'logs', `${req.params.agentId}.jsonl`);
+  const executionLogPath = join(FINGER_PATHS.logs.dir, `${req.params.agentId}.jsonl`);
   let iterations: unknown[] = [];
   
   try {
@@ -2951,11 +4278,118 @@ app.get('/api/v1/agents/:id/stats', (req, res) => {
 
 function extractSessionIdFromMessagePayload(message: unknown): string | null {
   if (typeof message !== 'object' || message === null) return null;
-  if (!('sessionId' in message)) return null;
-  const sessionId = (message as { sessionId?: unknown }).sessionId;
-  if (typeof sessionId !== 'string') return null;
-  const normalized = sessionId.trim();
-  return normalized.length > 0 ? normalized : null;
+  const record = message as Record<string, unknown>;
+  const direct = asString(record.sessionId);
+  if (direct) return direct;
+  const metadata = isObjectRecord(record.metadata) ? record.metadata : {};
+  return asString(metadata.sessionId) ?? asString(metadata.session_id) ?? null;
+}
+
+function shouldClientPersistSession(message: unknown): boolean {
+  if (!isObjectRecord(message)) return false;
+  const metadata = isObjectRecord(message.metadata) ? message.metadata : {};
+  const persistence = metadata.sessionPersistence ?? metadata.session_persistence ?? metadata.persistSession;
+  if (persistence === false) return true;
+  if (typeof persistence === 'string') {
+    const normalized = persistence.trim().toLowerCase();
+    return normalized === 'client' || normalized === 'ui';
+  }
+  return false;
+}
+
+function extractMessageTextForSession(message: unknown): string | null {
+  if (typeof message === 'string') {
+    return message.trim().length > 0 ? message : null;
+  }
+  if (!isObjectRecord(message)) return null;
+  const direct = asString(message.text)
+    ?? asString(message.content)
+    ?? asString(message.task)
+    ?? asString(message.prompt);
+  if (direct) return direct;
+  if (isObjectRecord(message.message)) {
+    return extractMessageTextForSession(message.message);
+  }
+  return null;
+}
+
+function extractResultTextForSession(result: unknown): string | null {
+  if (typeof result === 'string') {
+    return result.trim().length > 0 ? result : null;
+  }
+  if (!isObjectRecord(result)) {
+    return result === undefined ? null : JSON.stringify(result);
+  }
+  const nested = isObjectRecord(result.result) ? result.result : null;
+  const direct = asString(result.reply)
+    ?? asString(result.response)
+    ?? asString(result.output)
+    ?? (nested ? asString(nested.reply) ?? asString(nested.response) ?? asString(nested.output) : null);
+  if (direct) return direct;
+  return JSON.stringify(result);
+}
+
+function ensureSessionExists(sessionId: string, nameHint?: string): void {
+  const existing = sessionManager.getSession(sessionId);
+  if (existing) return;
+  sessionManager.ensureSession(sessionId, process.cwd(), nameHint);
+}
+
+function resolveSessionWorkspaceDirsForMessage(sessionId: string): SessionWorkspaceDirs {
+  const knownSession = sessionManager.getSession(sessionId);
+  if (knownSession) {
+    const context = isObjectRecord(knownSession.context) ? knownSession.context : {};
+    const fromContext = {
+      sessionWorkspaceRoot: asString(context.sessionWorkspaceRoot),
+      agentWorkspaceRoot: asString(context.agentWorkspaceRoot),
+      memoryDir: asString(context.memoryDir),
+      deliverablesDir: asString(context.deliverablesDir),
+      exchangeDir: asString(context.exchangeDir),
+    };
+    if (
+      fromContext.sessionWorkspaceRoot
+      && fromContext.agentWorkspaceRoot
+      && fromContext.memoryDir
+      && fromContext.deliverablesDir
+      && fromContext.exchangeDir
+    ) {
+      ensureDir(fromContext.sessionWorkspaceRoot);
+      ensureDir(fromContext.agentWorkspaceRoot);
+      ensureDir(fromContext.memoryDir);
+      ensureDir(fromContext.deliverablesDir);
+      ensureDir(fromContext.exchangeDir);
+      return {
+        sessionWorkspaceRoot: fromContext.sessionWorkspaceRoot,
+        agentWorkspaceRoot: fromContext.agentWorkspaceRoot,
+        memoryDir: fromContext.memoryDir,
+        deliverablesDir: fromContext.deliverablesDir,
+        exchangeDir: fromContext.exchangeDir,
+      };
+    }
+  }
+  return ensureSessionWorkspaceDirs(sessionId);
+}
+
+function withSessionWorkspaceDefaults(message: unknown, sessionId: string | null): unknown {
+  if (!sessionId) return message;
+  if (!isObjectRecord(message)) return message;
+  const dirs = resolveSessionWorkspaceDirsForMessage(sessionId);
+  const metadata = isObjectRecord(message.metadata) ? message.metadata : {};
+  return {
+    ...message,
+    metadata: {
+      ...metadata,
+      ...(typeof metadata.contextLedgerRootDir === 'string' && metadata.contextLedgerRootDir.trim().length > 0
+        ? {}
+        : { contextLedgerRootDir: dirs.memoryDir }),
+      ...(typeof metadata.deliverablesDir === 'string' && metadata.deliverablesDir.trim().length > 0
+        ? {}
+        : { deliverablesDir: dirs.deliverablesDir }),
+      ...(typeof metadata.exchangeDir === 'string' && metadata.exchangeDir.trim().length > 0
+        ? {}
+        : { exchangeDir: dirs.exchangeDir }),
+    },
+  };
 }
 
 function sleep(ms: number): Promise<void> {
@@ -3027,7 +4461,43 @@ function isDirectAgentRouteAllowed(req: Request): boolean {
 function isPrimaryOrchestratorTarget(target: string): boolean {
   const normalized = target.trim();
   if (normalized.length === 0) return false;
-  return normalized === PRIMARY_ORCHESTRATOR_TARGET || normalized === 'chat-codex';
+  return normalized === PRIMARY_ORCHESTRATOR_TARGET
+    || normalized === PRIMARY_ORCHESTRATOR_AGENT_ID
+    || normalized === FINGER_GENERAL_AGENT_ID
+    || normalized === LEGACY_ORCHESTRATOR_AGENT_ID
+    || normalized === PRIMARY_ORCHESTRATOR_GATEWAY_ID
+    || normalized === LEGACY_ORCHESTRATOR_GATEWAY_ID;
+}
+
+function shouldInjectProfileReviewPolicy(target: string): boolean {
+  const normalized = target.trim();
+  return normalized === PRIMARY_ORCHESTRATOR_TARGET
+    || normalized === PRIMARY_ORCHESTRATOR_AGENT_ID
+    || normalized === PRIMARY_ORCHESTRATOR_GATEWAY_ID
+    || normalized === LEGACY_ORCHESTRATOR_AGENT_ID
+    || normalized === LEGACY_ORCHESTRATOR_GATEWAY_ID;
+}
+
+function withDefaultProfileReviewPolicy(target: string, message: unknown): unknown {
+  if (!shouldInjectProfileReviewPolicy(target)) return message;
+  const reviewPolicy = activeOrchestrationReviewPolicy;
+  if (reviewPolicy.enabled !== true) return message;
+  if (!isObjectRecord(message)) return message;
+  const metadata = isObjectRecord(message.metadata) ? message.metadata : {};
+  if (isObjectRecord(metadata.review)) return message;
+  return {
+    ...message,
+    metadata: {
+      ...metadata,
+      review: {
+        enabled: true,
+        ...(Array.isArray(reviewPolicy.stages) && reviewPolicy.stages.length > 0 ? { stages: reviewPolicy.stages } : {}),
+        ...(typeof reviewPolicy.strictness === 'string' && reviewPolicy.strictness.trim().length > 0
+          ? { strictness: reviewPolicy.strictness.trim() }
+          : {}),
+      },
+    },
+  };
 }
 
 // Modified message endpoint with mailbox integration
@@ -3062,13 +4532,26 @@ app.post('/api/v1/message', async (req, res) => {
     return;
   }
 
-  const requestSessionId = extractSessionIdFromMessagePayload(body.message);
+  const requestMessageWithPolicy = withDefaultProfileReviewPolicy(body.target, body.message);
+  const requestSessionId = extractSessionIdFromMessagePayload(requestMessageWithPolicy);
+  if (requestSessionId) {
+    ensureSessionExists(requestSessionId, body.target);
+  }
+  const requestMessage = withSessionWorkspaceDefaults(requestMessageWithPolicy, requestSessionId);
   if (requestSessionId) {
     runtime.setCurrentSession(requestSessionId);
   }
+  const shouldPersistSession = !!requestSessionId && !shouldClientPersistSession(requestMessageWithPolicy);
+  if (shouldPersistSession && requestSessionId) {
+    const content = extractMessageTextForSession(requestMessageWithPolicy)
+      ?? JSON.stringify(requestMessageWithPolicy);
+    if (content.trim().length > 0) {
+      sessionManager.addMessage(requestSessionId, 'user', content);
+    }
+  }
 
   // Create mailbox message for tracking
-  const messageId = mailbox.createMessage(body.target, body.message, body.sender, body.callbackId);
+  const messageId = mailbox.createMessage(body.target, requestMessage, body.sender, body.callbackId);
   mailbox.updateStatus(messageId, 'processing');
 
   // Broadcast to WebSocket clients
@@ -3086,7 +4569,7 @@ app.post('/api/v1/message', async (req, res) => {
       while (attempt <= BLOCKING_MESSAGE_MAX_RETRIES) {
         try {
           primaryResult = await Promise.race([
-            hub.sendToModule(body.target, body.message),
+            hub.sendToModule(body.target, requestMessage),
             new Promise<never>((_, reject) => {
               setTimeout(
                 () => reject(new Error(`Timed out waiting for module response: ${body.target}`)),
@@ -3123,7 +4606,7 @@ app.post('/api/v1/message', async (req, res) => {
             blocking: body.blocking === true,
             sender: body.sender,
             callbackId: body.callbackId,
-            message: body.message,
+            message: requestMessage,
             timeoutMs: BLOCKING_MESSAGE_TIMEOUT_MS,
             retryCount: BLOCKING_MESSAGE_MAX_RETRIES,
           },
@@ -3159,6 +4642,12 @@ app.post('/api/v1/message', async (req, res) => {
       }
 
       const actualResult = primaryResult;
+      if (shouldPersistSession && requestSessionId) {
+        const assistantContent = extractResultTextForSession(actualResult);
+        if (assistantContent && assistantContent.trim().length > 0) {
+          sessionManager.addMessage(requestSessionId, 'assistant', assistantContent);
+        }
+      }
       mailbox.updateStatus(messageId, 'completed', actualResult);
       
       // Broadcast completion
@@ -3172,12 +4661,18 @@ app.post('/api/v1/message', async (req, res) => {
     }
 
     // Non-blocking: return messageId immediately
-    hub.sendToModule(body.target, body.message, body.sender ? (result: any) => {
+    hub.sendToModule(body.target, requestMessage, body.sender ? (result: any) => {
         hub.sendToModule(body.sender!, { type: 'callback', payload: result, originalMessageId: messageId })
           .catch(() => { /* Ignore sender callback errors */ });
         return result;
       } : undefined)
       .then((result) => {
+        if (shouldPersistSession && requestSessionId) {
+          const assistantContent = extractResultTextForSession(result);
+          if (assistantContent && assistantContent.trim().length > 0) {
+            sessionManager.addMessage(requestSessionId, 'assistant', assistantContent);
+          }
+        }
         mailbox.updateStatus(messageId, 'completed', result);
         const completeBroadcast = JSON.stringify({ type: 'messageCompleted', messageId, result });
         for (const client of wsClients) {
@@ -3202,7 +4697,7 @@ app.post('/api/v1/message', async (req, res) => {
         blocking: body.blocking === true,
         sender: body.sender,
         callbackId: body.callbackId,
-        message: body.message,
+        message: requestMessage,
       },
       response: {
         status: 'failed',
@@ -3244,40 +4739,27 @@ server.on('error', (err: NodeJS.ErrnoException) => {
   process.exit(1);
 });
 
-// 注册 ReACT 循环版本的编排者和执行者
-const { module: orchestratorLoop } = createOrchestratorLoop({
-  id: 'orchestrator-loop',
-  name: 'Orchestrator ReACT Loop',
-  mode: 'auto',
-  cwd: process.cwd(),
-  maxRounds: 10,
-  targetReviewerId: 'reviewer-loop',
-}, hub);
-await orchestratorLoop.initialize?.(hub);
-await moduleRegistry.register(orchestratorLoop);
-console.log('[Server] OrchestratorLoop module registered: orchestrator-loop');
-
-const { module: reviewerLoop } = createReviewerModule({
-  id: 'reviewer-loop',
-  name: 'Reviewer Module',
-  mode: 'auto',
-  cwd: process.cwd(),
-}, hub);
-await reviewerLoop.initialize?.(hub);
-await moduleRegistry.register(reviewerLoop);
-console.log('[Server] Reviewer module registered: reviewer-loop');
-
-const { module: executorLoop } = createExecutorLoop({
-  id: 'executor-loop',
-  name: 'Executor ReACT Loop',
-  mode: 'auto',
-  cwd: process.cwd(),
-  maxIterations: 5,
-});
-await moduleRegistry.register(executorLoop);
-console.log('[Server] ExecutorLoop module registered: executor-loop');
-
-console.log('[Server] ReACT Loop modules ready: orchestrator-loop, reviewer-loop, executor-loop');
+console.log('[Server] Finger role modules ready:', [
+  FINGER_GENERAL_AGENT_ID,
+  FINGER_ORCHESTRATOR_AGENT_ID,
+  FINGER_RESEARCHER_AGENT_ID,
+  FINGER_EXECUTOR_AGENT_ID,
+  FINGER_CODER_AGENT_ID,
+  FINGER_REVIEWER_AGENT_ID,
+].join(', '));
+try {
+  const loadedOrchestrationConfig = loadOrchestrationConfig(process.cwd());
+  const applied = await applyOrchestrationConfig(loadedOrchestrationConfig.config);
+  console.log('[Server] Orchestration config applied:', {
+    path: loadedOrchestrationConfig.path,
+    created: loadedOrchestrationConfig.created,
+    appliedAgents: applied.agents,
+  });
+} catch (error) {
+  const message = error instanceof Error ? error.message : String(error);
+  console.error('[Server] Invalid orchestration.json; startup aborted:', message);
+  process.exit(1);
+}
 
 // =============================================================================
 // 性能监控 API
@@ -3326,6 +4808,7 @@ globalEventBus.subscribeMultiple(
     // 将 EventBus 事件转换为前端理解的 workflow_update 格式
     const wsMsg = {
       type: 'workflow_update',
+      sessionId: event.sessionId,
       payload: {
         workflowId: event.sessionId,
         taskId: (event.payload as any)?.taskId,
@@ -3351,7 +4834,7 @@ globalEventBus.subscribeMultiple(
 console.log('[Server] EventBus subscription enabled: task_started, task_completed, task_failed, workflow_progress, phase_transition');
 
 // 转发 agent 执行事件到前端，确保对话面板可以看到 thought/action/observation
-// 使用 runtime-facade 和 orchestrator-loop 中实际使用的事件类型
+// 使用 runtime-facade 与当前 finger runner 的事件类型
 globalEventBus.subscribeMultiple(
   ['task_started', 'task_completed', 'task_failed', 'workflow_progress', 'phase_transition'],
   (event) => {
@@ -3361,6 +4844,7 @@ globalEventBus.subscribeMultiple(
     // 当任务完成或失败时，将详细的 thought/action/observation 转发给前端
     const wsMsg = {
       type: 'agent_update',
+      sessionId: event.sessionId,
       payload: {
         agentId: (payload?.agentId as string | undefined) || event.sessionId,
         status: event.type === 'task_completed' ? 'idle' : event.type === 'task_failed' ? 'error' : 'running',
@@ -3395,6 +4879,7 @@ globalEventBus.subscribeMultiple(
 
     const wsMsg = {
       type: 'agent_update',
+      sessionId: event.sessionId,
       payload: {
         agentId: (payload?.agentId as string | undefined) || event.sessionId,
         status: (payload?.status as string | undefined) || 'running',
@@ -3424,7 +4909,100 @@ globalEventBus.subscribeMultiple(
 
 console.log('[Server] EventBus agent forwarding enabled: agent_thought, agent_action, agent_observation, agent_step_completed');
 
-// 新增：监听 agent_step_completed 事件（从 react-loop.ts 发出），包含详细 thought/action/observation
+type SessionEventRecord = {
+  type: 'tool_call' | 'tool_result' | 'tool_error' | 'agent_step';
+  agentId?: string;
+  toolName?: string;
+  toolStatus?: 'success' | 'error';
+  toolDurationMs?: number;
+  toolInput?: unknown;
+  toolOutput?: unknown;
+  metadata?: Record<string, unknown>;
+};
+
+function persistSessionEventMessage(
+  sessionId: string,
+  content: string,
+  detail: SessionEventRecord,
+): void {
+  if (!sessionId || sessionId.trim().length === 0) return;
+  sessionManager.addMessage(sessionId, 'system', content, detail);
+}
+
+function buildAgentStepContent(payload: AgentStepCompletedEvent['payload']): string {
+  const parts: string[] = [];
+  if (typeof payload.thought === 'string' && payload.thought.trim().length > 0) {
+    parts.push(`思考: ${payload.thought.trim()}`);
+  }
+  if (typeof payload.action === 'string' && payload.action.trim().length > 0) {
+    parts.push(`动作: ${payload.action.trim()}`);
+  }
+  if (typeof payload.observation === 'string' && payload.observation.trim().length > 0) {
+    parts.push(`观察: ${payload.observation.trim()}`);
+  }
+  if (parts.length === 0) {
+    return 'agent step 完成';
+  }
+  return parts.join('\n');
+}
+
+globalEventBus.subscribe('tool_call', (event) => {
+  if (event.type !== 'tool_call') return;
+  const toolEvent = event as ToolCallEvent;
+  const content = `调用工具: ${toolEvent.toolName}`;
+  persistSessionEventMessage(toolEvent.sessionId, content, {
+    type: 'tool_call',
+    agentId: toolEvent.agentId,
+    toolName: toolEvent.toolName,
+    toolInput: toolEvent.payload?.input,
+    metadata: { event: toolEvent },
+  });
+});
+
+globalEventBus.subscribe('tool_result', (event) => {
+  if (event.type !== 'tool_result') return;
+  const toolEvent = event as ToolResultEvent;
+  const content = `工具完成: ${toolEvent.toolName}`;
+  persistSessionEventMessage(toolEvent.sessionId, content, {
+    type: 'tool_result',
+    agentId: toolEvent.agentId,
+    toolName: toolEvent.toolName,
+    toolStatus: 'success',
+    toolDurationMs: toolEvent.payload?.duration,
+    toolInput: toolEvent.payload?.input,
+    toolOutput: toolEvent.payload?.output,
+    metadata: { event: toolEvent },
+  });
+});
+
+globalEventBus.subscribe('tool_error', (event) => {
+  if (event.type !== 'tool_error') return;
+  const toolEvent = event as ToolErrorEvent;
+  const content = `工具失败: ${toolEvent.toolName}`;
+  persistSessionEventMessage(toolEvent.sessionId, content, {
+    type: 'tool_error',
+    agentId: toolEvent.agentId,
+    toolName: toolEvent.toolName,
+    toolStatus: 'error',
+    toolDurationMs: toolEvent.payload?.duration,
+    toolInput: toolEvent.payload?.input,
+    toolOutput: toolEvent.payload?.error,
+    metadata: { event: toolEvent },
+  });
+});
+
+globalEventBus.subscribe('agent_step_completed', (event) => {
+  if (event.type !== 'agent_step_completed') return;
+  const stepEvent = event as AgentStepCompletedEvent;
+  const content = buildAgentStepContent(stepEvent.payload);
+  persistSessionEventMessage(stepEvent.sessionId, content, {
+    type: 'agent_step',
+    agentId: stepEvent.agentId,
+    metadata: { event: stepEvent },
+  });
+});
+
+// 新增：监听 agent_step_completed 事件，包含详细 thought/action/observation
 globalEventBus.subscribe(
   'agent_step_completed',
   (event) => {
@@ -3433,6 +5011,7 @@ globalEventBus.subscribe(
     // 将 agent_step_completed 转换为前端理解的 agent_update 格式
     const wsMsg = {
       type: 'agent_update',
+      sessionId: event.sessionId,
       payload: {
         agentId: ('agentId' in event ? (event as { agentId?: string }).agentId : undefined) || event.sessionId,
         status: (payload?.success as boolean) !== false ? 'running' : 'error',

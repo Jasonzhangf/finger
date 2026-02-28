@@ -290,6 +290,11 @@ export interface SessionInfo {
   lastAccessedAt: string;
   messageCount: number;
   activeWorkflows: string[];
+  sessionTier?: string;
+  ownerAgentId?: string;
+  rootSessionId?: string;
+  parentSessionId?: string;
+  sessionWorkspaceRoot?: string;
   lastMessageAt?: string;
   previewSummary?: string;
   previewMessages?: Array<{
@@ -297,6 +302,12 @@ export interface SessionInfo {
     timestamp: string;
     summary: string;
   }>;
+}
+
+export interface PickDirectoryResponse {
+  path: string | null;
+  canceled: boolean;
+  error?: string;
 }
 
 // ========== Workflow Runtime Types ==========
@@ -368,6 +379,7 @@ export interface AgentRuntime {
 export interface AgentConfig {
   id?: string;
   name: string;
+  role?: 'executor' | 'reviewer' | 'orchestrator' | 'searcher';
   mode: 'auto' | 'manual';
   provider: 'iflow' | 'openai' | 'anthropic';
   model?: string;
@@ -379,6 +391,13 @@ export interface AgentConfig {
   maxIterations?: number;
   maxRounds?: number;
   enableReview?: boolean;
+  enabled?: boolean;
+  capabilities?: string[];
+  defaultQuota?: number;
+  quotaPolicy?: {
+    projectQuota?: number;
+    workflowQuota?: Record<string, number>;
+  };
   cwd?: string;
   resumeSession?: boolean;
 }
@@ -412,6 +431,7 @@ export interface WorkflowExecutionState {
   workflowId: string;
   status: WorkflowStatus;
   fsmState?: WorkflowFSMState; // 新增：完整 FSM 状态
+  orchestratorPhase?: string; // 新增：编排器原始 phase（兼容 V2 FSM）
   orchestrator: {
     id: string;
     currentRound: number;

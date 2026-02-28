@@ -1,7 +1,14 @@
-import { useMemo, useState, useEffect, useRef, useCallback, type FC, type MouseEvent as ReactMouseEvent } from 'react';
+import { useMemo, useState, useEffect, useCallback, type FC, type MouseEvent as ReactMouseEvent } from 'react';
 import type { SessionInfo } from '../../api/types.js';
 import type { ProviderConfig } from '../../api/types.js';
-import { listProviders, selectProvider, testProvider, upsertProvider } from '../../api/client.js';
+import {
+  listProviders,
+  selectProvider,
+  testProvider,
+  upsertProvider,
+  deleteProjectSessions,
+  pickProjectDirectory,
+} from '../../api/client.js';
 import './LeftSidebar.css';
 
 type SidebarTab = 'project' | 'ai-provider' | 'settings';
@@ -14,6 +21,7 @@ interface LeftSidebarProps {
   onDeleteSession: (sessionId: string) => Promise<void>;
   onRenameSession: (sessionId: string, name: string) => Promise<SessionInfo>;
   onSwitchSession: (sessionId: string) => Promise<void>;
+  onRefreshSessions: () => Promise<void>;
 }
 
 interface ProjectTabProps {
@@ -24,6 +32,7 @@ interface ProjectTabProps {
   onDeleteSession: (sessionId: string) => Promise<void>;
   onRenameSession: (sessionId: string, name: string) => Promise<SessionInfo>;
   onSwitchSession: (sessionId: string) => Promise<void>;
+  onRefreshSessions: () => Promise<void>;
 }
 
 const TABS: Array<{ key: SidebarTab; label: string }> = [
@@ -32,10 +41,26 @@ const TABS: Array<{ key: SidebarTab; label: string }> = [
   { key: 'settings', label: 'Settings' },
 ];
 
-const WORKDIR_STORAGE_KEY = 'finger-ui-workdir';
 
 function normalizePath(value: string): string {
   return value.trim().replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
+}
+
+function hasActiveWorkflow(session: SessionInfo): boolean {
+  return Array.isArray(session.activeWorkflows) && session.activeWorkflows.length > 0;
+}
+
+function pickLatestSession(sessions: SessionInfo[]): SessionInfo | null {
+  if (sessions.length === 0) return null;
+  return sessions
+    .slice()
+    .sort((a, b) => new Date(b.lastAccessedAt).getTime() - new Date(a.lastAccessedAt).getTime())[0];
+}
+
+function projectDisplayName(pathValue: string): string {
+  const normalized = pathValue.replace(/\\/g, '/').replace(/\/+$/, '');
+  const parts = normalized.split('/').filter(Boolean);
+  return parts[parts.length - 1] || normalized;
 }
 
 function previewRoleLabel(role: 'user' | 'assistant' | 'system' | 'orchestrator'): string {
@@ -54,14 +79,6 @@ function buildSessionPreviewLines(session: SessionInfo): string[] {
   });
 }
 
-interface DirectoryPickerHandle {
-  name: string;
-}
-
-interface WindowWithDirectoryPicker extends Window {
-  showDirectoryPicker?: () => Promise<DirectoryPickerHandle>;
-}
-
 interface SessionContextMenuState {
   x: number;
   y: number;
@@ -76,6 +93,7 @@ export const LeftSidebar: FC<LeftSidebarProps> = ({
   onDeleteSession,
   onRenameSession,
   onSwitchSession,
+  onRefreshSessions,
 }) => {
   const [activeTab, setActiveTab] = useState<SidebarTab | null>('project');
 
@@ -118,6 +136,7 @@ export const LeftSidebar: FC<LeftSidebarProps> = ({
                 onDeleteSession={onDeleteSession}
                 onRenameSession={onRenameSession}
                 onSwitchSession={onSwitchSession}
+                onRefreshSessions={onRefreshSessions}
               />
             )}
             {activeTab === 'ai-provider' && <AIProviderTab />}
@@ -137,31 +156,13 @@ const ProjectTab: FC<ProjectTabProps> = ({
   onDeleteSession,
   onRenameSession,
   onSwitchSession,
+  onRefreshSessions,
 }) => {
-  const [workingDirectory, setWorkingDirectory] = useState('');
   const [selectedSessionIds, setSelectedSessionIds] = useState<Set<string>>(new Set());
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [hint, setHint] = useState<string | null>(null);
   const [contextMenu, setContextMenu] = useState<SessionContextMenuState | null>(null);
-  const autoSwitchKeyRef = useRef('');
-  const autoCreateKeyRef = useRef('');
-
-  useEffect(() => {
-    const stored = localStorage.getItem(WORKDIR_STORAGE_KEY);
-    if (stored && stored.trim().length > 0) {
-      setWorkingDirectory(stored.trim());
-      return;
-    }
-    if (currentSession?.projectPath) {
-      setWorkingDirectory(currentSession.projectPath);
-    }
-  }, [currentSession?.projectPath]);
-
-  useEffect(() => {
-    const next = workingDirectory.trim();
-    if (!next) return;
-    localStorage.setItem(WORKDIR_STORAGE_KEY, next);
-  }, [workingDirectory]);
+  const currentProjectPath = currentSession?.projectPath?.trim() || '';
 
   useEffect(() => {
     if (!currentSession?.id) return;
@@ -187,16 +188,60 @@ const ProjectTab: FC<ProjectTabProps> = ({
     [sessions],
   );
 
-  const knownDirectories = useMemo(
-    () => Array.from(new Set(sortedSessions.map((session) => session.projectPath))).sort((a, b) => a.localeCompare(b)),
-    [sortedSessions],
+  const projectGroups = useMemo(() => {
+    const groups: Array<{
+      projectPath: string;
+      name: string;
+      sessions: SessionInfo[];
+      latestSession: SessionInfo | null;
+      latestRunningSession: SessionInfo | null;
+      isRunning: boolean;
+    }> = [];
+    const index = new Map<string, number>();
+    for (const session of sortedSessions) {
+      const key = session.projectPath;
+      const existingIndex = index.get(key);
+      if (existingIndex === undefined) {
+        const isRunning = hasActiveWorkflow(session);
+        groups.push({
+          projectPath: key,
+          name: projectDisplayName(key),
+          sessions: [session],
+          latestSession: session,
+          latestRunningSession: isRunning ? session : null,
+          isRunning,
+        });
+        index.set(key, groups.length - 1);
+      } else {
+        const group = groups[existingIndex];
+        group.sessions.push(session);
+        if (!group.latestSession) group.latestSession = session;
+        if (!group.latestRunningSession && hasActiveWorkflow(session)) {
+          group.latestRunningSession = session;
+        }
+        if (hasActiveWorkflow(session)) {
+          group.isRunning = true;
+        }
+      }
+    }
+    return groups;
+  }, [sortedSessions]);
+
+  const runningProjects = useMemo(
+    () => projectGroups.filter((group) => group.isRunning),
+    [projectGroups],
+  );
+
+  const idleProjects = useMemo(
+    () => projectGroups.filter((group) => !group.isRunning),
+    [projectGroups],
   );
 
   const filteredSessions = useMemo(() => {
-    const normalizedWorkdir = normalizePath(workingDirectory);
-    if (!normalizedWorkdir) return sortedSessions;
-    return sortedSessions.filter((session) => normalizePath(session.projectPath).startsWith(normalizedWorkdir));
-  }, [sortedSessions, workingDirectory]);
+    const normalizedProject = normalizePath(currentProjectPath);
+    if (!normalizedProject) return sortedSessions;
+    return sortedSessions.filter((session) => normalizePath(session.projectPath) === normalizedProject);
+  }, [sortedSessions, currentProjectPath]);
 
   useEffect(() => {
     const validSet = new Set(filteredSessions.map((session) => session.id));
@@ -213,60 +258,6 @@ const ProjectTab: FC<ProjectTabProps> = ({
     });
   }, [filteredSessions]);
 
-  useEffect(() => {
-    const normalizedWorkdir = normalizePath(workingDirectory);
-    if (!normalizedWorkdir || filteredSessions.length > 0 || isSubmitting) return;
-
-    const autoCreateKey = `${normalizedWorkdir}:empty`;
-    if (autoCreateKeyRef.current === autoCreateKey) return;
-    autoCreateKeyRef.current = autoCreateKey;
-
-    setIsSubmitting(true);
-    setHint('当前目录无会话，正在创建...');
-    void onCreateSession(workingDirectory.trim())
-      .then((created) => {
-        setSelectedSessionIds(new Set([created.id]));
-        setHint(`已自动创建会话: ${created.name}`);
-      })
-      .catch((error: unknown) => {
-        setHint(error instanceof Error ? error.message : '自动创建会话失败');
-      })
-      .finally(() => {
-        setIsSubmitting(false);
-      });
-  }, [filteredSessions.length, isSubmitting, onCreateSession, workingDirectory]);
-
-  useEffect(() => {
-    const normalizedWorkdir = normalizePath(workingDirectory);
-    if (!normalizedWorkdir || filteredSessions.length === 0) {
-      autoSwitchKeyRef.current = '';
-      return;
-    }
-
-    const latest = filteredSessions[0];
-    const autoSwitchKey = `${normalizedWorkdir}:${latest.id}`;
-    if (autoSwitchKeyRef.current === autoSwitchKey) return;
-    if (currentSession?.id === latest.id) {
-      autoSwitchKeyRef.current = autoSwitchKey;
-      return;
-    }
-
-    autoSwitchKeyRef.current = autoSwitchKey;
-
-    setIsSubmitting(true);
-    setHint(`已切换到最新会话: ${latest.name}`);
-    void onSwitchSession(latest.id)
-      .then(() => {
-        setSelectedSessionIds(new Set([latest.id]));
-      })
-      .catch((error: unknown) => {
-        setHint(error instanceof Error ? error.message : '自动加载会话失败');
-      })
-      .finally(() => {
-        setIsSubmitting(false);
-      });
-  }, [currentSession?.id, filteredSessions, onSwitchSession, workingDirectory]);
-
   const selectedCount = selectedSessionIds.size;
   const selectedSession = useMemo(() => {
     if (selectedSessionIds.size !== 1) return null;
@@ -274,37 +265,10 @@ const ProjectTab: FC<ProjectTabProps> = ({
     return filteredSessions.find((session) => session.id === id) ?? null;
   }, [filteredSessions, selectedSessionIds]);
 
-  const handlePickDirectory = async () => {
-    const maybeWindow = window as WindowWithDirectoryPicker;
-    if (typeof maybeWindow.showDirectoryPicker !== 'function') {
-      setHint('当前浏览器不支持目录选择，请手动输入绝对路径');
-      return;
-    }
-
-    try {
-      const handle = await maybeWindow.showDirectoryPicker();
-      const matched = knownDirectories.filter((item) => normalizePath(item).endsWith(`/${normalizePath(handle.name)}`));
-      if (matched.length > 0) {
-        setWorkingDirectory(matched[0]);
-      } else {
-        setWorkingDirectory(handle.name);
-        setHint('目录已选择，请补全为 daemon 可访问的绝对路径');
-      }
-    } catch {
-      // user cancel
-    }
-  };
-
-  const handleUseCurrentDir = () => {
-    if (!currentSession?.projectPath) return;
-    setWorkingDirectory(currentSession.projectPath);
-    setHint(null);
-  };
-
   const handleCreate = async () => {
-    const target = workingDirectory.trim();
+    const target = currentProjectPath;
     if (!target) {
-      setHint('请先输入工作目录绝对路径');
+      setHint('请先选择项目');
       return;
     }
     setIsSubmitting(true);
@@ -320,20 +284,78 @@ const ProjectTab: FC<ProjectTabProps> = ({
     }
   };
 
+  const handleOpenDirectory = useCallback(async () => {
+    if (isSubmitting) return;
+    setIsSubmitting(true);
+    setHint(null);
+    try {
+      const result = await pickProjectDirectory('选择工作目录');
+      if (result.canceled) {
+        setHint('已取消选择目录');
+        return;
+      }
+      if (!result.path) {
+        setHint(result.error || '未返回目录路径');
+        return;
+      }
+      const created = await onCreateSession(result.path);
+      await onSwitchSession(created.id);
+      setSelectedSessionIds(new Set([created.id]));
+      setHint(`已打开目录并创建会话: ${created.name}`);
+    } catch (err) {
+      setHint(err instanceof Error ? err.message : '打开目录失败');
+    } finally {
+      setIsSubmitting(false);
+    }
+  }, [isSubmitting, onCreateSession, onSwitchSession]);
+
   const handleSwitchSession = useCallback(async (sessionId: string) => {
     setIsSubmitting(true);
     setHint(null);
     try {
       await onSwitchSession(sessionId);
       setSelectedSessionIds(new Set([sessionId]));
-      const selected = filteredSessions.find((session) => session.id === sessionId);
+      const selected = sessions.find((session) => session.id === sessionId);
       setHint(`已加载会话: ${selected?.name || sessionId}`);
     } catch (error) {
       setHint(error instanceof Error ? error.message : '加载会话失败');
     } finally {
       setIsSubmitting(false);
     }
-  }, [filteredSessions, onSwitchSession]);
+  }, [onSwitchSession, sessions]);
+
+  const handleProjectJump = useCallback(async (projectPath: string) => {
+    const group = projectGroups.find((item) => item.projectPath === projectPath);
+    if (!group) return;
+    const targetSession = group.latestRunningSession || group.latestSession || pickLatestSession(group.sessions);
+    if (!targetSession) return;
+    setIsSubmitting(true);
+    setHint(null);
+    try {
+      await onSwitchSession(targetSession.id);
+      setSelectedSessionIds(new Set([targetSession.id]));
+    } catch (error) {
+      setHint(error instanceof Error ? error.message : '项目跳转失败');
+    } finally {
+      setIsSubmitting(false);
+    }
+  }, [onSwitchSession, projectGroups]);
+
+  const handleDeleteProject = useCallback(async (projectPath: string) => {
+    const confirmed = window.confirm(`确认删除该项目的所有会话记录？\n${projectPath}`);
+    if (!confirmed) return;
+    setIsSubmitting(true);
+    setHint(null);
+    try {
+      await deleteProjectSessions(projectPath);
+      await onRefreshSessions();
+      setHint(`已删除项目会话: ${projectDisplayName(projectPath)}`);
+    } catch (error) {
+      setHint(error instanceof Error ? error.message : '删除项目会话失败');
+    } finally {
+      setIsSubmitting(false);
+    }
+  }, [onRefreshSessions]);
 
   const handleToggleSelection = useCallback((sessionId: string, additive: boolean) => {
     setSelectedSessionIds((prev) => {
@@ -350,8 +372,12 @@ const ProjectTab: FC<ProjectTabProps> = ({
   }, []);
 
   const handleRowClick = useCallback((sessionId: string, event: ReactMouseEvent<HTMLButtonElement>) => {
-    handleToggleSelection(sessionId, event.metaKey || event.ctrlKey);
-  }, [handleToggleSelection]);
+    if (event.metaKey || event.ctrlKey) {
+      handleToggleSelection(sessionId, true);
+      return;
+    }
+    void handleSwitchSession(sessionId);
+  }, [handleSwitchSession, handleToggleSelection]);
 
   const handleContextMenu = useCallback((event: ReactMouseEvent<HTMLButtonElement>, sessionId: string) => {
     event.preventDefault();
@@ -422,26 +448,76 @@ const ProjectTab: FC<ProjectTabProps> = ({
 
   return (
     <div className="tab-content">
+      <div className="project-status">
+        <div className="project-status-card running">
+          <div className="project-status-header">运行中项目</div>
+          {runningProjects.length === 0 && (
+            <div className="project-status-empty">暂无运行项目</div>
+          )}
+          {runningProjects.map((group) => {
+            const isActive = normalizePath(currentSession?.projectPath || '') === normalizePath(group.projectPath);
+            return (
+              <button
+                key={`running-${group.projectPath}`}
+                type="button"
+                className={`project-status-item ${isActive ? 'active' : ''}`}
+                onClick={() => { void handleProjectJump(group.projectPath); }}
+                onDoubleClick={() => { void handleProjectJump(group.projectPath); }}
+              >
+                <span className="project-status-name">{group.name}</span>
+                <span className="project-status-path">{group.projectPath}</span>
+              </button>
+            );
+          })}
+        </div>
+        <div className="project-status-card idle">
+          <div className="project-status-header">Idle 项目</div>
+          {idleProjects.length === 0 && (
+            <div className="project-status-empty">暂无 Idle 项目</div>
+          )}
+          {idleProjects.map((group) => {
+            const isActive = normalizePath(currentSession?.projectPath || '') === normalizePath(group.projectPath);
+            return (
+              <div key={`idle-${group.projectPath}`} className="project-status-row">
+                <button
+                  type="button"
+                  className={`project-status-item ${isActive ? 'active' : ''}`}
+                  onClick={() => { void handleProjectJump(group.projectPath); }}
+                  onDoubleClick={() => { void handleProjectJump(group.projectPath); }}
+                >
+                  <span className="project-status-name">{group.name}</span>
+                  <span className="project-status-path">{group.projectPath}</span>
+                </button>
+                <button
+                  type="button"
+                  className="project-status-delete"
+                  onClick={() => { void handleDeleteProject(group.projectPath); }}
+                  disabled={isSubmitting}
+                >
+                  删除
+                </button>
+              </div>
+            );
+          })}
+        </div>
+      </div>
       <div className="folder-picker">
-        <label htmlFor="workdir-input">工作目录</label>
+        <label htmlFor="workdir-input">会话/工作目录</label>
         <input
           id="workdir-input"
-          list="workdir-options"
           type="text"
-          placeholder="/absolute/path/to/project"
-          value={workingDirectory}
-          onChange={(e) => setWorkingDirectory(e.target.value)}
+          placeholder="当前会话绑定项目"
+          value={currentProjectPath}
+          readOnly
         />
-        <datalist id="workdir-options">
-          {knownDirectories.map((path) => (
-            <option value={path} key={path} />
-          ))}
-        </datalist>
         <div className="folder-picker-actions">
-          <button type="button" onClick={handlePickDirectory}>选择文件夹</button>
-          <button type="button" onClick={handleUseCurrentDir} disabled={!currentSession?.projectPath}>使用当前目录</button>
+          <button type="button" onClick={() => { void handleOpenDirectory(); }} disabled={isSubmitting}>
+            打开目录
+          </button>
+          <button type="button" onClick={() => { void onRefreshSessions(); }} disabled={isSubmitting || isLoading}>
+            刷新项目
+          </button>
         </div>
-        <button type="button" onClick={handleCreate} disabled={isSubmitting}>新建会话</button>
         {hint && <div className="session-hint">{hint}</div>}
       </div>
 

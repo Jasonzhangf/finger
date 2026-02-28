@@ -24,6 +24,10 @@ It intentionally avoids project-specific architecture, API, roadmap, and busines
 - Do not commit secrets, credentials, or private keys.
 - Do not add build artifacts, temporary files, or coverage outputs.
 - Avoid destructive git/file operations unless explicitly requested.
+- 提交规则：
+- 已完成的修改直接提交。
+- 不了解的修改需 review 后再提交。
+- 临时文件、敏感文件、日志、构建产物不要提交。
 
 ## Validation
 - Validate changed behavior with the smallest relevant checks first.

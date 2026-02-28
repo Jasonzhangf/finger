@@ -28,6 +28,7 @@
 - ✅ `POST /api/v1/workflow/pause` - 暂停工作流
 - ✅ `POST /api/v1/workflow/resume` - 恢复工作流
 - ✅ `GET /api/v1/workflows/:id/state` - 获取状态
+- ✅ `POST /api/v1/projects/pick-directory` - 打开目录选择器并返回路径
 - ✅ WebSocket 事件广播
 
 ### 5. UI 集成
