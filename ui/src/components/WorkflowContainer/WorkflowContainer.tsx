@@ -122,12 +122,6 @@ export const WorkflowContainer: React.FC = () => {
   });
   const activeSessionId = sessionBinding.context === 'runtime' ? sessionBinding.sessionId : orchestratorSessionId;
 
-  useEffect(() => {
-    if (sessionBinding.context !== 'runtime') return;
-    setDrawerAgentId(null);
-    setSelectedAgentId(null);
-  }, [sessionBinding.context, setSelectedAgentId]);
-
   // Check for resumeable session on mount
   useEffect(() => {
     const checkSession = async () => {
@@ -207,6 +201,13 @@ export const WorkflowContainer: React.FC = () => {
     clearDebugSnapshots,
     orchestratorRuntimeMode,
   } = useWorkflowExecution(activeSessionId);
+
+  useEffect(() => {
+    if (sessionBinding.context !== 'runtime') return;
+    setDrawerAgentId(null);
+    setSelectedAgentId(null);
+  }, [sessionBinding.context, setSelectedAgentId]);
+
   const {
     agents: agentPanelAgents,
     instances: runtimeInstances,
