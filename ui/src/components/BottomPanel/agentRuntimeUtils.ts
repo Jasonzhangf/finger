@@ -1,11 +1,16 @@
-import type { AgentRuntime } from '../../api/types.js';
 import type { AgentConfigSummary, AgentRuntimeInstance } from '../../hooks/useAgentRuntimePanel.js';
+
+interface AgentLike {
+  id: string;
+  name: string;
+  type: string;
+}
 
 function normalize(value: string): string {
   return value.trim().toLowerCase();
 }
 
-export function matchInstanceToAgent(agent: AgentRuntime, instance: AgentRuntimeInstance): boolean {
+export function matchInstanceToAgent(agent: AgentLike, instance: AgentRuntimeInstance): boolean {
   const agentId = normalize(agent.id);
   const agentName = normalize(agent.name);
   const instanceId = normalize(instance.id);
@@ -22,7 +27,7 @@ export function matchInstanceToAgent(agent: AgentRuntime, instance: AgentRuntime
   return false;
 }
 
-export function findConfigForAgent(agent: AgentRuntime, configs: AgentConfigSummary[]): AgentConfigSummary | null {
+export function findConfigForAgent(agent: AgentLike, configs: AgentConfigSummary[]): AgentConfigSummary | null {
   const agentId = normalize(agent.id);
   const agentName = normalize(agent.name);
   const exactById = configs.find((item) => normalize(item.id) === agentId);
@@ -39,5 +44,15 @@ export function findConfigForAgent(agent: AgentRuntime, configs: AgentConfigSumm
 
 export function isActiveInstanceStatus(status: string): boolean {
   const normalized = normalize(status);
-  return normalized === 'deployed' || normalized === 'busy' || normalized === 'running';
+  return normalized === 'deployed'
+    || normalized === 'busy'
+    || normalized === 'running'
+    || normalized === 'starting'
+    || normalized === 'active'
+    || normalized === 'executing'
+    || normalized === 'in_progress'
+    || normalized === 'allocated'
+    || normalized === 'queued'
+    || normalized === 'waiting_input'
+    || normalized === 'paused';
 }

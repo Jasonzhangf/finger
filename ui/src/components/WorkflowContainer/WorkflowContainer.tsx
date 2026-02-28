@@ -13,7 +13,7 @@ import { useWorkflowExecution } from '../../hooks/useWorkflowExecution.js';
 import { useAgents } from '../../hooks/useAgents.js';
 import { useAgentRuntimePanel } from '../../hooks/useAgentRuntimePanel.js';
 import { TaskFlowCanvas } from '../TaskFlowCanvas/TaskFlowCanvas.js';
-import type { Loop } from '../TaskFlowCanvas/types.js';
+import type { Loop, LoopNode } from '../TaskFlowCanvas/types.js';
 import { findConfigForAgent, matchInstanceToAgent } from '../BottomPanel/agentRuntimeUtils.js';
 import type { AgentConfig, AgentRuntime } from '../../api/types.js';
 
@@ -24,7 +24,7 @@ interface ResumeCheckResult {
   progress: number;
 }
 
-const CHAT_GATEWAY_ID = 'chat-codex-gateway';
+const CHAT_GATEWAY_ID = 'finger-orchestrator-gateway';
 const WORKDIR_STORAGE_KEY = 'finger-ui-workdir';
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -59,6 +59,42 @@ function resolveChatInputCapability(modules: Array<{ id: string; metadata?: Reco
   };
 }
 
+function normalizeChatAgentStatus(status: string): AgentRuntime['status'] {
+  const normalized = status.trim().toLowerCase();
+  if (normalized === 'running' || normalized === 'queued' || normalized === 'waiting_input') return 'running';
+  if (normalized === 'error' || normalized === 'failed' || normalized === 'interrupted') return 'error';
+  if (normalized === 'paused') return 'paused';
+  return 'idle';
+}
+
+function mapInstanceStatusToLoopNodeStatus(status: string): LoopNode['status'] {
+  const normalized = status.trim().toLowerCase();
+  if (normalized === 'running' || normalized === 'waiting_input') return 'running';
+  if (normalized === 'completed') return 'done';
+  if (normalized === 'failed' || normalized === 'error' || normalized === 'interrupted') return 'failed';
+  return 'waiting';
+}
+
+function mapAgentTypeToLoopNodeType(type: string): LoopNode['type'] {
+  if (type === 'orchestrator') return 'orch';
+  if (type === 'reviewer') return 'review';
+  if (type === 'executor' || type === 'searcher') return 'exec';
+  return 'user';
+}
+
+function isRuntimeBusyStatus(status: string): boolean {
+  const normalized = status.trim().toLowerCase();
+  return normalized === 'running' || normalized === 'queued' || normalized === 'waiting_input' || normalized === 'paused';
+}
+
+function isRuntimeTerminalStatus(status: string): boolean {
+  const normalized = status.trim().toLowerCase();
+  return normalized === 'completed'
+    || normalized === 'failed'
+    || normalized === 'interrupted'
+    || normalized === 'error';
+}
+
 export const WorkflowContainer: React.FC = () => {
   const {
     currentSession,
@@ -69,12 +105,22 @@ export const WorkflowContainer: React.FC = () => {
     remove: removeSession,
     rename: renameSession,
     switchSession,
+    refresh: refreshSessions,
   } = useSessions();
   const { checkForResumeableSession } = useSessionResume();
   const [showResumeDialog, setShowResumeDialog] = useState(false);
   const [resumeTarget, setResumeTarget] = useState<ResumeCheckResult | null>(null);
 
-  const sessionId = currentSession?.id || (sessions.length > 0 ? sessions[0].id : 'default-session');
+  const orchestratorSessionId = currentSession?.id || (sessions.length > 0 ? sessions[0].id : 'default-session');
+  const [sessionBinding, setSessionBinding] = useState<{
+    context: 'orchestrator' | 'runtime';
+    sessionId: string;
+    runtimeInstanceId?: string;
+  }>({
+    context: 'orchestrator',
+    sessionId: orchestratorSessionId,
+  });
+  const activeSessionId = sessionBinding.context === 'runtime' ? sessionBinding.sessionId : orchestratorSessionId;
 
   // Check for resumeable session on mount
   useEffect(() => {
@@ -108,10 +154,17 @@ export const WorkflowContainer: React.FC = () => {
 
   // Save current session ID to localStorage when it changes
   useEffect(() => {
-    if (sessionId && sessionId !== 'default-session') {
-      localStorage.setItem('finger-last-session-id', sessionId);
+    if (orchestratorSessionId && orchestratorSessionId !== 'default-session') {
+      localStorage.setItem('finger-last-session-id', orchestratorSessionId);
     }
-  }, [sessionId]);
+  }, [orchestratorSessionId]);
+
+  useEffect(() => {
+    setSessionBinding({
+      context: 'orchestrator',
+      sessionId: orchestratorSessionId,
+    });
+  }, [orchestratorSessionId]);
 
   const handleResumeSession = () => {
     setShowResumeDialog(false);
@@ -142,18 +195,31 @@ export const WorkflowContainer: React.FC = () => {
     toolPanelOverview,
     contextEditableEventIds,
     isConnected,
-  } = useWorkflowExecution(sessionId);
+    debugSnapshotsEnabled,
+    setDebugSnapshotsEnabled,
+    debugSnapshots,
+    clearDebugSnapshots,
+    orchestratorRuntimeMode,
+  } = useWorkflowExecution(activeSessionId);
   const {
     agents: agentPanelAgents,
     instances: runtimeInstances,
     configs: agentConfigItems,
+    startupTargets,
+    startupTemplates,
+    orchestrationConfig,
+    debugMode,
     isLoading: isLoadingAgentPanel,
     error: agentPanelError,
     refresh: refreshAgentPanel,
+    setDebugMode: setRuntimeDebugMode,
+    startTemplate,
+    saveOrchestrationConfig,
+    switchOrchestrationProfile,
     controlAgent,
   } = useAgentRuntimePanel();
   const [drawerAgentId, setDrawerAgentId] = useState<string | null>(null);
-  const effectiveDrawerAgentId = drawerAgentId ?? selectedAgentId ?? null;
+  const effectiveDrawerAgentId = drawerAgentId;
 
   const handleCreateNewSession = useCallback(async (): Promise<void> => {
     const fromStorage = localStorage.getItem(WORKDIR_STORAGE_KEY)?.trim();
@@ -169,15 +235,15 @@ export const WorkflowContainer: React.FC = () => {
   );
 
   // All hooks must be called before any conditional returns
-  const runtimeAgents = React.useMemo(() => {
+  const chatAgents = React.useMemo(() => {
     const merged = new Map<string, AgentRuntime>();
 
     for (const agent of agentPanelAgents) {
       merged.set(agent.id, {
         id: agent.id,
         name: agent.name,
-        type: agent.type,
-        status: agent.status,
+        type: agent.type === 'searcher' ? 'executor' : agent.type,
+        status: normalizeChatAgentStatus(agent.status),
         load: 0,
         errorRate: 0,
         requestCount: 0,
@@ -208,8 +274,8 @@ export const WorkflowContainer: React.FC = () => {
   }, [executionState?.agents, agentPanelAgents]);
 
   const selectedDrawerAgent = useMemo(
-    () => runtimeAgents.find((agent) => agent.id === effectiveDrawerAgentId) ?? null,
-    [effectiveDrawerAgentId, runtimeAgents],
+    () => agentPanelAgents.find((agent) => agent.id === effectiveDrawerAgentId) ?? null,
+    [effectiveDrawerAgentId, agentPanelAgents],
   );
 
   const selectedDrawerConfig = useMemo(
@@ -234,16 +300,40 @@ export const WorkflowContainer: React.FC = () => {
     setDrawerAgentId(agentId);
   }, [setSelectedAgentId]);
 
-  const handleSelectInstance = useCallback(async (instanceIdOrPayload: string | { sessionId?: string }): Promise<void> => {
-    const sessionIdToSwitch = typeof instanceIdOrPayload === 'string'
-      ? runtimeInstances.find((item) => item.id === instanceIdOrPayload)?.sessionId
-      : instanceIdOrPayload.sessionId;
+  const handleSelectInstance = useCallback(async (instanceIdOrPayload: string | { id?: string; sessionId?: string }): Promise<void> => {
+    const selectedInstance = typeof instanceIdOrPayload === 'string'
+      ? runtimeInstances.find((item) => item.id === instanceIdOrPayload)
+      : runtimeInstances.find((item) => (
+          (typeof instanceIdOrPayload.id === 'string' && item.id === instanceIdOrPayload.id)
+          || item.sessionId === instanceIdOrPayload.sessionId
+        ));
+    const sessionIdToSwitch = selectedInstance?.sessionId;
     if (!sessionIdToSwitch) return;
-    await switchSession(sessionIdToSwitch);
-  }, [runtimeInstances, switchSession]);
+    setDrawerAgentId(null);
+    setSelectedAgentId(null);
+    setSessionBinding({
+      context: 'runtime',
+      sessionId: sessionIdToSwitch,
+      runtimeInstanceId: selectedInstance?.id,
+    });
+  }, [runtimeInstances]);
+
+  useEffect(() => {
+    if (sessionBinding.context !== 'runtime') return;
+    const boundInstance = runtimeInstances.find((instance) => (
+      (sessionBinding.runtimeInstanceId && instance.id === sessionBinding.runtimeInstanceId)
+      || instance.sessionId === sessionBinding.sessionId
+    ));
+    if (!boundInstance || isRuntimeTerminalStatus(boundInstance.status)) {
+      setSessionBinding({
+        context: 'orchestrator',
+        sessionId: orchestratorSessionId,
+      });
+    }
+  }, [orchestratorSessionId, runtimeInstances, sessionBinding]);
 
   const handleDeployAgent = useCallback(async (payload: { config: AgentConfig; instanceCount: number }): Promise<void> => {
-    const targetSessionId = currentSession?.id || sessionId;
+    const targetSessionId = currentSession?.id || orchestratorSessionId;
     const response = await fetch('/api/v1/agents/deploy', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -259,7 +349,7 @@ export const WorkflowContainer: React.FC = () => {
       throw new Error(message || `HTTP ${response.status}`);
     }
     await refreshAgentPanel();
-  }, [currentSession?.id, refreshAgentPanel, sessionId]);
+  }, [currentSession?.id, orchestratorSessionId, refreshAgentPanel]);
 
   const handleAgentControl = useCallback(async (payload: {
     action: 'status' | 'pause' | 'resume' | 'interrupt' | 'cancel';
@@ -274,41 +364,134 @@ export const WorkflowContainer: React.FC = () => {
     return result;
   }, [controlAgent, refreshAgentPanel]);
 
+  const scopedRuntimeInstances = useMemo(() => {
+    if (sessionBinding.context === 'runtime') {
+      return runtimeInstances.filter((instance) => instance.sessionId === sessionBinding.sessionId);
+    }
+    return runtimeInstances;
+  }, [runtimeInstances, sessionBinding.context, sessionBinding.sessionId]);
+
   const taskFlowProps = React.useMemo(() => {
     const planHistory: Loop[] = [];
     const designHistory: Loop[] = [];
-    const executionHistory: Loop[] = [];
-    const queue: Loop[] = [];
+    const executionHistory: Loop[] = scopedRuntimeInstances
+      .filter((instance) => {
+        const normalized = instance.status.toLowerCase();
+        return normalized === 'completed' || normalized === 'failed' || normalized === 'interrupted' || normalized === 'error';
+      })
+      .slice(0, 20)
+      .map((instance) => ({
+        id: `history-${instance.id}`,
+        epicId: executionState?.workflowId || activeSessionId,
+        phase: 'execution',
+        status: 'history',
+        result: instance.status === 'completed' ? 'success' : 'failed',
+        createdAt: new Date().toISOString(),
+        nodes: [
+          {
+            id: `orch-${instance.id}`,
+            type: 'orch',
+            status: 'done',
+            title: 'orchestrator',
+            text: 'dispatch completed',
+            agentId: 'finger-orchestrator',
+            timestamp: new Date().toISOString(),
+          },
+          {
+            id: `runtime-${instance.id}`,
+            type: mapAgentTypeToLoopNodeType(instance.type),
+            status: mapInstanceStatusToLoopNodeStatus(instance.status),
+            title: instance.name,
+            text: instance.workflowId ?? instance.sessionId ?? instance.id,
+            agentId: instance.agentId,
+            timestamp: new Date().toISOString(),
+          },
+        ],
+      }));
+    const queue: Loop[] = scopedRuntimeInstances
+      .filter((instance) => instance.status.toLowerCase() === 'queued')
+      .map((instance) => ({
+        id: `queue-${instance.id}`,
+        epicId: executionState?.workflowId || activeSessionId,
+        phase: 'execution',
+        status: 'queue',
+        createdAt: new Date().toISOString(),
+        nodes: [
+          {
+            id: `queue-node-${instance.id}`,
+            type: mapAgentTypeToLoopNodeType(instance.type),
+            status: 'waiting',
+            title: instance.name,
+            text: `queue: ${instance.workflowId ?? instance.sessionId ?? instance.id}`,
+            agentId: instance.agentId,
+            timestamp: new Date().toISOString(),
+          },
+        ],
+      }));
+    const runningRuntimeNodes: LoopNode[] = scopedRuntimeInstances
+      .filter((instance) => isRuntimeBusyStatus(instance.status))
+      .map((instance) => ({
+        id: `running-${instance.id}`,
+        type: mapAgentTypeToLoopNodeType(instance.type),
+        status: mapInstanceStatusToLoopNodeStatus(instance.status),
+        title: instance.name,
+        text: instance.workflowId ?? instance.sessionId ?? instance.id,
+        agentId: instance.agentId,
+        timestamp: new Date().toISOString(),
+      }));
+    const orchestratorNodeStatus: LoopNode['status'] = sessionBinding.context === 'runtime' ? 'waiting' : 'running';
+    const orchestratorNode: LoopNode = {
+      id: `orchestrator-${activeSessionId}`,
+      type: 'orch',
+      status: orchestratorNodeStatus,
+      title: 'orchestrator',
+      text: sessionBinding.context === 'runtime' ? 'waiting runtime feedback' : 'active',
+      agentId: 'finger-orchestrator',
+      timestamp: new Date().toISOString(),
+    };
+    const runningLoop = runningRuntimeNodes.length > 0 ? {
+      id: `running-${activeSessionId}`,
+      epicId: executionState?.workflowId || activeSessionId,
+      phase: 'execution' as const,
+      status: 'running' as const,
+      createdAt: new Date().toISOString(),
+      nodes: [
+        orchestratorNode,
+        ...runningRuntimeNodes,
+      ],
+    } : undefined;
 
     return {
-      epicId: executionState?.workflowId || 'new-workflow',
+      epicId: executionState?.workflowId || activeSessionId,
       planHistory,
       designHistory,
       executionHistory,
-      runningLoop: undefined,
+      runningLoop,
       queue,
     };
-  }, [executionState?.workflowId]);
+  }, [executionState?.workflowId, scopedRuntimeInstances, activeSessionId, sessionBinding.context]);
 
   const canvasElement = useMemo(() => (
-    <div style={{ position: 'relative', width: '100%', height: '100%' }}>
-      <TaskFlowCanvas
-        epicId={taskFlowProps.epicId}
-        planHistory={taskFlowProps.planHistory}
-        designHistory={taskFlowProps.designHistory}
-        executionHistory={taskFlowProps.executionHistory}
-        runningLoop={taskFlowProps.runningLoop}
-        queue={taskFlowProps.queue}
-      />
+    <div className="canvas-shell">
       <PerformanceCard />
+      <div className="canvas-body">
+        <TaskFlowCanvas
+          epicId={taskFlowProps.epicId}
+          planHistory={taskFlowProps.planHistory}
+          designHistory={taskFlowProps.designHistory}
+          executionHistory={taskFlowProps.executionHistory}
+          runningLoop={taskFlowProps.runningLoop}
+          queue={taskFlowProps.queue}
+        />
+      </div>
     </div>
   ), [taskFlowProps]);
 
   const rightPanelElement = useMemo(() => (
     <ChatInterface
-      key={sessionId}
+      key={activeSessionId}
       executionState={executionState}
-      agents={runtimeAgents}
+      agents={chatAgents}
       events={runtimeEvents}
       contextEditableEventIds={contextEditableEventIds}
       agentRunStatus={agentRunStatus}
@@ -325,8 +508,13 @@ export const WorkflowContainer: React.FC = () => {
       isConnected={isConnected}
       onAgentClick={handleSelectAgent}
       inputCapability={chatInputCapability}
+      debugSnapshotsEnabled={debugSnapshotsEnabled}
+      onToggleDebugSnapshots={setDebugSnapshotsEnabled}
+      debugSnapshots={debugSnapshots}
+      onClearDebugSnapshots={clearDebugSnapshots}
+      orchestratorRuntimeMode={orchestratorRuntimeMode}
     />
-  ), [sessionId, executionState, runtimeAgents, runtimeEvents, contextEditableEventIds, agentRunStatus, runtimeOverview, toolPanelOverview, sendUserInput, editRuntimeEvent, deleteRuntimeEvent, handleCreateNewSession, pauseWorkflow, resumeWorkflow, interruptCurrentTurn, isConnected, handleSelectAgent, chatInputCapability]);
+  ), [activeSessionId, executionState, chatAgents, runtimeEvents, contextEditableEventIds, agentRunStatus, runtimeOverview, toolPanelOverview, sendUserInput, editRuntimeEvent, deleteRuntimeEvent, handleCreateNewSession, pauseWorkflow, resumeWorkflow, interruptCurrentTurn, isConnected, handleSelectAgent, chatInputCapability, debugSnapshotsEnabled, setDebugSnapshotsEnabled, debugSnapshots, clearDebugSnapshots, orchestratorRuntimeMode]);
 
   // Use overlay instead of early return to maintain hook consistency
   const loadingOverlay = isLoading || isLoadingSessions ? (
@@ -361,22 +549,55 @@ export const WorkflowContainer: React.FC = () => {
             onDeleteSession={removeSession}
             onRenameSession={renameSession}
             onSwitchSession={switchSession}
+            onRefreshSessions={refreshSessions}
           />
         }
         canvas={canvasElement}
         rightPanel={rightPanelElement}
         bottomPanel={
           <BottomPanel
-            agents={runtimeAgents}
+            agents={agentPanelAgents}
             instances={runtimeInstances}
             configs={agentConfigItems}
+            startupTargets={startupTargets}
+            startupTemplates={startupTemplates}
+            orchestrationConfig={orchestrationConfig}
+            debugMode={debugMode}
             selectedAgentId={selectedAgentId}
-            currentSessionId={currentSession?.id ?? null}
+            currentSessionId={activeSessionId}
+            focusedRuntimeInstanceId={sessionBinding.runtimeInstanceId ?? null}
             isLoading={isLoadingAgentPanel}
             error={agentPanelError}
             onSelectAgent={handleSelectAgent}
             onSelectInstance={(instance) => { void handleSelectInstance(instance); }}
             onRefresh={() => { void refreshAgentPanel(); }}
+            onSetDebugMode={async (enabled) => {
+              const result = await setRuntimeDebugMode(enabled);
+              if (!result.ok) {
+                throw new Error(result.error ?? '更新 debug mode 失败');
+              }
+            }}
+            onStartTemplate={async (templateId) => {
+              const result = await startTemplate({
+                templateId,
+                sessionId: orchestratorSessionId,
+              });
+              if (!result.ok) {
+                throw new Error(result.error ?? `模板 ${templateId} 启动失败`);
+              }
+            }}
+            onSwitchOrchestrationProfile={async (profileId) => {
+              const result = await switchOrchestrationProfile(profileId);
+              if (!result.ok) {
+                throw new Error(result.error ?? `切换 profile 失败: ${profileId}`);
+              }
+            }}
+            onSaveOrchestrationConfig={async (config) => {
+              const result = await saveOrchestrationConfig(config);
+              if (!result.ok) {
+                throw new Error(result.error ?? '保存 orchestration 配置失败');
+              }
+            }}
           />
         }
       />
@@ -386,8 +607,12 @@ export const WorkflowContainer: React.FC = () => {
         capabilities={selectedDrawerCapabilities}
         config={selectedDrawerConfig}
         instances={selectedDrawerInstances}
-        currentSessionId={currentSession?.id ?? null}
-        onClose={() => setDrawerAgentId(null)}
+        assertions={selectedDrawerAgent?.debugAssertions ?? []}
+        currentSessionId={activeSessionId}
+        onClose={() => {
+          setDrawerAgentId(null);
+          setSelectedAgentId(null);
+        }}
         onSwitchInstance={(instance) => { void handleSelectInstance(instance); }}
         onDeployConfig={handleDeployAgent}
         onControlAgent={handleAgentControl}

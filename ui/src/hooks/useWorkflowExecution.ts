@@ -4,6 +4,8 @@ import { getWebSocket } from '../api/websocket.js';
 import type {
   WorkflowExecutionState,
   WorkflowInfo,
+  WorkflowFSMState,
+  WorkflowStatus,
   AgentExecutionDetail,
   WsMessage,
   WorkflowUpdatePayload,
@@ -23,8 +25,8 @@ import type {
   RuntimePlanStep,
 } from '../api/types.js';
 
-const CHAT_PANEL_TARGET = (import.meta.env.VITE_CHAT_PANEL_TARGET as string | undefined)?.trim() || 'chat-codex-gateway';
-const DEFAULT_CHAT_AGENT_ID = 'chat-codex';
+const CHAT_PANEL_TARGET = (import.meta.env.VITE_CHAT_PANEL_TARGET as string | undefined)?.trim() || 'finger-orchestrator-gateway';
+const DEFAULT_CHAT_AGENT_ID = 'finger-orchestrator';
 const ENABLE_UI_DIRECT_AGENT_TEST_ROUTE =
   (import.meta.env.VITE_UI_DIRECT_AGENT_TEST_ROUTE as string | undefined)?.trim() === '1';
 const MAX_INLINE_FILE_TEXT_CHARS = 12000;
@@ -35,6 +37,35 @@ const CONTEXT_HISTORY_WINDOW_SIZE =
   Number.isFinite(parsedContextWindowSize) && parsedContextWindowSize > 0
     ? Math.floor(parsedContextWindowSize)
     : DEFAULT_CONTEXT_HISTORY_WINDOW_SIZE;
+
+const SESSION_BOUND_WS_TYPES = new Set([
+  'chat_codex_turn',
+  'tool_call',
+  'tool_result',
+  'tool_error',
+  'user_message',
+  'assistant_chunk',
+  'assistant_complete',
+  'waiting_for_user',
+  'user_decision_received',
+  'phase_transition',
+  'workflow_progress',
+  'workflow_update',
+  'agent_update',
+  'agent_runtime_dispatch',
+  'agent_runtime_control',
+  'agent_runtime_status',
+  'agent_runtime_mock_assertion',
+  'runtime_status_changed',
+  'runtime_finished',
+  'input_lock_changed',
+  'typing_indicator',
+  'input_lock_heartbeat_ack',
+]);
+
+function isSessionBoundWsMessage(type: string): boolean {
+  return SESSION_BOUND_WS_TYPES.has(type);
+}
 
 type KernelInputItem =
   | { type: 'text'; text: string }
@@ -79,6 +110,14 @@ interface SessionApiMessage {
   role: 'user' | 'assistant' | 'system' | 'orchestrator';
   content: string;
   timestamp: string;
+  type?: 'text' | 'command' | 'plan_update' | 'task_update' | 'tool_call' | 'tool_result' | 'tool_error' | 'agent_step' | 'dispatch';
+  agentId?: string;
+  toolName?: string;
+  toolStatus?: 'success' | 'error';
+  toolDurationMs?: number;
+  toolInput?: unknown;
+  toolOutput?: unknown;
+  metadata?: Record<string, unknown>;
   attachments?: SessionApiAttachment[];
 }
 
@@ -90,7 +129,7 @@ interface RuntimeTokenUsage {
 }
 
 interface AgentRunStatus {
-  phase: 'idle' | 'running' | 'error';
+  phase: 'idle' | 'running' | 'dispatching' | 'error';
   text: string;
   updatedAt: string;
 }
@@ -113,6 +152,36 @@ interface RuntimeOverview {
 interface ToolPanelOverview {
   availableTools: string[];
   exposedTools: string[];
+}
+
+export type DebugSnapshotStage =
+  | 'request_build'
+  | 'request_attempt'
+  | 'request_ok'
+  | 'request_error'
+  | 'chat_codex_turn'
+  | 'phase_transition'
+  | 'tool_call'
+  | 'tool_result'
+  | 'tool_error';
+
+export interface DebugSnapshotItem {
+  id: string;
+  timestamp: string;
+  sessionId: string;
+  stage: DebugSnapshotStage;
+  summary: string;
+  requestId?: string;
+  attempt?: number;
+  phase?: string;
+  payload?: unknown;
+}
+
+export interface OrchestratorRuntimeModeState {
+  mode: string;
+  fsmV2Implemented: boolean;
+  runnerModuleId?: string;
+  updatedAt: string;
 }
 
 interface UseWorkflowExecutionReturn {
@@ -143,6 +212,11 @@ interface UseWorkflowExecutionReturn {
   clientId: string | null;
   acquireInputLock: () => Promise<boolean>;
   releaseInputLock: () => void;
+  debugSnapshotsEnabled: boolean;
+  setDebugSnapshotsEnabled: (enabled: boolean) => void;
+  debugSnapshots: DebugSnapshotItem[];
+  clearDebugSnapshots: () => void;
+  orchestratorRuntimeMode: OrchestratorRuntimeModeState | null;
 }
 
 interface InputLockState {
@@ -155,9 +229,100 @@ interface InputLockState {
 }
 
 const DEFAULT_LEDGER_FOCUS_MAX_CHARS = 20_000;
-const SEND_RETRY_MAX_ATTEMPTS = 6;
-const SEND_RETRY_BASE_DELAY_MS = 800;
+const SEND_RETRY_MAX_ATTEMPTS = 10;
+const SEND_RETRY_BASE_DELAY_MS = 3000;
+const DEBUG_SNAPSHOTS_STORAGE_KEY = 'finger-debug-snapshots-enabled';
 type ToolCategoryLabel = '编辑' | '读取' | '写入' | '计划' | '搜索' | '网络搜索' | '其他';
+type AgentRunPhase = AgentRunStatus['phase'];
+
+interface OrchestratorPhaseUiState {
+  status: WorkflowStatus;
+  fsmState?: WorkflowFSMState;
+  paused: boolean;
+  runPhase: AgentRunPhase;
+}
+
+const ORCHESTRATOR_PHASE_LABELS: Record<string, string> = {
+  boot: '启动探测',
+  idle_probe_bd: '探测可恢复任务',
+  resume_ask: '恢复确认',
+  resume_plan: '加载恢复计划',
+  idle: '空闲等待',
+  intake: '需求接入',
+  ask_switch: '冲突澄清',
+  epic_sync: '同步任务模型',
+  plan_baseline: '建立基线计划',
+  plan_review: '计划评审',
+  observe: '定义观察目标',
+  research_fanout: '并发研究派发',
+  wait_others: '等待研究结果',
+  research_ingest: '回收研究产物',
+  research_eval: '研究充分性评估',
+  detail_design: '详细设计',
+  coder_handoff: '交付编码任务',
+  schedule: '资源调度',
+  queue: '资源排队',
+  dispatch: '派发执行',
+  coder_exec: '编码执行',
+  review_accept: '验收审核',
+  replan_patch: '重规划修补',
+  complete: '已完成',
+  completed: '已完成',
+  cancelled: '已取消',
+  failed: '失败',
+  understanding: '理解任务',
+  high_design: '概要设计',
+  deliverables: '交付清单',
+  plan: '任务拆解',
+  parallel_dispatch: '并行派发',
+  blocked_review: '阻塞审查',
+  verify: '验证交付',
+  replanning: '重规划',
+};
+
+export function describeOrchestratorPhase(phase: string): string {
+  const normalized = phase.trim().toLowerCase();
+  if (!normalized) return '未知阶段';
+  return ORCHESTRATOR_PHASE_LABELS[normalized] ?? normalized;
+}
+
+export function mapOrchestratorPhaseToUiState(phase: string): OrchestratorPhaseUiState {
+  const normalized = phase.trim().toLowerCase();
+  switch (normalized) {
+    case 'idle':
+      return { status: 'planning', fsmState: 'idle', paused: false, runPhase: 'idle' };
+    case 'boot':
+    case 'idle_probe_bd':
+    case 'resume_plan':
+      return { status: 'planning', fsmState: 'plan_loop', paused: false, runPhase: 'running' };
+    case 'resume_ask':
+    case 'ask_switch':
+      return { status: 'paused', fsmState: 'wait_user_decision', paused: true, runPhase: 'idle' };
+    case 'queue':
+      return { status: 'paused', fsmState: 'paused', paused: true, runPhase: 'idle' };
+    case 'review_accept':
+    case 'verify':
+      return { status: 'executing', fsmState: 'review', paused: false, runPhase: 'running' };
+    case 'replan_patch':
+    case 'replanning':
+      return { status: 'executing', fsmState: 'replan_evaluation', paused: false, runPhase: 'running' };
+    case 'schedule':
+    case 'dispatch':
+    case 'coder_exec':
+    case 'parallel_dispatch':
+    case 'blocked_review':
+      return { status: 'executing', fsmState: 'execution', paused: false, runPhase: 'running' };
+    case 'complete':
+    case 'completed':
+      return { status: 'completed', fsmState: 'completed', paused: false, runPhase: 'idle' };
+    case 'failed':
+      return { status: 'failed', fsmState: 'failed', paused: false, runPhase: 'error' };
+    case 'cancelled':
+      return { status: 'paused', fsmState: 'paused', paused: true, runPhase: 'idle' };
+    default:
+      return { status: 'planning', fsmState: 'plan_loop', paused: false, runPhase: 'running' };
+  }
+}
 
 function isPersistedSessionMessageId(id: string): boolean {
   return id.startsWith('msg-');
@@ -204,45 +369,6 @@ function pickWorkflowForSession(workflows: WorkflowInfo[], sessionId: string, pr
     .sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime())[0] ?? null;
 }
 
-function pushEvent(current: RuntimeEvent[], event: Omit<RuntimeEvent, 'id'> & { id?: string }): RuntimeEvent[] {
-  const entry: RuntimeEvent = {
-    ...event,
-    id: event.id ?? `${event.timestamp}-${Math.random().toString(36).slice(2, 8)}`,
-  };
-  const existingIndex = current.findIndex((item) => item.id === entry.id);
-  if (existingIndex >= 0) {
-    const updated = [...current];
-    updated[existingIndex] = entry;
-    return updated;
-  }
-  return [...current.slice(-299), entry];
-}
-
-function upsertAgentRuntimeEvent(current: RuntimeEvent[], event: Omit<RuntimeEvent, 'id'>): RuntimeEvent[] {
-  // 对同一个 agent 的状态事件做就地更新，避免 UI 积压导致卡顿
-  if (event.role !== 'agent' || !event.agentId) {
-    return pushEvent(current, event);
-  }
-
-  const idx = current.findIndex(
-    (e) =>
-      e.role === 'agent' &&
-      e.agentId === event.agentId &&
-      e.kind === 'status',
-  );
-
-  if (idx >= 0 && event.kind === 'status') {
-    const updated = [...current];
-    updated[idx] = {
-      ...updated[idx],
-      ...event,
-    } as RuntimeEvent;
-    return updated;
-  }
-
-  return pushEvent(current, event);
-}
-
 function computeAgentLoadFromLog(log: SessionLog): number {
   const rounds = Math.max(log.totalRounds || log.iterations.length || 1, 1);
   const current = log.iterations.length;
@@ -256,7 +382,7 @@ function buildRoundExecutionPath(
 ): WorkflowExecutionState['executionPath'] {
   return tasks.map((task) => ({
     from: orchestratorId,
-    to: task.assignee || 'executor-loop',
+    to: task.assignee || 'finger-executor',
     status: mapTaskStatusToPathStatus(task.status),
     message: `${task.id}: ${task.description}`,
   }));
@@ -402,6 +528,7 @@ function classifyExecCommand(command: string): ToolCategoryLabel {
 function resolveToolCategoryLabel(toolName: string, input?: unknown): ToolCategoryLabel {
   if (toolName === 'apply_patch') return '编辑';
   if (toolName === 'update_plan') return '计划';
+  if (toolName.toLowerCase().includes('dispatch')) return '计划';
   if (toolName === 'context_ledger.memory') return '搜索';
   if (toolName === 'web_search') return '网络搜索';
   if (toolName === 'view_image') return '读取';
@@ -728,7 +855,7 @@ function toSessionAttachments(images: RuntimeImage[], files: RuntimeFile[]): Ses
   return [...imageAttachments, ...fileAttachments];
 }
 
-function mapSessionMessageToRuntimeEvent(message: SessionApiMessage): RuntimeEvent {
+function mapSessionMessageToRuntimeEvent(message: SessionApiMessage, defaultAgentId: string): RuntimeEvent {
   const attachments = Array.isArray(message.attachments) ? message.attachments : [];
   const images: RuntimeImage[] = attachments
     .filter((item) => item.type === 'image')
@@ -748,6 +875,97 @@ function mapSessionMessageToRuntimeEvent(message: SessionApiMessage): RuntimeEve
       dataUrl: item.url.startsWith('data:') ? item.url : undefined,
     }));
 
+  const metaRecord = isRecord(message.metadata) ? message.metadata : null;
+  const metaEvent = metaRecord && isRecord(metaRecord.event) ? metaRecord.event : null;
+  const explicitAgentId =
+    (typeof message.agentId === 'string' && message.agentId.trim().length > 0 ? message.agentId.trim() : '') ||
+    (metaEvent && typeof metaEvent.agentId === 'string' ? metaEvent.agentId : '');
+  const resolvedAgentId = explicitAgentId || defaultAgentId;
+  const metaAgentName =
+    (metaRecord && typeof metaRecord.agentName === 'string' && metaRecord.agentName.trim().length > 0
+      ? metaRecord.agentName.trim()
+      : '') ||
+    (metaRecord && typeof metaRecord.agentRole === 'string' && metaRecord.agentRole.trim().length > 0
+      ? metaRecord.agentRole.trim()
+      : '');
+  const resolvedAgentName = metaAgentName || explicitAgentId || resolvedAgentId;
+  const toolName =
+    (typeof message.toolName === 'string' && message.toolName.trim().length > 0 ? message.toolName.trim() : '') ||
+    (metaEvent && typeof metaEvent.toolName === 'string' ? metaEvent.toolName : '');
+  const toolInput =
+    message.toolInput !== undefined
+      ? message.toolInput
+      : (metaEvent && isRecord(metaEvent.payload) ? metaEvent.payload.input : undefined);
+  const toolOutput =
+    message.toolOutput !== undefined
+      ? message.toolOutput
+      : (metaEvent && isRecord(metaEvent.payload)
+        ? (metaEvent.payload.output ?? metaEvent.payload.error)
+        : undefined);
+  const toolDurationMs =
+    typeof message.toolDurationMs === 'number'
+      ? message.toolDurationMs
+      : (metaEvent && isRecord(metaEvent.payload) && typeof metaEvent.payload.duration === 'number'
+        ? metaEvent.payload.duration
+        : undefined);
+  const toolStatus = message.toolStatus
+    ?? (message.type === 'tool_error' ? 'error' : message.type === 'tool_result' ? 'success' : undefined);
+
+  if (message.type === 'tool_call' && toolName) {
+    const actionLabel = resolveToolActionLabel(toolName, toolInput);
+    const category = resolveToolCategoryLabel(toolName, toolInput);
+    return {
+      id: message.id,
+      role: 'system',
+      agentId: resolvedAgentId,
+      agentName: resolvedAgentName,
+      content: message.content || `调用工具：${actionLabel}`,
+      timestamp: message.timestamp,
+      kind: 'action',
+      toolName,
+      toolCategory: category,
+      toolStatus: 'running',
+      ...(toolDurationMs !== undefined ? { toolDurationMs } : {}),
+      ...(toolInput !== undefined ? { toolInput } : {}),
+      ...(toolOutput !== undefined ? { toolOutput } : {}),
+    };
+  }
+
+  if ((message.type === 'tool_result' || message.type === 'tool_error') && toolName) {
+    const category = resolveToolCategoryLabel(toolName, toolInput);
+    const status = toolStatus === 'error' ? 'error' : 'success';
+    const errorText = status === 'error' && typeof toolOutput === 'string' ? toolOutput : undefined;
+    const content = message.content || buildToolResultContent(toolName, status, toolDurationMs, errorText, toolInput);
+    return {
+      id: message.id,
+      role: 'system',
+      agentId: resolvedAgentId,
+      agentName: resolvedAgentName,
+      content,
+      timestamp: message.timestamp,
+      kind: 'observation',
+      toolName,
+      toolCategory: category,
+      toolStatus: status,
+      ...(toolDurationMs !== undefined ? { toolDurationMs } : {}),
+      ...(toolInput !== undefined ? { toolInput } : {}),
+      ...(toolOutput !== undefined ? { toolOutput } : {}),
+      ...(status === 'error' && typeof toolOutput === 'string' ? { errorMessage: toolOutput } : {}),
+    };
+  }
+
+  if (message.type === 'agent_step') {
+    return {
+      id: message.id,
+      role: 'system',
+      agentId: resolvedAgentId,
+      agentName: resolvedAgentName,
+      content: message.content,
+      timestamp: message.timestamp,
+      kind: 'thought',
+    };
+  }
+
   if (message.role === 'user') {
     return {
       id: message.id,
@@ -762,15 +980,29 @@ function mapSessionMessageToRuntimeEvent(message: SessionApiMessage): RuntimeEve
   }
 
   if (message.role === 'assistant' || message.role === 'orchestrator') {
-    const agentId = DEFAULT_CHAT_AGENT_ID;
+    const agentId = resolvedAgentId;
     return {
       id: message.id,
       role: 'agent',
       agentId,
-      agentName: agentId,
+      agentName: resolvedAgentName,
       content: message.content,
       timestamp: message.timestamp,
       kind: 'observation',
+      tokenUsage: estimateTokenUsage(message.content),
+      ...(images.length > 0 ? { images } : {}),
+      ...(files.length > 0 ? { files } : {}),
+    };
+  }
+
+  if (message.role === 'system') {
+    return {
+      id: message.id,
+      role: 'system',
+      ...(explicitAgentId ? { agentId: explicitAgentId, agentName: resolvedAgentName } : {}),
+      content: message.content,
+      timestamp: message.timestamp,
+      kind: 'status',
       tokenUsage: estimateTokenUsage(message.content),
       ...(images.length > 0 ? { images } : {}),
       ...(files.length > 0 ? { files } : {}),
@@ -910,8 +1142,9 @@ export function mapWsMessageToRuntimeEvent(
     (typeof msg.sessionId === 'string' ? msg.sessionId : undefined) ||
     (typeof payload.sessionId === 'string' ? payload.sessionId : undefined);
 
-  if (eventSessionId && eventSessionId !== currentSessionId && eventSessionId !== 'default') {
-    return null;
+  if (isSessionBoundWsMessage(msg.type)) {
+    if (!eventSessionId) return null;
+    if (eventSessionId !== currentSessionId) return null;
   }
 
   const timestamp = typeof msg.timestamp === 'string' ? msg.timestamp : new Date().toISOString();
@@ -1038,23 +1271,35 @@ export function mapWsMessageToRuntimeEvent(
       }
     case 'assistant_chunk':
       if (typeof payload.content !== 'string' || payload.content.length === 0) return null;
-      return {
-        role: 'agent',
-        agentId: agentId || DEFAULT_CHAT_AGENT_ID,
-        agentName: agentId || DEFAULT_CHAT_AGENT_ID,
-        kind: 'observation',
-        content: payload.content,
-        timestamp,
-      };
+      {
+        const messageId = typeof payload.messageId === 'string' ? payload.messageId.trim() : '';
+        const eventId = messageId.length > 0 ? `assistant:${messageId}` : undefined;
+        return {
+          ...(eventId ? { id: eventId } : {}),
+          role: 'agent',
+          agentId: agentId || DEFAULT_CHAT_AGENT_ID,
+          agentName: agentId || DEFAULT_CHAT_AGENT_ID,
+          kind: 'observation',
+          content: payload.content,
+          timestamp,
+        };
+      }
     case 'assistant_complete':
-      return {
-        role: 'agent',
-        agentId: agentId || DEFAULT_CHAT_AGENT_ID,
-        agentName: agentId || DEFAULT_CHAT_AGENT_ID,
-        kind: 'status',
-        content: typeof payload.content === 'string' ? payload.content : '回复完成',
-        timestamp,
-      };
+      {
+        const messageId = typeof payload.messageId === 'string' ? payload.messageId.trim() : '';
+        const eventId = messageId.length > 0 ? `assistant:${messageId}` : undefined;
+        const content = typeof payload.content === 'string' ? payload.content.trim() : '';
+        if (content.length === 0) return null;
+        return {
+          ...(eventId ? { id: eventId } : {}),
+          role: 'agent',
+          agentId: agentId || DEFAULT_CHAT_AGENT_ID,
+          agentName: agentId || DEFAULT_CHAT_AGENT_ID,
+          kind: 'observation',
+          content,
+          timestamp,
+        };
+      }
     case 'workflow_progress':
       return {
         role: 'system',
@@ -1066,14 +1311,18 @@ export function mapWsMessageToRuntimeEvent(
         timestamp,
       };
     case 'phase_transition':
+      {
+        const from = String((payload as Record<string, unknown>).from ?? '').trim();
+        const to = String((payload as Record<string, unknown>).to ?? '').trim();
+        const fromLabel = from ? describeOrchestratorPhase(from) : '?';
+        const toLabel = to ? describeOrchestratorPhase(to) : '?';
       return {
         role: 'system',
         kind: 'status',
-        content: `阶段切换：${String((payload as Record<string, unknown>).from ?? '?')} -> ${String(
-          (payload as Record<string, unknown>).to ?? '?',
-        )}`,
+        content: `阶段切换：${fromLabel} -> ${toLabel}`,
         timestamp,
       };
+      }
     case 'waiting_for_user':
       return {
         role: 'system',
@@ -1086,6 +1335,77 @@ export function mapWsMessageToRuntimeEvent(
         role: 'system',
         kind: 'status',
         content: '已接收用户决策',
+        timestamp,
+      };
+    case 'agent_runtime_dispatch':
+      {
+        const target = typeof payload.targetAgentId === 'string' ? payload.targetAgentId : 'unknown-agent';
+        const status = typeof payload.status === 'string' ? payload.status : 'unknown';
+        const summary = typeof payload.summary === 'string' ? payload.summary : '';
+        const content = summary.length > 0
+          ? `[dispatch] ${target} ${status} - ${summary}`
+          : `[dispatch] ${target} ${status}`;
+        return {
+          role: 'system',
+          kind: 'status',
+          content,
+          timestamp,
+        };
+      }
+    case 'agent_runtime_control':
+      {
+        const action = typeof payload.action === 'string' ? payload.action : 'unknown';
+        const status = typeof payload.status === 'string' ? payload.status : 'unknown';
+        const content = `[control] ${action} -> ${status}`;
+        return {
+          role: 'system',
+          kind: 'status',
+          content,
+          timestamp,
+        };
+      }
+    case 'agent_runtime_status':
+      {
+        const summary = typeof payload.summary === 'string' ? payload.summary.trim() : '';
+        const status = typeof payload.status === 'string' ? payload.status : 'unknown';
+        const content = summary.length > 0
+          ? `[runtime] ${status} - ${summary}`
+          : `[runtime] ${status}`;
+        return {
+          role: 'system',
+          kind: 'status',
+          content,
+          timestamp,
+        };
+      }
+    case 'agent_runtime_mock_assertion':
+      {
+        const assertion = isRecord(payload.payload) ? payload.payload : payload;
+        const summary = typeof assertion.content === 'string' ? assertion.content : 'mock assertion';
+        const result = isRecord(assertion.result) ? assertion.result : {};
+        const resultSummary = typeof result.summary === 'string' ? result.summary : '';
+        const content = resultSummary
+          ? `[assert] ${summary} => ${resultSummary}`
+          : `[assert] ${summary}`;
+        return {
+          role: 'system',
+          kind: 'status',
+          content,
+          timestamp,
+        };
+      }
+    case 'runtime_status_changed':
+      return {
+        role: 'system',
+        kind: 'status',
+        content: `[runtime] status=${String(payload.status ?? 'unknown')}`,
+        timestamp,
+      };
+    case 'runtime_finished':
+      return {
+        role: 'system',
+        kind: 'status',
+        content: `[runtime] finished: ${String(payload.finalStatus ?? payload.status ?? 'unknown')}`,
         timestamp,
       };
     default:
@@ -1116,7 +1436,7 @@ function extractChatReply(result: unknown): {
     candidate.pendingInputAccepted === true
     || metadata?.pendingInputAccepted === true;
   if (candidate.success === false) {
-    const error = typeof candidate.error === 'string' ? candidate.error : 'chat-codex request failed';
+    const error = typeof candidate.error === 'string' ? candidate.error : 'finger-general request failed';
     throw new Error(error);
   }
 
@@ -1324,7 +1644,7 @@ function normalizeToolNameList(value: unknown): string[] {
 
 function parseRetryAfterMs(attempt: number): number {
   const base = SEND_RETRY_BASE_DELAY_MS * Math.pow(2, Math.max(0, attempt - 1));
-  return Math.min(30_000, Math.floor(base));
+  return Math.floor(base);
 }
 
 function sleep(ms: number): Promise<void> {
@@ -1353,6 +1673,9 @@ function shouldRetryChatRequest(statusCode: number | undefined, errorMessage: st
     || normalized.includes('timed out')
     || normalized.includes('result timeout')
     || normalized.includes('gateway')
+    || normalized.includes('run_turn failed')
+    || normalized.includes('http request failed')
+    || normalized.includes('error sending request for url')
     || normalized.includes('fetch failed')
     || normalized.includes('network')
     || normalized.includes('econnreset')
@@ -1394,13 +1717,64 @@ export function useWorkflowExecution(sessionId: string): UseWorkflowExecutionRet
     compactCount: 0,
     updatedAt: new Date().toISOString(),
   });
+  const [sessionAgentId, setSessionAgentId] = useState<string>(DEFAULT_CHAT_AGENT_ID);
   const [toolPanelOverview, setToolPanelOverview] = useState<ToolPanelOverview>({
     availableTools: [],
     exposedTools: [],
   });
+  const [debugSnapshotsEnabled, setDebugSnapshotsEnabledState] = useState<boolean>(() => {
+    if (typeof window === 'undefined' || !window.localStorage) return true;
+    const raw = window.localStorage.getItem(DEBUG_SNAPSHOTS_STORAGE_KEY);
+    if (!raw) return true;
+    const normalized = raw.trim().toLowerCase();
+    return normalized === 'true' || normalized === '1' || normalized === 'yes';
+  });
+  const [debugSnapshots, setDebugSnapshots] = useState<DebugSnapshotItem[]>([]);
+  const [orchestratorRuntimeMode, setOrchestratorRuntimeMode] = useState<OrchestratorRuntimeModeState | null>(null);
   const executionStateRef = useRef<WorkflowExecutionState | null>(null);
   const runtimeEventsRef = useRef<RuntimeEvent[]>([]);
   const inFlightSendAbortRef = useRef<AbortController | null>(null);
+  const sessionHydratedRef = useRef(false);
+  const deferredWsEventsRef = useRef<WsMessage[]>([]);
+  const sessionRefreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const loadSessionMessagesRef = useRef<(() => void) | null>(null);
+
+  const setDebugSnapshotsEnabled = useCallback((enabled: boolean) => {
+    setDebugSnapshotsEnabledState(enabled);
+    if (typeof window !== 'undefined' && window.localStorage) {
+      window.localStorage.setItem(DEBUG_SNAPSHOTS_STORAGE_KEY, String(enabled));
+    }
+  }, []);
+
+  const pushDebugSnapshot = useCallback((input: {
+    stage: DebugSnapshotStage;
+    summary: string;
+    requestId?: string;
+    attempt?: number;
+    phase?: string;
+    payload?: unknown;
+  }) => {
+    const timestamp = new Date().toISOString();
+    const nextItem: DebugSnapshotItem = {
+      id: `${timestamp}-${Math.random().toString(36).slice(2, 9)}`,
+      timestamp,
+      sessionId,
+      stage: input.stage,
+      summary: input.summary.trim().length > 0 ? input.summary.trim() : input.stage,
+      ...(input.requestId ? { requestId: input.requestId } : {}),
+      ...(typeof input.attempt === 'number' ? { attempt: input.attempt } : {}),
+      ...(input.phase ? { phase: input.phase } : {}),
+      ...(input.payload !== undefined ? { payload: input.payload } : {}),
+    };
+    setDebugSnapshots((prev) => {
+      const merged = [...prev, nextItem];
+      return merged.length > 300 ? merged.slice(merged.length - 300) : merged;
+    });
+  }, [sessionId]);
+
+  const clearDebugSnapshots = useCallback(() => {
+    setDebugSnapshots([]);
+  }, []);
 
   const resolveMessageRoute = useCallback((): {
     target: string;
@@ -1430,13 +1804,70 @@ export function useWorkflowExecution(sessionId: string): UseWorkflowExecutionRet
     runtimeEventsRef.current = runtimeEvents;
   }, [runtimeEvents]);
 
-  const handleWebSocketMessage = useCallback((msg: WsMessage) => {
+  const scheduleSessionMessagesRefresh = useCallback(() => {
+    if (!sessionId) return;
+    if (sessionRefreshTimerRef.current) {
+      clearTimeout(sessionRefreshTimerRef.current);
+    }
+    sessionRefreshTimerRef.current = setTimeout(() => {
+      loadSessionMessagesRef.current?.();
+    }, 300);
+  }, [sessionId]);
+
+  const processWebSocketMessage = useCallback((msg: WsMessage) => {
     const payload = isRecord(msg.payload) ? msg.payload : {};
     const messageSessionId =
       (typeof msg.sessionId === 'string' ? msg.sessionId : undefined)
       ?? (typeof payload.sessionId === 'string' ? payload.sessionId : undefined);
-    const isCurrentSessionEvent =
-      !messageSessionId || messageSessionId === sessionId || messageSessionId === 'default';
+    const isCurrentSessionEvent = !messageSessionId || messageSessionId === sessionId;
+
+    if (isCurrentSessionEvent) {
+      if (msg.type === 'user_message') {
+        scheduleSessionMessagesRefresh();
+      }
+      if (msg.type === 'tool_call' || msg.type === 'tool_result' || msg.type === 'tool_error' || msg.type === 'agent_update') {
+        scheduleSessionMessagesRefresh();
+      }
+      if (msg.type === 'chat_codex_turn') {
+        const wsPhase = typeof payload.phase === 'string' ? payload.phase.trim() : '';
+        pushDebugSnapshot({
+          stage: 'chat_codex_turn',
+          summary: wsPhase.length > 0 ? `chat_codex_turn.${wsPhase}` : 'chat_codex_turn',
+          ...(wsPhase.length > 0 ? { phase: wsPhase } : {}),
+          payload,
+        });
+      } else if (msg.type === 'phase_transition') {
+        const from = typeof payload.from === 'string' ? payload.from.trim() : '';
+        const to = typeof payload.to === 'string' ? payload.to.trim() : '';
+        pushDebugSnapshot({
+          stage: 'phase_transition',
+          summary: `phase ${from || '?'} -> ${to || '?'}`,
+          ...(to.length > 0 ? { phase: to } : {}),
+          payload,
+        });
+      } else if (msg.type === 'tool_call') {
+        const toolName = resolveDisplayToolName(payload, payload.input, payload.output);
+        pushDebugSnapshot({
+          stage: 'tool_call',
+          summary: `tool_call ${toolName}`,
+          payload,
+        });
+      } else if (msg.type === 'tool_result') {
+        const toolName = resolveDisplayToolName(payload, payload.input, payload.output);
+        pushDebugSnapshot({
+          stage: 'tool_result',
+          summary: `tool_result ${toolName}`,
+          payload,
+        });
+      } else if (msg.type === 'tool_error') {
+        const toolName = resolveDisplayToolName(payload, payload.input, payload.output);
+        pushDebugSnapshot({
+          stage: 'tool_error',
+          summary: `tool_error ${toolName}`,
+          payload,
+        });
+      }
+    }
 
     if (msg.type === 'chat_codex_turn') {
       if (!isCurrentSessionEvent) return;
@@ -1602,9 +2033,13 @@ export function useWorkflowExecution(sessionId: string): UseWorkflowExecutionRet
       const toolName = resolveDisplayToolName(payload, payload.input, payload.output);
       const actionLabel = resolveToolActionLabel(toolName, payload.input);
       const category = resolveToolCategoryLabel(toolName, payload.input);
+      const normalizedToolName = toolName.trim().toLowerCase();
+      const isDispatchTool = normalizedToolName.includes('dispatch');
       setAgentRunStatus({
-        phase: 'running',
-        text: `正在执行${category}工具：${actionLabel}`,
+        phase: isDispatchTool ? 'dispatching' : 'running',
+        text: isDispatchTool
+          ? `编排器任务分配中：${actionLabel}`
+          : `正在执行${category}工具：${actionLabel}`,
         updatedAt: new Date().toISOString(),
       });
     } else if (msg.type === 'tool_result') {
@@ -1644,6 +2079,33 @@ export function useWorkflowExecution(sessionId: string): UseWorkflowExecutionRet
         text: '本轮已完成',
         updatedAt: new Date().toISOString(),
       });
+      if (isCurrentSessionEvent) {
+        scheduleSessionMessagesRefresh();
+      }
+    }
+
+    if (msg.type === 'phase_transition') {
+      if (!isCurrentSessionEvent) return;
+      const to = typeof payload.to === 'string' ? payload.to.trim() : '';
+      if (to.length > 0) {
+        const uiState = mapOrchestratorPhaseToUiState(to);
+        const phaseLabel = describeOrchestratorPhase(to);
+        setExecutionState((prev) => {
+          if (!prev) return prev;
+          return {
+            ...prev,
+            status: uiState.status,
+            ...(uiState.fsmState ? { fsmState: uiState.fsmState } : {}),
+            orchestratorPhase: to,
+            paused: uiState.paused,
+          };
+        });
+        setAgentRunStatus({
+          phase: uiState.runPhase,
+          text: `编排阶段：${phaseLabel}`,
+          updatedAt: new Date().toISOString(),
+        });
+      }
     }
 
     if (msg.type === 'workflow_update') {
@@ -1657,6 +2119,7 @@ export function useWorkflowExecution(sessionId: string): UseWorkflowExecutionRet
         return {
           ...prev,
           status: workflowPayload.status,
+          ...(workflowPayload.fsmState ? { fsmState: workflowPayload.fsmState } : {}),
           orchestrator: workflowPayload.orchestratorState
             ? {
                 ...prev.orchestrator,
@@ -1705,22 +2168,6 @@ export function useWorkflowExecution(sessionId: string): UseWorkflowExecutionRet
         }
         return { ...prev, agents: updatedAgents };
       });
-
-      setRuntimeEvents((prev) => {
-        const event: Omit<RuntimeEvent, 'id'> = {
-          role: 'agent',
-          agentId: payload.agentId,
-          agentName: executionStateRef.current?.agents.find(a => a.id === payload.agentId)?.name ?? payload.agentId,
-          kind: payload.step?.thought ? 'thought' : payload.step?.action ? 'action' : 'status',
-          content: payload.step?.thought
-            ? payload.step.thought
-            : payload.step?.action
-              ? `${payload.step.action}${payload.step.observation ? ` -> ${payload.step.observation}` : ''}`
-            : `状态 ${payload.status}${payload.currentTaskId ? `，任务 ${payload.currentTaskId}` : ''}`,
-          timestamp: new Date().toISOString(),
-        };
-        return upsertAgentRuntimeEvent(prev, event);
-      });
       return;
     }
 
@@ -1767,11 +2214,23 @@ export function useWorkflowExecution(sessionId: string): UseWorkflowExecutionRet
       }
       return;
     }
+  }, [pushDebugSnapshot, scheduleSessionMessagesRefresh, sessionId]);
 
-    const runtimeEvent = mapWsMessageToRuntimeEvent(msg, sessionId);
-    if (!runtimeEvent) return;
-    setRuntimeEvents((prev) => pushEvent(prev, runtimeEvent));
-  }, [sessionId]);
+  const handleWebSocketMessage = useCallback((msg: WsMessage) => {
+    const payload = isRecord(msg.payload) ? msg.payload : {};
+    const messageSessionId =
+      (typeof msg.sessionId === 'string' ? msg.sessionId : undefined)
+      ?? (typeof payload.sessionId === 'string' ? payload.sessionId : undefined);
+    if (isSessionBoundWsMessage(msg.type)) {
+      if (!messageSessionId) return;
+      if (messageSessionId !== sessionId) return;
+      if (!sessionHydratedRef.current) {
+        deferredWsEventsRef.current.push(msg);
+        return;
+      }
+    }
+    processWebSocketMessage(msg);
+  }, [processWebSocketMessage, sessionId]);
 
   const { isConnected, getClientId, send: sendWs } = useWebSocket(handleWebSocketMessage);
 
@@ -1832,7 +2291,8 @@ export function useWorkflowExecution(sessionId: string): UseWorkflowExecutionRet
 
   // 获取输入锁
   const acquireInputLock = useCallback(async (): Promise<boolean> => {
-    if (!isConnected || !sessionId) return false;
+    // Fail-open: lock is best-effort coordination and should not block user send path.
+    if (!sessionId || !isConnected) return true;
     const acquireToken = ++lockAcquireTokenRef.current;
     return new Promise((resolve) => {
       const handler = (msg: WsMessage) => {
@@ -1869,7 +2329,8 @@ export function useWorkflowExecution(sessionId: string): UseWorkflowExecutionRet
       // 超时处理
       const timeoutHandle = setTimeout(() => {
         unsubscribe();
-        resolve(false);
+        // Fail-open on timeout to avoid silently dropping user inputs.
+        resolve(true);
       }, 5000);
     });
   }, [isConnected, sessionId, clientId, sendWs, startLockHeartbeat]);
@@ -1895,7 +2356,7 @@ export function useWorkflowExecution(sessionId: string): UseWorkflowExecutionRet
     });
   }, [sessionId, clientId, sendWs, stopLockHeartbeat]);
 
-  const loadSessionMessages = useCallback(async () => {
+  const loadSessionMessages = useCallback(async (defaultAgentId?: string) => {
     try {
       const response = await fetch(`/api/v1/sessions/${sessionId}/messages?limit=${SESSION_MESSAGES_FETCH_LIMIT}`);
       if (!response.ok) return;
@@ -1906,11 +2367,50 @@ export function useWorkflowExecution(sessionId: string): UseWorkflowExecutionRet
       const sortedMessages = payload.messages
         .slice()
         .sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
-      const mappedEvents = sortedMessages.map(mapSessionMessageToRuntimeEvent);
+      const agentId = typeof defaultAgentId === 'string' && defaultAgentId.trim().length > 0
+        ? defaultAgentId.trim()
+        : sessionAgentId;
+      const mappedEvents = sortedMessages.map((message) => mapSessionMessageToRuntimeEvent(message, agentId));
       setRuntimeEvents(mappedEvents);
       setUserRounds(buildUserRoundsFromSessionMessages(sortedMessages));
     } catch {
       // keep current UI state if load fails
+    }
+  }, [sessionAgentId, sessionId]);
+
+  useEffect(() => {
+    loadSessionMessagesRef.current = () => {
+      void loadSessionMessages();
+    };
+    return () => {
+      loadSessionMessagesRef.current = null;
+    };
+  }, [loadSessionMessages]);
+
+  useEffect(() => {
+    return () => {
+      if (sessionRefreshTimerRef.current) {
+        clearTimeout(sessionRefreshTimerRef.current);
+        sessionRefreshTimerRef.current = null;
+      }
+    };
+  }, [sessionId]);
+
+  const loadSessionMeta = useCallback(async (): Promise<string> => {
+    try {
+      const response = await fetch(`/api/v1/sessions/${sessionId}`);
+      if (!response.ok) return DEFAULT_CHAT_AGENT_ID;
+      const payload = (await response.json()) as { ownerAgentId?: string };
+      if (typeof payload.ownerAgentId === 'string' && payload.ownerAgentId.trim().length > 0) {
+        const resolved = payload.ownerAgentId.trim();
+        setSessionAgentId(resolved);
+        return resolved;
+      }
+      setSessionAgentId(DEFAULT_CHAT_AGENT_ID);
+      return DEFAULT_CHAT_AGENT_ID;
+    } catch {
+      setSessionAgentId(DEFAULT_CHAT_AGENT_ID);
+      return DEFAULT_CHAT_AGENT_ID;
     }
   }, [sessionId]);
 
@@ -1946,6 +2446,30 @@ export function useWorkflowExecution(sessionId: string): UseWorkflowExecutionRet
       }));
     } catch {
       // ignore tool panel refresh failures
+    }
+  }, []);
+
+  const refreshOrchestratorRuntimeMode = useCallback(async () => {
+    try {
+      const response = await fetch('/api/v1/orchestrator/runtime-mode');
+      if (!response.ok) return;
+      const payload = await response.json() as {
+        success?: boolean;
+        mode?: string;
+        fsmV2Implemented?: boolean;
+        runnerModuleId?: string;
+      };
+      if (!payload.success || typeof payload.mode !== 'string' || payload.mode.trim().length === 0) return;
+      setOrchestratorRuntimeMode({
+        mode: payload.mode,
+        fsmV2Implemented: payload.fsmV2Implemented === true,
+        ...(typeof payload.runnerModuleId === 'string' && payload.runnerModuleId.trim().length > 0
+          ? { runnerModuleId: payload.runnerModuleId.trim() }
+          : {}),
+        updatedAt: new Date().toISOString(),
+      });
+    } catch {
+      // ignore runtime mode refresh failures
     }
   }, []);
 
@@ -1991,6 +2515,8 @@ export function useWorkflowExecution(sessionId: string): UseWorkflowExecutionRet
   }, [sessionId]);
 
   useEffect(() => {
+    sessionHydratedRef.current = false;
+    deferredWsEventsRef.current = [];
     setRuntimeEvents([]);
     setUserRounds([]);
     setRuntimeOverview({
@@ -2007,9 +2533,18 @@ export function useWorkflowExecution(sessionId: string): UseWorkflowExecutionRet
       text: '已就绪',
       updatedAt: new Date().toISOString(),
     });
-    void loadSessionMessages();
+    const hydrateSession = async () => {
+      const agentId = await loadSessionMeta();
+      await loadSessionMessages(agentId);
+      sessionHydratedRef.current = true;
+      const queued = deferredWsEventsRef.current;
+      deferredWsEventsRef.current = [];
+      queued.forEach((item) => processWebSocketMessage(item));
+    };
+    void hydrateSession();
     void refreshToolPanelOverview();
-  }, [loadSessionMessages, refreshToolPanelOverview]);
+    void refreshOrchestratorRuntimeMode();
+  }, [loadSessionMessages, loadSessionMeta, processWebSocketMessage, refreshOrchestratorRuntimeMode, refreshToolPanelOverview]);
 
   const refreshRuntimeState = useCallback(async () => {
     try {
@@ -2025,7 +2560,8 @@ export function useWorkflowExecution(sessionId: string): UseWorkflowExecutionRet
       const workflows = (await workflowsRes.json()) as WorkflowInfo[];
       const logsPayload = (await logsRes.json()) as { success: boolean; logs: SessionLog[] };
       const allLogs = logsPayload.success ? logsPayload.logs : [];
-      setLogs(allLogs);
+      const scopedLogs = allLogs.filter((log) => log.sessionId === sessionId);
+      setLogs(scopedLogs);
 
       const preferredWorkflowId = executionStateRef.current?.workflowId || workflow?.id;
       const selectedWorkflow = pickWorkflowForSession(workflows, sessionId, preferredWorkflowId);
@@ -2038,6 +2574,8 @@ export function useWorkflowExecution(sessionId: string): UseWorkflowExecutionRet
         setExecutionState({
           workflowId: `empty-${sessionId}`,
           status: 'planning',
+          fsmState: 'idle',
+          orchestratorPhase: 'idle',
           orchestrator: {
             id: DEFAULT_CHAT_AGENT_ID,
             currentRound: 0,
@@ -2065,7 +2603,7 @@ export function useWorkflowExecution(sessionId: string): UseWorkflowExecutionRet
       const taskList = tasksRes.ok ? ((await tasksRes.json()) as TaskNode[]) : [];
 
       const latestByAgent = new Map<string, SessionLog>();
-      for (const log of allLogs) {
+      for (const log of scopedLogs) {
         const existing = latestByAgent.get(log.agentId);
         if (!existing || new Date(log.startTime).getTime() > new Date(existing.startTime).getTime()) {
           latestByAgent.set(log.agentId, log);
@@ -2128,6 +2666,8 @@ export function useWorkflowExecution(sessionId: string): UseWorkflowExecutionRet
       setExecutionState((prev) => ({
         workflowId: selectedWorkflow.id,
         status: selectedWorkflow.status,
+        fsmState: selectedWorkflow.fsmState ?? prev?.fsmState,
+        orchestratorPhase: prev?.orchestratorPhase ?? selectedWorkflow.fsmState,
         orchestrator: {
           id: DEFAULT_CHAT_AGENT_ID,
           currentRound: orchestratorLog?.iterations.length || prev?.orchestrator.currentRound || 0,
@@ -2158,6 +2698,14 @@ export function useWorkflowExecution(sessionId: string): UseWorkflowExecutionRet
     return () => clearInterval(timer);
   }, [refreshRuntimeState]);
 
+  useEffect(() => {
+    void refreshOrchestratorRuntimeMode();
+    const timer = setInterval(() => {
+      void refreshOrchestratorRuntimeMode();
+    }, 10_000);
+    return () => clearInterval(timer);
+  }, [refreshOrchestratorRuntimeMode]);
+
   const startWorkflow = useCallback(
     async (userTask: string) => {
       setIsLoading(true);
@@ -2182,6 +2730,8 @@ export function useWorkflowExecution(sessionId: string): UseWorkflowExecutionRet
         setExecutionState({
           workflowId: workflow?.id || `pending-${Date.now()}`,
           status: 'planning',
+          fsmState: 'plan_loop',
+          orchestratorPhase: 'intake',
           orchestrator: {
             id: DEFAULT_CHAT_AGENT_ID,
             currentRound: 0,
@@ -2227,17 +2777,13 @@ export function useWorkflowExecution(sessionId: string): UseWorkflowExecutionRet
           hard: true,
         }),
       });
+      setAgentRunStatus({
+        phase: 'idle',
+        text: '执行已暂停',
+        updatedAt: new Date().toISOString(),
+      });
 
-      setRuntimeEvents((prev) =>
-        pushEvent(prev, {
-          role: 'system',
-          kind: 'status',
-          content: '执行已暂停',
-          timestamp: new Date().toISOString(),
-        }),
-      );
-
-      setExecutionState((prev) => (prev ? { ...prev, paused: true, status: 'paused' } : prev));
+      setExecutionState((prev) => (prev ? { ...prev, paused: true, status: 'paused', fsmState: 'paused' } : prev));
     } catch {
       // ignore pause failure in UI
     }
@@ -2254,17 +2800,13 @@ export function useWorkflowExecution(sessionId: string): UseWorkflowExecutionRet
           workflowId: executionState.workflowId,
         }),
       });
+      setAgentRunStatus({
+        phase: 'running',
+        text: '执行已恢复',
+        updatedAt: new Date().toISOString(),
+      });
 
-      setRuntimeEvents((prev) =>
-        pushEvent(prev, {
-          role: 'system',
-          kind: 'status',
-          content: '执行已恢复',
-          timestamp: new Date().toISOString(),
-        }),
-      );
-
-      setExecutionState((prev) => (prev ? { ...prev, paused: false, status: 'executing' } : prev));
+      setExecutionState((prev) => (prev ? { ...prev, paused: false, status: 'executing', fsmState: 'execution' } : prev));
     } catch {
       // ignore resume failure in UI
     }
@@ -2276,7 +2818,7 @@ export function useWorkflowExecution(sessionId: string): UseWorkflowExecutionRet
       activeAbort.abort();
     }
     try {
-      const res = await fetch(`/api/v1/chat-codex/sessions/${encodeURIComponent(sessionId)}/interrupt`, {
+      const res = await fetch(`/api/v1/finger-general/sessions/${encodeURIComponent(sessionId)}/interrupt`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({}),
@@ -2292,14 +2834,6 @@ export function useWorkflowExecution(sessionId: string): UseWorkflowExecutionRet
         text: interrupted ? '已停止当前回合' : '当前没有可停止的回合',
         updatedAt: new Date().toISOString(),
       });
-      setRuntimeEvents((prev) =>
-        pushEvent(prev, {
-          role: 'system',
-          kind: 'status',
-          content: interrupted ? '已发送停止信号，当前回合终止。' : '当前没有可停止的运行回合。',
-          timestamp: new Date().toISOString(),
-        }),
-      );
       return interrupted;
     } catch (error) {
       const message = error instanceof Error ? error.message : '停止当前回合失败';
@@ -2308,15 +2842,6 @@ export function useWorkflowExecution(sessionId: string): UseWorkflowExecutionRet
         text: `停止失败：${message}`,
         updatedAt: new Date().toISOString(),
       });
-      setRuntimeEvents((prev) =>
-        pushEvent(prev, {
-          role: 'system',
-          kind: 'status',
-          content: `停止当前回合失败：${message}`,
-          timestamp: new Date().toISOString(),
-          agentId: 'error',
-        }),
-      );
       return false;
     }
   }, [sessionId]);
@@ -2329,7 +2854,7 @@ const sendUserInput = useCallback(
     const review = normalizeReviewSettings(inputPayload.review);
     const planModeEnabled = inputPayload.planModeEnabled === true;
     if (!text && images.length === 0 && files.length === 0) return;
-    if (text === '/compact' && images.length === 0 && files.length === 0) {
+      if (text === '/compact' && images.length === 0 && files.length === 0) {
       try {
         const compactRes = await fetch(`/api/v1/sessions/${encodeURIComponent(sessionId)}/compress`, {
           method: 'POST',
@@ -2340,36 +2865,21 @@ const sendUserInput = useCallback(
           const compactError = extractErrorMessageFromBody(compactBody) ?? `HTTP ${compactRes.status}`;
           throw new Error(compactError);
         }
-        const summary = extractCompactSummary(compactBody);
         setRuntimeOverview((prev) => ({
           ...prev,
           compactCount: prev.compactCount + 1,
           updatedAt: new Date().toISOString(),
         }));
-        setRuntimeEvents((prev) =>
-          pushEvent(prev, {
-            role: 'system',
-            kind: 'status',
-            content: `上下文已压缩${summary ? `：${summary}` : ''}`,
-            timestamp: new Date().toISOString(),
-          }),
-        );
         setAgentRunStatus({
           phase: 'idle',
-          text: '上下文压缩完成',
+          text: (() => {
+            const summary = extractCompactSummary(compactBody);
+            return summary ? `上下文压缩完成：${summary}` : '上下文压缩完成';
+          })(),
           updatedAt: new Date().toISOString(),
         });
       } catch (error) {
         const message = error instanceof Error ? error.message : '上下文压缩失败';
-        setRuntimeEvents((prev) =>
-          pushEvent(prev, {
-            role: 'system',
-            kind: 'status',
-            content: `压缩失败：${message}`,
-            timestamp: new Date().toISOString(),
-            agentId: 'error',
-          }),
-        );
         setAgentRunStatus({
           phase: 'error',
           text: `压缩失败：${message}`,
@@ -2382,33 +2892,12 @@ const sendUserInput = useCallback(
     const displayText = text || (images.length > 0 || files.length > 0 ? '[附件输入]' : '');
 
     const eventTime = new Date().toISOString();
-    const roundId = `user-round-${Date.now()}`;
-    const pendingUserEvent: Omit<RuntimeEvent, 'id'> = {
-      role: 'user',
-      content: displayText,
-      images,
-      files,
-      timestamp: eventTime,
-      kind: 'status',
-      agentId: 'pending',
-      tokenUsage: estimateTokenUsage(displayText),
-    };
-
-    // 1. 先本地插入 pending 状态的用户事件（立即可见）
-    setRuntimeEvents((prev) => pushEvent(prev, pendingUserEvent));
-
-    // 2. 同步更新用户轮次
-    setUserRounds((prev) => [
-      ...prev,
-      {
-        roundId,
-        timestamp: eventTime,
-        summary: text ? (text.length > 24 ? `${text.slice(0, 24)}...` : text) : '[附件输入]',
-        fullText: text,
-        images,
-        files,
-      },
-    ]);
+    try {
+      await appendSessionMessage('user', displayText, images, files);
+      await loadSessionMessages();
+    } catch {
+      // keep going even if session persistence fails
+    }
 
     const route = resolveMessageRoute();
     setAgentRunStatus({
@@ -2416,19 +2905,23 @@ const sendUserInput = useCallback(
       text: route.directTest
         ? `测试直连 ${route.target} 执行中...`
         : review
-          ? `chat-codex 正在思考（${planModeEnabled ? '计划模式 · ' : ''}Review: ${review.strictness === 'strict' ? '严格' : '主线'}, 上限 ${review.maxTurns}）...`
-          : `chat-codex 正在思考${planModeEnabled ? '（计划模式）' : ''}...`,
+          ? `finger-general 正在思考（${planModeEnabled ? '计划模式 · ' : ''}Review: ${review.strictness === 'strict' ? '严格' : '主线'}, 上限 ${review.maxTurns}）...`
+          : `finger-general 正在思考${planModeEnabled ? '（计划模式）' : ''}...`,
       updatedAt: new Date().toISOString(),
     });
 
-    // 3. 统一走 chat-codex gateway
+    // 3. 统一走 finger orchestrator gateway
     try {
       const history = buildGatewayHistory(
         [
           ...runtimeEventsRef.current,
           {
             id: `${eventTime}-pending-local`,
-            ...pendingUserEvent,
+            role: 'user',
+            content: displayText,
+            timestamp: eventTime,
+            kind: 'status',
+            agentId: 'pending',
           },
         ],
         CONTEXT_HISTORY_WINDOW_SIZE,
@@ -2436,6 +2929,7 @@ const sendUserInput = useCallback(
 
       const abortController = new AbortController();
       inFlightSendAbortRef.current = abortController;
+      const requestId = `req-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
       const requestBody = {
         target: route.target,
         blocking: true,
@@ -2450,6 +2944,7 @@ const sendUserInput = useCallback(
             kernelMode: planModeEnabled ? 'plan' : 'main',
             planModeEnabled,
             includePlanTool: planModeEnabled,
+            sessionPersistence: 'client',
             ...(review
               ? {
                   review,
@@ -2458,12 +2953,35 @@ const sendUserInput = useCallback(
           },
         },
       };
+      pushDebugSnapshot({
+        stage: 'request_build',
+        requestId,
+        summary: `message request built -> ${route.target}`,
+        payload: {
+          target: route.target,
+          directTest: route.directTest,
+          historyCount: history.length,
+          hasReview: review !== null,
+          planModeEnabled,
+          message: requestBody.message,
+        },
+      });
 
       let responseData: { result?: unknown; error?: string } | null = null;
       let attempt = 1;
       for (; attempt <= SEND_RETRY_MAX_ATTEMPTS; attempt += 1) {
         let responseStatus: number | undefined;
         try {
+          pushDebugSnapshot({
+            stage: 'request_attempt',
+            requestId,
+            attempt,
+            summary: `attempt ${attempt}/${SEND_RETRY_MAX_ATTEMPTS}`,
+            payload: {
+              url: '/api/v1/message',
+              target: route.target,
+            },
+          });
           const res = await fetch('/api/v1/message', {
             method: 'POST',
             headers: route.headers,
@@ -2474,18 +2992,51 @@ const sendUserInput = useCallback(
           if (!res.ok) {
             const failureBody = await safeParseJson(res);
             const message = extractErrorMessageFromBody(failureBody) ?? `HTTP ${res.status}`;
+            pushDebugSnapshot({
+              stage: 'request_error',
+              requestId,
+              attempt,
+              summary: `attempt ${attempt} failed: HTTP ${res.status}`,
+              payload: failureBody,
+            });
             const wrapped = message.startsWith('HTTP') ? message : `HTTP ${res.status}: ${message}`;
             throw new Error(wrapped);
           }
           responseData = (await res.json()) as { result?: unknown; error?: string } | null;
           if (!responseData || responseData.error) {
+            pushDebugSnapshot({
+              stage: 'request_error',
+              requestId,
+              attempt,
+              summary: `attempt ${attempt} failed: invalid response body`,
+              payload: responseData,
+            });
             throw new Error(responseData?.error || 'Empty response from daemon');
           }
+          pushDebugSnapshot({
+            stage: 'request_ok',
+            requestId,
+            attempt,
+            summary: `attempt ${attempt} succeeded`,
+            payload: {
+              status: res.status,
+              hasResult: responseData?.result !== undefined,
+            },
+          });
           break;
         } catch (error) {
           if (isAbortError(error)) throw error;
           const errorMessage = error instanceof Error ? error.message : String(error);
           const inferredStatus = responseStatus ?? extractStatusCodeFromErrorMessage(errorMessage);
+          pushDebugSnapshot({
+            stage: 'request_error',
+            requestId,
+            attempt,
+            summary: `attempt ${attempt} error: ${errorMessage}`,
+            payload: {
+              inferredStatus,
+            },
+          });
           const canRetry = attempt < SEND_RETRY_MAX_ATTEMPTS && shouldRetryChatRequest(inferredStatus, errorMessage);
           if (!canRetry) {
             throw error;
@@ -2494,7 +3045,7 @@ const sendUserInput = useCallback(
           const waitSeconds = Math.max(1, Math.ceil(backoffMs / 1000));
           setAgentRunStatus({
             phase: 'running',
-            text: `请求失败，${waitSeconds}s 后自动重试（${attempt}/${SEND_RETRY_MAX_ATTEMPTS - 1}）...`,
+            text: `请求失败，${waitSeconds}s 后自动重试（${attempt}/${SEND_RETRY_MAX_ATTEMPTS}）...`,
             updatedAt: new Date().toISOString(),
           });
           await sleep(backoffMs);
@@ -2508,24 +3059,14 @@ const sendUserInput = useCallback(
       if (!responseData || responseData.error) {
         throw new Error(responseData?.error || 'Empty response from daemon');
       }
-      const { reply, agentId, tokenUsage, pendingInputAccepted } = extractChatReply(responseData.result);
+      const { reply, tokenUsage, pendingInputAccepted } = extractChatReply(responseData.result);
       if (pendingInputAccepted) {
-        setRuntimeEvents((prev) =>
-          prev
-            .map((e) =>
-              e.role === 'user' && e.timestamp === eventTime
-                ? { ...e, agentId: 'confirmed', kind: 'status' }
-                : e,
-            ),
-        );
-        setRuntimeEvents((prev) =>
-          pushEvent(prev, {
-            role: 'system',
-            kind: 'status',
-            content: '输入已排队，等待当前回合合并处理。',
-            timestamp: new Date().toISOString(),
-          }),
-        );
+        try {
+          await appendSessionMessage('user', displayText, images, files);
+          await loadSessionMessages();
+        } catch {
+          // keep running even if persistence fails
+        }
         setAgentRunStatus({
           phase: 'running',
           text: '当前回合仍在执行，输入已排队...',
@@ -2618,32 +3159,9 @@ const sendUserInput = useCallback(
         // keep conversation running even if session persistence fails
       }
 
-      const assistantEvent: Omit<RuntimeEvent, 'id'> & { id?: string } = {
-        ...(persistedAssistantMessage?.id ? { id: persistedAssistantMessage.id } : {}),
-        role: 'agent',
-        agentId,
-        agentName: agentId,
-        content: reply,
-        timestamp: persistedAssistantMessage?.timestamp ?? new Date().toISOString(),
-        kind: 'observation',
-        tokenUsage,
-      };
-
-      setRuntimeEvents((prev) =>
-        prev
-          .map((e) =>
-            e.role === 'user' && e.timestamp === eventTime
-              ? {
-                  ...e,
-                  ...(persistedUserMessage?.id ? { id: persistedUserMessage.id } : {}),
-                  ...(persistedUserMessage?.timestamp ? { timestamp: persistedUserMessage.timestamp } : {}),
-                  agentId: 'confirmed',
-                }
-              : e,
-          ),
-      );
-
-      setRuntimeEvents((prev) => pushEvent(prev, assistantEvent));
+      if (persistedUserMessage || persistedAssistantMessage) {
+        await loadSessionMessages();
+      }
 
       setExecutionState((prev) => (prev ? { ...prev, userInput: displayText } : prev));
       setAgentRunStatus({
@@ -2653,14 +3171,7 @@ const sendUserInput = useCallback(
       });
     } catch (err) {
       if (isAbortError(err)) {
-        setRuntimeEvents((prev) =>
-          prev
-            .map((e) =>
-              e.role === 'user' && e.timestamp === eventTime
-                ? { ...e, agentId: 'confirmed', kind: 'status' }
-                : e,
-            ),
-        );
+        await loadSessionMessages();
         setAgentRunStatus({
           phase: 'idle',
           text: '当前回合已中止',
@@ -2671,38 +3182,16 @@ const sendUserInput = useCallback(
       const interruptedByUser =
         err instanceof Error && err.message.toLowerCase().includes('interrupted by user');
       if (interruptedByUser) {
-        setRuntimeEvents((prev) =>
-          prev
-            .map((e) =>
-              e.role === 'user' && e.timestamp === eventTime
-                ? { ...e, agentId: 'confirmed', kind: 'status' }
-                : e,
-            ),
-        );
+        await loadSessionMessages();
         setAgentRunStatus({
           phase: 'idle',
           text: '当前回合已停止',
           updatedAt: new Date().toISOString(),
         });
-        setRuntimeEvents((prev) =>
-          pushEvent(prev, {
-            role: 'system',
-            content: '当前回合已被停止。',
-            timestamp: new Date().toISOString(),
-            kind: 'status',
-          }),
-        );
         return;
       }
       // 6. API 失败：更新事件为 error 并追加错误事件
-      setRuntimeEvents((prev) =>
-        prev
-          .map((e) =>
-            e.role === 'user' && e.timestamp === eventTime
-              ? { ...e, agentId: 'error', kind: 'status', errorMessage: err instanceof Error ? err.message : '发送失败' }
-              : e,
-          ),
-      );
+      await loadSessionMessages();
 
       const errorMsg = err instanceof Error ? err.message : '发送失败';
       setAgentRunStatus({
@@ -2710,34 +3199,24 @@ const sendUserInput = useCallback(
         text: `执行失败：${errorMsg}`,
         updatedAt: new Date().toISOString(),
       });
-      setRuntimeEvents((prev) =>
-        pushEvent(prev, {
-          role: 'system',
-          content: `发送失败：${errorMsg}`,
-          timestamp: new Date().toISOString(),
-          kind: 'status',
-          agentId: 'error',
-        }),
-      );
     } finally {
       inFlightSendAbortRef.current = null;
     }
   },
-  [appendSessionMessage, resolveMessageRoute, sessionId],
+  [appendSessionMessage, loadSessionMessages, pushDebugSnapshot, resolveMessageRoute, sessionId],
 );
 
-const editRuntimeEvent = useCallback(async (eventId: string, content: string): Promise<boolean> => {
-  const normalized = content.trim();
-  if (normalized.length === 0) {
-    return false;
-  }
+  const editRuntimeEvent = useCallback(async (eventId: string, content: string): Promise<boolean> => {
+    const normalized = content.trim();
+    if (normalized.length === 0) {
+      return false;
+    }
 
   const current = runtimeEventsRef.current.find((event) => event.id === eventId);
   if (!current || (current.role !== 'user' && current.role !== 'agent')) {
     return false;
   }
 
-  const previousContent = current.content;
   setRuntimeEvents((prev) => prev.map((event) => (event.id === eventId ? { ...event, content: normalized } : event)));
 
   if (!isPersistedSessionMessageId(eventId)) {
@@ -2746,11 +3225,12 @@ const editRuntimeEvent = useCallback(async (eventId: string, content: string): P
 
   const updated = await patchSessionMessage(eventId, normalized);
   if (!updated) {
-    setRuntimeEvents((prev) => prev.map((event) => (event.id === eventId ? { ...event, content: previousContent } : event)));
+    await loadSessionMessages();
     return false;
   }
+  await loadSessionMessages();
   return true;
-}, [patchSessionMessage]);
+}, [loadSessionMessages, patchSessionMessage]);
 
 const deleteRuntimeEvent = useCallback(async (eventId: string): Promise<boolean> => {
   const current = runtimeEventsRef.current.find((event) => event.id === eventId);
@@ -2765,11 +3245,12 @@ const deleteRuntimeEvent = useCallback(async (eventId: string): Promise<boolean>
 
   const deleted = await removeSessionMessage(eventId);
   if (!deleted) {
-    setRuntimeEvents((prev) => pushEvent(prev, current));
+    await loadSessionMessages();
     return false;
   }
+  await loadSessionMessages();
   return true;
-}, [removeSessionMessage]);
+}, [loadSessionMessages, removeSessionMessage]);
 
 const contextEditableEventIds = buildContextEditableEventIds(
   runtimeEvents,
@@ -2873,6 +3354,11 @@ const contextEditableEventIds = buildContextEditableEventIds(
    clientId,
    acquireInputLock,
    releaseInputLock,
+   debugSnapshotsEnabled,
+   setDebugSnapshotsEnabled,
+   debugSnapshots,
+   clearDebugSnapshots,
+   orchestratorRuntimeMode,
  };
 }
 
@@ -2894,7 +3380,7 @@ function buildExecutionRoundsFromTasks(
 
     const round = roundMap.get(roundKey)!;
     const agentInfo: AgentRoundInfo = {
-      agentId: task.assignee || 'executor-loop',
+      agentId: task.assignee || 'finger-executor',
       status: task.status === 'completed' ? 'completed' : task.status === 'failed' ? 'error' : task.status === 'in_progress' ? 'running' : 'idle',
       taskId: task.id,
       taskDescription: task.description,
@@ -2905,7 +3391,7 @@ function buildExecutionRoundsFromTasks(
 
     const edgeInfo: RoundEdgeInfo = {
       from: DEFAULT_CHAT_AGENT_ID,
-      to: task.assignee || 'executor-loop',
+      to: task.assignee || 'finger-executor',
       status: task.status === 'completed' ? 'completed' : task.status === 'failed' ? 'error' : task.status === 'in_progress' ? 'active' : 'pending',
       message: `${task.id}: ${task.description.slice(0, 32)}`,
     };

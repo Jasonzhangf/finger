@@ -932,6 +932,43 @@ function asString(value: unknown): string | undefined {
   return typeof value === 'string' && value.trim().length > 0 ? value.trim() : undefined;
 }
 
+function inferAgentRoleLabel(agentId: string): string {
+  const normalized = agentId.trim().toLowerCase();
+  if (normalized.includes('orchestr')) return 'orchestrator';
+  if (normalized.includes('review')) return 'reviewer';
+  if (normalized.includes('search')) return 'searcher';
+  if (normalized.includes('executor')) return 'executor';
+  return 'executor';
+}
+
+function formatDispatchResultContent(result: unknown, error?: string): string {
+  if (typeof error === 'string' && error.trim().length > 0) {
+    return `任务失败：${error.trim()}`;
+  }
+  if (typeof result === 'string') {
+    const trimmed = result.trim();
+    if (trimmed.length > 0) return trimmed;
+  }
+  if (isObjectRecord(result)) {
+    const response = typeof result.response === 'string' ? result.response.trim() : '';
+    if (response.length > 0) return response;
+    const output = typeof result.output === 'string' ? result.output.trim() : '';
+    if (output.length > 0) return output;
+    if (isObjectRecord(result.output) && typeof result.output.response === 'string') {
+      const nested = result.output.response.trim();
+      if (nested.length > 0) return nested;
+    }
+  }
+  if (result !== undefined) {
+    try {
+      return JSON.stringify(result, null, 2);
+    } catch {
+      return String(result);
+    }
+  }
+  return error ? `任务失败：${error}` : '任务完成';
+}
+
 function sanitizeWorkspaceComponent(raw: string): string {
   return raw.trim().replace(/[^a-zA-Z0-9._-]/g, '_');
 }
@@ -5045,8 +5082,40 @@ globalEventBus.subscribe(
   (event) => {
     const payload = event.payload as Record<string, unknown>;
     const status = typeof payload.status === 'string' ? payload.status : '';
-    if (status !== 'completed' && status !== 'failed') return;
+    const sessionId = asString(event.sessionId) || asString(payload.sessionId);
+    const targetAgentId = asString(payload.targetAgentId) ?? 'unknown-agent';
+    const agentRole = inferAgentRoleLabel(targetAgentId);
     const assignment = isObjectRecord(payload.assignment) ? payload.assignment : null;
+    const queuePosition = typeof payload.queuePosition === 'number' ? payload.queuePosition : undefined;
+    const taskId = assignment && typeof assignment.taskId === 'string' ? assignment.taskId.trim() : '';
+    const bdTaskId = assignment && typeof assignment.bdTaskId === 'string' ? assignment.bdTaskId.trim() : '';
+    const statusLabel = status === 'queued' ? '排队' : status === 'completed' ? '完成' : status === 'failed' ? '失败' : status;
+    const dispatchParts = [
+      `派发给 ${agentRole}${targetAgentId ? ` (${targetAgentId})` : ''}`,
+      statusLabel ? `状态 ${statusLabel}` : '',
+      typeof queuePosition === 'number' ? `队列 #${queuePosition}` : '',
+      taskId ? `task ${taskId}` : '',
+      bdTaskId && !taskId ? `bd ${bdTaskId}` : '',
+    ].filter((part) => part.length > 0);
+    const dispatchContent = dispatchParts.join(' · ');
+    if (sessionId && dispatchContent.length > 0) {
+      sessionManager.addMessage(sessionId, 'system', dispatchContent, {
+        type: 'dispatch',
+        agentId: targetAgentId,
+        metadata: { event, agentRole },
+      });
+      if (status === 'completed' || status === 'failed') {
+        const resultContent = formatDispatchResultContent(payload.result, asString(payload.error));
+        if (resultContent.trim().length > 0) {
+          sessionManager.addMessage(sessionId, 'assistant', resultContent, {
+            type: 'dispatch',
+            agentId: targetAgentId,
+            metadata: { event, agentRole },
+          });
+        }
+      }
+    }
+    if (status !== 'completed' && status !== 'failed') return;
     if (!assignment) return;
 
     const feedback = {
