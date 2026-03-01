@@ -1,7 +1,7 @@
 import express, { type Request } from 'express';
 import { fileURLToPath } from 'url';
 import { dirname, extname, join } from 'path';
-import { appendFileSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'fs';
+import { appendFileSync, existsSync, mkdirSync, readFileSync, statSync } from 'fs';
 import { registry } from '../core/registry.js';
 import { globalEventBus } from '../runtime/event-bus.js';
 import { globalToolRegistry } from '../runtime/tool-registry.js';
@@ -64,6 +64,7 @@ import type { OutputModule } from '../orchestration/module-registry.js';
 import type { Attachment, ToolCallEvent, ToolResultEvent, ToolErrorEvent, AgentStepCompletedEvent } from '../runtime/events.js';
 import { inputLockManager } from '../runtime/input-lock.js';
 import { createWebSocketServer } from './modules/websocket-server.js';
+import { createSessionWorkspaceManager } from './modules/session-workspaces.js';
 import { registerSessionRoutes } from './routes/session.js';
 import {
   extractSessionIdFromMessagePayload,
@@ -74,7 +75,7 @@ import {
   shouldRetryBlockingMessage,
   resolveBlockingErrorStatus,
 } from './modules/message-session.js';
-import { FINGER_PATHS, ensureFingerLayout, normalizeSessionDirName } from '../core/finger-paths.js';
+import { FINGER_PATHS, ensureDir, ensureFingerLayout } from '../core/finger-paths.js';
 import {
   listKernelProviders,
   resolveActiveKernelProviderId,
@@ -175,7 +176,7 @@ const LOCAL_IMAGE_MIME_BY_EXT: Record<string, string> = {
 };
 
 function resolveSessionLoopLogPath(sessionId: string): string {
-  const dirs = resolveSessionWorkspaceDirsForMessage(sessionId);
+  const dirs = sessionWorkspaceManager.resolveSessionWorkspaceDirsForMessage(sessionId);
   const diagnosticsDir = ensureDir(join(dirs.sessionWorkspaceRoot, 'diagnostics'));
   return join(diagnosticsDir, `${PRIMARY_ORCHESTRATOR_AGENT_ID}.loop.jsonl`);
 }
@@ -920,6 +921,7 @@ await registry.initializeAll();
 const hub = sharedMessageHub;
 const moduleRegistry = new ModuleRegistry(hub);
 const sessionManager = sharedSessionManager;
+const sessionWorkspaceManager = createSessionWorkspaceManager(sessionManager);
 const workflowManager = sharedWorkflowManager;
 const runtime = new RuntimeFacade(globalEventBus, sessionManager, globalToolRegistry);
 const askManager = new AskManager(
@@ -978,225 +980,6 @@ function formatDispatchResultContent(result: unknown, error?: string): string {
   return error ? `任务失败：${error}` : '任务完成';
 }
 
-function sanitizeWorkspaceComponent(raw: string): string {
-  return raw.trim().replace(/[^a-zA-Z0-9._-]/g, '_');
-}
-
-function ensureDir(dirPath: string): string {
-  if (!existsSync(dirPath)) {
-    mkdirSync(dirPath, { recursive: true });
-  }
-  return dirPath;
-}
-
-function ensureSessionBeadsWorkspace(sessionWorkspaceRoot: string): void {
-  const beadsDir = ensureDir(join(sessionWorkspaceRoot, '.beads'));
-  const beadsConfigPath = join(beadsDir, 'config.yaml');
-  if (!existsSync(beadsConfigPath)) {
-    writeFileSync(beadsConfigPath, 'mode: git-portable\n', 'utf8');
-  }
-}
-
-function resolveSessionWorkspaceRoot(sessionId: string): string {
-  const resolved = sessionManager.resolveSessionWorkspaceRoot(sessionId);
-  if (resolved) return resolved;
-  const fallback = join(
-    FINGER_PATHS.sessions.dir,
-    '_unknown',
-    normalizeSessionDirName(sanitizeWorkspaceComponent(sessionId)),
-    'workspace',
-  );
-  ensureDir(fallback);
-  return fallback;
-}
-
-function resolveSessionAgentWorkspace(sessionWorkspaceRoot: string, agentId: string): string {
-  return join(sessionWorkspaceRoot, 'agents', sanitizeWorkspaceComponent(agentId));
-}
-
-function resolveAgentSessionWorkspace(agentWorkspaceRoot: string, agentSessionId: string): string {
-  return join(agentWorkspaceRoot, 'session', sanitizeWorkspaceComponent(agentSessionId));
-}
-
-interface AgentSessionWorkspaceDirs {
-  agentWorkspaceRoot: string;
-  agentSessionWorkspace: string;
-  memoryDir: string;
-  deliverablesDir: string;
-  exchangeDir: string;
-}
-
-function ensureAgentSessionWorkspaceDirs(agentWorkspaceRoot: string, agentSessionId: string): AgentSessionWorkspaceDirs {
-  const normalizedAgentWorkspaceRoot = ensureDir(agentWorkspaceRoot);
-  const agentSessionWorkspace = ensureDir(resolveAgentSessionWorkspace(normalizedAgentWorkspaceRoot, agentSessionId));
-  ensureSessionBeadsWorkspace(agentSessionWorkspace);
-  const memoryDir = ensureDir(join(agentSessionWorkspace, 'memory'));
-  const deliverablesDir = ensureDir(join(agentSessionWorkspace, 'deliverables'));
-  const exchangeDir = ensureDir(join(agentSessionWorkspace, 'exchange'));
-  return {
-    agentWorkspaceRoot: normalizedAgentWorkspaceRoot,
-    agentSessionWorkspace,
-    memoryDir,
-    deliverablesDir,
-    exchangeDir,
-  };
-}
-
-interface SessionWorkspaceDirs {
-  sessionWorkspaceRoot: string;
-  agentWorkspaceRoot: string;
-  memoryDir: string;
-  deliverablesDir: string;
-  exchangeDir: string;
-}
-
-function ensureSessionWorkspaceDirs(sessionId: string): SessionWorkspaceDirs {
-  const sessionWorkspaceRoot = ensureDir(resolveSessionWorkspaceRoot(sessionId));
-  ensureSessionBeadsWorkspace(sessionWorkspaceRoot);
-  const agentWorkspaceRoot = ensureDir(join(sessionWorkspaceRoot, 'agents'));
-  const memoryDir = ensureDir(join(sessionWorkspaceRoot, 'memory'));
-  const deliverablesDir = ensureDir(join(sessionWorkspaceRoot, 'deliverables'));
-  const exchangeDir = ensureDir(join(sessionWorkspaceRoot, 'exchange'));
-  return {
-    sessionWorkspaceRoot,
-    agentWorkspaceRoot,
-    memoryDir,
-    deliverablesDir,
-    exchangeDir,
-  };
-}
-
-interface RootSessionInfo {
-  id: string;
-  projectPath: string;
-  sessionWorkspaceRoot: string;
-  memoryDir: string;
-  deliverablesDir: string;
-  exchangeDir: string;
-}
-
-function hydrateSessionWorkspace(sessionId: string): RootSessionInfo {
-  const session = sessionManager.getSession(sessionId);
-  if (!session) {
-    throw new Error(`session not found: ${sessionId}`);
-  }
-  const dirs = ensureSessionWorkspaceDirs(session.id);
-  sessionManager.updateContext(session.id, {
-    sessionWorkspaceRoot: dirs.sessionWorkspaceRoot,
-    agentWorkspaceRoot: dirs.agentWorkspaceRoot,
-    memoryDir: dirs.memoryDir,
-    deliverablesDir: dirs.deliverablesDir,
-    exchangeDir: dirs.exchangeDir,
-  });
-  const refreshed = sessionManager.getSession(session.id) ?? session;
-  return {
-    id: refreshed.id,
-    projectPath: refreshed.projectPath,
-    sessionWorkspaceRoot: dirs.sessionWorkspaceRoot,
-    memoryDir: dirs.memoryDir,
-    deliverablesDir: dirs.deliverablesDir,
-    exchangeDir: dirs.exchangeDir,
-  };
-}
-
-function resolveWorkspaceForAgent(agentId: string): string {
-  const root = ensureOrchestratorRootSession();
-  return ensureDir(resolveSessionAgentWorkspace(root.sessionWorkspaceRoot, agentId));
-}
-
-function isRuntimeChildSession(session: { context?: Record<string, unknown> } | null | undefined): boolean {
-  if (!session || typeof session !== 'object') return false;
-  const context = isObjectRecord(session.context) ? session.context : {};
-  return context.sessionTier === 'runtime' || typeof context.parentSessionId === 'string';
-}
-
-function ensureOrchestratorRootSession(): RootSessionInfo {
-  const current = sessionManager.getCurrentSession();
-  if (current && !isRuntimeChildSession(current)) {
-    const hydrated = hydrateSessionWorkspace(current.id);
-    sessionManager.updateContext(current.id, { sessionTier: 'orchestrator-root' });
-    return hydrated;
-  }
-
-  if (current && isRuntimeChildSession(current)) {
-    const rootSessionId = asString((current.context as Record<string, unknown>)?.rootSessionId);
-    if (rootSessionId) {
-      const rootSession = sessionManager.getSession(rootSessionId);
-      if (rootSession && !isRuntimeChildSession(rootSession)) {
-        sessionManager.setCurrentSession(rootSession.id);
-        const hydrated = hydrateSessionWorkspace(rootSession.id);
-        sessionManager.updateContext(rootSession.id, { sessionTier: 'orchestrator-root' });
-        return hydrated;
-      }
-    }
-  }
-
-  const created = sessionManager.createSession(process.cwd(), 'orchestrator', { allowReuse: false });
-  const hydrated = hydrateSessionWorkspace(created.id);
-  sessionManager.updateContext(created.id, {
-    sessionTier: 'orchestrator-root',
-  });
-  return hydrated;
-}
-
-function findRuntimeChildSession(rootSessionId: string, agentId: string): { id: string; projectPath: string } | null {
-  const sessions = sessionManager.listSessions();
-  for (const session of sessions) {
-    const context = isObjectRecord(session.context) ? session.context : {};
-    if (context.sessionTier !== 'runtime') continue;
-    if (asString(context.parentSessionId) !== rootSessionId) continue;
-    if (asString(context.ownerAgentId) !== agentId) continue;
-    return {
-      id: session.id,
-      projectPath: session.projectPath,
-    };
-  }
-  return null;
-}
-
-function ensureRuntimeChildSession(root: RootSessionInfo, agentId: string): { id: string; projectPath: string } {
-  const agentWorkspaceRoot = ensureDir(resolveSessionAgentWorkspace(root.sessionWorkspaceRoot, agentId));
-  const existing = findRuntimeChildSession(root.id, agentId);
-  if (existing) {
-    const dirs = ensureAgentSessionWorkspaceDirs(agentWorkspaceRoot, existing.id);
-    sessionManager.updateContext(existing.id, {
-      sessionTier: 'runtime',
-      parentSessionId: root.id,
-      rootSessionId: root.id,
-      ownerAgentId: agentId,
-      sessionWorkspaceRoot: root.sessionWorkspaceRoot,
-      memoryDir: dirs.memoryDir,
-      deliverablesDir: dirs.deliverablesDir,
-      exchangeDir: dirs.exchangeDir,
-      agentWorkspaceRoot,
-      agentSessionWorkspace: dirs.agentSessionWorkspace,
-    });
-    return {
-      id: existing.id,
-      projectPath: sessionManager.getSession(existing.id)?.projectPath ?? dirs.agentSessionWorkspace,
-    };
-  }
-
-  const created = sessionManager.createSession(root.projectPath, `${agentId} runtime`, { allowReuse: false });
-  const dirs = ensureAgentSessionWorkspaceDirs(agentWorkspaceRoot, created.id);
-  sessionManager.updateContext(created.id, {
-    sessionTier: 'runtime',
-    parentSessionId: root.id,
-    rootSessionId: root.id,
-    ownerAgentId: agentId,
-    sessionWorkspaceRoot: root.sessionWorkspaceRoot,
-    memoryDir: dirs.memoryDir,
-    deliverablesDir: dirs.deliverablesDir,
-    exchangeDir: dirs.exchangeDir,
-    agentWorkspaceRoot,
-    agentSessionWorkspace: dirs.agentSessionWorkspace,
-  });
-  sessionManager.setCurrentSession(root.id);
-  return {
-    id: created.id,
-    projectPath: sessionManager.getSession(created.id)?.projectPath ?? dirs.agentSessionWorkspace,
-  };
-}
 
 async function applyOrchestrationConfig(config: OrchestrationConfigV1): Promise<{
   applied: number;
@@ -1208,7 +991,7 @@ async function applyOrchestrationConfig(config: OrchestrationConfigV1): Promise<
     throw new Error(`active orchestration profile not found: ${config.activeProfileId}`);
   }
   activeOrchestrationReviewPolicy = normalizeReviewPolicy(profile.reviewPolicy);
-  const rootSession = ensureOrchestratorRootSession();
+  const rootSession = sessionWorkspaceManager.ensureOrchestratorRootSession();
   const appliedAgents: string[] = [];
   const activeAgentIds = new Set(
     profile.agents.filter((item) => item.enabled !== false).map((item) => item.targetAgentId),
@@ -1222,7 +1005,7 @@ async function applyOrchestrationConfig(config: OrchestrationConfigV1): Promise<
 
   for (const staleAgentId of currentlyStartedAgentIds) {
     if (activeAgentIds.has(staleAgentId)) continue;
-    const staleSession = findRuntimeChildSession(rootSession.id, staleAgentId);
+    const staleSession = sessionWorkspaceManager.findRuntimeChildSession(rootSession.id, staleAgentId);
     await agentRuntimeBlock.execute('deploy', {
       sessionId: staleSession?.id ?? rootSession.id,
       scope: 'session',
@@ -1239,7 +1022,7 @@ async function applyOrchestrationConfig(config: OrchestrationConfigV1): Promise<
     if (entry.enabled === false) continue;
     const targetSessionId = entry.role === 'orchestrator'
       ? rootSession.id
-      : ensureRuntimeChildSession(rootSession, entry.targetAgentId).id;
+      : sessionWorkspaceManager.ensureRuntimeChildSession(rootSession, entry.targetAgentId).id;
     await agentRuntimeBlock.execute('deploy', {
       sessionId: targetSessionId,
       scope: 'session',
@@ -2437,7 +2220,7 @@ function withDispatchWorkspaceDefaults(input: AgentDispatchRequest): AgentDispat
   );
   if (!sessionId) return input;
 
-  const dirs = resolveSessionWorkspaceDirsForMessage(sessionId);
+  const dirs = sessionWorkspaceManager.resolveSessionWorkspaceDirsForMessage(sessionId);
   const withWorkspaceMetadata = (metadata: Record<string, unknown>): Record<string, unknown> => ({
     ...metadata,
     ...(typeof metadata.contextLedgerRootDir === 'string' && metadata.contextLedgerRootDir.trim().length > 0
@@ -3720,41 +3503,6 @@ function ensureSessionExists(sessionId: string, nameHint?: string): void {
   sessionManager.ensureSession(sessionId, process.cwd(), nameHint);
 }
 
-function resolveSessionWorkspaceDirsForMessage(sessionId: string): SessionWorkspaceDirs {
-  const knownSession = sessionManager.getSession(sessionId);
-  if (knownSession) {
-    const context = isObjectRecord(knownSession.context) ? knownSession.context : {};
-    const fromContext = {
-      sessionWorkspaceRoot: asString(context.sessionWorkspaceRoot),
-      agentWorkspaceRoot: asString(context.agentWorkspaceRoot),
-      memoryDir: asString(context.memoryDir),
-      deliverablesDir: asString(context.deliverablesDir),
-      exchangeDir: asString(context.exchangeDir),
-    };
-    if (
-      fromContext.sessionWorkspaceRoot
-      && fromContext.agentWorkspaceRoot
-      && fromContext.memoryDir
-      && fromContext.deliverablesDir
-      && fromContext.exchangeDir
-    ) {
-      ensureDir(fromContext.sessionWorkspaceRoot);
-      ensureDir(fromContext.agentWorkspaceRoot);
-      ensureDir(fromContext.memoryDir);
-      ensureDir(fromContext.deliverablesDir);
-      ensureDir(fromContext.exchangeDir);
-      return {
-        sessionWorkspaceRoot: fromContext.sessionWorkspaceRoot,
-        agentWorkspaceRoot: fromContext.agentWorkspaceRoot,
-        memoryDir: fromContext.memoryDir,
-        deliverablesDir: fromContext.deliverablesDir,
-        exchangeDir: fromContext.exchangeDir,
-      };
-    }
-  }
-  return ensureSessionWorkspaceDirs(sessionId);
-}
-
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -3846,7 +3594,7 @@ app.post('/api/v1/message', async (req, res) => {
     ensureSessionExists(requestSessionId, body.target);
   }
   const requestMessage = withSessionWorkspaceDefaults(requestMessageWithPolicy, requestSessionId, {
-    resolveSessionWorkspaceDirsForMessage,
+    resolveSessionWorkspaceDirsForMessage: sessionWorkspaceManager.resolveSessionWorkspaceDirsForMessage,
   });
   if (requestSessionId) {
     runtime.setCurrentSession(requestSessionId);
