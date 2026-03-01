@@ -67,6 +67,7 @@ import { registerWorkflowRoutes } from './routes/workflow.js';
 import { registerGatewayRoutes } from './routes/gateway.js';
 import { registerRuntimeEventRoutes } from './routes/runtime-events.js';
 import { registerToolRoutes } from './routes/tools.js';
+import { registerResumableSessionRoutes } from './routes/resumable-session.js';
 import { setActiveReviewPolicy } from './orchestration/review-policy.js';
 import { FINGER_PATHS, ensureDir, ensureFingerLayout } from '../core/finger-paths.js';
 import { isObjectRecord } from './common/object.js';
@@ -724,6 +725,11 @@ registerToolRoutes(app, {
   runtime,
 });
 
+registerResumableSessionRoutes(app, {
+  resumableSessionManager,
+  wsClients,
+});
+
 app.get('/api/v1/agents/configs', (_req, res) => {
   res.json({
     success: true,
@@ -859,91 +865,6 @@ app.get('/api/v1/orchestrator/runtime-mode', (_req, res) => {
     runnerModuleId: PRIMARY_ORCHESTRATOR_AGENT_ID,
     chatCodexRunnerMode: shouldUseMockChatCodexRunner() ? 'mock' : 'real',
     updatedAt: new Date().toISOString(),
-  });
-});
-
-// Session: create checkpoint
-app.post('/api/v1/session/checkpoint', (req, res) => {
-  const { sessionId, originalTask, taskProgress, agentStates, context } = req.body;
-  if (!sessionId || !originalTask || !taskProgress) {
-    res.status(400).json({ error: 'Missing required fields' });
-    return;
-  }
-  
-  const checkpoint = resumableSessionManager.createCheckpoint(
-    sessionId,
-    originalTask,
-    taskProgress,
-    agentStates || {},
-    context || {}
-  );
-  
-  res.json({ success: true, checkpointId: checkpoint.checkpointId });
-});
-
-// Session: load checkpoint
-app.get('/api/v1/session/checkpoint/:checkpointId', (req, res) => {
-  const checkpoint = resumableSessionManager.loadCheckpoint(req.params.checkpointId);
-  if (!checkpoint) {
-    res.status(404).json({ error: 'Checkpoint not found' });
-    return;
-  }
-  res.json(checkpoint);
-});
-
-// Session: find latest checkpoint
-app.get('/api/v1/session/:sessionId/checkpoint/latest', (req, res) => {
-  const checkpoint = resumableSessionManager.findLatestCheckpoint(req.params.sessionId);
-  if (!checkpoint) {
-    res.status(404).json({ error: 'No checkpoint found for session' });
-    return;
-  }
-  
-  const resumeContext = resumableSessionManager.buildResumeContext(checkpoint);
-  res.json({
-    checkpoint,
-    resumeContext,
-  });
-});
-
-// Session: resume with context
-app.post('/api/v1/session/resume', (req, res) => {
-  const { sessionId, checkpointId } = req.body;
-  
-  let checkpoint: ReturnType<typeof resumableSessionManager.loadCheckpoint>;
-  
-  if (checkpointId) {
-    checkpoint = resumableSessionManager.loadCheckpoint(checkpointId);
-  } else {
-    checkpoint = resumableSessionManager.findLatestCheckpoint(sessionId);
-  }
-  
-  if (!checkpoint) {
-    res.status(404).json({ error: 'Checkpoint not found' });
-    return;
-  }
-  
-  const resumeContext = resumableSessionManager.buildResumeContext(checkpoint);
-  
-  // Broadcast resume event
-  const broadcastMsg = JSON.stringify({
-    type: 'session_resume',
-    payload: {
-      sessionId: checkpoint.sessionId,
-      checkpointId: checkpoint.checkpointId,
-      progress: resumeContext.estimatedProgress,
-      pendingTasks: checkpoint.pendingTaskIds.length,
-    },
-    timestamp: new Date().toISOString(),
-  });
-  for (const client of wsClients) {
-    if (client.readyState === 1) client.send(broadcastMsg);
-  }
-  
-  res.json({
-    success: true,
-    sessionId: checkpoint.sessionId,
-    resumeContext,
   });
 });
 
