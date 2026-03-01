@@ -17,7 +17,6 @@ import {
 } from '../runtime/agent-json-config.js';
 import { execSync } from 'child_process';
 import { createServer } from 'net';
-import { WebSocketServer, type WebSocket } from 'ws';
 import { ModuleRegistry } from '../orchestration/module-registry.js';
 import { GatewayManager } from '../gateway/gateway-manager.js';
 // SessionManager accessed via shared-instances
@@ -65,6 +64,7 @@ import { BdTools } from '../agents/shared/bd-tools.js';
 import type { OutputModule } from '../orchestration/module-registry.js';
 import type { Attachment, ToolCallEvent, ToolResultEvent, ToolErrorEvent, AgentStepCompletedEvent } from '../runtime/events.js';
 import { inputLockManager } from '../runtime/input-lock.js';
+import { createWebSocketServer } from './modules/websocket-server.js';
 import { FINGER_PATHS, ensureFingerLayout, normalizeSessionDirName } from '../core/finger-paths.js';
 import {
   listKernelProviders,
@@ -1919,123 +1919,15 @@ app.post('/api/v1/mailbox/clear', (_req, res) => {
 
 // WebSocket server for real-time updates
 const wsPort = process.env.WS_PORT ? parseInt(process.env.WS_PORT, 10) : 9998;
-const wss = new WebSocketServer({ port: wsPort });
-console.log(`[Server] Starting WebSocket server on port ${wsPort} (PORT=${PORT})`);
-const wsClients: Set<WebSocket> = new Set();
-
-// 扩展 WebSocket 类型以包含 clientId
-interface WebSocketWithClientId extends WebSocket {
-  clientId?: string;
-}
-
-function generateClientId(): string {
-  return `client_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
-}
-
-wss.on('connection', (ws: WebSocketWithClientId) => {
- wsClients.add(ws);
-  ws.clientId = generateClientId();
-  console.log('[Server] WebSocket client connected, total clients:', wsClients.size, 'clientId:', ws.clientId);
- globalEventBus.registerWsClient(ws);
-  
-  // 发送 clientId 给客户端
-  ws.send(JSON.stringify({
-    type: 'client_id_assigned',
-    clientId: ws.clientId,
-    timestamp: new Date().toISOString(),
-  }));
-  
-  ws.on('message', (data) => {
-    try {
-      const msg = JSON.parse(data.toString());
-      if (msg.type === 'subscribe') {
-        // 新协议：支持按分组和按类型订阅
-        const types = msg.types || msg.events || [];
-        const groups = msg.groups || [];
-
-        if (groups.length > 0 || types.length > 0) {
-          // 设置客户端过滤
-          globalEventBus.setWsClientFilter(ws, { types, groups });
-
-          // 发送确认
-          ws.send(JSON.stringify({
-            type: 'subscribe_confirmed',
-            types,
-            groups,
-            timestamp: new Date().toISOString(),
-          }));
-        } else if (msg.messageId) {
-          // Legacy: Subscribe to message updates
-          mailbox.subscribe(msg.messageId, (m) => {
-            ws.send(JSON.stringify({ type: 'messageUpdate', message: m }));
-          });
-        }
-      } else if (msg.type === 'unsubscribe') {
-        // 清除过滤
-        globalEventBus.setWsClientFilter(ws, {});
-        ws.send(JSON.stringify({ type: 'unsubscribe_confirmed', timestamp: new Date().toISOString() }));
-      } else if (msg.type === 'input_lock_acquire') {
-        // 尝试获取输入锁
-        const sessionId = typeof msg.sessionId === 'string' ? msg.sessionId : '';
-        if (!sessionId) {
-          ws.send(JSON.stringify({
-            type: 'input_lock_result',
-            sessionId: '',
-            acquired: false,
-            clientId: ws.clientId,
-            error: 'sessionId is required',
-            timestamp: new Date().toISOString(),
-          }));
-          return;
-        }
-        const acquired = inputLockManager.acquire(sessionId, ws.clientId!);
-        ws.send(JSON.stringify({
-          type: 'input_lock_result',
-          sessionId,
-          acquired,
-          clientId: ws.clientId,
-          state: inputLockManager.getState(sessionId),
-          timestamp: new Date().toISOString(),
-        }));
-      } else if (msg.type === 'input_lock_heartbeat') {
-        const sessionId = typeof msg.sessionId === 'string' ? msg.sessionId : '';
-        if (!sessionId) return;
-        const alive = inputLockManager.heartbeat(sessionId, ws.clientId!);
-        ws.send(JSON.stringify({
-          type: 'input_lock_heartbeat_ack',
-          sessionId,
-          alive,
-          clientId: ws.clientId,
-          state: inputLockManager.getState(sessionId),
-          timestamp: new Date().toISOString(),
-        }));
-      } else if (msg.type === 'input_lock_release') {
-        // 释放输入锁
-        const sessionId = typeof msg.sessionId === 'string' ? msg.sessionId : '';
-        if (!sessionId) return;
-        inputLockManager.release(sessionId, ws.clientId!);
-      } else if (msg.type === 'typing_indicator') {
-        // 正在输入指示器
-        const sessionId = typeof msg.sessionId === 'string' ? msg.sessionId : '';
-        if (!sessionId) return;
-        inputLockManager.setTyping(sessionId, ws.clientId!, msg.typing === true);
-      }
-    } catch {
-      // ignore
-    }
-  });
-  
-  ws.on('close', () => {
-    // 客户端断连时释放所有锁
-    inputLockManager.forceRelease(ws.clientId!);
-    wsClients.delete(ws);
-  });
+const { wss, wsClients, broadcast } = createWebSocketServer({
+  port: wsPort,
+  serverPort: PORT,
+  eventBus: globalEventBus,
+  mailbox,
+  inputLockManager,
+  registerStateBridgeClient: registerWebSocketClient,
+  unregisterStateBridgeClient: unregisterWebSocketClient,
 });
-
- console.log(`[Server] WebSocket server running at ws://localhost:${wsPort}`);
-  // Log actual bound address
-  const addresses = wss.address();
-  console.log(`[Server] WebSocket server bound to:`, addresses);
  // ========== Session Data API ==========
 // Real-time session data from ~/.finger/sessions
 
@@ -3669,7 +3561,7 @@ app.get('/api/v1/agents/runtime-view', (_req, res) => {
 
 app.get('/api/v1/orchestration/config', (_req, res) => {
   try {
-    const loaded = loadOrchestrationConfig(process.cwd());
+    const loaded = loadOrchestrationConfig();
     res.json({
       success: true,
       path: loaded.path,
@@ -3684,7 +3576,7 @@ app.get('/api/v1/orchestration/config', (_req, res) => {
 
 app.put('/api/v1/orchestration/config', async (req, res) => {
   try {
-    const saved = saveOrchestrationConfig(req.body, process.cwd());
+    const saved = saveOrchestrationConfig(req.body);
     const applied = await applyOrchestrationConfig(saved.config);
     res.json({
       success: true,
@@ -3706,11 +3598,11 @@ app.post('/api/v1/orchestration/config/switch', async (req, res) => {
     return;
   }
   try {
-    const loaded = loadOrchestrationConfig(process.cwd());
+    const loaded = loadOrchestrationConfig();
     const switched = saveOrchestrationConfig({
       ...loaded.config,
       activeProfileId: profileId,
-    }, process.cwd());
+    });
     const applied = await applyOrchestrationConfig(switched.config);
     res.json({
       success: true,
@@ -4785,7 +4677,7 @@ console.log('[Server] Finger role modules ready:', [
   FINGER_REVIEWER_AGENT_ID,
 ].join(', '));
 try {
-  const loadedOrchestrationConfig = loadOrchestrationConfig(process.cwd());
+  const loadedOrchestrationConfig = loadOrchestrationConfig();
   const applied = await applyOrchestrationConfig(loadedOrchestrationConfig.config);
   console.log('[Server] Orchestration config applied:', {
     path: loadedOrchestrationConfig.path,
