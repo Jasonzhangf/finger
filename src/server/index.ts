@@ -70,6 +70,7 @@ import { registerResumableSessionRoutes } from './routes/resumable-session.js';
 import { registerOrchestrationRoutes } from './routes/orchestration.js';
 import { registerAgentConfigRoutes } from './routes/agent-configs.js';
 import { registerModuleRegistryRoutes } from './routes/module-registry.js';
+import { registerPerformanceRoutes } from './routes/performance.js';
 import { setActiveReviewPolicy } from './orchestration/review-policy.js';
 import { FINGER_PATHS, ensureDir, ensureFingerLayout } from '../core/finger-paths.js';
 import { isObjectRecord } from './common/object.js';
@@ -749,6 +750,10 @@ registerModuleRegistryRoutes(app, {
   moduleRegistry,
 });
 
+registerPerformanceRoutes(app, {
+  wsClients,
+});
+
 
 
 
@@ -814,43 +819,6 @@ try {
   console.error('[Server] Invalid orchestration.json; startup aborted:', message);
   process.exit(1);
 }
-
-// =============================================================================
-// 性能监控 API
-// =============================================================================
-
-import { performanceMonitor } from '../runtime/performance-monitor.js';
-
-app.get('/api/v1/performance', (_req, res) => {
-  const metrics = performanceMonitor.getMetrics();
-  res.json({
-    success: true,
-    metrics,
-  });
-});
-
-app.get('/api/v1/performance/report', (_req, res) => {
-  const report = performanceMonitor.generateReport();
-  res.type('text/plain').send(report);
-});
-
-// 定期发送性能指标到 WebSocket 客户端
-setInterval(() => {
-  const metrics = performanceMonitor.getMetrics();
-  const msg = JSON.stringify({
-    type: 'performance_metrics',
-    payload: metrics,
-    timestamp: new Date().toISOString(),
-  });
-  
-  for (const client of wsClients) {
-    if (client.readyState === 1) {
-      client.send(msg);
-    }
-  }
-}, 5000); // 每5秒发送一次
-
-console.log('[Server] Performance monitoring enabled');
 
 // =============================================================================
 // EventBus 订阅转发到 WebSocket
