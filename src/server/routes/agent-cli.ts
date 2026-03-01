@@ -29,14 +29,20 @@ export function registerAgentCliRoutes(app: Express): void {
 
   // API: 路由决策
   app.post('/api/v1/agent/route', async (req, res) => {
-    const { input } = req.body;
-    if (!input) {
-      res.status(400).json({ error: 'Missing input' });
+    const { intentAnalysis, input, sessionId } = req.body as {
+      intentAnalysis?: unknown;
+      input?: unknown;
+      sessionId?: string;
+    };
+    const raw = intentAnalysis ?? input;
+    if (!raw) {
+      res.status(400).json({ error: 'Missing intentAnalysis' });
       return;
     }
 
     try {
-      const result = await routeCommand(input);
+      const payload = typeof raw === 'string' ? raw : JSON.stringify(raw);
+      const result = await routeCommand(payload, { sessionId });
       res.json({ success: true, result });
     } catch (error) {
       res.status(500).json({ error: String(error) });
