@@ -1,9 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs';
-import { homedir } from 'os';
-import { join } from 'path';
+import { FINGER_PATHS, ensureDir } from '../core/finger-paths.js';
 
-const FINGER_HOME = join(homedir(), '.finger');
-const CONFIG_PATH = join(FINGER_HOME, 'config.json');
+const CONFIG_PATH = FINGER_PATHS.config.file.main;
 const DEFAULT_BASE_URL = 'https://codex.funai.vip/openai';
 const DEFAULT_WIRE_API = 'responses';
 
@@ -72,9 +70,7 @@ const DEFAULT_PROVIDERS: Record<string, Required<KernelProviderJson>> = {
 };
 
 function ensureFingerHomeDir(): void {
-  if (!existsSync(FINGER_HOME)) {
-    mkdirSync(FINGER_HOME, { recursive: true });
-  }
+  ensureDir(FINGER_PATHS.config.dir);
 }
 
 function readConfigFile(): FingerConfigJson {

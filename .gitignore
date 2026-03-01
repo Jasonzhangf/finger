@@ -25,6 +25,8 @@ ui/node_modules/
 # Secrets and local config
 .env
 .env.local
+/.finger/
+orchestration.json
 *.key
 *.pem
 .DS_Store
