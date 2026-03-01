@@ -68,6 +68,7 @@ import { registerRuntimeEventRoutes } from './routes/runtime-events.js';
 import { registerToolRoutes } from './routes/tools.js';
 import { registerResumableSessionRoutes } from './routes/resumable-session.js';
 import { registerOrchestrationRoutes } from './routes/orchestration.js';
+import { registerAgentConfigRoutes } from './routes/agent-configs.js';
 import { setActiveReviewPolicy } from './orchestration/review-policy.js';
 import { FINGER_PATHS, ensureDir, ensureFingerLayout } from '../core/finger-paths.js';
 import { isObjectRecord } from './common/object.js';
@@ -736,49 +737,13 @@ registerOrchestrationRoutes(app, {
   getChatCodexRunnerMode: () => (shouldUseMockChatCodexRunner() ? 'mock' : 'real'),
 });
 
-app.get('/api/v1/agents/configs', (_req, res) => {
-  res.json({
-    success: true,
-    dir: loadedAgentConfigDir,
-    schema: AGENT_JSON_SCHEMA,
-    agents: loadedAgentConfigs.map((item) => ({
-      filePath: item.filePath,
-      id: item.config.id,
-      name: item.config.name,
-      role: item.config.role,
-      tools: item.config.tools ?? {},
-    })),
-  });
+registerAgentConfigRoutes(app, {
+  getLoadedAgentConfigDir: () => loadedAgentConfigDir,
+  getLoadedAgentConfigs: () => loadedAgentConfigs,
+  agentJsonSchema: AGENT_JSON_SCHEMA,
+  reloadAgentJsonConfigs,
 });
 
-app.get('/api/v1/agents/configs/schema', (_req, res) => {
-  res.json({ success: true, schema: AGENT_JSON_SCHEMA });
-});
-
-app.post('/api/v1/agents/configs/reload', (req, res) => {
-  const requestedDir = req.body?.dir;
-  if (requestedDir !== undefined && typeof requestedDir !== 'string') {
-    res.status(400).json({ error: 'dir must be string when provided' });
-    return;
-  }
-
-  try {
-    reloadAgentJsonConfigs(requestedDir || loadedAgentConfigDir);
-    res.json({
-      success: true,
-      dir: loadedAgentConfigDir,
-      count: loadedAgentConfigs.length,
-      agents: loadedAgentConfigs.map((item) => ({
-        filePath: item.filePath,
-        id: item.config.id,
-        role: item.config.role,
-      })),
-    });
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    res.status(400).json({ error: message });
-  }
-});
 
 
 
