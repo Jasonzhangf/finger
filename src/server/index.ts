@@ -69,6 +69,7 @@ import { registerToolRoutes } from './routes/tools.js';
 import { registerResumableSessionRoutes } from './routes/resumable-session.js';
 import { registerOrchestrationRoutes } from './routes/orchestration.js';
 import { registerAgentConfigRoutes } from './routes/agent-configs.js';
+import { registerModuleRegistryRoutes } from './routes/module-registry.js';
 import { setActiveReviewPolicy } from './orchestration/review-policy.js';
 import { FINGER_PATHS, ensureDir, ensureFingerLayout } from '../core/finger-paths.js';
 import { isObjectRecord } from './common/object.js';
@@ -744,6 +745,10 @@ registerAgentConfigRoutes(app, {
   reloadAgentJsonConfigs,
 });
 
+registerModuleRegistryRoutes(app, {
+  moduleRegistry,
+});
+
 
 
 
@@ -773,21 +778,6 @@ registerAgentRuntimeRoutes(app, {
 });
 
 
-app.post('/api/v1/module/register', async (req, res) => {
-  const body = req.body as { filePath?: string };
-  if (!body.filePath) {
-    res.status(400).json({ error: 'Missing filePath' });
-    return;
-  }
-
-  try {
-    await moduleRegistry.loadFromFile(body.filePath);
-    res.json({ success: true, message: `Module loaded from ${body.filePath}` });
-  } catch (err) {
-    const errorMessage = err instanceof Error ? err.message : String(err);
-    res.status(400).json({ error: errorMessage });
-  }
-});
 
 await ensureSingleInstance(PORT);
 const server = app.listen(PORT, () => {
