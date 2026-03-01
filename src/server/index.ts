@@ -65,6 +65,7 @@ import { registerAgentCliRoutes } from './routes/agent-cli.js';
 import { registerAgentRuntimeRoutes } from './routes/agent-runtime.js';
 import { registerWorkflowRoutes } from './routes/workflow.js';
 import { registerGatewayRoutes } from './routes/gateway.js';
+import { registerRuntimeEventRoutes } from './routes/runtime-events.js';
 import { setActiveReviewPolicy } from './orchestration/review-policy.js';
 import { FINGER_PATHS, ensureDir, ensureFingerLayout } from '../core/finger-paths.js';
 import {
@@ -658,83 +659,6 @@ app.post('/api/test/:id/state/:key', (req, res) => {
 });
 
 
-// Event metadata for UI subscriptions (types + groups)
-app.get('/api/v1/events/types', (_req, res) => {
-  res.json({
-    success: true,
-    types: globalEventBus.getSupportedTypes(),
-  });
-});
-
-app.get('/api/v1/events/groups', (_req, res) => {
-  res.json({
-    success: true,
-    groups: globalEventBus.getSupportedGroups(),
-  });
-});
-
-app.get('/api/v1/events/history', (req, res) => {
-  const type = typeof req.query.type === 'string' ? req.query.type : undefined;
-  const group = typeof req.query.group === 'string' ? req.query.group : undefined;
-  const limit = typeof req.query.limit === 'string' ? parseInt(req.query.limit, 10) : undefined;
-  
-  if (type) {
-    res.json({ success: true, events: globalEventBus.getHistoryByType(type, limit) });
-    return;
-  }
-  
-  if (group) {
-    res.json({ success: true, events: globalEventBus.getHistoryByGroup(group as Parameters<typeof globalEventBus.getHistoryByGroup>[0], limit) });
-    return;
-  }
-  
-  res.json({ success: true, events: globalEventBus.getHistory(limit) });
-});
-
-// ========== Input Lock API ==========
-
-app.get('/api/v1/input-lock/:sessionId', (req, res) => {
-  const state = inputLockManager.getState(req.params.sessionId);
-  res.json({ success: true, state });
-});
-
-app.get('/api/v1/input-lock', (_req, res) => {
-  const locks = inputLockManager.getAllLocks();
-  res.json({ success: true, locks });
-});
-
-// Mailbox API
-app.get('/api/v1/mailbox', (req, res) => {
-  const messages = mailbox.listMessages({
-    target: req.query.target as string,
-    status: req.query.status as any,
-    limit: req.query.limit ? parseInt(req.query.limit as string, 10) : 10,
-  });
-  res.json({ messages });
-});
-
-app.get('/api/v1/mailbox/:id', (req, res) => {
-  const msg = mailbox.getMessage(req.params.id);
-  if (!msg) {
-    res.status(404).json({ error: 'Message not found' });
-    return;
-  }
-  res.json(msg);
-});
-
-app.get('/api/v1/mailbox/callback/:callbackId', (req, res) => {
-  const msg = mailbox.getMessageByCallbackId(req.params.callbackId);
-  if (!msg) {
-    res.status(404).json({ error: 'Message not found' });
-    return;
-  }
-  res.json(msg);
-});
-
-app.post('/api/v1/mailbox/clear', (_req, res) => {
-  mailbox.cleanup();
-  res.json({ success: true, message: 'Mailbox cleaned up' });
-});
 
 // WebSocket server for real-time updates
 const wsPort = process.env.WS_PORT ? parseInt(process.env.WS_PORT, 10) : 9998;
@@ -789,6 +713,12 @@ registerGatewayRoutes(app, {
   hub,
   moduleRegistry,
   gatewayManager,
+});
+
+registerRuntimeEventRoutes(app, {
+  eventBus: globalEventBus,
+  inputLockManager,
+  mailbox,
 });
 
 // Tool policy
