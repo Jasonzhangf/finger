@@ -27,7 +27,6 @@ import { resourcePool } from '../orchestration/resource-pool.js';
 import {
   loadOrchestrationConfig,
   normalizeReviewPolicy,
-  saveOrchestrationConfig,
   type OrchestrationConfigV1,
 } from '../orchestration/orchestration-config.js';
 import { resumableSessionManager } from '../orchestration/resumable-session.js';
@@ -68,6 +67,7 @@ import { registerGatewayRoutes } from './routes/gateway.js';
 import { registerRuntimeEventRoutes } from './routes/runtime-events.js';
 import { registerToolRoutes } from './routes/tools.js';
 import { registerResumableSessionRoutes } from './routes/resumable-session.js';
+import { registerOrchestrationRoutes } from './routes/orchestration.js';
 import { setActiveReviewPolicy } from './orchestration/review-policy.js';
 import { FINGER_PATHS, ensureDir, ensureFingerLayout } from '../core/finger-paths.js';
 import { isObjectRecord } from './common/object.js';
@@ -730,6 +730,12 @@ registerResumableSessionRoutes(app, {
   wsClients,
 });
 
+registerOrchestrationRoutes(app, {
+  applyOrchestrationConfig,
+  primaryOrchestratorAgentId: PRIMARY_ORCHESTRATOR_AGENT_ID,
+  getChatCodexRunnerMode: () => (shouldUseMockChatCodexRunner() ? 'mock' : 'real'),
+});
+
 app.get('/api/v1/agents/configs', (_req, res) => {
   res.json({
     success: true,
@@ -775,62 +781,6 @@ app.post('/api/v1/agents/configs/reload', (req, res) => {
 });
 
 
-app.get('/api/v1/orchestration/config', (_req, res) => {
-  try {
-    const loaded = loadOrchestrationConfig();
-    res.json({
-      success: true,
-      path: loaded.path,
-      created: loaded.created,
-      config: loaded.config,
-    });
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    res.status(400).json({ success: false, error: message });
-  }
-});
-
-app.put('/api/v1/orchestration/config', async (req, res) => {
-  try {
-    const saved = saveOrchestrationConfig(req.body);
-    const applied = await applyOrchestrationConfig(saved.config);
-    res.json({
-      success: true,
-      path: saved.path,
-      config: saved.config,
-      applied,
-    });
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    res.status(400).json({ success: false, error: message });
-  }
-});
-
-app.post('/api/v1/orchestration/config/switch', async (req, res) => {
-  const body = req.body as { profileId?: unknown };
-  const profileId = typeof body.profileId === 'string' ? body.profileId.trim() : '';
-  if (!profileId) {
-    res.status(400).json({ success: false, error: 'profileId is required' });
-    return;
-  }
-  try {
-    const loaded = loadOrchestrationConfig();
-    const switched = saveOrchestrationConfig({
-      ...loaded.config,
-      activeProfileId: profileId,
-    });
-    const applied = await applyOrchestrationConfig(switched.config);
-    res.json({
-      success: true,
-      path: switched.path,
-      config: switched.config,
-      applied,
-    });
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    res.status(400).json({ success: false, error: message });
-  }
-});
 
 registerAgentRuntimeRoutes(app, {
   getAgentRuntimeDeps,
@@ -857,16 +807,6 @@ registerAgentRuntimeRoutes(app, {
   },
 });
 
-app.get('/api/v1/orchestrator/runtime-mode', (_req, res) => {
-  res.json({
-    success: true,
-    mode: 'finger-general-runner',
-    fsmV2Implemented: true,
-    runnerModuleId: PRIMARY_ORCHESTRATOR_AGENT_ID,
-    chatCodexRunnerMode: shouldUseMockChatCodexRunner() ? 'mock' : 'real',
-    updatedAt: new Date().toISOString(),
-  });
-});
 
 app.post('/api/v1/module/register', async (req, res) => {
   const body = req.body as { filePath?: string };
