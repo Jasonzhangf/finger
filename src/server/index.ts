@@ -63,6 +63,7 @@ import { registerSystemRoutes } from './routes/system.js';
 import { registerMessageRoutes } from './routes/message.js';
 import { registerAgentCliRoutes } from './routes/agent-cli.js';
 import { registerAgentRuntimeRoutes } from './routes/agent-runtime.js';
+import { registerWorkflowRoutes } from './routes/workflow.js';
 import { setActiveReviewPolicy } from './orchestration/review-policy.js';
 import { FINGER_PATHS, ensureDir, ensureFingerLayout } from '../core/finger-paths.js';
 import {
@@ -895,6 +896,14 @@ registerMessageRoutes(app, {
 
 registerAgentCliRoutes(app);
 
+registerWorkflowRoutes(app, {
+  workflowManager,
+  askManager,
+  runtimeInstructionBus,
+  broadcast,
+  primaryOrchestratorAgentId: PRIMARY_ORCHESTRATOR_AGENT_ID,
+});
+
 // Tool policy
 app.get('/api/v1/tools', (_req, res) => {
   const tools = globalToolRegistry.list();
@@ -1151,151 +1160,6 @@ app.post('/api/v1/agents/configs/reload', (req, res) => {
   }
 });
 
-// ========== Workflow Management API ==========
-app.get('/api/v1/workflows', (_req, res) => {
-  const workflows = workflowManager.listWorkflows();
-  res.json(workflows.map(w => ({
-    id: w.id,
-    sessionId: w.sessionId,
-    epicId: w.epicId,
-    status: w.status,
-    taskCount: w.tasks.size,
-    completedTasks: Array.from(w.tasks.values()).filter(t => t.status === 'completed').length,
-    failedTasks: Array.from(w.tasks.values()).filter(t => t.status === 'failed').length,
-    createdAt: w.createdAt,
-    updatedAt: w.updatedAt,
-    userTask: w.userTask,
-  })));
-});
-
-app.get('/api/v1/workflows/:id', (req, res) => {
-  const workflow = workflowManager.getWorkflow(req.params.id);
-  if (!workflow) {
-    res.status(404).json({ error: 'Workflow not found' });
-    return;
-  }
-  const tasks = Array.from(workflow.tasks.values());
-  res.json({
-    id: workflow.id,
-    sessionId: workflow.sessionId,
-    epicId: workflow.epicId,
-    status: workflow.status,
-    taskCount: workflow.tasks.size,
-    completedTasks: tasks.filter(t => t.status === 'completed').length,
-    failedTasks: tasks.filter(t => t.status === 'failed').length,
-    createdAt: workflow.createdAt,
-    updatedAt: workflow.updatedAt,
-    userTask: workflow.userTask,
-  });
-});
-
-app.get('/api/v1/workflows/:id/tasks', (req, res) => {
-  const workflow = workflowManager.getWorkflow(req.params.id);
-  if (!workflow) {
-    res.status(404).json({ error: 'Workflow not found' });
-    return;
-  }
-  const tasks = Array.from(workflow.tasks.values());
-  res.json(tasks);
-});
-
-app.post('/api/v1/workflow/pause', async (req, res) => {
-  const { workflowId, hard } = req.body;
-  if (!workflowId) {
-    res.status(400).json({ error: 'Missing workflowId' });
-    return;
-  }
-  const workflow = workflowManager.getWorkflow(workflowId);
-  if (!workflow) {
-    res.status(404).json({ error: 'Workflow not found' });
-    return;
-  }
-  workflowManager.pauseWorkflow(workflowId, hard);
-  
-  // Broadcast pause to WebSocket clients
-  const broadcastMsg = JSON.stringify({
-    type: 'workflow_update',
-    payload: { workflowId, status: 'paused' },
-    timestamp: new Date().toISOString(),
-  });
-  for (const client of wsClients) {
-    if (client.readyState === 1) client.send(broadcastMsg);
-  }
-  
-  res.json({ success: true, workflowId, status: 'paused' });
-});
-
-app.post('/api/v1/workflow/resume', async (req, res) => {
-  const { workflowId } = req.body;
-  if (!workflowId) {
-    res.status(400).json({ error: 'Missing workflowId' });
-    return;
-  }
-  const workflow = workflowManager.getWorkflow(workflowId);
-  if (!workflow) {
-    res.status(404).json({ error: 'Workflow not found' });
-    return;
-  }
-  workflowManager.resumeWorkflow(workflowId);
-  
-  // Broadcast resume to WebSocket clients
-  const broadcastMsg = JSON.stringify({
-    type: 'workflow_update',
-    payload: { workflowId, status: 'executing' },
-    timestamp: new Date().toISOString(),
-  });
-  for (const client of wsClients) {
-    if (client.readyState === 1) client.send(broadcastMsg);
-  }
-  
-  res.json({ success: true, workflowId, status: 'executing' });
-});
-
-app.post('/api/v1/workflow/input', async (req, res) => {
-  const { workflowId, input } = req.body;
-  if (!workflowId || !input) {
-    res.status(400).json({ error: 'Missing workflowId or input' });
-    return;
-  }
-  const workflow = workflowManager.getWorkflow(workflowId);
-  if (!workflow) {
-    res.status(404).json({ error: 'Workflow not found' });
-    return;
-  }
-
-  const askResolution = askManager.resolveOldestByScope({
-    agentId: PRIMARY_ORCHESTRATOR_AGENT_ID,
-    workflowId: String(workflowId),
-    ...(typeof workflow.epicId === 'string' && workflow.epicId.trim().length > 0 ? { epicId: workflow.epicId.trim() } : {}),
-    ...(typeof workflow.sessionId === 'string' && workflow.sessionId.trim().length > 0 ? { sessionId: workflow.sessionId.trim() } : {}),
-  }, String(input));
-
-  if (askResolution) {
-    res.json({ success: true, workflowId, askResolution });
-    return;
-  }
-  
-  // Store user input in workflow context and route runtime instruction to loop parser.
-  workflowManager.updateWorkflowContext(workflowId, { lastUserInput: input });
-  runtimeInstructionBus.push(workflowId, String(input));
-
-  const workflowEpicId = workflow.epicId;
-  if (workflowEpicId) {
-    runtimeInstructionBus.push(workflowEpicId, String(input));
-  }
-  
-  // Broadcast input to WebSocket clients
-  const broadcastMsg = JSON.stringify({
-    type: 'workflow_update',
-    payload: { workflowId, userInput: input },
-    timestamp: new Date().toISOString(),
-  });
-  for (const client of wsClients) {
-    if (client.readyState === 1) client.send(broadcastMsg);
-  }
-  
-  res.json({ success: true, workflowId });
-});
 
 app.get('/api/v1/orchestration/config', (_req, res) => {
   try {
