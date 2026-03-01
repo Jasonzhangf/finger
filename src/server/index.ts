@@ -1,7 +1,7 @@
 import express, { type Request } from 'express';
 import { fileURLToPath } from 'url';
-import { dirname, extname, join } from 'path';
-import { appendFileSync, existsSync, mkdirSync, readFileSync, statSync } from 'fs';
+import { dirname, join } from 'path';
+import { appendFileSync, existsSync, mkdirSync, readFileSync } from 'fs';
 import { registry } from '../core/registry.js';
 import { globalEventBus } from '../runtime/event-bus.js';
 import { globalToolRegistry } from '../runtime/tool-registry.js';
@@ -60,6 +60,7 @@ import { createSessionWorkspaceManager } from './modules/session-workspaces.js';
 import { attachEventForwarding } from './modules/event-forwarding.js';
 import { createMockRuntimeKit, type ChatCodexRunnerController, type MockOutcome } from './modules/mock-runtime.js';
 import { registerSessionRoutes } from './routes/session.js';
+import { registerSystemRoutes } from './routes/system.js';
 import { firstNonEmptyString } from './common/strings.js';
 import {
   extractSessionIdFromMessagePayload,
@@ -604,128 +605,13 @@ moduleRegistry.createRoute(() => true, 'echo-output', {
 });
 console.log('[Server] Orchestration modules initialized: echo-input, echo-output, finger-general, finger-orchestrator');
 
-app.get('/health', (_req, res) => {
-  res.json({ status: 'healthy', timestamp: new Date().toISOString() });
-});
-
-app.get('/api/v1/providers', (_req, res) => {
-  res.json(listKernelProviders());
-});
-
-app.post('/api/v1/providers/upsert', (req, res) => {
-  const body = req.body as {
-    id?: string;
-    name?: string;
-    baseUrl?: string;
-    wireApi?: string;
-    envKey?: string;
-    model?: string;
-    select?: boolean;
-  };
-  if (typeof body.id !== 'string' || body.id.trim().length === 0) {
-    res.status(400).json({ error: 'provider id is required' });
-    return;
-  }
-  try {
-    const provider = upsertKernelProvider({
-      id: body.id,
-      ...(typeof body.name === 'string' ? { name: body.name } : {}),
-      ...(typeof body.baseUrl === 'string' ? { baseUrl: body.baseUrl } : {}),
-      ...(typeof body.wireApi === 'string' ? { wireApi: body.wireApi } : {}),
-      ...(typeof body.envKey === 'string' ? { envKey: body.envKey } : {}),
-      ...(typeof body.model === 'string' ? { model: body.model } : {}),
-      ...(typeof body.select === 'boolean' ? { select: body.select } : {}),
-    });
-    res.json({ success: true, provider });
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    res.status(400).json({ error: message });
-  }
-});
-
-app.post('/api/v1/providers/:providerId/select', (req, res) => {
-  const providerId = req.params.providerId;
-  if (!providerId || providerId.trim().length === 0) {
-    res.status(400).json({ error: 'providerId is required' });
-    return;
-  }
-  try {
-    const provider = selectKernelProvider(providerId);
-    res.json({ success: true, provider });
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    res.status(400).json({ error: message });
-  }
-});
-
-app.post('/api/v1/providers/:providerId/test', async (req, res) => {
-  const providerId = req.params.providerId;
-  if (!providerId || providerId.trim().length === 0) {
-    res.status(400).json({ error: 'providerId is required' });
-    return;
-  }
-  try {
-    const result = await testKernelProvider(providerId);
-    res.json(result);
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    res.status(400).json({ success: false, message });
-  }
-});
-
-app.get('/api/v1/files/local-image', (req, res) => {
-  const rawPath = typeof req.query.path === 'string' ? req.query.path.trim() : '';
-  if (rawPath.length === 0) {
-    res.status(400).json({ error: 'query.path is required' });
-    return;
-  }
-
-  const mimeType = LOCAL_IMAGE_MIME_BY_EXT[extname(rawPath).toLowerCase()];
-  if (!mimeType) {
-    res.status(415).json({ error: 'unsupported image extension' });
-    return;
-  }
-
-  const stat = statSync(rawPath, { throwIfNoEntry: false });
-  if (!stat || !stat.isFile()) {
-    res.status(404).json({ error: 'file not found' });
-    return;
-  }
-
-  res.setHeader('Content-Type', mimeType);
-  res.setHeader('Cache-Control', 'private, max-age=60');
-  res.sendFile(rawPath, (error) => {
-    if (!error || res.headersSent) return;
-    res.status(500).json({ error: `failed to read image: ${error.message}` });
-  });
-});
-
-app.get('/api/blocks', (_req, res) => {
-  res.json(registry.generateApiEndpoints());
-});
-
-app.get('/api/blocks/:id/state', (req, res) => {
-  const block = registry.getBlock(req.params.id);
-  if (!block) {
-    res.status(404).json({ error: 'Block not found' });
-    return;
-  }
-  res.json(block.getState());
-});
-
-app.post('/api/blocks/:id/:command', async (req, res) => {
-  const { id, command } = req.params;
-  const block = registry.getBlock(id);
-  if (!block) {
-    res.status(404).json({ error: 'Block not found' });
-    return;
-  }
-  try {
-    const result = await registry.execute(id, command, req.body.args || {});
-    res.json({ success: true, result });
-  } catch (err) {
-    res.status(400).json({ error: err instanceof Error ? err.message : String(err) });
-  }
+registerSystemRoutes(app, {
+  registry,
+  localImageMimeByExt: LOCAL_IMAGE_MIME_BY_EXT,
+  listKernelProviders,
+  upsertKernelProvider,
+  selectKernelProvider,
+  testKernelProvider,
 });
 
 app.get('/api/test/:id/state/:key', (req, res) => {
