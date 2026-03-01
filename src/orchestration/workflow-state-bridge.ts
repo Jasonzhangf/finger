@@ -8,6 +8,7 @@
  * 4. 维护状态快照供 UI 轮询
  */
 
+import type { WebSocket } from 'ws';
 import { globalEventBus } from '../runtime/event-bus.js';
 import { 
   WorkflowFSM, 
@@ -138,6 +139,7 @@ function handlePhaseTransition(event: any): void {
   // 广播到 WebSocket
   broadcastToWebSocket({
     type: 'workflow_update',
+    sessionId,
     payload: {
       workflowId: workflow.id,
       status: mapFSMToSimplified(payload.to as FSMWorkflowState),
@@ -178,6 +180,7 @@ function handleTaskEvent(eventType: string, event: any): void {
   // 广播到 WebSocket
   broadcastToWebSocket({
     type: 'task_update',
+    sessionId,
     payload: {
       workflowId: workflow.id,
       taskId: payload.taskId,
@@ -200,6 +203,7 @@ function handleAgentEvent(eventType: string, event: any): void {
   // 广播到 WebSocket
   broadcastToWebSocket({
     type: 'agent_update',
+    sessionId: event.sessionId,
     payload: {
       agentId,
       status: 'running',
