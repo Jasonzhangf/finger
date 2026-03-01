@@ -49,24 +49,18 @@ import {
   FINGER_REVIEWER_ALLOWED_TOOLS,
   ProcessChatCodexRunner,
   createFingerGeneralModule,
-  type ChatCodexKernelEvent,
-  type ChatCodexRunContext,
-  type ChatCodexRunResult,
-  type ChatCodexRunner,
-  type ChatCodexRunnerInterruptResult,
-  type ChatCodexRunnerSessionState,
-  type KernelInputItem,
   type ChatCodexLoopEvent,
 } from '../agents/finger-general/finger-general-module.js';
 import { mailbox } from './mailbox.js';
 import { BdTools } from '../agents/shared/bd-tools.js';
-import type { OutputModule } from '../orchestration/module-registry.js';
 import type { Attachment } from '../runtime/events.js';
 import { inputLockManager } from '../runtime/input-lock.js';
 import { createWebSocketServer } from './modules/websocket-server.js';
 import { createSessionWorkspaceManager } from './modules/session-workspaces.js';
 import { attachEventForwarding } from './modules/event-forwarding.js';
+import { createMockRuntimeKit, type ChatCodexRunnerController, type MockOutcome } from './modules/mock-runtime.js';
 import { registerSessionRoutes } from './routes/session.js';
+import { firstNonEmptyString } from './common/strings.js';
 import {
   extractSessionIdFromMessagePayload,
   extractMessageTextForSession,
@@ -118,6 +112,11 @@ const PRIMARY_ORCHESTRATOR_TARGET = (
   || PRIMARY_ORCHESTRATOR_GATEWAY_ID
 ).trim();
 const ALLOW_DIRECT_AGENT_ROUTE = process.env.FINGER_ALLOW_DIRECT_AGENT_ROUTE === '1';
+
+type WebSocketServerRuntime = ReturnType<typeof createWebSocketServer>;
+let wsClients: WebSocketServerRuntime['wsClients'];
+let wss: WebSocketServerRuntime['wss'];
+let broadcast: WebSocketServerRuntime['broadcast'] = () => {};
 
 function resolveBoolFlag(name: string, fallback: boolean): boolean {
   const raw = process.env[name];
@@ -216,510 +215,11 @@ function isObjectRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null;
 }
 
-interface MockDispatchAssertion {
-  id: string;
-  timestamp: string;
-  agentId: string;
-  agentRole: 'executor' | 'reviewer' | 'searcher';
-  sessionId?: string;
-  workflowId?: string;
-  taskId?: string;
-  content: string;
-  payload: unknown;
-  result: {
-    ok: boolean;
-    summary: string;
-  };
-}
-
-const mockDispatchAssertions: MockDispatchAssertion[] = [];
-const MAX_MOCK_ASSERTIONS = 400;
-type MockAgentRole = 'executor' | 'reviewer' | 'searcher';
-type MockOutcome = 'success' | 'failure';
-
-function parseMockOutcome(raw: string | undefined): MockOutcome {
-  const normalized = (raw ?? '').trim().toLowerCase();
-  return normalized === 'failure' || normalized === 'fail' || normalized === 'error'
-    ? 'failure'
-    : 'success';
-}
-
-const mockRolePolicy: Record<MockAgentRole, MockOutcome> = {
-  executor: parseMockOutcome(process.env.FINGER_MOCK_EXECUTOR_OUTCOME),
-  reviewer: parseMockOutcome(process.env.FINGER_MOCK_REVIEWER_OUTCOME),
-  searcher: parseMockOutcome(process.env.FINGER_MOCK_SEARCHER_OUTCOME),
-};
-
 let activeOrchestrationReviewPolicy: OrchestrationReviewPolicy = { enabled: false };
-
-function firstNonEmptyString(...values: unknown[]): string | undefined {
-  for (const value of values) {
-    if (typeof value !== 'string') continue;
-    const trimmed = value.trim();
-    if (trimmed.length === 0) continue;
-    return trimmed;
-  }
-  return undefined;
-}
-
-interface AgentDispatchResultLike {
-  ok: boolean;
-  dispatchId: string;
-  status: 'queued' | 'completed' | 'failed';
-  result?: unknown;
-  error?: string;
-  queuePosition?: number;
-}
-
-type DispatchTaskLike = (input: {
-  sourceAgentId: string;
-  targetAgentId: string;
-  task: unknown;
-  sessionId?: string;
-  workflowId?: string;
-  blocking?: boolean;
-  queueOnBusy?: boolean;
-  metadata?: Record<string, unknown>;
-}) => Promise<AgentDispatchResultLike>;
-
-type ChatCodexRunnerController = ChatCodexRunner & {
-  listSessionStates(sessionId?: string, providerId?: string): ChatCodexRunnerSessionState[];
-  interruptSession(sessionId: string, providerId?: string): ChatCodexRunnerInterruptResult[];
-};
 
 function shouldUseMockChatCodexRunner(): boolean {
   return ENABLE_FULL_MOCK_MODE;
 }
-
-class MockChatCodexRunner implements ChatCodexRunnerController {
-  private readonly dispatchTask: DispatchTaskLike;
-  private readonly sessions = new Map<string, { sessionId: string; providerId: string }>();
-
-  constructor(dispatchTask: DispatchTaskLike) {
-    this.dispatchTask = dispatchTask;
-  }
-
-  async runTurn(text: string, _items?: KernelInputItem[], context?: ChatCodexRunContext): Promise<ChatCodexRunResult> {
-    const sessionId = typeof context?.sessionId === 'string' && context.sessionId.trim().length > 0
-      ? context.sessionId.trim()
-      : 'mock-session';
-    const metadata = isObjectRecord(context?.metadata) ? context.metadata : {};
-    const roleProfile = firstNonEmptyString(
-      metadata.roleProfile,
-      metadata.role_profile,
-      metadata.contextLedgerRole,
-      metadata.context_ledger_role,
-      metadata.role,
-    ) ?? 'orchestrator';
-    const workflowId = firstNonEmptyString(metadata.workflowId, metadata.workflow_id) ?? `wf-mock-${Date.now()}`;
-    const content = text.trim().length > 0 ? text.trim() : '[empty input]';
-    const turnId = `mock-turn-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-
-    this.sessions.set(sessionId, { sessionId, providerId: 'mock' });
-
-    const normalizedRole = roleProfile.trim().toLowerCase();
-    if (!normalizedRole.includes('orchestr') && normalizedRole !== 'general') {
-      return this.runRoleTurn(normalizedRole, {
-        sessionId,
-        workflowId,
-        content,
-        turnId,
-        historyCount: Array.isArray(context?.history) ? context.history.length : 0,
-      });
-    }
-
-    const searchTask = {
-      description: `research: ${content}`,
-      content,
-      text: content,
-      sessionId,
-      workflowId,
-      taskId: `task-research-${Date.now()}`,
-      metadata: {
-        role: 'searcher',
-        source: 'finger-general-mock-runner',
-      },
-    };
-    const searchDispatch = await this.dispatch(FINGER_RESEARCHER_AGENT_ID, searchTask, sessionId, workflowId, 'searcher');
-
-    const executorTask = {
-      description: `execute: ${content}`,
-      content,
-      text: content,
-      sessionId,
-      workflowId,
-      taskId: `task-executor-${Date.now()}`,
-      metadata: {
-        role: 'executor',
-        source: 'finger-general-mock-runner',
-        research: searchDispatch.result,
-      },
-    };
-    const executorDispatch = await this.dispatch(FINGER_EXECUTOR_AGENT_ID, executorTask, sessionId, workflowId, 'executor');
-
-    const reviewerTask = {
-      description: `review: ${content}`,
-      content,
-      text: content,
-      sessionId,
-      workflowId,
-      taskId: `task-review-${Date.now()}`,
-      metadata: {
-        role: 'reviewer',
-        source: 'finger-general-mock-runner',
-        claims: executorDispatch.result,
-        evidence: executorDispatch.result,
-      },
-    };
-    const reviewerDispatch = await this.dispatch(FINGER_REVIEWER_AGENT_ID, reviewerTask, sessionId, workflowId, 'reviewer');
-
-    const reviewerResult = isObjectRecord(reviewerDispatch.result) ? reviewerDispatch.result : {};
-    const reviewerPassed = reviewerResult.passed === true || reviewerResult.reviewDecision === 'pass';
-    const reply = reviewerPassed
-      ? `[mock runner] 执行完成: ${content}`
-      : `[mock runner] 需要重试: ${content}`;
-
-    const kernelMetadata: Record<string, unknown> = {
-      stop_reason: reviewerPassed ? 'mock_pass' : 'mock_retry',
-      pendingInputAccepted: false,
-      tool_trace: [
-        {
-          seq: 1,
-          call_id: searchDispatch.dispatchId,
-          tool: `agent.dispatch.${FINGER_RESEARCHER_AGENT_ID}`,
-          status: searchDispatch.ok ? 'ok' : 'error',
-          input: searchTask,
-          ...(searchDispatch.ok ? { output: searchDispatch.result } : { error: searchDispatch.error ?? 'dispatch failed' }),
-        },
-        {
-          seq: 2,
-          call_id: executorDispatch.dispatchId,
-          tool: `agent.dispatch.${FINGER_EXECUTOR_AGENT_ID}`,
-          status: executorDispatch.ok ? 'ok' : 'error',
-          input: executorTask,
-          ...(executorDispatch.ok ? { output: executorDispatch.result } : { error: executorDispatch.error ?? 'dispatch failed' }),
-        },
-        {
-          seq: 3,
-          call_id: reviewerDispatch.dispatchId,
-          tool: `agent.dispatch.${FINGER_REVIEWER_AGENT_ID}`,
-          status: reviewerDispatch.ok ? 'ok' : 'error',
-          input: reviewerTask,
-          ...(reviewerDispatch.ok ? { output: reviewerDispatch.result } : { error: reviewerDispatch.error ?? 'dispatch failed' }),
-        },
-      ],
-      round_trace: [
-        {
-          seq: 1,
-          round: 1,
-          function_calls_count: 3,
-          reasoning_count: 1,
-          history_items_count: Array.isArray(context?.history) ? context.history.length : 0,
-          has_output_text: true,
-          finish_reason: reviewerPassed ? 'completed' : 'review_retry',
-          response_status: reviewerPassed ? 'success' : 'retry',
-        },
-      ],
-      dispatches: {
-        searcher: searchDispatch,
-        executor: executorDispatch,
-        reviewer: reviewerDispatch,
-      },
-    };
-
-    const events: ChatCodexKernelEvent[] = [
-      {
-        id: turnId,
-        msg: {
-          type: 'task_started',
-          message: 'mock runner started',
-          model_context_window: 128000,
-        },
-      },
-      {
-        id: turnId,
-        msg: {
-          type: 'model_round',
-          round: 1,
-          function_calls_count: 3,
-          reasoning_count: 1,
-          has_output_text: true,
-          finish_reason: reviewerPassed ? 'completed' : 'review_retry',
-          response_status: reviewerPassed ? 'success' : 'retry',
-        },
-      },
-      {
-        id: turnId,
-        msg: {
-          type: 'task_complete',
-          last_agent_message: reply,
-          metadata_json: JSON.stringify(kernelMetadata),
-        },
-      },
-    ];
-
-    return {
-      reply,
-      events,
-      usedBinaryPath: 'mock://finger-general-runner',
-      kernelMetadata,
-    };
-  }
-
-  private async runRoleTurn(
-    roleProfile: string,
-    input: {
-      sessionId: string;
-      workflowId: string;
-      content: string;
-      turnId: string;
-      historyCount: number;
-    },
-  ): Promise<ChatCodexRunResult> {
-    if (roleProfile.includes('review')) {
-      const reply = `[mock reviewer] reviewed: ${input.content}`;
-      return {
-        reply,
-        events: [
-          {
-            id: input.turnId,
-            msg: {
-              type: 'task_complete',
-              last_agent_message: reply,
-              metadata_json: JSON.stringify({
-                stop_reason: 'mock_reviewer_pass',
-                pendingInputAccepted: false,
-                round_trace: [{
-                  seq: 1,
-                  round: 1,
-                  function_calls_count: 0,
-                  reasoning_count: 1,
-                  history_items_count: input.historyCount,
-                  has_output_text: true,
-                  finish_reason: 'completed',
-                  response_status: 'success',
-                }],
-              }),
-            },
-          },
-        ],
-        usedBinaryPath: 'mock://finger-general-runner',
-      };
-    }
-
-    if (roleProfile.includes('search') || roleProfile.includes('research')) {
-      const reply = `[mock researcher] summary for: ${input.content}`;
-      return {
-        reply,
-        events: [
-          {
-            id: input.turnId,
-            msg: {
-              type: 'task_complete',
-              last_agent_message: reply,
-              metadata_json: JSON.stringify({
-                stop_reason: 'mock_search_done',
-                pendingInputAccepted: false,
-                round_trace: [{
-                  seq: 1,
-                  round: 1,
-                  function_calls_count: 0,
-                  reasoning_count: 1,
-                  history_items_count: input.historyCount,
-                  has_output_text: true,
-                  finish_reason: 'completed',
-                  response_status: 'success',
-                }],
-              }),
-            },
-          },
-        ],
-        usedBinaryPath: 'mock://finger-general-runner',
-      };
-    }
-
-    const reply = `[mock executor] completed: ${input.content}`;
-    return {
-      reply,
-      events: [
-        {
-          id: input.turnId,
-          msg: {
-            type: 'task_complete',
-            last_agent_message: reply,
-            metadata_json: JSON.stringify({
-              stop_reason: 'mock_executor_done',
-              pendingInputAccepted: false,
-              round_trace: [{
-                seq: 1,
-                round: 1,
-                function_calls_count: 0,
-                reasoning_count: 1,
-                history_items_count: input.historyCount,
-                has_output_text: true,
-                finish_reason: 'completed',
-                response_status: 'success',
-              }],
-            }),
-          },
-        },
-      ],
-      usedBinaryPath: 'mock://finger-general-runner',
-    };
-  }
-
-  listSessionStates(sessionId?: string, providerId?: string): ChatCodexRunnerSessionState[] {
-    const normalizedSessionId = typeof sessionId === 'string' ? sessionId.trim() : '';
-    const normalizedProviderId = typeof providerId === 'string' ? providerId.trim() : '';
-    const states: ChatCodexRunnerSessionState[] = [];
-    for (const session of this.sessions.values()) {
-      if (normalizedSessionId.length > 0 && session.sessionId !== normalizedSessionId) continue;
-      if (normalizedProviderId.length > 0 && session.providerId !== normalizedProviderId) continue;
-      states.push({
-        sessionKey: `${session.sessionId}::provider=${session.providerId}`,
-        sessionId: session.sessionId,
-        providerId: session.providerId,
-        hasActiveTurn: false,
-      });
-    }
-    return states;
-  }
-
-  interruptSession(sessionId: string, providerId?: string): ChatCodexRunnerInterruptResult[] {
-    const normalizedSessionId = sessionId.trim();
-    if (normalizedSessionId.length === 0) return [];
-    const normalizedProviderId = typeof providerId === 'string' ? providerId.trim() : '';
-    const session = this.sessions.get(normalizedSessionId);
-    if (!session) return [];
-    if (normalizedProviderId.length > 0 && session.providerId !== normalizedProviderId) return [];
-    this.sessions.delete(normalizedSessionId);
-    return [{
-      sessionKey: `${session.sessionId}::provider=${session.providerId}`,
-      sessionId: session.sessionId,
-      providerId: session.providerId,
-      hadActiveTurn: false,
-      interrupted: false,
-    }];
-  }
-
-  private async dispatch(
-    targetAgentId: string,
-    task: Record<string, unknown>,
-    sessionId: string,
-    workflowId: string,
-    role: MockAgentRole,
-  ): Promise<AgentDispatchResultLike> {
-    try {
-      return await this.dispatchTask({
-        sourceAgentId: PRIMARY_ORCHESTRATOR_AGENT_ID,
-        targetAgentId,
-        task,
-        sessionId,
-        workflowId,
-        blocking: true,
-        queueOnBusy: true,
-        metadata: {
-          role,
-          source: 'finger-general-mock-runner',
-        },
-      });
-    } catch (error) {
-      return {
-        ok: false,
-        dispatchId: `dispatch-${targetAgentId}-${Date.now()}-error`,
-        status: 'failed',
-        error: error instanceof Error ? error.message : String(error),
-      };
-    }
-  }
-}
-
-class AdaptiveChatCodexRunner implements ChatCodexRunnerController {
-  private readonly realRunner: ProcessChatCodexRunner;
-  private readonly mockRunner: MockChatCodexRunner;
-  private readonly shouldUseMock: () => boolean;
-
-  constructor(realRunner: ProcessChatCodexRunner, mockRunner: MockChatCodexRunner, shouldUseMock: () => boolean) {
-    this.realRunner = realRunner;
-    this.mockRunner = mockRunner;
-    this.shouldUseMock = shouldUseMock;
-  }
-
-  runTurn(text: string, items?: KernelInputItem[], context?: ChatCodexRunContext): Promise<ChatCodexRunResult> {
-    return (this.shouldUseMock() ? this.mockRunner : this.realRunner).runTurn(text, items, context);
-  }
-
-  listSessionStates(sessionId?: string, providerId?: string): ChatCodexRunnerSessionState[] {
-    return (this.shouldUseMock() ? this.mockRunner : this.realRunner).listSessionStates(sessionId, providerId);
-  }
-
-  interruptSession(sessionId: string, providerId?: string): ChatCodexRunnerInterruptResult[] {
-    return (this.shouldUseMock() ? this.mockRunner : this.realRunner).interruptSession(sessionId, providerId);
-  }
-}
-
-function pickMessageContext(
-  message: unknown,
-): {
-  sessionId?: string;
-  workflowId?: string;
-  taskId?: string;
-  content: string;
-  assignment?: Record<string, unknown>;
-} {
-  const record = isObjectRecord(message) ? message : {};
-  const metadata = isObjectRecord(record.metadata) ? record.metadata : {};
-  const assignment = isObjectRecord(metadata.assignment) ? metadata.assignment : undefined;
-  const sessionId = firstNonEmptyString(record.sessionId, record.session_id, metadata.sessionId, metadata.session_id);
-  const workflowId = firstNonEmptyString(record.workflowId, record.workflow_id, metadata.workflowId, metadata.workflow_id);
-  const taskId = firstNonEmptyString(record.taskId, record.task_id, metadata.taskId, metadata.task_id, assignment?.taskId, assignment?.task_id);
-  const content = firstNonEmptyString(record.description, record.text, record.content, taskId) ?? '[empty task]';
-  return {
-    ...(sessionId ? { sessionId } : {}),
-    ...(workflowId ? { workflowId } : {}),
-    ...(taskId ? { taskId } : {}),
-    content,
-    ...(assignment ? { assignment } : {}),
-  };
-}
-
-function recordMockDispatchAssertion(input: {
-  agentId: string;
-  agentRole: MockAgentRole;
-  message: unknown;
-  result: { ok: boolean; summary: string };
-}): MockDispatchAssertion {
-  const timestamp = new Date().toISOString();
-  const context = pickMessageContext(input.message);
-  const assertion: MockDispatchAssertion = {
-    id: `assert-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-    timestamp,
-    agentId: input.agentId,
-    agentRole: input.agentRole,
-    ...(context.sessionId ? { sessionId: context.sessionId } : {}),
-    ...(context.workflowId ? { workflowId: context.workflowId } : {}),
-    ...(context.taskId ? { taskId: context.taskId } : {}),
-    content: context.content,
-    payload: input.message,
-    result: input.result,
-  };
-
-  mockDispatchAssertions.push(assertion);
-  while (mockDispatchAssertions.length > MAX_MOCK_ASSERTIONS) {
-    mockDispatchAssertions.shift();
-  }
-
-  broadcast({
-    type: 'agent_runtime_mock_assertion',
-    sessionId: assertion.sessionId ?? 'default',
-    agentId: assertion.agentId,
-    timestamp,
-    payload: assertion,
-  });
-
-  return assertion;
-}
-
 
 async function isPortInUse(port: number): Promise<boolean> {
   return new Promise((resolve) => {
@@ -946,9 +446,21 @@ const processChatCodexRunner = new ProcessChatCodexRunner({
     agentId: FINGER_GENERAL_AGENT_ID,
   },
 });
-const mockChatCodexRunner = new MockChatCodexRunner(dispatchTaskToAgent);
-const chatCodexRunner: ChatCodexRunnerController = new AdaptiveChatCodexRunner(
-  processChatCodexRunner,
+const mockRuntimeKit = createMockRuntimeKit({
+  dispatchTask: dispatchTaskToAgent,
+  eventBus: globalEventBus,
+  sessionManager,
+  getBroadcast: () => broadcast,
+  primaryOrchestratorAgentId: PRIMARY_ORCHESTRATOR_AGENT_ID,
+  agentIds: {
+    researcher: FINGER_RESEARCHER_AGENT_ID,
+    executor: FINGER_EXECUTOR_AGENT_ID,
+    reviewer: FINGER_REVIEWER_AGENT_ID,
+  },
+});
+const mockChatCodexRunner = mockRuntimeKit.createMockChatCodexRunner();
+const chatCodexRunner: ChatCodexRunnerController = mockRuntimeKit.createAdaptiveChatCodexRunner(
+  processChatCodexRunner as unknown as ChatCodexRunnerController,
   mockChatCodexRunner,
   shouldUseMockChatCodexRunner,
 );
@@ -1040,155 +552,9 @@ await agentRuntimeBlock.start();
 const agentRuntimeTools = registerAgentRuntimeTools();
 console.log(`[Server] Agent runtime tools loaded: ${agentRuntimeTools.join(', ')}`);
 
-const createMockRuntimeRoleModule = (params: {
-  id: string;
-  name: string;
-  role: MockAgentRole;
-}): OutputModule => ({
-  id: params.id,
-  type: 'output',
-  name: params.name,
-  version: '1.0.0',
-  metadata: {
-    role: params.role,
-    type: `${params.role}-agent`,
-    mode: 'mock',
-    provider: 'mock',
-  },
-  handle: async (message: unknown, callback?: (result: unknown) => void) => {
-    const taskPayload = isObjectRecord(message) && message.task !== undefined ? message.task : message;
-    const context = pickMessageContext(taskPayload);
-    const timestamp = new Date().toISOString();
-    const outcome = mockRolePolicy[params.role];
-    const ok = outcome === 'success';
-    const runStatus = ok ? 'ok' : 'error';
-
-    void globalEventBus.emit({
-      type: 'agent_runtime_status',
-      sessionId: context.sessionId ?? 'default',
-      agentId: params.id,
-      timestamp,
-      payload: {
-        scope: context.workflowId ? 'workflow' : 'session',
-        status: runStatus,
-        ...(context.workflowId ? { workflowId: context.workflowId } : {}),
-        runningAgents: [params.id],
-      },
-    });
-
-    let result: Record<string, unknown>;
-    if (params.role === 'reviewer') {
-      result = ok
-        ? {
-            success: true,
-            reviewDecision: 'pass',
-            passed: true,
-            summary: `[mock:reviewer] approved ${context.taskId ?? context.content}`,
-          }
-        : {
-            success: true,
-            reviewDecision: 'retry',
-            passed: false,
-            comments: `[mock:reviewer] forced retry for ${context.taskId ?? context.content}`,
-            summary: `[mock:reviewer] retry ${context.taskId ?? context.content}`,
-          };
-    } else if (params.role === 'searcher') {
-      result = ok
-        ? {
-            success: true,
-            taskId: context.taskId,
-            summary: `[mock:searcher] summary for ${context.taskId ?? context.content}`,
-            artifacts: {
-              summaryPath: `mock://${params.id}/summary.md`,
-              memoryPath: `mock://${params.id}/memory.jsonl`,
-            },
-          }
-        : {
-            success: false,
-            taskId: context.taskId,
-            error: `[mock:searcher] forced failure for ${context.taskId ?? context.content}`,
-          };
-    } else {
-      result = ok
-        ? {
-            success: true,
-            taskId: context.taskId,
-            output: `[mock:executor] completed ${context.content}`,
-          }
-        : {
-            success: false,
-            taskId: context.taskId,
-            error: `[mock:executor] forced failure for ${context.content}`,
-          };
-    }
-    const summary = ok
-      ? `[mock:${params.role}] success ${context.taskId ?? context.content}`
-      : `[mock:${params.role}] failure ${context.taskId ?? context.content}`;
-    recordMockDispatchAssertion({
-      agentId: params.id,
-      agentRole: params.role,
-      message: taskPayload,
-      result: { ok, summary },
-    });
-
-    void globalEventBus.emit({
-      type: 'agent_runtime_status',
-      sessionId: context.sessionId ?? 'default',
-      agentId: params.id,
-      timestamp: new Date().toISOString(),
-      payload: {
-        scope: context.workflowId ? 'workflow' : 'session',
-        status: runStatus,
-        ...(context.workflowId ? { workflowId: context.workflowId } : {}),
-        runningAgents: [],
-      },
-    });
-
-    if (callback) callback(result);
-    return result;
-  },
-});
-
-const DEBUG_RUNTIME_MODULE_IDS = ['executor-debug-agent', 'reviewer-debug-agent', 'searcher-debug-agent'] as const;
-
-async function ensureDebugRuntimeModules(enabled: boolean): Promise<void> {
-  const executorId = 'executor-debug-agent';
-  const reviewerId = 'reviewer-debug-agent';
-  const searcherId = 'searcher-debug-agent';
-  if (enabled) {
-    if (!moduleRegistry.getModule(executorId)) {
-      await moduleRegistry.register(createMockRuntimeRoleModule({
-        id: executorId,
-        name: 'Executor Debug Agent',
-        role: 'executor',
-      }));
-      console.log('[Server] Debug Executor module registered: executor-debug-agent');
-    }
-    if (!moduleRegistry.getModule(reviewerId)) {
-      await moduleRegistry.register(createMockRuntimeRoleModule({
-        id: reviewerId,
-        name: 'Reviewer Debug Agent',
-        role: 'reviewer',
-      }));
-      console.log('[Server] Debug Reviewer module registered: reviewer-debug-agent');
-    }
-    if (!moduleRegistry.getModule(searcherId)) {
-      await moduleRegistry.register(createMockRuntimeRoleModule({
-        id: searcherId,
-        name: 'Searcher Debug Agent',
-        role: 'searcher',
-      }));
-      console.log('[Server] Debug Searcher module registered: searcher-debug-agent');
-    }
-    return;
-  }
-
-  for (const moduleId of DEBUG_RUNTIME_MODULE_IDS) {
-    if (!moduleRegistry.getModule(moduleId)) continue;
-    await moduleRegistry.unregister(moduleId);
-    console.log(`[Server] Debug module unregistered: ${moduleId}`);
-  }
-}
+const { mockRolePolicy, debugRuntimeModuleIds: DEBUG_RUNTIME_MODULE_IDS } = mockRuntimeKit;
+const createMockRuntimeRoleModule = mockRuntimeKit.createMockRuntimeRoleModule;
+const ensureDebugRuntimeModules = (enabled: boolean) => mockRuntimeKit.ensureDebugRuntimeModules(enabled, moduleRegistry);
 
 if (ENABLE_MOCK_EXECUTOR) {
   const executorMock = createMockRuntimeRoleModule({
@@ -1582,7 +948,7 @@ app.post('/api/v1/mailbox/clear', (_req, res) => {
 
 // WebSocket server for real-time updates
 const wsPort = process.env.WS_PORT ? parseInt(process.env.WS_PORT, 10) : 9998;
-const { wss, wsClients, broadcast } = createWebSocketServer({
+({ wss, wsClients, broadcast } = createWebSocketServer({
   port: wsPort,
   serverPort: PORT,
   eventBus: globalEventBus,
@@ -1590,7 +956,7 @@ const { wss, wsClients, broadcast } = createWebSocketServer({
   inputLockManager,
   registerStateBridgeClient: registerWebSocketClient,
   unregisterStateBridgeClient: unregisterWebSocketClient,
-});
+}));
 // ========== Session Data API ==========
 registerSessionRoutes(app, {
   sessionManager,
@@ -2884,7 +2250,7 @@ app.post('/api/v1/agents/debug/mock-policy', (req, res) => {
 });
 
 app.post('/api/v1/agents/debug/assertions/clear', (_req, res) => {
-  mockDispatchAssertions.splice(0, mockDispatchAssertions.length);
+  mockRuntimeKit.clearMockDispatchAssertions();
   res.json({
     success: true,
     count: 0,
@@ -2898,12 +2264,12 @@ app.get('/api/v1/agents/debug/assertions', (req, res) => {
   const limitRaw = typeof req.query.limit === 'string' ? Number(req.query.limit) : NaN;
   const limit = Number.isFinite(limitRaw) ? Math.max(1, Math.min(200, Math.floor(limitRaw))) : 100;
 
-  const filtered = mockDispatchAssertions
-    .filter((item) => (agentId ? item.agentId === agentId : true))
-    .filter((item) => (workflowId ? item.workflowId === workflowId : true))
-    .filter((item) => (sessionId ? item.sessionId === sessionId : true))
-    .slice(-limit)
-    .reverse();
+  const filtered = mockRuntimeKit.listMockDispatchAssertions({
+    agentId,
+    workflowId,
+    sessionId,
+    limit,
+  });
 
   res.json({
     success: true,
