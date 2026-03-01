@@ -61,10 +61,11 @@ import {
 import { mailbox } from './mailbox.js';
 import { BdTools } from '../agents/shared/bd-tools.js';
 import type { OutputModule } from '../orchestration/module-registry.js';
-import type { Attachment, ToolCallEvent, ToolResultEvent, ToolErrorEvent, AgentStepCompletedEvent } from '../runtime/events.js';
+import type { Attachment } from '../runtime/events.js';
 import { inputLockManager } from '../runtime/input-lock.js';
 import { createWebSocketServer } from './modules/websocket-server.js';
 import { createSessionWorkspaceManager } from './modules/session-workspaces.js';
+import { attachEventForwarding } from './modules/event-forwarding.js';
 import { registerSessionRoutes } from './routes/session.js';
 import {
   extractSessionIdFromMessagePayload,
@@ -209,15 +210,7 @@ function writeMessageErrorSample(payload: Record<string, unknown>): void {
   }
 }
 
-interface LoopToolTraceItem {
-  callId?: string;
-  tool: string;
-  status: 'ok' | 'error';
-  input?: unknown;
-  output?: unknown;
-  error?: string;
-  durationMs?: number;
-}
+let emitLoopEventToEventBus: (event: ChatCodexLoopEvent) => void = () => {};
 
 function isObjectRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null;
@@ -716,7 +709,7 @@ function recordMockDispatchAssertion(input: {
     mockDispatchAssertions.shift();
   }
 
-  broadcastWsMessage({
+  broadcast({
     type: 'agent_runtime_mock_assertion',
     sessionId: assertion.sessionId ?? 'default',
     agentId: assertion.agentId,
@@ -727,128 +720,6 @@ function recordMockDispatchAssertion(input: {
   return assertion;
 }
 
-function extractLoopToolTrace(raw: unknown): LoopToolTraceItem[] {
-  if (!Array.isArray(raw)) return [];
-  const items: LoopToolTraceItem[] = [];
-  for (const entry of raw) {
-    if (!isObjectRecord(entry)) continue;
-    const tool = typeof entry.tool === 'string' ? entry.tool.trim() : '';
-    if (!tool) continue;
-    const status: LoopToolTraceItem['status'] = entry.status === 'error' ? 'error' : 'ok';
-    const callId = typeof entry.callId === 'string' && entry.callId.trim().length > 0
-      ? entry.callId.trim()
-      : typeof entry.call_id === 'string' && entry.call_id.trim().length > 0
-        ? entry.call_id.trim()
-        : undefined;
-    const error = typeof entry.error === 'string' && entry.error.trim().length > 0 ? entry.error.trim() : undefined;
-    const durationMs = typeof entry.durationMs === 'number' && Number.isFinite(entry.durationMs)
-      ? Math.round(entry.durationMs)
-      : typeof entry.duration_ms === 'number' && Number.isFinite(entry.duration_ms)
-        ? Math.round(entry.duration_ms)
-        : undefined;
-    items.push({
-      ...(callId ? { callId } : {}),
-      tool,
-      status,
-      ...(entry.input !== undefined ? { input: entry.input } : {}),
-      ...(entry.output !== undefined ? { output: entry.output } : {}),
-      ...(error ? { error } : {}),
-      ...(durationMs !== undefined ? { durationMs } : {}),
-    });
-  }
-  return items;
-}
-
-function broadcastWsMessage(message: Record<string, unknown>): void {
-  const encoded = JSON.stringify(message);
-  for (const client of wsClients) {
-    if (client.readyState === 1) {
-      client.send(encoded);
-    }
-  }
-}
-
-function emitToolStepEventsFromLoopEvent(event: ChatCodexLoopEvent): void {
-  if (event.phase !== 'kernel_event') return;
-  // finger-general module already emits realtime tool events (or synthetic recovery events
-  // when realtime events are missing). Keep legacy fallback disabled by default to
-  // avoid duplicate tool_result/tool_error entries in UI.
-  if (event.payload.enableLegacyToolTraceFallback !== true) return;
-  const eventType = typeof event.payload.type === 'string' ? event.payload.type : '';
-  if (eventType !== 'task_complete') return;
-  if (event.payload.syntheticToolEvents === true || event.payload.realtimeToolEvents === true) return;
-
-  const toolTrace = extractLoopToolTrace(event.payload.toolTrace);
-  if (toolTrace.length === 0) return;
-
-  const base = Date.parse(event.timestamp);
-  const baseMs = Number.isFinite(base) ? base : Date.now();
-  for (let i = 0; i < toolTrace.length; i += 1) {
-    const trace = toolTrace[i];
-    const toolId = trace.callId ?? `${event.sessionId}-tool-${i + 1}`;
-    const resultTimestamp = new Date(baseMs + i * 2 + 1).toISOString();
-
-    if (trace.status === 'ok') {
-      broadcastWsMessage({
-        type: 'tool_result',
-        sessionId: event.sessionId,
-        agentId: FINGER_GENERAL_AGENT_ID,
-        timestamp: resultTimestamp,
-        payload: {
-          toolId,
-          toolName: trace.tool,
-          ...(trace.input !== undefined ? { input: trace.input } : {}),
-          ...(trace.output !== undefined ? { output: trace.output } : {}),
-          ...(typeof trace.durationMs === 'number' ? { duration: trace.durationMs } : {}),
-        },
-      });
-      continue;
-    }
-
-    broadcastWsMessage({
-      type: 'tool_error',
-      sessionId: event.sessionId,
-      agentId: FINGER_GENERAL_AGENT_ID,
-      timestamp: resultTimestamp,
-      payload: {
-        toolId,
-        toolName: trace.tool,
-        ...(trace.input !== undefined ? { input: trace.input } : {}),
-        error: trace.error ?? `工具执行失败：${trace.tool}`,
-        ...(typeof trace.durationMs === 'number' ? { duration: trace.durationMs } : {}),
-      },
-    });
-  }
-}
-
-function emitLoopEventToEventBus(event: ChatCodexLoopEvent): void {
-  if (!event.sessionId || event.sessionId === 'unknown') return;
-  emitToolStepEventsFromLoopEvent(event);
-
-  broadcastWsMessage({
-    type: 'chat_codex_turn',
-    sessionId: event.sessionId,
-    timestamp: event.timestamp,
-    payload: {
-      phase: event.phase,
-      ...event.payload,
-    },
-  });
-
-  if (event.phase === 'turn_error') {
-    void globalEventBus.emit({
-      type: 'system_error',
-      sessionId: event.sessionId,
-      timestamp: event.timestamp,
-      payload: {
-        error: typeof event.payload.error === 'string' ? event.payload.error : 'finger-general runner error',
-        component: 'finger-general-runner',
-        recoverable: true,
-      },
-    });
-    return;
-  }
-}
 
 async function isPortInUse(port: number): Promise<boolean> {
   return new Promise((resolve) => {
@@ -2362,7 +2233,7 @@ async function runBlockingAsk(request: AskToolRequest): Promise<{
     },
   });
 
-  broadcastWsMessage({
+  broadcast({
     type: 'user_question',
     payload: opened.pending,
     timestamp: new Date().toISOString(),
@@ -3860,319 +3731,17 @@ console.log('[Server] Performance monitoring enabled');
 // EventBus 订阅转发到 WebSocket
 // =============================================================================
 
-globalEventBus.subscribeMultiple(
-  ['task_started', 'task_completed', 'task_failed', 'workflow_progress', 'phase_transition'],
-  (event) => {
-    // 将 EventBus 事件转换为前端理解的 workflow_update 格式
-    const wsMsg = {
-      type: 'workflow_update',
-      sessionId: event.sessionId,
-      payload: {
-        workflowId: event.sessionId,
-        taskId: (event.payload as any)?.taskId,
-        status: event.type === 'task_completed' ? 'completed' : event.type === 'task_failed' ? 'failed' : 'executing',
-        orchestratorState: event.type === 'phase_transition' ? { round: (event.payload as any)?.round } : undefined,
-        taskUpdates: event.type === 'task_started' || event.type === 'task_completed' || event.type === 'task_failed' ? [{
-          id: (event.payload as any)?.taskId,
-          status: event.type === 'task_started' ? 'in_progress' : event.type === 'task_completed' ? 'completed' : 'failed',
-        }] : undefined,
-      },
-      timestamp: event.timestamp,
-    };
-    
-    const msg = JSON.stringify(wsMsg);
-    for (const client of wsClients) {
-      if (client.readyState === 1) {
-        client.send(msg);
-      }
-    }
-  }
-);
-
-console.log('[Server] EventBus subscription enabled: task_started, task_completed, task_failed, workflow_progress, phase_transition');
-
-// 转发 agent 执行事件到前端，确保对话面板可以看到 thought/action/observation
-// 使用 runtime-facade 与当前 finger runner 的事件类型
-globalEventBus.subscribeMultiple(
-  ['task_started', 'task_completed', 'task_failed', 'workflow_progress', 'phase_transition'],
-  (event) => {
-    const payload = event.payload as Record<string, unknown> | undefined;
-    const taskDetails = payload?.task || payload?.result;
-
-    // 当任务完成或失败时，将详细的 thought/action/observation 转发给前端
-    const wsMsg = {
-      type: 'agent_update',
-      sessionId: event.sessionId,
-      payload: {
-        agentId: (payload?.agentId as string | undefined) || event.sessionId,
-        status: event.type === 'task_completed' ? 'idle' : event.type === 'task_failed' ? 'error' : 'running',
-        currentTaskId: payload?.taskId as string | undefined,
-        load: ((payload?.progress as number | undefined) ?? 0),
-        step: {
-          round: (payload?.round as number | undefined) ?? 1,
-          thought: (taskDetails as any)?.thought,
-          action: (taskDetails as any)?.action,
-          observation: (taskDetails as any)?.observation || (taskDetails as any)?.result,
-          success: event.type !== 'task_failed',
-          timestamp: event.timestamp,
-        },
-      },
-      timestamp: event.timestamp,
-    };
-
-    const msg = JSON.stringify(wsMsg);
-    for (const client of wsClients) {
-      if (client.readyState === 1) {
-        client.send(msg);
-      }
-    }
-  }
-);
-
-globalEventBus.subscribeMultiple(
-  ['task_started', 'task_completed', 'task_failed', 'workflow_progress', 'phase_transition'],
-  (event) => {
-    const payload = event.payload as Record<string, unknown> | undefined;
-    const step = (payload?.step as Record<string, unknown> | undefined) ?? {};
-
-    const wsMsg = {
-      type: 'agent_update',
-      sessionId: event.sessionId,
-      payload: {
-        agentId: (payload?.agentId as string | undefined) || event.sessionId,
-        status: (payload?.status as string | undefined) || 'running',
-        currentTaskId: payload?.taskId as string | undefined,
-        load: ((payload?.load as number | undefined) ?? (payload?.progress as number | undefined) ?? 0),
-        step: {
-          round: ((payload?.round as number | undefined) ?? (step.round as number | undefined) ?? 1),
-          action: (payload?.action as string | undefined) || (step.action as string | undefined),
-          thought: (payload?.thought as string | undefined) || (step.thought as string | undefined),
-          observation: (payload?.observation as string | undefined) || (step.observation as string | undefined),
-          params: (payload?.params as Record<string, unknown> | undefined) || (step.params as Record<string, unknown> | undefined),
-          success: (payload?.success as boolean | undefined) !== false,
-          timestamp: event.timestamp,
-        },
-      },
-      timestamp: event.timestamp,
-    };
-
-    const msg = JSON.stringify(wsMsg);
-    for (const client of wsClients) {
-      if (client.readyState === 1) {
-        client.send(msg);
-      }
-    }
-  }
-);
-
-console.log('[Server] EventBus agent forwarding enabled: agent_thought, agent_action, agent_observation, agent_step_completed');
-
-type SessionEventRecord = {
-  type: 'tool_call' | 'tool_result' | 'tool_error' | 'agent_step';
-  agentId?: string;
-  toolName?: string;
-  toolStatus?: 'success' | 'error';
-  toolDurationMs?: number;
-  toolInput?: unknown;
-  toolOutput?: unknown;
-  metadata?: Record<string, unknown>;
-};
-
-function persistSessionEventMessage(
-  sessionId: string,
-  content: string,
-  detail: SessionEventRecord,
-): void {
-  if (!sessionId || sessionId.trim().length === 0) return;
-  sessionManager.addMessage(sessionId, 'system', content, detail);
-}
-
-function buildAgentStepContent(payload: AgentStepCompletedEvent['payload']): string {
-  const parts: string[] = [];
-  if (typeof payload.thought === 'string' && payload.thought.trim().length > 0) {
-    parts.push(`思考: ${payload.thought.trim()}`);
-  }
-  if (typeof payload.action === 'string' && payload.action.trim().length > 0) {
-    parts.push(`动作: ${payload.action.trim()}`);
-  }
-  if (typeof payload.observation === 'string' && payload.observation.trim().length > 0) {
-    parts.push(`观察: ${payload.observation.trim()}`);
-  }
-  if (parts.length === 0) {
-    return 'agent step 完成';
-  }
-  return parts.join('\n');
-}
-
-globalEventBus.subscribe('tool_call', (event) => {
-  if (event.type !== 'tool_call') return;
-  const toolEvent = event as ToolCallEvent;
-  const content = `调用工具: ${toolEvent.toolName}`;
-  persistSessionEventMessage(toolEvent.sessionId, content, {
-    type: 'tool_call',
-    agentId: toolEvent.agentId,
-    toolName: toolEvent.toolName,
-    toolInput: toolEvent.payload?.input,
-    metadata: { event: toolEvent },
-  });
+const forwarding = attachEventForwarding({
+  eventBus: globalEventBus,
+  broadcast,
+  sessionManager,
+  runtimeInstructionBus,
+  inferAgentRoleLabel,
+  formatDispatchResultContent,
+  asString,
+  generalAgentId: FINGER_GENERAL_AGENT_ID,
 });
-
-globalEventBus.subscribe('tool_result', (event) => {
-  if (event.type !== 'tool_result') return;
-  const toolEvent = event as ToolResultEvent;
-  const content = `工具完成: ${toolEvent.toolName}`;
-  persistSessionEventMessage(toolEvent.sessionId, content, {
-    type: 'tool_result',
-    agentId: toolEvent.agentId,
-    toolName: toolEvent.toolName,
-    toolStatus: 'success',
-    toolDurationMs: toolEvent.payload?.duration,
-    toolInput: toolEvent.payload?.input,
-    toolOutput: toolEvent.payload?.output,
-    metadata: { event: toolEvent },
-  });
-});
-
-globalEventBus.subscribe('tool_error', (event) => {
-  if (event.type !== 'tool_error') return;
-  const toolEvent = event as ToolErrorEvent;
-  const content = `工具失败: ${toolEvent.toolName}`;
-  persistSessionEventMessage(toolEvent.sessionId, content, {
-    type: 'tool_error',
-    agentId: toolEvent.agentId,
-    toolName: toolEvent.toolName,
-    toolStatus: 'error',
-    toolDurationMs: toolEvent.payload?.duration,
-    toolInput: toolEvent.payload?.input,
-    toolOutput: toolEvent.payload?.error,
-    metadata: { event: toolEvent },
-  });
-});
-
-globalEventBus.subscribe('agent_step_completed', (event) => {
-  if (event.type !== 'agent_step_completed') return;
-  const stepEvent = event as AgentStepCompletedEvent;
-  const content = buildAgentStepContent(stepEvent.payload);
-  persistSessionEventMessage(stepEvent.sessionId, content, {
-    type: 'agent_step',
-    agentId: stepEvent.agentId,
-    metadata: { event: stepEvent },
-  });
-});
-
-// 新增：监听 agent_step_completed 事件，包含详细 thought/action/observation
-globalEventBus.subscribe(
-  'agent_step_completed',
-  (event) => {
-    const payload = event.payload as Record<string, unknown> | undefined;
-
-    // 将 agent_step_completed 转换为前端理解的 agent_update 格式
-    const wsMsg = {
-      type: 'agent_update',
-      sessionId: event.sessionId,
-      payload: {
-        agentId: ('agentId' in event ? (event as { agentId?: string }).agentId : undefined) || event.sessionId,
-        status: (payload?.success as boolean) !== false ? 'running' : 'error',
-        currentTaskId: payload?.taskId as string | undefined,
-        load: 50,
-        step: {
-          round: (payload?.round as number | undefined) ?? 1,
-          thought: payload?.thought as string | undefined,
-          action: payload?.action as string | undefined,
-          observation: payload?.observation as string | undefined,
-          success: (payload?.success as boolean | undefined) !== false,
-          timestamp: event.timestamp,
-        },
-      },
-      timestamp: event.timestamp,
-    };
-
-    const msg = JSON.stringify(wsMsg);
-    for (const client of wsClients) {
-      if (client.readyState === 1) {
-        client.send(msg);
-      }
-    }
-  }
-);
-
-console.log('[Server] EventBus agent_step_completed forwarding enabled for detailed agent updates');
-
-globalEventBus.subscribe(
-  'agent_runtime_dispatch',
-  (event) => {
-    const payload = event.payload as Record<string, unknown>;
-    const status = typeof payload.status === 'string' ? payload.status : '';
-    const sessionId = asString(event.sessionId) || asString(payload.sessionId);
-    const targetAgentId = asString(payload.targetAgentId) ?? 'unknown-agent';
-    const agentRole = inferAgentRoleLabel(targetAgentId);
-    const assignment = isObjectRecord(payload.assignment) ? payload.assignment : null;
-    const queuePosition = typeof payload.queuePosition === 'number' ? payload.queuePosition : undefined;
-    const taskId = assignment && typeof assignment.taskId === 'string' ? assignment.taskId.trim() : '';
-    const bdTaskId = assignment && typeof assignment.bdTaskId === 'string' ? assignment.bdTaskId.trim() : '';
-    const statusLabel = status === 'queued' ? '排队' : status === 'completed' ? '完成' : status === 'failed' ? '失败' : status;
-    const dispatchParts = [
-      `派发给 ${agentRole}${targetAgentId ? ` (${targetAgentId})` : ''}`,
-      statusLabel ? `状态 ${statusLabel}` : '',
-      typeof queuePosition === 'number' ? `队列 #${queuePosition}` : '',
-      taskId ? `task ${taskId}` : '',
-      bdTaskId && !taskId ? `bd ${bdTaskId}` : '',
-    ].filter((part) => part.length > 0);
-    const dispatchContent = dispatchParts.join(' · ');
-    if (sessionId && dispatchContent.length > 0) {
-      sessionManager.addMessage(sessionId, 'system', dispatchContent, {
-        type: 'dispatch',
-        agentId: targetAgentId,
-        metadata: { event, agentRole },
-      });
-      if (status === 'completed' || status === 'failed') {
-        const resultContent = formatDispatchResultContent(payload.result, asString(payload.error));
-        if (resultContent.trim().length > 0) {
-          sessionManager.addMessage(sessionId, 'assistant', resultContent, {
-            type: 'dispatch',
-            agentId: targetAgentId,
-            metadata: { event, agentRole },
-          });
-        }
-      }
-    }
-    if (status !== 'completed' && status !== 'failed') return;
-    if (!assignment) return;
-
-    const feedback = {
-      role: 'user',
-      from: typeof payload.targetAgentId === 'string' ? payload.targetAgentId : 'unknown-assignee',
-      status: status === 'completed' ? 'complete' : 'error',
-      dispatchId: typeof payload.dispatchId === 'string' ? payload.dispatchId : '',
-      task: typeof assignment.taskId === 'string' ? assignment.taskId : undefined,
-      sourceAgentId: typeof payload.sourceAgentId === 'string' ? payload.sourceAgentId : undefined,
-      assignment,
-      ...(payload.result !== undefined ? { result: payload.result } : {}),
-      ...(typeof payload.error === 'string' && payload.error.trim().length > 0 ? { error: payload.error } : {}),
-    };
-    const feedbackText = JSON.stringify(feedback);
-    const workflowId = typeof payload.workflowId === 'string' && payload.workflowId.trim().length > 0
-      ? payload.workflowId.trim()
-      : undefined;
-    const epicId = typeof assignment.epicId === 'string' && assignment.epicId.trim().length > 0
-      ? assignment.epicId.trim()
-      : undefined;
-    if (workflowId) {
-      runtimeInstructionBus.push(workflowId, feedbackText);
-    }
-    if (epicId && epicId !== workflowId) {
-      runtimeInstructionBus.push(epicId, feedbackText);
-    }
-
-    broadcastWsMessage({
-      type: 'orchestrator_feedback',
-      payload: feedback,
-      timestamp: event.timestamp,
-    });
-  },
-);
-
-console.log('[Server] EventBus orchestrator feedback forwarding enabled: agent_runtime_dispatch');
+emitLoopEventToEventBus = forwarding.emitLoopEventToEventBus;
 
 // =============================================================================
 // State Bridge 集成
