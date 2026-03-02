@@ -24,7 +24,6 @@ import { AskManager } from '../orchestration/ask/ask-manager.js';
 import { resourcePool } from '../orchestration/resource-pool.js';
 import {
   loadOrchestrationConfig,
-  normalizeReviewPolicy,
   type OrchestrationConfigV1,
 } from '../orchestration/orchestration-config.js';
 import { resumableSessionManager } from '../orchestration/resumable-session.js';
@@ -54,6 +53,7 @@ import { createSessionWorkspaceManager } from './modules/session-workspaces.js';
 import { attachEventForwarding } from './modules/event-forwarding.js';
 import { createMockRuntimeKit, type ChatCodexRunnerController } from './modules/mock-runtime.js';
 import { ensureSingleInstance } from './modules/port-guard.js';
+import { createOrchestrationConfigApplier } from './modules/orchestration-config-applier.js';
 import { dispatchTaskToAgent as dispatchTaskToAgentModule, registerAgentRuntimeTools } from './modules/agent-runtime/index.js';
 import type { AgentDispatchRequest, AgentRuntimeDeps } from './modules/agent-runtime/types.js';
 import { registerSessionRoutes } from './routes/session.js';
@@ -71,7 +71,6 @@ import { registerAgentConfigRoutes } from './routes/agent-configs.js';
 import { registerModuleRegistryRoutes } from './routes/module-registry.js';
 import { registerPerformanceRoutes } from './routes/performance.js';
 import { registerWorkflowStateRoutes } from './routes/workflow-state.js';
-import { setActiveReviewPolicy } from './orchestration/review-policy.js';
 import { FINGER_PATHS, ensureDir, ensureFingerLayout } from '../core/finger-paths.js';
 import { isObjectRecord } from './common/object.js';
 import {
@@ -352,73 +351,11 @@ function formatDispatchResultContent(result: unknown, error?: string): string {
 }
 
 
-async function applyOrchestrationConfig(config: OrchestrationConfigV1): Promise<{
+let applyOrchestrationConfig: (config: OrchestrationConfigV1) => Promise<{
   applied: number;
   agents: string[];
   profileId: string;
-}> {
-  const profile = config.profiles.find((item) => item.id === config.activeProfileId);
-  if (!profile) {
-    throw new Error(`active orchestration profile not found: ${config.activeProfileId}`);
-  }
-  setActiveReviewPolicy(normalizeReviewPolicy(profile.reviewPolicy));
-  const rootSession = sessionWorkspaceManager.ensureOrchestratorRootSession();
-  const appliedAgents: string[] = [];
-  const activeAgentIds = new Set(
-    profile.agents.filter((item) => item.enabled !== false).map((item) => item.targetAgentId),
-  );
-  const runtimeView = await agentRuntimeBlock.execute('runtime_view', {}) as {
-    agents?: Array<{ id: string; instanceCount?: number }>;
-  };
-  const currentlyStartedAgentIds = (runtimeView.agents ?? [])
-    .filter((item) => (Number.isFinite(item.instanceCount) ? (item.instanceCount as number) > 0 : false))
-    .map((item) => item.id);
-
-  for (const staleAgentId of currentlyStartedAgentIds) {
-    if (activeAgentIds.has(staleAgentId)) continue;
-    const staleSession = sessionWorkspaceManager.findRuntimeChildSession(rootSession.id, staleAgentId);
-    await agentRuntimeBlock.execute('deploy', {
-      sessionId: staleSession?.id ?? rootSession.id,
-      scope: 'session',
-      targetAgentId: staleAgentId,
-      config: {
-        id: staleAgentId,
-        name: staleAgentId,
-        enabled: false,
-      },
-    });
-  }
-
-  for (const entry of profile.agents) {
-    if (entry.enabled === false) continue;
-    const targetSessionId = entry.role === 'orchestrator'
-      ? rootSession.id
-      : sessionWorkspaceManager.ensureRuntimeChildSession(rootSession, entry.targetAgentId).id;
-    await agentRuntimeBlock.execute('deploy', {
-      sessionId: targetSessionId,
-      scope: 'session',
-      targetAgentId: entry.targetAgentId,
-      ...(typeof entry.targetImplementationId === 'string'
-        ? { targetImplementationId: entry.targetImplementationId }
-        : {}),
-      instanceCount: entry.instanceCount ?? 1,
-      launchMode: entry.launchMode ?? (entry.role === 'orchestrator' ? 'orchestrator' : 'manual'),
-      config: {
-        id: entry.targetAgentId,
-        name: entry.targetAgentId,
-        role: entry.role,
-        enabled: true,
-      },
-    });
-    appliedAgents.push(entry.targetAgentId);
-  }
-  sessionManager.setCurrentSession(rootSession.id);
-  return {
-    applied: appliedAgents.length,
-    agents: appliedAgents,
-    profileId: profile.id,
-  };
-}
+}>;
 
 function reloadAgentJsonConfigs(configDir = loadedAgentConfigDir): void {
   const result = loadAgentJsonConfigs(configDir);
@@ -549,6 +486,11 @@ agentRuntimeBlock = new AgentRuntimeBlock('agent-runtime-1', {
 });
 await agentRuntimeBlock.initialize();
 await agentRuntimeBlock.start();
+applyOrchestrationConfig = createOrchestrationConfigApplier({
+  agentRuntimeBlock,
+  sessionManager,
+  sessionWorkspaces: sessionWorkspaceManager,
+});
 const agentRuntimeTools = registerAgentRuntimeTools(getAgentRuntimeDeps());
 console.log(`[Server] Agent runtime tools loaded: ${agentRuntimeTools.join(', ')}`);
 
