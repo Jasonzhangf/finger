@@ -20,10 +20,14 @@ describe('Route Uniqueness', () => {
     // 直接检查源代码中的路由注册次数
     const fs = await import('fs');
     const path = await import('path');
-    const serverCode = fs.readFileSync(
-      path.join(process.cwd(), 'src/server/index.ts'),
-      'utf-8'
-    );
+    // 路由已拆分到 modules 和 routes 文件中，检查所有相关源文件
+    const filesToCheck = [
+      'src/server/routes/agent-cli.ts',
+      'src/server/routes/index.ts',
+    ];
+    const serverCode = filesToCheck
+      .map(f => fs.readFileSync(path.join(process.cwd(), f), 'utf-8'))
+      .join('\n');
 
     for (const route of agentRoutes) {
       const pattern = new RegExp(`app\\.post\\('${route.replace(/\//g, '\\/')}'`, 'g');
@@ -61,10 +65,14 @@ describe('Route Uniqueness', () => {
     // 检查源代码中每个 agent 路由是否存在
     const fs = await import('fs');
     const path = await import('path');
-    const serverCode = fs.readFileSync(
-      path.join(process.cwd(), 'src/server/index.ts'),
-      'utf-8'
-    );
+    // 路由已拆分到 modules 和 routes 文件中，检查所有相关源文件
+    const filesToCheck = [
+      'src/server/routes/agent-cli.ts',
+      'src/server/routes/index.ts',
+    ];
+    const serverCode = filesToCheck
+      .map(f => fs.readFileSync(path.join(process.cwd(), f), 'utf-8'))
+      .join('\n');
 
     const requiredRoutes = [
       "app.post('/api/v1/agent/understand'",

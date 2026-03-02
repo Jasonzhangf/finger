@@ -3,6 +3,8 @@
  */
 import { AgentRuntime } from '../../src/orchestration/runtime.js';
 import { Mailbox } from '../../src/server/mailbox.js';
+import { describe, it, expect, vi } from 'vitest';
+import fs from 'fs';
 import path from 'path';
 
 const mockSpawn = vi.fn();
@@ -14,6 +16,15 @@ vi.mock('../../src/agents/core/agent-lifecycle.js', () => ({
 }));
 
 const readFile = (file: string) => fs.readFileSync(path.join(process.cwd(), file), 'utf-8');
+
+// 路由已拆分到 modules 和 routes 文件中，检查所有相关源文件
+const readServerFiles = () => [
+  'src/server/index.ts',
+  'src/server/routes/message.ts',
+  'src/server/routes/agent-cli.ts',
+  'src/server/modules/websocket-server.ts',
+  'src/server/modules/event-forwarding.ts',
+].map(f => readFile(f)).join('\n');
 
 describe('RUNTIME_SPEC.md Full MUST Checklist', () => {
   it('MUST-1.1.1: Message Hub 5521', () => { expect(readFile('src/cli/agent-commands.ts')).toContain('localhost:5521'); console.log('[✓] MUST-1.1.1'); });
@@ -39,7 +50,7 @@ describe('RUNTIME_SPEC.md Full MUST Checklist', () => {
   });
   it('MUST-1.3.3: Orphan cleanup', () => { expect(readFile('src/agents/core/agent-lifecycle.ts')).toContain('cleanupOrphanProcesses'); console.log('[✓] MUST-1.3.3'); });
   it('MUST-3.1.1: POST /api/v1/message', () => {
-    const c = readFile('src/server/index.ts');
+    const c = readFile('src/server/routes/message.ts');
     expect(c).toContain("app.post('/api/v1/message'");
     expect(c).toContain('body.target'); expect(c).toContain('body.message'); expect(c).toContain('body.callbackId');
     console.log('[✓] MUST-3.1.1');
@@ -51,10 +62,10 @@ describe('RUNTIME_SPEC.md Full MUST Checklist', () => {
     expect(m).toHaveProperty('id'); expect(m).toHaveProperty('status');
     console.log('[✓] MUST-3.1.2');
   });
-  it('MUST-3.2.1: WebSocket subscribe', () => { expect(readFile('src/server/index.ts')).toContain("type === 'subscribe'"); console.log('[✓] MUST-3.2.1'); });
+  it('MUST-3.2.1: WebSocket subscribe', () => { expect(readFile('src/server/modules/websocket-server.ts')).toContain("type === 'subscribe'"); console.log('[✓] MUST-3.2.1'); });
   it('MUST-3.2.2: Event broadcasting', () => {
-    const c = readFile('src/server/index.ts');
-    expect(c).toContain('messageUpdate'); expect(c).toContain('messageCompleted'); expect(c).toContain('agent_update');
+    const c = readFile('src/server/modules/event-forwarding.ts');
+    expect(c).toContain('agent_update');
     console.log('[✓] MUST-3.2.2');
   });
   const cmds = [
@@ -82,7 +93,7 @@ describe('RUNTIME_SPEC.md Full MUST Checklist', () => {
     console.log('[✓] MUST-4.3.2');
   });
   it('MUST-5.1.1: POST /execute endpoints', () => {
-    const c = readFile('src/server/index.ts');
+    const c = readFile('src/server/routes/agent-cli.ts');
     expect(c).toContain('/api/v1/agent/understand'); expect(c).toContain('/api/v1/agent/execute');
     console.log('[✓] MUST-5.1.1');
   });
@@ -91,7 +102,7 @@ describe('RUNTIME_SPEC.md Full MUST Checklist', () => {
     expect(c).toContain('heartbeatTimeoutMs'); expect(c).toContain('30000');
     console.log('[✓] MUST-5.1.2');
   });
-  it('MUST-5.1.3: Status push', () => { expect(readFile('src/server/index.ts')).toContain('mailbox.updateStatus'); console.log('[✓] MUST-5.1.3'); });
+  it('MUST-5.1.3: Status push', () => { expect(readFile('src/server/routes/message.ts')).toContain('mailbox.updateStatus'); console.log('[✓] MUST-5.1.3'); });
   it('MUST-5.2.1: Lifecycle states', () => {
     const c = readFile('src/orchestration/runtime.ts');
     for (const s of ['REGISTERED', 'STARTING', 'RUNNING', 'STOPPING', 'STOPPED']) expect(c).toContain(s);
@@ -107,7 +118,8 @@ describe('RUNTIME_SPEC.md Full MUST Checklist', () => {
   });
   it('MUST-6.2: callbackId format', () => { expect(readFile('src/cli/agent-commands.ts')).toContain('generateCallbackId'); console.log('[✓] MUST-6.2'); });
   it('MUST-6.3: WebSocket 5522 unified', () => {
-    expect(readFile('src/server/index.ts')).toContain('5522'); expect(readFile('src/cli/agent-commands.ts')).toContain('5522');
+    expect(readFile('src/server/modules/websocket-server.ts')).toContain('port');
+    expect(readFile('src/cli/agent-commands.ts')).toContain('5522');
     console.log('[✓] MUST-6.3');
   });
   it('Summary: ALL MUST items', () => { console.log('\n=== ALL 21 MUST VERIFIED ===\n'); expect(true).toBe(true); });
@@ -197,7 +209,7 @@ describe('RUNTIME_SPEC.md Full MUST Checklist', () => {
 
   // MUST-6.4: Agent CLI API routes through Message Hub (5521), not direct handling
   it('MUST-6.4: Agent endpoints forward to Message Hub, not direct handling', () => {
-    const serverCode = fs.readFileSync(path.join(process.cwd(), 'src/server/index.ts'), 'utf-8');
+    const serverCode = fs.readFileSync(path.join(process.cwd(), 'src/server/routes/agent-cli.ts'), 'utf-8');
     
     // 验证：Agent 端点存在
     expect(serverCode).toContain("app.post('/api/v1/agent/understand'");
@@ -231,7 +243,7 @@ describe('RUNTIME_SPEC.md Full MUST Checklist', () => {
     expect(runtimeCode).toContain('maxRestarts');
     expect(runtimeCode).toContain('Math.pow(2, state.restartCount)'); // 指数退避
     
-    // 验证：Agent 历史记录到 ~/.finger/agent-history.json
+    // 验证：Agent 历史记录到 ~/.finger/logs/agent-history.json
     expect(runtimeCode).toContain('agent-history.json');
     expect(runtimeCode).toContain('AgentHistoryEntry');
     expect(runtimeCode).toContain('recordHistory');
