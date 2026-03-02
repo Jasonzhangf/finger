@@ -60,22 +60,7 @@ import {
   createGetAgentRuntimeDeps,
 } from './modules/agent-runtime/index.js';
 import type { AgentDispatchRequest } from './modules/agent-runtime/types.js';
-import { registerSessionRoutes } from './routes/session.js';
-import { registerSystemRoutes } from './routes/system.js';
-import { registerMessageRoutes } from './routes/message.js';
-import { registerAgentCliRoutes } from './routes/agent-cli.js';
-import { registerAgentRuntimeRoutes } from './routes/agent-runtime.js';
-import { registerWorkflowRoutes } from './routes/workflow.js';
-import { registerGatewayRoutes } from './routes/gateway.js';
-import { registerRuntimeEventRoutes } from './routes/runtime-events.js';
-import { registerToolRoutes } from './routes/tools.js';
-import { registerResumableSessionRoutes } from './routes/resumable-session.js';
-import { registerOrchestrationRoutes } from './routes/orchestration.js';
-import { registerAgentConfigRoutes } from './routes/agent-configs.js';
-import { registerModuleRegistryRoutes } from './routes/module-registry.js';
-import { registerPerformanceRoutes } from './routes/performance.js';
-import { registerWorkflowStateRoutes } from './routes/workflow-state.js';
-import { registerDebugRoutes } from './routes/debug.js';
+import { registerAllRoutes } from './routes/index.js';
 import { ensureFingerLayout } from '../core/finger-paths.js';
 import {
   ERROR_SAMPLE_DIR,
@@ -312,19 +297,6 @@ await gatewayManager.start().catch((err) => {
 });
 
 registerDefaultModuleRoutes(moduleRegistry);
-
-registerSystemRoutes(app, {
-  registry,
-  localImageMimeByExt: LOCAL_IMAGE_MIME_BY_EXT,
-  listKernelProviders,
-  upsertKernelProvider,
-  selectKernelProvider,
-  testKernelProvider,
-});
-
-
-
-// WebSocket server for real-time updates
 const wsPort = process.env.WS_PORT ? parseInt(process.env.WS_PORT, 10) : 9998;
 ({ wss, wsClients, broadcast } = createWebSocketServer({
   port: wsPort,
@@ -333,20 +305,14 @@ const wsPort = process.env.WS_PORT ? parseInt(process.env.WS_PORT, 10) : 9998;
   mailbox,
   inputLockManager,
 }));
-// ========== Session Data API ==========
-registerSessionRoutes(app, {
+registerAllRoutes(app, {
   sessionManager,
   runtime,
   eventBus: globalEventBus,
   logsDir: join(process.cwd(), 'logs', 'sessions'),
   resolveSessionLoopLogPath,
-});
-
-registerMessageRoutes(app, {
   hub,
   mailbox,
-  runtime,
-  sessionManager,
   sessionWorkspaces: sessionWorkspaceManager,
   broadcast,
   writeMessageErrorSample,
@@ -359,75 +325,24 @@ registerMessageRoutes(app, {
   primaryOrchestratorGatewayId: PRIMARY_ORCHESTRATOR_GATEWAY_ID,
   legacyOrchestratorAgentId: LEGACY_ORCHESTRATOR_AGENT_ID,
   legacyOrchestratorGatewayId: LEGACY_ORCHESTRATOR_GATEWAY_ID,
-});
-
-registerAgentCliRoutes(app);
-
-registerWorkflowRoutes(app, {
   workflowManager,
   askManager,
   runtimeInstructionBus,
-  broadcast,
-  primaryOrchestratorAgentId: PRIMARY_ORCHESTRATOR_AGENT_ID,
-});
-
-registerGatewayRoutes(app, {
-  hub,
   moduleRegistry,
   gatewayManager,
-});
-
-registerRuntimeEventRoutes(app, {
-  eventBus: globalEventBus,
   inputLockManager,
-  mailbox,
-});
-
-registerToolRoutes(app, {
   toolRegistry: globalToolRegistry,
-  runtime,
-});
-
-registerResumableSessionRoutes(app, {
   resumableSessionManager,
   wsClients,
-});
-
-registerOrchestrationRoutes(app, {
   applyOrchestrationConfig,
-  primaryOrchestratorAgentId: PRIMARY_ORCHESTRATOR_AGENT_ID,
   getChatCodexRunnerMode: () => (shouldUseMockChatCodexRunner(runtimeFlags) ? 'mock' : 'real'),
-});
-
-registerAgentConfigRoutes(app, {
   getLoadedAgentConfigDir,
   getLoadedAgentConfigs,
   agentJsonSchema: AGENT_JSON_SCHEMA,
   reloadAgentJsonConfigs,
-});
-
-registerModuleRegistryRoutes(app, {
-  moduleRegistry,
-});
-
-registerPerformanceRoutes(app, {
-  wsClients,
-});
-
-registerWorkflowStateRoutes(app, {
   wss,
-});
-
-registerDebugRoutes(app, {
   registry,
-});
-
-
-
-
-registerAgentRuntimeRoutes(app, {
   getAgentRuntimeDeps,
-  moduleRegistry,
   resourcePool,
   runtimeDebug: {
     get: () => runtimeDebugMode,
@@ -447,6 +362,13 @@ registerAgentRuntimeRoutes(app, {
     useMockExecutorLoop: USE_MOCK_EXECUTOR_LOOP,
     useMockReviewerLoop: USE_MOCK_REVIEWER_LOOP,
     useMockSearcherLoop: USE_MOCK_SEARCHER_LOOP,
+  },
+  system: {
+    localImageMimeByExt: LOCAL_IMAGE_MIME_BY_EXT,
+    listKernelProviders,
+    upsertKernelProvider,
+    selectKernelProvider,
+    testKernelProvider,
   },
 });
 
