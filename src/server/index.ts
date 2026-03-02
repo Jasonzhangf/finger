@@ -71,6 +71,7 @@ import { registerAgentConfigRoutes } from './routes/agent-configs.js';
 import { registerModuleRegistryRoutes } from './routes/module-registry.js';
 import { registerPerformanceRoutes } from './routes/performance.js';
 import { registerWorkflowStateRoutes } from './routes/workflow-state.js';
+import { registerDebugRoutes } from './routes/debug.js';
 import { FINGER_PATHS, ensureDir, ensureFingerLayout } from '../core/finger-paths.js';
 import { isObjectRecord } from './common/object.js';
 import {
@@ -239,10 +240,6 @@ app.get('/', (_req, res) => {
 app.use((req, _res, next) => {
   console.log(`[${new Date().toISOString()}] ${req.method} ${req.url}`);
   next();
-});
-
-app.get('/api/test', (_req, res) => {
-  res.json({ ok: true, message: 'Test route works' });
 });
 
 registry.register({ type: 'task', factory: (config) => new TaskBlock(config.id as string), version: '1.0.0' });
@@ -555,25 +552,6 @@ registerSystemRoutes(app, {
   testKernelProvider,
 });
 
-app.get('/api/test/:id/state/:key', (req, res) => {
-  const block = registry.getBlock(req.params.id);
-  if (!block) {
-    res.status(404).json({ error: 'Block not found' });
-    return;
-  }
-  const state = block.getState();
-  res.json({ [req.params.key]: (state.data as Record<string, unknown>)?.[req.params.key] });
-});
-
-app.post('/api/test/:id/state/:key', (req, res) => {
-  const block = registry.getBlock(req.params.id);
-  if (!block) {
-    res.status(404).json({ error: 'Block not found' });
-    return;
-  }
-  res.json({ success: true });
-});
-
 
 
 // WebSocket server for real-time updates
@@ -668,6 +646,10 @@ registerPerformanceRoutes(app, {
 
 registerWorkflowStateRoutes(app, {
   wss,
+});
+
+registerDebugRoutes(app, {
+  registry,
 });
 
 
