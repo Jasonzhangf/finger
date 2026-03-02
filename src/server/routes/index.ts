@@ -24,7 +24,7 @@ import { registerSessionRoutes } from './session.js';
 import { registerSystemRoutes } from './system.js';
 import { registerMessageRoutes } from './message.js';
 import { registerAgentCliRoutes } from './agent-cli.js';
-import { registerAgentRuntimeRoutes } from './agent-runtime.js';
+import { registerAgentRuntimeRoutes } from './agent-runtime/index.js';
 import { registerWorkflowRoutes } from './workflow.js';
 import { registerGatewayRoutes } from './gateway.js';
 import { registerRuntimeEventRoutes } from './runtime-events.js';

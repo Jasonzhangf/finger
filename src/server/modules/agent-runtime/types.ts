@@ -32,12 +32,15 @@ export interface AgentDispatchRequest {
 }
 
 export interface AgentControlRequest {
-  action: 'status' | 'pause' | 'resume' | 'interrupt' | 'cancel';
+  action: 'status' | 'pause' | 'resume' | 'interrupt' | 'cancel' | 'dispatch';
   targetAgentId?: string;
   sessionId?: string;
   workflowId?: string;
   providerId?: string;
   hard?: boolean;
+  task?: unknown;
+  blocking?: boolean;
+  metadata?: Record<string, unknown>;
 }
 
 export interface AgentControlResult {
