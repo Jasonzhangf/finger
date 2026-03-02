@@ -8,36 +8,74 @@ const execAsync = promisify(exec);
 
 const router = Router();
 
-// Test layer configuration matching three-layer architecture
-const TEST_LAYERS = {
-  blocks: {
+interface TestGroupConfig {
+  id: string;
+  name: string;
+  paths: string[];
+}
+
+// Test groups (three-layer + UI e2e buckets)
+const TEST_GROUPS: TestGroupConfig[] = [
+  {
+    id: 'blocks',
     name: 'Blocks 基础能力层',
     paths: ['tests/modules/', 'tests/unit/blocks/'],
   },
-  orchestration: {
+  {
+    id: 'orchestration',
     name: 'Orchestration 编排层',
     paths: ['tests/orchestration/', 'tests/unit/orchestration/'],
   },
-  agents: {
+  {
+    id: 'agents',
     name: 'Agents 业务层',
     paths: ['tests/agents/', 'tests/unit/agents/'],
   },
-} as const;
-
-type LayerKey = keyof typeof TEST_LAYERS;
+  {
+    id: 'ui-contracts',
+    name: 'UI Contracts 合约',
+    paths: ['tests/e2e-ui/contracts/'],
+  },
+  {
+    id: 'ui-controls-elements',
+    name: 'UI Controls 元素',
+    paths: ['tests/e2e-ui/controls/elements/'],
+  },
+  {
+    id: 'ui-controls-navigation',
+    name: 'UI Controls 导航',
+    paths: ['tests/e2e-ui/controls/navigation/'],
+  },
+  {
+    id: 'ui-controls-forms',
+    name: 'UI Controls 表单',
+    paths: ['tests/e2e-ui/controls/forms/'],
+  },
+  {
+    id: 'ui-flows',
+    name: 'UI Flows 流程',
+    paths: ['tests/e2e-ui/flows/'],
+  },
+  {
+    id: 'ui-stability',
+    name: 'UI Stability 稳定性',
+    paths: ['tests/e2e-ui/stability/'],
+  },
+];
 
 interface TestCase {
   id: string;
   name: string;
   file: string;
-  layer: LayerKey;
+  groupId: string;
   status: 'pending' | 'running' | 'passed' | 'failed';
   duration?: number;
   error?: string;
 }
 
 interface TestGroup {
-  layer: LayerKey;
+  id: string;
+  name: string;
   tests: TestCase[];
 }
 
@@ -50,24 +88,24 @@ function scanTestsFromFS(): TestGroup[] {
   const groups: TestGroup[] = [];
   const cwd = process.cwd();
 
-  for (const [layer, config] of Object.entries(TEST_LAYERS)) {
+  for (const group of TEST_GROUPS) {
     const tests: TestCase[] = [];
 
-    for (const testPath of config.paths) {
+    for (const testPath of group.paths) {
       const fullPath = join(cwd, testPath);
       if (!existsSync(fullPath)) continue;
 
       const files = readdirSync(fullPath).filter(f => f.endsWith('.test.ts') || f.endsWith('.test.tsx'));
 
       for (const file of files) {
-        const testId = `${layer}:${testPath}:${file}`;
+        const testId = `${group.id}:${testPath}:${file}`;
         const lastResult = lastTestResults.get(testId);
 
         tests.push({
           id: testId,
           name: file.replace(/\.(test\.)?(ts|tsx)$/, '').replace(/-/g, ' '),
           file: relative(cwd, join(fullPath, file)),
-          layer: layer as LayerKey,
+          groupId: group.id,
           status: lastResult?.status || 'pending',
           duration: lastResult?.duration,
           error: lastResult?.error,
@@ -76,7 +114,8 @@ function scanTestsFromFS(): TestGroup[] {
     }
 
     groups.push({
-      layer: layer as LayerKey,
+      id: group.id,
+      name: group.name,
       tests,
     });
   }
@@ -143,20 +182,19 @@ router.post('/run-test/:testId', async (req: Request, res: Response) => {
   }
 });
 
-// Run all tests in a layer
+// Run all tests in a group
 router.post('/run-layer/:layer', async (req: Request, res: Response) => {
   const layer = req.params.layer as string;
+  const groupConfig = TEST_GROUPS.find(g => g.id === layer);
 
-  if (!TEST_LAYERS[layer as LayerKey]) {
-    return res.status(400).json({ error: 'Invalid layer' });
+  if (!groupConfig) {
+    return res.status(400).json({ error: 'Invalid group' });
   }
 
-  const layerConfig = TEST_LAYERS[layer as LayerKey];
-
   try {
-    const paths = layerConfig.paths.filter(p => existsSync(join(process.cwd(), p)));
+    const paths = groupConfig.paths.filter(p => existsSync(join(process.cwd(), p)));
     if (paths.length === 0) {
-      return res.json({ groups: scanTestsFromFS(), message: 'No test paths found for this layer' });
+      return res.json({ groups: scanTestsFromFS(), message: 'No test paths found for this group' });
     }
 
     const testPattern = paths.map(p => `${p}**/*.test.ts`).join(' ');

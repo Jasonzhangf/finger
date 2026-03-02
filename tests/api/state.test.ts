@@ -1,36 +1,20 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { registry } from '../../src/core/registry.js';
 import express from 'express';
-import { 
-  TaskBlock, 
-  AgentBlock, 
-  EventBusBlock, 
-  StorageBlock, 
-  SessionBlock, 
-  AIBlock, 
-  ProjectBlock, 
-  StateBlock, 
-  OrchestratorBlock, 
-  WebSocketBlock 
-} from '../../src/blocks/index.js';
+import { StateBlock } from '../../src/blocks/index.js';
 
 let app: express.Express;
 let server: any;
+let baseUrl = '';
 
 beforeAll(async () => {
+  (registry as any).blocks.clear();
+  (registry as any).registrations.clear();
+
   app = express();
   app.use(express.json());
 
   registry.register({ type: 'state', factory: (config) => new StateBlock(config.id as string), version: '1.0.0' });
-  registry.register({ type: 'task', factory: (config) => new TaskBlock(config.id as string), version: '1.0.0' });
-  registry.register({ type: 'agent', factory: (config) => new AgentBlock(config.id as string), version: '1.0.0' });
-  registry.register({ type: 'eventbus', factory: (config) => new EventBusBlock(config.id as string), version: '1.0.0' });
-  registry.register({ type: 'storage', factory: (config) => new StorageBlock(config.id as string), version: '1.0.0' });
-  registry.register({ type: 'session', factory: (config) => new SessionBlock(config.id as string), version: '1.0.0' });
-  registry.register({ type: 'ai', factory: (config) => new AIBlock(config.id as string), version: '1.0.0' });
-  registry.register({ type: 'project', factory: (config) => new ProjectBlock(config.id as string), version: '1.0.0' });
-  registry.register({ type: 'orchestrator', factory: (config) => new OrchestratorBlock(config.id as string), version: '1.0.0' });
-  registry.register({ type: 'websocket', factory: (config) => new WebSocketBlock(config.id as string), version: '1.0.0' });
 
   registry.createInstance('state', 'state-1');
   await registry.initializeAll();
@@ -59,57 +43,82 @@ beforeAll(async () => {
       .catch(err => res.status(500).json({ error: err.message }));
   });
 
-  server = app.listen(0);
+  await new Promise<void>((resolve) => {
+    server = app.listen(0, () => resolve());
+  });
+  const address = server.address();
+  if (!address || typeof address === 'string') {
+    throw new Error('Failed to start test server');
+  }
+  baseUrl = `http://127.0.0.1:${address.port}`;
 });
 
-afterAll(() => {
+afterAll(async () => {
   server.close();
+  await registry.destroyAll();
+  (registry as any).registrations.clear();
 });
 
-describe.skip('State API (requires supertest)', () => {
+describe('State API', () => {
   it('should list all blocks', async () => {
-    const res = await request(app).get('/api/blocks').expect(200);
-    expect(Array.isArray(res.body)).toBe(true);
-    expect(res.body.some((b: any) => b.type === 'state')).toBe(true);
+    const res = await fetch(`${baseUrl}/api/blocks`);
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(Array.isArray(body)).toBe(true);
+    expect(body.some((b: any) => b.type === 'state')).toBe(true);
   });
 
   it('should get state block status', async () => {
-    const res = await request(app).get('/api/blocks/state-1/state').expect(200);
-    expect(res.body.id).toBe('state-1');
-    expect(res.body.status).toBe('idle');
+    const res = await fetch(`${baseUrl}/api/blocks/state-1/state`);
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.id).toBe('state-1');
+    expect(body.status).toBe('idle');
   });
 
   it('should return 404 for unknown block', async () => {
-    await request(app).get('/api/blocks/unknown/state').expect(404);
+    const res = await fetch(`${baseUrl}/api/blocks/unknown/state`);
+    expect(res.status).toBe(404);
   });
 
   it('should execute set command on state block', async () => {
-    const setRes = await request(app)
-      .post('/api/blocks/state-1/exec')
-      .send({ command: 'set', args: { key: 'foo', value: 'bar' } })
-      .expect(200);
-    expect(setRes.body.success).toBe(true);
-    expect(setRes.body.result.key).toBe('foo');
-    expect(setRes.body.result.updated).toBe(true);
+    const setRes = await fetch(`${baseUrl}/api/blocks/state-1/exec`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ command: 'set', args: { key: 'foo', value: 'bar' } }),
+    });
+    expect(setRes.status).toBe(200);
+    const setBody = await setRes.json();
+    expect(setBody.success).toBe(true);
+    expect(setBody.result.key).toBe('foo');
+    expect(setBody.result.updated).toBe(true);
 
-    const getRes = await request(app).get('/api/test/state/foo').expect(200);
-    expect(getRes.body.value).toBe('bar');
+    const getRes = await fetch(`${baseUrl}/api/test/state/foo`);
+    expect(getRes.status).toBe(200);
+    const getBody = await getRes.json();
+    expect(getBody.value).toBe('bar');
   });
 
   it('should execute get command on state block', async () => {
-    const getRes = await request(app)
-      .post('/api/blocks/state-1/exec')
-      .send({ command: 'get', args: { key: 'foo' } })
-      .expect(200);
-    expect(getRes.body.success).toBe(true);
-    expect(getRes.body.result).toBe('bar');
+    const getRes = await fetch(`${baseUrl}/api/blocks/state-1/exec`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ command: 'get', args: { key: 'foo' } }),
+    });
+    expect(getRes.status).toBe(200);
+    const body = await getRes.json();
+    expect(body.success).toBe(true);
+    expect(body.result).toBe('bar');
   });
 
   it('should return error for invalid command', async () => {
-    const res = await request(app)
-      .post('/api/blocks/state-1/exec')
-      .send({ command: 'invalid', args: {} })
-      .expect(400);
-    expect(res.body.error).toContain('Unknown command');
+    const res = await fetch(`${baseUrl}/api/blocks/state-1/exec`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ command: 'invalid', args: {} }),
+    });
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(body.error).toContain('Unknown command');
   });
 });

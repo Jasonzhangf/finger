@@ -1,46 +1,40 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import './TestPanel.css';
 
-// Test layer definitions matching three-layer architecture
-const TEST_LAYERS = {
-  blocks: {
-    name: 'Blocks 基础能力层',
-    description: '全局唯一真源',
-    color: '#4caf50',
-  },
-  orchestration: {
-    name: 'Orchestration 编排层',
-    description: 'block 组合与调度',
-    color: '#2196f3',
-  },
-  agents: {
-    name: 'Agents 业务层',
-    description: '业务流程与交互',
-    color: '#ff9800',
-  },
-} as const;
-
-type LayerKey = keyof typeof TEST_LAYERS;
+const TEST_GROUP_ORDER = [
+  'blocks',
+  'orchestration',
+  'agents',
+  'ui-contracts',
+  'ui-controls-elements',
+  'ui-controls-navigation',
+  'ui-controls-forms',
+  'ui-flows',
+  'ui-stability',
+] as const;
 
 interface TestCase {
   id: string;
   name: string;
   file: string;
-  layer: LayerKey;
+  groupId: string;
   status: 'pending' | 'running' | 'passed' | 'failed';
   duration?: number;
   error?: string;
 }
 
 interface TestGroup {
-  layer: LayerKey;
+  id: string;
+  name: string;
   tests: TestCase[];
 }
 
 const TestPanel: React.FC = () => {
   const [groups, setGroups] = useState<TestGroup[]>([]);
   const [running, setRunning] = useState(false);
-  const [serverUrl] = useState('http://localhost:9999');
+  const [serverUrl] = useState(() => (
+    typeof window !== 'undefined' ? window.location.origin : 'http://localhost:9999'
+  ));
   const [discovered, setDiscovered] = useState(false);
   const [runningTestId, setRunningTestId] = useState<string | null>(null);
 
@@ -93,11 +87,11 @@ const TestPanel: React.FC = () => {
     }
   }, [serverUrl]);
 
-  // Run all tests in a layer
-  const runLayer = useCallback(async (layer: LayerKey) => {
+  // Run all tests in a group
+  const runGroup = useCallback(async (groupId: string) => {
     setRunning(true);
     try {
-      const res = await fetch(`${serverUrl}/api/v1/test/run-layer/${layer}`, {
+      const res = await fetch(`${serverUrl}/api/v1/test/run-layer/${groupId}`, {
         method: 'POST',
       });
       if (res.ok) {
@@ -107,7 +101,7 @@ const TestPanel: React.FC = () => {
         }
       }
     } catch (e) {
-      console.error('Failed to run layer tests:', e);
+      console.error('Failed to run group tests:', e);
     } finally {
       setRunning(false);
     }
@@ -162,8 +156,8 @@ const TestPanel: React.FC = () => {
     return `test-status test-status-${status}`;
   };
 
-  const getLayerStats = (layer: LayerKey) => {
-    const group = groups.find(g => g.layer === layer);
+  const getGroupStats = (groupId: string) => {
+    const group = groups.find(g => g.id === groupId);
     if (!group) return { total: 0, passed: 0, failed: 0, pending: 0 };
 
     const total = group.tests.length;
@@ -174,14 +168,11 @@ const TestPanel: React.FC = () => {
     return { total, passed, failed, pending };
   };
 
-  // Render test layers in order
-  const layerOrder: LayerKey[] = ['blocks', 'orchestration', 'agents'];
-
   return (
     <div className="test-panel">
       <div className="test-header">
-        <h1>Test Panel</h1>
-        <div className="test-subtitle">三层架构功能测试</div>
+        <h1>UI 测试中心</h1>
+        <div className="test-subtitle">自动注册与执行面板</div>
         <div className="test-actions">
           <button onClick={scanTests} disabled={running} className="scan-btn">
             扫描测试
@@ -202,17 +193,18 @@ const TestPanel: React.FC = () => {
       )}
 
       <div className="test-groups">
-        {layerOrder.map(layer => {
-          const layerInfo = TEST_LAYERS[layer];
-          const group = groups.find(g => g.layer === layer);
-          const stats = getLayerStats(layer);
+        {TEST_GROUP_ORDER.map(groupId => {
+          const group = groups.find(g => g.id === groupId);
+          if (!group) return null;
+
+          const stats = getGroupStats(groupId);
 
           return (
-            <div key={layer} className="test-group" style={{ borderColor: layerInfo.color }}>
-              <div className="test-group-header" style={{ borderBottomColor: layerInfo.color }}>
+            <div key={groupId} className="test-group">
+              <div className="test-group-header">
                 <div className="group-title">
-                  <h2 style={{ color: layerInfo.color }}>{layerInfo.name}</h2>
-                  <span className="layer-desc">{layerInfo.description}</span>
+                  <h2>{group.name}</h2>
+                  <span className="layer-desc">{groupId}</span>
                 </div>
                 <div className="layer-stats">
                   <span className="stat stat-total">{stats.total} 总</span>
@@ -220,17 +212,16 @@ const TestPanel: React.FC = () => {
                   <span className="stat stat-failed">{stats.failed} 失败</span>
                 </div>
                 <button
-                  onClick={() => runLayer(layer)}
-                  disabled={running || !group?.tests.length}
+                  onClick={() => runGroup(groupId)}
+                  disabled={running || group.tests.length === 0}
                   className="run-layer-btn"
-                  style={{ backgroundColor: layerInfo.color }}
                 >
                   运行全部
                 </button>
               </div>
 
               <div className="test-list">
-                {!group || group.tests.length === 0 ? (
+                {group.tests.length === 0 ? (
                   <div className="test-empty">暂无测试用例</div>
                 ) : (
                   group.tests.map(test => (
@@ -238,21 +229,25 @@ const TestPanel: React.FC = () => {
                       key={test.id}
                       className={`test-item ${runningTestId === test.id ? 'active' : ''}`}
                     >
-                      <span className={getStatusClass(test.status)}>
-                        {getStatusIcon(test.status)}
-                      </span>
-                      <span className="test-name">{test.name}</span>
-                      <span className="test-file">{test.file}</span>
-                      {test.duration && (
-                        <span className="test-duration">{test.duration}ms</span>
-                      )}
-                      <button
-                        onClick={() => runTest(test.id)}
-                        disabled={running}
-                        className="run-single-btn"
-                      >
-                        运行
-                      </button>
+                      <div className="test-item-header">
+                        <span className={getStatusClass(test.status)}>
+                          {getStatusIcon(test.status)}
+                        </span>
+                        <button
+                          onClick={() => runTest(test.id)}
+                          disabled={running}
+                          className="run-single-btn"
+                        >
+                          运行
+                        </button>
+                      </div>
+                      <div className="test-name">{test.name}</div>
+                      <div className="test-file" title={test.file}>{test.file}</div>
+                      <div className="test-item-meta">
+                        {test.duration && (
+                          <span className="test-duration">{test.duration}ms</span>
+                        )}
+                      </div>
                       {test.error && (
                         <div className="test-error-full">{test.error}</div>
                       )}
