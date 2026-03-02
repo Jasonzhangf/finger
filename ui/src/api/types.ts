@@ -549,6 +549,7 @@ export interface RuntimeEvent {
   };
   errorMessage?: string;
   fsmState?: WorkflowFSMState | TaskFSMState | AgentFSMState; // 新增：FSM 状态
+  metadata?: Record<string, unknown>;
 }
 
 export interface RuntimeImage {
@@ -600,6 +601,8 @@ export interface UserInputPayload {
   files?: RuntimeFile[];
   review?: ReviewSettings;
   planModeEnabled?: boolean;
+  dryrun?: boolean;
+  dryrunTarget?: string;
 }
 
 export interface WorkflowUpdatePayload {

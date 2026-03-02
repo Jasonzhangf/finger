@@ -12,6 +12,7 @@ import {
   executeCommand,
   reviewCommand,
   orchestrateCommand,
+  dryrunCommand,
 } from './agent-commands.js';
 import { registerDaemonCommand } from './daemon.js';
 import { registerChatCommand } from './chat-mode.js';
@@ -147,6 +148,33 @@ program
       await orchestrateCommand(task, {
         sessionId: options.session,
         watch: options.watch,
+      });
+    } catch (error) {
+      console.error('[CLI Error]', error);
+      process.exit(1);
+    }
+  });
+
+program
+  .command('dryrun')
+  .description('Dryrun：仅构建注入请求，不触发模型调用')
+  .argument('<text>', '输入文本')
+  .option('-t, --target <id>', '目标 Agent/模块 ID')
+  .option('-s, --session <id>', '会话 ID')
+  .option('-r, --role <profile>', '角色 profile')
+  .option('--tools <csv>', '工具白名单（逗号分隔）')
+  .option('--json', '输出 JSON')
+  .action(async (text: string, options: { target?: string; session?: string; role?: string; tools?: string; json?: boolean }) => {
+    try {
+      const tools = typeof options.tools === 'string'
+        ? options.tools.split(',').map((item) => item.trim()).filter((item) => item.length > 0)
+        : undefined;
+      await dryrunCommand(text, {
+        target: options.target,
+        sessionId: options.session,
+        roleProfile: options.role,
+        tools,
+        json: options.json,
       });
     } catch (error) {
       console.error('[CLI Error]', error);

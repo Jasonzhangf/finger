@@ -1,8 +1,8 @@
 .test-panel {
   padding: 20px;
-  background: #0f1115;
+  background: #ffffff;
   min-height: 100vh;
-  color: #e5e7eb;
+  color: #1f2937;
 }
 
 .test-header {
@@ -12,35 +12,37 @@
   align-items: center;
   margin-bottom: 24px;
   padding-bottom: 16px;
-  border-bottom: 1px solid #2a2f3a;
+  border-bottom: 1px solid #e5e7eb;
 }
 
 .test-header h1 {
   margin: 0;
   font-size: 24px;
-  color: #f3f4f6;
+  color: #111827;
 }
 
 .test-subtitle {
   width: 100%;
   font-size: 14px;
-  color: #9aa0a6;
+  color: #6b7280;
   margin-top: 4px;
 }
 
 .test-empty-state {
   text-align: center;
   padding: 40px;
-  color: #9aa0a6;
+  color: #6b7280;
 }
 
 .scan-btn {
-  background: #1f2937 !important;
-  border: 1px solid #2a2f3a;
+  background: #f3f4f6 !important;
+  border: 1px solid #d1d5db;
+  color: #374151;
 }
 
 .run-all-btn {
   background: #2563eb !important;
+  color: #ffffff;
 }
 
 .test-actions {
@@ -51,17 +53,17 @@
 
 .test-actions button {
   padding: 8px 16px;
-  border: none;
+  border: 1px solid #d1d5db;
   border-radius: 6px;
   cursor: pointer;
   font-size: 14px;
   transition: all 0.2s;
-  background: #1f2937;
-  color: #e5e7eb;
+  background: #ffffff;
+  color: #374151;
 }
 
 .test-actions button:hover:not(:disabled) {
-  filter: brightness(1.1);
+  background: #f3f4f6;
 }
 
 .test-actions button:disabled {
@@ -75,10 +77,10 @@
 }
 
 .test-group {
-  background: #141821;
+  background: #f9fafb;
   border-radius: 8px;
   padding: 16px;
-  border: 2px solid #2a2f3a;
+  border: 1px solid #e5e7eb;
 }
 
 .test-group-header {
@@ -87,7 +89,7 @@
   align-items: center;
   margin-bottom: 12px;
   padding-bottom: 12px;
-  border-bottom: 2px solid #2a2f3a;
+  border-bottom: 1px solid #e5e7eb;
   gap: 16px;
   flex-wrap: wrap;
 }
@@ -95,6 +97,7 @@
 .test-group-header h2 {
   margin: 0;
   font-size: 16px;
+  color: #111827;
 }
 
 .group-title {
@@ -105,21 +108,22 @@
 
 .layer-desc {
   font-size: 12px;
-  color: #9aa0a6;
+  color: #6b7280;
 }
 
 .run-layer-btn {
   padding: 6px 16px;
-  color: #fff;
+  color: #ffffff;
   border: none;
   border-radius: 4px;
   cursor: pointer;
   font-size: 12px;
   font-weight: 500;
+  background: #4b5563;
 }
 
 .run-layer-btn:hover:not(:disabled) {
-  filter: brightness(1.1);
+  background: #374151;
 }
 
 .run-layer-btn:disabled {
@@ -139,18 +143,18 @@
 }
 
 .stat-total {
-  background: #1f2937;
-  color: #e5e7eb;
+  background: #e5e7eb;
+  color: #374151;
 }
 
 .stat-passed {
-  background: rgba(37, 99, 235, 0.2);
-  color: #93c5fd;
+  background: rgba(37, 99, 235, 0.15);
+  color: #1d4ed8;
 }
 
 .stat-failed {
-  background: rgba(29, 78, 216, 0.2);
-  color: #60a5fa;
+  background: rgba(220, 38, 38, 0.1);
+  color: #dc2626;
 }
 
 .test-list {
@@ -160,7 +164,7 @@
 }
 
 .test-empty {
-  color: #9aa0a6;
+  color: #6b7280;
   font-style: italic;
   padding: 8px;
 }
@@ -170,10 +174,10 @@
   flex-direction: column;
   gap: 8px;
   padding: 12px;
-  background: #0f1115;
+  background: #ffffff;
   border-radius: 8px;
   font-size: 14px;
-  border: 1px solid #1f2633;
+  border: 1px solid #e5e7eb;
   min-height: 120px;
 }
 
@@ -195,7 +199,7 @@
 }
 
 .test-status-pending {
-  color: #9aa0a6;
+  color: #9ca3af;
 }
 
 .test-status-running {
@@ -204,11 +208,11 @@
 }
 
 .test-status-passed {
-  color: #93c5fd;
+  color: #2563eb;
 }
 
 .test-status-failed {
-  color: #60a5fa;
+  color: #dc2626;
 }
 
 @keyframes pulse {
@@ -219,10 +223,11 @@
 .test-name {
   font-weight: 600;
   line-height: 1.4;
+  color: #111827;
 }
 
 .test-file {
-  color: #9aa0a6;
+  color: #6b7280;
   font-size: 12px;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -236,22 +241,22 @@
 }
 
 .test-duration {
-  color: #9aa0a6;
+  color: #6b7280;
   font-size: 12px;
 }
 
 .run-single-btn {
   padding: 4px 12px;
-  background: #1f2937;
-  color: #fff;
-  border: none;
+  background: #f3f4f6;
+  color: #374151;
+  border: 1px solid #d1d5db;
   border-radius: 4px;
   cursor: pointer;
   font-size: 12px;
 }
 
 .run-single-btn:hover:not(:disabled) {
-  background: #273244;
+  background: #e5e7eb;
 }
 
 .run-single-btn:disabled {
@@ -260,7 +265,7 @@
 }
 
 .test-error {
-  color: #60a5fa;
+  color: #dc2626;
   font-size: 12px;
   max-width: 300px;
   overflow: hidden;
@@ -270,12 +275,13 @@
 
 .test-error-full {
   width: 100%;
-  color: #60a5fa;
+  color: #dc2626;
   font-size: 12px;
   padding: 8px;
-  background: rgba(37, 99, 235, 0.1);
+  background: rgba(220, 38, 38, 0.05);
   border-radius: 4px;
   margin-top: 4px;
   overflow: auto;
   max-height: 100px;
+  border: 1px solid rgba(220, 38, 38, 0.2);
 }

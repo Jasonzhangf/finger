@@ -37,6 +37,7 @@ import { registerPerformanceRoutes } from './performance.js';
 import { registerWorkflowStateRoutes } from './workflow-state.js';
 import { registerDebugRoutes } from './debug.js';
 import { registerTestRoutes } from './test.js';
+import { registerDryrunRoutes } from './dryrun.js';
 
 export interface RegisterAllRoutesDeps {
   sessionManager: SessionManager;
@@ -198,6 +199,16 @@ export function registerAllRoutes(app: Express, deps: RegisterAllRoutesDeps): vo
 
   registerDebugRoutes(app, {
     registry: deps.registry,
+  });
+
+  registerDryrunRoutes(app, {
+    sessionManager: deps.sessionManager,
+    runtime: deps.runtime,
+    toolRegistry: deps.toolRegistry,
+    sessionWorkspaces: deps.sessionWorkspaces,
+    primaryOrchestratorAgentId: deps.primaryOrchestratorAgentId,
+    primaryOrchestratorTarget: deps.primaryOrchestratorTarget,
+    allowDirectAgentRoute: deps.allowDirectAgentRoute,
   });
 
   registerAgentRuntimeRoutes(app, {

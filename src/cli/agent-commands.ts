@@ -195,3 +195,47 @@ export async function orchestrateCommand(task: string, options: { sessionId?: st
     console.log(`[CLI] Or run: finger events ${workflowId} --watch`);
   }
 }
+
+/**
+ * Dryrun 命令
+ * CLI: finger dryrun <text>
+ * Target: any agent/module
+ */
+export async function dryrunCommand(
+  text: string,
+  options: {
+    target?: string;
+    sessionId?: string;
+    roleProfile?: string;
+    tools?: string[];
+    json?: boolean;
+  } = {},
+): Promise<void> {
+  const target = options.target && options.target.trim().length > 0
+    ? options.target.trim()
+    : 'finger-orchestrator-gateway';
+
+  const message: Record<string, unknown> = {
+    text,
+    ...(options.sessionId ? { sessionId: options.sessionId } : {}),
+    ...(options.tools && options.tools.length > 0 ? { tools: options.tools } : {}),
+  };
+
+  const res = await fetch(`${MESSAGE_HUB_URL}/api/v1/dryrun`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      target,
+      sessionId: options.sessionId,
+      ...(options.roleProfile ? { roleProfile: options.roleProfile } : {}),
+      message,
+    }),
+  });
+
+  if (!res.ok) {
+    throw new Error(`Dryrun error: ${res.statusText}`);
+  }
+
+  const result = await res.json();
+  formatOutput(result, options.json || false);
+}

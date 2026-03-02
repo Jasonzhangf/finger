@@ -27,6 +27,7 @@ export const CODEX_SLASH_COMMANDS: SlashCommandDefinition[] = [
   { name: 'fork', description: 'fork the current chat', supportsInlineArgs: false, implemented: false },
   { name: 'init', description: 'create an AGENTS.md file with instructions for Codex', supportsInlineArgs: false, implemented: false },
   { name: 'compact', description: 'summarize conversation to prevent hitting context limit', supportsInlineArgs: false, implemented: true },
+  { name: 'dryrun', description: 'preview injected prompts/tools without model execution', supportsInlineArgs: true, implemented: true },
   { name: 'plan', description: 'switch to Plan mode', supportsInlineArgs: true, implemented: true },
   { name: 'collab', description: 'change collaboration mode (experimental)', supportsInlineArgs: false, implemented: false },
   { name: 'agent', description: 'switch the active agent thread', supportsInlineArgs: false, implemented: false },

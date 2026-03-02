@@ -310,6 +310,15 @@ function formatToolOutputForDisplay(event: RuntimeEvent): string | null {
   return formatToolInput(event.toolOutput);
 }
 
+function formatJsonBlock(value: unknown): string | null {
+  if (value === undefined || value === null) return null;
+  try {
+    return JSON.stringify(value, null, 2);
+  } catch {
+    return null;
+  }
+}
+
 function buildToolOutputPreview(output: string, maxChars = 120): string {
   const normalized = output.replace(/\s+/g, ' ').trim();
   if (!normalized) return '无可展示输出';
@@ -657,6 +666,40 @@ const MessageItem = React.memo<{
 
   const messageStatus = getMessageStatus();
 
+  const dryrunSnapshot = isRecord(event.metadata) && isRecord(event.metadata.dryrunSnapshot)
+    ? event.metadata.dryrunSnapshot
+    : null;
+  const dryrunTarget = dryrunSnapshot && typeof dryrunSnapshot.target === 'string'
+    ? dryrunSnapshot.target
+    : event.agentId;
+  const dryrunRole = dryrunSnapshot && typeof dryrunSnapshot.roleProfile === 'string'
+    ? dryrunSnapshot.roleProfile
+    : '';
+  const dryrunTools = dryrunSnapshot && isRecord(dryrunSnapshot.tools) ? dryrunSnapshot.tools : null;
+  const dryrunToolList = Array.isArray(dryrunTools?.requested)
+    ? dryrunTools.requested
+      .map((item) => (isRecord(item) && typeof item.name === 'string' ? item.name : ''))
+      .filter((name) => name.length > 0)
+    : [];
+  const dryrunDeveloper = dryrunSnapshot && typeof dryrunSnapshot.developerInstructions === 'string'
+    ? dryrunSnapshot.developerInstructions
+    : null;
+  const dryrunInjected = dryrunSnapshot && typeof dryrunSnapshot.injectedPrompt === 'string'
+    ? dryrunSnapshot.injectedPrompt
+    : null;
+  const dryrunContextLedger = dryrunSnapshot && isRecord(dryrunSnapshot.contextLedger)
+    ? dryrunSnapshot.contextLedger
+    : null;
+  const dryrunTurnContext = dryrunSnapshot && isRecord(dryrunSnapshot.turnContext)
+    ? dryrunSnapshot.turnContext
+    : null;
+  const dryrunEnvironmentContext = dryrunSnapshot && typeof dryrunSnapshot.environmentContext === 'string'
+    ? dryrunSnapshot.environmentContext
+    : null;
+  const dryrunUserInstructions = dryrunSnapshot && typeof dryrunSnapshot.userInstructions === 'string'
+    ? dryrunSnapshot.userInstructions
+    : null;
+
   const handleAgentClick = useCallback(() => {
     if (event.agentId && onAgentClick && (isAgent || (isSystem && event.agentId))) {
       onAgentClick(event.agentId);
@@ -715,6 +758,9 @@ const MessageItem = React.memo<{
         </div>
 
         <div className="message-body">
+          {dryrunSnapshot && (
+            <div className="dryrun-chip">Dryrun</div>
+          )}
           {event.toolName && (
             <div className={`tool-event-chip ${event.kind || 'status'} ${event.toolStatus || ''} ${toolCategoryClass(event.toolCategory)}`}>
               <span className="tool-event-label">{toolChipLabel(event)}</span>
@@ -725,6 +771,67 @@ const MessageItem = React.memo<{
             </div>
           )}
           <div className="message-text">{event.content}</div>
+          {dryrunSnapshot && (
+            <details className="dryrun-details">
+              <summary>
+                查看 Dryrun 详情
+                {dryrunTarget ? ` · ${dryrunTarget}` : ''}
+                {dryrunRole ? ` · ${dryrunRole}` : ''}
+              </summary>
+              {dryrunToolList.length > 0 && (
+                <div className="dryrun-block">
+                  <div className="dryrun-label">Tools</div>
+                  <div className="dryrun-list">{dryrunToolList.join(', ')}</div>
+                </div>
+              )}
+              {dryrunDeveloper && (
+                <div className="dryrun-block">
+                  <div className="dryrun-label">Developer Instructions</div>
+                  <pre className="dryrun-code">{dryrunDeveloper}</pre>
+                </div>
+              )}
+              {dryrunInjected && (
+                <div className="dryrun-block">
+                  <div className="dryrun-label">Injected Prompt</div>
+                  <pre className="dryrun-code">{dryrunInjected}</pre>
+                </div>
+              )}
+              {dryrunUserInstructions && (
+                <div className="dryrun-block">
+                  <div className="dryrun-label">User Instructions</div>
+                  <pre className="dryrun-code">{dryrunUserInstructions}</pre>
+                </div>
+              )}
+              {dryrunEnvironmentContext && (
+                <div className="dryrun-block">
+                  <div className="dryrun-label">Environment Context</div>
+                  <pre className="dryrun-code">{dryrunEnvironmentContext}</pre>
+                </div>
+              )}
+              {dryrunTurnContext && (
+                <div className="dryrun-block">
+                  <div className="dryrun-label">Turn Context</div>
+                  <pre className="dryrun-code">{formatJsonBlock(dryrunTurnContext)}</pre>
+                </div>
+              )}
+              {dryrunContextLedger && (
+                <div className="dryrun-block">
+                  <div className="dryrun-label">Context Ledger</div>
+                  <pre className="dryrun-code">{formatJsonBlock(dryrunContextLedger)}</pre>
+                </div>
+              )}
+              {dryrunTools && (
+                <div className="dryrun-block">
+                  <div className="dryrun-label">Tool Schemas</div>
+                  <pre className="dryrun-code">{formatJsonBlock(dryrunTools)}</pre>
+                </div>
+              )}
+              <div className="dryrun-block">
+                <div className="dryrun-label">Raw Snapshot</div>
+                <pre className="dryrun-code">{formatJsonBlock(dryrunSnapshot)}</pre>
+              </div>
+            </details>
+          )}
           {event.kind === 'action' && event.toolName && (() => {
             const toolInputSummary = buildToolInputSummary(event);
             const toolInput = formatToolInput(event.toolInput);
@@ -901,6 +1008,28 @@ const ChatInput: React.FC<{
 
       if (slashCommand.name === 'compact') {
         onSend({ text: '/compact' });
+        resetDraft();
+        setInputWarning(null);
+        return;
+      }
+
+      if (slashCommand.name === 'dryrun') {
+        const tokens = slashCommand.args;
+        let target: string | undefined;
+        let textInput = slashCommand.rawArgs;
+        if (tokens[0] && tokens[0].startsWith('@')) {
+          target = tokens[0].slice(1);
+          textInput = tokens.slice(1).join(' ').trim();
+        }
+        if (!textInput) {
+          setInputWarning('dryrun 需要输入文本，例如：/dryrun @finger-orchestrator 请生成执行请求');
+          return;
+        }
+        onSend({
+          text: textInput,
+          dryrun: true,
+          ...(target ? { dryrunTarget: target } : {}),
+        });
         resetDraft();
         setInputWarning(null);
         return;

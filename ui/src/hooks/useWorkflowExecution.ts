@@ -1249,6 +1249,7 @@ export function useWorkflowExecution(sessionId: string): UseWorkflowExecutionRet
     const files = inputPayload.files ?? [];
     const review = normalizeReviewSettings(inputPayload.review);
     const planModeEnabled = inputPayload.planModeEnabled === true;
+    const dryrunEnabled = inputPayload.dryrun === true;
     if (!text && images.length === 0 && files.length === 0) return;
       if (text === '/compact' && images.length === 0 && files.length === 0) {
       try {
@@ -1290,13 +1291,18 @@ export function useWorkflowExecution(sessionId: string): UseWorkflowExecutionRet
     const eventTime = new Date().toISOString();
 
     const route = resolveMessageRoute();
+    const dryrunTarget = inputPayload.dryrunTarget && inputPayload.dryrunTarget.trim().length > 0
+      ? inputPayload.dryrunTarget.trim()
+      : route.target;
     setAgentRunStatus({
       phase: 'running',
-      text: route.directTest
-        ? `测试直连 ${route.target} 执行中...`
-        : review
-          ? `finger-general 正在思考（${planModeEnabled ? '计划模式 · ' : ''}Review: ${review.strictness === 'strict' ? '严格' : '主线'}, 上限 ${review.maxTurns}）...`
-          : `finger-general 正在思考${planModeEnabled ? '（计划模式）' : ''}...`,
+      text: dryrunEnabled
+        ? `Dryrun 生成中（${dryrunTarget}）...`
+        : route.directTest
+          ? `测试直连 ${route.target} 执行中...`
+          : review
+            ? `finger-general 正在思考（${planModeEnabled ? '计划模式 · ' : ''}Review: ${review.strictness === 'strict' ? '严格' : '主线'}, 上限 ${review.maxTurns}）...`
+            : `finger-general 正在思考${planModeEnabled ? '（计划模式）' : ''}...`,
       updatedAt: new Date().toISOString(),
     });
 
@@ -1350,6 +1356,66 @@ export function useWorkflowExecution(sessionId: string): UseWorkflowExecutionRet
             : {}),
         },
       };
+
+      if (dryrunEnabled) {
+        await fetch(`/api/v1/sessions/${encodeURIComponent(sessionId)}/messages/append`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            role: 'user',
+            content: displayText,
+          }),
+        });
+
+        const dryrunBody = {
+          target: dryrunTarget,
+          sessionId,
+          message: requestBody.message,
+        };
+        const res = await fetch('/api/v1/dryrun', {
+          method: 'POST',
+          headers: route.headers,
+          signal: abortController.signal,
+          body: JSON.stringify(dryrunBody),
+        });
+        const payload = await safeParseJson(res);
+        if (!res.ok) {
+          const message = extractErrorMessageFromBody(payload) ?? `HTTP ${res.status}`;
+          throw new Error(message);
+        }
+        const snapshot = payload as Record<string, unknown>;
+        const toolCount = Array.isArray(snapshot.tools)
+          ? (snapshot.tools as unknown[]).length
+          : (isRecord(snapshot.tools) && Array.isArray(snapshot.tools.requested)
+            ? snapshot.tools.requested.length
+            : 0);
+        const roleProfile = typeof snapshot.roleProfile === 'string' ? snapshot.roleProfile : '';
+        const summary = `Dryrun 就绪：${dryrunTarget}${roleProfile ? ` (${roleProfile})` : ''} · tools ${toolCount}`;
+
+        await fetch(`/api/v1/sessions/${encodeURIComponent(sessionId)}/messages/append`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            role: 'assistant',
+            content: summary,
+            metadata: {
+              event: {
+                agentId: dryrunTarget,
+                agentName: dryrunTarget,
+              },
+              dryrunSnapshot: snapshot,
+            },
+          }),
+        });
+
+        await loadSessionMessages();
+        setAgentRunStatus({
+          phase: 'idle',
+          text: 'Dryrun 完成',
+          updatedAt: new Date().toISOString(),
+        });
+        return;
+      }
       pushDebugSnapshot({
         stage: 'request_build',
         requestId,

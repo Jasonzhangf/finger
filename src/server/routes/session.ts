@@ -321,10 +321,11 @@ export function registerSessionRoutes(app: Express, deps: SessionRouteDeps): voi
   });
 
   app.post('/api/v1/sessions/:sessionId/messages/append', (req, res) => {
-    const { role, content, attachments } = req.body as {
+    const { role, content, attachments, metadata } = req.body as {
       role?: 'user' | 'assistant' | 'system' | 'orchestrator';
       content?: string;
       attachments?: unknown;
+      metadata?: Record<string, unknown>;
     };
     if (!role || (role !== 'user' && role !== 'assistant' && role !== 'system' && role !== 'orchestrator')) {
       res.status(400).json({ error: 'Invalid role' });
@@ -338,7 +339,10 @@ export function registerSessionRoutes(app: Express, deps: SessionRouteDeps): voi
       req.params.sessionId,
       role,
       content,
-      Array.isArray(attachments) ? { attachments: attachments as Attachment[] } : undefined,
+      {
+        ...(Array.isArray(attachments) ? { attachments: attachments as Attachment[] } : {}),
+        ...(metadata ? { metadata } : {}),
+      },
     );
     if (!message) {
       res.status(404).json({ error: 'Session not found' });

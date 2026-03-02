@@ -301,6 +301,36 @@ describe('ChatInterface input behavior', () => {
     });
     expect(onSendMessage).not.toHaveBeenCalled();
   });
+
+  it('forwards /dryrun with target and payload', async () => {
+    const onSendMessage = vi.fn<(payload: unknown) => void>();
+
+    render(
+      <ChatInterface
+        executionState={null}
+        agents={[]}
+        events={[]}
+        onSendMessage={onSendMessage}
+        onPause={() => undefined}
+        onResume={() => undefined}
+        isPaused={false}
+        isConnected={true}
+      />,
+    );
+
+    const input = screen.getByTestId('chat-input') as HTMLTextAreaElement;
+    fireEvent.change(input, { target: { value: '/dryrun @finger-orchestrator 生成执行请求' } });
+    fireEvent.keyDown(input, { key: 'Enter', shiftKey: false });
+
+    await waitFor(() => {
+      expect(onSendMessage).toHaveBeenCalledTimes(1);
+    });
+    expect(onSendMessage).toHaveBeenCalledWith({
+      text: '生成执行请求',
+      dryrun: true,
+      dryrunTarget: 'finger-orchestrator',
+    });
+  });
 });
 
 describe('ChatInterface tool render', () => {

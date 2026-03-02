@@ -26,6 +26,7 @@ finger --help
 | `finger execute --task <desc>` | 任务执行 |
 | `finger review --proposal <json>` | 质量审查 |
 | `finger orchestrate <task>` | 编排协调 |
+| `finger dryrun <text>` | Dryrun：查看注入的提示词与工具 |
 
 ### 工作流控制
 
@@ -107,6 +108,9 @@ Goodbye!
 ```bash
 # 执行单个任务
 finger orchestrate "搜索 deepseek 最新发布" --watch
+
+# Dryrun（查看注入结果，不触发模型）
+finger dryrun "生成执行请求" --target finger-orchestrator-gateway --json
 
 # 查看工作流状态
 finger status wf-123456

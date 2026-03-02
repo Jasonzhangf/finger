@@ -2254,4 +2254,7 @@ export const __chatCodexInternals = {
   resolveDeveloperRoleFromMetadata,
   normalizeDeveloperRole,
   buildLedgerDeveloperInstructions,
+  resolveUserInstructions,
+  resolveTurnContext,
+  resolveEnvironmentContext,
 };

@@ -133,6 +133,7 @@ export function mapSessionMessageToRuntimeEvent(
       toolName,
       toolCategory: category,
       toolStatus: 'running',
+      ...(metaRecord ? { metadata: metaRecord } : {}),
       ...(toolDurationMs !== undefined ? { toolDurationMs } : {}),
       ...(toolInput !== undefined ? { toolInput } : {}),
       ...(toolOutput !== undefined ? { toolOutput } : {}),
@@ -155,6 +156,7 @@ export function mapSessionMessageToRuntimeEvent(
       toolName,
       toolCategory: category,
       toolStatus: status,
+      ...(metaRecord ? { metadata: metaRecord } : {}),
       ...(toolDurationMs !== undefined ? { toolDurationMs } : {}),
       ...(toolInput !== undefined ? { toolInput } : {}),
       ...(toolOutput !== undefined ? { toolOutput } : {}),
@@ -173,6 +175,7 @@ export function mapSessionMessageToRuntimeEvent(
       content: message.content,
       timestamp: message.timestamp,
       kind: 'thought',
+      ...(metaRecord ? { metadata: metaRecord } : {}),
     };
   }
 
@@ -184,6 +187,7 @@ export function mapSessionMessageToRuntimeEvent(
       timestamp: message.timestamp,
       kind: 'status',
       tokenUsage: estimateTokenUsage(message.content),
+      ...(metaRecord ? { metadata: metaRecord } : {}),
       ...(images.length > 0 ? { images } : {}),
       ...(files.length > 0 ? { files } : {}),
     };
@@ -199,6 +203,7 @@ export function mapSessionMessageToRuntimeEvent(
       timestamp: message.timestamp,
       kind: 'observation',
       tokenUsage: estimateTokenUsage(message.content),
+      ...(metaRecord ? { metadata: metaRecord } : {}),
       ...(images.length > 0 ? { images } : {}),
       ...(files.length > 0 ? { files } : {}),
     };
@@ -213,6 +218,7 @@ export function mapSessionMessageToRuntimeEvent(
       timestamp: message.timestamp,
       kind: 'status',
       tokenUsage: estimateTokenUsage(message.content),
+      ...(metaRecord ? { metadata: metaRecord } : {}),
       ...(images.length > 0 ? { images } : {}),
       ...(files.length > 0 ? { files } : {}),
     };
