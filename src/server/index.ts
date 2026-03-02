@@ -73,7 +73,20 @@ import { registerModuleRegistryRoutes } from './routes/module-registry.js';
 import { registerPerformanceRoutes } from './routes/performance.js';
 import { registerWorkflowStateRoutes } from './routes/workflow-state.js';
 import { registerDebugRoutes } from './routes/debug.js';
-import { FINGER_PATHS, ensureFingerLayout } from '../core/finger-paths.js';
+import { ensureFingerLayout } from '../core/finger-paths.js';
+import {
+  ERROR_SAMPLE_DIR,
+  BLOCKING_MESSAGE_TIMEOUT_MS,
+  BLOCKING_MESSAGE_MAX_RETRIES,
+  BLOCKING_MESSAGE_RETRY_BASE_MS,
+  PRIMARY_ORCHESTRATOR_AGENT_ID,
+  PRIMARY_ORCHESTRATOR_GATEWAY_ID,
+  LEGACY_ORCHESTRATOR_AGENT_ID,
+  LEGACY_ORCHESTRATOR_GATEWAY_ID,
+  PRIMARY_ORCHESTRATOR_TARGET,
+  ALLOW_DIRECT_AGENT_ROUTE,
+  isPrimaryOrchestratorTarget,
+} from './modules/server-constants.js';
 import {
   asString,
   formatDispatchResultContent,
@@ -89,37 +102,6 @@ import {
 import { AgentRuntimeBlock } from '../blocks/index.js';
 import { initializeBlockRegistry } from './modules/block-registry-bootstrap.js';
 
-const ERROR_SAMPLE_DIR = FINGER_PATHS.logs.errorsamplesDir;
-const BLOCKING_MESSAGE_TIMEOUT_MS = Number.isFinite(Number(process.env.FINGER_BLOCKING_MESSAGE_TIMEOUT_MS))
-  ? Math.max(1000, Math.floor(Number(process.env.FINGER_BLOCKING_MESSAGE_TIMEOUT_MS)))
-  : 600_000;
-const BLOCKING_MESSAGE_MAX_RETRIES = Number.isFinite(Number(process.env.FINGER_BLOCKING_MESSAGE_MAX_RETRIES))
-  ? Math.max(0, Math.floor(Number(process.env.FINGER_BLOCKING_MESSAGE_MAX_RETRIES)))
-  : 5;
-const BLOCKING_MESSAGE_RETRY_BASE_MS = Number.isFinite(Number(process.env.FINGER_BLOCKING_MESSAGE_RETRY_BASE_MS))
-  ? Math.max(100, Math.floor(Number(process.env.FINGER_BLOCKING_MESSAGE_RETRY_BASE_MS)))
-  : 750;
-const PRIMARY_ORCHESTRATOR_AGENT_ID = FINGER_ORCHESTRATOR_AGENT_ID;
-const PRIMARY_ORCHESTRATOR_GATEWAY_ID = 'finger-orchestrator-gateway';
-const LEGACY_ORCHESTRATOR_AGENT_ID = 'chat-codex';
-const LEGACY_ORCHESTRATOR_GATEWAY_ID = 'chat-codex-gateway';
-const PRIMARY_ORCHESTRATOR_TARGET = (
-  process.env.FINGER_PRIMARY_ORCHESTRATOR_TARGET
-  || process.env.VITE_CHAT_PANEL_TARGET
-  || PRIMARY_ORCHESTRATOR_GATEWAY_ID
-).trim();
-const ALLOW_DIRECT_AGENT_ROUTE = process.env.FINGER_ALLOW_DIRECT_AGENT_ROUTE === '1';
-
-function isPrimaryOrchestratorTarget(target: string): boolean {
-  const normalized = target.trim();
-  if (normalized.length === 0) return false;
-  return normalized === PRIMARY_ORCHESTRATOR_TARGET
-    || normalized === PRIMARY_ORCHESTRATOR_AGENT_ID
-    || normalized === FINGER_GENERAL_AGENT_ID
-    || normalized === LEGACY_ORCHESTRATOR_AGENT_ID
-    || normalized === PRIMARY_ORCHESTRATOR_GATEWAY_ID
-    || normalized === LEGACY_ORCHESTRATOR_GATEWAY_ID;
-}
 
 type WebSocketServerRuntime = ReturnType<typeof createWebSocketServer>;
 let wsClients: WebSocketServerRuntime['wsClients'];
