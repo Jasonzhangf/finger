@@ -36,6 +36,7 @@ import { registerModuleRegistryRoutes } from './module-registry.js';
 import { registerPerformanceRoutes } from './performance.js';
 import { registerWorkflowStateRoutes } from './workflow-state.js';
 import { registerDebugRoutes } from './debug.js';
+import { registerTestRoutes } from './test.js';
 
 export interface RegisterAllRoutesDeps {
   sessionManager: SessionManager;
@@ -216,4 +217,6 @@ export function registerAllRoutes(app: Express, deps: RegisterAllRoutesDeps): vo
     selectKernelProvider: deps.system.selectKernelProvider,
     testKernelProvider: deps.system.testKernelProvider,
   });
+
+  registerTestRoutes(app);
 }
