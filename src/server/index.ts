@@ -41,9 +41,8 @@ import {
   FINGER_REVIEWER_AGENT_ID,
   FINGER_REVIEWER_ALLOWED_TOOLS,
   ProcessChatCodexRunner,
-  createFingerGeneralModule,
-  type ChatCodexLoopEvent,
 } from '../agents/finger-general/finger-general-module.js';
+import type { ChatCodexLoopEvent } from '../agents/finger-general/finger-general-module.js';
 import { mailbox } from './mailbox.js';
 import { BdTools } from '../agents/shared/bd-tools.js';
 import { inputLockManager } from '../runtime/input-lock.js';
@@ -54,6 +53,7 @@ import { createMockRuntimeKit, type ChatCodexRunnerController } from './modules/
 import { ensureSingleInstance } from './modules/port-guard.js';
 import { createOrchestrationConfigApplier } from './modules/orchestration-config-applier.js';
 import { createSessionLoggingHelpers } from './modules/session-logging.js';
+import { registerFingerRoleModules } from './modules/finger-role-modules.js';
 import { dispatchTaskToAgent as dispatchTaskToAgentModule, registerAgentRuntimeTools } from './modules/agent-runtime/index.js';
 import type { AgentDispatchRequest, AgentRuntimeDeps } from './modules/agent-runtime/types.js';
 import { registerSessionRoutes } from './routes/session.js';
@@ -302,74 +302,28 @@ const chatCodexRunner: ChatCodexRunnerController = mockRuntimeKit.createAdaptive
   mockChatCodexRunner,
   shouldUseMockChatCodexRunner,
 );
-const resolveFingerToolSpecifications = async (toolNames: string[]) => {
-  const resolved: Array<{ name: string; description?: string; inputSchema?: Record<string, unknown> }> = [];
-  for (const name of toolNames) {
-    const tool = globalToolRegistry.get(name);
-    if (!tool || tool.policy !== 'allow') continue;
-    resolved.push({
-      name: tool.name,
-      description: tool.description,
-      inputSchema:
-        typeof tool.inputSchema === 'object' && tool.inputSchema !== null
-          ? (tool.inputSchema as Record<string, unknown>)
-          : { type: 'object', additionalProperties: true },
-    });
-  }
-  return resolved;
-};
-
-const registerFingerRoleModule = async (
-  id: string,
-  roleProfile: 'general' | 'orchestrator' | 'researcher' | 'executor' | 'coder' | 'reviewer',
-  allowedTools: string[],
-): Promise<void> => {
-  const roleModule = createFingerGeneralModule({
-    id,
-    name: id,
-    roleProfile,
-    resolveToolSpecifications: resolveFingerToolSpecifications,
-    toolExecution: {
-      daemonUrl: `http://127.0.0.1:${PORT}`,
-      agentId: id,
-    },
-    onLoopEvent: (event) => {
-      appendSessionLoopLog(event);
-      emitLoopEventToEventBus(event);
-    },
-  }, chatCodexRunner);
-  await moduleRegistry.register(roleModule);
-  const policy = runtime.setAgentToolWhitelist(id, allowedTools);
-  console.log(`[Server] ${id} module registered, tools=${policy.whitelist.join(', ')}`);
-};
-
-await registerFingerRoleModule(FINGER_GENERAL_AGENT_ID, 'general', FINGER_GENERAL_ALLOWED_TOOLS);
-await registerFingerRoleModule(FINGER_ORCHESTRATOR_AGENT_ID, 'orchestrator', FINGER_ORCHESTRATOR_ALLOWED_TOOLS);
-await registerFingerRoleModule(FINGER_RESEARCHER_AGENT_ID, 'researcher', FINGER_RESEARCHER_ALLOWED_TOOLS);
-await registerFingerRoleModule(FINGER_EXECUTOR_AGENT_ID, 'executor', FINGER_EXECUTOR_ALLOWED_TOOLS);
-await registerFingerRoleModule(FINGER_CODER_AGENT_ID, 'coder', FINGER_CODER_ALLOWED_TOOLS);
-await registerFingerRoleModule(FINGER_REVIEWER_AGENT_ID, 'reviewer', FINGER_REVIEWER_ALLOWED_TOOLS);
-
-if (ENABLE_LEGACY_CHAT_CODEX_ALIAS) {
-  const legacyChatCodexAlias = createFingerGeneralModule({
-    id: LEGACY_ORCHESTRATOR_AGENT_ID,
-    name: LEGACY_ORCHESTRATOR_AGENT_ID,
-    roleProfile: 'general',
-    resolveToolSpecifications: async (toolNames) => {
-      return resolveFingerToolSpecifications(toolNames);
-    },
-    toolExecution: {
-      daemonUrl: `http://127.0.0.1:${PORT}`,
-      agentId: LEGACY_ORCHESTRATOR_AGENT_ID,
-    },
-    onLoopEvent: (event) => {
-      appendSessionLoopLog(event);
-      emitLoopEventToEventBus(event);
-    },
-  }, chatCodexRunner);
-  await moduleRegistry.register(legacyChatCodexAlias);
-  runtime.setAgentToolWhitelist(LEGACY_ORCHESTRATOR_AGENT_ID, FINGER_GENERAL_ALLOWED_TOOLS);
-}
+await registerFingerRoleModules({
+  moduleRegistry,
+  runtime,
+  toolRegistry: globalToolRegistry,
+  chatCodexRunner,
+  daemonUrl: `http://127.0.0.1:${PORT}`,
+  onLoopEvent: (event) => {
+    appendSessionLoopLog(event);
+    emitLoopEventToEventBus(event);
+  },
+}, [
+  { id: FINGER_GENERAL_AGENT_ID, roleProfile: 'general', allowedTools: FINGER_GENERAL_ALLOWED_TOOLS },
+  { id: FINGER_ORCHESTRATOR_AGENT_ID, roleProfile: 'orchestrator', allowedTools: FINGER_ORCHESTRATOR_ALLOWED_TOOLS },
+  { id: FINGER_RESEARCHER_AGENT_ID, roleProfile: 'researcher', allowedTools: FINGER_RESEARCHER_ALLOWED_TOOLS },
+  { id: FINGER_EXECUTOR_AGENT_ID, roleProfile: 'executor', allowedTools: FINGER_EXECUTOR_ALLOWED_TOOLS },
+  { id: FINGER_CODER_AGENT_ID, roleProfile: 'coder', allowedTools: FINGER_CODER_ALLOWED_TOOLS },
+  { id: FINGER_REVIEWER_AGENT_ID, roleProfile: 'reviewer', allowedTools: FINGER_REVIEWER_ALLOWED_TOOLS },
+], {
+  enableLegacyChatCodexAlias: ENABLE_LEGACY_CHAT_CODEX_ALIAS,
+  legacyAgentId: LEGACY_ORCHESTRATOR_AGENT_ID,
+  legacyAllowedTools: FINGER_GENERAL_ALLOWED_TOOLS,
+});
 console.log(`[Server] Finger runner mode: ${shouldUseMockChatCodexRunner() ? 'mock' : 'real'} (profile/env aware)`);
 
 agentRuntimeBlock = new AgentRuntimeBlock('agent-runtime-1', {
