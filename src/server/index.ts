@@ -53,7 +53,11 @@ import { createSessionLoggingHelpers } from './modules/session-logging.js';
 import { registerFingerRoleModules } from './modules/finger-role-modules.js';
 import { createAgentConfigReloader } from './modules/agent-config-reloader.js';
 import { resolveRuntimeFlags } from './modules/server-flags.js';
-import { dispatchTaskToAgent as dispatchTaskToAgentModule, registerAgentRuntimeTools } from './modules/agent-runtime/index.js';
+import {
+  dispatchTaskToAgent as dispatchTaskToAgentModule,
+  registerAgentRuntimeTools,
+  createGetAgentRuntimeDeps,
+} from './modules/agent-runtime/index.js';
 import type { AgentDispatchRequest, AgentRuntimeDeps } from './modules/agent-runtime/types.js';
 import { registerSessionRoutes } from './routes/session.js';
 import { registerSystemRoutes } from './routes/system.js';
@@ -183,22 +187,21 @@ const { reloadAgentJsonConfigs, getLoadedAgentConfigDir, getLoadedAgentConfigs }
   initialConfigDir: resolveDefaultAgentConfigDir(),
 });
 
-const getAgentRuntimeDeps = (): AgentRuntimeDeps => ({
-  agentRuntimeBlock,
-  runtime,
-  sessionManager,
-  sessionWorkspaces: sessionWorkspaceManager,
-  askManager,
-  eventBus: globalEventBus,
-  runtimeInstructionBus,
-  bdTools,
-  broadcast: (message) => broadcast(message),
-  primaryOrchestratorAgentId: PRIMARY_ORCHESTRATOR_AGENT_ID,
-  isPrimaryOrchestratorTarget,
-  ensureOrchestratorRootSession: () => sessionWorkspaceManager.ensureOrchestratorRootSession(),
-  ensureRuntimeChildSession: (root, agentId) => sessionWorkspaceManager.ensureRuntimeChildSession(root, agentId),
-  isRuntimeChildSession: (session) => sessionWorkspaceManager.isRuntimeChildSession(session),
-});
+const getAgentRuntimeDeps = createGetAgentRuntimeDeps(
+  () => agentRuntimeBlock,
+  {
+    runtime,
+    sessionManager,
+    sessionWorkspaces: sessionWorkspaceManager,
+    askManager,
+    eventBus: globalEventBus,
+    runtimeInstructionBus,
+    bdTools,
+    broadcast: (message) => broadcast(message),
+    primaryOrchestratorAgentId: PRIMARY_ORCHESTRATOR_AGENT_ID,
+    isPrimaryOrchestratorTarget,
+  },
+);
 
 const dispatchTaskToAgent = (input: AgentDispatchRequest) =>
   dispatchTaskToAgentModule(getAgentRuntimeDeps(), input);
