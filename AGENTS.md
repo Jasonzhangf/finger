@@ -37,6 +37,7 @@ It intentionally avoids project-specific architecture, API, roadmap, and busines
 - 未经用户明确允许，不删除仓库文件。
 - 发现未跟踪文件时优先 review，再决定是否纳入；禁止默认清理/回退。
 - 禁止执行进程终止类命令（如 `kill`/`pkill`/`killall` 等）。
+- 禁止书面或口头使用 “fallback/后备/兜底/替代方案” 等表述。
 
 ## Validation
 - Validate changed behavior with the smallest relevant checks first.
