@@ -341,20 +341,16 @@ async function startInteractiveMode(runtime: RuntimeFacade): Promise<void> {
 ```
 ~/.finger/
 ├── sessions/
-│   ├── <session-id>/
-│   │   ├── session.json       # 元数据 + 消息索引
-│   │   ├── messages.jsonl     # 消息流 (追加写入)
-│   │   ├── plan.json          # 当前 Plan
-│   │   ├── tasks.json         # 任务列表
-│   │   ├── compressed/        # 压缩后的上下文
-│   │   │   ├── summary-1.json
-│   │   │   └── summary-2.json
-│   │   └── files/             # 引用的文件快照
-│   └── ...
-└── workspace/
-    └── <session-id>/          # 工作目录
-        └── ...                # 运行时文件
+│   └── <project编码>/
+│       └── session-<id>/
+│           ├── main.json              # 主会话元数据与消息
+│           ├── agent-<agentId>.json   # 子会话数据
+│           └── checkpoints/
+└── runtime/
+    └── workflows/
 ```
+
+工作目录在项目内：`<projectRoot>/.finger/session/<session-id>/`（内含 memory / deliverables / exchange 等运行时文件）。
 
 ## 6. 服务端 API
 

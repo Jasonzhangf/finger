@@ -15,7 +15,7 @@ import {
   resolveAvailableCliCapabilities,
 } from '../tools/external/cli-capability-registry.js';
 
-const DEFAULT_DAEMON_URL = process.env.FINGER_HUB_URL || 'http://localhost:9999';
+const DEFAULT_DAEMON_URL = process.env.FINGER_HUB_URL || 'http://localhost:5521';
 const DEFAULT_AGENT_ID = process.env.FINGER_CAPABILITY_AGENT_ID || 'manual-cli';
 
 interface DaemonToolResult {

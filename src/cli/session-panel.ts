@@ -2,8 +2,8 @@ import { createInterface, type Interface } from 'readline';
 import type { Command } from 'commander';
 import WebSocket, { type RawData } from 'ws';
 
-const DEFAULT_DAEMON_URL = process.env.FINGER_HUB_URL || 'http://localhost:9999';
-const DEFAULT_WS_URL = process.env.FINGER_WS_URL || 'ws://localhost:9998';
+const DEFAULT_DAEMON_URL = process.env.FINGER_HUB_URL || 'http://localhost:5521';
+const DEFAULT_WS_URL = process.env.FINGER_WS_URL || 'ws://localhost:5522';
 const DEFAULT_GATEWAY_TARGET = 'chat-gateway';
 
 const EVENT_GROUPS = [
@@ -146,7 +146,7 @@ export function deriveWsUrl(daemonUrl: string, wsUrl?: string): string {
   try {
     const parsed = new URL(daemonUrl);
     const protocol = parsed.protocol === 'https:' ? 'wss:' : 'ws:';
-    return `${protocol}//${parsed.hostname}:9998`;
+    return `${protocol}//${parsed.hostname}:5522`;
   } catch {
     return DEFAULT_WS_URL;
   }

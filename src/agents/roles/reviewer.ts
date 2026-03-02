@@ -154,9 +154,37 @@ export class ReviewerRole {
    * 审查已执行任务的完成质量
    */
   async review(epicId: string, tasks: Array<{ id?: string; description: string }>, results: unknown[]): Promise<ReviewResult> {
-    const prompt = '请审查以下任务的执行结果:\n\nEpic ID: ' + epicId + '\n\n任务及结果:\n' + 
-      tasks.map((t, i) => '任务: ' + t.description + '\n结果: ' + JSON.stringify(results[i] || '无')).join('\n\n') +
-      '\n\n请给出审查意见，返回 JSON 格式: { passed: boolean, score: number, comments: string, issues: string[], suggestions: string[] }';
+    const normalizedResults = results.map((item) => (
+      typeof item === 'object' && item !== null ? item as Record<string, unknown> : {}
+    ));
+    const stageSet = new Set(
+      normalizedResults
+        .map((item) => (typeof item.reviewStage === 'string' ? item.reviewStage.trim() : ''))
+        .filter((item) => item.length > 0),
+    );
+    const reviewStage = stageSet.size === 1 ? Array.from(stageSet)[0] : 'mixed';
+    const strictness = normalizedResults
+      .map((item) => (typeof item.strictness === 'string' ? item.strictness.trim() : ''))
+      .find((item) => item.length > 0) ?? 'mainline';
+    const stageGuideline = reviewStage === 'execution_pre'
+      ? '当前是 execution_pre（执行前）审查：应审查任务描述、指派对象、风险和前置条件是否可执行；不要要求已产出的文件/代码结果。'
+      : reviewStage === 'plan'
+        ? '当前是 plan 审查：应审查任务拆解完整性、依赖关系、优先级与可执行性。'
+        : reviewStage === 'deliverables'
+          ? '当前是 deliverables 审查：应审查验收标准、测试要求与交付清单的完整性。'
+          : '当前是 execution_post 或混合审查：应重点审查执行结果质量与可验证性。';
+    const prompt = [
+      '请审查以下任务的执行结果。',
+      `Epic ID: ${epicId}`,
+      `审查阶段: ${reviewStage}`,
+      `审查强度: ${strictness}`,
+      stageGuideline,
+      '',
+      '任务及结果:',
+      tasks.map((t, i) => `任务: ${t.description}\n结果: ${JSON.stringify(results[i] || '无')}`).join('\n\n'),
+      '',
+      '请返回 JSON: { passed: boolean, score: number, comments: string, issues: string[], suggestions: string[] }',
+    ].join('\n');
 
     const response = await this.agent.execute(prompt);
 

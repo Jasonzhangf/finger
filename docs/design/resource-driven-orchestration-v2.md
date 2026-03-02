@@ -175,8 +175,8 @@ if (cycleCompleted && usedTokens > threshold) {
 - `src/orchestration/loop/loop-manager.ts`：循环生命周期引擎
 
 ### 7.2 Agent 接入点
-- `orchestrator-loop`：负责 phase 决策和循环推进
-- `executor-loop`：负责执行节点与资源使用回报
+- `finger-orchestrator`：负责 phase 决策和循环推进
+- `finger-executor`：负责执行节点与资源使用回报
 
 约束：执行器不直接操控全局 phase，只通过事件与结果反馈驱动
 

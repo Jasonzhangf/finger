@@ -105,8 +105,8 @@ describe('cli plugin loader', () => {
 
     const program = new Command();
     const result = await loadDynamicCliPlugins(program, {
-      defaultHttpBaseUrl: 'http://localhost:9999',
-      defaultWsUrl: 'ws://localhost:9999',
+      defaultHttpBaseUrl: 'http://localhost:5521',
+      defaultWsUrl: 'ws://localhost:5522',
       cliVersion: '1.0.0',
     });
     expect(result.failed).toEqual([]);

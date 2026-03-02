@@ -10,7 +10,7 @@
 
 import { appendFileSync, mkdirSync, existsSync, statSync, renameSync, readdirSync, unlinkSync, readFileSync } from 'fs';
 import { join } from 'path';
-import { homedir } from 'os';
+import { FINGER_PATHS } from './finger-paths.js';
 import { ntpTime } from './ntp-time.js';
 
 export type LogLevel = 'debug' | 'info' | 'warn' | 'error' | 'fatal';
@@ -45,7 +45,7 @@ export interface LoggerConfig {
 }
 
 const DEFAULT_CONFIG: LoggerConfig = {
-  logDir: join(homedir(), '.finger', 'logs'),
+  logDir: FINGER_PATHS.logs.dir,
   maxFileSizeMB: 10,
   maxFiles: 30,
   level: 'info',
@@ -77,7 +77,11 @@ export class FingerLogger {
     this.config = { ...DEFAULT_CONFIG, ...config };
     
     if (!existsSync(this.config.logDir)) {
-      mkdirSync(this.config.logDir, { recursive: true });
+      try {
+        mkdirSync(this.config.logDir, { recursive: true });
+      } catch {
+        this.config.enableFile = false;
+      }
     }
     
     this.currentLogFile = this.getLogFileName();

@@ -4,7 +4,7 @@
 
 ## 1. 插件目录
 
-- 默认目录：`~/.finger/plugins/cli`
+- 默认目录：`~/.finger/runtime/plugins/cli`
 - 可覆盖：环境变量 `FINGER_CLI_PLUGIN_DIR`
 
 ## 2. module.json 格式
@@ -49,8 +49,8 @@ export default {
 - `myfinger plugin register-file -i <id> -n <name> -f /path/to/plugin.js`
 - `myfinger plugin register-file -i <id> -n <name> -f /path/to/plugin.js --mode capability`
 
-`mode=plugin` 默认目录：`~/.finger/plugins/cli`  
-`mode=capability` 默认目录：`~/.finger/capabilities/cli`
+`mode=plugin` 默认目录：`~/.finger/runtime/plugins/cli`  
+`mode=capability` 默认目录：`~/.finger/runtime/capabilities/cli`
 
 ## 5. MessageHub 模块动态挂载
 
@@ -58,4 +58,4 @@ Daemon 侧支持两种方式：
 - `myfinger daemon register-module -f /path/to/module.js`
 - `myfinger daemon register-module -m /path/to/module.json`
 
-`~/.finger/autostart` 目录也支持放置 `.module.json`（`type=input/output/agent`），daemon 启动后自动注册。
+`~/.finger/runtime/autostart` 目录也支持放置 `.module.json`（`type=input/output/agent`），daemon 启动后自动注册。

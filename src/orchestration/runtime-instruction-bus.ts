@@ -18,6 +18,12 @@ class RuntimeInstructionBus {
     this.queues.set(workflowId, queue);
   }
 
+  peek(workflowId: string): string[] {
+    const queue = this.queues.get(workflowId);
+    if (!queue || queue.length === 0) return [];
+    return queue.map((item) => item.content);
+  }
+
   consume(workflowId: string): string[] {
     const queue = this.queues.get(workflowId);
     if (!queue || queue.length === 0) return [];

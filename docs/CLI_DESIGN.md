@@ -344,17 +344,32 @@ finger events --group TASK,PROGRESS
 
 ```
 ~/.finger/
-├── daemon.pid           # Daemon PID
-├── daemon.log           # Daemon 日志
+├── config/
+│   ├── config.json
+│   ├── inputs.yaml
+│   ├── outputs.yaml
+│   ├── routes.yaml
+│   ├── agents.json
+│   ├── session-control-plane.json
+│   └── prompts/
+├── logs/
+│   ├── daemon.log
+│   ├── agent-history.json
+│   └── errorsamples/
+├── runtime/
+│   ├── daemon.pid
+│   ├── autostart/
+│   ├── agents/
+│   ├── workflows/
+│   ├── plugins/cli
+│   └── capabilities/cli
 ├── sessions/
-│   ├── session-123/
-│   │   ├── checkpoint.json
-│   │   ├── tasks.json
-│   │   └── events.jsonl
-│   └── session-456/
-│       └── ...
-└── workflows/
-    └── wf-789.json
+│   └── <project编码>/
+│       └── session-<id>/
+│           ├── main.json
+│           ├── agent-<agentId>.json
+│           └── checkpoints/
+└── tmp/
 ```
 
 ### 7.2 会话恢复
@@ -403,21 +418,10 @@ finger execute --task "xxx" --json 2>&1
 
 ### 9.1 配置文件
 
-```bash
-# ~/.finger/config.yaml
-daemon:
-  httpPort: 8080
-  wsPort: 8081
-  logLevel: info
+配置目录：`~/.finger/config/`
 
-agent:
-  provider: iflow
-  timeout: 300000
-
-resource:
-  maxConcurrent: 5
-  timeout: 60000
-```
+- `config.json`（全局 / Provider 配置）
+- `inputs.yaml` / `outputs.yaml` / `routes.yaml`（核心 daemon 配置）
 
 ### 9.2 环境变量
 

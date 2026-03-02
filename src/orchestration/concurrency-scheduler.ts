@@ -10,13 +10,20 @@
 
 import { resourcePool, type ResourceRequirement } from './resource-pool.js';
 // import { performanceMonitor } from '../runtime/performance-monitor.js';
-import type { TaskNode } from '../agents/daemon/orchestrator-loop.js';
 import {
   type ConcurrencyPolicy,
   type SchedulingDecision,
   type ConcurrencyStats,
   DEFAULT_CONCURRENCY_POLICY,
 } from './concurrency-policy.js';
+
+interface TaskNode {
+  id: string;
+  description: string;
+  status: 'pending' | 'ready' | 'in_progress' | 'completed' | 'failed';
+  priority?: number;
+  blockedBy?: string[];
+}
 
 interface QueuedTask {
   task: TaskNode;

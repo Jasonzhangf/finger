@@ -54,7 +54,7 @@
 - 影响：
 - 在共享开发机上存在误伤风险，不符合精确进程管理原则。
 
-3. 配置来源碎片化，未统一到 `~/.finger/config.json` + `module.json`
+3. 配置来源碎片化，未统一到 `~/.finger/config/config.json` + `module.json`
 - 证据：
 - `src/server/index.ts:46`、`src/cli/chat-codex.ts:24`、`src/client/finger-client.ts:98`
 - 影响：
@@ -85,7 +85,7 @@
 - `src/agents/router/router-agent.ts`
   -> `IngressSupervisorAgent`（强制 JSON Guardrail）
 - `rust/kernel-config/src/lib.rs`
-  -> `finger-config` 读取 `~/.finger/config.json`，模块细节读取 `module.json`
+  -> `finger-config` 读取 `~/.finger/config/config.json`，模块细节读取 `module.json`
 
 ## 4. 分阶段改造计划
 
@@ -114,7 +114,7 @@
 - CLI 工具链：`tool list/show/run/register/grant`。
 
 ## Phase 5（配置统一）
-- 用户配置统一 `~/.finger/config.json`。
+- 用户配置统一 `~/.finger/config/config.json`。
 - 系统配置统一 `module.json`。
 - Rust/TS 双端统一配置解析与优先级策略。
 

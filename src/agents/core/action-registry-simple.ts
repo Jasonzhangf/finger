@@ -316,10 +316,11 @@ export function createOrchestratorActions(): ActionDefinition[] {
     },
     {
       name: 'PARALLEL_DISPATCH',
-      description: '并行派发非阻塞任务给多个执行者',
+      description: '并行派发非阻塞任务给多个可用执行者（默认按可用列表轮询）',
       paramsSchema: {
         taskIds: { type: 'array', required: true, description: '要派发的任务 ID 列表' },
-        targetExecutorId: { type: 'string', required: false, description: '目标执行者 ID' },
+        targetExecutorId: { type: 'string', required: false, description: '指定单一执行者 ID（可选）' },
+        targetExecutorIds: { type: 'array', required: false, description: '指定执行者 ID 列表（可选，优先于 targetExecutorId）' },
       },
       handler: async (params, context) => {
         const loopContext = context as { state?: any };
@@ -331,13 +332,32 @@ export function createOrchestratorActions(): ActionDefinition[] {
         if (taskIds.length === 0) {
           return { success: false, observation: 'PARALLEL_DISPATCH failed: no taskIds', error: 'empty taskIds' };
         }
-        const targetExecutorId = String(params.targetExecutorId || state.targetExecutorId || 'executor-loop');
-        
-        const dispatchPromises = taskIds.map(async (taskId) => {
+
+        const executorIds = Array.isArray(params.targetExecutorIds)
+          ? (params.targetExecutorIds as unknown[]).filter((id) => typeof id === 'string').map((id) => (id as string).trim()).filter((id) => id.length > 0)
+          : [];
+        const fallbackExecutorId = typeof params.targetExecutorId === 'string'
+          ? params.targetExecutorId.trim()
+          : '';
+        const availableExecutors = Array.isArray(state.availableExecutors)
+          ? state.availableExecutors.filter((id: unknown) => typeof id === 'string').map((id: string) => id.trim()).filter((id: string) => id.length > 0)
+          : [];
+        const candidates = executorIds.length > 0
+          ? executorIds
+          : fallbackExecutorId
+            ? [fallbackExecutorId]
+            : (availableExecutors.length > 0 ? availableExecutors : (typeof state.targetExecutorId === 'string' ? [state.targetExecutorId] : []));
+
+        if (candidates.length === 0) {
+          return { success: false, observation: 'PARALLEL_DISPATCH failed: no available executors', error: 'no executors' };
+        }
+
+        const dispatchPromises = taskIds.map(async (taskId, idx) => {
           const task = state.taskGraph.find((t: any) => t.id === taskId);
           if (!task || task.status !== 'ready') {
             return { taskId, success: false, error: 'task not ready' };
           }
+          const targetExecutorId = candidates[idx % candidates.length];
           task.status = 'in_progress';
           task.assignee = targetExecutorId;
           try {
@@ -362,15 +382,15 @@ export function createOrchestratorActions(): ActionDefinition[] {
             return { taskId, success: false, error: String(err) };
           }
         });
-        
+
         const results = await Promise.allSettled(dispatchPromises);
         const successCount = results.filter(r => r.status === 'fulfilled' && r.value.success).length;
         const failCount = results.filter(r => r.status === 'fulfilled' && !r.value.success).length;
-        
+
         return {
           success: successCount > 0,
           observation: `并行派发完成：成功${successCount}/${taskIds.length}, 失败${failCount}`,
-          data: { dispatched: taskIds.length, success: successCount, failed: failCount, results },
+          data: { dispatched: taskIds.length, success: successCount, failed: failCount, results, executors: candidates },
         };
       },
     },
@@ -397,7 +417,13 @@ export function createOrchestratorActions(): ActionDefinition[] {
           return { success: true, observation: '无阻塞任务需要处理', data: { handled: 0 } };
         }
         
-        const targetExecutorId = String(params.strongestResourceId || state.targetExecutorId || 'executor-loop');
+        const availableExecutors = Array.isArray(state.availableExecutors)
+          ? state.availableExecutors.filter((id: unknown) => typeof id === 'string').map((id: string) => id.trim()).filter((id: string) => id.length > 0)
+          : [];
+        const targetExecutorId = String(params.strongestResourceId || state.targetExecutorId || availableExecutors[0] || '').trim();
+        if (!targetExecutorId) {
+          return { success: false, observation: 'BLOCKED_REVIEW failed: no available executor', error: 'no executor' };
+        }
         const handledTasks: Array<{ taskId: string; success: boolean; error?: string }> = [];
         
         for (const taskId of blockedTaskIds) {

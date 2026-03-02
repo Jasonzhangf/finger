@@ -9,7 +9,7 @@ import fetch from 'node-fetch';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { spawn, ChildProcess } from 'child_process';
-import { homedir } from 'os';
+import { FINGER_PATHS } from '../../src/core/finger-paths.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DAEMON_PORT = 5523;
@@ -55,7 +55,7 @@ async function stopDaemon(): Promise<void> {
     daemonProcess.kill('SIGTERM');
     daemonProcess = null;
     
-    const pidFile = path.join(homedir(), '.finger', 'daemon.pid');
+    const pidFile = FINGER_PATHS.runtime.daemonPid;
     try {
       const fs = await import('fs');
       if (fs.existsSync(pidFile)) {

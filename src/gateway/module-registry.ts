@@ -1,5 +1,5 @@
 import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'fs';
-import { homedir } from 'os';
+import { FINGER_PATHS } from '../core/finger-paths.js';
 import path from 'path';
 import { spawnSync } from 'child_process';
 import { GatewayModuleManifest, GatewayProbeResult, ResolvedGatewayModule } from './types.js';
@@ -10,7 +10,7 @@ const DEFAULT_CLI_DOC_FILE = 'cli.md';
 const DEFAULT_DOC_EXCERPT_LIMIT = 1200;
 
 export function resolveGatewayDir(): string {
-  return process.env.FINGER_GATEWAY_DIR || path.join(homedir(), '.finger', 'gateways');
+  return process.env.FINGER_GATEWAY_DIR || FINGER_PATHS.runtime.gatewaysDir;
 }
 
 export function ensureGatewayDir(): string {

@@ -7,6 +7,7 @@ interface TestContext {
   hubSendToModule: ReturnType<typeof vi.fn>;
   runtimeSetConfig: ReturnType<typeof vi.fn>;
   emittedEvents: ReturnType<typeof vi.fn>;
+  chatCodexListSessionStates: ReturnType<typeof vi.fn>;
   resourcePoolEntries: Array<{ id: string; status: string }>;
 }
 
@@ -48,6 +49,7 @@ async function createContext(): Promise<TestContext> {
   const hubSendToModule = vi.fn().mockResolvedValue({ ok: true });
   const runtimeSetConfig = vi.fn();
   const emittedEvents = vi.fn().mockResolvedValue(undefined);
+  const chatCodexListSessionStates = vi.fn().mockReturnValue([]);
 
   const resourcePoolEntries: Array<{ id: string; status: string }> = [];
 
@@ -90,7 +92,7 @@ async function createContext(): Promise<TestContext> {
       getCurrentSession: () => ({ id: 'session-default' }),
     },
     chatCodexRunner: {
-      listSessionStates: () => [],
+      listSessionStates: chatCodexListSessionStates,
       interruptSession: () => [],
     },
     resourcePool: {
@@ -111,6 +113,7 @@ async function createContext(): Promise<TestContext> {
     hubSendToModule,
     runtimeSetConfig,
     emittedEvents,
+    chatCodexListSessionStates,
     resourcePoolEntries,
   };
 }
@@ -141,12 +144,14 @@ describe('AgentRuntimeBlock', () => {
     ]));
   });
 
-  it('returns base startup templates for orchestrator/reviewer/executor', async () => {
+  it('returns base startup templates for finger role agents', async () => {
     const templates = await ctx.block.execute('list_startup_templates', {}) as Array<{ id: string; role: string }>;
     expect(templates).toEqual(expect.arrayContaining([
-      expect.objectContaining({ id: 'orchestrator-loop', role: 'orchestrator' }),
-      expect.objectContaining({ id: 'reviewer-loop', role: 'reviewer' }),
-      expect.objectContaining({ id: 'executor-loop', role: 'executor' }),
+      expect.objectContaining({ id: 'finger-orchestrator', role: 'orchestrator' }),
+      expect.objectContaining({ id: 'finger-researcher', role: 'searcher' }),
+      expect.objectContaining({ id: 'finger-executor', role: 'executor' }),
+      expect.objectContaining({ id: 'finger-coder', role: 'executor' }),
+      expect.objectContaining({ id: 'finger-reviewer', role: 'reviewer' }),
     ]));
   });
 
@@ -268,6 +273,37 @@ describe('AgentRuntimeBlock', () => {
     expect(ctx.hubSendToModule).toHaveBeenCalledTimes(2);
   });
 
+  it('marks runtime instance as running when runner reports active turn for its session', async () => {
+    await ctx.block.execute('deploy', {
+      targetAgentId: 'executor-a',
+      targetImplementationId: 'native-main',
+      sessionId: 'session-runtime-active',
+      instanceCount: 1,
+      launchMode: 'orchestrator',
+    });
+
+    ctx.chatCodexListSessionStates.mockReturnValue([
+      {
+        sessionKey: 'session-runtime-active::provider=mock',
+        sessionId: 'session-runtime-active',
+        providerId: 'mock',
+        hasActiveTurn: true,
+      },
+    ]);
+
+    const view = await ctx.block.execute('runtime_view', {}) as {
+      instances: Array<{ agentId: string; sessionId?: string; status: string }>;
+      agents: Array<{ id: string; status: string; runningCount: number }>;
+    };
+
+    const instance = view.instances.find((item) => item.sessionId === 'session-runtime-active' && item.agentId === 'executor-a');
+    expect(instance?.status).toBe('running');
+
+    const agent = view.agents.find((item) => item.id === 'executor-a');
+    expect(agent?.status).toBe('running');
+    expect(agent?.runningCount).toBeGreaterThanOrEqual(1);
+  });
+
   it('guards against self-dispatch blocking deadlock when capacity is exhausted', async () => {
     const first = createDeferred<{ ok: boolean }>();
     ctx.hubSendToModule.mockImplementationOnce(() => first.promise);
@@ -383,5 +419,97 @@ describe('AgentRuntimeBlock', () => {
       taskId: 'task-r1',
       phase: 'retry',
     }));
+  });
+
+  it('exposes running/queued counters and last event in runtime view', async () => {
+    const first = createDeferred<{ ok: boolean }>();
+    ctx.hubSendToModule.mockImplementationOnce(() => first.promise);
+    ctx.hubSendToModule.mockResolvedValueOnce({ ok: true });
+
+    await ctx.block.execute('deploy', {
+      targetAgentId: 'executor-a',
+      targetImplementationId: 'native-main',
+      sessionId: 'session-1',
+      instanceCount: 1,
+      launchMode: 'orchestrator',
+    });
+
+    await ctx.block.execute('dispatch', {
+      sourceAgentId: 'chat-codex',
+      targetAgentId: 'executor-a',
+      task: { text: 't1' },
+      blocking: false,
+    });
+    await ctx.block.execute('dispatch', {
+      sourceAgentId: 'chat-codex',
+      targetAgentId: 'executor-a',
+      task: { text: 't2' },
+      blocking: false,
+      queueOnBusy: true,
+    });
+
+    const view = await ctx.block.execute('runtime_view', {}) as {
+      agents: Array<{
+        id: string;
+        runningCount: number;
+        queuedCount: number;
+        quota: { effective: number; source: string };
+        lastEvent?: { status: string };
+      }>;
+    };
+    const agent = view.agents.find((item) => item.id === 'executor-a');
+    expect(agent).toBeDefined();
+    expect(agent?.runningCount).toBe(1);
+    expect(agent?.queuedCount).toBe(1);
+    expect(agent?.quota).toEqual(expect.objectContaining({ effective: 1, source: 'default' }));
+    expect(agent?.lastEvent?.status).toBe('queued');
+
+    first.resolve({ ok: true });
+  });
+
+  it('applies runtime quota config from deploy request', async () => {
+    await ctx.block.execute('deploy', {
+      targetAgentId: 'executor-a',
+      targetImplementationId: 'native-main',
+      sessionId: 'session-1',
+      instanceCount: 1,
+      config: {
+        defaultQuota: 3,
+        quotaPolicy: {
+          projectQuota: 2,
+          workflowQuota: {
+            'wf-1': 1,
+          },
+        },
+      },
+    });
+
+    const view = await ctx.block.execute('runtime_view', {}) as {
+      agents: Array<{
+        id: string;
+        defaultQuota: number;
+        quotaPolicy: {
+          projectQuota?: number;
+          workflowQuota: Record<string, number>;
+        };
+        quota: { effective: number; source: string };
+      }>;
+      configs: Array<{
+        id: string;
+        defaultQuota?: number;
+        quotaPolicy?: { projectQuota?: number; workflowQuota: Record<string, number> };
+      }>;
+    };
+
+    const agent = view.agents.find((item) => item.id === 'executor-a');
+    expect(agent).toBeDefined();
+    expect(agent?.defaultQuota).toBe(3);
+    expect(agent?.quotaPolicy.projectQuota).toBe(2);
+    expect(agent?.quotaPolicy.workflowQuota['wf-1']).toBe(1);
+    expect(agent?.quota).toEqual(expect.objectContaining({ effective: 2, source: 'project' }));
+
+    const config = view.configs.find((item) => item.id === 'executor-a');
+    expect(config?.defaultQuota).toBe(3);
+    expect(config?.quotaPolicy?.projectQuota).toBe(2);
   });
 });

@@ -279,10 +279,42 @@ export class GatewayManager {
     });
 
     installGatewayFromCommand({
+      id: 'finger-general-gateway',
+      name: 'Finger General Gateway',
+      version: '1.0.0',
+      description: 'CLI gateway for finger-general module',
+      command,
+      args: [cliPath, 'gateway-worker', '--adapter', 'chat-codex', '--daemon-url', this.daemonUrl, '--target', 'finger-general'],
+      direction: 'output',
+      supportedModes: ['sync', 'async'],
+      defaultMode: 'sync',
+      requestTimeoutMs: builtinRequestTimeoutMs,
+      ackTimeoutMs: builtinAckTimeoutMs,
+      helpArgs: [cliPath, 'gateway-worker', '--help'],
+      versionArgs: [],
+    });
+
+    installGatewayFromCommand({
+      id: 'finger-orchestrator-gateway',
+      name: 'Finger Orchestrator Gateway',
+      version: '1.0.0',
+      description: 'CLI gateway for finger-orchestrator module',
+      command,
+      args: [cliPath, 'gateway-worker', '--adapter', 'chat-codex', '--daemon-url', this.daemonUrl, '--target', 'finger-orchestrator'],
+      direction: 'output',
+      supportedModes: ['sync', 'async'],
+      defaultMode: 'sync',
+      requestTimeoutMs: builtinRequestTimeoutMs,
+      ackTimeoutMs: builtinAckTimeoutMs,
+      helpArgs: [cliPath, 'gateway-worker', '--help'],
+      versionArgs: [],
+    });
+
+    installGatewayFromCommand({
       id: 'chat-codex-gateway',
       name: 'Chat Codex Gateway',
       version: '1.0.0',
-      description: 'CLI gateway for chat-codex module',
+      description: 'Legacy CLI gateway alias for finger-general',
       command,
       args: [cliPath, 'gateway-worker', '--adapter', 'chat-codex', '--daemon-url', this.daemonUrl, '--target', 'chat-codex'],
       direction: 'output',
@@ -302,7 +334,7 @@ function inferInputCapability(moduleId: string): {
   acceptFiles: boolean;
   acceptedFileMimePrefixes?: string[];
 } {
-  if (moduleId === 'chat-codex-gateway') {
+  if (moduleId === 'finger-general-gateway' || moduleId === 'finger-orchestrator-gateway' || moduleId === 'chat-codex-gateway') {
     return {
       acceptText: true,
       acceptImages: true,

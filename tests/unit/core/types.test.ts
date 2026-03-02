@@ -28,7 +28,7 @@ describe('Core Types - ERROR_CODES', () => {
 describe('Core Types - DEFAULT_CONFIG', () => {
   it('should have correct default configuration', () => {
     expect(DEFAULT_CONFIG.serverHost).toBe('localhost');
-    expect(DEFAULT_CONFIG.serverPort).toBe(8080);
+    expect(DEFAULT_CONFIG.serverPort).toBe(5521);
     expect(DEFAULT_CONFIG.dbPath).toBe('./data/finger.db');
   });
   it('should have correct retry configuration', () => {

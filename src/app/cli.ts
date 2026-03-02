@@ -11,9 +11,14 @@ import { globalEventBus } from '../runtime/event-bus.js';
 import { globalToolRegistry } from '../runtime/tool-registry.js';
 import { RuntimeFacade } from '../runtime/runtime-facade.js';
 import { registerDefaultRuntimeTools } from '../runtime/default-tools.js';
-import { createOrchestratorLoop } from '../agents/daemon/orchestrator-loop.js';
-import { createExecutorLoop } from '../agents/daemon/executor-loop.js';
-import { createReviewerModule } from '../agents/daemon/reviewer-module.js';
+import {
+  createFingerGeneralModule,
+  FINGER_ORCHESTRATOR_AGENT_ID,
+  FINGER_RESEARCHER_AGENT_ID,
+  FINGER_EXECUTOR_AGENT_ID,
+  FINGER_CODER_AGENT_ID,
+  FINGER_REVIEWER_AGENT_ID,
+} from '../agents/finger-general/finger-general-module.js';
 import type { RuntimeEvent } from '../runtime/events.js';
 
 export interface AppCLIOptions {
@@ -43,37 +48,18 @@ export async function runAppCLI(args: string[]): Promise<void> {
   runtime = new RuntimeFacade(globalEventBus, sessionManager, globalToolRegistry);
   registerDefaultRuntimeTools(globalToolRegistry);
 
-  // 注册 orchestrator-loop 和 executor-loop
-  const { module: orchestratorLoop } = createOrchestratorLoop({
-    id: 'orchestrator-loop',
-    name: 'Orchestrator ReACT Loop',
-    mode: 'auto',
-    cwd: process.cwd(),
-    maxRounds: 10,
-    targetReviewerId: 'reviewer-loop',
-  }, hub);
-  await orchestratorLoop.initialize?.(hub);
-  await moduleRegistry.register(orchestratorLoop);
+  const modules = [
+    createFingerGeneralModule({ id: FINGER_ORCHESTRATOR_AGENT_ID, roleProfile: 'orchestrator' }),
+    createFingerGeneralModule({ id: FINGER_RESEARCHER_AGENT_ID, roleProfile: 'researcher' }),
+    createFingerGeneralModule({ id: FINGER_EXECUTOR_AGENT_ID, roleProfile: 'executor' }),
+    createFingerGeneralModule({ id: FINGER_CODER_AGENT_ID, roleProfile: 'coder' }),
+    createFingerGeneralModule({ id: FINGER_REVIEWER_AGENT_ID, roleProfile: 'reviewer' }),
+  ];
+  for (const module of modules) {
+    await moduleRegistry.register(module);
+  }
 
-  const { module: reviewerLoop } = createReviewerModule({
-    id: 'reviewer-loop',
-    name: 'Reviewer Module',
-    mode: 'auto',
-    cwd: process.cwd(),
-  }, hub);
-  await reviewerLoop.initialize?.(hub);
-  await moduleRegistry.register(reviewerLoop);
-
-  const { module: executorLoop } = createExecutorLoop({
-    id: 'executor-loop',
-    name: 'Executor ReACT Loop',
-    mode: 'auto',
-    cwd: process.cwd(),
-    maxIterations: 5,
-  });
-  await moduleRegistry.register(executorLoop);
-
-  console.log('[App] ReACT Loop modules ready: orchestrator-loop, reviewer-loop, executor-loop');
+  console.log('[App] Finger role modules ready: finger-orchestrator, finger-researcher, finger-executor, finger-coder, finger-reviewer');
 
   // 订阅事件打印
   globalEventBus.subscribeAll(printEvent);
@@ -142,10 +128,10 @@ async function executePrompt(prompt: string): Promise<void> {
   console.log(`\n> ${prompt}\n`);
   await runtime.sendMessage(currentSessionId, prompt);
 
-  // 通过 MessageHub 发送任务给 orchestrator-loop
+  // 通过 MessageHub 发送任务给 finger-orchestrator
   try {
-    console.log('[App] Sending task to orchestrator-loop...');
-    const result = await hub.sendToModule('orchestrator-loop', {
+    console.log('[App] Sending task to finger-orchestrator...');
+    const result = await hub.sendToModule(FINGER_ORCHESTRATOR_AGENT_ID, {
       task: prompt,
       sessionId: currentSessionId,
     });

@@ -48,3 +48,37 @@ These fields are emitted with `agent_runtime_dispatch` events and forwarded in t
 
 - `user.ask` is scoped to the requesting `agentId`.
 - Answering one pending ask only resumes that agent's request and does not consume asks from other agents.
+
+## UI Debug Snapshot Contract
+
+- Scope: UI session page (`ChatInterface`) debug mode only.
+- Toggle: per-session local switch (`Debug Snapshots`), default off.
+- Snapshot granularity: one request can produce multiple stage snapshots.
+
+### Snapshot Stages
+
+- `request_build`: request body and route prepared.
+- `request_attempt`: each retry attempt before `/api/v1/message`.
+- `request_ok`: successful response with status/result metadata.
+- `request_error`: failed attempt with status/error.
+- `chat_codex_turn`: websocket turn events (`turn_start/kernel_event/turn_complete/turn_error`).
+- `phase_transition`: websocket phase transition (`from -> to`).
+- `tool_call` / `tool_result` / `tool_error`: websocket tool execution stages.
+
+### Snapshot Payload (minimal stable fields)
+
+- `id`
+- `timestamp`
+- `sessionId`
+- `stage`
+- `summary`
+- optional: `requestId`, `attempt`, `phase`, `payload`
+
+## Runtime Mode Visibility
+
+- API: `GET /api/v1/orchestrator/runtime-mode`
+- Purpose: expose active orchestrator loop path to UI/debug.
+- Initial truth source in current implementation:
+  - `mode = finger-general-runner` (runtime wired to `finger-orchestrator`).
+  - `fsmV2Implemented = true` if `orchestrator-fsm-v2` exists but not active.
+- UI should show this as non-blocking status text, not as hard gate.

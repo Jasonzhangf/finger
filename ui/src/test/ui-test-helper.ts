@@ -46,7 +46,7 @@ class UITestHelperImpl implements UITestHelper {
     }
 
     // 建立 WebSocket 连接
-    const wsUrl = `ws://${window.location.hostname}:9998`;
+    const wsUrl = `ws://${window.location.hostname}:5522`;
     this.ws = new WebSocket(wsUrl);
     
     this.ws.onopen = () => {

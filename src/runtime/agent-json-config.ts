@@ -1,6 +1,6 @@
 import { existsSync, readdirSync, readFileSync } from 'fs';
-import { homedir } from 'os';
 import path from 'path';
+import { FINGER_PATHS } from '../core/finger-paths.js';
 import type {
   AgentGovernanceRuntimeConfig,
   AgentProviderRuntimeConfig,
@@ -135,7 +135,7 @@ export const AGENT_JSON_SCHEMA: Record<string, unknown> = {
 };
 
 export function resolveDefaultAgentConfigDir(): string {
-  return process.env.FINGER_AGENT_CONFIG_DIR || path.join(homedir(), '.finger', 'agents');
+  return process.env.FINGER_AGENT_CONFIG_DIR || FINGER_PATHS.runtime.agentsDir;
 }
 
 export function loadAgentJsonConfigs(configDir = resolveDefaultAgentConfigDir()): AgentJsonLoadResult {

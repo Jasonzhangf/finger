@@ -390,4 +390,39 @@ describe('ChatInterface tool render', () => {
     expect(details?.hasAttribute('open')).toBe(false);
     expect(screen.getByText(/查看工具输出：/)).not.toBeNull();
   });
+
+  it('toggles tool exposure checkbox and calls updater', async () => {
+    const onUpdateToolExposure = vi.fn().mockResolvedValue(true);
+    render(
+      <ChatInterface
+        executionState={null}
+        agents={[]}
+        events={[]}
+        toolPanelOverview={{
+          availableTools: ['exec_command', 'write_stdin'],
+          exposedTools: ['exec_command'],
+        }}
+        onUpdateToolExposure={onUpdateToolExposure}
+        onSendMessage={vi.fn()}
+        onPause={() => undefined}
+        onResume={() => undefined}
+        isPaused={false}
+        isConnected={true}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: '暴露工具' }));
+
+    const execCheckbox = screen.getByRole('checkbox', { name: 'exec_command' }) as HTMLInputElement;
+    const stdinCheckbox = screen.getByRole('checkbox', { name: 'write_stdin' }) as HTMLInputElement;
+    expect(execCheckbox.checked).toBe(true);
+    expect(stdinCheckbox.checked).toBe(false);
+
+    fireEvent.click(stdinCheckbox);
+    await waitFor(() => {
+      expect(onUpdateToolExposure).toHaveBeenCalledTimes(1);
+    });
+    const args = onUpdateToolExposure.mock.calls[0][0] as string[];
+    expect(args).toContain('write_stdin');
+  });
 });

@@ -5,6 +5,7 @@ set -e
 
 echo "=== Building myfinger ==="
 npm run build
+chmod +x dist/cli/index.js
 
 echo "=== Copying autostart agents ==="
 mkdir -p ~/.finger/autostart

@@ -154,7 +154,7 @@ export const lifecycleManager = new AgentLifecycleManager();
 
 import fs from 'fs';
 import path from 'path';
-import os from 'os';
+import { FINGER_PATHS } from '../../core/finger-paths.js';
 import { HeartbeatBroker, HeartbeatMonitor } from './heartbeat-broker.js';
 
 // Extended lifecycle manager with orphan cleanup
@@ -162,8 +162,7 @@ export function cleanupOrphanProcesses(): { killed: string[]; errors: string[] }
   const killed: string[] = [];
   const errors: string[] = [];
 
-  const fingerHome = path.join(os.homedir(), '.finger');
-  const agentsDir = path.join(fingerHome, 'agents');
+  const agentsDir = FINGER_PATHS.runtime.agentsDir;
 
   if (!fs.existsSync(agentsDir)) {
     return { killed, errors };
@@ -202,7 +201,7 @@ export function cleanupOrphanProcesses(): { killed: string[]; errors: string[] }
     }
   }
 
-  const daemonPidFile = path.join(fingerHome, 'daemon.pid');
+  const daemonPidFile = FINGER_PATHS.runtime.daemonPid;
   if (fs.existsSync(daemonPidFile)) {
     try {
       const pid = parseInt(fs.readFileSync(daemonPidFile, 'utf-8').trim(), 10);

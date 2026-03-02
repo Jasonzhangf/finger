@@ -1,1703 +1,87 @@
-import { useState, useEffect, useCallback, useRef } from 'react';
-import { useWebSocket } from './useWebSocket.js';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { getWebSocket } from '../api/websocket.js';
 import type {
-  WorkflowExecutionState,
-  WorkflowInfo,
-  WorkflowFSMState,
-  WorkflowStatus,
   AgentExecutionDetail,
-  WsMessage,
-  WorkflowUpdatePayload,
-  AgentUpdatePayload,
-  TaskReport,
-  TaskNode,
   AgentRuntime,
+  AgentUpdatePayload,
+  ExecutionRound,
   RuntimeEvent,
-  ReviewSettings,
+  TaskNode,
+  TaskReport,
   UserInputPayload,
   UserRound,
-  ExecutionRound,
-  AgentRoundInfo,
-  RoundEdgeInfo,
-  RuntimeFile,
-  RuntimeImage,
-  RuntimePlanStep,
+  WorkflowExecutionState,
+  WorkflowInfo,
+  WorkflowUpdatePayload,
+  WsMessage,
 } from '../api/types.js';
-
-const CHAT_PANEL_TARGET = (import.meta.env.VITE_CHAT_PANEL_TARGET as string | undefined)?.trim() || 'finger-orchestrator-gateway';
-const DEFAULT_CHAT_AGENT_ID = 'finger-orchestrator';
-const ENABLE_UI_DIRECT_AGENT_TEST_ROUTE =
-  (import.meta.env.VITE_UI_DIRECT_AGENT_TEST_ROUTE as string | undefined)?.trim() === '1';
-const MAX_INLINE_FILE_TEXT_CHARS = 12000;
-const SESSION_MESSAGES_FETCH_LIMIT = 0;
-const DEFAULT_CONTEXT_HISTORY_WINDOW_SIZE = 40;
-const parsedContextWindowSize = Number(import.meta.env.VITE_CONTEXT_HISTORY_WINDOW_SIZE ?? '');
-const CONTEXT_HISTORY_WINDOW_SIZE =
-  Number.isFinite(parsedContextWindowSize) && parsedContextWindowSize > 0
-    ? Math.floor(parsedContextWindowSize)
-    : DEFAULT_CONTEXT_HISTORY_WINDOW_SIZE;
-
-const SESSION_BOUND_WS_TYPES = new Set([
-  'chat_codex_turn',
-  'tool_call',
-  'tool_result',
-  'tool_error',
-  'user_message',
-  'assistant_chunk',
-  'assistant_complete',
-  'waiting_for_user',
-  'user_decision_received',
-  'phase_transition',
-  'workflow_progress',
-  'workflow_update',
-  'agent_update',
-  'agent_runtime_dispatch',
-  'agent_runtime_control',
-  'agent_runtime_status',
-  'agent_runtime_mock_assertion',
-  'runtime_status_changed',
-  'runtime_finished',
-  'input_lock_changed',
-  'typing_indicator',
-  'input_lock_heartbeat_ack',
-]);
-
-function isSessionBoundWsMessage(type: string): boolean {
-  return SESSION_BOUND_WS_TYPES.has(type);
-}
-
-type KernelInputItem =
-  | { type: 'text'; text: string }
-  | { type: 'image'; image_url: string }
-  | { type: 'local_image'; path: string };
-
-interface SessionLog {
-  sessionId: string;
-  agentId: string;
-  agentRole: string;
-  userTask: string;
-  taskId?: string;
-  startTime: string;
-  endTime?: string;
-  success: boolean;
-  iterations: Array<{
-    round: number;
-    action: string;
-    thought?: string;
-    params?: Record<string, unknown>;
-    observation?: string;
-    success: boolean;
-    timestamp: string;
-    duration?: number;
-  }>;
-  totalRounds: number;
-  finalOutput?: string;
-  finalError?: string;
-  stopReason?: string;
-}
-
-interface SessionApiAttachment {
-  id: string;
-  name: string;
-  type: 'image' | 'file' | 'code';
-  url: string;
-  size?: number;
-}
-
-interface SessionApiMessage {
-  id: string;
-  role: 'user' | 'assistant' | 'system' | 'orchestrator';
-  content: string;
-  timestamp: string;
-  type?: 'text' | 'command' | 'plan_update' | 'task_update' | 'tool_call' | 'tool_result' | 'tool_error' | 'agent_step' | 'dispatch';
-  agentId?: string;
-  toolName?: string;
-  toolStatus?: 'success' | 'error';
-  toolDurationMs?: number;
-  toolInput?: unknown;
-  toolOutput?: unknown;
-  metadata?: Record<string, unknown>;
-  attachments?: SessionApiAttachment[];
-}
-
-interface RuntimeTokenUsage {
-  inputTokens?: number;
-  outputTokens?: number;
-  totalTokens?: number;
-  estimated?: boolean;
-}
-
-interface AgentRunStatus {
-  phase: 'idle' | 'running' | 'dispatching' | 'error';
-  text: string;
-  updatedAt: string;
-}
-
-interface RuntimeOverview {
-  reqTokens?: number;
-  respTokens?: number;
-  totalTokens?: number;
-  tokenUpdatedAtLocal?: string;
-  contextUsagePercent?: number;
-  contextTokensInWindow?: number;
-  contextMaxInputTokens?: number;
-  contextThresholdPercent?: number;
-  ledgerFocusMaxChars: number;
-  lastLedgerInsertChars?: number;
-  compactCount: number;
-  updatedAt: string;
-}
-
-interface ToolPanelOverview {
-  availableTools: string[];
-  exposedTools: string[];
-}
-
-export type DebugSnapshotStage =
-  | 'request_build'
-  | 'request_attempt'
-  | 'request_ok'
-  | 'request_error'
-  | 'chat_codex_turn'
-  | 'phase_transition'
-  | 'tool_call'
-  | 'tool_result'
-  | 'tool_error';
-
-export interface DebugSnapshotItem {
-  id: string;
-  timestamp: string;
-  sessionId: string;
-  stage: DebugSnapshotStage;
-  summary: string;
-  requestId?: string;
-  attempt?: number;
-  phase?: string;
-  payload?: unknown;
-}
-
-export interface OrchestratorRuntimeModeState {
-  mode: string;
-  fsmV2Implemented: boolean;
-  runnerModuleId?: string;
-  updatedAt: string;
-}
-
-interface UseWorkflowExecutionReturn {
-  workflow: WorkflowInfo | null;
-  executionState: WorkflowExecutionState | null;
-  runtimeEvents: RuntimeEvent[];
-  userRounds: UserRound[];
-  executionRounds: ExecutionRound[];
-  selectedAgentId: string | null;
-  setSelectedAgentId: (agentId: string | null) => void;
-  isLoading: boolean;
-  error: string | null;
-  startWorkflow: (userTask: string) => Promise<void>;
-  pauseWorkflow: () => Promise<void>;
-  resumeWorkflow: () => Promise<void>;
-  interruptCurrentTurn: () => Promise<boolean>;
-  sendUserInput: (input: UserInputPayload) => Promise<void>;
-  editRuntimeEvent: (eventId: string, content: string) => Promise<boolean>;
-  deleteRuntimeEvent: (eventId: string) => Promise<boolean>;
-  agentRunStatus: AgentRunStatus;
-  runtimeOverview: RuntimeOverview;
-  toolPanelOverview: ToolPanelOverview;
-  contextEditableEventIds: string[];
-  getAgentDetail: (agentId: string) => AgentExecutionDetail | null;
-  getTaskReport: () => TaskReport | null;
-  isConnected: boolean;
-  inputLockState: InputLockState | null;
-  clientId: string | null;
-  acquireInputLock: () => Promise<boolean>;
-  releaseInputLock: () => void;
-  debugSnapshotsEnabled: boolean;
-  setDebugSnapshotsEnabled: (enabled: boolean) => void;
-  debugSnapshots: DebugSnapshotItem[];
-  clearDebugSnapshots: () => void;
-  orchestratorRuntimeMode: OrchestratorRuntimeModeState | null;
-}
-
-interface InputLockState {
-  sessionId: string;
-  lockedBy: string | null;
-  lockedAt: string | null;
-  typing: boolean;
-  lastHeartbeatAt?: string | null;
-  expiresAt?: string | null;
-}
-
-const DEFAULT_LEDGER_FOCUS_MAX_CHARS = 20_000;
-const SEND_RETRY_MAX_ATTEMPTS = 10;
-const SEND_RETRY_BASE_DELAY_MS = 3000;
-const DEBUG_SNAPSHOTS_STORAGE_KEY = 'finger-debug-snapshots-enabled';
-type ToolCategoryLabel = '编辑' | '读取' | '写入' | '计划' | '搜索' | '网络搜索' | '其他';
-type AgentRunPhase = AgentRunStatus['phase'];
-
-interface OrchestratorPhaseUiState {
-  status: WorkflowStatus;
-  fsmState?: WorkflowFSMState;
-  paused: boolean;
-  runPhase: AgentRunPhase;
-}
-
-const ORCHESTRATOR_PHASE_LABELS: Record<string, string> = {
-  boot: '启动探测',
-  idle_probe_bd: '探测可恢复任务',
-  resume_ask: '恢复确认',
-  resume_plan: '加载恢复计划',
-  idle: '空闲等待',
-  intake: '需求接入',
-  ask_switch: '冲突澄清',
-  epic_sync: '同步任务模型',
-  plan_baseline: '建立基线计划',
-  plan_review: '计划评审',
-  observe: '定义观察目标',
-  research_fanout: '并发研究派发',
-  wait_others: '等待研究结果',
-  research_ingest: '回收研究产物',
-  research_eval: '研究充分性评估',
-  detail_design: '详细设计',
-  coder_handoff: '交付编码任务',
-  schedule: '资源调度',
-  queue: '资源排队',
-  dispatch: '派发执行',
-  coder_exec: '编码执行',
-  review_accept: '验收审核',
-  replan_patch: '重规划修补',
-  complete: '已完成',
-  completed: '已完成',
-  cancelled: '已取消',
-  failed: '失败',
-  understanding: '理解任务',
-  high_design: '概要设计',
-  deliverables: '交付清单',
-  plan: '任务拆解',
-  parallel_dispatch: '并行派发',
-  blocked_review: '阻塞审查',
-  verify: '验证交付',
-  replanning: '重规划',
-};
-
-export function describeOrchestratorPhase(phase: string): string {
-  const normalized = phase.trim().toLowerCase();
-  if (!normalized) return '未知阶段';
-  return ORCHESTRATOR_PHASE_LABELS[normalized] ?? normalized;
-}
-
-export function mapOrchestratorPhaseToUiState(phase: string): OrchestratorPhaseUiState {
-  const normalized = phase.trim().toLowerCase();
-  switch (normalized) {
-    case 'idle':
-      return { status: 'planning', fsmState: 'idle', paused: false, runPhase: 'idle' };
-    case 'boot':
-    case 'idle_probe_bd':
-    case 'resume_plan':
-      return { status: 'planning', fsmState: 'plan_loop', paused: false, runPhase: 'running' };
-    case 'resume_ask':
-    case 'ask_switch':
-      return { status: 'paused', fsmState: 'wait_user_decision', paused: true, runPhase: 'idle' };
-    case 'queue':
-      return { status: 'paused', fsmState: 'paused', paused: true, runPhase: 'idle' };
-    case 'review_accept':
-    case 'verify':
-      return { status: 'executing', fsmState: 'review', paused: false, runPhase: 'running' };
-    case 'replan_patch':
-    case 'replanning':
-      return { status: 'executing', fsmState: 'replan_evaluation', paused: false, runPhase: 'running' };
-    case 'schedule':
-    case 'dispatch':
-    case 'coder_exec':
-    case 'parallel_dispatch':
-    case 'blocked_review':
-      return { status: 'executing', fsmState: 'execution', paused: false, runPhase: 'running' };
-    case 'complete':
-    case 'completed':
-      return { status: 'completed', fsmState: 'completed', paused: false, runPhase: 'idle' };
-    case 'failed':
-      return { status: 'failed', fsmState: 'failed', paused: false, runPhase: 'error' };
-    case 'cancelled':
-      return { status: 'paused', fsmState: 'paused', paused: true, runPhase: 'idle' };
-    default:
-      return { status: 'planning', fsmState: 'plan_loop', paused: false, runPhase: 'running' };
-  }
-}
-
-function isPersistedSessionMessageId(id: string): boolean {
-  return id.startsWith('msg-');
-}
-
-function inferAgentType(agentId: string): AgentRuntime['type'] {
-  if (agentId.includes('orchestrator')) return 'orchestrator';
-  if (agentId.includes('reviewer')) return 'reviewer';
-  return 'executor';
-}
-
-function inferAgentStatus(log: SessionLog): AgentRuntime['status'] {
-  if (!log.endTime) return 'running';
-  if (log.success) return 'idle';
-  return 'error';
-}
-
-function mapTaskStatusToPathStatus(status: TaskNode['status']): 'active' | 'completed' | 'error' | 'pending' {
-  if (status === 'in_progress') return 'active';
-  if (status === 'completed') return 'completed';
-  if (status === 'failed') return 'error';
-  return 'pending';
-}
-
-function pickWorkflowForSession(workflows: WorkflowInfo[], sessionId: string, preferredWorkflowId?: string): WorkflowInfo | null {
-  if (workflows.length === 0) return null;
-
-  if (preferredWorkflowId) {
-    const exact = workflows.find((w) => w.id === preferredWorkflowId || w.epicId === preferredWorkflowId);
-    if (exact) return exact;
-  }
-
-  const sameSession = workflows.filter((w) => w.sessionId === sessionId);
-  const candidates = sameSession.length > 0 ? sameSession : workflows;
-
-  const active = candidates
-    .filter((w) => w.status === 'planning' || w.status === 'executing' || w.status === 'paused')
-    .sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());
-
-  if (active.length > 0) return active[0];
-
-  return candidates
-    .slice()
-    .sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime())[0] ?? null;
-}
-
-function computeAgentLoadFromLog(log: SessionLog): number {
-  const rounds = Math.max(log.totalRounds || log.iterations.length || 1, 1);
-  const current = log.iterations.length;
-  if (log.endTime) return 100;
-  return Math.min(95, Math.max(5, Math.round((current / rounds) * 100)));
-}
-
-function buildRoundExecutionPath(
-  tasks: TaskNode[],
-  orchestratorId: string,
-): WorkflowExecutionState['executionPath'] {
-  return tasks.map((task) => ({
-    from: orchestratorId,
-    to: task.assignee || 'finger-executor',
-    status: mapTaskStatusToPathStatus(task.status),
-    message: `${task.id}: ${task.description}`,
-  }));
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null;
-}
-
-function firstStringField(value: Record<string, unknown>, fields: string[]): string | undefined {
-  for (const field of fields) {
-    const candidate = value[field];
-    if (typeof candidate !== 'string') continue;
-    const normalized = candidate.trim();
-    if (normalized.length > 0) return normalized;
-  }
-  return undefined;
-}
-
-function parseJsonObjectString(value: string): Record<string, unknown> | null {
-  const trimmed = value.trim();
-  if (!trimmed.startsWith('{') || !trimmed.endsWith('}')) return null;
-  try {
-    const parsed = JSON.parse(trimmed) as unknown;
-    return isRecord(parsed) ? parsed : null;
-  } catch {
-    return null;
-  }
-}
-
-function looksLikeExecOutput(value: unknown): boolean {
-  if (!isRecord(value)) return false;
-  if (typeof value.exitCode === 'number') return true;
-  if (isRecord(value.termination) && typeof value.termination.type === 'string') return true;
-  if (typeof value.wall_time_seconds === 'number') return true;
-  if (typeof value.text === 'string' && value.text.includes('Process exited with code')) return true;
-  return false;
-}
-
-function unwrapToolPayload(value: unknown): unknown {
-  if (!isRecord(value)) return value;
-  if (isRecord(value.input)) return value.input;
-  if (isRecord(value.args)) return value.args;
-  if (typeof value.arguments === 'string') {
-    const parsed = parseJsonObjectString(value.arguments);
-    if (parsed) return parsed;
-  }
-  return value;
-}
-
-function normalizeToolName(raw: string): string {
-  const normalized = raw.trim().toLowerCase();
-  if (normalized.length === 0) return 'unknown';
-  if (
-    normalized === 'shell'
-    || normalized === 'shell.exec'
-    || normalized === 'shell_command'
-    || normalized === 'local_shell'
-    || normalized === 'unified_exec'
-  ) {
-    return 'exec_command';
-  }
-  if (normalized === 'web_search_request') return 'web_search';
-  return normalized;
-}
-
-function inferToolName(input?: unknown, output?: unknown): string | undefined {
-  const normalizedInputRaw = unwrapToolPayload(input);
-  const normalizedInput = typeof normalizedInputRaw === 'string'
-    ? parseJsonObjectString(normalizedInputRaw) ?? normalizedInputRaw
-    : normalizedInputRaw;
-  if (isRecord(normalizedInput)) {
-    if (typeof normalizedInput.cmd === 'string') return 'exec_command';
-    if (typeof normalizedInput.command === 'string') return 'exec_command';
-    if (Array.isArray(normalizedInput.command) && normalizedInput.command.length > 0) return 'exec_command';
-    if (
-      typeof normalizedInput.chars === 'string' &&
-      (typeof normalizedInput.session_id === 'string' || typeof normalizedInput.sessionId === 'string')
-    ) {
-      return 'write_stdin';
-    }
-    if (typeof normalizedInput.path === 'string') return 'view_image';
-    if (typeof normalizedInput.query === 'string' || typeof normalizedInput.q === 'string') return 'web_search';
-    if (typeof normalizedInput.action === 'string' && normalizedInput.action === 'query') return 'context_ledger.memory';
-  }
-
-  const normalizedOutputRaw = unwrapToolPayload(output);
-  const normalizedOutput = typeof normalizedOutputRaw === 'string'
-    ? parseJsonObjectString(normalizedOutputRaw) ?? normalizedOutputRaw
-    : normalizedOutputRaw;
-  if (isRecord(normalizedOutput)) {
-    if (Array.isArray(normalizedOutput.plan)) return 'update_plan';
-    if (
-      typeof normalizedOutput.path === 'string'
-      && typeof normalizedOutput.mimeType === 'string'
-      && normalizedOutput.mimeType.startsWith('image/')
-    ) {
-      return 'view_image';
-    }
-    if (Array.isArray(normalizedOutput.results)) return 'web_search';
-    if (looksLikeExecOutput(normalizedOutput)) return 'exec_command';
-    if (isRecord(normalizedOutput.result)) {
-      if (looksLikeExecOutput(normalizedOutput.result)) return 'exec_command';
-      if (
-        typeof normalizedOutput.result.path === 'string' &&
-        typeof normalizedOutput.result.mimeType === 'string' &&
-        normalizedOutput.result.mimeType.startsWith('image/')
-      ) {
-        return 'view_image';
-      }
-    }
-  }
-
-  return undefined;
-}
-
-function resolveDisplayToolName(payload: Record<string, unknown>, input?: unknown, output?: unknown): string {
-  const explicitName = firstStringField(payload, ['toolName', 'tool_name', 'tool']);
-  if (explicitName) {
-    const normalized = normalizeToolName(explicitName);
-    if (normalized !== 'unknown') return normalized;
-  }
-  return inferToolName(input, output) ?? 'unknown';
-}
-
-function classifyExecCommand(command: string): ToolCategoryLabel {
-  const normalized = command.trim().toLowerCase();
-  if (normalized.length === 0) return '其他';
-
-  if (/(^|\s)(rg|grep|find|fd)\b/.test(normalized)) return '搜索';
-  if (/(^|\s)(cat|sed|head|tail|less|more|ls|pwd|stat|wc|du|git\s+(show|status|log|diff))\b/.test(normalized)) {
-    return '读取';
-  }
-  if (
-    /(^|\s)(echo|tee|cp|mv|rm|mkdir|rmdir|touch|chmod|chown|git\s+(add|commit|checkout|restore)|npm\s+install|pnpm\s+install|yarn\s+add)\b/.test(normalized)
-    || />\s*[^ ]/.test(normalized)
-  ) {
-    return '写入';
-  }
-  return '其他';
-}
-
-function resolveToolCategoryLabel(toolName: string, input?: unknown): ToolCategoryLabel {
-  if (toolName === 'apply_patch') return '编辑';
-  if (toolName === 'update_plan') return '计划';
-  if (toolName.toLowerCase().includes('dispatch')) return '计划';
-  if (toolName === 'context_ledger.memory') return '搜索';
-  if (toolName === 'web_search') return '网络搜索';
-  if (toolName === 'view_image') return '读取';
-  if (toolName === 'write_stdin') return '写入';
-  if (toolName === 'exec_command' || toolName === 'shell.exec') {
-    const command = extractExecCommand(input);
-    if (command) return classifyExecCommand(command);
-    return '其他';
-  }
-  return '其他';
-}
-
-function truncateInlineText(text: string, maxChars = 140): string {
-  const normalized = text.replace(/\s+/g, ' ').trim();
-  if (normalized.length <= maxChars) return normalized;
-  return `${normalized.slice(0, maxChars)}...`;
-}
-
-function formatCommandArray(command: unknown[]): string {
-  return command
-    .filter((item): item is string | number | boolean => ['string', 'number', 'boolean'].includes(typeof item))
-    .map((item) => String(item))
-    .join(' ')
-    .trim();
-}
-
-function extractExecCommand(input: unknown): string | undefined {
-  const normalizedInput = unwrapToolPayload(input);
-  if (!isRecord(normalizedInput)) return undefined;
-  if (typeof normalizedInput.cmd === 'string' && normalizedInput.cmd.trim().length > 0) {
-    return truncateInlineText(normalizedInput.cmd, 200);
-  }
-  if (typeof normalizedInput.command === 'string' && normalizedInput.command.trim().length > 0) {
-    return truncateInlineText(normalizedInput.command, 200);
-  }
-  if (Array.isArray(normalizedInput.command)) {
-    const formatted = formatCommandArray(normalizedInput.command);
-    if (formatted.length > 0) return truncateInlineText(formatted, 200);
-  }
-  return undefined;
-}
-
-function buildToolExecutionSummary(toolName: string, input?: unknown): string | undefined {
-  const command = extractExecCommand(input);
-  if (command) return command;
-
-  const normalizedInput = unwrapToolPayload(input);
-  if (!isRecord(normalizedInput)) return undefined;
-
-  if (toolName === 'write_stdin' && typeof normalizedInput.chars === 'string') {
-    return `写入 ${normalizedInput.chars.length} 字符`;
-  }
-
-  if (typeof normalizedInput.path === 'string' && normalizedInput.path.trim().length > 0) {
-    return `路径 ${truncateInlineText(normalizedInput.path, 120)}`;
-  }
-
-  const query = typeof normalizedInput.query === 'string'
-    ? normalizedInput.query
-    : typeof normalizedInput.q === 'string'
-      ? normalizedInput.q
-      : '';
-  if (query.trim().length > 0) {
-    return `查询 ${truncateInlineText(query, 120)}`;
-  }
-
-  if (typeof normalizedInput.action === 'string' && normalizedInput.action.trim().length > 0) {
-    return `动作 ${truncateInlineText(normalizedInput.action, 80)}`;
-  }
-
-  return undefined;
-}
-
-function resolveToolActionLabel(toolName: string, input?: unknown): string {
-  const summary = buildToolExecutionSummary(toolName, input);
-  if (summary && summary.trim().length > 0) return summary.trim();
-  if (toolName === 'update_plan') return '更新计划';
-  if (toolName === 'context_ledger.memory') return '查询记忆';
-  if (toolName === 'web_search') return '网络搜索';
-  if (toolName === 'apply_patch') return '应用补丁';
-  if (toolName === 'view_image') return '查看图片';
-  if (toolName === 'write_stdin') return '写入终端';
-  if (toolName === 'exec_command') return '执行命令';
-  return toolName;
-}
-
-function buildFileInputText(file: RuntimeFile): string {
-  const header = `[文件 ${file.name} | ${file.mimeType} | ${file.size} bytes]`;
-  if (typeof file.textContent === 'string' && file.textContent.trim().length > 0) {
-    const trimmed = file.textContent.slice(0, MAX_INLINE_FILE_TEXT_CHARS);
-    const suffix = file.textContent.length > MAX_INLINE_FILE_TEXT_CHARS ? '\n...[文件内容已截断]' : '';
-    return `${header}\n${trimmed}${suffix}`;
-  }
-  return `${header}\n[二进制文件，未内联文本内容]`;
-}
-
-function normalizeRuntimeFileMime(attachment: SessionApiAttachment): string {
-  if (attachment.type === 'code') return 'text/plain';
-  if (attachment.type === 'image') return 'image/*';
-  return 'application/octet-stream';
-}
-
-function toRuntimeImageUrl(url: string): string {
-  const trimmed = url.trim();
-  if (
-    trimmed.startsWith('data:') ||
-    trimmed.startsWith('blob:') ||
-    trimmed.startsWith('http://') ||
-    trimmed.startsWith('https://')
-  ) {
-    return trimmed;
-  }
-  const isPosixAbsPath = trimmed.startsWith('/');
-  const isWindowsAbsPath = /^[A-Za-z]:[\\/]/.test(trimmed);
-  if (!isPosixAbsPath && !isWindowsAbsPath) {
-    return trimmed;
-  }
-  return `/api/v1/files/local-image?path=${encodeURIComponent(trimmed)}`;
-}
-
-function pickFilenameFromPath(inputPath: string): string {
-  const normalized = inputPath.replace(/\\/g, '/');
-  const segments = normalized.split('/').filter((segment) => segment.length > 0);
-  return segments[segments.length - 1] ?? inputPath;
-}
-
-function parseViewImageOutput(output: unknown): RuntimeImage | null {
-  if (!isRecord(output)) return null;
-  const path = typeof output.path === 'string' ? output.path.trim() : '';
-  if (path.length === 0) return null;
-  const mimeType = typeof output.mimeType === 'string' ? output.mimeType : '';
-  if (!mimeType.startsWith('image/')) return null;
-  const size = typeof output.sizeBytes === 'number' && Number.isFinite(output.sizeBytes)
-    ? Math.max(0, Math.floor(output.sizeBytes))
-    : undefined;
-  return {
-    id: `view-image-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
-    name: pickFilenameFromPath(path),
-    url: toRuntimeImageUrl(path),
-    mimeType,
-    size,
-  };
-}
-
-function parseUpdatePlanOutput(output: unknown): {
-  steps: RuntimePlanStep[];
-  explanation?: string;
-  updatedAt?: string;
-} | null {
-  if (!isRecord(output) || !Array.isArray(output.plan)) return null;
-  const steps: RuntimePlanStep[] = [];
-  for (const item of output.plan) {
-    if (!isRecord(item)) continue;
-    if (typeof item.step !== 'string' || item.step.trim().length === 0) continue;
-    if (item.status !== 'pending' && item.status !== 'in_progress' && item.status !== 'completed') continue;
-    steps.push({
-      step: item.step.trim(),
-      status: item.status,
-    });
-  }
-  if (steps.length === 0) return null;
-  return {
-    steps,
-    explanation: typeof output.explanation === 'string' ? output.explanation : undefined,
-    updatedAt: typeof output.updatedAt === 'string' ? output.updatedAt : undefined,
-  };
-}
-
-function stringifyToolPayload(value: unknown, maxChars = 260): string | undefined {
-  if (value === null || value === undefined) return undefined;
-  let raw = '';
-  if (typeof value === 'string') {
-    raw = value;
-  } else {
-    try {
-      raw = JSON.stringify(value, null, 2);
-    } catch {
-      raw = String(value);
-    }
-  }
-  const trimmed = raw.trim();
-  if (trimmed.length === 0) return undefined;
-  return trimmed.length > maxChars ? `${trimmed.slice(0, maxChars)}...` : trimmed;
-}
-
-function cleanTechnicalErrorText(raw: string): string {
-  const normalized = raw
-    .replace(/tool execution failed for [^:]+:\s*/ig, '')
-    .replace(/\b(ENOENT|EACCES|ETIMEDOUT|ECONNREFUSED|EPIPE)\b/gi, '')
-    .replace(/\s+/g, ' ')
-    .trim();
-  return normalized.length > 0 ? normalized : '执行失败';
-}
-
-function humanizeToolError(toolName: string, rawError: unknown): string {
-  const text = typeof rawError === 'string' ? rawError.trim() : '';
-  if (text.length === 0) return `工具执行失败：${toolName}`;
-
-  const spawnMissing = text.match(/spawn\s+([^\s]+)\s+enoent/i);
-  if (spawnMissing) {
-    return `工具执行失败：未找到可执行命令 ${spawnMissing[1]}`;
-  }
-
-  const lower = text.toLowerCase();
-  if (lower.includes('permission denied') || lower.includes('eacces')) {
-    return '工具执行失败：权限不足，当前环境不允许该操作';
-  }
-  if (lower.includes('timed out') || lower.includes('timeout') || lower.includes('etimedout')) {
-    return '工具执行失败：执行超时，请缩小范围后重试';
-  }
-  if (lower.includes('not found') || lower.includes('no such file') || lower.includes('enoent')) {
-    return '工具执行失败：目标命令或文件不存在';
-  }
-
-  return `工具执行失败：${cleanTechnicalErrorText(text)}`;
-}
-
-function extractToolFailureText(output: unknown): string | undefined {
-  if (typeof output === 'string' && output.trim().length > 0) {
-    return output.trim();
-  }
-  if (!isRecord(output)) return undefined;
-
-  if (typeof output.error === 'string' && output.error.trim().length > 0) {
-    return output.error.trim();
-  }
-  if (isRecord(output.result)) {
-    const nested = output.result;
-    if (typeof nested.error === 'string' && nested.error.trim().length > 0) {
-      return nested.error.trim();
-    }
-    if (typeof nested.stderr === 'string' && nested.stderr.trim().length > 0) {
-      return nested.stderr.trim();
-    }
-  }
-  if (typeof output.stderr === 'string' && output.stderr.trim().length > 0) {
-    return output.stderr.trim();
-  }
-
-  return undefined;
-}
-
-function resolveToolResultStatus(output: unknown): 'success' | 'error' {
-  if (!isRecord(output)) return 'success';
-  if (typeof output.ok === 'boolean') return output.ok ? 'success' : 'error';
-  if (typeof output.success === 'boolean') return output.success ? 'success' : 'error';
-  if (typeof output.exitCode === 'number') return output.exitCode === 0 ? 'success' : 'error';
-
-  if (isRecord(output.result)) {
-    const result = output.result;
-    if (typeof result.ok === 'boolean') return result.ok ? 'success' : 'error';
-    if (typeof result.success === 'boolean') return result.success ? 'success' : 'error';
-    if (typeof result.exitCode === 'number') return result.exitCode === 0 ? 'success' : 'error';
-  }
-
-  return 'success';
-}
-
-function buildHumanToolResultOutput(toolName: string, output: unknown): string | undefined {
-  if (
-    toolName !== 'shell.exec'
-    && toolName !== 'exec_command'
-    && toolName !== 'write_stdin'
-    && toolName !== 'shell'
-    && toolName !== 'shell_command'
-  ) {
-    return stringifyToolPayload(output, 1200);
-  }
-
-  if (!isRecord(output)) return stringifyToolPayload(output, 1200);
-  const result = isRecord(output.result) ? output.result : output;
-  const stdout = typeof result.stdout === 'string'
-    ? result.stdout
-    : typeof result.output === 'string'
-      ? result.output
-      : typeof result.text === 'string'
-        ? result.text
-        : '';
-  const stderr = typeof result.stderr === 'string' ? cleanTechnicalErrorText(result.stderr) : '';
-
-  const parts: string[] = [];
-  if (stdout.trim().length > 0) {
-    parts.push(`输出:\n${stdout.trim().slice(0, 2000)}`);
-  }
-  if (stderr.trim().length > 0) {
-    parts.push(`提示:\n${stderr.trim().slice(0, 800)}`);
-  }
-  if (parts.length === 0) {
-    return '命令已执行，无可展示输出。';
-  }
-  return parts.join('\n\n');
-}
-
-function buildToolResultContent(
-  toolName: string,
-  status: 'success' | 'error',
-  duration?: number,
-  errorText?: string,
-  input?: unknown,
-): string {
-  const durationText = typeof duration === 'number' ? ` (${duration}ms)` : '';
-  const actionLabel = resolveToolActionLabel(toolName, input);
-  if (status === 'error') {
-    return errorText ?? `执行失败：${actionLabel}${durationText}`;
-  }
-  return `执行成功：${actionLabel}${durationText}`;
-}
-
-function toSessionAttachments(images: RuntimeImage[], files: RuntimeFile[]): SessionApiAttachment[] {
-  const imageAttachments: SessionApiAttachment[] = images.map((image) => ({
-    id: image.id,
-    name: image.name,
-    type: 'image',
-    url: image.dataUrl || image.url,
-    size: image.size,
-  }));
-  const fileAttachments: SessionApiAttachment[] = files.map((file) => ({
-    id: file.id,
-    name: file.name,
-    type: file.mimeType.startsWith('text/') ? 'code' : 'file',
-    url: file.dataUrl || '',
-    size: file.size,
-  }));
-  return [...imageAttachments, ...fileAttachments];
-}
-
-function mapSessionMessageToRuntimeEvent(message: SessionApiMessage, defaultAgentId: string): RuntimeEvent {
-  const attachments = Array.isArray(message.attachments) ? message.attachments : [];
-  const images: RuntimeImage[] = attachments
-    .filter((item) => item.type === 'image')
-    .map((item) => ({
-      id: item.id,
-      name: item.name,
-      url: toRuntimeImageUrl(item.url),
-      size: item.size,
-    }));
-  const files: RuntimeFile[] = attachments
-    .filter((item) => item.type !== 'image')
-    .map((item) => ({
-      id: item.id,
-      name: item.name,
-      mimeType: normalizeRuntimeFileMime(item),
-      size: item.size ?? 0,
-      dataUrl: item.url.startsWith('data:') ? item.url : undefined,
-    }));
-
-  const metaRecord = isRecord(message.metadata) ? message.metadata : null;
-  const metaEvent = metaRecord && isRecord(metaRecord.event) ? metaRecord.event : null;
-  const explicitAgentId =
-    (typeof message.agentId === 'string' && message.agentId.trim().length > 0 ? message.agentId.trim() : '') ||
-    (metaEvent && typeof metaEvent.agentId === 'string' ? metaEvent.agentId : '');
-  const resolvedAgentId = explicitAgentId || defaultAgentId;
-  const metaAgentName =
-    (metaRecord && typeof metaRecord.agentName === 'string' && metaRecord.agentName.trim().length > 0
-      ? metaRecord.agentName.trim()
-      : '') ||
-    (metaRecord && typeof metaRecord.agentRole === 'string' && metaRecord.agentRole.trim().length > 0
-      ? metaRecord.agentRole.trim()
-      : '');
-  const resolvedAgentName = metaAgentName || explicitAgentId || resolvedAgentId;
-  const toolName =
-    (typeof message.toolName === 'string' && message.toolName.trim().length > 0 ? message.toolName.trim() : '') ||
-    (metaEvent && typeof metaEvent.toolName === 'string' ? metaEvent.toolName : '');
-  const toolInput =
-    message.toolInput !== undefined
-      ? message.toolInput
-      : (metaEvent && isRecord(metaEvent.payload) ? metaEvent.payload.input : undefined);
-  const toolOutput =
-    message.toolOutput !== undefined
-      ? message.toolOutput
-      : (metaEvent && isRecord(metaEvent.payload)
-        ? (metaEvent.payload.output ?? metaEvent.payload.error)
-        : undefined);
-  const toolDurationMs =
-    typeof message.toolDurationMs === 'number'
-      ? message.toolDurationMs
-      : (metaEvent && isRecord(metaEvent.payload) && typeof metaEvent.payload.duration === 'number'
-        ? metaEvent.payload.duration
-        : undefined);
-  const toolStatus = message.toolStatus
-    ?? (message.type === 'tool_error' ? 'error' : message.type === 'tool_result' ? 'success' : undefined);
-
-  if (message.type === 'tool_call' && toolName) {
-    const actionLabel = resolveToolActionLabel(toolName, toolInput);
-    const category = resolveToolCategoryLabel(toolName, toolInput);
-    return {
-      id: message.id,
-      role: 'system',
-      agentId: resolvedAgentId,
-      agentName: resolvedAgentName,
-      content: message.content || `调用工具：${actionLabel}`,
-      timestamp: message.timestamp,
-      kind: 'action',
-      toolName,
-      toolCategory: category,
-      toolStatus: 'running',
-      ...(toolDurationMs !== undefined ? { toolDurationMs } : {}),
-      ...(toolInput !== undefined ? { toolInput } : {}),
-      ...(toolOutput !== undefined ? { toolOutput } : {}),
-    };
-  }
-
-  if ((message.type === 'tool_result' || message.type === 'tool_error') && toolName) {
-    const category = resolveToolCategoryLabel(toolName, toolInput);
-    const status = toolStatus === 'error' ? 'error' : 'success';
-    const errorText = status === 'error' && typeof toolOutput === 'string' ? toolOutput : undefined;
-    const content = message.content || buildToolResultContent(toolName, status, toolDurationMs, errorText, toolInput);
-    return {
-      id: message.id,
-      role: 'system',
-      agentId: resolvedAgentId,
-      agentName: resolvedAgentName,
-      content,
-      timestamp: message.timestamp,
-      kind: 'observation',
-      toolName,
-      toolCategory: category,
-      toolStatus: status,
-      ...(toolDurationMs !== undefined ? { toolDurationMs } : {}),
-      ...(toolInput !== undefined ? { toolInput } : {}),
-      ...(toolOutput !== undefined ? { toolOutput } : {}),
-      ...(status === 'error' && typeof toolOutput === 'string' ? { errorMessage: toolOutput } : {}),
-    };
-  }
-
-  if (message.type === 'agent_step') {
-    return {
-      id: message.id,
-      role: 'system',
-      agentId: resolvedAgentId,
-      agentName: resolvedAgentName,
-      content: message.content,
-      timestamp: message.timestamp,
-      kind: 'thought',
-    };
-  }
-
-  if (message.role === 'user') {
-    return {
-      id: message.id,
-      role: 'user',
-      content: message.content,
-      timestamp: message.timestamp,
-      kind: 'status',
-      tokenUsage: estimateTokenUsage(message.content),
-      ...(images.length > 0 ? { images } : {}),
-      ...(files.length > 0 ? { files } : {}),
-    };
-  }
-
-  if (message.role === 'assistant' || message.role === 'orchestrator') {
-    const agentId = resolvedAgentId;
-    return {
-      id: message.id,
-      role: 'agent',
-      agentId,
-      agentName: resolvedAgentName,
-      content: message.content,
-      timestamp: message.timestamp,
-      kind: 'observation',
-      tokenUsage: estimateTokenUsage(message.content),
-      ...(images.length > 0 ? { images } : {}),
-      ...(files.length > 0 ? { files } : {}),
-    };
-  }
-
-  if (message.role === 'system') {
-    return {
-      id: message.id,
-      role: 'system',
-      ...(explicitAgentId ? { agentId: explicitAgentId, agentName: resolvedAgentName } : {}),
-      content: message.content,
-      timestamp: message.timestamp,
-      kind: 'status',
-      tokenUsage: estimateTokenUsage(message.content),
-      ...(images.length > 0 ? { images } : {}),
-      ...(files.length > 0 ? { files } : {}),
-    };
-  }
-
-  return {
-    id: message.id,
-    role: 'system',
-    content: message.content,
-    timestamp: message.timestamp,
-    kind: 'status',
-    tokenUsage: estimateTokenUsage(message.content),
-    ...(images.length > 0 ? { images } : {}),
-    ...(files.length > 0 ? { files } : {}),
-  };
-}
-
-function buildUserRoundsFromSessionMessages(messages: SessionApiMessage[]): UserRound[] {
-  return messages
-    .filter((item) => item.role === 'user')
-    .map((item) => {
-      const attachments = Array.isArray(item.attachments) ? item.attachments : [];
-      const images: RuntimeImage[] = attachments
-        .filter((attachment) => attachment.type === 'image')
-        .map((attachment) => ({
-          id: attachment.id,
-          name: attachment.name,
-          url: toRuntimeImageUrl(attachment.url),
-          size: attachment.size,
-        }));
-      const files: RuntimeFile[] = attachments
-        .filter((attachment) => attachment.type !== 'image')
-        .map((attachment) => ({
-          id: attachment.id,
-          name: attachment.name,
-          mimeType: normalizeRuntimeFileMime(attachment),
-          size: attachment.size ?? 0,
-          dataUrl: attachment.url.startsWith('data:') ? attachment.url : undefined,
-        }));
-      const text = item.content || '';
-      return {
-        roundId: item.id,
-        timestamp: item.timestamp,
-        summary: text.length > 24 ? `${text.slice(0, 24)}...` : text || '[附件输入]',
-        fullText: text,
-        ...(images.length > 0 ? { images } : {}),
-        ...(files.length > 0 ? { files } : {}),
-      };
-    });
-}
-
-function buildKernelInputItems(text: string, images: RuntimeImage[], files: RuntimeFile[]): KernelInputItem[] {
-  const items: KernelInputItem[] = [];
-  if (text.trim().length > 0) {
-    items.push({ type: 'text', text: text.trim() });
-  }
-
-  for (const image of images) {
-    if (typeof image.dataUrl === 'string' && image.dataUrl.trim().length > 0) {
-      items.push({ type: 'image', image_url: image.dataUrl });
-      continue;
-    }
-    if (image.url.startsWith('data:')) {
-      items.push({ type: 'image', image_url: image.url });
-    }
-  }
-
-  for (const file of files) {
-    if (file.mimeType.startsWith('image/') && typeof file.dataUrl === 'string' && file.dataUrl.trim().length > 0) {
-      const exists = items.some((item) => item.type === 'image' && item.image_url === file.dataUrl);
-      if (!exists) {
-        items.push({ type: 'image', image_url: file.dataUrl });
-      }
-      continue;
-    }
-
-    const hasSameImage = items.some(
-      (item) => item.type === 'image' && typeof file.dataUrl === 'string' && item.image_url === file.dataUrl,
-    );
-    if (!hasSameImage) {
-      items.push({ type: 'text', text: buildFileInputText(file) });
-    }
-  }
-
-  return items;
-}
-
-function normalizeReviewSettings(review: ReviewSettings | undefined): ReviewSettings | undefined {
-  if (!review || review.enabled !== true) return undefined;
-  const target = review.target.trim();
-  if (target.length === 0) return undefined;
-
-  const strictness = review.strictness === 'strict' ? 'strict' : 'mainline';
-  const maxTurns = Number.isFinite(review.maxTurns)
-    ? Math.max(0, Math.floor(review.maxTurns))
-    : 10;
-
-  return {
-    enabled: true,
-    target,
-    strictness,
-    maxTurns,
-  };
-}
-
-function buildGatewayHistory(
-  events: RuntimeEvent[],
-  maxItems: number,
-): Array<{ role: 'user' | 'assistant'; content: string }> {
-  return events
-    .filter((event) => event.role === 'user' || event.role === 'agent')
-    .map((event) => {
-      const role: 'user' | 'assistant' = event.role === 'user' ? 'user' : 'assistant';
-      return {
-        role,
-        content: event.content,
-      };
-    })
-    .filter((event) => event.content.trim().length > 0)
-    .slice(-maxItems);
-}
-
-function buildContextEditableEventIds(events: RuntimeEvent[], maxItems: number): string[] {
-  return events
-    .filter((event) => (event.role === 'user' || event.role === 'agent') && typeof event.id === 'string' && event.id.length > 0)
-    .slice(-maxItems)
-    .map((event) => event.id);
-}
-
-export function mapWsMessageToRuntimeEvent(
-  msg: WsMessage,
-  currentSessionId: string,
-): (Omit<RuntimeEvent, 'id'> & { id?: string }) | null {
-  const payload = isRecord(msg.payload) ? msg.payload : {};
-  const eventSessionId =
-    (typeof msg.sessionId === 'string' ? msg.sessionId : undefined) ||
-    (typeof payload.sessionId === 'string' ? payload.sessionId : undefined);
-
-  if (isSessionBoundWsMessage(msg.type)) {
-    if (!eventSessionId) return null;
-    if (eventSessionId !== currentSessionId) return null;
-  }
-
-  const timestamp = typeof msg.timestamp === 'string' ? msg.timestamp : new Date().toISOString();
-  const agentId =
-    (typeof msg.agentId === 'string' ? msg.agentId : undefined) ||
-    (typeof payload.agentId === 'string' ? payload.agentId : undefined);
-
-  switch (msg.type) {
-    case 'task_started':
-    case 'task_completed':
-    case 'task_failed':
-      return null;
-    case 'tool_call':
-      return null;
-    case 'tool_result':
-      {
-        const output = payload.output;
-        const toolInput = payload.input;
-        const toolName = resolveDisplayToolName(payload, toolInput, output);
-        const toolSeq = typeof payload.seq === 'number' && Number.isFinite(payload.seq)
-          ? Math.max(0, Math.floor(payload.seq))
-          : undefined;
-        const toolId = typeof payload.toolId === 'string'
-          ? payload.toolId
-          : toolSeq !== undefined
-            ? `seq-${toolSeq}`
-            : undefined;
-        const duration = typeof payload.duration === 'number' ? payload.duration : undefined;
-        const status = resolveToolResultStatus(output);
-        const failureText = status === 'error'
-          ? humanizeToolError(toolName, extractToolFailureText(output))
-          : undefined;
-        const humanOutput = status === 'error'
-          ? (failureText ?? buildHumanToolResultOutput(toolName, output))
-          : buildHumanToolResultOutput(toolName, output);
-
-        if (toolName === 'view_image') {
-          const image = parseViewImageOutput(output);
-          if (image) {
-            return {
-              ...(toolId ? { id: `tool:${toolId}:result` } : {}),
-              role: 'agent',
-              agentId: agentId || DEFAULT_CHAT_AGENT_ID,
-              agentName: agentId || DEFAULT_CHAT_AGENT_ID,
-              kind: 'observation',
-              toolName,
-              toolCategory: resolveToolCategoryLabel(toolName, toolInput),
-              toolStatus: 'success',
-              toolDurationMs: duration,
-              content: buildToolResultContent(toolName, 'success', duration, undefined, toolInput),
-              timestamp,
-              images: [image],
-              ...(toolInput !== undefined ? { toolInput } : {}),
-            };
-          }
-        }
-
-        if (toolName === 'update_plan') {
-          const planOutput = parseUpdatePlanOutput(output);
-          if (planOutput) {
-            return {
-              ...(toolId ? { id: `tool:${toolId}:result` } : {}),
-              role: 'agent',
-              agentId: agentId || DEFAULT_CHAT_AGENT_ID,
-              agentName: agentId || DEFAULT_CHAT_AGENT_ID,
-              kind: 'observation',
-              toolName,
-              toolCategory: resolveToolCategoryLabel(toolName, toolInput),
-              toolStatus: 'success',
-              toolDurationMs: duration,
-              content: buildToolResultContent(toolName, 'success', duration, undefined, toolInput),
-              timestamp,
-              planSteps: planOutput.steps,
-              planExplanation: planOutput.explanation,
-              planUpdatedAt: planOutput.updatedAt,
-              ...(toolInput !== undefined ? { toolInput } : {}),
-            };
-          }
-        }
-
-        return {
-          ...(toolId ? { id: `tool:${toolId}:result` } : {}),
-          role: 'agent',
-          agentId: agentId || DEFAULT_CHAT_AGENT_ID,
-          agentName: agentId || DEFAULT_CHAT_AGENT_ID,
-          kind: 'observation',
-          toolName,
-          toolCategory: resolveToolCategoryLabel(toolName, toolInput),
-          toolStatus: status,
-          toolOutput: humanOutput,
-          toolDurationMs: duration,
-          content: buildToolResultContent(toolName, status, duration, failureText, toolInput),
-          ...(toolInput !== undefined ? { toolInput } : {}),
-          ...(failureText ? { errorMessage: failureText } : {}),
-          timestamp,
-        };
-      }
-    case 'tool_error':
-      {
-        const toolName = resolveDisplayToolName(payload, payload.input, payload.output);
-        const toolSeq = typeof payload.seq === 'number' && Number.isFinite(payload.seq)
-          ? Math.max(0, Math.floor(payload.seq))
-          : undefined;
-        const toolId = typeof payload.toolId === 'string'
-          ? payload.toolId
-          : toolSeq !== undefined
-            ? `seq-${toolSeq}`
-            : undefined;
-        const failureText = humanizeToolError(toolName, payload.error);
-        return {
-          ...(toolId ? { id: `tool:${toolId}:error` } : {}),
-          role: 'agent',
-          agentId: agentId || DEFAULT_CHAT_AGENT_ID,
-          agentName: agentId || DEFAULT_CHAT_AGENT_ID,
-          kind: 'observation',
-          toolName,
-          toolCategory: resolveToolCategoryLabel(toolName, payload.input),
-          toolStatus: 'error',
-          toolOutput: failureText,
-          content: failureText,
-          errorMessage: failureText,
-          timestamp,
-        };
-      }
-    case 'assistant_chunk':
-      if (typeof payload.content !== 'string' || payload.content.length === 0) return null;
-      {
-        const messageId = typeof payload.messageId === 'string' ? payload.messageId.trim() : '';
-        const eventId = messageId.length > 0 ? `assistant:${messageId}` : undefined;
-        return {
-          ...(eventId ? { id: eventId } : {}),
-          role: 'agent',
-          agentId: agentId || DEFAULT_CHAT_AGENT_ID,
-          agentName: agentId || DEFAULT_CHAT_AGENT_ID,
-          kind: 'observation',
-          content: payload.content,
-          timestamp,
-        };
-      }
-    case 'assistant_complete':
-      {
-        const messageId = typeof payload.messageId === 'string' ? payload.messageId.trim() : '';
-        const eventId = messageId.length > 0 ? `assistant:${messageId}` : undefined;
-        const content = typeof payload.content === 'string' ? payload.content.trim() : '';
-        if (content.length === 0) return null;
-        return {
-          ...(eventId ? { id: eventId } : {}),
-          role: 'agent',
-          agentId: agentId || DEFAULT_CHAT_AGENT_ID,
-          agentName: agentId || DEFAULT_CHAT_AGENT_ID,
-          kind: 'observation',
-          content,
-          timestamp,
-        };
-      }
-    case 'workflow_progress':
-      return {
-        role: 'system',
-        kind: 'status',
-        content:
-          typeof payload.overallProgress === 'number'
-            ? `进度：${Math.round(payload.overallProgress)}%`
-            : '工作流进度更新',
-        timestamp,
-      };
-    case 'phase_transition':
-      {
-        const from = String((payload as Record<string, unknown>).from ?? '').trim();
-        const to = String((payload as Record<string, unknown>).to ?? '').trim();
-        const fromLabel = from ? describeOrchestratorPhase(from) : '?';
-        const toLabel = to ? describeOrchestratorPhase(to) : '?';
-      return {
-        role: 'system',
-        kind: 'status',
-        content: `阶段切换：${fromLabel} -> ${toLabel}`,
-        timestamp,
-      };
-      }
-    case 'waiting_for_user':
-      return {
-        role: 'system',
-        kind: 'status',
-        content: `等待用户决策：${typeof payload.reason === 'string' ? payload.reason : '需要确认'}`,
-        timestamp,
-      };
-    case 'user_decision_received':
-      return {
-        role: 'system',
-        kind: 'status',
-        content: '已接收用户决策',
-        timestamp,
-      };
-    case 'agent_runtime_dispatch':
-      {
-        const target = typeof payload.targetAgentId === 'string' ? payload.targetAgentId : 'unknown-agent';
-        const status = typeof payload.status === 'string' ? payload.status : 'unknown';
-        const summary = typeof payload.summary === 'string' ? payload.summary : '';
-        const content = summary.length > 0
-          ? `[dispatch] ${target} ${status} - ${summary}`
-          : `[dispatch] ${target} ${status}`;
-        return {
-          role: 'system',
-          kind: 'status',
-          content,
-          timestamp,
-        };
-      }
-    case 'agent_runtime_control':
-      {
-        const action = typeof payload.action === 'string' ? payload.action : 'unknown';
-        const status = typeof payload.status === 'string' ? payload.status : 'unknown';
-        const content = `[control] ${action} -> ${status}`;
-        return {
-          role: 'system',
-          kind: 'status',
-          content,
-          timestamp,
-        };
-      }
-    case 'agent_runtime_status':
-      {
-        const summary = typeof payload.summary === 'string' ? payload.summary.trim() : '';
-        const status = typeof payload.status === 'string' ? payload.status : 'unknown';
-        const content = summary.length > 0
-          ? `[runtime] ${status} - ${summary}`
-          : `[runtime] ${status}`;
-        return {
-          role: 'system',
-          kind: 'status',
-          content,
-          timestamp,
-        };
-      }
-    case 'agent_runtime_mock_assertion':
-      {
-        const assertion = isRecord(payload.payload) ? payload.payload : payload;
-        const summary = typeof assertion.content === 'string' ? assertion.content : 'mock assertion';
-        const result = isRecord(assertion.result) ? assertion.result : {};
-        const resultSummary = typeof result.summary === 'string' ? result.summary : '';
-        const content = resultSummary
-          ? `[assert] ${summary} => ${resultSummary}`
-          : `[assert] ${summary}`;
-        return {
-          role: 'system',
-          kind: 'status',
-          content,
-          timestamp,
-        };
-      }
-    case 'runtime_status_changed':
-      return {
-        role: 'system',
-        kind: 'status',
-        content: `[runtime] status=${String(payload.status ?? 'unknown')}`,
-        timestamp,
-      };
-    case 'runtime_finished':
-      return {
-        role: 'system',
-        kind: 'status',
-        content: `[runtime] finished: ${String(payload.finalStatus ?? payload.status ?? 'unknown')}`,
-        timestamp,
-      };
-    default:
-      return null;
-  }
-}
-
-function extractChatReply(result: unknown): {
-  reply: string;
-  agentId: string;
-  tokenUsage?: RuntimeTokenUsage;
-  pendingInputAccepted?: boolean;
-} {
-  const candidate = isRecord(result) && isRecord(result.output) ? result.output : result;
-
-  if (typeof candidate === 'string') {
-    return { reply: candidate, agentId: DEFAULT_CHAT_AGENT_ID, tokenUsage: estimateTokenUsage(candidate) };
-  }
-
-  if (!isRecord(candidate)) {
-    const reply = JSON.stringify(candidate);
-    return { reply, agentId: DEFAULT_CHAT_AGENT_ID, tokenUsage: estimateTokenUsage(reply) };
-  }
-
-  const agentId = typeof candidate.module === 'string' ? candidate.module : DEFAULT_CHAT_AGENT_ID;
-  const metadata = isRecord(candidate.metadata) ? candidate.metadata : null;
-  const pendingInputAccepted =
-    candidate.pendingInputAccepted === true
-    || metadata?.pendingInputAccepted === true;
-  if (candidate.success === false) {
-    const error = typeof candidate.error === 'string' ? candidate.error : 'finger-general request failed';
-    throw new Error(error);
-  }
-
-  if (typeof candidate.response === 'string' && candidate.response.trim().length > 0) {
-    return {
-      reply: candidate.response,
-      agentId,
-      tokenUsage: parseTokenUsage(candidate) ?? estimateTokenUsage(candidate.response),
-      ...(pendingInputAccepted ? { pendingInputAccepted: true } : {}),
-    };
-  }
-
-  if (typeof candidate.output === 'string' && candidate.output.trim().length > 0) {
-    return {
-      reply: candidate.output,
-      agentId,
-      tokenUsage: parseTokenUsage(candidate) ?? estimateTokenUsage(candidate.output),
-      ...(pendingInputAccepted ? { pendingInputAccepted: true } : {}),
-    };
-  }
-
-  if (typeof candidate.error === 'string' && candidate.error.length > 0) {
-    throw new Error(candidate.error);
-  }
-
-  const reply = JSON.stringify(candidate, null, 2);
-  return {
-    reply,
-    agentId,
-    tokenUsage: parseTokenUsage(candidate) ?? estimateTokenUsage(reply),
-    ...(pendingInputAccepted ? { pendingInputAccepted: true } : {}),
-  };
-}
-
-function parseTokenUsage(candidate: Record<string, unknown>): RuntimeTokenUsage | undefined {
-  const fromCandidate = normalizeTokenUsage(candidate);
-  if (fromCandidate) return fromCandidate;
-  if (isRecord(candidate.metadata)) {
-    const fromMetadata = normalizeTokenUsage(candidate.metadata);
-    if (fromMetadata) return fromMetadata;
-    const fromRoundTrace = extractTokenUsageFromRoundTrace(candidate.metadata);
-    if (fromRoundTrace) return fromRoundTrace;
-  }
-  const fromRoundTrace = extractTokenUsageFromRoundTrace(candidate);
-  if (fromRoundTrace) return fromRoundTrace;
-  return undefined;
-}
-
-function extractTokenUsageFromRoundTrace(source: Record<string, unknown>): RuntimeTokenUsage | undefined {
-  const traces = source.round_trace ?? source.roundTrace;
-  if (!Array.isArray(traces) || traces.length === 0) return undefined;
-  for (let i = traces.length - 1; i >= 0; i -= 1) {
-    const item = traces[i];
-    if (!isRecord(item)) continue;
-    const inputTokens = parseNumberLike(item.input_tokens, item.inputTokens);
-    const outputTokens = parseNumberLike(item.output_tokens, item.outputTokens);
-    const totalTokens = parseNumberLike(item.total_tokens, item.totalTokens);
-    if (inputTokens === undefined && outputTokens === undefined && totalTokens === undefined) continue;
-    return {
-      ...(inputTokens !== undefined ? { inputTokens } : {}),
-      ...(outputTokens !== undefined ? { outputTokens } : {}),
-      ...(totalTokens !== undefined ? { totalTokens } : {}),
-      estimated: false,
-    };
-  }
-  return undefined;
-}
-
-function normalizeTokenUsage(source: Record<string, unknown>): RuntimeTokenUsage | undefined {
-  const usage = isRecord(source.usage) ? source.usage : source;
-  const prompt = parseNumberLike(
-    usage.prompt_tokens,
-    usage.input_tokens,
-    usage.promptTokens,
-    usage.inputTokens,
-  );
-  const completion = parseNumberLike(
-    usage.completion_tokens,
-    usage.output_tokens,
-    usage.completionTokens,
-    usage.outputTokens,
-  );
-  const total = parseNumberLike(
-    usage.total_tokens,
-    usage.totalTokens,
-  );
-
-  if (prompt === undefined && completion === undefined && total === undefined) return undefined;
-  return {
-    ...(prompt !== undefined ? { inputTokens: prompt } : {}),
-    ...(completion !== undefined ? { outputTokens: completion } : {}),
-    ...(total !== undefined ? { totalTokens: total } : {}),
-    estimated: false,
-  };
-}
-
-function parseNumberLike(...values: unknown[]): number | undefined {
-  for (const value of values) {
-    if (typeof value === 'number' && Number.isFinite(value) && value >= 0) {
-      return Math.round(value);
-    }
-    if (typeof value === 'string' && value.trim().length > 0) {
-      const parsed = Number(value);
-      if (Number.isFinite(parsed) && parsed >= 0) {
-        return Math.round(parsed);
-      }
-    }
-  }
-  return undefined;
-}
-
-function computeContextUsagePercent(
-  contextTokensInWindow: number | undefined,
-  contextMaxInputTokens: number | undefined,
-): number | undefined {
-  if (
-    typeof contextTokensInWindow !== 'number'
-    || !Number.isFinite(contextTokensInWindow)
-    || contextTokensInWindow < 0
-    || typeof contextMaxInputTokens !== 'number'
-    || !Number.isFinite(contextMaxInputTokens)
-    || contextMaxInputTokens <= 0
-  ) {
-    return undefined;
-  }
-  const ratio = Math.floor((contextTokensInWindow / contextMaxInputTokens) * 100);
-  return Math.max(0, Math.min(100, ratio));
-}
-
-function isAbortError(error: unknown): boolean {
-  if (error instanceof DOMException && error.name === 'AbortError') return true;
-  if (error instanceof Error && error.name === 'AbortError') return true;
-  const message = error instanceof Error ? error.message : String(error);
-  return message.toLowerCase().includes('aborted');
-}
-
-async function safeParseJson(response: Response): Promise<Record<string, unknown> | null> {
-  try {
-    const payload = (await response.json()) as unknown;
-    return isRecord(payload) ? payload : null;
-  } catch {
-    return null;
-  }
-}
-
-function extractErrorMessageFromBody(body: Record<string, unknown> | null): string | undefined {
-  if (!body) return undefined;
-  const direct = firstStringField(body, ['error', 'message']);
-  if (direct) return direct;
-  if (isRecord(body.result)) {
-    const nested = firstStringField(body.result, ['error', 'message']);
-    if (nested) return nested;
-  }
-  if (isRecord(body.payload)) {
-    const nested = firstStringField(body.payload, ['error', 'message']);
-    if (nested) return nested;
-  }
-  return undefined;
-}
-
-function extractCompactSummary(body: Record<string, unknown> | null): string | undefined {
-  if (!body) return undefined;
-  const summary = firstStringField(body, ['summary']);
-  if (!summary) return undefined;
-  return truncateInlineText(summary, 220);
-}
-
-function estimateTokenUsage(text: string): RuntimeTokenUsage {
-  const trimmed = text.trim();
-  if (trimmed.length === 0) {
-    return { totalTokens: 0, estimated: true };
-  }
-  const total = Math.max(1, Math.ceil(trimmed.length / 4));
-  return { totalTokens: total, estimated: true };
-}
-
-function parseInputLockState(value: unknown): InputLockState | null {
-  if (!isRecord(value)) return null;
-  if (typeof value.sessionId !== 'string') return null;
-  const lockedBy = typeof value.lockedBy === 'string' ? value.lockedBy : null;
-  const lockedAt = typeof value.lockedAt === 'string' ? value.lockedAt : null;
-  const typing = value.typing === true;
-  const lastHeartbeatAt = typeof value.lastHeartbeatAt === 'string' ? value.lastHeartbeatAt : null;
-  const expiresAt = typeof value.expiresAt === 'string' ? value.expiresAt : null;
-
-  return {
-    sessionId: value.sessionId,
-    lockedBy,
-    lockedAt,
-    typing,
-    lastHeartbeatAt,
-    expiresAt,
-  };
-}
-
-function normalizeToolNameList(value: unknown): string[] {
-  if (!Array.isArray(value)) return [];
-  const names = value
-    .filter((item): item is string => typeof item === 'string')
-    .map((item) => item.trim())
-    .filter((item) => item.length > 0)
-    .map(normalizeToolName);
-  return Array.from(new Set(names));
-}
-
-function parseRetryAfterMs(attempt: number): number {
-  const base = SEND_RETRY_BASE_DELAY_MS * Math.pow(2, Math.max(0, attempt - 1));
-  return Math.floor(base);
-}
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-function shouldRetryChatRequest(statusCode: number | undefined, errorMessage: string): boolean {
-  const normalized = errorMessage.toLowerCase();
-  if (normalized.includes('daily_cost_limit_exceeded')) return false;
-  if (normalized.includes('insufficient_quota')) return false;
-  if (normalized.includes('unauthorized')) return false;
-  if (normalized.includes('forbidden')) return false;
-
-  if (typeof statusCode === 'number') {
-    return statusCode === 408
-      || statusCode === 409
-      || statusCode === 425
-      || statusCode === 429
-      || statusCode === 500
-      || statusCode === 502
-      || statusCode === 503
-      || statusCode === 504;
-  }
-
-  return normalized.includes('timeout')
-    || normalized.includes('timed out')
-    || normalized.includes('result timeout')
-    || normalized.includes('gateway')
-    || normalized.includes('run_turn failed')
-    || normalized.includes('http request failed')
-    || normalized.includes('error sending request for url')
-    || normalized.includes('fetch failed')
-    || normalized.includes('network')
-    || normalized.includes('econnreset')
-    || normalized.includes('econnrefused')
-    || normalized.includes('socket hang up');
-}
-
-function extractStatusCodeFromErrorMessage(message: string): number | undefined {
-  const httpMatch = message.match(/\bHTTP[_\s:]?(\d{3})\b/i);
-  if (httpMatch) {
-    const parsed = Number.parseInt(httpMatch[1], 10);
-    if (Number.isFinite(parsed)) return parsed;
-  }
-  const statusMatch = message.match(/\bstatus[:=\s]+(\d{3})\b/i);
-  if (statusMatch) {
-    const parsed = Number.parseInt(statusMatch[1], 10);
-    if (Number.isFinite(parsed)) return parsed;
-  }
-  return undefined;
-}
+import {
+  CHAT_PANEL_TARGET,
+  CONTEXT_HISTORY_WINDOW_SIZE,
+  DEBUG_SNAPSHOTS_STORAGE_KEY,
+  DEFAULT_CHAT_AGENT_ID,
+  DEFAULT_LEDGER_FOCUS_MAX_CHARS,
+  ENABLE_UI_DIRECT_AGENT_TEST_ROUTE,
+  SEND_RETRY_BASE_DELAY_MS,
+  SEND_RETRY_MAX_ATTEMPTS,
+  SESSION_BOUND_WS_TYPES,
+  SESSION_MESSAGES_FETCH_LIMIT,
+} from './useWorkflowExecution.constants.js';
+import {
+  buildContextEditableEventIds,
+  buildGatewayHistory,
+  buildKernelInputItems,
+  buildUserRoundsFromSessionMessages,
+  mapSessionMessageToRuntimeEvent,
+  normalizeReviewSettings,
+} from './useWorkflowExecution.session.js';
+import {
+  buildExecutionRoundsFromTasks,
+  buildRoundExecutionPath,
+  computeAgentLoadFromLog,
+  inferAgentStatus,
+  inferAgentType,
+  pickWorkflowForSession,
+} from './useWorkflowExecution.runtime.js';
+import { describeOrchestratorPhase, mapOrchestratorPhaseToUiState } from './useWorkflowExecution.phase.js';
+import { extractChatReply, extractTokenUsageFromRoundTrace } from './useWorkflowExecution.reply.js';
+import { useWebSocket } from './useWebSocket.js';
+import {
+  normalizeToolName,
+  normalizeToolNameList,
+  resolveDisplayToolName,
+  resolveToolActionLabel,
+  resolveToolCategoryLabel,
+} from './useWorkflowExecution.tools.js';
+import {
+  computeContextUsagePercent,
+  extractCompactSummary,
+  extractErrorMessageFromBody,
+  extractStatusCodeFromErrorMessage,
+  isAbortError,
+  isRecord,
+  isPersistedSessionMessageId,
+  parseNumberLike,
+  parseRetryAfterMs,
+  parseInputLockState,
+  safeParseJson,
+  shouldRetryChatRequest,
+  sleep,
+} from './useWorkflowExecution.utils.js';
+import type {
+  AgentRunStatus,
+  DebugSnapshotItem,
+  DebugSnapshotStage,
+  InputLockState,
+  OrchestratorRuntimeModeState,
+  RuntimeOverview,
+  SessionLog,
+  ToolPanelOverview,
+  UseWorkflowExecutionReturn,
+} from './useWorkflowExecution.types.js';
 
 export function useWorkflowExecution(sessionId: string): UseWorkflowExecutionReturn {
+  const isSessionBoundWsMessage = useCallback((type: string): boolean => SESSION_BOUND_WS_TYPES.has(type), []);
   const [workflow, setWorkflow] = useState<WorkflowInfo | null>(null);
   const [executionState, setExecutionState] = useState<WorkflowExecutionState | null>(null);
   const [runtimeEvents, setRuntimeEvents] = useState<RuntimeEvent[]>([]);
@@ -2361,18 +745,24 @@ export function useWorkflowExecution(sessionId: string): UseWorkflowExecutionRet
       const response = await fetch(`/api/v1/sessions/${sessionId}/messages?limit=${SESSION_MESSAGES_FETCH_LIMIT}`);
       if (!response.ok) return;
 
-      const payload = (await response.json()) as { success?: boolean; messages?: SessionApiMessage[] };
+      const payload = (await response.json()) as { success?: boolean; messages?: Array<Record<string, unknown>> };
       if (!payload.success || !Array.isArray(payload.messages)) return;
 
       const sortedMessages = payload.messages
         .slice()
-        .sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
+        .sort((a, b) => new Date(String(a.timestamp ?? '')).getTime() - new Date(String(b.timestamp ?? '')).getTime());
       const agentId = typeof defaultAgentId === 'string' && defaultAgentId.trim().length > 0
         ? defaultAgentId.trim()
         : sessionAgentId;
-      const mappedEvents = sortedMessages.map((message) => mapSessionMessageToRuntimeEvent(message, agentId));
+      const typedMessages = sortedMessages.filter((message): message is {
+        id: string;
+        role: 'user' | 'assistant' | 'system' | 'orchestrator';
+        content: string;
+        timestamp: string;
+      } => typeof message.id === 'string' && typeof message.role === 'string' && typeof message.timestamp === 'string');
+      const mappedEvents = typedMessages.map((message) => mapSessionMessageToRuntimeEvent(message, agentId));
       setRuntimeEvents(mappedEvents);
-      setUserRounds(buildUserRoundsFromSessionMessages(sortedMessages));
+      setUserRounds(buildUserRoundsFromSessionMessages(typedMessages));
     } catch {
       // keep current UI state if load fails
     }
@@ -2449,6 +839,37 @@ export function useWorkflowExecution(sessionId: string): UseWorkflowExecutionRet
     }
   }, []);
 
+  const updateToolExposure = useCallback(async (tools: string[]): Promise<boolean> => {
+    const normalized = Array.from(
+      new Set(
+        tools
+          .filter((item) => typeof item === 'string')
+          .map((item) => normalizeToolName(item))
+          .filter((item) => item.length > 0),
+      ),
+    ).sort();
+
+    try {
+      const response = await fetch(`/api/v1/tools/agents/${encodeURIComponent(DEFAULT_CHAT_AGENT_ID)}/policy`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ whitelist: normalized, blacklist: [] }),
+      });
+      if (!response.ok) return false;
+      const payload = (await response.json()) as { success?: boolean; policy?: { whitelist?: unknown } };
+      if (!payload.success) return false;
+      const whitelist = normalizeToolNameList(payload.policy?.whitelist);
+      setToolPanelOverview((prev) => ({
+        ...prev,
+        exposedTools: whitelist.sort(),
+      }));
+      void refreshToolPanelOverview();
+      return true;
+    } catch {
+      return false;
+    }
+  }, [refreshToolPanelOverview]);
+
   const refreshOrchestratorRuntimeMode = useCallback(async () => {
     try {
       const response = await fetch('/api/v1/orchestrator/runtime-mode');
@@ -2472,31 +893,6 @@ export function useWorkflowExecution(sessionId: string): UseWorkflowExecutionRet
       // ignore runtime mode refresh failures
     }
   }, []);
-
-  const appendSessionMessage = useCallback(
-    async (
-      role: SessionApiMessage['role'],
-      content: string,
-      images: RuntimeImage[] = [],
-      files: RuntimeFile[] = [],
-    ): Promise<SessionApiMessage | null> => {
-      const attachments = toSessionAttachments(images, files);
-      const response = await fetch(`/api/v1/sessions/${sessionId}/messages/append`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          role,
-          content,
-          ...(attachments.length > 0 ? { attachments } : {}),
-        }),
-      });
-      if (!response.ok) return null;
-      const payload = (await response.json()) as { success?: boolean; message?: SessionApiMessage };
-      if (!payload.success || !payload.message) return null;
-      return payload.message;
-    },
-    [sessionId],
-  );
 
   const patchSessionMessage = useCallback(async (messageId: string, content: string): Promise<boolean> => {
     const response = await fetch(`/api/v1/sessions/${sessionId}/messages/${encodeURIComponent(messageId)}`, {
@@ -2846,7 +1242,7 @@ export function useWorkflowExecution(sessionId: string): UseWorkflowExecutionRet
     }
   }, [sessionId]);
 
-const sendUserInput = useCallback(
+  const sendUserInput = useCallback(
   async (inputPayload: UserInputPayload) => {
     const text = inputPayload.text.trim();
     const images = inputPayload.images ?? [];
@@ -2892,12 +1288,6 @@ const sendUserInput = useCallback(
     const displayText = text || (images.length > 0 || files.length > 0 ? '[附件输入]' : '');
 
     const eventTime = new Date().toISOString();
-    try {
-      await appendSessionMessage('user', displayText, images, files);
-      await loadSessionMessages();
-    } catch {
-      // keep going even if session persistence fails
-    }
 
     const route = resolveMessageRoute();
     setAgentRunStatus({
@@ -2912,6 +1302,11 @@ const sendUserInput = useCallback(
 
     // 3. 统一走 finger orchestrator gateway
     try {
+      try {
+        await loadSessionMessages();
+      } catch {
+        // keep going even if session persistence fails
+      }
       const history = buildGatewayHistory(
         [
           ...runtimeEventsRef.current,
@@ -2944,13 +1339,15 @@ const sendUserInput = useCallback(
             kernelMode: planModeEnabled ? 'plan' : 'main',
             planModeEnabled,
             includePlanTool: planModeEnabled,
-            sessionPersistence: 'client',
             ...(review
               ? {
                   review,
                 }
               : {}),
           },
+          ...(toolPanelOverview.exposedTools.length > 0
+            ? { tools: toolPanelOverview.exposedTools }
+            : {}),
         },
       };
       pushDebugSnapshot({
@@ -3041,7 +1438,7 @@ const sendUserInput = useCallback(
           if (!canRetry) {
             throw error;
           }
-          const backoffMs = parseRetryAfterMs(attempt);
+          const backoffMs = parseRetryAfterMs(attempt, SEND_RETRY_BASE_DELAY_MS);
           const waitSeconds = Math.max(1, Math.ceil(backoffMs / 1000));
           setAgentRunStatus({
             phase: 'running',
@@ -3059,14 +1456,9 @@ const sendUserInput = useCallback(
       if (!responseData || responseData.error) {
         throw new Error(responseData?.error || 'Empty response from daemon');
       }
-      const { reply, tokenUsage, pendingInputAccepted } = extractChatReply(responseData.result);
+      const { tokenUsage, pendingInputAccepted } = extractChatReply(responseData.result);
       if (pendingInputAccepted) {
-        try {
-          await appendSessionMessage('user', displayText, images, files);
-          await loadSessionMessages();
-        } catch {
-          // keep running even if persistence fails
-        }
+        await loadSessionMessages();
         setAgentRunStatus({
           phase: 'running',
           text: '当前回合仍在执行，输入已排队...',
@@ -3086,6 +1478,21 @@ const sendUserInput = useCallback(
       }
       if (isRecord(responseData.result) && isRecord(responseData.result.metadata)) {
         const metadata = responseData.result.metadata;
+        const slotIdsRaw = metadata.contextSlotIds ?? metadata.context_slot_ids ?? metadata.contextSlotIds;
+        const trimmedIdsRaw = metadata.contextSlotTrimmedIds ?? metadata.context_slot_trimmed_ids ?? metadata.contextSlotTrimmedIds;
+        const slotIds = Array.isArray(slotIdsRaw)
+          ? slotIdsRaw.filter((item): item is string => typeof item === 'string')
+          : [];
+        const trimmedIds = Array.isArray(trimmedIdsRaw)
+          ? trimmedIdsRaw.filter((item): item is string => typeof item === 'string')
+          : [];
+        if (slotIds.length > 0 || trimmedIds.length > 0) {
+          pushDebugSnapshot({
+            stage: 'request_ok',
+            summary: 'context slots rendered',
+            payload: { slotIds, trimmedIds },
+          });
+        }
         const focusMaxChars = parseNumberLike(
           metadata.contextLedgerFocusMaxChars,
           metadata.context_ledger_focus_max_chars,
@@ -3094,6 +1501,7 @@ const sendUserInput = useCallback(
           metadata.context_usage_percent,
           metadata.contextUsagePercent,
           metadata.context_budget_usage_percent,
+          isRecord(metadata.context_budget) ? metadata.context_budget.context_usage_percent : undefined,
         );
         const contextTokens = parseNumberLike(
           metadata.estimated_tokens_in_context_window,
@@ -3149,19 +1557,7 @@ const sendUserInput = useCallback(
           }));
         }
       }
-      let persistedUserMessage: SessionApiMessage | null = null;
-      let persistedAssistantMessage: SessionApiMessage | null = null;
-
-      try {
-        persistedUserMessage = await appendSessionMessage('user', displayText, images, files);
-        persistedAssistantMessage = await appendSessionMessage('assistant', reply);
-      } catch {
-        // keep conversation running even if session persistence fails
-      }
-
-      if (persistedUserMessage || persistedAssistantMessage) {
-        await loadSessionMessages();
-      }
+      await loadSessionMessages();
 
       setExecutionState((prev) => (prev ? { ...prev, userInput: displayText } : prev));
       setAgentRunStatus({
@@ -3203,7 +1599,7 @@ const sendUserInput = useCallback(
       inFlightSendAbortRef.current = null;
     }
   },
-  [appendSessionMessage, loadSessionMessages, pushDebugSnapshot, resolveMessageRoute, sessionId],
+  [loadSessionMessages, pushDebugSnapshot, resolveMessageRoute, sessionId, toolPanelOverview.exposedTools],
 );
 
   const editRuntimeEvent = useCallback(async (eventId: string, content: string): Promise<boolean> => {
@@ -3326,32 +1722,33 @@ const contextEditableEventIds = buildContextEditableEventIds(
     };
   }, [workflow, executionState]);
 
- return {
-   workflow,
-   executionState,
-   runtimeEvents,
-   userRounds,
-   executionRounds,
-   selectedAgentId,
-   setSelectedAgentId,
-   isLoading,
-   error,
-   startWorkflow,
-   pauseWorkflow,
-   resumeWorkflow,
-   interruptCurrentTurn,
-   sendUserInput,
-   editRuntimeEvent,
-   deleteRuntimeEvent,
-   agentRunStatus,
-   runtimeOverview,
-   toolPanelOverview,
-   contextEditableEventIds,
-   getAgentDetail,
-   getTaskReport,
-   isConnected,
-   inputLockState,
-   clientId,
+  return {
+    workflow,
+    executionState,
+    runtimeEvents,
+    userRounds,
+    executionRounds,
+    selectedAgentId,
+    setSelectedAgentId,
+    isLoading,
+    error,
+    startWorkflow,
+    pauseWorkflow,
+    resumeWorkflow,
+    interruptCurrentTurn,
+    sendUserInput,
+    editRuntimeEvent,
+    deleteRuntimeEvent,
+    agentRunStatus,
+    runtimeOverview,
+    toolPanelOverview,
+    updateToolExposure,
+    contextEditableEventIds,
+    getAgentDetail,
+    getTaskReport,
+    isConnected,
+    inputLockState,
+    clientId,
    acquireInputLock,
    releaseInputLock,
    debugSnapshotsEnabled,
@@ -3360,45 +1757,4 @@ const contextEditableEventIds = buildContextEditableEventIds(
    clearDebugSnapshots,
    orchestratorRuntimeMode,
  };
-}
-
-function buildExecutionRoundsFromTasks(
-  tasks: TaskNode[],
-): ExecutionRound[] {
-  const roundMap = new Map<string, ExecutionRound>();
-
-  for (const task of tasks) {
-    const roundKey = `round-${task.id.split('-')[0] || '0'}`;
-    if (!roundMap.has(roundKey)) {
-      roundMap.set(roundKey, {
-        roundId: roundKey,
-        timestamp: task.startedAt || new Date().toISOString(),
-        agents: [],
-        edges: [],
-      });
-    }
-
-    const round = roundMap.get(roundKey)!;
-    const agentInfo: AgentRoundInfo = {
-      agentId: task.assignee || 'finger-executor',
-      status: task.status === 'completed' ? 'completed' : task.status === 'failed' ? 'error' : task.status === 'in_progress' ? 'running' : 'idle',
-      taskId: task.id,
-      taskDescription: task.description,
-    };
-    if (!round.agents.some((a) => a.agentId === agentInfo.agentId)) {
-      round.agents.push(agentInfo);
-    }
-
-    const edgeInfo: RoundEdgeInfo = {
-      from: DEFAULT_CHAT_AGENT_ID,
-      to: task.assignee || 'finger-executor',
-      status: task.status === 'completed' ? 'completed' : task.status === 'failed' ? 'error' : task.status === 'in_progress' ? 'active' : 'pending',
-      message: `${task.id}: ${task.description.slice(0, 32)}`,
-    };
-    if (!round.edges.some((e) => e.to === edgeInfo.to && e.from === edgeInfo.from)) {
-      round.edges.push(edgeInfo);
-    }
-  }
-
-  return Array.from(roundMap.values()).sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
 }

@@ -10,8 +10,8 @@
 
 import { spawn, type ChildProcess } from 'child_process';
 import fs from 'fs';
-import os from 'os';
 import path from 'path';
+import { FINGER_PATHS, ensureDir } from '../core/finger-paths.js';
 import { lifecycleManager } from '../agents/core/agent-lifecycle.js';
 
 export type AgentLifecycleState =
@@ -121,8 +121,9 @@ export class AgentRuntime {
   >>;
 
   constructor(config: RuntimeConfig = {}, checker?: HealthChecker) {
-    const fingerDir = path.join(os.homedir(), '.finger');
-    this.historyFile = config.historyFile || path.join(fingerDir, 'agent-history.json');
+    ensureDir(FINGER_PATHS.logs.dir);
+    // ~/.finger/logs/agent-history.json (single source of truth)
+    this.historyFile = config.historyFile || FINGER_PATHS.logs.agentHistory;
     this.healthChecker = checker ?? new DefaultHealthChecker();
 
     this.defaults = {

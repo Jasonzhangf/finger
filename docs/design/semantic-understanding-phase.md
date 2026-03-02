@@ -319,9 +319,9 @@ interface WorkflowState {
 
 - 展示名统一：`{loopId}.{role}`
 - 例子：
-  - `orchestrator-loop.planner`
-  - `executor-loop.executor`
-  - `orchestrator-loop.reviewer`
+  - `finger-orchestrator.planner`
+  - `finger-executor.executor`
+  - `finger-orchestrator.reviewer`
 - 后端事件必须带 `loopId` + `role`，前端不再猜测
 
 ## 13. 参考文件

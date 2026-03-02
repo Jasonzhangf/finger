@@ -4,8 +4,8 @@
 
 默认目录：
 
-- `~/.finger/agents/<agent-id>/agent.json`
-- 或 `~/.finger/agents/<agent-id>.agent.json`
+- `~/.finger/runtime/agents/<agent-id>/agent.json`
+- 或 `~/.finger/runtime/agents/<agent-id>.agent.json`
 
 ## 示例：Reviewer 只读
 
@@ -23,7 +23,7 @@
     "resume": true,
     "provider": "iflow",
     "agentId": "reviewer-1",
-    "mapPath": "~/.finger/session-control-plane.json"
+    "mapPath": "~/.finger/config/session-control-plane.json"
   },
   "governance": {
     "iflow": {

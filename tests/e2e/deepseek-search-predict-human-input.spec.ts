@@ -143,7 +143,7 @@ describe('DeepSeek Research with Human Input Flow', () => {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        target: 'orchestrator-loop',
+        target: 'finger-orchestrator-gateway',
         message: { 
           content: userTask,
           sessionId: session.id,

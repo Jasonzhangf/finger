@@ -1,23 +1,14 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import {
   listSessions,
   createSession,
   deleteSession,
   setCurrentSession,
-  getCurrentSession,
   renameSession,
 } from '../api/client.js';
 import type { SessionInfo } from '../api/types.js';
 
 const LAST_SESSION_STORAGE_KEY = 'finger-last-session-id';
-
-function readLastSessionIdFromStorage(): string | null {
-  if (typeof window === 'undefined' || !window.localStorage) return null;
-  const raw = window.localStorage.getItem(LAST_SESSION_STORAGE_KEY);
-  if (!raw) return null;
-  const normalized = raw.trim();
-  return normalized.length > 0 ? normalized : null;
-}
 
 interface UseSessionsReturn {
   sessions: SessionInfo[];
@@ -36,51 +27,72 @@ export function useSessions(): UseSessionsReturn {
   const [currentSession, setCurrent] = useState<SessionInfo | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const manualSelectionRef = useRef<string | null>(null);
+
+  const sortByRecent = useCallback((items: SessionInfo[]) => {
+    return items.slice().sort(
+      (a, b) => new Date(b.lastAccessedAt).getTime() - new Date(a.lastAccessedAt).getTime(),
+    );
+  }, []);
+
+  const pickLatestRunning = useCallback((items: SessionInfo[]): SessionInfo | null => {
+    const running = items.filter(
+      (session) => Array.isArray(session.activeWorkflows) && session.activeWorkflows.length > 0,
+    );
+    if (running.length === 0) return null;
+    return sortByRecent(running)[0] ?? null;
+  }, [sortByRecent]);
 
   const refresh = useCallback(async () => {
     setIsLoading(true);
     setError(null);
     try {
-      const [data, serverCurrent] = await Promise.all([
-        listSessions(),
-        getCurrentSession().catch(() => null),
-      ]);
+      const data = await listSessions();
       setSessions(data);
       if (data.length === 0) {
         setCurrent(null);
         return;
       }
 
-      const lastSessionId = readLastSessionIdFromStorage();
-      if (lastSessionId) {
-        const matched = data.find((item) => item.id === lastSessionId);
+      const manualSelection = manualSelectionRef.current;
+      if (manualSelection) {
+        const matched = data.find((item) => item.id === manualSelection);
+        manualSelectionRef.current = null;
         if (matched) {
           setCurrent(matched);
-          await setCurrentSession(matched.id).catch(() => undefined);
+          if (typeof window !== 'undefined' && window.localStorage) {
+            window.localStorage.setItem(LAST_SESSION_STORAGE_KEY, matched.id);
+          }
           return;
         }
       }
 
-      if (serverCurrent && data.some((item) => item.id === serverCurrent.id)) {
-        setCurrent(serverCurrent);
+      const latestRunning = pickLatestRunning(data);
+      if (latestRunning) {
+        setCurrent(latestRunning);
+        if (typeof window !== 'undefined' && window.localStorage) {
+          window.localStorage.setItem(LAST_SESSION_STORAGE_KEY, latestRunning.id);
+        }
+        await setCurrentSession(latestRunning.id).catch(() => undefined);
         return;
       }
 
-      const sorted = [...data].sort(
-        (a, b) => new Date(b.lastAccessedAt).getTime() - new Date(a.lastAccessedAt).getTime(),
-      );
-      const fallback = sorted[0];
+      const fallback = sortByRecent(data)[0];
       setCurrent(fallback);
       await setCurrentSession(fallback.id).catch(() => undefined);
+      if (typeof window !== 'undefined' && window.localStorage) {
+        window.localStorage.setItem(LAST_SESSION_STORAGE_KEY, fallback.id);
+      }
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Failed to load sessions');
     } finally {
       setIsLoading(false);
     }
-  }, []);
+  }, [pickLatestRunning, sortByRecent]);
 
   const create = useCallback(async (projectPath: string, name?: string) => {
     const session = await createSession(projectPath, name);
+    manualSelectionRef.current = session.id;
     await refresh();
     return session;
   }, [refresh]);
@@ -98,9 +110,13 @@ export function useSessions(): UseSessionsReturn {
 
   const switchSession = useCallback(async (sessionId: string) => {
     await setCurrentSession(sessionId);
+    manualSelectionRef.current = sessionId;
     const next = sessions.find((session) => session.id === sessionId);
     if (next) {
       setCurrent(next);
+    }
+    if (typeof window !== 'undefined' && window.localStorage) {
+      window.localStorage.setItem(LAST_SESSION_STORAGE_KEY, sessionId);
     }
     await refresh();
   }, [refresh, sessions]);

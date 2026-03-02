@@ -1,5 +1,4 @@
-import { homedir } from 'os';
-import path from 'path';
+import { FINGER_PATHS } from '../../core/finger-paths.js';
 import { SessionControlPlaneStore } from '../../runtime/session-control-plane.js';
 
 export interface IflowSessionBinding {
@@ -15,7 +14,7 @@ export interface IflowSessionMapScope {
   provider?: string;
 }
 
-const DEFAULT_MAP_PATH = path.join(homedir(), '.finger', 'iflow-session-map.json');
+const DEFAULT_MAP_PATH = FINGER_PATHS.config.file.iflowSessionMap;
 const DEFAULT_AGENT_ID = 'iflow-default';
 const DEFAULT_PROVIDER = 'iflow';
 

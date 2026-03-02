@@ -1,30 +1,32 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import fs from 'fs';
 import path from 'path';
-import os from 'os';
+import { FINGER_PATHS } from '../../src/core/finger-paths.js';
 import { ResumableSessionManager, determineResumePhase, type SessionCheckpoint, type PhaseHistoryEntry } from '../../src/orchestration/resumable-session.js';
 
-const FINGER_HOME = path.join(os.homedir(), '.finger');
-const SESSION_STATE_DIR = path.join(FINGER_HOME, 'session-states');
+const SESSIONS_DIR = FINGER_PATHS.sessions.dir;
 
 describe('Orchestrator Phase Resume Integration', () => {
   let manager: ResumableSessionManager;
   let testSessionId: string;
+  let checkpointDir: string;
   
   beforeEach(() => {
     manager = new ResumableSessionManager();
     testSessionId = `test-resume-${Date.now()}`;
-    if (!fs.existsSync(SESSION_STATE_DIR)) {
-      fs.mkdirSync(SESSION_STATE_DIR, { recursive: true });
+    if (!fs.existsSync(SESSIONS_DIR)) {
+      fs.mkdirSync(SESSIONS_DIR, { recursive: true });
     }
+    checkpointDir = manager.getCheckpointDir(testSessionId);
   });
   
   afterEach(() => {
     // Cleanup test checkpoints
-    const files = fs.readdirSync(SESSION_STATE_DIR);
+    if (!fs.existsSync(checkpointDir)) return;
+    const files = fs.readdirSync(checkpointDir);
     for (const file of files) {
-      if (file.startsWith(testSessionId)) {
-        fs.unlinkSync(path.join(SESSION_STATE_DIR, file));
+      if (file.startsWith(`chk-${testSessionId}-`)) {
+        fs.unlinkSync(path.join(checkpointDir, file));
       }
     }
   });
@@ -120,7 +122,7 @@ describe('Orchestrator Phase Resume Integration', () => {
     // macOS fs sync can be delayed by a few ms; retry briefly to avoid flake
     for (let retry = 0; retry < 10 && checkpointsBeforeCleanup.length < 15; retry++) {
       await new Promise(r => setTimeout(r, 10));
-      checkpointsBeforeCleanup = fs.readdirSync(SESSION_STATE_DIR)
+      checkpointsBeforeCleanup = fs.readdirSync(checkpointDir)
         .filter(f => f.startsWith(`chk-${testSessionId}-`));
     }
     expect(checkpointsBeforeCleanup.length).toBe(15);
@@ -130,7 +132,7 @@ describe('Orchestrator Phase Resume Integration', () => {
     expect(deletedCount).toBe(5);
     
     // Verify only 10 remain
-    const checkpointsAfterCleanup = fs.readdirSync(SESSION_STATE_DIR)
+    const checkpointsAfterCleanup = fs.readdirSync(checkpointDir)
       .filter(f => f.startsWith(`chk-${testSessionId}-`));
     expect(checkpointsAfterCleanup.length).toBe(10);
     

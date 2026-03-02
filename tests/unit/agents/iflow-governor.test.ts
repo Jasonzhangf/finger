@@ -55,7 +55,7 @@ describe('iflow-governor', () => {
       {
         commandPolicy: {
           injectCapabilities: true,
-          capabilityIds: ['bd'],
+          capabilityIds: ['bd', 'camo'],
           commandNamespace: 'cap_',
         },
       },
@@ -66,13 +66,19 @@ describe('iflow-governor', () => {
       expect.arrayContaining([
         { name: 'existing', content: 'echo existing' },
         { name: 'cap_bd', content: 'bd --no-db' },
+        { name: 'cap_camo', content: 'camo run' },
       ]),
     );
-    expect(resolved.injectedCommands).toHaveLength(1);
+    expect(resolved.injectedCommands).toHaveLength(2);
     expect(resolved.injectedCommands[0]).toMatchObject({
       capabilityId: 'bd',
       commandName: 'cap_bd',
       commandLine: 'bd --no-db',
+    });
+    expect(resolved.injectedCommands[1]).toMatchObject({
+      capabilityId: 'camo',
+      commandName: 'cap_camo',
+      commandLine: 'camo run',
     });
   });
 });

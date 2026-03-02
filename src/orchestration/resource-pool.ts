@@ -4,10 +4,9 @@
  */
 
 import fs from 'fs';
-import path from 'path';
-import os from 'os';
+import { FINGER_PATHS, ensureDir } from '../core/finger-paths.js';
 
-export type ResourceType = 'executor' | 'orchestrator' | 'reviewer' | 'tool' | 'api' | 'database';
+export type ResourceType = 'executor' | 'orchestrator' | 'reviewer' | 'searcher' | 'tool' | 'api' | 'database';
 export type ResourceStatus = 'available' | 'deployed' | 'busy' | 'blocked' | 'error' | 'released';
 
 export interface ResourceCapability {
@@ -54,8 +53,7 @@ export interface ResourcePoolState {
   version: number;
 }
 
-const FINGER_HOME = path.join(os.homedir(), '.finger');
-const RESOURCE_POOL_FILE = path.join(FINGER_HOME, 'resource-pool.json');
+const RESOURCE_POOL_FILE = FINGER_PATHS.config.file.resourcePool;
 
 export class ResourcePool {
   private resources: Map<string, ResourceInstance> = new Map();
@@ -67,9 +65,7 @@ export class ResourcePool {
   }
 
   private ensureDirs(): void {
-    if (!fs.existsSync(FINGER_HOME)) {
-      fs.mkdirSync(FINGER_HOME, { recursive: true });
-    }
+    ensureDir(FINGER_PATHS.config.dir);
   }
 
   private loadPool(): void {
@@ -165,6 +161,17 @@ export class ResourcePool {
       name: 'Default Reviewer',
       type: 'reviewer',
       capabilities: [{ type: 'code_review', level: 8 }, { type: 'quality_check', level: 9 }],
+      status: 'available',
+      totalDeployments: 0,
+      errorCount: 0,
+    });
+
+    // Default searcher
+    this.resources.set('searcher-default', {
+      id: 'searcher-default',
+      name: 'Default Searcher',
+      type: 'searcher',
+      capabilities: [{ type: 'web_search', level: 10 }, { type: 'evidence_trace', level: 8 }],
       status: 'available',
       totalDeployments: 0,
       errorCount: 0,

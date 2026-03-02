@@ -109,8 +109,8 @@ fingerdaemon daemon register-module ...
 
 ### 日志
 
-- 主进程日志：`~/.finger/daemon.log`
-- Agent 日志：`~/.finger/agents/<id>.log`
+- 主进程日志：`~/.finger/logs/daemon.log`
+- Agent 状态：`~/.finger/runtime/agents/<id>.pid`
 
 ## 4. Runtime Agent 池 (`AgentPool`)
 
@@ -118,8 +118,8 @@ fingerdaemon daemon register-module ...
 
 ### 配置文件
 
-- `~/.finger/agents.json` - 存储所有 Agent 配置。
-- PID 文件：`~/.finger/agents/<id>.pid`
+- `~/.finger/config/agents.json` - 存储所有 Agent 配置。
+- PID 文件：`~/.finger/runtime/agents/<id>.pid`
 
 ### 子命令
 
@@ -170,7 +170,7 @@ fingerdaemon daemon agent remove executor1
 |------|------|------|
 | `/api/v1/modules` | GET | 列出所有已注册模块 |
 | `/api/v1/routes` | GET | 列出所有路由规则 |
-| `/api/v1/message` | POST | 发送消息到指定模块 |
+| `/api/v1/message` | POST | 发送消息到指定模块（支持 `?dryrun=1` 仅返回开发提示词与注入结果） |
 | `/api/v1/module/register` | POST | 动态注册模块文件 |
 
 示例：
@@ -179,10 +179,18 @@ fingerdaemon daemon agent remove executor1
 curl -X POST http://localhost:5521/api/v1/message \
   -H "Content-Type: application/json" \
   -d '{"target":"echo-output","message":{"text":"hello"},"blocking":true}'
+
+dryrun 示例（仅返回注入后的 developer instructions，不触发模型调用）：
+
+```bash
+curl -X POST "http://localhost:5521/api/v1/message?dryrun=1" \
+  -H "Content-Type: application/json" \
+  -d '{"target":"finger-orchestrator-gateway","message":{"text":"dryrun sample"}}'
+```
 ```
 
 ## 6. 故障排查
 
 - **端口冲突**：`lsof -ti:5521 | xargs kill -9`
-- **Agent 启动失败**：查看 `~/.finger/agents/<id>.log`
+- **Agent 启动失败**：查看 `~/.finger/logs/daemon.log`
 - **消息路由不工作**：检查 `hub.getRoutes()` 和模块注册情况

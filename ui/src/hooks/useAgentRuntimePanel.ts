@@ -156,9 +156,12 @@ export interface OrchestrationProfileConfig {
     targetAgentId: string;
     role: AgentType;
     enabled: boolean;
+    visible?: boolean;
     instanceCount: number;
     launchMode: 'manual' | 'orchestrator';
     targetImplementationId?: string;
+    defaultQuota?: number;
+    quotaPolicy?: AgentQuotaPolicy;
   }>;
 }
 
@@ -210,6 +213,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function parseAgentType(raw: unknown): AgentRuntimeInstance['type'] {
   if (raw === 'reviewer' || raw === 'orchestrator' || raw === 'searcher') return raw;
+  if (raw === 'executor') return raw;
   return 'executor';
 }
 
@@ -262,11 +266,11 @@ function parseQuotaPolicy(raw: unknown): AgentQuotaPolicy {
     const trimmedId = workflowId.trim();
     if (trimmedId.length === 0) continue;
     if (typeof quota !== 'number' || !Number.isFinite(quota)) continue;
-    workflowQuota[trimmedId] = Math.max(1, Math.floor(quota));
+    workflowQuota[trimmedId] = Math.max(0, Math.floor(quota));
   }
   return {
     ...(typeof raw.projectQuota === 'number' && Number.isFinite(raw.projectQuota)
-      ? { projectQuota: Math.max(1, Math.floor(raw.projectQuota)) }
+      ? { projectQuota: Math.max(0, Math.floor(raw.projectQuota)) }
       : {}),
     workflowQuota,
   };
@@ -274,14 +278,14 @@ function parseQuotaPolicy(raw: unknown): AgentQuotaPolicy {
 
 function parseQuotaView(raw: unknown, defaultQuota = 1): AgentQuotaView {
   if (!isRecord(raw)) {
-    return { effective: Math.max(1, defaultQuota), source: 'default' };
+    return { effective: Math.max(0, defaultQuota), source: 'default' };
   }
   const source: QuotaSource = raw.source === 'workflow' || raw.source === 'project' || raw.source === 'deployment'
     ? raw.source
     : 'default';
   const effective = typeof raw.effective === 'number' && Number.isFinite(raw.effective)
-    ? Math.max(1, Math.floor(raw.effective))
-    : Math.max(1, defaultQuota);
+    ? Math.max(0, Math.floor(raw.effective))
+    : Math.max(0, defaultQuota);
   const workflowId = typeof raw.workflowId === 'string' && raw.workflowId.trim().length > 0
     ? raw.workflowId.trim()
     : undefined;
@@ -364,7 +368,7 @@ function parseRuntimeAgents(raw: unknown): AgentRuntimePanelAgent[] {
     const queuedCount = parseNonNegativeInt(item.queuedCount, 0);
     const enabled = item.enabled !== false;
     const runtimeCapabilities = toStringArray(item.capabilities);
-    const defaultQuota = parsePositiveInt(item.defaultQuota, 1);
+    const defaultQuota = parseNonNegativeInt(item.defaultQuota, 1);
     const quotaPolicy = parseQuotaPolicy(item.quotaPolicy);
     const quota = parseQuotaView(item.quota, defaultQuota);
     const lastEvent = parseLastEvent(item.lastEvent);
@@ -420,7 +424,7 @@ function parseCatalogAgents(raw: unknown): AgentRuntimePanelAgent[] {
     const queuedCount = parseNonNegativeInt(item.queuedCount, 0);
     const enabled = item.enabled !== false;
     const runtimeCapabilities = toStringArray(item.runtimeCapabilities);
-    const defaultQuota = parsePositiveInt(item.defaultQuota, 1);
+    const defaultQuota = parseNonNegativeInt(item.defaultQuota, 1);
     const quotaPolicy = parseQuotaPolicy(item.quotaPolicy);
     const quota = parseQuotaView(item.quota, defaultQuota);
     const lastEvent = parseLastEvent(item.lastEvent);
@@ -525,6 +529,27 @@ function mergeAgents(
   return Array.from(map.values()).sort((a, b) => a.name.localeCompare(b.name));
 }
 
+const DEFAULT_VISIBLE_AGENT_IDS = new Set(['finger-orchestrator', 'finger-researcher']);
+
+function filterVisibleAgents(
+  agents: AgentRuntimePanelAgent[],
+  orchestration: OrchestrationConfigState | null,
+): AgentRuntimePanelAgent[] {
+  if (!orchestration) {
+    return agents.filter((agent) => DEFAULT_VISIBLE_AGENT_IDS.has(agent.id));
+  }
+  const activeProfile = orchestration.profiles.find((profile) => profile.id === orchestration.activeProfileId);
+  if (!activeProfile) {
+    return agents.filter((agent) => DEFAULT_VISIBLE_AGENT_IDS.has(agent.id));
+  }
+  const visibleByConfig = new Set(
+    activeProfile.agents
+      .filter((entry) => entry.visible !== false)
+      .map((entry) => entry.targetAgentId),
+  );
+  return agents.filter((agent) => visibleByConfig.has(agent.id));
+}
+
 function parseAgentConfigs(raw: unknown): AgentConfigSummary[] {
   if (!isRecord(raw) || !Array.isArray(raw.configs)) return [];
   const parsed: AgentConfigSummary[] = [];
@@ -539,7 +564,7 @@ function parseAgentConfigs(raw: unknown): AgentConfigSummary[] {
     const enabled = typeof item.enabled === 'boolean' ? item.enabled : undefined;
     const capabilities = Array.isArray(item.capabilities) ? toStringArray(item.capabilities) : undefined;
     const defaultQuota = typeof item.defaultQuota === 'number' && Number.isFinite(item.defaultQuota)
-      ? Math.max(1, Math.floor(item.defaultQuota))
+      ? Math.max(0, Math.floor(item.defaultQuota))
       : undefined;
     const quotaPolicy = item.quotaPolicy !== undefined ? parseQuotaPolicy(item.quotaPolicy) : undefined;
     parsed.push({
@@ -747,6 +772,9 @@ function parseOrchestrationConfig(raw: unknown): OrchestrationConfigState | null
       const instanceCount = parsePositiveInt(agent.instanceCount, 1);
       const launchMode: 'manual' | 'orchestrator' = agent.launchMode === 'orchestrator' ? 'orchestrator' : 'manual';
       const enabled = agent.enabled !== false;
+      const visible = typeof agent.visible === 'boolean' ? agent.visible : undefined;
+      const defaultQuota = parseNonNegativeInt(agent.defaultQuota, 1);
+      const quotaPolicy = agent.quotaPolicy !== undefined ? parseQuotaPolicy(agent.quotaPolicy) : undefined;
       const targetImplementationId =
         typeof agent.targetImplementationId === 'string' && agent.targetImplementationId.trim().length > 0
           ? agent.targetImplementationId.trim()
@@ -757,7 +785,10 @@ function parseOrchestrationConfig(raw: unknown): OrchestrationConfigState | null
         enabled,
         instanceCount,
         launchMode,
+        ...(visible !== undefined ? { visible } : {}),
         ...(targetImplementationId ? { targetImplementationId } : {}),
+        ...(defaultQuota !== undefined ? { defaultQuota } : {}),
+        ...(quotaPolicy ? { quotaPolicy } : {}),
       });
     }
     const reviewPolicy = parseReviewPolicy(profile.reviewPolicy);
@@ -812,12 +843,14 @@ export function useAgentRuntimePanel(): UseAgentRuntimePanelResult {
       const parsedDebug = parseDebugAssertions(debugData);
       const parsedDebugMode = parseDebugMode(debugModeData);
       const mergedAgents = mergeAgents(runtimeAgents, catalogAgents);
-      setAgents(bindDebugAssertions(mergedAgents, parsedDebug.assertions));
+      const parsedOrchestration = parseOrchestrationConfig(orchestrationData);
+      const visibleAgents = filterVisibleAgents(mergedAgents, parsedOrchestration);
+      setAgents(bindDebugAssertions(visibleAgents, parsedDebug.assertions));
       setInstances(parseRuntimeInstances(isRecord(runtimeData) ? runtimeData.instances : undefined));
       setConfigs(parseAgentConfigs(runtimeData));
       setStartupTargets(parseStartupTargets(isRecord(runtimeData) ? runtimeData.startupTargets : undefined));
       setStartupTemplates(parseStartupTemplates(isRecord(runtimeData) ? runtimeData.startupTemplates : undefined));
-      setOrchestrationConfig(parseOrchestrationConfig(orchestrationData));
+      setOrchestrationConfig(parsedOrchestration);
       setDebugAssertions(parsedDebug.assertions);
       setDebugModeState(parsedDebugMode ?? parsedDebug.debugMode);
     } catch (fetchError) {

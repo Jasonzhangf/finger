@@ -78,7 +78,7 @@ pub trait Agent: Send + Sync {
 - `execute(input, runtime_ctx) -> ToolResult`
 
 ## 5.2 注册与配置
-- 用户配置：`~/.finger/config.json`
+- 用户配置：`~/.finger/config/config.json`
 - 系统配置：每个工具/模块 `module.json`
 - 注册源：
 - 静态加载（启动时）

@@ -64,9 +64,9 @@ data: ${JSON.stringify(event.payload)}
       timestamp: new Date().toISOString(),
     };
 
-    const timestamp = new Date(event.timestamp).toLocaleTimeString();
+    const timestamp = new Date(event.timestamp).toISOString();
     const output = `[${timestamp}] ${event.type}:`;
 
-    expect(output).toMatch(/\[\d{1,2}:\d{2}:\d{2}\] task_started:/);
+    expect(output).toMatch(/\[\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z\] task_started:/);
   });
 });

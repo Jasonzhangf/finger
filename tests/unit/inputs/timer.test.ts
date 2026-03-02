@@ -1,4 +1,7 @@
 
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { TimerInput } from '../../../src/inputs/timer.js';
+
 describe('TimerInput', () => {
   let input: TimerInput;
 

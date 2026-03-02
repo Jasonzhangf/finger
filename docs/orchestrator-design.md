@@ -49,10 +49,10 @@ Task A → Task B → Task D
 ### 3.3 Session 存储
 ```
 ~/.finger/sessions/
-  └── {sessionId}/
-      ├── history.jsonl
-      ├── tasks.json
-      └── context.json
+  └── <project编码>/
+      └── session-{sessionId}/
+          ├── main.json
+          └── agent-<agentId>.json
 ```
 
 ## 4. 数据结构

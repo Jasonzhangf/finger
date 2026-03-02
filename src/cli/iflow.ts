@@ -3,6 +3,7 @@ import { IflowBaseAgent, type IflowGovernedOptions } from '../agents/sdk/iflow-b
 import { IflowInteractiveAgent } from '../agents/sdk/iflow-interactive.js';
 import { runIflowCapabilityTest } from '../agents/sdk/iflow-capability-test.js';
 import * as readline from 'readline';
+import { FINGER_PATHS } from '../core/finger-paths.js';
 
 interface CommonOptions {
   cwd?: string;
@@ -219,7 +220,7 @@ export function registerIflowCommand(program: Command): void {
       const agent = buildBaseAgent(options);
       try {
         console.log(JSON.stringify({
-          path: options.sessionMapPath || '~/.finger/iflow-session-map.json',
+          path: options.sessionMapPath || FINGER_PATHS.config.file.iflowSessionMap,
           bindings: agent.listSessionBindings(),
         }, null, 2));
       } catch (err) {

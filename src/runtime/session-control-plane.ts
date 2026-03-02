@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs';
-import { homedir } from 'os';
 import path from 'path';
+import { FINGER_PATHS, ensureDir } from '../core/finger-paths.js';
 
 export interface SessionBindingRecord {
   fingerSessionId: string;
@@ -16,7 +16,7 @@ interface SessionControlPlaneFile {
   bindings: Record<string, SessionBindingRecord>;
 }
 
-const DEFAULT_CONTROL_PLANE_PATH = path.join(homedir(), '.finger', 'session-control-plane.json');
+const DEFAULT_CONTROL_PLANE_PATH = FINGER_PATHS.config.file.sessionControlPlane;
 const LEGACY_IFLOW_AGENT_ID = 'iflow-default';
 const LEGACY_IFLOW_PROVIDER = 'iflow';
 
@@ -102,6 +102,7 @@ export class SessionControlPlaneStore {
     if (!existsSync(dir)) {
       mkdirSync(dir, { recursive: true });
     }
+    ensureDir(FINGER_PATHS.config.dir);
     writeFileSync(this.filePath, JSON.stringify(map, null, 2), 'utf-8');
   }
 }

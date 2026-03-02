@@ -35,7 +35,7 @@ export abstract class AgentCLIBase extends EventEmitter {
   constructor(config: Partial<AgentCLIConfig> & { agentId: string; agentName: string }) {
     super();
     this.config = {
-      daemonUrl: 'http://localhost:9999',
+      daemonUrl: 'http://localhost:5521',
       heartbeatTimeoutMs: 60000,     // 60s
       maxMissedHeartbeats: 3,        // 3次
       capabilities: [],

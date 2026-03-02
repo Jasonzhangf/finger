@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs';
 import { randomUUID } from 'crypto';
-import { homedir } from 'os';
 import path from 'path';
+import { FINGER_PATHS, ensureDir } from '../../core/finger-paths.js';
 import { InternalTool } from './types.js';
 import { computeNextCronFireAt, validateTimezone } from './codex-clock-cron.js';
 import {
@@ -267,7 +267,8 @@ function getClockStore(): ClockStoreManager {
 function resolveClockStorePath(): string {
   const envPath = process.env.FINGER_CLOCK_STORE_PATH;
   if (envPath && envPath.trim().length > 0) return envPath.trim();
-  return path.join(homedir(), '.finger', 'clock', 'tool-timers.json');
+  ensureDir(FINGER_PATHS.runtime.clockDir);
+  return path.join(FINGER_PATHS.runtime.clockDir, 'tool-timers.json');
 }
 
 function normalizeCreateSchedule(payload: ClockCreatePayload, now: Date): NormalizedSchedule {

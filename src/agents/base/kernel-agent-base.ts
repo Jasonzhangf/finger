@@ -113,11 +113,16 @@ export class KernelAgentBase {
 
     try {
       const { session, responseSessionId } = await this.resolveSession(input);
-      await this.sessionManager.addMessage(session.id, {
-        role: 'user',
-        content: input.text,
-        metadata: input.metadata,
-      });
+      const clientPersist = input.metadata?.sessionPersistence === 'client'
+        || input.metadata?.session_persistence === 'client'
+        || input.metadata?.persistSession === false;
+      if (input.sessionId && !clientPersist) {
+        await this.sessionManager.addMessage(session.id, {
+          role: 'user',
+          content: input.text,
+          metadata: input.metadata,
+        });
+      }
 
       const history = await this.sessionManager.getMessageHistory(session.id, this.config.maxContextMessages);
       const mergedHistory = mergeHistory(history, input.history, this.config.maxContextMessages);
@@ -203,14 +208,17 @@ export class KernelAgentBase {
         throw new Error('chat-codex got empty model reply');
       }
 
-      const assistantMessage = await this.sessionManager.addMessage(session.id, {
-        role: 'assistant',
-        content: reply,
-        metadata: {
-          roleProfile: roleProfile?.id,
-          tools,
-        },
-      });
+      let assistantMessage: SessionMessage | null = null;
+      if (input.sessionId && !clientPersist) {
+        assistantMessage = await this.sessionManager.addMessage(session.id, {
+          role: 'assistant',
+          content: reply,
+          metadata: {
+            roleProfile: roleProfile?.id,
+            tools,
+          },
+        });
+      }
 
       return {
         success: true,
@@ -218,7 +226,7 @@ export class KernelAgentBase {
         module: this.config.moduleId,
         provider: this.config.provider,
         sessionId: responseSessionId,
-        messageId: runResult.messageId ?? assistantMessage.id,
+        messageId: runResult.messageId ?? assistantMessage?.id,
         latencyMs: Date.now() - startedAt,
         metadata: {
           roleProfile: roleProfile?.id,

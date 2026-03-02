@@ -1,7 +1,7 @@
 import express from 'express';
 import fs from 'fs';
 import path from 'path';
-import os from 'os';
+import { FINGER_PATHS, ensureDir } from '../../core/finger-paths.js';
 import { Agent, AgentConfig } from '../agent.js';
 import { HeartbeatMonitor } from '../core/heartbeat-broker.js';
 
@@ -24,7 +24,7 @@ export interface TaskMessage {
   files?: Array<{ path?: string; image?: string }>;
 }
 
-const AGENT_PID_DIR = path.join(os.homedir(), '.finger', 'agents');
+const AGENT_PID_DIR = FINGER_PATHS.runtime.agentsDir;
 
 function getPidFile(agentId: string): string {
   return path.join(AGENT_PID_DIR, `${agentId}.pid`);
@@ -53,9 +53,7 @@ export class AgentDaemon {
 
     this.agent = new Agent(agentConfig);
 
-    if (!fs.existsSync(AGENT_PID_DIR)) {
-      fs.mkdirSync(AGENT_PID_DIR, { recursive: true });
-    }
+    ensureDir(AGENT_PID_DIR);
 
     this.heartbeatMonitor = new HeartbeatMonitor();
   }

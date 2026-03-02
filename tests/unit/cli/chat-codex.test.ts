@@ -22,7 +22,7 @@ describe('chat-codex cli', () => {
       }),
     });
 
-    const response = await sendChatCodexTurn('http://localhost:9999', 'chat-codex-gateway', 'hello');
+    const response = await sendChatCodexTurn('http://localhost:5521', 'chat-codex-gateway', 'hello');
 
     expect(response).toBe('TEST_OK');
     expect(mockFetch).toHaveBeenCalledTimes(1);
@@ -49,7 +49,7 @@ describe('chat-codex cli', () => {
       }),
     });
 
-    await expect(sendChatCodexTurn('http://localhost:9999', 'chat-codex-gateway', 'hello')).rejects.toThrow(
+    await expect(sendChatCodexTurn('http://localhost:5521', 'chat-codex-gateway', 'hello')).rejects.toThrow(
       'kernel failed',
     );
   });
@@ -60,7 +60,7 @@ describe('chat-codex cli', () => {
       text: async () => JSON.stringify({ result: 'unexpected' }),
     });
 
-    await expect(sendChatCodexTurn('http://localhost:9999', 'chat-codex-gateway', 'hello')).rejects.toThrow(
+    await expect(sendChatCodexTurn('http://localhost:5521', 'chat-codex-gateway', 'hello')).rejects.toThrow(
       'Unexpected response format from daemon',
     );
   });
@@ -78,7 +78,7 @@ describe('chat-codex cli', () => {
       }),
     });
 
-    const response = await sendChatCodexTurn('http://localhost:9999', 'chat-codex-gateway', 'hello');
+    const response = await sendChatCodexTurn('http://localhost:5521', 'chat-codex-gateway', 'hello');
     expect(response).toBe('WRAPPED_OK');
   });
 });

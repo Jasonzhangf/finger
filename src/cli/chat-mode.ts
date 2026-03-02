@@ -1,7 +1,7 @@
 import type { Command } from 'commander';
 import { deriveWsUrl, startSessionPanel } from './session-panel.js';
 
-const DEFAULT_DAEMON_URL = process.env.FINGER_HUB_URL || 'http://localhost:9999';
+const DEFAULT_DAEMON_URL = process.env.FINGER_HUB_URL || 'http://localhost:5521';
 const DEFAULT_CHAT_TARGET = 'chat-gateway';
 
 export function registerChatCommand(program: Command): void {

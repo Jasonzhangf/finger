@@ -13,8 +13,8 @@ import type { Workflow, TaskNode } from '../../../src/orchestration/workflow-man
 const workflows = new Map<string, Workflow>();
 const files = new Map<string, string>();
 
-vi.mock('fs', () => ({
-  default: {
+vi.mock('fs', () => {
+  const fsMock = {
     existsSync: vi.fn((target) => {
       const path = String(target);
       if (path.endsWith('.json')) {
@@ -56,8 +56,12 @@ vi.mock('fs', () => ({
       }
       return [];
     }),
-  },
-}));
+  };
+  return {
+    default: fsMock,
+    ...fsMock,
+  };
+});
 
 vi.mock('os', () => ({
   default: { homedir: vi.fn(() => '/home/test') },

@@ -1,5 +1,5 @@
-import { homedir } from 'os';
 import { resolve } from 'path';
+import { FINGER_PATHS } from '../../core/finger-paths.js';
 import { resolveHotPrompt } from '../base/prompt-template-loader.js';
 
 const CODEX_BASE_PROMPT = [
@@ -344,10 +344,16 @@ function normalizePrompt(prompt: string): string {
 function resolvePromptCandidates(explicitPath?: string): string[] {
   const candidates = [
     explicitPath,
+    process.env.FINGER_GENERAL_PROMPT_PATH,
     process.env.FINGER_CHAT_CODEX_PROMPT_PATH,
-    resolve(homedir(), '.finger', 'prompts', 'chat-codex', 'prompt.md'),
+    resolve(FINGER_PATHS.config.promptsDir, 'finger-general', 'prompt.md'),
+    resolve(process.cwd(), 'prompts', 'finger-general', 'prompt.md'),
+    resolve(process.cwd(), 'src', 'agents', 'finger-general', 'prompt.md'),
+    resolve(FINGER_PATHS.config.promptsDir, 'chat-codex', 'prompt.md'),
     resolve(process.cwd(), 'prompts', 'chat-codex', 'prompt.md'),
     resolve(process.cwd(), 'src', 'agents', 'chat-codex', 'prompt.md'),
+    resolve(FINGER_PATHS.home, 'prompts', 'finger-general', 'prompt.md'),
+    resolve(FINGER_PATHS.home, 'prompts', 'chat-codex', 'prompt.md'),
   ];
 
   const deduped: string[] = [];

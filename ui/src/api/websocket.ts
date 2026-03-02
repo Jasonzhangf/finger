@@ -19,7 +19,7 @@ export class WebSocketClient {
   clientId: string | null = null;
 
  constructor(
-   url: string = 'ws://localhost:9998',
+   url: string = 'ws://localhost:5522',
    options: { reconnectInterval?: number; maxReconnectAttempts?: number } = {}
  ) {
    this.url = url;
@@ -155,7 +155,7 @@ export function getWebSocket(): WebSocketClient {
   if (!wsInstance) {
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     const host = window.location.hostname;
-    const port = 9998;
+    const port = 5522;
     wsInstance = new WebSocketClient(`${protocol}//${host}:${port}`);
   }
   return wsInstance;

@@ -5,8 +5,7 @@
  */
 
 import fs from 'fs';
-import path from 'path';
-import os from 'os';
+import { FINGER_PATHS, ensureDir, ensureFingerLayout } from './finger-paths.js';
 import type { Message } from './schema.js';
 import { HubCore } from './hub-core.js';
 import { SnapshotManager } from './snapshot.js';
@@ -24,8 +23,8 @@ import type { FileConfig } from '../outputs/file.js';
 import type { RegistryEntry, RouteRule } from './schema.js';
 import { registry } from './registry-new.js';
 
-const FINGER_DIR = path.join(os.homedir(), '.finger');
-const PID_FILE = path.join(FINGER_DIR, 'daemon.pid');
+const FINGER_DIR = FINGER_PATHS.runtime.dir;
+const PID_FILE = FINGER_PATHS.runtime.daemonPid;
 
 export interface CoreDaemonConfig {
   snapshotInterval?: number;
@@ -50,6 +49,7 @@ export class CoreDaemon {
   }
 
   async start(): Promise<void> {
+    ensureFingerLayout();
     // Check if already running
     if (this.isRunning()) {
       console.log('[Daemon] Already running');
@@ -57,7 +57,7 @@ export class CoreDaemon {
     }
 
     // Ensure directory exists
-    fs.mkdirSync(FINGER_DIR, { recursive: true });
+    ensureDir(FINGER_DIR);
 
     // Load snapshot
     const snap = this.snapshot.load();

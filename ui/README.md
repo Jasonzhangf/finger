@@ -17,7 +17,7 @@
 | ID | Task | Description | Deps |
 |---|---|---|---|
 | finger-6 | AI Provider Config | OpenAI/Anthropic/Local config + Fetch Models + Test | finger-3 |
-| finger-7 | Session Management | Path to sessionID, store in ~/.finger/sessions/ | finger-3 |
+| finger-7 | Session Management | Path to sessionID, store in `~/.finger/sessions/<project编码>/session-<id>/main.json` | finger-3 |
 | finger-8 | Backend API | GET /api/blocks + POST exec + WebSocket | finger-4, finger-5 |
 
 ## Implementation Order

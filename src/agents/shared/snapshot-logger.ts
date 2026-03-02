@@ -1,12 +1,10 @@
 import fs from 'fs';
 import path from 'path';
+import { ensureDir, ensureFingerLayout, FINGER_PATHS } from '../../core/finger-paths.js';
 
-const LOG_DIR = '/Volumes/extension/code/finger/logs';
-const SNAPSHOT_DIR = path.join(LOG_DIR, 'snapshots');
-
-// Ensure directories exist
-fs.mkdirSync(LOG_DIR, { recursive: true });
-fs.mkdirSync(SNAPSHOT_DIR, { recursive: true });
+ensureFingerLayout();
+const LOG_DIR = ensureDir(FINGER_PATHS.logs.dir);
+const SNAPSHOT_DIR = ensureDir(path.join(LOG_DIR, 'snapshots'));
 
 export interface Snapshot {
   timestamp: string;

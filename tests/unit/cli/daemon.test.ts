@@ -4,12 +4,10 @@
 
 import { describe, it, expect, beforeEach } from 'vitest';
 import { existsSync, writeFileSync, unlinkSync, readFileSync } from 'fs';
-import { homedir } from 'os';
-import { join } from 'path';
+import { FINGER_PATHS } from '../../../src/core/finger-paths.js';
 
-const FINGER_HOME = join(homedir(), '.finger');
-const DAEMON_LOG_FILE = join(FINGER_HOME, 'daemon.log');
-const DAEMON_PID_FILE = join(FINGER_HOME, 'daemon.pid');
+const DAEMON_LOG_FILE = FINGER_PATHS.logs.daemonLog;
+const DAEMON_PID_FILE = FINGER_PATHS.runtime.daemonPid;
 
 describe('daemon logs command', () => {
   beforeEach(() => {

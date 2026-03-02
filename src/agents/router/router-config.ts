@@ -8,8 +8,7 @@
  */
 
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs';
-import { join } from 'path';
-import { homedir } from 'os';
+import { FINGER_PATHS, ensureDir } from '../../core/finger-paths.js';
 import { logger } from '../../core/logger.js';
 
 const log = logger.module('RouterConfig');
@@ -191,7 +190,7 @@ const DEFAULT_CONFIG: RouterConfiguration = {
 
 // ========== 配置管理器 ==========
 
-const CONFIG_PATH = join(homedir(), '.finger', 'router-config.json');
+const CONFIG_PATH = FINGER_PATHS.config.file.routerConfig;
 
 export class RouterConfigManager {
   private config: RouterConfiguration;
@@ -225,10 +224,7 @@ export class RouterConfigManager {
    * 保存配置
    */
   private saveConfig(config: RouterConfiguration): void {
-    const dir = join(homedir(), '.finger');
-    if (!existsSync(dir)) {
-      mkdirSync(dir, { recursive: true });
-    }
+    ensureDir(FINGER_PATHS.config.dir);
 
     config.updatedAt = new Date().toISOString();
     writeFileSync(CONFIG_PATH, JSON.stringify(config, null, 2), 'utf-8');

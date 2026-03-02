@@ -50,43 +50,103 @@ export interface AgentDeploymentRecord {
   createdAt: string;
 }
 
+type AgentRuntimeStatus =
+  | 'idle'
+  | 'running'
+  | 'error'
+  | 'paused'
+  | 'queued'
+  | 'waiting_input'
+  | 'completed'
+  | 'failed'
+  | 'interrupted';
+
+type AgentQuotaSource = 'workflow' | 'project' | 'default' | 'deployment';
+
+interface AgentQuotaPolicyView {
+  projectQuota?: number;
+  workflowQuota: Record<string, number>;
+}
+
+interface AgentQuotaView {
+  effective: number;
+  source: AgentQuotaSource;
+  workflowId?: string;
+}
+
+interface AgentLastEventView {
+  type: 'dispatch' | 'control' | 'status';
+  status: string;
+  summary: string;
+  timestamp: string;
+  sessionId?: string;
+  workflowId?: string;
+  dispatchId?: string;
+}
+
 interface AgentRuntimeViewItem {
   id: string;
   name: string;
   type: AgentRoleType;
-  status: 'idle' | 'running' | 'error' | 'paused';
+  status: AgentRuntimeStatus;
   source: 'agent-json' | 'runtime-config' | 'module' | 'deployment';
   instanceCount: number;
   deployedCount: number;
   availableCount: number;
+  runningCount: number;
+  queuedCount: number;
+  enabled: boolean;
+  capabilities: string[];
+  defaultQuota: number;
+  quotaPolicy: AgentQuotaPolicyView;
+  quota: AgentQuotaView;
+  lastEvent?: AgentLastEventView;
   lastSessionId?: string;
 }
 
 const BASE_STARTUP_TEMPLATES: AgentStartupTemplate[] = [
   {
-    id: 'orchestrator-loop',
+    id: 'finger-orchestrator',
     name: 'Orchestrator',
     role: 'orchestrator',
-    defaultImplementationId: 'native:orchestrator-loop',
-    defaultModuleId: 'orchestrator-loop',
+    defaultImplementationId: 'native:finger-orchestrator',
+    defaultModuleId: 'finger-orchestrator',
     defaultInstanceCount: 1,
     launchMode: 'orchestrator',
   },
   {
-    id: 'reviewer-loop',
-    name: 'Reviewer',
-    role: 'reviewer',
-    defaultImplementationId: 'native:reviewer-loop',
-    defaultModuleId: 'reviewer-loop',
+    id: 'finger-researcher',
+    name: 'Researcher',
+    role: 'searcher',
+    defaultImplementationId: 'native:finger-researcher',
+    defaultModuleId: 'finger-researcher',
     defaultInstanceCount: 1,
     launchMode: 'manual',
   },
   {
-    id: 'executor-loop',
+    id: 'finger-executor',
     name: 'Executor',
     role: 'executor',
-    defaultImplementationId: 'native:executor-loop',
-    defaultModuleId: 'executor-loop',
+    defaultImplementationId: 'native:finger-executor',
+    defaultModuleId: 'finger-executor',
+    defaultInstanceCount: 1,
+    launchMode: 'manual',
+  },
+  {
+    id: 'finger-coder',
+    name: 'Coder',
+    role: 'executor',
+    defaultImplementationId: 'native:finger-coder',
+    defaultModuleId: 'finger-coder',
+    defaultInstanceCount: 1,
+    launchMode: 'manual',
+  },
+  {
+    id: 'finger-reviewer',
+    name: 'Reviewer',
+    role: 'reviewer',
+    defaultImplementationId: 'native:finger-reviewer',
+    defaultModuleId: 'finger-reviewer',
     defaultInstanceCount: 1,
     launchMode: 'manual',
   },
@@ -97,7 +157,7 @@ interface AgentRuntimeViewInstance {
   agentId: string;
   name: string;
   type: AgentRoleType;
-  status: 'idle' | 'running' | 'error' | 'paused';
+  status: AgentRuntimeStatus;
   sessionId?: string;
   workflowId?: string;
   source: 'deployment';
@@ -109,7 +169,7 @@ interface AgentCatalogCapabilities {
   summary: {
     role: string;
     source: string;
-    status: 'idle' | 'running' | 'error' | 'paused';
+    status: AgentRuntimeStatus;
     tags: string[];
   };
   execution?: {
@@ -134,11 +194,16 @@ export interface AgentCatalogEntry {
   id: string;
   name: string;
   type: AgentRoleType;
-  status: 'idle' | 'running' | 'error' | 'paused';
+  status: AgentRuntimeStatus;
   source: string;
   instanceCount: number;
   deployedCount: number;
   availableCount: number;
+  runningCount: number;
+  queuedCount: number;
+  defaultQuota: number;
+  quota: AgentQuotaView;
+  lastEvent?: AgentLastEventView;
   lastSessionId?: string;
   capabilities: AgentCatalogCapabilities;
 }
@@ -200,6 +265,13 @@ export interface AgentDeployRequest {
     permissionMode?: string;
     maxRounds?: number;
     enableReview?: boolean;
+    enabled?: boolean;
+    capabilities?: string[];
+    defaultQuota?: number;
+    quotaPolicy?: {
+      projectQuota?: number;
+      workflowQuota?: Record<string, number>;
+    };
   };
   targetAgentId?: string;
   targetImplementationId?: string;
@@ -284,6 +356,13 @@ interface ChatCodexRunnerLike {
   interruptSession(sessionId: string, providerId?: string): Array<{ interrupted?: boolean }>;
 }
 
+interface AgentRuntimeConfigProfile {
+  enabled: boolean;
+  capabilities: string[];
+  defaultQuota: number;
+  quotaPolicy: AgentQuotaPolicyView;
+}
+
 export interface AgentRuntimeBlockDeps {
   moduleRegistry: ModuleRegistry;
   hub: MessageHub;
@@ -341,10 +420,58 @@ function resolveCapabilityLayer(value: unknown): AgentCapabilityLayer {
   return 'summary';
 }
 
+function normalizePositiveInteger(value: unknown): number | undefined {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return undefined;
+  return Math.max(1, Math.floor(value));
+}
+
+function normalizeNonNegativeInteger(value: unknown): number | undefined {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return undefined;
+  return Math.max(0, Math.floor(value));
+}
+
+function normalizeWorkflowQuota(raw: unknown): Record<string, number> {
+  if (!isObjectRecord(raw)) return {};
+  const normalized: Record<string, number> = {};
+  for (const [workflowId, quota] of Object.entries(raw)) {
+    if (workflowId.trim().length === 0) continue;
+    const parsed = normalizeNonNegativeInteger(quota);
+    if (parsed === undefined) continue;
+    normalized[workflowId.trim()] = parsed;
+  }
+  return normalized;
+}
+
+function normalizeQuotaPolicy(raw: unknown): AgentQuotaPolicyView {
+  if (!isObjectRecord(raw)) {
+    return { workflowQuota: {} };
+  }
+  const projectQuota = normalizeNonNegativeInteger(raw.projectQuota);
+  const workflowQuota = normalizeWorkflowQuota(raw.workflowQuota);
+  return {
+    ...(projectQuota !== undefined ? { projectQuota } : {}),
+    workflowQuota,
+  };
+}
+
+function normalizeCapabilities(raw: unknown): string[] {
+  if (!Array.isArray(raw)) return [];
+  return Array.from(new Set(
+    raw
+      .filter((item): item is string => typeof item === 'string')
+      .map((item) => item.trim())
+      .filter((item) => item.length > 0),
+  )).sort((a, b) => a.localeCompare(b));
+}
+
 function isIgnorableRuntimeModule(moduleId: string): boolean {
   return moduleId.includes('mock')
+    || moduleId.includes('debug-agent')
     || moduleId.includes('echo')
-    || moduleId === 'chat-codex-gateway';
+    || moduleId === 'chat-codex'
+    || moduleId === 'chat-codex-gateway'
+    || moduleId === 'finger-general-gateway'
+    || moduleId === 'finger-orchestrator-gateway';
 }
 
 function moduleHasAgentRuntimeIdentity(module: OrchestrationModule): boolean {
@@ -368,8 +495,8 @@ function moduleHasAgentRuntimeIdentity(module: OrchestrationModule): boolean {
     return true;
   }
   if (bridge.includes('rust-kernel')) return true;
-  if (provider === 'codex' && moduleId.includes('chat-codex')) return true;
-  return moduleId.includes('-loop') || moduleId.includes('chat-codex');
+  if (provider === 'codex' && (moduleId.includes('chat-codex') || moduleId.includes('finger-'))) return true;
+  return moduleId.includes('chat-codex') || moduleId.includes('finger-');
 }
 
 export class AgentRuntimeBlock extends BaseBlock {
@@ -397,6 +524,8 @@ export class AgentRuntimeBlock extends BaseBlock {
   private readonly deployments = new Map<string, AgentDeploymentRecord>();
   private readonly activeDispatchCountByAgent = new Map<string, number>();
   private readonly dispatchQueueByAgent = new Map<string, QueuedDispatchItem[]>();
+  private readonly runtimeConfigByAgent = new Map<string, AgentRuntimeConfigProfile>();
+  private readonly lastEventByAgent = new Map<string, AgentLastEventView>();
 
   constructor(id: string, private readonly deps: AgentRuntimeBlockDeps) {
     super(id, 'agent_runtime');
@@ -450,6 +579,126 @@ export class AgentRuntimeBlock extends BaseBlock {
       }
     }
     return running;
+  }
+
+  private collectRunnerActiveSessionIds(): Set<string> {
+    const active = new Set<string>();
+    const states = this.deps.chatCodexRunner.listSessionStates();
+    for (const item of states) {
+      if (!isObjectRecord(item)) continue;
+      if (item.hasActiveTurn !== true) continue;
+      const sessionId = typeof item.sessionId === 'string' ? item.sessionId.trim() : '';
+      if (sessionId.length === 0) continue;
+      active.add(sessionId);
+    }
+    return active;
+  }
+
+  private createDefaultRuntimeConfigProfile(): AgentRuntimeConfigProfile {
+    return {
+      enabled: true,
+      capabilities: [],
+      defaultQuota: 1,
+      quotaPolicy: { workflowQuota: {} },
+    };
+  }
+
+  private readRuntimeProfileFromLoadedConfig(agentId: string): AgentRuntimeConfigProfile | null {
+    const loaded = this.deps.getLoadedAgentConfigs().find((item) => item.config.id === agentId);
+    if (!loaded) return null;
+    const runtime = isObjectRecord(loaded.config.runtime) ? loaded.config.runtime : {};
+    const metadata = isObjectRecord(loaded.config.metadata) ? loaded.config.metadata : {};
+
+    const defaultQuota = normalizeNonNegativeInteger(runtime.defaultQuota ?? runtime.default_quota) ?? 1;
+    const quotaPolicy = normalizeQuotaPolicy(
+      runtime.quotaPolicy
+      ?? runtime.quota_policy
+      ?? {
+        projectQuota: runtime.projectQuota ?? runtime.project_quota,
+        workflowQuota: runtime.workflowQuota ?? runtime.workflow_quota,
+      },
+    );
+    const enabled = runtime.enabled !== false;
+    const capabilities = normalizeCapabilities(runtime.capabilities ?? metadata.capabilities);
+
+    return {
+      enabled,
+      capabilities,
+      defaultQuota,
+      quotaPolicy,
+    };
+  }
+
+  private mergeRuntimeConfigProfiles(
+    base: AgentRuntimeConfigProfile,
+    override?: Partial<AgentRuntimeConfigProfile>,
+  ): AgentRuntimeConfigProfile {
+    if (!override) return base;
+    const mergedCapabilities = override.capabilities
+      ? normalizeCapabilities(override.capabilities)
+      : base.capabilities;
+    const mergedDefaultQuota = normalizeNonNegativeInteger(override.defaultQuota) ?? base.defaultQuota;
+    const mergedQuotaPolicy = override.quotaPolicy
+      ? {
+          projectQuota: normalizeNonNegativeInteger(override.quotaPolicy.projectQuota)
+            ?? base.quotaPolicy.projectQuota,
+          workflowQuota: {
+            ...base.quotaPolicy.workflowQuota,
+            ...normalizeWorkflowQuota(override.quotaPolicy.workflowQuota),
+          },
+        }
+      : base.quotaPolicy;
+
+    return {
+      enabled: typeof override.enabled === 'boolean' ? override.enabled : base.enabled,
+      capabilities: mergedCapabilities,
+      defaultQuota: mergedDefaultQuota,
+      quotaPolicy: {
+        ...(mergedQuotaPolicy.projectQuota !== undefined ? { projectQuota: mergedQuotaPolicy.projectQuota } : {}),
+        workflowQuota: mergedQuotaPolicy.workflowQuota,
+      },
+    };
+  }
+
+  private resolveRuntimeConfigProfile(agentId: string): AgentRuntimeConfigProfile {
+    const existing = this.runtimeConfigByAgent.get(agentId);
+    if (existing) return existing;
+    const loaded = this.readRuntimeProfileFromLoadedConfig(agentId);
+    const resolved = loaded ?? this.createDefaultRuntimeConfigProfile();
+    this.runtimeConfigByAgent.set(agentId, resolved);
+    return resolved;
+  }
+
+  private patchRuntimeConfigProfile(agentId: string, patch: Partial<AgentRuntimeConfigProfile>): AgentRuntimeConfigProfile {
+    const current = this.resolveRuntimeConfigProfile(agentId);
+    const merged = this.mergeRuntimeConfigProfiles(current, patch);
+    this.runtimeConfigByAgent.set(agentId, merged);
+    return merged;
+  }
+
+  private resolveAgentQuota(
+    agentId: string,
+    workflowId: string | undefined,
+    deployment: AgentDeploymentRecord | undefined,
+  ): AgentQuotaView {
+    const profile = this.resolveRuntimeConfigProfile(agentId);
+    const workflowQuota = profile.quotaPolicy.workflowQuota;
+    if (workflowId && workflowQuota[workflowId] !== undefined) {
+      return { effective: workflowQuota[workflowId], source: 'workflow', workflowId };
+    }
+    if (profile.quotaPolicy.projectQuota !== undefined) {
+      return { effective: profile.quotaPolicy.projectQuota, source: 'project' };
+    }
+    if (Number.isFinite(profile.defaultQuota)) {
+      return { effective: Math.max(0, Math.floor(profile.defaultQuota)), source: 'default' };
+    }
+    const fallbackDeploymentQuota = deployment ? Math.max(1, Math.floor(deployment.instanceCount)) : 1;
+    return { effective: fallbackDeploymentQuota, source: 'deployment' };
+  }
+
+  private rememberLastEvent(agentId: string | undefined, event: AgentLastEventView): void {
+    if (typeof agentId !== 'string' || agentId.trim().length === 0) return;
+    this.lastEventByAgent.set(agentId.trim(), event);
   }
 
   private resolveToolAccess(agentId: string): {
@@ -635,12 +884,23 @@ export class AgentRuntimeBlock extends BaseBlock {
   private getRuntimeView(): {
     agents: AgentRuntimeViewItem[];
     instances: AgentRuntimeViewInstance[];
-    configs: Array<{ id: string; name: string; role?: string; filePath: string; tools?: Record<string, unknown> }>;
+    configs: Array<{
+      id: string;
+      name: string;
+      role?: string;
+      filePath: string;
+      tools?: Record<string, unknown>;
+      enabled?: boolean;
+      capabilities?: string[];
+      defaultQuota?: number;
+      quotaPolicy?: AgentQuotaPolicyView;
+    }>;
     definitions: AgentDefinition[];
     startupTargets: AgentDefinition[];
     startupTemplates: AgentStartupTemplate[];
   } {
     const runningAgentIds = this.collectRunningAgentIds();
+    const runnerActiveSessionIds = this.collectRunnerActiveSessionIds();
     const definitions = this.buildDefinitions();
 
     const workflowBySessionId = new Map<string, string>();
@@ -651,12 +911,35 @@ export class AgentRuntimeBlock extends BaseBlock {
     }
 
     const instances: AgentRuntimeViewInstance[] = [];
+    const runnerActiveCountByAgent = new Map<string, number>();
     for (const deployment of this.deployments.values()) {
       const baseStatus = normalizeAgentStatus(deployment.status);
       const instanceTotal = Math.max(1, Number.isFinite(deployment.instanceCount) ? Math.floor(deployment.instanceCount) : 1);
+      const runningCount = this.getActiveDispatchCount(deployment.agentId);
+      const queuedCount = this.dispatchQueueByAgent.get(deployment.agentId)?.length ?? 0;
+      const lastEvent = this.lastEventByAgent.get(deployment.agentId);
+      const hasRunnerActiveTurn = typeof deployment.sessionId === 'string' && runnerActiveSessionIds.has(deployment.sessionId);
+      if (hasRunnerActiveTurn) {
+        runnerActiveCountByAgent.set(deployment.agentId, (runnerActiveCountByAgent.get(deployment.agentId) ?? 0) + 1);
+      }
       for (let idx = 0; idx < instanceTotal; idx += 1) {
         const id = instanceTotal === 1 ? deployment.id : `${deployment.id}#${idx + 1}`;
-        const status = runningAgentIds.has(deployment.agentId) ? 'running' : baseStatus;
+        let status: AgentRuntimeStatus = (runningAgentIds.has(deployment.agentId) || (hasRunnerActiveTurn && idx === 0))
+          ? 'running'
+          : baseStatus;
+        if (runningCount > 0 && idx < runningCount) {
+          status = 'running';
+        } else if (queuedCount > 0 && idx < queuedCount) {
+          status = 'queued';
+        } else if (lastEvent?.status === 'waiting_input') {
+          status = 'waiting_input';
+        } else if (lastEvent?.status === 'completed' || lastEvent?.status === 'passed' || lastEvent?.status === 'closed') {
+          status = 'completed';
+        } else if (lastEvent?.status === 'failed' || lastEvent?.status === 'error') {
+          status = 'failed';
+        } else if (lastEvent?.status === 'interrupted' || lastEvent?.status === 'cancel') {
+          status = 'interrupted';
+        }
         const workflowId = workflowBySessionId.get(deployment.sessionId);
         instances.push({
           id,
@@ -683,38 +966,85 @@ export class AgentRuntimeBlock extends BaseBlock {
     const agents: AgentRuntimeViewItem[] = [];
     for (const def of definitions.values()) {
       const related = byAgentId.get(def.id) ?? [];
-      const deployedCount = related.filter((item) => item.status === 'running' || item.status === 'paused').length;
+      const profile = this.resolveRuntimeConfigProfile(def.id);
+      const queuedCount = this.dispatchQueueByAgent.get(def.id)?.length ?? 0;
+      const runningCount = Math.max(
+        this.getActiveDispatchCount(def.id),
+        related.filter((item) => item.status === 'running' || item.status === 'waiting_input').length,
+        runnerActiveCountByAgent.get(def.id) ?? 0,
+      );
+      const deployedCount = related.filter((item) => (
+        item.status === 'running'
+        || item.status === 'waiting_input'
+        || item.status === 'paused'
+        || item.status === 'queued'
+      )).length;
       const latestSession = related
         .slice()
         .sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt))
         .find((item) => typeof item.sessionId === 'string' && item.sessionId.length > 0)
         ?.sessionId;
+      const latestWorkflowId = related
+        .slice()
+        .sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt))
+        .find((item) => typeof item.workflowId === 'string' && item.workflowId.length > 0)
+        ?.workflowId;
+      const deployment = this.resolveDeploymentByAgentId(def.id) ?? undefined;
+      const quota = this.resolveAgentQuota(def.id, latestWorkflowId, deployment);
+      const lastEvent = this.lastEventByAgent.get(def.id);
+
+      let status: AgentRuntimeStatus = 'idle';
+      if (related.some((item) => item.status === 'error' || item.status === 'failed')) {
+        status = 'error';
+      } else if (runningCount > 0 || runningAgentIds.has(def.id)) {
+        status = 'running';
+      } else if (queuedCount > 0) {
+        status = 'queued';
+      } else if (related.some((item) => item.status === 'paused')) {
+        status = 'paused';
+      } else if (lastEvent?.status === 'waiting_input') {
+        status = 'waiting_input';
+      } else if (lastEvent?.status === 'completed' || lastEvent?.status === 'passed' || lastEvent?.status === 'closed') {
+        status = 'completed';
+      } else if (lastEvent?.status === 'interrupted' || lastEvent?.status === 'cancel') {
+        status = 'interrupted';
+      }
+
       agents.push({
         id: def.id,
         name: def.name,
         type: def.role,
-        status: related.some((item) => item.status === 'error')
-          ? 'error'
-          : runningAgentIds.has(def.id)
-            ? 'running'
-            : related.some((item) => item.status === 'paused')
-              ? 'paused'
-              : 'idle',
+        status,
         source: def.source,
         instanceCount: related.length,
         deployedCount,
-        availableCount: Math.max(0, related.length - deployedCount),
+        availableCount: Math.max(0, related.length - Math.max(0, runningCount) - Math.max(0, queuedCount)),
+        runningCount,
+        queuedCount,
+        enabled: profile.enabled,
+        capabilities: profile.capabilities,
+        defaultQuota: profile.defaultQuota,
+        quotaPolicy: profile.quotaPolicy,
+        quota,
+        ...(lastEvent ? { lastEvent } : {}),
         ...(latestSession ? { lastSessionId: latestSession } : {}),
       });
     }
 
-    const configs = this.deps.getLoadedAgentConfigs().map((item) => ({
-      id: item.config.id,
-      name: item.config.name ?? item.config.id,
-      ...(item.config.role ? { role: item.config.role } : {}),
-      filePath: item.filePath,
-      ...(item.config.tools ? { tools: item.config.tools as Record<string, unknown> } : {}),
-    }));
+    const configs = this.deps.getLoadedAgentConfigs().map((item) => {
+      const profile = this.resolveRuntimeConfigProfile(item.config.id);
+      return {
+        id: item.config.id,
+        name: item.config.name ?? item.config.id,
+        ...(item.config.role ? { role: item.config.role } : {}),
+        filePath: item.filePath,
+        ...(item.config.tools ? { tools: item.config.tools as Record<string, unknown> } : {}),
+        enabled: profile.enabled,
+        capabilities: profile.capabilities,
+        defaultQuota: profile.defaultQuota,
+        quotaPolicy: profile.quotaPolicy,
+      };
+    });
 
     const startupTargets = Array.from(definitions.values())
       .filter((def) => (byAgentId.get(def.id)?.length ?? 0) === 0)
@@ -747,7 +1077,7 @@ export class AgentRuntimeBlock extends BaseBlock {
       'cancel',
     ];
     const dispatchTargets = runtimeView.instances
-      .filter((item) => item.status !== 'error')
+      .filter((item) => item.status !== 'error' && item.status !== 'failed' && item.status !== 'interrupted')
       .map((item) => item.agentId)
       .filter((item, index, arr) => arr.indexOf(item) === index)
       .sort((a, b) => a.localeCompare(b));
@@ -820,6 +1150,11 @@ export class AgentRuntimeBlock extends BaseBlock {
         instanceCount: agent.instanceCount,
         deployedCount: agent.deployedCount,
         availableCount: agent.availableCount,
+        runningCount: agent.runningCount,
+        queuedCount: agent.queuedCount,
+        defaultQuota: agent.defaultQuota,
+        quota: agent.quota,
+        ...(agent.lastEvent ? { lastEvent: agent.lastEvent } : {}),
         ...(agent.lastSessionId ? { lastSessionId: agent.lastSessionId } : {}),
         capabilities,
       };
@@ -981,11 +1316,27 @@ export class AgentRuntimeBlock extends BaseBlock {
     result?: unknown;
     error?: string;
   }): void {
+    const timestamp = new Date().toISOString();
+    const queueSuffix = typeof params.queuePosition === 'number' ? ` (queue #${params.queuePosition})` : '';
+    const summary = params.status === 'failed'
+      ? `Dispatch failed${params.error ? `: ${params.error}` : ''}`
+      : params.status === 'completed'
+        ? 'Dispatch completed'
+        : `Dispatch queued${queueSuffix}`;
+    this.rememberLastEvent(params.targetAgentId, {
+      type: 'dispatch',
+      status: params.status,
+      summary,
+      timestamp,
+      ...(params.sessionId ? { sessionId: params.sessionId } : {}),
+      ...(params.workflowId ? { workflowId: params.workflowId } : {}),
+      dispatchId: params.dispatchId,
+    });
     void this.deps.eventBus.emit({
       type: 'agent_runtime_dispatch',
       sessionId: params.sessionId ?? this.deps.sessionManager.getCurrentSession()?.id ?? 'default',
       agentId: params.targetAgentId,
-      timestamp: new Date().toISOString(),
+      timestamp,
       payload: {
         dispatchId: params.dispatchId,
         sourceAgentId: params.sourceAgentId,
@@ -1003,11 +1354,26 @@ export class AgentRuntimeBlock extends BaseBlock {
   }
 
   private emitControlEvent(result: AgentControlResult): void {
+    const timestamp = new Date().toISOString();
+    const normalizedStatus = (result.action === 'interrupt' || result.action === 'cancel') && result.ok
+      ? 'interrupted'
+      : result.status;
+    const summary = result.ok
+      ? `Control ${result.action} ${result.status}`
+      : `Control ${result.action} failed${result.error ? `: ${result.error}` : ''}`;
+    this.rememberLastEvent(result.targetAgentId, {
+      type: 'control',
+      status: normalizedStatus,
+      summary,
+      timestamp,
+      ...(result.sessionId ? { sessionId: result.sessionId } : {}),
+      ...(result.workflowId ? { workflowId: result.workflowId } : {}),
+    });
     void this.deps.eventBus.emit({
       type: 'agent_runtime_control',
       sessionId: result.sessionId ?? this.deps.sessionManager.getCurrentSession()?.id ?? 'default',
       agentId: result.targetAgentId,
-      timestamp: new Date().toISOString(),
+      timestamp,
       payload: {
         action: result.action,
         status: result.status,
@@ -1024,16 +1390,28 @@ export class AgentRuntimeBlock extends BaseBlock {
     status: 'ok' | 'error';
     error?: string;
   }): void {
+    const timestamp = new Date().toISOString();
+    const runningAgents = Array.from(this.collectRunningAgentIds()).sort((a, b) => a.localeCompare(b));
+    for (const agentId of runningAgents) {
+      this.rememberLastEvent(agentId, {
+        type: 'status',
+        status: params.status,
+        summary: params.status === 'ok' ? 'Runtime status ok' : `Runtime status error${params.error ? `: ${params.error}` : ''}`,
+        timestamp,
+        ...(params.sessionId ? { sessionId: params.sessionId } : {}),
+        ...(params.workflowId ? { workflowId: params.workflowId } : {}),
+      });
+    }
     void this.deps.eventBus.emit({
       type: 'agent_runtime_status',
       sessionId: params.sessionId ?? this.deps.sessionManager.getCurrentSession()?.id ?? 'default',
-      timestamp: new Date().toISOString(),
+      timestamp,
       payload: {
         scope: params.workflowId ? 'workflow' : params.sessionId ? 'session' : 'global',
         status: params.status,
         ...(params.sessionId ? { sessionId: params.sessionId } : {}),
         ...(params.workflowId ? { workflowId: params.workflowId } : {}),
-        runningAgents: Array.from(this.collectRunningAgentIds()).sort((a, b) => a.localeCompare(b)),
+        runningAgents,
         ...(params.error ? { error: params.error } : {}),
       },
     });
@@ -1211,6 +1589,16 @@ export class AgentRuntimeBlock extends BaseBlock {
         dispatchId: `dispatch-${Date.now()}-not-started`,
         status: 'failed',
         error: `target agent is not started in resource pool: ${target}`,
+      };
+    }
+
+    const runtimeProfile = this.resolveRuntimeConfigProfile(target);
+    if (runtimeProfile.enabled === false) {
+      return {
+        ok: false,
+        dispatchId: `dispatch-${Date.now()}-disabled`,
+        status: 'failed',
+        error: `target agent is disabled by orchestration config: ${target}`,
       };
     }
     const targetModuleId = deployment.moduleId ?? target;
@@ -1581,14 +1969,46 @@ export class AgentRuntimeBlock extends BaseBlock {
       createdAt: previous?.createdAt ?? new Date().toISOString(),
     };
 
-    if (request.config?.provider === 'iflow' || request.config?.provider === 'openai' || request.config?.provider === 'anthropic') {
+    const hasRuntimeEnabledPatch = typeof request.config?.enabled === 'boolean';
+    const runtimeDefaultQuotaPatch = normalizeNonNegativeInteger(request.config?.defaultQuota);
+    const hasRuntimeDefaultQuotaPatch = runtimeDefaultQuotaPatch !== undefined;
+    const hasRuntimeCapabilitiesPatch = Array.isArray(request.config?.capabilities);
+    const hasRuntimeQuotaPolicyPatch = request.config?.quotaPolicy !== undefined;
+    const runtimeProfile = (hasRuntimeEnabledPatch || hasRuntimeDefaultQuotaPatch || hasRuntimeCapabilitiesPatch || hasRuntimeQuotaPolicyPatch)
+      ? this.patchRuntimeConfigProfile(definition.id, {
+          ...(hasRuntimeEnabledPatch ? { enabled: request.config?.enabled } : {}),
+          ...(hasRuntimeDefaultQuotaPatch ? { defaultQuota: runtimeDefaultQuotaPatch } : {}),
+          ...(hasRuntimeCapabilitiesPatch ? { capabilities: normalizeCapabilities(request.config?.capabilities) } : {}),
+          ...(hasRuntimeQuotaPolicyPatch ? { quotaPolicy: normalizeQuotaPolicy(request.config?.quotaPolicy) } : {}),
+        })
+      : this.resolveRuntimeConfigProfile(definition.id);
+
+    if (
+      request.config?.provider === 'iflow'
+      || request.config?.provider === 'openai'
+      || request.config?.provider === 'anthropic'
+      || hasRuntimeEnabledPatch
+      || hasRuntimeDefaultQuotaPatch
+      || hasRuntimeCapabilitiesPatch
+      || hasRuntimeQuotaPolicyPatch
+    ) {
       this.deps.runtime.setAgentRuntimeConfig(definition.id, {
         id: definition.id,
         name: request.config?.name ?? definition.name,
         role: request.config?.role ?? definition.role,
-        provider: {
-          type: request.config.provider,
-          ...(request.config.model ? { model: request.config.model } : {}),
+        ...(request.config?.provider
+          ? {
+              provider: {
+                type: request.config.provider,
+                ...(request.config.model ? { model: request.config.model } : {}),
+              },
+            }
+          : {}),
+        runtime: {
+          enabled: runtimeProfile.enabled,
+          capabilities: runtimeProfile.capabilities,
+          defaultQuota: runtimeProfile.defaultQuota,
+          quotaPolicy: runtimeProfile.quotaPolicy,
         },
       });
     }
@@ -1615,6 +2035,41 @@ export class AgentRuntimeBlock extends BaseBlock {
   }
 
   private listStartupTemplates(): AgentStartupTemplate[] {
-    return BASE_STARTUP_TEMPLATES.map((item) => ({ ...item }));
+    const templates = BASE_STARTUP_TEMPLATES.map((item) => ({ ...item }));
+    const existingIds = new Set(templates.map((item) => item.id));
+    const modules = this.deps.moduleRegistry.getAllModules();
+
+    for (const module of modules) {
+      if (module.type !== 'output') continue;
+      const moduleId = typeof module.id === 'string' ? module.id.trim() : '';
+      if (!moduleId || existingIds.has(moduleId)) continue;
+      const inferredRole = normalizeAgentType(module.metadata?.role ?? module.metadata?.type ?? moduleId);
+      if (
+        inferredRole !== 'orchestrator'
+        && inferredRole !== 'reviewer'
+        && inferredRole !== 'executor'
+        && inferredRole !== 'searcher'
+      ) continue;
+      if (
+        !moduleId.includes('orchestr')
+        && !moduleId.includes('review')
+        && !moduleId.includes('execut')
+        && !moduleId.includes('coder')
+        && !moduleId.includes('search')
+        && !moduleId.includes('research')
+      ) continue;
+      templates.push({
+        id: moduleId,
+        name: module.name ?? moduleId,
+        role: inferredRole,
+        defaultImplementationId: `native:${moduleId}`,
+        defaultModuleId: moduleId,
+        defaultInstanceCount: 1,
+        launchMode: inferredRole === 'orchestrator' ? 'orchestrator' : 'manual',
+      });
+      existingIds.add(moduleId);
+    }
+
+    return templates.sort((a, b) => a.name.localeCompare(b.name));
   }
 }

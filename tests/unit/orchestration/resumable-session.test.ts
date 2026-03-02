@@ -2,22 +2,20 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { ResumableSessionManager, TaskProgress, SessionCheckpoint, determineResumePhase } from '../../../src/orchestration/resumable-session.js';
 
 // Mock fs module
-vi.mock('fs', () => ({
-  default: {
+vi.mock('fs', () => {
+  const fsMock = {
     existsSync: vi.fn(() => false),
     mkdirSync: vi.fn(),
     writeFileSync: vi.fn(),
     readFileSync: vi.fn(() => '[]'),
     readdirSync: vi.fn(() => []),
     unlinkSync: vi.fn(),
-  },
-  existsSync: vi.fn(() => false),
-  mkdirSync: vi.fn(),
-  writeFileSync: vi.fn(),
-  readFileSync: vi.fn(() => '[]'),
-  readdirSync: vi.fn(() => []),
-  unlinkSync: vi.fn(),
-}));
+  };
+  return {
+    default: fsMock,
+    ...fsMock,
+  };
+});
 
 vi.mock('os', () => ({
   default: {

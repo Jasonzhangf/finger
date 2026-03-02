@@ -5,6 +5,7 @@
 
 import { Command } from 'commander';
 import {
+  configureAgentCommandUrls,
   understandCommand,
   routeCommand,
   planCommand,
@@ -23,16 +24,28 @@ import { registerToolCommand } from './tool-command.js';
 import { registerGatewayCommand } from './gateway-command.js';
 import { registerGatewayWorkerCommand } from './gateway-worker.js';
 import { registerMemoryLedgerCommand } from './memory-ledger.js';
+import { ensureFingerLayout } from '../core/finger-paths.js';
 
-const DEFAULT_HTTP_BASE_URL = process.env.FINGER_HTTP_URL || process.env.FINGER_HUB_URL || 'http://localhost:9999';
-const DEFAULT_WS_URL = process.env.FINGER_WS_URL || 'ws://localhost:9998';
+const DEFAULT_HTTP_BASE_URL = process.env.FINGER_HTTP_URL || process.env.FINGER_HUB_URL || 'http://localhost:5521';
+const DEFAULT_WS_URL = process.env.FINGER_WS_URL || 'ws://localhost:5522';
+
+ensureFingerLayout();
 
 const program = new Command();
 
 program
   .name('finger')
   .description('AI Agent 编排系统 CLI')
-  .version('1.0.0');
+  .version('1.0.0')
+  .option('--base-url <url>', 'Message Hub base URL', DEFAULT_HTTP_BASE_URL)
+  .option('--ws-url <url>', 'WebSocket base URL', DEFAULT_WS_URL)
+  .hook('preAction', (command) => {
+    const options = command.opts();
+    configureAgentCommandUrls({
+      hubUrl: options.baseUrl,
+      wsUrl: options.wsUrl,
+    });
+  });
 
 // ========== Agent Commands ==========
 program

@@ -3,6 +3,8 @@
  */
 
 import { spawn } from 'child_process';
+import { existsSync } from 'fs';
+import { dirname, join, resolve } from 'path';
 
 
 export interface BdTaskOptions {
@@ -54,6 +56,21 @@ export class BdTools {
     this.cwd = cwd ?? process.cwd();
   }
 
+  private resolveBeadsDir(): string | undefined {
+    let current = resolve(this.cwd);
+    while (true) {
+      const candidate = join(current, '.beads');
+      if (existsSync(candidate)) {
+        return candidate;
+      }
+      const parent = dirname(current);
+      if (parent === current) {
+        return undefined;
+      }
+      current = parent;
+    }
+  }
+
   private normalizePriority(priority?: number): number {
     if (typeof priority !== 'number' || Number.isNaN(priority)) {
       return 1;
@@ -86,9 +103,11 @@ export class BdTools {
         }
       }
       
+      const beadsDir = this.resolveBeadsDir();
       const child = spawn('bd', ['--no-db', ...argList], {
         cwd: this.cwd,
         shell: false, // 不使用 shell，避免转义问题
+        env: beadsDir ? { ...process.env, BEADS_DIR: beadsDir } : process.env,
       });
       
       let stdout = '';

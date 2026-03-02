@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import {
+  __chatCodexInternals,
   type ChatCodexRunContext,
   createChatCodexModule,
   type ChatCodexRunResult,
@@ -388,5 +389,157 @@ describe('chat-codex module', () => {
     const taskCompletePayload = kernelPayloads.find((payload) => payload.type === 'task_complete');
     expect(taskCompletePayload).toBeDefined();
     expect(taskCompletePayload?.realtimeToolEvents).toBe(true);
+  });
+
+  it('keeps system prompt stable across orchestrator and reviewer roles', async () => {
+    runTurnMock.mockResolvedValue({
+      reply: 'OK',
+      events: [],
+      usedBinaryPath: '/tmp/finger-kernel-bridge-bin',
+    });
+    const module = createChatCodexModule({}, runner);
+
+    await module.handle({ text: 'orchestrate this', roleProfile: 'orchestrator' });
+    await module.handle({ text: 'review this', roleProfile: 'reviewer' });
+
+    expect(runTurnMock).toHaveBeenCalledTimes(2);
+    const firstPrompt = runTurnMock.mock.calls[0][2]?.systemPrompt;
+    const secondPrompt = runTurnMock.mock.calls[1][2]?.systemPrompt;
+    expect(typeof firstPrompt).toBe('string');
+    expect(firstPrompt).toBe(secondPrompt);
+  });
+
+  it('builds role-specific developer instructions with ledger block in developer zone', () => {
+    const orchestrator = __chatCodexInternals.buildKernelUserTurnOptions(
+      {
+        sessionId: 'session-1',
+        metadata: {
+          roleProfile: 'orchestrator',
+          contextLedgerEnabled: true,
+          contextLedgerAgentId: 'chat-codex',
+          contextLedgerRole: 'orchestrator',
+          kernelMode: 'main',
+        },
+      },
+      undefined,
+    );
+    const reviewer = __chatCodexInternals.buildKernelUserTurnOptions(
+      {
+        sessionId: 'session-1',
+        metadata: {
+          roleProfile: 'reviewer',
+          contextLedgerEnabled: true,
+          contextLedgerAgentId: 'chat-codex',
+          contextLedgerRole: 'reviewer',
+          kernelMode: 'main',
+        },
+      },
+      undefined,
+    );
+
+    expect(orchestrator?.developer_instructions).toContain('role=orchestrator');
+    expect(orchestrator?.developer_instructions).toContain('[context_ledger]');
+    expect(reviewer?.developer_instructions).toContain('role=reviewer');
+    expect(reviewer?.developer_instructions).toContain('[context_ledger]');
+    expect(orchestrator?.developer_instructions).not.toBe(reviewer?.developer_instructions);
+  });
+
+  it('supports executor and searcher developer role templates', () => {
+    const executor = __chatCodexInternals.resolveDeveloperInstructions({
+      roleProfile: 'executor',
+      contextLedgerEnabled: true,
+      kernelMode: 'main',
+    });
+    const searcher = __chatCodexInternals.resolveDeveloperInstructions({
+      roleProfile: 'searcher',
+      contextLedgerEnabled: true,
+      kernelMode: 'main',
+    });
+
+    expect(executor).toContain('role=executor');
+    expect(searcher).toContain('role=searcher');
+    expect(executor).not.toBe(searcher);
+  });
+
+  it('grants orchestrator documentation write tool and keeps reviewer read-only', async () => {
+    runTurnMock.mockResolvedValue({
+      reply: 'OK',
+      events: [],
+      usedBinaryPath: '/tmp/finger-kernel-bridge-bin',
+    });
+    const module = createChatCodexModule({}, runner);
+
+    await module.handle({ text: 'write plan doc', roleProfile: 'orchestrator' });
+    await module.handle({ text: 'review only', roleProfile: 'reviewer' });
+
+    const orchestratorTools = (runTurnMock.mock.calls[0][2]?.tools ?? []).map((item) => item.name);
+    const reviewerTools = (runTurnMock.mock.calls[1][2]?.tools ?? []).map((item) => item.name);
+
+    expect(orchestratorTools).toContain('apply_patch');
+    expect(orchestratorTools).toContain('update_plan');
+    expect(reviewerTools).not.toContain('apply_patch');
+  });
+
+  it('keeps structured output schema disabled by default', () => {
+    const options = __chatCodexInternals.buildKernelUserTurnOptions(
+      {
+        sessionId: 'session-1',
+        metadata: {
+          roleProfile: 'orchestrator',
+          kernelMode: 'main',
+        },
+      },
+      undefined,
+    );
+
+    expect(options?.responses?.text?.output_schema).toBeUndefined();
+  });
+
+  it('enables role default structured output schema when requested', () => {
+    const options = __chatCodexInternals.buildKernelUserTurnOptions(
+      {
+        sessionId: 'session-1',
+        metadata: {
+          roleProfile: 'reviewer',
+          kernelMode: 'main',
+          responsesStructuredOutput: true,
+        },
+      },
+      undefined,
+    );
+
+    const schema = options?.responses?.text?.output_schema as Record<string, unknown> | undefined;
+    expect(schema).toBeDefined();
+    expect(schema?.type).toBe('object');
+    expect(schema?.properties).toMatchObject({
+      role: { type: 'string', const: 'reviewer' },
+      reviewLevel: { type: 'string', enum: ['feedback', 'soft_gate', 'hard_gate'] },
+      target: { type: 'string', enum: ['executor', 'orchestrator', 'general'] },
+    });
+  });
+
+  it('prefers explicit responsesOutputSchema over role defaults', () => {
+    const explicitSchema = {
+      type: 'object',
+      properties: {
+        ok: { type: 'boolean' },
+      },
+      required: ['ok'],
+      additionalProperties: false,
+    };
+    const options = __chatCodexInternals.buildKernelUserTurnOptions(
+      {
+        sessionId: 'session-1',
+        metadata: {
+          roleProfile: 'executor',
+          kernelMode: 'main',
+          responsesStructuredOutput: true,
+          responsesOutputSchema: explicitSchema,
+        },
+      },
+      undefined,
+    );
+
+    expect(options?.responses?.text?.output_schema).toEqual(explicitSchema);
   });
 });

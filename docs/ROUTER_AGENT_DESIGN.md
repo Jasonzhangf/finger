@@ -118,7 +118,7 @@ interface RouterConfig {
 
 将编译后的模块放入 autostart 目录：
 ```bash
-cp dist/agents/router/router-agent.js ~/.finger/autostart/
+cp dist/agents/router/router-agent.js ~/.finger/runtime/autostart/
 myfinger daemon restart
 ```
 

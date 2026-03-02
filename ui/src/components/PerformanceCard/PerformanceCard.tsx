@@ -33,7 +33,6 @@ interface PerformanceMetrics {
 
 export const PerformanceCard: React.FC = () => {
   const [metrics, setMetrics] = useState<PerformanceMetrics | null>(null);
-  const [collapsed, setCollapsed] = useState(false);
 
   useEffect(() => {
     // Fetch initial metrics
@@ -55,7 +54,7 @@ export const PerformanceCard: React.FC = () => {
     };
 
     // Connect to WebSocket for real-time updates
-    const ws = new WebSocket(`ws://${window.location.hostname}:9998`);
+    const ws = new WebSocket(`ws://${window.location.hostname}:5522`);
     ws.onmessage = handlePerformanceMetrics;
 
     return () => {
@@ -101,14 +100,12 @@ export const PerformanceCard: React.FC = () => {
 
   if (!metrics) {
     return (
-      <div className="performance-card collapsed">
-        <div className="performance-header">
-          <span className="performance-title">
-            <span className="performance-indicator"></span>
-            Performance
-          </span>
+      <div className="performance-bar">
+        <div className="performance-bar-title">
+          <span className="performance-indicator"></span>
+          Performance
         </div>
-        <div style={{ color: '#64748b', fontSize: '12px' }}>Loading...</div>
+        <div className="performance-bar-loading">Loading...</div>
       </div>
     );
   }
@@ -116,72 +113,34 @@ export const PerformanceCard: React.FC = () => {
   const status = getOverallStatus();
 
   return (
-    <div className={`performance-card ${collapsed ? 'collapsed' : ''}`}>
-      <div className="performance-header">
-        <span className="performance-title">
-          <span className={`performance-indicator ${status}`}></span>
-          Performance
-        </span>
-        <button 
-          className="performance-toggle"
-          onClick={() => setCollapsed(!collapsed)}
-        >
-          {collapsed ? '▼' : '▲'}
-        </button>
+    <div className={`performance-bar ${status}`}>
+      <div className="performance-bar-title">
+        <span className={`performance-indicator ${status}`}></span>
+        Performance
       </div>
-
-      {!collapsed && (
-        <>
-          <div className="performance-grid">
-            <div className="metric-row">
-              <span className="metric-label">调度延迟</span>
-              <span className={`metric-value ${getStatusClass(metrics.scheduling.avgLatencyMs, { warning: 1000, critical: 5000 })}`}>
-                {metrics.scheduling.avgLatencyMs}ms
-              </span>
-            </div>
-
-            <div className="metric-row">
-              <span className="metric-label">任务成功率</span>
-              <span className={`metric-value ${getStatusClass(1 - metrics.execution.successRate, { warning: 0.1, critical: 0.2 })}`}>
-                {(metrics.execution.successRate * 100).toFixed(0)}%
-              </span>
-            </div>
-
-            <div className="metric-row">
-              <span className="metric-label">活跃任务</span>
-              <span className="metric-value">
-                {metrics.scheduling.activeTasks} / {metrics.scheduling.queuedTasks}
-              </span>
-            </div>
-
-            <div className="metric-row">
-              <span className="metric-label">资源利用率</span>
-              <span className={`metric-value ${getStatusClass(metrics.resourcePool.utilizationRate, { warning: 0.7, critical: 0.9 })}`}>
-                {(metrics.resourcePool.utilizationRate * 100).toFixed(0)}%
-              </span>
-            </div>
-
-            <div className="metric-row">
-              <span className="metric-label">事件吞吐</span>
-              <span className="metric-value">
-                {metrics.eventBus.eventsPerSecond}/s
-              </span>
-            </div>
-
-            <div className="metric-row">
-              <span className="metric-label">内存使用</span>
-              <span className={`metric-value ${getStatusClass(metrics.system.memoryUsedMB, { warning: 256, critical: 512 })}`}>
-                {metrics.system.memoryUsedMB}MB
-              </span>
-            </div>
-          </div>
-
-          <div className="performance-footer">
-            <span>运行时间: {formatUptime(metrics.system.uptimeSeconds)}</span>
-            <span>完成: {metrics.execution.totalCompleted} | 失败: {metrics.execution.totalFailed}</span>
-          </div>
-        </>
-      )}
+      <div className="performance-bar-metrics">
+        <span className={`metric-chip ${getStatusClass(metrics.scheduling.avgLatencyMs, { warning: 1000, critical: 5000 })}`}>
+          延迟 {metrics.scheduling.avgLatencyMs}ms
+        </span>
+        <span className={`metric-chip ${getStatusClass(1 - metrics.execution.successRate, { warning: 0.1, critical: 0.2 })}`}>
+          成功 {(metrics.execution.successRate * 100).toFixed(0)}%
+        </span>
+        <span className="metric-chip">
+          活跃 {metrics.scheduling.activeTasks}/{metrics.scheduling.queuedTasks}
+        </span>
+        <span className={`metric-chip ${getStatusClass(metrics.resourcePool.utilizationRate, { warning: 0.7, critical: 0.9 })}`}>
+          资源 {(metrics.resourcePool.utilizationRate * 100).toFixed(0)}%
+        </span>
+        <span className="metric-chip">
+          事件 {metrics.eventBus.eventsPerSecond}/s
+        </span>
+        <span className={`metric-chip ${getStatusClass(metrics.system.memoryUsedMB, { warning: 256, critical: 512 })}`}>
+          内存 {metrics.system.memoryUsedMB}MB
+        </span>
+        <span className="metric-chip subtle">
+          运行 {formatUptime(metrics.system.uptimeSeconds)}
+        </span>
+      </div>
     </div>
   );
 };

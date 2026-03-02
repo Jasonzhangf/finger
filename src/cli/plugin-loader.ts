@@ -1,9 +1,9 @@
 import { Command } from 'commander';
 import { copyFileSync, existsSync, mkdirSync, readdirSync, rmSync, writeFileSync } from 'fs';
-import { homedir } from 'os';
 import path from 'path';
 import { pathToFileURL } from 'url';
 import { loadModuleManifest } from '../orchestration/module-manifest.js';
+import { FINGER_PATHS } from '../core/finger-paths.js';
 
 const PLUGIN_FILENAME_SUFFIX = '.module.json';
 export type CliPluginMode = 'plugin' | 'capability';
@@ -30,9 +30,9 @@ export interface InstalledCliPlugin {
 
 export function resolveCliPluginDir(mode: CliPluginMode = 'plugin'): string {
   if (mode === 'capability') {
-    return process.env.FINGER_CLI_CAPABILITY_DIR || path.join(homedir(), '.finger', 'capabilities', 'cli');
+    return process.env.FINGER_CLI_CAPABILITY_DIR || FINGER_PATHS.runtime.capabilitiesCliDir;
   }
-  return process.env.FINGER_CLI_PLUGIN_DIR || path.join(homedir(), '.finger', 'plugins', 'cli');
+  return process.env.FINGER_CLI_PLUGIN_DIR || FINGER_PATHS.runtime.pluginsCliDir;
 }
 
 export function ensureCliPluginDir(mode: CliPluginMode = 'plugin'): string {

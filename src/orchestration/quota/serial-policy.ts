@@ -30,6 +30,7 @@ export const SERIAL_VALIDATION_POLICY: ConcurrencyPolicy = {
     executor: 1,
     orchestrator: 1,
     reviewer: 1,
+    searcher: 1,
     tool: 1,
     api: 1,
     database: 1,

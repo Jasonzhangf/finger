@@ -6,10 +6,10 @@
 
 import fs from 'fs';
 import path from 'path';
-import os from 'os';
+import { FINGER_PATHS } from './finger-paths.js';
 import type { Registry } from './registry-new.js';
 
-const FINGER_DIR = path.join(os.homedir(), '.finger');
+const FINGER_DIR = FINGER_PATHS.runtime.dir;
 const SNAPSHOT_PATH = path.join(FINGER_DIR, 'snapshot.json');
 const SNAPSHOT_INTERVAL = 30000; // 30 seconds
 

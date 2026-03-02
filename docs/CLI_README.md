@@ -174,18 +174,10 @@ export FINGER_WS_URL=ws://localhost:8081
 
 ## 配置文件
 
-配置文件位于 `~/.finger/config.yaml`：
+配置目录位于 `~/.finger/config/`：
 
-```yaml
-daemon:
-  httpPort: 8080
-  wsPort: 8081
-  logLevel: info
-
-agent:
-  provider: iflow
-  timeout: 300000
-```
+- `config.json`（全局 / Provider 配置）
+- `inputs.yaml` / `outputs.yaml` / `routes.yaml`（核心 daemon 配置）
 
 ---
 

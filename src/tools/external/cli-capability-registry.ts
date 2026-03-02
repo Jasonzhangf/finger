@@ -1,7 +1,7 @@
 import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'fs';
 import { spawnSync } from 'child_process';
-import { homedir } from 'os';
 import path from 'path';
+import { FINGER_PATHS } from '../../core/finger-paths.js';
 
 const LEGACY_CAPABILITY_SUFFIX = '.capability.json';
 const MODULE_JSON_NAME = 'module.json';
@@ -65,7 +65,7 @@ const BUILTIN_CAPABILITIES: CliCapabilityDescriptor[] = [
 ];
 
 export function resolveCliCapabilityDir(): string {
-  return process.env.FINGER_CLI_TOOL_CAPABILITY_DIR || path.join(homedir(), '.finger', 'capabilities', 'tools');
+  return process.env.FINGER_CLI_TOOL_CAPABILITY_DIR || FINGER_PATHS.runtime.capabilitiesToolsDir;
 }
 
 export function ensureCliCapabilityDir(): string {

@@ -5,15 +5,13 @@
 import { Command } from 'commander';
 import { spawn } from 'child_process';
 import { readFileSync, existsSync } from 'fs';
-import { homedir } from 'os';
-import { join } from 'path';
+import { FINGER_PATHS } from '../../core/finger-paths.js';
 
-const FINGER_HOME = join(homedir(), '.finger');
-const DAEMON_LOG_FILE = join(FINGER_HOME, 'daemon.log');
-const DAEMON_PID_FILE = join(FINGER_HOME, 'daemon.pid');
-const DAEMON_HTTP_URL = process.env.FINGER_HUB_URL || 'http://localhost:9999';
-const DAEMON_HTTP_PORT = 9999;
-const DAEMON_WS_PORT = 9998;
+const DAEMON_LOG_FILE = FINGER_PATHS.logs.daemonLog;
+const DAEMON_PID_FILE = FINGER_PATHS.runtime.daemonPid;
+const DAEMON_HTTP_URL = process.env.FINGER_HUB_URL || 'http://localhost:5521';
+const DAEMON_HTTP_PORT = 5521;
+const DAEMON_WS_PORT = 5522;
 
 export function registerDaemonSubCommands(daemon: Command): void {
   // Logs command

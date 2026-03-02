@@ -4,11 +4,10 @@
 
 import fs from 'fs';
 import path from 'path';
-import os from 'os';
+import { FINGER_PATHS, ensureDir } from '../core/finger-paths.js';
 import type { Workflow, TaskNode } from './workflow-manager.js';
 
-const FINGER_HOME = path.join(os.homedir(), '.finger');
-const WORKFLOWS_DIR = path.join(FINGER_HOME, 'workflows');
+const WORKFLOWS_DIR = FINGER_PATHS.runtime.workflowsDir;
 
 interface SerializedWorkflow {
   id: string;
@@ -22,13 +21,8 @@ interface SerializedWorkflow {
   context?: Record<string, unknown>;
 }
 
-function ensureDir(): void {
-  if (!fs.existsSync(FINGER_HOME)) {
-    fs.mkdirSync(FINGER_HOME, { recursive: true });
-  }
-  if (!fs.existsSync(WORKFLOWS_DIR)) {
-    fs.mkdirSync(WORKFLOWS_DIR, { recursive: true });
-  }
+function ensureWorkflowDir(): void {
+  ensureDir(WORKFLOWS_DIR);
 }
 
 function getWorkflowPath(workflowId: string): string {
@@ -39,7 +33,7 @@ function getWorkflowPath(workflowId: string): string {
  * 保存工作流到磁盘
  */
 export function saveWorkflow(workflow: Workflow): void {
-  ensureDir();
+  ensureWorkflowDir();
   const serialized: SerializedWorkflow = {
     id: workflow.id,
     sessionId: workflow.sessionId,
@@ -80,7 +74,7 @@ export function loadWorkflow(workflowId: string): Workflow | null {
  * 加载所有未完成的工作流
  */
 export function loadAllWorkflows(): Workflow[] {
-  ensureDir();
+  ensureWorkflowDir();
   if (!fs.existsSync(WORKFLOWS_DIR)) {
     return [];
   }

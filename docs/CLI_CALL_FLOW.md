@@ -52,14 +52,14 @@ CLI: finger orchestrate "搜索 deepseek"
   │     │
   │     └─> POST /api/v1/message
   │           {
-  │             "target": "orchestrator-loop",
+  │             "target": "finger-orchestrator",
   │             "message": { "content": "搜索 deepseek" },
   │             "blocking": false
   │           }
   │
   └─> Daemon 接收并处理
         │
-        ├─> MessageHub.sendToModule('orchestrator-loop', message)
+        ├─> MessageHub.sendToModule('finger-orchestrator', message)
         │
         ├─> WorkflowFSM.trigger('user_input_received')
         │     idle → semantic_understanding

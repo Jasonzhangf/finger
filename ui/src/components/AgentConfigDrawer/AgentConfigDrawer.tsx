@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
-import type { AgentConfig, AgentRuntime } from '../../api/types.js';
-import type { AgentConfigSummary, AgentRuntimeInstance, AgentRuntimePanelAgent } from '../../hooks/useAgentRuntimePanel.js';
+import type { AgentConfig } from '../../api/types.js';
+import type { AgentConfigSummary, AgentDebugAssertion, AgentRuntimeInstance, AgentRuntimePanelAgent } from '../../hooks/useAgentRuntimePanel.js';
 import { isActiveInstanceStatus } from '../BottomPanel/agentRuntimeUtils.js';
 import './AgentConfigDrawer.css';
 
@@ -11,15 +11,44 @@ interface AgentDeployDraft {
   permissionMode: 'default' | 'autoEdit' | 'yolo' | 'plan';
   maxRounds: number;
   enableReview: boolean;
+  enabled: boolean;
+  capabilitiesText: string;
+  defaultQuota: number;
+  projectQuotaText: string;
+  workflowQuotaText: string;
   instanceCount: number;
+}
+
+function stringifyWorkflowQuota(workflowQuota: Record<string, number>): string {
+  return Object.entries(workflowQuota)
+    .sort((a, b) => a[0].localeCompare(b[0]))
+    .map(([workflowId, quota]) => `${workflowId}=${quota}`)
+    .join('\n');
+}
+
+function parseWorkflowQuotaText(text: string): Record<string, number> {
+  const result: Record<string, number> = {};
+  const lines = text
+    .split('\n')
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0);
+  for (const line of lines) {
+    const [workflowIdRaw, quotaRaw] = line.split('=');
+    const workflowId = workflowIdRaw?.trim();
+    const quota = Number(quotaRaw);
+    if (!workflowId || !Number.isFinite(quota) || quota <= 0) continue;
+    result[workflowId] = Math.max(1, Math.floor(quota));
+  }
+  return result;
 }
 
 interface AgentConfigDrawerProps {
   isOpen: boolean;
-  agent: AgentRuntime | null;
+  agent: AgentRuntimePanelAgent | null;
   capabilities?: AgentRuntimePanelAgent['capabilities'] | null;
   config: AgentConfigSummary | null;
   instances: AgentRuntimeInstance[];
+  assertions?: AgentDebugAssertion[];
   currentSessionId?: string | null;
   onClose: () => void;
   onSwitchInstance?: (instance: AgentRuntimeInstance) => void;
@@ -45,8 +74,18 @@ function toToolList(raw: unknown): string[] {
   return raw.filter((item): item is string => typeof item === 'string' && item.trim().length > 0);
 }
 
-function pickDefaultDraft(agent: AgentRuntime | null): AgentDeployDraft {
-  const sourceConfig = (agent?.config ?? {}) as AgentConfig;
+function pickDefaultDraft(agent: AgentRuntimePanelAgent | null, config: AgentConfigSummary | null): AgentDeployDraft {
+  const sourceConfig = {} as AgentConfig;
+  const defaultQuota = agent?.defaultQuota
+    ?? (typeof config?.defaultQuota === 'number' ? Math.max(1, Math.floor(config.defaultQuota)) : 1);
+  const projectQuota = agent?.quotaPolicy.projectQuota
+    ?? config?.quotaPolicy?.projectQuota;
+  const workflowQuota = agent?.quotaPolicy.workflowQuota
+    ?? config?.quotaPolicy?.workflowQuota
+    ?? {};
+  const capabilityFromAgent = Array.isArray(agent?.runtimeCapabilities) ? agent.runtimeCapabilities : [];
+  const capabilityFromConfig = Array.isArray(config?.capabilities) ? config.capabilities : [];
+  const capabilities = capabilityFromAgent.length > 0 ? capabilityFromAgent : capabilityFromConfig;
   return {
     mode: sourceConfig.mode ?? 'auto',
     provider: sourceConfig.provider ?? 'iflow',
@@ -54,6 +93,11 @@ function pickDefaultDraft(agent: AgentRuntime | null): AgentDeployDraft {
     permissionMode: sourceConfig.permissionMode ?? 'default',
     maxRounds: Number.isFinite(sourceConfig.maxRounds) ? Math.max(1, Number(sourceConfig.maxRounds)) : 10,
     enableReview: sourceConfig.enableReview === true,
+    enabled: agent?.enabled !== false,
+    capabilitiesText: capabilities.join(', '),
+    defaultQuota,
+    projectQuotaText: projectQuota ? String(projectQuota) : '',
+    workflowQuotaText: stringifyWorkflowQuota(workflowQuota),
     instanceCount: Number.isFinite(agent?.instanceCount) ? Math.max(1, Number(agent?.instanceCount)) : 1,
   };
 }
@@ -64,21 +108,33 @@ export const AgentConfigDrawer = ({
   capabilities,
   config,
   instances,
+  assertions = [],
   currentSessionId,
   onClose,
   onSwitchInstance,
   onDeployConfig,
   onControlAgent,
 }: AgentConfigDrawerProps) => {
-  const [draft, setDraft] = useState<AgentDeployDraft>(() => pickDefaultDraft(agent));
+  const [draft, setDraft] = useState<AgentDeployDraft>(() => pickDefaultDraft(agent, config));
   const [isDeploying, setIsDeploying] = useState(false);
   const [isControlling, setIsControlling] = useState(false);
   const [hint, setHint] = useState<string | null>(null);
 
   useEffect(() => {
-    setDraft(pickDefaultDraft(agent));
+    setDraft(pickDefaultDraft(agent, config));
     setHint(null);
-  }, [agent?.id]);
+  }, [agent?.id, config?.id]);
+
+  useEffect(() => {
+    if (!isOpen) return undefined;
+    const onKeyDown = (event: KeyboardEvent): void => {
+      if (event.key !== 'Escape') return;
+      event.preventDefault();
+      onClose();
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [isOpen, onClose]);
 
   const allowTools = useMemo(
     () =>
@@ -126,6 +182,15 @@ export const AgentConfigDrawer = ({
     if (!onDeployConfig) return;
     setIsDeploying(true);
     setHint(null);
+    const capabilitiesNormalized = draft.capabilitiesText
+      .split(',')
+      .map((item) => item.trim())
+      .filter((item) => item.length > 0);
+    const projectQuotaRaw = Number(draft.projectQuotaText);
+    const projectQuota = Number.isFinite(projectQuotaRaw) && projectQuotaRaw > 0
+      ? Math.max(1, Math.floor(projectQuotaRaw))
+      : undefined;
+    const workflowQuota = parseWorkflowQuotaText(draft.workflowQuotaText);
     try {
       await onDeployConfig({
         config: {
@@ -137,6 +202,14 @@ export const AgentConfigDrawer = ({
           permissionMode: draft.permissionMode,
           maxRounds: draft.maxRounds,
           enableReview: draft.enableReview,
+          ...(agent.type ? { role: agent.type } : {}),
+          enabled: draft.enabled,
+          capabilities: capabilitiesNormalized,
+          defaultQuota: draft.defaultQuota,
+          quotaPolicy: {
+            ...(projectQuota !== undefined ? { projectQuota } : {}),
+            workflowQuota,
+          },
         },
         instanceCount: draft.instanceCount,
       });
@@ -204,7 +277,33 @@ export const AgentConfigDrawer = ({
         </section>
 
         <section className="agent-drawer-section">
-          <div className="agent-form-title">配置</div>
+          <div className="agent-form-title">基础配置</div>
+          <label className="agent-form-row checkbox">
+            <span>启用</span>
+            <input
+              type="checkbox"
+              checked={draft.enabled}
+              onChange={(event) => setDraft((prev) => ({ ...prev, enabled: event.target.checked }))}
+            />
+          </label>
+          <label className="agent-form-row">
+            <span>能力</span>
+            <input
+              value={draft.capabilitiesText}
+              onChange={(event) => setDraft((prev) => ({ ...prev, capabilitiesText: event.target.value }))}
+              placeholder="execution, review"
+            />
+          </label>
+          <label className="agent-form-row">
+            <span>Default Quota</span>
+            <input
+              type="number"
+              min={1}
+              max={50}
+              value={draft.defaultQuota}
+              onChange={(event) => setDraft((prev) => ({ ...prev, defaultQuota: Math.max(1, Number(event.target.value) || 1) }))}
+            />
+          </label>
           <label className="agent-form-row">
             <span>Mode</span>
             <select value={draft.mode} onChange={(event) => setDraft((prev) => ({ ...prev, mode: event.target.value as AgentDeployDraft['mode'] }))}>
@@ -264,6 +363,33 @@ export const AgentConfigDrawer = ({
               onChange={(event) => setDraft((prev) => ({ ...prev, enableReview: event.target.checked }))}
             />
           </label>
+        </section>
+
+        <section className="agent-drawer-section">
+          <div className="agent-form-title">Project Quota</div>
+          <label className="agent-form-row">
+            <span>projectQuota</span>
+            <input
+              type="number"
+              min={1}
+              placeholder="留空=未设置"
+              value={draft.projectQuotaText}
+              onChange={(event) => setDraft((prev) => ({ ...prev, projectQuotaText: event.target.value }))}
+            />
+          </label>
+        </section>
+
+        <section className="agent-drawer-section">
+          <div className="agent-form-title">Workflow Quota</div>
+          <label className="agent-form-row">
+            <span>workflowId=quota</span>
+            <textarea
+              value={draft.workflowQuotaText}
+              onChange={(event) => setDraft((prev) => ({ ...prev, workflowQuotaText: event.target.value }))}
+              placeholder={'wf-1=1\nwf-2=2'}
+              rows={4}
+            />
+          </label>
           <button
             type="button"
             className="agent-deploy-btn"
@@ -288,6 +414,16 @@ export const AgentConfigDrawer = ({
           {dispatchTargets.length > 0 && (
             <div className="tool-line">targets: {dispatchTargets.slice(0, 8).join(', ')}{dispatchTargets.length > 8 ? ' ...' : ''}</div>
           )}
+        </section>
+
+        <section className="agent-drawer-section">
+          <div className="agent-form-title">调试断言</div>
+          {assertions.length === 0 && <div className="tool-line">暂无断言记录</div>}
+          {assertions.slice(0, 6).map((assertion) => (
+            <div key={assertion.id} className="tool-line">
+              [{assertion.result.ok ? 'OK' : 'ERR'}] {assertion.result.summary}
+            </div>
+          ))}
         </section>
 
         <section className="agent-drawer-section">

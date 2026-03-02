@@ -5,7 +5,7 @@
 
 import type { WebSocket } from 'ws';
 import path from 'path';
-import { homedir } from 'os';
+import { FINGER_PATHS, ensureDir } from '../core/finger-paths.js';
 import { UnifiedEventBus } from './event-bus.js';
 import { ToolRegistry } from './tool-registry.js';
 import type { RuntimeEvent, Attachment } from './events.js';
@@ -26,6 +26,7 @@ export interface SessionInfo {
   messageCount?: number;
   createdAt: string;
   updatedAt: string;
+  context?: Record<string, unknown>;
 }
 
 // 进度报告
@@ -121,9 +122,9 @@ export class RuntimeFacade {
     const result = this.sessionManager.createSession(projectPath, name);
     const session = result instanceof Promise ? await result : result;
     this.currentSessionId = session.id;
-    this.eventBus.enablePersistence(session.id, path.join(homedir(), '.finger', 'events'));
+    this.eventBus.enablePersistence(session.id, ensureDir(FINGER_PATHS.runtime.eventsDir));
 
-    this.eventBus.emit({
+    await this.eventBus.emit({
       type: 'session_created',
       sessionId: session.id,
       timestamp: new Date().toISOString(),
@@ -158,7 +159,7 @@ export class RuntimeFacade {
     const result = this.sessionManager.setCurrentSession(sessionId);
     if (result) {
       this.currentSessionId = sessionId;
-      this.eventBus.enablePersistence(sessionId, path.join(homedir(), '.finger', 'events'));
+      this.eventBus.enablePersistence(sessionId, ensureDir(FINGER_PATHS.runtime.eventsDir));
     }
     return result;
   }
@@ -201,7 +202,7 @@ export class RuntimeFacade {
       throw new Error(`Failed to append message to session ${sessionId}`);
     }
 
-    this.eventBus.emit({
+    await this.eventBus.emit({
       type: 'user_message',
       sessionId,
       timestamp: message.timestamp,
@@ -219,7 +220,7 @@ export class RuntimeFacade {
    * 添加助手消息块 (流式)
    */
   emitAssistantChunk(sessionId: string, agentId: string, messageId: string, content: string): void {
-    this.eventBus.emit({
+    void this.eventBus.emit({
       type: 'assistant_chunk',
       sessionId,
       agentId,
@@ -235,7 +236,12 @@ export class RuntimeFacade {
    * 添加助手消息完成
    */
   emitAssistantComplete(sessionId: string, agentId: string, messageId: string, content: string, stopReason?: string): void {
-    this.eventBus.emit({
+    const session = this.sessionManager.getSession(sessionId);
+    const context = session?.context as Record<string, unknown> | undefined;
+    if (context && context.sessionTier === 'runtime') {
+      this.sessionManager.addMessage(sessionId, 'assistant', content);
+    }
+    void this.eventBus.emit({
       type: 'assistant_complete',
       sessionId,
       agentId,
@@ -300,7 +306,7 @@ export class RuntimeFacade {
     }
 
     // 发送 tool_call 事件
-    this.eventBus.emit({
+    await this.eventBus.emit({
       type: 'tool_call',
       toolId,
       toolName,
@@ -315,7 +321,7 @@ export class RuntimeFacade {
       const duration = Date.now() - startTime;
 
       // 发送 tool_result 事件
-      this.eventBus.emit({
+      await this.eventBus.emit({
         type: 'tool_result',
         toolId,
         toolName,
@@ -326,7 +332,7 @@ export class RuntimeFacade {
       });
 
       if (toolName === 'view_image') {
-        this.appendViewImageAttachmentEvent(sessionId, result);
+        await this.appendViewImageAttachmentEvent(sessionId, result);
       }
 
       return result;
@@ -334,7 +340,7 @@ export class RuntimeFacade {
       const duration = Date.now() - startTime;
 
       // 发送 tool_error 事件
-      this.eventBus.emit({
+      await this.eventBus.emit({
         type: 'tool_error',
         toolId,
         toolName,
@@ -348,7 +354,7 @@ export class RuntimeFacade {
     }
   }
 
-  private appendViewImageAttachmentEvent(sessionId: string, toolResult: unknown): void {
+  private async appendViewImageAttachmentEvent(sessionId: string, toolResult: unknown): Promise<void> {
     const session = this.sessionManager.getSession(sessionId);
     if (!session) return;
 
@@ -361,7 +367,7 @@ export class RuntimeFacade {
     });
     if (!message) return;
 
-    this.eventBus.emit({
+    await this.eventBus.emit({
       type: 'user_message',
       sessionId,
       timestamp: message.timestamp,

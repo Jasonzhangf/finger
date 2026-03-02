@@ -6,6 +6,8 @@ vi.mock('../../../src/orchestration/message-hub.js', () => ({
   MessageHub: vi.fn().mockImplementation(() => ({
     registerInput: vi.fn(),
     registerOutput: vi.fn(),
+    unregisterInput: vi.fn(),
+    unregisterOutput: vi.fn(),
     addRoute: vi.fn().mockReturnValue('route-1'),
     routeToOutput: vi.fn().mockResolvedValue({}),
   })),

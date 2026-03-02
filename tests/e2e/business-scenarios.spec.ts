@@ -180,7 +180,7 @@ describe('Finger E2E Business Scenarios', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          target: 'orchestrator-loop',
+          target: 'finger-orchestrator-gateway',
           message: { content: userTask, sessionId },
           blocking: false,
         }),
@@ -221,7 +221,7 @@ describe('Finger E2E Business Scenarios', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          target: 'orchestrator-loop',
+          target: 'finger-orchestrator-gateway',
           message: {
             content: '创建 3 个文件: a.txt, b.txt, c.txt，每个文件包含不同的内容',
             sessionId,
@@ -362,7 +362,7 @@ describe('Finger E2E Business Scenarios', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          target: 'orchestrator-loop',
+          target: 'finger-orchestrator-gateway',
           message: { content: '简单测试任务', sessionId },
           blocking: false,
         }),

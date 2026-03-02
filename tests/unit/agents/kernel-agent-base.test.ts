@@ -33,6 +33,34 @@ describe('KernelAgentBase session binding', () => {
     expect(contexts[1]?.history.some((item) => item.role === 'user' && item.content === 'first')).toBe(true);
   });
 
+  it('skips session persistence when client controls session messages', async () => {
+    const runner: KernelAgentRunner = {
+      runTurn: vi.fn(async () => ({ reply: 'ok' })),
+    };
+    const agent = new KernelAgentBase(
+      {
+        moduleId: 'chat-codex',
+        provider: 'codex',
+        maxContextMessages: 20,
+      },
+      runner,
+    );
+
+    await agent.handle({
+      text: 'client-side persist only',
+      sessionId: 'ui-session-client-1',
+      metadata: { sessionPersistence: 'client' },
+    });
+
+    const contexts: KernelRunContext[] = [];
+    (runner.runTurn as any).mock.calls.forEach((call: unknown[]) => {
+      const context = call[1] as KernelRunContext | undefined;
+      if (context) contexts.push(context);
+    });
+    expect(contexts).toHaveLength(1);
+    expect(contexts[0]?.history.length).toBe(0);
+  });
+
   it('ignores inline review loop and returns main-thread reply directly', async () => {
     const contexts: KernelRunContext[] = [];
     let mainTurns = 0;

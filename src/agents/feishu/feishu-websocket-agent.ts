@@ -58,13 +58,9 @@ export class FeishuWebSocketAgent implements AgentModule {
     if (hasAddRoute(hub)) {
       hub.addRoute({
         id: 'feishu-to-output',
-        pattern: 'feishu.message',
-        handler: async (msg: any) => {
-          const payload = (msg as { payload?: unknown }).payload ?? msg;
-          return hub.routeToOutput('feishu-ws-output', payload);
-        },
-        blocking: true,
-        priority: 100
+        match: { type: 'feishu.message' },
+        dest: ['feishu-ws-output'],
+        priority: 100,
       });
     }
 
@@ -122,12 +118,12 @@ export class FeishuWebSocketAgent implements AgentModule {
     return result;
   }
 
-  private async connectWebSocket(wsEndpoint?: string): Promise<{ success: boolean; endpoint?: string }> {
+  private async connectWebSocket(wsEndpoint?: string): Promise<{ success: boolean }> {
     const endpoint = wsEndpoint || 'wss://default.feishu.cn';
     console.log(`[FeishuAgent] Connecting to WebSocket endpoint: ${endpoint}`);
-    
+
     // 模拟连接（实际实现会使用 new WebSocket(endpoint)）
-    return { success: true, endpoint };
+    return { success: true };
   }
 
   private async disconnect(): Promise<{ success: boolean }> {

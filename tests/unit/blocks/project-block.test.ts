@@ -6,6 +6,11 @@ vi.mock('child_process', () => ({
     if (cb) cb(null, { stdout: '', stderr: '' });
     return { on: vi.fn(), kill: vi.fn() };
   }),
+  execFile: vi.fn((...args: any[]) => {
+    const cb = args.find((arg) => typeof arg === 'function');
+    if (cb) cb(null, { stdout: '', stderr: '' });
+    return { on: vi.fn(), kill: vi.fn() };
+  }),
 }));
 
 describe('ProjectBlock', () => {

@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { Mailbox } from '../../../src/server/mailbox.js';
 
 describe('Mailbox', () => {
   let mailbox: Mailbox;

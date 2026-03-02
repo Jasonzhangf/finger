@@ -5,10 +5,11 @@
 
 import fs from 'fs';
 import path from 'path';
-import os from 'os';
+import { FINGER_PATHS, ensureDir, normalizeSessionDirName } from '../core/finger-paths.js';
 
-const FINGER_HOME = path.join(os.homedir(), '.finger');
-const SESSION_STATE_DIR = path.join(FINGER_HOME, 'session-states');
+const SESSIONS_DIR = FINGER_PATHS.sessions.dir;
+const CHECKPOINTS_DIR = 'checkpoints';
+const SESSION_STATE_FILE = 'session-state.json';
 
 export interface TaskProgress {
   taskId: string;
@@ -75,13 +76,41 @@ export class ResumableSessionManager {
   }
 
   private ensureDirs(): void {
-    if (!fs.existsSync(SESSION_STATE_DIR)) {
-      fs.mkdirSync(SESSION_STATE_DIR, { recursive: true });
-    }
+    ensureDir(SESSIONS_DIR);
   }
 
-  private getCheckpointPath(checkpointId: string): string {
-    return path.join(SESSION_STATE_DIR, `${checkpointId}.json`);
+  private resolveSessionDir(sessionId: string): string {
+    ensureDir(SESSIONS_DIR);
+    const projects = fs.readdirSync(SESSIONS_DIR, { withFileTypes: true })
+      .filter((entry) => entry.isDirectory())
+      .map((entry) => entry.name);
+    for (const projectDir of projects) {
+      const candidate = path.join(SESSIONS_DIR, projectDir, normalizeSessionDirName(sessionId));
+      if (fs.existsSync(candidate)) return candidate;
+    }
+    const fallback = path.join(SESSIONS_DIR, '_unknown', normalizeSessionDirName(sessionId));
+    if (!fs.existsSync(fallback)) {
+      fs.mkdirSync(fallback, { recursive: true });
+    }
+    return fallback;
+  }
+
+  private getCheckpointPath(checkpointId: string, sessionId: string): string {
+    const sessionDir = this.resolveSessionDir(sessionId);
+    const checkpointDir = path.join(sessionDir, CHECKPOINTS_DIR);
+    if (!fs.existsSync(checkpointDir)) {
+      fs.mkdirSync(checkpointDir, { recursive: true });
+    }
+    return path.join(checkpointDir, `${checkpointId}.json`);
+  }
+
+  getCheckpointDir(sessionId: string): string {
+    const sessionDir = this.resolveSessionDir(sessionId);
+    const checkpointDir = path.join(sessionDir, CHECKPOINTS_DIR);
+    if (!fs.existsSync(checkpointDir)) {
+      fs.mkdirSync(checkpointDir, { recursive: true });
+    }
+    return checkpointDir;
   }
 
   /**
@@ -99,7 +128,7 @@ export class ResumableSessionManager {
     const baseCheckpointId = `chk-${sessionId}-${Date.now()}`;
     let checkpointId = baseCheckpointId;
     let counter = 0;
-    while (fs.existsSync(this.getCheckpointPath(checkpointId))) {
+    while (fs.existsSync(this.getCheckpointPath(checkpointId, sessionId))) {
       counter++;
       checkpointId = `${baseCheckpointId}-${counter}`;
     }
@@ -131,7 +160,7 @@ export class ResumableSessionManager {
     };
 
     fs.writeFileSync(
-      this.getCheckpointPath(checkpointId),
+      this.getCheckpointPath(checkpointId, sessionId),
       JSON.stringify(checkpoint, null, 2)
     );
 
@@ -143,7 +172,7 @@ export class ResumableSessionManager {
    * Update session metadata, specifically activeWorkflows.
    */
   updateSession(sessionId: string, updates: Partial<SessionMetadata>): void {
-    const sessionFilePath = path.join(SESSION_STATE_DIR, `session-${sessionId}.json`);
+    const sessionFilePath = path.join(this.resolveSessionDir(sessionId), SESSION_STATE_FILE);
     let session: SessionMetadata | null = null;
 
     if (fs.existsSync(sessionFilePath)) {
@@ -177,7 +206,9 @@ export class ResumableSessionManager {
    * Load a checkpoint by ID
    */
   loadCheckpoint(checkpointId: string): SessionCheckpoint | null {
-    const filePath = this.getCheckpointPath(checkpointId);
+    const sessionId = checkpointId.split('-').slice(1, -1).join('-');
+    if (!sessionId) return null;
+    const filePath = this.getCheckpointPath(checkpointId, sessionId);
     if (!fs.existsSync(filePath)) return null;
 
     try {
@@ -193,9 +224,10 @@ export class ResumableSessionManager {
    * Find latest checkpoint for a session
    */
   findLatestCheckpoint(sessionId: string): SessionCheckpoint | null {
-    if (!fs.existsSync(SESSION_STATE_DIR)) return null;
+    const checkpointDir = this.getCheckpointDir(sessionId);
+    if (!fs.existsSync(checkpointDir)) return null;
 
-    const files = fs.readdirSync(SESSION_STATE_DIR)
+    const files = fs.readdirSync(checkpointDir)
       .filter(f => f.startsWith(`chk-${sessionId}-`) && f.endsWith('.json'))
       .sort()
       .reverse();
@@ -326,9 +358,10 @@ export class ResumableSessionManager {
    * Clean up old checkpoints (keep last 10 per session)
    */
   cleanupOldCheckpoints(sessionId: string, keepCount: number = 10): number {
-    if (!fs.existsSync(SESSION_STATE_DIR)) return 0;
+    const checkpointDir = this.getCheckpointDir(sessionId);
+    if (!fs.existsSync(checkpointDir)) return 0;
 
-    const files = fs.readdirSync(SESSION_STATE_DIR)
+    const files = fs.readdirSync(checkpointDir)
       .filter(f => f.startsWith(`chk-${sessionId}-`) && f.endsWith('.json'))
       .sort()
       .reverse();
@@ -336,7 +369,7 @@ export class ResumableSessionManager {
     let deleted = 0;
     for (const file of files.slice(keepCount)) {
       try {
-        fs.unlinkSync(path.join(SESSION_STATE_DIR, file));
+        fs.unlinkSync(path.join(checkpointDir, file));
         deleted++;
       } catch {
         // Ignore errors

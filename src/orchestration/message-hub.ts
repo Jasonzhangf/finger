@@ -72,6 +72,22 @@ export class MessageHub {
     this.log.info('Output registered', { id });
   }
 
+  unregisterInput(id: string): boolean {
+    const existed = this.inputs.delete(id);
+    if (existed) {
+      this.log.info('Input unregistered', { id });
+    }
+    return existed;
+  }
+
+  unregisterOutput(id: string): boolean {
+    const existed = this.outputs.delete(id);
+    if (existed) {
+      this.log.info('Output unregistered', { id });
+    }
+    return existed;
+  }
+
   getInputs(): InputRegistration[] {
     return Array.from(this.inputs.values());
   }

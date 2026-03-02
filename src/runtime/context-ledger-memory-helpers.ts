@@ -1,6 +1,6 @@
 import { promises as fs } from 'fs';
-import { homedir } from 'os';
 import { join } from 'path';
+import { FINGER_PATHS } from '../core/finger-paths.js';
 import type {
   ContextLedgerMemoryInput,
   ContextLedgerMemoryRuntimeContext,
@@ -70,7 +70,7 @@ export function resolveBaseDir(rootDir: string, sessionId: string, agentId: stri
 export function normalizeRootDir(rootDir?: string): string {
   const normalized = normalizeText(rootDir);
   if (normalized) return normalized;
-  return join(homedir(), '.finger', 'sessions');
+  return FINGER_PATHS.sessions.dir;
 }
 
 export async function readJsonLines<T>(filePath: string): Promise<T[]> {

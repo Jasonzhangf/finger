@@ -51,7 +51,7 @@ const internalToolRegistry = createDefaultInternalToolRegistry();
 
 export function registerToolCommand(program: Command): void {
   const tool = program.command('tool').description('内部工具执行入口');
-  const defaultDaemonUrl = process.env.FINGER_HUB_URL || 'http://localhost:9999';
+  const defaultDaemonUrl = process.env.FINGER_HUB_URL || 'http://localhost:5521';
 
   tool
     .command('list')

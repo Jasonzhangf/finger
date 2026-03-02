@@ -36,7 +36,7 @@
  */
 interface AgentConfigV1 {
   // === 必填 ===
-  agentType: string;        // 唯一标识，如 'task-orchestrator', 'executor-loop', 'chat-agent'
+  agentType: string;        // 唯一标识，如 'task-orchestrator', 'finger-executor', 'chat-agent'
   displayName: string;      // UI 显示名
   role: AgentRole;          // 'orchestrator' | 'executor' | 'reviewer' | 'specialist'
   enabled: boolean;         // 是否启用
@@ -76,7 +76,7 @@ type AgentRole = 'orchestrator' | 'executor' | 'reviewer' | 'specialist';
 **与现有代码的兼容说明：**
 - `agentType`：统一替代现有 `id` 字段，避免与 runtimeId 混淆。
 - `role`：对齐 `src/core/types.ts:48` 已有 `AgentRole`。
-- `capabilities`：对齐 router-agent 和 orchestrator-loop 中已有能力标签机制。
+- `capabilities`：对齐 router-agent 和 finger-orchestrator 中已有能力标签机制。
 - `defaultQuota`：新增，用于资源池配额上限；若不存在则默认 1。
 - `quotaPolicy`：新增，实现 project/workflow 双层覆盖，见 3.2。
 - `modelConfig`：统一三处分散的 provider/model/systemPrompt。
@@ -165,7 +165,7 @@ type RuntimeStatus =
 - `runtimeId`：新增，统一动态实例标识，不与 agentType 混淆。
 - `sessionId`：对齐 `src/runtime/session-control-plane.ts:5` 的 providerSessionId。
 - `status`：对齐 docs/AGENT_RUNTIME_AND_SESSION_LIFECYCLE.md:93 已有状态集。
-- `workflowId/taskId`：与现有 workflow-fsm / orchestrator-loop 一致。
+- `workflowId/taskId`：与现有 workflow-fsm / finger-orchestrator 一致。
 - `queuePosition/queuedCount`：新增，用于队列可视化。
 - `summary`：新增，用于 Canvas 节点摘要显示。
 

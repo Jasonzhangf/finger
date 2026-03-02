@@ -5,8 +5,10 @@
 import { MessageHub } from './message-hub.js';
 import { SessionManager } from './session-manager.js';
 import { WorkflowManager } from './workflow-manager.js';
+import { ensureFingerLayout } from '../core/finger-paths.js';
 
 // 全局共享实例
+ensureFingerLayout();
 export const sharedMessageHub = new MessageHub();
 export const sharedSessionManager = new SessionManager();
 export const sharedWorkflowManager = new WorkflowManager(sharedMessageHub, sharedSessionManager);

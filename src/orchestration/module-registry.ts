@@ -117,6 +117,12 @@ export class ModuleRegistry {
       await module.destroy();
     }
 
+    if (module.type === 'input') {
+      this.hub.unregisterInput(id);
+    } else if (module.type === 'output') {
+      this.hub.unregisterOutput(id);
+    }
+
     this.modules.delete(id);
     console.log(`[Registry] Module unregistered: ${id}`);
     return true;

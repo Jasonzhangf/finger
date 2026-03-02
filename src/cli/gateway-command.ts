@@ -1,6 +1,6 @@
 import type { Command } from 'commander';
 
-const DEFAULT_DAEMON_URL = process.env.FINGER_HUB_URL || 'http://localhost:9999';
+const DEFAULT_DAEMON_URL = process.env.FINGER_HUB_URL || 'http://localhost:5521';
 
 export function registerGatewayCommand(program: Command): void {
   const gateway = program.command('gateway').description('CLI gateway management');

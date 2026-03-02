@@ -87,7 +87,7 @@ describe('Message Route Guard E2E', () => {
     expect(response.status).toBe(403);
     const body = (await response.json()) as { code?: string; primaryTarget?: string };
     expect(body.code).toBe('DIRECT_ROUTE_DISABLED');
-    expect(body.primaryTarget).toBe('chat-codex-gateway');
+    expect(body.primaryTarget).toBe('finger-orchestrator-gateway');
   });
 
   it('allows direct route only in explicit test mode', async () => {

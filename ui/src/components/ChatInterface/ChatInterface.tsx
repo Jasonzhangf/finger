@@ -23,7 +23,7 @@ export interface InputCapability {
 }
 
 interface AgentRunStatus {
-  phase: 'idle' | 'running' | 'error';
+  phase: 'idle' | 'running' | 'dispatching' | 'error';
   text: string;
   updatedAt: string;
 }
@@ -55,6 +55,22 @@ interface InputLockState {
   typing: boolean;
 }
 
+interface DebugSnapshotItem {
+  id: string;
+  timestamp: string;
+  stage: string;
+  summary: string;
+  requestId?: string;
+  attempt?: number;
+  phase?: string;
+}
+
+interface OrchestratorRuntimeModeState {
+  mode: string;
+  fsmV2Implemented: boolean;
+  runnerModuleId?: string;
+}
+
 interface ChatInterfaceProps {
   executionState: WorkflowExecutionState | null;
   agents: Array<{ id: string; name: string; status: string }>;
@@ -63,6 +79,7 @@ interface ChatInterfaceProps {
   agentRunStatus?: AgentRunStatus;
   runtimeOverview?: RuntimeOverview;
   toolPanelOverview?: ToolPanelOverview;
+  onUpdateToolExposure?: (tools: string[]) => Promise<boolean> | boolean;
   onSendMessage: (payload: UserInputPayload) => Promise<void> | void;
   onEditMessage?: (eventId: string, content: string) => Promise<boolean>;
   onDeleteMessage?: (eventId: string) => Promise<boolean>;
@@ -78,6 +95,11 @@ interface ChatInterfaceProps {
   clientId?: string | null;
   onAcquireInputLock?: () => Promise<boolean>;
   onReleaseInputLock?: () => void;
+  debugSnapshotsEnabled?: boolean;
+  onToggleDebugSnapshots?: (enabled: boolean) => void;
+  debugSnapshots?: DebugSnapshotItem[];
+  onClearDebugSnapshots?: () => void;
+  orchestratorRuntimeMode?: OrchestratorRuntimeModeState | null;
 }
 
 interface ContextMenuState {
@@ -112,6 +134,13 @@ interface WebkitFileSystemEntry {
   isFile: boolean;
   name: string;
   fullPath?: string;
+}
+
+function formatOrchestratorPhase(phase: string | undefined): string | null {
+  if (!phase) return null;
+  const normalized = phase.trim();
+  if (normalized.length === 0) return null;
+  return normalized.replace(/_/g, ' ');
 }
 
 function createRuntimeId(file: File): string {
@@ -1310,7 +1339,7 @@ const ChatInput: React.FC<{
               className="control-btn danger"
               onClick={handleInterrupt}
               disabled={disabled || !isAgentRunning}
-              title="中断当前 chat-codex 回合"
+              title="中断当前 finger-general 回合"
             >
               停止当前回合
             </button>
@@ -1320,7 +1349,7 @@ const ChatInput: React.FC<{
                 className={`control-btn ${isPaused ? 'paused' : ''}`}
                 onClick={isPaused ? onResumeWorkflow : onPauseWorkflow}
                 disabled={disabled}
-                title="仅影响工作流状态机，不会中断当前 chat-codex 回合"
+                title="仅影响工作流状态机，不会中断当前 finger-general 回合"
               >
                 {isPaused ? '继续流程' : '暂停流程'}
               </button>
@@ -1388,6 +1417,12 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
   clientId,
   onAcquireInputLock,
   onReleaseInputLock,
+  debugSnapshotsEnabled = false,
+  onToggleDebugSnapshots,
+  debugSnapshots = [],
+  onClearDebugSnapshots,
+  orchestratorRuntimeMode,
+  onUpdateToolExposure,
 }) => {
   const chatRef = useRef<HTMLDivElement>(null);
   const [showScrollToBottom, setShowScrollToBottom] = useState(false);
@@ -1401,11 +1436,86 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
     () => buildToolDashboard(events, toolPanelOverview?.availableTools ?? [], toolPanelOverview?.exposedTools ?? []),
     [events, toolPanelOverview?.availableTools, toolPanelOverview?.exposedTools],
   );
+  const [toolTab, setToolTab] = useState<'summary' | 'exposure'>('summary');
+  const [toolSelection, setToolSelection] = useState<Set<string>>(new Set());
+  const toolSelectionRef = useRef<Set<string>>(new Set());
+  const [toolUpdateError, setToolUpdateError] = useState<string | null>(null);
+  const [toolUpdatePending, setToolUpdatePending] = useState(false);
+  const orchestratorPhase = useMemo(
+    () => formatOrchestratorPhase(executionState?.orchestratorPhase),
+    [executionState?.orchestratorPhase],
+  );
+  const runtimeModeText = useMemo(() => {
+    if (!orchestratorRuntimeMode) return null;
+    const base = orchestratorRuntimeMode.mode.trim();
+    if (!base) return null;
+    if (orchestratorRuntimeMode.runnerModuleId && orchestratorRuntimeMode.runnerModuleId.trim().length > 0) {
+      return `${base} · ${orchestratorRuntimeMode.runnerModuleId.trim()}`;
+    }
+    return base;
+  }, [orchestratorRuntimeMode]);
+  const displayedSnapshots = useMemo(
+    () => debugSnapshots.slice(-60).reverse(),
+    [debugSnapshots],
+  );
 
   useEffect(() => {
     if (!chatRef.current) return;
     chatRef.current.scrollTop = chatRef.current.scrollHeight;
   }, [events]);
+
+  useEffect(() => {
+    const available = (toolPanelOverview?.availableTools ?? [])
+      .map((item) => item.trim())
+      .filter((item) => item.length > 0);
+    if (available.length === 0) {
+      const empty = new Set<string>();
+      toolSelectionRef.current = empty;
+      setToolSelection(empty);
+      return;
+    }
+    const exposed = new Set(
+      (toolPanelOverview?.exposedTools ?? [])
+        .map((item) => item.trim())
+        .filter((item) => item.length > 0),
+    );
+    if (exposed.size === 0) {
+      const all = new Set(available);
+      toolSelectionRef.current = all;
+      setToolSelection(all);
+      return;
+    }
+    const next = new Set(available.filter((item) => exposed.has(item)));
+    toolSelectionRef.current = next;
+    setToolSelection(next);
+  }, [toolPanelOverview?.availableTools, toolPanelOverview?.exposedTools]);
+
+  const handleToggleToolExposure = useCallback(async (toolName: string) => {
+    if (!onUpdateToolExposure) return;
+    const normalized = toolName.trim();
+    if (!normalized) return;
+    const base = new Set(toolSelectionRef.current);
+    if (base.has(normalized)) {
+      base.delete(normalized);
+    } else {
+      base.add(normalized);
+    }
+    toolSelectionRef.current = base;
+    setToolSelection(base);
+    setToolUpdateError(null);
+    setToolUpdatePending(true);
+    try {
+      const ok = await Promise.resolve(onUpdateToolExposure(Array.from(base)));
+      if (!ok) {
+        setToolUpdateError('工具暴露更新失败');
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : '工具暴露更新失败';
+      setToolUpdateError(message);
+    } finally {
+      setToolUpdatePending(false);
+    }
+  }, [onUpdateToolExposure]);
 
   useEffect(() => {
     const closeMenu = (event: MouseEvent): void => {
@@ -1457,12 +1567,12 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
   }, [events]);
 
   const handleSend = useCallback(async (payload: UserInputPayload) => {
-    // 尝试获取输入锁
+    // 尝试获取输入锁（best-effort，不阻断发送）
+    let acquired = true;
     if (onAcquireInputLock) {
-      const acquired = await onAcquireInputLock();
+      acquired = await onAcquireInputLock();
       if (!acquired) {
-        console.warn('[ChatInterface] Failed to acquire input lock, another client is typing');
-        return;
+        console.warn('[ChatInterface] Failed to acquire input lock, continue send without lock');
       }
     }
     
@@ -1470,7 +1580,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
       await Promise.resolve(onSendMessage(payload));
     } finally {
       // 释放输入锁
-      if (onReleaseInputLock) {
+      if (onReleaseInputLock && acquired) {
         onReleaseInputLock();
       }
     }
@@ -1629,18 +1739,30 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
         <div className="header-title">
           <span className="title-text">对话面板</span>
           {!isConnected && <span className="connection-badge offline">离线</span>}
+          {runtimeModeText && <span className="runtime-mode-badge">{runtimeModeText}</span>}
         </div>
         <div className="header-status">
+          <label className="debug-toggle">
+            <input
+              type="checkbox"
+              checked={debugSnapshotsEnabled}
+              onChange={(event) => onToggleDebugSnapshots?.(event.target.checked)}
+            />
+            <span>Debug 快照</span>
+          </label>
           <span className={`header-status-dot ${agentRunStatus?.phase ?? 'idle'}`} />
           <span className="header-status-text">
             {agentRunStatus?.phase === 'running'
               ? '运行中'
+              : agentRunStatus?.phase === 'dispatching'
+                ? '分配中'
               : agentRunStatus?.phase === 'error'
                 ? '异常'
                 : isPaused
                   ? '流程已暂停'
                   : '就绪'}
           </span>
+          {orchestratorPhase && <span className="header-phase-text">[{orchestratorPhase}]</span>}
         </div>
       </div>
 
@@ -1680,7 +1802,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
 
       {agentRunStatus && (
         <div className={`agent-run-status ${agentRunStatus.phase}`}>
-          <span className={`agent-run-dot ${agentRunStatus.phase === 'running' ? 'pulsing' : ''}`} />
+          <span className={`agent-run-dot ${(agentRunStatus.phase === 'running' || agentRunStatus.phase === 'dispatching') ? 'pulsing' : ''}`} />
           <span className="agent-run-text">{agentRunStatus.text}</span>
         </div>
       )}
@@ -1689,14 +1811,32 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
         <div className="runtime-overview-line">{formatRuntimeOverview(runtimeOverview)}</div>
       </div>
       <div className="tool-dashboard">
-        <div className="tool-dashboard-summary">
-          <span>可用 {toolPanelOverview?.availableTools.length ?? 0}</span>
-          <span>暴露 {toolPanelOverview?.exposedTools.length ?? 0}</span>
-          <span>工具调用 {toolDashboard.total}</span>
-          <span className="ok">成功 {toolDashboard.success}</span>
-          <span className="fail">失败 {toolDashboard.failed}</span>
+        <div className="tool-dashboard-header">
+          <div className="tool-dashboard-tabs">
+            <button
+              type="button"
+              className={toolTab === 'summary' ? 'active' : ''}
+              onClick={() => setToolTab('summary')}
+            >
+              概览
+            </button>
+            <button
+              type="button"
+              className={toolTab === 'exposure' ? 'active' : ''}
+              onClick={() => setToolTab('exposure')}
+            >
+              暴露工具
+            </button>
+          </div>
+          <div className="tool-dashboard-summary">
+            <span>可用 {toolPanelOverview?.availableTools.length ?? 0}</span>
+            <span>暴露 {toolPanelOverview?.exposedTools.length ?? 0}</span>
+            <span>工具调用 {toolDashboard.total}</span>
+            <span className="ok">成功 {toolDashboard.success}</span>
+            <span className="fail">失败 {toolDashboard.failed}</span>
+          </div>
         </div>
-        {toolDashboard.tools.length > 0 && (
+        {toolTab === 'summary' && toolDashboard.tools.length > 0 && (
           <div className="tool-dashboard-list">
             {toolDashboard.tools.slice(0, 8).map((tool) => (
               <div key={`${tool.category}-${tool.name}`} className={`tool-dashboard-item ${tool.exposed ? 'exposed' : ''}`}>
@@ -1709,7 +1849,70 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
             ))}
           </div>
         )}
+        {toolTab === 'exposure' && (
+          <div className="tool-exposure-panel">
+            <div className="tool-exposure-hint">
+              未勾选工具将不会暴露给模型，下一轮请求立即生效。
+            </div>
+            <div className="tool-exposure-meta">
+              {toolUpdatePending ? '更新中...' : '实时生效'}
+              {toolUpdateError ? ` · ${toolUpdateError}` : ''}
+            </div>
+            <div className="tool-exposure-grid">
+              {(() => {
+                const items = (toolPanelOverview?.availableTools ?? []).slice();
+                items.sort((a, b) => a.localeCompare(b));
+                return items;
+              })().map((tool) => {
+                const normalizedTool = tool.trim();
+                const checked = toolSelection.has(normalizedTool);
+                return (
+                  <label key={tool} className={`tool-exposure-item ${checked ? 'checked' : ''}`}>
+                    <input
+                      type="checkbox"
+                      aria-label={tool}
+                      checked={checked}
+                      disabled={!onUpdateToolExposure || toolUpdatePending}
+                      onChange={() => { void handleToggleToolExposure(normalizedTool); }}
+                    />
+                    <span>{tool}</span>
+                  </label>
+                );
+              })}
+            </div>
+          </div>
+        )}
       </div>
+
+      {debugSnapshotsEnabled && (
+        <div className="debug-snapshots-panel">
+          <div className="debug-snapshots-header">
+            <span>Debug Snapshots ({debugSnapshots.length})</span>
+            <button
+              type="button"
+              className="debug-snapshots-clear-btn"
+              onClick={() => onClearDebugSnapshots?.()}
+            >
+              清空
+            </button>
+          </div>
+          <div className="debug-snapshots-list">
+            {displayedSnapshots.length === 0 ? (
+              <div className="debug-snapshot-empty">暂无快照</div>
+            ) : (
+              displayedSnapshots.map((snapshot) => (
+                <div key={snapshot.id} className="debug-snapshot-item">
+                  <span className="debug-snapshot-time">{new Date(snapshot.timestamp).toLocaleTimeString()}</span>
+                  <span className="debug-snapshot-stage">{snapshot.stage}</span>
+                  <span className="debug-snapshot-summary">{snapshot.summary}</span>
+                  {typeof snapshot.attempt === 'number' && <span className="debug-snapshot-attempt">#{snapshot.attempt}</span>}
+                  {snapshot.phase && <span className="debug-snapshot-phase">{snapshot.phase}</span>}
+                </div>
+              ))
+            )}
+          </div>
+        </div>
+      )}
 
       {inputLockState && inputLockState.lockedBy && inputLockState.lockedBy !== clientId && (
         <div className="input-lock-indicator">

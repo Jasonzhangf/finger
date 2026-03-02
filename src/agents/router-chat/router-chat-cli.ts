@@ -124,7 +124,7 @@ class RouterChatAgentCLI extends AgentCLIBase {
     const config: Partial<AgentCLIConfig> & { agentId: string; agentName: string } = {
       agentId: process.env.AGENT_ID || 'router-chat-agent',
       agentName: process.env.AGENT_NAME || 'Router Chat Agent',
-      daemonUrl: process.env.DAEMON_URL || 'http://localhost:9999',
+      daemonUrl: process.env.DAEMON_URL || 'http://localhost:5521',
       heartbeatTimeoutMs: parseInt(process.env.HEARTBEAT_TIMEOUT_MS || '60000', 10),
       capabilities: ['routing', 'chat', 'intent-classification', 'semantic-understanding', 'session-management'],
     };
@@ -176,7 +176,7 @@ program
 program
   .command('start')
   .description('Start the agent daemon')
-  .option('--daemon-url <url>', 'Daemon URL', 'http://localhost:9999')
+  .option('--daemon-url <url>', 'Daemon URL', 'http://localhost:5521')
   .action(async (options) => {
     process.env.DAEMON_URL = options.daemonUrl;
     const cli = new RouterChatAgentCLI();

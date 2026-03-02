@@ -2,18 +2,18 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { ResourcePool, ResourceType, ResourceStatus, ResourceRequirement } from '../../../src/orchestration/resource-pool.js';
 
 // Mock fs module
-vi.mock('fs', () => ({
-  default: {
+vi.mock('fs', () => {
+  const fsMock = {
     existsSync: vi.fn(() => false),
     mkdirSync: vi.fn(),
     readFileSync: vi.fn(),
     writeFileSync: vi.fn(),
-  },
-  existsSync: vi.fn(() => false),
-  mkdirSync: vi.fn(),
-  readFileSync: vi.fn(),
-  writeFileSync: vi.fn(),
-}));
+  };
+  return {
+    default: fsMock,
+    ...fsMock,
+  };
+});
 
 describe('ResourcePool', () => {
   let pool: ResourcePool;
@@ -41,6 +41,11 @@ describe('ResourcePool', () => {
     it('should have default reviewer resource', () => {
       const reviewers = pool.getResourcesByType('reviewer');
       expect(reviewers.length).toBeGreaterThan(0);
+    });
+
+    it('should have default searcher resource', () => {
+      const searchers = pool.getResourcesByType('searcher');
+      expect(searchers.length).toBeGreaterThan(0);
     });
   });
 

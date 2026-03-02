@@ -7,10 +7,10 @@ import { spawn } from "child_process";
 import fs from "fs";
 import path from "path";
 import os from "os";
+import { FINGER_PATHS, ensureFingerLayout } from "../../core/finger-paths.js";
 
-const FINGER_DIR = path.join(os.homedir(), ".finger");
-const PID_FILE = path.join(FINGER_DIR, "daemon.pid");
-const LOG_FILE = path.join(FINGER_DIR, "daemon.log");
+const PID_FILE = FINGER_PATHS.runtime.daemonPid;
+const LOG_FILE = FINGER_PATHS.logs.daemonLog;
 
 export function daemonCommand(): Command {
   const cmd = new Command("daemon")
@@ -108,7 +108,7 @@ function isRunning(): boolean {
 }
 
 function startDetached(): void {
-  fs.mkdirSync(FINGER_DIR, { recursive: true });
+  ensureFingerLayout();
   const logFd = fs.openSync(LOG_FILE, "a");
   
   const scriptPath = path.join(__dirname, "..", "..", "core", "daemon.js");

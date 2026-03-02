@@ -31,6 +31,21 @@ const ORCHESTRATION_TOOLS = [
   'user.ask',
 ] as const;
 
+const ORCHESTRATOR_DOCUMENTATION_TOOLS = [
+  'apply_patch',
+] as const;
+
+function dedupeTools(...groups: ReadonlyArray<ReadonlyArray<string>>): string[] {
+  return Array.from(new Set(groups.flatMap((group) => group)));
+}
+
+const ORCHESTRATOR_FULL_TOOLS = dedupeTools(
+  [...CORE_EXECUTION_TOOLS],
+  [...ORCHESTRATION_TOOLS],
+  [...READ_ONLY_COORDINATION_TOOLS],
+  [...ORCHESTRATOR_DOCUMENTATION_TOOLS],
+);
+
 export interface BaseAgentRoleConfig {
   role: BaseAgentRole;
   description: string;
@@ -41,8 +56,8 @@ export interface BaseAgentRoleConfig {
 export const BASE_AGENT_ROLE_CONFIG: Record<BaseAgentRole, BaseAgentRoleConfig> = {
   orchestrator: {
     role: 'orchestrator',
-    description: 'Default planner/dispatcher role. Prioritizes deploy+dispatch through standard agent tools.',
-    allowedTools: [...READ_ONLY_COORDINATION_TOOLS, ...ORCHESTRATION_TOOLS],
+    description: 'Default planner/dispatcher role. Has full tools for orchestration, experiment, and verification, while delegating production coding to executor.',
+    allowedTools: [...ORCHESTRATOR_FULL_TOOLS],
     defaultLedgerCanReadAll: true,
   },
   reviewer: {
@@ -68,12 +83,15 @@ export const BASE_AGENT_ROLE_CONFIG: Record<BaseAgentRole, BaseAgentRoleConfig> 
 export function resolveBaseAgentRole(roleProfile: string | undefined): BaseAgentRole {
   const normalized = (roleProfile ?? '').trim().toLowerCase();
   if (!normalized) return 'orchestrator';
+  if (normalized === 'general' || normalized === 'finger-general') return 'orchestrator';
   if (normalized === 'orchestrator' || normalized.includes('orchestr')) return 'orchestrator';
   if (normalized === 'reviewer' || normalized.includes('review')) return 'reviewer';
-  if (normalized === 'searcher' || normalized.includes('search')) return 'searcher';
+  if (normalized === 'searcher' || normalized.includes('search') || normalized.includes('research')) return 'searcher';
   if (
     normalized === 'executor'
     || normalized.includes('execut')
+    || normalized.includes('coder')
+    || normalized.includes('code')
     || normalized === 'coding-cli'
     || normalized.includes('coding')
   ) {

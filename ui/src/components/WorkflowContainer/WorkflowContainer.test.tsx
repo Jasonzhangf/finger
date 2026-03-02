@@ -54,6 +54,7 @@ interface MockWorkflowExecution {
   pauseWorkflow: ReturnType<typeof vi.fn>;
   resumeWorkflow: ReturnType<typeof vi.fn>;
   sendUserInput: ReturnType<typeof vi.fn>;
+  updateToolExposure: ReturnType<typeof vi.fn>;
   getAgentDetail: ReturnType<typeof vi.fn>;
   getTaskReport: ReturnType<typeof vi.fn>;
   isConnected: boolean;
@@ -74,6 +75,7 @@ let mockWorkflowExecution: MockWorkflowExecution = {
   pauseWorkflow: vi.fn(),
   resumeWorkflow: vi.fn(),
   sendUserInput: vi.fn(),
+  updateToolExposure: vi.fn(),
   getAgentDetail: vi.fn(),
   getTaskReport: vi.fn(),
   isConnected: true,
@@ -140,6 +142,7 @@ describe('WorkflowContainer', () => {
       pauseWorkflow: vi.fn(),
       resumeWorkflow: vi.fn(),
       sendUserInput: vi.fn(),
+      updateToolExposure: vi.fn(),
       getAgentDetail: vi.fn(),
       getTaskReport: vi.fn(),
       isConnected: true,

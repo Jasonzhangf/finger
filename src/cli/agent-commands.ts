@@ -1,12 +1,34 @@
 /**
  * Agent CLI Commands - Message Hub wrappers
  * 
- * 所有命令通过 Message Hub (9999) 发送消息，符合当前 daemon 默认端口规范。
+ * 所有命令通过 Message Hub (5521) 发送消息，符合当前 daemon 默认端口规范。
  * CLI 是纯粹客户端：发送请求后立即退出（除非 --watch）。
  */
 
-const MESSAGE_HUB_URL = process.env.FINGER_HUB_URL || 'http://localhost:9999';
-const WEBSOCKET_URL = process.env.FINGER_WS_URL || 'ws://localhost:9998';
+export function resolveEnvUrl(name: string, fallback: string): string {
+  const value = process.env[name];
+  if (typeof value === 'string' && value.trim().length > 0) {
+    return value.trim();
+  }
+  return fallback;
+}
+
+let MESSAGE_HUB_URL = resolveEnvUrl('FINGER_HUB_URL', 'http://localhost:5521');
+let WEBSOCKET_URL = resolveEnvUrl('FINGER_WS_URL', 'ws://localhost:5522');
+
+export function configureAgentCommandUrls(options: { hubUrl?: string; wsUrl?: string }): void {
+  if (options.hubUrl && options.hubUrl.trim().length > 0) {
+    MESSAGE_HUB_URL = options.hubUrl.trim();
+  } else {
+    MESSAGE_HUB_URL = resolveEnvUrl('FINGER_HUB_URL', 'http://localhost:5521');
+  }
+
+  if (options.wsUrl && options.wsUrl.trim().length > 0) {
+    WEBSOCKET_URL = options.wsUrl.trim();
+  } else {
+    WEBSOCKET_URL = resolveEnvUrl('FINGER_WS_URL', 'ws://localhost:5522');
+  }
+}
 
 export interface CommandOptions {
   sessionId?: string;

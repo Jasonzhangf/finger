@@ -90,10 +90,9 @@ interface SessionRoutingState {
 
 ## 4.2 存储布局
 
-- `~/.finger/sessions/<fingerSessionId>/session.json`：主会话元数据。
-- `~/.finger/sessions/<fingerSessionId>/messages.jsonl`：主会话消息流。
-- `~/.finger/sessions/<fingerSessionId>/agent-sessions.json`：子会话映射表。
-- `~/.finger/iflow-session-map.json`：兼容层（V1 保留，V2 合并进 `agent-sessions.json`）。
+- `~/.finger/sessions/<project编码>/session-<fingerSessionId>/main.json`：主会话元数据与消息。
+- `~/.finger/sessions/<project编码>/session-<fingerSessionId>/agent-<agentId>.json`：子会话数据。
+- `~/.finger/config/iflow-session-map.json`：兼容层（V1 保留，V2 合并进 `agent-sessions.json`）。
 
 ## 4.3 生命周期
 
@@ -163,7 +162,7 @@ interface UnifiedAgent {
 
 ## 7.1 用户配置（统一）
 
-- 文件：`~/.finger/config.json`
+- 文件：`~/.finger/config/config.json`
 - 用途：端口、默认 provider、全局策略、默认路由与开关。
 
 ## 7.2 系统模块配置（统一）
@@ -294,4 +293,3 @@ interface GatewayModule {
   - 缓解：映射失效时自动新建并发告警事件。
 - 风险：工具注入过多造成上下文膨胀。
   - 缓解：分阶段披露 + 上下文预算裁剪。
-

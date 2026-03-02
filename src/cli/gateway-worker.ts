@@ -20,7 +20,7 @@ export function registerGatewayWorkerCommand(program: Command): void {
     .command('gateway-worker')
     .description('Internal gateway worker process (stdin/stdout JSONL protocol)')
     .requiredOption('--adapter <type>', 'chat | chat-codex')
-    .option('--daemon-url <url>', 'Daemon URL', process.env.FINGER_HUB_URL || 'http://localhost:9999')
+    .option('--daemon-url <url>', 'Daemon URL', process.env.FINGER_HUB_URL || 'http://localhost:5521')
     .option('--target <moduleId>', 'Target module ID')
     .action(async (options: { adapter: string; daemonUrl: string; target?: string }) => {
       const adapter = normalizeAdapter(options.adapter);
@@ -30,7 +30,7 @@ export function registerGatewayWorkerCommand(program: Command): void {
         return;
       }
 
-      const target = options.target || (adapter === 'chat-codex' ? 'chat-codex' : 'router-chat-agent');
+      const target = options.target || (adapter === 'chat-codex' ? 'finger-general' : 'router-chat-agent');
       await runGatewayWorker({
         adapter,
         daemonUrl: options.daemonUrl,
@@ -114,7 +114,7 @@ function normalizeChatCodexOutput(result: unknown): unknown {
   if (success === false) {
     return {
       success: false,
-      error: typeof result.error === 'string' ? result.error : 'chat-codex request failed',
+      error: typeof result.error === 'string' ? result.error : 'finger-general request failed',
     };
   }
   return result;

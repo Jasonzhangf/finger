@@ -178,7 +178,7 @@ describe('WebUI Conversation Panel', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          target: 'orchestrator-loop',
+          target: 'finger-orchestrator-gateway',
           message: { content: '测试用户输入流程', sessionId },
           blocking: false,
         }),
@@ -251,7 +251,7 @@ describe('WebUI Conversation Panel', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          target: 'orchestrator-loop',
+          target: 'finger-orchestrator-gateway',
           message: { content: '列出当前目录文件', sessionId },
           blocking: false,
         }),
@@ -348,7 +348,7 @@ describe('WebUI Conversation Panel', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          target: 'orchestrator-loop',
+          target: 'finger-orchestrator-gateway',
           message: { content: '第一轮任务', sessionId },
           blocking: false,
         }),

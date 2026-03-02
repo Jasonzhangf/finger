@@ -9,11 +9,11 @@
  */
 
 import { join } from 'path';
-import { homedir } from 'os';
 import { readdir } from 'fs/promises';
 import { existsSync } from 'fs';
 import { EventEmitter } from 'events';
 import { logger } from '../../core/logger.js';
+import { FINGER_PATHS } from '../../core/finger-paths.js';
 import { AgentProcess, type AgentProcessConfig, type AgentProcessInfo } from './agent-process.js';
 
 const log = logger.module('ProcessRegistry');
@@ -43,7 +43,7 @@ export class ProcessRegistry extends EventEmitter {
   constructor(config?: Partial<RegistryConfig>) {
     super();
     this.config = {
-      autostartDir: join(homedir(), '.finger', 'autostart'),
+      autostartDir: FINGER_PATHS.runtime.autostartDir,
       heartbeatTimeoutMs: 90000,  // 90s
       autoStartOnBoot: true,
       ...config,

@@ -1,8 +1,7 @@
 import { ChildProcess } from 'child_process';
 import { lifecycleManager } from '../agents/core/agent-lifecycle.js';
 import fs from 'fs';
-import path from 'path';
-import os from 'os';
+import { FINGER_PATHS, ensureDir } from '../core/finger-paths.js';
 
 export interface AgentInstanceConfig {
   id: string;
@@ -31,9 +30,8 @@ export interface AgentPoolConfig {
   agents: AgentInstanceConfig[];
 }
 
-const FINGER_HOME = path.join(os.homedir(), '.finger');
-const AGENT_CONFIG_FILE = path.join(FINGER_HOME, 'agents.json');
-const AGENT_PID_DIR = path.join(FINGER_HOME, 'agents');
+const AGENT_CONFIG_FILE = FINGER_PATHS.config.file.agents;
+const AGENT_PID_DIR = FINGER_PATHS.runtime.agentsDir;
 
 const DEFAULT_AGENTS: AgentInstanceConfig[] = [
   {
@@ -65,12 +63,8 @@ export class AgentPool {
   }
 
   private ensureDirs(): void {
-    if (!fs.existsSync(FINGER_HOME)) {
-      fs.mkdirSync(FINGER_HOME, { recursive: true });
-    }
-    if (!fs.existsSync(AGENT_PID_DIR)) {
-      fs.mkdirSync(AGENT_PID_DIR, { recursive: true });
-    }
+    ensureDir(FINGER_PATHS.config.dir);
+    ensureDir(AGENT_PID_DIR);
   }
 
   private loadConfig(): AgentPoolConfig {

@@ -181,7 +181,7 @@ const res = await fetch('http://localhost:5521/api/v1/message', {
 **修改**：
 1. 添加 Agent 健康检查定时器
 2. 崩溃后自动重启（带退避策略）
-3. 记录启动历史到 `~/.finger/agent-history.json`
+3. 记录启动历史到 `~/.finger/logs/agent-history.json`
 
 ## 7. 实施优先级
 

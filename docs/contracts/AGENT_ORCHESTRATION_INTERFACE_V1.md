@@ -32,7 +32,7 @@ Query:
 Response:
 - `agents[]`：每个 agent 的运行状态、实例计数、`capabilities` 分层字段
 - `startupTargets[]`：已定义但尚未启动到资源池的 agent 目标
-- `startupTemplates[]`：基础启动模板（默认包含 `orchestrator-loop` / `reviewer-loop` / `executor-loop`）
+- `startupTemplates[]`：基础启动模板（默认包含 `finger-orchestrator` / `finger-reviewer` / `finger-executor`）
 
 ### 2.2 `POST /api/v1/agents/dispatch`
 
@@ -71,6 +71,14 @@ Body:
 - `instanceCount?: number`
 - `launchMode?: manual | orchestrator`
 - `config?: object`
+
+### 2.5 `orchestration.json` Profile Entry（扩展字段）
+
+在 orchestration 配置 profile 中，每个 agent entry 支持以下可选字段（由服务端透传到 runtime 配置）：
+
+- `defaultQuota`：运行时默认配额（允许为 0，用于“保留但不分配”）。
+- `quotaPolicy`：配额策略（`projectQuota` / `workflowQuota`），支持 0。
+- `visible`：是否在 UI 中展示该 agent（`false` 时仅隐藏，不影响后端启用）。
 
 ## 3. 标准工具调用
 

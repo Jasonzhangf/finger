@@ -1,5 +1,9 @@
 # Agent Context 设计文档
 
+> NOTE
+> 本文档中的“动态系统提示词拼接”方案已被新分区规范替代。
+> 当前以 `docs/CONTEXT_PARTITION_RULES.md` 为准：System 区固定，角色/ledger 等动态策略放入 Developer 区。
+
 ## 概述
 
 Agent Context 是提供给每个 Agent 的标准化上下文信息，包含资源池状态、能力目录、任务信息等，用于支持基于能力的任务分配和执行。

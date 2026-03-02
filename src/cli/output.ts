@@ -20,7 +20,7 @@ export function _getOutputFormat(): OutputFormat {
  * Format and print event
  */
 export function printEvent(type: string, payload: unknown, timestamp?: string): void {
-  const time = timestamp ? new Date(timestamp).toLocaleTimeString() : new Date().toLocaleTimeString();
+  const time = timestamp ? new Date(timestamp).toISOString() : new Date().toISOString();
   
   if (currentFormat === 'json') {
     console.log(JSON.stringify({ type, payload, timestamp: timestamp || new Date().toISOString() }));

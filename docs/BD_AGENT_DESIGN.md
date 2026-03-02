@@ -250,7 +250,7 @@ export class SessionPersistence {
   
   // 定期保存会话快照到 bd
   async saveSnapshot(session: SessionSnapshot): Promise<void> {
-    const snapshotPath = `~/.finger/sessions/${session.sessionId}.json`;
+    const snapshotPath = `~/.finger/sessions/<project编码>/session-${session.sessionId}/main.json`;
     await fs.writeFile(snapshotPath, JSON.stringify(session, null, 2));
     
     await this.bdTools.addComment(session.epicId, 

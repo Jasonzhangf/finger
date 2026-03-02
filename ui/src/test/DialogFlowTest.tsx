@@ -29,7 +29,7 @@ export const DialogFlowTest: React.FC = () => {
       const response = await fetch('/api/v1/message', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ target: 'orchestrator-loop', message: { content: task }, blocking: false }),
+        body: JSON.stringify({ target: 'finger-orchestrator-gateway', message: { content: task }, blocking: false }),
       });
 
       const data = await response.json();

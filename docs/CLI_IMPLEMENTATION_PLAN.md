@@ -179,7 +179,7 @@ export class FingerClient {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        target: 'orchestrator-loop',
+        target: 'finger-orchestrator',
         message: { content: task },
         blocking: options.blocking ?? false,
       }),

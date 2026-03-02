@@ -3,7 +3,7 @@
  * 
  * 特性：
  * - 唯一实例管理：新启动自动停止旧 daemon
- * - 默认端口：HTTP 9999 / WebSocket 9998
+ * - 默认端口：HTTP 5521 / WebSocket 5522
  * - 孤儿进程清理
  * - 自动加载 autostart 目录模块
  */
@@ -11,7 +11,7 @@
 import { spawn, execSync } from 'child_process';
 import { existsSync, readFileSync, writeFileSync, unlinkSync, openSync, mkdirSync, readdirSync } from 'fs';
 import { join } from 'path';
-import { homedir } from 'os';
+import { FINGER_PATHS, ensureDir } from '../core/finger-paths.js';
 import { logger } from '../core/logger.js';
 import { loadModuleManifest } from './module-manifest.js';
 
@@ -26,16 +26,18 @@ export interface DaemonConfig {
 }
 
 const DEFAULT_CONFIG: DaemonConfig = {
-  port: 9999,
-  wsPort: 9998,
+  port: 5521,
+  wsPort: 5522,
   host: '127.0.0.1',
-  pidFile: join(homedir(), '.finger', 'daemon.pid'),
-  logFile: join(homedir(), '.finger', 'daemon.log'),
+  pidFile: FINGER_PATHS.runtime.daemonPid,
+  logFile: FINGER_PATHS.logs.daemonLog,
   serverScript: join(process.cwd(), 'dist', 'server', 'index.js'),
-  autostartDir: join(homedir(), '.finger', 'autostart'),
+  autostartDir: FINGER_PATHS.runtime.autostartDir,
 };
 
-const log = logger.module('Daemon');
+const log = process.env.NODE_ENV === 'test'
+  ? logger.module('DaemonTest')
+  : logger.module('Daemon');
 
 export class OrchestrationDaemon {
   private config: DaemonConfig;
@@ -47,13 +49,9 @@ export class OrchestrationDaemon {
   }
 
   private ensureDirs(): void {
-    const fingerDir = join(homedir(), '.finger');
-    if (!existsSync(fingerDir)) {
-      mkdirSync(fingerDir, { recursive: true });
-    }
-    if (!existsSync(this.config.autostartDir)) {
-      mkdirSync(this.config.autostartDir, { recursive: true });
-    }
+    ensureDir(FINGER_PATHS.runtime.dir);
+    ensureDir(FINGER_PATHS.logs.dir);
+    ensureDir(this.config.autostartDir);
   }
 
   private isPortInUse(port: number): boolean {

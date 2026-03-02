@@ -6,10 +6,10 @@
 
 import fs from 'fs';
 import path from 'path';
-import os from 'os';
+import { FINGER_PATHS, ensureDir } from './finger-paths.js';
 import type { InputsConfig, OutputsConfig, RoutesConfig } from './schema.js';
 
-const FINGER_DIR = path.join(os.homedir(), '.finger');
+const CONFIG_DIR = FINGER_PATHS.config.dir;
 
 function parseYamlSimple(content: string): unknown {
   // Very simple YAML parser for our use case
@@ -147,21 +147,24 @@ export function loadRoutesConfig(): RoutesConfig {
 }
 
 function getPath(filename: string): string {
-  return path.join(FINGER_DIR, filename);
+  return path.join(CONFIG_DIR, filename);
 }
 
 // Write helpers
 export function writeInputsConfig(config: InputsConfig): void {
+  ensureDir(CONFIG_DIR);
   const path = getPath('inputs.yaml');
   fs.writeFileSync(path, yamlStringify(config), 'utf-8');
 }
 
 export function writeOutputsConfig(config: OutputsConfig): void {
+  ensureDir(CONFIG_DIR);
   const path = getPath('outputs.yaml');
   fs.writeFileSync(path, yamlStringify(config), 'utf-8');
 }
 
 export function writeRoutesConfig(config: RoutesConfig): void {
+  ensureDir(CONFIG_DIR);
   const path = getPath('routes.yaml');
   fs.writeFileSync(path, yamlStringify(config), 'utf-8');
 }

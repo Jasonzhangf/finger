@@ -9,6 +9,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 // Mock fetch globally
 const mockFetch = vi.fn();
 global.fetch = mockFetch;
+const TEST_HUB_URL = process.env.FINGER_HUB_URL || 'http://localhost:5521';
 
 describe('agent commands - Message Hub', () => {
   beforeEach(() => {
@@ -88,7 +89,7 @@ describe('understand command - Message Hub', () => {
     mockFetch.mockReset();
   });
 
-  it('should send message to Message Hub (5521)', async () => {
+  it('should send message to Message Hub', async () => {
     const { understandCommand } = await import('../../../src/cli/agent-commands.js');
     mockFetch.mockResolvedValueOnce({
       ok: true,
@@ -96,7 +97,7 @@ describe('understand command - Message Hub', () => {
     });
     await understandCommand('搜索 deepseek', { sessionId: 'test-session' });
     expect(mockFetch).toHaveBeenCalledWith(
-      expect.stringContaining('localhost:5521/api/v1/message'),
+      expect.stringContaining(`${TEST_HUB_URL}/api/v1/message`),
       expect.objectContaining({
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },

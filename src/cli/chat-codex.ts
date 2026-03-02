@@ -21,14 +21,14 @@ interface ChatCodexCommandOptions {
 }
 
 export function registerChatCodexCommand(program: Command): void {
-  const defaultDaemonUrl = process.env.FINGER_HUB_URL || 'http://localhost:9999';
+  const defaultDaemonUrl = process.env.FINGER_HUB_URL || 'http://localhost:5521';
 
   program
     .command('chat-codex')
-    .description('通过 daemon gateway 调用 chat-codex 模块')
+    .description('通过 daemon gateway 调用 finger-general/finger-orchestrator 模块（兼容 chat-codex）')
     .argument('[input]', '单轮输入文本')
     .option('-u, --url <url>', 'Daemon URL', defaultDaemonUrl)
-    .option('-t, --target <id>', 'Target module ID', 'chat-codex-gateway')
+    .option('-t, --target <id>', 'Target module ID', 'finger-orchestrator-gateway')
     .option('-i, --interactive', '交互模式')
     .action(async (input: string | undefined, options: ChatCodexCommandOptions) => {
       if (options.interactive || !input) {

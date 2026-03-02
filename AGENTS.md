@@ -13,6 +13,7 @@ It intentionally avoids project-specific architecture, API, roadmap, and busines
 - Keep style consistent with existing code.
 - Do not refactor unrelated areas unless explicitly requested.
 - Do not revert user changes you did not make.
+- Fix root causes directly; do not use rollback/patching as a substitute for diagnosis.
 
 ## Code Quality
 - Prefer clear names and straightforward logic over cleverness.
@@ -51,9 +52,12 @@ It intentionally avoids project-specific architecture, API, roadmap, and busines
 - 新需求先创建/更新 bd issue，包含清晰验收标准。
 - 常用命令：
   - `bd --no-db ready`
+  - `bd --no-db search "<keyword>"`
+  - `bd --no-db list --status open|in_progress|blocked`
   - `bd --no-db show <id>`
   - `bd --no-db create "Title" --type epic|task --parent <epic>`
   - `bd --no-db update <id> --status in_progress|blocked|closed`
+  - `bd --no-db update <id> --claim`
   - `bd --no-db dep add <blocked> <blocker>`
   - `bd --no-db epic status`
 - `.beads/issues.jsonl` 是唯一可版本化的 bd 数据文件；不要手改 JSONL，使用 `bd` 命令。
@@ -62,6 +66,7 @@ It intentionally avoids project-specific architecture, API, roadmap, and busines
 ## LSP 管理
 - 需要代码语义分析时，必须启动 LSP：`lsp server start <repo_root>`。
 - 结束前用 `lsp server list` 检查并 `lsp server stop <repo_root>` 清理。
+- 任何涉及跨文件重构或大范围引用分析的任务必须用 LSP 完成定位与引用核查。
 
 ## 三层架构铁律（强制）
 - 代码必须严格三层：`blocks`（基础能力层）/ `orchestration app`（编排层）/ `ui`（呈现层）。

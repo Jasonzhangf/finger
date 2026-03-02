@@ -193,6 +193,7 @@ export const WorkflowContainer: React.FC = () => {
     agentRunStatus,
     runtimeOverview,
     toolPanelOverview,
+    updateToolExposure,
     contextEditableEventIds,
     isConnected,
     debugSnapshotsEnabled,
@@ -233,7 +234,23 @@ export const WorkflowContainer: React.FC = () => {
     const projectPath = currentSession?.projectPath?.trim() || fromStorage || '/';
     const created = await createSession(projectPath);
     await switchSession(created.id);
+    setSessionBinding({
+      context: 'orchestrator',
+      sessionId: created.id,
+    });
+    setDrawerAgentId(null);
+    setSelectedAgentId(null);
   }, [createSession, currentSession?.projectPath, switchSession]);
+
+  const handleSwitchSessionFromSidebar = useCallback(async (sessionId: string): Promise<void> => {
+    await switchSession(sessionId);
+    setSessionBinding({
+      context: 'orchestrator',
+      sessionId,
+    });
+    setDrawerAgentId(null);
+    setSelectedAgentId(null);
+  }, [switchSession, setSelectedAgentId]);
 
   const { agents: agentModules } = useAgents();
   const chatInputCapability = useMemo(
@@ -303,9 +320,19 @@ export const WorkflowContainer: React.FC = () => {
   );
 
   const handleSelectAgent = useCallback((agentId: string) => {
+    const selectedAgent = agentPanelAgents.find((agent) => agent.id === agentId);
+    const normalizedAgentId = agentId.trim().toLowerCase();
+    const isOrchestratorAgent = selectedAgent?.type === 'orchestrator' || normalizedAgentId.includes('orchestrator');
+    if (isOrchestratorAgent) {
+      setSessionBinding({
+        context: 'orchestrator',
+        sessionId: orchestratorSessionId,
+      });
+      setDrawerAgentId(null);
+    }
     setSelectedAgentId(agentId);
     setDrawerAgentId(agentId);
-  }, [setSelectedAgentId]);
+  }, [agentPanelAgents, orchestratorSessionId, setSelectedAgentId]);
 
   const handleSelectInstance = useCallback(async (instanceIdOrPayload: string | { id?: string; sessionId?: string }): Promise<void> => {
     const selectedInstance = typeof instanceIdOrPayload === 'string'
@@ -318,12 +345,13 @@ export const WorkflowContainer: React.FC = () => {
     if (!sessionIdToSwitch) return;
     setDrawerAgentId(null);
     setSelectedAgentId(null);
+    const shouldRestoreOrchestrator = selectedInstance.type === 'orchestrator' || sessionIdToSwitch === orchestratorSessionId;
     setSessionBinding({
-      context: 'runtime',
+      context: shouldRestoreOrchestrator ? 'orchestrator' : 'runtime',
       sessionId: sessionIdToSwitch,
-      runtimeInstanceId: selectedInstance?.id,
+      ...(shouldRestoreOrchestrator ? {} : { runtimeInstanceId: selectedInstance?.id }),
     });
-  }, [runtimeInstances]);
+  }, [orchestratorSessionId, runtimeInstances]);
 
   useEffect(() => {
     if (sessionBinding.context !== 'runtime') return;
@@ -504,6 +532,7 @@ export const WorkflowContainer: React.FC = () => {
       agentRunStatus={agentRunStatus}
       runtimeOverview={runtimeOverview}
       toolPanelOverview={toolPanelOverview}
+      onUpdateToolExposure={updateToolExposure}
       onSendMessage={sendUserInput}
       onEditMessage={editRuntimeEvent}
       onDeleteMessage={deleteRuntimeEvent}
@@ -555,7 +584,7 @@ export const WorkflowContainer: React.FC = () => {
             onCreateSession={createSession}
             onDeleteSession={removeSession}
             onRenameSession={renameSession}
-            onSwitchSession={switchSession}
+            onSwitchSession={handleSwitchSessionFromSidebar}
             onRefreshSessions={refreshSessions}
           />
         }

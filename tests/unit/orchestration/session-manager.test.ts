@@ -3,8 +3,8 @@ import fs from 'fs';
 import { SessionManager } from '../../../src/orchestration/session-manager.js';
 
 // Mock fs module
-vi.mock('fs', () => ({
-  default: {
+vi.mock('fs', () => {
+  const fsMock = {
     existsSync: vi.fn(() => false),
     mkdirSync: vi.fn(),
     readdirSync: vi.fn(() => []),
@@ -12,15 +12,12 @@ vi.mock('fs', () => ({
     writeFileSync: vi.fn(),
     unlinkSync: vi.fn(),
     rmdirSync: vi.fn(),
-  },
-  existsSync: vi.fn(() => false),
-  mkdirSync: vi.fn(),
-  readdirSync: vi.fn(() => []),
-  readFileSync: vi.fn(),
-  writeFileSync: vi.fn(),
-  unlinkSync: vi.fn(),
-  rmdirSync: vi.fn(),
-}));
+  };
+  return {
+    default: fsMock,
+    ...fsMock,
+  };
+});
 
 // Mock os module
 vi.mock('os', () => ({
@@ -91,12 +88,19 @@ describe('SessionManager', () => {
       expect(manager.listSessions().length).toBe(2);
     });
 
+    it('should create a new session when allowReuse is false', () => {
+      const first = manager.createSession('/project/same');
+      const second = manager.createSession('/project/same', undefined, { allowReuse: false });
+      expect(second.id).not.toBe(first.id);
+      expect(manager.listSessions().length).toBe(2);
+    });
+
     it('should save session in project-based directory layout', () => {
       const session = manager.createSession('/project/path');
       const calls = vi.mocked(fs.writeFileSync).mock.calls;
       const latestPath = String(calls[calls.length - 1]?.[0] ?? '');
       expect(latestPath).toContain('/home/test/.finger/sessions/_project_path/');
-      expect(latestPath).toContain(`${session.id}.json`);
+      expect(latestPath).toContain('main.json');
     });
   });
 
