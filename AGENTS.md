@@ -29,6 +29,7 @@ It intentionally avoids project-specific architecture, API, roadmap, and busines
 - 已完成的修改直接提交。
 - 不了解的修改需 review 后再提交。
 - 临时文件、敏感文件、日志、构建产物不要提交。
+- 日志/输出文件必须落盘到 `~/.finger`，不得写入仓库路径（例如 `logs/`、`output/`）。
 
 ## Agent Conduct & Accountability
 - 所有结论必须基于可验证证据（文件内容/命令输出/测试结果），不得“推测已完成”。
@@ -46,6 +47,21 @@ It intentionally avoids project-specific architecture, API, roadmap, and busines
 - Update docs when behavior, interfaces, or workflows change.
 - Keep documentation concise, accurate, and implementation-agnostic where possible.
 - Use one canonical docs directory naming convention per repo (choose `Docs/` or `docs/` and keep it consistent).
+
+## Testing Files
+- `tests/modules/**/*.test.ts` (blocks 基础能力层)
+- `tests/unit/blocks/**/*.test.ts` (blocks 基础能力层)
+- `tests/orchestration/**/*.test.ts` (orchestration 编排层)
+- `tests/unit/orchestration/**/*.test.ts` (orchestration 编排层)
+- `tests/agents/**/*.test.ts` (agents 业务层)
+- `tests/unit/agents/**/*.test.ts` (agents 业务层)
+- `tests/api/**/*.test.ts` (API)
+- `tests/integration/**/*.test.ts` (integration)
+- `tests/e2e/**/*.spec.ts` (end-to-end)
+- `tests/e2e-ui/contracts/**/*.test.ts` (UI contracts)
+- `tests/e2e-ui/controls/**/*.test.ts` (UI controls)
+- `tests/e2e-ui/flows/**/*.test.ts` (UI flows)
+- `tests/e2e-ui/stability/**/*.test.ts` (UI stability)
 
 ## Task Tracking (bd)
 - 任务/计划/依赖统一用 `bd --no-db` 管理，不在 `AGENTS.md` 写 TODO。
@@ -74,3 +90,86 @@ It intentionally avoids project-specific architecture, API, roadmap, and busines
 - `orchestration app` 只做 block 的组合、调度与流程编排，不承载业务规则本体。
 - `ui` 只负责展示与交互，不承载业务编排逻辑；必须与业务实现解耦。
 - 任何新增需求都应优先下沉到 `blocks` 抽象，避免在编排层或 UI 层复制业务语义。
+
+## 生命周期管理（强制）
+
+### 设计原则
+
+- **主程序主动退出**：主程序（Daemon/Server）负责生命周期管理，可主动退出。
+- **子进程心跳依赖**：所有子线程/进程必须依赖主程序的心跳存活。
+- **自杀机制**：子进程连续 **3 次** 未收到心跳（每次间隔 **30 秒**，共 **90 秒**）必须自杀。
+- **UDP 广播心跳**：使用 UDP 广播机制，主程序定期广播，子进程监听。
+
+### 心跳参数
+
+| 参数 | 默认值 | 说明 |
+|------|--------|------|
+| `HEARTBEAT_INTERVAL_MS` | 30000 | 心跳广播间隔（30 秒） |
+| `MISSED_THRESHOLD` | 3 | 允许丢失的心跳次数 |
+| `HEARTBEAT_TIMEOUT_MS` | 90000 | 心跳超时时间（3 × 30 秒） |
+
+### 实现位置
+
+- **心跳广播**：`src/agents/core/heartbeat-broker.ts` - `HeartbeatBroker`（主程序）
+- **心跳监听**：`src/agents/core/heartbeat-broker.ts` - `HeartbeatMonitor`（子进程）
+- **进程管理**：`src/daemon/process-manager/agent-process.ts` - `AgentProcess`
+- **注册表**：`src/daemon/process-manager/process-registry.ts` - `ProcessRegistry`
+
+### 子进程自杀流程
+
+1. 子进程启动时创建 `HeartbeatMonitor` 实例
+2. 监听 UDP 端口（默认 5522）接收主程序心跳
+3. 每次收到心跳重置 `missedCount = 0`
+4. 每 30 秒检查一次：`missedCount++`
+5. 当 `missedCount >= 3` 时：
+   - 记录日志：`[HeartbeatMonitor] Master appears dead, initiating self-destruct`
+   - 停止监听器
+   - 调用 `onDeath()` 回调（通常是 `process.exit(1)` 或清理后退出）
+
+### 主程序退出流程
+
+1. 主程序停止心跳广播：`heartbeatBroker.stop()`
+2. 等待子进程自杀（最多 90 秒）
+3. 强制清理残留进程（如有）
+4. 主程序退出
+
+### 验收标准
+
+- [ ] 主程序退出后，所有子进程在 90 秒内自动退出
+- [ ] 子进程日志包含 `Missed heartbeat X/3` 记录
+- [ ] 子进程自杀前记录 `Master appears dead, initiating self-destruct`
+- [ ] 无残留僵尸进程
+
+### 边界情况
+
+- **网络分区**：UDP 广播可能被防火墙阻止，子进程会自杀（预期行为）
+- **主程序假死**：主程序未退出但停止广播，子进程同样会自杀（预期行为）
+- **时钟漂移**：使用 `Date.now()` 计算间隔，不受系统时钟调整影响
+
+## 测试文件规范
+
+### 目录与命名
+
+- 所有测试文件统一使用 `*.test.ts` 或 `*.test.tsx` 命名。
+- 基础能力层（Blocks）：
+  - `tests/modules/*.test.ts`
+  - `tests/unit/blocks/**/*.test.ts`
+- 编排层（Orchestration）：
+  - `tests/orchestration/*.test.ts`
+  - `tests/unit/orchestration/**/*.test.ts`
+- Agent 层：
+  - `tests/agents/*.test.ts`
+  - `tests/unit/agents/**/*.test.ts`
+- UI E2E（测试中心自动注册源）：
+  - `tests/e2e-ui/contracts/**/*.test.ts`
+  - `tests/e2e-ui/controls/elements/**/*.test.ts`
+  - `tests/e2e-ui/controls/navigation/**/*.test.ts`
+  - `tests/e2e-ui/controls/forms/**/*.test.ts`
+  - `tests/e2e-ui/flows/**/*.test.ts`
+  - `tests/e2e-ui/stability/**/*.test.ts`
+
+### 结构约定
+
+- `describe()` 作为测试套件（Suite）名称来源。
+- `it()` 作为测试用例（Case）名称来源。
+- 不在测试文件中执行副作用初始化（启动服务等），此类逻辑应由测试运行器负责。

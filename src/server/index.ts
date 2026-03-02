@@ -61,7 +61,7 @@ import {
 } from './modules/agent-runtime/index.js';
 import type { AgentDispatchRequest } from './modules/agent-runtime/types.js';
 import { registerAllRoutes } from './routes/index.js';
-import { ensureFingerLayout } from '../core/finger-paths.js';
+import { ensureFingerLayout, FINGER_PATHS } from '../core/finger-paths.js';
 import {
   ERROR_SAMPLE_DIR,
   BLOCKING_MESSAGE_TIMEOUT_MS,
@@ -309,7 +309,7 @@ registerAllRoutes(app, {
   sessionManager,
   runtime,
   eventBus: globalEventBus,
-  logsDir: join(process.cwd(), 'logs', 'sessions'),
+  logsDir: join(FINGER_PATHS.logs.dir, 'sessions'),
   resolveSessionLoopLogPath,
   hub,
   mailbox,
@@ -375,8 +375,9 @@ registerAllRoutes(app, {
 
 
 await ensureSingleInstance(PORT);
-const server = app.listen(PORT, () => {
-  console.log(`Finger server running at http://localhost:${PORT}`);
+const HOST = process.env.HOST || '0.0.0.0';
+const server = app.listen(PORT, HOST, () => {
+  console.log(`Finger server running at http://${HOST}:${PORT}`);
 });
 
 server.on('error', (err: NodeJS.ErrnoException) => {

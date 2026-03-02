@@ -9,13 +9,12 @@
   * - 最终结果
   */
  
- import fs from 'fs';
- import path from 'path';
- 
- const SESSION_DIR = '/Volumes/extension/code/finger/logs/sessions';
- 
- // Ensure directory exists
- fs.mkdirSync(SESSION_DIR, { recursive: true });
+import fs from 'fs';
+import path from 'path';
+import { ensureDir, ensureFingerLayout, FINGER_PATHS } from '../../core/finger-paths.js';
+
+ensureFingerLayout();
+const SESSION_DIR = ensureDir(path.join(FINGER_PATHS.logs.dir, 'sessions'));
  
  export interface SessionIteration {
    round: number;
