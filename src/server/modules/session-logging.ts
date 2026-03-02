@@ -10,8 +10,14 @@ export interface SessionLoggingDeps {
   errorSampleDir: string;
 }
 
+export interface LoopEventEmitter {
+  emitLoopEventToEventBus: (event: ChatCodexLoopEvent) => void;
+  setLoopEventEmitter: (emitter: (event: ChatCodexLoopEvent) => void) => void;
+}
+
 export function createSessionLoggingHelpers(deps: SessionLoggingDeps) {
   const { sessionWorkspaces, primaryOrchestratorAgentId, errorSampleDir } = deps;
+  let loopEventEmitter: (event: ChatCodexLoopEvent) => void = () => {};
 
   const resolveSessionLoopLogPath = (sessionId: string): string => {
     const dirs = sessionWorkspaces.resolveSessionWorkspaceDirsForMessage(sessionId);
@@ -47,9 +53,19 @@ export function createSessionLoggingHelpers(deps: SessionLoggingDeps) {
     }
   };
 
+  const emitLoopEventToEventBus = (event: ChatCodexLoopEvent): void => {
+    loopEventEmitter(event);
+  };
+
+  const setLoopEventEmitter = (emitter: (event: ChatCodexLoopEvent) => void): void => {
+    loopEventEmitter = emitter;
+  };
+
   return {
     resolveSessionLoopLogPath,
     appendSessionLoopLog,
     writeMessageErrorSample,
+    emitLoopEventToEventBus,
+    setLoopEventEmitter,
   };
 }
