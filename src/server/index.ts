@@ -53,6 +53,7 @@ import { registerFingerRoleModules } from './modules/finger-role-modules.js';
 import { createAgentConfigReloader } from './modules/agent-config-reloader.js';
 import { registerDefaultModuleRoutes } from './modules/module-registry-bootstrap.js';
 import { resolveRuntimeFlags, shouldUseMockChatCodexRunner } from './modules/server-flags.js';
+import { registerMockRuntimeModules } from './modules/mock-runtime-setup.js';
 import {
   dispatchTaskToAgent as dispatchTaskToAgentModule,
   registerAgentRuntimeTools,
@@ -291,41 +292,15 @@ applyOrchestrationConfig = createOrchestrationConfigApplier({
 const agentRuntimeTools = registerAgentRuntimeTools(getAgentRuntimeDeps());
 console.log(`[Server] Agent runtime tools loaded: ${agentRuntimeTools.join(', ')}`);
 
-const { mockRolePolicy, debugRuntimeModuleIds: DEBUG_RUNTIME_MODULE_IDS } = mockRuntimeKit;
-const createMockRuntimeRoleModule = mockRuntimeKit.createMockRuntimeRoleModule;
-const ensureDebugRuntimeModules = (enabled: boolean) => mockRuntimeKit.ensureDebugRuntimeModules(enabled, moduleRegistry);
-
-if (ENABLE_MOCK_EXECUTOR) {
-  const executorMock = createMockRuntimeRoleModule({
-    id: 'executor-mock',
-    name: 'Mock Executor',
-    role: 'executor',
-  });
-  await moduleRegistry.register(executorMock);
-  console.log('[Server] Mock Executor module registered: executor-mock');
-}
-
-if (ENABLE_MOCK_REVIEWER) {
-  const reviewerMock = createMockRuntimeRoleModule({
-    id: 'reviewer-mock',
-    name: 'Mock Reviewer',
-    role: 'reviewer',
-  });
-  await moduleRegistry.register(reviewerMock);
-  console.log('[Server] Mock Reviewer module registered: reviewer-mock');
-}
-
-if (ENABLE_MOCK_SEARCHER) {
-  const searcherMock = createMockRuntimeRoleModule({
-    id: 'searcher-mock',
-    name: 'Mock Searcher',
-    role: 'searcher',
-  });
-  await moduleRegistry.register(searcherMock);
-  console.log('[Server] Mock Searcher module registered: searcher-mock');
-}
-
-await ensureDebugRuntimeModules(runtimeDebugMode);
+const { mockRolePolicy, debugRuntimeModuleIds: DEBUG_RUNTIME_MODULE_IDS, ensureDebugRuntimeModules } = await registerMockRuntimeModules({
+  mockRuntimeKit,
+  moduleRegistry,
+  flags: {
+    enableMockExecutor: ENABLE_MOCK_EXECUTOR,
+    enableMockReviewer: ENABLE_MOCK_REVIEWER,
+    enableMockSearcher: ENABLE_MOCK_SEARCHER,
+  },
+});
 
 // 加载 autostart agents
 await loadAutostartAgents(moduleRegistry).catch(err => {
