@@ -14,8 +14,6 @@ import {
   resolveDefaultAgentConfigDir,
   type LoadedAgentConfig,
 } from '../runtime/agent-json-config.js';
-import { execSync } from 'child_process';
-import { createServer } from 'net';
 import { ModuleRegistry } from '../orchestration/module-registry.js';
 import { GatewayManager } from '../gateway/gateway-manager.js';
 // SessionManager accessed via shared-instances
@@ -55,6 +53,7 @@ import { createWebSocketServer } from './modules/websocket-server.js';
 import { createSessionWorkspaceManager } from './modules/session-workspaces.js';
 import { attachEventForwarding } from './modules/event-forwarding.js';
 import { createMockRuntimeKit, type ChatCodexRunnerController } from './modules/mock-runtime.js';
+import { ensureSingleInstance } from './modules/port-guard.js';
 import { dispatchTaskToAgent as dispatchTaskToAgentModule, registerAgentRuntimeTools } from './modules/agent-runtime/index.js';
 import type { AgentDispatchRequest, AgentRuntimeDeps } from './modules/agent-runtime/types.js';
 import { registerSessionRoutes } from './routes/session.js';
@@ -228,34 +227,6 @@ let emitLoopEventToEventBus: (event: ChatCodexLoopEvent) => void = () => {};
 
 function shouldUseMockChatCodexRunner(): boolean {
   return ENABLE_FULL_MOCK_MODE;
-}
-
-async function isPortInUse(port: number): Promise<boolean> {
-  return new Promise((resolve) => {
-    const server = createServer();
-    server.once('error', (err: NodeJS.ErrnoException) => resolve(err.code === 'EADDRINUSE'));
-    server.once('listening', () => {
-      server.close();
-      resolve(false);
-    });
-    server.listen(port);
-  });
-}
-
-function killProcessOnPort(port: number): void {
-  try {
-    execSync(`lsof -ti:${port} | xargs kill -9 2>/dev/null || true`, { stdio: 'ignore' });
-  } catch {
-    // noop
-  }
-}
-
-async function ensureSingleInstance(port: number): Promise<void> {
-  if (await isPortInUse(port)) {
-    console.log(`[Server] Port ${port} is in use, killing existing process...`);
-    killProcessOnPort(port);
-    await new Promise(resolve => setTimeout(resolve, 500));
-  }
 }
 
 const app = express();
