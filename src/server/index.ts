@@ -52,6 +52,7 @@ import { createOrchestrationConfigApplier } from './modules/orchestration-config
 import { createSessionLoggingHelpers } from './modules/session-logging.js';
 import { registerFingerRoleModules } from './modules/finger-role-modules.js';
 import { createAgentConfigReloader } from './modules/agent-config-reloader.js';
+import { registerDefaultModuleRoutes } from './modules/module-registry-bootstrap.js';
 import { resolveRuntimeFlags } from './modules/server-flags.js';
 import {
   dispatchTaskToAgent as dispatchTaskToAgentModule,
@@ -336,12 +337,7 @@ await gatewayManager.start().catch((err) => {
   console.error('[Server] Failed to start gateway manager:', err);
 });
 
-moduleRegistry.createRoute(() => true, 'echo-output', {
-  blocking: false,
-  priority: 0,
-  description: 'default route to echo-output'
-});
-console.log('[Server] Orchestration modules initialized: echo-input, echo-output, finger-general, finger-orchestrator');
+registerDefaultModuleRoutes(moduleRegistry);
 
 registerSystemRoutes(app, {
   registry,
