@@ -54,6 +54,7 @@ import { ensureSingleInstance } from './modules/port-guard.js';
 import { createOrchestrationConfigApplier } from './modules/orchestration-config-applier.js';
 import { createSessionLoggingHelpers } from './modules/session-logging.js';
 import { registerFingerRoleModules } from './modules/finger-role-modules.js';
+import { resolveRuntimeFlags } from './modules/server-flags.js';
 import { dispatchTaskToAgent as dispatchTaskToAgentModule, registerAgentRuntimeTools } from './modules/agent-runtime/index.js';
 import type { AgentDispatchRequest, AgentRuntimeDeps } from './modules/agent-runtime/types.js';
 import { registerSessionRoutes } from './routes/session.js';
@@ -125,46 +126,16 @@ let wsClients: WebSocketServerRuntime['wsClients'];
 let wss: WebSocketServerRuntime['wss'];
 let broadcast: WebSocketServerRuntime['broadcast'] = () => {};
 
-function resolveBoolFlag(name: string, fallback: boolean): boolean {
-  const raw = process.env[name];
-  if (typeof raw !== 'string' || raw.trim().length === 0) {
-    return fallback;
-  }
-  const normalized = raw.trim().toLowerCase();
-  if (normalized === '1' || normalized === 'true' || normalized === 'yes' || normalized === 'on') {
-    return true;
-  }
-  if (normalized === '0' || normalized === 'false' || normalized === 'no' || normalized === 'off') {
-    return false;
-  }
-  return fallback;
-}
-
-const ENABLE_FULL_MOCK_MODE = resolveBoolFlag('FINGER_FULL_MOCK_MODE', false);
-const ENABLE_RUNTIME_DEBUG_MODE = resolveBoolFlag('FINGER_RUNTIME_DEBUG_MODE', false);
-const ENABLE_LEGACY_CHAT_CODEX_ALIAS = resolveBoolFlag('FINGER_ENABLE_LEGACY_CHAT_CODEX_ALIAS', false);
-const ENABLE_MOCK_EXECUTOR = resolveBoolFlag(
-  'FINGER_ENABLE_MOCK_EXECUTOR',
-  false,
-);
-const ENABLE_MOCK_REVIEWER = resolveBoolFlag(
-  'FINGER_ENABLE_MOCK_REVIEWER',
-  false,
-);
-const ENABLE_MOCK_SEARCHER = resolveBoolFlag(
-  'FINGER_ENABLE_MOCK_SEARCHER',
-  false,
-);
-const USE_MOCK_EXECUTOR_LOOP = resolveBoolFlag('FINGER_MOCK_EXECUTOR_LOOP', ENABLE_FULL_MOCK_MODE);
-const USE_MOCK_REVIEWER_LOOP = resolveBoolFlag('FINGER_MOCK_REVIEWER_LOOP', ENABLE_FULL_MOCK_MODE);
-const USE_MOCK_SEARCHER_LOOP = resolveBoolFlag(
-  'FINGER_MOCK_SEARCHER_LOOP',
-  true,
-);
-let runtimeDebugMode = resolveBoolFlag(
-  'FINGER_RUNTIME_DEBUG_MODE',
-  false,
-);
+const runtimeFlags = resolveRuntimeFlags();
+const ENABLE_FULL_MOCK_MODE = runtimeFlags.enableFullMockMode;
+const ENABLE_LEGACY_CHAT_CODEX_ALIAS = runtimeFlags.enableLegacyChatCodexAlias;
+const ENABLE_MOCK_EXECUTOR = runtimeFlags.enableMockExecutor;
+const ENABLE_MOCK_REVIEWER = runtimeFlags.enableMockReviewer;
+const ENABLE_MOCK_SEARCHER = runtimeFlags.enableMockSearcher;
+const USE_MOCK_EXECUTOR_LOOP = runtimeFlags.useMockExecutorLoop;
+const USE_MOCK_REVIEWER_LOOP = runtimeFlags.useMockReviewerLoop;
+const USE_MOCK_SEARCHER_LOOP = runtimeFlags.useMockSearcherLoop;
+let runtimeDebugMode = runtimeFlags.runtimeDebugMode;
 
 ensureFingerLayout();
 
