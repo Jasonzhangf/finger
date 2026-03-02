@@ -58,7 +58,7 @@ import {
   registerAgentRuntimeTools,
   createGetAgentRuntimeDeps,
 } from './modules/agent-runtime/index.js';
-import type { AgentDispatchRequest, AgentRuntimeDeps } from './modules/agent-runtime/types.js';
+import type { AgentDispatchRequest } from './modules/agent-runtime/types.js';
 import { registerSessionRoutes } from './routes/session.js';
 import { registerSystemRoutes } from './routes/system.js';
 import { registerMessageRoutes } from './routes/message.js';
