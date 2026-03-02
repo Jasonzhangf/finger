@@ -24,6 +24,7 @@ import { registerToolCommand } from './tool-command.js';
 import { registerGatewayCommand } from './gateway-command.js';
 import { registerGatewayWorkerCommand } from './gateway-worker.js';
 import { registerMemoryLedgerCommand } from './memory-ledger.js';
+import { registerTestCommand } from './test-command.js';
 import { ensureFingerLayout } from '../core/finger-paths.js';
 
 const DEFAULT_HTTP_BASE_URL = process.env.FINGER_HTTP_URL || process.env.FINGER_HUB_URL || 'http://localhost:5521';
@@ -380,6 +381,7 @@ registerToolCommand(program);
 registerGatewayCommand(program);
 registerGatewayWorkerCommand(program);
 registerMemoryLedgerCommand(program);
+registerTestCommand(program);
 
 // ========== Status Command (via Mailbox) ==========
 program
