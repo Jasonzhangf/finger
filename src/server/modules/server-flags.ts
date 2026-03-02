@@ -10,6 +10,10 @@ export interface ServerRuntimeFlags {
   runtimeDebugMode: boolean;
 }
 
+export function shouldUseMockChatCodexRunner(flags: ServerRuntimeFlags): boolean {
+  return flags.enableFullMockMode;
+}
+
 function resolveBoolFlag(name: string, fallback: boolean): boolean {
   const raw = process.env[name];
   if (typeof raw !== 'string' || raw.trim().length === 0) {

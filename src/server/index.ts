@@ -39,7 +39,6 @@ import {
   FINGER_REVIEWER_ALLOWED_TOOLS,
   ProcessChatCodexRunner,
 } from '../agents/finger-general/finger-general-module.js';
-import type { ChatCodexLoopEvent } from '../agents/finger-general/finger-general-module.js';
 import { mailbox } from './mailbox.js';
 import { BdTools } from '../agents/shared/bd-tools.js';
 import { inputLockManager } from '../runtime/input-lock.js';
@@ -53,7 +52,7 @@ import { createSessionLoggingHelpers } from './modules/session-logging.js';
 import { registerFingerRoleModules } from './modules/finger-role-modules.js';
 import { createAgentConfigReloader } from './modules/agent-config-reloader.js';
 import { registerDefaultModuleRoutes } from './modules/module-registry-bootstrap.js';
-import { resolveRuntimeFlags } from './modules/server-flags.js';
+import { resolveRuntimeFlags, shouldUseMockChatCodexRunner } from './modules/server-flags.js';
 import {
   dispatchTaskToAgent as dispatchTaskToAgentModule,
   registerAgentRuntimeTools,
@@ -139,12 +138,6 @@ const LOCAL_IMAGE_MIME_BY_EXT: Record<string, string> = {
 };
 
 
-let emitLoopEventToEventBus: (event: ChatCodexLoopEvent) => void = () => {};
-
-function shouldUseMockChatCodexRunner(): boolean {
-  return ENABLE_FULL_MOCK_MODE;
-}
-
 const app = express();
 app.use(express.json({ limit: HTTP_BODY_LIMIT }));
 
@@ -164,7 +157,13 @@ const hub = sharedMessageHub;
 const moduleRegistry = new ModuleRegistry(hub);
 const sessionManager = sharedSessionManager;
 const sessionWorkspaceManager = createSessionWorkspaceManager(sessionManager);
-const { resolveSessionLoopLogPath, appendSessionLoopLog, writeMessageErrorSample } = createSessionLoggingHelpers({
+const {
+  resolveSessionLoopLogPath,
+  appendSessionLoopLog,
+  writeMessageErrorSample,
+  emitLoopEventToEventBus,
+  setLoopEventEmitter,
+} = createSessionLoggingHelpers({
   sessionWorkspaces: sessionWorkspaceManager,
   primaryOrchestratorAgentId: PRIMARY_ORCHESTRATOR_AGENT_ID,
   errorSampleDir: ERROR_SAMPLE_DIR,
@@ -243,7 +242,7 @@ const mockChatCodexRunner = mockRuntimeKit.createMockChatCodexRunner();
 const chatCodexRunner: ChatCodexRunnerController = mockRuntimeKit.createAdaptiveChatCodexRunner(
   processChatCodexRunner as unknown as ChatCodexRunnerController,
   mockChatCodexRunner,
-  shouldUseMockChatCodexRunner,
+  () => shouldUseMockChatCodexRunner(runtimeFlags),
 );
 await registerFingerRoleModules({
   moduleRegistry,
@@ -267,7 +266,7 @@ await registerFingerRoleModules({
   legacyAgentId: LEGACY_ORCHESTRATOR_AGENT_ID,
   legacyAllowedTools: FINGER_GENERAL_ALLOWED_TOOLS,
 });
-console.log(`[Server] Finger runner mode: ${shouldUseMockChatCodexRunner() ? 'mock' : 'real'} (profile/env aware)`);
+console.log(`[Server] Finger runner mode: ${shouldUseMockChatCodexRunner(runtimeFlags) ? 'mock' : 'real'} (profile/env aware)`);
 
 agentRuntimeBlock = new AgentRuntimeBlock('agent-runtime-1', {
   moduleRegistry,
@@ -422,7 +421,7 @@ registerResumableSessionRoutes(app, {
 registerOrchestrationRoutes(app, {
   applyOrchestrationConfig,
   primaryOrchestratorAgentId: PRIMARY_ORCHESTRATOR_AGENT_ID,
-  getChatCodexRunnerMode: () => (shouldUseMockChatCodexRunner() ? 'mock' : 'real'),
+  getChatCodexRunnerMode: () => (shouldUseMockChatCodexRunner(runtimeFlags) ? 'mock' : 'real'),
 });
 
 registerAgentConfigRoutes(app, {
@@ -528,4 +527,4 @@ const forwarding = attachEventForwarding({
   asString,
   generalAgentId: FINGER_GENERAL_AGENT_ID,
 });
-emitLoopEventToEventBus = forwarding.emitLoopEventToEventBus;
+setLoopEventEmitter(forwarding.emitLoopEventToEventBus);
