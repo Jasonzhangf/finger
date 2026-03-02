@@ -1,7 +1,6 @@
 import express from 'express';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
-import { appendFileSync, existsSync, mkdirSync } from 'fs';
 import { registry } from '../core/registry.js';
 import { globalEventBus } from '../runtime/event-bus.js';
 import { globalToolRegistry } from '../runtime/tool-registry.js';
@@ -54,6 +53,7 @@ import { attachEventForwarding } from './modules/event-forwarding.js';
 import { createMockRuntimeKit, type ChatCodexRunnerController } from './modules/mock-runtime.js';
 import { ensureSingleInstance } from './modules/port-guard.js';
 import { createOrchestrationConfigApplier } from './modules/orchestration-config-applier.js';
+import { createSessionLoggingHelpers } from './modules/session-logging.js';
 import { dispatchTaskToAgent as dispatchTaskToAgentModule, registerAgentRuntimeTools } from './modules/agent-runtime/index.js';
 import type { AgentDispatchRequest, AgentRuntimeDeps } from './modules/agent-runtime/types.js';
 import { registerSessionRoutes } from './routes/session.js';
@@ -72,7 +72,7 @@ import { registerModuleRegistryRoutes } from './routes/module-registry.js';
 import { registerPerformanceRoutes } from './routes/performance.js';
 import { registerWorkflowStateRoutes } from './routes/workflow-state.js';
 import { registerDebugRoutes } from './routes/debug.js';
-import { FINGER_PATHS, ensureDir, ensureFingerLayout } from '../core/finger-paths.js';
+import { FINGER_PATHS, ensureFingerLayout } from '../core/finger-paths.js';
 import { isObjectRecord } from './common/object.js';
 import {
   listKernelProviders,
@@ -178,39 +178,6 @@ const LOCAL_IMAGE_MIME_BY_EXT: Record<string, string> = {
   '.svg': 'image/svg+xml',
 };
 
-function resolveSessionLoopLogPath(sessionId: string): string {
-  const dirs = sessionWorkspaceManager.resolveSessionWorkspaceDirsForMessage(sessionId);
-  const diagnosticsDir = ensureDir(join(dirs.sessionWorkspaceRoot, 'diagnostics'));
-  return join(diagnosticsDir, `${PRIMARY_ORCHESTRATOR_AGENT_ID}.loop.jsonl`);
-}
-
-function appendSessionLoopLog(event: ChatCodexLoopEvent): void {
-  try {
-    const logPath = resolveSessionLoopLogPath(event.sessionId);
-    appendFileSync(logPath, `${JSON.stringify(event)}\n`, 'utf-8');
-  } catch (error) {
-    console.error('[Server] append session loop log failed:', error);
-  }
-}
-
-function writeMessageErrorSample(payload: Record<string, unknown>): void {
-  try {
-    if (!existsSync(ERROR_SAMPLE_DIR)) {
-      mkdirSync(ERROR_SAMPLE_DIR, { recursive: true });
-    }
-    const now = new Date();
-    const fileName = `message-error-${now.toISOString().replace(/[:.]/g, '-')}-${Math.random().toString(36).slice(2, 8)}.json`;
-    const filePath = join(ERROR_SAMPLE_DIR, fileName);
-    const content = {
-      timestamp: now.toISOString(),
-      localTime: now.toLocaleString(),
-      ...payload,
-    };
-    appendFileSync(filePath, `${JSON.stringify(content, null, 2)}\n`, 'utf-8');
-  } catch (error) {
-    console.error('[Server] write message error sample failed:', error);
-  }
-}
 
 let emitLoopEventToEventBus: (event: ChatCodexLoopEvent) => void = () => {};
 
@@ -237,6 +204,11 @@ const hub = sharedMessageHub;
 const moduleRegistry = new ModuleRegistry(hub);
 const sessionManager = sharedSessionManager;
 const sessionWorkspaceManager = createSessionWorkspaceManager(sessionManager);
+const { resolveSessionLoopLogPath, appendSessionLoopLog, writeMessageErrorSample } = createSessionLoggingHelpers({
+  sessionWorkspaces: sessionWorkspaceManager,
+  primaryOrchestratorAgentId: PRIMARY_ORCHESTRATOR_AGENT_ID,
+  errorSampleDir: ERROR_SAMPLE_DIR,
+});
 const workflowManager = sharedWorkflowManager;
 const runtime = new RuntimeFacade(globalEventBus, sessionManager, globalToolRegistry);
 const askManager = new AskManager(
