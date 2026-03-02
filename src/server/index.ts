@@ -8,10 +8,7 @@ import { RuntimeFacade } from '../runtime/runtime-facade.js';
 import { registerDefaultRuntimeTools } from '../runtime/default-tools.js';
 import {
   AGENT_JSON_SCHEMA,
-  applyAgentJsonConfigs,
-  loadAgentJsonConfigs,
   resolveDefaultAgentConfigDir,
-  type LoadedAgentConfig,
 } from '../runtime/agent-json-config.js';
 import { ModuleRegistry } from '../orchestration/module-registry.js';
 import { GatewayManager } from '../gateway/gateway-manager.js';
@@ -54,6 +51,7 @@ import { ensureSingleInstance } from './modules/port-guard.js';
 import { createOrchestrationConfigApplier } from './modules/orchestration-config-applier.js';
 import { createSessionLoggingHelpers } from './modules/session-logging.js';
 import { registerFingerRoleModules } from './modules/finger-role-modules.js';
+import { createAgentConfigReloader } from './modules/agent-config-reloader.js';
 import { resolveRuntimeFlags } from './modules/server-flags.js';
 import { dispatchTaskToAgent as dispatchTaskToAgentModule, registerAgentRuntimeTools } from './modules/agent-runtime/index.js';
 import type { AgentDispatchRequest, AgentRuntimeDeps } from './modules/agent-runtime/types.js';
@@ -180,8 +178,10 @@ const gatewayManager = new GatewayManager(hub, moduleRegistry, {
   daemonUrl: `http://127.0.0.1:${PORT}`,
 });
 let agentRuntimeBlock: AgentRuntimeBlock;
-let loadedAgentConfigs: LoadedAgentConfig[] = [];
-let loadedAgentConfigDir = resolveDefaultAgentConfigDir();
+const { reloadAgentJsonConfigs, getLoadedAgentConfigDir, getLoadedAgentConfigs } = createAgentConfigReloader({
+  runtime,
+  initialConfigDir: resolveDefaultAgentConfigDir(),
+});
 
 const getAgentRuntimeDeps = (): AgentRuntimeDeps => ({
   agentRuntimeBlock,
@@ -210,20 +210,6 @@ let applyOrchestrationConfig: (config: OrchestrationConfigV1) => Promise<{
   agents: string[];
   profileId: string;
 }>;
-
-function reloadAgentJsonConfigs(configDir = loadedAgentConfigDir): void {
-  const result = loadAgentJsonConfigs(configDir);
-  loadedAgentConfigDir = result.dir;
-  loadedAgentConfigs = result.loaded;
-  applyAgentJsonConfigs(runtime, result.loaded.map((item) => item.config));
-
-  console.log(`[Server] Agent JSON configs loaded: ${result.loaded.length} from ${result.dir}`);
-  if (result.errors.length > 0) {
-    for (const err of result.errors) {
-      console.error(`[Server] Agent config load error ${err.filePath}: ${err.error}`);
-    }
-  }
-}
 
 reloadAgentJsonConfigs();
 const activeKernelProviderId = resolveActiveKernelProviderId();
@@ -289,7 +275,7 @@ agentRuntimeBlock = new AgentRuntimeBlock('agent-runtime-1', {
   sessionManager,
   chatCodexRunner,
   resourcePool,
-  getLoadedAgentConfigs: () => loadedAgentConfigs,
+  getLoadedAgentConfigs,
   primaryOrchestratorAgentId: PRIMARY_ORCHESTRATOR_AGENT_ID,
 });
 await agentRuntimeBlock.initialize();
@@ -441,8 +427,8 @@ registerOrchestrationRoutes(app, {
 });
 
 registerAgentConfigRoutes(app, {
-  getLoadedAgentConfigDir: () => loadedAgentConfigDir,
-  getLoadedAgentConfigs: () => loadedAgentConfigs,
+  getLoadedAgentConfigDir,
+  getLoadedAgentConfigs,
   agentJsonSchema: AGENT_JSON_SCHEMA,
   reloadAgentJsonConfigs,
 });
