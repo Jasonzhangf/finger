@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { useWebSocket } from './useWebSocket.js';
 
 type AgentRuntimeStatus =
   | 'idle'
@@ -10,6 +11,7 @@ type AgentRuntimeStatus =
   | 'completed'
   | 'failed'
   | 'interrupted';
+type AgentRuntimeSource = 'agent-json' | 'runtime-config' | 'module' | 'deployment';
 type AgentType = 'executor' | 'reviewer' | 'orchestrator' | 'searcher';
 type QuotaSource = 'workflow' | 'project' | 'default' | 'deployment';
 
@@ -58,6 +60,7 @@ export interface AgentRuntimeInstance {
   status: AgentRuntimeStatus;
   sessionId?: string;
   workflowId?: string;
+  source?: AgentRuntimeSource;
   totalDeployments: number;
 }
 
@@ -334,6 +337,12 @@ function parseRuntimeInstances(raw: unknown): AgentRuntimeInstance[] {
     const name = typeof item.name === 'string' && item.name.trim().length > 0 ? item.name.trim() : id;
     const type = parseAgentType(item.type);
     const status = parseAgentStatus(item.status);
+    const source = item.source === 'agent-json'
+      || item.source === 'runtime-config'
+      || item.source === 'module'
+      || item.source === 'deployment'
+      ? item.source
+      : undefined;
     const sessionId = typeof item.sessionId === 'string' && item.sessionId.trim().length > 0 ? item.sessionId.trim() : undefined;
     const workflowId = typeof item.workflowId === 'string' && item.workflowId.trim().length > 0 ? item.workflowId.trim() : undefined;
     parsed.push({
@@ -344,6 +353,7 @@ function parseRuntimeInstances(raw: unknown): AgentRuntimeInstance[] {
       status,
       ...(sessionId ? { sessionId } : {}),
       ...(workflowId ? { workflowId } : {}),
+      ...(source ? { source } : {}),
       totalDeployments: 1,
     });
   }
@@ -818,9 +828,15 @@ export function useAgentRuntimePanel(): UseAgentRuntimePanelResult {
   const [debugMode, setDebugModeState] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const refreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const refreshInFlightRef = useRef(false);
 
-  const refresh = useCallback(async () => {
-    setIsLoading(true);
+  const refresh = useCallback(async (opts?: { silent?: boolean }) => {
+    if (refreshInFlightRef.current) return;
+    refreshInFlightRef.current = true;
+    if (!opts?.silent) {
+      setIsLoading(true);
+    }
     setError(null);
     try {
       const [runtimeResponse, catalogResponse, debugResponse, debugModeResponse, orchestrationResponse] = await Promise.all([
@@ -856,9 +872,30 @@ export function useAgentRuntimePanel(): UseAgentRuntimePanelResult {
     } catch (fetchError) {
       setError(fetchError instanceof Error ? fetchError.message : '加载 Agent 面板数据失败');
     } finally {
-      setIsLoading(false);
+      if (!opts?.silent) {
+        setIsLoading(false);
+      }
+      refreshInFlightRef.current = false;
     }
   }, []);
+
+  const scheduleRefresh = useCallback(() => {
+    if (refreshTimerRef.current) return;
+    refreshTimerRef.current = window.setTimeout(() => {
+      refreshTimerRef.current = null;
+      void refresh({ silent: true });
+    }, 200);
+  }, [refresh]);
+
+  const handleWsMessage = useCallback((msg: { type?: string }) => {
+    const type = typeof msg.type === 'string' ? msg.type : '';
+    if (!type) return;
+    if (type.startsWith('agent_runtime_')) {
+      scheduleRefresh();
+    }
+  }, [scheduleRefresh]);
+
+  useWebSocket(handleWsMessage);
 
   const setDebugMode = useCallback(async (enabled: boolean): Promise<{ ok: boolean; enabled: boolean; error?: string }> => {
     try {
@@ -1023,10 +1060,12 @@ export function useAgentRuntimePanel(): UseAgentRuntimePanelResult {
 
   useEffect(() => {
     void refresh();
-    const timer = window.setInterval(() => {
-      void refresh();
-    }, 5000);
-    return () => window.clearInterval(timer);
+    return () => {
+      if (refreshTimerRef.current) {
+        clearTimeout(refreshTimerRef.current);
+        refreshTimerRef.current = null;
+      }
+    };
   }, [refresh]);
 
   return {

@@ -4,6 +4,7 @@
 
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { useWebSocket } from './useWebSocket.js';
+import { isPanelFrozen } from '../utils/panel-freeze.js';
 
 export interface ResourceInstance {
   id: string;
@@ -48,6 +49,7 @@ export function useResourcePool(): UseResourcePoolReturn {
   const [isLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const resourcesRef = useRef<ResourceInstance[]>([]);
+  const refreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
     resourcesRef.current = resources;
@@ -78,31 +80,50 @@ export function useResourcePool(): UseResourcePoolReturn {
     }
   }, []);
 
+  const canvasFrozen = isPanelFrozen('canvas');
+
   useEffect(() => {
-    fetchResources();
-    const interval = setInterval(fetchResources, 5000);
-    return () => clearInterval(interval);
-  }, [fetchResources]);
+    if (canvasFrozen) return undefined;
+    void fetchResources();
+    return () => {
+      if (refreshTimerRef.current) {
+        clearTimeout(refreshTimerRef.current);
+        refreshTimerRef.current = null;
+      }
+    };
+  }, [canvasFrozen, fetchResources]);
+
+  const scheduleRefresh = useCallback(() => {
+    if (canvasFrozen) return;
+    if (refreshTimerRef.current) return;
+    refreshTimerRef.current = setTimeout(() => {
+      refreshTimerRef.current = null;
+      void fetchResources();
+    }, 200);
+  }, [canvasFrozen, fetchResources]);
 
   const handleWebSocketMessage = useCallback((msg: { type: string; payload?: unknown }) => {
-    if (msg.type === 'resource_update') {
-      const payload = msg.payload as { resourceId: string; status: string; sessionId?: string; workflowId?: string };
-      setResources((prev) =>
-        prev.map((r) =>
-          r.id === payload.resourceId
-            ? {
-                ...r,
-                status: payload.status as ResourceInstance['status'],
-                currentSessionId: payload.sessionId,
-                currentWorkflowId: payload.workflowId,
-              }
-            : r
-        )
-      );
+    if (msg.type !== 'resource_update') return;
+    const payload = msg.payload as { resourceId: string; status: string; sessionId?: string; workflowId?: string };
+    let matched = false;
+    setResources((prev) =>
+      prev.map((r) => {
+        if (r.id !== payload.resourceId) return r;
+        matched = true;
+        return {
+          ...r,
+          status: payload.status as ResourceInstance['status'],
+          currentSessionId: payload.sessionId,
+          currentWorkflowId: payload.workflowId,
+        };
+      })
+    );
+    if (!matched) {
+      scheduleRefresh();
     }
-  }, []);
+  }, [scheduleRefresh]);
 
-  useWebSocket(handleWebSocketMessage);
+  useWebSocket(handleWebSocketMessage, { disabled: canvasFrozen });
 
   const deployResource = useCallback(async (resourceId: string, sessionId: string, workflowId: string): Promise<boolean> => {
     try {

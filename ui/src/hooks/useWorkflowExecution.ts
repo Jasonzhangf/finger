@@ -80,7 +80,11 @@ import type {
   UseWorkflowExecutionReturn,
 } from './useWorkflowExecution.types.js';
 
-export function useWorkflowExecution(sessionId: string): UseWorkflowExecutionReturn {
+export function useWorkflowExecution(
+  sessionId: string,
+  projectPath?: string,
+  options?: { disableRealtime?: boolean; disablePolling?: boolean },
+): UseWorkflowExecutionReturn {
   const isSessionBoundWsMessage = useCallback((type: string): boolean => SESSION_BOUND_WS_TYPES.has(type), []);
   const [workflow, setWorkflow] = useState<WorkflowInfo | null>(null);
   const [executionState, setExecutionState] = useState<WorkflowExecutionState | null>(null);
@@ -114,7 +118,8 @@ export function useWorkflowExecution(sessionId: string): UseWorkflowExecutionRet
     return normalized === 'true' || normalized === '1' || normalized === 'yes';
   });
   const [debugSnapshots, setDebugSnapshots] = useState<DebugSnapshotItem[]>([]);
-  const [orchestratorRuntimeMode, setOrchestratorRuntimeMode] = useState<OrchestratorRuntimeModeState | null>(null);
+ const [orchestratorRuntimeMode, setOrchestratorRuntimeMode] = useState<OrchestratorRuntimeModeState | null>(null);
+  const [requestDetailsEnabled, setRequestDetailsEnabled] = useState<boolean>(false);
   const executionStateRef = useRef<WorkflowExecutionState | null>(null);
   const runtimeEventsRef = useRef<RuntimeEvent[]>([]);
   const inFlightSendAbortRef = useRef<AbortController | null>(null);
@@ -122,6 +127,9 @@ export function useWorkflowExecution(sessionId: string): UseWorkflowExecutionRet
   const deferredWsEventsRef = useRef<WsMessage[]>([]);
   const sessionRefreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const loadSessionMessagesRef = useRef<(() => void) | null>(null);
+  const runtimeRefreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const refreshRuntimeStateRef = useRef<(() => void) | null>(null);
+  const runtimeSnapshotRef = useRef<string | null>(null);
 
   const setDebugSnapshotsEnabled = useCallback((enabled: boolean) => {
     setDebugSnapshotsEnabledState(enabled);
@@ -166,17 +174,17 @@ export function useWorkflowExecution(sessionId: string): UseWorkflowExecutionRet
     directTest: boolean;
   } => {
     const selected = typeof selectedAgentId === 'string' ? selectedAgentId.trim() : '';
-    const directTest = ENABLE_UI_DIRECT_AGENT_TEST_ROUTE
+    const allowDirect = ENABLE_UI_DIRECT_AGENT_TEST_ROUTE
       && selected.length > 0
       && selected !== DEFAULT_CHAT_AGENT_ID
       && selected !== CHAT_PANEL_TARGET;
     return {
-      target: directTest ? selected : CHAT_PANEL_TARGET,
+      target: allowDirect ? selected : CHAT_PANEL_TARGET,
       headers: {
         'Content-Type': 'application/json',
-        ...(directTest ? { 'x-finger-route-mode': 'test' } : {}),
+        ...(allowDirect ? { 'x-finger-route-mode': 'test' } : {}),
       },
-      directTest,
+      directTest: allowDirect,
     };
   }, [selectedAgentId]);
 
@@ -197,6 +205,18 @@ export function useWorkflowExecution(sessionId: string): UseWorkflowExecutionRet
       loadSessionMessagesRef.current?.();
     }, 300);
   }, [sessionId]);
+
+  const scheduleRuntimeRefresh = useCallback(() => {
+    if (options?.disablePolling) return;
+    if (!sessionId) return;
+    if (runtimeRefreshTimerRef.current) return;
+    runtimeRefreshTimerRef.current = setTimeout(() => {
+      runtimeRefreshTimerRef.current = null;
+      refreshRuntimeStateRef.current?.();
+    }, 250);
+  }, [options?.disablePolling, sessionId]);
+
+
 
   const processWebSocketMessage = useCallback((msg: WsMessage) => {
     const payload = isRecord(msg.payload) ? msg.payload : {};
@@ -613,10 +633,28 @@ export function useWorkflowExecution(sessionId: string): UseWorkflowExecutionRet
         return;
       }
     }
+    const refreshTypes = new Set([
+      'workflow_update',
+      'task_update',
+      'task_started',
+      'task_completed',
+      'task_failed',
+      'phase_transition',
+      'workflow_progress',
+      'agent_update',
+      'agent_runtime_dispatch',
+      'agent_runtime_control',
+      'agent_runtime_status',
+    ]);
+    if (refreshTypes.has(msg.type) && (!messageSessionId || messageSessionId === sessionId)) {
+      scheduleRuntimeRefresh();
+    }
     processWebSocketMessage(msg);
-  }, [processWebSocketMessage, sessionId]);
+  }, [isSessionBoundWsMessage, processWebSocketMessage, scheduleRuntimeRefresh, sessionId]);
 
-  const { isConnected, getClientId, send: sendWs } = useWebSocket(handleWebSocketMessage);
+  const { isConnected, getClientId, send: sendWs } = useWebSocket(handleWebSocketMessage, {
+    disabled: options?.disableRealtime === true,
+  });
 
   // 输入锁状态
   const [inputLockState, setInputLockState] = useState<InputLockState | null>(null);
@@ -632,23 +670,26 @@ export function useWorkflowExecution(sessionId: string): UseWorkflowExecutionRet
   }, []);
 
   const startLockHeartbeat = useCallback(() => {
+    if (options?.disableRealtime) return;
     if (!sessionId || !clientId) return;
     stopLockHeartbeat();
     lockHeartbeatTimerRef.current = setInterval(() => {
       sendWs({ type: 'input_lock_heartbeat', sessionId });
     }, 8000);
-  }, [clientId, sendWs, sessionId, stopLockHeartbeat]);
+  }, [clientId, options?.disableRealtime, sendWs, sessionId, stopLockHeartbeat]);
 
   // 更新 clientId
   useEffect(() => {
+    if (options?.disableRealtime) return;
     const id = getClientId();
     if (id && id !== clientId) {
       setClientId(id);
     }
-  }, [getClientId, clientId, isConnected]);
+  }, [options?.disableRealtime, getClientId, clientId, isConnected]);
 
   // 查询初始锁状态
   useEffect(() => {
+    if (options?.disableRealtime) return;
     if (!sessionId || !isConnected) return;
     fetch(`/api/v1/input-lock/${sessionId}`)
       .then((res) => res.json())
@@ -658,16 +699,20 @@ export function useWorkflowExecution(sessionId: string): UseWorkflowExecutionRet
         }
       })
       .catch(() => {});
-  }, [sessionId, isConnected]);
+  }, [options?.disableRealtime, sessionId, isConnected]);
 
   // 锁状态变化时自动启动/停止心跳
   useEffect(() => {
+    if (options?.disableRealtime) {
+      stopLockHeartbeat();
+      return;
+    }
     if (inputLockState?.lockedBy && clientId && inputLockState.lockedBy === clientId) {
       startLockHeartbeat();
       return;
     }
     stopLockHeartbeat();
-  }, [clientId, inputLockState?.lockedBy, startLockHeartbeat, stopLockHeartbeat]);
+  }, [clientId, inputLockState?.lockedBy, options?.disableRealtime, startLockHeartbeat, stopLockHeartbeat]);
 
   useEffect(() => {
     return () => stopLockHeartbeat();
@@ -782,6 +827,10 @@ export function useWorkflowExecution(sessionId: string): UseWorkflowExecutionRet
       if (sessionRefreshTimerRef.current) {
         clearTimeout(sessionRefreshTimerRef.current);
         sessionRefreshTimerRef.current = null;
+      }
+      if (runtimeRefreshTimerRef.current) {
+        clearTimeout(runtimeRefreshTimerRef.current);
+        runtimeRefreshTimerRef.current = null;
       }
     };
   }, [sessionId]);
@@ -957,15 +1006,26 @@ export function useWorkflowExecution(sessionId: string): UseWorkflowExecutionRet
       const logsPayload = (await logsRes.json()) as { success: boolean; logs: SessionLog[] };
       const allLogs = logsPayload.success ? logsPayload.logs : [];
       const scopedLogs = allLogs.filter((log) => log.sessionId === sessionId);
-      setLogs(scopedLogs);
 
       const preferredWorkflowId = executionStateRef.current?.workflowId || workflow?.id;
       const selectedWorkflow = pickWorkflowForSession(workflows, sessionId, preferredWorkflowId);
       
-      // Always set workflow state, even if empty
-      setWorkflow(selectedWorkflow);
+      const sortedLogsSignature = scopedLogs
+        .slice()
+        .sort((a, b) => a.agentId.localeCompare(b.agentId))
+        .map((log) => (
+          `${log.agentId}|${log.startTime}|${log.endTime ?? ''}|${log.iterations.length}|${log.finalError ?? ''}|${log.success ? '1' : '0'}`
+        ))
+        .join('::');
       
       if (!selectedWorkflow) {
+        const emptySignature = `session:${sessionId}|workflow:none|logs:${sortedLogsSignature}`;
+        if (runtimeSnapshotRef.current === emptySignature) {
+          return;
+        }
+        runtimeSnapshotRef.current = emptySignature;
+        setLogs(scopedLogs);
+        setWorkflow(selectedWorkflow);
         // No workflow found - show empty state with default orchestrator agent
         setExecutionState({
           workflowId: `empty-${sessionId}`,
@@ -997,6 +1057,21 @@ export function useWorkflowExecution(sessionId: string): UseWorkflowExecutionRet
 
       const tasksRes = await fetch(`/api/v1/workflows/${selectedWorkflow.id}/tasks`);
       const taskList = tasksRes.ok ? ((await tasksRes.json()) as TaskNode[]) : [];
+      const sortedTasksSignature = taskList
+        .slice()
+        .sort((a, b) => a.id.localeCompare(b.id))
+        .map((task) => (
+          `${task.id}|${task.status}|${task.assignee ?? ''}|${task.startedAt ?? ''}|${task.completedAt ?? ''}|${task.fsmState ?? ''}`
+        ))
+        .join('::');
+      const workflowSignature = `workflow:${selectedWorkflow.id}|${selectedWorkflow.status}|${selectedWorkflow.fsmState ?? ''}|${selectedWorkflow.updatedAt}|${selectedWorkflow.taskCount}|${selectedWorkflow.completedTasks}|${selectedWorkflow.failedTasks}`;
+      const combinedSignature = `session:${sessionId}|${workflowSignature}|tasks:${sortedTasksSignature}|logs:${sortedLogsSignature}`;
+      if (runtimeSnapshotRef.current === combinedSignature) {
+        return;
+      }
+      runtimeSnapshotRef.current = combinedSignature;
+      setLogs(scopedLogs);
+      setWorkflow(selectedWorkflow);
 
       const latestByAgent = new Map<string, SessionLog>();
       for (const log of scopedLogs) {
@@ -1087,20 +1162,49 @@ export function useWorkflowExecution(sessionId: string): UseWorkflowExecutionRet
   }, [sessionId, workflow?.id]);
 
   useEffect(() => {
-    void refreshRuntimeState();
-    const timer = setInterval(() => {
+    refreshRuntimeStateRef.current = () => {
       void refreshRuntimeState();
-    }, 3000);
-    return () => clearInterval(timer);
+    };
+    return () => {
+      refreshRuntimeStateRef.current = null;
+    };
   }, [refreshRuntimeState]);
 
+
   useEffect(() => {
+    if (options?.disablePolling) return undefined;
+    void refreshRuntimeState();
+    return undefined;
+  }, [options?.disablePolling, refreshRuntimeState]);
+
+  const refreshRuntimePaths = useCallback(async () => {
+    try {
+      const url = sessionId ? `/api/v1/runtime/paths?sessionId=${encodeURIComponent(sessionId)}` : '/api/v1/runtime/paths';
+      const res = await fetch(url);
+      if (!res.ok) return;
+      const data = await res.json();
+      setRuntimeOverview((prev) => ({
+        ...prev,
+        workingProjectPath: typeof data.workingProjectPath === 'string' ? data.workingProjectPath : prev.workingProjectPath,
+        sourceProjectPath: typeof data.sourceProjectPath === 'string' ? data.sourceProjectPath : prev.sourceProjectPath,
+        sessionPath: typeof data.sessionPath === 'string' ? data.sessionPath : prev.sessionPath,
+        updatedAt: new Date().toISOString(),
+      }));
+    } catch {
+      // ignore
+    }
+  }, []);
+
+  useEffect(() => {
+    if (options?.disablePolling) return;
+    void refreshRuntimePaths();
+  }, [options?.disablePolling, refreshRuntimePaths, sessionId, projectPath]);
+
+  useEffect(() => {
+    if (options?.disablePolling) return undefined;
     void refreshOrchestratorRuntimeMode();
-    const timer = setInterval(() => {
-      void refreshOrchestratorRuntimeMode();
-    }, 10_000);
-    return () => clearInterval(timer);
-  }, [refreshOrchestratorRuntimeMode]);
+    return undefined;
+  }, [options?.disablePolling, refreshOrchestratorRuntimeMode]);
 
   const startWorkflow = useCallback(
     async (userTask: string) => {
@@ -1249,7 +1353,8 @@ export function useWorkflowExecution(sessionId: string): UseWorkflowExecutionRet
     const files = inputPayload.files ?? [];
     const review = normalizeReviewSettings(inputPayload.review);
     const planModeEnabled = inputPayload.planModeEnabled === true;
-    const dryrunEnabled = inputPayload.dryrun === true;
+   const dryrunEnabled = inputPayload.dryrun === true;
+    const reqDetails = requestDetailsEnabled === true;
     if (!text && images.length === 0 && files.length === 0) return;
       if (text === '/compact' && images.length === 0 && files.length === 0) {
       try {
@@ -1474,13 +1579,33 @@ export function useWorkflowExecution(sessionId: string): UseWorkflowExecutionRet
               summary: `attempt ${attempt} failed: invalid response body`,
               payload: responseData,
             });
-            throw new Error(responseData?.error || 'Empty response from daemon');
-          }
-          pushDebugSnapshot({
-            stage: 'request_ok',
-            requestId,
-            attempt,
-            summary: `attempt ${attempt} succeeded`,
+           throw new Error(responseData?.error || 'Empty response from daemon');
+         }
+        if (reqDetails) {
+          const details = {
+            target: route.target,
+            roleProfile: '',
+            input: requestBody.message,
+            tools: requestBody.message.tools ?? [],
+            contextLedger: null,
+          };
+           await fetch(`/api/v1/sessions/${encodeURIComponent(sessionId)}/messages/append`, {
+             method: 'POST',
+             headers: { 'Content-Type': 'application/json' },
+             body: JSON.stringify({
+               role: 'system',
+               content: 'Request Details',
+               metadata: {
+                 requestDetails: details,
+               },
+             }),
+           });
+         }
+         pushDebugSnapshot({
+           stage: 'request_ok',
+           requestId,
+           attempt,
+           summary: `attempt ${attempt} succeeded`,
             payload: {
               status: res.status,
               hasResult: responseData?.result !== undefined,
@@ -1820,7 +1945,9 @@ const contextEditableEventIds = buildContextEditableEventIds(
    debugSnapshotsEnabled,
    setDebugSnapshotsEnabled,
    debugSnapshots,
-   clearDebugSnapshots,
-   orchestratorRuntimeMode,
- };
+  clearDebugSnapshots,
+  orchestratorRuntimeMode,
+  requestDetailsEnabled,
+  setRequestDetailsEnabled,
+};
 }

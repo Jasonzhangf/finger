@@ -1,4 +1,5 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useCallback } from 'react';
+import { useWebSocket } from '../../hooks/useWebSocket.js';
 import './PerformanceCard.css';
 
 interface PerformanceMetrics {
@@ -31,49 +32,21 @@ interface PerformanceMetrics {
   };
 }
 
-export const PerformanceCard: React.FC = () => {
+export const PerformanceCard: React.FC<{ paused?: boolean }> = ({ paused = false }) => {
   const [metrics, setMetrics] = useState<PerformanceMetrics | null>(null);
-
-  useEffect(() => {
-    // Fetch initial metrics
-    fetchMetrics();
-
-    // Poll every 5 seconds
-    const interval = setInterval(fetchMetrics, 5000);
-
-    // Listen for WebSocket performance updates
-    const handlePerformanceMetrics = (event: MessageEvent) => {
-      try {
-        const data = JSON.parse(event.data);
-        if (data.type === 'performance_metrics') {
-          setMetrics(data.payload);
-        }
-      } catch {
-        // Ignore parse errors
-      }
-    };
-
-    // Connect to WebSocket for real-time updates
-    const ws = new WebSocket(`ws://${window.location.hostname}:5522`);
-    ws.onmessage = handlePerformanceMetrics;
-
-    return () => {
-      clearInterval(interval);
-      ws.close();
-    };
-  }, []);
-
-  const fetchMetrics = async () => {
-    try {
-      const res = await fetch('/api/v1/performance');
-      const data = await res.json();
-      if (data.success && data.metrics) {
-        setMetrics(data.metrics);
-      }
-    } catch {
-      // Ignore fetch errors
+  const handleWebSocketMessage = useCallback((msg: { type: string; payload?: unknown }) => {
+    if (paused) return;
+    if (msg.type !== 'performance_metrics') return;
+    const payload = msg.payload as Record<string, unknown> | null;
+    const next = payload && typeof payload === 'object' && payload !== null && 'metrics' in payload
+      ? (payload as { metrics?: PerformanceMetrics }).metrics
+      : (payload as PerformanceMetrics | null);
+    if (next) {
+      setMetrics(next);
     }
-  };
+  }, [paused]);
+
+  useWebSocket(handleWebSocketMessage);
 
   const getStatusClass = (value: number, thresholds: { warning: number; critical: number }) => {
     if (value >= thresholds.critical) return 'critical';
@@ -105,7 +78,7 @@ export const PerformanceCard: React.FC = () => {
           <span className="performance-indicator"></span>
           Performance
         </div>
-        <div className="performance-bar-loading">Loading...</div>
+        <div className="performance-bar-loading">Waiting for metrics...</div>
       </div>
     );
   }

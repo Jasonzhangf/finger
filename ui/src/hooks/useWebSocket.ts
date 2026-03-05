@@ -2,18 +2,23 @@ import { useCallback, useRef, useState, useEffect } from 'react';
 import { getWebSocket } from '../api/websocket.js';
 import type { WsMessage } from '../api/types.js';
 
-export function useWebSocket(onMessage: (msg: WsMessage) => void) {
+export function useWebSocket(onMessage: (msg: WsMessage) => void, options?: { disabled?: boolean }) {
  const wsRef = useRef(getWebSocket());
  const [isConnected, setIsConnected] = useState(false);
+ const disabled = options?.disabled === true;
 
  useEffect(() => {
    const ws = wsRef.current;
-    
+
+   if (disabled) {
+     setIsConnected(ws.isConnected());
+     return;
+   }
+
    const connect = async () => {
      try {
        await ws.connect();
        setIsConnected(true);
-       console.log('[useWebSocket] connected, isConnected set to true');
      } catch (e) {
        console.error('WebSocket connect error:', e);
        setIsConnected(false);
@@ -24,7 +29,6 @@ export function useWebSocket(onMessage: (msg: WsMessage) => void) {
      connect();
    } else {
      setIsConnected(true);
-     console.log('[useWebSocket] already connected, isConnected set to true');
    }
 
    const unsubscribe = ws.onMessage((msg) => {
@@ -34,7 +38,7 @@ export function useWebSocket(onMessage: (msg: WsMessage) => void) {
    return () => {
      unsubscribe();
    };
- }, [onMessage]);
+ }, [disabled, onMessage]);
 
  return {
    isConnected,

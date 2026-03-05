@@ -3,6 +3,7 @@ import {
   listSessions,
   createSession,
   deleteSession,
+  getSession,
   setCurrentSession,
   renameSession,
 } from '../api/client.js';
@@ -28,6 +29,7 @@ export function useSessions(): UseSessionsReturn {
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const manualSelectionRef = useRef<string | null>(null);
+  const currentSessionRef = useRef<SessionInfo | null>(null);
 
   const sortByRecent = useCallback((items: SessionInfo[]) => {
     return items.slice().sort(
@@ -50,7 +52,11 @@ export function useSessions(): UseSessionsReturn {
       const data = await listSessions();
       setSessions(data);
       if (data.length === 0) {
-        setCurrent(null);
+        if (currentSessionRef.current?.sessionTier === 'runtime') {
+          setCurrent(currentSessionRef.current);
+        } else {
+          setCurrent(null);
+        }
         return;
       }
 
@@ -63,6 +69,24 @@ export function useSessions(): UseSessionsReturn {
           if (typeof window !== 'undefined' && window.localStorage) {
             window.localStorage.setItem(LAST_SESSION_STORAGE_KEY, matched.id);
           }
+          return;
+        }
+        try {
+          const runtimeSession = await getSession(manualSelection);
+          setCurrent(runtimeSession);
+          if (typeof window !== 'undefined' && window.localStorage) {
+            window.localStorage.setItem(LAST_SESSION_STORAGE_KEY, runtimeSession.id);
+          }
+          return;
+        } catch {
+          // fall through to default selection
+        }
+      }
+
+      if (currentSessionRef.current?.sessionTier === 'runtime') {
+        const match = data.find((item) => item.id === currentSessionRef.current?.id);
+        if (!match) {
+          setCurrent(currentSessionRef.current);
           return;
         }
       }
@@ -124,6 +148,10 @@ export function useSessions(): UseSessionsReturn {
   useEffect(() => {
     refresh();
   }, [refresh]);
+
+  useEffect(() => {
+    currentSessionRef.current = currentSession;
+  }, [currentSession]);
 
   return {
     sessions,

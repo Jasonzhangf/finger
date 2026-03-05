@@ -1,4 +1,4 @@
-import React, { useMemo, useEffect, useState, useCallback } from 'react';
+import React, { useMemo, useEffect, useState, useCallback, useRef } from 'react';
 import { PerformanceCard } from '../PerformanceCard/PerformanceCard.js';
 import { ChatInterface } from '../ChatInterface/ChatInterface.js';
 import type { InputCapability } from '../ChatInterface/ChatInterface.js';
@@ -26,6 +26,31 @@ interface ResumeCheckResult {
 
 const CHAT_GATEWAY_ID = 'finger-orchestrator-gateway';
 const WORKDIR_STORAGE_KEY = 'finger-ui-workdir';
+const PANEL_FREEZE_STORAGE_KEY = 'finger-ui-panel-freeze';
+const DISABLE_ANIMATIONS_STORAGE_KEY = 'finger-ui-disable-animations';
+const UI_DISABLE_STORAGE_KEY = 'finger-ui-disable-flags';
+
+type PanelFreezeKey = 'left' | 'canvas' | 'right' | 'bottom' | 'performance';
+type PanelFreezeState = Record<PanelFreezeKey, boolean>;
+type UiDisableKey = 'realtime' | 'polling' | 'canvas' | 'right' | 'bottom' | 'performance';
+type UiDisableState = Record<UiDisableKey, boolean>;
+
+const DEFAULT_PANEL_FREEZE: PanelFreezeState = {
+  left: false,
+  canvas: false,
+  right: false,
+  bottom: false,
+  performance: false,
+};
+
+const DEFAULT_UI_DISABLE: UiDisableState = {
+  realtime: false,
+  polling: false,
+  canvas: false,
+  right: false,
+  bottom: false,
+  performance: false,
+};
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null;
@@ -59,6 +84,54 @@ function resolveChatInputCapability(modules: Array<{ id: string; metadata?: Reco
   };
 }
 
+function readPanelFreezeState(): PanelFreezeState {
+  try {
+    const raw = window.localStorage.getItem(PANEL_FREEZE_STORAGE_KEY);
+    if (!raw) return { ...DEFAULT_PANEL_FREEZE };
+    const parsed = JSON.parse(raw) as Partial<PanelFreezeState>;
+    return {
+      left: parsed.left === true,
+      canvas: parsed.canvas === true,
+      right: parsed.right === true,
+      bottom: parsed.bottom === true,
+      performance: parsed.performance === true,
+    };
+  } catch {
+    return { ...DEFAULT_PANEL_FREEZE };
+  }
+}
+
+function readUiDisableState(): UiDisableState {
+  try {
+    const raw = window.localStorage.getItem(UI_DISABLE_STORAGE_KEY);
+    if (!raw) return { ...DEFAULT_UI_DISABLE };
+    const parsed = JSON.parse(raw) as Partial<UiDisableState>;
+    return {
+      realtime: parsed.realtime === true,
+      polling: parsed.polling === true,
+      canvas: parsed.canvas === true,
+      right: parsed.right === true,
+      bottom: parsed.bottom === true,
+      performance: parsed.performance === true,
+    };
+  } catch {
+    return { ...DEFAULT_UI_DISABLE };
+  }
+}
+
+function useFrozenValue<T>(value: T, freeze: boolean): T {
+  const ref = useRef(value);
+  const initialized = useRef(false);
+  if (!initialized.current) {
+    ref.current = value;
+    initialized.current = true;
+  }
+  if (!freeze) {
+    ref.current = value;
+  }
+  return freeze ? ref.current : value;
+}
+
 function normalizeChatAgentStatus(status: string): AgentRuntime['status'] {
   const normalized = status.trim().toLowerCase();
   if (normalized === 'running' || normalized === 'queued' || normalized === 'waiting_input') return 'running';
@@ -87,14 +160,6 @@ function isRuntimeBusyStatus(status: string): boolean {
   return normalized === 'running' || normalized === 'queued' || normalized === 'waiting_input' || normalized === 'paused';
 }
 
-function isRuntimeTerminalStatus(status: string): boolean {
-  const normalized = status.trim().toLowerCase();
-  return normalized === 'completed'
-    || normalized === 'failed'
-    || normalized === 'interrupted'
-    || normalized === 'error';
-}
-
 export const WorkflowContainer: React.FC = () => {
   const {
     currentSession,
@@ -110,8 +175,25 @@ export const WorkflowContainer: React.FC = () => {
   const { checkForResumeableSession } = useSessionResume();
   const [showResumeDialog, setShowResumeDialog] = useState(false);
   const [resumeTarget, setResumeTarget] = useState<ResumeCheckResult | null>(null);
+  const [panelFreeze, setPanelFreeze] = useState<PanelFreezeState>(() => {
+    if (typeof window === 'undefined' || !window.localStorage) return { ...DEFAULT_PANEL_FREEZE };
+    return readPanelFreezeState();
+  });
+  const [disableAnimations, setDisableAnimations] = useState<boolean>(() => {
+    if (typeof window === 'undefined' || !window.localStorage) return false;
+    const raw = window.localStorage.getItem(DISABLE_ANIMATIONS_STORAGE_KEY);
+    return raw === '1' || raw === 'true';
+  });
+  const [uiDisable] = useState<UiDisableState>(() => {
+    if (typeof window === 'undefined' || !window.localStorage) return { ...DEFAULT_UI_DISABLE };
+    return readUiDisableState();
+  });
+  const instanceTimestampRef = useRef<Record<string, string>>({});
+  const workflowTimestampRef = useRef<Record<string, string>>({});
 
-  const orchestratorSessionId = currentSession?.id || (sessions.length > 0 ? sessions[0].id : 'default-session');
+  const orchestratorSessionId = currentSession?.sessionTier === 'runtime'
+    ? (currentSession.rootSessionId || currentSession.parentSessionId || (sessions.length > 0 ? sessions[0].id : 'default-session'))
+    : (currentSession?.id || (sessions.length > 0 ? sessions[0].id : 'default-session'));
   const [sessionBinding, setSessionBinding] = useState<{
     context: 'orchestrator' | 'runtime';
     sessionId: string;
@@ -121,6 +203,15 @@ export const WorkflowContainer: React.FC = () => {
     sessionId: orchestratorSessionId,
   });
   const activeSessionId = sessionBinding.context === 'runtime' ? sessionBinding.sessionId : orchestratorSessionId;
+
+  const getStableTimestamp = useCallback((key: string, ref: React.MutableRefObject<Record<string, string>>): string => {
+    if (!key) return new Date().toISOString();
+    const existing = ref.current[key];
+    if (existing) return existing;
+    const timestamp = new Date().toISOString();
+    ref.current[key] = timestamp;
+    return timestamp;
+  }, []);
 
   // Check for resumeable session on mount
   useEffect(() => {
@@ -160,9 +251,48 @@ export const WorkflowContainer: React.FC = () => {
   }, [orchestratorSessionId]);
 
   useEffect(() => {
-    setSessionBinding({
-      context: 'orchestrator',
-      sessionId: orchestratorSessionId,
+    if (!currentSession?.projectPath) return;
+    localStorage.setItem(WORKDIR_STORAGE_KEY, currentSession.projectPath);
+  }, [currentSession?.projectPath]);
+
+  useEffect(() => {
+    if (typeof document === 'undefined') return;
+    document.body.classList.toggle('freeze-animations', disableAnimations);
+    if (typeof window !== 'undefined' && window.localStorage) {
+      window.localStorage.setItem(DISABLE_ANIMATIONS_STORAGE_KEY, disableAnimations ? '1' : '0');
+    }
+  }, [disableAnimations]);
+
+  const updatePanelFreeze = useCallback((key: PanelFreezeKey, enabled: boolean) => {
+    setPanelFreeze((prev) => {
+      const next = { ...prev, [key]: enabled } as PanelFreezeState;
+      if (typeof window !== 'undefined' && window.localStorage) {
+        window.localStorage.setItem(PANEL_FREEZE_STORAGE_KEY, JSON.stringify(next));
+      }
+      return next;
+    });
+  }, []);
+
+
+  const updateDisableAnimations = useCallback((enabled: boolean) => {
+    setDisableAnimations(enabled);
+  }, []);
+
+  const resetPanelFreeze = useCallback(() => {
+    setPanelFreeze({ ...DEFAULT_PANEL_FREEZE });
+    if (typeof window !== 'undefined' && window.localStorage) {
+      window.localStorage.setItem(PANEL_FREEZE_STORAGE_KEY, JSON.stringify(DEFAULT_PANEL_FREEZE));
+    }
+  }, []);
+
+  useEffect(() => {
+    setSessionBinding((prev) => {
+      if (prev.context === 'runtime') return prev;
+      if (prev.context === 'orchestrator' && prev.sessionId === orchestratorSessionId) return prev;
+      return {
+        context: 'orchestrator',
+        sessionId: orchestratorSessionId,
+      };
     });
   }, [orchestratorSessionId]);
 
@@ -196,12 +326,18 @@ export const WorkflowContainer: React.FC = () => {
     updateToolExposure,
     contextEditableEventIds,
     isConnected,
-    debugSnapshotsEnabled,
-    setDebugSnapshotsEnabled,
-    debugSnapshots,
-    clearDebugSnapshots,
-    orchestratorRuntimeMode,
-  } = useWorkflowExecution(activeSessionId);
+   debugSnapshotsEnabled,
+   setDebugSnapshotsEnabled,
+   debugSnapshots,
+   clearDebugSnapshots,
+   orchestratorRuntimeMode,
+   requestDetailsEnabled,
+   setRequestDetailsEnabled,
+ } = useWorkflowExecution(activeSessionId, currentSession?.projectPath, {
+    disableRealtime: uiDisable.realtime,
+    disablePolling: uiDisable.polling,
+  });
+
 
   useEffect(() => {
     if (sessionBinding.context !== 'runtime') return;
@@ -228,6 +364,16 @@ export const WorkflowContainer: React.FC = () => {
   } = useAgentRuntimePanel();
   const [drawerAgentId, setDrawerAgentId] = useState<string | null>(null);
   const effectiveDrawerAgentId = drawerAgentId;
+
+  const frozenSessions = useFrozenValue(sessions, panelFreeze.left);
+  const frozenCurrentSession = useFrozenValue(currentSession, panelFreeze.left);
+  const frozenIsLoadingSessions = useFrozenValue(isLoadingSessions, panelFreeze.left);
+  const frozenRuntimeInstancesForLeft = useFrozenValue(runtimeInstances, panelFreeze.left);
+  const frozenFocusedRuntimeInstanceId = useFrozenValue(sessionBinding.runtimeInstanceId ?? null, panelFreeze.left);
+  const frozenActiveRuntimeSessionId = useFrozenValue(
+    sessionBinding.context === 'runtime' ? sessionBinding.sessionId : null,
+    panelFreeze.left,
+  );
 
   const handleCreateNewSession = useCallback(async (): Promise<void> => {
     const fromStorage = localStorage.getItem(WORKDIR_STORAGE_KEY)?.trim();
@@ -297,6 +443,22 @@ export const WorkflowContainer: React.FC = () => {
     return Array.from(merged.values()).sort((a, b) => a.name.localeCompare(b.name));
   }, [executionState?.agents, agentPanelAgents]);
 
+  const frozenRightPayload = useFrozenValue({
+    executionState,
+    runtimeEvents,
+    contextEditableEventIds,
+    agentRunStatus,
+    runtimeOverview,
+    toolPanelOverview,
+    debugSnapshotsEnabled,
+    debugSnapshots,
+    orchestratorRuntimeMode,
+    selectedAgentId,
+  }, panelFreeze.right);
+
+  const frozenActiveSessionId = useFrozenValue(activeSessionId, panelFreeze.right);
+  const frozenChatAgents = useFrozenValue(chatAgents, panelFreeze.right);
+
   const selectedDrawerAgent = useMemo(
     () => agentPanelAgents.find((agent) => agent.id === effectiveDrawerAgentId) ?? null,
     [effectiveDrawerAgentId, agentPanelAgents],
@@ -329,10 +491,26 @@ export const WorkflowContainer: React.FC = () => {
         sessionId: orchestratorSessionId,
       });
       setDrawerAgentId(null);
+      setSelectedAgentId(null);
+      if (orchestratorSessionId) {
+        void switchSession(orchestratorSessionId);
+      }
+      return;
+    }
+    const runtimeInstance = runtimeInstances.find((instance) => instance.agentId === agentId);
+    if (runtimeInstance?.sessionId) {
+      setSessionBinding({
+        context: 'runtime',
+        sessionId: runtimeInstance.sessionId,
+        runtimeInstanceId: runtimeInstance.id,
+      });
+      setSelectedAgentId(agentId);
+      setDrawerAgentId(agentId);
+      return;
     }
     setSelectedAgentId(agentId);
     setDrawerAgentId(agentId);
-  }, [agentPanelAgents, orchestratorSessionId, setSelectedAgentId]);
+  }, [agentPanelAgents, orchestratorSessionId, runtimeInstances, setSelectedAgentId, switchSession]);
 
   const handleSelectInstance = useCallback(async (instanceIdOrPayload: string | { id?: string; sessionId?: string }): Promise<void> => {
     const selectedInstance = typeof instanceIdOrPayload === 'string'
@@ -344,14 +522,23 @@ export const WorkflowContainer: React.FC = () => {
     const sessionIdToSwitch = selectedInstance?.sessionId;
     if (!sessionIdToSwitch) return;
     setDrawerAgentId(null);
-    setSelectedAgentId(null);
     const shouldRestoreOrchestrator = selectedInstance.type === 'orchestrator' || sessionIdToSwitch === orchestratorSessionId;
+    if (shouldRestoreOrchestrator) {
+      await switchSession(sessionIdToSwitch);
+      setSessionBinding({
+        context: 'orchestrator',
+        sessionId: sessionIdToSwitch,
+      });
+      setSelectedAgentId(null);
+      return;
+    }
     setSessionBinding({
-      context: shouldRestoreOrchestrator ? 'orchestrator' : 'runtime',
+      context: 'runtime',
       sessionId: sessionIdToSwitch,
-      ...(shouldRestoreOrchestrator ? {} : { runtimeInstanceId: selectedInstance?.id }),
+      runtimeInstanceId: selectedInstance?.id,
     });
-  }, [orchestratorSessionId, runtimeInstances]);
+    setSelectedAgentId(selectedInstance.agentId);
+  }, [orchestratorSessionId, runtimeInstances, switchSession]);
 
   useEffect(() => {
     if (sessionBinding.context !== 'runtime') return;
@@ -359,7 +546,7 @@ export const WorkflowContainer: React.FC = () => {
       (sessionBinding.runtimeInstanceId && instance.id === sessionBinding.runtimeInstanceId)
       || instance.sessionId === sessionBinding.sessionId
     ));
-    if (!boundInstance || isRuntimeTerminalStatus(boundInstance.status)) {
+    if (!boundInstance) {
       setSessionBinding({
         context: 'orchestrator',
         sessionId: orchestratorSessionId,
@@ -407,6 +594,9 @@ export const WorkflowContainer: React.FC = () => {
   }, [runtimeInstances, sessionBinding.context, sessionBinding.sessionId]);
 
   const taskFlowProps = React.useMemo(() => {
+    const workflowStamp = executionState?.workflowId
+      ? getStableTimestamp(executionState.workflowId, workflowTimestampRef)
+      : new Date().toISOString();
     const planHistory: Loop[] = [];
     const designHistory: Loop[] = [];
     const executionHistory: Loop[] = scopedRuntimeInstances
@@ -415,81 +605,90 @@ export const WorkflowContainer: React.FC = () => {
         return normalized === 'completed' || normalized === 'failed' || normalized === 'interrupted' || normalized === 'error';
       })
       .slice(0, 20)
-      .map((instance) => ({
-        id: `history-${instance.id}`,
-        epicId: executionState?.workflowId || activeSessionId,
+      .map((instance) => {
+        const instanceStamp = getStableTimestamp(instance.id, instanceTimestampRef);
+        return {
+          id: `history:${instance.id}`,
+          epicId: executionState?.workflowId || activeSessionId,
         phase: 'execution',
         status: 'history',
-        result: instance.status === 'completed' ? 'success' : 'failed',
-        createdAt: new Date().toISOString(),
-        nodes: [
-          {
-            id: `orch-${instance.id}`,
-            type: 'orch',
-            status: 'done',
-            title: 'orchestrator',
-            text: 'dispatch completed',
-            agentId: 'finger-orchestrator',
-            timestamp: new Date().toISOString(),
-          },
-          {
-            id: `runtime-${instance.id}`,
-            type: mapAgentTypeToLoopNodeType(instance.type),
-            status: mapInstanceStatusToLoopNodeStatus(instance.status),
-            title: instance.name,
-            text: instance.workflowId ?? instance.sessionId ?? instance.id,
-            agentId: instance.agentId,
-            timestamp: new Date().toISOString(),
-          },
-        ],
-      }));
+          result: instance.status === 'completed' ? 'success' : 'failed',
+          createdAt: instanceStamp,
+          nodes: [
+            {
+              id: `node:${instance.id}:orch`,
+              type: 'orch',
+              status: 'done',
+              title: 'orchestrator',
+              text: 'dispatch completed',
+              agentId: 'finger-orchestrator',
+              timestamp: instanceStamp,
+            },
+            {
+              id: `node:${instance.id}:${instance.agentId}`,
+              type: mapAgentTypeToLoopNodeType(instance.type),
+              status: mapInstanceStatusToLoopNodeStatus(instance.status),
+              title: instance.name,
+              text: instance.workflowId ?? instance.sessionId ?? instance.id,
+              agentId: instance.agentId,
+              timestamp: instanceStamp,
+            },
+          ],
+        };
+      });
     const queue: Loop[] = scopedRuntimeInstances
       .filter((instance) => instance.status.toLowerCase() === 'queued')
-      .map((instance) => ({
-        id: `queue-${instance.id}`,
-        epicId: executionState?.workflowId || activeSessionId,
+      .map((instance) => {
+        const instanceStamp = getStableTimestamp(instance.id, instanceTimestampRef);
+        return {
+          id: `queue:${instance.id}`,
+          epicId: executionState?.workflowId || activeSessionId,
         phase: 'execution',
         status: 'queue',
-        createdAt: new Date().toISOString(),
-        nodes: [
-          {
-            id: `queue-node-${instance.id}`,
-            type: mapAgentTypeToLoopNodeType(instance.type),
-            status: 'waiting',
-            title: instance.name,
-            text: `queue: ${instance.workflowId ?? instance.sessionId ?? instance.id}`,
-            agentId: instance.agentId,
-            timestamp: new Date().toISOString(),
-          },
-        ],
-      }));
+          createdAt: instanceStamp,
+          nodes: [
+            {
+              id: `node:${instance.id}:queue`,
+              type: mapAgentTypeToLoopNodeType(instance.type),
+              status: 'waiting',
+              title: instance.name,
+              text: `queue: ${instance.workflowId ?? instance.sessionId ?? instance.id}`,
+              agentId: instance.agentId,
+              timestamp: instanceStamp,
+            },
+          ],
+        };
+      });
     const runningRuntimeNodes: LoopNode[] = scopedRuntimeInstances
       .filter((instance) => isRuntimeBusyStatus(instance.status))
-      .map((instance) => ({
-        id: `running-${instance.id}`,
-        type: mapAgentTypeToLoopNodeType(instance.type),
-        status: mapInstanceStatusToLoopNodeStatus(instance.status),
-        title: instance.name,
-        text: instance.workflowId ?? instance.sessionId ?? instance.id,
-        agentId: instance.agentId,
-        timestamp: new Date().toISOString(),
-      }));
+      .map((instance) => {
+        const instanceStamp = getStableTimestamp(instance.id, instanceTimestampRef);
+        return {
+          id: `node:${instance.id}:running`,
+          type: mapAgentTypeToLoopNodeType(instance.type),
+          status: mapInstanceStatusToLoopNodeStatus(instance.status),
+          title: instance.name,
+          text: instance.workflowId ?? instance.sessionId ?? instance.id,
+          agentId: instance.agentId,
+          timestamp: instanceStamp,
+        };
+      });
     const orchestratorNodeStatus: LoopNode['status'] = sessionBinding.context === 'runtime' ? 'waiting' : 'running';
     const orchestratorNode: LoopNode = {
-      id: `orchestrator-${activeSessionId}`,
+      id: `node:${activeSessionId}:orchestrator`,
       type: 'orch',
       status: orchestratorNodeStatus,
       title: 'orchestrator',
       text: sessionBinding.context === 'runtime' ? 'waiting runtime feedback' : 'active',
       agentId: 'finger-orchestrator',
-      timestamp: new Date().toISOString(),
+      timestamp: workflowStamp,
     };
     const runningLoop = runningRuntimeNodes.length > 0 ? {
-      id: `running-${activeSessionId}`,
+      id: `running:${activeSessionId}`,
       epicId: executionState?.workflowId || activeSessionId,
       phase: 'execution' as const,
       status: 'running' as const,
-      createdAt: new Date().toISOString(),
+      createdAt: workflowStamp,
       nodes: [
         orchestratorNode,
         ...runningRuntimeNodes,
@@ -504,53 +703,157 @@ export const WorkflowContainer: React.FC = () => {
       runningLoop,
       queue,
     };
-  }, [executionState?.workflowId, scopedRuntimeInstances, activeSessionId, sessionBinding.context]);
+  }, [activeSessionId, executionState?.workflowId, getStableTimestamp, scopedRuntimeInstances, sessionBinding.context]);
+
+  const frozenTaskFlowProps = useFrozenValue(taskFlowProps, panelFreeze.canvas);
+
+  const frozenBottomPayload = useFrozenValue({
+    agents: agentPanelAgents,
+    instances: runtimeInstances,
+    configs: agentConfigItems,
+    startupTargets,
+    startupTemplates,
+    orchestrationConfig,
+    debugMode,
+    selectedAgentId,
+    currentSessionId: activeSessionId,
+    focusedRuntimeInstanceId: sessionBinding.runtimeInstanceId ?? null,
+    isLoading: isLoadingAgentPanel,
+    error: agentPanelError,
+  }, panelFreeze.bottom);
 
   const canvasElement = useMemo(() => (
     <div className="canvas-shell">
-      <PerformanceCard />
+      <PerformanceCard paused={panelFreeze.performance || uiDisable.performance} />
       <div className="canvas-body">
         <TaskFlowCanvas
-          epicId={taskFlowProps.epicId}
-          planHistory={taskFlowProps.planHistory}
-          designHistory={taskFlowProps.designHistory}
-          executionHistory={taskFlowProps.executionHistory}
-          runningLoop={taskFlowProps.runningLoop}
-          queue={taskFlowProps.queue}
+          epicId={frozenTaskFlowProps.epicId}
+          planHistory={frozenTaskFlowProps.planHistory}
+          designHistory={frozenTaskFlowProps.designHistory}
+          executionHistory={frozenTaskFlowProps.executionHistory}
+          runningLoop={frozenTaskFlowProps.runningLoop}
+          queue={frozenTaskFlowProps.queue}
         />
       </div>
     </div>
-  ), [taskFlowProps]);
+  ), [frozenTaskFlowProps, panelFreeze.performance, uiDisable.performance]);
 
   const rightPanelElement = useMemo(() => (
-    <ChatInterface
-      key={activeSessionId}
-      executionState={executionState}
-      agents={chatAgents}
-      events={runtimeEvents}
-      contextEditableEventIds={contextEditableEventIds}
-      agentRunStatus={agentRunStatus}
-      runtimeOverview={runtimeOverview}
-      toolPanelOverview={toolPanelOverview}
-      onUpdateToolExposure={updateToolExposure}
-      onSendMessage={sendUserInput}
-      onEditMessage={editRuntimeEvent}
-      onDeleteMessage={deleteRuntimeEvent}
-      onCreateNewSession={handleCreateNewSession}
-      onPause={pauseWorkflow}
-      onResume={resumeWorkflow}
-      onInterruptTurn={interruptCurrentTurn}
-      isPaused={executionState?.paused || false}
-      isConnected={isConnected}
-      onAgentClick={handleSelectAgent}
-      inputCapability={chatInputCapability}
-      debugSnapshotsEnabled={debugSnapshotsEnabled}
-      onToggleDebugSnapshots={setDebugSnapshotsEnabled}
-      debugSnapshots={debugSnapshots}
-      onClearDebugSnapshots={clearDebugSnapshots}
-      orchestratorRuntimeMode={orchestratorRuntimeMode}
+      <ChatInterface
+        key={frozenActiveSessionId}
+        executionState={frozenRightPayload.executionState}
+        agents={frozenChatAgents}
+        events={frozenRightPayload.runtimeEvents}
+        contextEditableEventIds={frozenRightPayload.contextEditableEventIds}
+        agentRunStatus={frozenRightPayload.agentRunStatus}
+        runtimeOverview={frozenRightPayload.runtimeOverview}
+        toolPanelOverview={frozenRightPayload.toolPanelOverview}
+        onUpdateToolExposure={updateToolExposure}
+        onSendMessage={sendUserInput}
+        onEditMessage={editRuntimeEvent}
+        onDeleteMessage={deleteRuntimeEvent}
+        onCreateNewSession={handleCreateNewSession}
+        onPause={pauseWorkflow}
+        onResume={resumeWorkflow}
+        onInterruptTurn={interruptCurrentTurn}
+        isPaused={frozenRightPayload.executionState?.paused || false}
+        isConnected={isConnected}
+        onAgentClick={handleSelectAgent}
+        selectedAgentId={frozenRightPayload.selectedAgentId}
+        inputCapability={chatInputCapability}
+        debugSnapshotsEnabled={frozenRightPayload.debugSnapshotsEnabled}
+        onToggleDebugSnapshots={setDebugSnapshotsEnabled}
+        debugSnapshots={frozenRightPayload.debugSnapshots}
+        onClearDebugSnapshots={clearDebugSnapshots}
+       orchestratorRuntimeMode={frozenRightPayload.orchestratorRuntimeMode}
+        requestDetailsEnabled={requestDetailsEnabled}
+        onToggleRequestDetails={setRequestDetailsEnabled}
+      />
+  ), [clearDebugSnapshots, deleteRuntimeEvent, editRuntimeEvent, frozenActiveSessionId, frozenChatAgents, frozenRightPayload, handleCreateNewSession, handleSelectAgent, interruptCurrentTurn, isConnected, pauseWorkflow, resumeWorkflow, sendUserInput, setDebugSnapshotsEnabled, updateToolExposure, requestDetailsEnabled, setRequestDetailsEnabled]);
+
+  const leftSidebarElement = useMemo(() => (
+    <LeftSidebar
+      sessions={frozenSessions}
+      currentSession={frozenCurrentSession}
+      isLoadingSessions={frozenIsLoadingSessions}
+      runtimeInstances={frozenRuntimeInstancesForLeft}
+      focusedRuntimeInstanceId={frozenFocusedRuntimeInstanceId}
+      activeRuntimeSessionId={frozenActiveRuntimeSessionId}
+      onSwitchRuntimeInstance={(instance) => { void handleSelectInstance(instance); }}
+      onCreateSession={createSession}
+      onDeleteSession={removeSession}
+      onRenameSession={renameSession}
+      onSwitchSession={handleSwitchSessionFromSidebar}
+      onRefreshSessions={refreshSessions}
+      panelFreeze={panelFreeze}
+      onUpdatePanelFreeze={updatePanelFreeze}
+      onResetPanelFreeze={resetPanelFreeze}
+      disableAnimations={disableAnimations}
+      onToggleDisableAnimations={updateDisableAnimations}
     />
-  ), [activeSessionId, executionState, chatAgents, runtimeEvents, contextEditableEventIds, agentRunStatus, runtimeOverview, toolPanelOverview, sendUserInput, editRuntimeEvent, deleteRuntimeEvent, handleCreateNewSession, pauseWorkflow, resumeWorkflow, interruptCurrentTurn, isConnected, handleSelectAgent, chatInputCapability, debugSnapshotsEnabled, setDebugSnapshotsEnabled, debugSnapshots, clearDebugSnapshots, orchestratorRuntimeMode]);
+  ), [createSession, disableAnimations, frozenActiveRuntimeSessionId, frozenCurrentSession, frozenFocusedRuntimeInstanceId, frozenIsLoadingSessions, frozenRuntimeInstancesForLeft, frozenSessions, handleSelectInstance, handleSwitchSessionFromSidebar, panelFreeze, refreshSessions, removeSession, renameSession, resetPanelFreeze, updateDisableAnimations, updatePanelFreeze]);
+
+  const bottomPanelElement = useMemo(() => (
+    <BottomPanel
+      agents={frozenBottomPayload.agents}
+      instances={frozenBottomPayload.instances}
+      configs={frozenBottomPayload.configs}
+      startupTargets={frozenBottomPayload.startupTargets}
+      startupTemplates={frozenBottomPayload.startupTemplates}
+      orchestrationConfig={frozenBottomPayload.orchestrationConfig}
+      debugMode={frozenBottomPayload.debugMode}
+      selectedAgentId={frozenBottomPayload.selectedAgentId}
+      currentSessionId={frozenBottomPayload.currentSessionId}
+      focusedRuntimeInstanceId={frozenBottomPayload.focusedRuntimeInstanceId}
+      isLoading={frozenBottomPayload.isLoading}
+      error={frozenBottomPayload.error}
+      onSelectAgent={handleSelectAgent}
+      onSelectInstance={(instance) => { void handleSelectInstance(instance); }}
+      onRefresh={() => { void refreshAgentPanel(); }}
+      onSetDebugMode={async (enabled) => {
+        const result = await setRuntimeDebugMode(enabled);
+        if (!result.ok) {
+          throw new Error(result.error ?? '更新 debug mode 失败');
+        }
+      }}
+      onStartTemplate={async (templateId) => {
+        const result = await startTemplate({
+          templateId,
+          sessionId: orchestratorSessionId,
+        });
+        if (!result.ok) {
+          throw new Error(result.error ?? `模板 ${templateId} 启动失败`);
+        }
+      }}
+      onSwitchOrchestrationProfile={async (profileId) => {
+        const result = await switchOrchestrationProfile(profileId);
+        if (!result.ok) {
+          throw new Error(result.error ?? `切换 profile 失败: ${profileId}`);
+        }
+      }}
+      onSaveOrchestrationConfig={async (config) => {
+        const result = await saveOrchestrationConfig(config);
+        if (!result.ok) {
+          throw new Error(result.error ?? '保存 orchestration 配置失败');
+        }
+      }}
+    />
+  ), [frozenBottomPayload, handleSelectAgent, handleSelectInstance, orchestratorSessionId, refreshAgentPanel, saveOrchestrationConfig, setRuntimeDebugMode, startTemplate, switchOrchestrationProfile]);
+
+  const renderedLeftSidebar = useFrozenValue(leftSidebarElement, panelFreeze.left);
+  const renderedCanvas = useFrozenValue(
+    uiDisable.canvas ? <div className="canvas-shell"><div className="canvas-body">Canvas Disabled</div></div> : canvasElement,
+    panelFreeze.canvas,
+  );
+  const renderedRightPanel = useFrozenValue(
+    uiDisable.right ? <div className="right-panel"><div className="right-panel-placeholder">Right Panel Disabled</div></div> : rightPanelElement,
+    panelFreeze.right,
+  );
+  const renderedBottomPanel = useFrozenValue(
+    uiDisable.bottom ? <div className="bottom-panel-container"><div className="bottom-panel-placeholder">Bottom Panel Disabled</div></div> : bottomPanelElement,
+    panelFreeze.bottom,
+  );
+  // note: requestDetailsEnabled, setRequestDetailsEnabled intentionally omitted from deps for now (UI-only toggle)
 
   // Use overlay instead of early return to maintain hook consistency
   const loadingOverlay = isLoading || isLoadingSessions ? (
@@ -576,66 +879,10 @@ export const WorkflowContainer: React.FC = () => {
       {loadingOverlay}
       {errorOverlay}
       <AppLayout
-        leftSidebar={
-          <LeftSidebar
-            sessions={sessions}
-            currentSession={currentSession}
-            isLoadingSessions={isLoadingSessions}
-            onCreateSession={createSession}
-            onDeleteSession={removeSession}
-            onRenameSession={renameSession}
-            onSwitchSession={handleSwitchSessionFromSidebar}
-            onRefreshSessions={refreshSessions}
-          />
-        }
-        canvas={canvasElement}
-        rightPanel={rightPanelElement}
-        bottomPanel={
-          <BottomPanel
-            agents={agentPanelAgents}
-            instances={runtimeInstances}
-            configs={agentConfigItems}
-            startupTargets={startupTargets}
-            startupTemplates={startupTemplates}
-            orchestrationConfig={orchestrationConfig}
-            debugMode={debugMode}
-            selectedAgentId={selectedAgentId}
-            currentSessionId={activeSessionId}
-            focusedRuntimeInstanceId={sessionBinding.runtimeInstanceId ?? null}
-            isLoading={isLoadingAgentPanel}
-            error={agentPanelError}
-            onSelectAgent={handleSelectAgent}
-            onSelectInstance={(instance) => { void handleSelectInstance(instance); }}
-            onRefresh={() => { void refreshAgentPanel(); }}
-            onSetDebugMode={async (enabled) => {
-              const result = await setRuntimeDebugMode(enabled);
-              if (!result.ok) {
-                throw new Error(result.error ?? '更新 debug mode 失败');
-              }
-            }}
-            onStartTemplate={async (templateId) => {
-              const result = await startTemplate({
-                templateId,
-                sessionId: orchestratorSessionId,
-              });
-              if (!result.ok) {
-                throw new Error(result.error ?? `模板 ${templateId} 启动失败`);
-              }
-            }}
-            onSwitchOrchestrationProfile={async (profileId) => {
-              const result = await switchOrchestrationProfile(profileId);
-              if (!result.ok) {
-                throw new Error(result.error ?? `切换 profile 失败: ${profileId}`);
-              }
-            }}
-            onSaveOrchestrationConfig={async (config) => {
-              const result = await saveOrchestrationConfig(config);
-              if (!result.ok) {
-                throw new Error(result.error ?? '保存 orchestration 配置失败');
-              }
-            }}
-          />
-        }
+        leftSidebar={renderedLeftSidebar}
+        canvas={renderedCanvas}
+        rightPanel={renderedRightPanel}
+        bottomPanel={renderedBottomPanel}
       />
       <AgentConfigDrawer
         isOpen={selectedDrawerAgent !== null}

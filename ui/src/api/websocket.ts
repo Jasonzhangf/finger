@@ -16,10 +16,11 @@ export class WebSocketClient {
   private messageHandlers: Set<MessageHandler> = new Set();
   private errorHandlers: Set<ErrorHandler> = new Set();
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  private connecting: Promise<void> | null = null;
   clientId: string | null = null;
 
  constructor(
-   url: string = 'ws://localhost:5522',
+   url: string = 'ws://localhost:9998',
    options: { reconnectInterval?: number; maxReconnectAttempts?: number } = {}
  ) {
    this.url = url;
@@ -28,77 +29,115 @@ export class WebSocketClient {
  }
 
  connect(): Promise<void> {
-   return new Promise((resolve, reject) => {
-     try {
-       this.ws = new WebSocket(this.url);
+    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+      return Promise.resolve();
+    }
+    if (this.ws && this.ws.readyState === WebSocket.CONNECTING && this.connecting) {
+      return this.connecting;
+    }
+    if (this.connecting) {
+      return this.connecting;
+    }
 
-       this.ws.onopen = () => {
-         console.log('[WS] Connected to', this.url);
-         this.reconnectAttempts = 0;
+    this.connecting = new Promise((resolve, reject) => {
+      try {
+        const socket = new WebSocket(this.url);
+        this.ws = socket;
 
-          // Subscribe to both legacy workflow stream and grouped EventBus stream.
-          this.ws?.send(JSON.stringify({
-            type: 'subscribe',
-            types: [
-              'workflow_update',
-              'agent_update',
-              'task_started',
-              'task_completed',
-              'task_failed',
-              'tool_call',
-              'tool_result',
-              'tool_error',
-              'assistant_chunk',
-              'assistant_complete',
-              'waiting_for_user',
-              'phase_transition',
-              'workflow_progress',
-              'input_lock_changed',
-              'typing_indicator',
-              'agent_runtime_catalog',
-              'agent_runtime_dispatch',
-              'agent_runtime_control',
-              'agent_runtime_status',
-            ],
-            groups: ['SESSION', 'TASK', 'TOOL', 'DIALOG', 'PROGRESS', 'PHASE', 'HUMAN_IN_LOOP', 'SYSTEM', 'INPUT_LOCK', 'AGENT_RUNTIME'],
-          }));
-         resolve();
-       };
+        socket.onopen = () => {
+          if (this.ws !== socket) {
+            try {
+              socket.close();
+            } catch {
+              // ignore
+            }
+            return;
+          }
+          console.log('[WS] Connected to', this.url);
+          this.reconnectAttempts = 0;
+          this.connecting = null;
 
-	       this.ws.onmessage = (event) => {
-	         try {
-	           const msg = JSON.parse(event.data) as WsMessage;
-	           
-	           // 处理 client_id_assigned 消息
-	           if (msg.type === 'client_id_assigned') {
-	             if (typeof msg.clientId === 'string' && msg.clientId.trim().length > 0) {
-	               this.clientId = msg.clientId;
-	               console.log('[WS] Assigned clientId:', this.clientId);
-	             }
-	           }
-           
-           this.messageHandlers.forEach((h) => h(msg));
-         } catch (e) {
-           console.warn('[WS] Failed to parse message:', event.data);
-         }
-       };
+          try {
+            socket.send(JSON.stringify({
+              type: 'subscribe',
+              types: [
+                'workflow_update',
+                'task_update',
+                'agent_update',
+                'task_started',
+                'task_completed',
+                'task_failed',
+                'tool_call',
+                'tool_result',
+                'tool_error',
+                'assistant_chunk',
+                'assistant_complete',
+                'waiting_for_user',
+                'phase_transition',
+                'workflow_progress',
+                'input_lock_changed',
+                'typing_indicator',
+                'agent_runtime_catalog',
+                'agent_runtime_dispatch',
+                'agent_runtime_control',
+                'agent_runtime_status',
+                'resource_update',
+                'session_created',
+                'session_resumed',
+                'session_paused',
+                'session_compressed',
+                'performance_metrics',
+              ],
+              groups: ['SESSION', 'TASK', 'TOOL', 'DIALOG', 'PROGRESS', 'PHASE', 'HUMAN_IN_LOOP', 'SYSTEM', 'INPUT_LOCK', 'AGENT_RUNTIME'],
+            }));
+          } catch (err) {
+            console.error('[WS] Failed to send subscribe:', err);
+          }
+          resolve();
+        };
 
-       this.ws.onerror = (err) => {
-         console.error('[WS] Error:', err);
-         this.errorHandlers.forEach((h) => h(err));
-       };
+        socket.onmessage = (event) => {
+          try {
+            const msg = JSON.parse(event.data) as WsMessage;
 
-       this.ws.onclose = () => {
-         console.log('[WS] Disconnected');
-         this.scheduleReconnect();
-       };
-     } catch (err) {
-       reject(err);
-     }
-   });
+            // 处理 client_id_assigned 消息
+            if (msg.type === 'client_id_assigned') {
+              if (typeof msg.clientId === 'string' && msg.clientId.trim().length > 0) {
+                this.clientId = msg.clientId;
+                console.log('[WS] Assigned clientId:', this.clientId);
+              }
+            }
+
+            this.messageHandlers.forEach((h) => h(msg));
+          } catch {
+            console.warn('[WS] Failed to parse message:', event.data);
+          }
+        };
+
+        socket.onerror = (err) => {
+          if (this.ws !== socket) return;
+          console.error('[WS] Error:', err);
+          this.errorHandlers.forEach((h) => h(err));
+        };
+
+        socket.onclose = () => {
+          if (this.ws !== socket) return;
+          console.log('[WS] Disconnected');
+          this.ws = null;
+          this.connecting = null;
+          this.scheduleReconnect();
+        };
+      } catch (err) {
+        this.connecting = null;
+        reject(err);
+      }
+    });
+
+    return this.connecting;
  }
 
  private scheduleReconnect(): void {
+   if (this.reconnectTimer) return;
    if (this.reconnectAttempts >= this.maxReconnectAttempts) {
      console.warn('[WS] Max reconnect attempts reached');
      return;
@@ -106,6 +145,7 @@ export class WebSocketClient {
    this.reconnectAttempts++;
    console.log(`[WS] Reconnecting in ${this.reconnectInterval}ms (attempt ${this.reconnectAttempts})`);
    this.reconnectTimer = setTimeout(() => {
+     this.reconnectTimer = null;
      this.connect().catch((e) => console.error('[WS] Reconnect failed:', e));
    }, this.reconnectInterval);
  }
@@ -115,6 +155,7 @@ export class WebSocketClient {
      clearTimeout(this.reconnectTimer);
      this.reconnectTimer = null;
    }
+    this.connecting = null;
    if (this.ws) {
      this.ws.close();
      this.ws = null;
@@ -155,7 +196,7 @@ export function getWebSocket(): WebSocketClient {
   if (!wsInstance) {
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     const host = window.location.hostname;
-    const port = 5522;
+    const port = 9998;
     wsInstance = new WebSocketClient(`${protocol}//${host}:${port}`);
   }
   return wsInstance;

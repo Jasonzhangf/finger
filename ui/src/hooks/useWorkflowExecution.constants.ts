@@ -25,6 +25,7 @@ export const SESSION_BOUND_WS_TYPES = new Set([
   'phase_transition',
   'workflow_progress',
   'workflow_update',
+  'task_update',
   'agent_update',
   'agent_runtime_dispatch',
   'agent_runtime_control',
