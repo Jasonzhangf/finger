@@ -89,7 +89,7 @@ echo "Log: /tmp/finger-daemon.log"
 # 等待服务启动
 echo "Waiting for server to start..."
 for i in {1..10}; do
-    if curl -sf http://localhost:8080/health > /dev/null 2>&1; then
+    if curl -sf http://localhost:9999/health > /dev/null 2>&1; then
         echo "Server is ready!"
         break
     fi
@@ -113,8 +113,8 @@ echo ""
 echo "========================================"
 echo "Services Ready"
 echo "========================================"
-echo "Finger HTTP:  http://localhost:8080"
-echo "Finger WS:    ws://localhost:8081"
+echo "Finger HTTP:  http://localhost:9999"
+echo "Finger WS:    ws://localhost:9998"
 echo "iFlow:        Auto-managed by SDK"
 echo ""
 echo "Ready for E2E tests!"

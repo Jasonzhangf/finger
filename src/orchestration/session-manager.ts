@@ -195,7 +195,7 @@ export class SessionManager {
 
     const preserveId = options?.preserveCurrentId ?? null;
     if (preserveId && this.sessions.has(preserveId)) {
-      this.currentSessionId = preserveId;
+      this.setCurrentSession(preserveId);
       return;
     }
 
@@ -209,8 +209,9 @@ export class SessionManager {
       (a, b) => new Date(b.lastAccessedAt).getTime() - new Date(a.lastAccessedAt).getTime()
     );
     if (sorted.length > 0) {
-      this.currentSessionId = sorted[0].id;
-      console.log(`[SessionManager] Auto-resumed session: ${sorted[0].name}`);
+      if (this.setCurrentSession(sorted[0].id)) {
+        console.log(`[SessionManager] Auto-resumed session: ${sorted[0].name}`);
+      }
     }
   }
 
@@ -249,7 +250,9 @@ export class SessionManager {
         }
         reusable.lastAccessedAt = now;
         this.saveSession(reusable);
-        this.currentSessionId = reusable.id;
+        if (!this.setCurrentSession(reusable.id)) {
+          console.warn(`[SessionManager] Failed to set cwd for reused session: ${reusable.id}`);
+        }
         console.log(`[SessionManager] Reused empty session: ${reusable.name} (${reusable.id})`);
         return reusable;
       }
@@ -270,7 +273,9 @@ export class SessionManager {
 
     this.sessions.set(id, session);
     this.saveSession(session);
-    this.currentSessionId = id;
+    if (!this.setCurrentSession(id)) {
+      console.warn(`[SessionManager] Failed to set cwd for new session: ${id}`);
+    }
 
     console.log(`[SessionManager] Created session: ${session.name} (${id})`);
     return session;
@@ -358,10 +363,23 @@ export class SessionManager {
     return this.getSession(this.currentSessionId) || null;
   }
 
+  private applySessionCwd(session: Session): boolean {
+    const target = session.projectPath?.trim();
+    if (!target) return false;
+    try {
+      process.chdir(target);
+      return true;
+    } catch (error) {
+      console.error(`[SessionManager] Failed to set cwd to ${target}:`, error);
+      return false;
+    }
+  }
+
   setCurrentSession(sessionId: string): boolean {
     if (!this.sessions.has(sessionId)) return false;
-    this.currentSessionId = sessionId;
     const session = this.sessions.get(sessionId)!;
+    if (!this.applySessionCwd(session)) return false;
+    this.currentSessionId = sessionId;
     session.lastAccessedAt = new Date().toISOString();
     this.saveSession(session);
     return true;

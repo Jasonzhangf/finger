@@ -127,7 +127,7 @@
   - `POST /api/v1/message`：核心消息入口（支持 blocking/non-blocking）
   - `POST /api/v1/finger-general/sessions/:sessionId/interrupt`：中断当前 turn
   - `POST /api/v1/workflow/pause` / `resume`：流程控制
-- WebSocket（默认 `:5522`）
+- WebSocket（默认 `:9998`）
   - 客户端连接后发送 `subscribe`
   - 订阅 `chat_codex_turn`、`tool_*`、`workflow_update`、`phase_transition`、`input_lock_*` 等
 

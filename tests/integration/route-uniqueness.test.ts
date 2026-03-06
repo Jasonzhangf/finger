@@ -49,7 +49,7 @@ describe('Route Uniqueness', () => {
     });
     global.fetch = mockFetch;
 
-    const res = await fetch('http://localhost:5521/api/v1/message', {
+    const res = await fetch('http://localhost:9999/api/v1/message', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ target: 'test', message: {} }),

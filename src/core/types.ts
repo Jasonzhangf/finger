@@ -113,7 +113,7 @@ export interface TimeoutConfig {
 
 export const DEFAULT_CONFIG: OrchestratorConfig = {
   serverHost: 'localhost',
-  serverPort: 5521,
+  serverPort: 9999,
   dbPath: './data/finger.db',
   retryConfig: {
     maxRetries: 10,

@@ -41,6 +41,9 @@ interface RuntimeOverview {
   lastLedgerInsertChars?: number;
   compactCount: number;
   updatedAt: string;
+  workingProjectPath?: string;
+  sourceProjectPath?: string;
+  sessionPath?: string;
 }
 
 interface ToolPanelOverview {
@@ -77,7 +80,10 @@ interface ChatInterfaceProps {
   events: RuntimeEvent[];
   contextEditableEventIds?: string[];
   agentRunStatus?: AgentRunStatus;
+  panelTitle?: string;
+  showRuntimeModeBadge?: boolean;
   runtimeOverview?: RuntimeOverview;
+  contextLabel?: string;
   toolPanelOverview?: ToolPanelOverview;
   onUpdateToolExposure?: (tools: string[]) => Promise<boolean> | boolean;
   onSendMessage: (payload: UserInputPayload) => Promise<void> | void;
@@ -90,6 +96,8 @@ interface ChatInterfaceProps {
   isPaused: boolean;
   isConnected: boolean;
   onAgentClick?: (agentId: string) => void;
+  selectedAgentId?: string | null;
+  eventFilterAgentId?: string | null;
   inputCapability?: InputCapability;
   inputLockState?: InputLockState | null;
   clientId?: string | null;
@@ -100,6 +108,8 @@ interface ChatInterfaceProps {
   debugSnapshots?: DebugSnapshotItem[];
   onClearDebugSnapshots?: () => void;
   orchestratorRuntimeMode?: OrchestratorRuntimeModeState | null;
+  onToggleRequestDetails?: (enabled: boolean) => void;
+  requestDetailsEnabled?: boolean;
 }
 
 interface ContextMenuState {
@@ -532,6 +542,15 @@ function formatRuntimeOverview(overview?: RuntimeOverview): string {
   return `${contextText} · ${thresholdText} · ${ledgerText} · ${compactText}`;
 }
 
+function formatRuntimePaths(overview?: RuntimeOverview): string {
+  if (!overview) return '';
+  const parts: string[] = [];
+  if (overview.workingProjectPath) parts.push(`Working: ${overview.workingProjectPath}`);
+  if (overview.sourceProjectPath) parts.push(`Source: ${overview.sourceProjectPath}`);
+  if (overview.sessionPath) parts.push(`Session: ${overview.sessionPath}`);
+  return parts.join(' · ');
+}
+
 function formatRuntimeTokenSummary(overview?: RuntimeOverview): string {
   if (!overview) return 'Token: N/A';
   const parts: string[] = [];
@@ -696,8 +715,12 @@ const MessageItem = React.memo<{
   const dryrunEnvironmentContext = dryrunSnapshot && typeof dryrunSnapshot.environmentContext === 'string'
     ? dryrunSnapshot.environmentContext
     : null;
-  const dryrunUserInstructions = dryrunSnapshot && typeof dryrunSnapshot.userInstructions === 'string'
-    ? dryrunSnapshot.userInstructions
+ const dryrunUserInstructions = dryrunSnapshot && typeof dryrunSnapshot.userInstructions === 'string'
+   ? dryrunSnapshot.userInstructions
+   : null;
+
+  const requestDetailsSnapshot = isRecord(event.metadata) && isRecord(event.metadata.requestDetails)
+    ? event.metadata.requestDetails
     : null;
 
   const handleAgentClick = useCallback(() => {
@@ -758,10 +781,13 @@ const MessageItem = React.memo<{
         </div>
 
         <div className="message-body">
-          {dryrunSnapshot && (
-            <div className="dryrun-chip">Dryrun</div>
+         {dryrunSnapshot && (
+           <div className="dryrun-chip">Dryrun</div>
+         )}
+          {requestDetailsSnapshot && (
+            <div className="request-details-chip">Request Details</div>
           )}
-          {event.toolName && (
+         {event.toolName && (
             <div className={`tool-event-chip ${event.kind || 'status'} ${event.toolStatus || ''} ${toolCategoryClass(event.toolCategory)}`}>
               <span className="tool-event-label">{toolChipLabel(event)}</span>
               <span className="tool-event-name">{buildToolChipName(event)}</span>
@@ -826,13 +852,52 @@ const MessageItem = React.memo<{
                   <pre className="dryrun-code">{formatJsonBlock(dryrunTools)}</pre>
                 </div>
               )}
+             <div className="dryrun-block">
+               <div className="dryrun-label">Raw Snapshot</div>
+               <pre className="dryrun-code">{formatJsonBlock(dryrunSnapshot)}</pre>
+             </div>
+           </details>
+         )}
+          {requestDetailsSnapshot && (
+            <details className="dryrun-details">
+              <summary>查看请求详情</summary>
+              {typeof requestDetailsSnapshot.target === 'string' && requestDetailsSnapshot.target.length > 0 && (
+                <div className="dryrun-block">
+                  <div className="dryrun-label">Target</div>
+                  <pre className="dryrun-code">{String(requestDetailsSnapshot.target)}</pre>
+                </div>
+              )}
+              {typeof requestDetailsSnapshot.roleProfile === 'string' && requestDetailsSnapshot.roleProfile.length > 0 && (
+                <div className="dryrun-block">
+                  <div className="dryrun-label">Role Profile</div>
+                  <pre className="dryrun-code">{String(requestDetailsSnapshot.roleProfile)}</pre>
+                </div>
+              )}
+              {requestDetailsSnapshot.input != null && (
+                <div className="dryrun-block">
+                  <div className="dryrun-label">Input</div>
+                  <pre className="dryrun-code">{formatJsonBlock(requestDetailsSnapshot.input as Record<string,unknown>)}</pre>
+                </div>
+              )}
+              {requestDetailsSnapshot.tools != null && (
+                <div className="dryrun-block">
+                  <div className="dryrun-label">Tools</div>
+                  <pre className="dryrun-code">{formatJsonBlock(requestDetailsSnapshot.tools as Record<string,unknown>)}</pre>
+                </div>
+              )}
+              {requestDetailsSnapshot.contextLedger != null && (
+                <div className="dryrun-block">
+                  <div className="dryrun-label">Context Ledger</div>
+                  <pre className="dryrun-code">{formatJsonBlock(requestDetailsSnapshot.contextLedger as Record<string,unknown>)}</pre>
+                </div>
+              )}
               <div className="dryrun-block">
-                <div className="dryrun-label">Raw Snapshot</div>
-                <pre className="dryrun-code">{formatJsonBlock(dryrunSnapshot)}</pre>
+                <div className="dryrun-label">Raw Request</div>
+                <pre className="dryrun-code">{formatJsonBlock(requestDetailsSnapshot)}</pre>
               </div>
             </details>
           )}
-          {event.kind === 'action' && event.toolName && (() => {
+         {event.kind === 'action' && event.toolName && (() => {
             const toolInputSummary = buildToolInputSummary(event);
             const toolInput = formatToolInput(event.toolInput);
             if (!toolInput && !toolInputSummary) return null;
@@ -938,6 +1003,9 @@ const ChatInput: React.FC<{
   isPaused: boolean;
   isAgentRunning: boolean;
   disabled?: boolean;
+  dryrunTarget?: string | null;
+  requestDetailsEnabled?: boolean;
+  onToggleRequestDetails?: (enabled: boolean) => void;
   onPauseWorkflow?: () => void;
   onResumeWorkflow?: () => void;
   onInterruptTurn?: () => Promise<boolean> | boolean;
@@ -951,6 +1019,9 @@ const ChatInput: React.FC<{
   isPaused,
   isAgentRunning,
   disabled,
+  dryrunTarget,
+  requestDetailsEnabled,
+  onToggleRequestDetails,
   onPauseWorkflow,
   onResumeWorkflow,
   onInterruptTurn,
@@ -1147,6 +1218,38 @@ const ChatInput: React.FC<{
     planModeEnabled,
     reviewMaxTurns,
   ]);
+
+  const handleDryrun = useCallback(() => {
+    const sanitized = sanitizeDraftByCapability(draft, inputCapability);
+    if (sanitized.reason) {
+      setInputWarning(sanitized.reason);
+      return;
+    }
+    if (sanitized.dropped > 0) {
+      setInputWarning(`已过滤 ${sanitized.dropped} 个不受支持的附件`);
+    } else {
+      setInputWarning(null);
+    }
+
+    const normalizedText = sanitized.payload.text.trim();
+    const hasAttachments = (sanitized.payload.images?.length ?? 0) > 0 || (sanitized.payload.files?.length ?? 0) > 0;
+    if (!normalizedText && !hasAttachments) {
+      setInputWarning('请输入内容后再 dryrun');
+      return;
+    }
+
+    onSend({
+      ...sanitized.payload,
+      dryrun: true,
+      ...(dryrunTarget ? { dryrunTarget } : {}),
+    });
+    setHistoryCursor(null);
+    setHistorySnapshot('');
+    onDraftChange({ text: '', images: [], files: [] });
+    if (textareaRef.current) {
+      textareaRef.current.style.height = 'auto';
+    }
+  }, [draft, dryrunTarget, inputCapability, onDraftChange, onSend]);
 
   const handleKeyDown = useCallback((e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.altKey || e.ctrlKey || e.metaKey) return;
@@ -1506,11 +1609,31 @@ const ChatInput: React.FC<{
             </label>
           </div>
 
-          <button
-            className="send-btn"
-            onClick={handleSend}
-            disabled={!canSend || disabled}
-          >
+         <button
+           className="send-btn dryrun-btn"
+           onClick={handleDryrun}
+           disabled={!canSend || disabled}
+           data-testid="dryrun-btn"
+           title="Dryrun：查看注入提示词与工具"
+        >
+          <span>DRY</span>
+        </button>
+        {requestDetailsEnabled !== undefined && (
+         <button
+           className={`send-btn request-details-btn${requestDetailsEnabled ? ' active' : ''}`}
+           onClick={() => onToggleRequestDetails?.(!requestDetailsEnabled)}
+           disabled={disabled}
+           data-testid="request-details-btn"
+           title={requestDetailsEnabled ? '关闭请求详情' : '显示请求详情：发送后查看完整请求体'}
+         >
+           <span>DETAILS</span>
+         </button>
+        )}
+        <button
+           className="send-btn"
+           onClick={handleSend}
+           disabled={!canSend || disabled}
+         >
             <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
               <line x1="22" y1="2" x2="11" y2="13" />
               <polygon points="22 2 15 22 11 13 2 9 22 2" />
@@ -1529,7 +1652,10 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
   events,
   contextEditableEventIds,
   agentRunStatus,
+  panelTitle,
+  showRuntimeModeBadge = true,
   runtimeOverview,
+  contextLabel,
   toolPanelOverview,
   onSendMessage,
   onEditMessage,
@@ -1541,6 +1667,8 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
   isPaused,
   isConnected,
   onAgentClick,
+  selectedAgentId,
+  eventFilterAgentId,
   inputCapability,
   inputLockState,
   clientId,
@@ -1552,6 +1680,8 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
   onClearDebugSnapshots,
   orchestratorRuntimeMode,
   onUpdateToolExposure,
+  onToggleRequestDetails,
+  requestDetailsEnabled = false,
 }) => {
   const chatRef = useRef<HTMLDivElement>(null);
   const [showScrollToBottom, setShowScrollToBottom] = useState(false);
@@ -1566,6 +1696,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
     [events, toolPanelOverview?.availableTools, toolPanelOverview?.exposedTools],
   );
   const [toolTab, setToolTab] = useState<'summary' | 'exposure'>('summary');
+  const [toolPanelCollapsed, setToolPanelCollapsed] = useState(false);
   const [toolSelection, setToolSelection] = useState<Set<string>>(new Set());
   const toolSelectionRef = useRef<Set<string>>(new Set());
   const [toolUpdateError, setToolUpdateError] = useState<string | null>(null);
@@ -1758,12 +1889,30 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
       });
   }, [events]);
 
+  const filteredByAgentEvents = useMemo(() => {
+    if (!eventFilterAgentId) return eventsWithKeys;
+    return eventsWithKeys.filter((event) => {
+      if (event.role === 'user') return true;
+      const metadata = (event as any).metadata;
+      const metadataEvent = metadata && typeof metadata === 'object' ? (metadata as any).event : null;
+      const resolvedAgentId = (event as any).agentId
+        || metadataEvent?.agentId
+        || metadataEvent?.targetAgentId
+        || metadataEvent?.sourceAgentId;
+      if (!resolvedAgentId) return true;
+      if (typeof resolvedAgentId === 'string') {
+        return resolvedAgentId === eventFilterAgentId;
+      }
+      return false;
+    });
+  }, [eventFilterAgentId, eventsWithKeys]);
+
   const displayedEvents = useMemo(
-    () => eventsWithKeys.slice(-Math.max(1, visibleEventCount)),
-    [eventsWithKeys, visibleEventCount],
+    () => filteredByAgentEvents.slice(-Math.max(1, visibleEventCount)),
+    [filteredByAgentEvents, visibleEventCount],
   );
 
-  const hiddenEventsCount = eventsWithKeys.length - displayedEvents.length;
+  const hiddenEventsCount = filteredByAgentEvents.length - displayedEvents.length;
 
   const activeMenuEvent = useMemo<DecoratedEvent | null>(() => {
     if (!contextMenu) return null;
@@ -1866,9 +2015,11 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
     <div className="chat-interface">
       <div className="chat-header">
         <div className="header-title">
-          <span className="title-text">对话面板</span>
+          <span className="title-text">{panelTitle || '对话面板'}</span>
           {!isConnected && <span className="connection-badge offline">离线</span>}
-          {runtimeModeText && <span className="runtime-mode-badge">{runtimeModeText}</span>}
+          {showRuntimeModeBadge && runtimeModeText && (
+            <span className="runtime-mode-badge">{runtimeModeText}</span>
+          )}
         </div>
         <div className="header-status">
           <label className="debug-toggle">
@@ -1936,10 +2087,14 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
         </div>
       )}
       <div className="runtime-overview-bar">
+        {contextLabel && <div className="runtime-overview-line">{contextLabel}</div>}
         <div className="runtime-overview-line">{formatRuntimeTokenSummary(runtimeOverview)}</div>
         <div className="runtime-overview-line">{formatRuntimeOverview(runtimeOverview)}</div>
+        {formatRuntimePaths(runtimeOverview) && (
+          <div className="runtime-overview-line">{formatRuntimePaths(runtimeOverview)}</div>
+        )}
       </div>
-      <div className="tool-dashboard">
+      <div className={`tool-dashboard ${toolPanelCollapsed ? 'collapsed' : ''}`}>
         <div className="tool-dashboard-header">
           <div className="tool-dashboard-tabs">
             <button
@@ -1964,8 +2119,20 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
             <span className="ok">成功 {toolDashboard.success}</span>
             <span className="fail">失败 {toolDashboard.failed}</span>
           </div>
+          <div className="tool-dashboard-actions">
+            <button
+              type="button"
+              className="tool-dashboard-toggle"
+              onClick={() => setToolPanelCollapsed((prev) => !prev)}
+            >
+              {toolPanelCollapsed ? '展开工具' : '收起工具'}
+            </button>
+          </div>
         </div>
-        {toolTab === 'summary' && toolDashboard.tools.length > 0 && (
+        {toolPanelCollapsed && (
+          <div className="tool-dashboard-collapsed">工具面板已折叠</div>
+        )}
+        {!toolPanelCollapsed && toolTab === 'summary' && toolDashboard.tools.length > 0 && (
           <div className="tool-dashboard-list">
             {toolDashboard.tools.slice(0, 8).map((tool) => (
               <div key={`${tool.category}-${tool.name}`} className={`tool-dashboard-item ${tool.exposed ? 'exposed' : ''}`}>
@@ -1978,7 +2145,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
             ))}
           </div>
         )}
-        {toolTab === 'exposure' && (
+        {!toolPanelCollapsed && toolTab === 'exposure' && (
           <div className="tool-exposure-panel">
             <div className="tool-exposure-hint">
               未勾选工具将不会暴露给模型，下一轮请求立即生效。
@@ -2082,6 +2249,9 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
         inputCapability={effectiveInputCapability}
         isPaused={isPaused}
         isAgentRunning={agentRunStatus?.phase === 'running'}
+        dryrunTarget={selectedAgentId}
+        requestDetailsEnabled={requestDetailsEnabled}
+        onToggleRequestDetails={onToggleRequestDetails}
         onPauseWorkflow={executionState ? onPause : undefined}
         onResumeWorkflow={executionState ? onResume : undefined}
         onInterruptTurn={onInterruptTurn}

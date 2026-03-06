@@ -10,6 +10,7 @@ import { SessionResumeDialog } from '../SessionResumeDialog/SessionResumeDialog.
 import { useSessionResume } from '../../hooks/useSessionResume.js';
 import { useSessions } from '../../hooks/useSessions.js';
 import { useWorkflowExecution } from '../../hooks/useWorkflowExecution.js';
+import { DEFAULT_CHAT_AGENT_ID } from '../../hooks/useWorkflowExecution.constants.js';
 import { useAgents } from '../../hooks/useAgents.js';
 import { useAgentRuntimePanel } from '../../hooks/useAgentRuntimePanel.js';
 import { TaskFlowCanvas } from '../TaskFlowCanvas/TaskFlowCanvas.js';
@@ -310,6 +311,7 @@ export const WorkflowContainer: React.FC = () => {
   const {
     executionState,
     runtimeEvents,
+    sessionAgentId,
     selectedAgentId,
     setSelectedAgentId,
     isLoading,
@@ -374,6 +376,7 @@ export const WorkflowContainer: React.FC = () => {
     sessionBinding.context === 'runtime' ? sessionBinding.sessionId : null,
     panelFreeze.left,
   );
+  const frozenDrawerAgentIdForLeft = useFrozenValue(drawerAgentId, panelFreeze.left);
 
   const handleCreateNewSession = useCallback(async (): Promise<void> => {
     const fromStorage = localStorage.getItem(WORKDIR_STORAGE_KEY)?.trim();
@@ -464,15 +467,20 @@ export const WorkflowContainer: React.FC = () => {
     [effectiveDrawerAgentId, agentPanelAgents],
   );
 
-  const selectedDrawerConfig = useMemo(
-    () => (selectedDrawerAgent ? findConfigForAgent(selectedDrawerAgent, agentConfigItems) : null),
-    [agentConfigItems, selectedDrawerAgent],
-  );
+  const selectedDrawerConfig = useMemo(() => {
+    if (selectedDrawerAgent) return findConfigForAgent(selectedDrawerAgent, agentConfigItems);
+    if (effectiveDrawerAgentId) return agentConfigItems.find((item) => item.id === effectiveDrawerAgentId) ?? null;
+    return null;
+  }, [agentConfigItems, effectiveDrawerAgentId, selectedDrawerAgent]);
 
   const selectedDrawerCapabilities = useMemo(
     () => agentPanelAgents.find((item) => item.id === effectiveDrawerAgentId)?.capabilities ?? null,
     [agentPanelAgents, effectiveDrawerAgentId],
   );
+
+  const handleSelectAgentConfig = useCallback((agentId: string) => {
+    setDrawerAgentId(agentId);
+  }, []);
 
   const selectedDrawerInstances = useMemo(
     () => (selectedDrawerAgent
@@ -482,35 +490,8 @@ export const WorkflowContainer: React.FC = () => {
   );
 
   const handleSelectAgent = useCallback((agentId: string) => {
-    const selectedAgent = agentPanelAgents.find((agent) => agent.id === agentId);
-    const normalizedAgentId = agentId.trim().toLowerCase();
-    const isOrchestratorAgent = selectedAgent?.type === 'orchestrator' || normalizedAgentId.includes('orchestrator');
-    if (isOrchestratorAgent) {
-      setSessionBinding({
-        context: 'orchestrator',
-        sessionId: orchestratorSessionId,
-      });
-      setDrawerAgentId(null);
-      setSelectedAgentId(null);
-      if (orchestratorSessionId) {
-        void switchSession(orchestratorSessionId);
-      }
-      return;
-    }
-    const runtimeInstance = runtimeInstances.find((instance) => instance.agentId === agentId);
-    if (runtimeInstance?.sessionId) {
-      setSessionBinding({
-        context: 'runtime',
-        sessionId: runtimeInstance.sessionId,
-        runtimeInstanceId: runtimeInstance.id,
-      });
-      setSelectedAgentId(agentId);
-      setDrawerAgentId(agentId);
-      return;
-    }
     setSelectedAgentId(agentId);
-    setDrawerAgentId(agentId);
-  }, [agentPanelAgents, orchestratorSessionId, runtimeInstances, setSelectedAgentId, switchSession]);
+  }, [setSelectedAgentId]);
 
   const handleSelectInstance = useCallback(async (instanceIdOrPayload: string | { id?: string; sessionId?: string }): Promise<void> => {
     const selectedInstance = typeof instanceIdOrPayload === 'string'
@@ -519,7 +500,9 @@ export const WorkflowContainer: React.FC = () => {
           (typeof instanceIdOrPayload.id === 'string' && item.id === instanceIdOrPayload.id)
           || item.sessionId === instanceIdOrPayload.sessionId
         ));
-    const sessionIdToSwitch = selectedInstance?.sessionId;
+    if (!selectedInstance) return;
+    const sessionIdToSwitch = selectedInstance.sessionId
+      || (selectedInstance.type === 'orchestrator' ? orchestratorSessionId : undefined);
     if (!sessionIdToSwitch) return;
     setDrawerAgentId(null);
     const shouldRestoreOrchestrator = selectedInstance.type === 'orchestrator' || sessionIdToSwitch === orchestratorSessionId;
@@ -535,7 +518,7 @@ export const WorkflowContainer: React.FC = () => {
     setSessionBinding({
       context: 'runtime',
       sessionId: sessionIdToSwitch,
-      runtimeInstanceId: selectedInstance?.id,
+      runtimeInstanceId: selectedInstance.id,
     });
     setSelectedAgentId(selectedInstance.agentId);
   }, [orchestratorSessionId, runtimeInstances, switchSession]);
@@ -715,7 +698,7 @@ export const WorkflowContainer: React.FC = () => {
     startupTemplates,
     orchestrationConfig,
     debugMode,
-    selectedAgentId,
+    selectedAgentConfigId: drawerAgentId,
     currentSessionId: activeSessionId,
     focusedRuntimeInstanceId: sessionBinding.runtimeInstanceId ?? null,
     isLoading: isLoadingAgentPanel,
@@ -738,7 +721,25 @@ export const WorkflowContainer: React.FC = () => {
     </div>
   ), [frozenTaskFlowProps, panelFreeze.performance, uiDisable.performance]);
 
-  const rightPanelElement = useMemo(() => (
+  const rightPanelElement = useMemo(() => {
+    const runtimeInstance = sessionBinding.context === 'runtime'
+      ? (runtimeInstances.find((instance) => (
+          (sessionBinding.runtimeInstanceId && instance.id === sessionBinding.runtimeInstanceId)
+          || instance.sessionId === sessionBinding.sessionId
+        )) ?? null)
+      : null;
+    const resolvedSessionAgentId = sessionAgentId || currentSession?.ownerAgentId || executionState?.orchestrator?.id || DEFAULT_CHAT_AGENT_ID;
+    const runtimeAgentLabel = runtimeInstance?.agentId || runtimeInstance?.name || resolvedSessionAgentId || `runtime:${sessionBinding.sessionId}`;
+    const orchestratorAgentLabel = resolvedSessionAgentId || DEFAULT_CHAT_AGENT_ID;
+    const eventFilterAgentId = sessionBinding.context === 'runtime' ? runtimeAgentLabel : null;
+    const contextLabel = sessionBinding.context === 'runtime'
+      ? `上下文: 子会话 · agent ${runtimeAgentLabel} · session ${sessionBinding.sessionId}`
+      : `上下文: 主会话 · agent ${orchestratorAgentLabel} · session ${orchestratorSessionId}`;
+    const panelTitle = sessionBinding.context === 'runtime'
+      ? runtimeAgentLabel
+      : orchestratorAgentLabel;
+    const showRuntimeModeBadge = sessionBinding.context !== 'runtime';
+    return (
       <ChatInterface
         key={frozenActiveSessionId}
         executionState={frozenRightPayload.executionState}
@@ -747,6 +748,7 @@ export const WorkflowContainer: React.FC = () => {
         contextEditableEventIds={frozenRightPayload.contextEditableEventIds}
         agentRunStatus={frozenRightPayload.agentRunStatus}
         runtimeOverview={frozenRightPayload.runtimeOverview}
+        contextLabel={contextLabel}
         toolPanelOverview={frozenRightPayload.toolPanelOverview}
         onUpdateToolExposure={updateToolExposure}
         onSendMessage={sendUserInput}
@@ -760,16 +762,20 @@ export const WorkflowContainer: React.FC = () => {
         isConnected={isConnected}
         onAgentClick={handleSelectAgent}
         selectedAgentId={frozenRightPayload.selectedAgentId}
+        eventFilterAgentId={eventFilterAgentId}
         inputCapability={chatInputCapability}
         debugSnapshotsEnabled={frozenRightPayload.debugSnapshotsEnabled}
         onToggleDebugSnapshots={setDebugSnapshotsEnabled}
         debugSnapshots={frozenRightPayload.debugSnapshots}
         onClearDebugSnapshots={clearDebugSnapshots}
-       orchestratorRuntimeMode={frozenRightPayload.orchestratorRuntimeMode}
+        orchestratorRuntimeMode={frozenRightPayload.orchestratorRuntimeMode}
         requestDetailsEnabled={requestDetailsEnabled}
         onToggleRequestDetails={setRequestDetailsEnabled}
+        panelTitle={panelTitle}
+        showRuntimeModeBadge={showRuntimeModeBadge}
       />
-  ), [clearDebugSnapshots, deleteRuntimeEvent, editRuntimeEvent, frozenActiveSessionId, frozenChatAgents, frozenRightPayload, handleCreateNewSession, handleSelectAgent, interruptCurrentTurn, isConnected, pauseWorkflow, resumeWorkflow, sendUserInput, setDebugSnapshotsEnabled, updateToolExposure, requestDetailsEnabled, setRequestDetailsEnabled]);
+    );
+  }, [clearDebugSnapshots, deleteRuntimeEvent, editRuntimeEvent, executionState?.orchestrator?.id, frozenActiveSessionId, frozenChatAgents, frozenRightPayload, handleCreateNewSession, handleSelectAgent, interruptCurrentTurn, isConnected, pauseWorkflow, resumeWorkflow, runtimeInstances, sendUserInput, sessionBinding.context, sessionBinding.runtimeInstanceId, sessionBinding.sessionId, orchestratorSessionId, setDebugSnapshotsEnabled, updateToolExposure, requestDetailsEnabled, setRequestDetailsEnabled]);
 
   const leftSidebarElement = useMemo(() => (
     <LeftSidebar
@@ -779,6 +785,7 @@ export const WorkflowContainer: React.FC = () => {
       runtimeInstances={frozenRuntimeInstancesForLeft}
       focusedRuntimeInstanceId={frozenFocusedRuntimeInstanceId}
       activeRuntimeSessionId={frozenActiveRuntimeSessionId}
+      selectedAgentConfigId={frozenDrawerAgentIdForLeft}
       onSwitchRuntimeInstance={(instance) => { void handleSelectInstance(instance); }}
       onCreateSession={createSession}
       onDeleteSession={removeSession}
@@ -791,7 +798,7 @@ export const WorkflowContainer: React.FC = () => {
       disableAnimations={disableAnimations}
       onToggleDisableAnimations={updateDisableAnimations}
     />
-  ), [createSession, disableAnimations, frozenActiveRuntimeSessionId, frozenCurrentSession, frozenFocusedRuntimeInstanceId, frozenIsLoadingSessions, frozenRuntimeInstancesForLeft, frozenSessions, handleSelectInstance, handleSwitchSessionFromSidebar, panelFreeze, refreshSessions, removeSession, renameSession, resetPanelFreeze, updateDisableAnimations, updatePanelFreeze]);
+  ), [createSession, disableAnimations, frozenActiveRuntimeSessionId, frozenCurrentSession, frozenDrawerAgentIdForLeft, frozenFocusedRuntimeInstanceId, frozenIsLoadingSessions, frozenRuntimeInstancesForLeft, frozenSessions, handleSelectInstance, handleSwitchSessionFromSidebar, panelFreeze, refreshSessions, removeSession, renameSession, resetPanelFreeze, updateDisableAnimations, updatePanelFreeze]);
 
   const bottomPanelElement = useMemo(() => (
     <BottomPanel
@@ -802,12 +809,12 @@ export const WorkflowContainer: React.FC = () => {
       startupTemplates={frozenBottomPayload.startupTemplates}
       orchestrationConfig={frozenBottomPayload.orchestrationConfig}
       debugMode={frozenBottomPayload.debugMode}
-      selectedAgentId={frozenBottomPayload.selectedAgentId}
+      selectedAgentConfigId={frozenBottomPayload.selectedAgentConfigId}
       currentSessionId={frozenBottomPayload.currentSessionId}
       focusedRuntimeInstanceId={frozenBottomPayload.focusedRuntimeInstanceId}
       isLoading={frozenBottomPayload.isLoading}
       error={frozenBottomPayload.error}
-      onSelectAgent={handleSelectAgent}
+      onSelectAgentConfig={handleSelectAgentConfig}
       onSelectInstance={(instance) => { void handleSelectInstance(instance); }}
       onRefresh={() => { void refreshAgentPanel(); }}
       onSetDebugMode={async (enabled) => {
@@ -894,7 +901,6 @@ export const WorkflowContainer: React.FC = () => {
         currentSessionId={activeSessionId}
         onClose={() => {
           setDrawerAgentId(null);
-          setSelectedAgentId(null);
         }}
         onSwitchInstance={(instance) => { void handleSelectInstance(instance); }}
         onDeployConfig={handleDeployAgent}

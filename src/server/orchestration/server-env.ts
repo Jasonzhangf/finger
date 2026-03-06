@@ -28,8 +28,8 @@ export interface ServerEnv {
 }
 
 export function resolveServerEnv(): ServerEnv {
-  const port = process.env.PORT ? parseInt(process.env.PORT, 10) : 5521;
-  const wsPort = process.env.WS_PORT ? parseInt(process.env.WS_PORT, 10) : 5522;
+  const port = process.env.PORT ? parseInt(process.env.PORT, 10) : 9999;
+  const wsPort = process.env.WS_PORT ? parseInt(process.env.WS_PORT, 10) : 9998;
   const httpBodyLimit = process.env.FINGER_HTTP_BODY_LIMIT || '20mb';
   const blockingMessageTimeoutMs = Number.isFinite(Number(process.env.FINGER_BLOCKING_MESSAGE_TIMEOUT_MS))
     ? Math.max(1000, Math.floor(Number(process.env.FINGER_BLOCKING_MESSAGE_TIMEOUT_MS)))

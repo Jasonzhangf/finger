@@ -24,7 +24,7 @@
 │                    Daemon Process                            │
 │  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐      │
 │  │ HTTP Server  │  │ WS Server    │  │ MessageHub   │      │
-│  │  :8080       │  │ :8081        │  │              │      │
+│  │  :9999       │  │ :9998        │  │              │      │
 │  └──────────────┘  └──────────────┘  └──────────────┘      │
 │                                                              │
 │  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐      │
@@ -106,7 +106,7 @@ Agent 执行遇到需要用户决策的情况
 CLI: finger orchestrate "task" --watch
   │
   ├─> FingerClient.connect()
-  │     WebSocket 连接到 ws://localhost:8081
+  │     WebSocket 连接到 ws://localhost:9998
   │
   ├─> FingerClient.subscribe(['*'], handler)
   │     发送: { "type": "subscribe", "events": ["*"] }

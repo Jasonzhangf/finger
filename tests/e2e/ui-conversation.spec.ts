@@ -16,8 +16,8 @@ import WebSocket from 'ws';
 import { setTimeout as sleep } from 'timers/promises';
 
 // 测试配置
-const UI_URL = 'http://localhost:8080';
-const WS_URL = 'ws://localhost:8081';
+const UI_URL = 'http://localhost:9999';
+const WS_URL = 'ws://localhost:9998';
 const TEST_TIMEOUT = 120000;
 const SETUP_TIMEOUT = 60000;
 
@@ -39,8 +39,8 @@ describe('WebUI Conversation Panel', () => {
   }
 
   async function startServer(): Promise<void> {
-    if (await isPortInUse(8080)) {
-      console.log('[E2E] Server already running on port 8080');
+    if (await isPortInUse(9999)) {
+      console.log('[E2E] Server already running on port 9999');
       return;
     }
 

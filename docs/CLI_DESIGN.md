@@ -56,8 +56,8 @@ finger daemon logs [-f]
 ```
 
 **Daemon 职责**:
-- 启动 HTTP Server (端口 8080)
-- 启动 WebSocket Server (端口 8081)
+- 启动 HTTP Server (端口 9999)
+- 启动 WebSocket Server (端口 9998)
 - 初始化资源池
 - 加载已持久化的会话
 - 监听 CLI 命令
@@ -70,8 +70,8 @@ finger daemon start
     ▼
 ┌───────────────────────��─────────────┐
 │           Main Process              │
-│  - HTTP Server (8080)               │
-│  - WebSocket Server (8081)          │
+│  - HTTP Server (9999)               │
+│  - WebSocket Server (9998)          │
 │  - MessageHub                       │
 │  - ResourcePool                     │
 │  - WorkflowManager                  │
@@ -213,7 +213,7 @@ for await (const event of stream) {
 
 ```typescript
 // 通过 HTTP API 调用
-const response = await fetch('http://localhost:8080/api/v1/agent/plan', {
+const response = await fetch('http://localhost:9999/api/v1/agent/plan', {
   method: 'POST',
   headers: { 'Content-Type': 'application/json' },
   body: JSON.stringify({
@@ -223,7 +223,7 @@ const response = await fetch('http://localhost:8080/api/v1/agent/plan', {
 });
 
 // 通过 WebSocket 订阅
-const ws = new WebSocket('ws://localhost:8081');
+const ws = new WebSocket('ws://localhost:9998');
 ws.send(JSON.stringify({
   type: 'subscribe',
   events: ['phase_transition', 'task_started', 'task_completed'],
@@ -426,8 +426,8 @@ finger execute --task "xxx" --json 2>&1
 ### 9.2 环境变量
 
 ```bash
-FINGER_HTTP_PORT=8080
-FINGER_WS_PORT=8081
+FINGER_HTTP_PORT=9999
+FINGER_WS_PORT=9998
 FINGER_LOG_LEVEL=debug
 IFLOW_API_KEY=xxx
 ```
@@ -491,8 +491,8 @@ finger daemon stop
 import { FingerClient } from 'finger-sdk';
 
 const client = new FingerClient({
-  httpUrl: 'http://localhost:8080',
-  wsUrl: 'ws://localhost:8081',
+  httpUrl: 'http://localhost:9999',
+  wsUrl: 'ws://localhost:9998',
 });
 
 // 订阅事件

@@ -38,6 +38,8 @@ import { registerWorkflowStateRoutes } from './workflow-state.js';
 import { registerDebugRoutes } from './debug.js';
 import { registerTestRoutes } from './test.js';
 import { registerDryrunRoutes } from './dryrun.js';
+import { registerRuntimePathRoutes } from './runtime-paths.js';
+import { registerProjectRoutes } from './projects.js';
 
 export interface RegisterAllRoutesDeps {
   sessionManager: SessionManager;
@@ -209,6 +211,14 @@ export function registerAllRoutes(app: Express, deps: RegisterAllRoutesDeps): vo
     primaryOrchestratorAgentId: deps.primaryOrchestratorAgentId,
     primaryOrchestratorTarget: deps.primaryOrchestratorTarget,
     allowDirectAgentRoute: deps.allowDirectAgentRoute,
+  });
+
+  registerRuntimePathRoutes(app, {
+    sessionManager: deps.sessionManager,
+  });
+
+  registerProjectRoutes(app, {
+    registry: deps.registry,
   });
 
   registerAgentRuntimeRoutes(app, {

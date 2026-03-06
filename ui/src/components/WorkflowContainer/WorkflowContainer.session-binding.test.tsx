@@ -74,17 +74,17 @@ vi.mock('../BottomPanel/BottomPanel.tsx', () => ({
   BottomPanel: ({
     instances,
     onSelectInstance,
-    onSelectAgent,
+    onSelectAgentConfig,
   }: {
     instances: Array<{ id: string }>;
     onSelectInstance?: (instance: { id: string }) => void;
-    onSelectAgent?: (agentId: string) => void;
+    onSelectAgentConfig?: (agentId: string) => void;
   }) => (
     <>
       <button type="button" data-testid="switch-runtime" onClick={() => onSelectInstance?.(instances[0])}>
         switch
       </button>
-      <button type="button" data-testid="select-orchestrator" onClick={() => onSelectAgent?.('finger-orchestrator')}>
+      <button type="button" data-testid="select-orchestrator" onClick={() => onSelectAgentConfig?.('finger-orchestrator')}>
         select orchestrator
       </button>
     </>
@@ -216,7 +216,7 @@ describe('WorkflowContainer session binding', () => {
     });
   });
 
-  it('returns to orchestrator context when selecting orchestrator agent', async () => {
+  it('does not switch session when selecting orchestrator config', async () => {
     render(<WorkflowContainer />);
 
     fireEvent.click(screen.getByTestId('switch-runtime'));
@@ -227,7 +227,7 @@ describe('WorkflowContainer session binding', () => {
     fireEvent.click(screen.getByTestId('select-orchestrator'));
 
     await waitFor(() => {
-      expect(useWorkflowExecutionMock).toHaveBeenLastCalledWith('orch-session');
+      expect(useWorkflowExecutionMock).toHaveBeenLastCalledWith('runtime-session');
     });
   });
 });

@@ -170,16 +170,16 @@ describe('RUNTIME_SPEC E2E Verification', () => {
   });
 
   describe('Section 6 - Code Fixes Verification', () => {
-    it('VERIFIED: Message Hub URL is 5521, not 8080', async () => {
-      const MESSAGE_HUB_URL = 'http://localhost:5521';
-      expect(MESSAGE_HUB_URL).toContain(':5521');
+    it('VERIFIED: Message Hub URL is 9999, not 8080', async () => {
+      const MESSAGE_HUB_URL = 'http://localhost:9999';
+      expect(MESSAGE_HUB_URL).toContain(':9999');
       expect(MESSAGE_HUB_URL).not.toContain(':8080');
       console.log(`[E2E] Message Hub URL verified: ${MESSAGE_HUB_URL}`);
     });
 
-    it('VERIFIED: WebSocket URL is 5522', async () => {
-      const WEBSOCKET_URL = 'ws://localhost:5522';
-      expect(WEBSOCKET_URL).toContain(':5522');
+    it('VERIFIED: WebSocket URL is 9998', async () => {
+      const WEBSOCKET_URL = 'ws://localhost:9998';
+      expect(WEBSOCKET_URL).toContain(':9998');
       console.log(`[E2E] WebSocket URL verified: ${WEBSOCKET_URL}`);
     });
 

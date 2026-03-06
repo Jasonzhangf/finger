@@ -38,6 +38,15 @@ It intentionally avoids project-specific architecture, API, roadmap, and busines
 - 发现未跟踪文件时优先 review，再决定是否纳入；禁止默认清理/回退。
 - 禁止执行进程终止类命令（如 `kill`/`pkill`/`killall` 等）。
 - 代码逻辑必须精确处理问题，不得用兜底/后备/替代分支绕过，除非用户明确要求。
+- 如果没有必要，需要自己进行查询和搜索，自己进行最佳线路规划和执行，不要做无意义的暂停和询问，尽量进行思考后直接执行。
+
+## Memsearch 使用原则
+1. 当任务完成或阶段性完成、有重要发现、或需要记录失败尝试时，使用 memsearch flow skill 进行记录。
+2. 当需要压缩记忆时，使用 memsearch flow skill 进行记录。
+3. 当有 debug 任务需要分析或有新任务要实现时，先使用 memsearch flow skill 做记忆搜索再执行。
+4. 对用户反复要求的任务、习惯与命令，提炼规律并记录到 memsearch。
+5. 当用户提出“请记住 / 记住 / 保存记忆 / 记忆一下”等请求时，必须调用 memsearch flow skill 写入记忆。
+6. 当用户提出“查询记忆 / 查找记忆 / 搜索记忆 / 回忆”等请求时，先调用 memsearch flow skill 检索记忆，再进行代码搜索或实现操作。
 
 ## Validation
 - Validate changed behavior with the smallest relevant checks first.
@@ -119,7 +128,7 @@ It intentionally avoids project-specific architecture, API, roadmap, and busines
 ### 子进程自杀流程
 
 1. 子进程启动时创建 `HeartbeatMonitor` 实例
-2. 监听 UDP 端口（默认 5522）接收主程序心跳
+2. 监听 UDP 端口（默认 9998）接收主程序心跳
 3. 每次收到心跳重置 `missedCount = 0`
 4. 每 30 秒检查一次：`missedCount++`
 5. 当 `missedCount >= 3` 时：

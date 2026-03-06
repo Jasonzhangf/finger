@@ -19,13 +19,13 @@ describe('CLI status command - callbackId support', () => {
     });
 
     // Simulate the status command logic
-    const MESSAGE_HUB_URL = 'http://localhost:5521';
+    const MESSAGE_HUB_URL = 'http://localhost:9999';
     const callbackId = 'cb-123';
     
     const res = await fetch(`${MESSAGE_HUB_URL}/api/v1/mailbox/callback/${callbackId}`);
     
     expect(mockFetch).toHaveBeenCalledWith(
-      'http://localhost:5521/api/v1/mailbox/callback/cb-123'
+      'http://localhost:9999/api/v1/mailbox/callback/cb-123'
     );
     
     const data = await res.json();
@@ -40,7 +40,7 @@ describe('CLI status command - callbackId support', () => {
         json: () => Promise.resolve({ id: 'msg-1', status: 'completed' }),
       });
 
-    const MESSAGE_HUB_URL = 'http://localhost:5521';
+    const MESSAGE_HUB_URL = 'http://localhost:9999';
     const id = 'msg-1';
     
     let res = await fetch(`${MESSAGE_HUB_URL}/api/v1/mailbox/callback/${id}`);
@@ -52,11 +52,11 @@ describe('CLI status command - callbackId support', () => {
     expect(mockFetch).toHaveBeenCalledTimes(2);
     expect(mockFetch).toHaveBeenNthCalledWith(
       1,
-      'http://localhost:5521/api/v1/mailbox/callback/msg-1'
+      'http://localhost:9999/api/v1/mailbox/callback/msg-1'
     );
     expect(mockFetch).toHaveBeenNthCalledWith(
       2,
-      'http://localhost:5521/api/v1/mailbox/msg-1'
+      'http://localhost:9999/api/v1/mailbox/msg-1'
     );
   });
 
@@ -65,7 +65,7 @@ describe('CLI status command - callbackId support', () => {
       .mockResolvedValueOnce({ status: 404 })
       .mockResolvedValueOnce({ status: 404 });
 
-    const MESSAGE_HUB_URL = 'http://localhost:5521';
+    const MESSAGE_HUB_URL = 'http://localhost:9999';
     const id = 'non-existent';
     
     let res = await fetch(`${MESSAGE_HUB_URL}/api/v1/mailbox/callback/${id}`);

@@ -1,5 +1,6 @@
 import { resolve } from 'path';
-import { resolveHotPrompt } from '../base/prompt-template-loader.js';
+import { FINGER_SOURCE_ROOT } from '../../core/source-root.js';
+import { resolveHotPrompt, type HotPromptResolveResult } from '../base/prompt-template-loader.js';
 import { FINGER_PATHS } from '../../core/finger-paths.js';
 
 export type ChatCodexDeveloperRole = 'orchestrator' | 'reviewer' | 'executor' | 'searcher' | 'router';
@@ -26,11 +27,11 @@ function resolveTemplateCandidates(role: ChatCodexDeveloperRole, explicitPath?: 
     envPath,
     legacyEnvPath,
     resolve(FINGER_PATHS.config.promptsDir, 'finger-general', 'dev', fileName),
-    resolve(process.cwd(), 'prompts', 'finger-general', 'dev', fileName),
-    resolve(process.cwd(), 'src', 'agents', 'finger-general', 'dev-prompts', fileName),
+    resolve(FINGER_SOURCE_ROOT, 'prompts', 'finger-general', 'dev', fileName),
+    resolve(FINGER_SOURCE_ROOT, 'src', 'agents', 'finger-general', 'dev-prompts', fileName),
     resolve(FINGER_PATHS.config.promptsDir, 'chat-codex', 'dev', fileName),
-    resolve(process.cwd(), 'prompts', 'chat-codex', 'dev', fileName),
-    resolve(process.cwd(), 'src', 'agents', 'chat-codex', 'dev-prompts', fileName),
+    resolve(FINGER_SOURCE_ROOT, 'prompts', 'chat-codex', 'dev', fileName),
+    resolve(FINGER_SOURCE_ROOT, 'src', 'agents', 'chat-codex', 'dev-prompts', fileName),
     resolve(FINGER_PATHS.home, 'prompts', 'finger-general', 'dev', fileName),
     resolve(FINGER_PATHS.home, 'prompts', 'chat-codex', 'dev', fileName),
   ];
@@ -43,13 +44,20 @@ function resolveTemplateCandidates(role: ChatCodexDeveloperRole, explicitPath?: 
   return deduped;
 }
 
+
+export function resolveDeveloperPromptTemplateWithSource(
+  role: ChatCodexDeveloperRole,
+  explicitPath?: string,
+): HotPromptResolveResult {
+  return resolveHotPrompt({
+    inlinePrompt: INLINE_TEMPLATE_FALLBACK[role],
+    candidatePaths: resolveTemplateCandidates(role, explicitPath),
+  });
+}
+
 export function resolveDeveloperPromptTemplate(
   role: ChatCodexDeveloperRole,
   explicitPath?: string,
 ): string {
-  const { prompt } = resolveHotPrompt({
-    inlinePrompt: INLINE_TEMPLATE_FALLBACK[role],
-    candidatePaths: resolveTemplateCandidates(role, explicitPath),
-  });
-  return prompt;
+  return resolveDeveloperPromptTemplateWithSource(role, explicitPath).prompt;
 }

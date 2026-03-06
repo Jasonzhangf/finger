@@ -46,6 +46,17 @@ export function registerRuntimeViewRoutes(app: Express, deps: AgentRuntimeRouteD
     });
   });
 
+  app.get('/api/v1/agents/debug/assertions', (req, res) => {
+    const rawLimit = typeof req.query.limit === 'string' ? req.query.limit : '';
+    const limit = rawLimit.trim().length > 0 ? Math.max(1, Math.floor(Number(rawLimit))) : 200;
+    res.json({ success: true, assertions: deps.mockRuntime.listAssertions({ limit }) });
+  });
+
+  app.delete('/api/v1/agents/debug/assertions', (_req, res) => {
+    deps.mockRuntime.clearAssertions();
+    res.json({ success: true, message: 'Debug assertions cleared' });
+  });
+
   app.post('/api/v1/agents/debug/mode', async (req, res) => {
     const body = req.body as { enabled?: unknown };
     if (typeof body.enabled !== 'boolean') {

@@ -104,7 +104,7 @@ fingerdaemon daemon register-module ...
 
 ### 环境变量
 
-- `PORT` - 覆盖 HTTP 服务端口（默认 5521）
+- `PORT` - 覆盖 HTTP 服务端口（默认 9999）
 - `HOST` - 覆盖监听地址
 
 ### 日志
@@ -164,7 +164,7 @@ fingerdaemon daemon agent remove executor1
 
 ## 5. 模块注册 API
 
-守护进程提供以下 REST 端点（端口 5521）：
+守护进程提供以下 REST 端点（端口 9999）：
 
 | 端点 | 方法 | 说明 |
 |------|------|------|
@@ -176,14 +176,14 @@ fingerdaemon daemon agent remove executor1
 示例：
 
 ```bash
-curl -X POST http://localhost:5521/api/v1/message \
+curl -X POST http://localhost:9999/api/v1/message \
   -H "Content-Type: application/json" \
   -d '{"target":"echo-output","message":{"text":"hello"},"blocking":true}'
 
 dryrun 示例（仅返回注入后的 developer instructions，不触发模型调用）：
 
 ```bash
-curl -X POST "http://localhost:5521/api/v1/message?dryrun=1" \
+curl -X POST "http://localhost:9999/api/v1/message?dryrun=1" \
   -H "Content-Type: application/json" \
   -d '{"target":"finger-orchestrator-gateway","message":{"text":"dryrun sample"}}'
 ```
@@ -191,6 +191,6 @@ curl -X POST "http://localhost:5521/api/v1/message?dryrun=1" \
 
 ## 6. 故障排查
 
-- **端口冲突**：`lsof -ti:5521 | xargs kill -9`
+- **端口冲突**：`lsof -ti:9999 | xargs kill -9`
 - **Agent 启动失败**：查看 `~/.finger/logs/daemon.log`
 - **消息路由不工作**：检查 `hub.getRoutes()` 和模块注册情况

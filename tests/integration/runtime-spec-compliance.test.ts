@@ -71,8 +71,8 @@ describe('RUNTIME_SPEC.md Compliance', () => {
   // ============================================================================
 
   describe('Section 1.1 - Single Source of Truth', () => {
-    it('MUST: All components communicate via Message Hub (5521)', async () => {
-      // 验证：agent-commands.ts 使用 MESSAGE_HUB_URL = localhost:5521
+    it('MUST: All components communicate via Message Hub (9999)', async () => {
+      // 验证：agent-commands.ts 使用 MESSAGE_HUB_URL = localhost:9999
       const { understandCommand } = await import('../../src/cli/agent-commands.js');
       
       const mockFetch = vi.fn();
@@ -85,7 +85,7 @@ describe('RUNTIME_SPEC.md Compliance', () => {
       await understandCommand('test', { sessionId: 's1' });
       
       const callUrl = mockFetch.mock.calls[0][0];
-      expect(callUrl).toContain('localhost:5521');
+      expect(callUrl).toContain('localhost:9999');
     });
 
     it('MUST: CLI is pure client, sends request then exits', async () => {
@@ -108,12 +108,12 @@ describe('RUNTIME_SPEC.md Compliance', () => {
       expect(mockFetch).toHaveBeenCalledTimes(1);
     });
 
-    it('MUST: Status sync via WebSocket (5522)', async () => {
-      // 验证：server/index.ts 使用 wsPort = 5522 (default)
-      const wsPort = process.env.WS_PORT ? parseInt(process.env.WS_PORT, 10) : 5522;
-      expect(wsPort).toBe(5522);
+    it('MUST: Status sync via WebSocket (9998)', async () => {
+      // 验证：server/index.ts 使用 wsPort = 9998 (default)
+      const wsPort = process.env.WS_PORT ? parseInt(process.env.WS_PORT, 10) : 9998;
+      expect(wsPort).toBe(9998);
       
-      // 验证：agent-commands.ts 使用 WEBSOCKET_URL = localhost:5522
+      // 验证：agent-commands.ts 使用 WEBSOCKET_URL = localhost:9998
       const { orchestrateCommand } = await import('../../src/cli/agent-commands.js');
       
       const mockFetch = vi.fn();
@@ -126,7 +126,7 @@ describe('RUNTIME_SPEC.md Compliance', () => {
       const consoleSpy = vi.spyOn(console, 'log');
       await orchestrateCommand('test', { watch: true });
       
-      expect(consoleSpy).toHaveBeenCalledWith(expect.stringContaining('ws://localhost:5522'));
+      expect(consoleSpy).toHaveBeenCalledWith(expect.stringContaining('ws://localhost:9998'));
       consoleSpy.mockRestore();
     });
   });
@@ -179,7 +179,7 @@ describe('RUNTIME_SPEC.md Compliance', () => {
   // ============================================================================
 
   describe('Section 3.1 - Message Hub API', () => {
-    const API_BASE = process.env.FINGER_API_URL || 'http://localhost:5521';
+    const API_BASE = process.env.FINGER_API_URL || 'http://localhost:9999';
 
     it('MUST: POST /api/v1/message accepts target, message, blocking, sender, callbackId', async () => {
       // 验证 API 接受完整字段（mock 测试，因为 daemon 可能未启动）
@@ -307,7 +307,7 @@ describe('RUNTIME_SPEC.md Compliance', () => {
         });
       global.fetch = mockFetch;
 
-      const MESSAGE_HUB_URL = 'http://localhost:5521';
+      const MESSAGE_HUB_URL = 'http://localhost:9999';
       const callbackId = 'cb-123';
       
       const res = await fetch(`${MESSAGE_HUB_URL}/api/v1/mailbox/callback/${callbackId}`);
@@ -475,7 +475,7 @@ describe('RUNTIME_SPEC.md Compliance', () => {
   // ============================================================================
 
   describe('Section 6.1 - Message Hub Communication', () => {
-    it('VERIFIED: agent-commands.ts uses Message Hub (5521)', async () => {
+    it('VERIFIED: agent-commands.ts uses Message Hub (9999)', async () => {
       // 已验证：src/cli/agent-commands.ts 使用 MESSAGE_HUB_URL
       const { understandCommand } = await import('../../src/cli/agent-commands.js');
       
@@ -489,7 +489,7 @@ describe('RUNTIME_SPEC.md Compliance', () => {
       await understandCommand('test', { sessionId: 's1' });
 
       expect(mockFetch).toHaveBeenCalledWith(
-        expect.stringContaining('localhost:5521'),
+        expect.stringContaining('localhost:9999'),
         expect.any(Object)
       );
     });
@@ -515,10 +515,10 @@ describe('RUNTIME_SPEC.md Compliance', () => {
   });
 
   describe('Section 6.3 - WebSocket Port Unification', () => {
-    it('VERIFIED: WebSocket port is 5522', () => {
-      // 已验证：src/server/index.ts wsPort = 5522 (default)
-      const wsPort = process.env.WS_PORT ? parseInt(process.env.WS_PORT, 10) : 5522;
-      expect(wsPort).toBe(5522);
+    it('VERIFIED: WebSocket port is 9998', () => {
+      // 已验证：src/server/index.ts wsPort = 9998 (default)
+      const wsPort = process.env.WS_PORT ? parseInt(process.env.WS_PORT, 10) : 9998;
+      expect(wsPort).toBe(9998);
     });
   });
 
@@ -536,7 +536,7 @@ describe('RUNTIME_SPEC.md Compliance', () => {
       });
       global.fetch = mockFetch;
       
-      const API_BASE = 'http://localhost:5521';
+      const API_BASE = 'http://localhost:9999';
       const res = await fetch(`${API_BASE}/api/v1/message`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },

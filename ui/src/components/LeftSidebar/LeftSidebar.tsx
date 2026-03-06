@@ -1,5 +1,6 @@
 import { useMemo, useState, useEffect, useCallback, type FC, type MouseEvent as ReactMouseEvent } from 'react';
 import type { SessionInfo } from '../../api/types.js';
+import type { AgentRuntimeInstance } from '../../hooks/useAgentRuntimePanel.js';
 import type { ProviderConfig } from '../../api/types.js';
 import {
   listProviders,
@@ -17,6 +18,22 @@ interface LeftSidebarProps {
   sessions: SessionInfo[];
   currentSession: SessionInfo | null;
   isLoadingSessions: boolean;
+  runtimeInstances?: AgentRuntimeInstance[];
+  selectedAgentConfigId?: string | null;
+  focusedRuntimeInstanceId?: string | null;
+  activeRuntimeSessionId?: string | null;
+  onSwitchRuntimeInstance?: (instance: AgentRuntimeInstance) => Promise<void> | void;
+  panelFreeze?: {
+    left: boolean;
+    canvas: boolean;
+    right: boolean;
+    bottom: boolean;
+    performance: boolean;
+  };
+  onUpdatePanelFreeze?: (key: 'left' | 'canvas' | 'right' | 'bottom' | 'performance', enabled: boolean) => void;
+  onResetPanelFreeze?: () => void;
+  disableAnimations?: boolean;
+  onToggleDisableAnimations?: (enabled: boolean) => void;
   onCreateSession: (projectPath: string, name?: string) => Promise<SessionInfo>;
   onDeleteSession: (sessionId: string) => Promise<void>;
   onRenameSession: (sessionId: string, name: string) => Promise<SessionInfo>;
@@ -28,6 +45,11 @@ interface ProjectTabProps {
   sessions: SessionInfo[];
   currentSession: SessionInfo | null;
   isLoading: boolean;
+  runtimeInstances?: AgentRuntimeInstance[];
+  selectedAgentConfigId?: string | null;
+  focusedRuntimeInstanceId?: string | null;
+  activeRuntimeSessionId?: string | null;
+  onSwitchRuntimeInstance?: (instance: AgentRuntimeInstance) => Promise<void> | void;
   onCreateSession: (projectPath: string, name?: string) => Promise<SessionInfo>;
   onDeleteSession: (sessionId: string) => Promise<void>;
   onRenameSession: (sessionId: string, name: string) => Promise<SessionInfo>;
@@ -79,6 +101,21 @@ function buildSessionPreviewLines(session: SessionInfo): string[] {
   });
 }
 
+function formatRuntimeStatus(status: string): string {
+  const normalized = status.trim().toLowerCase();
+  if (normalized === 'queued') return '排队中';
+  if (normalized === 'waiting_input') return '等待输入';
+  if (normalized === 'completed') return '已完成';
+  if (normalized === 'failed') return '失败';
+  if (normalized === 'interrupted') return '已中断';
+  if (normalized === 'deployed') return '已部署';
+  if (normalized === 'busy' || normalized === 'running') return '运行中';
+  if (normalized === 'blocked') return '阻塞';
+  if (normalized === 'error') return '异常';
+  if (normalized === 'released') return '已释放';
+  return '空闲';
+}
+
 interface SessionContextMenuState {
   x: number;
   y: number;
@@ -89,6 +126,22 @@ export const LeftSidebar: FC<LeftSidebarProps> = ({
   sessions,
   currentSession,
   isLoadingSessions,
+  runtimeInstances = [],
+  selectedAgentConfigId = null,
+  focusedRuntimeInstanceId = null,
+  activeRuntimeSessionId = null,
+  onSwitchRuntimeInstance,
+  panelFreeze = {
+    left: false,
+    canvas: false,
+    right: false,
+    bottom: false,
+    performance: false,
+  },
+  onUpdatePanelFreeze,
+  onResetPanelFreeze,
+  disableAnimations = false,
+  onToggleDisableAnimations,
   onCreateSession,
   onDeleteSession,
   onRenameSession,
@@ -132,6 +185,11 @@ export const LeftSidebar: FC<LeftSidebarProps> = ({
                 sessions={sessions}
                 currentSession={currentSession}
                 isLoading={isLoadingSessions}
+                runtimeInstances={runtimeInstances}
+                selectedAgentConfigId={selectedAgentConfigId}
+                focusedRuntimeInstanceId={focusedRuntimeInstanceId}
+                activeRuntimeSessionId={activeRuntimeSessionId}
+                onSwitchRuntimeInstance={onSwitchRuntimeInstance}
                 onCreateSession={onCreateSession}
                 onDeleteSession={onDeleteSession}
                 onRenameSession={onRenameSession}
@@ -140,7 +198,15 @@ export const LeftSidebar: FC<LeftSidebarProps> = ({
               />
             )}
             {activeTab === 'ai-provider' && <AIProviderTab />}
-            {activeTab === 'settings' && <SettingsTab />}
+            {activeTab === 'settings' && (
+              <SettingsTab
+                panelFreeze={panelFreeze}
+                onUpdatePanelFreeze={onUpdatePanelFreeze}
+                onResetPanelFreeze={onResetPanelFreeze}
+                disableAnimations={disableAnimations}
+                onToggleDisableAnimations={onToggleDisableAnimations}
+              />
+            )}
           </div>
         </aside>
       )}
@@ -152,6 +218,11 @@ const ProjectTab: FC<ProjectTabProps> = ({
   sessions,
   currentSession,
   isLoading,
+  runtimeInstances = [],
+  selectedAgentConfigId = null,
+  focusedRuntimeInstanceId = null,
+  activeRuntimeSessionId = null,
+  onSwitchRuntimeInstance,
   onCreateSession,
   onDeleteSession,
   onRenameSession,
@@ -187,6 +258,25 @@ const ProjectTab: FC<ProjectTabProps> = ({
     () => [...sessions].sort((a, b) => new Date(b.lastAccessedAt).getTime() - new Date(a.lastAccessedAt).getTime()),
     [sessions],
   );
+
+  const focusedRuntimeAgentId = useMemo(() => {
+    if (selectedAgentConfigId) return selectedAgentConfigId;
+    if (focusedRuntimeInstanceId) {
+      return runtimeInstances.find((instance) => instance.id === focusedRuntimeInstanceId)?.agentId ?? null;
+    }
+    if (activeRuntimeSessionId) {
+      return runtimeInstances.find((instance) => instance.sessionId === activeRuntimeSessionId)?.agentId ?? null;
+    }
+    return null;
+  }, [activeRuntimeSessionId, focusedRuntimeInstanceId, runtimeInstances, selectedAgentConfigId]);
+
+  const runtimeSessionItems = useMemo(() => {
+    return runtimeInstances
+      .filter((instance) => typeof instance.sessionId === 'string' && instance.sessionId.length > 0)
+      .filter((instance) => (focusedRuntimeAgentId ? instance.agentId === focusedRuntimeAgentId : true))
+      .slice()
+      .sort((a, b) => a.agentId.localeCompare(b.agentId));
+  }, [focusedRuntimeAgentId, runtimeInstances]);
 
   const projectGroups = useMemo(() => {
     const groups: Array<{
@@ -575,6 +665,34 @@ const ProjectTab: FC<ProjectTabProps> = ({
         )}
       </div>
 
+      <div className="runtime-session-list">
+        <h4>Agent Sessions ({runtimeSessionItems.length})</h4>
+        {runtimeSessionItems.length === 0 && (
+          <div className="empty-sessions">暂无子 Agent 会话</div>
+        )}
+        {runtimeSessionItems.length > 0 && (
+          <div className="runtime-session-items">
+            {runtimeSessionItems.map((instance) => {
+              const isFocused = focusedRuntimeInstanceId === instance.id;
+              const isActive = activeRuntimeSessionId === instance.sessionId;
+              return (
+                <button
+                  key={instance.id}
+                  type="button"
+                  className={`runtime-session-item ${isFocused ? 'focused' : ''} ${isActive ? 'active' : ''}`}
+                  onClick={() => { onSwitchRuntimeInstance?.(instance); }}
+                  onDoubleClick={() => { onSwitchRuntimeInstance?.(instance); }}
+                  disabled={!onSwitchRuntimeInstance}
+                >
+                  <span className="runtime-session-name">{instance.agentId}</span>
+                  <span className="runtime-session-meta">{formatRuntimeStatus(instance.status)} · {instance.sessionId}</span>
+                </button>
+              );
+            })}
+          </div>
+        )}
+      </div>
+
       {contextMenu && contextSession && (
         <div
           className="session-context-menu"
@@ -741,7 +859,25 @@ const AIProviderTab: FC = () => {
   );
 };
 
-const SettingsTab = () => (
+const SettingsTab = ({
+  panelFreeze,
+  onUpdatePanelFreeze,
+  onResetPanelFreeze,
+  disableAnimations,
+  onToggleDisableAnimations,
+}: {
+  panelFreeze: {
+    left: boolean;
+    canvas: boolean;
+    right: boolean;
+    bottom: boolean;
+    performance: boolean;
+  };
+  onUpdatePanelFreeze?: (key: 'left' | 'canvas' | 'right' | 'bottom' | 'performance', enabled: boolean) => void;
+  onResetPanelFreeze?: () => void;
+  disableAnimations: boolean;
+  onToggleDisableAnimations?: (enabled: boolean) => void;
+}) => (
   <div className="tab-content">
     <div className="setting-item">
       <label htmlFor="theme-select">Theme</label>
@@ -757,6 +893,67 @@ const SettingsTab = () => (
         <option value="Debug">Debug</option>
         <option value="Warn">Warn</option>
       </select>
+    </div>
+    <div className="setting-item">
+      <label>Panel Freeze</label>
+      <div className="freeze-list">
+        <label className="freeze-row">
+          <input
+            type="checkbox"
+            checked={panelFreeze.left}
+            onChange={(e) => onUpdatePanelFreeze?.('left', e.target.checked)}
+          />
+          Left Sidebar
+        </label>
+        <label className="freeze-row">
+          <input
+            type="checkbox"
+            checked={panelFreeze.canvas}
+            onChange={(e) => onUpdatePanelFreeze?.('canvas', e.target.checked)}
+          />
+          Canvas
+        </label>
+        <label className="freeze-row">
+          <input
+            type="checkbox"
+            checked={panelFreeze.right}
+            onChange={(e) => onUpdatePanelFreeze?.('right', e.target.checked)}
+          />
+          Right Panel
+        </label>
+        <label className="freeze-row">
+          <input
+            type="checkbox"
+            checked={panelFreeze.bottom}
+            onChange={(e) => onUpdatePanelFreeze?.('bottom', e.target.checked)}
+          />
+          Bottom Panel
+        </label>
+        <label className="freeze-row">
+          <input
+            type="checkbox"
+            checked={panelFreeze.performance}
+            onChange={(e) => onUpdatePanelFreeze?.('performance', e.target.checked)}
+          />
+          Performance
+        </label>
+        <button type="button" className="freeze-reset" onClick={() => onResetPanelFreeze?.()}>
+          Reset Freeze
+        </button>
+      </div>
+    </div>
+    <div className="setting-item">
+      <label>Animation</label>
+      <div className="freeze-list">
+        <label className="freeze-row">
+          <input
+            type="checkbox"
+            checked={disableAnimations}
+            onChange={(e) => onToggleDisableAnimations?.(e.target.checked)}
+          />
+          Disable Animations
+        </label>
+      </div>
     </div>
   </div>
 );

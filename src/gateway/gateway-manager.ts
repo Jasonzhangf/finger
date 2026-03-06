@@ -1,4 +1,5 @@
 import path from 'path';
+import { FINGER_SOURCE_ROOT } from '../core/source-root.js';
 import { MessageHub } from '../orchestration/message-hub.js';
 import { ModuleRegistry, OutputModule } from '../orchestration/module-registry.js';
 import { GatewayDeliveryMode, GatewayInboundEnvelope, ResolvedGatewayModule } from './types.js';
@@ -257,7 +258,7 @@ export class GatewayManager {
   }
 
   private async installBuiltins(): Promise<void> {
-    const cliPath = path.join(process.cwd(), 'dist', 'cli', 'index.js');
+    const cliPath = path.join(FINGER_SOURCE_ROOT, 'dist', 'cli', 'index.js');
     const command = process.execPath;
     const builtinRequestTimeoutMs = 600_000;
     const builtinAckTimeoutMs = 10_000;

@@ -110,7 +110,7 @@ node dist/agents/daemon/agent-daemon-cli.js start \
   --name "Executor 1" \
   --mode auto \
   --port 9001 \
-  --finger-daemon-url http://localhost:5521
+  --finger-daemon-url http://localhost:9999
 ```
 
 ## 四、注册为 MessageHub 模块

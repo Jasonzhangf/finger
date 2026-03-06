@@ -1,7 +1,7 @@
 /**
  * Unit tests for agent commands - Message Hub wrappers
  * 
- * 所有命令通过 Message Hub (5521) 发送消息
+ * 所有命令通过 Message Hub (9999) 发送消息
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
@@ -9,7 +9,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 // Mock fetch globally
 const mockFetch = vi.fn();
 global.fetch = mockFetch;
-const TEST_HUB_URL = process.env.FINGER_HUB_URL || 'http://localhost:5521';
+const TEST_HUB_URL = process.env.FINGER_HUB_URL || 'http://localhost:9999';
 
 describe('agent commands - Message Hub', () => {
   beforeEach(() => {

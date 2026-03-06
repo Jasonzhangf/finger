@@ -1,5 +1,6 @@
 import { existsSync } from 'fs';
 import { join } from 'path';
+import { FINGER_SOURCE_ROOT } from '../../core/source-root.js';
 import { runSpawnCommand } from './spawn-runner.js';
 import { InternalTool, ToolExecutionContext } from './types.js';
 
@@ -112,7 +113,7 @@ function resolveCliInvocation(): string[] {
     return [envBin];
   }
 
-  const distCli = join(process.cwd(), 'dist', 'cli', 'index.js');
+  const distCli = join(FINGER_SOURCE_ROOT, 'dist', 'cli', 'index.js');
   if (existsSync(distCli)) {
     return [process.execPath, distCli];
   }

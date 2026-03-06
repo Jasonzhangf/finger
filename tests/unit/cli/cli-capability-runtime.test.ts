@@ -35,7 +35,7 @@ describe('cli capability runtime execution', () => {
       },
       ['--no-db', 'list'],
       {
-        daemonUrl: 'http://localhost:5521',
+        daemonUrl: 'http://localhost:9999',
         agentId: 'manual-cli',
       },
     );

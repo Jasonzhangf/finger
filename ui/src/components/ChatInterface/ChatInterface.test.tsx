@@ -331,6 +331,38 @@ describe('ChatInterface input behavior', () => {
       dryrunTarget: 'finger-orchestrator',
     });
   });
+
+  it('sends dryrun payload when clicking dryrun button', async () => {
+    const onSendMessage = vi.fn<(payload: unknown) => void>();
+
+    render(
+      <ChatInterface
+        executionState={null}
+        agents={[]}
+        events={[]}
+        onSendMessage={onSendMessage}
+        onPause={() => undefined}
+        onResume={() => undefined}
+        isPaused={false}
+        isConnected={true}
+        selectedAgentId="finger-orchestrator"
+      />,
+    );
+
+    const input = screen.getByTestId('chat-input') as HTMLTextAreaElement;
+    fireEvent.change(input, { target: { value: 'dryrun content' } });
+    const dryrunBtn = screen.getByTestId('dryrun-btn');
+    fireEvent.click(dryrunBtn);
+
+    await waitFor(() => {
+      expect(onSendMessage).toHaveBeenCalledTimes(1);
+    });
+    expect(onSendMessage).toHaveBeenCalledWith({
+      text: 'dryrun content',
+      dryrun: true,
+      dryrunTarget: 'finger-orchestrator',
+    });
+  });
 });
 
 describe('ChatInterface tool render', () => {

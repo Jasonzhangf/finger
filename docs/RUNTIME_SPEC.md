@@ -7,9 +7,9 @@
 - 任何组件（Agent、Sub-Agent、应用）必须通过 Daemon 启动
 - 禁止绕过 Daemon 直接启动服务或进程
 
-- 所有组件间通信必须通过 **Message Hub** (端口 5521)
+- 所有组件间通信必须通过 **Message Hub** (端口 9999)
 - CLI、UI、外部客户端都是 **消息发送者**，不是执行宿主
-- 状态同步通过 **WebSocket** (端口 5522) 广播
+- 状态同步通过 **WebSocket** (端口 9998) 广播
 
 ### 1.3 生命周期托管
 - Daemon 负责所有子进程的生命周期管理（启动、停止、监控、清理）
@@ -30,15 +30,15 @@
                      │                              │
                      ▼                              ▼
         ┌──────────────────────┐      ┌──────────────────────┐
-        │   HTTP API (8080)    │      │   WebSocket (8081)   │
-        │   (可选，面向外部)    │      │   (状态推送)         │
+        │   HTTP API (9999)    │      │   WebSocket (9998)   │
+        │   (对外入口)         │      │   (状态推送)         │
         └──────────┬───────────┘      └──────────────────────┘
                    │
                    ▼
         ┌──────────────────────┐
         │   基础 Daemon        │◄──── 核心控制层
-        │   - Message Hub      │      端口: 5521 (HTTP)
-        │   - Process Manager  │      端口: 5522 (WS)
+        │   - Message Hub      │      端口: 9999 (HTTP)
+        │   - Process Manager  │      端口: 9998 (WS)
         │   - Agent Pool       │
         └──────────┬───────────┘
                    │
@@ -52,7 +52,7 @@
 
 ## 3. 通信协议
 
-### 3.1 Message Hub API (端口 5521)
+### 3.1 Message Hub API (端口 9999)
 
 所有操作通过 HTTP POST 到 `/api/v1/message`：
 
@@ -73,7 +73,7 @@ interface MessageResponse {
 }
 ```
 
-### 3.2 WebSocket 状态流 (端口 5522)
+### 3.2 WebSocket 状态流 (端口 9998)
 
 客户端订阅：`{ type: 'subscribe', target?: string, workflowId?: string }`
 
@@ -131,17 +131,17 @@ REGISTERED -> STARTING -> RUNNING -> [BUSY/IDLE] -> STOPPING -> STOPPED
 
 ## 6. 当前代码修改清单
 
-### 6.1 问题：Agent 命令直连 8080 API
+### 6.1 问题：Agent 命令直连 9999 API
 **位置**：`src/cli/agent-commands.ts`
-**问题**：直接调用 `http://localhost:8080/api/v1/agent/*`
-**修改**：改为发送消息到 `http://localhost:5521/api/v1/message`
+**问题**：直接调用 `http://localhost:9999/api/v1/agent/*`
+**修改**：改为发送消息到 `http://localhost:9999/api/v1/message`
 
 ```typescript
 // 修改前
 const res = await fetch(`${API_BASE}/api/v1/agent/understand`, {...})
 
 // 修改后
-const res = await fetch('http://localhost:5521/api/v1/message', {
+const res = await fetch('http://localhost:9999/api/v1/message', {
   method: 'POST',
   headers: { 'Content-Type': 'application/json' },
   body: JSON.stringify({
@@ -162,18 +162,18 @@ const res = await fetch('http://localhost:5521/api/v1/message', {
 3. `--watch` 模式通过 WebSocket 订阅 `callbackId`
 
 ### 6.3 问题：WebSocket 端口混乱
-**位置**：多处（8081 vs 5522）
-**问题**：UI 连 8081，CLI daemon chat 连 5522
+**位置**：历史文档/脚本（8081 vs 9998）
+**问题**：UI、CLI、daemon 端口不一致
 **修改**：
-- Daemon WebSocket 统一为 5522
-- 8081 仅作为 UI/外部客户端的代理转发层
+- WebSocket 统一为 9998
+- 清理历史文档/脚本中的 8081
 
 ### 6.4 问题：缺少 Agent 模块注册
 **位置**：`src/server/index.ts`
 **问题**：Agent 端点直接处理请求，未通过 Message Hub
 **修改**：
 1. 将 Agent 实现为 Message Hub 的 output module
-2. 或保留 8080 作为代理层，转发到 5521
+2. 禁止引入额外代理层（保持 9999 为唯一 HTTP 入口）
 
 ### 6.5 问题：生命周期管理不完善
 **位置**：`src/orchestration/daemon.ts`
@@ -186,8 +186,8 @@ const res = await fetch('http://localhost:5521/api/v1/message', {
 ## 7. 实施优先级
 
 ### P0 - 核心解耦
-1. [ ] 修改 `agent-commands.ts` 使用 Message Hub (5521)
-2. [ ] 统一 WebSocket 端口为 5522
+1. [ ] 修改 `agent-commands.ts` 使用 Message Hub (9999)
+2. [ ] 统一 WebSocket 端口为 9998
 3. [ ] 添加 callbackId 追踪机制
 
 ### P1 - 完善生命周期
@@ -196,7 +196,7 @@ const res = await fetch('http://localhost:5521/api/v1/message', {
 6. [ ] CLI `--watch` 实现 WebSocket 订阅
 
 ### P2 - 架构优化
-7. [ ] 8080 作为 5521 的代理层
+7. [ ] 不引入额外代理层（9999 为唯一入口）
 8. [ ] Agent 动态注册/发现
 9. [ ] 多客户端并发测试
 

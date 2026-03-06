@@ -1,7 +1,7 @@
 import dgram from 'dgram';
 import EventEmitter from 'events';
 
-const HEARTBEAT_PORT = 5522; // Separate from daemon HTTP port
+const HEARTBEAT_PORT = 9998; // Separate from daemon HTTP port
 const HEARTBEAT_INTERVAL_MS = 30000; // Master broadcasts every 30s
 const MISSED_THRESHOLD = 3; // 3 misses = 90s timeout
 

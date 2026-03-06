@@ -21,7 +21,7 @@ interface ChatCodexCommandOptions {
 }
 
 export function registerChatCodexCommand(program: Command): void {
-  const defaultDaemonUrl = process.env.FINGER_HUB_URL || 'http://localhost:5521';
+  const defaultDaemonUrl = process.env.FINGER_HUB_URL || 'http://localhost:9999';
 
   program
     .command('chat-codex')

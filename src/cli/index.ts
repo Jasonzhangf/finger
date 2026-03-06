@@ -28,8 +28,8 @@ import { registerMemoryLedgerCommand } from './memory-ledger.js';
 import { registerTestCommand } from './test-command.js';
 import { ensureFingerLayout } from '../core/finger-paths.js';
 
-const DEFAULT_HTTP_BASE_URL = process.env.FINGER_HTTP_URL || process.env.FINGER_HUB_URL || 'http://localhost:5521';
-const DEFAULT_WS_URL = process.env.FINGER_WS_URL || 'ws://localhost:5522';
+const DEFAULT_HTTP_BASE_URL = process.env.FINGER_HTTP_URL || process.env.FINGER_HUB_URL || 'http://localhost:9999';
+const DEFAULT_WS_URL = process.env.FINGER_WS_URL || 'ws://localhost:9998';
 
 ensureFingerLayout();
 

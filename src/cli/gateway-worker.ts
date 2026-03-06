@@ -20,7 +20,7 @@ export function registerGatewayWorkerCommand(program: Command): void {
     .command('gateway-worker')
     .description('Internal gateway worker process (stdin/stdout JSONL protocol)')
     .requiredOption('--adapter <type>', 'chat | chat-codex')
-    .option('--daemon-url <url>', 'Daemon URL', process.env.FINGER_HUB_URL || 'http://localhost:5521')
+    .option('--daemon-url <url>', 'Daemon URL', process.env.FINGER_HUB_URL || 'http://localhost:9999')
     .option('--target <moduleId>', 'Target module ID')
     .action(async (options: { adapter: string; daemonUrl: string; target?: string }) => {
       const adapter = normalizeAdapter(options.adapter);

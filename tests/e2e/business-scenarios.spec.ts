@@ -18,8 +18,8 @@ import path from 'path';
 import WebSocket from 'ws';
 
 // 测试配置
-const UI_URL = 'http://localhost:8080';
-const WS_URL = 'ws://localhost:8081';
+const UI_URL = 'http://localhost:9999';
+const WS_URL = 'ws://localhost:9998';
 const TEST_TIMEOUT = 180000; // 3 分钟
 const SETUP_TIMEOUT = 60000; // 1 分钟
 
@@ -43,8 +43,8 @@ describe('Finger E2E Business Scenarios', () => {
   // 工具函数：启动服务器
   async function startServer(): Promise<void> {
     // 如果端口已被占用，跳过启动
-    if (await isPortInUse(8080)) {
-      console.log('[E2E] Server already running on port 8080');
+    if (await isPortInUse(9999)) {
+      console.log('[E2E] Server already running on port 9999');
       return;
     }
 

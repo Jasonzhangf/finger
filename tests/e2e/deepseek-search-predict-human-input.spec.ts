@@ -15,8 +15,8 @@ import path from 'path';
 import WebSocket from 'ws';
 
 // E2E test config
-const UI_URL = 'http://localhost:8080';
-const WS_URL = 'ws://localhost:8081';
+const UI_URL = 'http://localhost:9999';
+const WS_URL = 'ws://localhost:9998';
 const TEST_TIMEOUT = 120000; // 2 minutes
 
 describe('DeepSeek Research with Human Input Flow', () => {

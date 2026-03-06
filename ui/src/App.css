@@ -1,2 +1,9 @@
 /* Global styles handled by component CSS files */
 /* AppLayout.css, LeftSidebar.css, RightPanel.css, BottomPanel.css, OrchestrationCanvas.css */
+
+.freeze-animations *,
+.freeze-animations *::before,
+.freeze-animations *::after {
+  animation: none !important;
+  transition: none !important;
+}

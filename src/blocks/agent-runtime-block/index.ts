@@ -336,6 +336,7 @@ function resolveTerminalAssignmentPhase(
 interface WorkflowLike {
   id: string;
   sessionId: string;
+  status?: string;
   tasks: Map<string, WorkflowTaskView>;
 }
 
@@ -904,9 +905,13 @@ export class AgentRuntimeBlock extends BaseBlock {
     const definitions = this.buildDefinitions();
 
     const workflowBySessionId = new Map<string, string>();
+    const workflowStatusBySessionId = new Map<string, string>();
     for (const workflow of this.deps.workflowManager.listWorkflows()) {
       if (typeof workflow.sessionId === 'string' && workflow.sessionId.trim().length > 0) {
         workflowBySessionId.set(workflow.sessionId, workflow.id);
+        if (typeof workflow.status === 'string' && workflow.status.trim().length > 0) {
+          workflowStatusBySessionId.set(workflow.sessionId, workflow.status.trim());
+        }
       }
     }
 
@@ -918,7 +923,11 @@ export class AgentRuntimeBlock extends BaseBlock {
       const runningCount = this.getActiveDispatchCount(deployment.agentId);
       const queuedCount = this.dispatchQueueByAgent.get(deployment.agentId)?.length ?? 0;
       const lastEvent = this.lastEventByAgent.get(deployment.agentId);
-      const hasRunnerActiveTurn = typeof deployment.sessionId === 'string' && runnerActiveSessionIds.has(deployment.sessionId);
+      const sessionId = typeof deployment.sessionId === 'string' ? deployment.sessionId : '';
+      const hasRunnerActiveTurn = sessionId.length > 0 && runnerActiveSessionIds.has(sessionId);
+      const workflowStatus = sessionId.length > 0 ? workflowStatusBySessionId.get(sessionId) : undefined;
+      const workflowActive = workflowStatus === 'planning' || workflowStatus === 'executing';
+      const workflowPaused = workflowStatus === 'paused';
       if (hasRunnerActiveTurn) {
         runnerActiveCountByAgent.set(deployment.agentId, (runnerActiveCountByAgent.get(deployment.agentId) ?? 0) + 1);
       }
@@ -939,6 +948,14 @@ export class AgentRuntimeBlock extends BaseBlock {
           status = 'failed';
         } else if (lastEvent?.status === 'interrupted' || lastEvent?.status === 'cancel') {
           status = 'interrupted';
+        }
+        const isTerminalProblem = status === 'failed' || status === 'error' || status === 'interrupted';
+        if (!isTerminalProblem) {
+          if (workflowPaused) {
+            status = 'paused';
+          } else if (workflowActive) {
+            status = 'running';
+          }
         }
         const workflowId = workflowBySessionId.get(deployment.sessionId);
         instances.push({
@@ -984,6 +1001,15 @@ export class AgentRuntimeBlock extends BaseBlock {
         .sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt))
         .find((item) => typeof item.sessionId === 'string' && item.sessionId.length > 0)
         ?.sessionId;
+      const hasActiveWorkflowForAgent = related.some((item) => {
+        if (typeof item.sessionId !== 'string' || item.sessionId.length === 0) return false;
+        const status = workflowStatusBySessionId.get(item.sessionId);
+        return status === 'planning' || status === 'executing';
+      });
+      const hasPausedWorkflowForAgent = related.some((item) => {
+        if (typeof item.sessionId !== 'string' || item.sessionId.length === 0) return false;
+        return workflowStatusBySessionId.get(item.sessionId) === 'paused';
+      });
       const latestWorkflowId = related
         .slice()
         .sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt))
@@ -996,6 +1022,10 @@ export class AgentRuntimeBlock extends BaseBlock {
       let status: AgentRuntimeStatus = 'idle';
       if (related.some((item) => item.status === 'error' || item.status === 'failed')) {
         status = 'error';
+      } else if (def.role === 'orchestrator' && hasPausedWorkflowForAgent) {
+        status = 'paused';
+      } else if (def.role === 'orchestrator' && hasActiveWorkflowForAgent) {
+        status = 'running';
       } else if (runningCount > 0 || runningAgentIds.has(def.id)) {
         status = 'running';
       } else if (queuedCount > 0) {

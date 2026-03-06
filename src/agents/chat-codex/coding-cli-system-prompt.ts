@@ -1,6 +1,7 @@
 import { resolve } from 'path';
+import { FINGER_SOURCE_ROOT } from '../../core/source-root.js';
 import { FINGER_PATHS } from '../../core/finger-paths.js';
-import { resolveHotPrompt } from '../base/prompt-template-loader.js';
+import { resolveHotPrompt, type HotPromptResolveResult } from '../base/prompt-template-loader.js';
 
 const CODEX_BASE_PROMPT = [
   "You are a coding agent running in the Codex CLI, a terminal-based coding assistant. Codex CLI is an open source project led by OpenAI. You are expected to be precise, safe, and helpful.",
@@ -347,11 +348,11 @@ function resolvePromptCandidates(explicitPath?: string): string[] {
     process.env.FINGER_GENERAL_PROMPT_PATH,
     process.env.FINGER_CHAT_CODEX_PROMPT_PATH,
     resolve(FINGER_PATHS.config.promptsDir, 'finger-general', 'prompt.md'),
-    resolve(process.cwd(), 'prompts', 'finger-general', 'prompt.md'),
-    resolve(process.cwd(), 'src', 'agents', 'finger-general', 'prompt.md'),
+    resolve(FINGER_SOURCE_ROOT, 'prompts', 'finger-general', 'prompt.md'),
+    resolve(FINGER_SOURCE_ROOT, 'src', 'agents', 'finger-general', 'prompt.md'),
     resolve(FINGER_PATHS.config.promptsDir, 'chat-codex', 'prompt.md'),
-    resolve(process.cwd(), 'prompts', 'chat-codex', 'prompt.md'),
-    resolve(process.cwd(), 'src', 'agents', 'chat-codex', 'prompt.md'),
+    resolve(FINGER_SOURCE_ROOT, 'prompts', 'chat-codex', 'prompt.md'),
+    resolve(FINGER_SOURCE_ROOT, 'src', 'agents', 'chat-codex', 'prompt.md'),
     resolve(FINGER_PATHS.home, 'prompts', 'finger-general', 'prompt.md'),
     resolve(FINGER_PATHS.home, 'prompts', 'chat-codex', 'prompt.md'),
   ];
@@ -365,12 +366,18 @@ function resolvePromptCandidates(explicitPath?: string): string[] {
 }
 
 export function resolveCodingCliSystemPrompt(explicitPath?: string): string {
-  const { prompt } = resolveHotPrompt({
+  const resolved = resolveCodingCliBasePrompt(explicitPath);
+  return `${resolved.prompt}
+
+${CLAIM_REVIEW_GUARDRAILS}`;
+}
+
+export const CODING_CLI_SYSTEM_PROMPT = resolveCodingCliSystemPrompt();
+
+export function resolveCodingCliBasePrompt(explicitPath?: string): HotPromptResolveResult {
+  return resolveHotPrompt({
     inlinePrompt: CODEX_BASE_PROMPT,
     candidatePaths: resolvePromptCandidates(explicitPath),
     normalize: normalizePrompt,
   });
-  return `${prompt}\n\n${CLAIM_REVIEW_GUARDRAILS}`;
 }
-
-export const CODING_CLI_SYSTEM_PROMPT = resolveCodingCliSystemPrompt();

@@ -27,7 +27,7 @@ const readServerFiles = () => [
 ].map(f => readFile(f)).join('\n');
 
 describe('RUNTIME_SPEC.md Full MUST Checklist', () => {
-  it('MUST-1.1.1: Message Hub 5521', () => { expect(readFile('src/cli/agent-commands.ts')).toContain('localhost:5521'); console.log('[✓] MUST-1.1.1'); });
+  it('MUST-1.1.1: Message Hub 9999', () => { expect(readFile('src/cli/agent-commands.ts')).toContain('localhost:9999'); console.log('[✓] MUST-1.1.1'); });
   it('MUST-1.1.2: CLI pure client', async () => {
     const { understandCommand } = await import('../../src/cli/agent-commands.js');
     const mockFetch = vi.fn().mockResolvedValue({ ok: true, json: () => Promise.resolve({ messageId: 'm1', status: 'queued' }) });
@@ -37,7 +37,7 @@ describe('RUNTIME_SPEC.md Full MUST Checklist', () => {
     expect(Date.now() - start).toBeLessThan(100);
     console.log('[✓] MUST-1.1.2');
   });
-  it('MUST-1.1.3: WebSocket 5522', () => { expect(readFile('src/cli/agent-commands.ts')).toContain('ws://localhost:5522'); console.log('[✓] MUST-1.1.3'); });
+  it('MUST-1.1.3: WebSocket 9998', () => { expect(readFile('src/cli/agent-commands.ts')).toContain('ws://localhost:9998'); console.log('[✓] MUST-1.1.3'); });
   it('MUST-1.3.1: Daemon lifecycle', () => {
     const c = readFile('src/orchestration/runtime.ts');
     expect(c).toContain('async start'); expect(c).toContain('async stop'); expect(c).toContain('async restart');
@@ -89,7 +89,7 @@ describe('RUNTIME_SPEC.md Full MUST Checklist', () => {
   });
   it('MUST-4.3.2: events --watch', () => {
     const c = readFile('src/cli/index.ts');
-    expect(c).toContain('WebSocket'); expect(c).toContain('5522');
+    expect(c).toContain('WebSocket'); expect(c).toContain('9998');
     console.log('[✓] MUST-4.3.2');
   });
   it('MUST-5.1.1: POST /execute endpoints', () => {
@@ -111,15 +111,15 @@ describe('RUNTIME_SPEC.md Full MUST Checklist', () => {
   it('MUST-5.2.2: FAILED state', () => { expect(readFile('src/orchestration/runtime.ts')).toContain("'FAILED'"); console.log('[✓] MUST-5.2.2'); });
   it('MUST-5.3.1: Auto-start', () => { expect(readFile('src/orchestration/runtime.ts')).toContain('autoStart'); console.log('[✓] MUST-5.3.1'); });
   it('MUST-5.3.2: Dynamic registration', () => { expect(readFile('src/orchestration/runtime.ts')).toContain('register(config: AgentConfig)'); console.log('[✓] MUST-5.3.2'); });
-  it('MUST-6.1: 5521 not 8080', () => {
+  it('MUST-6.1: 9999 not 8080', () => {
     const c = readFile('src/cli/agent-commands.ts');
-    expect(c).toContain('localhost:5521'); expect(c).not.toContain('localhost:8080');
+    expect(c).toContain('localhost:9999'); expect(c).not.toContain('localhost:8080');
     console.log('[✓] MUST-6.1');
   });
   it('MUST-6.2: callbackId format', () => { expect(readFile('src/cli/agent-commands.ts')).toContain('generateCallbackId'); console.log('[✓] MUST-6.2'); });
-  it('MUST-6.3: WebSocket 5522 unified', () => {
+  it('MUST-6.3: WebSocket 9998 unified', () => {
     expect(readFile('src/server/modules/websocket-server.ts')).toContain('port');
-    expect(readFile('src/cli/agent-commands.ts')).toContain('5522');
+    expect(readFile('src/cli/agent-commands.ts')).toContain('9998');
     console.log('[✓] MUST-6.3');
   });
   it('Summary: ALL MUST items', () => { console.log('\n=== ALL 21 MUST VERIFIED ===\n'); expect(true).toBe(true); });
@@ -152,8 +152,8 @@ describe('RUNTIME_SPEC.md Full MUST Checklist', () => {
     
     // 关键 MUST 条目列表（从 docs/RUNTIME_SPEC.md 提取）
     const requiredMusts = [
-      { id: '1.1.1', keyword: 'Message Hub', port: '5521' },
-      { id: '1.1.2', keyword: 'WebSocket', port: '5522' },
+      { id: '1.1.1', keyword: 'Message Hub', port: '9999' },
+      { id: '1.1.2', keyword: 'WebSocket', port: '9998' },
       { id: '1.1.3', keyword: 'CLI', keyword2: '纯客户端' },
       { id: '1.3.1', keyword: '生命周期', keyword2: 'Daemon' },
       { id: '1.3.2', keyword: '重启', keyword2: 'autoRestart' },
@@ -177,9 +177,9 @@ describe('RUNTIME_SPEC.md Full MUST Checklist', () => {
       { id: '5.2.2', keyword: 'FAILED' },
       { id: '5.3.1', keyword: 'autoStart' },
       { id: '5.3.2', keyword: '动态', keyword2: 'register' },
-      { id: '6.1', keyword: '5521', keyword2: '8080' },
+      { id: '6.1', keyword: '9999', keyword2: '8080' },
       { id: '6.2', keyword: 'callbackId', keyword2: 'generate' },
-      { id: '6.3', keyword: '5522', keyword2: 'WebSocket' },
+      { id: '6.3', keyword: '9998', keyword2: 'WebSocket' },
     ];
     
     // 验证每个 MUST 条目都有对应的测试覆盖
@@ -207,7 +207,7 @@ describe('RUNTIME_SPEC.md Full MUST Checklist', () => {
 
   // 回归测试：验证 keyword2 缺失时 MUST 覆盖检查会正确失败
 
-  // MUST-6.4: Agent CLI API routes through Message Hub (5521), not direct handling
+  // MUST-6.4: Agent CLI API routes through Message Hub (9999), not direct handling
   it('MUST-6.4: Agent endpoints forward to Message Hub, not direct handling', () => {
     const serverCode = fs.readFileSync(path.join(process.cwd(), 'src/server/routes/agent-cli.ts'), 'utf-8');
     
@@ -219,12 +219,12 @@ describe('RUNTIME_SPEC.md Full MUST Checklist', () => {
     expect(serverCode).toContain('understandCommand');
     expect(serverCode).toContain('executeCommand');
     
-    // 验证：CLI 命令使用 Message Hub (5521)
+    // 验证：CLI 命令使用 Message Hub (9999)
     const agentCommandsCode = fs.readFileSync(path.join(process.cwd(), 'src/cli/agent-commands.ts'), 'utf-8');
-    expect(agentCommandsCode).toContain('localhost:5521');
+    expect(agentCommandsCode).toContain('localhost:9999');
     expect(agentCommandsCode).toContain('sendMessageToHub');
     
-    console.log('[✓] MUST-6.4: Agent endpoints forward to Message Hub (5521)');
+    console.log('[✓] MUST-6.4: Agent endpoints forward to Message Hub (9999)');
   });
 
   // MUST-6.5: Daemon lifecycle management with health check, auto-restart, and history

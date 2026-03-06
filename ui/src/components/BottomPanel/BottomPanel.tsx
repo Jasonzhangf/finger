@@ -20,12 +20,12 @@ interface BottomPanelProps {
   startupTemplates?: AgentStartupTemplate[];
   orchestrationConfig?: OrchestrationConfigState | null;
   debugMode?: boolean;
-  selectedAgentId?: string | null;
+  selectedAgentConfigId?: string | null;
   currentSessionId?: string | null;
   focusedRuntimeInstanceId?: string | null;
   isLoading?: boolean;
   error?: string | null;
-  onSelectAgent?: (agentId: string) => void;
+  onSelectAgentConfig?: (agentId: string) => void;
   onSelectInstance?: (instance: AgentRuntimeInstance) => void;
   onSetDebugMode?: (enabled: boolean) => Promise<void> | void;
   onStartTemplate?: (templateId: string) => Promise<void> | void;
@@ -183,12 +183,12 @@ export const BottomPanel: React.FC<BottomPanelProps> = ({
   startupTemplates = [],
   orchestrationConfig = null,
   debugMode = false,
-  selectedAgentId,
+  selectedAgentConfigId,
   currentSessionId,
   focusedRuntimeInstanceId = null,
   isLoading = false,
   error = null,
-  onSelectAgent,
+  onSelectAgentConfig,
   onSelectInstance,
   onSetDebugMode,
   onStartTemplate,
@@ -813,8 +813,8 @@ export const BottomPanel: React.FC<BottomPanelProps> = ({
                   <button
                     key={agent.id}
                     ref={(node) => { agentCardRefs.current[agent.id] = node; }}
-                    className={`agent-card static-agent-card ${agent.status} ${selectedAgentId === agent.id ? 'selected' : ''}`}
-                    onClick={() => onSelectAgent?.(agent.id)}
+                    className={`agent-card static-agent-card ${agent.status} ${selectedAgentConfigId === agent.id ? 'selected' : ''}`}
+                    onClick={() => onSelectAgentConfig?.(agent.id)}
                     type="button"
                   >
                     <div className="agent-header">
@@ -841,8 +841,9 @@ export const BottomPanel: React.FC<BottomPanelProps> = ({
                     <div className="agent-config-ref">
                       {(() => {
                         const config = findConfigForAgent(agent, configs);
-                        if (!config) return '无配置文件映射';
-                        return `配置: ${config.id}`;
+                        const sourceLabel = `来源: ${agent.source}`;
+                        if (!config) return sourceLabel;
+                        return `配置: ${config.id} · ${sourceLabel}`;
                       })()}
                     </div>
                     <div className="agent-config-ref">
@@ -859,11 +860,13 @@ export const BottomPanel: React.FC<BottomPanelProps> = ({
               <div className="layer-title">Runtime</div>
               <div className="runtime-grid">
                 {instances.map((instance) => {
-                  const switchable = typeof instance.sessionId === 'string' && instance.sessionId.length > 0;
+                  const switchable = (typeof instance.sessionId === 'string' && instance.sessionId.length > 0)
+                    || instance.type === 'orchestrator';
                   const focused = focusedRuntimeId === instance.id;
                   const toneClass = resolveRuntimeToneClass(instance.status);
                   const boundAgent = findBoundAgentForInstance(agents, instance);
                   const boundConfig = boundAgent ? findConfigForAgent(boundAgent, configs) : null;
+                  const sourceLabel = ` · 来源 ${boundAgent?.source ?? instance.source}`;
                   return (
                     <button
                       key={instance.id}
@@ -883,7 +886,8 @@ export const BottomPanel: React.FC<BottomPanelProps> = ({
                       </div>
                       <div className="runtime-card-meta">
                         Agent: {boundAgent?.name ?? instance.agentId}
-                        {boundConfig ? ` · 配置 ${boundConfig.id}` : ' · 未映射配置（未找到对应 agent.json）'}
+                        {boundConfig ? ` · 配置 ${boundConfig.id}` : ''}
+                        {sourceLabel}
                       </div>
                     </button>
                   );
@@ -901,7 +905,8 @@ export const BottomPanel: React.FC<BottomPanelProps> = ({
             {instances.length > 0 && (
               <div className="instance-list">
                 {instances.map((instance) => {
-                  const switchable = typeof instance.sessionId === 'string' && instance.sessionId.length > 0;
+                  const switchable = (typeof instance.sessionId === 'string' && instance.sessionId.length > 0)
+                    || instance.type === 'orchestrator';
                   const active = switchable && instance.sessionId === currentSessionId;
                   return (
                     <button

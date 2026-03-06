@@ -63,8 +63,8 @@ describe('daemon status command', () => {
     const status = {
       pid: null as number | null,
       isRunning: false,
-      httpPort: 5521,
-      wsPort: 5522,
+      httpPort: 9999,
+      wsPort: 9998,
       modules: null as unknown,
     };
 

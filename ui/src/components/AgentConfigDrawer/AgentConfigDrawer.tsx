@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react';
 import type { AgentConfig } from '../../api/types.js';
 import type { AgentConfigSummary, AgentDebugAssertion, AgentRuntimeInstance, AgentRuntimePanelAgent } from '../../hooks/useAgentRuntimePanel.js';
 import { isActiveInstanceStatus } from '../BottomPanel/agentRuntimeUtils.js';
@@ -6,7 +6,7 @@ import './AgentConfigDrawer.css';
 
 interface AgentDeployDraft {
   mode: 'auto' | 'manual';
-  provider: 'iflow' | 'openai' | 'anthropic';
+  provider: 'auto' | 'openai' | 'anthropic';
   model: string;
   permissionMode: 'default' | 'autoEdit' | 'yolo' | 'plan';
   maxRounds: number;
@@ -17,6 +17,48 @@ interface AgentDeployDraft {
   projectQuotaText: string;
   workflowQuotaText: string;
   instanceCount: number;
+}
+
+interface AgentJsonState {
+  text: string;
+  filePath: string;
+  isLoading: boolean;
+  isSaving: boolean;
+  error: string | null;
+  dirty: boolean;
+  missing: boolean;
+}
+
+interface AgentPromptMeta {
+  role: string;
+  source: string;
+  path: string;
+  editablePath: string;
+  content: string;
+}
+
+interface AgentPromptState {
+  system: AgentPromptMeta | null;
+  developer: AgentPromptMeta | null;
+  systemText: string;
+  developerText: string;
+  isLoading: boolean;
+  isSaving: boolean;
+  error: string | null;
+  dirtySystem: boolean;
+  dirtyDeveloper: boolean;
+  hint: string | null;
+}
+
+
+const DRAWER_WIDTH_STORAGE_KEY = 'finger.agentConfigDrawer.width';
+const MIN_DRAWER_WIDTH = 420;
+const MAX_DRAWER_WIDTH = 860;
+const DEFAULT_DRAWER_WIDTH = 560;
+
+function clampDrawerWidth(width: number): number {
+  if (!Number.isFinite(width)) return DEFAULT_DRAWER_WIDTH;
+  return Math.min(MAX_DRAWER_WIDTH, Math.max(MIN_DRAWER_WIDTH, Math.round(width)));
 }
 
 function stringifyWorkflowQuota(workflowQuota: Record<string, number>): string {
@@ -74,7 +116,31 @@ function toToolList(raw: unknown): string[] {
   return raw.filter((item): item is string => typeof item === 'string' && item.trim().length > 0);
 }
 
-function pickDefaultDraft(agent: AgentRuntimePanelAgent | null, config: AgentConfigSummary | null): AgentDeployDraft {
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null;
+}
+
+function parsePromptMeta(raw: unknown): AgentPromptMeta | null {
+  if (!isRecord(raw)) return null;
+  const role = typeof raw.role === 'string' ? raw.role : '';
+  const source = typeof raw.source === 'string' ? raw.source : '';
+  const path = typeof raw.path === 'string' ? raw.path : '';
+  const editablePath = typeof raw.editablePath === 'string' ? raw.editablePath : '';
+  const content = typeof raw.content === 'string' ? raw.content : '';
+  return {
+    role,
+    source,
+    path,
+    editablePath,
+    content,
+  };
+}
+
+function pickDefaultDraft(
+  agent: AgentRuntimePanelAgent | null,
+  config: AgentConfigSummary | null,
+  capabilitiesInfo: AgentRuntimePanelAgent['capabilities'] | null | undefined,
+): AgentDeployDraft {
   const sourceConfig = {} as AgentConfig;
   const defaultQuota = agent?.defaultQuota
     ?? (typeof config?.defaultQuota === 'number' ? Math.max(1, Math.floor(config.defaultQuota)) : 1);
@@ -86,11 +152,19 @@ function pickDefaultDraft(agent: AgentRuntimePanelAgent | null, config: AgentCon
   const capabilityFromAgent = Array.isArray(agent?.runtimeCapabilities) ? agent.runtimeCapabilities : [];
   const capabilityFromConfig = Array.isArray(config?.capabilities) ? config.capabilities : [];
   const capabilities = capabilityFromAgent.length > 0 ? capabilityFromAgent : capabilityFromConfig;
+  const providerHint = capabilitiesInfo?.governance?.provider;
+  const provider = providerHint === 'openai' || providerHint === 'anthropic'
+    ? providerHint
+    : 'auto';
+  const approvalHint = capabilitiesInfo?.governance?.iflowApprovalMode;
+  const permissionMode = approvalHint === 'autoEdit' || approvalHint === 'yolo' || approvalHint === 'plan' || approvalHint === 'default'
+    ? approvalHint
+    : (sourceConfig.permissionMode ?? 'default');
   return {
     mode: sourceConfig.mode ?? 'auto',
-    provider: sourceConfig.provider ?? 'iflow',
+    provider,
     model: sourceConfig.model ?? '',
-    permissionMode: sourceConfig.permissionMode ?? 'default',
+    permissionMode,
     maxRounds: Number.isFinite(sourceConfig.maxRounds) ? Math.max(1, Number(sourceConfig.maxRounds)) : 10,
     enableReview: sourceConfig.enableReview === true,
     enabled: agent?.enabled !== false,
@@ -115,15 +189,192 @@ export const AgentConfigDrawer = ({
   onDeployConfig,
   onControlAgent,
 }: AgentConfigDrawerProps) => {
-  const [draft, setDraft] = useState<AgentDeployDraft>(() => pickDefaultDraft(agent, config));
+  const [draft, setDraft] = useState<AgentDeployDraft>(() => pickDefaultDraft(agent, config, capabilities));
+  const [drawerWidth, setDrawerWidth] = useState(() => {
+    if (typeof window === 'undefined') return DEFAULT_DRAWER_WIDTH;
+    const saved = Number(window.localStorage.getItem(DRAWER_WIDTH_STORAGE_KEY));
+    return clampDrawerWidth(saved);
+  });
+  const [isDrawerResizing, setIsDrawerResizing] = useState(false);
+  const drawerResizeOriginRef = useRef<{ startX: number; startWidth: number } | null>(null);
   const [isDeploying, setIsDeploying] = useState(false);
   const [isControlling, setIsControlling] = useState(false);
   const [hint, setHint] = useState<string | null>(null);
+  const [agentJson, setAgentJson] = useState<AgentJsonState>({
+    text: '',
+    filePath: '',
+    isLoading: false,
+    isSaving: false,
+    error: null,
+    dirty: false,
+    missing: false,
+  });
+  const [prompts, setPrompts] = useState<AgentPromptState>({
+    system: null,
+    developer: null,
+    systemText: '',
+    developerText: '',
+    isLoading: false,
+    isSaving: false,
+    error: null,
+    dirtySystem: false,
+    dirtyDeveloper: false,
+    hint: null,
+  });
 
   useEffect(() => {
-    setDraft(pickDefaultDraft(agent, config));
+    setDraft(pickDefaultDraft(agent, config, capabilities));
     setHint(null);
-  }, [agent?.id, config?.id]);
+  }, [agent?.id, config?.id, capabilities]);
+
+  const loadAgentJson = useCallback(async () => {
+    if (!agent?.id) return;
+    setAgentJson((prev) => ({
+      ...prev,
+      isLoading: true,
+      error: null,
+    }));
+    setPrompts((prev) => ({
+      ...prev,
+      isLoading: true,
+      error: null,
+      hint: null,
+    }));
+    const agentId = encodeURIComponent(agent.id);
+    const [jsonRes, promptRes] = await Promise.allSettled([
+      fetch(`/api/v1/agents/configs/${agentId}`),
+      fetch(`/api/v1/agents/configs/${agentId}/prompts`),
+    ]);
+
+    if (jsonRes.status === 'fulfilled') {
+      const res = jsonRes.value;
+      if (res.ok) {
+        try {
+          const payload = await res.json() as { filePath?: string; config?: unknown; missing?: boolean };
+          const text = JSON.stringify(payload.config ?? {}, null, 2);
+          const missing = payload.missing === true;
+          setAgentJson({
+            text,
+            filePath: typeof payload.filePath === 'string' ? payload.filePath : '',
+            isLoading: false,
+            isSaving: false,
+            error: null,
+            dirty: missing,
+            missing,
+          });
+        } catch (error) {
+          setAgentJson((prev) => ({
+            ...prev,
+            isLoading: false,
+            error: error instanceof Error ? error.message : '加载 agent.json 失败',
+          }));
+        }
+      } else {
+        const message = await res.text().catch(() => `HTTP ${res.status}`);
+        setAgentJson((prev) => ({
+          ...prev,
+          isLoading: false,
+          error: message || `HTTP ${res.status}`,
+        }));
+      }
+    } else {
+      setAgentJson((prev) => ({
+        ...prev,
+        isLoading: false,
+        error: '加载 agent.json 失败',
+      }));
+    }
+
+    if (promptRes.status === 'fulfilled') {
+      const res = promptRes.value;
+      if (res.ok) {
+        try {
+          const payload = await res.json() as { prompts?: unknown };
+          const promptRecord = isRecord(payload.prompts) ? payload.prompts as Record<string, unknown> : null;
+          const systemPrompt = parsePromptMeta(promptRecord?.system);
+          const developerPrompt = parsePromptMeta(promptRecord?.developer);
+          setPrompts((prev) => ({
+            ...prev,
+            system: systemPrompt,
+            developer: developerPrompt,
+            systemText: systemPrompt?.content ?? '',
+            developerText: developerPrompt?.content ?? '',
+            isLoading: false,
+            error: null,
+            dirtySystem: false,
+            dirtyDeveloper: false,
+          }));
+        } catch (error) {
+          setPrompts((prev) => ({
+            ...prev,
+            isLoading: false,
+            error: error instanceof Error ? error.message : '加载 prompt 失败',
+          }));
+        }
+      } else {
+        const message = await res.text().catch(() => `HTTP ${res.status}`);
+        setPrompts((prev) => ({
+          ...prev,
+          isLoading: false,
+          error: message || `HTTP ${res.status}`,
+        }));
+      }
+    } else {
+      setPrompts((prev) => ({
+        ...prev,
+        isLoading: false,
+        error: '加载 prompt 失败',
+      }));
+    }
+  }, [agent?.id]);
+
+  useEffect(() => {
+    if (!isOpen || !agent?.id) return;
+    void loadAgentJson();
+  }, [agent?.id, isOpen, loadAgentJson]);
+
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    window.localStorage.setItem(DRAWER_WIDTH_STORAGE_KEY, String(clampDrawerWidth(drawerWidth)));
+  }, [drawerWidth]);
+
+  useEffect(() => {
+    if (!isDrawerResizing) return undefined;
+    const onPointerMove = (event: PointerEvent): void => {
+      const origin = drawerResizeOriginRef.current;
+      if (!origin) return;
+      const nextWidth = clampDrawerWidth(origin.startWidth + (event.clientX - origin.startX));
+      setDrawerWidth(nextWidth);
+    };
+    const stopResize = (): void => {
+      drawerResizeOriginRef.current = null;
+      setIsDrawerResizing(false);
+      document.body.style.removeProperty('user-select');
+      document.body.style.removeProperty('cursor');
+    };
+
+    document.body.style.userSelect = 'none';
+    document.body.style.cursor = 'ew-resize';
+    window.addEventListener('pointermove', onPointerMove);
+    window.addEventListener('pointerup', stopResize);
+    window.addEventListener('pointercancel', stopResize);
+    return () => {
+      window.removeEventListener('pointermove', onPointerMove);
+      window.removeEventListener('pointerup', stopResize);
+      window.removeEventListener('pointercancel', stopResize);
+      document.body.style.removeProperty('user-select');
+      document.body.style.removeProperty('cursor');
+    };
+  }, [isDrawerResizing]);
+
+  const handleResizeStart = useCallback((event: ReactPointerEvent<HTMLDivElement>): void => {
+    drawerResizeOriginRef.current = {
+      startX: event.clientX,
+      startWidth: drawerWidth,
+    };
+    setIsDrawerResizing(true);
+  }, [drawerWidth]);
 
   useEffect(() => {
     if (!isOpen) return undefined;
@@ -178,6 +429,32 @@ export const AgentConfigDrawer = ({
 
   if (!isOpen || !agent) return null;
 
+  const handleSaveAgentJson = async (): Promise<void> => {
+    if (!agentJson.dirty || agentJson.isSaving) return;
+    setAgentJson((prev) => ({ ...prev, isSaving: true, error: null }));
+    try {
+      const parsed = JSON.parse(agentJson.text);
+      const res = await fetch(`/api/v1/agents/configs/${encodeURIComponent(agent.id)}`,
+        {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ config: parsed }),
+        });
+      if (!res.ok) {
+        const message = await res.text().catch(() => `HTTP ${res.status}`);
+        throw new Error(message || `HTTP ${res.status}`);
+      }
+      setAgentJson((prev) => ({ ...prev, isSaving: false, dirty: false, missing: false }));
+      setHint('agent.json 已保存，下一次任务开始会加载');
+    } catch (error) {
+      setAgentJson((prev) => ({
+        ...prev,
+        isSaving: false,
+        error: error instanceof Error ? error.message : '保存 agent.json 失败',
+      }));
+    }
+  };
+
   const handleDeploy = async (): Promise<void> => {
     if (!onDeployConfig) return;
     setIsDeploying(true);
@@ -197,8 +474,12 @@ export const AgentConfigDrawer = ({
           id: agent.id,
           name: agent.name,
           mode: draft.mode,
-          provider: draft.provider,
-          model: draft.model.trim() || undefined,
+          ...(draft.provider !== 'auto'
+            ? {
+                provider: draft.provider,
+                model: draft.model.trim() || undefined,
+              }
+            : {}),
           permissionMode: draft.permissionMode,
           maxRounds: draft.maxRounds,
           enableReview: draft.enableReview,
@@ -219,6 +500,56 @@ export const AgentConfigDrawer = ({
     } finally {
       setIsDeploying(false);
     }
+  };
+
+  const handleSavePrompts = async (): Promise<void> => {
+    if (prompts.isSaving) return;
+    const shouldSaveSystem = prompts.dirtySystem;
+    const shouldSaveDeveloper = prompts.dirtyDeveloper;
+    if (!shouldSaveSystem && !shouldSaveDeveloper) return;
+    setPrompts((prev) => ({
+      ...prev,
+      isSaving: true,
+      error: null,
+      hint: null,
+    }));
+    try {
+      const payload: Record<string, unknown> = {
+        ...(shouldSaveSystem ? { systemPrompt: prompts.systemText } : {}),
+        ...(shouldSaveDeveloper ? { developerPrompt: prompts.developerText } : {}),
+        ...(prompts.developer?.role ? { developerRole: prompts.developer.role } : {}),
+      };
+      const res = await fetch(`/api/v1/agents/configs/${encodeURIComponent(agent.id)}/prompts`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      if (!res.ok) {
+        const message = await res.text().catch(() => `HTTP ${res.status}`);
+        throw new Error(message || `HTTP ${res.status}`);
+      }
+      setPrompts((prev) => ({
+        ...prev,
+        isSaving: false,
+        dirtySystem: false,
+        dirtyDeveloper: false,
+        hint: '提示词已保存，下一次任务开始生效。',
+      }));
+    } catch (error) {
+      setPrompts((prev) => ({
+        ...prev,
+        isSaving: false,
+        error: error instanceof Error ? error.message : '保存提示词失败',
+      }));
+    }
+  };
+
+  const handleAgentJsonChange = (value: string): void => {
+    setAgentJson((prev) => ({
+      ...prev,
+      text: value,
+      dirty: true,
+    }));
   };
 
   const handleControl = async (action: 'status' | 'pause' | 'resume' | 'interrupt' | 'cancel'): Promise<void> => {
@@ -246,7 +577,14 @@ export const AgentConfigDrawer = ({
 
   return (
     <div className="agent-drawer-overlay" onClick={onClose}>
-      <aside className="agent-drawer" onClick={(event) => event.stopPropagation()}>
+      <aside className={`agent-drawer ${isDrawerResizing ? 'resizing' : ''}`} style={{ width: `${drawerWidth}px` }} onClick={(event) => event.stopPropagation()}>
+        <div
+          className="agent-drawer-resize-handle"
+          onPointerDown={handleResizeStart}
+          role="separator"
+          aria-orientation="vertical"
+          aria-label="调整抽屉宽度"
+        />
         <header className="agent-drawer-header">
           <div className="agent-drawer-title">
             <div className="agent-drawer-name">{agent.name}</div>
@@ -277,7 +615,61 @@ export const AgentConfigDrawer = ({
         </section>
 
         <section className="agent-drawer-section">
-          <div className="agent-form-title">基础配置</div>
+          <div className="agent-form-title">提示词编辑</div>
+          <div className="agent-prompt-meta">
+            <div>System Prompt · role: {prompts.system?.role || agent.type}</div>
+            <div>来源: {prompts.system?.source || 'inline'} {prompts.system?.path ? `· ${prompts.system.path}` : ''}</div>
+            <div>可写路径: {prompts.system?.editablePath || '未初始化'}</div>
+          </div>
+          {prompts.error && <div className="agent-prompt-error">{prompts.error}</div>}
+          <textarea
+            className="agent-prompt-editor"
+            value={prompts.systemText}
+            onChange={(event) => setPrompts((prev) => ({
+              ...prev,
+              systemText: event.target.value,
+              dirtySystem: true,
+            }))}
+            placeholder="System Prompt"
+            rows={8}
+          />
+          <div className="agent-prompt-meta">
+            <div>Developer Prompt · role: {prompts.developer?.role || agent.type}</div>
+            <div>来源: {prompts.developer?.source || 'inline'} {prompts.developer?.path ? `· ${prompts.developer.path}` : ''}</div>
+            <div>可写路径: {prompts.developer?.editablePath || '未初始化'}</div>
+          </div>
+          <textarea
+            className="agent-prompt-editor"
+            value={prompts.developerText}
+            onChange={(event) => setPrompts((prev) => ({
+              ...prev,
+              developerText: event.target.value,
+              dirtyDeveloper: true,
+            }))}
+            placeholder="Developer Prompt"
+            rows={10}
+          />
+          <div className="agent-prompt-actions">
+            <button type="button" onClick={() => { void loadAgentJson(); }} disabled={prompts.isLoading}>
+              重新加载
+            </button>
+            <button
+              type="button"
+              className="agent-prompt-save"
+              onClick={() => { void handleSavePrompts(); }}
+              disabled={prompts.isSaving || (!prompts.dirtySystem && !prompts.dirtyDeveloper)}
+            >
+              {prompts.isSaving ? '保存中...' : '保存提示词'}
+            </button>
+          </div>
+          {prompts.hint && <div className="agent-prompt-hint">{prompts.hint}</div>}
+          <div className="agent-prompt-hint">保存后写入 prompts，下一次任务开始生效。</div>
+        </section>
+
+        <section className="agent-drawer-section">
+          <div className="agent-form-title">运行配置（部署）</div>
+          <div className="agent-form-subtitle">仅影响部署/运行参数，不会写入 agent.json。</div>
+
           <label className="agent-form-row checkbox">
             <span>启用</span>
             <input
@@ -314,11 +706,12 @@ export const AgentConfigDrawer = ({
           <label className="agent-form-row">
             <span>Provider</span>
             <select value={draft.provider} onChange={(event) => setDraft((prev) => ({ ...prev, provider: event.target.value as AgentDeployDraft['provider'] }))}>
-              <option value="iflow">iflow</option>
+              <option value="auto">auto</option>
               <option value="openai">openai</option>
               <option value="anthropic">anthropic</option>
             </select>
           </label>
+          <div className="agent-form-hint">auto = 不覆写 runtime provider</div>
           <label className="agent-form-row">
             <span>Model</span>
             <input value={draft.model} onChange={(event) => setDraft((prev) => ({ ...prev, model: event.target.value }))} placeholder="可选" />
@@ -399,6 +792,36 @@ export const AgentConfigDrawer = ({
             {isDeploying ? '部署中...' : '应用并部署'}
           </button>
           {hint && <div className="agent-hint-line">{hint}</div>}
+        </section>
+
+        <section className="agent-drawer-section">
+          <div className="agent-form-title">agent.json 编辑</div>
+          <div className="agent-json-meta">
+            <div>文件: {agentJson.filePath || config?.filePath || '未加载'}</div>
+            {agentJson.missing && <div className="agent-json-missing">未找到配置，保存后将创建</div>}
+            <div className="agent-json-actions">
+              <button type="button" onClick={() => { void loadAgentJson(); }} disabled={agentJson.isLoading}>
+                重新加载
+              </button>
+              <button
+                type="button"
+                className="agent-json-save"
+                onClick={() => { void handleSaveAgentJson(); }}
+                disabled={!agentJson.dirty || agentJson.isSaving}
+              >
+                {agentJson.isSaving ? '保存中...' : '保存'}
+              </button>
+            </div>
+          </div>
+          {agentJson.error && <div className="agent-json-error">{agentJson.error}</div>}
+          <textarea
+            className="agent-json-editor"
+            value={agentJson.text}
+            onChange={(event) => handleAgentJsonChange(event.target.value)}
+            placeholder={`{\n  "id": "agent-id",\n  "provider": {\n    "type": "openai"\n  },\n  "tools": {\n    "whitelist": []\n  },\n  "metadata": {\n    "systemPrompt": "..."\n  }\n}`}
+            rows={14}
+          />
+          <div className="agent-json-hint">保存后会写入 agent.json，下一次任务开始生效。</div>
         </section>
 
         <section className="agent-drawer-section">

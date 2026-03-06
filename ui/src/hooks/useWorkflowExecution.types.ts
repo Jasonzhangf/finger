@@ -98,6 +98,9 @@ export interface RuntimeOverview {
   lastLedgerInsertChars?: number;
   compactCount: number;
   updatedAt: string;
+  workingProjectPath?: string;
+  sourceProjectPath?: string;
+  sessionPath?: string;
 }
 
 export interface RuntimeTokenUsage {
@@ -157,6 +160,7 @@ export interface UseWorkflowExecutionReturn {
   runtimeEvents: RuntimeEvent[];
   userRounds: UserRound[];
   executionRounds: ExecutionRound[];
+  sessionAgentId: string;
   selectedAgentId: string | null;
   setSelectedAgentId: (agentId: string | null) => void;
   isLoading: boolean;
@@ -183,8 +187,10 @@ export interface UseWorkflowExecutionReturn {
   debugSnapshotsEnabled: boolean;
   setDebugSnapshotsEnabled: (enabled: boolean) => void;
   debugSnapshots: DebugSnapshotItem[];
-  clearDebugSnapshots: () => void;
-  orchestratorRuntimeMode: OrchestratorRuntimeModeState | null;
+ clearDebugSnapshots: () => void;
+ orchestratorRuntimeMode: OrchestratorRuntimeModeState | null;
+  requestDetailsEnabled: boolean;
+  setRequestDetailsEnabled: (enabled: boolean) => void;
 }
 
 export type ToolCategoryLabel = '编辑' | '读取' | '写入' | '计划' | '搜索' | '网络搜索' | '其他';

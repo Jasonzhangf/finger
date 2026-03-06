@@ -145,7 +145,7 @@ finger orchestrate <projectId>
 finger schedule show
 
 # 服务
-finger server start [--port 8080]
+finger server start [--port 9999]
 finger server status
 ```
 

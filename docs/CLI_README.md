@@ -170,10 +170,10 @@ finger input wf-123456 "继续执行"
 
 ```bash
 # HTTP API 地址
-export FINGER_HTTP_URL=http://localhost:8080
+export FINGER_HTTP_URL=http://localhost:9999
 
 # WebSocket 地址
-export FINGER_WS_URL=ws://localhost:8081
+export FINGER_WS_URL=ws://localhost:9998
 ```
 
 ## 配置文件

@@ -250,7 +250,9 @@ export function registerDryrunRoutes(app: Express, deps: DryrunRouteDeps): void 
     const sessionId = typeof body.sessionId === 'string' && body.sessionId.trim().length > 0
       ? body.sessionId.trim()
       : `dryrun-${Date.now()}`;
-    deps.sessionManager.ensureSession(sessionId, process.cwd(), `dryrun-${sessionId}`);
+    const currentSession = deps.sessionManager.getCurrentSession();
+    const fallbackProjectPath = currentSession?.projectPath ?? process.cwd();
+    deps.sessionManager.ensureSession(sessionId, fallbackProjectPath, `dryrun-${sessionId}`);
 
     const baseMetadata = resolveMetadataFromMessage(body.message);
     const mergedMetadata: Record<string, unknown> = {

@@ -71,3 +71,21 @@
 - `GET /api/v1/agents/configs/schema` 查看 JSON Schema
 - `GET /api/v1/agents/configs` 查看当前已加载配置
 - `POST /api/v1/agents/configs/reload` 重新加载配置（可带 `{"dir":"..."}`）
+
+
+## Prompt 文件
+
+- System Prompt：`~/.finger/config/prompts/finger-general/prompt.md`
+- Developer Prompt：`~/.finger/config/prompts/finger-general/dev/<role>.md`
+
+说明：`<role>` 由 agent role 推导（orchestrator/executor/reviewer/searcher/router）。
+保存后下一次任务开始生效。
+
+## Prompt API
+
+- `GET /api/v1/agents/configs/:agentId` 返回 `prompts` 字段（system/developer 及其来源/路径）
+- `GET /api/v1/agents/configs/:agentId/prompts` 获取提示词快照
+- `PUT /api/v1/agents/configs/:agentId/prompts` 更新提示词
+  - `systemPrompt` 可选
+  - `developerPrompt` 可选
+  - `developerRole` 可选（显式指定 role）

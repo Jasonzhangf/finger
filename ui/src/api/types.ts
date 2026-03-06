@@ -51,7 +51,7 @@ export type AgentFSMState =
 
 export type WorkflowStatus = 'planning' | 'executing' | 'completed' | 'failed' | 'partial' | 'paused';
 export type TaskStatus = 'pending' | 'blocked' | 'ready' | 'in_progress' | 'completed' | 'failed' | 'paused';
-export type AgentRuntimeStatus = 'idle' | 'running' | 'error' | 'paused';
+export type AgentRuntimeStatus = 'idle' | 'running' | 'error' | 'paused' | 'queued' | 'waiting_input' | 'completed' | 'failed' | 'interrupted';
 
 // ========== 状态映射工具 ==========
 
@@ -381,7 +381,7 @@ export interface AgentConfig {
   name: string;
   role?: 'executor' | 'reviewer' | 'orchestrator' | 'searcher';
   mode: 'auto' | 'manual';
-  provider: 'iflow' | 'openai' | 'anthropic';
+  provider?: 'iflow' | 'openai' | 'anthropic';
   model?: string;
   systemPrompt?: string;
   allowedTools?: string[];
@@ -603,6 +603,7 @@ export interface UserInputPayload {
   planModeEnabled?: boolean;
   dryrun?: boolean;
   dryrunTarget?: string;
+  requestDetails?: boolean;
 }
 
 export interface WorkflowUpdatePayload {

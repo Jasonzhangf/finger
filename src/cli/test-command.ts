@@ -31,7 +31,7 @@ function printGroups(groups: TestGroup[]): void {
 }
 
 export function registerTestCommand(program: Command): void {
-  const defaultDaemonUrl = process.env.FINGER_HUB_URL || process.env.FINGER_HTTP_URL || 'http://localhost:5521';
+  const defaultDaemonUrl = process.env.FINGER_HUB_URL || process.env.FINGER_HTTP_URL || 'http://localhost:9999';
   const test = program.command('test').description('测试管理').option('-u, --url <url>', 'Daemon URL', defaultDaemonUrl);
 
   test

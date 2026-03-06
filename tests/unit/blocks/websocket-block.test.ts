@@ -71,13 +71,13 @@ describe('WebSocketBlock', () => {
 
   describe('execute - start', () => {
     it('should start WebSocket server', async () => {
-      const result = await block.execute('start', { port: 8081 });
+      const result = await block.execute('start', { port: 9998 });
       expect(result.started).toBe(true);
-      expect(result.port).toBe(8081);
+      expect(result.port).toBe(9998);
     });
 
     it('should return started false if already running', async () => {
-      block.startServer(8081);
+      block.startServer(9998);
       const result = await block.execute('start', { port: 8082 });
       expect(result.started).toBe(false);
     });
@@ -85,7 +85,7 @@ describe('WebSocketBlock', () => {
 
   describe('execute - stop', () => {
     it('should stop WebSocket server', async () => {
-      block.startServer(8081);
+      block.startServer(9998);
       const result = await block.execute('stop', {});
       expect(result.stopped).toBe(true);
     });
@@ -98,13 +98,13 @@ describe('WebSocketBlock', () => {
 
   describe('execute - broadcast', () => {
     it('should broadcast message to clients', async () => {
-      block.startServer(8081);
+      block.startServer(9998);
       const result = await block.execute('broadcast', { message: 'test' });
       expect(result.sent).toBe(0);
     });
 
     it('should send only to open clients', async () => {
-      block.startServer(8081);
+      block.startServer(9998);
       expect(connectionHandler).toBeTruthy();
 
       const openSocket = createSocket(1);
@@ -122,7 +122,7 @@ describe('WebSocketBlock', () => {
 
   describe('connection lifecycle', () => {
     it('should track connection and close events', async () => {
-      block.startServer(8081);
+      block.startServer(9998);
       expect(connectionHandler).toBeTruthy();
 
       const socket = createSocket(1);
@@ -138,7 +138,7 @@ describe('WebSocketBlock', () => {
     });
 
     it('should close all clients on stop', async () => {
-      block.startServer(8081);
+      block.startServer(9998);
       expect(connectionHandler).toBeTruthy();
 
       const socket1 = createSocket(1);

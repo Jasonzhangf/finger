@@ -134,8 +134,8 @@ export class FingerClient {
   private subscribers: Map<string, Set<(event: any) => void>> = new Map();
   
   constructor(options: FingerClientOptions = {}) {
-    this.httpUrl = options.httpUrl || 'http://localhost:8080';
-    this.wsUrl = options.wsUrl || 'ws://localhost:8081';
+    this.httpUrl = options.httpUrl || 'http://localhost:9999';
+    this.wsUrl = options.wsUrl || 'ws://localhost:9998';
   }
   
   async connect(): Promise<void> {
@@ -341,7 +341,7 @@ data: {"workflowId":"wf-123","status":"completed"}
 ```typescript
 // src/cli/stream.ts
 export async function streamWorkflow(task: string): Promise<void> {
-  const res = await fetch('http://localhost:8080/api/v1/workflow/stream', {
+  const res = await fetch('http://localhost:9999/api/v1/workflow/stream', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ task }),
@@ -395,7 +395,7 @@ finger start
 ```typescript
 // src/cli/session-resume.ts
 export async function checkResumableSessions(): Promise<SessionInfo[]> {
-  const res = await fetch('http://localhost:8080/api/v1/sessions/resumable');
+  const res = await fetch('http://localhost:9999/api/v1/sessions/resumable');
   const { sessions } = await res.json();
   return sessions;
 }

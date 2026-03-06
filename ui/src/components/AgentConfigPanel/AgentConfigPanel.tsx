@@ -18,7 +18,7 @@ export const AgentConfigPanel: React.FC<AgentConfigPanelProps> = ({
   const [config, setConfig] = useState<AgentConfig & { instanceCount: number }>({
     name: agent?.name || '',
     mode: 'auto',
-    provider: 'iflow',
+    provider: 'openai',
     model: '',
     systemPrompt: '',
     allowedTools: [],
@@ -110,10 +110,9 @@ export const AgentConfigPanel: React.FC<AgentConfigPanelProps> = ({
                 <label>Provider</label>
                 <select
                   value={config.provider}
-                  onChange={(e) => setConfig({ ...config, provider: e.target.value as 'iflow' | 'openai' | 'anthropic' })}
+                  onChange={(e) => setConfig({ ...config, provider: e.target.value as 'openai' | 'anthropic' })}
                 >
-                  <option value="iflow">iFlow</option>
-                  <option value="openai">OpenAI</option>
+                                    <option value="openai">OpenAI</option>
                   <option value="anthropic">Anthropic</option>
                 </select>
               </div>

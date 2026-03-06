@@ -158,7 +158,9 @@ export function createSessionWorkspaceManager(sessionManager: SessionManager): S
       }
     }
 
-    const created = sessionManager.createSession(process.cwd(), 'orchestrator', { allowReuse: false });
+    const currentSession = sessionManager.getCurrentSession();
+    const fallbackProjectPath = currentSession?.projectPath ?? process.cwd();
+    const created = sessionManager.createSession(fallbackProjectPath, 'orchestrator', { allowReuse: false });
     const hydrated = hydrateSessionWorkspace(created.id);
     sessionManager.updateContext(created.id, {
       sessionTier: 'orchestrator-root',

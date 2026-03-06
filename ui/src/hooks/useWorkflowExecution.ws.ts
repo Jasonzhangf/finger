@@ -281,12 +281,15 @@ export function mapWsMessageToRuntimeEvent(
       const target = typeof payload.targetAgentId === 'string' ? payload.targetAgentId : 'unknown-agent';
       const status = typeof payload.status === 'string' ? payload.status : 'unknown';
       const summary = typeof payload.summary === 'string' ? payload.summary : '';
+      const source = typeof payload.sourceAgentId === 'string' ? payload.sourceAgentId : 'orchestrator';
+      const blocking = payload.blocking === true ? 'blocking' : 'async';
       const content = summary.length > 0
-        ? `[dispatch] ${target} ${status} - ${summary}`
-        : `[dispatch] ${target} ${status}`;
+        ? `[dispatch] ${source} -> ${target} (${blocking}) ${status} - ${summary}`
+        : `[dispatch] ${source} -> ${target} (${blocking}) ${status}`;
       return {
         role: 'system',
         kind: 'status',
+        agentId: target,
         content,
         timestamp,
       };

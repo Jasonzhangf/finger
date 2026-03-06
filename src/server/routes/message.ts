@@ -152,7 +152,9 @@ function resolveDryRunFlag(req: Request, message: unknown): boolean {
 function ensureSessionExists(sessionManager: SessionManager, sessionId: string, nameHint?: string): void {
   const existing = sessionManager.getSession(sessionId);
   if (existing) return;
-  sessionManager.ensureSession(sessionId, process.cwd(), nameHint);
+  const currentSession = sessionManager.getCurrentSession();
+  const fallbackProjectPath = currentSession?.projectPath ?? process.cwd();
+  sessionManager.ensureSession(sessionId, fallbackProjectPath, nameHint);
 }
 
 export function registerMessageRoutes(app: Express, deps: MessageRouteDeps): void {

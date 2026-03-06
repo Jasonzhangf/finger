@@ -1919,6 +1919,7 @@ const contextEditableEventIds = buildContextEditableEventIds(
     runtimeEvents,
     userRounds,
     executionRounds,
+    sessionAgentId,
     selectedAgentId,
     setSelectedAgentId,
     isLoading,
