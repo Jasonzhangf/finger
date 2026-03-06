@@ -48,6 +48,10 @@ describe('agent json config', () => {
           blacklist: ['file.write'],
           authorizationRequired: ['shell.exec'],
         },
+        prompts: {
+          system: 'prompts/prompt.md',
+          developer: 'prompts/dev/reviewer.md',
+        },
       },
       '/tmp/reviewer/agent.json',
     );
@@ -56,6 +60,10 @@ describe('agent json config', () => {
     expect(parsed.provider?.type).toBe('iflow');
     expect(parsed.session?.bindingScope).toBe('finger+agent');
     expect(parsed.governance?.iflow?.approvalMode).toBe('default');
+    expect(parsed.prompts).toEqual({
+      system: 'prompts/prompt.md',
+      developer: 'prompts/dev/reviewer.md',
+    });
   });
 
   it('parses multi-implementation definitions', () => {
@@ -143,6 +151,10 @@ describe('agent json config', () => {
           blacklist: ['file.write'],
           authorizationRequired: ['shell.exec'],
         },
+        prompts: {
+          system: 'prompts/prompt.md',
+          developer: 'prompts/dev/reviewer.md',
+        },
       },
     ]);
 
@@ -166,6 +178,10 @@ describe('agent json config', () => {
           resume: true,
           provider: 'iflow',
           agentId: 'reviewer',
+        },
+        prompts: {
+          system: 'prompts/prompt.md',
+          developer: 'prompts/dev/reviewer.md',
         },
         runtime: {
           maxTurns: 8,

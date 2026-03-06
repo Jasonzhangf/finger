@@ -3,6 +3,8 @@ import type { RuntimeFacade } from '../../runtime/runtime-facade.js';
 import type { ToolRegistry } from '../../runtime/tool-registry.js';
 import type { ChatCodexRunnerController } from './mock-runtime.js';
 import { createFingerGeneralModule, type ChatCodexLoopEvent } from '../../agents/finger-general/finger-general-module.js';
+import { resolveBaseAgentRole } from '../../agents/chat-codex/agent-role-config.js';
+import type { ChatCodexDeveloperRole } from '../../agents/chat-codex/developer-prompt-templates.js';
 
 export type FingerRoleProfile = 'general' | 'orchestrator' | 'researcher' | 'executor' | 'coder' | 'reviewer';
 
@@ -34,6 +36,29 @@ export async function registerFingerRoleModules(
 ): Promise<void> {
   const { moduleRegistry, runtime, toolRegistry, chatCodexRunner, daemonUrl, onLoopEvent } = deps;
 
+  const resolveDeveloperRole = (role: FingerRoleSpec): ChatCodexDeveloperRole => {
+    if (role.roleProfile === 'researcher') return 'searcher';
+    if (role.roleProfile === 'general') return 'orchestrator';
+    return resolveBaseAgentRole(role.roleProfile);
+  };
+
+  const resolvePromptOverrides = (agentId: string, role: FingerRoleSpec) => {
+    const runtimeConfig = runtime.getAgentRuntimeConfig(agentId);
+    const developerRole = resolveDeveloperRole(role);
+    const systemPath = runtimeConfig?.prompts?.system?.trim();
+    const developerPath = runtimeConfig?.prompts?.developer?.trim();
+    return {
+      ...(systemPath ? { codingPromptPath: systemPath } : {}),
+      ...(developerPath
+        ? {
+            developerPromptPaths: {
+              [developerRole]: developerPath,
+            } as Partial<Record<ChatCodexDeveloperRole, string>>,
+          }
+        : {}),
+    };
+  };
+
   const resolveFingerToolSpecifications = async (toolNames: string[]) => {
     const resolved: Array<{ name: string; description?: string; inputSchema?: Record<string, unknown> }> = [];
     for (const name of toolNames) {
@@ -56,6 +81,8 @@ export async function registerFingerRoleModules(
       id: role.id,
       name: role.id,
       roleProfile: role.roleProfile,
+      ...resolvePromptOverrides(role.id, role),
+      resolvePromptPaths: () => resolvePromptOverrides(role.id, role),
       resolveToolSpecifications: resolveFingerToolSpecifications,
       toolExecution: {
         daemonUrl,
@@ -77,6 +104,17 @@ export async function registerFingerRoleModules(
       id: legacy.legacyAgentId,
       name: legacy.legacyAgentId,
       roleProfile: 'general',
+      ...resolvePromptOverrides(legacy.legacyAgentId, {
+        id: legacy.legacyAgentId,
+        roleProfile: 'general',
+        allowedTools: legacy.legacyAllowedTools,
+      }),
+      resolvePromptPaths: () =>
+        resolvePromptOverrides(legacy.legacyAgentId, {
+          id: legacy.legacyAgentId,
+          roleProfile: 'general',
+          allowedTools: legacy.legacyAllowedTools,
+        }),
       resolveToolSpecifications: resolveFingerToolSpecifications,
       toolExecution: {
         daemonUrl,

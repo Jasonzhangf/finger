@@ -89,6 +89,10 @@ export interface AgentRuntimeConfig {
   provider?: AgentProviderRuntimeConfig;
   session?: AgentSessionRuntimeConfig;
   governance?: AgentGovernanceRuntimeConfig;
+  prompts?: {
+    system?: string;
+    developer?: string;
+  };
   model?: Record<string, unknown>;
   runtime?: Record<string, unknown>;
   metadata?: Record<string, unknown>;

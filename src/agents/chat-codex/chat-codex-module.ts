@@ -15,6 +15,7 @@ import {
   resolveBaseAgentRole,
 } from './agent-role-config.js';
 import { FINGER_PATHS, ensureDir, normalizeSessionDirName } from '../../core/finger-paths.js';
+import { FINGER_SOURCE_ROOT } from '../../core/source-root.js';
 
 const DEFAULT_KERNEL_TIMEOUT_MS = 600_000;
 const DEFAULT_KERNEL_TIMEOUT_RETRY_COUNT = 5;
@@ -66,6 +67,10 @@ export interface ChatCodexModuleConfig {
   binaryPath?: string;
   codingPromptPath?: string;
   developerPromptPaths?: Partial<Record<ChatCodexDeveloperRole, string>>;
+  resolvePromptPaths?: () => {
+    codingPromptPath?: string;
+    developerPromptPaths?: Partial<Record<ChatCodexDeveloperRole, string>>;
+  };
   resolveToolSpecifications?: (toolNames: string[]) => Promise<ChatCodexToolSpecification[]> | ChatCodexToolSpecification[];
   toolExecution?: ChatCodexToolExecutionConfig;
   onLoopEvent?: (event: ChatCodexLoopEvent) => void | Promise<void>;
@@ -122,6 +127,7 @@ export interface ChatCodexRunContext {
   systemPrompt?: string;
   history?: Array<{ role: 'user' | 'assistant' | 'system'; content: string }>;
   metadata?: Record<string, unknown>;
+  developerPromptPaths?: Partial<Record<ChatCodexDeveloperRole, string>>;
   tools?: ChatCodexToolSpecification[];
   toolExecution?: ChatCodexToolExecutionConfig;
   onKernelEvent?: (event: ChatCodexKernelEvent) => void;
@@ -382,7 +388,11 @@ export class ProcessChatCodexRunner implements ChatCodexRunner {
     const sessionKey = resolveRunnerSessionKey(context?.sessionId, providerId);
     const session = this.ensureSession(sessionKey, resolvedPath, providerId);
     const normalizedItems = normalizeKernelInputItems(items, text);
-    const options = buildKernelUserTurnOptions(context, this.toolExecution, this.developerPromptPaths);
+    const options = buildKernelUserTurnOptions(
+      context,
+      this.toolExecution,
+      context?.developerPromptPaths ?? this.developerPromptPaths,
+    );
     if (session.activeTurn) {
       const pendingTurnId = this.nextSubmissionId(session, 'pending');
       this.sendUserTurnSubmission(session, pendingTurnId, normalizedItems, options);
@@ -683,7 +693,11 @@ export function createChatCodexModule(
     ...config,
   };
 
-  const resolveCodingPrompt = (): string => resolveCodingCliSystemPrompt(mergedConfig.codingPromptPath);
+  const resolveCurrentPromptPaths = () => mergedConfig.resolvePromptPaths?.() ?? {};
+  const resolveCodingPrompt = (): string => {
+    const resolvedPromptPaths = resolveCurrentPromptPaths();
+    return resolveCodingCliSystemPrompt(resolvedPromptPaths.codingPromptPath ?? mergedConfig.codingPromptPath);
+  };
   const resolveSystemPrompt = (): string => resolveCodingPrompt();
   const activeRunner =
     runner ??
@@ -703,6 +717,7 @@ export function createChatCodexModule(
       const reviewMeta = isRecord(context?.metadata?.review) ? context.metadata.review : undefined;
       const reviewIteration = parseOptionalNumber(reviewMeta?.iteration);
       const reviewPhase = parseOptionalString(reviewMeta?.phase);
+      const currentPromptPaths = resolveCurrentPromptPaths();
       const snapshotContext: ChatCodexRunContext = {
         sessionId,
         systemPrompt: context?.systemPrompt,
@@ -711,10 +726,15 @@ export function createChatCodexModule(
           content: item.content,
         })),
         metadata: context?.metadata,
+        developerPromptPaths: currentPromptPaths.developerPromptPaths ?? mergedConfig.developerPromptPaths,
         tools: toolSpecifications,
         toolExecution: mergedConfig.toolExecution,
       };
-      const optionsSnapshot = buildKernelUserTurnOptions(snapshotContext, mergedConfig.toolExecution, mergedConfig.developerPromptPaths);
+      const optionsSnapshot = buildKernelUserTurnOptions(
+        snapshotContext,
+        mergedConfig.toolExecution,
+        snapshotContext.developerPromptPaths,
+      );
       writePromptInjectionSnapshot({
         sessionId,
         text,
@@ -940,6 +960,7 @@ export function createChatCodexModule(
             systemPrompt: context?.systemPrompt,
             history: context?.history,
             metadata: context?.metadata,
+            developerPromptPaths: currentPromptPaths.developerPromptPaths ?? mergedConfig.developerPromptPaths,
             tools: toolSpecifications,
             toolExecution: mergedConfig.toolExecution,
             onKernelEvent: (event) => {
@@ -1569,7 +1590,7 @@ function resolveKernelBinaryPath(configuredPath?: string): string {
   if (process.env.FINGER_KERNEL_BRIDGE_BIN && process.env.FINGER_KERNEL_BRIDGE_BIN.length > 0) {
     return process.env.FINGER_KERNEL_BRIDGE_BIN;
   }
-  return join(process.cwd(), 'rust', 'target', 'debug', 'finger-kernel-bridge-bin');
+  return join(FINGER_SOURCE_ROOT, 'rust', 'target', 'debug', 'finger-kernel-bridge-bin');
 }
 
 function parseKernelInputItems(metadata?: Record<string, unknown>): KernelInputItem[] | undefined {

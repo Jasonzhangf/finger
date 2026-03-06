@@ -41,6 +41,11 @@ export interface AgentJsonConfig {
   model?: Record<string, unknown>;
   runtime?: Record<string, unknown>;
   metadata?: Record<string, unknown>;
+  instanceCount?: number;
+  prompts?: {
+    system?: string;
+    developer?: string;
+  };
 }
 
 export interface LoadedAgentConfig {
@@ -64,6 +69,7 @@ export const AGENT_JSON_SCHEMA: Record<string, unknown> = {
     id: { type: 'string' },
     name: { type: 'string' },
     role: { type: 'string' },
+    instanceCount: { type: 'integer', minimum: 0 },
     implementations: {
       type: 'array',
       items: {
@@ -124,6 +130,14 @@ export const AGENT_JSON_SCHEMA: Record<string, unknown> = {
         whitelist: { type: 'array', items: { type: 'string' } },
         blacklist: { type: 'array', items: { type: 'string' } },
         authorizationRequired: { type: 'array', items: { type: 'string' } },
+      },
+      additionalProperties: false,
+    },
+    prompts: {
+      type: 'object',
+      properties: {
+        system: { type: 'string' },
+        developer: { type: 'string' },
       },
       additionalProperties: false,
     },
@@ -196,6 +210,7 @@ export function applyAgentJsonConfigs(runtime: RuntimeFacade, configs: AgentJson
       provider: config.provider,
       session: config.session,
       governance: config.governance,
+      prompts: config.prompts,
       model: config.model,
       runtime: config.runtime,
       metadata: config.metadata,
@@ -237,6 +252,9 @@ export function parseAgentJsonConfig(value: unknown, sourcePath: string): AgentJ
 
   if (typeof value.name === 'string') config.name = value.name;
   if (typeof value.role === 'string') config.role = value.role;
+  if (typeof value.instanceCount === 'number' && Number.isFinite(value.instanceCount)) {
+    config.instanceCount = Math.max(0, Math.floor(value.instanceCount));
+  }
   if (value.implementations !== undefined) {
     config.implementations = parseImplementations(value.implementations, sourcePath);
   }
@@ -263,6 +281,19 @@ export function parseAgentJsonConfig(value: unknown, sourcePath: string): AgentJ
         sourcePath,
       ),
     };
+  }
+
+  if (value.prompts !== undefined) {
+    if (!isRecord(value.prompts)) {
+      throw new Error(`Invalid agent.json at ${sourcePath}: prompts must be object`);
+    }
+    config.prompts = {};
+    if (typeof value.prompts.system === 'string') {
+      config.prompts.system = value.prompts.system;
+    }
+    if (typeof value.prompts.developer === 'string') {
+      config.prompts.developer = value.prompts.developer;
+    }
   }
 
   if (isRecord(value.model)) config.model = value.model;
