@@ -10,9 +10,6 @@ logs/snapshots/
 .beads/*.jsonl
 .beads/last-touched
 .beads/export-state/
-.opencode/
-MEMORY.md
-memory/
 
 # Temporary test files
 *.test.ts.tmp

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Memsearch Flow"
+  short_description: "memsearch 标准流程与验证执行步骤说明文档"
+  default_prompt: "配置 memsearch 的 embedding/LLM 分离并按标准流程验证 index/search/compact。"

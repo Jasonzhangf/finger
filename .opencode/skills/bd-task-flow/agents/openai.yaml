@@ -1,0 +1,4 @@
+interface:
+  display_name: "BD Task Flow"
+  short_description: "Beads bd CLI workflow for task tracking"
+  default_prompt: "Use this skill when managing tasks with bd --no-db; follow repo rules for creating, claiming, updating, and closing issues with evidence."
