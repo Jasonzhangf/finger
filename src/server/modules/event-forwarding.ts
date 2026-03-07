@@ -3,6 +3,7 @@ import type { UnifiedEventBus } from '../../runtime/event-bus.js';
 import type { AgentStepCompletedEvent, ToolCallEvent, ToolErrorEvent, ToolResultEvent } from '../../runtime/events.js';
 import type { ChatCodexLoopEvent } from '../../agents/finger-general/finger-general-module.js';
 import { isObjectRecord } from '../common/object.js';
+import { sanitizeDispatchResult } from '../../common/agent-dispatch.js';
 
 export interface EventForwardingDeps {
   eventBus: UnifiedEventBus;
@@ -34,6 +35,21 @@ interface LoopToolTraceItem {
   output?: unknown;
   error?: string;
   durationMs?: number;
+}
+
+function buildDispatchFeedbackPayload(payload: Record<string, unknown>): Record<string, unknown> {
+  const summarized = sanitizeDispatchResult(payload.result);
+  return {
+    role: 'user',
+    from: typeof payload.targetAgentId === 'string' ? payload.targetAgentId : 'unknown-assignee',
+    status: payload.status === 'completed' ? 'complete' : 'error',
+    dispatchId: typeof payload.dispatchId === 'string' ? payload.dispatchId : '',
+    ...(typeof summarized.childSessionId === 'string' ? { childSessionId: summarized.childSessionId } : {}),
+    summary: summarized.summary,
+    result: summarized,
+    ...(typeof payload.sourceAgentId === 'string' ? { sourceAgentId: payload.sourceAgentId } : {}),
+    ...(typeof payload.error === 'string' && payload.error.trim().length > 0 ? { error: payload.error } : {}),
+  };
 }
 
 function extractLoopToolTrace(raw: unknown): LoopToolTraceItem[] {
@@ -396,15 +412,9 @@ export function attachEventForwarding(deps: EventForwardingDeps): {
       if (!assignment) return;
 
       const feedback = {
-        role: 'user',
-        from: typeof payload.targetAgentId === 'string' ? payload.targetAgentId : 'unknown-assignee',
-        status: status === 'completed' ? 'complete' : 'error',
-        dispatchId: typeof payload.dispatchId === 'string' ? payload.dispatchId : '',
+        ...buildDispatchFeedbackPayload(payload),
         task: typeof assignment.taskId === 'string' ? assignment.taskId : undefined,
-        sourceAgentId: typeof payload.sourceAgentId === 'string' ? payload.sourceAgentId : undefined,
         assignment,
-        ...(payload.result !== undefined ? { result: payload.result } : {}),
-        ...(typeof payload.error === 'string' && payload.error.trim().length > 0 ? { error: payload.error } : {}),
       };
       const feedbackText = JSON.stringify(feedback);
       const workflowId = typeof payload.workflowId === 'string' && payload.workflowId.trim().length > 0

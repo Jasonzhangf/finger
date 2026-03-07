@@ -1,5 +1,6 @@
 import { isObjectRecord } from '../../common/object.js';
 import { asString, firstNonEmptyString } from '../../common/strings.js';
+import { sanitizeDispatchResult, type DispatchSummaryResult } from '../../../common/agent-dispatch.js';
 import type { AgentDispatchRequest, AgentRuntimeDeps } from './types.js';
 
 function formatDispatchTaskContent(task: unknown): string {
@@ -190,7 +191,7 @@ export async function dispatchTaskToAgent(deps: AgentRuntimeDeps, input: AgentDi
   ok: boolean;
   dispatchId: string;
   status: 'queued' | 'completed' | 'failed';
-  result?: unknown;
+  result?: DispatchSummaryResult;
   error?: string;
   queuePosition?: number;
 }> {
@@ -201,10 +202,13 @@ export async function dispatchTaskToAgent(deps: AgentRuntimeDeps, input: AgentDi
     ok: boolean;
     dispatchId: string;
     status: 'queued' | 'completed' | 'failed';
-    result?: unknown;
+    result?: DispatchSummaryResult;
     error?: string;
     queuePosition?: number;
   };
+  if (result.result !== undefined) {
+    result.result = sanitizeDispatchResult(result.result);
+  }
   await syncBdDispatchLifecycle(deps, normalizedInput, result);
   return result;
 }

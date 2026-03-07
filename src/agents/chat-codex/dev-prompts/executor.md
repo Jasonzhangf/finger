@@ -19,6 +19,10 @@ Execution policy:
 Structured output contract:
 - Default mode: concise execution summary with evidence.
 - If `responses.text.output_schema` is present, output one strict JSON object only.
+- The final payload must use `summary` as the main handoff field for the orchestrator.
+- Include key file paths in `outputs[].path` whenever files are read, created, or modified.
+- Keep `summary` concise and decision-ready; do not dump raw tool traces, `api_history`, or full transcripts.
+- When blocked or failed, clearly state blocker, impact, and recommended `nextAction`.
 
 Ledger policy:
 - Use `context_ledger.memory` when historical context is needed.

@@ -6,6 +6,7 @@ import type { MessageHub } from '../../orchestration/message-hub.js';
 import type { ModuleRegistry, OrchestrationModule } from '../../orchestration/module-registry.js';
 import type { LoadedAgentConfig } from '../../runtime/agent-json-config.js';
 import type { ResourcePool } from '../../orchestration/resource-pool.js';
+import { buildDispatchTaskText, sanitizeDispatchResult, type DispatchSummaryResult } from '../../common/agent-dispatch.js';
 
 export type AgentRoleType = 'executor' | 'reviewer' | 'orchestrator' | 'searcher';
 export type AgentCapabilityLayer = 'summary' | 'execution' | 'governance' | 'full';
@@ -295,7 +296,7 @@ interface DispatchResult {
   ok: boolean;
   dispatchId: string;
   status: 'queued' | 'completed' | 'failed';
-  result?: unknown;
+  result?: DispatchSummaryResult;
   error?: string;
   targetModuleId?: string;
   queuePosition?: number;
@@ -1307,17 +1308,23 @@ export class AgentRuntimeBlock extends BaseBlock {
 
   private toDispatchPayload(input: AgentDispatchRequest, dispatchId: string): Record<string, unknown> {
     const assignment = this.normalizeAssignment(input);
+    const targetRole = this.buildDefinitions().get(input.targetAgentId)?.role ?? normalizeAgentType(input.targetAgentId);
     const metadata = {
       ...(isObjectRecord(input.metadata) ? input.metadata : {}),
       dispatchId,
       sourceAgentId: input.sourceAgentId,
       targetAgentId: input.targetAgentId,
+      responsesStructuredOutput: true,
+      responsesOutputSchemaPreset: targetRole === 'searcher' ? 'searcher' : targetRole,
       ...(assignment ? { assignment } : {}),
       orchestration: true,
     };
 
+    const dispatchText = buildDispatchTaskText(input.task, targetRole);
+
     if (isObjectRecord(input.task)) {
       const next: Record<string, unknown> = { ...input.task };
+      next.text = dispatchText;
       if (typeof next.sessionId !== 'string' && typeof input.sessionId === 'string' && input.sessionId.trim().length > 0) {
         next.sessionId = input.sessionId;
       }
@@ -1327,10 +1334,14 @@ export class AgentRuntimeBlock extends BaseBlock {
     }
 
     return {
-      text: typeof input.task === 'string' ? input.task : JSON.stringify(input.task),
+      text: dispatchText,
       ...(typeof input.sessionId === 'string' && input.sessionId.trim().length > 0 ? { sessionId: input.sessionId } : {}),
       metadata,
     };
+  }
+
+  private summarizeDispatchResult(result: unknown): DispatchSummaryResult {
+    return sanitizeDispatchResult(result);
   }
 
   private emitDispatchEvent(params: {
@@ -1484,6 +1495,7 @@ export class AgentRuntimeBlock extends BaseBlock {
     if (!blocking) {
       void this.deps.hub.sendToModule(targetModuleId, payload)
         .then((result) => {
+          const summarized = this.summarizeDispatchResult(result);
           this.emitDispatchEvent({
             dispatchId,
             sourceAgentId: input.sourceAgentId,
@@ -1493,7 +1505,7 @@ export class AgentRuntimeBlock extends BaseBlock {
             sessionId: input.sessionId,
             workflowId: input.workflowId,
             assignment: resolveTerminalAssignmentPhase(assignment, true, result),
-            result,
+            result: summarized,
           });
         })
         .catch((error: unknown) => {
@@ -1519,6 +1531,7 @@ export class AgentRuntimeBlock extends BaseBlock {
 
     try {
       const result = await this.deps.hub.sendToModule(targetModuleId, payload);
+      const summarized = this.summarizeDispatchResult(result);
       this.emitDispatchEvent({
         dispatchId,
         sourceAgentId: input.sourceAgentId,
@@ -1528,9 +1541,9 @@ export class AgentRuntimeBlock extends BaseBlock {
         sessionId: input.sessionId,
         workflowId: input.workflowId,
         assignment: resolveTerminalAssignmentPhase(assignment, true, result),
-        result,
+        result: summarized,
       });
-      return { ok: true, dispatchId, status: 'completed', result, targetModuleId };
+      return { ok: true, dispatchId, status: 'completed', result: summarized, targetModuleId };
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       this.emitDispatchEvent({

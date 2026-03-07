@@ -193,7 +193,7 @@ describe('AgentRuntimeBlock', () => {
     expect(ctx.hubSendToModule).toHaveBeenCalledWith(
       'executor-a-loop',
       expect.objectContaining({
-        text: 'run unit task',
+        text: expect.stringContaining('[ASSIGNED TASK]\nrun unit task'),
         sessionId: 'session-1',
       }),
     );
@@ -383,6 +383,83 @@ describe('AgentRuntimeBlock', () => {
       phase: 'closed',
       attempt: 2,
     }));
+  });
+
+  it('sanitizes blocking dispatch result to summary payload instead of raw child metadata', async () => {
+    ctx.hubSendToModule.mockResolvedValueOnce({
+      success: true,
+      response: JSON.stringify({
+        role: 'executor',
+        summary: '完成修复并更新 src/app.ts',
+        status: 'completed',
+        outputs: [{ type: 'file', path: 'src/app.ts', description: 'patched file' }],
+        evidence: [{ tool: 'exec_command', detail: 'npm test passed' }],
+        nextAction: '等待编排者继续',
+      }),
+      sessionId: 'child-session-1',
+      metadata: {
+        api_history: [{ huge: true }],
+        eventCount: 99,
+      },
+    });
+
+    await ctx.block.execute('deploy', {
+      targetAgentId: 'executor-a',
+      targetImplementationId: 'native-main',
+      sessionId: 'session-1',
+      instanceCount: 1,
+      launchMode: 'orchestrator',
+    });
+
+    const dispatchResult = await ctx.block.execute('dispatch', {
+      sourceAgentId: 'chat-codex',
+      targetAgentId: 'executor-a',
+      task: { text: 'fix it' },
+      blocking: true,
+    }) as { ok: boolean; status: string; result?: Record<string, unknown> };
+
+    expect(dispatchResult.ok).toBe(true);
+    expect(dispatchResult.status).toBe('completed');
+    expect(dispatchResult.result).toEqual(expect.objectContaining({
+      summary: '完成修复并更新 src/app.ts',
+      status: 'completed',
+      childSessionId: 'child-session-1',
+      keyFiles: ['src/app.ts'],
+    }));
+    expect(dispatchResult.result).not.toHaveProperty('metadata');
+    expect(dispatchResult.result).not.toHaveProperty('response');
+  });
+
+  it('injects dispatch contract and structured output metadata into child task payload', async () => {
+    await ctx.block.execute('deploy', {
+      targetAgentId: 'executor-a',
+      targetImplementationId: 'native-main',
+      sessionId: 'session-1',
+      instanceCount: 1,
+      launchMode: 'orchestrator',
+    });
+
+    await ctx.block.execute('dispatch', {
+      sourceAgentId: 'chat-codex',
+      targetAgentId: 'executor-a',
+      task: {
+        text: '修复 dispatch 逻辑',
+        goal: '让主编排器只接收 summary',
+        acceptance: ['返回 summary', '包含关键文件路径'],
+      },
+      blocking: true,
+    });
+
+    expect(ctx.hubSendToModule).toHaveBeenCalledWith(
+      'executor-a-loop',
+      expect.objectContaining({
+        text: expect.stringContaining('[DISPATCH CONTRACT]'),
+        metadata: expect.objectContaining({
+          responsesStructuredOutput: true,
+          responsesOutputSchemaPreset: 'executor',
+        }),
+      }),
+    );
   });
 
   it('maps reviewer decision to assignment terminal phase', async () => {

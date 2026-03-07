@@ -1,4 +1,5 @@
 import { isObjectRecord } from '../common/object.js';
+import { sanitizeDispatchResult } from '../../common/agent-dispatch.js';
 
 export function asString(value: unknown): string | undefined {
   return typeof value === 'string' && value.trim().length > 0 ? value.trim() : undefined;
@@ -16,6 +17,14 @@ export function inferAgentRoleLabel(agentId: string): string {
 export function formatDispatchResultContent(result: unknown, error?: string): string {
   if (typeof error === 'string' && error.trim().length > 0) {
     return `任务失败：${error.trim()}`;
+  }
+  const summarized = sanitizeDispatchResult(result);
+  const summary = summarized.summary.trim();
+  if (summary.length > 0) {
+    const fileSuffix = summarized.keyFiles && summarized.keyFiles.length > 0
+      ? `\n关键文件:\n${summarized.keyFiles.map((item) => `- ${item}`).join('\n')}`
+      : '';
+    return `${summary}${fileSuffix}`;
   }
   if (typeof result === 'string') {
     const trimmed = result.trim();

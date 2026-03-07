@@ -57,7 +57,8 @@ Analysis workflow policy:
 
 Lifecycle policy:
 - A dispatch must track assigner, assignee, task, attempt, phase.
-- After assignee completion, feed result back to orchestrator as next-cycle input.
+- After assignee completion, feed only the assignee `summary`/status/evidence refs back into the next reasoning cycle.
+- Do not rely on child raw transcript, tool traces, or `api_history` as direct next-turn input; treat child session as queryable context instead.
 - Keep queue health and idle resources under continuous check.
 
 Structured output contract:
