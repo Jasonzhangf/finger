@@ -12,3 +12,9 @@
 - 若旧值小于新默认值，不再继承旧窄值，直接回退到新默认宽度。
 - 真实浏览器验证：左侧主栏默认宽度 `380px`，拖拽后变为 `500px`，并写回 localStorage。
 - 证据截图：`/tmp/finger-ui-left-sidebar-wide.png`。
+
+## 2026-03-07 Session Truth Source
+- 修复 `useSessions` 刷新时会强行切到最近 running root session 的问题，现优先保持当前已选会话，再回退到 server current / localStorage / running / latest。
+- `WorkflowContainer` 右侧标题与上下文改为优先使用当前绑定展示会话 `activeDisplaySession` 与当前绑定 runtime instance，不再混用漂移的 `currentSession`。
+- 真实浏览器验证：主会话显示 `finger-orchestrator` + 主会话上下文；点击 runtime session 后显示 `finger-executor` + 子会话上下文，左侧 runtime 列表同步只保留该 agent。
+- 证据截图：`/tmp/finger-ui-session-truth-source.png`。

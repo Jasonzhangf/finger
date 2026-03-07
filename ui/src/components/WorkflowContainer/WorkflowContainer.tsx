@@ -204,6 +204,10 @@ export const WorkflowContainer: React.FC = () => {
     sessionId: orchestratorSessionId,
   });
   const activeSessionId = sessionBinding.context === 'runtime' ? sessionBinding.sessionId : orchestratorSessionId;
+  const activeDisplaySession = useMemo(() => {
+    if (currentSession?.id === activeSessionId) return currentSession;
+    return sessions.find((item) => item.id === activeSessionId) ?? null;
+  }, [activeSessionId, currentSession, sessions]);
 
   const getStableTimestamp = useCallback((key: string, ref: React.MutableRefObject<Record<string, string>>): string => {
     if (!key) return new Date().toISOString();
@@ -744,8 +748,8 @@ export const WorkflowContainer: React.FC = () => {
           || instance.sessionId === sessionBinding.sessionId
         )) ?? null)
       : null;
-    const resolvedSessionAgentId = sessionAgentId || currentSession?.ownerAgentId || executionState?.orchestrator?.id || DEFAULT_CHAT_AGENT_ID;
-    const runtimeAgentLabel = runtimeInstance?.agentId || runtimeInstance?.name || resolvedSessionAgentId || `runtime:${sessionBinding.sessionId}`;
+    const resolvedSessionAgentId = activeDisplaySession?.ownerAgentId || sessionAgentId || executionState?.orchestrator?.id || DEFAULT_CHAT_AGENT_ID;
+    const runtimeAgentLabel = runtimeInstance?.agentId || activeDisplaySession?.ownerAgentId || runtimeInstance?.name || `runtime:${sessionBinding.sessionId}`;
     const orchestratorAgentLabel = resolvedSessionAgentId || DEFAULT_CHAT_AGENT_ID;
     const eventFilterAgentId = sessionBinding.context === 'runtime' ? runtimeAgentLabel : null;
     const contextLabel = sessionBinding.context === 'runtime'
@@ -791,7 +795,7 @@ export const WorkflowContainer: React.FC = () => {
         showRuntimeModeBadge={showRuntimeModeBadge}
       />
     );
-  }, [clearDebugSnapshots, deleteRuntimeEvent, editRuntimeEvent, executionState?.orchestrator?.id, frozenActiveSessionId, frozenChatAgents, frozenRightPayload, handleCreateNewSession, handleSelectAgent, interruptCurrentTurn, isConnected, pauseWorkflow, resumeWorkflow, runtimeInstances, sendUserInput, sessionBinding.context, sessionBinding.runtimeInstanceId, sessionBinding.sessionId, orchestratorSessionId, setDebugSnapshotsEnabled, updateToolExposure, requestDetailsEnabled, setRequestDetailsEnabled]);
+  }, [activeDisplaySession?.ownerAgentId, clearDebugSnapshots, deleteRuntimeEvent, editRuntimeEvent, executionState?.orchestrator?.id, frozenActiveSessionId, frozenChatAgents, frozenRightPayload, handleCreateNewSession, handleSelectAgent, interruptCurrentTurn, isConnected, pauseWorkflow, resumeWorkflow, runtimeInstances, sendUserInput, sessionAgentId, sessionBinding.context, sessionBinding.runtimeInstanceId, sessionBinding.sessionId, orchestratorSessionId, setDebugSnapshotsEnabled, updateToolExposure, requestDetailsEnabled, setRequestDetailsEnabled]);
 
   const leftSidebarElement = useMemo(() => (
     <LeftSidebar

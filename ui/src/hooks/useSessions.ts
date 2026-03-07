@@ -4,6 +4,7 @@ import {
   createSession,
   deleteSession,
   getSession,
+  getCurrentSession,
   setCurrentSession,
   renameSession,
 } from '../api/client.js';
@@ -45,6 +46,12 @@ export function useSessions(): UseSessionsReturn {
     return sortByRecent(running)[0] ?? null;
   }, [sortByRecent]);
 
+  const persistLastSessionId = useCallback((sessionId: string): void => {
+    if (typeof window !== 'undefined' && window.localStorage) {
+      window.localStorage.setItem(LAST_SESSION_STORAGE_KEY, sessionId);
+    }
+  }, []);
+
   const refresh = useCallback(async () => {
     setIsLoading(true);
     setError(null);
@@ -66,20 +73,26 @@ export function useSessions(): UseSessionsReturn {
         manualSelectionRef.current = null;
         if (matched) {
           setCurrent(matched);
-          if (typeof window !== 'undefined' && window.localStorage) {
-            window.localStorage.setItem(LAST_SESSION_STORAGE_KEY, matched.id);
-          }
+          persistLastSessionId(matched.id);
           return;
         }
         try {
           const runtimeSession = await getSession(manualSelection);
           setCurrent(runtimeSession);
-          if (typeof window !== 'undefined' && window.localStorage) {
-            window.localStorage.setItem(LAST_SESSION_STORAGE_KEY, runtimeSession.id);
-          }
+          persistLastSessionId(runtimeSession.id);
           return;
         } catch {
           // fall through to default selection
+        }
+      }
+
+      if (currentSessionRef.current) {
+        const currentId = currentSessionRef.current.id;
+        const matchedCurrent = data.find((item) => item.id === currentId);
+        if (matchedCurrent) {
+          setCurrent(matchedCurrent);
+          persistLastSessionId(matchedCurrent.id);
+          return;
         }
       }
 
@@ -87,6 +100,37 @@ export function useSessions(): UseSessionsReturn {
         const match = data.find((item) => item.id === currentSessionRef.current?.id);
         if (!match) {
           setCurrent(currentSessionRef.current);
+          persistLastSessionId(currentSessionRef.current.id);
+          return;
+        }
+      }
+
+      try {
+        const serverCurrent = await getCurrentSession();
+        if (serverCurrent.sessionTier === 'runtime') {
+          setCurrent(serverCurrent);
+          persistLastSessionId(serverCurrent.id);
+          return;
+        }
+        const matchedServerCurrent = data.find((item) => item.id === serverCurrent.id);
+        if (matchedServerCurrent) {
+          setCurrent(matchedServerCurrent);
+          persistLastSessionId(matchedServerCurrent.id);
+          return;
+        }
+      } catch {
+        // ignore server current session lookup failures
+      }
+
+      const lastSessionId = typeof window !== 'undefined' && window.localStorage
+        ? window.localStorage.getItem(LAST_SESSION_STORAGE_KEY)
+        : null;
+      if (lastSessionId) {
+        const matchedLast = data.find((item) => item.id === lastSessionId);
+        if (matchedLast) {
+          setCurrent(matchedLast);
+          persistLastSessionId(matchedLast.id);
+          await setCurrentSession(matchedLast.id).catch(() => undefined);
           return;
         }
       }
@@ -94,9 +138,7 @@ export function useSessions(): UseSessionsReturn {
       const latestRunning = pickLatestRunning(data);
       if (latestRunning) {
         setCurrent(latestRunning);
-        if (typeof window !== 'undefined' && window.localStorage) {
-          window.localStorage.setItem(LAST_SESSION_STORAGE_KEY, latestRunning.id);
-        }
+        persistLastSessionId(latestRunning.id);
         await setCurrentSession(latestRunning.id).catch(() => undefined);
         return;
       }
@@ -104,15 +146,13 @@ export function useSessions(): UseSessionsReturn {
       const fallback = sortByRecent(data)[0];
       setCurrent(fallback);
       await setCurrentSession(fallback.id).catch(() => undefined);
-      if (typeof window !== 'undefined' && window.localStorage) {
-        window.localStorage.setItem(LAST_SESSION_STORAGE_KEY, fallback.id);
-      }
+      persistLastSessionId(fallback.id);
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Failed to load sessions');
     } finally {
       setIsLoading(false);
     }
-  }, [pickLatestRunning, sortByRecent]);
+  }, [persistLastSessionId, pickLatestRunning, sortByRecent]);
 
   const create = useCallback(async (projectPath: string, name?: string) => {
     const session = await createSession(projectPath, name);
@@ -139,11 +179,9 @@ export function useSessions(): UseSessionsReturn {
     if (next) {
       setCurrent(next);
     }
-    if (typeof window !== 'undefined' && window.localStorage) {
-      window.localStorage.setItem(LAST_SESSION_STORAGE_KEY, sessionId);
-    }
+    persistLastSessionId(sessionId);
     await refresh();
-  }, [refresh, sessions]);
+  }, [persistLastSessionId, refresh, sessions]);
 
   useEffect(() => {
     refresh();

@@ -63,7 +63,12 @@ vi.mock('../PerformanceCard/PerformanceCard.tsx', () => ({
 }));
 
 vi.mock('../ChatInterface/ChatInterface.tsx', () => ({
-  ChatInterface: () => <div data-testid="chat">chat</div>,
+  ChatInterface: ({ panelTitle, contextLabel }: { panelTitle?: string; contextLabel?: string }) => (
+    <div data-testid="chat">
+      <div data-testid="chat-panel-title">{panelTitle}</div>
+      <div data-testid="chat-context-label">{contextLabel}</div>
+    </div>
+  ),
 }));
 
 vi.mock('../LeftSidebar/LeftSidebar.tsx', () => ({
@@ -228,6 +233,23 @@ describe('WorkflowContainer session binding', () => {
 
     await waitFor(() => {
       expect(useWorkflowExecutionMock).toHaveBeenLastCalledWith('runtime-session');
+    });
+  });
+
+  it('uses bound runtime session agent for panel title and context', async () => {
+    render(<WorkflowContainer />);
+
+    fireEvent.click(screen.getByTestId('switch-runtime'));
+
+    await waitFor(() => {
+      expect(useWorkflowExecutionMock).toHaveBeenLastCalledWith('runtime-session');
+    });
+
+    await waitFor(() => {
+      expect(screen.getByTestId('chat-panel-title').textContent).toBe('executor-debug-loop');
+      expect(screen.getByTestId('chat-context-label').textContent).toContain('子会话');
+      expect(screen.getByTestId('chat-context-label').textContent).toContain('agent executor-debug-loop');
+      expect(screen.getByTestId('chat-context-label').textContent).toContain('session runtime-session');
     });
   });
 });

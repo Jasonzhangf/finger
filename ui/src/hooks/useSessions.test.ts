@@ -55,6 +55,28 @@ describe('useSessions', () => {
     expect(mockListSessions).toHaveBeenCalled();
   });
 
+  it('should keep current session on refresh instead of switching to latest running session', async () => {
+    const mockSessions = [
+      { id: 'session-1', name: 'Session 1', projectPath: '/path/1', createdAt: '2023-01-01T00:00:00Z', updatedAt: '2023-01-01T00:00:00Z', lastAccessedAt: '2023-01-01T00:00:00Z', messageCount: 0, activeWorkflows: [] },
+      { id: 'session-2', name: 'Session 2', projectPath: '/path/2', createdAt: '2023-01-01T00:00:00Z', updatedAt: '2023-01-02T00:00:00Z', lastAccessedAt: '2023-01-02T00:00:00Z', messageCount: 0, activeWorkflows: ['wf-1'] },
+    ];
+
+    mockListSessions.mockResolvedValue(mockSessions);
+    mockGetCurrentSession.mockResolvedValue(mockSessions[0]);
+
+    const { result } = renderHook(() => useSessions());
+
+    await waitFor(() => {
+      expect(result.current.currentSession?.id).toBe('session-1');
+    });
+
+    await result.current.refresh();
+
+    await waitFor(() => {
+      expect(result.current.currentSession?.id).toBe('session-1');
+    });
+  });
+
   it('should prefer server current session when available', async () => {
     const mockSessions = [
       { id: 'session-1', name: 'Session 1', projectPath: '/path/1', createdAt: '2023-01-01T00:00:00Z', updatedAt: '2023-01-01T00:00:00Z', lastAccessedAt: '2023-01-01T00:00:00Z', messageCount: 0, activeWorkflows: [] },
