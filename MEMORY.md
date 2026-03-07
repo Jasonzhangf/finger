@@ -12,3 +12,8 @@
 - Agent 配置抽屉中的提示词编辑支持两层入口：抽屉内快速 textarea 编辑，以及全屏模态框编辑/预览 Markdown。
 - 提示词默认读取系统 prompt；用户保存后写入 `~/.finger/runtime/agents/<agent-id>/prompts/...` 覆盖文件，并在下一次任务开始时生效。
 - 全屏提示词模态框需要展示读取路径、写入路径、role/source 元信息；Markdown 预览至少支持标题、段落、引用、列表、代码块、行内 code、粗体、斜体。
+
+## 2026-03-07 Bottom Panel Agent Source
+- 下方 Agent 配置面板中的静态 agent 列表必须是动态聚合结果，不能只显示默认固定 agent。
+- 真正来源是三者合并：`runtime-view.agents`、`catalog.agents`、`runtime-view.configs`；即使某个 agent 还未部署、只存在于 `agent.json`，也要在面板里出现并可配置。
+- orchestration profile 的 `visible` 不应裁掉配置面板里的 agent 候选；它只影响编排展示，不应影响配置真源。

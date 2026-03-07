@@ -539,25 +539,41 @@ function mergeAgents(
   return Array.from(map.values()).sort((a, b) => a.name.localeCompare(b.name));
 }
 
-const DEFAULT_VISIBLE_AGENT_IDS = new Set(['finger-orchestrator', 'finger-researcher']);
-
-function filterVisibleAgents(
+function synthesizeAgentsFromConfigs(
   agents: AgentRuntimePanelAgent[],
-  orchestration: OrchestrationConfigState | null,
+  configs: AgentConfigSummary[],
 ): AgentRuntimePanelAgent[] {
-  if (!orchestration) {
-    return agents.filter((agent) => DEFAULT_VISIBLE_AGENT_IDS.has(agent.id));
+  const byId = new Map<string, AgentRuntimePanelAgent>();
+  for (const agent of agents) {
+    byId.set(agent.id, agent);
   }
-  const activeProfile = orchestration.profiles.find((profile) => profile.id === orchestration.activeProfileId);
-  if (!activeProfile) {
-    return agents.filter((agent) => DEFAULT_VISIBLE_AGENT_IDS.has(agent.id));
+
+  for (const config of configs) {
+    if (byId.has(config.id)) continue;
+    byId.set(config.id, {
+      id: config.id,
+      name: config.name,
+      type: parseAgentType(config.role ?? config.id),
+      status: 'idle',
+      source: 'agent-json',
+      instanceCount: 0,
+      deployedCount: 0,
+      availableCount: 0,
+      runningCount: 0,
+      queuedCount: 0,
+      enabled: config.enabled !== false,
+      runtimeCapabilities: config.capabilities ?? [],
+      defaultQuota: typeof config.defaultQuota === 'number' ? config.defaultQuota : 1,
+      quotaPolicy: config.quotaPolicy ?? { workflowQuota: {} },
+      quota: {
+        effective: typeof config.defaultQuota === 'number' ? config.defaultQuota : 1,
+        source: 'default',
+      },
+      debugAssertions: [],
+    });
   }
-  const visibleByConfig = new Set(
-    activeProfile.agents
-      .filter((entry) => entry.visible !== false)
-      .map((entry) => entry.targetAgentId),
-  );
-  return agents.filter((agent) => visibleByConfig.has(agent.id));
+
+  return Array.from(byId.values()).sort((a, b) => a.name.localeCompare(b.name));
 }
 
 function parseAgentConfigs(raw: unknown): AgentConfigSummary[] {
@@ -859,11 +875,12 @@ export function useAgentRuntimePanel(): UseAgentRuntimePanelResult {
       const parsedDebug = parseDebugAssertions(debugData);
       const parsedDebugMode = parseDebugMode(debugModeData);
       const mergedAgents = mergeAgents(runtimeAgents, catalogAgents);
+      const parsedConfigs = parseAgentConfigs(runtimeData);
       const parsedOrchestration = parseOrchestrationConfig(orchestrationData);
-      const visibleAgents = filterVisibleAgents(mergedAgents, parsedOrchestration);
-      setAgents(bindDebugAssertions(visibleAgents, parsedDebug.assertions));
+      const panelAgents = synthesizeAgentsFromConfigs(mergedAgents, parsedConfigs);
+      setAgents(bindDebugAssertions(panelAgents, parsedDebug.assertions));
       setInstances(parseRuntimeInstances(isRecord(runtimeData) ? runtimeData.instances : undefined));
-      setConfigs(parseAgentConfigs(runtimeData));
+      setConfigs(parsedConfigs);
       setStartupTargets(parseStartupTargets(isRecord(runtimeData) ? runtimeData.startupTargets : undefined));
       setStartupTemplates(parseStartupTemplates(isRecord(runtimeData) ? runtimeData.startupTemplates : undefined));
       setOrchestrationConfig(parsedOrchestration);
