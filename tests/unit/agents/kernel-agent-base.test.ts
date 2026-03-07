@@ -336,4 +336,63 @@ describe('KernelAgentBase session binding', () => {
     expect(result.error).toContain('$.summary: is required');
     expect(result.error).toContain('$.status: must be one of');
   });
+
+  it('supports configurable structured output retry count', async () => {
+    let attempts = 0;
+    const runner: KernelAgentRunner = {
+      runTurn: vi.fn(async (text: string) => {
+        if (text.includes('[STRUCTURED OUTPUT RETRY]')) {
+          attempts += 1;
+          if (attempts === 1) {
+            return {
+              reply: JSON.stringify({
+                role: 'executor',
+                status: 'still_bad',
+                outputs: [],
+                evidence: [],
+                nextAction: 'none',
+              }),
+            };
+          }
+          return {
+            reply: JSON.stringify({
+              role: 'executor',
+              summary: 'second retry fixed',
+              status: 'completed',
+              outputs: [],
+              evidence: [],
+              nextAction: 'none',
+            }),
+          };
+        }
+        return {
+          reply: '{"role":"executor"',
+        };
+      }),
+    };
+
+    const agent = new KernelAgentBase(
+      {
+        moduleId: 'finger-executor',
+        provider: 'codex',
+        defaultRoleProfileId: 'executor',
+        maxContextMessages: 20,
+      },
+      runner,
+    );
+
+    const result = await agent.handle({
+      text: '执行任务',
+      sessionId: 'ui-session-structured-4',
+      roleProfile: 'executor',
+      metadata: {
+        responsesStructuredOutput: true,
+        structuredOutputRetryMaxAttempts: 2,
+      },
+    });
+
+    expect(result.success).toBe(true);
+    expect(result.response).toContain('"summary": "second retry fixed"');
+    expect(runner.runTurn).toHaveBeenCalledTimes(3);
+  });
 });

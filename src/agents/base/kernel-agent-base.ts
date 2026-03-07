@@ -79,6 +79,8 @@ interface ReviewVerdict {
   score?: number;
 }
 
+const DEFAULT_STRUCTURED_OUTPUT_RETRY_MAX_ATTEMPTS = 1;
+
 export class KernelAgentBase {
   private readonly config: KernelAgentBaseConfig;
   private readonly runner: KernelAgentRunner;
@@ -680,6 +682,7 @@ export class KernelAgentBase {
     };
     const schema = resolveResponsesOutputSchema(schemaMetadata, this.resolveSchemaRole(params.roleProfileId));
     if (!schema) return params.current;
+    const retryMaxAttempts = resolveStructuredOutputRetryMaxAttempts(schemaMetadata);
 
     const initialReply = params.current.reply?.trim() ?? '';
     if (initialReply.length === 0) return params.current;
@@ -696,6 +699,7 @@ export class KernelAgentBase {
       return this.retryStructuredOutput({
         ...params,
         schema,
+        retryMaxAttempts,
         firstReply: initialReply,
         parseFailure: false,
         issues,
@@ -705,6 +709,7 @@ export class KernelAgentBase {
     return this.retryStructuredOutput({
       ...params,
       schema,
+        retryMaxAttempts,
       firstReply: initialReply,
       parseFailure: true,
       issues: [],
@@ -722,65 +727,87 @@ export class KernelAgentBase {
     threadKey: string;
     current: KernelRunnerResult;
     schema: Record<string, unknown>;
+    retryMaxAttempts: number;
     firstReply: string;
     parseFailure: boolean;
     issues: Array<{ path: string; message: string }>;
   }): Promise<KernelRunnerResult> {
-    if (params.current.metadata?.structuredOutputRetryApplied === true) {
+    const initialAttempt = resolveStructuredOutputRetryAttemptCount(params.current.metadata);
+    if (initialAttempt >= params.retryMaxAttempts) {
       const suffix = params.parseFailure
-        ? 'Structured output parse failed and retry already applied'
-        : `Structured output schema mismatch after retry:\n${formatStructuredOutputIssues(params.issues)}`;
+        ? 'Structured output parse failed and retry budget exhausted'
+        : `Structured output schema mismatch and retry budget exhausted:\n${formatStructuredOutputIssues(params.issues)}`;
       throw new Error(suffix);
     }
 
-    const retryMetadata: Record<string, unknown> = {
-      ...params.runtimeMetadata,
-      structuredOutputRetryApplied: true,
-      structuredOutputRetryReason: params.parseFailure ? 'parse_error' : 'schema_validation_error',
-    };
-    const retryPrompt = buildStructuredOutputRetryInput({
-      originalUserInput: params.inputText,
-      previousReply: params.firstReply,
-      schema: params.schema,
-      issues: params.issues,
-      parseFailure: params.parseFailure,
-    });
+    let lastReply = params.firstReply;
+    let lastParseFailure = params.parseFailure;
+    let lastIssues = [...params.issues];
+    let attempt = initialAttempt;
 
-    const retried = await this.runner.runTurn(retryPrompt, {
-      sessionId: params.sessionId,
-      systemPrompt: params.systemPrompt,
-      history: params.history,
-      tools: params.tools,
-      metadata: retryMetadata,
-    });
-    this.captureApiHistory(params.threadKey, retried.metadata);
+    while (attempt < params.retryMaxAttempts) {
+      const retryMetadata: Record<string, unknown> = {
+        ...params.runtimeMetadata,
+        structuredOutputRetryApplied: true,
+        structuredOutputRetryAttempt: attempt + 1,
+        structuredOutputRetryMaxAttempts: params.retryMaxAttempts,
+        structuredOutputRetryReason: lastParseFailure ? 'parse_error' : 'schema_validation_error',
+      };
+      const retryPrompt = buildStructuredOutputRetryInput({
+        originalUserInput: params.inputText,
+        previousReply: lastReply,
+        schema: params.schema,
+        issues: lastIssues,
+        parseFailure: lastParseFailure,
+      });
 
-    const retriedReply = retried.reply?.trim() ?? '';
-    const parsedRetry = tryParseStructuredJson(retriedReply);
-    if (parsedRetry.parsed === undefined) {
+      const retried = await this.runner.runTurn(retryPrompt, {
+        sessionId: params.sessionId,
+        systemPrompt: params.systemPrompt,
+        history: params.history,
+        tools: params.tools,
+        metadata: retryMetadata,
+      });
+      this.captureApiHistory(params.threadKey, retried.metadata);
+
+      const retriedReply = retried.reply?.trim() ?? '';
+      const parsedRetry = tryParseStructuredJson(retriedReply);
+      if (parsedRetry.parsed !== undefined) {
+        const retryIssues = validateStructuredOutput(parsedRetry.parsed, params.schema);
+        if (retryIssues.length === 0) {
+          return {
+            ...retried,
+            reply: normalizeStructuredJsonText(parsedRetry.parsed),
+            metadata: {
+              ...(retried.metadata ?? {}),
+              structuredOutputRecovered: true,
+            },
+          };
+        }
+        lastReply = retriedReply;
+        lastParseFailure = false;
+        lastIssues = retryIssues;
+      } else {
+        lastReply = retriedReply;
+        lastParseFailure = true;
+        lastIssues = [];
+      }
+      attempt += 1;
+    }
+
+    if (lastParseFailure) {
       throw new Error([
         'Structured output parse failed after retry.',
         'Model must resend valid JSON matching schema.',
         'Problem: unable to parse JSON object.',
       ].join(' '));
     }
-    const retryIssues = validateStructuredOutput(parsedRetry.parsed, params.schema);
-    if (retryIssues.length > 0) {
-      throw new Error([
-        'Structured output schema validation failed after retry.',
-        'Model must resend fields at:',
-        formatStructuredOutputIssues(retryIssues),
-      ].join('\n'));
-    }
 
-    return {
-      ...retried,
-      reply: normalizeStructuredJsonText(parsedRetry.parsed),
-      metadata: {
-        ...(retried.metadata ?? {}),
-        structuredOutputRecovered: parsedRetry.repaired || true,
-      },
-    };
+    throw new Error([
+      'Structured output schema validation failed after retry.',
+      'Model must resend fields at:',
+      formatStructuredOutputIssues(lastIssues),
+    ].join('\n'));
   }
 
   private resolveSchemaRole(roleProfileId?: string): 'orchestrator' | 'reviewer' | 'executor' | 'searcher' | 'router' {
@@ -1081,6 +1108,30 @@ function buildStructuredOutputRetryInput(params: {
     '',
     'Return only corrected JSON. Do not include markdown fences or extra explanation.',
   ].join('\n');
+}
+
+function resolveStructuredOutputRetryMaxAttempts(metadata?: Record<string, unknown>): number {
+  const raw = metadata?.structuredOutputRetryMaxAttempts
+    ?? metadata?.structured_output_retry_max_attempts
+    ?? metadata?.responsesStructuredOutputRetryMaxAttempts;
+  if (typeof raw === 'number' && Number.isFinite(raw)) {
+    return Math.max(0, Math.floor(raw));
+  }
+  if (typeof raw === 'string') {
+    const parsed = Number(raw);
+    if (Number.isFinite(parsed)) return Math.max(0, Math.floor(parsed));
+  }
+  return DEFAULT_STRUCTURED_OUTPUT_RETRY_MAX_ATTEMPTS;
+}
+
+function resolveStructuredOutputRetryAttemptCount(metadata?: Record<string, unknown>): number {
+  const raw = metadata?.structuredOutputRetryAttempt ?? metadata?.structured_output_retry_attempt;
+  if (typeof raw === 'number' && Number.isFinite(raw)) return Math.max(0, Math.floor(raw));
+  if (typeof raw === 'string') {
+    const parsed = Number(raw);
+    if (Number.isFinite(parsed)) return Math.max(0, Math.floor(parsed));
+  }
+  return metadata?.structuredOutputRetryApplied === true ? 1 : 0;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

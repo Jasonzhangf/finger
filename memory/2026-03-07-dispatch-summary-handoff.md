@@ -27,3 +27,5 @@
 - 在 `KernelAgentBase` 增加 structured output 容错链路：先尝试本地修复 JSON（去 fence、去尾逗号、补闭合、规范引号），再按 `responses.text.output_schema` 做最小 schema 校验。
 - 如果本地修复后仍不满足 schema，则自动重试一次，提示模型仅返回 JSON，并明确列出失败路径，例如 `$.summary: is required`。
 - 若重试后仍失败，则返回包含字段路径的错误，要求模型按这些路径重发。
+
+- Structured output retry 次数现可通过 metadata 配置：`structuredOutputRetryMaxAttempts` / `structured_output_retry_max_attempts` / `responsesStructuredOutputRetryMaxAttempts`。
