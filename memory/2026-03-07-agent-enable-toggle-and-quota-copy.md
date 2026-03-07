@@ -30,3 +30,4 @@
 - 底部 agent 卡片现在拆分为“状态徽标 + 动作按钮”：`已启用/已禁用` 用颜色表达状态，`启用/禁用` 只表达动作。
 - Drawer 的“运行配置（部署）/应用并部署”已改为“运行配置/应用并保存”，并改为直接保存到 `agent.json`，不再调用 deploy endpoint。
 - `WorkflowContainer` 中 drawer 保存逻辑改为 `GET + PUT /api/v1/agents/configs/:agentId`，保存后刷新 panel，保证行为与文案一致。
+- 额外修复：`AgentConfigDrawer` 组件测试默认会在 mount 时请求 `GET /configs/:agentId` 与 `GET /configs/:agentId/prompts`。若个别用例未 mock `fetch`，happy-dom/node 会打印 `socket hang up` 噪音。已为该测试文件补上默认 fetch mock，并在基础渲染用例中等待初始异步请求完成，测试输出现已干净。

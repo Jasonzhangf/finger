@@ -1,83 +1,101 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { AgentConfigDrawer } from './AgentConfigDrawer.js';
 
+function createDefaultFetchMock() {
+  return vi.fn(async (input: RequestInfo | URL) => {
+    const url = String(input);
+    if (url.includes('/prompts')) {
+      return new Response(JSON.stringify({
+        prompts: {
+          system: {
+            role: 'orchestrator',
+            source: 'file',
+            path: '/tmp/system.md',
+            editablePath: '/tmp/system.md',
+            content: '# Default Title',
+          },
+          developer: {
+            role: 'orchestrator',
+            source: 'file',
+            path: '/tmp/dev.md',
+            editablePath: '/tmp/dev.md',
+            content: 'default dev content',
+          },
+        },
+      }), { status: 200 });
+    }
+
+    return new Response(JSON.stringify({
+      filePath: '/tmp/agent.json',
+      config: { id: 'orchestrator-loop', enabled: true, instanceCount: 1 },
+    }), { status: 200 });
+  });
+}
+
+function renderDrawer() {
+  return render(
+    <AgentConfigDrawer
+      isOpen
+      agent={{
+        id: 'orchestrator-loop',
+        name: 'Orchestrator',
+        type: 'orchestrator',
+        status: 'idle',
+        source: 'runtime-config',
+        instanceCount: 0,
+        deployedCount: 0,
+        availableCount: 0,
+        runningCount: 0,
+        queuedCount: 0,
+        enabled: true,
+        runtimeCapabilities: [],
+        defaultQuota: 1,
+        quotaPolicy: { workflowQuota: {} },
+        quota: { effective: 1, source: 'default' },
+        debugAssertions: [],
+      }}
+      capabilities={null}
+      config={null}
+      instances={[]}
+      currentSessionId={null}
+      onClose={vi.fn()}
+    />,
+  );
+}
+
 describe('AgentConfigDrawer', () => {
-  it('uses widened default width when no stored preference exists', () => {
+  beforeEach(() => {
+    globalThis.fetch = createDefaultFetchMock() as unknown as typeof fetch;
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('uses widened default width when no stored preference exists', async () => {
     window.localStorage.removeItem('finger.agentConfigDrawer.width.v2');
     window.localStorage.removeItem('finger.agentConfigDrawer.width');
 
-    const { container } = render(
-      <AgentConfigDrawer
-        isOpen
-        agent={{
-          id: 'orchestrator-loop',
-          name: 'Orchestrator',
-          type: 'orchestrator',
-          status: 'idle',
-          source: 'runtime-config',
-          instanceCount: 0,
-          deployedCount: 0,
-          availableCount: 0,
-          runningCount: 0,
-          queuedCount: 0,
-          enabled: true,
-          runtimeCapabilities: [],
-          defaultQuota: 1,
-          quotaPolicy: { workflowQuota: {} },
-          quota: { effective: 1, source: 'default' },
-          debugAssertions: [],
-        }}
-        capabilities={null}
-        config={null}
-        instances={[]}
-        currentSessionId={null}
-        onClose={vi.fn()}
-      />,
-    );
+    const { container } = renderDrawer();
+    await waitFor(() => expect(globalThis.fetch).toHaveBeenCalled());
 
     const drawer = container.querySelector('.agent-drawer') as HTMLElement | null;
     expect(drawer?.style.width).toBe('720px');
   });
 
-  it('restores stored width preference on open', () => {
+  it('restores stored width preference on open', async () => {
     window.localStorage.removeItem('finger.agentConfigDrawer.width');
     window.localStorage.setItem('finger.agentConfigDrawer.width.v2', '860');
 
-    const { container } = render(
-      <AgentConfigDrawer
-        isOpen
-        agent={{
-          id: 'orchestrator-loop',
-          name: 'Orchestrator',
-          type: 'orchestrator',
-          status: 'idle',
-          source: 'runtime-config',
-          instanceCount: 0,
-          deployedCount: 0,
-          availableCount: 0,
-          runningCount: 0,
-          queuedCount: 0,
-          enabled: true,
-          runtimeCapabilities: [],
-          defaultQuota: 1,
-          quotaPolicy: { workflowQuota: {} },
-          quota: { effective: 1, source: 'default' },
-          debugAssertions: [],
-        }}
-        capabilities={null}
-        config={null}
-        instances={[]}
-        currentSessionId={null}
-        onClose={vi.fn()}
-      />,
-    );
+    const { container } = renderDrawer();
+    await waitFor(() => expect(globalThis.fetch).toHaveBeenCalled());
 
     const drawer = container.querySelector('.agent-drawer') as HTMLElement | null;
     expect(drawer?.style.width).toBe('860px');
   });
 
-  it('closes on Escape key press', () => {
+  it('closes on Escape key press', async () => {
     const onClose = vi.fn();
     render(
       <AgentConfigDrawer
@@ -107,6 +125,7 @@ describe('AgentConfigDrawer', () => {
         onClose={onClose}
       />,
     );
+    await waitFor(() => expect(globalThis.fetch).toHaveBeenCalled());
 
     expect(screen.getByText('Orchestrator')).toBeTruthy();
     fireEvent.keyDown(window, { key: 'Escape' });
