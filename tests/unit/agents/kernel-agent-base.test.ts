@@ -213,4 +213,127 @@ describe('KernelAgentBase session binding', () => {
     expect(result.response).toBe('已执行并完成：列出了目录并写入文件。');
     expect(runner.runTurn).toHaveBeenCalledTimes(2);
   });
+
+  it('repairs structured output locally when JSON has fences and trailing comma', async () => {
+    const runner: KernelAgentRunner = {
+      runTurn: vi.fn(async () => ({
+        reply: '```json\n{"role":"executor","summary":"done","status":"completed","outputs":[],"evidence":[],"nextAction":"none",}\n```',
+      })),
+    };
+
+    const agent = new KernelAgentBase(
+      {
+        moduleId: 'finger-executor',
+        provider: 'codex',
+        defaultRoleProfileId: 'executor',
+        maxContextMessages: 20,
+      },
+      runner,
+    );
+
+    const result = await agent.handle({
+      text: '执行任务',
+      sessionId: 'ui-session-structured-1',
+      roleProfile: 'executor',
+      metadata: { responsesStructuredOutput: true },
+    });
+
+    expect(result.success).toBe(true);
+    expect(result.response).toContain('"summary": "done"');
+    expect(runner.runTurn).toHaveBeenCalledTimes(1);
+  });
+
+  it('requests one structured output retry with field-level errors when schema validation fails', async () => {
+    const runner: KernelAgentRunner = {
+      runTurn: vi.fn(async (text: string) => {
+        if (text.includes('[STRUCTURED OUTPUT RETRY]')) {
+          expect(text).toContain('$.summary: is required');
+          expect(text).toContain('$.status: must be one of');
+          return {
+            reply: JSON.stringify({
+              role: 'executor',
+              summary: 'fixed',
+              status: 'completed',
+              outputs: [],
+              evidence: [],
+              nextAction: 'none',
+            }),
+          };
+        }
+        return {
+          reply: JSON.stringify({
+            role: 'executor',
+            status: 'oops',
+            outputs: [],
+            evidence: [],
+            nextAction: 'none',
+          }),
+        };
+      }),
+    };
+
+    const agent = new KernelAgentBase(
+      {
+        moduleId: 'finger-executor',
+        provider: 'codex',
+        defaultRoleProfileId: 'executor',
+        maxContextMessages: 20,
+      },
+      runner,
+    );
+
+    const result = await agent.handle({
+      text: '执行任务',
+      sessionId: 'ui-session-structured-2',
+      roleProfile: 'executor',
+      metadata: { responsesStructuredOutput: true },
+    });
+
+    expect(result.success).toBe(true);
+    expect(result.response).toContain('"summary": "fixed"');
+    expect(runner.runTurn).toHaveBeenCalledTimes(2);
+  });
+
+  it('fails with explicit resend paths when structured output is still invalid after retry', async () => {
+    const runner: KernelAgentRunner = {
+      runTurn: vi.fn(async (text: string) => {
+        if (text.includes('[STRUCTURED OUTPUT RETRY]')) {
+          return {
+            reply: JSON.stringify({
+              role: 'executor',
+              status: 'bad',
+              outputs: [],
+              evidence: [],
+              nextAction: 'none',
+            }),
+          };
+        }
+        return {
+          reply: '{"role":"executor"',
+        };
+      }),
+    };
+
+    const agent = new KernelAgentBase(
+      {
+        moduleId: 'finger-executor',
+        provider: 'codex',
+        defaultRoleProfileId: 'executor',
+        maxContextMessages: 20,
+      },
+      runner,
+    );
+
+    const result = await agent.handle({
+      text: '执行任务',
+      sessionId: 'ui-session-structured-3',
+      roleProfile: 'executor',
+      metadata: { responsesStructuredOutput: true },
+    });
+
+    expect(result.success).toBe(false);
+    expect(result.error).toContain('Structured output schema validation failed after retry');
+    expect(result.error).toContain('$.summary: is required');
+    expect(result.error).toContain('$.status: must be one of');
+  });
 });

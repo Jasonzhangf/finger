@@ -4,5 +4,6 @@
 - 与 agent prompt 相关的覆盖链路采用：默认读取仓库系统 prompt，用户保存后写入 `~/.finger/runtime/agents/<agent-id>/prompts/...`，并以下次任务开始时优先加载该覆盖。
 
 ## 2026-03-07 Dispatch Handoff
+- Structured output 返回需要容错：先本地修 JSON，再按 schema 校验；仍失败时只允许一次带字段路径的重试提示，错误必须明确到 JSON path。
 - 子 agent 派发返回必须只回灌轻量 `summary/status/keyFiles/evidence/childSessionId`，不能把 `metadata.api_history`、原始 transcript 或完整工具历史直接送回主编排器下一轮输入。
 - `agent.dispatch` 的任务下发应带明确 goal / acceptance / response contract，优先启用 structured output schema，保证 executor 输出 JSON handoff。

@@ -2,6 +2,13 @@ import type { Session, SessionMessage } from '../chat/session-types.js';
 import { composeTurnContextSlots } from './context-slots.js';
 import { MemorySessionManager } from './memory-session-manager.js';
 import {
+  formatStructuredOutputIssues,
+  normalizeStructuredJsonText,
+  tryParseStructuredJson,
+  validateStructuredOutput,
+} from '../../common/structured-output.js';
+import { resolveResponsesOutputSchema } from '../chat-codex/response-output-schemas.js';
+import {
   mergeHistory,
   parseUnifiedAgentInput,
   type UnifiedAgentInput,
@@ -196,6 +203,19 @@ export class KernelAgentBase {
         history: toUnifiedHistory(mergedHistory),
         tools,
         runtimeMetadata,
+        threadKey,
+        current: runResult,
+      });
+
+      runResult = await this.applyStructuredOutputRecoveryIfNeeded({
+        inputText: input.text,
+        sessionId: runnerSessionId,
+        systemPrompt,
+        history: toUnifiedHistory(mergedHistory),
+        tools,
+        inputMetadata: input.metadata,
+        runtimeMetadata,
+        roleProfileId: roleProfile?.id ?? input.roleProfile,
         threadKey,
         current: runResult,
       });
@@ -642,6 +662,136 @@ export class KernelAgentBase {
     return followUpResult;
   }
 
+  private async applyStructuredOutputRecoveryIfNeeded(params: {
+    inputText: string;
+    sessionId: string;
+    systemPrompt?: string;
+    history: UnifiedHistoryItem[];
+    tools: string[];
+    inputMetadata?: Record<string, unknown>;
+    runtimeMetadata: Record<string, unknown>;
+    roleProfileId?: string;
+    threadKey: string;
+    current: KernelRunnerResult;
+  }): Promise<KernelRunnerResult> {
+    const schemaMetadata = {
+      ...(params.runtimeMetadata ?? {}),
+      ...(params.inputMetadata ?? {}),
+    };
+    const schema = resolveResponsesOutputSchema(schemaMetadata, this.resolveSchemaRole(params.roleProfileId));
+    if (!schema) return params.current;
+
+    const initialReply = params.current.reply?.trim() ?? '';
+    if (initialReply.length === 0) return params.current;
+
+    const firstPass = tryParseStructuredJson(initialReply);
+    if (firstPass.parsed !== undefined) {
+      const issues = validateStructuredOutput(firstPass.parsed, schema);
+      if (issues.length === 0) {
+        if (firstPass.repaired) {
+          return { ...params.current, reply: normalizeStructuredJsonText(firstPass.parsed) };
+        }
+        return params.current;
+      }
+      return this.retryStructuredOutput({
+        ...params,
+        schema,
+        firstReply: initialReply,
+        parseFailure: false,
+        issues,
+      });
+    }
+
+    return this.retryStructuredOutput({
+      ...params,
+      schema,
+      firstReply: initialReply,
+      parseFailure: true,
+      issues: [],
+    });
+  }
+
+  private async retryStructuredOutput(params: {
+    inputText: string;
+    sessionId: string;
+    systemPrompt?: string;
+    history: UnifiedHistoryItem[];
+    tools: string[];
+    runtimeMetadata: Record<string, unknown>;
+    roleProfileId?: string;
+    threadKey: string;
+    current: KernelRunnerResult;
+    schema: Record<string, unknown>;
+    firstReply: string;
+    parseFailure: boolean;
+    issues: Array<{ path: string; message: string }>;
+  }): Promise<KernelRunnerResult> {
+    if (params.current.metadata?.structuredOutputRetryApplied === true) {
+      const suffix = params.parseFailure
+        ? 'Structured output parse failed and retry already applied'
+        : `Structured output schema mismatch after retry:\n${formatStructuredOutputIssues(params.issues)}`;
+      throw new Error(suffix);
+    }
+
+    const retryMetadata: Record<string, unknown> = {
+      ...params.runtimeMetadata,
+      structuredOutputRetryApplied: true,
+      structuredOutputRetryReason: params.parseFailure ? 'parse_error' : 'schema_validation_error',
+    };
+    const retryPrompt = buildStructuredOutputRetryInput({
+      originalUserInput: params.inputText,
+      previousReply: params.firstReply,
+      schema: params.schema,
+      issues: params.issues,
+      parseFailure: params.parseFailure,
+    });
+
+    const retried = await this.runner.runTurn(retryPrompt, {
+      sessionId: params.sessionId,
+      systemPrompt: params.systemPrompt,
+      history: params.history,
+      tools: params.tools,
+      metadata: retryMetadata,
+    });
+    this.captureApiHistory(params.threadKey, retried.metadata);
+
+    const retriedReply = retried.reply?.trim() ?? '';
+    const parsedRetry = tryParseStructuredJson(retriedReply);
+    if (parsedRetry.parsed === undefined) {
+      throw new Error([
+        'Structured output parse failed after retry.',
+        'Model must resend valid JSON matching schema.',
+        'Problem: unable to parse JSON object.',
+      ].join(' '));
+    }
+    const retryIssues = validateStructuredOutput(parsedRetry.parsed, params.schema);
+    if (retryIssues.length > 0) {
+      throw new Error([
+        'Structured output schema validation failed after retry.',
+        'Model must resend fields at:',
+        formatStructuredOutputIssues(retryIssues),
+      ].join('\n'));
+    }
+
+    return {
+      ...retried,
+      reply: normalizeStructuredJsonText(parsedRetry.parsed),
+      metadata: {
+        ...(retried.metadata ?? {}),
+        structuredOutputRecovered: parsedRetry.repaired || true,
+      },
+    };
+  }
+
+  private resolveSchemaRole(roleProfileId?: string): 'orchestrator' | 'reviewer' | 'executor' | 'searcher' | 'router' {
+    const normalized = (roleProfileId ?? '').trim().toLowerCase();
+    if (normalized.includes('review')) return 'reviewer';
+    if (normalized.includes('search') || normalized.includes('research')) return 'searcher';
+    if (normalized.includes('execut') || normalized.includes('coder') || normalized.includes('coding')) return 'executor';
+    if (normalized === 'router') return 'router';
+    return 'orchestrator';
+  }
+
   private shouldRequestExecutionFollowUp(
     inputText: string,
     replyText: string,
@@ -904,6 +1054,33 @@ function extractJsonObject(text: string): string | null {
   const end = text.lastIndexOf('}');
   if (start < 0 || end <= start) return null;
   return text.slice(start, end + 1);
+}
+
+function buildStructuredOutputRetryInput(params: {
+  originalUserInput: string;
+  previousReply: string;
+  schema: Record<string, unknown>;
+  issues: Array<{ path: string; message: string }>;
+  parseFailure: boolean;
+}): string {
+  return [
+    '[STRUCTURED OUTPUT RETRY]',
+    'Your previous answer did not satisfy the required structured output contract.',
+    params.parseFailure
+      ? 'Problem: JSON could not be parsed. Resend one valid JSON object only.'
+      : ['Problem: schema validation failed. Resend one valid JSON object only.', formatStructuredOutputIssues(params.issues)].join('\n'),
+    '',
+    '[Original User Input]',
+    params.originalUserInput,
+    '',
+    '[Previous Reply]',
+    params.previousReply,
+    '',
+    '[Required JSON Schema]',
+    JSON.stringify(params.schema, null, 2),
+    '',
+    'Return only corrected JSON. Do not include markdown fences or extra explanation.',
+  ].join('\n');
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
