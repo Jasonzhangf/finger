@@ -605,6 +605,11 @@ export class AgentRuntimeBlock extends BaseBlock {
     };
   }
 
+  private readBaseRuntimeConfigProfile(agentId: string): AgentRuntimeConfigProfile {
+    const loaded = this.readRuntimeProfileFromLoadedConfig(agentId);
+    return loaded ?? this.createDefaultRuntimeConfigProfile();
+  }
+
   private readRuntimeProfileFromLoadedConfig(agentId: string): AgentRuntimeConfigProfile | null {
     const loaded = this.deps.getLoadedAgentConfigs().find((item) => item.config.id === agentId);
     if (!loaded) return null;
@@ -620,7 +625,9 @@ export class AgentRuntimeBlock extends BaseBlock {
         workflowQuota: runtime.workflowQuota ?? runtime.workflow_quota,
       },
     );
-    const enabled = runtime.enabled !== false;
+    const enabled = typeof loaded.config.enabled === 'boolean'
+      ? loaded.config.enabled
+      : runtime.enabled !== false;
     const capabilities = normalizeCapabilities(runtime.capabilities ?? metadata.capabilities);
 
     return {
@@ -663,19 +670,20 @@ export class AgentRuntimeBlock extends BaseBlock {
   }
 
   private resolveRuntimeConfigProfile(agentId: string): AgentRuntimeConfigProfile {
-    const existing = this.runtimeConfigByAgent.get(agentId);
-    if (existing) return existing;
-    const loaded = this.readRuntimeProfileFromLoadedConfig(agentId);
-    const resolved = loaded ?? this.createDefaultRuntimeConfigProfile();
-    this.runtimeConfigByAgent.set(agentId, resolved);
-    return resolved;
+    const base = this.readBaseRuntimeConfigProfile(agentId);
+    const override = this.runtimeConfigByAgent.get(agentId);
+    if (!override) return base;
+    return this.mergeRuntimeConfigProfiles(base, override);
   }
 
   private patchRuntimeConfigProfile(agentId: string, patch: Partial<AgentRuntimeConfigProfile>): AgentRuntimeConfigProfile {
-    const current = this.resolveRuntimeConfigProfile(agentId);
-    const merged = this.mergeRuntimeConfigProfiles(current, patch);
-    this.runtimeConfigByAgent.set(agentId, merged);
-    return merged;
+    const currentOverride = this.runtimeConfigByAgent.get(agentId);
+    const mergedOverride = this.mergeRuntimeConfigProfiles(
+      currentOverride ?? this.createDefaultRuntimeConfigProfile(),
+      patch,
+    );
+    this.runtimeConfigByAgent.set(agentId, mergedOverride);
+    return this.resolveRuntimeConfigProfile(agentId);
   }
 
   private resolveAgentQuota(

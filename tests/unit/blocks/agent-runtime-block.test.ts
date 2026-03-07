@@ -118,6 +118,86 @@ async function createContext(): Promise<TestContext> {
   };
 }
 
+async function createContextWithLoadedConfigs(loadedAgentConfigs: LoadedAgentConfig[]): Promise<TestContext> {
+  const modules = new Map<string, Record<string, unknown>>();
+  modules.set('executor-a-loop', {
+    id: 'executor-a-loop',
+    name: 'executor-a-loop',
+    type: 'agent',
+    metadata: { role: 'executor' },
+  });
+
+  const hubSendToModule = vi.fn().mockResolvedValue({ ok: true });
+  const runtimeSetConfig = vi.fn();
+  const emittedEvents = vi.fn().mockResolvedValue(undefined);
+  const chatCodexListSessionStates = vi.fn().mockReturnValue([]);
+  const resourcePoolEntries: Array<{ id: string; status: string }> = [];
+
+  const block = new AgentRuntimeBlock('agent-runtime-test', {
+    moduleRegistry: {
+      getAllModules: () => Array.from(modules.values()) as never,
+      getModule: (id: string) => (modules.get(id) as never) ?? null,
+    } as never,
+    hub: {
+      sendToModule: hubSendToModule,
+    } as never,
+    runtime: {
+      getAgentToolPolicy: () => ({
+        whitelist: ['agent.list', 'agent.capabilities', 'agent.deploy', 'agent.dispatch', 'agent.control'],
+        blacklist: [],
+      }),
+      getAgentRuntimeConfig: () => null,
+      setAgentRuntimeConfig: runtimeSetConfig,
+    } as never,
+    toolRegistry: {
+      list: () => [
+        { name: 'agent.list', policy: 'allow' },
+        { name: 'agent.capabilities', policy: 'allow' },
+        { name: 'agent.deploy', policy: 'allow' },
+        { name: 'agent.dispatch', policy: 'allow' },
+        { name: 'agent.control', policy: 'allow' },
+      ],
+    } as never,
+    eventBus: {
+      emit: emittedEvents,
+    } as never,
+    workflowManager: {
+      listWorkflows: () => [],
+      pauseWorkflow: () => true,
+      resumeWorkflow: () => true,
+    },
+    sessionManager: {
+      pauseSession: () => true,
+      resumeSession: () => true,
+      getCurrentSession: () => ({ id: 'session-default' }),
+    },
+    chatCodexRunner: {
+      listSessionStates: chatCodexListSessionStates,
+      interruptSession: () => [],
+    },
+    resourcePool: {
+      getAllResources: () => resourcePoolEntries,
+      addResource: (resource: { id: string }) => {
+        resourcePoolEntries.push({ id: resource.id, status: 'available' });
+      },
+    } as never,
+    getLoadedAgentConfigs: () => loadedAgentConfigs,
+    primaryOrchestratorAgentId: 'chat-codex',
+  });
+
+  await block.initialize();
+  await block.start();
+
+  return {
+    block,
+    hubSendToModule,
+    runtimeSetConfig,
+    emittedEvents,
+    chatCodexListSessionStates,
+    resourcePoolEntries,
+  };
+}
+
 describe('AgentRuntimeBlock', () => {
   let ctx: TestContext;
 
@@ -588,5 +668,71 @@ describe('AgentRuntimeBlock', () => {
     const config = view.configs.find((item) => item.id === 'executor-a');
     expect(config?.defaultQuota).toBe(3);
     expect(config?.quotaPolicy?.projectQuota).toBe(2);
+  });
+
+  it('reads enabled from agent.json top-level field in runtime view', async () => {
+    const custom = await createContextWithLoadedConfigs([
+      {
+        filePath: '/tmp/executor-a.agent.json',
+        config: {
+          id: 'executor-a',
+          name: 'Executor A',
+          role: 'executor',
+          enabled: false,
+          implementations: [
+            { id: 'native-main', kind: 'native', moduleId: 'executor-a-loop', enabled: true },
+          ],
+          tools: {
+            whitelist: ['agent.list', 'agent.capabilities', 'agent.deploy', 'agent.dispatch', 'agent.control'],
+          },
+        },
+      },
+    ]);
+
+    const runtimeView = await custom.block.execute('runtime_view', {}) as {
+      agents: Array<{ id: string; enabled: boolean }>;
+      configs: Array<{ id: string; enabled: boolean }>;
+    };
+
+    expect(runtimeView.agents.find((item) => item.id === 'executor-a')?.enabled).toBe(false);
+    expect(runtimeView.configs.find((item) => item.id === 'executor-a')?.enabled).toBe(false);
+  });
+
+  it('does not let stale base profile override explicit runtime enabled patch', async () => {
+    const loadedAgentConfigs: LoadedAgentConfig[] = [
+      {
+        filePath: '/tmp/executor-a.agent.json',
+        config: {
+          id: 'executor-a',
+          name: 'Executor A',
+          role: 'executor',
+          enabled: true,
+          implementations: [
+            { id: 'native-main', kind: 'native', moduleId: 'executor-a-loop', enabled: true },
+          ],
+          tools: {
+            whitelist: ['agent.list', 'agent.capabilities', 'agent.deploy', 'agent.dispatch', 'agent.control'],
+          },
+        },
+      },
+    ];
+    const custom = await createContextWithLoadedConfigs(loadedAgentConfigs);
+
+    await custom.block.execute('deploy', {
+      targetAgentId: 'executor-a',
+      targetImplementationId: 'native-main',
+      sessionId: 'session-1',
+      config: {
+        enabled: false,
+      },
+    });
+
+    const runtimeView = await custom.block.execute('runtime_view', {}) as {
+      agents: Array<{ id: string; enabled: boolean }>;
+      configs: Array<{ id: string; enabled: boolean }>;
+    };
+
+    expect(runtimeView.agents.find((item) => item.id === 'executor-a')?.enabled).toBe(false);
+    expect(runtimeView.configs.find((item) => item.id === 'executor-a')?.enabled).toBe(false);
   });
 });

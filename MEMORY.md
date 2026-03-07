@@ -28,3 +28,8 @@
 - 底部 agent 卡片的启用态展示必须把“当前状态”和“可执行动作”分开：状态徽标显示 `已启用/已禁用`，动作按钮显示 `禁用/启用`，避免绿色按钮文字与当前状态混淆。
 - Agent 配置抽屉里的运行配置区域本质是配置编辑，不是 runtime deploy；UI 文案必须使用“应用并保存/保存中”，并明确说明“保存到 agent.json，下一次任务开始生效，不会立即部署实例”。
 - 抽屉保存运行配置时必须直接写入 `/api/v1/agents/configs/:agentId`，不能再走 `/api/v1/agents/deploy`，否则禁用态下会出现“还能部署”的错误语义和错误行为。
+
+## 2026-03-07 Agent Enabled Runtime Truth Source
+- `runtime-view.agents[].enabled` 与 `runtime-view.configs[].enabled` 必须最终反映 `agent.json` 顶层 `enabled`，不能只读取 `runtime.enabled`。
+- `AgentRuntimeBlock` 里的 `runtimeConfigByAgent` 不能缓存“从 loaded config 推导出的完整 profile”，否则 agent.json reload 后旧缓存会把新配置盖回去。
+- 正确策略是：每次读取时先重新计算 loaded-config base profile，再叠加仅用于运行期 patch 的 override profile。
