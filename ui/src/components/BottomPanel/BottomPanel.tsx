@@ -32,6 +32,7 @@ interface BottomPanelProps {
   onSwitchOrchestrationProfile?: (profileId: string) => Promise<void> | void;
   onSaveOrchestrationConfig?: (config: unknown) => Promise<void> | void;
   onRefresh?: () => void;
+  onToggleAgentEnabled?: (payload: { agentId: string; enabled: boolean }) => Promise<void> | void;
 }
 
 function getStatusColor(status: string): string {
@@ -195,6 +196,7 @@ export const BottomPanel: React.FC<BottomPanelProps> = ({
   onSwitchOrchestrationProfile,
   onSaveOrchestrationConfig,
   onRefresh,
+  onToggleAgentEnabled,
 }) => {
   const [activeTab, setActiveTab] = useState<Tab>('agents');
   const [isTogglingDebug, setIsTogglingDebug] = useState(false);
@@ -206,7 +208,22 @@ export const BottomPanel: React.FC<BottomPanelProps> = ({
   const [isOrchestrationDraftDirty, setIsOrchestrationDraftDirty] = useState(false);
   const [isSavingOrchestrationConfig, setIsSavingOrchestrationConfig] = useState(false);
   const [startupHint, setStartupHint] = useState<string | null>(null);
+  const [togglingAgentId, setTogglingAgentId] = useState<string | null>(null);
   const [connectionSegments, setConnectionSegments] = useState<ConnectionSegment[]>([]);
+
+  const handleToggleAgentEnabled = async (agent: AgentRuntimePanelAgent, nextEnabled: boolean): Promise<void> => {
+    if (!onToggleAgentEnabled) return;
+    setTogglingAgentId(agent.id);
+    setStartupHint(null);
+    try {
+      await onToggleAgentEnabled({ agentId: agent.id, enabled: nextEnabled });
+      setStartupHint(`${agent.name} 已${nextEnabled ? '启用' : '禁用'}`);
+    } catch (error) {
+      setStartupHint(error instanceof Error ? error.message : `${agent.name} 更新启用状态失败`);
+    } finally {
+      setTogglingAgentId(null);
+    }
+  };
 
   const linkageRef = useRef<HTMLDivElement | null>(null);
   const agentCardRefs = useRef<Record<string, HTMLButtonElement | null>>({});
@@ -810,51 +827,68 @@ export const BottomPanel: React.FC<BottomPanelProps> = ({
               <div className="layer-title">Static Agent</div>
               <div className="agents-grid static-agent-grid">
                 {agents.map((agent) => (
-                  <button
+                  <div
                     key={agent.id}
-                    ref={(node) => { agentCardRefs.current[agent.id] = node; }}
+                    ref={(node) => { agentCardRefs.current[agent.id] = node as HTMLButtonElement | null; }}
                     className={`agent-card static-agent-card ${agent.status} ${selectedAgentConfigId === agent.id ? 'selected' : ''}`}
-                    onClick={() => onSelectAgentConfig?.(agent.id)}
-                    type="button"
                   >
-                    <div className="agent-header">
-                      <span className="agent-dot" style={{ background: getStatusColor(agent.status) }} />
-                      <span className="agent-name">{agent.name}</span>
-                      <span className="agent-role">{agent.type}</span>
+                    <div className="agent-card-actions">
+                      <button
+                        type="button"
+                        className={`agent-enabled-toggle ${agent.enabled ? 'enabled' : 'disabled'}`}
+                        disabled={!onToggleAgentEnabled || togglingAgentId === agent.id}
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          void handleToggleAgentEnabled(agent, !agent.enabled);
+                        }}
+                      >
+                        {togglingAgentId === agent.id ? '更新中...' : agent.enabled ? '禁用' : '启用'}
+                      </button>
                     </div>
-                    <div className="agent-metrics">
-                      <div className="metric">
-                        <span className="metric-label">Running</span>
-                        <span className="metric-value">{agent.runningCount}</span>
+                    <button
+                      className="agent-card-main"
+                      onClick={() => onSelectAgentConfig?.(agent.id)}
+                      type="button"
+                    >
+                      <div className="agent-header">
+                        <span className="agent-dot" style={{ background: getStatusColor(agent.status) }} />
+                        <span className="agent-name">{agent.name}</span>
+                        <span className="agent-role">{agent.type}</span>
                       </div>
-                      <div className="metric">
-                        <span className="metric-label">Queued</span>
-                        <span className="metric-value">{agent.queuedCount}</span>
+                      <div className="agent-metrics">
+                        <div className="metric">
+                          <span className="metric-label">Running</span>
+                          <span className="metric-value">{agent.runningCount}</span>
+                        </div>
+                        <div className="metric">
+                          <span className="metric-label">Queued</span>
+                          <span className="metric-value">{agent.queuedCount}</span>
+                        </div>
+                        <div className="metric">
+                          <span className="metric-label">Quota</span>
+                          <span className="metric-value">
+                            {agent.quota.effective} ({formatQuotaSource(agent.quota.source)})
+                          </span>
+                        </div>
                       </div>
-                      <div className="metric">
-                        <span className="metric-label">Quota</span>
-                        <span className="metric-value">
-                          {agent.quota.effective} ({formatQuotaSource(agent.quota.source)})
-                        </span>
-                      </div>
-                    </div>
-                    <div className="agent-config-ref">
-                      {(() => {
-                        const config = findConfigForAgent(agent, configs);
-                        const sourceLabel = `来源: ${agent.source}`;
-                        if (!config) return sourceLabel;
-                        return `配置: ${config.id} · ${sourceLabel}`;
-                      })()}
-                    </div>
-                    <div className="agent-config-ref">
-                      Last Event: {agent.lastEvent?.summary ?? '暂无'}
-                    </div>
-                    {agent.debugAssertions.length > 0 && (
                       <div className="agent-config-ref">
-                        Assert: {agent.debugAssertions[0].result.summary}
+                        {(() => {
+                          const config = findConfigForAgent(agent, configs);
+                          const sourceLabel = `来源: ${agent.source}`;
+                          if (!config) return sourceLabel;
+                          return `配置: ${config.id} · ${sourceLabel}`;
+                        })()}
                       </div>
-                    )}
-                  </button>
+                      <div className="agent-config-ref">
+                        Last Event: {agent.lastEvent?.summary ?? '暂无'}
+                      </div>
+                      {agent.debugAssertions.length > 0 && (
+                        <div className="agent-config-ref">
+                          Assert: {agent.debugAssertions[0].result.summary}
+                        </div>
+                      )}
+                    </button>
+                  </div>
                 ))}
               </div>
               <div className="layer-title">Runtime</div>

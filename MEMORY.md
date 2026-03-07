@@ -17,3 +17,9 @@
 - 下方 Agent 配置面板中的静态 agent 列表必须是动态聚合结果，不能只显示默认固定 agent。
 - 真正来源是三者合并：`runtime-view.agents`、`catalog.agents`、`runtime-view.configs`；即使某个 agent 还未部署、只存在于 `agent.json`，也要在面板里出现并可配置。
 - orchestration profile 的 `visible` 不应裁掉配置面板里的 agent 候选；它只影响编排展示，不应影响配置真源。
+
+## 2026-03-07 Agent Enable Truth Source
+- agent 的启用状态要持久化到 `agent.json` 顶层 `enabled`，不能只停留在 runtime patch，否则 drawer 重开或 reload 后会被重新覆盖成 `true`。
+- Drawer 中的 `enabled` 编辑是配置编辑，不应因为同一个 agent 的刷新而被 `pickDefaultDraft()` 重置。
+- 下方 Agent 卡片需要有直接 `启用/禁用` 操作，且该操作应走 `GET /api/v1/agents/configs/:agentId` + `PUT /api/v1/agents/configs/:agentId` 持久化，再刷新面板。
+- `Workflow Quota` 文案对用户不直观，应该改成“按工作流覆盖配额”，并解释格式 `workflowId=配额`。

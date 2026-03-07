@@ -33,6 +33,7 @@ export interface AgentJsonConfig {
   id: string;
   name?: string;
   role?: string;
+  enabled?: boolean;
   implementations?: AgentJsonImplementationConfig[];
   provider?: AgentJsonProviderConfig;
   session?: AgentJsonSessionConfig;
@@ -69,6 +70,7 @@ export const AGENT_JSON_SCHEMA: Record<string, unknown> = {
     id: { type: 'string' },
     name: { type: 'string' },
     role: { type: 'string' },
+    enabled: { type: 'boolean' },
     instanceCount: { type: 'integer', minimum: 0 },
     implementations: {
       type: 'array',
@@ -212,7 +214,10 @@ export function applyAgentJsonConfigs(runtime: RuntimeFacade, configs: AgentJson
       governance: config.governance,
       prompts: config.prompts,
       model: config.model,
-      runtime: config.runtime,
+      runtime: {
+        ...(isRecord(config.runtime) ? config.runtime : {}),
+        ...(typeof config.enabled === 'boolean' ? { enabled: config.enabled } : {}),
+      },
       metadata: config.metadata,
     };
     runtime.setAgentRuntimeConfig(config.id, runtimeConfig);
@@ -252,6 +257,7 @@ export function parseAgentJsonConfig(value: unknown, sourcePath: string): AgentJ
 
   if (typeof value.name === 'string') config.name = value.name;
   if (typeof value.role === 'string') config.role = value.role;
+  if (typeof value.enabled === 'boolean') config.enabled = value.enabled;
   if (typeof value.instanceCount === 'number' && Number.isFinite(value.instanceCount)) {
     config.instanceCount = Math.max(0, Math.floor(value.instanceCount));
   }

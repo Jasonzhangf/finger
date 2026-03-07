@@ -183,7 +183,7 @@ function pickDefaultDraft(
     permissionMode,
     maxRounds: Number.isFinite(sourceConfig.maxRounds) ? Math.max(1, Number(sourceConfig.maxRounds)) : 10,
     enableReview: sourceConfig.enableReview === true,
-    enabled: agent?.enabled !== false,
+    enabled: config?.enabled ?? (agent?.enabled !== false),
     capabilitiesText: capabilities.join(', '),
     defaultQuota,
     projectQuotaText: projectQuota ? String(projectQuota) : '',
@@ -205,6 +205,7 @@ export const AgentConfigDrawer = ({
   onDeployConfig,
   onControlAgent,
 }: AgentConfigDrawerProps) => {
+  const previousDraftAgentIdRef = useRef<string | null>(null);
   const [draft, setDraft] = useState<AgentDeployDraft>(() => pickDefaultDraft(agent, config, capabilities));
   const [drawerWidth, setDrawerWidth] = useState(() => readStoredDrawerWidth());
   const [isDrawerResizing, setIsDrawerResizing] = useState(false);
@@ -240,7 +241,27 @@ export const AgentConfigDrawer = ({
   }, []);
 
   useEffect(() => {
-    setDraft(pickDefaultDraft(agent, config, capabilities));
+    setDraft((prev) => {
+      const next = pickDefaultDraft(agent, config, capabilities);
+      const currentAgentId = agent?.id ?? config?.id ?? null;
+      const sameAgent = currentAgentId !== null && previousDraftAgentIdRef.current === currentAgentId;
+      previousDraftAgentIdRef.current = currentAgentId;
+      return sameAgent
+        ? {
+            ...next,
+            enabled: prev.enabled,
+            capabilitiesText: prev.capabilitiesText,
+            model: prev.model,
+            permissionMode: prev.permissionMode,
+            maxRounds: prev.maxRounds,
+            enableReview: prev.enableReview,
+            defaultQuota: prev.defaultQuota,
+            projectQuotaText: prev.projectQuotaText,
+            workflowQuotaText: prev.workflowQuotaText,
+            instanceCount: prev.instanceCount,
+          }
+        : next;
+    });
     setHint(null);
   }, [agent?.id, config?.id, capabilities]);
 
@@ -830,9 +851,10 @@ export const AgentConfigDrawer = ({
         </section>
 
         <section className="agent-drawer-section">
-          <div className="agent-form-title">Project Quota</div>
+          <div className="agent-form-title">项目级并发上限</div>
+          <div className="agent-form-subtitle">限制该 agent 在当前 project 内最多可同时占用的执行配额。留空表示不单独设置。</div>
           <label className="agent-form-row">
-            <span>projectQuota</span>
+            <span>项目上限</span>
             <input
               type="number"
               min={1}
@@ -844,9 +866,10 @@ export const AgentConfigDrawer = ({
         </section>
 
         <section className="agent-drawer-section">
-          <div className="agent-form-title">Workflow Quota</div>
+          <div className="agent-form-title">按工作流覆盖配额</div>
+          <div className="agent-form-subtitle">只在特定 workflow 生效。格式为 `workflowId=配额`，每行一条，例如 `wf-search=1`。</div>
           <label className="agent-form-row">
-            <span>workflowId=quota</span>
+            <span>覆盖规则</span>
             <textarea
               value={draft.workflowQuotaText}
               onChange={(event) => setDraft((prev) => ({ ...prev, workflowQuotaText: event.target.value }))}

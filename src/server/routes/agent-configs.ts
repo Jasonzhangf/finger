@@ -148,6 +148,7 @@ export function registerAgentConfigRoutes(app: Express, deps: AgentConfigRouteDe
         id: item.config.id,
         name: item.config.name,
         role: item.config.role,
+        enabled: item.config.enabled,
         tools: item.config.tools ?? {},
       })),
     });
@@ -325,6 +326,7 @@ export function registerAgentConfigRoutes(app: Express, deps: AgentConfigRouteDe
           filePath: item.filePath,
           id: item.config.id,
           role: item.config.role,
+          enabled: item.config.enabled,
         })),
       });
     } catch (error) {

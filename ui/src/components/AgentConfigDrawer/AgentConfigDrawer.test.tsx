@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { AgentConfigDrawer } from './AgentConfigDrawer.js';
 
 describe('AgentConfigDrawer', () => {
@@ -310,5 +310,99 @@ describe('AgentConfigDrawer', () => {
     await waitFor(() => {
       expect(screen.getAllByDisplayValue('# After').length).toBeGreaterThan(0);
     });
+  });
+
+  it('preserves enabled toggle changes for the same agent', async () => {
+    globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes('/prompts')) {
+        return new Response(JSON.stringify({
+          prompts: {
+            system: {
+              role: 'orchestrator',
+              source: 'file',
+              path: '/tmp/system.md',
+              editablePath: '/tmp/system.md',
+              content: '# Title',
+            },
+            developer: {
+              role: 'orchestrator',
+              source: 'file',
+              path: '/tmp/dev.md',
+              editablePath: '/tmp/dev.md',
+              content: 'dev content',
+            },
+          },
+        }), { status: 200 });
+      }
+      return new Response(JSON.stringify({ filePath: '/tmp/agent.json', config: { id: 'orchestrator-loop', enabled: true } }), { status: 200 });
+    }) as unknown as typeof fetch;
+
+    const { rerender } = render(
+      <AgentConfigDrawer
+        isOpen
+        agent={{
+          id: 'orchestrator-loop',
+          name: 'Orchestrator',
+          type: 'orchestrator',
+          status: 'idle',
+          source: 'runtime-config',
+          instanceCount: 0,
+          deployedCount: 0,
+          availableCount: 0,
+          runningCount: 0,
+          queuedCount: 0,
+          enabled: true,
+          runtimeCapabilities: [],
+          defaultQuota: 1,
+          quotaPolicy: { workflowQuota: {} },
+          quota: { effective: 1, source: 'default' },
+          debugAssertions: [],
+        }}
+        capabilities={null}
+        config={{ id: 'orchestrator-loop', name: 'Orchestrator', filePath: '/tmp/agent.json', enabled: true }}
+        instances={[]}
+        currentSessionId={null}
+        onClose={vi.fn()}
+      />,
+    );
+
+    const checkbox = screen.getByRole('checkbox', { name: '启用' });
+    expect((checkbox as HTMLInputElement).checked).toBe(true);
+    fireEvent.click(checkbox);
+    expect((checkbox as HTMLInputElement).checked).toBe(false);
+
+    await act(async () => {
+      rerender(
+        <AgentConfigDrawer
+          isOpen
+          agent={{
+            id: 'orchestrator-loop',
+            name: 'Orchestrator',
+            type: 'orchestrator',
+            status: 'idle',
+            source: 'runtime-config',
+            instanceCount: 0,
+            deployedCount: 0,
+            availableCount: 0,
+            runningCount: 0,
+            queuedCount: 0,
+            enabled: true,
+            runtimeCapabilities: [],
+            defaultQuota: 1,
+            quotaPolicy: { workflowQuota: {} },
+            quota: { effective: 1, source: 'default' },
+            debugAssertions: [],
+          }}
+          capabilities={null}
+          config={{ id: 'orchestrator-loop', name: 'Orchestrator', filePath: '/tmp/agent.json', enabled: true }}
+          instances={[]}
+          currentSessionId={null}
+          onClose={vi.fn()}
+        />,
+      );
+    });
+
+    expect((screen.getByRole('checkbox', { name: '启用' }) as HTMLInputElement).checked).toBe(false);
   });
 });

@@ -286,4 +286,41 @@ describe('BottomPanel', () => {
     });
     expect(onSwitchOrchestrationProfile).toHaveBeenCalledWith('full_mock');
   });
+
+  it('supports toggling agent enabled state from bottom panel', async () => {
+    const onToggleAgentEnabled = vi.fn().mockResolvedValue(undefined);
+    render(
+      <BottomPanel
+        agents={[
+          {
+            id: 'finger-executor',
+            name: 'Finger Executor',
+            type: 'executor',
+            status: 'idle',
+            source: 'agent-json',
+            instanceCount: 0,
+            deployedCount: 0,
+            availableCount: 0,
+            runningCount: 0,
+            queuedCount: 0,
+            enabled: true,
+            runtimeCapabilities: [],
+            defaultQuota: 1,
+            quotaPolicy: { workflowQuota: {} },
+            quota: { effective: 1, source: 'default' },
+            debugAssertions: [],
+          },
+        ]}
+        instances={[]}
+        configs={[]}
+        onToggleAgentEnabled={onToggleAgentEnabled}
+      />,
+    );
+
+    await act(async () => {
+      fireEvent.click(screen.getByText('禁用'));
+    });
+
+    expect(onToggleAgentEnabled).toHaveBeenCalledWith({ agentId: 'finger-executor', enabled: false });
+  });
 });

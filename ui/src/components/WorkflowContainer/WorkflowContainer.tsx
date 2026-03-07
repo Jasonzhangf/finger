@@ -576,6 +576,34 @@ export const WorkflowContainer: React.FC = () => {
     await refreshAgentPanel();
   }, [currentSession?.id, orchestratorSessionId, refreshAgentPanel]);
 
+  const handleToggleAgentEnabled = useCallback(async (payload: { agentId: string; enabled: boolean }): Promise<void> => {
+    const targetConfig = agentConfigItems.find((item) => item.id === payload.agentId);
+    const response = await fetch(`/api/v1/agents/configs/${encodeURIComponent(payload.agentId)}`);
+    if (!response.ok) {
+      const message = await response.text().catch(() => `HTTP ${response.status}`);
+      throw new Error(message || `HTTP ${response.status}`);
+    }
+    const snapshot = await response.json() as { config?: Record<string, unknown> };
+    const currentConfig = (snapshot.config && typeof snapshot.config === 'object') ? snapshot.config : { id: payload.agentId };
+    const nextConfig = {
+      ...currentConfig,
+      id: payload.agentId,
+      ...(targetConfig?.name ? { name: currentConfig.name ?? targetConfig.name } : {}),
+      ...(targetConfig?.role ? { role: currentConfig.role ?? targetConfig.role } : {}),
+      enabled: payload.enabled,
+    };
+    const saveResponse = await fetch(`/api/v1/agents/configs/${encodeURIComponent(payload.agentId)}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ config: nextConfig }),
+    });
+    if (!saveResponse.ok) {
+      const message = await saveResponse.text().catch(() => `HTTP ${saveResponse.status}`);
+      throw new Error(message || `HTTP ${saveResponse.status}`);
+    }
+    await refreshAgentPanel();
+  }, [agentConfigItems, refreshAgentPanel]);
+
   const handleAgentControl = useCallback(async (payload: {
     action: 'status' | 'pause' | 'resume' | 'interrupt' | 'cancel';
     targetAgentId?: string;
@@ -864,8 +892,9 @@ export const WorkflowContainer: React.FC = () => {
           throw new Error(result.error ?? '保存 orchestration 配置失败');
         }
       }}
+      onToggleAgentEnabled={handleToggleAgentEnabled}
     />
-  ), [frozenBottomPayload, handleSelectAgent, handleSelectInstance, orchestratorSessionId, refreshAgentPanel, saveOrchestrationConfig, setRuntimeDebugMode, startTemplate, switchOrchestrationProfile]);
+  ), [frozenBottomPayload, handleSelectAgent, handleSelectInstance, handleToggleAgentEnabled, orchestratorSessionId, refreshAgentPanel, saveOrchestrationConfig, setRuntimeDebugMode, startTemplate, switchOrchestrationProfile]);
 
   const renderedLeftSidebar = useFrozenValue(leftSidebarElement, panelFreeze.left);
   const renderedCanvas = useFrozenValue(
