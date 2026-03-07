@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from 'react';
 import './PromptEditorModal.css';
 
 export interface PromptEditorMeta {
@@ -159,29 +159,38 @@ export function PromptEditorModal({
   onSave,
 }: PromptEditorModalProps) {
   const [tab, setTab] = useState<'edit' | 'preview'>('edit');
-
-  useEffect(() => {
-    if (!isOpen) return;
-    const onKeyDown = (event: KeyboardEvent): void => {
-      if (event.key === 'Escape') {
-        event.preventDefault();
-        onClose();
-      }
-    };
-    window.addEventListener('keydown', onKeyDown);
-    return () => window.removeEventListener('keydown', onKeyDown);
-  }, [isOpen, onClose]);
+  const dialogRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
     if (!isOpen) return;
     setTab('edit');
   }, [isOpen, meta?.title]);
 
+  useEffect(() => {
+    if (!isOpen || tab !== 'preview') return;
+    dialogRef.current?.focus();
+  }, [isOpen, tab]);
+
+  const handleKeyDownCapture = (event: ReactKeyboardEvent<HTMLDivElement>): void => {
+    if (event.key !== 'Escape') return;
+    event.preventDefault();
+    event.stopPropagation();
+    onClose();
+  };
+
   if (!isOpen || !meta) return null;
 
   return (
     <div className="prompt-modal-overlay" onClick={onClose}>
-      <div className="prompt-modal" onClick={(event) => event.stopPropagation()}>
+      <div
+        ref={dialogRef}
+        className="prompt-modal"
+        onClick={(event) => event.stopPropagation()}
+        onKeyDownCapture={handleKeyDownCapture}
+        role="dialog"
+        aria-modal="true"
+        tabIndex={-1}
+      >
         <div className="prompt-modal-header">
           <div>
             <h2>{meta.title}</h2>
@@ -202,6 +211,7 @@ export function PromptEditorModal({
               value={value}
               onChange={(event) => onChange(event.target.value)}
               spellCheck={false}
+              autoFocus
             />
           ) : (
             <MarkdownPreview source={value} />

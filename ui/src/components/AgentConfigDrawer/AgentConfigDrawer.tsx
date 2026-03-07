@@ -235,6 +235,10 @@ export const AgentConfigDrawer = ({
   });
   const [activePromptModal, setActivePromptModal] = useState<'system' | 'developer' | null>(null);
 
+  const closePromptModal = useCallback(() => {
+    setActivePromptModal(null);
+  }, []);
+
   useEffect(() => {
     setDraft(pickDefaultDraft(agent, config, capabilities));
     setHint(null);
@@ -412,7 +416,7 @@ export const AgentConfigDrawer = ({
   }, [drawerWidth]);
 
   useEffect(() => {
-    if (!isOpen) return undefined;
+    if (!isOpen || activePromptModal !== null) return undefined;
     const onKeyDown = (event: KeyboardEvent): void => {
       if (event.key !== 'Escape') return;
       event.preventDefault();
@@ -420,7 +424,7 @@ export const AgentConfigDrawer = ({
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [isOpen, onClose]);
+  }, [activePromptModal, isOpen, onClose]);
 
   const allowTools = useMemo(
     () =>
@@ -644,8 +648,9 @@ export const AgentConfigDrawer = ({
   };
 
   return (
-    <div className="agent-drawer-overlay" aria-hidden="true">
-      <aside className={`agent-drawer ${isDrawerResizing ? 'resizing' : ''}`} style={{ width: `${drawerWidth}px` }}>
+    <>
+      <div className="agent-drawer-overlay">
+        <aside className={`agent-drawer ${isDrawerResizing ? 'resizing' : ''}`} style={{ width: `${drawerWidth}px` }}>
         <div
           className="agent-drawer-resize-handle"
           onPointerDown={handleResizeStart}
@@ -698,7 +703,7 @@ export const AgentConfigDrawer = ({
             rows={8}
           />
           <div className="agent-prompt-inline-actions">
-            <button type="button" onClick={() => setActivePromptModal('system')}>全屏编辑</button>
+            <button type="button" onClick={() => setActivePromptModal('system')} disabled={prompts.isLoading}>全屏编辑</button>
           </div>
           <div className="agent-prompt-meta">
             <div>Developer Prompt · role: {prompts.developer?.role || agent.type}</div>
@@ -713,7 +718,7 @@ export const AgentConfigDrawer = ({
             rows={10}
           />
           <div className="agent-prompt-inline-actions">
-            <button type="button" onClick={() => setActivePromptModal('developer')}>全屏编辑</button>
+            <button type="button" onClick={() => setActivePromptModal('developer')} disabled={prompts.isLoading}>全屏编辑</button>
           </div>
           <div className="agent-prompt-actions">
             <button type="button" onClick={() => { void loadAgentJson(); }} disabled={prompts.isLoading}>
@@ -958,18 +963,19 @@ export const AgentConfigDrawer = ({
             );
           })}
         </section>
-      </aside>
+        </aside>
+      </div>
       <PromptEditorModal
         isOpen={activePromptModal !== null}
         meta={activePromptMeta}
         value={activePromptValue}
         isSaving={prompts.isSaving}
-        onClose={() => setActivePromptModal(null)}
+        onClose={closePromptModal}
         onChange={(value) => {
           if (activePromptModal) handlePromptTextChange(activePromptModal, value);
         }}
         onSave={() => { void handleSavePrompts(); }}
       />
-    </div>
+    </>
   );
 };

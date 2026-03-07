@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { fireEvent, render, screen } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { AgentConfigDrawer } from './AgentConfigDrawer.js';
 
 describe('AgentConfigDrawer', () => {
@@ -176,5 +176,139 @@ describe('AgentConfigDrawer', () => {
     expect(screen.getByText('item')).toBeTruthy();
     expect(screen.getByText('ts')).toBeTruthy();
     expect(screen.getByText('const x = 1;')).toBeTruthy();
+  });
+
+  it('closes only prompt modal on Escape and keeps drawer open', async () => {
+    const onClose = vi.fn();
+    globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes('/prompts')) {
+        return new Response(JSON.stringify({
+          prompts: {
+            system: {
+              role: 'orchestrator',
+              source: 'file',
+              path: '/tmp/system.md',
+              editablePath: '/tmp/system.md',
+              content: '# Title',
+            },
+            developer: {
+              role: 'orchestrator',
+              source: 'file',
+              path: '/tmp/dev.md',
+              editablePath: '/tmp/dev.md',
+              content: 'dev content',
+            },
+          },
+        }), { status: 200 });
+      }
+      return new Response(JSON.stringify({ filePath: '/tmp/agent.json', config: { id: 'orchestrator-loop' } }), { status: 200 });
+    }) as unknown as typeof fetch;
+
+    render(
+      <AgentConfigDrawer
+        isOpen
+        agent={{
+          id: 'orchestrator-loop',
+          name: 'Orchestrator',
+          type: 'orchestrator',
+          status: 'idle',
+          source: 'runtime-config',
+          instanceCount: 0,
+          deployedCount: 0,
+          availableCount: 0,
+          runningCount: 0,
+          queuedCount: 0,
+          enabled: true,
+          runtimeCapabilities: [],
+          defaultQuota: 1,
+          quotaPolicy: { workflowQuota: {} },
+          quota: { effective: 1, source: 'default' },
+          debugAssertions: [],
+        }}
+        capabilities={null}
+        config={null}
+        instances={[]}
+        currentSessionId={null}
+        onClose={onClose}
+      />,
+    );
+
+    const buttons = await screen.findAllByText('全屏编辑');
+    fireEvent.click(buttons[0]);
+    expect(await screen.findByText('System Prompt')).toBeTruthy();
+
+    fireEvent.keyDown(screen.getByRole('dialog', { hidden: true }), { key: 'Escape' });
+
+    await waitFor(() => {
+      expect(screen.queryByText('System Prompt')).toBeNull();
+    });
+    expect(screen.getByText('Orchestrator')).toBeTruthy();
+    expect(onClose).not.toHaveBeenCalled();
+  });
+
+  it('edits prompt content through fullscreen modal', async () => {
+    globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes('/prompts')) {
+        return new Response(JSON.stringify({
+          prompts: {
+            system: {
+              role: 'orchestrator',
+              source: 'file',
+              path: '/tmp/system.md',
+              editablePath: '/tmp/system.md',
+              content: '# Before',
+            },
+            developer: {
+              role: 'orchestrator',
+              source: 'file',
+              path: '/tmp/dev.md',
+              editablePath: '/tmp/dev.md',
+              content: 'dev content',
+            },
+          },
+        }), { status: 200 });
+      }
+      return new Response(JSON.stringify({ filePath: '/tmp/agent.json', config: { id: 'orchestrator-loop' } }), { status: 200 });
+    }) as unknown as typeof fetch;
+
+    render(
+      <AgentConfigDrawer
+        isOpen
+        agent={{
+          id: 'orchestrator-loop',
+          name: 'Orchestrator',
+          type: 'orchestrator',
+          status: 'idle',
+          source: 'runtime-config',
+          instanceCount: 0,
+          deployedCount: 0,
+          availableCount: 0,
+          runningCount: 0,
+          queuedCount: 0,
+          enabled: true,
+          runtimeCapabilities: [],
+          defaultQuota: 1,
+          quotaPolicy: { workflowQuota: {} },
+          quota: { effective: 1, source: 'default' },
+          debugAssertions: [],
+        }}
+        capabilities={null}
+        config={null}
+        instances={[]}
+        currentSessionId={null}
+        onClose={vi.fn()}
+      />,
+    );
+
+    const buttons = await screen.findAllByText('全屏编辑');
+    fireEvent.click(buttons[0]);
+    const editor = (await screen.findAllByDisplayValue('# Before'))[0];
+    fireEvent.change(editor, { target: { value: '# After' } });
+
+    await waitFor(() => {
+      expect(screen.getAllByDisplayValue('# After').length).toBeGreaterThan(0);
+    });
   });
 });
