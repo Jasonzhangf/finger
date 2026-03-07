@@ -317,10 +317,45 @@ describe('BottomPanel', () => {
       />,
     );
 
+    expect(screen.getByText('已启用')).toBeTruthy();
+
     await act(async () => {
       fireEvent.click(screen.getByText('禁用'));
     });
 
     expect(onToggleAgentEnabled).toHaveBeenCalledWith({ agentId: 'finger-executor', enabled: false });
+  });
+
+  it('renders disabled state badge distinctly from enable action', () => {
+    render(
+      <BottomPanel
+        agents={[
+          {
+            id: 'finger-reviewer',
+            name: 'Finger Reviewer',
+            type: 'reviewer',
+            status: 'idle',
+            source: 'agent-json',
+            instanceCount: 0,
+            deployedCount: 0,
+            availableCount: 0,
+            runningCount: 0,
+            queuedCount: 0,
+            enabled: false,
+            runtimeCapabilities: [],
+            defaultQuota: 1,
+            quotaPolicy: { workflowQuota: {} },
+            quota: { effective: 1, source: 'default' },
+            debugAssertions: [],
+          },
+        ]}
+        instances={[]}
+        configs={[]}
+        onToggleAgentEnabled={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByText('已禁用')).toBeTruthy();
+    expect(screen.getByText('启用')).toBeTruthy();
   });
 });

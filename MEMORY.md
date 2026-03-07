@@ -23,3 +23,8 @@
 - Drawer 中的 `enabled` 编辑是配置编辑，不应因为同一个 agent 的刷新而被 `pickDefaultDraft()` 重置。
 - 下方 Agent 卡片需要有直接 `启用/禁用` 操作，且该操作应走 `GET /api/v1/agents/configs/:agentId` + `PUT /api/v1/agents/configs/:agentId` 持久化，再刷新面板。
 - `Workflow Quota` 文案对用户不直观，应该改成“按工作流覆盖配额”，并解释格式 `workflowId=配额`。
+
+## 2026-03-07 Agent Config Save Semantics
+- 底部 agent 卡片的启用态展示必须把“当前状态”和“可执行动作”分开：状态徽标显示 `已启用/已禁用`，动作按钮显示 `禁用/启用`，避免绿色按钮文字与当前状态混淆。
+- Agent 配置抽屉里的运行配置区域本质是配置编辑，不是 runtime deploy；UI 文案必须使用“应用并保存/保存中”，并明确说明“保存到 agent.json，下一次任务开始生效，不会立即部署实例”。
+- 抽屉保存运行配置时必须直接写入 `/api/v1/agents/configs/:agentId`，不能再走 `/api/v1/agents/deploy`，否则禁用态下会出现“还能部署”的错误语义和错误行为。

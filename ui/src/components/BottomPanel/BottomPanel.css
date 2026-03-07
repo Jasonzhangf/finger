@@ -316,7 +316,31 @@
 
 .agent-card-actions {
   display: flex;
+  align-items: center;
   justify-content: flex-end;
+  gap: 8px;
+}
+
+.agent-enabled-status {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 999px;
+  padding: 4px 10px;
+  font-size: 0.72rem;
+  font-weight: 600;
+  border: 1px solid transparent;
+}
+
+.agent-enabled-status.enabled {
+  background: rgba(20, 83, 45, 0.38);
+  border-color: rgba(74, 222, 128, 0.62);
+  color: #dcfce7;
+}
+
+.agent-enabled-status.disabled {
+  background: rgba(127, 29, 29, 0.35);
+  border-color: rgba(248, 113, 113, 0.6);
+  color: #fecaca;
 }
 
 .agent-enabled-toggle {
@@ -328,14 +352,14 @@
 }
 
 .agent-enabled-toggle.enabled {
-  background: rgba(127, 29, 29, 0.35);
-  border-color: rgba(248, 113, 113, 0.6);
+  background: rgba(69, 10, 10, 0.4);
+  border-color: rgba(248, 113, 113, 0.46);
   color: #fecaca;
 }
 
 .agent-enabled-toggle.disabled {
-  background: rgba(20, 83, 45, 0.38);
-  border-color: rgba(74, 222, 128, 0.62);
+  background: rgba(20, 83, 45, 0.24);
+  border-color: rgba(74, 222, 128, 0.42);
   color: #dcfce7;
 }
 

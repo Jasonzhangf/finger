@@ -110,7 +110,7 @@ interface AgentConfigDrawerProps {
   currentSessionId?: string | null;
   onClose: () => void;
   onSwitchInstance?: (instance: AgentRuntimeInstance) => void;
-  onDeployConfig?: (payload: { config: AgentConfig; instanceCount: number }) => Promise<void>;
+  onSaveAgentConfig?: (payload: { config: AgentConfig; instanceCount: number }) => Promise<void>;
   onControlAgent?: (payload: {
     action: 'status' | 'pause' | 'resume' | 'interrupt' | 'cancel';
     targetAgentId?: string;
@@ -202,7 +202,7 @@ export const AgentConfigDrawer = ({
   currentSessionId,
   onClose,
   onSwitchInstance,
-  onDeployConfig,
+  onSaveAgentConfig,
   onControlAgent,
 }: AgentConfigDrawerProps) => {
   const previousDraftAgentIdRef = useRef<string | null>(null);
@@ -210,7 +210,7 @@ export const AgentConfigDrawer = ({
   const [drawerWidth, setDrawerWidth] = useState(() => readStoredDrawerWidth());
   const [isDrawerResizing, setIsDrawerResizing] = useState(false);
   const drawerResizeOriginRef = useRef<{ startX: number; startWidth: number } | null>(null);
-  const [isDeploying, setIsDeploying] = useState(false);
+  const [isSavingRuntimeConfig, setIsSavingRuntimeConfig] = useState(false);
   const [isControlling, setIsControlling] = useState(false);
   const [hint, setHint] = useState<string | null>(null);
   const [agentJson, setAgentJson] = useState<AgentJsonState>({
@@ -539,9 +539,9 @@ export const AgentConfigDrawer = ({
     }
   };
 
-  const handleDeploy = async (): Promise<void> => {
-    if (!onDeployConfig) return;
-    setIsDeploying(true);
+  const handleSaveRuntimeConfig = async (): Promise<void> => {
+    if (!onSaveAgentConfig) return;
+    setIsSavingRuntimeConfig(true);
     setHint(null);
     const capabilitiesNormalized = draft.capabilitiesText
       .split(',')
@@ -553,7 +553,7 @@ export const AgentConfigDrawer = ({
       : undefined;
     const workflowQuota = parseWorkflowQuotaText(draft.workflowQuotaText);
     try {
-      await onDeployConfig({
+      await onSaveAgentConfig({
         config: {
           id: agent.id,
           name: agent.name,
@@ -578,11 +578,11 @@ export const AgentConfigDrawer = ({
         },
         instanceCount: draft.instanceCount,
       });
-      setHint('部署请求已提交');
+      setHint('运行配置已保存，下一次任务开始生效');
     } catch (error) {
-      setHint(error instanceof Error ? error.message : '部署失败');
+      setHint(error instanceof Error ? error.message : '保存运行配置失败');
     } finally {
-      setIsDeploying(false);
+      setIsSavingRuntimeConfig(false);
     }
   };
 
@@ -759,8 +759,8 @@ export const AgentConfigDrawer = ({
         </section>
 
         <section className="agent-drawer-section">
-          <div className="agent-form-title">运行配置（部署）</div>
-          <div className="agent-form-subtitle">仅影响部署/运行参数，不会写入 agent.json。</div>
+          <div className="agent-form-title">运行配置</div>
+          <div className="agent-form-subtitle">保存到 agent.json，下一次任务开始生效；不会立即部署实例。</div>
 
           <label className="agent-form-row checkbox">
             <span>启用</span>
@@ -880,10 +880,10 @@ export const AgentConfigDrawer = ({
           <button
             type="button"
             className="agent-deploy-btn"
-            onClick={() => { void handleDeploy(); }}
-            disabled={!onDeployConfig || isDeploying}
+            onClick={() => { void handleSaveRuntimeConfig(); }}
+            disabled={!onSaveAgentConfig || isSavingRuntimeConfig}
           >
-            {isDeploying ? '部署中...' : '应用并部署'}
+            {isSavingRuntimeConfig ? '保存中...' : '应用并保存'}
           </button>
           {hint && <div className="agent-hint-line">{hint}</div>}
         </section>

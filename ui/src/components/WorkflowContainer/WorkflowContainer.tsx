@@ -557,24 +557,43 @@ export const WorkflowContainer: React.FC = () => {
     }
   }, [orchestratorSessionId, runtimeInstances, sessionBinding, setSelectedAgentId]);
 
-  const handleDeployAgent = useCallback(async (payload: { config: AgentConfig; instanceCount: number }): Promise<void> => {
-    const targetSessionId = currentSession?.id || orchestratorSessionId;
-    const response = await fetch('/api/v1/agents/deploy', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        sessionId: targetSessionId,
-        config: payload.config,
-        scope: 'session',
-        instanceCount: payload.instanceCount,
-      }),
-    });
+  const handleSaveAgentConfig = useCallback(async (payload: { config: AgentConfig; instanceCount: number }): Promise<void> => {
+    const agentId = payload.config.id?.trim();
+    if (!agentId) {
+      throw new Error('agentId is required');
+    }
+
+    const response = await fetch(`/api/v1/agents/configs/${encodeURIComponent(agentId)}`);
     if (!response.ok) {
       const message = await response.text().catch(() => `HTTP ${response.status}`);
       throw new Error(message || `HTTP ${response.status}`);
     }
+
+    const snapshot = await response.json() as { config?: Record<string, unknown> };
+    const currentConfig = (snapshot.config && typeof snapshot.config === 'object') ? snapshot.config : { id: agentId };
+    const nextConfig = {
+      ...currentConfig,
+      ...payload.config,
+      id: agentId,
+      instanceCount: payload.instanceCount,
+      enabled: payload.config.enabled,
+      capabilities: payload.config.capabilities,
+      defaultQuota: payload.config.defaultQuota,
+      quotaPolicy: payload.config.quotaPolicy,
+    };
+
+    const saveResponse = await fetch(`/api/v1/agents/configs/${encodeURIComponent(agentId)}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ config: nextConfig }),
+    });
+    if (!saveResponse.ok) {
+      const message = await saveResponse.text().catch(() => `HTTP ${saveResponse.status}`);
+      throw new Error(message || `HTTP ${saveResponse.status}`);
+    }
+
     await refreshAgentPanel();
-  }, [currentSession?.id, orchestratorSessionId, refreshAgentPanel]);
+  }, [refreshAgentPanel]);
 
   const handleToggleAgentEnabled = useCallback(async (payload: { agentId: string; enabled: boolean }): Promise<void> => {
     const targetConfig = agentConfigItems.find((item) => item.id === payload.agentId);
@@ -952,7 +971,7 @@ export const WorkflowContainer: React.FC = () => {
           setDrawerAgentId(null);
         }}
         onSwitchInstance={(instance) => { void handleSelectInstance(instance); }}
-        onDeployConfig={handleDeployAgent}
+        onSaveAgentConfig={handleSaveAgentConfig}
         onControlAgent={handleAgentControl}
       />
       <SessionResumeDialog

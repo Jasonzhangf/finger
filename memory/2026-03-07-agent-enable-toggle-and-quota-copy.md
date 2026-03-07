@@ -25,3 +25,8 @@
 - `cd ui && pnpm vitest run src/components/AgentConfigDrawer/AgentConfigDrawer.test.tsx src/components/BottomPanel/BottomPanel.test.tsx`
 - `pnpm exec tsc -p tsconfig.json --noEmit`
 - `cd ui && pnpm exec tsc -b --pretty false`
+
+## Follow-up
+- 底部 agent 卡片现在拆分为“状态徽标 + 动作按钮”：`已启用/已禁用` 用颜色表达状态，`启用/禁用` 只表达动作。
+- Drawer 的“运行配置（部署）/应用并部署”已改为“运行配置/应用并保存”，并改为直接保存到 `agent.json`，不再调用 deploy endpoint。
+- `WorkflowContainer` 中 drawer 保存逻辑改为 `GET + PUT /api/v1/agents/configs/:agentId`，保存后刷新 panel，保证行为与文案一致。

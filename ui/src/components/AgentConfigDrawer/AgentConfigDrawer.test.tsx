@@ -405,4 +405,79 @@ describe('AgentConfigDrawer', () => {
 
     expect((screen.getByRole('checkbox', { name: '启用' }) as HTMLInputElement).checked).toBe(false);
   });
+
+  it('saves runtime config into agent.json instead of deploy endpoint', async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (!init?.method && url.includes('/api/v1/agents/configs/orchestrator-loop/prompts')) {
+        return new Response(JSON.stringify({
+          prompts: {
+            system: {
+              role: 'orchestrator',
+              source: 'file',
+              path: '/tmp/system.md',
+              editablePath: '/tmp/system.md',
+              content: '# Title',
+            },
+            developer: {
+              role: 'orchestrator',
+              source: 'file',
+              path: '/tmp/dev.md',
+              editablePath: '/tmp/dev.md',
+              content: 'dev content',
+            },
+          },
+        }), { status: 200 });
+      }
+      if (!init?.method && url.includes('/api/v1/agents/configs/orchestrator-loop')) {
+        return new Response(JSON.stringify({
+          filePath: '/tmp/agent.json',
+          config: { id: 'orchestrator-loop', enabled: true, instanceCount: 1 },
+        }), { status: 200 });
+      }
+      return new Response('not-found', { status: 404 });
+    });
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+    const onSaveAgentConfig = vi.fn().mockResolvedValue(undefined);
+
+    render(
+      <AgentConfigDrawer
+        isOpen
+        agent={{
+          id: 'orchestrator-loop',
+          name: 'Orchestrator',
+          type: 'orchestrator',
+          status: 'idle',
+          source: 'runtime-config',
+          instanceCount: 1,
+          deployedCount: 0,
+          availableCount: 0,
+          runningCount: 0,
+          queuedCount: 0,
+          enabled: true,
+          runtimeCapabilities: [],
+          defaultQuota: 1,
+          quotaPolicy: { workflowQuota: {} },
+          quota: { effective: 1, source: 'default' },
+          debugAssertions: [],
+        }}
+        capabilities={null}
+        config={{ id: 'orchestrator-loop', name: 'Orchestrator', filePath: '/tmp/agent.json', enabled: true }}
+        instances={[]}
+        currentSessionId={null}
+        onClose={vi.fn()}
+        onSaveAgentConfig={onSaveAgentConfig}
+      />,
+    );
+
+    expect(await screen.findByText('运行配置')).toBeTruthy();
+    expect(screen.getByText('保存到 agent.json，下一次任务开始生效；不会立即部署实例。')).toBeTruthy();
+
+    await act(async () => {
+      fireEvent.click(screen.getByText('应用并保存'));
+    });
+
+    expect(onSaveAgentConfig).toHaveBeenCalledTimes(1);
+    expect(screen.queryByText('应用并部署')).toBeNull();
+  });
 });

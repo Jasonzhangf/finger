@@ -833,6 +833,12 @@ export const BottomPanel: React.FC<BottomPanelProps> = ({
                     className={`agent-card static-agent-card ${agent.status} ${selectedAgentConfigId === agent.id ? 'selected' : ''}`}
                   >
                     <div className="agent-card-actions">
+                      <span
+                        className={`agent-enabled-status ${agent.enabled ? 'enabled' : 'disabled'}`}
+                        aria-label={`${agent.name} 当前${agent.enabled ? '已启用' : '已禁用'}`}
+                      >
+                        {agent.enabled ? '已启用' : '已禁用'}
+                      </span>
                       <button
                         type="button"
                         className={`agent-enabled-toggle ${agent.enabled ? 'enabled' : 'disabled'}`}
