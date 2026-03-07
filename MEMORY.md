@@ -7,3 +7,8 @@
 - Structured output 返回需要容错：先本地修 JSON，再按 schema 校验；失败时按可配置重试次数发起字段路径级重试提示，错误必须明确到 JSON path。
 - 子 agent 派发返回必须只回灌轻量 `summary/status/keyFiles/evidence/childSessionId`，不能把 `metadata.api_history`、原始 transcript 或完整工具历史直接送回主编排器下一轮输入。
 - `agent.dispatch` 的任务下发应带明确 goal / acceptance / response contract，优先启用 structured output schema，保证 executor 输出 JSON handoff。
+
+## 2026-03-07 Agent Prompt Editing UI
+- Agent 配置抽屉中的提示词编辑支持两层入口：抽屉内快速 textarea 编辑，以及全屏模态框编辑/预览 Markdown。
+- 提示词默认读取系统 prompt；用户保存后写入 `~/.finger/runtime/agents/<agent-id>/prompts/...` 覆盖文件，并在下一次任务开始时生效。
+- 全屏提示词模态框需要展示读取路径、写入路径、role/source 元信息；Markdown 预览至少支持标题、段落、引用、列表、代码块、行内 code、粗体、斜体。

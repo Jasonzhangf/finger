@@ -345,6 +345,22 @@
   margin-top: 8px;
 }
 
+.agent-prompt-inline-actions {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 6px;
+}
+
+.agent-prompt-inline-actions button {
+  background: rgba(15, 23, 42, 0.9);
+  color: #bfdbfe;
+  border: 1px solid rgba(59, 130, 246, 0.6);
+  border-radius: 6px;
+  padding: 5px 9px;
+  font-size: 0.72rem;
+  cursor: pointer;
+}
+
 .agent-prompt-actions button {
   background: #0b1220;
   color: #cbd5e1;

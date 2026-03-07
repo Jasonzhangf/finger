@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type PointerEvent as
 import type { AgentConfig } from '../../api/types.js';
 import type { AgentConfigSummary, AgentDebugAssertion, AgentRuntimeInstance, AgentRuntimePanelAgent } from '../../hooks/useAgentRuntimePanel.js';
 import { isActiveInstanceStatus } from '../BottomPanel/agentRuntimeUtils.js';
+import { PromptEditorModal, type PromptEditorMeta } from './PromptEditorModal.js';
 import './AgentConfigDrawer.css';
 
 interface AgentDeployDraft {
@@ -232,6 +233,7 @@ export const AgentConfigDrawer = ({
     dirtyDeveloper: false,
     hint: null,
   });
+  const [activePromptModal, setActivePromptModal] = useState<'system' | 'developer' | null>(null);
 
   useEffect(() => {
     setDraft(pickDefaultDraft(agent, config, capabilities));
@@ -243,8 +245,8 @@ export const AgentConfigDrawer = ({
     setDrawerWidth(readStoredDrawerWidth());
   }, [isOpen]);
 
-  const loadAgentJson = useCallback(async () => {
-    if (!agent?.id) return;
+  const loadAgentJson = useCallback(async (signal?: AbortSignal) => {
+    if (!agent?.id || signal?.aborted) return;
     setAgentJson((prev) => ({
       ...prev,
       isLoading: true,
@@ -257,16 +259,20 @@ export const AgentConfigDrawer = ({
       hint: null,
     }));
     const agentId = encodeURIComponent(agent.id);
+    const requestInit = signal ? { signal } : undefined;
     const [jsonRes, promptRes] = await Promise.allSettled([
-      fetch(`/api/v1/agents/configs/${agentId}`),
-      fetch(`/api/v1/agents/configs/${agentId}/prompts`),
+      fetch(`/api/v1/agents/configs/${agentId}`, requestInit),
+      fetch(`/api/v1/agents/configs/${agentId}/prompts`, requestInit),
     ]);
+
+    if (signal?.aborted) return;
 
     if (jsonRes.status === 'fulfilled') {
       const res = jsonRes.value;
       if (res.ok) {
         try {
           const payload = await res.json() as { filePath?: string; config?: unknown; missing?: boolean };
+          if (signal?.aborted) return;
           const text = JSON.stringify(payload.config ?? {}, null, 2);
           const missing = payload.missing === true;
           setAgentJson({
@@ -279,6 +285,7 @@ export const AgentConfigDrawer = ({
             missing,
           });
         } catch (error) {
+          if (signal?.aborted) return;
           setAgentJson((prev) => ({
             ...prev,
             isLoading: false,
@@ -287,6 +294,7 @@ export const AgentConfigDrawer = ({
         }
       } else {
         const message = await res.text().catch(() => `HTTP ${res.status}`);
+        if (signal?.aborted) return;
         setAgentJson((prev) => ({
           ...prev,
           isLoading: false,
@@ -294,11 +302,14 @@ export const AgentConfigDrawer = ({
         }));
       }
     } else {
-      setAgentJson((prev) => ({
-        ...prev,
-        isLoading: false,
-        error: '加载 agent.json 失败',
-      }));
+      const reason = jsonRes.reason;
+      if (!(reason instanceof DOMException && reason.name === 'AbortError') && !signal?.aborted) {
+        setAgentJson((prev) => ({
+          ...prev,
+          isLoading: false,
+          error: '加载 agent.json 失败',
+        }));
+      }
     }
 
     if (promptRes.status === 'fulfilled') {
@@ -306,6 +317,7 @@ export const AgentConfigDrawer = ({
       if (res.ok) {
         try {
           const payload = await res.json() as { prompts?: unknown };
+          if (signal?.aborted) return;
           const promptRecord = isRecord(payload.prompts) ? payload.prompts as Record<string, unknown> : null;
           const systemPrompt = parsePromptMeta(promptRecord?.system);
           const developerPrompt = parsePromptMeta(promptRecord?.developer);
@@ -321,6 +333,7 @@ export const AgentConfigDrawer = ({
             dirtyDeveloper: false,
           }));
         } catch (error) {
+          if (signal?.aborted) return;
           setPrompts((prev) => ({
             ...prev,
             isLoading: false,
@@ -329,6 +342,7 @@ export const AgentConfigDrawer = ({
         }
       } else {
         const message = await res.text().catch(() => `HTTP ${res.status}`);
+        if (signal?.aborted) return;
         setPrompts((prev) => ({
           ...prev,
           isLoading: false,
@@ -336,17 +350,22 @@ export const AgentConfigDrawer = ({
         }));
       }
     } else {
-      setPrompts((prev) => ({
-        ...prev,
-        isLoading: false,
-        error: '加载 prompt 失败',
-      }));
+      const reason = promptRes.reason;
+      if (!(reason instanceof DOMException && reason.name === 'AbortError') && !signal?.aborted) {
+        setPrompts((prev) => ({
+          ...prev,
+          isLoading: false,
+          error: '加载 prompt 失败',
+        }));
+      }
     }
   }, [agent?.id]);
 
   useEffect(() => {
     if (!isOpen || !agent?.id) return;
-    void loadAgentJson();
+    const controller = new AbortController();
+    void loadAgentJson(controller.signal);
+    return () => controller.abort();
   }, [agent?.id, isOpen, loadAgentJson]);
 
 
@@ -442,6 +461,30 @@ export const AgentConfigDrawer = ({
     [currentSessionId, instances],
   );
   const deployedCount = useMemo(() => instances.filter((instance) => isActiveInstanceStatus(instance.status)).length, [instances]);
+  const activePromptMeta = useMemo<PromptEditorMeta | null>(() => {
+    if (!agent) return null;
+    if (activePromptModal === 'system' && prompts.system) {
+      return {
+        title: 'System Prompt',
+        role: prompts.system.role || agent.type,
+        source: prompts.system.source || 'inline',
+        path: prompts.system.path || '',
+        editablePath: prompts.system.editablePath || '',
+      };
+    }
+    if (activePromptModal === 'developer' && prompts.developer) {
+      return {
+        title: 'Developer Prompt',
+        role: prompts.developer.role || agent.type,
+        source: prompts.developer.source || 'inline',
+        path: prompts.developer.path || '',
+        editablePath: prompts.developer.editablePath || '',
+      };
+    }
+    return null;
+  }, [activePromptModal, agent, prompts.developer, prompts.system]);
+
+  const activePromptValue = activePromptModal === 'system' ? prompts.systemText : prompts.developerText;
 
   if (!isOpen || !agent) return null;
 
@@ -560,6 +603,15 @@ export const AgentConfigDrawer = ({
     }
   };
 
+  const handlePromptTextChange = (kind: 'system' | 'developer', value: string): void => {
+    setPrompts((prev) => ({
+      ...prev,
+      ...(kind === 'system'
+        ? { systemText: value, dirtySystem: true }
+        : { developerText: value, dirtyDeveloper: true }),
+    }));
+  };
+
   const handleAgentJsonChange = (value: string): void => {
     setAgentJson((prev) => ({
       ...prev,
@@ -641,14 +693,13 @@ export const AgentConfigDrawer = ({
           <textarea
             className="agent-prompt-editor"
             value={prompts.systemText}
-            onChange={(event) => setPrompts((prev) => ({
-              ...prev,
-              systemText: event.target.value,
-              dirtySystem: true,
-            }))}
+            onChange={(event) => handlePromptTextChange('system', event.target.value)}
             placeholder="System Prompt"
             rows={8}
           />
+          <div className="agent-prompt-inline-actions">
+            <button type="button" onClick={() => setActivePromptModal('system')}>全屏编辑</button>
+          </div>
           <div className="agent-prompt-meta">
             <div>Developer Prompt · role: {prompts.developer?.role || agent.type}</div>
             <div>来源: {prompts.developer?.source || 'inline'} {prompts.developer?.path ? `· ${prompts.developer.path}` : ''}</div>
@@ -657,14 +708,13 @@ export const AgentConfigDrawer = ({
           <textarea
             className="agent-prompt-editor"
             value={prompts.developerText}
-            onChange={(event) => setPrompts((prev) => ({
-              ...prev,
-              developerText: event.target.value,
-              dirtyDeveloper: true,
-            }))}
+            onChange={(event) => handlePromptTextChange('developer', event.target.value)}
             placeholder="Developer Prompt"
             rows={10}
           />
+          <div className="agent-prompt-inline-actions">
+            <button type="button" onClick={() => setActivePromptModal('developer')}>全屏编辑</button>
+          </div>
           <div className="agent-prompt-actions">
             <button type="button" onClick={() => { void loadAgentJson(); }} disabled={prompts.isLoading}>
               重新加载
@@ -909,6 +959,17 @@ export const AgentConfigDrawer = ({
           })}
         </section>
       </aside>
+      <PromptEditorModal
+        isOpen={activePromptModal !== null}
+        meta={activePromptMeta}
+        value={activePromptValue}
+        isSaving={prompts.isSaving}
+        onClose={() => setActivePromptModal(null)}
+        onChange={(value) => {
+          if (activePromptModal) handlePromptTextChange(activePromptModal, value);
+        }}
+        onSave={() => { void handleSavePrompts(); }}
+      />
     </div>
   );
 };
