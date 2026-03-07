@@ -46,7 +46,6 @@ interface ProjectTabProps {
   currentSession: SessionInfo | null;
   isLoading: boolean;
   runtimeInstances?: AgentRuntimeInstance[];
-  selectedAgentConfigId?: string | null;
   focusedRuntimeInstanceId?: string | null;
   activeRuntimeSessionId?: string | null;
   onSwitchRuntimeInstance?: (instance: AgentRuntimeInstance) => Promise<void> | void;
@@ -127,7 +126,6 @@ export const LeftSidebar: FC<LeftSidebarProps> = ({
   currentSession,
   isLoadingSessions,
   runtimeInstances = [],
-  selectedAgentConfigId = null,
   focusedRuntimeInstanceId = null,
   activeRuntimeSessionId = null,
   onSwitchRuntimeInstance,
@@ -186,7 +184,6 @@ export const LeftSidebar: FC<LeftSidebarProps> = ({
                 currentSession={currentSession}
                 isLoading={isLoadingSessions}
                 runtimeInstances={runtimeInstances}
-                selectedAgentConfigId={selectedAgentConfigId}
                 focusedRuntimeInstanceId={focusedRuntimeInstanceId}
                 activeRuntimeSessionId={activeRuntimeSessionId}
                 onSwitchRuntimeInstance={onSwitchRuntimeInstance}
@@ -219,7 +216,6 @@ const ProjectTab: FC<ProjectTabProps> = ({
   currentSession,
   isLoading,
   runtimeInstances = [],
-  selectedAgentConfigId = null,
   focusedRuntimeInstanceId = null,
   activeRuntimeSessionId = null,
   onSwitchRuntimeInstance,
@@ -260,7 +256,6 @@ const ProjectTab: FC<ProjectTabProps> = ({
   );
 
   const focusedRuntimeAgentId = useMemo(() => {
-    if (selectedAgentConfigId) return selectedAgentConfigId;
     if (focusedRuntimeInstanceId) {
       return runtimeInstances.find((instance) => instance.id === focusedRuntimeInstanceId)?.agentId ?? null;
     }
@@ -268,7 +263,7 @@ const ProjectTab: FC<ProjectTabProps> = ({
       return runtimeInstances.find((instance) => instance.sessionId === activeRuntimeSessionId)?.agentId ?? null;
     }
     return null;
-  }, [activeRuntimeSessionId, focusedRuntimeInstanceId, runtimeInstances, selectedAgentConfigId]);
+  }, [activeRuntimeSessionId, focusedRuntimeInstanceId, runtimeInstances]);
 
   const runtimeSessionItems = useMemo(() => {
     return runtimeInstances

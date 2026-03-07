@@ -13,8 +13,8 @@
 .left-sidebar {
   display: flex;
   height: 100%;
-  width: 292px;
-  min-width: 240px;
+  width: 380px;
+  min-width: 320px;
   flex-shrink: 0;
   border-right: 1px solid rgba(148, 163, 184, 0.18);
   background: rgba(2, 6, 23, 0.46);
@@ -171,7 +171,7 @@ body.layout-resizing * {
 
 @media (max-width: 1024px) {
   .left-sidebar {
-    min-width: 220px;
+    min-width: 280px;
   }
 
   .right-panel {

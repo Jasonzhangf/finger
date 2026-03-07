@@ -51,14 +51,29 @@ interface AgentPromptState {
 }
 
 
-const DRAWER_WIDTH_STORAGE_KEY = 'finger.agentConfigDrawer.width';
-const MIN_DRAWER_WIDTH = 420;
-const MAX_DRAWER_WIDTH = 860;
-const DEFAULT_DRAWER_WIDTH = 560;
+const DRAWER_WIDTH_STORAGE_KEY = 'finger.agentConfigDrawer.width.v2';
+const LEGACY_DRAWER_WIDTH_STORAGE_KEY = 'finger.agentConfigDrawer.width';
+const MIN_DRAWER_WIDTH = 520;
+const MAX_DRAWER_WIDTH = 1080;
+const DEFAULT_DRAWER_WIDTH = 720;
 
 function clampDrawerWidth(width: number): number {
   if (!Number.isFinite(width)) return DEFAULT_DRAWER_WIDTH;
   return Math.min(MAX_DRAWER_WIDTH, Math.max(MIN_DRAWER_WIDTH, Math.round(width)));
+}
+
+function readStoredDrawerWidth(): number {
+  if (typeof window === 'undefined') return DEFAULT_DRAWER_WIDTH;
+  const raw = window.localStorage.getItem(DRAWER_WIDTH_STORAGE_KEY);
+  if (raw) {
+    const saved = Number(raw);
+    return clampDrawerWidth(saved);
+  }
+
+  const legacyRaw = window.localStorage.getItem(LEGACY_DRAWER_WIDTH_STORAGE_KEY);
+  if (!legacyRaw) return DEFAULT_DRAWER_WIDTH;
+  const legacySaved = clampDrawerWidth(Number(legacyRaw));
+  return legacySaved >= DEFAULT_DRAWER_WIDTH ? legacySaved : DEFAULT_DRAWER_WIDTH;
 }
 
 function stringifyWorkflowQuota(workflowQuota: Record<string, number>): string {
@@ -190,11 +205,7 @@ export const AgentConfigDrawer = ({
   onControlAgent,
 }: AgentConfigDrawerProps) => {
   const [draft, setDraft] = useState<AgentDeployDraft>(() => pickDefaultDraft(agent, config, capabilities));
-  const [drawerWidth, setDrawerWidth] = useState(() => {
-    if (typeof window === 'undefined') return DEFAULT_DRAWER_WIDTH;
-    const saved = Number(window.localStorage.getItem(DRAWER_WIDTH_STORAGE_KEY));
-    return clampDrawerWidth(saved);
-  });
+  const [drawerWidth, setDrawerWidth] = useState(() => readStoredDrawerWidth());
   const [isDrawerResizing, setIsDrawerResizing] = useState(false);
   const drawerResizeOriginRef = useRef<{ startX: number; startWidth: number } | null>(null);
   const [isDeploying, setIsDeploying] = useState(false);
@@ -226,6 +237,11 @@ export const AgentConfigDrawer = ({
     setDraft(pickDefaultDraft(agent, config, capabilities));
     setHint(null);
   }, [agent?.id, config?.id, capabilities]);
+
+  useEffect(() => {
+    if (!isOpen) return;
+    setDrawerWidth(readStoredDrawerWidth());
+  }, [isOpen]);
 
   const loadAgentJson = useCallback(async () => {
     if (!agent?.id) return;
@@ -576,8 +592,8 @@ export const AgentConfigDrawer = ({
   };
 
   return (
-    <div className="agent-drawer-overlay" onClick={onClose}>
-      <aside className={`agent-drawer ${isDrawerResizing ? 'resizing' : ''}`} style={{ width: `${drawerWidth}px` }} onClick={(event) => event.stopPropagation()}>
+    <div className="agent-drawer-overlay" aria-hidden="true">
+      <aside className={`agent-drawer ${isDrawerResizing ? 'resizing' : ''}`} style={{ width: `${drawerWidth}px` }}>
         <div
           className="agent-drawer-resize-handle"
           onPointerDown={handleResizeStart}

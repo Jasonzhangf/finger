@@ -22,19 +22,20 @@ interface DragState {
 }
 
 const COLLAPSED_PANEL_SIZE = 44;
-const LEFT_MIN = 260;
+const LEFT_MIN = 320;
 const RIGHT_MIN = 360;
 const BOTTOM_MIN = 180;
 const CANVAS_MIN_WIDTH = 320;
 const MAIN_MIN_HEIGHT = 220;
 
-const LEFT_WIDTH_KEY = 'finger-ui-layout-left-width';
+const LEFT_WIDTH_KEY = 'finger-ui-layout-left-width.v2';
+const LEGACY_LEFT_WIDTH_KEY = 'finger-ui-layout-left-width';
 const RIGHT_WIDTH_KEY = 'finger-ui-layout-right-width';
 const BOTTOM_HEIGHT_KEY = 'finger-ui-layout-bottom-height';
 const RIGHT_COLLAPSED_KEY = 'finger-ui-layout-right-collapsed';
 const BOTTOM_COLLAPSED_KEY = 'finger-ui-layout-bottom-collapsed';
 
-const DEFAULT_LEFT_WIDTH = 292;
+const DEFAULT_LEFT_WIDTH = 380;
 const DEFAULT_RIGHT_WIDTH = 520;
 const DEFAULT_BOTTOM_HEIGHT = 340;
 
@@ -52,6 +53,15 @@ function readStoredNumber(key: string, fallback: number): number {
   } catch {
     return fallback;
   }
+}
+
+function readStoredLeftWidth(): number {
+  const stored = readStoredNumber(LEFT_WIDTH_KEY, Number.NaN);
+  if (Number.isFinite(stored)) return stored;
+
+  const legacy = readStoredNumber(LEGACY_LEFT_WIDTH_KEY, Number.NaN);
+  if (!Number.isFinite(legacy)) return DEFAULT_LEFT_WIDTH;
+  return legacy >= DEFAULT_LEFT_WIDTH ? legacy : DEFAULT_LEFT_WIDTH;
 }
 
 function readStoredBoolean(key: string, fallback: boolean): boolean {
@@ -86,7 +96,7 @@ export const AppLayout = ({
   rightPanel,
   bottomPanel,
 }: AppLayoutProps) => {
-  const [leftPanelWidth, setLeftPanelWidth] = useState(() => readStoredNumber(LEFT_WIDTH_KEY, DEFAULT_LEFT_WIDTH));
+  const [leftPanelWidth, setLeftPanelWidth] = useState(() => readStoredLeftWidth());
   const [rightPanelWidth, setRightPanelWidth] = useState(() => readStoredNumber(RIGHT_WIDTH_KEY, DEFAULT_RIGHT_WIDTH));
   const [bottomPanelHeight, setBottomPanelHeight] = useState(() => readStoredNumber(BOTTOM_HEIGHT_KEY, DEFAULT_BOTTOM_HEIGHT));
   const [rightPanelCollapsed, setRightPanelCollapsed] = useState(() => readStoredBoolean(RIGHT_COLLAPSED_KEY, false));

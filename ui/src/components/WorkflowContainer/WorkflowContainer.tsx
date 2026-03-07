@@ -534,8 +534,24 @@ export const WorkflowContainer: React.FC = () => {
         context: 'orchestrator',
         sessionId: orchestratorSessionId,
       });
+      setSelectedAgentId(null);
+      return;
     }
-  }, [orchestratorSessionId, runtimeInstances, sessionBinding]);
+
+    const normalizedStatus = boundInstance.status.trim().toLowerCase();
+    const shouldReturnToOrchestrator = normalizedStatus === 'completed'
+      || normalizedStatus === 'failed'
+      || normalizedStatus === 'error'
+      || normalizedStatus === 'interrupted';
+
+    if (shouldReturnToOrchestrator) {
+      setSessionBinding({
+        context: 'orchestrator',
+        sessionId: orchestratorSessionId,
+      });
+      setSelectedAgentId(null);
+    }
+  }, [orchestratorSessionId, runtimeInstances, sessionBinding, setSelectedAgentId]);
 
   const handleDeployAgent = useCallback(async (payload: { config: AgentConfig; instanceCount: number }): Promise<void> => {
     const targetSessionId = currentSession?.id || orchestratorSessionId;

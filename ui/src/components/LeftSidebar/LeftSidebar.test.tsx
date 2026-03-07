@@ -73,5 +73,48 @@ describe('LeftSidebar project running state', () => {
     fireEvent.click(screen.getByText('Project'));
     expect(screen.getByText('暂无运行项目')).toBeTruthy();
   });
-});
 
+  it('runtime session list follows focused runtime instance instead of selected agent config', () => {
+    render(
+      <LeftSidebar
+        sessions={baseSessions}
+        currentSession={baseSessions[0]}
+        isLoadingSessions={false}
+        runtimeInstances={[
+          {
+            id: 'runtime-executor-1',
+            agentId: 'finger-executor',
+            name: 'finger-executor',
+            type: 'executor',
+            status: 'running',
+            sessionId: 'session-executor-1',
+            totalDeployments: 1,
+          },
+          {
+            id: 'runtime-reviewer-1',
+            agentId: 'finger-reviewer',
+            name: 'finger-reviewer',
+            type: 'reviewer',
+            status: 'idle',
+            sessionId: 'session-reviewer-1',
+            totalDeployments: 1,
+          },
+        ]}
+        selectedAgentConfigId="finger-reviewer"
+        focusedRuntimeInstanceId="runtime-executor-1"
+        activeRuntimeSessionId="session-executor-1"
+        onSwitchRuntimeInstance={vi.fn()}
+        onCreateSession={vi.fn().mockResolvedValue(baseSessions[0])}
+        onDeleteSession={vi.fn().mockResolvedValue(undefined)}
+        onRenameSession={vi.fn().mockResolvedValue(baseSessions[0])}
+        onSwitchSession={vi.fn().mockResolvedValue(undefined)}
+        onRefreshSessions={vi.fn().mockResolvedValue(undefined)}
+      />,
+    );
+
+    fireEvent.click(screen.getByText('Project'));
+    expect(screen.getByText('Agent Sessions (1)')).toBeTruthy();
+    expect(screen.getByText('finger-executor')).toBeTruthy();
+    expect(screen.queryByText('finger-reviewer')).toBeNull();
+  });
+});
