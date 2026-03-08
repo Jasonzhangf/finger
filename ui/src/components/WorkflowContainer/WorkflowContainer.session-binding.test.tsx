@@ -105,6 +105,7 @@ const runtimePanelState: {
 
 const switchSessionMock = vi.fn().mockResolvedValue(undefined);
 const setSelectedAgentIdMock = vi.fn();
+const switchRuntimeSessionMock = vi.fn();
 
 vi.mock('../TaskFlowCanvas/TaskFlowCanvas.tsx', () => ({
   TaskFlowCanvas: () => <div data-testid="canvas" />,
@@ -124,7 +125,19 @@ vi.mock('../ChatInterface/ChatInterface.tsx', () => ({
 }));
 
 vi.mock('../LeftSidebar/LeftSidebar.tsx', () => ({
-  LeftSidebar: () => <div data-testid="sidebar">sidebar</div>,
+  LeftSidebar: ({ runtimeInstances, onSwitchRuntimeInstance }: { runtimeInstances?: Array<{ id: string }>; onSwitchRuntimeInstance?: (instance: { id: string }) => void }) => (
+    <>
+      <div data-testid="sidebar">sidebar</div>
+      <button type="button" data-testid="sidebar-switch-runtime" onClick={() => {
+        if (runtimeInstances && runtimeInstances[0]) {
+          switchRuntimeSessionMock();
+          onSwitchRuntimeInstance?.(runtimeInstances[0]);
+        }
+      }}>
+        sidebar-switch
+      </button>
+    </>
+  ),
 }));
 
 vi.mock('../BottomPanel/BottomPanel.tsx', () => ({
@@ -221,6 +234,7 @@ describe('WorkflowContainer session binding', () => {
     useWorkflowExecutionMock.mockClear();
     switchSessionMock.mockClear();
     setSelectedAgentIdMock.mockClear();
+    switchRuntimeSessionMock.mockClear();
     fetchMock.mockReset();
     runtimePanelState.configAgents = [
       {
@@ -260,7 +274,7 @@ describe('WorkflowContainer session binding', () => {
     fetchMock.mockReset();
   });
 
-  it('switches to runtime session and auto-returns to orchestrator when runtime finishes', async () => {
+  it('keeps runtime session focused after runtime finishes so history remains inspectable', async () => {
     const { rerender } = render(<WorkflowContainer />);
 
     expect(useWorkflowExecutionMock).toHaveBeenCalledWith('orch-session');
@@ -274,7 +288,7 @@ describe('WorkflowContainer session binding', () => {
     rerender(<WorkflowContainer />);
 
     await waitFor(() => {
-      expect(useWorkflowExecutionMock).toHaveBeenLastCalledWith('orch-session');
+      expect(useWorkflowExecutionMock).toHaveBeenLastCalledWith('runtime-session');
     });
   });
 
@@ -323,6 +337,37 @@ describe('WorkflowContainer session binding', () => {
       expect(screen.getByTestId('chat-context-label').textContent).toContain('子会话');
       expect(screen.getByTestId('chat-context-label').textContent).toContain('agent Executor Debug Loop (executor-debug-loop)');
       expect(screen.getByTestId('chat-context-label').textContent).toContain('session runtime-session');
+    });
+  });
+
+  it('keeps completed runtime session title/context after execution completes', async () => {
+    const { rerender } = render(<WorkflowContainer />);
+
+    fireEvent.click(screen.getByTestId('switch-runtime'));
+
+    await waitFor(() => {
+      expect(useWorkflowExecutionMock).toHaveBeenLastCalledWith('runtime-session');
+    });
+
+    runtimePanelState.instances = [{ ...runtimePanelState.instances[0], status: 'completed' }];
+    rerender(<WorkflowContainer />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('chat-panel-title').textContent).toBe('Executor Debug Loop');
+      expect(screen.getByTestId('chat-context-label').textContent).toContain('子会话');
+      expect(screen.getByTestId('chat-context-label').textContent).toContain('session runtime-session');
+    });
+  });
+
+  it('sidebar runtime history selection also switches to the correct runtime session', async () => {
+    render(<WorkflowContainer />);
+
+    fireEvent.click(screen.getByTestId('sidebar-switch-runtime'));
+
+    await waitFor(() => {
+      expect(switchRuntimeSessionMock).toHaveBeenCalledTimes(1);
+      expect(useWorkflowExecutionMock).toHaveBeenLastCalledWith('runtime-session');
+      expect(screen.getByTestId('chat-panel-title').textContent).toBe('Executor Debug Loop');
     });
   });
 

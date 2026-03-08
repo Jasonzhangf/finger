@@ -83,6 +83,8 @@ interface AgentLastEventView {
   sessionId?: string;
   workflowId?: string;
   dispatchId?: string;
+  sourceAgentId?: string;
+  taskId?: string;
 }
 
 interface AgentRuntimeViewItem {
@@ -1420,6 +1422,10 @@ export class AgentRuntimeBlock extends BaseBlock {
       status: params.status,
       summary,
       timestamp,
+      sourceAgentId: params.sourceAgentId,
+      ...(typeof params.assignment?.taskId === 'string' && params.assignment.taskId.trim().length > 0
+        ? { taskId: params.assignment.taskId.trim() }
+        : {}),
       ...(params.sessionId ? { sessionId: params.sessionId } : {}),
       ...(params.workflowId ? { workflowId: params.workflowId } : {}),
       dispatchId: params.dispatchId,

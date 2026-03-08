@@ -34,6 +34,8 @@ export interface AgentLastEvent {
   sessionId?: string;
   workflowId?: string;
   dispatchId?: string;
+  sourceAgentId?: string;
+  taskId?: string;
 }
 
 export interface AgentDebugAssertion {
@@ -316,6 +318,8 @@ function parseLastEvent(raw: unknown): AgentLastEvent | undefined {
   const sessionId = typeof raw.sessionId === 'string' && raw.sessionId.trim().length > 0 ? raw.sessionId.trim() : undefined;
   const workflowId = typeof raw.workflowId === 'string' && raw.workflowId.trim().length > 0 ? raw.workflowId.trim() : undefined;
   const dispatchId = typeof raw.dispatchId === 'string' && raw.dispatchId.trim().length > 0 ? raw.dispatchId.trim() : undefined;
+  const sourceAgentId = typeof raw.sourceAgentId === 'string' && raw.sourceAgentId.trim().length > 0 ? raw.sourceAgentId.trim() : undefined;
+  const taskId = typeof raw.taskId === 'string' && raw.taskId.trim().length > 0 ? raw.taskId.trim() : undefined;
   return {
     type,
     status,
@@ -324,6 +328,8 @@ function parseLastEvent(raw: unknown): AgentLastEvent | undefined {
     ...(sessionId ? { sessionId } : {}),
     ...(workflowId ? { workflowId } : {}),
     ...(dispatchId ? { dispatchId } : {}),
+    ...(sourceAgentId ? { sourceAgentId } : {}),
+    ...(taskId ? { taskId } : {}),
   };
 }
 

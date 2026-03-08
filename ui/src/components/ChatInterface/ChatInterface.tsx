@@ -1946,15 +1946,14 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
       if (event.role === 'user') return true;
       const metadata = (event as any).metadata;
       const metadataEvent = metadata && typeof metadata === 'object' ? (metadata as any).event : null;
-      const resolvedAgentId = (event as any).agentId
-        || metadataEvent?.agentId
-        || metadataEvent?.targetAgentId
-        || metadataEvent?.sourceAgentId;
-      if (!resolvedAgentId) return true;
-      if (typeof resolvedAgentId === 'string') {
-        return resolvedAgentId === eventFilterAgentId;
-      }
-      return false;
+      const resolvedAgentIds = [
+        (event as any).agentId,
+        metadataEvent?.agentId,
+        metadataEvent?.targetAgentId,
+        metadataEvent?.sourceAgentId,
+      ].filter((value): value is string => typeof value === 'string' && value.trim().length > 0);
+      if (resolvedAgentIds.length === 0) return true;
+      return resolvedAgentIds.includes(eventFilterAgentId);
     });
   }, [eventFilterAgentId, eventsWithKeys]);
 

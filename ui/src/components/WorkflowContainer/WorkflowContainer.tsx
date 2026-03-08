@@ -558,6 +558,10 @@ export const WorkflowContainer: React.FC = () => {
     setSelectedAgentId(selectedInstance.agentId);
   }, [orchestratorSessionId, runtimeInstances, switchSession]);
 
+  const handleSelectRuntimeSession = useCallback(async (instance: AgentRuntimeInstance): Promise<void> => {
+    await handleSelectInstance(instance);
+  }, [handleSelectInstance]);
+
   useEffect(() => {
     if (sessionBinding.context !== 'runtime') return;
     const boundInstance = runtimeInstances.find((instance) => (
@@ -565,21 +569,6 @@ export const WorkflowContainer: React.FC = () => {
       || instance.sessionId === sessionBinding.sessionId
     ));
     if (!boundInstance) {
-      setSessionBinding({
-        context: 'orchestrator',
-        sessionId: orchestratorSessionId,
-      });
-      setSelectedAgentId(null);
-      return;
-    }
-
-    const normalizedStatus = boundInstance.status.trim().toLowerCase();
-    const shouldReturnToOrchestrator = normalizedStatus === 'completed'
-      || normalizedStatus === 'failed'
-      || normalizedStatus === 'error'
-      || normalizedStatus === 'interrupted';
-
-    if (shouldReturnToOrchestrator) {
       setSessionBinding({
         context: 'orchestrator',
         sessionId: orchestratorSessionId,
@@ -879,7 +868,7 @@ export const WorkflowContainer: React.FC = () => {
       runtimeConfigs={agentConfigItems}
       focusedRuntimeInstanceId={frozenFocusedRuntimeInstanceId}
       activeRuntimeSessionId={frozenActiveRuntimeSessionId}
-      onSwitchRuntimeInstance={(instance) => { void handleSelectInstance(instance); }}
+      onSwitchRuntimeInstance={(instance) => { void handleSelectRuntimeSession(instance); }}
       onCreateSession={createSession}
       onDeleteSession={removeSession}
       onRenameSession={renameSession}
@@ -909,7 +898,7 @@ export const WorkflowContainer: React.FC = () => {
       isLoading={frozenBottomPayload.isLoading}
       error={frozenBottomPayload.error}
       onSelectAgentConfig={handleSelectAgentConfig}
-      onSelectInstance={(instance) => { void handleSelectInstance(instance); }}
+      onSelectInstance={(instance) => { void handleSelectRuntimeSession(instance); }}
       onRefresh={() => { void refreshAgentPanel(); }}
       onSetDebugMode={async (enabled) => {
         const result = await setRuntimeDebugMode(enabled);

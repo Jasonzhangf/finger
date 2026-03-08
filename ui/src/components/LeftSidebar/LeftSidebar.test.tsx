@@ -77,7 +77,23 @@ describe('LeftSidebar project running state', () => {
   it('runtime session list follows focused runtime instance instead of selected agent config', () => {
     render(
       <LeftSidebar
-        sessions={baseSessions}
+        sessions={[
+          ...baseSessions,
+          {
+            id: 'session-executor-1',
+            name: 'Executor Session',
+            projectPath: '/workspace/a',
+            createdAt: '2026-02-28T00:00:00.000Z',
+            updatedAt: '2026-02-28T00:00:00.000Z',
+            lastAccessedAt: '2026-02-28T00:00:00.000Z',
+            messageCount: 1,
+            activeWorkflows: [],
+            sessionTier: 'runtime',
+            ownerAgentId: 'finger-executor',
+            parentSessionId: 'session-orch',
+            rootSessionId: 'session-orch',
+          },
+        ]}
         currentSession={baseSessions[0]}
         isLoadingSessions={false}
         runtimeInstances={[
@@ -120,7 +136,23 @@ describe('LeftSidebar project running state', () => {
   it('runtime session list uses config display name and exposes agentId/sessionId separately', () => {
     render(
       <LeftSidebar
-        sessions={baseSessions}
+        sessions={[
+          ...baseSessions,
+          {
+            id: 'runtime-session-1',
+            name: 'Orchestrator Runtime Session',
+            projectPath: '/workspace/a',
+            createdAt: '2026-02-28T00:00:00.000Z',
+            updatedAt: '2026-02-28T00:00:00.000Z',
+            lastAccessedAt: '2026-02-28T00:00:00.000Z',
+            messageCount: 1,
+            activeWorkflows: [],
+            sessionTier: 'runtime',
+            ownerAgentId: 'finger-orchestrator',
+            parentSessionId: 'session-orch',
+            rootSessionId: 'session-orch',
+          },
+        ]}
         currentSession={baseSessions[0]}
         isLoadingSessions={false}
         runtimeInstances={[
@@ -182,5 +214,154 @@ describe('LeftSidebar project running state', () => {
     expect(screen.getByText('运行中 · agent finger-orchestrator')).toBeTruthy();
     expect(screen.getByText('session runtime-session-1')).toBeTruthy();
     expect(screen.queryByText('finger-orchestrator')).toBeNull();
+  });
+
+  it('runtime session list keeps historical child sessions from sessions source after instance completion', () => {
+    const currentSession = {
+      id: 'orch-session',
+      name: 'Orchestrator Session',
+      projectPath: '/workspace/a',
+      createdAt: '2026-02-28T00:00:00.000Z',
+      updatedAt: '2026-02-28T00:00:00.000Z',
+      lastAccessedAt: '2026-02-28T00:00:00.000Z',
+      messageCount: 2,
+      activeWorkflows: [],
+    };
+
+    render(
+      <LeftSidebar
+        sessions={[
+          currentSession,
+          {
+            id: 'runtime-session-history-1',
+            name: 'Executor Runtime History',
+            projectPath: '/workspace/a',
+            createdAt: '2026-03-08T10:00:00.000Z',
+            updatedAt: '2026-03-08T10:10:00.000Z',
+            lastAccessedAt: '2026-03-08T10:10:00.000Z',
+            messageCount: 5,
+            activeWorkflows: [],
+            sessionTier: 'runtime',
+            ownerAgentId: 'finger-executor',
+            parentSessionId: 'orch-session',
+            rootSessionId: 'orch-session',
+          },
+        ]}
+        currentSession={currentSession}
+        isLoadingSessions={false}
+        runtimeInstances={[]}
+        runtimeAgents={[
+          {
+            id: 'finger-executor',
+            name: 'Executor',
+            type: 'executor',
+            status: 'idle',
+            source: 'deployment',
+            instanceCount: 1,
+            deployedCount: 1,
+            availableCount: 1,
+            runningCount: 0,
+            queuedCount: 0,
+            enabled: true,
+            runtimeCapabilities: [],
+            defaultQuota: 1,
+            quotaPolicy: { workflowQuota: {} },
+            quota: { effective: 1, source: 'default' },
+            debugAssertions: [],
+          },
+        ]}
+        runtimeConfigs={[
+          {
+            id: 'finger-executor',
+            name: 'Executor',
+            role: 'executor',
+            filePath: '/tmp/finger-executor/agent.json',
+            enabled: true,
+            capabilities: [],
+            defaultQuota: 1,
+            quotaPolicy: { workflowQuota: {} },
+          },
+        ]}
+        focusedRuntimeInstanceId={null}
+        activeRuntimeSessionId="runtime-session-history-1"
+        onSwitchRuntimeInstance={vi.fn()}
+        onCreateSession={vi.fn().mockResolvedValue(currentSession)}
+        onDeleteSession={vi.fn().mockResolvedValue(undefined)}
+        onRenameSession={vi.fn().mockResolvedValue(currentSession)}
+        onSwitchSession={vi.fn().mockResolvedValue(undefined)}
+        onRefreshSessions={vi.fn().mockResolvedValue(undefined)}
+      />,
+    );
+
+    fireEvent.click(screen.getByText('Project'));
+    expect(screen.getByText('Agent Sessions (1)')).toBeTruthy();
+    expect(screen.getByText('Executor')).toBeTruthy();
+    expect(screen.getByText('已完成 · agent finger-executor')).toBeTruthy();
+    expect(screen.getByText('session runtime-session-history-1')).toBeTruthy();
+  });
+
+  it('runtime session list excludes orchestrator main session even if a runtime instance references it', () => {
+    render(
+      <LeftSidebar
+        sessions={baseSessions}
+        currentSession={baseSessions[0]}
+        isLoadingSessions={false}
+        runtimeInstances={[
+          {
+            id: 'inst-main',
+            agentId: 'finger-orchestrator',
+            name: 'main-inst',
+            type: 'orchestrator',
+            status: 'idle',
+            sessionId: 'session-orch',
+            totalDeployments: 1,
+          },
+        ]}
+        runtimeAgents={[
+          {
+            id: 'finger-orchestrator',
+            name: 'Orchestrator',
+            type: 'orchestrator',
+            status: 'idle',
+            source: 'deployment',
+            instanceCount: 1,
+            deployedCount: 1,
+            availableCount: 1,
+            runningCount: 0,
+            queuedCount: 0,
+            enabled: true,
+            runtimeCapabilities: [],
+            defaultQuota: 1,
+            quotaPolicy: { workflowQuota: {} },
+            quota: { effective: 1, source: 'default' },
+            debugAssertions: [],
+          },
+        ]}
+        runtimeConfigs={[
+          {
+            id: 'finger-orchestrator',
+            name: 'Orchestrator',
+            role: 'orchestrator',
+            filePath: '/tmp/finger-orchestrator/agent.json',
+            enabled: true,
+            capabilities: [],
+            defaultQuota: 1,
+            quotaPolicy: { workflowQuota: {} },
+          },
+        ]}
+        focusedRuntimeInstanceId={null}
+        activeRuntimeSessionId={null}
+        onSwitchRuntimeInstance={vi.fn()}
+        onCreateSession={vi.fn().mockResolvedValue(baseSessions[0])}
+        onDeleteSession={vi.fn().mockResolvedValue(undefined)}
+        onRenameSession={vi.fn().mockResolvedValue(baseSessions[0])}
+        onSwitchSession={vi.fn().mockResolvedValue(undefined)}
+        onRefreshSessions={vi.fn().mockResolvedValue(undefined)}
+      />,
+    );
+
+    fireEvent.click(screen.getByText('Project'));
+    expect(screen.getByText('Agent Sessions (0)')).toBeTruthy();
+    expect(screen.queryByText('Orchestrator')).toBeNull();
   });
 });

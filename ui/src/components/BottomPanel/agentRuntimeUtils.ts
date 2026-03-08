@@ -17,6 +17,27 @@ export interface AgentBinding {
   displayName: string;
 }
 
+export function formatDispatchDescriptor(input: {
+  sourceAgentId?: string | null;
+  sourceDisplayName?: string | null;
+  targetAgentId?: string | null;
+  targetDisplayName?: string | null;
+  taskId?: string | null;
+  status?: string | null;
+}): string {
+  const source = (input.sourceDisplayName && input.sourceDisplayName.trim())
+    || (input.sourceAgentId && input.sourceAgentId.trim())
+    || 'unknown-source';
+  const target = (input.targetDisplayName && input.targetDisplayName.trim())
+    || (input.targetAgentId && input.targetAgentId.trim())
+    || 'unknown-target';
+  const status = (input.status && input.status.trim()) || 'unknown';
+  const taskId = (input.taskId && input.taskId.trim()) || '';
+  return taskId
+    ? `${source} -> ${target} · ${status} · task ${taskId}`
+    : `${source} -> ${target} · ${status}`;
+}
+
 function normalize(value: string): string {
   return value.trim().toLowerCase();
 }

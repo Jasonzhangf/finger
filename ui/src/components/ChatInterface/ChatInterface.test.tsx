@@ -191,6 +191,38 @@ describe('ChatInterface request details rendering', () => {
     expect(screen.getByText('orchestrator')).toBeTruthy();
     expect(screen.getByText('exec_command, update_plan')).toBeTruthy();
   });
+
+  it('keeps dispatch events visible in child session when source and target agent ids are both present', () => {
+    const events: RuntimeEvent[] = [
+      buildEvent({
+        role: 'system',
+        agentId: 'finger-executor',
+        content: '派发给 executor (finger-executor) · 状态 完成 · task task-1',
+        metadata: {
+          event: {
+            sourceAgentId: 'finger-orchestrator',
+            targetAgentId: 'finger-executor',
+          },
+        },
+      }),
+    ];
+
+    render(
+      <ChatInterface
+        executionState={null}
+        agents={[]}
+        events={events}
+        onSendMessage={vi.fn()}
+        onPause={() => undefined}
+        onResume={() => undefined}
+        isPaused={false}
+        isConnected={true}
+        eventFilterAgentId="finger-executor"
+      />,
+    );
+
+    expect(screen.getByText('派发给 executor (finger-executor) · 状态 完成 · task task-1')).toBeTruthy();
+  });
 });
 
 describe('ChatInterface input behavior', () => {

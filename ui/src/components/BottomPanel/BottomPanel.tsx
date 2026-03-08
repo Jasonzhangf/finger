@@ -8,6 +8,7 @@ import type {
   AgentStartupTemplate,
 } from '../../hooks/useAgentRuntimePanel.js';
 import {
+  formatDispatchDescriptor,
   findConfigForAgent,
   isActiveInstanceStatus,
   resolveInstanceBinding,
@@ -873,6 +874,17 @@ export const BottomPanel: React.FC<BottomPanelProps> = ({
                   const binding = resolveInstanceBinding(instance, staticAgents, configs);
                   const displayName = resolveInstanceDisplayName(instance, staticAgents, configs);
                   const sourceLabel = ` · 来源 ${binding.agent?.source ?? instance.source}`;
+                  const boundRuntimeAgent = runtimeAgents.find((agent) => agent.id === instance.agentId);
+                  const runtimeLastEvent = boundRuntimeAgent?.lastEvent;
+                  const dispatchSummary = runtimeLastEvent?.type === 'dispatch'
+                    ? formatDispatchDescriptor({
+                        sourceAgentId: runtimeLastEvent.sourceAgentId ?? null,
+                        targetAgentId: instance.agentId,
+                        targetDisplayName: displayName,
+                        taskId: runtimeLastEvent.taskId ?? null,
+                        status: runtimeLastEvent.status ?? null,
+                      })
+                    : null;
                   return (
                     <button
                       key={instance.id}
@@ -896,6 +908,9 @@ export const BottomPanel: React.FC<BottomPanelProps> = ({
                         {binding.agentId ? ` · agentId ${binding.agentId}` : ''}
                         {sourceLabel}
                       </div>
+                      {dispatchSummary && (
+                        <div className="runtime-card-meta">Dispatch: {dispatchSummary}</div>
+                      )}
                     </button>
                   );
                 })}

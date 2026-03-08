@@ -86,6 +86,10 @@ function pickLatestSession(sessions: SessionInfo[]): SessionInfo | null {
     .sort((a, b) => new Date(b.lastAccessedAt).getTime() - new Date(a.lastAccessedAt).getTime())[0];
 }
 
+function isRuntimeSession(session: SessionInfo): boolean {
+  return session.sessionTier === 'runtime' || typeof session.parentSessionId === 'string';
+}
+
 function projectDisplayName(pathValue: string): string {
   const normalized = pathValue.replace(/\\/g, '/').replace(/\/+$/, '');
   const parts = normalized.split('/').filter(Boolean);
@@ -284,18 +288,6 @@ const ProjectTab: FC<ProjectTabProps> = ({
     [runtimeConfigs, runtimeAgents],
   );
 
-  const runtimeSessionItems = useMemo(() => {
-    return runtimeInstances
-      .filter((instance) => typeof instance.sessionId === 'string' && instance.sessionId.length > 0)
-      .filter((instance) => (focusedRuntimeAgentId ? instance.agentId === focusedRuntimeAgentId : true))
-      .slice()
-      .sort((a, b) => {
-        const displayA = resolveInstanceDisplayName(a, runtimeDisplayAgents, runtimeConfigs);
-        const displayB = resolveInstanceDisplayName(b, runtimeDisplayAgents, runtimeConfigs);
-        return displayA.localeCompare(displayB);
-      });
-  }, [focusedRuntimeAgentId, runtimeConfigs, runtimeDisplayAgents, runtimeInstances]);
-
   const projectGroups = useMemo(() => {
     const groups: Array<{
       projectPath: string;
@@ -350,6 +342,45 @@ const ProjectTab: FC<ProjectTabProps> = ({
     if (!normalizedProject) return sortedSessions;
     return sortedSessions.filter((session) => normalizePath(session.projectPath) === normalizedProject);
   }, [sortedSessions, currentProjectPath]);
+
+  const runtimeSessionItems = useMemo(() => {
+    const sessionById = new Map(filteredSessions.map((session) => [session.id, session] as const));
+    const deduped = new Map<string, AgentRuntimeInstance>();
+    for (const instance of runtimeInstances) {
+      if (typeof instance.sessionId !== 'string' || instance.sessionId.length === 0) continue;
+      const boundSession = sessionById.get(instance.sessionId);
+      if (!boundSession || !isRuntimeSession(boundSession)) continue;
+      if (focusedRuntimeAgentId && instance.agentId !== focusedRuntimeAgentId) continue;
+      if (!deduped.has(instance.sessionId)) {
+        deduped.set(instance.sessionId, instance);
+      }
+    }
+
+    for (const session of filteredSessions) {
+      if (!isRuntimeSession(session)) continue;
+      if (focusedRuntimeAgentId && session.ownerAgentId !== focusedRuntimeAgentId) continue;
+      if (deduped.has(session.id)) continue;
+      deduped.set(session.id, {
+        id: `session:${session.id}`,
+        agentId: session.ownerAgentId || 'unknown-agent',
+        name: session.name,
+        type: 'executor',
+        status: 'completed',
+        sessionId: session.id,
+        workflowId: session.activeWorkflows[0],
+        totalDeployments: 1,
+      });
+    }
+
+    return Array.from(deduped.values())
+      .filter((instance) => typeof instance.sessionId === 'string' && instance.sessionId.length > 0)
+      .slice()
+      .sort((a, b) => {
+        const displayA = resolveInstanceDisplayName(a, runtimeDisplayAgents, runtimeConfigs);
+        const displayB = resolveInstanceDisplayName(b, runtimeDisplayAgents, runtimeConfigs);
+        return displayA.localeCompare(displayB);
+      });
+  }, [filteredSessions, focusedRuntimeAgentId, runtimeConfigs, runtimeDisplayAgents, runtimeInstances]);
 
   useEffect(() => {
     const validSet = new Set(filteredSessions.map((session) => session.id));

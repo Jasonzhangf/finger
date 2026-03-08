@@ -28,6 +28,8 @@ describe('BottomPanel', () => {
               status: 'queued',
               summary: 'Dispatch queued (queue #1)',
               timestamp: '2026-02-27T00:00:00.000Z',
+              sourceAgentId: 'finger-orchestrator',
+              taskId: 'task-1',
             },
             debugAssertions: [],
           },
@@ -54,6 +56,8 @@ describe('BottomPanel', () => {
               status: 'queued',
               summary: 'Dispatch queued (queue #1)',
               timestamp: '2026-02-27T00:00:00.000Z',
+              sourceAgentId: 'finger-orchestrator',
+              taskId: 'task-1',
             },
             debugAssertions: [],
           },
@@ -67,6 +71,67 @@ describe('BottomPanel', () => {
     expect(screen.getByText('Running')).toBeTruthy();
     expect(screen.getByText('Queued')).toBeTruthy();
     expect(screen.getByText('Last Event: Dispatch queued (queue #1)')).toBeTruthy();
+    expect(screen.queryByText('Dispatch: finger-orchestrator -> Executor Debug Loop · queued · task task-1')).toBeNull();
+  });
+
+  it('renders dispatch descriptor on runtime card when runtime instance exists', () => {
+    render(
+      <BottomPanel
+        configAgents={[]}
+        runtimeAgents={[
+          {
+            id: 'executor-debug-loop',
+            name: 'Executor Debug Loop',
+            type: 'executor',
+            status: 'running',
+            source: 'deployment',
+            instanceCount: 1,
+            deployedCount: 1,
+            availableCount: 0,
+            runningCount: 1,
+            queuedCount: 1,
+            enabled: true,
+            runtimeCapabilities: [],
+            defaultQuota: 1,
+            quotaPolicy: { workflowQuota: {} },
+            quota: { effective: 1, source: 'default' },
+            lastEvent: {
+              type: 'dispatch',
+              status: 'queued',
+              summary: 'Dispatch queued (queue #1)',
+              timestamp: '2026-02-27T00:00:00.000Z',
+              sourceAgentId: 'finger-orchestrator',
+              taskId: 'task-1',
+            },
+            debugAssertions: [],
+          },
+        ]}
+        instances={[
+          {
+            id: 'inst-1',
+            agentId: 'executor-debug-loop',
+            name: 'inst-1',
+            type: 'executor',
+            status: 'running',
+            sessionId: 'runtime-session',
+            totalDeployments: 1,
+          },
+        ]}
+        configs={[
+          {
+            id: 'executor-debug-loop',
+            name: 'Executor Debug Loop',
+            role: 'executor',
+            filePath: '/tmp/executor-debug-loop/agent.json',
+            enabled: true,
+            defaultQuota: 1,
+            quotaPolicy: { workflowQuota: {} },
+          },
+        ]}
+      />,
+    );
+
+    expect(screen.getByText('Dispatch: finger-orchestrator -> Executor Debug Loop · queued · task task-1')).toBeTruthy();
   });
 
   it('renders agent-runtime connection lines in agents tab', () => {
