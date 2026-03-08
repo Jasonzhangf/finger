@@ -70,24 +70,27 @@ export function extractChatReply(result: unknown): {
   tokenUsage?: RuntimeTokenUsage;
   pendingInputAccepted?: boolean;
 } {
+  const fallbackAgentId = arguments.length > 1 && typeof arguments[1] === 'string'
+    ? arguments[1]
+    : DEFAULT_CHAT_AGENT_ID;
   const candidate = isRecord(result) && isRecord(result.output) ? result.output : result;
 
   if (typeof candidate === 'string') {
-    return { reply: candidate, agentId: DEFAULT_CHAT_AGENT_ID, tokenUsage: estimateTokenUsage(candidate) };
+    return { reply: candidate, agentId: fallbackAgentId, tokenUsage: estimateTokenUsage(candidate) };
   }
 
   if (!isRecord(candidate)) {
     const reply = JSON.stringify(candidate);
-    return { reply, agentId: DEFAULT_CHAT_AGENT_ID, tokenUsage: estimateTokenUsage(reply) };
+    return { reply, agentId: fallbackAgentId, tokenUsage: estimateTokenUsage(reply) };
   }
 
-  const agentId = typeof candidate.module === 'string' ? candidate.module : DEFAULT_CHAT_AGENT_ID;
+  const agentId = typeof candidate.module === 'string' ? candidate.module : fallbackAgentId;
   const metadata = isRecord(candidate.metadata) ? candidate.metadata : null;
   const pendingInputAccepted =
     candidate.pendingInputAccepted === true
     || metadata?.pendingInputAccepted === true;
   if (candidate.success === false) {
-    const error = typeof candidate.error === 'string' ? candidate.error : 'finger-general request failed';
+    const error = typeof candidate.error === 'string' ? candidate.error : `${agentId} request failed`;
     throw new Error(error);
   }
 

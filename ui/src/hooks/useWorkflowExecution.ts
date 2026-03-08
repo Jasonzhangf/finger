@@ -131,6 +131,19 @@ export function useWorkflowExecution(
   const refreshRuntimeStateRef = useRef<(() => void) | null>(null);
   const runtimeSnapshotRef = useRef<string | null>(null);
 
+  const resolveSessionRoleProfile = useCallback((agentId?: string | null): string => {
+    const normalized = typeof agentId === 'string' ? agentId.trim() : '';
+    if (!normalized) return 'orchestrator';
+    const lowered = normalized.toLowerCase();
+    if (lowered === 'orchestrator' || lowered.includes('orchestr')) return 'orchestrator';
+    if (lowered.includes('research')) return 'researcher';
+    if (lowered.includes('coder')) return 'coder';
+    if (lowered.includes('review')) return 'reviewer';
+    if (lowered.includes('execut')) return 'executor';
+    if (lowered.includes('general')) return 'general';
+    return 'orchestrator';
+  }, []);
+
   const setDebugSnapshotsEnabled = useCallback((enabled: boolean) => {
     setDebugSnapshotsEnabledState(enabled);
     if (typeof window !== 'undefined' && window.localStorage) {
@@ -176,7 +189,7 @@ export function useWorkflowExecution(
     const selected = typeof selectedAgentId === 'string' ? selectedAgentId.trim() : '';
     const allowDirect = ENABLE_UI_DIRECT_AGENT_TEST_ROUTE
       && selected.length > 0
-      && selected !== DEFAULT_CHAT_AGENT_ID
+      && selected !== sessionAgentId
       && selected !== CHAT_PANEL_TARGET;
     return {
       target: allowDirect ? selected : CHAT_PANEL_TARGET,
@@ -186,7 +199,7 @@ export function useWorkflowExecution(
       },
       directTest: allowDirect,
     };
-  }, [selectedAgentId]);
+  }, [selectedAgentId, sessionAgentId]);
 
   useEffect(() => {
     executionStateRef.current = executionState;
@@ -516,7 +529,7 @@ export function useWorkflowExecution(
       const workflowPayload = msg.payload as WorkflowUpdatePayload;
 
       if (workflowPayload.taskUpdates && workflowPayload.taskUpdates.length > 0) {
-        setExecutionRounds(buildExecutionRoundsFromTasks(workflowPayload.taskUpdates));
+        setExecutionRounds(buildExecutionRoundsFromTasks(workflowPayload.taskUpdates, sessionAgentId));
       }
       setExecutionState((prev) => {
         if (!prev || prev.workflowId !== workflowPayload.workflowId) return prev;
@@ -853,11 +866,14 @@ export function useWorkflowExecution(
     }
   }, [sessionId]);
 
-  const refreshToolPanelOverview = useCallback(async () => {
+  const refreshToolPanelOverview = useCallback(async (agentId = sessionAgentId) => {
     try {
+      const targetAgentId = typeof agentId === 'string' && agentId.trim().length > 0
+        ? agentId.trim()
+        : DEFAULT_CHAT_AGENT_ID;
       const [toolsRes, policyRes] = await Promise.all([
         fetch('/api/v1/tools'),
-        fetch(`/api/v1/tools/agents/${encodeURIComponent(DEFAULT_CHAT_AGENT_ID)}/policy`),
+        fetch(`/api/v1/tools/agents/${encodeURIComponent(targetAgentId)}/policy`),
       ]);
       if (!toolsRes.ok || !policyRes.ok) return;
       const toolsPayload = (await toolsRes.json()) as { success?: boolean; tools?: Array<Record<string, unknown>> };
@@ -886,7 +902,7 @@ export function useWorkflowExecution(
     } catch {
       // ignore tool panel refresh failures
     }
-  }, []);
+  }, [sessionAgentId]);
 
   const updateToolExposure = useCallback(async (tools: string[]): Promise<boolean> => {
     const normalized = Array.from(
@@ -899,7 +915,10 @@ export function useWorkflowExecution(
     ).sort();
 
     try {
-      const response = await fetch(`/api/v1/tools/agents/${encodeURIComponent(DEFAULT_CHAT_AGENT_ID)}/policy`, {
+      const targetAgentId = typeof sessionAgentId === 'string' && sessionAgentId.trim().length > 0
+        ? sessionAgentId.trim()
+        : DEFAULT_CHAT_AGENT_ID;
+      const response = await fetch(`/api/v1/tools/agents/${encodeURIComponent(targetAgentId)}/policy`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ whitelist: normalized, blacklist: [] }),
@@ -917,7 +936,7 @@ export function useWorkflowExecution(
     } catch {
       return false;
     }
-  }, [refreshToolPanelOverview]);
+  }, [refreshToolPanelOverview, sessionAgentId]);
 
   const refreshOrchestratorRuntimeMode = useCallback(async () => {
     try {
@@ -981,13 +1000,13 @@ export function useWorkflowExecution(
     const hydrateSession = async () => {
       const agentId = await loadSessionMeta();
       await loadSessionMessages(agentId);
+      await refreshToolPanelOverview(agentId);
       sessionHydratedRef.current = true;
       const queued = deferredWsEventsRef.current;
       deferredWsEventsRef.current = [];
       queued.forEach((item) => processWebSocketMessage(item));
     };
     void hydrateSession();
-    void refreshToolPanelOverview();
     void refreshOrchestratorRuntimeMode();
   }, [loadSessionMessages, loadSessionMeta, processWebSocketMessage, refreshOrchestratorRuntimeMode, refreshToolPanelOverview]);
 
@@ -1033,13 +1052,13 @@ export function useWorkflowExecution(
           fsmState: 'idle',
           orchestratorPhase: 'idle',
           orchestrator: {
-            id: DEFAULT_CHAT_AGENT_ID,
+            id: sessionAgentId,
             currentRound: 0,
             maxRounds: 10,
           },
           agents: [{
-            id: DEFAULT_CHAT_AGENT_ID,
-            name: DEFAULT_CHAT_AGENT_ID,
+            id: sessionAgentId,
+            name: sessionAgentId,
             type: 'orchestrator',
             status: 'idle',
             load: 0,
@@ -1117,8 +1136,8 @@ export function useWorkflowExecution(
 
       if (!agentsWithAssignees.some((agent) => agent.type === 'orchestrator')) {
         agentsWithAssignees.push({
-          id: DEFAULT_CHAT_AGENT_ID,
-          name: DEFAULT_CHAT_AGENT_ID,
+          id: sessionAgentId,
+          name: sessionAgentId,
           type: 'orchestrator',
           status: selectedWorkflow.status === 'failed' ? 'error' : selectedWorkflow.status === 'paused' ? 'paused' : 'running',
           load: 0,
@@ -1132,7 +1151,7 @@ export function useWorkflowExecution(
         .filter((log) => inferAgentType(log.agentId) === 'orchestrator')
         .sort((a, b) => new Date(b.startTime).getTime() - new Date(a.startTime).getTime())[0];
 
-      const executionPath = buildRoundExecutionPath(taskList, DEFAULT_CHAT_AGENT_ID);
+      const executionPath = buildRoundExecutionPath(taskList, sessionAgentId);
 
       setExecutionState((prev) => ({
         workflowId: selectedWorkflow.id,
@@ -1140,7 +1159,7 @@ export function useWorkflowExecution(
         fsmState: selectedWorkflow.fsmState ?? prev?.fsmState,
         orchestratorPhase: prev?.orchestratorPhase ?? selectedWorkflow.fsmState,
         orchestrator: {
-          id: DEFAULT_CHAT_AGENT_ID,
+          id: sessionAgentId,
           currentRound: orchestratorLog?.iterations.length || prev?.orchestrator.currentRound || 0,
           maxRounds: Math.max(orchestratorLog?.totalRounds || 10, 1),
           thought: orchestratorLog?.iterations[orchestratorLog.iterations.length - 1]?.thought,
@@ -1154,12 +1173,12 @@ export function useWorkflowExecution(
       }));
 
       // 根据任务状态构建执行轮次并更新状态
-      const rounds = buildExecutionRoundsFromTasks(taskList);
+      const rounds = buildExecutionRoundsFromTasks(taskList, sessionAgentId);
       setExecutionRounds(rounds);
     } catch {
       // keep current UI state if polling fails
     }
-  }, [sessionId, workflow?.id]);
+  }, [sessionAgentId, sessionId, workflow?.id]);
 
   useEffect(() => {
     refreshRuntimeStateRef.current = () => {
@@ -1233,14 +1252,14 @@ export function useWorkflowExecution(
           fsmState: 'plan_loop',
           orchestratorPhase: 'intake',
           orchestrator: {
-            id: DEFAULT_CHAT_AGENT_ID,
+            id: sessionAgentId,
             currentRound: 0,
             maxRounds: 10,
           },
           agents: [
             {
-              id: DEFAULT_CHAT_AGENT_ID,
-              name: DEFAULT_CHAT_AGENT_ID,
+              id: sessionAgentId,
+              name: sessionAgentId,
               type: 'orchestrator',
               status: 'running',
               load: 1,
@@ -1318,17 +1337,27 @@ export function useWorkflowExecution(
       activeAbort.abort();
     }
     try {
-      const res = await fetch(`/api/v1/finger-general/sessions/${encodeURIComponent(sessionId)}/interrupt`, {
+      const targetAgentId = typeof sessionAgentId === 'string' && sessionAgentId.trim().length > 0
+        ? sessionAgentId.trim()
+        : DEFAULT_CHAT_AGENT_ID;
+      const res = await fetch('/api/v1/agents/control', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({}),
+        body: JSON.stringify({
+          action: 'interrupt',
+          targetAgentId,
+          sessionId,
+        }),
       });
       const body = await safeParseJson(res);
       if (!res.ok) {
         const message = extractErrorMessageFromBody(body) ?? `HTTP ${res.status}`;
         throw new Error(message);
       }
-      const interrupted = body?.interrupted === true;
+      const interruptedCount = typeof body?.result?.interruptedCount === 'number'
+        ? body.result.interruptedCount
+        : 0;
+      const interrupted = interruptedCount > 0;
       setAgentRunStatus({
         phase: 'idle',
         text: interrupted ? '已停止当前回合' : '当前没有可停止的回合',
@@ -1344,7 +1373,7 @@ export function useWorkflowExecution(
       });
       return false;
     }
-  }, [sessionId]);
+  }, [sessionAgentId, sessionId]);
 
   const sendUserInput = useCallback(
   async (inputPayload: UserInputPayload) => {
@@ -1399,15 +1428,21 @@ export function useWorkflowExecution(
     const dryrunTarget = inputPayload.dryrunTarget && inputPayload.dryrunTarget.trim().length > 0
       ? inputPayload.dryrunTarget.trim()
       : route.target;
+    const requestTargetAgentId = route.directTest ? route.target : sessionAgentId;
+    const requestRoleProfile = resolveSessionRoleProfile(requestTargetAgentId);
+    const requestAgentDisplay = requestTargetAgentId || requestRoleProfile || DEFAULT_CHAT_AGENT_ID;
+    const thinkingLabel = requestRoleProfile === 'general'
+      ? requestAgentDisplay
+      : `${requestAgentDisplay}${requestRoleProfile ? ` (${requestRoleProfile})` : ''}`;
     setAgentRunStatus({
       phase: 'running',
       text: dryrunEnabled
-        ? `Dryrun 生成中（${dryrunTarget}）...`
+        ? `Dryrun 生成中（${dryrunTarget} · source ${requestAgentDisplay}${requestRoleProfile ? ` · ${requestRoleProfile}` : ''}）...`
         : route.directTest
           ? `测试直连 ${route.target} 执行中...`
           : review
-            ? `finger-general 正在思考（${planModeEnabled ? '计划模式 · ' : ''}Review: ${review.strictness === 'strict' ? '严格' : '主线'}, 上限 ${review.maxTurns}）...`
-            : `finger-general 正在思考${planModeEnabled ? '（计划模式）' : ''}...`,
+            ? `${thinkingLabel} 正在思考（${planModeEnabled ? '计划模式 · ' : ''}Review: ${review.strictness === 'strict' ? '严格' : '主线'}, 上限 ${review.maxTurns}）...`
+            : `${thinkingLabel} 正在思考${planModeEnabled ? '（计划模式）' : ''}...`,
       updatedAt: new Date().toISOString(),
     });
 
@@ -1446,6 +1481,9 @@ export function useWorkflowExecution(
           deliveryMode: 'sync',
           metadata: {
             inputItems,
+            roleProfile: requestRoleProfile,
+            sourceAgentId: requestTargetAgentId,
+            targetAgentId: route.target,
             mode: planModeEnabled ? 'plan' : 'main',
             kernelMode: planModeEnabled ? 'plan' : 'main',
             planModeEnabled,
@@ -1494,8 +1532,9 @@ export function useWorkflowExecution(
           : (isRecord(snapshot.tools) && Array.isArray(snapshot.tools.requested)
             ? snapshot.tools.requested.length
             : 0);
+        const snapshotAgentId = typeof snapshot.agentId === 'string' ? snapshot.agentId : dryrunTarget;
         const roleProfile = typeof snapshot.roleProfile === 'string' ? snapshot.roleProfile : '';
-        const summary = `Dryrun 就绪：${dryrunTarget}${roleProfile ? ` (${roleProfile})` : ''} · tools ${toolCount}`;
+        const summary = `Dryrun 就绪：target ${dryrunTarget}${snapshotAgentId ? ` · agent ${snapshotAgentId}` : ''}${roleProfile ? ` · ${roleProfile}` : ''} · tools ${toolCount}`;
 
         await fetch(`/api/v1/sessions/${encodeURIComponent(sessionId)}/messages/append`, {
           method: 'POST',
@@ -1505,8 +1544,8 @@ export function useWorkflowExecution(
             content: summary,
             metadata: {
               event: {
-                agentId: dryrunTarget,
-                agentName: dryrunTarget,
+                agentId: snapshotAgentId,
+                agentName: snapshotAgentId,
               },
               dryrunSnapshot: snapshot,
             },
@@ -1584,10 +1623,18 @@ export function useWorkflowExecution(
         if (reqDetails) {
           const details = {
             target: route.target,
-            roleProfile: '',
+            agentId: requestTargetAgentId,
+            roleProfile: requestRoleProfile,
             input: requestBody.message,
             tools: requestBody.message.tools ?? [],
-            contextLedger: null,
+            contextLedger: {
+              enabled: true,
+              agentId: requestTargetAgentId,
+              role: requestRoleProfile,
+              canReadAll: requestRoleProfile === 'orchestrator',
+              focusEnabled: true,
+              focusMaxChars: runtimeOverview.ledgerFocusMaxChars,
+            },
           };
            await fetch(`/api/v1/sessions/${encodeURIComponent(sessionId)}/messages/append`, {
              method: 'POST',
@@ -1647,7 +1694,7 @@ export function useWorkflowExecution(
       if (!responseData || responseData.error) {
         throw new Error(responseData?.error || 'Empty response from daemon');
       }
-      const { tokenUsage, pendingInputAccepted } = extractChatReply(responseData.result);
+      const { tokenUsage, pendingInputAccepted } = extractChatReply(responseData.result, sessionAgentId);
       if (pendingInputAccepted) {
         await loadSessionMessages();
         setAgentRunStatus({
@@ -1790,7 +1837,7 @@ export function useWorkflowExecution(
       inFlightSendAbortRef.current = null;
     }
   },
-  [loadSessionMessages, pushDebugSnapshot, resolveMessageRoute, sessionId, toolPanelOverview.exposedTools],
+  [loadSessionMessages, pushDebugSnapshot, resolveMessageRoute, resolveSessionRoleProfile, runtimeOverview.ledgerFocusMaxChars, sessionAgentId, sessionId, toolPanelOverview.exposedTools],
 );
 
   const editRuntimeEvent = useCallback(async (eventId: string, content: string): Promise<boolean> => {

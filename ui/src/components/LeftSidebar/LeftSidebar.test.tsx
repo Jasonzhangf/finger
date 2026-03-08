@@ -84,7 +84,7 @@ describe('LeftSidebar project running state', () => {
           {
             id: 'runtime-executor-1',
             agentId: 'finger-executor',
-            name: 'finger-executor',
+            name: 'Executor',
             type: 'executor',
             status: 'running',
             sessionId: 'session-executor-1',
@@ -93,14 +93,13 @@ describe('LeftSidebar project running state', () => {
           {
             id: 'runtime-reviewer-1',
             agentId: 'finger-reviewer',
-            name: 'finger-reviewer',
+            name: 'Reviewer',
             type: 'reviewer',
             status: 'idle',
             sessionId: 'session-reviewer-1',
             totalDeployments: 1,
           },
         ]}
-        selectedAgentConfigId="finger-reviewer"
         focusedRuntimeInstanceId="runtime-executor-1"
         activeRuntimeSessionId="session-executor-1"
         onSwitchRuntimeInstance={vi.fn()}
@@ -115,6 +114,73 @@ describe('LeftSidebar project running state', () => {
     fireEvent.click(screen.getByText('Project'));
     expect(screen.getByText('Agent Sessions (1)')).toBeTruthy();
     expect(screen.getByText('finger-executor')).toBeTruthy();
-    expect(screen.queryByText('finger-reviewer')).toBeNull();
+    expect(screen.queryByText('Reviewer')).toBeNull();
+  });
+
+  it('runtime session list uses config display name and exposes agentId/sessionId separately', () => {
+    render(
+      <LeftSidebar
+        sessions={baseSessions}
+        currentSession={baseSessions[0]}
+        isLoadingSessions={false}
+        runtimeInstances={[
+          {
+            id: 'runtime-orch-1',
+            agentId: 'finger-orchestrator',
+            name: 'runtime-orch-1',
+            type: 'orchestrator',
+            status: 'running',
+            sessionId: 'runtime-session-1',
+            totalDeployments: 1,
+          },
+        ]}
+        runtimeAgents={[
+          {
+            id: 'finger-orchestrator',
+            name: 'finger-orchestrator',
+            type: 'orchestrator',
+            status: 'running',
+            source: 'deployment',
+            instanceCount: 1,
+            deployedCount: 1,
+            availableCount: 0,
+            runningCount: 1,
+            queuedCount: 0,
+            enabled: true,
+            runtimeCapabilities: [],
+            defaultQuota: 1,
+            quotaPolicy: { workflowQuota: {} },
+            quota: { effective: 1, source: 'default' },
+            debugAssertions: [],
+          },
+        ]}
+        runtimeConfigs={[
+          {
+            id: 'finger-orchestrator',
+            name: 'Orchestrator',
+            role: 'orchestrator',
+            filePath: '/tmp/finger-orchestrator/agent.json',
+            enabled: true,
+            capabilities: [],
+            defaultQuota: 1,
+            quotaPolicy: { workflowQuota: {} },
+          },
+        ]}
+        focusedRuntimeInstanceId="runtime-orch-1"
+        activeRuntimeSessionId="runtime-session-1"
+        onSwitchRuntimeInstance={vi.fn()}
+        onCreateSession={vi.fn().mockResolvedValue(baseSessions[0])}
+        onDeleteSession={vi.fn().mockResolvedValue(undefined)}
+        onRenameSession={vi.fn().mockResolvedValue(baseSessions[0])}
+        onSwitchSession={vi.fn().mockResolvedValue(undefined)}
+        onRefreshSessions={vi.fn().mockResolvedValue(undefined)}
+      />,
+    );
+
+    fireEvent.click(screen.getByText('Project'));
+    expect(screen.getByText('Orchestrator')).toBeTruthy();
+    expect(screen.getByText('运行中 · agent finger-orchestrator')).toBeTruthy();
+    expect(screen.getByText('session runtime-session-1')).toBeTruthy();
+    expect(screen.queryByText('finger-orchestrator')).toBeNull();
   });
 });

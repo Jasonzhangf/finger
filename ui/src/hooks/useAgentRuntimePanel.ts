@@ -175,7 +175,9 @@ export interface OrchestrationConfigState {
 }
 
 interface UseAgentRuntimePanelResult {
-  agents: AgentRuntimePanelAgent[];
+  configAgents: AgentRuntimePanelAgent[];
+  runtimeAgents: AgentRuntimePanelAgent[];
+  catalogAgents: AgentRuntimePanelAgent[];
   instances: AgentRuntimeInstance[];
   configs: AgentConfigSummary[];
   startupTargets: AgentStartupTarget[];
@@ -516,40 +518,47 @@ function parseCatalogAgents(raw: unknown): AgentRuntimePanelAgent[] {
   return parsed;
 }
 
-function mergeAgents(
-  runtimeAgents: AgentRuntimePanelAgent[],
-  catalogAgents: AgentRuntimePanelAgent[],
-): AgentRuntimePanelAgent[] {
-  const map = new Map<string, AgentRuntimePanelAgent>();
-  for (const item of catalogAgents) {
-    map.set(item.id, { ...item });
-  }
-  for (const item of runtimeAgents) {
-    const existing = map.get(item.id);
-    if (!existing) {
-      map.set(item.id, { ...item });
-      continue;
-    }
-    map.set(item.id, {
-      ...existing,
-      ...item,
-      capabilities: existing.capabilities ?? item.capabilities,
-    });
-  }
-  return Array.from(map.values()).sort((a, b) => a.name.localeCompare(b.name));
-}
-
 function synthesizeAgentsFromConfigs(
   agents: AgentRuntimePanelAgent[],
   configs: AgentConfigSummary[],
 ): AgentRuntimePanelAgent[] {
   const byId = new Map<string, AgentRuntimePanelAgent>();
+  const configById = new Map<string, AgentConfigSummary>();
+  for (const config of configs) {
+    configById.set(config.id, config);
+  }
+
   for (const agent of agents) {
-    byId.set(agent.id, agent);
+    const config = configById.get(agent.id);
+    byId.set(agent.id, {
+      ...agent,
+      ...(typeof config?.enabled === 'boolean' ? { enabled: config.enabled } : {}),
+      ...(config?.filePath ? { source: 'agent-json' as const } : {}),
+    });
   }
 
   for (const config of configs) {
-    if (byId.has(config.id)) continue;
+    const existing = byId.get(config.id);
+    if (existing) {
+      byId.set(config.id, {
+        ...existing,
+        name: config.name || existing.name,
+        type: parseAgentType(config.role ?? existing.type),
+        source: 'agent-json',
+        enabled: config.enabled !== false,
+        runtimeCapabilities: config.capabilities ?? existing.runtimeCapabilities,
+        defaultQuota: typeof config.defaultQuota === 'number' ? config.defaultQuota : existing.defaultQuota,
+        quotaPolicy: config.quotaPolicy ?? existing.quotaPolicy,
+        quota: typeof config.defaultQuota === 'number'
+          ? {
+              effective: config.defaultQuota,
+              source: 'default',
+            }
+          : existing.quota,
+      });
+      continue;
+    }
+
     byId.set(config.id, {
       id: config.id,
       name: config.name,
@@ -834,7 +843,9 @@ function parseOrchestrationConfig(raw: unknown): OrchestrationConfigState | null
 }
 
 export function useAgentRuntimePanel(): UseAgentRuntimePanelResult {
-  const [agents, setAgents] = useState<AgentRuntimePanelAgent[]>([]);
+  const [configAgents, setConfigAgents] = useState<AgentRuntimePanelAgent[]>([]);
+  const [runtimeAgents, setRuntimeAgents] = useState<AgentRuntimePanelAgent[]>([]);
+  const [catalogAgents, setCatalogAgents] = useState<AgentRuntimePanelAgent[]>([]);
   const [instances, setInstances] = useState<AgentRuntimeInstance[]>([]);
   const [configs, setConfigs] = useState<AgentConfigSummary[]>([]);
   const [startupTargets, setStartupTargets] = useState<AgentStartupTarget[]>([]);
@@ -874,11 +885,11 @@ export function useAgentRuntimePanel(): UseAgentRuntimePanelResult {
       const catalogAgents = parseCatalogAgents(catalogData);
       const parsedDebug = parseDebugAssertions(debugData);
       const parsedDebugMode = parseDebugMode(debugModeData);
-      const mergedAgents = mergeAgents(runtimeAgents, catalogAgents);
       const parsedConfigs = parseAgentConfigs(runtimeData);
       const parsedOrchestration = parseOrchestrationConfig(orchestrationData);
-      const panelAgents = synthesizeAgentsFromConfigs(mergedAgents, parsedConfigs);
-      setAgents(bindDebugAssertions(panelAgents, parsedDebug.assertions));
+      setRuntimeAgents(bindDebugAssertions(runtimeAgents, parsedDebug.assertions));
+      setCatalogAgents(bindDebugAssertions(catalogAgents, parsedDebug.assertions));
+      setConfigAgents(bindDebugAssertions(synthesizeAgentsFromConfigs(runtimeAgents, parsedConfigs), parsedDebug.assertions));
       setInstances(parseRuntimeInstances(isRecord(runtimeData) ? runtimeData.instances : undefined));
       setConfigs(parsedConfigs);
       setStartupTargets(parseStartupTargets(isRecord(runtimeData) ? runtimeData.startupTargets : undefined));
@@ -1086,7 +1097,9 @@ export function useAgentRuntimePanel(): UseAgentRuntimePanelResult {
   }, [refresh]);
 
   return {
-    agents,
+    configAgents,
+    runtimeAgents,
+    catalogAgents,
     instances,
     configs,
     startupTargets,

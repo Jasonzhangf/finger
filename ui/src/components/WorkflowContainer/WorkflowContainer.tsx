@@ -15,8 +15,9 @@ import { useAgents } from '../../hooks/useAgents.js';
 import { useAgentRuntimePanel } from '../../hooks/useAgentRuntimePanel.js';
 import { TaskFlowCanvas } from '../TaskFlowCanvas/TaskFlowCanvas.js';
 import type { Loop, LoopNode } from '../TaskFlowCanvas/types.js';
-import { findConfigForAgent, matchInstanceToAgent } from '../BottomPanel/agentRuntimeUtils.js';
+import { findConfigForAgent, matchInstanceToAgent, resolveInstanceDisplayName } from '../BottomPanel/agentRuntimeUtils.js';
 import type { AgentConfig, AgentRuntime } from '../../api/types.js';
+import type { AgentRuntimeInstance, AgentRuntimePanelAgent } from '../../hooks/useAgentRuntimePanel.js';
 
 interface ResumeCheckResult {
   sessionId: string;
@@ -159,6 +160,34 @@ function mapAgentTypeToLoopNodeType(type: string): LoopNode['type'] {
 function isRuntimeBusyStatus(status: string): boolean {
   const normalized = status.trim().toLowerCase();
   return normalized === 'running' || normalized === 'queued' || normalized === 'waiting_input' || normalized === 'paused';
+}
+
+function resolveAgentDisplayName(
+  agentId: string | null | undefined,
+  configAgents: AgentRuntimePanelAgent[],
+  runtimeAgents: AgentRuntimePanelAgent[],
+): string | null {
+  const normalized = typeof agentId === 'string' ? agentId.trim().toLowerCase() : '';
+  if (!normalized) return null;
+  const combined = [...configAgents, ...runtimeAgents];
+  const match = combined.find((agent) => agent.id.trim().toLowerCase() === normalized);
+  return match?.name ?? agentId ?? null;
+}
+
+function resolveRuntimeInstanceDisplay(
+  instance: AgentRuntimeInstance | null,
+  configAgents: AgentRuntimePanelAgent[],
+  runtimeAgents: AgentRuntimePanelAgent[],
+): { agentId: string | null; agentName: string | null } {
+  if (!instance) return { agentId: null, agentName: null };
+  const agentId = instance.agentId?.trim() || null;
+  const displayName = resolveAgentDisplayName(agentId, configAgents, runtimeAgents)
+    ?? instance.name?.trim()
+    ?? agentId;
+  return {
+    agentId,
+    agentName: displayName,
+  };
 }
 
 export const WorkflowContainer: React.FC = () => {
@@ -352,7 +381,9 @@ export const WorkflowContainer: React.FC = () => {
   }, [sessionBinding.context, setSelectedAgentId]);
 
   const {
-    agents: agentPanelAgents,
+    configAgents: configPanelAgents,
+    runtimeAgents: runtimePanelAgents,
+    catalogAgents: catalogPanelAgents,
     instances: runtimeInstances,
     configs: agentConfigItems,
     startupTargets,
@@ -415,7 +446,7 @@ export const WorkflowContainer: React.FC = () => {
   const chatAgents = React.useMemo(() => {
     const merged = new Map<string, AgentRuntime>();
 
-    for (const agent of agentPanelAgents) {
+    for (const agent of runtimePanelAgents) {
       merged.set(agent.id, {
         id: agent.id,
         name: agent.name,
@@ -448,7 +479,7 @@ export const WorkflowContainer: React.FC = () => {
     }
 
     return Array.from(merged.values()).sort((a, b) => a.name.localeCompare(b.name));
-  }, [executionState?.agents, agentPanelAgents]);
+  }, [executionState?.agents, runtimePanelAgents]);
 
   const frozenRightPayload = useFrozenValue({
     executionState,
@@ -467,8 +498,8 @@ export const WorkflowContainer: React.FC = () => {
   const frozenChatAgents = useFrozenValue(chatAgents, panelFreeze.right);
 
   const selectedDrawerAgent = useMemo(
-    () => agentPanelAgents.find((agent) => agent.id === effectiveDrawerAgentId) ?? null,
-    [effectiveDrawerAgentId, agentPanelAgents],
+    () => configPanelAgents.find((agent) => agent.id === effectiveDrawerAgentId) ?? null,
+    [configPanelAgents, effectiveDrawerAgentId],
   );
 
   const selectedDrawerConfig = useMemo(() => {
@@ -478,8 +509,8 @@ export const WorkflowContainer: React.FC = () => {
   }, [agentConfigItems, effectiveDrawerAgentId, selectedDrawerAgent]);
 
   const selectedDrawerCapabilities = useMemo(
-    () => agentPanelAgents.find((item) => item.id === effectiveDrawerAgentId)?.capabilities ?? null,
-    [agentPanelAgents, effectiveDrawerAgentId],
+    () => catalogPanelAgents.find((item) => item.id === effectiveDrawerAgentId)?.capabilities ?? null,
+    [catalogPanelAgents, effectiveDrawerAgentId],
   );
 
   const handleSelectAgentConfig = useCallback((agentId: string) => {
@@ -596,32 +627,17 @@ export const WorkflowContainer: React.FC = () => {
   }, [refreshAgentPanel]);
 
   const handleToggleAgentEnabled = useCallback(async (payload: { agentId: string; enabled: boolean }): Promise<void> => {
-    const targetConfig = agentConfigItems.find((item) => item.id === payload.agentId);
-    const response = await fetch(`/api/v1/agents/configs/${encodeURIComponent(payload.agentId)}`);
-    if (!response.ok) {
-      const message = await response.text().catch(() => `HTTP ${response.status}`);
-      throw new Error(message || `HTTP ${response.status}`);
-    }
-    const snapshot = await response.json() as { config?: Record<string, unknown> };
-    const currentConfig = (snapshot.config && typeof snapshot.config === 'object') ? snapshot.config : { id: payload.agentId };
-    const nextConfig = {
-      ...currentConfig,
-      id: payload.agentId,
-      ...(targetConfig?.name ? { name: currentConfig.name ?? targetConfig.name } : {}),
-      ...(targetConfig?.role ? { role: currentConfig.role ?? targetConfig.role } : {}),
-      enabled: payload.enabled,
-    };
-    const saveResponse = await fetch(`/api/v1/agents/configs/${encodeURIComponent(payload.agentId)}`, {
-      method: 'PUT',
+    const saveResponse = await fetch(`/api/v1/agents/configs/${encodeURIComponent(payload.agentId)}/enabled`, {
+      method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ config: nextConfig }),
+      body: JSON.stringify({ enabled: payload.enabled }),
     });
     if (!saveResponse.ok) {
       const message = await saveResponse.text().catch(() => `HTTP ${saveResponse.status}`);
       throw new Error(message || `HTTP ${saveResponse.status}`);
     }
     await refreshAgentPanel();
-  }, [agentConfigItems, refreshAgentPanel]);
+  }, [refreshAgentPanel]);
 
   const handleAgentControl = useCallback(async (payload: {
     action: 'status' | 'pause' | 'resume' | 'interrupt' | 'cancel';
@@ -678,7 +694,7 @@ export const WorkflowContainer: React.FC = () => {
               id: `node:${instance.id}:${instance.agentId}`,
               type: mapAgentTypeToLoopNodeType(instance.type),
               status: mapInstanceStatusToLoopNodeStatus(instance.status),
-              title: instance.name,
+              title: resolveInstanceDisplayName(instance, configPanelAgents, agentConfigItems),
               text: instance.workflowId ?? instance.sessionId ?? instance.id,
               agentId: instance.agentId,
               timestamp: instanceStamp,
@@ -701,7 +717,7 @@ export const WorkflowContainer: React.FC = () => {
               id: `node:${instance.id}:queue`,
               type: mapAgentTypeToLoopNodeType(instance.type),
               status: 'waiting',
-              title: instance.name,
+              title: resolveInstanceDisplayName(instance, configPanelAgents, agentConfigItems),
               text: `queue: ${instance.workflowId ?? instance.sessionId ?? instance.id}`,
               agentId: instance.agentId,
               timestamp: instanceStamp,
@@ -717,7 +733,7 @@ export const WorkflowContainer: React.FC = () => {
           id: `node:${instance.id}:running`,
           type: mapAgentTypeToLoopNodeType(instance.type),
           status: mapInstanceStatusToLoopNodeStatus(instance.status),
-          title: instance.name,
+          title: resolveInstanceDisplayName(instance, configPanelAgents, agentConfigItems),
           text: instance.workflowId ?? instance.sessionId ?? instance.id,
           agentId: instance.agentId,
           timestamp: instanceStamp,
@@ -758,7 +774,8 @@ export const WorkflowContainer: React.FC = () => {
   const frozenTaskFlowProps = useFrozenValue(taskFlowProps, panelFreeze.canvas);
 
   const frozenBottomPayload = useFrozenValue({
-    agents: agentPanelAgents,
+    configAgents: configPanelAgents,
+    runtimeAgents: runtimePanelAgents,
     instances: runtimeInstances,
     configs: agentConfigItems,
     startupTargets,
@@ -795,13 +812,20 @@ export const WorkflowContainer: React.FC = () => {
           || instance.sessionId === sessionBinding.sessionId
         )) ?? null)
       : null;
+    const runtimeDisplay = resolveRuntimeInstanceDisplay(runtimeInstance, configPanelAgents, runtimePanelAgents);
     const resolvedSessionAgentId = activeDisplaySession?.ownerAgentId || sessionAgentId || executionState?.orchestrator?.id || DEFAULT_CHAT_AGENT_ID;
-    const runtimeAgentLabel = runtimeInstance?.agentId || activeDisplaySession?.ownerAgentId || runtimeInstance?.name || `runtime:${sessionBinding.sessionId}`;
-    const orchestratorAgentLabel = resolvedSessionAgentId || DEFAULT_CHAT_AGENT_ID;
-    const eventFilterAgentId = sessionBinding.context === 'runtime' ? runtimeAgentLabel : null;
+    const orchestratorAgentName = resolveAgentDisplayName(resolvedSessionAgentId, configPanelAgents, runtimePanelAgents)
+      ?? resolvedSessionAgentId
+      ?? DEFAULT_CHAT_AGENT_ID;
+    const runtimeAgentLabel = runtimeDisplay.agentName || `runtime:${sessionBinding.sessionId}`;
+    const orchestratorAgentLabel = orchestratorAgentName;
+    const interruptTargetLabel = sessionBinding.context === 'runtime'
+      ? runtimeAgentLabel
+      : orchestratorAgentLabel;
+    const eventFilterAgentId = sessionBinding.context === 'runtime' ? (runtimeDisplay.agentId || null) : null;
     const contextLabel = sessionBinding.context === 'runtime'
-      ? `上下文: 子会话 · agent ${runtimeAgentLabel} · session ${sessionBinding.sessionId}`
-      : `上下文: 主会话 · agent ${orchestratorAgentLabel} · session ${orchestratorSessionId}`;
+      ? `上下文: 子会话 · agent ${runtimeAgentLabel}${runtimeDisplay.agentId ? ` (${runtimeDisplay.agentId})` : ''} · session ${sessionBinding.sessionId}`
+      : `上下文: 主会话 · agent ${orchestratorAgentLabel}${resolvedSessionAgentId ? ` (${resolvedSessionAgentId})` : ''} · session ${orchestratorSessionId}`;
     const panelTitle = sessionBinding.context === 'runtime'
       ? runtimeAgentLabel
       : orchestratorAgentLabel;
@@ -838,11 +862,12 @@ export const WorkflowContainer: React.FC = () => {
         orchestratorRuntimeMode={frozenRightPayload.orchestratorRuntimeMode}
         requestDetailsEnabled={requestDetailsEnabled}
         onToggleRequestDetails={setRequestDetailsEnabled}
+        interruptTargetLabel={interruptTargetLabel}
         panelTitle={panelTitle}
         showRuntimeModeBadge={showRuntimeModeBadge}
       />
     );
-  }, [activeDisplaySession?.ownerAgentId, clearDebugSnapshots, deleteRuntimeEvent, editRuntimeEvent, executionState?.orchestrator?.id, frozenActiveSessionId, frozenChatAgents, frozenRightPayload, handleCreateNewSession, handleSelectAgent, interruptCurrentTurn, isConnected, pauseWorkflow, resumeWorkflow, runtimeInstances, sendUserInput, sessionAgentId, sessionBinding.context, sessionBinding.runtimeInstanceId, sessionBinding.sessionId, orchestratorSessionId, setDebugSnapshotsEnabled, updateToolExposure, requestDetailsEnabled, setRequestDetailsEnabled]);
+  }, [activeDisplaySession?.ownerAgentId, clearDebugSnapshots, configPanelAgents, deleteRuntimeEvent, editRuntimeEvent, executionState?.orchestrator?.id, frozenActiveSessionId, frozenChatAgents, frozenRightPayload, handleCreateNewSession, handleSelectAgent, interruptCurrentTurn, isConnected, pauseWorkflow, resumeWorkflow, runtimeInstances, runtimePanelAgents, sendUserInput, sessionAgentId, sessionBinding.context, sessionBinding.runtimeInstanceId, sessionBinding.sessionId, orchestratorSessionId, setDebugSnapshotsEnabled, updateToolExposure, requestDetailsEnabled, setRequestDetailsEnabled]);
 
   const leftSidebarElement = useMemo(() => (
     <LeftSidebar
@@ -850,9 +875,10 @@ export const WorkflowContainer: React.FC = () => {
       currentSession={frozenCurrentSession}
       isLoadingSessions={frozenIsLoadingSessions}
       runtimeInstances={frozenRuntimeInstancesForLeft}
+      runtimeAgents={runtimePanelAgents}
+      runtimeConfigs={agentConfigItems}
       focusedRuntimeInstanceId={frozenFocusedRuntimeInstanceId}
       activeRuntimeSessionId={frozenActiveRuntimeSessionId}
-      selectedAgentConfigId={frozenDrawerAgentIdForLeft}
       onSwitchRuntimeInstance={(instance) => { void handleSelectInstance(instance); }}
       onCreateSession={createSession}
       onDeleteSession={removeSession}
@@ -869,7 +895,8 @@ export const WorkflowContainer: React.FC = () => {
 
   const bottomPanelElement = useMemo(() => (
     <BottomPanel
-      agents={frozenBottomPayload.agents}
+      configAgents={frozenBottomPayload.configAgents}
+      runtimeAgents={frozenBottomPayload.runtimeAgents}
       instances={frozenBottomPayload.instances}
       configs={frozenBottomPayload.configs}
       startupTargets={frozenBottomPayload.startupTargets}

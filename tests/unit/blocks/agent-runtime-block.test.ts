@@ -690,7 +690,7 @@ describe('AgentRuntimeBlock', () => {
     ]);
 
     const runtimeView = await custom.block.execute('runtime_view', {}) as {
-      agents: Array<{ id: string; enabled: boolean }>;
+      agents: Array<{ id: string; enabled: boolean; instanceCount: number }>;
       configs: Array<{ id: string; enabled: boolean }>;
     };
 
@@ -732,7 +732,94 @@ describe('AgentRuntimeBlock', () => {
       configs: Array<{ id: string; enabled: boolean }>;
     };
 
-    expect(runtimeView.agents.find((item) => item.id === 'executor-a')?.enabled).toBe(false);
-    expect(runtimeView.configs.find((item) => item.id === 'executor-a')?.enabled).toBe(false);
+    expect(runtimeView.agents.find((item) => item.id === 'executor-a')?.enabled).toBe(true);
+    expect(runtimeView.agents.find((item) => item.id === 'executor-a')?.instanceCount).toBe(0);
+    expect(runtimeView.configs.find((item) => item.id === 'executor-a')?.enabled).toBe(true);
+  });
+
+  it('reads defaultQuota and quotaPolicy from agent.json runtime view config snapshot', async () => {
+    const custom = await createContextWithLoadedConfigs([
+      {
+        filePath: '/tmp/executor-a.agent.json',
+        config: {
+          id: 'executor-a',
+          name: 'Executor A',
+          role: 'executor',
+          enabled: false,
+          defaultQuota: 3,
+          quotaPolicy: {
+            projectQuota: 2,
+            workflowQuota: {
+              'wf-1': 1,
+            },
+          },
+          implementations: [
+            { id: 'native-main', kind: 'native', moduleId: 'executor-a-loop', enabled: true },
+          ],
+          tools: {
+            whitelist: ['agent.list', 'agent.capabilities', 'agent.deploy', 'agent.dispatch', 'agent.control'],
+          },
+        },
+      },
+    ]);
+
+    const runtimeView = await custom.block.execute('runtime_view', {}) as {
+      configs: Array<{
+        id: string;
+        enabled?: boolean;
+        defaultQuota?: number;
+        quotaPolicy?: { projectQuota?: number; workflowQuota?: Record<string, number> };
+      }>;
+    };
+
+    const config = runtimeView.configs.find((item) => item.id === 'executor-a');
+    expect(config?.enabled).toBe(false);
+    expect(config?.defaultQuota).toBe(3);
+    expect(config?.quotaPolicy?.projectQuota).toBe(2);
+    expect(config?.quotaPolicy?.workflowQuota?.['wf-1']).toBe(1);
+  });
+
+  it('removes deployment from runtime view when agent is disabled', async () => {
+    const custom = await createContextWithLoadedConfigs([
+      {
+        filePath: '/tmp/executor-a.agent.json',
+        config: {
+          id: 'executor-a',
+          name: 'Executor A',
+          role: 'executor',
+          enabled: true,
+          implementations: [
+            { id: 'native-main', kind: 'native', moduleId: 'executor-a-loop', enabled: true },
+          ],
+          tools: {
+            whitelist: ['agent.list', 'agent.capabilities', 'agent.deploy', 'agent.dispatch', 'agent.control'],
+          },
+        },
+      },
+    ]);
+
+    await custom.block.execute('deploy', {
+      targetAgentId: 'executor-a',
+      targetImplementationId: 'native-main',
+      sessionId: 'session-1',
+      instanceCount: 1,
+    });
+
+    await custom.block.execute('deploy', {
+      targetAgentId: 'executor-a',
+      targetImplementationId: 'native-main',
+      sessionId: 'session-1',
+      config: { enabled: false },
+    });
+
+    const runtimeView = await custom.block.execute('runtime_view', {}) as {
+      agents: Array<{ id: string; instanceCount: number; enabled: boolean }>;
+      instances: Array<{ agentId: string }>;
+    };
+
+    const agent = runtimeView.agents.find((item) => item.id === 'executor-a');
+    expect(agent?.enabled).toBe(true);
+    expect(agent?.instanceCount).toBe(0);
+    expect(runtimeView.instances.find((item) => item.agentId === 'executor-a')).toBeUndefined();
   });
 });

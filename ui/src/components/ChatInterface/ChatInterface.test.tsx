@@ -111,6 +111,88 @@ describe('ChatInterface context menu', () => {
   });
 });
 
+describe('ChatInterface request details rendering', () => {
+  it('renders request details agentId, roleProfile and target', () => {
+    const events: RuntimeEvent[] = [
+      buildEvent({
+        role: 'system',
+        content: 'Request Details',
+        metadata: {
+          requestDetails: {
+            agentId: 'finger-orchestrator',
+            roleProfile: 'orchestrator',
+            target: 'finger-orchestrator-gateway',
+            input: { text: 'hello' },
+            tools: ['exec_command'],
+            contextLedger: { enabled: true, agentId: 'finger-orchestrator' },
+          },
+        },
+      }),
+    ];
+
+    render(
+      <ChatInterface
+        executionState={null}
+        agents={[]}
+        events={events}
+        onSendMessage={vi.fn()}
+        onPause={() => undefined}
+        onResume={() => undefined}
+        isPaused={false}
+        isConnected={true}
+      />,
+    );
+
+    fireEvent.click(screen.getByText('查看请求详情'));
+    expect(screen.getByText('Agent ID')).toBeTruthy();
+    expect(screen.getByText('finger-orchestrator')).toBeTruthy();
+    expect(screen.getByText('Role Profile')).toBeTruthy();
+    expect(screen.getByText('orchestrator')).toBeTruthy();
+    expect(screen.getByText('Target')).toBeTruthy();
+    expect(screen.getByText('finger-orchestrator-gateway')).toBeTruthy();
+  });
+
+  it('renders dryrun details with target and agent id separately', () => {
+    const events: RuntimeEvent[] = [
+      buildEvent({
+        role: 'assistant',
+        content: 'Dryrun 就绪：target finger-orchestrator-gateway · agent finger-orchestrator · orchestrator · tools 2',
+        agentId: 'finger-orchestrator',
+        agentName: 'finger-orchestrator',
+        metadata: {
+          dryrunSnapshot: {
+            target: 'finger-orchestrator-gateway',
+            agentId: 'finger-orchestrator',
+            roleProfile: 'orchestrator',
+            tools: {
+              requested: [{ name: 'exec_command' }, { name: 'update_plan' }],
+            },
+          },
+        },
+      }),
+    ];
+
+    render(
+      <ChatInterface
+        executionState={null}
+        agents={[]}
+        events={events}
+        onSendMessage={vi.fn()}
+        onPause={() => undefined}
+        onResume={() => undefined}
+        isPaused={false}
+        isConnected={true}
+      />,
+    );
+
+    fireEvent.click(screen.getByText(/查看 Dryrun 详情/));
+    expect(screen.getByText('Agent ID')).toBeTruthy();
+    expect(screen.getByText('finger-orchestrator')).toBeTruthy();
+    expect(screen.getByText('orchestrator')).toBeTruthy();
+    expect(screen.getByText('exec_command, update_plan')).toBeTruthy();
+  });
+});
+
 describe('ChatInterface input behavior', () => {
   it('sends on Enter and keeps newline on Shift+Enter', async () => {
     const onSendMessage = vi.fn<(payload: unknown) => void>();
@@ -362,6 +444,35 @@ describe('ChatInterface input behavior', () => {
       dryrun: true,
       dryrunTarget: 'finger-orchestrator',
     });
+  });
+
+  it('uses dynamic interrupt titles instead of hardcoded finger-general', () => {
+    render(
+      <ChatInterface
+        executionState={{
+          id: 'wf-1',
+          status: 'executing',
+          paused: false,
+          currentRound: 1,
+          totalRounds: 1,
+          agents: [],
+          tasks: [],
+        } as never}
+        agents={[]}
+        events={[]}
+        onSendMessage={vi.fn()}
+        onPause={() => undefined}
+        onResume={() => undefined}
+        onInterruptTurn={() => true}
+        isPaused={false}
+        isConnected={true}
+        agentRunStatus={{ phase: 'running', text: 'running', updatedAt: '' }}
+        interruptTargetLabel="Executor Debug Loop"
+      />,
+    );
+
+    expect(screen.getByTitle('中断当前 Executor Debug Loop 回合')).toBeTruthy();
+    expect(screen.getByTitle('仅影响工作流状态机，不会中断当前 Executor Debug Loop 回合')).toBeTruthy();
   });
 });
 

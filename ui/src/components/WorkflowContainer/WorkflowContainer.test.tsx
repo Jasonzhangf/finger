@@ -3,6 +3,9 @@ import { render, screen } from '@testing-library/react';
 
 import type { RuntimeEvent } from '../../api/types.js';
 
+const fetchMock = vi.fn();
+vi.stubGlobal('fetch', fetchMock);
+
 // Mock child components
 vi.mock('../TaskFlowCanvas/TaskFlowCanvas.tsx', () => ({
   TaskFlowCanvas: () => <div data-testid="task-flow-canvas">Canvas</div>,
@@ -109,12 +112,23 @@ vi.mock('../../hooks/useAgents.js', () => ({
 
 vi.mock('../../hooks/useAgentRuntimePanel.js', () => ({
   useAgentRuntimePanel: () => ({
-    agents: [],
+    configAgents: [],
+    runtimeAgents: [],
+    catalogAgents: [],
     instances: [],
     configs: [],
+    startupTargets: [],
+    startupTemplates: [],
+    orchestrationConfig: null,
+    debugAssertions: [],
+    debugMode: false,
     isLoading: false,
     error: null,
     refresh: vi.fn(),
+    setDebugMode: vi.fn().mockResolvedValue({ ok: true, enabled: false }),
+    startTemplate: vi.fn().mockResolvedValue({ ok: true }),
+    saveOrchestrationConfig: vi.fn().mockResolvedValue({ ok: true }),
+    switchOrchestrationProfile: vi.fn().mockResolvedValue({ ok: true }),
     controlAgent: vi.fn().mockResolvedValue({ ok: true, action: 'status', status: 'completed' }),
   }),
 }));
@@ -126,6 +140,7 @@ describe('WorkflowContainer', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    fetchMock.mockReset();
     consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
     // Reset mock state
     mockWorkflowExecution = {
@@ -275,4 +290,5 @@ describe('WorkflowContainer', () => {
     );
     expect(hookErrorCalls.length).toBe(0);
   });
+
 });

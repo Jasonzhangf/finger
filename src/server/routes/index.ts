@@ -185,6 +185,7 @@ export function registerAllRoutes(app: Express, deps: RegisterAllRoutesDeps): vo
     getLoadedAgentConfigs: deps.getLoadedAgentConfigs,
     agentJsonSchema: deps.agentJsonSchema,
     reloadAgentJsonConfigs: deps.reloadAgentJsonConfigs,
+    getAgentRuntimeDeps: deps.getAgentRuntimeDeps,
   });
 
   registerModuleRegistryRoutes(app, {

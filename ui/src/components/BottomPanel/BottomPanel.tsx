@@ -7,13 +7,19 @@ import type {
   AgentStartupTarget,
   AgentStartupTemplate,
 } from '../../hooks/useAgentRuntimePanel.js';
-import { findConfigForAgent, isActiveInstanceStatus } from './agentRuntimeUtils.js';
+import {
+  findConfigForAgent,
+  isActiveInstanceStatus,
+  resolveInstanceBinding,
+  resolveInstanceDisplayName,
+} from './agentRuntimeUtils.js';
 import './BottomPanel.css';
 
 type Tab = 'overview' | 'startup' | 'agents' | 'instances';
 
 interface BottomPanelProps {
-  agents: AgentRuntimePanelAgent[];
+  configAgents: AgentRuntimePanelAgent[];
+  runtimeAgents: AgentRuntimePanelAgent[];
   instances: AgentRuntimeInstance[];
   configs: AgentConfigSummary[];
   startupTargets?: AgentStartupTarget[];
@@ -69,17 +75,6 @@ function resolveRuntimeToneClass(status: string): 'idle' | 'running' | 'error' {
   if (isProblemInstanceStatus(status)) return 'error';
   if (isActiveInstanceStatus(status)) return 'running';
   return 'idle';
-}
-
-function normalizeText(value: string): string {
-  return value.trim().toLowerCase();
-}
-
-function formatQuotaSource(source: string): string {
-  if (source === 'workflow') return 'workflow';
-  if (source === 'project') return 'project';
-  if (source === 'deployment') return 'deployment';
-  return 'default';
 }
 
 type ProfileReviewPolicy = {
@@ -148,36 +143,9 @@ function parseProfileReviewPolicy(raw: unknown): ProfileReviewPolicy {
   };
 }
 
-function findBoundAgentForInstance(
-  agents: AgentRuntimePanelAgent[],
-  instance: AgentRuntimeInstance,
-): AgentRuntimePanelAgent | null {
-  const normalizedAgentId = normalizeText(instance.agentId);
-  const normalizedInstanceName = normalizeText(instance.name);
-  const normalizedType = normalizeText(instance.type);
-  const idLookup = new Map(agents.map((agent) => [normalizeText(agent.id), agent]));
-  const nameLookup = new Map(agents.map((agent) => [normalizeText(agent.name), agent]));
-
-  let boundAgent = idLookup.get(normalizedAgentId) ?? null;
-  if (!boundAgent) boundAgent = nameLookup.get(normalizedAgentId) ?? null;
-  if (!boundAgent && normalizedAgentId.length > 0) {
-    boundAgent = agents.find((agent) => {
-      const candidateId = normalizeText(agent.id);
-      if (candidateId.length === 0) return false;
-      return candidateId.includes(normalizedAgentId) || normalizedAgentId.includes(candidateId);
-    }) ?? null;
-  }
-  if (!boundAgent && normalizedInstanceName.length > 0) {
-    boundAgent = agents.find((agent) => normalizeText(agent.name) === normalizedInstanceName) ?? null;
-  }
-  if (!boundAgent) {
-    boundAgent = agents.find((agent) => normalizeText(agent.type) === normalizedType) ?? null;
-  }
-  return boundAgent;
-}
-
 export const BottomPanel: React.FC<BottomPanelProps> = ({
-  agents,
+  configAgents,
+  runtimeAgents,
   instances,
   configs,
   startupTargets = [],
@@ -211,6 +179,9 @@ export const BottomPanel: React.FC<BottomPanelProps> = ({
   const [togglingAgentId, setTogglingAgentId] = useState<string | null>(null);
   const [connectionSegments, setConnectionSegments] = useState<ConnectionSegment[]>([]);
 
+  const staticAgents = useMemo<AgentRuntimePanelAgent[]>(() => [...configAgents].sort((a, b) => a.name.localeCompare(b.name)), [configAgents]);
+  const hasStartupTargets = startupTargets.length > 0;
+
   const handleToggleAgentEnabled = async (agent: AgentRuntimePanelAgent, nextEnabled: boolean): Promise<void> => {
     if (!onToggleAgentEnabled) return;
     setTogglingAgentId(agent.id);
@@ -236,10 +207,10 @@ export const BottomPanel: React.FC<BottomPanelProps> = ({
       const status = instance.status.toLowerCase();
       return status === 'error' || status === 'failed';
     }).length;
-    const totalRunning = agents.reduce((sum, agent) => sum + agent.runningCount, 0);
-    const totalQueued = agents.reduce((sum, agent) => sum + agent.queuedCount, 0);
+    const totalRunning = runtimeAgents.reduce((sum, agent) => sum + agent.runningCount, 0);
+    const totalQueued = runtimeAgents.reduce((sum, agent) => sum + agent.queuedCount, 0);
     return {
-      totalAgents: agents.length,
+      totalAgents: staticAgents.length,
       totalInstances: instances.length,
       activeInstances,
       idleInstances: Math.max(0, instances.length - activeInstances),
@@ -249,7 +220,7 @@ export const BottomPanel: React.FC<BottomPanelProps> = ({
       totalQueued,
       totalConfigs: configs.length,
     };
-  }, [agents, configs.length, instances]);
+  }, [configs.length, instances, runtimeAgents, staticAgents.length]);
 
   const focusedRuntimeId = useMemo(() => {
     if (focusedRuntimeInstanceId && instances.some((item) => item.id === focusedRuntimeInstanceId)) {
@@ -268,15 +239,15 @@ export const BottomPanel: React.FC<BottomPanelProps> = ({
 
   const runtimeConnections = useMemo<RuntimeConnection[]>(() => {
     return instances.map((instance) => {
-      const boundAgent = findBoundAgentForInstance(agents, instance);
+      const binding = resolveInstanceBinding(instance, runtimeAgents, configs);
       return {
-        key: `${boundAgent?.id ?? 'unbound'}=>${instance.id}`,
-        agentId: boundAgent?.id ?? null,
+        key: `${binding.agentId || 'unbound'}=>${instance.id}`,
+        agentId: binding.agent?.id ?? null,
         runtimeId: instance.id,
         tone: resolveRuntimeToneClass(instance.status),
       };
     });
-  }, [agents, instances]);
+  }, [configs, instances, runtimeAgents]);
 
   useLayoutEffect(() => {
     if (activeTab !== 'agents') {
@@ -334,7 +305,7 @@ export const BottomPanel: React.FC<BottomPanelProps> = ({
       window.removeEventListener('resize', updateSegments);
       observer?.disconnect();
     };
-  }, [activeTab, runtimeConnections, agents, instances]);
+  }, [activeTab, runtimeConnections, instances, runtimeAgents]);
 
   useEffect(() => {
     if (!orchestrationConfig) {
@@ -661,17 +632,18 @@ export const BottomPanel: React.FC<BottomPanelProps> = ({
               <div className="empty-state">暂无默认启动模板</div>
             )}
 
-            <div className="startup-targets">
-              <div className="startup-title">Startup Targets</div>
-              <div className="startup-target-list">
-                {startupTargets.length === 0 && <span>当前无可启动目标</span>}
-                {startupTargets.map((target) => (
-                  <span key={target.id} className="startup-target-item">
-                    {target.name} ({target.role})
-                  </span>
-                ))}
+            {hasStartupTargets && (
+              <div className="startup-targets">
+                <div className="startup-title">Startup Targets</div>
+                <div className="startup-target-list">
+                  {startupTargets.map((target) => (
+                    <span key={target.id} className="startup-target-item">
+                      {target.name} ({target.role})
+                    </span>
+                  ))}
+                </div>
               </div>
-            </div>
+            )}
 
             <div className="startup-targets">
               <div className="startup-title">orchestration.json</div>
@@ -826,7 +798,7 @@ export const BottomPanel: React.FC<BottomPanelProps> = ({
 
               <div className="layer-title">Static Agent</div>
               <div className="agents-grid static-agent-grid">
-                {agents.map((agent) => (
+                {staticAgents.map((agent) => (
                   <div
                     key={agent.id}
                     ref={(node) => { agentCardRefs.current[agent.id] = node as HTMLButtonElement | null; }}
@@ -870,12 +842,6 @@ export const BottomPanel: React.FC<BottomPanelProps> = ({
                           <span className="metric-label">Queued</span>
                           <span className="metric-value">{agent.queuedCount}</span>
                         </div>
-                        <div className="metric">
-                          <span className="metric-label">Quota</span>
-                          <span className="metric-value">
-                            {agent.quota.effective} ({formatQuotaSource(agent.quota.source)})
-                          </span>
-                        </div>
                       </div>
                       <div className="agent-config-ref">
                         {(() => {
@@ -904,9 +870,9 @@ export const BottomPanel: React.FC<BottomPanelProps> = ({
                     || instance.type === 'orchestrator';
                   const focused = focusedRuntimeId === instance.id;
                   const toneClass = resolveRuntimeToneClass(instance.status);
-                  const boundAgent = findBoundAgentForInstance(agents, instance);
-                  const boundConfig = boundAgent ? findConfigForAgent(boundAgent, configs) : null;
-                  const sourceLabel = ` · 来源 ${boundAgent?.source ?? instance.source}`;
+                  const binding = resolveInstanceBinding(instance, staticAgents, configs);
+                  const displayName = resolveInstanceDisplayName(instance, staticAgents, configs);
+                  const sourceLabel = ` · 来源 ${binding.agent?.source ?? instance.source}`;
                   return (
                     <button
                       key={instance.id}
@@ -917,7 +883,7 @@ export const BottomPanel: React.FC<BottomPanelProps> = ({
                       onClick={() => onSelectInstance?.(instance)}
                     >
                       <div className="runtime-card-header">
-                        <span className="runtime-card-name">{instance.name}</span>
+                        <span className="runtime-card-name">{displayName}</span>
                         <span className="runtime-card-role">{instance.type}</span>
                       </div>
                       <div className="runtime-card-meta">
@@ -925,8 +891,9 @@ export const BottomPanel: React.FC<BottomPanelProps> = ({
                         {instance.sessionId ? ` · session ${instance.sessionId}` : ' · 无会话'}
                       </div>
                       <div className="runtime-card-meta">
-                        Agent: {boundAgent?.name ?? instance.agentId}
-                        {boundConfig ? ` · 配置 ${boundConfig.id}` : ''}
+                        Agent: {binding.displayName}
+                        {binding.config ? ` · 配置 ${binding.config.id}` : ''}
+                        {binding.agentId ? ` · agentId ${binding.agentId}` : ''}
                         {sourceLabel}
                       </div>
                     </button>
@@ -935,7 +902,7 @@ export const BottomPanel: React.FC<BottomPanelProps> = ({
               </div>
             </div>
             {instances.length === 0 && <div className="empty-state">当前没有 Runtime 实例</div>}
-            {agents.length === 0 && <div className="empty-state">当前没有可用 Agent</div>}
+            {staticAgents.length === 0 && <div className="empty-state">当前没有可用 Agent</div>}
           </div>
         )}
 
@@ -948,6 +915,7 @@ export const BottomPanel: React.FC<BottomPanelProps> = ({
                   const switchable = (typeof instance.sessionId === 'string' && instance.sessionId.length > 0)
                     || instance.type === 'orchestrator';
                   const active = switchable && instance.sessionId === currentSessionId;
+                  const displayName = resolveInstanceDisplayName(instance, staticAgents, configs);
                   return (
                     <button
                       key={instance.id}
@@ -958,7 +926,7 @@ export const BottomPanel: React.FC<BottomPanelProps> = ({
                     >
                       <span className="instance-dot" style={{ background: getStatusColor(instance.status) }} />
                       <span className="instance-main">
-                        <span className="instance-name">{instance.name}</span>
+                        <span className="instance-name">{displayName}</span>
                         <span className="instance-meta">
                           {instance.id} · {formatInstanceStatus(instance.status)}
                           {instance.sessionId ? ` · 会话 ${instance.sessionId}` : ' · 未绑定会话'}

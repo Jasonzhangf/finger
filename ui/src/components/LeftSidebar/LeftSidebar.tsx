@@ -1,6 +1,6 @@
 import { useMemo, useState, useEffect, useCallback, type FC, type MouseEvent as ReactMouseEvent } from 'react';
 import type { SessionInfo } from '../../api/types.js';
-import type { AgentRuntimeInstance } from '../../hooks/useAgentRuntimePanel.js';
+import type { AgentConfigSummary, AgentRuntimeInstance, AgentRuntimePanelAgent } from '../../hooks/useAgentRuntimePanel.js';
 import type { ProviderConfig } from '../../api/types.js';
 import {
   listProviders,
@@ -10,6 +10,11 @@ import {
   deleteProjectSessions,
   pickProjectDirectory,
 } from '../../api/client.js';
+import {
+  mergeAgentSources,
+  resolveInstanceBinding,
+  resolveInstanceDisplayName,
+} from '../BottomPanel/agentRuntimeUtils.js';
 import './LeftSidebar.css';
 
 type SidebarTab = 'project' | 'ai-provider' | 'settings';
@@ -19,7 +24,8 @@ interface LeftSidebarProps {
   currentSession: SessionInfo | null;
   isLoadingSessions: boolean;
   runtimeInstances?: AgentRuntimeInstance[];
-  selectedAgentConfigId?: string | null;
+  runtimeAgents?: AgentRuntimePanelAgent[];
+  runtimeConfigs?: AgentConfigSummary[];
   focusedRuntimeInstanceId?: string | null;
   activeRuntimeSessionId?: string | null;
   onSwitchRuntimeInstance?: (instance: AgentRuntimeInstance) => Promise<void> | void;
@@ -46,6 +52,8 @@ interface ProjectTabProps {
   currentSession: SessionInfo | null;
   isLoading: boolean;
   runtimeInstances?: AgentRuntimeInstance[];
+  runtimeAgents?: AgentRuntimePanelAgent[];
+  runtimeConfigs?: AgentConfigSummary[];
   focusedRuntimeInstanceId?: string | null;
   activeRuntimeSessionId?: string | null;
   onSwitchRuntimeInstance?: (instance: AgentRuntimeInstance) => Promise<void> | void;
@@ -126,6 +134,8 @@ export const LeftSidebar: FC<LeftSidebarProps> = ({
   currentSession,
   isLoadingSessions,
   runtimeInstances = [],
+  runtimeAgents = [],
+  runtimeConfigs = [],
   focusedRuntimeInstanceId = null,
   activeRuntimeSessionId = null,
   onSwitchRuntimeInstance,
@@ -184,6 +194,8 @@ export const LeftSidebar: FC<LeftSidebarProps> = ({
                 currentSession={currentSession}
                 isLoading={isLoadingSessions}
                 runtimeInstances={runtimeInstances}
+                runtimeAgents={runtimeAgents}
+                runtimeConfigs={runtimeConfigs}
                 focusedRuntimeInstanceId={focusedRuntimeInstanceId}
                 activeRuntimeSessionId={activeRuntimeSessionId}
                 onSwitchRuntimeInstance={onSwitchRuntimeInstance}
@@ -216,6 +228,8 @@ const ProjectTab: FC<ProjectTabProps> = ({
   currentSession,
   isLoading,
   runtimeInstances = [],
+  runtimeAgents = [],
+  runtimeConfigs = [],
   focusedRuntimeInstanceId = null,
   activeRuntimeSessionId = null,
   onSwitchRuntimeInstance,
@@ -265,13 +279,22 @@ const ProjectTab: FC<ProjectTabProps> = ({
     return null;
   }, [activeRuntimeSessionId, focusedRuntimeInstanceId, runtimeInstances]);
 
+  const runtimeDisplayAgents = useMemo(
+    () => mergeAgentSources(runtimeConfigsToAgents(runtimeConfigs), runtimeAgents),
+    [runtimeConfigs, runtimeAgents],
+  );
+
   const runtimeSessionItems = useMemo(() => {
     return runtimeInstances
       .filter((instance) => typeof instance.sessionId === 'string' && instance.sessionId.length > 0)
       .filter((instance) => (focusedRuntimeAgentId ? instance.agentId === focusedRuntimeAgentId : true))
       .slice()
-      .sort((a, b) => a.agentId.localeCompare(b.agentId));
-  }, [focusedRuntimeAgentId, runtimeInstances]);
+      .sort((a, b) => {
+        const displayA = resolveInstanceDisplayName(a, runtimeDisplayAgents, runtimeConfigs);
+        const displayB = resolveInstanceDisplayName(b, runtimeDisplayAgents, runtimeConfigs);
+        return displayA.localeCompare(displayB);
+      });
+  }, [focusedRuntimeAgentId, runtimeConfigs, runtimeDisplayAgents, runtimeInstances]);
 
   const projectGroups = useMemo(() => {
     const groups: Array<{
@@ -670,6 +693,7 @@ const ProjectTab: FC<ProjectTabProps> = ({
             {runtimeSessionItems.map((instance) => {
               const isFocused = focusedRuntimeInstanceId === instance.id;
               const isActive = activeRuntimeSessionId === instance.sessionId;
+              const binding = resolveInstanceBinding(instance, runtimeDisplayAgents, runtimeConfigs);
               return (
                 <button
                   key={instance.id}
@@ -679,8 +703,9 @@ const ProjectTab: FC<ProjectTabProps> = ({
                   onDoubleClick={() => { onSwitchRuntimeInstance?.(instance); }}
                   disabled={!onSwitchRuntimeInstance}
                 >
-                  <span className="runtime-session-name">{instance.agentId}</span>
-                  <span className="runtime-session-meta">{formatRuntimeStatus(instance.status)} · {instance.sessionId}</span>
+                  <span className="runtime-session-name">{binding.displayName}</span>
+                  <span className="runtime-session-meta">{formatRuntimeStatus(instance.status)} · agent {binding.agentId}</span>
+                  <span className="runtime-session-meta">session {instance.sessionId}</span>
                 </button>
               );
             })}
@@ -730,6 +755,32 @@ const ProjectTab: FC<ProjectTabProps> = ({
     </div>
   );
 };
+
+function runtimeConfigsToAgents(configs: AgentConfigSummary[]): AgentRuntimePanelAgent[] {
+  return configs.map((config) => ({
+    id: config.id,
+    name: config.name,
+    type: config.role === 'reviewer' || config.role === 'orchestrator' || config.role === 'searcher'
+      ? config.role
+      : 'executor',
+    status: 'idle',
+    source: 'agent-json',
+    instanceCount: 0,
+    deployedCount: 0,
+    availableCount: 0,
+    runningCount: 0,
+    queuedCount: 0,
+    enabled: config.enabled !== false,
+    runtimeCapabilities: config.capabilities ?? [],
+    defaultQuota: typeof config.defaultQuota === 'number' ? config.defaultQuota : 1,
+    quotaPolicy: config.quotaPolicy ?? { workflowQuota: {} },
+    quota: {
+      effective: typeof config.defaultQuota === 'number' ? config.defaultQuota : 1,
+      source: 'default',
+    },
+    debugAssertions: [],
+  }));
+}
 
 const AIProviderTab: FC = () => {
   const [providers, setProviders] = useState<ProviderConfig[]>([]);

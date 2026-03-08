@@ -34,6 +34,11 @@ export interface AgentJsonConfig {
   name?: string;
   role?: string;
   enabled?: boolean;
+  defaultQuota?: number;
+  quotaPolicy?: {
+    projectQuota?: number;
+    workflowQuota?: Record<string, number>;
+  };
   implementations?: AgentJsonImplementationConfig[];
   provider?: AgentJsonProviderConfig;
   session?: AgentJsonSessionConfig;
@@ -71,6 +76,18 @@ export const AGENT_JSON_SCHEMA: Record<string, unknown> = {
     name: { type: 'string' },
     role: { type: 'string' },
     enabled: { type: 'boolean' },
+    defaultQuota: { type: 'integer', minimum: 0 },
+    quotaPolicy: {
+      type: 'object',
+      properties: {
+        projectQuota: { type: 'integer', minimum: 0 },
+        workflowQuota: {
+          type: 'object',
+          additionalProperties: { type: 'integer', minimum: 0 },
+        },
+      },
+      additionalProperties: false,
+    },
     instanceCount: { type: 'integer', minimum: 0 },
     implementations: {
       type: 'array',
@@ -258,6 +275,28 @@ export function parseAgentJsonConfig(value: unknown, sourcePath: string): AgentJ
   if (typeof value.name === 'string') config.name = value.name;
   if (typeof value.role === 'string') config.role = value.role;
   if (typeof value.enabled === 'boolean') config.enabled = value.enabled;
+  if (typeof value.defaultQuota === 'number' && Number.isFinite(value.defaultQuota)) {
+    config.defaultQuota = Math.max(0, Math.floor(value.defaultQuota));
+  }
+  if (isRecord(value.quotaPolicy)) {
+    const workflowQuota: Record<string, number> = {};
+    const workflowQuotaRaw = isRecord(value.quotaPolicy.workflowQuota)
+      ? value.quotaPolicy.workflowQuota
+      : {};
+    for (const [workflowId, quota] of Object.entries(workflowQuotaRaw)) {
+      if (typeof quota !== 'number' || !Number.isFinite(quota)) continue;
+      const normalizedWorkflowId = workflowId.trim();
+      if (normalizedWorkflowId.length === 0) continue;
+      workflowQuota[normalizedWorkflowId] = Math.max(0, Math.floor(quota));
+    }
+    const projectQuota = typeof value.quotaPolicy.projectQuota === 'number' && Number.isFinite(value.quotaPolicy.projectQuota)
+      ? Math.max(0, Math.floor(value.quotaPolicy.projectQuota))
+      : undefined;
+    config.quotaPolicy = {
+      ...(projectQuota !== undefined ? { projectQuota } : {}),
+      workflowQuota,
+    };
+  }
   if (typeof value.instanceCount === 'number' && Number.isFinite(value.instanceCount)) {
     config.instanceCount = Math.max(0, Math.floor(value.instanceCount));
   }

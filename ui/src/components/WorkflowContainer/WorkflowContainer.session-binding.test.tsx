@@ -1,10 +1,61 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import type { AgentRuntimePanelAgent } from '../../hooks/useAgentRuntimePanel.js';
+
+const fetchMock = vi.fn();
+vi.stubGlobal('fetch', fetchMock);
 
 const useWorkflowExecutionMock = vi.fn();
 
-const runtimePanelState = {
-  agents: [
+const runtimePanelState: {
+  configAgents: AgentRuntimePanelAgent[];
+  runtimeAgents: AgentRuntimePanelAgent[];
+  catalogAgents: never[];
+  instances: Array<{
+    id: string;
+    agentId: string;
+    name: string;
+    type: 'executor';
+    status: 'running' | 'completed' | 'idle';
+    sessionId: string;
+    totalDeployments: number;
+  }>;
+  configs: never[];
+  startupTargets: never[];
+  startupTemplates: never[];
+  orchestrationConfig: null;
+  debugAssertions: never[];
+  debugMode: boolean;
+  isLoading: boolean;
+  error: null;
+  refresh: ReturnType<typeof vi.fn>;
+  setDebugMode: ReturnType<typeof vi.fn>;
+  startTemplate: ReturnType<typeof vi.fn>;
+  saveOrchestrationConfig: ReturnType<typeof vi.fn>;
+  switchOrchestrationProfile: ReturnType<typeof vi.fn>;
+  controlAgent: ReturnType<typeof vi.fn>;
+} = {
+  configAgents: [
+    {
+      id: 'executor-debug-loop',
+      name: 'Executor Debug Loop',
+      type: 'executor' as const,
+      status: 'running' as const,
+      source: 'agent-json' as const,
+      instanceCount: 1,
+      deployedCount: 1,
+      availableCount: 0,
+      runningCount: 1,
+      queuedCount: 0,
+      enabled: true,
+      runtimeCapabilities: [],
+      defaultQuota: 1,
+      quotaPolicy: { workflowQuota: {} },
+      quota: { effective: 1, source: 'default' as const },
+      debugAssertions: [],
+    },
+  ],
+  runtimeAgents: [
     {
       id: 'executor-debug-loop',
       name: 'Executor Debug Loop',
@@ -24,6 +75,7 @@ const runtimePanelState = {
       debugAssertions: [],
     },
   ],
+  catalogAgents: [],
   instances: [
     {
       id: 'inst-1',
@@ -169,6 +221,27 @@ describe('WorkflowContainer session binding', () => {
     useWorkflowExecutionMock.mockClear();
     switchSessionMock.mockClear();
     setSelectedAgentIdMock.mockClear();
+    fetchMock.mockReset();
+    runtimePanelState.configAgents = [
+      {
+        id: 'executor-debug-loop',
+        name: 'Executor Debug Loop',
+        type: 'executor',
+        status: 'running',
+        source: 'agent-json',
+        instanceCount: 1,
+        deployedCount: 1,
+        availableCount: 0,
+        runningCount: 1,
+        queuedCount: 0,
+        enabled: true,
+        runtimeCapabilities: [],
+        defaultQuota: 1,
+        quotaPolicy: { workflowQuota: {} },
+        quota: { effective: 1, source: 'default' },
+        debugAssertions: [],
+      },
+    ];
     runtimePanelState.instances = [
       {
         id: 'inst-1',
@@ -180,11 +253,11 @@ describe('WorkflowContainer session binding', () => {
         totalDeployments: 1,
       },
     ];
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: false, status: 404 }));
+    fetchMock.mockResolvedValue({ ok: false, status: 404 });
   });
 
   afterEach(() => {
-    vi.unstubAllGlobals();
+    fetchMock.mockReset();
   });
 
   it('switches to runtime session and auto-returns to orchestrator when runtime finishes', async () => {
@@ -246,10 +319,60 @@ describe('WorkflowContainer session binding', () => {
     });
 
     await waitFor(() => {
-      expect(screen.getByTestId('chat-panel-title').textContent).toBe('executor-debug-loop');
+      expect(screen.getByTestId('chat-panel-title').textContent).toBe('Executor Debug Loop');
       expect(screen.getByTestId('chat-context-label').textContent).toContain('子会话');
-      expect(screen.getByTestId('chat-context-label').textContent).toContain('agent executor-debug-loop');
+      expect(screen.getByTestId('chat-context-label').textContent).toContain('agent Executor Debug Loop (executor-debug-loop)');
       expect(screen.getByTestId('chat-context-label').textContent).toContain('session runtime-session');
     });
   });
+
+  it('uses orchestrator configured display name for panel title in main session', async () => {
+    runtimePanelState.configAgents = [
+      ...runtimePanelState.configAgents,
+      {
+        id: 'finger-orchestrator',
+        name: 'Orchestrator',
+        type: 'orchestrator',
+        status: 'idle',
+        source: 'agent-json',
+        instanceCount: 0,
+        deployedCount: 0,
+        availableCount: 0,
+        runningCount: 0,
+        queuedCount: 0,
+        enabled: true,
+        runtimeCapabilities: [],
+        defaultQuota: 1,
+        quotaPolicy: { workflowQuota: {} },
+        quota: { effective: 1, source: 'default' },
+        debugAssertions: [],
+      },
+    ];
+
+    fetchMock.mockImplementation(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith('/api/v1/sessions/orch-session')) {
+        return {
+          ok: true,
+          json: async () => ({ ownerAgentId: 'finger-orchestrator' }),
+        };
+      }
+      if (url.includes('/messages')) {
+        return {
+          ok: true,
+          json: async () => ({ success: true, messages: [] }),
+        };
+      }
+      return { ok: false, status: 404, json: async () => ({}) };
+    });
+
+    render(<WorkflowContainer />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('chat-panel-title').textContent).toBe('Orchestrator');
+      expect(screen.getByTestId('chat-context-label').textContent).toContain('主会话');
+      expect(screen.getByTestId('chat-context-label').textContent).toContain('agent Orchestrator (finger-orchestrator)');
+    });
+  });
+
 });

@@ -73,7 +73,7 @@ export function buildRoundExecutionPath(
   }));
 }
 
-export function buildExecutionRoundsFromTasks(tasks: TaskNode[]): ExecutionRound[] {
+export function buildExecutionRoundsFromTasks(tasks: TaskNode[], orchestratorId = DEFAULT_CHAT_AGENT_ID): ExecutionRound[] {
   const roundMap = new Map<string, ExecutionRound>();
 
   for (const task of tasks) {
@@ -89,7 +89,7 @@ export function buildExecutionRoundsFromTasks(tasks: TaskNode[]): ExecutionRound
 
     const round = roundMap.get(roundKey)!;
     const agentInfo: AgentRoundInfo = {
-      agentId: task.assignee || DEFAULT_CHAT_AGENT_ID,
+      agentId: task.assignee || orchestratorId,
       status: task.status === 'completed'
         ? 'completed'
         : task.status === 'failed'
@@ -105,8 +105,8 @@ export function buildExecutionRoundsFromTasks(tasks: TaskNode[]): ExecutionRound
     }
 
     const edgeInfo: RoundEdgeInfo = {
-      from: DEFAULT_CHAT_AGENT_ID,
-      to: task.assignee || DEFAULT_CHAT_AGENT_ID,
+      from: orchestratorId,
+      to: task.assignee || orchestratorId,
       status: task.status === 'completed'
         ? 'completed'
         : task.status === 'failed'

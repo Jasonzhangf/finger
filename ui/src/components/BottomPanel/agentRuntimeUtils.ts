@@ -1,4 +1,8 @@
-import type { AgentConfigSummary, AgentRuntimeInstance } from '../../hooks/useAgentRuntimePanel.js';
+import type {
+  AgentConfigSummary,
+  AgentRuntimeInstance,
+  AgentRuntimePanelAgent,
+} from '../../hooks/useAgentRuntimePanel.js';
 
 interface AgentLike {
   id: string;
@@ -6,40 +10,96 @@ interface AgentLike {
   type: string;
 }
 
+export interface AgentBinding {
+  agentId: string;
+  agent: AgentLike | null;
+  config: AgentConfigSummary | null;
+  displayName: string;
+}
+
 function normalize(value: string): string {
   return value.trim().toLowerCase();
 }
 
 export function matchInstanceToAgent(agent: AgentLike, instance: AgentRuntimeInstance): boolean {
-  const agentId = normalize(agent.id);
-  const agentName = normalize(agent.name);
-  const instanceId = normalize(instance.id);
-  const instanceName = normalize(instance.name);
-  const instanceType = normalize(instance.type);
-  const agentType = normalize(agent.type);
+  // 唯一真源：精确匹配agentId
+  return normalize(agent.id) === normalize(instance.agentId);
+}
 
-  if (instanceId === agentId || instanceName === agentName) return true;
-  if (agentId.length > 0 && (instanceId.includes(agentId) || instanceName.includes(agentId))) return true;
-  if (agentName.length > 0 && (instanceId.includes(agentName) || instanceName.includes(agentName))) return true;
-  if (agentType.length > 0 && instanceType === agentType) return true;
-  if (agentType === 'reviewer' && instanceType.includes('review')) return true;
-  if (agentType === 'orchestrator' && instanceType.includes('orchestr')) return true;
-  return false;
+export function findAgentById<T extends AgentLike>(agents: T[], agentId: string): T | null {
+  const normalizedAgentId = normalize(agentId);
+  return agents.find((item) => normalize(item.id) === normalizedAgentId) ?? null;
 }
 
 export function findConfigForAgent(agent: AgentLike, configs: AgentConfigSummary[]): AgentConfigSummary | null {
+  // 唯一真源：精确匹配agentId
   const agentId = normalize(agent.id);
-  const agentName = normalize(agent.name);
-  const exactById = configs.find((item) => normalize(item.id) === agentId);
-  if (exactById) return exactById;
-  const exactByName = configs.find((item) => normalize(item.name) === agentName);
-  if (exactByName) return exactByName;
-  const fuzzy = configs.find((item) => {
-    const id = normalize(item.id);
-    const name = normalize(item.name);
-    return id.includes(agentId) || name.includes(agentName) || agentId.includes(id) || agentName.includes(name);
-  });
-  return fuzzy ?? null;
+  return configs.find((item) => normalize(item.id) === agentId) ?? null;
+}
+
+export function findConfigByAgentId(agentId: string, configs: AgentConfigSummary[]): AgentConfigSummary | null {
+  const normalizedAgentId = normalize(agentId);
+  return configs.find((item) => normalize(item.id) === normalizedAgentId) ?? null;
+}
+
+export function resolveAgentDisplayName(agent: AgentLike, configs: AgentConfigSummary[]): string {
+  const config = findConfigForAgent(agent, configs);
+  if (config?.name && config.name.trim().length > 0) return config.name.trim();
+  if (agent.name && agent.name.trim().length > 0) return agent.name.trim();
+  return agent.id;
+}
+
+export function resolveInstanceDisplayName(
+  instance: AgentRuntimeInstance,
+  agents: AgentLike[],
+  configs: AgentConfigSummary[],
+): string {
+  const boundAgent = findAgentById(agents, instance.agentId);
+  if (boundAgent) return resolveAgentDisplayName(boundAgent, configs);
+  const config = findConfigByAgentId(instance.agentId, configs);
+  if (config?.name && config.name.trim().length > 0) return config.name.trim();
+  if (instance.name && instance.name.trim().length > 0) return instance.name.trim();
+  return instance.agentId;
+}
+
+export function resolveAgentBinding(
+  agentId: string,
+  agents: AgentLike[],
+  configs: AgentConfigSummary[],
+): AgentBinding {
+  const agent = findAgentById(agents, agentId);
+  const config = agent ? findConfigForAgent(agent, configs) : findConfigByAgentId(agentId, configs);
+  const displayName = config?.name?.trim()
+    || agent?.name?.trim()
+    || agentId;
+  return {
+    agentId,
+    agent,
+    config,
+    displayName,
+  };
+}
+
+export function resolveInstanceBinding(
+  instance: AgentRuntimeInstance,
+  agents: AgentLike[],
+  configs: AgentConfigSummary[],
+): AgentBinding {
+  return resolveAgentBinding(instance.agentId, agents, configs);
+}
+
+export function mergeAgentSources(
+  configAgents: AgentRuntimePanelAgent[],
+  runtimeAgents: AgentRuntimePanelAgent[],
+): AgentRuntimePanelAgent[] {
+  const merged = new Map<string, AgentRuntimePanelAgent>();
+  for (const agent of runtimeAgents) {
+    merged.set(normalize(agent.id), agent);
+  }
+  for (const agent of configAgents) {
+    merged.set(normalize(agent.id), agent);
+  }
+  return Array.from(merged.values());
 }
 
 export function isActiveInstanceStatus(status: string): boolean {

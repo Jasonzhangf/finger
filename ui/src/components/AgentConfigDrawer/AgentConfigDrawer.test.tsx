@@ -491,12 +491,14 @@ describe('AgentConfigDrawer', () => {
 
     expect(await screen.findByText('运行配置')).toBeTruthy();
     expect(screen.getByText('保存到 agent.json，下一次任务开始生效；不会立即部署实例。')).toBeTruthy();
+    expect(screen.getByText('保存并应用')).toBeTruthy();
 
     await act(async () => {
-      fireEvent.click(screen.getByText('应用并保存'));
+      fireEvent.click(screen.getByText('保存并应用'));
     });
 
     expect(onSaveAgentConfig).toHaveBeenCalledTimes(1);
     expect(screen.queryByText('应用并部署')).toBeNull();
+    expect(screen.getByText('保存并应用')).toBeTruthy();
   });
 });

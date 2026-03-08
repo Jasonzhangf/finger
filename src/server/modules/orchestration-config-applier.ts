@@ -70,6 +70,8 @@ export function createOrchestrationConfigApplier(deps: OrchestrationConfigApplie
           name: entry.targetAgentId,
           role: entry.role,
           enabled: true,
+          ...(typeof entry.defaultQuota === 'number' ? { defaultQuota: entry.defaultQuota } : {}),
+          ...(entry.quotaPolicy ? { quotaPolicy: entry.quotaPolicy } : {}),
         },
       });
       appliedAgents.push(entry.targetAgentId);

@@ -7,16 +7,24 @@ import { parseAgentJsonConfig } from '../../runtime/agent-json-config.js';
 import { resolveCodingCliBasePrompt } from '../../agents/chat-codex/coding-cli-system-prompt.js';
 import { resolveDeveloperPromptTemplateWithSource, type ChatCodexDeveloperRole } from '../../agents/chat-codex/developer-prompt-templates.js';
 import { resolveBaseAgentRole } from '../../agents/chat-codex/agent-role-config.js';
+import type { AgentRuntimeDeps } from '../modules/agent-runtime/types.js';
 
 export interface AgentConfigRouteDeps {
   getLoadedAgentConfigDir: () => string;
   getLoadedAgentConfigs: () => LoadedAgentConfig[];
   agentJsonSchema: Record<string, unknown>;
   reloadAgentJsonConfigs: (requestedDir?: string) => void;
+  getAgentRuntimeDeps: () => AgentRuntimeDeps;
 }
 
 export function registerAgentConfigRoutes(app: Express, deps: AgentConfigRouteDeps): void {
-  const { getLoadedAgentConfigDir, getLoadedAgentConfigs, agentJsonSchema, reloadAgentJsonConfigs } = deps;
+  const {
+    getLoadedAgentConfigDir,
+    getLoadedAgentConfigs,
+    agentJsonSchema,
+    reloadAgentJsonConfigs,
+    getAgentRuntimeDeps,
+  } = deps;
 
   const resolveAgentConfig = (agentId: string): LoadedAgentConfig | null => {
     const normalized = agentId.trim();
@@ -297,7 +305,68 @@ export function registerAgentConfigRoutes(app: Express, deps: AgentConfigRouteDe
       }
       writeFileSync(targetPath, `${JSON.stringify(nextConfig, null, 2)}\n`, 'utf-8');
       reloadAgentJsonConfigs();
+
+      const enabled = typeof (nextConfig as { enabled?: unknown }).enabled === 'boolean'
+        ? (nextConfig as { enabled: boolean }).enabled
+        : true;
+      if (!enabled) {
+        void getAgentRuntimeDeps().agentRuntimeBlock.execute('deploy', {
+          targetAgentId: agentId,
+          config: { enabled: false },
+        });
+      }
+
       res.json({ success: true, filePath: targetPath });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      res.status(400).json({ error: message });
+    }
+  });
+
+  app.patch('/api/v1/agents/configs/:agentId/enabled', (req, res) => {
+    const agentId = typeof req.params.agentId === 'string' ? req.params.agentId.trim() : '';
+    if (!agentId) {
+      res.status(400).json({ error: 'agentId is required' });
+      return;
+    }
+
+    const enabled = req.body?.enabled;
+    if (typeof enabled !== 'boolean') {
+      res.status(400).json({ error: 'enabled(boolean) is required' });
+      return;
+    }
+
+    const found = resolveAgentConfig(agentId);
+    const targetPath = found?.filePath || resolveNewAgentConfigPath(agentId);
+    if (!targetPath || !ensureWithinDir(targetPath)) {
+      res.status(400).json({ error: 'agent config path is invalid' });
+      return;
+    }
+
+    try {
+      const currentConfig: AgentJsonConfig = found?.config ?? { id: agentId };
+      const nextConfig: AgentJsonConfig = {
+        ...currentConfig,
+        id: agentId,
+        enabled,
+      };
+      parseAgentJsonConfig(nextConfig, targetPath);
+      writeFileSync(targetPath, `${JSON.stringify(nextConfig, null, 2)}\n`, 'utf-8');
+      reloadAgentJsonConfigs();
+
+      if (!enabled) {
+        void getAgentRuntimeDeps().agentRuntimeBlock.execute('deploy', {
+          targetAgentId: agentId,
+          config: { enabled: false },
+        });
+      }
+
+      res.json({
+        success: true,
+        agentId,
+        enabled,
+        filePath: targetPath,
+      });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       res.status(400).json({ error: message });

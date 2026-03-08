@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react';
 import type { AgentConfig } from '../../api/types.js';
 import type { AgentConfigSummary, AgentDebugAssertion, AgentRuntimeInstance, AgentRuntimePanelAgent } from '../../hooks/useAgentRuntimePanel.js';
-import { isActiveInstanceStatus } from '../BottomPanel/agentRuntimeUtils.js';
+import { isActiveInstanceStatus, resolveInstanceDisplayName } from '../BottomPanel/agentRuntimeUtils.js';
 import { PromptEditorModal, type PromptEditorMeta } from './PromptEditorModal.js';
 import './AgentConfigDrawer.css';
 
@@ -485,6 +485,16 @@ export const AgentConfigDrawer = ({
     () => instances.find((instance) => instance.sessionId === currentSessionId) ?? instances[0] ?? null,
     [currentSessionId, instances],
   );
+  const displayInstances = useMemo(
+    () => {
+      if (!agent) return [];
+      return instances.map((instance) => ({
+        ...instance,
+        displayName: resolveInstanceDisplayName(instance, [agent], config ? [config] : []),
+      }));
+    },
+    [agent, config, instances],
+  );
   const deployedCount = useMemo(() => instances.filter((instance) => isActiveInstanceStatus(instance.status)).length, [instances]);
   const activePromptMeta = useMemo<PromptEditorMeta | null>(() => {
     if (!agent) return null;
@@ -883,7 +893,7 @@ export const AgentConfigDrawer = ({
             onClick={() => { void handleSaveRuntimeConfig(); }}
             disabled={!onSaveAgentConfig || isSavingRuntimeConfig}
           >
-            {isSavingRuntimeConfig ? '保存中...' : '应用并保存'}
+            {isSavingRuntimeConfig ? '保存中...' : '保存并应用'}
           </button>
           {hint && <div className="agent-hint-line">{hint}</div>}
         </section>
@@ -965,8 +975,8 @@ export const AgentConfigDrawer = ({
 
         <section className="agent-drawer-section">
           <div className="agent-form-title">实例列表</div>
-          {instances.length === 0 && <div className="tool-line">暂无实例</div>}
-          {instances.map((instance) => {
+          {displayInstances.length === 0 && <div className="tool-line">暂无实例</div>}
+          {displayInstances.map((instance) => {
             const switchable = typeof instance.sessionId === 'string' && instance.sessionId.length > 0;
             const active = switchable && instance.sessionId === currentSessionId;
             return (
@@ -977,7 +987,7 @@ export const AgentConfigDrawer = ({
                 disabled={!switchable}
                 onClick={() => onSwitchInstance?.(instance)}
               >
-                <span className="instance-name">{instance.name}</span>
+                <span className="instance-name">{instance.displayName}</span>
                 <span className="instance-meta">
                   {instance.id} · {instance.status}
                   {instance.sessionId ? ` · ${instance.sessionId}` : ''}

@@ -74,6 +74,28 @@ interface OrchestratorRuntimeModeState {
   runnerModuleId?: string;
 }
 
+interface RequestDetailsSnapshot {
+  target?: string;
+  agentId?: string;
+  roleProfile?: string;
+  input?: unknown;
+  tools?: unknown;
+  contextLedger?: unknown;
+}
+
+interface DryrunSnapshotSummary {
+  target?: string;
+  agentId?: string;
+  roleProfile?: string;
+  tools?: unknown;
+  developerInstructions?: string;
+  injectedPrompt?: string;
+  contextLedger?: unknown;
+  turnContext?: unknown;
+  environmentContext?: string;
+  userInstructions?: string;
+}
+
 interface ChatInterfaceProps {
   executionState: WorkflowExecutionState | null;
   agents: Array<{ id: string; name: string; status: string }>;
@@ -110,6 +132,7 @@ interface ChatInterfaceProps {
   orchestratorRuntimeMode?: OrchestratorRuntimeModeState | null;
   onToggleRequestDetails?: (enabled: boolean) => void;
   requestDetailsEnabled?: boolean;
+  interruptTargetLabel?: string;
 }
 
 interface ContextMenuState {
@@ -685,11 +708,14 @@ const MessageItem = React.memo<{
 
   const messageStatus = getMessageStatus();
 
-  const dryrunSnapshot = isRecord(event.metadata) && isRecord(event.metadata.dryrunSnapshot)
-    ? event.metadata.dryrunSnapshot
+  const dryrunSnapshot: DryrunSnapshotSummary | null = isRecord(event.metadata) && isRecord(event.metadata.dryrunSnapshot)
+    ? event.metadata.dryrunSnapshot as DryrunSnapshotSummary
     : null;
   const dryrunTarget = dryrunSnapshot && typeof dryrunSnapshot.target === 'string'
     ? dryrunSnapshot.target
+    : event.agentId;
+  const dryrunAgentId = dryrunSnapshot && typeof dryrunSnapshot.agentId === 'string'
+    ? dryrunSnapshot.agentId
     : event.agentId;
   const dryrunRole = dryrunSnapshot && typeof dryrunSnapshot.roleProfile === 'string'
     ? dryrunSnapshot.roleProfile
@@ -719,8 +745,8 @@ const MessageItem = React.memo<{
    ? dryrunSnapshot.userInstructions
    : null;
 
-  const requestDetailsSnapshot = isRecord(event.metadata) && isRecord(event.metadata.requestDetails)
-    ? event.metadata.requestDetails
+  const requestDetailsSnapshot: RequestDetailsSnapshot | null = isRecord(event.metadata) && isRecord(event.metadata.requestDetails)
+    ? event.metadata.requestDetails as RequestDetailsSnapshot
     : null;
 
   const handleAgentClick = useCallback(() => {
@@ -802,8 +828,21 @@ const MessageItem = React.memo<{
               <summary>
                 查看 Dryrun 详情
                 {dryrunTarget ? ` · ${dryrunTarget}` : ''}
+                {dryrunAgentId && dryrunAgentId !== dryrunTarget ? ` · ${dryrunAgentId}` : ''}
                 {dryrunRole ? ` · ${dryrunRole}` : ''}
               </summary>
+              {dryrunAgentId && (
+                <div className="dryrun-block">
+                  <div className="dryrun-label">Agent ID</div>
+                  <pre className="dryrun-code">{dryrunAgentId}</pre>
+                </div>
+              )}
+              {dryrunRole && (
+                <div className="dryrun-block">
+                  <div className="dryrun-label">Role Profile</div>
+                  <pre className="dryrun-code">{dryrunRole}</pre>
+                </div>
+              )}
               {dryrunToolList.length > 0 && (
                 <div className="dryrun-block">
                   <div className="dryrun-label">Tools</div>
@@ -861,6 +900,12 @@ const MessageItem = React.memo<{
           {requestDetailsSnapshot && (
             <details className="dryrun-details">
               <summary>查看请求详情</summary>
+              {typeof requestDetailsSnapshot.agentId === 'string' && requestDetailsSnapshot.agentId.length > 0 && (
+                <div className="dryrun-block">
+                  <div className="dryrun-label">Agent ID</div>
+                  <pre className="dryrun-code">{String(requestDetailsSnapshot.agentId)}</pre>
+                </div>
+              )}
               {typeof requestDetailsSnapshot.target === 'string' && requestDetailsSnapshot.target.length > 0 && (
                 <div className="dryrun-block">
                   <div className="dryrun-label">Target</div>
@@ -1006,6 +1051,7 @@ const ChatInput: React.FC<{
   dryrunTarget?: string | null;
   requestDetailsEnabled?: boolean;
   onToggleRequestDetails?: (enabled: boolean) => void;
+  interruptTargetLabel?: string;
   onPauseWorkflow?: () => void;
   onResumeWorkflow?: () => void;
   onInterruptTurn?: () => Promise<boolean> | boolean;
@@ -1022,6 +1068,7 @@ const ChatInput: React.FC<{
   dryrunTarget,
   requestDetailsEnabled,
   onToggleRequestDetails,
+  interruptTargetLabel,
   onPauseWorkflow,
   onResumeWorkflow,
   onInterruptTurn,
@@ -1038,6 +1085,9 @@ const ChatInput: React.FC<{
   const [isDragOver, setIsDragOver] = useState<boolean>(false);
   const images = draft.images ?? [];
   const files = draft.files ?? [];
+  const resolvedInterruptLabel = typeof interruptTargetLabel === 'string' && interruptTargetLabel.trim().length > 0
+    ? interruptTargetLabel.trim()
+    : '当前 agent';
 
   const handleSend = useCallback(() => {
     const sanitized = sanitizeDraftByCapability(draft, inputCapability);
@@ -1571,7 +1621,7 @@ const ChatInput: React.FC<{
               className="control-btn danger"
               onClick={handleInterrupt}
               disabled={disabled || !isAgentRunning}
-              title="中断当前 finger-general 回合"
+              title={`中断当前 ${resolvedInterruptLabel} 回合`}
             >
               停止当前回合
             </button>
@@ -1581,7 +1631,7 @@ const ChatInput: React.FC<{
                 className={`control-btn ${isPaused ? 'paused' : ''}`}
                 onClick={isPaused ? onResumeWorkflow : onPauseWorkflow}
                 disabled={disabled}
-                title="仅影响工作流状态机，不会中断当前 finger-general 回合"
+                title={`仅影响工作流状态机，不会中断当前 ${resolvedInterruptLabel} 回合`}
               >
                 {isPaused ? '继续流程' : '暂停流程'}
               </button>
@@ -1682,6 +1732,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
   onUpdateToolExposure,
   onToggleRequestDetails,
   requestDetailsEnabled = false,
+  interruptTargetLabel,
 }) => {
   const chatRef = useRef<HTMLDivElement>(null);
   const [showScrollToBottom, setShowScrollToBottom] = useState(false);
@@ -2252,6 +2303,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
         dryrunTarget={selectedAgentId}
         requestDetailsEnabled={requestDetailsEnabled}
         onToggleRequestDetails={onToggleRequestDetails}
+        interruptTargetLabel={interruptTargetLabel}
         onPauseWorkflow={executionState ? onPause : undefined}
         onResumeWorkflow={executionState ? onResume : undefined}
         onInterruptTurn={onInterruptTurn}

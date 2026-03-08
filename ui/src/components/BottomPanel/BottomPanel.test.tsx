@@ -6,7 +6,33 @@ describe('BottomPanel', () => {
   it('renders running/queued/quota/last-event metrics on agent card', () => {
     render(
       <BottomPanel
-        agents={[
+        configAgents={[
+          {
+            id: 'executor-debug-loop',
+            name: 'Executor Debug Loop',
+            type: 'executor',
+            status: 'running',
+            source: 'deployment',
+            instanceCount: 1,
+            deployedCount: 1,
+            availableCount: 0,
+            runningCount: 2,
+            queuedCount: 1,
+            enabled: true,
+            runtimeCapabilities: [],
+            defaultQuota: 1,
+            quotaPolicy: { workflowQuota: {} },
+            quota: { effective: 3, source: 'project' },
+            lastEvent: {
+              type: 'dispatch',
+              status: 'queued',
+              summary: 'Dispatch queued (queue #1)',
+              timestamp: '2026-02-27T00:00:00.000Z',
+            },
+            debugAssertions: [],
+          },
+        ]}
+        runtimeAgents={[
           {
             id: 'executor-debug-loop',
             name: 'Executor Debug Loop',
@@ -40,14 +66,33 @@ describe('BottomPanel', () => {
     expect(screen.getByText('Executor Debug Loop')).toBeTruthy();
     expect(screen.getByText('Running')).toBeTruthy();
     expect(screen.getByText('Queued')).toBeTruthy();
-    expect(screen.getByText('3 (project)')).toBeTruthy();
     expect(screen.getByText('Last Event: Dispatch queued (queue #1)')).toBeTruthy();
   });
 
   it('renders agent-runtime connection lines in agents tab', () => {
     render(
       <BottomPanel
-        agents={[
+        configAgents={[
+          {
+            id: 'finger-orchestrator',
+            name: 'Finger Orchestrator',
+            type: 'orchestrator',
+            status: 'running',
+            source: 'deployment',
+            instanceCount: 1,
+            deployedCount: 1,
+            availableCount: 0,
+            runningCount: 1,
+            queuedCount: 0,
+            enabled: true,
+            runtimeCapabilities: [],
+            defaultQuota: 1,
+            quotaPolicy: { workflowQuota: {} },
+            quota: { effective: 1, source: 'default' },
+            debugAssertions: [],
+          },
+        ]}
+        runtimeAgents={[
           {
             id: 'finger-orchestrator',
             name: 'Finger Orchestrator',
@@ -84,14 +129,89 @@ describe('BottomPanel', () => {
 
     expect(screen.getByLabelText('agent-runtime-connections')).toBeTruthy();
     expect(screen.getAllByText('Finger Orchestrator').length).toBeGreaterThan(0);
-    expect(screen.getAllByText('runtime-orch-1').length).toBeGreaterThan(0);
+    expect(screen.getByText(/Agent: Finger Orchestrator/)).toBeTruthy();
+    expect(screen.getByText(/agentId finger-orchestrator/)).toBeTruthy();
+  });
+
+  it('uses agentId binding to resolve runtime card label from config source of truth', () => {
+    render(
+      <BottomPanel
+        configAgents={[
+          {
+            id: 'finger-orchestrator',
+            name: 'Orchestrator',
+            type: 'orchestrator',
+            status: 'idle',
+            source: 'agent-json',
+            instanceCount: 0,
+            deployedCount: 0,
+            availableCount: 0,
+            runningCount: 0,
+            queuedCount: 0,
+            enabled: true,
+            runtimeCapabilities: [],
+            defaultQuota: 1,
+            quotaPolicy: { workflowQuota: {} },
+            quota: { effective: 1, source: 'default' },
+            debugAssertions: [],
+          },
+        ]}
+        runtimeAgents={[
+          {
+            id: 'finger-orchestrator',
+            name: 'finger-orchestrator',
+            type: 'orchestrator',
+            status: 'running',
+            source: 'deployment',
+            instanceCount: 1,
+            deployedCount: 1,
+            availableCount: 0,
+            runningCount: 1,
+            queuedCount: 0,
+            enabled: true,
+            runtimeCapabilities: [],
+            defaultQuota: 1,
+            quotaPolicy: { workflowQuota: {} },
+            quota: { effective: 1, source: 'default' },
+            debugAssertions: [],
+          },
+        ]}
+        instances={[
+          {
+            id: 'runtime-orch-1',
+            agentId: 'finger-orchestrator',
+            name: 'runtime-orch-1',
+            type: 'orchestrator',
+            status: 'running',
+            totalDeployments: 1,
+            sessionId: 'session-1',
+          },
+        ]}
+        configs={[
+          {
+            id: 'finger-orchestrator',
+            name: 'Orchestrator',
+            role: 'orchestrator',
+            filePath: '/tmp/finger-orchestrator/agent.json',
+            enabled: true,
+            defaultQuota: 1,
+            quotaPolicy: { workflowQuota: {} },
+          },
+        ]}
+      />,
+    );
+
+    expect(screen.getAllByText('Orchestrator').length).toBeGreaterThan(0);
+    expect(screen.getByText(/Agent: Orchestrator · 配置 finger-orchestrator · agentId finger-orchestrator/)).toBeTruthy();
+    expect(screen.queryByText(/Agent: runtime-orch-1/)).toBeNull();
   });
 
   it('fires instance selection callback in instances tab', () => {
     const onSelectInstance = vi.fn();
     render(
       <BottomPanel
-        agents={[]}
+        configAgents={[]}
+        runtimeAgents={[]}
         instances={[
           {
             id: 'inst-1',
@@ -119,7 +239,8 @@ describe('BottomPanel', () => {
     const onStartTemplate = vi.fn().mockResolvedValue(undefined);
     render(
       <BottomPanel
-        agents={[]}
+        configAgents={[]}
+        runtimeAgents={[]}
         instances={[]}
         configs={[]}
         debugMode={false}
@@ -156,7 +277,8 @@ describe('BottomPanel', () => {
     const onSaveOrchestrationConfig = vi.fn().mockResolvedValue(undefined);
     render(
       <BottomPanel
-        agents={[]}
+        configAgents={[]}
+        runtimeAgents={[]}
         instances={[]}
         configs={[]}
         startupTemplates={[]}
@@ -201,7 +323,8 @@ describe('BottomPanel', () => {
     const onSaveOrchestrationConfig = vi.fn().mockResolvedValue(undefined);
     render(
       <BottomPanel
-        agents={[]}
+        configAgents={[]}
+        runtimeAgents={[]}
         instances={[]}
         configs={[]}
         startupTemplates={[]}
@@ -256,7 +379,8 @@ describe('BottomPanel', () => {
     const onSwitchOrchestrationProfile = vi.fn().mockResolvedValue(undefined);
     render(
       <BottomPanel
-        agents={[]}
+        configAgents={[]}
+        runtimeAgents={[]}
         instances={[]}
         configs={[]}
         startupTemplates={[]}
@@ -291,7 +415,7 @@ describe('BottomPanel', () => {
     const onToggleAgentEnabled = vi.fn().mockResolvedValue(undefined);
     render(
       <BottomPanel
-        agents={[
+        configAgents={[
           {
             id: 'finger-executor',
             name: 'Finger Executor',
@@ -311,6 +435,7 @@ describe('BottomPanel', () => {
             debugAssertions: [],
           },
         ]}
+        runtimeAgents={[]}
         instances={[]}
         configs={[]}
         onToggleAgentEnabled={onToggleAgentEnabled}
@@ -329,7 +454,7 @@ describe('BottomPanel', () => {
   it('renders disabled state badge distinctly from enable action', () => {
     render(
       <BottomPanel
-        agents={[
+        configAgents={[
           {
             id: 'finger-reviewer',
             name: 'Finger Reviewer',
@@ -349,6 +474,7 @@ describe('BottomPanel', () => {
             debugAssertions: [],
           },
         ]}
+        runtimeAgents={[]}
         instances={[]}
         configs={[]}
         onToggleAgentEnabled={vi.fn()}
@@ -357,5 +483,141 @@ describe('BottomPanel', () => {
 
     expect(screen.getByText('已禁用')).toBeTruthy();
     expect(screen.getByText('启用')).toBeTruthy();
+  });
+
+  it('hides startup targets section when there are no targets', () => {
+    render(
+      <BottomPanel
+        configAgents={[]}
+        runtimeAgents={[]}
+        instances={[]}
+        configs={[]}
+        startupTargets={[]}
+      />,
+    );
+
+    fireEvent.click(screen.getByText('Startup'));
+    expect(screen.queryByText('Startup Targets')).toBeNull();
+    expect(screen.queryByText('当前无可启动目标')).toBeNull();
+  });
+
+  it('uses configs as single source of truth for static enabled state', () => {
+    render(
+      <BottomPanel
+        configAgents={[
+          {
+            id: 'finger-executor',
+            name: 'Finger Executor',
+            type: 'executor',
+            status: 'idle',
+            source: 'agent-json',
+            instanceCount: 1,
+            deployedCount: 0,
+            availableCount: 1,
+            runningCount: 0,
+            queuedCount: 0,
+            enabled: false,
+            runtimeCapabilities: [],
+            defaultQuota: 1,
+            quotaPolicy: { workflowQuota: {} },
+            quota: { effective: 1, source: 'default' },
+            debugAssertions: [],
+          },
+        ]}
+        runtimeAgents={[
+          {
+            id: 'finger-executor',
+            name: 'Finger Executor',
+            type: 'executor',
+            status: 'idle',
+            source: 'deployment',
+            instanceCount: 1,
+            deployedCount: 0,
+            availableCount: 1,
+            runningCount: 0,
+            queuedCount: 0,
+            enabled: true,
+            runtimeCapabilities: [],
+            defaultQuota: 1,
+            quotaPolicy: { workflowQuota: {} },
+            quota: { effective: 1, source: 'default' },
+            debugAssertions: [],
+          },
+        ]}
+        instances={[]}
+        configs={[
+          {
+            id: 'finger-executor',
+            name: 'Finger Executor',
+            role: 'executor',
+            filePath: '/tmp/finger-executor/agent.json',
+            enabled: false,
+            capabilities: [],
+            defaultQuota: 1,
+            quotaPolicy: { workflowQuota: {} },
+          },
+        ]}
+        onToggleAgentEnabled={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByText('已禁用')).toBeTruthy();
+    expect(screen.getByText('启用')).toBeTruthy();
+    expect(screen.getByText(/配置: finger-executor/)).toBeTruthy();
+  });
+
+  it('renders runtime instance display name from config mapping', () => {
+    render(
+      <BottomPanel
+        configAgents={[
+          {
+            id: 'finger-executor',
+            name: 'Executor',
+            type: 'executor',
+            status: 'idle',
+            source: 'agent-json',
+            instanceCount: 0,
+            deployedCount: 0,
+            availableCount: 0,
+            runningCount: 0,
+            queuedCount: 0,
+            enabled: true,
+            runtimeCapabilities: [],
+            defaultQuota: 1,
+            quotaPolicy: { workflowQuota: {} },
+            quota: { effective: 1, source: 'default' },
+            debugAssertions: [],
+          },
+        ]}
+        runtimeAgents={[]}
+        instances={[
+          {
+            id: 'inst-executor-1',
+            agentId: 'finger-executor',
+            name: 'finger-executor',
+            type: 'executor',
+            status: 'idle',
+            sessionId: 'runtime-session-1',
+            totalDeployments: 1,
+          },
+        ]}
+        configs={[
+          {
+            id: 'finger-executor',
+            name: 'Executor',
+            role: 'executor',
+            filePath: '/tmp/finger-executor/agent.json',
+            enabled: true,
+            capabilities: [],
+            defaultQuota: 1,
+            quotaPolicy: { workflowQuota: {} },
+          },
+        ]}
+      />,
+    );
+
+    expect(screen.getAllByText('Executor').length).toBeGreaterThan(0);
+    expect(screen.getByText(/Agent: Executor/)).toBeTruthy();
+    expect(screen.queryByText('finger-executor')).toBeNull();
   });
 });

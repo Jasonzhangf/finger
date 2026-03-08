@@ -616,10 +616,15 @@ export class AgentRuntimeBlock extends BaseBlock {
     const runtime = isObjectRecord(loaded.config.runtime) ? loaded.config.runtime : {};
     const metadata = isObjectRecord(loaded.config.metadata) ? loaded.config.metadata : {};
 
-    const defaultQuota = normalizeNonNegativeInteger(runtime.defaultQuota ?? runtime.default_quota) ?? 1;
+    const defaultQuota = normalizeNonNegativeInteger(
+      runtime.defaultQuota
+      ?? runtime.default_quota
+      ?? loaded.config.defaultQuota,
+    ) ?? 1;
     const quotaPolicy = normalizeQuotaPolicy(
       runtime.quotaPolicy
       ?? runtime.quota_policy
+      ?? loaded.config.quotaPolicy
       ?? {
         projectQuota: runtime.projectQuota ?? runtime.project_quota,
         workflowQuota: runtime.workflowQuota ?? runtime.workflow_quota,
@@ -673,7 +678,12 @@ export class AgentRuntimeBlock extends BaseBlock {
     const base = this.readBaseRuntimeConfigProfile(agentId);
     const override = this.runtimeConfigByAgent.get(agentId);
     if (!override) return base;
-    return this.mergeRuntimeConfigProfiles(base, override);
+    const merged = this.mergeRuntimeConfigProfiles(base, override);
+    return {
+      ...merged,
+      // Top-level agent.json enabled is the single source of truth.
+      enabled: base.enabled,
+    };
   }
 
   private patchRuntimeConfigProfile(agentId: string, patch: Partial<AgentRuntimeConfigProfile>): AgentRuntimeConfigProfile {
@@ -684,6 +694,37 @@ export class AgentRuntimeBlock extends BaseBlock {
     );
     this.runtimeConfigByAgent.set(agentId, mergedOverride);
     return this.resolveRuntimeConfigProfile(agentId);
+  }
+
+  private undeployAgent(agentId: string): void {
+    const deploymentIds = Array.from(this.deployments.values())
+      .filter((item) => item.agentId === agentId)
+      .map((item) => item.id);
+
+    for (const deploymentId of deploymentIds) {
+      this.deployments.delete(deploymentId);
+    }
+
+    this.dispatchQueueByAgent.delete(agentId);
+    this.activeDispatchCountByAgent.delete(agentId);
+    this.runtimeConfigByAgent.delete(agentId);
+
+    if (!this.deps.resourcePool) return;
+
+    const releasablePool = this.deps.resourcePool as typeof this.deps.resourcePool & {
+      releaseResource?: (resourceId: string) => boolean;
+      removeResource?: (resourceId: string) => boolean;
+    };
+
+    const resourceIds = this.deps.resourcePool
+      .getAllResources()
+      .filter((item) => item.id.startsWith(`${agentId}::`))
+      .map((item) => item.id);
+
+    for (const resourceId of resourceIds) {
+      releasablePool.releaseResource?.(resourceId);
+      releasablePool.removeResource?.(resourceId);
+    }
   }
 
   private resolveAgentQuota(
@@ -831,7 +872,7 @@ export class AgentRuntimeBlock extends BaseBlock {
       }
 
       ensureDefinition(preferredId, {
-        name: moduleName,
+        name: definitions.get(preferredId)?.name ?? moduleName,
         role,
         source: definitions.has(preferredId) ? definitions.get(preferredId)!.source : 'module',
         tags: Array.from(new Set([...(definitions.get(preferredId)?.tags ?? []), role, 'runtime-module'])),
@@ -970,7 +1011,9 @@ export class AgentRuntimeBlock extends BaseBlock {
         instances.push({
           id,
           agentId: deployment.agentId,
-          name: instanceTotal === 1 ? deployment.agentId : `${deployment.agentId}#${idx + 1}`,
+          name: instanceTotal === 1
+            ? (definitions.get(deployment.agentId)?.name ?? deployment.agentId)
+            : `${definitions.get(deployment.agentId)?.name ?? deployment.agentId}#${idx + 1}`,
           type: definitions.get(deployment.agentId)?.role ?? 'executor',
           status,
           ...(deployment.sessionId ? { sessionId: deployment.sessionId } : {}),
@@ -2005,6 +2048,21 @@ export class AgentRuntimeBlock extends BaseBlock {
     const deploymentId = `deployment-${definition.id}-${impl.id.replace(/[^a-zA-Z0-9-_]/g, '_')}`;
     const previous = this.deployments.get(deploymentId);
 
+    if (request.config?.enabled === false) {
+      this.undeployAgent(definition.id);
+      this.emitStatusEvent({
+        sessionId: typeof request.sessionId === 'string' && request.sessionId.trim().length > 0
+          ? request.sessionId.trim()
+          : this.deps.sessionManager.getCurrentSession()?.id ?? 'default',
+        status: 'ok',
+      });
+      return {
+        success: true,
+        startupTargets: this.listStartupTargets(),
+        startupTemplates: this.listStartupTemplates(),
+      };
+    }
+
     const deployment: AgentDeploymentRecord = {
       id: deploymentId,
       agentId: definition.id,
@@ -2020,14 +2078,12 @@ export class AgentRuntimeBlock extends BaseBlock {
       createdAt: previous?.createdAt ?? new Date().toISOString(),
     };
 
-    const hasRuntimeEnabledPatch = typeof request.config?.enabled === 'boolean';
     const runtimeDefaultQuotaPatch = normalizeNonNegativeInteger(request.config?.defaultQuota);
     const hasRuntimeDefaultQuotaPatch = runtimeDefaultQuotaPatch !== undefined;
     const hasRuntimeCapabilitiesPatch = Array.isArray(request.config?.capabilities);
     const hasRuntimeQuotaPolicyPatch = request.config?.quotaPolicy !== undefined;
-    const runtimeProfile = (hasRuntimeEnabledPatch || hasRuntimeDefaultQuotaPatch || hasRuntimeCapabilitiesPatch || hasRuntimeQuotaPolicyPatch)
+    const runtimeProfile = (hasRuntimeDefaultQuotaPatch || hasRuntimeCapabilitiesPatch || hasRuntimeQuotaPolicyPatch)
       ? this.patchRuntimeConfigProfile(definition.id, {
-          ...(hasRuntimeEnabledPatch ? { enabled: request.config?.enabled } : {}),
           ...(hasRuntimeDefaultQuotaPatch ? { defaultQuota: runtimeDefaultQuotaPatch } : {}),
           ...(hasRuntimeCapabilitiesPatch ? { capabilities: normalizeCapabilities(request.config?.capabilities) } : {}),
           ...(hasRuntimeQuotaPolicyPatch ? { quotaPolicy: normalizeQuotaPolicy(request.config?.quotaPolicy) } : {}),
@@ -2038,7 +2094,6 @@ export class AgentRuntimeBlock extends BaseBlock {
       request.config?.provider === 'iflow'
       || request.config?.provider === 'openai'
       || request.config?.provider === 'anthropic'
-      || hasRuntimeEnabledPatch
       || hasRuntimeDefaultQuotaPatch
       || hasRuntimeCapabilitiesPatch
       || hasRuntimeQuotaPolicyPatch

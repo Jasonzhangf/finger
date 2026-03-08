@@ -81,6 +81,7 @@ function parseUpdatePlanOutput(output: unknown): {
 export function mapWsMessageToRuntimeEvent(
   msg: WsMessage,
   currentSessionId: string,
+  fallbackAgentId = DEFAULT_CHAT_AGENT_ID,
 ): (Omit<RuntimeEvent, 'id'> & { id?: string }) | null {
   const payload = isRecord(msg.payload) ? msg.payload : {};
   const eventSessionId =
@@ -130,8 +131,8 @@ export function mapWsMessageToRuntimeEvent(
           return {
             ...(toolId ? { id: `tool:${toolId}:result` } : {}),
             role: 'agent',
-            agentId: agentId || DEFAULT_CHAT_AGENT_ID,
-            agentName: agentId || DEFAULT_CHAT_AGENT_ID,
+            agentId: agentId || fallbackAgentId,
+            agentName: agentId || fallbackAgentId,
             kind: 'observation',
             toolName,
             toolCategory: resolveToolCategoryLabel(toolName, toolInput),
@@ -151,8 +152,8 @@ export function mapWsMessageToRuntimeEvent(
           return {
             ...(toolId ? { id: `tool:${toolId}:result` } : {}),
             role: 'agent',
-            agentId: agentId || DEFAULT_CHAT_AGENT_ID,
-            agentName: agentId || DEFAULT_CHAT_AGENT_ID,
+            agentId: agentId || fallbackAgentId,
+            agentName: agentId || fallbackAgentId,
             kind: 'observation',
             toolName,
             toolCategory: resolveToolCategoryLabel(toolName, toolInput),
@@ -171,8 +172,8 @@ export function mapWsMessageToRuntimeEvent(
       return {
         ...(toolId ? { id: `tool:${toolId}:result` } : {}),
         role: 'agent',
-        agentId: agentId || DEFAULT_CHAT_AGENT_ID,
-        agentName: agentId || DEFAULT_CHAT_AGENT_ID,
+        agentId: agentId || fallbackAgentId,
+        agentName: agentId || fallbackAgentId,
         kind: 'observation',
         toolName,
         toolCategory: resolveToolCategoryLabel(toolName, toolInput),
@@ -199,8 +200,8 @@ export function mapWsMessageToRuntimeEvent(
       return {
         ...(toolId ? { id: `tool:${toolId}:error` } : {}),
         role: 'agent',
-        agentId: agentId || DEFAULT_CHAT_AGENT_ID,
-        agentName: agentId || DEFAULT_CHAT_AGENT_ID,
+        agentId: agentId || fallbackAgentId,
+        agentName: agentId || fallbackAgentId,
         kind: 'observation',
         toolName,
         toolCategory: resolveToolCategoryLabel(toolName, payload.input),
@@ -219,8 +220,8 @@ export function mapWsMessageToRuntimeEvent(
         return {
           ...(eventId ? { id: eventId } : {}),
           role: 'agent',
-          agentId: agentId || DEFAULT_CHAT_AGENT_ID,
-          agentName: agentId || DEFAULT_CHAT_AGENT_ID,
+          agentId: agentId || fallbackAgentId,
+          agentName: agentId || fallbackAgentId,
           kind: 'observation',
           content: payload.content,
           timestamp,
@@ -234,8 +235,8 @@ export function mapWsMessageToRuntimeEvent(
       return {
         ...(eventId ? { id: eventId } : {}),
         role: 'agent',
-        agentId: agentId || DEFAULT_CHAT_AGENT_ID,
-        agentName: agentId || DEFAULT_CHAT_AGENT_ID,
+        agentId: agentId || fallbackAgentId,
+        agentName: agentId || fallbackAgentId,
         kind: 'observation',
         content,
         timestamp,
