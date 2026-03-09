@@ -1,0 +1,116 @@
+.create-agent-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0, 0, 0, 0.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+}
+
+.create-agent-dialog {
+  background: white;
+  border-radius: 8px;
+  width: 420px;
+  max-width: 90%;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+  overflow: hidden;
+}
+
+.create-agent-dialog .dialog-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 16px 20px;
+  border-bottom: 1px solid #eee;
+}
+
+.create-agent-dialog .dialog-header h3 {
+  margin: 0;
+  font-size: 18px;
+  font-weight: 600;
+}
+
+.create-agent-dialog .close-btn {
+  background: none;
+  border: none;
+  font-size: 24px;
+  cursor: pointer;
+  padding: 0;
+  color: #666;
+}
+
+.create-agent-dialog .close-btn:hover {
+  color: #000;
+}
+
+.create-agent-dialog .dialog-content {
+  padding: 20px;
+}
+
+.create-agent-dialog .form-group {
+  margin-bottom: 16px;
+}
+
+.create-agent-dialog .form-group label {
+  display: block;
+  margin-bottom: 6px;
+  font-size: 14px;
+  font-weight: 500;
+}
+
+.create-agent-dialog .form-group input,
+.create-agent-dialog .form-group select {
+  width: 100%;
+  padding: 8px 12px;
+  border: 1px solid #ddd;
+  border-radius: 4px;
+  font-size: 14px;
+}
+
+.create-agent-dialog .form-group input:disabled,
+.create-agent-dialog .form-group select:disabled {
+  background: #f5f5f5;
+}
+
+.create-agent-dialog .error-message {
+  color: #dc3545;
+  font-size: 13px;
+  margin-bottom: 16px;
+}
+
+.create-agent-dialog .dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: 8px;
+}
+
+.create-agent-dialog .btn-secondary,
+.create-agent-dialog .btn-primary {
+  padding: 8px 16px;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 14px;
+  font-weight: 500;
+}
+
+.create-agent-dialog .btn-secondary {
+  background: #f0f0f0;
+  color: #333;
+}
+
+.create-agent-dialog .btn-primary {
+  background: #0066cc;
+  color: white;
+}
+
+.create-agent-dialog .btn-primary:disabled,
+.create-agent-dialog .btn-secondary:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}

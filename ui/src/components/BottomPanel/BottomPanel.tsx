@@ -1,4 +1,6 @@
 import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { CreateAgentDialog } from "../CreateAgentDialog/CreateAgentDialog.js";
+
 import type {
   AgentConfigSummary,
   AgentRuntimeInstance,
@@ -173,6 +175,9 @@ export const BottomPanel: React.FC<BottomPanelProps> = ({
   const [launchingProfile, setLaunchingProfile] = useState<'default' | 'mock' | 'full_mock' | null>(null);
   const [switchingProfileId, setSwitchingProfileId] = useState<string | null>(null);
   const [selectedOrchestrationProfileId, setSelectedOrchestrationProfileId] = useState<string>('');
+  const [isCreateAgentDialogOpen, setIsCreateAgentDialogOpen] = useState(false);
+  const [isCreatingAgent, setIsCreatingAgent] = useState(false);
+
   const [orchestrationDraft, setOrchestrationDraft] = useState<string>('');
   const [isOrchestrationDraftDirty, setIsOrchestrationDraftDirty] = useState(false);
   const [isSavingOrchestrationConfig, setIsSavingOrchestrationConfig] = useState(false);
@@ -202,6 +207,25 @@ export const BottomPanel: React.FC<BottomPanelProps> = ({
   const runtimeCardRefs = useRef<Record<string, HTMLButtonElement | null>>({});
 
   const overview = useMemo(() => {
+  const handleCreateAgent = useCallback(async (agentId: string, name: string, role: string) => {
+    setIsCreatingAgent(true);
+    try {
+      const response = await fetch("""/api/v1/agents/configs/create"", {
+        method: ""POST"",
+        headers: { ""Content-Type"": ""application/json"" },
+        body: JSON.stringify({ agentId, name, role }),
+      });
+      if (!response.ok) {
+        const data = await response.json();
+        throw new Error(data.error || ""Failed to create agent"");
+      }
+      await fetch("""/api/v1/agents/configs/reload"", { method: ""POST"" });
+      setIsCreateAgentDialogOpen(false);
+    } finally {
+      setIsCreatingAgent(false);
+    }
+  }, []);
+
     const activeInstances = instances.filter((instance) => isActiveInstanceStatus(instance.status)).length;
     const boundSessions = instances.filter((instance) => typeof instance.sessionId === 'string' && instance.sessionId.length > 0).length;
     const erroredInstances = instances.filter((instance) => {
@@ -451,6 +475,13 @@ export const BottomPanel: React.FC<BottomPanelProps> = ({
         mode === 'mock'
           ? '已启动最小编排: orchestrator + mock executor'
           : '已启动最小编排: orchestrator + executor',
+        <CreateAgentDialog
+          isOpen={isCreateAgentDialogOpen}
+          onClose={() => setIsCreateAgentDialogOpen(false)}
+          onCreate={handleCreateAgent}
+          isCreating={isCreatingAgent}
+        />
+
       );
     } catch (launchError) {
       setStartupHint(launchError instanceof Error ? launchError.message : '最小编排启动失败');
@@ -792,13 +823,21 @@ export const BottomPanel: React.FC<BottomPanelProps> = ({
                         <circle className={`agent-connection-dot ${segment.tone}`} cx={segment.x1} cy={segment.y1} r={3.2} />
                         <circle className={`agent-connection-dot ${segment.tone}`} cx={segment.x2} cy={segment.y2} r={3.2} />
                       </g>
+        <CreateAgentDialog
+          isOpen={isCreateAgentDialogOpen}
+          onClose={() => setIsCreateAgentDialogOpen(false)}
+          onCreate={handleCreateAgent}
+          isCreating={isCreatingAgent}
+        />
+
                     );
                   })}
                 </svg>
               )}
 
               <div className="layer-title">Static Agent</div>
-              <button className="add-agent-btn" type="button" onClick={() => { /* TODO: use finger-general as template to create new agent */ }}>+</button>
+              <button className="add-agent-btn" type="button" onClick={() => setIsCreateAgentDialogOpen(true)}>+</button>
+
               <div className="agents-grid static-agent-grid">
                 {staticAgents.map((agent) => (
                   <div
@@ -913,6 +952,13 @@ export const BottomPanel: React.FC<BottomPanelProps> = ({
                         <div className="runtime-card-meta">Dispatch: {dispatchSummary}</div>
                       )}
                     </button>
+        <CreateAgentDialog
+          isOpen={isCreateAgentDialogOpen}
+          onClose={() => setIsCreateAgentDialogOpen(false)}
+          onCreate={handleCreateAgent}
+          isCreating={isCreatingAgent}
+        />
+
                   );
                 })}
               </div>
@@ -950,6 +996,13 @@ export const BottomPanel: React.FC<BottomPanelProps> = ({
                       </span>
                       <span className="instance-switch">{switchable ? '切换会话' : '不可切换'}</span>
                     </button>
+        <CreateAgentDialog
+          isOpen={isCreateAgentDialogOpen}
+          onClose={() => setIsCreateAgentDialogOpen(false)}
+          onCreate={handleCreateAgent}
+          isCreating={isCreatingAgent}
+        />
+
                   );
                 })}
               </div>
@@ -982,5 +1035,12 @@ export const BottomPanel: React.FC<BottomPanelProps> = ({
         )}
       </div>
     </div>
+        <CreateAgentDialog
+          isOpen={isCreateAgentDialogOpen}
+          onClose={() => setIsCreateAgentDialogOpen(false)}
+          onCreate={handleCreateAgent}
+          isCreating={isCreatingAgent}
+        />
+
   );
 };
