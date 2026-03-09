@@ -12,7 +12,7 @@ interface MemoryLedgerRunOptions {
 export function registerMemoryLedgerCommand(program: Command): void {
   program
     .command('memory-ledger')
-    .description('时间线上下文记忆工具（query/insert）')
+    .description('时间线上下文记忆工具（query/search/insert/index/compact）')
     .command('run')
     .description('执行 context ledger memory 操作')
     .option('-i, --input <json>', '输入 JSON')

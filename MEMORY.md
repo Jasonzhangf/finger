@@ -144,3 +144,77 @@
 - [ ] 子会话显示: Orchestrator → finger-executor-1
 - [ ] 多实例显示: finger-executor-1, finger-executor-2
 - [ ] 所有显示数据来源可追溯到全局真源
+
+## 2026-03-09 13:47 - Compact with Ledger Integration (基于 Codex 实现)
+
+### Codex 的 Compact 关键点 (compact.rs)
+
+1. **SUMMARIZATION_PROMPT**: 用于生成压缩摘要的提示词
+2. **历史替换机制**: 用压缩摘要替换旧历史
+3. **保留用户消息**: 收集并保留用户消息，有 token 限制
+4. **Ghost snapshots**: 保留 ghost snapshot 项
+5. **Initial context injection**: 根据时机注入初始上下文
+6. **CompactedItem**: 包含压缩消息和替换历史
+7. **replace_compacted_history**: 替换压缩后的历史
+8. **recompute_token_usage**: 重新计算 token 使用量
+
+### 两级记忆设计
+
+#### 一级记忆：压缩记忆
+- 用于常规提示，控制 token 用量
+- 包含压缩摘要和保留的关键用户消息
+- 保持较小的上下文窗口
+
+#### 二级记忆：长历史记忆
+- 用于详细查询和搜索
+- 包含压缩前的完整历史
+- 用于 ledger 精确搜索和时间对齐
+
+### Slot 对齐与时间对齐
+
+压缩前的 slot 时间戳需要与压缩后的摘要对齐，确保：
+- Ledger 搜索能找到压缩的对应项
+- 两级记忆可以互查
+
+### Ledger 更新
+
+压缩后需要更新 ledger index，使其能搜索到：
+- 压缩摘要
+- 原始历史
+- slot 对齐关系
+
+## 2026-03-09 14:32 - 自动 Compact 与 Ledger 集成架构设计完成
+
+### 已完成工作
+
+1. **自动 Compact 架构设计**（基于 codex 实现）
+   - 触发条件：85% 上下文窗口阈值
+   - 两级记忆：压缩摘要（一级）+ 完整 ledger（二级）
+   - 时间对齐与 slot 对齐机制
+   - Memsearch 兼容的 JSONL 索引
+
+2. **RuntimeEvent 类型扩展**
+   - 添加 `roleType`, `assignerId`, `assignerName`, `instanceName`, `sessionType`
+   - 遵循全局唯一真源原则
+
+3. **MessageItem 组件更新**
+   - 基于真源数据的显示逻辑
+   - 主会话 vs 子会话的角色链显示
+
+4. **全局唯一真源原则**
+   - 添加到 ~/.codex/AGENTS.md
+   - 强调数据生产消费的一致性
+
+5. **提交代码**
+   - 提交到 main 分支并推送
+
+### 后续任务（bd 追踪）
+
+- webauto-hz8q: 迁移 browser-service 核心
+- webauto-btzg: logging/heartbeat 最小替代
+- webauto-mtrg: action 兼容层与缺失动作补齐
+- webauto-aoik: 文档/CLI/API 列表更新
+
+### 下一步
+
+使用 `bd` 工具创建任务并执行。

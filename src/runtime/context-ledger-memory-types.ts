@@ -1,4 +1,4 @@
-export type ContextLedgerMemoryAction = 'query' | 'insert';
+export type ContextLedgerMemoryAction = 'query' | 'search' | 'insert' | 'index' | 'compact';
 
 export interface ContextLedgerMemoryRuntimeContext {
   root_dir?: string;
@@ -25,6 +25,16 @@ export interface ContextLedgerMemoryInput {
   text?: string;
   append?: boolean;
   focus_max_chars?: number;
+  full_reindex?: boolean;
+  trigger?: 'manual' | 'auto';
+  summary?: string;
+  source_event_ids?: string[];
+  source_message_ids?: string[];
+  source_time_start?: string;
+  source_time_end?: string;
+  source_slot_start?: number;
+  source_slot_end?: number;
+  replacement_history?: Array<Record<string, unknown>>;
   _runtime_context?: ContextLedgerMemoryRuntimeContext;
 }
 
@@ -44,6 +54,9 @@ export interface CompactMemoryEntryFile {
   id: string;
   timestamp_ms: number;
   timestamp_iso: string;
+  session_id?: string;
+  agent_id?: string;
+  mode?: string;
   payload: Record<string, unknown>;
 }
 
@@ -54,11 +67,16 @@ export interface CompactMemorySearchEntry {
   summary: string;
   source_time_start?: string;
   source_time_end?: string;
+  source_slot_start?: number;
+  source_slot_end?: number;
+  trigger?: 'manual' | 'auto';
+  linked_event_ids?: string[];
+  linked_message_ids?: string[];
 }
 
 export interface ContextLedgerMemoryQueryResult {
   ok: true;
-  action: 'query';
+  action: 'query' | 'search';
   strategy: 'direct_ledger' | 'compact_first' | 'compact_then_detail';
   source: string;
   entries: LedgerEntryFile[];
@@ -80,6 +98,9 @@ export interface ContextLedgerMemoryQueryResult {
     summary: string;
     source_time_start?: string;
     source_time_end?: string;
+    source_slot_start?: number;
+    source_slot_end?: number;
+    trigger?: 'manual' | 'auto';
     preview: string;
   }>;
   compact_source: string;
@@ -97,4 +118,34 @@ export interface ContextLedgerMemoryInsertResult {
   focus_path: string;
 }
 
-export type ContextLedgerMemoryResult = ContextLedgerMemoryQueryResult | ContextLedgerMemoryInsertResult;
+export interface ContextLedgerMemoryIndexResult {
+  ok: true;
+  action: 'index';
+  compact_source: string;
+  compact_index_path: string;
+  entries_indexed: number;
+  full_reindex: boolean;
+}
+
+export interface ContextLedgerMemoryCompactResult {
+  ok: true;
+  action: 'compact';
+  compaction_id: string;
+  summary: string;
+  trigger: 'manual' | 'auto';
+  compact_path: string;
+  compact_index_path: string;
+  source_time_start?: string;
+  source_time_end?: string;
+  source_slot_start?: number;
+  source_slot_end?: number;
+  linked_event_ids: string[];
+  linked_message_ids: string[];
+  indexed: boolean;
+}
+
+export type ContextLedgerMemoryResult =
+  | ContextLedgerMemoryQueryResult
+  | ContextLedgerMemoryInsertResult
+  | ContextLedgerMemoryIndexResult
+  | ContextLedgerMemoryCompactResult;

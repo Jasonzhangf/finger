@@ -286,6 +286,25 @@ export function useWorkflowExecution(
       }
     }
 
+    if (msg.type === 'session_compressed') {
+      if (!isCurrentSessionEvent) return;
+      const summary = typeof payload.summary === 'string' ? payload.summary : '';
+      const trigger = payload.trigger === 'auto' ? 'auto' : payload.trigger === 'manual' ? 'manual' : undefined;
+      setRuntimeOverview((prev) => ({
+        ...prev,
+        compactCount: prev.compactCount + 1,
+        updatedAt: new Date().toISOString(),
+      }));
+      setAgentRunStatus({
+        phase: 'running',
+        text: trigger === 'auto'
+          ? `已自动压缩上下文 · ${summary.length > 0 ? '摘要已更新' : '上下文已整理'}`
+          : `已手动压缩上下文 · ${summary.length > 0 ? '摘要已更新' : '上下文已整理'}`,
+        updatedAt: new Date().toISOString(),
+      });
+      return;
+    }
+
     if (msg.type === 'chat_codex_turn') {
       if (!isCurrentSessionEvent) return;
       const phase = typeof payload.phase === 'string' ? payload.phase : 'kernel_event';

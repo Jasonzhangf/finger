@@ -12,8 +12,15 @@ export const DEFAULT_FOCUS_MAX_CHARS = 20_000;
 
 export function parseInput(rawInput: unknown): ContextLedgerMemoryInput {
   if (!isRecord(rawInput)) return { action: 'query' };
+  const rawAction = valueAsString(rawInput.action);
+  const action = rawAction === 'insert'
+    || rawAction === 'index'
+    || rawAction === 'compact'
+    || rawAction === 'search'
+      ? rawAction
+      : 'query';
   return {
-    action: rawInput.action === 'insert' ? 'insert' : 'query',
+    action,
     session_id: valueAsString(rawInput.session_id),
     agent_id: valueAsString(rawInput.agent_id),
     mode: valueAsString(rawInput.mode),
@@ -27,6 +34,18 @@ export function parseInput(rawInput: unknown): ContextLedgerMemoryInput {
     text: valueAsString(rawInput.text),
     append: rawInput.append === true,
     focus_max_chars: normalizePositiveInt(rawInput.focus_max_chars),
+    full_reindex: rawInput.full_reindex === true,
+    trigger: rawInput.trigger === 'auto' ? 'auto' : rawInput.trigger === 'manual' ? 'manual' : undefined,
+    summary: valueAsString(rawInput.summary),
+    source_event_ids: normalizeStringArray(rawInput.source_event_ids),
+    source_message_ids: normalizeStringArray(rawInput.source_message_ids),
+    source_time_start: valueAsString(rawInput.source_time_start),
+    source_time_end: valueAsString(rawInput.source_time_end),
+    source_slot_start: normalizePositiveInt(rawInput.source_slot_start),
+    source_slot_end: normalizePositiveInt(rawInput.source_slot_end),
+    replacement_history: Array.isArray(rawInput.replacement_history)
+      ? rawInput.replacement_history.filter((item): item is Record<string, unknown> => isRecord(item))
+      : undefined,
     _runtime_context: isRecord(rawInput._runtime_context)
       ? parseRuntimeContext(rawInput._runtime_context)
       : undefined,
@@ -61,6 +80,14 @@ export function resolveCompactMemoryIndexPath(
   mode: string,
 ): string {
   return join(resolveBaseDir(rootDir, sessionId, agentId, mode), 'compact-memory-index.json');
+}
+
+export function resolveFullMemoryPath(rootDir: string, sessionId: string, agentId: string, mode: string): string {
+  return join(resolveBaseDir(rootDir, sessionId, agentId, mode), 'full-memory.jsonl');
+}
+
+export async function writeJsonFile(filePath: string, value: unknown): Promise<void> {
+  await fs.writeFile(filePath, `${JSON.stringify(value, null, 2)}\n`, 'utf-8');
 }
 
 export function resolveBaseDir(rootDir: string, sessionId: string, agentId: string, mode: string): string {

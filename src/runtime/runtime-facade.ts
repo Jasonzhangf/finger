@@ -16,6 +16,7 @@ import {
   type AuthorizationIssueOptions,
   type ToolAuthorizationGrant,
 } from './tool-authorization.js';
+import { executeContextLedgerMemory } from './context-ledger-memory.js';
 
 // Session 类型 (简化版，完整定义在 session-manager.ts)
 export interface SessionInfo {
@@ -104,6 +105,8 @@ export class RuntimeFacade {
   private readonly toolAuthorization = new ToolAuthorizationManager();
   private roleToolPolicyPresets: RoleToolPolicyPresetMap = {};
   private readonly agentRuntimeConfigs = new Map<string, AgentRuntimeConfig>();
+  private readonly AUTO_COMPACT_THRESHOLD_PERCENT = 85;
+  private readonly autoCompactTriggeredTurns = new Set<string>();
 
   constructor(
     private eventBus: UnifiedEventBus,
@@ -684,7 +687,7 @@ export class RuntimeFacade {
   /**
    * 压缩上下文
    */
-  async compressContext(sessionId: string): Promise<string> {
+  async compressContext(sessionId: string, options?: { trigger?: 'manual' | 'auto'; contextUsagePercent?: number }): Promise<string> {
     if (!this.sessionManager.compressContext) {
       throw new Error('Context compression not supported by session manager');
     }
@@ -697,6 +700,46 @@ export class RuntimeFacade {
     const originalSize = session.messageCount ?? 0;
     const summary = await this.sessionManager.compressContext(sessionId);
     const compressedSize = summary.length;
+    const nowIso = new Date().toISOString();
+
+    const messages = this.sessionManager.getMessages(sessionId);
+    const sessionContext = session.context ?? {};
+    const ownerAgentId = typeof sessionContext.ownerAgentId === 'string' && sessionContext.ownerAgentId.trim().length > 0
+      ? sessionContext.ownerAgentId.trim()
+      : 'finger-orchestrator';
+    const mode = typeof sessionContext.sessionTier === 'string' && sessionContext.sessionTier.trim().length > 0
+      ? sessionContext.sessionTier.trim()
+      : 'main';
+    const sourceEventIds = messages.map((message) => message.id);
+    const sourceMessageIds = messages.map((message) => message.id);
+    const sourceTimeStart = messages.length > 0 ? messages[0].timestamp : nowIso;
+    const sourceTimeEnd = messages.length > 0 ? messages[messages.length - 1].timestamp : nowIso;
+
+    let compactResult: Awaited<ReturnType<typeof executeContextLedgerMemory>> | undefined;
+    try {
+      compactResult = await executeContextLedgerMemory({
+        action: 'compact',
+        session_id: sessionId,
+        agent_id: ownerAgentId,
+        mode,
+        trigger: options?.trigger === 'auto' ? 'auto' : 'manual',
+        summary,
+        source_event_ids: sourceEventIds,
+        source_message_ids: sourceMessageIds,
+        source_time_start: sourceTimeStart,
+        source_time_end: sourceTimeEnd,
+        source_slot_start: messages.length > 0 ? 1 : undefined,
+        source_slot_end: messages.length > 0 ? messages.length : undefined,
+        _runtime_context: {
+          session_id: sessionId,
+          agent_id: ownerAgentId,
+          mode,
+        },
+      });
+    } catch (error) {
+      // Keep session compression successful even if ledger compact persistence fails.
+      console.warn('[RuntimeFacade] ledger compact persistence failed:', error);
+    }
 
     this.eventBus.emit({
       type: 'session_compressed',
@@ -706,10 +749,35 @@ export class RuntimeFacade {
         originalSize,
         compressedSize,
         summary,
+        trigger: options?.trigger === 'auto' ? 'auto' : 'manual',
+        ...(typeof options?.contextUsagePercent === 'number' ? { contextUsagePercent: options.contextUsagePercent } : {}),
+        ...(compactResult && compactResult.action === 'compact' ? {
+          compactionId: compactResult.compaction_id,
+          sourceTimeStart: compactResult.source_time_start,
+          sourceTimeEnd: compactResult.source_time_end,
+          sourceSlotStart: compactResult.source_slot_start,
+          sourceSlotEnd: compactResult.source_slot_end,
+        } : {}),
       },
     });
 
     return summary;
+  }
+
+  async maybeAutoCompact(sessionId: string, contextUsagePercent?: number, turnId?: string): Promise<boolean> {
+    if (typeof contextUsagePercent !== 'number' || !Number.isFinite(contextUsagePercent)) return false;
+    if (contextUsagePercent < this.AUTO_COMPACT_THRESHOLD_PERCENT) return false;
+    const session = this.sessionManager.getSession(sessionId);
+    if (!session) return false;
+    const dedupeKey = turnId && turnId.trim().length > 0 ? `${sessionId}:${turnId}` : undefined;
+    if (dedupeKey && this.autoCompactTriggeredTurns.has(dedupeKey)) return false;
+
+    await this.compressContext(sessionId, {
+      trigger: 'auto',
+      contextUsagePercent,
+    });
+    if (dedupeKey) this.autoCompactTriggeredTurns.add(dedupeKey);
+    return true;
   }
 
   // ==================== 事件订阅 ====================

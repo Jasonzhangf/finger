@@ -8,7 +8,7 @@ const DEFAULT_TIMEOUT_MS = 15_000;
 const TOOL_INPUT_ENV_KEY = 'FINGER_CONTEXT_LEDGER_TOOL_INPUT';
 
 interface ContextLedgerMemoryToolInput {
-  action?: 'query' | 'insert';
+  action?: 'query' | 'search' | 'insert' | 'index' | 'compact';
   session_id?: string;
   agent_id?: string;
   mode?: string;
@@ -22,6 +22,16 @@ interface ContextLedgerMemoryToolInput {
   text?: string;
   append?: boolean;
   focus_max_chars?: number;
+  full_reindex?: boolean;
+  trigger?: 'manual' | 'auto';
+  summary?: string;
+  source_event_ids?: string[];
+  source_message_ids?: string[];
+  source_time_start?: string;
+  source_time_end?: string;
+  source_slot_start?: number;
+  source_slot_end?: number;
+  replacement_history?: Array<Record<string, unknown>>;
   _runtime_context?: Record<string, unknown>;
 }
 
@@ -38,11 +48,12 @@ export const contextLedgerMemoryTool: InternalTool<unknown, ContextLedgerMemoryT
     'Query timeline ledger by time range / keyword / event type.',
     'For fuzzy queries, it checks compact memory first; then detail query can drill into raw timeline.',
     'Can insert important text or a time-range slice into focus slot (ledger carry area).',
+    'Supports compact/index actions to persist compaction summaries and rebuild compact-memory search index.',
   ].join(' '),
   inputSchema: {
     type: 'object',
     properties: {
-      action: { type: 'string', enum: ['query', 'insert'], description: 'query: search timeline memory; insert: write focus slot' },
+      action: { type: 'string', enum: ['query', 'search', 'insert', 'index', 'compact'], description: 'query/search: search timeline memory; insert: write focus slot; index: rebuild compact index; compact: persist a compaction summary and align ledger' },
       session_id: { type: 'string', description: 'Optional override session id; usually auto-filled by runtime context' },
       agent_id: { type: 'string', description: 'Target agent ledger id. Requires read permission when not self.' },
       mode: { type: 'string', description: 'Conversation mode/thread name, e.g. main or review' },
@@ -56,6 +67,15 @@ export const contextLedgerMemoryTool: InternalTool<unknown, ContextLedgerMemoryT
       text: { type: 'string', description: 'Text to insert into focus slot for carry-forward context' },
       append: { type: 'boolean', description: 'Append to existing focus slot content instead of overwrite' },
       focus_max_chars: { type: 'number', description: 'Optional focus-slot char limit override' },
+      full_reindex: { type: 'boolean', description: 'Rebuild compact-memory index from scratch' },
+      trigger: { type: 'string', enum: ['manual', 'auto'], description: 'Compaction trigger kind' },
+      summary: { type: 'string', description: 'Compaction summary text' },
+      source_event_ids: { type: 'array', items: { type: 'string' }, description: 'Original ledger event ids covered by compaction' },
+      source_message_ids: { type: 'array', items: { type: 'string' }, description: 'Original session message ids covered by compaction' },
+      source_time_start: { type: 'string', description: 'Original timeline start ISO timestamp' },
+      source_time_end: { type: 'string', description: 'Original timeline end ISO timestamp' },
+      source_slot_start: { type: 'number', description: 'Original timeline start slot' },
+      source_slot_end: { type: 'number', description: 'Original timeline end slot' },
     },
     additionalProperties: true,
   },
@@ -125,7 +145,12 @@ function parseInput(rawInput: unknown): ContextLedgerMemoryToolInput {
   if (!isRecord(rawInput)) {
     return { action: 'query' };
   }
-  const action = rawInput.action === 'insert' ? 'insert' : 'query';
+  const action = rawInput.action === 'insert'
+    || rawInput.action === 'index'
+    || rawInput.action === 'compact'
+    || rawInput.action === 'search'
+      ? rawInput.action
+      : 'query';
   return {
     action,
     session_id: typeof rawInput.session_id === 'string' ? rawInput.session_id : undefined,
@@ -143,6 +168,22 @@ function parseInput(rawInput: unknown): ContextLedgerMemoryToolInput {
     text: typeof rawInput.text === 'string' ? rawInput.text : undefined,
     append: rawInput.append === true,
     focus_max_chars: typeof rawInput.focus_max_chars === 'number' ? rawInput.focus_max_chars : undefined,
+    full_reindex: rawInput.full_reindex === true,
+    trigger: rawInput.trigger === 'auto' ? 'auto' : rawInput.trigger === 'manual' ? 'manual' : undefined,
+    summary: typeof rawInput.summary === 'string' ? rawInput.summary : undefined,
+    source_event_ids: Array.isArray(rawInput.source_event_ids)
+      ? rawInput.source_event_ids.filter((item): item is string => typeof item === 'string')
+      : undefined,
+    source_message_ids: Array.isArray(rawInput.source_message_ids)
+      ? rawInput.source_message_ids.filter((item): item is string => typeof item === 'string')
+      : undefined,
+    source_time_start: typeof rawInput.source_time_start === 'string' ? rawInput.source_time_start : undefined,
+    source_time_end: typeof rawInput.source_time_end === 'string' ? rawInput.source_time_end : undefined,
+    source_slot_start: typeof rawInput.source_slot_start === 'number' ? rawInput.source_slot_start : undefined,
+    source_slot_end: typeof rawInput.source_slot_end === 'number' ? rawInput.source_slot_end : undefined,
+    replacement_history: Array.isArray(rawInput.replacement_history)
+      ? rawInput.replacement_history.filter((item): item is Record<string, unknown> => isRecord(item))
+      : undefined,
     _runtime_context: isRecord(rawInput._runtime_context) ? rawInput._runtime_context : undefined,
   };
 }

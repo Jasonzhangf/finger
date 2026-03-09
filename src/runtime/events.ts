@@ -71,6 +71,13 @@ export interface SessionCompressedEvent extends BaseEvent {
     originalSize: number;
     compressedSize: number;
     summary: string;
+    trigger?: 'manual' | 'auto';
+    contextUsagePercent?: number;
+    compactionId?: string;
+    sourceTimeStart?: string;
+    sourceTimeEnd?: string;
+    sourceSlotStart?: number;
+    sourceSlotEnd?: number;
   };
 }
 
@@ -369,7 +376,17 @@ export interface SystemErrorEvent extends BaseEvent {
   };
 }
 
-export type SystemEvent = SystemErrorEvent;
+export interface SystemNoticeEvent extends BaseEvent {
+  type: 'system_notice';
+  payload: {
+    source: string;
+    contextUsagePercent?: number;
+    turnId?: string;
+    [key: string]: unknown;
+  };
+}
+
+export type SystemEvent = SystemErrorEvent | SystemNoticeEvent;
 
 // =============================================================================
 // Input Lock 事件 - 跨端输入锁
@@ -549,6 +566,7 @@ export const HUMAN_IN_LOOP_EVENT_TYPES = [
 /** System 事件类型集合 */
 export const SYSTEM_EVENT_TYPES = [
   'system_error',
+  'system_notice',
 ] as const;
 
 /** Input Lock 事件类型集合 */

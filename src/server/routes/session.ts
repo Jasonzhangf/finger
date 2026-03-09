@@ -410,7 +410,9 @@ export function registerSessionRoutes(app: Express, deps: SessionRouteDeps): voi
 
   app.post('/api/v1/sessions/:sessionId/compress', async (req, res) => {
     try {
-      const summary = await sessionManager.compressContext(req.params.sessionId);
+      const trigger = req.body?.trigger === 'auto' ? 'auto' : 'manual';
+      const contextUsagePercent = typeof req.body?.contextUsagePercent === 'number' ? req.body.contextUsagePercent : undefined;
+      const summary = await runtime.compressContext(req.params.sessionId, { trigger, contextUsagePercent });
       const status = sessionManager.getCompressionStatus(req.params.sessionId);
       res.json({ success: true, summary, originalCount: status.originalCount });
     } catch (e) {

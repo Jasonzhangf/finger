@@ -184,6 +184,29 @@ export function attachEventForwarding(deps: EventForwardingDeps): {
       },
     });
 
+    if (event.phase === 'kernel_event' && event.payload.type === 'model_round') {
+      const contextUsagePercent = typeof event.payload.contextUsagePercent === 'number'
+        ? event.payload.contextUsagePercent
+        : undefined;
+      const turnId = typeof event.payload.responseId === 'string' && event.payload.responseId.trim().length > 0
+        ? event.payload.responseId.trim()
+        : typeof event.payload.round === 'number'
+          ? `round-${event.payload.round}`
+          : undefined;
+      if (contextUsagePercent !== undefined) {
+        void deps.eventBus.emit({
+          type: 'system_notice',
+          sessionId: event.sessionId,
+          timestamp: event.timestamp,
+          payload: {
+            source: 'auto_compact_probe',
+            contextUsagePercent,
+            turnId,
+          },
+        });
+      }
+    }
+
     if (event.phase === 'turn_error') {
       void eventBus.emit({
         type: 'system_error',
