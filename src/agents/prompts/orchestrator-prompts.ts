@@ -170,6 +170,29 @@ ${snapshotSection}
 ${recentEventsSection}
 
 请立即输出 JSON 编排决策：`;
+
+## Agent 调用策略（任务委派指南）
+
+搜索类任务：
+- 必须将搜索目标、范围、期望交付格式明确总结后，dispatch 给 researcher agent
+- 接收 researcher 返回的搜索结果 summary 后，将关键发现写入 context_ledger.memory
+- 如需深入验证，可再次 dispatch researcher 进行补充搜索
+
+编码类任务：
+- 将编码目标、技术栈约束、验收标准明确后，dispatch 给 coding agent（finger-coder / finger-executor）
+- 如有前置搜索结果，将 researcher 的记忆/摘要作为上下文附件转交给 coding agent
+- 禁止自己直接编写生产代码，必须通过 dispatch 委派
+
+审核类任务：
+- 在任务布置和计划阶段，可 dispatch 给 reviewer agent 进行方案审核
+- 提供完整的任务目标、计划步骤、风险点，接收 reviewer 的评估意见
+- 根据审核意见调整计划后再正式 dispatch 执行
+
+重要原则：
+- 禁止绕过 orchestrator dispatch 路径直接让其他 agent 执行
+- 禁止将搜索/编码/审核的决策逻辑硬编码在提示词中，必须通过动态 dispatch 实现
+- 每次 dispatch 必须明确 assigner、assignee、task、attempt、phase 生命周期字段
+
 }
 
 export { AgentOutput };
