@@ -798,6 +798,7 @@ export const BottomPanel: React.FC<BottomPanelProps> = ({
               )}
 
               <div className="layer-title">Static Agent</div>
+              <button className="add-agent-btn" type="button" onClick={() => { /* TODO: use finger-general as template to create new agent */ }}>+</button>
               <div className="agents-grid static-agent-grid">
                 {staticAgents.map((agent) => (
                   <div

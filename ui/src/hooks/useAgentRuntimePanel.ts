@@ -894,8 +894,10 @@ export function useAgentRuntimePanel(): UseAgentRuntimePanelResult {
       const parsedConfigs = parseAgentConfigs(runtimeData);
       const parsedOrchestration = parseOrchestrationConfig(orchestrationData);
       setRuntimeAgents(bindDebugAssertions(runtimeAgents, parsedDebug.assertions));
+      // Hide finger-general from config panel, use it as template for creating new agents
+      const filteredConfigs = parsedConfigs.filter(c => c.id !== "finger-general");
       setCatalogAgents(bindDebugAssertions(catalogAgents, parsedDebug.assertions));
-      setConfigAgents(bindDebugAssertions(synthesizeAgentsFromConfigs(runtimeAgents, parsedConfigs), parsedDebug.assertions));
+      setConfigAgents(bindDebugAssertions(synthesizeAgentsFromConfigs(runtimeAgents, filteredConfigs), parsedDebug.assertions));
       setInstances(parseRuntimeInstances(isRecord(runtimeData) ? runtimeData.instances : undefined));
       setConfigs(parsedConfigs);
       setStartupTargets(parseStartupTargets(isRecord(runtimeData) ? runtimeData.startupTargets : undefined));
