@@ -183,3 +183,16 @@ It intentionally avoids project-specific architecture, API, roadmap, and busines
 - `describe()` 作为测试套件（Suite）名称来源。
 - `it()` 作为测试用例（Case）名称来源。
 - 不在测试文件中执行副作用初始化（启动服务等），此类逻辑应由测试运行器负责。
+
+## 新增安全与架构原则（2026-03-09）
+
+### 文件操作安全
+- 遇到没碰过但是修改的文件不主动删除，必须询问用户确认
+- 使用 `git reset`、`pkill`、`killall` 等有严重后果的指令前必须先询问用户
+
+### 代码架构原则
+- 代码遵循共用函数化、模块化、自包含的原则
+- 严格遵从三层架构：编排和功能不耦合
+- `blocks` 是基础能力层的唯一真源
+- `orchestration` 只做编排不做业务逻辑
+- `ui` 只负责展示不与业务耦合

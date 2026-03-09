@@ -33,3 +33,24 @@
 - `runtime-view.agents[].enabled` 与 `runtime-view.configs[].enabled` 必须最终反映 `agent.json` 顶层 `enabled`，不能只读取 `runtime.enabled`。
 - `AgentRuntimeBlock` 里的 `runtimeConfigByAgent` 不能缓存“从 loaded config 推导出的完整 profile”，否则 agent.json reload 后旧缓存会把新配置盖回去。
 - 正确策略是：每次读取时先重新计算 loaded-config base profile，再叠加仅用于运行期 patch 的 override profile。
+## 2026-03-09 - Agent 总结显示与子会话切换修复
+
+### 问题描述
+1. 编排者在结束时并没有总结，需要每个 agent 在完成时总结工作
+2. 在执行结束以后，无法切换到别的 agent 检查执行结果
+3. 提示词需要全部改为英文
+
+### 修复方案
+1. 更新了所有 agent 的提示词文件，加入了 "Must Summarize on Completion" 的要求
+2. 增强了 `extractResultTextForSession` 函数，能够从结构化 JSON 输出中提取 summary 字段
+3. 使用 `tryParseStructuredJson` 来解析可能的 JSON 字符串
+4. 修复了 import 路径错误
+
+### 修改的文件
+- src/agents/prompts/executor-prompts.ts
+- src/agents/prompts/orchestrator-prompts.ts
+- src/agents/prompts/planner-prompts.ts
+- src/agents/prompts/reviewer-prompts.ts
+- src/agents/prompts/router-prompts.ts
+- src/agents/prompts/understanding-prompts.ts
+- src/server/modules/message-session.ts
