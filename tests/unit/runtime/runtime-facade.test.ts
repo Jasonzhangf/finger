@@ -12,12 +12,12 @@ describe('RuntimeFacade', () => {
   let mockSessionManager: ISessionManager;
   let facade: RuntimeFacade;
 
-  const createMockSession = (id: string, projectPath: string, name?: string): SessionInfo => ({
+  const createMockSession = (id: string, projectPath: string, name?: string, messageCount = 0): SessionInfo => ({
     id,
     name: name || `Session ${id}`,
     projectPath,
     status: 'active',
-    messageCount: 0,
+    messageCount: messageCount,
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
   });
