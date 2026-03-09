@@ -543,6 +543,27 @@ export interface RuntimeEvent {
   files?: RuntimeFile[];
   tokenUsage?: {
     inputTokens?: number;
+  // 新增：全局唯一真源驱动的字段
+  roleType?: 'orchestrator' | 'executor' | 'reviewer' | 'planner' | 'router' | 'understanding' | 'searcher' | 'coder';
+  assignerId?: string;      // 谁分配的任务（全局真源：AgentAssignmentLifecycle.assignerAgentId）
+  assignerName?: string;    // 分配者显示名
+  instanceName?: string;    // 多实例时的实例名（全局真源：AgentRuntimeViewInstance）
+  sessionType?: 'main' | 'child'; // 会话类型（全局真源：SessionInfo.sessionTier）
+  agentName?: string;
+  kind?: 'thought' | 'action' | 'observation' | 'status';
+  toolName?: string;
+  toolCategory?: '编辑' | '读取' | '写入' | '计划' | '搜索' | '网络搜索' | '其他';
+  toolInput?: unknown;
+  toolOutput?: unknown;
+  toolStatus?: 'running' | 'success' | 'error';
+  toolDurationMs?: number;
+  planSteps?: RuntimePlanStep[];
+  planExplanation?: string;
+  planUpdatedAt?: string;
+  images?: RuntimeImage[];
+  files?: RuntimeFile[];
+  tokenUsage?: {
+    inputTokens?: number;
     outputTokens?: number;
     totalTokens?: number;
     estimated?: boolean;

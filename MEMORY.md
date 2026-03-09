@@ -54,3 +54,93 @@
 - src/agents/prompts/router-prompts.ts
 - src/agents/prompts/understanding-prompts.ts
 - src/server/modules/message-session.ts
+
+## 2026-03-09 13:14 - Agent 会话角色显示重构
+
+### 全局真源分析
+
+已确定的真源位置：
+
+| 数据项 | 真源位置 | 说明 |
+|--------|----------|------|
+| 会话类型 | `SessionInfo.sessionTier` | 主会话/子会话 |
+| 会话归属 | `SessionInfo.ownerAgentId` | 会话属于哪个 agent |
+| 会话层级 | `SessionInfo.parentSessionId` | 父会话关系链 |
+| 事件角色 | `RuntimeEvent.role` | user/agent/system |
+| Agent 标识 | `RuntimeEvent.agentId/agentName` | 哪个 agent 产生 |
+
+### 需要继续调研
+
+- Agent 实例信息来源（多实例区分）
+- 分配者信息（assigner）存储位置
+- Runtime 层的数据生产逻辑
+
+### 下一步
+
+1. 查看 blocks/runtime 层代码
+2. 确定实例信息的全局真源
+3. 修改前端只消费真源数据
+
+## 2026-03-09 13:19 - 全局唯一真源确定
+
+### 已找到的真源位置
+
+| 数据项 | 真源位置 | 类型 | 说明 |
+|--------|----------|------|------|
+| 会话类型 | `SessionInfo.sessionTier` | blocks/session | `main`/`child` |
+| 会话所有者 | `SessionInfo.ownerAgentId` | blocks/session | 该会话属于哪个 agent |
+| 父会话关系 | `SessionInfo.parentSessionId` | blocks/session | 谁分配的 |
+| Agent 角色 | `AgentRoleType` | agent-runtime-block | `orchestrator`/`executor`/`reviewer`/`searcher` |
+| Agent 实例 | `AgentRuntimeViewInstance` | agent-runtime-block | 每个部署实例有独立 ID |
+| 分配者信息 | `AgentAssignmentLifecycle.assignerAgentId` | agent-runtime-block | 谁分派的任务 |
+
+### 下一步
+
+1. 修改 MessageItem 组件，只消费上述全局真源
+2. 不再硬编码显示逻辑，从真源动态获取
+3. 移除前端重复计算的逻辑，确保一致性
+
+## 2026-03-09 13:20 - Agent 会话角色显示修改计划
+
+### 目标
+解决会话角色显示不清晰的问题，确保：
+1. 主会话清晰显示：You / Orchestrator / Agent
+2. 子会话显示分配链：Assigner → AgentInstance
+3. 多实例有区分：AgentName-1, AgentName-2
+
+### 全局真源确认
+
+| 数据项 | 真源位置 | 消费方式 |
+|--------|----------|----------|
+| 会话类型 | `SessionInfo.sessionTier` | 从 session 对象读取 |
+| 会话归属 | `SessionInfo.ownerAgentId` | 确定会话属于哪个 agent |
+| 父会话 | `SessionInfo.parentSessionId` | 确定分配关系 |
+| Agent 角色 | `AgentDefinition.role` | 确定角色类型 |
+| 实例信息 | `AgentRuntimeViewInstance` | 确定具体实例名 |
+| 分配者 | `AgentAssignmentLifecycle.assignerAgentId` | 确定谁分配的任务 |
+
+### 修改步骤
+
+1. **扩展 RuntimeEvent 类型** (`ui/src/api/types.ts`)
+   - 添加 `roleType`: 'orchestrator' | 'executor' | 'reviewer' | ...
+   - 添加 `assignerId` / `assignerName`: 分配者信息
+   - 添加 `instanceName`: 实例具体名称
+   - 添加 `sessionType`: 'main' | 'child'
+
+2. **修改 MessageItem 组件** (`ui/src/components/ChatInterface/MessageItem.tsx`)
+   - 移除硬编码的 "You" / "Agent" / "System"
+   - 实现新的显示逻辑：
+     - 用户: "You"
+     - 主会话 Agent: 显示角色名 (Orchestrator / Executor / ...)
+     - 子会话 Agent: "{Assigner} → {InstanceName}"
+
+3. **后端数据填充** (如需)
+   - 确保 RuntimeEvent 包含所有需要的字段
+   - 从全局真源读取数据填充事件
+
+### 验证标准
+
+- [ ] 主会话显示: You / Orchestrator / Executor / ...
+- [ ] 子会话显示: Orchestrator → finger-executor-1
+- [ ] 多实例显示: finger-executor-1, finger-executor-2
+- [ ] 所有显示数据来源可追溯到全局真源
