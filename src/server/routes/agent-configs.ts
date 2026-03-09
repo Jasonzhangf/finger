@@ -1,4 +1,6 @@
 import type { Express } from 'express';
+import { updateProjectStateEnabledAgents } from "../../runtime/project-state.js";
+
 import { readFileSync, writeFileSync } from 'fs';
 import path from 'path';
 import { ensureDir, FINGER_PATHS } from '../../core/finger-paths.js';
@@ -365,6 +367,9 @@ export function registerAgentConfigRoutes(app: Express, deps: AgentConfigRouteDe
         success: true,
         agentId,
         enabled,
+      // TODO: Update project state with enabled agents when we have projectPath
+      // For now, we need to get projectPath from request or session
+
         filePath: targetPath,
       });
     } catch (error) {
