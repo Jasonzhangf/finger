@@ -44,7 +44,7 @@ export class CoreDaemon {
   private outputs: Map<string, Output> = new Map();
   private running = false;
   private healthTimer: NodeJS.Timeout | null = null;
-  private readonly openClawGate = new OpenClawGateBlock('openclaw-gate');
+  private openClawGate = new OpenClawGateBlock('openclaw-gate');
 
   constructor(private config: CoreDaemonConfig = {}) {
     this.hub = new HubCore(registry);
@@ -74,6 +74,12 @@ export class CoreDaemon {
     const inputsCfg = loadInputsConfig();
     const outputsCfg = loadOutputsConfig();
     const routesCfg = loadRoutesConfig();
+
+    // Derive OpenClaw pluginDir from configured inputs/outputs
+    const openClawInputConfig = inputsCfg.inputs.find((item) => item.kind === 'openclaw' && item.enabled)?.config as { pluginDir?: string } | undefined;
+    const openClawOutputConfig = outputsCfg.outputs.find((item) => item.kind === 'openclaw' && item.enabled)?.config as { pluginDir?: string } | undefined;
+    const openClawPluginDir = openClawInputConfig?.pluginDir ?? openClawOutputConfig?.pluginDir;
+    this.openClawGate = new OpenClawGateBlock('openclaw-gate', { pluginDir: openClawPluginDir });
 
     // Register routes
     for (const route of routesCfg.routes) {

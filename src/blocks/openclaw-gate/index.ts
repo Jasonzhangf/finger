@@ -8,6 +8,8 @@
  * 2. Orchestration layer - composition
  * 3. UI layer - presentation
  */
+import fs from 'fs';
+import path from 'path';
 import { BaseBlock, type BlockCapabilities } from '../../core/block.js';
 
 export interface OpenClawPlugin {
@@ -30,6 +32,21 @@ export interface OpenClawTool {
   description: string;
   inputSchema: Record<string, unknown>;
   outputSchema: Record<string, unknown>;
+}
+
+
+export interface OpenClawPluginManifest {
+  id: string;
+  name?: string;
+  version?: string;
+  status?: 'installed' | 'enabled' | 'disabled' | 'error';
+  metadata?: {
+    author?: string;
+    description?: string;
+    category?: string;
+    icon?: string;
+  };
+  tools?: OpenClawTool[];
 }
 
 export class OpenClawGateError extends Error {
@@ -60,9 +77,11 @@ export class OpenClawGateBlock extends BaseBlock {
   };
 
   private plugins: Map<string, OpenClawPlugin> = new Map();
+  private pluginDir?: string;
 
-  constructor(id: string) {
+  constructor(id: string, options?: { pluginDir?: string }) {
     super(id, 'openclaw-gate');
+    this.pluginDir = options?.pluginDir;
     this.loadPlugins();
   }
 
@@ -203,8 +222,45 @@ export class OpenClawGateBlock extends BaseBlock {
   }
 
   private loadPlugins(): void {
-    // TODO: Load plugins from persistent storage
-    // For now, start empty
-    this.updateState({ data: { plugins: 0, tools: 0 } });
+    if (!this.pluginDir || this.pluginDir.trim().length === 0) {
+      this.updateState({ data: { plugins: this.plugins.size, tools: this.countAvailableTools() } });
+      return;
+    }
+
+    const resolvedPluginDir = this.pluginDir.trim();
+    if (!fs.existsSync(resolvedPluginDir)) {
+      this.updateState({ data: { plugins: this.plugins.size, tools: this.countAvailableTools() } });
+      return;
+    }
+
+    const entries = fs.readdirSync(resolvedPluginDir, { withFileTypes: true });
+    for (const entry of entries) {
+      if (!entry.isFile() || !entry.name.endsWith('.json')) continue;
+      const manifestPath = path.join(resolvedPluginDir, entry.name);
+      try {
+        const raw = fs.readFileSync(manifestPath, 'utf-8');
+        const manifest = JSON.parse(raw) as OpenClawPluginManifest;
+        if (!manifest.id || typeof manifest.id !== 'string') continue;
+
+        const plugin: OpenClawPlugin = {
+          id: manifest.id,
+          name: manifest.name || manifest.id,
+          version: manifest.version || '0.0.1',
+          status: manifest.status || 'installed',
+          metadata: {
+            author: manifest.metadata?.author,
+            description: manifest.metadata?.description,
+            category: manifest.metadata?.category,
+            icon: manifest.metadata?.icon,
+          },
+          tools: Array.isArray(manifest.tools) ? manifest.tools : [],
+        };
+        this.plugins.set(plugin.id, plugin);
+      } catch {
+        // ignore malformed manifest during startup
+      }
+    }
+
+    this.updateState({ data: { plugins: this.plugins.size, tools: this.countAvailableTools() } });
   }
 }
