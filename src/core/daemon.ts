@@ -24,6 +24,8 @@ import type { ExecConfig } from '../outputs/exec.js';
 import type { FileConfig } from '../outputs/file.js';
 import type { RegistryEntry, RouteRule } from './schema.js';
 import { registry } from './registry-new.js';
+import { OpenClawGateBlock } from '../blocks/openclaw-gate/index.js';
+import { invokeOpenClawFromMessage } from '../orchestration/openclaw-adapter/index.js';
 
 const FINGER_DIR = FINGER_PATHS.runtime.dir;
 const PID_FILE = FINGER_PATHS.runtime.daemonPid;
@@ -42,6 +44,7 @@ export class CoreDaemon {
   private outputs: Map<string, Output> = new Map();
   private running = false;
   private healthTimer: NodeJS.Timeout | null = null;
+  private readonly openClawGate = new OpenClawGateBlock('openclaw-gate');
 
   constructor(private config: CoreDaemonConfig = {}) {
     this.hub = new HubCore(registry);
@@ -205,6 +208,15 @@ case 'openclaw':
 
   private async handleMessage(msg: Message): Promise<void> {
     this.snapshot.markDirty();
+
+    if (msg.type === 'openclaw-call') {
+      const openClawResult = await invokeOpenClawFromMessage(msg, this.openClawGate);
+      if (openClawResult) {
+        console.log('[Daemon] OpenClaw message handled via gate', msg.meta.id, openClawResult.ok);
+        return;
+      }
+    }
+
     const results = await this.hub.route(msg);
     console.log('[Daemon] Routed message', msg.meta.id, 'to', results.length, 'outputs');
   }
