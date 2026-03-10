@@ -16,8 +16,10 @@ import type { Input } from '../inputs/base.js';
 import type { Output } from '../outputs/base.js';
 import { StdinInput } from '../inputs/stdin.js';
 import { TimerInput } from '../inputs/timer.js';
+import { OpenClawInput } from '../inputs/openclaw.js';
 import { ExecOutput } from '../outputs/exec.js';
 import { FileOutput } from '../outputs/file.js';
+import { OpenClawOutput } from '../outputs/openclaw.js';
 import type { ExecConfig } from '../outputs/exec.js';
 import type { FileConfig } from '../outputs/file.js';
 import type { RegistryEntry, RouteRule } from './schema.js';
@@ -88,6 +90,9 @@ case 'exec':
 case 'file':
           output = new FileOutput(out.id, out.config as unknown as FileConfig);
           break;
+case 'openclaw':
+          output = new OpenClawOutput(out.id, out.config as never);
+          break;
         default:
           console.warn(`[Daemon] Unknown output kind: ${out.kind}`);
           continue;
@@ -119,6 +124,9 @@ case 'file':
           input = new TimerInput(inp.id, timerCfg);
           break;
         }
+        case 'openclaw':
+          input = new OpenClawInput(inp.id, inp.config as never);
+          break;
         default:
           console.warn(`[Daemon] Unknown input kind: ${inp.kind}`);
           continue;

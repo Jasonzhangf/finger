@@ -103,13 +103,6 @@ export interface RuntimeOverview {
   sessionPath?: string;
 }
 
-export interface RuntimeTokenUsage {
-  inputTokens?: number;
-  outputTokens?: number;
-  totalTokens?: number;
-  estimated?: boolean;
-}
-
 export interface ToolPanelOverview {
   availableTools: string[];
   exposedTools: string[];

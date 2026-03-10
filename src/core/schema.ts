@@ -80,6 +80,13 @@ export interface OutputsConfig {
   }>;
 }
 
+export interface OpenClawConfig {
+  gatewayUrl: string;
+  pluginDir: string;
+  timeoutMs?: number;
+  authToken?: string;
+}
+
 export interface RoutesConfig {
   version: "v1";
   routes: RouteRule[];

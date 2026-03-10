@@ -7,7 +7,7 @@
 import fs from 'fs';
 import path from 'path';
 import { FINGER_PATHS, ensureDir } from './finger-paths.js';
-import type { InputsConfig, OutputsConfig, RoutesConfig } from './schema.js';
+import type { InputsConfig, OutputsConfig, RoutesConfig, OpenClawConfig } from './schema.js';
 
 const CONFIG_DIR = FINGER_PATHS.config.dir;
 
@@ -123,6 +123,7 @@ export function loadInputsConfig(): InputsConfig {
   }
   const content = fs.readFileSync(path, 'utf-8');
   const parsed = parseYamlSimple(content) as InputsConfig;
+  validateOpenClawInputs(parsed);
   return parsed;
 }
 
@@ -133,6 +134,7 @@ export function loadOutputsConfig(): OutputsConfig {
   }
   const content = fs.readFileSync(path, 'utf-8');
   const parsed = parseYamlSimple(content) as OutputsConfig;
+  validateOpenClawOutputs(parsed);
   return parsed;
 }
 
@@ -148,6 +150,42 @@ export function loadRoutesConfig(): RoutesConfig {
 
 function getPath(filename: string): string {
   return path.join(CONFIG_DIR, filename);
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null;
+}
+
+function validateOpenClawConfig(config: unknown, owner: string): asserts config is OpenClawConfig {
+  if (!isRecord(config)) {
+    throw new Error(`${owner}: openclaw config must be an object`);
+  }
+  if (typeof config.gatewayUrl !== 'string' || config.gatewayUrl.trim().length === 0) {
+    throw new Error(`${owner}: openclaw config.gatewayUrl is required`);
+  }
+  if (typeof config.pluginDir !== 'string' || config.pluginDir.trim().length === 0) {
+    throw new Error(`${owner}: openclaw config.pluginDir is required`);
+  }
+  if (config.timeoutMs !== undefined && (typeof config.timeoutMs !== 'number' || !Number.isFinite(config.timeoutMs))) {
+    throw new Error(`${owner}: openclaw config.timeoutMs must be a finite number when provided`);
+  }
+  if (config.authToken !== undefined && typeof config.authToken !== 'string') {
+    throw new Error(`${owner}: openclaw config.authToken must be a string when provided`);
+  }
+}
+
+function validateOpenClawInputs(config: InputsConfig): void {
+  for (const input of config.inputs ?? []) {
+    if (input.kind !== 'openclaw') continue;
+    validateOpenClawConfig(input.config, `inputs.${input.id}`);
+  }
+}
+
+function validateOpenClawOutputs(config: OutputsConfig): void {
+  for (const output of config.outputs ?? []) {
+    if (output.kind !== 'openclaw') continue;
+    validateOpenClawConfig(output.config, `outputs.${output.id}`);
+  }
 }
 
 // Write helpers

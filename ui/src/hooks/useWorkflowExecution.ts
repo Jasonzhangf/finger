@@ -75,6 +75,7 @@ import type {
   InputLockState,
   OrchestratorRuntimeModeState,
   RuntimeOverview,
+  RuntimeTokenUsage,
   SessionLog,
   ToolPanelOverview,
   UseWorkflowExecutionReturn,
@@ -1373,8 +1374,9 @@ export function useWorkflowExecution(
         const message = extractErrorMessageFromBody(body) ?? `HTTP ${res.status}`;
         throw new Error(message);
       }
-      const interruptedCount = typeof body?.result?.interruptedCount === 'number'
-        ? body.result.interruptedCount
+      const resultRecord = isRecord(body?.result) ? body.result : null;
+      const interruptedCount = typeof resultRecord?.interruptedCount === 'number'
+        ? resultRecord.interruptedCount
         : 0;
       const interrupted = interruptedCount > 0;
       setAgentRunStatus({
@@ -1713,7 +1715,12 @@ export function useWorkflowExecution(
       if (!responseData || responseData.error) {
         throw new Error(responseData?.error || 'Empty response from daemon');
       }
-      const { tokenUsage, pendingInputAccepted } = extractChatReply(responseData.result, sessionAgentId);
+      const { tokenUsage, pendingInputAccepted } = (extractChatReply as (result: unknown, fallbackAgentId?: string) => {
+        reply: string;
+        agentId: string;
+        tokenUsage?: RuntimeTokenUsage;
+        pendingInputAccepted?: boolean;
+      })(responseData.result, sessionAgentId);
       if (pendingInputAccepted) {
         await loadSessionMessages();
         setAgentRunStatus({

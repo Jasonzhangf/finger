@@ -6,7 +6,10 @@ import { mapWsMessageToRuntimeEvent } from './useWorkflowExecution.ws.js';
 
 describe('useWorkflowExecution agent source of truth helpers', () => {
   it('extractChatReply uses session agent fallback when module is absent', () => {
-    const result = extractChatReply({ response: 'ok' }, 'custom-orchestrator');
+    const result = (extractChatReply as (result: unknown, fallbackAgentId?: string) => {
+      reply: string;
+      agentId: string;
+    })({ response: 'ok' }, 'custom-orchestrator');
     expect(result.agentId).toBe('custom-orchestrator');
     expect(result.reply).toBe('ok');
   });

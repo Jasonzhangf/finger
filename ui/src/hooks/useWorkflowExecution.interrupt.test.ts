@@ -57,7 +57,7 @@ describe('useWorkflowExecution interruptCurrentTurn', () => {
       await result.current.interruptCurrentTurn();
     });
 
-    const interruptCall = fetchMock.mock.calls.find(([input]: [RequestInfo | URL]) => String(input).includes('/api/v1/agents/control'));
+    const interruptCall = fetchMock.mock.calls.find((call) => String(call[0]).includes('/api/v1/agents/control'));
     expect(interruptCall).toBeTruthy();
     const body = JSON.parse(String((interruptCall?.[1] as RequestInit | undefined)?.body ?? '{}'));
     expect(body).toMatchObject({

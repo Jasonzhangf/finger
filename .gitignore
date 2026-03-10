@@ -10,6 +10,8 @@ logs/snapshots/
 .beads/*.jsonl
 .beads/last-touched
 .beads/export-state/
+# Local reminder scratch file
+clock.md
 
 # Temporary test files
 *.test.ts.tmp

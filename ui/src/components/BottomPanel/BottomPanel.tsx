@@ -887,7 +887,8 @@ export const BottomPanel: React.FC<BottomPanelProps> = ({
                       <div className="agent-config-ref">
                         {(() => {
                           const config = findConfigForAgent(agent, configs);
-                          const sourceLabel = `来源: ${agent.source}`;
+                          const sourceLabel = `来源: ${agent.id}`;
+
                           if (!config) return sourceLabel;
                           return `配置: ${config.id} · ${sourceLabel}`;
                         })()}
@@ -913,7 +914,7 @@ export const BottomPanel: React.FC<BottomPanelProps> = ({
                   const toneClass = resolveRuntimeToneClass(instance.status);
                   const binding = resolveInstanceBinding(instance, staticAgents, configs);
                   const displayName = resolveInstanceDisplayName(instance, staticAgents, configs);
-                  const sourceLabel = ` · 来源 ${binding.agent?.source ?? instance.source}`;
+                  const sourceLabel = ` · 来源 ${instance.agentId}`;
                   const boundRuntimeAgent = runtimeAgents.find((agent) => agent.id === instance.agentId);
                   const runtimeLastEvent = boundRuntimeAgent?.lastEvent;
                   const dispatchSummary = runtimeLastEvent?.type === 'dispatch'

@@ -155,7 +155,7 @@ describe('ChatInterface request details rendering', () => {
   it('renders dryrun details with target and agent id separately', () => {
     const events: RuntimeEvent[] = [
       buildEvent({
-        role: 'assistant',
+        role: 'agent',
         content: 'Dryrun 就绪：target finger-orchestrator-gateway · agent finger-orchestrator · orchestrator · tools 2',
         agentId: 'finger-orchestrator',
         agentName: 'finger-orchestrator',

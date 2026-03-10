@@ -7,6 +7,8 @@ import type {
 interface AgentLike {
   id: string;
   name: string;
+  source?: string;
+
   type: string;
 }
 
