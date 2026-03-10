@@ -21,12 +21,15 @@ export interface MailboxSnapshot {
   currentSeq: number;
   entries: MailboxSnapshotEntry[];
   hasUnread: boolean;
+  /** Last seq that was already notified to model */
+  lastNotifiedSeq?: number;
 }
 
 export function buildMailboxSnapshot(
   mailbox: Mailbox,
   sessionId?: string,
-  lastSeenSeq: number = 0
+  lastSeenSeq: number = 0,
+  lastNotifiedSeq: number = 0
 ): MailboxSnapshot {
   const currentSeq = mailbox.getCurrentSeq();
   const delta = mailbox.listDelta(lastSeenSeq, { sessionId });
@@ -48,7 +51,22 @@ export function buildMailboxSnapshot(
     currentSeq,
     entries,
     hasUnread: entries.length > 0,
+    lastNotifiedSeq,
   };
+}
+
+/** Check if there are new unread messages since last notified */
+export function hasNewUnreadSinceLastNotified(snapshot: MailboxSnapshot): boolean {
+  if (!snapshot.hasUnread) return false;
+  const lastNotified = snapshot.lastNotifiedSeq ?? 0;
+  const maxSeqInSnapshot = snapshot.entries.length > 0 ? Math.max(...snapshot.entries.map(e => e.seq)) : 0;
+  return maxSeqInSnapshot > lastNotified;
+}
+
+/** Get only new unread entries since last notified */
+export function getNewUnreadEntries(snapshot: MailboxSnapshot): MailboxSnapshotEntry[] {
+  const lastNotified = snapshot.lastNotifiedSeq ?? 0;
+  return snapshot.entries.filter(e => e.seq > lastNotified);
 }
 
 function extractShortDescription(msg: MailboxMessage): string {

@@ -17,6 +17,7 @@ import {
 import { FINGER_PATHS, ensureDir, normalizeSessionDirName } from '../../core/finger-paths.js';
 import { FINGER_SOURCE_ROOT } from '../../core/source-root.js';
 import type { MailboxSnapshot } from '../../runtime/mailbox-snapshot.js';
+import { hasNewUnreadSinceLastNotified, getNewUnreadEntries } from '../../runtime/mailbox-snapshot.js';
 
 const DEFAULT_KERNEL_TIMEOUT_MS = 600_000;
 const DEFAULT_KERNEL_TIMEOUT_RETRY_COUNT = 5;
@@ -1655,12 +1656,12 @@ function buildKernelUserTurnOptions(
   const role = resolveDeveloperRoleFromMetadata(metadata);
   let developerInstructions = resolveDeveloperInstructions(metadata, developerPromptPaths, role);
 
-  if (context?.mailboxSnapshot && context.mailboxSnapshot.entries.length > 0) {
+  if (context?.mailboxSnapshot && hasNewUnreadSinceLastNotified(context.mailboxSnapshot)) {
+    const newEntries = getNewUnreadEntries(context.mailboxSnapshot);
     const mailboxBlock = [
-      '## Mailbox Snapshot',
-      `current_seq=${context.mailboxSnapshot.currentSeq}`,
-      `has_unread=${context.mailboxSnapshot.hasUnread}`,
-      ...context.mailboxSnapshot.entries.map((entry) => `- [${entry.seq}] ${entry.shortDescription}`),
+      '## Mailbox Pending Notice',
+      `new_unread_since_last_notification=${newEntries.length}`,
+      ...newEntries.map((entry) => `- [${entry.seq}] ${entry.shortDescription}`),
     ].join('\n');
 
     developerInstructions = developerInstructions
