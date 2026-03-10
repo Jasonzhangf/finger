@@ -173,8 +173,6 @@ export class OpenClawGateBlock extends BaseBlock {
       throw new Error(`Tool ${toolId} not found in plugin ${pluginId}`);
     }
 
-    // TODO: Implement actual tool calling logic
-    // This will be connected to OpenClaw Gate protocol
     return {
       result: {
         pluginId,
