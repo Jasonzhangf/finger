@@ -16,6 +16,7 @@ import {
 } from './agent-role-config.js';
 import { FINGER_PATHS, ensureDir, normalizeSessionDirName } from '../../core/finger-paths.js';
 import { FINGER_SOURCE_ROOT } from '../../core/source-root.js';
+import type { MailboxSnapshot } from '../../runtime/mailbox-snapshot.js';
 
 const DEFAULT_KERNEL_TIMEOUT_MS = 600_000;
 const DEFAULT_KERNEL_TIMEOUT_RETRY_COUNT = 5;
@@ -127,6 +128,7 @@ export interface ChatCodexRunContext {
   systemPrompt?: string;
   history?: Array<{ role: 'user' | 'assistant' | 'system'; content: string }>;
   metadata?: Record<string, unknown>;
+  mailboxSnapshot?: MailboxSnapshot;
   developerPromptPaths?: Partial<Record<ChatCodexDeveloperRole, string>>;
   tools?: ChatCodexToolSpecification[];
   toolExecution?: ChatCodexToolExecutionConfig;
@@ -1276,6 +1278,7 @@ function writePromptInjectionSnapshot(input: {
   text: string;
   systemPrompt?: string;
   metadata?: Record<string, unknown>;
+  mailboxSnapshot?: MailboxSnapshot;
   roleProfile?: string;
   toolSpecifications: ChatCodexToolSpecification[];
   inputItems?: KernelInputItem[];
@@ -1650,7 +1653,21 @@ function buildKernelUserTurnOptions(
   }
 
   const role = resolveDeveloperRoleFromMetadata(metadata);
-  const developerInstructions = resolveDeveloperInstructions(metadata, developerPromptPaths, role);
+  let developerInstructions = resolveDeveloperInstructions(metadata, developerPromptPaths, role);
+
+  if (context?.mailboxSnapshot && context.mailboxSnapshot.entries.length > 0) {
+    const mailboxBlock = [
+      '## Mailbox Snapshot',
+      `current_seq=${context.mailboxSnapshot.currentSeq}`,
+      `has_unread=${context.mailboxSnapshot.hasUnread}`,
+      ...context.mailboxSnapshot.entries.map((entry) => `- [${entry.seq}] ${entry.shortDescription}`),
+    ].join('\n');
+
+    developerInstructions = developerInstructions
+      ? `${developerInstructions}\n\n${mailboxBlock}`
+      : mailboxBlock;
+  }
+
   if (developerInstructions) {
     options.developer_instructions = developerInstructions;
   }
