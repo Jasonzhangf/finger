@@ -1,5 +1,5 @@
 import type { ToolDefinition, ToolRegistry } from '../../runtime/tool-registry.js';
-import type { OpenClawGateBlock, OpenClawTool } from '../../blocks/openclaw-gate/index.js';
+import { OpenClawGateError, type OpenClawGateBlock, type OpenClawTool } from '../../blocks/openclaw-gate/index.js';
 import type { Message } from '../../core/schema.js';
 
 export interface OpenClawInvocationInput {
@@ -74,11 +74,13 @@ export async function invokeOpenClawFromMessage(
       output,
     };
   } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    const errorCode = error instanceof OpenClawGateError ? error.code : 'OPENCLAW_INVOCATION_ERROR';
     return {
       ok: false,
       pluginId: invocation.pluginId,
       toolId: invocation.toolId,
-      error: error instanceof Error ? error.message : String(error),
+      error: `${errorCode}: ${errorMessage}`,
     };
   }
 }

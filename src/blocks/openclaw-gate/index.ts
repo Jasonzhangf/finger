@@ -32,6 +32,16 @@ export interface OpenClawTool {
   outputSchema: Record<string, unknown>;
 }
 
+export class OpenClawGateError extends Error {
+  code: 'OPENCLAW_PLUGIN_NOT_FOUND' | 'OPENCLAW_PLUGIN_DISABLED' | 'OPENCLAW_TOOL_NOT_FOUND';
+
+  constructor(code: OpenClawGateError['code'], message: string) {
+    super(`${code}: ${message}`);
+    this.name = 'OpenClawGateError';
+    this.code = code;
+  }
+}
+
 export class OpenClawGateBlock extends BaseBlock {
   readonly type = 'openclaw-gate';
   readonly capabilities: BlockCapabilities = {
@@ -163,14 +173,14 @@ export class OpenClawGateBlock extends BaseBlock {
   callTool(pluginId: string, toolId: string, input: Record<string, unknown>): { result: unknown; success: boolean } {
     const plugin = this.plugins.get(pluginId);
     if (!plugin) {
-      throw new Error(`Plugin ${pluginId} not found`);
+      throw new OpenClawGateError('OPENCLAW_PLUGIN_NOT_FOUND', `Plugin ${pluginId} not found`);
     }
     if (plugin.status !== 'enabled') {
-      throw new Error(`Plugin ${pluginId} is not enabled`);
+      throw new OpenClawGateError('OPENCLAW_PLUGIN_DISABLED', `Plugin ${pluginId} is not enabled`);
     }
     const tool = plugin.tools.find(t => t.id === toolId);
     if (!tool) {
-      throw new Error(`Tool ${toolId} not found in plugin ${pluginId}`);
+      throw new OpenClawGateError('OPENCLAW_TOOL_NOT_FOUND', `Tool ${toolId} not found in plugin ${pluginId}`);
     }
 
     return {

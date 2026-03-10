@@ -69,3 +69,44 @@ describe('openclaw adapter', () => {
     expect((result as any).success).toBe(true);
   });
 });
+
+
+  it('returns explicit disabled error from adapter when plugin is disabled', async () => {
+    const gate = new OpenClawGateBlock('gate-1');
+    gate.installPlugin('plugin-a', { name: 'Plugin A' });
+    gate.addTool('plugin-a', {
+      id: 'tool-1',
+      name: 'Tool 1',
+      description: 'test tool',
+      inputSchema: { type: 'object' },
+      outputSchema: { type: 'object' },
+    });
+
+    const result = await invokeOpenClawFromMessage({
+      type: 'openclaw-call',
+      payload: {
+        pluginId: 'plugin-a',
+        toolId: 'tool-1',
+        input: { y: 2 },
+      },
+    } as any, gate);
+
+    expect(result?.ok).toBe(false);
+    expect(result?.error).toContain('OPENCLAW_PLUGIN_DISABLED');
+  });
+
+  it('tool definition surfaces disabled error contract', async () => {
+    const gate = new OpenClawGateBlock('gate-1');
+    gate.installPlugin('plugin-a', { name: 'Plugin A' });
+    const tool = {
+      id: 'tool-1',
+      name: 'Tool 1',
+      description: 'test tool',
+      inputSchema: { type: 'object' },
+      outputSchema: { type: 'object' },
+    };
+    gate.addTool('plugin-a', tool);
+
+    const def = toOpenClawToolDefinition('plugin-a', tool, gate);
+    await expect(def.handler({ hello: 'world' })).rejects.toThrow('OPENCLAW_PLUGIN_DISABLED');
+  });

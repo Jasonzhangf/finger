@@ -61,3 +61,23 @@ describe('OpenClawGateBlock', () => {
     });
   });
 });
+
+
+  it('throws explicit disabled error when plugin is not enabled', () => {
+    const gate = new OpenClawGateBlock('gate-1');
+    gate.installPlugin('plugin-a', { name: 'Plugin A' });
+    gate.addTool('plugin-a', {
+      id: 'tool-1',
+      name: 'Tool 1',
+      description: 'test tool',
+      inputSchema: { type: 'object' },
+      outputSchema: { type: 'object' },
+    });
+
+    expect(() => gate.callTool('plugin-a', 'tool-1', {})).toThrowError('OPENCLAW_PLUGIN_DISABLED');
+  });
+
+  it('throws explicit not found error when plugin does not exist', () => {
+    const gate = new OpenClawGateBlock('gate-1');
+    expect(() => gate.callTool('missing', 'tool-1', {})).toThrowError('OPENCLAW_PLUGIN_NOT_FOUND');
+  });
