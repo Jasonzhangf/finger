@@ -59,6 +59,12 @@ export class OpenClawGateError extends Error {
   }
 }
 
+export type OpenClawGateEvent =
+  | { type: 'plugin_enabled'; pluginId: string; tools: OpenClawTool[] }
+  | { type: 'plugin_disabled'; pluginId: string; toolNames: string[] }
+  | { type: 'plugin_installed'; pluginId: string; tools: OpenClawTool[] }
+  | { type: 'plugin_uninstalled'; pluginId: string; toolNames: string[] };
+
 export class OpenClawGateBlock extends BaseBlock {
   readonly type = 'openclaw-gate';
   readonly capabilities: BlockCapabilities = {
@@ -78,6 +84,7 @@ export class OpenClawGateBlock extends BaseBlock {
 
   private plugins: Map<string, OpenClawPlugin> = new Map();
   private pluginDir?: string;
+  private eventListeners: Array<(event: OpenClawGateEvent) => void> = [];
 
   constructor(id: string, options?: { pluginDir?: string }) {
     super(id, 'openclaw-gate');
@@ -131,15 +138,25 @@ export class OpenClawGateBlock extends BaseBlock {
 
     this.plugins.set(pluginId, plugin);
     this.updateState({ data: { plugins: this.plugins.size, tools: this.countAvailableTools() } });
+    this.emitEvent({ type: 'plugin_installed', pluginId, tools: plugin.tools });
     return plugin;
   }
 
   uninstallPlugin(pluginId: string): { uninstalled: boolean } {
+    const plugin = this.plugins.get(pluginId);
     const uninstalled = this.plugins.delete(pluginId);
     if (uninstalled) {
       this.updateState({ data: { plugins: this.plugins.size, tools: this.countAvailableTools() } });
+      if (plugin) {
+        const toolNames = plugin.tools.map(t => `openclaw.${pluginId}.${t.id}`);
+        this.emitEvent({ type: 'plugin_uninstalled', pluginId, toolNames });
+      }
     }
     return { uninstalled };
+  }
+
+  addEventListener(listener: (event: OpenClawGateEvent) => void): void {
+    this.eventListeners.push(listener);
   }
 
   enablePlugin(pluginId: string): OpenClawPlugin {
@@ -149,6 +166,7 @@ export class OpenClawGateBlock extends BaseBlock {
     }
     plugin.status = 'enabled';
     this.updateState({ data: { plugins: this.plugins.size, tools: this.countAvailableTools() } });
+    this.emitEvent({ type: 'plugin_enabled', pluginId, tools: plugin.tools });
     return plugin;
   }
 
@@ -159,6 +177,8 @@ export class OpenClawGateBlock extends BaseBlock {
     }
     plugin.status = 'disabled';
     this.updateState({ data: { plugins: this.plugins.size, tools: this.countAvailableTools() } });
+    const toolNames = plugin.tools.map(t => `openclaw.${pluginId}.${t.id}`);
+    this.emitEvent({ type: 'plugin_disabled', pluginId, toolNames });
     return plugin;
   }
 
@@ -262,5 +282,13 @@ export class OpenClawGateBlock extends BaseBlock {
     }
 
     this.updateState({ data: { plugins: this.plugins.size, tools: this.countAvailableTools() } });
+  }
+
+  private emitEvent(event: OpenClawGateEvent): void {
+    for (const listener of this.eventListeners) {
+      try {
+        listener(event);
+      } catch {}
+    }
   }
 }

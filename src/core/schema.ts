@@ -4,6 +4,17 @@
 
 export const CURRENT_VERSION = "v1";
 
+export interface OpenClawChannelMeta {
+  channelId: string;
+  accountId: string;
+  senderId: string;
+  senderName?: string;
+  chatType: "direct" | "group" | "channel";
+  threadId?: string;
+  messageId: string;
+  originalTimestamp: number;
+}
+
 export interface Message {
   version: "v1";
   type: string;
@@ -14,6 +25,7 @@ export interface Message {
     source: string;
     dest?: string;
     traceId?: string;
+    channelMeta?: OpenClawChannelMeta;
   };
 }
 
@@ -21,7 +33,11 @@ export function createMessage(
   type: string,
   payload: unknown,
   source: string,
-  options?: { dest?: string; traceId?: string }
+  options?: {
+    dest?: string;
+    traceId?: string;
+    channelMeta?: OpenClawChannelMeta;
+  }
 ): Message {
   return {
     version: CURRENT_VERSION,

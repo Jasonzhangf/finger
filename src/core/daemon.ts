@@ -24,8 +24,9 @@ import type { ExecConfig } from '../outputs/exec.js';
 import type { FileConfig } from '../outputs/file.js';
 import type { RegistryEntry, RouteRule } from './schema.js';
 import { registry } from './registry-new.js';
-import { OpenClawGateBlock } from '../blocks/openclaw-gate/index.js';
-import { invokeOpenClawFromMessage } from '../orchestration/openclaw-adapter/index.js';
+import { OpenClawGateBlock, type OpenClawGateEvent } from '../blocks/openclaw-gate/index.js';
+import { invokeOpenClawFromMessage, toOpenClawToolDefinition } from '../orchestration/openclaw-adapter/index.js';
+import { globalToolRegistry } from '../runtime/tool-registry.js';
 
 const FINGER_DIR = FINGER_PATHS.runtime.dir;
 const PID_FILE = FINGER_PATHS.runtime.daemonPid;
@@ -80,6 +81,24 @@ export class CoreDaemon {
     const openClawOutputConfig = outputsCfg.outputs.find((item) => item.kind === 'openclaw' && item.enabled)?.config as { pluginDir?: string } | undefined;
     const openClawPluginDir = openClawInputConfig?.pluginDir ?? openClawOutputConfig?.pluginDir;
     this.openClawGate = new OpenClawGateBlock('openclaw-gate', { pluginDir: openClawPluginDir });
+
+    // Register event listener for dynamic tool updates
+    this.openClawGate.addEventListener((event: OpenClawGateEvent) => {
+      switch (event.type) {
+        case 'plugin_enabled':
+        case 'plugin_installed':
+          for (const tool of event.tools) {
+            globalToolRegistry.register(toOpenClawToolDefinition(event.pluginId, tool, this.openClawGate));
+          }
+          break;
+        case 'plugin_disabled':
+        case 'plugin_uninstalled':
+          for (const toolName of event.toolNames) {
+            globalToolRegistry.unregister(toolName);
+          }
+          break;
+      }
+    });
 
     // Register routes
     for (const route of routesCfg.routes) {
@@ -198,16 +217,17 @@ case 'openclaw':
     for (const input of this.inputs.values()) {
       await input.stop();
     }
+
     for (const output of this.outputs.values()) {
       await output.stop();
     }
 
     this.snapshot.stop();
-    this.timer.stopAll();
 
-    if (fs.existsSync(PID_FILE)) {
+    // Remove PID file
+    try {
       fs.unlinkSync(PID_FILE);
-    }
+    } catch {}
 
     console.log('[Daemon] Stopped');
   }
@@ -243,9 +263,8 @@ case 'openclaw':
   getStatus() {
     return {
       running: this.running,
-      inputs: Array.from(this.inputs.keys()),
-      outputs: Array.from(this.outputs.keys()),
-      routes: registry.getRoutes().length,
+      inputs: this.inputs.size,
+      outputs: this.outputs.size,
     };
   }
 }
