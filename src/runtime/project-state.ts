@@ -14,7 +14,7 @@ const PROJECT_STATE_VERSION = '1';
 
 function getProjectStatePath(projectPath: string): string {
   const hash = crypto.createHash('sha256').update(projectPath).digest('hex');
-  return path.join(FINGER_PATHS.runtime.stateDir, `${hash}.json`);
+  return path.join(path.join(FINGER_PATHS.runtime.dir, "state"), `${hash}.json`);
 }
 
 export function readProjectState(projectPath: string): ProjectState | null {

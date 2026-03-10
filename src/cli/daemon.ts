@@ -1,6 +1,5 @@
 import { Command } from 'commander';
 import { OrchestrationDaemon } from '../orchestration/daemon.js';
-import fetch from 'node-fetch';
 import { loadModuleManifest } from '../orchestration/module-manifest.js';
 
 interface SendOptions {
@@ -78,7 +77,7 @@ export function registerDaemonCommand(program: Command): void {
 
       const config = d.getConfig();
       
-      fetch(`http://localhost:${config.port}/api/v1/modules`, { timeout: 5000 })
+      fetch(`http://localhost:${config.port}/api/v1/modules`, { signal: AbortSignal.timeout(5000) })
         .then(res => res.json())
         .then(data => {
           if (options.json) {

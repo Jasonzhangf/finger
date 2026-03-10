@@ -1,5 +1,4 @@
 import { Command } from 'commander';
-import fetch from 'node-fetch';
 import ora from 'ora';
 
 const MAILBOX_BASE_URL = process.env.FINGER_HUB_URL || 'http://localhost:9999';

@@ -1,4 +1,4 @@
-import { Router, type Request, type Response } from 'express';
+import { Router, type Request, type Response, type Express } from 'express';
 import { exec } from 'child_process';
 import { promisify } from 'util';
 import { readdirSync, existsSync } from 'fs';
@@ -6,7 +6,7 @@ import { join, relative } from 'path';
 
 const execAsync = promisify(exec);
 
-const router = Router();
+const router: ReturnType<typeof Router> = Router();
 
 interface TestGroupConfig {
   id: string;

@@ -1,11 +1,10 @@
 /**
-import { readProjectState, getDefaultEnabledAgents } from "./project-state.js";
-
  * RuntimeFacade - 统一运行时门面
  * 提供给基础子 Agent 使用的统一接口
  */
 
 import type { WebSocket } from 'ws';
+import { readProjectState, getDefaultEnabledAgents } from "./project-state.js";
 import path from 'path';
 import { FINGER_PATHS, ensureDir } from '../core/finger-paths.js';
 import { UnifiedEventBus } from './event-bus.js';
@@ -136,11 +135,6 @@ export class RuntimeFacade {
     await this.eventBus.emit({
       type: 'session_created',
       sessionId: session.id,
-    // Load project state and auto-start enabled agents
-    const projectState = readProjectState(projectPath);
-    const enabledAgents = projectState?.enabledAgents ?? getDefaultEnabledAgents();
-    // TODO: Auto-start orchestrator and other enabled agents
-
       timestamp: new Date().toISOString(),
       payload: {
         name: session.name,
@@ -148,6 +142,11 @@ export class RuntimeFacade {
         messageCount: 0,
       },
     });
+
+    const projectState = readProjectState(projectPath);
+    const enabledAgents = projectState?.enabledAgents ?? getDefaultEnabledAgents();
+    void enabledAgents;
+    // TODO: Auto-start orchestrator and other enabled agents based on project state.
 
     return session;
   }

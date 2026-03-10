@@ -1,6 +1,4 @@
 import type { Express } from 'express';
-import { updateProjectStateEnabledAgents } from "../../runtime/project-state.js";
-
 import { readFileSync, writeFileSync } from 'fs';
 import path from 'path';
 import { ensureDir, FINGER_PATHS } from '../../core/finger-paths.js';
@@ -367,9 +365,6 @@ export function registerAgentConfigRoutes(app: Express, deps: AgentConfigRouteDe
         success: true,
         agentId,
         enabled,
-      // TODO: Update project state with enabled agents when we have projectPath
-      // For now, we need to get projectPath from request or session
-
         filePath: targetPath,
       });
     } catch (error) {
@@ -379,57 +374,55 @@ export function registerAgentConfigRoutes(app: Express, deps: AgentConfigRouteDe
   });
 
   app.get('/api/v1/agents/configs/schema', (_req, res) => {
+    res.json({ success: true, schema: agentJsonSchema });
+  });
+
   // POST /api/v1/agents/configs/create - Create new agent from template
-  app.post("""/api/v1/agents/configs/create"", async (req, res) => {
+  app.post('/api/v1/agents/configs/create', async (req, res) => {
     const { agentId, name, role, templateId } = req.body;
-    if (!agentId || typeof agentId !== ""string"" || agentId.trim().length === 0) {
-      res.status(400).json({ error: ""agentId (string) is required"" });
+    if (!agentId || typeof agentId !== 'string' || agentId.trim().length === 0) {
+      res.status(400).json({ error: 'agentId (string) is required' });
       return;
     }
     const safeAgentId = path.basename(agentId.trim());
     if (safeAgentId !== agentId.trim()) {
-      res.status(400).json({ error: ""agentId contains invalid characters"" });
+      res.status(400).json({ error: 'agentId contains invalid characters' });
       return;
     }
     const existingConfig = resolveAgentConfig(safeAgentId);
     if (existingConfig) {
-      res.status(409).json({ error: `Agent ""${safeAgentId}"" already exists` });
+      res.status(409).json({ error: `Agent "${safeAgentId}" already exists` });
       return;
     }
-    // Use finger-orchestrator as default template if none provided
-    const template = templateId && resolveAgentConfig(templateId) ? resolveAgentConfig(templateId) : resolveAgentConfig(""finger-orchestrator"");
+    const template = templateId && resolveAgentConfig(templateId)
+      ? resolveAgentConfig(templateId)
+      : resolveAgentConfig('finger-orchestrator');
     if (!template) {
-      res.status(404).json({ error: ""Template not found (neither finger-orchestrator nor specified template exists)"" });
+      res.status(404).json({ error: 'Template not found (neither finger-orchestrator nor specified template exists)' });
       return;
     }
     try {
       const targetPath = resolveNewAgentConfigPath(safeAgentId);
       if (!targetPath) {
-        res.status(400).json({ error: ""Invalid agent config path"" });
+        res.status(400).json({ error: 'Invalid agent config path' });
         return;
       }
-      // Create new config based on template
       const newConfig = {
         ...template.config,
         id: safeAgentId,
         name: name ?? safeAgentId,
-        role: role ?? ""general"",
+        role: role ?? 'general',
         enabled: true,
         instanceCount: 1,
       };
-      // Ensure directory exists
       ensureDir(path.dirname(targetPath));
-      // Write config file
-      writeFileSync(targetPath, JSON.stringify(newConfig, null, 2), ""utf-8"");
+      writeFileSync(targetPath, JSON.stringify(newConfig, null, 2), 'utf-8');
       reloadAgentJsonConfigs(getLoadedAgentConfigDir());
       res.json({ success: true, agentId: safeAgentId, filePath: targetPath });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       res.status(500).json({ error: `Failed to create agent: ${message}` });
     }
-  });
-
-    res.json({ success: true, schema: agentJsonSchema });
   });
 
   app.post('/api/v1/agents/configs/reload', (req, res) => {
