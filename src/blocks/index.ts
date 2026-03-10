@@ -10,3 +10,5 @@ export { StateBlock } from './state-block/index.js';
 export { OrchestratorBlock } from './orchestrator-block/index.js';
 export { WebSocketBlock } from './websocket-block/index.js';
 export { AgentRuntimeBlock } from './agent-runtime-block/index.js';
+export { OpenClawGateBlock } from './openclaw-gate/index.js';
+export { ThreadBindingBlock } from './thread-binding-block/index.js';

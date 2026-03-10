@@ -278,7 +278,10 @@ export function registerMessageRoutes(app: Express, deps: MessageRouteDeps): voi
       }
     }
 
-    const messageId = deps.mailbox.createMessage(body.target, requestMessage, body.sender, body.callbackId);
+    const messageId = deps.mailbox.createMessage(body.target, requestMessage, {
+      sender: body.sender,
+      callbackId: body.callbackId
+    });
     deps.mailbox.updateStatus(messageId, 'processing');
 
     deps.broadcast({ type: 'messageCreated', messageId, status: 'processing' });
