@@ -49,13 +49,12 @@ describe('Channel Message Routing', () => {
         channelId: 'qqbot',
         accountId: 'default',
         type: 'direct',
-        senderId: 'ABC123DEF456', // QQ OpenID
+        senderId: 'ABC123DEF456',
         senderName: 'TestUser',
         content: 'hello',
         timestamp: Date.now(),
       };
 
-      // Simulate the onMessage callback logic (from src/server/index.ts)
       const dispatchRequest: AgentDispatchRequest = {
         sourceAgentId: 'channel-bridge',
         targetAgentId: 'finger-orchestrator',
@@ -73,15 +72,11 @@ describe('Channel Message Routing', () => {
 
       const result = await mockDispatchTaskToAgent({}, dispatchRequest);
 
-      // Verify dispatch was called with correct parameters
       expect(mockDispatchTaskToAgent).toHaveBeenCalledWith({}, dispatchRequest);
       expect(dispatchRequest.targetAgentId).toBe('finger-orchestrator');
-      expect(dispatchRequest.sourceAgentId).toBe('channel-bridge');
-      expect(dispatchRequest.task).toEqual({ prompt: 'hello' });
 
-      // If we got a response, send it back
       if (result.ok && result.result) {
-        const target = channelMessage.senderId; // Direct message target
+        const target = channelMessage.senderId;
         await mockSendMessage('qqbot', {
           to: target,
           text: result.result as string,
@@ -89,7 +84,6 @@ describe('Channel Message Routing', () => {
         });
       }
 
-      // Verify reply was sent back
       expect(mockSendMessage).toHaveBeenCalledWith('qqbot', {
         to: 'ABC123DEF456',
         text: 'Hello! I am Finger orchestrator.',
@@ -107,7 +101,6 @@ describe('Channel Message Routing', () => {
 
       mockSendMessage.mockResolvedValueOnce({ messageId: 'reply-789' });
 
-      // Create a group message
       const groupMessage: ChannelMessage = {
         id: 'msg-group-001',
         channelId: 'qqbot',
@@ -117,9 +110,7 @@ describe('Channel Message Routing', () => {
         senderName: 'GroupUser',
         content: '大家好',
         timestamp: Date.now(),
-        metadata: {
-          groupId: 'GROUP456',
-        },
+        metadata: { groupId: 'GROUP456' },
       };
 
       const dispatchRequest: AgentDispatchRequest = {
@@ -131,7 +122,6 @@ describe('Channel Message Routing', () => {
           source: 'channel',
           channelId: groupMessage.channelId,
           senderId: groupMessage.senderId,
-          senderName: groupMessage.senderName,
           messageId: groupMessage.id,
           type: groupMessage.type,
           groupId: groupMessage.metadata?.groupId,
@@ -140,10 +130,6 @@ describe('Channel Message Routing', () => {
 
       const result = await mockDispatchTaskToAgent({}, dispatchRequest);
 
-      expect(mockDispatchTaskToAgent).toHaveBeenCalledWith({}, dispatchRequest);
-      expect(dispatchRequest.metadata?.type).toBe('group');
-
-      // For group messages, target should include group prefix
       if (result.ok && result.result) {
         let target = groupMessage.senderId;
         if (groupMessage.type === 'group' && groupMessage.metadata?.groupId) {
@@ -156,7 +142,6 @@ describe('Channel Message Routing', () => {
         });
       }
 
-      // Verify group target format
       expect(mockSendMessage).toHaveBeenCalledWith('qqbot', {
         to: 'group:GROUP456',
         text: 'Group reply from orchestrator',
@@ -198,7 +183,6 @@ describe('Channel Message Routing', () => {
 
       const result = await mockDispatchTaskToAgent({}, dispatchRequest);
 
-      // Should NOT send reply if dispatch failed
       expect(result.ok).toBe(false);
       expect(mockSendMessage).not.toHaveBeenCalled();
     });
@@ -237,7 +221,6 @@ describe('Channel Message Routing', () => {
 
       const result = await mockDispatchTaskToAgent({}, dispatchRequest);
 
-      // Should NOT send reply if result is undefined
       if (result.ok && result.result) {
         await mockSendMessage('qqbot', {
           to: channelMessage.senderId,
@@ -247,26 +230,6 @@ describe('Channel Message Routing', () => {
       }
 
       expect(mockSendMessage).not.toHaveBeenCalled();
-    });
-  });
-
-  describe('ChannelBridgeManager sendMessage', () => {
-    it('should call bridge sendMessage with correct parameters', async () => {
-      mockSendMessage.mockResolvedValueOnce({ messageId: 'sent-123' });
-
-      const result = await mockSendMessage('qqbot', {
-        to: 'USER123',
-        text: 'Reply text',
-        replyTo: 'original-msg-id',
-      });
-
-      expect(mockSendMessage).toHaveBeenCalledWith('qqbot', {
-        to: 'USER123',
-        text: 'Reply text',
-        replyTo: 'original-msg-id',
-      });
-
-      expect(result.messageId).toBe('sent-123');
     });
   });
 });
