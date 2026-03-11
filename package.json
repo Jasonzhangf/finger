@@ -47,7 +47,9 @@
     "express": "^5.2.1",
     "ora": "^9.3.0",
     "ws": "^8.18.0",
-    "yaml": "^2.8.2"
+    "yaml": "^2.8.2",
+    "mem0ai": "^2.3.0",
+    "@zilliz/milvus2-sdk-node": "^2.5.9"
   },
   "devDependencies": {
     "@types/express": "^5.0.6",

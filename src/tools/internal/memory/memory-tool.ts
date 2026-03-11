@@ -1,17 +1,26 @@
 /**
- * Memory Tool - 基于 Markdown 的记忆系统
- * 
+ * Memory Tool - 基于 Markdown + 语义搜索的记忆系统
+ *
  * 存储位置:
  * - 项目记忆: {projectPath}/MEMORY.md
  * - 系统记忆: ~/.finger/system/MEMORY.md
- * 
- * 支持: insert, search, list, compact, edit, delete
+ *
+ * 特性:
+ * - MEMORY.md 是唯一真源 (Single Source of Truth)
+ * - 支持 insert 时自动索引
+ * - 支持语义搜索 (embedding + Milvus Lite)
+ * - compact 保留原始条目，只添加 summary
+ *
+ * 支持: insert, search, list, compact, edit, delete, reindex
  */
 
 import { promises as fs } from 'fs';
 import * as path from 'path';
 import { FINGER_PATHS } from '../../../core/finger-paths.js';
 import { InternalTool } from '../types.js';
+import { getEmbeddingAdapter } from './embedding-adapter.js';
+import { getMilvusAdapter, resetMilvusAdapter } from './milvus-adapter.js';
+import { loadMemoryConfig } from './memory-config.js';
 
 export interface MemoryEntry {
   id: string;
@@ -24,7 +33,7 @@ export interface MemoryEntry {
 }
 
 export interface MemoryInput {
-  action: 'insert' | 'search' | 'list' | 'compact' | 'edit' | 'delete';
+  action: 'insert' | 'search' | 'list' | 'compact' | 'edit' | 'delete' | 'reindex';
   scope?: 'project' | 'system';
   project_path?: string;
   type?: MemoryEntry['type'];
@@ -48,6 +57,7 @@ export interface MemoryOutput {
   entry?: MemoryEntry;
   entries?: MemoryEntry[];
   error?: string;
+  indexed_count?: number;
 }
 
 const SYSTEM_MEMORY_PATH = path.join(FINGER_PATHS.home, 'system', 'MEMORY.md');
@@ -76,14 +86,19 @@ function parseMemoryFile(content: string): MemoryEntry[] {
     if (headerMatch) {
       if (currentEntry && currentEntry.id) {
         entries.push({
-          ...currentEntry,
+          id: currentEntry.id,
+          type: currentEntry.type!,
+          title: currentEntry.title!,
+          timestamp: currentEntry.timestamp || '',
           content: contentLines.join('\n').trim(),
-        } as MemoryEntry);
+          tags: currentEntry.tags || [],
+        });
       }
       currentEntry = {
         id: headerMatch[3],
         type: headerMatch[1] as MemoryEntry['type'],
         title: headerMatch[2],
+        tags: [],
       };
       contentLines = [];
       continue;
@@ -110,9 +125,13 @@ function parseMemoryFile(content: string): MemoryEntry[] {
 
   if (currentEntry && currentEntry.id) {
     entries.push({
-      ...currentEntry,
+      id: currentEntry.id,
+      type: currentEntry.type!,
+      title: currentEntry.title!,
+      timestamp: currentEntry.timestamp || '',
       content: contentLines.join('\n').trim(),
-    } as MemoryEntry);
+      tags: currentEntry.tags || [],
+    });
   }
 
   return entries;
@@ -124,7 +143,7 @@ function serializeEntry(entry: MemoryEntry): string {
     `> timestamp: \`${entry.timestamp}\``,
   ];
 
-  if (entry.tags.length > 0) {
+  if (entry.tags && entry.tags.length > 0) {
     lines.push(`> tags: ${entry.tags.map(t => `\`${t}\``).join(', ')}`);
   }
 
@@ -158,13 +177,63 @@ function scoreMatch(entry: MemoryEntry, query: string): number {
   return score;
 }
 
+async function indexEntry(
+  entry: MemoryEntry,
+  scope: 'project' | 'system',
+  projectPath?: string
+): Promise<void> {
+  try {
+    const embeddingAdapter = getEmbeddingAdapter();
+    const milvusAdapter = getMilvusAdapter(embeddingAdapter);
+
+    const textToEmbed = `${entry.title}\n${entry.content}`;
+    const { embedding } = await embeddingAdapter.embed(textToEmbed);
+
+    await milvusAdapter.insert({
+      id: entry.id,
+      embedding,
+      metadata: {
+        title: entry.title,
+        content: entry.content,
+        type: entry.type,
+        tags: entry.tags.join(','),
+        timestamp: entry.timestamp,
+        scope,
+        projectPath,
+      },
+    });
+  } catch (error) {
+    console.error('[Memory] Failed to index entry:', entry.id, error);
+  }
+}
+
+async function semanticSearch(
+  query: string,
+  scope: 'project' | 'system',
+  projectPath?: string,
+  limit: number = 10
+): Promise<Array<{ id: string; score: number }>> {
+  try {
+    const embeddingAdapter = getEmbeddingAdapter();
+    const milvusAdapter = getMilvusAdapter(embeddingAdapter);
+
+    const { embedding } = await embeddingAdapter.embed(query);
+    const results = await milvusAdapter.search(embedding, scope, projectPath, limit);
+
+    return results.map(r => ({ id: r.id, score: r.score }));
+  } catch (error) {
+    console.error('[Memory] Semantic search failed:', error);
+    return [];
+  }
+}
+
 export const memoryTool: InternalTool<unknown, MemoryOutput> = {
   name: 'memory',
-  description: 'Manage agent memory in MEMORY.md. Actions: insert, search, list, compact, edit, delete. Scope: project (default) or system.',
+  description: 'Manage agent memory in MEMORY.md with semantic search. Actions: insert, search, list, compact, edit, delete, reindex. Scope: project (default) or system.',
   inputSchema: {
     type: 'object',
     properties: {
-      action: { type: 'string', enum: ['insert', 'search', 'list', 'compact', 'edit', 'delete'] },
+      action: { type: 'string', enum: ['insert', 'search', 'list', 'compact', 'edit', 'delete', 'reindex'] },
       scope: { type: 'string', enum: ['project', 'system'] },
       project_path: { type: 'string' },
       type: { type: 'string', enum: ['fact', 'decision', 'error', 'discovery', 'preference', 'instruction', 'task', 'summary'] },
@@ -189,10 +258,12 @@ export const memoryTool: InternalTool<unknown, MemoryOutput> = {
     const memoryPath = getMemoryPath(scope, input.project_path);
 
     try {
+      loadMemoryConfig();
+
       try {
         await fs.access(memoryPath);
       } catch {
-        if (input.action === 'insert') {
+        if (input.action === 'insert' || input.action === 'reindex') {
           await fs.mkdir(path.dirname(memoryPath), { recursive: true });
           await fs.writeFile(memoryPath, serializeMemoryFile([]), 'utf-8');
         } else {
@@ -201,7 +272,7 @@ export const memoryTool: InternalTool<unknown, MemoryOutput> = {
       }
 
       const fileContent = await fs.readFile(memoryPath, 'utf-8');
-      const entries = parseMemoryFile(fileContent);
+      let entries = parseMemoryFile(fileContent);
 
       switch (input.action) {
         case 'insert': {
@@ -218,11 +289,28 @@ export const memoryTool: InternalTool<unknown, MemoryOutput> = {
 
           entries.unshift(entry);
           await fs.writeFile(memoryPath, serializeMemoryFile(entries), 'utf-8');
+          indexEntry(entry, scope, input.project_path).catch(() => {});
+
           return { ok: true, action: 'insert', entry };
         }
 
         case 'search': {
           if (!input.query) return { ok: false, action: 'search', error: 'query is required' };
+
+          const semanticResults = await semanticSearch(
+            input.query,
+            scope,
+            input.project_path,
+            input.limit || 10
+          );
+
+          if (semanticResults.length > 0) {
+            const idToScore = new Map(semanticResults.map(r => [r.id, r.score]));
+            const matchedEntries = entries
+              .filter(e => idToScore.has(e.id))
+              .sort((a, b) => (idToScore.get(b.id) || 0) - (idToScore.get(a.id) || 0));
+            return { ok: true, action: 'search', entries: matchedEntries };
+          }
 
           const results = entries
             .filter(e => fuzzyMatch(e.title, input.query!) || fuzzyMatch(e.content, input.query!))
@@ -243,24 +331,35 @@ export const memoryTool: InternalTool<unknown, MemoryOutput> = {
         }
 
         case 'compact': {
-          const keepCount = input.limit || 50;
-          if (entries.length <= keepCount) return { ok: true, action: 'compact', entries };
+          const config = loadMemoryConfig();
+          const threshold = config.compact.threshold;
+          const keepRecent = config.compact.keepRecent;
 
-          const kept = entries.slice(0, keepCount);
-          const removed = entries.slice(keepCount);
+          if (entries.length <= threshold) {
+            return { ok: true, action: 'compact', entries };
+          }
+
+          const olderEntries = entries.slice(keepRecent);
+          if (olderEntries.length === 0) {
+            return { ok: true, action: 'compact', entries };
+          }
 
           const summaryEntry: MemoryEntry = {
             id: generateId(),
             timestamp: new Date().toISOString(),
             type: 'summary',
-            title: `Compacted ${removed.length} entries`,
-            content: `Removed ${removed.length} older entries.`,
-            tags: ['compact'],
+            title: `Memory Summary - ${olderEntries.length} older entries`,
+            content: `Summary of ${olderEntries.length} entries (kept in full for reference):\n\n${
+              olderEntries.slice(0, 10).map(e => `- [${e.type}] ${e.title}`).join('\n')
+            }${olderEntries.length > 10 ? `\n... and ${olderEntries.length - 10} more` : ''}`,
+            tags: ['compact', 'summary'],
           };
 
-          kept.push(summaryEntry);
-          await fs.writeFile(memoryPath, serializeMemoryFile(kept), 'utf-8');
-          return { ok: true, action: 'compact', entry: summaryEntry, entries: kept };
+          entries.push(summaryEntry);
+          await fs.writeFile(memoryPath, serializeMemoryFile(entries), 'utf-8');
+          indexEntry(summaryEntry, scope, input.project_path).catch(() => {});
+
+          return { ok: true, action: 'compact', entry: summaryEntry, entries };
         }
 
         case 'edit': {
@@ -274,6 +373,8 @@ export const memoryTool: InternalTool<unknown, MemoryOutput> = {
 
           entries[index] = { ...entries[index], ...input.updates, id: entries[index].id, timestamp: new Date().toISOString() };
           await fs.writeFile(memoryPath, serializeMemoryFile(entries), 'utf-8');
+          indexEntry(entries[index], scope, input.project_path).catch(() => {});
+
           return { ok: true, action: 'edit', entry: entries[index] };
         }
 
@@ -288,7 +389,55 @@ export const memoryTool: InternalTool<unknown, MemoryOutput> = {
 
           const deleted = entries.splice(index, 1)[0];
           await fs.writeFile(memoryPath, serializeMemoryFile(entries), 'utf-8');
+
+          try {
+            const embeddingAdapter = getEmbeddingAdapter();
+            const milvusAdapter = getMilvusAdapter(embeddingAdapter);
+            await milvusAdapter.delete(input.entry_id);
+          } catch (error) {
+            console.error('[Memory] Failed to delete from vector index:', error);
+          }
+
           return { ok: true, action: 'delete', entry: deleted };
+        }
+
+        case 'reindex': {
+          let indexedCount = 0;
+          const embeddingAdapter = getEmbeddingAdapter();
+          const milvusAdapter = getMilvusAdapter(embeddingAdapter);
+
+          try {
+            await milvusAdapter.close();
+            resetMilvusAdapter();
+          } catch (error) {
+            // Ignore
+          }
+
+          for (const entry of entries) {
+            try {
+              const textToEmbed = `${entry.title}\n${entry.content}`;
+              const { embedding } = await embeddingAdapter.embed(textToEmbed);
+
+              await milvusAdapter.insert({
+                id: entry.id,
+                embedding,
+                metadata: {
+                  title: entry.title,
+                  content: entry.content,
+                  type: entry.type,
+                  tags: entry.tags.join(','),
+                  timestamp: entry.timestamp,
+                  scope,
+                  projectPath: input.project_path,
+                },
+              });
+              indexedCount++;
+            } catch (error) {
+              console.error('[Memory] Failed to index entry:', entry.id, error);
+            }
+          }
+
+          return { ok: true, action: 'reindex', indexed_count: indexedCount, entries };
         }
 
         default:
