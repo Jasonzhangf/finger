@@ -116,7 +116,7 @@ export interface PluginRuntimeApi {
         formatInboundEnvelope: (params: unknown) => unknown;
         finalizeInboundContext: (params: unknown) => unknown;
         resolveEffectiveMessagesConfig: (cfg: unknown, agentId: string) => unknown;
-        dispatchReplyWithBufferedBlockDispatcher: (params: { ctx: Record<string, unknown>; cfg: unknown; dispatcherOptions?: unknown }) => Promise<void>;
+        dispatchReplyWithBufferedBlockDispatcher: (params: { ctx: Record<string, unknown>; cfg: unknown; dispatcherOptions?: { responsePrefix?: string; deliver?: (payload: { text?: string }, info: { kind: 'tool' | 'block' }) => Promise<void> } }) => Promise<void>;
       };
     };
   };

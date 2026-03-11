@@ -102,20 +102,23 @@ export function createOpenClawRuntimeApi(params: {
           formatInboundEnvelope: (params: unknown) => params,
           finalizeInboundContext: (params: unknown) => params,
           resolveEffectiveMessagesConfig: (cfg: unknown, agentId: string) => ({}),
-          dispatchReplyWithBufferedBlockDispatcher: async (params: { ctx: Record<string, unknown>; cfg: unknown; dispatcherOptions?: unknown }) => {
-            // Bridge message to Finger
+          dispatchReplyWithBufferedBlockDispatcher: async (params: { ctx: Record<string, unknown>; cfg: unknown; dispatcherOptions?: { responsePrefix?: string; deliver?: (payload: { text?: string }, info: { kind: 'tool' | 'block' }) => Promise<void> } }) => {
+            // Bridge message to Finger and handle reply
             const ctx = params.ctx as Record<string, unknown>;
             const content = (ctx?.content as string) || '';
             const senderId = (ctx?.senderId as string) || '';
             const peerId = (ctx?.peerId as string) || '';
             const peerKind = (ctx?.peerKind as string) || 'direct';
+            const deliver = params.dispatcherOptions?.deliver;
+
+            logger.info?.(`[channel.reply] dispatchReply called - content: "${content.slice(0, 50)}", senderId: ${senderId}, peerKind: ${peerKind}`);
 
             // Get bridge manager and dispatch
             try {
               const { getChannelBridgeManager } = await import('../../bridges/manager.js');
               const manager = getChannelBridgeManager();
-              const bridge = manager.getBridge('qqbot');
-              if (bridge && (bridge as any).callbacks) {
+              const bridge = manager.getBridge('qqbot') as any;
+              if (bridge && bridge.callbacks_) {
                 const message = {
                   id: `qqbot-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
                   channelId: 'qqbot',
@@ -127,7 +130,17 @@ export function createOpenClawRuntimeApi(params: {
                   metadata: ctx,
                 };
                 logger.info?.(`[channel.reply] Bridging message: ${message.id} from ${senderId}`);
-                await (bridge as any).callbacks.onMessage(message);
+                
+                // Call onMessage to route to agent
+                await bridge.callbacks_.onMessage(message);
+                
+                // For now, send a simple acknowledgment via deliver
+                if (deliver) {
+                  await deliver({ text: '消息已收到，Finger 正在处理...' }, { kind: 'block' });
+                  logger.info?.(`[channel.reply] Sent acknowledgment via deliver`);
+                }
+              } else {
+                logger.error?.(`[channel.reply] Bridge or callbacks not found`);
               }
             } catch (err) {
               logger.error?.(`[channel.reply] Failed to bridge message: ${err}`);
