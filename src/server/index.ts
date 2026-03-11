@@ -149,8 +149,56 @@ app.use((req, _res, next) => {
 // Initialize Channel Bridge Manager
 const channelBridgeManager = getChannelBridgeManager({
   onMessage: async (msg: ChannelMessage) => {
-    console.log('[Server] Received channel message:', msg.id);
-    // TODO: Route message to appropriate agent
+    console.log('[Server] Received channel message:', msg.id, 'from', msg.senderId);
+    
+    // Route message to orchestrator agent
+    try {
+      const dispatchRequest: AgentDispatchRequest = {
+        sourceAgentId: 'channel-bridge',
+        targetAgentId: 'finger-orchestrator',
+        task: { prompt: msg.content },
+        sessionId: `qqbot-${msg.senderId}`,
+        metadata: {
+          source: 'channel',
+          channelId: msg.channelId,
+          senderId: msg.senderId,
+          senderName: msg.senderName,
+          messageId: msg.id,
+          type: msg.type,
+        },
+      };
+      
+      console.log('[Server] Dispatching to orchestrator:', dispatchRequest.targetAgentId);
+      const result = await dispatchTaskToAgent(dispatchRequest);
+      console.log('[Server] Dispatch result:', result?.status, result?.dispatchId);
+      
+      // Send response back to channel if we got a reply
+      if (result?.ok && result.result) {
+        const replyText = typeof result.result === 'string' ? result.result : '处理完成';
+        console.log('[Server] Sending reply to channel:', replyText.slice(0, 100));
+        
+        // Determine target based on message type
+        let target = msg.senderId;
+        if (msg.type === 'group' && msg.metadata?.groupId) {
+          target = `group:${msg.metadata.groupId}`;
+        }
+        
+        try {
+          const sendResult = await channelBridgeManager.sendMessage('qqbot', {
+            to: target,
+            text: replyText,
+            replyTo: msg.id,
+          });
+          console.log('[Server] Reply sent:', sendResult.messageId);
+        } catch (sendErr) {
+          console.error('[Server] Failed to send reply:', sendErr);
+        }
+      } else {
+        console.log('[Server] No response to send back, result:', result);
+      }
+    } catch (err) {
+      console.error('[Server] Failed to dispatch message:', err);
+    }
   },
   onError: (err: Error) => {
     console.error('[Server] Channel bridge error:', err);
