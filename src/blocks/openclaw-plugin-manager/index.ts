@@ -8,6 +8,7 @@ import fs from 'node:fs';
 import type { PluginSource, InstallPluginResult, PluginRecord, PluginRuntimeApi, PluginLogger } from './types.js';
 import { installPlugin } from './installer.js';
 import { loadAllPlugins, discoverPlugins } from './loader.js';
+import type { OpenClawGateBlock } from '../openclaw-gate/index.js';
 
 export type { OpenClawPluginManifest, PluginSource, InstallPluginResult, PluginRecord, PluginRuntimeApi, PluginLogger, OpenClawPluginDefinition } from './types.js';
 export { loadPluginManifest, parsePackageJsonExtensions } from './manifest.js';
@@ -17,6 +18,8 @@ export { loadPlugin, loadAllPlugins, discoverPlugins } from './loader.js';
 export type PluginManagerOptions = {
   pluginDir: string;
   logger?: PluginLogger;
+  gate?: OpenClawGateBlock;
+  pluginConfigs?: Record<string, Record<string, unknown>>;
 };
 
 const defaultLogger: PluginLogger = {
@@ -33,10 +36,14 @@ export class PluginManager {
   private logger: PluginLogger;
   private plugins: Map<string, PluginRecord> = new Map();
   private runtimeApi: PluginRuntimeApi;
+  private gate?: OpenClawGateBlock;
+  private pluginConfigs?: Record<string, Record<string, unknown>>;
 
   constructor(options: PluginManagerOptions) {
     this.pluginDir = options.pluginDir;
     this.logger = options.logger || defaultLogger;
+    this.gate = options.gate;
+    this.pluginConfigs = options.pluginConfigs;
     this.runtimeApi = this.createRuntimeApi();
   }
 
@@ -91,6 +98,8 @@ export class PluginManager {
     const records = await loadAllPlugins(this.pluginDir, this.runtimeApi, {
       pluginDir: this.pluginDir,
       logger: this.logger,
+      gate: this.gate,
+      pluginConfigs: this.pluginConfigs,
     });
 
     for (const record of records) {
@@ -119,7 +128,7 @@ export class PluginManager {
    * List installed plugins
    */
   listInstalled(): string[] {
-    return discoverPlugins(this.pluginDir);
+    return discoverPlugins(this.pluginDir, { includeOpenClawGlobal: false });
   }
 
   /**
@@ -151,8 +160,8 @@ export class PluginManager {
    */
   private createRuntimeApi(): PluginRuntimeApi {
     return {
-      registerChannel: (channelId: string, _handler: unknown) => {
-        this.logger.info?.('Channel registered: ' + channelId);
+      registerChannel: (_channelIdOrRegistration: unknown, _handler?: unknown) => {
+        this.logger.info?.('Channel registered');
       },
       registerTool: (_tool: unknown) => {
         this.logger.info?.('Tool registered');

@@ -17,29 +17,54 @@ vi.mock('../../../src/core/config-loader.js', async () => {
 
 const configLoader = await import('../../../src/core/config-loader.js');
 
+function writePlugin(pluginRoot: string, params: { id: string; tools?: { id: string; name: string }[] }) {
+  fs.mkdirSync(pluginRoot, { recursive: true });
+  fs.writeFileSync(
+    path.join(pluginRoot, 'package.json'),
+    JSON.stringify(
+      {
+        name: params.id,
+        version: '1.0.0',
+        type: 'module',
+        openclaw: {
+          id: params.id,
+          extensions: ['./index.js'],
+        },
+      },
+      null,
+      2,
+    ),
+  );
+
+  const toolsCode = params.tools?.map(t => 
+    `api.registerTool({ id: '${t.id}', name: '${t.name}', description: '${t.name} tool', inputSchema: { type: 'object' }, outputSchema: { type: 'object' } });`
+  ).join('\n') || '';
+
+  fs.writeFileSync(
+    path.join(pluginRoot, 'index.js'),
+    `export default {
+      id: '${params.id}',
+      register(api) {
+        ${toolsCode}
+      }
+    };`,
+    'utf-8',
+  );
+}
+
 describe('CoreDaemon openclaw pluginDir wiring', () => {
   let tempDir: string;
+  let openclawHome: string;
 
   beforeEach(() => {
     tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'finger-openclaw-daemon-'));
-    fs.writeFileSync(
-      path.join(tempDir, 'plugin-a.json'),
-      JSON.stringify({
-        id: 'plugin-a',
-        name: 'Plugin A',
-        status: 'enabled',
-        tools: [
-          {
-            id: 'tool-1',
-            name: 'Tool 1',
-            description: 'test tool',
-            inputSchema: { type: 'object' },
-            outputSchema: { type: 'object' },
-          },
-        ],
-      }),
-      'utf-8'
-    );
+    openclawHome = fs.mkdtempSync(path.join(os.tmpdir(), 'finger-openclaw-home-'));
+    process.env.OPENCLAW_STATE_DIR = openclawHome;
+
+    writePlugin(path.join(tempDir, 'plugin-a'), {
+      id: 'plugin-a',
+      tools: [{ id: 'tool-1', name: 'Tool 1' }],
+    });
 
     vi.mocked(configLoader.loadInputsConfig).mockReturnValue({
       version: 'v1',
@@ -64,6 +89,7 @@ describe('CoreDaemon openclaw pluginDir wiring', () => {
 
   afterEach(() => {
     vi.restoreAllMocks();
+    delete process.env.OPENCLAW_STATE_DIR;
   });
 
   it('loads plugin manifests into daemon gate and handles message via loaded plugin', async () => {
@@ -72,6 +98,7 @@ describe('CoreDaemon openclaw pluginDir wiring', () => {
 
     // Force-create gate from mocked config path in case daemon start short-circuits in test env
     (daemon as any).openClawGate = new (await import('../../../src/blocks/openclaw-gate/index.js')).OpenClawGateBlock('openclaw-gate', { pluginDir: tempDir });
+    await (daemon as any).openClawGate.initialize();
 
     const gate = (daemon as any).openClawGate;
     expect(gate.listPlugins()).toHaveLength(1);

@@ -81,6 +81,7 @@ export class CoreDaemon {
     const openClawOutputConfig = outputsCfg.outputs.find((item) => item.kind === 'openclaw' && item.enabled)?.config as { pluginDir?: string } | undefined;
     const openClawPluginDir = openClawInputConfig?.pluginDir ?? openClawOutputConfig?.pluginDir;
     this.openClawGate = new OpenClawGateBlock('openclaw-gate', { pluginDir: openClawPluginDir });
+    await this.openClawGate.initialize();
 
     // Register event listener for dynamic tool updates
     this.openClawGate.addEventListener((event: OpenClawGateEvent) => {

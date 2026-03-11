@@ -4,13 +4,18 @@
  */
 
 import fs from 'node:fs';
-import path from 'node:path';
-import type { PluginRecord, LoadPluginResult, OpenClawPluginDefinition, PluginRuntimeApi, PluginLogger } from './types.js';
+import { pathToFileURL } from 'node:url';
+import type { PluginRecord, LoadPluginResult, PluginRuntimeApi, PluginLogger } from './types.js';
 import { loadPluginManifest, parsePackageJsonExtensions, resolvePluginEntries } from './manifest.js';
+import { discoverPluginsWithPriority, type DiscoveredPluginPath } from './discovery.js';
+import { createOpenClawRuntimeApi, normalizePluginDefinition } from './openclaw-api-adapter.js';
+import type { OpenClawGateBlock } from '../openclaw-gate/index.js';
 
 export type LoaderOptions = {
   pluginDir: string;
   logger?: PluginLogger;
+  gate?: OpenClawGateBlock;
+  pluginConfigs?: Record<string, Record<string, unknown>>;
 };
 
 const defaultLogger: PluginLogger = {
@@ -20,29 +25,14 @@ const defaultLogger: PluginLogger = {
 };
 
 /**
- * Discover all plugins in directory
+ * Discover all plugins in directory with priority
  */
-export function discoverPlugins(pluginDir: string): string[] {
-  if (!fs.existsSync(pluginDir)) {
-    return [];
-  }
-  
-  const plugins: string[] = [];
-  const entries = fs.readdirSync(pluginDir, { withFileTypes: true });
-  
-  for (const entry of entries) {
-    if (entry.isDirectory() || entry.isSymbolicLink()) {
-      const pluginPath = path.join(pluginDir, entry.name);
-      const manifestPath = path.join(pluginPath, 'openclaw.plugin.json');
-      const packagePath = path.join(pluginPath, 'package.json');
-      
-      if (fs.existsSync(manifestPath) || fs.existsSync(packagePath)) {
-        plugins.push(pluginPath);
-      }
-    }
-  }
-  
-  return plugins;
+export function discoverPlugins(pluginDir: string, options?: { includeOpenClawGlobal?: boolean }): string[] {
+  return discoverPluginsWithPriority(pluginDir, options).map((item) => item.pluginPath);
+}
+
+export function discoverPluginsDetailed(pluginDir: string, options?: { includeOpenClawGlobal?: boolean }): DiscoveredPluginPath[] {
+  return discoverPluginsWithPriority(pluginDir, options);
 }
 
 /**
@@ -54,14 +44,12 @@ export async function loadPlugin(
   options: LoaderOptions
 ): Promise<LoadPluginResult> {
   const logger = options.logger || defaultLogger;
-  
-  // Load manifest
+
   const manifestResult = loadPluginManifest(pluginPath);
   let manifest: import('./types.js').OpenClawPluginManifest;
-  
+
   if (!manifestResult.ok) {
-    // Try package.json
-    const packageJsonPath = path.join(pluginPath, 'package.json');
+    const packageJsonPath = `${pluginPath}/package.json`;
     if (fs.existsSync(packageJsonPath)) {
       const extResult = parsePackageJsonExtensions(packageJsonPath);
       if (extResult.ok) {
@@ -82,26 +70,23 @@ export async function loadPlugin(
   } else {
     manifest = manifestResult.manifest;
   }
-  
-  // Resolve plugin entries
-  const packageJsonPath = path.join(pluginPath, 'package.json');
+
+  const packageJsonPath = `${pluginPath}/package.json`;
   let entries: string[] = [];
-  
+
   if (fs.existsSync(packageJsonPath)) {
     const extResult = parsePackageJsonExtensions(packageJsonPath);
     if (extResult.ok) {
       entries = resolvePluginEntries(pluginPath, extResult.extensions).resolved;
     }
   }
-  
-  // Try to load each entry
+
   let pluginModule: unknown = null;
   let lastError: string | null = null;
-  
+
   for (const entry of entries) {
     try {
-      // Dynamic import
-      const imported = await import(entry);
+      const imported = await import(pathToFileURL(entry).href);
       pluginModule = imported?.default ?? imported;
       logger.info?.(`Loaded plugin entry: ${entry}`);
       break;
@@ -110,19 +95,27 @@ export async function loadPlugin(
       logger.warn?.(lastError);
     }
   }
-  
-  // Call register if available
-  if (pluginModule && isPluginDefinition(pluginModule)) {
-    if (pluginModule.register) {
-      try {
-        await pluginModule.register(runtimeApi);
-        logger.info?.(`Registered plugin: ${manifest.id}`);
-      } catch (err) {
-        logger.error?.(`Failed to register plugin ${manifest.id}: ${err}`);
-      }
+
+  if (!pluginModule && lastError) {
+    return { ok: false, error: lastError };
+  }
+
+  const pluginDefinition = normalizePluginDefinition(pluginModule);
+  if (pluginDefinition?.register && options.gate) {
+    try {
+      const compatApi = createOpenClawRuntimeApi({
+        pluginId: manifest.id,
+        gate: options.gate,
+        logger,
+        pluginConfig: options.pluginConfigs?.[manifest.id],
+      });
+      await pluginDefinition.register(compatApi);
+      logger.info?.(`Registered plugin: ${manifest.id}`);
+    } catch (err) {
+      logger.error?.(`Failed to register plugin ${manifest.id}: ${err}`);
     }
   }
-  
+
   return {
     ok: true,
     pluginId: manifest.id,
@@ -140,36 +133,26 @@ export async function loadAllPlugins(
   options: LoaderOptions
 ): Promise<PluginRecord[]> {
   const logger = options.logger || defaultLogger;
-  const pluginPaths = discoverPlugins(pluginDir);
+  const discovered = discoverPluginsDetailed(pluginDir, { includeOpenClawGlobal: true });
   const records: PluginRecord[] = [];
-  
-  for (const pluginPath of pluginPaths) {
-    const result = await loadPlugin(pluginPath, runtimeApi, options);
-    
+
+  for (const discoveredPlugin of discovered) {
+    const result = await loadPlugin(discoveredPlugin.pluginPath, runtimeApi, options);
+
     if (result.ok) {
       records.push({
         id: result.pluginId,
         manifest: result.manifest,
-        installDir: pluginPath,
+        installDir: discoveredPlugin.pluginPath,
         enabled: true,
         module: result.module,
+        sourceKind: discoveredPlugin.sourceKind,
       });
     } else {
-      logger.warn?.(`Failed to load plugin at ${pluginPath}: ${result.error}`);
+      logger.warn?.(`Failed to load plugin at ${discoveredPlugin.pluginPath}: ${result.error}`);
     }
   }
-  
+
   return records;
 }
 
-/**
- * Type guard for plugin definition
- */
-function isPluginDefinition(value: unknown): value is OpenClawPluginDefinition {
-  return (
-    typeof value === 'object' &&
-    value !== null &&
-    'id' in value &&
-    typeof (value as OpenClawPluginDefinition).id === 'string'
-  );
-}

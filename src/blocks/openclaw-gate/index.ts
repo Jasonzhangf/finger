@@ -11,6 +11,7 @@
 import fs from 'fs';
 import path from 'path';
 import { BaseBlock, type BlockCapabilities } from '../../core/block.js';
+import { createPluginManager, type PluginManager } from '../openclaw-plugin-manager/index.js';
 
 export interface OpenClawPlugin {
   id: string;
@@ -22,6 +23,7 @@ export interface OpenClawPlugin {
     description?: string;
     category?: string;
     icon?: string;
+    sourceKind?: 'finger' | 'openclaw' | 'runtime';
   };
   tools: OpenClawTool[];
 }
@@ -83,13 +85,58 @@ export class OpenClawGateBlock extends BaseBlock {
   };
 
   private plugins: Map<string, OpenClawPlugin> = new Map();
+  private pluginManager?: PluginManager;
   private pluginDir?: string;
   private eventListeners: Array<(event: OpenClawGateEvent) => void> = [];
 
   constructor(id: string, options?: { pluginDir?: string }) {
     super(id, 'openclaw-gate');
     this.pluginDir = options?.pluginDir;
-    this.loadPlugins();
+    if (this.pluginDir && this.pluginDir.trim().length > 0) {
+      this.pluginManager = createPluginManager({
+        pluginDir: this.pluginDir,
+        gate: this,
+      });
+    }
+  }
+
+  async initialize(): Promise<void> {
+    if (!this.pluginManager) {
+      return;
+    }
+
+    const records = await this.pluginManager.loadAll();
+    // Plugins are already created by addTool during loadAll
+    // Just update metadata for any that exist
+    for (const record of records) {
+      const existing = this.plugins.get(record.id);
+      if (existing) {
+        existing.name = record.manifest.name || record.id;
+        existing.version = record.manifest.version || '0.0.1';
+        existing.status = record.enabled ? 'enabled' : 'installed';
+        existing.metadata = {
+          ...existing.metadata,
+          description: record.manifest.description,
+          sourceKind: record.sourceKind,
+        };
+      } else {
+        // Plugin was not auto-created, create it now (no tools registered)
+        const plugin: OpenClawPlugin = {
+          id: record.id,
+          name: record.manifest.name || record.id,
+          version: record.manifest.version || '0.0.1',
+          status: record.enabled ? 'enabled' : 'installed',
+          metadata: {
+            description: record.manifest.description,
+            sourceKind: record.sourceKind,
+          },
+          tools: [],
+        };
+        this.plugins.set(plugin.id, plugin);
+      }
+    }
+
+    this.updateState({ data: { plugins: this.plugins.size, tools: this.countAvailableTools() } });
   }
 
   async execute(command: string, args: Record<string, unknown>): Promise<unknown> {
@@ -189,6 +236,11 @@ export class OpenClawGateBlock extends BaseBlock {
   // --- Tool management ---
 
   addTool(pluginId: string, tool: OpenClawTool): OpenClawTool {
+    // Auto-create plugin if it doesn't exist (for dynamically registered tools)
+    if (!this.plugins.has(pluginId)) {
+      this.installPlugin(pluginId, { name: pluginId });
+      this.enablePlugin(pluginId);
+    }
     const plugin = this.plugins.get(pluginId);
     if (!plugin) {
       throw new Error(`Plugin ${pluginId} not found`);
@@ -239,49 +291,6 @@ export class OpenClawGateBlock extends BaseBlock {
     return Array.from(this.plugins.values())
       .filter(p => p.status === 'enabled')
       .reduce((count, p) => count + p.tools.length, 0);
-  }
-
-  private loadPlugins(): void {
-    if (!this.pluginDir || this.pluginDir.trim().length === 0) {
-      this.updateState({ data: { plugins: this.plugins.size, tools: this.countAvailableTools() } });
-      return;
-    }
-
-    const resolvedPluginDir = this.pluginDir.trim();
-    if (!fs.existsSync(resolvedPluginDir)) {
-      this.updateState({ data: { plugins: this.plugins.size, tools: this.countAvailableTools() } });
-      return;
-    }
-
-    const entries = fs.readdirSync(resolvedPluginDir, { withFileTypes: true });
-    for (const entry of entries) {
-      if (!entry.isFile() || !entry.name.endsWith('.json')) continue;
-      const manifestPath = path.join(resolvedPluginDir, entry.name);
-      try {
-        const raw = fs.readFileSync(manifestPath, 'utf-8');
-        const manifest = JSON.parse(raw) as OpenClawPluginManifest;
-        if (!manifest.id || typeof manifest.id !== 'string') continue;
-
-        const plugin: OpenClawPlugin = {
-          id: manifest.id,
-          name: manifest.name || manifest.id,
-          version: manifest.version || '0.0.1',
-          status: manifest.status || 'installed',
-          metadata: {
-            author: manifest.metadata?.author,
-            description: manifest.metadata?.description,
-            category: manifest.metadata?.category,
-            icon: manifest.metadata?.icon,
-          },
-          tools: Array.isArray(manifest.tools) ? manifest.tools : [],
-        };
-        this.plugins.set(plugin.id, plugin);
-      } catch {
-        // ignore malformed manifest during startup
-      }
-    }
-
-    this.updateState({ data: { plugins: this.plugins.size, tools: this.countAvailableTools() } });
   }
 
   private emitEvent(event: OpenClawGateEvent): void {

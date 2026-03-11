@@ -34,6 +34,7 @@ describe('OpenClaw Plugin Manager', () => {
     if (fs.existsSync(TEST_DIR)) {
       fs.rmSync(TEST_DIR, { recursive: true, force: true });
     }
+    delete process.env.OPENCLAW_STATE_DIR;
   });
 
   describe('Manifest Loading', () => {
@@ -111,6 +112,8 @@ describe('OpenClaw Plugin Manager', () => {
 
   describe('Plugin Discovery', () => {
     it('should discover plugins in directory', () => {
+      // Isolate from global plugins
+      process.env.OPENCLAW_STATE_DIR = TEST_DIR;
       setupTestPlugin('plugin-a', { id: 'plugin-a' });
       setupTestPlugin('plugin-b', { id: 'plugin-b' });
 
@@ -121,6 +124,8 @@ describe('OpenClaw Plugin Manager', () => {
     });
 
     it('should return empty array for non-existent directory', () => {
+      // Isolate from global plugins
+      process.env.OPENCLAW_STATE_DIR = TEST_DIR;
       const plugins = discoverPlugins('/non/existent/path');
       expect(plugins).toEqual([]);
     });
@@ -142,6 +147,8 @@ describe('OpenClaw Plugin Manager', () => {
     });
 
     it('should load all plugins', async () => {
+      // Isolate from global plugins
+      process.env.OPENCLAW_STATE_DIR = TEST_DIR;
       setupTestPlugin('load-test', {
         id: 'load-test',
         name: 'Load Test Plugin',

@@ -86,18 +86,21 @@ export interface PluginRecord {
   enabled: boolean;
   config?: Record<string, unknown>;
   module?: unknown;
+  sourceKind?: 'finger' | 'openclaw';
 }
 
 /**
  * Plugin runtime API - provided to plugin modules
  */
 export interface PluginRuntimeApi {
-  registerChannel: (channelId: string, handler: unknown) => void;
+  registerChannel: (channelIdOrRegistration: string | unknown, handler?: unknown) => void;
   registerTool: (tool: unknown) => void;
   registerHook: (hook: unknown) => void;
   registerService: (service: unknown) => void;
+  registerGatewayMethod?: (method: string, handler: unknown) => void;
   logger: PluginLogger;
   config?: Record<string, unknown>;
+  pluginConfig?: Record<string, unknown>;
 }
 
 export type PluginLogger = {
