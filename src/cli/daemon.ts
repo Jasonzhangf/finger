@@ -1,5 +1,6 @@
 import { Command } from 'commander';
 import { OrchestrationDaemon } from '../orchestration/daemon.js';
+import { DualDaemonSupervisor, enableAutoStart, disableAutoStart } from '../daemon/dual-daemon.js';
 import { loadModuleManifest } from '../orchestration/module-manifest.js';
 
 interface SendOptions {
@@ -24,7 +25,87 @@ interface AgentInstanceView {
 export function registerDaemonCommand(program: Command): void {
   const daemon = program
     .command('daemon')
-    .description('Orchestration daemon control');
+    .description('Daemon control (supports dual-daemon architecture)');
+
+  // Dual-daemon commands
+  daemon
+    .command('start-dual')
+    .description('Start dual-daemon supervisor (two daemons monitoring each other)')
+    .action(() => {
+      const supervisor = new DualDaemonSupervisor();
+      supervisor.start().then(() => {
+        console.log('Dual-daemon started');
+        // Keep process alive
+        process.stdin.resume();
+      }).catch((err) => {
+        console.error('Failed to start dual-daemon:', err);
+        process.exit(1);
+      });
+    });
+
+  daemon
+    .command('stop-dual')
+    .description('Stop dual-daemon (both daemons)')
+    .action(() => {
+      const supervisor = new DualDaemonSupervisor();
+      supervisor.stop().then(() => {
+        console.log('Dual-daemon stopped');
+        process.exit(0);
+      }).catch((err) => {
+        console.error('Failed to stop dual-daemon:', err);
+        process.exit(1);
+      });
+    });
+
+  daemon
+    .command('restart-dual')
+    .description('Restart dual-daemon')
+    .action(() => {
+      const supervisor = new DualDaemonSupervisor();
+      supervisor.restart().then(() => {
+        console.log('Dual-daemon restarted');
+        process.exit(0);
+      }).catch((err) => {
+        console.error('Failed to restart dual-daemon:', err);
+        process.exit(1);
+      });
+    });
+
+  daemon
+    .command('status-dual')
+    .description('Show dual-daemon status')
+    .option('-j, --json', 'Output as JSON')
+    .action((options: { json?: boolean }) => {
+      const supervisor = new DualDaemonSupervisor();
+      const status = supervisor.getStatus();
+      if (options.json) {
+        console.log(JSON.stringify(status, null, 2));
+      } else {
+        console.log('Dual-Daemon Status:');
+        console.log(`  Supervisor PID: ${status.supervisor}`);
+        console.log(`  Daemon 1: PID ${status.daemon1.pid}, Alive: ${status.daemon1.alive}`);
+        console.log(`  Daemon 2: PID ${status.daemon2.pid}, Alive: ${status.daemon2.alive}`);
+      }
+      process.exit(0);
+    });
+
+  daemon
+    .command('enable-autostart')
+    .description('Enable auto-start on boot (macOS launchd)')
+    .action(() => {
+      enableAutoStart();
+      console.log('Auto-start enabled');
+      process.exit(0);
+    });
+
+  daemon
+    .command('disable-autostart')
+    .description('Disable auto-start')
+    .action(() => {
+      disableAutoStart();
+      console.log('Auto-start disabled');
+      process.exit(0);
+    });
 
   // All commands are non-blocking (fire and forget)
   

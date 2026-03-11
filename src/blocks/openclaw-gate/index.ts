@@ -10,6 +10,7 @@
  */
 import fs from 'fs';
 import path from 'path';
+import os from 'os';
 import { BaseBlock, type BlockCapabilities } from '../../core/block.js';
 import { createPluginManager, type PluginManager } from '../openclaw-plugin-manager/index.js';
 
@@ -91,7 +92,20 @@ export class OpenClawGateBlock extends BaseBlock {
 
   constructor(id: string, options?: { pluginDir?: string }) {
     super(id, 'openclaw-gate');
-    this.pluginDir = options?.pluginDir;
+    // Normalize pluginDir: expand ~ and if a plugin dir points directly to a plugin repo,
+    // use its parent directory so discovery works.
+    if (options?.pluginDir) {
+      const expanded = options.pluginDir.startsWith('~/')
+        ? path.join(os.homedir(), options.pluginDir.slice(2))
+        : options.pluginDir;
+      const resolved = path.resolve(expanded);
+      const manifestPath = path.join(resolved, 'openclaw.plugin.json');
+      if (fs.existsSync(manifestPath)) {
+        this.pluginDir = path.dirname(resolved);
+      } else {
+        this.pluginDir = resolved;
+      }
+    }
     if (this.pluginDir && this.pluginDir.trim().length > 0) {
       this.pluginManager = createPluginManager({
         pluginDir: this.pluginDir,
@@ -137,6 +151,29 @@ export class OpenClawGateBlock extends BaseBlock {
     }
 
     this.updateState({ data: { plugins: this.plugins.size, tools: this.countAvailableTools() } });
+
+    // Register channel bridge modules for any loaded channel tools
+    try {
+      const { getChannelBridgeManager } = await import('../../bridges/manager.js');
+      const manager = getChannelBridgeManager();
+      for (const plugin of this.plugins.values()) {
+        for (const tool of plugin.tools) {
+          if (tool.id.startsWith('channel.')) {
+            const channelId = tool.id.replace('channel.', '');
+            manager.registerBridgeModule({
+              id: `openclaw-${channelId}`,
+              channelId,
+              factory: async (config: any, callbacks: any) => {
+                const { OpenClawBridgeAdapter } = await import('../../bridges/openclaw-adapter.js');
+                return new OpenClawBridgeAdapter(config, callbacks);
+              },
+            });
+          }
+        }
+      }
+    } catch {
+      // ignore
+    }
   }
 
   async execute(command: string, args: Record<string, unknown>): Promise<unknown> {

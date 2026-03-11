@@ -34,6 +34,11 @@ export class OpenClawBridgeAdapter implements ChannelBridge {
   private running = false;
   private abortController: AbortController | null = null;
 
+  // Expose callbacks for runtime access
+  get callbacks_(): ChannelBridgeCallbacks {
+    return this.callbacks;
+  }
+
   constructor(config: ChannelBridgeConfig, callbacks: ChannelBridgeCallbacks) {
     this.id = config.id;
     this.channelId = config.channelId;
@@ -59,6 +64,17 @@ export class OpenClawBridgeAdapter implements ChannelBridge {
       this.abortController = new AbortController();
 
       try {
+        // Build config for OpenClaw plugin
+        const pluginCfg = {
+          channels: {
+            [this.channelId]: {
+              appId: this.config.credentials.appid as string,
+              clientSecret: this.config.credentials.token as string,
+              enabled: true,
+            },
+          },
+        };
+
         const ctx: GatewayContext = {
           account: {
             accountId: this.config.credentials.accountId as string || 'default',
@@ -66,7 +82,7 @@ export class OpenClawBridgeAdapter implements ChannelBridge {
             clientSecret: this.config.credentials.token as string,
             ...this.config.credentials,
           },
-          cfg: this.config.options || {},
+          cfg: pluginCfg,
           log,
           onReady: () => {
             log.info(`[${this.id}] Gateway ready callback`);
@@ -118,7 +134,7 @@ export class OpenClawBridgeAdapter implements ChannelBridge {
       to: options.to,
       text: options.text,
       replyToId: options.replyTo,
-      cfg: this.config.options,
+      cfg: {},
     });
 
     if (result.error) {

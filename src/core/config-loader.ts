@@ -20,6 +20,7 @@ function parseYamlSimple(content: string): unknown {
   let currentObj: Record<string, unknown> | unknown[] = result;
   
   const stack: Array<{ obj: Record<string, unknown> | unknown[]; indent: number }> = [{ obj: result, indent: 0 }];
+  let lastArrayItemObj: Record<string, unknown> | null = null;
 
   for (const line of lines) {
     const trimmed = line.trim();
@@ -36,45 +37,40 @@ function parseYamlSimple(content: string): unknown {
     if (trimmed.startsWith('- ')) {
       // Array item
       const value = trimmed.slice(2);
+      let arr: unknown[] | null = null;
+
       if (!Array.isArray(currentObj)) {
-        // Convert to array
+        // Convert to array on parent
         const parent = stack[stack.length - 2]?.obj;
         if (parent && currentKey) {
-          const arr: unknown[] = [];
-          if (Array.isArray(parent)) {
-            // This shouldn't happen for arrays
-          } else {
+          arr = [];
+          if (!Array.isArray(parent)) {
             parent[currentKey] = arr;
             stack[stack.length - 1].obj = arr;
           }
-          // Need to handle array items differently
-          if (value.includes(':')) {
-            const obj: Record<string, unknown> = {};
-            const [k, v] = value.split(':').map(s => s.trim());
-            if (v) obj[k] = parseValue(v);
-            arr.push(obj);
-          } else {
-            arr.push(parseValue(value));
-          }
-          continue;
         }
+      } else {
+        arr = currentObj as unknown[];
       }
-      if (Array.isArray(currentObj)) {
+
+      if (arr) {
         if (value.includes(':')) {
-          // Object in array
+          // Object in array (start a new object and push to stack)
           const obj: Record<string, unknown> = {};
           const [k, v] = value.split(':').map(s => s.trim());
-          if (v) obj[k] = parseValue(v);
-          else {
+          if (v) {
+            obj[k] = parseValue(v);
+          } else {
             obj[k] = {};
-            currentObj.push(obj);
-            stack.push({ obj, indent: currentIndent });
-            currentObj = obj;
-            continue;
           }
-          currentObj.push(obj);
+          arr.push(obj);
+          // Set current object to this new object for subsequent nested fields
+          currentObj = obj;
+          lastArrayItemObj = obj;
+          stack.push({ obj, indent: currentIndent });
         } else {
-          currentObj.push(parseValue(value));
+          arr.push(parseValue(value));
+          lastArrayItemObj = null;
         }
       }
     } else if (trimmed.includes(':')) {
@@ -85,15 +81,17 @@ function parseYamlSimple(content: string): unknown {
       currentKey = key;
       
       if (value) {
-        if (Array.isArray(currentObj)) {
-          // This shouldn't happen for key-value on array
-        } else {
+        if (Array.isArray(currentObj) && lastArrayItemObj) {
+          lastArrayItemObj[key] = parseValue(value);
+        } else if (!Array.isArray(currentObj)) {
           currentObj[key] = parseValue(value);
         }
       } else {
-        if (Array.isArray(currentObj)) {
-          // This shouldn't happen for key-value on array
-        } else {
+        if (Array.isArray(currentObj) && lastArrayItemObj) {
+          lastArrayItemObj[key] = {};
+          stack.push({ obj: lastArrayItemObj[key] as Record<string, unknown>, indent: currentIndent });
+          currentObj = lastArrayItemObj[key] as Record<string, unknown>;
+        } else if (!Array.isArray(currentObj)) {
           currentObj[key] = {};
           stack.push({ obj: currentObj[key] as Record<string, unknown>, indent: currentIndent });
           currentObj = currentObj[key] as Record<string, unknown>;

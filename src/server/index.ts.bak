@@ -92,7 +92,7 @@ import {
 import { AgentRuntimeBlock } from '../blocks/index.js';
 import { OpenClawGateBlock, type OpenClawGateEvent } from '../blocks/openclaw-gate/index.js';
 import { loadInputsConfig, loadOutputsConfig } from '../core/config-loader.js';
-import { toOpenClawToolDefinition } from '../orchestration/openclaw-adapter/index.js';
+import { invokeOpenClawFromMessage, toOpenClawToolDefinition } from '../orchestration/openclaw-adapter/index.js';
 import { initializeBlockRegistry } from './modules/block-registry-bootstrap.js';
 import { getChannelBridgeManager, type ChannelBridgeConfig } from '../bridges/index.js';
 import type { ChannelMessage } from '../bridges/types.js';
@@ -147,6 +147,7 @@ app.use((req, _res, next) => {
 });
 
 // Initialize Channel Bridge Manager
+console.log('[Server] Initializing Channel Bridge Manager...');
 const channelBridgeManager = getChannelBridgeManager({
   onMessage: async (msg: ChannelMessage) => {
     console.log('[Server] Received channel message:', msg.id);
@@ -163,6 +164,7 @@ const channelBridgeManager = getChannelBridgeManager({
   },
 });
 
+// Load channel bridge configs
 async function loadChannelBridgeConfigs(): Promise<void> {
   console.log('[Server] loadChannelBridgeConfigs called');
   const channelsConfigPath = path.join(FINGER_PATHS.config.dir, 'channels.json');
@@ -192,8 +194,8 @@ async function loadChannelBridgeConfigs(): Promise<void> {
   } else {
     console.log('[Server] No channel bridge configs to load');
   }
-}
 
+// Load channel bridge configs
 // Initialize OpenClaw Gate and load plugins before loading channel bridges
 const inputsCfg = loadInputsConfig();
 const outputsCfg = loadOutputsConfig();
@@ -207,7 +209,7 @@ console.log('[Server] OpenClaw plugin dir:', openClawPluginDir);
 if (openClawPluginDir) {
   const openClawGate = new OpenClawGateBlock('openclaw-gate', { pluginDir: openClawPluginDir });
   await openClawGate.initialize();
-
+  
   openClawGate.addEventListener((event: OpenClawGateEvent) => {
     switch (event.type) {
       case 'plugin_enabled':
@@ -224,12 +226,14 @@ if (openClawPluginDir) {
         break;
     }
   });
-
-  console.log('[Server] OpenClaw Gate initialized, plugins:', openClawGate.listPlugins().length);
+  
 }
+  console.log('[Server] OpenClaw Gate initialized, plugins:', openClawGate.listPlugins().length);
 
 // Load channel bridge configs after OpenClaw gate is ready
 await loadChannelBridgeConfigs();
+
+
 
 await initializeBlockRegistry(registry);
 
@@ -517,7 +521,6 @@ try {
   const message = error instanceof Error ? error.message : String(error);
   console.error('[Server] Invalid orchestration.json; startup aborted:', message);
   process.exit(1);
-}
 
 // =============================================================================
 // EventBus 订阅转发到 WebSocket

@@ -125,6 +125,19 @@ export function resolvePluginEntries(
   for (const ext of extensions) {
     const entryPath = path.join(pluginDir, ext);
     if (fs.existsSync(entryPath)) {
+      // Prefer compiled JS if exists
+      if (entryPath.endsWith('.ts')) {
+        const jsPath = entryPath.replace(/\.ts$/, '.js');
+        const distPath = path.join(pluginDir, 'dist', path.basename(jsPath));
+        if (fs.existsSync(distPath)) {
+          resolved.push(distPath);
+          continue;
+        }
+        if (fs.existsSync(jsPath)) {
+          resolved.push(jsPath);
+          continue;
+        }
+      }
       resolved.push(entryPath);
     } else {
       missing.push(entryPath);

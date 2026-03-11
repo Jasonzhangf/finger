@@ -294,7 +294,6 @@ export class CoreDaemon {
   }
 
   private async loadChannelBridgeConfigs(): Promise<void> {
-    console.log('[Daemon] loadChannelBridgeConfigs called, manager:', !!this.channelBridgeManager);
     if (!this.channelBridgeManager) return;
 
     const channelsConfigPath = path.join(FINGER_PATHS.config.dir, 'channels.json');
@@ -305,24 +304,14 @@ export class CoreDaemon {
         const raw = fs.readFileSync(channelsConfigPath, 'utf-8');
         const parsed = JSON.parse(raw);
         configs = parsed.channels || [];
-        console.log('[Daemon] Found channels config file, channels:', configs.length);
-      } else {
-        console.log('[Daemon] channels.json not found at:', channelsConfigPath);
       }
     } catch (err) {
       console.warn('[Daemon] Failed to load channels config:', err);
     }
 
     if (configs.length > 0) {
-      console.log('[Daemon] Loading channel bridge configs...');
-      try {
-        await this.channelBridgeManager.loadConfigs(configs);
-        console.log('[Daemon] Loaded', configs.length, 'channel bridge configs successfully');
-      } catch (err) {
-        console.error('[Daemon] Failed to load channel bridges:', err instanceof Error ? err.message : String(err));
-      }
-    } else {
-      console.log('[Daemon] No channel bridge configs to load');
+      await this.channelBridgeManager.loadConfigs(configs);
+      console.log('[Daemon] Loaded', configs.length, 'channel bridge configs');
     }
   }
 

@@ -47,31 +47,30 @@ export function getChannelHandler(channelId: string): ChannelPluginHandler | und
 
 export function registerChannelHandler(channelId: string, handler: ChannelPluginHandler): void {
   channelHandlers.set(channelId, handler);
-
+  
   // 自动注册为 Bridge Module
   registerAsBridgeModule(channelId, handler);
 }
 
 function registerAsBridgeModule(channelId: string, handler: ChannelPluginHandler): void {
-  // 同步注册 bridge 模块，避免异步导致的时序问题
-  try {
-    // 动态同步导入
-    const managerModule = require('../../bridges/manager.js');
-    const manager = managerModule.getChannelBridgeManager();
-    if (manager) {
+  // 延迟导入避免循环依赖
+  import('../../bridges/manager.js').then(({ getChannelBridgeManager }) => {
+    try {
+      const manager = getChannelBridgeManager();
       manager.registerBridgeModule({
         id: `openclaw-${channelId}`,
         channelId,
-        factory: (config: any, callbacks: any) => {
+        factory: (config, callbacks) => {
+          // OpenClawBridgeAdapter 在文件顶部已经导入
           return new OpenClawBridgeAdapter(config, callbacks);
         },
       });
+    } catch {
+      // Manager not initialized yet, skip
     }
-  } catch {
-    // Manager not initialized yet, store for later registration
-    const pendingHandlers = (globalThis as any).__pendingChannelHandlers = (globalThis as any).__pendingChannelHandlers || new Map();
-    pendingHandlers.set(channelId, handler);
-  }
+  }).catch(() => {
+    // Bridge module not available
+  });
 }
 
 export function createOpenClawRuntimeApi(params: {
@@ -83,59 +82,7 @@ export function createOpenClawRuntimeApi(params: {
   const { pluginId, gate, logger, pluginConfig } = params;
 
   return {
-    runtime: {
-      config: pluginConfig,
-      channel: {
-        activity: {
-          record: (event: { channel: string; accountId: string; direction: string }) => {
-            logger.info?.(`[channel.activity] ${event.channel}:${event.accountId} ${event.direction}`);
-          },
-        },
-        routing: {
-          resolveAgentRoute: (params: { cfg: unknown; channel: string; accountId: string; peer: { kind: string; id: string } }) => {
-            // Default route to orchestrator
-            return { agentId: 'finger-orchestrator' };
-          },
-        },
-        reply: {
-          resolveEnvelopeFormatOptions: (cfg: unknown) => ({}),
-          formatInboundEnvelope: (params: unknown) => params,
-          finalizeInboundContext: (params: unknown) => params,
-          resolveEffectiveMessagesConfig: (cfg: unknown, agentId: string) => ({}),
-          dispatchReplyWithBufferedBlockDispatcher: async (params: { ctx: Record<string, unknown>; cfg: unknown; dispatcherOptions?: unknown }) => {
-            // Bridge message to Finger
-            const ctx = params.ctx as Record<string, unknown>;
-            const content = (ctx?.content as string) || '';
-            const senderId = (ctx?.senderId as string) || '';
-            const peerId = (ctx?.peerId as string) || '';
-            const peerKind = (ctx?.peerKind as string) || 'direct';
-
-            // Get bridge manager and dispatch
-            try {
-              const { getChannelBridgeManager } = await import('../../bridges/manager.js');
-              const manager = getChannelBridgeManager();
-              const bridge = manager.getBridge('qqbot');
-              if (bridge && (bridge as any).callbacks) {
-                const message = {
-                  id: `qqbot-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-                  channelId: 'qqbot',
-                  accountId: 'default',
-                  type: peerKind === 'group' ? 'group' : 'direct',
-                  senderId,
-                  content,
-                  timestamp: Date.now(),
-                  metadata: ctx,
-                };
-                logger.info?.(`[channel.reply] Bridging message: ${message.id} from ${senderId}`);
-                await (bridge as any).callbacks.onMessage(message);
-              }
-            } catch (err) {
-              logger.error?.(`[channel.reply] Failed to bridge message: ${err}`);
-            }
-          },
-        },
-      },
-    },
+    runtime: { config: pluginConfig },
     logger,
     config: pluginConfig,
     pluginConfig,
@@ -146,39 +93,26 @@ export function createOpenClawRuntimeApi(params: {
         return;
       }
 
-      // Store channel plugin handler - extract from outbound/gateway/messaging
+      // Store channel plugin handler if it has outbound methods
       // registration structure: { plugin: ChannelPlugin } or ChannelPlugin directly
       const regRecord = registration as Record<string, unknown>;
       const channelPlugin = (regRecord.plugin ?? registration) as Record<string, unknown>;
-
-      const handler: ChannelPluginHandler = {};
-
-      // Extract outbound methods (sendText, sendMedia)
       const outbound = channelPlugin.outbound as Record<string, unknown> | undefined;
       if (outbound) {
+        const handler: ChannelPluginHandler = {};
         if (typeof outbound.sendText === 'function') {
           handler.sendText = outbound.sendText as ChannelPluginHandler['sendText'];
         }
         if (typeof outbound.sendMedia === 'function') {
           handler.sendMedia = outbound.sendMedia as ChannelPluginHandler['sendMedia'];
         }
+        const messaging = channelPlugin.messaging as Record<string, unknown> | undefined;
+        if (messaging && typeof messaging.normalizeTarget === 'function') {
+          handler.normalizeTarget = messaging.normalizeTarget as ChannelPluginHandler['normalizeTarget'];
+        }
+        registerChannelHandler(channel.id, handler);
+        logger.info(`Stored channel handler for ${channel.id} (sendText: ${!!handler.sendText}, sendMedia: ${!!handler.sendMedia})`);
       }
-
-      // Extract gateway methods (startAccount for QQ gateway)
-      const gateway = channelPlugin.gateway as Record<string, unknown> | undefined;
-      if (gateway && typeof gateway.startAccount === 'function') {
-        handler.startAccount = gateway.startAccount as ChannelPluginHandler['startAccount'];
-      }
-
-      // Extract messaging methods (normalizeTarget)
-      const messaging = channelPlugin.messaging as Record<string, unknown> | undefined;
-      if (messaging && typeof messaging.normalizeTarget === 'function') {
-        handler.normalizeTarget = messaging.normalizeTarget as ChannelPluginHandler['normalizeTarget'];
-      }
-
-      // Always register handler (even if empty, for tracking)
-      registerChannelHandler(channel.id, handler);
-      logger.info(`Stored channel handler for ${channel.id} (sendText: ${!!handler.sendText}, sendMedia: ${!!handler.sendMedia}, startAccount: ${!!handler.startAccount})`);
 
       const schema = extractSchema(channel);
       const tool: OpenClawTool = {

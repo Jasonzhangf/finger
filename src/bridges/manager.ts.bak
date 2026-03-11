@@ -2,12 +2,11 @@
  * Channel Bridge Manager - 动态加载和管理渠道桥接
  */
 
-import type { ChannelBridge, ChannelBridgeConfig, ChannelBridgeCallbacks, ChannelBridge as BridgeCallbacks } from './types.js';
+import type { ChannelBridge, ChannelBridgeConfig, ChannelBridgeCallbacks, ChannelMessage, SendMessageOptions } from './types.js';
 import { logger } from '../core/logger.js';
 
-import { OpenClawBridgeAdapter } from './openclaw-adapter.js';
-
 const log = logger.module('ChannelBridgeManager');
+import { OpenClawBridgeAdapter } from './openclaw-adapter.js';
 
 
 export interface BridgeModule {
@@ -110,7 +109,7 @@ export class ChannelBridgeManager {
   /**
    * 发送消息
    */
-  async sendMessage(bridgeId: string, options: import('./types.js').SendMessageOptions): Promise<{ messageId: string }> {
+  async sendMessage(bridgeId: string, options: SendMessageOptions): Promise<{ messageId: string }> {
     const bridge = this.bridges.get(bridgeId);
     if (!bridge) {
       throw new Error(`Bridge not found: ${bridgeId}`);
@@ -144,21 +143,6 @@ export function getChannelBridgeManager(callbacks?: ChannelBridgeCallbacks): Cha
       throw new Error('First call to getChannelBridgeManager requires callbacks');
     }
     managerInstance = new ChannelBridgeManager(callbacks);
-    
-    // 处理之前存储的 pending handlers
-    const pendingHandlers = (globalThis as any).__pendingChannelHandlers;
-    if (pendingHandlers && pendingHandlers instanceof Map) {
-      for (const [channelId, handler] of pendingHandlers) {
-        managerInstance.registerBridgeModule({
-          id: `openclaw-${channelId}`,
-          channelId,
-          factory: (config: any, callbacks: any) => {
-            return new OpenClawBridgeAdapter(config, callbacks);
-          },
-        });
-      }
-      pendingHandlers.clear();
-    }
   }
   return managerInstance;
 }

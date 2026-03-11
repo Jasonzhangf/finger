@@ -101,6 +101,25 @@ export interface PluginRuntimeApi {
   logger: PluginLogger;
   config?: Record<string, unknown>;
   pluginConfig?: Record<string, unknown>;
+  // OpenClaw-compatible runtime with channel routing/reply
+  runtime?: {
+    config?: Record<string, unknown>;
+    channel?: {
+      activity: {
+        record: (event: { channel: string; accountId: string; direction: string }) => void;
+      };
+      routing: {
+        resolveAgentRoute: (params: { cfg: unknown; channel: string; accountId: string; peer: { kind: string; id: string } }) => { agentId: string };
+      };
+      reply: {
+        resolveEnvelopeFormatOptions: (cfg: unknown) => unknown;
+        formatInboundEnvelope: (params: unknown) => unknown;
+        finalizeInboundContext: (params: unknown) => unknown;
+        resolveEffectiveMessagesConfig: (cfg: unknown, agentId: string) => unknown;
+        dispatchReplyWithBufferedBlockDispatcher: (params: { ctx: Record<string, unknown>; cfg: unknown; dispatcherOptions?: unknown }) => Promise<void>;
+      };
+    };
+  };
 }
 
 export type PluginLogger = {
