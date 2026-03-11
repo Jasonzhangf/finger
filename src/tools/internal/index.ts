@@ -10,6 +10,7 @@ import { updatePlanTool } from './codex-update-plan-tool.js';
 import { viewImageTool } from './codex-view-image-tool.js';
 import { clockTool } from './codex-clock-tool.js';
 import { noopTool } from './codex-noop-tool.js';
+import { memoryTool } from './memory/index.js';
 import { webSearchTool } from './codex-web-search-tool.js';
 import { contextLedgerMemoryTool } from './context-ledger-memory-tool.js';
 
@@ -25,6 +26,7 @@ export * from './codex-shell-tool.js';
 export * from './codex-unified-exec-tool.js';
 export * from './codex-update-plan-tool.js';
 export * from './codex-view-image-tool.js';
+export * from './memory/index.js';
 export * from './codex-clock-tool.js';
 export * from './codex-noop-tool.js';
 export * from './codex-web-search-tool.js';
@@ -44,6 +46,7 @@ export function createDefaultInternalToolRegistry(): InternalToolRegistry {
   registry.register(noopTool);
   registry.register(webSearchTool);
   registry.register(contextLedgerMemoryTool);
+  registry.register(memoryTool);
   const capabilities = resolveAvailableCliCapabilities();
   for (const capability of capabilities) {
     registry.register(createCliCapabilityTool(capability));
