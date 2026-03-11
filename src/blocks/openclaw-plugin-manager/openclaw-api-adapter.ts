@@ -28,7 +28,25 @@ export type OpenClawGatewayMethodHandler = (payload: {
 export type OpenClawCompatRuntimeApi = PluginRuntimeApi & {
   registerGatewayMethod: (method: string, handler: OpenClawGatewayMethodHandler) => void;
   pluginConfig?: Record<string, unknown>;
+  runtime?: { config?: Record<string, unknown> };
 };
+
+export type ChannelPluginHandler = {
+  sendText?: (params: { to: string; text: string; accountId?: string; replyToId?: string; cfg?: unknown }) => Promise<{ messageId?: string; error?: string; channel?: string }>;
+  sendMedia?: (params: { to: string; text: string; mediaUrl: string; accountId?: string; replyToId?: string; cfg?: unknown }) => Promise<{ messageId?: string; error?: string; channel?: string }>;
+  startAccount?: (ctx: unknown) => Promise<void>;
+  normalizeTarget?: (target: string) => { ok: boolean; to?: string; error?: string };
+};
+
+const channelHandlers = new Map<string, ChannelPluginHandler>();
+
+export function getChannelHandler(channelId: string): ChannelPluginHandler | undefined {
+  return channelHandlers.get(channelId);
+}
+
+export function registerChannelHandler(channelId: string, handler: ChannelPluginHandler): void {
+  channelHandlers.set(channelId, handler);
+}
 
 export function createOpenClawRuntimeApi(params: {
   pluginId: string;
@@ -39,6 +57,7 @@ export function createOpenClawRuntimeApi(params: {
   const { pluginId, gate, logger, pluginConfig } = params;
 
   return {
+    runtime: { config: pluginConfig },
     logger,
     config: pluginConfig,
     pluginConfig,
@@ -47,6 +66,27 @@ export function createOpenClawRuntimeApi(params: {
       if (!channel) {
         logger.warn(`Ignored invalid channel registration for plugin ${pluginId}`);
         return;
+      }
+
+      // Store channel plugin handler if it has outbound methods
+      // registration structure: { plugin: ChannelPlugin } or ChannelPlugin directly
+      const regRecord = registration as Record<string, unknown>;
+      const channelPlugin = (regRecord.plugin ?? registration) as Record<string, unknown>;
+      const outbound = channelPlugin.outbound as Record<string, unknown> | undefined;
+      if (outbound) {
+        const handler: ChannelPluginHandler = {};
+        if (typeof outbound.sendText === 'function') {
+          handler.sendText = outbound.sendText as ChannelPluginHandler['sendText'];
+        }
+        if (typeof outbound.sendMedia === 'function') {
+          handler.sendMedia = outbound.sendMedia as ChannelPluginHandler['sendMedia'];
+        }
+        const messaging = channelPlugin.messaging as Record<string, unknown> | undefined;
+        if (messaging && typeof messaging.normalizeTarget === 'function') {
+          handler.normalizeTarget = messaging.normalizeTarget as ChannelPluginHandler['normalizeTarget'];
+        }
+        registerChannelHandler(channel.id, handler);
+        logger.info(`Stored channel handler for ${channel.id} (sendText: ${!!handler.sendText}, sendMedia: ${!!handler.sendMedia})`);
       }
 
       const schema = extractSchema(channel);

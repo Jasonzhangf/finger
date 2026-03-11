@@ -261,7 +261,7 @@ export class OpenClawGateBlock extends BaseBlock {
       .flatMap(p => p.tools);
   }
 
-  callTool(pluginId: string, toolId: string, input: Record<string, unknown>): { result: unknown; success: boolean } {
+  async callTool(pluginId: string, toolId: string, input: Record<string, unknown>): Promise<{ result: unknown; success: boolean }> {
     const plugin = this.plugins.get(pluginId);
     if (!plugin) {
       throw new OpenClawGateError('OPENCLAW_PLUGIN_NOT_FOUND', `Plugin ${pluginId} not found`);
@@ -272,6 +272,40 @@ export class OpenClawGateBlock extends BaseBlock {
     const tool = plugin.tools.find(t => t.id === toolId);
     if (!tool) {
       throw new OpenClawGateError('OPENCLAW_TOOL_NOT_FOUND', `Tool ${toolId} not found in plugin ${pluginId}`);
+    }
+
+    // Check if this is a channel tool and delegate to handler
+    if (toolId.startsWith('channel.')) {
+      const channelId = toolId.slice('channel.'.length);
+      const { getChannelHandler } = await import('../openclaw-plugin-manager/openclaw-api-adapter.js');
+      const handler = getChannelHandler(channelId);
+      
+      if (handler?.sendText && input.to && input.text) {
+        try {
+          const result = await handler.sendText({
+            to: input.to as string,
+            text: input.text as string,
+            accountId: input.accountId as string | undefined,
+            replyToId: input.replyToId as string | undefined,
+            cfg: input.cfg,
+          });
+          return {
+            result: {
+              pluginId,
+              toolId,
+              channelId,
+              messageId: result.messageId,
+              channel: result.channel || channelId,
+            },
+            success: !result.error,
+          };
+        } catch (error) {
+          return {
+            result: { error: error instanceof Error ? error.message : String(error) },
+            success: false,
+          };
+        }
+      }
     }
 
     return {

@@ -66,12 +66,12 @@ export async function invokeOpenClawFromMessage(
   const invocation = mapOpenClawMessageToInvocation(message);
   if (!invocation) return null;
   try {
-    const output = gateBlock.callTool(invocation.pluginId, invocation.toolId, invocation.input);
+    const output = await gateBlock.callTool(invocation.pluginId, invocation.toolId, invocation.input);
     return {
-      ok: true,
+      ok: output.success,
       pluginId: invocation.pluginId,
       toolId: invocation.toolId,
-      output,
+      output: output.result,
     };
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : String(error);
