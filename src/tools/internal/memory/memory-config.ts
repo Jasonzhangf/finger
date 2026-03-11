@@ -84,6 +84,12 @@ function parseYamlSimple(content: string): Record<string, unknown> {
 }
 
 function parseValue(value: string): unknown {
+  // Strip inline comments
+  const commentIndex = value.indexOf('#');
+  if (commentIndex >= 0) {
+    value = value.slice(0, commentIndex).trim();
+  }
+
   if (!value) return '';
   if (value === 'true') return true;
   if (value === 'false') return false;
