@@ -9,6 +9,10 @@ import { FINGER_PATHS, ensureDir, normalizeSessionDirName } from '../core/finger
 import type { Attachment } from '../runtime/events.js';
 
 const SESSIONS_DIR = FINGER_PATHS.sessions.dir;
+const SYSTEM_SESSIONS_DIR = path.join(FINGER_PATHS.home, 'system', 'sessions');
+const SYSTEM_PROJECT_PATH = path.join(FINGER_PATHS.home, 'system');
+const SYSTEM_AGENT_ID = 'finger-system-agent';
+const SYSTEM_SESSION_PREFIX = 'system-';
 const ROOT_SESSION_FILE = 'main.json';
 
 export interface Session {
@@ -54,6 +58,20 @@ export class SessionManager {
 
   private ensureDirs(): void {
     ensureDir(SESSIONS_DIR);
+    ensureDir(SYSTEM_SESSIONS_DIR);
+  }
+
+  private isSystemSession(session: Session): boolean {
+    const ctx = session.context ?? {};
+    if (ctx.sessionTier === 'system') return true;
+    if (session.projectPath === SYSTEM_PROJECT_PATH) return true;
+    if (typeof ctx.ownerAgentId === 'string' && ctx.ownerAgentId === SYSTEM_AGENT_ID) return true;
+    if (session.id.startsWith(SYSTEM_SESSION_PREFIX)) return true;
+    return false;
+  }
+
+  private getSystemSessionsDir(): string {
+    return SYSTEM_SESSIONS_DIR;
   }
 
   private getProjectDirName(projectPath: string): string {
@@ -63,7 +81,17 @@ export class SessionManager {
   }
 
   private getProjectSessionsDir(projectPath: string): string {
+    if (projectPath === SYSTEM_PROJECT_PATH) {
+      return SYSTEM_SESSIONS_DIR;
+    }
     return path.join(SESSIONS_DIR, this.getProjectDirName(projectPath));
+  }
+
+  private resolveSessionsRoot(session: Session): string {
+    if (this.isSystemSession(session)) {
+      return SYSTEM_SESSIONS_DIR;
+    }
+    return this.getProjectSessionsDir(session.projectPath);
   }
 
   private sanitizeFileComponent(value: string): string {
@@ -88,15 +116,23 @@ export class SessionManager {
   }
 
   private getSessionDir(session: Session): string {
-    const rootSessionId = this.getRootSessionId(session);
-    return path.join(this.getProjectSessionsDir(session.projectPath), normalizeSessionDirName(rootSessionId));
+    if (this.isSystemSession(session)) {
+      const rootSessionId = this.getRootSessionId(session);
+      return path.join(SYSTEM_SESSIONS_DIR, normalizeSessionDirName(rootSessionId));
+    }
+   const rootSessionId = this.getRootSessionId(session);
+   return path.join(this.getProjectSessionsDir(session.projectPath), normalizeSessionDirName(rootSessionId));
   }
 
-  resolveSessionStorageDir(sessionId: string): string | null {
-    const session = this.sessions.get(sessionId);
-    if (!session) return null;
-    const rootSessionId = this.getRootSessionId(session);
-    return path.join(this.getProjectSessionsDir(session.projectPath), normalizeSessionDirName(rootSessionId));
+ resolveSessionStorageDir(sessionId: string): string | null {
+   const session = this.sessions.get(sessionId);
+   if (!session) return null;
+    if (this.isSystemSession(session)) {
+      const rootSessionId = this.getRootSessionId(session);
+      return path.join(SYSTEM_SESSIONS_DIR, normalizeSessionDirName(rootSessionId));
+    }
+   const rootSessionId = this.getRootSessionId(session);
+   return path.join(this.getProjectSessionsDir(session.projectPath), normalizeSessionDirName(rootSessionId));
   }
 
   resolveSessionWorkspaceRoot(sessionId: string): string | null {
@@ -180,13 +216,21 @@ export class SessionManager {
         this.loadSessionsFromDir(path.join(SESSIONS_DIR, entry.name));
         continue;
       }
-      // Backward compatibility: load legacy flat session files.
       if (entry.isFile() && entry.name.endsWith('.json')) {
         const legacyFilePath = path.join(SESSIONS_DIR, entry.name);
         try {
           this.loadSessionFile(legacyFilePath);
         } catch (err) {
           console.error(`[SessionManager] Failed to load legacy session ${legacyFilePath}:`, err);
+        }
+      }
+    }
+
+    if (fs.existsSync(SYSTEM_SESSIONS_DIR)) {
+      const systemEntries = fs.readdirSync(SYSTEM_SESSIONS_DIR, { withFileTypes: true });
+      for (const entry of systemEntries) {
+        if (entry.isDirectory()) {
+          this.loadSessionsFromDir(path.join(SYSTEM_SESSIONS_DIR, entry.name));
         }
       }
     }
@@ -204,14 +248,11 @@ export class SessionManager {
       return;
     }
 
-    // Auto-resume most recent session
     const sorted = this.listRootSessions().sort(
       (a, b) => new Date(b.lastAccessedAt).getTime() - new Date(a.lastAccessedAt).getTime()
     );
-    if (sorted.length > 0) {
-      if (this.setCurrentSession(sorted[0].id)) {
-        console.log(`[SessionManager] Auto-resumed session: ${sorted[0].name}`);
-      }
+    if (sorted.length > 0 && this.setCurrentSession(sorted[0].id)) {
+      console.log(`[SessionManager] Auto-resumed session: ${sorted[0].name}`);
     }
   }
 
@@ -236,8 +277,12 @@ export class SessionManager {
     this.sessionFilePaths.set(session.id, filePath);
   }
 
-  createSession(projectPath: string, name?: string, options?: { allowReuse?: boolean }): Session {
-    const normalizedPath = path.resolve(projectPath);
+ createSession(projectPath: string, name?: string, options?: { allowReuse?: boolean }): Session {
+    // Special handling for system sessions
+    if (projectPath === SYSTEM_PROJECT_PATH) {
+      return this.createSystemSession(name, options);
+    }
+   const normalizedPath = path.resolve(projectPath);
     const now = new Date().toISOString();
     const finalAllowReuse = options?.allowReuse !== false;
 
@@ -277,11 +322,49 @@ export class SessionManager {
       console.warn(`[SessionManager] Failed to set cwd for new session: ${id}`);
     }
 
-    console.log(`[SessionManager] Created session: ${session.name} (${id})`);
+   console.log(`[SessionManager] Created session: ${session.name} (${id})`);
+   return session;
+  }
+
+  createSystemSession(name?: string, options?: { allowReuse?: boolean }): Session {
+    const now = new Date().toISOString();
+    const systemSessionId = `${SYSTEM_SESSION_PREFIX}${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const systemSessionName = name && name.trim().length > 0 ? name.trim() : 'system-main';
+
+    const session: Session = {
+      id: systemSessionId,
+      name: systemSessionName,
+      projectPath: SYSTEM_PROJECT_PATH,
+      createdAt: now,
+      updatedAt: now,
+      lastAccessedAt: now,
+      messages: [],
+      activeWorkflows: [],
+      context: {
+        sessionTier: 'system',
+        ownerAgentId: SYSTEM_AGENT_ID,
+      },
+    };
+
+    this.sessions.set(systemSessionId, session);
+    this.saveSession(session);
+    console.log(`[SessionManager] Created system session: ${session.name} (${systemSessionId})`);
     return session;
   }
 
-  ensureSession(sessionId: string, projectPath: string, name?: string): Session {
+  getOrCreateSystemSession(): Session {
+    // Find existing system session
+    for (const session of this.sessions.values()) {
+      if (this.isSystemSession(session)) {
+        session.lastAccessedAt = new Date().toISOString();
+        return session;
+      }
+    }
+    // Create new system session if none exists
+    return this.createSystemSession();
+  }
+
+ ensureSession(sessionId: string, projectPath: string, name?: string): Session {
     const existing = this.sessions.get(sessionId);
     if (existing) {
       existing.lastAccessedAt = new Date().toISOString();

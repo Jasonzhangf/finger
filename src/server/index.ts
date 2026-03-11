@@ -37,6 +37,8 @@ import {
   FINGER_RESEARCHER_ALLOWED_TOOLS,
   FINGER_REVIEWER_AGENT_ID,
   FINGER_REVIEWER_ALLOWED_TOOLS,
+  FINGER_SYSTEM_AGENT_ID,
+  FINGER_SYSTEM_ALLOWED_TOOLS,
   ProcessChatCodexRunner,
 } from '../agents/finger-general/finger-general-module.js';
 import { mailbox } from './mailbox.js';
@@ -153,6 +155,7 @@ const {
   sessionWorkspaces: sessionWorkspaceManager,
   primaryOrchestratorAgentId: PRIMARY_ORCHESTRATOR_AGENT_ID,
   errorSampleDir: ERROR_SAMPLE_DIR,
+  systemAgentId: FINGER_SYSTEM_AGENT_ID,
 });
 const workflowManager = sharedWorkflowManager;
 const runtime = new RuntimeFacade(globalEventBus, sessionManager, globalToolRegistry);
@@ -259,6 +262,7 @@ await registerFingerRoleModules({
   { id: FINGER_EXECUTOR_AGENT_ID, roleProfile: 'executor', allowedTools: FINGER_EXECUTOR_ALLOWED_TOOLS },
   { id: FINGER_CODER_AGENT_ID, roleProfile: 'coder', allowedTools: FINGER_CODER_ALLOWED_TOOLS },
   { id: FINGER_REVIEWER_AGENT_ID, roleProfile: 'reviewer', allowedTools: FINGER_REVIEWER_ALLOWED_TOOLS },
+  { id: FINGER_SYSTEM_AGENT_ID, roleProfile: 'system', allowedTools: FINGER_SYSTEM_ALLOWED_TOOLS },
 ], {
   enableLegacyChatCodexAlias: ENABLE_LEGACY_CHAT_CODEX_ALIAS,
   legacyAgentId: LEGACY_ORCHESTRATOR_AGENT_ID,

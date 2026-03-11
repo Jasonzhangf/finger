@@ -18,6 +18,11 @@ import {
   resolveBlockingErrorStatus,
 } from '../modules/message-session.js';
 import type { SessionWorkspaceManager } from '../modules/session-workspaces.js';
+import { parseSuperCommand } from '../middleware/super-command-parser.js';
+import { validateSystemCommand } from '../middleware/system-auth.js';
+import { getChannelContextManager } from '../../orchestration/channel-context-manager.js';
+import { SYSTEM_PROJECT_PATH, getSystemSessionPath } from '../../agents/finger-system-agent/index.js';
+import path from 'path';
 
 export interface MessageRouteDeps {
   hub: MessageHub;
@@ -149,12 +154,56 @@ function resolveDryRunFlag(req: Request, message: unknown): boolean {
   return false;
 }
 
-function ensureSessionExists(sessionManager: SessionManager, sessionId: string, nameHint?: string): void {
+function ensureSessionExists(sessionManager: SessionManager, sessionId: string, nameHint?: string, projectPathOverride?: string): void {
   const existing = sessionManager.getSession(sessionId);
   if (existing) return;
   const currentSession = sessionManager.getCurrentSession();
-  const fallbackProjectPath = currentSession?.projectPath ?? process.cwd();
+  const fallbackProjectPath = projectPathOverride ?? currentSession?.projectPath ?? process.cwd();
   sessionManager.ensureSession(sessionId, fallbackProjectPath, nameHint);
+}
+
+function buildChannelId(req: Request, sender: string): string {
+  const headerChannel = req.header('x-finger-channel');
+  if (typeof headerChannel === 'string' && headerChannel.trim().length > 0) {
+    return headerChannel.trim();
+  }
+  if (sender.length > 0) return sender;
+  return 'webui';
+}
+
+function withMessageContent(message: unknown, content: string): unknown {
+  if (typeof message === 'string') return content;
+  if (!isObjectRecord(message)) return { content };
+  const metadata = isObjectRecord(message.metadata) ? message.metadata : {};
+  return {
+    ...message,
+    content,
+    text: content,
+    metadata,
+  };
+}
+
+function buildAgentEnvelope(agentId: string) {
+  if (agentId === 'finger-system-agent') {
+    return { id: 'finger-system-agent', name: 'SystemBot', role: 'system', mode: 'system' as const };
+  }
+  if (agentId === 'finger-orchestrator') {
+    return { id: 'finger-orchestrator', name: 'Orchestrator', role: 'orchestrator', mode: 'business' as const };
+  }
+  return { id: agentId, name: agentId, role: 'agent', mode: 'business' as const };
+}
+
+function prefixAgentResponse(agentId: string, text: string): string {
+  const normalized = text.trim();
+  if (agentId === 'finger-system-agent') {
+    if (normalized.toLowerCase().startsWith('systembot:')) return normalized
+    return `SystemBot: ${normalized}`;
+  }
+  if (agentId === 'finger-orchestrator') {
+    if (normalized.toLowerCase().startsWith('orchestrator:')) return normalized
+    return `Orchestrator: ${normalized}`;
+  }
+  return normalized;
 }
 
 export function registerMessageRoutes(app: Express, deps: MessageRouteDeps): void {
@@ -189,7 +238,46 @@ export function registerMessageRoutes(app: Express, deps: MessageRouteDeps): voi
       return;
     }
 
-    const requestMessageWithPolicy = withDefaultProfileReviewPolicy(body.target, body.message, deps);
+    const channelId = buildChannelId(req, sender);
+    const contextManager = getChannelContextManager();
+    const incomingContent = extractMessageTextForSession(body.message) ?? '';
+    const parsedCommand = parseSuperCommand(incomingContent);
+
+    if (parsedCommand.type === 'super_command' && parsedCommand.blocks && parsedCommand.blocks.length > 0) {
+      const firstBlock = parsedCommand.blocks[0];
+      if (firstBlock.type === 'system') {
+        const auth = await validateSystemCommand(firstBlock, channelId);
+        if (!auth.ok) {
+          res.status(403).json({ error: auth.error, code: 'SYSTEM_AUTH_FAILED' });
+          return;
+        }
+      }
+
+      if (parsedCommand.shouldSwitch && parsedCommand.targetAgent) {
+        const currentSession = deps.sessionManager.getCurrentSession();
+        const previousContext = currentSession ? {
+          agentId: contextManager.getTargetAgent(channelId, { type: 'normal', targetAgent: '' }),
+          sessionId: currentSession.id,
+          projectPath: currentSession.projectPath,
+        } : undefined;
+
+        if (parsedCommand.targetAgent === 'finger-system-agent') {
+          contextManager.updateContext(channelId, 'system', 'finger-system-agent', previousContext);
+        } else if (parsedCommand.targetAgent === 'finger-orchestrator') {
+          contextManager.updateContext(channelId, 'business', 'finger-orchestrator');
+        }
+      }
+    }
+
+   const routedTarget = contextManager.getTargetAgent(channelId, parsedCommand);
+   body.target = routedTarget;
+    const isSystemRoute = routedTarget === 'finger-system-agent';
+    const systemProjectPath = isSystemRoute ? SYSTEM_PROJECT_PATH : undefined;
+   const effectiveMessage = parsedCommand.type === 'super_command'
+     ? withMessageContent(body.message, parsedCommand.effectiveContent)
+     : body.message;
+
+    const requestMessageWithPolicy = withDefaultProfileReviewPolicy(body.target, effectiveMessage, deps);
     const shouldDryRun = resolveDryRunFlag(req, requestMessageWithPolicy);
     let injectedPrompt: string | null = null;
     let injectedAgents: OrchestrationPromptAgent[] = [];
@@ -261,10 +349,11 @@ export function registerMessageRoutes(app: Express, deps: MessageRouteDeps): voi
       return;
     }
 
-    const requestSessionId = extractSessionIdFromMessagePayload(requestMessage);
-    if (requestSessionId) {
-      ensureSessionExists(deps.sessionManager, requestSessionId, body.target);
-    }
+   const requestSessionId = extractSessionIdFromMessagePayload(requestMessage);
+   if (requestSessionId) {
+      const sessionProjectPath = isSystemRoute ? SYSTEM_PROJECT_PATH : undefined;
+      ensureSessionExists(deps.sessionManager, requestSessionId, body.target, sessionProjectPath);
+   }
     requestMessage = withSessionWorkspaceDefaults(requestMessage, requestSessionId, deps.sessionWorkspaces);
     if (requestSessionId) {
       deps.runtime.setCurrentSession(requestSessionId);
@@ -367,16 +456,44 @@ export function registerMessageRoutes(app: Express, deps: MessageRouteDeps): voi
         }
 
         const actualResult = primaryResult;
+        const agentTarget = body.target ?? deps.primaryOrchestratorAgentId;
+          const agentInfo = buildAgentEnvelope(agentTarget);
+        const rawAssistantContent = extractResultTextForSession(actualResult) ?? '';
+        const assistantContent = rawAssistantContent.trim().length > 0
+          ? prefixAgentResponse(agentTarget, rawAssistantContent)
+          : rawAssistantContent;
+
+        const responsePayload = {
+          ...(isObjectRecord(actualResult) ? actualResult : { response: assistantContent || actualResult }),
+          response: assistantContent || (typeof actualResult === 'string' ? actualResult : extractResultTextForSession(actualResult) ?? ''),
+          agent: agentInfo,
+          ...(parsedCommand.shouldSwitch ? {
+            contextSwitch: {
+              from: parsedCommand.targetAgent === 'finger-system-agent' ? 'finger-orchestrator' : 'finger-system-agent',
+              to: agentTarget,
+              previousMode: parsedCommand.targetAgent === 'finger-system-agent' ? 'business' : 'system',
+            },
+          } : {}),
+          timestamp: {
+            utc: new Date().toISOString(),
+            local: new Date().toLocaleString('sv-SE', { timeZone: 'Asia/Shanghai' }).replace(' ', ' ') + ' +08:00',
+            tz: 'Asia/Shanghai',
+            nowMs: Date.now(),
+          },
+        };
+
         if (shouldPersistSession && requestSessionId) {
-          const assistantContent = extractResultTextForSession(actualResult);
           if (assistantContent && assistantContent.trim().length > 0) {
-            deps.sessionManager.addMessage(requestSessionId, 'assistant', assistantContent);
+            deps.sessionManager.addMessage(requestSessionId, 'assistant', assistantContent, {
+              agentId: agentTarget,
+              metadata: { channelId, mode: agentInfo.mode },
+            });
           }
         }
-        deps.mailbox.updateStatus(messageId, 'completed', actualResult);
+        deps.mailbox.updateStatus(messageId, 'completed', responsePayload);
 
-        deps.broadcast({ type: 'messageCompleted', messageId, result: actualResult, callbackResult: senderResponse });
-        res.json({ messageId, status: 'completed', result: actualResult, callbackResult: senderResponse });
+        deps.broadcast({ type: 'messageCompleted', messageId, result: responsePayload, callbackResult: senderResponse });
+        res.json({ messageId, status: 'completed', result: responsePayload, callbackResult: senderResponse });
         return;
       }
 
@@ -386,14 +503,40 @@ export function registerMessageRoutes(app: Express, deps: MessageRouteDeps): voi
         return result;
       } : undefined)
         .then((result) => {
+          const agentTarget = body.target ?? deps.primaryOrchestratorAgentId;
+          const agentInfo = buildAgentEnvelope(agentTarget);
+          const rawAssistantContent = extractResultTextForSession(result) ?? '';
+          const assistantContent = rawAssistantContent.trim().length > 0
+            ? prefixAgentResponse(agentTarget, rawAssistantContent)
+            : rawAssistantContent;
+          const responsePayload = {
+            ...(isObjectRecord(result) ? result : { response: assistantContent || result }),
+            response: assistantContent || (typeof result === 'string' ? result : extractResultTextForSession(result) ?? ''),
+            agent: agentInfo,
+            ...(parsedCommand.shouldSwitch ? {
+              contextSwitch: {
+                from: parsedCommand.targetAgent === 'finger-system-agent' ? 'finger-orchestrator' : 'finger-system-agent',
+                to: agentTarget,
+                previousMode: parsedCommand.targetAgent === 'finger-system-agent' ? 'business' : 'system',
+              },
+            } : {}),
+            timestamp: {
+              utc: new Date().toISOString(),
+              local: new Date().toLocaleString('sv-SE', { timeZone: 'Asia/Shanghai' }).replace(' ', ' ') + ' +08:00',
+              tz: 'Asia/Shanghai',
+              nowMs: Date.now(),
+            },
+          };
           if (shouldPersistSession && requestSessionId) {
-            const assistantContent = extractResultTextForSession(result);
             if (assistantContent && assistantContent.trim().length > 0) {
-              deps.sessionManager.addMessage(requestSessionId, 'assistant', assistantContent);
+              deps.sessionManager.addMessage(requestSessionId, 'assistant', assistantContent, {
+                agentId: agentTarget,
+                metadata: { channelId, mode: agentInfo.mode },
+              });
             }
           }
-          deps.mailbox.updateStatus(messageId, 'completed', result);
-          deps.broadcast({ type: 'messageCompleted', messageId, result });
+          deps.mailbox.updateStatus(messageId, 'completed', responsePayload);
+          deps.broadcast({ type: 'messageCompleted', messageId, result: responsePayload });
         })
         .catch((err) => {
           console.error('[Hub] Send error:', err);

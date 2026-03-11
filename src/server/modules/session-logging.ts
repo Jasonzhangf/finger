@@ -8,6 +8,7 @@ export interface SessionLoggingDeps {
   sessionWorkspaces: SessionWorkspaceManager;
   primaryOrchestratorAgentId: string;
   errorSampleDir: string;
+  systemAgentId?: string;
 }
 
 export interface LoopEventEmitter {
@@ -16,7 +17,7 @@ export interface LoopEventEmitter {
 }
 
 export function createSessionLoggingHelpers(deps: SessionLoggingDeps) {
-  const { sessionWorkspaces, primaryOrchestratorAgentId, errorSampleDir } = deps;
+  const { sessionWorkspaces, primaryOrchestratorAgentId, errorSampleDir, systemAgentId = 'finger-system-agent' } = deps;
   let loopEventEmitter: (event: ChatCodexLoopEvent) => void = () => {};
 
   const resolveSessionLoopLogPath = (sessionId: string): string => {
@@ -29,6 +30,9 @@ export function createSessionLoggingHelpers(deps: SessionLoggingDeps) {
     try {
       const logPath = resolveSessionLoopLogPath(event.sessionId);
       appendFileSync(logPath, `${JSON.stringify(event)}\n`, 'utf-8');
+      const payloadAgentId = typeof event.payload?.agentId === 'string' ? event.payload.agentId : primaryOrchestratorAgentId;
+      const agentLogPath = join(errorSampleDir, `${payloadAgentId}.loop.jsonl`);
+      appendFileSync(agentLogPath, `${JSON.stringify(event)}\n`, 'utf-8');
     } catch (error) {
       console.error('[Server] append session loop log failed:', error);
     }
