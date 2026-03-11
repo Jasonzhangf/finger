@@ -1,12 +1,23 @@
 /**
  * Super Command Parser
- * Parses <##@system##> and <##@agent##> tags for agent switching
+ * Parses <##@...##> tags for agent/project/session switching
+ * 
+ * Syntax:
+ * - <##@system##>message -> switch to system agent
+ * - <##@system:pwd=xxx##>message -> switch to system agent with password
+ * - <##@agent##>message -> switch back to business agent
+ * - <##@project:list##> -> list available projects
+ * - <##@project:switch@/path/to/project##> -> switch project
+ * - <##@session:list##> -> list sessions in current project
+ * - <##@session:switch@session-id##> -> switch to session
  */
 
 export interface SuperCommandBlock {
-  type: 'system' | 'agent' | 'invalid';
+  type: 'system' | 'agent' | 'project_list' | 'project_switch' | 'session_list' | 'session_switch' | 'invalid';
   password?: string;
   content: string;
+  path?: string;  // for project:switch
+  sessionId?: string;  // for session:switch
 }
 
 export interface ParsedMessage {
@@ -17,47 +28,116 @@ export interface ParsedMessage {
   shouldSwitch: boolean;
 }
 
-const SYSTEM_TAG_PATTERN = /^<##@system(?::<pwd=([^>]+)>)?##>\s*/;
-const AGENT_TAG_PATTERN = /^<##@agent##>\s*/;
+// Match: <##@category##> or <##@category:action##> or <##@category:action@param##>
+const TAG_PATTERN = /^<##@(\w+)(?::([^@#>]+))?(?:@([^>]+))?##>\s*/;
 
 /**
  * Parse message content for super command tags
- * - If <##@system##> or <##@agent##> tag exists at START, extract target agent
- * - Remove the tag from content for processing
  */
 export function parseSuperCommand(content: string): ParsedMessage {
   const trimmed = content.trim();
+  const match = trimmed.match(TAG_PATTERN);
 
-  // Check for system tag at start
-  const systemMatch = trimmed.match(SYSTEM_TAG_PATTERN);
-  if (systemMatch) {
-    const password = systemMatch[1];
-    const remainingContent = trimmed.slice(systemMatch[0].length).trim();
+  if (!match) {
+    return {
+      type: 'normal',
+      effectiveContent: content,
+      targetAgent: '',
+      shouldSwitch: false,
+    };
+  }
+
+  const [fullMatch, category, actionRaw, param] = match;
+  const remainingContent = trimmed.slice(fullMatch.length).trim();
+  const action = actionRaw?.trim();
+
+  // Parse based on category and action
+  let block: SuperCommandBlock;
+
+  if (category === 'system') {
+    // <##@system##> or <##@system:pwd=xxx##>
+    const password = action?.startsWith('pwd=') ? action.slice(4) : undefined;
+    block = {
+      type: 'system',
+      password,
+      content: remainingContent,
+    };
 
     return {
       type: 'super_command',
-      blocks: [{ type: 'system', password, content: remainingContent }],
+      blocks: [block],
       effectiveContent: remainingContent,
       targetAgent: 'finger-system-agent',
       shouldSwitch: true,
     };
   }
 
-  // Check for agent tag at start
-  const agentMatch = trimmed.match(AGENT_TAG_PATTERN);
-  if (agentMatch) {
-    const remainingContent = trimmed.slice(agentMatch[0].length).trim();
+  if (category === 'agent') {
+    block = {
+      type: 'agent',
+      content: remainingContent,
+    };
 
     return {
       type: 'super_command',
-      blocks: [{ type: 'agent', content: remainingContent }],
+      blocks: [block],
       effectiveContent: remainingContent,
       targetAgent: 'finger-orchestrator',
       shouldSwitch: true,
     };
   }
 
-  // No super command tag
+  if (category === 'project') {
+    if (action === 'list' || !action) {
+      block = {
+        type: 'project_list',
+        content: '',
+      };
+    } else if (action === 'switch' && param) {
+      block = {
+        type: 'project_switch',
+        content: '',
+        path: param,
+      };
+    } else {
+      block = { type: 'invalid', content: remainingContent };
+    }
+
+    return {
+      type: 'super_command',
+      blocks: [block],
+      effectiveContent: '',
+      targetAgent: '',
+      shouldSwitch: false,
+    };
+  }
+
+  if (category === 'session') {
+    if (action === 'list' || !action) {
+      block = {
+        type: 'session_list',
+        content: '',
+      };
+    } else if (action === 'switch' && param) {
+      block = {
+        type: 'session_switch',
+        content: '',
+        sessionId: param,
+      };
+    } else {
+      block = { type: 'invalid', content: remainingContent };
+    }
+
+    return {
+      type: 'super_command',
+      blocks: [block],
+      effectiveContent: '',
+      targetAgent: '',
+      shouldSwitch: false,
+    };
+  }
+
+  // Unknown category
   return {
     type: 'normal',
     effectiveContent: content,
