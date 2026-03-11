@@ -27,6 +27,9 @@ import { registry } from './registry-new.js';
 import { OpenClawGateBlock, type OpenClawGateEvent } from '../blocks/openclaw-gate/index.js';
 import { invokeOpenClawFromMessage, toOpenClawToolDefinition } from '../orchestration/openclaw-adapter/index.js';
 import { globalToolRegistry } from '../runtime/tool-registry.js';
+import { getChannelBridgeManager, type ChannelBridgeManager, type ChannelMessage } from '../bridges/index.js';
+import type { ChannelBridgeConfig } from '../bridges/types.js';
+import { createMessage, type OpenClawChannelMeta } from './schema.js';
 
 const FINGER_DIR = FINGER_PATHS.runtime.dir;
 const PID_FILE = FINGER_PATHS.runtime.daemonPid;
@@ -46,6 +49,7 @@ export class CoreDaemon {
   private running = false;
   private healthTimer: NodeJS.Timeout | null = null;
   private openClawGate = new OpenClawGateBlock('openclaw-gate');
+  private channelBridgeManager: ChannelBridgeManager | null = null;
 
   constructor(private config: CoreDaemonConfig = {}) {
     this.hub = new HubCore(registry);
@@ -64,6 +68,22 @@ export class CoreDaemon {
 
     // Ensure directory exists
     ensureDir(FINGER_DIR);
+
+    // Initialize ChannelBridgeManager
+    this.channelBridgeManager = getChannelBridgeManager({
+      onMessage: async (msg: ChannelMessage) => {
+        await this.handleChannelMessage(msg);
+      },
+      onError: (err: Error) => {
+        console.error('[Daemon] Channel bridge error:', err);
+      },
+      onReady: () => {
+        console.log('[Daemon] Channel bridge ready');
+      },
+      onClose: () => {
+        console.log('[Daemon] Channel bridge closed');
+      },
+    });
 
     // Load snapshot
     const snap = this.snapshot.load();
@@ -100,6 +120,9 @@ export class CoreDaemon {
           break;
       }
     });
+
+    // Load channel bridge configs
+    await this.loadChannelBridgeConfigs();
 
     // Register routes
     for (const route of routesCfg.routes) {
@@ -213,6 +236,11 @@ case 'openclaw':
       clearInterval(this.healthTimer);
     }
 
+    // Stop all channel bridges
+    if (this.channelBridgeManager) {
+      await this.channelBridgeManager.stopAll();
+    }
+
     await this.supervisor.stopAll();
 
     for (const input of this.inputs.values()) {
@@ -231,6 +259,31 @@ case 'openclaw':
     } catch {}
 
     console.log('[Daemon] Stopped');
+  }
+
+  private async handleChannelMessage(channelMsg: ChannelMessage): Promise<void> {
+    this.snapshot.markDirty();
+
+    // 转换为标准 Message
+    const channelMeta: OpenClawChannelMeta = {
+      channelId: channelMsg.channelId,
+      accountId: channelMsg.accountId,
+      senderId: channelMsg.senderId,
+      senderName: channelMsg.senderName,
+      chatType: channelMsg.type,
+      threadId: channelMsg.threadId,
+      messageId: channelMsg.id,
+      originalTimestamp: channelMsg.timestamp,
+    };
+
+    const msg = createMessage('channel-message', {
+      text: channelMsg.content,
+      attachments: channelMsg.attachments,
+    }, channelMsg.channelId, { channelMeta });
+
+    // 路由到 outputs
+    const results = await this.hub.route(msg);
+    console.log('[Daemon] Routed channel message', channelMsg.id, 'to', results.length, 'outputs');
   }
 
   private async handleMessage(msg: Message): Promise<void> {
@@ -261,11 +314,34 @@ case 'openclaw':
     }
   }
 
+  private async loadChannelBridgeConfigs(): Promise<void> {
+    if (!this.channelBridgeManager) return;
+
+    const channelsConfigPath = FINGER_PATHS.config.channels;
+    let configs: ChannelBridgeConfig[] = [];
+
+    try {
+      if (fs.existsSync(channelsConfigPath)) {
+        const raw = fs.readFileSync(channelsConfigPath, 'utf-8');
+        const parsed = JSON.parse(raw);
+        configs = parsed.channels || [];
+      }
+    } catch (err) {
+      console.warn('[Daemon] Failed to load channels config:', err);
+    }
+
+    if (configs.length > 0) {
+      await this.channelBridgeManager.loadConfigs(configs);
+      console.log('[Daemon] Loaded', configs.length, 'channel bridge configs');
+    }
+  }
+
   getStatus() {
     return {
       running: this.running,
       inputs: this.inputs.size,
       outputs: this.outputs.size,
+      bridges: this.channelBridgeManager?.getRunningBridges().length || 0,
     };
   }
 }

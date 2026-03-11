@@ -1,45 +1,43 @@
 # Finger 项目记忆
 
-## 2026-03-11 OpenClaw 标准插件适配完成
+## 2026-03-11 标准化 Bridge 系统
 
 ### 已完成
-1. **OpenClawRuntimeApi 适配器**
-   - 支持 `plugin.register(api)` 标准方式
-   - `registerChannel()` - 注册渠道插件
-   - `registerGatewayMethod()` - 注册网关方法
-   - `registerTool()` - 注册工具
 
-2. **插件发现优先级**
-   - Finger 插件目录 (`~/.finger/plugins`) 优先
-   - OpenClaw 全局扩展 (`~/.openclaw/extensions`) 次之
-   - 同名插件使用 finger 目录版本
+1. **标准化 Channel Bridge 架构**
+   - `src/bridges/types.ts` - 标准接口定义
+   - `src/bridges/manager.ts` - 动态加载管理器
+   - `src/bridges/openclaw-adapter.ts` - OpenClaw 插件适配器
 
-3. **QQBot 插件已集成**
-   - 符合标准 OpenClaw 插件格式
-   - 已注册 `channel.qqbot` 工具
-   - 配置: `appId=1903323793`
+2. **OpenClaw 插件自动注册为 Bridge**
+   - 当 OpenClaw 插件注册 channel handler 时自动注册为 bridge module
+   - 无需硬编码，支持任意 OpenClaw 标准插件
 
-### 插件加载测试结果
+3. **QQBot 问题解决**
+   - `run-qqbot-minimal.js` 参数传递错误已修复
+   - `getAccessToken(APP_ID, CLIENT_SECRET)` - 分开传参
+   - `getGatewayUrl(token)` - 只传 token
+
+### 架构设计
+
 ```
-Loaded plugins: 2
-
-Plugin: openclaw-qqbot
-  Name: OpenClaw QQ Bot
-  Status: enabled
-  Source: finger
-  Tools: 1
-  Tool IDs: [ 'channel.qqbot' ]
-
-Plugin: weibo
-  Name: weibo
-  Status: enabled
-  Source: openclaw
-  Tools: 0
+OpenClaw Plugin (qqbot, weibo, etc.)
+        ↓
+registerChannel() → ChannelHandler 存储
+        ↓
+自动注册为 BridgeModule
+        ↓
+ChannelBridgeManager 动态加载
+        ↓
+OpenClawBridgeAdapter 适配
+        ↓
+Finger Agent 系统
 ```
 
 ### 待完成
-1. 实现 `callTool()` 实际执行逻辑
-2. QQBot 消息收发测试
-3. 渠道上下文与会话绑定
 
-Tags: openclaw, plugin, qqbot, integration, channel
+1. CoreDaemon 集成 ChannelBridgeManager
+2. 消息回复闭环（消息接收 → agent 处理 → 回复发送）
+3. 测试真实 QQ 消息收发
+
+Tags: bridge, openclaw, plugin, architecture

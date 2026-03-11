@@ -1,5 +1,6 @@
 import type { OpenClawGateBlock, OpenClawTool } from '../openclaw-gate/index.js';
 import type { OpenClawPluginDefinition, PluginLogger, PluginRuntimeApi } from './types.js';
+import { OpenClawBridgeAdapter } from '../../bridges/openclaw-adapter.js';
 
 export type OpenClawRegisterChannelInput = {
   plugin: {
@@ -46,6 +47,31 @@ export function getChannelHandler(channelId: string): ChannelPluginHandler | und
 
 export function registerChannelHandler(channelId: string, handler: ChannelPluginHandler): void {
   channelHandlers.set(channelId, handler);
+
+  // 自动注册为 Bridge Module
+  registerAsBridgeModule(channelId, handler);
+}
+
+function registerAsBridgeModule(channelId: string, handler: ChannelPluginHandler): void {
+  // 同步注册 bridge 模块，避免异步导致的时序问题
+  try {
+    // 动态同步导入
+    const managerModule = require('../../bridges/manager.js');
+    const manager = managerModule.getChannelBridgeManager();
+    if (manager) {
+      manager.registerBridgeModule({
+        id: `openclaw-${channelId}`,
+        channelId,
+        factory: (config: any, callbacks: any) => {
+          return new OpenClawBridgeAdapter(config, callbacks);
+        },
+      });
+    }
+  } catch {
+    // Manager not initialized yet, store for later registration
+    const pendingHandlers = (globalThis as any).__pendingChannelHandlers = (globalThis as any).__pendingChannelHandlers || new Map();
+    pendingHandlers.set(channelId, handler);
+  }
 }
 
 export function createOpenClawRuntimeApi(params: {
@@ -68,26 +94,39 @@ export function createOpenClawRuntimeApi(params: {
         return;
       }
 
-      // Store channel plugin handler if it has outbound methods
+      // Store channel plugin handler - extract from outbound/gateway/messaging
       // registration structure: { plugin: ChannelPlugin } or ChannelPlugin directly
       const regRecord = registration as Record<string, unknown>;
       const channelPlugin = (regRecord.plugin ?? registration) as Record<string, unknown>;
+
+      const handler: ChannelPluginHandler = {};
+
+      // Extract outbound methods (sendText, sendMedia)
       const outbound = channelPlugin.outbound as Record<string, unknown> | undefined;
       if (outbound) {
-        const handler: ChannelPluginHandler = {};
         if (typeof outbound.sendText === 'function') {
           handler.sendText = outbound.sendText as ChannelPluginHandler['sendText'];
         }
         if (typeof outbound.sendMedia === 'function') {
           handler.sendMedia = outbound.sendMedia as ChannelPluginHandler['sendMedia'];
         }
-        const messaging = channelPlugin.messaging as Record<string, unknown> | undefined;
-        if (messaging && typeof messaging.normalizeTarget === 'function') {
-          handler.normalizeTarget = messaging.normalizeTarget as ChannelPluginHandler['normalizeTarget'];
-        }
-        registerChannelHandler(channel.id, handler);
-        logger.info(`Stored channel handler for ${channel.id} (sendText: ${!!handler.sendText}, sendMedia: ${!!handler.sendMedia})`);
       }
+
+      // Extract gateway methods (startAccount for QQ gateway)
+      const gateway = channelPlugin.gateway as Record<string, unknown> | undefined;
+      if (gateway && typeof gateway.startAccount === 'function') {
+        handler.startAccount = gateway.startAccount as ChannelPluginHandler['startAccount'];
+      }
+
+      // Extract messaging methods (normalizeTarget)
+      const messaging = channelPlugin.messaging as Record<string, unknown> | undefined;
+      if (messaging && typeof messaging.normalizeTarget === 'function') {
+        handler.normalizeTarget = messaging.normalizeTarget as ChannelPluginHandler['normalizeTarget'];
+      }
+
+      // Always register handler (even if empty, for tracking)
+      registerChannelHandler(channel.id, handler);
+      logger.info(`Stored channel handler for ${channel.id} (sendText: ${!!handler.sendText}, sendMedia: ${!!handler.sendMedia}, startAccount: ${!!handler.startAccount})`);
 
       const schema = extractSchema(channel);
       const tool: OpenClawTool = {
