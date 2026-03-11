@@ -264,6 +264,10 @@ function getClockStore(): ClockStoreManager {
   return globalClockStore;
 }
 
+export function resetClockStore(): void {
+  globalClockStore = null;
+}
+
 function resolveClockStorePath(): string {
   const envPath = process.env.FINGER_CLOCK_STORE_PATH;
   if (envPath && envPath.trim().length > 0) return envPath.trim();
@@ -365,6 +369,9 @@ function compactSchedule(timer: ClockTimer): Record<string, unknown> {
     at: timer.at,
     cron: timer.cron,
     timezone: timer.timezone,
+    repeat: timer.repeat,
+    max_runs: timer.max_runs,
+    run_count: timer.run_count,
   };
 }
 

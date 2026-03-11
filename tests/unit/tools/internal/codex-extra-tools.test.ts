@@ -5,7 +5,7 @@ import { describe, expect, it } from 'vitest';
 import { updatePlanTool } from '../../../../src/tools/internal/codex-update-plan-tool.js';
 import { noopTool } from '../../../../src/tools/internal/codex-noop-tool.js';
 import { viewImageTool } from '../../../../src/tools/internal/codex-view-image-tool.js';
-import { clockTool } from '../../../../src/tools/internal/codex-clock-tool.js';
+import { clockTool, resetClockStore } from '../../../../src/tools/internal/codex-clock-tool.js';
 import { codexShellTool } from '../../../../src/tools/internal/codex-shell-tool.js';
 import { unifiedExecTool } from '../../../../src/tools/internal/codex-unified-exec-tool.js';
 import { createWebSearchTool } from '../../../../src/tools/internal/codex-web-search-tool.js';
@@ -130,6 +130,62 @@ describe('codex extra tools', () => {
       const schedule = (created.data as { schedule?: Record<string, unknown> }).schedule;
       expect(schedule?.schedule_type).toBe('cron');
       expect(schedule?.cron).toBe('*/5 * * * *');
+    } finally {
+      if (oldStorePath === undefined) {
+        delete process.env.FINGER_CLOCK_STORE_PATH;
+      } else {
+        process.env.FINGER_CLOCK_STORE_PATH = oldStorePath;
+      }
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('clock recurring timer shows repeat info and cancels completely', async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'finger-clock-recurring-'));
+    const storePath = path.join(dir, 'clock.json');
+    const oldStorePath = process.env.FINGER_CLOCK_STORE_PATH;
+    process.env.FINGER_CLOCK_STORE_PATH = storePath;
+    resetClockStore();
+    try {
+      const created = await clockTool.execute({
+        action: 'create',
+        payload: {
+          message: 'recurring reminder',
+          schedule_type: 'delay',
+          delay_seconds: 60,
+          repeat: true,
+          max_runs: 5,
+        },
+      });
+      expect(created.ok).toBe(true);
+      expect(created.timer_id).toBeTruthy();
+
+      const schedule = (created.data as { schedule?: Record<string, unknown> }).schedule;
+      expect(schedule?.repeat).toBe(true);
+      expect(schedule?.max_runs).toBe(5);
+
+      const listed = await clockTool.execute({
+        action: 'list',
+        payload: { status: 'active' },
+      });
+      expect(listed.ok).toBe(true);
+      const timers = (listed.data as { timers: Array<Record<string, unknown>> }).timers;
+      expect(timers).toHaveLength(1);
+      expect(timers[0].repeat).toBe(true);
+      expect(timers[0].max_runs).toBe(5);
+      expect(timers[0].run_count).toBe(0);
+
+      const canceled = await clockTool.execute({
+        action: 'cancel',
+        payload: { timer_id: created.timer_id },
+      });
+      expect(canceled.ok).toBe(true);
+
+      const afterCancel = await clockTool.execute({
+        action: 'list',
+        payload: { status: 'active' },
+      });
+      expect((afterCancel.data as { timers: unknown[] }).timers).toHaveLength(0);
     } finally {
       if (oldStorePath === undefined) {
         delete process.env.FINGER_CLOCK_STORE_PATH;
