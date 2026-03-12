@@ -243,7 +243,7 @@ export function useWorkflowExecution(
       if (msg.type === 'user_message') {
         scheduleSessionMessagesRefresh();
       }
-      if (msg.type === 'tool_call' || msg.type === 'tool_result' || msg.type === 'tool_error' || msg.type === 'agent_update') {
+      if (msg.type === 'tool_call' || msg.type === 'tool_result' || msg.type === 'tool_error' || msg.type === 'agent_update' || msg.type === 'agent_runtime_dispatch') {
         scheduleSessionMessagesRefresh();
       }
       if (msg.type === 'chat_codex_turn') {

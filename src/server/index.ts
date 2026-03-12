@@ -661,6 +661,13 @@ hub.addRoute({
     const msg = message as Record<string, unknown>;
     const channelMsg = msg.payload as ChannelMessage;
 
+    const sessionId = `qqbot-${channelMsg.senderId}`;
+    sessionManager.ensureSession(sessionId, process.cwd(), `channel:${channelMsg.channelId}`);
+    sessionManager.addMessage(sessionId, "system", "已收到，正在处理中…", {
+      type: "dispatch",
+      metadata: { channelId: channelMsg.channelId, messageId: channelMsg.id },
+    });
+
     console.log('[Server] Processing channel message via MessageHub', {
       channelId: channelMsg.channelId,
       msgId: channelMsg.id,
@@ -690,7 +697,7 @@ hub.addRoute({
         sourceAgentId: 'channel-bridge',
         targetAgentId: 'finger-orchestrator',
         task: { prompt: channelMsg.content },
-        sessionId: `channel-${channelMsg.channelId}-${channelMsg.senderId}`,
+        sessionId,
         metadata: {
           source: 'channel',
           channelId: channelMsg.channelId,
