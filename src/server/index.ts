@@ -174,7 +174,9 @@ const channelBridgeManager = getChannelBridgeManager({
       
       // Send response back to channel if we got a reply
       if (result?.ok && result.result) {
-        const replyText = typeof result.result === 'string' ? result.result : '处理完成';
+        const replyText = typeof result.result === 'string'
+          ? result.result
+          : (result.result.summary || '处理完成');
         console.log('[Server] Sending reply to channel:', replyText.slice(0, 100));
         
         // Determine target based on message type
