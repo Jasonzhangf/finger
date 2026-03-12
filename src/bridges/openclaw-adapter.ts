@@ -98,8 +98,13 @@ export class OpenClawBridgeAdapter implements ChannelBridge {
           abortSignal: this.abortController.signal,
         };
 
-        await this.handler.startAccount(ctx);
-        log.info(`[${this.id}] startAccount completed`);
+        const startPromise = this.handler.startAccount(ctx);
+        Promise.resolve(startPromise).catch((err) => {
+          const error = err instanceof Error ? err : new Error(String(err));
+          log.error(`[${this.id}] startAccount error: ${error.message}`);
+          this.callbacks.onError(error);
+        });
+        log.info(`[${this.id}] startAccount launched`);
       } catch (err) {
         log.error(`[${this.id}] startAccount error:`, err instanceof Error ? err : new Error(String(err)));
         throw err;
