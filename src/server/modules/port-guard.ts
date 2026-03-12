@@ -14,6 +14,11 @@ function isPortInUse(port: number): Promise<boolean> {
 }
 
 function killProcessOnPort(port: number): void {
+  // Respect safety policy: only kill when explicitly allowed
+  if (process.env.ALLOW_PORT_GUARD_KILL !== '1') {
+    console.warn(`[Server] Port ${port} in use. Set ALLOW_PORT_GUARD_KILL=1 to enable auto-kill.`);
+    return;
+  }
   try {
     const output = execSync(`lsof -ti:${port} 2>/dev/null || true`, {
       encoding: 'utf8',
