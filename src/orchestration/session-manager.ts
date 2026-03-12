@@ -190,7 +190,12 @@ export class SessionManager {
           try {
             this.loadSessionFile(filePath);
           } catch (err) {
-            console.error(`[SessionManager] Failed to load session ${filePath}:`, err);
+            const error = err instanceof Error ? err : new Error(String(err));
+            if (error.message.includes('Unexpected end of JSON input')) {
+              // Ignore truncated session files during startup
+              continue;
+            }
+            console.error(`[SessionManager] Failed to load session ${filePath}:`, error);
           }
         }
         continue;
@@ -201,7 +206,12 @@ export class SessionManager {
         try {
           this.loadSessionFile(filePath);
         } catch (err) {
-          console.error(`[SessionManager] Failed to load session ${filePath}:`, err);
+          const error = err instanceof Error ? err : new Error(String(err));
+          if (error.message.includes('Unexpected end of JSON input')) {
+            // Ignore truncated session files during startup
+            continue;
+          }
+          console.error(`[SessionManager] Failed to load session ${filePath}:`, error);
         }
       }
     }
