@@ -244,7 +244,7 @@ async function loadChannelBridgeConfigs(): Promise<void> {
   }
 }
 
-// Initialize OpenClaw Gate and load plugins before loading channel bridges
+// Initialize OpenClaw Gate lazily after server start
 const inputsCfg = loadInputsConfig();
 const outputsCfg = loadOutputsConfig();
 
@@ -254,32 +254,37 @@ const openClawPluginDir = openClawInputConfig?.pluginDir ?? openClawOutputConfig
 
 console.log('[Server] OpenClaw plugin dir:', openClawPluginDir);
 
-if (openClawPluginDir) {
+// Delay OpenClaw gate init until after server is listening
+async function initOpenClawGate(): Promise<void> {
+  if (!openClawPluginDir) return;
   const openClawGate = new OpenClawGateBlock('openclaw-gate', { pluginDir: openClawPluginDir });
-  await openClawGate.initialize();
+  try {
+    await openClawGate.initialize();
+    openClawGate.addEventListener((event: OpenClawGateEvent) => {
+      switch (event.type) {
+        case 'plugin_enabled':
+        case 'plugin_installed':
+          for (const tool of event.tools) {
+            globalToolRegistry.register(toOpenClawToolDefinition(event.pluginId, tool, openClawGate));
+          }
+          break;
+        case 'plugin_disabled':
+        case 'plugin_uninstalled':
+          for (const toolName of event.toolNames) {
+            globalToolRegistry.unregister(toolName);
+          }
+          break;
+      }
+    });
 
-  openClawGate.addEventListener((event: OpenClawGateEvent) => {
-    switch (event.type) {
-      case 'plugin_enabled':
-      case 'plugin_installed':
-        for (const tool of event.tools) {
-          globalToolRegistry.register(toOpenClawToolDefinition(event.pluginId, tool, openClawGate));
-        }
-        break;
-      case 'plugin_disabled':
-      case 'plugin_uninstalled':
-        for (const toolName of event.toolNames) {
-          globalToolRegistry.unregister(toolName);
-        }
-        break;
-    }
-  });
+    console.log('[Server] OpenClaw Gate initialized, plugins:', openClawGate.listPlugins().length);
+  } catch (err) {
+    console.error('[Server] Failed to initialize OpenClaw Gate:', err instanceof Error ? err.message : String(err));
+  }
 
-  console.log('[Server] OpenClaw Gate initialized, plugins:', openClawGate.listPlugins().length);
+  // Load channel bridge configs after OpenClaw gate is ready
+  await loadChannelBridgeConfigs();
 }
-
-// Load channel bridge configs after OpenClaw gate is ready
-await loadChannelBridgeConfigs();
 
 await initializeBlockRegistry(registry);
 
@@ -536,6 +541,10 @@ await ensureSingleInstance(PORT);
 const HOST = process.env.HOST || '0.0.0.0';
 const server = app.listen(PORT, HOST, () => {
   console.log(`Finger server running at http://${HOST}:${PORT}`);
+  // Initialize OpenClaw gate after server is listening
+  initOpenClawGate().catch((err) => {
+    console.error('[Server] OpenClaw init error:', err instanceof Error ? err.message : String(err));
+  });
 });
 
 server.on('error', (err: NodeJS.ErrnoException) => {
