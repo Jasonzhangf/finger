@@ -8,6 +8,7 @@ export interface ServerRuntimeFlags {
   useMockReviewerLoop: boolean;
   useMockSearcherLoop: boolean;
   runtimeDebugMode: boolean;
+  channelBridgeUseHub: boolean;
 }
 
 export function shouldUseMockChatCodexRunner(flags: ServerRuntimeFlags): boolean {
@@ -40,6 +41,8 @@ export function resolveRuntimeFlags(): ServerRuntimeFlags {
   const useMockSearcherLoop = resolveBoolFlag('FINGER_MOCK_SEARCHER_LOOP', true);
   const runtimeDebugMode = resolveBoolFlag('FINGER_RUNTIME_DEBUG_MODE', false);
 
+  const channelBridgeUseHub = resolveBoolFlag('FINGER_CHANNEL_BRIDGE_USE_HUB', false);
+
   return {
     enableFullMockMode,
     enableLegacyChatCodexAlias,
@@ -50,5 +53,6 @@ export function resolveRuntimeFlags(): ServerRuntimeFlags {
     useMockReviewerLoop,
     useMockSearcherLoop,
     runtimeDebugMode,
+    channelBridgeUseHub,
   };
 }

@@ -5,3 +5,6 @@
 export * from './types.js';
 export * from './manager.js';
 export * from './openclaw-adapter.js';
+export * from './envelope.js';
+export * from './channel-bridge-input.js';
+export * from './channel-bridge-output.js';
