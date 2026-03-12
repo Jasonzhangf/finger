@@ -10,6 +10,7 @@ import { logger } from '../core/logger.js';
 const log = logger.module('OpenClawBridgeAdapter');
 
 type GatewayContext = {
+  callbacks?: ChannelBridgeCallbacks;
   account: {
     accountId: string;
     appId?: string;
@@ -76,6 +77,7 @@ export class OpenClawBridgeAdapter implements ChannelBridge {
         };
 
         const ctx: GatewayContext = {
+          callbacks: this.callbacks,
           account: {
             accountId: this.config.credentials.accountId as string || 'default',
             appId: this.config.credentials.appid as string,
@@ -135,11 +137,30 @@ export class OpenClawBridgeAdapter implements ChannelBridge {
       throw new Error(`Handler does not support sendText for channel: ${this.channelId}`);
     }
 
+    const appId = this.config.credentials.appid as string | undefined;
+    const clientSecret = this.config.credentials.token as string | undefined;
+    if (!appId || !clientSecret) {
+      throw new Error('QQBot not configured (missing appId or clientSecret)');
+    }
+
+    const cfg = {
+      channels: {
+        [this.channelId]: {
+          appId,
+          clientSecret,
+          enabled: true,
+        },
+      },
+    };
+
+    log.info(`[${this.id}] sendMessage - cfg keys: channels=${!!cfg.channels}, qqbot=${!!cfg.channels?.[this.channelId]}`);
+
     const result = await this.handler.sendText({
       to: options.to,
       text: options.text,
       replyToId: options.replyTo,
-      cfg: {},
+      accountId: this.config.credentials.accountId as string | undefined,
+      cfg,
     });
 
     if (result.error) {

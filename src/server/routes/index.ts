@@ -27,6 +27,7 @@ import { registerAgentCliRoutes } from './agent-cli.js';
 import { registerAgentRuntimeRoutes } from './agent-runtime/index.js';
 import { registerWorkflowRoutes } from './workflow.js';
 import { registerGatewayRoutes } from './gateway.js';
+import { registerChannelRoutes } from './channels.js';
 import { registerRuntimeEventRoutes } from './runtime-events.js';
 import { registerToolRoutes } from './tools.js';
 import { registerResumableSessionRoutes } from './resumable-session.js';
@@ -66,6 +67,7 @@ export interface RegisterAllRoutesDeps {
   runtimeInstructionBus: typeof import('../../orchestration/runtime-instruction-bus.js').runtimeInstructionBus;
   moduleRegistry: ModuleRegistry;
   gatewayManager: GatewayManager;
+  channelBridgeManager: import('../../bridges/manager.js').ChannelBridgeManager;
   inputLockManager: InputLockManager;
   toolRegistry: ToolRegistry;
   resumableSessionManager: ResumableSessionManager;
@@ -156,6 +158,10 @@ export function registerAllRoutes(app: Express, deps: RegisterAllRoutesDeps): vo
     hub: deps.hub,
     moduleRegistry: deps.moduleRegistry,
     gatewayManager: deps.gatewayManager,
+  });
+
+  registerChannelRoutes(app, {
+    channelBridgeManager: deps.channelBridgeManager,
   });
 
   registerRuntimeEventRoutes(app, {

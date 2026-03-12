@@ -102,43 +102,67 @@ export function createOpenClawRuntimeApi(params: {
           formatInboundEnvelope: (params: unknown) => params,
           finalizeInboundContext: (params: unknown) => params,
           resolveEffectiveMessagesConfig: (cfg: unknown, agentId: string) => ({}),
-          dispatchReplyWithBufferedBlockDispatcher: async (params: { ctx: Record<string, unknown>; cfg: unknown; dispatcherOptions?: { responsePrefix?: string; deliver?: (payload: { text?: string }, info: { kind: 'tool' | 'block' }) => Promise<void> } }) => {
-            // Bridge message to Finger and handle reply
-            const ctx = params.ctx as Record<string, unknown>;
-            const content = (ctx?.content as string) || '';
-            const senderId = (ctx?.senderId as string) || '';
-            const peerId = (ctx?.peerId as string) || '';
-            const peerKind = (ctx?.peerKind as string) || 'direct';
-            const deliver = params.dispatcherOptions?.deliver;
+         dispatchReplyWithBufferedBlockDispatcher: async (params: { ctx: Record<string, unknown>; cfg: unknown; dispatcherOptions?: { responsePrefix?: string; deliver?: (payload: { text?: string }, info: { kind: 'tool' | 'block' }) => Promise<void> } }) => {
+           // Bridge message to Finger and handle reply
+           const ctx = params.ctx as Record<string, unknown>;
+           console.log('[channel.reply] dispatchReply called with ctx keys:', Object.keys(ctx || {}).join(', '));
+           const content = String(
+             ctx?.BodyForAgent
+               ?? ctx?.RawBody
+               ?? ctx?.CommandBody
+               ?? ctx?.Body
+               ?? ctx?.content
+               ?? ''
+           );
+           console.log('[channel.reply] Extracted content:', content.slice(0, 100));
+           const senderId = String(ctx?.SenderId ?? ctx?.senderId ?? '');
+           const senderName = String(ctx?.SenderName ?? ctx?.senderName ?? '');
+           const peerId = String(ctx?.From ?? ctx?.peerId ?? '');
+           const peerKind = String(ctx?.ChatType ?? ctx?.peerKind ?? 'direct');
+           const messageId = String(ctx?.MessageSid ?? ctx?.messageId ?? '');
+           const groupId = String(
+             ctx?.QQGroupOpenid
+               ?? ctx?.QQChannelId
+               ?? ctx?.QQGuildId
+               ?? ctx?.groupId
+               ?? ''
+           );
 
-            logger.info?.(`[channel.reply] dispatchReply called - content: "${content.slice(0, 50)}", senderId: ${senderId}, peerKind: ${peerKind}`);
+           logger.info?.(`[channel.reply] dispatchReply called - content: "${content.slice(0, 50)}", senderId: ${senderId}, peerKind: ${peerKind}`);
+
+            if (!content.trim()) {
+              logger.warn?.('[channel.reply] Empty content, skip dispatch');
+              return;
+            }
 
             // Get bridge manager and dispatch
             try {
               const { getChannelBridgeManager } = await import('../../bridges/manager.js');
               const manager = getChannelBridgeManager();
               const bridge = manager.getBridge('qqbot') as any;
+              logger.info?.(`[channel.reply] Bridge lookup - manager: ${!!manager}, bridge: ${!!bridge}, callbacks: ${!!(bridge && bridge.callbacks_)}`);
               if (bridge && bridge.callbacks_) {
-                const message = {
-                  id: `qqbot-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-                  channelId: 'qqbot',
-                  accountId: 'default',
-                  type: peerKind === 'group' ? 'group' : 'direct',
-                  senderId,
-                  content,
-                  timestamp: Date.now(),
-                  metadata: ctx,
-                };
-                logger.info?.(`[channel.reply] Bridging message: ${message.id} from ${senderId}`);
+               const message = {
+                 // 使用原始QQ消息ID作为唯一标识，fallback到自生成ID
+                 id: messageId || `qqbot-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+                 channelId: 'qqbot',
+                 accountId: 'default',
+                 type: peerKind === 'group' ? 'group' : 'direct',
+                 senderId,
+                 senderName,
+                 content,
+                 timestamp: Date.now(),
+                 metadata: {
+                   messageId, // 始终保留原始QQ消息ID
+                   ...ctx,
+                   peerId,
+                   groupId: groupId || undefined,
+                 },
+               };
+               logger.info?.(`[channel.reply] Bridging message: ${message.id} from ${senderId}`);
                 
-                // Call onMessage to route to agent
+                // Call onMessage to route to agent (actual reply is handled by server routing)
                 await bridge.callbacks_.onMessage(message);
-                
-                // For now, send a simple acknowledgment via deliver
-                if (deliver) {
-                  await deliver({ text: '消息已收到，Finger 正在处理...' }, { kind: 'block' });
-                  logger.info?.(`[channel.reply] Sent acknowledgment via deliver`);
-                }
               } else {
                 logger.error?.(`[channel.reply] Bridge or callbacks not found`);
               }

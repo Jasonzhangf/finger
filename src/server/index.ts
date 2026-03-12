@@ -49,6 +49,7 @@ import { createSessionWorkspaceManager } from './modules/session-workspaces.js';
 import { attachEventForwarding } from './modules/event-forwarding.js';
 import { createMockRuntimeKit, type ChatCodexRunnerController } from './modules/mock-runtime.js';
 import { ensureSingleInstance } from './modules/port-guard.js';
+import { writeFileSync, unlinkSync, existsSync } from 'fs';
 import { createOrchestrationConfigApplier } from './modules/orchestration-config-applier.js';
 import { createSessionLoggingHelpers } from './modules/session-logging.js';
 import { registerFingerRoleModules } from './modules/finger-role-modules.js';
@@ -150,6 +151,24 @@ app.use((req, _res, next) => {
 const channelBridgeManager = getChannelBridgeManager({
   onMessage: async (msg: ChannelMessage) => {
     console.log('[Server] Received channel message:', msg.id, 'from', msg.senderId);
+
+    const target = msg.type === 'group' && msg.metadata?.groupId
+      ? `group:${msg.metadata.groupId}`
+      : msg.senderId;
+
+    const sendReply = async (text: string) => {
+      if (!text || !text.trim()) return;
+      try {
+        const sendResult = await channelBridgeManager.sendMessage('qqbot', {
+          to: target,
+          text,
+          replyTo: (msg.metadata?.messageId as string) || msg.id,
+        });
+        console.log('[Server] Reply sent:', sendResult.messageId);
+      } catch (sendErr) {
+        console.error('[Server] Failed to send reply:', sendErr);
+      }
+    };
     
     // Route message to orchestrator agent
     try {
@@ -166,40 +185,33 @@ const channelBridgeManager = getChannelBridgeManager({
           messageId: msg.id,
           type: msg.type,
         },
+        blocking: true,
+        queueOnBusy: true,
+        maxQueueWaitMs: 180000,
       };
-      
-      console.log('[Server] Dispatching to orchestrator:', dispatchRequest.targetAgentId);
+
+      console.log('[Server] Dispatching to orchestrator (blocking):', dispatchRequest.targetAgentId);
       const result = await dispatchTaskToAgent(dispatchRequest);
       console.log('[Server] Dispatch result:', result?.status, result?.dispatchId);
-      
-      // Send response back to channel if we got a reply
+
       if (result?.ok && result.result) {
         const replyText = typeof result.result === 'string'
           ? result.result
           : (result.result.summary || '处理完成');
         console.log('[Server] Sending reply to channel:', replyText.slice(0, 100));
-        
-        // Determine target based on message type
-        let target = msg.senderId;
-        if (msg.type === 'group' && msg.metadata?.groupId) {
-          target = `group:${msg.metadata.groupId}`;
-        }
-        
-        try {
-          const sendResult = await channelBridgeManager.sendMessage('qqbot', {
-            to: target,
-            text: replyText,
-            replyTo: msg.id,
-          });
-          console.log('[Server] Reply sent:', sendResult.messageId);
-        } catch (sendErr) {
-          console.error('[Server] Failed to send reply:', sendErr);
-        }
+        await sendReply(replyText);
+      } else if (result?.ok === false) {
+        const errorText = `处理失败: ${result.error || 'unknown error'}`;
+        console.log('[Server] Sending error reply to channel:', errorText.slice(0, 100));
+        await sendReply(errorText);
       } else {
         console.log('[Server] No response to send back, result:', result);
+        await sendReply('任务已受理，但未返回内容');
       }
     } catch (err) {
       console.error('[Server] Failed to dispatch message:', err);
+      const message = err instanceof Error ? err.message : String(err);
+      await sendReply(`系统错误: ${message}`);
     }
   },
   onError: (err: Error) => {
@@ -493,6 +505,7 @@ registerAllRoutes(app, {
   runtimeInstructionBus,
   moduleRegistry,
   gatewayManager,
+  channelBridgeManager,
   inputLockManager,
   toolRegistry: globalToolRegistry,
   resumableSessionManager,
@@ -541,10 +554,25 @@ await ensureSingleInstance(PORT);
 const HOST = process.env.HOST || '0.0.0.0';
 const server = app.listen(PORT, HOST, () => {
   console.log(`Finger server running at http://${HOST}:${PORT}`);
+  try {
+    const pidPath = join(FINGER_PATHS.runtime.dir, 'server.pid');
+    writeFileSync(pidPath, String(process.pid));
+  } catch (err) {
+    console.error('[Server] Failed to write PID file:', err instanceof Error ? err.message : String(err));
+  }
   // Initialize OpenClaw gate after server is listening
   initOpenClawGate().catch((err) => {
     console.error('[Server] OpenClaw init error:', err instanceof Error ? err.message : String(err));
   });
+});
+
+process.on('exit', () => {
+  try {
+    const pidPath = join(FINGER_PATHS.runtime.dir, 'server.pid');
+    if (existsSync(pidPath)) unlinkSync(pidPath);
+  } catch {
+    // ignore
+  }
 });
 
 server.on('error', (err: NodeJS.ErrnoException) => {

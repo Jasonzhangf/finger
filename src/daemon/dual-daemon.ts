@@ -7,6 +7,11 @@
  * - restart 命令同时重启两个
  * - stop 命令同时停止两个
  * - 支持开机自启 (launchd)
+ * 
+ * 安全机制：
+ * - 最大重启次数限制 (MAX_RESTART_ATTEMPTS)
+ * - 启动冷却期 (START_COOLDOWN_MS)
+ * - 指数退避重启延迟
  */
 
 import { spawn, execSync } from 'child_process';
@@ -21,16 +26,22 @@ const DUAL_DAEMON_PID_FILE = join(FINGER_PATHS.runtime.dir, 'dual-daemon.pid');
 const DAEMON_1_PID_FILE = join(FINGER_PATHS.runtime.dir, 'daemon-1.pid');
 const DAEMON_2_PID_FILE = join(FINGER_PATHS.runtime.dir, 'daemon-2.pid');
 
+const MAX_RESTART_ATTEMPTS = 3;
+const START_COOLDOWN_MS = 5000;
+
 interface DaemonInstance {
   id: number;
   pidFile: string;
   pid?: number;
   process?: ReturnType<typeof spawn>;
+  restartCount: number;
+  lastStart?: number;
+  lastExit?: number;
 }
 
 export class DualDaemonSupervisor {
-  private daemon1: DaemonInstance = { id: 1, pidFile: DAEMON_1_PID_FILE };
-  private daemon2: DaemonInstance = { id: 2, pidFile: DAEMON_2_PID_FILE };
+  private daemon1: DaemonInstance = { id: 1, pidFile: DAEMON_1_PID_FILE, restartCount: 0 };
+  private daemon2: DaemonInstance = { id: 2, pidFile: DAEMON_2_PID_FILE, restartCount: 0 };
   private running = false;
   private checkTimer: NodeJS.Timeout | null = null;
 
@@ -105,9 +116,23 @@ export class DualDaemonSupervisor {
     const port = daemon.id === 1 ? 9999 : 9997;
     const wsPort = daemon.id === 1 ? 9998 : 9996;
 
+    // 检查是否在冷却期内
+    const now = Date.now();
+    if (daemon.lastStart && now - daemon.lastStart < START_COOLDOWN_MS) {
+      log.warn(`Daemon ${daemon.id} start cooldown, waiting...`);
+      return;
+    }
+
+    // 检查重启次数
+    if (daemon.restartCount >= MAX_RESTART_ATTEMPTS) {
+      log.error(`Daemon ${daemon.id} exceeded max restart attempts (${MAX_RESTART_ATTEMPTS})`);
+      return;
+    }
+
     const child = spawn('node', [serverScript], {
       detached: true,
       stdio: 'ignore',
+      cwd: process.cwd(),
       env: {
         ...process.env,
         FINGER_DAEMON: '1',
@@ -119,6 +144,7 @@ export class DualDaemonSupervisor {
 
     daemon.pid = child.pid;
     daemon.process = child;
+    daemon.lastStart = Date.now();
 
     writeFileSync(daemon.pidFile, String(child.pid));
 
@@ -127,8 +153,22 @@ export class DualDaemonSupervisor {
     child.on('exit', (code) => {
       log.warn(`Daemon ${daemon.id} exited with code ${code}`);
       if (this.running) {
-        // 如果是意外退出，立即重启
-        setTimeout(() => this.restartDaemon(daemon), 1000);
+        daemon.lastExit = Date.now();
+
+        // 检查是否是启动后立即退出（< 5秒）
+        const uptime = daemon.lastExit - (daemon.lastStart || 0);
+        if (uptime < 5000) {
+          daemon.restartCount++;
+          log.warn(`Daemon ${daemon.id} exited quickly (${uptime}ms), restart count: ${daemon.restartCount}/${MAX_RESTART_ATTEMPTS}`);
+        } else {
+          // 正常运行后退出，重置重启计数
+          daemon.restartCount = 0;
+        }
+
+        // 如果是意外退出，延迟重启（指数退避）
+        const delay = Math.min(1000 * Math.pow(2, daemon.restartCount), 30000);
+        log.info(`Daemon ${daemon.id} will restart in ${delay}ms`);
+        setTimeout(() => this.restartDaemon(daemon), delay);
       }
     });
 
@@ -171,6 +211,10 @@ export class DualDaemonSupervisor {
 
   private async restartDaemon(daemon: DaemonInstance): Promise<void> {
     if (!this.running) return;
+    if (daemon.restartCount >= MAX_RESTART_ATTEMPTS) {
+      log.error(`Daemon ${daemon.id} not restarting: exceeded max attempts`);
+      return;
+    }
 
     log.info(`Restarting daemon ${daemon.id}...`);
     await this.stopDaemon(daemon);
