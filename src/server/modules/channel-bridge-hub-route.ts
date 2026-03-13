@@ -129,6 +129,11 @@ export function createChannelBridgeHubRoute(deps: ChannelBridgeHubRouteDeps) {
       }
     }
 
+    // 解析命令时剥离 marker，传递给 agent 的内容不包含 <##...##>
+    const cleanContent = (parsedCommand.type === 'super_command' && parsedCommand.effectiveContent)
+      ? parsedCommand.effectiveContent
+      : channelMsg.content;
+
     // Check channel policy
     const fingerConfig = await loadFingerConfig();
     const channelPolicy = getChannelAuth(fingerConfig, channelMsg.channelId);
@@ -155,7 +160,7 @@ export function createChannelBridgeHubRoute(deps: ChannelBridgeHubRouteDeps) {
       const dispatchRequest: AgentDispatchRequest = {
         sourceAgentId: 'channel-bridge',
         targetAgentId: 'finger-orchestrator',
-        task: { prompt: channelMsg.content },
+        task: { prompt: cleanContent },
         sessionId,
         metadata: {
           source: 'channel',

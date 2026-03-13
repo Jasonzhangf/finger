@@ -54,8 +54,7 @@ const TAG_PATTERN = /<##(?:@(\w+)(?::([^@#>]+))?(?:@([^>]+))?|help)##>/;
  * Parse message content for super command tags
  */
 export function parseSuperCommand(content: string): ParsedMessage {
-  const trimmed = content.trim();
-  const match = trimmed.match(TAG_PATTERN);
+  const match = content.match(TAG_PATTERN);
 
   if (!match) {
     return {
@@ -67,17 +66,18 @@ export function parseSuperCommand(content: string): ParsedMessage {
   }
 
   const [fullMatch, category, actionRaw, param] = match;
+  const matchIndex = match.index ?? 0;
+  const remainingContent = `${content.slice(0, matchIndex)}${content.slice(matchIndex + fullMatch.length)}`.trim();
   if (fullMatch === '<##help##>') {
     const block: SuperCommandBlock = { type: 'cmd_list', content: '' };
     return {
       type: 'super_command',
       blocks: [block],
-      effectiveContent: '',
+      effectiveContent: remainingContent,
       targetAgent: '',
       shouldSwitch: false,
     };
   }
-  const remainingContent = trimmed.slice(fullMatch.length).trim();
   const action = actionRaw?.trim();
 
   // Parse based on category and action
