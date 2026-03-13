@@ -8,6 +8,7 @@
  */
 
 import { FINGER_PATHS, ensureDir } from '../../core/finger-paths.js';
+import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { logger } from '../../core/logger.js';
 
 const log = logger.module('RouterConfig');
