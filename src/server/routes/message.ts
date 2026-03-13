@@ -40,6 +40,7 @@ export interface MessageRouteDeps {
   mailbox: Mailbox;
   runtime: RuntimeFacade;
   sessionManager: SessionManager;
+  eventBus: import('../../runtime/event-bus.js').UnifiedEventBus;
   sessionWorkspaces: SessionWorkspaceManager;
   broadcast: (message: Record<string, unknown>) => void;
   writeMessageErrorSample: (payload: Record<string, unknown>) => void;
@@ -280,25 +281,25 @@ export function registerMessageRoutes(app: Express, deps: MessageRouteDeps): voi
       }
 
       if (firstBlock.type === 'agent_new') {
-        const result = await handleAgentNew(deps.sessionManager, firstBlock.path);
+        const result = await handleAgentNew(deps.sessionManager, firstBlock.path, deps.eventBus);
         res.json({ messageId: `cmd-${Date.now()}`, status: 'completed', result });
         return;
       }
 
       if (firstBlock.type === 'agent_switch' && firstBlock.sessionId) {
-        const result = await handleAgentSwitch(deps.sessionManager, firstBlock.sessionId);
+        const result = await handleAgentSwitch(deps.sessionManager, firstBlock.sessionId, deps.eventBus);
         res.json({ messageId: `cmd-${Date.now()}`, status: 'completed', result });
         return;
       }
 
       if (firstBlock.type === 'agent_delete' && firstBlock.sessionId) {
-        const result = await handleAgentDelete(deps.sessionManager, firstBlock.sessionId);
+        const result = await handleAgentDelete(deps.sessionManager, firstBlock.sessionId, deps.eventBus);
         res.json({ messageId: `cmd-${Date.now()}`, status: 'completed', result });
         return;
       }
 
       if (firstBlock.type === 'system') {
-        const result = await handleSystemCommand(deps.sessionManager);
+        const result = await handleSystemCommand(deps.sessionManager, deps.eventBus);
         res.json({ messageId: `cmd-${Date.now()}`, status: 'completed', result });
         return;
       }
@@ -310,7 +311,7 @@ export function registerMessageRoutes(app: Express, deps: MessageRouteDeps): voi
       }
 
       if (firstBlock.type === 'project_switch' && firstBlock.path) {
-        const result = await handleProjectSwitch(deps.sessionManager, firstBlock.path);
+        const result = await handleProjectSwitch(deps.sessionManager, firstBlock.path, deps.eventBus);
         res.json({ messageId: `cmd-${Date.now()}`, status: 'completed', result });
         return;
       }

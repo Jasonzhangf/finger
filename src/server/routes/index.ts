@@ -130,6 +130,7 @@ export function registerAllRoutes(app: Express, deps: RegisterAllRoutesDeps): vo
     mailbox: deps.mailbox,
     runtime: deps.runtime,
     sessionManager: deps.sessionManager,
+    eventBus: deps.eventBus,
     sessionWorkspaces: deps.sessionWorkspaces,
     broadcast: deps.broadcast,
     writeMessageErrorSample: deps.writeMessageErrorSample,

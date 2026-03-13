@@ -135,6 +135,23 @@ export function createOpenClawRuntimeApi(params: {
               return;
             }
 
+            // 立即回应“处理中”，避免阻塞导致超时
+            const deliver = params.dispatcherOptions?.deliver;
+            if (deliver) {
+              const responsePrefix = typeof params.dispatcherOptions?.responsePrefix === 'string'
+                ? params.dispatcherOptions?.responsePrefix.trim()
+                : '';
+              const ackText = responsePrefix
+                ? `${responsePrefix}\n已收到，正在处理中…`
+                : '已收到，正在处理中…';
+              try {
+                // 不等待链路执行完成，先回执
+                await deliver({ text: ackText }, { kind: 'block' });
+              } catch (err) {
+                logger.warn?.(`[channel.reply] Failed to deliver ack: ${err}`);
+              }
+            }
+
             // Get bridge manager and dispatch
             try {
               const { getChannelBridgeManager } = await import('../../bridges/manager.js');
@@ -160,9 +177,12 @@ export function createOpenClawRuntimeApi(params: {
                  },
                };
                logger.info?.(`[channel.reply] Bridging message: ${message.id} from ${senderId}`);
-                
+
                 // Call onMessage to route to agent (actual reply is handled by server routing)
-                await bridge.callbacks_.onMessage(message);
+                // 不等待结果，避免阻塞输入线程
+                void bridge.callbacks_.onMessage(message).catch((err: unknown) => {
+                  logger.error?.(`[channel.reply] Bridge onMessage failed: ${err}`);
+                });
               } else {
                 logger.error?.(`[channel.reply] Bridge or callbacks not found`);
               }
