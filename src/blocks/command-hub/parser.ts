@@ -89,6 +89,28 @@ function parseSingleCommand(
     } else if (action?.startsWith('provider:switch@')) {
       type = CommandType.PROVIDER_SWITCH;
       params.providerId = action.replace('provider:switch@', '');
+    } else if (action?.startsWith('clock:')) {
+      const clockAction = action.slice(6); // remove 'clock:'
+      if (clockAction === 'list') {
+        type = CommandType.CLOCK_LIST;
+      } else if (clockAction.startsWith('cancel@')) {
+        type = CommandType.CLOCK_CANCEL;
+        params.timerId = action.replace('clock:cancel@', '');
+      } else if (clockAction.startsWith('create')) {
+        type = CommandType.CLOCK_CREATE;
+        // Parse clock parameters from param if present
+        if (param) {
+          try {
+            const clockParams = JSON.parse(param);
+            Object.assign(params, clockParams);
+          } catch {
+            // If not JSON, treat as message
+            params.message = param;
+          }
+        }
+      } else {
+        type = CommandType.INVALID;
+      }
     } else {
       type = CommandType.SYSTEM;
       if (action?.startsWith('pwd=')) {

@@ -18,6 +18,7 @@ import {
   ProviderListHandler,
   ProviderSwitchHandler
 } from './handlers/index.js';
+import { ClockCreateHandler } from './handlers/system-handler.js';
 import { AgentSwitchHandler } from './handlers/agent-handler.js';
 import { ProjectSwitchHandler } from './handlers/project-handler.js';
 import { SessionSwitchHandler } from './handlers/session-handler.js';
@@ -39,6 +40,9 @@ export function initCommandHub(): CommandExecutor {
   executor.registerHandler(CommandType.SYSTEM_RESTART, new SystemRestartHandler());
   executor.registerHandler(CommandType.PROVIDER_LIST, new ProviderListHandler());
   executor.registerHandler(CommandType.PROVIDER_SWITCH, new ProviderSwitchHandler());
+
+  // Register clock command handlers
+  executor.registerHandler(CommandType.CLOCK_CREATE, new ClockCreateHandler());
 
   // Register agent command handlers
   executor.registerHandler(CommandType.AGENT, new AgentSwitchHandler());

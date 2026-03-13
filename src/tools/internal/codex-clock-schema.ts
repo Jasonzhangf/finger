@@ -15,8 +15,18 @@ export interface ClockTimer {
   run_count: number;
   next_fire_at: string | null;
   status: ClockTimerStatus;
-  created_at: string;
+ created_at: string;
   updated_at: string;
+  inject?: ClockInjectPayload;
+  last_injected_at?: string;
+}
+
+export interface ClockInjectPayload {
+  agentId: string;
+  sessionId?: string;
+  projectPath?: string;
+  prompt: string;
+  channelId?: string;
 }
 
 export interface ClockStore {
@@ -37,6 +47,12 @@ export interface ClockCreatePayload {
   timezone?: string;
   repeat?: boolean;
   max_runs?: number;
+  inject?: {
+    agentId: string;
+    sessionId?: string;
+    projectPath?: string;
+    prompt: string;
+  };
 }
 
 export interface ClockListPayload {
@@ -58,6 +74,7 @@ export interface ClockUpdatePayload {
   timezone?: string;
   repeat?: boolean;
   max_runs?: number;
+  inject?: ClockInjectPayload;
 }
 
 export interface ClockOutput {
@@ -93,6 +110,17 @@ export function parseClockInput(rawInput: unknown): ClockInput {
 export function parseCreatePayload(payload: Record<string, unknown>): ClockCreatePayload {
   if (typeof payload.message !== 'string') throw new Error('failed to parse clock create payload: message is required');
   if (typeof payload.schedule_type !== 'string') throw new Error('failed to parse clock create payload: schedule_type is required');
+  let inject: ClockCreatePayload['inject'] | undefined;
+  if (isRecord(payload.inject)) {
+    const agentId = requireNonEmptyString(payload.inject.agentId, 'inject.agentId is required');
+    const prompt = requireNonEmptyString(payload.inject.prompt, 'inject.prompt is required');
+    inject = {
+      agentId,
+      prompt,
+      ...(typeof payload.inject.sessionId === 'string' ? { sessionId: payload.inject.sessionId } : {}),
+      ...(typeof payload.inject.projectPath === 'string' ? { projectPath: payload.inject.projectPath } : {}),
+    };
+  }
   return {
     message: payload.message,
     schedule_type: payload.schedule_type,
@@ -102,6 +130,7 @@ export function parseCreatePayload(payload: Record<string, unknown>): ClockCreat
     timezone: typeof payload.timezone === 'string' ? payload.timezone : undefined,
     repeat: typeof payload.repeat === 'boolean' ? payload.repeat : undefined,
     max_runs: toOptionalPositiveInteger(payload.max_runs),
+    ...(inject ? { inject } : {}),
   };
 }
 
@@ -117,6 +146,18 @@ export function parseCancelPayload(payload: Record<string, unknown>): ClockCance
 }
 
 export function parseUpdatePayload(payload: Record<string, unknown>): ClockUpdatePayload {
+  let inject: ClockUpdatePayload['inject'] | undefined;
+  if (isRecord(payload.inject)) {
+    const agentId = requireNonEmptyString(payload.inject.agentId, 'inject.agentId is required');
+    const prompt = requireNonEmptyString(payload.inject.prompt, 'inject.prompt is required');
+    inject = {
+      agentId,
+      prompt,
+      ...(typeof payload.inject.sessionId === 'string' ? { sessionId: payload.inject.sessionId } : {}),
+      ...(typeof payload.inject.projectPath === 'string' ? { projectPath: payload.inject.projectPath } : {}),
+      ...(typeof payload.inject.channelId === 'string' ? { channelId: payload.inject.channelId } : {}),
+    };
+  }
   return {
     timer_id: requireNonEmptyString(payload.timer_id, 'failed to parse clock update payload: timer_id is required'),
     message: typeof payload.message === 'string' ? payload.message : undefined,
@@ -127,6 +168,7 @@ export function parseUpdatePayload(payload: Record<string, unknown>): ClockUpdat
     timezone: typeof payload.timezone === 'string' ? payload.timezone : undefined,
     repeat: typeof payload.repeat === 'boolean' ? payload.repeat : undefined,
     max_runs: toOptionalPositiveInteger(payload.max_runs),
+    ...(inject ? { inject } : {}),
   };
 }
 

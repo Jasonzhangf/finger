@@ -9,6 +9,8 @@ const CORE_EXECUTION_TOOLS = [
   'web_search',
   'update_plan',
   'context_ledger.memory',
+  'clock',
+  'command.exec',
 ] as const;
 
 const READ_ONLY_COORDINATION_TOOLS = [
@@ -19,6 +21,8 @@ const READ_ONLY_COORDINATION_TOOLS = [
   'web_search',
   'update_plan',
   'context_ledger.memory',
+  'clock',
+  'command.exec',
 ] as const;
 
 const ORCHESTRATION_TOOLS = [
@@ -29,6 +33,8 @@ const ORCHESTRATION_TOOLS = [
   'agent.control',
   'orchestrator.loop_templates',
   'user.ask',
+  'clock',
+  'command.exec',
 ] as const;
 
 const ORCHESTRATOR_DOCUMENTATION_TOOLS = [

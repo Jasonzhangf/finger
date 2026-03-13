@@ -4,6 +4,7 @@ import { runSpawnCommand } from './spawn-runner.js';
 import type { ToolRegistry } from '../../runtime/tool-registry.js';
 import type { AgentRuntimeDeps } from '../../server/modules/agent-runtime/types.js';
 import { registerProjectTool } from './project-tool/project-tool.js';
+import { clockTool } from './codex-clock-tool.js';
 
 export * from './types.js';
 export * from './registry.js';
@@ -26,6 +27,7 @@ export * from './context-ledger-memory-tool.js';
 export function createDefaultInternalToolRegistry(): InternalToolRegistry {
   const registry = new InternalToolRegistry();
   registry.register(shellExecTool);
+  registry.register(clockTool);
   // NOTE: project_tool 只在运行时注册，不在 CLI 内部注册表中注册
   // 因为它需要 AgentRuntimeDeps（sessionManager, dispatchTaskToAgent）
   return registry;

@@ -30,7 +30,12 @@ export enum CommandType {
   // Utility commands
   CMD_LIST = 'cmd_list',
   HELP = 'help',
-  
+
+  // Clock commands
+  CLOCK_CREATE = 'clock_create',
+  CLOCK_LIST = 'clock_list',
+  CLOCK_CANCEL = 'clock_cancel',
+
   // Invalid
   INVALID = 'invalid'
 }
@@ -39,7 +44,7 @@ export interface Command {
   type: CommandType;
   raw: string;
   content: string;
-  params: Record<string, string>;
+  params: Record<string, any>;
 }
 
 export interface CommandContext {

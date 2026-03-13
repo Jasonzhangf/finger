@@ -49,7 +49,7 @@ class ClockStoreManager {
     const now = new Date();
     const schedule = normalizeCreateSchedule(payload, now);
     const timer: ClockTimer = {
-      timer_id: randomUUID(),
+ timer_id: randomUUID(),
       message: payload.message.trim(),
       schedule_type: schedule.schedule_type,
       delay_seconds: schedule.delay_seconds,
@@ -63,6 +63,7 @@ class ClockStoreManager {
       status: 'active',
       created_at: now.toISOString(),
       updated_at: now.toISOString(),
+      inject: payload.inject,
     };
     this.timers.set(timer.timer_id, timer);
     this.persist();
@@ -103,8 +104,11 @@ class ClockStoreManager {
     if (!timer) throw new Error(`timer not found: ${payload.timer_id}`);
 
     const now = new Date();
-    if (typeof payload.message === 'string' && payload.message.trim().length > 0) {
+  if (typeof payload.message === 'string' && payload.message.trim().length > 0) {
       timer.message = payload.message.trim();
+    }
+    if (payload.inject !== undefined) {
+      timer.inject = payload.inject;
     }
 
     const schedule = normalizeUpdateSchedule(timer, payload, now);

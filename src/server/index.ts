@@ -6,6 +6,9 @@ import { globalEventBus } from '../runtime/event-bus.js';
 import { globalToolRegistry } from '../runtime/tool-registry.js';
 import { RuntimeFacade } from '../runtime/runtime-facade.js';
 import { registerDefaultRuntimeTools } from '../runtime/default-tools.js';
+import { ClockTaskInjector } from '../orchestration/clock-task-injector.js';
+
+let clockInjector: ClockTaskInjector | null = null;
 import {
   AGENT_JSON_SCHEMA,
   resolveDefaultAgentConfigDir,
@@ -421,6 +424,17 @@ await loadAutostartAgents(moduleRegistry).catch(err => {
   console.error('[Server] Failed to load autostart agents:', err);
 });
 
+// Start Clock Task Injector
+clockInjector = new ClockTaskInjector({
+  dispatchTaskToAgent,
+  ensureSession: (sessionId, projectPath) => {
+    sessionManager.ensureSession(sessionId, projectPath);
+  },
+  log: (message, data) => console.log(message, data ?? ''),
+});
+clockInjector.start();
+console.log('[Server] Clock Task Injector started');
+
 await gatewayManager.start().catch((err) => {
   console.error('[Server] Failed to start gateway manager:', err);
 });
@@ -521,6 +535,7 @@ const server = app.listen(PORT, HOST, () => {
 });
 
 process.on('exit', () => {
+  if (clockInjector) clockInjector.stop();
   try {
     const pidPath = join(FINGER_PATHS.runtime.dir, 'server.pid');
     if (existsSync(pidPath)) unlinkSync(pidPath);
