@@ -190,8 +190,8 @@ async function syncBdDispatchLifecycle(deps: AgentRuntimeDeps, input: AgentDispa
 }
 
 function shouldRecordToMemory(input: AgentDispatchRequest): boolean {
-  const metadata = isObjectRecord(input.metadata) ? input.metadata : {};
-  const source = String(metadata.source ?? '');
+    const metadata = isObjectRecord(input.metadata) ? input.metadata : {};
+    const source = String(metadata.source ?? '');
   const role = String(metadata.role ?? '');
   const sourceAgentId = String(input.sourceAgentId ?? '');
 
@@ -219,7 +219,7 @@ async function persistUserMessageToMemory(deps: AgentRuntimeDeps, input: AgentDi
     const timestamp = new Date().toISOString();
     const entryId = `mem-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
     const metadata = isObjectRecord(input.metadata) ? input.metadata : {};
-  const source = String(metadata.source ?? 'unknown');
+    const source = String(metadata.source ?? 'unknown');
 
     const entry = `## [input] 用户消息 {#${entryId}}
 时间: ${timestamp}
@@ -246,7 +246,9 @@ async function persistAgentSummaryToMemory(
   if (!shouldRecordToMemory(input)) return;
   if (!result.summary || result.summary.trim().length === 0) return;
 
-  const session = deps.sessionManager.getSession(input.sessionId);
+  const sessionId = typeof input.sessionId === "string" ? input.sessionId : "";
+  if (!sessionId) return;
+  const session = deps.sessionManager.getSession(sessionId);
   if (!session) return;
 
   try {

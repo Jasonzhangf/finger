@@ -6,8 +6,6 @@
 
 import { promises as fs } from 'fs';
 import * as path from 'path';
-import { ToolRegistry } from '../../runtime/tool-registry.js';
-import type { AgentRuntimeDeps } from '../../server/modules/agent-runtime/types.js';
 
 export interface ProjectToolInput {
   action: 'create';
@@ -30,8 +28,8 @@ export interface ProjectToolOutput {
  * 注册 project_tool 到工具注册表
  */
 export function registerProjectTool(
-  toolRegistry: ToolRegistry,
-  getAgentRuntimeDeps: () => AgentRuntimeDeps
+  toolRegistry: { register: (tool: { name: string; description: string; inputSchema: Record<string, unknown>; policy: 'allow'; handler: (input: unknown) => Promise<unknown> }) => void },
+  getAgentRuntimeDeps: () => { sessionManager: any; dispatchTaskToAgent?: any }
 ): void {
   toolRegistry.register({
     name: 'project_tool',
@@ -78,15 +76,7 @@ export function registerProjectTool(
         // 2. 初始化 MEMORY.md
         const memoryPath = path.join(normalizedPath, 'MEMORY.md');
         const timestamp = new Date().toISOString();
-        const memoryContent = `# ${projectName} 项目记忆
-
-项目创建时间: ${timestamp}
-项目路径: ${normalizedPath}
-
-Tags: project
-
----
-`;
+        const memoryContent = `# ${projectName} 项目记忆\n\n项目创建时间: ${timestamp}\n项目路径: ${normalizedPath}\n\nTags: project\n\n---\n`;
         await fs.writeFile(memoryPath, memoryContent);
 
         // 3. 创建 session
@@ -94,7 +84,7 @@ Tags: project
 
         // 4. 分派编排者 agent（如果 dispatchTaskToAgent 可用）
         let dispatchId: string | undefined;
-        if ('dispatchTaskToAgent' in deps && typeof deps.dispatchTaskToAgent === 'function') {
+        if (deps.dispatchTaskToAgent) {
           const dispatchRequest = {
             sourceAgentId: 'finger-system-agent',
             targetAgentId: 'finger-orchestrator',

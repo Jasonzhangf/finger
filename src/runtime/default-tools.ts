@@ -5,7 +5,7 @@ import type { AgentRuntimeDeps } from '../server/modules/agent-runtime/types.js'
 
 export function registerDefaultRuntimeTools(
   runtimeToolRegistry: ToolRegistry,
-  getAgentRuntimeDeps: () => AgentRuntimeDeps
+  getAgentRuntimeDeps?: () => AgentRuntimeDeps
 ): string[] {
   const internalRegistry = createDefaultInternalToolRegistry();
   const loadedToolNames: string[] = [];
@@ -22,8 +22,10 @@ export function registerDefaultRuntimeTools(
   }
 
   // 注册 project_tool（需要 AgentRuntimeDeps）
-  registerProjectTool(runtimeToolRegistry, getAgentRuntimeDeps);
-  loadedToolNames.push('project_tool');
+  if (getAgentRuntimeDeps) {
+    registerProjectTool(runtimeToolRegistry, getAgentRuntimeDeps);
+    loadedToolNames.push('project_tool');
+  }
 
   return loadedToolNames;
 }

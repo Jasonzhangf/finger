@@ -46,15 +46,7 @@ export async function runAppCLI(args: string[]): Promise<void> {
   hub = new MessageHub();
   moduleRegistry = new ModuleRegistry(hub);
   runtime = new RuntimeFacade(globalEventBus, sessionManager, globalToolRegistry);
-
-  // Minimal getAgentRuntimeDeps for CLI mode
-  const getAgentRuntimeDeps = () => ({
-    sessionManager,
-    sessionWorkspaces: runtime.sessionWorkspaces,
-    eventBus: globalEventBus,
-  });
-
-  registerDefaultRuntimeTools(globalToolRegistry, getAgentRuntimeDeps);
+  registerDefaultRuntimeTools(globalToolRegistry);
 
   const modules = [
     createFingerGeneralModule({ id: FINGER_ORCHESTRATOR_AGENT_ID, roleProfile: 'orchestrator' }),
