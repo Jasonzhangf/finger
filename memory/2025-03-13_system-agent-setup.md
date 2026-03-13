@@ -27,17 +27,21 @@ Tags: system-agent, project-tool, memory, validation
 - **变更**: 在 `AgentRuntimeDeps` 中添加可选的 `dispatchTaskToAgent`
 - **理由**: project_tool 需要分派编排者 agent 到新项目
 
+### 4. 静态验证测试
+- ✅ `system-agent-static.test.ts`: 5 tests passed
+- ✅ `memory-permission.test.ts`: 1 test passed
+- 测试覆盖：
+  - Prompt/Capability 文件存在性
+  - System Agent 工具白名单
+  - System Agent cwd / session path
+  - Memory 权限控制
+
 ## 构建状态
 ✅ `npm run build:backend` 通过
 ✅ 类型检查通过
+✅ 静态单元测试全部通过
 
 ## 待验证
-
-### 静态验证（单元测试）
-- [x] Prompt 文件存在
-- [x] Capability.md 存在
-- [x] 工具白名单包含 `project_tool`
-- [x] System Agent 配置路径正确
 
 ### 运行验证（功能测试）
 - [ ] project_tool.create（需要运行时环境）
