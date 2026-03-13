@@ -52,6 +52,15 @@
 - session 创建成功
 - orchestrator 分派成功
 
+### 1.1 project_tool.create（权限边界）
+步骤:
+1. system agent 发送 project_tool.create
+2. 普通 agent 发送 project_tool.create
+
+预期:
+- system agent 调用成功
+- 普通 agent 调用被拒绝或无权限
+
 ### 2. 跨项目限制
 步骤:
 1. system agent 直接尝试写非系统目录
@@ -67,6 +76,13 @@
 预期:
 - 自动追加 [input] + [summary]
 
+### 3.1 MEMORY 追加条件验证
+步骤:
+1. source=channel, role=user → 触发记录
+2. source=channel, role=system → 不记录
+3. agent->agent dispatch → 不记录
+4. mailbox 模式 → 不记录
+
 ### 4. Agent 派发不记录
 步骤:
 1. orchestrator -> executor dispatch
@@ -74,6 +90,16 @@
 
 预期:
 - 不追加
+
+### 5. 交互切换验证（System ↔ Project）
+步骤:
+1. system agent 创建项目并分派
+2. 用户切换到项目 session
+3. 用户留在 system session
+
+预期:
+- 切换后 project agent 对话正常
+- system session 可等待结果汇报
 
 ---
 
