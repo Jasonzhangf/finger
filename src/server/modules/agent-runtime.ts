@@ -307,6 +307,42 @@ export function registerAgentRuntimeTools(deps: AgentRuntimeDeps): string[] {
   });
   loaded.push('session.list');
 
+
+  // CommandHub exec tool - shared command processing
+  deps.runtime.registerTool({
+    name: 'command.exec',
+    description: 'Execute <##...##> commands via shared CommandHub (MessageHub/System Agent/CLI unified).',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        input: { type: 'string', description: 'Command string, e.g. <##@system:provider:list##>' },
+      },
+      required: ['input'],
+      additionalProperties: false,
+    },
+    handler: async (input: unknown): Promise<unknown> => {
+      if (!isObjectRecord(input) || typeof input.input !== 'string') {
+        throw new Error('command.exec input must be { input: string }');
+      }
+      const { parseCommands, getCommandHub } = await import('../../blocks/command-hub/index.js');
+      const parsed = parseCommands(input.input);
+      if (parsed.commands.length === 0) {
+        return { success: false, output: '未检测到命令' };
+      }
+      const executor = getCommandHub();
+      const result = await executor.execute(parsed.commands[0], {
+        channelId: 'agent',
+        configPath: `${process.env.HOME || ''}/.finger/config/config.json`,
+        updateContext: (id, mode, agentId) => {
+          const { ChannelContextManager } = require('../../orchestration/channel-context-manager.js');
+          const ctxMgr = ChannelContextManager.getInstance();
+          ctxMgr.updateContext(id, mode, agentId);
+        }
+      });
+      return result;
+    }
+  });
+  loaded.push('command.exec');
   return loaded;
 }
 
@@ -324,3 +360,4 @@ export function registerAgentRuntimeRoutes(app: Express, deps: AgentRuntimeDeps)
     });
   });
 }
+
