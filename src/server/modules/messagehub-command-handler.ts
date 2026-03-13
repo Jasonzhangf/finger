@@ -12,6 +12,9 @@ import {
   resolveDefaultProject,
   type FingerConfig,
 } from '../../core/config/channel-config.js';
+import * as fs from 'fs';
+import * as path from 'path';
+import { FINGER_PATHS } from '../../core/finger-paths.js';
 
 /**
  * 解析指定项目的最新 session
@@ -275,4 +278,84 @@ export async function handleProjectSwitch(
   await emitSessionChanged(sessionManager, session.id, eventBus);
 
   return `✓ 已切换到项目：${resolvedPath}\n\n当前会话：[${session.id}]\n${session.messages.length} 条消息\n\n继续对话...`;
+}
+
+/**
+ * Load provider config from ~/.finger/config/config.json
+ */
+function loadProviderConfig(): { providers: Record<string, any>; current: string | null } {
+  const configPath = path.join(FINGER_PATHS.config.dir, 'config.json');
+  try {
+    if (!fs.existsSync(configPath)) {
+      return { providers: {}, current: null };
+    }
+    const content = fs.readFileSync(configPath, 'utf-8');
+    const config = JSON.parse(content) as any;
+    const kernel = config?.kernel || {};
+    return {
+      providers: kernel.providers || {},
+      current: kernel.provider || null,
+    };
+  } catch {
+    return { providers: {}, current: null };
+  }
+}
+
+/**
+ * Save provider config to ~/.finger/config/config.json
+ */
+function saveProviderConfig(providerId: string): boolean {
+  const configPath = path.join(FINGER_PATHS.config.dir, 'config.json');
+  try {
+    let config: any = {};
+    if (fs.existsSync(configPath)) {
+      const content = fs.readFileSync(configPath, 'utf-8');
+      config = JSON.parse(content);
+    }
+    if (!config.kernel) config.kernel = {};
+    config.kernel.provider = providerId;
+    fs.writeFileSync(configPath, JSON.stringify(config, null, 2), 'utf-8');
+    return true;
+  } catch (err) {
+    console.error('[MessageHub] Failed to save provider config:', err);
+    return false;
+  }
+}
+
+/**
+ * <##@system:provider:list##> - List all AI providers
+ */
+export async function handleProviderList(): Promise<string> {
+  const { providers, current } = loadProviderConfig();
+  const lines = ['可用 AI Provider：\n'];
+
+  Object.entries(providers).forEach(([id, cfg]: [string, any]) => {
+    const isCurrent = id === current;
+    const marker = isCurrent ? ' [当前]' : '';
+    const baseUrl = cfg?.base_url || 'unknown';
+    const model = cfg?.model || 'unknown';
+    lines.push(`  - ${id}${marker}: ${model} @ ${baseUrl}`);
+  });
+
+  lines.push('\n使用 <##@system:provider:switch@id##> 切换 provider');
+  return lines.join('\n');
+}
+
+/**
+ * <##@system:provider:switch@id##> - Switch AI provider
+ */
+export async function handleProviderSwitch(providerId: string): Promise<string> {
+  const { providers } = loadProviderConfig();
+
+  if (!providers[providerId]) {
+    return `❌ Provider 不存在：${providerId}\n\n使用 <##@system:provider:list##> 查看可用 providers`;
+  }
+
+  const success = saveProviderConfig(providerId);
+  if (!success) {
+    return `❌ 切换失败：无法保存配置`;
+  }
+
+  const cfg = providers[providerId];
+  return `✓ 已切换到 provider：${providerId}\n  Model: ${cfg?.model || 'unknown'}\n  URL: ${cfg?.base_url || 'unknown'}\n\n重启 agent 后生效`;
 }

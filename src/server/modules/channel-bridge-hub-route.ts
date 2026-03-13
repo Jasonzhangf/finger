@@ -20,6 +20,8 @@ import {
   handleSystemCommand,
   handleProjectList,
   handleProjectSwitch,
+  handleProviderList,
+  handleProviderSwitch,
 } from './messagehub-command-handler.js';
 import { loadFingerConfig, getChannelAuth } from '../../core/config/channel-config.js';
 
@@ -128,29 +130,43 @@ export function createChannelBridgeHubRoute(deps: ChannelBridgeHubRouteDeps) {
           return;
         }
 
-       if (firstBlock.type === 'system') {
-          // Check for <##@system:restart##> command
-          if (firstBlock.content === 'restart') {
-            await sendReply('系统重启指令已接收，正在安全重启 daemon...', 'messagehub');
+      if (firstBlock.type === 'system') {
+         // Check for <##@system:restart##> command
+         if (firstBlock.content === 'restart') {
+           await sendReply('系统重启指令已接收，正在安全重启 daemon...', 'messagehub');
 
-            // Trigger graceful restart via process manager
-            try {
-              const daemon = (globalThis as any).__daemonInstance;
-              // Using global daemon instance
-              if (daemon && typeof daemon.restart === 'function') {
-                await daemon.restart();
-              } else {
-                // Fallback: use safe restart endpoint
-                await sendReply('⚠️ Daemon 实例不可用，请手动重启服务', 'messagehub');
-              }
-            } catch (err) {
-              console.error('[Server] Daemon restart error:', err);
-              await sendReply(`重启失败: ${err instanceof Error ? err.message : String(err)}`, 'messagehub');
-            }
+           // Trigger graceful restart via process manager
+           try {
+             const daemon = (globalThis as any).__daemonInstance;
+             // Using global daemon instance
+             if (daemon && typeof daemon.restart === 'function') {
+               await daemon.restart();
+             } else {
+               // Fallback: use safe restart endpoint
+               await sendReply('⚠️ Daemon 实例不可用，请手动重启服务', 'messagehub');
+             }
+           } catch (err) {
+             console.error('[Server] Daemon restart error:', err);
+             await sendReply(`重启失败: ${err instanceof Error ? err.message : String(err)}`, 'messagehub');
+           }
+           return;
+         }
+
+          // Check for provider commands
+          if (firstBlock.content === 'provider_list') {
+            const result = await handleProviderList();
+            await sendReply(result, 'messagehub');
             return;
           }
 
-         const result = await handleSystemCommand(sessionManager, eventBus);
+          if (firstBlock.content?.startsWith('provider_switch:')) {
+            const providerId = firstBlock.content.replace('provider_switch:', '');
+            const result = await handleProviderSwitch(providerId);
+            await sendReply(result, 'messagehub');
+            return;
+          }
+
+          const result = await handleSystemCommand(sessionManager, eventBus);
           channelContextManager.updateContext(
             channelMsg.channelId,
             'system',
