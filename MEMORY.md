@@ -120,3 +120,48 @@ Tags: dual-daemon, bridge, openclaw, architecture, qqbot
 - Mailbox 模式的消息（不进入 dispatch）
 
 Tags: system-agent, rules, memory, capability, routing, permissions
+
+## 2026-03-13 System Agent 实施细节
+
+### 类型系统修复
+
+**问题**: project_tool 使用非标准 `execute` 字段
+
+**解决**: 改为 ToolRegistry 标准（`policy + handler`）
+
+**文件修改**:
+- `src/tools/internal/project-tool/project-tool.ts`
+- `src/server/modules/agent-runtime/types.ts`（添加 `dispatchTaskToAgent` 可选依赖）
+
+### 注册机制重构
+
+**原则**: project_tool 只在运行时注册，不在 CLI 内部注册表
+
+**原因**: 需要 AgentRuntimeDeps（sessionManager, dispatchTaskToAgent）
+
+**实现**:
+```typescript
+// src/tools/internal/index.ts
+export function registerProjectToolInRuntime(
+  toolRegistry: ToolRegistry,
+  getAgentRuntimeDeps: () => AgentRuntimeDeps
+): void {
+  registerProjectTool(toolRegistry, getAgentRuntimeDeps);
+}
+```
+
+**调用点**: `src/runtime/default-tools.ts` 的 `registerDefaultRuntimeTools()`
+
+### 验证状态
+
+- ✅ 构建通过
+- ✅ 类型检查通过
+- ⏳ 运行时验证待进行（需要实际 channel/webui）
+
+### 当前限制
+
+`project_tool` 无法通过 `finger tool run --local` 测试：
+- 原因: 只在运行时注册，CLI 内部注册表不包含
+- 设计意图: 需要运行时环境才能验证
+
+Tags: system-agent, project-tool, type-system, registration
