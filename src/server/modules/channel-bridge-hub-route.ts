@@ -98,55 +98,55 @@ export function createChannelBridgeHubRoute(deps: ChannelBridgeHubRouteDeps) {
       try {
         if (firstBlock.type === 'cmd_list') {
           const result = await handleCmdList();
-          await sendReply(result);
+          await sendReply(result, 'messagehub');
           return;
         }
 
         if (firstBlock.type === 'agent_list') {
           const result = await handleAgentList(sessionManager, firstBlock.path);
-          await sendReply(result);
+          await sendReply(result, 'messagehub');
           return;
         }
 
         if (firstBlock.type === 'agent_new') {
           const result = await handleAgentNew(sessionManager, firstBlock.path, eventBus);
-          await sendReply(result);
+          await sendReply(result, 'messagehub');
           return;
         }
 
         if (firstBlock.type === 'agent_switch' && firstBlock.sessionId) {
           const result = await handleAgentSwitch(sessionManager, firstBlock.sessionId, eventBus);
-          await sendReply(result);
+          await sendReply(result, 'messagehub');
           return;
         }
 
         if (firstBlock.type === 'agent_delete') {
           const result = await handleAgentDelete(sessionManager, firstBlock.sessionId!, eventBus);
-          await sendReply(result);
+          await sendReply(result, 'messagehub');
           return;
         }
 
         if (firstBlock.type === 'system') {
           const result = await handleSystemCommand(sessionManager, eventBus);
-          await sendReply(result, 'finger-system-agent');
+          await sendReply(result, 'messagehub');
           return;
         }
 
         if (firstBlock.type === 'project_list') {
           const result = await handleProjectList(sessionManager);
-          await sendReply(result);
+          await sendReply(result, 'messagehub');
           return;
         }
 
         if (firstBlock.type === 'project_switch' && firstBlock.path) {
           const result = await handleProjectSwitch(sessionManager, firstBlock.path, eventBus);
-          await sendReply(result);
+          await sendReply(result, 'messagehub');
           return;
         }
       } catch (err) {
         console.error('[Server] Channel super command error:', err);
         const errorMessage = err instanceof Error ? err.message : String(err);
-        await sendReply(`命令执行失败: ${errorMessage}`);
+        await sendReply(`命令执行失败: ${errorMessage}`, 'messagehub');
         return;
       }
     }

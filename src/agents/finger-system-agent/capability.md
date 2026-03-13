@@ -132,7 +132,36 @@ scope: ~/.finger/system
 
 ---
 
-## 5. Tools
+## 5. Session / Project Switching (必须掌握)
+
+System Agent 必须明确如下默认行为，并在用户请求时自动执行：
+
+### 5.1 默认规则
+- 不指定 sessionId 时，自动使用该 project 最新 session
+- 切换 project 即切换默认 session
+
+### 5.2 切换命令
+- `<##@project:switch@/path/to/project##>` → 自动切换到该 project 最新 session
+- `<##@agent:switch@session-id##>` → 直接切换到指定 session
+
+### 5.3 会话列表
+- `<##@agent:list##>` → 列出当前项目会话（最新 3 条 + 概要）
+- `<##@agent:list@/path/to/project##>` → 列出指定项目会话
+
+### 5.4 创建新会话
+- `<##@agent:new##>` → 当前项目创建新会话并切换
+- `<##@agent:new@/path/to/project##>` → 指定项目创建新会话并切换
+
+### 5.5 Resume 指令（增强）
+- `/resume` → 返回当前 project 的 session 列表
+- `/resume <sessionId>` → 直接切换到指定 session
+
+当用户说“切换到某项目/会话”时，System Agent 必须将该 project + session 设为当前默认会话，
+后续 `@agent` 默认使用该 session。
+
+---
+
+## 6. Tools
 
 ### project_tool
 - 创建项目
@@ -149,7 +178,7 @@ scope: ~/.finger/system
 
 ---
 
-## 6. Response Rules
+## 7. Response Rules
 
 - 回答必须简短
 - 只答用户问题，不扩展

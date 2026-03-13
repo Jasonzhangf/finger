@@ -48,7 +48,8 @@ export interface ParsedMessage {
 // Match:
 // - <##@category##> or <##@category:action##> or <##@category:action@param##>
 // - <##help##> (alias for cmd:list)
-const TAG_PATTERN = /<##(?:@(\w+)(?::([^@#>]+))?(?:@([^>]+))?|help)##>/;
+// - /resume or /resume <sessionId> (alias for agent:list / agent:switch)
+const TAG_PATTERN = /<##(?:@(\w+)(?::([^@#>]+))?(?:@([^>]+))?|help)##>|\/resume(?:\s+([^\s]+))?/;
 
 /**
  * Parse message content for super command tags
@@ -65,9 +66,21 @@ export function parseSuperCommand(content: string): ParsedMessage {
     };
   }
 
-  const [fullMatch, category, actionRaw, param] = match;
+  const [fullMatch, category, actionRaw, param, resumeArg] = match;
   const matchIndex = match.index ?? 0;
   const remainingContent = `${content.slice(0, matchIndex)}${content.slice(matchIndex + fullMatch.length)}`.trim();
+  if (fullMatch.startsWith('/resume')) {
+    const block: SuperCommandBlock = resumeArg
+      ? { type: 'agent_switch', content: '', sessionId: resumeArg }
+      : { type: 'agent_list', content: '' };
+    return {
+      type: 'super_command',
+      blocks: [block],
+      effectiveContent: remainingContent,
+      targetAgent: 'finger-orchestrator',
+      shouldSwitch: true,
+    };
+  }
   if (fullMatch === '<##help##>') {
     const block: SuperCommandBlock = { type: 'cmd_list', content: '' };
     return {

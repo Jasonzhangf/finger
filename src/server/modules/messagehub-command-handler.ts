@@ -61,6 +61,8 @@ export async function handleCmdList(): Promise<string> {
   <##@agent:delete@session-id##>   - 删除会话
   <##@project:list##>              - 列出所有项目
   <##@project:switch@/path##>      - 切换项目路径（使用最新 session）
+  /resume                           - 列出当前项目会话（等同 <##@agent:list##>）
+  /resume session-id                - 直接切换会话（等同 <##@agent:switch@...##>）
   <##@cmd:list##>                  - 显示此帮助`;
 }
 
@@ -199,7 +201,6 @@ export async function handleSystemCommand(
     .slice(0, 3);
 
   const lines = [
-    `✓ 已切换到 System Agent`,
     `系统目录：${systemProject}`,
     ``,
     `最近 3 条 System Agent 会话：`,
