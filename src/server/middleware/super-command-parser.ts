@@ -48,7 +48,7 @@ export interface ParsedMessage {
 // Match:
 // - <##@category##> or <##@category:action##> or <##@category:action@param##>
 // - <##help##> (alias for cmd:list)
-const TAG_PATTERN = /^<##(?:@(\w+)(?::([^@#>]+))?(?:@([^>]+))?|help)##>\s*/;
+const TAG_PATTERN = /<##(?:@(\w+)(?::([^@#>]+))?(?:@([^>]+))?|help)##>/;
 
 /**
  * Parse message content for super command tags
