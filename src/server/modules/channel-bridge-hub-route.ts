@@ -126,7 +126,28 @@ export function createChannelBridgeHubRoute(deps: ChannelBridgeHubRouteDeps) {
           return;
         }
 
-        if (firstBlock.type === 'system') {
+       if (firstBlock.type === 'system') {
+          // Check for <##@system:restart##> command
+          if (firstBlock.content === 'restart') {
+            await sendReply('系统重启指令已接收，正在安全重启 daemon...', 'messagehub');
+
+            // Trigger graceful restart via process manager
+            try {
+              const daemon = (globalThis as any).__daemonInstance;
+              // Using global daemon instance
+              if (daemon && typeof daemon.restart === 'function') {
+                await daemon.restart();
+              } else {
+                // Fallback: use safe restart endpoint
+                await sendReply('⚠️ Daemon 实例不可用，请手动重启服务', 'messagehub');
+              }
+            } catch (err) {
+              console.error('[Server] Daemon restart error:', err);
+              await sendReply(`重启失败: ${err instanceof Error ? err.message : String(err)}`, 'messagehub');
+            }
+            return;
+          }
+
           const result = await handleSystemCommand(sessionManager, eventBus);
           await sendReply(result, 'messagehub');
           return;

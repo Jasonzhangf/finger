@@ -238,6 +238,75 @@ export function registerAgentRuntimeTools(deps: AgentRuntimeDeps): string[] {
   });
   loaded.push('user.ask');
 
+  // Session switching tool
+  deps.runtime.registerTool({
+    name: 'session.switch',
+    description: 'Switch to a different session within the current project',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        session_id: { type: 'string' },
+        target_agent_id: { type: 'string' }
+      },
+      required: ['session_id'],
+      additionalProperties: false
+    },
+    handler: async (input: unknown): Promise<unknown> => {
+      if (!isObjectRecord(input)) {
+        throw new Error('session.switch input must be object');
+      }
+
+      const sessionId = typeof input.session_id === 'string' ? input.session_id.trim() : '';
+      if (sessionId.length === 0) {
+        throw new Error('session.switch session_id is required');
+      }
+
+      const currentAgentId = deps.primaryOrchestratorAgentId;
+      const targetAgentId = typeof input.target_agent_id === 'string' ? input.target_agent_id.trim() : currentAgentId;
+
+      if (currentAgentId !== 'finger-system-agent' && targetAgentId !== currentAgentId) {
+        throw new Error(`Agent ${currentAgentId} can only switch its own sessions`);
+      }
+
+      const success = deps.runtime.setCurrentSession(sessionId);
+      if (!success) {
+        throw new Error(`Failed to switch to session: ${sessionId}`);
+      }
+
+      return { success: true, session_id: sessionId, agent_id: targetAgentId };
+    }
+  });
+  loaded.push('session.switch');
+
+  // Session list tool
+  deps.runtime.registerTool({
+    name: 'session.list',
+    description: 'List all sessions in the current project',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        limit: { type: 'number' }
+      },
+      additionalProperties: false
+    },
+    handler: async (input: unknown): Promise<unknown> => {
+      const limit = isObjectRecord(input) && typeof input.limit === 'number' ? input.limit : undefined;
+      const sessions = deps.runtime.listSessions();
+      const result = limit && limit > 0 ? sessions.slice(0, limit) : sessions;
+
+      return {
+        sessions: result.map(s => ({
+          session_id: s.id,
+          created_at: s.createdAt,
+          last_accessed_at: s.updatedAt,
+          message_count: s.messageCount
+        })),
+        total: sessions.length
+      };
+    }
+  });
+  loaded.push('session.list');
+
   return loaded;
 }
 

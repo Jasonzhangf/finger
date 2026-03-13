@@ -5,6 +5,7 @@
  * Syntax:
  * - <##@system##>message -> switch to system agent
  * - <##@system:pwd=xxx##>message -> switch to system agent with password
+ * - <##@system:restart##> -> trigger daemon restart (MessageHub handled)
  * - <##@agent##>message -> switch back to business agent
  * - <##@agent:list##> -> list sessions in current project
  * - <##@agent:list@/path##> -> list sessions in specified project
@@ -14,7 +15,12 @@
  * - <##@agent:delete@id##> -> delete session
  * - <##@project:list##> -> list all projects
  * - <##@project:switch@/path##> -> switch project
- * - <##@cmd:list##> -> list all commands
+ * - <##cmd:list##> or <##help##> -> list all commands
+ *
+ * Note: /resume is now handled by agents (not MessageHub)
+ * - Agents can use their session switching tool to change sessions
+ * - System Agent can switch any agent's session
+ * - Normal agents can only switch their own session
  */
 
 export interface SuperCommandBlock {
@@ -48,8 +54,8 @@ export interface ParsedMessage {
 // Match:
 // - <##@category##> or <##@category:action##> or <##@category:action@param##>
 // - <##help##> (alias for cmd:list)
-// - /resume or /resume <sessionId> (alias for agent:list / agent:switch)
-const TAG_PATTERN = /<##(?:@(\w+)(?::([^@#>]+))?(?:@([^>]+))?|help)##>|\/resume(?:\s+([^\s]+))?/;
+// NOTE: /resume is NOT handled here anymore - agents handle it via their session tools
+const TAG_PATTERN = /<##(?:@(\w+)(?::([^@#>]+))?(?:@([^>]+))?|help)##>/;
 
 /**
  * Parse message content for super command tags
@@ -66,21 +72,10 @@ export function parseSuperCommand(content: string): ParsedMessage {
     };
   }
 
-  const [fullMatch, category, actionRaw, param, resumeArg] = match;
+  const [fullMatch, category, actionRaw, param] = match;
   const matchIndex = match.index ?? 0;
   const remainingContent = `${content.slice(0, matchIndex)}${content.slice(matchIndex + fullMatch.length)}`.trim();
-  if (fullMatch.startsWith('/resume')) {
-    const block: SuperCommandBlock = resumeArg
-      ? { type: 'agent_switch', content: '', sessionId: resumeArg }
-      : { type: 'agent_list', content: '' };
-    return {
-      type: 'super_command',
-      blocks: [block],
-      effectiveContent: remainingContent,
-      targetAgent: 'finger-orchestrator',
-      shouldSwitch: true,
-    };
-  }
+
   if (fullMatch === '<##help##>') {
     const block: SuperCommandBlock = { type: 'cmd_list', content: '' };
     return {
@@ -154,13 +149,21 @@ export function parseSuperCommand(content: string): ParsedMessage {
   }
 
   if (category === 'system') {
-    // <##@system##> or <##@system:pwd=xxx##>
-    const password = action?.startsWith('pwd=') ? action.slice(4) : undefined;
-    block = {
-      type: 'system',
-      password,
-      content: remainingContent,
-    };
+    // <##@system##> or <##@system:pwd=xxx##> or <##@system:restart##>
+    if (action === 'restart') {
+      block = {
+        type: 'system' as const,
+        password: undefined,
+        content: 'restart',
+      };
+    } else {
+      const password = action?.startsWith('pwd=') ? action.slice(4) : undefined;
+      block = {
+        type: 'system',
+        password,
+        content: remainingContent,
+      };
+    }
 
     return {
       type: 'super_command',
