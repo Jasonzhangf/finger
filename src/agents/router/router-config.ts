@@ -7,7 +7,6 @@
  * 3. 与消息分发层解耦，只在作为发送目标时命中
  */
 
-import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs';
 import { FINGER_PATHS, ensureDir } from '../../core/finger-paths.js';
 import { logger } from '../../core/logger.js';
 

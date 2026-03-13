@@ -51,11 +51,13 @@
     "mem0ai": "^2.3.0",
     "@zilliz/milvus2-sdk-node": "^2.5.9"
   },
-  "devDependencies": {
+ "devDependencies": {
+    "@eslint/js": "^9.18.0",
     "@types/express": "^5.0.6",
     "@types/node": "^20.10.0",
     "@types/ws": "^8.5.13",
-    "eslint": "^8.57.0",
+    "eslint": "^9.18.0",
+    "globals": "^15.14.0",
     "tsx": "^4.19.2",
     "typescript": "^5.3.3",
     "typescript-eslint": "^8.56.1",
