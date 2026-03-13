@@ -93,9 +93,13 @@ function parseSingleCommand(
       const clockAction = action.slice(6); // remove 'clock:'
       if (clockAction === 'list') {
         type = CommandType.CLOCK_LIST;
-      } else if (clockAction.startsWith('cancel@')) {
+      } else if (clockAction === 'cancel' || clockAction.startsWith('cancel@')) {
         type = CommandType.CLOCK_CANCEL;
-        params.timerId = action.replace('clock:cancel@', '');
+        if (clockAction.startsWith('cancel@')) {
+          params.timerId = action.slice(18); // remove 'clock:cancel@'
+        } else if (param) {
+          params.timerId = param;
+        }
       } else if (clockAction.startsWith('create')) {
         type = CommandType.CLOCK_CREATE;
         // Parse clock parameters from param if present
