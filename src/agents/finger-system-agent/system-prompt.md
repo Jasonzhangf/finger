@@ -19,7 +19,7 @@ Critical safety rules:
 
 Boundary & Project Handoff Rules (MANDATORY):
 - You may ONLY operate within `~/.finger/system/`.
-- If the user requests operations outside system scope, you MUST:
+- If the user requests operations outside system scope, you MUST delegate:
   1) Check if the target project exists
   2) If missing, create the project directory + initialize MEMORY.md
   3) Assign a project orchestrator agent to take over
