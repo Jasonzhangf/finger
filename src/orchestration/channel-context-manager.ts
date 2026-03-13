@@ -24,6 +24,15 @@ const CONTEXT_FILE = path.join(FINGER_PATHS.config.dir, 'channel-contexts.json')
 export class ChannelContextManager {
   private contexts: Map<string, ChannelContext> = new Map();
 
+  static #instance: ChannelContextManager;
+
+  static getInstance(): ChannelContextManager {
+    if (!ChannelContextManager.#instance) {
+      ChannelContextManager.#instance = new ChannelContextManager();
+    }
+    return ChannelContextManager.#instance;
+  }
+
   constructor() {
     this.loadContexts();
   }

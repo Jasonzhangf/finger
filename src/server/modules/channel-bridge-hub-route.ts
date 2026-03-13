@@ -32,7 +32,7 @@ export interface ChannelBridgeHubRouteDeps {
 
 export function createChannelBridgeHubRoute(deps: ChannelBridgeHubRouteDeps) {
   const { channelBridgeManager, sessionManager, dispatchTaskToAgent, eventBus } = deps;
-  const channelContextManager = new ChannelContextManager();
+  const channelContextManager = ChannelContextManager.getInstance();
 
   function formatLocalTimestamp(date: Date = new Date()): string {
     const year = date.getFullYear();
@@ -150,7 +150,12 @@ export function createChannelBridgeHubRoute(deps: ChannelBridgeHubRouteDeps) {
             return;
           }
 
-          const result = await handleSystemCommand(sessionManager, eventBus);
+         const result = await handleSystemCommand(sessionManager, eventBus);
+          channelContextManager.updateContext(
+            channelMsg.channelId,
+            'system',
+            'finger-system-agent'
+          );
           await sendReply(result, 'messagehub');
           return;
         }
@@ -162,7 +167,12 @@ export function createChannelBridgeHubRoute(deps: ChannelBridgeHubRouteDeps) {
         }
 
         if (firstBlock.type === 'project_switch' && firstBlock.path) {
-          const result = await handleProjectSwitch(sessionManager, firstBlock.path, eventBus);
+         const result = await handleProjectSwitch(sessionManager, firstBlock.path, eventBus);
+          channelContextManager.updateContext(
+            channelMsg.channelId,
+            'business',
+            'finger-orchestrator'
+          );
           await sendReply(result, 'messagehub');
           return;
         }
@@ -200,11 +210,13 @@ export function createChannelBridgeHubRoute(deps: ChannelBridgeHubRouteDeps) {
       metadata: { channelId: channelMsg.channelId, messageId: channelMsg.id },
     });
 
-    // Dispatch to orchestrator
-    try {
+   // Dispatch to orchestrator
+   try {
+      const targetAgentId = channelContextManager.getTargetAgent(channelMsg.channelId, parsedCommand);
+
       const dispatchRequest: AgentDispatchRequest = {
         sourceAgentId: 'channel-bridge',
-        targetAgentId: 'finger-orchestrator',
+        targetAgentId,
         task: { prompt: cleanContent },
         sessionId,
         metadata: {
