@@ -60,7 +60,15 @@ export function createChannelBridgeHubRoute(deps: ChannelBridgeHubRouteDeps) {
     };
 
     // Parse super commands
-    const parsedCommand = parseSuperCommand(channelMsg.content);
+    const metadata = channelMsg.metadata as Record<string, unknown> | undefined;
+    const commandSource = (
+      (typeof metadata?.RawBody === 'string' && metadata.RawBody.trim())
+      || (typeof metadata?.CommandBody === 'string' && metadata.CommandBody.trim())
+      || (typeof metadata?.Body === 'string' && metadata.Body.trim())
+      || (typeof metadata?.BodyForAgent === 'string' && metadata.BodyForAgent.trim())
+      || channelMsg.content
+    );
+    const parsedCommand = parseSuperCommand(commandSource);
     if (parsedCommand.type === 'super_command' && parsedCommand.blocks && parsedCommand.blocks.length > 0) {
       const firstBlock = parsedCommand.blocks[0];
       console.log('[Server] Channel super command detected:', firstBlock.type);
