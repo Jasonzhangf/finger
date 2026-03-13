@@ -5,6 +5,7 @@
  */
 
 import type { SessionManager, Session } from '../../orchestration/session-manager.js';
+import type { UnifiedEventBus } from '../../runtime/event-bus.js';
 import {
   loadFingerConfig,
   resolveHomePath,
@@ -28,17 +29,22 @@ function resolveLatestSession(sessionManager: SessionManager, projectPath: strin
 /**
  * 辅助函数：触发 session_changed 事件
  */
-async function emitSessionChanged(sessionManager: SessionManager, sessionId: string): Promise<void> {
-  // SessionManager 暂时没有公开 eventBus 引用，后续接入统一事件系统
-  // 这里先保留接口占位，避免破坏调用逻辑
-  if ((sessionManager as any).eventBus?.emit) {
-    await (sessionManager as any).eventBus.emit({
-      type: 'session_changed',
-      sessionId,
-      timestamp: new Date().toISOString(),
-      payload: {},
-    });
-  }
+async function emitSessionChanged(
+  sessionManager: SessionManager,
+  sessionId: string,
+  eventBus?: UnifiedEventBus
+): Promise<void> {
+  if (!eventBus) return;
+  const session = sessionManager.getSession(sessionId);
+  await eventBus.emit({
+    type: 'session_changed',
+    sessionId,
+    timestamp: new Date().toISOString(),
+    payload: {
+      projectPath: session?.projectPath,
+      messageCount: session?.messages.length ?? 0,
+    },
+  });
 }
 
 /**
@@ -98,7 +104,8 @@ export async function handleAgentList(
  */
 export async function handleAgentNew(
   sessionManager: SessionManager,
-  projectPath?: string
+  projectPath?: string,
+  eventBus?: UnifiedEventBus
 ): Promise<string> {
   const config = await loadFingerConfig();
   const resolvedPath = projectPath
@@ -107,7 +114,7 @@ export async function handleAgentNew(
 
   const session = sessionManager.createSession(resolvedPath);
   sessionManager.setCurrentSession(session.id);
-  await emitSessionChanged(sessionManager, session.id);
+  await emitSessionChanged(sessionManager, session.id, eventBus);
 
   return `✓ 已创建新会话：[${session.id}]\n项目路径：${resolvedPath}\n\n开始新对话...`;
 }
@@ -117,7 +124,8 @@ export async function handleAgentNew(
  */
 export async function handleAgentSwitch(
   sessionManager: SessionManager,
-  sessionId: string
+  sessionId: string,
+  eventBus?: UnifiedEventBus
 ): Promise<string> {
   const session = sessionManager.getSession(sessionId);
   if (!session) {
@@ -129,7 +137,7 @@ export async function handleAgentSwitch(
     return `❌ 切换失败：[${sessionId}]`;
   }
 
-  await emitSessionChanged(sessionManager, sessionId);
+  await emitSessionChanged(sessionManager, sessionId, eventBus);
 
   const messageCount = session.messages.length;
   return `✓ 已切换到会话：[${sessionId}]\n项目路径：${session.projectPath}\n\n加载会话历史... (${messageCount} ��消息)\n继续对话...`;
@@ -140,7 +148,8 @@ export async function handleAgentSwitch(
  */
 export async function handleAgentDelete(
   sessionManager: SessionManager,
-  sessionId: string
+  sessionId: string,
+  eventBus?: UnifiedEventBus
 ): Promise<string> {
   const session = sessionManager.getSession(sessionId);
   if (!session) {
@@ -159,7 +168,7 @@ export async function handleAgentDelete(
     const latestSession = resolveLatestSession(sessionManager, projectPath);
     if (latestSession) {
       sessionManager.setCurrentSession(latestSession.id);
-      await emitSessionChanged(sessionManager, latestSession.id);
+      await emitSessionChanged(sessionManager, latestSession.id, eventBus);
       return `✓ 已删除会话：[${sessionId}]\n\n已切换到：[${latestSession.id}]`;
     }
   }
@@ -170,7 +179,10 @@ export async function handleAgentDelete(
 /**
  * <##@system##>
  */
-export async function handleSystemCommand(sessionManager: SessionManager): Promise<string> {
+export async function handleSystemCommand(
+  sessionManager: SessionManager,
+  eventBus?: UnifiedEventBus
+): Promise<string> {
   const systemProject = resolveHomePath('~/.finger');
   let session = resolveLatestSession(sessionManager, systemProject);
 
@@ -179,7 +191,7 @@ export async function handleSystemCommand(sessionManager: SessionManager): Promi
   }
 
   sessionManager.setCurrentSession(session.id);
-  await emitSessionChanged(sessionManager, session.id);
+  await emitSessionChanged(sessionManager, session.id, eventBus);
 
   const systemSessions = sessionManager.listSessions()
     .filter(s => s.projectPath === systemProject)
@@ -248,7 +260,8 @@ export async function handleProjectList(sessionManager: SessionManager): Promise
  */
 export async function handleProjectSwitch(
   sessionManager: SessionManager,
-  projectPath: string
+  projectPath: string,
+  eventBus?: UnifiedEventBus
 ): Promise<string> {
   const resolvedPath = resolveHomePath(projectPath);
 
@@ -258,7 +271,7 @@ export async function handleProjectSwitch(
   }
 
   sessionManager.setCurrentSession(session.id);
-  await emitSessionChanged(sessionManager, session.id);
+  await emitSessionChanged(sessionManager, session.id, eventBus);
 
   return `✓ 已切换到项目：${resolvedPath}\n\n当前会话：[${session.id}]\n${session.messages.length} 条消息\n\n继续对话...`;
 }

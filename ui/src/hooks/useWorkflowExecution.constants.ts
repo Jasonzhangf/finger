@@ -32,6 +32,7 @@ export const SESSION_BOUND_WS_TYPES = new Set([
   'agent_runtime_mock_assertion',
   'runtime_status_changed',
   'runtime_finished',
+  'session_changed',
   'input_lock_changed',
   'typing_indicator',
   'input_lock_heartbeat_ack',

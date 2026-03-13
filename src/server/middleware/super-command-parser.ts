@@ -45,8 +45,10 @@ export interface ParsedMessage {
   shouldSwitch: boolean;
 }
 
-// Match: <##@category##> or <##@category:action##> or <##@category:action@param##>
-const TAG_PATTERN = /^<##@(\w+)(?::([^@#>]+))?(?:@([^>]+))?##>\s*/;
+// Match:
+// - <##@category##> or <##@category:action##> or <##@category:action@param##>
+// - <##help##> (alias for cmd:list)
+const TAG_PATTERN = /^<##(?:@(\w+)(?::([^@#>]+))?(?:@([^>]+))?|help)##>\s*/;
 
 /**
  * Parse message content for super command tags
@@ -65,6 +67,16 @@ export function parseSuperCommand(content: string): ParsedMessage {
   }
 
   const [fullMatch, category, actionRaw, param] = match;
+  if (fullMatch === '<##help##>') {
+    const block: SuperCommandBlock = { type: 'cmd_list', content: '' };
+    return {
+      type: 'super_command',
+      blocks: [block],
+      effectiveContent: '',
+      targetAgent: '',
+      shouldSwitch: false,
+    };
+  }
   const remainingContent = trimmed.slice(fullMatch.length).trim();
   const action = actionRaw?.trim();
 

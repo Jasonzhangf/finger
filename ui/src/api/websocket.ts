@@ -86,6 +86,8 @@ export class WebSocketClient {
                 'session_resumed',
                 'session_paused',
                 'session_compressed',
+                'session_changed',
+                'session_changed',
                 'performance_metrics',
               ],
               groups: ['SESSION', 'TASK', 'TOOL', 'DIALOG', 'PROGRESS', 'PHASE', 'HUMAN_IN_LOOP', 'SYSTEM', 'INPUT_LOCK', 'AGENT_RUNTIME'],

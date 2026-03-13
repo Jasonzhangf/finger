@@ -81,11 +81,20 @@ export interface SessionCompressedEvent extends BaseEvent {
   };
 }
 
+export interface SessionChangedEvent extends BaseEvent {
+  type: 'session_changed';
+  payload: {
+    projectPath?: string;
+    messageCount?: number;
+  };
+}
+
 export type SessionEvent =
   | SessionCreatedEvent
   | SessionResumedEvent
   | SessionPausedEvent
-  | SessionCompressedEvent;
+  | SessionCompressedEvent
+  | SessionChangedEvent;
 
 // =============================================================================
 // Task 事件
@@ -512,6 +521,7 @@ export const SESSION_EVENT_TYPES = [
   'session_resumed',
   'session_paused',
   'session_compressed',
+  'session_changed',
 ] as const;
 
 /** Task 事件类型集合 */

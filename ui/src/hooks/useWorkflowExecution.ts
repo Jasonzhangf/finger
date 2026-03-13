@@ -299,6 +299,12 @@ export function useWorkflowExecution(
       }
     }
 
+    if (msg.type === 'session_changed') {
+      if (!isCurrentSessionEvent) return;
+      scheduleSessionMessagesRefresh();
+      return;
+    }
+
     if (msg.type === 'session_compressed') {
       if (!isCurrentSessionEvent) return;
       const summary = typeof payload.summary === 'string' ? payload.summary : '';
