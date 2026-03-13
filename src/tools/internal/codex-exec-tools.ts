@@ -43,7 +43,7 @@ export const execCommandTool: InternalTool<unknown, ExecCommandToolOutput> = {
       login: { type: 'boolean', description: 'Whether to run the command as a login shell. Defaults to true.' },
     },
     required: ['cmd'],
-    additionalProperties: false,
+    additionalProperties: true,
   },
   execute: async (rawInput: unknown, context: ToolExecutionContext): Promise<ExecCommandToolOutput> => {
     const input = parseExecCommandInput(rawInput);
@@ -75,7 +75,7 @@ export const writeStdinTool: InternalTool<unknown, ExecCommandToolOutput> = {
       max_output_tokens: { type: 'number', description: 'The maximum number of tokens to output.' },
     },
     required: ['session_id', 'chars'],
-    additionalProperties: false,
+    additionalProperties: true,
   },
   execute: async (rawInput: unknown): Promise<ExecCommandToolOutput> => {
     const input = parseWriteStdinInput(rawInput);
