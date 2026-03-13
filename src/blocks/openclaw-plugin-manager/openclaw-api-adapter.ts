@@ -107,8 +107,7 @@ export function createOpenClawRuntimeApi(params: {
            const ctx = params.ctx as Record<string, unknown>;
            console.log('[channel.reply] dispatchReply called with ctx keys:', Object.keys(ctx || {}).join(', '));
            const content = String(
-             ctx?.BodyForAgent
-               ?? ctx?.RawBody
+            ctx?.RawBody
                ?? ctx?.CommandBody
                ?? ctx?.Body
                ?? ctx?.content
