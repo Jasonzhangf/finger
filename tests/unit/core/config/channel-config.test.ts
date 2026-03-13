@@ -1,18 +1,24 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
+
+// Mock fs module
+vi.mock('fs', () => ({
+  existsSync: vi.fn(),
+  readFileSync: vi.fn(),
+}));
+
+import { existsSync, readFileSync } from 'fs';
 import {
   loadFingerConfig,
   getChannelAuth,
   resolveDefaultProject,
   resolveHomePath,
   type FingerConfig,
-  type ChannelAuthConfig,
-} from '../../../src/core/config/channel-config.js';
+} from '../../../../src/core/config/channel-config.js';
 
 // Mock FINGER_PATHS
-vi.mock('../../../src/core/finger-paths.js', () => ({
+vi.mock('../../../../src/core/finger-paths.js', () => ({
   FINGER_PATHS: {
     home: '/home/testuser',
     config: {
@@ -33,7 +39,7 @@ describe('ChannelConfig', () => {
       channels: [
         { id: 'webui', type: 'direct', priority: 10 },
         { id: 'qqbot', type: 'direct', priority: 20 },
-        { id: 'feishu', 'type: 'mailbox', priority: 30 },
+        { id: 'feishu', type: 'mailbox', priority: 30 },
       ],
     },
     systemAuth: {
@@ -52,7 +58,7 @@ describe('ChannelConfig', () => {
 
   describe('loadFingerConfig', () => {
     it('loads default config when file does not exist', async () => {
-      vi.spyOn(fs, 'existsSync').mockReturnValue(false);
+      (existsSync as unknown as ReturnType<typeof vi.fn>).mockReturnValue(false);
       const config = await loadFingerConfig();
       expect(config.channelAuth?.enabled).toBe(true);
       expect(config.channelAuth?.defaultPolicy).toBe('direct');
@@ -62,8 +68,8 @@ describe('ChannelConfig', () => {
     });
 
     it('loads and merges config from file', async () => {
-      vi.spyOn(fs, 'existsSync').mockReturnValue(true);
-      vi.spyOn(fs, 'readFileSync').mockReturnValue(mockConfigContent);
+      (existsSync as unknown as ReturnType<typeof vi.fn>).mockReturnValue(true);
+      (readFileSync as unknown as ReturnType<typeof vi.fn>).mockReturnValue(mockConfigContent);
       const config = await loadFingerConfig();
       expect(config.channelAuth?.defaultPolicy).toBe('mailbox');
       expect(config.channelAuth?.channels).toHaveLength(3);
@@ -72,8 +78,8 @@ describe('ChannelConfig', () => {
     });
 
     it('returns default config on parse error', async () => {
-      vi.spyOn(fs, 'existsSync').mockReturnValue(true);
-      vi.spyOn(fs, 'readFileSync').mockImplementationOnce(() => {
+      (existsSync as unknown as ReturnType<typeof vi.fn>).mockReturnValue(true);
+      (readFileSync as unknown as ReturnType<typeof vi.fn>).mockImplementationOnce(() => {
         throw new Error('Invalid JSON');
       });
       const config = await loadFingerConfig();

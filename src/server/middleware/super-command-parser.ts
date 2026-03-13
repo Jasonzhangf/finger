@@ -6,18 +6,35 @@
  * - <##@system##>message -> switch to system agent
  * - <##@system:pwd=xxx##>message -> switch to system agent with password
  * - <##@agent##>message -> switch back to business agent
- * - <##@project:list##> -> list available projects
- * - <##@project:switch@/path/to/project##> -> switch project
- * - <##@session:list##> -> list sessions in current project
- * - <##@session:switch@session-id##> -> switch to session
+ * - <##@agent:list##> -> list sessions in current project
+ * - <##@agent:list@/path##> -> list sessions in specified project
+ * - <##@agent:new##> -> create new session in current project
+ * - <##@agent:new@/path##> -> create new session in specified project
+ * - <##@agent:switch@id##> -> switch to session
+ * - <##@agent:delete@id##> -> delete session
+ * - <##@project:list##> -> list all projects
+ * - <##@project:switch@/path##> -> switch project
+ * - <##@cmd:list##> -> list all commands
  */
 
 export interface SuperCommandBlock {
-  type: 'system' | 'agent' | 'project_list' | 'project_switch' | 'session_list' | 'session_switch' | 'invalid';
+  type:
+    | 'system'
+    | 'agent'
+    | 'agent_list'
+    | 'agent_new'
+    | 'agent_switch'
+    | 'agent_delete'
+    | 'project_list'
+    | 'project_switch'
+    | 'session_list'
+    | 'session_switch'
+    | 'cmd_list'
+    | 'invalid';
   password?: string;
   content: string;
-  path?: string;  // for project:switch
-  sessionId?: string;  // for session:switch
+  path?: string;  // for project:switch, agent:list@path, agent:new@path
+  sessionId?: string;  // for agent:switch, agent:delete
 }
 
 export interface ParsedMessage {
@@ -54,6 +71,63 @@ export function parseSuperCommand(content: string): ParsedMessage {
   // Parse based on category and action
   let block: SuperCommandBlock;
 
+  if (category === 'cmd') {
+    if (action === 'list' || !action) {
+      block = {
+        type: 'cmd_list',
+        content: '',
+      };
+    } else {
+      block = { type: 'invalid', content: remainingContent };
+    }
+
+    return {
+      type: 'super_command',
+      blocks: [block],
+      effectiveContent: '',
+      targetAgent: '',
+      shouldSwitch: false,
+    };
+  }
+
+  if (category === 'agent') {
+    if (action === 'list' || !action) {
+      block = {
+        type: 'agent_list',
+        content: '',
+        path: param && param.startsWith('/') ? param : undefined,
+      };
+    } else if (action === 'new') {
+      block = {
+        type: 'agent_new',
+        content: '',
+        path: param || undefined,
+      };
+    } else if (action === 'switch' && param) {
+      block = {
+        type: 'agent_switch',
+        content: '',
+        sessionId: param,
+      };
+    } else if (action === 'delete' && param) {
+      block = {
+        type: 'agent_delete',
+        content: '',
+        sessionId: param,
+      };
+    } else {
+      block = { type: 'invalid', content: remainingContent };
+    }
+
+    return {
+      type: 'super_command',
+      blocks: [block],
+      effectiveContent: remainingContent,
+      targetAgent: 'finger-orchestrator',
+      shouldSwitch: true,
+    };
+  }
+
   if (category === 'system') {
     // <##@system##> or <##@system:pwd=xxx##>
     const password = action?.startsWith('pwd=') ? action.slice(4) : undefined;
@@ -68,21 +142,6 @@ export function parseSuperCommand(content: string): ParsedMessage {
       blocks: [block],
       effectiveContent: remainingContent,
       targetAgent: 'finger-system-agent',
-      shouldSwitch: true,
-    };
-  }
-
-  if (category === 'agent') {
-    block = {
-      type: 'agent',
-      content: remainingContent,
-    };
-
-    return {
-      type: 'super_command',
-      blocks: [block],
-      effectiveContent: remainingContent,
-      targetAgent: 'finger-orchestrator',
       shouldSwitch: true,
     };
   }
