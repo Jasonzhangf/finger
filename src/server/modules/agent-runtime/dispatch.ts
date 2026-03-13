@@ -2,6 +2,8 @@ import { isObjectRecord } from '../../common/object.js';
 import { asString, firstNonEmptyString } from '../../common/strings.js';
 import { sanitizeDispatchResult, type DispatchSummaryResult } from '../../../common/agent-dispatch.js';
 import type { AgentDispatchRequest, AgentRuntimeDeps } from './types.js';
+import { promises as fs } from 'fs';
+import * as path from 'path';
 
 function formatDispatchTaskContent(task: unknown): string {
   if (typeof task === 'string') return task;
@@ -187,6 +189,89 @@ async function syncBdDispatchLifecycle(deps: AgentRuntimeDeps, input: AgentDispa
   }
 }
 
+function shouldRecordToMemory(input: AgentDispatchRequest): boolean {
+  const metadata = isObjectRecord(input.metadata) ? input.metadata : {};
+  const source = String(metadata.source ?? '');
+  const role = String(metadata.role ?? '');
+  const sourceAgentId = String(input.sourceAgentId ?? '');
+
+  const isFromChannel = ['channel', 'webui', 'api'].includes(source);
+  const isFromUser = role === 'user';
+  const isFromAgent = sourceAgentId && sourceAgentId !== 'channel-bridge' && sourceAgentId !== 'api';
+
+  return isFromChannel && isFromUser && !isFromAgent;
+}
+
+async function persistUserMessageToMemory(deps: AgentRuntimeDeps, input: AgentDispatchRequest): Promise<void> {
+  if (!shouldRecordToMemory(input)) return;
+
+  const sessionId = String(input.sessionId ?? '').trim();
+  if (!sessionId) return;
+
+  const session = deps.sessionManager.getSession(sessionId);
+  if (!session) return;
+
+  const content = formatDispatchTaskContent(input.task);
+  if (!content.trim()) return;
+
+  try {
+    const memoryPath = path.join(session.projectPath, 'MEMORY.md');
+    const timestamp = new Date().toISOString();
+    const entryId = `mem-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
+    const metadata = isObjectRecord(input.metadata) ? input.metadata : {};
+  const source = String(metadata.source ?? 'unknown');
+
+    const entry = `## [input] 用户消息 {#${entryId}}
+时间: ${timestamp}
+Agent: ${input.targetAgentId}
+来源: ${source}
+
+${content}
+
+Tags: input, user, ${source}
+---`;
+
+    const existingContent = await fs.readFile(memoryPath, 'utf8').catch(() => '');
+    await fs.writeFile(memoryPath, `${entry}\n\n${existingContent}`);
+  } catch (err) {
+    console.error('[MEMORY] Failed to record user message:', err);
+  }
+}
+
+async function persistAgentSummaryToMemory(
+  deps: AgentRuntimeDeps,
+  input: AgentDispatchRequest,
+  result: { ok: boolean; summary?: string }
+): Promise<void> {
+  if (!shouldRecordToMemory(input)) return;
+  if (!result.summary || result.summary.trim().length === 0) return;
+
+  const session = deps.sessionManager.getSession(input.sessionId);
+  if (!session) return;
+
+  try {
+    const memoryPath = path.join(session.projectPath, 'MEMORY.md');
+    const timestamp = new Date().toISOString();
+    const entryId = `mem-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
+    const status = result.ok ? 'completed' : 'failed';
+
+    const entry = `## [summary] Agent 响应 {#${entryId}}
+时间: ${timestamp}
+Agent: ${input.targetAgentId}
+状态: ${status}
+
+${result.summary}
+
+Tags: output, agent, ${status}
+---`;
+
+    const existingContent = await fs.readFile(memoryPath, 'utf8').catch(() => '');
+    await fs.writeFile(memoryPath, `${entry}\n\n${existingContent}`);
+  } catch (err) {
+    console.error('[MEMORY] Failed to record agent summary:', err);
+  }
+}
+
 export async function dispatchTaskToAgent(deps: AgentRuntimeDeps, input: AgentDispatchRequest): Promise<{
   ok: boolean;
   dispatchId: string;
@@ -197,7 +282,8 @@ export async function dispatchTaskToAgent(deps: AgentRuntimeDeps, input: AgentDi
 }> {
   const boundInput = bindDispatchSessionToRuntime(deps, input);
   const normalizedInput = withDispatchWorkspaceDefaults(deps, boundInput);
-  persistDispatchUserMessage(deps, normalizedInput);
+  await persistDispatchUserMessage(deps, normalizedInput);
+  await persistUserMessageToMemory(deps, normalizedInput);
   const result = await deps.agentRuntimeBlock.execute('dispatch', normalizedInput as unknown as Record<string, unknown>) as {
     ok: boolean;
     dispatchId: string;
@@ -209,6 +295,7 @@ export async function dispatchTaskToAgent(deps: AgentRuntimeDeps, input: AgentDi
   if (result.result !== undefined) {
     result.result = sanitizeDispatchResult(result.result);
   }
+  await persistAgentSummaryToMemory(deps, normalizedInput, result);
   await syncBdDispatchLifecycle(deps, normalizedInput, result);
   return result;
 }

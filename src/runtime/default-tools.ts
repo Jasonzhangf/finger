@@ -1,7 +1,12 @@
 import { createDefaultInternalToolRegistry } from '../tools/internal/index.js';
 import { ToolRegistry } from './tool-registry.js';
+import { registerProjectTool } from '../tools/internal/project-tool/project-tool.js';
+import type { AgentRuntimeDeps } from '../server/modules/agent-runtime/types.js';
 
-export function registerDefaultRuntimeTools(runtimeToolRegistry: ToolRegistry): string[] {
+export function registerDefaultRuntimeTools(
+  runtimeToolRegistry: ToolRegistry,
+  getAgentRuntimeDeps: () => AgentRuntimeDeps
+): string[] {
   const internalRegistry = createDefaultInternalToolRegistry();
   const loadedToolNames: string[] = [];
 
@@ -15,6 +20,10 @@ export function registerDefaultRuntimeTools(runtimeToolRegistry: ToolRegistry): 
     });
     loadedToolNames.push(tool.name);
   }
+
+  // 注册 project_tool（需要 AgentRuntimeDeps）
+  registerProjectTool(runtimeToolRegistry, getAgentRuntimeDeps);
+  loadedToolNames.push('project_tool');
 
   return loadedToolNames;
 }

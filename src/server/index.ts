@@ -291,7 +291,7 @@ const askManager = new AskManager(
     : 600_000,
 );
 const bdTools = new BdTools(process.cwd());
-const loadedTools = registerDefaultRuntimeTools(globalToolRegistry);
+const loadedTools = registerDefaultRuntimeTools(globalToolRegistry, getAgentRuntimeDeps);
 console.log(`[Server] Runtime tools loaded: ${loadedTools.join(', ')}`);
 const gatewayManager = new GatewayManager(hub, moduleRegistry, {
   daemonUrl: `http://127.0.0.1:${PORT}`,
