@@ -35,6 +35,23 @@ export class SystemRestartHandler implements CommandHandler {
   }
 }
 
+export class SystemSwitchHandler implements CommandHandler {
+  canHandle(cmd: Command): boolean {
+    return cmd.type === CommandType.SYSTEM;
+  }
+
+  async execute(cmd: Command, ctx: CommandContext): Promise<CommandResult> {
+    if (ctx.updateContext && ctx.channelId) {
+      ctx.updateContext(ctx.channelId, 'system', 'finger-system-agent');
+    }
+
+    return {
+      success: true,
+      output: '已切换到 System Agent（上下文持久）'
+    };
+  }
+}
+
 export class ProviderListHandler implements CommandHandler {
   canHandle(cmd: Command): boolean {
     return cmd.type === CommandType.PROVIDER_LIST;

@@ -44,9 +44,11 @@ export interface Command {
 
 export interface CommandContext {
   channel?: string;
+  channelId?: string;
   sessionManager?: any;
   eventBus?: any;
   configPath?: string;
+  updateContext?: (channelId: string, mode: 'business' | 'system', agentId: string) => void;
 }
 
 export interface CommandResult {
