@@ -37,7 +37,7 @@ ensureFingerLayout();
 const program = new Command();
 
 program
-  .name('finger')
+  .name('myfinger')
   .description('AI Agent 编排系统 CLI')
   .version('1.0.0')
   .option('--base-url <url>', 'Message Hub base URL', DEFAULT_HTTP_BASE_URL)
