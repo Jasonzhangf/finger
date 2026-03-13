@@ -80,4 +80,5 @@ export interface AgentRuntimeDeps {
   ensureOrchestratorRootSession: () => RootSessionInfo;
   ensureRuntimeChildSession: (root: RootSessionInfo, agentId: string) => { id: string; projectPath: string };
   isRuntimeChildSession: (session: { context?: Record<string, unknown> } | null | undefined) => boolean;
+  dispatchTaskToAgent?: (deps: AgentRuntimeDeps, input: AgentDispatchRequest) => Promise<{dispatchId: string; status: string; error?: string}>;
 }

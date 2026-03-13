@@ -6,6 +6,8 @@
 
 import { promises as fs } from 'fs';
 import * as path from 'path';
+import type { ToolRegistry } from '../../../runtime/tool-registry.js';
+import type { AgentRuntimeDeps } from '../../../server/modules/agent-runtime/types.js';
 
 export interface ProjectToolInput {
   action: 'create';
@@ -28,8 +30,8 @@ export interface ProjectToolOutput {
  * 注册 project_tool 到工具注册表
  */
 export function registerProjectTool(
-  toolRegistry: { register: (tool: { name: string; description: string; inputSchema: Record<string, unknown>; policy: 'allow'; handler: (input: unknown) => Promise<unknown> }) => void },
-  getAgentRuntimeDeps: () => { sessionManager: any; dispatchTaskToAgent?: any }
+  toolRegistry: ToolRegistry,
+  getAgentRuntimeDeps: () => AgentRuntimeDeps
 ): void {
   toolRegistry.register({
     name: 'project_tool',

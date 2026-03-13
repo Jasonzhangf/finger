@@ -1,6 +1,5 @@
-import { createDefaultInternalToolRegistry } from '../tools/internal/index.js';
+import { createDefaultInternalToolRegistry, registerProjectToolInRuntime } from '../tools/internal/index.js';
 import { ToolRegistry } from './tool-registry.js';
-import { registerProjectTool } from '../tools/internal/project-tool/project-tool.js';
 import type { AgentRuntimeDeps } from '../server/modules/agent-runtime/types.js';
 
 export function registerDefaultRuntimeTools(
@@ -23,7 +22,7 @@ export function registerDefaultRuntimeTools(
 
   // 注册 project_tool（需要 AgentRuntimeDeps）
   if (getAgentRuntimeDeps) {
-    registerProjectTool(runtimeToolRegistry, getAgentRuntimeDeps);
+    registerProjectToolInRuntime(runtimeToolRegistry, getAgentRuntimeDeps);
     loadedToolNames.push('project_tool');
   }
 
