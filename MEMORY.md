@@ -165,3 +165,51 @@ export function registerProjectToolInRuntime(
 - 设计意图: 需要运行时环境才能验证
 
 Tags: system-agent, project-tool, type-system, registration
+
+## 2026-03-13 System Agent 运行时验证框架
+
+### 测试框架设计
+
+**测试文件**: `tests/integration/system-agent-runtime.test.ts`
+
+**测试用例**:
+1. Daemon 启动验证
+2. System Agent 模块注册验证（包含 project_tool）
+3. System Agent 目录结构验证
+4. MEMORY 记录机制代码验证
+5. project_tool 实现验证
+
+**测试结果**: ✅ 5/5 tests passed
+
+### 运行测试
+
+```bash
+npm run build:backend
+npx vitest run tests/integration/system-agent-runtime.test.ts
+```
+
+### 验证覆盖
+
+✅ **自动化验证**:
+- Daemon 启动成功
+- finger-system-agent 模块注册
+- project_tool 工具加载
+- System Agent 目录结构
+- MEMORY 记录机制实现
+- project_tool 实现文件存在
+
+⏳ **手动验证**:
+- 实际发送消息到 System Agent
+- project_tool.create 创建项目
+- MEMORY 自动追加用户输入和 summary
+- 跨项目限制生效
+- Agent 派发不记录
+
+### 测试设计原则
+
+1. 自动化优先
+2. 代码层面验证
+3. 运行时验证
+4. 可扩展性
+
+Tags: system-agent, runtime-verification, testing, integration-test, framework
