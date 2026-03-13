@@ -19,6 +19,17 @@ import {
 } from '../modules/message-session.js';
 import type { SessionWorkspaceManager } from '../modules/session-workspaces.js';
 import { parseSuperCommand } from '../middleware/super-command-parser.js';
+import {
+  handleCmdList,
+  handleAgentList,
+  handleAgentNew,
+  handleAgentSwitch,
+  handleAgentDelete,
+  handleSystemCommand,
+  handleProjectList,
+  handleProjectSwitch,
+} from '../modules/messagehub-command-handler.js';
+import { loadFingerConfig, getChannelAuth } from '../../core/config/channel-config.js';
 import { validateSystemCommand } from '../middleware/system-auth.js';
 import { getChannelContextManager } from '../../orchestration/channel-context-manager.js';
 import { SYSTEM_PROJECT_PATH, getSystemSessionPath } from '../../agents/finger-system-agent/index.js';
@@ -242,6 +253,8 @@ export function registerMessageRoutes(app: Express, deps: MessageRouteDeps): voi
     const contextManager = getChannelContextManager();
     const incomingContent = extractMessageTextForSession(body.message) ?? '';
     const parsedCommand = parseSuperCommand(incomingContent);
+    const fingerConfig = await loadFingerConfig();
+    const channelPolicy = getChannelAuth(fingerConfig, channelId);
 
     if (parsedCommand.type === 'super_command' && parsedCommand.blocks && parsedCommand.blocks.length > 0) {
       const firstBlock = parsedCommand.blocks[0];
@@ -253,44 +266,52 @@ export function registerMessageRoutes(app: Express, deps: MessageRouteDeps): voi
         }
       }
 
-      // Handle project/session commands
+      // Handle command responses (return plain text for QQ/WebUI)
+      if (firstBlock.type === 'cmd_list') {
+        const result = await handleCmdList();
+        res.json({ messageId: `cmd-${Date.now()}`, status: 'completed', result });
+        return;
+      }
+
+      if (firstBlock.type === 'agent_list') {
+        const result = await handleAgentList(deps.sessionManager, firstBlock.path);
+        res.json({ messageId: `cmd-${Date.now()}`, status: 'completed', result });
+        return;
+      }
+
+      if (firstBlock.type === 'agent_new') {
+        const result = await handleAgentNew(deps.sessionManager, firstBlock.path);
+        res.json({ messageId: `cmd-${Date.now()}`, status: 'completed', result });
+        return;
+      }
+
+      if (firstBlock.type === 'agent_switch' && firstBlock.sessionId) {
+        const result = await handleAgentSwitch(deps.sessionManager, firstBlock.sessionId);
+        res.json({ messageId: `cmd-${Date.now()}`, status: 'completed', result });
+        return;
+      }
+
+      if (firstBlock.type === 'agent_delete' && firstBlock.sessionId) {
+        const result = await handleAgentDelete(deps.sessionManager, firstBlock.sessionId);
+        res.json({ messageId: `cmd-${Date.now()}`, status: 'completed', result });
+        return;
+      }
+
+      if (firstBlock.type === 'system') {
+        const result = await handleSystemCommand(deps.sessionManager);
+        res.json({ messageId: `cmd-${Date.now()}`, status: 'completed', result });
+        return;
+      }
+
       if (firstBlock.type === 'project_list') {
-        const sessions = deps.sessionManager.listSessions();
-        const projectMap = new Map<string, number>();
-        for (const s of sessions) {
-          projectMap.set(s.projectPath, (projectMap.get(s.projectPath) ?? 0) + 1);
-        }
-        const projects = Array.from(projectMap.entries()).map(([path, count]) => ({ path, sessionCount: count }));
-        res.json({ type: 'project_list', projects });
+        const result = await handleProjectList(deps.sessionManager);
+        res.json({ messageId: `cmd-${Date.now()}`, status: 'completed', result });
         return;
       }
 
       if (firstBlock.type === 'project_switch' && firstBlock.path) {
-        res.json({ type: 'project_switch', path: firstBlock.path, message: 'Project switched' });
-        return;
-      }
-
-      if (firstBlock.type === 'session_list') {
-        const currentProject = deps.sessionManager.getCurrentSession()?.projectPath ?? process.cwd();
-        const sessions = deps.sessionManager.listSessions().filter(s => s.projectPath === currentProject);
-        const sessionList = sessions.map(s => ({
-          id: s.id,
-          name: s.name,
-          lastAccessed: s.lastAccessedAt,
-          preview: (s.messages[s.messages.length - 1]?.content ?? '').slice(0, 100),
-        }));
-        res.json({ type: 'session_list', sessions: sessionList });
-        return;
-      }
-
-      if (firstBlock.type === 'session_switch' && firstBlock.sessionId) {
-        const session = deps.sessionManager.getSession(firstBlock.sessionId);
-        if (session) {
-          deps.sessionManager.setCurrentSession(firstBlock.sessionId);
-          res.json({ type: 'session_switch', sessionId: firstBlock.sessionId, message: 'Session switched' });
-        } else {
-          res.status(404).json({ error: 'Session not found', sessionId: firstBlock.sessionId });
-        }
+        const result = await handleProjectSwitch(deps.sessionManager, firstBlock.path);
+        res.json({ messageId: `cmd-${Date.now()}`, status: 'completed', result });
         return;
       }
 
@@ -310,13 +331,24 @@ export function registerMessageRoutes(app: Express, deps: MessageRouteDeps): voi
       }
     }
 
-   const routedTarget = contextManager.getTargetAgent(channelId, parsedCommand);
-   body.target = routedTarget;
+    const routedTarget = contextManager.getTargetAgent(channelId, parsedCommand);
+    body.target = routedTarget;
+    const effectiveMessage = parsedCommand.type === 'super_command'
+      ? withMessageContent(body.message, parsedCommand.effectiveContent)
+      : body.message;
+
+    if (channelPolicy === 'mailbox') {
+      const messageId = deps.mailbox.createMessage(body.target, effectiveMessage, {
+        sender: body.sender,
+        callbackId: body.callbackId,
+      });
+      deps.mailbox.updateStatus(messageId, 'pending');
+      res.json({ messageId, status: 'queued' });
+      return;
+    }
+
     const isSystemRoute = routedTarget === 'finger-system-agent';
     const systemProjectPath = isSystemRoute ? SYSTEM_PROJECT_PATH : undefined;
-   const effectiveMessage = parsedCommand.type === 'super_command'
-     ? withMessageContent(body.message, parsedCommand.effectiveContent)
-     : body.message;
 
     const requestMessageWithPolicy = withDefaultProfileReviewPolicy(body.target, effectiveMessage, deps);
     const shouldDryRun = resolveDryRunFlag(req, requestMessageWithPolicy);
