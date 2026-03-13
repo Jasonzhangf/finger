@@ -9,6 +9,7 @@ import type { AgentDispatchRequest } from './agent-runtime/types.js';
 import type { ChannelBridgeManager } from '../../bridges/manager.js';
 import type { SessionManager } from '../../orchestration/session-manager.js';
 import type { UnifiedEventBus } from '../../runtime/event-bus.js';
+import { ChannelContextManager } from '../../orchestration/channel-context-manager.js';
 import { parseSuperCommand } from '../middleware/super-command-parser.js';
 import {
   handleCmdList,
@@ -31,6 +32,7 @@ export interface ChannelBridgeHubRouteDeps {
 
 export function createChannelBridgeHubRoute(deps: ChannelBridgeHubRouteDeps) {
   const { channelBridgeManager, sessionManager, dispatchTaskToAgent, eventBus } = deps;
+  const channelContextManager = new ChannelContextManager();
 
   function formatLocalTimestamp(date: Date = new Date()): string {
     const year = date.getFullYear();

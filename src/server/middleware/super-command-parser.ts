@@ -150,11 +150,25 @@ export function parseSuperCommand(content: string): ParsedMessage {
 
   if (category === 'system') {
     // <##@system##> or <##@system:pwd=xxx##> or <##@system:restart##>
+    // <##@system:provider:list##> or <##@system:provider:switch@id##>
     if (action === 'restart') {
       block = {
         type: 'system' as const,
         password: undefined,
         content: 'restart',
+      };
+    } else if (action === 'provider:list') {
+      block = {
+        type: 'system' as const,
+        password: undefined,
+        content: 'provider_list',
+      };
+    } else if (action?.startsWith('provider:switch@')) {
+      const providerId = action.replace('provider:switch@', '');
+      block = {
+        type: 'system' as const,
+        password: undefined,
+        content: `provider_switch:${providerId}`,
       };
     } else {
       const password = action?.startsWith('pwd=') ? action.slice(4) : undefined;
@@ -164,7 +178,6 @@ export function parseSuperCommand(content: string): ParsedMessage {
         content: remainingContent,
       };
     }
-
     return {
       type: 'super_command',
       blocks: [block],
