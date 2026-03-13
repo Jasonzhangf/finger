@@ -1,3 +1,4 @@
+import { formatLocalTimestamp } from '../../../core/date-utils';
 import { isObjectRecord } from '../../common/object.js';
 import { asString, firstNonEmptyString } from '../../common/strings.js';
 import { sanitizeDispatchResult, type DispatchSummaryResult } from '../../../common/agent-dispatch.js';
@@ -216,7 +217,7 @@ async function persistUserMessageToMemory(deps: AgentRuntimeDeps, input: AgentDi
 
   try {
     const memoryPath = path.join(session.projectPath, 'MEMORY.md');
-    const timestamp = new Date().toISOString();
+    const timestamp = formatLocalTimestamp();
     const entryId = `mem-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
     const metadata = isObjectRecord(input.metadata) ? input.metadata : {};
     const source = String(metadata.source ?? 'unknown');
@@ -253,7 +254,7 @@ async function persistAgentSummaryToMemory(
 
   try {
     const memoryPath = path.join(session.projectPath, 'MEMORY.md');
-    const timestamp = new Date().toISOString();
+    const timestamp = formatLocalTimestamp();
     const entryId = `mem-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
     const status = result.ok ? 'completed' : 'failed';
 
