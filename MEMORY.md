@@ -213,3 +213,17 @@ npx vitest run tests/integration/system-agent-runtime.test.ts
 4. 可扩展性
 
 Tags: system-agent, runtime-verification, testing, integration-test, framework
+
+## 2026-03-13 MessageHub/Agent 切换与命令前缀规则更新
+
+- QQBot 回复前缀标注必须反映实际处理来源：
+  - MessageHub 命令（<##help##>, <##@agent:list##>, <##@project:switch##> 等）统一标记为 `messagehub`
+  - 只有真正进入 system agent / 普通 agent 的任务才标记为对应 agent
+- `<##@system##>` 只是 MessageHub 处理的切换命令，不应显示为 system agent 回复
+- System Agent capability 已增强：
+  - project/session 默认切换逻辑（不指定 sessionId 切换最新）
+  - `<##@project:switch@...##>` / `<##@agent:switch@...##>` / `<##@agent:list##>` / `<##@agent:new##>`
+  - `/resume` 列表与 `/resume <sessionId>` 直接切换
+- 规则：用户说“切换到某项目/会话”时，必须将该 project+session 设为当前默认会话，后续 `@agent` 默认使用该 session
+
+Tags: messagehub, command-routing, system-agent, session-switch, qqbot, resume
