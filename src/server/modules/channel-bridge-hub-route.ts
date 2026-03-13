@@ -109,24 +109,44 @@ export function createChannelBridgeHubRoute(deps: ChannelBridgeHubRouteDeps) {
         if (firstBlock.type === 'agent_list') {
           const result = await handleAgentList(sessionManager, firstBlock.path);
           await sendReply(result, 'messagehub');
+          channelContextManager.updateContext(
+            channelMsg.channelId,
+            'business',
+            'finger-orchestrator'
+          );
           return;
         }
 
         if (firstBlock.type === 'agent_new') {
           const result = await handleAgentNew(sessionManager, firstBlock.path, eventBus);
           await sendReply(result, 'messagehub');
+          channelContextManager.updateContext(
+            channelMsg.channelId,
+            'business',
+            'finger-orchestrator'
+          );
           return;
         }
 
         if (firstBlock.type === 'agent_switch' && firstBlock.sessionId) {
           const result = await handleAgentSwitch(sessionManager, firstBlock.sessionId, eventBus);
           await sendReply(result, 'messagehub');
+          channelContextManager.updateContext(
+            channelMsg.channelId,
+            'business',
+            'finger-orchestrator'
+          );
           return;
         }
 
         if (firstBlock.type === 'agent_delete') {
           const result = await handleAgentDelete(sessionManager, firstBlock.sessionId!, eventBus);
           await sendReply(result, 'messagehub');
+          channelContextManager.updateContext(
+            channelMsg.channelId,
+            'business',
+            'finger-orchestrator'
+          );
           return;
         }
 
@@ -152,20 +172,21 @@ export function createChannelBridgeHubRoute(deps: ChannelBridgeHubRouteDeps) {
            return;
          }
 
-          // Check for provider commands
-          if (firstBlock.content === 'provider_list') {
-            const result = await handleProviderList();
-            await sendReply(result, 'messagehub');
-            return;
-          }
+         // Check for provider commands
+         if (firstBlock.content === 'provider_list') {
+           const result = await handleProviderList();
+           await sendReply(result, 'messagehub');
+           return;
+         }
 
-          if (firstBlock.content?.startsWith('provider_switch:')) {
-            const providerId = firstBlock.content.replace('provider_switch:', '');
-            const result = await handleProviderSwitch(providerId);
-            await sendReply(result, 'messagehub');
-            return;
-          }
+         if (firstBlock.content?.startsWith('provider_switch:')) {
+           const providerId = firstBlock.content.replace('provider_switch:', '');
+           const result = await handleProviderSwitch(providerId);
+           await sendReply(result, 'messagehub');
+           return;
+         }
 
+          // Update context for system agent (persistent until agent/project switch)
           const result = await handleSystemCommand(sessionManager, eventBus);
           channelContextManager.updateContext(
             channelMsg.channelId,
