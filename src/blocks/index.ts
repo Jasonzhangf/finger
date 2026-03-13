@@ -12,3 +12,5 @@ export { WebSocketBlock } from './websocket-block/index.js';
 export { AgentRuntimeBlock } from './agent-runtime-block/index.js';
 export { OpenClawGateBlock } from './openclaw-gate/index.js';
 export { ThreadBindingBlock } from './thread-binding-block/index.js';
+export { initCommandHub, getCommandHub, parseCommands } from './command-hub/index.js';
+export type { Command, CommandContext, CommandResult, CommandHandler } from './command-hub/index.js';
