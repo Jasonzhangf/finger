@@ -63,6 +63,8 @@ import {
   createGetAgentRuntimeDeps,
 } from './modules/agent-runtime/index.js';
 import type { AgentDispatchRequest } from './modules/agent-runtime/types.js';
+import { createChannelBridgeHubRoute } from './modules/channel-bridge-hub-route.js';
+
 import { registerAllRoutes } from './routes/index.js';
 import { ensureFingerLayout, FINGER_PATHS } from '../core/finger-paths.js';
 import {
@@ -151,94 +153,21 @@ app.use((req, _res, next) => {
 const channelBridgeManager = getChannelBridgeManager({
   onMessage: async (msg: ChannelMessage) => {
     console.log('[Server] Received channel message:', msg.id, 'from', msg.senderId);
+    console.log('[Server] Routing via MessageHub (dynamic mode)', {
+      channelId: msg.channelId,
+      msgId: msg.id,
+    });
 
-    // Dynamic routing based on FINGER_CHANNEL_BRIDGE_USE_HUB flag
-    // If enabled, route via MessageHub (unlimited channels, auto-registration)
-    // If disabled, use direct dispatch (legacy path)
-    if (runtimeFlags.channelBridgeUseHub) {
-      console.log('[Server] Routing via MessageHub (dynamic mode)', {
-        channelId: msg.channelId,
-        msgId: msg.id,
-      });
+    await hub.send({
+      type: `channel.${msg.channelId}`,
+      payload: msg,
+      meta: {
+        source: msg.channelId,
+        id: msg.id,
+      },
+    });
 
-      await hub.send({
-        type: `channel.${msg.channelId}`,
-        payload: msg,
-        meta: {
-          source: msg.channelId,
-          id: msg.id,
-        },
-      });
-
-      console.log('[Server] Message sent to MessageHub');
-      return;
-    }
-
-    // Legacy direct dispatch path (when FINGER_CHANNEL_BRIDGE_USE_HUB=false)
-    console.log('[Server] Using direct dispatch (legacy mode)');
-
-
-    const target = msg.type === 'group' && msg.metadata?.groupId
-      ? `group:${msg.metadata.groupId}`
-      : msg.senderId;
-
-    const sendReply = async (text: string) => {
-      if (!text || !text.trim()) return;
-      try {
-        const sendResult = await channelBridgeManager.sendMessage(msg.channelId, {
-          to: target,
-          text,
-          replyTo: (msg.metadata?.messageId as string) || msg.id,
-        });
-        console.log('[Server] Reply sent:', sendResult.messageId);
-      } catch (sendErr) {
-        console.error('[Server] Failed to send reply:', sendErr);
-      }
-    };
-    
-    // Route message to orchestrator agent
-    try {
-      const dispatchRequest: AgentDispatchRequest = {
-        sourceAgentId: 'channel-bridge',
-        targetAgentId: 'finger-orchestrator',
-        task: { prompt: msg.content },
-        sessionId: `qqbot-${msg.senderId}`,
-        metadata: {
-          source: 'channel',
-          channelId: msg.channelId,
-          senderId: msg.senderId,
-          senderName: msg.senderName,
-          messageId: msg.id,
-          type: msg.type,
-        },
-        blocking: true,
-        queueOnBusy: true,
-        maxQueueWaitMs: 180000,
-      };
-
-      console.log('[Server] Dispatching to orchestrator (blocking):', dispatchRequest.targetAgentId);
-      const result = await dispatchTaskToAgent(dispatchRequest);
-      console.log('[Server] Dispatch result:', result?.status, result?.dispatchId);
-
-      if (result?.ok && result.result) {
-        const replyText = typeof result.result === 'string'
-          ? result.result
-          : (result.result.summary || '处理完成');
-        console.log('[Server] Sending reply to channel:', replyText.slice(0, 100));
-        await sendReply(replyText);
-      } else if (result?.ok === false) {
-        const errorText = `处理失败: ${result.error || 'unknown error'}`;
-        console.log('[Server] Sending error reply to channel:', errorText.slice(0, 100));
-        await sendReply(errorText);
-      } else {
-        console.log('[Server] No response to send back, result:', result);
-        await sendReply('任务已受理，但未返回内容');
-      }
-    } catch (err) {
-      console.error('[Server] Failed to dispatch message:', err);
-      const message = err instanceof Error ? err.message : String(err);
-      await sendReply(`系统错误: ${message}`);
-    }
+    console.log('[Server] Message sent to MessageHub');
   },
   onError: (err: Error) => {
     console.error('[Server] Channel bridge error:', err);
@@ -413,10 +342,9 @@ const processChatCodexRunner = new ProcessChatCodexRunner({
   },
 });
 const mockRuntimeKit = createMockRuntimeKit({
-  dispatchTask: dispatchTaskToAgent,
-  eventBus: globalEventBus,
   sessionManager,
-  getBroadcast: () => broadcast,
+  dispatchTask: dispatchTaskToAgent,
+    eventBus: globalEventBus,
   primaryOrchestratorAgentId: PRIMARY_ORCHESTRATOR_AGENT_ID,
   agentIds: {
     researcher: FINGER_RESEARCHER_AGENT_ID,
@@ -647,91 +575,24 @@ const forwarding = attachEventForwarding({
   generalAgentId: FINGER_GENERAL_AGENT_ID,
 });
 setLoopEventEmitter(forwarding.emitLoopEventToEventBus);
-import { ChannelBridgeHubRouter } from './modules/channel-bridge-hub-router.js';
 
 // Register MessageHub route for channel messages (supports unlimited channels)
 // Only active when FINGER_CHANNEL_BRIDGE_USE_HUB=true
 hub.addRoute({
   id: 'channel-bridge-hub-route',
- pattern: (message: unknown) => {
-   const msg = message as Record<string, unknown>;
-   return !!(msg.type && typeof msg.type === 'string' && msg.type.startsWith('channel.'));
- },
-  handler: async (message: unknown) => {
+  pattern: (message: unknown): boolean => {
     const msg = message as Record<string, unknown>;
-    const channelMsg = msg.payload as ChannelMessage;
-
-    const sessionId = `qqbot-${channelMsg.senderId}`;
-    sessionManager.ensureSession(sessionId, process.cwd(), `channel:${channelMsg.channelId}`);
-    sessionManager.addMessage(sessionId, "system", "已收到，正在处理中…", {
-      type: "dispatch",
-      metadata: { channelId: channelMsg.channelId, messageId: channelMsg.id },
-    });
-
-    console.log('[Server] Processing channel message via MessageHub', {
-      channelId: channelMsg.channelId,
-      msgId: channelMsg.id,
-    });
-
-    const target = channelMsg.type === 'group' && channelMsg.metadata?.groupId
-      ? `group:${channelMsg.metadata.groupId}`
-      : channelMsg.senderId;
-
-    const sendReply = async (text: string) => {
-      if (!text || !text.trim()) return;
-      try {
-        const sendResult = await channelBridgeManager.sendMessage(channelMsg.channelId, {
-          to: target,
-          text,
-          replyTo: (channelMsg.metadata?.messageId as string) || channelMsg.id,
-        });
-        console.log('[Server] Hub route reply sent:', sendResult.messageId);
-      } catch (sendErr) {
-        console.error('[Server] Failed to send reply (hub route):', sendErr);
-      }
-    };
-
-    // Dispatch to orchestrator
-    try {
-      const dispatchRequest: AgentDispatchRequest = {
-        sourceAgentId: 'channel-bridge',
-        targetAgentId: 'finger-orchestrator',
-        task: { prompt: channelMsg.content },
-        sessionId,
-        metadata: {
-          source: 'channel',
-          channelId: channelMsg.channelId,
-          senderId: channelMsg.senderId,
-          senderName: channelMsg.senderName,
-          messageId: channelMsg.id,
-          type: channelMsg.type,
-        },
-        blocking: true,
-        queueOnBusy: true,
-        maxQueueWaitMs: 180000,
-      };
-
-      console.log('[Server] Hub route dispatching to orchestrator');
-      const result = await dispatchTaskToAgent(dispatchRequest);
-
-      if (result && typeof result === 'object' && 'ok' in result && result.ok && 'result' in result) {
-        const replyText = typeof result.result === 'string'
-          ? result.result
-          : ((result.result as any)?.summary || '处理完成');
-        await sendReply(replyText);
-      } else if (result && typeof result === 'object' && 'ok' in result && result.ok === false) {
-        const errorText = `处理失败: ${(result as any).error || 'unknown error'}`;
-        await sendReply(errorText);
-      }
-    } catch (err) {
-      console.error('[Server] Hub route dispatch error:', err);
-      const message = err instanceof Error ? err.message : String(err);
-      await sendReply(`系统错误: ${message}`);
-    }
+    return !!(msg.type && typeof msg.type === 'string' && msg.type.startsWith('channel.'));
   },
+  handler: createChannelBridgeHubRoute({
+    channelBridgeManager,
+    sessionManager,
+    dispatchTaskToAgent,
+    eventBus: globalEventBus,
+  }),
   blocking: true,
   priority: 10,
   moduleId: 'channel-bridge-hub',
 });
 
-console.log('[Server] MessageHub channel route registered (FINGER_CHANNEL_BRIDGE_USE_HUB=' + runtimeFlags.channelBridgeUseHub + ')');
+console.log('[Server] MessageHub channel route registered (dynamic mode forced)');

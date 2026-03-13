@@ -8,15 +8,29 @@ import type { ChannelMessage } from '../../bridges/types.js';
 import type { AgentDispatchRequest } from './agent-runtime/types.js';
 import type { ChannelBridgeManager } from '../../bridges/manager.js';
 import type { SessionManager } from '../../orchestration/session-manager.js';
+import type { UnifiedEventBus } from '../../runtime/event-bus.js';
+import { parseSuperCommand } from '../middleware/super-command-parser.js';
+import {
+  handleCmdList,
+  handleAgentList,
+  handleAgentNew,
+  handleAgentSwitch,
+  handleAgentDelete,
+  handleSystemCommand,
+  handleProjectList,
+  handleProjectSwitch,
+} from './messagehub-command-handler.js';
+import { loadFingerConfig, getChannelAuth } from '../../core/config/channel-config.js';
 
 export interface ChannelBridgeHubRouteDeps {
   channelBridgeManager: ChannelBridgeManager;
   sessionManager: SessionManager;
   dispatchTaskToAgent: (request: AgentDispatchRequest) => Promise<unknown>;
+  eventBus: UnifiedEventBus;
 }
 
 export function createChannelBridgeHubRoute(deps: ChannelBridgeHubRouteDeps) {
-  const { channelBridgeManager, sessionManager, dispatchTaskToAgent } = deps;
+  const { channelBridgeManager, sessionManager, dispatchTaskToAgent, eventBus } = deps;
 
   return async (message: unknown): Promise<void> => {
     const msg = message as Record<string, unknown>;
@@ -31,17 +45,6 @@ export function createChannelBridgeHubRoute(deps: ChannelBridgeHubRouteDeps) {
       ? `group:${channelMsg.metadata.groupId}`
       : channelMsg.senderId;
 
-    // 统一使用当前会话（session 切换仅通过 <##@session:switch@...##>）
-    const currentSession = sessionManager.getCurrentSession();
-    const sessionId = currentSession?.id || `qqbot-${channelMsg.senderId}`;
-    if (!currentSession) {
-      sessionManager.ensureSession(sessionId, process.cwd(), `channel:${channelMsg.channelId}`);
-    }
-    sessionManager.addMessage(sessionId, 'system', '已收到，正在处理中…', {
-      type: 'dispatch',
-      metadata: { channelId: channelMsg.channelId, messageId: channelMsg.id },
-    });
-
     const sendReply = async (text: string) => {
       if (!text || !text.trim()) return;
       try {
@@ -55,6 +58,89 @@ export function createChannelBridgeHubRoute(deps: ChannelBridgeHubRouteDeps) {
         console.error('[Server] Failed to send reply (hub route):', sendErr);
       }
     };
+
+    // Parse super commands
+    const parsedCommand = parseSuperCommand(channelMsg.content);
+    if (parsedCommand.type === 'super_command' && parsedCommand.blocks && parsedCommand.blocks.length > 0) {
+      const firstBlock = parsedCommand.blocks[0];
+      console.log('[Server] Channel super command detected:', firstBlock.type);
+
+      try {
+        if (firstBlock.type === 'cmd_list') {
+          const result = await handleCmdList();
+          await sendReply(result);
+          return;
+        }
+
+        if (firstBlock.type === 'agent_list') {
+          const result = await handleAgentList(sessionManager, firstBlock.path);
+          await sendReply(result);
+          return;
+        }
+
+        if (firstBlock.type === 'agent_new') {
+          const result = await handleAgentNew(sessionManager, firstBlock.path, eventBus);
+          await sendReply(result);
+          return;
+        }
+
+        if (firstBlock.type === 'agent_switch' && firstBlock.sessionId) {
+          const result = await handleAgentSwitch(sessionManager, firstBlock.sessionId, eventBus);
+          await sendReply(result);
+          return;
+        }
+
+        if (firstBlock.type === 'agent_delete') {
+          const result = await handleAgentDelete(sessionManager, firstBlock.sessionId!, eventBus);
+          await sendReply(result);
+          return;
+        }
+
+        if (firstBlock.type === 'system') {
+          const result = await handleSystemCommand(sessionManager, eventBus);
+          await sendReply(result);
+          return;
+        }
+
+        if (firstBlock.type === 'project_list') {
+          const result = await handleProjectList(sessionManager);
+          await sendReply(result);
+          return;
+        }
+
+        if (firstBlock.type === 'project_switch' && firstBlock.path) {
+          const result = await handleProjectSwitch(sessionManager, firstBlock.path, eventBus);
+          await sendReply(result);
+          return;
+        }
+      } catch (err) {
+        console.error('[Server] Channel super command error:', err);
+        const errorMessage = err instanceof Error ? err.message : String(err);
+        await sendReply(`命令执行失败: ${errorMessage}`);
+        return;
+      }
+    }
+
+    // Check channel policy
+    const fingerConfig = await loadFingerConfig();
+    const channelPolicy = getChannelAuth(fingerConfig, channelMsg.channelId);
+    if (channelPolicy === 'mailbox') {
+      console.log('[Server] Channel policy is mailbox, creating pending entry');
+      // TODO: Implement mailbox entry creation
+      await sendReply('消息已加入队列等待处理');
+      return;
+    }
+
+    // 统一使用当前会话（session 切换仅通过 <##@session:switch@...##>）
+    const currentSession = sessionManager.getCurrentSession();
+    const sessionId = currentSession?.id || `qqbot-${channelMsg.senderId}`;
+    if (!currentSession) {
+      sessionManager.ensureSession(sessionId, process.cwd(), `channel:${channelMsg.channelId}`);
+    }
+    sessionManager.addMessage(sessionId, 'system', '已收到，正在处理中…', {
+      type: 'dispatch',
+      metadata: { channelId: channelMsg.channelId, messageId: channelMsg.id },
+    });
 
     // Dispatch to orchestrator
     try {
