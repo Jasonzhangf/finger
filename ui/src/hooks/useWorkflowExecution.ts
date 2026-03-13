@@ -25,7 +25,6 @@ import {
   SEND_RETRY_BASE_DELAY_MS,
   SEND_RETRY_MAX_ATTEMPTS,
   SESSION_BOUND_WS_TYPES,
-  SESSION_MESSAGES_FETCH_LIMIT,
 } from './useWorkflowExecution.constants.js';
 import {
   buildContextEditableEventIds,
@@ -35,6 +34,7 @@ import {
   mapSessionMessageToRuntimeEvent,
   normalizeReviewSettings,
 } from './useWorkflowExecution.session.js';
+import { mapWsMessageToRuntimeEvent } from './useWorkflowExecution.ws.js';
 import {
   buildExecutionRoundsFromTasks,
   buildRoundExecutionPath,
@@ -245,6 +245,18 @@ export function useWorkflowExecution(
       }
       if (msg.type === 'tool_call' || msg.type === 'tool_result' || msg.type === 'tool_error' || msg.type === 'agent_update' || msg.type === 'agent_runtime_dispatch') {
         scheduleSessionMessagesRefresh();
+      }
+      const runtimeEvent = mapWsMessageToRuntimeEvent(msg, sessionId, sessionAgentId);
+      if (runtimeEvent) {
+        setRuntimeEvents((prev) => {
+          const next = prev.slice();
+          const eventWithId: RuntimeEvent = {
+            id: runtimeEvent.id ?? `${msg.type}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+            ...runtimeEvent,
+          };
+          next.push(eventWithId);
+          return next;
+        });
       }
       if (msg.type === 'chat_codex_turn') {
         const wsPhase = typeof payload.phase === 'string' ? payload.phase.trim() : '';
@@ -651,7 +663,7 @@ export function useWorkflowExecution(
       }
       return;
     }
-  }, [pushDebugSnapshot, scheduleSessionMessagesRefresh, sessionId]);
+  }, [pushDebugSnapshot, scheduleSessionMessagesRefresh, sessionId, sessionAgentId]);
 
   const handleWebSocketMessage = useCallback((msg: WsMessage) => {
     const payload = isRecord(msg.payload) ? msg.payload : {};
@@ -820,7 +832,7 @@ export function useWorkflowExecution(
 
   const loadSessionMessages = useCallback(async (defaultAgentId?: string) => {
     try {
-      const response = await fetch(`/api/v1/sessions/${sessionId}/messages?limit=${SESSION_MESSAGES_FETCH_LIMIT}`);
+      const response = await fetch(`/api/v1/sessions/${sessionId}/messages`);
       if (!response.ok) return;
 
       const payload = (await response.json()) as { success?: boolean; messages?: Array<Record<string, unknown>> };
@@ -839,12 +851,16 @@ export function useWorkflowExecution(
         timestamp: string;
       } => typeof message.id === 'string' && typeof message.role === 'string' && typeof message.timestamp === 'string');
       const mappedEvents = typedMessages.map((message) => mapSessionMessageToRuntimeEvent(message, agentId));
-      setRuntimeEvents(mappedEvents);
+      // 实时模式下优先使用 WS 事件流；仅在首次/无 WS 事件时用 session 填充
+      const shouldHydrateFromSession = options?.disableRealtime === true || runtimeEventsRef.current.length === 0;
+      if (shouldHydrateFromSession) {
+        setRuntimeEvents(mappedEvents);
+      }
       setUserRounds(buildUserRoundsFromSessionMessages(typedMessages));
     } catch {
       // keep current UI state if load fails
     }
-  }, [sessionAgentId, sessionId]);
+  }, [options?.disableRealtime, sessionAgentId, sessionId]);
 
   useEffect(() => {
     loadSessionMessagesRef.current = () => {

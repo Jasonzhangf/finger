@@ -4,7 +4,6 @@ export const DEFAULT_CHAT_AGENT_ID = 'finger-orchestrator';
 export const ENABLE_UI_DIRECT_AGENT_TEST_ROUTE =
   (import.meta.env.VITE_UI_DIRECT_AGENT_TEST_ROUTE as string | undefined)?.trim() === '1';
 export const MAX_INLINE_FILE_TEXT_CHARS = 12000;
-export const SESSION_MESSAGES_FETCH_LIMIT = 0;
 export const DEFAULT_CONTEXT_HISTORY_WINDOW_SIZE = 40;
 const parsedContextWindowSize = Number(import.meta.env.VITE_CONTEXT_HISTORY_WINDOW_SIZE ?? '');
 export const CONTEXT_HISTORY_WINDOW_SIZE =
