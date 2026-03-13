@@ -1,4 +1,3 @@
-import { formatLocalTimestamp } from '../../../core/date-utils';
 import { isObjectRecord } from '../../common/object.js';
 import { asString, firstNonEmptyString } from '../../common/strings.js';
 import { sanitizeDispatchResult, type DispatchSummaryResult } from '../../../common/agent-dispatch.js';
