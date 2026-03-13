@@ -32,6 +32,28 @@ export interface ChannelBridgeHubRouteDeps {
 export function createChannelBridgeHubRoute(deps: ChannelBridgeHubRouteDeps) {
   const { channelBridgeManager, sessionManager, dispatchTaskToAgent, eventBus } = deps;
 
+  function formatLocalTimestamp(): string {
+    const now = new Date();
+    const year = now.getFullYear();
+    const month = String(now.getMonth() + 1).padStart(2, '0');
+    const day = String(now.getDate()).padStart(2, '0');
+    const hours = String(now.getHours()).padStart(2, '0');
+    const minutes = String(now.getMinutes()).padStart(2, '0');
+    const seconds = String(now.getSeconds()).padStart(2, '0');
+    const ms = String(now.getMilliseconds()).padStart(3, '0');
+    const offset = -now.getTimezoneOffset();
+    const offsetHours = String(Math.floor(Math.abs(offset) / 60)).padStart(2, '0');
+    const offsetMinutes = String(Math.abs(offset) % 60).padStart(2, '0');
+    const offsetSign = offset >= 0 ? '+' : '-';
+    return `${year}-${month}-${day} ${hours}:${minutes}:${seconds}.${ms} ${offsetSign}${offsetHours}:${offsetMinutes}`;
+  }
+
+  function addAgentPrefix(content: string, agentId?: string): string {
+    const timestamp = formatLocalTimestamp();
+    const agentName = agentId?.replace(/^finger-/, '').replace(/-/g, ' ') || 'orchestrator';
+    return `[${agentName}] [${timestamp}] ${content}`;
+  }
+
   return async (message: unknown): Promise<void> => {
     const msg = message as Record<string, unknown>;
     const channelMsg = msg.payload as ChannelMessage;
@@ -45,12 +67,13 @@ export function createChannelBridgeHubRoute(deps: ChannelBridgeHubRouteDeps) {
       ? `group:${channelMsg.metadata.groupId}`
       : channelMsg.senderId;
 
-    const sendReply = async (text: string) => {
+    const sendReply = async (text: string, agentId?: string) => {
       if (!text || !text.trim()) return;
       try {
+        const replyWithPrefix = addAgentPrefix(text, agentId);
         const sendResult = await channelBridgeManager.sendMessage(channelMsg.channelId, {
           to: target,
-          text,
+          text: replyWithPrefix,
           replyTo: (channelMsg.metadata?.messageId as string) || channelMsg.id,
         });
         console.log('[Server] Hub route reply sent:', sendResult.messageId);
@@ -106,7 +129,7 @@ export function createChannelBridgeHubRoute(deps: ChannelBridgeHubRouteDeps) {
 
         if (firstBlock.type === 'system') {
           const result = await handleSystemCommand(sessionManager, eventBus);
-          await sendReply(result);
+          await sendReply(result, 'finger-system-agent');
           return;
         }
 
@@ -178,14 +201,15 @@ export function createChannelBridgeHubRoute(deps: ChannelBridgeHubRouteDeps) {
       console.log('[Server] Hub route dispatching to orchestrator');
       const result = await dispatchTaskToAgent(dispatchRequest);
 
+      const dispatchTargetAgentId = dispatchRequest.targetAgentId;
       if (result && typeof result === 'object' && 'ok' in result && result.ok && 'result' in result) {
         const replyText = typeof result.result === 'string'
           ? result.result
           : ((result.result as any)?.summary || '处理完成');
-        await sendReply(replyText);
+        await sendReply(replyText, dispatchTargetAgentId);
       } else if (result && typeof result === 'object' && 'ok' in result && result.ok === false) {
         const errorText = `处理失败: ${(result as any).error || 'unknown error'}`;
-        await sendReply(errorText);
+        await sendReply(errorText, dispatchTargetAgentId);
       }
     } catch (err) {
       console.error('[Server] Hub route dispatch error:', err);
