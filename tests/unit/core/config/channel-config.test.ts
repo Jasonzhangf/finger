@@ -1,0 +1,176 @@
+import { describe, it, expect, beforeEach, vi } from 'vitest';
+import * as fs from 'fs';
+import * as os from 'os';
+import * as path from 'path';
+import {
+  loadFingerConfig,
+  getChannelAuth,
+  resolveDefaultProject,
+  resolveHomePath,
+  type FingerConfig,
+  type ChannelAuthConfig,
+} from '../../../src/core/config/channel-config.js';
+
+// Mock FINGER_PATHS
+vi.mock('../../../src/core/finger-paths.js', () => ({
+  FINGER_PATHS: {
+    home: '/home/testuser',
+    config: {
+      dir: '/home/testuser/.finger/config',
+      file: {
+        main: '/home/testuser/.finger/config/config.json',
+      },
+    },
+  },
+}));
+
+describe('ChannelConfig', () => {
+  const mockConfigContent = JSON.stringify({
+    kernel: { providers: {} },
+    channelAuth: {
+      enabled: true,
+      defaultPolicy: 'mailbox',
+      channels: [
+        { id: 'webui', type: 'direct', priority: 10 },
+        { id: 'qqbot', type: 'direct', priority: 20 },
+        { id: 'feishu', 'type: 'mailbox', priority: 30 },
+      ],
+    },
+    systemAuth: {
+      enabled: true,
+      password: 'sha256:abc123def456',
+    },
+    defaults: {
+      projectPath: '~/myproject',
+      useLastProject: false,
+    },
+  }, null, 2);
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  describe('loadFingerConfig', () => {
+    it('loads default config when file does not exist', async () => {
+      vi.spyOn(fs, 'existsSync').mockReturnValue(false);
+      const config = await loadFingerConfig();
+      expect(config.channelAuth?.enabled).toBe(true);
+      expect(config.channelAuth?.defaultPolicy).toBe('direct');
+      expect(config.channelAuth?.channels).toHaveLength(4);
+      expect(config.systemAuth?.enabled).toBe(true);
+      expect(config.systemAuth?.password).toBe(null);
+    });
+
+    it('loads and merges config from file', async () => {
+      vi.spyOn(fs, 'existsSync').mockReturnValue(true);
+      vi.spyOn(fs, 'readFileSync').mockReturnValue(mockConfigContent);
+      const config = await loadFingerConfig();
+      expect(config.channelAuth?.defaultPolicy).toBe('mailbox');
+      expect(config.channelAuth?.channels).toHaveLength(3);
+      expect(config.systemAuth?.password).toBe('sha256:abc123def456');
+      expect(config.defaults?.projectPath).toBe('~/myproject');
+    });
+
+    it('returns default config on parse error', async () => {
+      vi.spyOn(fs, 'existsSync').mockReturnValue(true);
+      vi.spyOn(fs, 'readFileSync').mockImplementationOnce(() => {
+        throw new Error('Invalid JSON');
+      });
+      const config = await loadFingerConfig();
+      expect(config.channelAuth?.enabled).toBe(true);
+      expect(config.channelAuth?.defaultPolicy).toBe('direct');
+    });
+  });
+
+  describe('getChannelAuth', () => {
+    it('returns direct policy for direct channel', async () => {
+      const config: FingerConfig = {
+        channelAuth: {
+          enabled: true,
+          defaultPolicy: 'mailbox',
+          channels: [
+            { id: 'webui', type: 'direct', priority: 10 },
+          ],
+        },
+      };
+      expect(getChannelAuth(config, 'webui')).toBe('direct');
+    });
+
+    it('returns mailbox policy for mailbox channel', async () => {
+      const config: FingerConfig = {
+        channelAuth: {
+          enabled: true,
+          defaultPolicy: 'direct',
+          channels: [
+            { id: 'feishu', type: 'mailbox', priority: 30 },
+          ],
+        },
+      };
+      expect(getChannelAuth(config, 'feishu')).toBe('mailbox');
+    });
+
+    it('returns defaultPolicy when channel not found', async () => {
+      const config: FingerConfig = {
+        channelAuth: {
+          enabled: true,
+          defaultPolicy: 'direct',
+          channels: [],
+        },
+      };
+      expect(getChannelAuth(config, 'unknown')).toBe('direct');
+    });
+
+    it('returns defaultPolicy when channelAuth disabled', async () => {
+      const config: FingerConfig = {
+        channelAuth: {
+          enabled: false,
+          defaultPolicy: 'mailbox',
+          channels: [
+            { id: 'webui', type: 'direct', priority: 10 },
+          ],
+        },
+      };
+      expect(getChannelAuth(config, 'webui')).toBe('mailbox');
+    });
+  });
+
+  describe('resolveHomePath', () => {
+    it('resolves ~ to home directory', () => {
+      expect(resolveHomePath('~/test/path')).toBe(`${path.join(os.homedir(), 'test/path')}`);
+    });
+
+    it('handles paths without ~', () => {
+      expect(resolveHomePath('/absolute/path')).toBe('/absolute/path');
+    });
+  });
+
+  describe('resolveDefaultProject', () => {
+    it('uses configured project path when available', () => {
+      const config: FingerConfig = {
+        defaults: {
+          projectPath: '~/configured',
+          useLastProject: true,
+        },
+      };
+      expect(resolveDefaultProject(config, null)).toBe(`${path.join(os.homedir(), 'configured')}`);
+    });
+
+    it('uses last accessed project when configured', async () => {
+      const config: FingerConfig = {
+        defaults: {
+          useLastProject: true,
+        },
+      };
+      expect(resolveDefaultProject(config, '/last/project')).toBe('/last/project');
+    });
+
+    it('falls back to ~/.finger when no config or last project', () => {
+      const config: FingerConfig = {
+        defaults: {
+          useLastProject: false,
+        },
+      };
+      expect(resolveDefaultProject(config, null)).toBe(`${path.join(os.homedir(), '.finger')}`);
+    });
+  });
+});
