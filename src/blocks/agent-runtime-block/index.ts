@@ -364,6 +364,7 @@ interface AgentRuntimeConfigProfile {
   enabled: boolean;
   capabilities: string[];
   defaultQuota: number;
+  hasExplicitDefaultQuota: boolean;
   quotaPolicy: AgentQuotaPolicyView;
 }
 
@@ -603,6 +604,7 @@ export class AgentRuntimeBlock extends BaseBlock {
       enabled: true,
       capabilities: [],
       defaultQuota: 1,
+      hasExplicitDefaultQuota: false,
       quotaPolicy: { workflowQuota: {} },
     };
   }
@@ -618,11 +620,17 @@ export class AgentRuntimeBlock extends BaseBlock {
     const runtime = isObjectRecord(loaded.config.runtime) ? loaded.config.runtime : {};
     const metadata = isObjectRecord(loaded.config.metadata) ? loaded.config.metadata : {};
 
-    const defaultQuota = normalizeNonNegativeInteger(
+    // Check for explicit defaultQuota before normalization
+    const hasExplicitDefaultQuota =
+      typeof runtime.defaultQuota === 'number' ||
+      typeof runtime.default_quota === 'number' ||
+      typeof loaded.config.defaultQuota === 'number';
+    
+    const defaultQuota = hasExplicitDefaultQuota ? normalizeNonNegativeInteger(
       runtime.defaultQuota
       ?? runtime.default_quota
       ?? loaded.config.defaultQuota,
-    ) ?? 1;
+    ) : undefined;
     const quotaPolicy = normalizeQuotaPolicy(
       runtime.quotaPolicy
       ?? runtime.quota_policy
@@ -641,6 +649,7 @@ export class AgentRuntimeBlock extends BaseBlock {
       enabled,
       capabilities,
       defaultQuota,
+      hasExplicitDefaultQuota,
       quotaPolicy,
     };
   }
@@ -669,6 +678,7 @@ export class AgentRuntimeBlock extends BaseBlock {
       enabled: typeof override.enabled === 'boolean' ? override.enabled : base.enabled,
       capabilities: mergedCapabilities,
       defaultQuota: mergedDefaultQuota,
+      hasExplicitDefaultQuota: override.hasExplicitDefaultQuota ?? base.hasExplicitDefaultQuota,
       quotaPolicy: {
         ...(mergedQuotaPolicy.projectQuota !== undefined ? { projectQuota: mergedQuotaPolicy.projectQuota } : {}),
         workflowQuota: mergedQuotaPolicy.workflowQuota,
@@ -742,10 +752,10 @@ export class AgentRuntimeBlock extends BaseBlock {
     if (profile.quotaPolicy.projectQuota !== undefined) {
       return { effective: profile.quotaPolicy.projectQuota, source: 'project' };
     }
-    if (Number.isFinite(profile.defaultQuota)) {
+    if (profile.hasExplicitDefaultQuota && Number.isFinite(profile.defaultQuota)) {
       return { effective: Math.max(0, Math.floor(profile.defaultQuota)), source: 'default' };
     }
-    const fallbackDeploymentQuota = deployment ? Math.max(1, Math.floor(deployment.instanceCount)) : 1;
+    const fallbackDeploymentQuota = deployment ? Math.max(0, Math.floor(deployment.instanceCount)) : 0;
     return { effective: fallbackDeploymentQuota, source: 'deployment' };
   }
 

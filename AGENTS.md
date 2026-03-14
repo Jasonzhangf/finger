@@ -47,6 +47,8 @@ It intentionally avoids project-specific architecture, API, roadmap, and busines
 4. 对用户反复要求的任务、习惯与命令，提炼规律并记录到 memsearch。
 5. 当用户提出“请记住 / 记住 / 保存记忆 / 记忆一下”等请求时，必须调用 memsearch flow skill 写入记忆。
 6. 当用户提出“查询记忆 / 查找记忆 / 搜索记忆 / 回忆”等请求时，先调用 memsearch flow skill 检索记忆，再进行代码搜索或实现操作。
+7. 记忆只写入仓库根目录 `MEMORY.md`，按 Long-term / Short-term 分区维护；不要再使用 `memory/` 目录记录零散记忆。
+8. 长期记忆只追加不删除；短期记忆在 review 通过后压缩归档到长期记忆。
 
 ## Validation
 - Validate changed behavior with the smallest relevant checks first.

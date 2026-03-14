@@ -312,12 +312,10 @@ export const OrchestrationCanvas = ({
   }, [computedEdges, setEdges]);
 
   const handleDeploy = useCallback(
-    async (agentConfig: unknown) => {
-      try {
-        await onDeployAgent(agentConfig);
-      } catch (err) {
+    (agentConfig: unknown) => {
+      onDeployAgent(agentConfig).catch((err) => {
         console.error('[OrchestrationCanvas] Deploy agent failed:', err);
-      }
+      });
     },
     [onDeployAgent],
   );

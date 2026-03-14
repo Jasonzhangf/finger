@@ -22,12 +22,12 @@ import type {
   UserRound,
   ExecutionRound,
 } from '../../api/types.js';
-import type { AgentRuntimeInstance, AgentLastEvent } from '../../hooks/useAgentRuntimePanel.js';
 import { ExecutionModal } from '../ExecutionModal/ExecutionModal.js';
 import { AgentConfigPanel } from '../AgentConfigPanel/AgentConfigPanel.js';
 import { TaskReport } from '../TaskReport/TaskReport.js';
 import { ResourcePoolPanel } from '../ResourcePoolPanel/ResourcePoolPanel.js';
 import type { TaskReport as TaskReportType } from '../../api/types.js';
+import type { AgentRuntimeInstance, AgentLastEvent } from '../../hooks/useAgentRuntimePanel.js';
 import { useResourcePool } from '../../hooks/useResourcePool.js';
 
 type AgentNodeData = {
@@ -35,13 +35,6 @@ type AgentNodeData = {
   selected: boolean;
   onClick: () => void;
   onDoubleClick: () => void;
-};
-
-type RuntimeInstanceNodeData = {
-  instance: AgentRuntimeInstance;
-  lastEvent?: AgentLastEvent;
-  selected: boolean;
-  onClick: () => void;
 };
 
 type StageNodeData = {
@@ -86,6 +79,53 @@ const AgentNodeComponent = ({ data }: { data: AgentNodeData }) => {
       <Handle type="source" position={Position.Bottom} className="node-handle" />
     </div>
   );
+};
+
+const StageNodeComponent = ({ data }: { data: StageNodeData }) => {
+  return (
+    <div className={`stage-node stage-${data.stage}`}>
+      <Handle
+        type={data.stage === 'end' ? 'target' : 'source'}
+        position={data.stage === 'end' ? Position.Top : Position.Bottom}
+        className="node-handle"
+      />
+      <div className="stage-label">
+        {data.label}
+        {data.summary && <div className="stage-summary">{data.summary}</div>}
+      </div>
+    </div>
+  );
+};
+
+const nodeTypes = {
+  agent: AgentNodeComponent,
+  runtime: RuntimeInstanceNodeComponent,
+  stage: StageNodeComponent,
+};
+
+interface OrchestrationCanvasProps {
+  executionState: WorkflowExecutionState | null;
+  agents: AgentRuntime[];
+  userRounds?: UserRound[];
+  executionRounds?: ExecutionRound[];
+  onDeployAgent: (agentConfig: unknown) => Promise<void>;
+  getAgentDetail: (agentId: string) => AgentExecutionDetail | null;
+  getTaskReport: () => TaskReportType | null;
+  selectedAgentId?: string | null;
+  onSelectAgent?: (agentId: string | null) => void;
+  inspectRequest?: { agentId: string; signal: number } | null;
+  selectedRoundId?: string | null;
+  onSelectRound?: (roundId: string | null) => void;
+}
+
+function edgeClassByStatus(status: 'active' | 'completed' | 'error' | 'pending'): string {
+  if (status === 'active') return 'edge-active';
+
+type RuntimeInstanceNodeData = {
+  instance: AgentRuntimeInstance;
+  lastEvent?: AgentLastEvent;
+  selected: boolean;
+  onClick: () => void;
 };
 
 const RuntimeInstanceNodeComponent = ({ data }: { data: RuntimeInstanceNodeData }) => {
@@ -134,21 +174,21 @@ const RuntimeInstanceNodeComponent = ({ data }: { data: RuntimeInstanceNodeData 
   );
 };
 
-const StageNodeComponent = ({ data }: { data: StageNodeData }) => {
-  return (
-    <div className={`stage-node stage-${data.stage}`}>
-      <Handle
-        type={data.stage === 'end' ? 'target' : 'source'}
-        position={data.stage === 'end' ? Position.Top : Position.Bottom}
-        className="node-handle"
-      />
-      <div className="stage-label">
-        {data.label}
-        {data.summary && <div className="stage-summary">{data.summary}</div>}
-      </div>
-    </div>
-  );
-};
+  if (status === 'completed') return 'edge-completed';
+  if (status === 'error') return 'edge-error';
+  return 'edge-pending';
+}
+
+export const OrchestrationCanvas = ({
+  executionState,
+  agents,
+  onDeployAgent,
+  getAgentDetail,
+  getTaskReport,
+  selectedAgentId,
+  onSelectAgent,
+}: OrchestrationCanvasProps) => {
+  console.log('[OrchestrationCanvas] render:', { executionState, agents });
 
 const nodeTypes = {
   agent: AgentNodeComponent,
@@ -174,6 +214,7 @@ interface OrchestrationCanvasProps {
   onSelectRound?: (roundId: string | null) => void;
   instanceLastEvents?: Map<string, AgentLastEvent>;
 }
+
 
 function edgeClassByStatus(status: 'active' | 'completed' | 'error' | 'pending'): string {
   if (status === 'active') return 'edge-active';
@@ -312,12 +353,10 @@ export const OrchestrationCanvas = ({
   }, [computedEdges, setEdges]);
 
   const handleDeploy = useCallback(
-    async (agentConfig: unknown) => {
-      try {
-        await onDeployAgent(agentConfig);
-      } catch (err) {
+    (agentConfig: unknown) => {
+      onDeployAgent(agentConfig).catch((err) => {
         console.error('[OrchestrationCanvas] Deploy agent failed:', err);
-      }
+      });
     },
     [onDeployAgent],
   );
@@ -381,3 +420,4 @@ export const OrchestrationCanvas = ({
     </div>
   );
 };
+}

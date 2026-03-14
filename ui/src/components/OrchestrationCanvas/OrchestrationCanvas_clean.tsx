@@ -22,7 +22,6 @@ import type {
   UserRound,
   ExecutionRound,
 } from '../../api/types.js';
-import type { AgentRuntimeInstance, AgentLastEvent } from '../../hooks/useAgentRuntimePanel.js';
 import { ExecutionModal } from '../ExecutionModal/ExecutionModal.js';
 import { AgentConfigPanel } from '../AgentConfigPanel/AgentConfigPanel.js';
 import { TaskReport } from '../TaskReport/TaskReport.js';
@@ -35,13 +34,6 @@ type AgentNodeData = {
   selected: boolean;
   onClick: () => void;
   onDoubleClick: () => void;
-};
-
-type RuntimeInstanceNodeData = {
-  instance: AgentRuntimeInstance;
-  lastEvent?: AgentLastEvent;
-  selected: boolean;
-  onClick: () => void;
 };
 
 type StageNodeData = {
@@ -88,52 +80,6 @@ const AgentNodeComponent = ({ data }: { data: AgentNodeData }) => {
   );
 };
 
-const RuntimeInstanceNodeComponent = ({ data }: { data: RuntimeInstanceNodeData }) => {
-  const { instance, lastEvent, selected, onClick } = data;
-  
-  const statusClass = 
-    instance.status === 'running' ? 'status-running'
-    : instance.status === 'completed' ? 'status-completed'
-    : instance.status === 'failed' || instance.status === 'error' ? 'status-error'
-    : instance.status === 'waiting_input' ? 'status-waiting'
-    : instance.status === 'queued' ? 'status-queued'
-    : 'status-idle';
-
-  const isTerminal = instance.status === 'completed' || instance.status === 'failed' || instance.status === 'interrupted';
-
-  return (
-    <div
-      className={`runtime-instance-node ${statusClass}${selected ? ' is-selected' : ''}${isTerminal ? ' is-terminal' : ''}`}
-      onClick={onClick}
-    >
-      {instance.status === 'running' && <div className="agent-marquee" />}
-      
-      <Handle type="target" position={Position.Top} className="node-handle" />
-      
-      <div className="runtime-instance-header">
-        <button type="button" className={`status-dot ${statusClass}`} aria-label="Instance status" />
-        <span className="runtime-instance-name">{instance.name}</span>
-        <span className="runtime-instance-badge">{isTerminal ? '历史' : '运行中'}</span>
-      </div>
-      
-      <div className="runtime-instance-body">
-        <div className="runtime-instance-type">{instance.type}</div>
-        {lastEvent && (
-          <div className="runtime-instance-summary">
-            <div className="last-event-type">{lastEvent.type}</div>
-            <div className="last-event-summary">{lastEvent.summary}</div>
-          </div>
-        )}
-        {instance.sessionId && (
-          <div className="runtime-instance-session">Session: {instance.sessionId.slice(0, 8)}...</div>
-        )}
-      </div>
-      
-      <Handle type="source" position={Position.Bottom} className="node-handle" />
-    </div>
-  );
-};
-
 const StageNodeComponent = ({ data }: { data: StageNodeData }) => {
   return (
     <div className={`stage-node stage-${data.stage}`}>
@@ -152,15 +98,12 @@ const StageNodeComponent = ({ data }: { data: StageNodeData }) => {
 
 const nodeTypes = {
   agent: AgentNodeComponent,
-  runtime: RuntimeInstanceNodeComponent,
   stage: StageNodeComponent,
 };
 
 interface OrchestrationCanvasProps {
   executionState: WorkflowExecutionState | null;
   agents: AgentRuntime[];
-  runtimeInstances?: AgentRuntimeInstance[];
-  sessionBinding?: { context: 'orchestrator' | 'runtime'; sessionId?: string; runtimeInstanceId?: string };
   userRounds?: UserRound[];
   executionRounds?: ExecutionRound[];
   onDeployAgent: (agentConfig: unknown) => Promise<void>;
@@ -168,11 +111,9 @@ interface OrchestrationCanvasProps {
   getTaskReport: () => TaskReportType | null;
   selectedAgentId?: string | null;
   onSelectAgent?: (agentId: string | null) => void;
-  onSelectRuntimeInstance?: (instanceId: string) => void;
   inspectRequest?: { agentId: string; signal: number } | null;
   selectedRoundId?: string | null;
   onSelectRound?: (roundId: string | null) => void;
-  instanceLastEvents?: Map<string, AgentLastEvent>;
 }
 
 function edgeClassByStatus(status: 'active' | 'completed' | 'error' | 'pending'): string {
@@ -185,17 +126,13 @@ function edgeClassByStatus(status: 'active' | 'completed' | 'error' | 'pending')
 export const OrchestrationCanvas = ({
   executionState,
   agents,
-  runtimeInstances = [],
-  sessionBinding,
   onDeployAgent,
   getAgentDetail,
   getTaskReport,
   selectedAgentId,
   onSelectAgent,
-  onSelectRuntimeInstance,
-  instanceLastEvents = new Map(),
 }: OrchestrationCanvasProps) => {
-  console.log('[OrchestrationCanvas] render:', { executionState, agents, runtimeInstances, sessionBinding });
+  console.log('[OrchestrationCanvas] render:', { executionState, agents });
   
   const [selectedAgent, setSelectedAgent] = useState<AgentRuntime | null>(null);
   const [showExecutionModal, setShowExecutionModal] = useState(false);
@@ -210,7 +147,6 @@ export const OrchestrationCanvas = ({
   const computedNodes: Node[] = useMemo(() => {
     const list: Node[] = [];
     
-    // Start stage
     list.push({
       id: 'stage-start',
       type: 'stage',
@@ -219,7 +155,6 @@ export const OrchestrationCanvas = ({
       draggable: false,
     });
 
-    // Orchestrator agent nodes
     agents.forEach((agent, idx) => {
       list.push({
         id: agent.id,
@@ -242,66 +177,22 @@ export const OrchestrationCanvas = ({
       });
     });
 
-    // Phase 4: Runtime instance nodes (spawned by orchestrator)
-    runtimeInstances.forEach((instance, idx) => {
-      const parentAgent = agents.find(a => a.id === instance.agentId);
-      const parentY = parentAgent ? 150 : 150;
-      const offsetX = parentAgent ? agents.indexOf(parentAgent) * 200 : 0;
-      
-      list.push({
-        id: `runtime-${instance.id}`,
-        type: 'runtime',
-        position: { x: 100 + offsetX + (idx % 2) * 150, y: parentY + 180 + Math.floor(idx / 2) * 120 },
-        data: {
-          instance,
-          lastEvent: instanceLastEvents.get(instance.id),
-          selected: sessionBinding?.runtimeInstanceId === instance.id,
-          onClick: () => {
-            // Phase 4: Click handling - switch to runtime session for running, view history for terminal
-            onSelectRuntimeInstance?.(instance.id);
-          },
-        },
-      });
-    });
-
     return list;
-  }, [agents, runtimeInstances, executionState, getAgentDetail, onSelectAgent, selectedAgentId, sessionBinding, instanceLastEvents, onSelectRuntimeInstance]);
+  }, [agents, executionState, getAgentDetail, onSelectAgent, selectedAgentId]);
 
-  // Phase 4: Generate edges including spawned_by relationships
   const computedEdges: Edge[] = useMemo(() => {
-    const list: Edge[] = [];
-    
-    // Existing execution path edges
-    if (executionState) {
-      executionState.executionPath.forEach((path, idx) => {
-        list.push({
-          id: `e-${idx}`,
-          source: path.from,
-          target: path.to,
-          style: { stroke: '#3b82f6', strokeWidth: 2 },
-          markerEnd: { type: MarkerType.ArrowClosed },
-          className: edgeClassByStatus(path.status),
-          animated: path.status === 'active',
-          label: path.message,
-        });
-      });
-    }
-    
-    // Phase 4: Spawned edges from orchestrator to runtime instances
-    runtimeInstances.forEach((instance) => {
-      list.push({
-        id: `spawned-${instance.id}`,
-        source: instance.agentId,
-        target: `runtime-${instance.id}`,
-        style: { stroke: '#8b5cf6', strokeWidth: 2, strokeDasharray: '5,5' },
-        markerEnd: { type: MarkerType.ArrowClosed },
-        className: 'edge-spawned',
-        label: 'spawned',
-      });
-    });
-    
-    return list;
-  }, [executionState, runtimeInstances]);
+    if (!executionState) return [];
+    return executionState.executionPath.map((path, idx) => ({
+      id: `e-${idx}`,
+      source: path.from,
+      target: path.to,
+      style: { stroke: '#3b82f6', strokeWidth: 2 },
+      markerEnd: { type: MarkerType.ArrowClosed },
+      className: edgeClassByStatus(path.status),
+      animated: path.status === 'active',
+      label: path.message,
+    }));
+  }, [executionState]);
 
   useEffect(() => {
     setNodes(computedNodes);
@@ -312,24 +203,20 @@ export const OrchestrationCanvas = ({
   }, [computedEdges, setEdges]);
 
   const handleDeploy = useCallback(
-    async (agentConfig: unknown) => {
-      try {
-        await onDeployAgent(agentConfig);
-      } catch (err) {
-        console.error('[OrchestrationCanvas] Deploy agent failed:', err);
-      }
+    async (config: unknown) => {
+      await onDeployAgent(config);
+      setShowConfigPanel(false);
     },
-    [onDeployAgent],
+    [onDeployAgent]
   );
 
   if (!executionState) {
     return (
-      <div className="canvas-wrapper">
-        <div className="canvas-hud">
-          <div className="canvas-title">Execution Topology</div>
-        </div>
-        <div className="canvas-empty">
-          <p>No execution state available</p>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%', background: '#0e1217' }}>
+        <div style={{ textAlign: 'center', color: '#9ca3af' }}>
+          <div style={{ fontSize: '48px', marginBottom: '16px' }}>🎯</div>
+          <div style={{ fontSize: '18px', marginBottom: '8px' }}>准备就绪</div>
+          <div style={{ fontSize: '14px' }}>在右侧输入任务开始编排执行</div>
         </div>
       </div>
     );

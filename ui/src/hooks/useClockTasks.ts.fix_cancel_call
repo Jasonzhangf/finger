@@ -3,7 +3,7 @@
  */
 
 import { useState, useEffect, useCallback } from 'react';
-import { listClockTimers, createClockTimer, fetchApi } from '../api/client.js';
+import { listClockTimers, createClockTimer,  } from '../api/client.js';
 import type { ClockTimer } from '../api/client.js';
 
 export interface UseClockTasksReturn {
@@ -51,13 +51,12 @@ export function useClockTasks(): UseClockTasksReturn {
 
   const cancel = useCallback(async (timerId: string) => {
     try {
-      await fetchApi('/clock/cancel', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ timer_id: timerId }),
-      });
-      await refresh();
-      return { success: true };
+      const response = await (timerId);
+      if (response.success) {
+        await refresh();
+        return { success: true };
+      }
+      return { success: false, error: response.error };
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       return { success: false, error: message };

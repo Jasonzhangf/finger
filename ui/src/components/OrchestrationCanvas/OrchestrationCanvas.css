@@ -359,3 +359,130 @@
     padding: 10px;
   }
 }
+
+/* Phase 4: Runtime Instance Node Styles */
+.runtime-instance-node {
+  background: #1e293b;
+  border: 2px solid #334155;
+  border-radius: 8px;
+  padding: 12px;
+  min-width: 180px;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  color: #e2e8f0;
+  transition: all 0.2s ease;
+  position: relative;
+}
+
+.runtime-instance-node:hover {
+  border-color: #60a5fa;
+  box-shadow: 0 4px 12px rgba(96, 165, 250, 0.3);
+  cursor: pointer;
+}
+
+.runtime-instance-node.is-selected {
+  border-color: #3b82f6;
+  box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.3);
+}
+
+.runtime-instance-node.is-terminal {
+  opacity: 0.85;
+  border-color: #64748b;
+}
+
+.runtime-instance-node.is-terminal:hover {
+  border-color: #94a3b8;
+}
+
+.runtime-instance-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.runtime-instance-name {
+  font-weight: 600;
+  font-size: 13px;
+  flex: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.runtime-instance-badge {
+  font-size: 10px;
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: #334155;
+  color: #94a3b8;
+  font-weight: 500;
+}
+
+.runtime-instance-node.is-terminal .runtime-instance-badge {
+  background: #475569;
+  color: #cbd5e1;
+}
+
+.runtime-instance-body {
+  font-size: 11px;
+  color: #94a3b8;
+}
+
+.runtime-instance-type {
+  text-transform: uppercase;
+  font-size: 9px;
+  letter-spacing: 0.5px;
+  margin-bottom: 6px;
+  color: #64748b;
+}
+
+.runtime-instance-summary {
+  margin-top: 6px;
+  padding: 6px;
+  background: #0f172a;
+  border-radius: 4px;
+  border-left: 2px solid #3b82f6;
+}
+
+.last-event-type {
+  font-weight: 600;
+  font-size: 10px;
+  color: #60a5fa;
+  margin-bottom: 2px;
+  text-transform: uppercase;
+}
+
+.last-event-summary {
+  font-size: 10px;
+  color: #cbd5e1;
+  line-height: 1.3;
+  max-height: 2.6em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+
+.runtime-instance-session {
+  margin-top: 4px;
+  font-size: 9px;
+  color: #64748b;
+  font-family: 'Monaco', 'Menlo', monospace;
+}
+
+.edge-spawned {
+  stroke-dasharray: 5;
+}
+
+.status-completed {
+  background: #10b981;
+}
+
+.status-waiting {
+  background: #f59e0b;
+}
+
+.status-queued {
+  background: #6366f1;
+}
