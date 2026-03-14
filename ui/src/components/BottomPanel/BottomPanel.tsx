@@ -843,6 +843,12 @@ export const BottomPanel: React.FC<BottomPanelProps> = ({
                           <span className="metric-label">Queued</span>
                           <span className="metric-value">{agent.queuedCount}</span>
                         </div>
+                        <div className="metric">
+                          <span className="metric-label">Quota</span>
+                          <span className="metric-value" title={`来源: ${agent.quota.source}`}>
+                            {agent.quota.effective}
+                          </span>
+                        </div>
                       </div>
                       <div className="agent-config-ref">
                         {(() => {
