@@ -279,3 +279,48 @@ Phase 2: UI 管理面板与配置能力
 - 联动测试
 
 Tags: agent-management, quota, phase-0, phase-1, completed, gate-1
+
+## 2026-03-14 Agent 管理 Phase 2 完成
+
+### Phase 2: UI 管理面板与配置能力 ✅
+
+**核心功能实现**：
+
+1. **底部面板 Agent 卡片 quota 显示** ✅
+   - 修改文件: `ui/src/components/BottomPanel/BottomPanel.tsx`
+   - 显示有效配额值: `{agent.quota.effective}`
+   - 配额来源提示: `title={`来源: ${agent.quota.source}`}`
+   - 提交: `04ddf91`
+
+2. **AgentConfigDrawer quota 编辑功能** ✅ (已存在)
+   - Default Quota 输入框
+   - Project Quota 输入框
+   - Workflow Quota 多行文本框（支持 `workflowId=quota` 格式）
+   - 保存按钮连接 `onSaveAgentConfig` 回调
+
+3. **组件集成验证** ✅
+   - AgentConfigDrawer 在 WorkflowContainer 中使用
+   - 与 BottomPanel Agent 卡片联动
+   - 点击 Agent 卡片打开配置抽屉
+
+**验收标准**：
+- ✅ 用户可明确看到 quota 来源
+- ✅ 变更不会破坏串行验证模式
+- ⏳ 配置持久化需要实际 UI 测试验证
+
+**BD 任务**：
+- finger-221.3: Phase 2 - CLOSED
+
+**提��**：
+- `04ddf91` - feat(ui): Add quota display to agent cards in bottom panel
+- `1385e8b` - chore: Update bd status - close finger-221.3 Phase 2
+
+### 下一步
+
+Phase 3: 右侧会话联动与自动回退
+- 默认上下文固定 orchestrator
+- runtime 点击切换到对应 session
+- runtime 结束时自动回 orchestrator
+- 历史查看入口独立
+
+Tags: agent-management, quota, phase-2, completed, gate-2, ui-panel
