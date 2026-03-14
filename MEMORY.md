@@ -227,3 +227,55 @@ Tags: system-agent, runtime-verification, testing, integration-test, framework
 - 规则：用户说“切换到某项目/会话”时，必须将该 project+session 设为当前默认会话，后续 `@agent` 默认使用该 session
 
 Tags: messagehub, command-routing, system-agent, session-switch, qqbot, resume
+
+## 2026-03-14 Agent 管理 Phase 0-1 完成
+
+### Phase 0: 契约冻结 ✅
+
+**Phase 0.1** (finger-221.1.1): 核心模型字段清单
+- 交付物：`docs/contracts/AGENT_RUNTIME_CONTRACT_V1.md`
+- 统一模型：AgentConfigV1, QuotaPolicyV1, RuntimeInstanceV1, SessionBindingV1
+- Gate-0 评审通过：字段一致性、命名规范、默认值完整
+- 状态：**COMPLETED**
+
+**Phase 0.2**: 事件字段定义
+- 交付物：`src/orchestration/quota/events.ts`
+- 事件类型：runtime_spawned, runtime_status_changed, runtime_finished
+- 状态：**COMPLETED**
+
+### Phase 1: Agent 基础能力串行验证 ✅
+
+**核心代码实现**：
+1. `src/orchestration/quota/types.ts` - 统一模型定义
+2. `src/orchestration/quota/serial-policy.ts` - 串行验证策略
+3. `src/orchestration/quota/runtime-queue.ts` - 队列管理器
+4. `src/orchestration/quota/events.ts` - 事件系统
+5. `src/orchestration/quota/__tests__/quota.test.ts` - 单元测试
+6. `tests/integration/quota-runtime-lifecycle.test.ts` - 集成测试
+
+**Gate-1 验证通过**：
+- ✅ 单元：quota 解析、状态机、排队出队
+- ✅ 集成：资源池 + runtime 生命周期 + 会话绑定
+- ✅ 功能：同类任务严格串行执行，队列位次正确
+
+**验收标准**：
+- 同类任务严格串行执行 ✅
+- 队列位次与实际执行顺序一致 ✅
+- runtime 生命周期状态完整闭合 ✅
+
+**BD 任务**：
+- finger-221.1: Phase 0 - CLOSED
+- finger-221.2: Phase 1 - CLOSED
+
+**提交**：
+- `9cf1492` - test: Add Phase 1 integration test for Quota + Runtime Lifecycle
+- `7b9167a` - chore: Update bd status - close finger-221.1 and finger-221.2
+
+### 下一步
+
+Phase 2: UI 管理面板与配置能力
+- 底部卡片展示（Running/Queued/Quota）
+- 左抽屉配置界面
+- 联动测试
+
+Tags: agent-management, quota, phase-0, phase-1, completed, gate-1
