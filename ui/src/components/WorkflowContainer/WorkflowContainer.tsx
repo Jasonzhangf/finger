@@ -483,33 +483,26 @@ export const WorkflowContainer: React.FC = () => {
 
 
   // Phase 3: Auto-switch back to orchestrator when runtime finishes
+  // 基于 RuntimeEvent 显式字段：event.kind === 'status' 和 content 解析
   useEffect(() => {
     // 只在 runtime context 下监听
     if (sessionBinding.context !== 'runtime') return;
     if (runtimeEvents.length === 0) return;
     
-    // 找到最后一个与当前 runtime session 相关的 status 事件
-    const currentSessionEvents = runtimeEvents.filter((event) => {
-      // 根据 useWorkflowExecution.ws.ts 的映射，runtime_finished 事件的 content 包含 sessionId
-      // 格式: [runtime] finished: {status}
-      // 我们需要检查这是否是当前绑定的 runtime session
-      const isRuntimeEvent = event.kind === 'status' && event.content?.includes('[runtime]');
-      if (!isRuntimeEvent) return false;
-      
-      // 从事件中提取 sessionId（如果有的话）
-      // 当前实现中，我们通过事件顺序和 sessionBinding.sessionId 来判断
-      return true; // 稍后在最后一个事件上再精确匹配
+    // 找到最后一个 runtime status 事件
+    // useWorkflowExecution.ws.ts: runtime_finished 事件的格式是 `[runtime] finished: {finalStatus}`
+    // 我们只关心 status 类型的 runtime 事件
+    const lastRuntimeEvent = [...runtimeEvents].reverse().find((event) => {
+      return event.kind === 'status' && event.content?.startsWith('[runtime]');
     });
     
-    if (currentSessionEvents.length === 0) return;
-    
-    const lastRuntimeEvent = currentSessionEvents[currentSessionEvents.length - 1];
     if (!lastRuntimeEvent) return;
     
-    // 检查是否是 finished 事件
-    if (!lastRuntimeEvent.content?.includes('finished')) return;
+    // 检查是否是 finished 事件（非 running 状态）
+    const isFinished = lastRuntimeEvent.content?.includes('finished');
+    if (!isFinished) return;
     
-    // 检查是否是完成、失败或中断状态
+    // 检查终态：completed/failed/interrupted
     const isTerminalStatus = lastRuntimeEvent.content?.includes('completed')
       || lastRuntimeEvent.content?.includes('failed')
       || lastRuntimeEvent.content?.includes('interrupted');
