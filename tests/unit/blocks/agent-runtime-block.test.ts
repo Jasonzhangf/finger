@@ -618,7 +618,7 @@ describe('AgentRuntimeBlock', () => {
     expect(agent).toBeDefined();
     expect(agent?.runningCount).toBe(1);
     expect(agent?.queuedCount).toBe(1);
-    expect(agent?.quota).toEqual(expect.objectContaining({ effective: 1, source: 'default' }));
+    expect(agent?.quota).toEqual(expect.objectContaining({ effective: 1, source: 'deployment' }));
     expect(agent?.lastEvent?.status).toBe('queued');
 
     first.resolve({ ok: true });
