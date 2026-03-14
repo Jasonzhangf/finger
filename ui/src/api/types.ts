@@ -556,6 +556,12 @@ export interface RuntimeEvent {
   instanceName?: string;
   sessionType?: "main" | "child";
 
+  // Runtime 显式字段（用于 auto-switch 判断）
+  runtimeEventType?: 'runtime_status_changed' | 'runtime_finished';
+  runtimeStatus?: 'queued' | 'running' | 'waiting_input' | 'completed' | 'validating' | 'failed' | 'interrupted';
+  runtimeInstanceId?: string;
+  runtimeSessionId?: string;
+
   metadata?: Record<string, unknown>;
 }
 
@@ -564,7 +570,11 @@ export interface RuntimeImage {
   name: string;
   url: string;
   dataUrl?: string;
-  mimeType?: string;
+  // Runtime 显式字段（用于 auto-switch 判断）
+  runtimeEventType?: 'runtime_status_changed' | 'runtime_finished';
+  runtimeStatus?: 'queued' | 'running' | 'waiting_input' | 'completed' | 'validating' | 'failed' | 'interrupted';
+  runtimeInstanceId?: string;
+  runtimeSessionId?: string;  mimeType?: string;
   size?: number;
 }
 

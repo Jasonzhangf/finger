@@ -38,6 +38,19 @@ function toRuntimeImageUrl(url: string): string {
 
 function parseViewImageOutput(output: unknown) {
   if (!isRecord(output)) return null;
+
+
+function normalizeRuntimeStatus(status: unknown): RuntimeEvent['runtimeStatus'] | undefined {
+  if (typeof status !== 'string') return undefined;
+  const normalized = status.trim().toLowerCase();
+  if (normalized === 'queued') return 'queued';
+  if (normalized === 'running') return 'running';
+  if (normalized === 'waiting_input') return 'waiting_input';
+  if (normalized === 'completed') return 'completed';
+  if (normalized === 'failed') return 'failed';
+  if (normalized === 'interrupted') return 'interrupted';
+  return undefined;
+}
   const path = typeof output.path === 'string' ? output.path.trim() : '';
   if (path.length === 0) return null;
   const mimeType = typeof output.mimeType === 'string' ? output.mimeType : '';
@@ -340,6 +353,10 @@ export function mapWsMessageToRuntimeEvent(
         kind: 'status',
         content: `[runtime] status=${String(payload.status ?? 'unknown')}`,
         timestamp,
+        runtimeEventType: 'runtime_status_changed',
+        runtimeStatus: normalizeRuntimeStatus(payload.status),
+        runtimeInstanceId: typeof payload.instanceId === 'string' ? payload.instanceId : undefined,
+        runtimeSessionId: typeof msg.sessionId === 'string' ? msg.sessionId : undefined,
       };
     case 'runtime_finished':
       return {
@@ -347,6 +364,10 @@ export function mapWsMessageToRuntimeEvent(
         kind: 'status',
         content: `[runtime] finished: ${String(payload.finalStatus ?? payload.status ?? 'unknown')}`,
         timestamp,
+        runtimeEventType: 'runtime_finished',
+        runtimeStatus: normalizeRuntimeStatus(payload.finalStatus ?? payload.status),
+        runtimeInstanceId: typeof payload.instanceId === 'string' ? payload.instanceId : undefined,
+        runtimeSessionId: typeof msg.sessionId === 'string' ? msg.sessionId : undefined,
       };
     default:
       return null;

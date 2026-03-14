@@ -4,6 +4,8 @@ settings:
   autoInstallPeers: true
   excludeLinksFromLockfile: false
 
+packageExtensionsChecksum: sha256-M1/gZ6ARNTXk2sj6gTyP/iuDMyF6djM4LI7OaIuAvks=
+
 importers:
 
   .:
@@ -54,6 +56,9 @@ importers:
       eslint:
         specifier: ^9.18.0
         version: 9.39.4
+      execa:
+        specifier: ^8.0.1
+        version: 8.0.1
       globals:
         specifier: ^15.14.0
         version: 15.15.0
