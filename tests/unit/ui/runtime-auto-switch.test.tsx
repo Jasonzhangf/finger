@@ -155,7 +155,6 @@ describe('Runtime Auto-Switch on Finished', () => {
     expect(currentSessionEvents.length).toBe(1);
     expect(currentSessionEvents[0].content).toContain('[runtime]');
   });
-});
 
   it('should not auto-switch when different runtime session finishes', () => {
     // Simulate scenario with multiple runtime sessions
@@ -192,3 +191,4 @@ describe('Runtime Auto-Switch on Finished', () => {
     
     expect(lastEventIsForCurrentSession).toBe(false);
   });
+});
