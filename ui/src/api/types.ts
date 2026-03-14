@@ -662,3 +662,28 @@ export interface TaskReport {
   createdAt: string;
   completedAt?: string;
 }
+
+ export interface ClockTimer {
+   timer_id: string;
+   message: string;
+   schedule_type: 'delay' | 'at' | 'cron';
+   delay_seconds?: number;
+   at?: string;
+   cron?: string;
+   timezone?: string;
+   repeat: boolean;
+   max_runs: number | null;
+   run_count: number;
+   next_fire_at: string | null;
+   status: 'active' | 'completed' | 'canceled';
+   created_at: string;
+   updated_at: string;
+   inject?: {
+     agentId: string;
+     sessionId?: string;
+     projectPath?: string;
+     prompt: string;
+     channelId?: string;
+   };
+   last_injected_at?: string;
+ }

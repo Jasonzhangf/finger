@@ -203,6 +203,67 @@ export async function fetchBlockState(blockId: string): Promise<Record<string, u
   return res.json() as Promise<Record<string, unknown>>;
 }
 
+ // Clock API
+ export interface ClockTimer {
+   timer_id: string;
+   message: string;
+   schedule_type: 'delay' | 'at' | 'cron';
+   delay_seconds?: number;
+   at?: string;
+   cron?: string;
+   timezone?: string;
+   repeat: boolean;
+   max_runs: number | null;
+   run_count: number;
+   next_fire_at: string | null;
+   status: 'active' | 'completed' | 'canceled';
+   created_at: string;
+   updated_at: string;
+   inject?: {
+     agentId: string;
+     projectPath?: string;
+     prompt: string;
+   };
+ }
+
+ export async function listClockTimers(): Promise<{ timers: ClockTimer[] }> {
+   return fetchApi<{ timers: ClockTimer[] }>('/clock/list');
+ }
+
+ export async function createClockTimer(payload: {
+   message: string;
+   schedule_type: 'delay' | 'at' | 'cron';
+   delay_seconds?: number;
+   at?: string;
+   cron?: string;
+   timezone?: string;
+   repeat?: boolean;
+   max_runs?: number;
+   inject?: {
+     agentId: string;
+     projectPath?: string;
+     prompt: string;
+   };
+ }): Promise<{ success: boolean; timer_id?: string; data?: Record<string, unknown>; error?: string }> {
+   return fetchApi('/clock/create', {
+     method: 'POST',
+     headers: { 'Content-Type': 'application/json' },
+     body: JSON.stringify(payload),
+   });
+ }
+
+ export async function cancelClockTimer(timer_id: string): Promise<{ success: boolean; error?: string }> {
+   return fetchApi('/clock/cancel', {
+     method: 'POST',
+     headers: { 'Content-Type': 'application/json' },
+     body: JSON.stringify({ timer_id }),
+   return fetchApi('/clock/cancel', {
+     method: 'POST',
+     headers: { 'Content-Type': 'application/json' },
+     body: JSON.stringify({ timer_id }),
+  });
+}
+
 export async function executeBlockCommand(
   blockId: string,
   command: string,

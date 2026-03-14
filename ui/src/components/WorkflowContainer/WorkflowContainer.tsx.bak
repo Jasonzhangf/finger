@@ -481,49 +481,6 @@ export const WorkflowContainer: React.FC = () => {
     return Array.from(merged.values()).sort((a, b) => a.name.localeCompare(b.name));
   }, [executionState?.agents, runtimePanelAgents]);
 
-
-  // Phase 3: Auto-switch back to orchestrator when runtime finishes
-  useEffect(() => {
-    // 只在 runtime context 下监听
-    if (sessionBinding.context !== 'runtime') return;
-    if (runtimeEvents.length === 0) return;
-    
-    // 找到最后一个与当前 runtime session 相关的 status 事件
-    const currentSessionEvents = runtimeEvents.filter((event) => {
-      // 根据 useWorkflowExecution.ws.ts 的映射，runtime_finished 事件的 content 包含 sessionId
-      // 格式: [runtime] finished: {status}
-      // 我们需要检查这是否是当前绑定的 runtime session
-      const isRuntimeEvent = event.kind === 'status' && event.content?.includes('[runtime]');
-      if (!isRuntimeEvent) return false;
-      
-      // 从事件中提取 sessionId（如果有的话）
-      // 当前实现中，我们通过事件顺序和 sessionBinding.sessionId 来判断
-      return true; // 稍后在最后一个事件上再精确匹配
-    });
-    
-    if (currentSessionEvents.length === 0) return;
-    
-    const lastRuntimeEvent = currentSessionEvents[currentSessionEvents.length - 1];
-    if (!lastRuntimeEvent) return;
-    
-    // 检查是否是 finished 事件
-    if (!lastRuntimeEvent.content?.includes('finished')) return;
-    
-    // 检查是否是完成、失败或中断状态
-    const isTerminalStatus = lastRuntimeEvent.content?.includes('completed')
-      || lastRuntimeEvent.content?.includes('failed')
-      || lastRuntimeEvent.content?.includes('interrupted');
-    
-    if (isTerminalStatus) {
-      // 自动切回 orchestrator
-      setSessionBinding({
-        context: 'orchestrator',
-        sessionId: orchestratorSessionId,
-      });
-      setSelectedAgentId(null);
-    }
-  }, [runtimeEvents, sessionBinding, orchestratorSessionId, setSelectedAgentId]);
-
   const frozenRightPayload = useFrozenValue({
     executionState,
     runtimeEvents,
@@ -606,7 +563,27 @@ export const WorkflowContainer: React.FC = () => {
   }, [handleSelectInstance]);
 
 
+  // Phase 3: Auto-switch back to orchestrator when runtime finishes
   useEffect(() => {
+    // 监听 runtimeEvents 中的 runtime_finished 事件
+    // 这里需要从 useWorkflowExecution hook 获取 runtimeEvents
+    // 暂时先注释掉，需要确认 runtimeEvents 的访问方式
+    /*
+    const lastEvent = runtimeEvents[runtimeEvents.length - 1];
+    if (lastEvent?.kind === 'status' && lastEvent?.content?.includes('finished')) {
+      const isFinished = lastEvent.content.includes('completed')
+        || lastEvent.content.includes('failed')
+        || lastEvent.content.includes('interrupted');
+      
+      if (isFinished && sessionBinding.context === 'runtime') {
+        setSessionBinding({
+          context: 'orchestrator',
+          sessionId: orchestratorSessionId,
+        });
+        setSelectedAgentId(null);
+      }
+    }
+    */
   }, [sessionBinding, orchestratorSessionId, setSelectedAgentId]);
   useEffect(() => {
     if (sessionBinding.context !== 'runtime') return;

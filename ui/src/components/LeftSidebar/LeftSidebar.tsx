@@ -10,6 +10,7 @@ import {
   deleteProjectSessions,
   pickProjectDirectory,
 } from '../../api/client.js';
+import { ClockTasksTab } from '../ClockTasksTab/ClockTasksTab.js';
 import {
   mergeAgentSources,
   resolveInstanceBinding,
@@ -17,7 +18,7 @@ import {
 } from '../BottomPanel/agentRuntimeUtils.js';
 import './LeftSidebar.css';
 
-type SidebarTab = 'project' | 'ai-provider' | 'settings';
+type SidebarTab = 'project' | 'ai-provider' | 'settings' | 'clock-tasks';
 
 interface LeftSidebarProps {
   sessions: SessionInfo[];
@@ -67,6 +68,7 @@ interface ProjectTabProps {
 const TABS: Array<{ key: SidebarTab; label: string }> = [
   { key: 'project', label: 'Project' },
   { key: 'ai-provider', label: 'AI Provider' },
+  { key: 'clock-tasks', label: 'Clock Tasks' },
   { key: 'settings', label: 'Settings' },
 ];
 
@@ -211,6 +213,7 @@ export const LeftSidebar: FC<LeftSidebarProps> = ({
               />
             )}
             {activeTab === 'ai-provider' && <AIProviderTab />}
+            {activeTab === 'clock-tasks' && <ClockTasksTab />}
             {activeTab === 'settings' && (
               <SettingsTab
                 panelFreeze={panelFreeze}

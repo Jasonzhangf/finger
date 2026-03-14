@@ -41,6 +41,7 @@ import { registerTestRoutes } from './test.js';
 import { registerDryrunRoutes } from './dryrun.js';
 import { registerRuntimePathRoutes } from './runtime-paths.js';
 import { registerProjectRoutes } from './projects.js';
+import { registerClockRoutes } from './clock.js';
 
 export interface RegisterAllRoutesDeps {
   sessionManager: SessionManager;
