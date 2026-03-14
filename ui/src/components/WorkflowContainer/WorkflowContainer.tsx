@@ -481,6 +481,34 @@ export const WorkflowContainer: React.FC = () => {
     return Array.from(merged.values()).sort((a, b) => a.name.localeCompare(b.name));
   }, [executionState?.agents, runtimePanelAgents]);
 
+
+  // Phase 3: Auto-switch back to orchestrator when runtime finishes
+  useEffect(() => {
+    // 监听 runtimeEvents，当最后一个事件是 runtime_finished 时自动切回 orchestrator
+    if (runtimeEvents.length === 0) return;
+    
+    const lastEvent = runtimeEvents[runtimeEvents.length - 1];
+    if (!lastEvent) return;
+    
+    // 检查是否是 finished 事件
+    const isFinishedEvent = lastEvent.content?.includes('finished');
+    if (!isFinishedEvent) return;
+    
+    // 检查是否是完成、失败或中断状态
+    const isTerminalStatus = lastEvent.content?.includes('completed')
+      || lastEvent.content?.includes('failed')
+      || lastEvent.content?.includes('interrupted');
+    
+    if (isTerminalStatus && sessionBinding.context === 'runtime') {
+      // 自动切回 orchestrator
+      setSessionBinding({
+        context: 'orchestrator',
+        sessionId: orchestratorSessionId,
+      });
+      setSelectedAgentId(null);
+    }
+  }, [runtimeEvents, sessionBinding, orchestratorSessionId, setSelectedAgentId]);
+
   const frozenRightPayload = useFrozenValue({
     executionState,
     runtimeEvents,
@@ -562,6 +590,9 @@ export const WorkflowContainer: React.FC = () => {
     await handleSelectInstance(instance);
   }, [handleSelectInstance]);
 
+
+  useEffect(() => {
+  }, [sessionBinding, orchestratorSessionId, setSelectedAgentId]);
   useEffect(() => {
     if (sessionBinding.context !== 'runtime') return;
     const boundInstance = runtimeInstances.find((instance) => (
