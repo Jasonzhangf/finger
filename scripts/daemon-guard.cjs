@@ -5,6 +5,7 @@
 const fs = require('fs');
 const path = require('path');
 const { spawn } = require('child_process');
+const net = require('net');
 
 const FINGER_ROOT = path.resolve(__dirname, '..');
 const RUNTIME_DIR = path.join(FINGER_ROOT, '.finger', 'runtime');
@@ -25,15 +26,16 @@ class DaemonGuard {
         console.log(`[DaemonGuard] Guard process started (PID: ${this.guardPid})`);
     }
 
-    start() {
-        this.spawnMainDaemon();
+    async start() {
+        await this.spawnMainDaemon();
         this.startHeartbeatMonitor();
         this.startMainProcessCheck();
         this.setupExitHandlers();
     }
 
-    spawnMainDaemon() {
+    async spawnMainDaemon() {
         console.log('[DaemonGuard] Starting main daemon...');
+        await this.waitForPorts([9998, 9999]);
         this.cleanupOldProcesses();
 
         const mainProcess = spawn('node', [path.join(FINGER_ROOT, 'dist', 'server', 'index.js')], {
@@ -117,12 +119,36 @@ class DaemonGuard {
             this.restartCount++;
             console.log(`[DaemonGuard] Restarting daemon (attempt ${this.restartCount}/${MAX_RESTARTS})...`);
             setTimeout(() => {
-                this.spawnMainDaemon();
+                this.spawnMainDaemon().catch((err) => {
+                    console.error('[DaemonGuard] Failed to restart daemon:', err);
+                });
             }, RESTART_DELAY_MS);
         } else {
             console.error(`[DaemonGuard] Max restarts reached (${MAX_RESTARTS}), exiting guard...`);
             this.shutdown();
         }
+    }
+
+    async waitForPorts(ports) {
+        while (true) {
+            const checks = await Promise.all(ports.map((port) => this.isPortAvailable(port)));
+            if (checks.every(Boolean)) {
+                return;
+            }
+            console.warn('[DaemonGuard] Port still in use, waiting for release...');
+            await new Promise(resolve => setTimeout(resolve, 1000));
+        }
+    }
+
+    isPortAvailable(port) {
+        return new Promise((resolve) => {
+            const tester = net.createServer();
+            tester.once('error', () => resolve(false));
+            tester.once('listening', () => {
+                tester.close(() => resolve(true));
+            });
+            tester.listen(port, '0.0.0.0');
+        });
     }
 
     cleanupMainProcess() {
