@@ -8,7 +8,6 @@ import { BottomPanel } from '../BottomPanel/BottomPanel.js';
 import { AgentConfigDrawer } from '../AgentConfigDrawer/AgentConfigDrawer.js';
 import { SessionResumeDialog } from '../SessionResumeDialog/SessionResumeDialog.js';
 import { useSessionResume } from '../../hooks/useSessionResume.js';
-import { pickProjectDirectory } from '../../api/client.js';
 import { useSessions } from '../../hooks/useSessions.js';
 import { useWorkflowExecution } from '../../hooks/useWorkflowExecution.js';
 import { useAgents } from '../../hooks/useAgents.js';
@@ -375,18 +374,6 @@ export const WorkflowContainer: React.FC = () => {
     setSelectedAgentId(null);
   }, [switchSession, setSelectedAgentId]);
 
-
-  const handleOpenProject = useCallback(async (_projectPath: string): Promise<void> => {
-    try {
-      const result = await pickProjectDirectory('选择工作目录');
-      if (result.canceled) return;
-      if (!result.path) return;
-      const created = await createSession(result.path);
-      await handleSwitchSessionFromSidebar(created.id);
-    } catch (error) {
-      console.error('打开目录失败', error);
-    }
-  }, [createSession, handleSwitchSessionFromSidebar]);
   const { agents: agentModules } = useAgents();
   const chatInputCapability = useMemo(
     () => resolveChatInputCapability(agentModules),
@@ -647,29 +634,23 @@ export const WorkflowContainer: React.FC = () => {
     error: agentPanelError,
   }, panelFreeze.bottom);
   const canvasElement = useMemo(() => {
-   const monitorPanels: MonitorPanel[] = sessions.slice(0, 4).map((session) => ({
-     id: session.id,
-     projectPath: session.projectPath,
-      sessions: sessions.filter((s) => s.projectPath === session.projectPath).map((s) => ({ id: s.id, name: s.name })),
-     scheduledTasks: [],
-     selectedSessionId: session.id,
-      onOpenProject: () => { void handleOpenProject(session.projectPath); },
-      onSelectSession: (sessionId: string) => { void handleSwitchSessionFromSidebar(sessionId); },
+    const monitorPanels: MonitorPanel[] = sessions.slice(0, 4).map((session) => ({
+      id: session.id,
+      projectPath: session.projectPath,
+      sessions: sessions.map((s) => ({ id: s.id, name: s.name })),
+      scheduledTasks: [],
+      selectedSessionId: session.id,
     }));
 
     return (
       <div className="canvas-shell">
         <PerformanceCard paused={panelFreeze.performance || uiDisable.performance} />
         <div className="canvas-body">
-          <MultiAgentMonitorGrid
-            panels={monitorPanels}
-            chatAgents={chatAgents}
-            inputCapability={chatInputCapability}
-          />
+          <MultiAgentMonitorGrid panels={monitorPanels} />
         </div>
       </div>
     );
-  }, [panelFreeze.performance, uiDisable.performance, sessions, handleOpenProject, handleSwitchSessionFromSidebar, chatAgents, chatInputCapability]);
+  }, [panelFreeze.performance, uiDisable.performance, sessions]);
 
   const rightPanelElement = useMemo(() => {
     const orchestratorAgentName = 'System Agent';

@@ -863,9 +863,52 @@ describe('AgentRuntimeBlock', () => {
       const agent = runtimeView.agents.find((item) => item.id === 'executor-a');
       expect(agent?.quota.effective).toBe(3);
       expect(agent?.quota.source).toBe('deployment');
+      expect(agent?.defaultQuota).toBeUndefined();
     });
 
-    it('prioritizes explicit defaultQuota=1 over deployment instanceCount=3', async () => {
+    
+    it('uses explicit defaultQuota=5 when configured', async () => {
+      const custom = await createContextWithLoadedConfigs([
+        {
+          filePath: '/tmp/executor-a.agent.json',
+          config: {
+            id: 'executor-a',
+            name: 'Executor A',
+            role: 'executor',
+            enabled: true,
+            defaultQuota: 5, // Explicit defaultQuota
+            implementations: [
+              { id: 'native-main', kind: 'native', moduleId: 'executor-a-loop', enabled: true },
+            ],
+            tools: {
+              whitelist: ['agent.list', 'agent.capabilities', 'agent.deploy', 'agent.dispatch', 'agent.control'],
+            },
+          },
+        },
+      ]);
+
+      // Deploy with instanceCount=3 (should not override explicit defaultQuota)
+      await custom.block.execute('deploy', {
+        targetAgentId: 'executor-a',
+        targetImplementationId: 'native-main',
+        sessionId: 'session-1',
+        instanceCount: 3,
+      });
+
+      const runtimeView = await custom.block.execute('runtime_view', {}) as {
+        agents: Array<{
+          id: string;
+          quota: { effective: number; source: string };
+          defaultQuota?: number;
+        }>;
+      };
+
+      const agent = runtimeView.agents.find((item) => item.id === 'executor-a');
+      expect(agent?.quota.effective).toBe(5);
+      expect(agent?.quota.source).toBe('defaultQuota');
+      expect(agent?.defaultQuota).toBe(5);
+    });
+it('prioritizes explicit defaultQuota=1 over deployment instanceCount=3', async () => {
       const custom = await createContextWithLoadedConfigs([
         {
           filePath: '/tmp/executor-a.agent.json',
@@ -902,6 +945,6 @@ describe('AgentRuntimeBlock', () => {
 
       const agent = runtimeView.agents.find((item) => item.id === 'executor-a');
       expect(agent?.quota.effective).toBe(1);
-      expect(agent?.quota.source).toBe('default');
+      expect(agent?.quota.source).toBe('defaultQuota');
     });
   });

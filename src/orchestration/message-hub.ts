@@ -6,8 +6,21 @@
 
 import { logger } from '../core/logger.js';
 import { errorHandler } from './error-handler.js';
+import type { HubMessage } from './types.js';
 
 export type Message = unknown;
+
+export interface MessageMeta {
+  callbackId?: string;
+  timeoutMs?: number;
+  retryCount?: number;
+  errorCode?: string;
+}
+
+export interface MessageEnvelope<T = unknown> extends HubMessage<T> {
+  meta?: (HubMessage<T>['meta'] & MessageMeta) | undefined;
+}
+
 export type MessageHandler = (message: Message) => Promise<unknown> | unknown;
 export type MessageCallback = (result: unknown) => void;
 
@@ -198,6 +211,12 @@ export class MessageHub {
     if (callback) {
       const callbackId = 'cb-' + Date.now() + '-' + this.nextCallbackId++;
       this.pendingCallbacks.set(callbackId, callback);
+      const envelope = message as MessageEnvelope;
+      const meta = (envelope.meta ?? {}) as Record<string, unknown>;
+      if (meta.callbackId === undefined) {
+        meta.callbackId = callbackId;
+      }
+      envelope.meta = meta as MessageEnvelope['meta'];
       (message as Record<string, unknown>)._callbackId = callbackId;
     }
     

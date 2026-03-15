@@ -7,6 +7,7 @@ import {
   tryParseStructuredJson,
   validateStructuredOutput,
 } from '../../common/structured-output.js';
+import { CacheMemoryInterceptor } from './cache-memory-interceptor.js';
 import { resolveResponsesOutputSchema } from '../chat-codex/response-output-schemas.js';
 import {
   mergeHistory,
@@ -16,12 +17,13 @@ import {
   type UnifiedAgentRoleProfile,
   type UnifiedHistoryItem,
 } from './unified-agent-types.js';
+import type { MessageHub } from '../../orchestration/message-hub.js';
 
 export interface KernelRunContext {
   sessionId: string;
   systemPrompt?: string;
   history: UnifiedHistoryItem[];
-  tools: string[];
+  tools: string[] | import('../chat-codex/chat-codex-module.js').ChatCodexToolSpecification[];
   metadata?: Record<string, unknown>;
 }
 
@@ -44,6 +46,7 @@ export interface KernelAgentBaseConfig {
   appendContextSlotsToSystemPrompt?: boolean;
   maxContextMessages: number;
   roleProfiles?: Record<string, UnifiedAgentRoleProfile>;
+  messageHub?: import('../../orchestration/message-hub.js').MessageHub;
 }
 
 const DEFAULT_KERNEL_AGENT_CONFIG: Omit<KernelAgentBaseConfig, 'moduleId'> = {
@@ -87,6 +90,7 @@ export class KernelAgentBase {
   private readonly sessionManager: MemorySessionManager;
   private readonly apiHistoryByThread = new Map<string, unknown[]>();
   private readonly externalSessionBindings = new Map<string, string>();
+  private readonly cacheMemoryInterceptor: CacheMemoryInterceptor;
   private initialized = false;
 
   constructor(
@@ -101,6 +105,11 @@ export class KernelAgentBase {
     };
     this.runner = runner;
     this.sessionManager = sessionManager;
+    this.cacheMemoryInterceptor = new CacheMemoryInterceptor({
+      agentId: this.config.moduleId,
+      projectPath: process.cwd(),
+      messageHub: this.config.messageHub,
+    });
   }
 
   async handle(message: unknown): Promise<UnifiedAgentOutput> {
@@ -119,6 +128,9 @@ export class KernelAgentBase {
     }
 
     await this.ensureInitialized();
+
+    // Intercept user request and write to CACHE.md
+    await this.cacheMemoryInterceptor.interceptRequest(input);
 
     try {
       const { session, responseSessionId } = await this.resolveSession(input);
@@ -242,7 +254,8 @@ export class KernelAgentBase {
         });
       }
 
-      return {
+      // Intercept assistant response and write to CACHE.md
+      const output = {
         success: true,
         response: reply,
         module: this.config.moduleId,
@@ -257,6 +270,10 @@ export class KernelAgentBase {
           ...(runResult.metadata ?? {}),
         },
       };
+      
+      await this.cacheMemoryInterceptor.interceptResponse(output, input);
+      
+      return output;
     } catch (error) {
       return {
         success: false,

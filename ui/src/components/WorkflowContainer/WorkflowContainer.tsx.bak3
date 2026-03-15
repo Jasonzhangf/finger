@@ -8,15 +8,15 @@ import { BottomPanel } from '../BottomPanel/BottomPanel.js';
 import { AgentConfigDrawer } from '../AgentConfigDrawer/AgentConfigDrawer.js';
 import { SessionResumeDialog } from '../SessionResumeDialog/SessionResumeDialog.js';
 import { useSessionResume } from '../../hooks/useSessionResume.js';
-import { pickProjectDirectory } from '../../api/client.js';
 import { useSessions } from '../../hooks/useSessions.js';
 import { useWorkflowExecution } from '../../hooks/useWorkflowExecution.js';
+import { DEFAULT_CHAT_AGENT_ID } from '../../hooks/useWorkflowExecution.constants.js';
 import { useAgents } from '../../hooks/useAgents.js';
 import { useAgentRuntimePanel } from '../../hooks/useAgentRuntimePanel.js';
 import { MultiAgentMonitorGrid, type MonitorPanel } from '../MultiAgentMonitorGrid/MultiAgentMonitorGrid.js';
-import { findConfigForAgent, matchInstanceToAgent } from '../BottomPanel/agentRuntimeUtils.js';
+import { findConfigForAgent, matchInstanceToAgent, resolveInstanceDisplayName } from '../BottomPanel/agentRuntimeUtils.js';
 import type { AgentConfig, AgentRuntime } from '../../api/types.js';
-import type { AgentRuntimeInstance } from '../../hooks/useAgentRuntimePanel.js';
+import type { AgentRuntimeInstance, AgentRuntimePanelAgent } from '../../hooks/useAgentRuntimePanel.js';
 
 interface ResumeCheckResult {
   sessionId: string;
@@ -139,9 +139,37 @@ function normalizeChatAgentStatus(status: string): AgentRuntime['status'] {
   if (normalized === 'error' || normalized === 'failed' || normalized === 'interrupted') return 'error';
   if (normalized === 'paused') return 'paused';
   return 'idle';
+}
 
 
 
+function resolveAgentDisplayName(
+function resolveAgentDisplayName(
+  agentId: string | null | undefined,
+  configAgents: AgentRuntimePanelAgent[],
+  runtimeAgents: AgentRuntimePanelAgent[],
+): string | null {
+  const normalized = typeof agentId === 'string' ? agentId.trim().toLowerCase() : '';
+  if (!normalized) return null;
+  const combined = [...configAgents, ...runtimeAgents];
+  const match = combined.find((agent) => agent.id.trim().toLowerCase() === normalized);
+  return match?.name ?? agentId ?? null;
+}
+
+function resolveRuntimeInstanceDisplay(
+  instance: AgentRuntimeInstance | null,
+  configAgents: AgentRuntimePanelAgent[],
+  runtimeAgents: AgentRuntimePanelAgent[],
+): { agentId: string | null; agentName: string | null } {
+  if (!instance) return { agentId: null, agentName: null };
+  const agentId = instance.agentId?.trim() || null;
+  const displayName = resolveAgentDisplayName(agentId, configAgents, runtimeAgents)
+    ?? instance.name?.trim()
+    ?? agentId;
+  return {
+    agentId,
+    agentName: displayName,
+  };
 }
 
 export const WorkflowContainer: React.FC = () => {
@@ -172,6 +200,8 @@ export const WorkflowContainer: React.FC = () => {
     if (typeof window === 'undefined' || !window.localStorage) return { ...DEFAULT_UI_DISABLE };
     return readUiDisableState();
   });
+  const instanceTimestampRef = useRef<Record<string, string>>({});
+  const workflowTimestampRef = useRef<Record<string, string>>({});
 
   const orchestratorSessionId = currentSession?.sessionTier === 'runtime'
     ? (currentSession.rootSessionId || currentSession.parentSessionId || (sessions.length > 0 ? sessions[0].id : 'default-session'))
@@ -184,9 +214,20 @@ export const WorkflowContainer: React.FC = () => {
     context: 'orchestrator',
     sessionId: orchestratorSessionId,
   });
-
   const activeSessionId = sessionBinding.context === 'runtime' ? sessionBinding.sessionId : orchestratorSessionId;
+  const activeDisplaySession = useMemo(() => {
+    if (currentSession?.id === activeSessionId) return currentSession;
+    return sessions.find((item) => item.id === activeSessionId) ?? null;
+  }, [activeSessionId, currentSession, sessions]);
 
+  const getStableTimestamp = useCallback((key: string, ref: React.MutableRefObject<Record<string, string>>): string => {
+    if (!key) return new Date().toISOString();
+    const existing = ref.current[key];
+    if (existing) return existing;
+    const timestamp = new Date().toISOString();
+    ref.current[key] = timestamp;
+    return timestamp;
+  }, []);
 
   // Check for resumeable session on mount
   useEffect(() => {
@@ -247,6 +288,7 @@ export const WorkflowContainer: React.FC = () => {
       return next;
     });
   }, []);
+
 
   const updateDisableAnimations = useCallback((enabled: boolean) => {
     setDisableAnimations(enabled);
@@ -313,6 +355,7 @@ export const WorkflowContainer: React.FC = () => {
     disablePolling: uiDisable.polling,
   });
 
+
   useEffect(() => {
     if (sessionBinding.context !== 'runtime') return;
     setDrawerAgentId(null);
@@ -375,18 +418,6 @@ export const WorkflowContainer: React.FC = () => {
     setSelectedAgentId(null);
   }, [switchSession, setSelectedAgentId]);
 
-
-  const handleOpenProject = useCallback(async (_projectPath: string): Promise<void> => {
-    try {
-      const result = await pickProjectDirectory('选择工作目录');
-      if (result.canceled) return;
-      if (!result.path) return;
-      const created = await createSession(result.path);
-      await handleSwitchSessionFromSidebar(created.id);
-    } catch (error) {
-      console.error('打开目录失败', error);
-    }
-  }, [createSession, handleSwitchSessionFromSidebar]);
   const { agents: agentModules } = useAgents();
   const chatInputCapability = useMemo(
     () => resolveChatInputCapability(agentModules),
@@ -431,6 +462,7 @@ export const WorkflowContainer: React.FC = () => {
 
     return Array.from(merged.values()).sort((a, b) => a.name.localeCompare(b.name));
   }, [executionState?.agents, runtimePanelAgents]);
+
 
   // Phase 3: Auto-switch back to orchestrator when runtime finishes
   // 基于 RuntimeEvent 显式字段：runtimeEventType/runtimeStatus/runtimeInstanceId/runtimeSessionId
@@ -549,6 +581,7 @@ export const WorkflowContainer: React.FC = () => {
     await handleSelectInstance(instance);
   }, [handleSelectInstance]);
 
+
   useEffect(() => {
   }, [sessionBinding, orchestratorSessionId, setSelectedAgentId]);
   useEffect(() => {
@@ -630,7 +663,17 @@ export const WorkflowContainer: React.FC = () => {
     return result;
   }, [controlAgent, refreshAgentPanel]);
 
+  const scopedRuntimeInstances = useMemo(() => {
+    if (sessionBinding.context === 'runtime') {
+      return runtimeInstances.filter((instance) => instance.sessionId === sessionBinding.sessionId);
+    }
+    return runtimeInstances;
+  }, [runtimeInstances, sessionBinding.context, sessionBinding.sessionId]);
 
+
+
+
+  const frozenBottomPayload = useFrozenValue({
   const frozenBottomPayload = useFrozenValue({
     configAgents: configPanelAgents,
     runtimeAgents: runtimePanelAgents,
@@ -647,31 +690,26 @@ export const WorkflowContainer: React.FC = () => {
     error: agentPanelError,
   }, panelFreeze.bottom);
   const canvasElement = useMemo(() => {
-   const monitorPanels: MonitorPanel[] = sessions.slice(0, 4).map((session) => ({
-     id: session.id,
-     projectPath: session.projectPath,
-      sessions: sessions.filter((s) => s.projectPath === session.projectPath).map((s) => ({ id: s.id, name: s.name })),
-     scheduledTasks: [],
-     selectedSessionId: session.id,
-      onOpenProject: () => { void handleOpenProject(session.projectPath); },
-      onSelectSession: (sessionId: string) => { void handleSwitchSessionFromSidebar(sessionId); },
+    const monitorPanels: MonitorPanel[] = sessions.slice(0, 4).map((session) => ({
+      id: session.id,
+      projectPath: session.projectPath,
+      sessions: sessions.map((s) => ({ id: s.id, name: s.name })),
+      scheduledTasks: [],
+      selectedSessionId: session.id,
     }));
 
     return (
       <div className="canvas-shell">
         <PerformanceCard paused={panelFreeze.performance || uiDisable.performance} />
         <div className="canvas-body">
-          <MultiAgentMonitorGrid
-            panels={monitorPanels}
-            chatAgents={chatAgents}
-            inputCapability={chatInputCapability}
-          />
+          <MultiAgentMonitorGrid panels={monitorPanels} />
         </div>
       </div>
     );
-  }, [panelFreeze.performance, uiDisable.performance, sessions, handleOpenProject, handleSwitchSessionFromSidebar, chatAgents, chatInputCapability]);
+  }, [panelFreeze.performance, uiDisable.performance, sessions]);
 
   const rightPanelElement = useMemo(() => {
+    const resolvedSessionAgentId = DEFAULT_CHAT_AGENT_ID;
     const orchestratorAgentName = 'System Agent';
     const orchestratorAgentLabel = orchestratorAgentName;
     const interruptTargetLabel = orchestratorAgentLabel;
@@ -717,6 +755,7 @@ export const WorkflowContainer: React.FC = () => {
       />
     );
   }, [frozenActiveSessionId, frozenChatAgents, frozenRightPayload, handleCreateNewSession, handleSelectAgent, interruptCurrentTurn, isConnected, pauseWorkflow, resumeWorkflow, sendUserInput, sessionAgentId, deleteRuntimeEvent, editRuntimeEvent, setDebugSnapshotsEnabled, updateToolExposure, requestDetailsEnabled, setRequestDetailsEnabled, clearDebugSnapshots, chatInputCapability]);
+
 
   const leftSidebarElement = useMemo(() => (
     <LeftSidebar

@@ -26,6 +26,8 @@ export interface OrchestrationModule {
   destroy?: () => Promise<void>;
   /** 模块元数据 */
   metadata?: Record<string, unknown>;
+  /** 模块健康检查函数（可选） */
+  healthCheck?: () => Promise<{ status: 'healthy' | 'degraded' | 'unhealthy'; message?: string }>;
 }
 
 /**
@@ -67,6 +69,7 @@ export interface AgentModule extends OrchestrationModule {
 export class ModuleRegistry {
   private modules: Map<string, OrchestrationModule> = new Map();
   private hub: MessageHub;
+  private registrationErrors: Map<string, Error> = new Map();
 
   constructor(hub: MessageHub) {
     this.hub = hub;
@@ -76,11 +79,22 @@ export class ModuleRegistry {
    * 注册模块
    */
   async register(module: OrchestrationModule): Promise<void> {
-    if (this.modules.has(module.id)) {
-      throw new Error(`Module with id ${module.id} already registered`);
+    const existing = this.modules.get(module.id);
+    if (existing) {
+      if (existing.version !== module.version) {
+        const error = new Error(
+          `Module ${module.id} version conflict: existing=${existing.version}, new=${module.version}`
+        );
+        this.registrationErrors.set(module.id, error);
+        throw error;
+      }
+      throw new Error(`Module with id ${module.id} already registered (version ${module.version})`);
     }
 
     this.modules.set(module.id, module);
+
+    // Clear any previous registration error
+    this.registrationErrors.delete(module.id);
 
     // 根据类型进行特殊注册
     if (module.type === 'input') {
@@ -103,7 +117,7 @@ export class ModuleRegistry {
       await module.initialize(this.hub);
     }
 
-    console.log(`[Registry] Module registered: ${module.id} (${module.type})`);
+    console.log(`[Registry] Module registered: ${module.id} (${module.type}) v${module.version}`);
   }
 
   /**
@@ -124,6 +138,7 @@ export class ModuleRegistry {
     }
 
     this.modules.delete(id);
+    this.registrationErrors.delete(id);
     console.log(`[Registry] Module unregistered: ${id}`);
     return true;
   }
@@ -150,6 +165,70 @@ export class ModuleRegistry {
   }
 
   /**
+   * 检查模块健康状态
+   */
+  async checkHealth(id: string): Promise<{
+    status: 'healthy' | 'degraded' | 'unhealthy';
+    version: string;
+    message?: string;
+  } | null> {
+    const module = this.modules.get(id);
+    if (!module) return null;
+
+    if (module.healthCheck) {
+      try {
+        const result = await module.healthCheck();
+        return {
+          ...result,
+          version: module.version,
+        };
+      } catch (err) {
+        return {
+          status: 'unhealthy',
+          version: module.version,
+          message: err instanceof Error ? err.message : String(err),
+        };
+      }
+    }
+
+    // Default healthy if no health check implemented
+    return {
+      status: 'healthy',
+      version: module.version,
+    };
+  }
+
+  /**
+   * 获取所有模块的健康状态
+   */
+  async getAllHealthStatus(): Promise<Map<string, {
+    status: 'healthy' | 'degraded' | 'unhealthy';
+    version: string;
+    message?: string;
+  }>> {
+    const results = new Map();
+    for (const id of this.modules.keys()) {
+      const status = await this.checkHealth(id);
+      if (status) results.set(id, status);
+    }
+    return results;
+  }
+
+  /**
+   * 获取注册错误列表
+   */
+  getRegistrationErrors(): Map<string, Error> {
+    return new Map(this.registrationErrors);
+  }
+
+  /**
+   * 获取模块注册失败原因
+   */
+  getRegistrationError(id: string): Error | undefined {
+    return this.registrationErrors.get(id);
+  }
+
+  /**
    * 动态加载模块（从文件）
    */
   async loadFromFile(filePath: string): Promise<void> {
@@ -167,10 +246,19 @@ export class ModuleRegistry {
       } else if (moduleDef && moduleDef.id && moduleDef.type) {
         await this.register(moduleDef);
       } else {
-        throw new Error(`No valid module export found in ${absPath}`);
+        const error = new Error(
+          `[MODULE_LOAD_ERROR] No valid module export found in ${absPath}. ` +
+          `Ensure module exports a default object with 'id', 'type', 'name', 'version', 'entry' fields.`
+        );
+        console.error(`[Registry] ${error.message}`);
+        throw error;
       }
     } catch (err) {
-      console.error(`[Registry] Failed to load module from ${absPath}:`, err);
+      const errorMsg = err instanceof Error ? err.message : String(err);
+      const error = new Error(
+        `[MODULE_LOAD_ERROR] Failed to load module from ${absPath}: ${errorMsg}`
+      );
+      console.error(`[Registry] ${error.message}`);
       throw err;
     }
   }

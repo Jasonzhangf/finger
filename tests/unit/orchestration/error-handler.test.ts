@@ -95,10 +95,36 @@ describe('FingerErrorHandler', () => {
       
       // 第4次应该达到上限
       const error = handler.createError('network', 'Final error', 'module-1');
-      await handler.handleError(error, 'module-1', vi.fn());
+      const result = await handler.handleError(error, 'module-1', vi.fn());
       
-      // 注意：retryCount 已经是 3，所以再增加一次判断会暂停
-      // 但逻辑是先更新状态再判断，所以需要重新检查
+      expect(result.paused).toBe(true);
+      expect(result.reason).toBe('max_retries_exceeded');
+      
+      const updatedState = handler.getModuleState('module-1');
+      expect(updatedState?.isPaused).toBe(true);
+      expect(updatedState?.pauseReason).toContain('Max retries (3) exceeded');
+    });
+    it('should trigger onRetry after backoff for recoverable error', async () => {
+      const error = handler.createError('network', 'Network error', 'module-1');
+      const retryFn = vi.fn().mockResolvedValue(undefined);
+      const onRetry = vi.fn().mockResolvedValue(undefined);
+
+      handler.onRetry(onRetry);
+
+      const result = await handler.handleError(error, 'module-1', retryFn);
+      expect(result.paused).toBe(false);
+
+      const state = handler.getModuleState('module-1');
+      expect(state?.nextRetryAt).toBeDefined();
+
+      // Fast-forward to retry time
+      await vi.advanceTimersByTimeAsync(100);
+      await vi.runAllTimersAsync();
+
+      expect(onRetry).toHaveBeenCalled();
+      expect(onRetry).toHaveBeenCalledTimes(1);
+      expect(onRetry).toHaveBeenCalledWith('module-1', expect.objectContaining({ category: 'network' }));
+      expect(retryFn).toHaveBeenCalled();
     });
   });
 

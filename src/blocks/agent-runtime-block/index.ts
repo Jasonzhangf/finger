@@ -62,7 +62,7 @@ type AgentRuntimeStatus =
   | 'failed'
   | 'interrupted';
 
-type AgentQuotaSource = 'workflow' | 'project' | 'default' | 'deployment';
+type AgentQuotaSource = 'workflow' | 'project' | 'defaultQuota' | 'deployment';
 
 interface AgentQuotaPolicyView {
   projectQuota?: number;
@@ -100,7 +100,7 @@ interface AgentRuntimeViewItem {
   queuedCount: number;
   enabled: boolean;
   capabilities: string[];
-  defaultQuota: number;
+  defaultQuota?: number;
   quotaPolicy: AgentQuotaPolicyView;
   quota: AgentQuotaView;
   lastEvent?: AgentLastEventView;
@@ -204,7 +204,7 @@ export interface AgentCatalogEntry {
   availableCount: number;
   runningCount: number;
   queuedCount: number;
-  defaultQuota: number;
+  defaultQuota?: number;
   quota: AgentQuotaView;
   lastEvent?: AgentLastEventView;
   lastSessionId?: string;
@@ -363,7 +363,7 @@ interface ChatCodexRunnerLike {
 interface AgentRuntimeConfigProfile {
   enabled: boolean;
   capabilities: string[];
-  defaultQuota: number;
+  defaultQuota: number | undefined;
   hasExplicitDefaultQuota: boolean;
   quotaPolicy: AgentQuotaPolicyView;
 }
@@ -603,7 +603,7 @@ export class AgentRuntimeBlock extends BaseBlock {
     return {
       enabled: true,
       capabilities: [],
-      defaultQuota: 1,
+      defaultQuota: 0,
       hasExplicitDefaultQuota: false,
       quotaPolicy: { workflowQuota: {} },
     };
@@ -753,7 +753,7 @@ export class AgentRuntimeBlock extends BaseBlock {
       return { effective: profile.quotaPolicy.projectQuota, source: 'project' };
     }
     if (profile.hasExplicitDefaultQuota && Number.isFinite(profile.defaultQuota)) {
-      return { effective: Math.max(0, Math.floor(profile.defaultQuota)), source: 'default' };
+      return { effective: Math.max(0, Math.floor(profile.defaultQuota ?? 0)), source: 'defaultQuota' };
     }
     const fallbackDeploymentQuota = deployment ? Math.max(0, Math.floor(deployment.instanceCount)) : 0;
     return { effective: fallbackDeploymentQuota, source: 'deployment' };

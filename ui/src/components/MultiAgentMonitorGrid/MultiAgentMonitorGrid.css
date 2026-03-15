@@ -1,0 +1,96 @@
+.multi-agent-monitor-grid {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  background: var(--panel-bg, #1a1b1e);
+}
+
+.multi-agent-monitor-grid-content {
+  flex: 1;
+  display: grid;
+  gap: 2px;
+  background: #2d3748;
+  overflow: hidden;
+  height: 100%;
+  grid-template-columns: repeat(var(--pane-count, 4), 1fr);
+  grid-template-rows: 1fr;
+}
+
+.monitor-grid-item {
+  background: #151b26;
+  border: 1px solid #2d3748;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  position: relative;
+}
+
+.monitor-pane-split {
+  overflow: hidden;
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+}
+
+/* 分隔线样式 - 关键：必须有明确的宽高 */
+.monitor-pane-resize-handle {
+  flex-shrink: 0;
+  flex-grow: 0;
+  background: #2b6e9e !important;
+  z-index: 100;
+  position: relative;
+}
+
+/* 左右分隔线 - 垂直 */
+.monitor-grid-item[style*="flex-direction: row"] .monitor-pane-resize-handle {
+  width: 6px !important;
+  height: 100% !important;
+  cursor: col-resize !important;
+}
+
+/* 上下分隔线 - 水平 */
+.monitor-grid-item[style*="flex-direction: column"] .monitor-pane-resize-handle {
+  height: 6px !important;
+  width: 100% !important;
+  cursor: row-resize !important;
+}
+
+.monitor-pane-resize-handle:hover {
+  background: #3b7eb0 !important;
+}
+
+/* 右键菜单样式 */
+.pane-context-menu {
+  position: fixed;
+  background: #151b26;
+  border: 1px solid #2d3748;
+  border-radius: 4px;
+  padding: 4px 0;
+  min-width: 120px;
+  z-index: 10000;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.5);
+}
+
+.pane-context-menu-item {
+  padding: 6px 12px;
+  font-size: 12px;
+  color: #e4e7eb;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.pane-context-menu-item:hover {
+  background: #2b6e9e;
+}
+
+.pane-context-menu-item.disabled {
+  color: #64748b;
+  cursor: not-allowed;
+}
+
+.pane-context-menu-item.disabled:hover {
+  background: transparent;
+}

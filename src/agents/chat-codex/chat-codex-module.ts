@@ -3,7 +3,8 @@ import { appendFileSync, existsSync, mkdirSync, readFileSync } from 'fs';
 import { basename, dirname, join } from 'path';
 import { createInterface } from 'readline';
 import type { OutputModule } from '../../orchestration/module-registry.js';
-import { KernelAgentBase, type KernelAgentRunner } from '../base/kernel-agent-base.js';
+import { KernelAgentBase, type KernelAgentRunner, type KernelRunContext } from '../base/kernel-agent-base.js';
+import type { MessageHub } from '../../orchestration/message-hub.js';
 import { resolveCodingCliSystemPrompt } from './coding-cli-system-prompt.js';
 import {
   resolveDeveloperPromptTemplate,
@@ -76,6 +77,7 @@ export interface ChatCodexModuleConfig {
   resolveToolSpecifications?: (toolNames: string[]) => Promise<ChatCodexToolSpecification[]> | ChatCodexToolSpecification[];
   toolExecution?: ChatCodexToolExecutionConfig;
   onLoopEvent?: (event: ChatCodexLoopEvent) => void | Promise<void>;
+  messageHub?: MessageHub;
 }
 
 export interface ChatCodexRunResult {
@@ -715,7 +717,12 @@ export function createChatCodexModule(
     runTurn: async (text: string, context) => {
       const inputItems = parseKernelInputItems(context?.metadata);
       const sessionId = context?.sessionId ?? 'unknown';
-      const toolSpecifications = await resolveToolSpecifications(context?.tools, mergedConfig.resolveToolSpecifications);
+      const toolSpecifications = await resolveToolSpecifications(
+        Array.isArray(context?.tools) && context?.tools.every((item) => typeof item === 'string')
+          ? (context?.tools as string[])
+          : undefined,
+        mergedConfig.resolveToolSpecifications,
+      );
       const mode = parseOptionalString(context?.metadata?.kernelMode) ?? parseOptionalString(context?.metadata?.mode) ?? 'main';
       const reviewMeta = isRecord(context?.metadata?.review) ? context.metadata.review : undefined;
       const reviewIteration = parseOptionalNumber(reviewMeta?.iteration);
@@ -1125,6 +1132,7 @@ export function createChatCodexModule(
           allowedTools: ['noop'],
         },
       },
+      messageHub: mergedConfig.messageHub,
     },
     kernelRunner,
   );

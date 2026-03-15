@@ -261,6 +261,9 @@ describe('MessageHub', () => {
       // Handler receives message with _callbackId added
       expect(handler).toHaveBeenCalledTimes(1);
       expect(handler.mock.calls[0][1]).toBe(callback);
+      
+      const message = handler.mock.calls[0][0] as any;
+      expect(message.meta?.callbackId || message._callbackId).toBeDefined();
     });
   });
 

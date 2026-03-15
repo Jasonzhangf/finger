@@ -20,6 +20,7 @@ export type OrchestratorV2State =
   | 'queue'
   | 'dispatch'
   | 'coder_exec'
+  | 'executor_review'
   | 'review_accept'
   | 'replan_patch'
   | 'complete'
@@ -31,6 +32,12 @@ export type ResumeDecision = 'yes' | 'no';
 export type SwitchDecision = 'switch' | 'keep' | 'merge' | 'clarified';
 export type ResearchDecision = 'need_more_results' | 'need_replan' | 'enough_info';
 export type ReviewDecision = 'pass' | 'retry' | 'replan';
+
+export interface DispatchReviewerOptions {
+  reviewerAgentId?: string;
+  reviewGoal?: string;
+  reviewCriteria?: string[];
+}
 
 export interface ResumeCandidate {
   epicId: string;
@@ -91,6 +98,7 @@ export type OrchestratorV2CommandType =
   | 'run_reviewer_executor_mode'
   | 'reject_claim_without_evidence'
   | 'apply_replan_patch'
+  | 'execute_cache_compaction'
   | 'finalize_delivery'
   | 'mark_cancelled'
   | 'mark_failed';
@@ -121,9 +129,9 @@ export type OrchestratorV2Event =
   | { type: 'coder_handoff_ready' }
   | { type: 'schedule_decided'; resourceBusy: boolean; confidence: number }
   | { type: 'resource_available' }
-  | { type: 'dispatch_result'; ok: boolean }
+  | { type: 'dispatch_result'; ok: boolean; reviewerOptions?: DispatchReviewerOptions }
   | { type: 'coder_result'; claimCount: number; evidenceCount: number }
-  | { type: 'review_result'; decision: ReviewDecision; claimsWithoutEvidence?: number }
+  | { type: 'review_result'; decision: ReviewDecision; claimsWithoutEvidence?: number; feedback?: string }
   | { type: 'replan_applied'; confidence: number }
   | { type: 'requirement_changed' }
   | { type: 'cancel' }
@@ -698,6 +706,26 @@ export function transitionOrchestratorV2(
           'dispatch_failed'
         );
       }
+      
+      // Check if reviewer is configured
+      const reviewerOptions = event.reviewerOptions;
+      if (reviewerOptions?.reviewerAgentId) {
+        return withTransition(
+          snapshot,
+          'executor_review',
+          {},
+          [{
+            type: 'run_reviewer_executor_mode',
+            payload: {
+              reviewerAgentId: reviewerOptions.reviewerAgentId,
+              reviewGoal: reviewerOptions.reviewGoal || 'Review executor output',
+              reviewCriteria: reviewerOptions.reviewCriteria,
+            },
+          }],
+          'dispatch_with_reviewer'
+        );
+      }
+      
       return withTransition(
         snapshot,
         'coder_exec',
@@ -724,6 +752,54 @@ export function transitionOrchestratorV2(
         }],
         'coder_result_arrived'
       );
+    }
+
+    case 'executor_review': {
+      if (event.type !== 'review_result') {
+        return withNoop(snapshot, 'invalid_event_for_executor_review');
+      }
+      
+      // Handle reviewer decision
+      if (event.decision === 'retry') {
+        return withTransition(
+          snapshot,
+          'coder_exec',
+          {},
+          [{ type: 'prepare_coder_handoff' }],
+          'executor_retry'
+        );
+      }
+      
+      if (event.decision === 'replan') {
+        return withTransition(
+          snapshot,
+          'replan_patch',
+          {},
+          [{ type: 'apply_replan_patch' }],
+          'executor_replan'
+        );
+      }
+      
+      // Pass: trigger cache compaction and complete
+      if (event.decision === 'pass') {
+        // Trigger cache → memory compaction
+        const compactionCommand: OrchestratorV2Command = {
+          type: 'execute_cache_compaction',
+          payload: {
+            summary: event.feedback || 'Task reviewed and approved',
+          },
+        };
+        
+        return withTransition(
+          snapshot,
+          'complete',
+          {},
+          [compactionCommand, { type: 'finalize_delivery' }],
+          'executor_review_passed'
+        );
+      }
+      
+      return withNoop(snapshot, 'unknown_review_decision');
     }
 
     case 'review_accept': {

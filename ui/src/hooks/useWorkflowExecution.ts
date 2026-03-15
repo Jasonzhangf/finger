@@ -676,9 +676,10 @@ export function useWorkflowExecution(
     const messageSessionId =
       (typeof msg.sessionId === 'string' ? msg.sessionId : undefined)
       ?? (typeof payload.sessionId === 'string' ? payload.sessionId : undefined);
+    // Always ignore messages that explicitly belong to a different session
+    if (messageSessionId && messageSessionId !== sessionId) return;
     if (isSessionBoundWsMessage(msg.type)) {
       if (!messageSessionId) return;
-      if (messageSessionId !== sessionId) return;
       if (!sessionHydratedRef.current) {
         deferredWsEventsRef.current.push(msg);
         return;
