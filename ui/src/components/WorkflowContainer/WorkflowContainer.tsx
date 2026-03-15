@@ -177,6 +177,10 @@ export const WorkflowContainer: React.FC = () => {
   const orchestratorSessionId = currentSession?.sessionTier === 'runtime'
     ? (currentSession.rootSessionId || currentSession.parentSessionId || (sessions.length > 0 ? sessions[0].id : 'default-session'))
     : (currentSession?.id || (sessions.length > 0 ? sessions[0].id : 'default-session'));
+  const systemAgentSessionId = currentSession?.sessionTier === 'system'
+    ? currentSession.id
+    : (sessions.find((session) => session.sessionTier === 'system')?.id
+      || `system-${orchestratorSessionId}`);
   const [sessionBinding, setSessionBinding] = useState<{
     context: 'orchestrator' | 'runtime';
     sessionId: string;
@@ -187,7 +191,6 @@ export const WorkflowContainer: React.FC = () => {
   });
 
   const activeSessionId = sessionBinding.context === 'runtime' ? sessionBinding.sessionId : orchestratorSessionId;
-  const systemAgentSessionId = orchestratorSessionId;
   const systemProjectPath = SYSTEM_PROJECT_PATH;
 
 
