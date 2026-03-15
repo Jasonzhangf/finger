@@ -1,4 +1,5 @@
 import { type FC, useState, useMemo } from 'react';
+import type { SessionInfo } from '../../api/types.js';
 import { ChatInterface } from '../ChatInterface/ChatInterface.js';
 import type { InputCapability } from '../ChatInterface/ChatInterface.js';
 import { useWorkflowExecution } from '../../hooks/useWorkflowExecution.js';
@@ -13,6 +14,9 @@ export interface AgentSessionPanelProps {
   onSelectSession?: (sessionId: string) => void;
   hideProjectPath?: boolean;
   onOpenProject?: () => void;
+  onCreateSession?: (projectPath: string) => Promise<SessionInfo>;
+  onSwitchSession?: (sessionId: string) => Promise<void>;
+  onDeleteSession?: (sessionId: string) => Promise<void>;
   chatAgents?: Array<{ id: string; name: string; status: string }>;
   inputCapability?: InputCapability;
 }
@@ -24,7 +28,8 @@ const ChatSessionView: FC<{
   projectPath: string;
   chatAgents: Array<{ id: string; name: string; status: string }>;
   inputCapability?: InputCapability;
-}> = ({ sessionId, projectPath, chatAgents, inputCapability }) => {
+  onCreateNewSession?: () => Promise<void>;
+}> = ({ sessionId, projectPath, chatAgents, inputCapability, onCreateNewSession }) => {
   const {
     executionState,
     runtimeEvents,
@@ -65,7 +70,7 @@ const ChatSessionView: FC<{
       onSendMessage={sendUserInput}
       onEditMessage={() => Promise.resolve(false)}
       onDeleteMessage={() => Promise.resolve(false)}
-      onCreateNewSession={() => Promise.resolve()}
+      onCreateNewSession={onCreateNewSession}
       onPause={pauseWorkflow}
       onResume={resumeWorkflow}
       onInterruptTurn={interruptCurrentTurn}
@@ -96,6 +101,9 @@ export const AgentSessionPanel: FC<AgentSessionPanelProps> = ({
   onSelectSession,
   hideProjectPath = false,
   onOpenProject,
+  onCreateSession,
+  onSwitchSession,
+  onDeleteSession,
   chatAgents = [],
   inputCapability,
 }) => {
@@ -192,6 +200,30 @@ export const AgentSessionPanel: FC<AgentSessionPanelProps> = ({
                 <span>会话列表</span>
               </div>
               <div className="sidebar-content">
+                <div className="session-toolbar">
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      if (onCreateSession) {
+                        await onCreateSession(projectPath);
+                      }
+                    }}
+                    disabled={!onCreateSession}
+                  >
+                    新建
+                  </button>
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      if (activeSessionId && onDeleteSession) {
+                        await onDeleteSession(activeSessionId);
+                      }
+                    }}
+                    disabled={!activeSessionId || !onDeleteSession}
+                  >
+                    删除当前
+                  </button>
+                </div>
                 {sessions.length === 0 ? (
                   <div className="empty-state">暂无会话</div>
                 ) : (
@@ -199,7 +231,13 @@ export const AgentSessionPanel: FC<AgentSessionPanelProps> = ({
                     <div
                       key={session.id}
                       className={`session-item ${session.id === activeSessionId ? 'active' : ''}`}
-                      onClick={() => onSelectSession?.(session.id)}
+                      onClick={() => {
+                        if (onSelectSession) {
+                          onSelectSession(session.id);
+                        } else if (onSwitchSession) {
+                          void onSwitchSession(session.id);
+                        }
+                      }}
                     >
                       <div className="session-title">{session.name}</div>
                       <div className="session-meta">{session.status ?? 'idle'}</div>
@@ -215,12 +253,17 @@ export const AgentSessionPanel: FC<AgentSessionPanelProps> = ({
       {/* Main chat area */}
       <div className="agent-session-panel-main">
         {activeSessionId ? (
-          <ChatSessionView
-            sessionId={activeSessionId}
-            projectPath={projectPath}
-            chatAgents={chatAgents}
-            inputCapability={inputCapability}
-          />
+         <ChatSessionView
+           sessionId={activeSessionId}
+           projectPath={projectPath}
+           chatAgents={chatAgents}
+            onCreateNewSession={async () => {
+              if (onCreateSession) {
+                await onCreateSession(projectPath);
+              }
+            }}
+           inputCapability={inputCapability}
+         />
         ) : (
           <div className="empty-state">请选择一个会话</div>
         )}

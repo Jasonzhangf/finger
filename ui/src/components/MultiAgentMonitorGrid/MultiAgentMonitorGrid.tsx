@@ -1,4 +1,5 @@
 import { type FC, useMemo, useState, useCallback, useEffect } from 'react';
+import type { SessionInfo } from '../../api/types.js';
 import { AgentSessionPanel } from '../AgentSessionPanel/AgentSessionPanel.js';
 import './MultiAgentMonitorGrid.css';
 
@@ -21,6 +22,9 @@ export interface MonitorPanel {
   selectedSessionId?: string;
   onOpenProject?: () => void;
   onSelectSession?: (sessionId: string) => void;
+  onCreateSession?: (projectPath: string) => Promise<SessionInfo>;
+  onSwitchSession?: (sessionId: string) => Promise<void>;
+  onDeleteSession?: (sessionId: string) => Promise<void>;
 }
 
 export interface MultiAgentMonitorGridProps {
@@ -230,6 +234,9 @@ export const MultiAgentMonitorGrid: FC<MultiAgentMonitorGridProps> = ({ panels: 
             selectedSessionId={panel.selectedSessionId ?? panel.sessions[0]?.id}
             onOpenProject={panel.onOpenProject}
             onSelectSession={panel.onSelectSession}
+            onCreateSession={panel.onCreateSession}
+            onSwitchSession={panel.onSwitchSession}
+            onDeleteSession={panel.onDeleteSession}
             chatAgents={chatAgents}
             inputCapability={inputCapability}
           />
@@ -255,6 +262,9 @@ export const MultiAgentMonitorGrid: FC<MultiAgentMonitorGridProps> = ({ panels: 
               selectedSessionId={panel.selectedSessionId ?? panel.sessions[0]?.id}
               onOpenProject={panel.onOpenProject}
               onSelectSession={panel.onSelectSession}
+              onCreateSession={panel.onCreateSession}
+              onSwitchSession={panel.onSwitchSession}
+              onDeleteSession={panel.onDeleteSession}
               chatAgents={chatAgents}
               inputCapability={inputCapability}
             />
@@ -273,6 +283,9 @@ export const MultiAgentMonitorGrid: FC<MultiAgentMonitorGridProps> = ({ panels: 
               selectedSessionId={panel.selectedSessionId ?? panel.sessions[0]?.id}
               onOpenProject={panel.onOpenProject}
               onSelectSession={panel.onSelectSession}
+              onCreateSession={panel.onCreateSession}
+              onSwitchSession={panel.onSwitchSession}
+              onDeleteSession={panel.onDeleteSession}
               chatAgents={chatAgents}
               inputCapability={inputCapability}
             />
@@ -299,6 +312,9 @@ export const MultiAgentMonitorGrid: FC<MultiAgentMonitorGridProps> = ({ panels: 
               selectedSessionId={panel.selectedSessionId ?? panel.sessions[0]?.id}
               onOpenProject={panel.onOpenProject}
               onSelectSession={panel.onSelectSession}
+              onCreateSession={panel.onCreateSession}
+              onSwitchSession={panel.onSwitchSession}
+              onDeleteSession={panel.onDeleteSession}
               chatAgents={chatAgents}
               inputCapability={inputCapability}
             />
@@ -316,6 +332,10 @@ export const MultiAgentMonitorGrid: FC<MultiAgentMonitorGridProps> = ({ panels: 
               scheduledTasks={panel.scheduledTasks}
               selectedSessionId={panel.selectedSessionId ?? panel.sessions[0]?.id}
               onOpenProject={panel.onOpenProject}
+              onSelectSession={panel.onSelectSession}
+              onCreateSession={panel.onCreateSession}
+              onSwitchSession={panel.onSwitchSession}
+              onDeleteSession={panel.onDeleteSession}
               chatAgents={chatAgents}
               inputCapability={inputCapability}
             />
@@ -342,6 +362,9 @@ export const MultiAgentMonitorGrid: FC<MultiAgentMonitorGridProps> = ({ panels: 
                 selectedSessionId={panel.selectedSessionId ?? panel.sessions[0]?.id}
                 onOpenProject={panel.onOpenProject}
                 onSelectSession={panel.onSelectSession}
+                onCreateSession={panel.onCreateSession}
+                onSwitchSession={panel.onSwitchSession}
+                onDeleteSession={panel.onDeleteSession}
                 chatAgents={chatAgents}
                 inputCapability={inputCapability}
               />
