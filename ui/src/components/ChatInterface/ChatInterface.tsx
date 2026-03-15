@@ -108,6 +108,7 @@ interface ChatInterfaceProps {
   contextLabel?: string;
   toolPanelOverview?: ToolPanelOverview;
   onUpdateToolExposure?: (tools: string[]) => Promise<boolean> | boolean;
+  hideToolDashboard?: boolean;
   onSendMessage: (payload: UserInputPayload) => Promise<void> | void;
   onEditMessage?: (eventId: string, content: string) => Promise<boolean>;
   onDeleteMessage?: (eventId: string) => Promise<boolean>;
@@ -1733,6 +1734,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
   onToggleRequestDetails,
   requestDetailsEnabled = false,
   interruptTargetLabel,
+  hideToolDashboard = false,
 }) => {
   const chatRef = useRef<HTMLDivElement>(null);
   const [showScrollToBottom, setShowScrollToBottom] = useState(false);
@@ -2144,91 +2146,93 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
           <div className="runtime-overview-line">{formatRuntimePaths(runtimeOverview)}</div>
         )}
       </div>
-      <div className={`tool-dashboard ${toolPanelCollapsed ? 'collapsed' : ''}`}>
-        <div className="tool-dashboard-header">
-          <div className="tool-dashboard-tabs">
-            <button
-              type="button"
-              className={toolTab === 'summary' ? 'active' : ''}
-              onClick={() => setToolTab('summary')}
-            >
-              概览
-            </button>
-            <button
-              type="button"
-              className={toolTab === 'exposure' ? 'active' : ''}
-              onClick={() => setToolTab('exposure')}
-            >
-              暴露工具
-            </button>
+      {!hideToolDashboard && (
+        <div className={`tool-dashboard ${toolPanelCollapsed ? 'collapsed' : ''}`}>
+          <div className="tool-dashboard-header">
+            <div className="tool-dashboard-tabs">
+              <button
+                type="button"
+                className={toolTab === 'summary' ? 'active' : ''}
+                onClick={() => setToolTab('summary')}
+              >
+                概览
+              </button>
+              <button
+                type="button"
+                className={toolTab === 'exposure' ? 'active' : ''}
+                onClick={() => setToolTab('exposure')}
+              >
+                暴露工具
+              </button>
+            </div>
+            <div className="tool-dashboard-summary">
+              <span>可用 {toolPanelOverview?.availableTools.length ?? 0}</span>
+              <span>暴露 {toolPanelOverview?.exposedTools.length ?? 0}</span>
+              <span>工具调用 {toolDashboard.total}</span>
+              <span className="ok">成功 {toolDashboard.success}</span>
+              <span className="fail">失败 {toolDashboard.failed}</span>
+            </div>
+            <div className="tool-dashboard-actions">
+              <button
+                type="button"
+                className="tool-dashboard-toggle"
+                onClick={() => setToolPanelCollapsed((prev) => !prev)}
+              >
+                {toolPanelCollapsed ? '展开工具' : '收起工具'}
+              </button>
+            </div>
           </div>
-          <div className="tool-dashboard-summary">
-            <span>可用 {toolPanelOverview?.availableTools.length ?? 0}</span>
-            <span>暴露 {toolPanelOverview?.exposedTools.length ?? 0}</span>
-            <span>工具调用 {toolDashboard.total}</span>
-            <span className="ok">成功 {toolDashboard.success}</span>
-            <span className="fail">失败 {toolDashboard.failed}</span>
-          </div>
-          <div className="tool-dashboard-actions">
-            <button
-              type="button"
-              className="tool-dashboard-toggle"
-              onClick={() => setToolPanelCollapsed((prev) => !prev)}
-            >
-              {toolPanelCollapsed ? '展开工具' : '收起工具'}
-            </button>
-          </div>
-        </div>
-        {toolPanelCollapsed && (
-          <div className="tool-dashboard-collapsed">工具面板已折叠</div>
-        )}
-        {!toolPanelCollapsed && toolTab === 'summary' && toolDashboard.tools.length > 0 && (
-          <div className="tool-dashboard-list">
-            {toolDashboard.tools.slice(0, 8).map((tool) => (
-              <div key={`${tool.category}-${tool.name}`} className={`tool-dashboard-item ${tool.exposed ? 'exposed' : ''}`}>
-                <span className="tool-name">
-                  [{tool.category}] {tool.name}
-                  {tool.exposed ? ' · 已暴露' : tool.available ? ' · 可用' : ''}
-                </span>
-                <span className="tool-count">总 {tool.total} / 成 {tool.success} / 败 {tool.failed}</span>
+          {toolPanelCollapsed && (
+            <div className="tool-dashboard-collapsed">工具面板已折叠</div>
+          )}
+          {!toolPanelCollapsed && toolTab === 'summary' && toolDashboard.tools.length > 0 && (
+            <div className="tool-dashboard-list">
+              {toolDashboard.tools.slice(0, 8).map((tool) => (
+                <div key={`${tool.category}-${tool.name}`} className={`tool-dashboard-item ${tool.exposed ? 'exposed' : ''}`}>
+                  <span className="tool-name">
+                    [{tool.category}] {tool.name}
+                    {tool.exposed ? ' · 已暴露' : tool.available ? ' · 可用' : ''}
+                  </span>
+                  <span className="tool-count">总 {tool.total} / 成 {tool.success} / 败 {tool.failed}</span>
+                </div>
+              ))}
+            </div>
+          )}
+          {!toolPanelCollapsed && toolTab === 'exposure' && (
+            <div className="tool-exposure-panel">
+              <div className="tool-exposure-hint">
+                未勾选工具将不会暴露给模型，下一轮请求立即生效。
               </div>
-            ))}
-          </div>
-        )}
-        {!toolPanelCollapsed && toolTab === 'exposure' && (
-          <div className="tool-exposure-panel">
-            <div className="tool-exposure-hint">
-              未勾选工具将不会暴露给模型，下一轮请求立即生效。
+              <div className="tool-exposure-meta">
+                {toolUpdatePending ? '更新中...' : '实时生效'}
+                {toolUpdateError ? ` · ${toolUpdateError}` : ''}
+              </div>
+              <div className="tool-exposure-grid">
+                {(() => {
+                  const items = (toolPanelOverview?.availableTools ?? []).slice();
+                  items.sort((a, b) => a.localeCompare(b));
+                  return items;
+                })().map((tool) => {
+                  const normalizedTool = tool.trim();
+                  const checked = toolSelection.has(normalizedTool);
+                  return (
+                    <label key={tool} className={`tool-exposure-item ${checked ? 'checked' : ''}`}>
+                      <input
+                        type="checkbox"
+                        aria-label={tool}
+                        checked={checked}
+                        disabled={!onUpdateToolExposure || toolUpdatePending}
+                        onChange={() => { void handleToggleToolExposure(normalizedTool); }}
+                      />
+                      <span>{tool}</span>
+                    </label>
+                  );
+                })()}
+              </div>
             </div>
-            <div className="tool-exposure-meta">
-              {toolUpdatePending ? '更新中...' : '实时生效'}
-              {toolUpdateError ? ` · ${toolUpdateError}` : ''}
-            </div>
-            <div className="tool-exposure-grid">
-              {(() => {
-                const items = (toolPanelOverview?.availableTools ?? []).slice();
-                items.sort((a, b) => a.localeCompare(b));
-                return items;
-              })().map((tool) => {
-                const normalizedTool = tool.trim();
-                const checked = toolSelection.has(normalizedTool);
-                return (
-                  <label key={tool} className={`tool-exposure-item ${checked ? 'checked' : ''}`}>
-                    <input
-                      type="checkbox"
-                      aria-label={tool}
-                      checked={checked}
-                      disabled={!onUpdateToolExposure || toolUpdatePending}
-                      onChange={() => { void handleToggleToolExposure(normalizedTool); }}
-                    />
-                    <span>{tool}</span>
-                  </label>
-                );
-              })}
-            </div>
-          </div>
-        )}
-      </div>
+          )}
+        </div>
+      )}
 
       {debugSnapshotsEnabled && (
         <div className="debug-snapshots-panel">

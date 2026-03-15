@@ -88,6 +88,7 @@ const ChatSessionView: FC<{
       onToggleRequestDetails={setRequestDetailsEnabled}
       panelTitle={panelTitle}
       showRuntimeModeBadge={false}
+      hideToolDashboard
     />
   );
 };

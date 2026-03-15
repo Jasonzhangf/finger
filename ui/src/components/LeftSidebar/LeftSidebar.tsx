@@ -18,7 +18,7 @@ import {
 } from '../BottomPanel/agentRuntimeUtils.js';
 import './LeftSidebar.css';
 
-type SidebarTab = 'project' | 'ai-provider' | 'settings' | 'clock-tasks';
+type SidebarTab = 'project' | 'system-monitor' | 'ai-provider' | 'settings' | 'clock-tasks';
 
 interface LeftSidebarProps {
   sessions: SessionInfo[];
@@ -63,12 +63,19 @@ interface ProjectTabProps {
   onRenameSession: (sessionId: string, name: string) => Promise<SessionInfo>;
   onSwitchSession: (sessionId: string) => Promise<void>;
   onRefreshSessions: () => Promise<void>;
+}
+
+interface SystemMonitorTabProps {
+  sessions: SessionInfo[];
+  currentSession: SessionInfo | null;
+  isLoading: boolean;
   onToggleSystemMonitor?: (projectPath: string, enabled: boolean) => Promise<void> | void;
   isSystemMonitorEnabled?: (projectPath: string) => boolean;
 }
 
 const TABS: Array<{ key: SidebarTab; label: string }> = [
   { key: 'project', label: 'Project' },
+  { key: 'system-monitor', label: 'System Monitor' },
   { key: 'ai-provider', label: 'AI Provider' },
   { key: 'clock-tasks', label: 'Clock Tasks' },
   { key: 'settings', label: 'Settings' },
@@ -163,13 +170,12 @@ export const LeftSidebar: FC<LeftSidebarProps> = ({
   onRenameSession,
   onSwitchSession,
   onRefreshSessions,
-  onToggleSystemMonitor,
-  isSystemMonitorEnabled,
 }) => {
   const [activeTab, setActiveTab] = useState<SidebarTab | null>('project');
 
   const panelTitle = useMemo(() => {
     if (activeTab === 'project') return 'Project Management';
+    if (activeTab === 'system-monitor') return 'System Monitor';
     if (activeTab === 'ai-provider') return 'AI Provider';
     if (activeTab === 'settings') return 'System Settings';
     return '';
@@ -214,6 +220,13 @@ export const LeftSidebar: FC<LeftSidebarProps> = ({
                 onRenameSession={onRenameSession}
                 onSwitchSession={onSwitchSession}
                 onRefreshSessions={onRefreshSessions}
+              />
+            )}
+            {activeTab === 'system-monitor' && (
+              <SystemMonitorTab
+                sessions={sessions}
+                currentSession={currentSession}
+                isLoading={isLoadingSessions}
                 onToggleSystemMonitor={onToggleSystemMonitor}
                 isSystemMonitorEnabled={isSystemMonitorEnabled}
               />
@@ -251,17 +264,12 @@ const ProjectTab: FC<ProjectTabProps> = ({
   onRenameSession,
   onSwitchSession,
   onRefreshSessions,
-  onToggleSystemMonitor,
-  isSystemMonitorEnabled,
 }) => {
   const [selectedSessionIds, setSelectedSessionIds] = useState<Set<string>>(new Set());
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [hint, setHint] = useState<string | null>(null);
   const [contextMenu, setContextMenu] = useState<SessionContextMenuState | null>(null);
   const currentProjectPath = currentSession?.projectPath?.trim() || '';
-  const isSystemMonitorOn = useMemo(() => (
-    currentProjectPath && isSystemMonitorEnabled ? isSystemMonitorEnabled(currentProjectPath) : false
-  ), [currentProjectPath, isSystemMonitorEnabled]);
 
   useEffect(() => {
     if (!currentSession?.id) return;
@@ -667,13 +675,6 @@ const ProjectTab: FC<ProjectTabProps> = ({
           <button type="button" onClick={() => { void handleOpenDirectory(); }} disabled={isSubmitting}>
             打开目录
           </button>
-          <button
-            type="button"
-            onClick={() => { if (currentProjectPath) { void onToggleSystemMonitor?.(currentProjectPath, !isSystemMonitorOn); } }}
-            disabled={isSubmitting || !currentProjectPath}
-          >
-            {isSystemMonitorOn ? '取消系统监控' : '系统监控'}
-          </button>
           <button type="button" onClick={() => { void onRefreshSessions(); }} disabled={isSubmitting || isLoading}>
             刷新项目
           </button>
@@ -803,6 +804,77 @@ const ProjectTab: FC<ProjectTabProps> = ({
 
       <div className="session-selected-info">
         {selectedSession ? `已选: ${selectedSession.name}` : selectedCount > 1 ? `已多选 ${selectedCount} 个会话` : '未选择会话'}
+      </div>
+    </div>
+  );
+};
+
+const SystemMonitorTab: FC<SystemMonitorTabProps> = ({
+  sessions,
+  currentSession,
+  isLoading,
+  onToggleSystemMonitor,
+  isSystemMonitorEnabled,
+}) => {
+  const currentProjectPath = currentSession?.projectPath?.trim() || '';
+  const projectGroups = useMemo(() => {
+    const groups: Array<{ projectPath: string; name: string; sessionCount: number }> = [];
+    const index = new Map<string, number>();
+    for (const session of sessions) {
+      const key = session.projectPath;
+      const existingIndex = index.get(key);
+      if (existingIndex === undefined) {
+        groups.push({
+          projectPath: key,
+          name: projectDisplayName(key),
+          sessionCount: 1,
+        });
+        index.set(key, groups.length - 1);
+      } else {
+        groups[existingIndex].sessionCount += 1;
+      }
+    }
+    return groups;
+  }, [sessions]);
+
+  return (
+    <div className="tab-content">
+      <div className="project-status">
+        <div className="project-status-card running">
+          <div className="project-status-header">System Monitor</div>
+          {projectGroups.length === 0 && (
+            <div className="project-status-empty">暂无可监控项目</div>
+          )}
+          {projectGroups.map((group) => {
+            const isActive = normalizePath(currentProjectPath) === normalizePath(group.projectPath);
+            const isEnabled = group.projectPath && isSystemMonitorEnabled
+              ? isSystemMonitorEnabled(group.projectPath)
+              : false;
+            return (
+              <div key={`monitor-${group.projectPath}`} className="project-status-row">
+                <button
+                  type="button"
+                  className={`project-status-item ${isActive ? 'active' : ''}`}
+                >
+                  <span className="project-status-name">{group.name}</span>
+                  <span className="project-status-path">{group.projectPath}</span>
+                  <span className="project-status-path">sessions {group.sessionCount}</span>
+                </button>
+                <button
+                  type="button"
+                  className="project-status-delete"
+                  onClick={() => {
+                    if (!group.projectPath) return;
+                    void onToggleSystemMonitor?.(group.projectPath, !isEnabled);
+                  }}
+                  disabled={isLoading}
+                >
+                  {isEnabled ? '已监控' : '未监控'}
+                </button>
+              </div>
+            );
+          })}
+        </div>
       </div>
     </div>
   );
