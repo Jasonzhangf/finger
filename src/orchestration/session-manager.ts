@@ -287,7 +287,7 @@ export class SessionManager {
     this.sessionFilePaths.set(session.id, filePath);
   }
 
- createSession(projectPath: string, name?: string, options?: { allowReuse?: boolean }): Session {
+  createSession(projectPath: string, name?: string, options?: { allowReuse?: boolean }): Session {
     // Special handling for system sessions
     if (projectPath === SYSTEM_PROJECT_PATH) {
       return this.createSystemSession(name, options);
@@ -333,7 +333,15 @@ export class SessionManager {
     }
 
    console.log(`[SessionManager] Created session: ${session.name} (${id})`);
-   return session;
+    return session;
+  }
+
+  ensureSystemSession(): Session {
+    const systemSessions = this.listSessions().filter((session) => this.isSystemSession(session));
+    if (systemSessions.length > 0) {
+      return systemSessions[0];
+    }
+    return this.createSystemSession();
   }
 
   createSystemSession(name?: string, options?: { allowReuse?: boolean }): Session {
