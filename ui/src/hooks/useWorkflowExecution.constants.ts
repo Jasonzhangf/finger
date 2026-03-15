@@ -1,6 +1,8 @@
 export const CHAT_PANEL_TARGET = (import.meta.env.VITE_CHAT_PANEL_TARGET as string | undefined)?.trim()
   || 'finger-orchestrator-gateway';
 export const DEFAULT_CHAT_AGENT_ID = 'finger-orchestrator';
+export const SYSTEM_PROJECT_PATH = (import.meta.env.VITE_SYSTEM_PROJECT_PATH as string | undefined)?.trim()
+  || '~/.finger/system';
 export const ENABLE_UI_DIRECT_AGENT_TEST_ROUTE =
   (import.meta.env.VITE_UI_DIRECT_AGENT_TEST_ROUTE as string | undefined)?.trim() === '1';
 export const MAX_INLINE_FILE_TEXT_CHARS = 12000;

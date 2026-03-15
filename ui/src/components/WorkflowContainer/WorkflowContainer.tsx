@@ -8,6 +8,7 @@ import { BottomPanel } from '../BottomPanel/BottomPanel.js';
 import { AgentConfigDrawer } from '../AgentConfigDrawer/AgentConfigDrawer.js';
 import { SessionResumeDialog } from '../SessionResumeDialog/SessionResumeDialog.js';
 import { useSessionResume } from '../../hooks/useSessionResume.js';
+import { SYSTEM_PROJECT_PATH } from '../../hooks/useWorkflowExecution.constants.js';
 import { pickProjectDirectory } from '../../api/client.js';
 import { useSessions } from '../../hooks/useSessions.js';
 import { useWorkflowExecution } from '../../hooks/useWorkflowExecution.js';
@@ -187,6 +188,7 @@ export const WorkflowContainer: React.FC = () => {
 
   const activeSessionId = sessionBinding.context === 'runtime' ? sessionBinding.sessionId : orchestratorSessionId;
   const systemAgentSessionId = orchestratorSessionId;
+  const systemProjectPath = SYSTEM_PROJECT_PATH;
 
 
   // Check for resumeable session on mount
@@ -293,7 +295,7 @@ export const WorkflowContainer: React.FC = () => {
     disablePolling: uiDisable.polling,
   });
 
-  const systemAgentExecution = useWorkflowExecution(systemAgentSessionId, currentSession?.projectPath, {
+  const systemAgentExecution = useWorkflowExecution(systemAgentSessionId, systemProjectPath, {
     disableRealtime: uiDisable.realtime,
     disablePolling: uiDisable.polling,
   });
