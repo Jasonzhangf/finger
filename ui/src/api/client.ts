@@ -13,6 +13,7 @@ import type {
   AgentStats,
   TaskInfo,
   PickDirectoryResponse,
+  SystemRegistryEntry,
 } from './types.js';
 
 const API_BASE = '/api/v1';
@@ -94,6 +95,25 @@ export async function deleteProjectSessions(projectPath: string): Promise<{ succ
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ projectPath }),
   });
+}
+
+// System Registry (System Monitor)
+export async function listSystemRegistry(): Promise<SystemRegistryEntry[]> {
+  const payload = await fetchApi<{ success: boolean; agents?: SystemRegistryEntry[] }>('/system/registry');
+  if (!payload.success) return [];
+  return Array.isArray(payload.agents) ? payload.agents : [];
+}
+
+export async function setSystemMonitor(projectPath: string, enabled: boolean): Promise<SystemRegistryEntry> {
+  const payload = await fetchApi<{ success: boolean; agent: SystemRegistryEntry }>('/system/registry/monitor', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ projectPath, enabled }),
+  });
+  if (!payload.success) {
+    throw new Error('Failed to update system monitor');
+  }
+  return payload.agent;
 }
 
 export async function setCurrentSession(sessionId: string): Promise<void> {

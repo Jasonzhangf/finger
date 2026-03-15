@@ -42,6 +42,7 @@ import { registerDryrunRoutes } from './dryrun.js';
 import { registerRuntimePathRoutes } from './runtime-paths.js';
 import { registerProjectRoutes } from './projects.js';
 import { registerClockRoutes } from './clock.js';
+import { registerSystemRegistryRoutes } from './system-registry.js';
 
 export interface RegisterAllRoutesDeps {
   sessionManager: SessionManager;
@@ -229,6 +230,8 @@ export function registerAllRoutes(app: Express, deps: RegisterAllRoutesDeps): vo
   registerProjectRoutes(app, {
     registry: deps.registry,
   });
+
+  registerSystemRegistryRoutes(app);
 
   registerAgentRuntimeRoutes(app, {
     getAgentRuntimeDeps: deps.getAgentRuntimeDeps,

@@ -310,6 +310,23 @@ export interface PickDirectoryResponse {
   error?: string;
 }
 
+export interface SystemRegistryEntry {
+  projectId: string;
+  projectPath: string;
+  projectName: string;
+  agentId: string;
+  status: 'idle' | 'busy' | 'stopped' | 'crashed';
+  lastHeartbeat: string;
+  lastSessionId?: string;
+  monitored?: boolean;
+  monitorUpdatedAt?: string;
+  stats: {
+    tasksCompleted: number;
+    tasksFailed: number;
+    uptime: number;
+  };
+}
+
 // ========== Workflow Runtime Types ==========
 
 export interface WorkflowInfo {

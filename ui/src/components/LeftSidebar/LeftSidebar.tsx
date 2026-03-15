@@ -63,6 +63,8 @@ interface ProjectTabProps {
   onRenameSession: (sessionId: string, name: string) => Promise<SessionInfo>;
   onSwitchSession: (sessionId: string) => Promise<void>;
   onRefreshSessions: () => Promise<void>;
+  onToggleSystemMonitor?: (projectPath: string, enabled: boolean) => Promise<void> | void;
+  isSystemMonitorEnabled?: (projectPath: string) => boolean;
 }
 
 const TABS: Array<{ key: SidebarTab; label: string }> = [
@@ -161,6 +163,8 @@ export const LeftSidebar: FC<LeftSidebarProps> = ({
   onRenameSession,
   onSwitchSession,
   onRefreshSessions,
+  onToggleSystemMonitor,
+  isSystemMonitorEnabled,
 }) => {
   const [activeTab, setActiveTab] = useState<SidebarTab | null>('project');
 
@@ -210,6 +214,8 @@ export const LeftSidebar: FC<LeftSidebarProps> = ({
                 onRenameSession={onRenameSession}
                 onSwitchSession={onSwitchSession}
                 onRefreshSessions={onRefreshSessions}
+                onToggleSystemMonitor={onToggleSystemMonitor}
+                isSystemMonitorEnabled={isSystemMonitorEnabled}
               />
             )}
             {activeTab === 'ai-provider' && <AIProviderTab />}
@@ -245,12 +251,17 @@ const ProjectTab: FC<ProjectTabProps> = ({
   onRenameSession,
   onSwitchSession,
   onRefreshSessions,
+  onToggleSystemMonitor,
+  isSystemMonitorEnabled,
 }) => {
   const [selectedSessionIds, setSelectedSessionIds] = useState<Set<string>>(new Set());
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [hint, setHint] = useState<string | null>(null);
   const [contextMenu, setContextMenu] = useState<SessionContextMenuState | null>(null);
   const currentProjectPath = currentSession?.projectPath?.trim() || '';
+  const isSystemMonitorOn = useMemo(() => (
+    currentProjectPath && isSystemMonitorEnabled ? isSystemMonitorEnabled(currentProjectPath) : false
+  ), [currentProjectPath, isSystemMonitorEnabled]);
 
   useEffect(() => {
     if (!currentSession?.id) return;
@@ -655,6 +666,13 @@ const ProjectTab: FC<ProjectTabProps> = ({
         <div className="folder-picker-actions">
           <button type="button" onClick={() => { void handleOpenDirectory(); }} disabled={isSubmitting}>
             打开目录
+          </button>
+          <button
+            type="button"
+            onClick={() => { if (currentProjectPath) { void onToggleSystemMonitor?.(currentProjectPath, !isSystemMonitorOn); } }}
+            disabled={isSubmitting || !currentProjectPath}
+          >
+            {isSystemMonitorOn ? '取消系统监控' : '系统监控'}
           </button>
           <button type="button" onClick={() => { void onRefreshSessions(); }} disabled={isSubmitting || isLoading}>
             刷新项目

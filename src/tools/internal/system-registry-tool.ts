@@ -11,12 +11,13 @@ import * as registry from '../../agents/finger-system-agent/registry.js';
 import type { AgentStatus } from '../../agents/finger-system-agent/registry.js';
 
 export interface RegistryToolInput {
-  action: 'register' | 'unregister' | 'update' | 'list' | 'get_status' | 'heartbeat' | 'cleanup';
+  action: 'register' | 'unregister' | 'update' | 'list' | 'get_status' | 'heartbeat' | 'cleanup' | 'monitor';
   projectId?: string;
   projectPath?: string;
   projectName?: string;
   agentId?: string;
   status?: AgentStatus;
+  monitored?: boolean;
   updates?: Partial<registry.AgentInfo>;
   timeoutMs?: number;
 }
@@ -44,7 +45,7 @@ export function registerSystemRegistryTool(
       properties: {
         action: {
           type: 'string',
-          enum: ['register', 'unregister', 'update', 'list', 'get_status', 'heartbeat', 'cleanup'],
+          enum: ['register', 'unregister', 'update', 'list', 'get_status', 'heartbeat', 'cleanup', 'monitor'],
           description: '操作类型'
         },
         projectId: { type: 'string', description: '项目 ID' },
@@ -52,6 +53,7 @@ export function registerSystemRegistryTool(
         projectName: { type: 'string', description: '项目名称' },
         agentId: { type: 'string', description: 'Agent ID' },
         status: { type: 'string', enum: ['idle', 'busy', 'stopped', 'crashed'], description: 'Agent 状态' },
+        monitored: { type: 'boolean', description: '是否系统监控' },
         updates: { type: 'object', description: '更新内容' },
         timeoutMs: { type: 'number', description: '超时时间（毫秒）' },
       },
@@ -183,6 +185,22 @@ export function registerSystemRegistryTool(
             return {
               ok: true,
               action: 'cleanup',
+            };
+          }
+
+          case 'monitor': {
+            if (!params.projectPath || typeof params.monitored !== 'boolean') {
+              return {
+                ok: false,
+                action: 'monitor',
+                error: 'projectPath and monitored are required for monitor action',
+              };
+            }
+            const agent = await registry.setMonitorStatus(params.projectPath, params.monitored);
+            return {
+              ok: true,
+              action: 'monitor',
+              agent,
             };
           }
 

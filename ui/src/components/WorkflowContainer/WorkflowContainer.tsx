@@ -1,4 +1,5 @@
 import React, { useMemo, useEffect, useState, useCallback, useRef } from 'react';
+import { useSystemMonitor } from '../../hooks/useSystemMonitor.js';
 import { PerformanceCard } from '../PerformanceCard/PerformanceCard.js';
 import { ChatInterface } from '../ChatInterface/ChatInterface.js';
 import type { InputCapability } from '../ChatInterface/ChatInterface.js';
@@ -637,15 +638,30 @@ export const WorkflowContainer: React.FC = () => {
     error: agentPanelError,
   }, panelFreeze.bottom);
   const canvasElement = useMemo(() => {
-   const monitorPanels: MonitorPanel[] = sessions.slice(0, 4).map((session) => ({
-     id: session.id,
-     projectPath: session.projectPath,
-      sessions: sessions.filter((s) => s.projectPath === session.projectPath).map((s) => ({ id: s.id, name: s.name })),
-     scheduledTasks: [],
-     selectedSessionId: session.id,
-      onOpenProject: () => { void handleOpenProject(session.projectPath); },
-      onSelectSession: (sessionId: string) => { void handleSwitchSessionFromSidebar(sessionId); },
-    }));
+    const sortedMonitored = systemMonitor.entries
+      .filter((entry) => entry.monitored)
+      .slice()
+      .sort((a, b) => {
+        const aTime = a.monitorUpdatedAt ? new Date(a.monitorUpdatedAt).getTime() : 0;
+        const bTime = b.monitorUpdatedAt ? new Date(b.monitorUpdatedAt).getTime() : 0;
+        if (aTime !== bTime) return bTime - aTime;
+        return a.projectPath.localeCompare(b.projectPath);
+      })
+      .slice(0, 4);
+
+    const monitorPanels: MonitorPanel[] = sortedMonitored.map((entry) => {
+      const projectSessions = sessions.filter((s) => s.projectPath === entry.projectPath);
+      const selectedSessionId = projectSessions[0]?.id;
+      return {
+        id: entry.projectId,
+        projectPath: entry.projectPath,
+        sessions: projectSessions.map((s) => ({ id: s.id, name: s.name })),
+        scheduledTasks: [],
+        selectedSessionId,
+        onOpenProject: () => { void handleOpenProject(entry.projectPath); },
+        onSelectSession: (sessionId: string) => { void handleSwitchSessionFromSidebar(sessionId); },
+      } as MonitorPanel;
+    });
 
     return (
       <div className="canvas-shell">
@@ -659,7 +675,7 @@ export const WorkflowContainer: React.FC = () => {
         </div>
       </div>
     );
-  }, [panelFreeze.performance, uiDisable.performance, sessions, handleOpenProject, handleSwitchSessionFromSidebar, chatAgents, chatInputCapability]);
+  }, [panelFreeze.performance, uiDisable.performance, sessions, handleOpenProject, handleSwitchSessionFromSidebar, chatAgents, chatInputCapability, systemMonitor.entries]);
 
   const rightPanelElement = useMemo(() => {
     const orchestratorAgentName = 'System Agent';
@@ -708,6 +724,8 @@ export const WorkflowContainer: React.FC = () => {
     );
   }, [frozenActiveSessionId, frozenChatAgents, frozenRightPayload, handleCreateNewSession, systemAgentExecution, chatInputCapability]);
 
+  const systemMonitor = useSystemMonitor();
+
   const leftSidebarElement = useMemo(() => (
     <LeftSidebar
       sessions={frozenSessions}
@@ -724,13 +742,15 @@ export const WorkflowContainer: React.FC = () => {
       onRenameSession={renameSession}
       onSwitchSession={handleSwitchSessionFromSidebar}
       onRefreshSessions={refreshSessions}
+      onToggleSystemMonitor={systemMonitor.toggle}
+      isSystemMonitorEnabled={systemMonitor.isEnabled}
       panelFreeze={panelFreeze}
       onUpdatePanelFreeze={updatePanelFreeze}
       onResetPanelFreeze={resetPanelFreeze}
       disableAnimations={disableAnimations}
       onToggleDisableAnimations={updateDisableAnimations}
     />
-  ), [createSession, disableAnimations, frozenActiveRuntimeSessionId, frozenCurrentSession, frozenDrawerAgentIdForLeft, frozenFocusedRuntimeInstanceId, frozenIsLoadingSessions, frozenRuntimeInstancesForLeft, frozenSessions, handleSelectInstance, handleSwitchSessionFromSidebar, panelFreeze, refreshSessions, removeSession, renameSession, resetPanelFreeze, updateDisableAnimations, updatePanelFreeze]);
+  ), [createSession, disableAnimations, frozenActiveRuntimeSessionId, frozenCurrentSession, frozenDrawerAgentIdForLeft, frozenFocusedRuntimeInstanceId, frozenIsLoadingSessions, frozenRuntimeInstancesForLeft, frozenSessions, handleSelectInstance, handleSwitchSessionFromSidebar, panelFreeze, refreshSessions, removeSession, renameSession, resetPanelFreeze, updateDisableAnimations, updatePanelFreeze, systemMonitor.toggle, systemMonitor.isEnabled]);
 
   const bottomPanelElement = useMemo(() => (
     <BottomPanel

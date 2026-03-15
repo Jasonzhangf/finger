@@ -18,6 +18,8 @@ export interface AgentInfo {
   status: AgentStatus;
   lastHeartbeat: string;
   lastSessionId?: string;
+  monitored?: boolean;
+  monitorUpdatedAt?: string;
   stats: {
     tasksCompleted: number;
     tasksFailed: number;
@@ -33,6 +35,20 @@ export interface AgentRegistry {
 
 const REGISTRY_VERSION = 1;
 const REGISTRY_PATH = path.join(FINGER_PATHS.home, 'system', 'registry.json');
+
+export function normalizeProjectPath(value: string): string {
+  return value.trim().replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
+}
+
+export function projectIdFromPath(projectPath: string): string {
+  return normalizeProjectPath(projectPath);
+}
+
+function deriveProjectName(projectPath: string): string {
+  const normalized = projectPath.replace(/\\/g, '/').replace(/\/+$/, '');
+  const parts = normalized.split('/').filter(Boolean);
+  return parts[parts.length - 1] || normalized || 'unknown-project';
+}
 
 /**
  * 加载 Agent 注册表
@@ -82,13 +98,22 @@ function createEmptyRegistry(): AgentRegistry {
  */
 export async function registerAgent(agentInfo: AgentInfo): Promise<void> {
   const registry = await loadRegistry();
+  const existing = registry.agents[agentInfo.projectId];
+  const projectPath = agentInfo.projectPath?.trim() || existing?.projectPath || '';
+  const projectName = agentInfo.projectName || existing?.projectName || deriveProjectName(projectPath);
   registry.agents[agentInfo.projectId] = {
+    ...existing,
     ...agentInfo,
+    projectPath,
+    projectName,
+    monitored: existing?.monitored ?? agentInfo.monitored,
+    monitorUpdatedAt: existing?.monitorUpdatedAt ?? agentInfo.monitorUpdatedAt,
     lastHeartbeat: new Date().toISOString(),
     stats: {
       tasksCompleted: 0,
       tasksFailed: 0,
       uptime: 0,
+      ...(existing?.stats ?? {}),
       ...agentInfo.stats,
     },
   };
@@ -115,9 +140,14 @@ export async function updateAgent(projectId: string, updates: Partial<AgentInfo>
     throw new Error(`Agent not found: ${projectId}`);
   }
   
+  const nextProjectPath = typeof updates.projectPath === 'string'
+    ? updates.projectPath.trim()
+    : agent.projectPath;
   registry.agents[projectId] = {
     ...agent,
     ...updates,
+    projectPath: nextProjectPath,
+    projectName: updates.projectName || agent.projectName || deriveProjectName(nextProjectPath),
     lastHeartbeat: new Date().toISOString(),
   };
   
@@ -179,6 +209,47 @@ export async function updateAgentStats(
   };
   
   await saveRegistry(registry);
+}
+
+/**
+ * 更新项目的系统监控状态
+ */
+export async function setMonitorStatus(projectPath: string, enabled: boolean): Promise<AgentInfo> {
+  const trimmedPath = projectPath.trim();
+  if (!trimmedPath) {
+    throw new Error('projectPath is required');
+  }
+
+  const projectId = projectIdFromPath(trimmedPath);
+  const registry = await loadRegistry();
+  const existing = registry.agents[projectId];
+  const now = new Date().toISOString();
+
+  const base: AgentInfo = existing || {
+    projectId,
+    projectPath: trimmedPath,
+    projectName: deriveProjectName(trimmedPath),
+    agentId: `project:${projectId}`,
+    status: 'idle',
+    lastHeartbeat: now,
+    stats: {
+      tasksCompleted: 0,
+      tasksFailed: 0,
+      uptime: 0,
+    },
+  };
+
+  const next: AgentInfo = {
+    ...base,
+    projectPath: trimmedPath || base.projectPath,
+    projectName: base.projectName || deriveProjectName(trimmedPath),
+    monitored: enabled,
+    monitorUpdatedAt: now,
+  };
+
+  registry.agents[projectId] = next;
+  await saveRegistry(registry);
+  return next;
 }
 
 /**

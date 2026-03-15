@@ -375,6 +375,7 @@ interface SystemAgentEvent {
 **任务**:
 - [ ] 在侧栏菜单添加"系统监控"选项
 - [ ] 实现选项点击处理
+- [ ] 调用 System Registry API 持久化监控开关
 
 **验收标准**:
 - 选项显示正常
@@ -385,6 +386,7 @@ interface SystemAgentEvent {
 **任务**:
 - [ ] 实现 Agent 状态列表显示
 - [ ] 显示 agent 状态信息
+- [ ] 监控列表来源切换为 System Registry
 
 **验收标准**:
 - 状态显示正确
@@ -396,6 +398,7 @@ interface SystemAgentEvent {
 - [ ] 实现 2x2 grid 布局
 - [ ] 显示最近活跃的 4 个项目
 - [ ] 超过 4 个不显示但继续工作
+- [ ] 使用 monitorUpdatedAt 排序
 
 **验收标准**:
 - 布局正确
@@ -407,6 +410,7 @@ interface SystemAgentEvent {
 - [ ] 实现事件监听
 - [ ] 实现状态更新
 - [ ] 实现实时刷新
+- [ ] System Registry 变更后刷新监控列表
 
 **验收标准**:
 - 事件监听正常
