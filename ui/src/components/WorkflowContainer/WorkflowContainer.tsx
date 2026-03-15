@@ -186,6 +186,7 @@ export const WorkflowContainer: React.FC = () => {
   });
 
   const activeSessionId = sessionBinding.context === 'runtime' ? sessionBinding.sessionId : orchestratorSessionId;
+  const systemAgentSessionId = orchestratorSessionId;
 
 
   // Check for resumeable session on mount
@@ -284,31 +285,15 @@ export const WorkflowContainer: React.FC = () => {
   const {
     executionState,
     runtimeEvents,
-    sessionAgentId,
-    selectedAgentId,
     setSelectedAgentId,
     isLoading,
     error,
-    pauseWorkflow,
-    resumeWorkflow,
-    interruptCurrentTurn,
-    sendUserInput,
-    editRuntimeEvent,
-    deleteRuntimeEvent,
-    agentRunStatus,
-    runtimeOverview,
-    toolPanelOverview,
-    updateToolExposure,
-    contextEditableEventIds,
-    isConnected,
-   debugSnapshotsEnabled,
-   setDebugSnapshotsEnabled,
-   debugSnapshots,
-   clearDebugSnapshots,
-   orchestratorRuntimeMode,
-   requestDetailsEnabled,
-   setRequestDetailsEnabled,
- } = useWorkflowExecution(activeSessionId, currentSession?.projectPath, {
+  } = useWorkflowExecution(activeSessionId, currentSession?.projectPath, {
+    disableRealtime: uiDisable.realtime,
+    disablePolling: uiDisable.polling,
+  });
+
+  const systemAgentExecution = useWorkflowExecution(systemAgentSessionId, currentSession?.projectPath, {
     disableRealtime: uiDisable.realtime,
     disablePolling: uiDisable.polling,
   });
@@ -469,16 +454,16 @@ export const WorkflowContainer: React.FC = () => {
   }, [runtimeEvents, sessionBinding, orchestratorSessionId, setSelectedAgentId]);
 
   const frozenRightPayload = useFrozenValue({
-    executionState,
-    runtimeEvents,
-    contextEditableEventIds,
-    agentRunStatus,
-    runtimeOverview,
-    toolPanelOverview,
-    debugSnapshotsEnabled,
-    debugSnapshots,
-    orchestratorRuntimeMode,
-    selectedAgentId,
+    executionState: systemAgentExecution.executionState,
+    runtimeEvents: systemAgentExecution.runtimeEvents,
+    contextEditableEventIds: systemAgentExecution.contextEditableEventIds,
+    agentRunStatus: systemAgentExecution.agentRunStatus,
+    runtimeOverview: systemAgentExecution.runtimeOverview,
+    toolPanelOverview: systemAgentExecution.toolPanelOverview,
+    debugSnapshotsEnabled: systemAgentExecution.debugSnapshotsEnabled,
+    debugSnapshots: systemAgentExecution.debugSnapshots,
+    orchestratorRuntimeMode: systemAgentExecution.orchestratorRuntimeMode,
+    selectedAgentId: systemAgentExecution.selectedAgentId,
   }, panelFreeze.right);
 
   const frozenActiveSessionId = useFrozenValue(activeSessionId, panelFreeze.right);
@@ -690,33 +675,33 @@ export const WorkflowContainer: React.FC = () => {
         runtimeOverview={frozenRightPayload.runtimeOverview}
         contextLabel={contextLabel}
         toolPanelOverview={frozenRightPayload.toolPanelOverview}
-        onUpdateToolExposure={updateToolExposure}
-        onSendMessage={sendUserInput}
-        onEditMessage={editRuntimeEvent}
-        onDeleteMessage={deleteRuntimeEvent}
+        onUpdateToolExposure={systemAgentExecution.updateToolExposure}
+        onSendMessage={systemAgentExecution.sendUserInput}
+        onEditMessage={systemAgentExecution.editRuntimeEvent}
+        onDeleteMessage={systemAgentExecution.deleteRuntimeEvent}
         onCreateNewSession={handleCreateNewSession}
-        onPause={pauseWorkflow}
-        onResume={resumeWorkflow}
-        onInterruptTurn={interruptCurrentTurn}
+        onPause={systemAgentExecution.pauseWorkflow}
+        onResume={systemAgentExecution.resumeWorkflow}
+        onInterruptTurn={systemAgentExecution.interruptCurrentTurn}
         isPaused={frozenRightPayload.executionState?.paused || false}
-        isConnected={isConnected}
-        onAgentClick={handleSelectAgent}
+        isConnected={systemAgentExecution.isConnected}
+        onAgentClick={systemAgentExecution.setSelectedAgentId}
         selectedAgentId={frozenRightPayload.selectedAgentId}
         eventFilterAgentId={eventFilterAgentId}
         inputCapability={chatInputCapability}
         debugSnapshotsEnabled={frozenRightPayload.debugSnapshotsEnabled}
-        onToggleDebugSnapshots={setDebugSnapshotsEnabled}
+        onToggleDebugSnapshots={systemAgentExecution.setDebugSnapshotsEnabled}
         debugSnapshots={frozenRightPayload.debugSnapshots}
-        onClearDebugSnapshots={clearDebugSnapshots}
+        onClearDebugSnapshots={systemAgentExecution.clearDebugSnapshots}
         orchestratorRuntimeMode={frozenRightPayload.orchestratorRuntimeMode}
-        requestDetailsEnabled={requestDetailsEnabled}
-        onToggleRequestDetails={setRequestDetailsEnabled}
+        requestDetailsEnabled={systemAgentExecution.requestDetailsEnabled}
+        onToggleRequestDetails={systemAgentExecution.setRequestDetailsEnabled}
         interruptTargetLabel={interruptTargetLabel}
         panelTitle={panelTitle}
         showRuntimeModeBadge={showRuntimeModeBadge}
       />
     );
-  }, [frozenActiveSessionId, frozenChatAgents, frozenRightPayload, handleCreateNewSession, handleSelectAgent, interruptCurrentTurn, isConnected, pauseWorkflow, resumeWorkflow, sendUserInput, sessionAgentId, deleteRuntimeEvent, editRuntimeEvent, setDebugSnapshotsEnabled, updateToolExposure, requestDetailsEnabled, setRequestDetailsEnabled, clearDebugSnapshots, chatInputCapability]);
+  }, [frozenActiveSessionId, frozenChatAgents, frozenRightPayload, handleCreateNewSession, systemAgentExecution, chatInputCapability]);
 
   const leftSidebarElement = useMemo(() => (
     <LeftSidebar
