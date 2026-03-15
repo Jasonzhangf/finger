@@ -48,6 +48,7 @@ import { mailbox } from './mailbox.js';
 import { BdTools } from '../agents/shared/bd-tools.js';
 import { inputLockManager } from '../runtime/input-lock.js';
 import { createWebSocketServer } from './modules/websocket-server.js';
+import { SystemAgentManager } from './modules/system-agent-manager.js';
 import { createSessionWorkspaceManager } from './modules/session-workspaces.js';
 import { attachEventForwarding } from './modules/event-forwarding.js';
 import { createMockRuntimeKit, type ChatCodexRunnerController } from './modules/mock-runtime.js';
@@ -434,6 +435,11 @@ clockInjector = new ClockTaskInjector({
 });
 clockInjector.start();
 console.log('[Server] Clock Task Injector started');
+
+// Start System Agent periodic checks
+const systemAgentManager = new SystemAgentManager(getAgentRuntimeDeps());
+systemAgentManager.start();
+console.log('[Server] System Agent Manager started');
 
 await gatewayManager.start().catch((err) => {
   console.error('[Server] Failed to start gateway manager:', err);
