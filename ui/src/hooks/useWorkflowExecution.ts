@@ -112,9 +112,9 @@ export function useWorkflowExecution(
     exposedTools: [],
   });
   const [debugSnapshotsEnabled, setDebugSnapshotsEnabledState] = useState<boolean>(() => {
-    if (typeof window === 'undefined' || !window.localStorage) return true;
+    if (typeof window === 'undefined' || !window.localStorage) return false;
     const raw = window.localStorage.getItem(DEBUG_SNAPSHOTS_STORAGE_KEY);
-    if (!raw) return true;
+    if (!raw) return false;
     const normalized = raw.trim().toLowerCase();
     return normalized === 'true' || normalized === '1' || normalized === 'yes';
   });
