@@ -185,8 +185,12 @@ export function registerSessionRoutes(app: Express, deps: SessionRouteDeps): voi
 
   app.get('/api/v1/sessions', (_req, res) => {
     sessionManager.refreshSessionsFromDisk();
-    sessionManager.ensureSystemSession();
+    const systemSession = sessionManager.ensureSystemSession();
     const sessions = sessionManager.listRootSessions();
+    // Ensure system session is included (it might have been just created in-memory)
+    if (systemSession && !sessions.find(s => s.id === systemSession.id)) {
+      sessions.push(systemSession);
+    }
     res.json(sessions.map((session) => toSessionResponse(session)));
   });
 

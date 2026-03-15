@@ -37,7 +37,10 @@
     "finger:plan": "node dist/cli/index.js plan",
     "finger:execute": "node dist/cli/index.js execute",
     "finger:review": "node dist/cli/index.js review",
-    "finger:orchestrate": "node dist/cli/index.js orchestrate"
+    "finger:orchestrate": "node dist/cli/index.js orchestrate",
+    "daemon:guard": "node scripts/daemon-guard.cjs",
+    "daemon:start": "node dist/server/index.js",
+    "daemon:stop": "node -e \"const fs=require('fs');const path=require('path');const pidFile=path.join('.finger','runtime','server.pid');const guardPidFile=path.join('.finger','runtime','guard.pid');[pidFile,guardPidFile].forEach(f=>{if(fs.existsSync(f)){try{process.kill(parseInt(fs.readFileSync(f,'utf8')),'SIGTERM');}catch(e){}fs.unlinkSync(f);}});console.log('Daemon stopped');\""
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.40.1",
