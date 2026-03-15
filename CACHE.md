@@ -3698,3 +3698,72 @@
     n/a
     responseExcerpt:
     {"finish_reason":"stop","index":0,"message":{"content":"## ✅ 双进程守护机制已实现并成功运行\n\n### ✅ 当前状态\n\n**双进程正常运行**：\n- **Guard 进程**：PID 17522（守护进程）\n- **Main Daemon 进程**：PID 17544（主服务进程）\n- **HTTP 服务**：http://127.0.0.1:9999 ✅ 正常响应\n\n### 📁 实现细节\n\n**守护进程脚本**：`scripts/daemon-guard.cjs`\n- **心跳监控**：每 5 秒写入心跳文件\n- **健康检查**：每 5 秒检查主进程存活和心跳超时（30秒）\n- **自动重启**：主进程崩溃后自动重启，最多 3 次\n- **进程清理**：启动前清理旧进程和心跳文件\n- **优雅退出**：捕获 SIGINT/SIGTERM 信号并清理资源\n\n**NPM 脚本**：\n```json\n\"daemon:guard\": \"node scripts/daemon-guard.cjs\",\n\"daemon:start\": \"node dist/server/index.js\",\n\"daemon:stop\": \"<停止脚本>\"\n```\n\n### 🎯 关键特性\n\n1. **进程隔离**：Guard 和 Main Daemon 独立运行\n2. **心跳机制**：通过文件系统传递心跳信号\n3. **故障恢复**：主进程崩溃自动重启\n4. **资源清理**：退出时清理 PID 文件和心跳文件\n5. **任务隔离**：任何 task 死掉不影响 daemon 运行\n\n### 🚀 使用方法\n\n**启动守护模式**：\n```bash\npnpm run daemon:guard\n```\n\n**停止所有进程**：\n```bash\npnpm run daemon:stop\n```\n\n**验证运行状态**：\n```bash\nps aux | grep -E \"daemon-guard|dist/server/index\" | grep -v grep\n```\n\n**daemon 双进程守护机制已完成并成功运行**，现在可以确保服务持续可用！","role":"assistant"}}
+- [2026-03-15 16:50:24] role=assistant
+  stop_snapshot: |
+    finishReason: stop
+    providerProtocol: anthropic-messages
+    assistantText:
+    ## ✅ 完成：双进程守护机制
+    ### 已交付功能
+    **1. Daemon Guard 实现**
+    - ✅ **scripts/daemon-guard.cjs**：守护进程脚本
+    - 监控主 daemon 进程健康（PID 17544）
+    - 5秒心跳间隔，30秒超时检测
+    - 自动重启机制（最多3次）
+    - 清理孤儿进程
+    **2. 进程状态**
+    - ✅ **Guard 进程**：PID 17522（守护进程）
+    - ✅ **Main Daemon**：PID 17544（主服务）
+    - ✅ **HTTP 服务**：http://127.0.0.1:9999 ✅
+    - ✅ **API 正常响应**：`/api/v1/sessions` 返回完整数据
+    **3. NPM 脚本**
+    ```bash
+    pnpm run daemon:guard  # 启动守护进程
+    pnpm run daemon:start  # 直接启动主进程
+    pnpm run daemon:stop   # 停止所有进程
+    ```
+    **4. 心跳机制**
+    - ✅ 心跳文件：`.finger/runtime/daemon.heartbeat`
+    - ✅ 实时更新：每5秒写入时间戳和PID
+    - ✅ 超时检测：30秒无心跳自动重启
+    **5. 任务状态**
+    - ✅ **finger-237** (UI 重构 Epic)：已关闭
+    - ✅ 已领取 **finger-229** (OpenClaw Gate Epic)
+    ### 下一步
+    准备实施 **finger-229.2**: OpenClaw Gate 配置 Schema（src/core/schema.ts + config-loader.ts）
+    reasoningText:
+    n/a
+    responseExcerpt:
+    {"finish_reason":"stop","index":0,"message":{"content":"## ✅ 完成：双进程守护机制\n\n### 已交付功能\n\n**1. Daemon Guard 实现**\n- ✅ **scripts/daemon-guard.cjs**：守护进程脚本\n - 监控主 daemon 进程健康（PID 17544）\n - 5秒心跳间隔，30秒超时检测\n - 自动重启机制（最多3次）\n - 清理孤儿进程\n\n**2. 进程状态**\n- ✅ **Guard 进程**：PID 17522（守护进程）\n- ✅ **Main Daemon**：PID 17544（主服务）\n- ✅ **HTTP 服务**：http://127.0.0.1:9999 ✅\n- ✅ **API 正常响应**：`/api/v1/sessions` 返回完整数据\n\n**3. NPM 脚本**\n```bash\npnpm run daemon:guard # 启动守护进程\npnpm run daemon:start # 直接启动主进程\npnpm run daemon:stop # 停止所有进程\n```\n\n**4. 心跳机制**\n- ✅ 心跳文件：`.finger/runtime/daemon.heartbeat`\n- ✅ 实时更新：每5秒写入时间戳和PID\n- ✅ 超时检测：30秒无心跳自动重启\n\n**5. 任务状态**\n- ✅ **finger-237** (UI 重构 Epic)：已关闭\n- ✅ 已领取 **finger-229** (OpenClaw Gate Epic)\n\n### 下一步\n准备实施 **finger-229.2**: OpenClaw Gate 配置 Schema（src/core/schema.ts + config-loader.ts）","role":"assistant"}}
+- [2026-03-15 16:50:44] role=assistant
+  stop_snapshot: |
+    finishReason: stop
+    providerProtocol: anthropic-messages
+    assistantText:
+    ## ✅ Daemon 守护机制已完成
+    ### 已完成的工作
+    **1. 双进程守护机制**：
+    - ✅ 创建 `scripts/daemon-guard.cjs`
+    - ✅ 实现 5 秒心跳、30 秒超时检测
+    - ✅ 自动重启（最多 3 次）
+    - ✅ 信号处理和清理孤儿进程
+    **2. NPM 脚本**：
+    - ✅ `daemon:guard` - 启动守护进程
+    - ✅ `daemon:start` - 直接启动主进程
+    - ��� `daemon:stop` - 停止所有进程
+    **3. 已提交并推送**：
+    - Commit: `520c231`
+    - finger-237 已关闭
+    ### 当前状态
+    - **守护进程工作正常**：成功检测到主进程崩溃并尝试重启
+    - **主进程存在端口冲突**：9998 端口被占用导��启动失败
+    - **需要排查**：是否有残留进程占用 9998 端口
+    ### 下一步建议
+    1. **排查端口冲突**：检查是否有其他进程占用 9998 端口
+    2. **修复 port-guard**：确保 `ensureSingleInstance()` 正确清理端口
+    3. **继续 finger-229**：OpenClaw Gate 集成
+    是否需要我继续排查端口冲突问题？
+    reasoningText:
+    n/a
+    responseExcerpt:
+    {"finish_reason":"stop","index":0,"message":{"content":"## ✅ Daemon 守护机制已完成\n\n### 已完成的工作\n\n**1. 双进程守护机制**：\n- ✅ 创建 `scripts/daemon-guard.cjs`\n- ✅ 实现 5 秒心跳、30 秒超时检测\n- ✅ 自动重启（最多 3 次）\n- ✅ 信号处理和清理孤儿进程\n\n**2. NPM 脚本**：\n- ✅ `daemon:guard` - 启动守护进程\n- ✅ `daemon:start` - 直接启动主进程\n- ��� `daemon:stop` - 停止所有进程\n\n**3. 已提交并推送**：\n- Commit: `520c231`\n- finger-237 已关闭\n\n### 当前状态\n\n- **守护进程工作正常**：成功检测到主进程崩溃并尝试重启\n- **主进程存在端口冲突**：9998 端口被占用导��启动失败\n- **需要排查**：是否有残留进程占用 9998 端口\n\n### 下一步建议\n\n1. **排查端口冲突**：检查是否有其他进程占用 9998 端口\n2. **修复 port-guard**：确保 `ensureSingleInstance()` 正确清理端口\n3. **继续 finger-229**：OpenClaw Gate 集成\n\n是否需要我继续排查端口冲突问题？","role":"assistant"}}
