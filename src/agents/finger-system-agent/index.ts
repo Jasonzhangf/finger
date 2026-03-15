@@ -61,3 +61,4 @@ export function isSystemPath(targetPath: string): boolean {
 
 export * from './prompt-loader.js';
 export * from './registry.js';
+export * from './role-manager.js';
