@@ -637,6 +637,8 @@ export const WorkflowContainer: React.FC = () => {
     isLoading: isLoadingAgentPanel,
     error: agentPanelError,
   }, panelFreeze.bottom);
+  const systemMonitor = useSystemMonitor();
+
   const canvasElement = useMemo(() => {
     const sortedMonitored = systemMonitor.entries
       .filter((entry) => entry.monitored)
@@ -723,8 +725,6 @@ export const WorkflowContainer: React.FC = () => {
       />
     );
   }, [frozenActiveSessionId, frozenChatAgents, frozenRightPayload, handleCreateNewSession, systemAgentExecution, chatInputCapability]);
-
-  const systemMonitor = useSystemMonitor();
 
   const leftSidebarElement = useMemo(() => (
     <LeftSidebar

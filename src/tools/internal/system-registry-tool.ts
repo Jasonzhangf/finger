@@ -5,8 +5,8 @@
  * 仅 System Agent 可用 (policy: 'allow')
  */
 
-import type { ToolRegistry } from '../../../runtime/tool-registry.js';
-import type { AgentRuntimeDeps } from '../../../server/modules/agent-runtime/types.js';
+import type { ToolRegistry } from '../../runtime/tool-registry.js';
+import type { AgentRuntimeDeps } from '../../server/modules/agent-runtime/types.js';
 import * as registry from '../../agents/finger-system-agent/registry.js';
 import type { AgentStatus } from '../../agents/finger-system-agent/registry.js';
 

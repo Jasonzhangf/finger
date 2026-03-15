@@ -46,6 +46,8 @@ interface LeftSidebarProps {
   onRenameSession: (sessionId: string, name: string) => Promise<SessionInfo>;
   onSwitchSession: (sessionId: string) => Promise<void>;
   onRefreshSessions: () => Promise<void>;
+  onToggleSystemMonitor?: (projectPath: string, enabled: boolean) => Promise<void> | void;
+  isSystemMonitorEnabled?: (projectPath: string) => boolean;
 }
 
 interface ProjectTabProps {
@@ -170,6 +172,8 @@ export const LeftSidebar: FC<LeftSidebarProps> = ({
   onRenameSession,
   onSwitchSession,
   onRefreshSessions,
+  onToggleSystemMonitor,
+  isSystemMonitorEnabled,
 }) => {
   const [activeTab, setActiveTab] = useState<SidebarTab | null>('project');
 

@@ -1754,6 +1754,11 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
   const toolSelectionRef = useRef<Set<string>>(new Set());
   const [toolUpdateError, setToolUpdateError] = useState<string | null>(null);
   const [toolUpdatePending, setToolUpdatePending] = useState(false);
+  const sortedToolItems = useMemo(() => {
+    const items = (toolPanelOverview?.availableTools ?? []).slice();
+    items.sort((a, b) => a.localeCompare(b));
+    return items;
+  }, [toolPanelOverview?.availableTools]);
   const orchestratorPhase = useMemo(
     () => formatOrchestratorPhase(executionState?.orchestratorPhase),
     [executionState?.orchestratorPhase],
@@ -2208,11 +2213,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
                 {toolUpdateError ? ` · ${toolUpdateError}` : ''}
               </div>
               <div className="tool-exposure-grid">
-                {(() => {
-                  const items = (toolPanelOverview?.availableTools ?? []).slice();
-                  items.sort((a, b) => a.localeCompare(b));
-                  return items;
-                })().map((tool) => {
+                {sortedToolItems.map((tool) => {
                   const normalizedTool = tool.trim();
                   const checked = toolSelection.has(normalizedTool);
                   return (
@@ -2227,7 +2228,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
                       <span>{tool}</span>
                     </label>
                   );
-                })()}
+                })}
               </div>
             </div>
           )}

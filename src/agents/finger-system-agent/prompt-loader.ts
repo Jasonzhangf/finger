@@ -7,9 +7,10 @@
 
 import { promises as fs } from 'fs';
 import path from 'path';
-import { FINGER_PATHS, FINGER_PACKAGE_ROOT } from '../../core/finger-paths.js';
+import { FINGER_PATHS } from '../../core/finger-paths.js';
+import { FINGER_SOURCE_ROOT } from '../../core/source-root.js';
 
-const DIST_TEMPLATES_PATH = path.join(FINGER_PACKAGE_ROOT, 'docs', 'reference', 'templates', 'system-agent');
+const DIST_TEMPLATES_PATH = path.join(FINGER_SOURCE_ROOT, 'docs', 'reference', 'templates', 'system-agent');
 const promptCache = new Map<string, Promise<string>>();
 
 /**

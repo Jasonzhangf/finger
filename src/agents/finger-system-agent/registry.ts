@@ -10,6 +10,12 @@ import { FINGER_PATHS } from '../../core/finger-paths.js';
 
 export type AgentStatus = 'idle' | 'busy' | 'stopped' | 'crashed';
 
+export interface AgentStats {
+  tasksCompleted: number;
+  tasksFailed: number;
+  uptime: number;
+}
+
 export interface AgentInfo {
   projectId: string;
   projectPath: string;
@@ -20,11 +26,7 @@ export interface AgentInfo {
   lastSessionId?: string;
   monitored?: boolean;
   monitorUpdatedAt?: string;
-  stats: {
-    tasksCompleted: number;
-    tasksFailed: number;
-    uptime: number;
-  };
+  stats: AgentStats;
 }
 
 export interface AgentRegistry {
@@ -101,6 +103,11 @@ export async function registerAgent(agentInfo: AgentInfo): Promise<void> {
   const existing = registry.agents[agentInfo.projectId];
   const projectPath = agentInfo.projectPath?.trim() || existing?.projectPath || '';
   const projectName = agentInfo.projectName || existing?.projectName || deriveProjectName(projectPath);
+  const mergedStats: AgentStats = {
+    tasksCompleted: agentInfo.stats?.tasksCompleted ?? existing?.stats?.tasksCompleted ?? 0,
+    tasksFailed: agentInfo.stats?.tasksFailed ?? existing?.stats?.tasksFailed ?? 0,
+    uptime: agentInfo.stats?.uptime ?? existing?.stats?.uptime ?? 0,
+  };
   registry.agents[agentInfo.projectId] = {
     ...existing,
     ...agentInfo,
@@ -109,13 +116,7 @@ export async function registerAgent(agentInfo: AgentInfo): Promise<void> {
     monitored: existing?.monitored ?? agentInfo.monitored,
     monitorUpdatedAt: existing?.monitorUpdatedAt ?? agentInfo.monitorUpdatedAt,
     lastHeartbeat: new Date().toISOString(),
-    stats: {
-      tasksCompleted: 0,
-      tasksFailed: 0,
-      uptime: 0,
-      ...(existing?.stats ?? {}),
-      ...agentInfo.stats,
-    },
+    stats: mergedStats,
   };
   await saveRegistry(registry);
 }
