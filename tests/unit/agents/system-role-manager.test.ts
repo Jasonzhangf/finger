@@ -1,19 +1,17 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import { RoleManager } from '../../../src/agents/finger-system-agent/role-manager.js';
-
-const prompts = new Map<string, string>([
-  ['roles/user-interaction.md', 'User Interaction Prompt'],
-  ['roles/agent-coordination.md', 'Agent Coordination Prompt'],
-]);
-
-// Mock prompt loader
 vi.mock('../../../src/agents/finger-system-agent/prompt-loader.js', () => ({
   loadPrompt: async (name: string, role?: string) => {
     const key = role ? `${role}/${name}` : name;
-    return prompts.get(key) || `Missing ${key}`;
+    const prompts: Record<string, string> = {
+      'roles/user-interaction.md': 'User Interaction Prompt',
+      'roles/agent-coordination.md': 'Agent Coordination Prompt',
+    };
+    return prompts[key] ?? `Missing ${key}`;
   },
 }));
+
+import { RoleManager } from '../../../src/agents/finger-system-agent/role-manager.js';
 
 describe('RoleManager', () => {
   it('switches role and loads prompt', async () => {
