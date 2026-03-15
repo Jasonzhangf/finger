@@ -64,7 +64,7 @@
     "vitest": "^1.6.0",
     "execa": "^8.0.1"
   },
-  "fingerBuildVersion": "0.1.0104",
+  "fingerBuildVersion": "0.1.0106",
   "pnpm": {
     "packageExtensions": {
       "vitest@*": {

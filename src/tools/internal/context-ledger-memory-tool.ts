@@ -76,9 +76,10 @@ export const contextLedgerMemoryTool: InternalTool<unknown, ContextLedgerMemoryT
       source_time_end: { type: 'string', description: 'Original timeline end ISO timestamp' },
       source_slot_start: { type: 'number', description: 'Original timeline start slot' },
       source_slot_end: { type: 'number', description: 'Original timeline end slot' },
-    },
-    additionalProperties: true,
-  },
+   },
+   required: ['action'],
+   additionalProperties: true,
+ },
   execute: async (rawInput: unknown, context: ToolExecutionContext): Promise<ContextLedgerMemoryToolOutput> => {
     const input = parseInput(rawInput);
     const invocation = resolveCliInvocation();
