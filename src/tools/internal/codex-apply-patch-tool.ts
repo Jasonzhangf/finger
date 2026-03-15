@@ -40,7 +40,7 @@ export const applyPatchTool: InternalTool<unknown, ApplyPatchOutput> = {
       input: { type: 'string', description: 'The entire contents of the apply_patch command' },
       timeout_ms: { type: 'number' },
     },
-    required: ['input'],
+    required: [],
     additionalProperties: false,
   },
   execute: async (rawInput: unknown, context: ToolExecutionContext): Promise<ApplyPatchOutput> => {
@@ -112,16 +112,16 @@ function parseApplyPatchInput(rawInput: unknown): ApplyPatchInput {
     throw new Error('apply_patch input must be an object');
   }
 
-  if (typeof rawInput.input !== 'string' || rawInput.input.trim().length === 0) {
-    throw new Error('apply_patch input.input must be a non-empty string');
-  }
-
-  const parsed: ApplyPatchInput = {
-    input: rawInput.input,
-  };
+  const parsed: ApplyPatchInput = {};
 
   if (typeof rawInput.timeout_ms === 'number' && Number.isFinite(rawInput.timeout_ms)) {
     parsed.timeout_ms = rawInput.timeout_ms;
+  }
+
+  if (typeof rawInput.input === 'string' && rawInput.input.trim().length > 0) {
+    parsed.input = rawInput.input;
+  } else {
+    throw new Error('apply_patch requires input field with non-empty string');
   }
 
   return parsed;
