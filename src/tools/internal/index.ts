@@ -5,6 +5,7 @@ import type { ToolRegistry } from '../../runtime/tool-registry.js';
 import type { AgentRuntimeDeps } from '../../server/modules/agent-runtime/types.js';
 import { registerProjectTool } from './project-tool/project-tool.js';
 import { registerSystemRegistryTool } from './system-registry-tool.js';
+import { registerReportTaskCompletionTool } from './report-task-completion-tool.js';
 import { clockTool } from './codex-clock-tool.js';
 import { execCommandTool, writeStdinTool } from './codex-exec-tools.js';
 import { applyPatchTool } from './codex-apply-patch-tool.js';
@@ -69,4 +70,14 @@ export function registerSystemRegistryToolInRuntime(
   getAgentRuntimeDeps: () => AgentRuntimeDeps
 ): void {
   registerSystemRegistryTool(toolRegistry, getAgentRuntimeDeps);
+}
+
+/**
+ * 在运行时注册 report-task-completion（仅 Project Agent 可用）
+ */
+export function registerReportTaskCompletionToolInRuntime(
+  toolRegistry: ToolRegistry,
+  getAgentRuntimeDeps: () => AgentRuntimeDeps
+): void {
+  registerReportTaskCompletionTool(toolRegistry, getAgentRuntimeDeps);
 }
