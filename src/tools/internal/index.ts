@@ -4,6 +4,7 @@ import { runSpawnCommand } from './spawn-runner.js';
 import type { ToolRegistry } from '../../runtime/tool-registry.js';
 import type { AgentRuntimeDeps } from '../../server/modules/agent-runtime/types.js';
 import { registerProjectTool } from './project-tool/project-tool.js';
+import { registerSystemRegistryTool } from './system-registry-tool.js';
 import { clockTool } from './codex-clock-tool.js';
 import { execCommandTool, writeStdinTool } from './codex-exec-tools.js';
 import { applyPatchTool } from './codex-apply-patch-tool.js';
@@ -58,4 +59,14 @@ export function registerProjectToolInRuntime(
   getAgentRuntimeDeps: () => AgentRuntimeDeps
 ): void {
   registerProjectTool(toolRegistry, getAgentRuntimeDeps);
+}
+
+/**
+ * 在运行时注册 system-registry-tool（仅 System Agent 可用）
+ */
+export function registerSystemRegistryToolInRuntime(
+  toolRegistry: ToolRegistry,
+  getAgentRuntimeDeps: () => AgentRuntimeDeps
+): void {
+  registerSystemRegistryTool(toolRegistry, getAgentRuntimeDeps);
 }

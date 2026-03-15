@@ -58,3 +58,6 @@ export function isSystemPath(targetPath: string): boolean {
   const systemRoot = path.resolve(FINGER_PATHS.home, 'system');
   return normalized.startsWith(systemRoot);
 }
+
+export * from './prompt-loader.js';
+export * from './registry.js';

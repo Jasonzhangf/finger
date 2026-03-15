@@ -1,4 +1,4 @@
-import { createDefaultInternalToolRegistry, registerProjectToolInRuntime } from '../tools/internal/index.js';
+import { createDefaultInternalToolRegistry, registerProjectToolInRuntime, registerSystemRegistryToolInRuntime } from '../tools/internal/index.js';
 import { ToolRegistry } from './tool-registry.js';
 import type { AgentRuntimeDeps } from '../server/modules/agent-runtime/types.js';
 
@@ -24,6 +24,8 @@ export function registerDefaultRuntimeTools(
   if (getAgentRuntimeDeps) {
     registerProjectToolInRuntime(runtimeToolRegistry, getAgentRuntimeDeps);
     loadedToolNames.push('project_tool');
+    registerSystemRegistryToolInRuntime(runtimeToolRegistry, getAgentRuntimeDeps);
+    loadedToolNames.push('system-registry-tool');
   }
 
   return loadedToolNames;

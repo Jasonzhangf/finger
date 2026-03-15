@@ -1,8 +1,7 @@
 ---
-name: system-agent-capability
-version: 1.0.1
-updated_at: 2026-03-13T10:30:00.000Z
-scope: ~/.finger/system
+title: "System Agent Capability"
+version: "1.1.0"
+updated_at: "2026-03-15T12:02:00Z"
 ---
 
 # System Agent Capability Specification
@@ -236,30 +235,15 @@ System Agent 会调用相应工具执行切换，并确认结果。
 - 仅 system scope
 - actions: insert, search, list, edit, delete, compact, reindex
 
-### write_file / exec_command
-- 仅系统目录
-- 危险操作必须确认
-
----
-
-## 8. Response Rules
-
-- 回答必须简短
-- 只答用户问题，不扩展
-- 不需要汇报除非用户要求
-
----
-
-## 9. Version History
-
-- **v1.0.1** (2026-03-13): 迁移 /resume 到 Agent 层，新增 session.list/session.switch 工具，添加 system:restart 命令
-- **v1.0.0** (2026-03-13): 初始版本
-
 ### system-registry-tool（新增）
 - 管理 System Agent 的 Agent 注册表
 - actions: register, unregister, update, list, get_status, heartbeat, cleanup
 - 仅 System Agent 可用
 - 存储: ~/.finger/system/registry.json
+
+### write_file / exec_command
+- 仅系统目录
+- 危险操作必须确认
 
 ---
 
@@ -335,7 +319,16 @@ System Agent 每 5 分钟执行一次定时检查。
 
 ---
 
-## 10. Version History
+## 10. Response Rules
+
+- 回答必须简短
+- 只答用户问题，不扩展
+- 不需要汇报除非用户要求
+- 使用 `SystemBot:` 前缀标识身份
+
+---
+
+## 11. Version History
 
 - **v1.1.0** (2026-03-15): 新增多角色提示词体系、Agent 注册表、定时检查
 - **v1.0.1** (2026-03-13): 迁移 /resume 到 Agent 层，新增 session.list/session.switch 工具，添加 system:restart 命令
