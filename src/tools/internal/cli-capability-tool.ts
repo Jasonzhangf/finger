@@ -34,14 +34,15 @@ export function createCliCapabilityTool(
     description: descriptor.runtimeDescription ?? `${descriptor.description} (CLI: ${descriptor.command})`,
     inputSchema: {
       type: 'object',
-      properties: {
-        args: { type: 'array', items: { type: 'string' } },
-        cwd: { type: 'string' },
-        timeoutMs: { type: 'number' },
-        env: { type: 'object', additionalProperties: { type: 'string' } },
-      },
-      additionalProperties: false,
+    properties: {
+      args: { type: 'array', items: { type: 'string' } },
+      cwd: { type: 'string' },
+      timeoutMs: { type: 'number' },
+      env: { type: 'object', additionalProperties: { type: 'string' } },
     },
+    required: ['args'],
+    additionalProperties: false,
+  },
     execute: async (rawInput: unknown, context: ToolExecutionContext): Promise<CliCapabilityToolOutput> => {
       const input = parseCapabilityToolInput(rawInput);
       const commandArray = [

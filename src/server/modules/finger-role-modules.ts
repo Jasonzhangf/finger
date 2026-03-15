@@ -65,13 +65,29 @@ export async function registerFingerRoleModules(
     for (const name of toolNames) {
       const tool = toolRegistry.get(name);
       if (!tool || tool.policy !== 'allow') continue;
+
+      // 确保 inputSchema 符合 OpenAI function calling 规范
+      const schema = tool.inputSchema as Record<string, unknown>;
+      const finalSchema: Record<string, unknown> = {
+        type: schema?.type ?? 'object',
+      };
+
+      if (schema?.properties && typeof schema.properties === 'object') {
+        finalSchema.properties = schema.properties;
+      }
+
+      if (schema?.required && Array.isArray(schema.required)) {
+        finalSchema.required = schema.required;
+      }
+
+      if (schema?.additionalProperties !== undefined) {
+        finalSchema.additionalProperties = schema.additionalProperties;
+      }
+
       resolved.push({
         name: tool.name,
         description: tool.description,
-        inputSchema:
-          typeof tool.inputSchema === 'object' && tool.inputSchema !== null
-            ? (tool.inputSchema as Record<string, unknown>)
-            : { type: 'object', additionalProperties: true },
+        inputSchema: finalSchema,
       });
     }
     return resolved;
