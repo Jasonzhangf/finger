@@ -10,6 +10,7 @@
 import type { AgentRuntimeDeps } from '../../server/modules/agent-runtime/types.js';
 import { SessionControlPlaneStore } from '../../runtime/session-control-plane.js';
 import { updateAgentStatus, updateHeartbeat, listAgents } from './registry.js';
+import { emitAgentStatusChanged } from './system-events.js';
 
 const DEFAULT_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes
 
@@ -59,8 +60,10 @@ export class PeriodicCheckRunner {
       }
 
       // 更新 registry 状态
-      await updateAgentStatus(registryEntry.projectId, status === 'idle' ? 'idle' : 'busy');
+      const nextStatus = status === 'idle' ? 'idle' : 'busy';
+      await updateAgentStatus(registryEntry.projectId, nextStatus);
       await updateHeartbeat(registryEntry.projectId);
+      emitAgentStatusChanged(this.deps, { agentId, status: nextStatus, projectId: registryEntry.projectId });
 
       // 仅对 idle agent 发送心跳提示词
       if (status === 'idle') {

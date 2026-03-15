@@ -7,6 +7,7 @@
 import type { ToolRegistry } from '../../runtime/tool-registry.js';
 import type { AgentRuntimeDeps } from '../../server/modules/agent-runtime/types.js';
 import { dispatchTaskToSystemAgent } from '../../agents/finger-system-agent/task-report-dispatcher.js';
+import { emitTaskCompleted } from '../../agents/finger-system-agent/system-events.js';
 
 export interface ReportTaskCompletionInput {
   action: 'report';
@@ -56,6 +57,10 @@ export function registerReportTaskCompletionTool(
           taskSummary: params.taskSummary,
           sessionId: params.sessionId,
           result: params.result,
+          projectId: params.projectId,
+        });
+        emitTaskCompleted(deps, {
+          taskId: params.taskId,
           projectId: params.projectId,
         });
 
