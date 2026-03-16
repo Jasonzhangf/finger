@@ -6028,3 +6028,66 @@
   - "Create a new component for the user dashboard"
   
   What would you like to build or explore?
+
+- [2026/03/16 10:12:59] role=assistant
+  model: glm-4.7
+  provider: anthropic-messages
+  finishReason: stop
+  content: |
+  ## ❌ PassWall2 仍然存在严重文件描述符泄漏问题
+  
+  ### 当前状态
+  
+  **文件描述符情况**：
+  ```
+  ulimit 设置：131072
+  当前已打开：64575 个 fd
+  系统限制：仍然报错 "too many open files"
+  ```
+  
+  **连接状态分析**：
+  ```
+  总连接数：51834
+  ESTABLISHED：5323
+  TIME_WAIT：33349（异常高！）
+  CLOSE_WAIT：9818（异常高！）
+  ```
+  
+  ### 问题根源
+  
+  **大量 TIME_WAIT 和 CLOSE_WAIT 连接**（合计 43167 个）表明：
+  1. **连接无法正常关闭** - sing-box 没有正确关闭连接
+  2. **连接泄漏** - 连接积累导致 fd 耗尽
+  3. **可能是 DNS 查询或直连规则导致** - 不断创建新连接但不释放
+  
+  ### 问题分析
+  
+  即使设置了 ulimit -n 131072，问题依然存在，说明：
+  - 这不是简单的 ulimit 限制问题
+  - **PassWall2/sing-box 本身有 bug 或配置问题**
+  - 可能是新版本 sing-box (1.12.13) 与 PassWall2 不兼容
+  
+  ### 建议解决方案
+  
+  **方案 1：降级 sing-box 版本**
+  ```bash
+  opkg remove sing-box
+  opkg install sing-box=1.11.4-r11  # 使用之前的版本
+  ```
+  
+  **方案 2：使用 OpenClash 替代**
+  - OpenClash 基于 Clash，更稳定
+  - 支持相同的订阅源
+  - 配置更简单
+  
+  **方案 3：排查具体配置问题**
+  - 检查 DNS 配置
+  - 调整连接超时设置
+  - 简化路由规则
+  
+  你希望：
+  - A) 尝试降级 sing-box
+  - B) 安装 OpenClash 替代 PassWall2
+  - C) 继续排查 PassWall2 配置问题
+  
+  请告诉我你的选择。
