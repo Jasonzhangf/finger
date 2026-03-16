@@ -15,6 +15,7 @@ import { updatePlanTool } from './codex-update-plan-tool.js';
 import { viewImageTool } from './codex-view-image-tool.js';
 import { webSearchTool } from './codex-web-search-tool.js';
 import { contextLedgerMemoryTool } from './context-ledger-memory-tool.js';
+import { noopTool } from './codex-noop-tool.js';
 
 export * from './types.js';
 export * from './registry.js';
@@ -47,6 +48,7 @@ export function createDefaultInternalToolRegistry(): InternalToolRegistry {
   registry.register(viewImageTool);
   registry.register(webSearchTool);
   registry.register(contextLedgerMemoryTool);
+  registry.register(noopTool);
   // NOTE: project_tool 只在运行时注册，不在 CLI 内部注册表中注册
   // 因为它需要 AgentRuntimeDeps（sessionManager, dispatchTaskToAgent）
   return registry;
@@ -73,7 +75,7 @@ export function registerSystemRegistryToolInRuntime(
 }
 
 /**
- * 在运行时注册 report-task-completion（仅 Project Agent 可用）
+ * 在运行时注册 report-task-completion-tool（Project Agent 报告任务完成）
  */
 export function registerReportTaskCompletionToolInRuntime(
   toolRegistry: ToolRegistry,
