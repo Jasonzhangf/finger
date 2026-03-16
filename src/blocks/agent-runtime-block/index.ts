@@ -153,6 +153,15 @@ const BASE_STARTUP_TEMPLATES: AgentStartupTemplate[] = [
     defaultInstanceCount: 1,
     launchMode: 'manual',
   },
+  {
+    id: 'finger-system-agent',
+    name: 'System Agent',
+    role: 'orchestrator',
+    defaultImplementationId: 'native:finger-system-agent',
+    defaultModuleId: 'finger-system-agent',
+    defaultInstanceCount: 1,
+    launchMode: 'manual',
+  },
 ];
 
 interface AgentRuntimeViewInstance {

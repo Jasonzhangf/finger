@@ -1369,6 +1369,7 @@ function normalizeDefaultRoleProfileId(role?: string): string {
   if (normalized === 'general') return 'orchestrator';
   if (normalized === 'researcher') return 'searcher';
   if (normalized === 'coder') return 'executor';
+  if (normalized === 'system') return 'orchestrator';
   if (
     normalized === 'orchestrator'
     || normalized === 'executor'
