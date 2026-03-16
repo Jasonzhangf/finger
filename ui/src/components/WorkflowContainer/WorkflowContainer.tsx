@@ -1,7 +1,6 @@
 import React, { useMemo, useEffect, useState, useCallback, useRef } from 'react';
 import { useSystemMonitor } from '../../hooks/useSystemMonitor.js';
 import { PerformanceCard } from '../PerformanceCard/PerformanceCard.js';
-import { ChatInterface } from '../ChatInterface/ChatInterface.js';
 import type { InputCapability } from '../ChatInterface/ChatInterface.js';
 import { AppLayout } from '../layout/AppLayout.js';
 import { LeftSidebar } from '../LeftSidebar/LeftSidebar.js';
@@ -16,6 +15,7 @@ import { useWorkflowExecution } from '../../hooks/useWorkflowExecution.js';
 import { useAgents } from '../../hooks/useAgents.js';
 import { useAgentRuntimePanel } from '../../hooks/useAgentRuntimePanel.js';
 import { MultiAgentMonitorGrid, type MonitorPanel } from '../MultiAgentMonitorGrid/MultiAgentMonitorGrid.js';
+import { AgentSessionPanel } from '../AgentSessionPanel/AgentSessionPanel.js';
 import { findConfigForAgent, matchInstanceToAgent } from '../BottomPanel/agentRuntimeUtils.js';
 import type { AgentConfig, AgentRuntime } from '../../api/types.js';
 import type { AgentRuntimeInstance } from '../../hooks/useAgentRuntimePanel.js';
@@ -679,52 +679,26 @@ export const WorkflowContainer: React.FC = () => {
     );
   }, [panelFreeze.performance, uiDisable.performance, sessions, handleOpenProject, handleSwitchSessionFromSidebar, chatAgents, chatInputCapability, systemMonitor.entries]);
 
-  const rightPanelElement = useMemo(() => {
-    const orchestratorAgentName = 'System Agent';
-    const orchestratorAgentLabel = orchestratorAgentName;
-    const interruptTargetLabel = orchestratorAgentLabel;
-    const eventFilterAgentId = null;
-    const contextLabel = 'System Agent (Fixed)';
-    const panelTitle = orchestratorAgentLabel;
-    const showRuntimeModeBadge = false;
-    return (
-      <ChatInterface
-        key="system-agent-fixed"
-        executionState={frozenRightPayload.executionState}
-        agents={frozenChatAgents}
-        events={frozenRightPayload.runtimeEvents}
-        contextEditableEventIds={frozenRightPayload.contextEditableEventIds}
-        agentRunStatus={frozenRightPayload.agentRunStatus}
-        runtimeOverview={frozenRightPayload.runtimeOverview}
-        contextLabel={contextLabel}
-        toolPanelOverview={frozenRightPayload.toolPanelOverview}
-        onUpdateToolExposure={systemAgentExecution.updateToolExposure}
-        onSendMessage={systemAgentExecution.sendUserInput}
-        onEditMessage={systemAgentExecution.editRuntimeEvent}
-        onDeleteMessage={systemAgentExecution.deleteRuntimeEvent}
-        onCreateNewSession={handleCreateNewSession}
-        onPause={systemAgentExecution.pauseWorkflow}
-        onResume={systemAgentExecution.resumeWorkflow}
-        onInterruptTurn={systemAgentExecution.interruptCurrentTurn}
-        isPaused={frozenRightPayload.executionState?.paused || false}
-        isConnected={systemAgentExecution.isConnected}
-        onAgentClick={systemAgentExecution.setSelectedAgentId}
-        selectedAgentId={frozenRightPayload.selectedAgentId}
-        eventFilterAgentId={eventFilterAgentId}
-        inputCapability={chatInputCapability}
-        debugSnapshotsEnabled={frozenRightPayload.debugSnapshotsEnabled}
-        onToggleDebugSnapshots={systemAgentExecution.setDebugSnapshotsEnabled}
-        debugSnapshots={frozenRightPayload.debugSnapshots}
-        onClearDebugSnapshots={systemAgentExecution.clearDebugSnapshots}
-        orchestratorRuntimeMode={frozenRightPayload.orchestratorRuntimeMode}
-        requestDetailsEnabled={systemAgentExecution.requestDetailsEnabled}
-        onToggleRequestDetails={systemAgentExecution.setRequestDetailsEnabled}
-        interruptTargetLabel={interruptTargetLabel}
-        panelTitle={panelTitle}
-        showRuntimeModeBadge={showRuntimeModeBadge}
-      />
-    );
-  }, [frozenActiveSessionId, frozenChatAgents, frozenRightPayload, handleCreateNewSession, systemAgentExecution, chatInputCapability]);
+ const rightPanelElement = useMemo(() => {
+   const systemSessions = sessions.filter(s => s.sessionTier === 'system' || s.projectPath === SYSTEM_PROJECT_PATH);
+   const selectedSystemSessionId = systemSessions.length > 0 ? systemSessions[0].id : undefined;
+
+   return (
+     <AgentSessionPanel
+       projectPath={SYSTEM_PROJECT_PATH}
+       sessionId={selectedSystemSessionId ?? systemAgentSessionId}
+       sessions={systemSessions.map(s => ({ id: s.id, name: s.name }))}
+       scheduledTasks={[]}
+       selectedSessionId={selectedSystemSessionId}
+       onSelectSession={(sessionId) => { void handleSwitchSessionFromSidebar(sessionId); }}
+       onCreateSession={(projectPath) => createSession(projectPath)}
+       onSwitchSession={handleSwitchSessionFromSidebar}
+       onDeleteSession={removeSession}
+       chatAgents={chatAgents}
+       inputCapability={chatInputCapability}
+     />
+  );
+ }, [frozenActiveSessionId, frozenChatAgents, frozenRightPayload, handleCreateNewSession, systemAgentExecution, chatInputCapability, sessions]);
 
   const leftSidebarElement = useMemo(() => (
     <LeftSidebar
