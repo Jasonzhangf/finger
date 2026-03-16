@@ -477,3 +477,38 @@ export function disableAutoStart(): void {
     log.error('Failed to disable auto-start:', err instanceof Error ? err : new Error(String(err)));
   }
 }
+
+// CLI entry point
+const args = process.argv.slice(2);
+
+if (args.includes('--start')) {
+  const supervisor = new DualDaemonSupervisor();
+  supervisor.start().catch((err) => {
+    console.error('Failed to start DualDaemon:', err);
+    process.exit(1);
+  });
+} else if (args.includes('--stop')) {
+  const supervisor = new DualDaemonSupervisor();
+  supervisor.stop().catch((err) => {
+    console.error('Failed to stop DualDaemon:', err);
+    process.exit(1);
+  });
+} else if (args.includes('--status')) {
+  const supervisor = new DualDaemonSupervisor();
+  console.log(JSON.stringify(supervisor.getStatus(), null, 2));
+} else if (args.includes('--enable-autostart')) {
+  enableAutoStart();
+} else if (args.includes('--disable-autostart')) {
+  disableAutoStart();
+} else {
+  console.log(`
+Usage: node dist/daemon/dual-daemon.js [command]
+
+Commands:
+  --start             Start DualDaemon supervisor
+  --stop              Stop DualDaemon supervisor
+  --status             Show daemon status
+  --enable-autostart   Enable launchd auto-start
+  --disable-autostart  Disable launchd auto-start
+    `);
+}

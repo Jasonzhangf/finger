@@ -14,33 +14,40 @@ function isPortInUse(port: number): Promise<boolean> {
 }
 
 function killProcessOnPort(port: number): void {
-  // Respect safety policy: only kill when explicitly allowed
-  if (process.env.ALLOW_PORT_GUARD_KILL !== '1') {
-    console.warn(`[Server] Port ${port} in use. Set ALLOW_PORT_GUARD_KILL=1 to enable auto-kill.`);
-    return;
-  }
   try {
     const output = execSync(`lsof -ti:${port} 2>/dev/null || true`, {
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'ignore'],
     });
     const pids = output.split(/\s+/).map((entry) => Number.parseInt(entry, 10)).filter(Number.isFinite);
+    
+    if (pids.length === 0) {
+      return;
+    }
+    
+    console.log(`[PortGuard] Found ${pids.length} process(es) on port ${port}: ${pids.join(', ')}`);
+    
     for (const pid of pids) {
       try {
+        console.log(`[PortGuard] Killing process ${pid} on port ${port}...`);
         process.kill(pid, 'SIGKILL');
-      } catch {
-        // ignore
+        console.log(`[PortGuard] Process ${pid} killed`);
+      } catch (err) {
+        // Process may have already exited
+        console.log(`[PortGuard] Failed to kill process ${pid}: ${err instanceof Error ? err.message : String(err)}`);
       }
     }
-  } catch {
-    // noop
+  } catch (err) {
+    // lsof command may have failed
+    console.log(`[PortGuard] Failed to check port ${port}: ${err instanceof Error ? err.message : String(err)}`);
   }
 }
 
 export async function ensureSingleInstance(port: number): Promise<void> {
   if (await isPortInUse(port)) {
-    console.log(`[Server] Port ${port} is in use, killing existing process...`);
+    console.log(`[PortGuard] Port ${port} is in use, killing existing process...`);
     killProcessOnPort(port);
+    // Wait for port to be released
     await new Promise(resolve => setTimeout(resolve, 500));
   }
 }

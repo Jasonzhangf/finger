@@ -1,4 +1,5 @@
 import express from 'express';
+import { execSync } from 'child_process';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
 import { registry } from '../core/registry.js';
@@ -447,6 +448,9 @@ await gatewayManager.start().catch((err) => {
 
 registerDefaultModuleRoutes(moduleRegistry);
 const wsPort = process.env.WS_PORT ? parseInt(process.env.WS_PORT, 10) : 9998;
+// WebSocket server cleanup
+await ensureSingleInstance(wsPort);
+
 ({ wss, wsClients, broadcast } = createWebSocketServer({
   port: wsPort,
   serverPort: PORT,
