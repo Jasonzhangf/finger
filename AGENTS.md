@@ -60,6 +60,12 @@ It intentionally avoids project-specific architecture, API, roadmap, and busines
 - Keep documentation concise, accurate, and implementation-agnostic where possible.
 - Use one canonical docs directory naming convention per repo (choose `Docs/` or `docs/` and keep it consistent).
 
+## Project Operational Files (Do Not Delete)
+- `HEARTBEAT.md`：项目级 heartbeat 巡检唯一真源。用于定义当前 heartbeat 要持续跟踪的 epic / 子任务、每轮巡检步骤、状态矩阵、巡检日志、关闭 heartbeat 的条件。
+- `DELIVERY.md`：项目级交付与 reviewer 队列唯一真源。heartbeat / 人工巡检在确认某个任务闭环后，必须追加写入此文件，请 reviewer 基于这里的证据进行 review。
+- 这两个文件属于项目运行中的操作文件，即使被 `.gitignore` 忽略，也**不得删除**；如果缺失，应先重建再继续执行。
+- 对 heartbeat / review / 巡检类任务，必须优先读取这两个文件，再决定下一步动作。
+
 ## Testing Files
 - `tests/modules/**/*.test.ts` (blocks 基础能力层)
 - `tests/unit/blocks/**/*.test.ts` (blocks 基础能力层)

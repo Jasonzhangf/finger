@@ -11,29 +11,53 @@ import type { AgentInfo } from '../../agents/finger-system-agent/registry.js';
 import { readFileSync } from 'fs';
 import { join } from 'path';
 import { FINGER_PATHS } from '../../core/finger-paths.js';
-import { SYSTEM_AGENT_CONFIG } from '../../agents/finger-system-agent/index.js';
+import { SYSTEM_AGENT_CONFIG, SYSTEM_PROJECT_PATH } from '../../agents/finger-system-agent/index.js';
 import { logger } from '../../core/logger.js';
 
 const log = logger.module('SystemAgentManager');
 
 export class SystemAgentManager {
   private runner: PeriodicCheckRunner | null = null;
+  private systemSessionId: string | null = null;
 
   constructor(private deps: AgentRuntimeDeps) {}
 
   async start(): Promise<void> {
     if (this.runner) return;
+    
+    // 1. 创建或获取 System Agent 的 session
+    this.systemSessionId = await this.ensureSystemSession();
+    
+    // 2. 启动定时器
     this.runner = new PeriodicCheckRunner(this.deps);
     this.runner.start();
 
-    // 启动监控中的 Project Agents
+    // 3. 启动监控中的 Project Agents
     await this.startMonitoredProjects();
 
-    // 向 System Agent 注入启动 bootstrap 提示词
+    // 4. 向 System Agent 注入启动 bootstrap 提示词
     await this.injectSystemBootstrap();
   }
 
+  private async ensureSystemSession(): Promise<string> {
+    try {
+      const sessionId = `system-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+      this.deps.sessionManager.ensureSession(sessionId, SYSTEM_PROJECT_PATH, 'System Agent Bootstrap');
+      log.info(`Created system session: ${sessionId}`);
+      return sessionId;
+    } catch (err) {
+      const error = err instanceof Error ? err : new Error(String(err));
+      log.error('Failed to create system session:', error);
+      return 'default';
+    }
+  }
+
   private async injectSystemBootstrap(): Promise<void> {
+    if (!this.systemSessionId) {
+      log.warn('System session not available, skipping bootstrap injection');
+      return;
+    }
+
     try {
       const bootstrapPath = join(FINGER_PATHS.home, 'system', 'BOOTSTRAP.md');
       let bootstrapPrompt = '';
@@ -50,21 +74,26 @@ export class SystemAgentManager {
         return;
       }
 
-      // 查找或创建 system agent session
-      const sessionResult = await this.deps.agentRuntimeBlock.execute('dispatch', {
-        targetAgentId: SYSTEM_AGENT_CONFIG.id,
-        task: {
-          prompt: bootstrapPrompt,
-        },
-        sessionId: '', // 使用空 session ID 创建新会话
-        metadata: {
-          source: 'system-bootstrap',
-          role: 'system',
-        },
-        blocking: false,
-      });
+      // 使用正确的 sessionId 发送 bootstrap 提示词
+      const dispatchResult: { ok: boolean; dispatchId?: string; error?: string } = 
+        await this.deps.agentRuntimeBlock.execute('dispatch', {
+          targetAgentId: SYSTEM_AGENT_CONFIG.id,
+          task: {
+            prompt: bootstrapPrompt,
+          },
+          sessionId: this.systemSessionId,
+          metadata: {
+            source: 'system-bootstrap',
+            role: 'system',
+          },
+          blocking: false,
+        }) as unknown as { ok: boolean; dispatchId?: string; error?: string };
 
-      log.info('Injected system bootstrap prompt');
+      if (dispatchResult.ok) {
+        log.info('Injected system bootstrap prompt', { dispatchId: dispatchResult.dispatchId });
+      } else {
+        log.error('Failed to inject bootstrap:', dispatchResult.error ? new Error(dispatchResult.error) : undefined);
+      }
     } catch (err) {
       const error = err instanceof Error ? err : new Error(String(err));
       log.error('Failed to inject system bootstrap:', error);

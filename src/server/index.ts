@@ -388,6 +388,7 @@ await registerFingerRoleModules({
 });
 console.log(`[Server] Finger runner mode: ${shouldUseMockChatCodexRunner(runtimeFlags) ? 'mock' : 'real'} (profile/env aware)`);
 
+
 agentRuntimeBlock = new AgentRuntimeBlock('agent-runtime-1', {
   moduleRegistry,
   hub,
@@ -403,6 +404,19 @@ agentRuntimeBlock = new AgentRuntimeBlock('agent-runtime-1', {
 });
 await agentRuntimeBlock.initialize();
 await agentRuntimeBlock.start();
+
+// Deploy System Agent globally (required for dispatch to work)
+// Must be done after agentRuntimeBlock.start() to ensure module is registered and started
+try {
+  const deployResult = await agentRuntimeBlock.execute('deploy', {
+    agentId: FINGER_SYSTEM_AGENT_ID,
+    scope: 'global',
+    instanceCount: 1,
+  }) as unknown as { success: boolean };
+  console.log(`[Server] System Agent deployed: ${deployResult?.success ? 'ok' : 'failed'}`);
+} catch (err) {
+  console.error('[Server] Failed to deploy System Agent:', err);
+}
 applyOrchestrationConfig = createOrchestrationConfigApplier({
   agentRuntimeBlock,
   sessionManager,
@@ -427,17 +441,6 @@ await loadAutostartAgents(moduleRegistry).catch(err => {
 });
 
 
-// Deploy System Agent globally (required for dispatch to work)
-try {
-  const deployResult = await agentRuntimeBlock.execute('deploy', {
-    agentId: FINGER_SYSTEM_AGENT_ID,
-    scope: 'global',
-    instanceCount: 1,
-  }) as unknown as { success: boolean };
-  console.log(`[Server] System Agent deployed: ${deployResult?.success ? 'ok' : 'failed'}`);
-} catch (err) {
-  console.error('[Server] Failed to deploy System Agent:', err);
-}
 
 // Start Clock Task Injector
 clockInjector = new ClockTaskInjector({

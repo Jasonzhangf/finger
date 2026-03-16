@@ -12,6 +12,8 @@ logs/snapshots/
 .beads/export-state/
 # Local reminder scratch file
 clock.md
+HEARTBEAT.md
+DELIVERY.md
 
 # Temporary test files
 *.test.ts.tmp
