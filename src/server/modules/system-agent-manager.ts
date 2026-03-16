@@ -41,18 +41,22 @@ export class SystemAgentManager {
 
   private async ensureSystemSession(): Promise<string> {
     try {
-      const sessionId = `system-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-      this.deps.sessionManager.ensureSession(sessionId, SYSTEM_PROJECT_PATH, 'System Agent Bootstrap');
-      log.info(`Created system session: ${sessionId}`);
+      const session = this.deps.sessionManager.getOrCreateSystemSession();
+      const sessionId = session.id;
+      log.info(`System session: ${sessionId} (${session.name})`);
       return sessionId;
     } catch (err) {
       const error = err instanceof Error ? err : new Error(String(err));
-      log.error('Failed to create system session:', error);
+      log.error('Failed to get or create system session:', error);
       return 'default';
     }
   }
 
   private async injectSystemBootstrap(): Promise<void> {
+    log.info('[SystemAgentManager] Checking System Agent deployment', {
+      agentId: SYSTEM_AGENT_CONFIG.id
+    });
+
     if (!this.systemSessionId) {
       log.warn('System session not available, skipping bootstrap injection');
       return;
@@ -64,6 +68,11 @@ export class SystemAgentManager {
 
       try {
         bootstrapPrompt = readFileSync(bootstrapPath, 'utf-8');
+
+      log.info('[SystemAgentManager] Injecting bootstrap', {
+        sessionId: this.systemSessionId,
+        bootstrapPromptLength: bootstrapPrompt.length
+      });
       } catch (err) {
         log.warn(`Bootstrap file not found at ${bootstrapPath}, using default prompt`);
         bootstrapPrompt = '你已经启动，请进行开机检查。';
@@ -89,7 +98,7 @@ export class SystemAgentManager {
         }) as unknown as { ok: boolean; dispatchId?: string; error?: string };
 
       if (dispatchResult.ok) {
-        log.info('Injected system bootstrap prompt', { dispatchId: dispatchResult.dispatchId });
+        log.info('[SystemAgentManager] Bootstrap injected successfully', { dispatchId: dispatchResult.dispatchId });
       } else {
         log.error('Failed to inject bootstrap:', dispatchResult.error ? new Error(dispatchResult.error) : undefined);
       }

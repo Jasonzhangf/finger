@@ -341,9 +341,9 @@ function isRetryableRunError(error: unknown): boolean {
   if (normalized.includes('insufficient_quota')) return false;
   if (normalized.includes('unauthorized')) return false;
   if (normalized.includes('forbidden')) return false;
-  if (normalized.includes('http 401') || normalized.includes('http_401')) return false;
-  if (normalized.includes('http 402') || normalized.includes('http_402')) return false;
-  if (normalized.includes('http 403') || normalized.includes('http_403')) return false;
+  if (normalized.includes(' 401') || normalized.includes('_401') || normalized.includes('error code: 401')) return false;
+  if (normalized.includes(' 402') || normalized.includes('_402') || normalized.includes('error code: 402')) return false;
+  if (normalized.includes(' 403') || normalized.includes('_403') || normalized.includes('error code: 403')) return false;
 
   return isTimeoutError(error)
     || normalized.includes('fetch failed')
@@ -353,14 +353,22 @@ function isRetryableRunError(error: unknown): boolean {
     || normalized.includes('econnreset')
     || normalized.includes('econnrefused')
     || normalized.includes('socket hang up')
-    || normalized.includes('http 408')
-    || normalized.includes('http 409')
-    || normalized.includes('http 425')
-    || normalized.includes('http 429')
-    || normalized.includes('http 500')
-    || normalized.includes('http 502')
-    || normalized.includes('http 503')
-    || normalized.includes('http 504');
+    || normalized.includes(' 408')
+    || normalized.includes('_408')
+    || normalized.includes(' 409')
+    || normalized.includes('_409')
+    || normalized.includes(' 425')
+    || normalized.includes('_425')
+    || normalized.includes(' 429')
+    || normalized.includes('_429')
+    || normalized.includes(' 500')
+    || normalized.includes(' 502')
+    || normalized.includes(' 503')
+    || normalized.includes(' 504')
+    || normalized.includes('error code: 502')
+    || normalized.includes('error code: 500')
+    || normalized.includes('error code: 503')
+    || normalized.includes('error code: 504');
 }
 
 function retryDelayMs(attempt: number): number {
