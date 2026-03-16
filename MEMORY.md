@@ -139,3 +139,23 @@
 - [x] 业务逻辑保留
 - [x] Session 落盘完整
 
+
+## System Agent Bootstrap 实现 (2026-03-16 15:51)
+
+### 完成内容
+- ✅ `SystemAgentManager.injectSystemBootstrap()` - 启动时注入 bootstrap prompt
+- ✅ 读取 `~/.finger/system/BOOTSTRAP.md` 并发送给 system agent
+- ✅ `metadata.role = 'system'` 标记系统注入消息
+- ✅ ChatCodexModule 正确处理 role=system（跳过历史/developer instructions）
+- ✅ Session 落盘支持 system session���`~/.finger/system/sessions/`）
+- ✅ 测试覆盖：12 tests passed
+
+### 测试文件
+- `tests/unit/system-agent/system-agent-static.test.ts` (5 tests)
+- `tests/integration/system-agent-bootstrap.test.ts` (3 tests)
+- `tests/integration/system-agent-role-system.test.ts` (4 tests)
+
+### Git 提交记录
+- 8cb2cfe "feat: add system agent bootstrap injection on daemon start"
+- 3bbcc8a "chore: remove iflow SDK dependency, complete ChatCodexModule migration"
+
