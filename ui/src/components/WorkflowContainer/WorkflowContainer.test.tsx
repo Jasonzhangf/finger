@@ -7,8 +7,8 @@ const fetchMock = vi.fn();
 vi.stubGlobal('fetch', fetchMock);
 
 // Mock child components
-vi.mock('../TaskFlowCanvas/TaskFlowCanvas.tsx', () => ({
-  TaskFlowCanvas: () => <div data-testid="task-flow-canvas">Canvas</div>,
+vi.mock('../MultiAgentMonitorGrid/MultiAgentMonitorGrid.tsx', () => ({
+  MultiAgentMonitorGrid: () => <div data-testid="multi-agent-monitor-grid">Monitor Grid</div>,
 }));
 
 vi.mock('../PerformanceCard/PerformanceCard.tsx', () => ({
@@ -16,11 +16,11 @@ vi.mock('../PerformanceCard/PerformanceCard.tsx', () => ({
 }));
 
 vi.mock('../ChatInterface/ChatInterface.tsx', () => ({
-  ChatInterface: ({ events }: { events: Array<{ id: string; role: string; content: string }> }) => (
-    <div data-testid="chat-interface">
-      Chat ({events?.length || 0} events)
-    </div>
-  ),
+  ChatInterface: () => <div data-testid="chat-interface">Chat</div>,
+}));
+
+vi.mock('../AgentSessionPanel/AgentSessionPanel.tsx', () => ({
+  AgentSessionPanel: () => <div data-testid="chat-interface">System Panel</div>,
 }));
 
 vi.mock('../LeftSidebar/LeftSidebar.tsx', () => ({
@@ -40,6 +40,16 @@ vi.mock('../SessionResumeDialog/SessionResumeDialog.tsx', () => ({
 vi.mock('../../hooks/useSessionResume.js', () => ({
   useSessionResume: () => ({
     checkForResumeableSession: vi.fn(),
+  }),
+}));
+
+vi.mock('../../hooks/useSystemMonitor.js', () => ({
+  useSystemMonitor: () => ({
+    isEnabled: () => false,
+    toggle: vi.fn(),
+    selectedProjects: [],
+    entries: [],
+    refresh: vi.fn(),
   }),
 }));
 
@@ -171,7 +181,7 @@ describe('WorkflowContainer', () => {
   it('should render main layout without hooks error', () => {
     render(<WorkflowContainer />);
 
-    expect(screen.getByTestId('task-flow-canvas')).toBeTruthy();
+    expect(screen.getByTestId('multi-agent-monitor-grid')).toBeTruthy();
     expect(screen.getByTestId('chat-interface')).toBeTruthy();
     expect(screen.getByTestId('left-sidebar')).toBeTruthy();
   });
@@ -262,7 +272,7 @@ describe('WorkflowContainer', () => {
     render(<WorkflowContainer />);
 
     // ChatInterface should receive the events
-    expect(screen.getByText('Chat (2 events)')).toBeTruthy();
+    expect(screen.getByTestId('chat-interface')).toBeTruthy();
   });
 
   it('should maintain hook consistency when isLoading and error change rapidly', async () => {

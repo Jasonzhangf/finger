@@ -187,7 +187,7 @@ describe('ChatInterface request details rendering', () => {
 
     fireEvent.click(screen.getByText(/查看 Dryrun 详情/));
     expect(screen.getByText('Agent ID')).toBeTruthy();
-    expect(screen.getByText('finger-orchestrator')).toBeTruthy();
+    expect(screen.getAllByText('finger-orchestrator').length).toBeGreaterThan(0);
     expect(screen.getByText('orchestrator')).toBeTruthy();
     expect(screen.getByText('exec_command, update_plan')).toBeTruthy();
   });
