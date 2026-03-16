@@ -14647,3 +14647,86 @@ sessionId: 019cf122-9c1e-7830-9604-4a4cb18ee729
 model: gpt-5.4
 provider: openai-responses
 -->
+
+### Assistant · 2026/03/16 19:31:36
+
+**心跳验证和多项目管理验证说明**:
+
+## 1. 心跳验证
+
+### 代码验证
+- `periodic-check.ts`: 5 分钟间隔 `DEFAULT_INTERVAL_MS = 5 * 60 * 1000`
+- `sendHeartbeatPrompt()`: 只对 `idle` 状态的 agent 发送心跳
+- 运行时日志: `[PeriodicCheckRunner] Started with interval 300000ms`
+
+### 测试验证 (9 tests)
+```
+tests/integration/periodic-check-heartbeat.test.ts (5 tests)
+- registry load/save
+- agent status update  
+- monitor status setting
+- heartbeat operations
+
+tests/integration/periodic-check-runtime.test.ts (4 tests)
+- PeriodicCheckRunner execution
+- registry update on check
+- agent status changed event
+- 5-minute default interval
+```
+
+### 关键发现
+- `agentId` 必须在 registry 和 `runtime_view` 返回值之间匹配
+- 只有 `idle` 状态的 agent 会收到心跳提示词
+
+## 2. 多项目管理验证
+
+### Registry 结构
+```json
+{
+  "version": 1,
+  "agents": {
+    "projectId": {
+      "projectId": "...",
+      "projectPath": "...",
+      "agentId": "finger-orchestrator",
+      "status": "idle|busy|stopped|crashed",
+      "monitored": true,
+      "lastHeartbeat": "ISO timestamp",
+      "stats": { "tasksCompleted": 0, "tasksFailed": 0, "uptime": 0 }
+    }
+  }
+}
+```
+
+### 验证方式
+- `setMonitorStatus(projectPath, enabled)`: 设置监控状态
+- `listAgents()`: 列出所有注册的 agents
+- `updateAgentStatus(projectId, status)`: 更新状态
+
+## 未完成项
+
+⚠️ **实际运行时验证** (需要等待 5 分钟):
+- 启动 daemon 后等待 5 分钟
+- 观察 `[PeriodicCheckRunner] Running periodic check...` 日志
+- 验证 idle agent 收到心跳提示词
+
+需要我启动 daemon 进行实际的 5 分钟心跳验证吗？
+
+<!-- cache-meta
+requestId: openai-responses-ali-coding-plan.key1-glm-5-20260316T193103303-026
+sessionId: 019cf122-9c1e-7830-9604-4a4cb18ee729
+model: glm-5
+provider: anthropic-messages
+finishReason: stop
+-->
+
+### User · 2026/03/16 19:32:25
+
+需要的，你可以测试时用1分钟验证
+
+<!-- cache-meta
+requestId: openai-responses-unknown-unknown-20260316T193225660-027
+sessionId: 019cf122-9c1e-7830-9604-4a4cb18ee729
+model: gpt-5.4
+provider: openai-responses
+-->
