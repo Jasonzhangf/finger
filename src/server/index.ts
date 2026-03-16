@@ -426,6 +426,19 @@ await loadAutostartAgents(moduleRegistry).catch(err => {
   console.error('[Server] Failed to load autostart agents:', err);
 });
 
+
+// Deploy System Agent globally (required for dispatch to work)
+try {
+  const deployResult = await agentRuntimeBlock.execute('deploy', {
+    agentId: FINGER_SYSTEM_AGENT_ID,
+    scope: 'global',
+    instanceCount: 1,
+  }) as unknown as { success: boolean };
+  console.log(`[Server] System Agent deployed: ${deployResult?.success ? 'ok' : 'failed'}`);
+} catch (err) {
+  console.error('[Server] Failed to deploy System Agent:', err);
+}
+
 // Start Clock Task Injector
 clockInjector = new ClockTaskInjector({
   dispatchTaskToAgent,
