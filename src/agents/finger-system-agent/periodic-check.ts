@@ -70,7 +70,6 @@ export class PeriodicCheckRunner {
       // 更新 registry 状态
       const nextStatus = status === 'idle' ? 'idle' : 'busy';
       await updateAgentStatus(registryEntry.projectId, nextStatus);
-      await updateHeartbeat(registryEntry.projectId);
       emitAgentStatusChanged(this.deps, { agentId, status: nextStatus, projectId: registryEntry.projectId });
 
       // 仅对 idle agent 发送心跳提示词
