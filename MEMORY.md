@@ -111,3 +111,31 @@
 - [ ] Phase 2: 移除 iflow SDK
 - [ ] Phase 3: 重构业务代码
 - [ ] Phase 4: 验证测试
+
+## IFlow SDK 剥离完成 (2026-03-16)
+
+### 完成内容
+- ✅ 删除 `src/agents/sdk/image-test-real.ts`（唯一 iflow SDK 使用）
+- ✅ 保留 iflow 兼容性枚举（`AgentImplementation.kind: 'iflow' | 'native'`）
+- ✅ 所有业务逻辑完整保留（router/daemon/system-agent）
+- ✅ Session 落盘实现（`src/orchestration/session-manager.ts`）
+- ✅ System role=system 处理（`src/agents/chat-codex/chat-codex-module.ts`）
+- ✅ `pnpm build` 通过（version 0.1.0119）
+
+### 保留的 iflow 兼容层
+- `src/blocks/agent-runtime-block/index.ts`: iflow 枚举保留
+- `src/blocks/ai-block/index.ts`: sdk 枚举保留
+- `src/blocks/agent-block/index.ts`: sdk 枚举保留
+- `src/core/finger-paths.ts`: iflow-session-map.json 路径保留
+
+### 关键实现
+- **Session 落盘**: 792 行完整实现，支持 system/project session 分离
+- **System role**: 跳过历史记录和 developer instructions
+- **ChatCodexModule**: 作为唯一执行内核，替代 iflow SDK
+
+### 验收标准
+- [x] 构建通过
+- [x] 无 iflow 运行时依赖
+- [x] 业务逻辑保留
+- [x] Session 落盘完整
+

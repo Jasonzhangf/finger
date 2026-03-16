@@ -8,6 +8,10 @@ import type { AgentRuntimeDeps } from './agent-runtime/types.js';
 import { PeriodicCheckRunner } from '../../agents/finger-system-agent/periodic-check.js';
 import { loadRegistry } from '../../agents/finger-system-agent/registry.js';
 import type { AgentInfo } from '../../agents/finger-system-agent/registry.js';
+import { readFileSync } from 'fs';
+import { join } from 'path';
+import { FINGER_PATHS } from '../../core/finger-paths.js';
+import { SYSTEM_AGENT_CONFIG } from '../../agents/finger-system-agent/index.js';
 import { logger } from '../../core/logger.js';
 
 const log = logger.module('SystemAgentManager');
@@ -24,6 +28,47 @@ export class SystemAgentManager {
 
     // 启动监控中的 Project Agents
     await this.startMonitoredProjects();
+
+    // 向 System Agent 注入启动 bootstrap 提示词
+    await this.injectSystemBootstrap();
+  }
+
+  private async injectSystemBootstrap(): Promise<void> {
+    try {
+      const bootstrapPath = join(FINGER_PATHS.home, 'system', 'BOOTSTRAP.md');
+      let bootstrapPrompt = '';
+
+      try {
+        bootstrapPrompt = readFileSync(bootstrapPath, 'utf-8');
+      } catch (err) {
+        log.warn(`Bootstrap file not found at ${bootstrapPath}, using default prompt`);
+        bootstrapPrompt = '你已经启动，请进行开机检查。';
+      }
+
+      if (bootstrapPrompt.trim().length === 0) {
+        log.warn('Bootstrap prompt is empty, skipping injection');
+        return;
+      }
+
+      // 查找或创建 system agent session
+      const sessionResult = await this.deps.agentRuntimeBlock.execute('dispatch', {
+        targetAgentId: SYSTEM_AGENT_CONFIG.id,
+        task: {
+          prompt: bootstrapPrompt,
+        },
+        sessionId: '', // 使用空 session ID 创建新会话
+        metadata: {
+          source: 'system-bootstrap',
+          role: 'system',
+        },
+        blocking: false,
+      });
+
+      log.info('Injected system bootstrap prompt');
+    } catch (err) {
+      const error = err instanceof Error ? err : new Error(String(err));
+      log.error('Failed to inject system bootstrap:', error);
+    }
   }
 
   private async startMonitoredProjects(): Promise<void> {
