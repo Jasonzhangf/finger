@@ -32,7 +32,13 @@ export class PeriodicCheckRunner {
   start(): void {
     if (this.timer) return;
     console.log(`[PeriodicCheckRunner] Started with interval ${this.intervalMs}ms`);
-    this.timer = setInterval(() => void this.runOnce(), this.intervalMs);
+    this.timer = setInterval(async () => {
+      try {
+        await this.runOnce();
+      } catch (error) {
+        console.error('[PeriodicCheckRunner] Error in runOnce:', error);
+      }
+    }, this.intervalMs);
   }
 
   stop(): void {
