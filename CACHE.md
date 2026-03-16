@@ -6491,3 +6491,355 @@
   
   ### 5) CLI / API 要求
   - review / clock / injection / reenter 都必须提供 CLI + API 能... [truncated]
+
+- [2026/03/16 10:44:49] role=assistant
+  model: glm-4.7
+  provider: anthropic-messages
+  finishReason: stop
+  content: |
+  已完成所有修改。总结：
+  
+  ## ✅ UI 修复完成
+  
+  1. **关闭按钮功能**
+     - `MonitorPanel` 接口添加 `onClose` 回调
+     - 监控窗口右上角显示红色 × 按钮
+     - 点击调用 `systemMonitor.toggle(projectPath, false)` 移除监控
+  
+  2. **去重逻辑**
+     - 使用 `Map<string, SystemRegistryEntry>` 按 projectPath 去重
+     - 大小写不敏感（使用 `toLowerCase()`）
+     - 确保每个项目只显示一个监控窗口
+  
+  3. **构建状态**
+     - ✓ TypeScript 编译通过
+     - ✓ Vite 构建成功
+  
+  ## ✅ System Agent 测试计划
+  
+  创建了 `~/.finger/system/SystemAgentTestPlan.md`，包含：
+  
+  1. **Heartbeat 自检测试** - 验证 5 分钟自检机制
+  2. **Project Agent Heartbeat 测试** - 验证向监控项目发送 heartbeat
+  3. **Dryrun 模式测试** - 验证 dryrun 显示计划但不执行
+  4. **任务分发测试** - 验证任务分配和报告流程
+  5. **场景触发测试** - 验证 4 种场景的对应角色行为
+  6. **Daemon 重启测试** - 验证 build 后自动重启
+  7. **长时间运行测试** - 验证 24 小时稳定性
+  8. **测试环境配置** - 前置条件和工具
+  
+  ## ⚠️ 待实现
+  
+  System Agent 的核心功能尚未实现：
+  - 5 分钟定时器触发机制
+  - HEARTBEAT.md 读取和自检逻辑
+  - 向 Project Agent 发送 heartbeat
+  - Dryrun 模式支持
+  - Daemon build 后自动重启
+  
+  这些需要在后续 Epic 任务中实现。
+
+- [2026/03/16 10:48:26] role=assistant
+  model: glm-4.7
+  provider: anthropic-messages
+  finishReason: stop
+  content: |
+  是的，当前架构是这样的：
+  
+  ## 当前实现架构
+  
+  ```
+  ┌─────────────────────────────────────────┐
+  │         Dual Daemon (Supervisor)        │
+  │  - 监控 2 个 Daemon 进程               │
+  │  - 每 5 秒检查进程存活                 │
+  │  - 自动重启崩溃的 Daemon               │
+  └──────────────┬──────────────────────────┘
+                 │
+          ┌──────┴──────┐
+          │             │
+     ┌────▼────┐  ┌───▼────┐
+     │Daemon 1 │  │Daemon 2│
+     │:9999    │  │:9997   │
+     └────┬────┘  └───┬────┘
+          │            │
+          └─────┬──────┘
+                │
+         ┌──────▼──────┐
+         │  Server 进程 │
+         │              │
+         │  System Agent│
+         │  Manager     │
+         │  (setInterval│
+         │   5分钟)     │
+         └──────────────┘
+  ```
+  
+  ## 定时器实现位置
+  
+  **当前**: Server 进程中的 `PeriodicCheckRunner`
+  - 使用 `setInterval` 每 5 分钟触发
+  - 检查所有 Agent 状态
+  - 向 idle Agent 发送 heartbeat
+  
+  **Daemon 的角色**:
+  - 启动 Server 进程
+  - 监控 Server 进程存活
+  - Server 崩溃时自动重启
+  
+  ## Build 后自动重启机制
+  
+  `dual-daemon.ts` 已经实现了健康检查：
+  
+  ```typescript
+  private startHealthCheck(): void {
+    this.checkTimer = setInterval(() => {
+      this.checkHealth();
+    }, 5000);
+  }
+  
+  private checkHealth(): void {
+    // 检查 daemon 进程是否存活
+    if (!this.isProcessAlive(this.daemon1.pid)) {
+      this.restartDaemon(this.daemon1);
+    }
+  }
+  ```
+  
+  ## 问题分析
+  
+  如果 build 时 kill 了 Server 进程：
+  1. DualDaemon 检测到 Server 崩溃
+  2. 自动重启 Server
+  3. Server 重启后重新初始化 SystemAgentManager
+  4. **问题**: 定时器重新开始，但之前的 System Agent 会话可能丢失
+  
+  ## 建议改进
+  
+  需要确保：
+  1. ✅ DualDaemon 已实现自动重启（已完成）
+  2. ❌ System Agent 会话持久化（需要检查）
+  3. ❌ 定时器状态恢复（需要检查）
+  
+  你想检查会话持久化的实现吗？还是有其他关于定时器的问题？
+
+- [2026/03/16 10:53:08] role=assistant
+  model: glm-4.7
+  provider: anthropic-messages
+  finishReason: stop
+  content: |
+  从代码分析，会话已经实现了独立保存和隔离存储：
+  
+  ## ✅ 会话存储结构
+  
+  ```
+  ~/.finger/sessions/
+  ├── _Users_fanzhang_.finger/              # System Agent 专用目录
+  │   └── session-1773400666758-z8vwdz/
+  │       ├── messages.jsonl                 # 消息历史
+  │       ├── agent-finger-executor.json     # Agent 状态
+  │       ├── workspace/                     # 工作区
+  │       └── main.json                      # 会话元数据
+  │
+  ├── _Volumes_extension_code_finger/       # 普通项目会话
+  │   └── session-1773243937732-c3cgq8/
+  │       ├── messages.jsonl
+  │       └── ...
+  │
+  └── _tmp_test-project/                     # 其他项目会话
+      └── session-<id>-<suffix>/
+  ```
+  
+  ## 隔离机制
+  
+  ### 1. 目录隔离
+  - **System Agent**: `~/.finger/sessions/_Users_fanzhang_.finger/`
+  - **普通项目**: `~/.finger/sessions/<encoded-project-path>/`
+  
+  ```typescript
+  // session-manager.ts
+  private getProjectDirName(projectPath: string): string {
+    const normalizedPath = path.resolve(projectPath).replace(/\\/g, '/');
+    const encoded = normalizedPath.replace(/[/:]/g, '_');
+    return encoded.length > 0 ? encoded : '_';
+  }
+  
+  private isSystemSession(session: Session): boolean {
+    return session.projectPath === SYSTEM_PROJECT_PATH;
+  }
+  ```
+  
+  ### 2. 会话恢复机制
+  
+  ```typescript
+  // Server 重启时自动恢复
+  refreshSessionsFromDisk(options?: { preserveCurrent?: boolean }): void {
+    const preserve = options?.preserveCurrent !== false;
+    const preservedId = preserve ? this.currentSessionId : null;
+    this.sessions.clear();
+    this.currentSessionId = preservedId;
+    this.loadSessions({ autoResume: false, preserveCurrentId: preservedId });
+  }
+  ```
+  
+  ### 3. SessionControlPlane 绑定
+  
+  ```typescript
+  // 记录 Agent 和 Session 的映射关系
+  ~/.finger/config/session-control-plane.json
+  {
+    "version": "2.0.0",
+    "bindings": {
+      "finger::finger-system-agent::session-xxx": {
+        "fingerSessionId": "session-1773400666758-z8vwdz",
+        "agentId": "finger-system-agent",
+        "provider": "finger",
+        "providerSessionId": "provider-session-id",
+        "updatedAt": "2026-03-16T10:00:00.000Z"
+      }
+    }
+  }
+  ```
+  
+  ## Daemon 重启后的恢复流程
+  
+  ```
+  1. DualDaemon 检测到 Server 崩溃
+  ... [truncated]
+
+- [2026/03/16 10:54:35] role=assistant
+  model: glm-4.7
+  provider: anthropic-messages
+  finishReason: stop
+  content: |
+  ## ✅ OpenClash 透明代理配置完成
+  
+  ### 当前状态
+  
+  **透明代理已启用**：
+  - ✅ Redirect 模式：已启用
+  - ✅ 透明端口：7895（TCP/UDP）
+  - ✅ 局域网段：192.168.66.0/24
+  - ✅ DNS 劫持：已关闭（使用系统 DNS）
+  
+  ### 测试结果
+  
+  **路由器本地测试**：
+  - ✅ **GitHub**：成功访问（通过代理）
+  - ❌ **Google**：无法访问（连接超时）
+  - ✅ **Baidu**：正常访问（直连）
+  
+  **日志显示**：
+  - ✅ 代理正在处理流量
+  - ✅ GitHub 连接使用 `Claw-Relay-Trojan-443`
+  - ✅ 大陆网站直连
+  - ✅ 国外网站走代理
+  
+  ### 配置总结
+  
+  **当前配置**：
+  - **模式**：redir-host（Redirect 模式）
+  - **代理节点**：
+    - Claw-Relay-Trojan-443 (159.75.134.56:443)
+    - Coder1-Trojan-443 (154.193.217.169:443)
+  - **分流规则**：
+    - GitHub → Claw-Relay
+    - Google/OpenAI → 美国节点（URL 测试）
+    - 其他外网 → 国外节点
+    - 大陆网站 → 直连
+  
+  ### 下一步建议
+  
+  OpenClash 已经运行，透明代理已配置。你现在可以：
+  
+  1. **测试客户端设备**：将手机或电脑连接到路由器 Wi-Fi，测试是否能正常访问 Google、GitHub 等
+  2. **访问控制面板**：`http://192.168.66.1:9091/ui` 查看详细配置和日志
+  3. **调整分流规则**：根据需要添加更多域名规则
+  
+  需要我帮你做什么？
+
+- [2026/03/16 10:59:21] role=assistant
+  model: glm-5
+  provider: anthropic-messages
+  finishReason: stop
+  content: |
+  明白了，这是一个更清晰的架构设计。让我整理确认：
+  
+  ## 架构设计确认
+  
+  ### 1. DualDaemon 互相监控
+  
+  ```
+  ┌─────────────────┐     心跳检测      ┌─────────────────┐
+  │   Daemon 1      │ ◄──────────────► │   Daemon 2      │
+  │   :9999         │                   │   :9997         │
+  │                 │                   │                 │
+  │  检测 Daemon 2  │                   │  检测 Daemon 1  │
+  │  心跳消失则重启 │                   │  心跳消失则重启 │
+  └─────────────────┘                   └─────────────────┘
+  ```
+  
+  ### 2. 会话加载机制（Agent 自我管理）
+  
+  ```
+  Agent 生命周期:
+  ┌──────────┐     ┌──────────┐     ┌──────────┐
+  │  启动    │ ──► │ 运行时   │ ──► │ 动态切换 │
+  │ 加载最新 │     │ 不重载   │     │ 重载     │
+  │ session  │     │ session  │     │ session  │
+  └──────────┘     └──────────┘     └──────────┘
+  ```
+  
+  **关键点**：
+  - 不是 Server 启动时加载所有会话
+  - Agent 启动时自己加载最新 session
+  - 动态切换 project 时 Agent 重载 session
+  
+  ### 3. Server 启动流程
+  
+  ```
+  Server 启动
+      │
+      ▼
+  ┌─────────────────────────────────┐
+  │ 1. 启动 System Agent            │
+  │    - 加载最新 session            │
+  │    - 读取 registry.json          │
+  └──────────────┬──────────────────┘
+                 │
+                 ▼
+  ┌─────────────────────────────────┐
+  │ 2. 检查监控中的 Project          │
+  │    - 读取 registry.monitored     │
+  │    - 为每个监控项目启动 Agent     │
+  └──────────────┬──────────────────┘
+                 │
+                 ▼
+  ┌─────────────────────────────────┐
+  │ 3. Project Agent 自注册          │
+  │    - 编排者启动                   │
+  │    - 调用 register_agent 工具     │
+  │    - 向 System Agent 注册        │
+  └─────────────────────────────────┘
+  ```
+  
+  ### 4. System Agent 的 Agent 视图
+  
+  ```
+  registry.json 结构:
+  {
+    "monitored": [
+      { "projectId": "p1", "projectPath": "/path/to/project1", "monitored": true }
+    ],
+    "registered": [
+      { "agentId": "orchestrator-p1", "projectId": "p1", "status": "running" }
+    ],
+    "available": [
+      { "projectId": "p2", "projectPath": "/path/to/project2", "lastSeen": "2026-03-15" }
+    ]
+  }
+  
+  System Agent 通过工具获取:
+  ┌────────────────────────────────────┐
+  │ get_registered_agents()            │  → 当前运行的 agent
+  │ get_monitored_projects()           │... [truncated]
