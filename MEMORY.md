@@ -159,3 +159,36 @@
 - 8cb2cfe "feat: add system agent bootstrap injection on daemon start"
 - 3bbcc8a "chore: remove iflow SDK dependency, complete ChatCodexModule migration"
 
+
+## IFlow SDK 剥离完成 - 最终验证状态 (2026-03-16 15:54)
+
+### 完成内容汇总
+- ✅ 删除 iflow SDK 依赖（唯一使用文件 `image-test-real.ts`）
+- ✅ 保留 iflow 兼容性枚举（向后兼容）
+- ✅ 业务逻辑完整保留（router/daemon/system-agent）
+- ✅ Session 落盘实现（792 行完整实现）
+- ✅ System role=system 处理实现
+- ✅ System Agent Bootstrap 注入实现
+- ✅ 构建通过（version 0.1.0120）
+- ✅ 单元测试通过（16 tests）
+
+### Git 提交链
+- 6aca7c8 "test: add integration tests for dual daemon and session persistence"
+- 8cb2cfe "feat: add system agent bootstrap injection on daemon start"
+- 3bbcc8a "chore: remove iflow SDK dependency, complete ChatCodexModule migration"
+- 4fc70f5 "Remove @iflow-ai/iflow-cli-sdk dependency from package.json"
+- 6654d09 "Remove iflow SDK dependency and add role=system support"
+
+### 测试覆盖
+- ✅ `tests/unit/system-agent/system-agent-static.test.ts` (5 tests)
+- ✅ `tests/integration/system-agent-bootstrap.test.ts` (3 tests)
+- ✅ `tests/integration/system-agent-role-system.test.ts` (4 tests)
+- ✅ `tests/integration/dual-daemon-heartbeat.test.ts` (5 tests)
+- ✅ `tests/integration/session-manager-persistence.test.ts` (4 tests)
+
+### 待验证（需要实际运行 daemon）
+- [ ] Daemon 启动后 system session 落盘文件包含 bootstrap 消息
+- [ ] System Agent 实际响应 bootstrap 提示词并产生回复
+- [ ] Project agent 定时心跳检查工作正常
+- [ ] Dual daemon 互相心跳检测和重启机制工作
+
