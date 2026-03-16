@@ -15330,3 +15330,14 @@ sessionId: 019cf122-9c1e-7830-9604-4a4cb18ee729
 model: gpt-5.4
 provider: openai-responses
 -->
+
+### User · 2026/03/16 20:54:28
+
+应该是clispawn一个服务来解决收发，可以通过固定端口ws进行通信，也可以stdio通信，用cli启动和停止
+
+<!-- cache-meta
+requestId: openai-responses-unknown-unknown-20260316T205428326-020
+sessionId: 019cf122-9c1e-7830-9604-4a4cb18ee729
+model: gpt-5.4
+provider: openai-responses
+-->
