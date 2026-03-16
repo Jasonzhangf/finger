@@ -275,14 +275,28 @@ async function sendMessage(to: string, text: string, wsPort: number): Promise<vo
   });
 
   ws.on('message', (data) => {
-    const response = JSON.parse(data.toString()) as GatewayResponse;
-    if (response.ok) {
-      console.log('Message sent successfully');
-    } else {
-      console.error(`Failed to send message: ${response.error}`);
+    try {
+      const msg = JSON.parse(data.toString());
+
+      // Handle events
+      if (msg.event) {
+        return; // Ignore events in send command
+      }
+
+      // Handle responses
+      const response = msg as GatewayResponse;
+      if (response.ok) {
+        console.log('Message sent successfully');
+      } else {
+        console.error(`Failed to send message: ${response.error}`);
+      }
+      ws.close();
+      process.exit(response.ok ? 0 : 1);
+    } catch (error) {
+      console.error(`Failed to parse message: ${error}`);
+      ws.close();
+      process.exit(1);
     }
-    ws.close();
-    process.exit(response.ok ? 0 : 1);
   });
 
   ws.on('error', (error) => {
