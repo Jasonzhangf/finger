@@ -6,7 +6,7 @@ import type { MessageHub } from '../../orchestration/message-hub.js';
 import type { ModuleRegistry, OrchestrationModule } from '../../orchestration/module-registry.js';
 import type { LoadedAgentConfig } from '../../runtime/agent-json-config.js';
 import type { ResourcePool } from '../../orchestration/resource-pool.js';
-import { buildDispatchTaskText, sanitizeDispatchResult, type DispatchSummaryResult } from '../../common/agent-dispatch.js';
+import { buildDispatchTaskText, extractTaskText, sanitizeDispatchResult, type DispatchSummaryResult } from '../../common/agent-dispatch.js';
 
 export type AgentRoleType = 'executor' | 'reviewer' | 'orchestrator' | 'searcher';
 export type AgentCapabilityLayer = 'summary' | 'execution' | 'governance' | 'full';
@@ -1372,18 +1372,25 @@ export class AgentRuntimeBlock extends BaseBlock {
   private toDispatchPayload(input: AgentDispatchRequest, dispatchId: string): Record<string, unknown> {
     const assignment = this.normalizeAssignment(input);
     const targetRole = this.buildDefinitions().get(input.targetAgentId)?.role ?? normalizeAgentType(input.targetAgentId);
+    
+    // Check if this is a system role dispatch (should skip dispatch contract)
+    const isSystemRole = input.metadata?.role === 'system';
+    
     const metadata = {
       ...(isObjectRecord(input.metadata) ? input.metadata : {}),
       dispatchId,
       sourceAgentId: input.sourceAgentId,
       targetAgentId: input.targetAgentId,
       responsesStructuredOutput: true,
-      responsesOutputSchemaPreset: targetRole === 'searcher' ? 'searcher' : targetRole,
+      responsesOutputSchemaPreset: isSystemRole ? 'system' : (targetRole === 'searcher' ? 'searcher' : targetRole),
       ...(assignment ? { assignment } : {}),
       orchestration: true,
     };
 
-    const dispatchText = buildDispatchTaskText(input.task, targetRole);
+    // For system role, use the prompt directly without dispatch contract
+    const dispatchText = isSystemRole
+      ? extractTaskText(input.task)
+      : buildDispatchTaskText(input.task, targetRole);
 
     if (isObjectRecord(input.task)) {
       const next: Record<string, unknown> = { ...input.task };

@@ -1645,6 +1645,9 @@ function buildKernelUserTurnOptions(
   const options: KernelUserTurnOptions = {};
   const metadata = context?.metadata;
 
+  // Check if this is a system role message (from system bootstrap/heartbeat)
+  const isSystemRole = metadata?.role === 'system';
+
   if (context?.systemPrompt && context.systemPrompt.trim().length > 0) {
     options.system_prompt = context.systemPrompt.trim();
   }
@@ -1656,7 +1659,11 @@ function buildKernelUserTurnOptions(
   const mode = parseOptionalString(metadata?.kernelMode) ?? parseOptionalString(metadata?.mode) ?? 'main';
   options.mode = mode;
 
-  const historyItems = resolveHistoryItems(context?.history, metadata);
+  // For system role, skip history to avoid contamination
+  const historyItems = isSystemRole
+    ? []
+    : resolveHistoryItems(context?.history, metadata);
+
   if (historyItems.length > 0) {
     options.history_items = historyItems;
   }
@@ -1664,20 +1671,24 @@ function buildKernelUserTurnOptions(
   const role = resolveDeveloperRoleFromMetadata(metadata);
   let developerInstructions = resolveDeveloperInstructions(metadata, developerPromptPaths, role);
 
-  if (context?.mailboxSnapshot && hasNewUnreadSinceLastNotified(context.mailboxSnapshot)) {
-    const newEntries = getNewUnreadEntries(context.mailboxSnapshot);
-    const mailboxBlock = [
-      '## Mailbox Pending Notice',
-      `new_unread_since_last_notification=${newEntries.length}`,
-      ...newEntries.map((entry) => `- [${entry.seq}] ${entry.shortDescription}`),
-    ].join('\n');
+  // For system role, skip developer instructions and mailbox notifications
+  if (!isSystemRole) {
+    if (context?.mailboxSnapshot && hasNewUnreadSinceLastNotified(context.mailboxSnapshot)) {
+      const newEntries = getNewUnreadEntries(context.mailboxSnapshot);
+      const mailboxBlock = [
+        '## Mailbox Pending Notice',
+        `new_unread_since_last_notification=${newEntries.length}`,
+        ...newEntries.map((entry) => `- [${entry.seq}] ${entry.shortDescription}`),
+      ].join('\n');
 
-    developerInstructions = developerInstructions
-      ? `${developerInstructions}\n\n${mailboxBlock}`
-      : mailboxBlock;
+      developerInstructions = developerInstructions
+        ? `${developerInstructions}\n\n${mailboxBlock}`
+        : mailboxBlock;
+    }
   }
 
-  if (developerInstructions) {
+  // Only add developer instructions for non-system roles
+  if (!isSystemRole && developerInstructions) {
     options.developer_instructions = developerInstructions;
   }
 

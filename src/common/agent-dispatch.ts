@@ -233,3 +233,5 @@ export function buildDispatchTaskText(task: unknown, targetRole: string): string
   lines.push(originalText);
   return lines.join('\n');
 }
+
+export { extractTaskText };

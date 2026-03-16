@@ -57,3 +57,57 @@
 - [2026-03-14 17:57:06] role=user
   summary: "Phase 1 核心改动完成（MultiAgentMonitorGrid 接收 panels prop、canvasElement 从 sessions 构造、rightPanelElement 固定 system agent），TypeScript 编译 + 16 项 UI 测试通过，Phase 2 已 closed，finger-237 待收尾状态更新。"
   Tags: ui, refactoring, multi-agent-grid, session-panel, finger-237
+
+---
+
+## iflow SDK 剥离迁移计划 {#mem-iflow-migration-2026-03-16}
+
+> timestamp: `2026-03-16T06:40:14.689Z`
+
+### 背景
+当前项目有大量基于 iflow SDK (`@iflow-ai/iflow-cli-sdk`) 的 Agent 实现，但正式业务已迁移到 ChatCodexModule（基于 KernelAgentBase）。需要剥离 iflow SDK 依赖，统一到 ChatCodexModule 架构。
+
+### 决策
+- **Orchestrator 处理**：方案A - 重构为使用 ChatCodexModule
+- **Session 管理**：方案A - 使用 MemorySessionManager
+- **优先级**：优先删除 iflow SDK 依赖，快速验证 system agent 功能
+
+### 实施阶段
+
+#### Phase 1: 添加 role=system 支持（高优先级）
+1. `src/agents/chat-codex/chat-codex-module.ts` - 检测 `metadata.role === 'system'`，跳过历史和 developer instructions
+2. `src/blocks/agent-runtime-block/index.ts` - 检测 system role，不添加 DISPATCH CONTRACT
+3. `src/common/agent-dispatch.ts` - 导出 `extractTaskText`
+
+#### Phase 2: 移除 iflow SDK 依赖
+**删除文件（10个核心 + 3个 CLI）：**
+- `src/agents/sdk/iflow-*.ts` (6个)
+- `src/agents/chat/iflow-session-manager.ts`
+- `src/agents/base/iflow-agent-base.ts`
+- `src/agents/base/base-session-agent.ts`
+- `src/agents/providers/iflow-provider.ts`
+- `src/cli/iflow.ts`, `src/cli/index.ts`, `src/cli/loop-test.ts`
+
+**package.json:** 移除 `@iflow-ai/iflow-cli-sdk`
+
+#### Phase 3: 重构业务代码
+保留业务逻辑，替换底层实现：
+- `src/agents/agent.ts` → 基于 KernelAgentBase
+- `src/agents/base/base-agent.ts` → 移除 IflowBaseAgent 继承
+- `src/agents/chat/chat-agent.ts` → 使用 ChatCodexModule
+- `src/agents/roles/*.ts` → 使用 ChatCodexModule
+- `src/agents/router-chat/*.ts` → 使用 ChatCodexModule
+- `src/agents/daemon/*.ts` → 使用 ChatCodexModule
+
+### 成功标准
+1. 构建成功，无 TypeScript 错误
+2. `@iflow-ai/iflow-cli-sdk` 依赖已移除
+3. system agent bootstrap 注入正常工作
+4. role=system 的消息不被污染到历史记录
+
+### 状态
+- [x] 计划制定
+- [ ] Phase 1: role=system 支持
+- [ ] Phase 2: 移除 iflow SDK
+- [ ] Phase 3: 重构业务代码
+- [ ] Phase 4: 验证测试

@@ -7237,3 +7237,103 @@
   - **把端口从 20000/20001 改成 20002/20003/20004**
   
   确认后我立即执行。
+
+### User · 2026/03/16 14:34:49
+
+不是引用了 iflow 就删除，是剥离 iflow 的实现，我们很多业务代码是可以复用的，你现在完整的 review 下代码，把 iflow sdk 剥离的动作完整 review
+
+<!-- cache-meta
+requestId: openai-responses-unknown-unknown-20260316T143449309-068
+sessionId: 019cf122-9c1e-7830-9604-4a4cb18ee729
+model: gpt-5.4
+provider: openai-responses
+-->
+
+### Assistant · 2026/03/16 14:39:09
+
+<proposed_plan>
+# 剥离 iflow SDK 迁移计划
+
+## Summary
+
+将基于 iflow SDK 的 Agent 实现迁移到 ChatCodexModule（基于 KernelAgentBase），统一使用 MemorySessionManager，快速移除 iflow SDK 依赖，同时为 system agent 的 role=system 支持做好铺垫。
+
+## 实施步骤
+
+### Phase 1: 添加 role=system 支持（高优先级）
+
+**文件：`src/agents/chat-codex/chat-codex-module.ts`**
+- 在 `buildKernelUserTurnOptions` 中检测 `metadata.role === 'system'`
+- 对于 system role：
+  - 跳过历史记录（`historyItems = []`）
+  - 跳过 developer instructions 和 mailbox 通知
+  - 直接使用 prompt 作为 system_prompt
+
+**文件：`src/blocks/agent-runtime-block/index.ts`**
+- 添加 `extractTaskText` 导入
+- 在 `toDispatchPayload` 中检测 `input.metadata.role === 'system'`
+- 对于 system role：
+  - 不添加 DISPATCH CONTRACT（直接使用 `extractTaskText(input.task)`）
+  - 设置 `responsesOutputSchemaPreset` 为 `system`
+
+**文件：`src/common/agent-dispatch.ts`**
+- 导出 `extractTaskText` 函数
+
+### Phase 2: 移除 iflow SDK 依赖
+
+**删除文件（10个）：**
+```
+src/agents/sdk/iflow-base.ts
+src/agents/sdk/iflow-session-map.ts
+src/agents/sdk/iflow-governor.ts
+src/agents/sdk/iflow-interactive.ts
+src/agents/sdk/iflow-runtime-adapter.ts
+src/agents/sdk/iflow-capability-test.ts
+src/agents/chat/iflow-session-manager.ts
+src/agents/base/iflow-agent-base.ts
+src/agents/base/base-session-agent.ts
+src/agents/providers/iflow-provider.ts
+```
+
+**删除 CLI 文件（3个）：**
+```
+src/cli/iflow.ts
+src/cli/index.ts
+src/cli/loop-test.ts
+```
+
+**package.json:**
+- 移除 `"@iflow-ai/iflow-cli-sdk": "^0.2.1-beta.5"`
+
+### Phase 3: 重构业务代码（可复用逻辑）
+
+**保留但重构的文件：**
+- `src/agents/agent.ts` → 基于 KernelAgentBase 重构
+- `src/agents/base/base-agent.ts` → 移除 IflowBaseAgent 继承
+- `src/agents/chat/chat-agent.ts` → 使用 ChatCodexModule
+- `src/agents/roles/orchestrator.ts` → 使用 ChatCodexModule，保留 BD 工具集成
+- `src/agents/roles/self-review.ts` → 使用 ChatCodexModule
+- `src/agents/roles/summary.ts` → 使用 ChatCodexModule
+- `src/agents/roles/reviewer.ts` → 使用 ChatCodexModule
+- `src/agents/roles/executor.ts` → 使用 ChatCodexModule
+- `src/agents/roles/orchestrator-refactored.ts` → 使用 ChatCodexModule
+- `src/agents/router-chat/router-chat-agent.ts`... [truncated]
+
+<!-- cache-meta
+requestId: openai-responses-ali-coding-plan.key1-glm-4.7-20260316T143841807-019
+sessionId: 019cf122-9c1e-7830-9604-4a4cb18ee729
+model: glm-4.7
+provider: anthropic-messages
+finishReason: stop
+-->
+
+### User · 2026/03/16 14:40:14
+
+更新记忆，落盘计划，然后开始实现
+
+<!-- cache-meta
+requestId: openai-responses-unknown-unknown-20260316T144014213-026
+sessionId: 019cf122-9c1e-7830-9604-4a4cb18ee729
+model: gpt-5.4
+provider: openai-responses
+-->
