@@ -2,47 +2,6 @@
  * OpenClaw Gateway Bridge Service
  * 
  * CLI 命令管理一个独立的服务进程，支持 WebSocket 和 stdio 双模式通信
- * 
- * ## 架构
- * ```
- * CLI (finger gateway-bridge) ←spawn→ Service Process
- *                                        ↓
- *                              WebSocket Server (port 19999) 或 stdio
- *                                        ↓
- *                              OpenClaw Gateway (qqbot, etc.)
- * ```
- * 
- * ## 使用方式
- *   # 启动服务（WebSocket 模式）
- *   finger gateway-bridge start qqbot --ws-port 19999
- *   
- *   # 启动服务（stdio 模式）
- *   finger gateway-bridge start qqbot --stdio
- *   
- *   # 停止服务
- *   finger gateway-bridge stop qqbot
- *   
- *   # 查看状态
- *   finger gateway-bridge status qqbot
- *   
- *   # 发送消息
- *   finger gateway-bridge send qqbot --to "user-123" --text "Hello"
- * 
- * ## WebSocket 协议
- *   // 客户端发送
- *   {"action": "send", "payload": {"to": "user-123", "text": "Hello"}}
- *   {"action": "start", "payload": {"appId": "xxx", "clientSecret": "xxx"}}
- *   {"action": "stop"}
- *   {"action": "ping"}
- *   
- *   // 服务端响应
- *   {"ok": true, "requestId": "req-1", "result": {...}}
- *   {"ok": false, "requestId": "req-1", "error": "..."}
- *   
- *   // 服务端推送事件
- *   {"event": "message", "data": {...}}
- *   {"event": "ready", "data": {"channelId": "qqbot"}}
- *   {"event": "error", "data": {"message": "..."}}
  */
 
 import { Command } from 'commander';
@@ -61,8 +20,9 @@ const log = logger.module('GatewayBridge');
 
 // 默认端口
 const DEFAULT_WS_PORT = 19999;
-const DEFAULT_PLUGIN_DIR = path.join(os.homedir(), '.finger', 'plugins');
+const DEFAULT_PLUGIN_DIR = resolveDefaultPluginDir();
 const PID_FILE_DIR = path.join(os.homedir(), '.finger', 'run');
+const DEFAULT_CONFIG_PATH = path.join(os.homedir(), '.finger', 'runtime', 'plugins', 'openclaw-qqbot.json');
 
 // 消息类型
 export interface GatewayMessage {
@@ -113,6 +73,38 @@ export function registerOpenClawGatewayBridgeCommand(program: Command): void {
       }
     });
 
+  // 连接 QQBot（启动 account）
+  bridge
+    .command('connect <channel-id>')
+    .description('Connect gateway account (start account)')
+    .option('-w, --ws-port <port>', 'WebSocket port', parseInt, DEFAULT_WS_PORT)
+    .option('--app-id <id>', 'QQBot AppID (optional, reads from config if omitted)')
+    .option('--secret <secret>', 'QQBot AppSecret (optional, reads from config if omitted)')
+    .option('--timeout <ms>', 'Timeout for ready event', parseInt, 30000)
+    .action(async (channelId: string, options: { wsPort: number; appId?: string; secret?: string; timeout: number }) => {
+      const wsPort = Number.isFinite(options.wsPort) ? options.wsPort : DEFAULT_WS_PORT;
+      const config = loadQqbotConfig();
+      const appId = options.appId || config?.appId;
+      const clientSecret = options.secret || config?.clientSecret;
+
+      if (!appId || !clientSecret) {
+        console.error('Missing appId or clientSecret. Provide via --app-id/--secret or config file.');
+        process.exit(1);
+      }
+
+      await sendStartAction(channelId, wsPort, appId, clientSecret, options.timeout);
+    });
+
+  // 断开连接（停止 account）
+  bridge
+    .command('disconnect <channel-id>')
+    .description('Disconnect gateway account (stop account)')
+    .option('-w, --ws-port <port>', 'WebSocket port', parseInt, DEFAULT_WS_PORT)
+    .action(async (_channelId: string, options: { wsPort: number }) => {
+      const wsPort = Number.isFinite(options.wsPort) ? options.wsPort : DEFAULT_WS_PORT;
+      await sendStopAction(wsPort);
+    });
+
   // 停止服务
   bridge
     .command('stop <channel-id>')
@@ -136,9 +128,37 @@ export function registerOpenClawGatewayBridgeCommand(program: Command): void {
     .requiredOption('-t, --to <target>', 'Target user/group ID')
     .requiredOption('-m, --text <message>', 'Message text')
     .option('-w, --ws-port <port>', 'WebSocket port', parseInt, DEFAULT_WS_PORT)
-    .action(async (channelId: string, options: { to: string; text: string; wsPort: number }) => {
-      await sendMessage(channelId, options.to, options.text, options.wsPort);
+    .action(async (_channelId: string, options: { to: string; text: string; wsPort: number }) => {
+      const wsPort = Number.isFinite(options.wsPort) ? options.wsPort : DEFAULT_WS_PORT;
+      await sendMessage(options.to, options.text, wsPort);
     });
+}
+
+/**
+ * Resolve default plugin directory
+ */
+function resolveDefaultPluginDir(): string {
+  const runtimeDir = path.join(os.homedir(), '.finger', 'runtime', 'plugins');
+  const legacyDir = path.join(os.homedir(), '.finger', 'plugins');
+  if (fs.existsSync(runtimeDir)) {
+    return runtimeDir;
+  }
+  return legacyDir;
+}
+
+/**
+ * Load QQBot config from ~/.finger/runtime/plugins/openclaw-qqbot.json
+ */
+function loadQqbotConfig(): { appId?: string; clientSecret?: string } | null {
+  if (!fs.existsSync(DEFAULT_CONFIG_PATH)) return null;
+
+  try {
+    const raw = fs.readFileSync(DEFAULT_CONFIG_PATH, 'utf-8');
+    const parsed = JSON.parse(raw) as { config?: { appId?: string; clientSecret?: string } };
+    return parsed.config ?? null;
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -242,7 +262,7 @@ async function checkStatus(channelId: string): Promise<void> {
 /**
  * 发送消息
  */
-async function sendMessage(channelId: string, to: string, text: string, wsPort: number): Promise<void> {
+async function sendMessage(to: string, text: string, wsPort: number): Promise<void> {
   const ws = new WebSocket(`ws://localhost:${wsPort}`);
   
   ws.on('open', () => {
@@ -260,6 +280,91 @@ async function sendMessage(channelId: string, to: string, text: string, wsPort: 
       console.log('Message sent successfully');
     } else {
       console.error(`Failed to send message: ${response.error}`);
+    }
+    ws.close();
+    process.exit(response.ok ? 0 : 1);
+  });
+
+  ws.on('error', (error) => {
+    console.error(`WebSocket error: ${error.message}`);
+    process.exit(1);
+  });
+}
+
+/**
+ * 发送 start action 并等待 ready 事件
+ */
+async function sendStartAction(channelId: string, wsPort: number, appId: string, clientSecret: string, timeoutMs: number): Promise<void> {
+  const ws = new WebSocket(`ws://localhost:${wsPort}`);
+
+  const timeout = setTimeout(() => {
+    console.error('Timeout waiting for ready event');
+    ws.close();
+    process.exit(1);
+  }, timeoutMs);
+
+  ws.on('open', () => {
+    const message: GatewayMessage = {
+      action: 'start',
+      payload: { appId, clientSecret },
+      requestId: `req-${Date.now()}`,
+    };
+    ws.send(JSON.stringify(message));
+  });
+
+  ws.on('message', (data) => {
+    try {
+      const msg = JSON.parse(data.toString());
+      if (msg.event === 'ready') {
+        clearTimeout(timeout);
+        console.log(`Gateway ${channelId} ready`);
+        ws.close();
+        process.exit(0);
+      }
+      if (msg.event === 'error') {
+        clearTimeout(timeout);
+        console.error(`Gateway error: ${JSON.stringify(msg.data)}`);
+        ws.close();
+        process.exit(1);
+      }
+      if (msg.ok === false) {
+        clearTimeout(timeout);
+        console.error(`Start failed: ${msg.error}`);
+        ws.close();
+        process.exit(1);
+      }
+    } catch {
+      // ignore non-json
+    }
+  });
+
+  ws.on('error', (error) => {
+    clearTimeout(timeout);
+    console.error(`WebSocket error: ${error.message}`);
+    process.exit(1);
+  });
+}
+
+/**
+ * 发送 stop action
+ */
+async function sendStopAction(wsPort: number): Promise<void> {
+  const ws = new WebSocket(`ws://localhost:${wsPort}`);
+
+  ws.on('open', () => {
+    const message: GatewayMessage = {
+      action: 'stop',
+      requestId: `req-${Date.now()}`,
+    };
+    ws.send(JSON.stringify(message));
+  });
+
+  ws.on('message', (data) => {
+    const response = JSON.parse(data.toString()) as GatewayResponse;
+    if (response.ok) {
+      console.log('Gateway stopped');
+    } else {
+      console.error(`Failed to stop gateway: ${response.error}`);
     }
     ws.close();
     process.exit(response.ok ? 0 : 1);
@@ -434,6 +539,7 @@ class GatewayBridgeService {
     const managerOptions: PluginManagerOptions = {
       pluginDir: this.pluginDir,
       gate: this.gate,
+      pluginConfigs: loadPluginConfigs(),
     };
     const pluginManager = createPluginManager(managerOptions);
     await pluginManager.loadAll();
@@ -526,6 +632,10 @@ class GatewayBridgeService {
 
     const { appId, clientSecret, ...rest } = payload;
 
+    if (!appId || !clientSecret) {
+      return { ok: false, error: 'Missing appId or clientSecret' };
+    }
+
     try {
       this.abortController = new AbortController();
 
@@ -605,4 +715,31 @@ class GatewayBridgeService {
     this.initialized = false;
     log.info('Gateway bridge stopped');
   }
+}
+
+/**
+ * Load plugin configs from ~/.finger/runtime/plugins/*.json
+ */
+function loadPluginConfigs(): Record<string, Record<string, unknown>> {
+  const configs: Record<string, Record<string, unknown>> = {};
+  const runtimePluginDir = path.join(os.homedir(), '.finger', 'runtime', 'plugins');
+
+  if (!fs.existsSync(runtimePluginDir)) {
+    return configs;
+  }
+
+  const entries = fs.readdirSync(runtimePluginDir).filter((f) => f.endsWith('.json'));
+  for (const entry of entries) {
+    try {
+      const content = fs.readFileSync(path.join(runtimePluginDir, entry), 'utf-8');
+      const parsed = JSON.parse(content) as { id?: string; config?: Record<string, unknown> };
+      if (parsed.id && parsed.config) {
+        configs[parsed.id] = parsed.config;
+      }
+    } catch {
+      // ignore invalid config
+    }
+  }
+
+  return configs;
 }

@@ -58,6 +58,13 @@ function deriveProjectName(projectPath: string): string {
 export async function loadRegistry(): Promise<AgentRegistry> {
   try {
     const content = await fs.readFile(REGISTRY_PATH, 'utf-8');
+    
+    // Handle empty file
+    if (!content || content.trim() === '') {
+      console.warn('[Registry] Registry file is empty, creating new one');
+      return createEmptyRegistry();
+    }
+    
     const registry = JSON.parse(content) as AgentRegistry;
     
     // 版本检查
@@ -69,6 +76,11 @@ export async function loadRegistry(): Promise<AgentRegistry> {
   } catch (error) {
     if ((error as any).code === 'ENOENT') {
       // 注册表不存在，返回空的注册表
+      return createEmptyRegistry();
+    }
+    if ((error as any) instanceof SyntaxError) {
+      // JSON parse error (empty or corrupted file)
+      console.warn('[Registry] Failed to parse registry file, creating new one');
       return createEmptyRegistry();
     }
     throw error;

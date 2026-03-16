@@ -81,7 +81,7 @@ describe('RUNTIME_SPEC.md Full MUST Checklist', () => {
     expect(c).toContain(`'${target}'`); expect(c).toContain(`'${type}'`);
   });
   it('MUST-4.3.1: callbackId query', () => {
-    expect(readFile('src/cli/index.ts')).toContain('/api/v1/mailbox/callback/');
+    expect(readFile('src/server/routes/runtime-events.ts')).toContain('/api/v1/mailbox/callback/');
     const mailbox = new Mailbox();
     const id = mailbox.createMessage('a', {}, 'cli', 'cb1');
     expect(mailbox.getMessageByCallbackId('cb1')?.id).toBe(id);

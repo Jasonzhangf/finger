@@ -39,7 +39,7 @@ describe('OpenClawGateBlock', () => {
     expect(gate.listTools()[0].id).toBe('tool-1');
   });
 
-  it('calls enabled tool with normalized output shape', () => {
+  it('calls enabled tool with normalized output shape', async () => {
     const gate = new OpenClawGateBlock('gate-1');
     gate.installPlugin('plugin-a', { name: 'Plugin A' });
     gate.addTool('plugin-a', {
@@ -51,7 +51,7 @@ describe('OpenClawGateBlock', () => {
     });
     gate.enablePlugin('plugin-a');
 
-    const result = gate.callTool('plugin-a', 'tool-1', { hello: 'world' });
+    const result = await gate.callTool('plugin-a', 'tool-1', { hello: 'world' });
     expect(result.success).toBe(true);
     expect(result.result).toEqual({
       pluginId: 'plugin-a',
@@ -60,10 +60,8 @@ describe('OpenClawGateBlock', () => {
       status: 'not_implemented',
     });
   });
-});
 
-
-  it('throws explicit disabled error when plugin is not enabled', () => {
+  it('throws explicit disabled error when plugin is not enabled', async () => {
     const gate = new OpenClawGateBlock('gate-1');
     gate.installPlugin('plugin-a', { name: 'Plugin A' });
     gate.addTool('plugin-a', {
@@ -74,10 +72,11 @@ describe('OpenClawGateBlock', () => {
       outputSchema: { type: 'object' },
     });
 
-    expect(() => gate.callTool('plugin-a', 'tool-1', {})).toThrowError('OPENCLAW_PLUGIN_DISABLED');
+    await expect(gate.callTool('plugin-a', 'tool-1', {})).rejects.toThrow('OPENCLAW_PLUGIN_DISABLED');
   });
 
-  it('throws explicit not found error when plugin does not exist', () => {
+  it('throws explicit not found error when plugin does not exist', async () => {
     const gate = new OpenClawGateBlock('gate-1');
-    expect(() => gate.callTool('missing', 'tool-1', {})).toThrowError('OPENCLAW_PLUGIN_NOT_FOUND');
+    await expect(gate.callTool('missing', 'tool-1', {})).rejects.toThrow('OPENCLAW_PLUGIN_NOT_FOUND');
   });
+});
