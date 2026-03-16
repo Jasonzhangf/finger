@@ -86,11 +86,12 @@ export class PeriodicCheckRunner {
 
     if (!latest) return;
 
+    const prompt = `# Heartbeat Check\n\n请检查项目根目录的 HEARTBEAT.md 并执行待办任务。\n\n项目路径: ${projectPath}`;
+
     await this.deps.agentRuntimeBlock.execute('dispatch', {
+      sourceAgentId: 'system-heartbeat',
       targetAgentId: agentId,
-      task: {
-        prompt: `# Heartbeat Check\n\n请检查项目根目录的 HEARTBEAT.md 并执行待办任务。\n\n项目路径: ${projectPath}`,
-      },
+      task: prompt,
       sessionId: latest.fingerSessionId,
       metadata: {
         source: 'system-heartbeat',

@@ -15142,3 +15142,147 @@ sessionId: 019cf122-9c1e-7830-9604-4a4cb18ee729
 model: gpt-5.4
 provider: openai-responses
 -->
+
+### Assistant · 2026/03/16 20:23:44
+
+**测试 Session 验证结果**
+
+## 验证成功部分 ✅
+
+| 项目 | 状态 | 证据 |
+|------|------|------|
+| PeriodicCheckRunner 执行 | ✅ | `Running periodic check...` × 3 |
+| Registry 更新 | ✅ | `lastUpdate: 12:20:00` → `12:21:34` |
+| 测试项目创建 | ✅ | `/tmp/test-heartbeat-project/HEARTBEAT.md` |
+
+## 问题 ⚠️
+
+**Session bindings 格式错误**:
+```
+[SessionManager] Failed to load session .../bindings/finger-orchestrator.json: 
+Error: Invalid session content
+```
+
+导致 `sendHeartbeatPrompt` 无法找到有效的 session bindings，心跳提示词未能发送。
+
+## 下一步
+
+需要修复 session bindings 格式，使其符合 `SessionManager` 的要求，或者修改 `sendHeartbeatPrompt` 使用不同的 session 查找方式。
+
+**提交**: `fd280ab test: heartbeat verification with test session`
+**Build**: 0.1.0151
+
+<!-- cache-meta
+requestId: openai-responses-qwen.1-qwen3.5-plus-20260316T202327632-008
+sessionId: 019cf122-9c1e-7830-9604-4a4cb18ee729
+model: qwen3.5-plus
+provider: openai-chat
+finishReason: stop
+-->
+
+### User · 2026/03/16 20:28:42
+
+You are performing a CONTEXT CHECKPOINT COMPACTION. Create a handoff summary for another LLM that will resume the task.
+
+Include:
+- Current progress and key decisions made
+- Important context, constraints, or user preferences
+- What remains to be done (clear next steps)
+- Any critical data, examples, or references needed to continue
+
+Be concise, structured, and focused on helping the next LLM seamlessly continue the work.
+
+<!-- cache-meta
+requestId: openai-responses-unknown-unknown-20260316T202842428-007
+sessionId: 019cf122-9c1e-7830-9604-4a4cb18ee729
+model: gpt-5.4
+provider: openai-responses
+-->
+
+### Assistant · 2026/03/16 20:29:32
+
+# Handoff Summary: System Agent Heartbeat Verification
+
+## Current Progress
+
+### Completed (finger-241.3) ✅
+| Item | Status | Evidence |
+|------|--------|----------|
+| PeriodicCheckRunner implementation | ✅ | `periodic-check.ts` with 5-min interval |
+| setInterval error handling | ✅ | try-catch added to callback |
+| Heartbeat prompt mechanism | ✅ | Sends `# Heartbeat Check\n请检查 HEARTBEAT.md...` |
+| Task format fix | ✅ | Changed from `{prompt: ...}` to string |
+| sourceAgentId parameter | ✅ | Added `sourceAgentId: 'system-heartbeat'` |
+| Registry updates | ✅ | `lastUpdate` and `lastHeartbeat` correctly updated |
+| Periodic execution | ✅ | 3 executions verified with 10s test interval |
+
+### Key Code Changes
+```typescript
+// src/agents/finger-system-agent/periodic-check.ts
+
+// Fixed setInterval (was: void this.runOnce())
+this.timer = setInterval(async () => {
+  try {
+    await this.runOnce();
+  } catch (error) {
+    console.error('[PeriodicCheckRunner] Error in runOnce:', error);
+  }
+}, this.intervalMs);
+
+// Fixed sendHeartbeatPrompt (was: task: { prompt: ... })
+await this.deps.agentRuntimeBlock.execute('dispatch', {
+  sourceAgentId: 'system-heartbeat',
+  targetAgentId: agentId,
+  task: `# Heartbeat Check\n\n请检查项目根目录的 HEARTBEAT.md 并执行待办任务。\n\n项目路径：${projectPath}`,
+  sessionId: latest.fingerSessionId,
+  metadata: { source: 'system-heartbeat', role: 'system' },
+  blocking: false,
+});
+```
+
+### Test Infrastructure Created
+- Test project: `/tmp/test-heartbeat-project/HEARTBEAT.md`
+- Test session: `~/.finger/system/sessions/test-heartbeat-session/`
+- Test registry: `~/.finger/system/registry.json`
+
+## Remaining Issues
+
+### ⚠️ Session Bindings Format Error
+```
+[SessionManager] Failed to load session .../bindings/finger-orchestrator.json: 
+Error: Invalid session content
+```
+
+**Root Cause**: Test session bindings file format doesn't match SessionManager expectations.
+
+**Impact**: `sendHeartbeatPrompt` cannot find valid session bindings, so heartbeat prompts are not dispatched t... [truncated]
+
+<!-- cache-meta
+requestId: openai-responses-qwen.1-qwen3.5-plus-20260316T202842428-007
+sessionId: 019cf122-9c1e-7830-9604-4a4cb18ee729
+model: qwen3.5-plus
+provider: openai-chat
+finishReason: stop
+-->
+
+### User · 2026/03/16 20:29:33
+
+<**hb:on**> 我们检查下当前的单元测试和回归测试，不要以没有测试条件为借口不测试，需要为测试想办法创建条件
+
+<!-- cache-meta
+requestId: openai-responses-unknown-unknown-20260316T202933132-011
+sessionId: 019cf122-9c1e-7830-9604-4a4cb18ee729
+model: gpt-5.4
+provider: openai-responses
+-->
+
+### User · 2026/03/16 20:29:54
+
+[Heartbeat] 请读取当前目录的 HEARTBEAT.md 进行任务巡检。 先检查上一次交付是否完整、是否还需要继续修复。 完成后更新 DELIVERY.md，然后调用 review。 不要只做汇报；如果仍有未完成项，请直接继续执行。
+
+<!-- cache-meta
+requestId: openai-responses-unknown-unknown-20260316T202953996-014
+sessionId: 019cf122-9c1e-7830-9604-4a4cb18ee729
+model: gpt-5.4
+provider: openai-responses
+-->

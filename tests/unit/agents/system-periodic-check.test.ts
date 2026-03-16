@@ -18,6 +18,10 @@ vi.mock('../../../src/agents/finger-system-agent/registry.js', () => ({
   updateHeartbeat: vi.fn(),
 }));
 
+vi.mock('../../../src/agents/finger-system-agent/system-events.js', () => ({
+  emitAgentStatusChanged: vi.fn(),
+}));
+
 vi.mock('../../../src/runtime/session-control-plane.js', () => ({
   SessionControlPlaneStore: class {
     list() {
