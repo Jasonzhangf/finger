@@ -7337,3 +7337,127 @@ sessionId: 019cf122-9c1e-7830-9604-4a4cb18ee729
 model: gpt-5.4
 provider: openai-responses
 -->
+
+### User · 2026/03/16 15:33:36
+
+用 apply patch
+
+<!-- cache-meta
+requestId: openai-responses-unknown-unknown-20260316T153336590-182
+sessionId: 019cf122-9c1e-7830-9604-4a4cb18ee729
+model: gpt-5.4
+provider: openai-responses
+-->
+
+### User · 2026/03/16 15:35:01
+
+You are performing a CONTEXT CHECKPOINT COMPACTION. Create a handoff summary for another LLM that will resume the task.
+
+Include:
+- Current progress and key decisions made
+- Important context, constraints, or user preferences
+- What remains to be done (clear next steps)
+- Any critical data, examples, or references needed to continue
+
+Be concise, structured, and focused on helping the next LLM seamlessly continue the work.
+
+<!-- cache-meta
+requestId: openai-responses-unknown-unknown-20260316T153500845-190
+sessionId: 019cf122-9c1e-7830-9604-4a4cb18ee729
+model: gpt-5.4
+provider: openai-responses
+-->
+
+### User · 2026/03/16 15:35:25
+
+继续执行
+
+<!-- cache-meta
+requestId: openai-responses-unknown-unknown-20260316T153525151-193
+sessionId: 019cf122-9c1e-7830-9604-4a4cb18ee729
+model: gpt-5.4
+provider: openai-responses
+-->
+
+# IFlow SDK 剥离计划与现状分析 (2026-03-16)
+
+## 任务背景
+
+用户要求剥离 iflow SDK 依赖，使用 ChatCodexModule (KernelAgentBase) 作为执行内核，并实现 session 持久化落盘。
+
+## 现状分析
+
+### 已完成的 iflow 引用清理
+- ✅ 删除 `src/agents/sdk/image-test-real.ts`（唯一使用 `@iflow-ai/iflow-cli-sdk` 的文件）
+- ✅ package.json 中无 iflow 依赖
+
+### 保留的 iflow 相关代码（兼容层）
+以下代码保留 iflow 相关枚举/字段，用于向后兼容：
+- `src/blocks/agent-runtime-block/index.ts`:
+  - `AgentImplementation.kind: 'iflow' | 'native'`（保留，用于区分实现类型）
+  - `AgentDeploymentRecord` 中 iflow 相关字段
+  - provider.type 检查逻辑（保留兼容）
+- `src/blocks/ai-block/index.ts`: `sdk: 'iflow' | 'codex' | 'claude'`
+- `src/blocks/agent-block/index.ts`: `sdk: 'iflow' | 'codex' | 'claude'`
+- `src/core/finger-paths.ts`: iflow-session-map.json 路径映射（保留，用于迁移兼容）
+
+### 业务逻辑保留情况
+以下核心业务逻辑 **完整保留**：
+- ✅ `src/agents/router/` - router 相关业务
+- ✅ `src/agents/finger-system-agent/` - system agent 业务
+- ✅ `src/agents/chat-codex/` - ChatCodexModule 执行内核
+- ✅ `src/orchestration/session-manager.ts` - Session 落盘管理（已实现）
+- ✅ `src/agents/chat/session-types.ts` - ISessionManager 接口
+- ✅ `src/agents/base/memory-session-manager.ts` - 内存 SessionManager（备用）
+
+### Session 落盘实现状态
+✅ **已实现** - `src/orchestration/session-manager.ts` (792 行):
+- Session 文件落盘到 `~/.finger/sessions/<project>/<session>/main.json`
+- System session 落盘到 `~/.finger/system/sessions/`
+- Session 恢复、压缩、隔离机制完整
+
+### System Agent role=system 处理链路
+✅ **已实现** - `src/agents/chat-codex/chat-codex-module.ts`:
+- Line 1649: `const isSystemRole = metadata?.role === 'system';`
+- Line 1661: system role 跳过历史记录（避免污染）
+- Line 1675: system role 跳过 developer instructions 和 mailbox 通知
+
+## 待验证项
+
+### 1. Daemon 启动验证
+- [ ] daemon 启动时注入 bootstrap prompt 到 system agent
+- [ ] system session 文件写入成功
+- [ ] system agent 响应 role=system 消息
+
+### 2. 构建验证
+- [ ] `pnpm build` 通过
+- [ ] 启动 daemon 验证无 iflow 运行时错误
+
+### 3. 文档更新
+- [ ] 更新 MEMORY.md 记录剥离完成
+- [ ] 清理文档中的 iflow 引用（可选）
+
+## 关键发现
+
+1. **iflow SDK 已剥离完成** - 仅剩兼容性枚举，无实际依赖
+2. **Session 落盘已完整实现** - SessionManager 792 行完整实现
+3. **System role 处理已实现** - ChatCodexModule 已正确处理 role=system
+4. **业务逻辑完整保留** - router/daemon/system-agent 全部保留
+
+## 下一步行动
+
+1. 运行 `pnpm build` 验证构建
+2. 提交 git commit（删除 iflow SDK 文件）
+3. 记录完成状态到 MEMORY.md
+4. 推送到远程仓库
+
+### User · 2026/03/16 15:41:12
+
+继续执行
+
+<!-- cache-meta
+requestId: openai-responses-unknown-unknown-20260316T154111628-247
+sessionId: 019cf122-9c1e-7830-9604-4a4cb18ee729
+model: gpt-5.4
+provider: openai-responses
+-->
