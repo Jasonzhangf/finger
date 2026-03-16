@@ -31,6 +31,7 @@ export class PeriodicCheckRunner {
 
   start(): void {
     if (this.timer) return;
+    console.log(`[PeriodicCheckRunner] Started with interval ${this.intervalMs}ms`);
     this.timer = setInterval(() => void this.runOnce(), this.intervalMs);
   }
 
@@ -42,6 +43,7 @@ export class PeriodicCheckRunner {
   }
 
   async runOnce(): Promise<void> {
+    console.log(`[PeriodicCheckRunner] Running periodic check...`);
     const runtimeView = await this.deps.agentRuntimeBlock.execute('runtime_view', {});
     const agents = Array.isArray((runtimeView as any).agents)
       ? (runtimeView as any).agents
