@@ -861,7 +861,7 @@ export function useAgentRuntimePanel(): UseAgentRuntimePanelResult {
   const [debugMode, setDebugModeState] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const refreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const refreshTimerRef = useRef<NodeJS.Timeout | null>(null);
   const refreshInFlightRef = useRef(false);
 
   const refresh = useCallback(async (opts?: { silent?: boolean }) => {
@@ -917,7 +917,7 @@ export function useAgentRuntimePanel(): UseAgentRuntimePanelResult {
 
   const scheduleRefresh = useCallback(() => {
     if (refreshTimerRef.current) return;
-    refreshTimerRef.current = window.setTimeout(() => {
+    refreshTimerRef.current = setTimeout(() => {
       refreshTimerRef.current = null;
       void refresh({ silent: true });
     }, 200);

@@ -219,7 +219,7 @@ vi.mock('../../hooks/useAgentRuntimePanel.js', () => ({
 }));
 
 vi.mock('../../hooks/useWorkflowExecution.js', () => ({
-  useWorkflowExecution: (sessionId: string) => {
+  useWorkflowExecution: (_sessionId: string) => {
     // useWorkflowExecutionMock(sessionId);
     return {
       executionState: null,

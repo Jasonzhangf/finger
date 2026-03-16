@@ -6091,3 +6091,46 @@
   - C) 继续排查 PassWall2 配置问题
   
   请告诉我你的选择。
+
+- [2026/03/16 10:13:31] role=assistant
+  model: qwen3.5-plus
+  provider: openai-chat
+  finishReason: stop
+  content: |
+  ## ✅ PassWall2 已停止，问题诊断完成
+  
+  ### 问题根源确认
+  
+  **文件描述符泄漏是 sing-box 1.12.x 版本的已知问题**：
+  
+  | 项目 | 数值 |
+  |------|------|
+  | 当前 fd 使用 | 64,575 |
+  | 系统限制 | 131,072 |
+  | ESTABLISHED 连接 | 5,323 |
+  | TIME_WAIT 连接 | 33,349 |
+  | 总连接数 | 51,834 |
+  
+  **问题**：大量 `TIME_WAIT` 连接未释放，导致 fd 耗尽。这是 sing-box 新版本连接池管理的问题。
+  
+  ### 解决方案选项
+  
+  **选项 A**: 降级 sing-box 到 1.11.4 版本（稳定版）
+  ```bash
+  opkg remove sing-box
+  opkg install sing-box=1.11.4-r11
+  ```
+  
+  **选项 B**: 使用 OpenClash 替代 PassWall2
+  
+  **选项 C**: 配置 sing-box 连接超时参数
+  
+  ### 建议
+  
+  由于 PassWall2 本身配置正确（分流规则已设置，默认直连），问题出在 sing-box 内核版本。
+  
+  **推荐方案**：
+  1. 降级 sing-box 到 1.11.4
+  2. 或者切换到 OpenClash（使用 Clash Meta 内核，更稳定）
+  
+  你想选择哪个方案？
