@@ -77,10 +77,9 @@ export class SystemAgentManager {
       // 使用正确的 sessionId 发送 bootstrap 提示词
       const dispatchResult: { ok: boolean; dispatchId?: string; error?: string } = 
         await this.deps.agentRuntimeBlock.execute('dispatch', {
+          sourceAgentId: 'system-bootstrap',  // System bootstrap injection
           targetAgentId: SYSTEM_AGENT_CONFIG.id,
-          task: {
-            prompt: bootstrapPrompt,
-          },
+          task: bootstrapPrompt,
           sessionId: this.systemSessionId,
           metadata: {
             source: 'system-bootstrap',

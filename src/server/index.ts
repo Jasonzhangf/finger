@@ -409,7 +409,7 @@ await agentRuntimeBlock.start();
 // Must be done after agentRuntimeBlock.start() to ensure module is registered and started
 try {
   const deployResult = await agentRuntimeBlock.execute('deploy', {
-    agentId: FINGER_SYSTEM_AGENT_ID,
+    targetAgentId: FINGER_SYSTEM_AGENT_ID,
     scope: 'global',
     instanceCount: 1,
   }) as unknown as { success: boolean };

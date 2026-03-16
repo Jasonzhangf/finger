@@ -1698,7 +1698,17 @@ export class AgentRuntimeBlock extends BaseBlock {
   }
 
   private async dispatchTask(input: AgentDispatchRequest): Promise<DispatchResult> {
-    const target = input.targetAgentId.trim();
+    const targetAgentId = input.targetAgentId;
+    if (!targetAgentId || typeof targetAgentId !== 'string') {
+      console.log(`[AgentRuntimeBlock] Dispatch failed: invalid targetAgentId=${JSON.stringify(input)}`);
+      return {
+        ok: false,
+        dispatchId: `dispatch-${Date.now()}-invalid-target`,
+        status: 'failed',
+        error: 'targetAgentId is required',
+      };
+    }
+    const target = targetAgentId.trim();
     if (!target) {
       return {
         ok: false,
