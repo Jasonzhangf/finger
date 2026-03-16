@@ -19,6 +19,7 @@ import { AgentSessionPanel } from '../AgentSessionPanel/AgentSessionPanel.js';
 import { findConfigForAgent, matchInstanceToAgent } from '../BottomPanel/agentRuntimeUtils.js';
 import type { AgentConfig, AgentRuntime } from '../../api/types.js';
 import type { AgentRuntimeInstance } from '../../hooks/useAgentRuntimePanel.js';
+import type { SystemRegistryEntry } from '../../api/types.js';
 
 interface ResumeCheckResult {
   sessionId: string;
@@ -640,9 +641,15 @@ export const WorkflowContainer: React.FC = () => {
   const systemMonitor = useSystemMonitor();
 
   const canvasElement = useMemo(() => {
-    const sortedMonitored = systemMonitor.entries
-      .filter((entry) => entry.monitored)
-      .slice()
+    // 去重：每个 projectPath 只显示一个窗口
+    const uniqueEntries = new Map<string, SystemRegistryEntry>();
+    for (const entry of systemMonitor.entries.filter((entry) => entry.monitored)) {
+      const key = entry.projectPath.toLowerCase();
+      if (!uniqueEntries.has(key)) {
+        uniqueEntries.set(key, entry);
+      }
+    }
+    const sortedMonitored = Array.from(uniqueEntries.values())
       .sort((a, b) => {
         const aTime = a.monitorUpdatedAt ? new Date(a.monitorUpdatedAt).getTime() : 0;
         const bTime = b.monitorUpdatedAt ? new Date(b.monitorUpdatedAt).getTime() : 0;
@@ -662,6 +669,7 @@ export const WorkflowContainer: React.FC = () => {
         selectedSessionId,
         onOpenProject: () => { void handleOpenProject(entry.projectPath); },
         onSelectSession: (sessionId: string) => { void handleSwitchSessionFromSidebar(sessionId); },
+        onClose: () => { void systemMonitor.toggle(entry.projectPath, false); },
       } as MonitorPanel;
     });
 

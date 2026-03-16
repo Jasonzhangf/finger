@@ -25,6 +25,7 @@ export interface MonitorPanel {
   onCreateSession?: (projectPath: string) => Promise<SessionInfo>;
   onSwitchSession?: (sessionId: string) => Promise<void>;
   onDeleteSession?: (sessionId: string) => Promise<void>;
+  onClose?: () => void;
 }
 
 export interface MultiAgentMonitorGridProps {
