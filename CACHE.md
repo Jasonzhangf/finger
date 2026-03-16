@@ -14973,3 +14973,101 @@ sessionId: 019cf122-9c1e-7830-9604-4a4cb18ee729
 model: gpt-5.4
 provider: openai-responses
 -->
+
+### Assistant · 2026/03/16 20:10:33
+
+**修复完成！**
+
+## 心跳机制正确理解
+
+### 错误实现 ❌
+```typescript
+// 之前：只更新时间戳，无实际意义
+await updateHeartbeat(registryEntry.projectId);  // 只是记录时间
+```
+
+### 正确实现 ✅
+```typescript
+// 现在：发送提示词推动 agent 推理
+await this.deps.agentRuntimeBlock.execute('dispatch', {
+  sourceAgentId: 'system-heartbeat',
+  targetAgentId: agentId,
+  task: `# Heartbeat Check\n\n请检查项目根目录的 HEARTBEAT.md 并执行待办任务。\n\n项目路径：${projectPath}`,
+  sessionId: latest.fingerSessionId,
+  metadata: { source: 'system-heartbeat', role: 'system' },
+  blocking: false,
+});
+```
+
+## 心跳流程
+
+```
+┌─────────────────┐
+│ System Daemon   │ 每 5 分钟
+│ (periodic-check)│
+└────────┬────────┘
+         │
+         ▼
+┌─────────────────┐
+│ 检查 agent 状态   │ idle or busy?
+└────────┬────────┘
+         │ idle
+         ▼
+┌─────────────────┐
+│ 发送 dispatch    │ "# Heartbeat Check..."
+└────────┬────────┘
+         │
+         ▼
+┌─────────────────┐
+│ Project Agent   │ 收到提示词
+└────────┬────────┘
+         │
+         ▼
+┌─────────────────┐
+│ reACT 推理       │ 思考如何执行心跳检查
+└────────┬────────┘
+         │
+         ▼
+┌─────────────────┐
+│ 读取 HEARTBEAT.md│ 获取待办任务
+└────────┬────────┘
+         │
+         ▼
+┌─────────────────┐
+│ 执行待办任务     │ 修复代码/更新文档等
+└────────┬────────┘
+         │
+         ▼
+┌─────────────────┐
+│ 更新 DELIVERY.md│ 记录交付
+└────────┬────────┘
+         │
+         ▼
+┌─────────────────┐
+│ 调用 review     │ 请求审核
+└─────────────────┘
+```
+
+## 修复提交
+
+- `3f754f7`: fix: correct heartbeat mechanism - send prompt to agent not just timestamp
+- Build version: 0.1.0147
+
+<!-- cache-meta
+requestId: openai-responses-qwen.2-135-qwen3.5-plus-20260316T201020336-005
+sessionId: 019cf122-9c1e-7830-9604-4a4cb18ee729
+model: qwen3.5-plus
+provider: openai-chat
+finishReason: stop
+-->
+
+### User · 2026/03/16 20:12:20
+
+那你需要这样修复以后 用正确的方式 进行日志和测试
+
+<!-- cache-meta
+requestId: openai-responses-unknown-unknown-20260316T201219855-018
+sessionId: 019cf122-9c1e-7830-9604-4a4cb18ee729
+model: gpt-5.4
+provider: openai-responses
+-->
