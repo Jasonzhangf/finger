@@ -19,8 +19,22 @@ import { existsSync, readFileSync, writeFileSync, unlinkSync, mkdirSync } from '
 import { join } from 'path';
 import { FINGER_PATHS } from '../core/finger-paths.js';
 import { logger } from '../core/logger.js';
+import dgram from 'dgram';
 
 const log = logger.module('DualDaemon');
+
+interface DaemonHeartbeat {
+  type: 'daemon_heartbeat';
+  daemonId: 1 | 2;
+  pid: number;
+  sequence: number;
+  timestamp: number;
+  status: {
+    httpPort: number;
+    wsPort: number;
+    uptime: number;
+  };
+}
 
 const DUAL_DAEMON_PID_FILE = join(FINGER_PATHS.runtime.dir, 'dual-daemon.pid');
 const DAEMON_1_PID_FILE = join(FINGER_PATHS.runtime.dir, 'daemon-1.pid');
@@ -28,6 +42,12 @@ const DAEMON_2_PID_FILE = join(FINGER_PATHS.runtime.dir, 'daemon-2.pid');
 
 const MAX_RESTART_ATTEMPTS = 3;
 const START_COOLDOWN_MS = 5000;
+
+// DualDaemon mutual heartbeat ports
+const DAEMON_1_UDP_PORT = 10001;
+const DAEMON_2_UDP_PORT = 10002;
+const HEARTBEAT_INTERVAL_MS = 5000;  // 5 seconds
+const MISSED_HEARTBEAT_THRESHOLD = 3;  // 3 missed = 15 seconds
 
 interface DaemonInstance {
   id: number;
@@ -37,6 +57,10 @@ interface DaemonInstance {
   restartCount: number;
   lastStart?: number;
   lastExit?: number;
+  heartbeatSocket?: dgram.Socket;
+  lastHeartbeatSequence?: number;
+  heartbeatMissedCount?: number;
+  uptimeStart?: number;
 }
 
 export class DualDaemonSupervisor {
@@ -85,6 +109,16 @@ export class DualDaemonSupervisor {
     if (this.checkTimer) {
       clearInterval(this.checkTimer);
       this.checkTimer = null;
+    }
+
+    // 关闭心跳 sockets
+    if (this.daemon1.heartbeatSocket) {
+      this.daemon1.heartbeatSocket.close();
+      this.daemon1.heartbeatSocket = undefined;
+    }
+    if (this.daemon2.heartbeatSocket) {
+      this.daemon2.heartbeatSocket.close();
+      this.daemon2.heartbeatSocket = undefined;
     }
 
     // 停止两个 daemon
@@ -145,6 +179,7 @@ export class DualDaemonSupervisor {
     daemon.pid = child.pid;
     daemon.process = child;
     daemon.lastStart = Date.now();
+    daemon.uptimeStart = Date.now();
 
     writeFileSync(daemon.pidFile, String(child.pid));
 
@@ -222,23 +257,122 @@ export class DualDaemonSupervisor {
   }
 
   private startHealthCheck(): void {
+    // 启动 UDP 心跳监听
+    this.startHeartbeatListener(this.daemon1, DAEMON_1_UDP_PORT);
+    this.startHeartbeatListener(this.daemon2, DAEMON_2_UDP_PORT);
+
+    // 启动心跳广播
+    this.startHeartbeatBroadcaster(this.daemon1, DAEMON_2_UDP_PORT);
+    this.startHeartbeatBroadcaster(this.daemon2, DAEMON_1_UDP_PORT);
+
+    // 启动心跳检测循环
     this.checkTimer = setInterval(() => {
-      this.checkHealth();
-    }, 5000); // 每 5 秒检查一次
+      this.checkHeartbeats();
+    }, HEARTBEAT_INTERVAL_MS);
+  }
+
+  private startHeartbeatListener(daemon: DaemonInstance, port: number): void {
+    const socket = dgram.createSocket('udp4');
+    
+    socket.on('message', (msg) => {
+      try {
+        const heartbeat: DaemonHeartbeat = JSON.parse(msg.toString());
+        if (heartbeat.type === 'daemon_heartbeat' && heartbeat.daemonId !== daemon.id) {
+          // 收到对方的心跳，重置计数
+          daemon.lastHeartbeatSequence = heartbeat.sequence;
+          daemon.heartbeatMissedCount = 0;
+          log.debug(`Daemon ${daemon.id} received heartbeat from Daemon ${heartbeat.daemonId}`, {
+            sequence: heartbeat.sequence,
+            pid: heartbeat.pid
+          });
+        }
+      } catch (err) {
+        // Ignore parse errors
+      }
+    });
+
+    socket.bind(port, () => {
+      log.info(`Daemon ${daemon.id} heartbeat listener bound to UDP ${port}`);
+    });
+
+    daemon.heartbeatSocket = socket;
+  }
+
+  private startHeartbeatBroadcaster(daemon: DaemonInstance, targetPort: number): void {
+    const socket = dgram.createSocket('udp4');
+    let sequence = 0;
+
+    const broadcast = () => {
+      if (!this.running || !daemon.pid) return;
+
+      const heartbeat: DaemonHeartbeat = {
+        type: 'daemon_heartbeat',
+        daemonId: daemon.id as 1 | 2,
+        pid: daemon.pid,
+        sequence: ++sequence,
+        timestamp: Date.now(),
+        status: {
+          httpPort: daemon.id === 1 ? 9999 : 9997,
+          wsPort: daemon.id === 1 ? 9998 : 9996,
+          uptime: daemon.uptimeStart ? Date.now() - daemon.uptimeStart : 0,
+        }
+      };
+
+      const message = Buffer.from(JSON.stringify(heartbeat));
+      socket.send(message, 0, message.length, targetPort, '127.0.0.1', (err) => {
+        if (err) {
+          log.error(`Daemon ${daemon.id} failed to send heartbeat:`, err);
+        }
+      });
+    };
+
+    // 立即发送一次，然后定时发送
+    broadcast();
+    setInterval(broadcast, HEARTBEAT_INTERVAL_MS);
+  }
+
+  private checkHeartbeats(): void {
+    if (!this.running) return;
+
+    // 检查 Daemon 1
+    this.checkDaemonHeartbeat(this.daemon1);
+
+    // 检查 Daemon 2  
+    this.checkDaemonHeartbeat(this.daemon2);
+  }
+
+  private checkDaemonHeartbeat(daemon: DaemonInstance): void {
+    // 初始化计数
+    if (daemon.heartbeatMissedCount === undefined) {
+      daemon.heartbeatMissedCount = 0;
+    }
+
+    // 增加丢失计数
+    daemon.heartbeatMissedCount++;
+
+    if (daemon.heartbeatMissedCount >= MISSED_HEARTBEAT_THRESHOLD) {
+      log.warn(`Daemon ${daemon.id} missed ${daemon.heartbeatMissedCount} heartbeats, restarting peer...`);
+      // 重启对方 daemon
+      const peer = daemon.id === 1 ? this.daemon2 : this.daemon1;
+      if (!this.isProcessAlive(peer.pid)) {
+        this.restartDaemon(peer);
+      }
+      // 重置计数
+      daemon.heartbeatMissedCount = 0;
+    }
   }
 
   private checkHealth(): void {
+    // 保留原有的进程检查作为备份
     if (!this.running) return;
 
-    // 检查 daemon 1
     if (!this.isProcessAlive(this.daemon1.pid)) {
-      log.warn('Daemon 1 is not responding, restarting...');
+      log.warn('Daemon 1 process not alive, restarting...');
       this.restartDaemon(this.daemon1);
     }
 
-    // 检查 daemon 2
     if (!this.isProcessAlive(this.daemon2.pid)) {
-      log.warn('Daemon 2 is not responding, restarting...');
+      log.warn('Daemon 2 process not alive, restarting...');
       this.restartDaemon(this.daemon2);
     }
   }
@@ -273,8 +407,20 @@ export class DualDaemonSupervisor {
     return {
       running: this.running,
       supervisor: process.pid,
-      daemon1: { pid: this.daemon1.pid, alive: this.isProcessAlive(this.daemon1.pid) },
-      daemon2: { pid: this.daemon2.pid, alive: this.isProcessAlive(this.daemon2.pid) },
+      daemon1: {
+        pid: this.daemon1.pid,
+        alive: this.isProcessAlive(this.daemon1.pid),
+        heartbeatSequence: this.daemon1.lastHeartbeatSequence,
+        missedHeartbeats: this.daemon1.heartbeatMissedCount ?? 0,
+        uptime: this.daemon1.uptimeStart ? Date.now() - this.daemon1.uptimeStart : 0,
+      },
+      daemon2: {
+        pid: this.daemon2.pid,
+        alive: this.isProcessAlive(this.daemon2.pid),
+        heartbeatSequence: this.daemon2.lastHeartbeatSequence,
+        missedHeartbeats: this.daemon2.heartbeatMissedCount ?? 0,
+        uptime: this.daemon2.uptimeStart ? Date.now() - this.daemon2.uptimeStart : 0,
+      },
     };
   }
 }
