@@ -6,9 +6,15 @@ import type { MessageHub } from '../../orchestration/message-hub.js';
 import type { ModuleRegistry, OrchestrationModule } from '../../orchestration/module-registry.js';
 import type { LoadedAgentConfig } from '../../runtime/agent-json-config.js';
 import type { ResourcePool } from '../../orchestration/resource-pool.js';
+
 import { buildDispatchTaskText, extractTaskText, sanitizeDispatchResult, type DispatchSummaryResult } from '../../common/agent-dispatch.js';
 
+import { logger } from '../../core/logger.js';
+
+const log = logger.module('AgentRuntimeBlock');
+
 export type AgentRoleType = 'executor' | 'reviewer' | 'orchestrator' | 'searcher';
+
 export type AgentCapabilityLayer = 'summary' | 'execution' | 'governance' | 'full';
 
 export interface AgentImplementation {
@@ -1292,6 +1298,10 @@ export class AgentRuntimeBlock extends BaseBlock {
   }
 
   private resolveDeploymentByAgentId(agentId: string): AgentDeploymentRecord | null {
+    log.debug('[AgentRuntimeBlock] Resolving deployment', {
+      agentId,
+      deploymentsSize: this.deployments.size,
+    });
     const candidates = Array.from(this.deployments.values()).filter((item) => item.agentId === agentId);
     if (candidates.length === 0) return null;
     candidates.sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt));
@@ -1698,9 +1708,16 @@ export class AgentRuntimeBlock extends BaseBlock {
   }
 
   private async dispatchTask(input: AgentDispatchRequest): Promise<DispatchResult> {
+    log.info('[AgentRuntimeBlock] Dispatching task', {
+      sourceAgentId: input.sourceAgentId,
+      targetAgentId: input.targetAgentId,
+      sessionId: input.sessionId,
+      taskType: typeof input.task
+    });
+
     const targetAgentId = input.targetAgentId;
     if (!targetAgentId || typeof targetAgentId !== 'string') {
-      console.log(`[AgentRuntimeBlock] Dispatch failed: invalid targetAgentId=${JSON.stringify(input)}`);
+      log.info(`[AgentRuntimeBlock] Dispatch failed: invalid targetAgentId=${JSON.stringify(input)}`);
       return {
         ok: false,
         dispatchId: `dispatch-${Date.now()}-invalid-target`,
@@ -1718,8 +1735,14 @@ export class AgentRuntimeBlock extends BaseBlock {
       };
     }
 
+    log.debug('[AgentRuntimeBlock] Checking deployment', {
+      targetAgentId: target,
+    });
     const deployment = this.resolveDeploymentByAgentId(target);
     if (!deployment) {
+      log.warn('[AgentRuntimeBlock] Deployment not found', {
+        targetAgentId: target,
+      });
       return {
         ok: false,
         dispatchId: `dispatch-${Date.now()}-not-started`,
@@ -2162,7 +2185,20 @@ export class AgentRuntimeBlock extends BaseBlock {
     }
 
     this.deployments.set(deploymentId, deployment);
+
+    log.info('[AgentRuntimeBlock] Deployment stored in map', {
+      deploymentId,
+      agentId: deployment.agentId,
+      sessionId: deployment.sessionId,
+      status: deployment.status,
+    });
     this.syncResourcePool(deployment, definition);
+
+    log.info('[AgentRuntimeBlock] Deployment synced to resource pool', {
+      deploymentId,
+      agentId: deployment.agentId,
+      implementationId: deployment.implementationId,
+    });
 
     this.emitStatusEvent({
       sessionId: deployment.sessionId,

@@ -13,6 +13,9 @@ import { ChannelContextManager } from '../../orchestration/channel-context-manag
 import { getCommandHub, parseCommands } from '../../blocks/command-hub/index.js';
 import { loadFingerConfig, getChannelAuth } from '../../core/config/channel-config.js';
 import { CommandType } from '../../blocks/command-hub/types.js';
+import { logger } from '../../core/logger.js';
+
+const log = logger.module('ChannelBridgeHubRoute');
 
 export interface ChannelBridgeHubRouteDeps {
   channelBridgeManager: ChannelBridgeManager;
@@ -50,7 +53,7 @@ export function createChannelBridgeHubRoute(deps: ChannelBridgeHubRouteDeps) {
     const msg = message as Record<string, unknown>;
     const channelMsg = msg.payload as ChannelMessage;
 
-    console.log('[Server] Processing channel message via MessageHub', {
+    log.info('Processing channel message via MessageHub', {
       channelId: channelMsg.channelId,
       msgId: channelMsg.id,
     });
@@ -68,9 +71,9 @@ export function createChannelBridgeHubRoute(deps: ChannelBridgeHubRouteDeps) {
           text: replyWithPrefix,
           replyTo: (channelMsg.metadata?.messageId as string) || channelMsg.id,
         });
-        console.log('[Server] Hub route reply sent:', sendResult.messageId);
+        log.info('Hub route reply sent', { messageId: sendResult.messageId });
       } catch (sendErr) {
-        console.error('[Server] Failed to send reply (hub route):', sendErr);
+        log.error('Failed to send reply (hub route)', sendErr instanceof Error ? sendErr : undefined);
       }
     };
 
@@ -111,7 +114,7 @@ export function createChannelBridgeHubRoute(deps: ChannelBridgeHubRouteDeps) {
     const fingerConfig = await loadFingerConfig();
     const channelPolicy = getChannelAuth(fingerConfig, channelMsg.channelId);
     if (channelPolicy === 'mailbox') {
-      console.log('[Server] Channel policy is mailbox, creating pending entry');
+      log.info('Channel policy is mailbox, creating pending entry');
       await sendReply('消息已加入队列等待处理');
       return;
     }
@@ -152,8 +155,15 @@ export function createChannelBridgeHubRoute(deps: ChannelBridgeHubRouteDeps) {
         maxQueueWaitMs: 180000,
       };
 
-      console.log('[Server] Hub route dispatching to agent:', targetAgentId);
+      log.info('Hub route dispatching to agent', { targetAgentId });
       const result = await dispatchTaskToAgent(dispatchRequest);
+
+      log.info('Hub route dispatch result', {
+        hasResult: !!result,
+        resultType: typeof result,
+        ok: typeof result === 'object' && result !== null && 'ok' in result ? (result as any).ok : undefined,
+      });
+
 
       if (result && typeof result === 'object' && 'ok' in result && result.ok && 'result' in result) {
         const replyText = typeof result.result === 'string'
@@ -162,7 +172,7 @@ export function createChannelBridgeHubRoute(deps: ChannelBridgeHubRouteDeps) {
         await sendReply(replyText, targetAgentId);
       }
     } catch (err) {
-      console.error('[Server] Hub route dispatch error:', err);
+      log.error('Hub route dispatch error', err instanceof Error ? err : undefined);
       await sendReply('处理失败，请稍后再试', 'messagehub');
     }
   };

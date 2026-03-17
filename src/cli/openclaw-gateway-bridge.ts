@@ -673,16 +673,31 @@ class GatewayBridgeService {
           ...rest,
         },
         cfg: {},
-        log,
-        onReady: () => {
+      log,
+      onReady: () => {
+         this.running = true;
+         this.emitEvent('ready', { channelId: this.channelId });
+      },
+      onError: (err: Error) => {
+        this.emitEvent('error', { message: err.message });
+      },
+      getStatus: () => ({
+        running: this.running,
+        connected: true,
+        lastConnectedAt: Date.now(),
+      }),
+      setStatus: (status: Record<string, unknown>) => {
+        log.info('Status update:', status);
+        const running = (status as { running?: boolean }).running === true;
+        const connected = (status as { connected?: boolean }).connected === true;
+        if (running && connected) {
           this.running = true;
-          log.info('Gateway ready');
-        },
-        onError: (err: Error) => {
-          this.emitEvent('error', { message: err.message });
-        },
-        abortSignal: this.abortController.signal,
-      };
+          log.info('Gateway ready (via setStatus)');
+          this.emitEvent('ready', { channelId: this.channelId });
+        }
+      },
+       abortSignal: this.abortController.signal,
+     };
 
       // 异步启动 gateway
       this.handler.startAccount(ctx).then(() => {

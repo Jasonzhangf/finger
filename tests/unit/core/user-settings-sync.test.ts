@@ -166,4 +166,68 @@ describe('UserSettingsSync', () => {
     expect(config.kernel.provider).toBe('tcm');
     expect(config.kernel.providers.tcm).toBeDefined();
   });
+
+  it('preserves kernel extra fields and is idempotent', async () => {
+    const configDir = path.join(tempHome, 'config');
+    mkdirSync(configDir, { recursive: true });
+    const configPath = path.join(configDir, 'config.json');
+    const existingConfig = {
+      channelAuth: { enabled: true },
+      kernel: {
+        provider: 'old',
+        providers: { old: { name: 'old' } },
+        extra: { foo: 'bar' },
+      },
+      extraTopLevel: { keep: true },
+    };
+    writeFileSync(configPath, JSON.stringify(existingConfig, null, 2), 'utf-8');
+
+    const userSettingsPath = path.join(configDir, 'user-settings.json');
+    const payload = {
+      version: '1.0',
+      updated_at: new Date().toISOString(),
+      aiProviders: {
+        default: 'tcm',
+        providers: {
+          tcm: {
+            name: 'tcm',
+            base_url: 'http://127.0.0.1:5555/v1',
+            wire_api: 'responses',
+            env_key: 'ROUTECODEX_HTTP_APIKEY',
+            model: 'gpt-5.4',
+            enabled: true,
+          },
+        },
+      },
+      preferences: {
+        defaultModel: 'gpt-5.4',
+        maxTokens: 256000,
+        temperature: 0.7,
+        reasoningEffort: 'high',
+        reasoningSummary: 'detailed',
+        verbosity: 'medium',
+        showRawAgentReasoning: false,
+        webSearch: 'live',
+      },
+      ui: {
+        theme: 'dark',
+        language: 'zh-CN',
+        timeZone: 'Asia/Shanghai',
+      },
+    };
+    writeFileSync(userSettingsPath, JSON.stringify(payload, null, 2), 'utf-8');
+
+    const { syncUserSettingsToKernelConfig } = await import('../../../src/core/user-settings-sync.js');
+    syncUserSettingsToKernelConfig();
+
+    const first = JSON.parse(readFileSync(configPath, 'utf-8'));
+    expect(first.kernel.provider).toBe('tcm');
+    expect(first.kernel.providers.tcm).toBeDefined();
+    expect(first.kernel.extra).toEqual({ foo: 'bar' });
+    expect(first.extraTopLevel).toEqual({ keep: true });
+
+    syncUserSettingsToKernelConfig();
+    const second = JSON.parse(readFileSync(configPath, 'utf-8'));
+    expect(second).toEqual(first);
+  });
 });

@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from 'fs';
+import { mkdtempSync, rmSync, writeFileSync, mkdirSync, readFileSync } from 'fs';
 import { tmpdir } from 'os';
 import path from 'path';
 
@@ -19,7 +19,7 @@ describe('UserSettingsSync + AIProviderConfig integration', () => {
     rmSync(tempHome, { recursive: true, force: true });
   });
 
-  it('syncs user settings and passes provider config check', async () => {
+  it('syncs user settings, writes config.json, and passes provider config check', async () => {
     const configDir = path.join(tempHome, 'config');
     mkdirSync(configDir, { recursive: true });
 
@@ -61,6 +61,12 @@ describe('UserSettingsSync + AIProviderConfig integration', () => {
 
     const { syncUserSettingsToKernelConfig } = await import('../../src/core/user-settings-sync.js');
     syncUserSettingsToKernelConfig();
+
+    const configPath = path.join(configDir, 'config.json');
+    const config = JSON.parse(readFileSync(configPath, 'utf-8'));
+    expect(config.kernel.provider).toBe('tcm');
+    expect(config.kernel.providers.tcm).toBeDefined();
+    expect(config.kernel.providers.tcm.base_url).toBe('http://127.0.0.1:5555/v1');
 
     const { checkAIProviderConfig } = await import('../../src/server/modules/ai-provider-config.js');
     await expect(checkAIProviderConfig()).resolves.toBeUndefined();

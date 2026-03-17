@@ -5,7 +5,8 @@
   "main": "dist/cli/index.js",
   "bin": {
     "myfinger": "./dist/cli/index.js",
-    "finger-gateway-bridge": "./dist/cli/finger-gateway-bridge.js"
+    "finger-gateway-bridge": "./dist/cli/finger-gateway-bridge.js",
+    "finger-config": "./dist/cli/finger-config.js"
   },
   "type": "module",
   "scripts": {
@@ -69,7 +70,7 @@
     "vitest": "^1.6.0",
     "execa": "^8.0.1"
   },
-  "fingerBuildVersion": "0.1.0200",
+  "fingerBuildVersion": "0.1.0201",
   "pnpm": {
     "packageExtensions": {
       "vitest@*": {

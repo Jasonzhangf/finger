@@ -4,6 +4,7 @@ import { normalizeReviewPolicy } from '../../orchestration/orchestration-config.
 import type { SessionManager } from '../../orchestration/session-manager.js';
 import { setActiveReviewPolicy } from '../orchestration/review-policy.js';
 import type { SessionWorkspaceManager } from './session-workspaces.js';
+import { FINGER_SYSTEM_AGENT_ID } from '../../agents/finger-general/finger-general-module.js';
 
 export interface OrchestrationConfigApplierDeps {
   agentRuntimeBlock: AgentRuntimeBlock;
@@ -37,6 +38,10 @@ export function createOrchestrationConfigApplier(deps: OrchestrationConfigApplie
       .map((item) => item.id);
 
     for (const staleAgentId of currentlyStartedAgentIds) {
+      if (staleAgentId === FINGER_SYSTEM_AGENT_ID) {
+        // System Agent should not be disabled by stale agent cleanup
+        continue;
+      }
       if (activeAgentIds.has(staleAgentId)) continue;
       const staleSession = sessionWorkspaces.findRuntimeChildSession(rootSession.id, staleAgentId);
       await agentRuntimeBlock.execute('deploy', {

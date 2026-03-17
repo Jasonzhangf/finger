@@ -166,7 +166,7 @@ export function validateUserSettings(settings: any): void {
     throw new Error(`Invalid settings: default provider "${settings.aiProviders.default}" not found in providers`);
   }
 
-  for (const [providerId, provider] of Object.entries(settings.aiProviders.providers)) {
+  for (const [providerId, provider] of Object.entries(settings.aiProviders.providers) as [string, AIProvider][]) {
     if (!provider.name || typeof provider.name !== 'string') {
       throw new Error(`Invalid settings: provider "${providerId}" missing or invalid name`);
     }

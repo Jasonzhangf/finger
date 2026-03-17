@@ -141,8 +141,8 @@ export function createOpenClawRuntimeApi(params: {
                 ? params.dispatcherOptions?.responsePrefix.trim()
                 : '';
               const ackText = responsePrefix
-                ? `${responsePrefix}\n已收到，正在处理中…`
-                : '已收到，正在处理中…';
+                ? `${responsePrefix}\n收到，处理中…`
+                : '收到，处理中…';
               try {
                 // 不等待链路执行完成，先回执
                 await deliver({ text: ackText }, { kind: 'block' });
