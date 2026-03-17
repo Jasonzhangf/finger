@@ -12,6 +12,10 @@ describe('normalizeKernelProviderBaseUrl', () => {
       .toBe('http://127.0.0.1:5555');
     expect(normalizeKernelProviderBaseUrl('http://127.0.0.1:5555/v1/', 'responses'))
       .toBe('http://127.0.0.1:5555');
+    expect(normalizeKernelProviderBaseUrl('http://127.0.0.1:5555/V1', 'responses'))
+      .toBe('http://127.0.0.1:5555');
+    expect(normalizeKernelProviderBaseUrl('http://127.0.0.1:5555/V1/', 'responses'))
+      .toBe('http://127.0.0.1:5555');
   });
 
   it('leaves non-responses APIs untouched', async () => {
