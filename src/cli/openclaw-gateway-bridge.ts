@@ -23,6 +23,7 @@ const DEFAULT_WS_PORT = 19999;
 const DEFAULT_PLUGIN_DIR = resolveDefaultPluginDir();
 const PID_FILE_DIR = path.join(os.homedir(), '.finger', 'run');
 const DEFAULT_CONFIG_PATH = path.join(os.homedir(), '.finger', 'runtime', 'plugins', 'openclaw-qqbot.json');
+const CHANNELS_CONFIG_PATH = path.join(os.homedir(), '.finger', 'config', 'channels.json');
 
 // 消息类型
 export interface GatewayMessage {
@@ -159,6 +160,52 @@ function loadQqbotConfig(): { appId?: string; clientSecret?: string } | null {
   } catch {
     return null;
   }
+}
+
+function loadChannelsConfig(): { channels?: Array<{ id?: string; channelId?: string; credentials?: { appid?: string; token?: string } }> } | null {
+  if (!fs.existsSync(CHANNELS_CONFIG_PATH)) return null;
+
+  try {
+    const raw = fs.readFileSync(CHANNELS_CONFIG_PATH, 'utf-8');
+    return JSON.parse(raw) as { channels?: Array<{ id?: string; channelId?: string; credentials?: { appid?: string; token?: string } }> };
+  } catch {
+    return null;
+  }
+}
+
+function resolveSendConfig(channelId: string, payloadCfg?: unknown): { channels: Record<string, { appId: string; clientSecret: string; enabled: boolean }> } | null {
+  if (payloadCfg && typeof payloadCfg === 'object') {
+    return payloadCfg as { channels: Record<string, { appId: string; clientSecret: string; enabled: boolean }> };
+  }
+
+  const qqbotConfig = loadQqbotConfig();
+  if (qqbotConfig?.appId && qqbotConfig.clientSecret) {
+    return {
+      channels: {
+        [channelId]: {
+          appId: qqbotConfig.appId,
+          clientSecret: qqbotConfig.clientSecret,
+          enabled: true,
+        },
+      },
+    };
+  }
+
+  const channelsConfig = loadChannelsConfig();
+  const channel = channelsConfig?.channels?.find((entry) => entry.id === channelId || entry.channelId === channelId);
+  const appId = channel?.credentials?.appid;
+  const clientSecret = channel?.credentials?.token;
+  if (!appId || !clientSecret) return null;
+
+  return {
+    channels: {
+      [channelId]: {
+        appId,
+        clientSecret,
+        enabled: true,
+      },
+    },
+  };
 }
 
 /**
@@ -615,17 +662,25 @@ class GatewayBridgeService {
       return { ok: false, error: 'Missing required fields: to, text' };
     }
 
+    const cfg = resolveSendConfig(this.channelId, payload.cfg);
+    if (!cfg?.channels?.[this.channelId]) {
+      return { ok: false, error: 'Missing channel config (cfg.channels) for send' };
+    }
+
     try {
       const result = await this.handler.sendText({
         to,
         text,
         accountId,
         replyToId,
-        cfg: payload.cfg,
+        cfg,
       });
 
       if (result.error) {
-        return { ok: false, error: result.error };
+        const errorMessage = typeof result.error === 'string'
+          ? result.error
+          : JSON.stringify(result.error);
+        return { ok: false, error: errorMessage };
       }
 
       return { ok: true, result };
