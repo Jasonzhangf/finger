@@ -31,6 +31,16 @@ describe('normalizeKernelProviderBaseUrl', () => {
     expect(normalizeKernelProviderBaseUrl('https://api.example.com/v1/extra', 'responses'))
       .toBe('https://api.example.com/v1/extra');
   });
+
+  it('trims whitespace and handles empty string', async () => {
+    const { normalizeKernelProviderBaseUrl } = await import('../../../src/core/user-settings-sync.js');
+    expect(normalizeKernelProviderBaseUrl('  http://127.0.0.1:5555/v1  ', 'responses'))
+      .toBe('http://127.0.0.1:5555');
+    expect(normalizeKernelProviderBaseUrl('', 'responses'))
+      .toBe('');
+    expect(normalizeKernelProviderBaseUrl('   ', 'responses'))
+      .toBe('');
+  });
 });
 
 describe('syncUserSettingsToKernelConfig base_url normalization', () => {
