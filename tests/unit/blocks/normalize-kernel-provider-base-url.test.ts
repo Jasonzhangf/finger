@@ -23,6 +23,14 @@ describe('normalizeKernelProviderBaseUrl', () => {
     expect(normalizeKernelProviderBaseUrl('http://127.0.0.1:5555/v1', 'http'))
       .toBe('http://127.0.0.1:5555/v1');
   });
+
+  it('does NOT remove /v1 when followed by other characters (negative case)', async () => {
+    const { normalizeKernelProviderBaseUrl } = await import('../../../src/core/user-settings-sync.js');
+    expect(normalizeKernelProviderBaseUrl('https://api.example.com/v1beta', 'responses'))
+      .toBe('https://api.example.com/v1beta');
+    expect(normalizeKernelProviderBaseUrl('https://api.example.com/v1/extra', 'responses'))
+      .toBe('https://api.example.com/v1/extra');
+  });
 });
 
 describe('syncUserSettingsToKernelConfig base_url normalization', () => {
