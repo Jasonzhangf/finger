@@ -73,6 +73,7 @@ import { checkAIProviderConfig } from './modules/ai-provider-config.js';
 
 import { registerAllRoutes } from './routes/index.js';
 import { ensureFingerLayout, FINGER_PATHS } from '../core/finger-paths.js';
+import { syncUserSettingsToKernelConfig } from '../core/user-settings-sync.js';
 import {
   ERROR_SAMPLE_DIR,
   BLOCKING_MESSAGE_TIMEOUT_MS,
@@ -271,6 +272,7 @@ async function initOpenClawGate(): Promise<void> {
 
   // Load channel bridge configs after OpenClaw gate is ready
   // Check AI provider configuration first
+  await syncUserSettingsToKernelConfig();
   await checkAIProviderConfig();
 
   await loadChannelBridgeConfigs();

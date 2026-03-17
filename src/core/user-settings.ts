@@ -6,7 +6,7 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
-import { FINGER_PATHS } from './finger-paths.js';
+import { FINGER_PATHS, ensureDir } from './finger-paths.js';
 import { logger } from './logger.js';
 
 const log = logger.module('UserSettings');
@@ -60,7 +60,7 @@ const DEFAULT_USER_SETTINGS: UserSettings = {
     providers: {
       tcm: {
         name: 'tcm',
-        base_url: 'http://127.0.0.0.1:5555/v1',
+        base_url: 'http://127.0.0.1:5555/v1',
         wire_api: 'responses',
         env_key: 'ROUTECODEX_HTTP_APIKEY',
         model: 'gpt-5.4',
@@ -80,7 +80,7 @@ const DEFAULT_USER_SETTINGS: UserSettings = {
   },
   ui: {
     theme: 'dark',
-   : language: 'zh-CN',
+    language: 'zh-CN',
     timeZone: 'Asia/Shanghai'
   }
 };
@@ -99,10 +99,11 @@ export function loadUserSettings(): UserSettings {
   try {
     if (!fs.existsSync(USER_SETTINGS_PATH)) {
       log.info('[UserSettings] User settings file not found, using defaults');
+      saveUserSettings(DEFAULT_USER_SETTINGS);
       return DEFAULT_USER_SETTINGS;
     }
 
-    const raw = fs.readFileSync(USER_SETTINGS_PATH, ''utf-8');
+    const raw = fs.readFileSync(USER_SETTINGS_PATH, 'utf-8');
     const settings = JSON.parse(raw);
 
     // 验证配置格式
@@ -127,7 +128,7 @@ export function loadUserSettings(): UserSettings {
 export function saveUserSettings(settings: UserSettings): void {
   try {
     settings.updated_at = new Date().toISOString();
-    
+    ensureDir(FINGER_PATHS.config.dir);
     const content = JSON.stringify(settings, null, 2);
     fs.writeFileSync(USER_SETTINGS_PATH, content, 'utf-8');
     
@@ -291,7 +292,9 @@ export function updateUISettings(updates: Partial<UISettings>): void {
  * 重置用户配置为默认值
  */
 export function resetUserSettings(): void {
-  fs.unlinkSync(USER_SETTINGS_PATH);
+  if (fs.existsSync(USER_SETTINGS_PATH)) {
+    fs.unlinkSync(USER_SETTINGS_PATH);
+  }
   log.info('[UserSettings] User settings reset to defaults');
 }
 
@@ -305,6 +308,3 @@ export function getUserSettingsPath(): string {
 /**
  * 获取示例配置文件路径
  */
-export function getUserSettingsExamplePath(): string {
-  return path.join(FINGER_PATHS.repo.root, 'docs', 'reference', 'templates', 'user-settings.example.json');
-}

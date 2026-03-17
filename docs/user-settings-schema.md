@@ -30,15 +30,15 @@
       },
       "tcm": {
         "name": "tcm",
-        "base_url": "http://127.0.0.0.1:5555/v1",
+        "base_url": "http://127.0.0.1:5555/v1",
         "wire_api": "responses",
-        "env_key": "TAILCODEX_HTTP_APIKEY",
+        "env_key": "ROUTECODEX_HTTP_APIKEY",
         "model": "gpt-5.4",
         "enabled": true
       },
       "rcm": {
         "name": "rcm",
-        "base_url": "http://127.0.0.0.1:5520/v1",
+        "base_url": "http://127.0.0.1:5520/v1",
         "wire_api": "responses",
         "env_key": "ROUTECODEX_HTTP_APIKEY",
         "model": "gpt-5.4",

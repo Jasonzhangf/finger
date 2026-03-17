@@ -17,14 +17,13 @@
         "name": "crsa",
         "base_url": "https://api.funai.vip/openai",
         "wire_api": "responses",
-        "user-settings.json
         "env_key": "CRS_OAI_KEY1",
         "model": "gpt-5.3-codex",
         "enabled": true
       },
       "tcm": {
         "name": "tcm",
-        "base_url": "http://127.0.0.0.1:5555/v1",
+        "base_url": "http://127.0.0.1:5555/v1",
         "wire_api": "responses",
         "env_key": "ROUTECODEX_HTTP_APIKEY",
         "model": "gpt-5.4",
@@ -32,7 +31,7 @@
       },
       "rcm": {
         "name": "rcm",
-        "base_url": "http://127.0.0.0.1:5520/v1",
+        "base_url": "http://127.0.0.1:5520/v1",
         "wire_api": "responses",
         "env_key": "ROUTECODEX_HTTP_APIKEY",
         "model": "gpt-5.4",
