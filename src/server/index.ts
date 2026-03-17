@@ -69,6 +69,7 @@ import {
 } from './modules/agent-runtime/index.js';
 import type { AgentDispatchRequest } from './modules/agent-runtime/types.js';
 import { createChannelBridgeHubRoute } from './modules/channel-bridge-hub-route.js';
+import { checkAIProviderConfig } from './modules/ai-provider-config.js';
 
 import { registerAllRoutes } from './routes/index.js';
 import { ensureFingerLayout, FINGER_PATHS } from '../core/finger-paths.js';
@@ -106,8 +107,11 @@ import { getChannelBridgeManager, type ChannelBridgeConfig } from '../bridges/in
 import type { ChannelMessage } from '../bridges/types.js';
 import fs from 'fs';
 import path from 'path';
+import { logger } from '../core/logger.js';
 
 
+
+const log = logger.module('Server');
 type WebSocketServerRuntime = ReturnType<typeof createWebSocketServer>;
 let wsClients: WebSocketServerRuntime['wsClients'];
 let wss: WebSocketServerRuntime['wss'];
@@ -194,8 +198,18 @@ async function loadChannelBridgeConfigs(): Promise<void> {
     if (fs.existsSync(channelsConfigPath)) {
       const raw = fs.readFileSync(channelsConfigPath, 'utf-8');
       const parsed = JSON.parse(raw);
-      configs = parsed.channels || [];
-      console.log('[Server] Found channels config file, channels:', configs.length);
+     configs = parsed.channels || [];
+
+     // 检查是否禁用daemon中的channel bridge
+     // 如果设置为false，则不加载，用户可以使用独立的gateway bridge CLI
+     const enabledInDaemon = parsed.enabledInDaemon !== false; // 默认为true
+     if (!enabledInDaemon) {
+       console.log('[Server] Channel bridge disabled in daemon (enabledInDaemon: false), skipping load');
+       console.log('[Server] Use "finger-gateway-bridge start" command to start channel bridge independently');
+       return;
+     }
+
+     console.log('[Server] Found channels config file, channels:', configs.length);
     } else {
       console.log('[Server] channels.json not found at:', channelsConfigPath);
     }
@@ -216,7 +230,8 @@ async function loadChannelBridgeConfigs(): Promise<void> {
   }
 }
 
-// Initialize OpenClaw Gate lazily after server start
+// Check AI provider configuration
+
 const inputsCfg = loadInputsConfig();
 const outputsCfg = loadOutputsConfig();
 
@@ -255,6 +270,9 @@ async function initOpenClawGate(): Promise<void> {
   }
 
   // Load channel bridge configs after OpenClaw gate is ready
+  // Check AI provider configuration first
+  await checkAIProviderConfig();
+
   await loadChannelBridgeConfigs();
 }
 
@@ -407,15 +425,31 @@ await agentRuntimeBlock.start();
 
 // Deploy System Agent globally (required for dispatch to work)
 // Must be done after agentRuntimeBlock.start() to ensure module is registered and started
+
+  log.info('Attempting to deploy System Agent globally...', {
+    agentId: FINGER_SYSTEM_AGENT_ID,
+    scope: 'global',
+    instanceCount: 1
+  });
 try {
   const deployResult = await agentRuntimeBlock.execute('deploy', {
     targetAgentId: FINGER_SYSTEM_AGENT_ID,
     scope: 'global',
     instanceCount: 1,
   }) as unknown as { success: boolean };
-  console.log(`[Server] System Agent deployed: ${deployResult?.success ? 'ok' : 'failed'}`);
+  if (deployResult?.success) {
+    log.info('System Agent deployed successfully', {
+      agentId: FINGER_SYSTEM_AGENT_ID,
+      result: deployResult
+    });
+  } else {
+    log.error('System Agent deployment failed', undefined, {
+      agentId: FINGER_SYSTEM_AGENT_ID,
+      result: deployResult
+    });
+  }
 } catch (err) {
-  console.error('[Server] Failed to deploy System Agent:', err);
+  log.error('Failed to deploy System Agent', err instanceof Error ? err : undefined);
 }
 applyOrchestrationConfig = createOrchestrationConfigApplier({
   agentRuntimeBlock,

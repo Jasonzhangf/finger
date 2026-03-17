@@ -4,7 +4,8 @@
   "description": "Finger - AI Agent Orchestrator with bd project management",
   "main": "dist/cli/index.js",
   "bin": {
-    "myfinger": "./dist/cli/index.js"
+    "myfinger": "./dist/cli/index.js",
+    "finger-gateway-bridge": "./dist/cli/finger-gateway-bridge.js"
   },
   "type": "module",
   "scripts": {
@@ -68,7 +69,7 @@
     "vitest": "^1.6.0",
     "execa": "^8.0.1"
   },
-  "fingerBuildVersion": "0.1.0179",
+  "fingerBuildVersion": "0.1.0200",
   "pnpm": {
     "packageExtensions": {
       "vitest@*": {
