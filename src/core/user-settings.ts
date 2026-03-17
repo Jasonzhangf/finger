@@ -13,6 +13,65 @@ const log = logger.module('UserSettings');
 
 const USER_SETTINGS_PATH = path.join(FINGER_PATHS.config.dir, 'user-settings.json');
 
+
+const USER_SETTINGS_BACKUP_PATH = path.join(FINGER_PATHS.config.dir, 'user-settings.backup.json');
+const BACKUP_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
+
+// 验证规则
+const VALID_WIRE_APIS = ['responses', 'http'];
+const VALID_THEMES = ['dark', 'light', 'auto'];
+const VALID_VERBOSITY = ['high', 'medium', 'low'];
+const VALID_REASONING_EFFORT = ['high', 'medium', 'low'];
+const VALID_REASONING_SUMMARY = ['detailed', 'medium', 'short'];
+const VALID_WEB_SEARCH = ['live', 'off'];
+
+/**
+ * 验证URL格式
+ */
+function isValidUrl(url: string): boolean {
+  try {
+    new URL(url);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * 备份损坏的配置文件
+ */
+function backupCorruptedSettings(): void {
+  try {
+    if (fs.existsSync(USER_SETTINGS_PATH)) {
+      fs.copyFileSync(USER_SETTINGS_PATH, USER_SETTINGS_BACKUP_PATH);
+      log.info('[UserSettings] Corrupted settings backed up to', { path: USER_SETTINGS_BACKUP_PATH });
+      console.error(`⚠️ Corrupted settings backed up to: ${USER_SETTINGS_BACKUP_PATH}`);
+    }
+  } catch (err) {
+    const error = err instanceof Error ? err : new Error(String(err));
+    log.error('[UserSettings] Failed to backup corrupted settings', error);
+  }
+}
+
+/**
+ * 清理过期的备份文件
+ */
+function cleanOldBackups(): void {
+  try {
+    if (fs.existsSync(USER_SETTINGS_BACKUP_PATH)) {
+      const stats = fs.statSync(USER_SETTINGS_BACKUP_PATH);
+      const age = Date.now() - stats.mtimeMs;
+      if (age > BACKUP_MAX_AGE_MS) {
+        fs.unlinkSync(USER_SETTINGS_BACKUP_PATH);
+        log.info('[UserSettings] Old backup cleaned up');
+      }
+    }
+  } catch (err) {
+    const error = err instanceof Error ? err : new Error(String(err));
+    log.error('[UserSettings] Failed to clean old backup', error);
+  }
+}
+
 export interface AIProvider {
   name: string;
   base_url: string;
@@ -117,7 +176,9 @@ export function loadUserSettings(): UserSettings {
 
     return settings;
   } catch (err) {
+    const error = err instanceof Error ? err : new Error(String(err));
     log.error('[UserSettings] Failed to load user settings, using defaults', err instanceof Error ? err : new Error(String(err)));
+    backupCorruptedSettings();
     return DEFAULT_USER_SETTINGS;
   }
 }
@@ -137,6 +198,7 @@ export function saveUserSettings(settings: UserSettings): void {
       defaultProvider: settings.aiProviders.default,
     });
   } catch (err) {
+    const error = err instanceof Error ? err : new Error(String(err));
     log.error('[UserSettings] Failed to save user settings', err instanceof Error ? err : new Error(String(err)));
     throw err;
   }
@@ -173,6 +235,9 @@ export function validateUserSettings(settings: any): void {
 
     if (!provider.base_url || typeof provider.base_url !== 'string') {
       throw new Error(`Invalid settings: provider "${providerId}" missing or invalid base_url`);
+    if (!isValidUrl(provider.base_url)) {
+      throw new Error(`Invalid settings: provider "${providerId}" base_url must be a valid URL`);
+    }
     }
 
     if (!provider.wire_api || !['responses', 'http'].includes(provider.wire_api)) {
@@ -194,10 +259,44 @@ export function validateUserSettings(settings: any): void {
 
   if (!settings.preferences || typeof settings.preferences !== 'object') {
     throw new Error('Invalid settings: preferences must be an object');
+
+  // Validate preferences
+  if (settings.preferences.defaultModel && typeof settings.preferences.defaultModel !== 'string') {
+    throw new Error('Invalid settings: preferences.defaultModel must be a string');
+  }
+  if (settings.preferences.maxTokens !== undefined && (typeof settings.preferences.maxTokens !== 'number' || settings.preferences.maxTokens <= 0)) {
+    throw new Error('Invalid settings: preferences.maxTokens must be a positive number');
+  }
+  if (settings.preferences.temperature !== undefined && (typeof settings.preferences.temperature !== 'number' || settings.preferences.temperature < 0 || settings.preferences.temperature > 2)) {
+    throw new Error('Invalid settings: preferences.temperature must be between 0 and 2');
+  }
+  if (settings.preferences.reasoningEffort && !VALID_REASONING_EFFORT.includes(settings.preferences.reasoningEffort)) {
+    throw new Error(`Invalid settings: preferences.reasoningEffort must be one of: ${VALID_REASONING_EFFORT.join(', ')}`);
+  }
+  if (settings.preferences.reasoningSummary && !VALID_REASONING_SUMMARY.includes(settings.preferences.reasoningSummary)) {
+    throw new Error(`Invalid settings: preferences.reasoningSummary must be one of: ${VALID_REASONING_SUMMARY.join(', ')}`);
+  }
+  if (settings.preferences.verbosity && !VALID_VERBOSITY.includes(settings.preferences.verbosity)) {
+    throw new Error(`Invalid settings: preferences.verbosity must be one of: ${VALID_VERBOSITY.join(', ')}`);
+  }
+  if (settings.preferences.webSearch && !VALID_WEB_SEARCH.includes(settings.preferences.webSearch)) {
+    throw new Error(`Invalid settings: preferences.webSearch must be one of: ${VALID_WEB_SEARCH.join(', ')}`);
+  }
   }
 
   if (!settings.ui || typeof settings.ui !== 'object') {
     throw new Error('Invalid settings: ui must be an object');
+
+  // Validate ui
+  if (settings.ui.theme && !VALID_THEMES.includes(settings.ui.theme)) {
+    throw new Error(`Invalid settings: ui.theme must be one of: ${VALID_THEMES.join(', ')}`);
+  }
+  if (settings.ui.language && typeof settings.ui.language !== 'string') {
+    throw new Error('Invalid settings: ui.language must be a string');
+  }
+  if (settings.ui.timeZone && typeof settings.ui.timeZone !== 'string') {
+    throw new Error('Invalid settings: ui.timeZone must be a string');
+  }
   }
 }
 
