@@ -22,7 +22,7 @@ export interface FingerConfigFile {
   [key: string]: unknown;
 }
 
-function normalizeKernelProviderBaseUrl(baseUrl: string, wireApi: unknown): string {
+export function normalizeKernelProviderBaseUrl(baseUrl: string, wireApi: unknown): string {
   const trimmed = baseUrl.trim();
   if (trimmed.length === 0) return trimmed;
   if (wireApi !== 'responses') return trimmed;
