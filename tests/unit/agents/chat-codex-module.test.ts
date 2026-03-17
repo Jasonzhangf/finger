@@ -6,6 +6,7 @@ import {
   type ChatCodexRunResult,
   type ChatCodexRunner,
   type KernelInputItem,
+  isRetryableRunError,
 } from '../../../src/agents/chat-codex/chat-codex-module.js';
 
 function asRecord(value: unknown): Record<string, unknown> {
@@ -541,5 +542,82 @@ describe('chat-codex module', () => {
     );
 
     expect(options?.responses?.text?.output_schema).toEqual(explicitSchema);
+  });
+});
+
+describe('isRetryableRunError', () => {
+  it('should identify "error code: 502" as retryable', () => {
+    const error = new Error('responses api returned non-success status: 502; body: error code: 502');
+    expect(isRetryableRunError(error)).toBe(true);
+  });
+
+  it('should identify "http 502" as retryable', () => {
+    const error = new Error('http 502');
+    expect(isRetryableRunError(error)).toBe(true);
+  });
+
+  it('should identify " 502" as retryable', () => {
+    const error = new Error('error:  502');
+    expect(isRetryableRunError(error)).toBe(true);
+  });
+
+  it('should identify "_502" as retryable', () => {
+    const error = new Error('error_code_502');
+    expect(isRetryableRunError(error)).toBe(true);
+  });
+
+  it('should identify "error code: 500" as retryable', () => {
+    const error = new Error('error code: 500');
+    expect(isRetryableRunError(error)).toBe(true);
+  });
+
+  it('should identify "error code: 503" as retryable', () => {
+    const error = new Error('error code: 503');
+    expect(isRetryableRunError(error)).toBe(true);
+  });
+
+  it('should identify "error code: 504" as retryable', () => {
+    const error = new Error('error code: 504');
+    expect(isRetryableRunError(error)).toBe(true);
+  });
+
+  it('should identify " 408" as retryable', () => {
+    const error = new Error('timeout  408');
+    expect(isRetryableRunError(error)).toBe(true);
+  });
+
+  it('should identify " 429" as retryable', () => {
+    const error = new Error('rate limit  429');
+    expect(isRetryableRunError(error)).toBe(true);
+  });
+
+  it('should NOT identify "error code: 401" as retryable', () => {
+    const error = new Error('error code: 401');
+    expect(isRetryableRunError(error)).toBe(false);
+  });
+
+  it('should NOT identify "error code: 403" as retryable', () => {
+    const error = new Error('error code: 403');
+    expect(isRetryableRunError(error)).toBe(false);
+  });
+
+  it('should NOT identify "unauthorized" as retryable', () => {
+    const error = new Error('unauthorized');
+    expect(isRetryableRunError(error)).toBe(false);
+  });
+
+  it('should NOT identify "insufficient_quota" as retryable', () => {
+    const error = new Error('insufficient_quota');
+    expect(isRetryableRunError(error)).toBe(false);
+  });
+
+  it('should identify "fetch failed" as retryable', () => {
+    const error = new Error('fetch failed');
+    expect(isRetryableRunError(error)).toBe(true);
+  });
+
+  it('should identify "gateway timeout" as retryable', () => {
+    const error = new Error('gateway timeout');
+    expect(isRetryableRunError(error)).toBe(true);
   });
 });

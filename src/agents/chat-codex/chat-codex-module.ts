@@ -334,7 +334,7 @@ function isTimeoutError(error: unknown): boolean {
   return normalized.includes('timed out') || normalized.includes('timeout');
 }
 
-function isRetryableRunError(error: unknown): boolean {
+export function isRetryableRunError(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error);
   const normalized = message.toLowerCase();
   if (normalized.includes('daily_cost_limit_exceeded')) return false;
@@ -361,10 +361,10 @@ function isRetryableRunError(error: unknown): boolean {
     || normalized.includes('_425')
     || normalized.includes(' 429')
     || normalized.includes('_429')
-    || normalized.includes(' 500')
-    || normalized.includes(' 502')
-    || normalized.includes(' 503')
-    || normalized.includes(' 504')
+    || normalized.includes(' 500')    || normalized.includes('_500')
+    || normalized.includes(' 502')    || normalized.includes('_502')
+    || normalized.includes(' 503')    || normalized.includes('_503')
+    || normalized.includes(' 504')    || normalized.includes('_504')
     || normalized.includes('error code: 502')
     || normalized.includes('error code: 500')
     || normalized.includes('error code: 503')
