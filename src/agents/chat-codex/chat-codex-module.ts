@@ -521,6 +521,7 @@ export class ProcessChatCodexRunner implements ChatCodexRunner {
     const spawnEnv = {
       ...process.env,
       FINGER_KERNEL_PROVIDER: providerId,
+      FINGER_CONFIG_PATH: FINGER_PATHS.config.file.main,
     };
     const child = spawn(resolvedBinaryPath, [], {
       stdio: ['pipe', 'pipe', 'pipe'],

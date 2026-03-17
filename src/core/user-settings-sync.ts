@@ -22,6 +22,13 @@ export interface FingerConfigFile {
   [key: string]: unknown;
 }
 
+function normalizeKernelProviderBaseUrl(baseUrl: string, wireApi: unknown): string {
+  const trimmed = baseUrl.trim();
+  if (trimmed.length === 0) return trimmed;
+  if (wireApi !== 'responses') return trimmed;
+  return trimmed.replace(/\/v1\/?$/i, '');
+}
+
 export function syncUserSettingsToKernelConfig(): FingerConfigFile {
   const userSettings = loadUserSettings();
   const configPath = path.join(FINGER_PATHS.config.dir, 'config.json');
@@ -38,7 +45,15 @@ export function syncUserSettingsToKernelConfig(): FingerConfigFile {
     }
   }
 
-  const kernelProviders = userSettings.aiProviders.providers;
+  const kernelProviders = Object.fromEntries(
+    Object.entries(userSettings.aiProviders.providers).map(([providerId, provider]) => [
+      providerId,
+      {
+        ...provider,
+        base_url: normalizeKernelProviderBaseUrl(provider.base_url, provider.wire_api),
+      },
+    ]),
+  );
   const defaultProvider = userSettings.aiProviders.default;
 
   const nextConfig: FingerConfigFile = {

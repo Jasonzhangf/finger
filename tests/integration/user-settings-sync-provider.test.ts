@@ -66,7 +66,7 @@ describe('UserSettingsSync + AIProviderConfig integration', () => {
     const config = JSON.parse(readFileSync(configPath, 'utf-8'));
     expect(config.kernel.provider).toBe('tcm');
     expect(config.kernel.providers.tcm).toBeDefined();
-    expect(config.kernel.providers.tcm.base_url).toBe('http://127.0.0.1:5555/v1');
+    expect(config.kernel.providers.tcm.base_url).toBe('http://127.0.0.1:5555');
 
     const { checkAIProviderConfig } = await import('../../src/server/modules/ai-provider-config.js');
     await expect(checkAIProviderConfig()).resolves.toBeUndefined();

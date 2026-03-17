@@ -31,6 +31,11 @@ It intentionally avoids project-specific architecture, API, roadmap, and busines
 - 临时文件、敏感文件、日志、构建产物不要提交。
 - 日志/输出文件必须落盘到 `~/.finger`，不得写入仓库路径（例如 `logs/`、`output/`）。
 
+## 配置唯一真源原则
+- 用户配置（AI provider、用户偏好）只读 `~/.finger/config/user-settings.json`，不得在其他文件（如 config.json）重复存储。
+- 系统配置（orchestration.json、channels.json 等）各自独立，每个配置文件全局只有一个。
+- 所有代码必须通过 `src/core/user-settings.ts` 提供的函数读取 AI provider 配置，禁止直接读取 config.json 的 kernel.providers。
+
 ## Agent Conduct & Accountability
 - 所有结论必须基于可验证证据（文件内容/命令输出/测试结果），不得“推测已完成”。
 - 未完成必须明确说明原因与阻塞点，严禁隐瞒或虚报进度。
@@ -54,6 +59,9 @@ It intentionally avoids project-specific architecture, API, roadmap, and busines
 - Validate changed behavior with the smallest relevant checks first.
 - Expand to broader tests/builds only as needed.
 - If validation cannot be run, state that clearly in handoff.
+
+## Debugging Principles
+- 遇到通信/链路问题时，先用最小请求（如 curl）确认最底层请求/响应是否正常，再逐层向上定位（gateway → server → agent → tool），避免跳过底层验证。
 
 ## Documentation
 - Update docs when behavior, interfaces, or workflows change.

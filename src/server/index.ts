@@ -190,9 +190,10 @@ const channelBridgeManager = getChannelBridgeManager({
   },
 });
 
-async function loadChannelBridgeConfigs(): Promise<void> {
+export async function loadChannelBridgeConfigs(configDir?: string): Promise<void> {
   console.log('[Server] loadChannelBridgeConfigs called');
-  const channelsConfigPath = path.join(FINGER_PATHS.config.dir, 'channels.json');
+  const effectiveConfigDir = configDir ?? FINGER_PATHS.config.dir;
+  const channelsConfigPath = path.join(effectiveConfigDir, 'channels.json');
   let configs: ChannelBridgeConfig[] = [];
 
   try {
@@ -244,34 +245,36 @@ console.log('[Server] OpenClaw plugin dir:', openClawPluginDir);
 
 // Delay OpenClaw gate init until after server is listening
 async function initOpenClawGate(): Promise<void> {
-  if (!openClawPluginDir) return;
-  const openClawGate = new OpenClawGateBlock('openclaw-gate', { pluginDir: openClawPluginDir });
-  try {
-    await openClawGate.initialize();
-    openClawGate.addEventListener((event: OpenClawGateEvent) => {
-      switch (event.type) {
-        case 'plugin_enabled':
-        case 'plugin_installed':
-          for (const tool of event.tools) {
-            globalToolRegistry.register(toOpenClawToolDefinition(event.pluginId, tool, openClawGate));
-          }
-          break;
-        case 'plugin_disabled':
-        case 'plugin_uninstalled':
-          for (const toolName of event.toolNames) {
-            globalToolRegistry.unregister(toolName);
-          }
-          break;
-      }
-    });
+  if (openClawPluginDir) {
+    const openClawGate = new OpenClawGateBlock('openclaw-gate', { pluginDir: openClawPluginDir });
+    try {
+      await openClawGate.initialize();
+      openClawGate.addEventListener((event: OpenClawGateEvent) => {
+        switch (event.type) {
+          case 'plugin_enabled':
+          case 'plugin_installed':
+            for (const tool of event.tools) {
+              globalToolRegistry.register(toOpenClawToolDefinition(event.pluginId, tool, openClawGate));
+            }
+            break;
+          case 'plugin_disabled':
+          case 'plugin_uninstalled':
+            for (const toolName of event.toolNames) {
+              globalToolRegistry.unregister(toolName);
+            }
+            break;
+        }
+      });
 
-    console.log('[Server] OpenClaw Gate initialized, plugins:', openClawGate.listPlugins().length);
-  } catch (err) {
-    console.error('[Server] Failed to initialize OpenClaw Gate:', err instanceof Error ? err.message : String(err));
+      console.log('[Server] OpenClaw Gate initialized, plugins:', openClawGate.listPlugins().length);
+    } catch (err) {
+      console.error('[Server] Failed to initialize OpenClaw Gate:', err instanceof Error ? err.message : String(err));
+    }
+  } else {
+    console.log('[Server] OpenClaw Gate skipped: no plugin dir configured');
   }
 
-  // Load channel bridge configs after OpenClaw gate is ready
-  // Check AI provider configuration first
+  // Always sync/check AI provider config before loading channel bridge configs.
   await syncUserSettingsToKernelConfig();
   await checkAIProviderConfig();
 

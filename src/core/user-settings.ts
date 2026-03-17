@@ -407,3 +407,79 @@ export function getUserSettingsPath(): string {
 /**
  * 获取示例配置文件路径
  */
+
+/**
+ * 加载 AI provider 配置（用户配置唯一真源）
+ * 
+ * @returns {AIProviders} AI provider 配置
+ */
+export function loadAIProviders(): AIProviders {
+  const settings = loadUserSettings();
+  return settings.aiProviders;
+}
+
+/**
+ * 获取默认 AI provider ID
+ *
+ * @returns {string} 默认 provider ID
+ */
+export function getDefaultAIProviderId(): string {
+  const settings = loadUserSettings();
+  return settings.aiProviders.default;
+}
+
+/**
+ * 获取指定 provider 的配置
+ * 
+ * @param providerId Provider ID
+ * @returns {AIProvider | undefined} Provider 配置
+ */
+export function getAIProvider(providerId: string): AIProvider | undefined {
+  const settings = loadUserSettings();
+  return settings.aiProviders.providers[providerId];
+}
+
+/**
+ * 检查 AI provider 配置
+ * 
+ * @returns {boolean} 是否有效
+ */
+export function checkAIProviderConfigValidity(): boolean {
+  const settings = loadUserSettings();
+  try {
+    const providers = Object.keys(settings.aiProviders.providers);
+    if (providers.length === 0) {
+      log.error('[UserSettings] No AI providers configured in user-settings.json');
+      return false;
+    }
+    const defaultProvider = settings.aiProviders.default;
+   if (!defaultProvider || !settings.aiProviders.providers[defaultProvider]) {
+      log.error('[UserSettings] Default AI provider not configured or invalid', undefined, { defaultProvider, availableProviders: providers.join(', ') });
+      return false;
+    }
+    // 验证每个 provider 的配置
+    for (const [providerId, provider] of Object.entries(settings.aiProviders.providers)) {
+      if (!isValidUrl(provider.base_url)) {
+        log.error('[UserSettings] Invalid base_url for provider', undefined, { providerId, base_url: provider.base_url });
+        return false;
+      }
+      if (!VALID_WIRE_APIS.includes(provider.wire_api)) {
+        log.error('[UserSettings] Invalid wire_api for provider', undefined, { providerId, wire_api: provider.wire_api });
+        return false;
+      }
+     if (!provider.env_key) {
+       log.error('[UserSettings] Missing env_key for provider', undefined, { providerId });
+       return false;
+     }
+   }
+    log.info('[UserSettings] AI provider config is valid', {
+      defaultProvider,
+      providerCount: providers.length
+    });
+    return true;
+ } catch (err) {
+    const error = err instanceof Error ? err : new Error(String(err));
+    log.error('[UserSettings] Failed to validate AI provider config', error, {});
+    return false;
+  }
+}

@@ -48,6 +48,8 @@ interface LeftSidebarProps {
   onRefreshSessions: () => Promise<void>;
   onToggleSystemMonitor?: (projectPath: string, enabled: boolean) => Promise<void> | void;
   isSystemMonitorEnabled?: (projectPath: string) => boolean;
+  viewMode?: 'workflow' | 'system-monitor';
+  onSetViewMode?: (mode: 'workflow' | 'system-monitor') => void;
 }
 
 interface ProjectTabProps {
@@ -73,6 +75,8 @@ interface SystemMonitorTabProps {
   isLoading: boolean;
   onToggleSystemMonitor?: (projectPath: string, enabled: boolean) => Promise<void> | void;
   isSystemMonitorEnabled?: (projectPath: string) => boolean;
+  viewMode?: 'workflow' | 'system-monitor';
+  onSetViewMode?: (mode: 'workflow' | 'system-monitor') => void;
 }
 
 const TABS: Array<{ key: SidebarTab; label: string }> = [

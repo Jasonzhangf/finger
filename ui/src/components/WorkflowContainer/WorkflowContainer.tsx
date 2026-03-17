@@ -29,6 +29,7 @@ interface ResumeCheckResult {
 }
 
 const CHAT_GATEWAY_ID = 'finger-orchestrator-gateway';
+type ViewMode = 'workflow' | 'system-monitor';
 const WORKDIR_STORAGE_KEY = 'finger-ui-workdir';
 const PANEL_FREEZE_STORAGE_KEY = 'finger-ui-panel-freeze';
 const DISABLE_ANIMATIONS_STORAGE_KEY = 'finger-ui-disable-animations';
@@ -148,6 +149,7 @@ function normalizeChatAgentStatus(status: string): AgentRuntime['status'] {
 }
 
 export const WorkflowContainer: React.FC = () => {
+  const [viewMode, setViewMode] = React.useState<ViewMode>('workflow');
   const {
     currentSession,
     sessions,
@@ -724,15 +726,17 @@ export const WorkflowContainer: React.FC = () => {
       onRenameSession={renameSession}
       onSwitchSession={handleSwitchSessionFromSidebar}
       onRefreshSessions={refreshSessions}
-      onToggleSystemMonitor={systemMonitor.toggle}
-      isSystemMonitorEnabled={systemMonitor.isEnabled}
-      panelFreeze={panelFreeze}
-      onUpdatePanelFreeze={updatePanelFreeze}
-      onResetPanelFreeze={resetPanelFreeze}
-      disableAnimations={disableAnimations}
-      onToggleDisableAnimations={updateDisableAnimations}
+     onToggleSystemMonitor={systemMonitor.toggle}
+     isSystemMonitorEnabled={systemMonitor.isEnabled}
+     panelFreeze={panelFreeze}
+     onUpdatePanelFreeze={updatePanelFreeze}
+     onResetPanelFreeze={resetPanelFreeze}
+     disableAnimations={disableAnimations}
+     onToggleDisableAnimations={updateDisableAnimations}
+     viewMode={viewMode}
+     onSetViewMode={setViewMode}
     />
-  ), [createSession, disableAnimations, frozenActiveRuntimeSessionId, frozenCurrentSession, frozenDrawerAgentIdForLeft, frozenFocusedRuntimeInstanceId, frozenIsLoadingSessions, frozenRuntimeInstancesForLeft, frozenSessions, handleSelectInstance, handleSwitchSessionFromSidebar, panelFreeze, refreshSessions, removeSession, renameSession, resetPanelFreeze, updateDisableAnimations, updatePanelFreeze, systemMonitor.toggle, systemMonitor.isEnabled]);
+  ), [createSession, disableAnimations, frozenActiveRuntimeSessionId, frozenCurrentSession, frozenDrawerAgentIdForLeft, frozenFocusedRuntimeInstanceId, frozenIsLoadingSessions, frozenRuntimeInstancesForLeft, frozenSessions, handleSelectInstance, handleSwitchSessionFromSidebar, panelFreeze, refreshSessions, removeSession, renameSession, resetPanelFreeze, updateDisableAnimations, updatePanelFreeze, systemMonitor.toggle, systemMonitor.isEnabled, viewMode, setViewMode]);
 
   const bottomPanelElement = useMemo(() => (
     <BottomPanel
