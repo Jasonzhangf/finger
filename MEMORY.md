@@ -23,6 +23,8 @@
   Tags: system-agent, isolation, sessions
 - [2026-03-11] 超级命令语法 `<##@system##>` / `<##@agent##>` / `<##@system:pwd=...##>`；系统命令有通道白名单与可选密码鉴权。  
   Tags: super-command, system-auth, channel-auth
+- [2026-03-17] CLI `execute --task` 载荷兼容修复：为 `EXECUTE` 同时发送 `task/text/content`，并在 `parseUnifiedAgentInput` 支持 `task/description` 文本别名，避免 gateway/agent 路径出现 `No input text provided`。  
+  Tags: cli, execute, message-payload, system-agent, agent-runtime
 - [2026-03-13] ChannelContextManager 作为上下文真源：system/agent/project 切换命令必须更新上下文；provider 切换不影响 agent 上下文。  
   Tags: channel-context, persistence
 - [2026-03-13] MessageHub 指令集：Project -> Session -> Agent 关系为单一真源；通道策略 `direct`/`mailbox` 决定是否可直达 agent。  
@@ -191,4 +193,3 @@
 - [ ] System Agent 实际响应 bootstrap 提示词并产生回复
 - [ ] Project agent 定时心跳检查工作正常
 - [ ] Dual daemon 互相心跳检测和重启机制工作
-
