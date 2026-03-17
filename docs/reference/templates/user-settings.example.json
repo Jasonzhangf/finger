@@ -1,0 +1,58 @@
+{
+  "$schema": "https://finger.dev/schemas/user-settings.json",
+  "version": "1.0",
+  "updated_at": "2026-03-17T09:50:00+08:00",
+  "aiProviders": {
+    "default": "tcm",
+    "providers": {
+      "crs": {
+        "name": "crs",
+        "base_url": "https://api.funai.vip/openai",
+        "wire_api": "responses",
+        "env_key": "CRS_OAI_KEY",
+        "model": "gpt-5.4",
+        "enabled": true
+      },
+      "crsa": {
+        "name": "crsa",
+        "base_url": "https://api.funai.vip/openai",
+        "wire_api": "responses",
+        "user-settings.json
+        "env_key": "CRS_OAI_KEY1",
+        "model": "gpt-5.3-codex",
+        "enabled": true
+      },
+      "tcm": {
+        "name": "tcm",
+        "base_url": "http://127.0.0.0.1:5555/v1",
+        "wire_api": "responses",
+        "env_key": "ROUTECODEX_HTTP_APIKEY",
+        "model": "gpt-5.4",
+        "enabled": true
+      },
+      "rcm": {
+        "name": "rcm",
+        "base_url": "http://127.0.0.0.1:5520/v1",
+        "wire_api": "responses",
+        "env_key": "ROUTECODEX_HTTP_APIKEY",
+        "model": "gpt-5.4",
+        "enabled": true
+      }
+    }
+  },
+  "preferences": {
+    "defaultModel": "gpt-5.4",
+    "maxTokens": 256000,
+    "temperature": 0.7,
+    "reasoningEffort": "high",
+    "reasoningSummary": "detailed",
+    "verbosity": "medium",
+    "showRawAgentReasoning": false,
+    "webSearch": "live"
+  },
+  "ui": {
+    "theme": "dark",
+    "language": "zh-CN",
+    "timeZone": "Asia/Shanghai"
+  }
+}
