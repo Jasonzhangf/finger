@@ -7,7 +7,6 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { FINGER_PATHS } from '../../core/finger-paths.js';
-
 import { logger } from '../../core/logger.js';
 
 const log = logger.module('AIProviderConfig');
@@ -23,23 +22,24 @@ export async function checkAIProviderConfig(): Promise<void> {
 
   try {
     if (!fs.existsSync(configPath)) {
-      log.error('[Server] AI provider config not found:', configPath);
+      log.error('[Server] AI provider config not found', undefined, { configPath });
       log.error('[Server] Please create config.json with kernel providers configuration');
-      log.error('[Server] Example config:');
-      log.error(JSON.stringify({
-        kernel: {
-          providers: {
-            tcm: {
-              name: "tcm",
-              base_url: "http://127.0.0.1:5555/v1",
-              wire_api: "responses",
-              env_key: "ROUTECODEX_HTTP_APIKEY",
-              model: "gpt-5.4"
-            }
-          },
-          provider: "tcm"
+      log.error('[Server] Example config:', undefined, {
+        example: {
+          kernel: {
+            providers: {
+              tcm: {
+                name: "tcm",
+                base_url: "http://127.0.0.1:5555/v1",
+                wire_api: "responses",
+                env_key: "ROUTECODEX_HTTP_APIKEY",
+                model: "gpt-5.4"
+              }
+            },
+            provider: "tcm"
+          }
         }
-      }, null, 2));
+      });
       throw new Error('AI provider config not found');
     }
 
@@ -59,16 +59,18 @@ export async function checkAIProviderConfig(): Promise<void> {
 
     const defaultProvider = config.kernel.provider;
     if (!defaultProvider || !config.kernel.providers[defaultProvider]) {
-      log.error('[Server] Default AI provider not configured or invalid:', defaultProvider);
-      log.error('[Server] Available providers:', providers.join(', '));
+      log.error('[Server] Default AI provider not configured or invalid', undefined, { 
+        defaultProvider, 
+        availableProviders: providers.join(', ') 
+      });
       throw new Error(`Default AI provider not configured or invalid: ${defaultProvider}`);
     }
 
-    log.log('[Server] AI provider config loaded successfully');
-    log.log('[Server] Default provider:', defaultProvider);
-    log.log('[Server] Available providers:', providers.join(', '));
+    log.info('[Server] AI provider config loaded successfully');
+    log.info('[Server] Default provider', { defaultProvider });
+    log.info('[Server] Available providers', { providers: providers.join(', ') });
   } catch (err) {
-    log.error('[Server] Failed to load AI provider config:', err);
+    log.error('[Server] Failed to load AI provider config', err instanceof Error ? err : new Error(String(err)));
     throw err;
   }
 }
