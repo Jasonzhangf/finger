@@ -186,6 +186,9 @@ describe('execute command - Message Hub', () => {
     const callBody = JSON.parse(mockFetch.mock.calls[0][1].body);
     expect(callBody.target).toBe('executor-1');
     expect(callBody.message.type).toBe('EXECUTE');
+    expect(callBody.message.task).toBe('搜索 deepseek');
+    expect(callBody.message.text).toBe('搜索 deepseek');
+    expect(callBody.message.content).toBe('搜索 deepseek');
     expect(callBody.blocking).toBe(true);
   });
 
@@ -198,6 +201,9 @@ describe('execute command - Message Hub', () => {
     await executeCommand('分析数据', { blocking: false });
     const callBody = JSON.parse(mockFetch.mock.calls[0][1].body);
     expect(callBody.target).toBe('executor-agent');
+    expect(callBody.message.task).toBe('分析数据');
+    expect(callBody.message.text).toBe('分析数据');
+    expect(callBody.message.content).toBe('分析数据');
     expect(callBody.blocking).toBe(false);
   });
 });

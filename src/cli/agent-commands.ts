@@ -143,6 +143,8 @@ export async function executeCommand(task: string, options: { agent?: string; bl
   
   const result = await sendMessageToHub(options.agent || 'executor-agent', 'EXECUTE', {
     task,
+    text: task,
+    content: task,
     sessionId: options.sessionId,
   }, { 
     blocking: options.blocking,

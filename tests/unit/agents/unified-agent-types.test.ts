@@ -31,6 +31,25 @@ describe('unified-agent-types', () => {
     expect(parseUnifiedAgentInput('   ')).toBeNull();
   });
 
+  it('supports task field used by CLI execute payloads', () => {
+    const parsed = parseUnifiedAgentInput({
+      type: 'EXECUTE',
+      task: '  run heartbeat e2e  ',
+      sessionId: 's-heartbeat',
+    });
+
+    expect(parsed).toEqual({
+      text: 'run heartbeat e2e',
+      sessionId: 's-heartbeat',
+      createNewSession: undefined,
+      sender: undefined,
+      history: undefined,
+      metadata: undefined,
+      roleProfile: undefined,
+      tools: undefined,
+    });
+  });
+
   it('prefers explicit history when provided', () => {
     const merged = mergeHistory(
       [

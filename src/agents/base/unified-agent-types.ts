@@ -45,7 +45,7 @@ export interface UnifiedAgentOutput {
   };
 }
 
-const TEXT_KEYS = ['text', 'message', 'prompt', 'content'];
+const TEXT_KEYS = ['text', 'message', 'prompt', 'content', 'task', 'description'];
 
 export function parseUnifiedAgentInput(message: unknown): UnifiedAgentInput | null {
   if (typeof message === 'string') {
