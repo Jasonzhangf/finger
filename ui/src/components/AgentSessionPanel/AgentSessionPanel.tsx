@@ -12,6 +12,7 @@ export interface AgentSessionPanelProps {
   scheduledTasks: Array<{ id: string; title: string; status: string; nextRun?: string }>;
   selectedSessionId?: string;
   onSelectSession?: (sessionId: string) => void;
+  onSelectMultiple?: (sessionIds: string[]) => void;
   hideProjectPath?: boolean;
   onOpenProject?: () => void;
   onCreateSession?: (projectPath: string) => Promise<SessionInfo>;
@@ -109,6 +110,8 @@ export const AgentSessionPanel: FC<AgentSessionPanelProps> = ({
   inputCapability,
 }) => {
   const [activeTab, setActiveTab] = useState<TabType>(null);
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [multiSelectMode, setMultiSelectMode] = useState(false);
 
   const handleOpenProject = () => {
     if (onOpenProject) {
@@ -198,7 +201,7 @@ export const AgentSessionPanel: FC<AgentSessionPanelProps> = ({
           {activeTab === 'sessions' && (
             <div className="sidebar-panel">
               <div className="sidebar-header">
-                <span>会话列表</span>
+                <span>会话列表 {multiSelectMode && selectedIds.size > 0 ? `(已选 ${selectedIds.size})` : ''}</span>
               </div>
               <div className="sidebar-content">
                 <div className="session-toolbar">
@@ -213,6 +216,33 @@ export const AgentSessionPanel: FC<AgentSessionPanelProps> = ({
                   >
                     新建
                   </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setMultiSelectMode(!multiSelectMode);
+                      setSelectedIds(new Set());
+                    }}
+                  >
+                    {multiSelectMode ? '取消多选' : '多选'}
+                  </button>
+                  {multiSelectMode && selectedIds.size > 0 && (
+                    <button
+                      type="button"
+                      className="danger-btn"
+                      onClick={async () => {
+                        if (onDeleteSession) {
+                          for (const id of selectedIds) {
+                            await onDeleteSession(id);
+                          }
+                          setSelectedIds(new Set());
+                          setMultiSelectMode(false);
+                        }
+                      }}
+                      disabled={!onDeleteSession}
+                    >
+                      删除选中 ({selectedIds.size})
+                    </button>
+                  )}
                   <button
                     type="button"
                     onClick={async () => {
@@ -231,17 +261,39 @@ export const AgentSessionPanel: FC<AgentSessionPanelProps> = ({
                   sessions.map((session) => (
                     <div
                       key={session.id}
-                      className={`session-item ${session.id === activeSessionId ? 'active' : ''}`}
+                      className={`session-item ${session.id === activeSessionId ? 'active' : ''} ${selectedIds.has(session.id) ? 'selected' : ''}`}
                       onClick={() => {
-                        if (onSelectSession) {
-                          onSelectSession(session.id);
-                        } else if (onSwitchSession) {
-                          void onSwitchSession(session.id);
+                        if (multiSelectMode) {
+                          setSelectedIds(prev => {
+                            const next = new Set(prev);
+                            if (next.has(session.id)) {
+                              next.delete(session.id);
+                            } else {
+                              next.add(session.id);
+                            }
+                            return next;
+                          });
+                        } else {
+                          if (onSelectSession) {
+                            onSelectSession(session.id);
+                          } else if (onSwitchSession) {
+                            void onSwitchSession(session.id);
+                          }
                         }
                       }}
                     >
                       <div className="session-title">{session.name}</div>
-                      <div className="session-meta">{session.status ?? 'idle'}</div>
+                      <div className="session-meta">
+                        {multiSelectMode && (
+                          <input
+                            type="checkbox"
+                            checked={selectedIds.has(session.id)}
+                            readOnly
+                            className="session-checkbox"
+                          />
+                        )}
+                        <span>{session.status ?? 'idle'}</span>
+                      </div>
                     </div>
                   ))
                 )}

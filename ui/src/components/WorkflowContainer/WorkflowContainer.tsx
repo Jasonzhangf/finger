@@ -703,7 +703,9 @@ export const WorkflowContainer: React.FC = () => {
   }, [panelFreeze.performance, uiDisable.performance, sessions, handleOpenProject, handleSwitchSessionFromSidebar, chatAgents, chatInputCapability, systemMonitor.entries]);
 
  const rightPanelElement = useMemo(() => {
-   const systemSessions = sessions.filter(s => isSystemSession(s));
+   const systemSessions = sessions.filter(s => isSystemSession(s)).sort(
+     (a, b) => new Date(b.lastAccessedAt).getTime() - new Date(a.lastAccessedAt).getTime(),
+   );
    const selectedSystemSessionId = systemSessions.length > 0 ? systemSessions[0].id : undefined;
 
    return (
