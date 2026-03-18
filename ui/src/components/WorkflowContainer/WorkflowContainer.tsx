@@ -156,6 +156,10 @@ function isSystemSession(s: { projectPath?: string; sessionTier?: string; id?: s
   return false;
 }
 
+function normalizeProjectPath(value: string): string {
+  return value.trim().replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
+}
+
 export const WorkflowContainer: React.FC = () => {
   const [viewMode, setViewMode] = React.useState<ViewMode>('workflow');
   const {
@@ -659,7 +663,7 @@ export const WorkflowContainer: React.FC = () => {
     // 去重：每个 projectPath 只显示一个窗口
     const uniqueEntries = new Map<string, SystemRegistryEntry>();
     for (const entry of systemMonitor.entries.filter((entry) => entry.monitored)) {
-      const key = entry.projectPath.toLowerCase();
+      const key = normalizeProjectPath(entry.projectPath);
       if (!uniqueEntries.has(key)) {
         uniqueEntries.set(key, entry);
       }
@@ -674,7 +678,10 @@ export const WorkflowContainer: React.FC = () => {
       .slice(0, 4);
 
     const monitorPanels: MonitorPanel[] = sortedMonitored.map((entry) => {
-      const projectSessions = sessions.filter((s) => s.projectPath === entry.projectPath);
+      const normalizedProject = normalizeProjectPath(entry.projectPath);
+      const projectSessions = sessions
+        .filter((s) => normalizeProjectPath(s.projectPath) === normalizedProject)
+        .sort((a, b) => new Date(b.lastAccessedAt).getTime() - new Date(a.lastAccessedAt).getTime());
       const selectedSessionId = projectSessions[0]?.id;
       return {
         id: entry.projectId,
