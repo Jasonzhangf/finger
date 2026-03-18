@@ -8,6 +8,7 @@ import type { AgentRuntimeDeps } from './agent-runtime/types.js';
 import { PeriodicCheckRunner } from '../../agents/finger-system-agent/periodic-check.js';
 import { loadRegistry } from '../../agents/finger-system-agent/registry.js';
 import type { AgentInfo } from '../../agents/finger-system-agent/registry.js';
+import { injectSkillsIntoPrompt } from '../../skills/skill-prompt-injector.js';
 import { readFileSync } from 'fs';
 import { join } from 'path';
 import { FINGER_PATHS } from '../../core/finger-paths.js';
@@ -28,15 +29,47 @@ export class SystemAgentManager {
     // 1. 创建或获取 System Agent 的 session
     this.systemSessionId = await this.ensureSystemSession();
     
-    // 2. 启动定时器
+    // 2. 部署 System Agent（确保它持续运行）
+    await this.deploySystemAgent();
+    
+    
+    // 3. 启动定时器
     this.runner = new PeriodicCheckRunner(this.deps);
     this.runner.start();
 
-    // 3. 启动监控中的 Project Agents
+    // 4. 启动监控中的 Project Agents
     await this.startMonitoredProjects();
 
-    // 4. 向 System Agent 注入启动 bootstrap 提示词
+    // 5. 向 System Agent 注入启动 bootstrap 提示词
     await this.injectSystemBootstrap();
+  }
+
+
+  private async deploySystemAgent(): Promise<void> {
+    try {
+      const deployResult = await this.deps.agentRuntimeBlock.execute('deploy', {
+        targetAgentId: SYSTEM_AGENT_CONFIG.id,
+        sessionId: this.systemSessionId,
+        instanceCount: 1,
+        launchMode: 'orchestrator',
+        scope: 'global',
+        config: {
+          enabled: true,
+        },
+      }) as unknown as { success: boolean; deployment?: { id: string; status: string }; error?: string };
+
+      if (deployResult.success) {
+        log.info('[SystemAgentManager] System Agent deployed successfully', {
+          deploymentId: deployResult.deployment?.id,
+          status: deployResult.deployment?.status,
+        });
+      } else {
+        log.warn('[SystemAgentManager] Failed to deploy System Agent:', { error: deployResult.error });
+      }
+    } catch (err) {
+      const error = err instanceof Error ? err : new Error(String(err));
+      log.error('[SystemAgentManager] Error deploying System Agent:', error);
+    }
   }
 
   private async ensureSystemSession(): Promise<string> {
@@ -68,6 +101,9 @@ export class SystemAgentManager {
 
       try {
         bootstrapPrompt = readFileSync(bootstrapPath, 'utf-8');
+
+        // Inject Skills into bootstrap prompt
+        bootstrapPrompt = await injectSkillsIntoPrompt(bootstrapPrompt);
 
       log.info('[SystemAgentManager] Injecting bootstrap', {
         sessionId: this.systemSessionId,
