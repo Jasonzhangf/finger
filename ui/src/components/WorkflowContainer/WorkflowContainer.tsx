@@ -143,9 +143,17 @@ function normalizeChatAgentStatus(status: string): AgentRuntime['status'] {
   if (normalized === 'error' || normalized === 'failed' || normalized === 'interrupted') return 'error';
   if (normalized === 'paused') return 'paused';
   return 'idle';
+}
 
-
-
+/** Check if a session is a system session (used for System Agent panel) */
+function isSystemSession(s: { projectPath?: string; sessionTier?: string; id?: string }): boolean {
+  const pp = s.projectPath || '';
+  const tier = s.sessionTier || '';
+  const id = s.id || '';
+  if (pp.endsWith('/.finger/system') || pp === '~/.finger/system') return true;
+  if (tier === 'system') return true;
+  if (id.startsWith('system-')) return true;
+  return false;
 }
 
 export const WorkflowContainer: React.FC = () => {
@@ -181,9 +189,9 @@ export const WorkflowContainer: React.FC = () => {
   const orchestratorSessionId = currentSession?.sessionTier === 'runtime'
     ? (currentSession.rootSessionId || currentSession.parentSessionId || (sessions.length > 0 ? sessions[0].id : 'default-session'))
     : (currentSession?.id || (sessions.length > 0 ? sessions[0].id : 'default-session'));
-  const systemAgentSessionId = currentSession?.sessionTier === 'system'
-    ? currentSession.id
-    : (sessions.find((session) => session.sessionTier === 'system')?.id
+  const systemAgentSessionId = isSystemSession(currentSession ?? {})
+    ? currentSession!.id
+    : (sessions.find((session) => isSystemSession(session))?.id
       || `system-${orchestratorSessionId}`);
   const [sessionBinding, setSessionBinding] = useState<{
     context: 'orchestrator' | 'runtime';
@@ -335,7 +343,12 @@ export const WorkflowContainer: React.FC = () => {
   const [drawerAgentId, setDrawerAgentId] = useState<string | null>(null);
   const effectiveDrawerAgentId = drawerAgentId;
 
-  const frozenSessions = useFrozenValue(sessions, panelFreeze.left);
+  const nonSystemSessions = useMemo(
+    () => sessions.filter(s => !isSystemSession(s)),
+    [sessions],
+  );
+
+  const frozenSessions = useFrozenValue(nonSystemSessions, panelFreeze.left);
   const frozenCurrentSession = useFrozenValue(currentSession, panelFreeze.left);
   const frozenIsLoadingSessions = useFrozenValue(isLoadingSessions, panelFreeze.left);
   const frozenRuntimeInstancesForLeft = useFrozenValue(runtimeInstances, panelFreeze.left);
@@ -690,7 +703,7 @@ export const WorkflowContainer: React.FC = () => {
   }, [panelFreeze.performance, uiDisable.performance, sessions, handleOpenProject, handleSwitchSessionFromSidebar, chatAgents, chatInputCapability, systemMonitor.entries]);
 
  const rightPanelElement = useMemo(() => {
-   const systemSessions = sessions.filter(s => s.sessionTier === 'system' || s.projectPath === SYSTEM_PROJECT_PATH);
+   const systemSessions = sessions.filter(s => isSystemSession(s));
    const selectedSystemSessionId = systemSessions.length > 0 ? systemSessions[0].id : undefined;
 
    return (
