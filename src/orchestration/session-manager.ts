@@ -371,9 +371,17 @@ export class SessionManager {
   }
 
   getOrCreateSystemSession(): Session {
-    // Find existing system session
+    // Find existing system session with correct projectPath and sessionTier
     for (const session of this.sessions.values()) {
-      if (this.isSystemSession(session)) {
+      if (session.projectPath === SYSTEM_PROJECT_PATH) {
+        session.lastAccessedAt = new Date().toISOString();
+        return session;
+      }
+    }
+    // Find system session with sessionTier === 'system' (properly created)
+    for (const session of this.sessions.values()) {
+      const ctx = session.context ?? {};
+      if (ctx.sessionTier === 'system' || session.id.startsWith(SYSTEM_SESSION_PREFIX)) {
         session.lastAccessedAt = new Date().toISOString();
         return session;
       }
