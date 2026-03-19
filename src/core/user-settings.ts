@@ -120,15 +120,15 @@ const DEFAULT_USER_SETTINGS: UserSettings = {
       tcm: {
         name: 'tcm',
         base_url: 'http://127.0.0.1:5555/v1',
-        wire_api: 'responses',
+        wire_api: 'http',
         env_key: 'ROUTECODEX_HTTP_APIKEY',
-        model: 'gpt-5.4',
+        model: 'tabglm.glm-5-turbo',
         enabled: true
       }
     }
   },
   preferences: {
-    defaultModel: 'gpt-5.4',
+    defaultModel: 'tabglm.glm-5-turbo',
     maxTokens: 256000,
     temperature: 0.7,
     reasoningEffort: 'high',
