@@ -28,6 +28,8 @@ import {
 } from '../orchestration/orchestration-config.js';
 import { resumableSessionManager } from '../orchestration/resumable-session.js';
 import { echoInput, echoOutput } from '../agents/test/mock-echo-agent.js';
+import { memoryOutput } from '../outputs/memory.js';
+import { createWebUIOutput } from '../outputs/webui.js';
 import {
   FINGER_CODER_AGENT_ID,
   FINGER_CODER_ALLOWED_TOOLS,
@@ -49,6 +51,8 @@ import { mailbox } from './mailbox.js';
 import { BdTools } from '../agents/shared/bd-tools.js';
 import { inputLockManager } from '../runtime/input-lock.js';
 import { createWebSocketServer } from './modules/websocket-server.js';
+import { SYSTEM_AGENT_CONFIG } from '../agents/finger-system-agent/index.js';
+import { AgentStatusSubscriber } from './modules/agent-status-subscriber.js';
 import { SystemAgentManager } from './modules/system-agent-manager.js';
 import { createSessionWorkspaceManager } from './modules/session-workspaces.js';
 import { attachEventForwarding } from './modules/event-forwarding.js';
@@ -62,6 +66,7 @@ import { createAgentConfigReloader } from './modules/agent-config-reloader.js';
 import { registerDefaultModuleRoutes } from './modules/module-registry-bootstrap.js';
 import { resolveRuntimeFlags, shouldUseMockChatCodexRunner } from './modules/server-flags.js';
 import { registerMockRuntimeModules } from './modules/mock-runtime-setup.js';
+import { HeartbeatScheduler } from './modules/heartbeat-scheduler.js';
 import {
   dispatchTaskToAgent as dispatchTaskToAgentModule,
   registerAgentRuntimeTools,
@@ -105,6 +110,7 @@ import { loadInputsConfig, loadOutputsConfig } from '../core/config-loader.js';
 import { toOpenClawToolDefinition } from '../orchestration/openclaw-adapter/index.js';
 import { initializeBlockRegistry } from './modules/block-registry-bootstrap.js';
 import { getChannelBridgeManager, type ChannelBridgeConfig } from '../bridges/index.js';
+import { createChannelBridgeOutput } from '../bridges/channel-bridge-output.js';
 import type { ChannelMessage } from '../bridges/types.js';
 import fs from 'fs';
 import path from 'path';
@@ -190,6 +196,9 @@ const channelBridgeManager = getChannelBridgeManager({
   },
 });
 
+// Track registered ChannelBridgeOutput modules for cleanup
+const channelBridgeOutputs: Array<{ channelId: string; unregister: () => void }> = [];
+
 export async function loadChannelBridgeConfigs(configDir?: string): Promise<void> {
   console.log('[Server] loadChannelBridgeConfigs called');
   const effectiveConfigDir = configDir ?? FINGER_PATHS.config.dir;
@@ -224,6 +233,7 @@ export async function loadChannelBridgeConfigs(configDir?: string): Promise<void
     try {
       await channelBridgeManager.loadConfigs(configs);
       console.log('[Server] Loaded', configs.length, 'channel bridge configs successfully');
+      await registerChannelBridgeOutputs(configs);
     } catch (err) {
       console.error('[Server] Failed to load channel bridges:', err instanceof Error ? err.message : String(err));
     }
@@ -232,6 +242,34 @@ export async function loadChannelBridgeConfigs(configDir?: string): Promise<void
   }
 }
 
+// Register ChannelBridgeOutput modules for enabled channels (called after loadChannelBridgeConfigs)
+export async function registerChannelBridgeOutputs(configs: ChannelBridgeConfig[]): Promise<void> {
+  const registeredChannels = new Set<string>();
+  for (const config of configs) {
+    if (!config.enabled || !config.channelId) continue;
+
+    if (registeredChannels.has(config.channelId)) continue;
+    registeredChannels.add(config.channelId);
+
+    const outputModule = createChannelBridgeOutput({
+      channelId: config.channelId,
+      hub: sharedMessageHub,
+      bridgeManager: channelBridgeManager,
+    });
+
+    outputModule.register();
+    channelBridgeOutputs.push({
+      channelId: config.channelId,
+      unregister: () => outputModule.unregister(),
+    });
+
+    console.log('[Server] Registered ChannelBridgeOutput for channel:', config.channelId);
+  }
+
+  if (registeredChannels.size > 0) {
+    console.log('[Server] Registered ChannelBridgeOutput for', registeredChannels.size, 'channel(s)');
+  }
+}
 // Check AI provider configuration
 
 const inputsCfg = loadInputsConfig();
@@ -275,10 +313,31 @@ async function initOpenClawGate(): Promise<void> {
   }
 
   // Always sync/check AI provider config before loading channel bridge configs.
-  await syncUserSettingsToKernelConfig();
-  await checkAIProviderConfig();
+  try {
+    console.log('[Server] syncUserSettingsToKernelConfig...');
+    await syncUserSettingsToKernelConfig();
+    console.log('[Server] syncUserSettingsToKernelConfig completed');
+  } catch (err) {
+    console.error('[Server] syncUserSettingsToKernelConfig failed:', err instanceof Error ? err.message : String(err));
+    // Continue anyway, don't block channel bridge loading
+  }
 
-  await loadChannelBridgeConfigs();
+  try {
+    console.log('[Server] checkAIProviderConfig...');
+    await checkAIProviderConfig();
+    console.log('[Server] checkAIProviderConfig completed');
+  } catch (err) {
+    console.error('[Server] checkAIProviderConfig failed:', err instanceof Error ? err.message : String(err));
+    // Continue anyway, don't block channel bridge loading
+  }
+
+  try {
+    console.log('[Server] loadChannelBridgeConfigs...');
+    await loadChannelBridgeConfigs();
+    console.log('[Server] loadChannelBridgeConfigs completed');
+  } catch (err) {
+    console.error('[Server] loadChannelBridgeConfigs failed:', err instanceof Error ? err.message : String(err));
+  }
 }
 
 await initializeBlockRegistry(registry);
@@ -362,6 +421,7 @@ const activeKernelProviderId = resolveActiveKernelProviderId();
 console.log(`[Server] Active kernel provider: ${activeKernelProviderId}`);
 await moduleRegistry.register(echoInput);
 await moduleRegistry.register(echoOutput);
+await moduleRegistry.register(memoryOutput);
 const processChatCodexRunner = new ProcessChatCodexRunner({
   timeoutMs: 600_000,
   toolExecution: {
@@ -497,6 +557,17 @@ const systemAgentManager = new SystemAgentManager(getAgentRuntimeDeps());
 systemAgentManager.start();
 console.log('[Server] System Agent Manager started');
 
+// Start Agent Status Subscriber
+const agentStatusSubscriber = new AgentStatusSubscriber(globalEventBus, getAgentRuntimeDeps(), hub);
+agentStatusSubscriber.start();
+agentStatusSubscriber.setPrimaryAgent(SYSTEM_AGENT_CONFIG.id);
+console.log('[Server] Agent Status Subscriber started');
+
+// Start Heartbeat Scheduler
+const heartbeatScheduler = new HeartbeatScheduler(getAgentRuntimeDeps());
+await heartbeatScheduler.start();
+console.log('[Server] Heartbeat Scheduler started');
+
 await gatewayManager.start().catch((err) => {
   console.error('[Server] Failed to start gateway manager:', err);
 });
@@ -513,6 +584,12 @@ await ensureSingleInstance(wsPort);
   mailbox,
   inputLockManager,
 }));
+
+// Register WebUI output module (broadcast to WebSocket clients)
+const webuiOutput = createWebUIOutput({ broadcast });
+await moduleRegistry.register(webuiOutput);
+console.log('[Server] WebUI output module registered for WebSocket broadcast');
+
 registerAllRoutes(app, {
   sessionManager,
   runtime,
@@ -599,8 +676,40 @@ const server = app.listen(PORT, HOST, () => {
   });
 });
 
+let shuttingDown = false;
+const shutdown = (reason: string) => {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  console.log(`[Server] Shutdown initiated: ${reason}`);
+  try {
+    const sessions = chatCodexRunner.listSessionStates();
+    for (const session of sessions) {
+      try {
+        chatCodexRunner.interruptSession(session.sessionId, session.providerId);
+      } catch (err) {
+        console.warn('[Server] Failed to interrupt session:', err instanceof Error ? err.message : String(err));
+      }
+    }
+  } catch (err) {
+    console.warn('[Server] Failed to enumerate sessions during shutdown:', err instanceof Error ? err.message : String(err));
+  }
+  try {
+    server.close(() => {
+      process.exit(0);
+    });
+  } catch {
+    process.exit(0);
+  }
+  setTimeout(() => process.exit(1), 10_000).unref();
+};
+
+process.on('SIGTERM', () => shutdown('SIGTERM'));
+process.on('SIGINT', () => shutdown('SIGINT'));
+
 process.on('exit', () => {
   if (clockInjector) clockInjector.stop();
+  if (agentStatusSubscriber) agentStatusSubscriber.stop();
+  if (heartbeatScheduler) heartbeatScheduler.stop();
   try {
     const pidPath = join(FINGER_PATHS.runtime.dir, 'server.pid');
     if (existsSync(pidPath)) unlinkSync(pidPath);
@@ -669,6 +778,7 @@ hub.addRoute({
     sessionManager,
     dispatchTaskToAgent,
     eventBus: globalEventBus,
+    agentStatusSubscriber,
   }),
   blocking: true,
   priority: 10,

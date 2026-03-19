@@ -39,7 +39,7 @@ class DaemonGuard {
         this.cleanupOldProcesses();
 
         const mainProcess = spawn('node', [path.join(FINGER_ROOT, 'dist', 'server', 'index.js')], {
-            stdio: ['ignore', 'pipe', 'ignore'],
+            stdio: ['ignore', fs.openSync(path.join(require('os').homedir(), '.finger', 'logs', 'daemon.log'), 'a'), fs.openSync(path.join(require('os').homedir(), '.finger', 'logs', 'daemon.log'), 'a')],
             detached: true,
         });
 
