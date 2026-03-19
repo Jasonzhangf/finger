@@ -6,6 +6,7 @@ import type { RuntimeFacade } from '../../runtime/runtime-facade.js';
 import type { SessionManager } from '../../orchestration/session-manager.js';
 import { __chatCodexInternals } from '../../agents/chat-codex/chat-codex-module.js';
 import type { Mailbox } from '../mailbox.js';
+import type { ToolRegistry } from '../../runtime/tool-registry.js';
 import { getActiveReviewPolicy } from '../orchestration/review-policy.js';
 import { isObjectRecord } from '../common/object.js';
 import {
@@ -34,11 +35,14 @@ import { validateSystemCommand } from '../middleware/system-auth.js';
 import { getChannelContextManager } from '../../orchestration/channel-context-manager.js';
 import { SYSTEM_PROJECT_PATH, getSystemSessionPath } from '../../agents/finger-system-agent/index.js';
 import path from 'path';
+import type { ChannelBridgeManager } from '../../bridges/manager.js';
 
 export interface MessageRouteDeps {
   hub: MessageHub;
   mailbox: Mailbox;
   runtime: RuntimeFacade;
+  toolRegistry: ToolRegistry;
+  channelBridgeManager: ChannelBridgeManager;
   sessionManager: SessionManager;
   eventBus: import('../../runtime/event-bus.js').UnifiedEventBus;
   sessionWorkspaces: SessionWorkspaceManager;
@@ -53,6 +57,94 @@ export interface MessageRouteDeps {
   primaryOrchestratorGatewayId: string;
   legacyOrchestratorAgentId: string;
   legacyOrchestratorGatewayId: string;
+}
+
+interface DisplayChannelRequest {
+  channelId: string;
+  to: string;
+  replyTo?: string;
+  prefix?: string;
+}
+
+function normalizeDisplayChannels(input: unknown): DisplayChannelRequest[] {
+  if (!Array.isArray(input)) return [];
+  return input
+    .map((item) => (item && typeof item === 'object') ? (item as Record<string, unknown>) : null)
+    .filter((item): item is Record<string, unknown> => !!item)
+    .map((item) => ({
+      channelId: typeof item.channelId === 'string' ? item.channelId : '',
+      to: typeof item.to === 'string' ? item.to : '',
+      replyTo: typeof item.replyTo === 'string' ? item.replyTo : undefined,
+      prefix: typeof item.prefix === 'string' ? item.prefix : undefined,
+    }))
+    .filter((item) => item.channelId.length > 0 && item.to.length > 0);
+}
+
+async function sendDisplayFanout(
+  channelBridgeManager: ChannelBridgeManager,
+  channels: DisplayChannelRequest[],
+  content: string,
+): Promise<void> {
+  if (channels.length === 0) return;
+  const results = await Promise.allSettled(channels.map(async (channel) => {
+    const text = channel.prefix ? `${channel.prefix}${content}` : content;
+    await channelBridgeManager.sendMessage(channel.channelId, {
+      to: channel.to,
+      text,
+      ...(channel.replyTo ? { replyTo: channel.replyTo } : {}),
+    });
+  }));
+  results.forEach((result, index) => {
+    const channel = channels[index];
+    if (result.status === 'fulfilled') {
+      console.log('[Server] Display fanout sent', {
+        channelId: channel.channelId,
+        to: channel.to,
+      });
+      return;
+    }
+    const error = result.reason instanceof Error ? result.reason : new Error(String(result.reason));
+    console.error('[Server] Display fanout failed', {
+      channelId: channel.channelId,
+      to: channel.to,
+      error: error.message,
+    });
+  });
+}
+
+/**
+ * 发送输入同步到指定的 channels（与 displayChannels 相同结构）
+ * 当 inputSyncChannels 不为空时，将用户输入同步到其他渠道
+ */
+async function sendInputSync(
+  channelBridgeManager: ChannelBridgeManager,
+  channels: DisplayChannelRequest[],
+  content: string,
+): Promise<void> {
+  if (channels.length === 0) return;
+  const results = await Promise.allSettled(channels.map(async (channel) => {
+    const prefix = channel.prefix || '[输入同步] ';
+    const text = `${prefix}${content}`;
+    await channelBridgeManager.sendMessage(channel.channelId, {
+      to: channel.to,
+      text,
+    });
+  }));
+  results.forEach((result, index) => {
+    const channel = channels[index];
+    if (result.status === 'rejected') {
+      console.error('[Server] Input sync failed', {
+        channelId: channel.channelId,
+        to: channel.to,
+        error: result.reason instanceof Error ? result.reason.message : String(result.reason),
+      });
+    } else {
+      console.log('[Server] Input sync sent', {
+        channelId: channel.channelId,
+        to: channel.to,
+      });
+    }
+  });
 }
 
 function resolveActiveOrchestrationProfile(config: { activeProfileId: string; profiles: OrchestrationProfile[] }): OrchestrationProfile | null {
@@ -252,6 +344,8 @@ export function registerMessageRoutes(app: Express, deps: MessageRouteDeps): voi
     }
 
     const channelId = buildChannelId(req, sender);
+    const displayChannels = normalizeDisplayChannels((body as Record<string, unknown>)?.displayChannels);
+    const inputChannels = normalizeDisplayChannels((body as Record<string, unknown>)?.inputChannels);
     const contextManager = getChannelContextManager();
     const incomingContent = extractMessageTextForSession(body.message) ?? '';
     const parsedCommand = parseSuperCommand(incomingContent);
@@ -440,6 +534,82 @@ export function registerMessageRoutes(app: Express, deps: MessageRouteDeps): voi
       requestMessage = { ...requestMessage, metadata };
     }
 
+    // If this is a system route and the message contains an explicit project path,
+    // force delegation instructions to avoid boot checks.
+    if (isSystemRoute) {
+      const content = extractMessageTextForSession(requestMessage) ?? '';
+      const pathMatch = content.match(/(\/(Volumes|Users)\/[^\s]+|~\/[\w\-./]+)/);
+      if (pathMatch) {
+        const projectPathHint = pathMatch[0];
+        const delegationPrefix = `【系统强制委派】检测到项目路径：${projectPathHint}\n` +
+          '必须执行：\n' +
+          '1) system-registry-tool action=list 查找项目\n' +
+          '2) 若未注册，project_tool action=create 使用绝对路径\n' +
+          '3) agent.dispatch -> finger-orchestrator，使用返回的 sessionId\n' +
+          '禁止执行开机检查/周期性检查，仅处理本用户任务。\n\n';
+        requestMessage = withMessageContent(requestMessage, delegationPrefix + content);
+
+        // Server-side forced delegation to project orchestrator
+        try {
+          const registryTool = deps.toolRegistry.get('system-registry-tool');
+          const projectTool = deps.toolRegistry.get('project_tool');
+          if (registryTool && projectTool) {
+            const homeDir = process.env.HOME || '';
+            const resolvedPath = projectPathHint.startsWith('~/')
+              ? path.join(homeDir, projectPathHint.slice(2))
+              : projectPathHint;
+            const normalizedPath = path.resolve(resolvedPath);
+
+            const listResult = await deps.toolRegistry.execute('system-registry-tool', { action: 'list' }) as any;
+            const agents = Array.isArray(listResult?.agents) ? listResult.agents : [];
+            const matched = agents.find((agent: any) => {
+              const agentPath = typeof agent?.projectPath === 'string' ? agent.projectPath : '';
+              return agentPath && path.resolve(agentPath) === normalizedPath;
+            });
+
+            let projectSessionId: string | undefined;
+            if (!matched) {
+              const createResult = await deps.toolRegistry.execute('project_tool', {
+                action: 'create',
+                projectPath: normalizedPath,
+              }) as any;
+              if (typeof createResult?.sessionId === 'string') {
+                projectSessionId = createResult.sessionId;
+              }
+            }
+
+            if (!projectSessionId) {
+              const sessions = deps.sessionManager.findSessionsByProjectPath(normalizedPath);
+              sessions.sort((a, b) => new Date(b.lastAccessedAt).getTime() - new Date(a.lastAccessedAt).getTime());
+              projectSessionId = sessions[0]?.id;
+            }
+
+            if (projectSessionId) {
+              const systemSessionId = deps.sessionManager.getOrCreateSystemSession().id;
+              deps.sessionManager.addMessage(systemSessionId, 'system', `已委派 Project Agent 处理：${normalizedPath}\nsessionId: ${projectSessionId}`);
+
+              if (isObjectRecord(requestMessage)) {
+                const metadata = isObjectRecord(requestMessage.metadata) ? requestMessage.metadata : {};
+                requestMessage = {
+                  ...requestMessage,
+                  sessionId: projectSessionId,
+                  metadata: {
+                    ...metadata,
+                    delegatedBy: 'system-agent',
+                    projectPath: normalizedPath,
+                  },
+                };
+              }
+
+              body.target = 'finger-orchestrator';
+            }
+          }
+        } catch (error) {
+          console.error('[Server] Forced project delegation failed:', error);
+        }
+      }
+    }
+
     const requestSessionId = extractSessionIdFromMessagePayload(requestMessage);
    if (requestSessionId) {
       const sessionProjectPath = isSystemRoute ? SYSTEM_PROJECT_PATH : undefined;
@@ -456,6 +626,13 @@ export function registerMessageRoutes(app: Express, deps: MessageRouteDeps): voi
       if (content.trim().length > 0) {
         deps.sessionManager.addMessage(requestSessionId, 'user', content);
       }
+    }
+
+    // 输入同步：将用户输入发送到指定的其他渠道
+    if (inputChannels.length > 0) {
+      const userContent = extractMessageTextForSession(requestMessage)
+        ?? JSON.stringify(requestMessage);
+      sendInputSync(deps.channelBridgeManager, inputChannels, userContent).catch(() => {});
     }
 
     const messageId = deps.mailbox.createMessage(body.target, requestMessage, {
@@ -581,6 +758,11 @@ export function registerMessageRoutes(app: Express, deps: MessageRouteDeps): voi
             });
           }
         }
+
+        if (displayChannels.length > 0) {
+          sendDisplayFanout(deps.channelBridgeManager, displayChannels, responsePayload.response)
+            .catch((err) => console.error('[Server] Failed to send display fanout:', err));
+        }
         deps.mailbox.updateStatus(messageId, 'completed', responsePayload);
 
         deps.broadcast({ type: 'messageCompleted', messageId, result: responsePayload, callbackResult: senderResponse });
@@ -589,8 +771,10 @@ export function registerMessageRoutes(app: Express, deps: MessageRouteDeps): voi
       }
 
       deps.hub.sendToModule(body.target, requestMessage, body.sender ? (result: any) => {
-        deps.hub.sendToModule(body.sender!, { type: 'callback', payload: result, originalMessageId: messageId })
-          .catch(() => { /* Ignore sender callback errors */ });
+        if (deps.hub.hasModule(body.sender!)) {
+          deps.hub.sendToModule(body.sender!, { type: 'callback', payload: result, originalMessageId: messageId })
+            .catch(() => { /* Ignore sender callback errors */ });
+        }
         return result;
       } : undefined)
         .then((result) => {
@@ -625,6 +809,11 @@ export function registerMessageRoutes(app: Express, deps: MessageRouteDeps): voi
                 metadata: { channelId, mode: agentInfo.mode },
               });
             }
+          }
+
+          if (displayChannels.length > 0) {
+            sendDisplayFanout(deps.channelBridgeManager, displayChannels, responsePayload.response)
+              .catch((err) => console.error('[Server] Failed to send display fanout:', err));
           }
           deps.mailbox.updateStatus(messageId, 'completed', responsePayload);
           deps.broadcast({ type: 'messageCompleted', messageId, result: responsePayload });

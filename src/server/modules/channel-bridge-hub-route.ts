@@ -17,6 +17,29 @@ import { logger } from '../../core/logger.js';
 import { SYSTEM_AGENT_CONFIG } from '../../agents/finger-system-agent/index.js';
 import type { AgentStatusSubscriber } from './agent-status-subscriber.js';
 
+// 消息去重：防止同一条消息被重复处理（QQ Bot 偶发重复推送）
+const processedMessages = new Map<string, number>();
+const DEDUP_TTL_MS = 60_000;
+
+function isDuplicateMessage(msgId: string): boolean {
+  const now = Date.now();
+  if (processedMessages.has(msgId)) {
+    const existing = processedMessages.get(msgId)!;
+    if (now - existing < DEDUP_TTL_MS) {
+      log.debug('Duplicate message detected, skipping', { msgId });
+      return true;
+    }
+  }
+  processedMessages.set(msgId, now);
+  // 清理过期条目
+  if (processedMessages.size > 500) {
+    for (const [id, ts] of processedMessages) {
+      if (now - ts > DEDUP_TTL_MS) processedMessages.delete(id);
+    }
+  }
+  return false;
+}
+
 const log = logger.module('ChannelBridgeHubRoute');
 
 export interface ChannelBridgeHubRouteDeps {
@@ -55,6 +78,10 @@ export function createChannelBridgeHubRoute(deps: ChannelBridgeHubRouteDeps) {
   return async (message: unknown): Promise<void> => {
     const msg = message as Record<string, unknown>;
     const channelMsg = msg.payload as ChannelMessage;
+
+    if (channelMsg?.id && isDuplicateMessage(channelMsg.id)) {
+      return;
+    }
 
     log.info('Processing channel message via MessageHub', {
       channelId: channelMsg.channelId,
@@ -136,6 +163,24 @@ export function createChannelBridgeHubRoute(deps: ChannelBridgeHubRouteDeps) {
     // 解析命令时剥离 marker，传递给 agent 的内容不包含 <##...##>
     const cleanContent = parsed.effectiveContent || channelMsg.content;
 
+    // 处理附件（图片等）：如果消息包含图片附件，附加到 prompt 中
+    let enrichedContent = cleanContent;
+    if (channelMsg.attachments && Array.isArray(channelMsg.attachments) && channelMsg.attachments.length > 0) {
+      const imageAttachments = channelMsg.attachments.filter(
+        (a: any) => a.type === 'image' && a.url
+      );
+      if (imageAttachments.length > 0) {
+        const imageDescs = imageAttachments.map((a: any, i: number) =>
+          `[图片${i + 1}: ${a.filename || a.url}]`
+        ).join('\n');
+        enrichedContent = imageDescs + '\n' + cleanContent;
+        log.info('Message contains image attachments', {
+          count: imageAttachments.length,
+          urls: imageAttachments.map((a: any) => a.url),
+        });
+      }
+    }
+
     // Check channel policy
     const fingerConfig = await loadFingerConfig();
     const channelPolicy = getChannelAuth(fingerConfig, channelMsg.channelId);
@@ -179,12 +224,23 @@ export function createChannelBridgeHubRoute(deps: ChannelBridgeHubRouteDeps) {
       metadata: { channelId: channelMsg.channelId, messageId: channelMsg.id },
     });
 
+    // 将用户原始输入以 'user' 角色写入 session（保证 WebUI 可见）
+    sessionManager.addMessage(fixedSessionId, 'user', enrichedContent, {
+      type: 'text',
+      metadata: {
+        channelId: channelMsg.channelId,
+        senderId: channelMsg.senderId,
+        senderName: channelMsg.senderName,
+        messageId: channelMsg.id,
+      },
+    });
+
     // Dispatch to current agent
     try {
       const dispatchRequest: AgentDispatchRequest = {
         sourceAgentId: 'channel-bridge',
         targetAgentId,
-        task: { prompt: cleanContent },
+        task: { prompt: enrichedContent },
         sessionId: fixedSessionId,
         metadata: {
           source: 'channel',
