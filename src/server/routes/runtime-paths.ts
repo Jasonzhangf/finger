@@ -12,7 +12,12 @@ export interface RuntimePathDeps {
 
 export function registerRuntimePathRoutes(app: Express, deps: RuntimePathDeps): void {
   app.get('/api/v1/runtime/paths', (req, res) => {
-    const requestedId = typeof req.query.sessionId === 'string' ? req.query.sessionId.trim() : '';
+    let requestedId = typeof req.query.sessionId === 'string' ? req.query.sessionId.trim() : '';
+    // Resolve system session alias
+    if (requestedId === 'system-default-session') {
+      const systemSession = deps.sessionManager.getOrCreateSystemSession();
+      requestedId = systemSession.id;
+    }
     const current = requestedId
       ? deps.sessionManager.getSession(requestedId)
       : deps.sessionManager.getCurrentSession();

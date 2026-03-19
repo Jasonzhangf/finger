@@ -1,3 +1,4 @@
+import fs from 'fs';
 import { BaseBlock, type BlockCapabilities } from '../../core/block.js';
 
 export interface MailboxMessage {
@@ -203,7 +204,6 @@ export class MailboxBlock extends BaseBlock {
     if (!this.storagePath) return;
 
     try {
-      const fs = require('fs');
       if (fs.existsSync(this.storagePath)) {
         const content = fs.readFileSync(this.storagePath, 'utf-8');
         const lines = content.trim().split('\n');
@@ -234,7 +234,6 @@ export class MailboxBlock extends BaseBlock {
     if (!this.storagePath) return;
 
     try {
-      const fs = require('fs');
       const lines: string[] = [];
       for (const msg of this.messages.values()) {
         lines.push(JSON.stringify(msg));

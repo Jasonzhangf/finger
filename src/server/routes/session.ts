@@ -8,6 +8,7 @@ import type { UnifiedEventBus } from '../../runtime/event-bus.js';
 import type { Attachment } from '../../runtime/events.js';
 import { isObjectRecord } from '../common/object.js';
 import { asString } from '../common/strings.js';
+import { SYSTEM_PROJECT_PATH } from '../../agents/finger-system-agent/index.js';
 
 export interface SessionRouteDeps {
   sessionManager: SessionManager;
@@ -124,8 +125,17 @@ function toSessionResponse(session: ReturnType<SessionManager['listSessions']>[n
 export function registerSessionRoutes(app: Express, deps: SessionRouteDeps): void {
   const { sessionManager, runtime, eventBus, logsDir, resolveSessionLoopLogPath } = deps;
 
+  // System session alias: resolve 'system-default-session' to actual system session
+  const resolveSystemSessionId = (sessionId: string): string => {
+    if (sessionId === 'system-default-session') {
+      const systemSession = sessionManager.getOrCreateSystemSession();
+      return systemSession.id;
+    }
+    return sessionId;
+  };
+
   app.get('/api/v1/sessions/:sessionId/execution', async (req, res) => {
-    const sessionId = req.params.sessionId;
+    const sessionId = resolveSystemSessionId(req.params.sessionId);
     try {
       const session = sessionManager.getSession(sessionId);
       if (!session) {
@@ -175,7 +185,7 @@ export function registerSessionRoutes(app: Express, deps: SessionRouteDeps): voi
   });
 
   app.get('/api/v1/execution-logs/:sessionId', async (req, res) => {
-    const log = await loadSessionLog(req.params.sessionId, logsDir);
+    const log = await loadSessionLog(resolveSystemSessionId(req.params.sessionId), logsDir);
     if (!log) {
       res.status(404).json({ error: 'Log not found' });
       return;
@@ -185,13 +195,17 @@ export function registerSessionRoutes(app: Express, deps: SessionRouteDeps): voi
 
   app.get('/api/v1/sessions', (_req, res) => {
     sessionManager.refreshSessionsFromDisk();
-    const systemSession = sessionManager.ensureSystemSession();
     const sessions = sessionManager.listRootSessions();
-    // Ensure system session is included (it might have been just created in-memory)
-    if (systemSession && !sessions.find(s => s.id === systemSession.id)) {
-      sessions.push(systemSession);
-    }
-    res.json(sessions.map((session) => toSessionResponse(session)));
+    // By default exclude system sessions from the list (UI left panel doesn't need them)
+    // System agent panel uses system-default-session alias directly
+    const includeSystem = _req.query.includeSystem === '1';
+    const filtered = includeSystem
+      ? sessions
+      : sessions.filter((s) => s.projectPath !== SYSTEM_PROJECT_PATH
+          && !(s.context?.sessionTier === 'system')
+          && !s.id.startsWith('system-')
+          && !(s.context?.ownerAgentId === 'finger-system-agent'));
+    res.json(filtered.map((session) => toSessionResponse(session)));
   });
 
   app.get('/api/v1/sessions/current', (_req, res) => {
@@ -241,7 +255,7 @@ export function registerSessionRoutes(app: Express, deps: SessionRouteDeps): voi
 
   app.get('/api/v1/sessions/:id', (req, res) => {
     sessionManager.refreshSessionsFromDisk();
-    const session = sessionManager.getSession(req.params.id);
+    const session = sessionManager.getSession(resolveSystemSessionId(req.params.id));
     if (!session) {
       res.status(404).json({ error: 'Session not found' });
       return;
@@ -256,7 +270,7 @@ export function registerSessionRoutes(app: Express, deps: SessionRouteDeps): voi
       return;
     }
     try {
-      const session = sessionManager.renameSession(req.params.id, name);
+      const session = sessionManager.renameSession(resolveSystemSessionId(req.params.id), name);
       if (!session) {
         res.status(404).json({ error: 'Session not found' });
         return;
@@ -268,7 +282,7 @@ export function registerSessionRoutes(app: Express, deps: SessionRouteDeps): voi
   });
 
   app.delete('/api/v1/sessions/:id', (req, res) => {
-    const success = sessionManager.deleteSession(req.params.id);
+    const success = sessionManager.deleteSession(resolveSystemSessionId(req.params.id));
     if (!success) {
       res.status(404).json({ error: 'Session not found' });
       return;
@@ -280,13 +294,13 @@ export function registerSessionRoutes(app: Express, deps: SessionRouteDeps): voi
     sessionManager.refreshSessionsFromDisk();
     const parsedLimit = req.query.limit ? parseInt(req.query.limit as string, 10) : 50;
     const limit = Number.isFinite(parsedLimit) ? parsedLimit : 50;
-    const messages = sessionManager.getMessages(req.params.sessionId, limit);
+    const messages = sessionManager.getMessages(resolveSystemSessionId(req.params.sessionId), limit);
     res.json({ success: true, messages });
   });
 
   app.get('/api/v1/sessions/:sessionId/loop-logs', (req, res) => {
     const limit = req.query.limit ? parseInt(req.query.limit as string, 10) : 200;
-    const logPath = resolveSessionLoopLogPath(req.params.sessionId);
+    const logPath = resolveSessionLoopLogPath(resolveSystemSessionId(req.params.sessionId));
     if (!existsSync(logPath)) {
       res.json({ success: true, logs: [] });
       return;
@@ -318,7 +332,7 @@ export function registerSessionRoutes(app: Express, deps: SessionRouteDeps): voi
       return;
     }
     try {
-      const result = await runtime.sendMessage(req.params.sessionId, content, attachments);
+      const result = await runtime.sendMessage(resolveSystemSessionId(req.params.sessionId), content, attachments);
       res.json({ success: true, messageId: result.messageId });
     } catch (e) {
       res.status(400).json({ error: e instanceof Error ? e.message : String(e) });
@@ -341,7 +355,7 @@ export function registerSessionRoutes(app: Express, deps: SessionRouteDeps): voi
       return;
     }
     const message = sessionManager.addMessage(
-      req.params.sessionId,
+      resolveSystemSessionId(req.params.sessionId),
       role,
       content,
       {
@@ -363,7 +377,7 @@ export function registerSessionRoutes(app: Express, deps: SessionRouteDeps): voi
       return;
     }
     try {
-      const updated = sessionManager.updateMessage(req.params.sessionId, req.params.messageId, content);
+      const updated = sessionManager.updateMessage(resolveSystemSessionId(req.params.sessionId), req.params.messageId, content);
       if (!updated) {
         res.status(404).json({ error: 'Message not found' });
         return;
@@ -375,7 +389,7 @@ export function registerSessionRoutes(app: Express, deps: SessionRouteDeps): voi
   });
 
   app.delete('/api/v1/sessions/:sessionId/messages/:messageId', (req, res) => {
-    const deleted = sessionManager.deleteMessage(req.params.sessionId, req.params.messageId);
+    const deleted = sessionManager.deleteMessage(resolveSystemSessionId(req.params.sessionId), req.params.messageId);
     if (!deleted) {
       res.status(404).json({ error: 'Message not found' });
       return;
@@ -384,14 +398,14 @@ export function registerSessionRoutes(app: Express, deps: SessionRouteDeps): voi
   });
 
   app.post('/api/v1/sessions/:sessionId/pause', (req, res) => {
-    const success = sessionManager.pauseSession(req.params.sessionId);
+    const success = sessionManager.pauseSession(resolveSystemSessionId(req.params.sessionId));
     if (!success) {
       res.status(404).json({ error: 'Session not found' });
       return;
     }
     void eventBus.emit({
       type: 'session_paused',
-      sessionId: req.params.sessionId,
+      sessionId: resolveSystemSessionId(req.params.sessionId),
       timestamp: new Date().toISOString(),
       payload: {},
     });
@@ -399,16 +413,16 @@ export function registerSessionRoutes(app: Express, deps: SessionRouteDeps): voi
   });
 
   app.post('/api/v1/sessions/:sessionId/resume', (req, res) => {
-    const success = sessionManager.resumeSession(req.params.sessionId);
+    const success = sessionManager.resumeSession(resolveSystemSessionId(req.params.sessionId));
     if (!success) {
       res.status(404).json({ error: 'Session not found' });
       return;
     }
     void eventBus.emit({
       type: 'session_resumed',
-      sessionId: req.params.sessionId,
+      sessionId: resolveSystemSessionId(req.params.sessionId),
       timestamp: new Date().toISOString(),
-      payload: { messageCount: sessionManager.getMessages(req.params.sessionId).length },
+      payload: { messageCount: sessionManager.getMessages(resolveSystemSessionId(req.params.sessionId)).length },
     });
     res.json({ success: true });
   });
@@ -417,8 +431,8 @@ export function registerSessionRoutes(app: Express, deps: SessionRouteDeps): voi
     try {
       const trigger = req.body?.trigger === 'auto' ? 'auto' : 'manual';
       const contextUsagePercent = typeof req.body?.contextUsagePercent === 'number' ? req.body.contextUsagePercent : undefined;
-      const summary = await runtime.compressContext(req.params.sessionId, { trigger, contextUsagePercent });
-      const status = sessionManager.getCompressionStatus(req.params.sessionId);
+      const summary = await runtime.compressContext(resolveSystemSessionId(req.params.sessionId), { trigger, contextUsagePercent });
+      const status = sessionManager.getCompressionStatus(resolveSystemSessionId(req.params.sessionId));
       res.json({ success: true, summary, originalCount: status.originalCount });
     } catch (e) {
       res.status(400).json({ error: e instanceof Error ? e.message : String(e) });
@@ -426,8 +440,8 @@ export function registerSessionRoutes(app: Express, deps: SessionRouteDeps): voi
   });
 
   app.get('/api/v1/sessions/:sessionId/context', (req, res) => {
-    const context = sessionManager.getFullContext(req.params.sessionId);
-    const status = sessionManager.getCompressionStatus(req.params.sessionId);
+    const context = sessionManager.getFullContext(resolveSystemSessionId(req.params.sessionId));
+    const status = sessionManager.getCompressionStatus(resolveSystemSessionId(req.params.sessionId));
     res.json({
       success: true,
       messages: context.messages,

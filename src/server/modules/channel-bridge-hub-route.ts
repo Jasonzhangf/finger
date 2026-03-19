@@ -14,6 +14,8 @@ import { getCommandHub, parseCommands } from '../../blocks/command-hub/index.js'
 import { loadFingerConfig, getChannelAuth } from '../../core/config/channel-config.js';
 import { CommandType } from '../../blocks/command-hub/types.js';
 import { logger } from '../../core/logger.js';
+import { SYSTEM_AGENT_CONFIG } from '../../agents/finger-system-agent/index.js';
+import type { AgentStatusSubscriber } from './agent-status-subscriber.js';
 
 const log = logger.module('ChannelBridgeHubRoute');
 
@@ -22,10 +24,11 @@ export interface ChannelBridgeHubRouteDeps {
   sessionManager: SessionManager;
   dispatchTaskToAgent: (request: AgentDispatchRequest) => Promise<unknown>;
   eventBus: UnifiedEventBus;
+  agentStatusSubscriber?: AgentStatusSubscriber;
 }
 
 export function createChannelBridgeHubRoute(deps: ChannelBridgeHubRouteDeps) {
-  const { channelBridgeManager, sessionManager, dispatchTaskToAgent, eventBus } = deps;
+  const { channelBridgeManager, sessionManager, dispatchTaskToAgent, eventBus, agentStatusSubscriber } = deps;
   const channelContextManager = ChannelContextManager.getInstance();
 
   function formatLocalTimestamp(date: Date = new Date()): string {
@@ -62,6 +65,18 @@ export function createChannelBridgeHubRoute(deps: ChannelBridgeHubRouteDeps) {
       ? `group:${channelMsg.metadata.groupId}`
       : channelMsg.senderId;
 
+    // 生成稳定的 sessionId（避免渠道来源影响 session）
+    const stableSessionId = (() => {
+      if (channelMsg.type === 'group' && channelMsg.metadata?.groupId) {
+        return `group-${channelMsg.metadata.groupId}`;
+      }
+      return `user-${channelMsg.senderId}`;
+    })();
+
+    // sendReply closure - resolveSessionId will be set after target agent is determined
+    let resolveSessionId: () => string = () => stableSessionId;
+    const setReplySessionId = (sid: string) => { resolveSessionId = () => sid; };
+
     const sendReply = async (text: string, agentId?: string) => {
       if (!text || !text.trim()) return;
       try {
@@ -72,6 +87,17 @@ export function createChannelBridgeHubRoute(deps: ChannelBridgeHubRouteDeps) {
           replyTo: (channelMsg.metadata?.messageId as string) || channelMsg.id,
         });
         log.info('Hub route reply sent', { messageId: sendResult.messageId });
+
+        // 将回复写入 session（保证 WebUI 可见）
+        const replySessionId = resolveSessionId();
+        sessionManager.addMessage(replySessionId, 'assistant', replyWithPrefix, {
+          type: 'text',
+          agentId: agentId || 'system',
+          metadata: {
+            channelId: channelMsg.channelId,
+            messageId: channelMsg.id,
+          },
+        });
       } catch (sendErr) {
         log.error('Failed to send reply (hub route)', sendErr instanceof Error ? sendErr : undefined);
       }
@@ -119,29 +145,47 @@ export function createChannelBridgeHubRoute(deps: ChannelBridgeHubRouteDeps) {
       return;
     }
 
-    // 统一使用当前会话
-    const currentSession = sessionManager.getCurrentSession();
-    const sessionId = currentSession?.id || `qqbot-${channelMsg.senderId}`;
+    // 为 QQBot 使用固定 session（每次都使用同一个，避免不停开新 session）
+    // 当派发给 System Agent 时，使用系统 session
+    const targetAgentId = channelContextManager.getTargetAgent(channelMsg.channelId, {
+      type: 'normal',
+      targetAgent: ''
+    });
+    const isSystemAgentTarget = targetAgentId === SYSTEM_AGENT_CONFIG.id;
+    const fixedSessionId = isSystemAgentTarget
+      ? sessionManager.getOrCreateSystemSession().id
+      : stableSessionId;
+    setReplySessionId(fixedSessionId);
+    const currentSession = sessionManager.getSession(fixedSessionId);
+
     if (!currentSession) {
-      sessionManager.ensureSession(sessionId, process.cwd(), `channel:${channelMsg.channelId}`);
+      if (isSystemAgentTarget) {
+        // System session already created by getOrCreateSystemSession()
+      } else {
+        sessionManager.ensureSession(fixedSessionId, process.cwd(), `channel:${channelMsg.channelId}`);
+      }
+      log.info('[ChannelBridgeHubRoute] Created new QQBot session', {
+        sessionId: fixedSessionId,
+        channelId: channelMsg.channelId,
+        senderId: channelMsg.senderId
+      });
+    } else {
+      log.debug('[ChannelBridgeHubRoute] Reusing existing QQBot session', {
+        sessionId: fixedSessionId
+      });
     }
-    sessionManager.addMessage(sessionId, 'system', '已收到，正在处理中…', {
+    sessionManager.addMessage(fixedSessionId, 'system', '已收到，正在处理中…', {
       type: 'dispatch',
       metadata: { channelId: channelMsg.channelId, messageId: channelMsg.id },
     });
 
     // Dispatch to current agent
     try {
-      const targetAgentId = channelContextManager.getTargetAgent(channelMsg.channelId, {
-        type: 'normal',
-        targetAgent: ''
-      });
-
       const dispatchRequest: AgentDispatchRequest = {
         sourceAgentId: 'channel-bridge',
         targetAgentId,
         task: { prompt: cleanContent },
-        sessionId,
+        sessionId: fixedSessionId,
         metadata: {
           source: 'channel',
           channelId: channelMsg.channelId,
@@ -154,6 +198,20 @@ export function createChannelBridgeHubRoute(deps: ChannelBridgeHubRouteDeps) {
         queueOnBusy: true,
         maxQueueWaitMs: 180000,
       };
+
+      // 注册 session-envelope 映射（用于 Agent Status Subscriber）
+      if (agentStatusSubscriber) {
+        agentStatusSubscriber.registerSession(fixedSessionId, {
+          channel: channelMsg.channelId,
+          envelopeId: channelMsg.id,
+          userId: channelMsg.senderId,
+          groupId: channelMsg.type === 'group' ? (channelMsg.metadata?.groupId as string) : undefined,
+        });
+        log.debug('[ChannelBridgeHubRoute] Registered session for status updates', {
+          sessionId: fixedSessionId,
+          targetAgentId,
+        });
+      }
 
       log.info('Hub route dispatching to agent', { targetAgentId });
       const result = await dispatchTaskToAgent(dispatchRequest);
@@ -174,6 +232,14 @@ export function createChannelBridgeHubRoute(deps: ChannelBridgeHubRouteDeps) {
     } catch (err) {
       log.error('Hub route dispatch error', err instanceof Error ? err : undefined);
       await sendReply('处理失败，请稍后再试', 'messagehub');
+    } finally {
+      // 延迟清理 session 映射（给状态更新发送留出时间）
+      if (agentStatusSubscriber) {
+        setTimeout(() => {
+          agentStatusSubscriber.unregisterSession(fixedSessionId);
+          log.debug('[ChannelBridgeHubRoute] Unregistered session', { sessionId: fixedSessionId });
+        }, 30_000); // 30秒后清理
+      }
     }
   };
 }

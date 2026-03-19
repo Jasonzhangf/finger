@@ -1,5 +1,6 @@
 import { FINGER_PATHS } from '../../core/finger-paths.js';
 import { FINGER_ORCHESTRATOR_AGENT_ID, FINGER_GENERAL_AGENT_ID } from '../../agents/finger-general/finger-general-module.js';
+import { SYSTEM_AGENT_CONFIG } from '../../agents/finger-system-agent/index.js';
 
 export const ERROR_SAMPLE_DIR = FINGER_PATHS.logs.errorsamplesDir;
 
@@ -44,5 +45,6 @@ export function isPrimaryOrchestratorTarget(target: string): boolean {
     || normalized === FINGER_GENERAL_AGENT_ID
     || normalized === LEGACY_ORCHESTRATOR_AGENT_ID
     || normalized === PRIMARY_ORCHESTRATOR_GATEWAY_ID
-    || normalized === LEGACY_ORCHESTRATOR_GATEWAY_ID;
+    || normalized === LEGACY_ORCHESTRATOR_GATEWAY_ID
+    || normalized === SYSTEM_AGENT_CONFIG.id;
 }
