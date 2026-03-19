@@ -391,6 +391,12 @@ export class SessionManager {
   }
 
  ensureSession(sessionId: string, projectPath: string, name?: string): Session {
+    // Resolve system session alias
+    if (sessionId === 'system-default-session') {
+      const systemSession = this.getOrCreateSystemSession();
+      return systemSession;
+    }
+
     const existing = this.sessions.get(sessionId);
     if (existing) {
       existing.lastAccessedAt = new Date().toISOString();
