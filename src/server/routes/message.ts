@@ -238,10 +238,11 @@ export function registerMessageRoutes(app: Express, deps: MessageRouteDeps): voi
       return;
     }
 
-    const sender = typeof body.sender === 'string' ? body.sender.trim().toLowerCase() : '';
-    const isCliRoute = sender === 'cli' || sender.startsWith('cli-');
-    if (!isPrimaryOrchestratorTarget(body.target, deps) && !isCliRoute && !isDirectAgentRouteAllowed(req, deps)) {
-      res.status(403).json({
+   const sender = typeof body.sender === 'string' ? body.sender.trim().toLowerCase() : '';
+   const isCliRoute = sender === 'cli' || sender.startsWith('cli-');
+    const isSystemAgentTarget = body.target === 'finger-system-agent';
+    if (!isPrimaryOrchestratorTarget(body.target, deps) && !isCliRoute && !isSystemAgentTarget && !isDirectAgentRouteAllowed(req, deps)) {
+     res.status(403).json({
         error: `Direct target routing is disabled. Use primary orchestrator target: ${deps.primaryOrchestratorTarget}`,
         code: 'DIRECT_ROUTE_DISABLED',
         target: body.target,
@@ -332,7 +333,13 @@ export function registerMessageRoutes(app: Express, deps: MessageRouteDeps): voi
       }
     }
 
-    const routedTarget = contextManager.getTargetAgent(channelId, parsedCommand);
+    const directSystemTarget = body.target === 'finger-system-agent';
+    if (directSystemTarget) {
+      contextManager.updateContext(channelId, 'system', 'finger-system-agent');
+    }
+    const routedTarget = directSystemTarget
+      ? 'finger-system-agent'
+      : contextManager.getTargetAgent(channelId, parsedCommand);
     body.target = routedTarget;
     const effectiveMessage = parsedCommand.type === 'super_command'
       ? withMessageContent(body.message, parsedCommand.effectiveContent)
@@ -356,7 +363,7 @@ export function registerMessageRoutes(app: Express, deps: MessageRouteDeps): voi
     let injectedPrompt: string | null = null;
     let injectedAgents: OrchestrationPromptAgent[] = [];
     let requestMessage = requestMessageWithPolicy;
-    if (shouldInjectProfileReviewPolicy(body.target, deps)) {
+    if (!isSystemRoute && shouldInjectProfileReviewPolicy(body.target, deps)) {
       try {
         const loaded = loadOrchestrationConfig();
         const activeProfile = resolveActiveOrchestrationProfile(loaded.config);
@@ -423,7 +430,17 @@ export function registerMessageRoutes(app: Express, deps: MessageRouteDeps): voi
       return;
     }
 
-   const requestSessionId = extractSessionIdFromMessagePayload(requestMessage);
+    if (isObjectRecord(requestMessage)) {
+      const metadata = isObjectRecord(requestMessage.metadata) ? requestMessage.metadata : {};
+      if (isSystemRoute) {
+        metadata.role = 'system';
+        metadata.responsesStructuredOutput = false;
+        metadata.responsesOutputSchemaPreset = 'none';
+      }
+      requestMessage = { ...requestMessage, metadata };
+    }
+
+    const requestSessionId = extractSessionIdFromMessagePayload(requestMessage);
    if (requestSessionId) {
       const sessionProjectPath = isSystemRoute ? SYSTEM_PROJECT_PATH : undefined;
       ensureSessionExists(deps.sessionManager, requestSessionId, body.target, sessionProjectPath);

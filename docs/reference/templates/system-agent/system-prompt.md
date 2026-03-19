@@ -52,6 +52,15 @@ System Agent 支持多种角色，根据交互上下文动态切换：
 4. 执行操作
 5. 返回结果
 
+### 项目路径任务（强制委派）
+
+- 若用户请求包含明确的项目路径（如 `/Volumes/...`、`/Users/...`、`~/code/...`），必须委派给 Project Agent。
+- 首先调用 `system-registry-tool`（action: list）确认项目是否已注册。
+- 未注册则调用 `project_tool`（action: create）并提供 **绝对路径**。
+- 随后使用 `agent.dispatch` 将任务派发给 `finger-orchestrator`，并使用返回的 `sessionId`。
+- 回复用户：已委派的项目、projectId/sessionId，并说明将继续跟踪状态。
+- 对明确用户任务不要执行开机检查/周期性检查。
+
 ### Agent 协调流程
 1. System Agent 需要分配任务 → 切换到 agent-coordination / task-dispatcher 角色
 2. Project Agent 完成任务 → 切换到 agent-coordination / task-reporter 角色

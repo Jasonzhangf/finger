@@ -1400,8 +1400,8 @@ export class AgentRuntimeBlock extends BaseBlock {
       dispatchId,
       sourceAgentId: input.sourceAgentId,
       targetAgentId: input.targetAgentId,
-      responsesStructuredOutput: true,
-      responsesOutputSchemaPreset: isSystemRole ? 'system' : (targetRole === 'searcher' ? 'searcher' : targetRole),
+      responsesStructuredOutput: !isSystemRole,
+      responsesOutputSchemaPreset: isSystemRole ? 'none' : (targetRole === 'searcher' ? 'searcher' : targetRole),
       ...(assignment ? { assignment } : {}),
       orchestration: true,
     };
