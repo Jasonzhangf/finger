@@ -370,22 +370,22 @@ export class SessionManager {
     return session;
   }
 
-  getOrCreateSystemSession(): Session {
-    // Find existing system session with correct projectPath and sessionTier
-    for (const session of this.sessions.values()) {
-      if (session.projectPath === SYSTEM_PROJECT_PATH) {
+ getOrCreateSystemSession(): Session {
+   // Find existing system session with correct projectPath and sessionTier
+   for (const session of this.sessions.values()) {
+      if (session.projectPath === SYSTEM_PROJECT_PATH && !this.isRuntimeSession(session)) {
         session.lastAccessedAt = new Date().toISOString();
         return session;
       }
     }
-    // Find system session with sessionTier === 'system' (properly created)
-    for (const session of this.sessions.values()) {
-      const ctx = session.context ?? {};
-      if (ctx.sessionTier === 'system' || session.id.startsWith(SYSTEM_SESSION_PREFIX)) {
+   // Find system session with sessionTier === 'system' (properly created)
+   for (const session of this.sessions.values()) {
+     const ctx = session.context ?? {};
+      if ((ctx.sessionTier === 'system' || session.id.startsWith(SYSTEM_SESSION_PREFIX)) && !this.isRuntimeSession(session)) {
         session.lastAccessedAt = new Date().toISOString();
         return session;
       }
-    }
+   }
     // Create new system session if none exists
     return this.createSystemSession();
   }
