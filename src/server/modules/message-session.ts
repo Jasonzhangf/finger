@@ -2,14 +2,47 @@ import { isObjectRecord } from '../common/object.js';
 import { asString, firstNonEmptyString } from '../common/strings.js';
 import { tryParseStructuredJson } from '../../common/structured-output.js';
 import type { SessionWorkspaceDirs } from './session-workspaces.js';
+import { logger } from '../../core/logger.js';
+
+const log = logger.module('message-session');
+
+interface SessionIdExtraction {
+  sessionId: string;
+  source: 'payload.top' | 'metadata.sessionId' | 'metadata.session_id';
+}
 
 export function extractSessionIdFromMessagePayload(message: unknown): string | null {
   if (typeof message !== 'object' || message === null) return null;
   const record = message as Record<string, unknown>;
-  const direct = asString(record.sessionId);
-  if (direct) return direct;
   const metadata = isObjectRecord(record.metadata) ? record.metadata : {};
-  return asString(metadata.sessionId) ?? asString(metadata.session_id) ?? null;
+
+  const candidates: SessionIdExtraction[] = [];
+  const top = asString(record.sessionId);
+  if (top) candidates.push({ sessionId: top, source: 'payload.top' });
+  const metaSid = asString(metadata.sessionId);
+  if (metaSid) candidates.push({ sessionId: metaSid, source: 'metadata.sessionId' });
+  const metaUnderscore = asString(metadata.session_id);
+  if (metaUnderscore) candidates.push({ sessionId: metaUnderscore, source: 'metadata.session_id' });
+
+  if (candidates.length === 0) return null;
+
+  if (candidates.length > 1) {
+    const unique = new Set(candidates.map(c => c.sessionId));
+    if (unique.size > 1) {
+      const detail = candidates.map(c => `${c.source}=${c.sessionId}`).join(', ');
+      log.error('sessionId conflict in message payload', new Error(detail));
+      throw new Error(`Conflicting sessionId sources: ${detail}. Use exactly one.`);
+    }
+  }
+
+  if (metaSid) {
+    log.info('sessionId extracted from payload', { source: 'metadata.sessionId', sessionId: metaSid });
+    return metaSid;
+  }
+
+  const chosen = candidates[0];
+  log.info('sessionId extracted from payload', { source: chosen.source, sessionId: chosen.sessionId });
+  return chosen.sessionId;
 }
 
 export function shouldClientPersistSession(message: unknown): boolean {
@@ -112,13 +145,15 @@ export function withSessionWorkspaceDefaults(
   if (!isObjectRecord(message)) return message;
   const dirs = sessionWorkspaces.resolveSessionWorkspaceDirsForMessage(sessionId);
   const metadata = isObjectRecord(message.metadata) ? message.metadata : {};
+  // ledger root_dir: kernel builds path as {root_dir}/{session_id}/{agent_id}/{mode}/context-ledger.jsonl
+  const ledgerRootDir = inferLedgerRootDir(dirs.memoryDir);
   return {
     ...message,
     metadata: {
       ...metadata,
       ...(typeof metadata.contextLedgerRootDir === 'string' && metadata.contextLedgerRootDir.trim().length > 0
         ? {}
-        : { contextLedgerRootDir: dirs.memoryDir }),
+        : { contextLedgerRootDir: ledgerRootDir }),
       ...(typeof metadata.deliverablesDir === 'string' && metadata.deliverablesDir.trim().length > 0
         ? {}
         : { deliverablesDir: dirs.deliverablesDir }),
@@ -127,6 +162,21 @@ export function withSessionWorkspaceDefaults(
         : { exchangeDir: dirs.exchangeDir }),
     },
   };
+}
+
+function inferLedgerRootDir(memoryDir: string): string {
+  // memoryDir: /Users/x/.finger/system/sessions/{sid}/workspace/memory
+  // root_dir should be: /Users/x/.finger/system/sessions
+  const parts = memoryDir.split('/');
+  const sessionsIdx = parts.lastIndexOf('sessions');
+  if (sessionsIdx > 0) {
+    return parts.slice(0, sessionsIdx + 1).join('/');
+  }
+  const workspaceIdx = parts.lastIndexOf('workspace');
+  if (workspaceIdx > 0) {
+    return parts.slice(0, workspaceIdx).join('/');
+  }
+  return memoryDir;
 }
 
 export function extractHttpStatusFromError(errorMessage: string): number | undefined {
