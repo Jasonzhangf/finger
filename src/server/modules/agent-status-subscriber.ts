@@ -28,6 +28,7 @@ import {
 } from './agent-status-subscriber-types.js';
 import { wrapStatusUpdate, getAgentIcon } from './agent-status-subscriber-helpers.js';
 import { logger } from '../../core/logger.js';
+import { sendStatusUpdate, startCleanup } from './agent-status-subscriber-runtime.js';
 
 const log = logger.module('AgentStatusSubscriber');
 
@@ -39,7 +40,7 @@ export class AgentStatusSubscriber {
   private agentSubscriptions = new Map<string, AgentSubscriptionConfig>(); // agentId -> config
   private primaryAgentId: string | null = null; // 当前主 Agent（编排者）
   private readonly cleanupIntervalMs = 5 * 60 * 1000; // 5分钟清理一次过期映射
-  private cleanupTimer: NodeJS.Timeout | null = null;
+  private _stopCleanup: (() => void) | null = null;
 
   constructor(
     private eventBus: UnifiedEventBus,
@@ -70,7 +71,7 @@ export class AgentStatusSubscriber {
     );
 
     // 启动定期清理
-    this.startCleanup();
+    this._stopCleanup = startCleanup(this.sessionEnvelopeMap, this.cleanupIntervalMs);
 
     log.info('[AgentStatusSubscriber] Started');
   }
@@ -138,12 +139,8 @@ export class AgentStatusSubscriber {
       this.unsubscribe();
       this.unsubscribe = null;
     }
-
-    if (this.cleanupTimer) {
-      clearInterval(this.cleanupTimer);
-      this.cleanupTimer = null;
-    }
-
+    this._stopCleanup?.();
+    this._stopCleanup = null;
     log.info('[AgentStatusSubscriber] Stopped');
   }
 
@@ -300,7 +297,7 @@ export class AgentStatusSubscriber {
       },
     };
 
-    await this.sendStatusUpdate(mapping.envelope, wrappedUpdate);
+    if (this.messageHub) { await sendStatusUpdate(mapping.envelope, wrappedUpdate, this.messageHub); };
   }
 
   /**
@@ -333,7 +330,7 @@ export class AgentStatusSubscriber {
       },
     };
 
-    await this.sendStatusUpdate(mapping.envelope, wrappedUpdate);
+    if (this.messageHub) { await sendStatusUpdate(mapping.envelope, wrappedUpdate, this.messageHub); };
   }
 
   /**
@@ -405,7 +402,7 @@ export class AgentStatusSubscriber {
     }
 
     // 发送状态更新到通信通道
-    await this.sendStatusUpdate(mapping.envelope, wrappedUpdate);
+    if (this.messageHub) { await sendStatusUpdate(mapping.envelope, wrappedUpdate, this.messageHub); };
   }
 
   /**
@@ -432,86 +429,6 @@ export class AgentStatusSubscriber {
     return { agentId };
   }
 
-  /**
-   * 包装状态更新事件
-   */
-
-  /**
-   * 发送状态更新到通信通道
-   */
-  private async sendStatusUpdate(
-    envelope: SessionEnvelopeMapping['envelope'],
-    statusUpdate: WrappedStatusUpdate
-  ): Promise<void> {
-    try {
-      log.info(`[AgentStatusSubscriber] Sending status update to channel ${envelope.channel}:`, {
-        agent: statusUpdate.agent.agentName || statusUpdate.agent.agentId,
-        status: statusUpdate.status.state,
-        level: statusUpdate.display.level,
-        task: statusUpdate.task.taskDescription,
-      });
-
-      // 通过 MessageHub 路由到 channel-bridge output
-      if (this.messageHub) {
-        const outputId = 'channel-bridge-' + envelope.channel;
-        const originalEnvelope: ChannelBridgeEnvelope = {
-          id: envelope.envelopeId,
-          channelId: envelope.channel,
-          accountId: 'default',
-          type: envelope.groupId ? 'group' : 'direct',
-          senderId: envelope.userId || 'unknown',
-          senderName: 'user',
-          content: '',
-          timestamp: Date.now(),
-          metadata: {
-            messageId: envelope.envelopeId,
-            ...(envelope.groupId ? { groupId: envelope.groupId } : {}),
-          },
-        };
-
-        const text = `${statusUpdate.display.title}\n${statusUpdate.status.summary}`
-          + (statusUpdate.display.subtitle ? `\n${statusUpdate.display.subtitle}` : '');
-
-        const message = {
-          channelId: envelope.channel,
-          target: envelope.groupId ? `group:${envelope.groupId}` : (envelope.userId || 'unknown'),
-          content: text,
-          originalEnvelope,
-          statusUpdate,
-        };
-
-        await this.messageHub.routeToOutput(outputId, message);
-        log.debug('[AgentStatusSubscriber] Sent status update via MessageHub: ' + outputId);
-      } else {
-        log.warn('[AgentStatusSubscriber] No messageHub available, skipping channel-bridge output');
-      }
-    } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : String(error);
-      log.error(`[AgentStatusSubscriber] Failed to send status update: `);
-    }
-  }
-
-  /**
-   * 启动定期清理过期映射
-   */
-  private startCleanup(): void {
-    this.cleanupTimer = setInterval(() => {
-      const now = Date.now();
-      const expired: string[] = [];
-
-      for (const [sessionId, mapping] of this.sessionEnvelopeMap.entries()) {
-        if (now - mapping.timestamp > this.cleanupIntervalMs) {
-          expired.push(sessionId);
-        }
-      }
-
-      expired.forEach(sessionId => this.sessionEnvelopeMap.delete(sessionId));
-
-      if (expired.length > 0) {
-        log.info(`[AgentStatusSubscriber] Cleaned up ${expired.length} expired session mappings`);
-      }
-    }, this.cleanupIntervalMs);
-  }
 }
 
 export default AgentStatusSubscriber;

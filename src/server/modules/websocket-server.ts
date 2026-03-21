@@ -17,7 +17,7 @@ export interface WebSocketServerDeps {
 export interface WebSocketServerRuntime {
   wss: WebSocketServer;
   wsClients: Set<WebSocket>;
-  broadcast: (message: Record<string, unknown>) => void;
+  broadcast: (message: unknown) => void;
 }
 
 interface WebSocketWithClientId extends WebSocket {
@@ -33,7 +33,7 @@ export function createWebSocketServer(deps: WebSocketServerDeps): WebSocketServe
   const wss = new WebSocketServer({ port });
   const wsClients: Set<WebSocket> = new Set();
 
-  const broadcast = (message: Record<string, unknown>): void => {
+  const broadcast = (message: unknown): void => {
     const encoded = JSON.stringify(message);
     for (const client of wsClients) {
       if (client.readyState === 1) {

@@ -441,10 +441,10 @@ describe('AgentStatusSubscriber', () => {
   describe('定时器清理', () => {
     it('应该在停止时清理定时器', () => {
       subscriber.start();
-      expect((subscriber as any).cleanupTimer).not.toBeNull();
+      expect((subscriber as any)._stopCleanup).not.toBeNull();
 
       subscriber.stop();
-      expect((subscriber as any).cleanupTimer).toBeNull();
+      expect((subscriber as any)._stopCleanup).toBeNull();
     });
   });
 });

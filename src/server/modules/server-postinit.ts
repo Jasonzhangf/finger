@@ -28,7 +28,7 @@ export async function runPostInit(deps: {
   eventBus: any;
   sessionManager: SessionManager;
   dispatchTaskToAgent: (input: AgentDispatchRequest) => Promise<unknown>;
-  broadcast: (message: Record<string, unknown>) => void;
+  broadcast: (message: unknown) => void;
   agentStatusSubscriber: any;
   applyOrchestrationConfig: (config: OrchestrationConfigV1) => Promise<{
     applied: number;

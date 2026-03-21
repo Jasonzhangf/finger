@@ -24,6 +24,7 @@ const readServerFiles = () => [
   'src/server/routes/agent-cli.ts',
   'src/server/modules/websocket-server.ts',
   'src/server/modules/event-forwarding.ts',
+  'src/server/modules/event-forwarding-handlers.ts',
 ].map(f => readFile(f)).join('\n');
 
 describe('RUNTIME_SPEC.md Full MUST Checklist', () => {
@@ -64,7 +65,7 @@ describe('RUNTIME_SPEC.md Full MUST Checklist', () => {
   });
   it('MUST-3.2.1: WebSocket subscribe', () => { expect(readFile('src/server/modules/websocket-server.ts')).toContain("type === 'subscribe'"); console.log('[✓] MUST-3.2.1'); });
   it('MUST-3.2.2: Event broadcasting', () => {
-    const c = readFile('src/server/modules/event-forwarding.ts');
+    const c = readFile('src/server/modules/event-forwarding-handlers.ts');
     expect(c).toContain('agent_update');
     console.log('[✓] MUST-3.2.2');
   });
