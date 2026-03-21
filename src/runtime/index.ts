@@ -9,3 +9,4 @@ export * from './runtime-facade.js';
 export * from './default-tools.js';
 export * from './session-control-plane.js';
 export * from './ledger-writer.js';
+export * from './ledger-reader.js';
