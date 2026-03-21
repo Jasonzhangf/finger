@@ -103,12 +103,24 @@ export interface UISettings {
   timeZone: string;
 }
 
+export interface LedgerSettings {
+  /** Context window size in tokens (default: 256K = 262144) */
+  contextWindow: number;
+  /**
+   * Compression trigger threshold in tokens.
+   * Default: 85% of contextWindow = 222822.
+   * When session.totalTokens exceeds this, compression is triggered.
+   */
+  compressTokenThreshold: number;
+}
+
 export interface UserSettings {
   version: string;
   updated_at: string;
   aiProviders: AIProviders;
   preferences: Preferences;
   ui: UISettings;
+  ledger: LedgerSettings;
 }
 
 const DEFAULT_USER_SETTINGS: UserSettings = {
@@ -141,6 +153,10 @@ const DEFAULT_USER_SETTINGS: UserSettings = {
     theme: 'dark',
     language: 'zh-CN',
     timeZone: 'Asia/Shanghai'
+  },
+  ledger: {
+    contextWindow: 262144,
+    compressTokenThreshold: 222822,
   }
 };
 
@@ -301,6 +317,24 @@ export function validateUserSettings(settings: any): void {
     throw new Error('Invalid settings: ui.timeZone must be a string');
   }
   }
+
+  // Validate ledger settings (with defaults for missing fields)
+  if (!settings.ledger || typeof settings.ledger !== 'object') {
+    settings.ledger = { contextWindow: 262144, compressTokenThreshold: 222822 };
+  }
+  if (settings.ledger.contextWindow !== undefined && (typeof settings.ledger.contextWindow !== 'number' || settings.ledger.contextWindow <= 0)) {
+    throw new Error('Invalid settings: ledger.contextWindow must be a positive number');
+  }
+  if (settings.ledger.compressTokenThreshold !== undefined && (typeof settings.ledger.compressTokenThreshold !== 'number' || settings.ledger.compressTokenThreshold <= 0)) {
+    throw new Error('Invalid settings: ledger.compressTokenThreshold must be a positive number');
+  }
+  // Apply defaults for missing fields
+  if (settings.ledger.contextWindow === undefined) {
+    settings.ledger.contextWindow = 262144;
+  }
+  if (settings.ledger.compressTokenThreshold === undefined) {
+    settings.ledger.compressTokenThreshold = Math.floor(settings.ledger.contextWindow * 0.85);
+  }
 }
 
 /**
@@ -405,6 +439,33 @@ export function resetUserSettings(): void {
  */
 export function getUserSettingsPath(): string {
   return USER_SETTINGS_PATH;
+}
+
+/**
+ * 加载 Ledger 配置
+ *
+ * @returns {LedgerSettings} Ledger 配置
+ */
+export function loadLedgerSettings(): LedgerSettings {
+  const settings = loadUserSettings();
+  return settings.ledger;
+}
+
+/**
+ * 获取 context window 大小 (tokens)
+ */
+export function getContextWindow(): number {
+  const ledger = loadLedgerSettings();
+  return ledger.contextWindow;
+}
+
+/**
+ * 获取压缩触发阈值 (tokens)
+ * 默认为 contextWindow 的 85%
+ */
+export function getCompressTokenThreshold(): number {
+  const ledger = loadLedgerSettings();
+  return ledger.compressTokenThreshold;
 }
 
 /**
