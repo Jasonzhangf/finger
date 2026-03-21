@@ -186,7 +186,7 @@ export function attachEventForwarding(deps: EventForwardingDeps): {
           'assistant', // Use assistant role so it's included in kernel history
         );
         
-        // Send reasoning to channel bridge (QQBot) using session-envelope mapping
+        // Send reasoning to channel bridge (QQBot) based on pushSettings.reasoning config
         if (agentStatusSubscriber) {
           agentStatusSubscriber.sendReasoningUpdate(event.sessionId, reasoningAgentId, reasoningText)
             .catch((err) => {

@@ -356,7 +356,7 @@ systemAgentManager.start();
 logger.module('server').info('System Agent Manager started');
 
 // Start Agent Status Subscriber
-const agentStatusSubscriber = new AgentStatusSubscriber(globalEventBus, getAgentRuntimeDeps(), hub);
+const agentStatusSubscriber = new AgentStatusSubscriber(globalEventBus, getAgentRuntimeDeps(), hub, channelBridgeManager);
 agentStatusSubscriber.start();
 agentStatusSubscriber.setPrimaryAgent(SYSTEM_AGENT_CONFIG.id);
 logger.module('server').info('Agent Status Subscriber started');

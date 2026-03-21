@@ -50,6 +50,32 @@ export class ChannelBridgeManager {
   }
 
   /**
+   * 获取指定 channel 的配置
+   */
+  getConfig(channelId: string): ChannelBridgeConfig | undefined {
+    // 先按 channelId 查找
+    for (const config of this.configs.values()) {
+      if (config.channelId === channelId) {
+        return config;
+      }
+    }
+    return undefined;
+  }
+
+  /**
+   * 获取指定 channel 的推送设置
+   */
+  getPushSettings(channelId: string): { reasoning: boolean; statusUpdate: boolean; toolCalls: boolean } {
+    const config = this.getConfig(channelId);
+    const pushSettings = config?.options?.pushSettings as { reasoning?: boolean; statusUpdate?: boolean; toolCalls?: boolean } | undefined;
+    return {
+      reasoning: pushSettings?.reasoning ?? false,
+      statusUpdate: pushSettings?.statusUpdate ?? true,
+      toolCalls: pushSettings?.toolCalls ?? false,
+    };
+  }
+
+  /**
    * 加载配置并启动所有启用的桥接
    */
   async loadConfigs(configs: ChannelBridgeConfig[]): Promise<void> {

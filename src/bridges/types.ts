@@ -47,7 +47,23 @@ export interface ChannelBridgeConfig {
   channelId: string;
   enabled: boolean;
   credentials: Record<string, unknown>;
-  options?: Record<string, unknown>;
+  options?: {
+    permissions?: {
+      send?: boolean;
+      receive?: boolean;
+      control?: boolean;
+    };
+    /** 推送设置 - 控制哪些内容推送到此 channel */
+    pushSettings?: {
+      /** 是否推送 reasoning/thinking 内容 */
+      reasoning?: boolean;
+      /** 是否推送状态更新 */
+      statusUpdate?: boolean;
+      /** 是否推送工具调用信息 */
+      toolCalls?: boolean;
+    };
+    [key: string]: unknown;
+  };
 }
 
 export interface ChannelBridgeCallbacks {

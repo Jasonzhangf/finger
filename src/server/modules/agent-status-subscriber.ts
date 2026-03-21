@@ -44,7 +44,8 @@ export class AgentStatusSubscriber {
   constructor(
     private eventBus: UnifiedEventBus,
     private deps: AgentRuntimeDeps,
-    private messageHub?: import('../../orchestration/message-hub.js').MessageHub
+    private messageHub?: import('../../orchestration/message-hub.js').MessageHub,
+    private channelBridgeManager?: import('../../bridges/manager.js').ChannelBridgeManager,
   ) {}
 
   /**
@@ -80,12 +81,21 @@ export class AgentStatusSubscriber {
   async sendReasoningUpdate(sessionId: string, agentId: string, reasoningText: string): Promise<void> {
     const mapping = this.resolveEnvelopeMapping(sessionId);
     if (!mapping) {
-      log.warn('[AgentStatusSubscriber] No envelope mapping for reasoning update', { sessionId, agentId });
+      // No envelope mapping - silently skip (heartbeat/system tasks don't need channel routing)
       return;
     }
     if (!this.messageHub) {
       log.warn('[AgentStatusSubscriber] No messageHub available for reasoning update');
       return;
+    }
+
+    // 检查该 channel 的 pushSettings.reasoning 配置
+    if (this.channelBridgeManager) {
+      const pushSettings = this.channelBridgeManager.getPushSettings(mapping.envelope.channel);
+      if (!pushSettings.reasoning) {
+        // 该 channel 配置为不推送 reasoning
+        return;
+      }
     }
 
     const outputId = 'channel-bridge-' + mapping.envelope.channel;

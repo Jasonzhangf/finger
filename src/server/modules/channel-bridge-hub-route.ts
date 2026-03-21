@@ -54,6 +54,7 @@ export interface ChannelBridgeHubRouteDeps {
 
 export function createChannelBridgeHubRoute(deps: ChannelBridgeHubRouteDeps) {
   const { channelBridgeManager, sessionManager, dispatchTaskToAgent, eventBus, agentStatusSubscriber } = deps;
+  log.info('[ChannelBridgeHubRoute] agentStatusSubscriber available:', { available: !!agentStatusSubscriber });
   const channelContextManager = ChannelContextManager.getInstance();
 
   function formatLocalTimestamp(date: Date = new Date()): string {

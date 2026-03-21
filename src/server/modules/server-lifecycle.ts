@@ -80,12 +80,18 @@ export async function initOpenClawGate(): Promise<void> {
     log.error('checkAIProviderConfig failed', err instanceof Error ? err : undefined);
   }
 
-  try {
-    log.info('loadChannelBridgeConfigs...');
-    await loadChannelBridgeConfigs();
-    log.info('loadChannelBridgeConfigs completed');
-  } catch (err) {
-    log.error('loadChannelBridgeConfigs failed', err instanceof Error ? err : undefined);
+  // Only primary daemon (port 9999) loads channel bridges to avoid duplicate message processing
+  const currentPort = parseInt(process.env.PORT || '9999', 10);
+  if (currentPort === 9999) {
+    try {
+      log.info('loadChannelBridgeConfigs (primary daemon only)...');
+      await loadChannelBridgeConfigs();
+      log.info('loadChannelBridgeConfigs completed');
+    } catch (err) {
+      log.error('loadChannelBridgeConfigs failed', err instanceof Error ? err : undefined);
+    }
+  } else {
+    log.info(`Skipping channel bridge loading (standby daemon, port ${currentPort})`);
   }
 }
 

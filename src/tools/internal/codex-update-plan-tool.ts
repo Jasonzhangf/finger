@@ -25,19 +25,19 @@ let lastPlanSnapshot: UpdatePlanOutput | null = null;
 export const updatePlanTool: InternalTool<unknown, UpdatePlanOutput> = {
   name: 'update_plan',
   description:
-    'Updates the task plan. Provide an optional explanation and a list of plan items, each with a step and status.',
+    'Updates the task plan. Each plan item must have a "step" field (the step description) and a "status" field (pending, in_progress, or completed).',
   inputSchema: {
     type: 'object',
     properties: {
       explanation: { type: 'string' },
       plan: {
         type: 'array',
-        description: 'The list of steps',
+        description: 'Array of plan items. Each item requires "step" (string) and "status" (string: pending|in_progress|completed).',
         items: {
           type: 'object',
           properties: {
-            step: { type: 'string' },
-            status: { type: 'string', description: 'One of: pending, in_progress, completed' },
+            step: { type: 'string', description: 'Short description of the step (required)' },
+            status: { type: 'string', description: 'One of: pending, in_progress, completed (required)' },
           },
           required: ['step', 'status'],
           additionalProperties: false,

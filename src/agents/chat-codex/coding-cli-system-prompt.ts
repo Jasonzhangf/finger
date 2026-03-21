@@ -319,7 +319,7 @@ const CODEX_BASE_PROMPT = [
   "",
   "A tool named `update_plan` is available to you. You can use it to keep an up‑to‑date, step‑by‑step plan for the task.",
   "",
-  "To create a new plan, call `update_plan` with a short list of 1‑sentence steps (no more than 5-7 words each) with a `status` for each step (`pending`, `in_progress`, or `completed`).",
+  "To create a new plan, call `update_plan` with a short list of plan items. Each item MUST have a `step` field (the step description as a string) and a `status` field (`pending`, `in_progress`, or `completed`). Do NOT use `description` as the field name — it must be `step`.",
   "",
   "When steps have been completed, use `update_plan` to mark each finished step as `completed` and the next step you are working on as `in_progress`. There should always be exactly one `in_progress` step until everything is done. You can mark multiple items as complete in a single `update_plan` call.",
   "",
