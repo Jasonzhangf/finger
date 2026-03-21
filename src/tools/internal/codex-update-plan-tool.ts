@@ -1,4 +1,5 @@
 import { InternalTool } from './types.js';
+import { logger } from '../../core/logger.js';
 
 type PlanStepStatus = 'pending' | 'in_progress' | 'completed';
 
@@ -79,22 +80,72 @@ function parseUpdatePlanInput(rawInput: unknown): UpdatePlanInput {
   const plan: PlanItem[] = [];
   let inProgressCount = 0;
 
+  const log = logger.module('update-plan');
+
   for (const item of rawInput.plan) {
     if (!isRecord(item)) {
       throw new Error('update_plan input.plan items must be objects');
     }
-    if (typeof item.step !== 'string' || item.step.trim().length === 0) {
-      throw new Error('update_plan plan item.step must be a non-empty string');
+
+    let stepValue: string | undefined;
+    if (typeof item.step === 'string' && item.step.trim().length > 0) {
+      stepValue = item.step.trim();
+    } else {
+      const fallback = typeof item.description === 'string'
+        ? item.description
+        : typeof item.text === 'string'
+          ? item.text
+          : typeof item.title === 'string'
+            ? item.title
+            : undefined;
+
+      if (typeof fallback === 'string' && fallback.trim().length > 0) {
+        log.warn('[update_plan] Missing step; normalized from fallback field', {
+          fallbackField: typeof item.description === 'string'
+            ? 'description'
+            : typeof item.text === 'string'
+              ? 'text'
+              : 'title',
+        });
+        stepValue = fallback.trim();
+      } else {
+        throw new Error('update_plan plan item.step must be a non-empty string');
+      }
     }
+
     if (!isPlanStatus(item.status)) {
-      throw new Error('update_plan plan item.status must be pending|in_progress|completed');
+      const statusMap: Record<string, PlanStepStatus> = {
+        todo: 'pending',
+        doing: 'in_progress',
+        done: 'completed',
+        inprogress: 'in_progress',
+        'in-progress': 'in_progress',
+      };
+      const normalized = typeof item.status === 'string'
+        ? statusMap[item.status.toLowerCase()]
+        : undefined;
+      if (normalized) {
+        log.warn('[update_plan] Normalized plan status alias', {
+          original: item.status,
+          normalized,
+        });
+        item.status = normalized;
+      }
+
+      if (!isPlanStatus(item.status)) {
+        throw new Error('update_plan plan item.status must be pending|in_progress|completed');
+      }
     }
+
     if (item.status === 'in_progress') {
       inProgressCount += 1;
     }
+
+    const statusValue = item.status as PlanStepStatus;
+
     plan.push({
-      step: item.step.trim(),
-      status: item.status,
+      step: stepValue,
+      status: statusValue,
     });
   }
 

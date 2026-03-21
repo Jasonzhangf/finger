@@ -22,6 +22,7 @@ import { ClockCreateHandler } from './handlers/system-handler.js';
 import { AgentSwitchHandler } from './handlers/agent-handler.js';
 import { ProjectSwitchHandler } from './handlers/project-handler.js';
 import { SessionSwitchHandler } from './handlers/session-handler.js';
+import { AuthGrantHandler, AuthDenyHandler, AuthStatusHandler } from './handlers/auth-handler.js';
 
 let executor: CommandExecutor | null = null;
 
@@ -58,6 +59,11 @@ export function initCommandHub(): CommandExecutor {
   // Register session command handlers
   executor.registerHandler(CommandType.SESSION_LIST, new SessionSwitchHandler());
   executor.registerHandler(CommandType.SESSION_SWITCH, new SessionSwitchHandler());
+
+  // Register auth/permission command handlers
+  executor.registerHandler(CommandType.AUTH_GRANT, new AuthGrantHandler());
+  executor.registerHandler(CommandType.AUTH_DENY, new AuthDenyHandler());
+  executor.registerHandler(CommandType.AUTH_STATUS, new AuthStatusHandler());
 
   // TODO: Add more handlers (agent, project, session, cmd_list)
 

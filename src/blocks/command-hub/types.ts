@@ -36,6 +36,11 @@ export enum CommandType {
   CLOCK_LIST = 'clock_list',
   CLOCK_CANCEL = 'clock_cancel',
 
+  // Permission/Auth commands
+  AUTH_GRANT = 'auth_grant',
+  AUTH_DENY = 'auth_deny',
+  AUTH_STATUS = 'auth_status',
+
   // Invalid
   INVALID = 'invalid'
 }

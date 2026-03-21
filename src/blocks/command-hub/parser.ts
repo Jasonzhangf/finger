@@ -4,7 +4,9 @@
 
 import { Command, CommandType } from './types.js';
 
-const COMMAND_PATTERN = /<##(?:@(\w+)(?::([^@#>]+))?(?:@([^>]+))?|(\w+))##>/g;
+// 支持 <##@category:action@params##>、<##auth:action@params##>、<##simpleCommand##> 三种格式
+// auth 类命令允许省略前导 @（如 <##auth:grant@id##>）
+const COMMAND_PATTERN = /<##(?:(?:@?)(\w+)(?::([^@#>]+))?(?:@([^>]+))?|(\w+))##>/g;
 
 export interface ParseResult {
   commands: Command[];
@@ -52,8 +54,11 @@ function parseSingleCommand(
   const action = actionRaw?.trim();
   const params: Record<string, string> = {};
 
-  if (simpleCommand) {
-    if (simpleCommand === 'help') {
+  const isBareCommand = !actionRaw && !param && !fullMatch.includes('@') && !fullMatch.includes(':');
+  const bareCommand = simpleCommand || (isBareCommand ? category : undefined);
+
+  if (bareCommand) {
+    if (bareCommand === 'help') {
       return {
         type: CommandType.CMD_LIST,
         raw: fullMatch,
@@ -147,18 +152,38 @@ function parseSingleCommand(
     } else {
       type = CommandType.INVALID;
     }
-  } else if (category === 'session') {
-    if (action === 'list' || !action) {
-      type = CommandType.SESSION_LIST;
-    } else if (action === 'switch' && param) {
-      type = CommandType.SESSION_SWITCH;
-      params.sessionId = param;
-    } else {
-      type = CommandType.INVALID;
-    }
-  } else {
-    type = CommandType.INVALID;
-  }
+ } else if (category === 'session') {
+   if (action === 'list' || !action) {
+     type = CommandType.SESSION_LIST;
+   } else if (action === 'switch' && param) {
+     type = CommandType.SESSION_SWITCH;
+     params.sessionId = param;
+   } else {
+     type = CommandType.INVALID;
+   }
+ } else if (category === 'auth') {
+   // Permission authorization commands
+   // Format: <##auth:grant@approvalId##> or <##auth:deny@approvalId##> or <##auth:status##>
+   if (action === 'grant') {
+     type = CommandType.AUTH_GRANT;
+     if (param) {
+       params.approvalId = param;
+     }
+   } else if (action === 'deny') {
+     type = CommandType.AUTH_DENY;
+     if (param) {
+       params.approvalId = param;
+     }
+   } else if (action === 'status' || !action) {
+     type = CommandType.AUTH_STATUS;
+   } else {
+     // Simple format: <##auth:approvalId##> - treat as grant
+     type = CommandType.AUTH_GRANT;
+     params.approvalId = action || '';
+   }
+ } else {
+   type = CommandType.INVALID;
+ }
 
   const remainingContent = extractRemainingContent(input, fullMatch);
 
