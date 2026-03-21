@@ -8,16 +8,13 @@ import { execSync } from 'child_process';
 import process from 'process';
 
 const ALLOWED_PATTERNS = [
-  // These files/directories are allowed to be untracked
   /^\.beads\//,
-  /^scripts\/prebuild-check\.mjs$/, // self
+  /^scripts\/prebuild-check\.mjs$/,
 ];
 
 function getUntrackedFiles() {
   const output = execSync('git status --porcelain', { encoding: 'utf-8' });
   const lines = output.trim().split('\n').filter(Boolean);
-
-  // Filter only untracked files (??)
   return lines
     .filter(line => line.startsWith('??'))
     .map(line => line.substring(3).trim());
@@ -27,7 +24,7 @@ function isAllowed(filepath) {
   return ALLOWED_PATTERNS.some(pattern => pattern.test(filepath));
 }
 
-const MAX_FILE_LINES = 700;
+const MAX_FILE_LINES = 500;
 
 function countLines(filePath) {
   try {
@@ -62,7 +59,6 @@ function checkFileLineLimits() {
 function main() {
   const untracked = getUntrackedFiles();
   const blocked = untracked.filter(f => !isAllowed(f));
-
   const lineLimitViolations = checkFileLineLimits();
 
   if (lineLimitViolations.length > 0) {
@@ -88,6 +84,62 @@ function main() {
   }
 
   console.log('✓ Prebuild check passed: no untracked files blocking build');
+
+  // ── Backbone regression test gate (18 test files, ~190 tests) ──
+  // These tests verify all core flows that must not break:
+  //   1. Tool error handling: tools/execute returns HTTP 200 on errors
+  //   2. Message hub: routeToOutput, meta injection, module routing
+  //   3. Mailbox: system mailbox, inbox/outbox
+  //   4. Agent status subscriber: session/agent registration
+  //   5. Channel bridge: config loading, output
+  //   6. System agent manager: bootstrap, lifecycle
+  //   7. Default tools: shell.exec, exec_command, etc.
+  //   8. Envelope: serialization, dispatch
+  //   9. Agent runtime block
+  //  10. Heartbeat: periodic check, status
+  //  11. Runtime spec compliance
+  //  12. Report task completion tool
+  //  13. System registry tool
+  //  14. AI provider config
+  console.log('\n▸ Running backbone regression tests...');
+
+  const BACKBONE_TESTS = [
+    'tests/unit/server/tool-error-handling.test.ts',
+    'tests/unit/orchestration/message-hub.test.ts',
+    'tests/unit/server/mailbox.test.ts',
+    'tests/unit/server/agent-status-subscriber.test.ts',
+    'tests/unit/server/channel-bridge-loading.test.ts',
+    'tests/unit/server/system-agent-manager.test.ts',
+    'tests/unit/runtime/default-tools.test.ts',
+    'tests/unit/bridges/envelope.test.ts',
+    'tests/integration/bridges/channel-bridge-hub-integration.test.ts',
+    // 'tests/unit/blocks/agent-runtime-block.test.ts', // requires port 9998, excluded to avoid EADDRINUSE
+    'tests/integration/periodic-check-heartbeat.test.ts',
+    'tests/integration/periodic-check-runtime.test.ts',
+    'tests/integration/runtime-full-checklist.test.ts',
+    'tests/unit/tools/internal/report-task-completion-tool.test.ts',
+    'tests/unit/tools/internal/codex-update-plan-tool.test.ts',
+    'tests/unit/tools/internal/system-registry-tool.test.ts',
+    'tests/unit/server/ai-provider-config.test.ts',
+    'tests/unit/server/heartbeat-scheduler-load-config.test.ts',
+    // Logger: unified logging, module switch, snapshot mode
+    'tests/unit/core/logger.test.ts',
+  ];
+
+  try {
+    const testOutput = execSync(
+      `npx vitest run ${BACKBONE_TESTS.join(' ')} --reporter=verbose 2>&1`,
+      { encoding: 'utf-8', stdio: 'pipe', timeout: 120_000 }
+    );
+    console.log(testOutput.trimEnd());
+    console.log('✓ Backbone regression tests passed');
+  } catch (err) {
+    console.error('\n❌ Backbone regression tests failed - build blocked');
+    console.error(err.stdout || '');
+    console.error(err.stderr || '');
+    process.exit(1);
+  }
+
   process.exit(0);
 }
 

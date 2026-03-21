@@ -1,4 +1,5 @@
 import type { Express } from 'express';
+import { logger } from '../../core/logger.js';
 import { appendFileSync, mkdirSync, readFileSync } from 'fs';
 import { readdir } from 'fs/promises';
 import { join } from 'path';
@@ -176,7 +177,7 @@ function buildOrchestrationInjection(primaryOrchestratorAgentId: string): {
     const { prompt, agents } = buildOrchestrationDispatchPrompt(activeProfile, { selfAgentId: primaryOrchestratorAgentId });
     return { injectedPrompt: prompt ?? null, injectedAgents: agents };
   } catch (error) {
-    console.error('[Dryrun] orchestration prompt injection failed:', error);
+    logger.module('dryrun').error('orchestration prompt injection failed', error instanceof Error ? error : undefined);
     return { injectedPrompt: null, injectedAgents: [] };
   }
 }

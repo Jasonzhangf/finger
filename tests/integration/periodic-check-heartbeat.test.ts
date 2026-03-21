@@ -6,15 +6,23 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { promises as fs } from 'fs';
 import path from 'path';
-import { FINGER_PATHS } from '../../src/core/finger-paths.js';
+import { tmpdir } from 'os';
+import { getFingerPaths } from '../../src/core/finger-paths.js';
 
-const REGISTRY_PATH = path.join(FINGER_PATHS.home, 'system', 'registry.json');
+let registryPath = '';
+let tempHome = '';
 
 describe('Periodic Check Heartbeat Integration', () => {
   beforeEach(async () => {
+    tempHome = path.join(tmpdir(), `finger-test-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`);
+    process.env.FINGER_HOME = tempHome;
+    vi.resetModules();
+    const paths = getFingerPaths(tempHome);
+    registryPath = path.join(paths.home, 'system', 'registry.json');
+
     // 创建测试 registry - 使用和 runtime_view 返回匹配的 agentId
-    await fs.mkdir(path.dirname(REGISTRY_PATH), { recursive: true });
-    await fs.writeFile(REGISTRY_PATH, JSON.stringify({
+    await fs.mkdir(path.dirname(registryPath), { recursive: true });
+    await fs.writeFile(registryPath, JSON.stringify({
       version: 1,
       lastUpdate: new Date().toISOString(),
       agents: {
@@ -34,7 +42,7 @@ describe('Periodic Check Heartbeat Integration', () => {
 
   afterEach(async () => {
     try {
-      await fs.unlink(REGISTRY_PATH);
+      await fs.rm(tempHome, { recursive: true, force: true });
     } catch {
       // ignore
     }

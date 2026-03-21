@@ -46,7 +46,7 @@ describe('UserSettingsSync', () => {
         reasoningEffort: 'high',
         reasoningSummary: 'detailed',
         verbosity: 'medium',
-        showRawAgentReasoning: false,
+        thinkingEnabled: true,
         webSearch: 'live',
       },
       ui: {
@@ -99,7 +99,7 @@ describe('UserSettingsSync', () => {
         reasoningEffort: 'high',
         reasoningSummary: 'detailed',
         verbosity: 'medium',
-        showRawAgentReasoning: false,
+        thinkingEnabled: true,
         webSearch: 'live',
       },
       ui: {
@@ -145,7 +145,7 @@ describe('UserSettingsSync', () => {
         reasoningEffort: 'high',
         reasoningSummary: 'detailed',
         verbosity: 'medium',
-        showRawAgentReasoning: false,
+        thinkingEnabled: true,
         webSearch: 'live',
       },
       ui: {
@@ -206,7 +206,7 @@ describe('UserSettingsSync', () => {
         reasoningEffort: 'high',
         reasoningSummary: 'detailed',
         verbosity: 'medium',
-        showRawAgentReasoning: false,
+        thinkingEnabled: true,
         webSearch: 'live',
       },
       ui: {

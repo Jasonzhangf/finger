@@ -1,3 +1,4 @@
+import { logger } from '../../core/logger.js';
 /**
  * ChannelBridge MessageHub 集成
  *
@@ -40,7 +41,7 @@ export class ChannelBridgeHubIntegration {
    */
   register(): void {
     if (this.registered) {
-      console.log('[ChannelBridgeHubIntegration] Already registered', { channelId: this.channelId });
+      logger.module('channel-bridge-hub-integration').info('Already registered', { channelId: this.channelId });
       return;
     }
 
@@ -72,7 +73,7 @@ export class ChannelBridgeHubIntegration {
     });
 
     this.registered = true;
-    console.log('[ChannelBridgeHubIntegration] Registered to MessageHub', { channelId: this.channelId });
+    logger.module('channel-bridge-hub-integration').info('Registered to MessageHub', { channelId: this.channelId });
   }
 
   /**
@@ -91,7 +92,7 @@ export class ChannelBridgeHubIntegration {
     this.hub.removeRoute(`channel-bridge-${this.channelId}-route`);
 
     this.registered = false;
-    console.log('[ChannelBridgeHubIntegration] Unregistered from MessageHub', { channelId: this.channelId });
+    logger.module('channel-bridge-hub-integration').info('Unregistered from MessageHub', { channelId: this.channelId });
   }
 
   /**
@@ -108,7 +109,7 @@ export class ChannelBridgeHubIntegration {
    * 处理消息（Agent 处理逻辑）
    */
   private async handleMessage(envelope: ChannelBridgeEnvelope): Promise<unknown> {
-    console.log('[ChannelBridgeHubIntegration] Handling message', {
+    logger.module('channel-bridge-hub-integration').info('Handling message', {
       id: envelope.id,
       channelId: envelope.channelId,
       senderId: envelope.senderId,
@@ -135,7 +136,7 @@ export class ChannelBridgeHubIntegration {
         maxQueueWaitMs: 180000,
       };
 
-      console.log('[ChannelBridgeHubIntegration] Dispatching to orchestrator', { channelId: this.channelId });
+      logger.module('channel-bridge-hub-integration').info('Dispatching to orchestrator', { channelId: this.channelId });
       const result = await this.dispatchTaskToAgent(dispatchRequest);
 
       // 处理回复
@@ -144,7 +145,7 @@ export class ChannelBridgeHubIntegration {
           ? result.result
           : ((result.result as any)?.summary || '处理完成');
 
-        console.log('[ChannelBridgeHubIntegration] Sending reply via output module', { channelId: this.channelId });
+        logger.module('channel-bridge-hub-integration').info('Sending reply via output module', { channelId: this.channelId });
         
         // 通过 Output 模块发送回复
         if (this.outputModule) {
@@ -154,7 +155,7 @@ export class ChannelBridgeHubIntegration {
 
       return result;
     } catch (error) {
-      console.error('[ChannelBridgeHubIntegration] Error handling message:', error);
+      logger.module('channel-bridge-hub-integration').error('Error handling message:', undefined, { error });
       
       // 发送错误回复
       const errorMessage = `处理失败: ${error instanceof Error ? error.message : String(error)}`;
@@ -205,7 +206,7 @@ export class ChannelBridgeHubIntegrationManager {
    */
   registerChannel(channelId: string): void {
     if (this.integrations.has(channelId)) {
-      console.log('[ChannelBridgeHubIntegrationManager] Channel already registered', { channelId });
+      logger.module('channel-bridge-hub-integration').info('Channel already registered', { channelId });
       return;
     }
 
@@ -218,7 +219,7 @@ export class ChannelBridgeHubIntegrationManager {
 
     integration.register();
     this.integrations.set(channelId, integration);
-    console.log('[ChannelBridgeHubIntegrationManager] Registered channel', { channelId });
+    logger.module('channel-bridge-hub-integration').info('Registered channel', { channelId });
   }
 
   /**
@@ -230,7 +231,7 @@ export class ChannelBridgeHubIntegrationManager {
 
     integration.unregister();
     this.integrations.delete(channelId);
-    console.log('[ChannelBridgeHubIntegrationManager] Unregistered channel', { channelId });
+    logger.module('channel-bridge-hub-integration').info('Unregistered channel', { channelId });
   }
 
   /**

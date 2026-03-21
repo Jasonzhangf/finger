@@ -12,6 +12,8 @@ describe('SystemAgentManager - Session Reuse', () => {
     mockSessionManager = {
       getOrCreateSystemSession: vi.fn(),
       ensureSession: vi.fn(),
+      listRootSessions: vi.fn().mockReturnValue([]),
+      getSession: vi.fn(),
     };
 
     // Mock agentRuntimeBlock
@@ -39,6 +41,9 @@ describe('SystemAgentManager - Session Reuse', () => {
 
     // Verify getOrCreateSystemSession was called
     expect(mockSessionManager.getOrCreateSystemSession).toHaveBeenCalled();
+
+    // Verify listRootSessions was called during registry initialization (no WARN)
+    expect(mockSessionManager.listRootSessions).toHaveBeenCalled();
 
     // Verify bootstrap injection uses the existing session ID
     const dispatchCall = mockAgentRuntimeBlock.execute.mock.calls.find(

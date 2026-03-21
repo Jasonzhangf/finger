@@ -85,7 +85,7 @@ describe('syncUserSettingsToKernelConfig base_url normalization', () => {
         reasoningEffort: 'high',
         reasoningSummary: 'detailed',
         verbosity: 'medium',
-        showRawAgentReasoning: false,
+        thinkingEnabled: true,
         webSearch: 'live',
       },
       ui: {

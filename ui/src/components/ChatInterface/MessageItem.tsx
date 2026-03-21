@@ -60,10 +60,11 @@ function getSenderDisplay(event: RuntimeEvent): string {
 export const MessageItem: React.FC<MessageItemProps> = ({ event }) => {
   const isUser = event.role === 'user';
   const isAgent = event.role === 'agent';
+  const isReasoning = event.messageType === 'reasoning' || event.kind === 'thought';
   const senderDisplay = getSenderDisplay(event);
 
   return (
-    <div className={`message-item ${isUser ? 'user' : isAgent ? 'agent' : 'system'}`}>
+    <div className={`message-item ${isUser ? 'user' : isAgent ? 'agent' : 'system'}${isReasoning ? ' reasoning' : ''}`}>
       <div className="message-avatar">
         {isUser ? '👤' : isAgent ? '🤖' : 'ℹ️'}
       </div>
@@ -76,8 +77,14 @@ export const MessageItem: React.FC<MessageItemProps> = ({ event }) => {
             {new Date(event.timestamp).toLocaleTimeString()}
           </span>
         </div>
-        <div className="message-body">
-          {event.content}
+        <div className={`message-body${isReasoning ? ' reasoning-body' : ''}`}>
+          {isReasoning ? (
+            <div className="reasoning-content">
+              <span className="reasoning-text">{event.content}</span>
+            </div>
+          ) : (
+            event.content
+          )}
           {event.images && event.images.length > 0 && (
             <div className="message-images">
               {event.images.map(image => (

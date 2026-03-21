@@ -77,11 +77,25 @@ export class CacheMemoryInterceptor {
   async interceptResponse(output: UnifiedAgentOutput, input: UnifiedAgentInput): Promise<void> {
     if (!this.enabled) return;
     
-    // Only write on successful completions
-    if (!output.success) return;
+    // Handle failure: record error to preserve context for retry
+    if (!output.success) {
+      const errorEntry: CacheEntry = {
+        timestamp: new Date().toISOString(),
+        agent_id: this.agentId,
+        session_id: output.sessionId || input.sessionId || 'unknown',
+        role: 'assistant',
+        type: 'response',
+        content: `[ERROR] ${output.error || 'Unknown error'}`,
+        summary: `ERROR: ${output.error?.slice(0, 100) || 'Unknown error'}`,
+        finish_reason: 'error',
+        metadata: { success: false, latencyMs: output.latencyMs },
+      };
+      await this.writeToCache(errorEntry);
+      return;
+    }
 
-    // Check finish_reason from metadata
-    const finishReason = this.extractFinishReason(output!)!;
+    // Check finish_reason from metadata (default to 'stop' if not found)
+    const finishReason = this.extractFinishReason(output!) || 'stop';
     if (finishReason !== 'stop') return;
 
     const entry: CacheEntry = {
@@ -143,16 +157,32 @@ export class CacheMemoryInterceptor {
           content: this.formatEntry(entry),
           tags: ['cache', entry.role, entry.type, entry.agent_id],
         });
-      } else {
-        // Fallback: direct file write (simplified)
-        // In production, always use messageHub to dispatch to memory tool
-        console.warn('[CacheMemoryInterceptor] No messageHub available, skipping cache write');
       }
+      // Fallback: direct file write when messageHub unavailable
+      await this.writeCacheDirectly(entry);
     } catch (error) {
-      console.error('[CacheMemoryInterceptor] Failed to write to cache:', error);
+      console.error('[CacheMemoryInterceptor] Failed to write via messageHub:', error);
+      await this.writeCacheDirectly(entry).catch(() => {});
     }
   }
 
+  /**
+   * Write directly to CACHE.md file (fallback when no messageHub)
+   */
+  private async writeCacheDirectly(entry: CacheEntry): Promise<void> {
+    const fs = await import('fs/promises');
+    const path = await import('path');
+    const cachePath = path.join(this.projectPath, 'CACHE.md');
+    const entryText = this.formatEntry(entry);
+    try { await fs.access(cachePath); } catch {
+      await fs.mkdir(path.dirname(cachePath), { recursive: true });
+      await fs.writeFile(cachePath, '# Conversation Cache\n\n', 'utf-8');
+    }
+    await fs.appendFile(cachePath, `${entryText}
+---
+
+`, 'utf-8');
+  }
   /**
    * Format entry for storage
    */

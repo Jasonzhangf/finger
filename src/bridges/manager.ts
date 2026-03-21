@@ -43,6 +43,13 @@ export class ChannelBridgeManager {
   }
 
   /**
+   * 添加配置（不启动桥接）
+   */
+  addConfig(config: ChannelBridgeConfig): void {
+    this.configs.set(config.id, config);
+  }
+
+  /**
    * 加载配置并启动所有启用的桥接
    */
   async loadConfigs(configs: ChannelBridgeConfig[]): Promise<void> {

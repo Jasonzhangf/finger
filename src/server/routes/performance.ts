@@ -1,5 +1,6 @@
 import type { Express } from 'express';
 import type { WebSocket } from 'ws';
+import { logger } from '../../core/logger.js';
 import { performanceMonitor } from '../../runtime/performance-monitor.js';
 
 export interface PerformanceRouteDeps {
@@ -37,7 +38,7 @@ export function registerPerformanceRoutes(app: Express, deps: PerformanceRouteDe
     }
   }, 5000);
 
-  console.log('[Server] Performance monitoring enabled');
+  logger.module('performance').info('Performance monitoring enabled');
 
   return () => clearInterval(intervalId);
 }

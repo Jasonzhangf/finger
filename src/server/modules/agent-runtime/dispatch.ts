@@ -1,3 +1,4 @@
+import { logger } from '../../../core/logger.js';
 import { isObjectRecord } from '../../common/object.js';
 import { asString, firstNonEmptyString } from '../../common/strings.js';
 import { sanitizeDispatchResult, type DispatchSummaryResult } from '../../../common/agent-dispatch.js';
@@ -249,7 +250,7 @@ Tags: input, user, ${source}
     const existingContent = await fs.readFile(memoryPath, 'utf8').catch(() => '');
     await fs.writeFile(memoryPath, `${entry}\n\n${existingContent}`);
   } catch (err) {
-    console.error('[MEMORY] Failed to record user message:', err);
+    logger.module('dispatch').error('Failed to record user message', err instanceof Error ? err : undefined);
   }
 }
 
@@ -285,7 +286,7 @@ Tags: output, agent, ${status}
     const existingContent = await fs.readFile(memoryPath, 'utf8').catch(() => '');
     await fs.writeFile(memoryPath, `${entry}\n\n${existingContent}`);
   } catch (err) {
-    console.error('[MEMORY] Failed to record agent summary:', err);
+    logger.module('dispatch').error('Failed to record agent summary', err instanceof Error ? err : undefined);
   }
 }
 

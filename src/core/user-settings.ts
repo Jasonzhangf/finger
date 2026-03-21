@@ -90,10 +90,10 @@ export interface Preferences {
   defaultModel: string;
   maxTokens: number;
   temperature: number;
+  thinkingEnabled: boolean;
   reasoningEffort: 'high' | 'medium' | 'low';
   reasoningSummary: 'detailed' | 'medium' | 'short';
   verbosity: 'high' | 'medium' | 'low';
-  showRawAgentReasoning: boolean;
   webSearch: 'live' | 'off';
 }
 
@@ -131,10 +131,10 @@ const DEFAULT_USER_SETTINGS: UserSettings = {
     defaultModel: 'tabglm.glm-5-turbo',
     maxTokens: 256000,
     temperature: 0.7,
+    thinkingEnabled: true,
     reasoningEffort: 'high',
     reasoningSummary: 'detailed',
     verbosity: 'medium',
-    showRawAgentReasoning: false,
     webSearch: 'live'
   },
   ui: {
@@ -269,6 +269,9 @@ export function validateUserSettings(settings: any): void {
   }
   if (settings.preferences.temperature !== undefined && (typeof settings.preferences.temperature !== 'number' || settings.preferences.temperature < 0 || settings.preferences.temperature > 2)) {
     throw new Error('Invalid settings: preferences.temperature must be between 0 and 2');
+  }
+  if (settings.preferences.thinkingEnabled !== undefined && typeof settings.preferences.thinkingEnabled !== 'boolean') {
+    throw new Error('Invalid settings: preferences.thinkingEnabled must be a boolean');
   }
   if (settings.preferences.reasoningEffort && !VALID_REASONING_EFFORT.includes(settings.preferences.reasoningEffort)) {
     throw new Error(`Invalid settings: preferences.reasoningEffort must be one of: ${VALID_REASONING_EFFORT.join(', ')}`);

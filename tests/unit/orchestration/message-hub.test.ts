@@ -262,8 +262,49 @@ describe('MessageHub', () => {
       expect(handler).toHaveBeenCalledTimes(1);
       expect(handler.mock.calls[0][1]).toBe(callback);
       
-      const message = handler.mock.calls[0][0] as any;
-      expect(message.meta?.callbackId || message._callbackId).toBeDefined();
+    const message = handler.mock.calls[0][0] as any;
+    expect(message.meta?.callbackId || message._callbackId).toBeDefined();
+    });
+
+    it('should wrap string message into envelope when callback is provided', async () => {
+      const handler = vi.fn().mockResolvedValue({});
+      hub.registerOutput('output-1', handler);
+
+      await hub.routeToOutput('output-1', 'ping', vi.fn());
+
+      // Handler should receive wrapped envelope, not the raw string
+      const msg = handler.mock.calls[0][0] as any;
+      expect(msg.message).toBe('ping');
+      expect(msg.meta).toBeDefined();
+      expect(typeof msg.meta.callbackId).toBe('string');
+    });
+
+    it('should not mutate non-extensible objects', async () => {
+      const frozenMsg = Object.freeze({ type: 'frozen' });
+      const handler = vi.fn().mockResolvedValue({});
+      hub.registerOutput('output-1', handler);
+
+      await hub.routeToOutput('output-1', frozenMsg, vi.fn());
+
+      // Handler receives wrapped envelope
+      const msg = handler.mock.calls[0][0] as any;
+      expect(msg.message).toBe(frozenMsg);
+      expect(msg.meta).toBeDefined();
+      expect(typeof msg.meta.callbackId).toBe('string');
+    });
+
+    it('should inject meta into extensible plain object', async () => {
+      const plainMsg = { type: 'test', data: 42 };
+      const handler = vi.fn().mockResolvedValue({});
+      hub.registerOutput('output-1', handler);
+
+      await hub.routeToOutput('output-1', plainMsg, vi.fn());
+
+      // Same reference, meta injected directly
+      const msg = handler.mock.calls[0][0] as any;
+      expect(msg).toBe(plainMsg); // same reference
+      expect(msg.meta.callbackId).toBeDefined();
+      expect(typeof msg.meta.callbackId).toBe('string');
     });
   });
 

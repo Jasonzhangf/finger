@@ -13,6 +13,7 @@ export interface ChannelAuthConfig {
   id: string;
   type: 'direct' | 'mailbox';
   priority: number;
+  authorizationMode?: 'prompt' | 'auto' | 'deny';
 }
 
 export interface ChannelAuthSection {
@@ -49,10 +50,10 @@ export async function loadFingerConfig(): Promise<FingerConfig> {
       enabled: true,
       defaultPolicy: 'direct',
       channels: [
-        { id: 'webui', type: 'direct', priority: 10 },
-        { id: 'qqbot', type: 'direct', priority: 20 },
-        { id: 'cli', type: 'direct', priority: 5 },
-        { id: 'feishu', type: 'mailbox', priority: 30 },
+        { id: 'webui', type: 'direct', priority: 10, authorizationMode: 'prompt' },
+        { id: 'qqbot', type: 'direct', priority: 20, authorizationMode: 'auto' },
+        { id: 'cli', type: 'direct', priority: 5, authorizationMode: 'prompt' },
+        { id: 'feishu', type: 'mailbox', priority: 30, authorizationMode: 'prompt' },
       ],
     },
     systemAuth: {
@@ -108,6 +109,22 @@ export function getChannelAuth(
 
   const channel = config.channelAuth.channels.find(c => c.id === channelId);
   return channel?.type || config.channelAuth.defaultPolicy || 'direct';
+}
+
+/**
+ * Get channel authorization mode for tool execution.
+ * Defaults to 'prompt' if not configured.
+ */
+export function getChannelAuthorizationMode(
+  config: FingerConfig,
+  channelId: string
+): 'prompt' | 'auto' | 'deny' {
+  const defaultMode: 'prompt' | 'auto' | 'deny' = 'prompt';
+  if (!config.channelAuth?.enabled) {
+    return defaultMode;
+  }
+  const channel = config.channelAuth.channels.find(c => c.id === channelId);
+  return channel?.authorizationMode ?? defaultMode;
 }
 
 /**

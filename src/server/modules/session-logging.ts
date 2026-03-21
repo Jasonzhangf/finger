@@ -1,3 +1,4 @@
+import { logger } from '../../core/logger.js';
 import { appendFileSync, existsSync, mkdirSync } from 'fs';
 import { join } from 'path';
 import type { ChatCodexLoopEvent } from '../../agents/finger-general/finger-general-module.js';
@@ -34,7 +35,7 @@ export function createSessionLoggingHelpers(deps: SessionLoggingDeps) {
       const agentLogPath = join(errorSampleDir, `${payloadAgentId}.loop.jsonl`);
       appendFileSync(agentLogPath, `${JSON.stringify(event)}\n`, 'utf-8');
     } catch (error) {
-      console.error('[Server] append session loop log failed:', error);
+      logger.module('session-logging').error('append session loop log failed:', undefined, { error });
     }
   };
 
@@ -53,7 +54,7 @@ export function createSessionLoggingHelpers(deps: SessionLoggingDeps) {
       };
       appendFileSync(filePath, `${JSON.stringify(content, null, 2)}\n`, 'utf-8');
     } catch (error) {
-      console.error('[Server] write message error sample failed:', error);
+      logger.module('session-logging').error('write message error sample failed:', undefined, { error });
     }
   };
 

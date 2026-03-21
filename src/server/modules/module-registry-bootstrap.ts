@@ -1,3 +1,4 @@
+import { logger } from '../../core/logger.js';
 import type { ModuleRegistry } from '../../orchestration/module-registry.js';
 
 export function registerDefaultModuleRoutes(moduleRegistry: ModuleRegistry): void {
@@ -6,5 +7,5 @@ export function registerDefaultModuleRoutes(moduleRegistry: ModuleRegistry): voi
     priority: 0,
     description: 'default route to echo-output',
   });
-  console.log('[Server] Orchestration modules initialized: echo-input, echo-output, finger-general, finger-orchestrator');
+  logger.module('module-registry-bootstrap').info('Orchestration modules initialized: echo-input, echo-output, finger-general, finger-orchestrator');
 }

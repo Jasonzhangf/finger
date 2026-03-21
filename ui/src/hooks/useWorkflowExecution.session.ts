@@ -179,6 +179,20 @@ export function mapSessionMessageToRuntimeEvent(
     };
   }
 
+  if (message.type === 'reasoning') {
+    return {
+      id: message.id,
+      role: 'agent',
+      agentId: resolvedAgentId,
+      agentName: resolvedAgentName,
+      content: message.content,
+      timestamp: message.timestamp,
+      kind: 'thought',
+      messageType: 'reasoning',
+      ...(metaRecord ? { metadata: metaRecord } : {}),
+    };
+  }
+
   if (message.role === 'user') {
     return {
       id: message.id,

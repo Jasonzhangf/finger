@@ -547,6 +547,7 @@ export interface RuntimeEvent {
   agentId?: string;
   agentName?: string;
   kind?: 'thought' | 'action' | 'observation' | 'status';
+  messageType?: 'text' | 'reasoning' | 'tool_call' | 'tool_result' | 'dispatch' | 'ledger_pointer';
   toolName?: string;
   toolCategory?: '编辑' | '读取' | '写入' | '计划' | '搜索' | '网络搜索' | '其他';
   toolInput?: unknown;

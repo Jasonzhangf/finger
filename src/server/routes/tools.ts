@@ -106,10 +106,22 @@ export function registerToolRoutes(app: Express, deps: ToolRouteDeps): void {
           }
         : input;
       const result = await runtime.callTool(agentId, toolName, executionInput, { authorizationToken });
-      res.json({ success: true, result });
+      res.json({
+        success: true,
+        result,
+        toolName,
+        agentId,
+      });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      res.status(400).json({ error: message });
+      // Always return HTTP 200 with success:false to avoid breaking the kernel loop
+      // The kernel-model will read this and emit a tool_error event for the agent to handle
+      res.json({
+        success: false,
+        error: message,
+        toolName,
+        agentId,
+      });
     }
   });
 

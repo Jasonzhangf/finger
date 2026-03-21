@@ -1,5 +1,8 @@
 import { execSync } from 'child_process';
 import { createServer } from 'net';
+import { logger } from '../../core/logger.js';
+
+const log = logger.module('port-guard');
 
 function isPortInUse(port: number): Promise<boolean> {
   return new Promise((resolve) => {
@@ -20,34 +23,26 @@ function killProcessOnPort(port: number): void {
       stdio: ['ignore', 'pipe', 'ignore'],
     });
     const pids = output.split(/\s+/).map((entry) => Number.parseInt(entry, 10)).filter(Number.isFinite);
-    
-    if (pids.length === 0) {
-      return;
-    }
-    
-    console.log(`[PortGuard] Found ${pids.length} process(es) on port ${port}: ${pids.join(', ')}`);
-    
+    if (pids.length === 0) return;
+    log.info('Found processes on port', { port, pids: pids.join(', ') });
     for (const pid of pids) {
       try {
-        console.log(`[PortGuard] Killing process ${pid} on port ${port}...`);
+        log.info('Killing process on port', { pid, port });
         process.kill(pid, 'SIGKILL');
-        console.log(`[PortGuard] Process ${pid} killed`);
+        log.info('Process killed', { pid });
       } catch (err) {
-        // Process may have already exited
-        console.log(`[PortGuard] Failed to kill process ${pid}: ${err instanceof Error ? err.message : String(err)}`);
+        log.warn('Failed to kill process', { pid, message: err instanceof Error ? err.message : String(err) });
       }
     }
   } catch (err) {
-    // lsof command may have failed
-    console.log(`[PortGuard] Failed to check port ${port}: ${err instanceof Error ? err.message : String(err)}`);
+    log.warn('Failed to check port', { port, message: err instanceof Error ? err.message : String(err) });
   }
 }
 
 export async function ensureSingleInstance(port: number): Promise<void> {
   if (await isPortInUse(port)) {
-    console.log(`[PortGuard] Port ${port} is in use, killing existing process...`);
+    log.info('Port in use, killing existing process', { port });
     killProcessOnPort(port);
-    // Wait for port to be released
     await new Promise(resolve => setTimeout(resolve, 500));
   }
 }

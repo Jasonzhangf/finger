@@ -275,9 +275,43 @@ export class KernelAgentBase {
       
       return output;
     } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+
+      // Ensure failure is recorded in session history so model has context on retry
+      if (input.sessionId) {
+        try {
+          const { session } = await this.resolveSession(input);
+          await this.sessionManager.addMessage(session.id, {
+            role: 'assistant',
+            content: `[执行失败] ${errorMessage}`,
+            metadata: {
+              error: true,
+              finish_reason: 'error',
+              roleProfile: input.roleProfile,
+              tools: input.tools,
+            },
+          });
+        } catch {
+          // Best-effort: do not throw from failure recording
+        }
+      }
+
+      // Record failure to CACHE.md for persistence
+      await this.cacheMemoryInterceptor.interceptResponse(
+        {
+          success: false,
+          error: errorMessage,
+          module: this.config.moduleId,
+          provider: this.config.provider,
+          sessionId: input.sessionId ?? 'unknown',
+          latencyMs: Date.now() - startedAt,
+        },
+        input,
+      );
+
       return {
         success: false,
-        error: error instanceof Error ? error.message : String(error),
+        error: errorMessage,
         module: this.config.moduleId,
         provider: this.config.provider,
         sessionId: input.sessionId ?? 'unknown',

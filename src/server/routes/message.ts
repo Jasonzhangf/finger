@@ -1,14 +1,10 @@
 import type { Express, Request } from 'express';
-import { loadOrchestrationConfig, type OrchestrationProfile } from '../../orchestration/orchestration-config.js';
-import { buildOrchestrationDispatchPrompt, type OrchestrationPromptAgent } from '../../orchestration/orchestration-prompt.js';
-import type { MessageHub } from '../../orchestration/message-hub.js';
-import type { RuntimeFacade } from '../../runtime/runtime-facade.js';
-import type { SessionManager } from '../../orchestration/session-manager.js';
+import { logger } from '../../core/logger.js';
+import { loadOrchestrationConfig } from '../../orchestration/orchestration-config.js';
+import type { OrchestrationPromptAgent } from '../../orchestration/orchestration-prompt.js';
 import { __chatCodexInternals } from '../../agents/chat-codex/chat-codex-module.js';
-import type { Mailbox } from '../mailbox.js';
-import type { ToolRegistry } from '../../runtime/tool-registry.js';
-import { getActiveReviewPolicy } from '../orchestration/review-policy.js';
 import { isObjectRecord } from '../common/object.js';
+import { parseSuperCommand } from '../middleware/super-command-parser.js';
 import {
   extractSessionIdFromMessagePayload,
   shouldClientPersistSession,
@@ -18,297 +14,31 @@ import {
   shouldRetryBlockingMessage,
   resolveBlockingErrorStatus,
 } from '../modules/message-session.js';
-import type { SessionWorkspaceManager } from '../modules/session-workspaces.js';
-import { parseSuperCommand } from '../middleware/super-command-parser.js';
-import {
-  handleCmdList,
-  handleAgentList,
-  handleAgentNew,
-  handleAgentSwitch,
-  handleAgentDelete,
-  handleSystemCommand,
-  handleProjectList,
-  handleProjectSwitch,
-} from '../modules/messagehub-command-handler.js';
-import { loadFingerConfig, getChannelAuth } from '../../core/config/channel-config.js';
-import { validateSystemCommand } from '../middleware/system-auth.js';
+import { loadFingerConfig, getChannelAuth, getChannelAuthorizationMode } from '../../core/config/channel-config.js';
 import { getChannelContextManager } from '../../orchestration/channel-context-manager.js';
+import { loadUserSettings } from '../../core/user-settings.js';
 import { SYSTEM_PROJECT_PATH, getSystemSessionPath } from '../../agents/finger-system-agent/index.js';
 import path from 'path';
-import type { ChannelBridgeManager } from '../../bridges/manager.js';
+import type { MessageRouteDeps } from './message-types.js';
+import { handleSuperCommand } from './message-super-command.js';
+import { handleSystemRouteDelegation } from './message-delegation.js';
+import { normalizeDisplayChannels, sendDisplayFanout, sendInputSync } from './message-display.js';
+import {
+  resolveActiveOrchestrationProfile,
+  shouldInjectProfileReviewPolicy,
+  withDefaultProfileReviewPolicy,
+  isPrimaryOrchestratorTarget,
+  isDirectAgentRouteAllowed,
+  buildOrchestrationPromptInjection,
+  resolveDryRunFlag,
+  ensureSessionExists,
+  buildChannelId,
+  withMessageContent,
+  buildAgentEnvelope,
+  prefixAgentResponse,
+} from './message-helpers.js';
 
-export interface MessageRouteDeps {
-  hub: MessageHub;
-  mailbox: Mailbox;
-  runtime: RuntimeFacade;
-  toolRegistry: ToolRegistry;
-  channelBridgeManager: ChannelBridgeManager;
-  sessionManager: SessionManager;
-  eventBus: import('../../runtime/event-bus.js').UnifiedEventBus;
-  sessionWorkspaces: SessionWorkspaceManager;
-  broadcast: (message: Record<string, unknown>) => void;
-  writeMessageErrorSample: (payload: Record<string, unknown>) => void;
-  blockingTimeoutMs: number;
-  blockingMaxRetries: number;
-  blockingRetryBaseMs: number;
-  allowDirectAgentRoute: boolean;
-  primaryOrchestratorTarget: string;
-  primaryOrchestratorAgentId: string;
-  primaryOrchestratorGatewayId: string;
-  legacyOrchestratorAgentId: string;
-  legacyOrchestratorGatewayId: string;
-}
 
-interface DisplayChannelRequest {
-  channelId: string;
-  to: string;
-  replyTo?: string;
-  prefix?: string;
-}
-
-function normalizeDisplayChannels(input: unknown): DisplayChannelRequest[] {
-  if (!Array.isArray(input)) return [];
-  return input
-    .map((item) => (item && typeof item === 'object') ? (item as Record<string, unknown>) : null)
-    .filter((item): item is Record<string, unknown> => !!item)
-    .map((item) => ({
-      channelId: typeof item.channelId === 'string' ? item.channelId : '',
-      to: typeof item.to === 'string' ? item.to : '',
-      replyTo: typeof item.replyTo === 'string' ? item.replyTo : undefined,
-      prefix: typeof item.prefix === 'string' ? item.prefix : undefined,
-    }))
-    .filter((item) => item.channelId.length > 0 && item.to.length > 0);
-}
-
-async function sendDisplayFanout(
-  channelBridgeManager: ChannelBridgeManager,
-  channels: DisplayChannelRequest[],
-  content: string,
-): Promise<void> {
-  if (channels.length === 0) return;
-  const results = await Promise.allSettled(channels.map(async (channel) => {
-    const text = channel.prefix ? `${channel.prefix}${content}` : content;
-    await channelBridgeManager.sendMessage(channel.channelId, {
-      to: channel.to,
-      text,
-      ...(channel.replyTo ? { replyTo: channel.replyTo } : {}),
-    });
-  }));
-  results.forEach((result, index) => {
-    const channel = channels[index];
-    if (result.status === 'fulfilled') {
-      console.log('[Server] Display fanout sent', {
-        channelId: channel.channelId,
-        to: channel.to,
-      });
-      return;
-    }
-    const error = result.reason instanceof Error ? result.reason : new Error(String(result.reason));
-    console.error('[Server] Display fanout failed', {
-      channelId: channel.channelId,
-      to: channel.to,
-      error: error.message,
-    });
-  });
-}
-
-/**
- * 发送输入同步到指定的 channels（与 displayChannels 相同结构）
- * 当 inputSyncChannels 不为空时，将用户输入同步到其他渠道
- */
-async function sendInputSync(
-  channelBridgeManager: ChannelBridgeManager,
-  channels: DisplayChannelRequest[],
-  content: string,
-): Promise<void> {
-  if (channels.length === 0) return;
-  const results = await Promise.allSettled(channels.map(async (channel) => {
-    const prefix = channel.prefix || '[输入同步] ';
-    const text = `${prefix}${content}`;
-    await channelBridgeManager.sendMessage(channel.channelId, {
-      to: channel.to,
-      text,
-    });
-  }));
-  results.forEach((result, index) => {
-    const channel = channels[index];
-    if (result.status === 'rejected') {
-      console.error('[Server] Input sync failed', {
-        channelId: channel.channelId,
-        to: channel.to,
-        error: result.reason instanceof Error ? result.reason.message : String(result.reason),
-      });
-    } else {
-      console.log('[Server] Input sync sent', {
-        channelId: channel.channelId,
-        to: channel.to,
-      });
-    }
-  });
-}
-
-function resolveActiveOrchestrationProfile(config: { activeProfileId: string; profiles: OrchestrationProfile[] }): OrchestrationProfile | null {
-  const activeId = config.activeProfileId;
-  return config.profiles.find((item) => item.id === activeId) ?? null;
-}
-
-function shouldInjectProfileReviewPolicy(target: string, deps: MessageRouteDeps): boolean {
-  const normalized = target.trim();
-  return normalized === deps.primaryOrchestratorTarget
-    || normalized === deps.primaryOrchestratorAgentId
-    || normalized === deps.primaryOrchestratorGatewayId
-    || normalized === deps.legacyOrchestratorAgentId
-    || normalized === deps.legacyOrchestratorGatewayId;
-}
-
-function withDefaultProfileReviewPolicy(target: string, message: unknown, deps: MessageRouteDeps): unknown {
-  if (!shouldInjectProfileReviewPolicy(target, deps)) return message;
-  const reviewPolicy = getActiveReviewPolicy();
-  if (reviewPolicy.enabled !== true) return message;
-  if (!isObjectRecord(message)) return message;
-  const metadata = isObjectRecord(message.metadata) ? message.metadata : {};
-  if (isObjectRecord(metadata.review)) return message;
-  return {
-    ...message,
-    metadata: {
-      ...metadata,
-      review: {
-        enabled: true,
-        ...(Array.isArray(reviewPolicy.stages) && reviewPolicy.stages.length > 0 ? { stages: reviewPolicy.stages } : {}),
-        ...(typeof reviewPolicy.strictness === 'string' && reviewPolicy.strictness.trim().length > 0
-          ? { strictness: reviewPolicy.strictness.trim() }
-          : {}),
-      },
-    },
-  };
-}
-
-function isPrimaryOrchestratorTarget(target: string, deps: MessageRouteDeps): boolean {
-  const normalized = target.trim();
-  if (normalized.length === 0) return false;
-  return normalized === deps.primaryOrchestratorTarget
-    || normalized === deps.primaryOrchestratorAgentId
-    || normalized === deps.primaryOrchestratorGatewayId
-    || normalized === deps.legacyOrchestratorAgentId
-    || normalized === deps.legacyOrchestratorGatewayId;
-}
-
-function isDirectAgentRouteAllowed(req: Request, deps: MessageRouteDeps): boolean {
-  if (deps.allowDirectAgentRoute) return true;
-  if (process.env.NODE_ENV === 'test') return true;
-  const mode = req.header('x-finger-route-mode');
-  return typeof mode === 'string' && mode.trim().toLowerCase() === 'test';
-}
-
-function buildOrchestrationPromptInjection(
-  message: unknown,
-  profile: OrchestrationProfile | null,
-  deps: MessageRouteDeps,
-): {
-  updatedMessage: unknown;
-  injectedPrompt: string | null;
-  agents: OrchestrationPromptAgent[];
-} {
-  if (!profile || !isObjectRecord(message)) {
-    return { updatedMessage: message, injectedPrompt: null, agents: [] };
-  }
-  const metadata = isObjectRecord(message.metadata) ? message.metadata : {};
-  const { prompt, agents } = buildOrchestrationDispatchPrompt(profile, { selfAgentId: deps.primaryOrchestratorAgentId });
-  if (!prompt) {
-    return { updatedMessage: message, injectedPrompt: null, agents };
-  }
-  const existing = typeof metadata.developerInstructions === 'string' && metadata.developerInstructions.trim().length > 0
-    ? metadata.developerInstructions.trim()
-    : typeof metadata.developer_instructions === 'string' && metadata.developer_instructions.trim().length > 0
-      ? metadata.developer_instructions.trim()
-      : '';
-  const mergedDeveloperInstructions = existing ? `${prompt}\n\n${existing}` : prompt;
-  return {
-    updatedMessage: {
-      ...message,
-      metadata: {
-        ...metadata,
-        developerInstructions: mergedDeveloperInstructions,
-      },
-    },
-    injectedPrompt: prompt,
-    agents,
-  };
-}
-
-function resolveDryRunFlag(req: Request, message: unknown): boolean {
-  const queryFlag = typeof req.query.dryrun === 'string'
-    ? req.query.dryrun.trim().toLowerCase()
-    : undefined;
-  if (queryFlag === '1' || queryFlag === 'true' || queryFlag === 'yes') return true;
-  const headerFlag = req.header('x-finger-dryrun');
-  if (typeof headerFlag === 'string') {
-    const normalized = headerFlag.trim().toLowerCase();
-    if (normalized === '1' || normalized === 'true' || normalized === 'yes') return true;
-  }
-  if (isObjectRecord(message)) {
-    const metadata = isObjectRecord(message.metadata) ? message.metadata : {};
-    const metaFlag = metadata.dryRun ?? metadata.dryrun ?? metadata.dry_run;
-    if (typeof metaFlag === 'boolean') return metaFlag;
-    if (typeof metaFlag === 'string') {
-      const normalized = metaFlag.trim().toLowerCase();
-      if (normalized === '1' || normalized === 'true' || normalized === 'yes') return true;
-    }
-  }
-  return false;
-}
-
-function ensureSessionExists(sessionManager: SessionManager, sessionId: string, nameHint?: string, projectPathOverride?: string): void {
-  const existing = sessionManager.getSession(sessionId);
-  if (existing) return;
-  const currentSession = sessionManager.getCurrentSession();
-  const fallbackProjectPath = projectPathOverride ?? currentSession?.projectPath ?? process.cwd();
-  sessionManager.ensureSession(sessionId, fallbackProjectPath, nameHint);
-}
-
-function buildChannelId(req: Request, sender: string): string {
-  const headerChannel = req.header('x-finger-channel');
-  if (typeof headerChannel === 'string' && headerChannel.trim().length > 0) {
-    return headerChannel.trim();
-  }
-  if (sender.length > 0) return sender;
-  return 'webui';
-}
-
-function withMessageContent(message: unknown, content: string): unknown {
-  if (typeof message === 'string') return content;
-  if (!isObjectRecord(message)) return { content };
-  const metadata = isObjectRecord(message.metadata) ? message.metadata : {};
-  return {
-    ...message,
-    content,
-    text: content,
-    metadata,
-  };
-}
-
-function buildAgentEnvelope(agentId: string) {
-  if (agentId === 'finger-system-agent') {
-    return { id: 'finger-system-agent', name: 'SystemBot', role: 'system', mode: 'system' as const };
-  }
-  if (agentId === 'finger-orchestrator') {
-    return { id: 'finger-orchestrator', name: 'Orchestrator', role: 'orchestrator', mode: 'business' as const };
-  }
-  return { id: agentId, name: agentId, role: 'agent', mode: 'business' as const };
-}
-
-function prefixAgentResponse(agentId: string, text: string): string {
-  const normalized = text.trim();
-  if (agentId === 'finger-system-agent') {
-    if (normalized.toLowerCase().startsWith('systembot:')) return normalized
-    return `SystemBot: ${normalized}`;
-  }
-  if (agentId === 'finger-orchestrator') {
-    if (normalized.toLowerCase().startsWith('orchestrator:')) return normalized
-    return `Orchestrator: ${normalized}`;
-  }
-  return normalized;
-}
 
 export function registerMessageRoutes(app: Express, deps: MessageRouteDeps): void {
   app.post('/api/v1/message', async (req, res) => {
@@ -330,9 +60,10 @@ export function registerMessageRoutes(app: Express, deps: MessageRouteDeps): voi
       return;
     }
 
-   const sender = typeof body.sender === 'string' ? body.sender.trim().toLowerCase() : '';
-   const isCliRoute = sender === 'cli' || sender.startsWith('cli-');
-    const isSystemAgentTarget = body.target === 'finger-system-agent';
+    let targetId = body.target;
+    const sender = typeof body.sender === 'string' ? body.sender.trim().toLowerCase() : '';
+    const isCliRoute = sender === 'cli' || sender.startsWith('cli-');
+    const isSystemAgentTarget = targetId === 'finger-system-agent';
     if (!isPrimaryOrchestratorTarget(body.target, deps) && !isCliRoute && !isSystemAgentTarget && !isDirectAgentRouteAllowed(req, deps)) {
      res.status(403).json({
         error: `Direct target routing is disabled. Use primary orchestrator target: ${deps.primaryOrchestratorTarget}`,
@@ -346,101 +77,38 @@ export function registerMessageRoutes(app: Express, deps: MessageRouteDeps): voi
     const channelId = buildChannelId(req, sender);
     const displayChannels = normalizeDisplayChannels((body as Record<string, unknown>)?.displayChannels);
     const inputChannels = normalizeDisplayChannels((body as Record<string, unknown>)?.inputChannels);
-    const contextManager = getChannelContextManager();
     const incomingContent = extractMessageTextForSession(body.message) ?? '';
     const parsedCommand = parseSuperCommand(incomingContent);
     const fingerConfig = await loadFingerConfig();
     const channelPolicy = getChannelAuth(fingerConfig, channelId);
+    const channelAuthorizationMode = getChannelAuthorizationMode(fingerConfig, channelId);
 
-    if (parsedCommand.type === 'super_command' && parsedCommand.blocks && parsedCommand.blocks.length > 0) {
-      const firstBlock = parsedCommand.blocks[0];
-      if (firstBlock.type === 'system') {
-        const auth = await validateSystemCommand(firstBlock, channelId);
-        if (!auth.ok) {
-          res.status(403).json({ error: auth.error, code: 'SYSTEM_AUTH_FAILED' });
-          return;
-        }
+    const superCmd = await handleSuperCommand(incomingContent, channelId, deps);
+    if (superCmd.handled && superCmd.response) {
+      if ('error' in (superCmd.response as Record<string, unknown>) && 'code' in (superCmd.response as Record<string, unknown>)) {
+        res.status(403).json(superCmd.response);
+      } else {
+        res.json(superCmd.response);
       }
-
-      // Handle command responses (return plain text for QQ/WebUI)
-      if (firstBlock.type === 'cmd_list') {
-        const result = await handleCmdList();
-        res.json({ messageId: `cmd-${Date.now()}`, status: 'completed', result });
-        return;
-      }
-
-      if (firstBlock.type === 'agent_list') {
-        const result = await handleAgentList(deps.sessionManager, firstBlock.path);
-        res.json({ messageId: `cmd-${Date.now()}`, status: 'completed', result });
-        return;
-      }
-
-      if (firstBlock.type === 'agent_new') {
-        const result = await handleAgentNew(deps.sessionManager, firstBlock.path, deps.eventBus);
-        res.json({ messageId: `cmd-${Date.now()}`, status: 'completed', result });
-        return;
-      }
-
-      if (firstBlock.type === 'agent_switch' && firstBlock.sessionId) {
-        const result = await handleAgentSwitch(deps.sessionManager, firstBlock.sessionId, deps.eventBus);
-        res.json({ messageId: `cmd-${Date.now()}`, status: 'completed', result });
-        return;
-      }
-
-      if (firstBlock.type === 'agent_delete' && firstBlock.sessionId) {
-        const result = await handleAgentDelete(deps.sessionManager, firstBlock.sessionId, deps.eventBus);
-        res.json({ messageId: `cmd-${Date.now()}`, status: 'completed', result });
-        return;
-      }
-
-      if (firstBlock.type === 'system') {
-        const result = await handleSystemCommand(deps.sessionManager, deps.eventBus);
-        res.json({ messageId: `cmd-${Date.now()}`, status: 'completed', result });
-        return;
-      }
-
-      if (firstBlock.type === 'project_list') {
-        const result = await handleProjectList(deps.sessionManager);
-        res.json({ messageId: `cmd-${Date.now()}`, status: 'completed', result });
-        return;
-      }
-
-      if (firstBlock.type === 'project_switch' && firstBlock.path) {
-        const result = await handleProjectSwitch(deps.sessionManager, firstBlock.path, deps.eventBus);
-        res.json({ messageId: `cmd-${Date.now()}`, status: 'completed', result });
-        return;
-      }
-
-      if (parsedCommand.shouldSwitch && parsedCommand.targetAgent) {
-        const currentSession = deps.sessionManager.getCurrentSession();
-        const previousContext = currentSession ? {
-          agentId: contextManager.getTargetAgent(channelId, { type: 'normal', targetAgent: '' }),
-          sessionId: currentSession.id,
-          projectPath: currentSession.projectPath,
-        } : undefined;
-
-        if (parsedCommand.targetAgent === 'finger-system-agent') {
-          contextManager.updateContext(channelId, 'system', 'finger-system-agent', previousContext);
-        } else if (parsedCommand.targetAgent === 'finger-orchestrator') {
-          contextManager.updateContext(channelId, 'business', 'finger-orchestrator');
-        }
-      }
+      return;
     }
 
-    const directSystemTarget = body.target === 'finger-system-agent';
+    const directSystemTarget = targetId === 'finger-system-agent';
+    const contextManager = getChannelContextManager();
     if (directSystemTarget) {
       contextManager.updateContext(channelId, 'system', 'finger-system-agent');
     }
     const routedTarget = directSystemTarget
       ? 'finger-system-agent'
       : contextManager.getTargetAgent(channelId, parsedCommand);
+    targetId = routedTarget;
     body.target = routedTarget;
     const effectiveMessage = parsedCommand.type === 'super_command'
       ? withMessageContent(body.message, parsedCommand.effectiveContent)
       : body.message;
 
     if (channelPolicy === 'mailbox') {
-      const messageId = deps.mailbox.createMessage(body.target, effectiveMessage, {
+      const messageId = deps.mailbox.createMessage(targetId, effectiveMessage, {
         sender: body.sender,
         callbackId: body.callbackId,
       });
@@ -452,12 +120,12 @@ export function registerMessageRoutes(app: Express, deps: MessageRouteDeps): voi
     const isSystemRoute = routedTarget === 'finger-system-agent';
     const systemProjectPath = isSystemRoute ? SYSTEM_PROJECT_PATH : undefined;
 
-    const requestMessageWithPolicy = withDefaultProfileReviewPolicy(body.target, effectiveMessage, deps);
+    const requestMessageWithPolicy = withDefaultProfileReviewPolicy(targetId, effectiveMessage, deps);
     const shouldDryRun = resolveDryRunFlag(req, requestMessageWithPolicy);
     let injectedPrompt: string | null = null;
     let injectedAgents: OrchestrationPromptAgent[] = [];
     let requestMessage = requestMessageWithPolicy;
-    if (!isSystemRoute && shouldInjectProfileReviewPolicy(body.target, deps)) {
+    if (!isSystemRoute && shouldInjectProfileReviewPolicy(targetId, deps)) {
       try {
         const loaded = loadOrchestrationConfig();
         const activeProfile = resolveActiveOrchestrationProfile(loaded.config);
@@ -466,7 +134,11 @@ export function registerMessageRoutes(app: Express, deps: MessageRouteDeps): voi
         injectedPrompt = injected.injectedPrompt;
         injectedAgents = injected.agents;
       } catch (error) {
-        console.error('[Server] orchestration prompt injection failed:', error);
+        logger.module('message-route').error(
+          'orchestration prompt injection failed',
+          error instanceof Error ? error : undefined,
+          { target: targetId },
+        );
       }
     }
 
@@ -516,7 +188,7 @@ export function registerMessageRoutes(app: Express, deps: MessageRouteDeps): voi
       const developerInstructions = __chatCodexInternals.resolveDeveloperInstructions(synthesizedMetadata, undefined, undefined);
       res.json({
         dryrun: true,
-        target: body.target,
+        target: targetId,
         injectedPrompt,
         injectedAgents,
         developerInstructions,
@@ -524,90 +196,36 @@ export function registerMessageRoutes(app: Express, deps: MessageRouteDeps): voi
       return;
     }
 
-    if (isObjectRecord(requestMessage)) {
-      const metadata = isObjectRecord(requestMessage.metadata) ? requestMessage.metadata : {};
-      if (isSystemRoute) {
-        metadata.role = 'system';
-        metadata.responsesStructuredOutput = false;
-        metadata.responsesOutputSchemaPreset = 'none';
+   if (isObjectRecord(requestMessage)) {
+     const metadata = isObjectRecord(requestMessage.metadata) ? requestMessage.metadata : {};
+     if (isSystemRoute) {
+       metadata.role = 'system';
+       metadata.responsesStructuredOutput = false;
+       metadata.responsesOutputSchemaPreset = 'none';
+     }
+      // Inject user thinking/reasoning preferences from user-settings
+      const userSettings = loadUserSettings();
+      if (typeof metadata.responsesReasoningEnabled !== 'boolean') {
+        metadata.responsesReasoningEnabled = userSettings.preferences.thinkingEnabled;
       }
-      requestMessage = { ...requestMessage, metadata };
-    }
-
-    // If this is a system route and the message contains an explicit project path,
-    // force delegation instructions to avoid boot checks.
-    if (isSystemRoute) {
-      const content = extractMessageTextForSession(requestMessage) ?? '';
-      const pathMatch = content.match(/(\/(Volumes|Users)\/[^\s]+|~\/[\w\-./]+)/);
-      if (pathMatch) {
-        const projectPathHint = pathMatch[0];
-        const delegationPrefix = `【系统强制委派】检测到项目路径：${projectPathHint}\n` +
-          '必须执行：\n' +
-          '1) system-registry-tool action=list 查找项目\n' +
-          '2) 若未注册，project_tool action=create 使用绝对路径\n' +
-          '3) agent.dispatch -> finger-orchestrator，使用返回的 sessionId\n' +
-          '禁止执行开机检查/周期性检查，仅处理本用户任务。\n\n';
-        requestMessage = withMessageContent(requestMessage, delegationPrefix + content);
-
-        // Server-side forced delegation to project orchestrator
-        try {
-          const registryTool = deps.toolRegistry.get('system-registry-tool');
-          const projectTool = deps.toolRegistry.get('project_tool');
-          if (registryTool && projectTool) {
-            const homeDir = process.env.HOME || '';
-            const resolvedPath = projectPathHint.startsWith('~/')
-              ? path.join(homeDir, projectPathHint.slice(2))
-              : projectPathHint;
-            const normalizedPath = path.resolve(resolvedPath);
-
-            const listResult = await deps.toolRegistry.execute('system-registry-tool', { action: 'list' }) as any;
-            const agents = Array.isArray(listResult?.agents) ? listResult.agents : [];
-            const matched = agents.find((agent: any) => {
-              const agentPath = typeof agent?.projectPath === 'string' ? agent.projectPath : '';
-              return agentPath && path.resolve(agentPath) === normalizedPath;
-            });
-
-            let projectSessionId: string | undefined;
-            if (!matched) {
-              const createResult = await deps.toolRegistry.execute('project_tool', {
-                action: 'create',
-                projectPath: normalizedPath,
-              }) as any;
-              if (typeof createResult?.sessionId === 'string') {
-                projectSessionId = createResult.sessionId;
-              }
-            }
-
-            if (!projectSessionId) {
-              const sessions = deps.sessionManager.findSessionsByProjectPath(normalizedPath);
-              sessions.sort((a, b) => new Date(b.lastAccessedAt).getTime() - new Date(a.lastAccessedAt).getTime());
-              projectSessionId = sessions[0]?.id;
-            }
-
-            if (projectSessionId) {
-              const systemSessionId = deps.sessionManager.getOrCreateSystemSession().id;
-              deps.sessionManager.addMessage(systemSessionId, 'system', `已委派 Project Agent 处理：${normalizedPath}\nsessionId: ${projectSessionId}`);
-
-              if (isObjectRecord(requestMessage)) {
-                const metadata = isObjectRecord(requestMessage.metadata) ? requestMessage.metadata : {};
-                requestMessage = {
-                  ...requestMessage,
-                  sessionId: projectSessionId,
-                  metadata: {
-                    ...metadata,
-                    delegatedBy: 'system-agent',
-                    projectPath: normalizedPath,
-                  },
-                };
-              }
-
-              body.target = 'finger-orchestrator';
-            }
-          }
-        } catch (error) {
-          console.error('[Server] Forced project delegation failed:', error);
-        }
+      if (typeof metadata.responsesReasoningEffort !== 'string') {
+        metadata.responsesReasoningEffort = userSettings.preferences.reasoningEffort ?? 'medium';
       }
+      if (typeof metadata.responsesReasoningSummary !== 'string') {
+        metadata.responsesReasoningSummary = userSettings.preferences.reasoningSummary ?? 'detailed';
+      }
+      // Store thinking state in metadata for session recording
+      metadata.thinkingEnabled = userSettings.preferences.thinkingEnabled;
+      metadata.reasoningEffort = userSettings.preferences.reasoningEffort;
+     requestMessage = { ...requestMessage, metadata };
+   }
+
+    // Server-side forced delegation for system routes with project paths
+    const delegation = await handleSystemRouteDelegation(isSystemRoute, requestMessage, targetId, deps);
+    requestMessage = delegation.updatedMessage;
+    if (delegation.updatedTarget) {
+      targetId = delegation.updatedTarget;
+      body.target = delegation.updatedTarget;
     }
 
     const requestSessionId = extractSessionIdFromMessagePayload(requestMessage);
@@ -619,6 +237,8 @@ export function registerMessageRoutes(app: Express, deps: MessageRouteDeps): voi
     if (requestSessionId) {
       deps.runtime.setCurrentSession(requestSessionId);
     }
+    // 记录当前渠道授权策略（供工具调用时使用）
+    deps.runtime.setAgentAuthorizationMode(targetId ?? deps.primaryOrchestratorAgentId, channelAuthorizationMode, channelId);
     const shouldPersistSession = !!requestSessionId && !shouldClientPersistSession(requestMessage);
     if (shouldPersistSession && requestSessionId) {
       const content = extractMessageTextForSession(requestMessage)
@@ -635,7 +255,7 @@ export function registerMessageRoutes(app: Express, deps: MessageRouteDeps): voi
       sendInputSync(deps.channelBridgeManager, inputChannels, userContent).catch(() => {});
     }
 
-    const messageId = deps.mailbox.createMessage(body.target, requestMessage, {
+    const messageId = deps.mailbox.createMessage(targetId, requestMessage, {
       sender: body.sender,
       callbackId: body.callbackId
     });
@@ -652,10 +272,10 @@ export function registerMessageRoutes(app: Express, deps: MessageRouteDeps): voi
         while (attempt <= deps.blockingMaxRetries) {
           try {
             primaryResult = await Promise.race([
-              deps.hub.sendToModule(body.target, requestMessage),
+              deps.hub.sendToModule(targetId, requestMessage),
               new Promise<never>((_, reject) => {
                 setTimeout(
-                  () => reject(new Error(`Timed out waiting for module response: ${body.target}`)),
+                  () => reject(new Error(`Timed out waiting for module response: ${targetId}`)),
                   deps.blockingTimeoutMs,
                 );
               }),
@@ -685,7 +305,7 @@ export function registerMessageRoutes(app: Express, deps: MessageRouteDeps): voi
             messageId,
             error: errorMessage,
             request: {
-              target: body.target,
+              target: targetId,
               blocking: body.blocking === true,
               sender: body.sender,
               callbackId: body.callbackId,
@@ -717,14 +337,18 @@ export function registerMessageRoutes(app: Express, deps: MessageRouteDeps): voi
               payload: primaryResult,
               originalMessageId: messageId,
             });
-            console.log('[Server] Callback result sent to sender', body.sender, 'Response:', senderResponse);
+            logger.module('message-route').info('Callback result sent to sender', { sender: body.sender });
           } catch (err) {
-            console.error('[Server] Failed to route callback result to sender', body.sender, err);
+            logger.module('message-route').error(
+              'Failed to route callback result to sender',
+              err instanceof Error ? err : undefined,
+              { sender: body.sender },
+            );
           }
         }
 
         const actualResult = primaryResult;
-        const agentTarget = body.target ?? deps.primaryOrchestratorAgentId;
+        const agentTarget = targetId ?? deps.primaryOrchestratorAgentId;
           const agentInfo = buildAgentEnvelope(agentTarget);
         const rawAssistantContent = extractResultTextForSession(actualResult) ?? '';
         const assistantContent = rawAssistantContent.trim().length > 0
@@ -761,7 +385,7 @@ export function registerMessageRoutes(app: Express, deps: MessageRouteDeps): voi
 
         if (displayChannels.length > 0) {
           sendDisplayFanout(deps.channelBridgeManager, displayChannels, responsePayload.response)
-            .catch((err) => console.error('[Server] Failed to send display fanout:', err));
+            .catch((err) => logger.module('message-route').error('Failed to send display fanout', err instanceof Error ? err : undefined));
         }
         deps.mailbox.updateStatus(messageId, 'completed', responsePayload);
 
@@ -770,15 +394,15 @@ export function registerMessageRoutes(app: Express, deps: MessageRouteDeps): voi
         return;
       }
 
-      deps.hub.sendToModule(body.target, requestMessage, body.sender ? (result: any) => {
-        if (deps.hub.hasModule(body.sender!)) {
-          deps.hub.sendToModule(body.sender!, { type: 'callback', payload: result, originalMessageId: messageId })
+      deps.hub.sendToModule(targetId, requestMessage, body.sender ? (result: any) => {
+        if (body.sender) {
+          deps.hub.sendToModule(body.sender, { type: 'callback', payload: result, originalMessageId: messageId })
             .catch(() => { /* Ignore sender callback errors */ });
         }
         return result;
       } : undefined)
         .then((result) => {
-          const agentTarget = body.target ?? deps.primaryOrchestratorAgentId;
+          const agentTarget = targetId ?? deps.primaryOrchestratorAgentId;
           const agentInfo = buildAgentEnvelope(agentTarget);
           const rawAssistantContent = extractResultTextForSession(result) ?? '';
           const assistantContent = rawAssistantContent.trim().length > 0
@@ -813,13 +437,13 @@ export function registerMessageRoutes(app: Express, deps: MessageRouteDeps): voi
 
           if (displayChannels.length > 0) {
             sendDisplayFanout(deps.channelBridgeManager, displayChannels, responsePayload.response)
-              .catch((err) => console.error('[Server] Failed to send display fanout:', err));
+              .catch((err) => logger.module('message-route').error('Failed to send display fanout', err instanceof Error ? err : undefined));
           }
           deps.mailbox.updateStatus(messageId, 'completed', responsePayload);
           deps.broadcast({ type: 'messageCompleted', messageId, result: responsePayload });
         })
         .catch((err) => {
-          console.error('[Hub] Send error:', err);
+          logger.module('message-route').error('Hub send error', err instanceof Error ? err : undefined, { target: targetId, messageId });
           deps.mailbox.updateStatus(messageId, 'failed', undefined, err.message);
         });
 
@@ -832,7 +456,7 @@ export function registerMessageRoutes(app: Express, deps: MessageRouteDeps): voi
         messageId,
         error: errorMessage,
         request: {
-          target: body.target,
+          target: targetId,
           blocking: body.blocking === true,
           sender: body.sender,
           callbackId: body.callbackId,

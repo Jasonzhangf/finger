@@ -1,19 +1,539 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { attachEventForwarding, type EventForwardingDeps } from '../../src/server/modules/event-forwarding.js';
+import type { SessionManager } from '../../src/orchestration/session-manager.js';
+import type { UnifiedEventBus } from '../../src/runtime/event-bus.js';
 
-describe('Event Forwarding Module', () => {
-  describe('Uniqueness Check', () => {
-    it('should have unique export names', async () => {
-      const mod = await import('../../src/server/modules/event-forwarding.js');
-      const exports = Object.keys(mod);
-      const uniqueExports = new Set(exports);
-      expect(exports.length).toBe(uniqueExports.size);
+function createMockSessionManager(): SessionManager {
+  const messages: Array<{ id: string; role: string; content: string; timestamp: string; type?: string; metadata?: Record<string, unknown> }> = [];
+  return {
+    addMessage: vi.fn((_sessionId: string, _role: string, content: string, _detail?: Record<string, unknown>) => {
+      messages.push({
+        id: `msg-${messages.length}`,
+        role: _role,
+        content,
+        timestamp: new Date().toISOString(),
+        type: (_detail as any)?.type,
+        metadata: (_detail as any)?.metadata,
+      });
+    }),
+    getMessages: vi.fn(() => messages),
+    compressContext: vi.fn(async () => 'compressed'),
+  } as unknown as SessionManager;
+}
+
+function createMockEventBus(): UnifiedEventBus {
+  return {
+    subscribe: vi.fn(),
+    subscribeMultiple: vi.fn(),
+    emit: vi.fn(async () => {}),
+  } as unknown as UnifiedEventBus;
+}
+
+function createMockBroadcast(): ReturnType<typeof vi.fn> {
+  return vi.fn();
+}
+
+function createDeps(overrides?: Partial<EventForwardingDeps>): EventForwardingDeps {
+  return {
+    eventBus: createMockEventBus(),
+    broadcast: createMockBroadcast(),
+    sessionManager: createMockSessionManager(),
+    runtimeInstructionBus: { push: vi.fn() },
+    inferAgentRoleLabel: (id: string) => id,
+    formatDispatchResultContent: (result: unknown, error?: string) =>
+      error ? `Error: ${error}` : `Result: ${JSON.stringify(result)}`,
+    asString: (v: unknown) => typeof v === 'string' ? v.trim() || undefined : undefined,
+    generalAgentId: 'finger-general',
+    ...overrides,
+  };
+}
+
+describe('Event Forwarding - Reasoning Persistence', () => {
+  it('should persist reasoning events with assistant role and agent/role info', () => {
+    const sessionManager = createMockSessionManager();
+    const deps = createDeps({ sessionManager });
+    const { emitLoopEventToEventBus } = attachEventForwarding(deps);
+
+    emitLoopEventToEventBus({
+      sessionId: 'test-session-1',
+      phase: 'kernel_event',
+      timestamp: new Date().toISOString(),
+      payload: {
+        id: 'evt-1',
+        type: 'reasoning',
+        index: 0,
+        text: 'Let me analyze the code structure...',
+        agentId: 'finger-orchestrator',
+        roleProfile: 'orchestrator',
+      },
     });
+
+    expect(sessionManager.addMessage).toHaveBeenCalledTimes(1);
+    const call = (sessionManager.addMessage as ReturnType<typeof vi.fn>).mock.calls[0];
+    expect(call[0]).toBe('test-session-1'); // sessionId
+    expect(call[1]).toBe('assistant'); // role - must be assistant, not system
+    expect(call[2]).toContain('[role=orchestrator agent=finger-orchestrator]');
+    expect(call[2]).toContain('思考: Let me analyze the code structure...');
+    expect((call[3] as any).type).toBe('reasoning');
+    expect((call[3] as any).agentId).toBe('finger-orchestrator');
+    expect((call[3] as any).metadata.role).toBe('orchestrator');
+    expect((call[3] as any).metadata.fullReasoningText).toBe('Let me analyze the code structure...');
   });
 
-  describe('Basic Functionality', () => {
-    it('should export attachEventForwarding function', async () => {
-      const mod = await import('../../src/server/modules/event-forwarding.js');
-      expect(typeof mod.attachEventForwarding).toBe('function');
+  it('should use generalAgentId when agentId is not in payload', () => {
+    const sessionManager = createMockSessionManager();
+    const deps = createDeps({ sessionManager, generalAgentId: 'test-default-agent' });
+    const { emitLoopEventToEventBus } = attachEventForwarding(deps);
+
+    emitLoopEventToEventBus({
+      sessionId: 'test-session-2',
+      phase: 'kernel_event',
+      timestamp: new Date().toISOString(),
+      payload: {
+        id: 'evt-2',
+        type: 'reasoning',
+        index: 0,
+        text: 'Fallback reasoning text',
+      },
     });
+
+    const call = (sessionManager.addMessage as ReturnType<typeof vi.fn>).mock.calls[0];
+    expect(call[1]).toBe('assistant');
+    expect(call[2]).toContain('[role=orchestrator agent=test-default-agent]');
+    expect((call[3] as any).agentId).toBe('test-default-agent');
+  });
+
+  it('should use default roleProfile when not in payload', () => {
+    const sessionManager = createMockSessionManager();
+    const deps = createDeps({ sessionManager });
+    const { emitLoopEventToEventBus } = attachEventForwarding(deps);
+
+    emitLoopEventToEventBus({
+      sessionId: 'test-session-3',
+      phase: 'kernel_event',
+      timestamp: new Date().toISOString(),
+      payload: {
+        id: 'evt-3',
+        type: 'reasoning',
+        index: 0,
+        text: 'Reasoning without explicit role',
+        agentId: 'some-agent',
+      },
+    });
+
+    const call = (sessionManager.addMessage as ReturnType<typeof vi.fn>).mock.calls[0];
+    expect(call[2]).toContain('[role=orchestrator agent=some-agent]');
+  });
+
+  it('should not persist empty reasoning text', () => {
+    const sessionManager = createMockSessionManager();
+    const deps = createDeps({ sessionManager });
+    const { emitLoopEventToEventBus } = attachEventForwarding(deps);
+
+    emitLoopEventToEventBus({
+      sessionId: 'test-session-4',
+      phase: 'kernel_event',
+      timestamp: new Date().toISOString(),
+      payload: {
+        id: 'evt-4',
+        type: 'reasoning',
+        index: 0,
+        text: '   ',
+      },
+    });
+
+    expect(sessionManager.addMessage).not.toHaveBeenCalled();
+  });
+
+  it('should not persist non-string reasoning text', () => {
+    const sessionManager = createMockSessionManager();
+    const deps = createDeps({ sessionManager });
+    const { emitLoopEventToEventBus } = attachEventForwarding(deps);
+
+    emitLoopEventToEventBus({
+      sessionId: 'test-session-5',
+      phase: 'kernel_event',
+      timestamp: new Date().toISOString(),
+      payload: {
+        id: 'evt-5',
+        type: 'reasoning',
+        index: 0,
+        text: 42,
+      },
+    });
+
+    expect(sessionManager.addMessage).not.toHaveBeenCalled();
   });
 });
+
+describe('Event Forwarding - Ledger Pointer Injection', () => {
+  it('should inject main ledger pointer on turn_start', () => {
+    const sessionManager = createMockSessionManager();
+    const deps = createDeps({ sessionManager, generalAgentId: 'test-agent' });
+    const { emitLoopEventToEventBus } = attachEventForwarding(deps);
+
+    emitLoopEventToEventBus({
+      sessionId: 'test-session-main',
+      phase: 'turn_start',
+      timestamp: new Date().toISOString(),
+      payload: {
+        text: 'hello',
+      },
+    });
+
+    // Should add main ledger pointer message
+    expect(sessionManager.addMessage).toHaveBeenCalledTimes(1);
+    const call = (sessionManager.addMessage as ReturnType<typeof vi.fn>).mock.calls[0];
+    expect(call[0]).toBe('test-session-main');
+    expect(call[1]).toBe('system');
+    expect(call[2]).toContain('[ledger_pointer:main]');
+    expect((call[3] as any).type).toBe('ledger_pointer');
+    expect((call[3] as any).metadata.ledgerPointer.label).toBe('main');
+    expect((call[3] as any).agentId).toBe('test-agent');
+  });
+
+  it('should not inject duplicate main ledger pointer', () => {
+    const messages: Array<{ type?: string; metadata?: Record<string, unknown> }> = [];
+    const sessionManager = {
+      addMessage: vi.fn(),
+      getMessages: vi.fn(() => [
+        {
+          id: 'existing',
+          role: 'system',
+          content: '[ledger_pointer:main]',
+          timestamp: new Date().toISOString(),
+          type: 'ledger_pointer',
+          metadata: { ledgerPointer: { label: 'main' } },
+        },
+      ]),
+    } as unknown as SessionManager;
+    const deps = createDeps({ sessionManager });
+    const { emitLoopEventToEventBus } = attachEventForwarding(deps);
+
+    emitLoopEventToEventBus({
+      sessionId: 'test-session-dedup',
+      phase: 'turn_start',
+      timestamp: new Date().toISOString(),
+      payload: { text: 'hello' },
+    });
+
+    expect(sessionManager.addMessage).not.toHaveBeenCalled();
+  });
+});
+
+describe('Event Forwarding - Dispatch Child Ledger Pointer', () => {
+  function createDispatchTestDeps(sessionId: string): {
+    deps: EventForwardingDeps;
+    capturedSubscribe: { eventName: string; handler: (event: any) => void }[];
+  } {
+    const capturedSubscribe: { eventName: string; handler: (event: any) => void }[] = [];
+    const sessionManager = createMockSessionManager();
+    const eventBus = {
+      subscribe: vi.fn((eventName: string, handler: (event: any) => void) => {
+        capturedSubscribe.push({ eventName, handler });
+      }),
+      subscribeMultiple: vi.fn(),
+      emit: vi.fn(async () => {}),
+    } as unknown as UnifiedEventBus;
+
+    const deps = createDeps({
+      sessionManager,
+      eventBus,
+      generalAgentId: 'finger-general',
+    });
+
+    // Attach to capture subscribe handlers
+    attachEventForwarding(deps);
+
+    return { deps, capturedSubscribe };
+  }
+
+  function getDispatchHandler(captured: { eventName: string; handler: (event: any) => void }[]) {
+    const entry = captured.find(e => e.eventName === 'agent_runtime_dispatch');
+    if (!entry) throw new Error('agent_runtime_dispatch handler not registered');
+    return entry.handler;
+  }
+
+  it('should inject child ledger pointer from payload.childSessionId on dispatch completed', () => {
+    const { capturedSubscribe } = createDispatchTestDeps('parent-session');
+    const handler = getDispatchHandler(capturedSubscribe);
+
+    handler({
+      type: 'agent_runtime_dispatch',
+      sessionId: 'parent-session',
+      timestamp: new Date().toISOString(),
+      payload: {
+        status: 'completed',
+        targetAgentId: 'finger-coder',
+        assignment: { taskId: 't1' },
+        childSessionId: 'child-session-123',
+        result: { summary: 'done', sessionId: 'child-session-123' },
+      },
+    });
+
+    // Verify that a ledger_pointer message was added via sessionManager.addMessage
+    const { deps } = createDispatchTestDeps('parent-session-verify');
+    // We need to check the actual mock from the first test
+    // Re-create with a trackable mock
+    const messages: Array<{ sessionId: string; role: string; content: string; type?: string; metadata?: Record<string, unknown> }> = [];
+    const trackableSessionManager = {
+      addMessage: vi.fn((sid: string, role: string, content: string, detail?: Record<string, unknown>) => {
+        messages.push({ sessionId: sid, role, content, type: (detail as any)?.type, metadata: (detail as any)?.metadata });
+      }),
+      getMessages: vi.fn(() => []),
+      compressContext: vi.fn(async () => 'compressed'),
+    } as unknown as SessionManager;
+
+    const captured2: { eventName: string; handler: (event: any) => void }[] = [];
+    const eventBus2 = {
+      subscribe: vi.fn((eventName: string, handler: (event: any) => void) => {
+        captured2.push({ eventName, handler });
+      }),
+      subscribeMultiple: vi.fn(),
+      emit: vi.fn(async () => {}),
+    } as unknown as UnifiedEventBus;
+
+    attachEventForwarding(createDeps({ sessionManager: trackableSessionManager, eventBus: eventBus2 }));
+    const handler2 = captured2.find(e => e.eventName === 'agent_runtime_dispatch')!.handler;
+
+    handler2({
+      type: 'agent_runtime_dispatch',
+      sessionId: 'parent-session',
+      timestamp: new Date().toISOString(),
+      payload: {
+        status: 'completed',
+        targetAgentId: 'finger-coder',
+        assignment: { taskId: 't1' },
+        childSessionId: 'child-session-456',
+        result: { summary: 'done' },
+      },
+    });
+
+    // Should have multiple messages (dispatch + ledger pointer)
+    const ledgerMsgs = messages.filter(m => m.type === 'ledger_pointer');
+    expect(ledgerMsgs.length).toBeGreaterThanOrEqual(1);
+    const childPtr = ledgerMsgs.find(m => m.content.includes('child:child-session-456'));
+    expect(childPtr).toBeDefined();
+    expect(childPtr!.content).toContain('[ledger_pointer:child:child-session-456]');
+  });
+
+  it('should inject child ledger pointer from result.sessionId fallback when payload.childSessionId absent', () => {
+    const messages: Array<{ sessionId: string; role: string; content: string; type?: string; metadata?: Record<string, unknown> }> = [];
+    const trackableSessionManager = {
+      addMessage: vi.fn((sid: string, role: string, content: string, detail?: Record<string, unknown>) => {
+        messages.push({ sessionId: sid, role, content, type: (detail as any)?.type, metadata: (detail as any)?.metadata });
+      }),
+      getMessages: vi.fn(() => []),
+      compressContext: vi.fn(async () => 'compressed'),
+    } as unknown as SessionManager;
+
+    const captured: { eventName: string; handler: (event: any) => void }[] = [];
+    const eventBus = {
+      subscribe: vi.fn((eventName: string, handler: (event: any) => void) => {
+        captured.push({ eventName, handler });
+      }),
+      subscribeMultiple: vi.fn(),
+      emit: vi.fn(async () => {}),
+    } as unknown as UnifiedEventBus;
+
+    attachEventForwarding(createDeps({ sessionManager: trackableSessionManager, eventBus }));
+    const handler = captured.find(e => e.eventName === 'agent_runtime_dispatch')!.handler;
+
+    handler({
+      type: 'agent_runtime_dispatch',
+      sessionId: 'parent-session-2',
+      timestamp: new Date().toISOString(),
+      payload: {
+        status: 'completed',
+        targetAgentId: 'finger-reviewer',
+        assignment: { taskId: 't2' },
+        // No payload.childSessionId - but result has sessionId (mapped to childSessionId by sanitizeDispatchResult)
+        result: { summary: 'review done', sessionId: 'child-from-result-789' },
+      },
+    });
+
+    const ledgerMsgs = messages.filter(m => m.type === 'ledger_pointer');
+    expect(ledgerMsgs.length).toBeGreaterThanOrEqual(1);
+    const childPtr = ledgerMsgs.find(m => m.content.includes('child:child-from-result-789'));
+    expect(childPtr).toBeDefined();
+    expect(childPtr!.content).toContain('[ledger_pointer:child:child-from-result-789]');
+    // Assert metadata.label
+    expect(childPtr!.metadata?.ledgerPointer?.label).toBe('child:child-from-result-789');
+  });
+
+  it('should inject child ledger pointer from result.childSessionId when both payload.childSessionId and result.childSessionId present', () => {
+    const messages: Array<{ sessionId: string; role: string; content: string; type?: string; metadata?: Record<string, unknown> }> = [];
+    const trackableSessionManager = {
+      addMessage: vi.fn((sid: string, role: string, content: string, detail?: Record<string, unknown>) => {
+        messages.push({ sessionId: sid, role, content, type: (detail as any)?.type, metadata: (detail as any)?.metadata });
+      }),
+      getMessages: vi.fn(() => []),
+      compressContext: vi.fn(async () => 'compressed'),
+    } as unknown as SessionManager;
+
+    const captured: { eventName: string; handler: (event: any) => void }[] = [];
+    const eventBus = {
+      subscribe: vi.fn((eventName: string, handler: (event: any) => void) => {
+        captured.push({ eventName, handler });
+      }),
+      subscribeMultiple: vi.fn(),
+      emit: vi.fn(async () => {}),
+    } as unknown as UnifiedEventBus;
+
+    attachEventForwarding(createDeps({ sessionManager: trackableSessionManager, eventBus }));
+    const handler = captured.find(e => e.eventName === 'agent_runtime_dispatch')!.handler;
+
+    handler({
+      type: 'agent_runtime_dispatch',
+      sessionId: 'parent-session-2b',
+      timestamp: new Date().toISOString(),
+      payload: {
+        status: 'completed',
+        targetAgentId: 'finger-executor',
+        assignment: { taskId: 't2b' },
+        // No payload.childSessionId, but result.childSessionId is present
+        result: { summary: 'exec done', childSessionId: 'child-from-result-childid-999' },
+      },
+    });
+
+    const ledgerMsgs = messages.filter(m => m.type === 'ledger_pointer');
+    expect(ledgerMsgs.length).toBeGreaterThanOrEqual(1);
+    const childPtr = ledgerMsgs.find(m => m.content.includes('child:child-from-result-childid-999'));
+    expect(childPtr).toBeDefined();
+    expect(childPtr!.content).toContain('[ledger_pointer:child:child-from-result-childid-999]');
+    // Assert metadata.label is correct
+    expect(childPtr!.metadata?.ledgerPointer?.label).toBe('child:child-from-result-childid-999');
+    // Assert agentId is set
+    expect(childPtr!.metadata?.ledgerPointer?.agentId).toBe('finger-executor');
+  });
+
+  it('should inject child ledger pointer on dispatch failed', () => {
+    const messages: Array<{ sessionId: string; role: string; content: string; type?: string; metadata?: Record<string, unknown> }> = [];
+    const trackableSessionManager = {
+      addMessage: vi.fn((sid: string, role: string, content: string, detail?: Record<string, unknown>) => {
+        messages.push({ sessionId: sid, role, content, type: (detail as any)?.type, metadata: (detail as any)?.metadata });
+      }),
+      getMessages: vi.fn(() => []),
+      compressContext: vi.fn(async () => 'compressed'),
+    } as unknown as SessionManager;
+
+    const captured: { eventName: string; handler: (event: any) => void }[] = [];
+    const eventBus = {
+      subscribe: vi.fn((eventName: string, handler: (event: any) => void) => {
+        captured.push({ eventName, handler });
+      }),
+      subscribeMultiple: vi.fn(),
+      emit: vi.fn(async () => {}),
+    } as unknown as UnifiedEventBus;
+
+    attachEventForwarding(createDeps({ sessionManager: trackableSessionManager, eventBus }));
+    const handler = captured.find(e => e.eventName === 'agent_runtime_dispatch')!.handler;
+
+    handler({
+      type: 'agent_runtime_dispatch',
+      sessionId: 'parent-session-3',
+      timestamp: new Date().toISOString(),
+      payload: {
+        status: 'failed',
+        targetAgentId: 'finger-executor',
+        assignment: { taskId: 't3' },
+        childSessionId: 'child-failed-001',
+        error: 'execution timeout',
+      },
+    });
+
+    const ledgerMsgs = messages.filter(m => m.type === 'ledger_pointer');
+    const childPtr = ledgerMsgs.find(m => m.content.includes('child:child-failed-001'));
+    expect(childPtr).toBeDefined();
+    expect(childPtr!.content).toContain('[ledger_pointer:child:child-failed-001]');
+  });
+
+  it('should not inject child ledger pointer on queued status', () => {
+    const messages: Array<{ sessionId: string; role: string; content: string; type?: string; metadata?: Record<string, unknown> }> = [];
+    const trackableSessionManager = {
+      addMessage: vi.fn((sid: string, role: string, content: string, detail?: Record<string, unknown>) => {
+        messages.push({ sessionId: sid, role, content, type: (detail as any)?.type, metadata: (detail as any)?.metadata });
+      }),
+      getMessages: vi.fn(() => []),
+      compressContext: vi.fn(async () => 'compressed'),
+    } as unknown as SessionManager;
+
+    const captured: { eventName: string; handler: (event: any) => void }[] = [];
+    const eventBus = {
+      subscribe: vi.fn((eventName: string, handler: (event: any) => void) => {
+        captured.push({ eventName, handler });
+      }),
+      subscribeMultiple: vi.fn(),
+      emit: vi.fn(async () => {}),
+    } as unknown as UnifiedEventBus;
+
+    attachEventForwarding(createDeps({ sessionManager: trackableSessionManager, eventBus }));
+    const handler = captured.find(e => e.eventName === 'agent_runtime_dispatch')!.handler;
+
+    handler({
+      type: 'agent_runtime_dispatch',
+      sessionId: 'parent-session-4',
+      timestamp: new Date().toISOString(),
+      payload: {
+        status: 'queued',
+        targetAgentId: 'finger-coder',
+        queuePosition: 1,
+      },
+    });
+
+    const ledgerMsgs = messages.filter(m => m.type === 'ledger_pointer');
+    expect(ledgerMsgs.length).toBe(0);
+  });
+
+  it('should deduplicate child ledger pointer injection', () => {
+    const messages: Array<{ sessionId: string; role: string; content: string; type?: string; metadata?: Record<string, unknown> }> = [];
+    // Pre-seed with an existing child ledger pointer
+    const existingMessages = [
+      {
+        id: 'existing-child-ptr',
+        role: 'system',
+        content: '[ledger_pointer:child:child-dedup-001]',
+        timestamp: new Date().toISOString(),
+        type: 'ledger_pointer',
+        metadata: { ledgerPointer: { label: 'child:child-dedup-001' } },
+      },
+    ];
+    const trackableSessionManager = {
+      addMessage: vi.fn((sid: string, role: string, content: string, detail?: Record<string, unknown>) => {
+        messages.push({ sessionId: sid, role, content, type: (detail as any)?.type, metadata: (detail as any)?.metadata });
+      }),
+      getMessages: vi.fn(() => existingMessages),
+      compressContext: vi.fn(async () => 'compressed'),
+    } as unknown as SessionManager;
+
+    const captured: { eventName: string; handler: (event: any) => void }[] = [];
+    const eventBus = {
+      subscribe: vi.fn((eventName: string, handler: (event: any) => void) => {
+        captured.push({ eventName, handler });
+      }),
+      subscribeMultiple: vi.fn(),
+      emit: vi.fn(async () => {}),
+    } as unknown as UnifiedEventBus;
+
+    attachEventForwarding(createDeps({ sessionManager: trackableSessionManager, eventBus }));
+    const handler = captured.find(e => e.eventName === 'agent_runtime_dispatch')!.handler;
+
+    handler({
+      type: 'agent_runtime_dispatch',
+      sessionId: 'parent-session-5',
+      timestamp: new Date().toISOString(),
+      payload: {
+        status: 'completed',
+        targetAgentId: 'finger-coder',
+        assignment: { taskId: 't5' },
+        childSessionId: 'child-dedup-001',
+        result: { summary: 'done' },
+      },
+    });
+
+    const ledgerMsgs = messages.filter(m => m.type === 'ledger_pointer');
+    // Should NOT add duplicate - getMessages returns existing pointer
+    expect(ledgerMsgs.length).toBe(0);
+  });
+});
+

@@ -211,13 +211,19 @@ export class MessageHub {
     if (callback) {
       const callbackId = 'cb-' + Date.now() + '-' + this.nextCallbackId++;
       this.pendingCallbacks.set(callbackId, callback);
-      const envelope = message as MessageEnvelope;
-      const meta = (envelope.meta ?? {}) as Record<string, unknown>;
-      if (meta.callbackId === undefined) {
-        meta.callbackId = callbackId;
+      // 只有可扩展的 plain object 才直接注入 meta，否则包装
+      if (typeof message === 'object' && message !== null && Object.isExtensible(message)) {
+        const envelope = message as MessageEnvelope;
+        const meta = (envelope.meta ?? {}) as Record<string, unknown>;
+        if (meta.callbackId === undefined) {
+          meta.callbackId = callbackId;
+        }
+        envelope.meta = meta as MessageEnvelope['meta'];
+        (message as Record<string, unknown>)._callbackId = callbackId;
+      } else {
+        // string / 不可扩展对象：包装为带 meta 的信封
+        message = { message, meta: { callbackId } } as unknown as Message;
       }
-      envelope.meta = meta as MessageEnvelope['meta'];
-      (message as Record<string, unknown>)._callbackId = callbackId;
     }
     
     try {

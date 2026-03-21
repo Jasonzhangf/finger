@@ -1,4 +1,5 @@
 import type { ModuleRegistry } from '../../orchestration/module-registry.js';
+import { logger } from '../../core/logger.js';
 import type { RuntimeFacade } from '../../runtime/runtime-facade.js';
 import type { ToolRegistry } from '../../runtime/tool-registry.js';
 import type { ChatCodexRunnerController } from './mock-runtime.js';
@@ -109,7 +110,7 @@ export async function registerFingerRoleModules(
     }, chatCodexRunner);
     await moduleRegistry.register(roleModule);
     const policy = runtime.setAgentToolWhitelist(role.id, role.allowedTools);
-    console.log(`[Server] ${role.id} module registered, tools=${policy.whitelist.join(', ')}`);
+    logger.module('finger-role-modules').info('Role module registered', { roleId: role.id, tools: policy.whitelist.join(', ') });
   };
 
   for (const role of roles) {

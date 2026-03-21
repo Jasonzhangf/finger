@@ -61,7 +61,9 @@ export interface SessionApiMessage {
     | 'tool_result'
     | 'tool_error'
     | 'agent_step'
-    | 'dispatch';
+    | 'dispatch'
+    | 'reasoning'
+    | 'ledger_pointer';
   agentId?: string;
   toolName?: string;
   toolStatus?: 'success' | 'error';

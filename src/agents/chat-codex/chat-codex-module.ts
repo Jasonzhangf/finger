@@ -868,6 +868,33 @@ export function createChatCodexModule(
                 ? (trace.output !== undefined ? { output: trace.output } : {})
                 : { error: trace.error ?? `工具执行失败：${trace.tool}` }),
             },
+         });
+       }
+
+        const reasoningTrace = extractKernelReasoningTrace(metadata);
+        const reasoningAgentId = parseOptionalString(context?.metadata?.contextLedgerAgentId)
+          ?? parseOptionalString(metadata?.contextLedgerAgentId)
+          ?? 'unknown-agent';
+        const reasoningRoleProfile = parseOptionalString(context?.metadata?.roleProfile)
+          ?? parseOptionalString(context?.metadata?.contextLedgerRole)
+          ?? parseOptionalString(metadata?.roleProfile)
+          ?? 'orchestrator';
+        for (let i = 0; i < reasoningTrace.length; i += 1) {
+          const reasoningText = reasoningTrace[i];
+          if (!reasoningText) continue;
+          emitted = true;
+          safeNotifyLoopEvent(mergedConfig.onLoopEvent, {
+            sessionId,
+            phase: 'kernel_event',
+            timestamp: new Date().toISOString(),
+            payload: {
+              id: event.id,
+              type: 'reasoning',
+              index: i,
+              text: reasoningText,
+              agentId: reasoningAgentId,
+              roleProfile: reasoningRoleProfile,
+            },
           });
         }
 
@@ -1061,6 +1088,38 @@ export function createChatCodexModule(
         // If streaming path produced only boundary events, recover tool/model steps from metadata traces.
         for (const event of runResult.events) {
           emitSyntheticKernelEventsFromTaskComplete(event);
+        }
+      } else {
+        // Streaming path produced realtime steps; still extract reasoning from task_complete metadata.
+        const rAgentId = parseOptionalString(context?.metadata?.contextLedgerAgentId)
+          ?? parseOptionalString(context?.metadata?.contextLedgerRole)
+          ?? 'unknown-agent';
+        const rRoleProfile = parseOptionalString(context?.metadata?.roleProfile)
+          ?? parseOptionalString(context?.metadata?.contextLedgerRole)
+          ?? parseOptionalString(context?.metadata?.roleProfile)
+          ?? 'orchestrator';
+        for (const event of runResult.events) {
+          if (event.msg.type !== 'task_complete' || !event.msg.metadata_json || event.msg.metadata_json.trim().length === 0) continue;
+          const metadata = parseKernelMetadata(event.msg.metadata_json);
+          if (!metadata) continue;
+          const reasoningTrace = extractKernelReasoningTrace(metadata);
+          for (let i = 0; i < reasoningTrace.length; i += 1) {
+            const reasoningText = reasoningTrace[i];
+            if (!reasoningText) continue;
+            safeNotifyLoopEvent(mergedConfig.onLoopEvent, {
+              sessionId,
+              phase: 'kernel_event',
+              timestamp: new Date().toISOString(),
+              payload: {
+                id: event.id,
+                type: 'reasoning',
+                index: i,
+                text: reasoningText,
+                agentId: rAgentId,
+                roleProfile: rRoleProfile,
+              },
+            });
+          }
         }
       }
 
@@ -1518,7 +1577,6 @@ function extractKernelRoundTrace(metadata: Record<string, unknown>): KernelRound
       typeof item.seq === 'number' && Number.isFinite(item.seq) && item.seq >= 0
         ? Math.floor(item.seq)
         : undefined;
-
     result.push({
       ...(seq !== undefined ? { seq } : {}),
       round,
@@ -1540,10 +1598,20 @@ function extractKernelRoundTrace(metadata: Record<string, unknown>): KernelRound
       ...(thresholdPercent !== undefined ? { thresholdPercent } : {}),
     });
   }
-
   return result;
 }
 
+function extractKernelReasoningTrace(metadata: Record<string, unknown>): string[] {
+  const raw = metadata.reasoning_trace;
+  if (!Array.isArray(raw)) return [];
+  const result: string[] = [];
+  for (const item of raw) {
+    if (typeof item === 'string' && item.trim().length > 0) {
+      result.push(item.trim());
+    }
+  }
+  return result;
+}
 function resolveStopReasonFromKernelMetadata(metadata?: Record<string, unknown>): string {
   if (!metadata) return 'model_stop';
   const rounds = extractKernelRoundTrace(metadata);

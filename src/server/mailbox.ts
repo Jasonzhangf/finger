@@ -1,3 +1,4 @@
+import { logger } from '../core/logger.js';
 /**
  * Mailbox - 消息邮箱系统
  * 存储消息状态，支持异步查询
@@ -304,7 +305,7 @@ export class Mailbox {
         try {
           cb(message);
         } catch (err) {
-          console.error('[Mailbox] Subscriber error:', err);
+          logger.module('mailbox').error('Subscriber error', err instanceof Error ? err : undefined);
         }
       }
     }

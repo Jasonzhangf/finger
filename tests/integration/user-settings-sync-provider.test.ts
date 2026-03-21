@@ -47,7 +47,7 @@ describe('UserSettingsSync + AIProviderConfig integration', () => {
         reasoningEffort: 'high',
         reasoningSummary: 'detailed',
         verbosity: 'medium',
-        showRawAgentReasoning: false,
+        thinkingEnabled: true,
         webSearch: 'live',
       },
       ui: {

@@ -274,7 +274,7 @@ describe('MemoryTool', () => {
         action: 'insert',
         scope: 'system',
         project_path: projectPath,
-        content: 'System entry',
+        content: 'System agent bootstrap configuration applied successfully',
       });
 
       expect(inserted.ok).toBe(true);
@@ -300,7 +300,7 @@ describe('MemoryTool', () => {
         action: 'insert',
         scope: 'system',
         project_path: projectPath,
-        content: 'System entry',
+        content: 'System agent bootstrap configuration applied successfully',
       });
 
       const result = await memoryTool.execute({

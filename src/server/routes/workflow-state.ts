@@ -1,5 +1,6 @@
 import type { Express } from 'express';
 import type { WebSocketServer } from 'ws';
+import { logger } from '../../core/logger.js';
 import {
   getAllStateSnapshots,
   getStateSnapshot,
@@ -39,5 +40,5 @@ export function registerWorkflowStateRoutes(app: Express, deps: WorkflowStateRou
     });
   });
 
-  console.log('[Server] State Bridge integration enabled');
+  logger.module('workflow-state').info('State Bridge integration enabled');
 }

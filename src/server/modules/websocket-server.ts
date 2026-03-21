@@ -1,3 +1,4 @@
+import { logger } from '../../core/logger.js';
 import { WebSocketServer, type WebSocket } from 'ws';
 import type { UnifiedEventBus } from '../../runtime/event-bus.js';
 import type { InputLockManager } from '../../runtime/input-lock.js';
@@ -41,12 +42,12 @@ export function createWebSocketServer(deps: WebSocketServerDeps): WebSocketServe
     }
   };
 
-  console.log(`[Server] Starting WebSocket server on port ${port} (PORT=${serverPort})`);
+  logger.module('websocket-server').info('Starting WebSocket server', { port, serverPort });
 
   wss.on('connection', (ws: WebSocketWithClientId) => {
     wsClients.add(ws);
     ws.clientId = generateClientId();
-    console.log('[Server] WebSocket client connected, total clients:', wsClients.size, 'clientId:', ws.clientId);
+    logger.module('websocket-server').info('WebSocket client connected', { totalClients: wsClients.size, clientId: ws.clientId });
     eventBus.registerWsClient(ws);
     if (registerStateBridgeClient) {
       registerStateBridgeClient(ws as WebSocket);
@@ -138,9 +139,12 @@ export function createWebSocketServer(deps: WebSocketServerDeps): WebSocketServe
     });
   });
 
-  console.log(`[Server] WebSocket server running at ws://localhost:${port}`);
+  logger.module('websocket-server').info('WebSocket server running', { url: `ws://localhost:${port}` });
   const addresses = wss.address();
-  console.log('[Server] WebSocket server bound to:', addresses);
+  const addrs = wss.address();
+  if (typeof addrs === 'object' && addrs) {
+    logger.module('websocket-server').info('WebSocket server bound', { address: addrs.address, port: addrs.port, family: addrs.family });
+  }
 
   return { wss, wsClients, broadcast };
 }

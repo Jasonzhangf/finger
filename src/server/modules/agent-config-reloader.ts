@@ -1,4 +1,5 @@
 import type { RuntimeFacade } from '../../runtime/runtime-facade.js';
+import { logger } from '../../core/logger.js';
 import {
   loadAgentJsonConfigs,
   applyAgentJsonConfigs,
@@ -28,10 +29,10 @@ export function createAgentConfigReloader(deps: AgentConfigReloaderDeps): AgentC
     loadedAgentConfigs = result.loaded;
     applyAgentJsonConfigs(runtime, result.loaded.map((item) => item.config));
 
-    console.log(`[Server] Agent JSON configs loaded: ${result.loaded.length} from ${result.dir}`);
+    logger.module('agent-config-reloader').info('Agent JSON configs loaded', { count: result.loaded.length, dir: result.dir });
     if (result.errors.length > 0) {
       for (const err of result.errors) {
-        console.error(`[Server] Agent config load error ${err.filePath}: ${err.error}`);
+        logger.module('agent-config-reloader').error('Agent config load error', undefined, { filePath: err.filePath, error: err.error });
       }
     }
   };

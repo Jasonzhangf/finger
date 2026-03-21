@@ -23,7 +23,7 @@ describe('UserSettings', () => {
     const { loadUserSettings } = await import('../../../src/core/user-settings.js');
     const settings = loadUserSettings();
     expect(settings.aiProviders.default).toBe('tcm');
-    expect(settings.preferences.defaultModel).toBe('gpt-5.4');
+    expect(settings.preferences.defaultModel).toBe('tabglm.glm-5-turbo');
   });
 
   it('saves and reloads user settings', async () => {
@@ -90,7 +90,7 @@ describe('UserSettings', () => {
         reasoningEffort: 'high',
         reasoningSummary: 'detailed',
         verbosity: 'medium',
-        showRawAgentReasoning: false,
+        thinkingEnabled: true,
         webSearch: 'live',
       },
       ui: {

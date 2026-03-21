@@ -218,6 +218,167 @@ finger-236 (Epic)
 - Orchestrator FSM: `src/orchestration/orchestrator-fsm-v2.ts`
 - Kernel Agent Base: `src/agents/base/kernel-agent-base.ts`
 
+
+## Session 完整上下文：Reasoning 持久化 + Ledger Pointer 注入
+
+### 概述
+
+为确保 Agent 的思考过程和执行历史能够被完整保留并在下一轮对话中使用，实现了以下机制：
+
+1. **Reasoning 持久化**：模型的思考过程以 `assistant` 角色存储到 session
+2. **Ledger Pointer 注入**：自动注入主 session 和子 session 的 ledger 指针
+
+### Reasoning 持久化
+
+**问题背景**：
+- Reasoning（思考过程）原本以 `system` role 存储
+- `system` role 的消息在构建 kernel history 时会被跳过或转换
+- 导致下一轮对话丢失之前的思考上下文
+
+**解决方案**：
+```typescript
+// src/server/modules/event-forwarding.ts
+// Reasoning 以 assistant role 存储，包含 agent 和 role 信息
+persistSessionEventMessage(
+  event.sessionId,
+  `[role=${roleProfile} agent=${agentId}] 思考: ${reasoningText}`,
+  {
+    type: 'reasoning',
+    agentId,
+    metadata: { role: roleProfile, agentId, fullReasoningText: reasoningText },
+  },
+  'assistant', // 使用 assistant role，确保被包含在 kernel history 中
+);
+```
+
+**Content 格式**：
+```
+[role=orchestrator agent=finger-orchestrator] 思考: Let me analyze the code structure...
+```
+
+**关键字段**：
+- `role`: `assistant`（确保被 kernel history 包含）
+- `type`: `reasoning`（便于过滤和识别）
+- `metadata.role`: 角色 profile（orchestrator/reviewer/executor 等）
+- `metadata.agentId`: 发射 reasoning 的 agent ID
+- `metadata.fullReasoningText`: 完整的 reasoning 文本（无截断）
+
+### Ledger Pointer 注入
+
+**问题背景**：
+- Agent 执行过程中的上下文存储在 ledger 中
+- 下一轮对话需要能够追溯到之前的 ledger
+- 模型容易忘记或不知道 ledger 的位置
+
+**解决方案**：自动注入 ledger pointer 到 session
+
+#### 1. 主 Session Ledger Pointer（turn_start）
+
+当 `turn_start` 事件发生时，自动注入主 session 的 ledger pointer：
+
+```typescript
+// src/server/modules/event-forwarding.ts
+if (event.phase === 'turn_start') {
+  addLedgerPointerMessage(event.sessionId, 'main', generalAgentId);
+}
+```
+
+**格式**：
+```
+[ledger_pointer:main] session=session-xxx agent=finger-orchestrator mode=main root=~/.finger path=~/.finger/sessions/.../context-ledger.jsonl
+```
+
+#### 2. 子 Session Ledger Pointer（dispatch completed/failed）
+
+当 dispatch 完成（`completed` 或 `failed`）时，自动注入子 session 的 ledger pointer：
+
+```typescript
+// src/server/modules/event-forwarding.ts
+if ((status === 'completed' || status === 'failed') && sessionId) {
+  const childSessionId = asString(payload.childSessionId)
+    ?? (isObjectRecord(payload.result)
+      ? asString(payload.result.childSessionId)
+        ?? asString(payload.result.sessionId)
+      : undefined);
+  if (childSessionId) {
+    addLedgerPointerMessage(sessionId, `child:${childSessionId}`, targetAgentId);
+  }
+}
+```
+
+**childSessionId 来源**：
+1. `payload.childSessionId`（直接指定）
+2. `payload.result.childSessionId`（从 dispatch 结果中提取）
+3. `payload.result.sessionId`（sanitizeDispatchResult 映射后的字段）
+
+#### 3. 去重机制
+
+防止重复注入相同的 ledger pointer：
+
+```typescript
+const hasLedgerPointerMessage = (sessionId: string, label: string): boolean => {
+  const messages = sessionManager.getMessages(sessionId, 0);
+  return messages.some((message) => message.type === 'ledger_pointer'
+    && message.metadata?.ledgerPointer?.label === label);
+};
+```
+
+### 数据流
+
+```
+┌─────────────────────────────────────────────────────────┐
+│                   Session 上下文构建                      │
+├─────────────────────────────────────────────────────────┤
+│                                                           │
+│  turn_start                                               │
+│       ↓                                                   │
+│  注入 main ledger pointer                                │
+│       ↓                                                   │
+│  reasoning 事件 → 以 assistant role 存储到 session       │
+│       ↓                                                   │
+│  tool_call/tool_result 等事件存储                        │
+│       ↓                                                   │
+│  dispatch → 子 agent 执行                                │
+│       ↓                                                   │
+│  dispatch completed/failed                               │
+│       ↓                                                   │
+│  注入 child ledger pointer                               │
+│       ↓                                                   │
+│  下一轮对话：session messages + ledger pointers          │
+│       ↓                                                   │
+│  kernel history 包含完整上下文                           │
+└─────────────────────────────────────────────────────────┘
+```
+
+### 测试覆盖
+
+**文件**：
+- `tests/modules/event-forwarding.test.ts`（12 tests）
+- `tests/modules/event-forwarding-helpers.test.ts`（15 tests）
+
+**测试用例**：
+1. Reasoning 以 assistant role 存储
+2. Reasoning 包含 agentId 和 roleProfile
+3. 使用默认值填充缺失的 agentId/roleProfile
+4. 不存储空的 reasoning
+5. turn_start 注入 main ledger pointer
+6. 去重不重复注入
+7. dispatch completed 注入 child ledger pointer（payload.childSessionId）
+8. dispatch completed 注入 child ledger pointer（result.sessionId）
+9. dispatch failed 注入 child ledger pointer
+10. queued 状态不注入 ledger pointer
+11. 子 session ledger pointer 去重
+12. payload.childSessionId 为空时从 result.childSessionId 注入（含 metadata.label 断言）
+
+### 相关文件
+
+- `src/server/modules/event-forwarding.ts` - 事件转发和 session 持久化
+- `src/server/modules/event-forwarding-helpers.ts` - helper 函数
+- `src/agents/chat-codex/chat-codex-module.ts` - reasoning 事件发射
+- `src/orchestration/session-manager.ts` - session 消息类型定义
+
+
 ## 版本历史
 
 - 2026-03-14: 初始设计，Phase 1 完成
+- 2026-03-21: 新增 Session 完整上下文设计（Reasoning 持久化 + Ledger Pointer 注入）

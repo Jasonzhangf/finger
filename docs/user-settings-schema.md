@@ -53,7 +53,7 @@
     "reasoningEffort": "high",
     "reasoningSummary": "detailed",
     "verbosity": "medium",
-    "showRawAgentReasoning": false,
+    "thinkingEnabled": true,
     "webSearch": "live"
   },
   "ui": {
@@ -83,7 +83,7 @@
 - **reasoningEffort**: 推理强度（high/medium/low）
 - **reasoningSummary**: 推理总结详细程度（detailed/medium/short）
 - **verbosity**: 日志详细程度（high/medium/low）
-- **showRawAgentReasoning**: 是否显示原始agent推理
+- **thinkingEnabled**: 是否启用模型思维链 (默认 true)
 - **webSearch**: 网络搜索模式（live/off）
 
 ### ui

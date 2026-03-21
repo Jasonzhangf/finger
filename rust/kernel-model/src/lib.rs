@@ -404,6 +404,7 @@ impl ResponsesChatEngine {
                     "reply_chars": output_text.chars().count(),
                     "tool_trace_count": tool_trace.len(),
                     "reasoning_count": reasoning_trace.len(),
+                    "reasoning_trace": reasoning_trace,
                     "compact_applied": compact_applied,
                 }),
             );
@@ -539,6 +540,7 @@ impl ResponsesChatEngine {
                     json!({
                         "call_id": call.call_id,
                         "tool_name": runtime_tool_name,
+                        "input": tool_input_snapshot,
                     }),
                 );
             }
@@ -565,6 +567,20 @@ impl ResponsesChatEngine {
                             duration_ms,
                         }),
                     );
+                    if let Some(ledger) = context_ledger {
+                        safe_append_ledger(
+                            ledger,
+                            "tool_result",
+                            json!({
+                                "call_id": call.call_id,
+                                "tool_name": runtime_tool_name,
+                                "ok": true,
+                                "input": tool_input_snapshot,
+                                "output": result,
+                                "duration_ms": duration_ms,
+                            }),
+                        );
+                    }
                     traces.push(json!({
                         "call_id": call.call_id,
                         "tool": runtime_tool_name,
@@ -582,6 +598,7 @@ impl ResponsesChatEngine {
                 }
                 Err(error) => {
                     let duration_ms = started_at.elapsed().as_millis() as u64;
+                    let error_message = error.to_string();
                     let tool_error_seq = next_progress_seq(progress_seq);
                     emit_progress_event(
                         progress_tx,
@@ -589,23 +606,37 @@ impl ResponsesChatEngine {
                             seq: tool_error_seq,
                             call_id: call.call_id.clone(),
                             tool_name: runtime_tool_name.clone(),
-                            error: error.to_string(),
+                            error: error_message.clone(),
                             duration_ms,
                         }),
                     );
+                    if let Some(ledger) = context_ledger {
+                        safe_append_ledger(
+                            ledger,
+                            "tool_error",
+                            json!({
+                                "call_id": call.call_id,
+                                "tool_name": runtime_tool_name,
+                                "ok": false,
+                                "input": tool_input_snapshot,
+                                "error": error_message,
+                                "duration_ms": duration_ms,
+                            }),
+                        );
+                    }
                     traces.push(json!({
                         "call_id": call.call_id,
                         "tool": runtime_tool_name,
                         "status": "error",
                         "seq": tool_error_seq,
                         "input": tool_input_snapshot.clone(),
-                        "error": error.to_string(),
+                        "error": error_message,
                         "duration_ms": duration_ms,
                     }));
                     json!({
                         "ok": false,
                         "tool": runtime_tool_name,
-                        "error": error.to_string(),
+                        "error": error_message,
                     })
                 }
             };
@@ -672,22 +703,22 @@ impl ResponsesChatEngine {
             });
         }
 
+        // Check for success:false in response body (tool execution returned error but HTTP 200)
+        if payload.get("success").and_then(Value::as_bool) == Some(false) {
+            let error_msg = payload.get("error").and_then(Value::as_str)
+                .map(str::to_string)
+                .unwrap_or_else(|| "Tool execution failed".to_string());
+            return Err(ModelError::ToolExecution {
+                tool_name: runtime_tool_name.to_string(),
+                message: error_msg,
+            });
+        }
+
         if let Some(error_message) = payload.get("error").and_then(Value::as_str) {
             return Err(ModelError::ToolExecution {
                 tool_name: runtime_tool_name.to_string(),
                 message: error_message.to_string(),
             });
-        }
-
-        if let Some(ledger) = context_ledger {
-            safe_append_ledger(
-                ledger,
-                "tool_result",
-                json!({
-                    "tool_name": runtime_tool_name,
-                    "ok": true,
-                }),
-            );
         }
 
         Ok(payload.get("result").cloned().unwrap_or(Value::Null))
@@ -743,10 +774,24 @@ impl ChatEngine for ResponsesChatEngine {
             return Ok(TurnRunResult::default());
         }
 
+        let context_ledger = build_context_ledger(&request.options);
+
         let completion = self
             .complete_with_options(&request.items, &request.options, progress_tx.as_ref())
             .await
-            .map_err(|err| err.to_string())?;
+            .map_err(|err| {
+                let error_msg = err.to_string();
+                if let Some(ledger) = context_ledger.as_ref() {
+                    safe_append_ledger(
+                        ledger,
+                        "turn_error",
+                        json!({
+                            "error": error_msg,
+                        }),
+                    );
+                }
+                error_msg
+            })?;
 
         Ok(TurnRunResult {
             last_agent_message: Some(completion.output_text),
@@ -2665,6 +2710,120 @@ mod tests {
         first_response_mock.assert_async().await;
         tool_execute_pwd_mock.assert_async().await;
         tool_execute_ls_mock.assert_async().await;
+        second_response_mock.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn run_turn_handles_tool_success_false_response() {
+        // When tools.ts returns HTTP 200 + {success:false, error:"..."},
+        // the kernel must parse it as a tool execution error (not crash),
+        // emit ToolError event, and let the model continue reasoning.
+        let mut server = Server::new_async().await;
+
+        let first_response_mock = server
+            .mock("POST", "/v1/responses")
+            .with_status(200)
+            .with_header("content-type", "text/event-stream")
+            .with_body(concat!(
+                "event: response.completed\n",
+                "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_1\",\"output\":[{\"type\":\"function_call\",\"call_id\":\"call_sf\",\"name\":\"shell_exec\",\"arguments\":\"{\\\"cmd\\\":\\\"rm\\\"}\"}]}}\n\n",
+                "data: [DONE]\n\n"
+            ))
+            .expect(1)
+            .create_async()
+            .await;
+
+        // tools.ts returns HTTP 200 but success:false (the real behavior)
+        let tool_execute_mock = server
+            .mock("POST", "/api/v1/tools/execute")
+            .match_body(Matcher::Regex(r#""toolName":"shell.exec""#.to_string()))
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(
+                json!({
+                    "success": false,
+                    "error": "Tool execution denied: permission denied for action",
+                    "toolName": "shell.exec",
+                    "agentId": "chat-codex"
+                })
+                .to_string(),
+            )
+            .expect(1)
+            .create_async()
+            .await;
+
+        let second_response_mock = server
+            .mock("POST", "/v1/responses")
+            .match_body(Matcher::Regex(r#""type":"function_call_output""#.to_string()))
+            .match_body(Matcher::Regex(r#""call_id":"call_sf""#.to_string()))
+            .with_status(200)
+            .with_header("content-type", "text/event-stream")
+            .with_body(concat!(
+                "event: response.completed\n",
+                "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_2\",\"output\":[{\"type\":\"message\",\"content\":[{\"type\":\"output_text\",\"text\":\"I cannot remove that file.\"}]}]}}\n\n",
+                "data: [DONE]\n\n"
+            ))
+            .expect(1)
+            .create_async()
+            .await;
+
+        let engine = ResponsesChatEngine::new(LocalModelConfig {
+            provider_id: "test".to_string(),
+            provider_name: "test".to_string(),
+            base_url: server.url(),
+            wire_api: "responses".to_string(),
+            env_key: "TEST_KEY".to_string(),
+            api_key: "test-key".to_string(),
+            model: "gpt-test".to_string(),
+            tool_daemon_url: server.url(),
+            tool_agent_id: "chat-codex".to_string(),
+        });
+
+        let (progress_tx, mut progress_rx) = tokio::sync::mpsc::unbounded_channel::<EventMsg>();
+        let result = engine
+            .run_turn(
+                &TurnRequest {
+                    items: vec![InputItem::Text {
+                        text: "run failing tool".to_string(),
+                    }],
+                    options: UserTurnOptions {
+                        tools: vec![ToolSpec {
+                            name: "shell.exec".to_string(),
+                            description: Some("Execute shell command".to_string()),
+                            input_schema: Some(json!({
+                                "type": "object",
+                                "properties": { "cmd": { "type": "string" } },
+                                "required": ["cmd"],
+                            })),
+                        }],
+                        tool_execution: Some(ToolExecutionConfig {
+                            daemon_url: server.url(),
+                            agent_id: "chat-codex".to_string(),
+                        }),
+                        ..UserTurnOptions::default()
+                    },
+                },
+                Some(progress_tx),
+            )
+            .await
+            .expect("run turn should succeed even when tool returns success:false");
+        assert_eq!(
+            result.last_agent_message.as_deref(),
+            Some("I cannot remove that file.")
+        );
+
+        let progress_events = drain_progress_events(&mut progress_rx);
+        let tool_error = progress_events.iter().find_map(|event| match event {
+            EventMsg::ToolError(error_event) => Some(error_event),
+            _ => None,
+        });
+        assert!(tool_error.is_some(), "should emit ToolError event for success:false");
+        let tool_error = tool_error.expect("tool error event");
+        assert_eq!(tool_error.tool_name, "shell.exec");
+        assert!(tool_error.error.contains("permission denied"));
+
+        first_response_mock.assert_async().await;
+        tool_execute_mock.assert_async().await;
         second_response_mock.assert_async().await;
     }
 

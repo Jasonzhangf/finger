@@ -8,7 +8,7 @@ import { promises as fs } from 'fs';
 import path from 'path';
 import { FINGER_PATHS } from '../../core/finger-paths.js';
 
-export type AgentStatus = 'idle' | 'busy' | 'stopped' | 'crashed';
+export type AgentStatus = 'idle' | 'busy' | 'stopped' | 'crashed' | 'completed';
 
 export interface AgentStats {
   tasksCompleted: number;

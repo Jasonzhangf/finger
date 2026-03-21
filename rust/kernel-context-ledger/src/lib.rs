@@ -3,6 +3,7 @@ use std::fs::{self, File, OpenOptions};
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
@@ -12,6 +13,7 @@ use time::format_description::well_known::Rfc3339;
 use time::OffsetDateTime;
 
 static ENTRY_COUNTER: AtomicU64 = AtomicU64::new(1);
+static LEDGER_WRITE_MUTEX: Mutex<()> = Mutex::new(());
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct LedgerEntry {
@@ -167,11 +169,14 @@ impl ContextLedger {
             payload,
         };
 
+        let line = serde_json::to_string(&entry)?;
+        let _guard = LEDGER_WRITE_MUTEX.lock().map_err(|_| {
+            ContextLedgerError::InvalidConfig("ledger write lock poisoned".to_string())
+        })?;
         let mut file = OpenOptions::new()
             .create(true)
             .append(true)
             .open(self.ledger_path())?;
-        let line = serde_json::to_string(&entry)?;
         file.write_all(line.as_bytes())?;
         file.write_all(b"\n")?;
         file.flush()?;
@@ -197,11 +202,14 @@ impl ContextLedger {
             "payload": payload,
         });
 
+        let line = serde_json::to_string(&entry)?;
+        let _guard = LEDGER_WRITE_MUTEX.lock().map_err(|_| {
+            ContextLedgerError::InvalidConfig("compact memory write lock poisoned".to_string())
+        })?;
         let mut file = OpenOptions::new()
             .create(true)
             .append(true)
             .open(self.compact_memory_path())?;
-        let line = serde_json::to_string(&entry)?;
         file.write_all(line.as_bytes())?;
         file.write_all(b"\n")?;
         file.flush()?;

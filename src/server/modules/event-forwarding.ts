@@ -1,14 +1,23 @@
+import { logger } from '../../core/logger.js';
 import type { SessionManager } from '../../orchestration/session-manager.js';
 import type { UnifiedEventBus } from '../../runtime/event-bus.js';
 import type { AgentStepCompletedEvent, ToolCallEvent, ToolErrorEvent, ToolResultEvent } from '../../runtime/events.js';
 import type { ChatCodexLoopEvent } from '../../agents/finger-general/finger-general-module.js';
+import type { AgentStatusSubscriber } from './agent-status-subscriber.js';
 import { isObjectRecord } from '../common/object.js';
-import { sanitizeDispatchResult } from '../../common/agent-dispatch.js';
+import {
+  buildAgentStepContent,
+  buildDispatchFeedbackPayload,
+  buildLedgerPointerInfo,
+  extractLoopToolTrace,
+  formatLedgerPointerContent,
+} from './event-forwarding-helpers.js';
 
 export interface EventForwardingDeps {
   eventBus: UnifiedEventBus;
   broadcast: (message: Record<string, unknown>) => void;
   sessionManager: SessionManager;
+  agentStatusSubscriber?: AgentStatusSubscriber;
   runtimeInstructionBus: { push: (workflowId: string, content: string) => void };
   inferAgentRoleLabel: (agentId: string) => string;
   formatDispatchResultContent: (result: unknown, error?: string) => string;
@@ -17,7 +26,7 @@ export interface EventForwardingDeps {
 }
 
 type SessionEventRecord = {
-  type: 'tool_call' | 'tool_result' | 'tool_error' | 'agent_step';
+  type: 'tool_call' | 'tool_result' | 'tool_error' | 'agent_step' | 'reasoning';
   agentId?: string;
   toolName?: string;
   toolStatus?: 'success' | 'error';
@@ -27,79 +36,6 @@ type SessionEventRecord = {
   metadata?: Record<string, unknown>;
 };
 
-interface LoopToolTraceItem {
-  callId?: string;
-  tool: string;
-  status: 'ok' | 'error';
-  input?: unknown;
-  output?: unknown;
-  error?: string;
-  durationMs?: number;
-}
-
-function buildDispatchFeedbackPayload(payload: Record<string, unknown>): Record<string, unknown> {
-  const summarized = sanitizeDispatchResult(payload.result);
-  return {
-    role: 'user',
-    from: typeof payload.targetAgentId === 'string' ? payload.targetAgentId : 'unknown-assignee',
-    status: payload.status === 'completed' ? 'complete' : 'error',
-    dispatchId: typeof payload.dispatchId === 'string' ? payload.dispatchId : '',
-    ...(typeof summarized.childSessionId === 'string' ? { childSessionId: summarized.childSessionId } : {}),
-    summary: summarized.summary,
-    result: summarized,
-    ...(typeof payload.sourceAgentId === 'string' ? { sourceAgentId: payload.sourceAgentId } : {}),
-    ...(typeof payload.error === 'string' && payload.error.trim().length > 0 ? { error: payload.error } : {}),
-  };
-}
-
-function extractLoopToolTrace(raw: unknown): LoopToolTraceItem[] {
-  if (!Array.isArray(raw)) return [];
-  const items: LoopToolTraceItem[] = [];
-  for (const entry of raw) {
-    if (!isObjectRecord(entry)) continue;
-    const tool = typeof entry.tool === 'string' ? entry.tool.trim() : '';
-    if (!tool) continue;
-    const status: LoopToolTraceItem['status'] = entry.status === 'error' ? 'error' : 'ok';
-    const callId = typeof entry.callId === 'string' && entry.callId.trim().length > 0
-      ? entry.callId.trim()
-      : typeof entry.call_id === 'string' && entry.call_id.trim().length > 0
-        ? entry.call_id.trim()
-        : undefined;
-    const error = typeof entry.error === 'string' && entry.error.trim().length > 0 ? entry.error.trim() : undefined;
-    const durationMs = typeof entry.durationMs === 'number' && Number.isFinite(entry.durationMs)
-      ? Math.round(entry.durationMs)
-      : typeof entry.duration_ms === 'number' && Number.isFinite(entry.duration_ms)
-        ? Math.round(entry.duration_ms)
-        : undefined;
-    items.push({
-      ...(callId ? { callId } : {}),
-      tool,
-      status,
-      ...(entry.input !== undefined ? { input: entry.input } : {}),
-      ...(entry.output !== undefined ? { output: entry.output } : {}),
-      ...(error ? { error } : {}),
-      ...(durationMs !== undefined ? { durationMs } : {}),
-    });
-  }
-  return items;
-}
-
-function buildAgentStepContent(payload: AgentStepCompletedEvent['payload']): string {
-  const parts: string[] = [];
-  if (typeof payload.thought === 'string' && payload.thought.trim().length > 0) {
-    parts.push(`思考: ${payload.thought.trim()}`);
-  }
-  if (typeof payload.action === 'string' && payload.action.trim().length > 0) {
-    parts.push(`动作: ${payload.action.trim()}`);
-  }
-  if (typeof payload.observation === 'string' && payload.observation.trim().length > 0) {
-    parts.push(`观察: ${payload.observation.trim()}`);
-  }
-  if (parts.length === 0) {
-    return 'agent step 完成';
-  }
-  return parts.join('\n');
-}
 
 export function attachEventForwarding(deps: EventForwardingDeps): {
   emitLoopEventToEventBus: (event: ChatCodexLoopEvent) => void;
@@ -108,6 +44,7 @@ export function attachEventForwarding(deps: EventForwardingDeps): {
     eventBus,
     broadcast,
     sessionManager,
+    agentStatusSubscriber,
     runtimeInstructionBus,
     inferAgentRoleLabel,
     formatDispatchResultContent,
@@ -115,9 +52,39 @@ export function attachEventForwarding(deps: EventForwardingDeps): {
     generalAgentId,
   } = deps;
 
-  const persistSessionEventMessage = (sessionId: string, content: string, detail: SessionEventRecord): void => {
+  const persistSessionEventMessage = (
+    sessionId: string,
+    content: string,
+    detail: SessionEventRecord,
+    role: 'user' | 'assistant' | 'system' | 'orchestrator' = 'system',
+  ): void => {
     if (!sessionId || sessionId.trim().length === 0) return;
-    sessionManager.addMessage(sessionId, 'system', content, detail);
+    sessionManager.addMessage(sessionId, role, content, detail);
+  };
+
+  const hasLedgerPointerMessage = (sessionId: string, label: string): boolean => {
+    const messages = sessionManager.getMessages(sessionId, 0);
+    return messages.some((message) => message.type === 'ledger_pointer'
+      && isObjectRecord(message.metadata)
+      && isObjectRecord(message.metadata.ledgerPointer)
+      && message.metadata.ledgerPointer.label === label);
+  };
+
+  const addLedgerPointerMessage = (sessionId: string, label: string, agentId: string): void => {
+    if (!sessionId || sessionId.trim().length === 0) return;
+    if (hasLedgerPointerMessage(sessionId, label)) return;
+    const pointerInfo = buildLedgerPointerInfo({ sessionId, agentId });
+    const content = formatLedgerPointerContent(pointerInfo, label);
+    sessionManager.addMessage(sessionId, 'system', content, {
+      type: 'ledger_pointer',
+      agentId,
+      metadata: {
+        ledgerPointer: {
+          label,
+          ...pointerInfo,
+        },
+      },
+    });
   };
 
   const emitToolStepEventsFromLoopEvent = (event: ChatCodexLoopEvent): void => {
@@ -184,6 +151,54 @@ export function attachEventForwarding(deps: EventForwardingDeps): {
       },
     });
 
+    // On turn_start, inject main session ledger pointer
+    if (event.phase === 'turn_start') {
+      addLedgerPointerMessage(event.sessionId, 'main', generalAgentId);
+    }
+
+    // Persist reasoning events into session
+    if (event.phase === 'kernel_event' && event.payload.type === 'reasoning') {
+      const reasoningText = typeof event.payload.text === 'string'
+        ? event.payload.text.trim()
+        : '';
+      if (reasoningText.length > 0) {
+        // Use 'assistant' role so reasoning is included in next-turn context
+        const reasoningAgentId = typeof event.payload.agentId === 'string' && event.payload.agentId.trim().length > 0
+          ? event.payload.agentId.trim()
+          : generalAgentId;
+        const roleProfile = typeof event.payload.roleProfile === 'string' && event.payload.roleProfile.trim().length > 0
+          ? event.payload.roleProfile.trim()
+          : 'orchestrator';
+        const contentPrefix = `[role=${roleProfile} agent=${reasoningAgentId}] `;
+        persistSessionEventMessage(
+          event.sessionId,
+          `${contentPrefix}思考: ${reasoningText}`,
+          {
+            type: 'reasoning',
+            agentId: reasoningAgentId,
+            metadata: {
+              role: roleProfile,
+              agentId: reasoningAgentId,
+              event: event.payload,
+              fullReasoningText: reasoningText,
+            },
+          },
+          'assistant', // Use assistant role so it's included in kernel history
+        );
+        
+        // Send reasoning to channel bridge (QQBot) using session-envelope mapping
+        if (agentStatusSubscriber) {
+          agentStatusSubscriber.sendReasoningUpdate(event.sessionId, reasoningAgentId, reasoningText)
+            .catch((err) => {
+              logger.module('event-forwarding').error(
+                'Failed to send reasoning to channel',
+                err instanceof Error ? err : new Error(String(err))
+              );
+            });
+        }
+      }
+    }
+
     if (event.phase === 'kernel_event' && event.payload.type === 'model_round') {
       const contextUsagePercent = typeof event.payload.contextUsagePercent === 'number'
         ? event.payload.contextUsagePercent
@@ -243,7 +258,7 @@ export function attachEventForwarding(deps: EventForwardingDeps): {
     },
   );
 
-  console.log('[Server] EventBus subscription enabled: task_started, task_completed, task_failed, workflow_progress, phase_transition');
+  logger.module('event-forwarding').info('EventBus subscription enabled: task_started, task_completed, task_failed, workflow_progress, phase_transition');
 
   eventBus.subscribeMultiple(
     ['task_started', 'task_completed', 'task_failed', 'workflow_progress', 'phase_transition'],
@@ -304,7 +319,7 @@ export function attachEventForwarding(deps: EventForwardingDeps): {
     },
   );
 
-  console.log('[Server] EventBus agent forwarding enabled: agent_thought, agent_action, agent_observation, agent_step_completed');
+  logger.module('event-forwarding').info('EventBus agent forwarding enabled: agent_thought, agent_action, agent_observation, agent_step_completed');
 
   eventBus.subscribe('tool_call', (event) => {
     if (event.type !== 'tool_call') return;
@@ -350,6 +365,23 @@ export function attachEventForwarding(deps: EventForwardingDeps): {
       metadata: { event: toolEvent },
     });
   });
+  // ── 补充：tool_error 也要 broadcast 到 WebSocket/QQBot ──
+  eventBus.subscribe('tool_error', (event) => {
+    if (event.type !== 'tool_error') return;
+    const toolEvent = event as ToolErrorEvent;
+    broadcast({
+      type: 'tool_error',
+      sessionId: toolEvent.sessionId,
+      agentId: toolEvent.agentId,
+      timestamp: event.timestamp,
+      payload: {
+        toolId: toolEvent.toolId,
+        toolName: toolEvent.toolName,
+        error: toolEvent.payload?.error ?? 'unknown',
+        ...(typeof toolEvent.payload?.duration === 'number' ? { duration: toolEvent.payload.duration } : {}),
+      },
+    });
+  });
 
   eventBus.subscribe('agent_step_completed', (event) => {
     if (event.type !== 'agent_step_completed') return;
@@ -391,7 +423,7 @@ export function attachEventForwarding(deps: EventForwardingDeps): {
     },
   );
 
-  console.log('[Server] EventBus agent_step_completed forwarding enabled for detailed agent updates');
+  logger.module('event-forwarding').info('EventBus agent_step_completed forwarding enabled for detailed agent updates');
 
   eventBus.subscribe(
     'agent_runtime_dispatch',
@@ -431,6 +463,18 @@ export function attachEventForwarding(deps: EventForwardingDeps): {
           }
         }
       }
+      // Inject child session ledger pointer on dispatch completion
+      if ((status === 'completed' || status === 'failed') && sessionId) {
+        const childSessionId = asString(payload.childSessionId)
+          ?? (isObjectRecord(payload.result)
+            ? asString((payload.result as Record<string, unknown>).childSessionId)
+              ?? asString((payload.result as Record<string, unknown>).sessionId)
+            : undefined);
+        if (childSessionId) {
+          addLedgerPointerMessage(sessionId, `child:${childSessionId}`, targetAgentId);
+        }
+      }
+
       if (status !== 'completed' && status !== 'failed') return;
       if (!assignment) return;
 
@@ -461,7 +505,7 @@ export function attachEventForwarding(deps: EventForwardingDeps): {
     },
   );
 
-  console.log('[Server] EventBus orchestrator feedback forwarding enabled: agent_runtime_dispatch');
+  logger.module('event-forwarding').info('EventBus orchestrator feedback forwarding enabled: agent_runtime_dispatch');
 
   return { emitLoopEventToEventBus };
 }

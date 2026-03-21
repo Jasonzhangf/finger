@@ -35,7 +35,7 @@ export interface SessionMessage {
   workflowId?: string;
   taskId?: string;
   attachments?: Attachment[];
-  type?: 'text' | 'command' | 'plan_update' | 'task_update' | 'tool_call' | 'tool_result' | 'tool_error' | 'agent_step' | 'dispatch';
+  type?: 'text' | 'command' | 'plan_update' | 'task_update' | 'tool_call' | 'tool_result' | 'tool_error' | 'agent_step' | 'dispatch' | 'reasoning' | 'ledger_pointer';
   agentId?: string;
   toolName?: string;
   toolStatus?: 'success' | 'error';

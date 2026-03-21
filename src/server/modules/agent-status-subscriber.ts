@@ -15,95 +15,23 @@
 
 import type { AgentRuntimeDeps } from './agent-runtime/types.js';
 import type { UnifiedEventBus } from '../../runtime/event-bus.js';
-import type { RuntimeEvent } from '../../runtime/events.js';
+import type { RuntimeEvent, ToolErrorEvent, SystemErrorEvent } from '../../runtime/events.js';
+import type { ChannelBridgeEnvelope } from '../../bridges/envelope.js';
+import {
+  type SubscriptionLevel,
+  type AgentSubscriptionConfig,
+  type SessionEnvelopeMapping,
+  type TaskContext,
+  type AgentInfo,
+  type WrappedStatusUpdate,
+  KEY_STATE_CHANGES,
+} from './agent-status-subscriber-types.js';
+import { wrapStatusUpdate, getAgentIcon } from './agent-status-subscriber-helpers.js';
 import { logger } from '../../core/logger.js';
 
 const log = logger.module('AgentStatusSubscriber');
 
-/**
- * 订阅级别
- */
-export type SubscriptionLevel = 'detailed' | 'summary';
-
-/**
- * Agent 订阅配置
- */
-export interface AgentSubscriptionConfig {
-  agentId: string;
-  level: SubscriptionLevel;
-  parentAgentId?: string; // 父 Agent ID（如果是子 Agent）
-}
-
-export interface SessionEnvelopeMapping {
-  sessionId: string;
-  envelope: {
-    channel: string;
-    envelopeId: string;
-    userId?: string;
-    groupId?: string;
-  };
-  timestamp: number;
-}
-
-/**
- * 任务上下文信息
- */
-export interface TaskContext {
-  taskId?: string;
-  taskDescription?: string;
-  sourceAgentId?: string;
-  targetAgentId?: string;
-}
-
-/**
- * Agent 信息
- */
-export interface AgentInfo {
-  agentId: string;
-  agentName?: string;
-  agentRole?: 'orchestrator' | 'executor' | 'reviewer' | 'searcher';
-}
-
-/**
- * 包装后的状态更新事件
- */
-export interface WrappedStatusUpdate {
-  // 事件元数据
-  type: 'agent_status';
-  eventId: string;
-  timestamp: string;
-
-  // 会话信息
-  sessionId: string;
-  conversationId?: string;
-
-  // 任务上下文
-  task: TaskContext;
-
-  // Agent 信息
-  agent: AgentInfo;
-
-  // 状态信息
-  status: {
-    state: 'running' | 'completed' | 'failed' | 'paused' | 'waiting';
-    progress?: number; // 0-100
-    summary: string;
-    details?: Record<string, unknown>;
-  };
-
-  // 客户端展示信息
-  display: {
-    title: string;
-    subtitle?: string;
-    icon?: string;
-    level: SubscriptionLevel; // 详细 vs 粗糙
-  };
-}
-
-/**
- * 状态变化事件类型（用于粗糙订阅）
- */
-const KEY_STATE_CHANGES = ['completed', 'failed', 'paused', 'waiting'];
+export type { SubscriptionLevel, AgentSubscriptionConfig, SessionEnvelopeMapping, TaskContext, AgentInfo, WrappedStatusUpdate };
 
 export class AgentStatusSubscriber {
   private unsubscribe: (() => void) | null = null;
@@ -130,9 +58,9 @@ export class AgentStatusSubscriber {
 
     log.info('[AgentStatusSubscriber] Starting...');
 
-    // 订阅 agent_runtime_status 和 agent_runtime_dispatch 事件
+    // 订阅 agent_runtime_status / agent_runtime_dispatch / tool_error / system_error 事件
     this.unsubscribe = this.eventBus.subscribeMultiple(
-      ['agent_runtime_status', 'agent_runtime_dispatch'],
+      ['agent_runtime_status', 'agent_runtime_dispatch', 'tool_error', 'system_error'],
       (event: RuntimeEvent) => {
         this.handleEvent(event).catch(err => {
           log.error('[AgentStatusSubscriber] Error handling event:', err);
@@ -144,6 +72,52 @@ export class AgentStatusSubscriber {
     this.startCleanup();
 
     log.info('[AgentStatusSubscriber] Started');
+  }
+
+  /**
+   * 发送 reasoning 更新到通道（用于 QQBot）
+   */
+  async sendReasoningUpdate(sessionId: string, agentId: string, reasoningText: string): Promise<void> {
+    const mapping = this.resolveEnvelopeMapping(sessionId);
+    if (!mapping) {
+      log.warn('[AgentStatusSubscriber] No envelope mapping for reasoning update', { sessionId, agentId });
+      return;
+    }
+    if (!this.messageHub) {
+      log.warn('[AgentStatusSubscriber] No messageHub available for reasoning update');
+      return;
+    }
+
+    const outputId = 'channel-bridge-' + mapping.envelope.channel;
+    const originalEnvelope: ChannelBridgeEnvelope = {
+      id: mapping.envelope.envelopeId,
+      channelId: mapping.envelope.channel,
+      accountId: 'default',
+      type: mapping.envelope.groupId ? 'group' : 'direct',
+      senderId: mapping.envelope.userId || 'unknown',
+      senderName: 'user',
+      content: '',
+      timestamp: Date.now(),
+      metadata: {
+        messageId: mapping.envelope.envelopeId,
+        ...(mapping.envelope.groupId ? { groupId: mapping.envelope.groupId } : {}),
+      },
+    };
+
+    const content = `思考：${reasoningText}`;
+    const message = {
+      channelId: mapping.envelope.channel,
+      target: mapping.envelope.groupId ? `group:${mapping.envelope.groupId}` : (mapping.envelope.userId || 'unknown'),
+      content,
+      originalEnvelope,
+      reasoning: {
+        sessionId,
+        agentId,
+      },
+    };
+
+    await this.messageHub.routeToOutput(outputId, message);
+    log.debug('[AgentStatusSubscriber] Sent reasoning update via MessageHub: ' + outputId);
   }
 
   /**
@@ -206,7 +180,7 @@ export class AgentStatusSubscriber {
    * 注册 sessionId 与 envelope 的映射
    */
   registerSession(sessionId: string, envelope: SessionEnvelopeMapping['envelope']): void {
-    log.debug(`[AgentStatusSubscriber] Registering session ${sessionId}`);
+    log.info(`[AgentStatusSubscriber] Registering session ${sessionId}`);
     this.sessionEnvelopeMap.set(sessionId, {
       sessionId,
       envelope,
@@ -227,6 +201,22 @@ export class AgentStatusSubscriber {
   private resolveEnvelopeMapping(sessionId: string): SessionEnvelopeMapping | null {
     const direct = this.sessionEnvelopeMap.get(sessionId);
     if (direct) return direct;
+
+    // fallback: default/system session -> real system session mapping
+    if (sessionId === 'default' || sessionId === 'system-default-session') {
+      const getSystemSession = (this.deps.sessionManager as any).getOrCreateSystemSession;
+      if (typeof getSystemSession === 'function') {
+        const systemSession = getSystemSession.call(this.deps.sessionManager);
+        const systemMapping = systemSession ? this.sessionEnvelopeMap.get(systemSession.id) : null;
+        if (systemMapping) {
+          return {
+            sessionId,
+            envelope: systemMapping.envelope,
+            timestamp: Date.now(),
+          };
+        }
+      }
+    }
 
     const session = this.deps.sessionManager.getSession(sessionId);
     if (!session) return null;
@@ -260,7 +250,80 @@ export class AgentStatusSubscriber {
       await this.handleDispatch(event);
     } else if (event.type === 'agent_runtime_status') {
       await this.handleStatus(event);
+    } else if (event.type === 'tool_error') {
+      await this.handleToolError(event as ToolErrorEvent);
+    } else if (event.type === 'system_error') {
+      await this.handleSystemError(event as SystemErrorEvent);
     }
+  }
+
+  /**
+   * 处理 tool_error 事件
+   */
+  private async handleToolError(event: ToolErrorEvent): Promise<void> {
+    const agentId = event.agentId || 'unknown-agent';
+    const sessionId = event.sessionId;
+    const mapping = this.resolveEnvelopeMapping(sessionId);
+    if (!mapping) return;
+
+    const agentInfo = await this.getAgentInfo(agentId);
+    const wrappedUpdate: WrappedStatusUpdate = {
+      type: 'agent_status',
+      eventId: event.toolId || `tool-error-${Date.now()}`,
+      timestamp: event.timestamp,
+      sessionId,
+      task: {
+        targetAgentId: agentId,
+        taskDescription: `工具失败: ${event.toolName}`,
+      },
+      agent: agentInfo,
+      status: {
+        state: 'failed',
+        summary: `工具失败: ${event.toolName}`,
+        details: { error: event.payload?.error, toolName: event.toolName },
+      },
+      display: {
+        title: `${agentInfo.agentName || agentId} 工具失败` ,
+        subtitle: event.payload?.error,
+        icon: getAgentIcon(agentInfo.agentRole),
+        level: 'detailed',
+      },
+    };
+
+    await this.sendStatusUpdate(mapping.envelope, wrappedUpdate);
+  }
+
+  /**
+   * 处理 system_error 事件
+   */
+  private async handleSystemError(event: SystemErrorEvent): Promise<void> {
+    const sessionId = event.sessionId;
+    const mapping = this.resolveEnvelopeMapping(sessionId);
+    if (!mapping) return;
+
+    const wrappedUpdate: WrappedStatusUpdate = {
+      type: 'agent_status',
+      eventId: `system-error-${Date.now()}`,
+      timestamp: event.timestamp,
+      sessionId,
+      task: {
+        taskDescription: '系统错误',
+      },
+      agent: { agentId: 'system' },
+      status: {
+        state: 'failed',
+        summary: event.payload?.error || '系统错误',
+        details: { component: event.payload?.component, recoverable: event.payload?.recoverable },
+      },
+      display: {
+        title: '系统错误',
+        subtitle: event.payload?.error,
+        icon: '⚠️',
+        level: 'detailed',
+      },
+    };
+
+    await this.sendStatusUpdate(mapping.envelope, wrappedUpdate);
   }
 
   /**
@@ -320,7 +383,7 @@ export class AgentStatusSubscriber {
     };
 
     // 包装状态更新
-    const wrappedUpdate = this.wrapStatusUpdate(event, payload, agentInfo, taskContext, level);
+    const wrappedUpdate = wrapStatusUpdate(event, payload, agentInfo, taskContext, level);
 
     // 查找对应的 session
     const sessionId = event.sessionId;
@@ -362,72 +425,6 @@ export class AgentStatusSubscriber {
   /**
    * 包装状态更新事件
    */
-  private wrapStatusUpdate(
-    event: RuntimeEvent,
-    payload: any,
-    agentInfo: AgentInfo,
-    taskContext: TaskContext,
-    level: SubscriptionLevel
-  ): WrappedStatusUpdate {
-    const statusMap: Record<string, WrappedStatusUpdate['status']['state']> = {
-      'running': 'running',
-      'idle': 'completed',
-      'error': 'failed',
-      'paused': 'paused',
-      'waiting_input': 'waiting',
-      'completed': 'completed',
-      'failed': 'failed',
-    };
-
-    const state = statusMap[payload.status] || 'running';
-
-    const update: WrappedStatusUpdate = {
-      type: 'agent_status',
-      eventId: `evt-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`,
-      timestamp: event.timestamp,
-
-      sessionId: event.sessionId,
-
-      task: taskContext,
-
-      agent: agentInfo,
-
-      status: {
-        state,
-        summary: payload.summary || `${agentInfo.agentName || agentInfo.agentId} ${state}`,
-      },
-
-      display: {
-        title: `${agentInfo.agentName || agentInfo.agentId} 任务状态`,
-        subtitle: taskContext.taskDescription || payload.summary,
-        icon: this.getAgentIcon(agentInfo.agentRole),
-        level,
-      },
-    };
-
-    // 详细订阅时添加更多信息
-    if (level === 'detailed') {
-      update.status.details = {
-        rawStatus: payload.status,
-        scope: payload.scope,
-      };
-    }
-
-    return update;
-  }
-
-  /**
-   * 获取 Agent 图标
-   */
-  private getAgentIcon(role?: string): string {
-    const icons: Record<string, string> = {
-      'orchestrator': '🎯',
-      'executor': '⚡',
-      'reviewer': '🔍',
-      'searcher': '🔎',
-    };
-    return icons[role || ''] || '🤖';
-  }
 
   /**
    * 发送状态更新到通信通道
@@ -447,11 +444,29 @@ export class AgentStatusSubscriber {
       // 通过 MessageHub 路由到 channel-bridge output
       if (this.messageHub) {
         const outputId = 'channel-bridge-' + envelope.channel;
+        const originalEnvelope: ChannelBridgeEnvelope = {
+          id: envelope.envelopeId,
+          channelId: envelope.channel,
+          accountId: 'default',
+          type: envelope.groupId ? 'group' : 'direct',
+          senderId: envelope.userId || 'unknown',
+          senderName: 'user',
+          content: '',
+          timestamp: Date.now(),
+          metadata: {
+            messageId: envelope.envelopeId,
+            ...(envelope.groupId ? { groupId: envelope.groupId } : {}),
+          },
+        };
+
+        const text = `${statusUpdate.display.title}\n${statusUpdate.status.summary}`
+          + (statusUpdate.display.subtitle ? `\n${statusUpdate.display.subtitle}` : '');
+
         const message = {
           channelId: envelope.channel,
-          envelopeId: envelope.envelopeId,
-          userId: envelope.userId,
-          groupId: envelope.groupId,
+          target: envelope.groupId ? `group:${envelope.groupId}` : (envelope.userId || 'unknown'),
+          content: text,
+          originalEnvelope,
           statusUpdate,
         };
 

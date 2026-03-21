@@ -26,6 +26,10 @@ output/
 ui/dist/
 ui/node_modules/
 
+# Runtime cache files
+CACHE.md
+MEMORY.md
+
 # Local screenshots
 *.png
 *.html

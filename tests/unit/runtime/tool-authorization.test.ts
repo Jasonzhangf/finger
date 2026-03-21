@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { ToolAuthorizationManager } from '../../../src/runtime/tool-authorization.js';
+import { setAgentAuthorizationMode, getAgentAuthorizationMode } from '../../../src/runtime/tool-authorization-context.js';
 
 describe('ToolAuthorizationManager', () => {
   it('issues token and consumes once', () => {
@@ -20,5 +21,12 @@ describe('ToolAuthorizationManager', () => {
     const decision = manager.verifyAndConsume(grant.token, 'agent-2', 'shell.exec');
     expect(decision.allowed).toBe(false);
     expect(decision.reason).toContain('scope mismatch');
+  });
+});
+
+describe('tool-authorization-context', () => {
+  it('stores and returns agent authorization mode', () => {
+    setAgentAuthorizationMode('agent-1', 'auto', 'qqbot');
+    expect(getAgentAuthorizationMode('agent-1')).toBe('auto');
   });
 });

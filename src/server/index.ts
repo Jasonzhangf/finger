@@ -17,7 +17,6 @@ import {
 import { ModuleRegistry } from '../orchestration/module-registry.js';
 import { GatewayManager } from '../gateway/gateway-manager.js';
 // SessionManager accessed via shared-instances
-import { loadAutostartAgents } from '../orchestration/autostart-loader.js';
 import { sharedWorkflowManager, sharedMessageHub, sharedSessionManager } from '../orchestration/shared-instances.js';
 import { runtimeInstructionBus } from '../orchestration/runtime-instruction-bus.js';
 import { AskManager } from '../orchestration/ask/ask-manager.js';
@@ -43,9 +42,8 @@ import {
   FINGER_RESEARCHER_ALLOWED_TOOLS,
   FINGER_REVIEWER_AGENT_ID,
   FINGER_REVIEWER_ALLOWED_TOOLS,
-  FINGER_SYSTEM_AGENT_ID,
+ FINGER_SYSTEM_AGENT_ID,
   FINGER_SYSTEM_ALLOWED_TOOLS,
-  ProcessChatCodexRunner,
 } from '../agents/finger-general/finger-general-module.js';
 import { mailbox } from './mailbox.js';
 import { BdTools } from '../agents/shared/bd-tools.js';
@@ -56,17 +54,23 @@ import { AgentStatusSubscriber } from './modules/agent-status-subscriber.js';
 import { SystemAgentManager } from './modules/system-agent-manager.js';
 import { createSessionWorkspaceManager } from './modules/session-workspaces.js';
 import { attachEventForwarding } from './modules/event-forwarding.js';
-import { createMockRuntimeKit, type ChatCodexRunnerController } from './modules/mock-runtime.js';
 import { ensureSingleInstance } from './modules/port-guard.js';
 import { writeFileSync, unlinkSync, existsSync } from 'fs';
-import { createOrchestrationConfigApplier } from './modules/orchestration-config-applier.js';
 import { createSessionLoggingHelpers } from './modules/session-logging.js';
 import { registerFingerRoleModules } from './modules/finger-role-modules.js';
 import { createAgentConfigReloader } from './modules/agent-config-reloader.js';
 import { registerDefaultModuleRoutes } from './modules/module-registry-bootstrap.js';
 import { resolveRuntimeFlags, shouldUseMockChatCodexRunner } from './modules/server-flags.js';
-import { registerMockRuntimeModules } from './modules/mock-runtime-setup.js';
 import { HeartbeatScheduler } from './modules/heartbeat-scheduler.js';
+import {
+  loadChannelBridgeConfigs,
+  registerChannelBridgeOutputs,
+} from './modules/channel-bridge-bootstrap.js';
+import { initOpenClawGate, writePidFile, cleanupPidFile } from './modules/server-lifecycle.js';
+import { startServer } from './modules/server-startup.js';
+import { setupChatCodexRunner } from './modules/runner-setup.js';
+import { setupAgentRuntime } from './modules/agent-runtime-setup.js';
+import { runPostInit } from './modules/server-postinit.js';
 import {
   dispatchTaskToAgent as dispatchTaskToAgentModule,
   registerAgentRuntimeTools,
@@ -76,7 +80,6 @@ import type { AgentDispatchRequest } from './modules/agent-runtime/types.js';
 import { createChannelBridgeHubRoute } from './modules/channel-bridge-hub-route.js';
 import { checkAIProviderConfig } from './modules/ai-provider-config.js';
 
-import { registerAllRoutes } from './routes/index.js';
 import { ensureFingerLayout, FINGER_PATHS } from '../core/finger-paths.js';
 import { syncUserSettingsToKernelConfig } from '../core/user-settings-sync.js';
 import {
@@ -104,13 +107,11 @@ import {
   testKernelProvider,
   upsertKernelProvider,
 } from './provider-config.js';
-import { AgentRuntimeBlock } from '../blocks/index.js';
 import { OpenClawGateBlock, type OpenClawGateEvent } from '../blocks/openclaw-gate/index.js';
 import { loadInputsConfig, loadOutputsConfig } from '../core/config-loader.js';
 import { toOpenClawToolDefinition } from '../orchestration/openclaw-adapter/index.js';
 import { initializeBlockRegistry } from './modules/block-registry-bootstrap.js';
 import { getChannelBridgeManager, type ChannelBridgeConfig } from '../bridges/index.js';
-import { createChannelBridgeOutput } from '../bridges/channel-bridge-output.js';
 import type { ChannelMessage } from '../bridges/types.js';
 import fs from 'fs';
 import path from 'path';
@@ -161,18 +162,14 @@ app.get('/', (_req, res) => {
 });
 
 app.use((req, _res, next) => {
-  console.log(`[${new Date().toISOString()}] ${req.method} ${req.url}`);
+  logger.module('server').debug(`${req.method} ${req.url}`);
   next();
 });
 
 // Initialize Channel Bridge Manager
 const channelBridgeManager = getChannelBridgeManager({
   onMessage: async (msg: ChannelMessage) => {
-    console.log('[Server] Received channel message:', msg.id, 'from', msg.senderId);
-    console.log('[Server] Routing via MessageHub (dynamic mode)', {
-      channelId: msg.channelId,
-      msgId: msg.id,
-    });
+    logger.module('channel-bridge').info('Received channel message', { msgId: msg.id, senderId: msg.senderId, channelId: msg.channelId });
 
     await hub.send({
       type: `channel.${msg.channelId}`,
@@ -183,163 +180,18 @@ const channelBridgeManager = getChannelBridgeManager({
       },
     });
 
-    console.log('[Server] Message sent to MessageHub');
+    logger.module('channel-bridge').debug('Message sent to MessageHub');
   },
   onError: (err: Error) => {
-    console.error('[Server] Channel bridge error:', err);
+    logger.module('channel-bridge').error('Channel bridge error', err instanceof Error ? err : undefined);
   },
   onReady: () => {
-    console.log('[Server] Channel bridge ready');
+    logger.module('channel-bridge').info('Channel bridge ready');
   },
   onClose: () => {
-    console.log('[Server] Channel bridge closed');
+    logger.module('channel-bridge').info('Channel bridge closed');
   },
 });
-
-// Track registered ChannelBridgeOutput modules for cleanup
-const channelBridgeOutputs: Array<{ channelId: string; unregister: () => void }> = [];
-
-export async function loadChannelBridgeConfigs(configDir?: string): Promise<void> {
-  console.log('[Server] loadChannelBridgeConfigs called');
-  const effectiveConfigDir = configDir ?? FINGER_PATHS.config.dir;
-  const channelsConfigPath = path.join(effectiveConfigDir, 'channels.json');
-  let configs: ChannelBridgeConfig[] = [];
-
-  try {
-    if (fs.existsSync(channelsConfigPath)) {
-      const raw = fs.readFileSync(channelsConfigPath, 'utf-8');
-      const parsed = JSON.parse(raw);
-     configs = parsed.channels || [];
-
-     // 检查是否禁用daemon中的channel bridge
-     // 如果设置为false，则不加载，用户可以使用独立的gateway bridge CLI
-     const enabledInDaemon = parsed.enabledInDaemon !== false; // 默认为true
-     if (!enabledInDaemon) {
-       console.log('[Server] Channel bridge disabled in daemon (enabledInDaemon: false), skipping load');
-       console.log('[Server] Use "finger-gateway-bridge start" command to start channel bridge independently');
-       return;
-     }
-
-     console.log('[Server] Found channels config file, channels:', configs.length);
-    } else {
-      console.log('[Server] channels.json not found at:', channelsConfigPath);
-    }
-  } catch (err) {
-    console.warn('[Server] Failed to load channels config:', err);
-  }
-
-  if (configs.length > 0) {
-    console.log('[Server] Loading channel bridge configs...');
-    try {
-      await channelBridgeManager.loadConfigs(configs);
-      console.log('[Server] Loaded', configs.length, 'channel bridge configs successfully');
-      await registerChannelBridgeOutputs(configs);
-    } catch (err) {
-      console.error('[Server] Failed to load channel bridges:', err instanceof Error ? err.message : String(err));
-    }
-  } else {
-    console.log('[Server] No channel bridge configs to load');
-  }
-}
-
-// Register ChannelBridgeOutput modules for enabled channels (called after loadChannelBridgeConfigs)
-export async function registerChannelBridgeOutputs(configs: ChannelBridgeConfig[]): Promise<void> {
-  const registeredChannels = new Set<string>();
-  for (const config of configs) {
-    if (!config.enabled || !config.channelId) continue;
-
-    if (registeredChannels.has(config.channelId)) continue;
-    registeredChannels.add(config.channelId);
-
-    const outputModule = createChannelBridgeOutput({
-      channelId: config.channelId,
-      hub: sharedMessageHub,
-      bridgeManager: channelBridgeManager,
-    });
-
-    outputModule.register();
-    channelBridgeOutputs.push({
-      channelId: config.channelId,
-      unregister: () => outputModule.unregister(),
-    });
-
-    console.log('[Server] Registered ChannelBridgeOutput for channel:', config.channelId);
-  }
-
-  if (registeredChannels.size > 0) {
-    console.log('[Server] Registered ChannelBridgeOutput for', registeredChannels.size, 'channel(s)');
-  }
-}
-// Check AI provider configuration
-
-const inputsCfg = loadInputsConfig();
-const outputsCfg = loadOutputsConfig();
-
-const openClawInputConfig = inputsCfg.inputs.find((item) => item.kind === 'openclaw' && item.enabled)?.config as { pluginDir?: string } | undefined;
-const openClawOutputConfig = outputsCfg.outputs.find((item) => item.kind === 'openclaw' && item.enabled)?.config as { pluginDir?: string } | undefined;
-const openClawPluginDir = openClawInputConfig?.pluginDir ?? openClawOutputConfig?.pluginDir;
-
-console.log('[Server] OpenClaw plugin dir:', openClawPluginDir);
-
-// Delay OpenClaw gate init until after server is listening
-async function initOpenClawGate(): Promise<void> {
-  if (openClawPluginDir) {
-    const openClawGate = new OpenClawGateBlock('openclaw-gate', { pluginDir: openClawPluginDir });
-    try {
-      await openClawGate.initialize();
-      openClawGate.addEventListener((event: OpenClawGateEvent) => {
-        switch (event.type) {
-          case 'plugin_enabled':
-          case 'plugin_installed':
-            for (const tool of event.tools) {
-              globalToolRegistry.register(toOpenClawToolDefinition(event.pluginId, tool, openClawGate));
-            }
-            break;
-          case 'plugin_disabled':
-          case 'plugin_uninstalled':
-            for (const toolName of event.toolNames) {
-              globalToolRegistry.unregister(toolName);
-            }
-            break;
-        }
-      });
-
-      console.log('[Server] OpenClaw Gate initialized, plugins:', openClawGate.listPlugins().length);
-    } catch (err) {
-      console.error('[Server] Failed to initialize OpenClaw Gate:', err instanceof Error ? err.message : String(err));
-    }
-  } else {
-    console.log('[Server] OpenClaw Gate skipped: no plugin dir configured');
-  }
-
-  // Always sync/check AI provider config before loading channel bridge configs.
-  try {
-    console.log('[Server] syncUserSettingsToKernelConfig...');
-    await syncUserSettingsToKernelConfig();
-    console.log('[Server] syncUserSettingsToKernelConfig completed');
-  } catch (err) {
-    console.error('[Server] syncUserSettingsToKernelConfig failed:', err instanceof Error ? err.message : String(err));
-    // Continue anyway, don't block channel bridge loading
-  }
-
-  try {
-    console.log('[Server] checkAIProviderConfig...');
-    await checkAIProviderConfig();
-    console.log('[Server] checkAIProviderConfig completed');
-  } catch (err) {
-    console.error('[Server] checkAIProviderConfig failed:', err instanceof Error ? err.message : String(err));
-    // Continue anyway, don't block channel bridge loading
-  }
-
-  try {
-    console.log('[Server] loadChannelBridgeConfigs...');
-    await loadChannelBridgeConfigs();
-    console.log('[Server] loadChannelBridgeConfigs completed');
-  } catch (err) {
-    console.error('[Server] loadChannelBridgeConfigs failed:', err instanceof Error ? err.message : String(err));
-  }
-}
-
 await initializeBlockRegistry(registry);
 
 const hub = sharedMessageHub;
@@ -379,11 +231,11 @@ const askManager = new AskManager(
 );
 const bdTools = new BdTools(process.cwd());
 const loadedTools = registerDefaultRuntimeTools(globalToolRegistry);
-console.log(`[Server] Runtime tools loaded: ${loadedTools.join(', ')}`);
+logger.module('server').info('Runtime tools loaded', { tools: loadedTools.join(', ') });
 const gatewayManager = new GatewayManager(hub, moduleRegistry, {
   daemonUrl: `http://127.0.0.1:${PORT}`,
 });
-let agentRuntimeBlock: AgentRuntimeBlock;
+let agentRuntimeBlock: any;
 const { reloadAgentJsonConfigs, getLoadedAgentConfigDir, getLoadedAgentConfigs } = createAgentConfigReloader({
   runtime,
   initialConfigDir: resolveDefaultAgentConfigDir(),
@@ -418,34 +270,20 @@ let applyOrchestrationConfig: (config: OrchestrationConfigV1) => Promise<{
 
 reloadAgentJsonConfigs();
 const activeKernelProviderId = resolveActiveKernelProviderId();
-console.log(`[Server] Active kernel provider: ${activeKernelProviderId}`);
+logger.module('server').info('Active kernel provider', { provider: activeKernelProviderId });
 await moduleRegistry.register(echoInput);
 await moduleRegistry.register(echoOutput);
 await moduleRegistry.register(memoryOutput);
-const processChatCodexRunner = new ProcessChatCodexRunner({
-  timeoutMs: 600_000,
-  toolExecution: {
-    daemonUrl: `http://127.0.0.1:${PORT}`,
-    agentId: FINGER_GENERAL_AGENT_ID,
-  },
-});
-const mockRuntimeKit = createMockRuntimeKit({
+
+const { chatCodexRunner, mockRuntimeKit } = setupChatCodexRunner({
+  PORT,
   sessionManager,
-  dispatchTask: dispatchTaskToAgent,
-    eventBus: globalEventBus,
+  runtime,
+  eventBus: globalEventBus,
+  dispatchTaskToAgent,
   primaryOrchestratorAgentId: PRIMARY_ORCHESTRATOR_AGENT_ID,
-  agentIds: {
-    researcher: FINGER_RESEARCHER_AGENT_ID,
-    executor: FINGER_EXECUTOR_AGENT_ID,
-    reviewer: FINGER_REVIEWER_AGENT_ID,
-  },
+  runtimeFlags,
 });
-const mockChatCodexRunner = mockRuntimeKit.createMockChatCodexRunner();
-const chatCodexRunner: ChatCodexRunnerController = mockRuntimeKit.createAdaptiveChatCodexRunner(
-  processChatCodexRunner as unknown as ChatCodexRunnerController,
-  mockChatCodexRunner,
-  () => shouldUseMockChatCodexRunner(runtimeFlags),
-);
 await registerFingerRoleModules({
   moduleRegistry,
   runtime,
@@ -469,10 +307,9 @@ await registerFingerRoleModules({
   legacyAgentId: LEGACY_ORCHESTRATOR_AGENT_ID,
   legacyAllowedTools: FINGER_GENERAL_ALLOWED_TOOLS,
 });
-console.log(`[Server] Finger runner mode: ${shouldUseMockChatCodexRunner(runtimeFlags) ? 'mock' : 'real'} (profile/env aware)`);
+logger.module('server').info('Finger runner mode', { mode: shouldUseMockChatCodexRunner(runtimeFlags) ? 'mock' : 'real' });
 
-
-agentRuntimeBlock = new AgentRuntimeBlock('agent-runtime-1', {
+const agentRuntimeSetup = await setupAgentRuntime({
   moduleRegistry,
   hub,
   runtime,
@@ -484,60 +321,21 @@ agentRuntimeBlock = new AgentRuntimeBlock('agent-runtime-1', {
   resourcePool,
   getLoadedAgentConfigs,
   primaryOrchestratorAgentId: PRIMARY_ORCHESTRATOR_AGENT_ID,
-});
-await agentRuntimeBlock.initialize();
-await agentRuntimeBlock.start();
-
-// Deploy System Agent globally (required for dispatch to work)
-// Must be done after agentRuntimeBlock.start() to ensure module is registered and started
-
-  log.info('Attempting to deploy System Agent globally...', {
-    agentId: FINGER_SYSTEM_AGENT_ID,
-    scope: 'global',
-    instanceCount: 1
-  });
-try {
-  const deployResult = await agentRuntimeBlock.execute('deploy', {
-    targetAgentId: FINGER_SYSTEM_AGENT_ID,
-    scope: 'global',
-    instanceCount: 1,
-  }) as unknown as { success: boolean };
-  if (deployResult?.success) {
-    log.info('System Agent deployed successfully', {
-      agentId: FINGER_SYSTEM_AGENT_ID,
-      result: deployResult
-    });
-  } else {
-    log.error('System Agent deployment failed', undefined, {
-      agentId: FINGER_SYSTEM_AGENT_ID,
-      result: deployResult
-    });
-  }
-} catch (err) {
-  log.error('Failed to deploy System Agent', err instanceof Error ? err : undefined);
-}
-applyOrchestrationConfig = createOrchestrationConfigApplier({
-  agentRuntimeBlock,
-  sessionManager,
   sessionWorkspaces: sessionWorkspaceManager,
-});
-const agentRuntimeTools = registerAgentRuntimeTools(getAgentRuntimeDeps());
-console.log(`[Server] Agent runtime tools loaded: ${agentRuntimeTools.join(', ')}`);
-
-const { mockRolePolicy, debugRuntimeModuleIds: DEBUG_RUNTIME_MODULE_IDS, ensureDebugRuntimeModules } = await registerMockRuntimeModules({
+  getAgentRuntimeDeps,
   mockRuntimeKit,
-  moduleRegistry,
+  systemAgentId: FINGER_SYSTEM_AGENT_ID,
   flags: {
     enableMockExecutor: ENABLE_MOCK_EXECUTOR,
     enableMockReviewer: ENABLE_MOCK_REVIEWER,
     enableMockSearcher: ENABLE_MOCK_SEARCHER,
   },
 });
-
-// 加载 autostart agents
-await loadAutostartAgents(moduleRegistry).catch(err => {
-  console.error('[Server] Failed to load autostart agents:', err);
-});
+agentRuntimeBlock = agentRuntimeSetup.agentRuntimeBlock;
+applyOrchestrationConfig = agentRuntimeSetup.applyOrchestrationConfig;
+const { mockRolePolicy, DEBUG_RUNTIME_MODULE_IDS, ensureDebugRuntimeModules } = agentRuntimeSetup;
+const agentRuntimeTools = registerAgentRuntimeTools(getAgentRuntimeDeps());
+logger.module('server').info('Agent runtime tools loaded', { tools: agentRuntimeTools.join(', ') });
 
 
 
@@ -547,29 +345,29 @@ clockInjector = new ClockTaskInjector({
   ensureSession: (sessionId, projectPath) => {
     sessionManager.ensureSession(sessionId, projectPath);
   },
-  log: (message, data) => console.log(message, data ?? ''),
+  log: (message, data) => logger.module('clock-injector').info(message, data ? { data } : undefined),
 });
 clockInjector.start();
-console.log('[Server] Clock Task Injector started');
+logger.module('server').info('Clock Task Injector started');
 
 // Start System Agent periodic checks
 const systemAgentManager = new SystemAgentManager(getAgentRuntimeDeps());
 systemAgentManager.start();
-console.log('[Server] System Agent Manager started');
+logger.module('server').info('System Agent Manager started');
 
 // Start Agent Status Subscriber
 const agentStatusSubscriber = new AgentStatusSubscriber(globalEventBus, getAgentRuntimeDeps(), hub);
 agentStatusSubscriber.start();
 agentStatusSubscriber.setPrimaryAgent(SYSTEM_AGENT_CONFIG.id);
-console.log('[Server] Agent Status Subscriber started');
+logger.module('server').info('Agent Status Subscriber started');
 
 // Start Heartbeat Scheduler
 const heartbeatScheduler = new HeartbeatScheduler(getAgentRuntimeDeps());
 await heartbeatScheduler.start();
-console.log('[Server] Heartbeat Scheduler started');
+logger.module('server').info('Heartbeat Scheduler started');
 
 await gatewayManager.start().catch((err) => {
-  console.error('[Server] Failed to start gateway manager:', err);
+  logger.module('server').error('Failed to start gateway manager', err instanceof Error ? err : undefined);
 });
 
 registerDefaultModuleRoutes(moduleRegistry);
@@ -588,201 +386,63 @@ await ensureSingleInstance(wsPort);
 // Register WebUI output module (broadcast to WebSocket clients)
 const webuiOutput = createWebUIOutput({ broadcast });
 await moduleRegistry.register(webuiOutput);
-console.log('[Server] WebUI output module registered for WebSocket broadcast');
+logger.module('server').info('WebUI output module registered for WebSocket broadcast');
 
-registerAllRoutes(app, {
-  sessionManager,
-  runtime,
-  eventBus: globalEventBus,
-  logsDir: join(FINGER_PATHS.logs.dir, 'sessions'),
-  resolveSessionLoopLogPath,
-  hub,
-  mailbox,
-  sessionWorkspaces: sessionWorkspaceManager,
-  broadcast,
-  writeMessageErrorSample,
-  blockingTimeoutMs: BLOCKING_MESSAGE_TIMEOUT_MS,
-  blockingMaxRetries: BLOCKING_MESSAGE_MAX_RETRIES,
-  blockingRetryBaseMs: BLOCKING_MESSAGE_RETRY_BASE_MS,
-  allowDirectAgentRoute: ALLOW_DIRECT_AGENT_ROUTE,
-  primaryOrchestratorTarget: PRIMARY_ORCHESTRATOR_TARGET,
-  primaryOrchestratorAgentId: PRIMARY_ORCHESTRATOR_AGENT_ID,
-  primaryOrchestratorGatewayId: PRIMARY_ORCHESTRATOR_GATEWAY_ID,
-  legacyOrchestratorAgentId: LEGACY_ORCHESTRATOR_AGENT_ID,
-  legacyOrchestratorGatewayId: LEGACY_ORCHESTRATOR_GATEWAY_ID,
-  workflowManager,
-  askManager,
-  runtimeInstructionBus,
-  moduleRegistry,
-  gatewayManager,
-  channelBridgeManager,
-  inputLockManager,
-  toolRegistry: globalToolRegistry,
-  resumableSessionManager,
-  wsClients,
-  applyOrchestrationConfig,
-  getChatCodexRunnerMode: () => (shouldUseMockChatCodexRunner(runtimeFlags) ? 'mock' : 'real'),
-  getLoadedAgentConfigDir,
-  getLoadedAgentConfigs,
-  agentJsonSchema: AGENT_JSON_SCHEMA,
-  reloadAgentJsonConfigs,
-  wss,
-  registry,
-  getAgentRuntimeDeps,
-  resourcePool,
-  runtimeDebug: {
-    get: () => runtimeDebugMode,
-    set: async (enabled: boolean) => {
-      runtimeDebugMode = enabled;
-      await ensureDebugRuntimeModules(runtimeDebugMode);
-    },
-    moduleIds: DEBUG_RUNTIME_MODULE_IDS,
-  },
-  mockRuntime: {
-    rolePolicy: mockRolePolicy,
-    clearAssertions: () => mockRuntimeKit.clearMockDispatchAssertions(),
-    listAssertions: (filters) => mockRuntimeKit.listMockDispatchAssertions(filters),
-  },
-  flags: {
-    enableFullMockMode: ENABLE_FULL_MOCK_MODE,
-    useMockExecutorLoop: USE_MOCK_EXECUTOR_LOOP,
-    useMockReviewerLoop: USE_MOCK_REVIEWER_LOOP,
-    useMockSearcherLoop: USE_MOCK_SEARCHER_LOOP,
-  },
-  system: {
-    localImageMimeByExt: LOCAL_IMAGE_MIME_BY_EXT,
-    listKernelProviders,
-    upsertKernelProvider,
-    selectKernelProvider,
-    testKernelProvider,
-  },
-});
-
-
-
-await ensureSingleInstance(PORT);
-const HOST = process.env.HOST || '0.0.0.0';
-const server = app.listen(PORT, HOST, () => {
-  console.log(`Finger server running at http://${HOST}:${PORT}`);
-  try {
-    const pidPath = join(FINGER_PATHS.runtime.dir, 'server.pid');
-    writeFileSync(pidPath, String(process.pid));
-  } catch (err) {
-    console.error('[Server] Failed to write PID file:', err instanceof Error ? err.message : String(err));
-  }
-  // Initialize OpenClaw gate after server is listening
-  initOpenClawGate().catch((err) => {
-    console.error('[Server] OpenClaw init error:', err instanceof Error ? err.message : String(err));
-  });
-});
-
-let shuttingDown = false;
-const shutdown = (reason: string) => {
-  if (shuttingDown) return;
-  shuttingDown = true;
-  console.log(`[Server] Shutdown initiated: ${reason}`);
-  try {
-    const sessions = chatCodexRunner.listSessionStates();
-    for (const session of sessions) {
-      try {
-        chatCodexRunner.interruptSession(session.sessionId, session.providerId);
-      } catch (err) {
-        console.warn('[Server] Failed to interrupt session:', err instanceof Error ? err.message : String(err));
-      }
-    }
-  } catch (err) {
-    console.warn('[Server] Failed to enumerate sessions during shutdown:', err instanceof Error ? err.message : String(err));
-  }
-  try {
-    server.close(() => {
-      process.exit(0);
-    });
-  } catch {
-    process.exit(0);
-  }
-  setTimeout(() => process.exit(1), 10_000).unref();
+const registerAllRoutesDeps = {
+  sessionManager, runtime, eventBus: globalEventBus, logsDir: join(FINGER_PATHS.logs.dir, 'sessions'), resolveSessionLoopLogPath,
+  hub, mailbox, sessionWorkspaces: sessionWorkspaceManager, broadcast, writeMessageErrorSample,
+  blockingTimeoutMs: BLOCKING_MESSAGE_TIMEOUT_MS, blockingMaxRetries: BLOCKING_MESSAGE_MAX_RETRIES, blockingRetryBaseMs: BLOCKING_MESSAGE_RETRY_BASE_MS,
+  allowDirectAgentRoute: ALLOW_DIRECT_AGENT_ROUTE, primaryOrchestratorTarget: PRIMARY_ORCHESTRATOR_TARGET, primaryOrchestratorAgentId: PRIMARY_ORCHESTRATOR_AGENT_ID,
+  primaryOrchestratorGatewayId: PRIMARY_ORCHESTRATOR_GATEWAY_ID, legacyOrchestratorAgentId: LEGACY_ORCHESTRATOR_AGENT_ID, legacyOrchestratorGatewayId: LEGACY_ORCHESTRATOR_GATEWAY_ID,
+  workflowManager, askManager, runtimeInstructionBus, moduleRegistry, gatewayManager, channelBridgeManager, inputLockManager, toolRegistry: globalToolRegistry,
+  resumableSessionManager, wsClients, applyOrchestrationConfig, getChatCodexRunnerMode: () => (shouldUseMockChatCodexRunner(runtimeFlags) ? 'mock' : 'real'),
+  getLoadedAgentConfigDir, getLoadedAgentConfigs, agentJsonSchema: AGENT_JSON_SCHEMA, reloadAgentJsonConfigs, wss, registry, getAgentRuntimeDeps, resourcePool,
+  runtimeDebug: { get: () => runtimeDebugMode, set: async (enabled: boolean) => { runtimeDebugMode = enabled; await ensureDebugRuntimeModules(runtimeDebugMode); }, moduleIds: DEBUG_RUNTIME_MODULE_IDS },
+  mockRuntime: { rolePolicy: mockRolePolicy, clearAssertions: () => mockRuntimeKit.clearMockDispatchAssertions(), listAssertions: (filters: any) => mockRuntimeKit.listMockDispatchAssertions(filters) },
+  flags: { enableFullMockMode: ENABLE_FULL_MOCK_MODE, useMockExecutorLoop: USE_MOCK_EXECUTOR_LOOP, useMockReviewerLoop: USE_MOCK_REVIEWER_LOOP, useMockSearcherLoop: USE_MOCK_SEARCHER_LOOP },
+  system: { localImageMimeByExt: LOCAL_IMAGE_MIME_BY_EXT, listKernelProviders, upsertKernelProvider, selectKernelProvider, testKernelProvider },
 };
-
-process.on('SIGTERM', () => shutdown('SIGTERM'));
-process.on('SIGINT', () => shutdown('SIGINT'));
-
-process.on('exit', () => {
-  if (clockInjector) clockInjector.stop();
-  if (agentStatusSubscriber) agentStatusSubscriber.stop();
-  if (heartbeatScheduler) heartbeatScheduler.stop();
-  try {
-    const pidPath = join(FINGER_PATHS.runtime.dir, 'server.pid');
-    if (existsSync(pidPath)) unlinkSync(pidPath);
-  } catch {
-    // ignore
-  }
+await ensureSingleInstance(PORT);
+startServer(app, process.env.HOST || '0.0.0.0', PORT, {
+  chatCodexRunner,
+  clockInjector,
+  agentStatusSubscriber,
+  heartbeatScheduler,
 });
 
-server.on('error', (err: NodeJS.ErrnoException) => {
-  if (err.code === 'EADDRINUSE') {
-    console.error(`[Server] Port ${PORT} is still in use after cleanup`);
-    process.exit(1);
-  }
-  console.error('[Server] Failed to start:', err.message);
-  process.exit(1);
+logger.module('server').info('Finger role modules ready', {
+  agents: [FINGER_GENERAL_AGENT_ID, FINGER_ORCHESTRATOR_AGENT_ID, FINGER_RESEARCHER_AGENT_ID, FINGER_EXECUTOR_AGENT_ID, FINGER_CODER_AGENT_ID, FINGER_REVIEWER_AGENT_ID].join(', '),
 });
-
-console.log('[Server] Finger role modules ready:', [
-  FINGER_GENERAL_AGENT_ID,
-  FINGER_ORCHESTRATOR_AGENT_ID,
-  FINGER_RESEARCHER_AGENT_ID,
-  FINGER_EXECUTOR_AGENT_ID,
-  FINGER_CODER_AGENT_ID,
-  FINGER_REVIEWER_AGENT_ID,
-].join(', '));
 try {
   const loadedOrchestrationConfig = loadOrchestrationConfig();
   const applied = await applyOrchestrationConfig(loadedOrchestrationConfig.config);
-  console.log('[Server] Orchestration config applied:', {
+  logger.module('server').info('Orchestration config applied', {
     path: loadedOrchestrationConfig.path,
     created: loadedOrchestrationConfig.created,
     appliedAgents: applied.agents,
   });
 } catch (error) {
   const message = error instanceof Error ? error.message : String(error);
-  console.error('[Server] Invalid orchestration.json; startup aborted:', message);
+  logger.module('server').fatal('Invalid orchestration.json; startup aborted', undefined, { message });
   process.exit(1);
 }
 
-// =============================================================================
-// EventBus 订阅转发到 WebSocket
-// =============================================================================
-
-const forwarding = attachEventForwarding({
+await runPostInit({
+  hub,
+  channelBridgeManager,
   eventBus: globalEventBus,
-  broadcast,
   sessionManager,
-  runtimeInstructionBus,
-  inferAgentRoleLabel,
-  formatDispatchResultContent,
-  asString,
+  dispatchTaskToAgent,
+  broadcast,
+  agentStatusSubscriber,
+  applyOrchestrationConfig,
   generalAgentId: FINGER_GENERAL_AGENT_ID,
+  setLoopEventEmitter,
+  runtimeInstructionBus,
+  app,
+  registerAllRoutesDeps,
+}).catch((error) => {
+  const message = error instanceof Error ? error.message : String(error);
+  logger.module('server').fatal('Post-init failed', undefined, { message });
+  process.exit(1);
 });
-setLoopEventEmitter(forwarding.emitLoopEventToEventBus);
-
-// Register MessageHub route for channel messages (supports unlimited channels)
-// Only active when FINGER_CHANNEL_BRIDGE_USE_HUB=true
-hub.addRoute({
-  id: 'channel-bridge-hub-route',
-  pattern: (message: unknown): boolean => {
-    const msg = message as Record<string, unknown>;
-    return !!(msg.type && typeof msg.type === 'string' && msg.type.startsWith('channel.'));
-  },
-  handler: createChannelBridgeHubRoute({
-    channelBridgeManager,
-    sessionManager,
-    dispatchTaskToAgent,
-    eventBus: globalEventBus,
-    agentStatusSubscriber,
-  }),
-  blocking: true,
-  priority: 10,
-  moduleId: 'channel-bridge-hub',
-});
-
-console.log('[Server] MessageHub channel route registered (dynamic mode forced)');

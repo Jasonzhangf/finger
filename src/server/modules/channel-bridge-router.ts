@@ -1,3 +1,4 @@
+import { logger } from '../../core/logger.js';
 /**
  * ChannelBridge Router - 根据配置开关选择路由方式
  *
@@ -46,7 +47,7 @@ export class ChannelBridgeRouter {
    * 通过 MessageHub 路由（新路径）
    */
   private async routeViaHub(msg: ChannelMessage): Promise<ChannelBridgeRouterResult> {
-    console.log('[ChannelBridgeRouter] Routing via MessageHub', {
+    logger.module('channel-bridge-router').info('Routing via MessageHub', {
       msgId: msg.id,
       channelId: msg.channelId,
       useHub: true,
@@ -65,7 +66,7 @@ export class ChannelBridgeRouter {
 
       return { status: 'success', message: 'Message routed via MessageHub' };
     } catch (error) {
-      console.error('[ChannelBridgeRouter] Hub routing error:', error);
+      logger.module('channel-bridge-router').error('Hub routing error:', undefined, { error });
       return {
         status: 'error',
         message: error instanceof Error ? error.message : String(error),
@@ -77,7 +78,7 @@ export class ChannelBridgeRouter {
    * 直接路由（旧路径）
    */
   private async routeDirect(msg: ChannelMessage): Promise<ChannelBridgeRouterResult> {
-    console.log('[ChannelBridgeRouter] Routing directly to agent', {
+    logger.module('channel-bridge-router').info('Routing directly to agent', {
       msgId: msg.id,
       channelId: msg.channelId,
       useHub: false,
@@ -92,7 +93,7 @@ export class ChannelBridgeRouter {
    */
   setUseHub(useHub: boolean): void {
     this.useHub = useHub;
-    console.log('[ChannelBridgeRouter] Routing mode updated:', { useHub });
+    logger.module('channel-bridge-router').info('Routing mode updated:', { useHub });
   }
 
   /**

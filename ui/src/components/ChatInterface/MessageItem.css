@@ -76,3 +76,29 @@
   height: auto;
   display: block;
 }
+
+/* Reasoning message styles - gray + italic */
+.message-item.reasoning .message-body {
+  background: transparent;
+  border: none;
+  padding: 6px 0;
+}
+
+.message-item.reasoning .message-body.reasoning-body {
+  background: transparent;
+  font-style: italic;
+  color: #8b9cb8;
+  font-size: 12px;
+  padding: 4px 0;
+}
+
+.reasoning-content {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.reasoning-text {
+  white-space: pre-wrap;
+  word-break: break-word;
+}

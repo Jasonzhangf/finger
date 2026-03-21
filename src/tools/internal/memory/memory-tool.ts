@@ -277,12 +277,19 @@ export const memoryTool: InternalTool<unknown, MemoryOutput> = {
       switch (input.action) {
         case 'insert': {
           if (!input.content) return { ok: false, action: 'insert', error: 'content is required' };
+          if (input.content.trim().length < 5) {
+            return { ok: false, action: 'insert', error: 'content must be at least 5 meaningful characters' };
+          }
+          const title = input.title || input.content.slice(0, 50);
+          if (/^(System entry|Updated)$/i.test(title.trim())) {
+            return { ok: false, action: 'insert', error: 'title must be meaningful' };
+          }
 
           const entry: MemoryEntry = {
             id: generateId(),
             timestamp: new Date().toISOString(),
             type: input.type || 'fact',
-            title: input.title || input.content.slice(0, 50),
+            title: title,
             content: input.content,
             tags: input.tags || [],
           };

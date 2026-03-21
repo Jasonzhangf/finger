@@ -1,3 +1,4 @@
+import { logger } from '../../core/logger.js';
 /**
  * MessageHub Command Handler
  *
@@ -317,7 +318,7 @@ function saveProviderConfig(providerId: string): boolean {
     fs.writeFileSync(configPath, JSON.stringify(config, null, 2), 'utf-8');
     return true;
   } catch (err) {
-    console.error('[MessageHub] Failed to save provider config:', err);
+    logger.module('messagehub-command-handler').error('Failed to save provider config', err instanceof Error ? err : undefined);
     return false;
   }
 }

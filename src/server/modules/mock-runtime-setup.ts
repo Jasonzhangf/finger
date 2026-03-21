@@ -1,3 +1,4 @@
+import { logger } from '../../core/logger.js';
 import type { ModuleRegistry } from '../../orchestration/module-registry.js';
 import type { MockRuntimeKit } from './mock-runtime.js';
 
@@ -28,7 +29,7 @@ export async function registerMockRuntimeModules(params: {
       role: 'executor',
     });
     await moduleRegistry.register(executorMock);
-    console.log('[Server] Mock Executor module registered: executor-mock');
+    logger.module('mock-runtime-setup').info('Mock Executor module registered: executor-mock');
   }
 
   if (flags.enableMockReviewer) {
@@ -38,7 +39,7 @@ export async function registerMockRuntimeModules(params: {
       role: 'reviewer',
     });
     await moduleRegistry.register(reviewerMock);
-    console.log('[Server] Mock Reviewer module registered: reviewer-mock');
+    logger.module('mock-runtime-setup').info('Mock Reviewer module registered: reviewer-mock');
   }
 
   if (flags.enableMockSearcher) {
@@ -48,7 +49,7 @@ export async function registerMockRuntimeModules(params: {
       role: 'searcher',
     });
     await moduleRegistry.register(searcherMock);
-    console.log('[Server] Mock Searcher module registered: searcher-mock');
+    logger.module('mock-runtime-setup').info('Mock Searcher module registered: searcher-mock');
   }
 
   return {

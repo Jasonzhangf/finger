@@ -18,6 +18,8 @@ import {
   type ToolAuthorizationGrant,
 } from './tool-authorization.js';
 import { executeContextLedgerMemory } from './context-ledger-memory.js';
+import { getAgentAuthorizationMode, type AuthorizationMode } from './tool-authorization-context.js';
+import { setAgentAuthorizationMode } from './tool-authorization-context.js';
 
 // Session 类型 (简化版，完整定义在 session-manager.ts)
 export interface SessionInfo {
@@ -178,6 +180,13 @@ export class RuntimeFacade {
   }
 
   /**
+   * Set authorization mode for a given agent (derived from channel policy)
+   */
+  setAgentAuthorizationMode(agentId: string, mode: AuthorizationMode, channelId?: string): void {
+    setAgentAuthorizationMode(agentId, mode, channelId);
+  }
+
+  /**
    * 列出所有会话
    */
   listSessions(): SessionInfo[] {
@@ -276,7 +285,7 @@ export class RuntimeFacade {
     agentId: string,
     toolName: string,
     input: unknown,
-    options: { authorizationToken?: string } = {},
+    options: { authorizationToken?: string; authorizationMode?: AuthorizationMode } = {},
   ): Promise<unknown> {
     const startTime = Date.now();
     const toolId = `${agentId}-${toolName}-${startTime}`;
@@ -303,8 +312,35 @@ export class RuntimeFacade {
     }
 
     if (this.toolAuthorization.isToolRequired(toolName)) {
-      const auth = this.toolAuthorization.verifyAndConsume(options.authorizationToken, agentId, toolName);
+      const effectiveMode = options.authorizationMode
+        ?? getAgentAuthorizationMode(agentId)
+        ?? 'prompt';
+
+      let token = options.authorizationToken;
+      if (effectiveMode === 'auto' && (!token || token.trim().length === 0)) {
+        const grant = this.toolAuthorization.issue(agentId, toolName, 'system-auto', {
+          ttlMs: 60_000,
+          maxUses: 1,
+        });
+        token = grant.token;
+      }
+
+      const auth = this.toolAuthorization.verifyAndConsume(token, agentId, toolName);
       if (!auth.allowed) {
+        if (effectiveMode === 'deny') {
+          const message = `Tool '${toolName}' denied by channel policy (authorizationMode=deny)`;
+          this.eventBus.emit({
+            type: 'tool_error',
+            toolId,
+            toolName,
+            agentId,
+            sessionId,
+            timestamp: new Date().toISOString(),
+            payload: { error: message, duration: 0 },
+          });
+          throw new Error(message);
+        }
+
         this.eventBus.emit({
           type: 'tool_error',
           toolId,

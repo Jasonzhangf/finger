@@ -90,7 +90,14 @@ describe('AgentStatusSubscriber', () => {
         'channel-bridge-qqbot',
         expect.objectContaining({
           channelId: 'qqbot',
-          envelopeId: 'env-1',
+          target: 'unknown',
+          content: expect.any(String),
+          originalEnvelope: expect.objectContaining({
+            channelId: 'qqbot',
+            metadata: expect.objectContaining({
+              messageId: 'env-1',
+            }),
+          }),
           statusUpdate: expect.objectContaining({
             agent: expect.objectContaining({
               agentId: 'agent-1',
@@ -165,7 +172,14 @@ describe('AgentStatusSubscriber', () => {
         'channel-bridge-qqbot',
         expect.objectContaining({
           channelId: 'qqbot',
-          envelopeId: 'env-2',
+          target: 'unknown',
+          content: expect.any(String),
+          originalEnvelope: expect.objectContaining({
+            channelId: 'qqbot',
+            metadata: expect.objectContaining({
+              messageId: 'env-2',
+            }),
+          }),
           statusUpdate: expect.objectContaining({
             agent: expect.objectContaining({
               agentId: 'agent-2',
@@ -230,9 +244,16 @@ describe('AgentStatusSubscriber', () => {
       // 断言 message 结构
       expect(message).toMatchObject({
         channelId: 'qqbot',
-        envelopeId: 'env-3',
-        userId: 'user-package',
-        groupId: 'group-package',
+        target: 'group:group-package',
+        content: expect.any(String),
+        originalEnvelope: expect.objectContaining({
+          channelId: 'qqbot',
+          senderId: 'user-package',
+          metadata: expect.objectContaining({
+            messageId: 'env-3',
+            groupId: 'group-package',
+          }),
+        }),
       });
 
       // 断言 statusUpdate 字段
@@ -319,7 +340,14 @@ describe('AgentStatusSubscriber', () => {
         'channel-bridge-qqbot',
         expect.objectContaining({
           channelId: 'qqbot',
-          envelopeId: 'env-root',
+          target: 'unknown',
+          content: expect.any(String),
+          originalEnvelope: expect.objectContaining({
+            channelId: 'qqbot',
+            metadata: expect.objectContaining({
+              messageId: 'env-root',
+            }),
+          }),
         })
       );
 
@@ -371,9 +399,16 @@ describe('AgentStatusSubscriber', () => {
         'channel-bridge-qqbot',
         expect.objectContaining({
           channelId: 'qqbot',
-          envelopeId: 'env-mock',
-          userId: 'user-123',
-          groupId: 'group-456',
+          target: 'group:group-456',
+          content: expect.any(String),
+          originalEnvelope: expect.objectContaining({
+            channelId: 'qqbot',
+            senderId: 'user-123',
+            metadata: expect.objectContaining({
+              messageId: 'env-mock',
+              groupId: 'group-456',
+            }),
+          }),
           statusUpdate: expect.objectContaining({
             type: 'agent_status',
             agent: expect.objectContaining({

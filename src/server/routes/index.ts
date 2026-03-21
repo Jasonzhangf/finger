@@ -127,12 +127,14 @@ export function registerAllRoutes(app: Express, deps: RegisterAllRoutesDeps): vo
     resolveSessionLoopLogPath: deps.resolveSessionLoopLogPath,
   });
 
-  registerMessageRoutes(app, {
-    hub: deps.hub,
-    mailbox: deps.mailbox,
-    runtime: deps.runtime,
-    sessionManager: deps.sessionManager,
-    eventBus: deps.eventBus,
+ registerMessageRoutes(app, {
+   hub: deps.hub,
+   mailbox: deps.mailbox,
+   runtime: deps.runtime,
+    toolRegistry: deps.toolRegistry,
+    channelBridgeManager: deps.channelBridgeManager,
+   sessionManager: deps.sessionManager,
+   eventBus: deps.eventBus,
     sessionWorkspaces: deps.sessionWorkspaces,
     broadcast: deps.broadcast,
     writeMessageErrorSample: deps.writeMessageErrorSample,
