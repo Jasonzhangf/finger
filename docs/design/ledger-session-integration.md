@@ -1,7 +1,7 @@
 # Ledger-Session 一体化架构设计
 
-> Last updated: 2026-03-21 19:06:00 +08:00
-> Status: Design Approved
+> Last updated: 2026-03-21 19:23:00 +08:00
+> Status: Draft
 
 ## 1. 核心原则
 
@@ -99,9 +99,9 @@ interface SessionView {
 
 ## 3. 压缩流程
 
-### 3.1 触��条件
+### 3.1 触发条件
 - `session.totalTokens > COMPRESS_TOKEN_THRESHOLD`
-- 默认阈值：85% of context window (256K tokens ≈ 217,600 tokens)
+- 默认阈值：85% of context window (256K tokens = 262,144，阈值为 222,822 tokens)
 
 ### 3.2 压缩流程
 
@@ -157,7 +157,7 @@ interface SessionView {
 }
 ```
 
-配置存储在 `~/.finger/config/config.json`，可通过系统设置动态调整。
+配置权威来源：`~/.finger/config/user-settings.json`，读取入口：`src/core/user-settings.ts`。
 
 ---
 
