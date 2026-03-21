@@ -12,6 +12,10 @@ import path from 'path';
 import { FINGER_PATHS, ensureDir, normalizeSessionDirName } from '../core/finger-paths.js';
 import { Session, SessionMessage, LEDGER_POINTER_DEFAULTS, ensureLedgerPointers } from './session-types.js';
 import type { Attachment } from '../runtime/events.js';
+import { appendSessionMessage } from '../runtime/ledger-writer.js';
+import { buildSessionView } from '../runtime/ledger-reader.js';
+import { needsCompression, compressSession, syncSessionTokens } from '../runtime/session-compressor.js';
+import { estimateTokens } from '../utils/token-counter.js';
 
 export { Session, SessionMessage } from './session-types.js';
 
@@ -510,7 +514,7 @@ export class SessionManager {
     });
   }
 
-  addMessage(
+  async addMessage(
     sessionId: string,
     role: SessionMessage['role'],
     content: string,
@@ -527,12 +531,13 @@ export class SessionManager {
       toolOutput?: unknown;
       metadata?: Record<string, unknown>;
     }
-  ): SessionMessage | null {
+  ): Promise<SessionMessage | null> {
     const session = this.sessions.get(sessionId);
     if (!session) return null;
 
+    const messageId = `msg-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     const message: SessionMessage = {
-      id: `msg-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      id: messageId,
       role,
       content,
       timestamp: new Date().toISOString(),
@@ -540,8 +545,33 @@ export class SessionManager {
       attachments: metadata?.attachments,
     };
 
+    // Write to ledger (primary storage)
+    const ctx = session.context ?? {};
+    const agentId = metadata?.agentId || (typeof ctx.ownerAgentId === 'string' ? ctx.ownerAgentId : '') || 'unknown';
+    const rootDir = this.resolveSessionsRoot(session);
+    try {
+      await appendSessionMessage(
+        { rootDir, sessionId: session.id, agentId, mode: 'main' },
+        {
+          role,
+          content,
+          messageId,
+          tokenCount: estimateTokens(content),
+          metadata: metadata?.metadata,
+        },
+      );
+    } catch (err) {
+      // Log but do not fail - ledger write is best-effort during migration
+      console.error('[SessionManager] Ledger write failed, falling back to session.messages:', err);
+    }
+
+    // Keep session.messages in sync for backward compatibility
     session.messages.push(message);
     session.lastAccessedAt = new Date().toISOString();
+
+    // Update ledger pointers
+    session.originalEndIndex = (session.originalEndIndex || 0) + 1;
+    session.totalTokens = (session.totalTokens || 0) + estimateTokens(content);
 
     this.saveSession(session);
     return message;

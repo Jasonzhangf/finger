@@ -47,7 +47,7 @@ export interface ISessionManager {
   getCurrentSession(): SessionInfo | null;
   setCurrentSession(sessionId: string): boolean;
   listSessions(): SessionInfo[];
-  addMessage(sessionId: string, role: string, content: string, metadata?: { attachments?: Attachment[] }): { id: string; timestamp: string } | null;
+  addMessage(sessionId: string, role: string, content: string, metadata?: { attachments?: Attachment[] }): Promise<{ id: string; timestamp: string } | null>;
   getMessages(sessionId: string, limit?: number): Array<{ id: string; role: string; content: string; timestamp: string }>;
   deleteSession(sessionId: string): boolean;
   pauseSession?(sessionId: string): boolean;
@@ -210,7 +210,7 @@ export class RuntimeFacade {
       throw new Error(`Session not found: ${sessionId}`);
     }
 
-    const message = this.sessionManager.addMessage(sessionId, 'user', content, { attachments });
+    const message = await this.sessionManager.addMessage(sessionId, 'user', content, { attachments });
     if (!message) {
       throw new Error(`Failed to append message to session ${sessionId}`);
     }
@@ -252,7 +252,7 @@ export class RuntimeFacade {
     const session = this.sessionManager.getSession(sessionId);
     const context = session?.context as Record<string, unknown> | undefined;
     if (context && context.sessionTier === 'runtime') {
-      this.sessionManager.addMessage(sessionId, 'assistant', content);
+      void this.sessionManager.addMessage(sessionId, 'assistant', content);
     }
     void this.eventBus.emit({
       type: 'assistant_complete',
@@ -384,7 +384,7 @@ export class RuntimeFacade {
     if (!attachment) return;
 
     const content = `[view_image] ${attachment.name}`;
-    const message = this.sessionManager.addMessage(sessionId, 'user', content, {
+    const message = await this.sessionManager.addMessage(sessionId, 'user', content, {
       attachments: [attachment],
     });
     if (!message) return;
