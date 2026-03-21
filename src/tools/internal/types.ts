@@ -2,6 +2,8 @@ export interface ToolExecutionContext {
   invocationId: string;
   cwd: string;
   timestamp: string;
+  channelId?: string;
+  sessionId?: string;
 }
 
 export interface InternalTool<Input = unknown, Output = unknown> {
@@ -23,5 +25,7 @@ export function createToolExecutionContext(overrides: Partial<ToolExecutionConte
     invocationId: overrides.invocationId ?? `tool-${now.getTime()}`,
     cwd: overrides.cwd ?? process.cwd(),
     timestamp: overrides.timestamp ?? now.toISOString(),
+    channelId: overrides.channelId,
+    sessionId: overrides.sessionId,
   };
 }

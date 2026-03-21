@@ -55,6 +55,7 @@ export interface Command {
 export interface CommandContext {
   channel?: string;
   channelId?: string;
+  sessionId?: string;
   sessionManager?: any;
   eventBus?: any;
   configPath?: string;

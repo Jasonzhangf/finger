@@ -100,17 +100,20 @@ describe('CommandHub auth command execution', () => {
   });
 
   it('should grant and deny existing approval', async () => {
-    // Create an approval request via permission.check
+    // Create an approval request in the same scope as the handler context
+    const scopeKey = permissionState.getScopeKey('test-channel');
     const checkResult = permissionState.createApprovalRequest(
       'shell.exec',
       '需要执行命令',
       'high',
-      'rm -rf /tmp/test'
+      'rm -rf /tmp/test',
+      undefined,
+      scopeKey
     );
     expect(checkResult.status).toBe('pending');
     expect(checkResult.id).toBeTruthy();
 
-    // Grant it via command hub
+    // Grant it via command hub (handler will use channelId: 'test-channel')
     const grantCmd = parseCommands(`<##auth:grant@${checkResult.id}##>`).commands[0];
     const grantResult = await hub.execute(grantCmd, { channelId: 'test-channel' });
     expect(grantResult.success).toBe(true);
@@ -118,11 +121,15 @@ describe('CommandHub auth command execution', () => {
   });
 
   it('should handle auth:deny for existing approval', async () => {
+    // Create approval in the same scope as the handler context
+    const scopeKey = permissionState.getScopeKey('test-channel');
     const request = permissionState.createApprovalRequest(
       'shell.exec',
       '需要执行命令',
       'high',
-      'git reset --hard'
+      'git reset --hard',
+      undefined,
+      scopeKey
     );
 
     const denyCmd = parseCommands(`<##auth:deny@${request.id}##>`).commands[0];

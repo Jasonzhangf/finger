@@ -37,7 +37,7 @@ export class AuthGrantHandler implements CommandHandler {
     try {
       log.info('Processing auth grant', { approvalId, channelId: ctx.channelId });
 
-      const toolContext = createToolExecutionContext();
+      const toolContext = createToolExecutionContext({ channelId: ctx.channelId, sessionId: ctx.sessionId });
       const result = await permissionGrantTool.execute(
         { approvalId, scope: 'session' },
         toolContext
@@ -89,7 +89,7 @@ export class AuthDenyHandler implements CommandHandler {
     try {
       log.info('Processing auth deny', { approvalId, channelId: ctx.channelId });
 
-      const toolContext = createToolExecutionContext();
+      const toolContext = createToolExecutionContext({ channelId: ctx.channelId, sessionId: ctx.sessionId });
       const result = await permissionDenyTool.execute(
         { approvalId, reason: '用户拒绝' },
         toolContext
@@ -132,7 +132,7 @@ export class AuthStatusHandler implements CommandHandler {
     try {
       log.info('Processing auth status', { channelId: ctx.channelId });
 
-      const toolContext = createToolExecutionContext();
+      const toolContext = createToolExecutionContext({ channelId: ctx.channelId, sessionId: ctx.sessionId });
       const result = await permissionListTool.execute({}, toolContext);
 
       const pending = result.pendingApprovals || [];
