@@ -14,6 +14,10 @@ describe('registerDefaultRuntimeTools', () => {
     expect(loaded).toContain('shell');
     expect(loaded).toContain('unified_exec');
     expect(loaded).toContain('update_plan');
+    expect(loaded).toContain('permission.check');
+    expect(loaded).toContain('permission.grant');
+    expect(loaded).toContain('permission.deny');
+    expect(loaded).toContain('permission.list');
     expect(loaded).toContain('view_image');
     expect(loaded).toContain('clock');
     expect(loaded).toContain('no-op');

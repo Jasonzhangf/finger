@@ -14,7 +14,7 @@ import {
   shouldRetryBlockingMessage,
   resolveBlockingErrorStatus,
 } from '../modules/message-session.js';
-import { loadFingerConfig, getChannelAuth, getChannelAuthorizationMode } from '../../core/config/channel-config.js';
+import { loadFingerConfig, getChannelAuth } from '../../core/config/channel-config.js';
 import { getChannelContextManager } from '../../orchestration/channel-context-manager.js';
 import { loadUserSettings } from '../../core/user-settings.js';
 import { SYSTEM_PROJECT_PATH, getSystemSessionPath } from '../../agents/finger-system-agent/index.js';
@@ -81,7 +81,6 @@ export function registerMessageRoutes(app: Express, deps: MessageRouteDeps): voi
     const parsedCommand = parseSuperCommand(incomingContent);
     const fingerConfig = await loadFingerConfig();
     const channelPolicy = getChannelAuth(fingerConfig, channelId);
-    const channelAuthorizationMode = getChannelAuthorizationMode(fingerConfig, channelId);
 
     const superCmd = await handleSuperCommand(incomingContent, channelId, deps);
     if (superCmd.handled && superCmd.response) {
@@ -238,7 +237,7 @@ export function registerMessageRoutes(app: Express, deps: MessageRouteDeps): voi
       deps.runtime.setCurrentSession(requestSessionId);
     }
     // 记录当前渠道授权策略（供工具调用时使用）
-    deps.runtime.setAgentAuthorizationMode(targetId ?? deps.primaryOrchestratorAgentId, channelAuthorizationMode, channelId);
+
     const shouldPersistSession = !!requestSessionId && !shouldClientPersistSession(requestMessage);
     if (shouldPersistSession && requestSessionId) {
       const content = extractMessageTextForSession(requestMessage)

@@ -3,6 +3,7 @@ import { isObjectRecord } from '../../common/object.js';
 import { asString, firstNonEmptyString } from '../../common/strings.js';
 import { sanitizeDispatchResult, type DispatchSummaryResult } from '../../../common/agent-dispatch.js';
 import type { AgentDispatchRequest, AgentRuntimeDeps } from './types.js';
+import { SYSTEM_AGENT_CONFIG } from '../../../agents/finger-system-agent/index.js';
 import { promises as fs } from 'fs';
 import * as path from 'path';
 
@@ -138,6 +139,7 @@ function resolveRootSessionForDispatch(deps: AgentRuntimeDeps, sessionId?: strin
 
 function bindDispatchSessionToRuntime(deps: AgentRuntimeDeps, input: AgentDispatchRequest): AgentDispatchRequest {
   const targetAgentId = typeof input.targetAgentId === 'string' ? input.targetAgentId.trim() : '';
+  if (targetAgentId === SYSTEM_AGENT_CONFIG.id) return input;
   if (!targetAgentId || deps.isPrimaryOrchestratorTarget(targetAgentId)) return input;
 
   const requestedSessionId = typeof input.sessionId === 'string' ? input.sessionId.trim() : '';

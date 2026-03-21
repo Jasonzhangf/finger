@@ -11,7 +11,7 @@ import type { SessionManager } from '../../orchestration/session-manager.js';
 import type { UnifiedEventBus } from '../../runtime/event-bus.js';
 import { ChannelContextManager } from '../../orchestration/channel-context-manager.js';
 import { getCommandHub, parseCommands } from '../../blocks/command-hub/index.js';
-import { loadFingerConfig, getChannelAuth, getChannelAuthorizationMode } from '../../core/config/channel-config.js';
+import { loadFingerConfig, getChannelAuth } from '../../core/config/channel-config.js';
 import { CommandType } from '../../blocks/command-hub/types.js';
 import { logger } from '../../core/logger.js';
 import { SYSTEM_AGENT_CONFIG } from '../../agents/finger-system-agent/index.js';
@@ -42,14 +42,13 @@ function isDuplicateMessage(msgId: string): boolean {
 
 const log = logger.module('ChannelBridgeHubRoute');
 
-import type { AuthorizationMode } from '../../runtime/tool-authorization-context.js';
 export interface ChannelBridgeHubRouteDeps {
   channelBridgeManager: ChannelBridgeManager;
   sessionManager: SessionManager;
   dispatchTaskToAgent: (request: AgentDispatchRequest) => Promise<unknown>;
   eventBus: UnifiedEventBus;
   agentStatusSubscriber?: AgentStatusSubscriber;
-  runtime: { setAgentAuthorizationMode: (agentId: string, mode: AuthorizationMode, channelId?: string) => void };
+  runtime: Record<string, unknown>;
 }
 
 export function createChannelBridgeHubRoute(deps: ChannelBridgeHubRouteDeps) {
@@ -187,7 +186,6 @@ export function createChannelBridgeHubRoute(deps: ChannelBridgeHubRouteDeps) {
     // Check channel policy
     const fingerConfig = await loadFingerConfig();
     const channelPolicy = getChannelAuth(fingerConfig, channelMsg.channelId);
-    const channelAuthorizationMode = getChannelAuthorizationMode(fingerConfig, channelMsg.channelId);
     if (channelPolicy === 'mailbox') {
       log.info('Channel policy is mailbox, creating pending entry');
       await sendReply('消息已加入队列等待处理');
@@ -200,8 +198,6 @@ export function createChannelBridgeHubRoute(deps: ChannelBridgeHubRouteDeps) {
       type: 'normal',
       targetAgent: ''
     });
-    // 记录当前渠道授权策略（供工具调用时使用）
-    deps.runtime.setAgentAuthorizationMode(targetAgentId, channelAuthorizationMode, channelMsg.channelId);
     const isSystemAgentTarget = targetAgentId === SYSTEM_AGENT_CONFIG.id;
     const fixedSessionId = isSystemAgentTarget
       ? sessionManager.getOrCreateSystemSession().id

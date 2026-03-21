@@ -21,7 +21,6 @@ import {
 import { createChannelBridgeHubRoute } from './channel-bridge-hub-route.js';
 import { loadOrchestrationConfig } from '../../orchestration/orchestration-config.js';
 import type { AgentDispatchRequest } from './agent-runtime/types.js';
-import { setAgentAuthorizationMode } from '../../runtime/tool-authorization-context.js';
 
 export async function runPostInit(deps: {
   hub: MessageHub;
@@ -70,7 +69,7 @@ export async function runPostInit(deps: {
      dispatchTaskToAgent: deps.dispatchTaskToAgent,
      eventBus: deps.eventBus,
      agentStatusSubscriber: deps.agentStatusSubscriber,
-      runtime: { setAgentAuthorizationMode },
+      runtime: {},
    }),
     blocking: true,
     priority: 10,

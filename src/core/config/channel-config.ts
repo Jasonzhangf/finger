@@ -13,7 +13,19 @@ export interface ChannelAuthConfig {
   id: string;
   type: 'direct' | 'mailbox';
   priority: number;
-  authorizationMode?: 'prompt' | 'auto' | 'deny';
+  /** @deprecated 权限管理将迁移至 permissionMode (minimal/default/full) */
+
+  permissionMode?: 'minimal' | 'default' | 'full';
+  permissionWhitelist?: string[];
+  permissionBlacklist?: string[];
+  highRiskCommands?: string[];
+  rejectConfig?: {
+    sandboxEscalation?: boolean;
+    policyRules?: boolean;
+    skillApproval?: boolean;
+    permissionRequest?: boolean;
+    mcpElicitation?: boolean;
+  };
 }
 
 export interface ChannelAuthSection {
@@ -50,10 +62,46 @@ export async function loadFingerConfig(): Promise<FingerConfig> {
       enabled: true,
       defaultPolicy: 'direct',
       channels: [
-        { id: 'webui', type: 'direct', priority: 10, authorizationMode: 'prompt' },
-        { id: 'qqbot', type: 'direct', priority: 20, authorizationMode: 'auto' },
-        { id: 'cli', type: 'direct', priority: 5, authorizationMode: 'prompt' },
-        { id: 'feishu', type: 'mailbox', priority: 30, authorizationMode: 'prompt' },
+        {
+          id: 'webui',
+          type: 'direct',
+          priority: 10,
+          permissionMode: 'default',
+          permissionWhitelist: [],
+          permissionBlacklist: [],
+          highRiskCommands: ['rm -rf', 'git reset --hard', 'git checkout', 'file.delete'],
+          rejectConfig: {},
+        },
+        {
+          id: 'qqbot',
+          type: 'direct',
+          priority: 20,
+          permissionMode: 'default',
+          permissionWhitelist: [],
+          permissionBlacklist: [],
+          highRiskCommands: ['rm -rf', 'git reset --hard', 'git checkout', 'file.delete'],
+          rejectConfig: {},
+        },
+        {
+          id: 'cli',
+          type: 'direct',
+          priority: 5,
+          permissionMode: 'default',
+          permissionWhitelist: [],
+          permissionBlacklist: [],
+          highRiskCommands: ['rm -rf', 'git reset --hard', 'git checkout', 'file.delete'],
+          rejectConfig: {},
+        },
+        {
+          id: 'feishu',
+          type: 'mailbox',
+          priority: 30,
+          permissionMode: 'default',
+          permissionWhitelist: [],
+          permissionBlacklist: [],
+          highRiskCommands: ['rm -rf', 'git reset --hard', 'git checkout', 'file.delete'],
+          rejectConfig: {},
+        },
       ],
     },
     systemAuth: {
@@ -112,19 +160,88 @@ export function getChannelAuth(
 }
 
 /**
- * Get channel authorization mode for tool execution.
- * Defaults to 'prompt' if not configured.
+ * Get channel permission mode (minimal/default/full).
+ * Defaults to 'default' if not configured.
  */
-export function getChannelAuthorizationMode(
+export function getChannelPermissionMode(
   config: FingerConfig,
   channelId: string
-): 'prompt' | 'auto' | 'deny' {
-  const defaultMode: 'prompt' | 'auto' | 'deny' = 'prompt';
+): 'minimal' | 'default' | 'full' {
+  const defaultMode: 'minimal' | 'default' | 'full' = 'default';
   if (!config.channelAuth?.enabled) {
     return defaultMode;
   }
   const channel = config.channelAuth.channels.find(c => c.id === channelId);
-  return channel?.authorizationMode ?? defaultMode;
+  return channel?.permissionMode ?? defaultMode;
+}
+
+/**
+ * Get channel permission whitelist.
+ */
+export function getChannelPermissionWhitelist(
+  config: FingerConfig,
+  channelId: string
+): string[] {
+  if (!config.channelAuth?.enabled) return [];
+  const channel = config.channelAuth.channels.find(c => c.id === channelId);
+  return Array.isArray(channel?.permissionWhitelist) ? channel!.permissionWhitelist! : [];
+}
+
+/**
+ * Get channel permission blacklist.
+ */
+export function getChannelPermissionBlacklist(
+  config: FingerConfig,
+  channelId: string
+): string[] {
+  if (!config.channelAuth?.enabled) return [];
+  const channel = config.channelAuth.channels.find(c => c.id === channelId);
+  return Array.isArray(channel?.permissionBlacklist) ? channel!.permissionBlacklist! : [];
+}
+
+/**
+ * Get high risk command list for channel.
+ */
+export function getChannelHighRiskCommands(
+  config: FingerConfig,
+  channelId: string
+): string[] {
+  if (!config.channelAuth?.enabled) return [];
+  const channel = config.channelAuth.channels.find(c => c.id === channelId);
+  return Array.isArray(channel?.highRiskCommands) ? channel!.highRiskCommands! : [];
+}
+
+/**
+ * Get channel reject config aligned with Codex RejectConfig.
+ */
+export function getChannelRejectConfig(
+  config: FingerConfig,
+  channelId: string
+): {
+  sandboxEscalation: boolean;
+  policyRules: boolean;
+  skillApproval: boolean;
+  permissionRequest: boolean;
+  mcpElicitation: boolean;
+} {
+  if (!config.channelAuth?.enabled) {
+    return {
+      sandboxEscalation: false,
+      policyRules: false,
+      skillApproval: false,
+      permissionRequest: false,
+      mcpElicitation: false,
+    };
+  }
+  const channel = config.channelAuth.channels.find(c => c.id === channelId);
+  const reject = channel?.rejectConfig ?? {};
+  return {
+    sandboxEscalation: reject.sandboxEscalation ?? false,
+    policyRules: reject.policyRules ?? false,
+    skillApproval: reject.skillApproval ?? false,
+    permissionRequest: reject.permissionRequest ?? false,
+    mcpElicitation: reject.mcpElicitation ?? false,
+  };
 }
 
 /**

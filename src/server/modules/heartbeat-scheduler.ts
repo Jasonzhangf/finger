@@ -6,6 +6,11 @@ import { heartbeatMailbox } from './heartbeat-mailbox.js';
 import { listAgents } from '../../agents/finger-system-agent/registry.js';
 import type { AgentRuntimeDeps } from './agent-runtime/types.js';
 import { SessionControlPlaneStore } from '../../runtime/session-control-plane.js';
+import {
+  resolveHeartbeatMdPath,
+  shouldStopHeartbeat,
+  validateHeartbeatMd,
+} from './heartbeat-md-parser.js';
 
 const log = logger.module('HeartbeatScheduler');
 
@@ -184,6 +189,38 @@ export class HeartbeatScheduler {
     projectId: string | undefined,
     config?: HeartbeatTaskConfig,
   ): Promise<void> {
+    const heartbeatMdPath = resolveHeartbeatMdPath(projectId, await this.resolveProjectPath(projectId), FINGER_PATHS.home);
+
+    // Validate HEARTBEAT.md format
+    if (heartbeatMdPath) {
+      const validation = await validateHeartbeatMd(heartbeatMdPath);
+      if (!validation.valid) {
+        log.warn('[HeartbeatScheduler] HEARTBEAT.md validation failed', {
+          projectId,
+          heartbeatMdPath,
+          errors: validation.errors,
+          warnings: validation.warnings,
+        });
+
+        // Dispatch auto-repair task to system agent
+        await this.dispatchAutoRepairTask(projectId, heartbeatMdPath, validation);
+
+        // Do not proceed with heartbeat dispatch when format is invalid
+        return;
+      }
+
+      // Check auto-stop conditions
+      const stopResult = await shouldStopHeartbeat(heartbeatMdPath);
+      if (stopResult.shouldStop) {
+        log.info('[HeartbeatScheduler] Heartbeat auto-stop triggered', {
+          projectId,
+          heartbeatMdPath,
+          reason: stopResult.reason,
+        });
+        return;
+      }
+    }
+
     const dispatchMode = config?.dispatch ?? 'mailbox';
     const prompt = config?.prompt
       ?? `# Heartbeat Check\n\n请检查项目根目录的 HEARTBEAT.md 并执行待办任务。\n\n` +
@@ -267,5 +304,53 @@ export class HeartbeatScheduler {
       await this.dispatchDirect(agent.agentId, 'mailbox-check', agent.projectId, prompt);
       this.lastMailboxPromptAt.set(agent.agentId, now);
     }
+  }
+
+  private async resolveProjectPath(projectId: string | undefined): Promise<string | undefined> {
+    if (!projectId) return undefined;
+    const agents = await listAgents();
+    const agent = agents.find(a => a.projectId === projectId);
+    return agent?.projectPath;
+  }
+
+  private async dispatchAutoRepairTask(
+    projectId: string | undefined,
+    heartbeatMdPath: string,
+    validation: { errors: string[]; warnings: string[] },
+  ): Promise<void> {
+    const targetAgentId = 'finger-system-agent';
+    const taskId = `heartbeat-repair:${projectId ?? 'global'}`;
+
+    const promptLines = [
+      '# HEARTBEAT.md Auto-Repair Request',
+      'The HEARTBEAT.md format is invalid or missing. Please repair it to the routecodex format.',
+      '',
+      `File: ${heartbeatMdPath}`,
+      projectId ? `Project ID: ${projectId}` : 'Project ID: global',
+      '',
+      'Validation errors:',
+      ...validation.errors.map(err => `- ${err}`),
+      '',
+      'Warnings:',
+      ...validation.warnings.map(warn => `- ${warn}`),
+      '',
+      'Required format: YAML front matter (---) with title, version, updated_at, and optional Heartbeat-Stop-When / Heartbeat-Until fields.',
+      'Make sure to preserve existing checklist items if possible.',
+    ];
+
+    const mailboxPayload = {
+      type: 'heartbeat-repair',
+      taskId,
+      projectId,
+      prompt: promptLines.join('\n'),
+      requiresFeedback: true,
+    };
+
+    heartbeatMailbox.append(targetAgentId, mailboxPayload, {
+      sender: 'system-heartbeat',
+      sourceType: 'control',
+      category: 'notification',
+      priority: 1,
+    });
   }
 }

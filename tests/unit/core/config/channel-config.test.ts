@@ -12,6 +12,11 @@ import { existsSync, readFileSync } from 'fs';
 import {
   loadFingerConfig,
   getChannelAuth,
+  getChannelPermissionMode,
+  getChannelPermissionWhitelist,
+  getChannelPermissionBlacklist,
+  getChannelHighRiskCommands,
+  getChannelRejectConfig,
   resolveDefaultProject,
   resolveHomePath,
   type FingerConfig,
@@ -137,6 +142,61 @@ describe('ChannelConfig', () => {
         },
       };
       expect(getChannelAuth(config, 'webui')).toBe('mailbox');
+    });
+  });
+
+  describe('permission config getters', () => {
+    it('returns default permission mode when channelAuth disabled', () => {
+      const config: FingerConfig = {
+        channelAuth: {
+          enabled: false,
+          defaultPolicy: 'direct',
+          channels: [],
+        },
+      };
+      expect(getChannelPermissionMode(config, 'webui')).toBe('default');
+      expect(getChannelPermissionWhitelist(config, 'webui')).toEqual([]);
+      expect(getChannelPermissionBlacklist(config, 'webui')).toEqual([]);
+      expect(getChannelHighRiskCommands(config, 'webui')).toEqual([]);
+      expect(getChannelRejectConfig(config, 'webui')).toEqual({
+        sandboxEscalation: false,
+        policyRules: false,
+        skillApproval: false,
+        permissionRequest: false,
+        mcpElicitation: false,
+      });
+    });
+
+    it('reads permission config fields from channel config', () => {
+      const config: FingerConfig = {
+        channelAuth: {
+          enabled: true,
+          defaultPolicy: 'direct',
+          channels: [
+            {
+              id: 'webui',
+              type: 'direct',
+              priority: 10,
+              permissionMode: 'minimal',
+              permissionWhitelist: ['shell.exec'],
+              permissionBlacklist: ['file.delete'],
+              highRiskCommands: ['rm -rf'],
+              rejectConfig: { sandboxEscalation: true, policyRules: true },
+            },
+          ],
+        },
+      };
+      expect(getChannelPermissionMode(config, 'webui')).toBe('minimal');
+      expect(getChannelPermissionWhitelist(config, 'webui')).toEqual(['shell.exec']);
+      expect(getChannelPermissionBlacklist(config, 'webui')).toEqual(['file.delete']);
+      expect(getChannelHighRiskCommands(config, 'webui')).toEqual(['rm -rf']);
+      expect(getChannelRejectConfig(config, 'webui')).toEqual({
+        sandboxEscalation: true,
+        policyRules: true,
+        skillApproval: false,
+        permissionRequest: false,
+        mcpElicitation: false,
+      });
     });
   });
 
