@@ -243,7 +243,7 @@ export function registerMessageRoutes(app: Express, deps: MessageRouteDeps): voi
       const content = extractMessageTextForSession(requestMessage)
         ?? JSON.stringify(requestMessage);
       if (content.trim().length > 0) {
-        deps.sessionManager.addMessage(requestSessionId, 'user', content);
+        void deps.sessionManager.addMessage(requestSessionId, 'user', content);
       }
     }
 
@@ -375,7 +375,7 @@ export function registerMessageRoutes(app: Express, deps: MessageRouteDeps): voi
 
         if (shouldPersistSession && requestSessionId) {
           if (assistantContent && assistantContent.trim().length > 0) {
-            deps.sessionManager.addMessage(requestSessionId, 'assistant', assistantContent, {
+            void deps.sessionManager.addMessage(requestSessionId, 'assistant', assistantContent, {
               agentId: agentTarget,
               metadata: { channelId, mode: agentInfo.mode },
             });
@@ -427,7 +427,7 @@ export function registerMessageRoutes(app: Express, deps: MessageRouteDeps): voi
           };
           if (shouldPersistSession && requestSessionId) {
             if (assistantContent && assistantContent.trim().length > 0) {
-              deps.sessionManager.addMessage(requestSessionId, 'assistant', assistantContent, {
+              void deps.sessionManager.addMessage(requestSessionId, 'assistant', assistantContent, {
                 agentId: agentTarget,
                 metadata: { channelId, mode: agentInfo.mode },
               });

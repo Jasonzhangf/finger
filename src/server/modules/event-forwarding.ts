@@ -59,7 +59,7 @@ export function attachEventForwarding(deps: EventForwardingDeps): {
     role: 'user' | 'assistant' | 'system' | 'orchestrator' = 'system',
   ): void => {
     if (!sessionId || sessionId.trim().length === 0) return;
-    sessionManager.addMessage(sessionId, role, content, detail);
+    void sessionManager.addMessage(sessionId, role, content, detail);
   };
 
   const hasLedgerPointerMessage = (sessionId: string, label: string): boolean => {
@@ -75,7 +75,7 @@ export function attachEventForwarding(deps: EventForwardingDeps): {
     if (hasLedgerPointerMessage(sessionId, label)) return;
     const pointerInfo = buildLedgerPointerInfo({ sessionId, agentId });
     const content = formatLedgerPointerContent(pointerInfo, label);
-    sessionManager.addMessage(sessionId, 'system', content, {
+    void sessionManager.addMessage(sessionId, 'system', content, {
       type: 'ledger_pointer',
       agentId,
       metadata: {
@@ -447,7 +447,7 @@ export function attachEventForwarding(deps: EventForwardingDeps): {
       ].filter((part) => part.length > 0);
       const dispatchContent = dispatchParts.join(' · ');
       if (sessionId && dispatchContent.length > 0) {
-        sessionManager.addMessage(sessionId, 'system', dispatchContent, {
+        void sessionManager.addMessage(sessionId, 'system', dispatchContent, {
           type: 'dispatch',
           agentId: targetAgentId,
           metadata: { event, agentRole },
@@ -455,7 +455,7 @@ export function attachEventForwarding(deps: EventForwardingDeps): {
         if (status === 'completed' || status === 'failed') {
           const resultContent = formatDispatchResultContent(payload.result, asString(payload.error));
           if (resultContent.trim().length > 0) {
-            sessionManager.addMessage(sessionId, 'assistant', resultContent, {
+            void sessionManager.addMessage(sessionId, 'assistant', resultContent, {
               type: 'dispatch',
               agentId: targetAgentId,
               metadata: { event, agentRole },

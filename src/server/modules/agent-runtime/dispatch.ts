@@ -55,7 +55,7 @@ function persistDispatchUserMessage(deps: AgentRuntimeDeps, input: AgentDispatch
     : deps.primaryOrchestratorAgentId;
   const content = formatDispatchTaskContent(input.task);
   if (content.trim().length === 0) return;
-  deps.sessionManager.addMessage(sessionId, 'user', content, {
+  void deps.sessionManager.addMessage(sessionId, 'user', content, {
     type: 'dispatch',
     agentId: sourceAgentId,
     metadata: {

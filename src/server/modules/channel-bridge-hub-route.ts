@@ -119,7 +119,7 @@ export function createChannelBridgeHubRoute(deps: ChannelBridgeHubRouteDeps) {
 
         // 将回复写入 session（保证 WebUI 可见）
         const replySessionId = resolveSessionId();
-        sessionManager.addMessage(replySessionId, 'assistant', replyWithPrefix, {
+        void sessionManager.addMessage(replySessionId, 'assistant', replyWithPrefix, {
           type: 'text',
           agentId: agentId || 'system',
           metadata: {
@@ -221,13 +221,13 @@ export function createChannelBridgeHubRoute(deps: ChannelBridgeHubRouteDeps) {
         sessionId: fixedSessionId
       });
     }
-    sessionManager.addMessage(fixedSessionId, 'system', '已收到，正在处理中…', {
+    void sessionManager.addMessage(fixedSessionId, 'system', '已收到，正在处理中…', {
       type: 'dispatch',
       metadata: { channelId: channelMsg.channelId, messageId: channelMsg.id },
     });
 
     // 将用户原始输入以 'user' 角色写入 session（保证 WebUI 可见）
-    sessionManager.addMessage(fixedSessionId, 'user', enrichedContent, {
+    void sessionManager.addMessage(fixedSessionId, 'user', enrichedContent, {
       type: 'text',
       metadata: {
         channelId: channelMsg.channelId,

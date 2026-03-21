@@ -11,3 +11,4 @@ export * from './session-control-plane.js';
 export * from './ledger-writer.js';
 export * from './ledger-reader.js';
 export * from './session-compressor.js';
+export * from './user-preference-merger.js';

@@ -80,7 +80,7 @@ export async function handleSystemRouteDelegation(
 
       if (projectSessionId) {
         const systemSessionId = deps.sessionManager.getOrCreateSystemSession().id;
-        deps.sessionManager.addMessage(systemSessionId, 'system', `已委派 Project Agent 处理：${normalizedPath}\nsessionId: ${projectSessionId}`);
+        void deps.sessionManager.addMessage(systemSessionId, 'system', `已委派 Project Agent 处理：${normalizedPath}\nsessionId: ${projectSessionId}`);
 
         if (isObjectRecord(updatedMessage)) {
           const metadata = isObjectRecord(updatedMessage.metadata) ? updatedMessage.metadata : {};

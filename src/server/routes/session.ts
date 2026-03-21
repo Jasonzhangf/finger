@@ -339,7 +339,7 @@ export function registerSessionRoutes(app: Express, deps: SessionRouteDeps): voi
     }
   });
 
-  app.post('/api/v1/sessions/:sessionId/messages/append', (req, res) => {
+  app.post('/api/v1/sessions/:sessionId/messages/append', async (req, res) => {
     const { role, content, attachments, metadata } = req.body as {
       role?: 'user' | 'assistant' | 'system' | 'orchestrator';
       content?: string;
@@ -354,7 +354,7 @@ export function registerSessionRoutes(app: Express, deps: SessionRouteDeps): voi
       res.status(400).json({ error: 'Missing content' });
       return;
     }
-    const message = sessionManager.addMessage(
+    const message = await sessionManager.addMessage(
       resolveSystemSessionId(req.params.sessionId),
       role,
       content,
