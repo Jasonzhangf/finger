@@ -1,12 +1,19 @@
 /**
  * Session Manager - 会话管理
  * 负责会话创建、恢复、隔离、上下文压缩
+ *
+ * Ledger-Session 一体化架构：
+ * - Ledger (context-ledger.jsonl) 是消息的唯一数据真源
+ * - Session 只存元数据和指针，messages 字段已废弃
  */
 
 import fs from 'fs';
 import path from 'path';
 import { FINGER_PATHS, ensureDir, normalizeSessionDirName } from '../core/finger-paths.js';
+import { Session, SessionMessage, LEDGER_POINTER_DEFAULTS, ensureLedgerPointers } from './session-types.js';
 import type { Attachment } from '../runtime/events.js';
+
+export { Session, SessionMessage } from './session-types.js';
 
 const SESSIONS_DIR = FINGER_PATHS.sessions.dir;
 const SYSTEM_SESSIONS_DIR = path.join(FINGER_PATHS.home, 'system', 'sessions');
@@ -14,36 +21,6 @@ const SYSTEM_PROJECT_PATH = path.join(FINGER_PATHS.home, 'system');
 const SYSTEM_AGENT_ID = 'finger-system-agent';
 const SYSTEM_SESSION_PREFIX = 'system-';
 const ROOT_SESSION_FILE = 'main.json';
-
-export interface Session {
-  id: string;
-  name: string;
-  projectPath: string;
-  createdAt: string;
-  updatedAt: string;
-  lastAccessedAt: string;
-  messages: SessionMessage[];
-  activeWorkflows: string[];
-  context: Record<string, unknown>;
-}
-
-export interface SessionMessage {
-  id: string;
-  role: 'user' | 'assistant' | 'system' | 'orchestrator';
-  content: string;
-  timestamp: string;
-  workflowId?: string;
-  taskId?: string;
-  attachments?: Attachment[];
-  type?: 'text' | 'command' | 'plan_update' | 'task_update' | 'tool_call' | 'tool_result' | 'tool_error' | 'agent_step' | 'dispatch' | 'reasoning' | 'ledger_pointer';
-  agentId?: string;
-  toolName?: string;
-  toolStatus?: 'success' | 'error';
-  toolDurationMs?: number;
-  toolInput?: unknown;
-  toolOutput?: unknown;
-  metadata?: Record<string, unknown>;
-}
 
 export class SessionManager {
   private sessions: Map<string, Session> = new Map();
@@ -163,6 +140,8 @@ export class SessionManager {
       throw new Error('Invalid session content');
     }
     session.projectPath = this.normalizeProjectPath(session.projectPath);
+    // Ensure ledger pointer fields exist for backward compatibility
+    ensureLedgerPointers(session);
     this.sessions.set(session.id, session);
     this.sessionFilePaths.set(session.id, filePath);
   }
@@ -324,6 +303,7 @@ export class SessionManager {
       messages: [],
       activeWorkflows: [],
       context: {},
+      ...LEDGER_POINTER_DEFAULTS,
     };
 
     this.sessions.set(id, session);
@@ -362,6 +342,7 @@ export class SessionManager {
         sessionTier: 'system',
         ownerAgentId: SYSTEM_AGENT_ID,
       },
+      ...LEDGER_POINTER_DEFAULTS,
     };
 
     this.sessions.set(systemSessionId, session);
@@ -416,6 +397,7 @@ export class SessionManager {
       messages: [],
       activeWorkflows: [],
       context: {},
+      ...LEDGER_POINTER_DEFAULTS,
     };
 
     this.sessions.set(sessionId, session);
