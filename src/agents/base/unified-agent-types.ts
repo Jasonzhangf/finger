@@ -58,13 +58,21 @@ export function parseUnifiedAgentInput(message: unknown): UnifiedAgentInput | nu
   const text = extractText(message);
   if (!text) return null;
 
+  const meta = isRecord(message.metadata) ? message.metadata : undefined;
+  const topSessionId = asOptionalString(message.sessionId);
+  const metaSessionId = meta ? asOptionalString(meta.sessionId) ?? asOptionalString((meta as Record<string, unknown>).session_id) : undefined;
+  if (topSessionId && metaSessionId && topSessionId !== metaSessionId) {
+    throw new Error(`Conflicting sessionId sources: sessionId=${topSessionId}, metadata.sessionId=${metaSessionId}`);
+  }
+  const resolvedSessionId = topSessionId ?? metaSessionId;
+
   const input: UnifiedAgentInput = {
     text,
-    sessionId: asOptionalString(message.sessionId),
+    sessionId: resolvedSessionId,
     createNewSession: typeof message.createNewSession === 'boolean' ? message.createNewSession : undefined,
     sender: parseSender(message.sender),
     history: parseHistory(message.history),
-    metadata: isRecord(message.metadata) ? message.metadata : undefined,
+    metadata: meta,
     roleProfile: asOptionalString(message.roleProfile),
     tools: parseStringArray(message.tools),
   };
@@ -77,6 +85,13 @@ export function mergeHistory(
   inputHistory: UnifiedHistoryItem[] | undefined,
   limit: number,
 ): SessionMessage[] {
+  // Session 历史是唯一真源，优先使用 session 存储中的历史
+  // 前端传来的 inputHistory 仅在 session 为空时作为补充（首次会话场景）
+  if (sessionHistory && sessionHistory.length > 0) {
+    return sessionHistory.slice(-Math.max(1, limit));
+  }
+
+  // 只有当 session 历史为空时，才使用前端传来的历史（首次会话）
   if (inputHistory && inputHistory.length > 0) {
     const normalized = inputHistory.map((item, index) => ({
       id: `ext-${Date.now()}-${index}`,
@@ -87,7 +102,7 @@ export function mergeHistory(
     return normalized.slice(-Math.max(1, limit));
   }
 
-  return sessionHistory.slice(-Math.max(1, limit));
+  return [];
 }
 
 function extractText(record: Record<string, unknown>): string | null {

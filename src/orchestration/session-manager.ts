@@ -13,9 +13,10 @@ import { FINGER_PATHS, ensureDir, normalizeSessionDirName } from '../core/finger
 import { Session, SessionMessage, LEDGER_POINTER_DEFAULTS, ensureLedgerPointers } from './session-types.js';
 import type { Attachment } from '../runtime/events.js';
 import { appendSessionMessage } from '../runtime/ledger-writer.js';
-import { buildSessionView } from '../runtime/ledger-reader.js';
-import { needsCompression, compressSession, syncSessionTokens } from '../runtime/session-compressor.js';
+import { buildSessionView, type SessionView, type SessionViewMessage } from '../runtime/ledger-reader.js';
+import { needsCompression, compressSession, syncSessionTokens, type CompressResult } from '../runtime/session-compressor.js';
 import { estimateTokens } from '../utils/token-counter.js';
+import { getContextWindow } from '../core/user-settings.js';
 
 export { Session, SessionMessage } from './session-types.js';
 
@@ -30,7 +31,6 @@ export class SessionManager {
   private sessions: Map<string, Session> = new Map();
   private sessionFilePaths: Map<string, string> = new Map();
   private currentSessionId: string | null = null;
-  private readonly COMPRESS_THRESHOLD = 50;
 
   constructor() {
     this.ensureDirs();
@@ -573,6 +573,9 @@ export class SessionManager {
     session.originalEndIndex = (session.originalEndIndex || 0) + 1;
     session.totalTokens = (session.totalTokens || 0) + estimateTokens(content);
 
+    // Invalidate cached view (will be rebuilt on next read)
+    session._cachedView = undefined;
+
     this.saveSession(session);
     return message;
   }
@@ -580,10 +583,77 @@ export class SessionManager {
   getMessages(sessionId: string, limit = 50): SessionMessage[] {
     const session = this.sessions.get(sessionId);
     if (!session) return [];
+
+    // Try Ledger as source of truth first
+    if (session.originalEndIndex > 0) {
+      return this.getMessagesFromLedger(session, limit);
+    }
+
+    // Fallback to session.messages for sessions not yet migrated to Ledger
     if (!Number.isFinite(limit) || limit <= 0) {
       return [...session.messages];
     }
     return session.messages.slice(-limit);
+  }
+
+  /**
+   * Build messages from Ledger via LedgerReader.
+   * Returns SessionMessage[] for backward compatibility.
+   */
+  private async getLedgerView(session: Session, options?: { maxTokens?: number; includeSummary?: boolean }): Promise<SessionView> {
+    const ctx = session.context ?? {};
+    const agentId = typeof ctx.ownerAgentId === 'string' ? ctx.ownerAgentId : SYSTEM_AGENT_ID;
+    const rootDir = this.resolveSessionsRoot(session);
+    const contextWindow = getContextWindow();
+
+    return buildSessionView(
+      { rootDir, sessionId: session.id, agentId, mode: 'main' },
+      { maxTokens: options?.maxTokens ?? contextWindow, includeSummary: options?.includeSummary ?? true },
+    );
+  }
+
+  private getMessagesFromLedger(session: Session, limit: number): SessionMessage[] {
+    const view = session._cachedView;
+    if (view) {
+      const msgs = view.messages;
+      if (!Number.isFinite(limit) || limit <= 0) {
+        return this.viewMessagesToSessionMessages(msgs);
+      }
+      return this.viewMessagesToSessionMessages(msgs.slice(-limit));
+    }
+
+    // Synchronous fallback: return from session.messages (kept in sync by addMessage)
+    // Callers needing fresh Ledger data should use getMessagesAsync()
+    if (!Number.isFinite(limit) || limit <= 0) {
+      return [...session.messages];
+    }
+    return session.messages.slice(-limit);
+  }
+
+  /**
+   * Async version of getMessages that always reads from Ledger.
+   */
+  async getMessagesAsync(sessionId: string, limit = 50): Promise<SessionMessage[]> {
+    const session = this.sessions.get(sessionId);
+    if (!session) return [];
+
+    const view = await this.getLedgerView(session, { includeSummary: false });
+    session._cachedView = view;
+
+    const msgs = view.messages;
+    if (!Number.isFinite(limit) || limit <= 0) {
+      return this.viewMessagesToSessionMessages(msgs);
+    }
+    return this.viewMessagesToSessionMessages(msgs.slice(-limit));
+  }
+
+  private viewMessagesToSessionMessages(msgs: SessionViewMessage[]): SessionMessage[] {
+    return msgs.map((msg) => ({
+      id: msg.messageId || `ledger-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      role: msg.role,
+      content: msg.content,
+      timestamp: msg.timestamp || new Date().toISOString(),
+    }));
   }
 
   updateMessage(sessionId: string, messageId: string, content: string): SessionMessage | null {
@@ -638,60 +708,63 @@ export class SessionManager {
     };
   }
 
-  /**
-   * 上下文压缩 (摘要式)
-   */
   async compressContext(sessionId: string, summarizer?: (messages: SessionMessage[]) => Promise<string>): Promise<string> {
     const session = this.sessions.get(sessionId);
     if (!session) throw new Error(`Session not found: ${sessionId}`);
 
-    if (session.messages.length <= this.COMPRESS_THRESHOLD) {
+    if (!needsCompression(session)) {
       return 'No compression needed';
     }
 
-    const earlyMessages = session.messages.slice(0, -this.COMPRESS_THRESHOLD);
-    const recentMessages = session.messages.slice(-this.COMPRESS_THRESHOLD);
+    const ctx = session.context ?? {};
+    const agentId = typeof ctx.ownerAgentId === 'string' ? ctx.ownerAgentId : SYSTEM_AGENT_ID;
+    const rootDir = this.resolveSessionsRoot(session);
 
-    let summary: string;
-    if (summarizer) {
-      summary = await summarizer(earlyMessages);
-    } else {
-      summary = this.defaultSummarize(earlyMessages);
+    const summarizerAdapter = summarizer
+      ? async (entries: Array<{ payload: unknown }>): Promise<CompressResult> => {
+          const messages: SessionMessage[] = entries.map((entry, idx) => {
+            const pl = entry.payload as Record<string, unknown>;
+            return {
+              id: `ledger-${idx}`,
+              role: (pl.role as SessionMessage['role']) || 'user',
+              content: typeof pl.content === 'string' ? pl.content : '',
+              timestamp: new Date().toISOString(),
+            };
+          });
+          const summary = await summarizer(messages);
+          return { summary, userPreferencePatch: '', tokenCount: estimateTokens(summary) };
+        }
+      : undefined;
+
+    const result = await compressSession(session, {
+      rootDir,
+      agentId,
+      mode: 'main',
+      summarizer: summarizerAdapter,
+    });
+
+    if (!result.compressed) {
+      return result.reason || 'Compression skipped';
     }
+
+    session.latestCompactIndex = result.pointers.latestCompactIndex;
+    session.originalStartIndex = result.pointers.originalStartIndex;
+    session.totalTokens = result.pointers.totalTokens;
+    session._cachedView = undefined;
 
     session.context = {
       ...session.context,
       compressedHistory: {
         timestamp: new Date().toISOString(),
-        originalCount: earlyMessages.length,
-        summary,
+        originalCount: result.result?.tokenCount || 0,
+        summary: result.result?.summary || '',
       },
     };
-    session.messages = recentMessages;
 
     this.saveSession(session);
-    console.log(`[SessionManager] Compressed ${earlyMessages.length} messages for session ${sessionId}`);
+    console.log(`[SessionManager] Compressed session ${sessionId}: ${result.result?.summary?.slice(0, 100)}...`);
 
-    return summary;
-  }
-
-  private defaultSummarize(messages: SessionMessage[]): string {
-    const userMessages = messages.filter(m => m.role === 'user');
-    const assistantMessages = messages.filter(m => m.role === 'assistant' || m.role === 'orchestrator');
-
-    const parts: string[] = [];
-    if (userMessages.length > 0) {
-      parts.push(`用户请求: ${userMessages.map(m => m.content.slice(0, 100)).join('; ')}`);
-    }
-    if (assistantMessages.length > 0) {
-      parts.push(`助手响应: ${assistantMessages.length} 条`);
-    }
-    const taskIds = new Set(messages.map(m => m.taskId).filter(Boolean));
-    if (taskIds.size > 0) {
-      parts.push(`涉及任务: ${Array.from(taskIds).join(', ')}`);
-    }
-
-    return parts.join('\n');
+    return result.result?.summary || 'Compression completed';
   }
 
   getCompressionStatus(sessionId: string): { compressed: boolean; summary?: string; originalCount?: number } {

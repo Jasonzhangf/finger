@@ -82,6 +82,22 @@ async function handleRequest(request: GatewayRequestEnvelope, options: WorkerOpt
 }
 
 async function routeRequestToDaemon(request: GatewayRequestEnvelope, options: WorkerOptions): Promise<unknown> {
+  // 结构化日志：记录即将 POST 的 body 中的 sessionId 信息
+  const msg = request.message;
+  const msgSessionId = msg && typeof msg === 'object' ? (msg as Record<string, unknown>).sessionId : undefined;
+  const meta = msg && typeof msg === 'object' && typeof (msg as Record<string, unknown>).metadata === 'object'
+    ? (msg as Record<string, Record<string, unknown>>).metadata : undefined;
+  const metaSessionId = meta?.sessionId;
+  const metaUnderscoreId = meta?.session_id;
+  process.stderr.write(JSON.stringify({
+    event: 'gateway-worker.routeRequestToDaemon',
+    target: options.target,
+    'message.sessionId': msgSessionId,
+    'message.metadata.sessionId': metaSessionId,
+    'message.metadata.session_id': metaUnderscoreId,
+    traceId: request.requestId,
+  }) + '\n');
+
   const response = await fetch(`${options.daemonUrl}/api/v1/message`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },

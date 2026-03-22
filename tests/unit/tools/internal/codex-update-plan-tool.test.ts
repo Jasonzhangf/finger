@@ -152,4 +152,110 @@ describe('update_plan tool', () => {
       expect(result.plan[0].step).toBe('Trimmed');
     });
   });
+
+  describe('error tolerance - fallback fields', () => {
+    it('accepts description field as fallback for step', async () => {
+      const result = await updatePlanTool.execute({
+        plan: [
+          { description: 'Step from description', status: 'pending' },
+        ],
+      });
+      expect(result.ok).toBe(true);
+      expect(result.plan[0].step).toBe('Step from description');
+    });
+
+    it('accepts text field as fallback for step', async () => {
+      const result = await updatePlanTool.execute({
+        plan: [
+          { text: 'Step from text', status: 'completed' },
+        ],
+      });
+      expect(result.ok).toBe(true);
+      expect(result.plan[0].step).toBe('Step from text');
+    });
+
+    it('accepts title field as fallback for step', async () => {
+      const result = await updatePlanTool.execute({
+        plan: [
+          { title: 'Step from title', status: 'in_progress' },
+        ],
+      });
+      expect(result.ok).toBe(true);
+      expect(result.plan[0].step).toBe('Step from title');
+    });
+
+    it('prefers step over fallback fields', async () => {
+      const result = await updatePlanTool.execute({
+        plan: [
+          { step: 'Primary step', description: 'Fallback desc', status: 'pending' },
+        ],
+      });
+      expect(result.ok).toBe(true);
+      expect(result.plan[0].step).toBe('Primary step');
+    });
+  });
+
+  describe('error tolerance - status aliases', () => {
+    it('normalizes todo to pending', async () => {
+      const result = await updatePlanTool.execute({
+        plan: [
+          { step: 'Todo item', status: 'todo' },
+        ],
+      });
+      expect(result.ok).toBe(true);
+      expect(result.plan[0].status).toBe('pending');
+    });
+
+    it('normalizes doing to in_progress', async () => {
+      const result = await updatePlanTool.execute({
+        plan: [
+          { step: 'Doing item', status: 'doing' },
+        ],
+      });
+      expect(result.ok).toBe(true);
+      expect(result.plan[0].status).toBe('in_progress');
+    });
+
+    it('normalizes done to completed', async () => {
+      const result = await updatePlanTool.execute({
+        plan: [
+          { step: 'Done item', status: 'done' },
+        ],
+      });
+      expect(result.ok).toBe(true);
+      expect(result.plan[0].status).toBe('completed');
+    });
+
+    it('normalizes inprogress to in_progress', async () => {
+      const result = await updatePlanTool.execute({
+        plan: [
+          { step: 'Inprogress item', status: 'inprogress' },
+        ],
+      });
+      expect(result.ok).toBe(true);
+      expect(result.plan[0].status).toBe('in_progress');
+    });
+
+    it('normalizes in-progress to in_progress', async () => {
+      const result = await updatePlanTool.execute({
+        plan: [
+          { step: 'In-progress item', status: 'in-progress' },
+        ],
+      });
+      expect(result.ok).toBe(true);
+      expect(result.plan[0].status).toBe('in_progress');
+    });
+
+    it('normalizes case-insensitively', async () => {
+      const result = await updatePlanTool.execute({
+        plan: [
+          { step: 'TODO item', status: 'TODO' },
+          { step: 'Done item', status: 'DONE' },
+        ],
+      });
+      expect(result.ok).toBe(true);
+      expect(result.plan[0].status).toBe('pending');
+      expect(result.plan[1].status).toBe('completed');
+    });
+  });
 });

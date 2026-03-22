@@ -26,6 +26,32 @@ describe('unified-agent-types', () => {
     });
   });
 
+  it('falls back to metadata.sessionId when top-level sessionId is missing', () => {
+    const parsed = parseUnifiedAgentInput({
+      content: 'hello',
+      metadata: { sessionId: 's-meta' },
+    });
+
+    expect(parsed).toEqual({
+      text: 'hello',
+      sessionId: 's-meta',
+      createNewSession: undefined,
+      sender: undefined,
+      history: undefined,
+      metadata: { sessionId: 's-meta' },
+      roleProfile: undefined,
+      tools: undefined,
+    });
+  });
+
+  it('throws when top-level sessionId conflicts with metadata.sessionId', () => {
+    expect(() => parseUnifiedAgentInput({
+      content: 'hello',
+      sessionId: 's-top',
+      metadata: { sessionId: 's-meta' },
+    })).toThrow('Conflicting sessionId sources');
+  });
+
   it('returns null for empty payload', () => {
     expect(parseUnifiedAgentInput({ foo: 'bar' })).toBeNull();
     expect(parseUnifiedAgentInput('   ')).toBeNull();

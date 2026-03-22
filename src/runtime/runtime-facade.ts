@@ -293,13 +293,25 @@ export class RuntimeFacade {
         timestamp: new Date().toISOString(),
         payload: { error: access.reason, duration: 0 },
       });
-      throw new Error(access.reason);
+      return {
+        __tool_access_denied: true,
+        error: access.reason,
+        toolName,
+        agentId,
+        suggestion: '工具访问被拒绝。请检查权限配置或联系管理员。',
+      };
     }
 
     // 检查策略
     const policy = this.toolRegistry.getPolicy(toolName);
     if (policy === 'deny') {
-      throw new Error(`Tool ${toolName} is not allowed`);
+      return {
+        __tool_policy_denied: true,
+        error: `Tool ${toolName} is not allowed by policy`,
+        toolName,
+        agentId,
+        suggestion: '工具被策略禁止。请检查 channels.json 中的工具策略配置。',
+      };
     }
 
     if (this.toolAuthorization.isToolRequired(toolName)) {
@@ -313,18 +325,24 @@ export class RuntimeFacade {
       }
 
       const auth = this.toolAuthorization.verifyAndConsume(token, agentId, toolName);
-      if (!auth.allowed) {
-        this.eventBus.emit({
-          type: 'tool_error',
-          toolId,
-          toolName,
-          agentId,
-          sessionId,
-          timestamp: new Date().toISOString(),
-          payload: { error: auth.reason, duration: 0 },
-        });
-        throw new Error(auth.reason);
-      }
+    if (!auth.allowed) {
+      this.eventBus.emit({
+        type: 'tool_error',
+        toolId,
+        toolName,
+        agentId,
+        sessionId,
+        timestamp: new Date().toISOString(),
+        payload: { error: auth.reason, duration: 0 },
+      });
+      return {
+        __authorization_required: true,
+        error: auth.reason,
+        toolName,
+        agentId,
+        suggestion: '需要用户授权才能执行此命令。调用 permission.check 检查权限，或让用户回复授权码 <##auth:approvalId##>',
+      };
+    }
     }
 
     // 发送 tool_call 事件

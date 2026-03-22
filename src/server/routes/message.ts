@@ -228,6 +228,11 @@ export function registerMessageRoutes(app: Express, deps: MessageRouteDeps): voi
     }
 
     const requestSessionId = extractSessionIdFromMessagePayload(requestMessage);
+    logger.module('message-route').info('Session reuse decision', {
+      sessionId: requestSessionId ?? 'none',
+      action: requestSessionId ? 'reuse' : 'new',
+      target: targetId,
+    });
    if (requestSessionId) {
       const sessionProjectPath = isSystemRoute ? SYSTEM_PROJECT_PATH : undefined;
       ensureSessionExists(deps.sessionManager, requestSessionId, body.target, sessionProjectPath);
