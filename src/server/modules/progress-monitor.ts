@@ -13,7 +13,6 @@
 
 import type { AgentRuntimeDeps } from './agent-runtime/types.js';
 import type { UnifiedEventBus } from '../../runtime/event-bus.js';
-import type { AgentStepCompletedEvent } from '../../runtime/events.js';
 import { logger } from '../../core/logger.js';
 import { promises as fs } from 'fs';
 import path from 'path';
@@ -38,6 +37,31 @@ export interface SessionProgress {
   status: 'running' | 'completed' | 'failed' | 'idle';
   currentTask?: string;
   elapsedMs: number;
+}
+export interface ToolCallRecord {
+  toolId?: string;
+  toolName: string;
+  params?: string;
+  result?: string;
+  error?: string;
+  success?: boolean;
+  timestamp: number;
+}
+export interface SessionProgress {
+  sessionId: string;
+  agentId: string;
+  startTime: number;
+  lastUpdateTime: number;
+  toolCallsCount: number;
+  modelRoundsCount: number;
+  reasoningCount: number;
+  status: 'running' | 'completed' | 'failed' | 'idle';
+  currentTask?: string;
+  elapsedMs: number;
+  toolCallHistory: ToolCallRecord[];
+  lastReportKey?: string;
+  lastReportStatus?: string;
+  lastReportTime?: number;
 }
 
 export interface ProgressReport {
@@ -154,8 +178,8 @@ export class ProgressMonitor {
    * 订阅事件来跟踪进度
    */
   private subscribeToEvents(): void {
-      const unsubscribe = this.eventBus.subscribeMultiple(
-      ['turn_start', 'turn_complete', 'tool_call', 'tool_result', 'model_round', 'agent_runtime_status', 'agent_step_completed', 'agent_runtime_dispatch'],
+    const unsubscribe = this.eventBus.subscribeMultiple(
+      ['turn_start', 'turn_complete', 'tool_call', 'tool_result', 'tool_error', 'model_round', 'agent_runtime_status', 'agent_step_completed', 'agent_runtime_dispatch'],
       (event: any) => {
         this.handleEvent(event).catch(err => {
           log.error('[ProgressMonitor] Error handling event:', err);
@@ -190,6 +214,7 @@ export class ProgressMonitor {
         reasoningCount: 0,
         status: 'running',
         elapsedMs: 0,
+        toolCallHistory: [],
       };
       this.sessionProgress.set(sessionId, progress);
     }
@@ -207,6 +232,13 @@ export class ProgressMonitor {
         break;
       case 'tool_call':
         progress.toolCallsCount++;
+        this.recordToolCall(progress, event.toolId, event.toolName, event.payload?.input);
+        break;
+      case 'tool_result':
+        this.recordToolResult(progress, event.toolId, event.toolName, event.payload?.input, event.payload?.output, undefined, true);
+        break;
+      case 'tool_error':
+        this.recordToolResult(progress, event.toolId, event.toolName, event.payload?.input, undefined, event.payload?.error, false);
         break;
       case 'model_round':
         progress.modelRoundsCount++;
@@ -227,6 +259,13 @@ export class ProgressMonitor {
           progress.currentTask = event.payload.summary;
         }
         break;
+      case 'agent_runtime_dispatch':
+        if (event.payload?.targetAgentId) {
+          const status = event.payload?.status || 'queued';
+          progress.currentTask = `派发 ${event.payload.targetAgentId} (${status})`;
+          if (status === 'failed') progress.status = 'failed';
+        }
+        break;
       case 'agent_step_completed':
         progress.modelRoundsCount++;
         const payload = event.payload as { round?: number; thought?: string; action?: string; observation?: string };
@@ -239,6 +278,60 @@ export class ProgressMonitor {
     }
 
     progress.elapsedMs = Date.now() - progress.startTime;
+  }
+
+  private recordToolCall(progress: SessionProgress, toolId?: string, toolName?: string, input?: unknown): void {
+    const record: ToolCallRecord = {
+      toolId,
+      toolName: toolName || 'unknown',
+      params: this.safeSnippet(input),
+      timestamp: Date.now(),
+    };
+    progress.toolCallHistory.push(record);
+    if (progress.toolCallHistory.length > 10) {
+      progress.toolCallHistory.shift();
+    }
+  }
+
+  private recordToolResult(
+    progress: SessionProgress,
+    toolId?: string,
+    toolName?: string,
+    input?: unknown,
+    output?: unknown,
+    error?: string,
+    success?: boolean,
+  ): void {
+    const existing = toolId
+      ? progress.toolCallHistory.find(t => t.toolId === toolId && !t.result && !t.error)
+      : undefined;
+    const record: ToolCallRecord = existing || {
+      toolId,
+      toolName: toolName || 'unknown',
+      params: this.safeSnippet(input),
+      timestamp: Date.now(),
+    };
+    record.result = output !== undefined ? this.safeSnippet(output) : record.result;
+    record.error = error ? this.safeSnippet(error) : record.error;
+    record.success = success;
+    if (!existing) {
+      progress.toolCallHistory.push(record);
+    }
+    if (progress.toolCallHistory.length > 10) {
+      progress.toolCallHistory.shift();
+    }
+    progress.currentTask = `${record.toolName} → ${success ? '✅' : '❌'}`;
+  }
+
+  private safeSnippet(value: unknown, limit = 200): string | undefined {
+    if (value === undefined || value === null) return undefined;
+    try {
+      const text = typeof value === 'string' ? value : JSON.stringify(value);
+      return text.length > limit ? text.slice(0, limit) + '...' : text;
+    } catch {
+      const text = String(value);
+      return text.length > limit ? text.slice(0, limit) + '...' : text;
+    }
   }
 
   /**
@@ -257,6 +350,12 @@ export class ProgressMonitor {
 
     // 为每个活跃 session 生成并推送进度报告
     for (const p of activeProgress) {
+      const reportKey = this.buildReportKey(p);
+      if (p.lastReportKey === reportKey) {
+        continue;
+      }
+      p.lastReportKey = reportKey;
+      p.lastReportTime = Date.now();
       const report: ProgressReport = {
         type: 'progress_report',
         timestamp: new Date().toISOString(),
@@ -280,7 +379,20 @@ export class ProgressMonitor {
     const task = p.currentTask ? ` | 当前: ${p.currentTask}` : '';
     const latestStep = this.latestStepSummary.get(p.sessionId);
     const stepInfo = latestStep ? ` | 最新步骤: ${latestStep}` : '';
-    return `🔄 ${p.agentId}: ${p.toolCallsCount} 工具, ${p.modelRoundsCount} 轮推理, ${elapsed}${task}${stepInfo}`;
+    const recentTools = p.toolCallHistory.slice(-3).map((t) => {
+      const status = t.success === undefined ? '' : (t.success ? '✅' : '❌');
+      const params = t.params ? `(${t.params})` : '';
+      const result = t.result ? ` => ${t.result}` : (t.error ? ` => ERROR: ${t.error}` : '');
+      return `- ${t.toolName}${params} ${status}${result}`.trim();
+    });
+    const toolSummary = recentTools.length > 0 ? `\n工具调用历史:\n${recentTools.join('\n')}` : '';
+    return `🔄 ${p.agentId}: ${elapsed}${task}${stepInfo}${toolSummary}`;
+  }
+
+  private buildReportKey(p: SessionProgress): string {
+    const latestStep = this.latestStepSummary.get(p.sessionId) || '';
+    const recentTools = p.toolCallHistory.slice(-3).map(t => `${t.toolName}:${t.params ?? ''}:${t.result ?? ''}:${t.error ?? ''}:${t.success ?? ''}`).join('|');
+    return `${p.status}|${p.currentTask ?? ''}|${latestStep}|${recentTools}`;
   }
 
   /**
@@ -288,13 +400,9 @@ export class ProgressMonitor {
    */
   private buildProgressSummary(progressList: SessionProgress[]): string {
     const lines: string[] = ['📊 执行进度报告:'];
-
     for (const p of progressList) {
-      const elapsed = this.formatElapsed(p.elapsedMs);
-      const statusIcon = p.status === 'running' ? '🔄' : p.status === 'completed' ? '✅' : '❌';
-      lines.push(`${statusIcon} ${p.agentId}: ${p.toolCallsCount} 工具, ${p.modelRoundsCount} 轮推理, ${elapsed}`);
+      lines.push(this.buildSingleProgressSummary(p));
     }
-
     return lines.join('\n');
   }
 
@@ -349,7 +457,7 @@ export class ProgressMonitor {
       sessionId,
       agentId: progress.agentId,
       progress,
-      summary: this.buildProgressSummary([progress]),
+      summary: this.buildSingleProgressSummary(progress),
     };
   }
 }
