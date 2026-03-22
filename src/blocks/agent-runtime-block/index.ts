@@ -1585,9 +1585,19 @@ export class AgentRuntimeBlock extends BaseBlock {
     }, dispatchId);
     this.increaseActiveDispatch(input.targetAgentId);
 
+    log.debug('[AgentRuntimeBlock] Execute dispatch start', {
+      dispatchId,
+      targetModuleId,
+      targetAgentId: input.targetAgentId,
+      blocking,
+      sessionId: input.sessionId,
+    });
+
     if (!blocking) {
+      log.debug('[AgentRuntimeBlock] Sending to module (non-blocking)', { dispatchId, targetModuleId });
       void this.deps.hub.sendToModule(targetModuleId, payload)
         .then((result) => {
+          log.debug('[AgentRuntimeBlock] Module result (non-blocking)', { dispatchId, targetModuleId, status: 'completed' });
           const summarized = this.summarizeDispatchResult(result);
           this.emitDispatchEvent({
             dispatchId,
@@ -1603,6 +1613,7 @@ export class AgentRuntimeBlock extends BaseBlock {
         })
         .catch((error: unknown) => {
           const message = error instanceof Error ? error.message : String(error);
+          log.error('[AgentRuntimeBlock] Module error (non-blocking)', undefined, { dispatchId, targetModuleId, error: message });
           this.emitDispatchEvent({
             dispatchId,
             sourceAgentId: input.sourceAgentId,
@@ -1623,7 +1634,9 @@ export class AgentRuntimeBlock extends BaseBlock {
     }
 
     try {
+      log.debug('[AgentRuntimeBlock] Sending to module (blocking)', { dispatchId, targetModuleId });
       const result = await this.deps.hub.sendToModule(targetModuleId, payload);
+      log.debug('[AgentRuntimeBlock] Module result (blocking)', { dispatchId, targetModuleId, status: 'completed' });
       const summarized = this.summarizeDispatchResult(result);
       this.emitDispatchEvent({
         dispatchId,
@@ -1639,6 +1652,7 @@ export class AgentRuntimeBlock extends BaseBlock {
       return { ok: true, dispatchId, status: 'completed', result: summarized, targetModuleId };
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
+      log.error('[AgentRuntimeBlock] Module error (blocking)', undefined, { dispatchId, targetModuleId, error: message });
       this.emitDispatchEvent({
         dispatchId,
         sourceAgentId: input.sourceAgentId,

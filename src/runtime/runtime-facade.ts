@@ -19,6 +19,8 @@ import {
 } from './tool-authorization.js';
 import { executeContextLedgerMemory } from './context-ledger-memory.js';
 
+import { logger } from '../core/logger.js';
+
 // Session 类型 (简化版，完整定义在 session-manager.ts)
 export interface SessionInfo {
   id: string;
@@ -99,6 +101,8 @@ export interface AgentRuntimeConfig {
   runtime?: Record<string, unknown>;
   metadata?: Record<string, unknown>;
 }
+
+const log = logger.module('RuntimeFacade');
 
 export class RuntimeFacade {
   private currentSessionId: string | null = null;
@@ -771,7 +775,7 @@ export class RuntimeFacade {
       });
     } catch (error) {
       // Keep session compression successful even if ledger compact persistence fails.
-      console.warn('[RuntimeFacade] ledger compact persistence failed:', error);
+      log.warn('ledger compact persistence failed', { sessionId, error: error instanceof Error ? error.message : String(error) });
     }
 
     this.eventBus.emit({

@@ -12,6 +12,7 @@ import {
   removeGatewayModule,
 } from './module-registry.js';
 import { GatewayProcessSession } from './process-session.js';
+import { logger } from '../core/logger.js';
 
 interface DispatchInputParams {
   target?: string;
@@ -37,6 +38,8 @@ interface GatewaySummary {
   readmePath?: string;
   cliDocPath?: string;
 }
+
+const log = logger.module('GatewayManager');
 
 export class GatewayManager {
   private readonly hub: MessageHub;
@@ -158,7 +161,7 @@ export class GatewayManager {
         }
       })
       .catch((error) => {
-        console.error(`[Gateway:${gatewayId}] async inbound dispatch failed: ${String(error)}`);
+        log.error('async inbound dispatch failed', error instanceof Error ? error : undefined, { gatewayId });
       });
 
     return {
@@ -200,13 +203,13 @@ export class GatewayManager {
         // 结构化日志：记录入口 message 的 sessionId 信息
         const msg = message && typeof message === 'object' ? (message as Record<string, unknown>) : null;
         const meta = msg && typeof msg.metadata === 'object' ? (msg.metadata as Record<string, unknown>) : null;
-        console.log(JSON.stringify({
+        log.debug('outbound delivery response', {
           event: 'gateway-manager.createOutputProxyModule.handle',
           gatewayId: module.manifest.id,
           'message.sessionId': msg?.sessionId,
           'message.metadata.sessionId': meta?.sessionId,
           'message.metadata.session_id': meta?.session_id,
-        }));
+        });
         const session = await this.ensureSession(module);
         const deliveryMode = this.resolveDeliveryMode(module, message);
         const result = await session.request(deliveryMode, message);
@@ -247,7 +250,7 @@ export class GatewayManager {
         });
       },
       onEvent: async (event) => {
-        console.log(`[Gateway:${module.manifest.id}] event ${event.name}`);
+        log.debug('gateway module event', { gatewayId: module.manifest.id, eventName: event.name });
       },
     });
 
