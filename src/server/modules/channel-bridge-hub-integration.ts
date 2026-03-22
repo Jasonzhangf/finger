@@ -139,17 +139,33 @@ export class ChannelBridgeHubIntegration {
       logger.module('channel-bridge-hub-integration').info('Dispatching to orchestrator', { channelId: this.channelId });
       const result = await this.dispatchTaskToAgent(dispatchRequest);
 
-      // 处理回复
-      if (result && typeof result === 'object' && 'ok' in result && result.ok && 'result' in result) {
-        const replyText = typeof result.result === 'string'
-          ? result.result
-          : ((result.result as any)?.summary || '处理完成');
+      // 处理回复 - 无论成功或失败都需要反馈
+      const r = result as Record<string, unknown> | null;
+      if (r && typeof r === 'object') {
+        const ok = typeof r.ok === 'boolean' ? r.ok : false;
+        const resObj = r.result as Record<string, unknown> | undefined;
+        const replyText = ok && resObj
+          ? (typeof resObj === 'string'
+              ? resObj
+              : ((resObj as Record<string, unknown>)?.summary as string || '处理完成'))
+          : '任务执行失败: ' + ((r.error as string) || '未知错误');
 
-        logger.module('channel-bridge-hub-integration').info('Sending reply via output module', { channelId: this.channelId });
+        logger.module('channel-bridge-hub-integration').info('Sending reply via output module', { 
+          channelId: this.channelId, 
+          ok,
+          status: r.status as string,
+        });
         
         // 通过 Output 模块发送回复
         if (this.outputModule) {
           await this.outputModule.sendReply(envelope, replyText);
+        }
+      } else {
+        // dispatch 返回了无效结果
+        const errorMessage = '任务执行失败: 返回结果无效';
+        logger.module('channel-bridge-hub-integration').warn('Invalid dispatch result', { result });
+        if (this.outputModule) {
+          await this.outputModule.sendReply(envelope, errorMessage);
         }
       }
 

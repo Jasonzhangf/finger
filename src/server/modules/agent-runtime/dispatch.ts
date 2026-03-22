@@ -260,9 +260,10 @@ Tags: input, user, ${source}
 async function persistAgentSummaryToMemory(
   deps: AgentRuntimeDeps,
   input: AgentDispatchRequest,
-  result: { ok: boolean; summary?: string }
+  result: { ok: boolean; summary?: string },
+  forceRecord = false,
 ): Promise<void> {
-  if (!shouldRecordToMemory(input)) return;
+  if (!forceRecord && !shouldRecordToMemory(input)) return;
   if (!result.summary || result.summary.trim().length === 0) return;
 
   const sessionId = typeof input.sessionId === "string" ? input.sessionId : "";
@@ -302,11 +303,25 @@ export async function dispatchTaskToAgent(deps: AgentRuntimeDeps, input: AgentDi
   queuePosition?: number;
 }> {
   const originalSessionId = typeof input.sessionId === 'string' ? input.sessionId.trim() : '';
-  const boundInput = bindDispatchSessionToRuntime(deps, input);
-  const normalizedInput = withDispatchWorkspaceDefaults(deps, boundInput);
+  const fallbackDispatchId = 'dispatch-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8);
+
+  let normalizedInput: AgentDispatchRequest;
+  try {
+    const boundInput = bindDispatchSessionToRuntime(deps, input);
+    normalizedInput = withDispatchWorkspaceDefaults(deps, boundInput);
+  } catch (preError) {
+    const message = preError instanceof Error ? preError.message : String(preError);
+    logger.module('dispatch').error('Pre-dispatch setup failed', preError instanceof Error ? preError : undefined, {
+      targetAgentId: input.targetAgentId,
+      sessionId: originalSessionId,
+    });
+    return { ok: false, dispatchId: fallbackDispatchId, status: 'failed', error: message };
+  }
+
   await persistDispatchUserMessage(deps, normalizedInput);
   await persistUserMessageToMemory(deps, normalizedInput);
-  const result = await deps.agentRuntimeBlock.execute('dispatch', normalizedInput as unknown as Record<string, unknown>) as {
+
+  let result: {
     ok: boolean;
     dispatchId: string;
     status: 'queued' | 'completed' | 'failed';
@@ -314,6 +329,29 @@ export async function dispatchTaskToAgent(deps: AgentRuntimeDeps, input: AgentDi
     error?: string;
     queuePosition?: number;
   };
+
+  try {
+    result = await deps.agentRuntimeBlock.execute('dispatch', normalizedInput as unknown as Record<string, unknown>) as typeof result;
+  } catch (executeError) {
+    const message = executeError instanceof Error ? executeError.message : String(executeError);
+    logger.module('dispatch').error('AgentRuntimeBlock.execute failed', executeError instanceof Error ? executeError : undefined, {
+      dispatchId: fallbackDispatchId,
+      targetAgentId: normalizedInput.targetAgentId,
+      sessionId: normalizedInput.sessionId,
+    });
+    // Persist failure to session so the conversation history is complete
+    const failSessionId = typeof normalizedInput.sessionId === 'string' ? normalizedInput.sessionId : '';
+    if (failSessionId) {
+      void deps.sessionManager.addMessage(failSessionId, 'system', '任务派发异常', {
+        type: 'dispatch',
+        agentId: normalizedInput.targetAgentId,
+        metadata: { error: message, dispatchId: fallbackDispatchId },
+      });
+    }
+    await persistAgentSummaryToMemory(deps, normalizedInput, { ok: false, summary: message }, true);
+    return { ok: false, dispatchId: fallbackDispatchId, status: 'failed', error: message };
+  }
+
   const newSessionId = typeof normalizedInput.sessionId === 'string' ? normalizedInput.sessionId.trim() : '';
   if (originalSessionId && newSessionId && originalSessionId !== newSessionId && result.dispatchId) {
     const tracker = getGlobalDispatchTracker();
@@ -328,7 +366,11 @@ export async function dispatchTaskToAgent(deps: AgentRuntimeDeps, input: AgentDi
   if (result.result !== undefined) {
     result.result = sanitizeDispatchResult(result.result);
   }
-  await persistAgentSummaryToMemory(deps, normalizedInput, result);
+  // Always record result to memory (success or failure)
+  const summaryForMemory = result.result?.summary || result.error || undefined;
+  if (summaryForMemory) {
+    await persistAgentSummaryToMemory(deps, normalizedInput, { ok: result.ok, summary: summaryForMemory });
+  }
   await syncBdDispatchLifecycle(deps, normalizedInput, result);
   return result;
 }
