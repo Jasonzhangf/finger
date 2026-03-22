@@ -79,5 +79,27 @@ export function startServer(
     process.exit(1);
   });
 
+  // Global error handlers to prevent silent crashes
+  process.on('uncaughtException', (err: Error) => {
+    log.error('Uncaught exception', err);
+    try {
+      const sessions = deps.chatCodexRunner.listSessionStates();
+      for (const session of sessions) {
+        try {
+          deps.chatCodexRunner.interruptSession(session.sessionId, session.providerId);
+        } catch {}
+      }
+    } catch {}
+    process.exit(1);
+  });
+
+  process.on('unhandledRejection', (reason: unknown) => {
+    const message = reason instanceof Error ? reason.message : String(reason);
+    log.error('Unhandled rejection', undefined, {
+      message,
+      stack: reason instanceof Error ? reason.stack : undefined,
+    });
+  });
+
   return server;
 }
