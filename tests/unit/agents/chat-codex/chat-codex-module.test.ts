@@ -29,11 +29,11 @@ describe('chat-codex mailbox pending notice injection', () => {
       undefined,
     );
 
-    expect(options?.developer_instructions).toContain('## Mailbox Pending Notice');
-    expect(options?.developer_instructions).toContain('new_unread_since_last_notification=2');
-    expect(options?.developer_instructions).toContain('- [2] new msg 1');
-    expect(options?.developer_instructions).toContain('- [3] new msg 2');
-    expect(options?.developer_instructions).not.toContain('- [1] old msg');
+    expect(options?.developer_instructions).toContain('# Mailbox');
+    expect(options?.developer_instructions).toContain('pending=2');
+    expect(options?.developer_instructions).toContain('- new msg 1');
+    expect(options?.developer_instructions).toContain('- new msg 2');
+    expect(options?.developer_instructions).not.toContain('- old msg');
   });
 
   it('should not inject pending notice when no unread', () => {

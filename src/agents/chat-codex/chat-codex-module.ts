@@ -1749,16 +1749,22 @@ function buildKernelUserTurnOptions(
   const role = resolveDeveloperRoleFromMetadata(metadata);
   let developerInstructions = resolveDeveloperInstructions(metadata, developerPromptPaths, role);
 
-  // For system role, skip developer instructions and mailbox notifications
-  if (!isSystemRole) {
-    if (context?.mailboxSnapshot && hasNewUnreadSinceLastNotified(context.mailboxSnapshot)) {
-      const newEntries = getNewUnreadEntries(context.mailboxSnapshot);
-      const mailboxBlock = [
-        '## Mailbox Pending Notice',
-        `new_unread_since_last_notification=${newEntries.length}`,
-        ...newEntries.map((entry) => `- [${entry.seq}] ${entry.shortDescription}`),
-      ].join('\n');
+  // Inject mailbox pending entries into context (works for all roles including system)
+  if (context?.mailboxSnapshot && hasNewUnreadSinceLastNotified(context.mailboxSnapshot)) {
+    const newEntries = getNewUnreadEntries(context.mailboxSnapshot);
+    const mailboxBlock = [
+      '# Mailbox',
+      `pending=${newEntries.length}`,
+      ...newEntries.map((entry) => `- ${entry.shortDescription}`),
+    ].join('\n');
 
+    if (isSystemRole) {
+      // For system role, append mailbox to system prompt
+      options.system_prompt = (options.system_prompt || '')
+        ? `${options.system_prompt}\n\n${mailboxBlock}`
+        : mailboxBlock;
+    } else {
+      // For other roles, append to developer instructions
       developerInstructions = developerInstructions
         ? `${developerInstructions}\n\n${mailboxBlock}`
         : mailboxBlock;

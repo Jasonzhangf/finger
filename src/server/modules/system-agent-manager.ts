@@ -108,10 +108,10 @@ export class SystemAgentManager {
         // Inject Skills into bootstrap prompt
         bootstrapPrompt = await injectSkillsIntoPrompt(bootstrapPrompt);
 
-      log.info('[SystemAgentManager] Injecting bootstrap', {
-        sessionId: this.systemSessionId,
-        bootstrapPromptLength: bootstrapPrompt.length
-      });
+        log.info('[SystemAgentManager] Injecting bootstrap', {
+          sessionId: this.systemSessionId,
+          bootstrapPromptLength: bootstrapPrompt.length
+        });
       } catch (err) {
         log.warn(`Bootstrap file not found at ${bootstrapPath}, using default prompt`);
         bootstrapPrompt = '你已经启动，请进行开机检查。';
