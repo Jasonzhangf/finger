@@ -5,6 +5,7 @@
 
 import fs from 'fs';
 import { FINGER_PATHS, ensureDir } from '../core/finger-paths.js';
+import { logger } from '../core/logger.js';
 
 export type ResourceType = 'executor' | 'orchestrator' | 'reviewer' | 'searcher' | 'tool' | 'api' | 'database';
 export type ResourceStatus = 'available' | 'deployed' | 'busy' | 'blocked' | 'error' | 'released';
@@ -55,6 +56,8 @@ export interface ResourcePoolState {
 
 const RESOURCE_POOL_FILE = FINGER_PATHS.config.file.resourcePool;
 
+const log = logger.module('ResourcePool');
+
 export class ResourcePool {
   private resources: Map<string, ResourceInstance> = new Map();
   private allocations: Map<string, TaskResourceAllocation> = new Map(); // taskId -> allocation
@@ -84,7 +87,7 @@ export class ResourcePool {
       for (const allocation of state.allocations || []) {
         this.allocations.set(allocation.taskId, allocation);
       }
-      console.log(`[ResourcePool] Loaded ${this.resources.size} resources, ${this.allocations.size} allocations`);
+      log.info('Loaded ${this.resources.size} resources, ${this.allocations.size} allocations', { "this.resources.size": this.resources.size, "this.allocations.size": this.allocations.size });
     } catch (err) {
       console.error('[ResourcePool] Failed to load pool:', err);
       this.initDefaultPool();
@@ -178,7 +181,7 @@ export class ResourcePool {
     });
 
     this.savePool();
-    console.log(`[ResourcePool] Initialized with ${this.resources.size} default resources`);
+    log.info('Initialized with ${this.resources.size} default resources', { "this.resources.size": this.resources.size });
   }
 
   /**
@@ -281,7 +284,7 @@ export class ResourcePool {
     this.allocations.set(taskId, allocation);
 
     this.savePool();
-    console.log(`[ResourcePool] Allocated ${allocatedIds.size} resources for task ${taskId}`);
+    log.info('Allocated ${allocatedIds.size} resources for task ${taskId}', { "allocatedIds.size": allocatedIds.size, "taskId": taskId });
     
     return { success: true, allocatedResources: Array.from(allocatedIds) };
   }
@@ -321,7 +324,7 @@ export class ResourcePool {
     allocation.releasedAt = new Date().toISOString();
 
     this.savePool();
-    console.log(`[ResourcePool] Released resources for task ${taskId}`);
+    log.info('Released resources for task ${taskId}', { "taskId": taskId });
     
     return true;
   }
@@ -393,7 +396,7 @@ export class ResourcePool {
     };
     this.resources.set(resource.id, newResource);
     this.savePool();
-    console.log(`[ResourcePool] Added resource ${resource.id}`);
+    log.info('Added resource ${resource.id}', { "resource.id": resource.id });
     return newResource;
   }
 
@@ -406,7 +409,7 @@ export class ResourcePool {
 
     this.resources.delete(resourceId);
     this.savePool();
-    console.log(`[ResourcePool] Removed resource ${resourceId}`);
+    log.info('Removed resource ${resourceId}', { "resourceId": resourceId });
     return true;
   }
 

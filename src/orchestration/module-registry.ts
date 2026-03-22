@@ -5,6 +5,7 @@
 import path from 'path';
 import { pathToFileURL } from 'url';
 import { MessageHub } from './message-hub.js';
+import { logger } from '../core/logger.js';
 
 export type ModuleType = 'input' | 'output' | 'agent';
 
@@ -66,6 +67,8 @@ export interface AgentModule extends OrchestrationModule {
 /**
  * 模块注册表 - 管理所有动态模块
  */
+const log = logger.module('Registry');
+
 export class ModuleRegistry {
   private modules: Map<string, OrchestrationModule> = new Map();
   private hub: MessageHub;
@@ -117,7 +120,7 @@ export class ModuleRegistry {
       await module.initialize(this.hub);
     }
 
-    console.log(`[Registry] Module registered: ${module.id} (${module.type}) v${module.version}`);
+    log.info('Module registered: ${module.id} (${module.type}) v${module.version}', { "module.id": module.id, "module.type": module.type, "module.version": module.version });
   }
 
   /**
@@ -139,7 +142,7 @@ export class ModuleRegistry {
 
     this.modules.delete(id);
     this.registrationErrors.delete(id);
-    console.log(`[Registry] Module unregistered: ${id}`);
+    log.info('Module unregistered: ${id}', { "id": id });
     return true;
   }
 
@@ -250,7 +253,7 @@ export class ModuleRegistry {
           `[MODULE_LOAD_ERROR] No valid module export found in ${absPath}. ` +
           `Ensure module exports a default object with 'id', 'type', 'name', 'version', 'entry' fields.`
         );
-        console.error(`[Registry] ${error.message}`);
+        log.error('No valid module export found', undefined, { absPath });
         throw error;
       }
     } catch (err) {
@@ -258,7 +261,7 @@ export class ModuleRegistry {
       const error = new Error(
         `[MODULE_LOAD_ERROR] Failed to load module from ${absPath}: ${errorMsg}`
       );
-      console.error(`[Registry] ${error.message}`);
+      log.error('Failed to load module', undefined, { absPath, errorMsg });
       throw err;
     }
   }

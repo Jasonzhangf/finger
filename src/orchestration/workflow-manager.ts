@@ -9,6 +9,7 @@ import type { SessionManager } from './session-manager.js';
 import { resourcePool } from './resource-pool.js';
 import { resumableSessionManager } from './resumable-session.js';
 import type { TaskProgress, SessionCheckpoint } from './resumable-session.js';
+import { logger } from '../core/logger.js';
 export type TaskStatus = 'pending' | 'blocked' | 'ready' | 'in_progress' | 'completed' | 'failed';
 
 export interface TaskNode {
@@ -44,6 +45,8 @@ export interface ResourcePool {
   reviewers: string[];
   busyAgents: Set<string>;
 }
+
+const log = logger.module('WorkflowManager');
 
 export class WorkflowManager {
   private workflows: Map<string, Workflow> = new Map();
@@ -292,7 +295,7 @@ export class WorkflowManager {
    * Restore workflow state from checkpoint
    */
   private restoreFromCheckpoint(workflow: Workflow, checkpoint: SessionCheckpoint): void {
-    console.log(`[WorkflowManager] Restoring workflow ${workflow.id} from checkpoint ${checkpoint.checkpointId}`);
+    log.info('Restoring workflow ${workflow.id} from checkpoint ${checkpoint.checkpointId}', { "workflow.id": workflow.id, "checkpoint.checkpointId": checkpoint.checkpointId });
     
     // Restore completed tasks
     for (const taskId of checkpoint.completedTaskIds) {

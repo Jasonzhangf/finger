@@ -5,6 +5,7 @@
  */
 
 import type { RuntimeInstanceV1, RuntimeStatus } from './types.js';
+import { logger } from '../../core/logger.js';
 
 /**
  * 队列项
@@ -18,6 +19,8 @@ interface QueueItem {
 /**
  * Runtime 队列管理器
  */
+const log = logger.module('RuntimeQueue');
+
 export class RuntimeQueue {
   private queue: QueueItem[] = [];
   private active: Map<string, RuntimeInstanceV1> = new Map();
@@ -90,7 +93,7 @@ export class RuntimeQueue {
   complete(instanceId: string, finalStatus: 'completed' | 'failed' | 'interrupted', errorReason?: string): void {
     const instance = this.active.get(instanceId);
     if (!instance) {
-      console.warn(`[RuntimeQueue] Instance ${instanceId} not found in active set`);
+      log.warn('Instance ${instanceId} not found in active set', { "instanceId": instanceId });
       return;
     }
 

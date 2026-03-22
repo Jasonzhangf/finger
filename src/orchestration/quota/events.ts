@@ -5,6 +5,7 @@
  */
 
 import type { RuntimeStatus, RuntimeInstanceV1 } from './types.js';
+import { logger } from '../../core/logger.js';
 
 /**
  * Runtime 事件类型
@@ -64,6 +65,8 @@ export interface RuntimeFinishedEvent extends RuntimeEvent {
  * 事件发射器
  */
 type EventListener = (event: RuntimeEvent) => void;
+
+const log = logger.module('RuntimeEventEmitter');
 
 class RuntimeEventEmitter {
   private listeners: Map<RuntimeEventType, Set<EventListener>> = new Map();

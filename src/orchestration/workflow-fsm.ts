@@ -11,6 +11,7 @@
  */
 
 import { globalEventBus } from '../runtime/event-bus.js';
+import { logger } from '../core/logger.js';
 
 /**
  * 工作流状态枚举
@@ -134,6 +135,8 @@ export interface FSMConfig {
 /**
  * 工作流状态机类
  */
+const log = logger.module('WorkflowFSM');
+
 export class WorkflowFSM {
   private config: FSMConfig;
   private currentState: WorkflowState;
@@ -341,7 +344,7 @@ export class WorkflowFSM {
     });
 
     if (!matchingTransition) {
-      console.warn(`[WorkflowFSM] No matching transition for trigger: ${trigger} from state: ${this.currentState}`);
+      log.warn('No matching transition for trigger: ${trigger} from state: ${this.currentState}', { "trigger": trigger, "this.currentState": this.currentState });
       return false;
     }
 
@@ -355,7 +358,7 @@ export class WorkflowFSM {
         await matchingTransition.action(this.context);
         newState = this.context.currentState as WorkflowState;
       } else {
-        console.warn('[WorkflowFSM] Wildcard transition requires action');
+        log.warn('Wildcard transition requires action');
         return false;
       }
     } else {
@@ -390,7 +393,7 @@ export class WorkflowFSM {
       },
     });
 
-    console.log(`[WorkflowFSM] Transition: ${oldState} → ${newState} (trigger: ${trigger})`);
+    log.info('Transition: ${oldState} → ${newState} (trigger: ${trigger})', { "oldState": oldState, "newState": newState, "trigger": trigger });
     return true;
   }
 

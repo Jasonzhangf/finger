@@ -6,6 +6,7 @@
 import fs from 'fs';
 import path from 'path';
 import { FINGER_PATHS, ensureDir, normalizeSessionDirName } from '../core/finger-paths.js';
+import { logger } from '../core/logger.js';
 
 const SESSIONS_DIR = FINGER_PATHS.sessions.dir;
 const CHECKPOINTS_DIR = 'checkpoints';
@@ -69,6 +70,8 @@ export interface ResumeContext {
   nextActions: string[];
   estimatedProgress: number; // 0-100
 }
+
+const log = logger.module('ResumableSession');
 
 export class ResumableSessionManager {
   constructor() {
@@ -164,7 +167,7 @@ export class ResumableSessionManager {
       JSON.stringify(checkpoint, null, 2)
     );
 
-    console.log(`[ResumableSession] Created checkpoint ${checkpointId} for session ${sessionId}`);
+    log.info('Created checkpoint ${checkpointId} for session ${sessionId}', { "checkpointId": checkpointId, "sessionId": sessionId });
     return checkpoint;
   }
 
@@ -199,7 +202,7 @@ export class ResumableSessionManager {
     Object.assign(session, updates);
     session.updatedAt = new Date().toISOString();
     fs.writeFileSync(sessionFilePath, JSON.stringify(session, null, 2));
-    console.log(`[ResumableSession] Updated session ${sessionId}`);
+    log.info('Updated session ${sessionId}', { "sessionId": sessionId });
   }
 
   /**

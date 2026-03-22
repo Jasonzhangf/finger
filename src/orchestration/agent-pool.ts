@@ -2,6 +2,7 @@ import { ChildProcess } from 'child_process';
 import { lifecycleManager } from '../agents/core/agent-lifecycle.js';
 import fs from 'fs';
 import { FINGER_PATHS, ensureDir } from '../core/finger-paths.js';
+import { logger } from '../core/logger.js';
 
 export interface AgentInstanceConfig {
   id: string;
@@ -44,6 +45,8 @@ const DEFAULT_AGENTS: AgentInstanceConfig[] = [
   },
 ];
 
+const log = logger.module('AgentPool');
+
 export class AgentPool {
   private static instance: AgentPool | null = null;
   private agents: Map<string, AgentInstance> = new Map();
@@ -73,7 +76,7 @@ export class AgentPool {
         const content = fs.readFileSync(AGENT_CONFIG_FILE, 'utf-8');
         return JSON.parse(content) as AgentPoolConfig;
       } catch {
-        console.error('[AgentPool] Failed to load config, fallback to default');
+        log.error('Failed to load config, fallback to default');
       }
     }
 

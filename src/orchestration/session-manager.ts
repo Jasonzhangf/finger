@@ -17,6 +17,7 @@ import { buildSessionView, type SessionView, type SessionViewMessage } from '../
 import { needsCompression, compressSession, syncSessionTokens, type CompressResult } from '../runtime/session-compressor.js';
 import { estimateTokens } from '../utils/token-counter.js';
 import { getContextWindow } from '../core/user-settings.js';
+import { logger } from '../core/logger.js';
 
 export { Session, SessionMessage } from './session-types.js';
 
@@ -26,6 +27,8 @@ const SYSTEM_PROJECT_PATH = path.join(FINGER_PATHS.home, 'system');
 const SYSTEM_AGENT_ID = 'finger-system-agent';
 const SYSTEM_SESSION_PREFIX = 'system-';
 const ROOT_SESSION_FILE = 'main.json';
+
+const log = logger.module('SessionManager');
 
 export class SessionManager {
   private sessions: Map<string, Session> = new Map();
@@ -245,7 +248,7 @@ export class SessionManager {
       (a, b) => new Date(b.lastAccessedAt).getTime() - new Date(a.lastAccessedAt).getTime()
     );
     if (sorted.length > 0 && this.setCurrentSession(sorted[0].id)) {
-      console.log(`[SessionManager] Auto-resumed session: ${sorted[0].name}`);
+      log.info('Auto-resumed session: ${sorted[0].name}', { "sorted[0].name": sorted[0].name });
     }
   }
 
@@ -289,9 +292,9 @@ export class SessionManager {
         reusable.lastAccessedAt = now;
         this.saveSession(reusable);
         if (!this.setCurrentSession(reusable.id)) {
-          console.warn(`[SessionManager] Failed to set cwd for reused session: ${reusable.id}`);
+          log.warn('Failed to set cwd for reused session: ${reusable.id}', { "reusable.id": reusable.id });
         }
-        console.log(`[SessionManager] Reused empty session: ${reusable.name} (${reusable.id})`);
+        log.info('Reused empty session: ${reusable.name} (${reusable.id})', { "reusable.name": reusable.name, "reusable.id": reusable.id });
         return reusable;
       }
     }
@@ -313,10 +316,10 @@ export class SessionManager {
     this.sessions.set(id, session);
     this.saveSession(session);
     if (!this.setCurrentSession(id)) {
-      console.warn(`[SessionManager] Failed to set cwd for new session: ${id}`);
+      log.warn('Failed to set cwd for new session: ${id}', { "id": id });
     }
 
-   console.log(`[SessionManager] Created session: ${session.name} (${id})`);
+   log.info('Created session: ${session.name} (${id})', { "session.name": session.name, "id": id });
     return session;
   }
 
@@ -351,7 +354,7 @@ export class SessionManager {
 
     this.sessions.set(systemSessionId, session);
     this.saveSession(session);
-    console.log(`[SessionManager] Created system session: ${session.name} (${systemSessionId})`);
+    log.info('Created system session: ${session.name} (${systemSessionId})', { "session.name": session.name, "systemSessionId": systemSessionId });
     return session;
   }
 
@@ -762,7 +765,7 @@ export class SessionManager {
     };
 
     this.saveSession(session);
-    console.log(`[SessionManager] Compressed session ${sessionId}: ${result.result?.summary?.slice(0, 100)}...`);
+    log.info('Compressed session ${sessionId}: ${result.result?.summary?.slice(0, 100)}...', { "sessionId": sessionId, "result.result?.summary?.slice(0, 100)": result.result?.summary?.slice(0, 100) });
 
     return result.result?.summary || 'Compression completed';
   }

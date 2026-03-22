@@ -6,6 +6,9 @@ import fs from 'fs';
 import path from 'path';
 import { FINGER_PATHS, ensureDir } from '../core/finger-paths.js';
 import type { Workflow, TaskNode } from './workflow-manager.js';
+import { logger } from '../core/logger.js';
+
+const log = logger.module('WorkflowPersistence');
 
 const WORKFLOWS_DIR = FINGER_PATHS.runtime.workflowsDir;
 

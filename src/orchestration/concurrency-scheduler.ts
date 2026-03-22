@@ -10,6 +10,7 @@
 
 import { resourcePool, type ResourceRequirement } from './resource-pool.js';
 // import { performanceMonitor } from '../runtime/performance-monitor.js';
+import { logger } from '../core/logger.js';
 import {
   type ConcurrencyPolicy,
   type SchedulingDecision,
@@ -39,6 +40,8 @@ interface ExecutionHistory {
   successRate: number;
   sampleCount: number;
 }
+
+const log = logger.module('ConcurrencyScheduler');
 
 export class ConcurrencyScheduler {
   private policy: ConcurrencyPolicy;
@@ -453,12 +456,12 @@ export class ConcurrencyScheduler {
       if (!this.degradationActive) {
         this.degradationActive = true;
         this.degradationCount++;
-        console.log(`[ConcurrencyScheduler] 降级激活: 资源使用率 ${Math.round(usageRate * 100)}%`);
+        log.info('降级激活: 资源使用率 ${Math.round(usageRate * 100)}%', { "Math.round(usageRate * 100)": Math.round(usageRate * 100) });
       }
     } else {
       if (this.degradationActive) {
         this.degradationActive = false;
-        console.log(`[ConcurrencyScheduler] 降级解除: 资源使用率 ${Math.round(usageRate * 100)}%`);
+        log.info('降级解除: 资源使用率 ${Math.round(usageRate * 100)}%', { "Math.round(usageRate * 100)": Math.round(usageRate * 100) });
       }
     }
   }

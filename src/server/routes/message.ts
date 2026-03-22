@@ -1,5 +1,7 @@
 import type { Express, Request } from 'express';
 import { logger } from '../../core/logger.js';
+
+const log = logger.module('message-route');
 import { loadOrchestrationConfig } from '../../orchestration/orchestration-config.js';
 import type { OrchestrationPromptAgent } from '../../orchestration/orchestration-prompt.js';
 import { __chatCodexInternals } from '../../agents/chat-codex/chat-codex-module.js';
@@ -133,7 +135,7 @@ export function registerMessageRoutes(app: Express, deps: MessageRouteDeps): voi
         injectedPrompt = injected.injectedPrompt;
         injectedAgents = injected.agents;
       } catch (error) {
-        logger.module('message-route').error(
+        log.error(
           'orchestration prompt injection failed',
           error instanceof Error ? error : undefined,
           { target: targetId },
@@ -228,7 +230,7 @@ export function registerMessageRoutes(app: Express, deps: MessageRouteDeps): voi
     }
 
     const requestSessionId = extractSessionIdFromMessagePayload(requestMessage);
-    logger.module('message-route').info('Session reuse decision', {
+    log.info('Session reuse decision', {
       sessionId: requestSessionId ?? 'none',
       action: requestSessionId ? 'reuse' : 'new',
       target: targetId,
@@ -276,10 +278,14 @@ export function registerMessageRoutes(app: Express, deps: MessageRouteDeps): voi
         while (attempt <= deps.blockingMaxRetries) {
           try {
             primaryResult = await Promise.race([
-              deps.hub.sendToModule(targetId, requestMessage),
+              log.info('Sending to module', { targetId, sessionId: requestSessionId ?? 'none', messageId }),
+      deps.hub.sendToModule(targetId, requestMessage),
               new Promise<never>((_, reject) => {
                 setTimeout(
-                  () => reject(new Error(`Timed out waiting for module response: ${targetId}`)),
+                  () => {
+        log.warn('Module response timed out', { targetId, sessionId: requestSessionId ?? 'none' });
+        reject(new Error(`Timed out waiting for module response: ${targetId}`));
+      },
                   deps.blockingTimeoutMs,
                 );
               }),
@@ -341,9 +347,9 @@ export function registerMessageRoutes(app: Express, deps: MessageRouteDeps): voi
               payload: primaryResult,
               originalMessageId: messageId,
             });
-            logger.module('message-route').info('Callback result sent to sender', { sender: body.sender });
+            log.info('Callback result sent to sender', { sender: body.sender });
           } catch (err) {
-            logger.module('message-route').error(
+            log.error(
               'Failed to route callback result to sender',
               err instanceof Error ? err : undefined,
               { sender: body.sender },
@@ -389,7 +395,7 @@ export function registerMessageRoutes(app: Express, deps: MessageRouteDeps): voi
 
         if (displayChannels.length > 0) {
           sendDisplayFanout(deps.channelBridgeManager, displayChannels, responsePayload.response)
-            .catch((err) => logger.module('message-route').error('Failed to send display fanout', err instanceof Error ? err : undefined));
+            .catch((err) => log.error('Failed to send display fanout', err instanceof Error ? err : undefined));
         }
         deps.mailbox.updateStatus(messageId, 'completed', responsePayload);
 
@@ -441,13 +447,13 @@ export function registerMessageRoutes(app: Express, deps: MessageRouteDeps): voi
 
           if (displayChannels.length > 0) {
             sendDisplayFanout(deps.channelBridgeManager, displayChannels, responsePayload.response)
-              .catch((err) => logger.module('message-route').error('Failed to send display fanout', err instanceof Error ? err : undefined));
+              .catch((err) => log.error('Failed to send display fanout', err instanceof Error ? err : undefined));
           }
           deps.mailbox.updateStatus(messageId, 'completed', responsePayload);
           deps.broadcast({ type: 'messageCompleted', messageId, result: responsePayload });
         })
         .catch((err) => {
-          logger.module('message-route').error('Hub send error', err instanceof Error ? err : undefined, { target: targetId, messageId });
+          log.error('Hub send error', err instanceof Error ? err : undefined, { target: targetId, messageId });
           deps.mailbox.updateStatus(messageId, 'failed', undefined, err.message);
         });
 

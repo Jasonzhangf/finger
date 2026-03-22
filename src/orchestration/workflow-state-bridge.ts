@@ -18,6 +18,7 @@ import {
   type AgentState as FSMAgentState,
 } from './workflow-fsm.js';
 import { sharedWorkflowManager } from './shared-instances.js';
+import { logger } from '../core/logger.js';
 
 // WebSocket 客户端集合（由 server/index.ts 注入）
 export const wsClients: Set<WebSocket> = new Set();
@@ -47,6 +48,8 @@ export interface StateSnapshot {
 /**
  * 状态快照管理器
  */
+const log = logger.module('StateBridge');
+
 class StateSnapshotManager {
   private snapshots: Map<string, StateSnapshot> = new Map();
 
@@ -75,7 +78,7 @@ export const stateSnapshotManager = new StateSnapshotManager();
  * 订阅 FSM 事件，转换为 UI 可消费的格式并广播
  */
 export function initializeStateBridge(): void {
-  console.log('[StateBridge] Initializing state bridge...');
+  log.info('Initializing state bridge...');
 
   // 订阅 phase_transition 事件
   globalEventBus.subscribe('phase_transition', (event) => {
@@ -100,7 +103,7 @@ export function initializeStateBridge(): void {
     handleAgentEvent('agent_step_completed', event);
   });
 
-  console.log('[StateBridge] State bridge initialized');
+  log.info('State bridge initialized');
 }
 
 /**
@@ -110,12 +113,12 @@ function handlePhaseTransition(event: any): void {
   const payload = event.payload as { from?: string; to?: string; trigger?: string };
   const sessionId = event.sessionId;
 
-  console.log(`[StateBridge] Phase transition: ${payload.from} → ${payload.to} (trigger: ${payload.trigger})`);
+  log.info('Phase transition: ${payload.from} → ${payload.to} (trigger: ${payload.trigger})', { "payload.from": payload.from, "payload.to": payload.to, "payload.trigger": payload.trigger });
 
   // 获取或创建 FSM
   const workflow = sharedWorkflowManager.getWorkflow(sessionId);
   if (!workflow) {
-    console.warn(`[StateBridge] Workflow not found: ${sessionId}`);
+    log.warn('Workflow not found: ${sessionId}', { "sessionId": sessionId });
     return;
   }
 
@@ -159,7 +162,7 @@ function handleTaskEvent(eventType: string, event: any): void {
   const payload = event.payload as { taskId?: string; agentId?: string };
   const sessionId = event.sessionId;
 
-  console.log(`[StateBridge] Task event: ${eventType} for task ${payload.taskId}`);
+  log.info('Task event: ${eventType} for task ${payload.taskId}', { "eventType": eventType, "payload.taskId": payload.taskId });
 
   // 获取工作流
   const workflow = sharedWorkflowManager.getWorkflow(sessionId);
@@ -198,7 +201,7 @@ function handleAgentEvent(eventType: string, event: any): void {
   const payload = event.payload as { round?: number; thought?: string; action?: string; observation?: string };
   const agentId = event.agentId;
 
-  console.log(`[StateBridge] Agent event: ${eventType} for agent ${agentId}`);
+  log.info('Agent event: ${eventType} for agent ${agentId}', { "eventType": eventType, "agentId": agentId });
 
   // 广播到 WebSocket
   broadcastToWebSocket({
@@ -333,7 +336,7 @@ export function getAllStateSnapshots(): StateSnapshot[] {
  */
 export function registerWebSocketClient(client: WebSocket): void {
   wsClients.add(client);
-  console.log(`[StateBridge] WebSocket client registered, total: ${wsClients.size}`);
+  log.info('WebSocket client registered, total: ${wsClients.size}', { "wsClients.size": wsClients.size });
 }
 
 /**
@@ -341,5 +344,5 @@ export function registerWebSocketClient(client: WebSocket): void {
  */
 export function unregisterWebSocketClient(client: WebSocket): void {
   wsClients.delete(client);
-  console.log(`[StateBridge] WebSocket client unregistered, total: ${wsClients.size}`);
+  log.info('WebSocket client unregistered, total: ${wsClients.size}', { "wsClients.size": wsClients.size });
 }

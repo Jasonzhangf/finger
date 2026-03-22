@@ -40,6 +40,7 @@ const log = process.env.NODE_ENV === 'test'
   ? logger.module('DaemonTest')
   : logger.module('Daemon');
 
+
 export class OrchestrationDaemon {
   private config: DaemonConfig;
   private running = false;
@@ -184,7 +185,7 @@ export class OrchestrationDaemon {
   async start(): Promise<void> {
     if (this.running) {
       log.warn('Daemon already running');
-      console.log('Daemon already running');
+      log.info('Daemon already running');
       return;
     }
 
@@ -216,9 +217,9 @@ export class OrchestrationDaemon {
     this.running = true;
 
     log.info('Daemon started', { pid: child.pid, port: this.config.port, wsPort: this.config.wsPort });
-    console.log(`[Daemon] Started with PID ${child.pid} on port ${this.config.port}`);
-    console.log(`[Daemon] WebSocket on port ${this.config.wsPort}`);
-    console.log(`[Daemon] Logs: ${this.config.logFile}`);
+    log.info('Started with PID ${child.pid} on port ${this.config.port}', { "child.pid": child.pid, "this.config.port": this.config.port });
+    log.info('WebSocket on port ${this.config.wsPort}', { "this.config.wsPort": this.config.wsPort });
+    log.info('Logs: ${this.config.logFile}', { "this.config.logFile": this.config.logFile });
 
     // 延迟加载 autostart 模块（等待 server 完全启动）
     setTimeout(() => {
@@ -232,7 +233,7 @@ export class OrchestrationDaemon {
     this.cleanupOrphans();
     this.running = false;
     log.info('Daemon stopped');
-    console.log('[Daemon] Stopped');
+    log.info('Stopped');
   }
 
   async restart(): Promise<void> {
