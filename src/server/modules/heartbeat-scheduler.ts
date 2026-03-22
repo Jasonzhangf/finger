@@ -13,6 +13,7 @@ import {
   truncateHeartbeatRecords,
   checkHeartbeatNeedsTruncation,
 } from './heartbeat-md-parser.js';
+import { buildHeartbeatEnvelope, formatEnvelopesForContext, type MailboxEnvelope } from './mailbox-envelope.js';
 
 const log = logger.module('HeartbeatScheduler');
 
@@ -264,18 +265,24 @@ export class HeartbeatScheduler {
       return;
     }
 
-    const mailboxPayload = {
+    const envelope = buildHeartbeatEnvelope(prompt, projectId);
+    heartbeatMailbox.append(targetAgentId, {
       type: 'heartbeat-task',
       taskId,
       projectId,
-      prompt,
+      envelopeId: envelope.id,
       requiresFeedback: true,
-    };
-    heartbeatMailbox.append(targetAgentId, mailboxPayload, {
+    }, {
       sender: 'system-heartbeat',
       sourceType: 'control',
       category: 'notification',
       priority: 1,
+      metadata: { envelope },
+    });
+    log.debug('[HeartbeatScheduler] Appended heartbeat envelope to mailbox', {
+      agentId: targetAgentId,
+      envelopeId: envelope.id,
+      taskId,
     });
   }
 
@@ -308,8 +315,11 @@ export class HeartbeatScheduler {
   private async promptMailboxChecks(): Promise<void> {
     const agents = await listAgents();
     for (const agent of agents) {
-      // Allow idle and completed agents to receive mailbox tasks
-      if (agent.status !== 'idle' && agent.status !== 'completed') continue;
+      // Skip agents that are actively executing tasks
+      if (agent.status === 'busy') {
+        log.debug('[HeartbeatScheduler] Skipping busy agent', { agentId: agent.agentId, status: agent.status });
+        continue;
+      }
       const pending = heartbeatMailbox.listPending(agent.agentId) ?? [];
       if (pending.length === 0) continue;
 
@@ -317,26 +327,47 @@ export class HeartbeatScheduler {
       const lastPrompt = this.lastMailboxPromptAt.get(agent.agentId) ?? 0;
       if (now - lastPrompt < DEFAULT_TICK_MS) continue;
 
-      const lines = [
-        '# Mailbox Check',
-        '你有待处理的系统任务，请逐条执行。',
-        '每个任务完成后必须调用 report-task-completion 工具提交 summary。',
-        '如果提交失败必须重试直到成功，避免断链。',
-        '',
-        '待办任务列表：',
-      ];
-
+      // Build envelopes from pending messages
+      const envelopes: MailboxEnvelope[] = [];
       for (const msg of pending) {
-        const content = typeof msg.content === 'object' && msg.content ? msg.content as Record<string, unknown> : {};
-        const taskId = typeof content.taskId === 'string' ? content.taskId : 'unknown';
-        const projectId = typeof content.projectId === 'string' ? content.projectId : 'unknown';
-        lines.push(`- messageId=${msg.id} taskId=${taskId} projectId=${projectId}`);
+        const msgContent = typeof msg.content === 'object' && msg.content ? msg.content as Record<string, unknown> : {};
+        if (msgContent.envelopeId) {
+          // Reconstruct a minimal envelope from stored content for formatting
+          const prompt = typeof msgContent.prompt === 'string' ? msgContent.prompt : '';
+          const projectId = typeof msgContent.projectId === 'string' ? msgContent.projectId : undefined;
+          if (prompt) {
+            envelopes.push(buildHeartbeatEnvelope(prompt, projectId));
+          }
+        }
       }
 
-      const prompt = lines.join('\n');
+      // Format mailbox context using envelope builder
+      const mailboxContext = envelopes.length > 0
+        ? formatEnvelopesForContext(envelopes)
+        : this.formatLegacyMailboxPrompt(pending);
+
+      const prompt = [
+        mailboxContext,
+        '',
+        '每个任务完成后必须调用 report-task-completion 工具提交 summary。',
+        '如果提交失败必须重试直到成功，避免断链。',
+      ].join('\n');
       await this.dispatchDirect(agent.agentId, 'mailbox-check', agent.projectId, prompt);
       this.lastMailboxPromptAt.set(agent.agentId, now);
     }
+  }
+
+  private formatLegacyMailboxPrompt(
+    pending: ReturnType<typeof heartbeatMailbox.listPending>,
+  ): string {
+    const lines = ['# Mailbox Check', '你有待处理的系统任务，请逐条执行。', '', '待办任务列表：'];
+    for (const msg of pending) {
+      const msgContent = typeof msg.content === 'object' && msg.content ? msg.content as Record<string, unknown> : {};
+      const taskId = typeof msgContent.taskId === 'string' ? msgContent.taskId : 'unknown';
+      const projectId = typeof msgContent.projectId === 'string' ? msgContent.projectId : 'unknown';
+      lines.push(`- messageId=${msg.id} taskId=${taskId} projectId=${projectId}`);
+    }
+    return lines.join('\n');
   }
 
   private async resolveProjectPath(projectId: string | undefined): Promise<string | undefined> {

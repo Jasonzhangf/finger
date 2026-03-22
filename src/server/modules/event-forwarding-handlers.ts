@@ -92,37 +92,6 @@ export function attachBroadcastHandlers(deps: HandlerDeps): void {
     },
   );
 
-  // ── Agent update (generic step) ──
-  eventBus.subscribeMultiple(
-    ['task_started', 'task_completed', 'task_failed', 'workflow_progress', 'phase_transition'],
-    (event) => {
-      const payload = event.payload as Record<string, unknown> | undefined;
-      const step = (payload?.step as Record<string, unknown> | undefined) ?? {};
-      const wsMsg = {
-        type: 'agent_update',
-        sessionId: event.sessionId,
-        payload: {
-          agentId: (payload?.agentId as string | undefined) || event.sessionId,
-          status: (payload?.status as string | undefined) || 'running',
-          currentTaskId: payload?.taskId as string | undefined,
-          load: ((payload?.load as number | undefined) ?? (payload?.progress as number | undefined) ?? 0),
-          step: {
-            round: ((payload?.round as number | undefined) ?? (step.round as number | undefined) ?? 1),
-            action: (payload?.action as string | undefined) || (step.action as string | undefined),
-            thought: (payload?.thought as string | undefined) || (step.thought as string | undefined),
-            observation: (payload?.observation as string | undefined) || (step.observation as string | undefined),
-            params: (payload?.params as Record<string, unknown> | undefined) || (step.params as Record<string, unknown> | undefined),
-            success: (payload?.success as boolean | undefined) !== false,
-            timestamp: event.timestamp,
-          },
-        },
-        timestamp: event.timestamp,
-      };
-      broadcast(wsMsg);
-    },
-  );
-
-  log.info('EventBus agent forwarding enabled: agent_thought, agent_action, agent_observation, agent_step_completed');
 
   // ── Tool events ──
   eventBus.subscribe('tool_call', (event) => {

@@ -11,6 +11,8 @@ import {
   formatLedgerPointerContent,
 } from './event-forwarding-helpers.js';
 import { attachBroadcastHandlers } from './event-forwarding-handlers.js';
+import { buildDispatchResultEnvelope } from './mailbox-envelope.js';
+import { heartbeatMailbox } from './heartbeat-mailbox.js';
 
 type SessionEventRecord = {
   type: 'tool_call' | 'tool_result' | 'tool_error' | 'agent_step' | 'reasoning';
@@ -285,6 +287,33 @@ export function attachEventForwarding(deps: EventForwardingDeps): {
             : undefined);
         if (childSessionId) {
           addLedgerPointerMessage(sessionId, `child:${childSessionId}`, targetAgentId);
+        }
+
+        // Append dispatch result as mailbox envelope for system agent
+        try {
+          const summary = formatDispatchResultContent(payload.result, asString(payload.error));
+          const errorMessage = asString(payload.error) || undefined;
+          const parentAgentId = 'finger-system-agent';
+          const envelope = buildDispatchResultEnvelope(childSessionId || sessionId, summary, errorMessage);
+          heartbeatMailbox.append(parentAgentId, {
+            type: 'dispatch-result',
+            dispatchId: payload.dispatchId,
+            status,
+            childSessionId: childSessionId || sessionId,
+            envelopeId: envelope.id,
+          }, {
+            sender: 'system-dispatch',
+            sourceType: 'control',
+            category: 'notification',
+            priority: status === 'failed' ? 3 : 2,
+          });
+          logger.module('event-forwarding').debug('Dispatch result appended to mailbox', {
+            envelopeId: envelope.id,
+            status,
+            childSessionId: childSessionId || sessionId,
+          });
+        } catch (mailErr) {
+          logger.module('event-forwarding').warn('Failed to append dispatch result to mailbox', mailErr instanceof Error ? { message: mailErr.message, stack: mailErr.stack } : undefined);
         }
       }
 
