@@ -22,6 +22,9 @@ import { getEmbeddingAdapter } from './embedding-adapter.js';
 import { getMilvusAdapter, resetMilvusAdapter } from './milvus-adapter.js';
 import { loadMemoryConfig } from './memory-config.js';
 import { logger } from '../../../core/logger.js';
+import { createConsoleLikeLogger } from '../../../core/logger/console-like.js';
+
+const clog = createConsoleLikeLogger('MemoryTool');
 
 const log = logger.module('index');
 
@@ -206,7 +209,7 @@ async function indexEntry(
       },
     });
   } catch (error) {
-    console.error('[Memory] Failed to index entry:', entry.id, error);
+    clog.error('[Memory] Failed to index entry:', entry.id, error);
   }
 }
 
@@ -225,7 +228,7 @@ async function semanticSearch(
 
     return results.map(r => ({ id: r.id, score: r.score }));
   } catch (error) {
-    console.error('[Memory] Semantic search failed:', error);
+    clog.error('[Memory] Semantic search failed:', error);
     return [];
   }
 }
@@ -405,7 +408,7 @@ export const memoryTool: InternalTool<unknown, MemoryOutput> = {
             const milvusAdapter = getMilvusAdapter(embeddingAdapter);
             await milvusAdapter.delete(input.entry_id);
           } catch (error) {
-            console.error('[Memory] Failed to delete from vector index:', error);
+            clog.error('[Memory] Failed to delete from vector index:', error);
           }
 
           return { ok: true, action: 'delete', entry: deleted };
@@ -443,7 +446,7 @@ export const memoryTool: InternalTool<unknown, MemoryOutput> = {
               });
               indexedCount++;
             } catch (error) {
-              console.error('[Memory] Failed to index entry:', entry.id, error);
+              clog.error('[Memory] Failed to index entry:', entry.id, error);
             }
           }
 

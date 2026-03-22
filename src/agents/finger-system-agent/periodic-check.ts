@@ -12,6 +12,9 @@ import { SessionControlPlaneStore } from '../../runtime/session-control-plane.js
 import { updateAgentStatus, updateHeartbeat, listAgents } from './registry.js';
 import { emitAgentStatusChanged } from './system-events.js';
 import { logger } from '../../core/logger.js';
+import { createConsoleLikeLogger } from '../../core/logger/console-like.js';
+
+const clog = createConsoleLikeLogger('PeriodicCheck');
 
 const DEFAULT_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes
 
@@ -34,12 +37,12 @@ export class PeriodicCheckRunner {
 
   start(): void {
     if (this.timer) return;
-    console.log(`[PeriodicCheckRunner] Started with interval ${this.intervalMs}ms`);
+    clog.log(`[PeriodicCheckRunner] Started with interval ${this.intervalMs}ms`);
     this.timer = setInterval(async () => {
       try {
         await this.runOnce();
       } catch (error) {
-        console.error('[PeriodicCheckRunner] Error in runOnce:', error);
+        clog.error('[PeriodicCheckRunner] Error in runOnce:', error);
       }
     }, this.intervalMs);
   }
@@ -52,7 +55,7 @@ export class PeriodicCheckRunner {
   }
 
   async runOnce(): Promise<void> {
-    console.log(`[PeriodicCheckRunner] Running periodic check...`);
+    clog.log(`[PeriodicCheckRunner] Running periodic check...`);
     const runtimeView = await this.deps.agentRuntimeBlock.execute('runtime_view', {});
     const agents = Array.isArray((runtimeView as any).agents)
       ? (runtimeView as any).agents

@@ -9,6 +9,12 @@ import type { PluginSource, InstallPluginResult, PluginRecord, PluginRuntimeApi,
 import { installPlugin } from './installer.js';
 import { loadAllPlugins, discoverPlugins } from './loader.js';
 import type { OpenClawGateBlock } from '../openclaw-gate/index.js';
+import { logger } from '../../core/logger.js';
+import { createConsoleLikeLogger } from '../../core/logger/console-like.js';
+
+const clog = createConsoleLikeLogger('Index');
+
+const log = logger.module('Index');
 
 export type { OpenClawPluginManifest, PluginSource, InstallPluginResult, PluginRecord, PluginRuntimeApi, PluginLogger, OpenClawPluginDefinition } from './types.js';
 export { loadPluginManifest, parsePackageJsonExtensions } from './manifest.js';
@@ -23,9 +29,9 @@ export type PluginManagerOptions = {
 };
 
 const defaultLogger: PluginLogger = {
-  info: (msg: string) => console.log('[PluginManager] INFO: ' + msg),
-  warn: (msg: string) => console.warn('[PluginManager] WARN: ' + msg),
-  error: (msg: string) => console.error('[PluginManager] ERROR: ' + msg),
+  info: (msg: string) => clog.log('[PluginManager] INFO: ' + msg),
+  warn: (msg: string) => clog.warn('[PluginManager] WARN: ' + msg),
+  error: (msg: string) => clog.error('[PluginManager] ERROR: ' + msg),
 };
 
 /**

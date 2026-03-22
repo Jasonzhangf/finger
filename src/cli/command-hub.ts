@@ -1,6 +1,9 @@
 import type { Command as CliCommand } from 'commander';
 import { parseCommands, getCommandHub } from '../blocks/command-hub/index.js';
 import { ensureFingerLayout, FINGER_PATHS } from '../core/finger-paths.js';
+import { createConsoleLikeLogger } from '../core/logger/console-like.js';
+
+const clog = createConsoleLikeLogger('CommandHub');
 
 interface CommandHubOptions {
   channel?: string;
@@ -20,7 +23,7 @@ export function registerCommandHubCommand(program: CliCommand): void {
 
         const parsed = parseCommands(input);
         if (parsed.commands.length === 0) {
-          console.error('未检测到命令: ', input);
+          clog.error('未检测到命令: ', input);
           process.exit(1);
           return;
         }
@@ -33,14 +36,14 @@ export function registerCommandHubCommand(program: CliCommand): void {
 
         const result = await executor.execute(parsed.commands[0], ctx);
         if (result.success) {
-          console.log(result.output);
+          clog.log(result.output);
           process.exit(0);
         } else {
-          console.error(result.error || result.output || '命令执行失败');
+          clog.error(result.error || result.output || '命令执行失败');
           process.exit(1);
         }
       } catch (err) {
-        console.error('[CLI Error]', err);
+        clog.error('[CLI Error]', err);
         process.exit(1);
       }
     });

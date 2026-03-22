@@ -6,6 +6,9 @@
 import fs from 'fs';
 import { FINGER_PATHS, ensureDir } from '../core/finger-paths.js';
 import { logger } from '../core/logger.js';
+import { createConsoleLikeLogger } from '../core/logger/console-like.js';
+
+const clog = createConsoleLikeLogger('ResourcePool');
 
 export type ResourceType = 'executor' | 'orchestrator' | 'reviewer' | 'searcher' | 'tool' | 'api' | 'database';
 export type ResourceStatus = 'available' | 'deployed' | 'busy' | 'blocked' | 'error' | 'released';
@@ -89,7 +92,7 @@ export class ResourcePool {
       }
       log.info('Loaded ${this.resources.size} resources, ${this.allocations.size} allocations', { "this.resources.size": this.resources.size, "this.allocations.size": this.allocations.size });
     } catch (err) {
-      console.error('[ResourcePool] Failed to load pool:', err);
+      clog.error('[ResourcePool] Failed to load pool:', err);
       this.initDefaultPool();
     }
   }

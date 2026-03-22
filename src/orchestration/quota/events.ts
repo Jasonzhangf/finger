@@ -6,6 +6,9 @@
 
 import type { RuntimeStatus, RuntimeInstanceV1 } from './types.js';
 import { logger } from '../../core/logger.js';
+import { createConsoleLikeLogger } from '../../core/logger/console-like.js';
+
+const clog = createConsoleLikeLogger('Events');
 
 /**
  * Runtime 事件类型
@@ -89,7 +92,7 @@ class RuntimeEventEmitter {
         try {
           listener(event);
         } catch (err) {
-          console.error(`[RuntimeEventEmitter] Error in listener for ${event.type}:`, err);
+          clog.error(`[RuntimeEventEmitter] Error in listener for ${event.type}:`, err);
         }
       });
     }

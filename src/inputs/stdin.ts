@@ -4,6 +4,9 @@
 import { BaseInput } from './base.js';
 import { createMessage } from '../core/schema.js';
 import readline from 'readline';
+import { logger } from '../core/logger.js';
+
+const log = logger.module('Stdin');
 
 export class StdinInput extends BaseInput {
   id = "stdin";
@@ -25,7 +28,7 @@ export class StdinInput extends BaseInput {
 
     this.rl.prompt();
     this.running = true;
-    console.log("[Input:stdin] Started");
+    log.info('Started');
   }
 
   async stop(): Promise<void> {

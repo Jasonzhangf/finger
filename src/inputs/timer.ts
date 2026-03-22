@@ -3,6 +3,12 @@
  */
 import { BaseInput } from './base.js';
 import { createMessage } from '../core/schema.js';
+import { logger } from '../core/logger.js';
+import { createConsoleLikeLogger } from '../core/logger/console-like.js';
+
+const clog = createConsoleLikeLogger('Timer');
+
+const log = logger.module('Timer');
 
 export interface TimerConfig {
   interval: number; // seconds
@@ -33,7 +39,7 @@ export class TimerInput extends BaseInput {
     await tick();
     this.timer = setInterval(tick, this.config.interval * 1000);
     this.running = true;
-    console.log(`[Input:${this.id}] Timer started (${this.config.interval}s)`);
+    clog.log(`[Input:${this.id}] Timer started (${this.config.interval}s)`);
   }
 
   async stop(): Promise<void> {

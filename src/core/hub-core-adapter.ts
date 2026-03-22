@@ -10,6 +10,12 @@
 
 import type { Message } from './schema.js';
 import { MessageHub, type MessageHandler } from '../orchestration/message-hub.js';
+import { logger } from './logger.js';
+import { createConsoleLikeLogger } from '../core/logger/console-like.js';
+
+const clog = createConsoleLikeLogger('HubCoreAdapter');
+
+const log = logger.module('HubCoreAdapter');
 
 export type HubCoreMessageHandler = (message: Message) => Promise<unknown>;
 export type HubCoreOutputHandler = (message: Message) => Promise<unknown>;
@@ -39,7 +45,7 @@ export class HubCoreAdapter {
   registerInput(id: string, handler: HubCoreMessageHandler): void {
     this.hub.registerInput(id, handler as MessageHandler, []);
     this.tracker.inputs.add(id);
-    console.log(`[HubAdapter] Input registered: ${id}`);
+    clog.log(`[HubAdapter] Input registered: ${id}`);
   }
 
   /**
@@ -48,7 +54,7 @@ export class HubCoreAdapter {
   registerOutput(id: string, handler: HubCoreOutputHandler): void {
     this.hub.registerOutput(id, async (msg, _cb) => handler(msg as Message));
     this.tracker.outputs.add(id);
-    console.log(`[HubAdapter] Output registered: ${id}`);
+    clog.log(`[HubAdapter] Output registered: ${id}`);
   }
 
   /**
@@ -88,7 +94,7 @@ export class HubCoreAdapter {
         const result = await this.hub.routeToOutput(dest, message);
         results.push(result);
       } catch (err) {
-        console.error(`[HubAdapter] Output ${dest} error:`, err);
+        clog.error(`[HubAdapter] Output ${dest} error:`, err);
         results.push({ error: String(err), dest });
       }
     }

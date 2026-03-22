@@ -5,6 +5,9 @@
 import { Command } from "commander";
 import { createMessage } from "../../core/schema.js";
 import { registry } from "../../core/registry-new.js";
+import { createConsoleLikeLogger } from '../../core/logger/console-like.js';
+
+const clog = createConsoleLikeLogger('Send');
 
 export function sendCommand(): Command {
   return new Command("send")
@@ -28,12 +31,12 @@ export function sendCommand(): Command {
 
       const output = registry.get(dest);
       if (!output || output.type !== "output") {
-        console.error("Destination not found:", dest);
+        clog.error("Destination not found:", dest);
         process.exit(1);
       }
 
-      console.log("Sending to", dest);
-      console.log(JSON.stringify(message, null, 2));
-      console.log("Note: Run daemon first");
+      clog.log("Sending to", dest);
+      clog.log(JSON.stringify(message, null, 2));
+      clog.log("Note: Run daemon first");
     });
 }

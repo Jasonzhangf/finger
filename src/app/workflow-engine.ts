@@ -2,6 +2,12 @@ import type { Task, Agent } from '../core/types.js';
 import { TaskStateMachine } from './task-state-machine.js';
 import { Scheduler, type SchedulingResult } from './scheduler.js';
 import { RecoveryManager, type RecoveryAction } from './recovery-manager.js';
+import { logger } from '../core/logger.js';
+import { createConsoleLikeLogger } from '../core/logger/console-like.js';
+
+const clog = createConsoleLikeLogger('WorkflowEngine');
+
+const log = logger.module('WorkflowEngine');
 
 export interface WorkflowContext {
   projectId: string;
@@ -58,7 +64,7 @@ export class WorkflowEngine {
         this.emitEvent({ type: 'task_completed', taskId });
       } catch (err) {
         const errMsg = err instanceof Error ? err.message : String(err);
-        console.error(`Failed to complete task ${taskId}: ${errMsg}`);
+        clog.error(`Failed to complete task ${taskId}: ${errMsg}`);
       }
     }
   }
@@ -73,7 +79,7 @@ export class WorkflowEngine {
       const updated = this.stateMachine.transition(task, 'failed');
       context.tasks.set(taskId, updated);
     } catch (err) {
-      console.error(`Failed to mark task as failed: ${err}`);
+      clog.error(`Failed to mark task as failed: ${err}`);
     }
 
     this.recoveryManager.saveCheckpoint(task);
@@ -84,7 +90,7 @@ export class WorkflowEngine {
         const escalated = this.stateMachine.transition(task, 'escalated');
         context.tasks.set(taskId, escalated);
       } catch {
-        console.error(`Failed to escalate task ${taskId}`);
+        clog.error(`Failed to escalate task ${taskId}`);
       }
     }
 
@@ -107,7 +113,7 @@ export class WorkflowEngine {
           context.tasks.set(task.id, updated);
           this.emitEvent({ type: 'dependency_resolved', taskId: task.id });
         } catch (err) {
-          console.error(`Failed to unblock task ${task.id}: ${err}`);
+          clog.error(`Failed to unblock task ${task.id}: ${err}`);
         }
       }
     }
@@ -124,7 +130,7 @@ export class WorkflowEngine {
           const updated = this.stateMachine.transition(task, 'open');
           context.tasks.set(task.id, updated);
         } catch {
-          console.error(`Failed to retry task ${task.id}`);
+          clog.error(`Failed to retry task ${task.id}`);
         }
       }
     }
@@ -135,7 +141,7 @@ export class WorkflowEngine {
       try {
         handler(event);
       } catch (err) {
-        console.error(`Event handler error: ${err}`);
+        clog.error(`Event handler error: ${err}`);
       }
     }
   }

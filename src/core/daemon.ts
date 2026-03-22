@@ -31,6 +31,12 @@ import { globalToolRegistry } from '../runtime/tool-registry.js';
 import { getChannelBridgeManager, type ChannelBridgeManager, type ChannelMessage } from '../bridges/index.js';
 import type { ChannelBridgeConfig } from '../bridges/types.js';
 import { createMessage, type OpenClawChannelMeta } from './schema.js';
+import { logger } from './logger.js';
+import { createConsoleLikeLogger } from '../core/logger/console-like.js';
+
+const clog = createConsoleLikeLogger('Daemon');
+
+const log = logger.module('Daemon');
 
 const FINGER_DIR = FINGER_PATHS.runtime.dir;
 const PID_FILE = FINGER_PATHS.runtime.daemonPid;
@@ -68,17 +74,17 @@ export class CoreDaemon {
       try {
         const stalePid = parseInt(fs.readFileSync(PID_FILE, 'utf-8'), 10);
         if (isNaN(stalePid)) {
-          console.log('[Daemon] Removing invalid PID file');
+          log.info('Removing invalid PID file');
           fs.unlinkSync(PID_FILE);
         } else {
           process.kill(stalePid, 0);
           // Process is still alive
-          console.log('[Daemon] Already running with PID', stalePid);
+          clog.log('[Daemon] Already running with PID', stalePid);
           return;
         }
       } catch {
         // Stale PID file - process is dead, clean it up
-        console.log('[Daemon] Cleaning up stale PID file');
+        log.info('Cleaning up stale PID file');
         try {
           fs.unlinkSync(PID_FILE);
         } catch {}
@@ -86,7 +92,7 @@ export class CoreDaemon {
     }
 
     if (this.isRunning()) {
-      console.log('[Daemon] Already running');
+      log.info('Already running');
       return;
     }
 
@@ -98,13 +104,13 @@ export class CoreDaemon {
         await this.handleChannelMessage(msg);
       },
       onError: (err: Error) => {
-        console.error('[Daemon] Channel bridge error:', err);
+        clog.error('[Daemon] Channel bridge error:', err);
       },
       onReady: () => {
-        console.log('[Daemon] Channel bridge ready');
+        log.info('Channel bridge ready');
       },
       onClose: () => {
-        console.log('[Daemon] Channel bridge closed');
+        log.info('Channel bridge closed');
       },
     });
 
@@ -163,7 +169,7 @@ export class CoreDaemon {
           output = new OpenClawOutput(out.id, out.config as never);
           break;
         default:
-          console.warn(`[Daemon] Unknown output kind: ${out.kind}`);
+          clog.warn(`[Daemon] Unknown output kind: ${out.kind}`);
           continue;
       }
 
@@ -190,7 +196,7 @@ export class CoreDaemon {
           input = new OpenClawInput(inp.id, inp.config as never);
           break;
         default:
-          console.warn(`[Daemon] Unknown input kind: ${inp.kind}`);
+          clog.warn(`[Daemon] Unknown input kind: ${inp.kind}`);
           continue;
       }
 
@@ -217,24 +223,24 @@ export class CoreDaemon {
     fs.writeFileSync(PID_FILE, String(process.pid));
     
     this.running = true;
-    console.log('[Daemon] Started with PID', process.pid);
+    clog.log('[Daemon] Started with PID', process.pid);
     
     process.on('SIGTERM', () => this.stop());
     process.on('SIGINT', () => this.stop());
     process.on('uncaughtException', (err) => {
-      console.error('[Daemon] Uncaught exception:', err);
+      clog.error('[Daemon] Uncaught exception:', err);
       this.stop();
       process.exit(1);
     });
     process.on('unhandledRejection', (reason) => {
-      console.error('[Daemon] Unhandled rejection:', reason);
+      clog.error('[Daemon] Unhandled rejection:', reason);
       this.stop();
       process.exit(1);
     });
   }
 
   async stop(): Promise<void> {
-    console.log('[Daemon] Stopping...');
+    log.info('Stopping...');
     this.running = false;
 
     if (this.stopTimeout) {
@@ -242,7 +248,7 @@ export class CoreDaemon {
     }
 
     this.stopTimeout = setTimeout(() => {
-      console.error('[Daemon] Stop timeout exceeded, forcing exit');
+      log.error('Stop timeout exceeded, forcing exit');
       process.exit(1);
     }, 10_000).unref();
 
@@ -255,20 +261,20 @@ export class CoreDaemon {
         await this.channelBridgeManager.stopAll();
       }
     } catch (err) {
-      console.error('[Daemon] Failed to stop channel bridges:', err);
+      clog.error('[Daemon] Failed to stop channel bridges:', err);
     }
 
     try {
       await this.supervisor.stopAll();
     } catch (err) {
-      console.error('[Daemon] Failed to stop supervisor:', err);
+      clog.error('[Daemon] Failed to stop supervisor:', err);
     }
 
     for (const input of this.inputs.values()) {
       try {
         await input.stop();
       } catch (err) {
-        console.error('[Daemon] Failed to stop input:', err);
+        clog.error('[Daemon] Failed to stop input:', err);
       }
     }
 
@@ -276,14 +282,14 @@ export class CoreDaemon {
       try {
         await output.stop();
       } catch (err) {
-        console.error('[Daemon] Failed to stop output:', err);
+        clog.error('[Daemon] Failed to stop output:', err);
       }
     }
 
     try {
       this.snapshot.stop();
     } catch (err) {
-      console.error('[Daemon] Failed to stop snapshot:', err);
+      clog.error('[Daemon] Failed to stop snapshot:', err);
     }
 
     try {
@@ -295,15 +301,15 @@ export class CoreDaemon {
       this.stopTimeout = null;
     }
 
-    console.log('[Daemon] Stopped');
+    log.info('Stopped');
   }
 
   async restart(): Promise<void> {
-    console.log('[Daemon] Restarting...');
+    log.info('Restarting...');
     await this.stop();
     await new Promise(resolve => setTimeout(resolve, 500));
     await this.start();
-    console.log('[Daemon] Restarted');
+    log.info('Restarted');
   }
 
   private async handleChannelMessage(channelMsg: ChannelMessage): Promise<void> {
@@ -326,7 +332,7 @@ export class CoreDaemon {
     }, channelMsg.channelId, { channelMeta });
 
     const results = await this.hub.route(msg);
-    console.log('[Daemon] Routed channel message', channelMsg.id, 'to', results.length, 'outputs');
+    clog.log('[Daemon] Routed channel message', channelMsg.id, 'to', results.length, 'outputs');
   }
 
   private async handleMessage(msg: Message): Promise<void> {
@@ -335,13 +341,13 @@ export class CoreDaemon {
     if (msg.type === 'openclaw-call') {
       const openClawResult = await invokeOpenClawFromMessage(msg, this.openClawGate);
       if (openClawResult) {
-        console.log('[Daemon] OpenClaw message handled via gate', msg.meta.id, openClawResult.ok);
+        clog.log('[Daemon] OpenClaw message handled via gate', msg.meta.id, openClawResult.ok);
         return;
       }
     }
 
     const results = await this.hub.route(msg);
-    console.log('[Daemon] Routed message', msg.meta.id, 'to', results.length, 'outputs');
+    clog.log('[Daemon] Routed message', msg.meta.id, 'to', results.length, 'outputs');
   }
 
   isRunning(): boolean {
@@ -363,7 +369,7 @@ export class CoreDaemon {
   }
 
   private async loadChannelBridgeConfigs(): Promise<void> {
-    console.log('[Daemon] loadChannelBridgeConfigs called, manager:', !!this.channelBridgeManager);
+    clog.log('[Daemon] loadChannelBridgeConfigs called, manager:', !!this.channelBridgeManager);
     if (!this.channelBridgeManager) return;
 
     const channelsConfigPath = path.join(FINGER_PATHS.config.dir, 'channels.json');
@@ -374,24 +380,24 @@ export class CoreDaemon {
         const raw = fs.readFileSync(channelsConfigPath, 'utf-8');
         const parsed = JSON.parse(raw);
         configs = parsed.channels || [];
-        console.log('[Daemon] Found channels config file, channels:', configs.length);
+        clog.log('[Daemon] Found channels config file, channels:', configs.length);
       } else {
-        console.log('[Daemon] channels.json not found at:', channelsConfigPath);
+        clog.log('[Daemon] channels.json not found at:', channelsConfigPath);
       }
     } catch (err) {
-      console.warn('[Daemon] Failed to load channels config:', err);
+      clog.warn('[Daemon] Failed to load channels config:', err);
     }
 
     if (configs.length > 0) {
-      console.log('[Daemon] Loading channel bridge configs...');
+      log.info('Loading channel bridge configs...');
       try {
         await this.channelBridgeManager.loadConfigs(configs);
-        console.log('[Daemon] Loaded', configs.length, 'channel bridge configs successfully');
+        clog.log('[Daemon] Loaded', configs.length, 'channel bridge configs successfully');
       } catch (err) {
-        console.error('[Daemon] Failed to load channel bridges:', err instanceof Error ? err.message : String(err));
+        clog.error('[Daemon] Failed to load channel bridges:', err instanceof Error ? err.message : String(err));
       }
     } else {
-      console.log('[Daemon] No channel bridge configs to load');
+      log.info('No channel bridge configs to load');
     }
   }
 

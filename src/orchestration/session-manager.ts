@@ -18,6 +18,9 @@ import { needsCompression, compressSession, syncSessionTokens, type CompressResu
 import { estimateTokens } from '../utils/token-counter.js';
 import { getContextWindow } from '../core/user-settings.js';
 import { logger } from '../core/logger.js';
+import { createConsoleLikeLogger } from '../core/logger/console-like.js';
+
+const clog = createConsoleLikeLogger('SessionManager');
 
 export { Session, SessionMessage } from './session-types.js';
 
@@ -181,7 +184,7 @@ export class SessionManager {
               // Ignore truncated session files during startup
               continue;
             }
-            console.error(`[SessionManager] Failed to load session ${filePath}:`, error);
+            clog.error(`[SessionManager] Failed to load session ${filePath}:`, error);
           }
         }
         continue;
@@ -197,7 +200,7 @@ export class SessionManager {
             // Ignore truncated session files during startup
             continue;
           }
-          console.error(`[SessionManager] Failed to load session ${filePath}:`, error);
+          clog.error(`[SessionManager] Failed to load session ${filePath}:`, error);
         }
       }
     }
@@ -217,7 +220,7 @@ export class SessionManager {
         try {
           this.loadSessionFile(legacyFilePath);
         } catch (err) {
-          console.error(`[SessionManager] Failed to load legacy session ${legacyFilePath}:`, err);
+          clog.error(`[SessionManager] Failed to load legacy session ${legacyFilePath}:`, err);
         }
       }
     }
@@ -474,7 +477,7 @@ export class SessionManager {
       process.chdir(target);
       return true;
     } catch (error) {
-      console.error(`[SessionManager] Failed to set cwd to ${target}:`, error);
+      clog.error(`[SessionManager] Failed to set cwd to ${target}:`, error);
       return false;
     }
   }
@@ -565,7 +568,7 @@ export class SessionManager {
       );
     } catch (err) {
       // Log but do not fail - ledger write is best-effort during migration
-      console.error('[SessionManager] Ledger write failed, falling back to session.messages:', err);
+      clog.error('[SessionManager] Ledger write failed, falling back to session.messages:', err);
     }
 
     // Keep session.messages in sync for backward compatibility

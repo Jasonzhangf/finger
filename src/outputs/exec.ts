@@ -4,6 +4,12 @@
 import { BaseOutput } from './base.js';
 import type { Message } from '../core/schema.js';
 import { spawn, ChildProcess } from 'child_process';
+import { logger } from '../core/logger.js';
+import { createConsoleLikeLogger } from '../core/logger/console-like.js';
+
+const clog = createConsoleLikeLogger('Exec');
+
+const log = logger.module('Exec');
 
 export interface ExecConfig {
   command: string;
@@ -25,7 +31,7 @@ export class ExecOutput extends BaseOutput {
 
   async start(): Promise<void> {
     this.running = true;
-    console.log(`[Output:${this.id}] Exec ready: ${this.config.command}`);
+    clog.log(`[Output:${this.id}] Exec ready: ${this.config.command}`);
   }
 
   async handle(message: Message): Promise<unknown> {

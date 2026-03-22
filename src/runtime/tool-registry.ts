@@ -3,6 +3,10 @@
  * 支持 allow/deny 策略
  */
 
+import { createConsoleLikeLogger } from '../core/logger/console-like.js';
+
+const clog = createConsoleLikeLogger('ToolRegistry');
+
 export type ToolPolicy = 'allow' | 'deny';
 
 export interface ToolDefinition {
@@ -27,7 +31,7 @@ export class ToolRegistry {
    */
   register(tool: ToolDefinition): void {
     if (this.tools.has(tool.name)) {
-      console.warn(`[ToolRegistry] Tool ${tool.name} already registered, overwriting`);
+      clog.warn(`[ToolRegistry] Tool ${tool.name} already registered, overwriting`);
     }
     this.tools.set(tool.name, { ...tool });
   }

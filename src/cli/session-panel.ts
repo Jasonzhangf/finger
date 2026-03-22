@@ -1,6 +1,9 @@
 import { createInterface, type Interface } from 'readline';
 import type { Command } from 'commander';
 import WebSocket, { type RawData } from 'ws';
+import { createConsoleLikeLogger } from '../core/logger/console-like.js';
+
+const clog = createConsoleLikeLogger('SessionPanel');
 
 const DEFAULT_DAEMON_URL = process.env.FINGER_HUB_URL || 'http://localhost:9999';
 const DEFAULT_WS_URL = process.env.FINGER_WS_URL || 'ws://localhost:9998';
@@ -118,11 +121,11 @@ export async function startSessionPanel(options: SessionPanelOptions): Promise<v
 
     try {
       const reply = await sendPanelInput(options.daemonUrl, state.target, state.sessionId, input, state.history);
-      console.log(`Agent: ${reply}\n`);
+      clog.log(`Agent: ${reply}\n`);
       state.history.push({ role: 'assistant', content: reply });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      console.error(`Error: ${message}\n`);
+      clog.error(`Error: ${message}\n`);
     }
 
     safePrompt(rl);
@@ -199,20 +202,20 @@ async function runPanelCommand(input: string, state: SessionPanelState, daemonUr
   }
 
   if (command === 'session') {
-    console.log(`Session: ${state.sessionId}`);
-    console.log(`Target:  ${state.target}`);
-    console.log('');
+    clog.log(`Session: ${state.sessionId}`);
+    clog.log(`Target:  ${state.target}`);
+    clog.log('');
     return true;
   }
 
   if (command === 'target') {
     const nextTarget = rest.join(' ').trim();
     if (!nextTarget) {
-      console.log(`Current target: ${state.target}\n`);
+      clog.log(`Current target: ${state.target}\n`);
       return true;
     }
     state.target = nextTarget;
-    console.log(`Target switched to: ${state.target}\n`);
+    clog.log(`Target switched to: ${state.target}\n`);
     return true;
   }
 
@@ -221,25 +224,25 @@ async function runPanelCommand(input: string, state: SessionPanelState, daemonUr
     await setCurrentSession(daemonUrl, nextSession.id);
     state.sessionId = nextSession.id;
     state.history = [];
-    console.log(`Switched to new session: ${state.sessionId}\n`);
+    clog.log(`Switched to new session: ${state.sessionId}\n`);
     return true;
   }
 
   if (command === 'switch') {
     const nextSessionId = rest[0];
     if (!nextSessionId) {
-      console.log('Usage: /switch <sessionId>\n');
+      clog.log('Usage: /switch <sessionId>\n');
       return true;
     }
     await ensureSessionExists(daemonUrl, nextSessionId);
     await setCurrentSession(daemonUrl, nextSessionId);
     state.sessionId = nextSessionId;
     state.history = await loadSessionHistory(daemonUrl, state.sessionId);
-    console.log(`Switched to session: ${state.sessionId}\n`);
+    clog.log(`Switched to session: ${state.sessionId}\n`);
     return true;
   }
 
-  console.log(`Unknown command: /${command}`);
+  clog.log(`Unknown command: /${command}`);
   printHelp();
   return true;
 }
@@ -498,37 +501,37 @@ async function requestJson<T>(url: string, init: RequestInit = {}): Promise<T> {
 }
 
 function printHeader(state: SessionPanelState): void {
-  console.log('\nSession Panel (CLI IO Gateway)');
-  console.log('------------------------------');
-  console.log(`Session: ${state.sessionId}`);
-  console.log(`Target:  ${state.target}`);
+  clog.log('\nSession Panel (CLI IO Gateway)');
+  clog.log('------------------------------');
+  clog.log(`Session: ${state.sessionId}`);
+  clog.log(`Target:  ${state.target}`);
   printHelp();
 }
 
 function printHelp(): void {
-  console.log('Commands:');
-  console.log('  /help                 Show this help');
-  console.log('  /history              Show local conversation history');
-  console.log('  /session              Show current session and target');
-  console.log('  /target <moduleId>    Switch target gateway/agent');
-  console.log('  /new [name]           Create and switch to new session');
-  console.log('  /switch <sessionId>   Switch to existing session');
-  console.log('  /exit                 Exit panel');
-  console.log('');
+  clog.log('Commands:');
+  clog.log('  /help                 Show this help');
+  clog.log('  /history              Show local conversation history');
+  clog.log('  /session              Show current session and target');
+  clog.log('  /target <moduleId>    Switch target gateway/agent');
+  clog.log('  /new [name]           Create and switch to new session');
+  clog.log('  /switch <sessionId>   Switch to existing session');
+  clog.log('  /exit                 Exit panel');
+  clog.log('');
 }
 
 function printHistory(history: PanelHistoryEntry[]): void {
   if (history.length === 0) {
-    console.log('History is empty.\n');
+    clog.log('History is empty.\n');
     return;
   }
 
-  console.log('History:');
+  clog.log('History:');
   for (const item of history) {
     const prefix = item.role === 'user' ? 'You' : 'Agent';
-    console.log(`${prefix}: ${item.content}`);
+    clog.log(`${prefix}: ${item.content}`);
   }
-  console.log('');
+  clog.log('');
 }
 
 function safePrompt(rl: Interface): void {

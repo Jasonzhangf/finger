@@ -8,6 +8,12 @@ import fs from 'fs';
 import path from 'path';
 import { FINGER_PATHS } from './finger-paths.js';
 import type { Registry } from './registry-new.js';
+import { logger } from './logger.js';
+import { createConsoleLikeLogger } from '../core/logger/console-like.js';
+
+const clog = createConsoleLikeLogger('Snapshot');
+
+const log = logger.module('Snapshot');
 
 const FINGER_DIR = FINGER_PATHS.runtime.dir;
 const SNAPSHOT_PATH = path.join(FINGER_DIR, 'snapshot.json');
@@ -25,7 +31,7 @@ export class SnapshotManager {
 
   start(): void {
     this.timer = setInterval(() => this.tick(), SNAPSHOT_INTERVAL);
-    console.log('[Snapshot] Started (interval: 30s)');
+    log.info('Started (interval: 30s)');
   }
 
   stop(): void {
@@ -35,7 +41,7 @@ export class SnapshotManager {
     }
     // Final save
     this.tick();
-    console.log('[Snapshot] Stopped');
+    log.info('Stopped');
   }
 
   markDirty(): void {
@@ -56,7 +62,7 @@ export class SnapshotManager {
       fs.writeFileSync(this.path, content, 'utf-8');
       this.lastHash = hash;
       this.dirty = false;
-      console.log('[Snapshot] Saved to', this.path);
+      clog.log('[Snapshot] Saved to', this.path);
     }
   }
 
@@ -66,11 +72,11 @@ export class SnapshotManager {
         const content = fs.readFileSync(this.path, 'utf-8');
         const snapshot = JSON.parse(content);
         this.lastHash = this.simpleHash(JSON.stringify(snapshot, null, 2));
-        console.log('[Snapshot] Loaded from', this.path);
+        clog.log('[Snapshot] Loaded from', this.path);
         return snapshot;
       }
     } catch (err) {
-      console.error('[Snapshot] Load failed:', err);
+      clog.error('[Snapshot] Load failed:', err);
     }
     return null;
   }

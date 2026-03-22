@@ -6,6 +6,9 @@ import { logger } from '../logger.js';
 import { runAllHealthChecks } from './checks.js';
 import { performResourceCleanup } from './cleanup.js';
 import { performAutoRecovery } from './recovery.js';
+import { createConsoleLikeLogger } from '../../core/logger/console-like.js';
+
+const clog = createConsoleLikeLogger('Startup');
 
 const log = logger.module('HealthChecker');
 
@@ -22,7 +25,7 @@ export function performStartupHealthCheck(): boolean {
   if (criticalResults.length > 0) {
     log.error('Startup health check failed - critical issues found', new Error(JSON.stringify(criticalResults)));
     for (const result of criticalResults) {
-      console.error(`❌ [Health Check] ${result.message}`);
+      clog.error(`❌ [Health Check] ${result.message}`);
     }
     performAutoRecovery(results);
     return false;
@@ -31,11 +34,11 @@ export function performStartupHealthCheck(): boolean {
   if (warningResults.length > 0) {
     log.warn('Startup health check passed with warnings', { warningResults });
     for (const result of warningResults) {
-      console.warn(`⚠️ [Health Check] ${result.message}`);
+      clog.warn(`⚠️ [Health Check] ${result.message}`);
     }
   } else {
     log.info('Startup health check passed');
-    console.log('✓ [Health Check] All systems healthy');
+    log.info('✓ [Health Check] All systems healthy');
   }
 
   return true;
@@ -71,7 +74,7 @@ export function performAutoCleanup(): void {
 
   if (stats.sessionsRemoved > 0 || stats.logsRemoved > 0 || stats.backupsRemoved > 0) {
     log.info('Auto cleanup completed', { stats });
-    console.log(`[Health Check] Cleaned up: ${stats.sessionsRemoved} sessions, ${stats.logsRemoved} logs, ${stats.backupsRemoved} backups`);
+    clog.log(`[Health Check] Cleaned up: ${stats.sessionsRemoved} sessions, ${stats.logsRemoved} logs, ${stats.backupsRemoved} backups`);
   } else {
     log.info('No resources to clean up');
   }

@@ -5,6 +5,9 @@
  */
 
 import { logger } from './logger.js';
+import { createConsoleLikeLogger } from '../core/logger/console-like.js';
+
+const clog = createConsoleLikeLogger('Supervisor');
 
 export interface SupervisedProcess {
   id: string;
@@ -65,7 +68,7 @@ export class Supervisor {
   checkHealth(): void {
     for (const [id, proc] of this.processes) {
       if (!proc.isHealthy()) {
-        console.log(`[Supervisor] Process ${id} unhealthy, scheduling restart`);
+        clog.log(`[Supervisor] Process ${id} unhealthy, scheduling restart`);
         this.scheduleRestart(id);
       } else {
         // Reset attempts on healthy check
@@ -78,7 +81,7 @@ export class Supervisor {
     const attempts = this.restartAttempts.get(id) || 0;
     const delay = Math.min(1000 * Math.pow(2, attempts), 60000); // Max 60s
 
-    console.log(`[Supervisor] Restart ${id} in ${delay}ms (attempt ${attempts + 1})`);
+    clog.log(`[Supervisor] Restart ${id} in ${delay}ms (attempt ${attempts + 1})`);
 
     this.restartAttempts.set(id, attempts + 1);
 

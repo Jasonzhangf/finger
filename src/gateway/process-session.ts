@@ -1,6 +1,12 @@
 import { ChildProcessWithoutNullStreams, spawn } from 'child_process';
 import { createInterface } from 'readline';
 import { GatewayAckEnvelope, GatewayDeliveryMode, GatewayEventEnvelope, GatewayInboundEnvelope, GatewayOutboundEnvelope, GatewayRequestEnvelope, GatewayResultEnvelope, ResolvedGatewayModule } from './types.js';
+import { logger } from '../core/logger.js';
+import { createConsoleLikeLogger } from '../core/logger/console-like.js';
+
+const clog = createConsoleLikeLogger('ProcessSession');
+
+const log = logger.module('ProcessSession');
 
 const DEFAULT_ACK_TIMEOUT_MS = 3000;
 const DEFAULT_REQUEST_TIMEOUT_MS = 60_000;
@@ -65,14 +71,14 @@ export class GatewayProcessSession {
     const stdoutReader = createInterface({ input: child.stdout });
     stdoutReader.on('line', (line: string) => {
       this.handleStdoutLine(line).catch((error) => {
-        console.error(`[Gateway:${this.module.manifest.id}] handle stdout line failed: ${String(error)}`);
+        clog.error(`[Gateway:${this.module.manifest.id}] handle stdout line failed: ${String(error)}`);
       });
     });
 
     child.stderr.on('data', (chunk: Buffer | string) => {
       const text = chunk.toString();
       if (text.trim().length > 0) {
-        console.warn(`[Gateway:${this.module.manifest.id}] stderr: ${text.trim()}`);
+        clog.warn(`[Gateway:${this.module.manifest.id}] stderr: ${text.trim()}`);
       }
     });
 

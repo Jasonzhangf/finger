@@ -16,6 +16,12 @@ import { EVENT_GROUPS, getEventTypesByGroup, getSupportedEventGroups } from './e
 import { getSupportedEventTypes } from './events.js';
 import { appendFile, mkdir } from 'fs/promises';
 import { join } from 'path';
+import { logger } from '../core/logger.js';
+import { createConsoleLikeLogger } from '../core/logger/console-like.js';
+
+const clog = createConsoleLikeLogger('EventBus');
+
+const log = logger.module('EventBus');
 
 export type EventHandler = (event: RuntimeEvent) => void;
 
@@ -103,7 +109,7 @@ export class UnifiedEventBus {
       try {
         h(event);
       } catch (err) {
-        console.error(`[EventBus] Handler error for ${event.type}:`, err);
+        clog.error(`[EventBus] Handler error for ${event.type}:`, err);
       }
     });
 
@@ -113,7 +119,7 @@ export class UnifiedEventBus {
       try {
         h(event);
       } catch (err) {
-        console.error(`[EventBus] Wildcard handler error:`, err);
+        clog.error(`[EventBus] Wildcard handler error:`, err);
       }
     });
 
@@ -126,7 +132,7 @@ export class UnifiedEventBus {
    */
   private broadcastToWsClients(event: RuntimeEvent): void {
     const msg = JSON.stringify(event);
-    console.log(`[EventBus] Broadcasting event: ${event.type}`, JSON.stringify(event).substring(0, 200));
+    clog.log(`[EventBus] Broadcasting event: ${event.type}`, JSON.stringify(event).substring(0, 200));
     this.wsClients.forEach(ws => {
       try {
         if (ws.readyState === WebSocket.OPEN) {
@@ -155,11 +161,11 @@ export class UnifiedEventBus {
             if (!shouldSend) return;
           }
           
-          console.log(`[EventBus] Sending to client: ${event.type}`);
+          clog.log(`[EventBus] Sending to client: ${event.type}`);
           ws.send(msg);
         }
       } catch (err) {
-        console.error(`[EventBus] WebSocket send error:`, err);
+        clog.error(`[EventBus] WebSocket send error:`, err);
       }
     });
   }
@@ -221,7 +227,7 @@ export class UnifiedEventBus {
       const logFile = join(this.persistenceDir, `${this.sessionId}-events.jsonl`);
       await appendFile(logFile, JSON.stringify(event) + '\n');
     } catch (err) {
-      console.error('[EventBus] Persist event error:', err);
+      clog.error('[EventBus] Persist event error:', err);
     }
   }
 

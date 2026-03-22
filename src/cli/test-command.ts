@@ -1,4 +1,7 @@
 import type { Command } from 'commander';
+import { createConsoleLikeLogger } from '../core/logger/console-like.js';
+
+const clog = createConsoleLikeLogger('TestCommand');
 
 interface TestGroup {
   id: string;
@@ -26,7 +29,7 @@ function resolveBaseUrl(command: Command, fallback: string): string {
 
 function printGroups(groups: TestGroup[]): void {
   for (const group of groups) {
-    console.log(`[${group.id}] ${group.name} (${group.tests.length})`);
+    clog.log(`[${group.id}] ${group.name} (${group.tests.length})`);
   }
 }
 
@@ -46,14 +49,14 @@ export function registerTestCommand(program: Command): void {
         const payload = await res.json() as TestGroupsPayload;
 
         if (options.json) {
-          console.log(JSON.stringify(payload, null, 2));
+          clog.log(JSON.stringify(payload, null, 2));
         } else {
           printGroups(payload.groups || []);
         }
         process.exit(0);
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
-        console.error(`[test scan] failed: ${message}`);
+        clog.error(`[test scan] failed: ${message}`);
         process.exit(1);
       }
     });
@@ -70,14 +73,14 @@ export function registerTestCommand(program: Command): void {
         const payload = await res.json() as TestGroupsPayload;
 
         if (options.json) {
-          console.log(JSON.stringify(payload, null, 2));
+          clog.log(JSON.stringify(payload, null, 2));
         } else {
           printGroups(payload.groups || []);
         }
         process.exit(0);
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
-        console.error(`[test status] failed: ${message}`);
+        clog.error(`[test status] failed: ${message}`);
         process.exit(1);
       }
     });
@@ -97,17 +100,17 @@ export function registerTestCommand(program: Command): void {
         const payload = await res.json() as TestRunResult;
 
         if (options.json) {
-          console.log(JSON.stringify(payload, null, 2));
+          clog.log(JSON.stringify(payload, null, 2));
         } else {
-          console.log(`[${payload.status}] duration=${payload.duration ?? 0}ms`);
+          clog.log(`[${payload.status}] duration=${payload.duration ?? 0}ms`);
           if (payload.error) {
-            console.log(payload.error);
+            clog.log(payload.error);
           }
         }
         process.exit(payload.status === 'passed' ? 0 : 1);
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
-        console.error(`[test run-test] failed: ${message}`);
+        clog.error(`[test run-test] failed: ${message}`);
         process.exit(1);
       }
     });
@@ -127,17 +130,17 @@ export function registerTestCommand(program: Command): void {
         const payload = await res.json() as TestGroupsPayload;
 
         if (options.json) {
-          console.log(JSON.stringify(payload, null, 2));
+          clog.log(JSON.stringify(payload, null, 2));
         } else {
           if (payload.error) {
-            console.log(payload.error);
+            clog.log(payload.error);
           }
           printGroups(payload.groups || []);
         }
         process.exit(payload.error ? 1 : 0);
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
-        console.error(`[test run-group] failed: ${message}`);
+        clog.error(`[test run-group] failed: ${message}`);
         process.exit(1);
       }
     });
@@ -154,17 +157,17 @@ export function registerTestCommand(program: Command): void {
         const payload = await res.json() as TestGroupsPayload;
 
         if (options.json) {
-          console.log(JSON.stringify(payload, null, 2));
+          clog.log(JSON.stringify(payload, null, 2));
         } else {
           if (payload.error) {
-            console.log(payload.error);
+            clog.log(payload.error);
           }
           printGroups(payload.groups || []);
         }
         process.exit(payload.error ? 1 : 0);
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
-        console.error(`[test run-all] failed: ${message}`);
+        clog.error(`[test run-all] failed: ${message}`);
         process.exit(1);
       }
     });

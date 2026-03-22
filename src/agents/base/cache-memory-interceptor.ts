@@ -8,6 +8,12 @@
 
 import type { UnifiedAgentInput, UnifiedAgentOutput } from './unified-agent-types.js';
 import type { MessageHub } from '../../orchestration/message-hub.js';
+import { logger } from '../../core/logger.js';
+import { createConsoleLikeLogger } from '../../core/logger/console-like.js';
+
+const clog = createConsoleLikeLogger('CacheMemoryInterceptor');
+
+const log = logger.module('CacheMemoryInterceptor');
 
 
 export interface CacheMemoryInterceptorConfig {
@@ -161,7 +167,7 @@ export class CacheMemoryInterceptor {
       // Fallback: direct file write when messageHub unavailable
       await this.writeCacheDirectly(entry);
     } catch (error) {
-      console.error('[CacheMemoryInterceptor] Failed to write via messageHub:', error);
+      clog.error('[CacheMemoryInterceptor] Failed to write via messageHub:', error);
       await this.writeCacheDirectly(entry).catch(() => {});
     }
   }

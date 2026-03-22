@@ -1,6 +1,12 @@
 import type { OpenClawGateBlock, OpenClawTool } from '../openclaw-gate/index.js';
 import type { OpenClawPluginDefinition, PluginLogger, PluginRuntimeApi } from './types.js';
 import { OpenClawBridgeAdapter } from '../../bridges/openclaw-adapter.js';
+import { logger } from '../../core/logger.js';
+import { createConsoleLikeLogger } from '../../core/logger/console-like.js';
+
+const clog = createConsoleLikeLogger('OpenclawApiAdapter');
+
+const log = logger.module('OpenclawApiAdapter');
 
 export type OpenClawRegisterChannelInput = {
   plugin: {
@@ -105,7 +111,7 @@ export function createOpenClawRuntimeApi(params: {
          dispatchReplyWithBufferedBlockDispatcher: async (params: { ctx: Record<string, unknown>; cfg: unknown; dispatcherOptions?: { responsePrefix?: string; deliver?: (payload: { text?: string }, info: { kind: 'tool' | 'block' }) => Promise<void> } }) => {
            // Bridge message to Finger and handle reply
            const ctx = params.ctx as Record<string, unknown>;
-           console.log('[channel.reply] dispatchReply called with ctx keys:', Object.keys(ctx || {}).join(', '));
+           clog.log('[channel.reply] dispatchReply called with ctx keys:', Object.keys(ctx || {}).join(', '));
            const content = String(
             ctx?.RawBody
                ?? ctx?.CommandBody
@@ -113,7 +119,7 @@ export function createOpenClawRuntimeApi(params: {
                ?? ctx?.content
                ?? ''
            );
-           console.log('[channel.reply] Extracted content:', content.slice(0, 100));
+           clog.log('[channel.reply] Extracted content:', content.slice(0, 100));
            const senderId = String(ctx?.SenderId ?? ctx?.senderId ?? '');
            const senderName = String(ctx?.SenderName ?? ctx?.senderName ?? '');
            const peerId = String(ctx?.From ?? ctx?.peerId ?? '');

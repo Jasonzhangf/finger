@@ -158,6 +158,9 @@ import fs from 'fs';
 import path from 'path';
 import { FINGER_PATHS } from '../../core/finger-paths.js';
 import { HeartbeatBroker, HeartbeatMonitor } from './heartbeat-broker.js';
+import { createConsoleLikeLogger } from '../../core/logger/console-like.js';
+
+const clog = createConsoleLikeLogger('AgentLifecycle');
 
 // Extended lifecycle manager with orphan cleanup
 export function cleanupOrphanProcesses(): { killed: string[]; errors: string[] } {
@@ -186,7 +189,7 @@ export function cleanupOrphanProcesses(): { killed: string[]; errors: string[] }
 
       try {
         process.kill(pid, 0);
-        console.log(`[LifecycleManager] Killing orphan process ${agentId} (PID ${pid})`);
+        clog.log(`[LifecycleManager] Killing orphan process ${agentId} (PID ${pid})`);
         process.kill(pid, 'SIGTERM');
         setTimeout(() => {
           try {

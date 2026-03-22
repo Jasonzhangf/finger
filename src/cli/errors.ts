@@ -2,6 +2,10 @@
  * CLI Error Codes and Error Handling
  */
 
+import { createConsoleLikeLogger } from '../core/logger/console-like.js';
+
+const clog = createConsoleLikeLogger('CliErrors');
+
 export enum ExitCode {
   SUCCESS = 0,
   GENERAL_ERROR = 1,
@@ -28,13 +32,13 @@ export class FingerError extends Error {
 
 export function exitWithError(error: unknown): never {
   if (error instanceof FingerError) {
-    console.error(`Error: ${error.message}`);
+    clog.error(`Error: ${error.message}`);
     if (error.details) {
-      console.error('Details:', error.details);
+      clog.error('Details:', error.details);
     }
     process.exit(error.code);
   } else {
-    console.error('Unexpected error:', error);
+    clog.error('Unexpected error:', error);
     process.exit(ExitCode.GENERAL_ERROR);
   }
 }

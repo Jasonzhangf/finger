@@ -5,6 +5,12 @@ import { BaseOutput } from './base.js';
 import type { Message, OpenClawChannelMeta } from '../core/schema.js';
 import type { OpenClawConfig } from '../core/schema.js';
 import http from 'http';
+import { logger } from '../core/logger.js';
+import { createConsoleLikeLogger } from '../core/logger/console-like.js';
+
+const clog = createConsoleLikeLogger('Openclaw');
+
+const log = logger.module('Openclaw');
 
 export class OpenClawOutput extends BaseOutput {
   id: string;
@@ -18,25 +24,25 @@ export class OpenClawOutput extends BaseOutput {
 
   async start(): Promise<void> {
     this.running = true;
-    console.log(`[Output:${this.id}] OpenClaw output ready`);
+    clog.log(`[Output:${this.id}] OpenClaw output ready`);
   }
 
   async handle(message: Message): Promise<unknown> {
     // 检查是否有通道元数据
     const channelMeta = message.meta.channelMeta;
     if (!channelMeta) {
-      console.log(`[Output:${this.id}] No channel meta found, skipping`);
+      clog.log(`[Output:${this.id}] No channel meta found, skipping`);
       return;
     }
 
-    console.log(`[Output:${this.id}] Handling message for channel: ${channelMeta.channelId}, chatType: ${channelMeta.chatType}`);
+    clog.log(`[Output:${this.id}] Handling message for channel: ${channelMeta.channelId}, chatType: ${channelMeta.chatType}`);
 
     // 根据通道元数据决定如何路由
     // 目前主要是结构化输出，为后续 OpenClaw 调用做准备
     // TODO: 实现真实的通道回复调用
     const responsePayload = this.buildResponsePayload(message, channelMeta);
     
-    console.log(`[Output:${this.id}] Response payload:`, JSON.stringify(responsePayload, null, 2));
+    clog.log(`[Output:${this.id}] Response payload:`, JSON.stringify(responsePayload, null, 2));
     
     return responsePayload;
   }

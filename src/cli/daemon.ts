@@ -2,6 +2,9 @@ import { Command } from 'commander';
 import { OrchestrationDaemon } from '../orchestration/daemon.js';
 import { DualDaemonSupervisor, enableAutoStart, disableAutoStart } from '../daemon/dual-daemon.js';
 import { loadModuleManifest } from '../orchestration/module-manifest.js';
+import { createConsoleLikeLogger } from '../core/logger/console-like.js';
+
+const clog = createConsoleLikeLogger('Daemon');
 
 interface SendOptions {
   target: string;
@@ -34,11 +37,11 @@ export function registerDaemonCommand(program: Command): void {
     .action(() => {
       const supervisor = new DualDaemonSupervisor();
       supervisor.start().then(() => {
-        console.log('Dual-daemon started');
+        clog.log('Dual-daemon started');
         // Keep process alive
         process.stdin.resume();
       }).catch((err) => {
-        console.error('Failed to start dual-daemon:', err);
+        clog.error('Failed to start dual-daemon:', err);
         process.exit(1);
       });
     });
@@ -49,10 +52,10 @@ export function registerDaemonCommand(program: Command): void {
     .action(() => {
       const supervisor = new DualDaemonSupervisor();
       supervisor.stop().then(() => {
-        console.log('Dual-daemon stopped');
+        clog.log('Dual-daemon stopped');
         process.exit(0);
       }).catch((err) => {
-        console.error('Failed to stop dual-daemon:', err);
+        clog.error('Failed to stop dual-daemon:', err);
         process.exit(1);
       });
     });
@@ -63,10 +66,10 @@ export function registerDaemonCommand(program: Command): void {
     .action(() => {
       const supervisor = new DualDaemonSupervisor();
       supervisor.restart().then(() => {
-        console.log('Dual-daemon restarted');
+        clog.log('Dual-daemon restarted');
         process.exit(0);
       }).catch((err) => {
-        console.error('Failed to restart dual-daemon:', err);
+        clog.error('Failed to restart dual-daemon:', err);
         process.exit(1);
       });
     });
@@ -79,12 +82,12 @@ export function registerDaemonCommand(program: Command): void {
       const supervisor = new DualDaemonSupervisor();
       const status = supervisor.getStatus();
       if (options.json) {
-        console.log(JSON.stringify(status, null, 2));
+        clog.log(JSON.stringify(status, null, 2));
       } else {
-        console.log('Dual-Daemon Status:');
-        console.log(`  Supervisor PID: ${status.supervisor}`);
-        console.log(`  Daemon 1: PID ${status.daemon1.pid}, Alive: ${status.daemon1.alive}`);
-        console.log(`  Daemon 2: PID ${status.daemon2.pid}, Alive: ${status.daemon2.alive}`);
+        clog.log('Dual-Daemon Status:');
+        clog.log(`  Supervisor PID: ${status.supervisor}`);
+        clog.log(`  Daemon 1: PID ${status.daemon1.pid}, Alive: ${status.daemon1.alive}`);
+        clog.log(`  Daemon 2: PID ${status.daemon2.pid}, Alive: ${status.daemon2.alive}`);
       }
       process.exit(0);
     });
@@ -94,7 +97,7 @@ export function registerDaemonCommand(program: Command): void {
     .description('Enable auto-start on boot (macOS launchd)')
     .action(() => {
       enableAutoStart();
-      console.log('Auto-start enabled');
+      clog.log('Auto-start enabled');
       process.exit(0);
     });
 
@@ -103,7 +106,7 @@ export function registerDaemonCommand(program: Command): void {
     .description('Disable auto-start')
     .action(() => {
       disableAutoStart();
-      console.log('Auto-start disabled');
+      clog.log('Auto-start disabled');
       process.exit(0);
     });
 
@@ -115,7 +118,7 @@ export function registerDaemonCommand(program: Command): void {
     .action(() => {
       const d = new OrchestrationDaemon();
       d.start().then(() => process.exit(0)).catch((err) => {
-        console.error('Failed to start daemon:', err);
+        clog.error('Failed to start daemon:', err);
         process.exit(1);
       });
     });
@@ -126,7 +129,7 @@ export function registerDaemonCommand(program: Command): void {
     .action(() => {
       const d = new OrchestrationDaemon();
       d.stop().then(() => process.exit(0)).catch((err) => {
-        console.error('Failed to stop daemon:', err);
+        clog.error('Failed to stop daemon:', err);
         process.exit(1);
       });
     });
@@ -137,7 +140,7 @@ export function registerDaemonCommand(program: Command): void {
     .action(() => {
       const d = new OrchestrationDaemon();
       d.restart().then(() => process.exit(0)).catch((err) => {
-        console.error('Failed to restart daemon:', err);
+        clog.error('Failed to restart daemon:', err);
         process.exit(1);
       });
     });
@@ -151,7 +154,7 @@ export function registerDaemonCommand(program: Command): void {
       const running = d.isRunning();
       
       if (!running) {
-        console.log('Daemon: not running');
+        clog.log('Daemon: not running');
         process.exit(0);
         return;
       }
@@ -162,19 +165,19 @@ export function registerDaemonCommand(program: Command): void {
         .then(res => res.json())
         .then(data => {
           if (options.json) {
-            console.log(JSON.stringify({ running: true, port: config.port, ...data }, null, 2));
+            clog.log(JSON.stringify({ running: true, port: config.port, ...data }, null, 2));
           } else {
-            console.log(`Daemon: running on port ${config.port}`);
-            console.log(`WebSocket: port ${config.wsPort}`);
-            console.log(`\nInputs: ${(data as { inputs: { id: string }[] }).inputs.length}`);
-            (data as { inputs: { id: string }[] }).inputs.forEach((i) => console.log(`  - ${i.id}`));
-            console.log(`\nOutputs: ${(data as { outputs: { id: string }[] }).outputs.length}`);
-            (data as { outputs: { id: string }[] }).outputs.forEach((o) => console.log(`  - ${o.id}`));
+            clog.log(`Daemon: running on port ${config.port}`);
+            clog.log(`WebSocket: port ${config.wsPort}`);
+            clog.log(`\nInputs: ${(data as { inputs: { id: string }[] }).inputs.length}`);
+            (data as { inputs: { id: string }[] }).inputs.forEach((i) => clog.log(`  - ${i.id}`));
+            clog.log(`\nOutputs: ${(data as { outputs: { id: string }[] }).outputs.length}`);
+            (data as { outputs: { id: string }[] }).outputs.forEach((o) => clog.log(`  - ${o.id}`));
           }
           process.exit(0);
         })
         .catch(() => {
-          console.log('Daemon: process exists but not responding');
+          clog.log('Daemon: process exists but not responding');
           process.exit(1);
         });
     });
@@ -204,15 +207,15 @@ export function registerDaemonCommand(program: Command): void {
         })
           .then(res => res.json())
           .then(data => {
-            console.log(JSON.stringify(data, null, 2));
+            clog.log(JSON.stringify(data, null, 2));
             process.exit(0);
           })
           .catch(error => {
-            console.error('Failed to send message:', error);
+            clog.error('Failed to send message:', error);
             process.exit(1);
           });
       } catch (error) {
-        console.error('Invalid JSON message:', error);
+        clog.error('Invalid JSON message:', error);
         process.exit(1);
       }
     });
@@ -228,7 +231,7 @@ export function registerDaemonCommand(program: Command): void {
       let filePath = options.file;
 
       if (!filePath && !options.manifest) {
-        console.error('Missing option: --file <path> or --manifest <path>');
+        clog.error('Missing option: --file <path> or --manifest <path>');
         process.exit(1);
         return;
       }
@@ -238,7 +241,7 @@ export function registerDaemonCommand(program: Command): void {
           const resolved = loadModuleManifest(options.manifest);
           filePath = resolved.entryPath;
         } catch (error) {
-          console.error('Invalid module manifest:', error instanceof Error ? error.message : String(error));
+          clog.error('Invalid module manifest:', error instanceof Error ? error.message : String(error));
           process.exit(1);
           return;
         }
@@ -251,11 +254,11 @@ export function registerDaemonCommand(program: Command): void {
       })
         .then(res => res.json())
         .then(data => {
-          console.log((data as { success?: boolean; error?: string }).success ? 'Module registered successfully' : 'Failed: ' + (data as { error?: string }).error);
+          clog.log((data as { success?: boolean; error?: string }).success ? 'Module registered successfully' : 'Failed: ' + (data as { error?: string }).error);
           process.exit(0);
         })
         .catch(error => {
-          console.error('Failed to register module:', error);
+          clog.error('Failed to register module:', error);
           process.exit(1);
         });
     });
@@ -271,16 +274,16 @@ export function registerDaemonCommand(program: Command): void {
         .then(res => res.json())
         .then(data => {
           const d = data as { inputs: { id: string }[]; outputs: { id: string }[]; modules: { id: string; type: string }[] };
-          console.log('Inputs:');
-          d.inputs.forEach((i) => console.log(`  - ${i.id}`));
-          console.log('\nOutputs:');
-          d.outputs.forEach((o) => console.log(`  - ${o.id}`));
-          console.log('\nModules:');
-          d.modules.forEach((m) => console.log(`  - ${m.id} (${m.type})`));
+          clog.log('Inputs:');
+          d.inputs.forEach((i) => clog.log(`  - ${i.id}`));
+          clog.log('\nOutputs:');
+          d.outputs.forEach((o) => clog.log(`  - ${o.id}`));
+          clog.log('\nModules:');
+          d.modules.forEach((m) => clog.log(`  - ${m.id} (${m.type})`));
           process.exit(0);
         })
         .catch(() => {
-          console.log('Daemon not running');
+          clog.log('Daemon not running');
           process.exit(1);
         });
     });
@@ -298,11 +301,11 @@ export function registerDaemonCommand(program: Command): void {
         .then(async ({ AgentPool }) => {
           const pool = AgentPool.getInstance();
           const instance = await pool.spawnAgent(agentId, { maxConcurrent: 5 });
-          console.log(`Spawned agent ${agentId} with ID ${instance.id}`);
+          clog.log(`Spawned agent ${agentId} with ID ${instance.id}`);
           process.exit(0);
         })
         .catch(err => {
-          console.error('Failed to spawn agent:', err);
+          clog.error('Failed to spawn agent:', err);
           process.exit(1);
         });
     });
@@ -317,18 +320,18 @@ export function registerDaemonCommand(program: Command): void {
           const instances = pool.getAllInstances() as AgentInstanceView[];
 
           if (instances.length === 0) {
-            console.log('No agent instances');
+            clog.log('No agent instances');
             process.exit(0);
             return;
           }
 
           instances.forEach((inst) => {
-            console.log(`${inst.agentId}:${inst.id} - ${inst.status} (load: ${inst.currentLoad})`);
+            clog.log(`${inst.agentId}:${inst.id} - ${inst.status} (load: ${inst.currentLoad})`);
           });
           process.exit(0);
         })
         .catch((err) => {
-          console.error('Failed to list agent instances:', err);
+          clog.error('Failed to list agent instances:', err);
           process.exit(1);
         });
     });
@@ -341,11 +344,11 @@ export function registerDaemonCommand(program: Command): void {
         .then(({ AgentPool }) => {
           const pool = AgentPool.getInstance();
           const killed = pool.killInstance(instanceId);
-          console.log(killed ? `Killed ${instanceId}` : `Instance ${instanceId} not found`);
+          clog.log(killed ? `Killed ${instanceId}` : `Instance ${instanceId} not found`);
           process.exit(0);
         })
         .catch((err) => {
-          console.error('Failed to kill agent instance:', err);
+          clog.error('Failed to kill agent instance:', err);
           process.exit(1);
         });
     });

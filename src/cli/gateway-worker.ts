@@ -1,6 +1,9 @@
 import { createInterface } from 'readline';
 import type { Command } from 'commander';
 import type { GatewayRequestEnvelope } from '../gateway/types.js';
+import { createConsoleLikeLogger } from '../core/logger/console-like.js';
+
+const clog = createConsoleLikeLogger('GatewayWorker');
 
 interface WorkerOptions {
   adapter: 'chat' | 'chat-codex';
@@ -25,7 +28,7 @@ export function registerGatewayWorkerCommand(program: Command): void {
     .action(async (options: { adapter: string; daemonUrl: string; target?: string }) => {
       const adapter = normalizeAdapter(options.adapter);
       if (!adapter) {
-        console.error('Invalid adapter, expected: chat | chat-codex');
+        clog.error('Invalid adapter, expected: chat | chat-codex');
         process.exit(1);
         return;
       }

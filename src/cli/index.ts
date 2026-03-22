@@ -22,6 +22,9 @@ import { registerTestCommand } from './test-command.js';
 import { registerCommandHubCommand } from './command-hub.js';
 import { ensureFingerLayout } from '../core/finger-paths.js';
 import { DualDaemonSupervisor, enableAutoStart, disableAutoStart } from '../daemon/dual-daemon.js';
+import { createConsoleLikeLogger } from '../core/logger/console-like.js';
+
+const clog = createConsoleLikeLogger('Index');
 
 const DEFAULT_HTTP_BASE_URL = process.env.FINGER_HTTP_URL || process.env.FINGER_HUB_URL || 'http://localhost:9999';
 const DEFAULT_WS_URL = process.env.FINGER_WS_URL || 'ws://localhost:9998';
@@ -47,7 +50,7 @@ async function main(): Promise<void> {
       return;
     }
     if (cmd === '--status') {
-      console.log(JSON.stringify(supervisor.getStatus(), null, 2));
+      clog.log(JSON.stringify(supervisor.getStatus(), null, 2));
       return;
     }
     if (cmd === '--enable-autostart') {
@@ -87,7 +90,7 @@ async function main(): Promise<void> {
       try {
         await understandCommand(input, { sessionId: options.session });
       } catch (error) {
-        console.error('[CLI Error]', error);
+        clog.error('[CLI Error]', error);
         process.exit(1);
       }
     });
@@ -100,12 +103,12 @@ async function main(): Promise<void> {
     .action(async (options) => {
       try {
         if (!options.intent) {
-          console.error('[CLI Error] Missing --intent option');
+          clog.error('[CLI Error] Missing --intent option');
           process.exit(1);
         }
         await routeCommand(options.intent, { sessionId: options.session });
       } catch (error) {
-        console.error('[CLI Error]', error);
+        clog.error('[CLI Error]', error);
         process.exit(1);
       }
     });
@@ -119,7 +122,7 @@ async function main(): Promise<void> {
       try {
         await planCommand(task, { sessionId: options.session });
       } catch (error) {
-        console.error('[CLI Error]', error);
+        clog.error('[CLI Error]', error);
         process.exit(1);
       }
     });
@@ -134,7 +137,7 @@ async function main(): Promise<void> {
     .action(async (options) => {
       try {
         if (!options.task) {
-          console.error('[CLI Error] Missing --task option');
+          clog.error('[CLI Error] Missing --task option');
           process.exit(1);
         }
         await executeCommand(options.task, {
@@ -143,7 +146,7 @@ async function main(): Promise<void> {
           sessionId: options.session,
         });
       } catch (error) {
-        console.error('[CLI Error]', error);
+        clog.error('[CLI Error]', error);
         process.exit(1);
       }
     });
@@ -155,12 +158,12 @@ async function main(): Promise<void> {
     .action(async (options) => {
       try {
         if (!options.proposal) {
-          console.error('[CLI Error] Missing --proposal option');
+          clog.error('[CLI Error] Missing --proposal option');
           process.exit(1);
         }
         await reviewCommand(options.proposal);
       } catch (error) {
-        console.error('[CLI Error]', error);
+        clog.error('[CLI Error]', error);
         process.exit(1);
       }
     });
@@ -178,7 +181,7 @@ async function main(): Promise<void> {
           watch: options.watch,
         });
       } catch (error) {
-        console.error('[CLI Error]', error);
+        clog.error('[CLI Error]', error);
         process.exit(1);
       }
     });
@@ -198,7 +201,7 @@ async function main(): Promise<void> {
           roleProfile: options.roleProfile,
         });
       } catch (error) {
-        console.error('[CLI Error]', error);
+        clog.error('[CLI Error]', error);
         process.exit(1);
       }
     });
@@ -233,6 +236,6 @@ async function main(): Promise<void> {
 }
 
 main().catch((error) => {
-  console.error('[CLI Error] Failed to start CLI:', error);
+  clog.error('[CLI Error] Failed to start CLI:', error);
   process.exit(1);
 });

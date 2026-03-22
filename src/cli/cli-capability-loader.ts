@@ -14,6 +14,9 @@ import {
   removeCliCapabilityDescriptor,
   resolveAvailableCliCapabilities,
 } from '../tools/external/cli-capability-registry.js';
+import { createConsoleLikeLogger } from '../core/logger/console-like.js';
+
+const clog = createConsoleLikeLogger('CliCapabilityLoader');
 
 const DEFAULT_DAEMON_URL = process.env.FINGER_HUB_URL || 'http://localhost:9999';
 const DEFAULT_AGENT_ID = process.env.FINGER_CAPABILITY_AGENT_ID || 'manual-cli';
@@ -81,7 +84,7 @@ export async function registerCliCapabilityAliases(
           process.exit(exitCode);
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error);
-          console.error(`[Capability] ${capability.id} failed: ${message}`);
+          clog.error(`[Capability] ${capability.id} failed: ${message}`);
           process.exit(1);
         }
       });
@@ -101,7 +104,7 @@ export function registerCapabilityCommand(program: Command): void {
     .action(() => {
       const installed = listInstalledCliCapabilities();
       if (installed.length === 0) {
-        console.log('No CLI capabilities installed');
+        clog.log('No CLI capabilities installed');
         process.exit(0);
         return;
       }
@@ -111,7 +114,7 @@ export function registerCapabilityCommand(program: Command): void {
         const docs = item.descriptor.docs;
         const readme = docs?.readmePath ? 'yes' : 'no';
         const cliDoc = docs?.cliDocPath ? 'yes' : 'no';
-        console.log(
+        clog.log(
           `${item.descriptor.id} (${item.descriptor.version}) source=${item.source} command=${item.descriptor.command} available=${available} readme=${readme} cliDoc=${cliDoc}`,
         );
       }
@@ -126,7 +129,7 @@ export function registerCapabilityCommand(program: Command): void {
     .action((id: string, options: CapabilityInspectOptions) => {
       const descriptor = resolveCapabilityById(id);
       if (!descriptor) {
-        console.error(`[Capability] Not found: ${id}`);
+        clog.error(`[Capability] Not found: ${id}`);
         process.exit(1);
         return;
       }
@@ -152,22 +155,22 @@ export function registerCapabilityCommand(program: Command): void {
       };
 
       if (options.json) {
-        console.log(JSON.stringify(payload, null, 2));
+        clog.log(JSON.stringify(payload, null, 2));
       } else {
-        console.log(`L1 ${payload.level1.name} (${payload.level1.id})`);
-        console.log(`用途: ${payload.level1.description}`);
-        console.log(`入口: ${payload.level1.command}`);
-        console.log(`L2 help: ${payload.level2.help}`);
-        console.log(`L2 version: ${payload.level2.version}`);
-        console.log(`L3 README: ${payload.level3.readmePath ?? '未提供'}`);
-        console.log(`L3 cli.md: ${payload.level3.cliDocPath ?? '未提供'}`);
+        clog.log(`L1 ${payload.level1.name} (${payload.level1.id})`);
+        clog.log(`用途: ${payload.level1.description}`);
+        clog.log(`入口: ${payload.level1.command}`);
+        clog.log(`L2 help: ${payload.level2.help}`);
+        clog.log(`L2 version: ${payload.level2.version}`);
+        clog.log(`L3 README: ${payload.level3.readmePath ?? '未提供'}`);
+        clog.log(`L3 cli.md: ${payload.level3.cliDocPath ?? '未提供'}`);
         if (payload.level3.readmeExcerpt) {
-          console.log('\nREADME 摘要:');
-          console.log(payload.level3.readmeExcerpt);
+          clog.log('\nREADME 摘要:');
+          clog.log(payload.level3.readmeExcerpt);
         }
         if (payload.level3.cliDocExcerpt) {
-          console.log('\ncli.md 摘要:');
-          console.log(payload.level3.cliDocExcerpt);
+          clog.log('\ncli.md 摘要:');
+          clog.log(payload.level3.cliDocExcerpt);
         }
       }
       process.exit(0);
@@ -181,7 +184,7 @@ export function registerCapabilityCommand(program: Command): void {
     .action((id: string, options: CapabilityVerifyOptions) => {
       const descriptor = resolveCapabilityById(id);
       if (!descriptor) {
-        console.error(`[Capability] Not found: ${id}`);
+        clog.error(`[Capability] Not found: ${id}`);
         process.exit(1);
         return;
       }
@@ -200,12 +203,12 @@ export function registerCapabilityCommand(program: Command): void {
       };
 
       if (options.json) {
-        console.log(JSON.stringify(payload, null, 2));
+        clog.log(JSON.stringify(payload, null, 2));
       } else {
-        console.log(`command available: ${commandAvailable}`);
-        console.log(`help probe: supported=${helpProbe.supported} ok=${helpProbe.ok} exit=${helpProbe.exitCode}`);
-        console.log(`version probe: supported=${versionProbe.supported} ok=${versionProbe.ok} exit=${versionProbe.exitCode}`);
-        console.log(`overall: ${ok ? 'ok' : 'failed'}`);
+        clog.log(`command available: ${commandAvailable}`);
+        clog.log(`help probe: supported=${helpProbe.supported} ok=${helpProbe.ok} exit=${helpProbe.exitCode}`);
+        clog.log(`version probe: supported=${versionProbe.supported} ok=${versionProbe.ok} exit=${versionProbe.exitCode}`);
+        clog.log(`overall: ${ok ? 'ok' : 'failed'}`);
       }
       process.exit(ok ? 0 : 1);
     });
@@ -223,12 +226,12 @@ export function registerCapabilityCommand(program: Command): void {
     .action(async (id: string, args: string[] | undefined, options: CapabilityRunCommandOptions) => {
       const descriptor = resolveCapabilityById(id);
       if (!descriptor) {
-        console.error(`[Capability] Not found: ${id}`);
+        clog.error(`[Capability] Not found: ${id}`);
         process.exit(1);
         return;
       }
       if (!isCliCommandAvailable(descriptor.command)) {
-        console.error(`[Capability] Command not available: ${descriptor.command}`);
+        clog.error(`[Capability] Command not available: ${descriptor.command}`);
         process.exit(1);
         return;
       }
@@ -244,7 +247,7 @@ export function registerCapabilityCommand(program: Command): void {
         process.exit(exitCode);
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
-        console.error(`[Capability] run failed: ${message}`);
+        clog.error(`[Capability] run failed: ${message}`);
         process.exit(1);
       }
     });
@@ -256,12 +259,12 @@ export function registerCapabilityCommand(program: Command): void {
     .action((options: { file: string }) => {
       try {
         const installed = installCliCapabilityDescriptor(options.file);
-        console.log(`Capability installed: ${installed.descriptor.id}`);
-        console.log(`Module: ${installed.filePath}`);
+        clog.log(`Capability installed: ${installed.descriptor.id}`);
+        clog.log(`Module: ${installed.filePath}`);
         process.exit(0);
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
-        console.error(`[Capability] Register failed: ${message}`);
+        clog.error(`[Capability] Register failed: ${message}`);
         process.exit(1);
       }
     });
@@ -313,12 +316,12 @@ export function registerCapabilityCommand(program: Command): void {
               versionArgs,
             },
           );
-          console.log(`Capability installed: ${installed.descriptor.id}`);
-          console.log(`Module: ${installed.filePath}`);
+          clog.log(`Capability installed: ${installed.descriptor.id}`);
+          clog.log(`Module: ${installed.filePath}`);
           process.exit(0);
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error);
-          console.error(`[Capability] register-cli failed: ${message}`);
+          clog.error(`[Capability] register-cli failed: ${message}`);
           process.exit(1);
         }
       },
@@ -331,11 +334,11 @@ export function registerCapabilityCommand(program: Command): void {
     .action((options: { id: string }) => {
       const removed = removeCliCapabilityDescriptor(options.id);
       if (!removed) {
-        console.error(`[Capability] Not found: ${options.id}`);
+        clog.error(`[Capability] Not found: ${options.id}`);
         process.exit(1);
         return;
       }
-      console.log(`Capability removed: ${options.id}`);
+      clog.log(`Capability removed: ${options.id}`);
       process.exit(0);
     });
 }
@@ -370,7 +373,7 @@ export async function executeCliCapability(
 
   const result = payload.result;
   if (!isDaemonToolResult(result)) {
-    console.log(JSON.stringify(result, null, 2));
+    clog.log(JSON.stringify(result, null, 2));
     return 0;
   }
 
@@ -388,7 +391,7 @@ export async function executeCliCapability(
     }
   }
 
-  console.log(`[Capability] exit=${result.exitCode} timedOut=${result.timedOut} durationMs=${result.durationMs}`);
+  clog.log(`[Capability] exit=${result.exitCode} timedOut=${result.timedOut} durationMs=${result.durationMs}`);
   return toProcessExitCode(result.exitCode, result.ok);
 }
 

@@ -4,6 +4,9 @@
 
 import { Command } from 'commander';
 import { orchestrateCommand } from '../agent-commands.js';
+import { createConsoleLikeLogger } from '../../core/logger/console-like.js';
+
+const clog = createConsoleLikeLogger('Orchestrate');
 
 export function registerOrchestrateCommand(program: Command): void {
   program
@@ -19,7 +22,7 @@ export function registerOrchestrateCommand(program: Command): void {
           watch: options.watch,
         });
       } catch (error) {
-        console.error('[CLI Error]', error);
+        clog.error('[CLI Error]', error);
         process.exit(1);
       }
     });

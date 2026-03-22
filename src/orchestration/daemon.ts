@@ -15,6 +15,9 @@ import { FINGER_SOURCE_ROOT } from '../core/source-root.js';
 import { FINGER_PATHS, ensureDir } from '../core/finger-paths.js';
 import { logger } from '../core/logger.js';
 import { loadModuleManifest } from './module-manifest.js';
+import { createConsoleLikeLogger } from '../core/logger/console-like.js';
+
+const clog = createConsoleLikeLogger('Daemon');
 
 export interface DaemonConfig {
   port: number;
@@ -194,7 +197,7 @@ export class OrchestrationDaemon {
     if (!existsSync(this.config.serverScript)) {
       const msg = `Server script not found: ${this.config.serverScript}. Run 'npm run build' first.`;
       log.error(msg);
-      console.error(msg);
+      clog.error(msg);
       return;
     }
 

@@ -1,5 +1,8 @@
 import type { Command } from 'commander';
 import { createDefaultInternalToolRegistry, ShellExecOutput } from '../tools/internal/index.js';
+import { createConsoleLikeLogger } from '../core/logger/console-like.js';
+
+const clog = createConsoleLikeLogger('ToolCommand');
 
 interface ToolShellOptions {
   command?: string;
@@ -59,13 +62,13 @@ export function registerToolCommand(program: Command): void {
     .action(() => {
       const tools = internalToolRegistry.list();
       if (tools.length === 0) {
-        console.log('No internal tools registered');
+        clog.log('No internal tools registered');
         process.exit(0);
         return;
       }
 
       for (const item of tools) {
-        console.log(`${item.name} - ${item.description}`);
+        clog.log(`${item.name} - ${item.description}`);
       }
       process.exit(0);
     });
@@ -81,7 +84,7 @@ export function registerToolCommand(program: Command): void {
     .action(async (commandParts: string[], options: ToolShellOptions) => {
       const command = resolveShellCommand(commandParts, options.command);
       if (!command) {
-        console.error('[tool shell] command is required');
+        clog.error('[tool shell] command is required');
         process.exit(1);
         return;
       }
@@ -94,7 +97,7 @@ export function registerToolCommand(program: Command): void {
         })) as ShellExecOutput;
 
         if (options.json) {
-          console.log(JSON.stringify(result, null, 2));
+          clog.log(JSON.stringify(result, null, 2));
         } else {
           if (result.stdout.trim().length > 0) {
             process.stdout.write(result.stdout);
@@ -108,7 +111,7 @@ export function registerToolCommand(program: Command): void {
               process.stderr.write('\n');
             }
           }
-          console.log(
+          clog.log(
             `[tool shell] exit=${result.exitCode} timedOut=${result.timedOut} durationMs=${result.durationMs}`,
           );
         }
@@ -116,7 +119,7 @@ export function registerToolCommand(program: Command): void {
         process.exit(toProcessExitCode(result.exitCode, result.ok));
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
-        console.error(`[tool shell] failed: ${message}`);
+        clog.error(`[tool shell] failed: ${message}`);
         process.exit(1);
       }
     });
@@ -136,11 +139,11 @@ export function registerToolCommand(program: Command): void {
         const result = options.local
           ? await internalToolRegistry.execute(name, input)
           : await executeToolThroughDaemon(options, name, input);
-        console.log(JSON.stringify(result, null, 2));
+        clog.log(JSON.stringify(result, null, 2));
         process.exit(resolveExitCodeFromResult(result));
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
-        console.error(`[tool run] failed: ${message}`);
+        clog.error(`[tool run] failed: ${message}`);
         process.exit(1);
       }
     });
@@ -157,11 +160,11 @@ export function registerToolCommand(program: Command): void {
         if (!response.ok || payload.success === false) {
           throw new Error(payload.error || `HTTP ${response.status}`);
         }
-        console.log(JSON.stringify(payload.policy, null, 2));
+        clog.log(JSON.stringify(payload.policy, null, 2));
         process.exit(0);
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
-        console.error(`[tool policy] failed: ${message}`);
+        clog.error(`[tool policy] failed: ${message}`);
         process.exit(1);
       }
     });
@@ -182,11 +185,11 @@ export function registerToolCommand(program: Command): void {
         if (!response.ok || payload.success === false) {
           throw new Error(payload.error || `HTTP ${response.status}`);
         }
-        console.log(JSON.stringify(payload.presets, null, 2));
+        clog.log(JSON.stringify(payload.presets, null, 2));
         process.exit(0);
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
-        console.error(`[tool presets] failed: ${message}`);
+        clog.error(`[tool presets] failed: ${message}`);
         process.exit(1);
       }
     });
@@ -211,11 +214,11 @@ export function registerToolCommand(program: Command): void {
         if (!response.ok || payload.success === false) {
           throw new Error(payload.error || `HTTP ${response.status}`);
         }
-        console.log(JSON.stringify(payload.policy, null, 2));
+        clog.log(JSON.stringify(payload.policy, null, 2));
         process.exit(0);
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
-        console.error(`[tool role-policy] failed: ${message}`);
+        clog.error(`[tool role-policy] failed: ${message}`);
         process.exit(1);
       }
     });
@@ -238,11 +241,11 @@ export function registerToolCommand(program: Command): void {
         if (!response.ok || payload.success === false) {
           throw new Error(payload.error || `HTTP ${response.status}`);
         }
-        console.log(JSON.stringify({ tool: options.tool, required }, null, 2));
+        clog.log(JSON.stringify({ tool: options.tool, required }, null, 2));
         process.exit(0);
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
-        console.error(`[tool auth-require] failed: ${message}`);
+        clog.error(`[tool auth-require] failed: ${message}`);
         process.exit(1);
       }
     });
@@ -273,11 +276,11 @@ export function registerToolCommand(program: Command): void {
         if (!response.ok || payload.success === false) {
           throw new Error(payload.error || `HTTP ${response.status}`);
         }
-        console.log(JSON.stringify(payload.authorization, null, 2));
+        clog.log(JSON.stringify(payload.authorization, null, 2));
         process.exit(0);
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
-        console.error(`[tool authorize] failed: ${message}`);
+        clog.error(`[tool authorize] failed: ${message}`);
         process.exit(1);
       }
     });
@@ -297,11 +300,11 @@ export function registerToolCommand(program: Command): void {
         if (!response.ok || payload.success === false) {
           throw new Error(payload.error || `HTTP ${response.status}`);
         }
-        console.log(JSON.stringify({ revoked: true, token }, null, 2));
+        clog.log(JSON.stringify({ revoked: true, token }, null, 2));
         process.exit(0);
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
-        console.error(`[tool revoke-auth] failed: ${message}`);
+        clog.error(`[tool revoke-auth] failed: ${message}`);
         process.exit(1);
       }
     });
@@ -317,11 +320,11 @@ export function registerToolCommand(program: Command): void {
         if (!response.ok || payload.success === false) {
           throw new Error(payload.error || `HTTP ${response.status}`);
         }
-        console.log(JSON.stringify(payload, null, 2));
+        clog.log(JSON.stringify(payload, null, 2));
         process.exit(0);
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
-        console.error(`[tool config-list] failed: ${message}`);
+        clog.error(`[tool config-list] failed: ${message}`);
         process.exit(1);
       }
     });
@@ -337,11 +340,11 @@ export function registerToolCommand(program: Command): void {
         if (!response.ok || payload.success === false) {
           throw new Error(payload.error || `HTTP ${response.status}`);
         }
-        console.log(JSON.stringify(payload, null, 2));
+        clog.log(JSON.stringify(payload, null, 2));
         process.exit(0);
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
-        console.error(`[tool config-schema] failed: ${message}`);
+        clog.error(`[tool config-schema] failed: ${message}`);
         process.exit(1);
       }
     });
@@ -362,11 +365,11 @@ export function registerToolCommand(program: Command): void {
         if (!response.ok || payload.success === false) {
           throw new Error(payload.error || `HTTP ${response.status}`);
         }
-        console.log(JSON.stringify(payload, null, 2));
+        clog.log(JSON.stringify(payload, null, 2));
         process.exit(0);
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
-        console.error(`[tool config-reload] failed: ${message}`);
+        clog.error(`[tool config-reload] failed: ${message}`);
         process.exit(1);
       }
     });
@@ -477,11 +480,11 @@ function registerToolPolicyMutation(
         if (!response.ok || payload.success === false) {
           throw new Error(payload.error || `HTTP ${response.status}`);
         }
-        console.log(JSON.stringify(payload.policy, null, 2));
+        clog.log(JSON.stringify(payload.policy, null, 2));
         process.exit(0);
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
-        console.error(`[tool ${action}] failed: ${message}`);
+        clog.error(`[tool ${action}] failed: ${message}`);
         process.exit(1);
       }
     });

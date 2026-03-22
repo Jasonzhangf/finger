@@ -8,6 +8,12 @@ import path from 'node:path';
 import { execSync } from 'node:child_process';
 import type { PluginSource, InstallPluginResult, OpenClawPluginManifest } from './types.js';
 import { loadPluginManifest, parsePackageJsonExtensions, resolvePluginEntries } from './manifest.js';
+import { logger } from '../../core/logger.js';
+import { createConsoleLikeLogger } from '../../core/logger/console-like.js';
+
+const clog = createConsoleLikeLogger('Installer');
+
+const log = logger.module('Installer');
 
 export type InstallOptions = {
   pluginDir: string;
@@ -21,9 +27,9 @@ export type InstallOptions = {
 };
 
 const defaultLogger = {
-  info: (msg: string) => console.log('[PluginInstaller] INFO: ' + msg),
-  warn: (msg: string) => console.warn('[PluginInstaller] WARN: ' + msg),
-  error: (msg: string) => console.error('[PluginInstaller] ERROR: ' + msg),
+  info: (msg: string) => clog.log('[PluginInstaller] INFO: ' + msg),
+  warn: (msg: string) => clog.warn('[PluginInstaller] WARN: ' + msg),
+  error: (msg: string) => clog.error('[PluginInstaller] ERROR: ' + msg),
 };
 
 /**

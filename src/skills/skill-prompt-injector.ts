@@ -5,6 +5,12 @@
  */
 
 import { SkillsManager } from './skill-manager.js';
+import { logger } from '../core/logger.js';
+import { createConsoleLikeLogger } from '../core/logger/console-like.js';
+
+const clog = createConsoleLikeLogger('SkillPromptInjector');
+
+const log = logger.module('SkillPromptInjector');
 
 const skillsManager = new SkillsManager();
 
@@ -29,7 +35,7 @@ export async function formatSkillsAsPrompt(): Promise<string> {
 
     return prompt;
   } catch (error) {
-    console.error('[SkillPromptInjector] Failed to load skills:', error);
+    clog.error('[SkillPromptInjector] Failed to load skills:', error);
     return '';
   }
 }
@@ -71,7 +77,7 @@ export function formatSkillsAsPromptSync(): string {
 
     return prompt;
   } catch (error) {
-    console.error('[SkillPromptInjector] Failed to load skills sync:', error);
+    clog.error('[SkillPromptInjector] Failed to load skills sync:', error);
     return '';
   }
 }

@@ -15,6 +15,9 @@ import { OpenClawGateBlock } from '../blocks/openclaw-gate/index.js';
 import { createPluginManager, type PluginManagerOptions } from '../blocks/openclaw-plugin-manager/index.js';
 import { getChannelHandler, type ChannelPluginHandler } from '../blocks/openclaw-plugin-manager/openclaw-api-adapter.js';
 import { logger } from '../core/logger.js';
+import { createConsoleLikeLogger } from '../core/logger/console-like.js';
+
+const clog = createConsoleLikeLogger('OpenclawGatewayBridge');
 
 const log = logger.module('GatewayBridge');
 
@@ -89,7 +92,7 @@ export function registerOpenClawGatewayBridgeCommand(program: Command): void {
       const clientSecret = options.secret || config?.clientSecret;
 
       if (!appId || !clientSecret) {
-        console.error('Missing appId or clientSecret. Provide via --app-id/--secret or config file.');
+        clog.error('Missing appId or clientSecret. Provide via --app-id/--secret or config file.');
         process.exit(1);
       }
 
@@ -219,7 +222,7 @@ async function startDaemon(channelId: string, options: { pluginDir: string; wsPo
     const pid = parseInt(fs.readFileSync(pidFile, 'utf-8'), 10);
     try {
       process.kill(pid, 0);
-      console.log(`Gateway bridge for ${channelId} is already running (PID: ${pid})`);
+      clog.log(`Gateway bridge for ${channelId} is already running (PID: ${pid})`);
       return;
     } catch {
       // 进程不存在，删除 pid 文件
@@ -255,9 +258,9 @@ async function startDaemon(channelId: string, options: { pluginDir: string; wsPo
   
   child.unref();
   
-  console.log(`Gateway bridge for ${channelId} started (PID: ${child.pid})`);
+  clog.log(`Gateway bridge for ${channelId} started (PID: ${child.pid})`);
   if (options.wsPort) {
-    console.log(`WebSocket server listening on port ${options.wsPort}`);
+    clog.log(`WebSocket server listening on port ${options.wsPort}`);
   }
 }
 
@@ -268,7 +271,7 @@ async function stopService(channelId: string): Promise<void> {
   const pidFile = getPidFilePath(channelId);
   
   if (!fs.existsSync(pidFile)) {
-    console.log(`Gateway bridge for ${channelId} is not running`);
+    clog.log(`Gateway bridge for ${channelId} is not running`);
     return;
   }
 
@@ -276,9 +279,9 @@ async function stopService(channelId: string): Promise<void> {
   
   try {
     process.kill(pid, 'SIGTERM');
-    console.log(`Gateway bridge for ${channelId} stopped (PID: ${pid})`);
+    clog.log(`Gateway bridge for ${channelId} stopped (PID: ${pid})`);
   } catch (error) {
-    console.log(`Failed to stop gateway bridge: ${error}`);
+    clog.log(`Failed to stop gateway bridge: ${error}`);
   }
   
   fs.unlinkSync(pidFile);
@@ -291,7 +294,7 @@ async function checkStatus(channelId: string): Promise<void> {
   const pidFile = getPidFilePath(channelId);
   
   if (!fs.existsSync(pidFile)) {
-    console.log(`Gateway bridge for ${channelId} is not running`);
+    clog.log(`Gateway bridge for ${channelId} is not running`);
     return;
   }
 
@@ -299,9 +302,9 @@ async function checkStatus(channelId: string): Promise<void> {
   
   try {
     process.kill(pid, 0);
-    console.log(`Gateway bridge for ${channelId} is running (PID: ${pid})`);
+    clog.log(`Gateway bridge for ${channelId} is running (PID: ${pid})`);
   } catch {
-    console.log(`Gateway bridge for ${channelId} is not running (stale PID file)`);
+    clog.log(`Gateway bridge for ${channelId} is not running (stale PID file)`);
     fs.unlinkSync(pidFile);
   }
 }
@@ -333,21 +336,21 @@ async function sendMessage(to: string, text: string, wsPort: number): Promise<vo
       // Handle responses
       const response = msg as GatewayResponse;
       if (response.ok) {
-        console.log('Message sent successfully');
+        clog.log('Message sent successfully');
       } else {
-        console.error(`Failed to send message: ${response.error}`);
+        clog.error(`Failed to send message: ${response.error}`);
       }
       ws.close();
       process.exit(response.ok ? 0 : 1);
     } catch (error) {
-      console.error(`Failed to parse message: ${error}`);
+      clog.error(`Failed to parse message: ${error}`);
       ws.close();
       process.exit(1);
     }
   });
 
   ws.on('error', (error) => {
-    console.error(`WebSocket error: ${error.message}`);
+    clog.error(`WebSocket error: ${error.message}`);
     process.exit(1);
   });
 }
@@ -359,7 +362,7 @@ async function sendStartAction(channelId: string, wsPort: number, appId: string,
   const ws = new WebSocket(`ws://localhost:${wsPort}`);
 
   const timeout = setTimeout(() => {
-    console.error('Timeout waiting for ready event');
+    clog.error('Timeout waiting for ready event');
     ws.close();
     process.exit(1);
   }, timeoutMs);
@@ -378,19 +381,19 @@ async function sendStartAction(channelId: string, wsPort: number, appId: string,
       const msg = JSON.parse(data.toString());
       if (msg.event === 'ready') {
         clearTimeout(timeout);
-        console.log(`Gateway ${channelId} ready`);
+        clog.log(`Gateway ${channelId} ready`);
         ws.close();
         process.exit(0);
       }
       if (msg.event === 'error') {
         clearTimeout(timeout);
-        console.error(`Gateway error: ${JSON.stringify(msg.data)}`);
+        clog.error(`Gateway error: ${JSON.stringify(msg.data)}`);
         ws.close();
         process.exit(1);
       }
       if (msg.ok === false) {
         clearTimeout(timeout);
-        console.error(`Start failed: ${msg.error}`);
+        clog.error(`Start failed: ${msg.error}`);
         ws.close();
         process.exit(1);
       }
@@ -401,7 +404,7 @@ async function sendStartAction(channelId: string, wsPort: number, appId: string,
 
   ws.on('error', (error) => {
     clearTimeout(timeout);
-    console.error(`WebSocket error: ${error.message}`);
+    clog.error(`WebSocket error: ${error.message}`);
     process.exit(1);
   });
 }
@@ -423,16 +426,16 @@ async function sendStopAction(wsPort: number): Promise<void> {
   ws.on('message', (data) => {
     const response = JSON.parse(data.toString()) as GatewayResponse;
     if (response.ok) {
-      console.log('Gateway stopped');
+      clog.log('Gateway stopped');
     } else {
-      console.error(`Failed to stop gateway: ${response.error}`);
+      clog.error(`Failed to stop gateway: ${response.error}`);
     }
     ws.close();
     process.exit(response.ok ? 0 : 1);
   });
 
   ws.on('error', (error) => {
-    console.error(`WebSocket error: ${error.message}`);
+    clog.error(`WebSocket error: ${error.message}`);
     process.exit(1);
   });
 }
@@ -447,7 +450,7 @@ async function runWebSocketMode(channelId: string, wsPort: number, options: { pl
     await service.initialize();
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : String(error);
-    console.error(`Failed to initialize: ${errorMessage}`);
+    clog.error(`Failed to initialize: ${errorMessage}`);
     process.exit(1);
   }
 
@@ -486,7 +489,7 @@ async function runWebSocketMode(channelId: string, wsPort: number, options: { pl
 
   server.listen(wsPort, () => {
     log.info(`WebSocket server listening on port ${wsPort}`);
-    console.log(`Gateway bridge for ${channelId} started on ws://localhost:${wsPort}`);
+    clog.log(`Gateway bridge for ${channelId} started on ws://localhost:${wsPort}`);
   });
 
   // 写入 PID 文件（如果不是 daemon 模式）

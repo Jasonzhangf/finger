@@ -4,6 +4,9 @@ import path from 'path';
 import { spawnSync } from 'child_process';
 import { GatewayModuleManifest, GatewayProbeResult, ResolvedGatewayModule } from './types.js';
 import { logger } from '../core/logger.js';
+import { createConsoleLikeLogger } from '../core/logger/console-like.js';
+
+const clog = createConsoleLikeLogger('ModuleRegistry');
 
 const log = logger.module('field');
 
@@ -85,7 +88,7 @@ export function listGatewayModules(): ResolvedGatewayModule[] {
       resolved.push(loadGatewayModule(modulePath));
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      console.warn(`[Gateway] Skip invalid module ${modulePath}: ${message}`);
+      clog.warn(`[Gateway] Skip invalid module ${modulePath}: ${message}`);
     }
   }
 

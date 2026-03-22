@@ -9,6 +9,9 @@ import * as path from 'path';
 import * as os from 'os';
 import { FINGER_PATHS } from '../finger-paths.js';
 import { logger } from '../../core/logger.js';
+import { createConsoleLikeLogger } from '../../core/logger/console-like.js';
+
+const clog = createConsoleLikeLogger('ChannelConfig');
 
 const log = logger.module('ChannelConfig');
 
@@ -142,7 +145,7 @@ export async function loadFingerConfig(): Promise<FingerConfig> {
       },
     };
   } catch (error) {
-    console.error('[ChannelConfig] Failed to load config.json:', error);
+    clog.error('[ChannelConfig] Failed to load config.json:', error);
     return defaultConfig;
   }
 }

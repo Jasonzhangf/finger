@@ -5,6 +5,10 @@
  * CLI 是纯粹客户端：发送请求后立即退出（除非 --watch）。
  */
 
+import { createConsoleLikeLogger } from '../core/logger/console-like.js';
+
+const clog = createConsoleLikeLogger('AgentCommands');
+
 export function resolveEnvUrl(name: string, fallback: string): string {
   const value = process.env[name];
   if (typeof value === 'string' && value.trim().length > 0) {
@@ -79,9 +83,9 @@ async function sendMessageToHub(
  */
 function formatOutput(result: unknown, json: boolean): void {
   if (json) {
-    console.log(JSON.stringify(result, null, 2));
+    clog.log(JSON.stringify(result, null, 2));
   } else {
-    console.log('[CLI] Result:', result);
+    clog.log('[CLI] Result:', result);
   }
 }
 
@@ -191,10 +195,10 @@ export async function orchestrateCommand(task: string, options: { sessionId?: st
   formatOutput({ ...result, callbackId, workflowId }, options.json || false);
   
   if (options.watch && workflowId) {
-    console.log('[CLI] Watch mode enabled.');
-    console.log(`[CLI] WebSocket: ${WEBSOCKET_URL}`);
-    console.log(`[CLI] Subscribe: { "type": "subscribe", "workflowId": "${workflowId}" }`);
-    console.log(`[CLI] Or run: finger events ${workflowId} --watch`);
+    clog.log('[CLI] Watch mode enabled.');
+    clog.log(`[CLI] WebSocket: ${WEBSOCKET_URL}`);
+    clog.log(`[CLI] Subscribe: { "type": "subscribe", "workflowId": "${workflowId}" }`);
+    clog.log(`[CLI] Or run: finger events ${workflowId} --watch`);
   }
 }
 

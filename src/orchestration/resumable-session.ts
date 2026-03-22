@@ -7,6 +7,9 @@ import fs from 'fs';
 import path from 'path';
 import { FINGER_PATHS, ensureDir, normalizeSessionDirName } from '../core/finger-paths.js';
 import { logger } from '../core/logger.js';
+import { createConsoleLikeLogger } from '../core/logger/console-like.js';
+
+const clog = createConsoleLikeLogger('ResumableSession');
 
 const SESSIONS_DIR = FINGER_PATHS.sessions.dir;
 const CHECKPOINTS_DIR = 'checkpoints';
@@ -182,7 +185,7 @@ export class ResumableSessionManager {
       try {
         session = JSON.parse(fs.readFileSync(sessionFilePath, 'utf-8'));
       } catch (error) {
-        console.error(`[ResumableSession] Failed to read session file ${sessionId}:`, error);
+        clog.error(`[ResumableSession] Failed to read session file ${sessionId}:`, error);
         return;
       }
     }
@@ -218,7 +221,7 @@ export class ResumableSessionManager {
       const content = fs.readFileSync(filePath, 'utf-8');
       return JSON.parse(content) as SessionCheckpoint;
     } catch (err) {
-      console.error(`[ResumableSession] Failed to load checkpoint ${checkpointId}:`, err);
+      clog.error(`[ResumableSession] Failed to load checkpoint ${checkpointId}:`, err);
       return null;
     }
   }

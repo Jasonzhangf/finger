@@ -8,6 +8,10 @@
  * 4. 输出格式规范
  */
 
+import { logger } from '../../core/logger.js';
+
+const log = logger.module('RouterPrompt');
+
 // ========== 输入消息标准化格式 ==========
 
 /**
@@ -487,12 +491,12 @@ export function parseRouterDecision(response: string): {
         const decision = JSON.parse(cleaned);
         return buildDecisionResult(decision);
       } catch {
-        console.log('[RouterPrompt] Failed to parse decision after cleanup');
+        log.info('Failed to parse decision after cleanup');
         return null;
       }
     }
   } catch (err) {
-    console.log('[RouterPrompt] Failed to parse decision:', err);
+    log.error('Failed to parse decision', err instanceof Error ? err : undefined);
     return null;
   }
 }

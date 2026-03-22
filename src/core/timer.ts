@@ -4,6 +4,10 @@
  * Second-level interval timers
  */
 
+import { createConsoleLikeLogger } from './logger/console-like.js';
+
+const clog = createConsoleLikeLogger('TimerSystem');
+
 export type TimerCallback = () => void | Promise<void>;
 
 export interface TimerHandle {
@@ -35,7 +39,7 @@ export class TimerSystem {
       try {
         await timer.callback();
       } catch (err) {
-        console.error(`[Timer:${id}] Error:`, err);
+        clog.error(`[Timer:${id}] Error:`, err);
       }
     };
 
@@ -45,7 +49,7 @@ export class TimerSystem {
     // Interval
     (timer as { _intervalId?: NodeJS.Timeout })._intervalId = setInterval(wrappedCallback, timer.interval);
     timer.running = true;
-    console.log(`[Timer] Started: ${id} (every ${timer.interval}ms)`);
+    clog.log(`[Timer] Started: ${id} (every ${timer.interval}ms)`);
     return true;
   }
 
@@ -57,7 +61,7 @@ export class TimerSystem {
       clearInterval((timer as { _intervalId?: NodeJS.Timeout })._intervalId);
     }
     timer.running = false;
-    console.log(`[Timer] Stopped: ${id}`);
+    clog.log(`[Timer] Stopped: ${id}`);
     return true;
   }
 

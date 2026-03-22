@@ -20,6 +20,9 @@ import {
   FINGER_REVIEWER_AGENT_ID,
 } from '../agents/finger-general/finger-general-module.js';
 import type { RuntimeEvent } from '../runtime/events.js';
+import { createConsoleLikeLogger } from '../core/logger/console-like.js';
+
+const clog = createConsoleLikeLogger('Cli');
 
 export interface AppCLIOptions {
   interactive?: boolean;
@@ -59,7 +62,7 @@ export async function runAppCLI(args: string[]): Promise<void> {
     await moduleRegistry.register(module);
   }
 
-  console.log('[App] Finger role modules ready: finger-orchestrator, finger-researcher, finger-executor, finger-coder, finger-reviewer');
+  clog.log('[App] Finger role modules ready: finger-orchestrator, finger-researcher, finger-executor, finger-coder, finger-reviewer');
 
   // 订阅事件打印
   globalEventBus.subscribeAll(printEvent);
@@ -69,21 +72,21 @@ export async function runAppCLI(args: string[]): Promise<void> {
     const session = sessionManager.getSession(options.sessionId);
     if (session) {
       currentSessionId = session.id;
-      console.log(`[App] Resumed session: ${session.name}`);
+      clog.log(`[App] Resumed session: ${session.name}`);
     } else {
-      console.error(`[App] Session not found: ${options.sessionId}`);
+      clog.error(`[App] Session not found: ${options.sessionId}`);
       process.exit(1);
     }
   } else {
     const current = sessionManager.getCurrentSession();
     if (current) {
       currentSessionId = current.id;
-      console.log(`[App] Auto-resumed session: ${current.name}`);
+      clog.log(`[App] Auto-resumed session: ${current.name}`);
     } else {
       const projectPath = options.projectPath || process.cwd();
       const session = sessionManager.createSession(projectPath, 'New Session');
       currentSessionId = session.id;
-      console.log(`[App] Created session: ${session.name}`);
+      clog.log(`[App] Created session: ${session.name}`);
     }
   }
 
@@ -125,19 +128,19 @@ function parseArgs(args: string[]): AppCLIOptions {
 async function executePrompt(prompt: string): Promise<void> {
   if (!runtime || !currentSessionId || !hub) return;
 
-  console.log(`\n> ${prompt}\n`);
+  clog.log(`\n> ${prompt}\n`);
   await runtime.sendMessage(currentSessionId, prompt);
 
   // 通过 MessageHub 发送任务给 finger-orchestrator
   try {
-    console.log('[App] Sending task to finger-orchestrator...');
+    clog.log('[App] Sending task to finger-orchestrator...');
     const result = await hub.sendToModule(FINGER_ORCHESTRATOR_AGENT_ID, {
       task: prompt,
       sessionId: currentSessionId,
     });
-    console.log('[App] Orchestrator result:', result);
+    clog.log('[App] Orchestrator result:', result);
   } catch (err) {
-    console.error('[App] Failed to execute orchestrator:', err);
+    clog.error('[App] Failed to execute orchestrator:', err);
   }
 }
 
@@ -151,7 +154,7 @@ async function startInteractiveMode(): Promise<void> {
     prompt: '> ',
   });
 
-  console.log('\n[App] Interactive mode. Type /help for commands.\n');
+  clog.log('\n[App] Interactive mode. Type /help for commands.\n');
 
   rl.prompt();
 
@@ -188,7 +191,7 @@ async function handleCommand(commandLine: string): Promise<void> {
 
     case 'exit':
     case 'quit':
-      console.log('[App] Goodbye!');
+      clog.log('[App] Goodbye!');
       rl?.close();
       process.exit(0);
       break;
@@ -204,16 +207,16 @@ async function handleCommand(commandLine: string): Promise<void> {
     case 'compress':
       if (currentSessionId && sessionManager) {
         const result = await sessionManager.compressContext(currentSessionId);
-        console.log(`[App] Context compressed: ${result.slice(0, 100)}...`);
+        clog.log(`[App] Context compressed: ${result.slice(0, 100)}...`);
       }
       break;
 
     case 'clear':
-      console.clear();
+      clog.clear();
       break;
 
     default:
-      console.log(`[App] Unknown command: ${cmd}. Type /help for available commands.`);
+      clog.log(`[App] Unknown command: ${cmd}. Type /help for available commands.`);
   }
 }
 
@@ -228,10 +231,10 @@ function handleSessionCommand(args: string[]): void {
   switch (subCmd) {
     case 'list': {
       const sessions = sessionManager.listSessions();
-      console.log('\nSessions:');
+      clog.log('\nSessions:');
       sessions.forEach((s, i) => {
         const current = s.id === currentSessionId ? ' (current)' : '';
-        console.log(`  ${i + 1}. ${s.name}${current} - ${s.messages.length} messages`);
+        clog.log(`  ${i + 1}. ${s.name}${current} - ${s.messages.length} messages`);
       });
       break;
     }
@@ -239,7 +242,7 @@ function handleSessionCommand(args: string[]): void {
       const name = args[1] || 'New Session';
       const session = sessionManager.createSession(process.cwd(), name);
       currentSessionId = session.id;
-      console.log(`[App] Created and switched to: ${session.name}`);
+      clog.log(`[App] Created and switched to: ${session.name}`);
       break;
     }
     case 'switch': {
@@ -247,15 +250,15 @@ function handleSessionCommand(args: string[]): void {
       if (sessionManager.getSession(targetId)) {
         currentSessionId = targetId;
         sessionManager.setCurrentSession(targetId);
-        console.log(`[App] Switched to session: ${targetId}`);
+        clog.log(`[App] Switched to session: ${targetId}`);
       } else {
-        console.log(`[App] Session not found: ${targetId}`);
+        clog.log(`[App] Session not found: ${targetId}`);
       }
       break;
     }
     default:
-      console.log(`[App] Unknown session command: ${subCmd}`);
-      console.log('  Available: list, new, switch');
+      clog.log(`[App] Unknown session command: ${subCmd}`);
+      clog.log('  Available: list, new, switch');
   }
 }
 
@@ -263,7 +266,7 @@ function handleSessionCommand(args: string[]): void {
  * 打印帮助
  */
 function printHelp(): void {
-  console.log(`
+  clog.log(`
 Commands:
   /help              Show this help
   /status            Show current status
@@ -287,7 +290,7 @@ function printStatus(): void {
 
   const compression = sessionManager.getCompressionStatus(currentSessionId);
 
-  console.log(`
+  clog.log(`
 Session: ${session.name}
   ID: ${session.id}
   Messages: ${session.messages.length}
@@ -304,7 +307,7 @@ function printEvent(event: RuntimeEvent): void {
 
   switch (event.type) {
     case 'user_message':
-      console.log(`[${timestamp}] You: ${(event as { payload: { content: string } }).payload.content}`);
+      clog.log(`[${timestamp}] You: ${(event as { payload: { content: string } }).payload.content}`);
       break;
 
     case 'assistant_chunk':
@@ -312,24 +315,24 @@ function printEvent(event: RuntimeEvent): void {
       break;
 
     case 'assistant_complete':
-      console.log(); // newline after streaming
+      clog.log(); // newline after streaming
       break;
 
     case 'task_started':
-      console.log(`[${timestamp}] Task started: ${(event as { payload: { title: string } }).payload.title}`);
+      clog.log(`[${timestamp}] Task started: ${(event as { payload: { title: string } }).payload.title}`);
       break;
 
     case 'task_completed':
-      console.log(`[${timestamp}] Task completed`);
+      clog.log(`[${timestamp}] Task completed`);
       break;
 
     case 'task_failed':
-      console.log(`[${timestamp}] Task failed: ${(event as { payload: { error: string } }).payload.error}`);
+      clog.log(`[${timestamp}] Task failed: ${(event as { payload: { error: string } }).payload.error}`);
       break;
 
     case 'workflow_progress': {
       const p = (event as { payload: { overallProgress: number; completedTasks: number; pendingTasks: number } }).payload;
-      console.log(`[${timestamp}] Progress: ${p.overallProgress}% (${p.completedTasks}/${p.completedTasks + p.pendingTasks})`);
+      clog.log(`[${timestamp}] Progress: ${p.overallProgress}% (${p.completedTasks}/${p.completedTasks + p.pendingTasks})`);
       break;
     }
   }
@@ -337,5 +340,5 @@ function printEvent(event: RuntimeEvent): void {
 
 // 如果直接运行此文件
 if (import.meta.url === `file://${process.argv[1]}`) {
-  runAppCLI(process.argv.slice(2)).catch(console.error);
+  runAppCLI(process.argv.slice(2)).catch((err) => clog.error('runAppCLI failed', err));
 }

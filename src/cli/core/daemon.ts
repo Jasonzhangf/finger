@@ -8,6 +8,9 @@ import fs from "fs";
 import path from "path";
 import os from "os";
 import { FINGER_PATHS, ensureFingerLayout } from "../../core/finger-paths.js";
+import { createConsoleLikeLogger } from '../../core/logger/console-like.js';
+
+const clog = createConsoleLikeLogger('Daemon');
 
 const PID_FILE = FINGER_PATHS.runtime.daemonPid;
 const LOG_FILE = FINGER_PATHS.logs.daemonLog;
@@ -22,7 +25,7 @@ export function daemonCommand(): Command {
     .option("-d, --detach", "Run in background", false)
     .action(async (options) => {
       if (isRunning()) {
-        console.log("Daemon already running");
+        clog.log("Daemon already running");
         return;
       }
 
@@ -41,12 +44,12 @@ export function daemonCommand(): Command {
     .description("Stop the daemon")
     .action(() => {
       if (!isRunning()) {
-        console.log("Daemon not running");
+        clog.log("Daemon not running");
         return;
       }
       const pid = parseInt(fs.readFileSync(PID_FILE, "utf-8"), 10);
       process.kill(pid, "SIGTERM");
-      console.log("Daemon stopped");
+      clog.log("Daemon stopped");
     });
 
   cmd
@@ -54,11 +57,11 @@ export function daemonCommand(): Command {
     .description("Show daemon status")
     .action(() => {
       if (!isRunning()) {
-        console.log("Daemon: not running");
+        clog.log("Daemon: not running");
         return;
       }
       const pid = fs.readFileSync(PID_FILE, "utf-8");
-      console.log("Daemon: running (PID", pid + ")");
+      clog.log("Daemon: running (PID", pid + ")");
     });
 
   cmd
@@ -68,7 +71,7 @@ export function daemonCommand(): Command {
     .option("-n, --lines <n>", "Number of lines", "50")
     .action((options) => {
       if (!fs.existsSync(LOG_FILE)) {
-        console.log("No log file");
+        clog.log("No log file");
         return;
       }
 
@@ -89,7 +92,7 @@ export function daemonCommand(): Command {
       } else if (platform === "linux") {
         installSystemd();
       } else {
-        console.log("Unsupported platform:", platform);
+        clog.log("Unsupported platform:", platform);
       }
     });
 
@@ -120,7 +123,7 @@ function startDetached(): void {
 
   proc.unref();
   fs.writeFileSync(PID_FILE, String(proc.pid));
-  console.log("Daemon started with PID", proc.pid);
+  clog.log("Daemon started with PID", proc.pid);
 }
 
 function installLaunchd(): void {
@@ -149,14 +152,14 @@ function installLaunchd(): void {
 
   fs.mkdirSync(path.dirname(plistPath), { recursive: true });
   fs.writeFileSync(plistPath, plist);
-  console.log("Installed launchd plist:", plistPath);
-  console.log("Run: launchctl load", plistPath);
+  clog.log("Installed launchd plist:", plistPath);
+  clog.log("Run: launchctl load", plistPath);
 }
 
 function installSystemd(): void {
-  console.log("Install systemd service:");
-  console.log("  sudo nano /etc/systemd/system/finger-daemon.service");
-  console.log("  sudo systemctl daemon-reload");
-  console.log("  sudo systemctl enable finger-daemon");
-  console.log("  sudo systemctl start finger-daemon");
+  clog.log("Install systemd service:");
+  clog.log("  sudo nano /etc/systemd/system/finger-daemon.service");
+  clog.log("  sudo systemctl daemon-reload");
+  clog.log("  sudo systemctl enable finger-daemon");
+  clog.log("  sudo systemctl start finger-daemon");
 }

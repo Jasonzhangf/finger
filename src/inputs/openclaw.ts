@@ -5,6 +5,12 @@ import { BaseInput } from './base.js';
 import { createMessage, type OpenClawChannelMeta } from '../core/schema.js';
 import type { OpenClawConfig } from '../core/schema.js';
 import http from 'http';
+import { logger } from '../core/logger.js';
+import { createConsoleLikeLogger } from '../core/logger/console-like.js';
+
+const clog = createConsoleLikeLogger('Openclaw');
+
+const log = logger.module('Openclaw');
 
 export class OpenClawInput extends BaseInput {
   id: string;
@@ -67,7 +73,7 @@ export class OpenClawInput extends BaseInput {
         resolve();
       }).on('error', reject);
     });
-    console.log(`[Input:${this.id}] OpenClaw listening on ${host}:${port}`);
+    clog.log(`[Input:${this.id}] OpenClaw listening on ${host}:${port}`);
   }
 
   /**

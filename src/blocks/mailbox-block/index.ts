@@ -1,6 +1,9 @@
 import fs from 'fs';
 import { BaseBlock, type BlockCapabilities } from '../../core/block.js';
 import { logger } from '../../core/logger.js';
+import { createConsoleLikeLogger } from '../../core/logger/console-like.js';
+
+const clog = createConsoleLikeLogger('Index');
 
 export interface MailboxMessage {
   id: string;
@@ -226,7 +229,7 @@ export class MailboxBlock extends BaseBlock {
             log.error('Failed to parse line: ${line}', e instanceof Error ? e : undefined, { "line": line });
           }
         }
-        console.log(`[MailboxBlock] Loaded ${this.messages.size} messages from ${this.storagePath}`);
+        clog.log(`[MailboxBlock] Loaded ${this.messages.size} messages from ${this.storagePath}`);
       }
     } catch (e) {
       log.error('Failed to load from storage: ${this.storagePath}', e instanceof Error ? e : undefined, { "this.storagePath": this.storagePath });
@@ -254,7 +257,7 @@ export class MailboxBlock extends BaseBlock {
         try {
           cb(message);
         } catch (err) {
-          console.error('[MailboxBlock] Subscriber error:', err);
+          clog.error('[MailboxBlock] Subscriber error:', err);
         }
       }
     }

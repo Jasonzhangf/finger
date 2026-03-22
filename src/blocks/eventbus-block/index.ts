@@ -1,5 +1,11 @@
 import { BaseBlock, type BlockCapabilities } from '../../core/block.js';
 import type { Event } from '../../core/types.js';
+import { logger } from '../../core/logger.js';
+import { createConsoleLikeLogger } from '../../core/logger/console-like.js';
+
+const clog = createConsoleLikeLogger('Index');
+
+const log = logger.module('Index');
 
 type EventHandler = (event: Event) => void | Promise<void>;
 
@@ -58,7 +64,7 @@ export class EventBusBlock extends BaseBlock {
         try {
           await handler(event);
         } catch (err) {
-          console.error(`Event handler error for ${event.type}:`, err);
+          clog.error(`Event handler error for ${event.type}:`, err);
         }
       }
     }

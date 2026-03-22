@@ -7,6 +7,9 @@ import path from 'path';
 import { FINGER_PATHS, ensureDir } from '../core/finger-paths.js';
 import type { Workflow, TaskNode } from './workflow-manager.js';
 import { logger } from '../core/logger.js';
+import { createConsoleLikeLogger } from '../core/logger/console-like.js';
+
+const clog = createConsoleLikeLogger('WorkflowPersistence');
 
 const log = logger.module('WorkflowPersistence');
 
@@ -68,7 +71,7 @@ export function loadWorkflow(workflowId: string): Workflow | null {
       tasks: new Map(serialized.tasks),
     };
   } catch (err) {
-    console.error(`[WorkflowPersistence] Failed to load ${workflowId}:`, err);
+    clog.error(`[WorkflowPersistence] Failed to load ${workflowId}:`, err);
     return null;
   }
 }

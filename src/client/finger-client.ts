@@ -9,6 +9,12 @@
  */
 
 import WebSocket from 'ws';
+import { logger } from '../core/logger.js';
+import { createConsoleLikeLogger } from '../core/logger/console-like.js';
+
+const clog = createConsoleLikeLogger('FingerClient');
+
+const log = logger.module('FingerClient');
 
 // ============================================================================
 // Types
@@ -139,7 +145,7 @@ export class FingerClient {
           if (this.connectionState === 'connecting') {
             reject(err);
           }
-          console.error('[FingerClient] WebSocket error:', err.message);
+          clog.error('[FingerClient] WebSocket error:', err.message);
         });
       } catch (err) {
         this.setConnectionState('disconnected');
@@ -179,7 +185,7 @@ export class FingerClient {
     if (this.reconnect && this.reconnectAttempts < this.maxReconnectAttempts) {
       this.setConnectionState('reconnecting');
       this.reconnectAttempts++;
-      console.log(`[FingerClient] Reconnecting in ${this.reconnectInterval}ms (attempt ${this.reconnectAttempts})`);
+      clog.log(`[FingerClient] Reconnecting in ${this.reconnectInterval}ms (attempt ${this.reconnectAttempts})`);
       
       this.reconnectTimer = setTimeout(() => {
         this.connect().catch(() => {
@@ -254,7 +260,7 @@ export class FingerClient {
         this.dispatchEvent(message);
       }
     } catch (err) {
-      console.error('[FingerClient] Failed to parse message:', err);
+      clog.error('[FingerClient] Failed to parse message:', err);
     }
   }
 
@@ -266,7 +272,7 @@ export class FingerClient {
         try {
           h(event);
         } catch (err) {
-          console.error('[FingerClient] Handler error:', err);
+          clog.error('[FingerClient] Handler error:', err);
         }
       });
     }
@@ -276,7 +282,7 @@ export class FingerClient {
       try {
         h(event);
       } catch (err) {
-        console.error('[FingerClient] Wildcard handler error:', err);
+        clog.error('[FingerClient] Wildcard handler error:', err);
       }
     });
   }
@@ -287,7 +293,7 @@ export class FingerClient {
         const response = await this.decisionHandler(payload);
         await this.respondDecision(payload.decisionId, response);
       } catch (err) {
-        console.error('[FingerClient] Decision handler error:', err);
+        clog.error('[FingerClient] Decision handler error:', err);
       }
     }
   }

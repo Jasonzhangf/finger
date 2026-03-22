@@ -20,6 +20,9 @@ import { join } from 'path';
 import { FINGER_PATHS } from '../core/finger-paths.js';
 import { logger } from '../core/logger.js';
 import dgram from 'dgram';
+import { createConsoleLikeLogger } from '../core/logger/console-like.js';
+
+const clog = createConsoleLikeLogger('DualDaemon');
 
 const log = logger.module('DualDaemon');
 
@@ -549,7 +552,7 @@ async function runCliEntry(): Promise<void> {
   }
   if (args.includes('--status')) {
     const supervisor = new DualDaemonSupervisor();
-    console.log(JSON.stringify(supervisor.getStatus(), null, 2));
+    clog.log(JSON.stringify(supervisor.getStatus(), null, 2));
     return;
   }
   if (args.includes('--enable-autostart')) {
@@ -561,7 +564,7 @@ async function runCliEntry(): Promise<void> {
     return;
   }
 
-  console.log(`
+  clog.log(`
 Usage: node dist/daemon/dual-daemon.js [command]
 
 Commands:
@@ -575,7 +578,7 @@ Commands:
 
 if (isDirectExecution()) {
   runCliEntry().catch((err) => {
-    console.error('DualDaemon CLI failed:', err);
+    clog.error('DualDaemon CLI failed:', err);
     process.exit(1);
   });
 }

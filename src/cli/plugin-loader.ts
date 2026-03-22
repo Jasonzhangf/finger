@@ -4,6 +4,9 @@ import path from 'path';
 import { pathToFileURL } from 'url';
 import { loadModuleManifest } from '../orchestration/module-manifest.js';
 import { FINGER_PATHS } from '../core/finger-paths.js';
+import { createConsoleLikeLogger } from '../core/logger/console-like.js';
+
+const clog = createConsoleLikeLogger('PluginLoader');
 
 const PLUGIN_FILENAME_SUFFIX = '.module.json';
 export type CliPluginMode = 'plugin' | 'capability';
@@ -74,7 +77,7 @@ export function listInstalledCliPlugins(): InstalledCliPlugin[] {
         });
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
-        console.warn(`[CLI Plugin] Skip invalid manifest ${manifestPath}: ${message}`);
+        clog.warn(`[CLI Plugin] Skip invalid manifest ${manifestPath}: ${message}`);
       }
     }
   }
@@ -158,7 +161,7 @@ export async function loadDynamicCliPlugins(
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       failed.push({ id: plugin.id, error: message });
-      console.error(`[CLI Plugin] Failed to load "${plugin.id}": ${message}`);
+      clog.error(`[CLI Plugin] Failed to load "${plugin.id}": ${message}`);
     }
   }
 
@@ -174,12 +177,12 @@ export function registerPluginCommand(program: Command): void {
     .action(() => {
       const installed = listInstalledCliPlugins();
       if (installed.length === 0) {
-        console.log('No CLI plugins installed');
+        clog.log('No CLI plugins installed');
         process.exit(0);
         return;
       }
       installed.forEach((item) => {
-        console.log(
+        clog.log(
           `[${item.mode}] ${item.id} (${item.version}) enabled=${item.enabled} entry=${item.entryPath}`,
         );
       });
@@ -195,12 +198,12 @@ export function registerPluginCommand(program: Command): void {
       try {
         const mode = parseMode(options.mode);
         const installed = installCliPluginManifest(options.manifest, mode);
-        console.log(`CLI ${installed.mode} installed: ${installed.id}`);
-        console.log(`Manifest: ${installed.manifestPath}`);
+        clog.log(`CLI ${installed.mode} installed: ${installed.id}`);
+        clog.log(`Manifest: ${installed.manifestPath}`);
         process.exit(0);
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
-        console.error(`[CLI Plugin] Register failed: ${message}`);
+        clog.error(`[CLI Plugin] Register failed: ${message}`);
         process.exit(1);
       }
     });
@@ -213,11 +216,11 @@ export function registerPluginCommand(program: Command): void {
     .action((options: { id: string; mode?: string }) => {
       const removed = removeCliPluginManifest(options.id, options.mode ? parseMode(options.mode) : undefined);
       if (!removed) {
-        console.error(`[CLI Plugin] Not found: ${options.id}`);
+        clog.error(`[CLI Plugin] Not found: ${options.id}`);
         process.exit(1);
         return;
       }
-      console.log(`CLI plugin removed: ${options.id}`);
+      clog.log(`CLI plugin removed: ${options.id}`);
       process.exit(0);
     });
 
@@ -259,12 +262,12 @@ export function registerPluginCommand(program: Command): void {
           'utf-8',
         );
 
-        console.log(`CLI ${mode} installed: ${options.id}`);
-        console.log(`Entry: ${copiedJsPath}`);
+        clog.log(`CLI ${mode} installed: ${options.id}`);
+        clog.log(`Entry: ${copiedJsPath}`);
         process.exit(0);
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
-        console.error(`[CLI Plugin] register-file failed: ${message}`);
+        clog.error(`[CLI Plugin] register-file failed: ${message}`);
         process.exit(1);
       }
     });

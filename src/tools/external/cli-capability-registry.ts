@@ -3,6 +3,9 @@ import { spawnSync } from 'child_process';
 import path from 'path';
 import { FINGER_PATHS } from '../../core/finger-paths.js';
 import { logger } from '../../core/logger.js';
+import { createConsoleLikeLogger } from '../../core/logger/console-like.js';
+
+const clog = createConsoleLikeLogger('CliCapabilityRegistry');
 
 const log = logger.module('command');
 
@@ -347,7 +350,7 @@ function loadCapabilityDescriptorFromFile(
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    console.warn(`[Capability] Skip invalid descriptor ${filePath}: ${message}`);
+    clog.warn(`[Capability] Skip invalid descriptor ${filePath}: ${message}`);
   }
 }
 

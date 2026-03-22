@@ -5,6 +5,12 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { Command, CommandType, CommandContext, CommandResult, CommandHandler } from './types.js';
+import { logger } from '../../core/logger.js';
+import { createConsoleLikeLogger } from '../../core/logger/console-like.js';
+
+const clog = createConsoleLikeLogger('Executor');
+
+const log = logger.module('Executor');
 
 export class CommandExecutor {
   private handlers: Map<CommandType, CommandHandler> = new Map();
@@ -84,7 +90,7 @@ export function saveProviderConfig(configPath: string, providerId: string): bool
     fs.writeFileSync(configPath, JSON.stringify(config, null, 2), 'utf-8');
     return true;
   } catch (err) {
-    console.error('[CommandHub] Failed to save provider config:', err);
+    clog.error('[CommandHub] Failed to save provider config:', err);
     return false;
   }
 }

@@ -6,6 +6,12 @@
 
 import type { Registry } from './registry-new.js';
 import type { Message } from './schema.js';
+import { logger } from './logger.js';
+import { createConsoleLikeLogger } from '../core/logger/console-like.js';
+
+const clog = createConsoleLikeLogger('HubCore');
+
+const log = logger.module('HubCore');
 
 export type MessageHandler = (message: Message) => Promise<unknown>;
 export type OutputHandler = (message: Message) => Promise<unknown>;
@@ -19,13 +25,13 @@ export class HubCore {
   // Register input handler
   registerInput(id: string, handler: MessageHandler): void {
     this.inputs.set(id, handler);
-    console.log(`[Hub] Input registered: ${id}`);
+    clog.log(`[Hub] Input registered: ${id}`);
   }
 
   // Register output handler
   registerOutput(id: string, handler: OutputHandler): void {
     this.outputs.set(id, handler);
-    console.log(`[Hub] Output registered: ${id}`);
+    clog.log(`[Hub] Output registered: ${id}`);
   }
 
   // Unregister
@@ -52,11 +58,11 @@ export class HubCore {
           });
           results.push(result);
         } catch (err) {
-          console.error(`[Hub] Output ${dest} error:`, err);
+          clog.error(`[Hub] Output ${dest} error:`, err);
           results.push({ error: String(err), dest });
         }
       } else {
-        console.warn(`[Hub] Output not found: ${dest}`);
+        clog.warn(`[Hub] Output not found: ${dest}`);
       }
     }
 

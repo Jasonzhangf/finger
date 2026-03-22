@@ -10,6 +10,12 @@ import { loadPluginManifest, parsePackageJsonExtensions, resolvePluginEntries } 
 import { discoverPluginsWithPriority, type DiscoveredPluginPath } from './discovery.js';
 import { createOpenClawRuntimeApi, normalizePluginDefinition } from './openclaw-api-adapter.js';
 import type { OpenClawGateBlock } from '../openclaw-gate/index.js';
+import { logger } from '../../core/logger.js';
+import { createConsoleLikeLogger } from '../../core/logger/console-like.js';
+
+const clog = createConsoleLikeLogger('Loader');
+
+const log = logger.module('Loader');
 
 export type LoaderOptions = {
   pluginDir: string;
@@ -19,9 +25,9 @@ export type LoaderOptions = {
 };
 
 const defaultLogger: PluginLogger = {
-  info: (msg: string) => console.log(`[PluginLoader] INFO: ${msg}`),
-  warn: (msg: string) => console.warn(`[PluginLoader] WARN: ${msg}`),
-  error: (msg: string) => console.error(`[PluginLoader] ERROR: ${msg}`),
+  info: (msg: string) => clog.log(`[PluginLoader] INFO: ${msg}`),
+  warn: (msg: string) => clog.warn(`[PluginLoader] WARN: ${msg}`),
+  error: (msg: string) => clog.error(`[PluginLoader] ERROR: ${msg}`),
 };
 
 /**

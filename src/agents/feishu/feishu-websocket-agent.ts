@@ -9,6 +9,12 @@
 import type { AgentModule } from '../../orchestration/module-registry.js';
 import type { MessageHub } from '../../orchestration/message-hub.js';
 import WebSocket from 'ws';
+import { logger } from '../../core/logger.js';
+import { createConsoleLikeLogger } from '../../core/logger/console-like.js';
+
+const clog = createConsoleLikeLogger('FeishuWebsocketAgent');
+
+const log = logger.module('FeishuWebsocketAgent');
 
 export interface FeishuMessage {
   type: 'text' | 'image' | 'file' | 'event';
@@ -64,7 +70,7 @@ export class FeishuWebSocketAgent implements AgentModule {
       });
     }
 
-    console.log('[FeishuAgent] Initialized with input: feishu-ws-input, output: feishu-ws-output');
+    log.info('Initialized with input: feishu-ws-input, output: feishu-ws-output');
   }
 
   async execute(command: string, params: Record<string, unknown>): Promise<unknown> {
@@ -86,12 +92,12 @@ export class FeishuWebSocketAgent implements AgentModule {
 
   private async handleIncomingMessage(message: unknown): Promise<unknown> {
     const feishuMsg = message as FeishuMessage;
-    console.log(`[FeishuAgent] Received message from ${feishuMsg.userId}: ${feishuMsg.content}`);
+    clog.log(`[FeishuAgent] Received message from ${feishuMsg.userId}: ${feishuMsg.content}`);
     
     // Only route valid feishu messages (text, image, file, event)
     const validTypes = ['text', 'image', 'file', 'event'];
     if (!validTypes.includes(feishuMsg.type)) {
-      console.log(`[FeishuAgent] Skipping invalid message type: ${feishuMsg.type}`);
+      clog.log(`[FeishuAgent] Skipping invalid message type: ${feishuMsg.type}`);
       return { success: true, forwarded: false, reason: 'Type mismatch' };
     }
     
@@ -120,7 +126,7 @@ export class FeishuWebSocketAgent implements AgentModule {
 
   private async connectWebSocket(wsEndpoint?: string): Promise<{ success: boolean }> {
     const endpoint = wsEndpoint || 'wss://default.feishu.cn';
-    console.log(`[FeishuAgent] Connecting to WebSocket endpoint: ${endpoint}`);
+    clog.log(`[FeishuAgent] Connecting to WebSocket endpoint: ${endpoint}`);
 
     // 模拟连接（实际实现会使用 new WebSocket(endpoint)）
     return { success: true };
@@ -135,7 +141,7 @@ export class FeishuWebSocketAgent implements AgentModule {
   }
 
   private async sendToFeishu(message: FeishuMessage): Promise<{ success: boolean; messageId?: string }> {
-    console.log(`[FeishuAgent] Sending to chat ${message.chatId} (user: ${message.userId}): ${message.content}`);
+    clog.log(`[FeishuAgent] Sending to chat ${message.chatId} (user: ${message.userId}): ${message.content}`);
     return { 
       success: true, 
       messageId: `msg-${Date.now()}` 

@@ -12,6 +12,9 @@ import * as readline from 'readline';
 import { FingerClient, type RuntimeEvent, type UserDecision } from '../client/finger-client.js';
 import { printEvent, printWorkflowStatus, printError, printSuccess, setOutputFormat } from './output.js';
 import { ExitCode } from './errors.js';
+import { createConsoleLikeLogger } from '../core/logger/console-like.js';
+
+const clog = createConsoleLikeLogger('Repl');
 
 export interface REPLConfig {
   httpUrl?: string;
@@ -49,17 +52,17 @@ export class FingerREPL {
    * Start REPL
    */
   async start(): Promise<void> {
-    console.log('Finger REPL v1.0.0');
-    console.log('Type /help for available commands\n');
+    clog.log('Finger REPL v1.0.0');
+    clog.log('Type /help for available commands\n');
 
     // Connect to daemon
     try {
-      console.log('Connecting to daemon...');
+      clog.log('Connecting to daemon...');
       await this.client.connect();
-      console.log('Connected ✓\n');
+      clog.log('Connected ✓\n');
     } catch (error) {
       printError('Failed to connect to daemon. Is it running?', error);
-      console.log('Start daemon with: finger daemon start\n');
+      clog.log('Start daemon with: finger daemon start\n');
       process.exit(ExitCode.DAEMON_NOT_RUNNING);
     }
 
@@ -72,9 +75,9 @@ export class FingerREPL {
     // Monitor connection state
     this.client.onStateChange((state) => {
       if (state === 'disconnected') {
-        console.log('\n⚠️  Connection lost. Reconnecting...');
+        clog.log('\n⚠️  Connection lost. Reconnecting...');
       } else if (state === 'connected') {
-        console.log('✓ Reconnected');
+        clog.log('✓ Reconnected');
         this.promptUser();
       }
     });
@@ -90,7 +93,7 @@ export class FingerREPL {
     this.isRunning = false;
     this.client.disconnect();
     this.rl.close();
-    console.log('\nGoodbye!');
+    clog.log('\nGoodbye!');
   }
 
   /**
@@ -207,7 +210,7 @@ export class FingerREPL {
         break;
         
       case 'clear':
-        console.clear();
+        clog.clear();
         break;
         
       case 'exit':
@@ -217,7 +220,7 @@ export class FingerREPL {
         
       default:
         printError(`Unknown command: ${cmd}`);
-        console.log('Type /help for available commands');
+        clog.log('Type /help for available commands');
     }
   }
 
@@ -225,7 +228,7 @@ export class FingerREPL {
    * Show help
    */
   private showHelp(): void {
-    console.log(`
+    clog.log(`
 Commands:
   /help              Show this help
   /status            Show current workflow status
@@ -249,7 +252,7 @@ Any other input will be sent as a task to the orchestrator.
    */
   private async showStatus(): Promise<void> {
     if (!this.currentWorkflowId) {
-      console.log('No active workflow');
+      clog.log('No active workflow');
       return;
     }
 
@@ -268,14 +271,14 @@ Any other input will be sent as a task to the orchestrator.
     try {
       const workflows = await this.client.listWorkflows();
       if (workflows.length === 0) {
-        console.log('No workflows');
+        clog.log('No workflows');
         return;
       }
       
-      console.log('Workflows:');
+      clog.log('Workflows:');
       workflows.forEach(w => {
         const active = w.workflowId === this.currentWorkflowId ? ' *' : '';
-        console.log(`  ${w.workflowId.slice(0, 12)}: ${w.simplifiedStatus} (${w.fsmState})${active}`);
+        clog.log(`  ${w.workflowId.slice(0, 12)}: ${w.simplifiedStatus} (${w.fsmState})${active}`);
       });
     } catch (error) {
       printError('Failed to list workflows', error);
@@ -319,10 +322,10 @@ Any other input will be sent as a task to the orchestrator.
       this.rl.pause();
       
       // Show decision prompt
-      console.log(`\n❓ ${decision.message}`);
+      clog.log(`\n❓ ${decision.message}`);
       if (decision.options) {
         decision.options.forEach((opt, i) => {
-          console.log(`  ${i + 1}. ${opt}`);
+          clog.log(`  ${i + 1}. ${opt}`);
         });
       }
       
@@ -362,7 +365,7 @@ export async function startREPL(config: REPLConfig = {}): Promise<void> {
   
   // Handle Ctrl+C
   process.on('SIGINT', async () => {
-    console.log('\n');
+    clog.log('\n');
     await repl.stop();
     process.exit(0);
   });

@@ -4,6 +4,9 @@
 
 import { Command } from "commander";
 import { registry } from "../../core/registry-new.js";
+import { createConsoleLikeLogger } from '../../core/logger/console-like.js';
+
+const clog = createConsoleLikeLogger('List');
 
 export function listCommand(): Command {
   return new Command("list")
@@ -15,24 +18,24 @@ export function listCommand(): Command {
       const entries = registry.list(filter);
 
       if (options.json) {
-        console.log(JSON.stringify(entries, null, 2));
+        clog.log(JSON.stringify(entries, null, 2));
         return;
       }
 
       if (entries.length === 0) {
-        console.log("No services registered");
+        clog.log("No services registered");
         return;
       }
 
-      console.log("Registered Services:");
-      console.log("-".repeat(60));
+      clog.log("Registered Services:");
+      clog.log("-".repeat(60));
 
       for (const entry of entries) {
         const status = entry.status === "active" ? "✓" : "✗";
-        console.log(`[${status}] ${entry.id} (${entry.type}/${entry.kind})`);
+        clog.log(`[${status}] ${entry.id} (${entry.type}/${entry.kind})`);
       }
 
-      console.log("-".repeat(60));
-      console.log(`Routes: ${registry.getRoutes().length}`);
+      clog.log("-".repeat(60));
+      clog.log(`Routes: ${registry.getRoutes().length}`);
     });
 }

@@ -8,6 +8,12 @@
 import { promises as fs } from 'fs';
 import * as path from 'path';
 import type { MessageHub } from '../../orchestration/message-hub.js';
+import { logger } from '../../core/logger.js';
+import { createConsoleLikeLogger } from '../../core/logger/console-like.js';
+
+const clog = createConsoleLikeLogger('CacheCompactionTrigger');
+
+const log = logger.module('CacheCompactionTrigger');
 
 export interface CompactionTriggerConfig {
   enabled?: boolean;
@@ -60,7 +66,7 @@ export class CacheCompactionTrigger {
 
       return true;
     } catch (error) {
-      console.error('[CacheCompactionTrigger] Failed to trigger compaction:', error);
+      clog.error('[CacheCompactionTrigger] Failed to trigger compaction:', error);
       return false;
     }
   }

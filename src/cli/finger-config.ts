@@ -15,6 +15,9 @@ import {
 } from '../core/user-settings.js';
 import { syncUserSettingsToKernelConfig } from '../core/user-settings-sync.js';
 import { logger } from '../core/logger.js';
+import { createConsoleLikeLogger } from '../core/logger/console-like.js';
+
+const clog = createConsoleLikeLogger('FingerConfig');
 
 const log = logger.module('ConfigCLI');
 
@@ -31,17 +34,17 @@ program.command('get [key]')
     try {
       const settings = loadUserSettings();
       if (!key) {
-        console.log(JSON.stringify(settings, null, 2));
+        clog.log(JSON.stringify(settings, null, 2));
       } else {
         const value = getNestedValue(settings, key);
         if (value === undefined) {
-          console.error(`Key not found: ${key}`);
+          clog.error(`Key not found: ${key}`);
           process.exit(1);
         }
-        console.log(JSON.stringify(value, null, 2));
+        clog.log(JSON.stringify(value, null, 2));
       }
     } catch (error) {
-      console.error(`Error loading settings: ${error}`);
+      clog.error(`Error loading settings: ${error}`);
       process.exit(1);
     }
   });
@@ -62,9 +65,9 @@ program.command('set <key> <value>')
       // 同步到 kernel config
       await syncUserSettingsToKernelConfig();
 
-      console.log(`✓ Updated ${key}: ${value}`);
+      clog.log(`✓ Updated ${key}: ${value}`);
     } catch (error) {
-      console.error(`Error updating settings: ${error}`);
+      clog.error(`Error updating settings: ${error}`);
       process.exit(1);
     }
   });
@@ -75,9 +78,9 @@ program.command('list')
   .action(() => {
     try {
       const settings = loadUserSettings();
-      console.log(JSON.stringify(settings, null, 2));
+      clog.log(JSON.stringify(settings, null, 2));
     } catch (error) {
-      console.error(`Error loading settings: ${error}`);
+      clog.error(`Error loading settings: ${error}`);
       process.exit(1);
     }
   });
@@ -101,7 +104,7 @@ program.command('reset')
       rl.close();
 
       if (answer.toLowerCase() !== 'yes' && answer.toLowerCase() !== 'y') {
-        console.log('Reset cancelled');
+        clog.log('Reset cancelled');
         process.exit(0);
       }
     }
@@ -109,9 +112,9 @@ program.command('reset')
     try {
       const settings = await resetUserSettings();
       await syncUserSettingsToKernelConfig();
-      console.log('✓ Settings reset to default');
+      clog.log('✓ Settings reset to default');
     } catch (error) {
-      console.error(`Error resetting settings: ${error}`);
+      clog.error(`Error resetting settings: ${error}`);
       process.exit(1);
     }
   });

@@ -1,5 +1,8 @@
 import { createInterface } from 'readline';
 import type { Command } from 'commander';
+import { createConsoleLikeLogger } from '../core/logger/console-like.js';
+
+const clog = createConsoleLikeLogger('ChatCodex');
 
 interface ChatCodexModuleResult {
   success?: boolean;
@@ -39,11 +42,11 @@ export function registerChatCodexCommand(program: Command): void {
 
       try {
         const reply = await sendChatCodexTurn(options.url, options.target, input);
-        console.log(reply);
+        clog.log(reply);
         process.exit(0);
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
-        console.error(`[chat-codex] ${message}`);
+        clog.error(`[chat-codex] ${message}`);
         process.exit(1);
       }
     });
@@ -98,8 +101,8 @@ export async function sendChatCodexTurn(daemonUrl: string, target: string, input
 }
 
 async function runInteractiveChat(daemonUrl: string, target: string): Promise<void> {
-  console.log('\n🤖 chat-codex interactive mode');
-  console.log('Type /exit to quit\n');
+  clog.log('\n🤖 chat-codex interactive mode');
+  clog.log('Type /exit to quit\n');
 
   const rl = createInterface({
     input: process.stdin,
@@ -123,10 +126,10 @@ async function runInteractiveChat(daemonUrl: string, target: string): Promise<vo
 
     try {
       const reply = await sendChatCodexTurn(daemonUrl, target, input);
-      console.log(`Codex: ${reply}\n`);
+      clog.log(`Codex: ${reply}\n`);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      console.error(`Error: ${message}\n`);
+      clog.error(`Error: ${message}\n`);
     }
 
     safePrompt(rl);

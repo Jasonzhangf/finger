@@ -1,22 +1,27 @@
 /**
- * Simple logger for agent modules
+ * Shared logger for legacy agent modules.
+ *
+ * Kept as compatibility layer, backed by unified FingerLogger.
  */
 
-const now = () => new Date().toISOString();
+import { createConsoleLikeLogger } from '../../core/logger/console-like.js';
+
+const base = createConsoleLikeLogger('AgentsShared');
 
 const logger = {
   debug: (message: string, ...args: unknown[]) => {
-    console.log(`[${now()}] [DEBUG] ${message}`, ...args);
+    base.debug(message, ...args);
   },
   info: (message: string, ...args: unknown[]) => {
-    console.log(`[${now()}] [INFO] ${message}`, ...args);
+    base.info(message, ...args);
   },
   warn: (message: string, ...args: unknown[]) => {
-    console.warn(`[${now()}] [WARN] ${message}`, ...args);
+    base.warn(message, ...args);
   },
   error: (message: string, ...args: unknown[]) => {
-    console.error(`[${now()}] [ERROR] ${message}`, ...args);
+    base.error(message, ...args);
   },
 };
 
 export default logger;
+

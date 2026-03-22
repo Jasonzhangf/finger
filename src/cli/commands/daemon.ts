@@ -6,6 +6,9 @@ import { Command } from 'commander';
 import { spawn } from 'child_process';
 import { readFileSync, existsSync } from 'fs';
 import { FINGER_PATHS } from '../../core/finger-paths.js';
+import { createConsoleLikeLogger } from '../../core/logger/console-like.js';
+
+const clog = createConsoleLikeLogger('Daemon');
 
 const DAEMON_LOG_FILE = FINGER_PATHS.logs.daemonLog;
 const DAEMON_PID_FILE = FINGER_PATHS.runtime.daemonPid;
@@ -23,7 +26,7 @@ export function registerDaemonSubCommands(daemon: Command): void {
     .action(async (options: { follow?: boolean; lines: string }) => {
       try {
         if (!existsSync(DAEMON_LOG_FILE)) {
-          console.error(`Log file not found: ${DAEMON_LOG_FILE}`);
+          clog.error(`Log file not found: ${DAEMON_LOG_FILE}`);
           process.exit(1);
         }
 
@@ -31,7 +34,7 @@ export function registerDaemonSubCommands(daemon: Command): void {
           // Tail -f mode
           const tail = spawn('tail', ['-f', DAEMON_LOG_FILE], { stdio: 'inherit' });
           tail.on('error', (err) => {
-            console.error('Failed to tail logs:', err.message);
+            clog.error('Failed to tail logs:', err.message);
             process.exit(1);
           });
           process.on('SIGINT', () => {
@@ -44,10 +47,10 @@ export function registerDaemonSubCommands(daemon: Command): void {
           const content = readFileSync(DAEMON_LOG_FILE, 'utf-8');
           const allLines = content.split('\n');
           const lastLines = allLines.slice(-lines);
-          console.log(lastLines.join('\n'));
+          clog.log(lastLines.join('\n'));
         }
       } catch (error) {
-        console.error('[CLI Error]', error);
+        clog.error('[CLI Error]', error);
         process.exit(1);
       }
     });
@@ -102,23 +105,23 @@ export function registerDaemonSubCommands(daemon: Command): void {
         };
 
         if (options.json) {
-          console.log(JSON.stringify(status, null, 2));
+          clog.log(JSON.stringify(status, null, 2));
         } else {
-          console.log(`Daemon Status:`);
-          console.log(`  Running: ${isRunning ? 'Yes' : 'No'}`);
-          console.log(`  PID: ${pid || 'N/A'}`);
-          console.log(`  HTTP Port: ${status.httpPort}`);
-          console.log(`  WebSocket Port: ${status.wsPort}`);
-          console.log(`  Log File: ${status.logFile}`);
+          clog.log(`Daemon Status:`);
+          clog.log(`  Running: ${isRunning ? 'Yes' : 'No'}`);
+          clog.log(`  PID: ${pid || 'N/A'}`);
+          clog.log(`  HTTP Port: ${status.httpPort}`);
+          clog.log(`  WebSocket Port: ${status.wsPort}`);
+          clog.log(`  Log File: ${status.logFile}`);
           if (fetchError) {
-            console.log(`  Error: ${fetchError}`);
+            clog.log(`  Error: ${fetchError}`);
           }
           if (modules) {
-            console.log(`  Modules:`, modules);
+            clog.log(`  Modules:`, modules);
           }
         }
       } catch (error) {
-        console.error('[CLI Error]', error);
+        clog.error('[CLI Error]', error);
         process.exit(1);
       }
     });

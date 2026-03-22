@@ -8,6 +8,9 @@ import { promises as fs } from 'fs';
 import path from 'path';
 import { FINGER_PATHS } from '../../core/finger-paths.js';
 import { logger } from '../../core/logger.js';
+import { createConsoleLikeLogger } from '../../core/logger/console-like.js';
+
+const clog = createConsoleLikeLogger('Registry');
 
 const log = logger.module('projectId');
 
@@ -72,7 +75,7 @@ export async function loadRegistry(): Promise<AgentRegistry> {
     
     // 版本检查
     if (registry.version !== REGISTRY_VERSION) {
-      console.warn(`Registry version mismatch: expected ${REGISTRY_VERSION}, got ${registry.version}`);
+      clog.warn(`Registry version mismatch: expected ${REGISTRY_VERSION}, got ${registry.version}`);
     }
     
     return registry;

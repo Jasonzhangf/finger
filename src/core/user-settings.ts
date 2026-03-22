@@ -8,6 +8,9 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { FINGER_PATHS, ensureDir } from './finger-paths.js';
 import { logger } from './logger.js';
+import { createConsoleLikeLogger } from '../core/logger/console-like.js';
+
+const clog = createConsoleLikeLogger('UserSettings');
 
 const log = logger.module('UserSettings');
 
@@ -45,7 +48,7 @@ function backupCorruptedSettings(): void {
     if (fs.existsSync(USER_SETTINGS_PATH)) {
       fs.copyFileSync(USER_SETTINGS_PATH, USER_SETTINGS_BACKUP_PATH);
       log.info('[UserSettings] Corrupted settings backed up to', { path: USER_SETTINGS_BACKUP_PATH });
-      console.error(`⚠️ Corrupted settings backed up to: ${USER_SETTINGS_BACKUP_PATH}`);
+      clog.error(`⚠️ Corrupted settings backed up to: ${USER_SETTINGS_BACKUP_PATH}`);
     }
   } catch (err) {
     const error = err instanceof Error ? err : new Error(String(err));

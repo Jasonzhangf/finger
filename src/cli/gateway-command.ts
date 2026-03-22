@@ -1,4 +1,7 @@
 import type { Command } from 'commander';
+import { createConsoleLikeLogger } from '../core/logger/console-like.js';
+
+const clog = createConsoleLikeLogger('GatewayCommand');
 
 const DEFAULT_DAEMON_URL = process.env.FINGER_HUB_URL || 'http://localhost:9999';
 
@@ -11,7 +14,7 @@ export function registerGatewayCommand(program: Command): void {
     .option('-u, --url <url>', 'Daemon URL', DEFAULT_DAEMON_URL)
     .action(async (options: { url: string }) => {
       const payload = await requestJson(`${options.url}/api/v1/gateways`);
-      console.log(JSON.stringify(payload, null, 2));
+      clog.log(JSON.stringify(payload, null, 2));
       process.exit(0);
     });
 
@@ -22,7 +25,7 @@ export function registerGatewayCommand(program: Command): void {
     .option('-u, --url <url>', 'Daemon URL', DEFAULT_DAEMON_URL)
     .action(async (id: string, options: { url: string }) => {
       const payload = await requestJson(`${options.url}/api/v1/gateways/${encodeURIComponent(id)}`);
-      console.log(JSON.stringify(payload, null, 2));
+      clog.log(JSON.stringify(payload, null, 2));
       process.exit(0);
     });
 
@@ -33,7 +36,7 @@ export function registerGatewayCommand(program: Command): void {
     .option('-u, --url <url>', 'Daemon URL', DEFAULT_DAEMON_URL)
     .action(async (id: string, options: { url: string }) => {
       const payload = await requestJson(`${options.url}/api/v1/gateways/${encodeURIComponent(id)}/probe`);
-      console.log(JSON.stringify(payload, null, 2));
+      clog.log(JSON.stringify(payload, null, 2));
       process.exit(0);
     });
 
@@ -48,7 +51,7 @@ export function registerGatewayCommand(program: Command): void {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ path: options.file }),
       });
-      console.log(JSON.stringify(payload, null, 2));
+      clog.log(JSON.stringify(payload, null, 2));
       process.exit(0);
     });
 
@@ -62,7 +65,7 @@ export function registerGatewayCommand(program: Command): void {
         `${options.url}/api/v1/gateways/${encodeURIComponent(options.id)}`,
         { method: 'DELETE' },
       );
-      console.log(JSON.stringify(payload, null, 2));
+      clog.log(JSON.stringify(payload, null, 2));
       process.exit(0);
     });
 
@@ -72,7 +75,7 @@ export function registerGatewayCommand(program: Command): void {
     .option('-u, --url <url>', 'Daemon URL', DEFAULT_DAEMON_URL)
     .action(async (options: { url: string }) => {
       const payload = await requestJson(`${options.url}/api/v1/gateways/reload`, { method: 'POST' });
-      console.log(JSON.stringify(payload, null, 2));
+      clog.log(JSON.stringify(payload, null, 2));
       process.exit(0);
     });
 
@@ -101,7 +104,7 @@ export function registerGatewayCommand(program: Command): void {
             blocking: options.blocking ?? false,
           }),
         });
-        console.log(JSON.stringify(payload, null, 2));
+        clog.log(JSON.stringify(payload, null, 2));
         process.exit(0);
       },
     );

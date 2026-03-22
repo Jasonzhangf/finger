@@ -5,6 +5,12 @@ import { BaseOutput } from './base.js';
 import type { Message } from '../core/schema.js';
 import fs from 'fs';
 import path from 'path';
+import { logger } from '../core/logger.js';
+import { createConsoleLikeLogger } from '../core/logger/console-like.js';
+
+const clog = createConsoleLikeLogger('File');
+
+const log = logger.module('File');
 
 export interface FileConfig {
   path: string;
@@ -25,7 +31,7 @@ export class FileOutput extends BaseOutput {
     const dir = path.dirname(this.config.path);
     fs.mkdirSync(dir, { recursive: true });
     this.running = true;
-    console.log(`[Output:${this.id}] File ready: ${this.config.path}`);
+    clog.log(`[Output:${this.id}] File ready: ${this.config.path}`);
   }
 
   async handle(message: Message): Promise<unknown> {

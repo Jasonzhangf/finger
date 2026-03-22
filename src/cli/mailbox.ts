@@ -1,5 +1,8 @@
 import { Command } from 'commander';
 import ora from 'ora';
+import { createConsoleLikeLogger } from '../core/logger/console-like.js';
+
+const clog = createConsoleLikeLogger('Mailbox');
 
 const MAILBOX_BASE_URL = process.env.FINGER_HUB_URL || 'http://localhost:9999';
 
@@ -37,18 +40,18 @@ export function registerMailboxCommand(program: Command): void {
         const res = await fetch(`${MAILBOX_BASE_URL}/api/v1/mailbox?${params}`);
         const data = await res.json();
         
-        console.log('\nMailbox Messages:');
-        console.log('-'.repeat(60));
+        clog.log('\nMailbox Messages:');
+        clog.log('-'.repeat(60));
         for (const msg of data.messages || []) {
-          console.log(`[${msg.id}] ${renderStatus(msg.status)} ${msg.target}`);
-          console.log(`  Created: ${new Date(msg.createdAt).toLocaleString()}`);
+          clog.log(`[${msg.id}] ${renderStatus(msg.status)} ${msg.target}`);
+          clog.log(`  Created: ${new Date(msg.createdAt).toLocaleString()}`);
           if (msg.error) {
-            console.log(`  Error: ${msg.error}`);
+            clog.log(`  Error: ${msg.error}`);
           }
-          console.log('');
+          clog.log('');
         }
       } catch (err) {
-        console.error('Failed to list messages:', err);
+        clog.error('Failed to list messages:', err);
       }
     });
 
@@ -59,33 +62,33 @@ export function registerMailboxCommand(program: Command): void {
       try {
         const res = await fetch(`${MAILBOX_BASE_URL}/api/v1/mailbox/${id}`);
         if (res.status === 404) {
-          console.error(`Message ${id} not found`);
+          clog.error(`Message ${id} not found`);
           return;
         }
         const data = await res.json();
         
-        console.log('\nMessage Details:');
-        console.log('-'.repeat(60));
-        console.log(`ID:       ${data.id}`);
-        console.log(`Target:   ${data.target}`);
-        console.log(`Status:   ${renderStatus(data.status)}`);
-        console.log(`Created:  ${new Date(data.createdAt).toLocaleString()}`);
-        console.log(`Updated:  ${new Date(data.updatedAt).toLocaleString()}`);
-        console.log('');
-        console.log('Content:');
-        console.log(JSON.stringify(data.content, null, 2));
+        clog.log('\nMessage Details:');
+        clog.log('-'.repeat(60));
+        clog.log(`ID:       ${data.id}`);
+        clog.log(`Target:   ${data.target}`);
+        clog.log(`Status:   ${renderStatus(data.status)}`);
+        clog.log(`Created:  ${new Date(data.createdAt).toLocaleString()}`);
+        clog.log(`Updated:  ${new Date(data.updatedAt).toLocaleString()}`);
+        clog.log('');
+        clog.log('Content:');
+        clog.log(JSON.stringify(data.content, null, 2));
         
         if (data.result) {
-          console.log('\nResult:');
-          console.log(JSON.stringify(data.result, null, 2));
+          clog.log('\nResult:');
+          clog.log(JSON.stringify(data.result, null, 2));
         }
         
         if (data.error) {
-          console.log('\nError:');
-          console.log(data.error);
+          clog.log('\nError:');
+          clog.log(data.error);
         }
       } catch (err) {
-        console.error('Failed to get message:', err);
+        clog.error('Failed to get message:', err);
       }
     });
 
@@ -111,20 +114,20 @@ export function registerMailboxCommand(program: Command): void {
           
           if (data.status === 'completed') {
             spinner.succeed('Completed');
-            console.log('\nResult:');
-            console.log(JSON.stringify(data.result, null, 2));
+            clog.log('\nResult:');
+            clog.log(JSON.stringify(data.result, null, 2));
             return;
           }
           
           if (data.status === 'failed') {
             spinner.fail('Failed');
-            console.log('\nError:', data.error);
+            clog.log('\nError:', data.error);
             return;
           }
 
           if (Date.now() - start > timeout) {
             spinner.warn('Timeout');
-            console.log('\nCurrent status:', data.status);
+            clog.log('\nCurrent status:', data.status);
             return;
           }
 
@@ -145,9 +148,9 @@ export function registerMailboxCommand(program: Command): void {
       try {
         const res = await fetch(`${MAILBOX_BASE_URL}/api/v1/mailbox/clear`, { method: 'POST' });
         const data = await res.json();
-        console.log(data.message || 'Mailbox cleared');
+        clog.log(data.message || 'Mailbox cleared');
       } catch (err) {
-        console.error('Failed to clear mailbox:', err);
+        clog.error('Failed to clear mailbox:', err);
       }
     });
 }

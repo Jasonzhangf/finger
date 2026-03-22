@@ -5,6 +5,9 @@
 import { logger } from '../logger.js';
 import { loadUserSettings, getDefaultAIProvider } from '../user-settings.js';
 import type { AIProviderCheckResult } from './types.js';
+import { createConsoleLikeLogger } from '../../core/logger/console-like.js';
+
+const clog = createConsoleLikeLogger('Providers');
 
 const log = logger.module('HealthChecker');
 
@@ -110,11 +113,11 @@ export async function performAIProviderHealthCheck(): Promise<boolean> {
 
   if (result.status === 'connected') {
     log.info('AI provider health check passed', { result });
-    console.log(`✓ [Health Check] AI provider "${defaultProvider.name}" is connected (${result.latency}ms)`);
+    clog.log(`✓ [Health Check] AI provider "${defaultProvider.name}" is connected (${result.latency}ms)`);
     return true;
   }
 
   log.error('AI provider health check failed', new Error(result.message));
-  console.error(`❌ [Health Check] AI provider "${defaultProvider.name}" is ${result.status}: ${result.message}`);
+  clog.error(`❌ [Health Check] AI provider "${defaultProvider.name}" is ${result.status}: ${result.message}`);
   return false;
 }
