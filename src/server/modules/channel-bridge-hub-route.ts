@@ -238,6 +238,8 @@ export function createChannelBridgeHubRoute(deps: ChannelBridgeHubRouteDeps) {
     });
 
     // Dispatch to current agent
+    let progressTimer: NodeJS.Timeout | null = null;
+    let progressTicks = 0;
     try {
       const dispatchRequest: AgentDispatchRequest = {
         sourceAgentId: 'channel-bridge',
@@ -272,6 +274,13 @@ export function createChannelBridgeHubRoute(deps: ChannelBridgeHubRouteDeps) {
       }
 
       log.info('Hub route dispatching to agent', { targetAgentId });
+
+      // 周期性进度提示（避免长任务静默）
+      progressTimer = setInterval(() => {
+        progressTicks += 1;
+        void sendReply(`仍在执行中…（已等待 ${progressTicks} 分钟）`, targetAgentId);
+      }, 60_000);
+
       const result = await dispatchTaskToAgent(dispatchRequest);
 
       log.info('Hub route dispatch result', {
@@ -291,6 +300,10 @@ export function createChannelBridgeHubRoute(deps: ChannelBridgeHubRouteDeps) {
       log.error('Hub route dispatch error', err instanceof Error ? err : undefined);
       await sendReply('处理失败，请稍后再试', 'messagehub');
     } finally {
+      if (progressTimer) {
+        clearInterval(progressTimer);
+        progressTimer = null;
+      }
       // 交给 AgentStatusSubscriber 自己根据终态/清理周期回收映射
     }
   };
