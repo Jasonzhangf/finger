@@ -260,9 +260,19 @@ export class ProgressMonitor {
         }
         break;
       case 'agent_runtime_dispatch':
-        if (event.payload?.targetAgentId) {
+        // Skip heartbeat/system-level dispatches (sourceAgentId contains 'system' or 'heartbeat')
+        const source = event.payload?.sourceAgentId || (event as any).sourceAgentId || '';
+        if (source.includes('system') || source.includes('heartbeat') || source.includes('bootstrap')) {
+          break;
+        }
+        // Skip self-dispatch (system agent dispatching to itself)
+        const target = event.payload?.targetAgentId;
+        if (target && target === progress.agentId) {
+          break;
+        }
+        if (target) {
           const status = event.payload?.status || 'queued';
-          progress.currentTask = `派发 ${event.payload.targetAgentId} (${status})`;
+          progress.currentTask = `派发 ${target} (${status})`;
           if (status === 'failed') progress.status = 'failed';
         }
         break;
@@ -376,17 +386,25 @@ export class ProgressMonitor {
    */
   private buildSingleProgressSummary(p: SessionProgress): string {
     const elapsed = this.formatElapsed(p.elapsedMs);
-    const task = p.currentTask ? ` | 当前: ${p.currentTask}` : '';
-    const latestStep = this.latestStepSummary.get(p.sessionId);
-    const stepInfo = latestStep ? ` | 最新步骤: ${latestStep}` : '';
-    const recentTools = p.toolCallHistory.slice(-3).map((t) => {
-      const status = t.success === undefined ? '' : (t.success ? '✅' : '❌');
-      const params = t.params ? `(${t.params})` : '';
-      const result = t.result ? ` => ${t.result}` : (t.error ? ` => ERROR: ${t.error}` : '');
-      return `- ${t.toolName}${params} ${status}${result}`.trim();
-    });
-    const toolSummary = recentTools.length > 0 ? `\n工具调用历史:\n${recentTools.join('\n')}` : '';
-    return `🔄 ${p.agentId}: ${elapsed}${task}${stepInfo}${toolSummary}`;
+    const task = p.currentTask ? ` | ${p.currentTask}` : '';
+
+    // Concise tool history, skip exec_command, mobile readable
+    const recentTools = p.toolCallHistory
+      .filter((t) => t.toolName !== 'exec_command')
+      .slice(-5);
+
+    let toolSummary = '';
+    if (recentTools.length > 0) {
+      const lines = recentTools.map((t) => {
+        const icon = t.success === false ? '❌' : t.success === true ? '✅' : '⏳';
+        const name = t.toolName.replace(/^finger-system-agent-/, '');
+        const result = t.error ? t.error.slice(0, 60) : t.result ? t.result.slice(0, 60) : '';
+        return `${icon} ${name}${result ? ': ' + result : ''}`;
+      });
+      toolSummary = '\n' + lines.join('\n');
+    }
+
+    return `📊 ${p.agentId} | ${elapsed}${task}${toolSummary}`;
   }
 
   private buildReportKey(p: SessionProgress): string {
