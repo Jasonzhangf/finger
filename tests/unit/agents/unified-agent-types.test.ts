@@ -76,7 +76,7 @@ describe('unified-agent-types', () => {
     });
   });
 
-  it('prefers explicit history when provided', () => {
+  it('prefers session history as SSOT when provided', () => {
     const merged = mergeHistory(
       [
         {
@@ -86,6 +86,23 @@ describe('unified-agent-types', () => {
           timestamp: new Date().toISOString(),
         },
       ],
+      [
+        {
+          role: 'assistant',
+          content: 'external history',
+        },
+      ],
+      20,
+    );
+
+    expect(merged).toHaveLength(1);
+    expect(merged[0].content).toBe('session history');
+    expect(merged[0].role).toBe('user');
+  });
+
+  it('uses external history only when session history is empty', () => {
+    const merged = mergeHistory(
+      [],
       [
         {
           role: 'assistant',

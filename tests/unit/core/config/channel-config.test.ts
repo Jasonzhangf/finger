@@ -6,6 +6,12 @@ import * as path from 'path';
 vi.mock('fs', () => ({
   existsSync: vi.fn(),
   readFileSync: vi.fn(),
+  mkdirSync: vi.fn(),
+  appendFileSync: vi.fn(),
+  statSync: vi.fn(),
+  renameSync: vi.fn(),
+  unlinkSync: vi.fn(),
+  writeFileSync: vi.fn(),
 }));
 
 import { existsSync, readFileSync } from 'fs';
@@ -31,6 +37,9 @@ vi.mock('../../../../src/core/finger-paths.js', () => ({
       file: {
         main: '/home/testuser/.finger/config/config.json',
       },
+    },
+    logs: {
+      dir: '/home/testuser/.finger/logs',
     },
   },
 }));
