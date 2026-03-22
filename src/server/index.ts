@@ -30,18 +30,10 @@ import { echoInput, echoOutput } from '../agents/test/mock-echo-agent.js';
 import { memoryOutput } from '../outputs/memory.js';
 import { createWebUIOutput } from '../outputs/webui.js';
 import {
-  FINGER_CODER_AGENT_ID,
-  FINGER_CODER_ALLOWED_TOOLS,
-  FINGER_EXECUTOR_AGENT_ID,
-  FINGER_EXECUTOR_ALLOWED_TOOLS,
   FINGER_GENERAL_AGENT_ID,
   FINGER_GENERAL_ALLOWED_TOOLS,
   FINGER_ORCHESTRATOR_AGENT_ID,
   FINGER_ORCHESTRATOR_ALLOWED_TOOLS,
-  FINGER_RESEARCHER_AGENT_ID,
-  FINGER_RESEARCHER_ALLOWED_TOOLS,
-  FINGER_REVIEWER_AGENT_ID,
-  FINGER_REVIEWER_ALLOWED_TOOLS,
  FINGER_SYSTEM_AGENT_ID,
   FINGER_SYSTEM_ALLOWED_TOOLS,
 } from '../agents/finger-general/finger-general-module.js';
@@ -298,10 +290,6 @@ await registerFingerRoleModules({
 }, [
   { id: FINGER_GENERAL_AGENT_ID, roleProfile: 'general', allowedTools: FINGER_GENERAL_ALLOWED_TOOLS },
   { id: FINGER_ORCHESTRATOR_AGENT_ID, roleProfile: 'orchestrator', allowedTools: FINGER_ORCHESTRATOR_ALLOWED_TOOLS },
-  { id: FINGER_RESEARCHER_AGENT_ID, roleProfile: 'researcher', allowedTools: FINGER_RESEARCHER_ALLOWED_TOOLS },
-  { id: FINGER_EXECUTOR_AGENT_ID, roleProfile: 'executor', allowedTools: FINGER_EXECUTOR_ALLOWED_TOOLS },
-  { id: FINGER_CODER_AGENT_ID, roleProfile: 'coder', allowedTools: FINGER_CODER_ALLOWED_TOOLS },
-  { id: FINGER_REVIEWER_AGENT_ID, roleProfile: 'reviewer', allowedTools: FINGER_REVIEWER_ALLOWED_TOOLS },
   { id: FINGER_SYSTEM_AGENT_ID, roleProfile: 'system', allowedTools: FINGER_SYSTEM_ALLOWED_TOOLS },
 ], {
   enableLegacyChatCodexAlias: ENABLE_LEGACY_CHAT_CODEX_ALIAS,
@@ -432,7 +420,7 @@ startServer(app, process.env.HOST || '0.0.0.0', PORT, {
 });
 
 logger.module('server').info('Finger role modules ready', {
-  agents: [FINGER_GENERAL_AGENT_ID, FINGER_ORCHESTRATOR_AGENT_ID, FINGER_RESEARCHER_AGENT_ID, FINGER_EXECUTOR_AGENT_ID, FINGER_CODER_AGENT_ID, FINGER_REVIEWER_AGENT_ID].join(', '),
+  agents: [FINGER_GENERAL_AGENT_ID, FINGER_ORCHESTRATOR_AGENT_ID].join(', '),
 });
 try {
   const loadedOrchestrationConfig = loadOrchestrationConfig();

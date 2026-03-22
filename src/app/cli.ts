@@ -14,10 +14,6 @@ import { registerDefaultRuntimeTools } from '../runtime/default-tools.js';
 import {
   createFingerGeneralModule,
   FINGER_ORCHESTRATOR_AGENT_ID,
-  FINGER_RESEARCHER_AGENT_ID,
-  FINGER_EXECUTOR_AGENT_ID,
-  FINGER_CODER_AGENT_ID,
-  FINGER_REVIEWER_AGENT_ID,
 } from '../agents/finger-general/finger-general-module.js';
 import type { RuntimeEvent } from '../runtime/events.js';
 import { createConsoleLikeLogger } from '../core/logger/console-like.js';
@@ -53,16 +49,12 @@ export async function runAppCLI(args: string[]): Promise<void> {
 
   const modules = [
     createFingerGeneralModule({ id: FINGER_ORCHESTRATOR_AGENT_ID, roleProfile: 'orchestrator' }),
-    createFingerGeneralModule({ id: FINGER_RESEARCHER_AGENT_ID, roleProfile: 'researcher' }),
-    createFingerGeneralModule({ id: FINGER_EXECUTOR_AGENT_ID, roleProfile: 'executor' }),
-    createFingerGeneralModule({ id: FINGER_CODER_AGENT_ID, roleProfile: 'coder' }),
-    createFingerGeneralModule({ id: FINGER_REVIEWER_AGENT_ID, roleProfile: 'reviewer' }),
   ];
   for (const module of modules) {
     await moduleRegistry.register(module);
   }
 
-  clog.log('[App] Finger role modules ready: finger-orchestrator, finger-researcher, finger-executor, finger-coder, finger-reviewer');
+  clog.log('[App] Finger role modules ready: finger-orchestrator');
 
   // 订阅事件打印
   globalEventBus.subscribeAll(printEvent);

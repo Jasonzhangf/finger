@@ -8,7 +8,7 @@ const DEFAULT_TIMEOUT_MS = 15_000;
 const TOOL_INPUT_ENV_KEY = 'FINGER_CONTEXT_LEDGER_TOOL_INPUT';
 
 interface ContextLedgerMemoryToolInput {
-  action?: 'query' | 'search' | 'insert' | 'index' | 'compact';
+  action?: 'query' | 'search' | 'index' | 'compact';
   session_id?: string;
   agent_id?: string;
   mode?: string;
@@ -47,13 +47,13 @@ export const contextLedgerMemoryTool: InternalTool<unknown, ContextLedgerMemoryT
     'Time-ordered context memory tool with two-level retrieval.',
     'Query timeline ledger by time range / keyword / event type.',
     'For fuzzy queries, it checks compact memory first; then detail query can drill into raw timeline.',
-    'Can insert important text or a time-range slice into focus slot (ledger carry area).',
-    'Supports compact/index actions to persist compaction summaries and rebuild compact-memory search index.',
+    'Read-only for agents: query/search timeline memory.',
+    'System-level maintenance actions compact/index are allowed for automatic ledger maintenance.',
   ].join(' '),
   inputSchema: {
     type: 'object',
     properties: {
-      action: { type: 'string', enum: ['query', 'search', 'insert', 'index', 'compact'], description: 'query/search: search timeline memory; insert: write focus slot; index: rebuild compact index; compact: persist a compaction summary and align ledger' },
+      action: { type: 'string', enum: ['query', 'search', 'index', 'compact'], description: 'query/search: search timeline memory; index: rebuild compact index; compact: persist a compaction summary and align ledger' },
       session_id: { type: 'string', description: 'Optional override session id; usually auto-filled by runtime context' },
       agent_id: { type: 'string', description: 'Target agent ledger id. Requires read permission when not self.' },
       mode: { type: 'string', description: 'Conversation mode/thread name, e.g. main or review' },
@@ -64,9 +64,9 @@ export const contextLedgerMemoryTool: InternalTool<unknown, ContextLedgerMemoryT
       fuzzy: { type: 'boolean', description: 'When true, fuzzy query checks compact memory first' },
       event_types: { type: 'array', items: { type: 'string' }, description: 'Filter by event types, e.g. tool_call/tool_result/context_compact' },
       detail: { type: 'boolean', description: 'For fuzzy compact hit, drill down into raw timeline details' },
-      text: { type: 'string', description: 'Text to insert into focus slot for carry-forward context' },
-      append: { type: 'boolean', description: 'Append to existing focus slot content instead of overwrite' },
-      focus_max_chars: { type: 'number', description: 'Optional focus-slot char limit override' },
+      text: { type: 'string', description: 'Reserved (disabled for agent manual writes)' },
+      append: { type: 'boolean', description: 'Reserved (disabled for agent manual writes)' },
+      focus_max_chars: { type: 'number', description: 'Reserved (disabled for agent manual writes)' },
       full_reindex: { type: 'boolean', description: 'Rebuild compact-memory index from scratch' },
       trigger: { type: 'string', enum: ['manual', 'auto'], description: 'Compaction trigger kind' },
       summary: { type: 'string', description: 'Compaction summary text' },
@@ -146,12 +146,15 @@ function parseInput(rawInput: unknown): ContextLedgerMemoryToolInput {
   if (!isRecord(rawInput)) {
     return { action: 'query' };
   }
-  const action = rawInput.action === 'insert'
-    || rawInput.action === 'index'
+  const action = rawInput.action === 'index'
     || rawInput.action === 'compact'
     || rawInput.action === 'search'
       ? rawInput.action
       : 'query';
+
+  if (rawInput.action === 'insert') {
+    throw new Error('context_ledger.memory action=insert is disabled for manual tool calls; use query/search or automatic compact/index pipeline');
+  }
   return {
     action,
     session_id: typeof rawInput.session_id === 'string' ? rawInput.session_id : undefined,

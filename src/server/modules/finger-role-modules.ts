@@ -7,7 +7,7 @@ import { createFingerGeneralModule, type ChatCodexLoopEvent } from '../../agents
 import { resolveBaseAgentRole } from '../../agents/chat-codex/agent-role-config.js';
 import type { ChatCodexDeveloperRole } from '../../agents/chat-codex/developer-prompt-templates.js';
 
-export type FingerRoleProfile = 'general' | 'orchestrator' | 'researcher' | 'executor' | 'coder' | 'reviewer' | 'system';
+export type FingerRoleProfile = 'general' | 'orchestrator' | 'system';
 
 export interface FingerRoleSpec {
   id: string;
@@ -38,7 +38,6 @@ export async function registerFingerRoleModules(
   const { moduleRegistry, runtime, toolRegistry, chatCodexRunner, daemonUrl, onLoopEvent } = deps;
 
   const resolveDeveloperRole = (role: FingerRoleSpec): ChatCodexDeveloperRole => {
-    if (role.roleProfile === 'researcher') return 'searcher';
     if (role.roleProfile === 'system') return 'orchestrator';
     if (role.roleProfile === 'general') return 'orchestrator';
     return resolveBaseAgentRole(role.roleProfile);
