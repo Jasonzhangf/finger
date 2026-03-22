@@ -1,6 +1,6 @@
 import { EventEmitter } from 'events';
 import type { ChildProcess } from 'child_process';
-import logger from '../shared/logger.js';
+import { logger } from '../../core/logger.js';
 
 export interface ManagedProcess {
   id: string;
@@ -24,6 +24,8 @@ const DEFAULT_LIMITS: ResourceLimits = {
   processTimeoutMs: 5 * 60 * 1000, // 5 minutes
   idleTimeoutMs: 2 * 60 * 1000, // 2 minutes
 };
+
+const log = logger.module('LifecycleManager');
 
 class AgentLifecycleManager extends EventEmitter {
   private processes = new Map<string, ManagedProcess>();
@@ -77,7 +79,7 @@ class AgentLifecycleManager extends EventEmitter {
       this.emit('process-exit', { id, type, code });
     });
 
-    logger.debug(`Registered ${type} process: ${id}`);
+    log.debug('Registered ${type} process: ${id}', { "type": type, "id": id });;
   }
 
   killProcess(id: string, reason: string): boolean {
@@ -93,13 +95,13 @@ class AgentLifecycleManager extends EventEmitter {
     setTimeout(() => {
       if (!process.killed) {
         process.kill('SIGKILL');
-        logger.warn(`Force killed process ${id} after SIGTERM timeout`);
+        log.warn('Force killed process ${id} after SIGTERM timeout', { "id": id });;
       }
     }, 5000);
 
     this.processes.delete(id);
     this.emit('process-killed', { id, type: managed.type, reason });
-    logger.info(`Killed ${managed.type} process ${id}: ${reason}`);
+    log.info('Killed ${managed.type} process ${id}: ${reason}', { "managed.type": managed.type, "id": id, "reason": reason });;
 
     return true;
   }

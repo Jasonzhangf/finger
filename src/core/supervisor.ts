@@ -4,12 +4,16 @@
  * Crash recovery with exponential backoff
  */
 
+import { logger } from './logger.js';
+
 export interface SupervisedProcess {
   id: string;
   start: () => Promise<void>;
   stop: () => Promise<void>;
   isHealthy: () => boolean;
 }
+
+const log = logger.module('Supervisor');
 
 export class Supervisor {
   private restartAttempts: Map<string, number> = new Map();
@@ -37,7 +41,7 @@ export class Supervisor {
         await proc.start();
         this.restartAttempts.set(id, 0);
       } catch (err) {
-        console.error(`[Supervisor] Failed to start ${id}:`, err);
+        log.error('Failed to start ${id}:', err instanceof Error ? err : undefined, { "id": id });
         this.scheduleRestart(id);
       }
     }
@@ -53,7 +57,7 @@ export class Supervisor {
       try {
         await proc.stop();
       } catch (err) {
-        console.error(`[Supervisor] Failed to stop ${id}:`, err);
+        log.error('Failed to stop ${id}:', err instanceof Error ? err : undefined, { "id": id });
       }
     }
   }
@@ -90,7 +94,7 @@ export class Supervisor {
             }
           }, 5000);
         } catch (err) {
-          console.error(`[Supervisor] Restart failed for ${id}:`, err);
+          log.error('Restart failed for ${id}:', err instanceof Error ? err : undefined, { "id": id });
           this.scheduleRestart(id);
         }
       }

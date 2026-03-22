@@ -7,6 +7,9 @@
 import { promises as fs } from 'fs';
 import path from 'path';
 import { FINGER_PATHS } from '../../core/finger-paths.js';
+import { logger } from '../../core/logger.js';
+
+const log = logger.module('projectId');
 
 export type AgentStatus = 'idle' | 'busy' | 'stopped' | 'crashed' | 'completed';
 
@@ -61,7 +64,7 @@ export async function loadRegistry(): Promise<AgentRegistry> {
     
     // Handle empty file
     if (!content || content.trim() === '') {
-      console.warn('[Registry] Registry file is empty, creating new one');
+      log.warn('Registry file is empty, creating new one');
       return createEmptyRegistry();
     }
     
@@ -80,7 +83,7 @@ export async function loadRegistry(): Promise<AgentRegistry> {
     }
     if ((error as any) instanceof SyntaxError) {
       // JSON parse error (empty or corrupted file)
-      console.warn('[Registry] Failed to parse registry file, creating new one');
+      log.warn('Failed to parse registry file, creating new one');
       return createEmptyRegistry();
     }
     throw error;

@@ -2,6 +2,9 @@ import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statS
 import { spawnSync } from 'child_process';
 import path from 'path';
 import { FINGER_PATHS } from '../../core/finger-paths.js';
+import { logger } from '../../core/logger.js';
+
+const log = logger.module('command');
 
 const LEGACY_CAPABILITY_SUFFIX = '.capability.json';
 const MODULE_JSON_NAME = 'module.json';

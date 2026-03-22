@@ -8,6 +8,9 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import { FINGER_PATHS } from '../finger-paths.js';
+import { logger } from '../../core/logger.js';
+
+const log = logger.module('ChannelConfig');
 
 export interface ChannelAuthConfig {
   id: string;

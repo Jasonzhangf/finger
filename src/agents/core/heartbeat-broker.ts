@@ -1,5 +1,6 @@
 import dgram from 'dgram';
 import EventEmitter from 'events';
+import { logger } from '../../core/logger.js';
 
 const HEARTBEAT_PORT = 9998; // Separate from daemon HTTP port
 const HEARTBEAT_INTERVAL_MS = 30000; // Master broadcasts every 30s
@@ -15,6 +16,8 @@ export interface HeartbeatBrokerOptions {
  * Master process heartbeat broadcaster
  * Sends UDP broadcast to all child agents
  */
+const log = logger.module('HeartbeatMonitor');
+
 export class HeartbeatBroker extends EventEmitter {
   private socket: dgram.Socket | null = null;
   private interval: NodeJS.Timeout | null = null;
@@ -36,7 +39,7 @@ export class HeartbeatBroker extends EventEmitter {
     this.socket = dgram.createSocket('udp4');
     this.socket.bind(() => {
       this.socket?.setBroadcast(true);
-      console.log(`[HeartbeatBroker] Broadcasting on port ${this.port}`);
+      log.info('Broadcasting', { port: this.port });
     });
 
     this.interval = setInterval(() => {
@@ -57,7 +60,7 @@ export class HeartbeatBroker extends EventEmitter {
     const message = Buffer.from(payload);
     this.socket.send(message, 0, message.length, this.port, this.broadcastAddress, (err) => {
       if (err) {
-        console.error('[HeartbeatBroker] Broadcast failed:', err.message);
+        log.error('Broadcast failed', err instanceof Error ? err : undefined);
       }
     });
   }
@@ -71,7 +74,7 @@ export class HeartbeatBroker extends EventEmitter {
       this.socket.close();
       this.socket = null;
     }
-    console.log('[HeartbeatBroker] Stopped');
+    log.info('Stopped');
   }
 }
 
@@ -114,16 +117,16 @@ export class HeartbeatMonitor extends EventEmitter {
     });
 
     this.socket.bind(this.port, () => {
-      console.log(`[HeartbeatMonitor] Listening on port ${this.port}`);
+      log.info('Listening', { port: this.port });
     });
 
     // Check every interval period if we received a heartbeat
     this.checkInterval = setInterval(() => {
       this.missedCount++;
-      console.log(`[HeartbeatMonitor] Missed heartbeat ${this.missedCount}/${this.missedThreshold}`);
+      log.warn('Missed heartbeat', { missedCount: this.missedCount, missedThreshold: this.missedThreshold });
 
       if (this.missedCount >= this.missedThreshold) {
-        console.error('[HeartbeatMonitor] Master appears dead, initiating self-destruct');
+        log.error('Master appears dead, initiating self-destruct');
         this.stop();
         onDeath();
       }

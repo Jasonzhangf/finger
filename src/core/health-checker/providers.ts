@@ -102,7 +102,7 @@ export async function performAIProviderHealthCheck(): Promise<boolean> {
 
   if (!defaultProvider) {
     log.warn('No default AI provider configured');
-    console.warn('⚠️ [Health Check] No default AI provider configured');
+    log.warn('⚠️ [Health Check] No default AI provider configured');
     return false;
   }
 

@@ -3,6 +3,9 @@ import { FINGER_PATHS } from '../core/finger-paths.js';
 import path from 'path';
 import { spawnSync } from 'child_process';
 import { GatewayModuleManifest, GatewayProbeResult, ResolvedGatewayModule } from './types.js';
+import { logger } from '../core/logger.js';
+
+const log = logger.module('field');
 
 const MODULE_JSON_NAME = 'module.json';
 const DEFAULT_README_FILE = 'README.md';

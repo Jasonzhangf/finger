@@ -1,5 +1,6 @@
 import fs from 'fs';
 import { BaseBlock, type BlockCapabilities } from '../../core/block.js';
+import { logger } from '../../core/logger.js';
 
 export interface MailboxMessage {
   id: string;
@@ -21,6 +22,8 @@ export interface MailboxMessage {
   readAt?: string;
   ackAt?: string;
 }
+
+const log = logger.module('MailboxBlock');
 
 export class MailboxBlock extends BaseBlock {
   readonly type = 'mailbox';
@@ -220,13 +223,13 @@ export class MailboxBlock extends BaseBlock {
               this.nextSeq = msg.seq + 1;
             }
           } catch (e) {
-            console.error(`[MailboxBlock] Failed to parse line: ${line}`, e);
+            log.error('Failed to parse line: ${line}', e instanceof Error ? e : undefined, { "line": line });
           }
         }
         console.log(`[MailboxBlock] Loaded ${this.messages.size} messages from ${this.storagePath}`);
       }
     } catch (e) {
-      console.error(`[MailboxBlock] Failed to load from storage: ${this.storagePath}`, e);
+      log.error('Failed to load from storage: ${this.storagePath}', e instanceof Error ? e : undefined, { "this.storagePath": this.storagePath });
     }
   }
 
@@ -240,7 +243,7 @@ export class MailboxBlock extends BaseBlock {
       }
       fs.writeFileSync(this.storagePath, lines.join('\n') + '\n', 'utf-8');
     } catch (e) {
-      console.error(`[MailboxBlock] Failed to save to storage: ${this.storagePath}`, e);
+      log.error('Failed to save to storage: ${this.storagePath}', e instanceof Error ? e : undefined, { "this.storagePath": this.storagePath });
     }
   }
 

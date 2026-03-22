@@ -21,6 +21,9 @@ import { InternalTool } from '../types.js';
 import { getEmbeddingAdapter } from './embedding-adapter.js';
 import { getMilvusAdapter, resetMilvusAdapter } from './milvus-adapter.js';
 import { loadMemoryConfig } from './memory-config.js';
+import { logger } from '../../../core/logger.js';
+
+const log = logger.module('index');
 
 export interface MemoryEntry {
   id: string;

@@ -11,12 +11,15 @@ import type { AgentRuntimeDeps } from '../../server/modules/agent-runtime/types.
 import { SessionControlPlaneStore } from '../../runtime/session-control-plane.js';
 import { updateAgentStatus, updateHeartbeat, listAgents } from './registry.js';
 import { emitAgentStatusChanged } from './system-events.js';
+import { logger } from '../../core/logger.js';
 
 const DEFAULT_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes
 
 export interface PeriodicCheckConfig {
   intervalMs?: number;
 }
+
+const log = logger.module('PeriodicCheckRunner');
 
 export class PeriodicCheckRunner {
   private timer: NodeJS.Timeout | null = null;
