@@ -58,6 +58,7 @@ export class AgentStatusSubscriber {
     return {
       messageHub: this.messageHub,
       channelBridgeManager: this.channelBridgeManager,
+      broadcast: this.broadcast,
       resolveEnvelopeMapping: (sessionId: string) => this.resolveEnvelopeMapping(sessionId),
       getAgentInfo: (agentId: string) => this.getAgentInfo(agentId),
       stepBuffer: this.stepBuffer,
@@ -67,12 +68,13 @@ export class AgentStatusSubscriber {
     };
   }
 
-  constructor(
-    private eventBus: UnifiedEventBus,
-    private deps: AgentRuntimeDeps,
-    private messageHub?: import('../../orchestration/message-hub.js').MessageHub,
-    private channelBridgeManager?: import('../../bridges/manager.js').ChannelBridgeManager,
-  ) {}
+ constructor(
+   private eventBus: UnifiedEventBus,
+   private deps: AgentRuntimeDeps,
+   private messageHub?: import('../../orchestration/message-hub.js').MessageHub,
+   private channelBridgeManager?: import('../../bridges/manager.js').ChannelBridgeManager,
+    private broadcast?: (message: unknown) => void,
+ ) {}
 
   /**
    * 启动订阅
@@ -365,8 +367,24 @@ export class AgentStatusSubscriber {
     // 更新时间戳，避免长任务被清理
     mapping.timestamp = Date.now();
 
-    // 发送状态更新到通信通道
+    // 发送状态更新到通信通道 (QQBot)
     if (this.messageHub) { await sendStatusUpdate(mapping.envelope, wrappedUpdate, this.messageHub); };
+
+    // 同时广播到 WebUI
+    if (this.broadcast) {
+      this.broadcast({
+        type: 'agent_status',
+        sessionId,
+        agentId,
+        timestamp: event.timestamp,
+        payload: {
+          status: payload.status,
+          summary: payload.summary,
+          agentName: agentInfo.agentName,
+          agentRole: agentInfo.agentRole,
+        },
+      });
+    }
 
     // 终态时先刷新剩余 steps buffer
     if (payload.status === 'completed' || payload.status === 'failed') {

@@ -18,6 +18,7 @@ const log = logger.module('AgentStatusSubscriberHandlers');
 export interface HandlerContext {
   messageHub?: import('../../orchestration/message-hub.js').MessageHub;
   channelBridgeManager?: import('../../bridges/manager.js').ChannelBridgeManager;
+  broadcast?: (message: unknown) => void;
   resolveEnvelopeMapping: (sessionId: string) => SessionEnvelopeMapping | null;
   getAgentInfo: (agentId: string) => Promise<AgentInfo>;
   stepBuffer: Map<string, Array<{ index: number; summary: string; timestamp: string }>>;
