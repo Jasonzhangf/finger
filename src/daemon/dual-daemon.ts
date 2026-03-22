@@ -69,6 +69,22 @@ export class DualDaemonSupervisor {
   private running = false;
   private checkTimer: NodeJS.Timeout | null = null;
 
+  private readPidFromFile(file: string): number | undefined {
+    try {
+      if (!existsSync(file)) return undefined;
+      const raw = readFileSync(file, 'utf-8').trim();
+      const pid = Number.parseInt(raw, 10);
+      return Number.isFinite(pid) && pid > 0 ? pid : undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
+  private hydratePidsFromFiles(): void {
+    this.daemon1.pid = this.readPidFromFile(DAEMON_1_PID_FILE);
+    this.daemon2.pid = this.readPidFromFile(DAEMON_2_PID_FILE);
+  }
+
   async start(): Promise<void> {
     if (this.running) {
       log.warn('DualDaemon already running');
@@ -77,7 +93,16 @@ export class DualDaemonSupervisor {
 
     log.info('Starting DualDaemon Supervisor...');
 
-    // 清理旧的 PID 文件
+    // 先读取现有运行态并进行有界清理（避免孤儿进程）
+    this.hydratePidsFromFiles();
+    if (this.isProcessAlive(this.daemon1.pid) || this.isProcessAlive(this.daemon2.pid)) {
+      log.warn('Existing daemon runtime detected, stopping before restart', {
+        daemon1: this.daemon1.pid,
+        daemon2: this.daemon2.pid,
+      });
+      await this.stopDaemon(this.daemon1);
+      await this.stopDaemon(this.daemon2);
+    }
     this.cleanupPidFiles();
 
     // 启动两个 daemon 实例
@@ -110,6 +135,9 @@ export class DualDaemonSupervisor {
   async stop(): Promise<void> {
     log.info('Stopping DualDaemon Supervisor...');
     this.running = false;
+
+    // 从 pid 文件恢复运行态（支持由新进程调用 stop/status）
+    this.hydratePidsFromFiles();
 
     if (this.checkTimer) {
       clearInterval(this.checkTimer);
@@ -216,6 +244,9 @@ export class DualDaemonSupervisor {
   }
 
   private async stopDaemon(daemon: DaemonInstance): Promise<void> {
+    if (!daemon.pid) {
+      daemon.pid = this.readPidFromFile(daemon.pidFile);
+    }
     if (daemon.pid) {
       try {
         process.kill(daemon.pid, 'SIGTERM');
@@ -241,7 +272,12 @@ export class DualDaemonSupervisor {
           // 已退出
         }
       } catch (err) {
-        log.error(`Failed to stop daemon ${daemon.id}:`, err instanceof Error ? err : new Error(String(err)));
+        const error = err as NodeJS.ErrnoException;
+        if (error?.code === 'ESRCH') {
+          log.warn(`Daemon ${daemon.id} already exited`, { pid: daemon.pid });
+        } else {
+          log.error(`Failed to stop daemon ${daemon.id}:`, err instanceof Error ? err : new Error(String(err)));
+        }
       }
     }
 
@@ -412,19 +448,25 @@ export class DualDaemonSupervisor {
   }
 
   getStatus() {
+    this.hydratePidsFromFiles();
+    const daemon1Alive = this.isProcessAlive(this.daemon1.pid);
+    const daemon2Alive = this.isProcessAlive(this.daemon2.pid);
+    const supervisorPid = this.readPidFromFile(DUAL_DAEMON_PID_FILE);
+    const supervisorAlive = this.isProcessAlive(supervisorPid);
+
     return {
-      running: this.running,
-      supervisor: process.pid,
+      running: this.running || daemon1Alive || daemon2Alive || supervisorAlive,
+      supervisor: supervisorPid,
       daemon1: {
         pid: this.daemon1.pid,
-        alive: this.isProcessAlive(this.daemon1.pid),
+        alive: daemon1Alive,
         heartbeatSequence: this.daemon1.lastHeartbeatSequence,
         missedHeartbeats: this.daemon1.heartbeatMissedCount ?? 0,
         uptime: this.daemon1.uptimeStart ? Date.now() - this.daemon1.uptimeStart : 0,
       },
       daemon2: {
         pid: this.daemon2.pid,
-        alive: this.isProcessAlive(this.daemon2.pid),
+        alive: daemon2Alive,
         heartbeatSequence: this.daemon2.lastHeartbeatSequence,
         missedHeartbeats: this.daemon2.heartbeatMissedCount ?? 0,
         uptime: this.daemon2.uptimeStart ? Date.now() - this.daemon2.uptimeStart : 0,
@@ -486,37 +528,54 @@ export function disableAutoStart(): void {
   }
 }
 
-// CLI entry point
-const args = process.argv.slice(2);
+function isDirectExecution(): boolean {
+  const entry = process.argv[1];
+  if (!entry) return false;
+  return entry.endsWith('/dist/daemon/dual-daemon.js') || entry.endsWith('\\dist\\daemon\\dual-daemon.js');
+}
 
-if (args.includes('--start')) {
-  const supervisor = new DualDaemonSupervisor();
-  supervisor.start().catch((err) => {
-    console.error('Failed to start DualDaemon:', err);
-    process.exit(1);
-  });
-} else if (args.includes('--stop')) {
-  const supervisor = new DualDaemonSupervisor();
-  supervisor.stop().catch((err) => {
-    console.error('Failed to stop DualDaemon:', err);
-    process.exit(1);
-  });
-} else if (args.includes('--status')) {
-  const supervisor = new DualDaemonSupervisor();
-  console.log(JSON.stringify(supervisor.getStatus(), null, 2));
-} else if (args.includes('--enable-autostart')) {
-  enableAutoStart();
-} else if (args.includes('--disable-autostart')) {
-  disableAutoStart();
-} else {
+async function runCliEntry(): Promise<void> {
+  const args = process.argv.slice(2);
+
+  if (args.includes('--start')) {
+    const supervisor = new DualDaemonSupervisor();
+    await supervisor.start();
+    return;
+  }
+  if (args.includes('--stop')) {
+    const supervisor = new DualDaemonSupervisor();
+    await supervisor.stop();
+    return;
+  }
+  if (args.includes('--status')) {
+    const supervisor = new DualDaemonSupervisor();
+    console.log(JSON.stringify(supervisor.getStatus(), null, 2));
+    return;
+  }
+  if (args.includes('--enable-autostart')) {
+    enableAutoStart();
+    return;
+  }
+  if (args.includes('--disable-autostart')) {
+    disableAutoStart();
+    return;
+  }
+
   console.log(`
 Usage: node dist/daemon/dual-daemon.js [command]
 
 Commands:
-  --start             Start DualDaemon supervisor
-  --stop              Stop DualDaemon supervisor
+  --start              Start DualDaemon supervisor
+  --stop               Stop DualDaemon supervisor
   --status             Show daemon status
   --enable-autostart   Enable launchd auto-start
   --disable-autostart  Disable launchd auto-start
-    `);
+`);
+}
+
+if (isDirectExecution()) {
+  runCliEntry().catch((err) => {
+    console.error('DualDaemon CLI failed:', err);
+    process.exit(1);
+  });
 }

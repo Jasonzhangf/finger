@@ -21,6 +21,7 @@ import { registerMemoryLedgerCommand } from './memory-ledger.js';
 import { registerTestCommand } from './test-command.js';
 import { registerCommandHubCommand } from './command-hub.js';
 import { ensureFingerLayout } from '../core/finger-paths.js';
+import { DualDaemonSupervisor, enableAutoStart, disableAutoStart } from '../daemon/dual-daemon.js';
 
 const DEFAULT_HTTP_BASE_URL = process.env.FINGER_HTTP_URL || process.env.FINGER_HUB_URL || 'http://localhost:9999';
 const DEFAULT_WS_URL = process.env.FINGER_WS_URL || 'ws://localhost:9998';
@@ -29,6 +30,36 @@ const DEFAULT_WS_URL = process.env.FINGER_WS_URL || 'ws://localhost:9998';
 ensureFingerLayout();
 
 async function main(): Promise<void> {
+  // Backward-compatible fingerdaemon flags:
+  //   fingerdaemon --start|--stop|--status|--enable-autostart|--disable-autostart
+  // These flags are historically used by ops scripts. Handle them before commander parsing
+  // to avoid "unknown option '--start'" and ensure deterministic daemon control behavior.
+  const rawArgs = process.argv.slice(2);
+  if (rawArgs.length > 0 && rawArgs[0].startsWith('--')) {
+    const cmd = rawArgs[0];
+    const supervisor = new DualDaemonSupervisor();
+    if (cmd === '--start') {
+      await supervisor.start();
+      return;
+    }
+    if (cmd === '--stop') {
+      await supervisor.stop();
+      return;
+    }
+    if (cmd === '--status') {
+      console.log(JSON.stringify(supervisor.getStatus(), null, 2));
+      return;
+    }
+    if (cmd === '--enable-autostart') {
+      enableAutoStart();
+      return;
+    }
+    if (cmd === '--disable-autostart') {
+      disableAutoStart();
+      return;
+    }
+  }
+
   const program = new Command();
 
   program
