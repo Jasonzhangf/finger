@@ -29,6 +29,14 @@ import {
 import { wrapStatusUpdate, getAgentIcon } from './agent-status-subscriber-helpers.js';
 import { logger } from '../../core/logger.js';
 import { sendStatusUpdate, startCleanup } from './agent-status-subscriber-runtime.js';
+import {
+  handleToolError as handleToolErrorEvent,
+  handleSystemError as handleSystemErrorEvent,
+  handleDispatch as handleDispatchEvent,
+  handleStepCompleted as handleStepCompletedEvent,
+  flushStepBuffer as flushStepBufferEvent,
+  type HandlerContext,
+} from './agent-status-subscriber-handlers.js';
 
 const log = logger.module('AgentStatusSubscriber');
 
@@ -45,6 +53,19 @@ export class AgentStatusSubscriber {
   // Step batching: per-session buffer for batch step updates
   private stepBuffer = new Map<string, Array<{ index: number; summary: string; timestamp: string }>>();
   private stepBatchDefault = 5;
+
+  private getHandlerContext(): HandlerContext {
+    return {
+      messageHub: this.messageHub,
+      channelBridgeManager: this.channelBridgeManager,
+      resolveEnvelopeMapping: (sessionId: string) => this.resolveEnvelopeMapping(sessionId),
+      getAgentInfo: (agentId: string) => this.getAgentInfo(agentId),
+      stepBuffer: this.stepBuffer,
+      stepBatchDefault: this.stepBatchDefault,
+      primaryAgentId: this.primaryAgentId,
+      registerChildAgent: (childAgentId: string, parentAgentId: string) => this.registerChildAgent(childAgentId, parentAgentId),
+    };
+  }
 
   constructor(
     private eventBus: UnifiedEventBus,
@@ -257,180 +278,38 @@ export class AgentStatusSubscriber {
    * 处理事件
    */
   private async handleEvent(event: RuntimeEvent): Promise<void> {
+    const ctx = this.getHandlerContext();
     if (event.type === 'agent_runtime_dispatch') {
-      await this.handleDispatch(event);
+      await handleDispatchEvent(event, ctx);
     } else if (event.type === 'agent_runtime_status') {
       await this.handleStatus(event);
     } else if (event.type === 'agent_step_completed') {
-      await this.handleStepCompleted(event);
+      await handleStepCompletedEvent(event, ctx);
     } else if (event.type === 'tool_error') {
-      await this.handleToolError(event as ToolErrorEvent);
+      await handleToolErrorEvent(event as ToolErrorEvent, ctx);
     } else if (event.type === 'system_error') {
-      await this.handleSystemError(event as SystemErrorEvent);
+      await handleSystemErrorEvent(event as SystemErrorEvent, ctx);
     }
   }
 
-  /**
-   * 处理 tool_error 事件
-   */
   private async handleToolError(event: ToolErrorEvent): Promise<void> {
-    const agentId = event.agentId || 'unknown-agent';
-    const sessionId = event.sessionId;
-    const mapping = this.resolveEnvelopeMapping(sessionId);
-    if (!mapping) return;
-
-    const agentInfo = await this.getAgentInfo(agentId);
-    const wrappedUpdate: WrappedStatusUpdate = {
-      type: 'agent_status',
-      eventId: event.toolId || `tool-error-${Date.now()}`,
-      timestamp: event.timestamp,
-      sessionId,
-      task: {
-        targetAgentId: agentId,
-        taskDescription: `工具失败: ${event.toolName}`,
-      },
-      agent: agentInfo,
-      status: {
-        state: 'failed',
-        summary: `工具失败: ${event.toolName}`,
-        details: { error: event.payload?.error, toolName: event.toolName },
-      },
-      display: {
-        title: `${agentInfo.agentName || agentId} 工具失败` ,
-        subtitle: event.payload?.error,
-        icon: getAgentIcon(agentInfo.agentRole),
-        level: 'detailed',
-      },
-    };
-
-    if (this.messageHub) { await sendStatusUpdate(mapping.envelope, wrappedUpdate, this.messageHub); };
+    await handleToolErrorEvent(event, this.getHandlerContext());
   }
 
-  /**
-   * 处理 system_error 事件
-   */
   private async handleSystemError(event: SystemErrorEvent): Promise<void> {
-    const sessionId = event.sessionId;
-    const mapping = this.resolveEnvelopeMapping(sessionId);
-    if (!mapping) return;
-
-    const wrappedUpdate: WrappedStatusUpdate = {
-      type: 'agent_status',
-      eventId: `system-error-${Date.now()}`,
-      timestamp: event.timestamp,
-      sessionId,
-      task: {
-        taskDescription: '系统错误',
-      },
-      agent: { agentId: 'system' },
-      status: {
-        state: 'failed',
-        summary: event.payload?.error || '系统错误',
-        details: { component: event.payload?.component, recoverable: event.payload?.recoverable },
-      },
-      display: {
-        title: '系统错误',
-        subtitle: event.payload?.error,
-        icon: '⚠️',
-        level: 'detailed',
-      },
-    };
-
-    if (this.messageHub) { await sendStatusUpdate(mapping.envelope, wrappedUpdate, this.messageHub); };
+    await handleSystemErrorEvent(event, this.getHandlerContext());
   }
 
-  /**
-   * 处理 dispatch 事件（任务派发）
-   */
   private async handleDispatch(event: RuntimeEvent): Promise<void> {
-    const payload = event.payload as {
-      dispatchId?: string;
-      targetAgentId?: string;
-    };
-
-    const targetAgentId = payload.targetAgentId;
-    if (!targetAgentId) return;
-
-    // 如果当前有主 Agent，且派发目标不是主 Agent，则注册为子 Agent
-    if (this.primaryAgentId && targetAgentId !== this.primaryAgentId) {
-      this.registerChildAgent(targetAgentId, this.primaryAgentId);
-    }
+    await handleDispatchEvent(event, this.getHandlerContext());
   }
 
-  /**
-   * 处理 agent_step_completed 事件（step 批量推送）
-   */
   private async handleStepCompleted(event: RuntimeEvent): Promise<void> {
-    const sessionId = event.sessionId;
-    const mapping = this.resolveEnvelopeMapping(sessionId);
-    if (!mapping) return;
-
-    // 检查该 channel 是否配置了 stepUpdates
-    // 默认启用 stepUpdates，只有在 channelBridgeManager 明确返回 false 时才禁用
-    let stepBatch = this.stepBatchDefault;
-    let stepUpdatesEnabled = true;
-    if (this.channelBridgeManager) {
-      const pushSettings = this.channelBridgeManager.getPushSettings(mapping.envelope.channel);
-      stepUpdatesEnabled = pushSettings.stepUpdates;
-      stepBatch = Math.max(1, pushSettings.stepBatch);
-    }
-    if (!stepUpdatesEnabled) return;
-
-    // 构建 step 摘要
-    const payload = event.payload as { round?: number; thought?: string; action?: string; observation?: string; success?: boolean };
-    const round = payload.round ?? 0;
-    const action = payload.action || '';
-    const thought = payload.thought || '';
-    const summary = action
-      ? (thought ? `思考: ${thought}\n操作: ${action}` : `操作: ${action}`)
-      : thought || `步骤 ${round}`;
-
-    // 追加到 buffer
-    const buffer = this.stepBuffer.get(sessionId) || [];
-    buffer.push({ index: round, summary, timestamp: event.timestamp as string });
-    this.stepBuffer.set(sessionId, buffer);
-
-    // 达到 batch 阈值时推送
-    if (buffer.length >= stepBatch) {
-      await this.flushStepBuffer(sessionId, mapping);
-    }
+    await handleStepCompletedEvent(event, this.getHandlerContext());
   }
 
-  /**
-   * 刷新 step buffer，批量发送到通道
-   */
   private async flushStepBuffer(sessionId: string, mapping: SessionEnvelopeMapping): Promise<void> {
-    const buffer = this.stepBuffer.get(sessionId);
-    if (!buffer || buffer.length === 0) return;
-
-    this.stepBuffer.delete(sessionId); // 清空 buffer，无论发送成功与否
-
-    if (!this.messageHub) return;
-
-    const lines = buffer.map((s, i) => `${i + 1}) ${s.summary}`).join('\n');
-    const content = `📋 中间步骤（${buffer.length}）:\n${lines}`;
-
-    const wrappedUpdate: WrappedStatusUpdate = {
-      type: 'agent_status',
-      eventId: `batch-steps-${Date.now()}`,
-      timestamp: new Date().toISOString(),
-      sessionId,
-      agent: { agentId: 'batch-steps' },
-      task: { taskDescription: `执行了 ${buffer.length} 个步骤` },
-      status: {
-        state: 'running',
-        summary: `执行了 ${buffer.length} 个步骤`,
-      },
-      display: {
-        title: '📋 中间步骤',
-        subtitle: content,
-        icon: '🔄',
-        level: 'detailed',
-      },
-    };
-
-    await sendStatusUpdate(mapping.envelope, wrappedUpdate, this.messageHub);
-    log.debug(`[AgentStatusSubscriber] Flushed ${buffer.length} steps for session ${sessionId}`);
+    await flushStepBufferEvent(sessionId, mapping, this.getHandlerContext());
   }
 
   /**
