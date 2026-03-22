@@ -291,13 +291,7 @@ export function createChannelBridgeHubRoute(deps: ChannelBridgeHubRouteDeps) {
       log.error('Hub route dispatch error', err instanceof Error ? err : undefined);
       await sendReply('处理失败，请稍后再试', 'messagehub');
     } finally {
-      // 延迟清理 session 映射（给状态更新发送留出时间）
-      if (agentStatusSubscriber) {
-        setTimeout(() => {
-          agentStatusSubscriber.unregisterSession(fixedSessionId);
-          log.info('[ChannelBridgeHubRoute] Unregistered session', { sessionId: fixedSessionId });
-        }, 30_000); // 30秒后清理
-      }
+      // 交给 AgentStatusSubscriber 自己根据终态/清理周期回收映射
     }
   };
 }

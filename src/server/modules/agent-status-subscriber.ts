@@ -39,7 +39,7 @@ export class AgentStatusSubscriber {
   private sessionEnvelopeMap = new Map<string, SessionEnvelopeMapping>();
   private agentSubscriptions = new Map<string, AgentSubscriptionConfig>(); // agentId -> config
   private primaryAgentId: string | null = null; // 当前主 Agent（编排者）
-  private readonly cleanupIntervalMs = 5 * 60 * 1000; // 5分钟清理一次过期映射
+  private readonly cleanupIntervalMs = 24 * 60 * 60 * 1000; // 24小时清理一次过期映射（避免长任务丢失更新）
   private _stopCleanup: (() => void) | null = null;
 
   constructor(
@@ -401,8 +401,17 @@ export class AgentStatusSubscriber {
       return;
     }
 
+    // 更新时间戳，避免长任务被清理
+    mapping.timestamp = Date.now();
+
     // 发送状态更新到通信通道
     if (this.messageHub) { await sendStatusUpdate(mapping.envelope, wrappedUpdate, this.messageHub); };
+
+    // 终态自动解除订阅（完成/失败）
+    if (payload.status === 'completed' || payload.status === 'failed') {
+      this.unregisterSession(sessionId);
+      log.info('[AgentStatusSubscriber] Unregistered session (terminal status)', { sessionId, status: payload.status });
+    }
   }
 
   /**
