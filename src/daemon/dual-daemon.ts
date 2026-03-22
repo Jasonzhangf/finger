@@ -342,37 +342,40 @@ export class DualDaemonSupervisor {
   }
 
   private checkDaemonHeartbeat(daemon: DaemonInstance): void {
-    // 初始化计数
+    // Each daemon monitors the OTHER daemon's heartbeat.
+    // daemon-1 monitors daemon-2, daemon-2 monitors daemon-1.
     if (daemon.heartbeatMissedCount === undefined) {
       daemon.heartbeatMissedCount = 0;
     }
 
-    // 增加丢失计数
     daemon.heartbeatMissedCount++;
 
     if (daemon.heartbeatMissedCount >= MISSED_HEARTBEAT_THRESHOLD) {
-      log.warn(`Daemon ${daemon.id} missed ${daemon.heartbeatMissedCount} heartbeats, restarting peer...`);
-      // 重启对方 daemon
+      // If the OTHER daemon is dead, restart it
       const peer = daemon.id === 1 ? this.daemon2 : this.daemon1;
       if (!this.isProcessAlive(peer.pid)) {
+        log.warn(`Daemon ${daemon.id}: Daemon ${peer.id} missed ${daemon.heartbeatMissedCount} heartbeats, restarting daemon ${peer.id}...`);
         this.restartDaemon(peer);
       }
-      // 重置计数
+      // Reset counter regardless (peer was restarted or already dead)
       daemon.heartbeatMissedCount = 0;
     }
   }
 
   private checkHealth(): void {
-    // 保留原有的进程检查作为备份
+    // Backup: PID-based check. Uses same mutual monitoring as checkDaemonHeartbeats.
     if (!this.running) return;
 
+    // daemon-1 is the primary executor - always restart if dead
     if (!this.isProcessAlive(this.daemon1.pid)) {
-      log.warn('Daemon 1 process not alive, restarting...');
+      log.warn('Daemon 1 (primary) process not alive, restarting...');
       this.restartDaemon(this.daemon1);
+      return;
     }
 
+    // daemon-2 is standby monitor - restart if dead
     if (!this.isProcessAlive(this.daemon2.pid)) {
-      log.warn('Daemon 2 process not alive, restarting...');
+      log.warn('Daemon 2 (standby) process not alive, restarting...');
       this.restartDaemon(this.daemon2);
     }
   }
