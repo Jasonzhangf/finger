@@ -17,6 +17,7 @@ export interface ServerLifecycleDeps {
   clockInjector?: { stop(): void } | null;
   agentStatusSubscriber?: { stop(): void } | null;
   heartbeatScheduler?: { stop(): void } | null;
+  progressMonitor?: { stop(): void } | null;
 }
 
 export function startServer(
@@ -67,6 +68,7 @@ export function startServer(
     if (deps.clockInjector) deps.clockInjector.stop();
     if (deps.agentStatusSubscriber) deps.agentStatusSubscriber.stop();
     if (deps.heartbeatScheduler) deps.heartbeatScheduler.stop();
+    if (deps.progressMonitor) deps.progressMonitor.stop();
     cleanupPidFile();
   });
 

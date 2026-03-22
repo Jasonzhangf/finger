@@ -65,7 +65,7 @@ export class ChannelBridgeManager {
   /**
    * 获取指定 channel 的推送设置
    */
-  getPushSettings(channelId: string): { reasoning: boolean; statusUpdate: boolean; toolCalls: boolean; stepUpdates: boolean; stepBatch: number } {
+  getPushSettings(channelId: string): { reasoning: boolean; statusUpdate: boolean; toolCalls: boolean; stepUpdates: boolean; stepBatch: number; progressUpdates: boolean } {
     const config = this.getConfig(channelId);
     const pushSettings = config?.options?.pushSettings as {
       reasoning?: boolean;
@@ -73,6 +73,7 @@ export class ChannelBridgeManager {
       toolCalls?: boolean;
       stepUpdates?: boolean;
       stepBatch?: number;
+      progressUpdates?: boolean;
     } | undefined;
     return {
       reasoning: pushSettings?.reasoning ?? false,
@@ -80,6 +81,7 @@ export class ChannelBridgeManager {
       toolCalls: pushSettings?.toolCalls ?? false,
       stepUpdates: pushSettings?.stepUpdates ?? false,
       stepBatch: pushSettings?.stepBatch ?? 5,
+      progressUpdates: pushSettings?.progressUpdates ?? true,
     };
   }
 

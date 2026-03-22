@@ -505,6 +505,54 @@ export class AgentStatusSubscriber {
   }
 
   /**
+   * 推送进度报告到通道（由 ProgressMonitor 调用）
+   */
+  async sendProgressUpdate(report: {
+    sessionId: string;
+    agentId: string;
+    summary: string;
+    progress: { status: string; toolCallsCount: number; modelRoundsCount: number; elapsedMs: number };
+  }): Promise<void> {
+    const mapping = this.resolveEnvelopeMapping(report.sessionId);
+    if (!mapping) return;
+    if (!this.messageHub) return;
+
+    // 检查该 channel 是否配置了 progressUpdates
+    if (this.channelBridgeManager) {
+      const pushSettings = this.channelBridgeManager.getPushSettings(mapping.envelope.channel);
+      if (!pushSettings.progressUpdates) return;
+    }
+
+    const wrappedUpdate: WrappedStatusUpdate = {
+      type: 'agent_status',
+      eventId: `progress-${Date.now()}`,
+      timestamp: new Date().toISOString(),
+      sessionId: report.sessionId,
+      agent: { agentId: report.agentId },
+      task: { taskDescription: report.summary },
+      status: {
+        state: report.progress.status === 'completed' ? 'completed'
+          : report.progress.status === 'failed' ? 'failed'
+          : 'running',
+        summary: report.summary,
+        details: {
+          toolCalls: report.progress.toolCallsCount,
+          modelRounds: report.progress.modelRoundsCount,
+          elapsedMs: report.progress.elapsedMs,
+        },
+      },
+      display: {
+        title: '📊 进度更新',
+        subtitle: report.summary,
+        icon: '🔄',
+        level: 'detailed',
+      },
+    };
+
+    await sendStatusUpdate(mapping.envelope, wrappedUpdate, this.messageHub);
+  }
+
+  /**
    * 获取 Agent 信息
    */
   private async getAgentInfo(agentId: string): Promise<AgentInfo> {

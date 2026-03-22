@@ -62,6 +62,7 @@ import { createAgentConfigReloader } from './modules/agent-config-reloader.js';
 import { registerDefaultModuleRoutes } from './modules/module-registry-bootstrap.js';
 import { resolveRuntimeFlags, shouldUseMockChatCodexRunner } from './modules/server-flags.js';
 import { HeartbeatScheduler } from './modules/heartbeat-scheduler.js';
+import { ProgressMonitor, type ProgressReport } from './modules/progress-monitor.js';
 import {
   loadChannelBridgeConfigs,
   registerChannelBridgeOutputs,
@@ -366,6 +367,25 @@ const heartbeatScheduler = new HeartbeatScheduler(getAgentRuntimeDeps());
 await heartbeatScheduler.start();
 logger.module('server').info('Heartbeat Scheduler started');
 
+// Start Progress Monitor
+const progressMonitor = new ProgressMonitor(globalEventBus, getAgentRuntimeDeps(), {
+  onProgressReport: async (report: ProgressReport) => {
+    await agentStatusSubscriber.sendProgressUpdate({
+      sessionId: report.sessionId,
+      agentId: report.agentId,
+      summary: report.summary,
+      progress: {
+        status: report.progress.status,
+        toolCallsCount: report.progress.toolCallsCount,
+        modelRoundsCount: report.progress.modelRoundsCount,
+        elapsedMs: report.progress.elapsedMs,
+      },
+    });
+  },
+});
+progressMonitor.start();
+logger.module('server').info('Progress Monitor started');
+
 await gatewayManager.start().catch((err) => {
   logger.module('server').error('Failed to start gateway manager', err instanceof Error ? err : undefined);
 });
@@ -408,6 +428,7 @@ startServer(app, process.env.HOST || '0.0.0.0', PORT, {
   clockInjector,
   agentStatusSubscriber,
   heartbeatScheduler,
+  progressMonitor,
 });
 
 logger.module('server').info('Finger role modules ready', {
