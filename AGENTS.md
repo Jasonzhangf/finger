@@ -212,3 +212,108 @@ It intentionally avoids project-specific architecture, API, roadmap, and busines
 - `blocks` 是基础能力层的唯一真源
 - `orchestration` 只做编排不做业务逻辑
 - `ui` 只负责展示不与业务耦合
+
+## 统一日志规范（强制）
+
+### 核心原则
+
+- **所有模块必须接入日志系统**：禁止使用 `console.log`、`console.error` 等直接输出。
+- **唯一真源**：所有日志必须通过 `src/core/logger` 的 `FingerLogger` 输出。
+- **结构化日志**：日志必须是结构化的 JSON 格式，便于查询和分析。
+- **快照模式**：关键流程支持快照，记录完整执行上下文。
+
+### 日志系统使用
+
+```typescript
+import { logger } from '../core/logger.js';
+
+// 每个模块创建独立的 ModuleLogger
+const log = logger.module('ModuleName');
+
+// 日志级别
+log.debug('详细调试信息', { key: 'value' });
+log.info('正常业务流程', { userId: 'xxx', action: 'login' });
+log.warn('潜在问题', { reason: 'retry', attempt: 2 });
+log.error('错误信息', error, { context: 'additional data' });
+log.fatal('致命错误', error, { critical: true });
+
+// 快照模式（关键流程）
+const traceId = log.startTrace();
+log.info('开始处理请求', { traceId });
+// ... 执行逻辑 ...
+log.endTrace(traceId);  // 自动写入快照文件
+```
+
+### 必须接入日志的核心模块
+
+| 模块路径 | 模块名 | 关键日志点 |
+|----------|--------|-----------|
+| `src/blocks/agent-runtime-block/` | `AgentRuntimeBlock` | dispatch创建/执行/完成、错误处理 |
+| `src/orchestration/message-hub.ts` | `MessageHub` | 消息路由、output调用 |
+| `src/server/routes/message.ts` | `message-route` | 请求接收、session决策、响应返回 |
+| `src/runtime/runtime-facade.ts` | `RuntimeFacade` | kernel请求/响应 |
+| `src/server/modules/heartbeat-scheduler.ts` | `HeartbeatScheduler` | 心跳触发、dispatch状态 |
+| `src/server/modules/system-agent-manager.ts` | `SystemAgentManager` | 系统agent生命周期 |
+| `src/agents/finger-*/` | 各agent模块 | agent执行过程 |
+| `src/gateway/` | `GatewayManager` | 网关请求路由 |
+
+### 关键流程日志点
+
+#### 消息处理流程（必须）
+
+```
+[message-route] Request received -> {messageId, target, sessionId}
+[message-route] Session decision -> {action: 'reuse'|'new', sessionId}
+[MessageHub] Routing to module -> {moduleId, routeId}
+[AgentRuntimeBlock] Dispatching task -> {dispatchId, sourceAgentId, targetAgentId}
+[AgentRuntimeBlock] Execute dispatch start -> {dispatchId, moduleId}
+[RuntimeFacade] Kernel request -> {provider, model, tokenCount}
+[RuntimeFacade] Kernel response -> {status, tokenCount, latency}
+[AgentRuntimeBlock] Execute dispatch complete -> {dispatchId, status}
+[message-route] Response sent -> {messageId, status}
+```
+
+#### Dispatch执行流程（必须）
+
+```
+[AgentRuntimeBlock] dispatchTask called -> {sourceAgentId, targetAgentId, sessionId}
+[AgentRuntimeBlock] Deployment resolved -> {deploymentId, moduleId, status}
+[AgentRuntimeBlock] Module lookup -> {moduleId, found: boolean}
+[AgentRuntimeBlock] Queue decision -> {action: 'execute'|'queue', capacity, activeCount}
+[AgentRuntimeBlock] executeDispatch start -> {dispatchId, targetModuleId}
+[AgentRuntimeBlock] Module.run() called -> {dispatchId, moduleId}
+[AgentRuntimeBlock] Module.run() result -> {dispatchId, status, duration}
+[AgentRuntimeBlock] dispatchTask complete -> {dispatchId, ok, status}
+```
+
+### 日志配置
+
+配置文件位置：`~/.finger/config/logging.json`
+
+```json
+{
+  "globalLevel": "info",
+  "moduleLevels": {
+    "AgentRuntimeBlock": "debug",
+    "MessageHub": "debug",
+    "message-route": "debug"
+  },
+  "snapshotMode": false,
+  "snapshotModules": []
+}
+```
+
+### 禁止事项
+
+- **禁止**使用 `console.log`、`console.error`、`console.warn`
+- **禁止**在生产代码中直接写入文件输出日志
+- **禁止**在日志中记录敏感信息（密码、token等）
+- **禁止**在循环中高频打日志（使用采样或聚合）
+
+### 新增代码检查项
+
+代码审查时必须检查：
+1. 所有新模块是否接入日志系统
+2. 关键路径是否有足够的日志覆盖
+3. 错误处理路径是否有日志
+4. 是否有残留的 `console.*` 调用
