@@ -10,6 +10,8 @@ import {
   resolveHeartbeatMdPath,
   shouldStopHeartbeat,
   validateHeartbeatMd,
+  truncateHeartbeatRecords,
+  checkHeartbeatNeedsTruncation,
 } from './heartbeat-md-parser.js';
 
 const log = logger.module('HeartbeatScheduler');
@@ -41,6 +43,8 @@ interface LoadConfigResult {
 
 const DEFAULT_TICK_MS = 10_000; // 10 seconds (configurable via heartbeat-tasks.json)
 const DEFAULT_TASK_INTERVAL_MS = 5 * 60_000; // 5 minutes
+const HEARTBEAT_RECORDS_MAX = 10;
+const HEARTBEAT_TRUNCATE_CHECK_INTERVAL_MS = 10 * 60_000; // 10 minutes
 const CONFIG_PATH = path.join(FINGER_PATHS.config.dir, 'heartbeat-tasks.json');
 const CONFIG_RELOAD_DEBOUNCE_MS = 1000;
 
@@ -51,6 +55,7 @@ export class HeartbeatScheduler {
   private lastConfigReloadAt = 0;
   private lastRun: Map<string, number> = new Map();
   private lastMailboxPromptAt: Map<string, number> = new Map();
+  private lastHeartbeatTruncateCheckAt = 0;
 
   constructor(private deps: AgentRuntimeDeps) {}
 
@@ -127,6 +132,11 @@ export class HeartbeatScheduler {
 
   private async tick(): Promise<void> {
     try {
+      await this.trimHeartbeatRecordsIfNeeded();
+    } catch (error) {
+      log.error('[HeartbeatScheduler] trimHeartbeatRecordsIfNeeded error', error instanceof Error ? error : undefined);
+    }
+    try {
       await this.dispatchDueTasks();
     } catch (error) {
       log.error('[HeartbeatScheduler] dispatchDueTasks error', error instanceof Error ? error : undefined);
@@ -135,6 +145,29 @@ export class HeartbeatScheduler {
       await this.promptMailboxChecks();
     } catch (error) {
       log.error('[HeartbeatScheduler] promptMailboxChecks error', error instanceof Error ? error : undefined);
+    }
+  }
+
+  private async trimHeartbeatRecordsIfNeeded(): Promise<void> {
+    const now = Date.now();
+    if (now - this.lastHeartbeatTruncateCheckAt < HEARTBEAT_TRUNCATE_CHECK_INTERVAL_MS) {
+      return;
+    }
+    this.lastHeartbeatTruncateCheckAt = now;
+
+    const heartbeatMdPath = resolveHeartbeatMdPath('finger-system-agent', undefined, FINGER_PATHS.home);
+    if (!heartbeatMdPath) return;
+
+    const needsTruncate = await checkHeartbeatNeedsTruncation(heartbeatMdPath, HEARTBEAT_RECORDS_MAX * 2);
+    if (!needsTruncate) return;
+
+    const result = await truncateHeartbeatRecords(heartbeatMdPath, HEARTBEAT_RECORDS_MAX);
+    if (result.truncated) {
+      log.info('[HeartbeatScheduler] Truncated HEARTBEAT.md records', {
+        path: heartbeatMdPath,
+        before: result.before,
+        after: result.after,
+      });
     }
   }
 

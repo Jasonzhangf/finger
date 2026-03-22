@@ -443,6 +443,21 @@ export const WorkflowContainer: React.FC = () => {
     return Array.from(merged.values()).sort((a, b) => a.name.localeCompare(b.name));
   }, [executionState?.agents, runtimePanelAgents]);
 
+  const projectChatAgents = React.useMemo(
+    () => chatAgents.filter((a) => a.id.startsWith('project:')),
+    [chatAgents],
+  );
+
+  const systemChatAgents = React.useMemo(
+    () => chatAgents.filter((a) => a.id === 'finger-system-agent'),
+    [chatAgents],
+  );
+
+  const projectRuntimeAgents = React.useMemo(
+    () => runtimePanelAgents.filter((a) => a.id.startsWith('project:')),
+    [runtimePanelAgents],
+  );
+
   // Phase 3: Auto-switch back to orchestrator when runtime finishes
   // 基于 RuntimeEvent 显式字段：runtimeEventType/runtimeStatus/runtimeInstanceId/runtimeSessionId
   useEffect(() => {
@@ -701,13 +716,13 @@ export const WorkflowContainer: React.FC = () => {
         <div className="canvas-body">
           <MultiAgentMonitorGrid
             panels={monitorPanels}
-            chatAgents={chatAgents}
+            chatAgents={projectChatAgents}
             inputCapability={chatInputCapability}
           />
         </div>
       </div>
     );
-  }, [panelFreeze.performance, uiDisable.performance, sessions, handleOpenProject, handleSwitchSessionFromSidebar, chatAgents, chatInputCapability, systemMonitor.entries]);
+  }, [panelFreeze.performance, uiDisable.performance, sessions, handleOpenProject, handleSwitchSessionFromSidebar, projectChatAgents, chatInputCapability, systemMonitor.entries]);
 
  const rightPanelElement = useMemo(() => {
    const systemSessions = sessions.filter(s => isSystemSession(s)).sort(
@@ -726,11 +741,11 @@ export const WorkflowContainer: React.FC = () => {
        onCreateSession={(projectPath) => createSession(projectPath)}
        onSwitchSession={handleSwitchSessionFromSidebar}
        onDeleteSession={removeSession}
-       chatAgents={chatAgents}
+       chatAgents={systemChatAgents}
        inputCapability={chatInputCapability}
      />
   );
- }, [frozenActiveSessionId, frozenChatAgents, frozenRightPayload, handleCreateNewSession, systemAgentExecution, chatInputCapability, sessions]);
+ }, [frozenActiveSessionId, frozenChatAgents, frozenRightPayload, handleCreateNewSession, systemAgentExecution, chatInputCapability, sessions, systemChatAgents]);
 
   const leftSidebarElement = useMemo(() => (
     <LeftSidebar
@@ -738,7 +753,7 @@ export const WorkflowContainer: React.FC = () => {
       currentSession={frozenCurrentSession}
       isLoadingSessions={frozenIsLoadingSessions}
       runtimeInstances={frozenRuntimeInstancesForLeft}
-      runtimeAgents={runtimePanelAgents}
+      runtimeAgents={projectRuntimeAgents}
       runtimeConfigs={agentConfigItems}
       focusedRuntimeInstanceId={frozenFocusedRuntimeInstanceId}
       activeRuntimeSessionId={frozenActiveRuntimeSessionId}
@@ -763,7 +778,7 @@ export const WorkflowContainer: React.FC = () => {
   const bottomPanelElement = useMemo(() => (
     <BottomPanel
       configAgents={frozenBottomPayload.configAgents}
-      runtimeAgents={frozenBottomPayload.runtimeAgents}
+      runtimeAgents={frozenBottomPayload.runtimeAgents.filter((a) => a.id.startsWith('project:'))}
       instances={frozenBottomPayload.instances}
       configs={frozenBottomPayload.configs}
       startupTargets={frozenBottomPayload.startupTargets}

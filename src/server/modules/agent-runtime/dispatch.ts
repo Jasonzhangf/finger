@@ -1,6 +1,7 @@
 import { logger } from '../../../core/logger.js';
 import { isObjectRecord } from '../../common/object.js';
 import { asString, firstNonEmptyString } from '../../common/strings.js';
+import { getGlobalDispatchTracker } from './dispatch-tracker.js';
 import { sanitizeDispatchResult, type DispatchSummaryResult } from '../../../common/agent-dispatch.js';
 import type { AgentDispatchRequest, AgentRuntimeDeps } from './types.js';
 import { SYSTEM_AGENT_CONFIG } from '../../../agents/finger-system-agent/index.js';
@@ -300,6 +301,7 @@ export async function dispatchTaskToAgent(deps: AgentRuntimeDeps, input: AgentDi
   error?: string;
   queuePosition?: number;
 }> {
+  const originalSessionId = typeof input.sessionId === 'string' ? input.sessionId.trim() : '';
   const boundInput = bindDispatchSessionToRuntime(deps, input);
   const normalizedInput = withDispatchWorkspaceDefaults(deps, boundInput);
   await persistDispatchUserMessage(deps, normalizedInput);
@@ -312,6 +314,17 @@ export async function dispatchTaskToAgent(deps: AgentRuntimeDeps, input: AgentDi
     error?: string;
     queuePosition?: number;
   };
+  const newSessionId = typeof normalizedInput.sessionId === 'string' ? normalizedInput.sessionId.trim() : '';
+  if (originalSessionId && newSessionId && originalSessionId !== newSessionId && result.dispatchId) {
+    const tracker = getGlobalDispatchTracker();
+    tracker.track({
+      dispatchId: result.dispatchId,
+      parentSessionId: originalSessionId,
+      childSessionId: newSessionId,
+      sourceAgentId: input.sourceAgentId,
+      targetAgentId: input.targetAgentId,
+    });
+  }
   if (result.result !== undefined) {
     result.result = sanitizeDispatchResult(result.result);
   }

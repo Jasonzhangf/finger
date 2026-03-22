@@ -385,3 +385,45 @@ export function resolveHeartbeatMdPath(projectId: string | undefined, projectPat
 
   return path.join(projectPath, 'HEARTBEAT.md');
 }
+
+/**
+ * Truncate old heartbeat records, keeping only the most recent N sections
+ * Sections are identified by '### ' prefix (markdown h3)
+ */
+export async function truncateHeartbeatRecords(filePath: string, maxRecords: number = 10): Promise<{ truncated: boolean; before: number; after: number }> {
+  try {
+    const content = await fs.readFile(filePath, 'utf-8');
+    const parts = content.split('### ');
+
+    if (parts.length <= maxRecords + 1) {
+      // No need to truncate
+      return { truncated: false, before: parts.length - 1, after: parts.length - 1 };
+    }
+
+    // Keep frontmatter + header (parts[0]) and last N sections
+    const header = parts[0];
+    const sections = parts.slice(1);
+    const truncated = header + '### ' + sections.slice(-maxRecords).join('### ');
+
+    await fs.writeFile(filePath, truncated, 'utf-8');
+    log.info(`[HeartbeatMdParser] Truncated ${filePath}: ${sections.length} -> ${maxRecords} sections`);
+
+    return { truncated: true, before: sections.length, after: maxRecords };
+  } catch (error) {
+    log.error('[HeartbeatMdParser] Failed to truncate records', error instanceof Error ? error : undefined);
+    return { truncated: false, before: 0, after: 0 };
+  }
+ }
+
+/**
+ * Check if HEARTBEAT.md needs truncation (has more than maxRecords sections)
+ */
+export async function checkHeartbeatNeedsTruncation(filePath: string, maxRecords: number = 20): Promise<boolean> {
+  try {
+    const content = await fs.readFile(filePath, 'utf-8');
+    const sectionCount = (content.match(/^### /gm) || []).length;
+    return sectionCount > maxRecords;
+  } catch {
+    return false;
+  }
+ }
