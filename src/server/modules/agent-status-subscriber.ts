@@ -15,7 +15,7 @@
 
 import type { AgentRuntimeDeps } from './agent-runtime/types.js';
 import type { UnifiedEventBus } from '../../runtime/event-bus.js';
-import type { RuntimeEvent, ToolErrorEvent, SystemErrorEvent } from '../../runtime/events.js';
+import type { RuntimeEvent, ToolErrorEvent, SystemErrorEvent, AgentStepCompletedEvent } from '../../runtime/events.js';
 import type { ChannelBridgeEnvelope } from '../../bridges/envelope.js';
 import {
   type SubscriptionLevel,
@@ -42,6 +42,10 @@ export class AgentStatusSubscriber {
   private readonly cleanupIntervalMs = 24 * 60 * 60 * 1000; // 24小时清理一次过期映射（避免长任务丢失更新）
   private _stopCleanup: (() => void) | null = null;
 
+  // Step batching: per-session buffer for batch step updates
+  private stepBuffer = new Map<string, Array<{ index: number; summary: string; timestamp: string }>>();
+  private stepBatchDefault = 5;
+
   constructor(
     private eventBus: UnifiedEventBus,
     private deps: AgentRuntimeDeps,
@@ -60,9 +64,9 @@ export class AgentStatusSubscriber {
 
     log.info('[AgentStatusSubscriber] Starting...');
 
-    // 订阅 agent_runtime_status / agent_runtime_dispatch / tool_error / system_error 事件
+    // 订阅 agent_runtime_status / agent_runtime_dispatch / agent_step_completed / tool_error / system_error 事件
     this.unsubscribe = this.eventBus.subscribeMultiple(
-      ['agent_runtime_status', 'agent_runtime_dispatch', 'tool_error', 'system_error'],
+      ['agent_runtime_status', 'agent_runtime_dispatch', 'agent_step_completed', 'tool_error', 'system_error'],
       (event: RuntimeEvent) => {
         this.handleEvent(event).catch(err => {
           log.error('[AgentStatusSubscriber] Error handling event:', err);
@@ -257,6 +261,8 @@ export class AgentStatusSubscriber {
       await this.handleDispatch(event);
     } else if (event.type === 'agent_runtime_status') {
       await this.handleStatus(event);
+    } else if (event.type === 'agent_step_completed') {
+      await this.handleStepCompleted(event);
     } else if (event.type === 'tool_error') {
       await this.handleToolError(event as ToolErrorEvent);
     } else if (event.type === 'system_error') {
@@ -352,6 +358,82 @@ export class AgentStatusSubscriber {
   }
 
   /**
+   * 处理 agent_step_completed 事件（step 批量推送）
+   */
+  private async handleStepCompleted(event: RuntimeEvent): Promise<void> {
+    const sessionId = event.sessionId;
+    const mapping = this.resolveEnvelopeMapping(sessionId);
+    if (!mapping) return;
+
+    // 检查该 channel 是否配置了 stepUpdates
+    // 默认启用 stepUpdates，只有在 channelBridgeManager 明确返回 false 时才禁用
+    let stepBatch = this.stepBatchDefault;
+    let stepUpdatesEnabled = true;
+    if (this.channelBridgeManager) {
+      const pushSettings = this.channelBridgeManager.getPushSettings(mapping.envelope.channel);
+      stepUpdatesEnabled = pushSettings.stepUpdates;
+      stepBatch = Math.max(1, pushSettings.stepBatch);
+    }
+    if (!stepUpdatesEnabled) return;
+
+    // 构建 step 摘要
+    const payload = event.payload as { round?: number; thought?: string; action?: string; observation?: string; success?: boolean };
+    const round = payload.round ?? 0;
+    const action = payload.action || '';
+    const thought = payload.thought || '';
+    const summary = action
+      ? (thought ? `思考: ${thought}\n操作: ${action}` : `操作: ${action}`)
+      : thought || `步骤 ${round}`;
+
+    // 追加到 buffer
+    const buffer = this.stepBuffer.get(sessionId) || [];
+    buffer.push({ index: round, summary, timestamp: event.timestamp as string });
+    this.stepBuffer.set(sessionId, buffer);
+
+    // 达到 batch 阈值时推送
+    if (buffer.length >= stepBatch) {
+      await this.flushStepBuffer(sessionId, mapping);
+    }
+  }
+
+  /**
+   * 刷新 step buffer，批量发送到通道
+   */
+  private async flushStepBuffer(sessionId: string, mapping: SessionEnvelopeMapping): Promise<void> {
+    const buffer = this.stepBuffer.get(sessionId);
+    if (!buffer || buffer.length === 0) return;
+
+    this.stepBuffer.delete(sessionId); // 清空 buffer，无论发送成功与否
+
+    if (!this.messageHub) return;
+
+    const lines = buffer.map((s, i) => `${i + 1}) ${s.summary}`).join('\n');
+    const content = `📋 中间步骤（${buffer.length}）:\n${lines}`;
+
+    const wrappedUpdate: WrappedStatusUpdate = {
+      type: 'agent_status',
+      eventId: `batch-steps-${Date.now()}`,
+      timestamp: new Date().toISOString(),
+      sessionId,
+      agent: { agentId: 'batch-steps' },
+      task: { taskDescription: `执行了 ${buffer.length} 个步骤` },
+      status: {
+        state: 'running',
+        summary: `执行了 ${buffer.length} 个步骤`,
+      },
+      display: {
+        title: '📋 中间步骤',
+        subtitle: content,
+        icon: '🔄',
+        level: 'detailed',
+      },
+    };
+
+    await sendStatusUpdate(mapping.envelope, wrappedUpdate, this.messageHub);
+    log.debug(`[AgentStatusSubscriber] Flushed ${buffer.length} steps for session ${sessionId}`);
+  }
+
+  /**
    * 处理 status 事件
    */
   private async handleStatus(event: RuntimeEvent): Promise<void> {
@@ -406,6 +488,14 @@ export class AgentStatusSubscriber {
 
     // 发送状态更新到通信通道
     if (this.messageHub) { await sendStatusUpdate(mapping.envelope, wrappedUpdate, this.messageHub); };
+
+    // 终态时先刷新剩余 steps buffer
+    if (payload.status === 'completed' || payload.status === 'failed') {
+      const remainingBuffer = this.stepBuffer.get(sessionId);
+      if (remainingBuffer && remainingBuffer.length > 0) {
+        await this.flushStepBuffer(sessionId, mapping);
+      }
+    }
 
     // 终态自动解除订阅（完成/失败）
     if (payload.status === 'completed' || payload.status === 'failed') {

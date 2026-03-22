@@ -426,15 +426,13 @@ describe('AgentStatusSubscriber', () => {
 
   describe('生命周期管理', () => {
     it('应该正确启动和停止订阅', () => {
-      const consoleLogSpy = vi.spyOn(console, 'log');
-
       subscriber.start();
-      expect(consoleLogSpy).toHaveBeenCalledWith(expect.stringContaining('Started'));
+      // 验证启动后 _stopCleanup 已设置
+      expect((subscriber as any)._stopCleanup).not.toBeNull();
 
       subscriber.stop();
-      expect(consoleLogSpy).toHaveBeenCalledWith(expect.stringContaining('Stopped'));
-
-      consoleLogSpy.mockRestore();
+      // 验证停止后 _stopCleanup 已清理
+      expect((subscriber as any)._stopCleanup).toBeNull();
     });
   });
 
@@ -445,6 +443,183 @@ describe('AgentStatusSubscriber', () => {
 
       subscriber.stop();
       expect((subscriber as any)._stopCleanup).toBeNull();
+    });
+  });
+
+  describe('Step 批量推送', () => {
+    it('应该在 stepBatch 达到阈值时才推送', async () => {
+      const mockMessageHub = {
+        routeToOutput: vi.fn().mockResolvedValue(undefined),
+      };
+      const mockChannelBridgeManager = {
+        getPushSettings: vi.fn().mockReturnValue({
+          reasoning: false,
+          statusUpdate: true,
+          toolCalls: false,
+          stepUpdates: true,
+          stepBatch: 3, // 每 3 个 step 推送一次
+        }),
+      };
+
+      const stepSubscriber = new AgentStatusSubscriber(
+        eventBus, mockAgentRuntimeDeps, mockMessageHub, mockChannelBridgeManager
+      );
+      stepSubscriber.setPrimaryAgent('agent-1');
+      stepSubscriber.registerSession('step-session-1', {
+        channel: 'qqbot',
+        envelopeId: 'env-step-1',
+      });
+      stepSubscriber.start();
+
+      // 发送 2 个 step 事件（未达到阈值 3，不应推送）
+      for (let i = 1; i <= 2; i++) {
+        const stepEvent: RuntimeEvent = {
+          type: 'agent_step_completed',
+          sessionId: 'step-session-1',
+          timestamp: new Date().toISOString(),
+          agentId: 'agent-1',
+          payload: {
+            round: i,
+            thought: `思考 ${i}`,
+            action: `操作 ${i}`,
+            success: true,
+          },
+        } as any;
+        await eventBus.emit(stepEvent);
+      }
+      await new Promise(resolve => setTimeout(resolve, 100));
+
+      // 2 个 step 不应触发推送（阈值 3）
+      expect(mockMessageHub.routeToOutput).not.toHaveBeenCalled();
+
+      // 发送第 3 个 step（达到阈值，应推送）
+      const stepEvent3: RuntimeEvent = {
+        type: 'agent_step_completed',
+        sessionId: 'step-session-1',
+        timestamp: new Date().toISOString(),
+        agentId: 'agent-1',
+        payload: {
+          round: 3,
+          thought: '思考 3',
+          action: '操作 3',
+          success: true,
+        },
+      } as any;
+      await eventBus.emit(stepEvent3);
+      await new Promise(resolve => setTimeout(resolve, 100));
+
+      // 应该推送了 1 次批量消息
+      expect(mockMessageHub.routeToOutput).toHaveBeenCalledTimes(1);
+      const callArgs = mockMessageHub.routeToOutput.mock.calls[0];
+      expect(callArgs[0]).toBe('channel-bridge-qqbot');
+      expect(callArgs[1].statusUpdate.status.summary).toContain('3');
+      expect(callArgs[1].statusUpdate.display.title).toBe('📋 中间步骤');
+
+      stepSubscriber.stop();
+    });
+
+    it('应该在 stepUpdates=false 时不推送 step', async () => {
+      const mockMessageHub = {
+        routeToOutput: vi.fn().mockResolvedValue(undefined),
+      };
+      const mockChannelBridgeManager = {
+        getPushSettings: vi.fn().mockReturnValue({
+          reasoning: false,
+          statusUpdate: true,
+          toolCalls: false,
+          stepUpdates: false, // 禁用 step 更新
+          stepBatch: 5,
+        }),
+      };
+
+      const stepSubscriber = new AgentStatusSubscriber(
+        eventBus, mockAgentRuntimeDeps, mockMessageHub, mockChannelBridgeManager
+      );
+      stepSubscriber.setPrimaryAgent('agent-1');
+      stepSubscriber.registerSession('step-session-2', {
+        channel: 'qqbot',
+        envelopeId: 'env-step-2',
+      });
+      stepSubscriber.start();
+
+      // 发送 10 个 step 事件（全部应被跳过）
+      for (let i = 1; i <= 10; i++) {
+        const stepEvent: RuntimeEvent = {
+          type: 'agent_step_completed',
+          sessionId: 'step-session-2',
+          timestamp: new Date().toISOString(),
+          agentId: 'agent-1',
+          payload: { round: i, action: `操作 ${i}`, success: true },
+        } as any;
+        await eventBus.emit(stepEvent);
+      }
+      await new Promise(resolve => setTimeout(resolve, 100));
+
+      expect(mockMessageHub.routeToOutput).not.toHaveBeenCalled();
+      stepSubscriber.stop();
+    });
+
+    it('应该在终态时 flush 剩余 steps', async () => {
+      const mockMessageHub = {
+        routeToOutput: vi.fn().mockResolvedValue(undefined),
+      };
+      const mockChannelBridgeManager = {
+        getPushSettings: vi.fn().mockReturnValue({
+          reasoning: false,
+          statusUpdate: true,
+          toolCalls: false,
+          stepUpdates: true,
+          stepBatch: 5,
+        }),
+      };
+
+      const stepSubscriber = new AgentStatusSubscriber(
+        eventBus, mockAgentRuntimeDeps, mockMessageHub, mockChannelBridgeManager
+      );
+      stepSubscriber.setPrimaryAgent('agent-1');
+      stepSubscriber.registerSession('step-session-3', {
+        channel: 'qqbot',
+        envelopeId: 'env-step-3',
+      });
+      stepSubscriber.start();
+
+      // 发送 3 个 step（未达到阈值 5）
+      for (let i = 1; i <= 3; i++) {
+        const stepEvent: RuntimeEvent = {
+          type: 'agent_step_completed',
+          sessionId: 'step-session-3',
+          timestamp: new Date().toISOString(),
+          agentId: 'agent-1',
+          payload: { round: i, action: `操作 ${i}`, success: true },
+        } as any;
+        await eventBus.emit(stepEvent);
+      }
+      await new Promise(resolve => setTimeout(resolve, 100));
+
+      // 3 个 step 未达到阈值，不应推送
+      expect(mockMessageHub.routeToOutput).not.toHaveBeenCalled();
+
+      // 发送 completed 状态事件（终态应触发 flush）
+      const completedEvent: RuntimeEvent = {
+        type: 'agent_runtime_status',
+        sessionId: 'step-session-3',
+        timestamp: new Date().toISOString(),
+        payload: {
+          scope: 'global',
+          status: 'completed',
+          agentId: 'agent-1',
+          summary: 'Task completed',
+        },
+      };
+      await eventBus.emit(completedEvent);
+      await new Promise(resolve => setTimeout(resolve, 100));
+
+      // flush 推送了剩余的 3 个 steps + completed 状态更新
+      expect(mockMessageHub.routeToOutput).toHaveBeenCalled();
+      // 至少调用 2 次：flush steps + completed status
+      expect(mockMessageHub.routeToOutput.mock.calls.length).toBeGreaterThanOrEqual(2);
+
+      stepSubscriber.stop();
     });
   });
 });

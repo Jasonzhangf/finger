@@ -49,6 +49,7 @@ export class CoreDaemon {
   private outputs: Map<string, Output> = new Map();
   private running = false;
   private healthTimer: NodeJS.Timeout | null = null;
+  private stopTimeout: NodeJS.Timeout | null = null;
   private openClawGate = new OpenClawGateBlock('openclaw-gate');
   private channelBridgeManager: ChannelBridgeManager | null = null;
 
@@ -61,6 +62,29 @@ export class CoreDaemon {
 
   async start(): Promise<void> {
     ensureFingerLayout();
+
+    // Clean up stale PID file if process is dead
+    if (fs.existsSync(PID_FILE)) {
+      try {
+        const stalePid = parseInt(fs.readFileSync(PID_FILE, 'utf-8'), 10);
+        if (isNaN(stalePid)) {
+          console.log('[Daemon] Removing invalid PID file');
+          fs.unlinkSync(PID_FILE);
+        } else {
+          process.kill(stalePid, 0);
+          // Process is still alive
+          console.log('[Daemon] Already running with PID', stalePid);
+          return;
+        }
+      } catch {
+        // Stale PID file - process is dead, clean it up
+        console.log('[Daemon] Cleaning up stale PID file');
+        try {
+          fs.unlinkSync(PID_FILE);
+        } catch {}
+      }
+    }
+
     if (this.isRunning()) {
       console.log('[Daemon] Already running');
       return;
@@ -202,35 +226,74 @@ export class CoreDaemon {
       this.stop();
       process.exit(1);
     });
+    process.on('unhandledRejection', (reason) => {
+      console.error('[Daemon] Unhandled rejection:', reason);
+      this.stop();
+      process.exit(1);
+    });
   }
 
   async stop(): Promise<void> {
     console.log('[Daemon] Stopping...');
     this.running = false;
 
+    if (this.stopTimeout) {
+      clearTimeout(this.stopTimeout);
+    }
+
+    this.stopTimeout = setTimeout(() => {
+      console.error('[Daemon] Stop timeout exceeded, forcing exit');
+      process.exit(1);
+    }, 10_000).unref();
+
     if (this.healthTimer) {
       clearInterval(this.healthTimer);
     }
 
-    if (this.channelBridgeManager) {
-      await this.channelBridgeManager.stopAll();
+    try {
+      if (this.channelBridgeManager) {
+        await this.channelBridgeManager.stopAll();
+      }
+    } catch (err) {
+      console.error('[Daemon] Failed to stop channel bridges:', err);
     }
 
-    await this.supervisor.stopAll();
+    try {
+      await this.supervisor.stopAll();
+    } catch (err) {
+      console.error('[Daemon] Failed to stop supervisor:', err);
+    }
 
     for (const input of this.inputs.values()) {
-      await input.stop();
+      try {
+        await input.stop();
+      } catch (err) {
+        console.error('[Daemon] Failed to stop input:', err);
+      }
     }
 
     for (const output of this.outputs.values()) {
-      await output.stop();
+      try {
+        await output.stop();
+      } catch (err) {
+        console.error('[Daemon] Failed to stop output:', err);
+      }
     }
 
-    this.snapshot.stop();
+    try {
+      this.snapshot.stop();
+    } catch (err) {
+      console.error('[Daemon] Failed to stop snapshot:', err);
+    }
 
     try {
       fs.unlinkSync(PID_FILE);
     } catch {}
+
+    if (this.stopTimeout) {
+      clearTimeout(this.stopTimeout);
+      this.stopTimeout = null;
+    }
 
     console.log('[Daemon] Stopped');
   }
@@ -285,10 +348,16 @@ export class CoreDaemon {
     if (!fs.existsSync(PID_FILE)) return false;
     try {
       const pid = parseInt(fs.readFileSync(PID_FILE, 'utf-8'), 10);
-      if (isNaN(pid)) return false;
+      if (isNaN(pid)) {
+        fs.unlinkSync(PID_FILE);
+        return false;
+      }
       process.kill(pid, 0);
       return true;
     } catch {
+      try {
+        fs.unlinkSync(PID_FILE);
+      } catch {}
       return false;
     }
   }

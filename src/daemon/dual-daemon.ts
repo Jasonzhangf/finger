@@ -100,6 +100,11 @@ export class DualDaemonSupervisor {
       this.stop();
       process.exit(1);
     });
+    process.on('unhandledRejection', (reason: unknown) => {
+      log.error('Unhandled rejection:', reason instanceof Error ? reason : new Error(String(reason)));
+      this.stop();
+      process.exit(1);
+    });
   }
 
   async stop(): Promise<void> {

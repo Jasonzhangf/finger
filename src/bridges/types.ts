@@ -61,6 +61,10 @@ export interface ChannelBridgeConfig {
       statusUpdate?: boolean;
       /** 是否推送工具调用信息 */
       toolCalls?: boolean;
+      /** 是否推送 step 更新（批量） */
+      stepUpdates?: boolean;
+      /** step 批量大小（累计 N 个 step 推送一次） */
+      stepBatch?: number;
     };
     [key: string]: unknown;
   };
