@@ -17,6 +17,7 @@ import { logger } from '../../core/logger.js';
 import { promises as fs } from 'fs';
 import path from 'path';
 import { FINGER_PATHS } from '../../core/finger-paths.js';
+import { buildCompactSummary, buildReportKey as buildReportKeyUtil, type SessionProgressData } from './progress-monitor-utils.js';
 
 const log = logger.module('ProgressMonitor');
 
@@ -26,18 +27,6 @@ export interface ProgressMonitorConfig {
   progressUpdates?: boolean; // 是否推送进度更新，默认 true
 }
 
-export interface SessionProgress {
-  sessionId: string;
-  agentId: string;
-  startTime: number;
-  lastUpdateTime: number;
-  toolCallsCount: number;
-  modelRoundsCount: number;
-  reasoningCount: number;
-  status: 'running' | 'completed' | 'failed' | 'idle';
-  currentTask?: string;
-  elapsedMs: number;
-}
 export interface ToolCallRecord {
   toolId?: string;
   toolName: string;
@@ -47,6 +36,7 @@ export interface ToolCallRecord {
   success?: boolean;
   timestamp: number;
 }
+
 export interface SessionProgress {
   sessionId: string;
   agentId: string;
@@ -62,6 +52,7 @@ export interface SessionProgress {
   lastReportKey?: string;
   lastReportStatus?: string;
   lastReportTime?: number;
+  latestReasoning?: string;
 }
 
 export interface ProgressReport {
@@ -145,6 +136,7 @@ export class ProgressMonitor {
 
     // 订阅事件来跟踪进度
     this.subscribeToEvents();
+    this.subscribeToReasoningEvents();
 
     // 启动定期清理已完成 session 的进度记录
     this._cleanupTimer = setInterval(() => this.cleanupCompleted(), 5 * 60 * 1000);
@@ -190,6 +182,26 @@ export class ProgressMonitor {
     this._stopCleanup = unsubscribe;
   }
 
+  private subscribeToReasoningEvents(): void {
+    const unsubscribe = this.eventBus.subscribe('kernel_reasoning', (event: any) => {
+      const sessionId = event?.sessionId;
+      if (!sessionId) return;
+      const progress = this.sessionProgress.get(sessionId);
+      if (!progress) return;
+
+      const text = typeof event?.payload?.text === 'string' ? event.payload.text : '';
+      if (text.length > 0) {
+        progress.latestReasoning = text.slice(0, 120);
+      }
+    });
+
+    const prev = this._stopCleanup;
+    this._stopCleanup = () => {
+      unsubscribe();
+      prev?.();
+    };
+  }
+
   /**
    * 处理事件
    */
@@ -226,9 +238,14 @@ export class ProgressMonitor {
     switch (eventType) {
       case 'turn_start':
         progress.status = 'running';
+        if (typeof event.payload?.reasoning === 'string' && event.payload.reasoning.length > 0) {
+          progress.latestReasoning = event.payload.reasoning.slice(0, 120);
+        }
         break;
       case 'turn_complete':
-        // 轮次完成，可能还在运行
+        if (typeof event.payload?.reasoning === 'string' && event.payload.reasoning.length > 0) {
+          progress.latestReasoning = event.payload.reasoning.slice(0, 120);
+        }
         break;
       case 'tool_call':
         progress.toolCallsCount++;
@@ -244,6 +261,9 @@ export class ProgressMonitor {
         progress.modelRoundsCount++;
         if (event.payload?.reasoning_count) {
           progress.reasoningCount += event.payload.reasoning_count;
+        }
+        if (typeof event.payload?.reasoning === 'string' && event.payload.reasoning.length > 0) {
+          progress.latestReasoning = event.payload.reasoning.slice(0, 120);
         }
         break;
       case 'agent_runtime_status':
@@ -282,6 +302,9 @@ export class ProgressMonitor {
         const parts: string[] = [];
         if (payload.thought) parts.push(payload.thought);
         if (payload.action) parts.push(payload.action);
+        if (payload.thought) {
+          progress.latestReasoning = payload.thought.slice(0, 120);
+        }
         this.latestStepSummary.set(sessionId, parts.join(' → ') || `步骤 ${payload.round ?? '?'}`);
         progress.currentTask = this.latestStepSummary.get(sessionId);
         break;
@@ -385,43 +408,35 @@ export class ProgressMonitor {
    * 构建单个 session 的进度摘要
    */
   private buildSingleProgressSummary(p: SessionProgress): string {
-    const elapsed = this.formatElapsed(p.elapsedMs);
-    const task = p.currentTask ? ` | ${p.currentTask}` : '';
-
-    // Concise tool history, skip exec_command, mobile readable
-    const recentTools = p.toolCallHistory
-      .filter((t) => t.toolName !== 'exec_command')
-      .slice(-5);
-
-    let toolSummary = '';
-    if (recentTools.length > 0) {
-      const lines = recentTools.map((t) => {
-        const icon = t.success === false ? '❌' : t.success === true ? '✅' : '⏳';
-        const name = t.toolName.replace(/^finger-system-agent-/, '');
-        const result = t.error ? t.error.slice(0, 60) : t.result ? t.result.slice(0, 60) : '';
-        return `${icon} ${name}${result ? ': ' + result : ''}`;
-      });
-      toolSummary = '\n' + lines.join('\n');
-    }
-
-    return `📊 ${p.agentId} | ${elapsed}${task}${toolSummary}`;
+    const data: SessionProgressData = {
+      agentId: p.agentId,
+      status: p.status,
+      currentTask: p.currentTask,
+      elapsedMs: p.elapsedMs,
+      toolCallHistory: p.toolCallHistory.map(t => ({
+        toolName: t.toolName,
+        params: t.params,
+        success: t.success,
+      })),
+      latestReasoning: p.latestReasoning,
+    };
+    return buildCompactSummary(data, (ms) => this.formatElapsed(ms));
   }
 
   private buildReportKey(p: SessionProgress): string {
-    const latestStep = this.latestStepSummary.get(p.sessionId) || '';
-    const recentTools = p.toolCallHistory.slice(-3).map(t => `${t.toolName}:${t.params ?? ''}:${t.result ?? ''}:${t.error ?? ''}:${t.success ?? ''}`).join('|');
-    return `${p.status}|${p.currentTask ?? ''}|${latestStep}|${recentTools}`;
-  }
-
-  /**
-   * 构建进度摘要
-   */
-  private buildProgressSummary(progressList: SessionProgress[]): string {
-    const lines: string[] = ['📊 执行进度报告:'];
-    for (const p of progressList) {
-      lines.push(this.buildSingleProgressSummary(p));
-    }
-    return lines.join('\n');
+    const data: SessionProgressData = {
+      agentId: p.agentId,
+      status: p.status,
+      currentTask: p.currentTask,
+      elapsedMs: p.elapsedMs,
+      toolCallHistory: p.toolCallHistory.map(t => ({
+        toolName: t.toolName,
+        params: t.params,
+        success: t.success,
+      })),
+      latestReasoning: p.latestReasoning,
+    };
+    return buildReportKeyUtil(data, this.latestStepSummary.get(p.sessionId));
   }
 
   /**
