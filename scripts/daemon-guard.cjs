@@ -38,9 +38,16 @@ class DaemonGuard {
         await this.waitForPorts([9998, 9999]);
         this.cleanupOldProcesses();
 
+        // Set NODE_PATH to include global openclaw package so that
+        // external plugins (e.g. openclaw-weixin) can resolve "openclaw/plugin-sdk"
+        const env = { ...process.env };
+        env.NODE_PATH = [env.NODE_PATH, '/opt/homebrew/lib/node_modules']
+            .filter(Boolean).join(path.delimiter);
+
         const mainProcess = spawn('node', [path.join(FINGER_ROOT, 'dist', 'server', 'index.js')], {
             stdio: ['ignore', fs.openSync(path.join(require('os').homedir(), '.finger', 'logs', 'daemon.log'), 'a'), fs.openSync(path.join(require('os').homedir(), '.finger', 'logs', 'daemon.log'), 'a')],
             detached: true,
+            env,
         });
 
         this.mainPid = mainProcess.pid;

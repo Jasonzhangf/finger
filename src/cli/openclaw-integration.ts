@@ -168,8 +168,8 @@ export function registerOpenClawIntegrationCommand(program: Command): void {
       const config = loadChannelsConfig();
 
       const credentials: Record<string, unknown> = {};
-      if (opts.appid) credentials.appid = opts.appid;
-      if (opts.token) credentials.token = opts.token;
+      if (opts.appid) credentials.appId = opts.appid;
+      if (opts.token) credentials.clientSecret = opts.token;
       if (opts.accountId) credentials.accountId = opts.accountId;
 
       upsertOpenClawPluginChannel(config, opts.channel, credentials);
