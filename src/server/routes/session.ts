@@ -294,8 +294,17 @@ export function registerSessionRoutes(app: Express, deps: SessionRouteDeps): voi
     sessionManager.refreshSessionsFromDisk();
     const parsedLimit = req.query.limit ? parseInt(req.query.limit as string, 10) : 50;
     const limit = Number.isFinite(parsedLimit) ? parsedLimit : 50;
-    const messages = sessionManager.getMessages(resolveSystemSessionId(req.params.sessionId), limit);
-    res.json({ success: true, messages });
+    void sessionManager
+      .getMessagesAsync(resolveSystemSessionId(req.params.sessionId), limit)
+      .then((messages) => {
+        res.json({ success: true, messages });
+      })
+      .catch((err) => {
+        console.error('[SessionRoute] getMessagesAsync failed:', err instanceof Error ? err.message : String(err));
+        // Fallback to sync getMessages if ledger read fails
+        const fallback = sessionManager.getMessages(resolveSystemSessionId(req.params.sessionId), limit);
+        res.json({ success: true, messages: fallback });
+      });
   });
 
   app.get('/api/v1/sessions/:sessionId/loop-logs', (req, res) => {

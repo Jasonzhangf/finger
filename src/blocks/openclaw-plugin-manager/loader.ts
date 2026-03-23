@@ -26,10 +26,22 @@ function getJitiRequire(): ((id: string) => unknown) | null {
   if (_jitiRequire) return _jitiRequire;
   try {
     // openclaw ships jiti in its node_modules
-    const jitiPath = cjsRequire.resolve('jiti', { paths: ['/opt/homebrew/lib/node_modules/openclaw/node_modules'] });
+    const openclawGlobalRoot = '/opt/homebrew/lib/node_modules/openclaw';
+    const jitiPath = cjsRequire.resolve('jiti', { paths: [`${openclawGlobalRoot}/node_modules`] });
     const { createJiti } = cjsRequire(jitiPath);
     // createJiti needs a real filename — use this file's path
-    _jitiRequire = createJiti(fileURLToPath(import.meta.url), { interopDefault: true });
+    _jitiRequire = createJiti(fileURLToPath(import.meta.url), {
+      interopDefault: true,
+      // Standard npm plugins (e.g. @tencent-weixin/openclaw-weixin) import from
+      // "openclaw/plugin-sdk" and "openclaw". When loaded from ~/.openclaw/extensions,
+      // there may be no local openclaw dependency, so we must alias to global openclaw
+      // install. Both the bare "openclaw" and "openclaw/*" subpath imports must resolve.
+      alias: {
+        openclaw: `${openclawGlobalRoot}/dist/index.js`,
+        'openclaw/plugin-sdk': `${openclawGlobalRoot}/dist/plugin-sdk/index.js`,
+        'openclaw/*': `${openclawGlobalRoot}/dist/*`,
+      },
+    });
     return _jitiRequire;
   } catch {
     return null;

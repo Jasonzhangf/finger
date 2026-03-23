@@ -42,9 +42,9 @@ export class LoopManager implements ILoopManager {
   
   // 默认上下文窗口配置
   private readonly defaultContextWindow: ContextWindow = {
-    maxTokens: 128000,
+    maxTokens: 256000,
     usedTokens: 0,
-    compressionThreshold: 100000, // 78% 触发压缩
+    compressionThreshold: 217600, // 85% 触发压缩
   };
   
   // 压缩配置

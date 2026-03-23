@@ -926,7 +926,9 @@ export function useAgentRuntimePanel(): UseAgentRuntimePanelResult {
   const handleWsMessage = useCallback((msg: { type?: string }) => {
     const type = typeof msg.type === 'string' ? msg.type : '';
     if (!type) return;
-    if (type.startsWith('agent_runtime_')) {
+    // Only trigger refresh on dispatch/control events, NOT catalog itself
+    // (catalog refresh would re-emit catalog event → infinite loop)
+    if (type.startsWith('agent_runtime_') && type !== 'agent_runtime_catalog') {
       scheduleRefresh();
     }
   }, [scheduleRefresh]);

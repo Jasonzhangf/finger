@@ -1,21 +1,78 @@
 # Ledger-Session 一体化架构设计
 
-> Last updated: 2026-03-21 19:23:00 +08:00
-> Status: Draft
+> Last updated: 2026-03-23 17:03:00 +08:00
+> Status: Approved（唯一真源，所有 Agent 必须遵循）
+> Owner: Jason
 
 ## 1. 核心原则
 
 ### 1.1 Ledger = 唯一数据真源
-- 所有消息/事件只写入 Ledger JSONL 文件（append-only）
-- Ledger 包含两个文件：
-  - `context-ledger.jsonl`：原始消息层，无限延展
-  - `compact-memory.jsonl`：压缩记忆层，无限延展
-- 两个文件都是只追加不修改
+- **Ledger 是整个系统的唯一数据真源（Single Source of Truth）**
+- 所有对话数据（用户输入、助手回复、工具调用、推理过程）只写入 Ledger
+- Ledger 本质是**静态的上下文输入流水账**——记录了会话中发生的所有事件，不可修改、不可删除
+- Session **没有自己的独立存储**，Session 的所有消息数据完全来自 Ledger 的动态拼接
+- 写操作的唯一路径：LedgerWriter → context-ledger.jsonl（append-only）
+- 不存在"先写 session 再同步 ledger"的流程，只存在"写 ledger → session 视图更新"
+
+**Ledger 包含两个文件（二级记忆系统）**：
+  - `context-ledger.jsonl`：**原始流水账**——完整记录所有事件（用户消息、助手回复、工具调用、推理、错误等），无限延展
+  - `compact-memory.jsonl`：**压缩流水账**——压缩后的记忆摘要，同样只追加不修改，无限延展
+
+### 1.1.1 Ledger 的不可变性原则
+- Ledger 记录一旦写入，**永不可修改或删除**（append-only + immutable）
+- 压缩不会修改原始记录，而是将压缩结果写入 compact-memory.jsonl 作为新的追加行
+- Session 指针（originalStartIndex、originalEndIndex）只是"窗口游标"，指向 ledger 中的行号范围
+- 任何读取 session 数据的操作，都必须通过 ledger 进行，不能绕过 ledger 直接读 session.messages
+
+### 1.1.2 Session ID 与 Ledger Session ID 一致
+- 每个 Ledger 文件对应一个 Session，两者共享相同的 Session ID
+- Ledger 文件路径格式：`<sessions-root>/<session-id>/<agent-id>/main/context-ledger.jsonl`
+- Session 元数据文件路径格式：`<sessions-root>/<session-id>/session.json`
+- 通过 Session ID 可以直接定位到对应的 Ledger 文件
 
 ### 1.2 Session = 动态视图
-- Session 从 Ledger 构建，缓存当前有效窗口
-- 懒加载 + 缓存机制：只在压缩或超阈值时重建
-- Session 文件只存元数据 + 指针，不存 messages 数组
+- **Session 不是数据存储，而是 Ledger 数据的动态视图（View）**
+- Session 的所有消息内容**完全从 Ledger 中拼接**，不存储任何消息数据本身
+- Session 文件只存储**元数据**：ID、名称、项目路径、Ledger 指针（originalStartIndex、originalEndIndex、totalTokens）
+- **缓存机制**：`_cachedView` 是 Ledger 视图的内存缓存，在 ledger 写入后自动失效
+- **懒加载**：只在需要时（API 调用、模型请求）从 Ledger 重建 Session 视图
+- **不可持久化消息**：Session.messages 数组只是向后兼容的临时缓存，不应作为数据来源
+
+### 1.2.1 Session 动态构建流程
+```
+1. 读取 session.json 获取元数据（originalStartIndex、originalEndIndex、latestCompactIndex）
+2. 读取 compact-memory.jsonl 中 latestCompactIndex 行（如果有），获取压缩摘要
+3. 读取 context-ledger.jsonl 中 [originalStartIndex, originalEndIndex] 范围的原始记录
+4. 拼接为 SessionView：compressedSummary + latestMessages
+5. 缓存到 session._cachedView
+6. 后续写入 ledger 后，清空 _cachedView 强制下次重建
+```
+
+### 1.2.2 读取数据的唯一正确路径
+```typescript
+// ✅ 正确：从 Ledger 读取（异步）
+const messages = await sessionManager.getMessagesAsync(sessionId, limit);
+
+// ❌ 错误：直接读 session.messages（可能为空或过期）
+const messages = sessionManager.getMessages(sessionId, limit);  // 仅向后兼容
+
+// ✅ API 层必须使用 getMessagesAsync
+app.get('/api/v1/sessions/:sessionId/messages', async (req, res) => {
+  const messages = await sessionManager.getMessagesAsync(sessionId, limit);
+});
+```
+
+### 1.2.3 写入数据的唯一正确路径
+```typescript
+// ✅ 正确：写入 Ledger（原子操作）
+await ledgerWriter.appendSessionMessage(context, role, content, { reasoning });
+
+// 写入后 session 视图自动失效（_cachedView = undefined）
+// 下次读取时会从 ledger 重新构建
+
+// ❌ 错误：直接 push 到 session.messages
+session.messages.push({ role, content });  // 这只是缓存同步，不是数据写入
+```
 
 ### 1.3 压缩范围
 - 压缩只取 ledger 指针范围内的数据，不处理整个 ledger
@@ -26,6 +83,43 @@
 ---
 
 ## 2. 架构设计
+
+### 2.0 概念关系图（Agent 必读）
+
+```
+┌──────────────────────────────────────────────────────────────────┐
+│                     概念关系（唯一真源）                        │
+├──────────────────────────────────────────────────────────────────┤
+│                                                                  │
+│  ┌───────────────────┐        ┌───────────────────────┐         │
+│  │  Ledger（流水账） │        │  Session（动态视图）  │         │
+│  │  ══════════════  │        │  ══════════════════  │         │
+│  │                   │        │                       │         │
+│  │  唯一数据真源     │──────▶│  从 Ledger 动态拼接  │         │
+│  │  静态、不可变     │        │  内存中的缓存视图    │         │
+│  │  append-only      │        │  可丢弃、可重建      │         │
+│  │  持久化到磁盘     │        │  不持久化消息内容    │         │
+│  │                   │        │                       │         │
+│  │  ┌─────────────┐  │        │  指针 → Ledger 行号 │         │
+│  │  │ 原始流水账 │  │        │  压缩摘要+最新消息 │         │
+│  │  │ context-   │  │        │  = 发给模型的内容   │         │
+│  │  │ ledger.jsonl│  │        │                       │         │
+│  │  ├─────────────┤  │        └───────────────────────┘         │
+│  │  │ 压缩流水账 │  │                                        │
+│  │  │ compact-   │  │                                        │
+│  │  │ memory.jsonl│  │                                        │
+│  │  └─────────────┘  │                                        │
+│  └───────────────────┘                                        │
+│                                                                  │
+│  关键规则：                                                     │
+│  ① 所有写操作只写 Ledger，Session 视图从 Ledger 派生            │
+│  ② Session ID = Ledger Session ID（1:1 对应）                   │
+│  ③ 刷新/重启后 Session 从 Ledger 重建，消息不会丢失             │
+│  ④ 压缩 = 新追加到压缩流水账，不修改原始记录                   │
+│  ⑤ API 层必须使用 getMessagesAsync() 从 Ledger 读取            │
+│                                                                  │
+└──────────────────────────────────────────────────────────────────┘
+```
 
 ### 2.1 数据流
 
