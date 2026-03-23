@@ -52,7 +52,10 @@ describe('agent runtime mailbox tools', () => {
       'mailbox.status',
       'mailbox.list',
       'mailbox.read',
+      'mailbox.read_all',
       'mailbox.ack',
+      'mailbox.remove',
+      'mailbox.remove_all',
     ]);
   });
 
@@ -95,16 +98,34 @@ describe('agent runtime mailbox tools', () => {
     ) as {
       success: boolean;
       status: string;
+      removed?: boolean;
       message: { ackAt?: string; result?: { summary?: string } };
     };
 
     expect(ackResult.success).toBe(true);
     expect(ackResult.status).toBe('completed');
+    expect(ackResult.removed).toBe(true);
     expect(ackResult.message.ackAt).toBeDefined();
     expect(ackResult.message.result).toEqual({ summary: 'mailbox done' });
     expect(eventBusEmit).toHaveBeenCalledTimes(2);
     expect(eventBusEmit.mock.calls[1][0].payload.status).toBe('completed');
     expect(eventBusEmit.mock.calls[1][0].payload.result.summary).toBe('mailbox done');
+    expect(heartbeatMailbox.get(targetAgentId, appended.id)).toBeUndefined();
+  });
+
+  it('keeps heartbeat mailbox ephemeral (no ~/.finger/mailbox persistence)', () => {
+    const targetAgentId = `test-mailbox-agent-${Date.now()}-ephemeral`;
+    cleanupTargets.add(targetAgentId);
+    const mailboxDir = path.join(FINGER_PATHS.home, 'mailbox', targetAgentId);
+    fs.rmSync(mailboxDir, { recursive: true, force: true });
+
+    heartbeatMailbox.append(targetAgentId, { type: 'dispatch-task' }, {
+      sender: 'finger-system-agent',
+      category: 'dispatch-task',
+      priority: 0,
+    });
+
+    expect(fs.existsSync(mailboxDir)).toBe(false);
   });
 
   it('keeps notification as pending when read and rejects ack before read for tasks', async () => {
@@ -157,5 +178,109 @@ describe('agent runtime mailbox tools', () => {
     expect(ackBeforeRead.success).toBe(false);
     expect(ackBeforeRead.error).toContain('mailbox.read');
     expect(eventBusEmit).toHaveBeenCalledTimes(0);
+  });
+
+  it('supports read_all and remove_all for batch mailbox operations', async () => {
+    const { tools, eventBusEmit } = createDeps();
+    const targetAgentId = `test-mailbox-agent-${Date.now()}-batch`;
+    cleanupTargets.add(targetAgentId);
+
+    const taskOne = heartbeatMailbox.append(targetAgentId, {
+      type: 'dispatch-task',
+      dispatchId: 'dispatch-batch-1',
+      sourceAgentId: 'finger-project-agent',
+      targetAgentId,
+    }, {
+      sender: 'finger-project-agent',
+      category: 'dispatch-task',
+      priority: 0,
+    });
+    const taskTwo = heartbeatMailbox.append(targetAgentId, {
+      type: 'dispatch-task',
+      dispatchId: 'dispatch-batch-2',
+      sourceAgentId: 'finger-project-agent',
+      targetAgentId,
+    }, {
+      sender: 'finger-project-agent',
+      category: 'dispatch-task',
+      priority: 0,
+    });
+    heartbeatMailbox.append(targetAgentId, {
+      type: 'dispatch-result',
+      dispatchId: 'dispatch-batch-notification',
+      sourceAgentId: 'finger-system-agent',
+      targetAgentId,
+    }, {
+      sender: 'finger-system-agent',
+      category: 'notification',
+      priority: 2,
+    });
+
+    const readAll = await getTool(tools, 'mailbox.read_all').handler(
+      { category: 'dispatch-task' },
+      { agentId: targetAgentId },
+    ) as {
+      success: boolean;
+      matched: number;
+      changed: number;
+      movedToProcessing: number;
+      readIds: string[];
+    };
+
+    expect(readAll.success).toBe(true);
+    expect(readAll.matched).toBe(2);
+    expect(readAll.changed).toBe(2);
+    expect(readAll.movedToProcessing).toBe(2);
+    expect(readAll.readIds).toEqual(expect.arrayContaining([taskOne.id, taskTwo.id]));
+    expect(eventBusEmit).toHaveBeenCalledTimes(2);
+    expect(heartbeatMailbox.get(targetAgentId, taskOne.id)?.status).toBe('processing');
+    expect(heartbeatMailbox.get(targetAgentId, taskTwo.id)?.status).toBe('processing');
+
+    const removeAll = await getTool(tools, 'mailbox.remove_all').handler(
+      { category: 'notification' },
+      { agentId: targetAgentId },
+    ) as {
+      success: boolean;
+      matched: number;
+      removed: number;
+      removedIds: string[];
+    };
+
+    expect(removeAll.success).toBe(true);
+    expect(removeAll.matched).toBe(1);
+    expect(removeAll.removed).toBe(1);
+    expect(removeAll.removedIds).toHaveLength(1);
+    expect(heartbeatMailbox.list(targetAgentId).filter((message) => message.category === 'notification')).toHaveLength(0);
+  });
+
+  it('supports removing a single mailbox message', async () => {
+    const { tools } = createDeps();
+    const targetAgentId = `test-mailbox-agent-${Date.now()}-remove-one`;
+    cleanupTargets.add(targetAgentId);
+
+    const appended = heartbeatMailbox.append(targetAgentId, {
+      type: 'dispatch-result',
+      dispatchId: 'dispatch-remove-one',
+      sourceAgentId: 'finger-project-agent',
+      targetAgentId,
+    }, {
+      sender: 'finger-project-agent',
+      category: 'notification',
+      priority: 2,
+    });
+
+    const removed = await getTool(tools, 'mailbox.remove').handler(
+      { id: appended.id },
+      { agentId: targetAgentId },
+    ) as {
+      success: boolean;
+      removed: boolean;
+      removedId: string;
+    };
+
+    expect(removed.success).toBe(true);
+    expect(removed.removed).toBe(true);
+    expect(removed.removedId).toBe(appended.id);
+    expect(heartbeatMailbox.get(targetAgentId, appended.id)).toBeUndefined();
   });
 });

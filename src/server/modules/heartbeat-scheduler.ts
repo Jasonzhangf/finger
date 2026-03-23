@@ -270,12 +270,14 @@ export class HeartbeatScheduler {
       type: 'heartbeat-task',
       taskId,
       projectId,
+      prompt,
+      envelope,
       envelopeId: envelope.id,
       requiresFeedback: true,
     }, {
       sender: 'system-heartbeat',
       sourceType: 'control',
-      category: 'notification',
+      category: 'heartbeat-task',
       priority: 1,
       metadata: { envelope },
     });
@@ -320,7 +322,13 @@ export class HeartbeatScheduler {
         log.debug('[HeartbeatScheduler] Skipping busy agent', { agentId: agent.agentId, status: agent.status });
         continue;
       }
-      const pending = heartbeatMailbox.listPending(agent.agentId) ?? [];
+      const pendingAll = heartbeatMailbox.listPending(agent.agentId) ?? [];
+      if (pendingAll.length === 0) continue;
+
+      const actionablePending = pendingAll.filter((msg) => msg.category !== 'notification');
+      const notificationOnly = actionablePending.length === 0;
+      const pending = notificationOnly ? pendingAll : actionablePending;
+      const deferredNotificationCount = notificationOnly ? 0 : pendingAll.length - actionablePending.length;
       if (pending.length === 0) continue;
 
       const now = Date.now();
@@ -329,9 +337,15 @@ export class HeartbeatScheduler {
 
       // Build envelopes from pending messages
       const envelopes: MailboxEnvelope[] = [];
+      const messageRefs: string[] = [];
       for (const msg of pending) {
         const msgContent = typeof msg.content === 'object' && msg.content ? msg.content as Record<string, unknown> : {};
-        if (msgContent.envelopeId) {
+        const storedEnvelope = typeof msgContent.envelope === 'object' && msgContent.envelope
+          ? msgContent.envelope as MailboxEnvelope
+          : undefined;
+        if (storedEnvelope) {
+          envelopes.push(storedEnvelope);
+        } else if (msgContent.envelopeId) {
           // Reconstruct a minimal envelope from stored content for formatting
           const prompt = typeof msgContent.prompt === 'string' ? msgContent.prompt : '';
           const projectId = typeof msgContent.projectId === 'string' ? msgContent.projectId : undefined;
@@ -339,6 +353,12 @@ export class HeartbeatScheduler {
             envelopes.push(buildHeartbeatEnvelope(prompt, projectId));
           }
         }
+        const refParts = [
+          `messageId=${msg.id}`,
+          typeof msgContent.dispatchId === 'string' ? `dispatchId=${msgContent.dispatchId}` : null,
+          typeof msgContent.taskId === 'string' ? `taskId=${msgContent.taskId}` : null,
+        ].filter((part): part is string => typeof part === 'string');
+        messageRefs.push(`- ${refParts.join(' ')}`);
       }
 
       // Format mailbox context using envelope builder
@@ -349,8 +369,29 @@ export class HeartbeatScheduler {
       const prompt = [
         mailboxContext,
         '',
-        '每个任务完成后必须调用 report-task-completion 工具提交 summary。',
-        '如果提交失败必须重试直到成功，避免断链。',
+        ...(deferredNotificationCount > 0
+          ? [`还有 ${deferredNotificationCount} 条 notification 已延后，等当前待办清空后再读。`, '']
+          : []),
+        '待确认消息：',
+        ...(messageRefs.length > 0 ? messageRefs : ['- (none)']),
+        '',
+        ...(notificationOnly
+          ? [
+              '处理规则：',
+              '1. 这些是 notification 类消息，只在空闲时阅读。',
+              '2. 少量通知可直接 mailbox.read(id)；如果通知很多，优先用 mailbox.read_all({ category: "notification", unreadOnly: true }) 批量标记已读。',
+              '3. 如果只是通知，不需要 ack，也不要强行 report-task-completion；清理已消费通知可用 mailbox.remove_all({ category: "notification" })。',
+              '4. 如果读到其中包含真正待执行任务，再按任务语义处理。',
+            ]
+          : [
+              '处理规则：',
+              '1. 少量任务可逐条 mailbox.read(id)；如果同类待办很多，可先用 mailbox.read_all({ unreadOnly: true, category: "<category>" }) 批量读取，并将 pending 任务切到 processing。',
+              '2. 只有真正处理完成后才能调用 mailbox.ack(id, { summary/result })；失败时用 mailbox.ack(id, { status: "failed", error })。ack 后消息会自动清理。',
+              '3. 如果暂时无法处理，不要 ack；未读取的保持 pending，已读取的保持 processing。手动 mailbox.remove_all(...) 只用于清理 notification 或历史噪音。',
+              '',
+              '每个任务完成后必须调用 report-task-completion 工具提交 summary。',
+              '如果提交失败必须重试直到成功，避免断链。',
+            ]),
       ].join('\n');
       await this.dispatchDirect(agent.agentId, 'mailbox-check', agent.projectId, prompt);
       this.lastMailboxPromptAt.set(agent.agentId, now);
@@ -413,8 +454,8 @@ export class HeartbeatScheduler {
     heartbeatMailbox.append(targetAgentId, mailboxPayload, {
       sender: 'system-heartbeat',
       sourceType: 'control',
-      category: 'notification',
-      priority: 1,
+      category: 'heartbeat-repair',
+      priority: 0,
     });
   }
 }

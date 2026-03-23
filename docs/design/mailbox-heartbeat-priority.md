@@ -42,6 +42,30 @@
 - 停止标记：`HEARTBEAT.md` 头部 `heartbeat: off`
 - 状态仍广播到 WebUI/QQBot（用户可见，但不会抢占主会话）
 
+## Mailbox 工具约定
+- `mailbox.status`：查看总览（unread / pending / processing）
+- `mailbox.list`：查看摘要列表
+- `mailbox.read`：单条读取；task 会 `pending -> processing`
+- `mailbox.read_all`：批量读取；默认读未读消息，适合同类消息很多时批量领取/批量已读
+- `mailbox.ack`：单条提交终态（`completed|failed`），**提交成功后自动清理消息**
+- `mailbox.remove`：单条删除已消费消息
+- `mailbox.remove_all`：批量清理已消费消息，支持 `status/category/unreadOnly/ids/limit`
+- Mailbox 默认是**内存态（ephemeral）**，不做磁盘持久化
+
+### notification 规则
+- `notification` 只在 agent **空闲** 且 **没有 actionable mailbox work** 时处理
+- `notification` 读取后只写 `readAt`，**不进入 processing**
+- 纯通知不要求 `ack`
+- 通知过多时优先：
+  1. `mailbox.read_all({ category: "notification", unreadOnly: true })`
+  2. 处理/确认后再 `mailbox.remove_all({ category: "notification" })`
+
+### task 规则
+- 少量 task：逐条 `mailbox.read(id)` → 处理 → `mailbox.ack(id, ...)`
+- 大量 task：先 `mailbox.read_all(...)` 批量领取，再逐条执行与 `ack`
+- 未完成的 task **不能** `ack`
+- task 在 `ack` 后会自动清理；`remove/remove_all` 主要用于 notification 或非标准历史清理
+
 ## 用户输入包裹策略
 - 默认用户输入**不强制走邮件**，直接注入
 - 第三方异步返回统一包裹为邮箱格式（便于统一优先级管理）
@@ -60,3 +84,5 @@
 | 日期 | 变更 |
 |------|------|
 | 2026-03-22 | 初版设计，定义优先级与三段式格式 |
+| 2026-03-23 | 新增 `mailbox.read_all` / `mailbox.remove_all`，补充 notification idle-only 与批量处理规则 |
+| 2026-03-23 | Mailbox 改为内存态不持久化；`mailbox.ack` 成功后自动清理消息 |

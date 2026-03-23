@@ -2,160 +2,22 @@ import { logger } from '../../../core/logger.js';
 import { isObjectRecord } from '../../common/object.js';
 import type { AgentRuntimeDeps } from './types.js';
 import { heartbeatMailbox, type HeartbeatMailboxMessage } from '../heartbeat-mailbox.js';
+import {
+  emitDispatchMailboxEvent,
+  getShortDescription,
+  normalizeMailboxMessage,
+  resolveMailboxAckResult,
+  resolveMailboxAckStatus,
+  resolveMailboxTarget,
+  type MailboxAckInput,
+  type MailboxListInput,
+  type MailboxRemoveInput,
+  type MailboxReadAllInput,
+  type MailboxRemoveAllInput,
+  type MailboxToolContext,
+} from './mailbox-shared.js';
 
 const log = logger.module('AgentRuntimeMailbox');
-
-type MailboxToolContext = {
-  agentId?: string;
-  sessionId?: string;
-};
-
-type MailboxTerminalStatus = 'completed' | 'failed';
-
-interface MailboxListInput {
-  target?: string;
-  status?: HeartbeatMailboxMessage['status'];
-  unreadOnly?: boolean;
-  limit?: number;
-}
-
-interface MailboxReadInput {
-  id: string;
-  target?: string;
-}
-
-interface MailboxAckInput {
-  id: string;
-  target?: string;
-  status?: MailboxTerminalStatus;
-  result?: unknown;
-  error?: string;
-  summary?: string;
-}
-
-function resolveMailboxTarget(rawInput: unknown, context?: MailboxToolContext): string {
-  const explicitTarget = isObjectRecord(rawInput) && typeof rawInput.target === 'string'
-    ? rawInput.target.trim()
-    : '';
-  if (explicitTarget.length > 0) return explicitTarget;
-  const agentTarget = typeof context?.agentId === 'string' ? context.agentId.trim() : '';
-  if (agentTarget.length > 0) return agentTarget;
-  return 'finger-system-agent';
-}
-
-function normalizeMailboxMessage(message: HeartbeatMailboxMessage): Record<string, unknown> {
-  return {
-    id: message.id,
-    seq: message.seq,
-    status: message.status,
-    sender: message.sender,
-    channel: message.channel,
-    category: message.category,
-    priority: message.priority,
-    content: message.content,
-    result: message.result,
-    error: message.error,
-    sessionId: message.sessionId,
-    threadId: message.threadId,
-    createdAt: message.createdAt,
-    updatedAt: message.updatedAt,
-    readAt: message.readAt,
-    ackAt: message.ackAt,
-  };
-}
-
-function getShortDescription(message: HeartbeatMailboxMessage, maxLength = 100): string {
-  let desc = '';
-  if (typeof message.content === 'string') {
-    desc = message.content;
-  } else if (isObjectRecord(message.content)) {
-    desc = typeof message.content.text === 'string'
-      ? message.content.text
-      : typeof message.content.summary === 'string'
-        ? message.content.summary
-        : JSON.stringify(message.content);
-  } else {
-    desc = JSON.stringify(message.content);
-  }
-  return desc.length > maxLength ? `${desc.substring(0, maxLength)}...` : desc;
-}
-
-function resolveMailboxAckStatus(input: MailboxAckInput): MailboxTerminalStatus {
-  if (input.status === 'failed') return 'failed';
-  if (typeof input.error === 'string' && input.error.trim().length > 0) return 'failed';
-  return 'completed';
-}
-
-function resolveMailboxAckResult(input: MailboxAckInput): unknown {
-  if (input.result !== undefined) return input.result;
-  if (typeof input.summary === 'string' && input.summary.trim().length > 0) {
-    return { summary: input.summary.trim() };
-  }
-  return undefined;
-}
-
-function extractDispatchPayload(message: HeartbeatMailboxMessage): {
-  dispatchId: string;
-  sourceAgentId: string;
-  targetAgentId: string;
-  sessionId?: string;
-  workflowId?: string;
-  assignment?: Record<string, unknown>;
-} | null {
-  if (!isObjectRecord(message.content)) return null;
-  if (message.content.type !== 'dispatch-task') return null;
-  const dispatchId = typeof message.content.dispatchId === 'string' ? message.content.dispatchId.trim() : '';
-  const sourceAgentId = typeof message.content.sourceAgentId === 'string' ? message.content.sourceAgentId.trim() : '';
-  const targetAgentId = typeof message.content.targetAgentId === 'string'
-    ? message.content.targetAgentId.trim()
-    : message.target;
-  if (dispatchId.length === 0 || sourceAgentId.length === 0 || targetAgentId.trim().length === 0) {
-    return null;
-  }
-  return {
-    dispatchId,
-    sourceAgentId,
-    targetAgentId: targetAgentId.trim(),
-    ...(typeof message.content.sessionId === 'string' && message.content.sessionId.trim().length > 0
-      ? { sessionId: message.content.sessionId.trim() }
-      : {}),
-    ...(typeof message.content.workflowId === 'string' && message.content.workflowId.trim().length > 0
-      ? { workflowId: message.content.workflowId.trim() }
-      : {}),
-    ...(isObjectRecord(message.content.assignment) ? { assignment: message.content.assignment } : {}),
-  };
-}
-
-async function emitDispatchMailboxEvent(
-  deps: AgentRuntimeDeps,
-  message: HeartbeatMailboxMessage,
-  status: 'processing' | 'completed' | 'failed',
-  detail?: {
-    result?: unknown;
-    error?: string;
-  },
-): Promise<void> {
-  const dispatch = extractDispatchPayload(message);
-  if (!dispatch) return;
-  await deps.eventBus.emit({
-    type: 'agent_runtime_dispatch',
-    agentId: dispatch.targetAgentId,
-    sessionId: dispatch.sessionId,
-    timestamp: new Date().toISOString(),
-    payload: {
-      dispatchId: dispatch.dispatchId,
-      sourceAgentId: dispatch.sourceAgentId,
-      targetAgentId: dispatch.targetAgentId,
-      status,
-      blocking: false,
-      ...(dispatch.sessionId ? { sessionId: dispatch.sessionId } : {}),
-      ...(dispatch.workflowId ? { workflowId: dispatch.workflowId } : {}),
-      ...(dispatch.assignment ? { assignment: dispatch.assignment } : {}),
-      ...(detail?.result !== undefined ? { result: detail.result } : {}),
-      ...(detail?.error ? { error: detail.error } : {}),
-    },
-  });
-}
 
 async function handleMailboxStatus(input: unknown, context: MailboxToolContext): Promise<unknown> {
   const target = resolveMailboxTarget(input, context);
@@ -190,14 +52,12 @@ async function handleMailboxList(input: unknown, context: MailboxToolContext): P
   const target = resolveMailboxTarget(input, context);
   let messages = heartbeatMailbox.list(target, {
     status: parsed.status,
+    category: parsed.category,
+    unreadOnly: parsed.unreadOnly,
     limit: typeof parsed.limit === 'number' && Number.isFinite(parsed.limit)
       ? Math.max(1, Math.floor(parsed.limit))
       : undefined,
   });
-
-  if (parsed.unreadOnly) {
-    messages = messages.filter((message) => !message.readAt);
-  }
 
   messages = [...messages].sort((a, b) => b.seq - a.seq);
 
@@ -218,6 +78,52 @@ async function handleMailboxList(input: unknown, context: MailboxToolContext): P
       readAt: message.readAt,
       ackAt: message.ackAt,
       createdAt: message.createdAt,
+    })),
+  };
+}
+
+async function handleMailboxReadAll(deps: AgentRuntimeDeps, input: unknown, context: MailboxToolContext): Promise<unknown> {
+  const parsed = isObjectRecord(input) ? input as MailboxReadAllInput : {};
+  const target = resolveMailboxTarget(parsed, context);
+  const ids = Array.isArray(parsed.ids)
+    ? parsed.ids.filter((id): id is string => typeof id === 'string' && id.trim().length > 0).map((id) => id.trim())
+    : undefined;
+
+  const result = heartbeatMailbox.markReadAll(target, {
+    status: parsed.status,
+    category: parsed.category,
+    unreadOnly: parsed.unreadOnly !== false,
+    limit: typeof parsed.limit === 'number' && Number.isFinite(parsed.limit)
+      ? Math.max(1, Math.floor(parsed.limit))
+      : undefined,
+    ...(ids && ids.length > 0 ? { ids } : {}),
+  });
+
+  for (const message of result.updatedMessages) {
+    if (message.status !== 'processing') continue;
+    await emitDispatchMailboxEvent(deps, message, 'processing', {
+      result: {
+        status: 'processing_mailbox',
+        via: 'mailbox',
+        mailboxMessageId: message.id,
+      },
+    });
+  }
+
+  return {
+    success: true,
+    target,
+    matched: result.matched,
+    changed: result.changed,
+    movedToProcessing: result.movedToProcessing,
+    readIds: result.updatedMessages.map((message) => message.id),
+    messages: result.updatedMessages.map((message) => ({
+      id: message.id,
+      status: message.status,
+      category: message.category,
+      priority: message.priority,
+      readAt: message.readAt,
+      ackAt: message.ackAt,
     })),
   };
 }
@@ -266,7 +172,7 @@ async function handleMailboxAck(deps: AgentRuntimeDeps, input: unknown, context:
     throw new Error('mailbox.ack id is required');
   }
 
-  const parsed = input as MailboxAckInput;
+  const parsed = input as unknown as MailboxAckInput;
   const target = resolveMailboxTarget(parsed, context);
   const id = parsed.id.trim();
   const current = heartbeatMailbox.get(target, id);
@@ -337,7 +243,54 @@ async function handleMailboxAck(deps: AgentRuntimeDeps, input: unknown, context:
     target,
     status: updated.status,
     ackAt: updated.ackAt,
+    removed: ackResult.removed === true,
     message: normalizeMailboxMessage(updated),
+  };
+}
+
+async function handleMailboxRemove(input: unknown, context: MailboxToolContext): Promise<unknown> {
+  if (!isObjectRecord(input) || typeof input.id !== 'string' || input.id.trim().length === 0) {
+    throw new Error('mailbox.remove id is required');
+  }
+
+  const parsed = input as unknown as MailboxRemoveInput;
+  const target = resolveMailboxTarget(parsed, context);
+  const id = parsed.id.trim();
+  const result = heartbeatMailbox.remove(target, id);
+  if (!result.removed) {
+    return { success: false, error: `Message not found: ${id}` };
+  }
+
+  return {
+    success: true,
+    target,
+    removed: true,
+    removedId: result.removedId ?? id,
+  };
+}
+
+async function handleMailboxRemoveAll(input: unknown, context: MailboxToolContext): Promise<unknown> {
+  const parsed = isObjectRecord(input) ? input as MailboxRemoveAllInput : {};
+  const target = resolveMailboxTarget(parsed, context);
+  const ids = Array.isArray(parsed.ids)
+    ? parsed.ids.filter((id): id is string => typeof id === 'string' && id.trim().length > 0).map((id) => id.trim())
+    : undefined;
+  const result = heartbeatMailbox.removeAll(target, {
+    status: parsed.status,
+    category: parsed.category,
+    unreadOnly: parsed.unreadOnly,
+    limit: typeof parsed.limit === 'number' && Number.isFinite(parsed.limit)
+      ? Math.max(1, Math.floor(parsed.limit))
+      : undefined,
+    ...(ids && ids.length > 0 ? { ids } : {}),
+  });
+
+  return {
+    success: true,
+    target,
+    matched: result.matched,
+    removed: result.removed,
+    removedIds: result.removedIds,
   };
 }
 
@@ -387,8 +340,29 @@ export function registerMailboxRuntimeTools(deps: AgentRuntimeDeps): string[] {
   });
 
   deps.runtime.registerTool({
+    name: 'mailbox.read_all',
+    description: 'Read multiple mailbox messages at once. By default reads unread messages; task messages move pending → processing, notifications stay pending.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        target: { type: 'string' },
+        status: { type: 'string', enum: ['pending', 'processing', 'completed', 'failed'] },
+        category: { type: 'string' },
+        unreadOnly: { type: 'boolean' },
+        limit: { type: 'number' },
+        ids: {
+          type: 'array',
+          items: { type: 'string' },
+        },
+      },
+      additionalProperties: false,
+    },
+    handler: async (input: unknown, context?: Record<string, unknown>) => handleMailboxReadAll(deps, input, context ?? {}),
+  });
+
+  deps.runtime.registerTool({
     name: 'mailbox.ack',
-    description: 'Finish a mailbox task after mailbox.read(id). Supports completed/failed and result/error payloads.',
+    description: 'Finish a mailbox task after mailbox.read(id). Supports completed/failed and result/error payloads, then auto-cleans the message from ephemeral mailbox.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -405,6 +379,42 @@ export function registerMailboxRuntimeTools(deps: AgentRuntimeDeps): string[] {
     handler: async (input: unknown, context?: Record<string, unknown>) => handleMailboxAck(deps, input, context ?? {}),
   });
 
+  deps.runtime.registerTool({
+    name: 'mailbox.remove',
+    description: 'Remove one mailbox message by id after it is no longer needed.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        id: { type: 'string' },
+        target: { type: 'string' },
+      },
+      required: ['id'],
+      additionalProperties: false,
+    },
+    handler: async (input: unknown, context?: Record<string, unknown>) => handleMailboxRemove(input, context ?? {}),
+  });
+
+  deps.runtime.registerTool({
+    name: 'mailbox.remove_all',
+    description: 'Remove multiple mailbox messages at once. Supports status/category/unread filters or explicit ids.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        target: { type: 'string' },
+        status: { type: 'string', enum: ['pending', 'processing', 'completed', 'failed'] },
+        category: { type: 'string' },
+        unreadOnly: { type: 'boolean' },
+        limit: { type: 'number' },
+        ids: {
+          type: 'array',
+          items: { type: 'string' },
+        },
+      },
+      additionalProperties: false,
+    },
+    handler: async (input: unknown, context?: Record<string, unknown>) => handleMailboxRemoveAll(input, context ?? {}),
+  });
+
   log.info('Mailbox runtime tools registered');
-  return ['mailbox.status', 'mailbox.list', 'mailbox.read', 'mailbox.ack'];
+  return ['mailbox.status', 'mailbox.list', 'mailbox.read', 'mailbox.read_all', 'mailbox.ack', 'mailbox.remove', 'mailbox.remove_all'];
 }

@@ -196,6 +196,62 @@ export function buildDispatchResultEnvelope(
   });
 }
 
+export function buildQueuedDispatchEnvelope(params: {
+  dispatchId: string;
+  sourceAgentId: string;
+  targetAgentId: string;
+  sessionId?: string;
+  workflowId?: string;
+  taskText: string;
+  assignment?: {
+    taskId?: string;
+    bdTaskId?: string;
+    epicId?: string;
+  };
+}): MailboxEnvelope {
+  const assignmentLines = [
+    typeof params.assignment?.taskId === 'string' && params.assignment.taskId.trim().length > 0
+      ? `- taskId: ${params.assignment.taskId.trim()}`
+      : null,
+    typeof params.assignment?.bdTaskId === 'string' && params.assignment.bdTaskId.trim().length > 0
+      ? `- bdTaskId: ${params.assignment.bdTaskId.trim()}`
+      : null,
+    typeof params.assignment?.epicId === 'string' && params.assignment.epicId.trim().length > 0
+      ? `- epicId: ${params.assignment.epicId.trim()}`
+      : null,
+  ].filter((line): line is string => typeof line === 'string');
+
+  return buildMailboxEnvelope({
+    category: 'User',
+    title: 'Queued Dispatch Task',
+    shortDescription: `队列超时后转入邮箱，等待 ${params.targetAgentId} 空闲后处理。`,
+    fullText: [
+      '# Queued Dispatch Task',
+      '',
+      `dispatchId: ${params.dispatchId}`,
+      `sourceAgentId: ${params.sourceAgentId}`,
+      `targetAgentId: ${params.targetAgentId}`,
+      ...(typeof params.sessionId === 'string' && params.sessionId.trim().length > 0 ? [`sessionId: ${params.sessionId.trim()}`] : []),
+      ...(typeof params.workflowId === 'string' && params.workflowId.trim().length > 0 ? [`workflowId: ${params.workflowId.trim()}`] : []),
+      ...(assignmentLines.length > 0 ? ['', 'assignment:', ...assignmentLines] : []),
+      '',
+      'task:',
+      params.taskText,
+      '',
+      '处理要求：单条任务可先用 mailbox.read(id) 读取并领取；若同类任务很多，可先用 mailbox.read_all(...) 批量标记已读/领取。完成后用 mailbox.ack(id, { summary/result }) 或 mailbox.ack(id, { status: "failed", error }) 回写终态（ack 后消息会自动清理）；若尚未处理，不要 ack。notification 等非任务消息可按需 mailbox.remove(id) / mailbox.remove_all(...) 清理。',
+    ].join('\n'),
+    source: 'dispatch-timeout',
+    priority: 'high',
+    expectedReply: {
+      format: 'mailbox.ack',
+      description: '处理完成或失败后调用 mailbox.ack(...) 回写终态（会自动清理）；notification 清理可用 mailbox.remove(...) / mailbox.remove_all(...)',
+      optional: false,
+    },
+    relatedSessionId: params.sessionId,
+    relatedTaskId: params.assignment?.taskId ?? params.assignment?.bdTaskId,
+  });
+}
+
 export function buildUserNotificationEnvelope(
   title: string,
   message: string,
