@@ -277,9 +277,9 @@ export function registerMessageRoutes(app: Express, deps: MessageRouteDeps): voi
         let lastError: Error | null = null;
         while (attempt <= deps.blockingMaxRetries) {
           try {
+            log.info('Sending to module', { targetId, sessionId: requestSessionId ?? 'none', messageId });
             primaryResult = await Promise.race([
-              log.info('Sending to module', { targetId, sessionId: requestSessionId ?? 'none', messageId }),
-      deps.hub.sendToModule(targetId, requestMessage),
+              deps.hub.sendToModule(targetId, requestMessage),
               new Promise<never>((_, reject) => {
                 setTimeout(
                   () => {
