@@ -34,6 +34,7 @@ export type OpenClawGatewayMethodHandler = (payload: {
 
 export type OpenClawCompatRuntimeApi = PluginRuntimeApi & {
   registerGatewayMethod: (method: string, handler: OpenClawGatewayMethodHandler) => void;
+  registerCli?: (options: unknown) => void;
   pluginConfig?: Record<string, unknown>;
   runtime?: { config?: Record<string, unknown> };
 };
@@ -253,7 +254,10 @@ export function createOpenClawRuntimeApi(params: {
       gate.addTool(pluginId, tool);
       logger.info(`Registered OpenClaw channel ${channel.id} for plugin ${pluginId}`);
     },
-    registerGatewayMethod: (method: string, _handler: unknown) => {
+    registerCli: (_registerCliOptions: unknown) => {
+      logger.debug?.(`Plugin ${pluginId} requested registerCli (not yet supported in Finger)`);
+    },
+        registerGatewayMethod: (method: string, _handler: unknown) => {
       const normalizedMethod = typeof method === 'string' ? method.trim() : '';
       if (!normalizedMethod) {
         logger.warn(`Ignored empty gateway method for plugin ${pluginId}`);

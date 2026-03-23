@@ -4,7 +4,8 @@
  */
 
 import fs from 'node:fs';
-import { pathToFileURL } from 'node:url';
+import { createRequire } from 'node:module';
+import { pathToFileURL, fileURLToPath } from 'node:url';
 import type { PluginRecord, LoadPluginResult, PluginRuntimeApi, PluginLogger } from './types.js';
 import { loadPluginManifest, parsePackageJsonExtensions, resolvePluginEntries } from './manifest.js';
 import { discoverPluginsWithPriority, type DiscoveredPluginPath } from './discovery.js';
@@ -16,6 +17,95 @@ import { createConsoleLikeLogger } from '../../core/logger/console-like.js';
 const clog = createConsoleLikeLogger('Loader');
 
 const log = logger.module('Loader');
+
+/** Lazy-loaded jiti instance (CJS require hook for .ts/.tsx files) */
+let _jitiRequire: ((id: string) => unknown) | null = null;
+const cjsRequire = createRequire(import.meta.url);
+
+function getJitiRequire(): ((id: string) => unknown) | null {
+  if (_jitiRequire) return _jitiRequire;
+  try {
+    // openclaw ships jiti in its node_modules
+    const jitiPath = cjsRequire.resolve('jiti', { paths: ['/opt/homebrew/lib/node_modules/openclaw/node_modules'] });
+    const { createJiti } = cjsRequire(jitiPath);
+    // createJiti needs a real filename — use this file's path
+    _jitiRequire = createJiti(fileURLToPath(import.meta.url), { interopDefault: true });
+    return _jitiRequire;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Import a module, falling back to jiti for .ts entries.
+ * jiti can load .ts files at runtime when openclaw is installed globally.
+ */
+async function smartImport(entryPath: string): Promise<unknown> {
+  const tsLike = /\.(ts|tsx|mts|cts)$/.test(entryPath);
+
+  // For source plugins (standard npm packages with TS entries), prefer jiti first.
+  if (tsLike) {
+    const jitiRequire = getJitiRequire();
+    if (jitiRequire) {
+      try {
+        return jitiRequire(entryPath);
+      } catch {
+        // continue to native import fallback
+      }
+    }
+  }
+
+  // Native ESM import path (works for .js/.mjs and some transpiled entries)
+  try {
+    return await import(pathToFileURL(entryPath).href);
+  } catch {
+    if (tsLike) {
+      // Second chance with jiti for TS entries
+      const jitiRequire = getJitiRequire();
+      if (!jitiRequire) return null;
+      try {
+        return jitiRequire(entryPath);
+      } catch {
+        return null;
+      }
+    }
+    return null;
+  }
+}
+
+function resolveEntriesWithManifestFallback(
+  pluginPath: string,
+  packageJsonPath: string,
+  manifestPresent: boolean,
+): string[] {
+  const extResult = parsePackageJsonExtensions(packageJsonPath);
+  if (extResult.ok) {
+    return resolvePluginEntries(pluginPath, extResult.extensions).resolved;
+  }
+
+  // Standard npm plugin fallback:
+  // Some packages rely on openclaw.plugin.json for id and only keep
+  // openclaw.extensions in package.json. In that case we still accept extensions.
+  if (manifestPresent) {
+    try {
+      const pkg = JSON.parse(fs.readFileSync(packageJsonPath, 'utf-8')) as {
+        openclaw?: { extensions?: unknown };
+      };
+      const extRaw = pkg.openclaw?.extensions;
+      const extensions = Array.isArray(extRaw)
+        ? extRaw.filter((item): item is string => typeof item === 'string' && item.trim().length > 0)
+        : [];
+      if (extensions.length > 0) {
+        return resolvePluginEntries(pluginPath, extensions).resolved;
+      }
+    } catch {
+      // ignore and return empty entries
+    }
+  }
+
+  return [];
+}
+
 
 export type LoaderOptions = {
   pluginDir: string;
@@ -81,10 +171,7 @@ export async function loadPlugin(
   let entries: string[] = [];
 
   if (fs.existsSync(packageJsonPath)) {
-    const extResult = parsePackageJsonExtensions(packageJsonPath);
-    if (extResult.ok) {
-      entries = resolvePluginEntries(pluginPath, extResult.extensions).resolved;
-    }
+    entries = resolveEntriesWithManifestFallback(pluginPath, packageJsonPath, manifestResult.ok);
   }
 
   let pluginModule: unknown = null;
@@ -92,8 +179,21 @@ export async function loadPlugin(
 
   for (const entry of entries) {
     try {
-      const imported = await import(pathToFileURL(entry).href);
-      pluginModule = imported?.default ?? imported;
+      const imported = await smartImport(entry) as any;
+      if (!imported) {
+        lastError = `Loader returned empty module for ${entry}`;
+        logger.warn?.(lastError);
+        continue;
+      }
+
+      const normalized = imported?.default ?? imported;
+      if (!normalized || (typeof normalized !== 'object' && typeof normalized !== 'function')) {
+        lastError = `Loader returned invalid module shape for ${entry}`;
+        logger.warn?.(lastError);
+        continue;
+      }
+
+      pluginModule = normalized;
       logger.info?.(`Loaded plugin entry: ${entry}`);
       break;
     } catch (err) {
@@ -161,4 +261,3 @@ export async function loadAllPlugins(
 
   return records;
 }
-
