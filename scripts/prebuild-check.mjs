@@ -85,7 +85,7 @@ function main() {
 
   console.log('✓ Prebuild check passed: no untracked files blocking build');
 
-  // ── Backbone regression test gate (18 test files, ~190 tests) ──
+  // ── Backbone regression test gate (23 test files) ──
   // These tests verify all core flows that must not break:
   //   1. Tool error handling: tools/execute returns HTTP 200 on errors
   //   2. Message hub: routeToOutput, meta injection, module routing
@@ -107,6 +107,11 @@ function main() {
     'tests/unit/server/tool-error-handling.test.ts',
     'tests/unit/orchestration/message-hub.test.ts',
     'tests/unit/server/mailbox.test.ts',
+    'tests/unit/blocks/mailbox-block.test.ts',
+    'tests/unit/tools/internal/mailbox-tool.test.ts',
+    'tests/unit/tools/internal/mailbox-tool-comprehensive.test.ts',
+    'tests/unit/server/agent-runtime-mailbox.test.ts',
+    'tests/integration/mailbox-two-agent.e2e.test.ts',
     'tests/unit/server/agent-status-subscriber.test.ts',
     'tests/unit/server/channel-bridge-loading.test.ts',
     'tests/unit/server/system-agent-manager.test.ts',

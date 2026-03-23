@@ -78,13 +78,23 @@ describe('MailboxBlock', () => {
   });
 
   describe('ack', () => {
-    it('should mark message as acknowledged', () => {
+    it('should mark message as acknowledged after read', () => {
       const { id } = block.append('agent-1', { data: 'test' });
+      block.markRead(id);
       const result = block.ack(id);
 
       expect(result.acked).toBe(true);
       const msg = block.get(id);
       expect(msg?.ackAt).toBeDefined();
+      expect(msg?.status).toBe('completed');
+    });
+
+    it('should reject ack without read first', () => {
+      const { id } = block.append('agent-1', { data: 'test' });
+      const result = block.ack(id);
+
+      expect(result.acked).toBe(false);
+      expect(result.error).toContain('mailbox.read(id)');
     });
 
     it('should return false for non-existent message', () => {
@@ -109,10 +119,11 @@ describe('MailboxBlock', () => {
       expect(Array.isArray(messages)).toBe(true);
     });
 
-    it('should route ack command', async () => {
+    it('should route ack command after read', async () => {
       const { id } = block.append('agent-1', {});
+      await block.execute('markRead', { id });
       const result = await block.execute('ack', { id });
-      expect(result).toEqual({ acked: true });
+      expect(result).toMatchObject({ acked: true });
     });
   });
 });
