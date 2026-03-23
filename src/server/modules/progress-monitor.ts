@@ -52,6 +52,7 @@ export interface SessionProgress {
   lastReportKey?: string;
   lastReportStatus?: string;
   lastReportTime?: number;
+  lastReportedToolIndex?: number; // Track which tool calls have been reported
   latestReasoning?: string;
 }
 
@@ -389,14 +390,24 @@ export class ProgressMonitor {
       }
       p.lastReportKey = reportKey;
       p.lastReportTime = Date.now();
+
+      // 仅发送新增工具调用（避免重复）
+      const lastReportedIdx = p.lastReportedToolIndex ?? -1;
+      const newToolCalls = p.toolCallHistory.slice(lastReportedIdx + 1);
+      if (newToolCalls.length === 0) {
+        continue;
+      }
+
       const report: ProgressReport = {
         type: 'progress_report',
         timestamp: new Date().toISOString(),
         sessionId: p.sessionId,
         agentId: p.agentId,
         progress: p,
-        summary: this.buildSingleProgressSummary(p),
+        summary: this.buildSingleProgressSummary(p, newToolCalls),
       };
+
+      p.lastReportedToolIndex = p.toolCallHistory.length - 1;
 
       if (this.callbacks?.onProgressReport) {
         await this.callbacks.onProgressReport(report);
@@ -407,13 +418,14 @@ export class ProgressMonitor {
   /**
    * 构建单个 session 的进度摘要
    */
-  private buildSingleProgressSummary(p: SessionProgress): string {
+  private buildSingleProgressSummary(p: SessionProgress, newToolCalls?: ToolCallRecord[]): string {
+    const toolsToShow = (newToolCalls && newToolCalls.length > 0) ? newToolCalls : [];
     const data: SessionProgressData = {
       agentId: p.agentId,
       status: p.status,
       currentTask: p.currentTask,
       elapsedMs: p.elapsedMs,
-      toolCallHistory: p.toolCallHistory.map(t => ({
+      toolCallHistory: toolsToShow.map(t => ({
         toolName: t.toolName,
         params: t.params,
         success: t.success,
