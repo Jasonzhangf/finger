@@ -327,18 +327,32 @@ export class ProgressMonitor {
     }
   }
 
-  private recordToolResult(
-    progress: SessionProgress,
-    toolId?: string,
-    toolName?: string,
-    input?: unknown,
-    output?: unknown,
-    error?: string,
-    success?: boolean,
-  ): void {
-    const existing = toolId
+ private recordToolResult(
+   progress: SessionProgress,
+   toolId?: string,
+   toolName?: string,
+   input?: unknown,
+   output?: unknown,
+   error?: string,
+   success?: boolean,
+ ): void {
+    // 先按 toolId 查找
+    let existing = toolId
       ? progress.toolCallHistory.find(t => t.toolId === toolId && !t.result && !t.error)
       : undefined;
+
+    // 如果按 toolId 找不到，按 toolName 查找最近的未完成记录
+    if (!existing && toolName) {
+      // 从后往前找最后一个未完成的同名工具
+      for (let i = progress.toolCallHistory.length - 1; i >= 0; i--) {
+        const t = progress.toolCallHistory[i];
+        if (t.toolName === toolName && !t.result && !t.error) {
+          existing = t;
+          break;
+        }
+      }
+    }
+
     const record: ToolCallRecord = existing || {
       toolId,
       toolName: toolName || 'unknown',
