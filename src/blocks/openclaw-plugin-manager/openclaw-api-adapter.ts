@@ -1,6 +1,7 @@
 import type { OpenClawGateBlock, OpenClawTool } from '../openclaw-gate/index.js';
 import type { OpenClawPluginDefinition, PluginLogger, PluginRuntimeApi } from './types.js';
 import { OpenClawBridgeAdapter } from '../../bridges/openclaw-adapter.js';
+import { loadUserSettings } from '../../core/user-settings.js';
 import { logger } from '../../core/logger.js';
 import { createConsoleLikeLogger } from '../../core/logger/console-like.js';
 
@@ -35,8 +36,15 @@ export type OpenClawGatewayMethodHandler = (payload: {
 export type OpenClawCompatRuntimeApi = PluginRuntimeApi & {
   registerGatewayMethod: (method: string, handler: OpenClawGatewayMethodHandler) => void;
   registerCli?: (options: unknown) => void;
+  registerAuthProfile?: (name: string, profile: unknown) => void;
   pluginConfig?: Record<string, unknown>;
-  runtime?: { config?: Record<string, unknown> };
+  runtime?: {
+    config?: Record<string, unknown>;
+    auth?: {
+      listProfiles?: () => string[];
+      resolveProfile?: (profileName: string) => Record<string, unknown> | null;
+    };
+  };
 };
 
 export type ChannelPluginHandler = {
@@ -89,26 +97,207 @@ export function createOpenClawRuntimeApi(params: {
 }): OpenClawCompatRuntimeApi {
   const { pluginId, gate, logger, pluginConfig } = params;
 
+  const runtimeAuthProfiles = new Map<string, Record<string, unknown>>();
+
+  function mapUserSettingsToOpenClawAuthProfiles(): Record<string, Record<string, unknown>> {
+    const settings = loadUserSettings();
+    const providers = settings?.aiProviders?.providers;
+    if (!providers || typeof providers !== 'object') return {};
+
+    const out: Record<string, Record<string, unknown>> = {};
+    for (const [name, provider] of Object.entries(providers as Record<string, any>)) {
+      if (!provider?.enabled) continue;
+
+      // 用户已按要求：provider model 统一 gpt-5.4，no provider wrapper
+      // auth 使用 user-settings 的 env_key 对应环境变量值
+      const envKey = typeof provider.env_key === 'string' ? provider.env_key : '';
+      const apiKey = envKey ? process.env[envKey] : undefined;
+      if (!apiKey) continue;
+
+      const baseUrl = typeof provider.base_url === 'string' ? provider.base_url : undefined;
+      out[name] = {
+        provider: name,
+        apiKey,
+        ...(baseUrl ? { baseUrl } : {}),
+      };
+    }
+
+    return out;
+  }
+
+  function listAuthProfiles(): string[] {
+    const merged = {
+      ...mapUserSettingsToOpenClawAuthProfiles(),
+      ...Object.fromEntries(runtimeAuthProfiles.entries()),
+    };
+    return Object.keys(merged);
+  }
+
+  function resolveAuthProfile(profileName: string): Record<string, unknown> | null {
+    const merged = {
+      ...mapUserSettingsToOpenClawAuthProfiles(),
+      ...Object.fromEntries(runtimeAuthProfiles.entries()),
+    };
+    return merged[profileName] || null;
+  }
+
   return {
     runtime: {
       config: pluginConfig,
+      auth: {
+        listProfiles: listAuthProfiles,
+        resolveProfile: resolveAuthProfile,
+      },
       channel: {
         activity: {
           record: (event: { channel: string; accountId: string; direction: string }) => {
             logger.info?.(`[channel.activity] ${event.channel}:${event.accountId} ${event.direction}`);
           },
         },
-        routing: {
-          resolveAgentRoute: (params: { cfg: unknown; channel: string; accountId: string; peer: { kind: string; id: string } }) => {
-            // Default route to orchestrator
-            return { agentId: 'finger-orchestrator' };
-          },
-        },
-        reply: {
-          resolveEnvelopeFormatOptions: (cfg: unknown) => ({}),
-          formatInboundEnvelope: (params: unknown) => params,
-          finalizeInboundContext: (params: unknown) => params,
-          resolveEffectiveMessagesConfig: (cfg: unknown, agentId: string) => ({}),
+       routing: {
+         resolveAgentRoute: (params: { cfg: unknown; channel: string; accountId: string; peer: { kind: string; id: string } }) => {
+           // Default route to orchestrator
+           return { agentId: 'finger-orchestrator' };
+         },
+       },
+       session: {
+         resolveStorePath: (baseStore: unknown, options?: { agentId?: string }) => {
+           return String(baseStore || '');
+         },
+         recordInboundSession: async (params: {
+           storePath: string;
+           sessionKey?: string;
+           ctx: Record<string, unknown>;
+           updateLastRoute?: { sessionKey?: string; channel: string; to: string; accountId: string };
+           onRecordError?: (err: Error) => void;
+         }) => {
+           logger.debug?.(`[session.recordInboundSession] Recorded session: ${params.sessionKey}`);
+         },
+       },
+       media: {
+         saveMediaBuffer: async (params: { buffer: Buffer; filename: string; mimeType?: string }) => {
+           // TODO: Implement media saving to temp directory
+           logger.debug?.(`[media.saveMediaBuffer] Saving media: ${params.filename}`);
+           return null; // Return null for now, as we don't implement actual saving
+         },
+       },
+       commands: {
+         resolveSenderCommandAuthorization: async (params: unknown) => {
+           // Default: allow all commands
+           return { senderAllowedForCommands: true, commandAuthorized: true };
+         },
+       },
+       reply: {
+         resolveEnvelopeFormatOptions: (cfg: unknown) => ({}),
+         formatInboundEnvelope: (params: unknown) => params,
+         finalizeInboundContext: (params: unknown) => params,
+         resolveEffectiveMessagesConfig: (cfg: unknown, agentId: string) => ({}),
+
+        // Human delay configuration
+        resolveHumanDelayConfig: (cfg: unknown, agentId?: string) => ({
+          minMs: 500,
+          maxMs: 2000,
+          enabled: true,
+        }),
+
+        // Reply dispatcher - bridges messages to Finger agent
+        createReplyDispatcherWithTyping: (params: {
+           humanDelay: { minMs: number; maxMs: number; enabled: boolean };
+           typingCallbacks: { start: () => Promise<void>; stop: () => Promise<void>; onStartError?: (err: Error) => void; onStopError?: (err: Error) => void; keepaliveIntervalMs?: number };
+           deliver: (payload: { text?: string; mediaUrl?: string; mediaUrls?: string[] }) => Promise<void>;
+           onError: (err: Error, info: { kind: string }) => void;
+         }) => {
+           return {
+             dispatcher: {
+               deliver: params.deliver,
+               humanDelay: params.humanDelay,
+             },
+             replyOptions: {},
+             markDispatchIdle: () => {},
+           };
+         },
+
+        withReplyDispatcher: async (params: {
+           dispatcher: unknown;
+           run: () => Promise<void>;
+         }) => {
+           await params.run();
+         },
+
+         // Core method: dispatch reply from config - bridges to Finger agent
+        dispatchReplyFromConfig: async (params: {
+           ctx: Record<string, unknown>;
+           cfg: unknown;
+           dispatcher: unknown;
+           replyOptions: Record<string, unknown>;
+         }) => {
+           const ctx = params.ctx as Record<string, unknown>;
+           const dispatcher = params.dispatcher as { deliver: (payload: { text?: string; mediaUrl?: string; mediaUrls?: string[] }) => Promise<void> };
+           const deliver = dispatcher.deliver;
+           
+           // Extract message content
+           const content = String(
+             ctx?.Body
+               ?? ctx?.CommandBody
+               ?? ctx?.RawBody
+               ?? ctx?.content
+               ?? ''
+           );
+           
+           const senderId = String(ctx?.From ?? ctx?.SenderId ?? ctx?.senderId ?? '');
+           const peerId = String(ctx?.To ?? ctx?.PeerId ?? ctx?.peerId ?? '');
+           const messageId = String(ctx?.MessageId ?? ctx?.MessageSid ?? ctx?.messageId ?? '');
+           const contextToken = String(ctx?.ContextToken ?? ctx?.contextToken ?? '');
+           
+           logger.info?.(`[reply.dispatchReplyFromConfig] content="${content.slice(0, 50)}" from=${senderId}`);
+           
+           if (!content.trim()) {
+             logger.warn?.('[reply.dispatchReplyFromConfig] Empty content, skip');
+             return;
+           }
+           
+           // Bridge to Finger agent
+           try {
+             const { getChannelBridgeManager } = await import('../../bridges/manager.js');
+             const manager = getChannelBridgeManager();
+             const inboundChannelId = String(ctx?.OriginatingChannel ?? ctx?.channelId ?? 'openclaw-weixin');
+             const bridge = manager.getBridge(inboundChannelId) as any;
+             
+             if (bridge && bridge.callbacks_) {
+               const message = {
+                 id: messageId || `weixin-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+                 channelId: inboundChannelId,
+                 accountId: String(ctx?.AccountId ?? 'default'),
+                 type: 'direct',
+                 senderId,
+                 senderName: String(ctx?.SenderName ?? ''),
+                 content,
+                 timestamp: Date.now(),
+                 metadata: {
+                   messageId,
+                   contextToken,
+                   peerId,
+                   ...ctx,
+                 },
+               };
+               
+               // Route to Finger agent
+               await bridge.callbacks_.onMessage(message);
+             } else {
+               logger.error?.(`[reply.dispatchReplyFromConfig] Bridge not found for channel: ${inboundChannelId}`);
+               // Send error notice via deliver
+               await deliver({ text: '抱歉，系统暂时无法处理您的消息。' });
+             }
+           } catch (err) {
+             logger.error?.(`[reply.dispatchReplyFromConfig] Error: ${err}`);
+             try {
+               await deliver({ text: '抱歉，处理您的消息时发生错误。' });
+             } catch (deliverErr) {
+               logger.error?.(`[reply.dispatchReplyFromConfig] Failed to deliver error notice: ${deliverErr}`);
+             }
+           }
+         },
+
          dispatchReplyWithBufferedBlockDispatcher: async (params: { ctx: Record<string, unknown>; cfg: unknown; dispatcherOptions?: { responsePrefix?: string; deliver?: (payload: { text?: string }, info: { kind: 'tool' | 'block' }) => Promise<void> } }) => {
            // Bridge message to Finger and handle reply
            const ctx = params.ctx as Record<string, unknown>;
@@ -162,13 +351,18 @@ export function createOpenClawRuntimeApi(params: {
             try {
               const { getChannelBridgeManager } = await import('../../bridges/manager.js');
               const manager = getChannelBridgeManager();
-              const bridge = manager.getBridge('qqbot') as any;
-              logger.info?.(`[channel.reply] Bridge lookup - manager: ${!!manager}, bridge: ${!!bridge}, callbacks: ${!!(bridge && bridge.callbacks_)}`);
+              const inboundChannelId = String(
+                ctx?.OriginatingChannel
+                  ?? ctx?.channelId
+                  ?? 'qqbot'
+              );
+              const bridge = manager.getBridge(inboundChannelId) as any;
+              logger.info?.(`[channel.reply] Bridge lookup - channel=${inboundChannelId}, manager: ${!!manager}, bridge: ${!!bridge}, callbacks: ${!!(bridge && bridge.callbacks_)}`);
               if (bridge && bridge.callbacks_) {
                const message = {
                  // 使用原始QQ消息ID作为唯一标识，fallback到自生成ID
                  id: messageId || `qqbot-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-                 channelId: 'qqbot',
+                 channelId: inboundChannelId,
                  accountId: 'default',
                  type: peerKind === 'group' ? 'group' : 'direct',
                  senderId,
@@ -256,6 +450,13 @@ export function createOpenClawRuntimeApi(params: {
     },
     registerCli: (_registerCliOptions: unknown) => {
       logger.debug?.(`Plugin ${pluginId} requested registerCli (not yet supported in Finger)`);
+    },
+    registerAuthProfile: (name: string, profile: unknown) => {
+      const key = typeof name === 'string' ? name.trim() : '';
+      if (!key) return;
+      if (!profile || typeof profile !== 'object') return;
+      runtimeAuthProfiles.set(key, profile as Record<string, unknown>);
+      logger.info?.(`Registered auth profile ${key} for plugin ${pluginId}`);
     },
         registerGatewayMethod: (method: string, _handler: unknown) => {
       const normalizedMethod = typeof method === 'string' ? method.trim() : '';
