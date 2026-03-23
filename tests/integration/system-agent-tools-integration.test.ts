@@ -21,7 +21,11 @@ vi.mock('../../src/agents/finger-system-agent/registry.js', () => ({
 
 // Mock task dispatcher
 vi.mock('../../src/agents/finger-system-agent/task-report-dispatcher.js', () => ({
-  dispatchTaskToSystemAgent: vi.fn().mockResolvedValue(undefined),
+  dispatchTaskToSystemAgent: vi.fn().mockResolvedValue({
+    ok: true,
+    dispatchId: 'dispatch-integration',
+    status: 'queued',
+  }),
 }));
 
 // Mock system events

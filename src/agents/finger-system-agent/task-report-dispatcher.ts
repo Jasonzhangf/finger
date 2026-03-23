@@ -14,14 +14,21 @@ export interface TaskReportPayload {
   projectId: string;
 }
 
+export interface TaskReportDispatchResult {
+  ok: boolean;
+  dispatchId: string;
+  status: 'queued' | 'completed' | 'failed';
+  error?: string;
+}
+
 export async function dispatchTaskToSystemAgent(
   deps: AgentRuntimeDeps,
   payload: TaskReportPayload
-): Promise<void> {
+): Promise<TaskReportDispatchResult> {
   const sessionId = payload.sessionId;
 
-  await deps.agentRuntimeBlock.execute('dispatch', {
-    sourceAgentId: 'project-agent',
+  const raw = await deps.agentRuntimeBlock.execute('dispatch', {
+    sourceAgentId: 'finger-project-agent',
     targetAgentId: 'finger-system-agent',
     task: {
       prompt: `[Task Report]\n任务ID: ${payload.taskId}\n任务摘要: ${payload.taskSummary}\n结果: ${payload.result}\n项目: ${payload.projectId}`,
@@ -35,4 +42,20 @@ export async function dispatchTaskToSystemAgent(
     },
     blocking: false,
   });
+
+  const result = (typeof raw === 'object' && raw !== null ? raw : {}) as {
+    ok?: boolean;
+    dispatchId?: string;
+    status?: string;
+    error?: string;
+  };
+  const status = result.status === 'completed' || result.status === 'failed' ? result.status : 'queued';
+  return {
+    ok: result.ok !== false && status !== 'failed',
+    dispatchId: typeof result.dispatchId === 'string' && result.dispatchId.trim().length > 0
+      ? result.dispatchId
+      : `dispatch-${Date.now()}-task-report`,
+    status,
+    ...(typeof result.error === 'string' && result.error.trim().length > 0 ? { error: result.error.trim() } : {}),
+  };
 }
