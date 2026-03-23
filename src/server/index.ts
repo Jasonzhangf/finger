@@ -42,6 +42,7 @@ import { BdTools } from '../agents/shared/bd-tools.js';
 import { inputLockManager } from '../runtime/input-lock.js';
 import { createWebSocketServer } from './modules/websocket-server.js';
 import { SYSTEM_AGENT_CONFIG } from '../agents/finger-system-agent/index.js';
+import { HeartbeatBroker } from '../agents/core/heartbeat-broker.js';
 import { AgentStatusSubscriber } from './modules/agent-status-subscriber.js';
 import { SystemAgentManager } from './modules/system-agent-manager.js';
 import { createSessionWorkspaceManager } from './modules/session-workspaces.js';
@@ -411,6 +412,11 @@ const registerAllRoutesDeps = {
   system: { localImageMimeByExt: LOCAL_IMAGE_MIME_BY_EXT, listKernelProviders, upsertKernelProvider, selectKernelProvider, testKernelProvider },
 };
 await ensureSingleInstance(PORT);
+// Start heartbeat broker for child process lifecycle management
+const heartbeatBroker = new HeartbeatBroker();
+heartbeatBroker.start();
+logger.module('server').info('Heartbeat broker started', { port: 9998 });
+
 startServer(app, process.env.HOST || '0.0.0.0', PORT, {
   chatCodexRunner,
   clockInjector,

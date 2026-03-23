@@ -1,3 +1,4 @@
+import { execSync } from 'child_process';
 /**
  * Server Startup & Shutdown
  */
@@ -52,6 +53,20 @@ export function startServer(
     log.warn('Failed to enumerate sessions during shutdown: ' + (err instanceof Error ? err.message : String(err)));
   }
     try {
+    // Kill all kernel bridge child processes before closing server
+    try {
+      const result = execSync('ps aux | grep finger-kernel-bridge-bin | grep -v grep | awk '{print $2}'').toString().trim();
+      if (result) {
+        const pids = result.split(\n).filter(Boolean);
+        for (const pid of pids) {
+          try { process.kill(Number(pid), 'SIGTERM'); } catch {}
+        }
+        log.info(`Killed ${pids.length} kernel bridge processes`);
+      }
+    } catch (err) {
+      log.warn('Failed to cleanup child processes: ' + (err instanceof Error ? err.message : String(err)));
+    }
+
       server.close(() => {
         process.exit(0);
       });
