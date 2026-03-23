@@ -1,5 +1,15 @@
 /**
- * OpenClaw Bridge Adapter - 适配 OpenClaw 插件到标准 Channel Bridge
+ * OpenClaw Bridge Adapter - Adapts OpenClaw plugins to standard Channel Bridge interface.
+ *
+ * Credential handling by channel type:
+ * - type=openclaw-plugin: Uses config.credentials (channel-specific) + config.options.adapterConfig
+ *   The OpenClaw plugin handler reads its own auth from ~/.openclaw state.
+ *   Finger only provides the plugin config envelope.
+ * - type=webui: No bridge adapter needed (handled by WebUI server directly).
+ * - type=builtin: Legacy / built-in channels.
+ *
+ * Key change: credentials structure is channel-specific and not hardcoded here.
+ * Each channel's config in channels.json defines its own credentials shape.
  */
 
 import type { ChannelBridge, ChannelBridgeConfig, ChannelBridgeCallbacks, ChannelMessage, SendMessageOptions } from './types.js';
@@ -11,12 +21,7 @@ const log = logger.module('OpenClawBridgeAdapter');
 
 type GatewayContext = {
   callbacks?: ChannelBridgeCallbacks;
-  account: {
-    accountId: string;
-    appId?: string;
-    clientSecret?: string;
-    [key: string]: unknown;
-  };
+  account: Record<string, unknown>;
   cfg: Record<string, unknown>;
   log: typeof log;
   onReady: () => void;
@@ -35,7 +40,6 @@ export class OpenClawBridgeAdapter implements ChannelBridge {
   private running = false;
   private abortController: AbortController | null = null;
 
-  // Expose callbacks for runtime access
   get callbacks_(): ChannelBridgeCallbacks {
     return this.callbacks;
   }
@@ -48,7 +52,6 @@ export class OpenClawBridgeAdapter implements ChannelBridge {
   }
 
   async start(): Promise<void> {
-    // 获取 OpenClaw 插件注册的 handler
     this.handler = getChannelHandler(this.channelId) || null;
 
     if (!this.handler) {
@@ -57,21 +60,17 @@ export class OpenClawBridgeAdapter implements ChannelBridge {
 
     log.info(`[${this.id}] Found handler - sendText: ${!!this.handler.sendText}, startAccount: ${!!this.handler.startAccount}`);
 
-    // 如果有 startAccount，调用它启动 gateway
     if (this.handler.startAccount) {
       log.info(`[${this.id}] Starting gateway via startAccount...`);
-
-      // Create AbortController for gateway lifecycle
       this.abortController = new AbortController();
 
       try {
-        // Build config for OpenClaw plugin
+        // Build plugin config from credentials + adapterConfig
         const pluginCfg = {
           channels: {
             [this.channelId]: {
-              appId: this.config.credentials.appid as string,
-              clientSecret: this.config.credentials.token as string,
-              enabled: true,
+              ...this.config.credentials,
+              ...(this.config.options?.adapterConfig || {}),
             },
           },
         };
@@ -79,10 +78,8 @@ export class OpenClawBridgeAdapter implements ChannelBridge {
         const ctx: GatewayContext = {
           callbacks: this.callbacks,
           account: {
-            accountId: this.config.credentials.accountId as string || 'default',
-            appId: this.config.credentials.appid as string,
-            clientSecret: this.config.credentials.token as string,
             ...this.config.credentials,
+            ...(this.config.options?.adapterConfig || {}),
           },
           cfg: pluginCfg,
           log,
@@ -119,7 +116,6 @@ export class OpenClawBridgeAdapter implements ChannelBridge {
   }
 
   async stop(): Promise<void> {
-    // Abort the gateway if running
     if (this.abortController) {
       this.abortController.abort();
       this.abortController = null;
@@ -137,30 +133,24 @@ export class OpenClawBridgeAdapter implements ChannelBridge {
       throw new Error(`Handler does not support sendText for channel: ${this.channelId}`);
     }
 
-    const appId = this.config.credentials.appid as string | undefined;
-    const clientSecret = this.config.credentials.token as string | undefined;
-    if (!appId || !clientSecret) {
-      throw new Error('QQBot not configured (missing appId or clientSecret)');
-    }
-
-    const cfg = {
+    // Build cfg from credentials + adapterConfig for plugin handler
+    const pluginCfg = {
       channels: {
         [this.channelId]: {
-          appId,
-          clientSecret,
-          enabled: true,
+          ...this.config.credentials,
+          ...(this.config.options?.adapterConfig || {}),
         },
       },
     };
 
-    log.info(`[${this.id}] sendMessage - cfg keys: channels=${!!cfg.channels}, qqbot=${!!cfg.channels?.[this.channelId]}`);
+    log.debug(`[${this.id}] sendMessage to=${options.to} cfg keys=${Object.keys(pluginCfg.channels[this.channelId] || {}).join(',')}`);
 
     const result = await this.handler.sendText({
       to: options.to,
       text: options.text,
       replyToId: options.replyTo,
       accountId: this.config.credentials.accountId as string | undefined,
-      cfg,
+      cfg: pluginCfg,
     });
 
     if (result.error) {

@@ -64,7 +64,7 @@ export async function handleToolError(
   };
 
   if (ctx.messageHub) {
-    await sendStatusUpdate(mapping.envelope, wrappedUpdate, ctx.messageHub);
+    await sendStatusUpdate(mapping.envelope, wrappedUpdate, ctx.messageHub, ctx.channelBridgeManager);
   }
 }
 
@@ -102,7 +102,7 @@ export async function handleSystemError(
   };
 
   if (ctx.messageHub) {
-    await sendStatusUpdate(mapping.envelope, wrappedUpdate, ctx.messageHub);
+    await sendStatusUpdate(mapping.envelope, wrappedUpdate, ctx.messageHub, ctx.channelBridgeManager);
   }
 }
 
@@ -206,6 +206,6 @@ export async function flushStepBuffer(
     },
   };
 
-  await sendStatusUpdate(mapping.envelope, wrappedUpdate, ctx.messageHub);
+  await sendStatusUpdate(mapping.envelope, wrappedUpdate, ctx.messageHub, ctx.channelBridgeManager);
   log.debug(`[AgentStatusSubscriber] Flushed ${buffer.length} steps for session ${sessionId}`);
 }

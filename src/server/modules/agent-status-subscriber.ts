@@ -368,7 +368,7 @@ export class AgentStatusSubscriber {
     mapping.timestamp = Date.now();
 
     // 发送状态更新到通信通道 (QQBot)
-    if (this.messageHub) { await sendStatusUpdate(mapping.envelope, wrappedUpdate, this.messageHub); };
+    if (this.messageHub) { await sendStatusUpdate(mapping.envelope, wrappedUpdate, this.messageHub, this.channelBridgeManager); };
 
     // 同时广播到 WebUI
     if (this.broadcast) {
@@ -447,7 +447,7 @@ export class AgentStatusSubscriber {
       },
     };
 
-    await sendStatusUpdate(mapping.envelope, wrappedUpdate, this.messageHub);
+    await sendStatusUpdate(mapping.envelope, wrappedUpdate, this.messageHub, this.channelBridgeManager);
   }
 
   /**

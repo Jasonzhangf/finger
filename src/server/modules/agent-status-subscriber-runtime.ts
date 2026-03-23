@@ -3,11 +3,15 @@
  *
  * Extracted from agent-status-subscriber.ts to keep file under 500 lines.
  * Contains sendStatusUpdate and startCleanup logic.
+ *
+ * IMPORTANT: All status update paths must check pushSettings before sending.
+ * The ChannelBridgeManager.getPushSettings() is the single source of truth.
  */
 
 import type { ChannelBridgeEnvelope } from '../../bridges/envelope.js';
 import type { MessageHub } from '../../orchestration/message-hub.js';
 import type { ChannelBridgeManager } from '../../bridges/manager.js';
+import type { PushSettings } from '../../bridges/types.js';
 import type {
   SessionEnvelopeMapping,
   WrappedStatusUpdate,
@@ -17,25 +21,48 @@ import { logger } from '../../core/logger.js';
 const log = logger.module('AgentStatusSubscriber');
 
 /**
+ * Check if a specific push setting is enabled for a channel.
+ * Centralizes all pushSettings checks in one place.
+ */
+function shouldPush(
+  channelBridgeManager: ChannelBridgeManager | undefined,
+  channelId: string,
+  setting: keyof PushSettings,
+): boolean {
+  if (!channelBridgeManager) return true; // no manager = push everything
+  return !!channelBridgeManager.getPushSettings(channelId)[setting];
+}
+
+/**
  * Send status update to communication channel via MessageHub.
+ * Filters based on pushSettings.statusUpdate.
  */
 export async function sendStatusUpdate(
   envelope: SessionEnvelopeMapping['envelope'],
   statusUpdate: WrappedStatusUpdate,
   messageHub: MessageHub,
+  channelBridgeManager?: ChannelBridgeManager,
 ): Promise<void> {
+  const channel = envelope.channel;
+
+  // Check statusUpdate permission before sending
+  if (!shouldPush(channelBridgeManager, channel, 'statusUpdate')) {
+    log.debug(`[AgentStatusSubscriber] Skipping status update for ${channel} (statusUpdate disabled)`);
+    return;
+  }
+
   try {
-    log.info(`[AgentStatusSubscriber] Sending status update to channel ${envelope.channel}:`, {
+    log.info(`[AgentStatusSubscriber] Sending status update to channel ${channel}:`, {
       agent: statusUpdate.agent.agentName || statusUpdate.agent.agentId,
       status: statusUpdate.status.state,
       level: statusUpdate.display.level,
       task: statusUpdate.task.taskDescription,
     });
 
-    const outputId = 'channel-bridge-' + envelope.channel;
+    const outputId = 'channel-bridge-' + channel;
     const originalEnvelope: ChannelBridgeEnvelope = {
       id: envelope.envelopeId,
-      channelId: envelope.channel,
+      channelId: channel,
       accountId: 'default',
       type: envelope.groupId ? 'group' : 'direct',
       senderId: envelope.userId || 'unknown',
@@ -52,7 +79,7 @@ export async function sendStatusUpdate(
       + (statusUpdate.display.subtitle ? `\n${statusUpdate.display.subtitle}` : '');
 
     const message = {
-      channelId: envelope.channel,
+      channelId: channel,
       target: envelope.groupId ? `group:${envelope.groupId}` : (envelope.userId || 'unknown'),
       content: text,
       originalEnvelope,

@@ -1,14 +1,29 @@
 /**
  * Channel Bridge Manager - 动态加载和管理渠道桥接
+ *
+ * Standardized channel management:
+ * - Channel type determines bridge adapter (openclaw-plugin / webui / builtin)
+ * - Credentials structure varies by channel type
+ * - Push settings control what content each channel receives
+ * - Permissions control send/receive/control capabilities
  */
 
-import type { ChannelBridge, ChannelBridgeConfig, ChannelBridgeCallbacks, ChannelBridge as BridgeCallbacks } from './types.js';
+import type { ChannelBridge, ChannelBridgeConfig, ChannelBridgeCallbacks, ChannelType, PushSettings } from './types.js';
 import { logger } from '../core/logger.js';
 
 import { OpenClawBridgeAdapter } from './openclaw-adapter.js';
 
 const log = logger.module('ChannelBridgeManager');
 
+/** Default push settings applied when channel config omits a field */
+const DEFAULT_PUSH_SETTINGS: PushSettings = {
+  reasoning: false,
+  statusUpdate: true,
+  toolCalls: false,
+  stepUpdates: true,
+  stepBatch: 5,
+  progressUpdates: true,
+};
 
 export interface BridgeModule {
   id: string;
@@ -27,7 +42,7 @@ export class ChannelBridgeManager {
   }
 
   /**
-   * 注册桥接模块（动态加载的插件会调用此方法注册自己）
+   * Register a bridge module (called by dynamically loaded plugins)
    */
   registerBridgeModule(module: BridgeModule): void {
     this.bridgeModules.set(module.channelId, module);
@@ -35,7 +50,7 @@ export class ChannelBridgeManager {
   }
 
   /**
-   * 取消注册桥接模块
+   * Unregister a bridge module
    */
   unregisterBridgeModule(channelId: string): void {
     this.bridgeModules.delete(channelId);
@@ -43,17 +58,16 @@ export class ChannelBridgeManager {
   }
 
   /**
-   * 添加配置（不启动桥接）
+   * Add config without starting bridge
    */
   addConfig(config: ChannelBridgeConfig): void {
     this.configs.set(config.id, config);
   }
 
   /**
-   * 获取指定 channel 的配置
+   * Get config for a channel
    */
   getConfig(channelId: string): ChannelBridgeConfig | undefined {
-    // 先按 channelId 查找
     for (const config of this.configs.values()) {
       if (config.channelId === channelId) {
         return config;
@@ -63,30 +77,40 @@ export class ChannelBridgeManager {
   }
 
   /**
-   * 获取指定 channel 的推送设置
+   * Get channel type for a channel
    */
-  getPushSettings(channelId: string): { reasoning: boolean; statusUpdate: boolean; toolCalls: boolean; stepUpdates: boolean; stepBatch: number; progressUpdates: boolean } {
+  getChannelType(channelId: string): ChannelType {
     const config = this.getConfig(channelId);
-    const pushSettings = config?.options?.pushSettings as {
-      reasoning?: boolean;
-      statusUpdate?: boolean;
-      toolCalls?: boolean;
-      stepUpdates?: boolean;
-      stepBatch?: number;
-      progressUpdates?: boolean;
-    } | undefined;
+    return config?.type ?? 'builtin';
+  }
+
+  /**
+   * Get push settings for a channel with defaults applied.
+   * This is the SINGLE SOURCE OF TRUTH for push settings resolution.
+   */
+  getPushSettings(channelId: string): PushSettings {
+    const config = this.getConfig(channelId);
+    const raw = config?.options?.pushSettings;
     return {
-      reasoning: pushSettings?.reasoning ?? false,
-      statusUpdate: pushSettings?.statusUpdate ?? true,
-      toolCalls: pushSettings?.toolCalls ?? false,
-      stepUpdates: pushSettings?.stepUpdates ?? false,
-      stepBatch: pushSettings?.stepBatch ?? 5,
-      progressUpdates: pushSettings?.progressUpdates ?? true,
+      reasoning: raw?.reasoning ?? DEFAULT_PUSH_SETTINGS.reasoning,
+      statusUpdate: raw?.statusUpdate ?? DEFAULT_PUSH_SETTINGS.statusUpdate,
+      toolCalls: raw?.toolCalls ?? DEFAULT_PUSH_SETTINGS.toolCalls,
+      stepUpdates: raw?.stepUpdates ?? DEFAULT_PUSH_SETTINGS.stepUpdates,
+      stepBatch: raw?.stepBatch ?? DEFAULT_PUSH_SETTINGS.stepBatch,
+      progressUpdates: raw?.progressUpdates ?? DEFAULT_PUSH_SETTINGS.progressUpdates,
     };
   }
 
   /**
-   * 加载配置并启动所有启用的桥接
+   * Check if a specific push setting is enabled for a channel.
+   * Convenience method to avoid full getPushSettings call.
+   */
+  shouldPush(channelId: string, setting: keyof PushSettings): boolean {
+    return !!this.getPushSettings(channelId)[setting];
+  }
+
+  /**
+   * Load configs and start all enabled bridges
    */
   async loadConfigs(configs: ChannelBridgeConfig[]): Promise<void> {
     for (const config of configs) {
@@ -98,7 +122,7 @@ export class ChannelBridgeManager {
   }
 
   /**
-   * 启动指定桥接
+   * Start a specific bridge
    */
   async startBridge(id: string): Promise<void> {
     const config = this.configs.get(id);
@@ -106,25 +130,22 @@ export class ChannelBridgeManager {
       throw new Error(`Bridge config not found: ${id}`);
     }
 
-    // 查找对应的桥接模块
     const module = this.bridgeModules.get(config.channelId);
     if (!module) {
       throw new Error(`Bridge module not found for channel: ${config.channelId}`);
     }
 
-    // 创建桥接实例（可能是 Promise）
     const bridgeOrPromise = module.factory(config, this.callbacks);
     const bridge = bridgeOrPromise instanceof Promise ? await bridgeOrPromise : bridgeOrPromise;
-    
-    // 启动
+
     await bridge.start();
     this.bridges.set(id, bridge);
-    
-    log.info(`Started bridge: ${id} (channel: ${config.channelId})`);
+
+    log.info(`Started bridge: ${id} (channel: ${config.channelId}, type: ${config.type})`);
   }
 
   /**
-   * 停止指定桥接
+   * Stop a specific bridge
    */
   async stopBridge(id: string): Promise<void> {
     const bridge = this.bridges.get(id);
@@ -136,7 +157,7 @@ export class ChannelBridgeManager {
   }
 
   /**
-   * 停止所有桥接
+   * Stop all bridges
    */
   async stopAll(): Promise<void> {
     for (const [id, bridge] of this.bridges) {
@@ -151,7 +172,7 @@ export class ChannelBridgeManager {
   }
 
   /**
-   * 发送消息
+   * Send message via a bridge
    */
   async sendMessage(bridgeId: string, options: import('./types.js').SendMessageOptions): Promise<{ messageId: string }> {
     const bridge = this.bridges.get(bridgeId);
@@ -162,7 +183,7 @@ export class ChannelBridgeManager {
   }
 
   /**
-   * 获取所有运行中的桥接
+   * Get all running bridge IDs
    */
   getRunningBridges(): string[] {
     return Array.from(this.bridges.entries())
@@ -171,14 +192,14 @@ export class ChannelBridgeManager {
   }
 
   /**
-   * 获取桥接实例
+   * Get bridge instance
    */
   getBridge(id: string): ChannelBridge | undefined {
     return this.bridges.get(id);
   }
 }
 
-// 全局单例
+// Global singleton
 let managerInstance: ChannelBridgeManager | null = null;
 
 export function getChannelBridgeManager(callbacks?: ChannelBridgeCallbacks): ChannelBridgeManager {
@@ -187,16 +208,16 @@ export function getChannelBridgeManager(callbacks?: ChannelBridgeCallbacks): Cha
       throw new Error('First call to getChannelBridgeManager requires callbacks');
     }
     managerInstance = new ChannelBridgeManager(callbacks);
-    
-    // 处理之前存储的 pending handlers
+
+    // Process pending handlers from plugins loaded before manager init
     const pendingHandlers = (globalThis as any).__pendingChannelHandlers;
     if (pendingHandlers && pendingHandlers instanceof Map) {
       for (const [channelId, handler] of pendingHandlers) {
         managerInstance.registerBridgeModule({
           id: `openclaw-${channelId}`,
           channelId,
-          factory: (config: any, callbacks: any) => {
-            return new OpenClawBridgeAdapter(config, callbacks);
+          factory: (config: ChannelBridgeConfig, cb: ChannelBridgeCallbacks) => {
+            return new OpenClawBridgeAdapter(config, cb);
           },
         });
       }

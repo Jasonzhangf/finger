@@ -17,6 +17,8 @@ import { registerToolCommand } from './tool-command.js';
 import { registerGatewayCommand } from './gateway-command.js';
 import { registerGatewayWorkerCommand } from './gateway-worker.js';
 import { registerOpenClawGatewayBridgeCommand } from './openclaw-gateway-bridge.js';
+import { registerOpenClawIntegrationCommand } from './openclaw-integration.js';
+import { registerFingerShortcuts } from './finger-shortcuts.js';
 import { registerMemoryLedgerCommand } from './memory-ledger.js';
 import { registerTestCommand } from './test-command.js';
 import { registerCommandHubCommand } from './command-hub.js';
@@ -217,9 +219,11 @@ async function main(): Promise<void> {
   registerGatewayCommand(program);
   registerGatewayWorkerCommand(program);
   registerOpenClawGatewayBridgeCommand(program);
+  registerOpenClawIntegrationCommand(program);
   registerMemoryLedgerCommand(program);
   registerTestCommand(program);
   registerCommandHubCommand(program);
+  registerFingerShortcuts(program);
 
   // ========== Register Dynamic Plugins ==========
   await loadDynamicCliPlugins(program, {
