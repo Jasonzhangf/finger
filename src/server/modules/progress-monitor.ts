@@ -343,12 +343,29 @@ export class ProgressMonitor {
 
     // 如果按 toolId 找不到，按 toolName 查找最近的未完成记录
     if (!existing && toolName) {
+      const inputSnippet = this.safeSnippet(input);
       // 从后往前找最后一个未完成的同名工具
       for (let i = progress.toolCallHistory.length - 1; i >= 0; i--) {
         const t = progress.toolCallHistory[i];
-        if (t.toolName === toolName && !t.result && !t.error) {
+        if (
+          t.toolName === toolName
+          && !t.result
+          && !t.error
+          && (inputSnippet === undefined || t.params === inputSnippet)
+        ) {
           existing = t;
           break;
+        }
+      }
+
+      // 若带参数匹配失败，再降级到同名匹配
+      if (!existing) {
+        for (let i = progress.toolCallHistory.length - 1; i >= 0; i--) {
+          const t = progress.toolCallHistory[i];
+          if (t.toolName === toolName && !t.result && !t.error) {
+            existing = t;
+            break;
+          }
         }
       }
     }
