@@ -1,5 +1,5 @@
 import { promises as fs } from 'fs';
-import type { Attachment } from './events.js';
+import type { Attachment } from '../bridges/types.js';
 import { estimateTokens } from '../utils/token-counter.js';
 import { normalizeRootDir, resolveLedgerPath, resolveBaseDir, appendLedgerEvent } from './context-ledger-memory-helpers.js';
 

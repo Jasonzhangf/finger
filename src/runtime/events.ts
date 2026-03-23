@@ -9,19 +9,18 @@
  */
 
 import type { LoopEvent, EpicEvent, ContextEvent } from '../orchestration/loop/events.js';
+import type { Attachment as UnifiedAttachment } from '../bridges/types.js';
 
 // =============================================================================
 // 基础类型定义
 // =============================================================================
 
-// 附件类型
-export interface Attachment {
-  id: string;
-  name: string;
-  type: 'image' | 'file' | 'code';
-  url: string;
-  size?: number;
-}
+/**
+ * Re-export unified Attachment from bridges/types.
+ * This is the single source of truth for all attachment types.
+ * Kept as re-export for backward compatibility with existing imports.
+ */
+export type Attachment = UnifiedAttachment;
 
 // 基础事件接口
 export interface BaseEvent {
@@ -441,7 +440,7 @@ export interface AgentRuntimeDispatchEvent extends BaseEvent {
     dispatchId: string;
     sourceAgentId: string;
     targetAgentId: string;
-    status: 'queued' | 'completed' | 'failed';
+    status: 'queued' | 'processing' | 'completed' | 'failed';
     blocking: boolean;
     sessionId?: string;
     workflowId?: string;

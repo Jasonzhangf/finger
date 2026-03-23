@@ -5,6 +5,7 @@ import type { Mailbox } from '../mailbox.js';
 import type { ToolRegistry } from '../../runtime/tool-registry.js';
 import type { SessionWorkspaceManager } from '../modules/session-workspaces.js';
 import type { ChannelBridgeManager } from '../../bridges/manager.js';
+import type { ChannelAttachment } from '../../bridges/types.js';
 
 export interface MessageRouteDeps {
   hub: MessageHub;
@@ -33,4 +34,5 @@ export interface DisplayChannelRequest {
   to: string;
   replyTo?: string;
   prefix?: string;
+  attachments?: ChannelAttachment[];
 }

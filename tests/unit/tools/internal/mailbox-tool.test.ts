@@ -4,14 +4,15 @@ import { mailboxListTool, mailboxStatusTool } from '../../../../src/tools/intern
 
 describe('mailbox tools', () => {
   it('defaults mailbox target to context.agentId', async () => {
-    const ctx = createToolExecutionContext({ agentId: 'finger-project-agent' });
+    const uniqueAgentId = `test-mailbox-defaults-${Date.now()}`;
+    const ctx = createToolExecutionContext({ agentId: uniqueAgentId });
 
     const status = await mailboxStatusTool.execute({}, ctx) as { target: string; counts: { total: number } };
     const list = await mailboxListTool.execute({}, ctx) as { target: string; total: number };
 
-    expect(status.target).toBe('finger-project-agent');
+    expect(status.target).toBe(uniqueAgentId);
     expect(status.counts.total).toBe(0);
-    expect(list.target).toBe('finger-project-agent');
+    expect(list.target).toBe(uniqueAgentId);
     expect(list.total).toBe(0);
   });
 

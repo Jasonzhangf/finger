@@ -4,6 +4,7 @@ import { OpenClawBridgeAdapter } from '../../bridges/openclaw-adapter.js';
 import { loadUserSettings } from '../../core/user-settings.js';
 import { logger } from '../../core/logger.js';
 import { createConsoleLikeLogger } from '../../core/logger/console-like.js';
+import type { ChannelAttachment } from '../../bridges/types.js';
 
 const clog = createConsoleLikeLogger('OpenclawApiAdapter');
 
@@ -49,7 +50,7 @@ export type OpenClawCompatRuntimeApi = PluginRuntimeApi & {
 
 export type ChannelPluginHandler = {
   sendText?: (params: { to: string; text: string; accountId?: string; replyToId?: string; cfg?: unknown }) => Promise<{ messageId?: string; error?: string; channel?: string }>;
-  sendMedia?: (params: { to: string; text: string; mediaUrl: string; accountId?: string; replyToId?: string; cfg?: unknown }) => Promise<{ messageId?: string; error?: string; channel?: string }>;
+  sendMedia?: (params: { to: string; text: string; mediaUrl: string; accountId?: string; replyToId?: string; cfg?: unknown; attachments?: ChannelAttachment[] }) => Promise<{ messageId?: string; error?: string; channel?: string }>;
   startAccount?: (ctx: unknown) => Promise<void>;
   normalizeTarget?: (target: string) => { ok: boolean; to?: string; error?: string };
 };
@@ -157,7 +158,7 @@ export function createOpenClawRuntimeApi(params: {
        routing: {
          resolveAgentRoute: (params: { cfg: unknown; channel: string; accountId: string; peer: { kind: string; id: string } }) => {
            // Default route to orchestrator
-           return { agentId: 'finger-orchestrator' };
+           return { agentId: 'finger-project-agent' };
          },
        },
        session: {

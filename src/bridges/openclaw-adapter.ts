@@ -169,8 +169,8 @@ export class OpenClawBridgeAdapter implements ChannelBridge {
   }
 
   async sendMessage(options: SendMessageOptions): Promise<{ messageId: string }> {
-    if (!this.handler?.sendText) {
-      throw new Error(`Handler does not support sendText for channel: ${this.channelId}`);
+    if (!this.handler) {
+      throw new Error(`No handler registered for channel: ${this.channelId}`);
     }
 
     const pluginCfg = {
@@ -183,6 +183,52 @@ export class OpenClawBridgeAdapter implements ChannelBridge {
     };
 
     log.debug(`[${this.id}] sendMessage to=${options.to} cfg keys=${Object.keys(pluginCfg.channels[this.channelId] || {}).join(',')}`);
+
+    // Check if message has image attachments → use sendMedia
+    const imageAttachments = (options.attachments || []).filter(
+      (a) => a.type === 'image' && a.url
+    );
+
+    if (imageAttachments.length > 0 && this.handler.sendMedia) {
+      const first = imageAttachments[0];
+      log.info(`[${this.id}] sendMessage via sendMedia: mediaUrl=${first.url.slice(0, 80)} text="${(options.text || '').slice(0, 50)}"`);
+
+      const result = await this.handler.sendMedia({
+        to: options.to,
+        text: options.text || '',
+        mediaUrl: first.url,
+        replyToId: options.replyTo,
+        accountId: this.config.credentials.accountId as string | undefined,
+        cfg: pluginCfg,
+      });
+
+      if (result.error) {
+        throw new Error(result.error);
+      }
+
+      if (imageAttachments.length > 1) {
+        const extraLinks = imageAttachments.slice(1).map((a) => `${a.filename || 'image'}: ${a.url}`).join('\n');
+        if (this.handler.sendText) {
+          await this.handler.sendText({
+            to: options.to,
+            text: extraLinks,
+            replyToId: options.replyTo,
+            accountId: this.config.credentials.accountId as string | undefined,
+            cfg: pluginCfg,
+          });
+        }
+      }
+
+      return { messageId: result.messageId || '' };
+    }
+
+    if (imageAttachments.length > 0 && !this.handler.sendMedia) {
+      log.warn(`[${this.id}] Image attachments present but handler lacks sendMedia, sending text only`);
+    }
+
+    if (!this.handler.sendText) {
+      throw new Error(`Handler does not support sendText for channel: ${this.channelId}`);
+    }
 
     const result = await this.handler.sendText({
       to: options.to,

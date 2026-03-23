@@ -18,11 +18,35 @@ export interface ChannelMessage {
 }
 
 export interface ChannelAttachment {
-  type: 'image' | 'audio' | 'video' | 'file';
+  /** Unique identifier for this attachment */
+  id?: string;
+  /** Logical type, includes channel media + internal code artifact */
+  type: 'image' | 'audio' | 'video' | 'file' | 'code';
   url: string;
+  /** Display name used by runtime/session layers */
+  name?: string;
+  /** Original filename from sender */
   filename?: string;
+  /** File size in bytes */
   size?: number;
+  /** MIME type (e.g. image/png, image/jpeg) */
+  mimeType?: string;
+  /** Image width in pixels (for image type) */
+  width?: number;
+  /** Image height in pixels (for image type) */
+  height?: number;
+  /** Thumbnail URL (for image type, smaller preview) */
+  thumbnailUrl?: string;
+  /** Source channel where this attachment originated (for tracing) */
+  source?: string;
+  /** Optional extension metadata */
+  metadata?: Record<string, unknown>;
 }
+
+/**
+ * Unified attachment type alias used by runtime/session/ledger and channel bridges.
+ */
+export type Attachment = ChannelAttachment;
 
 export interface SendMessageOptions {
   to: string;

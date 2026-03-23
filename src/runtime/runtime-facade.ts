@@ -9,7 +9,8 @@ import path from 'path';
 import { FINGER_PATHS, ensureDir } from '../core/finger-paths.js';
 import { UnifiedEventBus } from './event-bus.js';
 import { ToolRegistry } from './tool-registry.js';
-import type { RuntimeEvent, Attachment } from './events.js';
+import type { RuntimeEvent } from './events.js';
+import type { Attachment } from '../bridges/types.js';
 import { AgentToolAccessControl, type AgentToolPolicy } from './agent-tool-access.js';
 import { applyRoleToolPolicy, type RoleToolPolicyPresetMap } from './agent-tool-role-policy.js';
 import {
@@ -361,7 +362,10 @@ export class RuntimeFacade {
     });
 
     try {
-      const result = await this.toolRegistry.execute(toolName, input);
+      const result = await this.toolRegistry.execute(toolName, input, {
+        agentId,
+        sessionId,
+      });
       const duration = Date.now() - startTime;
 
       // 发送 tool_result 事件
@@ -436,6 +440,7 @@ export class RuntimeFacade {
       name: fileName.length > 0 ? fileName : fullPath,
       type: 'image',
       url: fullPath,
+      mimeType: typeof toolResult.mimeType === 'string' ? toolResult.mimeType : undefined,
     };
     if (typeof toolResult.sizeBytes === 'number' && Number.isFinite(toolResult.sizeBytes)) {
       attachment.size = Math.max(0, Math.floor(toolResult.sizeBytes));
@@ -450,7 +455,7 @@ export class RuntimeFacade {
     name: string;
     description: string;
     inputSchema: unknown;
-    handler: (input: unknown) => Promise<unknown>;
+    handler: (input: unknown, context?: Record<string, unknown>) => Promise<unknown>;
     policy?: 'allow' | 'deny';
   }): void {
     this.toolRegistry.register({
@@ -743,7 +748,7 @@ export class RuntimeFacade {
     const sessionContext = session.context ?? {};
     const ownerAgentId = typeof sessionContext.ownerAgentId === 'string' && sessionContext.ownerAgentId.trim().length > 0
       ? sessionContext.ownerAgentId.trim()
-      : 'finger-orchestrator';
+      : 'finger-project-agent';
     const mode = typeof sessionContext.sessionTier === 'string' && sessionContext.sessionTier.trim().length > 0
       ? sessionContext.sessionTier.trim()
       : 'main';

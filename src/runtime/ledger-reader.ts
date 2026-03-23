@@ -3,6 +3,16 @@ import { normalizeRootDir, readJsonLines, resolveCompactMemoryPath, resolveLedge
 import { estimateTokens } from '../utils/token-counter.js';
 import { promises as fs } from 'fs';
 
+/** Compact placeholder for attachments in history messages */
+export interface AttachmentPlaceholder {
+  /** How many attachments were in the original message */
+  count: number;
+  /** Types summary, e.g. "2 images, 1 file" */
+  summary: string;
+}
+
+export type SessionAttachment = AttachmentPlaceholder | import('../bridges/types.js').ChannelAttachment[];
+
 export interface LedgerReaderContext {
   rootDir?: string;
   sessionId: string;
@@ -16,6 +26,12 @@ export interface SessionViewMessage {
   tokenCount: number;
   messageId?: string;
   timestamp?: string;
+  /**
+   * Attachments for this message.
+   * - Last message (current turn): full ChannelAttachment[] with urls and metadata.
+   * - History messages: compact placeholder { count, summary }.
+   */
+  attachments?: SessionAttachment;
 }
 
 export interface SessionView {
@@ -34,6 +50,33 @@ export interface BuildSessionViewOptions {
   includeSummary?: boolean;
 }
 
+/**
+ * Build a compact placeholder from raw attachments.
+ * History messages use this to avoid re-sending full attachment data every turn.
+ */
+function compactAttachments(raw: unknown): AttachmentPlaceholder | undefined {
+  if (!Array.isArray(raw) || raw.length === 0) return undefined;
+  const typeCounts: Record<string, number> = {};
+  for (const item of raw) {
+    if (item && typeof item === 'object' && typeof (item as { type?: unknown }).type === 'string') {
+      const type = (item as { type: string }).type;
+      typeCounts[type] = (typeCounts[type] || 0) + 1;
+    }
+  }
+  const parts = Object.entries(typeCounts).map(([type, count]) => `${count} ${type}${count > 1 ? 's' : ''}`);
+  return {
+    count: raw.length,
+    summary: parts.join(', ') || `${raw.length} attachment(s)`,
+  };
+}
+
+/**
+ * Check if an attachment item is a placeholder (not a full attachment).
+ */
+export function isAttachmentPlaceholder(att: SessionAttachment): att is AttachmentPlaceholder {
+  return att != null && typeof att === 'object' && !Array.isArray(att) && 'count' in att && 'summary' in att;
+}
+
 export async function buildSessionView(
   context: LedgerReaderContext,
   options: BuildSessionViewOptions = {},
@@ -48,8 +91,9 @@ export async function buildSessionView(
 
   const ledgerEntries = await readJsonLines<LedgerEntryFile>(ledgerPath);
   const messageEntries = ledgerEntries.filter((entry) => entry.event_type === 'session_message');
+  const lastMessageEntryIdx = messageEntries.length - 1;
 
-  const messages: SessionViewMessage[] = messageEntries.map((entry) => {
+  const messages: SessionViewMessage[] = messageEntries.map((entry, idx) => {
     const payload = entry.payload as Record<string, unknown>;
     const content = typeof payload.content === 'string' ? payload.content : '';
     const role = (payload.role as SessionViewMessage['role']) || 'user';
@@ -57,12 +101,22 @@ export async function buildSessionView(
       ? Math.max(0, Math.floor(payload.token_count))
       : estimateTokens(content);
     const messageId = typeof payload.message_id === 'string' ? payload.message_id : undefined;
+    const rawAttachments = payload.attachments;
+    let attachments: SessionAttachment | undefined;
+    if (Array.isArray(rawAttachments) && rawAttachments.length > 0) {
+      // Current turn (last message): preserve full attachment data.
+      // History turns: use compact placeholder to avoid repeated large payload in context.
+      attachments = idx === lastMessageEntryIdx
+        ? rawAttachments as import('../bridges/types.js').ChannelAttachment[]
+        : compactAttachments(rawAttachments);
+    }
     return {
       role,
       content,
       tokenCount,
       messageId,
       timestamp: entry.timestamp_iso,
+      attachments,
     };
   });
 
