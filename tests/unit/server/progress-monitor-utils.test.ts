@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { classifyToolCall, extractTargetFile, buildCompactSummary, buildReportKey } from '../../../src/server/modules/progress-monitor-utils.js';
+import { classifyToolCall, extractTargetFile, buildCompactSummary, buildReportKey, resolveToolDisplayName } from '../../../src/server/modules/progress-monitor-utils.js';
 import type { SessionProgressData } from '../../../src/server/modules/progress-monitor-utils.js';
 
 describe('progress-monitor-utils', () => {
@@ -105,9 +105,9 @@ describe('progress-monitor-utils', () => {
         ],
       };
       const result = buildCompactSummary(data, formatElapsed);
-      expect(result).toContain('✅ [读写] shell.exec | src/index.ts');
+      expect(result).toContain('✅ [读写] cat | src/index.ts');
       expect(result).toContain('✅ [读写] apply_patch | src/server/routes.ts');
-      expect(result).toContain('❌ [搜索] shell.exec'); // no file path from "rg test"
+      expect(result).toContain('❌ [搜索] rg'); // parsed from shell.exec cmd
     });
 
     it('does not include raw params or result JSON', () => {
@@ -163,6 +163,25 @@ describe('progress-monitor-utils', () => {
       const key1 = buildReportKey({ ...data, latestReasoning: 'thought1' }, undefined);
       const key2 = buildReportKey({ ...data, latestReasoning: 'thought2' }, undefined);
       expect(key1).not.toBe(key2);
+    });
+  });
+
+  describe('resolveToolDisplayName', () => {
+    it('parses shell.exec command verb', () => {
+      expect(resolveToolDisplayName('shell.exec', { cmd: 'cat src/index.ts' })).toBe('cat');
+    });
+
+    it('parses JSON string input for shell.exec', () => {
+      expect(resolveToolDisplayName('shell.exec', JSON.stringify({ cmd: 'rg "pattern" src' }))).toBe('rg');
+    });
+
+    it('keeps known command family with subcommand', () => {
+      expect(resolveToolDisplayName('shell.exec', { cmd: 'git commit -m "x"' })).toBe('git commit');
+      expect(resolveToolDisplayName('shell.exec', { cmd: 'pnpm test' })).toBe('pnpm test');
+    });
+
+    it('returns original tool name for non-shell tools', () => {
+      expect(resolveToolDisplayName('update_plan')).toBe('update_plan');
     });
   });
 });

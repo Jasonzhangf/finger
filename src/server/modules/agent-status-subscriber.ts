@@ -440,7 +440,8 @@ export class AgentStatusSubscriber {
       },
       display: {
         title: '📊 进度更新',
-        subtitle: report.summary,
+        // avoid duplication: report.summary is already rendered as status.summary
+        subtitle: undefined,
         icon: '🔄',
         level: 'detailed',
       },

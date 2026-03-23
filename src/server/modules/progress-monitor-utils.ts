@@ -127,15 +127,51 @@ export function buildCompactSummary(
     const toolLines = recentTools.map((t) => {
       const icon = t.success === false ? '❌' : t.success === true ? '✅' : '⏳';
       const cat = classifyToolCall(t.toolName, t.params);
+      const resolvedName = resolveToolDisplayName(t.toolName, t.params);
       const file = extractTargetFile(t.toolName, t.params);
       const filePart = file ? ` | ${file}` : '';
-      const name = t.toolName.replace(/^finger-system-agent-/, '');
-      return `${icon} [${cat}] ${name}${filePart}`;
+      return `${icon} [${cat}] ${resolvedName}${filePart}`;
     });
     lines.push(toolLines.join('\n'));
   }
 
   return lines.join('\n');
+}
+
+/**
+ * Resolve a human-friendly display name for a tool call.
+ * For shell.exec/exec_command, extract the actual command verb instead of showing "shell.exec".
+ */
+export function resolveToolDisplayName(toolName: string, input?: unknown): string {
+  if (['shell.exec', 'exec_command'].includes(toolName)) {
+    const cmd = (() => {
+      if (typeof input === 'string') {
+        try {
+          const parsed = JSON.parse(input) as { cmd?: unknown };
+          if (parsed && typeof parsed.cmd === 'string') return parsed.cmd;
+        } catch { /* ignore */ }
+        return input;
+      }
+      if (typeof input === 'object' && input !== null && 'cmd' in input) {
+        return String((input as { cmd: unknown }).cmd);
+      }
+      return '';
+    })();
+    const trimmed = cmd.trim();
+    if (!trimmed) return toolName;
+    // Extract primary command name (and subcommand for known command families)
+    const m = trimmed.match(/^(\S+)(?:\s+(\S+))?/);
+    if (m) {
+      const verb = m[1];
+      const sub = m[2] || '';
+      if (['git', 'pnpm', 'npm', 'cargo', 'node', 'python'].includes(verb) && sub) {
+        return `${verb} ${sub}`;
+      }
+      return verb;
+    }
+    return trimmed;
+  }
+  return toolName.replace(/^finger-system-agent-/, '');
 }
 
 /**
