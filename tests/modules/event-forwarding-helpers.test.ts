@@ -6,6 +6,7 @@ import {
   formatLedgerPointerContent,
   extractLoopToolTrace,
   buildAgentStepContent,
+  extractAssistantBodyUpdate,
   asString,
   inferAgentRoleLabel,
 } from '../../src/server/modules/event-forwarding-helpers.js';
@@ -28,16 +29,17 @@ describe('event-forwarding-helpers', () => {
   });
 
   describe('inferAgentRoleLabel', () => {
-    it('should infer orchestrator', () => {
-      expect(inferAgentRoleLabel('finger-orchestrator')).toBe('orchestrator');
+    it('should infer project', () => {
+      expect(inferAgentRoleLabel('finger-project-agent')).toBe('project');
+      expect(inferAgentRoleLabel('finger-orchestrator')).toBe('project');
     });
 
     it('should infer reviewer', () => {
       expect(inferAgentRoleLabel('finger-reviewer')).toBe('reviewer');
     });
 
-    it('should default to executor', () => {
-      expect(inferAgentRoleLabel('unknown')).toBe('executor');
+    it('should default to project', () => {
+      expect(inferAgentRoleLabel('unknown')).toBe('project');
     });
   });
 
@@ -124,6 +126,78 @@ describe('event-forwarding-helpers', () => {
         success: true,
       } as AgentStepCompletedEvent['payload']);
       expect(content).toBe('agent step 完成');
+    });
+  });
+
+  describe('extractAssistantBodyUpdate', () => {
+    it('should extract from lastAgentMessage first', () => {
+      expect(extractAssistantBodyUpdate({
+        type: 'model_round',
+        lastAgentMessage: '这是增量正文',
+      })).toBe('这是增量正文');
+    });
+
+    it('should extract from output_text style events', () => {
+      expect(extractAssistantBodyUpdate({
+        type: 'output_text',
+        message: '输出正文片段',
+      })).toBe('输出正文片段');
+    });
+
+    it('should extract from delta payload', () => {
+      expect(extractAssistantBodyUpdate({
+        type: 'response.output_text.delta',
+        delta: '继续输出',
+      })).toBe('继续输出');
+    });
+
+    it('should ignore tool events to avoid noisy body push', () => {
+      expect(extractAssistantBodyUpdate({
+        type: 'tool_result',
+        output: 'tool-output',
+      })).toBeUndefined();
+    });
+
+    it('should include ask question and reply hint for structured orchestrator output', () => {
+      const body = extractAssistantBodyUpdate({
+        type: 'task_complete',
+        lastAgentMessage: {
+          role: 'orchestrator',
+          summary: '系统已就绪',
+          status: 'completed',
+          nextAction: '等待用户输入新任务',
+          ask: {
+            required: true,
+            question: '请确认是否继续？',
+            options: [{ label: '继续' }, { label: '暂停' }],
+          },
+        },
+      });
+
+      expect(body).toContain('系统已就绪');
+      expect(body).toContain('下一步：等待用户输入新任务');
+      expect(body).toContain('需要你回复：请确认是否继续？');
+      expect(body).toContain('回复方式：直接回复这条消息即可。');
+      expect(body).toContain('1. 继续');
+      expect(body).toContain('2. 暂停');
+    });
+
+    it('should include optional ask prompt even when ask.required is false', () => {
+      const body = extractAssistantBodyUpdate({
+        type: 'task_complete',
+        lastAgentMessage: {
+          role: 'orchestrator',
+          summary: '开机检查已完成',
+          ask: {
+            required: false,
+            question: '系统已就绪，请问有什么新任务需要处理？',
+          },
+        },
+      });
+
+      expect(body).toContain('开机检查已完成');
+      expect(body).toContain('可选回复：系统已就绪，请问有什么新任务需要处理？');
+      expect(body).toContain('回复方式：直接回复这条消息即可。');
     });
   });
 });

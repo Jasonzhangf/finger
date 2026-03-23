@@ -9,11 +9,9 @@ export function asString(value: unknown): string | undefined {
 
 export function inferAgentRoleLabel(agentId: string): string {
   const normalized = agentId.trim().toLowerCase();
-  if (normalized.includes('orchestr')) return 'orchestrator';
+  if (normalized.includes('system')) return 'system';
   if (normalized.includes('review')) return 'reviewer';
-  if (normalized.includes('search')) return 'searcher';
-  if (normalized.includes('executor')) return 'executor';
-  return 'executor';
+  return 'project';
 }
 
 export function formatDispatchResultContent(result: unknown, error?: string): string {
@@ -124,6 +122,130 @@ export function buildAgentStepContent(payload: AgentStepCompletedEvent['payload'
     return 'agent step 完成';
   }
   return parts.join('\n');
+}
+
+function pickBodyText(value: unknown): string | undefined {
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    return trimmed.length > 0 ? trimmed : undefined;
+  }
+  if (Array.isArray(value)) {
+    const parts = value
+      .map((item) => pickBodyText(item))
+      .filter((item): item is string => typeof item === 'string' && item.trim().length > 0);
+    if (parts.length > 0) {
+      return parts.join('\n');
+    }
+    return undefined;
+  }
+  if (!isObjectRecord(value)) return undefined;
+  const structured = formatStructuredAssistantBody(value);
+  if (structured) return structured;
+
+  const direct = asString(value.response)
+    ?? asString(value.content)
+    ?? asString(value.text)
+    ?? asString((value as { output_text?: unknown }).output_text)
+    ?? asString((value as { delta?: unknown }).delta)
+    ?? asString(value.summary)
+    ?? asString(value.message);
+  if (direct) return direct;
+  return undefined;
+}
+
+function formatAskOptions(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value.map((item) => {
+    if (typeof item === 'string' && item.trim().length > 0) {
+      return item.trim();
+    }
+    if (isObjectRecord(item)) {
+      return asString(item.label)
+        ?? asString(item.title)
+        ?? asString(item.value)
+        ?? '';
+    }
+    return '';
+  }).filter((item) => item.length > 0);
+}
+
+function formatStructuredAssistantBody(value: Record<string, unknown>): string | undefined {
+  const role = asString(value.role);
+  const summary = asString(value.summary);
+  const status = asString(value.status);
+  const nextAction = asString(value.nextAction);
+  const ask = isObjectRecord(value.ask) ? value.ask : undefined;
+  const askQuestion = ask ? asString(ask.question) : undefined;
+  const askRequired = ask?.required === true;
+  const askOptions = ask ? formatAskOptions(ask.options) : [];
+
+  const looksStructured = role !== undefined
+    || summary !== undefined
+    || status !== undefined
+    || nextAction !== undefined
+    || ask !== undefined;
+  if (!looksStructured) return undefined;
+
+  const lines: string[] = [];
+  if (summary) lines.push(summary);
+  if (status && status !== 'completed' && status !== 'running') {
+    lines.push(`状态：${status}`);
+  }
+  if (nextAction) lines.push(`下一步：${nextAction}`);
+
+  if (askQuestion) {
+    lines.push(`${askRequired ? '需要你回复' : '可选回复'}：${askQuestion}`);
+    if (askOptions.length > 0) {
+      lines.push(`可选项：${askOptions.map((option, index) => `${index + 1}. ${option}`).join(' ')}`);
+    }
+    lines.push('回复方式：直接回复这条消息即可。');
+  }
+
+  if (lines.length > 0) {
+    return lines.join('\n');
+  }
+
+  // structured object but no human-facing fields: keep a compact JSON view
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * 从 ChatCodex kernel_event payload 中提取正文更新（优先 lastAgentMessage）。
+ */
+export function extractAssistantBodyUpdate(payload: Record<string, unknown>): string | undefined {
+  const fromLastAgentMessage = pickBodyText(payload.lastAgentMessage);
+  if (fromLastAgentMessage) return fromLastAgentMessage;
+
+  const eventType = asString(payload.type)?.toLowerCase() ?? '';
+  const blockedEventType = eventType.startsWith('tool_')
+    || eventType === 'task_started'
+    || eventType === 'turn_retry'
+    || eventType === 'error'
+    || eventType.startsWith('session_')
+    || eventType.startsWith('pending_');
+  if (blockedEventType) return undefined;
+
+  const bodyCandidateFromDelta = pickBodyText(payload.delta);
+  if (bodyCandidateFromDelta) return bodyCandidateFromDelta;
+
+  const isLikelyBodyEvent = eventType.length === 0
+    || eventType === 'task_complete'
+    || eventType === 'model_round'
+    || eventType.includes('output')
+    || eventType.includes('assistant')
+    || eventType.includes('message');
+
+  if (!isLikelyBodyEvent) return undefined;
+
+  const fromOutput = pickBodyText(payload.output);
+  if (fromOutput) return fromOutput;
+  const fromMessage = pickBodyText(payload.message);
+  if (fromMessage) return fromMessage;
+  return pickBodyText(payload.text) ?? pickBodyText(payload.content);
 }
 
 export interface LedgerPointerInfo {
