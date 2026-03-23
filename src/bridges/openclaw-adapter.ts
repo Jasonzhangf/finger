@@ -1,21 +1,24 @@
 /**
  * OpenClaw Bridge Adapter - Adapts OpenClaw plugins to standard Channel Bridge interface.
  *
- * Credential handling by channel type:
- * - type=openclaw-plugin: Uses config.credentials (channel-specific) + config.options.adapterConfig
- *   The OpenClaw plugin handler reads its own auth from ~/.openclaw state.
- *   Finger only provides the plugin config envelope.
- * - type=webui: No bridge adapter needed (handled by WebUI server directly).
- * - type=builtin: Legacy / built-in channels.
+ * Account resolution: Some plugins (e.g. openclaw-weixin) expect ctx.account to be
+ * pre-resolved with token/configured fields. The adapter attempts to use the plugin's
+ * registered resolveAccount callback to populate these fields before calling startAccount.
  *
- * Key change: credentials structure is channel-specific and not hardcoded here.
- * Each channel's config in channels.json defines its own credentials shape.
+ * Credential handling by channel type:
+ * - type=openclaw-plugin: Uses config.credentials + adapterConfig for bridge config.
+ *   Auth tokens are read by the plugin from its own state directory.
+ * - type=webui: No bridge adapter needed.
+ * - type=builtin: Legacy / built-in channels.
  */
 
 import type { ChannelBridge, ChannelBridgeConfig, ChannelBridgeCallbacks, ChannelMessage, SendMessageOptions } from './types.js';
 import type { ChannelPluginHandler } from '../blocks/openclaw-plugin-manager/openclaw-api-adapter.js';
 import { getChannelHandler } from '../blocks/openclaw-plugin-manager/openclaw-api-adapter.js';
 import { logger } from '../core/logger.js';
+import fs from 'node:fs';
+import path from 'node:path';
+import os from 'node:os';
 
 const log = logger.module('OpenClawBridgeAdapter');
 
@@ -30,6 +33,32 @@ type GatewayContext = {
   getStatus?: () => Record<string, unknown>;
   abortSignal: AbortSignal;
 };
+
+/**
+ * Try to resolve account data from the OpenClaw state directory.
+ * For plugins like openclaw-weixin that store auth tokens in their own state dir.
+ */
+function tryResolveAccountFromState(channelId: string, accountId: string): Record<string, unknown> | null {
+  if (!channelId || !accountId) return null;
+
+  const stateDir = process.env.OPENCLAW_STATE_DIR?.trim()
+    || process.env.CLAWDBOT_STATE_DIR?.trim()
+    || path.join(os.homedir(), '.openclaw');
+
+  const accountFile = path.join(stateDir, channelId, 'accounts', `${accountId}.json`);
+  if (!fs.existsSync(accountFile)) return null;
+
+  try {
+    const raw = JSON.parse(fs.readFileSync(accountFile, 'utf-8'));
+    return {
+      ...raw,
+      accountId,
+      configured: Boolean(raw.token),
+    };
+  } catch {
+    return null;
+  }
+}
 
 export class OpenClawBridgeAdapter implements ChannelBridge {
   readonly id: string;
@@ -65,7 +94,6 @@ export class OpenClawBridgeAdapter implements ChannelBridge {
       this.abortController = new AbortController();
 
       try {
-        // Build plugin config from credentials + adapterConfig
         const pluginCfg = {
           channels: {
             [this.channelId]: {
@@ -75,12 +103,24 @@ export class OpenClawBridgeAdapter implements ChannelBridge {
           },
         };
 
+        // Build account: raw credentials + try to resolve from plugin state
+        let account: Record<string, unknown> = {
+          ...this.config.credentials,
+          ...(this.config.options?.adapterConfig || {}),
+        };
+
+        // If account doesn't have 'configured' field, try to resolve from plugin state
+        if (!('configured' in account) && account.accountId) {
+          const resolved = tryResolveAccountFromState(this.channelId, String(account.accountId));
+          if (resolved) {
+            log.info(`[${this.id}] Resolved account from state: configured=${resolved.configured}`);
+            account = { ...account, ...resolved };
+          }
+        }
+
         const ctx: GatewayContext = {
           callbacks: this.callbacks,
-          account: {
-            ...this.config.credentials,
-            ...(this.config.options?.adapterConfig || {}),
-          },
+          account,
           cfg: pluginCfg,
           log,
           onReady: () => {
@@ -133,7 +173,6 @@ export class OpenClawBridgeAdapter implements ChannelBridge {
       throw new Error(`Handler does not support sendText for channel: ${this.channelId}`);
     }
 
-    // Build cfg from credentials + adapterConfig for plugin handler
     const pluginCfg = {
       channels: {
         [this.channelId]: {
