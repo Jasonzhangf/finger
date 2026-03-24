@@ -27,7 +27,6 @@ use protocol::request::build_responses_request_payload;
 use protocol::response::parse_wire_response;
 use protocol::transport::send_responses_http;
 
-const MAX_TOOL_LOOP_ROUNDS: usize = 64;
 const DEFAULT_AUTO_COMPACT_THRESHOLD_RATIO: f64 = 0.85;
 const DEFAULT_FOCUS_MAX_CHARS: usize = 20_000;
 
@@ -47,8 +46,6 @@ pub enum ModelError {
     MissingStreamResponse,
     #[error("responses stream failed: {message}")]
     StreamFailed { message: String },
-    #[error("responses api tool loop exceeded {max_rounds} rounds")]
-    ToolLoopExceeded { max_rounds: usize },
     #[error("tool execution failed for {tool_name}: {message}")]
     ToolExecution { tool_name: String, message: String },
 }
@@ -136,7 +133,7 @@ impl ResponsesChatEngine {
         let mut tool_trace: Vec<Value> = Vec::new();
         let mut reasoning_trace: Vec<String> = Vec::new();
         let mut round_trace: Vec<Value> = Vec::new();
-        let mut final_text: Option<String> = None;
+        let mut round: usize = 0;
         let mut progress_seq: u64 = 0;
         let baseline_tokens = options
             .context_window
@@ -155,7 +152,8 @@ impl ResponsesChatEngine {
         let threshold_percent = Some((threshold_ratio * 100.0).round() as u64);
         let include_reasoning_items = should_replay_reasoning_items(options.responses.as_ref());
 
-        for round in 0..MAX_TOOL_LOOP_ROUNDS {
+        let output_text = loop {
+            round = round.saturating_add(1);
             let response = self
                 .send_responses_request(&rolling_input, options, &tool_bindings)
                 .await?;
@@ -222,7 +220,7 @@ impl ResponsesChatEngine {
             let model_round_seq = next_progress_seq(&mut progress_seq);
             round_trace.push(json!({
                 "seq": model_round_seq,
-                "round": round + 1,
+                "round": round,
                 "function_calls_count": parsed.function_calls.len(),
                 "reasoning_count": parsed.reasoning.len(),
                 "history_items_count": rolling_input.len(),
@@ -244,7 +242,7 @@ impl ResponsesChatEngine {
                 progress_tx,
                 EventMsg::ModelRound(ModelRoundEvent {
                     seq: model_round_seq,
-                    round: (round + 1) as u64,
+                    round: round as u64,
                     function_calls_count: parsed.function_calls.len() as u64,
                     reasoning_count: parsed.reasoning.len() as u64,
                     history_items_count: rolling_input.len() as u64,
@@ -268,8 +266,7 @@ impl ResponsesChatEngine {
                 if let Some(text) = parsed.output_text.clone() {
                     let trimmed = text.trim();
                     if !trimmed.is_empty() {
-                        final_text = Some(trimmed.to_string());
-                        break;
+                        break trimmed.to_string();
                     }
                 }
                 return Err(ModelError::EmptyOutput);
@@ -291,14 +288,6 @@ impl ResponsesChatEngine {
             if !function_call_batch.output_items.is_empty() {
                 rolling_input.extend(function_call_batch.output_items);
             }
-        }
-
-        let output_text = if let Some(text) = final_text {
-            text
-        } else {
-            return Err(ModelError::ToolLoopExceeded {
-                max_rounds: MAX_TOOL_LOOP_ROUNDS,
-            });
         };
 
         let mut estimated_tokens_in_window = estimate_tokens_in_history(&rolling_input);
