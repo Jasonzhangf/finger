@@ -491,6 +491,20 @@ export interface RoundEdgeInfo {
 
 export type ProviderType = 'iflow' | 'openai' | 'anthropic' | 'custom';
 
+export type ContextBuilderMode = 'minimal' | 'moderate' | 'aggressive';
+export type ContextBuilderRankingMode = boolean | 'dryrun';
+
+export interface ContextBuilderSettings {
+  enabled: boolean;
+  mode: ContextBuilderMode;
+  budgetRatio: number;
+  halfLifeMs: number;
+  overThresholdRelevance: number;
+  enableModelRanking: ContextBuilderRankingMode;
+  rankingProviderId: string;
+  includeMemoryMd: boolean;
+}
+
 export interface ProviderConfig {
   id: string;
   name: string;

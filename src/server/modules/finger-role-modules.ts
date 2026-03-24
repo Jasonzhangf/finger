@@ -117,6 +117,7 @@ export async function registerFingerRoleModules(
         { rootDir, sessionId, agentId, mode: 'main' },
         {
           targetBudget: 1_000_000,
+          buildMode: settings.mode,
           includeMemoryMd: settings.includeMemoryMd,
           enableTaskGrouping: true,
           enableModelRanking: settings.enableModelRanking,

@@ -70,11 +70,22 @@ export interface TimeWindowFilterOptions {
 }
 
 /**
+ * Context builder 构建模式
+ *
+ * - minimal:    最轻模式 — 保持原始顺序，只移除与最新用户输入无关的 task
+ * - moderate:   中等模式 — 移除无关 task 后，从历史中补充相关性高的 task（单个可超释放量，总预算内即可）
+ * - aggressive: 激进模式 — 完全按相关性重排所有 task
+ */
+export type ContextBuildMode = 'minimal' | 'moderate' | 'aggressive';
+
+/**
  * 上下文构建选项
  */
 export interface ContextBuildOptions {
   /** 目标上下文预算（tokens），默认为模型上下文窗口的 85% */
   targetBudget: number;
+  /** 构建模式 */
+  buildMode?: ContextBuildMode;
   /** 强制包含 MEMORY.md */
   includeMemoryMd?: boolean;
   /** MEMORY.md 路径（默认从项目根目录读取） */
@@ -121,6 +132,16 @@ export interface ContextBuildResult {
     targetBudget: number;
     /** 实际使用 */
     actualTokens: number;
+    /** 构建模式 */
+    buildMode?: ContextBuildMode;
+    /** 移除的无关 task 数量（minimal/moderate） */
+    removedIrrelevantCount?: number;
+    /** 补充的历史 task 数量（moderate） */
+    supplementedCount?: number;
+    /** 移除释放的 token 数 */
+    removedTokens?: number;
+    /** 补充消耗的 token 数 */
+    supplementedTokens?: number;
     /** Ranking 是否执行（含 dryrun） */
     rankingExecuted?: boolean;
     /** Ranking 模式 */

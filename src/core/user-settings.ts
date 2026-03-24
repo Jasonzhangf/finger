@@ -119,6 +119,8 @@ export interface LedgerSettings {
 
 export interface ContextBuilderSettings {
   enabled: boolean;
+  /** 构建模式：minimal=最轻(只移除无关), moderate=中等(移除+补充), aggressive=激进(完全重排) */
+  mode: 'minimal' | 'moderate' | 'aggressive';
   budgetRatio: number;
   halfLifeMs: number;
   overThresholdRelevance: number;
@@ -176,6 +178,7 @@ const DEFAULT_USER_SETTINGS: UserSettings = {
   },
   contextBuilder: {
     enabled: false,
+    mode: 'moderate',
     budgetRatio: 0.85,
     halfLifeMs: 86400000,
     overThresholdRelevance: 0.5,
@@ -365,6 +368,7 @@ export function validateUserSettings(settings: any): void {
   if (!settings.contextBuilder || typeof settings.contextBuilder !== 'object') {
     settings.contextBuilder = {
       enabled: false,
+      mode: 'moderate',
       budgetRatio: 0.85,
       halfLifeMs: 86400000,
       overThresholdRelevance: 0.5,
@@ -375,6 +379,10 @@ export function validateUserSettings(settings: any): void {
   }
   if (typeof settings.contextBuilder.enabled !== 'boolean') {
     settings.contextBuilder.enabled = false;
+  }
+  const validModes: Array<string> = ['minimal', 'moderate', 'aggressive'];
+  if (!validModes.includes(settings.contextBuilder.mode)) {
+    settings.contextBuilder.mode = 'moderate';
   }
   if (typeof settings.contextBuilder.budgetRatio !== 'number' || settings.contextBuilder.budgetRatio <= 0 || settings.contextBuilder.budgetRatio > 1) {
     settings.contextBuilder.budgetRatio = 0.85;
@@ -516,6 +524,7 @@ export function loadContextBuilderSettings(): ContextBuilderSettings {
   if (!settings.contextBuilder) {
     return {
       enabled: false,
+      mode: 'moderate',
       budgetRatio: 0.85,
       halfLifeMs: 86400000,
       overThresholdRelevance: 0.5,

@@ -651,6 +651,7 @@ export function registerLedgerRoutes(app: Express, deps: LedgerRouteDeps): void 
           },
           {
             targetBudget,
+            buildMode: contextBuilderSettings.mode,
             includeMemoryMd: contextBuilderSettings.includeMemoryMd,
             timeWindow: {
               nowMs,
@@ -728,6 +729,7 @@ export function registerLedgerRoutes(app: Express, deps: LedgerRouteDeps): void 
           includeMemoryMd: contextBuilderSettings.includeMemoryMd,
           enableModelRanking: contextBuilderSettings.enableModelRanking,
           rankingProviderId: contextBuilderSettings.rankingProviderId,
+          mode: contextBuilderSettings.mode,
         },
         contextBuild,
         slotWindow: {

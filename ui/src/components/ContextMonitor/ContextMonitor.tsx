@@ -50,6 +50,7 @@ interface ContextMonitorResponse {
     includeMemoryMd: boolean;
     enableModelRanking: boolean | 'dryrun';
     rankingProviderId: string;
+    mode: string;
   };
   contextBuild: {
     ok: boolean;
@@ -65,6 +66,11 @@ interface ContextMonitorResponse {
       budgetTruncatedCount: number;
       targetBudget: number;
       actualTokens: number;
+      buildMode?: string;
+      removedIrrelevantCount?: number;
+      supplementedCount?: number;
+      removedTokens?: number;
+      supplementedTokens?: number;
     };
     messages: Array<{
       id: string;
@@ -336,6 +342,15 @@ export const ContextMonitor: React.FC<ContextMonitorProps> = ({
           )}
           {data?.contextBuilder?.rankingProviderId && (
             <span>provider:{data.contextBuilder.rankingProviderId}</span>
+          )}
+          {data?.contextBuilder?.mode && (
+            <span className="context-mode-badge">mode:{data.contextBuilder.mode}</span>
+          )}
+          {data?.contextBuild?.metadata?.removedIrrelevantCount != null && data.contextBuild.metadata.removedIrrelevantCount > 0 && (
+            <span title="移除的无关 task">removed:{data.contextBuild.metadata.removedIrrelevantCount}</span>
+          )}
+          {data?.contextBuild?.metadata?.supplementedCount != null && data.contextBuild.metadata.supplementedCount > 0 && (
+            <span title="补充的历史 task">+{data.contextBuild.metadata.supplementedCount}</span>
           )}
           <span>{liveUpdatesEnabled ? 'live:on' : 'live:off'}</span>
           <span>{loading ? '刷新中…' : `更新 ${data?.updatedAt ? formatTimestamp(data.updatedAt) : '--:--:--'}`}</span>

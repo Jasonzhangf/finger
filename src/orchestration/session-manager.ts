@@ -634,6 +634,7 @@ export class SessionManager {
           { rootDir, sessionId: session.id, agentId, mode: 'main' },
           {
             targetBudget,
+            buildMode: contextBuilder.mode,
             includeMemoryMd: contextBuilder.includeMemoryMd,
             timeWindow: {
               nowMs: Date.now(),

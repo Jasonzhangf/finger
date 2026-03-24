@@ -35,6 +35,7 @@ import type {
   ContextBuildResult,
   TimeWindowFilterOptions,
   RankingOutput,
+  ContextBuildMode,
 } from './context-builder-types.js';
 
 type AttachmentPlaceholder = {
@@ -409,6 +410,72 @@ function reorderBlocksByRanking(blocks: TaskBlock[], rankedTaskIds: string[]): T
   return reordered;
 }
 
+function resolveBuildMode(mode: ContextBuildOptions['buildMode'] | undefined): ContextBuildMode {
+  if (mode === 'minimal' || mode === 'moderate' || mode === 'aggressive') return mode;
+  return 'moderate';
+}
+
+function splitCurrentAndHistorical(blocks: TaskBlock[]): {
+  current: TaskBlock | null;
+  historical: TaskBlock[];
+} {
+  if (blocks.length === 0) return { current: null, historical: [] };
+  const current = blocks[blocks.length - 1];
+  const historical = blocks.slice(0, -1);
+  return { current, historical };
+}
+
+function applyModerateSupplement(params: {
+  relatedBlocks: TaskBlock[];
+  currentBlock: TaskBlock;
+  removedBlocks: TaskBlock[];
+  historicalPoolByRanking: TaskBlock[];
+  effectiveBudget: number;
+}): {
+  blocks: TaskBlock[];
+  supplementedCount: number;
+  supplementedTokens: number;
+} {
+  const { relatedBlocks, currentBlock, removedBlocks, historicalPoolByRanking, effectiveBudget } = params;
+  const keptBlocks = [...relatedBlocks, currentBlock];
+  const keptTokens = keptBlocks.reduce((sum, b) => sum + b.tokenCount, 0);
+  if (keptTokens >= effectiveBudget) {
+    return { blocks: keptBlocks, supplementedCount: 0, supplementedTokens: 0 };
+  }
+
+  const removedTokens = removedBlocks.reduce((sum, b) => sum + b.tokenCount, 0);
+  const keptIds = new Set(keptBlocks.map((b) => b.id));
+  let supplementedTokens = 0;
+  const supplemented: TaskBlock[] = [];
+
+  for (const candidate of historicalPoolByRanking) {
+    if (keptIds.has(candidate.id)) continue;
+    if (supplemented.some((b) => b.id === candidate.id)) continue;
+
+    const newTotal = keptTokens + supplementedTokens + candidate.tokenCount;
+    // 中等模式规则：
+    // 1) 优先按“释放额度”补充
+    // 2) 即便单个 task 超过释放额度，只要总预算不超，仍允许添加（用户指定）
+    const withinReleasedBudget = supplementedTokens + candidate.tokenCount <= removedTokens;
+    const withinContextBudget = newTotal <= effectiveBudget;
+    if (!withinReleasedBudget && !withinContextBudget) {
+      continue;
+    }
+
+    supplemented.push(candidate);
+    supplementedTokens += candidate.tokenCount;
+
+    if (keptTokens + supplementedTokens >= effectiveBudget) break;
+  }
+
+  return {
+    // 当前 task 必须保持尾部（Jason 要求）
+    blocks: [...relatedBlocks, ...supplemented, currentBlock],
+    supplementedCount: supplemented.length,
+    supplementedTokens,
+  };
+}
+
 // ── MEMORY.md 读取 ────────────────────────────────────────────────────
 
 /**
@@ -551,6 +618,49 @@ export async function buildContext(
 
   const effectiveBudget = Math.max(0, targetBudget - memoryMdTokens);
 
+  const buildMode = resolveBuildMode(options?.buildMode);
+  const { current, historical } = splitCurrentAndHistorical(filteredBlocks);
+  let removedIrrelevantCount = 0;
+  let removedTokens = 0;
+  let supplementedCount = 0;
+  let supplementedTokens = 0;
+
+  if (current) {
+    const rankedHistory = rankingIds
+      ? reorderBlocksByRanking(historical, rankingIds)
+      : historical;
+
+    if (buildMode === 'minimal' || buildMode === 'moderate') {
+      // related = 在 ranking 结果中靠前的历史块（若无 ranking 则全部视为相关）
+      // 这里采用简单策略：若执行了 ranking，则保留前 60% 作为“相关”，其余视为可移除
+      const relatedCutoff = rankingExecuted
+        ? Math.max(1, Math.ceil(rankedHistory.length * 0.6))
+        : rankedHistory.length;
+      const related = rankedHistory.slice(0, relatedCutoff);
+      const removed = rankedHistory.slice(relatedCutoff);
+
+      removedIrrelevantCount = removed.length;
+      removedTokens = removed.reduce((sum, b) => sum + b.tokenCount, 0);
+
+      if (buildMode === 'minimal') {
+        filteredBlocks = [...related, current];
+      } else {
+        const supplemented = applyModerateSupplement({
+          relatedBlocks: related,
+          currentBlock: current,
+          removedBlocks: removed,
+          historicalPoolByRanking: rankedHistory,
+          effectiveBudget,
+        });
+        filteredBlocks = supplemented.blocks;
+        supplementedCount = supplemented.supplementedCount;
+        supplementedTokens = supplemented.supplementedTokens;
+      }
+    } else if (buildMode === 'aggressive') {
+      filteredBlocks = [...rankedHistory, current];
+    }
+  }
+
   // ── Step 6: 预算截断 ──
   const { included, truncated } = applyBudgetTruncation(filteredBlocks, effectiveBudget);
 
@@ -583,6 +693,11 @@ export async function buildContext(
       budgetTruncatedCount: truncated,
       targetBudget,
       actualTokens,
+      buildMode,
+      removedIrrelevantCount,
+      removedTokens,
+      supplementedCount,
+      supplementedTokens,
       rankingExecuted,
       rankingMode,
       ...(rankingProviderId ? { rankingProviderId } : {}),
