@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef, type WheelEvent as ReactWheelEvent } from 'react';
 import './LedgerMonitor.css';
 
 interface LedgerSlot {
@@ -21,6 +21,21 @@ interface SessionMeta {
   latestCompactIndex: number;
 }
 
+interface LedgerSlotDetail {
+  slot: number;
+  id: string;
+  timestamp_ms: number;
+  timestamp_iso: string;
+  event_type: string;
+  agent_id: string;
+  mode: string;
+  role: string;
+  content_preview: string;
+  content_full: string;
+  payload: Record<string, unknown>;
+  raw_entry: Record<string, unknown>;
+}
+
 interface LedgerApiResponse {
   success?: boolean;
   total?: number;
@@ -37,6 +52,14 @@ interface LedgerFetchResult {
   sessionId: string;
   data?: LedgerApiResponse;
   status?: number;
+  error?: string;
+}
+
+interface LedgerDetailResponse {
+  success?: boolean;
+  sessionId?: string;
+  slot?: number;
+  detail?: LedgerSlotDetail;
   error?: string;
 }
 
@@ -119,6 +142,10 @@ const LedgerModal: React.FC<LedgerModalProps> = ({ sessionId, label, onClose }) 
   const [jumpSlot, setJumpSlot] = useState('');
   const [activeSessionId, setActiveSessionId] = useState(sessionId);
   const [loadError, setLoadError] = useState<string | null>(null);
+  const [detail, setDetail] = useState<LedgerSlotDetail | null>(null);
+  const [detailLoading, setDetailLoading] = useState(false);
+  const [detailError, setDetailError] = useState<string | null>(null);
+  const slotListRef = useRef<HTMLDivElement | null>(null);
 
   const fetchLedger = useCallback(async (newOffset: number, requestedSessionId?: string) => {
     setLoading(true);
@@ -164,6 +191,43 @@ const LedgerModal: React.FC<LedgerModalProps> = ({ sessionId, label, onClose }) 
     setJumpSlot('');
   };
 
+  const handleSlotListWheel = useCallback((event: ReactWheelEvent<HTMLDivElement>) => {
+    const list = slotListRef.current;
+    if (!list) return;
+    if (list.scrollHeight <= list.clientHeight) return;
+    const previous = list.scrollTop;
+    list.scrollTop += event.deltaY;
+    if (list.scrollTop !== previous) {
+      event.preventDefault();
+      event.stopPropagation();
+    }
+  }, []);
+
+  const handleOpenDetail = useCallback(async (slot: number) => {
+    setDetail(null);
+    setDetailError(null);
+    setDetailLoading(true);
+    try {
+      const res = await fetch(`/api/v1/sessions/${activeSessionId}/ledger/${slot}`);
+      if (!res.ok) {
+        const reason = await readErrorMessage(res);
+        setDetailError(`读取原始消息失败 ${res.status}: ${reason}`);
+        return;
+      }
+      const data = await res.json() as LedgerDetailResponse;
+      if (!data.detail) {
+        setDetailError('未返回原始消息内容');
+        return;
+      }
+      setDetail(data.detail);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setDetailError(`读取原始消息异常: ${message}`);
+    } finally {
+      setDetailLoading(false);
+    }
+  }, [activeSessionId]);
+
   return (
     <>
     <div className="ledger-modal-overlay" onClick={onClose}>
@@ -196,8 +260,9 @@ const LedgerModal: React.FC<LedgerModalProps> = ({ sessionId, label, onClose }) 
             <button disabled={offset === 0} onClick={() => fetchLedger(Math.max(0, offset - PAGE_SIZE))}>上一页</button>
             <button disabled={offset + PAGE_SIZE >= total} onClick={() => fetchLedger(offset + PAGE_SIZE)}>下一页</button>
           </div>
+          <span className="ledger-row-tip">双击列表项查看原始消息</span>
         </div>
-        <div className="ledger-slot-list">
+        <div ref={slotListRef} className="ledger-slot-list" onWheel={handleSlotListWheel}>
           {loading ? (
             <div className="ledger-loading">加载中...</div>
           ) : loadError && slots.length === 0 ? (
@@ -205,7 +270,12 @@ const LedgerModal: React.FC<LedgerModalProps> = ({ sessionId, label, onClose }) 
           ) : slots.length === 0 ? (
             <div className="ledger-empty">暂无 ledger 数据</div>
           ) : slots.map((slot) => (
-            <div key={slot.id || slot.slot} className="ledger-slot-item">
+            <div
+              key={slot.id || slot.slot}
+              className="ledger-slot-item"
+              onDoubleClick={() => { void handleOpenDetail(slot.slot); }}
+              title="双击查看原始消息"
+            >
               <span className="slot-number">#{slot.slot}</span>
               <span className="slot-type">{eventTypeLabel(slot.event_type)}</span>
               <span className="slot-role">{slot.role}</span>
@@ -216,6 +286,31 @@ const LedgerModal: React.FC<LedgerModalProps> = ({ sessionId, label, onClose }) 
         </div>
       </div>
     </div>
+
+    {(detailLoading || detail || detailError) && (
+      <div className="ledger-detail-overlay" onClick={() => { setDetail(null); setDetailError(null); setDetailLoading(false); }}>
+        <div className="ledger-detail-modal" onClick={(event) => event.stopPropagation()}>
+          <div className="ledger-detail-header">
+            <h4>Ledger 原始消息</h4>
+            <button className="ledger-modal-close" onClick={() => { setDetail(null); setDetailError(null); setDetailLoading(false); }}>✕</button>
+          </div>
+          {detailLoading ? (
+            <div className="ledger-loading">加载原始内容...</div>
+          ) : detailError ? (
+            <div className="ledger-empty ledger-error-text">{detailError}</div>
+          ) : detail ? (
+            <div className="ledger-detail-body">
+              <div className="ledger-detail-meta">
+                <span>slot #{detail.slot}</span>
+                <span>{eventTypeLabel(detail.event_type)}</span>
+                <span>{formatTimestamp(detail.timestamp_iso)}</span>
+              </div>
+              <pre className="ledger-detail-content">{detail.content_full}</pre>
+            </div>
+          ) : null}
+        </div>
+      </div>
+    )}
 
     </>
   );

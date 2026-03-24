@@ -160,6 +160,12 @@
   border-bottom: 1px solid #2d3748;
 }
 
+.ledger-row-tip {
+  margin-left: 8px;
+  font-size: 11px;
+  color: #64748b;
+}
+
 .ledger-jump-bar input {
   width: 80px;
   padding: 2px 6px;
@@ -205,6 +211,7 @@
   flex: 1;
   overflow-y: auto;
   padding: 4px 0;
+  overscroll-behavior: contain;
 }
 
 .ledger-loading,
@@ -222,6 +229,8 @@
   padding: 4px 16px;
   font-size: 11px;
   border-bottom: 1px solid #1e293b;
+  cursor: pointer;
+  user-select: none;
 }
 
 .ledger-slot-item:hover {
@@ -262,4 +271,65 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.ledger-detail-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 10002;
+  background: rgba(0, 0, 0, 0.55);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.ledger-detail-modal {
+  width: min(960px, 92vw);
+  max-height: 72vh;
+  display: flex;
+  flex-direction: column;
+  border-radius: 8px;
+  border: 1px solid #2d3748;
+  background: #0e1217;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.4);
+}
+
+.ledger-detail-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  border-bottom: 1px solid #2d3748;
+  padding: 10px 14px;
+}
+
+.ledger-detail-header h4 {
+  margin: 0;
+  color: #e4e7eb;
+  font-size: 14px;
+}
+
+.ledger-detail-body {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.ledger-detail-meta {
+  display: flex;
+  gap: 12px;
+  padding: 8px 14px;
+  border-bottom: 1px solid #1e293b;
+  color: #94a3b8;
+  font-size: 11px;
+}
+
+.ledger-detail-content {
+  margin: 0;
+  padding: 12px 14px;
+  color: #cbd5e1;
+  font-size: 12px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  overflow-y: auto;
+  max-height: 56vh;
 }
