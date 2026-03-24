@@ -2,6 +2,7 @@ import { beforeEach, afterEach, describe, expect, it, vi } from 'vitest';
 import * as registry from '../../../src/agents/finger-system-agent/registry.js';
 import { heartbeatMailbox } from '../../../src/server/modules/heartbeat-mailbox.js';
 import { HeartbeatScheduler } from '../../../src/server/modules/heartbeat-scheduler.js';
+import { cleanupDispatchResultNotifications } from '../../../src/server/modules/heartbeat-helpers.js';
 
 const SYSTEM_AGENT_ID = 'finger-system-agent';
 
@@ -84,14 +85,15 @@ describe('HeartbeatScheduler mailbox lifecycle', () => {
   });
 
   it('defers mailbox prompt while busy and prompts immediately after idle', async () => {
-    vi.spyOn(registry, 'listAgents').mockResolvedValue([]);
+    const listAgentsMock = vi.spyOn(registry, 'listAgents');
     let runtimeStatus: 'busy' | 'idle' = 'busy';
-    const execute = vi.fn(async (command: string) => {
-      if (command === 'catalog') {
-        return { agents: [{ id: SYSTEM_AGENT_ID, status: runtimeStatus }] };
-      }
-      return { ok: true };
-    });
+    listAgentsMock.mockImplementation(async () => ([
+      {
+        agentId: SYSTEM_AGENT_ID,
+        status: runtimeStatus,
+      } as any,
+    ]));
+    const execute = vi.fn(async () => ({ ok: true }));
     const scheduler = new HeartbeatScheduler({
       agentRuntimeBlock: { execute },
       sessionManager: {
@@ -118,7 +120,7 @@ describe('HeartbeatScheduler mailbox lifecycle', () => {
     expect((scheduler as any).mailboxPromptDeferredByAgent.has(SYSTEM_AGENT_ID)).toBe(false);
   });
 
-  it('cleans expired mailbox notifications by retention window (instead of immediate delete)', async () => {
+  it('cleans dispatch-result notifications before mailbox prompt composition', async () => {
     const execute = vi.fn(async () => ({ agents: [] }));
     const scheduler = new HeartbeatScheduler({
       agentRuntimeBlock: { execute },
@@ -137,16 +139,9 @@ describe('HeartbeatScheduler mailbox lifecycle', () => {
       { type: 'dispatch-result', dispatchId: 'dispatch-2', summary: 'done-2' },
       { category: 'notification', priority: 2 },
     );
-    const notifications = heartbeatMailbox.list(SYSTEM_AGENT_ID, { category: 'notification' });
-    expect(notifications).toHaveLength(2);
-
-    // Manually age one message to exceed notification retention window (12h)
-    const old = notifications[0];
-    old.createdAt = new Date(Date.now() - 13 * 60 * 60_000).toISOString();
-    old.updatedAt = old.createdAt;
-
-    const result = (scheduler as any).cleanupExpiredMailboxMessages(SYSTEM_AGENT_ID, Date.now());
-    expect(result.removed).toBe(1);
-    expect(heartbeatMailbox.list(SYSTEM_AGENT_ID, { category: 'notification' })).toHaveLength(1);
+    void scheduler;
+    const result = cleanupDispatchResultNotifications(SYSTEM_AGENT_ID);
+    expect(result.removed).toBe(2);
+    expect(heartbeatMailbox.list(SYSTEM_AGENT_ID, { category: 'notification' })).toHaveLength(0);
   });
 });

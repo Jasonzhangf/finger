@@ -115,7 +115,7 @@ function summarizeLedgerSessionDir(dirPath: string): {
   }
 }
 
-function scanLedgerSessions(): Array<Record<string, unknown>> {
+export function listLedgerSessionsSnapshot(): Array<Record<string, unknown>> {
   const roots = [
     join(FINGER_PATHS.home, 'system', 'sessions'),
     FINGER_PATHS.sessions.dir,
@@ -164,7 +164,7 @@ export function registerLedgerRoutes(app: Express, deps: LedgerRouteDeps): void 
 
   // Ledger-based session list (SSOT for new UI)
   app.get('/api/v1/ledger/sessions', (_req, res) => {
-    const sessions = scanLedgerSessions();
+    const sessions = listLedgerSessionsSnapshot();
     res.json({ success: true, sessions });
   });
 

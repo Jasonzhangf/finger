@@ -71,7 +71,7 @@ describe('channel-bridge-hub-route user.ask async adaptation', () => {
     }));
   });
 
-  it('sends failure reply when dispatch returns ok=false', async () => {
+  it('sends failure reply when system direct path is unavailable (must not fallback to dispatch)', async () => {
     getChannelContextManager().updateContext('qqbot', 'business', 'finger-project-agent');
     const askManager = new AskManager(5_000);
     const sendMessage = vi.fn().mockResolvedValue({ messageId: 'reply-2' });
@@ -83,12 +83,7 @@ describe('channel-bridge-hub-route user.ask async adaptation', () => {
       context: {},
     });
     const getOrCreateSystemSession = vi.fn().mockReturnValue({ id: 'system-session-1' });
-    const dispatchTaskToAgent = vi.fn().mockResolvedValue({
-      ok: false,
-      dispatchId: 'dispatch-failed-1',
-      status: 'failed',
-      error: 'target agent is not started in resource pool: finger-system-agent',
-    });
+    const dispatchTaskToAgent = vi.fn();
 
     const route = createChannelBridgeHubRoute({
       channelBridgeManager: {
@@ -122,13 +117,10 @@ describe('channel-bridge-hub-route user.ask async adaptation', () => {
       },
     });
 
-    expect(dispatchTaskToAgent).toHaveBeenCalledTimes(1);
-    expect(dispatchTaskToAgent).toHaveBeenCalledWith(expect.objectContaining({
-      targetAgentId: 'finger-system-agent',
-    }));
+    expect(dispatchTaskToAgent).not.toHaveBeenCalled();
     expect(sendMessage).toHaveBeenCalledWith('qqbot', expect.objectContaining({
       to: 'user-1',
-      text: expect.stringContaining('处理失败：target agent is not started in resource pool: finger-system-agent'),
+      text: expect.stringContaining('处理失败，请稍后再试'),
     }));
   });
 

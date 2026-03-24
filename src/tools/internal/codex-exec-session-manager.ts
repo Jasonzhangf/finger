@@ -195,6 +195,11 @@ export class CodexExecSessionManager {
 
   private async writeChars(session: ExecSession, chars: string): Promise<void> {
     if (!session.child.stdin.writable) {
+      if (session.exited) {
+        // Session process already exited; treat late stdin writes as no-op so callers can
+        // still poll final output and receive exited termination instead of hard failure.
+        return;
+      }
       throw new Error(`failed to write to stdin for session ${session.id}`);
     }
 

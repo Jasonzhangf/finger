@@ -57,4 +57,32 @@ describe('codex exec tools', () => {
       }),
     ).rejects.toThrow('unknown session id');
   });
+
+  it('treats late stdin write after process exit as exited polling (no hard failure)', async () => {
+    const initial = await execCommandTool.execute(
+      {
+        cmd: 'sleep 0.2; echo done-after-exit',
+        shell: '/bin/bash',
+        login: false,
+        yield_time_ms: 20,
+      },
+      TEST_CONTEXT,
+    );
+
+    expect(initial.termination.type).toBe('ongoing');
+    if (initial.termination.type !== 'ongoing') {
+      return;
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, 350));
+
+    const result = await writeStdinTool.execute({
+      session_id: initial.termination.sessionId,
+      chars: 'ignored-input-after-exit\n',
+      yield_time_ms: 1000,
+    });
+
+    expect(result.termination.type).toBe('exited');
+    expect(result.text).toContain('Wall time:');
+  });
 });

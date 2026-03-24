@@ -11,6 +11,12 @@ import { sendStatusUpdate } from './agent-status-subscriber-runtime.js';
 import { logger } from '../../core/logger.js';
 
 const log = logger.module('AgentStatusSubscriberHandlers');
+const RAW_TOOL_ERROR_SUPPRESSED_CHANNELS = new Set(['qqbot', 'openclaw-weixin']);
+
+function shouldSuppressRawToolError(channelId?: string): boolean {
+  if (!channelId) return false;
+  return RAW_TOOL_ERROR_SUPPRESSED_CHANNELS.has(channelId);
+}
 
 /**
  * 处理上下文，包含事件处理所需的依赖
@@ -38,6 +44,17 @@ export async function handleToolError(
   const sessionId = event.sessionId;
   const mapping = ctx.resolveEnvelopeMapping(sessionId);
   if (!mapping) return;
+
+  if (shouldSuppressRawToolError(mapping.envelope.channel)) {
+    log.info('[AgentStatusSubscriber] Suppressed raw tool_error push for external channel', {
+      channel: mapping.envelope.channel,
+      sessionId,
+      agentId,
+      toolName: event.toolName,
+      error: event.payload?.error,
+    });
+    return;
+  }
 
   const agentInfo = await ctx.getAgentInfo(agentId);
   const wrappedUpdate: WrappedStatusUpdate = {

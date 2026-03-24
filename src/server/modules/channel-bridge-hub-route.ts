@@ -335,11 +335,10 @@ export function createChannelBridgeHubRoute(deps: ChannelBridgeHubRouteDeps) {
       }
 
       let result: unknown;
-      const shouldUseDirectUserInput =
-        targetAgentId === SYSTEM_AGENT_CONFIG.id
-        && typeof directSendToModule === 'function';
-
-      if (shouldUseDirectUserInput) {
+      if (targetAgentId === SYSTEM_AGENT_CONFIG.id) {
+        if (typeof directSendToModule !== 'function') {
+          throw new Error('system-agent direct input path unavailable (dispatch fallback disabled)');
+        }
         log.info('Hub route sending direct user input to agent module', {
           targetAgentId,
           sessionId: fixedSessionId,

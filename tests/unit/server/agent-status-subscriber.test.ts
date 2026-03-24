@@ -411,6 +411,82 @@ describe('AgentStatusSubscriber', () => {
 
       fallbackSubscriber.stop();
     });
+
+    it('应该抑制 qqbot/openclaw-weixin 的原始 tool_error 透传', async () => {
+      const mockMessageHub = {
+        routeToOutput: vi.fn().mockResolvedValue(undefined),
+      };
+
+      const toolErrorSubscriber = new AgentStatusSubscriber(eventBus, mockAgentRuntimeDeps, mockMessageHub);
+      toolErrorSubscriber.setPrimaryAgent('agent-1');
+      toolErrorSubscriber.registerSession('session-tool-error', {
+        channel: 'qqbot',
+        envelopeId: 'env-tool-error',
+      });
+      toolErrorSubscriber.start();
+
+      const event: RuntimeEvent = {
+        type: 'tool_error',
+        sessionId: 'session-tool-error',
+        timestamp: new Date().toISOString(),
+        agentId: 'agent-1',
+        toolId: 'tool-error-1',
+        toolName: 'write_stdin',
+        payload: {
+          error: 'Error: failed to write to stdin for session 58',
+          duration: 1,
+        },
+      } as RuntimeEvent;
+
+      await eventBus.emit(event);
+      await new Promise(resolve => setTimeout(resolve, 80));
+
+      expect(mockMessageHub.routeToOutput).not.toHaveBeenCalled();
+      toolErrorSubscriber.stop();
+    });
+
+    it('应该继续向非外部聊天渠道发送 tool_error 状态', async () => {
+      const mockMessageHub = {
+        routeToOutput: vi.fn().mockResolvedValue(undefined),
+      };
+
+      const toolErrorSubscriber = new AgentStatusSubscriber(eventBus, mockAgentRuntimeDeps, mockMessageHub);
+      toolErrorSubscriber.setPrimaryAgent('agent-1');
+      toolErrorSubscriber.registerSession('session-tool-error-web', {
+        channel: 'webui',
+        envelopeId: 'env-tool-error-web',
+      });
+      toolErrorSubscriber.start();
+
+      const event: RuntimeEvent = {
+        type: 'tool_error',
+        sessionId: 'session-tool-error-web',
+        timestamp: new Date().toISOString(),
+        agentId: 'agent-1',
+        toolId: 'tool-error-web-1',
+        toolName: 'write_stdin',
+        payload: {
+          error: 'Error: failed to write to stdin for session 58',
+          duration: 1,
+        },
+      } as RuntimeEvent;
+
+      await eventBus.emit(event);
+      await new Promise(resolve => setTimeout(resolve, 80));
+
+      expect(mockMessageHub.routeToOutput).toHaveBeenCalledWith(
+        'channel-bridge-webui',
+        expect.objectContaining({
+          statusUpdate: expect.objectContaining({
+            status: expect.objectContaining({
+              state: 'failed',
+              summary: expect.stringContaining('工具失败'),
+            }),
+          }),
+        }),
+      );
+      toolErrorSubscriber.stop();
+    });
   });
 
 
