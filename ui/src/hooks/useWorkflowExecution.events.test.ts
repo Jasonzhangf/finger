@@ -159,6 +159,42 @@ describe('mapWsMessageToRuntimeEvent tool payload mapping', () => {
     expect(event?.content).toContain('content=');
   });
 
+  it('parses mailbox.status tool_result from real session payload', () => {
+    const msg: WsMessage = {
+      type: 'tool_result',
+      sessionId: 'session-1',
+      agentId: 'finger-system-agent',
+      timestamp: '2026-03-24T05:37:08.000Z',
+      payload: {
+        toolName: 'mailbox.status',
+        input: {},
+        output: {
+          success: true,
+          target: 'finger-system-agent',
+          counts: {
+            total: 1,
+            unread: 1,
+            pending: 1,
+            processing: 0,
+          },
+          recentUnread: [
+            {
+              id: 'msg-1774330605368-q3vkv5',
+              category: 'heartbeat-task',
+            },
+          ],
+        },
+      },
+    };
+
+    const event = mapWsMessageToRuntimeEvent(msg, 'session-1');
+    expect(event).not.toBeNull();
+    expect(event?.content).toContain('total=1');
+    expect(event?.content).toContain('unread=1');
+    expect(event?.content).toContain('pending=1');
+    expect(event?.content).toContain('next=msg-1774330605368-q3vkv5');
+  });
+
   it('includes stdin/stdout snippets and truncates to 100 chars for exec_command', () => {
     const longStdout = `${'A'.repeat(140)}\n${'B'.repeat(140)}`;
     const msg: WsMessage = {

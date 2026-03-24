@@ -270,10 +270,25 @@ function extractStderrSnippet(output: unknown): string | undefined {
 function extractMailboxSnippet(output: unknown): string | undefined {
   const root = isRecord(output) ? output : null;
   if (!root) return undefined;
-  const message = isRecord(root.message)
-    ? root.message
-    : (isRecord(root.result) && isRecord(root.result.message) ? root.result.message : null);
-  if (!message) return undefined;
+  const resultRoot = isRecord(root.result) ? root.result : root;
+  const message = isRecord(resultRoot.message)
+    ? resultRoot.message
+    : null;
+  if (!message) {
+    const counts = isRecord(resultRoot.counts) ? resultRoot.counts : null;
+    const recentUnread = Array.isArray(resultRoot.recentUnread) ? resultRoot.recentUnread : [];
+    const firstUnread = recentUnread.find((item) => isRecord(item)) as Record<string, unknown> | undefined;
+    const unreadId = firstUnread && typeof firstUnread.id === 'string' ? firstUnread.id.trim() : '';
+    const unreadCategory = firstUnread && typeof firstUnread.category === 'string' ? firstUnread.category.trim() : '';
+    const parts = [
+      counts && typeof counts.total === 'number' ? `total=${counts.total}` : '',
+      counts && typeof counts.unread === 'number' ? `unread=${counts.unread}` : '',
+      counts && typeof counts.pending === 'number' ? `pending=${counts.pending}` : '',
+      unreadId ? `next=${clipSignal(unreadId, 48)}` : '',
+      unreadCategory ? `cat=${clipSignal(unreadCategory, 24)}` : '',
+    ].filter((part) => part.length > 0);
+    return parts.length > 0 ? parts.join(' · ') : undefined;
+  }
   const messageId = typeof message.id === 'string' ? message.id.trim() : '';
   const category = typeof message.category === 'string' ? message.category.trim() : '';
   const content = isRecord(message.content) ? message.content : null;

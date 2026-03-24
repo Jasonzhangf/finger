@@ -126,4 +126,28 @@ describe('mapSessionMessageToRuntimeEvent', () => {
     expect(event?.content).toContain('summary=');
     expect(event?.content).toContain('...');
   });
+
+  it('maps real session shell.exec payload to meaningful stdin/stdout summary', () => {
+    const event = mapSessionMessageToRuntimeEvent(
+      buildMessage({
+        type: 'tool_result',
+        content: '工具完成: shell.exec',
+        toolName: 'shell.exec',
+        toolInput: {
+          command: 'cat /Users/fanzhang/.finger/system/HEARTBEAT.md',
+        },
+        toolOutput: {
+          ok: true,
+          stdout: '---\\ntitle: \"System Agent HEARTBEAT\"\\nversion: \"1.3.3\"\\n...',
+        },
+      }),
+      'finger-system-agent',
+    );
+
+    expect(event).not.toBeNull();
+    expect(event?.content).toContain('[read]');
+    expect(event?.content).toContain('HEARTBEAT.md');
+    expect(event?.content).toContain('stdin=');
+    expect(event?.content).toContain('stdout=');
+  });
 });

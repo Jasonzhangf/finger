@@ -190,6 +190,13 @@ function parseToolSummary(toolName: string, input: unknown, output?: unknown): {
     const message = outputRecord && outputRecord.message && typeof outputRecord.message === 'object'
       ? outputRecord.message as Record<string, unknown>
       : null;
+    const counts = outputRecord && outputRecord.counts && typeof outputRecord.counts === 'object'
+      ? outputRecord.counts as Record<string, unknown>
+      : null;
+    const recentUnread = outputRecord && Array.isArray(outputRecord.recentUnread)
+      ? outputRecord.recentUnread
+      : [];
+    const firstUnread = recentUnread.find((item) => item && typeof item === 'object') as Record<string, unknown> | undefined;
     const content = message?.content && typeof message.content === 'object'
       ? message.content as Record<string, unknown>
       : null;
@@ -210,6 +217,10 @@ function parseToolSummary(toolName: string, input: unknown, output?: unknown): {
         messageCategory ? `cat=${truncateInline(messageCategory, 30)}` : '',
         title ? `title=${truncateInline(title, 100)}` : '',
         shortDescription ? `desc=${truncateInline(shortDescription, 100)}` : '',
+        counts && typeof counts.total === 'number' ? `total=${counts.total}` : '',
+        counts && typeof counts.unread === 'number' ? `unread=${counts.unread}` : '',
+        counts && typeof counts.pending === 'number' ? `pending=${counts.pending}` : '',
+        firstUnread && typeof firstUnread.id === 'string' ? `next=${truncateInline(firstUnread.id, 60)}` : '',
       ].filter((item) => item.length > 0),
     };
   }
