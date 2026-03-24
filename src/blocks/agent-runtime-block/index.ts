@@ -422,11 +422,6 @@ function resolveCapabilityLayer(value: unknown): AgentCapabilityLayer {
   return 'summary';
 }
 
-function normalizePositiveInteger(value: unknown): number | undefined {
-  if (typeof value !== 'number' || !Number.isFinite(value)) return undefined;
-  return Math.max(1, Math.floor(value));
-}
-
 function normalizeNonNegativeInteger(value: unknown): number | undefined {
   if (typeof value !== 'number' || !Number.isFinite(value)) return undefined;
   return Math.max(0, Math.floor(value));
@@ -1428,6 +1423,25 @@ export class AgentRuntimeBlock extends BaseBlock {
     error?: string;
   }): void {
     const timestamp = new Date().toISOString();
+    const resolvedSessionId = typeof params.sessionId === 'string' && params.sessionId.trim().length > 0
+      ? params.sessionId.trim()
+      : undefined;
+    const resolvedRootSessionId = (() => {
+      if (!resolvedSessionId) return undefined;
+      const getSession = (this.deps.sessionManager as unknown as { getSession?: (sessionId: string) => unknown }).getSession;
+      if (typeof getSession !== 'function') return undefined;
+      const session = getSession.call(this.deps.sessionManager, resolvedSessionId) as { context?: unknown } | null;
+      if (!session || typeof session.context !== 'object' || session.context === null) return undefined;
+      const context = session.context as Record<string, unknown>;
+      const rootSessionId = typeof context.rootSessionId === 'string'
+        ? context.rootSessionId.trim()
+        : '';
+      if (rootSessionId.length > 0) return rootSessionId;
+      const parentSessionId = typeof context.parentSessionId === 'string'
+        ? context.parentSessionId.trim()
+        : '';
+      return parentSessionId.length > 0 ? parentSessionId : undefined;
+    })();
     const queueSuffix = typeof params.queuePosition === 'number' ? ` (queue #${params.queuePosition})` : '';
     const summary = params.status === 'failed'
       ? `Dispatch failed${params.error ? `: ${params.error}` : ''}`
@@ -1449,7 +1463,7 @@ export class AgentRuntimeBlock extends BaseBlock {
     });
     void this.deps.eventBus.emit({
       type: 'agent_runtime_dispatch',
-      sessionId: params.sessionId ?? this.deps.sessionManager.getCurrentSession()?.id ?? 'default',
+      sessionId: resolvedSessionId ?? this.deps.sessionManager.getCurrentSession()?.id ?? 'default',
       agentId: params.targetAgentId,
       timestamp,
       payload: {
@@ -1458,7 +1472,10 @@ export class AgentRuntimeBlock extends BaseBlock {
         targetAgentId: params.targetAgentId,
         status: params.status,
         blocking: params.blocking,
-        ...(params.sessionId ? { sessionId: params.sessionId } : {}),
+        ...(resolvedSessionId ? { sessionId: resolvedSessionId } : {}),
+        ...(resolvedRootSessionId && resolvedRootSessionId !== resolvedSessionId
+          ? { rootSessionId: resolvedRootSessionId }
+          : {}),
         ...(params.workflowId ? { workflowId: params.workflowId } : {}),
         ...(typeof params.queuePosition === 'number' ? { queuePosition: params.queuePosition } : {}),
         ...(params.assignment ? { assignment: params.assignment } : {}),

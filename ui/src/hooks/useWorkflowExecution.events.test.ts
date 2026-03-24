@@ -138,6 +138,40 @@ describe('mapWsMessageToRuntimeEvent tool payload mapping', () => {
     expect(event).not.toBeNull();
     expect(event?.role).toBe('system');
     expect(event?.content).toContain('[dispatch]');
+    expect(event?.metadata).toMatchObject({
+      targetAgentId: 'executor-debug-loop',
+      status: 'queued',
+    });
+  });
+
+  it('accepts runtime-child dispatch event when payload.rootSessionId matches current session', () => {
+    const msg: WsMessage = {
+      type: 'agent_runtime_dispatch',
+      sessionId: 'runtime-child-1',
+      timestamp: '2026-02-25T10:00:00.000Z',
+      payload: {
+        dispatchId: 'dispatch-1',
+        sourceAgentId: 'finger-system-agent',
+        targetAgentId: 'finger-project-agent',
+        status: 'completed',
+        rootSessionId: 'system-root-1',
+        result: {
+          status: 'completed_mailbox',
+          messageId: 'msg-1',
+        },
+      },
+    };
+
+    const event = mapWsMessageToRuntimeEvent(msg, 'system-root-1');
+    expect(event).not.toBeNull();
+    expect(event?.content).toContain('dispatch-1');
+    expect(event?.content).toContain('mailbox=msg-1');
+    expect(event?.metadata).toMatchObject({
+      dispatchId: 'dispatch-1',
+      rootSessionId: 'system-root-1',
+      mailboxMessageId: 'msg-1',
+      status: 'completed',
+    });
   });
 
   it('maps agent_runtime_mock_assertion to summary event', () => {

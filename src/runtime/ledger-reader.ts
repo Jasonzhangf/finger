@@ -26,6 +26,7 @@ export interface SessionViewMessage {
   tokenCount: number;
   messageId?: string;
   timestamp?: string;
+  metadata?: Record<string, unknown>;
   /**
    * Attachments for this message.
    * - Last message (current turn): full ChannelAttachment[] with urls and metadata.
@@ -101,6 +102,9 @@ export async function buildSessionView(
       ? Math.max(0, Math.floor(payload.token_count))
       : estimateTokens(content);
     const messageId = typeof payload.message_id === 'string' ? payload.message_id : undefined;
+    const metadata = payload.metadata && typeof payload.metadata === 'object' && !Array.isArray(payload.metadata)
+      ? payload.metadata as Record<string, unknown>
+      : undefined;
     const rawAttachments = payload.attachments;
     let attachments: SessionAttachment | undefined;
     if (Array.isArray(rawAttachments) && rawAttachments.length > 0) {
@@ -116,6 +120,7 @@ export async function buildSessionView(
       tokenCount,
       messageId,
       timestamp: entry.timestamp_iso,
+      metadata,
       attachments,
     };
   });

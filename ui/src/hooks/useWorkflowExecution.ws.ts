@@ -106,7 +106,16 @@ export function mapWsMessageToRuntimeEvent(
     || (typeof payload.agentId === 'string' ? payload.agentId : undefined);
 
   if (eventSessionId && eventSessionId !== currentSessionId) {
-    return null;
+    const relatedSessionIds = [
+      typeof payload.rootSessionId === 'string' ? payload.rootSessionId : undefined,
+      typeof payload.parentSessionId === 'string' ? payload.parentSessionId : undefined,
+      typeof payload.originalSessionId === 'string' ? payload.originalSessionId : undefined,
+    ]
+      .filter((value): value is string => typeof value === 'string' && value.trim().length > 0)
+      .map((value) => value.trim());
+    if (!relatedSessionIds.includes(currentSessionId)) {
+      return null;
+    }
   }
 
   switch (msg.type) {
@@ -295,16 +304,48 @@ export function mapWsMessageToRuntimeEvent(
       const status = typeof payload.status === 'string' ? payload.status : 'unknown';
       const summary = typeof payload.summary === 'string' ? payload.summary : '';
       const source = typeof payload.sourceAgentId === 'string' ? payload.sourceAgentId : 'orchestrator';
+      const dispatchId = typeof payload.dispatchId === 'string' ? payload.dispatchId : undefined;
       const blocking = payload.blocking === true ? 'blocking' : 'async';
+      const queuePosition = typeof payload.queuePosition === 'number' ? payload.queuePosition : undefined;
+      const assignment = isRecord(payload.assignment) ? payload.assignment : null;
+      const result = isRecord(payload.result) ? payload.result : null;
+      const mailboxMessageId =
+        (result && typeof result.messageId === 'string' ? result.messageId : undefined)
+        ?? (result && typeof result.mailboxMessageId === 'string' ? result.mailboxMessageId : undefined);
+      const rootSessionId = typeof payload.rootSessionId === 'string' ? payload.rootSessionId : undefined;
+      const taskId = assignment && typeof assignment.taskId === 'string' ? assignment.taskId : undefined;
+      const bdTaskId = assignment && typeof assignment.bdTaskId === 'string' ? assignment.bdTaskId : undefined;
+      const extraParts = [
+        dispatchId ? `id=${dispatchId}` : '',
+        typeof queuePosition === 'number' ? `queue=#${queuePosition}` : '',
+        mailboxMessageId ? `mailbox=${mailboxMessageId}` : '',
+        taskId ? `task=${taskId}` : '',
+        !taskId && bdTaskId ? `bd=${bdTaskId}` : '',
+      ].filter((part) => part.length > 0);
+      const extraSuffix = extraParts.length > 0 ? ` · ${extraParts.join(' · ')}` : '';
       const content = summary.length > 0
-        ? `[dispatch] ${source} -> ${target} (${blocking}) ${status} - ${summary}`
-        : `[dispatch] ${source} -> ${target} (${blocking}) ${status}`;
+        ? `[dispatch] ${source} -> ${target} (${blocking}) ${status}${extraSuffix} - ${summary}`
+        : `[dispatch] ${source} -> ${target} (${blocking}) ${status}${extraSuffix}`;
       return {
         role: 'system',
         kind: 'status',
         agentId: target,
         content,
         timestamp,
+        metadata: {
+          dispatchId,
+          sourceAgentId: source,
+          targetAgentId: target,
+          status,
+          blocking: payload.blocking === true,
+          queuePosition,
+          mailboxMessageId,
+          taskId,
+          bdTaskId,
+          sessionId: eventSessionId,
+          rootSessionId,
+          payload,
+        },
       };
     }
     case 'agent_runtime_control': {

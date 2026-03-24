@@ -14,11 +14,11 @@ import { Session, SessionMessage, LEDGER_POINTER_DEFAULTS, ensureLedgerPointers 
 import type { Attachment } from '../runtime/events.js';
 import { appendSessionMessage } from '../runtime/ledger-writer.js';
 import { buildSessionView, type SessionView, type SessionViewMessage } from '../runtime/ledger-reader.js';
-import { needsCompression, compressSession, syncSessionTokens, type CompressResult } from '../runtime/session-compressor.js';
+import { needsCompression, compressSession, type CompressResult } from '../runtime/session-compressor.js';
 import { estimateTokens } from '../utils/token-counter.js';
 import { getContextWindow } from '../core/user-settings.js';
 import { loadContextBuilderSettings } from '../core/user-settings.js';
-import { buildContext, buildMemoryMdInjection, type ContextBuildResult } from '../runtime/context-builder.js';
+import { buildContext, buildMemoryMdInjection } from '../runtime/context-builder.js';
 import { logger } from '../core/logger.js';
 import { createConsoleLikeLogger } from '../core/logger/console-like.js';
 
@@ -340,7 +340,7 @@ export class SessionManager {
     return this.createSystemSession();
   }
 
-  createSystemSession(name?: string, options?: { allowReuse?: boolean }): Session {
+  createSystemSession(name?: string, _options?: { allowReuse?: boolean }): Session {
     const now = new Date().toISOString();
     const systemSessionId = `${SYSTEM_SESSION_PREFIX}${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     const systemSessionName = name && name.trim().length > 0 ? name.trim() : 'system-main';
@@ -732,6 +732,7 @@ export class SessionManager {
       role: msg.role,
       content: msg.content,
       timestamp: msg.timestamp || new Date().toISOString(),
+      ...(msg.metadata ? { metadata: msg.metadata } : {}),
     }));
   }
 
