@@ -96,7 +96,8 @@ describe('mapWsMessageToRuntimeEvent tool payload mapping', () => {
 
     const event = mapWsMessageToRuntimeEvent(msg, 'session-1');
     expect(event).not.toBeNull();
-    expect(event?.content).toContain('执行成功：ls -la');
+    expect(event?.content).toContain('[read]');
+    expect(event?.content).toContain('success');
   });
 
   it('infers exec_command result output shape and avoids unknown tool output rendering', () => {
@@ -123,6 +124,30 @@ describe('mapWsMessageToRuntimeEvent tool payload mapping', () => {
     expect(String(event?.toolOutput)).toContain('/Users/fanzhang/Documents/code/finger');
   });
 
+  it('parses mailbox tool_result into readable action summary', () => {
+    const msg: WsMessage = {
+      type: 'tool_result',
+      sessionId: 'session-1',
+      agentId: 'chat-codex',
+      timestamp: '2026-02-25T10:00:00.000Z',
+      payload: {
+        toolName: 'mailbox.read',
+        input: {
+          id: 'msg-123',
+        },
+        output: {
+          success: true,
+        },
+      },
+    };
+
+    const event = mapWsMessageToRuntimeEvent(msg, 'session-1');
+    expect(event).not.toBeNull();
+    expect(event?.content).toContain('[read]');
+    expect(event?.content).toContain('msg-123');
+    expect(event?.content).toContain('success');
+  });
+
   it('maps agent_runtime_dispatch to system status event', () => {
     const msg: WsMessage = {
       type: 'agent_runtime_dispatch',
@@ -131,6 +156,9 @@ describe('mapWsMessageToRuntimeEvent tool payload mapping', () => {
       payload: {
         targetAgentId: 'executor-debug-loop',
         status: 'queued',
+        assignment: {
+          acceptance: ['完成 A', '完成 B'],
+        },
       },
     };
 
@@ -142,6 +170,7 @@ describe('mapWsMessageToRuntimeEvent tool payload mapping', () => {
       targetAgentId: 'executor-debug-loop',
       status: 'queued',
     });
+    expect(event?.planSteps).toHaveLength(2);
   });
 
   it('accepts runtime-child dispatch event when payload.rootSessionId matches current session', () => {

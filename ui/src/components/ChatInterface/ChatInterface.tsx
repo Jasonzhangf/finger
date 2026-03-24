@@ -331,6 +331,7 @@ function toolChipLabel(event: RuntimeEvent): string {
 
 function toolCategoryClass(category?: RuntimeEvent['toolCategory']): string {
   if (category === '读取') return 'category-read';
+  if (category === '运行') return 'category-read';
   if (category === '写入' || category === '编辑') return 'category-write';
   if (category === '搜索' || category === '网络搜索') return 'category-search';
   if (category === '计划') return 'category-plan';
@@ -450,7 +451,7 @@ function inferToolCategoryFromName(toolName: string): string {
   if (toolName === 'context_ledger.memory') return '搜索';
   if (toolName === 'view_image') return '读取';
   if (toolName === 'write_stdin') return '写入';
-  if (toolName === 'exec_command' || toolName === 'shell.exec') return '其他';
+  if (toolName === 'exec_command' || toolName === 'shell.exec') return '运行';
   return '其他';
 }
 

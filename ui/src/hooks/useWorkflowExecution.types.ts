@@ -188,5 +188,5 @@ export interface UseWorkflowExecutionReturn {
   setRequestDetailsEnabled: (enabled: boolean) => void;
 }
 
-export type ToolCategoryLabel = '编辑' | '读取' | '写入' | '计划' | '搜索' | '网络搜索' | '其他';
+export type ToolCategoryLabel = '编辑' | '读取' | '写入' | '运行' | '计划' | '搜索' | '网络搜索' | '其他';
 export type AgentRunPhase = AgentRunStatus['phase'];

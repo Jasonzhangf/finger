@@ -857,7 +857,9 @@ export function useWorkflowExecution(
         content: string;
         timestamp: string;
       } => typeof message.id === 'string' && typeof message.role === 'string' && typeof message.timestamp === 'string');
-      const mappedEvents = typedMessages.map((message) => mapSessionMessageToRuntimeEvent(message, agentId));
+      const mappedEvents = typedMessages
+        .map((message) => mapSessionMessageToRuntimeEvent(message, agentId))
+        .filter((event): event is RuntimeEvent => event !== null);
       // 实时模式下优先使用 WS 事件流；仅在首次/无 WS 事件时用 session 填充
       const shouldHydrateFromSession = options?.disableRealtime === true || runtimeEventsRef.current.length === 0;
       if (shouldHydrateFromSession) {

@@ -101,9 +101,111 @@ export function resolveDisplayToolName(payload: Record<string, unknown>, input?:
   return inferToolName(input, output) ?? 'unknown';
 }
 
+type ToolResultVerb = 'search' | 'read' | 'write' | 'run' | 'edit' | 'plan' | 'other';
+
+function splitCommandHead(command: string): string {
+  return command.split(/(?:\|\||&&|\||;)/)[0]?.trim() ?? command.trim();
+}
+
+function tokenizeCommand(command: string): string[] {
+  const tokens: string[] = [];
+  const regex = /"([^"\\]*(?:\\.[^"\\]*)*)"|'([^'\\]*(?:\\.[^'\\]*)*)'|(\S+)/g;
+  let match: RegExpExecArray | null = regex.exec(command);
+  while (match) {
+    const token = (match[1] ?? match[2] ?? match[3] ?? '').trim();
+    if (token.length > 0) tokens.push(token);
+    match = regex.exec(command);
+  }
+  return tokens;
+}
+
+function looksLikePathToken(token: string): boolean {
+  if (!token || token.startsWith('-')) return false;
+  if (token.startsWith('~') || token.startsWith('/') || token.startsWith('./') || token.startsWith('../')) return true;
+  if (/^[A-Za-z]:[\\/]/.test(token)) return true;
+  if (/[\\/]/.test(token)) return true;
+  return /\.[A-Za-z0-9_-]{1,8}$/.test(token);
+}
+
+function pickFilenameFromToken(token: string): string {
+  const normalized = token.trim().replace(/\\/g, '/');
+  const compact = normalized.endsWith('/') ? normalized.slice(0, -1) : normalized;
+  const parts = compact.split('/').filter((part) => part.length > 0);
+  return parts[parts.length - 1] ?? token;
+}
+
+function parseExecCommandTarget(command: string, category: ToolCategoryLabel): string | undefined {
+  const head = splitCommandHead(command);
+  const tokens = tokenizeCommand(head);
+  if (tokens.length <= 1) return undefined;
+  const executable = tokens[0].toLowerCase();
+  const args = tokens.slice(1);
+
+  if ((executable === 'cp' || executable === 'mv') && args.length >= 2) {
+    const last = [...args].reverse().find((token) => looksLikePathToken(token) && token !== '.');
+    return last ? pickFilenameFromToken(last) : undefined;
+  }
+
+  if (executable === 'find') {
+    const target = args.find((token) => looksLikePathToken(token) && !token.startsWith('-'));
+    return target ? pickFilenameFromToken(target) : undefined;
+  }
+
+  if (executable === 'rg' || executable === 'grep') {
+    const candidates = args.filter((token) => looksLikePathToken(token) && !token.startsWith('-'));
+    const target = candidates[candidates.length - 1];
+    return target ? pickFilenameFromToken(target) : undefined;
+  }
+
+  const pathToken = args.find((token) => looksLikePathToken(token) && token !== '.');
+  if (pathToken) return pickFilenameFromToken(pathToken);
+  if (category === '运行') return executable;
+  return undefined;
+}
+
+function parseApplyPatchTarget(input: unknown): string | undefined {
+  const normalizedInput = unwrapToolPayload(input);
+  const patchText = typeof normalizedInput === 'string'
+    ? normalizedInput
+    : (isRecord(normalizedInput) && typeof normalizedInput.patch === 'string'
+      ? normalizedInput.patch
+      : '');
+  if (patchText.trim().length === 0) return undefined;
+  const matches = Array.from(
+    patchText.matchAll(/^\*\*\*\s+(?:Add|Update|Delete)\s+File:\s+(.+)$/gm),
+  ).map((item) => item[1]?.trim()).filter((item): item is string => Boolean(item));
+  if (matches.length === 0) return undefined;
+  if (matches.length === 1) return pickFilenameFromToken(matches[0]);
+  return `${pickFilenameFromToken(matches[0])} +${matches.length - 1}`;
+}
+
+function parseMailboxAction(toolName: string): string {
+  const normalized = toolName.trim().toLowerCase();
+  if (!normalized.startsWith('mailbox.')) return '';
+  return normalized.slice('mailbox.'.length);
+}
+
+function parseContextLedgerAction(input: unknown): string {
+  const normalizedInput = unwrapToolPayload(input);
+  if (!isRecord(normalizedInput)) return '';
+  if (typeof normalizedInput.action === 'string') return normalizedInput.action.trim().toLowerCase();
+  return '';
+}
+
+function parseQueryLabel(input: unknown): string | undefined {
+  const normalizedInput = unwrapToolPayload(input);
+  if (!isRecord(normalizedInput)) return undefined;
+  const query = typeof normalizedInput.query === 'string'
+    ? normalizedInput.query.trim()
+    : typeof normalizedInput.q === 'string'
+      ? normalizedInput.q.trim()
+      : '';
+  return query.length > 0 ? truncateInlineText(query, 48) : undefined;
+}
+
 function classifyExecCommand(command: string): ToolCategoryLabel {
   const normalized = command.trim().toLowerCase();
-  if (normalized.length === 0) return '其他';
+  if (normalized.length === 0) return '运行';
 
   if (/(^|\s)(rg|grep|find|fd)\b/.test(normalized)) return '搜索';
   if (/(^|\s)(cat|sed|head|tail|less|more|ls|pwd|stat|wc|du|git\s+(show|status|log|diff))\b/.test(normalized)) {
@@ -115,21 +217,41 @@ function classifyExecCommand(command: string): ToolCategoryLabel {
   ) {
     return '写入';
   }
-  return '其他';
+  return '运行';
+}
+
+function normalizeToolVerb(category: ToolCategoryLabel): ToolResultVerb {
+  if (category === '搜索' || category === '网络搜索') return 'search';
+  if (category === '读取') return 'read';
+  if (category === '写入') return 'write';
+  if (category === '运行') return 'run';
+  if (category === '编辑') return 'edit';
+  if (category === '计划') return 'plan';
+  return 'other';
 }
 
 export function resolveToolCategoryLabel(toolName: string, input?: unknown): ToolCategoryLabel {
   if (toolName === 'apply_patch') return '编辑';
   if (toolName === 'update_plan') return '计划';
   if (toolName.toLowerCase().includes('dispatch')) return '计划';
-  if (toolName === 'context_ledger.memory') return '搜索';
+  if (toolName === 'context_ledger.memory') {
+    const action = parseContextLedgerAction(input);
+    if (action === 'index' || action === 'compact' || action === 'write') return '写入';
+    if (action === 'query' || action === 'search' || action === 'read') return '读取';
+    return '搜索';
+  }
   if (toolName === 'web_search') return '网络搜索';
   if (toolName === 'view_image') return '读取';
-  if (toolName === 'write_stdin') return '写入';
+  if (toolName === 'write_stdin') return '运行';
+  if (toolName.toLowerCase().startsWith('mailbox.')) {
+    const action = parseMailboxAction(toolName);
+    if (action === 'ack' || action === 'remove' || action === 'remove_all') return '写入';
+    return '读取';
+  }
   if (toolName === 'exec_command' || toolName === 'shell.exec') {
     const command = extractExecCommand(input);
     if (command) return classifyExecCommand(command);
-    return '其他';
+    return '运行';
   }
   return '其他';
 }
@@ -160,17 +282,43 @@ export function extractExecCommand(input: unknown): string | undefined {
 
 function buildToolExecutionSummary(toolName: string, input?: unknown): string | undefined {
   const command = extractExecCommand(input);
-  if (command) return command;
+  if (command) {
+    const category = classifyExecCommand(command);
+    const target = parseExecCommandTarget(command, category);
+    if (target) return target;
+    return truncateInlineText(command, 72);
+  }
+
+  if (toolName === 'apply_patch') {
+    const patchTarget = parseApplyPatchTarget(input);
+    if (patchTarget) return patchTarget;
+  }
 
   const normalizedInput = unwrapToolPayload(input);
   if (!isRecord(normalizedInput)) return undefined;
 
   if (toolName === 'write_stdin' && typeof normalizedInput.chars === 'string') {
-    return `写入 ${normalizedInput.chars.length} 字符`;
+    return `stdin(${normalizedInput.chars.length} chars)`;
+  }
+
+  if (toolName.toLowerCase().startsWith('mailbox.')) {
+    const action = parseMailboxAction(toolName) || 'status';
+    const id = typeof normalizedInput.id === 'string' ? normalizedInput.id.trim() : '';
+    const category = typeof normalizedInput.category === 'string' ? normalizedInput.category.trim() : '';
+    if (id.length > 0) return `${action} ${truncateInlineText(id, 36)}`;
+    if (category.length > 0) return `${action} ${truncateInlineText(category, 24)}`;
+    return action;
+  }
+
+  if (toolName === 'context_ledger.memory') {
+    const action = parseContextLedgerAction(input) || 'query';
+    const query = parseQueryLabel(input);
+    if (query) return `${action} ${query}`;
+    return action;
   }
 
   if (typeof normalizedInput.path === 'string' && normalizedInput.path.trim().length > 0) {
-    return `路径 ${truncateInlineText(normalizedInput.path, 120)}`;
+    return pickFilenameFromToken(normalizedInput.path);
   }
 
   const query = typeof normalizedInput.query === 'string'
@@ -179,11 +327,11 @@ function buildToolExecutionSummary(toolName: string, input?: unknown): string | 
       ? normalizedInput.q
       : '';
   if (query.trim().length > 0) {
-    return `查询 ${truncateInlineText(query, 120)}`;
+    return truncateInlineText(query, 60);
   }
 
   if (typeof normalizedInput.action === 'string' && normalizedInput.action.trim().length > 0) {
-    return `动作 ${truncateInlineText(normalizedInput.action, 80)}`;
+    return truncateInlineText(normalizedInput.action, 80);
   }
 
   return undefined;
@@ -192,14 +340,15 @@ function buildToolExecutionSummary(toolName: string, input?: unknown): string | 
 export function resolveToolActionLabel(toolName: string, input?: unknown): string {
   const summary = buildToolExecutionSummary(toolName, input);
   if (summary && summary.trim().length > 0) return summary.trim();
-  if (toolName === 'update_plan') return '更新计划';
-  if (toolName === 'context_ledger.memory') return '查询记忆';
-  if (toolName === 'web_search') return '网络搜索';
-  if (toolName === 'apply_patch') return '应用补丁';
-  if (toolName === 'view_image') return '查看图片';
-  if (toolName === 'write_stdin') return '写入终端';
-  if (toolName === 'exec_command') return '执行命令';
-  return toolName;
+  if (toolName === 'update_plan') return 'plan updated';
+  if (toolName === 'context_ledger.memory') return 'ledger query';
+  if (toolName === 'web_search') return 'search';
+  if (toolName === 'apply_patch') return 'edit files';
+  if (toolName === 'view_image') return 'read image';
+  if (toolName === 'write_stdin') return 'run stdin';
+  if (toolName === 'exec_command') return 'run command';
+  if (toolName.startsWith('mailbox.')) return `mailbox ${toolName.slice('mailbox.'.length)}`;
+  return `run ${toolName}`;
 }
 
 function stringifyToolPayload(value: unknown, maxChars = 260): string | undefined {
@@ -335,11 +484,28 @@ export function buildToolResultContent(
   input?: unknown,
 ): string {
   const durationText = typeof duration === 'number' ? ` (${duration}ms)` : '';
+  const category = resolveToolCategoryLabel(toolName, input);
+  const verb = normalizeToolVerb(category);
   const actionLabel = resolveToolActionLabel(toolName, input);
+  const base = `[${verb}] ${actionLabel}`;
   if (status === 'error') {
-    return errorText ?? `执行失败：${actionLabel}${durationText}`;
+    if (errorText && errorText.trim().length > 0) {
+      return `${base} · failed${durationText} · ${errorText.trim()}`;
+    }
+    return `${base} · failed${durationText}`;
   }
-  return `执行成功：${actionLabel}${durationText}`;
+  return `${base} · success${durationText}`;
+}
+
+export function isGenericToolStatusContent(content: string): boolean {
+  const normalized = content.trim().toLowerCase();
+  if (normalized.length === 0) return true;
+  return normalized.startsWith('工具调用:')
+    || normalized.startsWith('工具完成:')
+    || normalized.startsWith('工具失败:')
+    || normalized.startsWith('tool_call:')
+    || normalized.startsWith('tool_result:')
+    || normalized.startsWith('tool_error:');
 }
 
 export function normalizeToolNameList(value: unknown): string[] {

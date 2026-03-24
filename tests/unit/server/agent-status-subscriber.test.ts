@@ -480,7 +480,7 @@ describe('AgentStatusSubscriber', () => {
           statusUpdate: expect.objectContaining({
             status: expect.objectContaining({
               state: 'failed',
-              summary: expect.stringContaining('工具失败'),
+              summary: expect.stringContaining('failed'),
             }),
           }),
         }),

@@ -3,7 +3,7 @@ import { MAX_INLINE_FILE_TEXT_CHARS } from './useWorkflowExecution.constants.js'
 import type { KernelInputItem, SessionApiAttachment, SessionApiMessage } from './useWorkflowExecution.types.js';
 import {
   buildToolResultContent,
-  resolveToolActionLabel,
+  isGenericToolStatusContent,
   resolveToolCategoryLabel,
 } from './useWorkflowExecution.tools.js';
 import { estimateTokenUsage, isRecord } from './useWorkflowExecution.utils.js';
@@ -63,7 +63,7 @@ export function toSessionAttachments(images: RuntimeImage[], files: RuntimeFile[
 export function mapSessionMessageToRuntimeEvent(
   message: SessionApiMessage,
   defaultAgentId: string,
-): RuntimeEvent {
+): RuntimeEvent | null {
   const attachments = Array.isArray(message.attachments) ? message.attachments : [];
   const images: RuntimeImage[] = attachments
     .filter((item) => item.type === 'image')
@@ -119,32 +119,42 @@ export function mapSessionMessageToRuntimeEvent(
   const toolStatus = message.toolStatus
     ?? (message.type === 'tool_error' ? 'error' : message.type === 'tool_result' ? 'success' : undefined);
 
-  if (message.type === 'tool_call' && toolName) {
-    const actionLabel = resolveToolActionLabel(toolName, toolInput);
-    const category = resolveToolCategoryLabel(toolName, toolInput);
+  const parsePlanOutput = (output: unknown): {
+    steps: Array<{ step: string; status: 'pending' | 'in_progress' | 'completed' }>;
+    explanation?: string;
+    updatedAt?: string;
+  } | null => {
+    if (!isRecord(output) || !Array.isArray(output.plan)) return null;
+    const steps = output.plan
+      .filter((item): item is Record<string, unknown> => isRecord(item))
+      .map((item) => {
+        const step = typeof item.step === 'string' ? item.step.trim() : '';
+        const status = item.status;
+        if (!step) return null;
+        if (status !== 'pending' && status !== 'in_progress' && status !== 'completed') return null;
+        return { step, status };
+      })
+      .filter((item): item is { step: string; status: 'pending' | 'in_progress' | 'completed' } => item !== null);
+    if (steps.length === 0) return null;
     return {
-      id: message.id,
-      role: 'system',
-      agentId: resolvedAgentId,
-      agentName: resolvedAgentName,
-      content: message.content || `调用工具：${actionLabel}`,
-      timestamp: message.timestamp,
-      kind: 'action',
-      toolName,
-      toolCategory: category,
-      toolStatus: 'running',
-      ...(metaRecord ? { metadata: metaRecord } : {}),
-      ...(toolDurationMs !== undefined ? { toolDurationMs } : {}),
-      ...(toolInput !== undefined ? { toolInput } : {}),
-      ...(toolOutput !== undefined ? { toolOutput } : {}),
+      steps,
+      explanation: typeof output.explanation === 'string' ? output.explanation : undefined,
+      updatedAt: typeof output.updatedAt === 'string' ? output.updatedAt : undefined,
     };
+  };
+
+  if (message.type === 'tool_call' && toolName) {
+    return null;
   }
 
   if ((message.type === 'tool_result' || message.type === 'tool_error') && toolName) {
     const category = resolveToolCategoryLabel(toolName, toolInput);
     const status = toolStatus === 'error' ? 'error' : 'success';
     const errorText = status === 'error' && typeof toolOutput === 'string' ? toolOutput : undefined;
-    const content = message.content || buildToolResultContent(toolName, status, toolDurationMs, errorText, toolInput);
+    const content = typeof message.content === 'string' && !isGenericToolStatusContent(message.content)
+      ? message.content
+      : buildToolResultContent(toolName, status, toolDurationMs, errorText, toolInput);
+    const planOutput = toolName === 'update_plan' ? parsePlanOutput(toolOutput) : null;
     return {
       id: message.id,
       role: 'system',
@@ -161,6 +171,11 @@ export function mapSessionMessageToRuntimeEvent(
       ...(toolInput !== undefined ? { toolInput } : {}),
       ...(toolOutput !== undefined ? { toolOutput } : {}),
       ...(status === 'error' && typeof toolOutput === 'string' ? { errorMessage: toolOutput } : {}),
+      ...(planOutput ? {
+        planSteps: planOutput.steps,
+        planExplanation: planOutput.explanation,
+        planUpdatedAt: planOutput.updatedAt,
+      } : {}),
     };
   }
 

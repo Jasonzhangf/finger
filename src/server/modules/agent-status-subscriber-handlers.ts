@@ -24,6 +24,169 @@ function shouldSuppressRawToolError(channelId?: string): boolean {
   return RAW_TOOL_ERROR_SUPPRESSED_CHANNELS.has(channelId);
 }
 
+type ToolVerb = 'search' | 'read' | 'write' | 'run' | 'edit' | 'plan' | 'other';
+
+function truncateInline(value: string, max = 72): string {
+  const normalized = value.replace(/\s+/g, ' ').trim();
+  if (normalized.length <= max) return normalized;
+  return `${normalized.slice(0, max)}...`;
+}
+
+function tokenizeCommand(command: string): string[] {
+  const tokens: string[] = [];
+  const regex = /"([^"\\]*(?:\\.[^"\\]*)*)"|'([^'\\]*(?:\\.[^'\\]*)*)'|(\S+)/g;
+  let match: RegExpExecArray | null = regex.exec(command);
+  while (match) {
+    const token = (match[1] ?? match[2] ?? match[3] ?? '').trim();
+    if (token.length > 0) tokens.push(token);
+    match = regex.exec(command);
+  }
+  return tokens;
+}
+
+function looksLikePathToken(token: string): boolean {
+  if (!token || token.startsWith('-')) return false;
+  if (token.startsWith('~') || token.startsWith('/') || token.startsWith('./') || token.startsWith('../')) return true;
+  if (/^[A-Za-z]:[\\/]/.test(token)) return true;
+  if (/[\\/]/.test(token)) return true;
+  return /\.[A-Za-z0-9_-]{1,8}$/.test(token);
+}
+
+function pickFileName(token: string): string {
+  const normalized = token.trim().replace(/\\/g, '/');
+  const compact = normalized.endsWith('/') ? normalized.slice(0, -1) : normalized;
+  const parts = compact.split('/').filter((part) => part.length > 0);
+  return parts[parts.length - 1] ?? token;
+}
+
+function classifyExecCommand(command: string): ToolVerb {
+  const normalized = command.trim().toLowerCase();
+  if (normalized.length === 0) return 'run';
+  if (/(^|\s)(rg|grep|find|fd)\b/.test(normalized)) return 'search';
+  if (/(^|\s)(cat|sed|head|tail|less|more|ls|pwd|stat|wc|du|git\s+(show|status|log|diff))\b/.test(normalized)) return 'read';
+  if (/(^|\s)(echo|tee|cp|mv|rm|mkdir|rmdir|touch|chmod|chown|git\s+(add|commit|checkout|restore)|npm\s+install|pnpm\s+install|yarn\s+add)\b/.test(normalized) || />\s*[^ ]/.test(normalized)) {
+    return 'write';
+  }
+  return 'run';
+}
+
+function parseExecCommandTarget(command: string, verb: ToolVerb): string | undefined {
+  const firstSegment = command.split(/(?:\|\||&&|\||;)/)[0]?.trim() ?? command.trim();
+  const tokens = tokenizeCommand(firstSegment);
+  if (tokens.length <= 1) return undefined;
+  const executable = tokens[0].toLowerCase();
+  const args = tokens.slice(1);
+
+  if ((executable === 'cp' || executable === 'mv') && args.length >= 2) {
+    const last = [...args].reverse().find((token) => looksLikePathToken(token) && token !== '.');
+    return last ? pickFileName(last) : undefined;
+  }
+
+  if (executable === 'find') {
+    const path = args.find((token) => looksLikePathToken(token));
+    return path ? pickFileName(path) : undefined;
+  }
+
+  if (executable === 'rg' || executable === 'grep') {
+    const candidates = args.filter((token) => looksLikePathToken(token) && !token.startsWith('-'));
+    const target = candidates[candidates.length - 1];
+    return target ? pickFileName(target) : undefined;
+  }
+
+  const candidate = args.find((token) => looksLikePathToken(token) && token !== '.');
+  if (candidate) return pickFileName(candidate);
+  if (verb === 'run') return executable;
+  return undefined;
+}
+
+function parseMailboxVerb(toolName: string): ToolVerb {
+  const action = toolName.replace(/^mailbox\./i, '').toLowerCase();
+  if (action === 'ack' || action === 'remove' || action === 'remove_all') return 'write';
+  return 'read';
+}
+
+function parseToolSummary(toolName: string, input: unknown): { verb: ToolVerb; target?: string; details?: Record<string, unknown> } {
+  const normalizedToolName = typeof toolName === 'string' ? toolName.trim().toLowerCase() : 'unknown';
+  const payload = typeof input === 'object' && input !== null ? input as Record<string, unknown> : {};
+  if (normalizedToolName === 'apply_patch') {
+    const patchText = typeof payload.patch === 'string'
+      ? payload.patch
+      : typeof input === 'string'
+        ? input
+        : '';
+    const match = patchText.match(/^\*\*\*\s+(?:Add|Update|Delete)\s+File:\s+(.+)$/m);
+    return {
+      verb: 'edit',
+      ...(match && match[1] ? { target: pickFileName(match[1]) } : {}),
+    };
+  }
+
+  if (normalizedToolName === 'update_plan') {
+    return { verb: 'plan' };
+  }
+
+  if (normalizedToolName === 'context_ledger.memory') {
+    const action = typeof payload.action === 'string' ? payload.action.trim().toLowerCase() : 'query';
+    const query = typeof payload.query === 'string' ? payload.query.trim() : '';
+    const verb: ToolVerb = (action === 'index' || action === 'compact' || action === 'write') ? 'write' : 'read';
+    return {
+      verb,
+      ...(query.length > 0 ? { target: truncateInline(query, 48) } : {}),
+    };
+  }
+
+  if (normalizedToolName.startsWith('mailbox.')) {
+    const id = typeof payload.id === 'string' ? payload.id.trim() : '';
+    return {
+      verb: parseMailboxVerb(normalizedToolName),
+      ...(id.length > 0 ? { target: truncateInline(id, 40) } : {}),
+    };
+  }
+
+  if (normalizedToolName === 'web_search' || normalizedToolName === 'search_query') {
+    const query = typeof payload.query === 'string'
+      ? payload.query.trim()
+      : typeof payload.q === 'string'
+        ? payload.q.trim()
+        : '';
+    return {
+      verb: 'search',
+      ...(query.length > 0 ? { target: truncateInline(query, 48) } : {}),
+    };
+  }
+
+  if (normalizedToolName === 'view_image') {
+    const path = typeof payload.path === 'string' ? payload.path.trim() : '';
+    return {
+      verb: 'read',
+      ...(path.length > 0 ? { target: pickFileName(path) } : {}),
+    };
+  }
+
+  if (normalizedToolName === 'write_stdin') {
+    return { verb: 'run', target: 'stdin' };
+  }
+
+  if (normalizedToolName === 'exec_command' || normalizedToolName === 'shell.exec' || normalizedToolName === 'shell') {
+    const command = typeof payload.cmd === 'string'
+      ? payload.cmd.trim()
+      : typeof payload.command === 'string'
+        ? payload.command.trim()
+        : '';
+    if (command.length === 0) return { verb: 'run' };
+    const verb = classifyExecCommand(command);
+    return {
+      verb,
+      target: parseExecCommandTarget(command, verb) ?? truncateInline(command, 64),
+      details: {
+        command: truncateInline(command, 200),
+      },
+    };
+  }
+
+  return { verb: 'run', target: normalizedToolName };
+}
+
 /**
  * 处理上下文，包含事件处理所需的依赖
  */
@@ -46,44 +209,14 @@ export interface HandlerContext {
  */
 export async function handleToolCall(
   event: ToolCallEvent,
-  ctx: HandlerContext,
+  _ctx: HandlerContext,
 ): Promise<void> {
-  const sessionId = event.sessionId;
-  const mapping = ctx.resolveEnvelopeMapping(sessionId);
-  if (!mapping || !ctx.messageHub) return;
-
-
-  const agentId = event.agentId || 'unknown-agent';
-  const toolName = event.toolName || 'unknown-tool';
-  const agentInfo = await ctx.getAgentInfo(agentId);
-
-  const wrappedUpdate: WrappedStatusUpdate = {
-    type: 'agent_status',
-    eventId: event.toolId || `tool-call-${Date.now()}`,
-    timestamp: event.timestamp,
-    sessionId,
-    task: {
-      targetAgentId: agentId,
-      taskDescription: `工具调用: ${toolName}`,
-    },
-    agent: agentInfo,
-    status: {
-      state: 'running',
-      summary: `工具调用: ${toolName}`,
-      details: {
-        toolId: event.toolId,
-        toolName,
-      },
-    },
-    display: {
-      title: `${getAgentIcon(agentInfo.agentRole)} 工具调用`,
-      subtitle: `${agentInfo.agentName || agentId}: ${toolName}`,
-      icon: getAgentIcon(agentInfo.agentRole),
-      level: 'summary',
-    },
-  };
-
-  await sendStatusUpdate(mapping.envelope, wrappedUpdate, ctx.messageHub, ctx.channelBridgeManager);
+  log.debug('[AgentStatusSubscriber] Skip tool_call push; only emit tool_result/tool_error', {
+    sessionId: event.sessionId,
+    agentId: event.agentId,
+    toolName: event.toolName,
+    toolId: event.toolId,
+  });
 }
 
 /**
@@ -101,6 +234,9 @@ export async function handleToolResult(
   const agentId = event.agentId || 'unknown-agent';
   const toolName = event.toolName || 'unknown-tool';
   const agentInfo = await ctx.getAgentInfo(agentId);
+  const parsed = parseToolSummary(toolName, event.payload?.input);
+  const statusTag = 'success';
+  const taskDescription = `[${parsed.verb}] ${parsed.target ?? toolName} · ${statusTag}`;
 
   const wrappedUpdate: WrappedStatusUpdate = {
     type: 'agent_status',
@@ -109,21 +245,22 @@ export async function handleToolResult(
     sessionId,
     task: {
       targetAgentId: agentId,
-      taskDescription: `工具完成: ${toolName}`,
+      taskDescription,
     },
     agent: agentInfo,
     status: {
       state: 'running',
-      summary: `工具完成: ${toolName}`,
+      summary: taskDescription,
       details: {
         toolId: event.toolId,
         toolName,
         duration: event.payload?.duration,
+        ...(parsed.details ? parsed.details : {}),
       },
     },
     display: {
-      title: `${getAgentIcon(agentInfo.agentRole)} 工具完成`,
-      subtitle: `${agentInfo.agentName || agentId}: ${toolName}`,
+      title: `${getAgentIcon(agentInfo.agentRole)} ${taskDescription}`,
+      subtitle: `${agentInfo.agentName || agentId}`,
       icon: getAgentIcon(agentInfo.agentRole),
       level: 'summary',
     },
@@ -156,6 +293,8 @@ export async function handleToolError(
   }
 
   const agentInfo = await ctx.getAgentInfo(agentId);
+  const parsed = parseToolSummary(event.toolName || 'unknown-tool', event.payload?.input);
+  const taskDescription = `[${parsed.verb}] ${parsed.target ?? (event.toolName || 'unknown-tool')} · failed`;
   const wrappedUpdate: WrappedStatusUpdate = {
     type: 'agent_status',
     eventId: event.toolId || `tool-error-${Date.now()}`,
@@ -163,16 +302,20 @@ export async function handleToolError(
     sessionId,
     task: {
       targetAgentId: agentId,
-      taskDescription: `工具失败: ${event.toolName}`,
+      taskDescription,
     },
     agent: agentInfo,
     status: {
       state: 'failed',
-      summary: `工具失败: ${event.toolName}`,
-      details: { error: event.payload?.error, toolName: event.toolName },
+      summary: taskDescription,
+      details: {
+        error: event.payload?.error,
+        toolName: event.toolName,
+        ...(parsed.details ? parsed.details : {}),
+      },
     },
     display: {
-      title: `${agentInfo.agentName || agentId} 工具失败`,
+      title: `${getAgentIcon(agentInfo.agentRole)} ${taskDescription}`,
       subtitle: event.payload?.error,
       icon: getAgentIcon(agentInfo.agentRole),
       level: 'detailed',

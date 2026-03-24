@@ -90,6 +90,32 @@ function parseUpdatePlanOutput(output: unknown): {
   };
 }
 
+function parseDispatchChecklist(value: unknown): RuntimePlanStep[] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((item): RuntimePlanStep | null => {
+      if (typeof item === 'string') {
+        const step = item.trim();
+        if (!step) return null;
+        return { step, status: 'pending' };
+      }
+      if (!isRecord(item)) return null;
+      const step = typeof item.step === 'string'
+        ? item.step.trim()
+        : typeof item.text === 'string'
+          ? item.text.trim()
+          : '';
+      if (!step) return null;
+      const rawStatus = typeof item.status === 'string' ? item.status : '';
+      const status: RuntimePlanStep['status'] =
+        rawStatus === 'completed' || rawStatus === 'in_progress' || rawStatus === 'pending'
+          ? rawStatus
+          : 'pending';
+      return { step, status };
+    })
+    .filter((item): item is RuntimePlanStep => item !== null);
+}
+
 export function mapWsMessageToRuntimeEvent(
   msg: WsMessage,
   currentSessionId: string,
@@ -315,12 +341,21 @@ export function mapWsMessageToRuntimeEvent(
       const rootSessionId = typeof payload.rootSessionId === 'string' ? payload.rootSessionId : undefined;
       const taskId = assignment && typeof assignment.taskId === 'string' ? assignment.taskId : undefined;
       const bdTaskId = assignment && typeof assignment.bdTaskId === 'string' ? assignment.bdTaskId : undefined;
+      const checklist = parseDispatchChecklist(
+        assignment?.checklist
+        ?? assignment?.acceptance
+        ?? assignment?.tasks
+        ?? assignment?.todo
+        ?? result?.checklist
+        ?? result?.acceptance,
+      );
       const extraParts = [
         dispatchId ? `id=${dispatchId}` : '',
         typeof queuePosition === 'number' ? `queue=#${queuePosition}` : '',
         mailboxMessageId ? `mailbox=${mailboxMessageId}` : '',
         taskId ? `task=${taskId}` : '',
         !taskId && bdTaskId ? `bd=${bdTaskId}` : '',
+        checklist.length > 0 ? `checklist=${checklist.length}` : '',
       ].filter((part) => part.length > 0);
       const extraSuffix = extraParts.length > 0 ? ` · ${extraParts.join(' · ')}` : '';
       const content = summary.length > 0
@@ -346,6 +381,8 @@ export function mapWsMessageToRuntimeEvent(
           rootSessionId,
           payload,
         },
+        ...(checklist.length > 0 ? { planSteps: checklist } : {}),
+        ...(checklist.length > 0 ? { planExplanation: 'Dispatch checklist' } : {}),
       };
     }
     case 'agent_runtime_control': {
