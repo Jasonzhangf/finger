@@ -621,3 +621,15 @@ describe('isRetryableRunError', () => {
     expect(isRetryableRunError(error)).toBe(true);
   });
 });
+
+describe('context window inference', () => {
+  it('keeps codex model inference for context window', () => {
+    expect(__chatCodexInternals.inferModelContextWindow('gpt-5-codex')).toBe(272_000);
+    expect(__chatCodexInternals.inferModelContextWindow('gpt-5.1-codex-mini')).toBe(272_000);
+  });
+
+  it('does not hardcode generic gpt-5 model context window', () => {
+    expect(__chatCodexInternals.inferModelContextWindow('gpt-5')).toBeUndefined();
+    expect(__chatCodexInternals.inferModelContextWindow('gpt-5.4')).toBeUndefined();
+  });
+});

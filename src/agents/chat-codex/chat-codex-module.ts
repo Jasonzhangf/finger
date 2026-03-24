@@ -2170,9 +2170,6 @@ function inferModelContextWindow(model: string | undefined): number | undefined 
   if (normalized === 'gpt-5-codex' || normalized === 'gpt-5-codex-mini' || normalized === 'gpt-5-codex-max') {
     return 272_000;
   }
-  if (/^gpt-5(\.\d+)?$/.test(normalized)) {
-    return 128_000;
-  }
   return undefined;
 }
 
@@ -2419,4 +2416,5 @@ export const __chatCodexInternals = {
   resolveUserInstructions,
   resolveTurnContext,
   resolveEnvironmentContext,
+  inferModelContextWindow,
 };
