@@ -132,7 +132,7 @@ async function fetchLedgerPage(sessionId: string, limit: number, offset: number,
   };
 }
 
-const PAGE_SIZE = 50;
+const PAGE_SIZE = 500;
 const CARD_PREVIEW_LIMIT = 500;
 
 const LedgerModal: React.FC<LedgerModalProps> = ({ sessionId, label, onClose }) => {
