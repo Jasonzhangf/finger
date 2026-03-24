@@ -133,6 +133,7 @@ async function fetchLedgerPage(sessionId: string, limit: number, offset: number,
 }
 
 const PAGE_SIZE = 50;
+const CARD_PREVIEW_LIMIT = 50;
 
 const LedgerModal: React.FC<LedgerModalProps> = ({ sessionId, label, onClose }) => {
   const [slots, setSlots] = useState<LedgerSlot[]>([]);
@@ -204,6 +205,16 @@ const LedgerModal: React.FC<LedgerModalProps> = ({ sessionId, label, onClose }) 
     }
   }, []);
 
+  const handleModalWheelCapture = useCallback((event: ReactWheelEvent<HTMLDivElement>) => {
+    const list = slotListRef.current;
+    if (!list) return;
+    const maxScrollTop = Math.max(0, list.scrollHeight - list.clientHeight);
+    if (maxScrollTop <= 0) return;
+    event.preventDefault();
+    event.stopPropagation();
+    list.scrollTop = Math.max(0, Math.min(maxScrollTop, list.scrollTop + event.deltaY));
+  }, []);
+
   const handleOpenDetail = useCallback(async (slot: number) => {
     setDetail(null);
     setDetailError(null);
@@ -232,7 +243,11 @@ const LedgerModal: React.FC<LedgerModalProps> = ({ sessionId, label, onClose }) 
   const modalContent = (
     <>
       <div className="ledger-modal-overlay" onClick={onClose}>
-        <div className="ledger-modal" onClick={(e) => e.stopPropagation()}>
+        <div
+          className="ledger-modal"
+          onClick={(e) => e.stopPropagation()}
+          onWheelCapture={handleModalWheelCapture}
+        >
           <div className="ledger-modal-header">
             <h3>{label || sessionId}</h3>
             <button className="ledger-modal-close" onClick={onClose}>✕</button>
@@ -336,7 +351,7 @@ export const LedgerMonitor: React.FC<LedgerMonitorProps> = ({ sessionId, label }
     const controller = new AbortController();
     const load = async () => {
       try {
-        const result = await fetchLedgerPage(sessionId, 5, 0, controller.signal);
+        const result = await fetchLedgerPage(sessionId, CARD_PREVIEW_LIMIT, 0, controller.signal);
         if (!result.ok || !result.data) {
           setLatestSlots([]);
           setMeta(null);
@@ -378,7 +393,7 @@ export const LedgerMonitor: React.FC<LedgerMonitorProps> = ({ sessionId, label }
           </div>
         )}
         <div className="ledger-monitor-recent">
-          <div className="ledger-monitor-hint">最近 5 条（点击查看全部）</div>
+          <div className="ledger-monitor-hint">当前展示 50 条（点击查看全部）</div>
           {loadError ? (
             <span className="ledger-monitor-empty ledger-error-text">{loadError}</span>
           ) : latestSlots.length === 0 ? (
