@@ -54,14 +54,14 @@ describe('AgentStatusSubscriber text updates', () => {
       1,
       'channel-bridge-qqbot',
       expect.objectContaining({
-        content: '思考：先检查日志',
+        content: '[system:finger-system-agent] 思考：先检查日志',
       }),
     );
     expect(messageHub.routeToOutput).toHaveBeenNthCalledWith(
       2,
       'channel-bridge-qqbot',
       expect.objectContaining({
-        content: '正文：正文增量',
+        content: '[system:finger-system-agent] 正文：正文增量',
       }),
     );
   });
@@ -208,14 +208,14 @@ describe('AgentStatusSubscriber text updates', () => {
       1,
       'channel-bridge-qqbot',
       expect.objectContaining({
-        content: '思考：继续输出思考',
+        content: '[project:finger-project-agent] 思考：继续输出思考',
       }),
     );
     expect(messageHub.routeToOutput).toHaveBeenNthCalledWith(
       2,
       'channel-bridge-qqbot',
       expect.objectContaining({
-        content: '正文：继续输出正文',
+        content: '[project:finger-project-agent] 正文：继续输出正文',
       }),
     );
 

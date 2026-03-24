@@ -33,7 +33,7 @@ export function registerGatewayWorkerCommand(program: Command): void {
         return;
       }
 
-      const target = options.target || (adapter === 'chat-codex' ? 'finger-general' : 'router-chat-agent');
+      const target = options.target || (adapter === 'chat-codex' ? 'finger-project-agent' : 'router-chat-agent');
       await runGatewayWorker({
         adapter,
         daemonUrl: options.daemonUrl,
@@ -133,7 +133,7 @@ function normalizeChatCodexOutput(result: unknown): unknown {
   if (success === false) {
     return {
       success: false,
-      error: typeof result.error === 'string' ? result.error : 'finger-general request failed',
+      error: typeof result.error === 'string' ? result.error : 'finger-project-agent request failed',
     };
   }
   return result;

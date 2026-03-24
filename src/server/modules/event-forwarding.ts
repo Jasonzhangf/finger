@@ -7,6 +7,7 @@ import { isObjectRecord } from '../common/object.js';
 import {
   buildDispatchFeedbackPayload,
   buildLedgerPointerInfo,
+  extractAssistantBodyUpdate,
   extractLoopToolTrace,
   formatLedgerPointerContent,
 } from './event-forwarding-helpers.js';
@@ -51,6 +52,7 @@ export function attachEventForwarding(deps: EventForwardingDeps): {
     asString,
     generalAgentId,
   } = deps;
+  const latestBodyBySession = new Map<string, string>();
 
   const persistSessionEventMessage = (
     sessionId: string,
@@ -139,6 +141,9 @@ export function attachEventForwarding(deps: EventForwardingDeps): {
 
   const emitLoopEventToEventBus = (event: ChatCodexLoopEvent): void => {
     if (!event.sessionId || event.sessionId === 'unknown') return;
+    if (event.phase === 'turn_complete' || event.phase === 'turn_error') {
+      latestBodyBySession.delete(event.sessionId);
+    }
     emitToolStepEventsFromLoopEvent(event);
 
     broadcast({
@@ -199,6 +204,24 @@ export function attachEventForwarding(deps: EventForwardingDeps): {
       }
     }
 
+    if (event.phase === 'kernel_event' && isObjectRecord(event.payload)) {
+      const bodyUpdate = extractAssistantBodyUpdate(event.payload);
+      if (bodyUpdate && agentStatusSubscriber) {
+        const normalized = bodyUpdate.trim();
+        if (normalized.length > 0 && latestBodyBySession.get(event.sessionId) !== normalized) {
+          latestBodyBySession.set(event.sessionId, normalized);
+          const bodyAgentId = asString(event.payload.agentId) ?? generalAgentId;
+          agentStatusSubscriber.sendBodyUpdate(event.sessionId, bodyAgentId, normalized)
+            .catch((err) => {
+              logger.module('event-forwarding').error(
+                'Failed to send body update to channel',
+                err instanceof Error ? err : new Error(String(err))
+              );
+            });
+        }
+      }
+    }
+
     if (event.phase === 'kernel_event' && event.payload.type === 'model_round') {
       const contextUsagePercent = typeof event.payload.contextUsagePercent === 'number'
         ? event.payload.contextUsagePercent
@@ -228,8 +251,8 @@ export function attachEventForwarding(deps: EventForwardingDeps): {
         sessionId: event.sessionId,
         timestamp: event.timestamp,
         payload: {
-          error: typeof event.payload.error === 'string' ? event.payload.error : 'finger-general runner error',
-          component: 'finger-general-runner',
+          error: typeof event.payload.error === 'string' ? event.payload.error : 'finger-project-agent runner error',
+          component: 'finger-project-agent-runner',
           recoverable: true,
         },
       });
@@ -250,13 +273,28 @@ export function attachEventForwarding(deps: EventForwardingDeps): {
       const agentRole = inferAgentRoleLabel(targetAgentId);
       const assignment = isObjectRecord(payload.assignment) ? payload.assignment : null;
       const queuePosition = typeof payload.queuePosition === 'number' ? payload.queuePosition : undefined;
+      const dispatchResult = isObjectRecord(payload.result) ? payload.result : null;
+      const mailboxMessageId = asString(dispatchResult?.messageId);
+      const isMailboxQueued = status === 'queued'
+        && (asString(dispatchResult?.status) === 'queued_mailbox' || Boolean(mailboxMessageId));
       const taskId = assignment && typeof assignment.taskId === 'string' ? assignment.taskId.trim() : '';
       const bdTaskId = assignment && typeof assignment.bdTaskId === 'string' ? assignment.bdTaskId.trim() : '';
-      const statusLabel = status === 'queued' ? '排队' : status === 'completed' ? '完成' : status === 'failed' ? '失败' : status;
+      const statusLabel = isMailboxQueued
+        ? '邮箱等待 ACK'
+        : status === 'queued'
+          ? '排队'
+          : status === 'processing'
+            ? '处理中'
+          : status === 'completed'
+            ? '完成'
+            : status === 'failed'
+              ? '失败'
+              : status;
       const dispatchParts = [
         `派发给 ${agentRole}${targetAgentId ? ` (${targetAgentId})` : ''}`,
         statusLabel ? `状态 ${statusLabel}` : '',
         typeof queuePosition === 'number' ? `队列 #${queuePosition}` : '',
+        mailboxMessageId ? `mailbox ${mailboxMessageId}` : '',
         taskId ? `task ${taskId}` : '',
         bdTaskId && !taskId ? `bd ${bdTaskId}` : '',
       ].filter((part) => part.length > 0);
@@ -293,21 +331,28 @@ export function attachEventForwarding(deps: EventForwardingDeps): {
         try {
           const summary = formatDispatchResultContent(payload.result, asString(payload.error));
           const errorMessage = asString(payload.error) || undefined;
-          const parentAgentId = 'finger-system-agent';
+          const parentAgentId = asString(payload.sourceAgentId) ?? 'finger-system-agent';
           const envelope = buildDispatchResultEnvelope(childSessionId || sessionId, summary, errorMessage);
           heartbeatMailbox.append(parentAgentId, {
             type: 'dispatch-result',
             dispatchId: payload.dispatchId,
+            sourceAgentId: payload.targetAgentId,
+            targetAgentId: parentAgentId,
             status,
             childSessionId: childSessionId || sessionId,
             envelopeId: envelope.id,
+            envelope,
+            summary,
+            error: errorMessage,
           }, {
-            sender: 'system-dispatch',
+            sender: asString(payload.targetAgentId) ?? 'system-dispatch',
             sourceType: 'control',
             category: 'notification',
-            priority: status === 'failed' ? 3 : 2,
+            priority: status === 'failed' ? 0 : 2,
+            ...(sessionId ? { sessionId } : {}),
           });
           logger.module('event-forwarding').debug('Dispatch result appended to mailbox', {
+            parentAgentId,
             envelopeId: envelope.id,
             status,
             childSessionId: childSessionId || sessionId,

@@ -78,7 +78,7 @@ export function registerOrchestrationRoutes(app: Express, deps: OrchestrationRou
   app.get('/api/v1/orchestrator/runtime-mode', (_req, res) => {
     res.json({
       success: true,
-      mode: 'finger-general-runner',
+      mode: 'finger-project-agent-runner',
       fsmV2Implemented: true,
       runnerModuleId: primaryOrchestratorAgentId,
       chatCodexRunnerMode: getChatCodexRunnerMode(),

@@ -29,6 +29,7 @@ describe('channel-bridge-hub-route user.ask async adaptation', () => {
         getSession,
         getOrCreateSystemSession,
         addMessage,
+        getMessages: vi.fn().mockReturnValue([]),
       } as any,
       askManager,
       dispatchTaskToAgent,
@@ -67,6 +68,133 @@ describe('channel-bridge-hub-route user.ask async adaptation', () => {
     expect(sendMessage).toHaveBeenCalledWith('qqbot', expect.objectContaining({
       to: 'user-1',
       text: expect.stringContaining('已收到你的回复'),
+    }));
+  });
+
+  it('sends failure reply when dispatch returns ok=false', async () => {
+    getChannelContextManager().updateContext('qqbot', 'business', 'finger-project-agent');
+    const askManager = new AskManager(5_000);
+    const sendMessage = vi.fn().mockResolvedValue({ messageId: 'reply-2' });
+    const addMessage = vi.fn().mockResolvedValue(undefined);
+    const ensureSession = vi.fn();
+    const updateContext = vi.fn();
+    const getSession = vi.fn().mockReturnValue({
+      id: 'user-user-1',
+      context: {},
+    });
+    const getOrCreateSystemSession = vi.fn().mockReturnValue({ id: 'system-session-1' });
+    const dispatchTaskToAgent = vi.fn().mockResolvedValue({
+      ok: false,
+      dispatchId: 'dispatch-failed-1',
+      status: 'failed',
+      error: 'target agent is not started in resource pool: finger-system-agent',
+    });
+
+    const route = createChannelBridgeHubRoute({
+      channelBridgeManager: {
+        sendMessage,
+      } as any,
+      sessionManager: {
+        ensureSession,
+        updateContext,
+        getSession,
+        getOrCreateSystemSession,
+        addMessage,
+        getMessages: vi.fn().mockReturnValue([]),
+      } as any,
+      askManager,
+      dispatchTaskToAgent,
+      eventBus: new UnifiedEventBus(),
+      runtime: {},
+    });
+
+    await route({
+      payload: {
+        id: 'msg-2',
+        channelId: 'qqbot',
+        accountId: 'acc-1',
+        type: 'direct',
+        senderId: 'user-1',
+        senderName: 'User 1',
+        content: 'hello',
+        timestamp: Date.now(),
+        metadata: {},
+      },
+    });
+
+    expect(dispatchTaskToAgent).toHaveBeenCalledTimes(1);
+    expect(dispatchTaskToAgent).toHaveBeenCalledWith(expect.objectContaining({
+      targetAgentId: 'finger-system-agent',
+    }));
+    expect(sendMessage).toHaveBeenCalledWith('qqbot', expect.objectContaining({
+      to: 'user-1',
+      text: expect.stringContaining('处理失败：target agent is not started in resource pool: finger-system-agent'),
+    }));
+  });
+
+  it('routes direct user input to system module without dispatch queue when directSendToModule is available', async () => {
+    getChannelContextManager().updateContext('qqbot', 'business', 'finger-project-agent');
+    const askManager = new AskManager(5_000);
+    const sendMessage = vi.fn().mockResolvedValue({ messageId: 'reply-3' });
+    const addMessage = vi.fn().mockResolvedValue(undefined);
+    const ensureSession = vi.fn();
+    const updateContext = vi.fn();
+    const getSession = vi.fn().mockReturnValue({
+      id: 'system-session-2',
+      context: {},
+    });
+    const getOrCreateSystemSession = vi.fn().mockReturnValue({ id: 'system-session-2' });
+    const dispatchTaskToAgent = vi.fn();
+    const directSendToModule = vi.fn().mockResolvedValue({
+      success: true,
+      response: 'direct ok',
+    });
+
+    const route = createChannelBridgeHubRoute({
+      channelBridgeManager: {
+        sendMessage,
+      } as any,
+      sessionManager: {
+        ensureSession,
+        updateContext,
+        getSession,
+        getOrCreateSystemSession,
+        addMessage,
+        getMessages: vi.fn().mockReturnValue([]),
+      } as any,
+      askManager,
+      dispatchTaskToAgent,
+      directSendToModule,
+      eventBus: new UnifiedEventBus(),
+      runtime: {},
+    });
+
+    await route({
+      payload: {
+        id: 'msg-3',
+        channelId: 'qqbot',
+        accountId: 'acc-1',
+        type: 'direct',
+        senderId: 'user-1',
+        senderName: 'User 1',
+        content: 'hello direct',
+        timestamp: Date.now(),
+        metadata: {},
+      },
+    });
+
+    expect(dispatchTaskToAgent).not.toHaveBeenCalled();
+    expect(directSendToModule).toHaveBeenCalledTimes(1);
+    expect(directSendToModule).toHaveBeenCalledWith(
+      'finger-system-agent',
+      expect.objectContaining({
+        prompt: 'hello direct',
+        sessionId: 'system-session-2',
+      }),
+    );
+    expect(sendMessage).toHaveBeenCalledWith('qqbot', expect.objectContaining({
+      to: 'user-1',
+      text: expect.stringContaining('direct ok'),
     }));
   });
 });

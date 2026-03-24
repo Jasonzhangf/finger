@@ -7,5 +7,5 @@ export function registerDefaultModuleRoutes(moduleRegistry: ModuleRegistry): voi
     priority: 0,
     description: 'default route to echo-output',
   });
-  logger.module('module-registry-bootstrap').info('Orchestration modules initialized: echo-input, echo-output, finger-general, finger-orchestrator');
+  logger.module('module-registry-bootstrap').info('Orchestration modules initialized: echo-input, echo-output, finger-project-agent, finger-reviewer, finger-system-agent');
 }

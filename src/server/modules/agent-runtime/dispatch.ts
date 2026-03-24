@@ -294,6 +294,23 @@ Tags: output, agent, ${status}
   }
 }
 
+function shouldAutoDeployForSystemDispatch(input: AgentDispatchRequest, result: { ok: boolean; status: string; error?: string }): boolean {
+  if (result.ok || result.status !== 'failed') return false;
+  const source = typeof input.sourceAgentId === 'string' ? input.sourceAgentId.trim().toLowerCase() : '';
+  if (!source.includes('system')) return false;
+  const error = typeof result.error === 'string' ? result.error : '';
+  return error.includes('target agent is not started in resource pool:');
+}
+
+function resolveAutoDeployInstanceCount(input: AgentDispatchRequest): number {
+  const metadata = isObjectRecord(input.metadata) ? input.metadata : {};
+  const raw = metadata.instanceCount ?? metadata.instance_count ?? metadata.runtimeCount ?? metadata.runtime_count;
+  if (typeof raw === 'number' && Number.isFinite(raw) && raw > 0) {
+    return Math.max(1, Math.floor(raw));
+  }
+  return 1;
+}
+
 export async function dispatchTaskToAgent(deps: AgentRuntimeDeps, input: AgentDispatchRequest): Promise<{
   ok: boolean;
   dispatchId: string;
@@ -352,6 +369,40 @@ export async function dispatchTaskToAgent(deps: AgentRuntimeDeps, input: AgentDi
     return { ok: false, dispatchId: fallbackDispatchId, status: 'failed', error: message };
   }
 
+  if (shouldAutoDeployForSystemDispatch(normalizedInput, result)) {
+    const deployRequest = {
+      targetAgentId: normalizedInput.targetAgentId,
+      sessionId: normalizedInput.sessionId,
+      scope: 'session' as const,
+      launchMode: 'orchestrator' as const,
+      instanceCount: resolveAutoDeployInstanceCount(normalizedInput),
+    };
+    try {
+      const deployResult = await deps.agentRuntimeBlock.execute('deploy', deployRequest as unknown as Record<string, unknown>) as {
+        success?: boolean;
+        error?: string;
+      };
+      if (deployResult?.success) {
+        logger.module('dispatch').info('Auto-deployed target agent for system dispatch retry', {
+          sourceAgentId: normalizedInput.sourceAgentId,
+          targetAgentId: normalizedInput.targetAgentId,
+          instanceCount: deployRequest.instanceCount,
+        });
+        result = await deps.agentRuntimeBlock.execute('dispatch', normalizedInput as unknown as Record<string, unknown>) as typeof result;
+      } else if (deployResult?.error) {
+        logger.module('dispatch').warn('Auto-deploy failed before retry', {
+          targetAgentId: normalizedInput.targetAgentId,
+          error: deployResult.error,
+        });
+      }
+    } catch (deployError) {
+      logger.module('dispatch').warn('Auto-deploy retry threw error', {
+        targetAgentId: normalizedInput.targetAgentId,
+        error: deployError instanceof Error ? deployError.message : String(deployError),
+      });
+    }
+  }
+
   const newSessionId = typeof normalizedInput.sessionId === 'string' ? normalizedInput.sessionId.trim() : '';
   if (originalSessionId && newSessionId && originalSessionId !== newSessionId && result.dispatchId) {
     const tracker = getGlobalDispatchTracker();
@@ -370,6 +421,35 @@ export async function dispatchTaskToAgent(deps: AgentRuntimeDeps, input: AgentDi
   const summaryForMemory = result.result?.summary || result.error || undefined;
   if (summaryForMemory) {
     await persistAgentSummaryToMemory(deps, normalizedInput, { ok: result.ok, summary: summaryForMemory });
+  }
+  // Write dispatch result to session for all channels (unified ledger writing)
+  // CRITICAL: Store FULL rawPayload in ledger - NEVER truncate
+  const dispatchSessionId = typeof normalizedInput.sessionId === "string" ? normalizedInput.sessionId.trim() : "";
+  if (dispatchSessionId) {
+    const dispatchSession = deps.sessionManager.getSession(dispatchSessionId);
+    if (dispatchSession) {
+      // Summary is for display (can be truncated), rawPayload is for ledger (NEVER truncated)
+      const replyContent = result.ok
+        ? (result.result?.summary || "处理完成")
+        : `处理失败：${result.error || "未知错误"}`;
+      
+      // Build metadata with FULL rawPayload for ledger storage
+      const ledgerMetadata: Record<string, unknown> = {
+        source: "dispatch",
+        dispatchId: result.dispatchId,
+        status: result.status,
+        agentId: normalizedInput.targetAgentId,
+        // Store full raw result for ledger - this is the single source of truth
+        rawResult: result.result?.rawPayload ?? result.result,
+      };
+      if (result.error) ledgerMetadata.error = result.error;
+      
+      void deps.sessionManager.addMessage(dispatchSessionId, "assistant", replyContent, {
+        type: "dispatch",
+        agentId: normalizedInput.targetAgentId,
+        metadata: ledgerMetadata,
+      });
+    }
   }
   await syncBdDispatchLifecycle(deps, normalizedInput, result);
   return result;

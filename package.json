@@ -41,9 +41,9 @@
     "finger:review": "node dist/cli/index.js review",
     "finger:orchestrate": "node dist/cli/index.js orchestrate",
     "daemon:guard": "node scripts/daemon-guard.cjs",
-    "daemon:start": "node dist/daemon/dual-daemon.js --start",
-    "daemon:stop": "node -e \"const fs=require('fs');const path=require('path');const pidFile=path.join('.finger','runtime','server.pid');const guardPidFile=path.join('.finger','runtime','guard.pid');[pidFile,guardPidFile].forEach(f=>{if(fs.existsSync(f)){try{process.kill(parseInt(fs.readFileSync(f,'utf8')),'SIGTERM');}catch(e){}fs.unlinkSync(f);}});console.log('Daemon stopped');\"",
-    "daemon:restart": "node scripts/daemon-restart.cjs",
+    "daemon:start": "node scripts/daemon-guard.cjs",
+    "daemon:stop": "node scripts/daemon-stop.cjs",
+    "daemon:restart": "bash -c 'node scripts/daemon-stop.cjs && sleep 1 && nohup node scripts/daemon-guard.cjs > /dev/null 2>&1 &'",
     "daemon:cleanup": "node scripts/daemon-cleanup.cjs"
   },
   "dependencies": {
@@ -70,7 +70,7 @@
     "vitest": "^1.6.0",
     "execa": "^8.0.1"
   },
-  "fingerBuildVersion": "0.1.0000",
+  "fingerBuildVersion": "0.1.0005",
   "pnpm": {
     "packageExtensions": {
       "vitest@*": {

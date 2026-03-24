@@ -294,6 +294,64 @@ describe('AgentStatusSubscriber', () => {
       packageSubscriber.stop();
     });
 
+    it('应该把 dispatch 事件推送到通道（用于 QQBot 派发进度）', async () => {
+      const mockMessageHub = {
+        routeToOutput: vi.fn().mockResolvedValue(undefined),
+      };
+
+      const dispatchSubscriber = new AgentStatusSubscriber(eventBus, mockAgentRuntimeDeps, mockMessageHub);
+      dispatchSubscriber.setPrimaryAgent('agent-1');
+      dispatchSubscriber.registerSession('session-dispatch', {
+        channel: 'qqbot',
+        envelopeId: 'env-dispatch',
+      });
+      dispatchSubscriber.start();
+
+      const dispatchEvent: RuntimeEvent = {
+        type: 'agent_runtime_dispatch',
+        sessionId: 'session-dispatch',
+        timestamp: new Date().toISOString(),
+        payload: {
+          dispatchId: 'dispatch-test-1',
+          sourceAgentId: 'agent-1',
+          targetAgentId: 'agent-2',
+          status: 'queued',
+          queuePosition: 1,
+        },
+      };
+
+      await eventBus.emit(dispatchEvent);
+      await new Promise(resolve => setTimeout(resolve, 50));
+
+      expect(mockMessageHub.routeToOutput).toHaveBeenCalledWith(
+        'channel-bridge-qqbot',
+        expect.objectContaining({
+          statusUpdate: expect.objectContaining({
+            task: expect.objectContaining({
+              taskId: 'dispatch-test-1',
+              sourceAgentId: 'agent-1',
+              targetAgentId: 'agent-2',
+            }),
+            status: expect.objectContaining({
+              state: 'running',
+              summary: expect.stringContaining('派发 agent-2'),
+            }),
+          }),
+        }),
+      );
+
+      const dispatchCall = mockMessageHub.routeToOutput.mock.calls.find(
+        (call: unknown[]) => call[0] === 'channel-bridge-qqbot',
+      );
+      expect(dispatchCall).toBeDefined();
+      const payload = dispatchCall?.[1] as { content?: string };
+      const content = typeof payload?.content === 'string' ? payload.content : '';
+      const summaryOccurrences = (content.match(/派发 agent-2/g) || []).length;
+      expect(summaryOccurrences).toBe(1);
+
+      dispatchSubscriber.stop();
+    });
+
     it('应该回退 runtime 子会话到 root session 的 envelope 映射', async () => {
       const mockMessageHub = {
         routeToOutput: vi.fn().mockResolvedValue(undefined),
@@ -620,6 +678,56 @@ describe('AgentStatusSubscriber', () => {
       expect(mockMessageHub.routeToOutput.mock.calls.length).toBeGreaterThanOrEqual(2);
 
       stepSubscriber.stop();
+    });
+
+    it('应该把 waiting_for_user 问题推送到渠道', async () => {
+      const mockMessageHub = {
+        routeToOutput: vi.fn().mockResolvedValue(undefined),
+      };
+
+      const waitingSubscriber = new AgentStatusSubscriber(eventBus, mockAgentRuntimeDeps, mockMessageHub);
+      waitingSubscriber.registerSession('session-ask', {
+        channel: 'qqbot',
+        envelopeId: 'env-ask',
+        userId: 'user-ask',
+      });
+      waitingSubscriber.start();
+
+      const event: RuntimeEvent = {
+        type: 'waiting_for_user',
+        sessionId: 'session-ask',
+        workflowId: 'wf-ask',
+        timestamp: new Date().toISOString(),
+        payload: {
+          reason: 'confirmation_required',
+          options: [
+            { id: 'confirm', label: '确认', description: '确认执行' },
+            { id: 'cancel', label: '取消', description: '取消执行' },
+          ],
+          context: {
+            requestId: 'ask-1',
+            question: '是否继续执行？',
+            agentId: 'finger-project-agent',
+          },
+        },
+      } as RuntimeEvent;
+
+      await eventBus.emit(event);
+      await new Promise(resolve => setTimeout(resolve, 100));
+
+      expect(mockMessageHub.routeToOutput).toHaveBeenCalledWith(
+        'channel-bridge-qqbot',
+        expect.objectContaining({
+          channelId: 'qqbot',
+          target: 'user-ask',
+          content: expect.stringContaining('是否继续执行？'),
+          statusUpdate: expect.objectContaining({
+            status: expect.objectContaining({ state: 'waiting' }),
+          }),
+        }),
+      );
+
+      waitingSubscriber.stop();
     });
   });
 });

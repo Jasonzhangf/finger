@@ -14,89 +14,27 @@
 import type { AgentRuntimeDeps } from './agent-runtime/types.js';
 import type { UnifiedEventBus } from '../../runtime/event-bus.js';
 import { logger } from '../../core/logger.js';
-import { promises as fs } from 'fs';
-import path from 'path';
-import { FINGER_PATHS } from '../../core/finger-paths.js';
 import { buildCompactSummary, buildReportKey as buildReportKeyUtil, type SessionProgressData } from './progress-monitor-utils.js';
+import {
+  DEFAULT_PROGRESS_MONITOR_CONFIG,
+  loadProgressMonitorConfig,
+} from './progress-monitor-config.js';
+import type {
+  ProgressMonitorCallbacks,
+  ProgressMonitorConfig,
+  ProgressReport,
+  SessionProgress,
+  ToolCallRecord,
+} from './progress-monitor-types.js';
 
 const log = logger.module('ProgressMonitor');
-
-export interface ProgressMonitorConfig {
-  intervalMs?: number; // 心跳间隔，默认 60000ms
-  enabled?: boolean; // 是否启用，默认 true
-  progressUpdates?: boolean; // 是否推送进度更新，默认 true
-}
-
-export interface ToolCallRecord {
-  toolId?: string;
-  toolName: string;
-  params?: string;
-  result?: string;
-  error?: string;
-  success?: boolean;
-  timestamp: number;
-}
-
-export interface SessionProgress {
-  sessionId: string;
-  agentId: string;
-  startTime: number;
-  lastUpdateTime: number;
-  toolCallsCount: number;
-  modelRoundsCount: number;
-  reasoningCount: number;
-  status: 'running' | 'completed' | 'failed' | 'idle';
-  currentTask?: string;
-  elapsedMs: number;
-  toolCallHistory: ToolCallRecord[];
-  lastReportKey?: string;
-  lastReportStatus?: string;
-  lastReportTime?: number;
-  lastReportedToolIndex?: number; // Track which tool calls have been reported
-  latestReasoning?: string;
-}
-
-export interface ProgressReport {
-  type: 'progress_report';
-  timestamp: string;
-  sessionId: string;
-  agentId: string;
-  progress: SessionProgress;
-  summary: string;
-}
-
-export interface ProgressMonitorCallbacks {
-  onProgressReport?: (report: ProgressReport) => Promise<void> | void;
-}
-
-const CONFIG_PATH = path.join(FINGER_PATHS.config.dir, 'progress-monitor.json');
-const DEFAULT_CONFIG: Required<ProgressMonitorConfig> = {
-  intervalMs: 60_000,
-  enabled: true,
-  progressUpdates: true,
-};
-
-export async function loadProgressMonitorConfig(): Promise<Required<ProgressMonitorConfig>> {
-  try {
-    await fs.mkdir(path.dirname(CONFIG_PATH), { recursive: true });
-    const exists = await fs.access(CONFIG_PATH).then(() => true).catch(() => false);
-    if (!exists) {
-      await fs.writeFile(CONFIG_PATH, JSON.stringify(DEFAULT_CONFIG, null, 2), 'utf-8');
-      return { ...DEFAULT_CONFIG };
-    }
-    const raw = await fs.readFile(CONFIG_PATH, 'utf-8');
-    const parsed = JSON.parse(raw) as ProgressMonitorConfig;
-    return {
-      intervalMs: parsed.intervalMs ?? DEFAULT_CONFIG.intervalMs,
-      enabled: parsed.enabled ?? DEFAULT_CONFIG.enabled,
-      progressUpdates: parsed.progressUpdates ?? DEFAULT_CONFIG.progressUpdates,
-    };
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    log.warn('[ProgressMonitor] Failed to load config, using default', { message });
-    return { ...DEFAULT_CONFIG };
-  }
-}
+export type {
+  ProgressMonitorCallbacks,
+  ProgressMonitorConfig,
+  ProgressReport,
+  SessionProgress,
+  ToolCallRecord,
+} from './progress-monitor-types.js';
 
 export class ProgressMonitor {
   private timer: NodeJS.Timeout | null = null;
@@ -113,9 +51,9 @@ export class ProgressMonitor {
     config?: ProgressMonitorConfig,
   ) {
     this.config = {
-      intervalMs: config?.intervalMs ?? DEFAULT_CONFIG.intervalMs,
-      enabled: config?.enabled ?? DEFAULT_CONFIG.enabled,
-      progressUpdates: config?.progressUpdates ?? DEFAULT_CONFIG.progressUpdates,
+      intervalMs: config?.intervalMs ?? DEFAULT_PROGRESS_MONITOR_CONFIG.intervalMs,
+      enabled: config?.enabled ?? DEFAULT_PROGRESS_MONITOR_CONFIG.enabled,
+      progressUpdates: config?.progressUpdates ?? DEFAULT_PROGRESS_MONITOR_CONFIG.progressUpdates,
     };
   }
 
@@ -281,9 +219,9 @@ export class ProgressMonitor {
         }
         break;
       case 'agent_runtime_dispatch':
-        // Skip heartbeat/system-level dispatches (sourceAgentId contains 'system' or 'heartbeat')
+        // Skip heartbeat/bootstrap dispatches only (system dispatch is now business-critical).
         const source = event.payload?.sourceAgentId || (event as any).sourceAgentId || '';
-        if (source.includes('system') || source.includes('heartbeat') || source.includes('bootstrap')) {
+        if (source.includes('heartbeat') || source.includes('bootstrap')) {
           break;
         }
         // Skip self-dispatch (system agent dispatching to itself)

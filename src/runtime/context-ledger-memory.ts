@@ -132,6 +132,8 @@ async function executeQueryAction(
     fuzzy: input.fuzzy === true,
     eventTypes: normalizeStringArray(input.event_types),
     limit: normalizePositiveInt(input.limit) ?? DEFAULT_QUERY_LIMIT,
+    slotStart: normalizePositiveInt(input.slot_start),
+    slotEnd: normalizePositiveInt(input.slot_end),
   };
 
   const ledgerPath = resolveLedgerPath(context.rootDir, context.sessionId, context.targetAgentId, context.mode);
@@ -161,7 +163,10 @@ async function executeQueryAction(
       strategy: 'compact_first',
       source: ledgerPath,
       entries: [],
+      slots: [],
       timeline: [],
+      slot_start: 0,
+      slot_end: 0,
       total: 0,
       truncated: false,
       compact_hits: compactHits,
@@ -171,12 +176,14 @@ async function executeQueryAction(
       next_query_hint: {
         action: 'query',
         detail: true,
+        slot_start: compactHits[0].source_slot_start,
+        slot_end: compactHits[0].source_slot_end,
         since_ms: toTimestampMs(compactHits[0].source_time_start),
         until_ms: toTimestampMs(compactHits[0].source_time_end),
         contains: query.contains,
         fuzzy: false,
       },
-      note: 'Fuzzy query matched compact memory first. Use next_query_hint for detail retrieval from full timeline ledger.',
+      note: 'Search matched compact memory first. Use next_query_hint with slot_start/slot_end to fetch detailed ledger records.',
     };
   }
 
@@ -194,32 +201,104 @@ async function executeQueryAction(
     sinceMs: deepRange.sinceMs,
     untilMs: deepRange.untilMs,
   });
-  const paged = paginate(detailHits, query.limit);
+  const paged = paginateBySlot(detailHits, query.limit, query.slotStart, query.slotEnd);
+  const slots = paged.items.map(({ slot, entry }) => ({
+    slot,
+    id: entry.id,
+    timestamp_ms: entry.timestamp_ms,
+    timestamp_iso: entry.timestamp_iso,
+    event_type: entry.event_type,
+    agent_id: entry.agent_id,
+    mode: entry.mode,
+    preview: buildPreview(JSON.stringify(entry.payload), 180),
+  }));
+  const shouldReturnEntries = input.action === 'query' && (
+    input.detail === true
+    || query.slotStart !== undefined
+    || query.slotEnd !== undefined
+  );
 
   return {
     ok: true,
     action: input.action === 'search' ? 'search' : 'query',
     strategy: shouldUseCompactFirst && compactHits.length > 0 ? 'compact_then_detail' : 'direct_ledger',
     source: ledgerPath,
-    entries: paged.items,
-    timeline: paged.items.map((entry) => ({
-      id: entry.id,
-      timestamp_ms: entry.timestamp_ms,
-      timestamp_iso: entry.timestamp_iso,
-      event_type: entry.event_type,
-      agent_id: entry.agent_id,
-      mode: entry.mode,
-      preview: buildPreview(JSON.stringify(entry.payload), 180),
-    })),
+    entries: shouldReturnEntries ? paged.items.map(({ entry }) => entry) : [],
+    slots,
+    timeline: slots,
+    slot_start: paged.slotStart,
+    slot_end: paged.slotEnd,
     total: paged.total,
     truncated: paged.truncated,
-      compact_hits: compactHits,
+    compact_hits: compactHits,
     compact_source: compactEntries.length > 0 ? compactIndexPath : compactPath,
     compact_total: compactHits.length,
     compact_truncated: false,
-      note: shouldUseCompactFirst
-      ? 'Fuzzy query looked up compact memory first, then fetched detailed timeline records.'
-      : 'Direct timeline query executed against append-only ledger.',
+    next_query_hint: slots.length > 0
+      ? {
+          action: 'query',
+          slot_start: paged.slotStart,
+          slot_end: paged.slotEnd,
+          since_ms: slots[0]?.timestamp_ms,
+          until_ms: slots[slots.length - 1]?.timestamp_ms,
+          contains: query.contains,
+          fuzzy: false,
+          detail: true,
+        }
+      : undefined,
+    note: input.action === 'search'
+      ? 'Search returned matching slot summaries only. Use query with slot_start/slot_end for detailed ledger entries.'
+      : shouldReturnEntries
+        ? 'Query returned detailed ledger entries for the requested slot range.'
+        : 'Query returned slot summaries only. Add slot_start/slot_end or detail=true to fetch detailed ledger entries.',
+  };
+}
+
+function paginateBySlot<T>(
+  items: T[],
+  requestedLimit: number,
+  slotStart?: number,
+  slotEnd?: number,
+): {
+  items: Array<{ slot: number; entry: T }>;
+  total: number;
+  truncated: boolean;
+  slotStart: number;
+  slotEnd: number;
+} {
+  const paged = paginate(items, requestedLimit);
+  const total = items.length;
+  if (total === 0) {
+    return {
+      items: [],
+      total,
+      truncated: false,
+      slotStart: 0,
+      slotEnd: 0,
+    };
+  }
+
+  let start = slotStart ?? Math.max(1, total - paged.items.length + 1);
+  start = Math.min(Math.max(1, start), total);
+
+  let end = slotEnd ?? Math.min(total, start + requestedLimit - 1);
+  end = Math.min(Math.max(start, end), total);
+  if (end - start + 1 > requestedLimit) {
+    end = Math.min(total, start + requestedLimit - 1);
+  }
+
+  if (slotStart === undefined && slotEnd === undefined) {
+    start = Math.max(1, total - requestedLimit + 1);
+    end = total;
+  }
+
+  const sliced = items.slice(start - 1, end);
+  return {
+    items: sliced.map((entry, index) => ({ slot: start + index, entry })),
+    total,
+    truncated: start > 1 || end < total,
+    slotStart: start,
+    slotEnd: sliced.length > 0 ? start + sliced.length - 1 : 0,
   };
 }
 

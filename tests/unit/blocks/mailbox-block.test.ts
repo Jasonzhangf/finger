@@ -103,6 +103,43 @@ describe('MailboxBlock', () => {
     });
   });
 
+  describe('batch mailbox operations', () => {
+    it('should mark multiple unread tasks as read', () => {
+      const first = block.append('agent-1', { data: 'task-1' }, { category: 'dispatch-task', priority: 0 });
+      const second = block.append('agent-1', { data: 'task-2' }, { category: 'dispatch-task', priority: 0 });
+      block.append('agent-1', { data: 'note' }, { category: 'notification', priority: 2 });
+
+      const result = block.markReadAll({ target: 'agent-1', category: 'dispatch-task', unreadOnly: true });
+      expect(result.matched).toBe(2);
+      expect(result.changed).toBe(2);
+      expect(result.movedToProcessing).toBe(2);
+      expect(block.get(first.id)?.status).toBe('processing');
+      expect(block.get(second.id)?.status).toBe('processing');
+    });
+
+    it('should remove filtered messages in bulk', () => {
+      block.append('agent-1', { data: 'task' }, { category: 'dispatch-task', priority: 0 });
+      const notification = block.append('agent-1', { data: 'note' }, { category: 'notification', priority: 2 });
+
+      const result = block.removeAll({ target: 'agent-1', category: 'notification' });
+      expect(result.matched).toBe(1);
+      expect(result.removed).toBe(1);
+      expect(result.removedIds).toEqual([notification.id]);
+      expect(block.list({ target: 'agent-1' })).toHaveLength(1);
+      expect(block.list({ target: 'agent-1' })[0].category).toBe('dispatch-task');
+    });
+
+    it('should remove a single message', () => {
+      const first = block.append('agent-1', { data: 'task' }, { category: 'dispatch-task', priority: 0 });
+      const second = block.append('agent-1', { data: 'note' }, { category: 'notification', priority: 2 });
+
+      const result = block.remove(second.id);
+      expect(result).toEqual({ removed: true, removedId: second.id });
+      expect(block.get(second.id)).toBeUndefined();
+      expect(block.get(first.id)).toBeDefined();
+    });
+  });
+
   describe('execute', () => {
     it('should route append command', async () => {
       const result = await block.execute('append', {
@@ -124,6 +161,26 @@ describe('MailboxBlock', () => {
       await block.execute('markRead', { id });
       const result = await block.execute('ack', { id });
       expect(result).toMatchObject({ acked: true });
+    });
+
+    it('should route markReadAll and removeAll commands', async () => {
+      const first = block.append('agent-1', { data: 1 }, { category: 'dispatch-task' });
+      const second = block.append('agent-1', { data: 2 }, { category: 'notification' });
+
+      const readAll = await block.execute('markReadAll', { target: 'agent-1', category: 'dispatch-task' });
+      expect(readAll).toMatchObject({ matched: 1, changed: 1, movedToProcessing: 1 });
+      expect(block.get(first.id)?.status).toBe('processing');
+
+      const removeAll = await block.execute('removeAll', { target: 'agent-1', category: 'notification' });
+      expect(removeAll).toMatchObject({ matched: 1, removed: 1 });
+      expect(block.get(second.id)).toBeUndefined();
+    });
+
+    it('should route remove command', async () => {
+      const { id } = block.append('agent-1', { data: 1 }, { category: 'notification' });
+      const result = await block.execute('remove', { id });
+      expect(result).toMatchObject({ removed: true, removedId: id });
+      expect(block.get(id)).toBeUndefined();
     });
   });
 });

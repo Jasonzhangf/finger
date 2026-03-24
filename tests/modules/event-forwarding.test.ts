@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { attachEventForwarding, type EventForwardingDeps } from '../../src/server/modules/event-forwarding.js';
 import type { SessionManager } from '../../src/orchestration/session-manager.js';
 import type { UnifiedEventBus } from '../../src/runtime/event-bus.js';
+import { heartbeatMailbox } from '../../src/server/modules/heartbeat-mailbox.js';
 
 function createMockSessionManager(): SessionManager {
   const messages: Array<{ id: string; role: string; content: string; timestamp: string; type?: string; metadata?: Record<string, unknown> }> = [];
@@ -163,6 +164,68 @@ describe('Event Forwarding - Reasoning Persistence', () => {
     });
 
     expect(sessionManager.addMessage).not.toHaveBeenCalled();
+  });
+
+  it('should forward reasoning/body updates to agent status subscriber', () => {
+    const sessionManager = createMockSessionManager();
+    const mockStatusSubscriber = {
+      sendReasoningUpdate: vi.fn().mockResolvedValue(undefined),
+      sendBodyUpdate: vi.fn().mockResolvedValue(undefined),
+    };
+    const deps = createDeps({
+      sessionManager,
+      agentStatusSubscriber: mockStatusSubscriber as any,
+    });
+    const { emitLoopEventToEventBus } = attachEventForwarding(deps);
+
+    emitLoopEventToEventBus({
+      sessionId: 'test-session-forward',
+      phase: 'kernel_event',
+      timestamp: new Date().toISOString(),
+      payload: {
+        id: 'evt-forward-1',
+        type: 'reasoning',
+        text: '需要先检查日志',
+        agentId: 'finger-system-agent',
+      },
+    });
+
+    emitLoopEventToEventBus({
+      sessionId: 'test-session-forward',
+      phase: 'kernel_event',
+      timestamp: new Date().toISOString(),
+      payload: {
+        id: 'evt-forward-2',
+        type: 'model_round',
+        lastAgentMessage: '这是正文更新内容',
+        agentId: 'finger-system-agent',
+      },
+    });
+
+    // duplicate body should be deduplicated
+    emitLoopEventToEventBus({
+      sessionId: 'test-session-forward',
+      phase: 'kernel_event',
+      timestamp: new Date().toISOString(),
+      payload: {
+        id: 'evt-forward-3',
+        type: 'model_round',
+        lastAgentMessage: '这是正文更新内容',
+        agentId: 'finger-system-agent',
+      },
+    });
+
+    expect(mockStatusSubscriber.sendReasoningUpdate).toHaveBeenCalledWith(
+      'test-session-forward',
+      'finger-system-agent',
+      '需要先检查日志',
+    );
+    expect(mockStatusSubscriber.sendBodyUpdate).toHaveBeenCalledTimes(1);
+    expect(mockStatusSubscriber.sendBodyUpdate).toHaveBeenCalledWith(
+      'test-session-forward',
+      'finger-system-agent',
+      '这是正文更新内容',
+    );
   });
 });
 
@@ -537,3 +600,48 @@ describe('Event Forwarding - Dispatch Child Ledger Pointer', () => {
   });
 });
 
+describe('Event Forwarding - Dispatch Result Mailbox Routing', () => {
+  it('routes completed dispatch result envelope into source agent mailbox with stored envelope', () => {
+    const eventBus = {
+      subscribe: vi.fn(),
+      subscribeMultiple: vi.fn(),
+      emit: vi.fn(async () => {}),
+    } as unknown as UnifiedEventBus;
+    const sessionManager = createMockSessionManager();
+    const deps = createDeps({ eventBus, sessionManager });
+    const captured: { eventName: string; handler: (event: any) => void }[] = [];
+    (eventBus.subscribe as ReturnType<typeof vi.fn>).mockImplementation((eventName: string, handler: (event: any) => void) => {
+      captured.push({ eventName, handler });
+    });
+
+    attachEventForwarding(deps);
+    const handler = captured.find((entry) => entry.eventName === 'agent_runtime_dispatch')?.handler;
+    expect(handler).toBeDefined();
+
+    const sourceAgentId = `test-source-agent-${Date.now()}`;
+    const dispatchId = `dispatch-${Date.now()}`;
+    handler?.({
+      type: 'agent_runtime_dispatch',
+      sessionId: 'session-source-mailbox',
+      timestamp: new Date().toISOString(),
+      payload: {
+        dispatchId,
+        sourceAgentId,
+        targetAgentId: 'finger-project-agent',
+        status: 'completed',
+        result: { summary: 'done from mailbox routing' },
+      },
+    });
+
+    const routed = heartbeatMailbox.list(sourceAgentId).find((message) =>
+      typeof message.content === 'object'
+      && message.content
+      && (message.content as Record<string, unknown>).dispatchId === dispatchId);
+
+    expect(routed).toBeDefined();
+    const content = routed?.content as Record<string, unknown>;
+    expect(content.envelope).toBeDefined();
+    expect(content.targetAgentId).toBe(sourceAgentId);
+    expect(routed?.category).toBe('notification');
+  });
+});

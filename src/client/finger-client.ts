@@ -105,7 +105,7 @@ export class FingerClient {
   constructor(options: FingerClientOptions = {}) {
     this.httpUrl = options.httpUrl || process.env.FINGER_HTTP_URL || process.env.FINGER_HUB_URL || 'http://localhost:9999';
     this.wsUrl = options.wsUrl || process.env.FINGER_WS_URL || 'ws://localhost:9998';
-    this.orchestratorTarget = options.orchestratorTarget || process.env.FINGER_PRIMARY_ORCHESTRATOR_TARGET || 'finger-orchestrator-gateway';
+    this.orchestratorTarget = options.orchestratorTarget || process.env.FINGER_PRIMARY_ORCHESTRATOR_TARGET || 'finger-project-agent-gateway';
     this.reconnect = options.reconnect ?? true;
     this.reconnectInterval = options.reconnectInterval ?? 3000;
     this.maxReconnectAttempts = options.maxReconnectAttempts ?? 10;

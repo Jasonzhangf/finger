@@ -94,4 +94,43 @@ describe('dispatchTaskToAgent', () => {
     expect(res.status).toBe('failed');
     expect(String(res.error)).toContain('target busy');
   });
+
+  it('auto deploys and retries when system dispatch target is not started', async () => {
+    const execute = vi.fn(async (command: string) => {
+      if (command === 'dispatch' && execute.mock.calls.filter((c) => c[0] === 'dispatch').length === 1) {
+        return {
+          ok: false,
+          dispatchId: 'dispatch-not-started',
+          status: 'failed',
+          error: 'target agent is not started in resource pool: finger-project-agent',
+        };
+      }
+      if (command === 'deploy') {
+        return { success: true };
+      }
+      return {
+        ok: true,
+        dispatchId: 'dispatch-retry-ok',
+        status: 'completed',
+        result: { summary: 'retry ok' },
+      };
+    });
+    const { deps } = createDeps(execute);
+
+    const res = await mod.dispatchTaskToAgent(deps as any, {
+      sourceAgentId: 'finger-system-agent',
+      targetAgentId: 'finger-project-agent',
+      task: 'run task',
+      sessionId: 'session-1',
+      metadata: { instanceCount: 2 },
+    } as any);
+
+    expect(res.ok).toBe(true);
+    expect(res.status).toBe('completed');
+    expect(execute).toHaveBeenCalledWith('deploy', expect.objectContaining({
+      targetAgentId: 'finger-project-agent',
+      instanceCount: 2,
+    }));
+    expect(execute.mock.calls.filter((c) => c[0] === 'dispatch')).toHaveLength(2);
+  });
 });

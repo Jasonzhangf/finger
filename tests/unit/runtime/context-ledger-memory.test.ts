@@ -91,7 +91,9 @@ describe('context-ledger-memory', () => {
     }
     expect(result.strategy).toBe('compact_first');
     expect(result.entries.length).toBe(0);
+    expect(result.slots.length).toBe(0);
     expect(result.compact_hits.length).toBeGreaterThan(0);
+    expect(result.next_query_hint).toMatchObject({ action: 'query', detail: true });
 
     rmSync(setup.rootDir, { recursive: true, force: true });
   });
@@ -119,6 +121,7 @@ describe('context-ledger-memory', () => {
     }
     expect(result.strategy).toBe('compact_then_detail');
     expect(result.entries.length).toBeGreaterThan(0);
+    expect(result.slots.length).toBeGreaterThan(0);
 
     rmSync(setup.rootDir, { recursive: true, force: true });
   });
@@ -160,7 +163,7 @@ describe('context-ledger-memory', () => {
     rmSync(setup.rootDir, { recursive: true, force: true });
   });
 
-  it('filters prompt-like blocks and keeps timeline sorted', async () => {
+  it('returns slot summaries by default and keeps timeline sorted', async () => {
     const setup = setupLedgerRoot('sort-filter');
     const dir = join(setup.rootDir, setup.sessionId, setup.agentId, setup.mode);
     const now = Date.now();
@@ -216,9 +219,48 @@ describe('context-ledger-memory', () => {
     if (result.action !== 'query') {
       throw new Error('expected query result');
     }
-    expect(result.entries.length).toBe(2);
-    expect(result.entries[0].timestamp_ms).toBeLessThanOrEqual(result.entries[1].timestamp_ms);
-    expect(JSON.stringify(result.entries)).not.toContain('<system_message>');
+    expect(result.entries.length).toBe(0);
+    expect(result.slots.length).toBe(2);
+    expect(result.slots[0].slot).toBe(1);
+    expect(result.slots[1].slot).toBe(2);
+    expect(result.slots[0].timestamp_ms).toBeLessThanOrEqual(result.slots[1].timestamp_ms);
+    expect(JSON.stringify(result.slots)).not.toContain('<system_message>');
+
+    const detail = await executeContextLedgerMemory({
+      action: 'query',
+      slot_start: 1,
+      slot_end: 2,
+      detail: true,
+      _runtime_context: {
+        root_dir: setup.rootDir,
+        session_id: setup.sessionId,
+        agent_id: setup.agentId,
+        mode: setup.mode,
+      },
+    });
+    if (detail.action !== 'query') {
+      throw new Error('expected query result');
+    }
+    expect(detail.entries.length).toBe(2);
+    expect(detail.entries[0].timestamp_ms).toBeLessThanOrEqual(detail.entries[1].timestamp_ms);
+    expect(JSON.stringify(detail.entries)).not.toContain('<system_message>');
+
+    const search = await executeContextLedgerMemory({
+      action: 'search',
+      contains: 'pwd',
+      _runtime_context: {
+        root_dir: setup.rootDir,
+        session_id: setup.sessionId,
+        agent_id: setup.agentId,
+        mode: setup.mode,
+      },
+    });
+    if (search.action !== 'search') {
+      throw new Error('expected search result');
+    }
+    expect(search.entries.length).toBe(0);
+    expect(search.slots.length).toBe(1);
+    expect(search.note).toContain('Search returned matching slot summaries only');
 
     rmSync(setup.rootDir, { recursive: true, force: true });
   });

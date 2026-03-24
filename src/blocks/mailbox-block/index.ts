@@ -2,6 +2,11 @@ import fs from 'fs';
 import { BaseBlock, type BlockCapabilities } from '../../core/block.js';
 import { logger } from '../../core/logger.js';
 import { createConsoleLikeLogger } from '../../core/logger/console-like.js';
+import {
+  applyMailboxAckTransition,
+  applyMailboxReadTransition,
+  type MailboxAckOptions,
+} from './protocol.js';
 
 const clog = createConsoleLikeLogger('Index');
 
@@ -22,6 +27,10 @@ export interface MailboxMessage {
   channel?: string;
   accountId?: string;
   threadId?: string;
+  sourceType?: 'control' | 'observe' | 'agent-callable';
+  category?: string;
+  priority?: 0 | 1 | 2 | 3;
+  deliveryPolicy?: 'realtime' | 'batched' | 'passive';
   readAt?: string;
   ackAt?: string;
 }
@@ -31,7 +40,7 @@ const log = logger.module('MailboxBlock');
 export class MailboxBlock extends BaseBlock {
   readonly type = 'mailbox';
   readonly capabilities: BlockCapabilities = {
-    functions: ['append', 'list', 'read', 'ack', 'create', 'get', 'updateStatus', 'markRead', 'markAck'],
+    functions: ['append', 'list', 'read', 'ack', 'create', 'get', 'updateStatus', 'markRead', 'markReadAll', 'markAck', 'remove', 'removeAll'],
     cli: [
       { name: 'append', description: 'Append message to mailbox', args: [] },
       { name: 'list', description: 'List messages', args: [] },
@@ -75,7 +84,11 @@ export class MailboxBlock extends BaseBlock {
       case 'get':
         return this.get(args.id as string);
       case 'ack':
-        return this.ack(args.id as string);
+        return this.ack(args.id as string, {
+          status: args.status as 'completed' | 'failed' | undefined,
+          result: args.result,
+          error: args.error as string | undefined,
+        });
       case 'updateStatus':
         return this.updateStatus(
           args.id as string,
@@ -85,8 +98,14 @@ export class MailboxBlock extends BaseBlock {
         );
       case 'markRead':
         return this.markRead(args.id as string);
+      case 'markReadAll':
+        return this.markReadAll(args as BatchMailboxOptions);
       case 'markAck':
         return this.markAck(args.id as string);
+      case 'remove':
+        return this.remove(args.id as string);
+      case 'removeAll':
+        return this.removeAll(args as BatchMailboxOptions);
       default:
         throw new Error(`Unknown command: ${command}`);
     }
@@ -112,6 +131,10 @@ export class MailboxBlock extends BaseBlock {
       channel: options?.channel as string | undefined,
       accountId: options?.accountId as string | undefined,
       threadId: options?.threadId as string | undefined,
+      sourceType: options?.sourceType as MailboxMessage['sourceType'],
+      category: options?.category as string | undefined,
+      priority: options?.priority as MailboxMessage['priority'],
+      deliveryPolicy: options?.deliveryPolicy as MailboxMessage['deliveryPolicy'],
     };
 
     this.messages.set(id, message);
@@ -149,8 +172,25 @@ export class MailboxBlock extends BaseBlock {
     if (options?.channel) {
       messages = messages.filter(m => m.channel === options.channel);
     }
+    if (options?.category) {
+      messages = messages.filter(m => m.category === options.category);
+    }
+    if (options?.unreadOnly) {
+      messages = messages.filter(m => !m.readAt);
+    }
+    if (Array.isArray(options?.ids) && options.ids.length > 0) {
+      const allowedIds = new Set(options.ids);
+      messages = messages.filter(m => allowedIds.has(m.id));
+    }
 
-    messages.sort((a, b) => b.seq - a.seq);
+    messages.sort((a, b) => {
+      const aPriority = typeof a.priority === 'number' ? a.priority : 2;
+      const bPriority = typeof b.priority === 'number' ? b.priority : 2;
+      if (aPriority !== bPriority) {
+        return aPriority - bPriority;
+      }
+      return b.seq - a.seq;
+    });
 
     if (options?.limit) {
       messages = messages.slice(0, options.limit);
@@ -166,15 +206,19 @@ export class MailboxBlock extends BaseBlock {
     return this.messages.get(id);
   }
 
-  ack(id: string): { acked: boolean } {
+  ack(id: string, options?: MailboxAckOptions): { acked: boolean; error?: string; updated?: MailboxMessage } {
     const msg = this.messages.get(id);
     if (!msg) return { acked: false };
 
-    msg.ackAt = new Date().toISOString();
-    msg.updatedAt = msg.ackAt;
-    this.notifySubscribers(id, msg);
+    const transitioned = applyMailboxAckTransition(msg, options);
+    if (!transitioned.ok || !transitioned.message) {
+      return { acked: false, error: transitioned.error };
+    }
+
+    this.messages.set(id, transitioned.message);
+    this.notifySubscribers(id, transitioned.message);
     this.saveToStorage();
-    return { acked: true };
+    return { acked: true, updated: transitioned.message };
   }
 
   updateStatus(id: string, status: MailboxMessage['status'], result?: unknown, error?: string): { updated: boolean } {
@@ -191,19 +235,125 @@ export class MailboxBlock extends BaseBlock {
     return { updated: true };
   }
 
-  markRead(id: string): { read: boolean } {
+  markRead(id: string): { read: boolean; updated?: MailboxMessage } {
     const msg = this.messages.get(id);
     if (!msg) return { read: false };
 
-    msg.readAt = new Date().toISOString();
-    msg.updatedAt = msg.readAt;
-    this.notifySubscribers(id, msg);
+    const transitioned = applyMailboxReadTransition(msg);
+    this.messages.set(id, transitioned.message);
+    this.notifySubscribers(id, transitioned.message);
     this.saveToStorage();
-    return { read: true };
+    return { read: true, updated: transitioned.message };
   }
 
-  markAck(id: string): { acked: boolean } {
-    return this.ack(id);
+  markAck(id: string, options?: MailboxAckOptions): { acked: boolean; error?: string; updated?: MailboxMessage } {
+    return this.ack(id, options);
+  }
+
+  remove(id: string): { removed: boolean; removedId?: string } {
+    const msg = this.messages.get(id);
+    if (!msg) {
+      return { removed: false };
+    }
+
+    this.messages.delete(id);
+    this.seqIndex.delete(msg.seq);
+    if (msg.callbackId) {
+      this.callbackIndex.delete(msg.callbackId);
+    }
+    this.updateState({
+      data: {
+        messageCount: this.messages.size,
+        currentSeq: this.nextSeq - 1,
+      }
+    });
+    this.saveToStorage();
+    return { removed: true, removedId: id };
+  }
+
+  markReadAll(options?: BatchMailboxOptions): {
+    matched: number;
+    changed: number;
+    movedToProcessing: number;
+    updatedMessages: MailboxMessage[];
+  } {
+    const selected = this.list(options);
+    if (selected.length === 0) {
+      return {
+        matched: 0,
+        changed: 0,
+        movedToProcessing: 0,
+        updatedMessages: [],
+      };
+    }
+
+    let changed = 0;
+    let movedToProcessing = 0;
+    const updatedMessages: MailboxMessage[] = [];
+
+    for (const message of selected) {
+      const transitioned = applyMailboxReadTransition(message);
+      updatedMessages.push(transitioned.message);
+      if (!transitioned.changed) continue;
+      changed += 1;
+      if (transitioned.movedToProcessing) {
+        movedToProcessing += 1;
+      }
+      this.messages.set(message.id, transitioned.message);
+      this.notifySubscribers(message.id, transitioned.message);
+    }
+
+    if (changed > 0) {
+      this.saveToStorage();
+    }
+
+    return {
+      matched: selected.length,
+      changed,
+      movedToProcessing,
+      updatedMessages,
+    };
+  }
+
+  removeAll(options?: BatchMailboxOptions): {
+    matched: number;
+    removed: number;
+    removedIds: string[];
+  } {
+    const selected = this.list(options);
+    if (selected.length === 0) {
+      return {
+        matched: 0,
+        removed: 0,
+        removedIds: [],
+      };
+    }
+
+    const removedIds: string[] = [];
+    for (const message of selected) {
+      if (!this.messages.delete(message.id)) continue;
+      this.seqIndex.delete(message.seq);
+      if (message.callbackId) {
+        this.callbackIndex.delete(message.callbackId);
+      }
+      removedIds.push(message.id);
+    }
+
+    if (removedIds.length > 0) {
+      this.updateState({
+        data: {
+          messageCount: this.messages.size,
+          currentSeq: this.nextSeq - 1,
+        }
+      });
+      this.saveToStorage();
+    }
+
+    return {
+      matched: selected.length,
+      removed: removedIds.length,
+      removedIds,
+    };
   }
 
   private loadFromStorage(): void {
@@ -283,6 +433,11 @@ interface ListOptions {
   status?: MailboxMessage['status'];
   sessionId?: string;
   channel?: string;
+  category?: string;
+  unreadOnly?: boolean;
   limit?: number;
   offset?: number;
+  ids?: string[];
 }
+
+type BatchMailboxOptions = ListOptions;

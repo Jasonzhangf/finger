@@ -49,4 +49,19 @@ describe('registerDefaultRuntimeTools', () => {
     expect(execResult.output).toContain('runtime_codex_exec_ok');
     expect(execResult.termination.type).toBe('exited');
   });
+
+  it('registers system/project runtime tools when deps are provided', () => {
+    const registry = new ToolRegistry();
+    const loaded = registerDefaultRuntimeTools(registry, (() => ({
+      sessionManager: {},
+      agentRuntimeBlock: {},
+    })) as any);
+
+    expect(loaded).toContain('project_tool');
+    expect(loaded).toContain('system-registry-tool');
+    expect(loaded).toContain('report-task-completion');
+    expect(registry.isAvailable('project_tool')).toBe(true);
+    expect(registry.isAvailable('system-registry-tool')).toBe(true);
+    expect(registry.isAvailable('report-task-completion')).toBe(true);
+  });
 });

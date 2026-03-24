@@ -383,7 +383,7 @@ export class WorkflowFSM {
     globalEventBus.emit({
       type: 'phase_transition',
       sessionId: this.context.sessionId,
-      agentId: 'finger-orchestrator',
+      agentId: 'finger-project-agent',
       timestamp: new Date().toISOString(),
       payload: {
         from: oldState,

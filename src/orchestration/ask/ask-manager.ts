@@ -6,6 +6,9 @@ export interface AskRequest {
   sessionId?: string;
   workflowId?: string;
   epicId?: string;
+  channelId?: string;
+  userId?: string;
+  groupId?: string;
   timeoutMs?: number;
 }
 
@@ -18,6 +21,9 @@ export interface PendingAsk {
   sessionId?: string;
   workflowId?: string;
   epicId?: string;
+  channelId?: string;
+  userId?: string;
+  groupId?: string;
   createdAt: string;
   expiresAt?: string;
 }
@@ -43,6 +49,9 @@ export interface AskPendingFilter {
   sessionId?: string;
   workflowId?: string;
   epicId?: string;
+  channelId?: string;
+  userId?: string;
+  groupId?: string;
 }
 
 function sanitizeOptions(value: unknown): string[] | undefined {
@@ -109,6 +118,9 @@ export class AskManager {
       ...(typeof input.sessionId === 'string' && input.sessionId.trim().length > 0 ? { sessionId: input.sessionId.trim() } : {}),
       ...(typeof input.workflowId === 'string' && input.workflowId.trim().length > 0 ? { workflowId: input.workflowId.trim() } : {}),
       ...(typeof input.epicId === 'string' && input.epicId.trim().length > 0 ? { epicId: input.epicId.trim() } : {}),
+      ...(typeof input.channelId === 'string' && input.channelId.trim().length > 0 ? { channelId: input.channelId.trim() } : {}),
+      ...(typeof input.userId === 'string' && input.userId.trim().length > 0 ? { userId: input.userId.trim() } : {}),
+      ...(typeof input.groupId === 'string' && input.groupId.trim().length > 0 ? { groupId: input.groupId.trim() } : {}),
       createdAt,
       expiresAt,
       resolveResult,
@@ -143,6 +155,9 @@ export class AskManager {
       if (filter.sessionId && item.sessionId !== filter.sessionId) return false;
       if (filter.workflowId && item.workflowId !== filter.workflowId) return false;
       if (filter.epicId && item.epicId !== filter.epicId) return false;
+      if (filter.channelId && item.channelId !== filter.channelId) return false;
+      if (filter.userId && item.userId !== filter.userId) return false;
+      if (filter.groupId && item.groupId !== filter.groupId) return false;
       return true;
     });
   }
@@ -193,6 +208,9 @@ export class AskManager {
       ...(item.sessionId ? { sessionId: item.sessionId } : {}),
       ...(item.workflowId ? { workflowId: item.workflowId } : {}),
       ...(item.epicId ? { epicId: item.epicId } : {}),
+      ...(item.channelId ? { channelId: item.channelId } : {}),
+      ...(item.userId ? { userId: item.userId } : {}),
+      ...(item.groupId ? { groupId: item.groupId } : {}),
       createdAt: item.createdAt,
       ...(item.expiresAt ? { expiresAt: item.expiresAt } : {}),
     };

@@ -6,14 +6,11 @@
 
 import type { AgentRuntimeDeps } from './agent-runtime/types.js';
 import { PeriodicCheckRunner } from '../../agents/finger-system-agent/periodic-check.js';
-import { loadRegistry, saveRegistry, projectIdFromPath } from '../../agents/finger-system-agent/registry.js';
+import { loadRegistry, saveRegistry, projectIdFromPath, registerAgent } from '../../agents/finger-system-agent/registry.js';
 import type { AgentInfo } from '../../agents/finger-system-agent/registry.js';
-import { injectSkillsIntoPrompt } from '../../skills/skill-prompt-injector.js';
-import { readFileSync } from 'fs';
-import { join } from 'path';
-import { FINGER_PATHS } from '../../core/finger-paths.js';
 import { SYSTEM_AGENT_CONFIG, SYSTEM_PROJECT_PATH } from '../../agents/finger-system-agent/index.js';
 import { logger } from '../../core/logger.js';
+import { FINGER_PATHS } from '../../core/finger-paths.js';
 
 const log = logger.module('SystemAgentManager');
 
@@ -43,8 +40,8 @@ export class SystemAgentManager {
     // 4. 启动监控中的 Project Agents
     await this.startMonitoredProjects();
 
-    // 5. 向 System Agent 注入启动 bootstrap 提示词
-    await this.injectSystemBootstrap();
+    // 5. 启动后不再自动注入 bootstrap 开机检查（避免无意义负载与忙态干扰）。
+    // 如需人工触发，可通过显式 dispatch/system 指令发起。
   }
 
 
@@ -85,65 +82,6 @@ export class SystemAgentManager {
       const error = err instanceof Error ? err : new Error(String(err));
       log.error('Failed to get or create system session:', error);
       return 'default';
-    }
-  }
-
-  private async injectSystemBootstrap(): Promise<void> {
-    log.info('[SystemAgentManager] Checking System Agent deployment', {
-      agentId: SYSTEM_AGENT_CONFIG.id
-    });
-
-    if (!this.systemSessionId) {
-      log.warn('System session not available, skipping bootstrap injection');
-      return;
-    }
-
-    try {
-      const bootstrapPath = join(FINGER_PATHS.home, 'system', 'BOOTSTRAP.md');
-      let bootstrapPrompt = '';
-
-      try {
-        bootstrapPrompt = readFileSync(bootstrapPath, 'utf-8');
-
-        // Inject Skills into bootstrap prompt
-        bootstrapPrompt = await injectSkillsIntoPrompt(bootstrapPrompt);
-
-        log.info('[SystemAgentManager] Injecting bootstrap', {
-          sessionId: this.systemSessionId,
-          bootstrapPromptLength: bootstrapPrompt.length
-        });
-      } catch (err) {
-        log.warn(`Bootstrap file not found at ${bootstrapPath}, using default prompt`);
-        bootstrapPrompt = '你已经启动，请进行开机检查。';
-      }
-
-      if (bootstrapPrompt.trim().length === 0) {
-        log.warn('Bootstrap prompt is empty, skipping injection');
-        return;
-      }
-
-      // 使用正确的 sessionId 发送 bootstrap 提示词
-      const dispatchResult: { ok: boolean; dispatchId?: string; error?: string } = 
-        await this.deps.agentRuntimeBlock.execute('dispatch', {
-          sourceAgentId: 'system-bootstrap',  // System bootstrap injection
-          targetAgentId: SYSTEM_AGENT_CONFIG.id,
-          task: bootstrapPrompt,
-          sessionId: this.systemSessionId,
-          metadata: {
-            source: 'system-bootstrap',
-            role: 'system',
-          },
-          blocking: false,
-        }) as unknown as { ok: boolean; dispatchId?: string; error?: string };
-
-      if (dispatchResult.ok) {
-        log.info('[SystemAgentManager] Bootstrap injected successfully', { dispatchId: dispatchResult.dispatchId });
-      } else {
-        log.error('Failed to inject bootstrap:', dispatchResult.error ? new Error(dispatchResult.error) : undefined);
-      }
-    } catch (err) {
-      const error = err instanceof Error ? err : new Error(String(err));
-      log.error('Failed to inject system bootstrap:', error);
     }
   }
 
@@ -218,18 +156,19 @@ export class SystemAgentManager {
         const projectName = session.name || rawPath.split('/').pop() || 'unknown';
         const now = new Date().toISOString();
 
-        registry.agents[projectId] = {
+        await registerAgent({
           projectId,
           projectPath: rawPath,
           projectName,
-          agentId: `project:${projectId}`,
+          agentId: '',
           status: 'idle',
           lastHeartbeat: now,
           monitored: true,
           monitorUpdatedAt: now,
           stats: { tasksCompleted: 0, tasksFailed: 0, uptime: 0 },
-        } satisfies AgentInfo;
-        needsSave = true;
+        } satisfies AgentInfo);
+        registry = await loadRegistry();
+        needsSave = false;
         log.info(`[SystemAgentManager] Registered project: ${rawPath} (monitoring enabled)`);
       }
 

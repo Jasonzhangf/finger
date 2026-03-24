@@ -97,13 +97,22 @@ export function registerToolRoutes(app: Express, deps: ToolRouteDeps): void {
     }
 
     try {
-      const executionInput = toolName === 'user.ask' && isObjectRecord(input)
-        ? {
-            ...input,
-            ...(typeof input.agent_id === 'string' && input.agent_id.trim().length > 0
-              ? {}
-              : { agent_id: agentId }),
-          }
+      const executionInput = isObjectRecord(input)
+        ? toolName === 'user.ask'
+          ? {
+              ...input,
+              ...(typeof input.agent_id === 'string' && input.agent_id.trim().length > 0
+                ? {}
+                : { agent_id: agentId }),
+            }
+          : toolName === 'agent.dispatch'
+            ? {
+                ...input,
+                ...(typeof input.source_agent_id === 'string' && input.source_agent_id.trim().length > 0
+                  ? {}
+                  : { source_agent_id: agentId }),
+              }
+            : input
         : input;
       const result = await runtime.callTool(agentId, toolName, executionInput, { authorizationToken });
       res.json({

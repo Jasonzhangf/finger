@@ -4,10 +4,9 @@ import type { RuntimeFacade } from '../../runtime/runtime-facade.js';
 import type { ToolRegistry } from '../../runtime/tool-registry.js';
 import type { ChatCodexRunnerController } from './mock-runtime.js';
 import { createFingerGeneralModule, type ChatCodexLoopEvent } from '../../agents/finger-general/finger-general-module.js';
-import { resolveBaseAgentRole } from '../../agents/chat-codex/agent-role-config.js';
 import type { ChatCodexDeveloperRole } from '../../agents/chat-codex/developer-prompt-templates.js';
 
-export type FingerRoleProfile = 'general' | 'orchestrator' | 'system';
+export type FingerRoleProfile = 'project' | 'reviewer' | 'system';
 
 export interface FingerRoleSpec {
   id: string;
@@ -38,9 +37,8 @@ export async function registerFingerRoleModules(
   const { moduleRegistry, runtime, toolRegistry, chatCodexRunner, daemonUrl, onLoopEvent } = deps;
 
   const resolveDeveloperRole = (role: FingerRoleSpec): ChatCodexDeveloperRole => {
-    if (role.roleProfile === 'system') return 'orchestrator';
-    if (role.roleProfile === 'general') return 'orchestrator';
-    return resolveBaseAgentRole(role.roleProfile);
+    if (role.roleProfile === 'reviewer') return 'reviewer';
+    return 'orchestrator';
   };
 
   const resolvePromptOverrides = (agentId: string, role: FingerRoleSpec) => {
@@ -97,7 +95,7 @@ export async function registerFingerRoleModules(
     const roleModule = createFingerGeneralModule({
       id: role.id,
       name: role.id,
-      roleProfile: role.roleProfile === 'system' ? 'orchestrator' : role.roleProfile,
+      roleProfile: role.roleProfile,
       ...resolvePromptOverrides(role.id, role),
       resolvePromptPaths: () => resolvePromptOverrides(role.id, role),
       resolveToolSpecifications: resolveFingerToolSpecifications,
@@ -120,16 +118,16 @@ export async function registerFingerRoleModules(
     const legacyChatCodexAlias = createFingerGeneralModule({
       id: legacy.legacyAgentId,
       name: legacy.legacyAgentId,
-      roleProfile: 'general',
+      roleProfile: 'project',
       ...resolvePromptOverrides(legacy.legacyAgentId, {
         id: legacy.legacyAgentId,
-        roleProfile: 'general',
+        roleProfile: 'project',
         allowedTools: legacy.legacyAllowedTools,
       }),
       resolvePromptPaths: () =>
         resolvePromptOverrides(legacy.legacyAgentId, {
           id: legacy.legacyAgentId,
-          roleProfile: 'general',
+          roleProfile: 'project',
           allowedTools: legacy.legacyAllowedTools,
         }),
       resolveToolSpecifications: resolveFingerToolSpecifications,

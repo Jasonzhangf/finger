@@ -62,7 +62,8 @@ export function registerAgentConfigRoutes(app: Express, deps: AgentConfigRouteDe
       : agentId;
     const normalized = roleHint.trim().toLowerCase();
     if (normalized.includes('router')) return 'router';
-    return resolveBaseAgentRole(roleHint);
+    const baseRole = resolveBaseAgentRole(roleHint);
+    return baseRole === 'reviewer' ? 'reviewer' : 'orchestrator';
   };
 
   const resolveAgentConfigFilePath = (agentId: string, loaded?: LoadedAgentConfig | null): string => {
@@ -243,7 +244,9 @@ export function registerAgentConfigRoutes(app: Express, deps: AgentConfigRouteDe
       return;
     }
 
-    const role = requestedRole ? resolveBaseAgentRole(requestedRole) : resolvePromptRole(agentId, found);
+    const role = requestedRole
+      ? (resolveBaseAgentRole(requestedRole) === 'reviewer' ? 'reviewer' : 'orchestrator')
+      : resolvePromptRole(agentId, found);
     const systemPath = resolvePromptOverridePath(agentId, 'system', role, found);
     const developerPath = resolvePromptOverridePath(agentId, 'developer', role, found);
 
@@ -396,9 +399,9 @@ export function registerAgentConfigRoutes(app: Express, deps: AgentConfigRouteDe
     }
     const template = templateId && resolveAgentConfig(templateId)
       ? resolveAgentConfig(templateId)
-      : resolveAgentConfig('finger-orchestrator');
+      : resolveAgentConfig('finger-project-agent');
     if (!template) {
-      res.status(404).json({ error: 'Template not found (neither finger-orchestrator nor specified template exists)' });
+      res.status(404).json({ error: 'Template not found (neither finger-project-agent nor specified template exists)' });
       return;
     }
     try {
@@ -411,7 +414,7 @@ export function registerAgentConfigRoutes(app: Express, deps: AgentConfigRouteDe
         ...template.config,
         id: safeAgentId,
         name: name ?? safeAgentId,
-        role: role ?? 'general',
+        role: role ?? 'project',
         enabled: true,
         instanceCount: 1,
       };

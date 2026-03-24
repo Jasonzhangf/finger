@@ -6,6 +6,7 @@
 import fs from 'fs';
 import path from 'path';
 import { FINGER_PATHS } from '../core/finger-paths.js';
+import { loadOrchestrationConfig } from './orchestration-config.js';
 
 export interface ChannelContext {
   channelId: string;
@@ -23,6 +24,7 @@ const CONTEXT_FILE = path.join(FINGER_PATHS.config.dir, 'channel-contexts.json')
 
 export class ChannelContextManager {
   private contexts: Map<string, ChannelContext> = new Map();
+  private defaultTargetAgentId = 'finger-system-agent';
 
   static #instance: ChannelContextManager;
 
@@ -35,6 +37,7 @@ export class ChannelContextManager {
 
   constructor() {
     this.loadContexts();
+    this.defaultTargetAgentId = this.resolveDefaultTargetAgent();
   }
 
   getTargetAgent(channelId: string, parsed: { type: string; targetAgent: string }): string {
@@ -47,7 +50,7 @@ export class ChannelContextManager {
       return ctx.currentAgentId;
     }
 
-    return 'finger-orchestrator';
+    return this.defaultTargetAgentId;
   }
 
   updateContext(
@@ -98,6 +101,21 @@ export class ChannelContextManager {
     } catch {
       this.contexts.clear();
     }
+  }
+
+  private resolveDefaultTargetAgent(): string {
+    try {
+      const loaded = loadOrchestrationConfig();
+      const profile = loaded.config.profiles.find((item) => item.id === loaded.config.activeProfileId);
+      const orchestrator = profile?.agents.find(
+        (item) => item.enabled !== false && item.role === 'orchestrator'
+      );
+      const resolved = orchestrator?.targetAgentId?.trim();
+      if (resolved) return resolved;
+    } catch {
+      // keep default
+    }
+    return 'finger-system-agent';
   }
 
   private persistContexts(): void {

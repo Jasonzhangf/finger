@@ -13,7 +13,7 @@ import { RuntimeFacade } from '../runtime/runtime-facade.js';
 import { registerDefaultRuntimeTools } from '../runtime/default-tools.js';
 import {
   createFingerGeneralModule,
-  FINGER_ORCHESTRATOR_AGENT_ID,
+  FINGER_PROJECT_AGENT_ID,
 } from '../agents/finger-general/finger-general-module.js';
 import type { RuntimeEvent } from '../runtime/events.js';
 import { createConsoleLikeLogger } from '../core/logger/console-like.js';
@@ -48,13 +48,13 @@ export async function runAppCLI(args: string[]): Promise<void> {
   registerDefaultRuntimeTools(globalToolRegistry);
 
   const modules = [
-    createFingerGeneralModule({ id: FINGER_ORCHESTRATOR_AGENT_ID, roleProfile: 'orchestrator' }),
+    createFingerGeneralModule({ id: FINGER_PROJECT_AGENT_ID, roleProfile: 'project' }),
   ];
   for (const module of modules) {
     await moduleRegistry.register(module);
   }
 
-  clog.log('[App] Finger role modules ready: finger-orchestrator');
+  clog.log('[App] Finger role modules ready: finger-project-agent');
 
   // 订阅事件打印
   globalEventBus.subscribeAll(printEvent);
@@ -123,16 +123,16 @@ async function executePrompt(prompt: string): Promise<void> {
   clog.log(`\n> ${prompt}\n`);
   await runtime.sendMessage(currentSessionId, prompt);
 
-  // 通过 MessageHub 发送任务给 finger-orchestrator
+  // 通过 MessageHub 发送任务给 finger-project-agent
   try {
-    clog.log('[App] Sending task to finger-orchestrator...');
-    const result = await hub.sendToModule(FINGER_ORCHESTRATOR_AGENT_ID, {
+    clog.log('[App] Sending task to finger-project-agent...');
+    const result = await hub.sendToModule(FINGER_PROJECT_AGENT_ID, {
       task: prompt,
       sessionId: currentSessionId,
     });
-    clog.log('[App] Orchestrator result:', result);
+    clog.log('[App] Project agent result:', result);
   } catch (err) {
-    clog.error('[App] Failed to execute orchestrator:', err);
+    clog.error('[App] Failed to execute project agent:', err);
   }
 }
 

@@ -117,6 +117,16 @@ export interface LedgerSettings {
   compressTokenThreshold: number;
 }
 
+export interface ContextBuilderSettings {
+  enabled: boolean;
+  budgetRatio: number;
+  halfLifeMs: number;
+  overThresholdRelevance: number;
+  enableModelRanking: boolean;
+  rankingModel: string;
+  includeMemoryMd: boolean;
+}
+
 export interface UserSettings {
   version: string;
   updated_at: string;
@@ -124,6 +134,7 @@ export interface UserSettings {
   preferences: Preferences;
   ui: UISettings;
   ledger: LedgerSettings;
+  contextBuilder: ContextBuilderSettings;
 }
 
 const DEFAULT_USER_SETTINGS: UserSettings = {
@@ -160,6 +171,15 @@ const DEFAULT_USER_SETTINGS: UserSettings = {
   ledger: {
     contextWindow: 262144,
     compressTokenThreshold: 222822,
+  },
+  contextBuilder: {
+    enabled: false,
+    budgetRatio: 0.85,
+    halfLifeMs: 86400000,
+    overThresholdRelevance: 0.5,
+    enableModelRanking: false,
+    rankingModel: 'qwen3.5-plus',
+    includeMemoryMd: true,
   }
 };
 
@@ -338,6 +358,40 @@ export function validateUserSettings(settings: any): void {
   if (settings.ledger.compressTokenThreshold === undefined) {
     settings.ledger.compressTokenThreshold = Math.floor(settings.ledger.contextWindow * 0.85);
   }
+
+  // Validate contextBuilder settings (with defaults for missing fields)
+  if (!settings.contextBuilder || typeof settings.contextBuilder !== 'object') {
+    settings.contextBuilder = {
+      enabled: false,
+      budgetRatio: 0.85,
+      halfLifeMs: 86400000,
+      overThresholdRelevance: 0.5,
+      enableModelRanking: false,
+      rankingModel: 'qwen3.5-plus',
+      includeMemoryMd: true,
+    };
+  }
+  if (typeof settings.contextBuilder.enabled !== 'boolean') {
+    settings.contextBuilder.enabled = false;
+  }
+  if (typeof settings.contextBuilder.budgetRatio !== 'number' || settings.contextBuilder.budgetRatio <= 0 || settings.contextBuilder.budgetRatio > 1) {
+    settings.contextBuilder.budgetRatio = 0.85;
+  }
+  if (typeof settings.contextBuilder.halfLifeMs !== 'number' || settings.contextBuilder.halfLifeMs <= 0) {
+    settings.contextBuilder.halfLifeMs = 86400000;
+  }
+  if (typeof settings.contextBuilder.overThresholdRelevance !== 'number' || settings.contextBuilder.overThresholdRelevance < 0 || settings.contextBuilder.overThresholdRelevance > 1) {
+    settings.contextBuilder.overThresholdRelevance = 0.5;
+  }
+  if (typeof settings.contextBuilder.enableModelRanking !== 'boolean') {
+    settings.contextBuilder.enableModelRanking = false;
+  }
+  if (typeof settings.contextBuilder.rankingModel !== 'string' || settings.contextBuilder.rankingModel.trim().length === 0) {
+    settings.contextBuilder.rankingModel = 'qwen3.5-plus';
+  }
+  if (typeof settings.contextBuilder.includeMemoryMd !== 'boolean') {
+    settings.contextBuilder.includeMemoryMd = true;
+  }
 }
 
 /**
@@ -452,6 +506,14 @@ export function getUserSettingsPath(): string {
 export function loadLedgerSettings(): LedgerSettings {
   const settings = loadUserSettings();
   return settings.ledger;
+}
+
+export function loadContextBuilderSettings(): ContextBuilderSettings {
+  const settings = loadUserSettings();
+  if (!settings.contextBuilder) {
+    return { enabled: false, budgetRatio: 0.85, halfLifeMs: 86400000, overThresholdRelevance: 0.5, enableModelRanking: false, rankingModel: 'qwen3.5-plus', includeMemoryMd: true };
+  }
+  return settings.contextBuilder;
 }
 
 /**

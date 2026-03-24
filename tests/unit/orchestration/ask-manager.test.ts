@@ -59,6 +59,28 @@ describe('AskManager', () => {
     expect(resolution?.requestId).not.toBe(a1.pending.requestId);
   });
 
+  it('keeps ask resolution isolated by channel/user scope', async () => {
+    const manager = new AskManager(2_000);
+    const qq = manager.open({
+      question: 'QQ',
+      channelId: 'qqbot',
+      userId: 'user-qq',
+      sessionId: 'session-qq',
+    });
+    manager.open({
+      question: 'WX',
+      channelId: 'weixin',
+      userId: 'user-wx',
+      sessionId: 'session-wx',
+    });
+
+    const resolution = manager.resolveOldestByScope({
+      channelId: 'weixin',
+      userId: 'user-wx',
+    }, '收到');
+    expect(resolution?.requestId).not.toBe(qq.pending.requestId);
+  });
+
   it('times out unanswered asks', async () => {
     const manager = new AskManager(30);
     const { result } = manager.open({

@@ -84,8 +84,8 @@ export async function handleSuperCommand(
 
     if (parsedCommand.targetAgent === 'finger-system-agent') {
       contextManager.updateContext(channelId, 'system', 'finger-system-agent', previousContext);
-    } else if (parsedCommand.targetAgent === 'finger-orchestrator') {
-      contextManager.updateContext(channelId, 'business', 'finger-orchestrator');
+    } else if (parsedCommand.targetAgent === 'finger-project-agent' || parsedCommand.targetAgent === 'finger-orchestrator') {
+      contextManager.updateContext(channelId, 'business', 'finger-project-agent');
     }
 
     return { handled: false, shouldSwitch: true, targetAgent: parsedCommand.targetAgent };

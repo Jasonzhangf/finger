@@ -1,73 +1,21 @@
 import type { InternalTool, ToolExecutionContext } from './types.js';
-import { FINGER_HOME } from '../../core/finger-paths.js';
 import { logger } from '../../core/logger.js';
-import * as fs from 'fs';
-import * as path from 'path';
+import { applyMailboxAckTransition, applyMailboxReadTransition } from '../../blocks/mailbox-block/protocol.js';
+import {
+  filterMailboxMessages,
+  getMailboxPath,
+  getShortDescription,
+  messageIndex,
+  normalizeIds,
+  readMailboxMessages,
+  resolveMailboxTarget,
+  type ListOptions,
+  type MailboxMessage,
+  writeMailboxMessages,
+} from './mailbox-tool-helpers.js';
+export { mailboxRemoveTool, mailboxRemoveAllTool } from './mailbox-tool-remove.js';
 
 const log = logger.module('MailboxTool');
-
-// Mailbox message structure (matches MailboxBlock)
-interface MailboxMessage {
-  id: string;
-  seq: number;
-  target: string;
-  content: unknown;
-  status: 'pending' | 'processing' | 'completed' | 'failed';
-  result?: unknown;
-  error?: string;
-  createdAt: string;
-  updatedAt: string;
-  sender?: string;
-  callbackId?: string;
-  sessionId?: string;
-  runtimeSessionId?: string;
-  channel?: string;
-  accountId?: string;
-  threadId?: string;
-  readAt?: string;
-  ackAt?: string;
-}
-
-interface ListOptions {
-  status?: string;
-  limit?: number;
-  offset?: number;
-  unreadOnly?: boolean;
-}
-
-// Helper to get mailbox path for a target
-function getMailboxPath(target: string): string {
-  return path.join(FINGER_HOME, 'mailbox', target, 'inbox.jsonl');
-}
-
-// Helper to read messages from a mailbox
-function readMailboxMessages(mailboxPath: string): MailboxMessage[] {
-  try {
-    if (!fs.existsSync(mailboxPath)) {
-      return [];
-    }
-    const content = fs.readFileSync(mailboxPath, 'utf-8');
-    const lines = content.trim().split('\n').filter(Boolean);
-    return lines.map(line => JSON.parse(line) as MailboxMessage);
-  } catch (error) {
-    log.warn('[readMailboxMessages] Failed to read mailbox', { mailboxPath, error });
-    return [];
-  }
-}
-
-// Helper to get short description for a message
-function getShortDescription(message: MailboxMessage, maxLength = 100): string {
-  let desc = '';
-  if (typeof message.content === 'string') {
-    desc = message.content;
-  } else if (message.content && typeof message.content === 'object') {
-    const content = message.content as Record<string, unknown>;
-    desc = (content.text as string) || (content.summary as string) || JSON.stringify(content);
-  } else {
-    desc = JSON.stringify(message.content);
-  }
-  return desc.length > maxLength ? desc.substring(0, maxLength) + '...' : desc;
-}
 
 /**
  * mailbox.status - Get mailbox overview (unread/pending counts)
@@ -85,7 +33,7 @@ export const mailboxStatusTool: InternalTool = {
     },
   },
   async execute(params: unknown, context: ToolExecutionContext) {
-    const { target = context.sessionId ? `agent-${context.sessionId}` : 'finger-system-agent' } = params as { target?: string };
+    const target = resolveMailboxTarget(params as { target?: string }, context);
     
     const mailboxPath = getMailboxPath(target);
     const messages = readMailboxMessages(mailboxPath);
@@ -106,9 +54,11 @@ export const mailboxStatusTool: InternalTool = {
       recentUnread: unread.slice(-5).map(m => ({
         id: m.id,
         seq: m.seq,
-        sender: m.sender,
-        shortDescription: getShortDescription(m, 80),
-        createdAt: m.createdAt,
+      sender: m.sender,
+      category: m.category,
+      priority: m.priority,
+      shortDescription: getShortDescription(m, 80),
+      createdAt: m.createdAt,
       })),
     };
   },
@@ -132,6 +82,10 @@ export const mailboxListTool: InternalTool = {
         enum: ['pending', 'processing', 'completed', 'failed'],
         description: 'Filter by message status',
       },
+      category: {
+        type: 'string',
+        description: 'Filter by message category',
+      },
       unreadOnly: {
         type: 'boolean',
         description: 'Only show unread messages',
@@ -145,24 +99,21 @@ export const mailboxListTool: InternalTool = {
   async execute(params: unknown, context: ToolExecutionContext) {
     const options = params as ListOptions & { target?: string };
     const { 
-      target = context.sessionId ? `agent-${context.sessionId}` : 'finger-system-agent',
       status,
+      category,
       unreadOnly,
       limit = 20,
     } = options;
+    const target = resolveMailboxTarget(options, context);
     
     const mailboxPath = getMailboxPath(target);
-    let messages = readMailboxMessages(mailboxPath);
-    
-    if (status) {
-      messages = messages.filter(m => m.status === status);
-    }
-    if (unreadOnly) {
-      messages = messages.filter(m => !m.readAt);
-    }
-    
-    // Sort by seq descending (newest first)
-    messages.sort((a, b) => b.seq - a.seq);
+    const messages = filterMailboxMessages(readMailboxMessages(mailboxPath), {
+      status,
+      category,
+      unreadOnly,
+      limit,
+      ids: normalizeIds(options.ids),
+    });
     
     const result = messages.slice(0, limit).map(m => ({
       id: m.id,
@@ -170,6 +121,8 @@ export const mailboxListTool: InternalTool = {
       status: m.status,
       sender: m.sender,
       channel: m.channel,
+      category: m.category,
+      priority: m.priority,
       shortDescription: getShortDescription(m, 100),
       readAt: m.readAt,
       ackAt: m.ackAt,
@@ -187,11 +140,104 @@ export const mailboxListTool: InternalTool = {
 };
 
 /**
+ * mailbox.read_all - Batch read messages
+ */
+export const mailboxReadAllTool: InternalTool = {
+  name: 'mailbox.read_all',
+  description: 'Read multiple mailbox messages. By default reads unread messages; normal tasks move pending → processing while notifications stay pending.',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      target: {
+        type: 'string',
+        description: 'Target mailbox (default: current agent)',
+      },
+      status: {
+        type: 'string',
+        enum: ['pending', 'processing', 'completed', 'failed'],
+        description: 'Optional status filter before reading',
+      },
+      category: {
+        type: 'string',
+        description: 'Optional category filter before reading',
+      },
+      unreadOnly: {
+        type: 'boolean',
+        description: 'Only read unread messages (default: true)',
+      },
+      limit: {
+        type: 'number',
+        description: 'Maximum messages to read',
+      },
+      ids: {
+        type: 'array',
+        items: { type: 'string' },
+        description: 'Explicit message ids to read',
+      },
+    },
+  },
+  async execute(params: unknown, context: ToolExecutionContext) {
+    const options = params as ListOptions & { target?: string };
+    const target = resolveMailboxTarget(options, context);
+    const mailboxPath = getMailboxPath(target);
+    const messages = readMailboxMessages(mailboxPath);
+    const selected = filterMailboxMessages(messages, {
+      status: options.status,
+      category: options.category,
+      unreadOnly: options.unreadOnly !== false,
+      limit: options.limit,
+      ids: normalizeIds(options.ids),
+    });
+
+    let changed = 0;
+    let movedToProcessing = 0;
+    const updatedIds = new Set<string>();
+    const updatedSummaries: Array<Record<string, unknown>> = [];
+
+    for (const message of selected) {
+      const transitioned = applyMailboxReadTransition(message);
+      updatedSummaries.push({
+        id: transitioned.message.id,
+        status: transitioned.message.status,
+        category: transitioned.message.category,
+        priority: transitioned.message.priority,
+        readAt: transitioned.message.readAt,
+        ackAt: transitioned.message.ackAt,
+      });
+      if (!transitioned.changed) continue;
+      changed += 1;
+      if (transitioned.movedToProcessing) {
+        movedToProcessing += 1;
+      }
+      updatedIds.add(message.id);
+      const idx = messageIndex(messages, message.id);
+      if (idx >= 0) {
+        messages[idx] = transitioned.message;
+      }
+    }
+
+    if (updatedIds.size > 0) {
+      writeMailboxMessages(mailboxPath, messages);
+    }
+
+    return {
+      success: true,
+      target,
+      matched: selected.length,
+      changed,
+      movedToProcessing,
+      readIds: selected.map((message) => message.id),
+      messages: updatedSummaries,
+    };
+  },
+};
+
+/**
  * mailbox.read - Read a specific message by ID
  */
 export const mailboxReadTool: InternalTool = {
   name: 'mailbox.read',
-  description: 'Read a specific message by ID. Returns full message content and marks as read.',
+  description: 'Read a specific message by ID. First read will mark it as read and transition pending → processing.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -207,7 +253,8 @@ export const mailboxReadTool: InternalTool = {
     required: ['id'],
   },
   async execute(params: unknown, context: ToolExecutionContext) {
-    const { id, target = context.sessionId ? `agent-${context.sessionId}` : 'finger-system-agent' } = params as { id: string; target?: string };
+    const { id } = params as { id: string; target?: string };
+    const target = resolveMailboxTarget(params as { target?: string }, context);
     
     const mailboxPath = getMailboxPath(target);
     const messages = readMailboxMessages(mailboxPath);
@@ -220,34 +267,38 @@ export const mailboxReadTool: InternalTool = {
       };
     }
     
-    // Mark as read (update readAt timestamp)
-    if (!message.readAt) {
-      message.readAt = new Date().toISOString();
-      // Write back to mailbox
+    const transitioned = applyMailboxReadTransition(message);
+
+    if (transitioned.changed) {
       try {
-        const updatedLines = messages.map(m => JSON.stringify(m)).join('\n') + '\n';
-        fs.writeFileSync(mailboxPath, updatedLines, 'utf-8');
+        messages[messageIndex(messages, id)] = transitioned.message;
+        writeMailboxMessages(mailboxPath, messages);
       } catch (error) {
         log.warn('[mailbox.read] Failed to mark as read', { id, error });
       }
     }
-    
+
     return {
       success: true,
+      target,
+      handshake: {
+        movedToProcessing: transitioned.movedToProcessing,
+        requiresAck: transitioned.message.category !== 'notification' && !transitioned.message.ackAt,
+      },
       message: {
-        id: message.id,
-        seq: message.seq,
-        status: message.status,
-        sender: message.sender,
-        channel: message.channel,
-        content: message.content,
-        result: message.result,
-        error: message.error,
-        sessionId: message.sessionId,
-        threadId: message.threadId,
-        createdAt: message.createdAt,
-        readAt: message.readAt,
-        ackAt: message.ackAt,
+        id: transitioned.message.id,
+        seq: transitioned.message.seq,
+        status: transitioned.message.status,
+        sender: transitioned.message.sender,
+        channel: transitioned.message.channel,
+        content: transitioned.message.content,
+        result: transitioned.message.result,
+        error: transitioned.message.error,
+        sessionId: transitioned.message.sessionId,
+        threadId: transitioned.message.threadId,
+        createdAt: transitioned.message.createdAt,
+        readAt: transitioned.message.readAt,
+        ackAt: transitioned.message.ackAt,
       },
     };
   },
@@ -258,7 +309,7 @@ export const mailboxReadTool: InternalTool = {
  */
 export const mailboxAckTool: InternalTool = {
   name: 'mailbox.ack',
-  description: 'Acknowledge a message, marking it as processed. Use after handling the message.',
+  description: 'Acknowledge a mailbox task after handling it. Requires mailbox.read(id) first and supports completed/failed terminal states.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -270,38 +321,70 @@ export const mailboxAckTool: InternalTool = {
         type: 'string',
         description: 'Target mailbox (default: current agent)',
       },
+      status: {
+        type: 'string',
+        enum: ['completed', 'failed'],
+        description: 'Terminal status to persist (default: completed, or failed when error is provided)',
+      },
+      result: {
+        description: 'Structured result to store with the mailbox message',
+      },
+      error: {
+        type: 'string',
+        description: 'Failure reason when the task could not be completed',
+      },
     },
     required: ['id'],
   },
   async execute(params: unknown, context: ToolExecutionContext) {
-    const { id, target = context.sessionId ? `agent-${context.sessionId}` : 'finger-system-agent' } = params as { id: string; target?: string };
+    const { id, status, result, error } = params as {
+      id: string;
+      target?: string;
+      status?: 'completed' | 'failed';
+      result?: unknown;
+      error?: string;
+    };
+    const target = resolveMailboxTarget(params as { target?: string }, context);
     
     const mailboxPath = getMailboxPath(target);
     const messages = readMailboxMessages(mailboxPath);
-    const messageIndex = messages.findIndex(m => m.id === id);
+    const idx = messageIndex(messages, id);
     
-    if (messageIndex === -1) {
+    if (idx === -1) {
       return {
         success: false,
         error: `Message not found: ${id}`,
       };
     }
     
-    const message = messages[messageIndex];
-    message.ackAt = new Date().toISOString();
-    message.status = 'completed';
+    const message = messages[idx];
+    const transitioned = applyMailboxAckTransition(message, {
+      status,
+      result,
+      error,
+    });
+    if (!transitioned.ok || !transitioned.message) {
+      return {
+        success: false,
+        error: transitioned.error ?? `Failed to acknowledge message: ${id}`,
+      };
+    }
+    messages[idx] = transitioned.message;
     
     // Write back to mailbox
     try {
-      const updatedLines = messages.map(m => JSON.stringify(m)).join('\n') + '\n';
-      fs.writeFileSync(mailboxPath, updatedLines, 'utf-8');
+      writeMailboxMessages(mailboxPath, messages);
       
       log.info('[mailbox.ack] Message acknowledged', { id, target });
       
       return {
         success: true,
-        message: `Message ${id} acknowledged`,
-        ackAt: message.ackAt,
+        target,
+        status: transitioned.message.status,
+        message: `Message ${id} acknowledged as ${transitioned.message.status}`,
+        ackAt: transitioned.message.ackAt,
+        result: transitioned.message.result,
+        error: transitioned.message.error,
       };
    } catch (error) {
       log.error('[mailbox.ack] Failed to acknowledge', error instanceof Error ? error : new Error(String(error)));

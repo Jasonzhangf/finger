@@ -17,7 +17,12 @@ describe('HeartbeatScheduler mailbox lifecycle', () => {
 
   it('checks system agent mailbox even when registry has no project agents', async () => {
     vi.spyOn(registry, 'listAgents').mockResolvedValue([]);
-    const execute = vi.fn(async () => ({ ok: true }));
+    const execute = vi.fn(async (command: string) => {
+      if (command === 'catalog') {
+        return { agents: [{ id: SYSTEM_AGENT_ID, status: 'idle' }] };
+      }
+      return { ok: true };
+    });
     const scheduler = new HeartbeatScheduler({
       agentRuntimeBlock: { execute },
       sessionManager: {
@@ -47,9 +52,74 @@ describe('HeartbeatScheduler mailbox lifecycle', () => {
     );
   });
 
-  it('auto-cleans dispatch-result notifications regardless of read state', async () => {
+  it('uses 5-minute mailbox prompt interval when agent stays idle', async () => {
     vi.spyOn(registry, 'listAgents').mockResolvedValue([]);
-    const execute = vi.fn(async () => ({ ok: true }));
+    const execute = vi.fn(async (command: string) => {
+      if (command === 'catalog') {
+        return { agents: [{ id: SYSTEM_AGENT_ID, status: 'idle' }] };
+      }
+      return { ok: true };
+    });
+    const scheduler = new HeartbeatScheduler({
+      agentRuntimeBlock: { execute },
+      sessionManager: {
+        getOrCreateSystemSession: vi.fn(() => ({ id: 'system-session-test' })),
+      },
+    } as any);
+
+    heartbeatMailbox.append(
+      SYSTEM_AGENT_ID,
+      { type: 'heartbeat-task', taskId: 'task-throttle', prompt: 'run mailbox check' },
+      { category: 'heartbeat-task', priority: 1 },
+    );
+
+    await (scheduler as any).promptMailboxChecks();
+    const firstDispatchCount = execute.mock.calls.filter((call: unknown[]) => call[0] === 'dispatch').length;
+    expect(firstDispatchCount).toBe(1);
+
+    // second check happens immediately: should be throttled by 5-minute interval
+    await (scheduler as any).promptMailboxChecks();
+    const secondDispatchCount = execute.mock.calls.filter((call: unknown[]) => call[0] === 'dispatch').length;
+    expect(secondDispatchCount).toBe(1);
+  });
+
+  it('defers mailbox prompt while busy and prompts immediately after idle', async () => {
+    vi.spyOn(registry, 'listAgents').mockResolvedValue([]);
+    let runtimeStatus: 'busy' | 'idle' = 'busy';
+    const execute = vi.fn(async (command: string) => {
+      if (command === 'catalog') {
+        return { agents: [{ id: SYSTEM_AGENT_ID, status: runtimeStatus }] };
+      }
+      return { ok: true };
+    });
+    const scheduler = new HeartbeatScheduler({
+      agentRuntimeBlock: { execute },
+      sessionManager: {
+        getOrCreateSystemSession: vi.fn(() => ({ id: 'system-session-test' })),
+      },
+    } as any);
+
+    heartbeatMailbox.append(
+      SYSTEM_AGENT_ID,
+      { type: 'dispatch-task', taskId: 'task-defer', prompt: 'run mailbox check' },
+      { category: 'dispatch-task', priority: 1 },
+    );
+
+    // force "due now" so busy state should mark deferred prompt
+    (scheduler as any).lastMailboxPromptAt.set(SYSTEM_AGENT_ID, Date.now() - 6 * 60_000);
+    await (scheduler as any).promptMailboxChecks();
+    expect(execute.mock.calls.filter((call: unknown[]) => call[0] === 'dispatch')).toHaveLength(0);
+    expect((scheduler as any).mailboxPromptDeferredByAgent.has(SYSTEM_AGENT_ID)).toBe(true);
+
+    // once idle, the deferred prompt should fire immediately (without waiting another 5 min)
+    runtimeStatus = 'idle';
+    await (scheduler as any).promptMailboxChecks();
+    expect(execute.mock.calls.filter((call: unknown[]) => call[0] === 'dispatch')).toHaveLength(1);
+    expect((scheduler as any).mailboxPromptDeferredByAgent.has(SYSTEM_AGENT_ID)).toBe(false);
+  });
+
+  it('cleans expired mailbox notifications by retention window (instead of immediate delete)', async () => {
+    const execute = vi.fn(async () => ({ agents: [] }));
     const scheduler = new HeartbeatScheduler({
       agentRuntimeBlock: { execute },
       sessionManager: {
@@ -67,16 +137,16 @@ describe('HeartbeatScheduler mailbox lifecycle', () => {
       { type: 'dispatch-result', dispatchId: 'dispatch-2', summary: 'done-2' },
       { category: 'notification', priority: 2 },
     );
-    heartbeatMailbox.append(
-      SYSTEM_AGENT_ID,
-      { type: 'heartbeat-task', taskId: 'task-2', prompt: 'still actionable' },
-      { category: 'heartbeat-task', priority: 1 },
-    );
+    const notifications = heartbeatMailbox.list(SYSTEM_AGENT_ID, { category: 'notification' });
+    expect(notifications).toHaveLength(2);
 
-    await (scheduler as any).promptMailboxChecks();
+    // Manually age one message to exceed notification retention window (12h)
+    const old = notifications[0];
+    old.createdAt = new Date(Date.now() - 13 * 60 * 60_000).toISOString();
+    old.updatedAt = old.createdAt;
 
-    expect(heartbeatMailbox.list(SYSTEM_AGENT_ID, { category: 'notification' })).toHaveLength(0);
-    expect(heartbeatMailbox.list(SYSTEM_AGENT_ID, { category: 'heartbeat-task' })).toHaveLength(1);
-    expect(execute).toHaveBeenCalledTimes(1);
+    const result = (scheduler as any).cleanupExpiredMailboxMessages(SYSTEM_AGENT_ID, Date.now());
+    expect(result.removed).toBe(1);
+    expect(heartbeatMailbox.list(SYSTEM_AGENT_ID, { category: 'notification' })).toHaveLength(1);
   });
 });

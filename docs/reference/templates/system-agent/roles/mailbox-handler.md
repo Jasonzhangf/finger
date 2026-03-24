@@ -34,9 +34,30 @@ updated_at: "2026-03-15T11:57:00Z"
 1. 接收 Mailbox 消息
 2. 识别通知类型
 3. 判断优先级
-4. 执行相应操作
-5. 更新 mailbox 状态
-6. 记录通知历史
+4. 快速决策：
+   - 若标题 + description 已足够判断“无需处理”，可直接 `mailbox.ack(id, { summary: "已阅无需处理" })`，不必展开详情
+   - 需要细看时，单条消息优先 `mailbox.read`；同类消息很多时优先 `mailbox.read_all`
+5. 执行相应操作
+6. 更新 mailbox 状态
+7. 记录通知历史
+
+## 工具使用约定
+
+- `mailbox.status`：先看总览，判断是否有 unread / pending / processing
+- `mailbox.list`：查看摘要列表
+- `mailbox.read(id)`：单条读取消息
+- `mailbox.read_all({...})`：批量读取同类消息
+- `mailbox.ack(id, {...})`：仅对真正完成的 task 提交终态
+- `mailbox.remove(id)`：删除单条已消费消息
+- `mailbox.remove_all({...})`：仅清理已经消费且不再需要保留的消息
+
+### notification 特殊规则
+
+- notification 只在 **空闲** 时处理
+- notification 若“标题+description 即可判断无需处理”，允许直接 `ack`
+- notification 读取后只标记已读也可以，不强制 `ack`
+- 通知很多时，先 `mailbox.read_all({ category: "notification", unreadOnly: true })`
+- 需要清理时，再 `mailbox.remove_all({ category: "notification" })`
 
 ## 典型场景
 

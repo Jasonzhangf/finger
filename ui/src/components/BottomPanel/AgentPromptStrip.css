@@ -1,0 +1,80 @@
+.agent-prompt-strip {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 6px 8px;
+  background: var(--panel-bg, #1a1b1e);
+  border-bottom: 1px solid #2d3748;
+}
+
+.agent-prompt-strip-title {
+  font-size: 10px;
+  color: #64748b;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  flex-shrink: 0;
+}
+
+.agent-prompt-strip-list {
+  display: flex;
+  gap: 6px;
+  overflow-x: auto;
+  align-items: center;
+  min-height: 28px;
+}
+
+.agent-prompt-chip {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 10px;
+  border-radius: 4px;
+  border: 1px solid #2d3748;
+  background: #0e1217;
+  color: #94a3b8;
+  font-size: 12px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: all 0.15s;
+  flex-shrink: 0;
+}
+
+.agent-prompt-chip:hover {
+  background: #1e293b;
+  border-color: #3b82f6;
+  color: #e4e7eb;
+}
+
+.agent-prompt-chip.selected {
+  background: #1e3a5f;
+  border-color: #3b82f6;
+  color: #60a5fa;
+}
+
+.chip-name {
+  max-width: 120px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.chip-status {
+  font-size: 10px;
+  padding: 1px 5px;
+  border-radius: 3px;
+  line-height: 1.2;
+}
+
+.chip-status.idle {
+  background: #064e3b;
+  color: #34d399;
+}
+
+.chip-status.running {
+  background: #78350f;
+  color: #fbbf24;
+}
+
+.chip-status.error {
+  background: #7f1d1d;
+  color: #f87171;
+}

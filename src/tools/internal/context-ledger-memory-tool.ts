@@ -15,6 +15,8 @@ interface ContextLedgerMemoryToolInput {
   since_ms?: number;
   until_ms?: number;
   limit?: number;
+  slot_start?: number;
+  slot_end?: number;
   contains?: string;
   fuzzy?: boolean;
   event_types?: string[];
@@ -60,10 +62,12 @@ export const contextLedgerMemoryTool: InternalTool<unknown, ContextLedgerMemoryT
       since_ms: { type: 'number', description: 'Unix milliseconds start boundary (inclusive)' },
       until_ms: { type: 'number', description: 'Unix milliseconds end boundary (inclusive)' },
       limit: { type: 'number', description: 'Max records to return, default 50, max 500' },
+      slot_start: { type: 'number', description: '1-based slot start for query detail retrieval' },
+      slot_end: { type: 'number', description: '1-based slot end for query detail retrieval' },
       contains: { type: 'string', description: 'Keyword query; fuzzy search supported' },
       fuzzy: { type: 'boolean', description: 'When true, fuzzy query checks compact memory first' },
       event_types: { type: 'array', items: { type: 'string' }, description: 'Filter by event types, e.g. tool_call/tool_result/context_compact' },
-      detail: { type: 'boolean', description: 'For fuzzy compact hit, drill down into raw timeline details' },
+      detail: { type: 'boolean', description: 'When true on query, return raw ledger entries for the selected slot window' },
       text: { type: 'string', description: 'Reserved (disabled for agent manual writes)' },
       append: { type: 'boolean', description: 'Reserved (disabled for agent manual writes)' },
       focus_max_chars: { type: 'number', description: 'Reserved (disabled for agent manual writes)' },
@@ -163,6 +167,8 @@ function parseInput(rawInput: unknown): ContextLedgerMemoryToolInput {
     since_ms: typeof rawInput.since_ms === 'number' ? rawInput.since_ms : undefined,
     until_ms: typeof rawInput.until_ms === 'number' ? rawInput.until_ms : undefined,
     limit: typeof rawInput.limit === 'number' ? rawInput.limit : undefined,
+    slot_start: typeof rawInput.slot_start === 'number' ? rawInput.slot_start : undefined,
+    slot_end: typeof rawInput.slot_end === 'number' ? rawInput.slot_end : undefined,
     contains: typeof rawInput.contains === 'string' ? rawInput.contains : undefined,
     fuzzy: rawInput.fuzzy === true,
     event_types: Array.isArray(rawInput.event_types)

@@ -42,12 +42,16 @@ export function fallbackDispatchQueueTimeoutToMailbox(params: {
     sender: params.sourceAgentId,
     sessionId: params.sessionId,
     channel: typeof params.metadata?.channelId === 'string' ? params.metadata.channelId : undefined,
+    sourceType: 'control',
+    category: 'dispatch-task',
+    priority: 0,
+    deliveryPolicy: 'realtime',
   });
 
   return {
     delivery: 'mailbox',
     mailboxMessageId: appended.id,
     summary: `Target busy timeout; task moved to mailbox (${appended.id}) for ${params.targetAgentId}`,
-    nextAction: 'Wait for the target agent to call mailbox.read(...) and mailbox.ack(...) after it becomes available.',
+    nextAction: 'Wait for the target agent to call mailbox.read(...) and then mailbox.ack(..., {summary/result or error}) after it becomes available.',
   };
 }

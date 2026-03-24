@@ -43,6 +43,7 @@ import { registerRuntimePathRoutes } from './runtime-paths.js';
 import { registerProjectRoutes } from './projects.js';
 import { registerClockRoutes } from './clock.js';
 import { registerSystemRegistryRoutes } from './system-registry.js';
+import { registerLedgerRoutes } from './ledger-routes.js';
 
 export interface RegisterAllRoutesDeps {
   sessionManager: SessionManager;
@@ -226,6 +227,10 @@ export function registerAllRoutes(app: Express, deps: RegisterAllRoutesDeps): vo
   });
 
   registerRuntimePathRoutes(app, {
+    sessionManager: deps.sessionManager,
+  });
+
+  registerLedgerRoutes(app, {
     sessionManager: deps.sessionManager,
   });
 

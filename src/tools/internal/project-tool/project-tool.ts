@@ -89,7 +89,7 @@ export function registerProjectTool(
         if (deps.dispatchTaskToAgent) {
           const dispatchRequest = {
             sourceAgentId: 'finger-system-agent',
-            targetAgentId: 'finger-orchestrator',
+            targetAgentId: 'finger-project-agent',
             task: {
               prompt: `项目已创建：${projectName}\n路径：${normalizedPath}\n${params.description || ''}`,
             },
@@ -111,7 +111,7 @@ export function registerProjectTool(
           projectId: normalizedPath,
           sessionId: session.id,
           dispatchId,
-          orchestratorAgentId: 'finger-orchestrator',
+          orchestratorAgentId: 'finger-project-agent',
         };
       } catch (err) {
         return {

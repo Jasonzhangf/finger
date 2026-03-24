@@ -72,8 +72,9 @@ System Agent 支持多种角色，根据交互上下文动态切换：
 1. Mailbox 收到通知
 2. 切换到 mailbox-handler 角色
 3. 使用 mailbox-handler 提示词处理通知
-4. 执行相应操作（记录、响应、转发等）
-5. 更新 mailbox 状态
+4. 先做快速判断：若标题 + description 已足够判断“无需处理”，可直接 `mailbox.ack(id, { summary: "已阅无需处理" })`
+5. 需要细看时再执行相应操作（记录、响应、转发等）；少量消息可单条 `mailbox.read`，大量同类消息优先 `mailbox.read_all`
+6. 更新 mailbox 状态
 
 ## 设计原则
 

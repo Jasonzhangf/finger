@@ -188,7 +188,10 @@ function resolveContextLedger(metadata: Record<string, unknown>, roleProfile: st
     enabled: true,
     agentId: asString(metadata.contextLedgerAgentId) ?? agentId,
     role: asString(metadata.contextLedgerRole) ?? roleProfile,
-    canReadAll: metadata.contextLedgerCanReadAll === true || roleProfile === 'orchestrator',
+    canReadAll: metadata.contextLedgerCanReadAll === true
+      || roleProfile === 'project'
+      || roleProfile === 'system'
+      || roleProfile === 'orchestrator',
     focusEnabled: metadata.contextLedgerFocusEnabled !== false,
     focusMaxChars: typeof metadata.contextLedgerFocusMaxChars === 'number'
       ? metadata.contextLedgerFocusMaxChars

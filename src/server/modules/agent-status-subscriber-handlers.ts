@@ -114,8 +114,12 @@ export async function handleDispatch(
   ctx: HandlerContext,
 ): Promise<void> {
   const payload = event.payload as {
+    sourceAgentId?: string;
     dispatchId?: string;
     targetAgentId?: string;
+    status?: string;
+    queuePosition?: number;
+    result?: Record<string, unknown>;
   };
 
   const targetAgentId = payload.targetAgentId;
@@ -124,6 +128,122 @@ export async function handleDispatch(
   if (ctx.primaryAgentId && targetAgentId !== ctx.primaryAgentId) {
     ctx.registerChildAgent(targetAgentId, ctx.primaryAgentId);
   }
+
+  const sessionId = event.sessionId;
+  const mapping = ctx.resolveEnvelopeMapping(sessionId);
+  if (!mapping || !ctx.messageHub) return;
+
+  const agentInfo = await ctx.getAgentInfo(targetAgentId);
+  const dispatchStatus = typeof payload.status === 'string' ? payload.status : 'queued';
+  const queuePosition = typeof payload.queuePosition === 'number' ? payload.queuePosition : undefined;
+  const mailboxMessageId = typeof payload.result?.messageId === 'string' ? payload.result.messageId : undefined;
+  const state: WrappedStatusUpdate['status']['state'] = dispatchStatus === 'failed'
+    ? 'failed'
+    : dispatchStatus === 'completed'
+      ? 'completed'
+      : 'running';
+  const summary = [
+    `派发 ${targetAgentId}`,
+    `状态: ${dispatchStatus}`,
+    typeof queuePosition === 'number' ? `队列 #${queuePosition}` : '',
+    mailboxMessageId ? `mailbox: ${mailboxMessageId}` : '',
+  ].filter((item) => item.length > 0).join(' · ');
+
+  const wrappedUpdate: WrappedStatusUpdate = {
+    type: 'agent_status',
+    eventId: payload.dispatchId || `dispatch-${Date.now()}`,
+    timestamp: event.timestamp,
+    sessionId,
+    task: {
+      taskId: payload.dispatchId,
+      sourceAgentId: payload.sourceAgentId,
+      targetAgentId,
+      taskDescription: summary,
+    },
+    agent: agentInfo,
+    status: {
+      state,
+      summary,
+      details: {
+        dispatchId: payload.dispatchId,
+        sourceAgentId: payload.sourceAgentId,
+        targetAgentId,
+        dispatchStatus,
+        ...(typeof queuePosition === 'number' ? { queuePosition } : {}),
+        ...(mailboxMessageId ? { mailboxMessageId } : {}),
+      },
+    },
+    display: {
+      title: `${getAgentIcon(agentInfo.agentRole)} 派发更新`,
+      // avoid duplication: summary is already rendered as status.summary
+      subtitle: undefined,
+      icon: getAgentIcon(agentInfo.agentRole),
+      level: targetAgentId === ctx.primaryAgentId ? 'detailed' : 'summary',
+    },
+  };
+
+  await sendStatusUpdate(mapping.envelope, wrappedUpdate, ctx.messageHub, ctx.channelBridgeManager);
+}
+
+export async function handleWaitingForUser(
+  event: RuntimeEvent,
+  ctx: HandlerContext,
+): Promise<void> {
+  const mapping = ctx.resolveEnvelopeMapping(event.sessionId);
+  if (!mapping || !ctx.messageHub) return;
+
+  const payload = event.payload as {
+    reason?: string;
+    options?: Array<{ id?: string; label?: string }>;
+    context?: Record<string, unknown>;
+  };
+  const askContext = payload.context ?? {};
+  const question = typeof askContext.question === 'string' && askContext.question.trim().length > 0
+    ? askContext.question.trim()
+    : '需要你回复后才能继续';
+  const options = Array.isArray(payload.options)
+    ? payload.options
+      .map((item, index) => {
+        const label = typeof item?.label === 'string' && item.label.trim().length > 0
+          ? item.label.trim()
+          : typeof item?.id === 'string' && item.id.trim().length > 0
+            ? item.id.trim()
+            : '';
+        return label ? `${index + 1}. ${label}` : '';
+      })
+      .filter((item) => item.length > 0)
+    : [];
+  const extraContext = typeof askContext.context === 'string' && askContext.context.trim().length > 0
+    ? askContext.context.trim()
+    : '';
+
+  const wrappedUpdate: WrappedStatusUpdate = {
+    type: 'agent_status',
+    eventId: `waiting-for-user-${Date.now()}`,
+    timestamp: event.timestamp,
+    sessionId: event.sessionId,
+    agent: { agentId: typeof askContext.agentId === 'string' ? askContext.agentId : 'unknown-agent' },
+    task: { taskDescription: question },
+    status: {
+      state: 'waiting',
+      summary: question,
+      details: {
+        reason: payload.reason,
+        requestId: typeof askContext.requestId === 'string' ? askContext.requestId : undefined,
+      },
+    },
+    display: {
+      title: '❓ 需要你回复',
+      subtitle: [
+        options.length > 0 ? `可选项：\n${options.join('\n')}` : '请直接回复你的答案。',
+        extraContext ? `上下文：${extraContext}` : '',
+      ].filter(Boolean).join('\n\n'),
+      icon: '❓',
+      level: 'detailed',
+    },
+  };
+
+  await sendStatusUpdate(mapping.envelope, wrappedUpdate, ctx.messageHub, ctx.channelBridgeManager);
 }
 
 /**

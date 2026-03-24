@@ -13,7 +13,7 @@ import { logger } from '../../core/logger.js';
 
 const log = logger.module('AgentRuntimeBlock');
 
-export type AgentRoleType = 'executor' | 'reviewer' | 'orchestrator' | 'searcher';
+export type AgentRoleType = 'system' | 'project' | 'reviewer';
 
 export type AgentCapabilityLayer = 'summary' | 'execution' | 'governance' | 'full';
 
@@ -115,18 +115,18 @@ interface AgentRuntimeViewItem {
 
 const BASE_STARTUP_TEMPLATES: AgentStartupTemplate[] = [
   {
-    id: 'finger-orchestrator',
-    name: 'Orchestrator',
-    role: 'orchestrator',
-    defaultImplementationId: 'native:finger-orchestrator',
-    defaultModuleId: 'finger-orchestrator',
+    id: 'finger-project-agent',
+    name: 'Project Agent',
+    role: 'project',
+    defaultImplementationId: 'native:finger-project-agent',
+    defaultModuleId: 'finger-project-agent',
     defaultInstanceCount: 1,
     launchMode: 'orchestrator',
   },
   {
     id: 'finger-system-agent',
     name: 'System Agent',
-    role: 'orchestrator',
+    role: 'system',
     defaultImplementationId: 'native:finger-system-agent',
     defaultModuleId: 'finger-system-agent',
     defaultInstanceCount: 1,
@@ -231,6 +231,13 @@ export interface AgentControlResult {
   targetAgentId?: string;
   result?: unknown;
   error?: string;
+}
+
+export interface DispatchQueueTimeoutFallbackResult {
+  delivery: 'mailbox';
+  mailboxMessageId: string;
+  summary?: string;
+  nextAction?: string;
 }
 
 export interface AgentDeployRequest {
@@ -359,6 +366,16 @@ export interface AgentRuntimeBlockDeps {
   resourcePool?: ResourcePool;
   getLoadedAgentConfigs: () => LoadedAgentConfig[];
   primaryOrchestratorAgentId?: string;
+  onDispatchQueueTimeout?: (params: {
+    dispatchId: string;
+    sourceAgentId: string;
+    targetAgentId: string;
+    sessionId?: string;
+    workflowId?: string;
+    assignment?: AgentAssignmentLifecycle;
+    task: unknown;
+    metadata?: Record<string, unknown>;
+  }) => DispatchQueueTimeoutFallbackResult | null;
 }
 
 function isObjectRecord(value: unknown): value is Record<string, unknown> {
@@ -378,12 +395,11 @@ function normalizeStringArray(value: unknown): string[] {
 }
 
 function normalizeAgentType(value: unknown): AgentRoleType {
-  if (typeof value !== 'string') return 'executor';
+  if (typeof value !== 'string') return 'project';
   const normalized = value.trim().toLowerCase();
-  if (normalized.includes('orchestr')) return 'orchestrator';
+  if (normalized.includes('system')) return 'system';
   if (normalized.includes('review')) return 'reviewer';
-  if (normalized.includes('search')) return 'searcher';
-  return 'executor';
+  return 'project';
 }
 
 function normalizeAgentStatus(value: unknown): 'idle' | 'running' | 'error' | 'paused' {
@@ -454,8 +470,7 @@ function isIgnorableRuntimeModule(moduleId: string): boolean {
     || moduleId.includes('echo')
     || moduleId === 'chat-codex'
     || moduleId === 'chat-codex-gateway'
-    || moduleId === 'finger-general-gateway'
-    || moduleId === 'finger-orchestrator-gateway';
+    || moduleId === 'finger-project-agent-gateway';
 }
 
 function moduleHasAgentRuntimeIdentity(module: OrchestrationModule): boolean {
@@ -782,7 +797,7 @@ export class AgentRuntimeBlock extends BaseBlock {
       const next: AgentDefinition = {
         id: normalizedId,
         name: patch.name ?? existing?.name ?? normalizedId,
-        role: patch.role ?? existing?.role ?? 'executor',
+        role: patch.role ?? existing?.role ?? 'project',
         source: patch.source ?? existing?.source ?? 'runtime-config',
         implementations: patch.implementations ?? existing?.implementations ?? [],
         tags: patch.tags ?? existing?.tags ?? [],
@@ -1005,7 +1020,7 @@ export class AgentRuntimeBlock extends BaseBlock {
           name: instanceTotal === 1
             ? (definitions.get(deployment.agentId)?.name ?? deployment.agentId)
             : `${definitions.get(deployment.agentId)?.name ?? deployment.agentId}#${idx + 1}`,
-          type: definitions.get(deployment.agentId)?.role ?? 'executor',
+          type: definitions.get(deployment.agentId)?.role ?? 'project',
           status,
           ...(deployment.sessionId ? { sessionId: deployment.sessionId } : {}),
           ...(workflowId ? { workflowId } : {}),
@@ -1065,9 +1080,9 @@ export class AgentRuntimeBlock extends BaseBlock {
       let status: AgentRuntimeStatus = 'idle';
       if (related.some((item) => item.status === 'error' || item.status === 'failed')) {
         status = 'error';
-      } else if (def.role === 'orchestrator' && hasPausedWorkflowForAgent) {
+      } else if ((def.role === 'project' || def.role === 'system') && hasPausedWorkflowForAgent) {
         status = 'paused';
-      } else if (def.role === 'orchestrator' && hasActiveWorkflowForAgent) {
+      } else if ((def.role === 'project' || def.role === 'system') && hasActiveWorkflowForAgent) {
         status = 'running';
       } else if (runningCount > 0 || runningAgentIds.has(def.id)) {
         status = 'running';
@@ -1365,7 +1380,7 @@ export class AgentRuntimeBlock extends BaseBlock {
       sourceAgentId: input.sourceAgentId,
       targetAgentId: input.targetAgentId,
       responsesStructuredOutput: !isSystemRole,
-      responsesOutputSchemaPreset: isSystemRole ? 'none' : (targetRole === 'searcher' ? 'searcher' : targetRole),
+      responsesOutputSchemaPreset: isSystemRole ? 'none' : (targetRole === 'reviewer' ? 'reviewer' : 'orchestrator'),
       ...(assignment ? { assignment } : {}),
       orchestration: true,
     };
@@ -1797,6 +1812,44 @@ export class AgentRuntimeBlock extends BaseBlock {
         queued.timeoutHandle = setTimeout(() => {
           const removed = this.removeQueuedDispatch(target, dispatchId);
           if (!removed) return;
+          const fallback = this.deps.onDispatchQueueTimeout?.({
+            dispatchId,
+            sourceAgentId: normalizedInput.sourceAgentId,
+            targetAgentId: target,
+            sessionId: normalizedInput.sessionId,
+            workflowId: normalizedInput.workflowId,
+            assignment,
+            task: normalizedInput.task,
+            metadata: normalizedInput.metadata,
+          });
+          if (fallback) {
+            const fallbackResult: DispatchSummaryResult = {
+              success: true,
+              status: 'queued_mailbox',
+              summary: fallback.summary ?? `Target agent busy; task moved to mailbox for ${target}`,
+              messageId: fallback.mailboxMessageId,
+              ...(fallback.nextAction ? { nextAction: fallback.nextAction } : {}),
+            };
+            this.emitDispatchEvent({
+              dispatchId,
+              sourceAgentId: normalizedInput.sourceAgentId,
+              targetAgentId: target,
+              status: 'queued',
+              blocking,
+              sessionId: normalizedInput.sessionId,
+              workflowId: normalizedInput.workflowId,
+              assignment: this.withAssignmentPhase(assignment, 'queued'),
+              result: fallbackResult,
+            });
+            resolve({
+              ok: true,
+              dispatchId,
+              status: 'queued',
+              targetModuleId,
+              result: fallbackResult,
+            });
+            return;
+          }
           this.emitDispatchEvent({
             dispatchId,
             sourceAgentId: normalizedInput.sourceAgentId,
@@ -2062,7 +2115,7 @@ export class AgentRuntimeBlock extends BaseBlock {
       this.deps.resourcePool.addResource({
         id: resourceId,
         name: `${definition.name} (${deployment.implementationId}) #${i + 1}`,
-        type,
+        type: type === 'reviewer' ? 'reviewer' : 'orchestrator',
         capabilities,
         status: 'available',
       });
@@ -2207,18 +2260,15 @@ export class AgentRuntimeBlock extends BaseBlock {
       if (!moduleId || existingIds.has(moduleId)) continue;
       const inferredRole = normalizeAgentType(module.metadata?.role ?? module.metadata?.type ?? moduleId);
       if (
-        inferredRole !== 'orchestrator'
+        inferredRole !== 'project'
+        && inferredRole !== 'system'
         && inferredRole !== 'reviewer'
-        && inferredRole !== 'executor'
-        && inferredRole !== 'searcher'
       ) continue;
       if (
-        !moduleId.includes('orchestr')
+        !moduleId.includes('project')
+        && !moduleId.includes('orchestr')
+        && !moduleId.includes('system')
         && !moduleId.includes('review')
-        && !moduleId.includes('execut')
-        && !moduleId.includes('coder')
-        && !moduleId.includes('search')
-        && !moduleId.includes('research')
       ) continue;
       templates.push({
         id: moduleId,
@@ -2227,7 +2277,7 @@ export class AgentRuntimeBlock extends BaseBlock {
         defaultImplementationId: `native:${moduleId}`,
         defaultModuleId: moduleId,
         defaultInstanceCount: 1,
-        launchMode: inferredRole === 'orchestrator' ? 'orchestrator' : 'manual',
+        launchMode: inferredRole === 'project' ? 'orchestrator' : 'manual',
       });
       existingIds.add(moduleId);
     }

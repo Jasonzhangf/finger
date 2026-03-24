@@ -58,6 +58,44 @@ function deriveProjectName(projectPath: string): string {
   return parts[parts.length - 1] || normalized || 'unknown-project';
 }
 
+function slugifyProjectName(projectName: string): string {
+  return projectName
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    || 'project';
+}
+
+function looksLikeLegacyProjectAgentId(agentId: string | undefined, projectId: string): boolean {
+  if (typeof agentId !== 'string') return true;
+  const normalized = agentId.trim();
+  return normalized.length === 0 || normalized === `project:${projectId}`;
+}
+
+function allocateProjectAgentId(
+  registry: AgentRegistry,
+  projectName: string,
+  projectId: string,
+  existingAgentId?: string,
+): string {
+  if (typeof existingAgentId === 'string' && existingAgentId.trim().length > 0 && !looksLikeLegacyProjectAgentId(existingAgentId, projectId)) {
+    return existingAgentId.trim();
+  }
+
+  const base = slugifyProjectName(projectName);
+  const used = new Set(
+    Object.entries(registry.agents)
+      .filter(([id]) => id !== projectId)
+      .map(([, agent]) => agent.agentId),
+  );
+  for (let index = 1; index < 1000; index += 1) {
+    const candidate = `${base}-${String(index).padStart(2, '0')}`;
+    if (!used.has(candidate)) return candidate;
+  }
+  return `${base}-${Date.now()}`;
+}
+
 /**
  * 加载 Agent 注册表
  */
@@ -121,6 +159,12 @@ export async function registerAgent(agentInfo: AgentInfo): Promise<void> {
   const existing = registry.agents[agentInfo.projectId];
   const projectPath = agentInfo.projectPath?.trim() || existing?.projectPath || '';
   const projectName = agentInfo.projectName || existing?.projectName || deriveProjectName(projectPath);
+  const resolvedAgentId = allocateProjectAgentId(
+    registry,
+    projectName,
+    agentInfo.projectId,
+    agentInfo.agentId || existing?.agentId,
+  );
   const mergedStats: AgentStats = {
     tasksCompleted: agentInfo.stats?.tasksCompleted ?? existing?.stats?.tasksCompleted ?? 0,
     tasksFailed: agentInfo.stats?.tasksFailed ?? existing?.stats?.tasksFailed ?? 0,
@@ -131,6 +175,7 @@ export async function registerAgent(agentInfo: AgentInfo): Promise<void> {
     ...agentInfo,
     projectPath,
     projectName,
+    agentId: resolvedAgentId,
     monitored: existing?.monitored ?? agentInfo.monitored,
     monitorUpdatedAt: existing?.monitorUpdatedAt ?? agentInfo.monitorUpdatedAt,
     lastHeartbeat: new Date().toISOString(),
@@ -167,6 +212,12 @@ export async function updateAgent(projectId: string, updates: Partial<AgentInfo>
     ...updates,
     projectPath: nextProjectPath,
     projectName: updates.projectName || agent.projectName || deriveProjectName(nextProjectPath),
+    agentId: allocateProjectAgentId(
+      registry,
+      updates.projectName || agent.projectName || deriveProjectName(nextProjectPath),
+      projectId,
+      updates.agentId || agent.agentId,
+    ),
     lastHeartbeat: new Date().toISOString(),
   };
   
@@ -242,13 +293,14 @@ export async function setMonitorStatus(projectPath: string, enabled: boolean): P
   const projectId = projectIdFromPath(trimmedPath);
   const registry = await loadRegistry();
   const existing = registry.agents[projectId];
+  const existingAgentId = existing?.agentId;
   const now = new Date().toISOString();
 
   const base: AgentInfo = existing || {
     projectId,
     projectPath: trimmedPath,
     projectName: deriveProjectName(trimmedPath),
-    agentId: `project:${projectId}`,
+    agentId: allocateProjectAgentId(registry, deriveProjectName(trimmedPath), projectId, existingAgentId),
     status: 'idle',
     lastHeartbeat: now,
     stats: {

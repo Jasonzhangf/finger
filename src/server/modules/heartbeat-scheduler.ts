@@ -14,6 +14,7 @@ import {
   checkHeartbeatNeedsTruncation,
 } from './heartbeat-md-parser.js';
 import { buildHeartbeatEnvelope, formatEnvelopesForContext, type MailboxEnvelope } from './mailbox-envelope.js';
+import { formatLegacyMailboxPrompt, resolveProjectPath, dispatchAutoRepairTask } from './heartbeat-helpers.js';
 import { isObjectRecord } from '../common/object.js';
 
 const log = logger.module('HeartbeatScheduler');
@@ -278,7 +279,7 @@ export class HeartbeatScheduler {
     projectId: string | undefined,
     config?: HeartbeatTaskConfig,
   ): Promise<void> {
-    const heartbeatMdPath = resolveHeartbeatMdPath(projectId, await this.resolveProjectPath(projectId), FINGER_PATHS.home);
+    const heartbeatMdPath = resolveHeartbeatMdPath(projectId, await resolveProjectPath(projectId), FINGER_PATHS.home);
 
     // Validate HEARTBEAT.md format
     if (heartbeatMdPath) {
@@ -292,7 +293,7 @@ export class HeartbeatScheduler {
         });
 
         // Dispatch auto-repair task to system agent
-        await this.dispatchAutoRepairTask(projectId, heartbeatMdPath, validation);
+        dispatchAutoRepairTask(projectId, heartbeatMdPath, validation);
 
         // Do not proceed with heartbeat dispatch when format is invalid
         return;
@@ -447,7 +448,7 @@ export class HeartbeatScheduler {
       // Format mailbox context using envelope builder
       const mailboxContext = envelopes.length > 0
         ? formatEnvelopesForContext(envelopes)
-        : this.formatLegacyMailboxPrompt(pending);
+        : formatLegacyMailboxPrompt(pending);
 
       const prompt = [
         mailboxContext,
@@ -481,64 +482,4 @@ export class HeartbeatScheduler {
     }
   }
 
-  private formatLegacyMailboxPrompt(
-    pending: ReturnType<typeof heartbeatMailbox.listPending>,
-  ): string {
-    const lines = ['# Mailbox Check', '你有待处理的系统任务，请逐条执行。', '', '待办任务列表：'];
-    for (const msg of pending) {
-      const msgContent = typeof msg.content === 'object' && msg.content ? msg.content as Record<string, unknown> : {};
-      const taskId = typeof msgContent.taskId === 'string' ? msgContent.taskId : 'unknown';
-      const projectId = typeof msgContent.projectId === 'string' ? msgContent.projectId : 'unknown';
-      lines.push(`- messageId=${msg.id} taskId=${taskId} projectId=${projectId}`);
-    }
-    return lines.join('\n');
-  }
-
-  private async resolveProjectPath(projectId: string | undefined): Promise<string | undefined> {
-    if (!projectId) return undefined;
-    const agents = await listAgents();
-    const agent = agents.find(a => a.projectId === projectId);
-    return agent?.projectPath;
-  }
-
-  private async dispatchAutoRepairTask(
-    projectId: string | undefined,
-    heartbeatMdPath: string,
-    validation: { errors: string[]; warnings: string[] },
-  ): Promise<void> {
-    const targetAgentId = 'finger-system-agent';
-    const taskId = `heartbeat-repair:${projectId ?? 'global'}`;
-
-    const promptLines = [
-      '# HEARTBEAT.md Auto-Repair Request',
-      'The HEARTBEAT.md format is invalid or missing. Please repair it to the routecodex format.',
-      '',
-      `File: ${heartbeatMdPath}`,
-      projectId ? `Project ID: ${projectId}` : 'Project ID: global',
-      '',
-      'Validation errors:',
-      ...validation.errors.map(err => `- ${err}`),
-      '',
-      'Warnings:',
-      ...validation.warnings.map(warn => `- ${warn}`),
-      '',
-      'Required format: YAML front matter (---) with title, version, updated_at, and optional Heartbeat-Stop-When / Heartbeat-Until fields.',
-      'Make sure to preserve existing checklist items if possible.',
-    ];
-
-    const mailboxPayload = {
-      type: 'heartbeat-repair',
-      taskId,
-      projectId,
-      prompt: promptLines.join('\n'),
-      requiresFeedback: true,
-    };
-
-    heartbeatMailbox.append(targetAgentId, mailboxPayload, {
-      sender: 'system-heartbeat',
-      sourceType: 'control',
-      category: 'heartbeat-repair',
-      priority: 0,
-    });
-  }
 }

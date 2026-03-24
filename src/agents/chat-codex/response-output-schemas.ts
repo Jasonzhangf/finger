@@ -68,7 +68,7 @@ const REVIEWER_RESPONSE_SCHEMA: Record<string, unknown> = {
   properties: {
     role: { type: 'string', const: 'reviewer' },
     summary: { type: 'string' },
-    target: { type: 'string', enum: ['executor', 'orchestrator', 'general'] },
+    target: { type: 'string', enum: ['project', 'reviewer', 'system'] },
     reviewLevel: { type: 'string', enum: ['feedback', 'soft_gate', 'hard_gate'] },
     decision: { type: 'string', enum: ['pass', 'retry', 'block', 'feedback'] },
     feedbackRound: { type: 'number' },

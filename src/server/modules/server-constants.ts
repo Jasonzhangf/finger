@@ -1,5 +1,5 @@
 import { FINGER_PATHS } from '../../core/finger-paths.js';
-import { FINGER_ORCHESTRATOR_AGENT_ID, FINGER_GENERAL_AGENT_ID } from '../../agents/finger-general/finger-general-module.js';
+import { FINGER_PROJECT_AGENT_ID } from '../../agents/finger-general/finger-general-module.js';
 import { SYSTEM_AGENT_CONFIG } from '../../agents/finger-system-agent/index.js';
 
 export const ERROR_SAMPLE_DIR = FINGER_PATHS.logs.errorsamplesDir;
@@ -16,8 +16,8 @@ export const BLOCKING_MESSAGE_RETRY_BASE_MS = Number.isFinite(Number(process.env
   ? Math.max(100, Math.floor(Number(process.env.FINGER_BLOCKING_MESSAGE_RETRY_BASE_MS)))
   : 750;
 
-export const PRIMARY_ORCHESTRATOR_AGENT_ID = FINGER_ORCHESTRATOR_AGENT_ID;
-export const PRIMARY_ORCHESTRATOR_GATEWAY_ID = 'finger-orchestrator-gateway';
+export const PRIMARY_ORCHESTRATOR_AGENT_ID = FINGER_PROJECT_AGENT_ID;
+export const PRIMARY_ORCHESTRATOR_GATEWAY_ID = 'finger-project-agent-gateway';
 export const LEGACY_ORCHESTRATOR_AGENT_ID = 'chat-codex';
 export const LEGACY_ORCHESTRATOR_GATEWAY_ID = 'chat-codex-gateway';
 export const PRIMARY_ORCHESTRATOR_TARGET = (
@@ -42,9 +42,11 @@ export function isPrimaryOrchestratorTarget(target: string): boolean {
   if (normalized.length === 0) return false;
   return normalized === PRIMARY_ORCHESTRATOR_TARGET
     || normalized === PRIMARY_ORCHESTRATOR_AGENT_ID
-    || normalized === FINGER_GENERAL_AGENT_ID
+    || normalized === 'finger-general'
+    || normalized === 'finger-orchestrator'
     || normalized === LEGACY_ORCHESTRATOR_AGENT_ID
     || normalized === PRIMARY_ORCHESTRATOR_GATEWAY_ID
+    || normalized === 'finger-orchestrator-gateway'
     || normalized === LEGACY_ORCHESTRATOR_GATEWAY_ID
     || normalized === SYSTEM_AGENT_CONFIG.id;
 }

@@ -332,13 +332,14 @@ A tool named `context_ledger.memory` is available for timeline context retrieval
 Use it as a two-level memory query mechanism:
 
 - Level 1 (`fuzzy: true`): fuzzy lookup in compact memory first (compressed timeline summaries).
-- Level 2 (`detail: true`): pull detailed records from the append-only timeline ledger.
+- Level 2 (`detail: true` + `slot_start` / `slot_end`): pull detailed records from the append-only timeline ledger.
 
 Key points:
 
 - The ledger is time-sensitive and ordered by timestamp.
 - Compact memory is an indexed copy for fast fuzzy lookup; original ledger remains immutable append-only.
-- If detailed context is needed, run a second query with `detail: true` and a narrowed time range.
+- Use `action: "search"` to get slot-indexed hit summaries first.
+- Use `action: "query"` to inspect slot summaries, and add `slot_start` / `slot_end` with `detail: true` when detailed records are needed.
 - To carry critical context in future turns, call `action: "insert"` and write into focus slot.
 - Insert supports direct text or timeline slice insertion (`since_ms` + `until_ms` when `text` is omitted).
 - The injected `<context_ledger_focus>` block is an old-memory recall zone. Treat it as recalled history, not guaranteed latest state.

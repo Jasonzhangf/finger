@@ -219,7 +219,7 @@ export async function dryrunCommand(
 ): Promise<void> {
   const target = options.target && options.target.trim().length > 0
     ? options.target.trim()
-    : 'finger-orchestrator-gateway';
+    : 'finger-project-agent-gateway';
 
   const message: Record<string, unknown> = {
     text,

@@ -150,8 +150,11 @@ export function buildAgentEnvelope(agentId: string) {
   if (agentId === 'finger-system-agent') {
     return { id: 'finger-system-agent', name: 'SystemBot', role: 'system', mode: 'system' as const };
   }
-  if (agentId === 'finger-orchestrator') {
-    return { id: 'finger-orchestrator', name: 'Orchestrator', role: 'orchestrator', mode: 'business' as const };
+  if (agentId === 'finger-project-agent' || agentId === 'finger-orchestrator' || agentId === 'finger-general') {
+    return { id: 'finger-project-agent', name: 'Project Agent', role: 'project', mode: 'business' as const };
+  }
+  if (agentId === 'finger-reviewer') {
+    return { id: 'finger-reviewer', name: 'Reviewer', role: 'reviewer', mode: 'business' as const };
   }
   return { id: agentId, name: agentId, role: 'agent', mode: 'business' as const };
 }
@@ -162,9 +165,13 @@ export function prefixAgentResponse(agentId: string, text: string): string {
     if (normalized.toLowerCase().startsWith('systembot:')) return normalized;
     return `SystemBot: ${normalized}`;
   }
-  if (agentId === 'finger-orchestrator') {
-    if (normalized.toLowerCase().startsWith('orchestrator:')) return normalized;
-    return `Orchestrator: ${normalized}`;
+  if (agentId === 'finger-project-agent' || agentId === 'finger-orchestrator' || agentId === 'finger-general') {
+    if (normalized.toLowerCase().startsWith('project agent:')) return normalized;
+    return `Project Agent: ${normalized}`;
+  }
+  if (agentId === 'finger-reviewer') {
+    if (normalized.toLowerCase().startsWith('reviewer:')) return normalized;
+    return `Reviewer: ${normalized}`;
   }
   return normalized;
 }

@@ -143,7 +143,7 @@ export function parseSuperCommand(content: string): ParsedMessage {
       type: 'super_command',
       blocks: [block],
       effectiveContent: remainingContent,
-      targetAgent: 'finger-orchestrator',
+      targetAgent: 'finger-project-agent',
       shouldSwitch: true,
     };
   }

@@ -30,11 +30,11 @@ import { echoInput, echoOutput } from '../agents/test/mock-echo-agent.js';
 import { memoryOutput } from '../outputs/memory.js';
 import { createWebUIOutput } from '../outputs/webui.js';
 import {
-  FINGER_GENERAL_AGENT_ID,
-  FINGER_GENERAL_ALLOWED_TOOLS,
-  FINGER_ORCHESTRATOR_AGENT_ID,
-  FINGER_ORCHESTRATOR_ALLOWED_TOOLS,
- FINGER_SYSTEM_AGENT_ID,
+  FINGER_PROJECT_AGENT_ID,
+  FINGER_PROJECT_ALLOWED_TOOLS,
+  FINGER_REVIEWER_AGENT_ID,
+  FINGER_REVIEWER_ALLOWED_TOOLS,
+  FINGER_SYSTEM_AGENT_ID,
   FINGER_SYSTEM_ALLOWED_TOOLS,
 } from '../agents/finger-general/finger-general-module.js';
 import { mailbox } from './mailbox.js';
@@ -224,8 +224,6 @@ const askManager = new AskManager(
     : 600_000,
 );
 const bdTools = new BdTools(process.cwd());
-const loadedTools = registerDefaultRuntimeTools(globalToolRegistry);
-logger.module('server').info('Runtime tools loaded', { tools: loadedTools.join(', ') });
 const gatewayManager = new GatewayManager(hub, moduleRegistry, {
   daemonUrl: `http://127.0.0.1:${PORT}`,
 });
@@ -254,6 +252,8 @@ const getAgentRuntimeDeps = createGetAgentRuntimeDeps(
 const dispatchTaskToAgent = (input: AgentDispatchRequest) =>
   dispatchTaskToAgentModule(getAgentRuntimeDeps(), input);
 
+const loadedTools = registerDefaultRuntimeTools(globalToolRegistry, getAgentRuntimeDeps);
+logger.module('server').info('Runtime tools loaded', { tools: loadedTools.join(', ') });
 
 
 let applyOrchestrationConfig: (config: OrchestrationConfigV1) => Promise<{
@@ -289,13 +289,13 @@ await registerFingerRoleModules({
     emitLoopEventToEventBus(event);
   },
 }, [
-  { id: FINGER_GENERAL_AGENT_ID, roleProfile: 'general', allowedTools: FINGER_GENERAL_ALLOWED_TOOLS },
-  { id: FINGER_ORCHESTRATOR_AGENT_ID, roleProfile: 'orchestrator', allowedTools: FINGER_ORCHESTRATOR_ALLOWED_TOOLS },
+  { id: FINGER_PROJECT_AGENT_ID, roleProfile: 'project', allowedTools: FINGER_PROJECT_ALLOWED_TOOLS },
+  { id: FINGER_REVIEWER_AGENT_ID, roleProfile: 'reviewer', allowedTools: FINGER_REVIEWER_ALLOWED_TOOLS },
   { id: FINGER_SYSTEM_AGENT_ID, roleProfile: 'system', allowedTools: FINGER_SYSTEM_ALLOWED_TOOLS },
 ], {
   enableLegacyChatCodexAlias: ENABLE_LEGACY_CHAT_CODEX_ALIAS,
   legacyAgentId: LEGACY_ORCHESTRATOR_AGENT_ID,
-  legacyAllowedTools: FINGER_GENERAL_ALLOWED_TOOLS,
+  legacyAllowedTools: FINGER_PROJECT_ALLOWED_TOOLS,
 });
 logger.module('server').info('Finger runner mode', { mode: shouldUseMockChatCodexRunner(runtimeFlags) ? 'mock' : 'real' });
 
@@ -426,7 +426,7 @@ startServer(app, process.env.HOST || '0.0.0.0', PORT, {
 });
 
 logger.module('server').info('Finger role modules ready', {
-  agents: [FINGER_GENERAL_AGENT_ID, FINGER_ORCHESTRATOR_AGENT_ID].join(', '),
+  agents: [FINGER_PROJECT_AGENT_ID, FINGER_REVIEWER_AGENT_ID, FINGER_SYSTEM_AGENT_ID].join(', '),
 });
 try {
   const loadedOrchestrationConfig = loadOrchestrationConfig();
@@ -445,13 +445,14 @@ try {
 await runPostInit({
   hub,
   channelBridgeManager,
+  askManager,
   eventBus: globalEventBus,
   sessionManager,
   dispatchTaskToAgent,
   broadcast,
   agentStatusSubscriber,
   applyOrchestrationConfig,
-  generalAgentId: FINGER_GENERAL_AGENT_ID,
+  generalAgentId: FINGER_PROJECT_AGENT_ID,
   setLoopEventEmitter,
   runtimeInstructionBus,
   app,

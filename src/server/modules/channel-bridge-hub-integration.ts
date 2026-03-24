@@ -120,7 +120,7 @@ export class ChannelBridgeHubIntegration {
       // 构造 dispatch request
       const dispatchRequest: AgentDispatchRequest = {
         sourceAgentId: 'channel-bridge',
-        targetAgentId: 'finger-orchestrator',
+        targetAgentId: 'finger-project-agent',
         task: { prompt: envelope.content },
         sessionId: `channel-${this.channelId}-${envelope.senderId}`,
         metadata: {

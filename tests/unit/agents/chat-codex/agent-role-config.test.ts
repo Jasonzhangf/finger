@@ -16,13 +16,21 @@ describe('agent-role-config', () => {
       'mailbox.status',
       'mailbox.list',
       'mailbox.read',
+      'mailbox.read_all',
       'mailbox.ack',
+      'mailbox.remove',
+      'mailbox.remove_all',
     ]));
     expect(BASE_AGENT_ROLE_CONFIG.reviewer.allowedTools).toEqual(expect.arrayContaining([
+      'user.ask',
       'mailbox.status',
       'mailbox.list',
       'mailbox.read',
+      'mailbox.read_all',
       'mailbox.ack',
+      'mailbox.remove',
+      'mailbox.remove_all',
     ]));
+    expect(BASE_AGENT_ROLE_CONFIG.project.allowedTools).toContain('report-task-completion');
   });
 });

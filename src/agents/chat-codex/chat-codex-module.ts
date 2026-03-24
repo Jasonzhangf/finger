@@ -23,22 +23,26 @@ import { hasNewUnreadSinceLastNotified, getNewUnreadEntries } from '../../runtim
 const DEFAULT_KERNEL_TIMEOUT_MS = 600_000;
 const DEFAULT_KERNEL_TIMEOUT_RETRY_COUNT = 5;
 export const CHAT_CODEX_ORCHESTRATOR_ALLOWED_TOOLS = [
-  ...BASE_AGENT_ROLE_CONFIG.orchestrator.allowedTools,
+  ...BASE_AGENT_ROLE_CONFIG.project.allowedTools,
 ];
 export const CHAT_CODEX_EXECUTOR_ALLOWED_TOOLS = [
-  ...BASE_AGENT_ROLE_CONFIG.executor.allowedTools,
+  ...BASE_AGENT_ROLE_CONFIG.project.allowedTools,
 ];
 export const CHAT_CODEX_REVIEWER_ALLOWED_TOOLS = [
   ...BASE_AGENT_ROLE_CONFIG.reviewer.allowedTools,
 ];
 export const CHAT_CODEX_SEARCHER_ALLOWED_TOOLS = [
-  ...BASE_AGENT_ROLE_CONFIG.searcher.allowedTools,
+  ...BASE_AGENT_ROLE_CONFIG.project.allowedTools,
 ];
 export const CHAT_CODEX_RESEARCHER_ALLOWED_TOOLS = CHAT_CODEX_SEARCHER_ALLOWED_TOOLS;
 export const CHAT_CODEX_CODER_ALLOWED_TOOLS = CHAT_CODEX_EXECUTOR_ALLOWED_TOOLS;
 export const CHAT_CODEX_CODING_CLI_ALLOWED_TOOLS = CHAT_CODEX_ORCHESTRATOR_ALLOWED_TOOLS;
+export const CHAT_CODEX_PROJECT_ALLOWED_TOOLS = CHAT_CODEX_ORCHESTRATOR_ALLOWED_TOOLS;
+export const CHAT_CODEX_SYSTEM_ALLOWED_TOOLS = [...BASE_AGENT_ROLE_CONFIG.system.allowedTools];
 
 type ChatCodexRoleProfileId =
+  | 'project'
+  | 'system'
   | 'orchestrator'
   | 'executor'
   | 'reviewer'
@@ -1164,15 +1168,23 @@ export function createChatCodexModule(
       roleProfiles: {
         general: {
           id: 'general',
-          allowedTools: CHAT_CODEX_ORCHESTRATOR_ALLOWED_TOOLS,
+          allowedTools: CHAT_CODEX_PROJECT_ALLOWED_TOOLS,
+        },
+        project: {
+          id: 'project',
+          allowedTools: CHAT_CODEX_PROJECT_ALLOWED_TOOLS,
+        },
+        system: {
+          id: 'system',
+          allowedTools: CHAT_CODEX_SYSTEM_ALLOWED_TOOLS,
         },
         orchestrator: {
           id: 'orchestrator',
-          allowedTools: CHAT_CODEX_ORCHESTRATOR_ALLOWED_TOOLS,
+          allowedTools: CHAT_CODEX_PROJECT_ALLOWED_TOOLS,
         },
         executor: {
           id: 'executor',
-          allowedTools: CHAT_CODEX_EXECUTOR_ALLOWED_TOOLS,
+          allowedTools: CHAT_CODEX_PROJECT_ALLOWED_TOOLS,
         },
         reviewer: {
           id: 'reviewer',
@@ -1180,19 +1192,19 @@ export function createChatCodexModule(
         },
         searcher: {
           id: 'searcher',
-          allowedTools: CHAT_CODEX_SEARCHER_ALLOWED_TOOLS,
+          allowedTools: CHAT_CODEX_PROJECT_ALLOWED_TOOLS,
         },
         researcher: {
           id: 'researcher',
-          allowedTools: CHAT_CODEX_SEARCHER_ALLOWED_TOOLS,
+          allowedTools: CHAT_CODEX_PROJECT_ALLOWED_TOOLS,
         },
         coder: {
           id: 'coder',
-          allowedTools: CHAT_CODEX_EXECUTOR_ALLOWED_TOOLS,
+          allowedTools: CHAT_CODEX_PROJECT_ALLOWED_TOOLS,
         },
         'coding-cli': {
           id: 'coding-cli',
-          allowedTools: CHAT_CODEX_EXECUTOR_ALLOWED_TOOLS,
+          allowedTools: CHAT_CODEX_PROJECT_ALLOWED_TOOLS,
         },
         router: {
           id: 'router',
@@ -1364,7 +1376,7 @@ function writePromptInjectionSnapshot(input: {
 }): void {
   try {
     const agentId = parseOptionalString(input.metadata?.contextLedgerAgentId) ?? 'unknown-agent';
-    const roleProfile = parseOptionalString(input.roleProfile) ?? 'orchestrator';
+    const roleProfile = parseOptionalString(input.roleProfile) ?? 'project';
     const filePath = resolvePromptInjectionLogPath(input.sessionId, input.metadata, agentId);
     const resolvedSystemPrompt = parseOptionalString(input.systemPrompt)
       ?? parseOptionalString(input.options?.system_prompt);
@@ -1434,10 +1446,11 @@ function sanitizePathPart(value: string): string {
 
 function normalizeDefaultRoleProfileId(role?: string): string {
   const normalized = (role ?? '').trim().toLowerCase();
-  if (normalized === 'general') return 'orchestrator';
-  if (normalized === 'researcher') return 'searcher';
-  if (normalized === 'coder') return 'executor';
-  if (normalized === 'system') return 'orchestrator';
+  if (normalized === 'general') return 'project';
+  if (normalized === 'project') return 'project';
+  if (normalized === 'system') return 'system';
+  if (normalized === 'researcher') return 'project';
+  if (normalized === 'coder') return 'project';
   if (
     normalized === 'orchestrator'
     || normalized === 'executor'
@@ -1446,9 +1459,10 @@ function normalizeDefaultRoleProfileId(role?: string): string {
     || normalized === 'coding-cli'
     || normalized === 'router'
   ) {
-    return normalized;
+    if (normalized === 'reviewer' || normalized === 'router') return normalized;
+    return 'project';
   }
-  return 'orchestrator';
+  return 'project';
 }
 
 function parseKernelMetadata(raw: string): Record<string, unknown> | undefined {
@@ -1972,7 +1986,9 @@ function resolveDeveloperRoleFromMetadata(
 function normalizeDeveloperRole(role: string): ChatCodexDeveloperRole {
   const normalized = role.trim().toLowerCase();
   if (normalized === 'router') return 'router';
-  return resolveBaseAgentRole(normalized);
+  const baseRole = resolveBaseAgentRole(normalized);
+  if (baseRole === 'reviewer') return 'reviewer';
+  return 'orchestrator';
 }
 
 function buildLedgerDeveloperInstructions(
@@ -1984,8 +2000,10 @@ function buildLedgerDeveloperInstructions(
   const ledgerRole = parseOptionalString(metadata?.contextLedgerRole) ?? role;
   const mode = parseOptionalString(metadata?.kernelMode) ?? parseOptionalString(metadata?.mode) ?? 'main';
   const defaultCanReadAll = role === 'router'
-    ? BASE_AGENT_ROLE_CONFIG.orchestrator.defaultLedgerCanReadAll
-    : BASE_AGENT_ROLE_CONFIG[role].defaultLedgerCanReadAll;
+    ? BASE_AGENT_ROLE_CONFIG.project.defaultLedgerCanReadAll
+    : role === 'reviewer'
+      ? BASE_AGENT_ROLE_CONFIG.reviewer.defaultLedgerCanReadAll
+      : BASE_AGENT_ROLE_CONFIG.project.defaultLedgerCanReadAll;
   const canReadAll = parseOptionalBoolean(metadata?.contextLedgerCanReadAll) ?? defaultCanReadAll;
   const readableAgents = Array.isArray(metadata?.contextLedgerReadableAgents)
     ? metadata.contextLedgerReadableAgents
@@ -2355,17 +2373,19 @@ function defaultToolSpecification(name: string): ChatCodexToolSpecification {
     return {
       name,
       description:
-        'Timeline context memory tool. Supports query/insert. For fuzzy query it checks compact memory first, then allows detailed timeline lookup.',
+        'Timeline context memory tool. Supports search/query/insert. Search returns slot summaries, and query can fetch detailed ledger entries by slot range.',
       inputSchema: {
         type: 'object',
         properties: {
-          action: { type: 'string', enum: ['query', 'insert'] },
+          action: { type: 'string', enum: ['query', 'search', 'insert'] },
           session_id: { type: 'string' },
           agent_id: { type: 'string' },
           mode: { type: 'string' },
           since_ms: { type: 'number' },
           until_ms: { type: 'number' },
           limit: { type: 'number' },
+          slot_start: { type: 'number' },
+          slot_end: { type: 'number' },
           contains: { type: 'string' },
           fuzzy: { type: 'boolean' },
           detail: { type: 'boolean' },

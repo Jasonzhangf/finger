@@ -23,6 +23,8 @@ export interface DispatchSummaryResult {
   evidence?: DispatchEvidenceItem[];
   nextAction?: string;
   error?: string;
+  /** Full raw response data - NEVER truncated, for ledger storage */
+  rawPayload?: unknown;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -49,6 +51,60 @@ function parseJsonObject(text: string | undefined): Record<string, unknown> | un
   } catch {
     return undefined;
   }
+}
+
+/**
+ * Extract a readable summary from structured data when no explicit summary exists.
+ * Tries common fields: summary, title, verdict, conclusion, result, response,
+ * then builds one-line from structured sub-fields (issues list, keyFiles, outputs).
+ * Falls back to truncated JSON string representation.
+ */
+function extractReadableSummary(raw: unknown, truncateMax = 800): string {
+  if (!isRecord(raw)) return truncateInline(String(raw), truncateMax);
+  const direct = asNonEmptyString(raw.summary)
+    ?? asNonEmptyString(raw.title)
+    ?? asNonEmptyString(raw.verdict)
+    ?? asNonEmptyString(raw.conclusion)
+    ?? asNonEmptyString(raw.result);
+  if (direct) return truncateInline(direct, truncateMax);
+  const resp = isRecord(raw.response) ? raw.response : undefined;
+  if (resp) {
+    const respSummary = asNonEmptyString(resp.summary)
+      ?? asNonEmptyString(resp.title)
+      ?? asNonEmptyString(resp.verdict);
+    if (respSummary) return truncateInline(respSummary, truncateMax);
+  }
+  const issues = pickArray(raw.issues);
+  if (issues && issues.length > 0) {
+    const titles = issues
+      .map((e) => {
+        if (!isRecord(e)) return 'issue';
+        return asNonEmptyString(e.title) || asNonEmptyString(e.description) || 'issue';
+      })
+      .filter((t): t is string => typeof t === 'string')
+      .slice(0, 5);
+    if (titles.length > 0) {
+      const v = asNonEmptyString(raw.verdict) || 'done';
+      return truncateInline(v + ': ' + titles.join('; '), truncateMax);
+    }
+  }
+  const outputs = pickArray(raw.outputs);
+  if (outputs && outputs.length > 0) {
+    const ds = outputs
+      .map((o) => {
+        if (!isRecord(o)) return undefined;
+        return asNonEmptyString(o.description) || asNonEmptyString(o.path);
+      })
+      .filter((d): d is string => typeof d === 'string')
+      .slice(0, 3);
+    if (ds.length > 0) return truncateInline(ds.join('; '), truncateMax);
+  }
+  const files = pickArray(raw.reviewed_files);
+  if (files && files.length > 0) {
+    const v = asNonEmptyString(raw.verdict) || 'done';
+    return truncateInline(v + ': reviewed ' + files.length + ' files', truncateMax);
+  }
+  return truncateInline(asNonEmptyString(raw.response) || JSON.stringify(raw), truncateMax);
 }
 
 function pickArray<T>(...candidates: unknown[]): T[] | undefined {
@@ -116,6 +172,7 @@ export function sanitizeDispatchResult(raw: unknown): DispatchSummaryResult {
       success: true,
       status: 'completed',
       summary,
+      rawPayload: raw,
     };
   }
 
@@ -124,6 +181,7 @@ export function sanitizeDispatchResult(raw: unknown): DispatchSummaryResult {
       success: true,
       status: 'completed',
       summary: truncateInline(String(raw)),
+      rawPayload: raw,
     };
   }
 
@@ -140,7 +198,7 @@ export function sanitizeDispatchResult(raw: unknown): DispatchSummaryResult {
   const summary = asNonEmptyString(raw.summary)
     ?? asNonEmptyString(responseRecord?.summary)
     ?? asNonEmptyString(error)
-    ?? truncateInline(asNonEmptyString(raw.response) ?? JSON.stringify(raw));
+    ?? extractReadableSummary(raw);
 
   return {
     success: explicitSuccess ?? !error,
@@ -156,6 +214,8 @@ export function sanitizeDispatchResult(raw: unknown): DispatchSummaryResult {
     ...(evidence ? { evidence } : {}),
     ...(asNonEmptyString(responseRecord?.nextAction) ? { nextAction: asNonEmptyString(responseRecord?.nextAction) } : {}),
     ...(error ? { error } : {}),
+    // Store full raw response for ledger - NEVER truncate
+    rawPayload: raw,
   };
 }
 

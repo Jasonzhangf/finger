@@ -293,28 +293,12 @@ export class GatewayManager {
     });
 
     installGatewayFromCommand({
-      id: 'finger-general-gateway',
-      name: 'Finger General Gateway',
+      id: 'finger-project-agent-gateway',
+      name: 'Finger Project Agent Gateway',
       version: '1.0.0',
-      description: 'CLI gateway for finger-general module',
+      description: 'CLI gateway for finger-project-agent module',
       command,
-      args: [cliPath, 'gateway-worker', '--adapter', 'chat-codex', '--daemon-url', this.daemonUrl, '--target', 'finger-general'],
-      direction: 'output',
-      supportedModes: ['sync', 'async'],
-      defaultMode: 'sync',
-      requestTimeoutMs: builtinRequestTimeoutMs,
-      ackTimeoutMs: builtinAckTimeoutMs,
-      helpArgs: [cliPath, 'gateway-worker', '--help'],
-      versionArgs: [],
-    });
-
-    installGatewayFromCommand({
-      id: 'finger-orchestrator-gateway',
-      name: 'Finger Orchestrator Gateway',
-      version: '1.0.0',
-      description: 'CLI gateway for finger-orchestrator module',
-      command,
-      args: [cliPath, 'gateway-worker', '--adapter', 'chat-codex', '--daemon-url', this.daemonUrl, '--target', 'finger-orchestrator'],
+      args: [cliPath, 'gateway-worker', '--adapter', 'chat-codex', '--daemon-url', this.daemonUrl, '--target', 'finger-project-agent'],
       direction: 'output',
       supportedModes: ['sync', 'async'],
       defaultMode: 'sync',
@@ -328,7 +312,7 @@ export class GatewayManager {
       id: 'chat-codex-gateway',
       name: 'Chat Codex Gateway',
       version: '1.0.0',
-      description: 'Legacy CLI gateway alias for finger-general',
+      description: 'Legacy CLI gateway alias for finger-project-agent',
       command,
       args: [cliPath, 'gateway-worker', '--adapter', 'chat-codex', '--daemon-url', this.daemonUrl, '--target', 'chat-codex'],
       direction: 'output',
@@ -348,7 +332,7 @@ function inferInputCapability(moduleId: string): {
   acceptFiles: boolean;
   acceptedFileMimePrefixes?: string[];
 } {
-  if (moduleId === 'finger-general-gateway' || moduleId === 'finger-orchestrator-gateway' || moduleId === 'chat-codex-gateway') {
+  if (moduleId === 'finger-project-agent-gateway' || moduleId === 'chat-codex-gateway') {
     return {
       acceptText: true,
       acceptImages: true,

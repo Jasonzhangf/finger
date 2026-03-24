@@ -149,7 +149,7 @@ export function registerMessageRoutes(app: Express, deps: MessageRouteDeps): voi
         : {};
       const roleProfile = typeof metadata.roleProfile === 'string' && metadata.roleProfile.trim().length > 0
         ? metadata.roleProfile.trim()
-        : 'orchestrator';
+        : 'project';
       const synthesizedMetadata: Record<string, unknown> = {
         ...metadata,
         roleProfile,
@@ -164,7 +164,7 @@ export function registerMessageRoutes(app: Express, deps: MessageRouteDeps): voi
         contextLedgerCanReadAll:
           typeof metadata.contextLedgerCanReadAll === 'boolean'
             ? metadata.contextLedgerCanReadAll
-            : roleProfile === 'orchestrator',
+            : roleProfile === 'project' || roleProfile === 'system' || roleProfile === 'orchestrator',
         contextLedgerFocusEnabled:
           typeof metadata.contextLedgerFocusEnabled === 'boolean'
             ? metadata.contextLedgerFocusEnabled
@@ -371,7 +371,7 @@ export function registerMessageRoutes(app: Express, deps: MessageRouteDeps): voi
           agent: agentInfo,
           ...(parsedCommand.shouldSwitch ? {
             contextSwitch: {
-              from: parsedCommand.targetAgent === 'finger-system-agent' ? 'finger-orchestrator' : 'finger-system-agent',
+              from: parsedCommand.targetAgent === 'finger-system-agent' ? 'finger-project-agent' : 'finger-system-agent',
               to: agentTarget,
               previousMode: parsedCommand.targetAgent === 'finger-system-agent' ? 'business' : 'system',
             },
@@ -424,7 +424,7 @@ export function registerMessageRoutes(app: Express, deps: MessageRouteDeps): voi
             agent: agentInfo,
             ...(parsedCommand.shouldSwitch ? {
               contextSwitch: {
-                from: parsedCommand.targetAgent === 'finger-system-agent' ? 'finger-orchestrator' : 'finger-system-agent',
+                from: parsedCommand.targetAgent === 'finger-system-agent' ? 'finger-project-agent' : 'finger-system-agent',
                 to: agentTarget,
                 previousMode: parsedCommand.targetAgent === 'finger-system-agent' ? 'business' : 'system',
               },

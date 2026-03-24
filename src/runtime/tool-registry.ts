@@ -14,7 +14,7 @@ export interface ToolDefinition {
   description: string;
   inputSchema: unknown;
   policy: ToolPolicy;
-  handler: (input: unknown) => Promise<unknown>;
+  handler: (input: unknown, context?: Record<string, unknown>) => Promise<unknown>;
 }
 
 export interface ToolInfo {
@@ -81,7 +81,7 @@ export class ToolRegistry {
   /**
    * 执行工具
    */
-  async execute(toolName: string, input: unknown): Promise<unknown> {
+  async execute(toolName: string, input: unknown, context?: Record<string, unknown>): Promise<unknown> {
     const tool = this.tools.get(toolName);
 
     if (!tool) {
@@ -92,7 +92,7 @@ export class ToolRegistry {
       throw new Error(`Tool ${toolName} is not allowed (policy: deny)`);
     }
 
-    return tool.handler(input);
+    return tool.handler(input, context);
   }
 
   /**

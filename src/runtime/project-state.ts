@@ -66,5 +66,5 @@ export function updateProjectStateEnabledAgents(
 }
 
 export function getDefaultEnabledAgents(): string[] {
-  return ['finger-orchestrator'];
+  return ['finger-project-agent'];
 }

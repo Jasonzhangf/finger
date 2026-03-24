@@ -17,6 +17,8 @@ import { buildSessionView, type SessionView, type SessionViewMessage } from '../
 import { needsCompression, compressSession, syncSessionTokens, type CompressResult } from '../runtime/session-compressor.js';
 import { estimateTokens } from '../utils/token-counter.js';
 import { getContextWindow } from '../core/user-settings.js';
+import { loadContextBuilderSettings } from '../core/user-settings.js';
+import { buildContext, buildMemoryMdInjection, type ContextBuildResult } from '../runtime/context-builder.js';
 import { logger } from '../core/logger.js';
 import { createConsoleLikeLogger } from '../core/logger/console-like.js';
 
@@ -611,10 +613,77 @@ export class SessionManager {
     const agentId = typeof ctx.ownerAgentId === 'string' ? ctx.ownerAgentId : SYSTEM_AGENT_ID;
     const rootDir = this.resolveSessionsRoot(session);
     const contextWindow = getContextWindow();
+    const contextBuilder = loadContextBuilderSettings();
+    const maxTokens = options?.maxTokens ?? contextWindow;
+
+    // Context Builder path (default enabled)
+    if (contextBuilder.enabled) {
+      try {
+        const targetBudget = Math.max(1, Math.floor(maxTokens * contextBuilder.budgetRatio));
+        const built = await buildContext(
+          { rootDir, sessionId: session.id, agentId, mode: 'main' },
+          {
+            targetBudget,
+            includeMemoryMd: contextBuilder.includeMemoryMd,
+            timeWindow: {
+              nowMs: Date.now(),
+              halfLifeMs: contextBuilder.halfLifeMs,
+              overThresholdRelevance: contextBuilder.overThresholdRelevance,
+            },
+            enableTaskGrouping: true,
+            enableModelRanking: contextBuilder.enableModelRanking,
+            rankingModel: contextBuilder.rankingModel,
+          },
+        );
+
+        const memoryInjection = contextBuilder.includeMemoryMd
+          ? buildMemoryMdInjection(path.join(process.cwd(), 'MEMORY.md'))
+          : null;
+
+        const mappedMessages: SessionViewMessage[] = [];
+        if (memoryInjection) {
+          mappedMessages.push({
+            role: 'system',
+            content: memoryInjection.content,
+            tokenCount: memoryInjection.tokenCount,
+            timestamp: new Date().toISOString(),
+            messageId: `memory-md-${Date.now()}`,
+          });
+        }
+
+        for (const msg of built.messages) {
+          mappedMessages.push({
+            role: msg.role,
+            content: msg.content,
+            tokenCount: msg.tokenCount,
+            messageId: msg.id,
+            timestamp: msg.timestampIso,
+          });
+        }
+
+        const total = mappedMessages.reduce((sum, m) => sum + m.tokenCount, 0);
+        return {
+          compressedSummary: undefined,
+          compressedSummaryTokens: undefined,
+          messages: mappedMessages,
+          tokenCount: total,
+          source: {
+            ledgerPath: `${rootDir}/${session.id}/${agentId}/main/context-ledger.jsonl`,
+            compactPath: `${rootDir}/${session.id}/${agentId}/main/compact-memory.jsonl`,
+          },
+        };
+      } catch (err) {
+        log.warn('[SessionManager] Context builder failed, fallback to ledger-reader', {
+          sessionId: session.id,
+          agentId,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+    }
 
     return buildSessionView(
       { rootDir, sessionId: session.id, agentId, mode: 'main' },
-      { maxTokens: options?.maxTokens ?? contextWindow, includeSummary: options?.includeSummary ?? true },
+      { maxTokens, includeSummary: options?.includeSummary ?? true },
     );
   }
 

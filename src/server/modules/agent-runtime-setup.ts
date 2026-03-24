@@ -4,6 +4,7 @@ import { registerMockRuntimeModules } from './mock-runtime-setup.js';
 import type { MockAgentRole, MockOutcome } from './mock-runtime.js';
 import { loadAutostartAgents } from '../../orchestration/autostart-loader.js';
 import { logger } from '../../core/logger.js';
+import { fallbackDispatchQueueTimeoutToMailbox } from './dispatch-queue-timeout-mailbox.js';
 
 const log = logger.module('AgentRuntimeSetup');
 
@@ -49,6 +50,7 @@ export async function setupAgentRuntime(deps: {
     resourcePool: deps.resourcePool,
     getLoadedAgentConfigs: deps.getLoadedAgentConfigs,
     primaryOrchestratorAgentId: deps.primaryOrchestratorAgentId,
+    onDispatchQueueTimeout: fallbackDispatchQueueTimeoutToMailbox,
   });
   await agentRuntimeBlock.initialize();
   await agentRuntimeBlock.start();

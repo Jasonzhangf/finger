@@ -15,7 +15,8 @@ export function registerDefaultRuntimeTools(
       description: tool.description,
       inputSchema: tool.inputSchema,
       policy: 'allow',
-      handler: async (input: unknown): Promise<unknown> => internalRegistry.execute(tool.name, input),
+      handler: async (input: unknown, context?: Record<string, unknown>): Promise<unknown> =>
+        internalRegistry.execute(tool.name, input, context ?? {}),
     });
     loadedToolNames.push(tool.name);
   }

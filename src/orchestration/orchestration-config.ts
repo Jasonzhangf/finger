@@ -56,7 +56,7 @@ export const DEFAULT_ORCHESTRATION_CONFIG: OrchestrationConfigV1 = {
       },
       agents: [
         {
-          targetAgentId: 'finger-orchestrator',
+          targetAgentId: 'finger-project-agent',
           role: 'orchestrator',
           enabled: true,
           visible: true,
@@ -111,7 +111,7 @@ export const DEFAULT_ORCHESTRATION_CONFIG: OrchestrationConfigV1 = {
       },
       agents: [
         {
-          targetAgentId: 'finger-orchestrator',
+          targetAgentId: 'finger-project-agent',
           role: 'orchestrator',
           enabled: true,
           visible: true,

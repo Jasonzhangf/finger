@@ -1,5 +1,5 @@
 import { FINGER_PATHS } from '../../core/finger-paths.js';
-import { FINGER_ORCHESTRATOR_AGENT_ID } from '../../agents/finger-general/finger-general-module.js';
+import { FINGER_PROJECT_AGENT_ID } from '../../agents/finger-general/finger-general-module.js';
 import { resolveBoolFlag } from '../common/runtime-debug.js';
 
 export interface ServerEnv {
@@ -41,8 +41,8 @@ export function resolveServerEnv(): ServerEnv {
     ? Math.max(100, Math.floor(Number(process.env.FINGER_BLOCKING_MESSAGE_RETRY_BASE_MS)))
     : 750;
 
-  const primaryOrchestratorAgentId = FINGER_ORCHESTRATOR_AGENT_ID;
-  const primaryOrchestratorGatewayId = 'finger-orchestrator-gateway';
+  const primaryOrchestratorAgentId = FINGER_PROJECT_AGENT_ID;
+  const primaryOrchestratorGatewayId = 'finger-project-agent-gateway';
   const legacyOrchestratorAgentId = 'chat-codex';
   const legacyOrchestratorGatewayId = 'chat-codex-gateway';
   const primaryOrchestratorTarget = (

@@ -22,6 +22,11 @@ export interface MailboxReadInput {
   target?: string;
 }
 
+export interface MailboxRemoveInput {
+  id: string;
+  target?: string;
+}
+
 export interface MailboxAckInput {
   id: string;
   target?: string;

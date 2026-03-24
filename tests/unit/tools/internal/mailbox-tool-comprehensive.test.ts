@@ -6,18 +6,28 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
+import { FINGER_HOME } from '../../../../src/core/finger-paths.js';
 import { createToolExecutionContext } from '../../../../src/tools/internal/types.js';
 import { 
   mailboxStatusTool, 
   mailboxListTool, 
   mailboxReadTool, 
-  mailboxAckTool 
+  mailboxReadAllTool,
+  mailboxAckTool,
+  mailboxRemoveTool,
+  mailboxRemoveAllTool,
 } from '../../../../src/tools/internal/mailbox-tool.js';
 import { MailboxBlock } from '../../../../src/blocks/mailbox-block/index.js';
 
 describe('mailbox tools - comprehensive tests', () => {
   let tempDir: string;
   let mailboxBlock: MailboxBlock;
+  const agentIds = new Set<string>();
+
+  function mailboxStoragePath(agentId: string): string {
+    agentIds.add(agentId);
+    return path.join(FINGER_HOME, 'mailbox', agentId, 'inbox.jsonl');
+  }
 
   beforeEach(() => {
     // Create a temp directory for mailbox storage
@@ -30,6 +40,10 @@ describe('mailbox tools - comprehensive tests', () => {
     if (fs.existsSync(tempDir)) {
       fs.rmSync(tempDir, { recursive: true, force: true });
     }
+    for (const agentId of agentIds) {
+      fs.rmSync(path.join(FINGER_HOME, 'mailbox', agentId), { recursive: true, force: true });
+    }
+    agentIds.clear();
   });
 
   describe('mailbox.status tool', () => {
@@ -151,6 +165,73 @@ describe('mailbox tools - comprehensive tests', () => {
     it('returns false for non-existent message', () => {
       const result = mailboxBlock.ack('nonexistent-id');
       expect(result.acked).toBe(false);
+    });
+  });
+
+  describe('mailbox.read_all / mailbox.remove_all tools', () => {
+    it('reads all unread dispatch tasks and removes notifications in batch', async () => {
+      const agentId = `agent-batch-${Date.now()}`;
+      const storagePath = mailboxStoragePath(agentId);
+      fs.mkdirSync(path.dirname(storagePath), { recursive: true });
+      const persistentMailbox = new MailboxBlock('batch-mailbox', storagePath);
+      const first = persistentMailbox.append(agentId, { task: 'a' }, { category: 'dispatch-task', sender: 'system' });
+      const second = persistentMailbox.append(agentId, { task: 'b' }, { category: 'dispatch-task', sender: 'system' });
+      const notification = persistentMailbox.append(agentId, { message: 'n' }, { category: 'notification', sender: 'system' });
+
+      const ctx = createToolExecutionContext({ agentId });
+      const readAll = await mailboxReadAllTool.execute({ category: 'dispatch-task' }, ctx) as {
+        success: boolean;
+        matched: number;
+        changed: number;
+        movedToProcessing: number;
+        readIds: string[];
+      };
+      expect(readAll.success).toBe(true);
+      expect(readAll.matched).toBe(2);
+      expect(readAll.changed).toBe(2);
+      expect(readAll.movedToProcessing).toBe(2);
+      expect(readAll.readIds).toEqual(expect.arrayContaining([first.id, second.id]));
+
+      const reloaded = new MailboxBlock('batch-mailbox-reloaded', storagePath);
+      expect(reloaded.get(first.id)?.status).toBe('processing');
+      expect(reloaded.get(second.id)?.status).toBe('processing');
+
+      const removeAll = await mailboxRemoveAllTool.execute({ category: 'notification' }, ctx) as {
+        success: boolean;
+        matched: number;
+        removed: number;
+        removedIds: string[];
+      };
+      expect(removeAll.success).toBe(true);
+      expect(removeAll.matched).toBe(1);
+      expect(removeAll.removed).toBe(1);
+      expect(removeAll.removedIds).toEqual([notification.id]);
+
+      const afterRemove = new MailboxBlock('batch-mailbox-after-remove', storagePath);
+      expect(afterRemove.get(notification.id)).toBeUndefined();
+      expect(afterRemove.list({ target: agentId })).toHaveLength(2);
+    });
+
+    it('removes a single message by id', async () => {
+      const agentId = `agent-remove-one-${Date.now()}`;
+      const storagePath = mailboxStoragePath(agentId);
+      fs.mkdirSync(path.dirname(storagePath), { recursive: true });
+      const persistentMailbox = new MailboxBlock('remove-one-mailbox', storagePath);
+      const message = persistentMailbox.append(agentId, { message: 'delete-me' }, { category: 'notification', sender: 'system' });
+
+      const ctx = createToolExecutionContext({ agentId });
+      const removed = await mailboxRemoveTool.execute({ id: message.id }, ctx) as {
+        success: boolean;
+        removed: boolean;
+        removedId: string;
+      };
+
+      expect(removed.success).toBe(true);
+      expect(removed.removed).toBe(true);
+      expect(removed.removedId).toBe(message.id);
+
+      const reloaded = new MailboxBlock('remove-one-mailbox-reloaded', storagePath);
+      expect(reloaded.get(message.id)).toBeUndefined();
     });
   });
 

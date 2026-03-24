@@ -11,7 +11,7 @@ export class ProjectSwitchHandler implements CommandHandler {
 
   async execute(cmd: Command, ctx: CommandContext): Promise<CommandResult> {
     if (ctx.updateContext && ctx.channelId) {
-      ctx.updateContext(ctx.channelId, 'business', 'finger-orchestrator');
+      ctx.updateContext(ctx.channelId, 'business', 'finger-project-agent');
     }
 
     return {

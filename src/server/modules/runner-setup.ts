@@ -10,7 +10,7 @@ import { createMockRuntimeKit, type ChatCodexRunnerController } from './mock-run
 import type { DispatchTaskLike } from './mock-runtime/index.js';
 import type { RuntimeFacade } from '../../runtime/runtime-facade.js';
 import type { SessionManager } from '../../orchestration/session-manager.js';
-import { FINGER_GENERAL_AGENT_ID, FINGER_ORCHESTRATOR_AGENT_ID } from '../../agents/finger-general/finger-general-module.js';
+import { FINGER_PROJECT_AGENT_ID, FINGER_REVIEWER_AGENT_ID } from '../../agents/finger-general/finger-general-module.js';
 import { resolveRuntimeFlags, shouldUseMockChatCodexRunner } from './server-flags.js';
 import type { AgentDispatchRequest } from './agent-runtime/types.js';
 
@@ -32,7 +32,7 @@ export function setupChatCodexRunner(deps: {
     timeoutMs: 600_000,
     toolExecution: {
       daemonUrl: `http://127.0.0.1:${deps.PORT}`,
-      agentId: FINGER_GENERAL_AGENT_ID,
+      agentId: FINGER_PROJECT_AGENT_ID,
     },
   });
 
@@ -42,9 +42,9 @@ export function setupChatCodexRunner(deps: {
     eventBus: deps.eventBus,
     primaryOrchestratorAgentId: deps.primaryOrchestratorAgentId,
     agentIds: {
-      researcher: FINGER_ORCHESTRATOR_AGENT_ID,
-      executor: FINGER_ORCHESTRATOR_AGENT_ID,
-      reviewer: FINGER_ORCHESTRATOR_AGENT_ID,
+      researcher: FINGER_PROJECT_AGENT_ID,
+      executor: FINGER_PROJECT_AGENT_ID,
+      reviewer: FINGER_REVIEWER_AGENT_ID,
     },
   });
 

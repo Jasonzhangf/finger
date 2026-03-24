@@ -1,4 +1,4 @@
-export type BaseAgentRole = 'orchestrator' | 'reviewer' | 'executor' | 'searcher';
+export type BaseAgentRole = 'system' | 'project' | 'reviewer';
 
 const CORE_EXECUTION_TOOLS = [
   'shell.exec',
@@ -9,8 +9,19 @@ const CORE_EXECUTION_TOOLS = [
   'web_search',
   'update_plan',
   'context_ledger.memory',
+  'report-task-completion',
   'clock',
   'command.exec',
+] as const;
+
+const MAILBOX_TOOLS = [
+  'mailbox.status',
+  'mailbox.list',
+  'mailbox.read',
+  'mailbox.read_all',
+  'mailbox.ack',
+  'mailbox.remove',
+  'mailbox.remove_all',
 ] as const;
 
 const READ_ONLY_COORDINATION_TOOLS = [
@@ -60,48 +71,33 @@ export interface BaseAgentRoleConfig {
 }
 
 export const BASE_AGENT_ROLE_CONFIG: Record<BaseAgentRole, BaseAgentRoleConfig> = {
-  orchestrator: {
-    role: 'orchestrator',
-    description: 'Default planner/dispatcher role. Has full tools for orchestration, experiment, and verification, while delegating production coding to executor.',
-    allowedTools: [...ORCHESTRATOR_FULL_TOOLS],
+  system: {
+    role: 'system',
+    description: 'System agent. Owns system-level coordination, registry access, and cross-project dispatch.',
+    allowedTools: dedupeTools([...ORCHESTRATOR_FULL_TOOLS], [...MAILBOX_TOOLS]),
+    defaultLedgerCanReadAll: true,
+  },
+  project: {
+    role: 'project',
+    description: 'Project agent. Handles project-scoped planning, coding, execution, and verification work.',
+    allowedTools: dedupeTools([...ORCHESTRATOR_FULL_TOOLS], [...MAILBOX_TOOLS]),
     defaultLedgerCanReadAll: true,
   },
   reviewer: {
     role: 'reviewer',
-    description: 'Verification role. Focuses on evidence, risk, and regression checks.',
-    allowedTools: ['shell.exec', 'exec_command', 'view_image', 'web_search', 'context_ledger.memory'],
-    defaultLedgerCanReadAll: false,
-  },
-  executor: {
-    role: 'executor',
-    description: 'Execution role. Performs concrete task execution with verifiable outputs.',
-    allowedTools: [...CORE_EXECUTION_TOOLS],
-    defaultLedgerCanReadAll: false,
-  },
-  searcher: {
-    role: 'searcher',
-    description: 'Retrieval role. Prioritizes source discovery, comparison, and evidence collection.',
-    allowedTools: ['web_search', 'context_ledger.memory'],
+    description: 'Reviewer agent. Focuses on evidence, risk, regression checks, and mailbox-driven review tasks.',
+    allowedTools: dedupeTools(
+      ['shell.exec', 'exec_command', 'view_image', 'web_search', 'context_ledger.memory', 'user.ask'],
+      [...MAILBOX_TOOLS],
+    ),
     defaultLedgerCanReadAll: false,
   },
 };
 
 export function resolveBaseAgentRole(roleProfile: string | undefined): BaseAgentRole {
   const normalized = (roleProfile ?? '').trim().toLowerCase();
-  if (!normalized) return 'orchestrator';
-  if (normalized === 'general' || normalized === 'finger-general') return 'orchestrator';
-  if (normalized === 'orchestrator' || normalized.includes('orchestr')) return 'orchestrator';
+  if (!normalized) return 'project';
+  if (normalized === 'system' || normalized.includes('finger-system')) return 'system';
   if (normalized === 'reviewer' || normalized.includes('review')) return 'reviewer';
-  if (normalized === 'searcher' || normalized.includes('search') || normalized.includes('research')) return 'searcher';
-  if (
-    normalized === 'executor'
-    || normalized.includes('execut')
-    || normalized.includes('coder')
-    || normalized.includes('code')
-    || normalized === 'coding-cli'
-    || normalized.includes('coding')
-  ) {
-    return 'executor';
-  }
-  return 'orchestrator';
+  return 'project';
 }

@@ -8,6 +8,7 @@ import { logger } from '../../core/logger.js';
 
 import type { MessageHub } from '../../orchestration/message-hub.js';
 import type { ChannelBridgeManager } from '../../bridges/manager.js';
+import type { AskManager } from '../../orchestration/ask/ask-manager.js';
 import type { SessionManager } from '../../orchestration/session-manager.js';
 import type { OrchestrationConfigV1 } from '../../orchestration/orchestration-config.js';
 import { attachEventForwarding } from './event-forwarding.js';
@@ -25,6 +26,7 @@ import type { AgentDispatchRequest } from './agent-runtime/types.js';
 export async function runPostInit(deps: {
   hub: MessageHub;
   channelBridgeManager: ChannelBridgeManager;
+  askManager: AskManager;
   eventBus: any;
   sessionManager: SessionManager;
   dispatchTaskToAgent: (input: AgentDispatchRequest) => Promise<unknown>;
@@ -66,7 +68,9 @@ export async function runPostInit(deps: {
    handler: createChannelBridgeHubRoute({
      channelBridgeManager: deps.channelBridgeManager,
      sessionManager: deps.sessionManager,
+     askManager: deps.askManager,
      dispatchTaskToAgent: deps.dispatchTaskToAgent,
+     directSendToModule: (moduleId, message) => deps.hub.sendToModule(moduleId, message),
      eventBus: deps.eventBus,
      agentStatusSubscriber: deps.agentStatusSubscriber,
       runtime: {},

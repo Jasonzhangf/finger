@@ -38,7 +38,7 @@ export async function handleSystemRouteDelegation(
     '必须执行：\n' +
     '1) system-registry-tool action=list 查找项目\n' +
     '2) 若未注册，project_tool action=create 使用绝对路径\n' +
-    '3) agent.dispatch -> finger-orchestrator，使用返回的 sessionId\n' +
+    '3) agent.dispatch -> finger-project-agent，使用返回的 sessionId\n' +
     '禁止执行开机检查/周期性检查，仅处理本用户任务。\n\n';
 
   let updatedMessage = withMessageContent(requestMessage, delegationPrefix + content);
@@ -94,7 +94,7 @@ export async function handleSystemRouteDelegation(
             },
           };
         }
-        updatedTarget = 'finger-orchestrator';
+        updatedTarget = 'finger-project-agent';
       }
     }
   } catch (error) {

@@ -1,10 +1,14 @@
 #!/usr/bin/env node
 /**
  * Finger Daemon Guard - 双进程守护机制
+ *
+ * Lifecycle: guard → spawns daemon (detached) → daemon dies → guard restarts
+ * Guard writes GUARD_PID_FILE. On startup, if an old guard PID exists, we kill
+ * the old daemon tree (daemon + heartbeat-writer + kernel-bridge) to prevent orphans.
  */
 const fs = require('fs');
 const path = require('path');
-const { spawn } = require('child_process');
+const { spawn, execSync } = require('child_process');
 const net = require('net');
 
 const FINGER_ROOT = path.resolve(__dirname, '..');
@@ -12,6 +16,7 @@ const RUNTIME_DIR = path.join(FINGER_ROOT, '.finger', 'runtime');
 const PID_FILE = path.join(RUNTIME_DIR, 'server.pid');
 const GUARD_PID_FILE = path.join(RUNTIME_DIR, 'guard.pid');
 const HEARTBEAT_FILE = path.join(RUNTIME_DIR, 'daemon.heartbeat');
+const HEARTBEAT_PATTERN = /daemon\.heartbeat/;
 const HEARTBEAT_INTERVAL_MS = 5000;
 const HEARTBEAT_TIMEOUT_MS = 30000;
 const MAX_RESTARTS = 3;
@@ -23,10 +28,13 @@ class DaemonGuard {
         this.guardPid = process.pid;
         this.restartCount = 0;
         this.isShuttingDown = false;
+        this.heartbeatWriterPid = null;
         console.log(`[DaemonGuard] Guard process started (PID: ${this.guardPid})`);
     }
 
     async start() {
+        // Kill any leftover daemon tree from a previous guard that died unexpectedly
+        this.cleanupOrphanTree();
         await this.spawnMainDaemon();
         this.startHeartbeatMonitor();
         this.startMainProcessCheck();
@@ -36,7 +44,6 @@ class DaemonGuard {
     async spawnMainDaemon() {
         console.log('[DaemonGuard] Starting main daemon...');
         await this.waitForPorts([9998, 9999]);
-        this.cleanupOldProcesses();
 
         // Set NODE_PATH to include global openclaw package so that
         // external plugins (e.g. openclaw-weixin) can resolve "openclaw/plugin-sdk"
@@ -51,6 +58,7 @@ class DaemonGuard {
         });
 
         this.mainPid = mainProcess.pid;
+        this.mainProcess = mainProcess;
         fs.writeFileSync(PID_FILE, String(this.mainPid));
         console.log(`[DaemonGuard] Main daemon started (PID: ${this.mainPid})`);
 
@@ -85,6 +93,7 @@ class DaemonGuard {
             stdio: ['ignore', 'pipe', 'ignore'],
             detached: true,
         });
+        this.heartbeatWriterPid = heartbeatWriter.pid;
         console.log('[DaemonGuard] Heartbeat monitor started');
     }
 
@@ -159,6 +168,14 @@ class DaemonGuard {
     }
 
     cleanupMainProcess() {
+        // Kill heartbeat writer if we spawned one
+        if (this.heartbeatWriterPid) {
+            try { process.kill(this.heartbeatWriterPid, 'SIGTERM'); } catch (_) {}
+            this.heartbeatWriterPid = null;
+        }
+        // Kill kernel-bridge if it was spawned alongside our daemon
+        this.cleanupKernelBridge();
+
         if (this.mainPid) {
             try {
                 process.kill(this.mainPid, 'SIGTERM');
@@ -177,36 +194,111 @@ class DaemonGuard {
         }
     }
 
+    /**
+     * Kill orphan processes left behind by a previous guard that exited uncleanly.
+     * Scans the process table for:
+     *   1. node dist/server/index.js  (old daemon)
+     *   2. node scripts/daemon-guard.cjs (old guard – kill it only if we are the new guard)
+     *   3. node -e ... daemon.heartbeat (orphan heartbeat writers, ppid=1)
+     *   4. finger-kernel-bridge-bin (orphan kernel bridges)
+     */
     cleanupOldProcesses() {
+        // 1. Read previous PID files
         if (fs.existsSync(PID_FILE)) {
             try {
                 const oldPid = parseInt(fs.readFileSync(PID_FILE, 'utf8').trim());
                 if (oldPid && !isNaN(oldPid)) {
-                    try {
-                        process.kill(oldPid, 0);
-                        console.log(`[DaemonGuard] Killed old daemon process (PID: ${oldPid})`);
-                    } catch (e) {
-                        // Process not exists
-                    }
+                    this.killProcessTree(oldPid, 'old daemon');
                 }
-            } catch (e) {
-                // File read error
-            }
+            } catch (e) {}
         }
 
-        if (fs.existsSync(HEARTBEAT_FILE)) {
+        // 2. Kill old guard if its PID file exists (we are replacing it)
+        if (fs.existsSync(GUARD_PID_FILE)) {
             try {
-                fs.unlinkSync(HEARTBEAT_FILE);
-            } catch (e) {
-                // Ignore error
-            }
+                const oldGuardPid = parseInt(fs.readFileSync(GUARD_PID_FILE, 'utf8').trim());
+                if (oldGuardPid && !isNaN(oldGuardPid) && oldGuardPid !== process.pid) {
+                    this.killProcessTree(oldGuardPid, 'old guard');
+                }
+            } catch (e) {}
         }
+    }
+
+    /**
+     * Aggressive cleanup: kill ALL orphan daemon/heartbeat/kernel-bridge processes
+     * that belong to this finger installation, regardless of PID files.
+     * Called once at guard startup.
+     */
+    cleanupOrphanTree() {
+        this.cleanupOldProcesses();
+
+        // Kill orphan heartbeat writers (ppid=1 means their parent is dead)
+        try {
+            const psOutput = execSync('ps -eo pid,ppid,command', { encoding: 'utf8' });
+            for (const line of psOutput.split('\n')) {
+                const parts = line.trim().split(/\s+/);
+                if (parts.length < 3) continue;
+                const pid = parseInt(parts[0]);
+                const ppid = parseInt(parts[1]);
+                const cmd = parts.slice(2).join(' ');
+                // Orphan heartbeat writers: parent dead, and they reference our heartbeat path
+                if (ppid === 1 && HEARTBEAT_PATTERN.test(cmd)) {
+                    console.log(`[DaemonGuard] Killing orphan heartbeat writer (PID: ${pid})`);
+                    try { process.kill(pid, 'SIGTERM'); } catch (_) {}
+                }
+                // Orphan daemons: dist/server/index.js with ppid=1
+                if (ppid === 1 && cmd.includes('dist/server/index.js') && cmd.includes(FINGER_ROOT)) {
+                    console.log(`[DaemonGuard] Killing orphan daemon (PID: ${pid})`);
+                    try { process.kill(pid, 'SIGTERM'); } catch (_) {}
+                }
+                // Orphan kernel bridges: ppid=1
+                if (ppid === 1 && cmd.includes('finger-kernel-bridge-bin')) {
+                    console.log(`[DaemonGuard] Killing orphan kernel-bridge (PID: ${pid})`);
+                    try { process.kill(pid, 'SIGTERM'); } catch (_) {}
+                }
+            }
+        } catch (e) {
+            console.warn('[DaemonGuard] orphan scan failed:', e.message);
+        }
+    }
+
+    killProcessTree(pid, label) {
+        try {
+            process.kill(pid, 'SIGTERM');
+            console.log(`[DaemonGuard] Sent SIGTERM to ${label} (PID: ${pid})`);
+            // Give it 3s to exit, then SIGKILL
+            setTimeout(() => {
+                try { process.kill(pid, 'SIGKILL'); } catch (_) {}
+            }, 3000);
+        } catch (e) {
+            console.log(`[DaemonGuard] ${label} (PID: ${pid}) already terminated`);
+        }
+    }
+
+    cleanupKernelBridge() {
+        try {
+            const psOutput = execSync('ps -eo pid,ppid,command', { encoding: 'utf8' });
+            for (const line of psOutput.split('\n')) {
+                const parts = line.trim().split(/\s+/);
+                if (parts.length < 3) continue;
+                const pid = parseInt(parts[0]);
+                const ppid = parseInt(parts[1]);
+                const cmd = parts.slice(2).join(' ');
+                if (ppid === this.mainPid && cmd.includes('finger-kernel-bridge-bin')) {
+                    console.log(`[DaemonGuard] Killing kernel-bridge (PID: ${pid})`);
+                    try { process.kill(pid, 'SIGTERM'); } catch (_) {}
+                }
+            }
+        } catch (e) {}
     }
 
     setupExitHandlers() {
         const exitHandler = () => {
             this.isShuttingDown = true;
             console.log('[DaemonGuard] Shutting down...');
+            if (this.heartbeatWriterPid) {
+                try { process.kill(this.heartbeatWriterPid, 'SIGTERM'); } catch (_) {}
+            }
             this.cleanupMainProcess();
             this.cleanupGuardFiles();
             process.exit(0);

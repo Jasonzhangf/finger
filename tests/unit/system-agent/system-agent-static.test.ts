@@ -2,7 +2,10 @@ import { describe, it, expect } from 'vitest';
 import fs from 'fs';
 import path from 'path';
 import { SYSTEM_AGENT_CONFIG } from '../../../src/agents/finger-system-agent/index.js';
-import { FINGER_SYSTEM_ALLOWED_TOOLS } from '../../../src/agents/finger-general/finger-general-module.js';
+import {
+  FINGER_PROJECT_ALLOWED_TOOLS,
+  FINGER_SYSTEM_ALLOWED_TOOLS,
+} from '../../../src/agents/finger-general/finger-general-module.js';
 
 const ROOT = path.resolve(process.cwd());
 
@@ -32,6 +35,10 @@ describe('System Agent Static Config', () => {
 
   it('system agent tool whitelist includes project_tool', () => {
     expect(FINGER_SYSTEM_ALLOWED_TOOLS).toContain('project_tool');
+  });
+
+  it('project agent tool whitelist includes report-task-completion', () => {
+    expect(FINGER_PROJECT_ALLOWED_TOOLS).toContain('report-task-completion');
   });
 
   it('system agent cwd/session path fixed', () => {

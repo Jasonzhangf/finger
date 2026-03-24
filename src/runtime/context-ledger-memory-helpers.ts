@@ -37,6 +37,8 @@ export function parseInput(rawInput: unknown): ContextLedgerMemoryInput {
     full_reindex: rawInput.full_reindex === true,
     trigger: rawInput.trigger === 'auto' ? 'auto' : rawInput.trigger === 'manual' ? 'manual' : undefined,
     summary: valueAsString(rawInput.summary),
+    slot_start: normalizePositiveInt(rawInput.slot_start),
+    slot_end: normalizePositiveInt(rawInput.slot_end),
     source_event_ids: normalizeStringArray(rawInput.source_event_ids),
     source_message_ids: normalizeStringArray(rawInput.source_message_ids),
     source_time_start: valueAsString(rawInput.source_time_start),

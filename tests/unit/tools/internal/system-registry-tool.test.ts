@@ -1,17 +1,27 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-vi.mock('../../../../core/finger-paths.js', () => ({
-  FINGER_PATHS: {
-    home: '/tmp',
-  },
-}));
-
 describe('system-registry-tool', () => {
-  const registryPath = '/tmp/system/registry.json';
+  let tempHome = '';
   let ToolRegistry: typeof import('../../../../src/runtime/tool-registry.js').ToolRegistry;
   let registerSystemRegistryTool: typeof import('../../../../src/tools/internal/system-registry-tool.js').registerSystemRegistryTool;
 
   beforeEach(async () => {
+    vi.resetModules();
+    const { promises: fs } = await import('fs');
+    const { tmpdir } = await import('os');
+    const path = await import('path');
+    tempHome = await fs.mkdtemp(path.join(tmpdir(), 'finger-system-registry-test-'));
+    vi.doMock('../../../../src/core/finger-paths.js', async () => {
+      const actual = await vi.importActual<typeof import('../../../../src/core/finger-paths.js')>(
+        '../../../../src/core/finger-paths.js',
+      );
+      return {
+        ...actual,
+        FINGER_HOME: tempHome,
+        FINGER_PATHS: actual.getFingerPaths(tempHome),
+        resolveFingerHome: () => tempHome,
+      };
+    });
     ({ ToolRegistry } = await import('../../../../src/runtime/tool-registry.js'));
     ({ registerSystemRegistryTool } = await import('../../../../src/tools/internal/system-registry-tool.js'));
   });
@@ -19,10 +29,11 @@ describe('system-registry-tool', () => {
   afterEach(async () => {
     try {
       const { promises: fs } = await import('fs');
-      await fs.unlink(registryPath);
+      await fs.rm(tempHome, { recursive: true, force: true });
     } catch {
       // ignore cleanup errors
     }
+    vi.doUnmock('../../../../src/core/finger-paths.js');
   });
 
   it('registers and lists agents', async () => {

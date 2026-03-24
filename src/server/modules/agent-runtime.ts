@@ -4,6 +4,7 @@ import { isObjectRecord } from '../common/object.js';
 import type { AgentCapabilityLayer, AgentRuntimeDeps } from './agent-runtime/types.js';
 import { dispatchTaskToAgent } from './agent-runtime/dispatch.js';
 import { controlAgentRuntime } from './agent-runtime/control.js';
+import { registerMailboxRuntimeTools } from './agent-runtime/mailbox.js';
 import { parseAskToolInput, runBlockingAsk } from './agent-runtime/ask.js';
 import {
   parseAgentControlToolInput,
@@ -22,6 +23,8 @@ function resolveAgentCapabilityLayer(value: unknown): AgentCapabilityLayer {
 
 export function registerAgentRuntimeTools(deps: AgentRuntimeDeps): string[] {
   const loaded: string[] = [];
+
+  loaded.push(...registerMailboxRuntimeTools(deps));
 
   deps.runtime.registerTool({
     name: 'agent.list',
@@ -360,4 +363,3 @@ export function registerAgentRuntimeRoutes(app: Express, deps: AgentRuntimeDeps)
     });
   });
 }
-

@@ -45,12 +45,18 @@ describe('SystemAgentManager - Session Reuse', () => {
     // Verify listRootSessions was called during registry initialization (no WARN)
     expect(mockSessionManager.listRootSessions).toHaveBeenCalled();
 
-    // Verify bootstrap injection uses the existing session ID
+    // Startup bootstrap auto-check is disabled: no dispatch should be sent automatically
     const dispatchCall = mockAgentRuntimeBlock.execute.mock.calls.find(
       (call: unknown[]) => call[0] === 'dispatch'
     );
-    expect(dispatchCall).toBeDefined();
-    expect(dispatchCall[1].sessionId).toBe(existingSession.id);
+    expect(dispatchCall).toBeUndefined();
+
+    // But deploy should still use the resolved system session
+    const deployCall = mockAgentRuntimeBlock.execute.mock.calls.find(
+      (call: unknown[]) => call[0] === 'deploy'
+    );
+    expect(deployCall).toBeDefined();
+    expect(deployCall[1].sessionId).toBe(existingSession.id);
   });
 
   it('should create new session when no system session exists', async () => {
@@ -68,12 +74,17 @@ describe('SystemAgentManager - Session Reuse', () => {
     // Verify getOrCreateSystemSession was called
     expect(mockSessionManager.getOrCreateSystemSession).toHaveBeenCalled();
 
-    // Verify bootstrap injection uses the new session ID
+    // Startup bootstrap auto-check is disabled: no dispatch should be sent automatically
     const dispatchCall = mockAgentRuntimeBlock.execute.mock.calls.find(
       (call: unknown[]) => call[0] === 'dispatch'
     );
-    expect(dispatchCall).toBeDefined();
-    expect(dispatchCall[1].sessionId).toBe(newSession.id);
+    expect(dispatchCall).toBeUndefined();
+
+    const deployCall = mockAgentRuntimeBlock.execute.mock.calls.find(
+      (call: unknown[]) => call[0] === 'deploy'
+    );
+    expect(deployCall).toBeDefined();
+    expect(deployCall[1].sessionId).toBe(newSession.id);
   });
 
   it('should not create multiple sessions on restart', async () => {
@@ -97,13 +108,11 @@ describe('SystemAgentManager - Session Reuse', () => {
     // getOrCreateSystemSession should be called exactly twice (once per manager)
     expect(secondCallCount).toBe(firstCallCount + 1);
 
-    // Both should use the same session ID
+    // Both starts should avoid bootstrap auto-dispatch
     const dispatchCalls = mockAgentRuntimeBlock.execute.mock.calls.filter(
       (call: unknown[]) => call[0] === 'dispatch'
     );
-    expect(dispatchCalls.length).toBe(2);
-    expect(dispatchCalls[0][1].sessionId).toBe(existingSession.id);
-    expect(dispatchCalls[1][1].sessionId).toBe(existingSession.id);
+    expect(dispatchCalls.length).toBe(0);
   });
 
   it('should handle session creation error gracefully', async () => {
@@ -114,11 +123,16 @@ describe('SystemAgentManager - Session Reuse', () => {
     const manager = new SystemAgentManager(deps);
     await manager.start();
 
-    // Should fall back to 'default' session ID
+    // Startup bootstrap auto-check is disabled, so no dispatch even on fallback
     const dispatchCall = mockAgentRuntimeBlock.execute.mock.calls.find(
       (call: unknown[]) => call[0] === 'dispatch'
     );
-    expect(dispatchCall).toBeDefined();
-    expect(dispatchCall[1].sessionId).toBe('default');
+    expect(dispatchCall).toBeUndefined();
+
+    const deployCall = mockAgentRuntimeBlock.execute.mock.calls.find(
+      (call: unknown[]) => call[0] === 'deploy'
+    );
+    expect(deployCall).toBeDefined();
+    expect(deployCall[1].sessionId).toBe('default');
   });
 });

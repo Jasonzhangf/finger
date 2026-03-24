@@ -386,7 +386,10 @@ export class KernelAgentBase {
           ? params.inputMetadata.contextLedgerRole
           : params.roleProfileId,
       contextLedgerCanReadAll:
-        params.inputMetadata?.contextLedgerCanReadAll === true || params.roleProfileId === 'orchestrator',
+        params.inputMetadata?.contextLedgerCanReadAll === true
+        || params.roleProfileId === 'project'
+        || params.roleProfileId === 'system'
+        || params.roleProfileId === 'orchestrator',
       contextLedgerFocusMaxChars:
         typeof params.inputMetadata?.contextLedgerFocusMaxChars === 'number'
           ? params.inputMetadata.contextLedgerFocusMaxChars

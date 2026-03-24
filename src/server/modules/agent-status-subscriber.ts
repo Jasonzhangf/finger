@@ -483,11 +483,7 @@ export class AgentStatusSubscriber {
       const agent = agents.find((a: any) => a.id === agentId);
 
       if (agent) {
-        return {
-          agentId: agent.id,
-          agentName: agent.name,
-          agentRole: agent.type,
-        };
+        return { agentId: agent.id, agentName: agent.name, agentRole: agent.type };
       }
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
@@ -498,5 +494,4 @@ export class AgentStatusSubscriber {
   }
 
 }
-
 export default AgentStatusSubscriber;

@@ -18,7 +18,14 @@ import { contextLedgerMemoryTool } from './context-ledger-memory-tool.js';
 import { noopTool } from './codex-noop-tool.js';
 import { permissionTools } from './permission-tools.js';
 import { heartbeatEnableTool, heartbeatDisableTool, heartbeatStatusTool } from './heartbeat-control-tool.js';
-import { mailboxListTool, mailboxReadTool, mailboxAckTool, mailboxStatusTool } from './mailbox-tool.js';
+import {
+  mailboxListTool,
+  mailboxReadTool,
+  mailboxReadAllTool,
+  mailboxAckTool,
+  mailboxStatusTool,
+} from './mailbox-tool.js';
+import { mailboxRemoveTool, mailboxRemoveAllTool } from './mailbox-tool-remove.js';
 
 export * from './types.js';
 export * from './registry.js';
@@ -40,6 +47,7 @@ export * from './context-ledger-memory-tool.js';
 export * from './permission-tools.js';
 export * from './heartbeat-control-tool.js';
 export * from './mailbox-tool.js';
+export * from './mailbox-tool-remove.js';
 
 export function createDefaultInternalToolRegistry(): InternalToolRegistry {
   const registry = new InternalToolRegistry();
@@ -60,7 +68,10 @@ export function createDefaultInternalToolRegistry(): InternalToolRegistry {
   registry.register(heartbeatStatusTool);
   registry.register(mailboxListTool);
   registry.register(mailboxReadTool);
+  registry.register(mailboxReadAllTool);
   registry.register(mailboxAckTool);
+  registry.register(mailboxRemoveTool);
+  registry.register(mailboxRemoveAllTool);
   registry.register(mailboxStatusTool);
   for (const tool of permissionTools) {
     registry.register(tool);

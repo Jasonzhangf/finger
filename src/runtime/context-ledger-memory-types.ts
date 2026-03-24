@@ -28,6 +28,8 @@ export interface ContextLedgerMemoryInput {
   full_reindex?: boolean;
   trigger?: 'manual' | 'auto';
   summary?: string;
+  slot_start?: number;
+  slot_end?: number;
   source_event_ids?: string[];
   source_message_ids?: string[];
   source_time_start?: string;
@@ -80,7 +82,8 @@ export interface ContextLedgerMemoryQueryResult {
   strategy: 'direct_ledger' | 'compact_first' | 'compact_then_detail';
   source: string;
   entries: LedgerEntryFile[];
-  timeline: Array<{
+  slots: Array<{
+    slot: number;
     id: string;
     timestamp_ms: number;
     timestamp_iso: string;
@@ -89,6 +92,18 @@ export interface ContextLedgerMemoryQueryResult {
     mode: string;
     preview: string;
   }>;
+  timeline: Array<{
+    slot: number;
+    id: string;
+    timestamp_ms: number;
+    timestamp_iso: string;
+    event_type: string;
+    agent_id: string;
+    mode: string;
+    preview: string;
+  }>;
+  slot_start: number;
+  slot_end: number;
   total: number;
   truncated: boolean;
   compact_hits: Array<{

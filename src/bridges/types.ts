@@ -69,6 +69,8 @@ export type ChannelType = 'openclaw-plugin' | 'webui' | 'builtin';
 export interface PushSettings {
   /** Push reasoning/thinking content (default: false) */
   reasoning: boolean;
+  /** Push assistant body/content updates (default: false) */
+  bodyUpdates: boolean;
   /** Push status updates (default: true) */
   statusUpdate: boolean;
   /** Push tool call details (default: false) */

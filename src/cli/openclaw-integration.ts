@@ -74,6 +74,7 @@ function buildDefaultPushSettings(channelId: string): Record<string, unknown> {
   if (channelId === 'webui') {
     return {
       reasoning: true,
+      bodyUpdates: true,
       statusUpdate: true,
       toolCalls: true,
       stepUpdates: true,
@@ -82,7 +83,8 @@ function buildDefaultPushSettings(channelId: string): Record<string, unknown> {
     };
   }
   return {
-    reasoning: false,
+    reasoning: true,
+    bodyUpdates: true,
     statusUpdate: true,
     toolCalls: false,
     stepUpdates: true,

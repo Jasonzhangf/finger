@@ -62,6 +62,9 @@ export interface AskToolRequest {
   sessionId?: string;
   workflowId?: string;
   epicId?: string;
+  channelId?: string;
+  userId?: string;
+  groupId?: string;
   timeoutMs?: number;
 }
 

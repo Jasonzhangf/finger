@@ -12,6 +12,7 @@ import type { ChannelBridgeEnvelope } from '../../bridges/envelope.js';
 import type { MessageHub } from '../../orchestration/message-hub.js';
 import type { ChannelBridgeManager } from '../../bridges/manager.js';
 import type { PushSettings } from '../../bridges/types.js';
+import { heartbeatMailbox } from './heartbeat-mailbox.js';
 import type {
   SessionEnvelopeMapping,
   WrappedStatusUpdate,
@@ -121,4 +122,81 @@ export function startCleanup(
   return () => {
     clearInterval(timer);
   };
+}
+
+export interface MailboxProgressSnapshot {
+  target: string;
+  summaryText: string;
+  counts: {
+    total: number;
+    unread: number;
+    pending: number;
+    processing: number;
+  };
+  recentUnread: Array<{
+    id: string;
+    seq: number;
+    category?: string;
+    priority?: number;
+    shortDescription: string;
+  }>;
+}
+
+function shortContent(value: unknown, maxLength = 80): string {
+  let text = '';
+  if (typeof value === 'string') {
+    text = value;
+  } else if (value && typeof value === 'object' && 'text' in value && typeof (value as { text: unknown }).text === 'string') {
+    text = (value as { text: string }).text;
+  } else if (value && typeof value === 'object' && 'summary' in value && typeof (value as { summary: unknown }).summary === 'string') {
+    text = (value as { summary: string }).summary;
+  } else {
+    try {
+      text = JSON.stringify(value);
+    } catch {
+      text = String(value);
+    }
+  }
+  const normalized = text.replace(/\s+/g, ' ').trim();
+  if (!normalized) return '(empty)';
+  return normalized.length > maxLength ? `${normalized.slice(0, maxLength)}...` : normalized;
+}
+
+/**
+ * Build mailbox.status-style snapshot for progress updates.
+ */
+export function buildMailboxProgressSnapshot(agentId: string, fallbackAgentId = 'finger-system-agent'): MailboxProgressSnapshot | null {
+  const target = (agentId || '').trim() || fallbackAgentId;
+  try {
+    const all = heartbeatMailbox.list(target);
+    const pending = all.filter((message) => message.status === 'pending');
+    const unread = pending.filter((message) => !message.readAt);
+    const processing = all.filter((message) => message.status === 'processing');
+    const recentUnread = unread.slice(0, 3).map((message) => ({
+      id: message.id,
+      seq: message.seq,
+      ...(typeof message.category === 'string' ? { category: message.category } : {}),
+      ...(typeof message.priority === 'number' ? { priority: message.priority } : {}),
+      shortDescription: shortContent(message.content),
+    }));
+
+    const summaryText = `mailbox.status(${target}): unread=${unread.length} pending=${pending.length} processing=${processing.length}`;
+    return {
+      target,
+      summaryText,
+      counts: {
+        total: all.length,
+        unread: unread.length,
+        pending: pending.length,
+        processing: processing.length,
+      },
+      recentUnread,
+    };
+  } catch (error) {
+    log.warn('[AgentStatusSubscriber] Failed to build mailbox snapshot for progress update', {
+      target,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return null;
+  }
 }
