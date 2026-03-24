@@ -53,6 +53,82 @@ export function attachEventForwarding(deps: EventForwardingDeps): {
     generalAgentId,
   } = deps;
   const latestBodyBySession = new Map<string, string>();
+  const dispatchLedgerDedup = new Map<string, number>();
+  const DISPATCH_LEDGER_DEDUP_TTL_MS = 10 * 60_000;
+
+  const normalizeDispatchLedgerSessionId = (
+    rawSessionId: string | undefined,
+  ): { sessionId?: string; originalSessionId?: string } => {
+    const lookup = (sessionId: string): { sessionId?: string; originalSessionId?: string } | null => {
+      const normalized = sessionId.trim();
+      if (normalized.length === 0) return null;
+      if (normalized.startsWith('msg-')) return null;
+      const getSession = (sessionManager as unknown as { getSession?: (id: string) => unknown }).getSession;
+      if (typeof getSession !== 'function') {
+        return { sessionId: normalized };
+      }
+      const session = getSession.call(sessionManager, normalized) as { id?: string; context?: unknown } | null;
+      if (!session || typeof session.id !== 'string' || session.id.trim().length === 0) {
+        return null;
+      }
+      const context = isObjectRecord(session.context) ? session.context : {};
+      const rootSessionId = asString(context.rootSessionId) ?? asString(context.parentSessionId);
+      if (rootSessionId) {
+        const root = getSession.call(sessionManager, rootSessionId) as { id?: string } | null;
+        if (root?.id && root.id.trim().length > 0) {
+          return {
+            sessionId: root.id,
+            ...(root.id !== normalized ? { originalSessionId: normalized } : {}),
+          };
+        }
+      }
+      return { sessionId: session.id };
+    };
+
+    const candidates: string[] = [];
+    if (typeof rawSessionId === 'string' && rawSessionId.trim().length > 0) {
+      candidates.push(rawSessionId.trim());
+    }
+
+    const getCurrentSession = (sessionManager as unknown as { getCurrentSession?: () => { id?: string } | null }).getCurrentSession;
+    const currentSessionId = typeof getCurrentSession === 'function'
+      ? asString(getCurrentSession.call(sessionManager)?.id)
+      : undefined;
+    if (currentSessionId) candidates.push(currentSessionId);
+
+    const getSystemSession = (sessionManager as unknown as { getOrCreateSystemSession?: () => { id?: string } | null }).getOrCreateSystemSession;
+    const systemSessionId = typeof getSystemSession === 'function'
+      ? asString(getSystemSession.call(sessionManager)?.id)
+      : undefined;
+    if (systemSessionId) candidates.push(systemSessionId);
+
+    for (const candidate of candidates) {
+      const resolved = lookup(candidate);
+      if (resolved?.sessionId) {
+        return resolved;
+      }
+    }
+
+    if (typeof rawSessionId === 'string') {
+      const fallback = rawSessionId.trim();
+      if (fallback.length > 0 && !fallback.startsWith('msg-')) {
+        return { sessionId: fallback };
+      }
+    }
+    return {};
+  };
+
+  const shouldSkipDispatchLedgerEntry = (key: string): boolean => {
+    const now = Date.now();
+    for (const [existingKey, ts] of dispatchLedgerDedup.entries()) {
+      if (now - ts > DISPATCH_LEDGER_DEDUP_TTL_MS) {
+        dispatchLedgerDedup.delete(existingKey);
+      }
+    }
+    if (dispatchLedgerDedup.has(key)) return true;
+    dispatchLedgerDedup.set(key, now);
+    return false;
+  };
 
   const persistSessionEventMessage = (
     sessionId: string,
@@ -268,8 +344,12 @@ export function attachEventForwarding(deps: EventForwardingDeps): {
     (event) => {
       const payload = event.payload as Record<string, unknown>;
       const status = typeof payload.status === 'string' ? payload.status : '';
-      const sessionId = asString(event.sessionId) || asString(payload.sessionId);
+      const dispatchId = asString(payload.dispatchId) ?? 'unknown-dispatch';
+      const requestedSessionId = asString(event.sessionId) || asString(payload.sessionId);
+      const sessionResolution = normalizeDispatchLedgerSessionId(requestedSessionId);
+      const sessionId = sessionResolution.sessionId;
       const targetAgentId = asString(payload.targetAgentId) ?? 'unknown-agent';
+      const sourceAgentId = asString(payload.sourceAgentId) ?? 'unknown-agent';
       const agentRole = inferAgentRoleLabel(targetAgentId);
       const assignment = isObjectRecord(payload.assignment) ? payload.assignment : null;
       const queuePosition = typeof payload.queuePosition === 'number' ? payload.queuePosition : undefined;
@@ -291,6 +371,7 @@ export function attachEventForwarding(deps: EventForwardingDeps): {
               ? '失败'
               : status;
       const dispatchParts = [
+        `dispatch ${dispatchId}`,
         `派发给 ${agentRole}${targetAgentId ? ` (${targetAgentId})` : ''}`,
         statusLabel ? `状态 ${statusLabel}` : '',
         typeof queuePosition === 'number' ? `队列 #${queuePosition}` : '',
@@ -300,19 +381,69 @@ export function attachEventForwarding(deps: EventForwardingDeps): {
       ].filter((part) => part.length > 0);
       const dispatchContent = dispatchParts.join(' · ');
       if (sessionId && dispatchContent.length > 0) {
-        void sessionManager.addMessage(sessionId, 'system', dispatchContent, {
-          type: 'dispatch',
-          agentId: targetAgentId,
-          metadata: { event, agentRole },
-        });
+        const statusDedupeKey = [
+          sessionId,
+          dispatchId,
+          'status',
+          status,
+          asString(dispatchResult?.status) ?? '',
+          typeof queuePosition === 'number' ? String(queuePosition) : '',
+          mailboxMessageId ?? '',
+          asString(payload.error) ?? '',
+        ].join('|');
+        if (!shouldSkipDispatchLedgerEntry(statusDedupeKey)) {
+          void sessionManager.addMessage(sessionId, 'system', dispatchContent, {
+            type: 'dispatch',
+            agentId: targetAgentId,
+            metadata: {
+              dispatchId,
+              sourceAgentId,
+              targetAgentId,
+              status,
+              queuePosition,
+              mailboxMessageId,
+              taskId: taskId || undefined,
+              bdTaskId: bdTaskId || undefined,
+              sessionId,
+              requestedSessionId: requestedSessionId || undefined,
+              originalSessionId: sessionResolution.originalSessionId,
+              event,
+              agentRole,
+            },
+          });
+        }
         if (status === 'completed' || status === 'failed') {
           const resultContent = formatDispatchResultContent(payload.result, asString(payload.error));
           if (resultContent.trim().length > 0) {
-            void sessionManager.addMessage(sessionId, 'assistant', resultContent, {
-              type: 'dispatch',
-              agentId: targetAgentId,
-              metadata: { event, agentRole },
-            });
+            const resultDedupeKey = [
+              sessionId,
+              dispatchId,
+              'result',
+              status,
+              asString(payload.error) ?? '',
+              resultContent.trim(),
+            ].join('|');
+            if (!shouldSkipDispatchLedgerEntry(resultDedupeKey)) {
+              void sessionManager.addMessage(sessionId, 'assistant', resultContent, {
+                type: 'dispatch',
+                agentId: targetAgentId,
+                metadata: {
+                  dispatchId,
+                  sourceAgentId,
+                  targetAgentId,
+                  status,
+                  mailboxMessageId,
+                  sessionId,
+                  requestedSessionId: requestedSessionId || undefined,
+                  originalSessionId: sessionResolution.originalSessionId,
+                  taskId: taskId || undefined,
+                  bdTaskId: bdTaskId || undefined,
+                  error: asString(payload.error) ?? undefined,
+                  event,
+                  agentRole,
+                },
+              });
+            }
           }
         }
       }

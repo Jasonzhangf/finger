@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { attachEventForwarding, type EventForwardingDeps } from '../../src/server/modules/event-forwarding.js';
 import type { SessionManager } from '../../src/orchestration/session-manager.js';
 import type { UnifiedEventBus } from '../../src/runtime/event-bus.js';
@@ -256,7 +256,6 @@ describe('Event Forwarding - Ledger Pointer Injection', () => {
   });
 
   it('should not inject duplicate main ledger pointer', () => {
-    const messages: Array<{ type?: string; metadata?: Record<string, unknown> }> = [];
     const sessionManager = {
       addMessage: vi.fn(),
       getMessages: vi.fn(() => [
@@ -285,7 +284,7 @@ describe('Event Forwarding - Ledger Pointer Injection', () => {
 });
 
 describe('Event Forwarding - Dispatch Child Ledger Pointer', () => {
-  function createDispatchTestDeps(sessionId: string): {
+  function createDispatchTestDeps(): {
     deps: EventForwardingDeps;
     capturedSubscribe: { eventName: string; handler: (event: any) => void }[];
   } {
@@ -318,7 +317,7 @@ describe('Event Forwarding - Dispatch Child Ledger Pointer', () => {
   }
 
   it('should inject child ledger pointer from payload.childSessionId on dispatch completed', () => {
-    const { capturedSubscribe } = createDispatchTestDeps('parent-session');
+    const { capturedSubscribe } = createDispatchTestDeps();
     const handler = getDispatchHandler(capturedSubscribe);
 
     handler({
@@ -335,8 +334,6 @@ describe('Event Forwarding - Dispatch Child Ledger Pointer', () => {
     });
 
     // Verify that a ledger_pointer message was added via sessionManager.addMessage
-    const { deps } = createDispatchTestDeps('parent-session-verify');
-    // We need to check the actual mock from the first test
     // Re-create with a trackable mock
     const messages: Array<{ sessionId: string; role: string; content: string; type?: string; metadata?: Record<string, unknown> }> = [];
     const trackableSessionManager = {
@@ -643,5 +640,101 @@ describe('Event Forwarding - Dispatch Result Mailbox Routing', () => {
     expect(content.envelope).toBeDefined();
     expect(content.targetAgentId).toBe(sourceAgentId);
     expect(routed?.category).toBe('notification');
+  });
+});
+
+describe('Event Forwarding - Dispatch Ledger Session Lifecycle', () => {
+  it('writes dispatch ledger updates into root session when runtime child session is reported', () => {
+    const writes: Array<{ sessionId: string; role: string; detail?: Record<string, unknown> }> = [];
+    const sessionManager = {
+      addMessage: vi.fn((sessionId: string, role: string, _content: string, detail?: Record<string, unknown>) => {
+        writes.push({ sessionId, role, detail });
+      }),
+      getMessages: vi.fn(() => []),
+      getSession: vi.fn((sessionId: string) => {
+        if (sessionId === 'runtime-child-1') {
+          return {
+            id: 'runtime-child-1',
+            context: { sessionTier: 'runtime', parentSessionId: 'root-session-1', rootSessionId: 'root-session-1' },
+          };
+        }
+        if (sessionId === 'root-session-1') {
+          return {
+            id: 'root-session-1',
+            context: { sessionTier: 'orchestrator-root' },
+          };
+        }
+        return null;
+      }),
+      compressContext: vi.fn(async () => 'compressed'),
+    } as unknown as SessionManager;
+    const captured: { eventName: string; handler: (event: any) => void }[] = [];
+    const eventBus = {
+      subscribe: vi.fn((eventName: string, handler: (event: any) => void) => captured.push({ eventName, handler })),
+      subscribeMultiple: vi.fn(),
+      emit: vi.fn(async () => {}),
+    } as unknown as UnifiedEventBus;
+    attachEventForwarding(createDeps({ eventBus, sessionManager }));
+    const handler = captured.find((entry) => entry.eventName === 'agent_runtime_dispatch')?.handler;
+    expect(handler).toBeDefined();
+
+    handler?.({
+      type: 'agent_runtime_dispatch',
+      sessionId: 'runtime-child-1',
+      timestamp: new Date().toISOString(),
+      payload: {
+        dispatchId: 'dispatch-root-route-1',
+        sourceAgentId: 'finger-system-agent',
+        targetAgentId: 'finger-project-agent',
+        status: 'completed',
+        result: { summary: 'done' },
+      },
+    });
+
+    expect(writes.length).toBeGreaterThanOrEqual(2);
+    expect(writes[0]?.sessionId).toBe('root-session-1');
+    const metadata = writes[0]?.detail?.metadata as Record<string, unknown> | undefined;
+    expect(metadata?.originalSessionId).toBe('runtime-child-1');
+    expect(metadata?.dispatchId).toBe('dispatch-root-route-1');
+  });
+
+  it('deduplicates duplicate dispatch status/result writes for the same dispatch event', () => {
+    const writes: Array<{ role: string }> = [];
+    const sessionManager = {
+      addMessage: vi.fn((_sessionId: string, role: string) => {
+        writes.push({ role });
+      }),
+      getMessages: vi.fn(() => []),
+      getSession: vi.fn((sessionId: string) => ({ id: sessionId, context: {} })),
+      compressContext: vi.fn(async () => 'compressed'),
+    } as unknown as SessionManager;
+    const captured: { eventName: string; handler: (event: any) => void }[] = [];
+    const eventBus = {
+      subscribe: vi.fn((eventName: string, handler: (event: any) => void) => captured.push({ eventName, handler })),
+      subscribeMultiple: vi.fn(),
+      emit: vi.fn(async () => {}),
+    } as unknown as UnifiedEventBus;
+    attachEventForwarding(createDeps({ eventBus, sessionManager }));
+    const handler = captured.find((entry) => entry.eventName === 'agent_runtime_dispatch')?.handler;
+    expect(handler).toBeDefined();
+
+    const event = {
+      type: 'agent_runtime_dispatch',
+      sessionId: 'root-dedup-1',
+      timestamp: new Date().toISOString(),
+      payload: {
+        dispatchId: 'dispatch-dedup-1',
+        sourceAgentId: 'finger-system-agent',
+        targetAgentId: 'finger-project-agent',
+        status: 'completed',
+        result: { summary: 'same' },
+      },
+    };
+
+    handler?.(event);
+    handler?.(event);
+
+    // One system status message + one assistant result message
+    expect(writes.length).toBe(2);
   });
 });

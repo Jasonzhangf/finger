@@ -15,7 +15,7 @@
 
 import type { AgentRuntimeDeps } from './agent-runtime/types.js';
 import type { UnifiedEventBus } from '../../runtime/event-bus.js';
-import type { RuntimeEvent, ToolErrorEvent, SystemErrorEvent, AgentStepCompletedEvent } from '../../runtime/events.js';
+import type { RuntimeEvent, ToolErrorEvent, SystemErrorEvent } from '../../runtime/events.js';
 import type { ChannelBridgeEnvelope } from '../../bridges/envelope.js';
 import {
   type SubscriptionLevel,
@@ -26,7 +26,7 @@ import {
   type WrappedStatusUpdate,
   KEY_STATE_CHANGES,
 } from './agent-status-subscriber-types.js';
-import { wrapStatusUpdate, getAgentIcon } from './agent-status-subscriber-helpers.js';
+import { wrapStatusUpdate } from './agent-status-subscriber-helpers.js';
 import { logger } from '../../core/logger.js';
 import { sendStatusUpdate, startCleanup, buildMailboxProgressSnapshot } from './agent-status-subscriber-runtime.js';
 import {
@@ -40,6 +40,21 @@ import {
   flushStepBuffer as flushStepBufferEvent,
   type HandlerContext,
 } from './agent-status-subscriber-handlers.js';
+
+/**
+ * 默认订阅的事件类型列表
+ * 可通过修改此列表来控制哪些事件会被实时推送到 channel
+ */
+const DEFAULT_SUBSCRIBED_EVENTS = [
+  'agent_runtime_status',
+  'agent_runtime_dispatch',
+  'agent_step_completed',
+  'tool_error',
+  'system_error',
+  'waiting_for_user',
+  'tool_call',
+  'tool_result',
+] as const;
 
 const log = logger.module('AgentStatusSubscriber');
 
@@ -89,12 +104,10 @@ export class AgentStatusSubscriber {
       log.warn('[AgentStatusSubscriber] Already started');
       return;
     }
+    log.info(`[AgentStatusSubscriber] Starting... subscribing to: ${DEFAULT_SUBSCRIBED_EVENTS.join(", ")}`);
 
-    log.info('[AgentStatusSubscriber] Starting...');
-
-    // 订阅 agent_runtime_status / agent_runtime_dispatch / agent_step_completed / tool_error / system_error / waiting_for_user 事件
     this.unsubscribe = this.eventBus.subscribeMultiple(
-      ["agent_runtime_status", "agent_runtime_dispatch", "agent_step_completed", "tool_error", "system_error", "waiting_for_user", "tool_call", "tool_result"],
+      [...DEFAULT_SUBSCRIBED_EVENTS],
       (event: RuntimeEvent) => {
         this.handleEvent(event).catch(err => {
           log.error('[AgentStatusSubscriber] Error handling event:', err);
