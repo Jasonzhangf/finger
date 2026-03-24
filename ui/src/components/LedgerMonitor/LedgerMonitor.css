@@ -47,11 +47,10 @@
 
 .ledger-monitor-recent {
   flex: 1;
-  overflow-y: auto;
+  overflow: hidden;
   display: flex;
   flex-direction: column;
   gap: 2px;
-  overscroll-behavior: contain;
 }
 
 .ledger-monitor-hint {

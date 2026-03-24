@@ -135,6 +135,18 @@ async function fetchLedgerPage(sessionId: string, limit: number, offset: number,
 const PAGE_SIZE = 50;
 const CARD_PREVIEW_LIMIT = 500;
 
+function resolveWheelDeltaY(event: ReactWheelEvent<HTMLElement>, viewportHeight: number): number {
+  if (event.deltaMode === 1) {
+    // line mode -> pixels
+    return event.deltaY * 16;
+  }
+  if (event.deltaMode === 2) {
+    // page mode -> viewport height
+    return event.deltaY * Math.max(1, viewportHeight);
+  }
+  return event.deltaY;
+}
+
 const LedgerModal: React.FC<LedgerModalProps> = ({ sessionId, label, onClose }) => {
   const [slots, setSlots] = useState<LedgerSlot[]>([]);
   const [meta, setMeta] = useState<SessionMeta | null>(null);
@@ -198,7 +210,8 @@ const LedgerModal: React.FC<LedgerModalProps> = ({ sessionId, label, onClose }) 
     if (!list) return;
     if (list.scrollHeight <= list.clientHeight) return;
     const previous = list.scrollTop;
-    list.scrollTop += event.deltaY;
+    const deltaY = resolveWheelDeltaY(event, list.clientHeight);
+    list.scrollTop += deltaY;
     if (list.scrollTop !== previous) {
       event.preventDefault();
       event.stopPropagation();
@@ -212,7 +225,8 @@ const LedgerModal: React.FC<LedgerModalProps> = ({ sessionId, label, onClose }) 
     if (maxScrollTop <= 0) return;
     event.preventDefault();
     event.stopPropagation();
-    list.scrollTop = Math.max(0, Math.min(maxScrollTop, list.scrollTop + event.deltaY));
+    const deltaY = resolveWheelDeltaY(event, list.clientHeight);
+    list.scrollTop = Math.max(0, Math.min(maxScrollTop, list.scrollTop + deltaY));
   }, []);
 
   const handleOpenDetail = useCallback(async (slot: number) => {
