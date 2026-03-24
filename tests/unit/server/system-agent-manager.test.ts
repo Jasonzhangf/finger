@@ -1,6 +1,7 @@
 import { describe, expect, it, beforeEach, vi } from 'vitest';
 import { SystemAgentManager } from '../../../src/server/modules/system-agent-manager.js';
 import type { AgentRuntimeDeps } from '../../../src/server/modules/agent-runtime/types.js';
+import { PeriodicCheckRunner } from '../../../src/agents/finger-system-agent/periodic-check.js';
 
 describe('SystemAgentManager - Session Reuse', () => {
   let mockSessionManager: any;
@@ -134,5 +135,36 @@ describe('SystemAgentManager - Session Reuse', () => {
     );
     expect(deployCall).toBeDefined();
     expect(deployCall[1].sessionId).toBe('default');
+  });
+
+  it('should respect periodic check switch (default on, optional off)', async () => {
+    const startSpy = vi.spyOn(PeriodicCheckRunner.prototype, 'start');
+    const stopSpy = vi.spyOn(PeriodicCheckRunner.prototype, 'stop');
+    const session = {
+      id: 'system-session-opts',
+      name: 'finger-system-agent runtime',
+      projectPath: '/tmp/system',
+      createdAt: '2026-03-24T00:00:00Z',
+    };
+    mockSessionManager.getOrCreateSystemSession.mockReturnValue(session);
+
+    const enabledManager = new SystemAgentManager(deps, {
+      periodicCheck: { enabled: true, intervalMs: 12345 },
+    });
+    await enabledManager.start();
+    expect(startSpy).toHaveBeenCalled();
+    enabledManager.stop();
+    expect(stopSpy).toHaveBeenCalled();
+
+    startSpy.mockClear();
+    stopSpy.mockClear();
+
+    const disabledManager = new SystemAgentManager(deps, {
+      periodicCheck: { enabled: false },
+    });
+    await disabledManager.start();
+    expect(startSpy).not.toHaveBeenCalled();
+    disabledManager.stop();
+    expect(stopSpy).not.toHaveBeenCalled();
   });
 });

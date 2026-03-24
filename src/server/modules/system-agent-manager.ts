@@ -11,17 +11,40 @@ import type { AgentInfo } from '../../agents/finger-system-agent/registry.js';
 import { SYSTEM_AGENT_CONFIG, SYSTEM_PROJECT_PATH } from '../../agents/finger-system-agent/index.js';
 import { logger } from '../../core/logger.js';
 import { FINGER_PATHS } from '../../core/finger-paths.js';
+import { promises as fs } from 'fs';
+import path from 'path';
 
 const log = logger.module('SystemAgentManager');
+const DEFAULT_PERIODIC_CHECK_INTERVAL_MS = 5 * 60_000;
+const SYSTEM_AGENT_MANAGER_CONFIG_PATH = path.join(FINGER_PATHS.config.dir, 'system-agent-manager.json');
+
+interface SystemAgentManagerFileConfig {
+  periodicCheck?: {
+    enabled?: boolean;
+    intervalMs?: number;
+  };
+}
+
+interface SystemAgentManagerOptions {
+  periodicCheck?: {
+    enabled?: boolean;
+    intervalMs?: number;
+  };
+}
 
 export class SystemAgentManager {
   private runner: PeriodicCheckRunner | null = null;
   private systemSessionId: string | null = null;
+  private started = false;
 
-  constructor(private deps: AgentRuntimeDeps) {}
+  constructor(
+    private deps: AgentRuntimeDeps,
+    private options: SystemAgentManagerOptions = {},
+  ) {}
 
   async start(): Promise<void> {
-    if (this.runner) return;
+    if (this.started) return;
+    this.started = true;
 
     // 0. 从现有 sessions 初始化 registry（含默认监控）
     await this.initializeRegistryFromSessions();
@@ -33,9 +56,23 @@ export class SystemAgentManager {
     await this.deploySystemAgent();
     
     
-    // 3. 启动定时器
-    this.runner = new PeriodicCheckRunner(this.deps);
-    this.runner.start();
+    // 3. 启动定时器（可配置开关，默认开启）
+    const periodicCheck = await this.resolvePeriodicCheckConfig();
+    if (periodicCheck.enabled) {
+      this.runner = new PeriodicCheckRunner(this.deps, {
+        intervalMs: periodicCheck.intervalMs,
+      });
+      this.runner.start();
+      log.info('[SystemAgentManager] Periodic check enabled', {
+        intervalMs: periodicCheck.intervalMs,
+        configPath: SYSTEM_AGENT_MANAGER_CONFIG_PATH,
+      });
+    } else {
+      this.runner = null;
+      log.info('[SystemAgentManager] Periodic check disabled by config', {
+        configPath: SYSTEM_AGENT_MANAGER_CONFIG_PATH,
+      });
+    }
 
     // 4. 启动监控中的 Project Agents
     await this.startMonitoredProjects();
@@ -120,9 +157,42 @@ export class SystemAgentManager {
   }
 
   stop(): void {
-    if (!this.runner) return;
-    this.runner.stop();
-    this.runner = null;
+    if (this.runner) {
+      this.runner.stop();
+      this.runner = null;
+    }
+    this.started = false;
+  }
+
+  private async resolvePeriodicCheckConfig(): Promise<{ enabled: boolean; intervalMs: number }> {
+    const defaults = {
+      enabled: true,
+      intervalMs: DEFAULT_PERIODIC_CHECK_INTERVAL_MS,
+    };
+
+    const fromOptions = this.options.periodicCheck;
+    if (fromOptions) {
+      return {
+        enabled: fromOptions.enabled !== false,
+        intervalMs: Number.isFinite(fromOptions.intervalMs)
+          ? Math.max(1_000, Math.floor(fromOptions.intervalMs as number))
+          : defaults.intervalMs,
+      };
+    }
+
+    try {
+      const raw = await fs.readFile(SYSTEM_AGENT_MANAGER_CONFIG_PATH, 'utf-8');
+      const parsed = JSON.parse(raw) as SystemAgentManagerFileConfig;
+      const intervalMs = parsed.periodicCheck?.intervalMs;
+      return {
+        enabled: parsed.periodicCheck?.enabled !== false,
+        intervalMs: Number.isFinite(intervalMs)
+          ? Math.max(1_000, Math.floor(intervalMs as number))
+          : defaults.intervalMs,
+      };
+    } catch {
+      return defaults;
+    }
   }
 
   /**

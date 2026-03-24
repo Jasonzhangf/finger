@@ -159,4 +159,227 @@ describe('AgentRuntimeBlock queue timeout fallback', () => {
       vi.useRealTimers();
     }
   });
+
+  it('routes non-direct dispatches to system agent into mailbox immediately', async () => {
+    const hubSendToModule = vi.fn().mockResolvedValue({ ok: true });
+    const onDispatchQueueTimeout = vi.fn().mockReturnValue({
+      delivery: 'mailbox',
+      mailboxMessageId: 'msg-system-mailbox-1',
+      summary: 'system mailbox route',
+    });
+
+    const block = new AgentRuntimeBlock('agent-runtime-test-system', {
+      moduleRegistry: {
+        getAllModules: () => [{
+          id: 'finger-system-agent',
+          name: 'finger-system-agent',
+          type: 'agent',
+          metadata: { role: 'system' },
+        }] as never,
+        getModule: (id: string) => (id === 'finger-system-agent'
+          ? {
+              id: 'finger-system-agent',
+              name: 'finger-system-agent',
+              type: 'agent',
+              metadata: { role: 'system' },
+            } as never
+          : null),
+      } as never,
+      hub: {
+        sendToModule: hubSendToModule,
+      } as never,
+      runtime: {
+        getAgentToolPolicy: () => ({
+          whitelist: ['agent.dispatch'],
+          blacklist: [],
+        }),
+        getAgentRuntimeConfig: () => null,
+        setAgentRuntimeConfig: vi.fn(),
+      } as never,
+      toolRegistry: {
+        list: () => [{ name: 'agent.dispatch', policy: 'allow' }],
+      } as never,
+      eventBus: {
+        emit: vi.fn().mockResolvedValue(undefined),
+      } as never,
+      workflowManager: {
+        listWorkflows: () => [],
+        pauseWorkflow: () => true,
+        resumeWorkflow: () => true,
+      },
+      sessionManager: {
+        pauseSession: () => true,
+        resumeSession: () => true,
+        getCurrentSession: () => ({ id: 'session-system' }),
+      },
+      chatCodexRunner: {
+        listSessionStates: () => [],
+        interruptSession: () => [],
+      },
+      resourcePool: {
+        getAllResources: () => [],
+        addResource: vi.fn(),
+      } as never,
+      getLoadedAgentConfigs: () => [{
+        filePath: '/tmp/finger-system-agent.agent.json',
+        config: {
+          id: 'finger-system-agent',
+          name: 'System Agent',
+          role: 'system',
+          implementations: [
+            { id: 'native-main', kind: 'native', moduleId: 'finger-system-agent', enabled: true },
+          ],
+          tools: {
+            whitelist: ['agent.dispatch'],
+          },
+        },
+      }],
+      primaryOrchestratorAgentId: 'chat-codex',
+      onDispatchQueueTimeout,
+    });
+
+    await block.initialize();
+    await block.start();
+    await block.execute('deploy', {
+      targetAgentId: 'finger-system-agent',
+      targetImplementationId: 'native-main',
+      sessionId: 'session-system',
+      instanceCount: 1,
+      launchMode: 'orchestrator',
+    });
+
+    const result = await block.execute('dispatch', {
+      sourceAgentId: 'system-heartbeat',
+      targetAgentId: 'finger-system-agent',
+      task: { text: 'mailbox-check' },
+      blocking: true,
+      metadata: { source: 'system-heartbeat' },
+    }) as {
+      ok: boolean;
+      status: string;
+      result?: { status?: string; messageId?: string };
+    };
+
+    expect(onDispatchQueueTimeout).toHaveBeenCalledWith(expect.objectContaining({
+      sourceAgentId: 'system-heartbeat',
+      targetAgentId: 'finger-system-agent',
+    }));
+    expect(result.ok).toBe(true);
+    expect(result.status).toBe('queued');
+    expect(result.result).toEqual(expect.objectContaining({
+      status: 'queued_mailbox',
+      messageId: 'msg-system-mailbox-1',
+    }));
+    expect(hubSendToModule).not.toHaveBeenCalled();
+  });
+
+  it('keeps direct-inject dispatch to system agent on the direct execution path', async () => {
+    const hubSendToModule = vi.fn().mockResolvedValue({ ok: true, output: 'ok' });
+    const onDispatchQueueTimeout = vi.fn().mockReturnValue({
+      delivery: 'mailbox',
+      mailboxMessageId: 'msg-system-mailbox-direct',
+      summary: 'should not be used',
+    });
+
+    const block = new AgentRuntimeBlock('agent-runtime-test-system-direct', {
+      moduleRegistry: {
+        getAllModules: () => [{
+          id: 'finger-system-agent',
+          name: 'finger-system-agent',
+          type: 'agent',
+          metadata: { role: 'system' },
+        }] as never,
+        getModule: (id: string) => (id === 'finger-system-agent'
+          ? {
+              id: 'finger-system-agent',
+              name: 'finger-system-agent',
+              type: 'agent',
+              metadata: { role: 'system' },
+            } as never
+          : null),
+      } as never,
+      hub: {
+        sendToModule: hubSendToModule,
+      } as never,
+      runtime: {
+        getAgentToolPolicy: () => ({
+          whitelist: ['agent.dispatch'],
+          blacklist: [],
+        }),
+        getAgentRuntimeConfig: () => null,
+        setAgentRuntimeConfig: vi.fn(),
+      } as never,
+      toolRegistry: {
+        list: () => [{ name: 'agent.dispatch', policy: 'allow' }],
+      } as never,
+      eventBus: {
+        emit: vi.fn().mockResolvedValue(undefined),
+      } as never,
+      workflowManager: {
+        listWorkflows: () => [],
+        pauseWorkflow: () => true,
+        resumeWorkflow: () => true,
+      },
+      sessionManager: {
+        pauseSession: () => true,
+        resumeSession: () => true,
+        getCurrentSession: () => ({ id: 'session-system' }),
+      },
+      chatCodexRunner: {
+        listSessionStates: () => [],
+        interruptSession: () => [],
+      },
+      resourcePool: {
+        getAllResources: () => [],
+        addResource: vi.fn(),
+      } as never,
+      getLoadedAgentConfigs: () => [{
+        filePath: '/tmp/finger-system-agent.agent.json',
+        config: {
+          id: 'finger-system-agent',
+          name: 'System Agent',
+          role: 'system',
+          implementations: [
+            { id: 'native-main', kind: 'native', moduleId: 'finger-system-agent', enabled: true },
+          ],
+          tools: {
+            whitelist: ['agent.dispatch'],
+          },
+        },
+      }],
+      primaryOrchestratorAgentId: 'chat-codex',
+      onDispatchQueueTimeout,
+    });
+
+    await block.initialize();
+    await block.start();
+    await block.execute('deploy', {
+      targetAgentId: 'finger-system-agent',
+      targetImplementationId: 'native-main',
+      sessionId: 'session-system',
+      instanceCount: 1,
+      launchMode: 'orchestrator',
+    });
+
+    const result = await block.execute('dispatch', {
+      sourceAgentId: 'system-heartbeat',
+      targetAgentId: 'finger-system-agent',
+      task: { text: 'mailbox-check-direct' },
+      blocking: true,
+      metadata: {
+        source: 'system-heartbeat',
+        systemDirectInject: true,
+        deliveryMode: 'direct',
+      },
+    }) as {
+      ok: boolean;
+      status: string;
+      result?: unknown;
+    };
+
+    expect(result.ok).toBe(true);
+    expect(result.status).toBe('completed');
+    expect(hubSendToModule).toHaveBeenCalledTimes(1);
+    expect(onDispatchQueueTimeout).not.toHaveBeenCalled();
+  });
 });

@@ -329,6 +329,8 @@ export class HeartbeatScheduler {
       metadata: {
         source: 'system-heartbeat',
         role: 'system',
+        systemDirectInject: true,
+        deliveryMode: 'direct',
         taskId,
         projectId,
       },

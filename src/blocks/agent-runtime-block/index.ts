@@ -8,10 +8,12 @@ import type { LoadedAgentConfig } from '../../runtime/agent-json-config.js';
 import type { ResourcePool } from '../../orchestration/resource-pool.js';
 
 import { buildDispatchTaskText, extractTaskText, sanitizeDispatchResult, type DispatchSummaryResult } from '../../common/agent-dispatch.js';
+import { resolveSystemDispatchPolicy } from '../../core/system-dispatch-policy.js';
 
 import { logger } from '../../core/logger.js';
 
 const log = logger.module('AgentRuntimeBlock');
+const SYSTEM_AGENT_ID = 'finger-system-agent';
 
 export type AgentRoleType = 'system' | 'project' | 'reviewer';
 
@@ -1700,6 +1702,91 @@ export class AgentRuntimeBlock extends BaseBlock {
     }
   }
 
+  private isSystemDirectInjectDispatch(input: AgentDispatchRequest): boolean {
+    const policy = resolveSystemDispatchPolicy();
+    const sourceAgentId = (input.sourceAgentId || '').trim().toLowerCase();
+    if (policy.directInjectSourceAgentIds.has(sourceAgentId)) {
+      return true;
+    }
+
+    const metadata = isObjectRecord(input.metadata) ? input.metadata : {};
+    for (const [rawKey, rawValue] of Object.entries(metadata)) {
+      if (rawValue !== true) continue;
+      const normalizedKey = rawKey.trim().toLowerCase();
+      if (policy.directInjectMetadataFlags.has(normalizedKey)) {
+        return true;
+      }
+    }
+
+    const metadataSourceRaw = metadata.source;
+    if (typeof metadataSourceRaw === 'string') {
+      const metadataSource = metadataSourceRaw.trim().toLowerCase();
+      if (policy.directInjectMetadataSources.has(metadataSource)) return true;
+    }
+
+    const deliveryModeRaw = metadata.deliveryMode;
+    if (typeof deliveryModeRaw === 'string') {
+      const deliveryMode = deliveryModeRaw.trim().toLowerCase();
+      if (policy.directInjectDeliveryModes.has(deliveryMode)) return true;
+    }
+
+    return false;
+  }
+
+  private shouldRouteSystemDispatchToMailbox(input: AgentDispatchRequest): boolean {
+    if ((input.targetAgentId || '').trim() !== SYSTEM_AGENT_ID) return false;
+    const policy = resolveSystemDispatchPolicy();
+    if (!policy.routeSystemDispatchToMailboxByDefault) return false;
+    return !this.isSystemDirectInjectDispatch(input);
+  }
+
+  private buildMailboxFallbackDispatchResult(params: {
+    dispatchId: string;
+    input: AgentDispatchRequest;
+    targetAgentId: string;
+    targetModuleId: string;
+    assignment: AgentAssignmentLifecycle | undefined;
+    blocking: boolean;
+  }): DispatchResult | null {
+    const fallback = this.deps.onDispatchQueueTimeout?.({
+      dispatchId: params.dispatchId,
+      sourceAgentId: params.input.sourceAgentId,
+      targetAgentId: params.targetAgentId,
+      sessionId: params.input.sessionId,
+      workflowId: params.input.workflowId,
+      assignment: params.assignment,
+      task: params.input.task,
+      metadata: params.input.metadata,
+    });
+    if (!fallback) return null;
+
+    const fallbackResult: DispatchSummaryResult = {
+      success: true,
+      status: 'queued_mailbox',
+      summary: fallback.summary ?? `Target agent busy; task moved to mailbox for ${params.targetAgentId}`,
+      messageId: fallback.mailboxMessageId,
+      ...(fallback.nextAction ? { nextAction: fallback.nextAction } : {}),
+    };
+    this.emitDispatchEvent({
+      dispatchId: params.dispatchId,
+      sourceAgentId: params.input.sourceAgentId,
+      targetAgentId: params.targetAgentId,
+      status: 'queued',
+      blocking: params.blocking,
+      sessionId: params.input.sessionId,
+      workflowId: params.input.workflowId,
+      assignment: this.withAssignmentPhase(params.assignment, 'queued'),
+      result: fallbackResult,
+    });
+    return {
+      ok: true,
+      dispatchId: params.dispatchId,
+      status: 'queued',
+      targetModuleId: params.targetModuleId,
+      result: fallbackResult,
+    };
+  }
+
   private async dispatchTask(input: AgentDispatchRequest): Promise<DispatchResult> {
     log.info('[AgentRuntimeBlock] Dispatching task', {
       sourceAgentId: input.sourceAgentId,
@@ -1780,6 +1867,25 @@ export class AgentRuntimeBlock extends BaseBlock {
     const activeCount = this.getActiveDispatchCount(target);
     const capacity = this.resolveDispatchCapacity(target);
 
+    if (this.shouldRouteSystemDispatchToMailbox(normalizedInput)) {
+      const mailboxFallback = this.buildMailboxFallbackDispatchResult({
+        dispatchId,
+        input: normalizedInput,
+        targetAgentId: target,
+        targetModuleId,
+        assignment,
+        blocking,
+      });
+      if (mailboxFallback) {
+        log.info('[AgentRuntimeBlock] Routed system dispatch to mailbox by source policy', {
+          dispatchId,
+          sourceAgentId: normalizedInput.sourceAgentId,
+          targetAgentId: target,
+        });
+        return mailboxFallback;
+      }
+    }
+
     if (blocking && normalizedInput.sourceAgentId === target && activeCount >= capacity) {
       return {
         ok: false,
@@ -1812,42 +1918,16 @@ export class AgentRuntimeBlock extends BaseBlock {
         queued.timeoutHandle = setTimeout(() => {
           const removed = this.removeQueuedDispatch(target, dispatchId);
           if (!removed) return;
-          const fallback = this.deps.onDispatchQueueTimeout?.({
+          const fallbackResult = this.buildMailboxFallbackDispatchResult({
             dispatchId,
-            sourceAgentId: normalizedInput.sourceAgentId,
+            input: normalizedInput,
             targetAgentId: target,
-            sessionId: normalizedInput.sessionId,
-            workflowId: normalizedInput.workflowId,
+            targetModuleId,
             assignment,
-            task: normalizedInput.task,
-            metadata: normalizedInput.metadata,
+            blocking,
           });
-          if (fallback) {
-            const fallbackResult: DispatchSummaryResult = {
-              success: true,
-              status: 'queued_mailbox',
-              summary: fallback.summary ?? `Target agent busy; task moved to mailbox for ${target}`,
-              messageId: fallback.mailboxMessageId,
-              ...(fallback.nextAction ? { nextAction: fallback.nextAction } : {}),
-            };
-            this.emitDispatchEvent({
-              dispatchId,
-              sourceAgentId: normalizedInput.sourceAgentId,
-              targetAgentId: target,
-              status: 'queued',
-              blocking,
-              sessionId: normalizedInput.sessionId,
-              workflowId: normalizedInput.workflowId,
-              assignment: this.withAssignmentPhase(assignment, 'queued'),
-              result: fallbackResult,
-            });
-            resolve({
-              ok: true,
-              dispatchId,
-              status: 'queued',
-              targetModuleId,
-              result: fallbackResult,
-            });
+          if (fallbackResult) {
+            resolve(fallbackResult);
             return;
           }
           this.emitDispatchEvent({
