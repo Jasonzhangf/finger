@@ -222,6 +222,26 @@ export class HeartbeatScheduler {
     return Date.now() - last >= intervalMs;
   }
 
+  private hasPendingHeartbeatTask(
+    targetAgentId: string,
+    taskId: string,
+    projectId: string | undefined,
+  ): boolean {
+    const pending = heartbeatMailbox.list(targetAgentId, {
+      status: 'pending',
+      category: 'heartbeat-task',
+    });
+    return pending.some((message) => {
+      const content = typeof message.content === 'object' && message.content
+        ? message.content as Record<string, unknown>
+        : {};
+      const contentTaskId = typeof content.taskId === 'string' ? content.taskId.trim() : '';
+      const contentProjectId = typeof content.projectId === 'string' ? content.projectId.trim() : '';
+      const normalizedProjectId = (projectId ?? '').trim();
+      return contentTaskId === taskId && contentProjectId === normalizedProjectId;
+    });
+  }
+
   private async dispatchTask(
     targetAgentId: string,
     taskId: string,
@@ -258,6 +278,24 @@ export class HeartbeatScheduler {
         });
         return;
       }
+
+      // If checklist exists and there is no open task, skip this heartbeat dispatch.
+      const checklistStats = stopResult.checklistStats;
+      if (
+        checklistStats
+        && checklistStats.total > 0
+        && checklistStats.unchecked === 0
+      ) {
+        log.debug('[HeartbeatScheduler] Skip heartbeat dispatch: no open checklist tasks', {
+          targetAgentId,
+          taskId,
+          projectId,
+          total: checklistStats.total,
+          checked: checklistStats.checked,
+          unchecked: checklistStats.unchecked,
+        });
+        return;
+      }
     }
 
     const dispatchMode = config?.dispatch ?? 'mailbox';
@@ -267,6 +305,15 @@ export class HeartbeatScheduler {
 
     if (dispatchMode === 'dispatch') {
       await this.dispatchDirect(targetAgentId, taskId, projectId, prompt);
+      return;
+    }
+
+    if (this.hasPendingHeartbeatTask(targetAgentId, taskId, projectId)) {
+      log.debug('[HeartbeatScheduler] Skip heartbeat mailbox append: pending task already exists', {
+        targetAgentId,
+        taskId,
+        projectId,
+      });
       return;
     }
 
@@ -370,12 +417,19 @@ export class HeartbeatScheduler {
         });
       }
 
-      if (pendingAll.length === 0) continue;
+      const pendingSnapshot = notificationCleanup.removed > 0
+        ? (heartbeatMailbox.listPending(agent.agentId) ?? [])
+        : pendingAll;
 
-      const actionablePending = pendingAll.filter((msg) => msg.category !== 'notification');
+      if (pendingSnapshot.length === 0) {
+        this.mailboxPromptDeferredByAgent.delete(agent.agentId);
+        continue;
+      }
+
+      const actionablePending = pendingSnapshot.filter((msg) => msg.category !== 'notification');
       const notificationOnly = actionablePending.length === 0;
-      const pending = notificationOnly ? pendingAll : actionablePending;
-      const deferredNotificationCount = notificationOnly ? 0 : pendingAll.length - actionablePending.length;
+      const pending = notificationOnly ? pendingSnapshot : actionablePending;
+      const deferredNotificationCount = notificationOnly ? 0 : pendingSnapshot.length - actionablePending.length;
       if (pending.length === 0) continue;
 
       const deferred = this.mailboxPromptDeferredByAgent.has(agent.agentId);

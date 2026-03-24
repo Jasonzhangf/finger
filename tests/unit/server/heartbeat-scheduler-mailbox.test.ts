@@ -1,5 +1,6 @@
 import { beforeEach, afterEach, describe, expect, it, vi } from 'vitest';
 import * as registry from '../../../src/agents/finger-system-agent/registry.js';
+import * as heartbeatParser from '../../../src/server/modules/heartbeat-md-parser.js';
 import { heartbeatMailbox } from '../../../src/server/modules/heartbeat-mailbox.js';
 import { HeartbeatScheduler } from '../../../src/server/modules/heartbeat-scheduler.js';
 import { cleanupDispatchResultNotifications } from '../../../src/server/modules/heartbeat-helpers.js';
@@ -143,5 +144,97 @@ describe('HeartbeatScheduler mailbox lifecycle', () => {
     const result = cleanupDispatchResultNotifications(SYSTEM_AGENT_ID);
     expect(result.removed).toBe(2);
     expect(heartbeatMailbox.list(SYSTEM_AGENT_ID, { category: 'notification' })).toHaveLength(0);
+  });
+
+  it('does not dispatch mailbox-check when cleanup removed all pending notifications', async () => {
+    vi.spyOn(registry, 'listAgents').mockResolvedValue([
+      { agentId: SYSTEM_AGENT_ID, status: 'idle' } as any,
+    ]);
+    const execute = vi.fn(async () => ({ ok: true }));
+    const scheduler = new HeartbeatScheduler({
+      agentRuntimeBlock: { execute },
+      sessionManager: {
+        getOrCreateSystemSession: vi.fn(() => ({ id: 'system-session-test' })),
+      },
+    } as any);
+
+    heartbeatMailbox.append(
+      SYSTEM_AGENT_ID,
+      { type: 'dispatch-result', dispatchId: 'dispatch-cleanup-only', summary: 'done' },
+      { category: 'notification', priority: 2 },
+    );
+
+    await (scheduler as any).promptMailboxChecks();
+    expect(execute.mock.calls.filter((call: unknown[]) => call[0] === 'dispatch')).toHaveLength(0);
+    expect(heartbeatMailbox.listPending(SYSTEM_AGENT_ID)).toHaveLength(0);
+  });
+
+  it('does not append duplicate pending heartbeat-task for same task/project', async () => {
+    vi.spyOn(heartbeatParser, 'resolveHeartbeatMdPath').mockReturnValue(undefined);
+    const execute = vi.fn(async () => ({ ok: true }));
+    const scheduler = new HeartbeatScheduler({
+      agentRuntimeBlock: { execute },
+      sessionManager: {
+        getOrCreateSystemSession: vi.fn(() => ({ id: 'system-session-test' })),
+      },
+    } as any);
+
+    await (scheduler as any).dispatchTask(
+      SYSTEM_AGENT_ID,
+      'global',
+      undefined,
+      { dispatch: 'mailbox' },
+    );
+    await (scheduler as any).dispatchTask(
+      SYSTEM_AGENT_ID,
+      'global',
+      undefined,
+      { dispatch: 'mailbox' },
+    );
+
+    const pending = heartbeatMailbox.list(SYSTEM_AGENT_ID, {
+      status: 'pending',
+      category: 'heartbeat-task',
+    });
+    expect(pending).toHaveLength(1);
+  });
+
+  it('skips heartbeat dispatch when checklist has no unchecked tasks', async () => {
+    vi.spyOn(heartbeatParser, 'resolveHeartbeatMdPath').mockReturnValue('/tmp/fake-heartbeat.md');
+    vi.spyOn(heartbeatParser, 'validateHeartbeatMd').mockResolvedValue({
+      valid: true,
+      errors: [],
+      warnings: [],
+      canAutoRepair: false,
+    });
+    vi.spyOn(heartbeatParser, 'shouldStopHeartbeat').mockResolvedValue({
+      shouldStop: false,
+      checklistStats: {
+        total: 3,
+        checked: 3,
+        unchecked: 0,
+      },
+    });
+
+    const execute = vi.fn(async () => ({ ok: true }));
+    const scheduler = new HeartbeatScheduler({
+      agentRuntimeBlock: { execute },
+      sessionManager: {
+        getOrCreateSystemSession: vi.fn(() => ({ id: 'system-session-test' })),
+      },
+    } as any);
+
+    await (scheduler as any).dispatchTask(
+      SYSTEM_AGENT_ID,
+      'global',
+      undefined,
+      { dispatch: 'mailbox' },
+    );
+
+    const pending = heartbeatMailbox.list(SYSTEM_AGENT_ID, {
+      status: 'pending',
+      category: 'heartbeat-task',
+    });
+    expect(pending).toHaveLength(0);
   });
 });
