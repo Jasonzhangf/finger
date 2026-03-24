@@ -9,6 +9,7 @@ import type { Attachment } from '../../runtime/events.js';
 import { isObjectRecord } from '../common/object.js';
 import { asString } from '../common/strings.js';
 import { SYSTEM_PROJECT_PATH } from '../../agents/finger-system-agent/index.js';
+import { listLedgerSessionsSnapshot } from './ledger-routes.js';
 
 export interface SessionRouteDeps {
   sessionManager: SessionManager;
@@ -16,6 +17,7 @@ export interface SessionRouteDeps {
   eventBus: UnifiedEventBus;
   logsDir: string;
   resolveSessionLoopLogPath: (sessionId: string) => string;
+  interruptSession?: (sessionId: string) => Promise<unknown>;
 }
 
 interface SessionLog {
@@ -122,6 +124,11 @@ function toSessionResponse(session: ReturnType<SessionManager['listSessions']>[n
   };
 }
 
+function hasActiveWorkflowEntry(raw: unknown): boolean {
+  if (!Array.isArray(raw)) return false;
+  return raw.some((item) => typeof item === 'string' && item.trim().length > 0);
+}
+
 export function registerSessionRoutes(app: Express, deps: SessionRouteDeps): void {
   const { sessionManager, runtime, eventBus, logsDir, resolveSessionLoopLogPath } = deps;
 
@@ -194,18 +201,22 @@ export function registerSessionRoutes(app: Express, deps: SessionRouteDeps): voi
   });
 
   app.get('/api/v1/sessions', (_req, res) => {
-    sessionManager.refreshSessionsFromDisk();
-    const sessions = sessionManager.listRootSessions();
-    // By default exclude system sessions from the list (UI left panel doesn't need them)
-    // System agent panel uses system-default-session alias directly
+    // Legacy endpoint now proxies ledger SSOT to avoid old session-file drift.
     const includeSystem = _req.query.includeSystem === '1';
+    const sessions = listLedgerSessionsSnapshot();
     const filtered = includeSystem
       ? sessions
-      : sessions.filter((s) => s.projectPath !== SYSTEM_PROJECT_PATH
-          && !(s.context?.sessionTier === 'system')
-          && !s.id.startsWith('system-')
-          && !(s.context?.ownerAgentId === 'finger-system-agent'));
-    res.json(filtered.map((session) => toSessionResponse(session)));
+      : sessions.filter((s) => {
+          const projectPath = String(s.projectPath || '');
+          const sessionTier = String((s as Record<string, unknown>).sessionTier || '');
+          const ownerAgentId = String((s as Record<string, unknown>).ownerAgentId || '');
+          const id = String(s.id || '');
+          return projectPath !== SYSTEM_PROJECT_PATH
+            && sessionTier !== 'system'
+            && !id.startsWith('system-')
+            && ownerAgentId !== 'finger-system-agent';
+        });
+    res.json(filtered);
   });
 
   app.get('/api/v1/sessions/current', (_req, res) => {
@@ -281,13 +292,27 @@ export function registerSessionRoutes(app: Express, deps: SessionRouteDeps): voi
     }
   });
 
-  app.delete('/api/v1/sessions/:id', (req, res) => {
-    const success = sessionManager.deleteSession(resolveSystemSessionId(req.params.id));
+  app.delete('/api/v1/sessions/:id', async (req, res) => {
+    const sessionId = resolveSystemSessionId(req.params.id);
+
+    // Interrupt running agent before deleting session
+    let interrupted = false;
+    if (deps.interruptSession) {
+      try {
+        await deps.interruptSession(sessionId);
+        interrupted = true;
+      } catch {
+        // Session may not be running, continue with delete
+      }
+    }
+
+    // Delete persisted session + ledger data
+    const success = sessionManager.deleteSession(sessionId);
     if (!success) {
       res.status(404).json({ error: 'Session not found' });
       return;
     }
-    res.json({ success: true });
+    res.json({ success: true, interrupted });
   });
 
   app.get('/api/v1/sessions/:sessionId/messages', (req, res) => {

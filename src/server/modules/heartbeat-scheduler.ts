@@ -14,8 +14,7 @@ import {
   checkHeartbeatNeedsTruncation,
 } from './heartbeat-md-parser.js';
 import { buildHeartbeatEnvelope, formatEnvelopesForContext, type MailboxEnvelope } from './mailbox-envelope.js';
-import { formatLegacyMailboxPrompt, resolveProjectPath, dispatchAutoRepairTask } from './heartbeat-helpers.js';
-import { isObjectRecord } from '../common/object.js';
+import { formatLegacyMailboxPrompt, resolveProjectPath, dispatchAutoRepairTask, buildMailboxCheckTargets, cleanupDispatchResultNotifications } from './heartbeat-helpers.js';
 
 const log = logger.module('HeartbeatScheduler');
 
@@ -26,6 +25,7 @@ interface HeartbeatTaskConfig {
   enabled?: boolean;
   dispatch?: DispatchMode;
   prompt?: string;
+  mailboxCheckIntervalMs?: number;
 }
 
 interface HeartbeatProjectConfig extends HeartbeatTaskConfig {
@@ -46,6 +46,7 @@ interface LoadConfigResult {
 
 const DEFAULT_TICK_MS = 10_000; // 10 seconds (configurable via heartbeat-tasks.json)
 const DEFAULT_TASK_INTERVAL_MS = 5 * 60_000; // 5 minutes
+const DEFAULT_MAILBOX_CHECK_INTERVAL_MS = 5 * 60_000; // 5 minutes
 const HEARTBEAT_RECORDS_MAX = 10;
 const HEARTBEAT_TRUNCATE_CHECK_INTERVAL_MS = 10 * 60_000; // 10 minutes
 const CONFIG_PATH = path.join(FINGER_PATHS.config.dir, 'heartbeat-tasks.json');
@@ -59,60 +60,8 @@ export class HeartbeatScheduler {
   private lastConfigReloadAt = 0;
   private lastRun: Map<string, number> = new Map();
   private lastMailboxPromptAt: Map<string, number> = new Map();
+  private mailboxPromptDeferredByAgent: Set<string> = new Set();
   private lastHeartbeatTruncateCheckAt = 0;
-
-  private buildMailboxCheckTargets(projectAgents: Awaited<ReturnType<typeof listAgents>>): Array<{
-    agentId: string;
-    projectId?: string;
-    status: string;
-  }> {
-    const seen = new Set<string>();
-    const targets: Array<{ agentId: string; projectId?: string; status: string }> = [];
-    for (const agent of projectAgents) {
-      if (!agent.agentId || seen.has(agent.agentId)) continue;
-      seen.add(agent.agentId);
-      targets.push({
-        agentId: agent.agentId,
-        projectId: agent.projectId,
-        status: agent.status,
-      });
-    }
-
-    // System agent mailbox is also part of runtime dispatch lifecycle.
-    // Must be checked periodically, otherwise dispatch-result notifications can accumulate.
-    if (!seen.has(SYSTEM_AGENT_ID)) {
-      targets.push({
-        agentId: SYSTEM_AGENT_ID,
-        status: 'idle',
-      });
-    }
-    return targets;
-  }
-
-  private cleanupDispatchResultNotifications(agentId: string): { matched: number; removed: number } {
-    const notifications = heartbeatMailbox.list(agentId, {
-      status: 'pending',
-      category: 'notification',
-    });
-    if (notifications.length === 0) {
-      return { matched: 0, removed: 0 };
-    }
-
-    const targets = notifications.filter((message) => {
-      const content = isObjectRecord(message.content) ? message.content : null;
-      return content?.type === 'dispatch-result';
-    });
-    if (targets.length === 0) {
-      return { matched: notifications.length, removed: 0 };
-    }
-
-    let removed = 0;
-    for (const message of targets) {
-      const result = heartbeatMailbox.remove(agentId, message.id);
-      if (result.removed) removed += 1;
-    }
-    return { matched: notifications.length, removed };
-  }
 
   constructor(private deps: AgentRuntimeDeps) {}
 
@@ -389,15 +338,28 @@ export class HeartbeatScheduler {
 
   private async promptMailboxChecks(): Promise<void> {
     const projectAgents = await listAgents();
-    const agents = this.buildMailboxCheckTargets(projectAgents);
+    const agents = buildMailboxCheckTargets(projectAgents);
     for (const agent of agents) {
+      const now = Date.now();
+      const mailboxCheckIntervalMs = this.resolveMailboxCheckIntervalMs(agent.projectId);
+      const lastPrompt = this.lastMailboxPromptAt.get(agent.agentId) ?? 0;
+      const due = now - lastPrompt >= mailboxCheckIntervalMs;
+
+      // Need pending snapshot before busy check:
+      // if check time arrives while busy, remember deferred check and execute it
+      // at the first idle window.
+      const pendingAll = heartbeatMailbox.listPending(agent.agentId) ?? [];
+
       // Skip agents that are actively executing tasks
       if (agent.status === 'busy') {
+        if (due && pendingAll.length > 0) {
+          this.mailboxPromptDeferredByAgent.add(agent.agentId);
+        }
         log.debug('[HeartbeatScheduler] Skipping busy agent', { agentId: agent.agentId, status: agent.status });
         continue;
       }
 
-      const notificationCleanup = this.cleanupDispatchResultNotifications(agent.agentId);
+      const notificationCleanup = cleanupDispatchResultNotifications(agent.agentId);
       if (notificationCleanup.removed > 0) {
         log.debug('[HeartbeatScheduler] Cleaned dispatch-result notifications', {
           agentId: agent.agentId,
@@ -406,7 +368,6 @@ export class HeartbeatScheduler {
         });
       }
 
-      const pendingAll = heartbeatMailbox.listPending(agent.agentId) ?? [];
       if (pendingAll.length === 0) continue;
 
       const actionablePending = pendingAll.filter((msg) => msg.category !== 'notification');
@@ -415,9 +376,8 @@ export class HeartbeatScheduler {
       const deferredNotificationCount = notificationOnly ? 0 : pendingAll.length - actionablePending.length;
       if (pending.length === 0) continue;
 
-      const now = Date.now();
-      const lastPrompt = this.lastMailboxPromptAt.get(agent.agentId) ?? 0;
-      if (now - lastPrompt < DEFAULT_TICK_MS) continue;
+      const deferred = this.mailboxPromptDeferredByAgent.has(agent.agentId);
+      if (!deferred && !due) continue;
 
       // Build envelopes from pending messages
       const envelopes: MailboxEnvelope[] = [];
@@ -479,7 +439,18 @@ export class HeartbeatScheduler {
       ].join('\n');
       await this.dispatchDirect(agent.agentId, 'mailbox-check', agent.projectId, prompt);
       this.lastMailboxPromptAt.set(agent.agentId, now);
+      this.mailboxPromptDeferredByAgent.delete(agent.agentId);
     }
+  }
+
+  private resolveMailboxCheckIntervalMs(projectId?: string): number {
+    const projectConfig = projectId ? this.config.projects?.[projectId] : undefined;
+    const raw = projectConfig?.mailboxCheckIntervalMs
+      ?? this.config.global?.mailboxCheckIntervalMs
+      ?? DEFAULT_MAILBOX_CHECK_INTERVAL_MS;
+    return Number.isFinite(raw) && raw > 0
+      ? Math.floor(raw)
+      : DEFAULT_MAILBOX_CHECK_INTERVAL_MS;
   }
 
 }

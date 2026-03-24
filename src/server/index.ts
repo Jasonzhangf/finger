@@ -409,6 +409,7 @@ const registerAllRoutesDeps = {
   runtimeDebug: { get: () => runtimeDebugMode, set: async (enabled: boolean) => { runtimeDebugMode = enabled; await ensureDebugRuntimeModules(runtimeDebugMode); }, moduleIds: DEBUG_RUNTIME_MODULE_IDS },
   mockRuntime: { rolePolicy: mockRolePolicy, clearAssertions: () => mockRuntimeKit.clearMockDispatchAssertions(), listAssertions: (filters: any) => mockRuntimeKit.listMockDispatchAssertions(filters) },
   flags: { enableFullMockMode: ENABLE_FULL_MOCK_MODE, useMockExecutorLoop: USE_MOCK_EXECUTOR_LOOP, useMockReviewerLoop: USE_MOCK_REVIEWER_LOOP, useMockSearcherLoop: USE_MOCK_SEARCHER_LOOP },
+  interruptSession: async (sessionId: string) => chatCodexRunner.interruptSession(sessionId),
   system: { localImageMimeByExt: LOCAL_IMAGE_MIME_BY_EXT, listKernelProviders, upsertKernelProvider, selectKernelProvider, testKernelProvider },
 };
 await ensureSingleInstance(PORT);

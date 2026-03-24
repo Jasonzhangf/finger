@@ -110,6 +110,7 @@ export interface RegisterAllRoutesDeps {
     useMockReviewerLoop: boolean;
     useMockSearcherLoop: boolean;
   };
+  interruptSession?: (sessionId: string) => Promise<unknown>;
   system: {
     localImageMimeByExt: Record<string, string>;
     listKernelProviders: () => unknown;
@@ -126,6 +127,7 @@ export function registerAllRoutes(app: Express, deps: RegisterAllRoutesDeps): vo
     eventBus: deps.eventBus,
     logsDir: deps.logsDir,
     resolveSessionLoopLogPath: deps.resolveSessionLoopLogPath,
+    interruptSession: deps.interruptSession,
   });
 
  registerMessageRoutes(app, {
