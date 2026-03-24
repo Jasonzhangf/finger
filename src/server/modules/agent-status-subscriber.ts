@@ -85,6 +85,7 @@ export class AgentStatusSubscriber {
       stepBatchDefault: this.stepBatchDefault,
       primaryAgentId: this.primaryAgentId,
       registerChildAgent: (childAgentId: string, parentAgentId: string) => this.registerChildAgent(childAgentId, parentAgentId),
+      registerChildSession: (childSessionId: string, envelope: SessionEnvelopeMapping[ 'envelope']) => this.registerChildSession(childSessionId, envelope),
     };
   }
 
@@ -237,6 +238,25 @@ export class AgentStatusSubscriber {
   /**
    * 注销 Agent
    */
+
+  /**
+   * 注册子会话的 envelope 映射
+   * 当 dispatch 创建子 agent 时，将子 agent 的 sessionId 映射到父会话的 channel envelope
+   * 这样子 agent 的 tool_call/tool_result 等事件可以直接找到 envelope 进行推送
+   */
+  registerChildSession(childSessionId: string, envelope: SessionEnvelopeMapping['envelope']): void {
+    if (this.sessionEnvelopeMap.has(childSessionId)) {
+      log.debug(`[AgentStatusSubscriber] Child session ${childSessionId} already registered`);
+      return;
+    }
+    this.sessionEnvelopeMap.set(childSessionId, {
+      sessionId: childSessionId,
+      envelope,
+      timestamp: Date.now(),
+    });
+    log.info(`[AgentStatusSubscriber] Registered child session envelope: ${childSessionId} -> ${envelope.channel}`);
+  }
+
   unregisterAgent(agentId: string): void {
     this.agentSubscriptions.delete(agentId);
 

@@ -38,6 +38,7 @@ export interface HandlerContext {
   stepBatchDefault: number;
   primaryAgentId: string | null;
   registerChildAgent: (childAgentId: string, parentAgentId: string) => void;
+  registerChildSession: (childSessionId: string, envelope: SessionEnvelopeMapping[ 'envelope']) => void;
 }
 
 /**
@@ -50,6 +51,7 @@ export async function handleToolCall(
   const sessionId = event.sessionId;
   const mapping = ctx.resolveEnvelopeMapping(sessionId);
   if (!mapping || !ctx.messageHub) return;
+
 
   const agentId = event.agentId || 'unknown-agent';
   const toolName = event.toolName || 'unknown-tool';
@@ -94,6 +96,7 @@ export async function handleToolResult(
   const sessionId = event.sessionId;
   const mapping = ctx.resolveEnvelopeMapping(sessionId);
   if (!mapping || !ctx.messageHub) return;
+
 
   const agentId = event.agentId || 'unknown-agent';
   const toolName = event.toolName || 'unknown-tool';
@@ -233,6 +236,8 @@ export async function handleDispatch(
     status?: string;
     queuePosition?: number;
     result?: Record<string, unknown>;
+    childSessionId?: string;
+    sessionId?: string;
   };
 
   const targetAgentId = payload.targetAgentId;
@@ -245,6 +250,7 @@ export async function handleDispatch(
   const sessionId = event.sessionId;
   const mapping = ctx.resolveEnvelopeMapping(sessionId);
   if (!mapping || !ctx.messageHub) return;
+
 
   const agentInfo = await ctx.getAgentInfo(targetAgentId);
   const dispatchStatus = typeof payload.status === 'string' ? payload.status : 'queued';
@@ -304,6 +310,7 @@ export async function handleWaitingForUser(
 ): Promise<void> {
   const mapping = ctx.resolveEnvelopeMapping(event.sessionId);
   if (!mapping || !ctx.messageHub) return;
+
 
   const payload = event.payload as {
     reason?: string;
