@@ -103,7 +103,7 @@ export function registerAgentRuntimeTools(deps: AgentRuntimeDeps): string[] {
   deps.runtime.registerTool({
     name: 'agent.dispatch',
     description:
-      'Dispatch a task to another agent/module through standard runtime routing. Required: target_agent_id + task.',
+      'Dispatch a task to another agent/module through standard runtime routing. Required: target_agent_id + task. Optional session_strategy=current|latest|new and project_path/cwd for automatic session + cwd targeting.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -111,6 +111,9 @@ export function registerAgentRuntimeTools(deps: AgentRuntimeDeps): string[] {
         target_agent_id: { type: 'string' },
         task: {},
         session_id: { type: 'string' },
+        session_strategy: { type: 'string', enum: ['current', 'latest', 'new'] },
+        project_path: { type: 'string' },
+        cwd: { type: 'string' },
         workflow_id: { type: 'string' },
         blocking: { type: 'boolean' },
         queue_on_busy: { type: 'boolean' },

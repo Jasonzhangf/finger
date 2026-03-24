@@ -15,6 +15,8 @@ export interface AgentDispatchRequest {
   targetAgentId: string;
   task: unknown;
   sessionId?: string;
+  sessionStrategy?: 'current' | 'latest' | 'new';
+  projectPath?: string;
   workflowId?: string;
   blocking?: boolean;
   queueOnBusy?: boolean;

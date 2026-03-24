@@ -2,6 +2,11 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 function createDeps(executeImpl?: ReturnType<typeof vi.fn>) {
   const calls: Array<{ sessionId: string; role: string; content: string; type?: string }> = [];
+  const rootSessions = [
+    { id: 'root-session-1', context: {}, projectPath: '/tmp/project-a', messages: [], lastAccessedAt: '2026-03-24T00:00:00.000Z' },
+    { id: 'root-session-2', context: {}, projectPath: '/tmp/project-a', messages: [], lastAccessedAt: '2026-03-24T00:10:00.000Z' },
+  ];
+  const runtimeCurrentSession = { id: 'runtime-current', projectPath: '/tmp/runtime-current' };
   const sessionManager = {
     addMessage: vi.fn(async (sessionId: string, role: string, content: string, detail?: Record<string, unknown>) => {
       calls.push({ sessionId, role, content, type: (detail as any)?.type });
@@ -9,11 +14,18 @@ function createDeps(executeImpl?: ReturnType<typeof vi.fn>) {
     }),
     getMessages: vi.fn(() => calls),
     getSession: vi.fn((id: string) => ({ id, context: {}, projectPath: '/tmp', messages: [] })),
+    getCurrentSession: vi.fn(() => ({ id: 'session-manager-current', projectPath: '/tmp/session-manager-current' })),
+    findSessionsByProjectPath: vi.fn((projectPath: string) => rootSessions.filter((item) => item.projectPath === projectPath)),
+    createSession: vi.fn((projectPath: string) => ({ id: `new-session-${projectPath.split('/').pop()}`, context: {}, projectPath, messages: [] })),
+    setCurrentSession: vi.fn(() => true),
     updateContext: vi.fn(),
   };
 
   return {
     deps: {
+      runtime: {
+        getCurrentSession: vi.fn(() => runtimeCurrentSession),
+      },
       sessionManager,
       agentRuntimeBlock: {
         execute: executeImpl ?? vi.fn(async () => ({
@@ -26,20 +38,35 @@ function createDeps(executeImpl?: ReturnType<typeof vi.fn>) {
       primaryOrchestratorAgentId: 'finger-orchestrator',
       isRuntimeChildSession: vi.fn(() => false),
       isPrimaryOrchestratorTarget: vi.fn(() => false),
-      ensureRuntimeChildSession: vi.fn(() => ({ id: 'child-session-1', context: {}, messages: [] })),
-      ensureOrchestratorRootSession: vi.fn(() => ({ id: 'root-session-1', context: {}, messages: [] })),
+      ensureRuntimeChildSession: vi.fn(() => ({ id: 'child-session-1', projectPath: '/tmp/project-a' })),
+      ensureOrchestratorRootSession: vi.fn(() => ({
+        id: 'root-session-1',
+        projectPath: '/tmp/project-a',
+        sessionWorkspaceRoot: '/tmp/ws',
+        memoryDir: '/tmp/memory',
+        deliverablesDir: '/tmp/deliverables',
+        exchangeDir: '/tmp/exchange',
+      })),
       sessionWorkspaces: {
         resolveSessionWorkspaceDirsForMessage: vi.fn(() => ({
           memoryDir: '/tmp/memory',
           deliverablesDir: '/tmp/deliverables',
           exchangeDir: '/tmp/exchange',
         })),
-        hydrateSessionWorkspace: vi.fn((s: any) => s),
+        hydrateSessionWorkspace: vi.fn((sessionId: any) => ({
+          id: typeof sessionId === 'string' ? sessionId : String(sessionId?.id ?? ''),
+          projectPath: '/tmp/project-a',
+          sessionWorkspaceRoot: '/tmp/ws',
+          memoryDir: '/tmp/memory',
+          deliverablesDir: '/tmp/deliverables',
+          exchangeDir: '/tmp/exchange',
+        })),
       },
       bdTools: { assignTask: vi.fn(), addComment: vi.fn(), updateStatus: vi.fn() },
     },
     sessionCalls: calls,
     sessionManager,
+    runtimeCurrentSession,
   };
 }
 
@@ -132,5 +159,38 @@ describe('dispatchTaskToAgent', () => {
       instanceCount: 2,
     }));
     expect(execute.mock.calls.filter((c) => c[0] === 'dispatch')).toHaveLength(2);
+  });
+
+  it('resolves latest project session when sessionStrategy=latest', async () => {
+    const { deps, sessionManager } = createDeps();
+    const res = await mod.dispatchTaskToAgent(deps as any, {
+      sourceAgentId: 'finger-system-agent',
+      targetAgentId: 'finger-project-agent',
+      task: 'run task',
+      sessionStrategy: 'latest',
+      projectPath: '/tmp/project-a',
+    } as any);
+
+    expect(res.ok).toBe(true);
+    expect(sessionManager.findSessionsByProjectPath).toHaveBeenCalledWith('/tmp/project-a');
+    expect(sessionManager.createSession).not.toHaveBeenCalled();
+    expect(sessionManager.setCurrentSession).toHaveBeenCalledWith('root-session-2');
+    expect((deps as any).ensureRuntimeChildSession).toHaveBeenCalledWith(expect.objectContaining({ id: 'root-session-2' }), 'finger-project-agent');
+  });
+
+  it('creates a new root session when sessionStrategy=new', async () => {
+    const { deps, sessionManager } = createDeps();
+    const res = await mod.dispatchTaskToAgent(deps as any, {
+      sourceAgentId: 'finger-system-agent',
+      targetAgentId: 'finger-project-agent',
+      task: 'run task',
+      sessionStrategy: 'new',
+      projectPath: '/tmp/project-b',
+    } as any);
+
+    expect(res.ok).toBe(true);
+    expect(sessionManager.createSession).toHaveBeenCalledWith('/tmp/project-b', undefined, { allowReuse: false });
+    expect(sessionManager.setCurrentSession).toHaveBeenCalledWith('new-session-project-b');
+    expect((deps as any).ensureRuntimeChildSession).toHaveBeenCalledWith(expect.objectContaining({ id: 'new-session-project-b' }), 'finger-project-agent');
   });
 });

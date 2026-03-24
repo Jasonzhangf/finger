@@ -1,10 +1,43 @@
 import { isObjectRecord } from '../../common/object.js';
 import type { AgentControlRequest, AgentDispatchRequest, AgentRuntimeDeps } from './types.js';
 
+function parseDispatchSessionStrategy(rawInput: Record<string, unknown>): AgentDispatchRequest['sessionStrategy'] | undefined {
+  const rawValue = typeof rawInput.session_strategy === 'string'
+    ? rawInput.session_strategy
+    : typeof rawInput.sessionStrategy === 'string'
+      ? rawInput.sessionStrategy
+      : typeof rawInput.session_mode === 'string'
+        ? rawInput.session_mode
+        : typeof rawInput.sessionMode === 'string'
+          ? rawInput.sessionMode
+          : undefined;
+  if (!rawValue) return undefined;
+  const normalized = rawValue.trim().toLowerCase();
+  if (normalized === 'latest') return 'latest';
+  if (normalized === 'new') return 'new';
+  if (normalized === 'current') return 'current';
+  return undefined;
+}
+
+function parseDispatchProjectPath(rawInput: Record<string, unknown>): string | undefined {
+  const rawValue = typeof rawInput.project_path === 'string'
+    ? rawInput.project_path
+    : typeof rawInput.projectPath === 'string'
+      ? rawInput.projectPath
+      : typeof rawInput.cwd === 'string'
+        ? rawInput.cwd
+        : undefined;
+  if (!rawValue) return undefined;
+  const normalized = rawValue.trim();
+  return normalized.length > 0 ? normalized : undefined;
+}
+
 export function parseAgentDispatchToolInput(rawInput: unknown, deps: AgentRuntimeDeps): AgentDispatchRequest {
   if (!isObjectRecord(rawInput)) {
     throw new Error('agent.dispatch input must be object');
   }
+  const sessionStrategy = parseDispatchSessionStrategy(rawInput);
+  const projectPath = parseDispatchProjectPath(rawInput);
   const sourceAgentId = typeof rawInput.source_agent_id === 'string'
     ? rawInput.source_agent_id
     : typeof rawInput.sourceAgentId === 'string'
@@ -22,15 +55,15 @@ export function parseAgentDispatchToolInput(rawInput: unknown, deps: AgentRuntim
   if (task === undefined) {
     throw new Error('agent.dispatch task is required');
   }
-  const sessionId = typeof rawInput.session_id === 'string'
-    ? rawInput.session_id
-    : typeof rawInput.sessionId === 'string'
-      ? rawInput.sessionId
-      : deps.runtime.getCurrentSession()?.id;
   const workflowId = typeof rawInput.workflow_id === 'string'
     ? rawInput.workflow_id
     : typeof rawInput.workflowId === 'string'
       ? rawInput.workflowId
+      : undefined;
+  const explicitSessionId = typeof rawInput.session_id === 'string'
+    ? rawInput.session_id
+    : typeof rawInput.sessionId === 'string'
+      ? rawInput.sessionId
       : undefined;
   const blocking = rawInput.blocking === true;
   const queueOnBusy = rawInput.queue_on_busy !== false && rawInput.queueOnBusy !== false;
@@ -39,6 +72,11 @@ export function parseAgentDispatchToolInput(rawInput: unknown, deps: AgentRuntim
     : typeof rawInput.maxQueueWaitMs === 'number'
       ? rawInput.maxQueueWaitMs
       : undefined;
+  const sessionId = typeof explicitSessionId === 'string' && explicitSessionId.trim().length > 0
+    ? explicitSessionId
+    : sessionStrategy === 'latest' || sessionStrategy === 'new'
+      ? undefined
+      : deps.runtime.getCurrentSession()?.id;
   const assignmentInput = isObjectRecord(rawInput.assignment) ? rawInput.assignment : undefined;
   if (!assignmentInput) {
     return {
@@ -46,6 +84,8 @@ export function parseAgentDispatchToolInput(rawInput: unknown, deps: AgentRuntim
       targetAgentId: targetAgentId.trim(),
       task,
       ...(typeof sessionId === 'string' && sessionId.trim().length > 0 ? { sessionId: sessionId.trim() } : {}),
+      ...(sessionStrategy ? { sessionStrategy } : {}),
+      ...(projectPath ? { projectPath } : {}),
       ...(typeof workflowId === 'string' && workflowId.trim().length > 0 ? { workflowId: workflowId.trim() } : {}),
       blocking,
       queueOnBusy,
@@ -93,6 +133,8 @@ export function parseAgentDispatchToolInput(rawInput: unknown, deps: AgentRuntim
     targetAgentId: targetAgentId.trim(),
     task,
     ...(typeof sessionId === 'string' && sessionId.trim().length > 0 ? { sessionId: sessionId.trim() } : {}),
+    ...(sessionStrategy ? { sessionStrategy } : {}),
+    ...(projectPath ? { projectPath } : {}),
     ...(typeof workflowId === 'string' && workflowId.trim().length > 0 ? { workflowId: workflowId.trim() } : {}),
     blocking,
     queueOnBusy,

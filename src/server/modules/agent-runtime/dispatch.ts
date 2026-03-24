@@ -7,6 +7,7 @@ import type { AgentDispatchRequest, AgentRuntimeDeps } from './types.js';
 import { SYSTEM_AGENT_CONFIG } from '../../../agents/finger-system-agent/index.js';
 import { promises as fs } from 'fs';
 import * as path from 'path';
+import { formatLocalTimestamp, normalizeProjectPathHint } from './dispatch-helpers.js';
 
 function formatLocalTimestamp(date: Date = new Date()): string {
   const year = date.getFullYear();
@@ -46,6 +47,85 @@ function formatDispatchTaskContent(task: unknown): string {
   } catch {
     return String(task);
   }
+}
+
+
+function resolveDispatchSessionStrategy(input: AgentDispatchRequest): NonNullable<AgentDispatchRequest['sessionStrategy']> {
+  const metadata = isObjectRecord(input.metadata) ? input.metadata : {};
+  const raw = firstNonEmptyString(
+    input.sessionStrategy,
+    asString(metadata.sessionStrategy),
+    asString(metadata.session_strategy),
+    asString(metadata.sessionMode),
+    asString(metadata.session_mode),
+  );
+  const normalized = (raw ?? '').trim().toLowerCase();
+  if (normalized === 'latest') return 'latest';
+  if (normalized === 'new') return 'new';
+  return 'current';
+}
+
+function resolveDispatchProjectPath(input: AgentDispatchRequest, deps: AgentRuntimeDeps): string {
+  const metadata = isObjectRecord(input.metadata) ? input.metadata : {};
+  const taskRecord = isObjectRecord(input.task) ? input.task : {};
+  const taskMetadata = isObjectRecord(taskRecord.metadata) ? taskRecord.metadata : {};
+  const hint = firstNonEmptyString(
+    input.projectPath,
+    asString(metadata.projectPath),
+    asString(metadata.project_path),
+    asString(metadata.cwd),
+    asString(taskRecord.projectPath),
+    asString(taskRecord.project_path),
+    asString(taskRecord.cwd),
+    asString(taskMetadata.projectPath),
+    asString(taskMetadata.project_path),
+    asString(taskMetadata.cwd),
+    deps.runtime.getCurrentSession()?.projectPath,
+    deps.sessionManager.getCurrentSession()?.projectPath,
+    process.cwd(),
+  );
+  return normalizeProjectPathHint(hint ?? process.cwd());
+}
+
+function resolveLatestProjectRootSession(deps: AgentRuntimeDeps, projectPath: string) {
+  const sessions = deps.sessionManager.findSessionsByProjectPath(projectPath)
+    .filter((session) => !deps.isRuntimeChildSession(session))
+    .sort((a, b) => new Date(b.lastAccessedAt).getTime() - new Date(a.lastAccessedAt).getTime());
+  return sessions[0] ?? null;
+}
+
+function resolveDispatchSessionSelection(deps: AgentRuntimeDeps, input: AgentDispatchRequest): AgentDispatchRequest {
+  const explicitSessionId = typeof input.sessionId === 'string' ? input.sessionId.trim() : '';
+  if (explicitSessionId.length > 0) {
+    return {
+      ...input,
+      sessionId: explicitSessionId,
+    };
+  }
+
+  const strategy = resolveDispatchSessionStrategy(input);
+  if (strategy === 'current') {
+    const currentSessionId = deps.runtime.getCurrentSession()?.id ?? deps.sessionManager.getCurrentSession()?.id;
+    if (!currentSessionId) return input;
+    return {
+      ...input,
+      sessionId: currentSessionId,
+      sessionStrategy: 'current',
+    };
+  }
+
+  const projectPath = resolveDispatchProjectPath(input, deps);
+  const selectedSession = strategy === 'new'
+    ? deps.sessionManager.createSession(projectPath, undefined, { allowReuse: false })
+    : resolveLatestProjectRootSession(deps, projectPath)
+      ?? deps.sessionManager.createSession(projectPath, undefined, { allowReuse: false });
+  deps.sessionManager.setCurrentSession(selectedSession.id);
+  return {
+    ...input,
+    sessionId: selectedSession.id,
+    sessionStrategy: strategy,
+    projectPath,
+  };
 }
 
 function persistDispatchUserMessage(deps: AgentRuntimeDeps, input: AgentDispatchRequest): void {
@@ -324,7 +404,8 @@ export async function dispatchTaskToAgent(deps: AgentRuntimeDeps, input: AgentDi
 
   let normalizedInput: AgentDispatchRequest;
   try {
-    const boundInput = bindDispatchSessionToRuntime(deps, input);
+    const sessionSelectedInput = resolveDispatchSessionSelection(deps, input);
+    const boundInput = bindDispatchSessionToRuntime(deps, sessionSelectedInput);
     normalizedInput = withDispatchWorkspaceDefaults(deps, boundInput);
   } catch (preError) {
     const message = preError instanceof Error ? preError.message : String(preError);
@@ -417,40 +498,7 @@ export async function dispatchTaskToAgent(deps: AgentRuntimeDeps, input: AgentDi
   if (result.result !== undefined) {
     result.result = sanitizeDispatchResult(result.result);
   }
-  // Always record result to memory (success or failure)
-  const summaryForMemory = result.result?.summary || result.error || undefined;
-  if (summaryForMemory) {
-    await persistAgentSummaryToMemory(deps, normalizedInput, { ok: result.ok, summary: summaryForMemory });
-  }
-  // Write dispatch result to session for all channels (unified ledger writing)
-  // CRITICAL: Store FULL rawPayload in ledger - NEVER truncate
-  const dispatchSessionId = typeof normalizedInput.sessionId === "string" ? normalizedInput.sessionId.trim() : "";
-  if (dispatchSessionId) {
-    const dispatchSession = deps.sessionManager.getSession(dispatchSessionId);
-    if (dispatchSession) {
-      // Summary is for display (can be truncated), rawPayload is for ledger (NEVER truncated)
-      const replyContent = result.ok
-        ? (result.result?.summary || "处理完成")
-        : `处理失败：${result.error || "未知错误"}`;
-      
-      // Build metadata with FULL rawPayload for ledger storage
-      const ledgerMetadata: Record<string, unknown> = {
-        source: "dispatch",
-        dispatchId: result.dispatchId,
-        status: result.status,
-        agentId: normalizedInput.targetAgentId,
-        // Store full raw result for ledger - this is the single source of truth
-        rawResult: result.result?.rawPayload ?? result.result,
-      };
-      if (result.error) ledgerMetadata.error = result.error;
-      
-      void deps.sessionManager.addMessage(dispatchSessionId, "assistant", replyContent, {
-        type: "dispatch",
-        agentId: normalizedInput.targetAgentId,
-        metadata: ledgerMetadata,
-      });
-    }
-  }
+  await recordDispatchResult(deps, normalizedInput, result);
   await syncBdDispatchLifecycle(deps, normalizedInput, result);
   return result;
 }
