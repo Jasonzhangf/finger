@@ -343,3 +343,5 @@ Tags: permission, reject-config, codex-alignment
   Tags: context-monitor, ui, context-builder
 - [2026-03-24] Context Builder 三模式与 dryrun 规范落地：`contextBuilder.mode` 支持 `minimal|moderate|aggressive`；`enableModelRanking` 支持 `false|true|'dryrun'`。moderate 以 task 为最小颗粒，补充历史时允许“单个 task 超过移除量但总预算内仍补入”；current task 必须保持尾部。UI Settings 新增 mode/ranking 选择并持久化到 `~/.finger/config/user-settings.json`；后端新增 `/api/v1/context-builder/settings` GET/PUT。  
   Tags: context-builder, mode, dryrun, moderate, ui-settings, user-settings, api
+- [2026-03-24] Context Monitor 调整为“只观测”面板：移除面板内 CB 开关/模式下拉/ranking 下拉（避免和 Settings 双入口冲突），配置入口统一在 LeftSidebar → Settings。Context Monitor 仅展示 build 元数据（mode/ranking/history-only）与 round 对照；通过 websocket 订阅触发刷新。  
+  Tags: context-monitor, ui, observer-only, settings, context-builder
