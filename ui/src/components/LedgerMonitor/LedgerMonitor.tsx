@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useRef, type WheelEvent as ReactWheelEvent } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import './LedgerMonitor.css';
 
@@ -135,18 +135,6 @@ async function fetchLedgerPage(sessionId: string, limit: number, offset: number,
 const PAGE_SIZE = 50;
 const CARD_PREVIEW_LIMIT = 500;
 
-function resolveWheelDeltaY(event: ReactWheelEvent<HTMLElement>, viewportHeight: number): number {
-  if (event.deltaMode === 1) {
-    // line mode -> pixels
-    return event.deltaY * 16;
-  }
-  if (event.deltaMode === 2) {
-    // page mode -> viewport height
-    return event.deltaY * Math.max(1, viewportHeight);
-  }
-  return event.deltaY;
-}
-
 const LedgerModal: React.FC<LedgerModalProps> = ({ sessionId, label, onClose }) => {
   const [slots, setSlots] = useState<LedgerSlot[]>([]);
   const [meta, setMeta] = useState<SessionMeta | null>(null);
@@ -205,30 +193,6 @@ const LedgerModal: React.FC<LedgerModalProps> = ({ sessionId, label, onClose }) 
     setJumpSlot('');
   };
 
-  const handleSlotListWheel = useCallback((event: ReactWheelEvent<HTMLDivElement>) => {
-    const list = slotListRef.current;
-    if (!list) return;
-    if (list.scrollHeight <= list.clientHeight) return;
-    const previous = list.scrollTop;
-    const deltaY = resolveWheelDeltaY(event, list.clientHeight);
-    list.scrollTop += deltaY;
-    if (list.scrollTop !== previous) {
-      event.preventDefault();
-      event.stopPropagation();
-    }
-  }, []);
-
-  const handleModalWheelCapture = useCallback((event: ReactWheelEvent<HTMLDivElement>) => {
-    const list = slotListRef.current;
-    if (!list) return;
-    const maxScrollTop = Math.max(0, list.scrollHeight - list.clientHeight);
-    if (maxScrollTop <= 0) return;
-    event.preventDefault();
-    event.stopPropagation();
-    const deltaY = resolveWheelDeltaY(event, list.clientHeight);
-    list.scrollTop = Math.max(0, Math.min(maxScrollTop, list.scrollTop + deltaY));
-  }, []);
-
   const handleOpenDetail = useCallback(async (slot: number) => {
     setDetail(null);
     setDetailError(null);
@@ -257,11 +221,7 @@ const LedgerModal: React.FC<LedgerModalProps> = ({ sessionId, label, onClose }) 
   const modalContent = (
     <>
       <div className="ledger-modal-overlay" onClick={onClose}>
-        <div
-          className="ledger-modal"
-          onClick={(e) => e.stopPropagation()}
-          onWheelCapture={handleModalWheelCapture}
-        >
+        <div className="ledger-modal" onClick={(e) => e.stopPropagation()}>
           <div className="ledger-modal-header">
             <h3>{label || sessionId}</h3>
             <button className="ledger-modal-close" onClick={onClose}>✕</button>
@@ -292,7 +252,7 @@ const LedgerModal: React.FC<LedgerModalProps> = ({ sessionId, label, onClose }) 
             </div>
             <span className="ledger-row-tip">双击列表项查看原始消息</span>
           </div>
-          <div ref={slotListRef} className="ledger-slot-list" onWheel={handleSlotListWheel}>
+          <div ref={slotListRef} className="ledger-slot-list">
             {loading ? (
               <div className="ledger-loading">加载中...</div>
             ) : loadError && slots.length === 0 ? (

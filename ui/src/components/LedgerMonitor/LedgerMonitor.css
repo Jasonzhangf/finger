@@ -214,9 +214,11 @@
 
 .ledger-slot-list {
   flex: 1;
-  overflow-y: auto;
+  overflow-y: scroll;
   padding: 4px 0;
   overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+  scrollbar-gutter: stable both-edges;
 }
 
 .ledger-loading,
