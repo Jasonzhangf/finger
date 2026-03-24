@@ -38,6 +38,18 @@ function safeParseJsonLines(filePath: string): Array<Record<string, unknown>> {
   }
 }
 
+function safeParseJsonFile(filePath: string): Record<string, unknown> | null {
+  try {
+    if (!existsSync(filePath)) return null;
+    const raw = readFileSync(filePath, 'utf-8');
+    if (!raw.trim()) return null;
+    const parsed = JSON.parse(raw);
+    return typeof parsed === 'object' && parsed !== null ? parsed as Record<string, unknown> : null;
+  } catch {
+    return null;
+  }
+}
+
 function summarizeLedgerSessionDir(dirPath: string): {
   id: string;
   lastAccessedAt: string;
@@ -53,8 +65,21 @@ function summarizeLedgerSessionDir(dirPath: string): {
   try {
     const stat = statSync(dirPath);
     if (!stat.isDirectory()) return null;
-    const sessionId = dirPath.split('/').pop() || '';
-    if (!sessionId) return null;
+    const dirName = dirPath.split('/').pop() || '';
+    if (!dirName) return null;
+
+    // Prefer canonical session metadata when available.
+    // session metadata dirs are expected to contain main.json / agent-*.json directly.
+    const mainMeta = safeParseJsonFile(join(dirPath, 'main.json'));
+    const metadata = mainMeta;
+    const metadataId = typeof metadata?.id === 'string' ? metadata.id : '';
+    const sessionId = metadataId || dirName;
+
+    // Guard: internal ledger workspace dirs (e.g. system-<id>) are not standalone sessions.
+    // If a system-like dir has no metadata file, skip it to avoid duplicate phantom sessions in UI.
+    if (!metadata && dirName.startsWith('system-')) {
+      return null;
+    }
 
     // scan agent subdirs for ledger files
     const children = readdirSync(dirPath, { withFileTypes: true }).filter((d) => d.isDirectory());
@@ -81,7 +106,41 @@ function summarizeLedgerSessionDir(dirPath: string): {
       }
     }
 
-    if (ledgerEntries.length === 0) return null;
+    const context = metadata && typeof metadata.context === 'object' && metadata.context !== null
+      ? metadata.context as Record<string, unknown>
+      : {};
+    const sessionTier = typeof context.sessionTier === 'string'
+      ? context.sessionTier
+      : (sessionId.startsWith('system-') ? 'system' : undefined);
+    const ownerAgentIdFromContext = typeof context.ownerAgentId === 'string'
+      ? context.ownerAgentId
+      : undefined;
+    const rootSessionId = typeof context.rootSessionId === 'string' ? context.rootSessionId : undefined;
+    const parentSessionId = typeof context.parentSessionId === 'string' ? context.parentSessionId : undefined;
+    const metadataMessageCount = Array.isArray(metadata?.messages) ? metadata.messages.length : undefined;
+
+    if (ledgerEntries.length === 0) {
+      if (!metadata) return null;
+      const fallbackProjectPath = typeof metadata.projectPath === 'string'
+        ? metadata.projectPath
+        : (sessionId.startsWith('system-') ? join(FINGER_PATHS.home, 'system') : FINGER_PATHS.home);
+      const fallbackLastAccessedAt = typeof metadata.lastAccessedAt === 'string'
+        ? metadata.lastAccessedAt
+        : new Date(stat.mtimeMs).toISOString();
+      const fallbackTotalTokens = typeof metadata.totalTokens === 'number' ? metadata.totalTokens : 0;
+      return {
+        id: sessionId,
+        name: typeof metadata.name === 'string' ? metadata.name : sessionId,
+        projectPath: fallbackProjectPath,
+        messageCount: typeof metadataMessageCount === 'number' ? metadataMessageCount : 0,
+        totalTokens: fallbackTotalTokens,
+        lastAccessedAt: fallbackLastAccessedAt,
+        ...(sessionTier ? { sessionTier } : {}),
+        ...((ownerAgentIdFromContext || ownerAgentId) ? { ownerAgentId: ownerAgentIdFromContext || ownerAgentId } : {}),
+        ...(rootSessionId ? { rootSessionId } : {}),
+        ...(parentSessionId ? { parentSessionId } : {}),
+      };
+    }
 
     const sorted = ledgerEntries
       .filter((e) => typeof e.timestamp_ms === 'number')
@@ -98,17 +157,19 @@ function summarizeLedgerSessionDir(dirPath: string): {
     }, 0);
 
     const projectPath = String((first?.payload as Record<string, unknown>)?.projectPath ||
-      (sessionId.startsWith('system-') ? join(FINGER_PATHS.home, 'system') : FINGER_PATHS.home));
-
+      (typeof metadata?.projectPath === 'string' ? metadata.projectPath : '')
+      || (sessionId.startsWith('system-') ? join(FINGER_PATHS.home, 'system') : FINGER_PATHS.home));
     return {
       id: sessionId,
-      name: sessionId,
+      name: typeof metadata?.name === 'string' ? metadata.name : sessionId,
       projectPath,
-      messageCount: messages.length,
+      messageCount: typeof metadataMessageCount === 'number' ? metadataMessageCount : messages.length,
       totalTokens,
       lastAccessedAt: String(last?.timestamp_iso || new Date(stat.mtimeMs).toISOString()),
-      ...(sessionId.startsWith('system-') ? { sessionTier: 'system' } : {}),
-      ...(ownerAgentId ? { ownerAgentId } : {}),
+      ...(sessionTier ? { sessionTier } : {}),
+      ...((ownerAgentIdFromContext || ownerAgentId) ? { ownerAgentId: ownerAgentIdFromContext || ownerAgentId } : {}),
+      ...(rootSessionId ? { rootSessionId } : {}),
+      ...(parentSessionId ? { parentSessionId } : {}),
     };
   } catch {
     return null;
