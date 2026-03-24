@@ -53,6 +53,11 @@
   gap: 2px;
 }
 
+.ledger-monitor-hint {
+  font-size: 10px;
+  color: #475569;
+}
+
 .ledger-monitor-entry {
   display: flex;
   gap: 4px;

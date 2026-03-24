@@ -229,93 +229,97 @@ const LedgerModal: React.FC<LedgerModalProps> = ({ sessionId, label, onClose }) 
     }
   }, [activeSessionId]);
 
-  return (
+  const modalContent = (
     <>
-    <div className="ledger-modal-overlay" onClick={onClose}>
-      <div className="ledger-modal" onClick={(e) => e.stopPropagation()}>
-        <div className="ledger-modal-header">
-          <h3>{label || sessionId}</h3>
-          <button className="ledger-modal-close" onClick={onClose}>✕</button>
-        </div>
-        <div className="ledger-meta-bar">
-          <span>session: {activeSessionId}</span>
-          {loadError && <span className="ledger-error-text">{loadError}</span>}
-        </div>
-        {meta && (
+      <div className="ledger-modal-overlay" onClick={onClose}>
+        <div className="ledger-modal" onClick={(e) => e.stopPropagation()}>
+          <div className="ledger-modal-header">
+            <h3>{label || sessionId}</h3>
+            <button className="ledger-modal-close" onClick={onClose}>✕</button>
+          </div>
           <div className="ledger-meta-bar">
-            <span>总条目: {total}</span>
-            <span>Tokens: {formatTokenCount(meta.totalTokens)}</span>
-            <span>指针: [{meta.originalStartIndex}..{meta.originalEndIndex}]</span>
-            <span>压缩块: {meta.latestCompactIndex + 1}</span>
-            <span>偏移: {offset + 1}..{Math.min(offset + PAGE_SIZE, total)}</span>
+            <span>session: {activeSessionId}</span>
+            {loadError && <span className="ledger-error-text">{loadError}</span>}
           </div>
-        )}
-        <div className="ledger-jump-bar">
-          <span>跳转到 Slot#</span>
-          <input type="number" min={1} max={total} value={jumpSlot}
-            onChange={(e) => setJumpSlot(e.target.value)}
-            onKeyDown={(e) => e.key === 'Enter' && handleJump()}
-            placeholder="1" />
-          <button onClick={handleJump}>跳转</button>
-          <div className="ledger-pager">
-            <button disabled={offset === 0} onClick={() => fetchLedger(Math.max(0, offset - PAGE_SIZE))}>上一页</button>
-            <button disabled={offset + PAGE_SIZE >= total} onClick={() => fetchLedger(offset + PAGE_SIZE)}>下一页</button>
-          </div>
-          <span className="ledger-row-tip">双击列表项查看原始消息</span>
-        </div>
-        <div ref={slotListRef} className="ledger-slot-list" onWheel={handleSlotListWheel}>
-          {loading ? (
-            <div className="ledger-loading">加载中...</div>
-          ) : loadError && slots.length === 0 ? (
-            <div className="ledger-empty ledger-error-text">{loadError}</div>
-          ) : slots.length === 0 ? (
-            <div className="ledger-empty">暂无 ledger 数据</div>
-          ) : slots.map((slot) => (
-            <div
-              key={slot.id || slot.slot}
-              className="ledger-slot-item"
-              onDoubleClick={() => { void handleOpenDetail(slot.slot); }}
-              title="双击查看原始消息"
-            >
-              <span className="slot-number">#{slot.slot}</span>
-              <span className="slot-type">{eventTypeLabel(slot.event_type)}</span>
-              <span className="slot-role">{slot.role}</span>
-              <span className="slot-time">{formatTimestamp(slot.timestamp_iso)}</span>
-              <span className="slot-preview">{slot.content_preview}</span>
+          {meta && (
+            <div className="ledger-meta-bar">
+              <span>总条目: {total}</span>
+              <span>Tokens: {formatTokenCount(meta.totalTokens)}</span>
+              <span>指针: [{meta.originalStartIndex}..{meta.originalEndIndex}]</span>
+              <span>压缩块: {meta.latestCompactIndex + 1}</span>
+              <span>偏移: {offset + 1}..{Math.min(offset + PAGE_SIZE, total)}</span>
             </div>
-          ))}
+          )}
+          <div className="ledger-jump-bar">
+            <span>跳转到 Slot#</span>
+            <input type="number" min={1} max={total} value={jumpSlot}
+              onChange={(e) => setJumpSlot(e.target.value)}
+              onKeyDown={(e) => e.key === 'Enter' && handleJump()}
+              placeholder="1" />
+            <button onClick={handleJump}>跳转</button>
+            <div className="ledger-pager">
+              <button disabled={offset === 0} onClick={() => fetchLedger(Math.max(0, offset - PAGE_SIZE))}>上一页</button>
+              <button disabled={offset + PAGE_SIZE >= total} onClick={() => fetchLedger(offset + PAGE_SIZE)}>下一页</button>
+            </div>
+            <span className="ledger-row-tip">双击列表项查看原始消息</span>
+          </div>
+          <div ref={slotListRef} className="ledger-slot-list" onWheel={handleSlotListWheel}>
+            {loading ? (
+              <div className="ledger-loading">加载中...</div>
+            ) : loadError && slots.length === 0 ? (
+              <div className="ledger-empty ledger-error-text">{loadError}</div>
+            ) : slots.length === 0 ? (
+              <div className="ledger-empty">暂无 ledger 数据</div>
+            ) : slots.map((slot) => (
+              <div
+                key={slot.id || slot.slot}
+                className="ledger-slot-item"
+                onDoubleClick={() => { void handleOpenDetail(slot.slot); }}
+                title="双击查看原始消息"
+              >
+                <span className="slot-number">#{slot.slot}</span>
+                <span className="slot-type">{eventTypeLabel(slot.event_type)}</span>
+                <span className="slot-role">{slot.role}</span>
+                <span className="slot-time">{formatTimestamp(slot.timestamp_iso)}</span>
+                <span className="slot-preview">{slot.content_preview}</span>
+              </div>
+            ))}
+          </div>
         </div>
       </div>
-    </div>
-
-    {(detailLoading || detail || detailError) && typeof document !== 'undefined' && createPortal(
-      <div className="ledger-detail-overlay" onClick={() => { setDetail(null); setDetailError(null); setDetailLoading(false); }}>
-        <div className="ledger-detail-modal" onClick={(event) => event.stopPropagation()}>
-          <div className="ledger-detail-header">
-            <h4>Ledger 原始消息</h4>
-            <button className="ledger-modal-close" onClick={() => { setDetail(null); setDetailError(null); setDetailLoading(false); }}>✕</button>
-          </div>
-          {detailLoading ? (
-            <div className="ledger-loading">加载原始内容...</div>
-          ) : detailError ? (
-            <div className="ledger-empty ledger-error-text">{detailError}</div>
-          ) : detail ? (
-            <div className="ledger-detail-body">
-              <div className="ledger-detail-meta">
-                <span>slot #{detail.slot}</span>
-                <span>{eventTypeLabel(detail.event_type)}</span>
-                <span>{formatTimestamp(detail.timestamp_iso)}</span>
-              </div>
-              <pre className="ledger-detail-content">{detail.content_full}</pre>
+  
+      {(detailLoading || detail || detailError) && typeof document !== 'undefined' && createPortal(
+        <div className="ledger-detail-overlay" onClick={() => { setDetail(null); setDetailError(null); setDetailLoading(false); }}>
+          <div className="ledger-detail-modal" onClick={(event) => event.stopPropagation()}>
+            <div className="ledger-detail-header">
+              <h4>Ledger 原始消息</h4>
+              <button className="ledger-modal-close" onClick={() => { setDetail(null); setDetailError(null); setDetailLoading(false); }}>✕</button>
             </div>
-          ) : null}
-        </div>
-      </div>,
-      document.body,
-    )}
-
+            {detailLoading ? (
+              <div className="ledger-loading">加载原始内容...</div>
+            ) : detailError ? (
+              <div className="ledger-empty ledger-error-text">{detailError}</div>
+            ) : detail ? (
+              <div className="ledger-detail-body">
+                <div className="ledger-detail-meta">
+                  <span>slot #{detail.slot}</span>
+                  <span>{eventTypeLabel(detail.event_type)}</span>
+                  <span>{formatTimestamp(detail.timestamp_iso)}</span>
+                </div>
+                <pre className="ledger-detail-content">{detail.content_full}</pre>
+              </div>
+            ) : null}
+          </div>
+        </div>,
+        document.body
+      )}
     </>
   );
+
+  if (typeof document !== 'undefined') {
+    return createPortal(modalContent, document.body);
+  }
+  return modalContent;
 };
 
 export const LedgerMonitor: React.FC<LedgerMonitorProps> = ({ sessionId, label }) => {
@@ -374,6 +378,7 @@ export const LedgerMonitor: React.FC<LedgerMonitorProps> = ({ sessionId, label }
           </div>
         )}
         <div className="ledger-monitor-recent">
+          <div className="ledger-monitor-hint">最近 5 条（点击查看全部）</div>
           {loadError ? (
             <span className="ledger-monitor-empty ledger-error-text">{loadError}</span>
           ) : latestSlots.length === 0 ? (
