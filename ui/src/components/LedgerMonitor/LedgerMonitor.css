@@ -26,6 +26,14 @@
   text-overflow: ellipsis;
 }
 
+.ledger-monitor-session {
+  font-size: 10px;
+  color: #475569;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 .ledger-monitor-stats {
   display: flex;
   gap: 8px;
@@ -72,6 +80,10 @@
 .ledger-monitor-empty {
   font-size: 10px;
   color: #475569;
+}
+
+.ledger-error-text {
+  color: #f59e0b;
 }
 
 /* Ledger Modal */

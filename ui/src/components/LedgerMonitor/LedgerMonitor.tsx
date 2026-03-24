@@ -21,6 +21,26 @@ interface SessionMeta {
   latestCompactIndex: number;
 }
 
+interface LedgerApiResponse {
+  success?: boolean;
+  total?: number;
+  offset?: number;
+  limit?: number;
+  slots?: LedgerSlot[];
+  compactCount?: number;
+  sessionMeta?: SessionMeta | null;
+  error?: string;
+}
+
+interface LedgerFetchResult {
+  ok: boolean;
+  sessionId: string;
+  data?: LedgerApiResponse;
+  status?: number;
+  error?: string;
+  fallbackFrom?: string;
+}
+
 interface LedgerMonitorProps {
   sessionId?: string;
   label?: string;
@@ -57,6 +77,79 @@ function formatTokenCount(tokens: number): string {
   return String(tokens);
 }
 
+async function readErrorMessage(response: Response): Promise<string> {
+  try {
+    const payload = await response.json() as { error?: string; message?: string };
+    if (payload?.error) return payload.error;
+    if (payload?.message) return payload.message;
+  } catch {
+    // ignore json parse failure
+  }
+  try {
+    const text = await response.text();
+    if (text.trim().length > 0) return text.trim();
+  } catch {
+    // ignore text parse failure
+  }
+  return 'unknown error';
+}
+
+function shouldTrySystemFallback(sessionId: string, status?: number): boolean {
+  if (status !== 404 && status !== 400) return false;
+  const normalized = (sessionId || '').toLowerCase();
+  return normalized === 'system-default-session' || normalized.startsWith('system-');
+}
+
+async function resolveFallbackSystemSessionId(signal?: AbortSignal): Promise<string | null> {
+  try {
+    const res = await fetch('/api/v1/ledger/sessions', { signal });
+    if (!res.ok) return null;
+    const data = await res.json() as { sessions?: Array<{ id?: string; sessionTier?: string; ownerAgentId?: string }> };
+    const sessions = Array.isArray(data?.sessions) ? data.sessions : [];
+    const preferred = sessions.find((item) =>
+      typeof item?.id === 'string'
+      && (item.sessionTier === 'orchestrator-root' || item.sessionTier === 'system')
+      && (item.ownerAgentId === 'finger-system-agent' || String(item.id).startsWith('system-')));
+    if (preferred?.id) return preferred.id;
+    const fallback = sessions.find((item) => typeof item?.id === 'string' && String(item.id).startsWith('system-'));
+    return fallback?.id ?? null;
+  } catch {
+    return null;
+  }
+}
+
+async function fetchLedger(sessionId: string, limit: number, offset: number, signal?: AbortSignal): Promise<LedgerFetchResult> {
+  const res = await fetch(`/api/v1/sessions/${sessionId}/ledger?limit=${limit}&offset=${offset}`, { signal });
+  if (res.ok) {
+    const data = await res.json() as LedgerApiResponse;
+    return { ok: true, sessionId, data };
+  }
+  const reason = await readErrorMessage(res);
+  return {
+    ok: false,
+    sessionId,
+    status: res.status,
+    error: `请求失败 ${res.status}: ${reason}`,
+  };
+}
+
+async function fetchLedgerWithFallback(sessionId: string, limit: number, offset: number, signal?: AbortSignal): Promise<LedgerFetchResult> {
+  const primary = await fetchLedger(sessionId, limit, offset, signal);
+  if (primary.ok) return primary;
+  if (!shouldTrySystemFallback(sessionId, primary.status)) return primary;
+
+  const fallbackSessionId = await resolveFallbackSystemSessionId(signal);
+  if (!fallbackSessionId || fallbackSessionId === sessionId) return primary;
+  const fallback = await fetchLedger(fallbackSessionId, limit, offset, signal);
+  if (fallback.ok) {
+    return { ...fallback, fallbackFrom: sessionId };
+  }
+  return {
+    ...primary,
+    error: `${primary.error || '请求失败'}；fallback(${fallbackSessionId}) 也失败: ${fallback.error || 'unknown error'}`,
+  };
+}
+
 const PAGE_SIZE = 50;
 
 const LedgerModal: React.FC<LedgerModalProps> = ({ sessionId, label, onClose }) => {
@@ -66,22 +159,45 @@ const LedgerModal: React.FC<LedgerModalProps> = ({ sessionId, label, onClose }) 
   const [offset, setOffset] = useState(0);
   const [loading, setLoading] = useState(false);
   const [jumpSlot, setJumpSlot] = useState('');
+  const [activeSessionId, setActiveSessionId] = useState(sessionId);
+  const [loadError, setLoadError] = useState<string | null>(null);
 
-  const fetchLedger = useCallback(async (newOffset: number) => {
+  const fetchLedger = useCallback(async (newOffset: number, requestedSessionId?: string) => {
     setLoading(true);
+    setLoadError(null);
     try {
-      const res = await fetch(`/api/v1/sessions/${sessionId}/ledger?limit=${PAGE_SIZE}&offset=${newOffset}`);
-      if (!res.ok) return;
-      const data = await res.json();
-      setSlots(data.slots || []);
-      setMeta(data.sessionMeta || null);
-      setTotal(data.total || 0);
+      const targetSessionId = requestedSessionId || activeSessionId || sessionId;
+      const result = await fetchLedgerWithFallback(targetSessionId, PAGE_SIZE, newOffset);
+      if (!result.ok || !result.data) {
+        setSlots([]);
+        setMeta(null);
+        setTotal(0);
+        setLoadError(result.error || 'ledger 请求失败');
+        return;
+      }
+      if (result.fallbackFrom) {
+        setLoadError(`session ${result.fallbackFrom} 无效，已自动切换到 ${result.sessionId}`);
+      }
+      setActiveSessionId(result.sessionId);
+      setSlots(result.data.slots || []);
+      setMeta(result.data.sessionMeta || null);
+      setTotal(result.data.total || 0);
       setOffset(newOffset);
-    } catch { /* ignore */ }
-    setLoading(false);
-  }, [sessionId]);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setLoadError(`ledger 请求异常: ${message}`);
+    } finally {
+      setLoading(false);
+    }
+  }, [activeSessionId, sessionId]);
 
-  useEffect(() => { fetchLedger(0); }, [fetchLedger]);
+  useEffect(() => {
+    setActiveSessionId(sessionId);
+    setLoadError(null);
+    setOffset(0);
+    setJumpSlot('');
+    void fetchLedger(0, sessionId);
+  }, [sessionId, fetchLedger]);
 
   const handleJump = () => {
     const slotNum = parseInt(jumpSlot, 10);
@@ -97,6 +213,10 @@ const LedgerModal: React.FC<LedgerModalProps> = ({ sessionId, label, onClose }) 
         <div className="ledger-modal-header">
           <h3>{label || sessionId}</h3>
           <button className="ledger-modal-close" onClick={onClose}>✕</button>
+        </div>
+        <div className="ledger-meta-bar">
+          <span>session: {activeSessionId}</span>
+          {loadError && <span className="ledger-error-text">{loadError}</span>}
         </div>
         {meta && (
           <div className="ledger-meta-bar">
@@ -122,6 +242,8 @@ const LedgerModal: React.FC<LedgerModalProps> = ({ sessionId, label, onClose }) 
         <div className="ledger-slot-list">
           {loading ? (
             <div className="ledger-loading">加载中...</div>
+          ) : loadError && slots.length === 0 ? (
+            <div className="ledger-empty ledger-error-text">{loadError}</div>
           ) : slots.length === 0 ? (
             <div className="ledger-empty">暂无 ledger 数据</div>
           ) : slots.map((slot) => (
@@ -145,20 +267,37 @@ export const LedgerMonitor: React.FC<LedgerMonitorProps> = ({ sessionId, label }
   const [latestSlots, setLatestSlots] = useState<LedgerSlot[]>([]);
   const [meta, setMeta] = useState<SessionMeta | null>(null);
   const [showModal, setShowModal] = useState(false);
+  const [resolvedSessionId, setResolvedSessionId] = useState(sessionId || '');
+  const [loadError, setLoadError] = useState<string | null>(null);
 
   useEffect(() => {
     if (!sessionId) return;
+    setResolvedSessionId(sessionId);
+    setLoadError(null);
     const controller = new AbortController();
     const load = async () => {
       try {
-        const res = await fetch(`/api/v1/sessions/${sessionId}/ledger?limit=5`, { signal: controller.signal });
-        if (!res.ok) return;
-        const data = await res.json();
-        setLatestSlots((data.slots || []).reverse());
-        setMeta(data.sessionMeta || null);
-      } catch { /* ignore */ }
+        const result = await fetchLedgerWithFallback(sessionId, 5, 0, controller.signal);
+        if (!result.ok || !result.data) {
+          setLatestSlots([]);
+          setMeta(null);
+          setLoadError(result.error || 'ledger 请求失败');
+          return;
+        }
+        setResolvedSessionId(result.sessionId);
+        setLatestSlots((result.data.slots || []).reverse());
+        setMeta(result.data.sessionMeta || null);
+        if (result.fallbackFrom) {
+          setLoadError(`session ${result.fallbackFrom} 无效，已回退 ${result.sessionId}`);
+        } else {
+          setLoadError(null);
+        }
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        setLoadError(`ledger 请求异常: ${message}`);
+      }
     };
-    load();
+    void load();
     const timer = setInterval(load, 5000);
     return () => { controller.abort(); clearInterval(timer); };
   }, [sessionId]);
@@ -169,6 +308,10 @@ export const LedgerMonitor: React.FC<LedgerMonitorProps> = ({ sessionId, label }
     <>
       <div className="ledger-monitor-card" onClick={() => setShowModal(true)}>
         <div className="ledger-monitor-title">{title}</div>
+        <div className="ledger-monitor-session">
+          session {resolvedSessionId || '—'}
+          {sessionId && resolvedSessionId && sessionId !== resolvedSessionId ? ` ← ${sessionId}` : ''}
+        </div>
         {meta && (
           <div className="ledger-monitor-stats">
             <span>{formatTokenCount(meta.totalTokens)} tok</span>
@@ -177,7 +320,9 @@ export const LedgerMonitor: React.FC<LedgerMonitorProps> = ({ sessionId, label }
           </div>
         )}
         <div className="ledger-monitor-recent">
-          {latestSlots.length === 0 ? (
+          {loadError ? (
+            <span className="ledger-monitor-empty ledger-error-text">{loadError}</span>
+          ) : latestSlots.length === 0 ? (
             <span className="ledger-monitor-empty">暂无数据</span>
           ) : latestSlots.map((slot) => (
             <div key={slot.id || slot.slot} className="ledger-monitor-entry">
@@ -187,8 +332,8 @@ export const LedgerMonitor: React.FC<LedgerMonitorProps> = ({ sessionId, label }
           ))}
         </div>
       </div>
-      {showModal && sessionId && (
-        <LedgerModal sessionId={sessionId} label={title} onClose={() => setShowModal(false)} />
+      {showModal && resolvedSessionId && (
+        <LedgerModal sessionId={resolvedSessionId} label={title} onClose={() => setShowModal(false)} />
       )}
 
     </>
