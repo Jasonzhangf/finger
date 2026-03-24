@@ -14,6 +14,7 @@ import {
   checkHeartbeatNeedsTruncation,
 } from './heartbeat-md-parser.js';
 import { buildHeartbeatEnvelope, formatEnvelopesForContext, type MailboxEnvelope } from './mailbox-envelope.js';
+import { isObjectRecord } from '../common/object.js';
 
 const log = logger.module('HeartbeatScheduler');
 
@@ -48,6 +49,7 @@ const HEARTBEAT_RECORDS_MAX = 10;
 const HEARTBEAT_TRUNCATE_CHECK_INTERVAL_MS = 10 * 60_000; // 10 minutes
 const CONFIG_PATH = path.join(FINGER_PATHS.config.dir, 'heartbeat-tasks.json');
 const CONFIG_RELOAD_DEBOUNCE_MS = 1000;
+const SYSTEM_AGENT_ID = 'finger-system-agent';
 
 export class HeartbeatScheduler {
   private timer: NodeJS.Timeout | null = null;
@@ -57,6 +59,59 @@ export class HeartbeatScheduler {
   private lastRun: Map<string, number> = new Map();
   private lastMailboxPromptAt: Map<string, number> = new Map();
   private lastHeartbeatTruncateCheckAt = 0;
+
+  private buildMailboxCheckTargets(projectAgents: Awaited<ReturnType<typeof listAgents>>): Array<{
+    agentId: string;
+    projectId?: string;
+    status: string;
+  }> {
+    const seen = new Set<string>();
+    const targets: Array<{ agentId: string; projectId?: string; status: string }> = [];
+    for (const agent of projectAgents) {
+      if (!agent.agentId || seen.has(agent.agentId)) continue;
+      seen.add(agent.agentId);
+      targets.push({
+        agentId: agent.agentId,
+        projectId: agent.projectId,
+        status: agent.status,
+      });
+    }
+
+    // System agent mailbox is also part of runtime dispatch lifecycle.
+    // Must be checked periodically, otherwise dispatch-result notifications can accumulate.
+    if (!seen.has(SYSTEM_AGENT_ID)) {
+      targets.push({
+        agentId: SYSTEM_AGENT_ID,
+        status: 'idle',
+      });
+    }
+    return targets;
+  }
+
+  private cleanupDispatchResultNotifications(agentId: string): { matched: number; removed: number } {
+    const notifications = heartbeatMailbox.list(agentId, {
+      status: 'pending',
+      category: 'notification',
+    });
+    if (notifications.length === 0) {
+      return { matched: 0, removed: 0 };
+    }
+
+    const targets = notifications.filter((message) => {
+      const content = isObjectRecord(message.content) ? message.content : null;
+      return content?.type === 'dispatch-result';
+    });
+    if (targets.length === 0) {
+      return { matched: notifications.length, removed: 0 };
+    }
+
+    let removed = 0;
+    for (const message of targets) {
+      const result = heartbeatMailbox.remove(agentId, message.id);
+      if (result.removed) removed += 1;
+    }
+    return { matched: notifications.length, removed };
+  }
 
   constructor(private deps: AgentRuntimeDeps) {}
 
@@ -297,13 +352,30 @@ export class HeartbeatScheduler {
     const sessionStore = new SessionControlPlaneStore();
     const bindings = sessionStore.list({ agentId: targetAgentId });
     const latest = bindings[0];
-    if (!latest) return;
+    let sessionId = latest?.fingerSessionId;
+    if (!sessionId && targetAgentId === SYSTEM_AGENT_ID) {
+      const getSystemSession = (this.deps.sessionManager as any)?.getOrCreateSystemSession;
+      if (typeof getSystemSession === 'function') {
+        const systemSession = getSystemSession.call(this.deps.sessionManager);
+        if (systemSession?.id && typeof systemSession.id === 'string') {
+          sessionId = systemSession.id;
+        }
+      }
+    }
+    if (!sessionId) {
+      log.debug('[HeartbeatScheduler] Skip dispatchDirect without session binding', {
+        targetAgentId,
+        taskId,
+        projectId,
+      });
+      return;
+    }
 
     await this.deps.agentRuntimeBlock.execute('dispatch', {
       sourceAgentId: 'system-heartbeat',
       targetAgentId,
       task: prompt,
-      sessionId: latest.fingerSessionId,
+      sessionId,
       metadata: {
         source: 'system-heartbeat',
         role: 'system',
@@ -315,13 +387,24 @@ export class HeartbeatScheduler {
   }
 
   private async promptMailboxChecks(): Promise<void> {
-    const agents = await listAgents();
+    const projectAgents = await listAgents();
+    const agents = this.buildMailboxCheckTargets(projectAgents);
     for (const agent of agents) {
       // Skip agents that are actively executing tasks
       if (agent.status === 'busy') {
         log.debug('[HeartbeatScheduler] Skipping busy agent', { agentId: agent.agentId, status: agent.status });
         continue;
       }
+
+      const notificationCleanup = this.cleanupDispatchResultNotifications(agent.agentId);
+      if (notificationCleanup.removed > 0) {
+        log.debug('[HeartbeatScheduler] Cleaned dispatch-result notifications', {
+          agentId: agent.agentId,
+          matched: notificationCleanup.matched,
+          removed: notificationCleanup.removed,
+        });
+      }
+
       const pendingAll = heartbeatMailbox.listPending(agent.agentId) ?? [];
       if (pendingAll.length === 0) continue;
 
