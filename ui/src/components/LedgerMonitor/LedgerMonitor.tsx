@@ -38,7 +38,6 @@ interface LedgerFetchResult {
   data?: LedgerApiResponse;
   status?: number;
   error?: string;
-  fallbackFrom?: string;
 }
 
 interface LedgerMonitorProps {
@@ -94,31 +93,7 @@ async function readErrorMessage(response: Response): Promise<string> {
   return 'unknown error';
 }
 
-function shouldTrySystemFallback(sessionId: string, status?: number): boolean {
-  if (status !== 404 && status !== 400) return false;
-  const normalized = (sessionId || '').toLowerCase();
-  return normalized === 'system-default-session' || normalized.startsWith('system-');
-}
-
-async function resolveFallbackSystemSessionId(signal?: AbortSignal): Promise<string | null> {
-  try {
-    const res = await fetch('/api/v1/ledger/sessions', { signal });
-    if (!res.ok) return null;
-    const data = await res.json() as { sessions?: Array<{ id?: string; sessionTier?: string; ownerAgentId?: string }> };
-    const sessions = Array.isArray(data?.sessions) ? data.sessions : [];
-    const preferred = sessions.find((item) =>
-      typeof item?.id === 'string'
-      && (item.sessionTier === 'orchestrator-root' || item.sessionTier === 'system')
-      && (item.ownerAgentId === 'finger-system-agent' || String(item.id).startsWith('system-')));
-    if (preferred?.id) return preferred.id;
-    const fallback = sessions.find((item) => typeof item?.id === 'string' && String(item.id).startsWith('system-'));
-    return fallback?.id ?? null;
-  } catch {
-    return null;
-  }
-}
-
-async function fetchLedger(sessionId: string, limit: number, offset: number, signal?: AbortSignal): Promise<LedgerFetchResult> {
+async function fetchLedgerPage(sessionId: string, limit: number, offset: number, signal?: AbortSignal): Promise<LedgerFetchResult> {
   const res = await fetch(`/api/v1/sessions/${sessionId}/ledger?limit=${limit}&offset=${offset}`, { signal });
   if (res.ok) {
     const data = await res.json() as LedgerApiResponse;
@@ -130,23 +105,6 @@ async function fetchLedger(sessionId: string, limit: number, offset: number, sig
     sessionId,
     status: res.status,
     error: `请求失败 ${res.status}: ${reason}`,
-  };
-}
-
-async function fetchLedgerWithFallback(sessionId: string, limit: number, offset: number, signal?: AbortSignal): Promise<LedgerFetchResult> {
-  const primary = await fetchLedger(sessionId, limit, offset, signal);
-  if (primary.ok) return primary;
-  if (!shouldTrySystemFallback(sessionId, primary.status)) return primary;
-
-  const fallbackSessionId = await resolveFallbackSystemSessionId(signal);
-  if (!fallbackSessionId || fallbackSessionId === sessionId) return primary;
-  const fallback = await fetchLedger(fallbackSessionId, limit, offset, signal);
-  if (fallback.ok) {
-    return { ...fallback, fallbackFrom: sessionId };
-  }
-  return {
-    ...primary,
-    error: `${primary.error || '请求失败'}；fallback(${fallbackSessionId}) 也失败: ${fallback.error || 'unknown error'}`,
   };
 }
 
@@ -167,16 +125,13 @@ const LedgerModal: React.FC<LedgerModalProps> = ({ sessionId, label, onClose }) 
     setLoadError(null);
     try {
       const targetSessionId = requestedSessionId || activeSessionId || sessionId;
-      const result = await fetchLedgerWithFallback(targetSessionId, PAGE_SIZE, newOffset);
+      const result = await fetchLedgerPage(targetSessionId, PAGE_SIZE, newOffset);
       if (!result.ok || !result.data) {
         setSlots([]);
         setMeta(null);
         setTotal(0);
         setLoadError(result.error || 'ledger 请求失败');
         return;
-      }
-      if (result.fallbackFrom) {
-        setLoadError(`session ${result.fallbackFrom} 无效，已自动切换到 ${result.sessionId}`);
       }
       setActiveSessionId(result.sessionId);
       setSlots(result.data.slots || []);
@@ -185,6 +140,9 @@ const LedgerModal: React.FC<LedgerModalProps> = ({ sessionId, label, onClose }) 
       setOffset(newOffset);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
+      if (message.toLowerCase().includes('aborted')) {
+        return;
+      }
       setLoadError(`ledger 请求异常: ${message}`);
     } finally {
       setLoading(false);
@@ -277,7 +235,7 @@ export const LedgerMonitor: React.FC<LedgerMonitorProps> = ({ sessionId, label }
     const controller = new AbortController();
     const load = async () => {
       try {
-        const result = await fetchLedgerWithFallback(sessionId, 5, 0, controller.signal);
+        const result = await fetchLedgerPage(sessionId, 5, 0, controller.signal);
         if (!result.ok || !result.data) {
           setLatestSlots([]);
           setMeta(null);
@@ -287,13 +245,12 @@ export const LedgerMonitor: React.FC<LedgerMonitorProps> = ({ sessionId, label }
         setResolvedSessionId(result.sessionId);
         setLatestSlots((result.data.slots || []).reverse());
         setMeta(result.data.sessionMeta || null);
-        if (result.fallbackFrom) {
-          setLoadError(`session ${result.fallbackFrom} 无效，已回退 ${result.sessionId}`);
-        } else {
-          setLoadError(null);
-        }
+        setLoadError(null);
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
+        if (message.toLowerCase().includes('aborted')) {
+          return;
+        }
         setLoadError(`ledger 请求异常: ${message}`);
       }
     };

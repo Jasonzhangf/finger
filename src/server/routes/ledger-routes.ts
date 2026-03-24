@@ -15,8 +15,14 @@ interface LedgerRouteDeps {
 }
 
 function resolveSystemSessionId(sessionManager: SessionManager, sessionId: string): string {
-  if (sessionId === 'system-default-session') {
+  if (sessionId === 'system-default-session' || sessionId === 'system-1') {
     return sessionManager.getOrCreateSystemSession().id;
+  }
+  if (sessionId.startsWith('system-')) {
+    const existing = sessionManager.getSession(sessionId);
+    if (!existing) {
+      return sessionManager.getOrCreateSystemSession().id;
+    }
   }
   return sessionId;
 }

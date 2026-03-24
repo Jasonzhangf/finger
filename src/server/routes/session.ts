@@ -134,9 +134,15 @@ export function registerSessionRoutes(app: Express, deps: SessionRouteDeps): voi
 
   // System session alias: resolve 'system-default-session' to actual system session
   const resolveSystemSessionId = (sessionId: string): string => {
-    if (sessionId === 'system-default-session') {
+    if (sessionId === 'system-default-session' || sessionId === 'system-1') {
       const systemSession = sessionManager.getOrCreateSystemSession();
       return systemSession.id;
+    }
+    if (sessionId.startsWith('system-')) {
+      const existing = sessionManager.getSession(sessionId);
+      if (!existing) {
+        return sessionManager.getOrCreateSystemSession().id;
+      }
     }
     return sessionId;
   };
