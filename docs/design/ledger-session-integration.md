@@ -3,6 +3,9 @@
 > Last updated: 2026-03-23 17:03:00 +08:00
 > Status: Approved（唯一真源，所有 Agent 必须遵循）
 > Owner: Jason
+>
+> 相关场景文档：
+> - `docs/design/system-project-ledger-lifecycle.md`（System ↔ Project 派发/回传/mailbox 生命周期）
 
 ## 1. 核心原则
 
