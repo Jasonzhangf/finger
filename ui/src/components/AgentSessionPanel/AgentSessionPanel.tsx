@@ -7,7 +7,7 @@ import './AgentSessionPanel.css';
 
 export interface AgentSessionPanelProps {
   projectPath: string;
-  sessionId: string;
+  sessionId?: string;
   sessions: Array<{ id: string; name: string; status?: string; lastMessage?: string }>;
   scheduledTasks: Array<{ id: string; title: string; status: string; nextRun?: string }>;
   selectedSessionId?: string;
@@ -26,11 +26,12 @@ type TabType = 'path' | 'tasks' | 'sessions' | null;
 
 const ChatSessionView: FC<{
   sessionId: string;
+  sessionName?: string;
   projectPath: string;
   chatAgents: Array<{ id: string; name: string; status: string }>;
   inputCapability?: InputCapability;
   onCreateNewSession?: () => Promise<void>;
-}> = ({ sessionId, projectPath, chatAgents, inputCapability, onCreateNewSession }) => {
+}> = ({ sessionId, sessionName, projectPath, chatAgents, inputCapability, onCreateNewSession }) => {
   const {
     executionState,
     runtimeEvents,
@@ -55,8 +56,12 @@ const ChatSessionView: FC<{
   } = useWorkflowExecution(sessionId, projectPath);
 
   const panelTitle = useMemo(() => {
+    const trimmed = (sessionName || '').trim();
+    if (trimmed && !trimmed.startsWith('session-')) {
+      return `Session: ${trimmed}`;
+    }
     return `Session: ${sessionId.slice(0, 8)}`;
-  }, [sessionId]);
+  }, [sessionId, sessionName]);
 
   return (
     <ChatInterface
@@ -120,6 +125,9 @@ export const AgentSessionPanel: FC<AgentSessionPanelProps> = ({
   };
 
   const activeSessionId = selectedSessionId || sessionId;
+  const activeSession = activeSessionId
+    ? sessions.find((item) => item.id === activeSessionId)
+    : undefined;
 
   return (
     <div className="agent-session-panel">
@@ -308,6 +316,7 @@ export const AgentSessionPanel: FC<AgentSessionPanelProps> = ({
         {activeSessionId ? (
          <ChatSessionView
            sessionId={activeSessionId}
+           sessionName={activeSession?.name}
            projectPath={projectPath}
            chatAgents={chatAgents}
             onCreateNewSession={async () => {

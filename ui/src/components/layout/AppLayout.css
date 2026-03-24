@@ -253,3 +253,80 @@ body.layout-resizing * {
   color: #64748b;
   font-size: 13px;
 }
+
+.right-session-shell {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
+
+.right-session-tabbar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 10px;
+  border-bottom: 1px solid rgba(148, 163, 184, 0.2);
+  background: rgba(15, 23, 42, 0.92);
+  overflow-x: auto;
+  flex-shrink: 0;
+}
+
+.right-session-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 220px;
+  border: 1px solid rgba(71, 85, 105, 0.7);
+  border-radius: 8px;
+  background: rgba(15, 23, 42, 0.86);
+  color: #94a3b8;
+  font-size: 12px;
+  padding: 4px 8px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.right-session-tab.active {
+  border-color: rgba(96, 165, 250, 0.9);
+  color: #dbeafe;
+  background: rgba(30, 58, 138, 0.42);
+}
+
+.right-session-tab-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.right-session-tab-close {
+  color: #94a3b8;
+  font-size: 13px;
+  line-height: 1;
+}
+
+.right-session-tab-close:hover {
+  color: #fda4af;
+}
+
+.right-session-add-btn {
+  flex-shrink: 0;
+  border: 1px dashed rgba(96, 165, 250, 0.65);
+  border-radius: 8px;
+  background: rgba(30, 58, 138, 0.25);
+  color: #bfdbfe;
+  padding: 4px 10px;
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.right-session-add-btn:hover {
+  background: rgba(37, 99, 235, 0.4);
+}
+
+.right-session-content {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}

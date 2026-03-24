@@ -335,3 +335,9 @@ Tags: permission, reject-config, codex-alignment
 
 - [2026-03-23] **Ledger 原始数据原则（Jason 强调）**：凡是进入 ledger 的数据都不能截断。显示给用户可以用 summary/preview，但 ledger 必须保存完整原始数据（raw payload）。尤其是结构化返回（JSON）必须完整落盘，防止记忆现场丢失。Session 重建依赖 ledger，因此原始数据完整性是硬约束。
   Tags: ledger, ssot, raw-payload, no-truncate, session-rebuild
+
+- [2026-03-24] **Context Builder 动态上下文构建**：从 Ledger 读取历史 → 按任务边界分组 → 24h 时间窗口粗筛 → 大模型排序 → 预算截断 → 展平消息列表。只改变 history 部分，不影响 skills/mailbox/AGENTS.md 等 context slots。配置在 `~/.finger/config/user-settings.json` 的 `contextBuilder` 字段。支持 `enableModelRanking: true | 'dryrun' | false`，排序模型通过 `rankingProviderId` 引用 `aiProviders` 配置，不硬编码。排序原则：内容相关性（首要）+ 时间相关性（次要），最终排序为 高相关(时间倒序) → 中相关(时间倒序) → 低相关(时间倒序)。设计文档：`docs/design/context-builder-design.md`。
+  Tags: context-builder, ledger, ranking, dryrun, user-settings, history
+
+- [2026-03-24] **Context Builder UI Monitor**：`ui/src/components/ContextMonitor/` 组件，集成在 WorkflowContainer 2x2 grid 右下角。左侧显示 Context Rounds（可折叠），右侧显示 Ledger Events 对比面板，底部显示详情。API: `/api/v1/sessions/:sessionId/context-monitor`。
+  Tags: context-monitor, ui, context-builder

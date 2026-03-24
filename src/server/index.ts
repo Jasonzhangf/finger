@@ -284,6 +284,7 @@ await registerFingerRoleModules({
   toolRegistry: globalToolRegistry,
   chatCodexRunner,
   daemonUrl: `http://127.0.0.1:${PORT}`,
+  resolveSessionLedgerRoot: (session) => sharedSessionManager.resolveLedgerRootForSession(session.id) || undefined,
   onLoopEvent: (event) => {
     appendSessionLoopLog(event);
     emitLoopEventToEventBus(event);

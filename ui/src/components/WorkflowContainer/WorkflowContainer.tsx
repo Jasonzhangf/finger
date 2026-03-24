@@ -17,6 +17,7 @@ import { AgentSessionPanel } from '../AgentSessionPanel/AgentSessionPanel.js';
 import LedgerMonitor from '../LedgerMonitor/LedgerMonitor.js';
 import { AgentPromptStrip } from '../BottomPanel/AgentPromptStrip.js';
 import { findConfigForAgent, matchInstanceToAgent } from '../BottomPanel/agentRuntimeUtils.js';
+import ContextMonitor from '../ContextMonitor/ContextMonitor.js';
 import type { AgentConfig, AgentRuntime, SessionInfo } from '../../api/types.js';
 import type { AgentRuntimeInstance } from '../../hooks/useAgentRuntimePanel.js';
 import type { SystemRegistryEntry } from '../../api/types.js';
@@ -47,6 +48,7 @@ const WORKDIR_STORAGE_KEY = 'finger-ui-workdir';
 const PANEL_FREEZE_STORAGE_KEY = 'finger-ui-panel-freeze';
 const DISABLE_ANIMATIONS_STORAGE_KEY = 'finger-ui-disable-animations';
 const UI_DISABLE_STORAGE_KEY = 'finger-ui-disable-flags';
+const MONITOR_LIVE_UPDATES_STORAGE_KEY = 'finger-ui-monitor-live-updates';
 
 type PanelFreezeKey = 'left' | 'canvas' | 'right' | 'bottom' | 'performance';
 type PanelFreezeState = Record<PanelFreezeKey, boolean>;
@@ -198,6 +200,12 @@ export const WorkflowContainer: React.FC = () => {
     const raw = window.localStorage.getItem(DISABLE_ANIMATIONS_STORAGE_KEY);
     return raw === '1' || raw === 'true';
   });
+  const [monitorLiveUpdatesEnabled, setMonitorLiveUpdatesEnabled] = useState<boolean>(() => {
+    if (typeof window === 'undefined' || !window.localStorage) return true;
+    const raw = window.localStorage.getItem(MONITOR_LIVE_UPDATES_STORAGE_KEY);
+    if (raw === null) return true;
+    return raw === '1' || raw === 'true';
+  });
   const [uiDisable] = useState<UiDisableState>(() => {
     if (typeof window === 'undefined' || !window.localStorage) return { ...DEFAULT_UI_DISABLE };
     return readUiDisableState();
@@ -285,6 +293,13 @@ export const WorkflowContainer: React.FC = () => {
 
   const updateDisableAnimations = useCallback((enabled: boolean) => {
     setDisableAnimations(enabled);
+  }, []);
+
+  const updateMonitorLiveUpdates = useCallback((enabled: boolean) => {
+    setMonitorLiveUpdatesEnabled(enabled);
+    if (typeof window !== 'undefined' && window.localStorage) {
+      window.localStorage.setItem(MONITOR_LIVE_UPDATES_STORAGE_KEY, enabled ? '1' : '0');
+    }
   }, []);
 
   const resetPanelFreeze = useCallback(() => {
@@ -714,7 +729,7 @@ export const WorkflowContainer: React.FC = () => {
               {primaryProject ? (
                 <AgentSessionPanel
                   projectPath={primaryProject.projectPath}
-                  sessionId={primaryProject.selectedSessionId ?? primaryProject.sessions[0]?.id ?? primaryProject.id}
+                  sessionId={primaryProject.selectedSessionId ?? primaryProject.sessions[0]?.id}
                   sessions={primaryProject.sessions}
                   scheduledTasks={primaryProject.scheduledTasks}
                   selectedSessionId={primaryProject.selectedSessionId ?? primaryProject.sessions[0]?.id}
@@ -732,7 +747,7 @@ export const WorkflowContainer: React.FC = () => {
               {secondaryProject ? (
                 <AgentSessionPanel
                   projectPath={secondaryProject.projectPath}
-                  sessionId={secondaryProject.selectedSessionId ?? secondaryProject.sessions[0]?.id ?? secondaryProject.id}
+                  sessionId={secondaryProject.selectedSessionId ?? secondaryProject.sessions[0]?.id}
                   sessions={secondaryProject.sessions}
                   scheduledTasks={secondaryProject.scheduledTasks}
                   selectedSessionId={secondaryProject.selectedSessionId ?? secondaryProject.sessions[0]?.id}
@@ -753,16 +768,17 @@ export const WorkflowContainer: React.FC = () => {
               </div>
             </div>
             <div className="session-grid-cell">
-              <div className="context-card">
-                <div className="context-card-title">Context Builder</div>
-                <div className="context-card-body">ledger slots → dynamic session</div>
-              </div>
+              <ContextMonitor
+                sessionId={systemAgentSessionId}
+                label="Context Builder Monitor"
+                liveUpdatesEnabled={monitorLiveUpdatesEnabled}
+              />
             </div>
           </div>
         </div>
       </div>
     );
-  }, [panelFreeze.performance, uiDisable.performance, sessions, handleOpenProject, handleSwitchSessionFromSidebar, projectChatAgents, chatInputCapability, systemMonitor.entries]);
+  }, [panelFreeze.performance, uiDisable.performance, sessions, handleOpenProject, handleSwitchSessionFromSidebar, projectChatAgents, chatInputCapability, systemMonitor.entries, monitorLiveUpdatesEnabled, systemAgentSessionId]);
 
  const rightPanelElement = useMemo(() => {
    const systemSessions = sessions.filter(s => isSystemSession(s)).sort(
@@ -811,10 +827,12 @@ export const WorkflowContainer: React.FC = () => {
       onResetPanelFreeze={resetPanelFreeze}
       disableAnimations={disableAnimations}
       onToggleDisableAnimations={updateDisableAnimations}
+      monitorLiveUpdatesEnabled={monitorLiveUpdatesEnabled}
+      onToggleMonitorLiveUpdates={updateMonitorLiveUpdates}
       viewMode={viewMode}
       onSetViewMode={setViewMode}
     />
-  ), [createSession, disableAnimations, frozenActiveRuntimeSessionId, frozenCurrentSession, frozenDrawerAgentIdForLeft, frozenFocusedRuntimeInstanceId, frozenIsLoadingSessions, frozenRuntimeInstancesForLeft, frozenSessions, handleSelectInstance, handleSwitchSessionFromSidebar, panelFreeze, refreshSessions, removeSession, renameSession, resetPanelFreeze, updateDisableAnimations, updatePanelFreeze, systemMonitor.toggle, systemMonitor.isEnabled, systemMonitor.entries, viewMode, setViewMode]);
+  ), [createSession, disableAnimations, frozenActiveRuntimeSessionId, frozenCurrentSession, frozenDrawerAgentIdForLeft, frozenFocusedRuntimeInstanceId, frozenIsLoadingSessions, frozenRuntimeInstancesForLeft, frozenSessions, handleSelectInstance, handleSwitchSessionFromSidebar, monitorLiveUpdatesEnabled, panelFreeze, refreshSessions, removeSession, renameSession, resetPanelFreeze, updateDisableAnimations, updateMonitorLiveUpdates, updatePanelFreeze, systemMonitor.toggle, systemMonitor.isEnabled, systemMonitor.entries, viewMode, setViewMode]);
 
   const bottomPanelElement = useMemo(() => (
     <div className="ledger-bottom-panel">
@@ -829,6 +847,7 @@ export const WorkflowContainer: React.FC = () => {
         <LedgerMonitor
           sessionId={systemAgentSessionId}
           label="System Agent Ledger"
+          liveUpdatesEnabled={monitorLiveUpdatesEnabled}
         />
         {systemMonitor.entries.filter((entry) => entry.monitored).slice(0, 3).map((entry) => {
           const projectSessions = sessions
@@ -840,12 +859,13 @@ export const WorkflowContainer: React.FC = () => {
               key={entry.projectId}
               sessionId={sid}
               label={`Project Ledger · ${entry.projectName}`}
+              liveUpdatesEnabled={monitorLiveUpdatesEnabled}
             />
           );
         })}
       </div>
     </div>
-  ), [frozenBottomPayload, handleSelectAgentConfig, systemAgentSessionId, systemMonitor.entries, sessions]);
+  ), [frozenBottomPayload, handleSelectAgentConfig, monitorLiveUpdatesEnabled, systemAgentSessionId, systemMonitor.entries, sessions]);
 
   const renderedLeftSidebar = useFrozenValue(leftSidebarElement, panelFreeze.left);
   const renderedCanvas = useFrozenValue(

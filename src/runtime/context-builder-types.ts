@@ -41,6 +41,18 @@ export interface TaskMessage {
   timestamp: number;
   timestampIso: string;
   tokenCount: number;
+  /** Original message ID from ledger payload.message_id */
+  messageId?: string;
+  /** Message metadata (reasoning/source/session pointers etc.) */
+  metadata?: Record<string, unknown>;
+  /**
+   * Attachments in context are always compact placeholders.
+   * We never include full image/file payload in built context to keep model input safe/portable.
+   */
+  attachments?: {
+    count: number;
+    summary: string;
+  };
   /** 是否属于当前轮次（最后一条用户输入） */
   isCurrentTurn?: boolean;
 }
@@ -71,10 +83,10 @@ export interface ContextBuildOptions {
   timeWindow?: TimeWindowFilterOptions;
   /** 任务分组是否启用 */
   enableTaskGrouping?: boolean;
-  /** 模型排序是否启用 */
-  enableModelRanking?: boolean;
-  /** 排序模型（默认 qwen3.5-plus） */
-  rankingModel?: string;
+  /** 模型排序开关：true=生效重排，'dryrun'=只计算不重排 */
+  enableModelRanking?: boolean | 'dryrun';
+  /** 排序模型 providerId（从 user-settings.aiProviders 读取） */
+  rankingProviderId?: string;
 }
 
 /**
@@ -109,6 +121,14 @@ export interface ContextBuildResult {
     targetBudget: number;
     /** 实际使用 */
     actualTokens: number;
+    /** Ranking 是否执行（含 dryrun） */
+    rankingExecuted?: boolean;
+    /** Ranking 模式 */
+    rankingMode?: 'off' | 'active' | 'dryrun';
+    /** Ranking provider ID */
+    rankingProviderId?: string;
+    /** Ranking provider model（仅观测） */
+    rankingProviderModel?: string;
   };
 }
 

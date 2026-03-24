@@ -9,6 +9,7 @@ import type { Attachment } from '../../runtime/events.js';
 import { isObjectRecord } from '../common/object.js';
 import { asString } from '../common/strings.js';
 import { SYSTEM_PROJECT_PATH } from '../../agents/finger-system-agent/index.js';
+import { buildContext } from '../../runtime/context-builder.js';
 import { listLedgerSessionsSnapshot } from './ledger-routes.js';
 
 export interface SessionRouteDeps {

@@ -1,5 +1,7 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { createPortal } from 'react-dom';
+import { useWebSocket } from '../../hooks/useWebSocket.js';
+import type { WsMessage } from '../../api/types.js';
 import './LedgerMonitor.css';
 
 interface LedgerSlot {
@@ -68,6 +70,8 @@ interface LedgerMonitorProps {
   sessionId?: string;
   label?: string;
   onClick?: () => void;
+  liveUpdatesEnabled?: boolean;
+  debounceMs?: number;
 }
 
 interface LedgerModalProps {
@@ -99,6 +103,38 @@ function formatTokenCount(tokens: number): string {
   if (tokens >= 1000) return `${(tokens / 1000).toFixed(1)}k`;
   return String(tokens);
 }
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null;
+}
+
+function isRelevantSessionMessage(msg: WsMessage, sessionId: string): boolean {
+  const payload = isRecord(msg.payload) ? msg.payload : {};
+  const eventSessionId = typeof msg.sessionId === 'string'
+    ? msg.sessionId
+    : (typeof payload.sessionId === 'string' ? payload.sessionId : undefined);
+  if (eventSessionId === sessionId) return true;
+  if (typeof payload.rootSessionId === 'string' && payload.rootSessionId === sessionId) return true;
+  if (typeof payload.parentSessionId === 'string' && payload.parentSessionId === sessionId) return true;
+  if (typeof payload.originalSessionId === 'string' && payload.originalSessionId === sessionId) return true;
+  return false;
+}
+
+const LEDGER_MONITOR_TRIGGER_TYPES = new Set<string>([
+  'assistant_complete',
+  'tool_result',
+  'tool_error',
+  'workflow_update',
+  'agent_update',
+  'agent_status',
+  'phase_transition',
+  'waiting_for_user',
+  'session_changed',
+  'session_created',
+  'session_resumed',
+  'session_paused',
+  'session_compressed',
+]);
 
 async function readErrorMessage(response: Response): Promise<string> {
   try {
@@ -311,43 +347,94 @@ const LedgerModal: React.FC<LedgerModalProps> = ({ sessionId, label, onClose }) 
   return modalContent;
 };
 
-export const LedgerMonitor: React.FC<LedgerMonitorProps> = ({ sessionId, label }) => {
+export const LedgerMonitor: React.FC<LedgerMonitorProps> = ({
+  sessionId,
+  label,
+  liveUpdatesEnabled = true,
+  debounceMs = 120,
+}) => {
   const [latestSlots, setLatestSlots] = useState<LedgerSlot[]>([]);
   const [meta, setMeta] = useState<SessionMeta | null>(null);
   const [showModal, setShowModal] = useState(false);
   const [resolvedSessionId, setResolvedSessionId] = useState(sessionId || '');
   const [loadError, setLoadError] = useState<string | null>(null);
+  const fetchInFlightRef = useRef(false);
+  const queuedRefreshRef = useRef(false);
+  const scheduleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const loadLedgerPreview = useCallback(async () => {
+    if (!sessionId) return;
+    if (fetchInFlightRef.current) {
+      queuedRefreshRef.current = true;
+      return;
+    }
+    fetchInFlightRef.current = true;
+    const controller = new AbortController();
+    try {
+      const result = await fetchLedgerPage(sessionId, CARD_PREVIEW_LIMIT, 0, controller.signal);
+      if (!result.ok || !result.data) {
+        setLatestSlots([]);
+        setMeta(null);
+        setLoadError(result.error || 'ledger 请求失败');
+        return;
+      }
+      setResolvedSessionId(result.sessionId);
+      setLatestSlots((result.data.slots || []).reverse());
+      setMeta(result.data.sessionMeta || null);
+      setLoadError(null);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (message.toLowerCase().includes('aborted')) {
+        return;
+      }
+      setLoadError(`ledger 请求异常: ${message}`);
+    } finally {
+      controller.abort();
+      fetchInFlightRef.current = false;
+      if (queuedRefreshRef.current) {
+        queuedRefreshRef.current = false;
+        void loadLedgerPreview();
+      }
+    }
+  }, [sessionId]);
+
+  const scheduleRefresh = useCallback((delayMs = 120) => {
+    if (scheduleTimerRef.current) return;
+    scheduleTimerRef.current = setTimeout(() => {
+      scheduleTimerRef.current = null;
+      void loadLedgerPreview();
+    }, delayMs);
+  }, [loadLedgerPreview]);
 
   useEffect(() => {
-    if (!sessionId) return;
+    if (!sessionId) {
+      setLatestSlots([]);
+      setMeta(null);
+      setResolvedSessionId('');
+      return;
+    }
     setResolvedSessionId(sessionId);
     setLoadError(null);
-    const controller = new AbortController();
-    const load = async () => {
-      try {
-        const result = await fetchLedgerPage(sessionId, CARD_PREVIEW_LIMIT, 0, controller.signal);
-        if (!result.ok || !result.data) {
-          setLatestSlots([]);
-          setMeta(null);
-          setLoadError(result.error || 'ledger 请求失败');
-          return;
-        }
-        setResolvedSessionId(result.sessionId);
-        setLatestSlots((result.data.slots || []).reverse());
-        setMeta(result.data.sessionMeta || null);
-        setLoadError(null);
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        if (message.toLowerCase().includes('aborted')) {
-          return;
-        }
-        setLoadError(`ledger 请求异常: ${message}`);
+    void loadLedgerPreview();
+    return () => {
+      fetchInFlightRef.current = false;
+      queuedRefreshRef.current = false;
+      if (scheduleTimerRef.current) {
+        clearTimeout(scheduleTimerRef.current);
+        scheduleTimerRef.current = null;
       }
     };
-    void load();
-    const timer = setInterval(load, 5000);
-    return () => { controller.abort(); clearInterval(timer); };
-  }, [sessionId]);
+  }, [loadLedgerPreview, sessionId]);
+
+  const handleWsMessage = useCallback((msg: WsMessage) => {
+    if (!liveUpdatesEnabled) return;
+    if (!sessionId) return;
+    if (!LEDGER_MONITOR_TRIGGER_TYPES.has(msg.type)) return;
+    if (!isRelevantSessionMessage(msg, sessionId)) return;
+    scheduleRefresh(Math.max(40, Math.min(600, debounceMs)));
+  }, [debounceMs, liveUpdatesEnabled, scheduleRefresh, sessionId]);
+
+  useWebSocket(handleWsMessage, { disabled: !sessionId || !liveUpdatesEnabled });
 
   const title = label || sessionId || '—';
 
@@ -367,7 +454,7 @@ export const LedgerMonitor: React.FC<LedgerMonitorProps> = ({ sessionId, label }
           </div>
         )}
         <div className="ledger-monitor-recent">
-          <div className="ledger-monitor-hint">当前展示 {latestSlots.length} 条（点击查看全部）</div>
+          <div className="ledger-monitor-hint">当前展示 {latestSlots.length} 条（点击查看全部） · live:{liveUpdatesEnabled ? 'on' : 'off'}</div>
           {loadError ? (
             <span className="ledger-monitor-empty ledger-error-text">{loadError}</span>
           ) : latestSlots.length === 0 ? (

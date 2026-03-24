@@ -5,6 +5,8 @@ import type { ToolRegistry } from '../../runtime/tool-registry.js';
 import type { ChatCodexRunnerController } from './mock-runtime.js';
 import { createFingerGeneralModule, type ChatCodexLoopEvent } from '../../agents/finger-general/finger-general-module.js';
 import type { ChatCodexDeveloperRole } from '../../agents/chat-codex/developer-prompt-templates.js';
+import { buildContext } from '../../runtime/context-builder.js';
+import { loadContextBuilderSettings } from '../../core/user-settings.js';
 
 export type FingerRoleProfile = 'project' | 'reviewer' | 'system';
 
@@ -21,6 +23,7 @@ export interface RegisterFingerRoleModulesDeps {
   chatCodexRunner: ChatCodexRunnerController;
   daemonUrl: string;
   onLoopEvent: (event: ChatCodexLoopEvent) => void;
+  resolveSessionLedgerRoot?: (session: { id: string; projectPath: string }) => string | undefined;
 }
 
 export interface LegacyAliasOptions {
@@ -92,6 +95,57 @@ export async function registerFingerRoleModules(
   };
 
   const registerFingerRoleModule = async (role: FingerRoleSpec): Promise<void> => {
+    const contextHistoryProvider = async (sessionId: string, limit: number) => {
+      const settings = loadContextBuilderSettings();
+      if (!settings.enabled) {
+        // Disabled => signal fallback to traditional in-memory history path
+        return null;
+      }
+
+      const session = runtime.getSession(sessionId);
+      if (!session) return [];
+
+      const sessionContext = (session.context ?? {}) as Record<string, unknown>;
+      const agentId = typeof sessionContext.ownerAgentId === 'string' && sessionContext.ownerAgentId.trim().length > 0
+        ? sessionContext.ownerAgentId
+        : role.id;
+      const rootDir = deps.resolveSessionLedgerRoot
+        ? deps.resolveSessionLedgerRoot({ id: session.id, projectPath: session.projectPath })
+        : undefined;
+
+      const built = await buildContext(
+        { rootDir, sessionId, agentId, mode: 'main' },
+        {
+          targetBudget: 1_000_000,
+          includeMemoryMd: settings.includeMemoryMd,
+          enableTaskGrouping: true,
+          enableModelRanking: settings.enableModelRanking,
+          rankingProviderId: settings.rankingProviderId,
+          timeWindow: {
+            nowMs: Date.now(),
+            halfLifeMs: settings.halfLifeMs,
+            overThresholdRelevance: settings.overThresholdRelevance,
+          },
+        },
+      );
+
+      const sliced = Number.isFinite(limit) && limit > 0
+        ? built.messages.slice(-limit)
+        : built.messages;
+
+      return sliced.map((m) => ({
+        id: m.messageId || m.id,
+        role: m.role === 'orchestrator' ? 'assistant' as const : m.role,
+        content: m.content,
+        timestamp: m.timestampIso,
+        metadata: {
+          ...(m.metadata ?? {}),
+          ...(m.attachments ? { attachments: m.attachments } : {}),
+          ...(m.messageId ? { messageId: m.messageId } : {}),
+        },
+      }));
+    };
+
     const roleModule = createFingerGeneralModule({
       id: role.id,
       name: role.id,
@@ -104,6 +158,7 @@ export async function registerFingerRoleModules(
         agentId: role.id,
       },
       onLoopEvent,
+      contextHistoryProvider,
     }, chatCodexRunner);
     await moduleRegistry.register(roleModule);
     const policy = runtime.setAgentToolWhitelist(role.id, role.allowedTools);

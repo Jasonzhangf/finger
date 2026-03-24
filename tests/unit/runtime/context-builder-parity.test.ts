@@ -60,7 +60,7 @@ function setupParityLedger(tag: string, entries: ParityLedgerEntry[]) {
 }
 
 describe('context-builder vs ledger-reader parity', () => {
-  it('builder drops metadata that ledger-reader preserves', async () => {
+  it('builder preserves metadata that ledger-reader preserves', async () => {
     const setup = setupParityLedger('metadata-drop', [
       {
         id: 'msg-1',
@@ -82,20 +82,20 @@ describe('context-builder vs ledger-reader parity', () => {
       expect(view.messages[0].metadata).toBeDefined();
       expect(view.messages[0].metadata!.reasoning).toBe('I need to check the login flow first');
 
-      // context-builder: drops metadata
+      // context-builder: preserves metadata
       const built = await buildContext(
         { rootDir: setup.rootDir, sessionId: setup.sessionId, agentId: setup.agentId, mode: setup.mode },
         { targetBudget: 1_000_000, includeMemoryMd: false },
       );
       expect(built.messages).toHaveLength(1);
-      // TaskMessage has NO metadata field at all — it is completely lost
-      expect(built.messages[0]).not.toHaveProperty('metadata');
+      expect(built.messages[0].metadata).toBeDefined();
+      expect(built.messages[0].metadata?.reasoning).toBe('I need to check the login flow first');
     } finally {
       rmSync(setup.rootDir, { recursive: true, force: true });
     }
   });
 
-  it('builder drops attachments that ledger-reader preserves (history turn)', async () => {
+  it('builder keeps attachments as placeholders (never full payload)', async () => {
     const setup = setupParityLedger('attachments-drop', [
       {
         id: 'msg-1',
@@ -133,19 +133,20 @@ describe('context-builder vs ledger-reader parity', () => {
         expect(view.messages[0].attachments).toHaveProperty('summary');
       }
 
-      // context-builder: drops attachments entirely
+      // context-builder: keeps compact placeholder
       const built = await buildContext(
         { rootDir: setup.rootDir, sessionId: setup.sessionId, agentId: setup.agentId, mode: setup.mode },
         { targetBudget: 1_000_000, includeMemoryMd: false },
       );
       expect(built.messages).toHaveLength(2);
-      expect(built.messages[0]).not.toHaveProperty('attachments');
+      expect(built.messages[0].attachments).toBeDefined();
+      expect(Array.isArray(built.messages[0].attachments)).toBe(false);
     } finally {
       rmSync(setup.rootDir, { recursive: true, force: true });
     }
   });
 
-  it('builder drops messageId that ledger-reader preserves', async () => {
+  it('builder preserves messageId while keeping ledger entry id', async () => {
     const setup = setupParityLedger('messageid-drop', [
       {
         id: 'led-1',
@@ -168,15 +169,15 @@ describe('context-builder vs ledger-reader parity', () => {
         { rootDir: setup.rootDir, sessionId: setup.sessionId, agentId: setup.agentId, mode: setup.mode },
         { targetBudget: 1_000_000, includeMemoryMd: false },
       );
-      // TaskMessage.id is the ledger entry id, NOT the original message_id
+      // TaskMessage.id is ledger entry id, messageId preserves original payload.message_id
       expect(built.messages[0].id).toBe('led-1');
-      expect(built.messages[0]).not.toHaveProperty('messageId');
+      expect(built.messages[0].messageId).toBe('msg-original-42');
     } finally {
       rmSync(setup.rootDir, { recursive: true, force: true });
     }
   });
 
-  it('builder does not distinguish current-turn vs history for attachments', async () => {
+  it('builder uses placeholder for both current-turn and history attachments', async () => {
     // ledger-reader: last message gets full attachments, history gets placeholder
     // context-builder: no concept of current-turn vs history at all
     const setup = setupParityLedger('current-turn-attach', [
@@ -213,9 +214,11 @@ describe('context-builder vs ledger-reader parity', () => {
         { rootDir: setup.rootDir, sessionId: setup.sessionId, agentId: setup.agentId, mode: setup.mode },
         { targetBudget: 1_000_000, includeMemoryMd: false },
       );
-      // context-builder: neither message has attachments
-      expect(built.messages[0]).not.toHaveProperty('attachments');
-      expect(built.messages[1]).not.toHaveProperty('attachments');
+      // context-builder: both messages use placeholders (no full payload in context)
+      expect(built.messages[0].attachments).toBeDefined();
+      expect(built.messages[1].attachments).toBeDefined();
+      expect(Array.isArray(built.messages[0].attachments)).toBe(false);
+      expect(Array.isArray(built.messages[1].attachments)).toBe(false);
       // Only the last message's last entry is marked as currentTurn
       expect(built.messages[0].isCurrentTurn).toBeFalsy();
       expect(built.messages[1].isCurrentTurn).toBe(true);
@@ -224,7 +227,7 @@ describe('context-builder vs ledger-reader parity', () => {
     }
   });
 
-  it('builder drops content-less entries that ledger-reader keeps', async () => {
+  it('builder keeps content-less entries and preserves metadata', async () => {
     const setup = setupParityLedger('empty-content', [
       {
         id: 'msg-empty',
@@ -255,10 +258,11 @@ describe('context-builder vs ledger-reader parity', () => {
         { targetBudget: 1_000_000, includeMemoryMd: false },
       );
       // Empty content messages ARE included by context-builder (not filtered)
-      // but metadata is still lost
+      // metadata should also be preserved
       expect(built.messages).toHaveLength(1);
       expect(built.messages[0].content).toBe('');
-      expect(built.messages[0]).not.toHaveProperty('metadata');
+      expect(built.messages[0].metadata).toBeDefined();
+      expect(built.messages[0].metadata?.toolName).toBe('context_ledger.memory');
     } finally {
       rmSync(setup.rootDir, { recursive: true, force: true });
     }

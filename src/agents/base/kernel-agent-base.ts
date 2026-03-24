@@ -47,6 +47,14 @@ export interface KernelAgentBaseConfig {
   maxContextMessages: number;
   roleProfiles?: Record<string, UnifiedAgentRoleProfile>;
   messageHub?: import('../../orchestration/message-hub.js').MessageHub;
+  /** Optional context history provider (e.g. ledger/context-builder pipeline). */
+  contextHistoryProvider?: (sessionId: string, limit: number) => Promise<Array<{
+    id?: string;
+    role: 'user' | 'assistant' | 'system';
+    content: string;
+    timestamp?: string;
+    metadata?: Record<string, unknown>;
+  }> | null>;
 }
 
 const DEFAULT_KERNEL_AGENT_CONFIG: Omit<KernelAgentBaseConfig, 'moduleId'> = {
@@ -145,7 +153,18 @@ export class KernelAgentBase {
         });
       }
 
-      const history = await this.sessionManager.getMessageHistory(session.id, this.config.maxContextMessages);
+      const providedHistory = this.config.contextHistoryProvider
+        ? await this.config.contextHistoryProvider(session.id, this.config.maxContextMessages)
+        : null;
+      const history = Array.isArray(providedHistory)
+        ? providedHistory.map((item, idx) => ({
+            id: item.id ?? `ctx-${Date.now()}-${idx}`,
+            role: item.role,
+            content: item.content,
+            timestamp: item.timestamp ?? new Date().toISOString(),
+            metadata: item.metadata,
+          }))
+        : await this.sessionManager.getMessageHistory(session.id, this.config.maxContextMessages);
       const mergedHistory = mergeHistory(history, input.history, this.config.maxContextMessages);
       const roleProfile = this.resolveRoleProfile(input.roleProfile);
       const threadMode = this.resolveThreadMode(input.metadata);

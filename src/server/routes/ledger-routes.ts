@@ -9,6 +9,8 @@ import { basename, dirname, join } from 'path';
 import type { SessionManager } from '../../orchestration/session-manager.js';
 import { FINGER_PATHS } from '../../core/finger-paths.js';
 import { readdirSync, statSync } from 'fs';
+import { buildContext } from '../../runtime/context-builder.js';
+import { getContextWindow, loadContextBuilderSettings } from '../../core/user-settings.js';
 
 interface LedgerRouteDeps {
   sessionManager: SessionManager;
@@ -380,6 +382,143 @@ export function listLedgerSessionsSnapshot(): Array<Record<string, unknown>> {
   });
 }
 
+interface ContextMonitorSlotEntry {
+  slot: number;
+  id: string;
+  timestampIso: string;
+  eventType: string;
+  role: string;
+  agentId: string;
+  preview: string;
+  finishReason?: string;
+  content?: string;
+}
+
+interface ContextMonitorRound {
+  id: string;
+  slotStart: number;
+  slotEnd: number;
+  startTimeIso: string;
+  endTimeIso: string;
+  userPrompt: string;
+  finishReason?: string;
+  contextMessages: Array<{
+    id: string;
+    slot?: number;
+    role: string;
+    content: string;
+    timestampIso: string;
+    tokenCount: number;
+  }>;
+  events: ContextMonitorSlotEntry[];
+}
+
+function extractPreview(payload: unknown, maxChars = 140): string {
+  if (payload && typeof payload === 'object') {
+    const asRecord = payload as Record<string, unknown>;
+    if (typeof asRecord.content === 'string' && asRecord.content.trim().length > 0) {
+      return asRecord.content.slice(0, maxChars);
+    }
+    if (typeof asRecord.summary === 'string' && asRecord.summary.trim().length > 0) {
+      return asRecord.summary.slice(0, maxChars);
+    }
+    if (typeof asRecord.output === 'string' && asRecord.output.trim().length > 0) {
+      return asRecord.output.slice(0, maxChars);
+    }
+    if (typeof asRecord.error === 'string' && asRecord.error.trim().length > 0) {
+      return `error: ${asRecord.error.slice(0, Math.max(0, maxChars - 7))}`;
+    }
+  }
+  try {
+    const text = JSON.stringify(payload ?? {});
+    return text.slice(0, maxChars);
+  } catch {
+    return '';
+  }
+}
+
+function toMonitorEntry(entry: Record<string, unknown>, slot: number): ContextMonitorSlotEntry {
+  const payload = entry.payload && typeof entry.payload === 'object'
+    ? entry.payload as Record<string, unknown>
+    : {};
+  const finishReason = typeof payload.finish_reason === 'string'
+    ? payload.finish_reason
+    : (typeof payload.stopReason === 'string' ? payload.stopReason : undefined);
+  return {
+    slot,
+    id: typeof entry.id === 'string' ? entry.id : `slot-${slot}`,
+    timestampIso: typeof entry.timestamp_iso === 'string' ? entry.timestamp_iso : new Date().toISOString(),
+    eventType: typeof entry.event_type === 'string' ? entry.event_type : '',
+    role: typeof payload.role === 'string' ? payload.role : '',
+    agentId: typeof entry.agent_id === 'string' ? entry.agent_id : '',
+    preview: extractPreview(payload),
+    ...(finishReason ? { finishReason } : {}),
+    ...(typeof payload.content === 'string' ? { content: payload.content } : {}),
+  };
+}
+
+function finalizeRound(round: ContextMonitorRound | null, target: ContextMonitorRound[]): void {
+  if (!round) return;
+  if (round.events.length === 0) return;
+  round.slotEnd = round.events[round.events.length - 1].slot;
+  round.endTimeIso = round.events[round.events.length - 1].timestampIso;
+  target.push(round);
+}
+
+function buildContextMonitorRounds(entries: ContextMonitorSlotEntry[]): ContextMonitorRound[] {
+  const rounds: ContextMonitorRound[] = [];
+  let activeRound: ContextMonitorRound | null = null;
+  let roundCounter = 0;
+
+  for (const item of entries) {
+    if (item.eventType === 'session_message' && item.role === 'user') {
+      finalizeRound(activeRound, rounds);
+      roundCounter += 1;
+      activeRound = {
+        id: `round-${roundCounter}-${item.slot}`,
+        slotStart: item.slot,
+        slotEnd: item.slot,
+        startTimeIso: item.timestampIso,
+        endTimeIso: item.timestampIso,
+        userPrompt: item.content || '',
+        contextMessages: [],
+        events: [],
+      };
+    }
+
+    if (!activeRound) {
+      continue;
+    }
+
+    activeRound.events.push(item);
+
+    if (item.eventType === 'model_round' && item.finishReason && activeRound.finishReason === undefined) {
+      activeRound.finishReason = item.finishReason;
+    }
+
+    if (item.eventType === 'task_complete') {
+      if (activeRound.finishReason === undefined) {
+        activeRound.finishReason = item.finishReason || 'stop';
+      }
+      finalizeRound(activeRound, rounds);
+      activeRound = null;
+      continue;
+    }
+
+    if (item.eventType === 'turn_complete') {
+      if (activeRound.finishReason === undefined) {
+        activeRound.finishReason = 'stop';
+      }
+      finalizeRound(activeRound, rounds);
+      activeRound = null;
+      continue;
+    }
+  }
+
+  finalizeRound(activeRound, rounds);
+  return rounds;
+}
+
 export function registerLedgerRoutes(app: Express, deps: LedgerRouteDeps): void {
   const { sessionManager } = deps;
 
@@ -432,6 +571,172 @@ export function registerLedgerRoutes(app: Express, deps: LedgerRouteDeps): void 
           originalEndIndex: session?.originalEndIndex || 0,
           latestCompactIndex: session?.latestCompactIndex || -1,
         },
+      });
+    } catch (e) {
+      res.status(500).json({ error: e instanceof Error ? e.message : String(e) });
+    }
+  });
+
+  app.get('/api/v1/sessions/:sessionId/context-monitor', async (req, res) => {
+    try {
+      const resolved = resolveLedgerSource(sessionManager, req.params.sessionId);
+      if (!resolved) {
+        res.status(404).json({ error: 'Storage dir not found' });
+        return;
+      }
+
+      const {
+        sessionId,
+        session,
+        resolvedStorageDir,
+        resolvedAgentId,
+        ledgerEntries,
+      } = resolved;
+
+      const requestedLimit = req.query.limit ? parseInt(req.query.limit as string, 10) : 1200;
+      const limit = Number.isFinite(requestedLimit)
+        ? Math.max(100, Math.min(5000, requestedLimit))
+        : 1200;
+      const startIndex = Math.max(0, ledgerEntries.length - limit);
+      const windowEntries = ledgerEntries.slice(startIndex);
+      const slotEntries = windowEntries.map((entry, idx) => toMonitorEntry(entry, startIndex + idx + 1));
+      const rounds = buildContextMonitorRounds(slotEntries);
+
+      const contextBuilderSettings = loadContextBuilderSettings();
+      const contextWindow = getContextWindow();
+      const targetBudget = Math.max(1, Math.floor(contextWindow * contextBuilderSettings.budgetRatio));
+      const nowMs = Date.now();
+
+      let contextBuild:
+        | {
+          ok: true;
+          totalTokens: number;
+          memoryMdIncluded: boolean;
+          taskBlockCount: number;
+          filteredTaskBlockCount: number;
+          buildTimestamp: string;
+          metadata: {
+            rawTaskBlockCount: number;
+            timeWindowFilteredCount: number;
+            budgetTruncatedCount: number;
+            targetBudget: number;
+            actualTokens: number;
+          };
+          messages: Array<{
+            id: string;
+            role: string;
+            content: string;
+            timestampIso: string;
+            tokenCount: number;
+          }>;
+        }
+        | {
+          ok: false;
+          error: string;
+          messages: [];
+        };
+
+      try {
+        // buildContext expects `rootDir` to be the sessions root directory,
+        // and will append `<sessionId>/<agentId>/<mode>/context-ledger.jsonl`.
+        // `resolvedStorageDir` here is already the concrete session directory,
+        // so we must pass its parent to avoid duplicated session path segments.
+        const contextRootDir = dirname(resolvedStorageDir);
+        const built = await buildContext(
+          {
+            rootDir: contextRootDir,
+            sessionId,
+            agentId: resolvedAgentId,
+            mode: 'main',
+          },
+          {
+            targetBudget,
+            includeMemoryMd: contextBuilderSettings.includeMemoryMd,
+            timeWindow: {
+              nowMs,
+              halfLifeMs: contextBuilderSettings.halfLifeMs,
+              overThresholdRelevance: contextBuilderSettings.overThresholdRelevance,
+            },
+            enableTaskGrouping: true,
+            enableModelRanking: contextBuilderSettings.enableModelRanking,
+            rankingProviderId: contextBuilderSettings.rankingProviderId,
+          },
+        );
+
+        contextBuild = {
+          ok: true,
+          totalTokens: built.totalTokens,
+          memoryMdIncluded: built.memoryMdIncluded,
+          taskBlockCount: built.taskBlockCount,
+          filteredTaskBlockCount: built.filteredTaskBlockCount,
+          buildTimestamp: built.buildTimestamp,
+          metadata: built.metadata,
+          messages: built.messages.map((message) => ({
+            id: message.id,
+            role: message.role,
+            content: message.content,
+            timestampIso: message.timestampIso,
+            tokenCount: message.tokenCount,
+          })),
+        };
+      } catch (error) {
+        contextBuild = {
+          ok: false,
+          error: error instanceof Error ? error.message : String(error),
+          messages: [],
+        };
+      }
+
+      const slotByMessageId = new Map<string, number>();
+      for (const item of slotEntries) {
+        slotByMessageId.set(item.id, item.slot);
+      }
+      const roundBySlot = (slot: number): ContextMonitorRound | null => {
+        for (const round of rounds) {
+          if (slot >= round.slotStart && slot <= round.slotEnd) return round;
+        }
+        return null;
+      };
+
+      for (const message of contextBuild.messages) {
+        const matchedSlot = slotByMessageId.get(message.id);
+        if (!matchedSlot) continue;
+        const targetRound = roundBySlot(matchedSlot);
+        if (!targetRound) continue;
+        targetRound.contextMessages.push({
+          id: message.id,
+          slot: matchedSlot,
+          role: message.role,
+          content: message.content,
+          timestampIso: message.timestampIso,
+          tokenCount: message.tokenCount,
+        });
+      }
+
+      res.json({
+        success: true,
+        sessionId,
+        projectPath: session?.projectPath || '',
+        agentId: resolvedAgentId,
+        updatedAt: new Date().toISOString(),
+        contextBuilder: {
+          enabled: contextBuilderSettings.enabled,
+          budgetRatio: contextBuilderSettings.budgetRatio,
+          targetBudget,
+          historyOnly: true,
+          halfLifeMs: contextBuilderSettings.halfLifeMs,
+          includeMemoryMd: contextBuilderSettings.includeMemoryMd,
+          enableModelRanking: contextBuilderSettings.enableModelRanking,
+          rankingProviderId: contextBuilderSettings.rankingProviderId,
+        },
+        contextBuild,
+        slotWindow: {
+          total: ledgerEntries.length,
+          start: slotEntries[0]?.slot ?? 0,
+          end: slotEntries[slotEntries.length - 1]?.slot ?? 0,
+          limit,
+        },
+        rounds,
       });
     } catch (e) {
       res.status(500).json({ error: e instanceof Error ? e.message : String(e) });

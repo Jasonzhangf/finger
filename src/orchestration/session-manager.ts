@@ -87,6 +87,12 @@ export class SessionManager {
     return this.getProjectSessionsDir(session.projectPath);
   }
 
+  resolveLedgerRootForSession(sessionId: string): string | null {
+    const session = this.sessions.get(sessionId);
+    if (!session) return null;
+    return this.resolveSessionsRoot(session);
+  }
+
   private sanitizeFileComponent(value: string): string {
     const normalized = value.trim();
     if (!normalized) return 'unknown';
@@ -636,7 +642,7 @@ export class SessionManager {
             },
             enableTaskGrouping: true,
             enableModelRanking: contextBuilder.enableModelRanking,
-            rankingModel: contextBuilder.rankingModel,
+            rankingProviderId: contextBuilder.rankingProviderId,
           },
         );
 

@@ -41,6 +41,8 @@ interface LeftSidebarProps {
   onResetPanelFreeze?: () => void;
   disableAnimations?: boolean;
   onToggleDisableAnimations?: (enabled: boolean) => void;
+  monitorLiveUpdatesEnabled?: boolean;
+  onToggleMonitorLiveUpdates?: (enabled: boolean) => void;
   onCreateSession: (projectPath: string, name?: string) => Promise<SessionInfo>;
   onDeleteSession: (sessionId: string) => Promise<void>;
   onRenameSession: (sessionId: string, name: string) => Promise<SessionInfo>;
@@ -82,7 +84,6 @@ interface SystemMonitorTabProps {
 }
 
 const TABS: Array<{ key: SidebarTab; label: string }> = [
-  { key: 'project', label: 'Project' },
   { key: 'system-monitor', label: 'System Monitor' },
   { key: 'ai-provider', label: 'AI Provider' },
   { key: 'clock-tasks', label: 'Clock Tasks' },
@@ -173,6 +174,8 @@ export const LeftSidebar: FC<LeftSidebarProps> = ({
   onResetPanelFreeze,
   disableAnimations = false,
   onToggleDisableAnimations,
+  monitorLiveUpdatesEnabled = true,
+  onToggleMonitorLiveUpdates,
   onCreateSession,
   onDeleteSession,
   onRenameSession,
@@ -182,12 +185,13 @@ export const LeftSidebar: FC<LeftSidebarProps> = ({
   isSystemMonitorEnabled,
   systemMonitorEntries = [],
 }) => {
-  const [activeTab, setActiveTab] = useState<SidebarTab | null>('project');
+  const [activeTab, setActiveTab] = useState<SidebarTab | null>('system-monitor');
 
   const panelTitle = useMemo(() => {
     if (activeTab === 'project') return 'Project Management';
     if (activeTab === 'system-monitor') return 'System Monitor';
     if (activeTab === 'ai-provider') return 'AI Provider';
+    if (activeTab === 'clock-tasks') return 'Clock Tasks';
     if (activeTab === 'settings') return 'System Settings';
     return '';
   }, [activeTab]);
@@ -252,6 +256,8 @@ export const LeftSidebar: FC<LeftSidebarProps> = ({
                 onResetPanelFreeze={onResetPanelFreeze}
                 disableAnimations={disableAnimations}
                 onToggleDisableAnimations={onToggleDisableAnimations}
+                monitorLiveUpdatesEnabled={monitorLiveUpdatesEnabled}
+                onToggleMonitorLiveUpdates={onToggleMonitorLiveUpdates}
               />
             )}
           </div>
@@ -1121,6 +1127,8 @@ const SettingsTab = ({
   onResetPanelFreeze,
   disableAnimations,
   onToggleDisableAnimations,
+  monitorLiveUpdatesEnabled,
+  onToggleMonitorLiveUpdates,
 }: {
   panelFreeze: {
     left: boolean;
@@ -1133,6 +1141,8 @@ const SettingsTab = ({
   onResetPanelFreeze?: () => void;
   disableAnimations: boolean;
   onToggleDisableAnimations?: (enabled: boolean) => void;
+  monitorLiveUpdatesEnabled: boolean;
+  onToggleMonitorLiveUpdates?: (enabled: boolean) => void;
 }) => (
   <div className="tab-content">
     <div className="setting-item">
@@ -1208,6 +1218,19 @@ const SettingsTab = ({
             onChange={(e) => onToggleDisableAnimations?.(e.target.checked)}
           />
           Disable Animations
+        </label>
+      </div>
+    </div>
+    <div className="setting-item">
+      <label>Monitor Updates</label>
+      <div className="freeze-list">
+        <label className="freeze-row">
+          <input
+            type="checkbox"
+            checked={monitorLiveUpdatesEnabled}
+            onChange={(e) => onToggleMonitorLiveUpdates?.(e.target.checked)}
+          />
+          Enable Context/Ledger Live Updates
         </label>
       </div>
     </div>

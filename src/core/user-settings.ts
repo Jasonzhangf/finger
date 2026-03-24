@@ -122,8 +122,10 @@ export interface ContextBuilderSettings {
   budgetRatio: number;
   halfLifeMs: number;
   overThresholdRelevance: number;
-  enableModelRanking: boolean;
-  rankingModel: string;
+  /** false = disabled, true = reorder blocks by model ranking, 'dryrun' = run ranking but keep original order */
+  enableModelRanking: boolean | 'dryrun';
+  /** Provider ID referencing aiProviders config (e.g. 'tcm'). Provider's base_url/model/wire_api used for ranking. */
+  rankingProviderId: string;
   includeMemoryMd: boolean;
 }
 
@@ -178,7 +180,7 @@ const DEFAULT_USER_SETTINGS: UserSettings = {
     halfLifeMs: 86400000,
     overThresholdRelevance: 0.5,
     enableModelRanking: false,
-    rankingModel: 'qwen3.5-plus',
+    rankingProviderId: '',
     includeMemoryMd: true,
   }
 };
@@ -367,7 +369,7 @@ export function validateUserSettings(settings: any): void {
       halfLifeMs: 86400000,
       overThresholdRelevance: 0.5,
       enableModelRanking: false,
-      rankingModel: 'qwen3.5-plus',
+      rankingProviderId: '',
       includeMemoryMd: true,
     };
   }
@@ -383,11 +385,12 @@ export function validateUserSettings(settings: any): void {
   if (typeof settings.contextBuilder.overThresholdRelevance !== 'number' || settings.contextBuilder.overThresholdRelevance < 0 || settings.contextBuilder.overThresholdRelevance > 1) {
     settings.contextBuilder.overThresholdRelevance = 0.5;
   }
-  if (typeof settings.contextBuilder.enableModelRanking !== 'boolean') {
+  const rankingFlag = settings.contextBuilder.enableModelRanking;
+  if (rankingFlag !== true && rankingFlag !== false && rankingFlag !== 'dryrun') {
     settings.contextBuilder.enableModelRanking = false;
   }
-  if (typeof settings.contextBuilder.rankingModel !== 'string' || settings.contextBuilder.rankingModel.trim().length === 0) {
-    settings.contextBuilder.rankingModel = 'qwen3.5-plus';
+  if (typeof settings.contextBuilder.rankingProviderId !== 'string') {
+    settings.contextBuilder.rankingProviderId = '';
   }
   if (typeof settings.contextBuilder.includeMemoryMd !== 'boolean') {
     settings.contextBuilder.includeMemoryMd = true;
@@ -511,7 +514,15 @@ export function loadLedgerSettings(): LedgerSettings {
 export function loadContextBuilderSettings(): ContextBuilderSettings {
   const settings = loadUserSettings();
   if (!settings.contextBuilder) {
-    return { enabled: false, budgetRatio: 0.85, halfLifeMs: 86400000, overThresholdRelevance: 0.5, enableModelRanking: false, rankingModel: 'qwen3.5-plus', includeMemoryMd: true };
+    return {
+      enabled: false,
+      budgetRatio: 0.85,
+      halfLifeMs: 86400000,
+      overThresholdRelevance: 0.5,
+      enableModelRanking: false,
+      rankingProviderId: '',
+      includeMemoryMd: true,
+    };
   }
   return settings.contextBuilder;
 }

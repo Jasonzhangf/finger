@@ -82,6 +82,14 @@ export interface ChatCodexModuleConfig {
   toolExecution?: ChatCodexToolExecutionConfig;
   onLoopEvent?: (event: ChatCodexLoopEvent) => void | Promise<void>;
   messageHub?: MessageHub;
+  /** Optional history provider. If provided, KernelAgentBase will use this for inference history. */
+  contextHistoryProvider?: (sessionId: string, limit: number) => Promise<Array<{
+    id?: string;
+    role: 'user' | 'assistant' | 'system';
+    content: string;
+    timestamp?: string;
+    metadata?: Record<string, unknown>;
+  }> | null>;
 }
 
 export interface ChatCodexRunResult {
@@ -1213,6 +1221,7 @@ export function createChatCodexModule(
         },
       },
       messageHub: mergedConfig.messageHub,
+      contextHistoryProvider: mergedConfig.contextHistoryProvider,
     },
     kernelRunner,
   );

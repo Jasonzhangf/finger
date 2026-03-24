@@ -18,7 +18,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { estimateTokens } from '../utils/token-counter.js';
-import { getContextWindow } from '../core/user-settings.js';
+import { getAIProvider, getContextWindow } from '../core/user-settings.js';
 import {
   readJsonLines,
   normalizeRootDir,
@@ -34,13 +34,35 @@ import type {
   ContextBuildOptions,
   ContextBuildResult,
   TimeWindowFilterOptions,
+  RankingOutput,
 } from './context-builder-types.js';
+
+type AttachmentPlaceholder = {
+  count: number;
+  summary: string;
+};
 
 // ── 常量 ──────────────────────────────────────────────────────────────
 
 const DEFAULT_HALF_LIFE_MS = 24 * 60 * 60 * 1000; // 24 hours
 const DEFAULT_OVER_THRESHOLD_RELEVANCE = 0.5; // 超过24h后相关性阈值
 const DEFAULT_BUDGET_RATIO = 0.85; // 目标上下文占模型窗口的比例
+
+function compactAttachments(raw: unknown): AttachmentPlaceholder | undefined {
+  if (!Array.isArray(raw) || raw.length === 0) return undefined;
+  const typeCounts: Record<string, number> = {};
+  for (const item of raw) {
+    if (item && typeof item === 'object' && typeof (item as { type?: unknown }).type === 'string') {
+      const type = (item as { type: string }).type;
+      typeCounts[type] = (typeCounts[type] || 0) + 1;
+    }
+  }
+  const parts = Object.entries(typeCounts).map(([type, count]) => `${count} ${type}${count > 1 ? 's' : ''}`);
+  return {
+    count: raw.length,
+    summary: parts.join(', ') || `${raw.length} attachment(s)`,
+  };
+}
 
 // ── 工具函数 ──────────────────────────────────────────────────────────
 
@@ -61,6 +83,11 @@ function groupByTaskBoundary(entries: LedgerEntryFile[]): TaskBlock[] {
     const payload = entry.payload as Record<string, unknown>;
     const role = (payload.role as string) || 'system';
     const content = typeof payload.content === 'string' ? payload.content : '';
+    const metadata = payload.metadata && typeof payload.metadata === 'object' && !Array.isArray(payload.metadata)
+      ? payload.metadata as Record<string, unknown>
+      : undefined;
+    const messageId = typeof payload.message_id === 'string' ? payload.message_id : undefined;
+    const attachments = compactAttachments(payload.attachments);
     const tokenCount = typeof payload.token_count === 'number'
       ? Math.max(0, Math.floor(payload.token_count))
       : estimateTokens(content);
@@ -72,6 +99,9 @@ function groupByTaskBoundary(entries: LedgerEntryFile[]): TaskBlock[] {
       timestamp: entry.timestamp_ms,
       timestampIso: entry.timestamp_iso,
       tokenCount,
+      messageId,
+      metadata,
+      attachments,
     };
 
     // 新的 user 消息 = 新任务开始（除非是第一个块）
@@ -193,6 +223,192 @@ function applyBudgetTruncation(
   return { included, truncated: Math.max(0, truncated) };
 }
 
+type RankingMode = 'off' | 'active' | 'dryrun';
+
+function resolveRankingMode(flag: ContextBuildOptions['enableModelRanking'] | undefined): RankingMode {
+  if (flag === 'dryrun') return 'dryrun';
+  if (flag === true) return 'active';
+  return 'off';
+}
+
+async function runModelRanking(
+  blocks: TaskBlock[],
+  params: {
+    providerId?: string;
+    currentPrompt?: string;
+  },
+): Promise<{ rankedTaskIds: string[]; providerId?: string; providerModel?: string; executed: boolean }> {
+  if (blocks.length <= 1) {
+    return { rankedTaskIds: blocks.map((b) => b.id), executed: false };
+  }
+  const providerId = (params.providerId || '').trim();
+  if (!providerId) {
+    return { rankedTaskIds: blocks.map((b) => b.id), executed: false };
+  }
+  const provider = getAIProvider(providerId);
+  if (!provider) {
+    return { rankedTaskIds: blocks.map((b) => b.id), executed: false };
+  }
+
+  const payload = {
+    model: provider.model,
+    reasoning: { effort: 'minimal' },
+    text: { verbosity: 'low' },
+    input: [
+      {
+        role: 'system',
+        content: [
+          {
+            type: 'input_text',
+            text: [
+              '你是上下文相关性排序助手。',
+              '',
+              '任务：根据用户当前的输入意图，在历史对话任务中找到相关的执行记录，按「内容相关性优先，时间次之」的原则排序。',
+              '',
+              '排序原则（双重维度）：',
+              '',
+              '一、内容相关性（首要维度）',
+              '- 高相关：task 直接涉及当前问题的话题/文件/概念',
+              '- 中相关：task 与当前问题有间接关联（相关领域、依赖模块等）',
+              '- 低相关：task 与当前问题无明显关联',
+              '',
+              '二、时间相关性（次要维度）',
+              '- 在相同内容相关性级别内，时间更近的 task 排在前面',
+              '- 最近的任���优先级更高，因为上下文更连贯',
+              '',
+              '最终排序：高相关(时间倒序) → 中相关(时间倒序) → 低相关(时间倒序)',
+              '',
+              '判断内容相关性的依据：',
+              '1. 话题匹配：task 讨论/解决的问题与当前问题是否同类',
+              '2. 文件匹配：task 操作的文件/目录是否与当前问题相关',
+              '3. 概念匹配：task 涉及的技术概念/术语是否与当前问题相关',
+              '4. 结论复用：task 的结论/结果是否对解决当前问题有帮助',
+              '',
+              '返回格式（严格 JSON，不要 markdown）：',
+              '{"rankedTaskIds": ["task-id-1", "task-id-2", ...]}',
+            ].join('\n'),
+          },
+        ],
+      },
+      {
+        role: 'user',
+        content: [
+          {
+            type: 'input_text',
+            text: [
+              '【用户当前输入】',
+              params.currentPrompt || '（无）',
+              '',
+              '【历史任务候选】',
+              '以下是与用户当前会话相关的历史任务记录，请根据相关性排序：',
+              '',
+              blocks.map((b) => {
+                const userMsg = b.messages.find((m) => m.role === 'user');
+                const assistantMsgs = b.messages.filter((m) => m.role === 'assistant');
+                const lastAssistant = assistantMsgs[assistantMsgs.length - 1];
+                const preview = [
+                  `[${b.id}]`,
+                  `时间: ${b.startTimeIso}`,
+                  userMsg ? `用户: ${userMsg.content.slice(0, 300)}` : '',
+                  lastAssistant ? `助手: ${lastAssistant.content.slice(0, 500)}` : '',
+                ].filter(Boolean).join('\n');
+                return preview;
+              }).join('\n\n'),
+              '',
+              '请返回排序后的 task ID 列表（JSON 格式）。',
+            ].join('\n'),
+          },
+        ],
+      },
+    ],
+  };
+
+  try {
+    const endpoint = provider.base_url.endsWith('/')
+      ? `${provider.base_url}responses`
+      : `${provider.base_url}/responses`;
+    const response = await fetch(endpoint, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(payload),
+    });
+    if (!response.ok) {
+      return { rankedTaskIds: blocks.map((b) => b.id), providerId, providerModel: provider.model, executed: false };
+    }
+    const data = await response.json() as Record<string, unknown>;
+    const outputText = extractResponseOutputText(data);
+    if (!outputText) {
+      return { rankedTaskIds: blocks.map((b) => b.id), providerId, providerModel: provider.model, executed: false };
+    }
+    const parsed = tryParseRankingOutput(outputText);
+    if (!parsed) {
+      return { rankedTaskIds: blocks.map((b) => b.id), providerId, providerModel: provider.model, executed: false };
+    }
+    const allowed = new Set(blocks.map((b) => b.id));
+    const deduped = parsed.rankedTaskIds.filter((id) => allowed.has(id));
+    for (const b of blocks) {
+      if (!deduped.includes(b.id)) deduped.push(b.id);
+    }
+    return {
+      rankedTaskIds: deduped,
+      providerId,
+      providerModel: provider.model,
+      executed: true,
+    };
+  } catch {
+    return { rankedTaskIds: blocks.map((b) => b.id), providerId, providerModel: provider.model, executed: false };
+  }
+}
+
+function extractResponseOutputText(data: Record<string, unknown>): string {
+  const outputText = data.output_text;
+  if (typeof outputText === 'string' && outputText.trim().length > 0) return outputText;
+  const output = Array.isArray(data.output) ? data.output : [];
+  for (const item of output) {
+    if (!item || typeof item !== 'object') continue;
+    const content = Array.isArray((item as Record<string, unknown>).content)
+      ? (item as Record<string, unknown>).content as Array<Record<string, unknown>>
+      : [];
+    for (const c of content) {
+      const text = c?.text;
+      if (typeof text === 'string' && text.trim().length > 0) return text;
+    }
+  }
+  return '';
+}
+
+function tryParseRankingOutput(text: string): RankingOutput | null {
+  const trimmed = text.trim();
+  const start = trimmed.indexOf('{');
+  const end = trimmed.lastIndexOf('}');
+  if (start < 0 || end <= start) return null;
+  try {
+    const parsed = JSON.parse(trimmed.slice(start, end + 1)) as Record<string, unknown>;
+    const ids = Array.isArray(parsed.rankedTaskIds)
+      ? parsed.rankedTaskIds.filter((v): v is string => typeof v === 'string' && v.trim().length > 0)
+      : [];
+    if (ids.length === 0) return null;
+    return { rankedTaskIds: ids };
+  } catch {
+    return null;
+  }
+}
+
+function reorderBlocksByRanking(blocks: TaskBlock[], rankedTaskIds: string[]): TaskBlock[] {
+  const byId = new Map(blocks.map((b) => [b.id, b]));
+  const reordered: TaskBlock[] = [];
+  for (const id of rankedTaskIds) {
+    const hit = byId.get(id);
+    if (hit) reordered.push(hit);
+  }
+  for (const block of blocks) {
+    if (!reordered.includes(block)) reordered.push(block);
+  }
+  return reordered;
+}
+
 // ── MEMORY.md 读取 ────────────────────────────────────────────────────
 
 /**
@@ -273,15 +489,20 @@ export async function buildContext(
     : messageEntries.map((entry) => {
         const payload = entry.payload as Record<string, unknown>;
         return finalizeBlock(`task-${entry.timestamp_ms}`, entry.timestamp_ms, [{
-          id: entry.id,
-          role: (payload.role as TaskMessage['role']) || 'user',
-          content: payload.content as string,
-          timestamp: entry.timestamp_ms,
-          timestampIso: entry.timestamp_iso,
-          tokenCount: typeof payload.token_count === 'number'
-            ? Math.max(0, Math.floor(payload.token_count))
-            : estimateTokens(payload.content as string),
-        }]);
+      id: entry.id,
+      role: (payload.role as TaskMessage['role']) || 'user',
+      content: payload.content as string,
+      timestamp: entry.timestamp_ms,
+      timestampIso: entry.timestamp_iso,
+      tokenCount: typeof payload.token_count === 'number'
+        ? Math.max(0, Math.floor(payload.token_count))
+        : estimateTokens(payload.content as string),
+      messageId: typeof payload.message_id === 'string' ? payload.message_id : undefined,
+      metadata: payload.metadata && typeof payload.metadata === 'object' && !Array.isArray(payload.metadata)
+        ? payload.metadata as Record<string, unknown>
+        : undefined,
+      attachments: compactAttachments(payload.attachments),
+    }]);
       });
 
   const rawTaskBlockCount = rawBlocks.length;
@@ -294,7 +515,28 @@ export async function buildContext(
     timeWindowFilteredCount = rawBlocks.length - filteredBlocks.length;
   }
 
-  // ── Step 4: MEMORY.md 预算预留 ──
+  // ── Step 4: 可选模型排序（active/dryrun） ──
+  const rankingMode = resolveRankingMode(options?.enableModelRanking);
+  let rankingExecuted = false;
+  let rankingProviderId: string | undefined;
+  let rankingProviderModel: string | undefined;
+  let rankingIds: string[] | undefined;
+  if (rankingMode === 'active' || rankingMode === 'dryrun') {
+    const ranking = await runModelRanking(filteredBlocks, {
+      providerId: options?.rankingProviderId,
+      currentPrompt: input.currentPrompt,
+    });
+    rankingExecuted = ranking.executed;
+    rankingProviderId = ranking.providerId;
+    rankingProviderModel = ranking.providerModel;
+    rankingIds = ranking.rankedTaskIds;
+
+    if (rankingMode === 'active' && ranking.executed) {
+      filteredBlocks = reorderBlocksByRanking(filteredBlocks, ranking.rankedTaskIds);
+    }
+  }
+
+  // ── Step 5: MEMORY.md 预算预留 ──
   let memoryMdTokens = 0;
   let memoryMdContent = '';
   let memoryMdIncluded = false;
@@ -309,10 +551,10 @@ export async function buildContext(
 
   const effectiveBudget = Math.max(0, targetBudget - memoryMdTokens);
 
-  // ── Step 5: 预算截断 ──
+  // ── Step 6: 预算截断 ──
   const { included, truncated } = applyBudgetTruncation(filteredBlocks, effectiveBudget);
 
-  // ── Step 6: 展平为消息列表 ──
+  // ── Step 7: 展平为消息列表 ──
   const messages: TaskMessage[] = [];
   for (const block of included) {
     for (const msg of block.messages) {
@@ -341,6 +583,11 @@ export async function buildContext(
       budgetTruncatedCount: truncated,
       targetBudget,
       actualTokens,
+      rankingExecuted,
+      rankingMode,
+      ...(rankingProviderId ? { rankingProviderId } : {}),
+      ...(rankingProviderModel ? { rankingProviderModel } : {}),
+      ...(rankingIds ? { rankingIds } : {}),
     },
   };
 }
