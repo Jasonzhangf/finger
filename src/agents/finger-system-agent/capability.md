@@ -258,6 +258,64 @@ System Agent 会调用相应工具执行切换，并确认结果。
 ### system-registry-tool（新增）
 - 管理 System Agent 的 Agent 注册表
 - actions: register, unregister, update, list, get_status, heartbeat, cleanup
+
+---
+
+## 10. Channel Sync & Image Delivery（新增）
+
+### 10.1 图片收发（禁止硬编码渠道）
+
+- 发送图片必须通过统一工具：`send_local_image`
+- 工具会按当前会话 `channelId` 走对应 ChannelBridge 适配层：
+  - `qqbot` → QQ 通道发送实现
+  - `openclaw-weixin` → 微信通道发送实现
+  - `webui` → WebUI 输出
+- 禁止在提示词或正文中硬编码 `<qqimg>` 作为跨渠道协议；该标签仅可作为历史兼容输入，不应作为新流程依赖。
+
+### 10.2 三端同步（可配置）
+
+配置文件：`~/.finger/config/channels.json`，每个 channel 节点下 `options.sync`：
+
+```json
+{
+  "id": "qqbot",
+  "channelId": "qqbot",
+  "enabled": true,
+  "options": {
+    "sync": {
+      "enabled": true,
+      "targets": ["webui", "openclaw-weixin"],
+      "targetOverrides": {
+        "openclaw-weixin": "o9cq80_xxx@im.wechat"
+      }
+    }
+  }
+}
+```
+
+支持模式：
+- `qqbot only`：sync 关闭（或 targets 为空）
+- `weixin only`：仅 weixin channel 开启并处理
+- `webui only`：仅 webui channel 开启并处理
+- 任意组合：在 source channel 的 `sync.targets` 中列出目标渠道
+
+说明：
+- `targets` 支持填写 `id` 或 `channelId`
+- 跨渠道镜像默认复用原始 `to`，可通过 `targetOverrides` 为目标渠道指定单独接收端
+- 镜像发送为 best-effort，不影响源渠道主发送结果
+
+### 10.3 Skills 路由整合（执行入口）
+
+System Agent 处理系统任务时，按以下能力包组合：
+- 心跳：`heartbeat.enable / heartbeat.disable / heartbeat.status`
+- 邮箱：`mailbox.*`
+- 定时：`clock.*`
+- 系统配置：`~/.finger/config/*.json`（最小改动+备份）
+- 图片发送：`send_local_image`
+
+要求：
+- 先判定渠道与同步策略，再执行发送
+- 用户优先级 > dispatch 结果 > 心跳任务
 - 仅 System Agent 可用
 - 存储: ~/.finger/system/registry.json
 

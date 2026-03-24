@@ -12,6 +12,7 @@ import type { ChannelBridge, ChannelBridgeConfig, ChannelBridgeCallbacks, Channe
 import { logger } from '../core/logger.js';
 
 import { OpenClawBridgeAdapter } from './openclaw-adapter.js';
+import { WeixinBridgeAdapter } from './weixin-adapter.js';
 
 const log = logger.module('ChannelBridgeManager');
 
@@ -132,9 +133,19 @@ export class ChannelBridgeManager {
       throw new Error(`Bridge config not found: ${id}`);
     }
 
-    const module = this.bridgeModules.get(config.channelId);
+    let module = this.bridgeModules.get(config.channelId);
+
+    // Built-in adapter fallback for known channel types
+    if (!module && config.channelId === 'openclaw-weixin') {
+      const bridge = new WeixinBridgeAdapter(config, this.callbacks);
+      await bridge.start();
+      this.bridges.set(id, bridge);
+      log.info(`Started weixin bridge with built-in adapter: ${id}`);
+      return;
+    }
+
     if (!module) {
-      throw new Error(`Bridge module not found for channel: ${config.channelId}`);
+      throw new Error(`Bridge module not found for channel: ${config.channelId} (type: ${config.type})`);
     }
 
     const bridgeOrPromise = module.factory(config, this.callbacks);
@@ -181,7 +192,84 @@ export class ChannelBridgeManager {
     if (!bridge) {
       throw new Error(`Bridge not found: ${bridgeId}`);
     }
-    return bridge.sendMessage(options);
+    const result = await bridge.sendMessage(options);
+
+    // Optional cross-channel sync fanout (best-effort, primary send result is authoritative)
+    try {
+      await this.sendMirrors(bridgeId, options);
+    } catch (err) {
+      log.warn(`Mirror send failed for source ${bridgeId}`, {
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+
+    return result;
+  }
+
+  private async sendMirrors(
+    sourceBridgeId: string,
+    options: import('./types.js').SendMessageOptions,
+  ): Promise<void> {
+    const sourceConfig = this.configs.get(sourceBridgeId);
+    const sync = sourceConfig?.options?.sync;
+    if (!sync?.enabled) return;
+
+    const rawTargets = Array.isArray(sync.targets)
+      ? sync.targets.map((item) => String(item).trim()).filter((item) => item.length > 0)
+      : [];
+    if (rawTargets.length === 0) return;
+
+    const targetOverrides = sync.targetOverrides && typeof sync.targetOverrides === 'object'
+      ? sync.targetOverrides
+      : {};
+
+    const seen = new Set<string>();
+    for (const targetRef of rawTargets) {
+      const resolvedBridgeIds = this.resolveBridgeIdsForSyncTarget(targetRef);
+      for (const targetBridgeId of resolvedBridgeIds) {
+        if (targetBridgeId === sourceBridgeId) continue;
+        if (seen.has(targetBridgeId)) continue;
+        seen.add(targetBridgeId);
+
+        const targetBridge = this.bridges.get(targetBridgeId);
+        if (!targetBridge) continue;
+
+        const targetConfig = this.configs.get(targetBridgeId);
+        const overrideTo = targetOverrides[targetBridgeId]
+          ?? (targetConfig ? targetOverrides[targetConfig.channelId] : undefined);
+        const to = typeof overrideTo === 'string' && overrideTo.trim().length > 0
+          ? overrideTo.trim()
+          : options.to;
+
+        // Cross-channel mirror should not carry replyTo from another channel thread
+        const mirroredOptions: import('./types.js').SendMessageOptions = {
+          to,
+          text: options.text,
+          ...(Array.isArray(options.attachments) && options.attachments.length > 0
+            ? { attachments: options.attachments }
+            : {}),
+        };
+
+        await targetBridge.sendMessage(mirroredOptions);
+        log.info('Mirrored channel message', {
+          sourceBridgeId,
+          targetBridgeId,
+          sourceChannelId: sourceConfig?.channelId,
+          targetChannelId: targetConfig?.channelId,
+          hasAttachments: Array.isArray(options.attachments) && options.attachments.length > 0,
+        });
+      }
+    }
+  }
+
+  private resolveBridgeIdsForSyncTarget(targetRef: string): string[] {
+    const out: string[] = [];
+    for (const [id, config] of this.configs.entries()) {
+      if (id === targetRef || config.channelId === targetRef) {
+        out.push(id);
+      }
+    }
+    return out;
   }
 
   /**

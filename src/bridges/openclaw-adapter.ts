@@ -19,6 +19,7 @@ import { logger } from '../core/logger.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+import { pathToFileURL } from 'node:url';
 
 const log = logger.module('OpenClawBridgeAdapter');
 
@@ -184,8 +185,12 @@ export class OpenClawBridgeAdapter implements ChannelBridge {
 
     log.debug(`[${this.id}] sendMessage to=${options.to} cfg keys=${Object.keys(pluginCfg.channels[this.channelId] || {}).join(',')}`);
 
+    // Normalize legacy inline image tags (e.g. <qqimg>/path/to/a.png</qqimg>)
+    // into standard attachments so different channels can adapt consistently.
+    const normalized = this.normalizeInlineImageTags(options);
+
     // Check if message has image attachments → use sendMedia
-    const imageAttachments = (options.attachments || []).filter(
+    const imageAttachments = (normalized.attachments || []).filter(
       (a) => a.type === 'image' && a.url
     );
 
@@ -194,10 +199,10 @@ export class OpenClawBridgeAdapter implements ChannelBridge {
       log.info(`[${this.id}] sendMessage via sendMedia: mediaUrl=${first.url.slice(0, 80)} text="${(options.text || '').slice(0, 50)}"`);
 
       const result = await this.handler.sendMedia({
-        to: options.to,
-        text: options.text || '',
+        to: normalized.to,
+        text: normalized.text || '',
         mediaUrl: first.url,
-        replyToId: options.replyTo,
+        replyToId: normalized.replyTo,
         accountId: this.config.credentials.accountId as string | undefined,
         cfg: pluginCfg,
       });
@@ -210,9 +215,9 @@ export class OpenClawBridgeAdapter implements ChannelBridge {
         const extraLinks = imageAttachments.slice(1).map((a) => `${a.filename || 'image'}: ${a.url}`).join('\n');
         if (this.handler.sendText) {
           await this.handler.sendText({
-            to: options.to,
+            to: normalized.to,
             text: extraLinks,
-            replyToId: options.replyTo,
+            replyToId: normalized.replyTo,
             accountId: this.config.credentials.accountId as string | undefined,
             cfg: pluginCfg,
           });
@@ -231,9 +236,9 @@ export class OpenClawBridgeAdapter implements ChannelBridge {
     }
 
     const result = await this.handler.sendText({
-      to: options.to,
-      text: options.text,
-      replyToId: options.replyTo,
+      to: normalized.to,
+      text: normalized.text,
+      replyToId: normalized.replyTo,
       accountId: this.config.credentials.accountId as string | undefined,
       cfg: pluginCfg,
     });
@@ -243,5 +248,54 @@ export class OpenClawBridgeAdapter implements ChannelBridge {
     }
 
     return { messageId: result.messageId || '' };
+  }
+
+  private normalizeInlineImageTags(options: SendMessageOptions): SendMessageOptions {
+    const originalText = typeof options.text === 'string' ? options.text : '';
+    const text = originalText;
+    const baseAttachments = Array.isArray(options.attachments)
+      ? [...options.attachments]
+      : [];
+
+    const imageRefs: string[] = [];
+    const tagPattern = /<qqimg>([\s\S]*?)<\/qqimg>/gi;
+    let m: RegExpExecArray | null;
+    while ((m = tagPattern.exec(text)) !== null) {
+      const raw = (m[1] || '').trim();
+      if (raw.length > 0) imageRefs.push(raw);
+    }
+
+    if (imageRefs.length === 0) {
+      return options;
+    }
+
+    const extraAttachments = imageRefs.map((ref) => {
+      const normalizedRef = this.normalizeImageRefToUrl(ref);
+      return {
+        type: 'image' as const,
+        url: normalizedRef,
+        filename: path.basename(ref),
+        name: path.basename(ref),
+      };
+    });
+
+    const cleanedText = text.replace(tagPattern, '').replace(/\n{3,}/g, '\n\n').trim();
+
+    return {
+      ...options,
+      text: cleanedText,
+      attachments: [...baseAttachments, ...extraAttachments],
+    };
+  }
+
+  private normalizeImageRefToUrl(ref: string): string {
+    const raw = ref.trim();
+    if (/^https?:\/\//i.test(raw) || /^file:\/\//i.test(raw)) {
+      return raw;
+    }
+    if (path.isAbsolute(raw)) {
+      return pathToFileURL(raw).toString();
+    }
+    return pathToFileURL(path.resolve(raw)).toString();
   }
 }

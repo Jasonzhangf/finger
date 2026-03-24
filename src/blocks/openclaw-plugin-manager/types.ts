@@ -145,9 +145,10 @@ export interface PluginRuntimeApi {
      media: {
        saveMediaBuffer: (params: { buffer: Buffer; filename: string; mimeType?: string }) => Promise<string | null>;
      };
-     commands: {
-       resolveSenderCommandAuthorization: (params: unknown) => Promise<unknown>;
-     };
+    commands: {
+      resolveSenderCommandAuthorization: (params: unknown) => Promise<unknown>;
+      shouldComputeCommandAuthorized?: (rawBody: string, cfg: unknown) => boolean;
+    };
     };
   };
 }

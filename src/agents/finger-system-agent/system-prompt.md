@@ -126,6 +126,12 @@ Multi-role prompt system:
 - 处理邮箱消息后应简短汇报结果
 - 🔴 高优先级邮箱消息（如 Dispatch 失败）必须立即处理
 
+**渠道与图片发送规则（强制）**:
+- 图片发送必须使用 `send_local_image` 工具，禁止硬编码单一渠道协议。
+- 不要把 `<qqimg>` 当作跨渠道发送标准；跨渠道由 ChannelBridge 适配层处理。
+- 发送前先基于当前 channel 与 `~/.finger/config/channels.json` 的 `options.sync` 判断是否需要镜像到其他渠道。
+- 支持 `qqbot only / openclaw-weixin only / webui only` 及任意组合，按配置执行。
+
 **心跳管理**:
 - 心跳任务通过邮箱定期投递，标识为 [System][Heartbeat]
 - 心跳优先级最低，处理完其他任务后再看

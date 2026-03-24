@@ -6,6 +6,7 @@ import type { AgentRuntimeDeps } from '../../server/modules/agent-runtime/types.
 import { registerProjectTool } from './project-tool/project-tool.js';
 import { registerSystemRegistryTool } from './system-registry-tool.js';
 import { registerReportTaskCompletionTool } from './report-task-completion-tool.js';
+import { registerSendLocalImageTool } from './send-local-image-tool.js';
 import { clockTool } from './codex-clock-tool.js';
 import { execCommandTool, writeStdinTool } from './codex-exec-tools.js';
 import { applyPatchTool } from './codex-apply-patch-tool.js';
@@ -48,6 +49,7 @@ export * from './permission-tools.js';
 export * from './heartbeat-control-tool.js';
 export * from './mailbox-tool.js';
 export * from './mailbox-tool-remove.js';
+export * from './send-local-image-tool.js';
 
 export function createDefaultInternalToolRegistry(): InternalToolRegistry {
   const registry = new InternalToolRegistry();
@@ -109,4 +111,14 @@ export function registerReportTaskCompletionToolInRuntime(
   getAgentRuntimeDeps: () => AgentRuntimeDeps
 ): void {
   registerReportTaskCompletionTool(toolRegistry, getAgentRuntimeDeps);
+}
+
+/**
+ * 在运行时注册 send_local_image 工具（发送本地图片到当前渠道）
+ */
+export function registerSendLocalImageToolInRuntime(
+  toolRegistry: ToolRegistry,
+  getAgentRuntimeDeps: () => AgentRuntimeDeps,
+): void {
+  registerSendLocalImageTool(toolRegistry, getAgentRuntimeDeps);
 }

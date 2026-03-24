@@ -116,6 +116,24 @@ export interface ChannelBridgeConfig {
   options?: {
     permissions?: Partial<ChannelPermissions>;
     pushSettings?: Partial<PushSettings>;
+    /**
+     * Cross-channel mirror settings.
+     *
+     * Example:
+     * sync: {
+     *   enabled: true,
+     *   targets: ["qqbot", "openclaw-weixin", "webui"],
+     *   targetOverrides: {
+     *     "qqbot": "F6A6...",
+     *     "openclaw-weixin": "o9cq...@im.wechat"
+     *   }
+     * }
+     */
+    sync?: {
+      enabled?: boolean;
+      targets?: string[];
+      targetOverrides?: Record<string, string>;
+    };
     /** Channel-type-specific config passed through to the bridge adapter */
     adapterConfig?: Record<string, unknown>;
     [key: string]: unknown;

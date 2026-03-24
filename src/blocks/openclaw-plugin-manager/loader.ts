@@ -4,6 +4,8 @@
  */
 
 import fs from 'node:fs';
+import path from 'node:path';
+import os from 'node:os';
 import { createRequire } from 'node:module';
 import { pathToFileURL, fileURLToPath } from 'node:url';
 import type { PluginRecord, LoadPluginResult, PluginRuntimeApi, PluginLogger } from './types.js';
@@ -25,22 +27,32 @@ const cjsRequire = createRequire(import.meta.url);
 function getJitiRequire(): ((id: string) => unknown) | null {
   if (_jitiRequire) return _jitiRequire;
   try {
-    // openclaw ships jiti in its node_modules
+    // openclaw ships jiti in its node_modules (as @mariozechner/jiti)
     const openclawGlobalRoot = '/opt/homebrew/lib/node_modules/openclaw';
-    const jitiPath = cjsRequire.resolve('jiti', { paths: [`${openclawGlobalRoot}/node_modules`] });
+    let jitiPath: string;
+    try {
+      jitiPath = cjsRequire.resolve('jiti', { paths: [`${openclawGlobalRoot}/node_modules`] });
+    } catch {
+      // Try the mariozechner fork used by openclaw
+      jitiPath = cjsRequire.resolve('@mariozechner/jiti', { paths: [`${openclawGlobalRoot}/node_modules`] });
+    }
     const { createJiti } = cjsRequire(jitiPath);
     // createJiti needs a real filename — use this file's path
+    // For plugins that import from "openclaw/plugin-sdk", we need to provide alias
+    // The global openclaw doesn't ship dist/index.js, so we check for local installs
+    const pluginDir = process.env.OPENCLAW_EXTENSIONS_DIR || path.join(os.homedir(), '.openclaw', 'extensions');
+    const pluginOpenclawPath = path.join(pluginDir, 'openclaw-weixin', 'node_modules', 'openclaw');
+    
+    // Build aliases only if openclaw module exists in plugin's node_modules
+    const alias: Record<string, string> = {};
+    if (fs.existsSync(path.join(pluginOpenclawPath, 'dist', 'index.js'))) {
+      alias.openclaw = path.join(pluginOpenclawPath, 'dist', 'index.js');
+      alias['openclaw/plugin-sdk'] = path.join(pluginOpenclawPath, 'dist', 'plugin-sdk', 'index.js');
+    }
+    
     _jitiRequire = createJiti(fileURLToPath(import.meta.url), {
       interopDefault: true,
-      // Standard npm plugins (e.g. @tencent-weixin/openclaw-weixin) import from
-      // "openclaw/plugin-sdk" and "openclaw". When loaded from ~/.openclaw/extensions,
-      // there may be no local openclaw dependency, so we must alias to global openclaw
-      // install. Both the bare "openclaw" and "openclaw/*" subpath imports must resolve.
-      alias: {
-        openclaw: `${openclawGlobalRoot}/dist/index.js`,
-        'openclaw/plugin-sdk': `${openclawGlobalRoot}/dist/plugin-sdk/index.js`,
-        'openclaw/*': `${openclawGlobalRoot}/dist/*`,
-      },
+      alias,
     });
     return _jitiRequire;
   } catch {

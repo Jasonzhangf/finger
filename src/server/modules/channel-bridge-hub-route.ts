@@ -301,15 +301,16 @@ export function createChannelBridgeHubRoute(deps: ChannelBridgeHubRouteDeps) {
 
     // 将用户原始输入以 'user' 角色写入 session（保证 WebUI 可见）
     void sessionManager.addMessage(fixedSessionId, 'user', enrichedContent, {
-      ...(Array.isArray(channelMsg.attachments) && channelMsg.attachments.length > 0
-        ? { attachments: channelMsg.attachments }
-        : {}),
       type: 'text',
       metadata: {
         channelId: channelMsg.channelId,
         senderId: channelMsg.senderId,
         senderName: channelMsg.senderName,
         messageId: channelMsg.id,
+        // 附件不保存完整对象，只保留占位摘要（已在 enrichedContent 中）
+        ...(Array.isArray(channelMsg.attachments) && channelMsg.attachments.length > 0
+          ? { hasAttachments: true, attachmentCount: channelMsg.attachments.length }
+          : {}),
       },
     });
 
@@ -410,6 +411,16 @@ export function createChannelBridgeHubRoute(deps: ChannelBridgeHubRouteDeps) {
           const replyText = typeof (result as any).response === 'string'
             ? (result as any).response
             : ((result as any)?.summary || '处理完成');
+          // 避免重复发送：
+          // - directSendToModule 路径下，正文增量会通过 event-forwarding -> bodyUpdates 推送
+          // - 若这里再次 sendReply，同一条 <qqimg> 内容会重复发送图片
+          if (targetAgentId === SYSTEM_AGENT_CONFIG.id && /<qqimg>[\s\S]*?<\/qqimg>/i.test(replyText)) {
+            log.info('Skip direct sendReply for qqimg-rich response to avoid duplicate image delivery', {
+              targetAgentId,
+              sessionId: fixedSessionId,
+            });
+            return;
+          }
           await sendReply(replyText, targetAgentId);
           return;
         }

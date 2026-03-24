@@ -269,13 +269,14 @@ export function createOpenClawRuntimeApi(params: {
            return null; // Return null for now, as we don't implement actual saving
          },
        },
-       commands: {
-         resolveSenderCommandAuthorization: async (params: unknown) => {
-           // Default: allow all commands
-           return { senderAllowedForCommands: true, commandAuthorized: true };
-         },
-       },
-       reply: {
+      commands: {
+        resolveSenderCommandAuthorization: async (params: unknown) => {
+          // Default: allow all commands
+          return { senderAllowedForCommands: true, commandAuthorized: true };
+        },
+        shouldComputeCommandAuthorized: (_rawBody: string, _cfg: unknown) => false,
+      },
+      reply: {
          resolveEnvelopeFormatOptions: (cfg: unknown) => ({}),
          formatInboundEnvelope: (params: unknown) => params,
          finalizeInboundContext: (params: unknown) => params,
@@ -390,13 +391,20 @@ export function createOpenClawRuntimeApi(params: {
            // Bridge message to Finger and handle reply
            const ctx = params.ctx as Record<string, unknown>;
            clog.log('[channel.reply] dispatchReply called with ctx keys:', Object.keys(ctx || {}).join(', '));
-           const content = String(
+           const rawContent = String(
             ctx?.RawBody
                ?? ctx?.CommandBody
                ?? ctx?.Body
                ?? ctx?.content
                ?? ''
            );
+           const attachments = extractChannelAttachmentsFromContext(ctx);
+           const hasAttachments = attachments.length > 0;
+           const content = rawContent.trim().length > 0
+             ? rawContent
+             : (hasAttachments
+               ? `【附件消息】${attachments.map((a) => a.type).join(',')}`
+               : '');
            clog.log('[channel.reply] Extracted content:', content.slice(0, 100));
            const senderId = String(ctx?.SenderId ?? ctx?.senderId ?? '');
            const senderName = String(ctx?.SenderName ?? ctx?.senderName ?? '');
@@ -411,9 +419,9 @@ export function createOpenClawRuntimeApi(params: {
                ?? ''
            );
 
-           logger.info?.(`[channel.reply] dispatchReply called - content: "${content.slice(0, 50)}", senderId: ${senderId}, peerKind: ${peerKind}`);
+           logger.info?.(`[channel.reply] dispatchReply called - content: "${content.slice(0, 50)}", senderId: ${senderId}, peerKind: ${peerKind}, attachments: ${attachments.length}`);
 
-            if (!content.trim()) {
+            if (!content.trim() && !hasAttachments) {
               logger.warn?.('[channel.reply] Empty content, skip dispatch');
               return;
             }
@@ -447,7 +455,6 @@ export function createOpenClawRuntimeApi(params: {
               const bridge = manager.getBridge(inboundChannelId) as any;
               logger.info?.(`[channel.reply] Bridge lookup - channel=${inboundChannelId}, manager: ${!!manager}, bridge: ${!!bridge}, callbacks: ${!!(bridge && bridge.callbacks_)}`);
              if (bridge && bridge.callbacks_) {
-               const attachments = extractChannelAttachmentsFromContext(ctx);
                const message = {
                  // 使用原始QQ消息ID作为唯一标识，fallback到自生成ID
                  id: messageId || `qqbot-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,

@@ -1,4 +1,10 @@
-import { createDefaultInternalToolRegistry, registerProjectToolInRuntime, registerSystemRegistryToolInRuntime, registerReportTaskCompletionToolInRuntime } from '../tools/internal/index.js';
+import {
+  createDefaultInternalToolRegistry,
+  registerProjectToolInRuntime,
+  registerSystemRegistryToolInRuntime,
+  registerReportTaskCompletionToolInRuntime,
+  registerSendLocalImageToolInRuntime,
+} from '../tools/internal/index.js';
 import { ToolRegistry } from './tool-registry.js';
 import type { AgentRuntimeDeps } from '../server/modules/agent-runtime/types.js';
 
@@ -29,6 +35,8 @@ export function registerDefaultRuntimeTools(
     loadedToolNames.push('system-registry-tool');
     registerReportTaskCompletionToolInRuntime(runtimeToolRegistry, getAgentRuntimeDeps);
     loadedToolNames.push('report-task-completion');
+    registerSendLocalImageToolInRuntime(runtimeToolRegistry, getAgentRuntimeDeps);
+    loadedToolNames.push('send_local_image');
   }
 
   return loadedToolNames;
