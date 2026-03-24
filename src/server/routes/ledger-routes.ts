@@ -5,7 +5,7 @@
 
 import type { Express } from 'express';
 import { existsSync, readFileSync } from 'fs';
-import { join } from 'path';
+import { basename, dirname, join } from 'path';
 import type { SessionManager } from '../../orchestration/session-manager.js';
 import { FINGER_PATHS } from '../../core/finger-paths.js';
 import { readdirSync, statSync } from 'fs';
@@ -48,6 +48,113 @@ function safeParseJsonFile(filePath: string): Record<string, unknown> | null {
   } catch {
     return null;
   }
+}
+
+interface LedgerSourceCandidate {
+  storageDir: string;
+  agentId: string;
+  ledgerEntries: Array<Record<string, unknown>>;
+  compactEntries: Array<Record<string, unknown>>;
+}
+
+function collectLedgerSourceCandidates(storageDir: string): LedgerSourceCandidate[] {
+  try {
+    if (!existsSync(storageDir) || !statSync(storageDir).isDirectory()) return [];
+    const children = readdirSync(storageDir, { withFileTypes: true }).filter((entry) => entry.isDirectory());
+    const candidates: LedgerSourceCandidate[] = [];
+    for (const child of children) {
+      const ledgerPath = join(storageDir, child.name, 'main', 'context-ledger.jsonl');
+      const compactPath = join(storageDir, child.name, 'main', 'compact-memory.jsonl');
+      const hasLedgerFile = existsSync(ledgerPath);
+      const hasCompactFile = existsSync(compactPath);
+      if (!hasLedgerFile && !hasCompactFile) continue;
+      const ledgerEntries = safeParseJsonLines(ledgerPath);
+      const compactEntries = safeParseJsonLines(compactPath);
+      candidates.push({
+        storageDir,
+        agentId: child.name,
+        ledgerEntries,
+        compactEntries,
+      });
+    }
+    return candidates;
+  } catch {
+    return [];
+  }
+}
+
+function buildSessionStorageCandidates(sessionId: string, storageDir: string | null): string[] {
+  const rootSystemSessions = join(FINGER_PATHS.home, 'system', 'sessions');
+  const rootProjectSessions = FINGER_PATHS.sessions.dir;
+  const candidates: string[] = [];
+  const pushCandidate = (value: string | null | undefined): void => {
+    if (!value) return;
+    const normalized = value.trim();
+    if (!normalized) return;
+    if (!candidates.includes(normalized)) candidates.push(normalized);
+  };
+
+  pushCandidate(storageDir);
+  pushCandidate(join(rootSystemSessions, sessionId));
+  pushCandidate(join(rootProjectSessions, sessionId));
+  pushCandidate(join(rootSystemSessions, `session-${sessionId}`));
+  pushCandidate(join(rootProjectSessions, `session-${sessionId}`));
+
+  if (sessionId.startsWith('session-')) {
+    const bareSessionId = sessionId.slice('session-'.length);
+    pushCandidate(join(rootSystemSessions, bareSessionId));
+    pushCandidate(join(rootProjectSessions, bareSessionId));
+  }
+
+  if (storageDir) {
+    const base = basename(storageDir);
+    const parent = dirname(storageDir);
+    if (base.startsWith('session-')) {
+      pushCandidate(join(parent, base.slice('session-'.length)));
+    } else {
+      pushCandidate(join(parent, `session-${base}`));
+    }
+  }
+
+  return candidates;
+}
+
+function pickBestLedgerSource(sessionId: string, storageDir: string | null, preferredAgentId: string): {
+  source: LedgerSourceCandidate | null;
+  fallbackStorageDir: string | null;
+} {
+  const storageCandidates = buildSessionStorageCandidates(sessionId, storageDir);
+  let fallbackStorageDir: string | null = null;
+  const sources: LedgerSourceCandidate[] = [];
+
+  for (const candidateDir of storageCandidates) {
+    try {
+      if (!existsSync(candidateDir) || !statSync(candidateDir).isDirectory()) continue;
+      if (!fallbackStorageDir) fallbackStorageDir = candidateDir;
+      sources.push(...collectLedgerSourceCandidates(candidateDir));
+    } catch {
+      continue;
+    }
+  }
+
+  if (sources.length === 0) {
+    return { source: null, fallbackStorageDir };
+  }
+
+  const ranked = sources
+    .slice()
+    .sort((a, b) => {
+      const aHasLedger = a.ledgerEntries.length > 0 ? 1 : 0;
+      const bHasLedger = b.ledgerEntries.length > 0 ? 1 : 0;
+      if (aHasLedger !== bHasLedger) return bHasLedger - aHasLedger;
+      const aPreferred = a.agentId === preferredAgentId ? 1 : 0;
+      const bPreferred = b.agentId === preferredAgentId ? 1 : 0;
+      if (aPreferred !== bPreferred) return bPreferred - aPreferred;
+      if (a.ledgerEntries.length !== b.ledgerEntries.length) return b.ledgerEntries.length - a.ledgerEntries.length;
+      return b.compactEntries.length - a.compactEntries.length;
+    });
+
+  return { source: ranked[0] ?? null, fallbackStorageDir };
 }
 
 function summarizeLedgerSessionDir(dirPath: string): {
@@ -235,30 +342,30 @@ export function registerLedgerRoutes(app: Express, deps: LedgerRouteDeps): void 
       const session = sessionManager.getSession(sessionId);
       const storageDir = sessionManager.resolveSessionStorageDir(sessionId);
 
-      // If session metadata is missing, still try to resolve by ledger scan
-      let resolvedStorageDir = storageDir;
-      let resolvedAgentId = 'finger-system-agent';
-      if (!resolvedStorageDir) {
-        const systemDir = join(FINGER_PATHS.home, 'system', 'sessions', sessionId);
-        const projectDir = join(FINGER_PATHS.sessions.dir, sessionId);
-        if (existsSync(systemDir)) resolvedStorageDir = systemDir;
-        else if (existsSync(projectDir)) resolvedStorageDir = projectDir;
+      let preferredAgentId = 'finger-system-agent';
+      if (session?.context && typeof session.context.ownerAgentId === 'string') {
+        preferredAgentId = session.context.ownerAgentId;
       }
+
+      // Resolve ledger source by scanning all likely storage dirs and picking the richest candidate.
+      // This avoids empty UI when metadata dir differs from ledger dir (e.g. session-* vs system-*).
+      const picked = pickBestLedgerSource(sessionId, storageDir, preferredAgentId);
+      let resolvedStorageDir = picked.source?.storageDir ?? picked.fallbackStorageDir;
+      let resolvedAgentId = picked.source?.agentId ?? preferredAgentId;
+      let ledgerEntries = picked.source?.ledgerEntries ?? [];
+      let compactEntries = picked.source?.compactEntries ?? [];
 
       if (!resolvedStorageDir) {
         res.status(404).json({ error: 'Storage dir not found' });
         return;
       }
 
-      if (session?.context && typeof session.context.ownerAgentId === 'string') {
-        resolvedAgentId = session.context.ownerAgentId;
+      if (!picked.source) {
+        const ledgerPath = join(resolvedStorageDir, resolvedAgentId, 'main', 'context-ledger.jsonl');
+        const compactPath = join(resolvedStorageDir, resolvedAgentId, 'main', 'compact-memory.jsonl');
+        ledgerEntries = safeParseJsonLines(ledgerPath);
+        compactEntries = safeParseJsonLines(compactPath);
       }
-
-      const ledgerPath = join(resolvedStorageDir, resolvedAgentId, 'main', 'context-ledger.jsonl');
-      const compactPath = join(resolvedStorageDir, resolvedAgentId, 'main', 'compact-memory.jsonl');
-
-      const ledgerEntries = safeParseJsonLines(ledgerPath);
-      const compactEntries = safeParseJsonLines(compactPath);
 
       const limit = req.query.limit ? parseInt(req.query.limit as string, 10) : 100;
       const offset = req.query.offset ? parseInt(req.query.offset as string, 10) : 0;
