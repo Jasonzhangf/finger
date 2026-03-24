@@ -52,9 +52,10 @@ interface WeixinMessageItem {
 }
 
 interface GetUpdatesResponse {
-  ret: number;
+  ret?: number;
   msgs?: WeixinMessage[];
-  get_updates_buf: string;
+  sync_buf?: string;
+  get_updates_buf?: string;
   longpolling_timeout_ms?: number;
   errcode?: number;
   errmsg?: string;
@@ -157,9 +158,9 @@ export class WeixinBridgeAdapter implements ChannelBridge {
 
     const data = (await response.json()) as GetUpdatesResponse;
 
-    log.warn(`[${this.id}] getUpdates raw response: ${JSON.stringify(data).slice(0, 500)}`);
+    log.debug(`[${this.id}] getUpdates: ${data.msgs?.length || 0} messages`);
     
-    if (data.ret !== undefined && data.ret !== 0) {
+    if (data.errcode !== undefined) {
       // Session timeout, need to re-login
       if (data.errcode === -14) {
         log.error(`[${this.id}] Session timeout, need QR code login`);
