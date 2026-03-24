@@ -396,3 +396,74 @@ describe('KernelAgentBase session binding', () => {
     expect(runner.runTurn).toHaveBeenCalledTimes(3);
   });
 });
+
+describe('inference chain uses MemorySessionManager not ledger/context builder', () => {
+  it('proves history comes from in-memory session.messages, not ledger or context builder', async () => {
+    const { MemorySessionManager } = await import('../../../src/agents/base/memory-session-manager.js');
+
+    // This test proves that KernelAgentBase.handle() reads from MemorySessionManager
+    // (session.messages.slice(-limit)) and NOT from ledger/context-builder.
+    //
+    // Evidence: We add a message directly to MemorySessionManager before the turn,
+    // and verify that the runner receives it in context.history.
+    // If it were reading from ledger, the message would not appear (ledger is empty).
+    // If it were using context-builder, the message would have different shape.
+
+    const contexts: KernelRunContext[] = [];
+    const runner: KernelAgentRunner = {
+      runTurn: vi.fn(async (_text: string, context?: KernelRunContext) => {
+        if (context) contexts.push(context);
+        return { reply: 'done' };
+      }),
+    };
+
+    // Create agent with custom MemorySessionManager
+    const customSessionManager = new MemorySessionManager();
+    const agent = new KernelAgentBase(
+      {
+        moduleId: 'test-module',
+        provider: 'test',
+        maxContextMessages: 50,
+      },
+      runner,
+      customSessionManager,
+    );
+
+    // Pre-populate the MemorySessionManager with a message (simulating prior turn)
+    // This message exists ONLY in memory, NOT in ledger
+    const session = await customSessionManager.createSession({
+      projectPath: '/tmp/test',
+    });
+    const sessionId = session.id;
+    await customSessionManager.addMessage(sessionId, {
+      id: 'msg-memory-only-1',
+      role: 'user',
+      content: 'This message exists only in MemorySessionManager, not in ledger',
+      timestamp: new Date().toISOString(),
+    });
+
+    // Now handle a new turn
+    await agent.handle({
+      text: 'New request',
+      sessionId,
+    });
+
+    // Evidence: The runner should have received the memory-only message in history
+    expect(contexts).toHaveLength(1);
+    expect(contexts[0]?.history).toBeDefined();
+
+    // The history should contain the pre-populated message
+    const memoryOnlyMsg = contexts[0]?.history.find(
+      (h) => h.content === 'This message exists only in MemorySessionManager, not in ledger'
+    );
+    expect(memoryOnlyMsg).toBeDefined();
+    expect(memoryOnlyMsg?.role).toBe('user');
+
+    // Additional evidence: history shape matches MemorySessionManager output
+    // (simple { role, content } items), not context-builder's TaskMessage shape
+    // which has additional fields like id, timestamp, tokenCount, isCurrentTurn
+    expect(contexts[0]?.history[0]).not.toHaveProperty('isCurrentTurn');
+    expect(contexts[0]?.history[0]).not.toHaveProperty('tokenCount');
+    expect(contexts[0]?.history[0]).not.toHaveProperty('timestampIso');
+  });
+});
