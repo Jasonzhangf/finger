@@ -311,7 +311,9 @@
 .ledger-detail-body {
   display: flex;
   flex-direction: column;
+  flex: 1;
   min-height: 0;
+  overflow: hidden;
 }
 
 .ledger-detail-meta {
@@ -330,6 +332,11 @@
   font-size: 12px;
   line-height: 1.45;
   white-space: pre-wrap;
+  flex: 1;
+  min-height: 0;
   overflow-y: auto;
-  max-height: 56vh;
+  max-height: none;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable both-edges;
+  touch-action: pan-y;
 }

@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef, type WheelEvent as ReactWheelEvent } from 'react';
+import { createPortal } from 'react-dom';
 import './LedgerMonitor.css';
 
 interface LedgerSlot {
@@ -287,7 +288,7 @@ const LedgerModal: React.FC<LedgerModalProps> = ({ sessionId, label, onClose }) 
       </div>
     </div>
 
-    {(detailLoading || detail || detailError) && (
+    {(detailLoading || detail || detailError) && typeof document !== 'undefined' && createPortal(
       <div className="ledger-detail-overlay" onClick={() => { setDetail(null); setDetailError(null); setDetailLoading(false); }}>
         <div className="ledger-detail-modal" onClick={(event) => event.stopPropagation()}>
           <div className="ledger-detail-header">
@@ -309,7 +310,8 @@ const LedgerModal: React.FC<LedgerModalProps> = ({ sessionId, label, onClose }) 
             </div>
           ) : null}
         </div>
-      </div>
+      </div>,
+      document.body,
     )}
 
     </>
