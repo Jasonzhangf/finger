@@ -50,6 +50,10 @@ export class SessionManager {
     ensureDir(SYSTEM_SESSIONS_DIR);
   }
 
+  private isSystemSessionId(sessionId: string): boolean {
+    return sessionId.startsWith(SYSTEM_SESSION_PREFIX) || sessionId === 'system-default-session';
+  }
+
   private isSystemSession(session: Session): boolean {
     const ctx = session.context ?? {};
     if (ctx.sessionTier === 'system') return true;

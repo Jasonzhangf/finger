@@ -3,6 +3,7 @@ import type { OrchestrationProfile } from '../../orchestration/orchestration-con
 import { buildOrchestrationDispatchPrompt, type OrchestrationPromptAgent } from '../../orchestration/orchestration-prompt.js';
 import type { SessionManager } from '../../orchestration/session-manager.js';
 import { getActiveReviewPolicy } from '../orchestration/review-policy.js';
+import { SYSTEM_PROJECT_PATH } from '../../agents/finger-system-agent/index.js';
 import { isObjectRecord } from '../common/object.js';
 import type { MessageRouteDeps } from './message-types.js';
 
@@ -120,8 +121,12 @@ export function resolveDryRunFlag(req: Request, message: unknown): boolean {
 export function ensureSessionExists(sessionManager: SessionManager, sessionId: string, nameHint?: string, projectPathOverride?: string): void {
   const existing = sessionManager.getSession(sessionId);
   if (existing) return;
+  // Use SYSTEM_PROJECT_PATH for system sessions to prevent projectPath corruption
+  const isSystemSession = sessionId.startsWith('system-') || sessionId === 'system-default-session';
   const currentSession = sessionManager.getCurrentSession();
-  const fallbackProjectPath = projectPathOverride ?? currentSession?.projectPath ?? process.cwd();
+  const fallbackProjectPath = isSystemSession
+    ? SYSTEM_PROJECT_PATH
+    : (projectPathOverride ?? currentSession?.projectPath ?? process.cwd());
   sessionManager.ensureSession(sessionId, fallbackProjectPath, nameHint);
 }
 

@@ -152,7 +152,7 @@ export function createChannelBridgeHubRoute(deps: ChannelBridgeHubRouteDeps) {
     }
     const fixedSessionId = sessionManager.getOrCreateSystemSession().id;
     setReplySessionId(fixedSessionId);
-    sessionManager.ensureSession(fixedSessionId, process.cwd(), `channel:${channelMsg.channelId}`);
+    sessionManager.ensureSession(fixedSessionId, SYSTEM_PROJECT_PATH, `channel:${channelMsg.channelId}`);
     sessionManager.updateContext(fixedSessionId, {
       channelId: channelMsg.channelId,
       channelUserId: channelMsg.senderId,

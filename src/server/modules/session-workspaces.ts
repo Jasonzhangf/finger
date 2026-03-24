@@ -158,6 +158,15 @@ export function createSessionWorkspaceManager(sessionManager: SessionManager): S
       }
     }
 
+    // Reuse system session when it exists and no current session available
+    const systemSession = sessionManager.getOrCreateSystemSession();
+    if (systemSession && !isRuntimeChildSession(systemSession)) {
+      sessionManager.setCurrentSession(systemSession.id);
+      const hydrated = hydrateSessionWorkspace(systemSession.id);
+      sessionManager.updateContext(systemSession.id, { sessionTier: 'orchestrator-root' });
+      return hydrated;
+    }
+
     const currentSession = sessionManager.getCurrentSession();
     const fallbackProjectPath = currentSession?.projectPath ?? process.cwd();
     const created = sessionManager.createSession(fallbackProjectPath, 'orchestrator', { allowReuse: false });
