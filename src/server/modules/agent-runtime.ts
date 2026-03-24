@@ -103,7 +103,7 @@ export function registerAgentRuntimeTools(deps: AgentRuntimeDeps): string[] {
   deps.runtime.registerTool({
     name: 'agent.dispatch',
     description:
-      'Dispatch a task to another agent/module through standard runtime routing. Required: target_agent_id + task. Optional session_strategy=current|latest|new and project_path/cwd for automatic session + cwd targeting.',
+      'Dispatch a task to another agent/module through standard runtime routing. Required: target_agent_id + task. Optional session_strategy=current|latest|new (default latest/existing session) and project_path/cwd for automatic session + cwd targeting.',
     inputSchema: {
       type: 'object',
       properties: {

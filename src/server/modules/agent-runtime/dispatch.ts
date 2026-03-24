@@ -9,21 +9,6 @@ import { promises as fs } from 'fs';
 import * as path from 'path';
 import { formatLocalTimestamp, normalizeProjectPathHint } from './dispatch-helpers.js';
 
-function formatLocalTimestamp(date: Date = new Date()): string {
-  const year = date.getFullYear();
-  const month = String(date.getMonth() + 1).padStart(2, '0');
-  const day = String(date.getDate()).padStart(2, '0');
-  const hours = String(date.getHours()).padStart(2, '0');
-  const minutes = String(date.getMinutes()).padStart(2, '0');
-  const seconds = String(date.getSeconds()).padStart(2, '0');
-  const ms = String(date.getMilliseconds()).padStart(3, '0');
-  const offset = -date.getTimezoneOffset();
-  const offsetHours = String(Math.floor(Math.abs(offset) / 60)).padStart(2, '0');
-  const offsetMinutes = String(Math.abs(offset) % 60).padStart(2, '0');
-  const offsetSign = offset >= 0 ? '+' : '-';
-  return `${year}-${month}-${day} ${hours}:${minutes}:${seconds}.${ms} ${offsetSign}${offsetHours}:${offsetMinutes}`;
-}
-
 function formatDispatchTaskContent(task: unknown): string {
   if (typeof task === 'string') return task;
   if (!isObjectRecord(task)) return String(task);
@@ -49,7 +34,6 @@ function formatDispatchTaskContent(task: unknown): string {
   }
 }
 
-
 function resolveDispatchSessionStrategy(input: AgentDispatchRequest): NonNullable<AgentDispatchRequest['sessionStrategy']> {
   const metadata = isObjectRecord(input.metadata) ? input.metadata : {};
   const raw = firstNonEmptyString(
@@ -62,7 +46,8 @@ function resolveDispatchSessionStrategy(input: AgentDispatchRequest): NonNullabl
   const normalized = (raw ?? '').trim().toLowerCase();
   if (normalized === 'latest') return 'latest';
   if (normalized === 'new') return 'new';
-  return 'current';
+  if (normalized === 'current') return 'current';
+  return 'latest';
 }
 
 function resolveDispatchProjectPath(input: AgentDispatchRequest, deps: AgentRuntimeDeps): string {
@@ -498,7 +483,40 @@ export async function dispatchTaskToAgent(deps: AgentRuntimeDeps, input: AgentDi
   if (result.result !== undefined) {
     result.result = sanitizeDispatchResult(result.result);
   }
-  await recordDispatchResult(deps, normalizedInput, result);
+  // Always record result to memory (success or failure)
+  const summaryForMemory = result.result?.summary || result.error || undefined;
+  if (summaryForMemory) {
+    await persistAgentSummaryToMemory(deps, normalizedInput, { ok: result.ok, summary: summaryForMemory });
+  }
+  // Write dispatch result to session for all channels (unified ledger writing)
+  // CRITICAL: Store FULL rawPayload in ledger - NEVER truncate
+  const dispatchSessionId = typeof normalizedInput.sessionId === 'string' ? normalizedInput.sessionId.trim() : '';
+  if (dispatchSessionId) {
+    const dispatchSession = deps.sessionManager.getSession(dispatchSessionId);
+    if (dispatchSession) {
+      // Summary is for display (can be truncated), rawPayload is for ledger (NEVER truncated)
+      const replyContent = result.ok
+        ? (result.result?.summary || '处理完成')
+        : `处理失败：${result.error || '未知错误'}`;
+
+      // Build metadata with FULL rawPayload for ledger storage
+      const ledgerMetadata: Record<string, unknown> = {
+        source: 'dispatch',
+        dispatchId: result.dispatchId,
+        status: result.status,
+        agentId: normalizedInput.targetAgentId,
+        // Store full raw result for ledger - this is the single source of truth
+        rawResult: result.result?.rawPayload ?? result.result,
+      };
+      if (result.error) ledgerMetadata.error = result.error;
+
+      void deps.sessionManager.addMessage(dispatchSessionId, 'assistant', replyContent, {
+        type: 'dispatch',
+        agentId: normalizedInput.targetAgentId,
+        metadata: ledgerMetadata,
+      });
+    }
+  }
   await syncBdDispatchLifecycle(deps, normalizedInput, result);
   return result;
 }

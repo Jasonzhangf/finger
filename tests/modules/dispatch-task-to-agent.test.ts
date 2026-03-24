@@ -178,6 +178,22 @@ describe('dispatchTaskToAgent', () => {
     expect((deps as any).ensureRuntimeChildSession).toHaveBeenCalledWith(expect.objectContaining({ id: 'root-session-2' }), 'finger-project-agent');
   });
 
+  it('defaults to latest existing session when no session/sessionStrategy is provided', async () => {
+    const { deps, sessionManager } = createDeps();
+    const res = await mod.dispatchTaskToAgent(deps as any, {
+      sourceAgentId: 'finger-system-agent',
+      targetAgentId: 'finger-project-agent',
+      task: 'run task',
+      projectPath: '/tmp/project-a',
+    } as any);
+
+    expect(res.ok).toBe(true);
+    expect(sessionManager.findSessionsByProjectPath).toHaveBeenCalledWith('/tmp/project-a');
+    expect(sessionManager.createSession).not.toHaveBeenCalled();
+    expect(sessionManager.setCurrentSession).toHaveBeenCalledWith('root-session-2');
+    expect((deps as any).ensureRuntimeChildSession).toHaveBeenCalledWith(expect.objectContaining({ id: 'root-session-2' }), 'finger-project-agent');
+  });
+
   it('creates a new root session when sessionStrategy=new', async () => {
     const { deps, sessionManager } = createDeps();
     const res = await mod.dispatchTaskToAgent(deps as any, {

@@ -76,7 +76,9 @@ export function parseAgentDispatchToolInput(rawInput: unknown, deps: AgentRuntim
     ? explicitSessionId
     : sessionStrategy === 'latest' || sessionStrategy === 'new'
       ? undefined
-      : deps.runtime.getCurrentSession()?.id;
+      : sessionStrategy === 'current'
+        ? deps.runtime.getCurrentSession()?.id
+        : undefined;
   const assignmentInput = isObjectRecord(rawInput.assignment) ? rawInput.assignment : undefined;
   if (!assignmentInput) {
     return {

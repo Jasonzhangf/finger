@@ -11,14 +11,14 @@ function createDeps(currentSessionId = 'session-current') {
 }
 
 describe('parseAgentDispatchToolInput', () => {
-  it('uses current session by default when no session strategy is provided', () => {
+  it('does not force current session by default (default strategy resolved later as latest)', () => {
     const deps = createDeps('session-123');
     const result = parseAgentDispatchToolInput({
       target_agent_id: 'finger-project-agent',
       task: 'hello',
     }, deps as any);
 
-    expect(result.sessionId).toBe('session-123');
+    expect(result.sessionId).toBeUndefined();
     expect(result.sessionStrategy).toBeUndefined();
   });
 
@@ -36,6 +36,18 @@ describe('parseAgentDispatchToolInput', () => {
     expect(result.projectPath).toBe('/tmp/project-a');
   });
 
+  it('uses runtime current session only when session_strategy=current is explicit', () => {
+    const deps = createDeps('session-123');
+    const result = parseAgentDispatchToolInput({
+      target_agent_id: 'finger-project-agent',
+      task: 'hello',
+      session_strategy: 'current',
+    }, deps as any);
+
+    expect(result.sessionId).toBe('session-123');
+    expect(result.sessionStrategy).toBe('current');
+  });
+
   it('explicit session id overrides strategy-driven auto resolution', () => {
     const deps = createDeps('session-123');
     const result = parseAgentDispatchToolInput({
@@ -51,4 +63,3 @@ describe('parseAgentDispatchToolInput', () => {
     expect(result.projectPath).toBe('/tmp/project-b');
   });
 });
-
