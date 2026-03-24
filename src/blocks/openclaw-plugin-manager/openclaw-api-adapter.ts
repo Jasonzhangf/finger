@@ -5,10 +5,97 @@ import { loadUserSettings } from '../../core/user-settings.js';
 import { logger } from '../../core/logger.js';
 import { createConsoleLikeLogger } from '../../core/logger/console-like.js';
 import type { ChannelAttachment } from '../../bridges/types.js';
+import path from 'node:path';
 
 const clog = createConsoleLikeLogger('OpenclawApiAdapter');
 
 const log = logger.module('OpenclawApiAdapter');
+
+function asStringArray(value: unknown): string[] {
+  if (Array.isArray(value)) {
+    return value
+      .map((item) => (typeof item === 'string' ? item.trim() : ''))
+      .filter((item) => item.length > 0);
+  }
+
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    if (!trimmed) return [];
+    if (trimmed.includes('\n')) {
+      return trimmed.split('\n').map((item) => item.trim()).filter((item) => item.length > 0);
+    }
+    if (trimmed.includes(',')) {
+      return trimmed.split(',').map((item) => item.trim()).filter((item) => item.length > 0);
+    }
+    return [trimmed];
+  }
+
+  return [];
+}
+
+function guessAttachmentType(candidateType: string, source: string): ChannelAttachment['type'] {
+  const normalizedType = candidateType.toLowerCase();
+  if (normalizedType.includes('image')) return 'image';
+  if (normalizedType.includes('audio')) return 'audio';
+  if (normalizedType.includes('video')) return 'video';
+
+  const lower = source.toLowerCase();
+  if (/\.(png|jpe?g|webp|gif|bmp|svg|heic|heif)$/.test(lower)) return 'image';
+  if (/\.(mp3|wav|ogg|m4a|aac|flac)$/.test(lower)) return 'audio';
+  if (/\.(mp4|mov|avi|mkv|webm)$/.test(lower)) return 'video';
+  return 'file';
+}
+
+export function extractChannelAttachmentsFromContext(ctx: Record<string, unknown>): ChannelAttachment[] {
+  const mediaPaths = asStringArray(ctx.MediaPaths ?? ctx.MediaPath);
+  const mediaUrls = asStringArray(
+    ctx.MediaUrls
+    ?? ctx.MediaUrl
+    ?? ctx.QQAttachmentUrls
+    ?? ctx.QQVoiceAttachmentUrls
+    ?? ctx.QQVoiceAttachmentUrl
+  );
+  const mediaTypes = asStringArray(ctx.MediaTypes ?? ctx.MediaType);
+
+  const maxLen = Math.max(mediaPaths.length, mediaUrls.length);
+  if (maxLen === 0) return [];
+
+  const attachments: ChannelAttachment[] = [];
+  for (let i = 0; i < maxLen; i += 1) {
+    const localPath = mediaPaths[i] ?? '';
+    const remoteUrl = mediaUrls[i] ?? '';
+    const ref = remoteUrl || localPath;
+    if (!ref) continue;
+
+    const mediaType = mediaTypes[i] ?? mediaTypes[0] ?? '';
+    const type = guessAttachmentType(mediaType, ref);
+    const filename = localPath
+      ? path.basename(localPath)
+      : (() => {
+          try {
+            const parsed = new URL(ref);
+            return path.basename(parsed.pathname);
+          } catch {
+            return path.basename(ref);
+          }
+        })();
+
+    attachments.push({
+      id: `media-${Date.now()}-${i}`,
+      type,
+      url: ref,
+      ...(filename ? { filename, name: filename } : {}),
+      ...(mediaType ? { mimeType: mediaType } : {}),
+      source: 'openclaw',
+      metadata: {
+        ...(localPath ? { localPath } : {}),
+        ...(remoteUrl ? { remoteUrl } : {}),
+      },
+    });
+  }
+
+  return attachments;
+}
 
 export type OpenClawRegisterChannelInput = {
   plugin: {
@@ -359,7 +446,8 @@ export function createOpenClawRuntimeApi(params: {
               );
               const bridge = manager.getBridge(inboundChannelId) as any;
               logger.info?.(`[channel.reply] Bridge lookup - channel=${inboundChannelId}, manager: ${!!manager}, bridge: ${!!bridge}, callbacks: ${!!(bridge && bridge.callbacks_)}`);
-              if (bridge && bridge.callbacks_) {
+             if (bridge && bridge.callbacks_) {
+               const attachments = extractChannelAttachmentsFromContext(ctx);
                const message = {
                  // 使用原始QQ消息ID作为唯一标识，fallback到自生成ID
                  id: messageId || `qqbot-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
@@ -370,6 +458,7 @@ export function createOpenClawRuntimeApi(params: {
                  senderName,
                  content,
                  timestamp: Date.now(),
+                 ...(attachments.length > 0 ? { attachments } : {}),
                  metadata: {
                    messageId, // 始终保留原始QQ消息ID
                    ...ctx,

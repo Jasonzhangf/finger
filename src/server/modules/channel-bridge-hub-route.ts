@@ -301,6 +301,9 @@ export function createChannelBridgeHubRoute(deps: ChannelBridgeHubRouteDeps) {
 
     // 将用户原始输入以 'user' 角色写入 session（保证 WebUI 可见）
     void sessionManager.addMessage(fixedSessionId, 'user', enrichedContent, {
+      ...(Array.isArray(channelMsg.attachments) && channelMsg.attachments.length > 0
+        ? { attachments: channelMsg.attachments }
+        : {}),
       type: 'text',
       metadata: {
         channelId: channelMsg.channelId,
