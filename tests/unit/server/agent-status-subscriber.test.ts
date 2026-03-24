@@ -581,6 +581,68 @@ describe('AgentStatusSubscriber', () => {
   });
 
   describe('Step 批量推送', () => {
+    it('应该在收到 thought 时立刻推送 reasoning（不走 stepBatch）', async () => {
+      const mockMessageHub = {
+        routeToOutput: vi.fn().mockResolvedValue(undefined),
+      };
+      const mockChannelBridgeManager = {
+        getPushSettings: vi.fn().mockReturnValue({
+          reasoning: true,
+          bodyUpdates: false,
+          statusUpdate: true,
+          toolCalls: false,
+          stepUpdates: true,
+          stepBatch: 5,
+          progressUpdates: true,
+        }),
+      };
+
+      const stepSubscriber = new AgentStatusSubscriber(
+        eventBus, mockAgentRuntimeDeps, mockMessageHub, mockChannelBridgeManager
+      );
+      stepSubscriber.setPrimaryAgent('agent-1');
+      stepSubscriber.registerSession('step-session-reasoning', {
+        channel: 'qqbot',
+        envelopeId: 'env-step-reasoning',
+        userId: 'user-1',
+      });
+      stepSubscriber.start();
+
+      for (let i = 1; i <= 2; i++) {
+        const stepEvent: RuntimeEvent = {
+          type: 'agent_step_completed',
+          sessionId: 'step-session-reasoning',
+          timestamp: new Date().toISOString(),
+          agentId: 'agent-1',
+          payload: {
+            round: i,
+            thought: `思考 ${i}`,
+            success: true,
+          },
+        } as any;
+        await eventBus.emit(stepEvent);
+      }
+      await new Promise(resolve => setTimeout(resolve, 80));
+
+      expect(mockMessageHub.routeToOutput).toHaveBeenCalledTimes(2);
+      expect(mockMessageHub.routeToOutput).toHaveBeenNthCalledWith(
+        1,
+        'channel-bridge-qqbot',
+        expect.objectContaining({
+          content: expect.stringContaining('思考：思考 1'),
+        }),
+      );
+      expect(mockMessageHub.routeToOutput).toHaveBeenNthCalledWith(
+        2,
+        'channel-bridge-qqbot',
+        expect.objectContaining({
+          content: expect.stringContaining('思考：思考 2'),
+        }),
+      );
+
+      stepSubscriber.stop();
+    });
+
     it('应该在 stepBatch 达到阈值时才推送', async () => {
       const mockMessageHub = {
         routeToOutput: vi.fn().mockResolvedValue(undefined),
@@ -614,7 +676,6 @@ describe('AgentStatusSubscriber', () => {
           agentId: 'agent-1',
           payload: {
             round: i,
-            thought: `思考 ${i}`,
             action: `操作 ${i}`,
             success: true,
           },
@@ -634,7 +695,6 @@ describe('AgentStatusSubscriber', () => {
         agentId: 'agent-1',
         payload: {
           round: 3,
-          thought: '思考 3',
           action: '操作 3',
           success: true,
         },

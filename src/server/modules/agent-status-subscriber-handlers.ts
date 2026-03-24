@@ -27,6 +27,7 @@ export interface HandlerContext {
   broadcast?: (message: unknown) => void;
   resolveEnvelopeMapping: (sessionId: string) => SessionEnvelopeMapping | null;
   getAgentInfo: (agentId: string) => Promise<AgentInfo>;
+  sendReasoningUpdate?: (sessionId: string, agentId: string, reasoningText: string) => Promise<void>;
   stepBuffer: Map<string, Array<{ index: number; summary: string; timestamp: string }>>;
   stepBatchDefault: number;
   primaryAgentId: string | null;
@@ -291,11 +292,25 @@ export async function handleStepCompleted(
     success?: boolean;
   };
   const round = payload.round ?? 0;
-  const action = payload.action || '';
-  const thought = payload.thought || '';
-  const summary = action
-    ? (thought ? `思考: ${thought}\n操作: ${action}` : `操作: ${action}`)
-    : thought || `步骤 ${round}`;
+  const action = (payload.action || '').trim();
+  const thought = (payload.thought || '').trim();
+  const observation = (payload.observation || '').trim();
+
+  // Jason 要求：reasoning 不要批量，收到就立刻推送
+  if (thought && ctx.sendReasoningUpdate) {
+    const stepAgentId = typeof (event as { agentId?: unknown }).agentId === 'string'
+      ? ((event as { agentId?: string }).agentId as string)
+      : (ctx.primaryAgentId || 'unknown-agent');
+    await ctx.sendReasoningUpdate(sessionId, stepAgentId, thought);
+  }
+
+  const actionSummary = action
+    ? (observation ? `操作: ${action}\n观察: ${observation}` : `操作: ${action}`)
+    : '';
+  const summary = actionSummary || (!thought ? `步骤 ${round}` : '');
+  if (!summary) {
+    return;
+  }
 
   const buffer = ctx.stepBuffer.get(sessionId) || [];
   buffer.push({ index: round, summary, timestamp: event.timestamp as string });

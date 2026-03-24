@@ -62,6 +62,8 @@ export class AgentStatusSubscriber {
       broadcast: this.broadcast,
       resolveEnvelopeMapping: (sessionId: string) => this.resolveEnvelopeMapping(sessionId),
       getAgentInfo: (agentId: string) => this.getAgentInfo(agentId),
+      sendReasoningUpdate: (sessionId: string, agentId: string, reasoningText: string) =>
+        this.sendReasoningUpdate(sessionId, agentId, reasoningText),
       stepBuffer: this.stepBuffer,
       stepBatchDefault: this.stepBatchDefault,
       primaryAgentId: this.primaryAgentId,
@@ -256,6 +258,18 @@ export class AgentStatusSubscriber {
 
     // fallback: default/system session -> real system session mapping
     if (sessionId === 'default' || sessionId === 'system-default-session') {
+      const currentSession = this.deps.sessionManager.getCurrentSession?.();
+      if (currentSession?.id) {
+        const currentMapping = this.sessionEnvelopeMap.get(currentSession.id);
+        if (currentMapping) {
+          return {
+            sessionId,
+            envelope: currentMapping.envelope,
+            timestamp: Date.now(),
+          };
+        }
+      }
+
       const getSystemSession = (this.deps.sessionManager as any).getOrCreateSystemSession;
       if (typeof getSystemSession === 'function') {
         const systemSession = getSystemSession.call(this.deps.sessionManager);

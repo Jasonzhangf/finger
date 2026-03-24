@@ -141,6 +141,7 @@ describe('channel-bridge-hub-route user.ask async adaptation', () => {
       success: true,
       response: 'direct ok',
     });
+    const runtimeSetCurrentSession = vi.fn().mockReturnValue(true);
 
     const route = createChannelBridgeHubRoute({
       channelBridgeManager: {
@@ -158,7 +159,9 @@ describe('channel-bridge-hub-route user.ask async adaptation', () => {
       dispatchTaskToAgent,
       directSendToModule,
       eventBus: new UnifiedEventBus(),
-      runtime: {},
+      runtime: {
+        setCurrentSession: runtimeSetCurrentSession,
+      },
     });
 
     await route({
@@ -184,6 +187,7 @@ describe('channel-bridge-hub-route user.ask async adaptation', () => {
         sessionId: 'system-session-2',
       }),
     );
+    expect(runtimeSetCurrentSession).toHaveBeenCalledWith('system-session-2');
     expect(sendMessage).toHaveBeenCalledWith('qqbot', expect.objectContaining({
       to: 'user-1',
       text: expect.stringContaining('direct ok'),

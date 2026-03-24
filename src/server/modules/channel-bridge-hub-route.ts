@@ -153,6 +153,16 @@ export function createChannelBridgeHubRoute(deps: ChannelBridgeHubRouteDeps) {
     const fixedSessionId = sessionManager.getOrCreateSystemSession().id;
     setReplySessionId(fixedSessionId);
     sessionManager.ensureSession(fixedSessionId, SYSTEM_PROJECT_PATH, `channel:${channelMsg.channelId}`);
+    const runtimeSetCurrentSession = (deps.runtime as { setCurrentSession?: (sessionId: string) => boolean }).setCurrentSession;
+    if (typeof runtimeSetCurrentSession === 'function') {
+      const switched = runtimeSetCurrentSession.call(deps.runtime, fixedSessionId);
+      if (!switched) {
+        log.warn('Failed to switch runtime current session for channel message', {
+          sessionId: fixedSessionId,
+          channelId: channelMsg.channelId,
+        });
+      }
+    }
     sessionManager.updateContext(fixedSessionId, {
       channelId: channelMsg.channelId,
       channelUserId: channelMsg.senderId,
