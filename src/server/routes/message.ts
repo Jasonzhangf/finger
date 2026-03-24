@@ -229,16 +229,41 @@ export function registerMessageRoutes(app: Express, deps: MessageRouteDeps): voi
       body.target = delegation.updatedTarget;
     }
 
-    const requestSessionId = extractSessionIdFromMessagePayload(requestMessage);
+    let requestSessionId = extractSessionIdFromMessagePayload(requestMessage);
+    if (!requestSessionId) {
+      if (isSystemRoute) {
+        requestSessionId = deps.sessionManager.getOrCreateSystemSession().id;
+      } else {
+        const currentSession = deps.sessionManager.getCurrentSession();
+        requestSessionId = currentSession?.id ?? null;
+      }
+
+      if (requestSessionId && isObjectRecord(requestMessage)) {
+        const metadata = isObjectRecord(requestMessage.metadata) ? requestMessage.metadata : {};
+        const metaSessionId =
+          typeof metadata.sessionId === 'string' && metadata.sessionId.trim().length > 0
+            ? metadata.sessionId
+            : requestSessionId;
+        requestMessage = {
+          ...requestMessage,
+          sessionId: requestSessionId,
+          metadata: {
+            ...metadata,
+            sessionId: metaSessionId,
+          },
+        };
+      }
+    }
+
     log.info('Session reuse decision', {
       sessionId: requestSessionId ?? 'none',
       action: requestSessionId ? 'reuse' : 'new',
       target: targetId,
     });
-   if (requestSessionId) {
+    if (requestSessionId) {
       const sessionProjectPath = isSystemRoute ? SYSTEM_PROJECT_PATH : undefined;
       ensureSessionExists(deps.sessionManager, requestSessionId, body.target, sessionProjectPath);
-   }
+    }
     requestMessage = withSessionWorkspaceDefaults(requestMessage, requestSessionId, deps.sessionWorkspaces);
     if (requestSessionId) {
       deps.runtime.setCurrentSession(requestSessionId);
