@@ -803,17 +803,18 @@ export const WorkflowContainer: React.FC = () => {
       onRenameSession={renameSession}
       onSwitchSession={handleSwitchSessionFromSidebar}
       onRefreshSessions={refreshSessions}
-     onToggleSystemMonitor={systemMonitor.toggle}
-     isSystemMonitorEnabled={systemMonitor.isEnabled}
-     panelFreeze={panelFreeze}
-     onUpdatePanelFreeze={updatePanelFreeze}
-     onResetPanelFreeze={resetPanelFreeze}
-     disableAnimations={disableAnimations}
-     onToggleDisableAnimations={updateDisableAnimations}
-     viewMode={viewMode}
-     onSetViewMode={setViewMode}
+      onToggleSystemMonitor={systemMonitor.toggle}
+      isSystemMonitorEnabled={systemMonitor.isEnabled}
+      systemMonitorEntries={systemMonitor.entries}
+      panelFreeze={panelFreeze}
+      onUpdatePanelFreeze={updatePanelFreeze}
+      onResetPanelFreeze={resetPanelFreeze}
+      disableAnimations={disableAnimations}
+      onToggleDisableAnimations={updateDisableAnimations}
+      viewMode={viewMode}
+      onSetViewMode={setViewMode}
     />
-  ), [createSession, disableAnimations, frozenActiveRuntimeSessionId, frozenCurrentSession, frozenDrawerAgentIdForLeft, frozenFocusedRuntimeInstanceId, frozenIsLoadingSessions, frozenRuntimeInstancesForLeft, frozenSessions, handleSelectInstance, handleSwitchSessionFromSidebar, panelFreeze, refreshSessions, removeSession, renameSession, resetPanelFreeze, updateDisableAnimations, updatePanelFreeze, systemMonitor.toggle, systemMonitor.isEnabled, viewMode, setViewMode]);
+  ), [createSession, disableAnimations, frozenActiveRuntimeSessionId, frozenCurrentSession, frozenDrawerAgentIdForLeft, frozenFocusedRuntimeInstanceId, frozenIsLoadingSessions, frozenRuntimeInstancesForLeft, frozenSessions, handleSelectInstance, handleSwitchSessionFromSidebar, panelFreeze, refreshSessions, removeSession, renameSession, resetPanelFreeze, updateDisableAnimations, updatePanelFreeze, systemMonitor.toggle, systemMonitor.isEnabled, systemMonitor.entries, viewMode, setViewMode]);
 
   const bottomPanelElement = useMemo(() => (
     <div className="ledger-bottom-panel">

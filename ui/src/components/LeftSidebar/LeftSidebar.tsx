@@ -1,5 +1,5 @@
 import { useMemo, useState, useEffect, useCallback, type FC, type MouseEvent as ReactMouseEvent } from 'react';
-import type { SessionInfo } from '../../api/types.js';
+import type { SessionInfo, SystemRegistryEntry } from '../../api/types.js';
 import type { AgentConfigSummary, AgentRuntimeInstance, AgentRuntimePanelAgent } from '../../hooks/useAgentRuntimePanel.js';
 import type { ProviderConfig } from '../../api/types.js';
 import {
@@ -48,6 +48,7 @@ interface LeftSidebarProps {
   onRefreshSessions: () => Promise<void>;
   onToggleSystemMonitor?: (projectPath: string, enabled: boolean) => Promise<void> | void;
   isSystemMonitorEnabled?: (projectPath: string) => boolean;
+  systemMonitorEntries?: SystemRegistryEntry[];
   viewMode?: 'workflow' | 'system-monitor';
   onSetViewMode?: (mode: 'workflow' | 'system-monitor') => void;
 }
@@ -75,6 +76,7 @@ interface SystemMonitorTabProps {
   isLoading: boolean;
   onToggleSystemMonitor?: (projectPath: string, enabled: boolean) => Promise<void> | void;
   isSystemMonitorEnabled?: (projectPath: string) => boolean;
+  entries?: SystemRegistryEntry[];
   viewMode?: 'workflow' | 'system-monitor';
   onSetViewMode?: (mode: 'workflow' | 'system-monitor') => void;
 }
@@ -178,6 +180,7 @@ export const LeftSidebar: FC<LeftSidebarProps> = ({
   onRefreshSessions,
   onToggleSystemMonitor,
   isSystemMonitorEnabled,
+  systemMonitorEntries = [],
 }) => {
   const [activeTab, setActiveTab] = useState<SidebarTab | null>('project');
 
@@ -237,6 +240,7 @@ export const LeftSidebar: FC<LeftSidebarProps> = ({
                 isLoading={isLoadingSessions}
                 onToggleSystemMonitor={onToggleSystemMonitor}
                 isSystemMonitorEnabled={isSystemMonitorEnabled}
+                entries={systemMonitorEntries}
               />
             )}
             {activeTab === 'ai-provider' && <AIProviderTab />}
@@ -823,61 +827,135 @@ const SystemMonitorTab: FC<SystemMonitorTabProps> = ({
   isLoading,
   onToggleSystemMonitor,
   isSystemMonitorEnabled,
+  entries = [],
 }) => {
+  const [monitorPathInput, setMonitorPathInput] = useState('');
+  const [hint, setHint] = useState<string | null>(null);
+  const [busyPath, setBusyPath] = useState<string | null>(null);
   const currentProjectPath = currentSession?.projectPath?.trim() || '';
-  const projectGroups = useMemo(() => {
-    const groups: Array<{ projectPath: string; name: string; sessionCount: number }> = [];
-    const index = new Map<string, number>();
+  const sessionCountByPath = useMemo(() => {
+    const stats = new Map<string, number>();
     for (const session of sessions) {
-      const key = session.projectPath;
-      const existingIndex = index.get(key);
-      if (existingIndex === undefined) {
-        groups.push({
-          projectPath: key,
-          name: projectDisplayName(key),
-          sessionCount: 1,
-        });
-        index.set(key, groups.length - 1);
-      } else {
-        groups[existingIndex].sessionCount += 1;
-      }
+      const key = normalizePath(session.projectPath || '');
+      if (!key) continue;
+      stats.set(key, (stats.get(key) ?? 0) + 1);
     }
-    return groups;
+    return stats;
   }, [sessions]);
+
+  const sortedEntries = useMemo(() => {
+    return entries
+      .slice()
+      .sort((a, b) => {
+        if (Boolean(a.monitored) !== Boolean(b.monitored)) return a.monitored ? -1 : 1;
+        const aTime = a.monitorUpdatedAt ? new Date(a.monitorUpdatedAt).getTime() : 0;
+        const bTime = b.monitorUpdatedAt ? new Date(b.monitorUpdatedAt).getTime() : 0;
+        if (aTime !== bTime) return bTime - aTime;
+        return a.projectPath.localeCompare(b.projectPath);
+      });
+  }, [entries]);
+
+  const executeToggle = useCallback(async (projectPath: string, enabled: boolean) => {
+    if (!projectPath || !onToggleSystemMonitor) return;
+    setBusyPath(projectPath);
+    setHint(null);
+    try {
+      await onToggleSystemMonitor(projectPath, enabled);
+      setHint(enabled ? '已添加到监控列表' : '已从监控列表移除');
+    } catch (error) {
+      setHint(error instanceof Error ? error.message : String(error));
+    } finally {
+      setBusyPath(null);
+    }
+  }, [onToggleSystemMonitor]);
+
+  const handlePickMonitorPath = useCallback(async () => {
+    setHint(null);
+    try {
+      const result = await pickProjectDirectory('选择要加入 System Monitor 的项目路径');
+      if (!result || result.canceled || !result.path) return;
+      setMonitorPathInput(result.path);
+    } catch (error) {
+      setHint(error instanceof Error ? error.message : String(error));
+    }
+  }, []);
+
+  const handleAddMonitorPath = useCallback(async () => {
+    const pathValue = monitorPathInput.trim();
+    if (!pathValue) {
+      setHint('请先输入或选择项目路径');
+      return;
+    }
+    await executeToggle(pathValue, true);
+    setMonitorPathInput('');
+  }, [executeToggle, monitorPathInput]);
+
+  const handleQuickAddCurrent = useCallback(async () => {
+    if (!currentProjectPath) {
+      setHint('当前会话没有可用 projectPath');
+      return;
+    }
+    await executeToggle(currentProjectPath, true);
+  }, [currentProjectPath, executeToggle]);
 
   return (
     <div className="tab-content">
       <div className="project-status">
         <div className="project-status-card running">
           <div className="project-status-header">System Monitor</div>
-          {projectGroups.length === 0 && (
-            <div className="project-status-empty">暂无可监控项目</div>
+          <div className="folder-picker">
+            <label htmlFor="system-monitor-path-input">新增监控项目路径</label>
+            <input
+              id="system-monitor-path-input"
+              value={monitorPathInput}
+              placeholder="/path/to/project"
+              onChange={(event) => setMonitorPathInput(event.target.value)}
+            />
+            <div className="folder-picker-actions">
+              <button type="button" onClick={() => { void handlePickMonitorPath(); }} disabled={isLoading || busyPath !== null}>
+                选择目录
+              </button>
+              <button type="button" onClick={() => { void handleAddMonitorPath(); }} disabled={isLoading || busyPath !== null}>
+                添加监控
+              </button>
+            </div>
+            <button type="button" onClick={() => { void handleQuickAddCurrent(); }} disabled={isLoading || !currentProjectPath || busyPath !== null}>
+              添加当前会话项目
+            </button>
+            {hint && <div className="session-hint">{hint}</div>}
+          </div>
+
+          {sortedEntries.length === 0 && (
+            <div className="project-status-empty">暂无监控项目，可通过上方路径添加</div>
           )}
-          {projectGroups.map((group) => {
-            const isActive = normalizePath(currentProjectPath) === normalizePath(group.projectPath);
-            const isEnabled = group.projectPath && isSystemMonitorEnabled
-              ? isSystemMonitorEnabled(group.projectPath)
-              : false;
+          {sortedEntries.map((entry) => {
+            const normalizedPath = normalizePath(entry.projectPath);
+            const isActive = normalizePath(currentProjectPath) === normalizedPath;
+            const isEnabled = typeof entry.monitored === 'boolean'
+              ? entry.monitored
+              : (entry.projectPath && isSystemMonitorEnabled ? isSystemMonitorEnabled(entry.projectPath) : false);
+            const sessionCount = sessionCountByPath.get(normalizedPath) ?? 0;
+            const isBusy = busyPath === entry.projectPath;
             return (
-              <div key={`monitor-${group.projectPath}`} className="project-status-row">
+              <div key={`monitor-${entry.projectPath}`} className="project-status-row">
                 <button
                   type="button"
                   className={`project-status-item ${isActive ? 'active' : ''}`}
                 >
-                  <span className="project-status-name">{group.name}</span>
-                  <span className="project-status-path">{group.projectPath}</span>
-                  <span className="project-status-path">sessions {group.sessionCount}</span>
+                  <span className="project-status-name">{entry.projectName || projectDisplayName(entry.projectPath)}</span>
+                  <span className="project-status-path">{entry.projectPath}</span>
+                  <span className="project-status-path">sessions {sessionCount} · status {entry.status}</span>
                 </button>
                 <button
                   type="button"
                   className="project-status-delete"
                   onClick={() => {
-                    if (!group.projectPath) return;
-                    void onToggleSystemMonitor?.(group.projectPath, !isEnabled);
+                    if (!entry.projectPath) return;
+                    void executeToggle(entry.projectPath, !isEnabled);
                   }}
-                  disabled={isLoading}
+                  disabled={isLoading || isBusy}
                 >
-                  {isEnabled ? '已监控' : '未监控'}
+                  {isEnabled ? '移除' : '启用'}
                 </button>
               </div>
             );
