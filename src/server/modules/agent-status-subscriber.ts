@@ -28,11 +28,12 @@ import {
 } from './agent-status-subscriber-types.js';
 import { wrapStatusUpdate, getAgentIcon } from './agent-status-subscriber-helpers.js';
 import { logger } from '../../core/logger.js';
-import { sendStatusUpdate, startCleanup } from './agent-status-subscriber-runtime.js';
+import { sendStatusUpdate, startCleanup, buildMailboxProgressSnapshot } from './agent-status-subscriber-runtime.js';
 import {
   handleToolError as handleToolErrorEvent,
   handleSystemError as handleSystemErrorEvent,
   handleDispatch as handleDispatchEvent,
+  handleWaitingForUser as handleWaitingForUserEvent,
   handleStepCompleted as handleStepCompletedEvent,
   flushStepBuffer as flushStepBufferEvent,
   type HandlerContext,
@@ -87,9 +88,9 @@ export class AgentStatusSubscriber {
 
     log.info('[AgentStatusSubscriber] Starting...');
 
-    // 订阅 agent_runtime_status / agent_runtime_dispatch / agent_step_completed / tool_error / system_error 事件
+    // 订阅 agent_runtime_status / agent_runtime_dispatch / agent_step_completed / tool_error / system_error / waiting_for_user 事件
     this.unsubscribe = this.eventBus.subscribeMultiple(
-      ['agent_runtime_status', 'agent_runtime_dispatch', 'agent_step_completed', 'tool_error', 'system_error'],
+      ['agent_runtime_status', 'agent_runtime_dispatch', 'agent_step_completed', 'tool_error', 'system_error', 'waiting_for_user'],
       (event: RuntimeEvent) => {
         this.handleEvent(event).catch(err => {
           log.error('[AgentStatusSubscriber] Error handling event:', err);
@@ -103,25 +104,30 @@ export class AgentStatusSubscriber {
     log.info('[AgentStatusSubscriber] Started');
   }
 
-  /**
-   * 发送 reasoning 更新到通道（用于 QQBot）
-   */
-  async sendReasoningUpdate(sessionId: string, agentId: string, reasoningText: string): Promise<void> {
+  private isVerboseTextChannel(channelId: string): boolean {
+    return channelId === 'qqbot' || channelId === 'openclaw-weixin';
+  }
+
+  private async sendTextUpdate(
+    sessionId: string,
+    agentId: string,
+    text: string,
+    setting: 'reasoning' | 'bodyUpdates',
+    label: 'reasoning' | 'body',
+    prefix: string,
+  ): Promise<void> {
     const mapping = this.resolveEnvelopeMapping(sessionId);
-    if (!mapping) {
-      // No envelope mapping - silently skip (heartbeat/system tasks don't need channel routing)
-      return;
-    }
+    if (!mapping) return; // heartbeat/system task不用回推通道
     if (!this.messageHub) {
-      log.warn('[AgentStatusSubscriber] No messageHub available for reasoning update');
+      log.warn(`[AgentStatusSubscriber] No messageHub available for ${label} update`);
       return;
     }
 
-    // 检查该 channel 的 pushSettings.reasoning 配置
     if (this.channelBridgeManager) {
+      const channelId = mapping.envelope.channel;
       const pushSettings = this.channelBridgeManager.getPushSettings(mapping.envelope.channel);
-      if (!pushSettings.reasoning) {
-        // 该 channel 配置为不推送 reasoning
+      const enabled = this.isVerboseTextChannel(channelId) || Boolean(pushSettings[setting]);
+      if (!enabled) {
         return;
       }
     }
@@ -142,20 +148,32 @@ export class AgentStatusSubscriber {
       },
     };
 
-    const content = `思考：${reasoningText}`;
+    const content = `${prefix}${text}`;
     const message = {
       channelId: mapping.envelope.channel,
       target: mapping.envelope.groupId ? `group:${mapping.envelope.groupId}` : (mapping.envelope.userId || 'unknown'),
       content,
       originalEnvelope,
-      reasoning: {
+      [label]: {
         sessionId,
         agentId,
       },
     };
 
     await this.messageHub.routeToOutput(outputId, message);
-    log.debug('[AgentStatusSubscriber] Sent reasoning update via MessageHub: ' + outputId);
+    log.debug(`[AgentStatusSubscriber] Sent ${label} update via MessageHub: ${outputId}`);
+  }
+
+  async sendReasoningUpdate(sessionId: string, agentId: string, reasoningText: string): Promise<void> {
+    const text = reasoningText.trim();
+    if (!text) return;
+    await this.sendTextUpdate(sessionId, agentId, text, 'reasoning', 'reasoning', '思考：');
+  }
+
+  async sendBodyUpdate(sessionId: string, agentId: string, bodyText: string): Promise<void> {
+    const text = bodyText.trim();
+    if (!text) return;
+    await this.sendTextUpdate(sessionId, agentId, text, 'bodyUpdates', 'body', '正文：');
   }
 
   /**
@@ -291,23 +309,9 @@ export class AgentStatusSubscriber {
       await handleToolErrorEvent(event as ToolErrorEvent, ctx);
     } else if (event.type === 'system_error') {
       await handleSystemErrorEvent(event as SystemErrorEvent, ctx);
+    } else if (event.type === 'waiting_for_user') {
+      await handleWaitingForUserEvent(event, ctx);
     }
-  }
-
-  private async handleToolError(event: ToolErrorEvent): Promise<void> {
-    await handleToolErrorEvent(event, this.getHandlerContext());
-  }
-
-  private async handleSystemError(event: SystemErrorEvent): Promise<void> {
-    await handleSystemErrorEvent(event, this.getHandlerContext());
-  }
-
-  private async handleDispatch(event: RuntimeEvent): Promise<void> {
-    await handleDispatchEvent(event, this.getHandlerContext());
-  }
-
-  private async handleStepCompleted(event: RuntimeEvent): Promise<void> {
-    await handleStepCompletedEvent(event, this.getHandlerContext());
   }
 
   private async flushStepBuffer(sessionId: string, mapping: SessionEnvelopeMapping): Promise<void> {
@@ -394,11 +398,15 @@ export class AgentStatusSubscriber {
       }
     }
 
-    // 终态自动解除订阅（完成/失败）
-    if (payload.status === 'completed' || payload.status === 'failed') {
-      this.unregisterSession(sessionId);
-      log.info('[AgentStatusSubscriber] Unregistered session (terminal status)', { sessionId, status: payload.status });
-    }
+    // NOTE:
+    // 不要在终态自动注销 session -> envelope 映射。
+    // 原因：子 agent 派发链路里，completed/failed 状态之后仍可能继续产出
+    // reasoning/body/progress 增量（同 session 或 runtime child session 回退）。
+    // 若这里提前 unregister，会导致后续正文/思考/进度全部丢失。
+    //
+    // 映射回收交给:
+    // 1) 定时清理（24h）
+    // 2) 显式会话生命周期结束流程（如未来补充）
   }
 
   /**
@@ -420,6 +428,12 @@ export class AgentStatusSubscriber {
       if (!pushSettings.progressUpdates) return;
     }
 
+    const mailboxSnapshot = buildMailboxProgressSnapshot(report.agentId, this.primaryAgentId || 'finger-system-agent');
+    const mailboxSummary = mailboxSnapshot
+      ? `📬 ${mailboxSnapshot.summaryText}`
+      : undefined;
+    const summary = mailboxSummary ? `${report.summary}\n${mailboxSummary}` : report.summary;
+
     const wrappedUpdate: WrappedStatusUpdate = {
       type: 'agent_status',
       eventId: `progress-${Date.now()}`,
@@ -431,16 +445,25 @@ export class AgentStatusSubscriber {
         state: report.progress.status === 'completed' ? 'completed'
           : report.progress.status === 'failed' ? 'failed'
           : 'running',
-        summary: report.summary,
+        summary,
         details: {
           toolCalls: report.progress.toolCallsCount,
           modelRounds: report.progress.modelRoundsCount,
           elapsedMs: report.progress.elapsedMs,
+          ...(mailboxSnapshot
+            ? {
+                mailboxStatus: {
+                  target: mailboxSnapshot.target,
+                  counts: mailboxSnapshot.counts,
+                  recentUnread: mailboxSnapshot.recentUnread,
+                },
+              }
+            : {}),
         },
       },
       display: {
         title: '📊 进度更新',
-        // avoid duplication: report.summary is already rendered as status.summary
+        // avoid duplication: summary is already rendered as status.summary
         subtitle: undefined,
         icon: '🔄',
         level: 'detailed',
