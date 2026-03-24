@@ -10,6 +10,7 @@ import type {
   SessionInfo,
   WorkflowInfo,
   ProviderConfig,
+  ContextBuilderSettings,
   AgentStats,
   TaskInfo,
   PickDirectoryResponse,
@@ -177,6 +178,22 @@ export async function selectProvider(providerId: string): Promise<{ success: boo
   return fetchApi<{ success: boolean; provider: ProviderConfig }>(`/providers/${providerId}/select`, {
     method: 'POST',
   });
+}
+
+export async function getContextBuilderSettings(): Promise<ContextBuilderSettings> {
+  const payload = await fetchApi<{ success: boolean; settings: ContextBuilderSettings }>('/context-builder/settings');
+  return payload.settings;
+}
+
+export async function updateContextBuilderSettings(
+  patch: Partial<ContextBuilderSettings>,
+): Promise<ContextBuilderSettings> {
+  const payload = await fetchApi<{ success: boolean; settings: ContextBuilderSettings }>('/context-builder/settings', {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ settings: patch }),
+  });
+  return payload.settings;
 }
 
 export interface UpsertProviderRequest {

@@ -341,3 +341,5 @@ Tags: permission, reject-config, codex-alignment
 
 - [2026-03-24] **Context Builder UI Monitor**：`ui/src/components/ContextMonitor/` 组件，集成在 WorkflowContainer 2x2 grid 右下角。左侧显示 Context Rounds（可折叠），右侧显示 Ledger Events 对比面板，底部显示详情。API: `/api/v1/sessions/:sessionId/context-monitor`。
   Tags: context-monitor, ui, context-builder
+- [2026-03-24] Context Builder 三模式与 dryrun 规范落地：`contextBuilder.mode` 支持 `minimal|moderate|aggressive`；`enableModelRanking` 支持 `false|true|'dryrun'`。moderate 以 task 为最小颗粒，补充历史时允许“单个 task 超过移除量但总预算内仍补入”；current task 必须保持尾部。UI Settings 新增 mode/ranking 选择并持久化到 `~/.finger/config/user-settings.json`；后端新增 `/api/v1/context-builder/settings` GET/PUT。  
+  Tags: context-builder, mode, dryrun, moderate, ui-settings, user-settings, api

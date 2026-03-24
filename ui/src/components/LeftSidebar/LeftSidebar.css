@@ -624,6 +624,17 @@
   accent-color: #2b6e9e;
 }
 
+.freeze-row select {
+  flex: 1;
+  min-width: 0;
+}
+
+.context-builder-hint {
+  font-size: 0.72rem;
+  color: #93c5fd;
+  line-height: 1.4;
+}
+
 .freeze-reset {
   margin-top: 4px;
   padding: 6px 8px;

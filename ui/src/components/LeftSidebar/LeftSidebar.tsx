@@ -1,12 +1,14 @@
 import { useMemo, useState, useEffect, useCallback, type FC, type MouseEvent as ReactMouseEvent } from 'react';
 import type { SessionInfo, SystemRegistryEntry } from '../../api/types.js';
 import type { AgentConfigSummary, AgentRuntimeInstance, AgentRuntimePanelAgent } from '../../hooks/useAgentRuntimePanel.js';
-import type { ProviderConfig } from '../../api/types.js';
+import type { ProviderConfig, ContextBuilderSettings } from '../../api/types.js';
 import {
   listProviders,
   selectProvider,
   testProvider,
   upsertProvider,
+  getContextBuilderSettings,
+  updateContextBuilderSettings,
   deleteProjectSessions,
   pickProjectDirectory,
 } from '../../api/client.js';
@@ -1121,15 +1123,18 @@ const AIProviderTab: FC = () => {
   );
 };
 
-const SettingsTab = ({
-  panelFreeze,
-  onUpdatePanelFreeze,
-  onResetPanelFreeze,
-  disableAnimations,
-  onToggleDisableAnimations,
-  monitorLiveUpdatesEnabled,
-  onToggleMonitorLiveUpdates,
-}: {
+const DEFAULT_CONTEXT_BUILDER_SETTINGS: ContextBuilderSettings = {
+  enabled: false,
+  mode: 'moderate',
+  budgetRatio: 0.85,
+  halfLifeMs: 86400000,
+  overThresholdRelevance: 0.5,
+  enableModelRanking: false,
+  rankingProviderId: '',
+  includeMemoryMd: true,
+};
+
+const SettingsTab: FC<{
   panelFreeze: {
     left: boolean;
     canvas: boolean;
@@ -1143,96 +1148,221 @@ const SettingsTab = ({
   onToggleDisableAnimations?: (enabled: boolean) => void;
   monitorLiveUpdatesEnabled: boolean;
   onToggleMonitorLiveUpdates?: (enabled: boolean) => void;
-}) => (
-  <div className="tab-content">
-    <div className="setting-item">
-      <label htmlFor="theme-select">Theme</label>
-      <select id="theme-select" defaultValue="Dark">
-        <option value="Dark">Dark</option>
-        <option value="Light">Light</option>
-      </select>
-    </div>
-    <div className="setting-item">
-      <label htmlFor="log-level-select">Log Level</label>
-      <select id="log-level-select" defaultValue="Info">
-        <option value="Info">Info</option>
-        <option value="Debug">Debug</option>
-        <option value="Warn">Warn</option>
-      </select>
-    </div>
-    <div className="setting-item">
-      <label>Panel Freeze</label>
-      <div className="freeze-list">
-        <label className="freeze-row">
-          <input
-            type="checkbox"
-            checked={panelFreeze.left}
-            onChange={(e) => onUpdatePanelFreeze?.('left', e.target.checked)}
-          />
-          Left Sidebar
-        </label>
-        <label className="freeze-row">
-          <input
-            type="checkbox"
-            checked={panelFreeze.canvas}
-            onChange={(e) => onUpdatePanelFreeze?.('canvas', e.target.checked)}
-          />
-          Canvas
-        </label>
-        <label className="freeze-row">
-          <input
-            type="checkbox"
-            checked={panelFreeze.right}
-            onChange={(e) => onUpdatePanelFreeze?.('right', e.target.checked)}
-          />
-          Right Panel
-        </label>
-        <label className="freeze-row">
-          <input
-            type="checkbox"
-            checked={panelFreeze.bottom}
-            onChange={(e) => onUpdatePanelFreeze?.('bottom', e.target.checked)}
-          />
-          Bottom Panel
-        </label>
-        <label className="freeze-row">
-          <input
-            type="checkbox"
-            checked={panelFreeze.performance}
-            onChange={(e) => onUpdatePanelFreeze?.('performance', e.target.checked)}
-          />
-          Performance
-        </label>
-        <button type="button" className="freeze-reset" onClick={() => onResetPanelFreeze?.()}>
-          Reset Freeze
-        </button>
+}> = ({
+  panelFreeze,
+  onUpdatePanelFreeze,
+  onResetPanelFreeze,
+  disableAnimations,
+  onToggleDisableAnimations,
+  monitorLiveUpdatesEnabled,
+  onToggleMonitorLiveUpdates,
+}) => {
+  const [contextBuilder, setContextBuilder] = useState<ContextBuilderSettings>(DEFAULT_CONTEXT_BUILDER_SETTINGS);
+  const [contextLoading, setContextLoading] = useState(true);
+  const [contextSaving, setContextSaving] = useState(false);
+  const [contextHint, setContextHint] = useState('');
+
+  const rankingModeValue = useMemo<'off' | 'dryrun' | 'active'>(() => {
+    if (contextBuilder.enableModelRanking === 'dryrun') return 'dryrun';
+    if (contextBuilder.enableModelRanking === true) return 'active';
+    return 'off';
+  }, [contextBuilder.enableModelRanking]);
+
+  const saveContextBuilderPatch = useCallback(async (patch: Partial<ContextBuilderSettings>) => {
+    setContextSaving(true);
+    setContextHint('');
+    try {
+      const next = await updateContextBuilderSettings(patch);
+      setContextBuilder(next);
+      setContextHint('Context Builder 设置已保存');
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setContextHint(`保存失败: ${message}`);
+    } finally {
+      setContextSaving(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    setContextLoading(true);
+    setContextHint('');
+    void getContextBuilderSettings()
+      .then((settings) => {
+        if (cancelled) return;
+        setContextBuilder(settings);
+      })
+      .catch((error) => {
+        if (cancelled) return;
+        const message = error instanceof Error ? error.message : String(error);
+        setContextHint(`读取 Context Builder 设置失败: ${message}`);
+      })
+      .finally(() => {
+        if (!cancelled) setContextLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  return (
+    <div className="tab-content">
+      <div className="setting-item">
+        <label htmlFor="theme-select">Theme</label>
+        <select id="theme-select" defaultValue="Dark">
+          <option value="Dark">Dark</option>
+          <option value="Light">Light</option>
+        </select>
+      </div>
+      <div className="setting-item">
+        <label htmlFor="log-level-select">Log Level</label>
+        <select id="log-level-select" defaultValue="Info">
+          <option value="Info">Info</option>
+          <option value="Debug">Debug</option>
+          <option value="Warn">Warn</option>
+        </select>
+      </div>
+
+      <div className="setting-item">
+        <label>Context Builder</label>
+        <div className="freeze-list">
+          {contextLoading ? (
+            <div className="context-builder-hint">加载中...</div>
+          ) : (
+            <>
+              <label className="freeze-row">
+                <input
+                  type="checkbox"
+                  checked={contextBuilder.enabled}
+                  disabled={contextSaving}
+                  onChange={(e) => {
+                    const enabled = e.target.checked;
+                    setContextBuilder((prev) => ({ ...prev, enabled }));
+                    void saveContextBuilderPatch({ enabled });
+                  }}
+                />
+                启用 Context Builder
+              </label>
+
+              <label className="freeze-row" style={{ alignItems: 'center', gap: 8 }}>
+                <span style={{ minWidth: 98 }}>Mode</span>
+                <select
+                  value={contextBuilder.mode}
+                  disabled={contextSaving}
+                  onChange={(e) => {
+                    const mode = e.target.value as ContextBuilderSettings['mode'];
+                    setContextBuilder((prev) => ({ ...prev, mode }));
+                    void saveContextBuilderPatch({ mode });
+                  }}
+                >
+                  <option value="minimal">minimal（仅移除无关）</option>
+                  <option value="moderate">moderate（移除+补充）</option>
+                  <option value="aggressive">aggressive（全量重排）</option>
+                </select>
+              </label>
+
+              <label className="freeze-row" style={{ alignItems: 'center', gap: 8 }}>
+                <span style={{ minWidth: 98 }}>Ranking</span>
+                <select
+                  value={rankingModeValue}
+                  disabled={contextSaving}
+                  onChange={(e) => {
+                    const value = e.target.value;
+                    const rankingMode: ContextBuilderSettings['enableModelRanking'] =
+                      value === 'dryrun' ? 'dryrun' : value === 'active';
+                    setContextBuilder((prev) => ({ ...prev, enableModelRanking: rankingMode }));
+                    void saveContextBuilderPatch({ enableModelRanking: rankingMode });
+                  }}
+                >
+                  <option value="off">off（关闭排序）</option>
+                  <option value="dryrun">dryrun（只算不重排）</option>
+                  <option value="active">active（按排序重排）</option>
+                </select>
+              </label>
+
+              <div className="context-builder-hint">
+                中等模式：以 task 为最小颗粒补充历史。即使单个 task 超过“移除量”，只要总 tokens 未超预算也会补入。
+              </div>
+              {contextHint && <div className="context-builder-hint">{contextHint}</div>}
+            </>
+          )}
+        </div>
+      </div>
+
+      <div className="setting-item">
+        <label>Panel Freeze</label>
+        <div className="freeze-list">
+          <label className="freeze-row">
+            <input
+              type="checkbox"
+              checked={panelFreeze.left}
+              onChange={(e) => onUpdatePanelFreeze?.('left', e.target.checked)}
+            />
+            Left Sidebar
+          </label>
+          <label className="freeze-row">
+            <input
+              type="checkbox"
+              checked={panelFreeze.canvas}
+              onChange={(e) => onUpdatePanelFreeze?.('canvas', e.target.checked)}
+            />
+            Canvas
+          </label>
+          <label className="freeze-row">
+            <input
+              type="checkbox"
+              checked={panelFreeze.right}
+              onChange={(e) => onUpdatePanelFreeze?.('right', e.target.checked)}
+            />
+            Right Panel
+          </label>
+          <label className="freeze-row">
+            <input
+              type="checkbox"
+              checked={panelFreeze.bottom}
+              onChange={(e) => onUpdatePanelFreeze?.('bottom', e.target.checked)}
+            />
+            Bottom Panel
+          </label>
+          <label className="freeze-row">
+            <input
+              type="checkbox"
+              checked={panelFreeze.performance}
+              onChange={(e) => onUpdatePanelFreeze?.('performance', e.target.checked)}
+            />
+            Performance
+          </label>
+          <button type="button" className="freeze-reset" onClick={() => onResetPanelFreeze?.()}>
+            Reset Freeze
+          </button>
+        </div>
+      </div>
+      <div className="setting-item">
+        <label>Animation</label>
+        <div className="freeze-list">
+          <label className="freeze-row">
+            <input
+              type="checkbox"
+              checked={disableAnimations}
+              onChange={(e) => onToggleDisableAnimations?.(e.target.checked)}
+            />
+            Disable Animations
+          </label>
+        </div>
+      </div>
+      <div className="setting-item">
+        <label>Monitor Updates</label>
+        <div className="freeze-list">
+          <label className="freeze-row">
+            <input
+              type="checkbox"
+              checked={monitorLiveUpdatesEnabled}
+              onChange={(e) => onToggleMonitorLiveUpdates?.(e.target.checked)}
+            />
+            Enable Context/Ledger Live Updates
+          </label>
+        </div>
       </div>
     </div>
-    <div className="setting-item">
-      <label>Animation</label>
-      <div className="freeze-list">
-        <label className="freeze-row">
-          <input
-            type="checkbox"
-            checked={disableAnimations}
-            onChange={(e) => onToggleDisableAnimations?.(e.target.checked)}
-          />
-          Disable Animations
-        </label>
-      </div>
-    </div>
-    <div className="setting-item">
-      <label>Monitor Updates</label>
-      <div className="freeze-list">
-        <label className="freeze-row">
-          <input
-            type="checkbox"
-            checked={monitorLiveUpdatesEnabled}
-            onChange={(e) => onToggleMonitorLiveUpdates?.(e.target.checked)}
-          />
-          Enable Context/Ledger Live Updates
-        </label>
-      </div>
-    </div>
-  </div>
-);
+  );
+};

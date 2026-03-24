@@ -173,6 +173,13 @@ export const ContextMonitor: React.FC<ContextMonitorProps> = ({
   const [selectedRoundId, setSelectedRoundId] = useState<string | null>(null);
   const [detail, setDetail] = useState<{ title: string; content: string; meta?: string } | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
+  const [cbSettings, setCbSettings] = useState<{
+    enabled: boolean;
+    mode: string;
+    enableModelRanking: boolean | 'dryrun';
+    rankingProviderId: string;
+  } | null>(null);
+  const [cbSaving, setCbSaving] = useState(false);
   const fetchInFlightRef = useRef(false);
   const queuedRefreshRef = useRef(false);
   const scheduleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -250,6 +257,56 @@ export const ContextMonitor: React.FC<ContextMonitorProps> = ({
   }, [debounceMs, liveUpdatesEnabled, scheduleRefresh, sessionId]);
 
   useWebSocket(handleWsMessage, { disabled: !sessionId || !liveUpdatesEnabled });
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch('/api/v1/context-builder/settings');
+        if (!res.ok || cancelled) return;
+        const body = await res.json() as { success: boolean; settings: Record<string, unknown> };
+        if (body.success && body.settings) {
+          setCbSettings({
+            enabled: typeof body.settings.enabled === 'boolean' ? body.settings.enabled : false,
+            mode: typeof body.settings.mode === 'string' ? body.settings.mode : 'moderate',
+            enableModelRanking: typeof body.settings.enableModelRanking === 'string'
+              ? body.settings.enableModelRanking as boolean | 'dryrun'
+              : !!body.settings.enableModelRanking,
+            rankingProviderId: typeof body.settings.rankingProviderId === 'string' ? body.settings.rankingProviderId : '',
+          });
+      }
+      } catch (_e) { /* ignore */ }
+    })();
+    return () => { cancelled = true; };
+  }, []);
+
+  const patchSetting = useCallback(async (patch: Record<string, unknown>) => {
+    if (cbSaving) return;
+    setCbSaving(true);
+    try {
+      const res = await fetch('/api/v1/context-builder/settings', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ settings: patch }),
+      });
+      const body = await res.json() as { success: boolean; settings: Record<string, unknown> };
+      if (body.success && body.settings) {
+        setCbSettings((prev) => {
+          if (!prev) return prev;
+          const next = { ...prev };
+          if (typeof body.settings.enabled === 'boolean') next.enabled = body.settings.enabled;
+          if (typeof body.settings.mode === 'string') next.mode = body.settings.mode;
+          if (body.settings.enableModelRanking !== undefined) {
+            next.enableModelRanking = body.settings.enableModelRanking as boolean | 'dryrun';
+          }
+          if (typeof body.settings.rankingProviderId === 'string') next.rankingProviderId = body.settings.rankingProviderId;
+          return next;
+        });
+      }
+    } catch (_e) { /* ignore */ } finally {
+      setCbSaving(false);
+    }
+  }, [cbSaving]);
 
   const sortedRounds = useMemo(() => {
     if (!data?.rounds) return [];
@@ -355,6 +412,42 @@ export const ContextMonitor: React.FC<ContextMonitorProps> = ({
           <span>{liveUpdatesEnabled ? 'live:on' : 'live:off'}</span>
           <span>{loading ? '刷新中…' : `更新 ${data?.updatedAt ? formatTimestamp(data.updatedAt) : '--:--:--'}`}</span>
         </div>
+        {cbSettings && (
+          <div className="context-monitor-controls">
+            <label className="cb-label" title="启用/禁用 context builder">
+              <input
+                type="checkbox"
+                checked={cbSettings.enabled}
+                disabled={cbSaving}
+                onChange={(e) => { void patchSetting({ enabled: e.target.checked }); }}
+              />
+              <span>CB</span>
+            </label>
+            <select
+              className="cb-select"
+              value={cbSettings.mode}
+              disabled={cbSaving || !cbSettings.enabled}
+              onChange={(e) => { void patchSetting({ mode: e.target.value }); }}
+            >
+              <option value="minimal">minimal</option>
+              <option value="moderate">moderate</option>
+              <option value="aggressive">aggressive</option>
+            </select>
+            <select
+              className="cb-select"
+              value={cbSettings.enableModelRanking === true ? 'true' : cbSettings.enableModelRanking === false ? 'false' : 'dryrun'}
+              disabled={cbSaving || !cbSettings.enabled}
+              onChange={(e) => {
+                const v = e.target.value;
+                void patchSetting({ enableModelRanking: v === 'true' ? true : v === 'false' ? false : 'dryrun' });
+              }}
+            >
+              <option value="false">ranking: off</option>
+              <option value="dryrun">ranking: dryrun</option>
+              <option value="true">ranking: active</option>
+            </select>
+          </div>
+        )}
         <div className="context-monitor-flow">
           <span>① 选 Round</span>
           <span>② 看该 Round 的 Selected Context 组合</span>
