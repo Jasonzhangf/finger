@@ -133,7 +133,7 @@ async function fetchLedgerPage(sessionId: string, limit: number, offset: number,
 }
 
 const PAGE_SIZE = 50;
-const CARD_PREVIEW_LIMIT = 50;
+const CARD_PREVIEW_LIMIT = 500;
 
 const LedgerModal: React.FC<LedgerModalProps> = ({ sessionId, label, onClose }) => {
   const [slots, setSlots] = useState<LedgerSlot[]>([]);
@@ -393,7 +393,7 @@ export const LedgerMonitor: React.FC<LedgerMonitorProps> = ({ sessionId, label }
           </div>
         )}
         <div className="ledger-monitor-recent">
-          <div className="ledger-monitor-hint">当前展示 50 条（点击查看全部）</div>
+          <div className="ledger-monitor-hint">当前展示 {latestSlots.length} 条（点击查看全部）</div>
           {loadError ? (
             <span className="ledger-monitor-empty ledger-error-text">{loadError}</span>
           ) : latestSlots.length === 0 ? (
