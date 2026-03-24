@@ -102,6 +102,7 @@ export function resolveDisplayToolName(payload: Record<string, unknown>, input?:
 }
 
 type ToolResultVerb = 'search' | 'read' | 'write' | 'run' | 'edit' | 'plan' | 'other';
+const TOOL_SIGNAL_SNIPPET_MAX = 100;
 
 function splitCommandHead(command: string): string {
   return command.split(/(?:\|\||&&|\||;)/)[0]?.trim() ?? command.trim();
@@ -228,6 +229,168 @@ function normalizeToolVerb(category: ToolCategoryLabel): ToolResultVerb {
   if (category === '编辑') return 'edit';
   if (category === '计划') return 'plan';
   return 'other';
+}
+
+function clipSignal(value: string, max = TOOL_SIGNAL_SNIPPET_MAX): string {
+  return truncateInlineText(value, max);
+}
+
+function resolveOutputRecord(output: unknown): Record<string, unknown> | null {
+  if (!isRecord(output)) return null;
+  if (isRecord(output.result)) return output.result;
+  return output;
+}
+
+function extractStdoutSnippet(output: unknown): string | undefined {
+  const record = resolveOutputRecord(output);
+  if (!record) return undefined;
+  const stdout = typeof record.stdout === 'string'
+    ? record.stdout
+    : typeof record.output === 'string'
+      ? record.output
+      : typeof record.text === 'string'
+        ? record.text
+        : '';
+  const normalized = stdout.trim();
+  return normalized.length > 0 ? clipSignal(normalized) : undefined;
+}
+
+function extractStderrSnippet(output: unknown): string | undefined {
+  const record = resolveOutputRecord(output);
+  if (!record) return undefined;
+  const stderr = typeof record.stderr === 'string'
+    ? record.stderr
+    : typeof record.error === 'string'
+      ? record.error
+      : '';
+  const normalized = stderr.trim();
+  return normalized.length > 0 ? clipSignal(normalized) : undefined;
+}
+
+function extractMailboxSnippet(output: unknown): string | undefined {
+  const root = isRecord(output) ? output : null;
+  if (!root) return undefined;
+  const message = isRecord(root.message)
+    ? root.message
+    : (isRecord(root.result) && isRecord(root.result.message) ? root.result.message : null);
+  if (!message) return undefined;
+  const messageId = typeof message.id === 'string' ? message.id.trim() : '';
+  const category = typeof message.category === 'string' ? message.category.trim() : '';
+  const content = isRecord(message.content) ? message.content : null;
+  const envelope = content && isRecord(content.envelope) ? content.envelope : null;
+  const title = envelope && typeof envelope.title === 'string' ? envelope.title.trim() : '';
+  const shortDescription = envelope && typeof envelope.shortDescription === 'string'
+    ? envelope.shortDescription.trim()
+    : '';
+  const summary = [title, shortDescription].filter((part) => part.length > 0).join(' / ');
+  const parts = [
+    messageId ? `msg=${clipSignal(messageId, 48)}` : '',
+    category ? `cat=${clipSignal(category, 24)}` : '',
+    summary ? `content=${clipSignal(summary)}` : '',
+  ].filter((part) => part.length > 0);
+  return parts.length > 0 ? parts.join(' · ') : undefined;
+}
+
+function extractLedgerSnippet(input: unknown, output: unknown): string | undefined {
+  const normalizedInput = unwrapToolPayload(input);
+  const action = isRecord(normalizedInput) && typeof normalizedInput.action === 'string'
+    ? normalizedInput.action.trim().toLowerCase()
+    : 'query';
+  const query = isRecord(normalizedInput)
+    ? (
+      typeof normalizedInput.query === 'string'
+        ? normalizedInput.query.trim()
+        : typeof normalizedInput.q === 'string'
+          ? normalizedInput.q.trim()
+          : ''
+    )
+    : '';
+  const root = isRecord(output) ? output : null;
+  if (!root) {
+    if (query.length > 0) return `query=${clipSignal(query)}`;
+    return action;
+  }
+  const hitCount = Array.isArray(root.results)
+    ? root.results.length
+    : Array.isArray(root.hits)
+      ? root.hits.length
+      : Array.isArray(root.messages)
+        ? root.messages.length
+        : undefined;
+  const summary = typeof root.summary === 'string'
+    ? root.summary.trim()
+    : undefined;
+  const firstResult = Array.isArray(root.results) && root.results.length > 0 && isRecord(root.results[0])
+    ? root.results[0]
+    : Array.isArray(root.hits) && root.hits.length > 0 && isRecord(root.hits[0])
+      ? root.hits[0]
+      : null;
+  const firstSummary = firstResult && typeof firstResult.summary === 'string'
+    ? firstResult.summary.trim()
+    : firstResult && typeof firstResult.content === 'string'
+      ? firstResult.content.trim()
+      : '';
+  const parts = [
+    action ? `action=${action}` : '',
+    query ? `query=${clipSignal(query)}` : '',
+    typeof hitCount === 'number' ? `hits=${hitCount}` : '',
+    summary ? `summary=${clipSignal(summary)}` : '',
+    firstSummary ? `first=${clipSignal(firstSummary)}` : '',
+  ].filter((part) => part.length > 0);
+  return parts.length > 0 ? parts.join(' · ') : undefined;
+}
+
+function buildToolSignalSummary(toolName: string, input: unknown, output: unknown): string | undefined {
+  const normalizedToolName = toolName.trim().toLowerCase();
+  if (normalizedToolName === 'exec_command' || normalizedToolName === 'shell.exec' || normalizedToolName === 'shell') {
+    const command = extractExecCommand(input);
+    const stdout = extractStdoutSnippet(output);
+    const stderr = extractStderrSnippet(output);
+    const parts = [
+      command ? `stdin=${clipSignal(command)}` : '',
+      stdout ? `stdout=${stdout}` : '',
+      stderr ? `stderr=${stderr}` : '',
+    ].filter((part) => part.length > 0);
+    return parts.length > 0 ? parts.join(' · ') : undefined;
+  }
+
+  if (normalizedToolName === 'write_stdin') {
+    const normalizedInput = unwrapToolPayload(input);
+    const stdin = isRecord(normalizedInput) && typeof normalizedInput.chars === 'string'
+      ? normalizedInput.chars.trim()
+      : '';
+    const stdout = extractStdoutSnippet(output);
+    const stderr = extractStderrSnippet(output);
+    const parts = [
+      stdin ? `stdin=${clipSignal(stdin)}` : '',
+      stdout ? `stdout=${stdout}` : '',
+      stderr ? `stderr=${stderr}` : '',
+    ].filter((part) => part.length > 0);
+    return parts.length > 0 ? parts.join(' · ') : undefined;
+  }
+
+  if (normalizedToolName.startsWith('mailbox.')) {
+    return extractMailboxSnippet(output);
+  }
+
+  if (normalizedToolName === 'context_ledger.memory') {
+    return extractLedgerSnippet(input, output);
+  }
+
+  if (normalizedToolName === 'update_plan') {
+    const root = isRecord(output) ? output : null;
+    if (!root || !Array.isArray(root.plan)) return undefined;
+    const firstStep = root.plan.find((item) => isRecord(item) && typeof item.step === 'string') as Record<string, unknown> | undefined;
+    const stepText = firstStep && typeof firstStep.step === 'string' ? firstStep.step.trim() : '';
+    const count = root.plan.length;
+    const parts = [
+      count > 0 ? `steps=${count}` : '',
+      stepText ? `first=${clipSignal(stepText)}` : '',
+    ].filter((part) => part.length > 0);
+    return parts.length > 0 ? parts.join(' · ') : undefined;
+  }
+
+  return undefined;
 }
 
 export function resolveToolCategoryLabel(toolName: string, input?: unknown): ToolCategoryLabel {
@@ -482,19 +645,22 @@ export function buildToolResultContent(
   duration?: number,
   errorText?: string,
   input?: unknown,
+  output?: unknown,
 ): string {
   const durationText = typeof duration === 'number' ? ` (${duration}ms)` : '';
   const category = resolveToolCategoryLabel(toolName, input);
   const verb = normalizeToolVerb(category);
   const actionLabel = resolveToolActionLabel(toolName, input);
   const base = `[${verb}] ${actionLabel}`;
+  const signal = buildToolSignalSummary(toolName, input, output);
+  const signalText = signal ? ` · ${signal}` : '';
   if (status === 'error') {
     if (errorText && errorText.trim().length > 0) {
-      return `${base} · failed${durationText} · ${errorText.trim()}`;
+      return `${base} · failed${durationText}${signalText} · ${errorText.trim()}`;
     }
-    return `${base} · failed${durationText}`;
+    return `${base} · failed${durationText}${signalText}`;
   }
-  return `${base} · success${durationText}`;
+  return `${base} · success${durationText}${signalText}`;
 }
 
 export function isGenericToolStatusContent(content: string): boolean {

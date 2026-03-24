@@ -3,18 +3,27 @@ import { dispatchTaskToSystemAgent } from '../../../../src/agents/finger-system-
 
 describe('task-report-dispatcher', () => {
   const createDeps = (overrides?: {
-    executeReturn?: unknown;
+    dispatchReturn?: unknown;
+    runtimeViewReturn?: unknown;
     runtimeCurrentSessionId?: string;
     sessions?: Array<{ id: string; context?: Record<string, unknown> }>;
     currentSessionId?: string;
   }) => {
-    const execute = vi.fn().mockResolvedValue(
-      overrides?.executeReturn ?? {
-        ok: true,
-        dispatchId: 'dispatch-123',
-        status: 'queued',
-      },
-    );
+    const execute = vi.fn().mockImplementation(async (command: string) => {
+      if (command === 'runtime_view') {
+        return overrides?.runtimeViewReturn ?? {
+          agents: [{ id: 'finger-system-agent', status: 'idle' }],
+        };
+      }
+      if (command === 'dispatch') {
+        return overrides?.dispatchReturn ?? {
+          ok: true,
+          dispatchId: 'dispatch-123',
+          status: 'queued',
+        };
+      }
+      return {};
+    });
     const sessions = new Map<string, { id: string; context?: Record<string, unknown> }>();
     for (const session of overrides?.sessions ?? []) {
       sessions.set(session.id, session);
@@ -62,12 +71,15 @@ describe('task-report-dispatcher', () => {
       targetAgentId: 'finger-system-agent',
       sessionId: 'session-1',
       blocking: false,
+      metadata: expect.objectContaining({
+        deliveryMode: 'direct',
+      }),
     }));
   });
 
   it('normalizes failed dispatch result', async () => {
     const { deps } = createDeps({
-      executeReturn: {
+      dispatchReturn: {
         ok: false,
         dispatchId: 'dispatch-failed',
         status: 'failed',
@@ -87,6 +99,29 @@ describe('task-report-dispatcher', () => {
     expect(result.ok).toBe(false);
     expect(result.status).toBe('failed');
     expect(result.error).toContain('target busy');
+  });
+
+  it('keeps mailbox delivery mode when system agent is busy', async () => {
+    const { deps, execute } = createDeps({
+      runtimeViewReturn: {
+        agents: [{ id: 'finger-system-agent', status: 'running' }],
+      },
+      sessions: [{ id: 'session-busy' }],
+    });
+
+    await dispatchTaskToSystemAgent(deps, {
+      taskId: 'task-busy',
+      taskSummary: 'summary',
+      sessionId: 'session-busy',
+      result: 'success',
+      projectId: 'project-busy',
+    });
+
+    expect(execute).toHaveBeenCalledWith('dispatch', expect.objectContaining({
+      metadata: expect.not.objectContaining({
+        deliveryMode: 'direct',
+      }),
+    }));
   });
 
   it('falls back to runtime current root session when requested session is invalid', async () => {
@@ -112,6 +147,7 @@ describe('task-report-dispatcher', () => {
     expect(execute).toHaveBeenCalledWith('dispatch', expect.objectContaining({
       sessionId: 'root-system-1',
       metadata: expect.objectContaining({
+        deliveryMode: 'direct',
         originalSessionId: 'msg-1774330605368-q3vkv5',
       }),
     }));

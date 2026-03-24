@@ -67,4 +67,63 @@ describe('mapSessionMessageToRuntimeEvent', () => {
     expect(event?.planSteps).toHaveLength(2);
     expect(event?.planExplanation).toBe('先修复关键显示，再补充细节');
   });
+
+  it('parses mailbox/session replay payload from metadata event', () => {
+    const event = mapSessionMessageToRuntimeEvent(
+      buildMessage({
+        type: 'tool_result',
+        content: '工具完成: mailbox.read',
+        metadata: {
+          event: {
+            toolName: 'mailbox.read',
+            payload: {
+              input: { id: 'msg-abc' },
+              output: {
+                message: {
+                  id: 'msg-abc',
+                  category: 'heartbeat-task',
+                  content: {
+                    envelope: {
+                      title: 'Heartbeat Task',
+                      shortDescription: '定时系统巡检任务，需要检查并处理。',
+                    },
+                  },
+                },
+              },
+            },
+          },
+        },
+      }),
+      'finger-system-agent',
+    );
+
+    expect(event).not.toBeNull();
+    expect(event?.content).toContain('msg-abc');
+    expect(event?.content).toContain('content=');
+  });
+
+  it('truncates context_ledger.memory details to 100 chars', () => {
+    const longQuery = `query-${'x'.repeat(180)}`;
+    const event = mapSessionMessageToRuntimeEvent(
+      buildMessage({
+        type: 'tool_result',
+        content: '工具完成: context_ledger.memory',
+        toolName: 'context_ledger.memory',
+        toolInput: {
+          action: 'query',
+          query: longQuery,
+        },
+        toolOutput: {
+          summary: `summary-${'y'.repeat(220)}`,
+          results: [{ summary: `first-${'z'.repeat(220)}` }],
+        },
+      }),
+      'finger-system-agent',
+    );
+
+    expect(event).not.toBeNull();
+    expect(event?.content).toContain('query=');
+    expect(event?.content).toContain('summary=');
+    expect(event?.content).toContain('...');
+  });
 });

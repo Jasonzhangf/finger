@@ -32,6 +32,41 @@ function truncateInline(value: string, max = 72): string {
   return `${normalized.slice(0, max)}...`;
 }
 
+function resolveOutputRecord(output: unknown): Record<string, unknown> | null {
+  if (!output || typeof output !== 'object') return null;
+  const record = output as Record<string, unknown>;
+  if (record.result && typeof record.result === 'object' && record.result !== null) {
+    return record.result as Record<string, unknown>;
+  }
+  return record;
+}
+
+function extractStdout(output: unknown): string | undefined {
+  const record = resolveOutputRecord(output);
+  if (!record) return undefined;
+  const stdout = typeof record.stdout === 'string'
+    ? record.stdout
+    : typeof record.output === 'string'
+      ? record.output
+      : typeof record.text === 'string'
+        ? record.text
+        : '';
+  const normalized = stdout.trim();
+  return normalized.length > 0 ? truncateInline(normalized, 100) : undefined;
+}
+
+function extractStderr(output: unknown): string | undefined {
+  const record = resolveOutputRecord(output);
+  if (!record) return undefined;
+  const stderr = typeof record.stderr === 'string'
+    ? record.stderr
+    : typeof record.error === 'string'
+      ? record.error
+      : '';
+  const normalized = stderr.trim();
+  return normalized.length > 0 ? truncateInline(normalized, 100) : undefined;
+}
+
 function tokenizeCommand(command: string): string[] {
   const tokens: string[] = [];
   const regex = /"([^"\\]*(?:\\.[^"\\]*)*)"|'([^'\\]*(?:\\.[^'\\]*)*)'|(\S+)/g;
@@ -105,7 +140,12 @@ function parseMailboxVerb(toolName: string): ToolVerb {
   return 'read';
 }
 
-function parseToolSummary(toolName: string, input: unknown): { verb: ToolVerb; target?: string; details?: Record<string, unknown> } {
+function parseToolSummary(toolName: string, input: unknown, output?: unknown): {
+  verb: ToolVerb;
+  target?: string;
+  signals?: string[];
+  details?: Record<string, unknown>;
+} {
   const normalizedToolName = typeof toolName === 'string' ? toolName.trim().toLowerCase() : 'unknown';
   const payload = typeof input === 'object' && input !== null ? input as Record<string, unknown> : {};
   if (normalizedToolName === 'apply_patch') {
@@ -128,18 +168,49 @@ function parseToolSummary(toolName: string, input: unknown): { verb: ToolVerb; t
   if (normalizedToolName === 'context_ledger.memory') {
     const action = typeof payload.action === 'string' ? payload.action.trim().toLowerCase() : 'query';
     const query = typeof payload.query === 'string' ? payload.query.trim() : '';
+    const outputRecord = resolveOutputRecord(output);
+    const summary = outputRecord && typeof outputRecord.summary === 'string' ? outputRecord.summary.trim() : '';
+    const hits = outputRecord && Array.isArray(outputRecord.results) ? outputRecord.results.length : undefined;
     const verb: ToolVerb = (action === 'index' || action === 'compact' || action === 'write') ? 'write' : 'read';
     return {
       verb,
       ...(query.length > 0 ? { target: truncateInline(query, 48) } : {}),
+      signals: [
+        `action=${action}`,
+        query.length > 0 ? `query=${truncateInline(query, 100)}` : '',
+        typeof hits === 'number' ? `hits=${hits}` : '',
+        summary.length > 0 ? `summary=${truncateInline(summary, 100)}` : '',
+      ].filter((item) => item.length > 0),
     };
   }
 
   if (normalizedToolName.startsWith('mailbox.')) {
     const id = typeof payload.id === 'string' ? payload.id.trim() : '';
+    const outputRecord = resolveOutputRecord(output);
+    const message = outputRecord && outputRecord.message && typeof outputRecord.message === 'object'
+      ? outputRecord.message as Record<string, unknown>
+      : null;
+    const content = message?.content && typeof message.content === 'object'
+      ? message.content as Record<string, unknown>
+      : null;
+    const envelope = content?.envelope && typeof content.envelope === 'object'
+      ? content.envelope as Record<string, unknown>
+      : null;
+    const title = envelope && typeof envelope.title === 'string' ? envelope.title.trim() : '';
+    const shortDescription = envelope && typeof envelope.shortDescription === 'string'
+      ? envelope.shortDescription.trim()
+      : '';
+    const messageCategory = message && typeof message.category === 'string' ? message.category.trim() : '';
+    const messageId = message && typeof message.id === 'string' ? message.id.trim() : '';
     return {
       verb: parseMailboxVerb(normalizedToolName),
       ...(id.length > 0 ? { target: truncateInline(id, 40) } : {}),
+      signals: [
+        messageId ? `msg=${truncateInline(messageId, 60)}` : '',
+        messageCategory ? `cat=${truncateInline(messageCategory, 30)}` : '',
+        title ? `title=${truncateInline(title, 100)}` : '',
+        shortDescription ? `desc=${truncateInline(shortDescription, 100)}` : '',
+      ].filter((item) => item.length > 0),
     };
   }
 
@@ -164,7 +235,18 @@ function parseToolSummary(toolName: string, input: unknown): { verb: ToolVerb; t
   }
 
   if (normalizedToolName === 'write_stdin') {
-    return { verb: 'run', target: 'stdin' };
+    const stdin = typeof payload.chars === 'string' ? payload.chars.trim() : '';
+    const stdout = extractStdout(output);
+    const stderr = extractStderr(output);
+    return {
+      verb: 'run',
+      target: 'stdin',
+      signals: [
+        stdin ? `stdin=${truncateInline(stdin, 100)}` : '',
+        stdout ? `stdout=${stdout}` : '',
+        stderr ? `stderr=${stderr}` : '',
+      ].filter((item) => item.length > 0),
+    };
   }
 
   if (normalizedToolName === 'exec_command' || normalizedToolName === 'shell.exec' || normalizedToolName === 'shell') {
@@ -175,9 +257,16 @@ function parseToolSummary(toolName: string, input: unknown): { verb: ToolVerb; t
         : '';
     if (command.length === 0) return { verb: 'run' };
     const verb = classifyExecCommand(command);
+    const stdout = extractStdout(output);
+    const stderr = extractStderr(output);
     return {
       verb,
       target: parseExecCommandTarget(command, verb) ?? truncateInline(command, 64),
+      signals: [
+        `stdin=${truncateInline(command, 100)}`,
+        stdout ? `stdout=${stdout}` : '',
+        stderr ? `stderr=${stderr}` : '',
+      ].filter((item) => item.length > 0),
       details: {
         command: truncateInline(command, 200),
       },
@@ -234,9 +323,10 @@ export async function handleToolResult(
   const agentId = event.agentId || 'unknown-agent';
   const toolName = event.toolName || 'unknown-tool';
   const agentInfo = await ctx.getAgentInfo(agentId);
-  const parsed = parseToolSummary(toolName, event.payload?.input);
+  const parsed = parseToolSummary(toolName, event.payload?.input, event.payload?.output);
   const statusTag = 'success';
-  const taskDescription = `[${parsed.verb}] ${parsed.target ?? toolName} · ${statusTag}`;
+  const signalText = parsed.signals && parsed.signals.length > 0 ? ` · ${parsed.signals.join(' · ')}` : '';
+  const taskDescription = `[${parsed.verb}] ${parsed.target ?? toolName} · ${statusTag}${signalText}`;
 
   const wrappedUpdate: WrappedStatusUpdate = {
     type: 'agent_status',
@@ -255,6 +345,7 @@ export async function handleToolResult(
         toolId: event.toolId,
         toolName,
         duration: event.payload?.duration,
+        ...(parsed.signals && parsed.signals.length > 0 ? { signals: parsed.signals } : {}),
         ...(parsed.details ? parsed.details : {}),
       },
     },
@@ -294,7 +385,8 @@ export async function handleToolError(
 
   const agentInfo = await ctx.getAgentInfo(agentId);
   const parsed = parseToolSummary(event.toolName || 'unknown-tool', event.payload?.input);
-  const taskDescription = `[${parsed.verb}] ${parsed.target ?? (event.toolName || 'unknown-tool')} · failed`;
+  const signalText = parsed.signals && parsed.signals.length > 0 ? ` · ${parsed.signals.join(' · ')}` : '';
+  const taskDescription = `[${parsed.verb}] ${parsed.target ?? (event.toolName || 'unknown-tool')} · failed${signalText}`;
   const wrappedUpdate: WrappedStatusUpdate = {
     type: 'agent_status',
     eventId: event.toolId || `tool-error-${Date.now()}`,
@@ -311,6 +403,7 @@ export async function handleToolError(
       details: {
         error: event.payload?.error,
         toolName: event.toolName,
+        ...(parsed.signals && parsed.signals.length > 0 ? { signals: parsed.signals } : {}),
         ...(parsed.details ? parsed.details : {}),
       },
     },

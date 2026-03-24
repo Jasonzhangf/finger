@@ -598,14 +598,18 @@ describe('Event Forwarding - Dispatch Child Ledger Pointer', () => {
 });
 
 describe('Event Forwarding - Dispatch Result Mailbox Routing', () => {
-  it('routes completed dispatch result envelope into source agent mailbox with stored envelope', () => {
+  it('routes completed dispatch result envelope into source agent mailbox with stored envelope when source system agent is busy', async () => {
     const eventBus = {
       subscribe: vi.fn(),
       subscribeMultiple: vi.fn(),
       emit: vi.fn(async () => {}),
     } as unknown as UnifiedEventBus;
     const sessionManager = createMockSessionManager();
-    const deps = createDeps({ eventBus, sessionManager });
+    const deps = createDeps({
+      eventBus,
+      sessionManager,
+      isAgentBusy: () => true,
+    });
     const captured: { eventName: string; handler: (event: any) => void }[] = [];
     (eventBus.subscribe as ReturnType<typeof vi.fn>).mockImplementation((eventName: string, handler: (event: any) => void) => {
       captured.push({ eventName, handler });
@@ -615,7 +619,7 @@ describe('Event Forwarding - Dispatch Result Mailbox Routing', () => {
     const handler = captured.find((entry) => entry.eventName === 'agent_runtime_dispatch')?.handler;
     expect(handler).toBeDefined();
 
-    const sourceAgentId = `test-source-agent-${Date.now()}`;
+    const sourceAgentId = 'finger-system-agent';
     const dispatchId = `dispatch-${Date.now()}`;
     handler?.({
       type: 'agent_runtime_dispatch',
@@ -629,6 +633,7 @@ describe('Event Forwarding - Dispatch Result Mailbox Routing', () => {
         result: { summary: 'done from mailbox routing' },
       },
     });
+    await new Promise((resolve) => setTimeout(resolve, 0));
 
     const routed = heartbeatMailbox.list(sourceAgentId).find((message) =>
       typeof message.content === 'object'
@@ -640,6 +645,94 @@ describe('Event Forwarding - Dispatch Result Mailbox Routing', () => {
     expect(content.envelope).toBeDefined();
     expect(content.targetAgentId).toBe(sourceAgentId);
     expect(routed?.category).toBe('notification');
+  });
+
+  it('skips mailbox routing when source system agent is idle', async () => {
+    const eventBus = {
+      subscribe: vi.fn(),
+      subscribeMultiple: vi.fn(),
+      emit: vi.fn(async () => {}),
+    } as unknown as UnifiedEventBus;
+    const sessionManager = createMockSessionManager();
+    const deps = createDeps({
+      eventBus,
+      sessionManager,
+      isAgentBusy: () => false,
+    });
+    const captured: { eventName: string; handler: (event: any) => void }[] = [];
+    (eventBus.subscribe as ReturnType<typeof vi.fn>).mockImplementation((eventName: string, handler: (event: any) => void) => {
+      captured.push({ eventName, handler });
+    });
+
+    attachEventForwarding(deps);
+    const handler = captured.find((entry) => entry.eventName === 'agent_runtime_dispatch')?.handler;
+    expect(handler).toBeDefined();
+
+    const sourceAgentId = 'finger-system-agent';
+    const dispatchId = `dispatch-idle-${Date.now()}`;
+    handler?.({
+      type: 'agent_runtime_dispatch',
+      sessionId: 'session-source-idle',
+      timestamp: new Date().toISOString(),
+      payload: {
+        dispatchId,
+        sourceAgentId,
+        targetAgentId: 'finger-project-agent',
+        status: 'completed',
+        result: { summary: 'done without mailbox' },
+      },
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    const routed = heartbeatMailbox.list(sourceAgentId).find((message) =>
+      typeof message.content === 'object'
+      && message.content
+      && (message.content as Record<string, unknown>).dispatchId === dispatchId);
+    expect(routed).toBeUndefined();
+  });
+
+  it('skips mailbox routing for non-system source agents even when source is busy', async () => {
+    const eventBus = {
+      subscribe: vi.fn(),
+      subscribeMultiple: vi.fn(),
+      emit: vi.fn(async () => {}),
+    } as unknown as UnifiedEventBus;
+    const sessionManager = createMockSessionManager();
+    const deps = createDeps({
+      eventBus,
+      sessionManager,
+      isAgentBusy: () => true,
+    });
+    const captured: { eventName: string; handler: (event: any) => void }[] = [];
+    (eventBus.subscribe as ReturnType<typeof vi.fn>).mockImplementation((eventName: string, handler: (event: any) => void) => {
+      captured.push({ eventName, handler });
+    });
+
+    attachEventForwarding(deps);
+    const handler = captured.find((entry) => entry.eventName === 'agent_runtime_dispatch')?.handler;
+    expect(handler).toBeDefined();
+
+    const sourceAgentId = `finger-project-agent-${Date.now()}`;
+    const dispatchId = `dispatch-skip-source-${Date.now()}`;
+    handler?.({
+      type: 'agent_runtime_dispatch',
+      sessionId: 'session-non-system-source',
+      timestamp: new Date().toISOString(),
+      payload: {
+        dispatchId,
+        sourceAgentId,
+        targetAgentId: 'finger-system-agent',
+        status: 'completed',
+        result: { summary: 'done without source mailbox callback' },
+      },
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    const routed = heartbeatMailbox.list(sourceAgentId).find((message) =>
+      typeof message.content === 'object'
+      && message.content
+      && (message.content as Record<string, unknown>).dispatchId === dispatchId);
+    expect(routed).toBeUndefined();
   });
 });
 

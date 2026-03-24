@@ -153,7 +153,7 @@ export function mapSessionMessageToRuntimeEvent(
     const errorText = status === 'error' && typeof toolOutput === 'string' ? toolOutput : undefined;
     const content = typeof message.content === 'string' && !isGenericToolStatusContent(message.content)
       ? message.content
-      : buildToolResultContent(toolName, status, toolDurationMs, errorText, toolInput);
+      : buildToolResultContent(toolName, status, toolDurationMs, errorText, toolInput, toolOutput);
     const planOutput = toolName === 'update_plan' ? parsePlanOutput(toolOutput) : null;
     return {
       id: message.id,

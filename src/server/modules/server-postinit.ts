@@ -56,6 +56,38 @@ export async function runPostInit(deps: {
     formatDispatchResultContent,
     asString,
     generalAgentId: deps.generalAgentId,
+    isAgentBusy: (agentId: string) => {
+      try {
+        const runtimeDeps = deps.registerAllRoutesDeps.getAgentRuntimeDeps();
+        const agentRuntimeBlock = runtimeDeps?.agentRuntimeBlock;
+        if (!agentRuntimeBlock || typeof agentRuntimeBlock.execute !== 'function') return true;
+        const result = agentRuntimeBlock.execute('runtime_view', {}) as unknown;
+        if (typeof (result as Promise<unknown>)?.then === 'function') {
+          return (result as Promise<unknown>)
+            .then((view) => {
+              if (!view || typeof view !== 'object') return true;
+              const agents = Array.isArray((view as { agents?: unknown }).agents)
+                ? (view as { agents: Array<Record<string, unknown>> }).agents
+                : [];
+              const agent = agents.find((item) => typeof item.id === 'string' && item.id === agentId);
+              if (!agent) return true;
+              const status = typeof agent.status === 'string' ? agent.status : '';
+              return status === 'running' || status === 'queued' || status === 'waiting_input' || status === 'paused';
+            })
+            .catch(() => true);
+        }
+        if (!result || typeof result !== 'object') return true;
+        const agents = Array.isArray((result as { agents?: unknown }).agents)
+          ? (result as { agents: Array<Record<string, unknown>> }).agents
+          : [];
+        const agent = agents.find((item) => typeof item.id === 'string' && item.id === agentId);
+        if (!agent) return true;
+        const status = typeof agent.status === 'string' ? agent.status : '';
+        return status === 'running' || status === 'queued' || status === 'waiting_input' || status === 'paused';
+      } catch {
+        return true;
+      }
+    },
   });
   deps.setLoopEventEmitter(forwarding.emitLoopEventToEventBus);
 

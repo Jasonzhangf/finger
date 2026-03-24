@@ -137,6 +137,16 @@ describe('mapWsMessageToRuntimeEvent tool payload mapping', () => {
         },
         output: {
           success: true,
+          message: {
+            id: 'msg-123',
+            category: 'dispatch-task',
+            content: {
+              envelope: {
+                title: 'Queued Dispatch Task',
+                shortDescription: '队列超时后转入邮箱，等待 system-agent 空闲后处理。',
+              },
+            },
+          },
         },
       },
     };
@@ -146,6 +156,33 @@ describe('mapWsMessageToRuntimeEvent tool payload mapping', () => {
     expect(event?.content).toContain('[read]');
     expect(event?.content).toContain('msg-123');
     expect(event?.content).toContain('success');
+    expect(event?.content).toContain('content=');
+  });
+
+  it('includes stdin/stdout snippets and truncates to 100 chars for exec_command', () => {
+    const longStdout = `${'A'.repeat(140)}\n${'B'.repeat(140)}`;
+    const msg: WsMessage = {
+      type: 'tool_result',
+      sessionId: 'session-1',
+      agentId: 'chat-codex',
+      timestamp: '2026-02-25T10:00:00.000Z',
+      payload: {
+        toolName: 'exec_command',
+        input: {
+          cmd: 'cat /Volumes/extension/code/finger/HEARTBEAT.md',
+        },
+        output: {
+          ok: true,
+          output: longStdout,
+        },
+      },
+    };
+
+    const event = mapWsMessageToRuntimeEvent(msg, 'session-1');
+    expect(event).not.toBeNull();
+    expect(event?.content).toContain('stdin=');
+    expect(event?.content).toContain('stdout=');
+    expect(event?.content).toContain('...');
   });
 
   it('maps agent_runtime_dispatch to system status event', () => {

@@ -15,6 +15,8 @@ import { attachBroadcastHandlers } from './event-forwarding-handlers.js';
 import { buildDispatchResultEnvelope } from './mailbox-envelope.js';
 import { heartbeatMailbox } from './heartbeat-mailbox.js';
 
+const SYSTEM_AGENT_ID = 'finger-system-agent';
+
 type SessionEventRecord = {
   type: 'tool_call' | 'tool_result' | 'tool_error' | 'agent_step' | 'reasoning';
   agentId?: string;
@@ -35,6 +37,7 @@ export interface EventForwardingDeps {
   formatDispatchResultContent: (result: unknown, error?: string) => string;
   asString: (value: unknown) => string | undefined;
   generalAgentId: string;
+  isAgentBusy?: (agentId: string) => boolean | Promise<boolean>;
 }
 
 
@@ -51,6 +54,7 @@ export function attachEventForwarding(deps: EventForwardingDeps): {
     formatDispatchResultContent,
     asString,
     generalAgentId,
+    isAgentBusy,
   } = deps;
   const latestBodyBySession = new Map<string, string>();
   const dispatchLedgerDedup = new Map<string, number>();
@@ -458,39 +462,61 @@ export function attachEventForwarding(deps: EventForwardingDeps): {
           addLedgerPointerMessage(sessionId, `child:${childSessionId}`, targetAgentId);
         }
 
-        // Append dispatch result as mailbox envelope for system agent
-        try {
-          const summary = formatDispatchResultContent(payload.result, asString(payload.error));
-          const errorMessage = asString(payload.error) || undefined;
-          const parentAgentId = asString(payload.sourceAgentId) ?? 'finger-system-agent';
-          const envelope = buildDispatchResultEnvelope(childSessionId || sessionId, summary, errorMessage);
-          heartbeatMailbox.append(parentAgentId, {
-            type: 'dispatch-result',
-            dispatchId: payload.dispatchId,
-            sourceAgentId: payload.targetAgentId,
-            targetAgentId: parentAgentId,
-            status,
-            childSessionId: childSessionId || sessionId,
-            envelopeId: envelope.id,
-            envelope,
-            summary,
-            error: errorMessage,
-          }, {
-            sender: asString(payload.targetAgentId) ?? 'system-dispatch',
-            sourceType: 'control',
-            category: 'notification',
-            priority: status === 'failed' ? 0 : 2,
-            ...(sessionId ? { sessionId } : {}),
-          });
-          logger.module('event-forwarding').debug('Dispatch result appended to mailbox', {
-            parentAgentId,
-            envelopeId: envelope.id,
-            status,
-            childSessionId: childSessionId || sessionId,
-          });
-        } catch (mailErr) {
-          logger.module('event-forwarding').warn('Failed to append dispatch result to mailbox', mailErr instanceof Error ? { message: mailErr.message, stack: mailErr.stack } : undefined);
-        }
+        const parentAgentId = asString(payload.sourceAgentId) ?? SYSTEM_AGENT_ID;
+        const shouldRouteResultToSourceMailbox = parentAgentId === SYSTEM_AGENT_ID;
+        const appendToMailbox = async (): Promise<void> => {
+          if (!shouldRouteResultToSourceMailbox) {
+            logger.module('event-forwarding').debug('Skip dispatch result mailbox append: source agent does not consume mailbox callbacks', {
+              parentAgentId,
+              status,
+              childSessionId: childSessionId || sessionId,
+            });
+            return;
+          }
+          const busy = typeof isAgentBusy === 'function'
+            ? await Promise.resolve(isAgentBusy(parentAgentId))
+            : true;
+          if (!busy) {
+            logger.module('event-forwarding').debug('Skip dispatch result mailbox append: source agent idle', {
+              parentAgentId,
+              status,
+              childSessionId: childSessionId || sessionId,
+            });
+            return;
+          }
+          try {
+            const summary = formatDispatchResultContent(payload.result, asString(payload.error));
+            const errorMessage = asString(payload.error) || undefined;
+            const envelope = buildDispatchResultEnvelope(childSessionId || sessionId, summary, errorMessage);
+            heartbeatMailbox.append(parentAgentId, {
+              type: 'dispatch-result',
+              dispatchId: payload.dispatchId,
+              sourceAgentId: payload.targetAgentId,
+              targetAgentId: parentAgentId,
+              status,
+              childSessionId: childSessionId || sessionId,
+              envelopeId: envelope.id,
+              envelope,
+              summary,
+              error: errorMessage,
+            }, {
+              sender: asString(payload.targetAgentId) ?? 'system-dispatch',
+              sourceType: 'control',
+              category: 'notification',
+              priority: status === 'failed' ? 0 : 2,
+              ...(sessionId ? { sessionId } : {}),
+            });
+            logger.module('event-forwarding').debug('Dispatch result appended to mailbox (source busy)', {
+              parentAgentId,
+              envelopeId: envelope.id,
+              status,
+              childSessionId: childSessionId || sessionId,
+            });
+          } catch (mailErr) {
+            logger.module('event-forwarding').warn('Failed to append dispatch result to mailbox', mailErr instanceof Error ? { message: mailErr.message, stack: mailErr.stack } : undefined);
+          }
+        };
+        void appendToMailbox();
       }
 
       if (status !== 'completed' && status !== 'failed') return;

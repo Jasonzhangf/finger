@@ -21,6 +21,9 @@ export interface TaskReportDispatchResult {
   error?: string;
 }
 
+const SYSTEM_AGENT_ID = 'finger-system-agent';
+const BUSY_STATUSES = new Set(['running', 'queued', 'waiting_input', 'paused']);
+
 function asRecord(value: unknown): Record<string, unknown> | null {
   if (typeof value !== 'object' || value === null) return null;
   return value as Record<string, unknown>;
@@ -57,16 +60,39 @@ function resolveTaskReportSessionId(deps: AgentRuntimeDeps, requestedSessionId: 
   return deps.sessionManager.getOrCreateSystemSession().id;
 }
 
+function isBusyStatus(value: unknown): boolean {
+  return typeof value === 'string' && BUSY_STATUSES.has(value.trim().toLowerCase());
+}
+
+async function isSystemAgentBusy(deps: AgentRuntimeDeps): Promise<boolean> {
+  try {
+    const raw = await deps.agentRuntimeBlock.execute('runtime_view', {});
+    const view = (typeof raw === 'object' && raw !== null ? raw : {}) as { agents?: unknown };
+    const agents = Array.isArray(view.agents) ? view.agents : [];
+    const agent = agents.find((item) => (
+      typeof item === 'object'
+      && item !== null
+      && typeof (item as { id?: unknown }).id === 'string'
+      && (item as { id: string }).id === SYSTEM_AGENT_ID
+    )) as { status?: unknown } | undefined;
+    if (!agent) return true;
+    return isBusyStatus(agent.status);
+  } catch {
+    return true;
+  }
+}
+
 export async function dispatchTaskToSystemAgent(
   deps: AgentRuntimeDeps,
   payload: TaskReportPayload
 ): Promise<TaskReportDispatchResult> {
   const sessionId = resolveTaskReportSessionId(deps, payload.sessionId);
   const sessionSubstituted = payload.sessionId.trim() !== sessionId;
+  const systemBusy = await isSystemAgentBusy(deps);
 
   const raw = await deps.agentRuntimeBlock.execute('dispatch', {
     sourceAgentId: 'finger-project-agent',
-    targetAgentId: 'finger-system-agent',
+    targetAgentId: SYSTEM_AGENT_ID,
     task: {
       prompt: `[Task Report]\n任务ID: ${payload.taskId}\n任务摘要: ${payload.taskSummary}\n结果: ${payload.result}\n项目: ${payload.projectId}`,
     },
@@ -76,6 +102,7 @@ export async function dispatchTaskToSystemAgent(
       role: 'system',
       projectId: payload.projectId,
       taskId: payload.taskId,
+      ...(systemBusy ? {} : { deliveryMode: 'direct' }),
       ...(sessionSubstituted ? { originalSessionId: payload.sessionId } : {}),
     },
     blocking: false,
