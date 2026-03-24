@@ -65,6 +65,12 @@ export async function listSessions(): Promise<SessionInfo[]> {
   return fetchApi<SessionInfo[]>('/sessions');
 }
 
+export async function listLedgerSessions(): Promise<SessionInfo[]> {
+  const payload = await fetchApi<{ success: boolean; sessions?: SessionInfo[] }>('/ledger/sessions');
+  if (!payload.success) return [];
+  return Array.isArray(payload.sessions) ? payload.sessions : [];
+}
+
 export async function getSession(sessionId: string): Promise<SessionInfo> {
   return fetchApi<SessionInfo>(`/sessions/${sessionId}`);
 }

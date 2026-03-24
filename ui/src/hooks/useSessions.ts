@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import {
-  listSessions,
+  listLedgerSessions,
   createSession,
   deleteSession,
   getSession,
@@ -56,7 +56,7 @@ export function useSessions(): UseSessionsReturn {
     setIsLoading(true);
     setError(null);
     try {
-      const data = await listSessions();
+      const data = await listLedgerSessions();
       setSessions(data);
       if (data.length === 0) {
         if (currentSessionRef.current?.sessionTier === 'runtime') {

@@ -4,7 +4,6 @@ import { PerformanceCard } from '../PerformanceCard/PerformanceCard.js';
 import type { InputCapability } from '../ChatInterface/ChatInterface.js';
 import { AppLayout } from '../layout/AppLayout.js';
 import { LeftSidebar } from '../LeftSidebar/LeftSidebar.js';
-import { BottomPanel } from '../BottomPanel/BottomPanel.js';
 import { AgentConfigDrawer } from '../AgentConfigDrawer/AgentConfigDrawer.js';
 import { SessionResumeDialog } from '../SessionResumeDialog/SessionResumeDialog.js';
 import { useSessionResume } from '../../hooks/useSessionResume.js';
@@ -14,12 +13,26 @@ import { useSessions } from '../../hooks/useSessions.js';
 import { useWorkflowExecution } from '../../hooks/useWorkflowExecution.js';
 import { useAgents } from '../../hooks/useAgents.js';
 import { useAgentRuntimePanel } from '../../hooks/useAgentRuntimePanel.js';
-import { MultiAgentMonitorGrid, type MonitorPanel } from '../MultiAgentMonitorGrid/MultiAgentMonitorGrid.js';
 import { AgentSessionPanel } from '../AgentSessionPanel/AgentSessionPanel.js';
+import LedgerMonitor from '../LedgerMonitor/LedgerMonitor.js';
+import { AgentPromptStrip } from '../BottomPanel/AgentPromptStrip.js';
 import { findConfigForAgent, matchInstanceToAgent } from '../BottomPanel/agentRuntimeUtils.js';
-import type { AgentConfig, AgentRuntime } from '../../api/types.js';
+import type { AgentConfig, AgentRuntime, SessionInfo } from '../../api/types.js';
 import type { AgentRuntimeInstance } from '../../hooks/useAgentRuntimePanel.js';
 import type { SystemRegistryEntry } from '../../api/types.js';
+
+type MonitorPanel = {
+  id: string;
+  projectPath: string;
+  sessions: Array<{ id: string; name: string }>;
+  scheduledTasks: Array<{ id: string; title: string; status: 'active' | 'pending' | 'completed' | 'failed' }>;
+  selectedSessionId?: string;
+  onOpenProject?: () => void;
+  onSelectSession?: (sessionId: string) => void;
+  onCreateSession?: (projectPath: string) => Promise<SessionInfo>;
+  onSwitchSession?: (sessionId: string) => Promise<void>;
+  onDeleteSession?: (sessionId: string) => Promise<void>;
+};
 
 interface ResumeCheckResult {
   sessionId: string;
@@ -338,10 +351,6 @@ export const WorkflowContainer: React.FC = () => {
     isLoading: isLoadingAgentPanel,
     error: agentPanelError,
     refresh: refreshAgentPanel,
-    setDebugMode: setRuntimeDebugMode,
-    startTemplate,
-    saveOrchestrationConfig,
-    switchOrchestrationProfile,
     controlAgent,
   } = useAgentRuntimePanel();
   const [drawerAgentId, setDrawerAgentId] = useState<string | null>(null);
@@ -537,10 +546,6 @@ export const WorkflowContainer: React.FC = () => {
     [runtimeInstances, selectedDrawerAgent],
   );
 
-  const handleSelectAgent = useCallback((agentId: string) => {
-    setSelectedAgentId(agentId);
-  }, [setSelectedAgentId]);
-
   const handleSelectInstance = useCallback(async (instanceIdOrPayload: string | { id?: string; sessionId?: string }): Promise<void> => {
     const selectedInstance = typeof instanceIdOrPayload === 'string'
       ? runtimeInstances.find((item) => item.id === instanceIdOrPayload)
@@ -630,19 +635,6 @@ export const WorkflowContainer: React.FC = () => {
     await refreshAgentPanel();
   }, [refreshAgentPanel]);
 
-  const handleToggleAgentEnabled = useCallback(async (payload: { agentId: string; enabled: boolean }): Promise<void> => {
-    const saveResponse = await fetch(`/api/v1/agents/configs/${encodeURIComponent(payload.agentId)}/enabled`, {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ enabled: payload.enabled }),
-    });
-    if (!saveResponse.ok) {
-      const message = await saveResponse.text().catch(() => `HTTP ${saveResponse.status}`);
-      throw new Error(message || `HTTP ${saveResponse.status}`);
-    }
-    await refreshAgentPanel();
-  }, [refreshAgentPanel]);
-
   const handleAgentControl = useCallback(async (payload: {
     action: 'status' | 'pause' | 'resume' | 'interrupt' | 'cancel';
     targetAgentId?: string;
@@ -710,15 +702,63 @@ export const WorkflowContainer: React.FC = () => {
       } as MonitorPanel;
     });
 
+    const contextAgent = projectChatAgents.find((a) => a.id.includes('context'));
+    const primaryProject = monitorPanels[0];
+    const secondaryProject = monitorPanels[1];
     return (
       <div className="canvas-shell">
         <PerformanceCard paused={panelFreeze.performance || uiDisable.performance} />
         <div className="canvas-body">
-          <MultiAgentMonitorGrid
-            panels={monitorPanels}
-            chatAgents={projectChatAgents}
-            inputCapability={chatInputCapability}
-          />
+          <div className="session-grid-2x2">
+            <div className="session-grid-cell">
+              {primaryProject ? (
+                <AgentSessionPanel
+                  projectPath={primaryProject.projectPath}
+                  sessionId={primaryProject.selectedSessionId ?? primaryProject.sessions[0]?.id ?? primaryProject.id}
+                  sessions={primaryProject.sessions}
+                  scheduledTasks={primaryProject.scheduledTasks}
+                  selectedSessionId={primaryProject.selectedSessionId ?? primaryProject.sessions[0]?.id}
+                  onOpenProject={primaryProject.onOpenProject}
+                  onSelectSession={primaryProject.onSelectSession}
+                  onCreateSession={primaryProject.onCreateSession}
+                  onSwitchSession={primaryProject.onSwitchSession}
+                  onDeleteSession={primaryProject.onDeleteSession}
+                  chatAgents={projectChatAgents}
+                  inputCapability={chatInputCapability}
+                />
+              ) : <div className="grid-placeholder">project agent</div>}
+            </div>
+            <div className="session-grid-cell">
+              {secondaryProject ? (
+                <AgentSessionPanel
+                  projectPath={secondaryProject.projectPath}
+                  sessionId={secondaryProject.selectedSessionId ?? secondaryProject.sessions[0]?.id ?? secondaryProject.id}
+                  sessions={secondaryProject.sessions}
+                  scheduledTasks={secondaryProject.scheduledTasks}
+                  selectedSessionId={secondaryProject.selectedSessionId ?? secondaryProject.sessions[0]?.id}
+                  onOpenProject={secondaryProject.onOpenProject}
+                  onSelectSession={secondaryProject.onSelectSession}
+                  onCreateSession={secondaryProject.onCreateSession}
+                  onSwitchSession={secondaryProject.onSwitchSession}
+                  onDeleteSession={secondaryProject.onDeleteSession}
+                  chatAgents={projectChatAgents}
+                  inputCapability={chatInputCapability}
+                />
+              ) : <div className="grid-placeholder">project agent (2)</div>}
+            </div>
+            <div className="session-grid-cell">
+              <div className="context-card">
+                <div className="context-card-title">Context Agent</div>
+                <div className="context-card-body">{contextAgent?.name || 'finger-context-agent'} · {contextAgent?.status || 'idle'}</div>
+              </div>
+            </div>
+            <div className="session-grid-cell">
+              <div className="context-card">
+                <div className="context-card-title">Context Builder</div>
+                <div className="context-card-body">ledger slots → dynamic session</div>
+              </div>
+            </div>
+          </div>
         </div>
       </div>
     );
@@ -776,53 +816,35 @@ export const WorkflowContainer: React.FC = () => {
   ), [createSession, disableAnimations, frozenActiveRuntimeSessionId, frozenCurrentSession, frozenDrawerAgentIdForLeft, frozenFocusedRuntimeInstanceId, frozenIsLoadingSessions, frozenRuntimeInstancesForLeft, frozenSessions, handleSelectInstance, handleSwitchSessionFromSidebar, panelFreeze, refreshSessions, removeSession, renameSession, resetPanelFreeze, updateDisableAnimations, updatePanelFreeze, systemMonitor.toggle, systemMonitor.isEnabled, viewMode, setViewMode]);
 
   const bottomPanelElement = useMemo(() => (
-    <BottomPanel
-      configAgents={frozenBottomPayload.configAgents}
-      runtimeAgents={frozenBottomPayload.runtimeAgents.filter((a) => a.id.startsWith('project:'))}
-      instances={frozenBottomPayload.instances}
-      configs={frozenBottomPayload.configs}
-      startupTargets={frozenBottomPayload.startupTargets}
-      startupTemplates={frozenBottomPayload.startupTemplates}
-      orchestrationConfig={frozenBottomPayload.orchestrationConfig}
-      debugMode={frozenBottomPayload.debugMode}
-      selectedAgentConfigId={frozenBottomPayload.selectedAgentConfigId}
-      currentSessionId={frozenBottomPayload.currentSessionId}
-      focusedRuntimeInstanceId={frozenBottomPayload.focusedRuntimeInstanceId}
-      isLoading={frozenBottomPayload.isLoading}
-      error={frozenBottomPayload.error}
-      onSelectAgentConfig={handleSelectAgentConfig}
-      onSelectInstance={(instance) => { void handleSelectRuntimeSession(instance); }}
-      onRefresh={() => { void refreshAgentPanel(); }}
-      onSetDebugMode={async (enabled) => {
-        const result = await setRuntimeDebugMode(enabled);
-        if (!result.ok) {
-          throw new Error(result.error ?? '更新 debug mode 失败');
-        }
-      }}
-      onStartTemplate={async (templateId) => {
-        const result = await startTemplate({
-          templateId,
-          sessionId: orchestratorSessionId,
-        });
-        if (!result.ok) {
-          throw new Error(result.error ?? `模板 ${templateId} 启动失败`);
-        }
-      }}
-      onSwitchOrchestrationProfile={async (profileId) => {
-        const result = await switchOrchestrationProfile(profileId);
-        if (!result.ok) {
-          throw new Error(result.error ?? `切换 profile 失败: ${profileId}`);
-        }
-      }}
-      onSaveOrchestrationConfig={async (config) => {
-        const result = await saveOrchestrationConfig(config);
-        if (!result.ok) {
-          throw new Error(result.error ?? '保存 orchestration 配置失败');
-        }
-      }}
-      onToggleAgentEnabled={handleToggleAgentEnabled}
-    />
-  ), [frozenBottomPayload, handleSelectAgent, handleSelectInstance, handleToggleAgentEnabled, orchestratorSessionId, refreshAgentPanel, saveOrchestrationConfig, setRuntimeDebugMode, startTemplate, switchOrchestrationProfile]);
+    <div className="ledger-bottom-panel">
+      <AgentPromptStrip
+        configAgents={frozenBottomPayload.configAgents}
+        runtimeAgents={frozenBottomPayload.runtimeAgents}
+        configs={frozenBottomPayload.configs}
+        selectedAgentConfigId={frozenBottomPayload.selectedAgentConfigId}
+        onSelectAgentConfig={handleSelectAgentConfig}
+      />
+      <div className="ledger-monitor-row">
+        <LedgerMonitor
+          sessionId={systemAgentSessionId}
+          label="System Agent Ledger"
+        />
+        {systemMonitor.entries.filter((entry) => entry.monitored).slice(0, 3).map((entry) => {
+          const projectSessions = sessions
+            .filter((s) => normalizeProjectPath(s.projectPath) === normalizeProjectPath(entry.projectPath))
+            .sort((a, b) => new Date(b.lastAccessedAt).getTime() - new Date(a.lastAccessedAt).getTime());
+          const sid = projectSessions[0]?.id;
+          return (
+            <LedgerMonitor
+              key={entry.projectId}
+              sessionId={sid}
+              label={`Project Ledger · ${entry.projectName}`}
+            />
+          );
+        })}
+      </div>
+    </div>
+  ), [frozenBottomPayload, handleSelectAgentConfig, systemAgentSessionId, systemMonitor.entries, sessions]);
 
   const renderedLeftSidebar = useFrozenValue(leftSidebarElement, panelFreeze.left);
   const renderedCanvas = useFrozenValue(
