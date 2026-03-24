@@ -4,7 +4,13 @@
  * 从主类提取的事件处理函数，减少 agent-status-subscriber.ts 文件大小
  */
 
-import type { RuntimeEvent, ToolErrorEvent, SystemErrorEvent } from '../../runtime/events.js';
+import type {
+  RuntimeEvent,
+  ToolCallEvent,
+  ToolResultEvent,
+  ToolErrorEvent,
+  SystemErrorEvent,
+} from '../../runtime/events.js';
 import type { SessionEnvelopeMapping, AgentInfo, WrappedStatusUpdate } from './agent-status-subscriber-types.js';
 import { getAgentIcon } from './agent-status-subscriber-helpers.js';
 import { sendStatusUpdate } from './agent-status-subscriber-runtime.js';
@@ -32,6 +38,95 @@ export interface HandlerContext {
   stepBatchDefault: number;
   primaryAgentId: string | null;
   registerChildAgent: (childAgentId: string, parentAgentId: string) => void;
+}
+
+/**
+ * 处理 tool_call 事件
+ */
+export async function handleToolCall(
+  event: ToolCallEvent,
+  ctx: HandlerContext,
+): Promise<void> {
+  const sessionId = event.sessionId;
+  const mapping = ctx.resolveEnvelopeMapping(sessionId);
+  if (!mapping || !ctx.messageHub) return;
+
+  const agentId = event.agentId || 'unknown-agent';
+  const toolName = event.toolName || 'unknown-tool';
+  const agentInfo = await ctx.getAgentInfo(agentId);
+
+  const wrappedUpdate: WrappedStatusUpdate = {
+    type: 'agent_status',
+    eventId: event.toolId || `tool-call-${Date.now()}`,
+    timestamp: event.timestamp,
+    sessionId,
+    task: {
+      targetAgentId: agentId,
+      taskDescription: `工具调用: ${toolName}`,
+    },
+    agent: agentInfo,
+    status: {
+      state: 'running',
+      summary: `工具调用: ${toolName}`,
+      details: {
+        toolId: event.toolId,
+        toolName,
+      },
+    },
+    display: {
+      title: `${getAgentIcon(agentInfo.agentRole)} 工具调用`,
+      subtitle: `${agentInfo.agentName || agentId}: ${toolName}`,
+      icon: getAgentIcon(agentInfo.agentRole),
+      level: 'summary',
+    },
+  };
+
+  await sendStatusUpdate(mapping.envelope, wrappedUpdate, ctx.messageHub, ctx.channelBridgeManager);
+}
+
+/**
+ * 处理 tool_result 事件
+ */
+export async function handleToolResult(
+  event: ToolResultEvent,
+  ctx: HandlerContext,
+): Promise<void> {
+  const sessionId = event.sessionId;
+  const mapping = ctx.resolveEnvelopeMapping(sessionId);
+  if (!mapping || !ctx.messageHub) return;
+
+  const agentId = event.agentId || 'unknown-agent';
+  const toolName = event.toolName || 'unknown-tool';
+  const agentInfo = await ctx.getAgentInfo(agentId);
+
+  const wrappedUpdate: WrappedStatusUpdate = {
+    type: 'agent_status',
+    eventId: event.toolId || `tool-result-${Date.now()}`,
+    timestamp: event.timestamp,
+    sessionId,
+    task: {
+      targetAgentId: agentId,
+      taskDescription: `工具完成: ${toolName}`,
+    },
+    agent: agentInfo,
+    status: {
+      state: 'running',
+      summary: `工具完成: ${toolName}`,
+      details: {
+        toolId: event.toolId,
+        toolName,
+        duration: event.payload?.duration,
+      },
+    },
+    display: {
+      title: `${getAgentIcon(agentInfo.agentRole)} 工具完成`,
+      subtitle: `${agentInfo.agentName || agentId}: ${toolName}`,
+      icon: getAgentIcon(agentInfo.agentRole),
+      level: 'summary',
+    },
+  };
+
+  await sendStatusUpdate(mapping.envelope, wrappedUpdate, ctx.messageHub, ctx.channelBridgeManager);
 }
 
 /**

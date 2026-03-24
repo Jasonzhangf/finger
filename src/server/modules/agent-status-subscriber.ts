@@ -30,6 +30,8 @@ import { wrapStatusUpdate, getAgentIcon } from './agent-status-subscriber-helper
 import { logger } from '../../core/logger.js';
 import { sendStatusUpdate, startCleanup, buildMailboxProgressSnapshot } from './agent-status-subscriber-runtime.js';
 import {
+  handleToolCall as handleToolCallEvent,
+  handleToolResult as handleToolResultEvent,
   handleToolError as handleToolErrorEvent,
   handleSystemError as handleSystemErrorEvent,
   handleDispatch as handleDispatchEvent,
@@ -92,7 +94,7 @@ export class AgentStatusSubscriber {
 
     // 订阅 agent_runtime_status / agent_runtime_dispatch / agent_step_completed / tool_error / system_error / waiting_for_user 事件
     this.unsubscribe = this.eventBus.subscribeMultiple(
-      ['agent_runtime_status', 'agent_runtime_dispatch', 'agent_step_completed', 'tool_error', 'system_error', 'waiting_for_user'],
+      ["agent_runtime_status", "agent_runtime_dispatch", "agent_step_completed", "tool_error", "system_error", "waiting_for_user", "tool_call", "tool_result"],
       (event: RuntimeEvent) => {
         this.handleEvent(event).catch(err => {
           log.error('[AgentStatusSubscriber] Error handling event:', err);
@@ -319,6 +321,10 @@ export class AgentStatusSubscriber {
       await this.handleStatus(event);
     } else if (event.type === 'agent_step_completed') {
       await handleStepCompletedEvent(event, ctx);
+    } else if (event.type === 'tool_call') {
+      await handleToolCallEvent(event, ctx);
+    } else if (event.type === 'tool_result') {
+      await handleToolResultEvent(event, ctx);
     } else if (event.type === 'tool_error') {
       await handleToolErrorEvent(event as ToolErrorEvent, ctx);
     } else if (event.type === 'system_error') {

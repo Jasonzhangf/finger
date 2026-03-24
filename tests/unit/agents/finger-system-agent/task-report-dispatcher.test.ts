@@ -2,15 +2,49 @@ import { describe, expect, it, vi } from 'vitest';
 import { dispatchTaskToSystemAgent } from '../../../../src/agents/finger-system-agent/task-report-dispatcher.js';
 
 describe('task-report-dispatcher', () => {
-  it('dispatches report to system agent with finger-project-agent source', async () => {
-    const execute = vi.fn().mockResolvedValue({
-      ok: true,
-      dispatchId: 'dispatch-123',
-      status: 'queued',
-    });
+  const createDeps = (overrides?: {
+    executeReturn?: unknown;
+    runtimeCurrentSessionId?: string;
+    sessions?: Array<{ id: string; context?: Record<string, unknown> }>;
+    currentSessionId?: string;
+  }) => {
+    const execute = vi.fn().mockResolvedValue(
+      overrides?.executeReturn ?? {
+        ok: true,
+        dispatchId: 'dispatch-123',
+        status: 'queued',
+      },
+    );
+    const sessions = new Map<string, { id: string; context?: Record<string, unknown> }>();
+    for (const session of overrides?.sessions ?? []) {
+      sessions.set(session.id, session);
+    }
     const deps = {
       agentRuntimeBlock: { execute },
+      runtime: {
+        getCurrentSession: vi.fn(() => (
+          overrides?.runtimeCurrentSessionId
+            ? { id: overrides.runtimeCurrentSessionId }
+            : null
+        )),
+      },
+      sessionManager: {
+        getSession: vi.fn((sessionId: string) => sessions.get(sessionId)),
+        getCurrentSession: vi.fn(() => (
+          overrides?.currentSessionId
+            ? sessions.get(overrides.currentSessionId)
+            : null
+        )),
+        getOrCreateSystemSession: vi.fn(() => ({ id: 'system-fallback' })),
+      },
     } as any;
+    return { deps, execute };
+  };
+
+  it('dispatches report to system agent with finger-project-agent source', async () => {
+    const { deps, execute } = createDeps({
+      sessions: [{ id: 'session-1' }],
+    });
 
     const result = await dispatchTaskToSystemAgent(deps, {
       taskId: 'task-1',
@@ -32,15 +66,15 @@ describe('task-report-dispatcher', () => {
   });
 
   it('normalizes failed dispatch result', async () => {
-    const execute = vi.fn().mockResolvedValue({
-      ok: false,
-      dispatchId: 'dispatch-failed',
-      status: 'failed',
-      error: 'target busy',
+    const { deps } = createDeps({
+      executeReturn: {
+        ok: false,
+        dispatchId: 'dispatch-failed',
+        status: 'failed',
+        error: 'target busy',
+      },
+      sessions: [{ id: 'session-2' }],
     });
-    const deps = {
-      agentRuntimeBlock: { execute },
-    } as any;
 
     const result = await dispatchTaskToSystemAgent(deps, {
       taskId: 'task-2',
@@ -53,5 +87,33 @@ describe('task-report-dispatcher', () => {
     expect(result.ok).toBe(false);
     expect(result.status).toBe('failed');
     expect(result.error).toContain('target busy');
+  });
+
+  it('falls back to runtime current root session when requested session is invalid', async () => {
+    const { deps, execute } = createDeps({
+      runtimeCurrentSessionId: 'runtime-child-1',
+      sessions: [
+        { id: 'root-system-1' },
+        {
+          id: 'runtime-child-1',
+          context: { sessionTier: 'runtime', parentSessionId: 'root-system-1', ownerAgentId: 'finger-project-agent' },
+        },
+      ],
+    });
+
+    await dispatchTaskToSystemAgent(deps, {
+      taskId: 'task-3',
+      taskSummary: 'summary',
+      sessionId: 'msg-1774330605368-q3vkv5',
+      result: 'success',
+      projectId: 'project-3',
+    });
+
+    expect(execute).toHaveBeenCalledWith('dispatch', expect.objectContaining({
+      sessionId: 'root-system-1',
+      metadata: expect.objectContaining({
+        originalSessionId: 'msg-1774330605368-q3vkv5',
+      }),
+    }));
   });
 });

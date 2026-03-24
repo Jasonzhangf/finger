@@ -21,11 +21,48 @@ export interface TaskReportDispatchResult {
   error?: string;
 }
 
+function asRecord(value: unknown): Record<string, unknown> | null {
+  if (typeof value !== 'object' || value === null) return null;
+  return value as Record<string, unknown>;
+}
+
+function resolveRootSessionIdIfRuntime(deps: AgentRuntimeDeps, sessionId: string | undefined): string | undefined {
+  if (!sessionId || sessionId.trim().length === 0) return undefined;
+  const session = deps.sessionManager.getSession(sessionId.trim());
+  if (!session) return undefined;
+  const context = asRecord(session.context) ?? {};
+  const rootSessionId =
+    (typeof context.rootSessionId === 'string' && context.rootSessionId.trim().length > 0
+      ? context.rootSessionId.trim()
+      : undefined)
+    ?? (typeof context.parentSessionId === 'string' && context.parentSessionId.trim().length > 0
+      ? context.parentSessionId.trim()
+      : undefined);
+  if (!rootSessionId) return session.id;
+  const root = deps.sessionManager.getSession(rootSessionId);
+  return root ? root.id : session.id;
+}
+
+function resolveTaskReportSessionId(deps: AgentRuntimeDeps, requestedSessionId: string): string {
+  const fromRequested = resolveRootSessionIdIfRuntime(deps, requestedSessionId);
+  if (fromRequested) return fromRequested;
+
+  const runtimeCurrentSession = deps.runtime.getCurrentSession();
+  const fromRuntimeCurrent = resolveRootSessionIdIfRuntime(deps, runtimeCurrentSession?.id);
+  if (fromRuntimeCurrent) return fromRuntimeCurrent;
+
+  const fromSessionCurrent = resolveRootSessionIdIfRuntime(deps, deps.sessionManager.getCurrentSession()?.id);
+  if (fromSessionCurrent) return fromSessionCurrent;
+
+  return deps.sessionManager.getOrCreateSystemSession().id;
+}
+
 export async function dispatchTaskToSystemAgent(
   deps: AgentRuntimeDeps,
   payload: TaskReportPayload
 ): Promise<TaskReportDispatchResult> {
-  const sessionId = payload.sessionId;
+  const sessionId = resolveTaskReportSessionId(deps, payload.sessionId);
+  const sessionSubstituted = payload.sessionId.trim() !== sessionId;
 
   const raw = await deps.agentRuntimeBlock.execute('dispatch', {
     sourceAgentId: 'finger-project-agent',
@@ -39,6 +76,7 @@ export async function dispatchTaskToSystemAgent(
       role: 'system',
       projectId: payload.projectId,
       taskId: payload.taskId,
+      ...(sessionSubstituted ? { originalSessionId: payload.sessionId } : {}),
     },
     blocking: false,
   });
