@@ -240,10 +240,18 @@ export function useWorkflowExecution(
     const isCurrentSessionEvent = !messageSessionId || messageSessionId === sessionId;
 
     if (isCurrentSessionEvent) {
-      if (msg.type === 'user_message') {
-        scheduleSessionMessagesRefresh();
-      }
-      if (msg.type === 'tool_call' || msg.type === 'tool_result' || msg.type === 'tool_error' || msg.type === 'agent_update' || msg.type === 'agent_runtime_dispatch') {
+      if (
+        msg.type === 'user_message'
+        || msg.type === 'chat_codex_turn'
+        || msg.type === 'assistant_complete'
+        || msg.type === 'tool_call'
+        || msg.type === 'tool_result'
+        || msg.type === 'tool_error'
+        || msg.type === 'agent_update'
+        || msg.type === 'agent_runtime_dispatch'
+        || msg.type === 'session_changed'
+        || msg.type === 'session_compressed'
+      ) {
         scheduleSessionMessagesRefresh();
       }
       const runtimeEvent = mapWsMessageToRuntimeEvent(msg, sessionId, sessionAgentId);

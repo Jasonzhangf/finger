@@ -136,18 +136,24 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function isRelevantSessionMessage(msg: WsMessage, sessionId: string): boolean {
   const payload = isRecord(msg.payload) ? msg.payload : {};
-  const eventSessionId = typeof msg.sessionId === 'string'
-    ? msg.sessionId
-    : (typeof payload.sessionId === 'string' ? payload.sessionId : undefined);
-  if (eventSessionId === sessionId) return true;
-  if (typeof payload.rootSessionId === 'string' && payload.rootSessionId === sessionId) return true;
-  if (typeof payload.parentSessionId === 'string' && payload.parentSessionId === sessionId) return true;
-  if (typeof payload.originalSessionId === 'string' && payload.originalSessionId === sessionId) return true;
-  return false;
+  const hints = [
+    typeof msg.sessionId === 'string' ? msg.sessionId : undefined,
+    typeof payload.sessionId === 'string' ? payload.sessionId : undefined,
+    typeof payload.rootSessionId === 'string' ? payload.rootSessionId : undefined,
+    typeof payload.parentSessionId === 'string' ? payload.parentSessionId : undefined,
+    typeof payload.originalSessionId === 'string' ? payload.originalSessionId : undefined,
+  ].filter((value): value is string => typeof value === 'string' && value.trim().length > 0);
+  // Global events without session hints should still trigger refresh,
+  // because context-monitor API is session-scoped and will no-op if unchanged.
+  if (hints.length === 0) return true;
+  return hints.includes(sessionId);
 }
 
 const CONTEXT_MONITOR_TRIGGER_TYPES = new Set<string>([
+  'chat_codex_turn',
+  'user_message',
   'assistant_complete',
+  'tool_call',
   'tool_result',
   'tool_error',
   'workflow_update',
@@ -160,6 +166,8 @@ const CONTEXT_MONITOR_TRIGGER_TYPES = new Set<string>([
   'session_resumed',
   'session_paused',
   'session_compressed',
+  'messageCreated',
+  'messageCompleted',
 ]);
 
 export const ContextMonitor: React.FC<ContextMonitorProps> = ({

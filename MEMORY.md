@@ -347,3 +347,5 @@ Tags: permission, reject-config, codex-alignment
   Tags: context-monitor, ui, observer-only, settings, context-builder
 - [2026-03-25] Context Monitor 新增“展开大视图”能力：小卡片右上角 `展开` 按钮可打开全屏 overlay，完整显示 Round 列表 / Selected Context / Ledger 对照 / 详情四区；支持遮罩点击与 `Esc` 关闭。该能力只影响 UI 展示层，不改变 context builder 逻辑与数据源。  
   Tags: context-monitor, ui, modal, overlay, esc, observability
+- [2026-03-25] 修复 UI 实时刷新滞后：Ledger/Context Monitor 的 WS 触发类型补齐 `chat_codex_turn`、`user_message`、`tool_call`、`messageCreated/messageCompleted`；并放宽会话相关性判断（无 session hints 的全局事件也允许触发刷新）。同时 `useWorkflowExecution` 将 `chat_codex_turn/assistant_complete/session_changed/session_compressed` 纳入消息刷新触发，避免“必须手动刷新页面才看到新事件”。  
+  Tags: websocket, live-update, ledger-monitor, context-monitor, workflow-execution, session
