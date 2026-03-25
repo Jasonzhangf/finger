@@ -3,6 +3,8 @@
 ## General Memory
 - [2026-03-14] 长期记忆仅写入本文件；短期记忆写入 `CACHE.md`，review 通过后汇总写入本文件并清空 `CACHE.md`（保留头部）。  
   Tags: memory, cache, review
+- [2026-03-25] Jason 明确：Finger 项目的 Skills 目录唯一真源是 `~/.finger/skills`；不要写到 `~/.openclaw/skills`、`~/.codex/skills` 或仓库内临时 `skills/` 目录。  
+  Tags: skills, finger, ssot, directory
 
 ## Architecture & Runtime
 - [2026-03-11] 三层架构：blocks（唯一真源）/ orchestration（编排）/ ui（展示），保持层间解耦。  

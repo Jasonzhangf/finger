@@ -14,26 +14,31 @@ const log = logger.module('SkillPromptInjector');
 
 const skillsManager = new SkillsManager();
 
+function renderSkillsPrompt(skills: Array<{ name: string; description: string; path: string }>): string {
+  if (skills.length === 0) return '';
+
+  const lines: string[] = [];
+  lines.push('## Skills');
+  lines.push('A skill is a set of local instructions stored in a `SKILL.md` file.');
+  lines.push('### Available skills');
+  for (const skill of skills) {
+    const desc = skill.description?.trim().length > 0 ? skill.description.trim() : 'No description provided.';
+    lines.push(`- ${skill.name}: ${desc} (file: ${skill.path}/SKILL.md)`);
+  }
+  lines.push('### How to use skills');
+  lines.push('- If the task clearly matches a listed skill, prefer following that skill workflow.');
+  lines.push('- Open the target `SKILL.md` and follow only the relevant sections; avoid bulk loading unrelated references.');
+  lines.push('- When a skill cannot be applied (missing files/unclear instructions), state the issue and continue with best fallback.');
+  return `\n\n${lines.join('\n')}`;
+}
+
 /**
  * 格式化Skills列表为提示词文本
  */
 export async function formatSkillsAsPrompt(): Promise<string> {
   try {
     const skills = await skillsManager.listSkills();
-
-    if (skills.length === 0) {
-      return '';
-    }
-
-    let prompt = '\n\n## Available Skills\n\n';
-    prompt += 'You have access to the following predefined skills:\n\n';
-
-    for (const skill of skills) {
-      prompt += `### ${skill.name}\n`;
-      prompt += `**Description**: ${skill.description}\n\n`;
-    }
-
-    return prompt;
+    return renderSkillsPrompt(skills);
   } catch (error) {
     clog.error('[SkillPromptInjector] Failed to load skills:', error);
     return '';
@@ -62,20 +67,7 @@ export async function injectSkillsIntoPrompt(systemPrompt: string): Promise<stri
 export function formatSkillsAsPromptSync(): string {
   try {
     const skills = skillsManager.listSkillsSync();
-
-    if (skills.length === 0) {
-      return '';
-    }
-
-    let prompt = '\n\n## Available Skills\n\n';
-    prompt += 'You have access to the following predefined skills:\n\n';
-
-    for (const skill of skills) {
-      prompt += `### ${skill.name}\n`;
-      prompt += `**Description**: ${skill.description}\n\n`;
-    }
-
-    return prompt;
+    return renderSkillsPrompt(skills);
   } catch (error) {
     clog.error('[SkillPromptInjector] Failed to load skills sync:', error);
     return '';

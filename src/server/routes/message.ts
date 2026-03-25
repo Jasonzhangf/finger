@@ -275,7 +275,9 @@ export function registerMessageRoutes(app: Express, deps: MessageRouteDeps): voi
       const content = extractMessageTextForSession(requestMessage)
         ?? JSON.stringify(requestMessage);
       if (content.trim().length > 0) {
-        void deps.sessionManager.addMessage(requestSessionId, 'user', content);
+        void deps.sessionManager.addMessage(requestSessionId, 'user', content, {
+          agentId: targetId,
+        });
       }
     }
 

@@ -25,6 +25,7 @@ export interface KernelRunContext {
   history: UnifiedHistoryItem[];
   tools: string[] | import('../chat-codex/chat-codex-module.js').ChatCodexToolSpecification[];
   metadata?: Record<string, unknown>;
+  mailboxSnapshot?: import('../../runtime/mailbox-snapshot.js').MailboxSnapshot;
 }
 
 export interface KernelRunnerResult {
@@ -209,12 +210,14 @@ export class KernelAgentBase {
       });
 
       const inputItems = this.parseInputItems(input.metadata);
+      const mailboxSnapshot = this.parseMailboxSnapshot(input.metadata?.mailboxSnapshot);
       const runnerContext = {
         sessionId: runnerSessionId,
         systemPrompt,
         history: toUnifiedHistory(mergedHistory),
         tools,
         metadata: runtimeMetadata,
+        ...(mailboxSnapshot ? { mailboxSnapshot } : {}),
       };
       let runResult = await this.runner.runTurn(input.text, inputItems, runnerContext);
 
@@ -734,6 +737,51 @@ export class KernelAgentBase {
       }
     }
     return parsed.length > 0 ? parsed : undefined;
+  }
+
+  private parseMailboxSnapshot(
+    rawSnapshot: unknown,
+  ): import('../../runtime/mailbox-snapshot.js').MailboxSnapshot | undefined {
+    if (!isRecord(rawSnapshot)) return undefined;
+    const currentSeq = rawSnapshot.currentSeq;
+    if (typeof currentSeq !== 'number' || !Number.isFinite(currentSeq)) return undefined;
+
+    const rawEntries = Array.isArray(rawSnapshot.entries) ? rawSnapshot.entries : [];
+    const entries = rawEntries
+      .filter((item): item is Record<string, unknown> => isRecord(item))
+      .map((item) => {
+        const id = typeof item.id === 'string' ? item.id : '';
+        const seq = typeof item.seq === 'number' && Number.isFinite(item.seq) ? Math.floor(item.seq) : 0;
+        const shortDescription = typeof item.shortDescription === 'string' ? item.shortDescription : '';
+        const createdAt = typeof item.createdAt === 'string' ? item.createdAt : new Date().toISOString();
+        return {
+          id,
+          seq,
+          shortDescription,
+          createdAt,
+          ...(typeof item.sourceType === 'string' ? { sourceType: item.sourceType } : {}),
+          ...(typeof item.category === 'string' ? { category: item.category } : {}),
+          ...(typeof item.priority === 'number' && Number.isFinite(item.priority) ? { priority: Math.floor(item.priority) } : {}),
+          ...(typeof item.channel === 'string' ? { channel: item.channel } : {}),
+          ...(typeof item.threadId === 'string' ? { threadId: item.threadId } : {}),
+          ...(typeof item.sender === 'string' ? { sender: item.sender } : {}),
+        };
+      })
+      .filter((entry) => entry.id.length > 0 && entry.shortDescription.length > 0);
+
+    const hasUnread = typeof rawSnapshot.hasUnread === 'boolean'
+      ? rawSnapshot.hasUnread
+      : entries.length > 0;
+    const lastNotifiedSeq = typeof rawSnapshot.lastNotifiedSeq === 'number' && Number.isFinite(rawSnapshot.lastNotifiedSeq)
+      ? Math.floor(rawSnapshot.lastNotifiedSeq)
+      : undefined;
+
+    return {
+      currentSeq: Math.floor(currentSeq),
+      entries,
+      hasUnread,
+      ...(typeof lastNotifiedSeq === 'number' ? { lastNotifiedSeq } : {}),
+    };
   }
 
   private captureApiHistory(threadKey: string, metadata?: Record<string, unknown>): void {

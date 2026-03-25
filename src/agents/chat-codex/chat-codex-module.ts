@@ -19,6 +19,7 @@ import { FINGER_PATHS, ensureDir, normalizeSessionDirName } from '../../core/fin
 import { FINGER_SOURCE_ROOT } from '../../core/source-root.js';
 import type { MailboxSnapshot } from '../../runtime/mailbox-snapshot.js';
 import { hasNewUnreadSinceLastNotified, getNewUnreadEntries } from '../../runtime/mailbox-snapshot.js';
+import { formatSkillsAsPromptSync } from '../../skills/skill-prompt-injector.js';
 
 const DEFAULT_KERNEL_TIMEOUT_MS = 600_000;
 const DEFAULT_KERNEL_TIMEOUT_RETRY_COUNT = 5;
@@ -777,6 +778,7 @@ export function createChatCodexModule(
         text,
         systemPrompt: context?.systemPrompt,
         metadata: isRecord(context?.metadata) ? context?.metadata : undefined,
+        mailboxSnapshot: context?.mailboxSnapshot,
         roleProfile: parseOptionalString(context?.metadata?.roleProfile) ?? parseOptionalString(context?.metadata?.contextLedgerRole),
         toolSpecifications: toolSpecificationsForTurn,
         inputItems: normalizedInputItems,
@@ -1399,6 +1401,17 @@ function writePromptInjectionSnapshot(input: {
     const filePath = resolvePromptInjectionLogPath(input.sessionId, input.metadata, agentId);
     const resolvedSystemPrompt = parseOptionalString(input.systemPrompt)
       ?? parseOptionalString(input.options?.system_prompt);
+    const developerInstructions = parseOptionalString(input.options?.developer_instructions);
+    const historyItems = Array.isArray(input.options?.history_items) ? input.options?.history_items : [];
+    const mailboxSnapshot = input.mailboxSnapshot;
+    const mailboxSummary = mailboxSnapshot
+      ? {
+          currentSeq: mailboxSnapshot.currentSeq,
+          hasUnread: mailboxSnapshot.hasUnread,
+          entryCount: Array.isArray(mailboxSnapshot.entries) ? mailboxSnapshot.entries.length : 0,
+          lastNotifiedSeq: mailboxSnapshot.lastNotifiedSeq ?? null,
+        }
+      : null;
     const entry = {
       timestamp: new Date().toISOString(),
       sessionId: input.sessionId,
@@ -1411,8 +1424,16 @@ function writePromptInjectionSnapshot(input: {
       metadata: input.metadata ?? null,
       tools: input.toolSpecifications,
       toolList: input.toolSpecifications.map((item) => item.name),
+      codexAlignedContext: {
+        system_prompt: resolvedSystemPrompt ?? null,
+        developer_instructions: developerInstructions ?? null,
+        user_input: input.text,
+        user_input_items: input.inputItems ?? null,
+        history_items_count: historyItems.length,
+        mailbox_snapshot: mailboxSummary,
+      },
       injections: {
-        developerInstructions: input.options?.developer_instructions ?? null,
+        developerInstructions: developerInstructions ?? null,
         userInstructions: input.options?.user_instructions ?? null,
         environmentContext: input.options?.environment_context ?? null,
         turnContext: input.options?.turn_context ?? null,
@@ -1437,7 +1458,11 @@ function resolvePromptInjectionLogPath(
   const rootCandidate = parseOptionalString(metadata?.contextLedgerRootDir) ?? parseOptionalString(metadata?.contextLedgerRoot);
   let sessionRoot: string;
   if (rootCandidate) {
-    sessionRoot = basename(rootCandidate) === 'memory' ? dirname(rootCandidate) : rootCandidate;
+    const normalizedBase = basename(rootCandidate) === 'memory' ? dirname(rootCandidate) : rootCandidate;
+    const candidateSessionRoot = basename(normalizedBase) === sessionId
+      ? normalizedBase
+      : join(normalizedBase, normalizeSessionDirName(sanitizePathPart(sessionId)));
+    sessionRoot = existsSync(candidateSessionRoot) ? candidateSessionRoot : normalizedBase;
   } else {
     sessionRoot = resolveFallbackSessionRoot(sessionId);
   }
@@ -1796,6 +1821,16 @@ function buildKernelUserTurnOptions(
 
   const role = resolveDeveloperRoleFromMetadata(metadata);
   let developerInstructions = resolveDeveloperInstructions(metadata, developerPromptPaths, role);
+  const skillsPromptBlock = buildSkillsPromptBlock(metadata);
+  const mailboxBaselineBlock = buildMailboxBaselineBlock(context?.mailboxSnapshot, metadata);
+
+  if (isSystemRole) {
+    options.system_prompt = appendPromptSection(options.system_prompt, skillsPromptBlock);
+    options.system_prompt = appendPromptSection(options.system_prompt, mailboxBaselineBlock);
+  } else {
+    developerInstructions = appendPromptSection(developerInstructions, skillsPromptBlock);
+    developerInstructions = appendPromptSection(developerInstructions, mailboxBaselineBlock);
+  }
 
   // Inject mailbox pending entries into context (works for all roles including system)
   if (context?.mailboxSnapshot && hasNewUnreadSinceLastNotified(context.mailboxSnapshot)) {
@@ -1808,14 +1843,10 @@ function buildKernelUserTurnOptions(
 
     if (isSystemRole) {
       // For system role, append mailbox to system prompt
-      options.system_prompt = (options.system_prompt || '')
-        ? `${options.system_prompt}\n\n${mailboxBlock}`
-        : mailboxBlock;
+      options.system_prompt = appendPromptSection(options.system_prompt, mailboxBlock);
     } else {
       // For other roles, append to developer instructions
-      developerInstructions = developerInstructions
-        ? `${developerInstructions}\n\n${mailboxBlock}`
-        : mailboxBlock;
+      developerInstructions = appendPromptSection(developerInstructions, mailboxBlock);
     }
   }
 
@@ -1901,6 +1932,46 @@ function buildKernelUserTurnOptions(
   }
 
   return options;
+}
+
+function appendPromptSection(base: string | undefined, section: string | undefined): string | undefined {
+  const normalizedSection = section?.trim();
+  if (!normalizedSection) return base;
+  if (!base || base.trim().length === 0) return normalizedSection;
+  if (base.includes(normalizedSection)) return base;
+  return `${base}\n\n${normalizedSection}`;
+}
+
+function buildSkillsPromptBlock(metadata: Record<string, unknown> | undefined): string | undefined {
+  const enabled = parseOptionalBoolean(metadata?.skillsPromptEnabled)
+    ?? parseOptionalBoolean(metadata?.skillsInjectionEnabled)
+    ?? true;
+  if (!enabled) return undefined;
+  const block = formatSkillsAsPromptSync().trim();
+  return block.length > 0 ? block : undefined;
+}
+
+function buildMailboxBaselineBlock(
+  snapshot: MailboxSnapshot | undefined,
+  metadata: Record<string, unknown> | undefined,
+): string | undefined {
+  const enabled = parseOptionalBoolean(metadata?.mailboxPromptEnabled)
+    ?? parseOptionalBoolean(metadata?.mailboxInjectionEnabled)
+    ?? true;
+  if (!enabled) return undefined;
+
+  const lines = [
+    '# Mailbox Runtime',
+    'Use mailbox tools for async task and notification handling.',
+    '- Tools: mailbox.status / mailbox.list / mailbox.read / mailbox.read_all / mailbox.ack / mailbox.remove / mailbox.remove_all',
+    '- For low-priority notifications, title + short description may be enough; you can ack/remove directly when no further action is required.',
+  ];
+  if (snapshot) {
+    const unread = Array.isArray(snapshot.entries) ? snapshot.entries.length : 0;
+    lines.push(`snapshot.currentSeq=${snapshot.currentSeq}`);
+    lines.push(`snapshot.unread=${unread}`);
+  }
+  return lines.join('\n');
 }
 
 function resolveResponsesOptions(

@@ -126,6 +126,18 @@ Multi-role prompt system:
 - 处理邮箱消息后应简短汇报结果
 - 🔴 高优先级邮箱消息（如 Dispatch 失败）必须立即处理
 
+**Email 通知处理规则（强制）**:
+- 当系统具备 Email skills（`email`）时，凡是“收取/查询/读取邮件”相关任务，必须使用 Email skills。
+- 禁止通过系统邮件 App（GUI 客户端）或手工打开本地邮件软件来完成邮件收取。
+- 对来自邮箱 channel 的 Notification：忙碌时允许仅在上下文中感知，不强制立即读取；空闲时优先处理。
+- 空闲处理邮件通知时，先 `mailbox.status/list` 做摘要判断；若需深入再 `mailbox.read/read_all`，并根据来源调用对应 skills（邮件来源优先 Email skills）。
+- 邮件任务执行必须收敛，使用最小流程：
+  1) `email envelope list` 列摘要；
+  2) 仅对必要邮件 `email message read`（通常 1~5 封）；
+  3) 直接输出用户需要的总结并结束。
+- 禁止为邮件任务做本地系统探索（例如 `~/Library/Mail`、Mail SQLite、`mdfind` 邮件索引、GUI 客户端探测）。
+- 若 Email 命令失败，仅允许做账号/文件夹两步诊断（`email account list` / `email folder list`），仍失败则明确汇报阻塞并停止继续探索。
+
 **渠道与图片发送规则（强制）**:
 - 图片发送必须使用 `send_local_image` 工具，禁止硬编码单一渠道协议。
 - 不要把 `<qqimg>` 当作跨渠道发送标准；跨渠道由 ChannelBridge 适配层处理。

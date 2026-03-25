@@ -567,6 +567,36 @@ export class SessionManager {
     const ctx = session.context ?? {};
     const agentId = metadata?.agentId || (typeof ctx.ownerAgentId === 'string' ? ctx.ownerAgentId : '') || 'unknown';
     const rootDir = this.resolveSessionsRoot(session);
+    const rawLedgerMetadata = metadata?.metadata;
+    const baseLedgerMetadata = rawLedgerMetadata && typeof rawLedgerMetadata === 'object'
+      ? (rawLedgerMetadata as Record<string, unknown>)
+      : {};
+    const rawCodexAlignedContext = baseLedgerMetadata.codexAlignedContext;
+    const baseCodexAlignedContext = rawCodexAlignedContext && typeof rawCodexAlignedContext === 'object'
+      ? (rawCodexAlignedContext as Record<string, unknown>)
+      : {};
+    const messageType = typeof metadata?.type === 'string' ? metadata.type : undefined;
+    const codexAlignedContext: Record<string, unknown> = {
+      ...baseCodexAlignedContext,
+      role,
+      session_id: session.id,
+      agent_id: agentId,
+      mode: 'main',
+      ...(messageType ? { message_type: messageType } : {}),
+      ...(role === 'user' ? { user_input: content } : {}),
+    };
+    const ledgerMetadata: Record<string, unknown> = {
+      ...baseLedgerMetadata,
+      codexAlignedContext,
+      _fingerLedger: {
+        schema: 'finger.session_message.v1',
+        role,
+        session_id: session.id,
+        agent_id: agentId,
+        mode: 'main',
+        ...(messageType ? { message_type: messageType } : {}),
+      },
+    };
     try {
       await appendSessionMessage(
         { rootDir, sessionId: session.id, agentId, mode: 'main' },
@@ -575,7 +605,7 @@ export class SessionManager {
           content,
           messageId,
           tokenCount: estimateTokens(content),
-          metadata: metadata?.metadata,
+          metadata: ledgerMetadata,
         },
       );
     } catch (err) {
