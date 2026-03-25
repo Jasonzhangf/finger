@@ -32,6 +32,43 @@ export interface LegacyAliasOptions {
   legacyAllowedTools: string[];
 }
 
+type RuntimePromptConfig = {
+  prompts?: {
+    system?: string;
+    developer?: string;
+  };
+};
+
+function resolveRolePromptOverridesFromConfig(
+  runtimeConfig: RuntimePromptConfig | undefined | null,
+  role: FingerRoleSpec,
+  developerRole: ChatCodexDeveloperRole,
+): {
+  developerPromptPath?: string;
+  developerPromptPaths?: Partial<Record<ChatCodexDeveloperRole, string>>;
+} {
+  const systemPath = runtimeConfig?.prompts?.system?.trim();
+  const developerPath = runtimeConfig?.prompts?.developer?.trim();
+
+  // Prompt convergence rule:
+  // - Keep coding/system prompt on the shared Codex general prompt track.
+  // - Finger system prompt should be injected as developer prompt (not system field).
+  const effectiveDeveloperPath = role.roleProfile === 'system'
+    ? (systemPath && systemPath.length > 0 ? systemPath : developerPath)
+    : developerPath;
+
+  if (!effectiveDeveloperPath || effectiveDeveloperPath.length === 0) {
+    return {};
+  }
+
+  return {
+    developerPromptPath: effectiveDeveloperPath,
+    developerPromptPaths: {
+      [developerRole]: effectiveDeveloperPath,
+    } as Partial<Record<ChatCodexDeveloperRole, string>>,
+  };
+}
+
 function hasMediaInputInMessage(message: { metadata?: Record<string, unknown> } | null | undefined): boolean {
   if (!message?.metadata || typeof message.metadata !== 'object') return false;
   const inputItems = (message.metadata as Record<string, unknown>).inputItems;
@@ -102,18 +139,12 @@ export async function registerFingerRoleModules(
   };
 
   const resolvePromptOverrides = (agentId: string, role: FingerRoleSpec) => {
-    const runtimeConfig = runtime.getAgentRuntimeConfig(agentId);
+    const runtimeConfig = runtime.getAgentRuntimeConfig(agentId) ?? undefined;
     const developerRole = resolveDeveloperRole(role);
-    const systemPath = runtimeConfig?.prompts?.system?.trim();
-    const developerPath = runtimeConfig?.prompts?.developer?.trim();
+    const promptOverrides = resolveRolePromptOverridesFromConfig(runtimeConfig, role, developerRole);
     return {
-      ...(systemPath ? { codingPromptPath: systemPath } : {}),
-      ...(developerPath
-        ? {
-            developerPromptPaths: {
-              [developerRole]: developerPath,
-            } as Partial<Record<ChatCodexDeveloperRole, string>>,
-          }
+      ...(promptOverrides.developerPromptPaths
+        ? { developerPromptPaths: promptOverrides.developerPromptPaths }
         : {}),
     };
   };
@@ -164,7 +195,13 @@ export async function registerFingerRoleModules(
       }
 
       const session = runtime.getSession(sessionId);
-      if (!session) return [];
+      if (!session) {
+        logger.module('finger-role-modules').warn('Context builder session not found, fallback to session history', {
+          roleId: role.id,
+          sessionId,
+        });
+        return null;
+      }
       const sessionMessages = Array.isArray((session as { messages?: unknown }).messages)
         ? ((session as { messages?: Array<{
           id?: string;
@@ -243,6 +280,22 @@ export async function registerFingerRoleModules(
           contextBuilderRebuilt: true,
         },
       }));
+      if (mapped.length === 0 && sessionMessages.length > 0) {
+        const fallback = mapRawSessionMessages(sessionMessages, limit, {
+          contextBuilderHistorySource: 'raw_session_fallback',
+          contextBuilderBypassed: true,
+          contextBuilderBypassReason: 'empty_context_builder_result',
+          contextBuilderRebuilt: false,
+        });
+        logger.module('finger-role-modules').warn('Context builder returned empty history, fallback to raw session', {
+          roleId: role.id,
+          sessionId,
+          rawMessageCount: sessionMessages.length,
+          selectedCount: fallback.length,
+          mode: settings.mode,
+        });
+        return fallback;
+      }
       logger.module('finger-role-modules').info('Context builder rebuilt session history', {
         roleId: role.id,
         sessionId,
@@ -302,3 +355,7 @@ export async function registerFingerRoleModules(
     runtime.setAgentToolWhitelist(legacy.legacyAgentId, legacy.legacyAllowedTools);
   }
 }
+
+export const __fingerRoleModulesInternals = {
+  resolveRolePromptOverridesFromConfig,
+};
