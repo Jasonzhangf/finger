@@ -162,7 +162,35 @@ function parseToolSummary(toolName: string, input: unknown, output?: unknown): {
   }
 
   if (normalizedToolName === 'update_plan') {
-    return { verb: 'plan' };
+    // Extract plan content from output for meaningful status display
+    const outputRecord = resolveOutputRecord(output);
+    const explanation = outputRecord && typeof outputRecord.explanation === 'string' ? outputRecord.explanation.trim() : '';
+    const planItems = outputRecord && Array.isArray(outputRecord.plan) ? outputRecord.plan : [];
+
+    // Build a compact plan summary: "2/4 done | next: ..."
+    const completedCount = planItems.filter((p: any) => p.status === 'completed').length;
+    const totalCount = planItems.length;
+    const inProgressItem = planItems.find((p: any) => p.status === 'in_progress');
+    const pendingItems = planItems.filter((p: any) => p.status === 'pending').slice(0, 2);
+
+    const statusParts: string[] = [];
+    if (totalCount > 0) {
+      statusParts.push(`${completedCount}/${totalCount}`);
+    }
+    if (inProgressItem) {
+      statusParts.push(`当前: ${(inProgressItem as any).step}`);
+    } else if (pendingItems.length > 0) {
+      statusParts.push(`下一步: ${(pendingItems[0] as any).step}`);
+    }
+    const statusText = statusParts.length > 0 ? statusParts.join(' | ') : '';
+
+    return {
+      verb: 'plan',
+      signals: [
+        explanation ? `说明: ${truncateInline(explanation, 80)}` : '',
+        statusText ? `进度: ${statusText}` : '',
+      ].filter((item) => item.length > 0),
+    };
   }
 
   if (normalizedToolName === 'context_ledger.memory') {
