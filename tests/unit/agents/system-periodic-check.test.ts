@@ -12,6 +12,7 @@ vi.mock('../../../src/agents/finger-system-agent/registry.js', () => ({
       status: 'idle',
       lastHeartbeat: new Date().toISOString(),
       stats: { tasksCompleted: 0, tasksFailed: 0, uptime: 0 },
+      monitored: true,
     },
   ],
   updateAgentStatus: vi.fn(),
@@ -24,8 +25,8 @@ vi.mock('../../../src/agents/finger-system-agent/system-events.js', () => ({
 
 vi.mock('../../../src/runtime/session-control-plane.js', () => ({
   SessionControlPlaneStore: class {
-    list() {
-      return [{ fingerSessionId: 'session-1' }];
+    list(opts?: any) {
+      return [{ fingerSessionId: 'session-1', agentId: opts?.agentId ?? 'agent-1' }];
     }
   },
 }));

@@ -208,6 +208,7 @@ async function uploadImageToCdn(
 export class WeixinBridgeAdapter implements ChannelBridge {
   readonly id: string;
   readonly channelId: string;
+  private static readonly GET_UPDATES_TIMEOUT_MS = 70_000;
   private config: ChannelBridgeConfig;
   private callbacks: ChannelBridgeCallbacks;
   private running = false;
@@ -272,11 +273,27 @@ export class WeixinBridgeAdapter implements ChannelBridge {
     const url = `${this.account.baseUrl.replace(/\/$/, '')}/ilink/bot/getupdates`;
     const body = JSON.stringify({ get_updates_buf: this.updateBuffer });
     const headers = this.getHeaders(body);
+    const timeoutSignal = AbortSignal.timeout(WeixinBridgeAdapter.GET_UPDATES_TIMEOUT_MS);
+    const signal = this.abortController?.signal
+      ? AbortSignal.any([this.abortController.signal, timeoutSignal])
+      : timeoutSignal;
 
-    const response = await fetch(url, {
+    let response: Response;
+    try {
+      response = await fetch(url, {
       method: 'POST', headers, body,
-      signal: this.abortController?.signal,
-    });
+        signal,
+      });
+    } catch (error) {
+      if (this.abortController?.signal.aborted) {
+        throw error;
+      }
+      const message = error instanceof Error ? error.message : String(error);
+      if (message.includes('timeout') || message.includes('aborted')) {
+        log.warn(`[${this.id}] getupdates timeout after ${WeixinBridgeAdapter.GET_UPDATES_TIMEOUT_MS}ms, restarting poll request`);
+      }
+      throw error;
+    }
 
     if (!response.ok) throw new Error(`HTTP ${response.status}: ${await response.text()}`);
     const data = (await response.json()) as GetUpdatesResponse;
