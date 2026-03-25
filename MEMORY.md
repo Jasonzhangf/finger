@@ -35,6 +35,8 @@
 ## Session Management & Agent Runtime SSOT
 - [2026-03-24] 约束更新（Jason 明确）：旧的 `new / resume / session` 语义是基于旧 session 文件模型；新架构中这些操作必须以 **ledger 为唯一真源** 解释与实现。UI 的会话切换/新建/恢复都要对应 ledger（持久化），动态 session 只是按 ledger slots 拼接的上下文视图。
   Tags: session, ledger, ssot, ui
+- [2026-03-25] Jason 明确补充：要对齐 codex 的模型可见性。`ledger` 只负责重建历史消息；`system prompt / developer instructions / skills / mailbox baseline / user input` 必须稳定注入，不得因 context builder 重建历史而丢失。`system agent` 与 `project agent` 各自维护独立 session/ledger；派发与回报要写入各自 ledger 流水。  
+  Tags: session, ledger, codex-alignment, prompt-injection, mailbox, user-input
 - [2026-03-13] Session 管理迁移到 Agent 层：移除 MessageHub `/resume`；新增 `session.list` / `session.switch` 工具；System Agent 可跨 agent 切换。
   Tags: session-management, agent-tools
 - [2026-03-13] `system:restart` 仍在 MessageHub 层直连 daemon，避免交给 agent。
