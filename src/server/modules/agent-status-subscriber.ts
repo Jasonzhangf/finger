@@ -122,10 +122,6 @@ export class AgentStatusSubscriber {
     log.info('[AgentStatusSubscriber] Started');
   }
 
-  private isVerboseTextChannel(channelId: string): boolean {
-    return channelId === 'qqbot' || channelId === 'openclaw-weixin';
-  }
-
   private async sendTextUpdate(
     sessionId: string,
     agentId: string,
@@ -142,9 +138,8 @@ export class AgentStatusSubscriber {
     }
 
     if (this.channelBridgeManager) {
-      const channelId = mapping.envelope.channel;
       const pushSettings = this.channelBridgeManager.getPushSettings(mapping.envelope.channel);
-      const enabled = this.isVerboseTextChannel(channelId) || Boolean(pushSettings[setting]);
+      const enabled = Boolean(pushSettings[setting]);
       if (!enabled) {
         return;
       }
@@ -191,6 +186,15 @@ export class AgentStatusSubscriber {
   async sendBodyUpdate(sessionId: string, agentId: string, bodyText: string): Promise<void> {
     const text = bodyText.trim();
     if (!text) return;
+
+    // Dedup: skip if the same body was already sent for this session.
+    // Prevents duplicate pushes when identical body text arrives multiple times.
+    const dedupKey = `${sessionId}:${text.slice(0, 200)}`;
+    if ((this as any)._lastBodyDedupKey === dedupKey) {
+      return;
+    }
+    (this as any)._lastBodyDedupKey = dedupKey;
+
     await this.sendTextUpdate(sessionId, agentId, text, 'bodyUpdates', 'body', '正文：');
   }
 
