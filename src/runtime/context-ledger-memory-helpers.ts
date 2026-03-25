@@ -17,6 +17,7 @@ export function parseInput(rawInput: unknown): ContextLedgerMemoryInput {
     || rawAction === 'index'
     || rawAction === 'compact'
     || rawAction === 'search'
+    || rawAction === 'delete_slots'
       ? rawAction
       : 'query';
   return {
@@ -45,6 +46,16 @@ export function parseInput(rawInput: unknown): ContextLedgerMemoryInput {
     source_time_end: valueAsString(rawInput.source_time_end),
     source_slot_start: normalizePositiveInt(rawInput.source_slot_start),
     source_slot_end: normalizePositiveInt(rawInput.source_slot_end),
+    slot_ids: Array.isArray(rawInput.slot_ids)
+      ? rawInput.slot_ids
+        .map((item) => normalizePositiveInt(item))
+        .filter((item): item is number => typeof item === 'number')
+      : undefined,
+    preview_only: rawInput.preview_only === true,
+    confirm: rawInput.confirm === true,
+    user_confirmation: valueAsString(rawInput.user_confirmation),
+    reason: valueAsString(rawInput.reason),
+    user_authorized: rawInput.user_authorized === true,
     replacement_history: Array.isArray(rawInput.replacement_history)
       ? rawInput.replacement_history.filter((item): item is Record<string, unknown> => isRecord(item))
       : undefined,

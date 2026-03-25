@@ -1,4 +1,4 @@
-export type ContextLedgerMemoryAction = 'query' | 'search' | 'insert' | 'index' | 'compact';
+export type ContextLedgerMemoryAction = 'query' | 'search' | 'insert' | 'index' | 'compact' | 'delete_slots';
 
 export interface ContextLedgerMemoryRuntimeContext {
   root_dir?: string;
@@ -36,6 +36,12 @@ export interface ContextLedgerMemoryInput {
   source_time_end?: string;
   source_slot_start?: number;
   source_slot_end?: number;
+  slot_ids?: number[];
+  preview_only?: boolean;
+  confirm?: boolean;
+  user_confirmation?: string;
+  reason?: string;
+  user_authorized?: boolean;
   replacement_history?: Array<Record<string, unknown>>;
   _runtime_context?: ContextLedgerMemoryRuntimeContext;
 }
@@ -159,8 +165,30 @@ export interface ContextLedgerMemoryCompactResult {
   indexed: boolean;
 }
 
+export interface ContextLedgerMemoryDeleteSlotsResult {
+  ok: true;
+  action: 'delete_slots';
+  source: string;
+  target_agent_id: string;
+  selected_slots: Array<{
+    slot: number;
+    id: string;
+    timestamp_ms: number;
+    timestamp_iso: string;
+    event_type: string;
+    preview: string;
+  }>;
+  selected_total: number;
+  deleted_count: number;
+  preview_only: boolean;
+  requires_confirmation: boolean;
+  reason?: string;
+  note: string;
+}
+
 export type ContextLedgerMemoryResult =
   | ContextLedgerMemoryQueryResult
   | ContextLedgerMemoryInsertResult
   | ContextLedgerMemoryIndexResult
-  | ContextLedgerMemoryCompactResult;
+  | ContextLedgerMemoryCompactResult
+  | ContextLedgerMemoryDeleteSlotsResult;

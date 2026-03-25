@@ -3,6 +3,7 @@ import type {
   CompactMemoryEntryFile,
   CompactMemorySearchEntry,
   ContextLedgerMemoryCompactResult,
+  ContextLedgerMemoryDeleteSlotsResult,
   ContextLedgerMemoryIndexResult,
   ContextLedgerMemoryInput,
   ContextLedgerMemoryQueryResult,
@@ -92,6 +93,18 @@ export async function executeContextLedgerMemory(rawInput: unknown): Promise<Con
       sessionId,
       currentAgentId,
       mode,
+    });
+  }
+
+  if (input.action === 'delete_slots') {
+    return executeDeleteSlotsAction(input, {
+      rootDir,
+      sessionId,
+      currentAgentId,
+      targetAgentId: pickString(input.agent_id, currentAgentId) ?? currentAgentId,
+      mode,
+      canReadAll: runtime.can_read_all === true,
+      readableAgents: runtime.readable_agents ?? [],
     });
   }
 
@@ -512,6 +525,129 @@ async function executeCompactAction(
     linked_event_ids: linkedEventIds,
     linked_message_ids: input.source_message_ids ?? [],
     indexed: true,
+  };
+}
+
+async function executeDeleteSlotsAction(
+  input: ContextLedgerMemoryInput,
+  context: {
+    rootDir: string;
+    sessionId: string;
+    currentAgentId: string;
+    targetAgentId: string;
+    mode: string;
+    canReadAll: boolean;
+    readableAgents: string[];
+  },
+): Promise<ContextLedgerMemoryDeleteSlotsResult> {
+  ensureReadableAgent(
+    context.currentAgentId,
+    context.targetAgentId,
+    context.canReadAll,
+    context.readableAgents,
+  );
+
+  const slotIds = Array.from(new Set((input.slot_ids ?? [])
+    .map((slot) => normalizePositiveInt(slot))
+    .filter((slot): slot is number => typeof slot === 'number')
+  )).sort((a, b) => a - b);
+
+  if (slotIds.length === 0) {
+    throw new Error('delete_slots requires slot_ids (array of 1-based slot numbers)');
+  }
+
+  const ledgerPath = resolveLedgerPath(context.rootDir, context.sessionId, context.targetAgentId, context.mode);
+  const allEntries = await readJsonLines<LedgerEntryFile>(ledgerPath);
+
+  const selected = slotIds
+    .filter((slot) => slot >= 1 && slot <= allEntries.length)
+    .map((slot) => ({ slot, entry: allEntries[slot - 1] }))
+    .filter((item) => item.entry.event_type !== 'context_compact');
+
+  const selectedSlots = selected.map(({ slot, entry }) => ({
+    slot,
+    id: entry.id,
+    timestamp_ms: entry.timestamp_ms,
+    timestamp_iso: entry.timestamp_iso,
+    event_type: entry.event_type,
+    preview: buildPreview(JSON.stringify(entry.payload), 220),
+  }));
+
+  if (selectedSlots.length === 0) {
+    return {
+      ok: true,
+      action: 'delete_slots',
+      source: ledgerPath,
+      target_agent_id: context.targetAgentId,
+      selected_slots: [],
+      selected_total: 0,
+      deleted_count: 0,
+      preview_only: true,
+      requires_confirmation: true,
+      note: 'No deletable slots matched. context_compact entries are protected and cannot be deleted by this action.',
+    };
+  }
+
+  const confirmToken = normalizeText(input.user_confirmation)?.toUpperCase();
+  const authorized = input.user_authorized === true;
+  const previewOnly = input.preview_only === true || input.confirm !== true;
+  const confirmed = input.confirm === true && confirmToken === 'CONFIRM_DELETE_SLOTS' && authorized;
+
+  if (previewOnly || !confirmed) {
+    return {
+      ok: true,
+      action: 'delete_slots',
+      source: ledgerPath,
+      target_agent_id: context.targetAgentId,
+      selected_slots: selectedSlots,
+      selected_total: selectedSlots.length,
+      deleted_count: 0,
+      preview_only: true,
+      requires_confirmation: true,
+      reason: normalizeText(input.reason),
+      note: [
+        'Deletion preview only. No ledger data has been deleted.',
+        'Before delete, show this summary to user and ask explicit permission.',
+        'To execute deletion, call again with confirm=true, user_authorized=true, user_confirmation="CONFIRM_DELETE_SLOTS".',
+      ].join(' '),
+    };
+  }
+
+  const deleteIndexSet = new Set(selected.map(({ slot }) => slot - 1));
+  const remaining = allEntries.filter((_, index) => !deleteIndexSet.has(index));
+  const content = remaining.length > 0
+    ? `${remaining.map((entry) => JSON.stringify(entry)).join('\n')}\n`
+    : '';
+  await fs.writeFile(ledgerPath, content, 'utf-8');
+
+  await appendLedgerEvent(ledgerPath, {
+    session_id: context.sessionId,
+    agent_id: context.currentAgentId,
+    mode: context.mode,
+    event_type: 'ledger_slots_deleted',
+    payload: {
+      source: 'context_ledger.memory',
+      target_agent_id: context.targetAgentId,
+      deleted_slots: selectedSlots.map((item) => item.slot),
+      deleted_event_ids: selectedSlots.map((item) => item.id),
+      deleted_count: selectedSlots.length,
+      reason: normalizeText(input.reason),
+      user_confirmation: confirmToken,
+    },
+  });
+
+  return {
+    ok: true,
+    action: 'delete_slots',
+    source: ledgerPath,
+    target_agent_id: context.targetAgentId,
+    selected_slots: selectedSlots,
+    selected_total: selectedSlots.length,
+    deleted_count: selectedSlots.length,
+    preview_only: false,
+    requires_confirmation: false,
+    reason: normalizeText(input.reason),
+    note: 'Ledger slots deleted successfully after explicit user authorization.',
   };
 }
 

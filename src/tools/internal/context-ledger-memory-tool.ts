@@ -8,7 +8,7 @@ const DEFAULT_TIMEOUT_MS = 15_000;
 const TOOL_INPUT_ENV_KEY = 'FINGER_CONTEXT_LEDGER_TOOL_INPUT';
 
 interface ContextLedgerMemoryToolInput {
-  action?: 'query' | 'search' | 'index' | 'compact';
+  action?: 'query' | 'search' | 'index' | 'compact' | 'delete_slots';
   session_id?: string;
   agent_id?: string;
   mode?: string;
@@ -33,6 +33,12 @@ interface ContextLedgerMemoryToolInput {
   source_time_end?: string;
   source_slot_start?: number;
   source_slot_end?: number;
+  slot_ids?: number[];
+  preview_only?: boolean;
+  confirm?: boolean;
+  user_confirmation?: string;
+  reason?: string;
+  user_authorized?: boolean;
   replacement_history?: Array<Record<string, unknown>>;
   _runtime_context?: Record<string, unknown>;
 }
@@ -51,11 +57,12 @@ export const contextLedgerMemoryTool: InternalTool<unknown, ContextLedgerMemoryT
     'For fuzzy queries, it checks compact memory first; then detail query can drill into raw timeline.',
     'Read-only for agents: query/search timeline memory.',
     'System-level maintenance actions compact/index are allowed for automatic ledger maintenance.',
+    'Dangerous action delete_slots requires interactive user authorization and explicit confirmation token.',
   ].join(' '),
   inputSchema: {
     type: 'object',
     properties: {
-      action: { type: 'string', enum: ['query', 'search', 'index', 'compact'], description: 'query/search: search timeline memory; index: rebuild compact index; compact: persist a compaction summary and align ledger' },
+      action: { type: 'string', enum: ['query', 'search', 'index', 'compact', 'delete_slots'], description: 'query/search: search timeline memory; index: rebuild compact index; compact: persist a compaction summary and align ledger; delete_slots: preview/delete selected slots (requires explicit user authorization)' },
       session_id: { type: 'string', description: 'Optional override session id; usually auto-filled by runtime context' },
       agent_id: { type: 'string', description: 'Target agent ledger id. Requires read permission when not self.' },
       mode: { type: 'string', description: 'Conversation mode/thread name, e.g. main or review' },
@@ -80,6 +87,12 @@ export const contextLedgerMemoryTool: InternalTool<unknown, ContextLedgerMemoryT
       source_time_end: { type: 'string', description: 'Original timeline end ISO timestamp' },
       source_slot_start: { type: 'number', description: 'Original timeline start slot' },
       source_slot_end: { type: 'number', description: 'Original timeline end slot' },
+      slot_ids: { type: 'array', items: { type: 'number' }, description: 'For delete_slots: 1-based slot numbers to delete' },
+      preview_only: { type: 'boolean', description: 'For delete_slots: when true, summarize candidate slots without deleting' },
+      confirm: { type: 'boolean', description: 'For delete_slots: true means execute deletion (still requires confirmation token + user_authorized=true)' },
+      user_confirmation: { type: 'string', description: 'For delete_slots: must equal CONFIRM_DELETE_SLOTS when confirm=true' },
+      user_authorized: { type: 'boolean', description: 'For delete_slots: must be true only after explicit user consent in current interaction' },
+      reason: { type: 'string', description: 'For delete_slots: user-provided reason for deletion' },
    },
    required: ['action'],
    additionalProperties: true,
@@ -153,6 +166,7 @@ function parseInput(rawInput: unknown): ContextLedgerMemoryToolInput {
   const action = rawInput.action === 'index'
     || rawInput.action === 'compact'
     || rawInput.action === 'search'
+    || rawInput.action === 'delete_slots'
       ? rawInput.action
       : 'query';
 
@@ -191,6 +205,14 @@ function parseInput(rawInput: unknown): ContextLedgerMemoryToolInput {
     source_time_end: typeof rawInput.source_time_end === 'string' ? rawInput.source_time_end : undefined,
     source_slot_start: typeof rawInput.source_slot_start === 'number' ? rawInput.source_slot_start : undefined,
     source_slot_end: typeof rawInput.source_slot_end === 'number' ? rawInput.source_slot_end : undefined,
+    slot_ids: Array.isArray(rawInput.slot_ids)
+      ? rawInput.slot_ids.filter((item): item is number => typeof item === 'number')
+      : undefined,
+    preview_only: rawInput.preview_only === true,
+    confirm: rawInput.confirm === true,
+    user_confirmation: typeof rawInput.user_confirmation === 'string' ? rawInput.user_confirmation : undefined,
+    reason: typeof rawInput.reason === 'string' ? rawInput.reason : undefined,
+    user_authorized: rawInput.user_authorized === true,
     replacement_history: Array.isArray(rawInput.replacement_history)
       ? rawInput.replacement_history.filter((item): item is Record<string, unknown> => isRecord(item))
       : undefined,
