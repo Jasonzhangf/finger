@@ -8,6 +8,7 @@
  */
 const fs = require('fs');
 const path = require('path');
+const os = require('os');
 const { spawn, execSync } = require('child_process');
 const net = require('net');
 
@@ -17,6 +18,8 @@ const PID_FILE = path.join(RUNTIME_DIR, 'server.pid');
 const GUARD_PID_FILE = path.join(RUNTIME_DIR, 'guard.pid');
 const HEARTBEAT_FILE = path.join(RUNTIME_DIR, 'daemon.heartbeat');
 const HEARTBEAT_PATTERN = /daemon\.heartbeat/;
+const USER_LOG_DIR = path.join(os.homedir(), '.finger', 'logs');
+const USER_DAEMON_LOG = path.join(USER_LOG_DIR, 'daemon.log');
 const HEARTBEAT_INTERVAL_MS = 5000;
 const HEARTBEAT_TIMEOUT_MS = 30000;
 const RESTART_DELAY_MS = 2000;
@@ -44,6 +47,7 @@ class DaemonGuard {
     async spawnMainDaemon() {
         console.log('[DaemonGuard] Starting main daemon...');
         await this.waitForPorts([9998, 9999]);
+        fs.mkdirSync(USER_LOG_DIR, { recursive: true });
 
         // Set NODE_PATH to include global openclaw package so that
         // external plugins (e.g. openclaw-weixin) can resolve "openclaw/plugin-sdk"
@@ -52,7 +56,7 @@ class DaemonGuard {
             .filter(Boolean).join(path.delimiter);
 
         const mainProcess = spawn('node', [path.join(FINGER_ROOT, 'dist', 'server', 'index.js')], {
-            stdio: ['ignore', fs.openSync(path.join(require('os').homedir(), '.finger', 'logs', 'daemon.log'), 'a'), fs.openSync(path.join(require('os').homedir(), '.finger', 'logs', 'daemon.log'), 'a')],
+            stdio: ['ignore', fs.openSync(USER_DAEMON_LOG, 'a'), fs.openSync(USER_DAEMON_LOG, 'a')],
             detached: true,
             env,
         });

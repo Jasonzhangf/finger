@@ -216,6 +216,7 @@ export class WeixinBridgeAdapter implements ChannelBridge {
   private account: WeixinAccount | null = null;
   private updateBuffer = '';
   private contextTokenMap = new Map<string, string>();
+  private inboundQueues = new Map<string, Promise<void>>();
 
   constructor(config: ChannelBridgeConfig, callbacks: ChannelBridgeCallbacks) {
     this.id = config.id;
@@ -237,6 +238,7 @@ export class WeixinBridgeAdapter implements ChannelBridge {
     this.running = true;
     this.pollLoop();
     this.callbacks.onReady();
+    log.info(`[${this.id}] Message processor started (per-user concurrency, max 10 users)`);
     log.info(`[${this.id}] Started weixin bridge`);
   }
 
@@ -381,7 +383,33 @@ export class WeixinBridgeAdapter implements ChannelBridge {
     };
 
     log.info(`[${this.id}] Received from ${fromUserId}: ${text.slice(0, 50)}${attachments.length ? ` (+${attachments.length} images)` : ''}`);
-    await this.callbacks.onMessage(channelMessage);
+    this.dispatchInboundMessage(channelMessage);
+  }
+
+  private dispatchInboundMessage(channelMessage: ChannelMessage): void {
+    const queueKey = channelMessage.senderId || channelMessage.threadId || 'unknown';
+    const previous = this.inboundQueues.get(queueKey);
+    const delivery = Promise.resolve(previous)
+      .catch(() => undefined)
+      .then(() => this.callbacks.onMessage(channelMessage))
+      .catch((error) => {
+        log.error(
+          `[${this.id}] Failed to deliver inbound message ${channelMessage.id}: ${error instanceof Error ? error.message : String(error)}`,
+          error instanceof Error ? error : undefined,
+          {
+            channelId: channelMessage.channelId,
+            senderId: channelMessage.senderId,
+            threadId: channelMessage.threadId,
+          },
+        );
+      })
+      .finally(() => {
+        if (this.inboundQueues.get(queueKey) === delivery) {
+          this.inboundQueues.delete(queueKey);
+        }
+      });
+
+    this.inboundQueues.set(queueKey, delivery);
   }
 
   async stop(): Promise<void> {

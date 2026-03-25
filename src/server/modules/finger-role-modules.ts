@@ -7,6 +7,8 @@ import { createFingerGeneralModule, type ChatCodexLoopEvent } from '../../agents
 import type { ChatCodexDeveloperRole } from '../../agents/chat-codex/developer-prompt-templates.js';
 import { buildContext } from '../../runtime/context-builder.js';
 import { loadContextBuilderSettings } from '../../core/user-settings.js';
+import { join, isAbsolute } from 'path';
+import { FINGER_PATHS } from '../../core/finger-paths.js';
 
 export type FingerRoleProfile = 'project' | 'reviewer' | 'system';
 
@@ -43,6 +45,7 @@ function resolveRolePromptOverridesFromConfig(
   runtimeConfig: RuntimePromptConfig | undefined | null,
   role: FingerRoleSpec,
   developerRole: ChatCodexDeveloperRole,
+  agentId: string,
 ): {
   developerPromptPath?: string;
   developerPromptPaths?: Partial<Record<ChatCodexDeveloperRole, string>>;
@@ -61,10 +64,16 @@ function resolveRolePromptOverridesFromConfig(
     return {};
   }
 
+  // Resolve relative paths against the agent's runtime directory
+  const agentDir = join(FINGER_PATHS.runtime.agentsDir, agentId);
+  const resolvedPath = isAbsolute(effectiveDeveloperPath)
+    ? effectiveDeveloperPath
+    : join(agentDir, effectiveDeveloperPath);
+
   return {
-    developerPromptPath: effectiveDeveloperPath,
+    developerPromptPath: resolvedPath,
     developerPromptPaths: {
-      [developerRole]: effectiveDeveloperPath,
+      [developerRole]: resolvedPath,
     } as Partial<Record<ChatCodexDeveloperRole, string>>,
   };
 }
@@ -141,7 +150,7 @@ export async function registerFingerRoleModules(
   const resolvePromptOverrides = (agentId: string, role: FingerRoleSpec) => {
     const runtimeConfig = runtime.getAgentRuntimeConfig(agentId) ?? undefined;
     const developerRole = resolveDeveloperRole(role);
-    const promptOverrides = resolveRolePromptOverridesFromConfig(runtimeConfig, role, developerRole);
+    const promptOverrides = resolveRolePromptOverridesFromConfig(runtimeConfig, role, developerRole, agentId);
     return {
       ...(promptOverrides.developerPromptPaths
         ? { developerPromptPaths: promptOverrides.developerPromptPaths }

@@ -82,6 +82,18 @@ export function registerToolRoutes(app: Express, deps: ToolRouteDeps): void {
     const toolName = req.body?.toolName;
     const input = req.body?.input;
     const authorizationToken = req.body?.authorizationToken;
+    const requestSessionId =
+      typeof req.body?.sessionId === 'string' && req.body.sessionId.trim().length > 0
+        ? req.body.sessionId.trim()
+        : typeof req.body?.session_id === 'string' && req.body.session_id.trim().length > 0
+          ? req.body.session_id.trim()
+          : isObjectRecord(input)
+            ? (typeof input.sessionId === 'string' && input.sessionId.trim().length > 0
+                ? input.sessionId.trim()
+                : typeof input.session_id === 'string' && input.session_id.trim().length > 0
+                  ? input.session_id.trim()
+                  : undefined)
+            : undefined;
 
     if (typeof agentId !== 'string' || agentId.trim().length === 0) {
       res.status(400).json({ error: 'agentId is required' });
@@ -97,6 +109,9 @@ export function registerToolRoutes(app: Express, deps: ToolRouteDeps): void {
     }
 
     try {
+      if (requestSessionId && typeof runtime.setCurrentSession === 'function') {
+        runtime.setCurrentSession(requestSessionId);
+      }
       const executionInput = isObjectRecord(input)
         ? toolName === 'user.ask'
           ? {

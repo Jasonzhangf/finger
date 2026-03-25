@@ -18,6 +18,7 @@ function createMockRuntime(opts?: { callToolThrows?: Error | null }) {
     : vi.fn().mockResolvedValue({ output: 'ok' });
   return {
     callTool,
+    setCurrentSession: vi.fn().mockReturnValue(true),
     setToolAuthorizationRequired: vi.fn(),
     issueToolAuthorization: vi.fn(),
     revokeToolAuthorization: vi.fn(),
@@ -46,12 +47,13 @@ function createMockToolRegistry() {
 function setupApp(opts?: { callToolThrows?: Error | null }) {
   const app = express();
   app.use(express.json());
+  const runtime = createMockRuntime(opts) as any;
   const deps: ToolRouteDeps = {
     toolRegistry: createMockToolRegistry(),
-    runtime: createMockRuntime(opts) as any,
+    runtime,
   };
   registerToolRoutes(app, deps);
-  return app;
+  return { app, runtime };
 }
 
 describe('Tool error handling regression', () => {
@@ -78,7 +80,7 @@ describe('Tool error handling regression', () => {
 
   // ── Test 1: Successful tool execution returns success:true with full shape ──
   it('returns { success: true, result, toolName, agentId } on success', async () => {
-    const app = setupApp();
+    const { app } = setupApp();
     baseUrl = await startServer(app, 19991);
 
     const res = await fetch(`${baseUrl}/api/v1/tools/execute`, {
@@ -103,7 +105,7 @@ describe('Tool error handling regression', () => {
 
   // ── Test 2 (CRITICAL): Tool execution error returns HTTP 200 with success:false ──
   it('returns HTTP 200 { success: false, error } when tool throws - never HTTP 400', async () => {
-    const app = setupApp({
+    const { app } = setupApp({
       callToolThrows: new Error('Tool execution denied: permission denied for action'),
     });
     baseUrl = await startServer(app, 19992);
@@ -135,7 +137,7 @@ describe('Tool error handling regression', () => {
 
   // ── Test 3: Non-Error throw still returns HTTP 200 with success:false ──
   it('returns HTTP 200 { success: false, error } when tool throws a string', async () => {
-    const app = setupApp({
+    const { app } = setupApp({
       callToolThrows: new Error('Unknown error occurred'),
     });
     baseUrl = await startServer(app, 19993);
@@ -161,7 +163,7 @@ describe('Tool error handling regression', () => {
 
   // ── Test 4: Validation errors (missing fields) still return HTTP 400 ──
   it('returns HTTP 400 for missing agentId (validation, not execution error)', async () => {
-    const app = setupApp();
+    const { app } = setupApp();
     baseUrl = await startServer(app, 19994);
 
     const res = await fetch(`${baseUrl}/api/v1/tools/execute`, {
@@ -184,7 +186,7 @@ describe('Tool error handling regression', () => {
 
 // ── Test 5: Validation errors (missing toolName) still return HTTP 400 ──
   it('returns HTTP 400 for missing toolName', async () => {
-    const app = setupApp();
+    const { app } = setupApp();
     baseUrl = await startServer(app, 19995);
 
     const res = await fetch(`${baseUrl}/api/v1/tools/execute`, {
@@ -206,7 +208,7 @@ describe('Tool error handling regression', () => {
   // runtime.callTool() throws "authorization token required for tool 'shell.exec'"
   // The API must catch this and return HTTP 200 + success:false
   it('returns HTTP 200 { success:false, error } when authorization required', async () => {
-    const app = setupApp({
+    const { app } = setupApp({
       callToolThrows: new Error("authorization token required for tool 'shell.exec'"),
     });
     baseUrl = await startServer(app, 19996);
@@ -234,7 +236,7 @@ describe('Tool error handling regression', () => {
 
   // ── Test 7: Expired authorization token returns HTTP 200 with success:false ──
   it('returns HTTP 200 { success:false, error } for expired authorization', async () => {
-    const app = setupApp({
+    const { app } = setupApp({
       callToolThrows: new Error("authorization token expired for tool 'shell.exec'"),
     });
     baseUrl = await startServer(app, 19997);
@@ -253,6 +255,28 @@ describe('Tool error handling regression', () => {
     const body = await res.json() as any;
     expect(body.success).toBe(false);
     expect(body.error).toContain('expired');
+
+    await stopServer();
+  });
+
+  it('binds tool execution to provided sessionId before calling runtime', async () => {
+    const { app, runtime } = setupApp();
+    baseUrl = await startServer(app, 19998);
+
+    const res = await fetch(`${baseUrl}/api/v1/tools/execute`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        agentId: 'test-agent',
+        toolName: 'echo.test',
+        sessionId: 'session-abc',
+        input: { message: 'hello' },
+      }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(runtime.setCurrentSession).toHaveBeenCalledWith('session-abc');
+    expect(runtime.callTool).toHaveBeenCalledWith('test-agent', 'echo.test', { message: 'hello' }, { authorizationToken: undefined });
 
     await stopServer();
   });

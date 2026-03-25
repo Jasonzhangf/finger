@@ -29,6 +29,7 @@ describe('resolveRolePromptOverridesFromConfig', () => {
   const systemRole: FingerRoleSpec = { roleProfile: 'system' };
   const projectRole: FingerRoleSpec = { roleProfile: 'project' };
   const developerRole: ChatCodexDeveloperRole = 'orchestrator';
+  const testAgentId = 'test-agent';
 
   describe('system role (roleProfile === "system")', () => {
     it('should use runtime prompts.system as developerPromptPath (not codingPromptPath)', () => {
@@ -39,12 +40,12 @@ describe('resolveRolePromptOverridesFromConfig', () => {
         },
       };
 
-      const result = resolveRolePromptOverridesFromConfig(config, systemRole, developerRole);
+      const result = resolveRolePromptOverridesFromConfig(config, systemRole, developerRole, testAgentId);
 
       // Key assertion: system prompt goes to developer path, NOT coding prompt path
-      expect(result.developerPromptPath).toBe('prompts/prompt.md');
+      expect(result.developerPromptPath).toMatch(/runtime\/agents\/test-agent\/prompts\/prompt\.md$/);
       expect(result.developerPromptPaths).toEqual({
-        orchestrator: 'prompts/prompt.md',
+        orchestrator: expect.stringMatching(/runtime\/agents\/test-agent\/prompts\/prompt\.md$/),
       });
       // Should NOT have codingPromptPath
       expect((result as Record<string, unknown>).codingPromptPath).toBeUndefined();
@@ -58,9 +59,9 @@ describe('resolveRolePromptOverridesFromConfig', () => {
         },
       };
 
-      const result = resolveRolePromptOverridesFromConfig(config, systemRole, developerRole);
+      const result = resolveRolePromptOverridesFromConfig(config, systemRole, developerRole, testAgentId);
 
-      expect(result.developerPromptPath).toBe('prompts/dev/orchestrator.md');
+      expect(result.developerPromptPath).toMatch(/runtime\/agents\/test-agent\/prompts\/dev\/orchestrator\.md$/);
     });
 
     it('should return empty object if both paths are empty', () => {
@@ -71,7 +72,7 @@ describe('resolveRolePromptOverridesFromConfig', () => {
         },
       };
 
-      const result = resolveRolePromptOverridesFromConfig(config, systemRole, developerRole);
+      const result = resolveRolePromptOverridesFromConfig(config, systemRole, developerRole, testAgentId);
 
       expect(result).toEqual({});
     });
@@ -86,12 +87,12 @@ describe('resolveRolePromptOverridesFromConfig', () => {
         },
       };
 
-      const result = resolveRolePromptOverridesFromConfig(config, projectRole, developerRole);
+      const result = resolveRolePromptOverridesFromConfig(config, projectRole, developerRole, testAgentId);
 
       // Non-system role uses developer path directly
-      expect(result.developerPromptPath).toBe('prompts/dev/project-agent.md');
+      expect(result.developerPromptPath).toMatch(/runtime\/agents\/test-agent\/prompts\/dev\/project-agent\.md$/);
       expect(result.developerPromptPaths).toEqual({
-        orchestrator: 'prompts/dev/project-agent.md',
+        orchestrator: expect.stringMatching(/runtime\/agents\/test-agent\/prompts\/dev\/project-agent\.md$/),
       });
       // Should NOT have codingPromptPath
       expect((result as Record<string, unknown>).codingPromptPath).toBeUndefined();
@@ -105,7 +106,7 @@ describe('resolveRolePromptOverridesFromConfig', () => {
         },
       };
 
-      const result = resolveRolePromptOverridesFromConfig(config, projectRole, developerRole);
+      const result = resolveRolePromptOverridesFromConfig(config, projectRole, developerRole, testAgentId);
 
       expect(result).toEqual({});
     });
@@ -113,13 +114,13 @@ describe('resolveRolePromptOverridesFromConfig', () => {
 
   describe('edge cases', () => {
     it('should handle undefined config', () => {
-      const result = resolveRolePromptOverridesFromConfig(undefined, systemRole, developerRole);
+      const result = resolveRolePromptOverridesFromConfig(undefined, systemRole, developerRole, testAgentId);
       expect(result).toEqual({});
     });
 
     it('should handle config without prompts', () => {
       const config: RuntimePromptConfig = {};
-      const result = resolveRolePromptOverridesFromConfig(config, systemRole, developerRole);
+      const result = resolveRolePromptOverridesFromConfig(config, systemRole, developerRole, testAgentId);
       expect(result).toEqual({});
     });
 
@@ -131,7 +132,7 @@ describe('resolveRolePromptOverridesFromConfig', () => {
         },
       };
 
-      const result = resolveRolePromptOverridesFromConfig(config, systemRole, developerRole);
+      const result = resolveRolePromptOverridesFromConfig(config, systemRole, developerRole, testAgentId);
       expect(result).toEqual({});
     });
   });

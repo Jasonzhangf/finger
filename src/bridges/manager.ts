@@ -39,6 +39,7 @@ export class ChannelBridgeManager {
   private configs: Map<string, ChannelBridgeConfig> = new Map();
   private callbacks: ChannelBridgeCallbacks;
   private bridgeModules: Map<string, BridgeModule> = new Map();
+  private outboundQueues: Map<string, Promise<{ messageId: string }>> = new Map();
 
   constructor(callbacks: ChannelBridgeCallbacks) {
     this.callbacks = callbacks;
@@ -196,18 +197,32 @@ export class ChannelBridgeManager {
     if (!bridge) {
       throw new Error(`Bridge not found: ${bridgeId}`);
     }
-    const result = await bridge.sendMessage(options);
+    const queueKey = `${bridgeId}:${options.to}`;
+    const previous = this.outboundQueues.get(queueKey);
+    const work = Promise.resolve(previous)
+      .catch(() => undefined as { messageId: string } | undefined)
+      .then(async () => {
+        const result = await bridge.sendMessage(options);
 
-    // Optional cross-channel sync fanout (best-effort, primary send result is authoritative)
-    try {
-      await this.sendMirrors(bridgeId, options);
-    } catch (err) {
-      log.warn(`Mirror send failed for source ${bridgeId}`, {
-        error: err instanceof Error ? err.message : String(err),
+        // Optional cross-channel sync fanout (best-effort, primary send result is authoritative)
+        try {
+          await this.sendMirrors(bridgeId, options);
+        } catch (err) {
+          log.warn(`Mirror send failed for source ${bridgeId}`, {
+            error: err instanceof Error ? err.message : String(err),
+          });
+        }
+
+        return result;
+      })
+      .finally(() => {
+        if (this.outboundQueues.get(queueKey) === work) {
+          this.outboundQueues.delete(queueKey);
+        }
       });
-    }
 
-    return result;
+    this.outboundQueues.set(queueKey, work);
+    return work;
   }
 
   private async sendMirrors(

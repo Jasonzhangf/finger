@@ -220,6 +220,7 @@ interface KernelUserTurnOptions {
   tool_execution?: {
     daemon_url: string;
     agent_id: string;
+    session_id?: string;
   };
 }
 
@@ -1851,8 +1852,8 @@ function buildKernelUserTurnOptions(
     }
   }
 
-  // Only add developer instructions for non-system roles
-  if (!isSystemRole && developerInstructions) {
+  // Add developer instructions (role-specific prompt) for all roles
+  if (developerInstructions) {
     options.developer_instructions = developerInstructions;
   }
 
@@ -1909,6 +1910,7 @@ function buildKernelUserTurnOptions(
     options.tool_execution = {
       daemon_url: toolExecution.daemonUrl.trim(),
       agent_id: toolExecution.agentId.trim(),
+      ...(context?.sessionId && context.sessionId.trim().length > 0 ? { session_id: context.sessionId.trim() } : {}),
     };
   }
 
