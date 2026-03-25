@@ -10,6 +10,11 @@
  * - sendMessage: Send text/image/video/file messages
  * - getUploadUrl: Get CDN upload pre-signed URL
  * - sendTyping: Send typing indicator
+ *
+ * CDN:
+ * - Download: https://novac2c.cdn.weixin.qq.com/c2c/download?encrypted_query_param=...
+ * - Upload: https://novac2c.cdn.weixin.qq.com/c2c/upload?encrypted_query_param=...&filekey=...
+ * - Encryption: AES-128-ECB
  */
 
 import type { ChannelBridge, ChannelBridgeConfig, ChannelBridgeCallbacks, ChannelMessage, SendMessageOptions, ChannelAttachment } from './types.js';
@@ -18,9 +23,11 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import crypto from 'node:crypto';
-import { readFile } from 'node:fs/promises';
+import { readFile, writeFile, mkdir } from 'node:fs/promises';
 
 const log = logger.module('WeixinBridgeAdapter');
+
+const CDN_BASE_URL = 'https://novac2c.cdn.weixin.qq.com/c2c';
 
 interface WeixinAccount {
   token: string;
@@ -61,6 +68,169 @@ interface GetUpdatesResponse {
   errmsg?: string;
 }
 
+interface GetUploadUrlResponse {
+  ret?: number;
+  upload_param?: string;
+  errcode?: number;
+  errmsg?: string;
+}
+
+// ---------- CDN Utilities ----------
+
+/**
+ * Parse AES key from base64 (handles both raw 16 bytes and hex-encoded 32 chars)
+ */
+function parseAesKey(aesKeyBase64: string): Buffer {
+  const decoded = Buffer.from(aesKeyBase64, 'base64');
+  if (decoded.length === 16) return decoded;
+  if (decoded.length === 32 && /^[0-9a-fA-F]{32}$/.test(decoded.toString('ascii'))) {
+    return Buffer.from(decoded.toString('ascii'), 'hex');
+  }
+  throw new Error(`Invalid aes_key: expected 16 raw bytes or 32-char hex string, got ${decoded.length} bytes`);
+}
+
+/**
+ * AES-128-ECB decrypt
+ */
+function decryptAesEcb(ciphertext: Buffer, key: Buffer): Buffer {
+  const decipher = crypto.createDecipheriv('aes-128-ecb', key, null);
+  return Buffer.concat([decipher.update(ciphertext), decipher.final()]);
+}
+
+/**
+ * AES-128-ECB encrypt
+ */
+function encryptAesEcb(plaintext: Buffer, key: Buffer): Buffer {
+  const cipher = crypto.createCipheriv('aes-128-ecb', key, null);
+  return Buffer.concat([cipher.update(plaintext), cipher.final()]);
+}
+
+/**
+ * Compute AES-128-ECB padded size
+ */
+function aesEcbPaddedSize(plaintextSize: number): number {
+  return Math.ceil((plaintextSize + 1) / 16) * 16;
+}
+
+/**
+ * Download and decrypt image from Weixin CDN
+ */
+async function downloadAndDecryptImage(
+  encryptedQueryParam: string,
+  aesKeyBase64: string,
+): Promise<Buffer> {
+  const key = parseAesKey(aesKeyBase64);
+  const url = `${CDN_BASE_URL}/download?encrypted_query_param=${encodeURIComponent(encryptedQueryParam)}`;
+
+  log.debug(`[CDN] Downloading image from CDN: ${url.slice(0, 100)}...`);
+
+  const res = await fetch(url);
+  if (!res.ok) {
+    throw new Error(`CDN download failed: ${res.status} ${res.statusText}`);
+  }
+
+  const encrypted = Buffer.from(await res.arrayBuffer());
+  log.debug(`[CDN] Downloaded ${encrypted.length} encrypted bytes`);
+
+  const decrypted = decryptAesEcb(encrypted, key);
+  log.debug(`[CDN] Decrypted to ${decrypted.length} bytes`);
+
+  return decrypted;
+}
+
+/**
+ * Upload image to Weixin CDN and return the encrypted query param
+ */
+async function uploadImageToCdn(
+  imageBuffer: Buffer,
+  toUserId: string,
+  opts: { baseUrl: string; token: string },
+): Promise<{ encryptQueryParam: string; aesKey: Buffer }> {
+  const aesKey = crypto.randomBytes(16);
+  const rawsize = imageBuffer.length;
+  const rawfilemd5 = crypto.createHash('md5').update(imageBuffer).digest('hex');
+  const filesize = aesEcbPaddedSize(rawsize);
+  const filekey = crypto.randomBytes(16).toString('hex');
+
+  log.debug(`[CDN] Uploading image: rawsize=${rawsize}, filesize=${filesize}, filekey=${filekey}`);
+
+  // 1. Get upload URL
+  const uploadUrlResp = await weixinApiFetch(opts.baseUrl, 'ilink/bot/getuploadurl', {
+    filekey,
+    media_type: 1, // IMAGE
+    to_user_id: toUserId,
+    rawsize,
+    rawfilemd5,
+    filesize,
+    no_need_thumb: true,
+    aeskey: aesKey.toString('hex'),
+  }, opts.token);
+
+  const uploadParam = (uploadUrlResp as GetUploadUrlResponse).upload_param;
+  if (!uploadParam) {
+    throw new Error('getUploadUrl returned no upload_param');
+  }
+
+  // 2. Encrypt and upload
+  const ciphertext = encryptAesEcb(imageBuffer, aesKey);
+  const uploadUrl = `${CDN_BASE_URL}/upload?encrypted_query_param=${encodeURIComponent(uploadParam)}&filekey=${encodeURIComponent(filekey)}`;
+
+  log.debug(`[CDN] Uploading ${ciphertext.length} encrypted bytes to CDN`);
+
+  const uploadRes = await fetch(uploadUrl, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/octet-stream' },
+    body: new Uint8Array(ciphertext),
+  });
+
+  if (!uploadRes.ok) {
+    throw new Error(`CDN upload failed: ${uploadRes.status} ${uploadRes.statusText}`);
+  }
+
+  const encryptQueryParam = uploadRes.headers.get('x-encrypted-param');
+  if (!encryptQueryParam) {
+    throw new Error('CDN upload response missing x-encrypted-param header');
+  }
+
+  log.debug(`[CDN] Upload complete, encryptQueryParam received`);
+
+  return { encryptQueryParam, aesKey };
+}
+
+// ---------- API Utilities ----------
+
+async function weixinApiFetch(
+  baseUrl: string,
+  endpoint: string,
+  body: Record<string, unknown>,
+  token: string,
+): Promise<Record<string, unknown>> {
+  const url = `${baseUrl.replace(/\/$/, '')}/${endpoint}`;
+  const bodyStr = JSON.stringify(body);
+
+  const uint32 = crypto.randomBytes(4).readUInt32BE(0);
+  const uin = Buffer.from(String(uint32), 'utf-8').toString('base64');
+
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'AuthorizationType': 'ilink_bot_token',
+      'Authorization': `Bearer ${token.trim()}`,
+      'X-WECHAT-UIN': uin,
+    },
+    body: bodyStr,
+  });
+
+  if (!res.ok) {
+    throw new Error(`API ${endpoint} failed: ${res.status} ${res.statusText}`);
+  }
+
+  return res.json() as Promise<Record<string, unknown>>;
+}
+
+// ---------- Adapter Class ----------
+
 export class WeixinBridgeAdapter implements ChannelBridge {
   readonly id: string;
   readonly channelId: string;
@@ -70,7 +240,6 @@ export class WeixinBridgeAdapter implements ChannelBridge {
   private abortController: AbortController | null = null;
   private account: WeixinAccount | null = null;
   private updateBuffer = '';
-  private pollTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor(config: ChannelBridgeConfig, callbacks: ChannelBridgeCallbacks) {
     this.id = config.id;
@@ -80,7 +249,6 @@ export class WeixinBridgeAdapter implements ChannelBridge {
   }
 
   async start(): Promise<void> {
-    // Load account from state
     const accountId = this.config.credentials?.accountId as string | undefined;
     if (!accountId) {
       throw new Error(`[${this.id}] Missing accountId in credentials`);
@@ -95,10 +263,7 @@ export class WeixinBridgeAdapter implements ChannelBridge {
 
     this.abortController = new AbortController();
     this.running = true;
-
-    // Start polling
     this.pollLoop();
-
     this.callbacks.onReady();
     log.info(`[${this.id}] Started weixin bridge`);
   }
@@ -128,7 +293,6 @@ export class WeixinBridgeAdapter implements ChannelBridge {
         await this.pollUpdates();
       } catch (err) {
         log.error(`[${this.id}] Poll error: ${err instanceof Error ? err.message : String(err)}`);
-        // Wait before retrying
         await this.sleep(5000);
       }
     }
@@ -138,12 +302,8 @@ export class WeixinBridgeAdapter implements ChannelBridge {
     if (!this.account) return;
 
     const url = `${this.account.baseUrl.replace(/\/$/, '')}/ilink/bot/getupdates`;
-    const pollBody = JSON.stringify({
-      get_updates_buf: this.updateBuffer,
-    });
+    const pollBody = JSON.stringify({ get_updates_buf: this.updateBuffer });
     const headers = this.getHeaders(pollBody);
-
-    log.debug(`[${this.id}] Polling updates...`);
 
     const response = await fetch(url, {
       method: 'POST',
@@ -158,10 +318,7 @@ export class WeixinBridgeAdapter implements ChannelBridge {
 
     const data = (await response.json()) as GetUpdatesResponse;
 
-    log.debug(`[${this.id}] getUpdates: ${data.msgs?.length || 0} messages`);
-    
     if (data.errcode !== undefined) {
-      // Session timeout, need to re-login
       if (data.errcode === -14) {
         log.error(`[${this.id}] Session timeout, need QR code login`);
         this.callbacks.onError(new Error('Weixin session timeout, need QR code login'));
@@ -169,12 +326,10 @@ export class WeixinBridgeAdapter implements ChannelBridge {
       return;
     }
 
-    // Update cursor
     if (data.get_updates_buf) {
       this.updateBuffer = data.get_updates_buf;
     }
 
-    // Process messages
     if (data.msgs && data.msgs.length > 0) {
       for (const msg of data.msgs) {
         await this.handleMessage(msg);
@@ -183,13 +338,11 @@ export class WeixinBridgeAdapter implements ChannelBridge {
   }
 
   private async handleMessage(msg: WeixinMessage): Promise<void> {
-    // Only handle USER messages (type 1)
     if (msg.message_type !== 1) return;
 
     const fromUserId = msg.from_user_id || '';
     const sessionId = msg.session_id || '';
 
-    // Extract text content
     let text = '';
     const attachments: ChannelAttachment[] = [];
 
@@ -198,15 +351,42 @@ export class WeixinBridgeAdapter implements ChannelBridge {
         if (item.type === 1 && item.text_item) {
           text += item.text_item.text;
         } else if (item.type === 2 && item.image_item) {
-          // Image - need to download via CDN
-          attachments.push({
-            type: 'image',
-            url: `weixin-cdn:${item.image_item.encrypt_query_param}`,
-            metadata: {
-              aes_key: item.image_item.aes_key,
-              encrypt_query_param: item.image_item.encrypt_query_param,
-            },
-          });
+          // Download and decrypt image from CDN
+          try {
+            log.info(`[${this.id}] Downloading image from Weixin CDN...`);
+            const imageBuffer = await downloadAndDecryptImage(
+              item.image_item.encrypt_query_param,
+              item.image_item.aes_key,
+            );
+
+            // Convert to base64 data URL for AI processing
+            const base64 = imageBuffer.toString('base64');
+            const dataUrl = `data:image/jpeg;base64,${base64}`;
+
+            log.info(`[${this.id}] Image downloaded and converted to base64 (${imageBuffer.length} bytes)`);
+
+            attachments.push({
+              type: 'image',
+              url: dataUrl,
+              metadata: {
+                encrypt_query_param: item.image_item.encrypt_query_param,
+                aes_key: item.image_item.aes_key,
+                size: imageBuffer.length,
+              },
+            });
+          } catch (err) {
+            log.error(`[${this.id}] Failed to download image: ${err instanceof Error ? err.message : String(err)}`);
+            // Fall back to CDN reference
+            attachments.push({
+              type: 'image',
+              url: `weixin-cdn:${item.image_item.encrypt_query_param}`,
+              metadata: {
+                aes_key: item.image_item.aes_key,
+                encrypt_query_param: item.image_item.encrypt_query_param,
+                download_error: err instanceof Error ? err.message : String(err),
+              },
+            });
+          }
         }
       }
     }
@@ -233,17 +413,13 @@ export class WeixinBridgeAdapter implements ChannelBridge {
       },
     };
 
-    log.info(`[${this.id}] Received message from ${fromUserId}: ${text.slice(0, 50)}...`);
+    log.info(`[${this.id}] Received message from ${fromUserId}: ${text.slice(0, 50)}${attachments.length ? ` (+${attachments.length} images)` : ''}`);
 
     await this.callbacks.onMessage(channelMessage);
   }
 
   async stop(): Promise<void> {
     this.running = false;
-    if (this.pollTimer) {
-      clearTimeout(this.pollTimer);
-      this.pollTimer = null;
-    }
     if (this.abortController) {
       this.abortController.abort();
       this.abortController = null;
@@ -260,35 +436,97 @@ export class WeixinBridgeAdapter implements ChannelBridge {
       throw new Error(`[${this.id}] Not connected`);
     }
 
-    const url = `${this.account.baseUrl.replace(/\/$/, '')}/ilink/bot/sendmessage`;
-    const headers = this.getHeaders();
-
-    // Build message items
     const itemList: WeixinMessageItem[] = [];
 
     // Add text
     if (options.text) {
-      itemList.push({
-        type: 1,
-        text_item: { text: options.text },
-      });
+      itemList.push({ type: 1, text_item: { text: options.text } });
     }
 
-    // Add images (TODO: implement CDN upload for local images)
+    // Handle images
     if (options.attachments && options.attachments.length > 0) {
       for (const att of options.attachments) {
-        if (att.type === 'image' && att.url.startsWith('weixin-cdn:')) {
-          // Already uploaded image (forwarding)
-          const metadata = att.metadata as any;
-          itemList.push({
-            type: 2,
-            image_item: {
-              encrypt_query_param: metadata?.encrypt_query_param || att.url.slice(11),
-              aes_key: metadata?.aes_key || '',
-            },
-          });
+        if (att.type === 'image') {
+          // Case 1: Already uploaded weixin-cdn image (forwarding)
+          if (att.url.startsWith('weixin-cdn:')) {
+            const metadata = att.metadata as Record<string, unknown> | undefined;
+            itemList.push({
+              type: 2,
+              image_item: {
+                encrypt_query_param: (metadata?.encrypt_query_param as string) || att.url.slice(11),
+                aes_key: (metadata?.aes_key as string) || '',
+              },
+            });
+            continue;
+          }
+
+          // Case 2: Base64 data URL (from downloaded image)
+          if (att.url.startsWith('data:image/')) {
+            const base64Match = att.url.match(/^data:image\/[^;]+;base64,(.+)$/);
+            if (base64Match) {
+              try {
+                const imageBuffer = Buffer.from(base64Match[1], 'base64');
+                log.info(`[${this.id}] Uploading image to Weixin CDN (${imageBuffer.length} bytes)...`);
+
+                const { encryptQueryParam, aesKey } = await uploadImageToCdn(
+                  imageBuffer,
+                  options.to,
+                  { baseUrl: this.account.baseUrl, token: this.account.token },
+                );
+
+                itemList.push({
+                  type: 2,
+                  image_item: {
+                    encrypt_query_param: encryptQueryParam,
+                    aes_key: aesKey.toString('base64'),
+                  },
+                });
+
+                log.info(`[${this.id}] Image uploaded to CDN`);
+              } catch (err) {
+                log.error(`[${this.id}] Failed to upload image: ${err instanceof Error ? err.message : String(err)}`);
+              }
+              continue;
+            }
+          }
+
+          // Case 3: Local file path or http URL - download first
+          if (att.url.startsWith('http://') || att.url.startsWith('https://') || att.url.startsWith('file://')) {
+            try {
+              let imageBuffer: Buffer;
+
+              if (att.url.startsWith('file://')) {
+                const filePath = decodeURIComponent(att.url.replace(/^file:\/\//, ''));
+                imageBuffer = await readFile(filePath);
+              } else {
+                const res = await fetch(att.url);
+                if (!res.ok) throw new Error(`HTTP ${res.status}`);
+                imageBuffer = Buffer.from(await res.arrayBuffer());
+              }
+
+              log.info(`[${this.id}] Uploading local image to Weixin CDN (${imageBuffer.length} bytes)...`);
+
+              const { encryptQueryParam, aesKey } = await uploadImageToCdn(
+                imageBuffer,
+                options.to,
+                { baseUrl: this.account.baseUrl, token: this.account.token },
+              );
+
+              itemList.push({
+                type: 2,
+                image_item: {
+                  encrypt_query_param: encryptQueryParam,
+                  aes_key: aesKey.toString('base64'),
+                },
+              });
+
+              log.info(`[${this.id}] Image uploaded to CDN`);
+            } catch (err) {
+              log.error(`[${this.id}] Failed to upload local image: ${err instanceof Error ? err.message : String(err)}`);
+            }
+            continue;
+          }
         }
-        // Local images need CDN upload (TODO)
       }
     }
 
@@ -299,6 +537,7 @@ export class WeixinBridgeAdapter implements ChannelBridge {
       },
     });
 
+    const url = `${this.account.baseUrl.replace(/\/$/, '')}/ilink/bot/sendmessage`;
     const response = await fetch(url, {
       method: 'POST',
       headers: this.getHeaders(sendBody),
@@ -309,16 +548,15 @@ export class WeixinBridgeAdapter implements ChannelBridge {
       throw new Error(`HTTP ${response.status}: ${await response.text()}`);
     }
 
-    const data = await response.json() as any;
-    const messageId = String(data?.msg?.message_id || Date.now());
+    const data = await response.json() as Record<string, unknown>;
+    const messageId = String((data.msg as Record<string, unknown>)?.message_id || Date.now());
 
-    log.info(`[${this.id}] Sent message to ${options.to}: ${options.text.slice(0, 50)}...`);
+    log.info(`[${this.id}] Sent message to ${options.to}: ${options.text?.slice(0, 50)}...`);
 
     return { messageId };
   }
 
   private getHeaders(body?: string): Record<string, string> {
-    // X-WECHAT-UIN: random uint32 (big-endian) -> decimal string -> base64
     const uint32 = crypto.randomBytes(4).readUInt32BE(0);
     const uin = Buffer.from(String(uint32), 'utf-8').toString('base64');
     const headers: Record<string, string> = {
