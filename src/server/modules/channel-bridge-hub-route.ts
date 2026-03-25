@@ -277,6 +277,10 @@ export function createChannelBridgeHubRoute(deps: ChannelBridgeHubRouteDeps) {
           replyTo: (channelMsg.metadata?.messageId as string) || channelMsg.id,
         });
         log.info('Hub route reply sent', { messageId: sendResult.messageId });
+        // Mark final reply sent so bodyUpdates dedup can skip duplicate pushes
+        if (agentStatusSubscriber) {
+          agentStatusSubscriber.markFinalReplySent(fixedSessionId, text);
+        }
       } catch (sendErr) {
         log.error('Failed to send reply (hub route)', sendErr instanceof Error ? sendErr : undefined);
       }
@@ -412,12 +416,14 @@ export function createChannelBridgeHubRoute(deps: ChannelBridgeHubRouteDeps) {
       });
     }
     void sessionManager.addMessage(fixedSessionId, 'system', '已收到，正在处理中…', {
+      agentId: targetAgentId,
       type: 'dispatch',
       metadata: { channelId: channelMsg.channelId, messageId: channelMsg.id },
     });
 
     // 将用户原始输入以 'user' 角色写入 session（保证 WebUI 可见）
     void sessionManager.addMessage(fixedSessionId, 'user', enrichedContent, {
+      agentId: targetAgentId,
       type: 'text',
       metadata: {
         channelId: channelMsg.channelId,

@@ -71,6 +71,7 @@ export class AgentStatusSubscriber {
   // Step batching: per-session buffer for batch step updates
   private stepBuffer = new Map<string, Array<{ index: number; summary: string; timestamp: string }>>();
   private stepBatchDefault = 5;
+  private finalReplyBySession = new Map<string, { normalized: string; at: number }>();
 
   private getHandlerContext(): HandlerContext {
     return {
@@ -187,6 +188,21 @@ export class AgentStatusSubscriber {
     const text = bodyText.trim();
     if (!text) return;
 
+    // If the same final reply has already been sent through the main reply
+    // chain for this session, skip additional body push to avoid duplicates.
+    const finalReply = this.finalReplyBySession.get(sessionId);
+    if (finalReply) {
+      const ageMs = Date.now() - finalReply.at;
+      const normalizedBody = this.normalizeBodyForDedup(text);
+      if (ageMs <= 10_000 && finalReply.normalized === normalizedBody) {
+        this.finalReplyBySession.delete(sessionId);
+        return;
+      }
+      if (ageMs > 10_000) {
+        this.finalReplyBySession.delete(sessionId);
+      }
+    }
+
     // Dedup: skip if the same body was already sent for this session.
     // Prevents duplicate pushes when identical body text arrives multiple times.
     const dedupKey = `${sessionId}:${text.slice(0, 200)}`;
@@ -196,6 +212,23 @@ export class AgentStatusSubscriber {
     (this as any)._lastBodyDedupKey = dedupKey;
 
     await this.sendTextUpdate(sessionId, agentId, text, 'bodyUpdates', 'body', '正文：');
+  }
+
+  markFinalReplySent(sessionId: string, replyText: string): void {
+    const text = replyText.trim();
+    if (!text) return;
+    this.finalReplyBySession.set(sessionId, {
+      normalized: this.normalizeBodyForDedup(text),
+      at: Date.now(),
+    });
+  }
+
+  private normalizeBodyForDedup(text: string): string {
+    return text
+      .trim()
+      .replace(/^正文\s*[：:]\s*/u, '')
+      .replace(/^\[[^\]]+\]\s*/u, '')
+      .trim();
   }
 
   /**
