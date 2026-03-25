@@ -41,9 +41,9 @@
     "finger:review": "node dist/cli/index.js review",
     "finger:orchestrate": "node dist/cli/index.js orchestrate",
     "daemon:guard": "node scripts/daemon-guard.cjs",
-    "daemon:start": "node scripts/daemon-guard.cjs",
+    "daemon:start": "node scripts/daemon-restart.cjs --start-only",
     "daemon:stop": "node scripts/daemon-stop.cjs",
-    "daemon:restart": "bash -c 'node scripts/daemon-stop.cjs && sleep 1 && nohup node scripts/daemon-guard.cjs > /dev/null 2>&1 &'",
+    "daemon:restart": "node scripts/daemon-restart.cjs",
     "daemon:cleanup": "node scripts/daemon-cleanup.cjs"
   },
   "dependencies": {
@@ -70,7 +70,7 @@
     "vitest": "^1.6.0",
     "execa": "^8.0.1"
   },
-  "fingerBuildVersion": "0.1.0007",
+  "fingerBuildVersion": "0.1.0008",
   "pnpm": {
     "packageExtensions": {
       "vitest@*": {

@@ -515,6 +515,7 @@ export class AgentStatusSubscriber {
     // 检查该 channel 是否配置了 progressUpdates
     if (this.channelBridgeManager) {
       const pushSettings = this.channelBridgeManager.getPushSettings(mapping.envelope.channel);
+      if (pushSettings.updateMode === 'command') return;
       if (!pushSettings.progressUpdates) return;
     }
 

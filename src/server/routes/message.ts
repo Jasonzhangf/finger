@@ -40,6 +40,70 @@ import {
   prefixAgentResponse,
 } from './message-helpers.js';
 
+function inferInboundRole(message: unknown, sender: string): 'user' | 'system' {
+  const metadata = isObjectRecord(message) && isObjectRecord(message.metadata)
+    ? message.metadata
+    : null;
+
+  if (metadata) {
+    const explicitRole = typeof metadata.role === 'string' ? metadata.role.trim().toLowerCase() : '';
+    if (explicitRole === 'system') return 'system';
+    if (explicitRole === 'user') return 'user';
+
+    if (metadata.systemDirectInject === true) return 'system';
+
+    const source = typeof metadata.source === 'string' ? metadata.source.trim().toLowerCase() : '';
+    if (
+      source.startsWith('system-')
+      || source === 'heartbeat'
+      || source === 'scheduler'
+      || source === 'clock'
+      || source === 'timer'
+    ) {
+      return 'system';
+    }
+  }
+
+  const normalizedSender = sender.trim().toLowerCase();
+  if (
+    normalizedSender === 'system'
+    || normalizedSender.includes('heartbeat')
+    || normalizedSender.includes('scheduler')
+    || normalizedSender.includes('daemon')
+    || normalizedSender.includes('timer')
+  ) {
+    return 'system';
+  }
+
+  return 'user';
+}
+
+function ensureMessageMetadataRole(message: unknown, role: 'user' | 'system'): unknown {
+  if (isObjectRecord(message)) {
+    const metadata = isObjectRecord(message.metadata) ? message.metadata : {};
+    if (typeof metadata.role === 'string' && metadata.role.trim().length > 0) {
+      return message;
+    }
+    return {
+      ...message,
+      metadata: {
+        ...metadata,
+        role,
+      },
+    };
+  }
+
+  if (typeof message === 'string') {
+    return {
+      text: message,
+      content: message,
+      metadata: { role },
+    };
+  }
+
+  return message;
+}
+
 
 
 export function registerMessageRoutes(app: Express, deps: MessageRouteDeps): void {
@@ -107,9 +171,11 @@ export function registerMessageRoutes(app: Express, deps: MessageRouteDeps): voi
     const effectiveMessage = parsedCommand.type === 'super_command'
       ? withMessageContent(body.message, parsedCommand.effectiveContent)
       : body.message;
+    const inferredRole = inferInboundRole(effectiveMessage, sender);
+    const effectiveMessageWithRole = ensureMessageMetadataRole(effectiveMessage, inferredRole);
 
     if (channelPolicy === 'mailbox') {
-      const messageId = deps.mailbox.createMessage(targetId, effectiveMessage, {
+      const messageId = deps.mailbox.createMessage(targetId, effectiveMessageWithRole, {
         sender: body.sender,
         callbackId: body.callbackId,
       });
@@ -121,7 +187,7 @@ export function registerMessageRoutes(app: Express, deps: MessageRouteDeps): voi
     const isSystemRoute = routedTarget === 'finger-system-agent';
     const systemProjectPath = isSystemRoute ? SYSTEM_PROJECT_PATH : undefined;
 
-    const requestMessageWithPolicy = withDefaultProfileReviewPolicy(targetId, effectiveMessage, deps);
+    const requestMessageWithPolicy = withDefaultProfileReviewPolicy(targetId, effectiveMessageWithRole, deps);
     const shouldDryRun = resolveDryRunFlag(req, requestMessageWithPolicy);
     let injectedPrompt: string | null = null;
     let injectedAgents: OrchestrationPromptAgent[] = [];
@@ -200,7 +266,6 @@ export function registerMessageRoutes(app: Express, deps: MessageRouteDeps): voi
    if (isObjectRecord(requestMessage)) {
      const metadata = isObjectRecord(requestMessage.metadata) ? requestMessage.metadata : {};
      if (isSystemRoute) {
-       metadata.role = 'system';
        metadata.responsesStructuredOutput = false;
        metadata.responsesOutputSchemaPreset = 'none';
      }

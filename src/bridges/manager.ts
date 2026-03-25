@@ -18,6 +18,7 @@ const log = logger.module('ChannelBridgeManager');
 
 /** Default push settings applied when channel config omits a field */
 const DEFAULT_PUSH_SETTINGS: PushSettings = {
+  updateMode: 'progress',
   reasoning: false,
   bodyUpdates: false,
   statusUpdate: true,
@@ -94,6 +95,9 @@ export class ChannelBridgeManager {
     const config = this.getConfig(channelId);
     const raw = config?.options?.pushSettings;
     return {
+      updateMode: raw?.updateMode === 'command' || raw?.updateMode === 'both' || raw?.updateMode === 'progress'
+        ? raw.updateMode
+        : DEFAULT_PUSH_SETTINGS.updateMode,
       reasoning: raw?.reasoning ?? DEFAULT_PUSH_SETTINGS.reasoning,
       bodyUpdates: raw?.bodyUpdates ?? DEFAULT_PUSH_SETTINGS.bodyUpdates,
       statusUpdate: raw?.statusUpdate ?? DEFAULT_PUSH_SETTINGS.statusUpdate,

@@ -73,6 +73,7 @@ function buildDefaultPushSettings(channelId: string): Record<string, unknown> {
   // webui wants richer details; text channels default to concise mode
   if (channelId === 'webui') {
     return {
+      updateMode: 'progress',
       reasoning: true,
       bodyUpdates: true,
       statusUpdate: true,
@@ -83,6 +84,7 @@ function buildDefaultPushSettings(channelId: string): Record<string, unknown> {
     };
   }
   return {
+    updateMode: 'progress',
     reasoning: true,
     bodyUpdates: true,
     statusUpdate: true,

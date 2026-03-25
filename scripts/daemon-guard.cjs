@@ -19,8 +19,8 @@ const HEARTBEAT_FILE = path.join(RUNTIME_DIR, 'daemon.heartbeat');
 const HEARTBEAT_PATTERN = /daemon\.heartbeat/;
 const HEARTBEAT_INTERVAL_MS = 5000;
 const HEARTBEAT_TIMEOUT_MS = 30000;
-const MAX_RESTARTS = 3;
 const RESTART_DELAY_MS = 2000;
+const MAX_RESTARTS = Number.parseInt(process.env.FINGER_DAEMON_MAX_RESTARTS || '0', 10); // <=0 means unlimited
 
 class DaemonGuard {
     constructor() {
@@ -131,14 +131,17 @@ class DaemonGuard {
         console.error('[DaemonGuard] Main process crashed!');
         this.cleanupMainProcess();
 
-        if (this.restartCount < MAX_RESTARTS) {
-            this.restartCount++;
-            console.log(`[DaemonGuard] Restarting daemon (attempt ${this.restartCount}/${MAX_RESTARTS})...`);
+        const allowUnlimited = !Number.isFinite(MAX_RESTARTS) || MAX_RESTARTS <= 0;
+        if (allowUnlimited || this.restartCount < MAX_RESTARTS) {
+            this.restartCount += 1;
+            const delay = Math.min(30000, RESTART_DELAY_MS * Math.max(1, this.restartCount));
+            const maxText = allowUnlimited ? '∞' : String(MAX_RESTARTS);
+            console.log(`[DaemonGuard] Restarting daemon (attempt ${this.restartCount}/${maxText}, delay=${delay}ms)...`);
             setTimeout(() => {
                 this.spawnMainDaemon().catch((err) => {
                     console.error('[DaemonGuard] Failed to restart daemon:', err);
                 });
-            }, RESTART_DELAY_MS);
+            }, delay);
         } else {
             console.error(`[DaemonGuard] Max restarts reached (${MAX_RESTARTS}), exiting guard...`);
             this.shutdown();
@@ -293,7 +296,7 @@ class DaemonGuard {
     }
 
     setupExitHandlers() {
-        const exitHandler = () => {
+        const signalHandler = () => {
             this.isShuttingDown = true;
             console.log('[DaemonGuard] Shutting down...');
             if (this.heartbeatWriterPid) {
@@ -304,9 +307,13 @@ class DaemonGuard {
             process.exit(0);
         };
 
-        process.on('SIGINT', exitHandler);
-        process.on('SIGTERM', exitHandler);
-        process.on('exit', exitHandler);
+        process.on('SIGINT', signalHandler);
+        process.on('SIGTERM', signalHandler);
+        process.on('exit', () => {
+            this.isShuttingDown = true;
+            this.cleanupMainProcess();
+            this.cleanupGuardFiles();
+        });
     }
 
     cleanupGuardFiles() {

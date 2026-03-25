@@ -1796,8 +1796,9 @@ function buildKernelUserTurnOptions(
   const options: KernelUserTurnOptions = {};
   const metadata = context?.metadata;
 
-  // Check if this is a system role message (from system bootstrap/heartbeat)
-  const isSystemRole = metadata?.role === 'system';
+  // Only treat heartbeat/bootstrap control injections as system-control turns.
+  // Regular user turns handled by system agent must keep normal history path.
+  const isSystemRole = isSystemControlTurn(metadata);
 
   if (context?.systemPrompt && context.systemPrompt.trim().length > 0) {
     options.system_prompt = context.systemPrompt.trim();
@@ -1932,6 +1933,17 @@ function buildKernelUserTurnOptions(
   }
 
   return options;
+}
+
+function isSystemControlTurn(metadata: Record<string, unknown> | undefined): boolean {
+  if (!metadata) return false;
+  const explicitDirect = parseOptionalBoolean(metadata.systemDirectInject);
+  if (explicitDirect === true) return true;
+
+  const source = (parseOptionalString(metadata.source) ?? '').toLowerCase();
+  if (source.includes('heartbeat') || source.includes('bootstrap')) return true;
+
+  return false;
 }
 
 function appendPromptSection(base: string | undefined, section: string | undefined): string | undefined {

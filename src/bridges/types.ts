@@ -67,6 +67,8 @@ export type ChannelType = 'openclaw-plugin' | 'webui' | 'builtin';
  * All status update paths MUST check these settings before sending.
  */
 export interface PushSettings {
+  /** System update mode: progress(default) | command | both */
+  updateMode: 'progress' | 'command' | 'both';
   /** Push reasoning/thinking content (default: false) */
   reasoning: boolean;
   /** Push assistant body/content updates (default: false) */

@@ -124,6 +124,7 @@ export class ChannelBridgeHubIntegration {
         task: { prompt: envelope.content },
         sessionId: `channel-${this.channelId}-${envelope.senderId}`,
         metadata: {
+          role: 'user',
           source: 'channel',
           channelId: envelope.channelId,
           senderId: envelope.senderId,

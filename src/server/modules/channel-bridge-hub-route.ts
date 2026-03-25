@@ -447,6 +447,7 @@ export function createChannelBridgeHubRoute(deps: ChannelBridgeHubRouteDeps) {
         ? `${SYSTEM_PROJECT_PATH}/sessions`
         : `${SYSTEM_PROJECT_PATH}/sessions`;
       const sharedMetadata = {
+        role: 'user',
         source: 'channel',
         channelId: channelMsg.channelId,
         senderId: channelMsg.senderId,

@@ -315,6 +315,15 @@ function parseToolSummary(toolName: string, input: unknown, output?: unknown): {
   return { verb: 'run', target: normalizedToolName };
 }
 
+function shouldPushCommandStyleUpdates(ctx: HandlerContext, mapping: SessionEnvelopeMapping): boolean {
+  if (!ctx.channelBridgeManager) return true;
+  const settings = ctx.channelBridgeManager.getPushSettings(mapping.envelope.channel);
+  if (settings.updateMode === 'progress') return false;
+  if (settings.updateMode === 'command') return true;
+  // both: require explicit toolCalls=true to avoid noisy default
+  return settings.toolCalls === true;
+}
+
 /**
  * 处理上下文，包含事件处理所需的依赖
  */
@@ -357,6 +366,7 @@ export async function handleToolResult(
   const sessionId = event.sessionId;
   const mapping = ctx.resolveEnvelopeMapping(sessionId);
   if (!mapping || !ctx.messageHub) return;
+  if (!shouldPushCommandStyleUpdates(ctx, mapping)) return;
 
 
   const agentId = event.agentId || 'unknown-agent';
@@ -410,6 +420,7 @@ export async function handleToolError(
   const sessionId = event.sessionId;
   const mapping = ctx.resolveEnvelopeMapping(sessionId);
   if (!mapping) return;
+  if (!shouldPushCommandStyleUpdates(ctx, mapping)) return;
 
   if (shouldSuppressRawToolError(mapping.envelope.channel)) {
     log.info('[AgentStatusSubscriber] Suppressed raw tool_error push for external channel', {

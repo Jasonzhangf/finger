@@ -123,6 +123,7 @@ export class ClockTaskInjector {
       sessionId,
       metadata: {
         source: 'clock',
+        role: 'system',
         timerId: timer.timer_id,
         message: timer.message,
         channelId,
