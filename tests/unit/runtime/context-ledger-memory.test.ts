@@ -264,4 +264,112 @@ describe('context-ledger-memory', () => {
 
     rmSync(setup.rootDir, { recursive: true, force: true });
   });
+
+  it('delete_slots returns interactive preview and does not mutate ledger without confirmation', async () => {
+    const setup = setupLedgerRoot('delete-preview');
+
+    const preview = await executeContextLedgerMemory({
+      action: 'delete_slots',
+      slot_ids: [1, 2],
+      preview_only: true,
+      reason: 'user cleanup request',
+      _runtime_context: {
+        root_dir: setup.rootDir,
+        session_id: setup.sessionId,
+        agent_id: setup.agentId,
+        mode: setup.mode,
+      },
+    });
+
+    expect(preview.ok).toBe(true);
+    expect(preview.action).toBe('delete_slots');
+    if (preview.action !== 'delete_slots') {
+      throw new Error('expected delete_slots result');
+    }
+    expect(preview.preview_only).toBe(true);
+    expect(preview.requires_confirmation).toBe(true);
+    expect(preview.deleted_count).toBe(0);
+    expect(preview.selected_total).toBe(2);
+    expect(preview.selected_slots[0]?.slot).toBe(1);
+    expect(preview.selected_slots[1]?.slot).toBe(2);
+
+    const query = await executeContextLedgerMemory({
+      action: 'query',
+      detail: true,
+      _runtime_context: {
+        root_dir: setup.rootDir,
+        session_id: setup.sessionId,
+        agent_id: setup.agentId,
+        mode: setup.mode,
+      },
+    });
+    if (query.action !== 'query') {
+      throw new Error('expected query result');
+    }
+    expect(query.total).toBeGreaterThanOrEqual(2);
+
+    rmSync(setup.rootDir, { recursive: true, force: true });
+  });
+
+  it('delete_slots requires explicit authorization token before deleting', async () => {
+    const setup = setupLedgerRoot('delete-confirm');
+
+    const denied = await executeContextLedgerMemory({
+      action: 'delete_slots',
+      slot_ids: [1],
+      confirm: true,
+      user_authorized: false,
+      user_confirmation: 'CONFIRM_DELETE_SLOTS',
+      _runtime_context: {
+        root_dir: setup.rootDir,
+        session_id: setup.sessionId,
+        agent_id: setup.agentId,
+        mode: setup.mode,
+      },
+    });
+    if (denied.action !== 'delete_slots') {
+      throw new Error('expected delete_slots result');
+    }
+    expect(denied.preview_only).toBe(true);
+    expect(denied.deleted_count).toBe(0);
+
+    const confirmed = await executeContextLedgerMemory({
+      action: 'delete_slots',
+      slot_ids: [1],
+      confirm: true,
+      user_authorized: true,
+      user_confirmation: 'CONFIRM_DELETE_SLOTS',
+      reason: 'user approved delete',
+      _runtime_context: {
+        root_dir: setup.rootDir,
+        session_id: setup.sessionId,
+        agent_id: setup.agentId,
+        mode: setup.mode,
+      },
+    });
+    if (confirmed.action !== 'delete_slots') {
+      throw new Error('expected delete_slots result');
+    }
+    expect(confirmed.preview_only).toBe(false);
+    expect(confirmed.deleted_count).toBe(1);
+
+    const queryAfter = await executeContextLedgerMemory({
+      action: 'query',
+      detail: true,
+      _runtime_context: {
+        root_dir: setup.rootDir,
+        session_id: setup.sessionId,
+        agent_id: setup.agentId,
+        mode: setup.mode,
+      },
+    });
+    if (queryAfter.action !== 'query') {
+      throw new Error('expected query result');
+    }
+    expect(queryAfter.total).toBeGreaterThanOrEqual(2);
+    const eventTypes = queryAfter.entries.map((entry) => entry.event_type);
+    expect(eventTypes).toContain('ledger_slots_deleted');
+
+    rmSync(setup.rootDir, { recursive: true, force: true });
+  });
 });
