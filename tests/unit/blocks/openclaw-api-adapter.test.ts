@@ -39,4 +39,29 @@ describe('extractChannelAttachmentsFromContext', () => {
       mimeType: 'image/webp',
     });
   });
+
+  it('recovers attachment paths from BodyForAgent absolute refs', () => {
+    const attachments = extractChannelAttachmentsFromContext({
+      BodyForAgent: [
+        '附件列表：',
+        '- /Users/jason/Downloads/report.pdf (application/pdf)',
+      ].join('\n'),
+    });
+
+    expect(attachments).toHaveLength(1);
+    expect(attachments[0]).toMatchObject({
+      type: 'file',
+      url: '/Users/jason/Downloads/report.pdf',
+      filename: 'report.pdf',
+      mimeType: 'application/pdf',
+    });
+  });
+
+  it('ignores filename-only BodyForAgent refs without resolvable path/url', () => {
+    const attachments = extractChannelAttachmentsFromContext({
+      BodyForAgent: '附件：report.pdf',
+    });
+
+    expect(attachments).toHaveLength(0);
+  });
 });

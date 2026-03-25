@@ -625,13 +625,23 @@ export class SessionManager {
     const contextWindow = getContextWindow();
     const contextBuilder = loadContextBuilderSettings();
     const maxTokens = options?.maxTokens ?? contextWindow;
+    const latestUserPrompt = [...session.messages]
+      .reverse()
+      .find((item) => item.role === 'user' && typeof item.content === 'string' && item.content.trim().length > 0)
+      ?.content;
 
     // Context Builder path (default enabled)
     if (contextBuilder.enabled) {
       try {
         const targetBudget = Math.max(1, Math.floor(maxTokens * contextBuilder.budgetRatio));
         const built = await buildContext(
-          { rootDir, sessionId: session.id, agentId, mode: 'main' },
+          {
+            rootDir,
+            sessionId: session.id,
+            agentId,
+            mode: 'main',
+            currentPrompt: latestUserPrompt,
+          },
           {
             targetBudget,
             buildMode: contextBuilder.mode,

@@ -22,6 +22,17 @@ interface ContextMonitorEvent {
   agentId: string;
   preview: string;
   finishReason?: string;
+  contextHistorySource?: string;
+  contextBuilderBypassed?: boolean;
+  contextBuilderBypassReason?: string;
+  contextBuilderRebuilt?: boolean;
+  modelRound?: number;
+  historyItemsCount?: number;
+  contextUsagePercent?: number;
+  contextTokensInWindow?: number;
+  inputTokens?: number;
+  outputTokens?: number;
+  totalTokens?: number;
 }
 
 interface ContextMonitorRound {
@@ -32,6 +43,24 @@ interface ContextMonitorRound {
   endTimeIso: string;
   userPrompt: string;
   finishReason?: string;
+  contextStrategy?: {
+    source?: string;
+    bypassed?: boolean;
+    bypassReason?: string;
+    rebuilt?: boolean;
+    derivedFromEventType?: string;
+    derivedFromSlot?: number;
+  };
+  modelSummary?: {
+    round?: number;
+    historyItemsCount?: number;
+    contextUsagePercent?: number;
+    contextTokensInWindow?: number;
+    inputTokens?: number;
+    outputTokens?: number;
+    totalTokens?: number;
+    derivedFromSlot?: number;
+  };
   contextMessages: ContextMonitorMessage[];
   events: ContextMonitorEvent[];
 }
@@ -95,6 +124,10 @@ interface ContextMonitorProps {
   label?: string;
   liveUpdatesEnabled?: boolean;
   debounceMs?: number;
+  externalCommand?: {
+    id: string;
+    action: 'focus_latest_round' | 'focus_latest_strategy_change' | 'step_compare_prev' | 'step_compare_next';
+  } | null;
 }
 
 function formatTimestamp(iso: string): string {
@@ -128,6 +161,45 @@ function eventLabel(eventType: string): string {
 function shorten(text: string, max = 100): string {
   if (text.length <= max) return text;
   return `${text.slice(0, max)}…`;
+}
+
+function toNumber(value: unknown): number | undefined {
+  if (typeof value === 'number' && Number.isFinite(value)) return value;
+  if (typeof value === 'string') {
+    const parsed = Number(value);
+    if (Number.isFinite(parsed)) return parsed;
+  }
+  return undefined;
+}
+
+function collectRoundContextSlots(round: ContextMonitorRound | null | undefined): Set<number> {
+  if (!round) return new Set<number>();
+  const slots = round.contextMessages
+    .map((msg) => msg.slot)
+    .filter((slot): slot is number => typeof slot === 'number' && Number.isFinite(slot));
+  return new Set(slots);
+}
+
+function describeContextStrategy(round: ContextMonitorRound | null | undefined): {
+  tag: string;
+  detail: string;
+  tone: 'green' | 'blue' | 'amber' | 'gray';
+} {
+  if (!round?.contextStrategy) {
+    return { tag: '未知', detail: '当前 round 未记录策略元信息', tone: 'gray' };
+  }
+  const strategy = round.contextStrategy;
+  if (strategy.bypassed === true) {
+    const reason = strategy.bypassReason ? `（${strategy.bypassReason}）` : '';
+    return { tag: `RAW_SESSION${reason}`, detail: '跳过 context builder 重排，直接使用原始会话顺序', tone: 'amber' };
+  }
+  if (strategy.source === 'context_builder' || strategy.rebuilt === true) {
+    return { tag: 'CONTEXT_BUILDER', detail: '使用 context builder 重建后的历史上下文', tone: 'green' };
+  }
+  if (strategy.source === 'raw_session') {
+    return { tag: 'RAW_SESSION', detail: '使用原始会话历史（未显式重建）', tone: 'blue' };
+  }
+  return { tag: strategy.source || '未知', detail: '策略已记录，但来源字段不完整', tone: 'gray' };
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -175,17 +247,22 @@ export const ContextMonitor: React.FC<ContextMonitorProps> = ({
   label = 'Context Builder Monitor',
   liveUpdatesEnabled = true,
   debounceMs = 120,
+  externalCommand = null,
 }) => {
   const [data, setData] = useState<ContextMonitorResponse | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [expanded, setExpanded] = useState(false);
   const [selectedRoundId, setSelectedRoundId] = useState<string | null>(null);
+  const [compareRoundId, setCompareRoundId] = useState<string | null>(null);
   const [detail, setDetail] = useState<{ title: string; content: string; meta?: string } | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
   const fetchInFlightRef = useRef(false);
   const queuedRefreshRef = useRef(false);
   const scheduleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const cardRef = useRef<HTMLDivElement | null>(null);
+  const expandedCardRef = useRef<HTMLDivElement | null>(null);
+  const lastHandledExternalCommandRef = useRef<string | null>(null);
 
   const fetchData = useCallback(async (options?: { silent?: boolean }) => {
     if (!sessionId) return;
@@ -296,6 +373,132 @@ export const ContextMonitor: React.FC<ContextMonitorProps> = ({
     return sortedRounds.find((round) => round.id === selectedRoundId) || sortedRounds[0] || null;
   }, [selectedRoundId, sortedRounds]);
 
+  const timelineRounds = useMemo(() => {
+    if (!data?.rounds) return [];
+    return [...data.rounds].sort((a, b) => a.slotStart - b.slotStart);
+  }, [data?.rounds]);
+
+  const selectedRoundTimelineIndex = useMemo(() => {
+    if (!selectedRound) return -1;
+    return timelineRounds.findIndex((round) => round.id === selectedRound.id);
+  }, [selectedRound, timelineRounds]);
+
+  const previousRound = useMemo(() => {
+    if (selectedRoundTimelineIndex <= 0) return null;
+    return timelineRounds[selectedRoundTimelineIndex - 1] ?? null;
+  }, [selectedRoundTimelineIndex, timelineRounds]);
+
+  useEffect(() => {
+    setCompareRoundId(previousRound?.id ?? null);
+  }, [previousRound?.id, selectedRoundId, sessionId]);
+
+  useEffect(() => {
+    if (!expanded) return;
+    window.setTimeout(() => {
+      expandedCardRef.current?.focus();
+    }, 0);
+  }, [expanded]);
+
+  const comparisonRound = useMemo(() => {
+    if (!selectedRound) return null;
+    if (!compareRoundId) return previousRound;
+    return timelineRounds.find((round) => round.id === compareRoundId) ?? previousRound;
+  }, [compareRoundId, previousRound, selectedRound, timelineRounds]);
+
+  const compareCandidates = useMemo(() => {
+    if (!selectedRound) return [];
+    return timelineRounds.filter((round) => round.id !== selectedRound.id);
+  }, [selectedRound, timelineRounds]);
+
+  const comparisonIndex = useMemo(() => {
+    if (!comparisonRound) return -1;
+    return compareCandidates.findIndex((round) => round.id === comparisonRound.id);
+  }, [compareCandidates, comparisonRound]);
+
+  const stepComparisonRound = useCallback((direction: -1 | 1) => {
+    if (compareCandidates.length === 0) return;
+    if (comparisonIndex < 0) {
+      const fallbackIndex = direction < 0 ? compareCandidates.length - 1 : 0;
+      setCompareRoundId(compareCandidates[fallbackIndex]?.id ?? null);
+      return;
+    }
+    const nextIndex = Math.max(0, Math.min(compareCandidates.length - 1, comparisonIndex + direction));
+    setCompareRoundId(compareCandidates[nextIndex]?.id ?? null);
+  }, [compareCandidates, comparisonIndex]);
+
+  const onCompareKeyDown = useCallback((event: React.KeyboardEvent<HTMLDivElement>) => {
+    const target = event.target as HTMLElement | null;
+    const tag = target?.tagName?.toLowerCase();
+    const editing = target?.isContentEditable
+      || tag === 'input'
+      || tag === 'textarea'
+      || tag === 'select';
+    if (editing) return;
+    if (event.key === 'ArrowLeft' || event.key === '[') {
+      event.preventDefault();
+      stepComparisonRound(-1);
+      return;
+    }
+    if (event.key === 'ArrowRight' || event.key === ']') {
+      event.preventDefault();
+      stepComparisonRound(1);
+    }
+  }, [stepComparisonRound]);
+
+  useEffect(() => {
+    if (!externalCommand?.id) return;
+    if (externalCommand.id === lastHandledExternalCommandRef.current) return;
+    lastHandledExternalCommandRef.current = externalCommand.id;
+    if (externalCommand.action === 'focus_latest_round') {
+      if (sortedRounds.length > 0) {
+        setSelectedRoundId(sortedRounds[0].id);
+      }
+      cardRef.current?.focus();
+      expandedCardRef.current?.focus();
+      return;
+    }
+    if (externalCommand.action === 'focus_latest_strategy_change') {
+      if (timelineRounds.length > 1) {
+        const strategyTagForRound = (round: ContextMonitorRound): string => describeContextStrategy(round).tag;
+        let targetIndex = -1;
+        for (let idx = timelineRounds.length - 1; idx >= 1; idx -= 1) {
+          const current = strategyTagForRound(timelineRounds[idx]);
+          const previous = strategyTagForRound(timelineRounds[idx - 1]);
+          if (current !== previous) {
+            targetIndex = idx;
+            break;
+          }
+        }
+        if (targetIndex >= 0) {
+          const targetRound = timelineRounds[targetIndex];
+          const baseRound = timelineRounds[targetIndex - 1] ?? null;
+          setSelectedRoundId(targetRound.id);
+          setCompareRoundId(baseRound?.id ?? null);
+        } else if (sortedRounds.length > 0) {
+          setSelectedRoundId(sortedRounds[0].id);
+        }
+      } else if (sortedRounds.length > 0) {
+        setSelectedRoundId(sortedRounds[0].id);
+      }
+      cardRef.current?.focus();
+      expandedCardRef.current?.focus();
+      return;
+    }
+    if (externalCommand.action === 'step_compare_prev') {
+      stepComparisonRound(-1);
+      cardRef.current?.focus();
+      expandedCardRef.current?.focus();
+      return;
+    }
+    if (externalCommand.action === 'step_compare_next') {
+      stepComparisonRound(1);
+      cardRef.current?.focus();
+      expandedCardRef.current?.focus();
+    }
+  }, [externalCommand, sortedRounds, stepComparisonRound, timelineRounds]);
+
+  const strategyView = useMemo(() => describeContextStrategy(selectedRound), [selectedRound]);
+
   const openLedgerDetail = useCallback(async (slot: number) => {
     if (!sessionId) return;
     setDetailLoading(true);
@@ -335,17 +538,81 @@ export const ContextMonitor: React.FC<ContextMonitorProps> = ({
   }, []);
 
   const selectedSlots = useMemo(() => {
-    if (!selectedRound) return new Set<number>();
-    const slots = selectedRound.contextMessages
-      .map((msg) => msg.slot)
-      .filter((slot): slot is number => typeof slot === 'number' && Number.isFinite(slot));
-    return new Set(slots);
+    return collectRoundContextSlots(selectedRound);
   }, [selectedRound]);
   const selectedContextCount = selectedRound?.contextMessages.length ?? 0;
   const selectedLedgerCount = selectedSlots.size;
 
-  const renderMonitorCard = (options?: { expandedView?: boolean }) => (
-    <div className={`context-monitor-card${options?.expandedView ? ' context-monitor-card-expanded' : ''}`}>
+  const compareSlots = useMemo(() => collectRoundContextSlots(comparisonRound), [comparisonRound]);
+  const comparisonDiff = useMemo(() => {
+    const added = Array.from(selectedSlots).filter((slot) => !compareSlots.has(slot)).sort((a, b) => a - b);
+    const removed = Array.from(compareSlots).filter((slot) => !selectedSlots.has(slot)).sort((a, b) => a - b);
+    const unchanged = Array.from(selectedSlots).filter((slot) => compareSlots.has(slot)).sort((a, b) => a - b);
+    return { added, removed, unchanged };
+  }, [compareSlots, selectedSlots]);
+
+  const metricDelta = useMemo(() => {
+    const current = selectedRound?.modelSummary;
+    const baseline = comparisonRound?.modelSummary;
+    if (!current || !baseline) return null;
+    const numberDelta = (a: unknown, b: unknown): number | undefined => {
+      const av = toNumber(a);
+      const bv = toNumber(b);
+      if (av === undefined || bv === undefined) return undefined;
+      return av - bv;
+    };
+    return {
+      historyItemsCount: numberDelta(current.historyItemsCount, baseline.historyItemsCount),
+      contextTokensInWindow: numberDelta(current.contextTokensInWindow, baseline.contextTokensInWindow),
+      contextUsagePercent: numberDelta(current.contextUsagePercent, baseline.contextUsagePercent),
+      totalTokens: numberDelta(current.totalTokens, baseline.totalTokens),
+    };
+  }, [comparisonRound, selectedRound]);
+
+  const traceBackRows = useMemo(() => {
+    if (!selectedRound || selectedRoundTimelineIndex <= 0) return [];
+    const currentSlots = collectRoundContextSlots(selectedRound);
+    const rows: Array<{
+      round: ContextMonitorRound;
+      addedCount: number;
+      removedCount: number;
+      overlapCount: number;
+      tokenDelta?: number;
+      historyDelta?: number;
+    }> = [];
+    for (let idx = selectedRoundTimelineIndex - 1; idx >= 0; idx -= 1) {
+      const base = timelineRounds[idx];
+      const baseSlots = collectRoundContextSlots(base);
+      const addedCount = Array.from(currentSlots).filter((slot) => !baseSlots.has(slot)).length;
+      const removedCount = Array.from(baseSlots).filter((slot) => !currentSlots.has(slot)).length;
+      const overlapCount = Array.from(currentSlots).filter((slot) => baseSlots.has(slot)).length;
+      const tokenDelta = toNumber(selectedRound.modelSummary?.contextTokensInWindow) !== undefined
+        && toNumber(base.modelSummary?.contextTokensInWindow) !== undefined
+        ? Number(toNumber(selectedRound.modelSummary?.contextTokensInWindow)) - Number(toNumber(base.modelSummary?.contextTokensInWindow))
+        : undefined;
+      const historyDelta = toNumber(selectedRound.modelSummary?.historyItemsCount) !== undefined
+        && toNumber(base.modelSummary?.historyItemsCount) !== undefined
+        ? Number(toNumber(selectedRound.modelSummary?.historyItemsCount)) - Number(toNumber(base.modelSummary?.historyItemsCount))
+        : undefined;
+      rows.push({
+        round: base,
+        addedCount,
+        removedCount,
+        overlapCount,
+        tokenDelta,
+        historyDelta,
+      });
+    }
+    return rows;
+  }, [selectedRound, selectedRoundTimelineIndex, timelineRounds]);
+
+  const renderMonitorCard = (options?: { expandedView?: boolean; cardRef?: React.RefObject<HTMLDivElement> }) => (
+    <div
+      ref={options?.cardRef}
+      className={`context-monitor-card${options?.expandedView ? ' context-monitor-card-expanded' : ''}`}
+      tabIndex={0}
+      onKeyDown={onCompareKeyDown}
+    >
       <div className="context-monitor-header">
         <div className="context-monitor-title-row">
           <div className="context-monitor-title">{label}</div>
@@ -406,7 +673,122 @@ export const ContextMonitor: React.FC<ContextMonitorProps> = ({
           <span>① 选 Round</span>
           <span>② 看该 Round 的 Selected Context 组合</span>
           <span>③ 右侧对照原始 Ledger（已选/未选）</span>
-          <span>④ 点击任意行看详情</span>
+          <span>④ 对比上一轮变化 + 回溯</span>
+          <span>⑤ 点击任意行看详情</span>
+        </div>
+        <div className="context-monitor-insight">
+          <div className={`context-strategy-chip tone-${strategyView.tone}`} title={strategyView.detail}>
+            本轮策略：{strategyView.tag}
+          </div>
+          <div className="context-insight-line">
+            {selectedRound?.contextStrategy?.derivedFromSlot != null
+              ? `策略来源 slot #${selectedRound.contextStrategy.derivedFromSlot} (${selectedRound.contextStrategy.derivedFromEventType || 'event'})`
+              : '策略来源：未记录'}
+          </div>
+          <div className="context-insight-line">
+            基线：
+            <select
+              className="context-compare-select"
+              value={compareRoundId ?? ''}
+              onChange={(event) => { setCompareRoundId(event.target.value); }}
+            >
+              <option value="">上一轮（默认）</option>
+              {compareCandidates.map((round) => (
+                <option key={round.id} value={round.id}>
+                  #{round.slotStart}-{round.slotEnd} {formatTimestamp(round.startTimeIso)}
+                </option>
+              ))}
+            </select>
+            <button
+              type="button"
+              className="context-compare-nav"
+              onClick={() => { stepComparisonRound(-1); }}
+              disabled={compareCandidates.length === 0 || comparisonIndex <= 0}
+              title="向前回溯一个基线（快捷键：← / [）"
+            >
+              ← 前一基线
+            </button>
+            <button
+              type="button"
+              className="context-compare-nav"
+              onClick={() => { stepComparisonRound(1); }}
+              disabled={compareCandidates.length === 0 || comparisonIndex >= compareCandidates.length - 1}
+              title="向后回溯一个基线（快捷键：→ / ]）"
+            >
+              后一基线 →
+            </button>
+            <span className="context-insight-muted">
+              {comparisonRound ? `对比 #${comparisonRound.slotStart}-${comparisonRound.slotEnd}` : '无可对比轮次'}
+            </span>
+            <span className="context-key-hint">快捷键：←/→ 或 [/]</span>
+          </div>
+          <div className="context-insight-diff">
+            <span className="diff-added">+{comparisonDiff.added.length}</span>
+            <span className="diff-removed">-{comparisonDiff.removed.length}</span>
+            <span className="diff-same">={comparisonDiff.unchanged.length}</span>
+            {metricDelta?.historyItemsCount !== undefined && (
+              <span>history Δ {metricDelta.historyItemsCount > 0 ? '+' : ''}{metricDelta.historyItemsCount}</span>
+            )}
+            {metricDelta?.contextTokensInWindow !== undefined && (
+              <span>ctxTok Δ {metricDelta.contextTokensInWindow > 0 ? '+' : ''}{metricDelta.contextTokensInWindow}</span>
+            )}
+            {metricDelta?.contextUsagePercent !== undefined && (
+              <span>usage Δ {metricDelta.contextUsagePercent > 0 ? '+' : ''}{metricDelta.contextUsagePercent}%</span>
+            )}
+          </div>
+          {(comparisonDiff.added.length > 0 || comparisonDiff.removed.length > 0) && (
+            <div className="context-insight-slot-groups">
+              {comparisonDiff.added.length > 0 && (
+                <div className="slot-group">
+                  <span className="slot-group-title">新增命中</span>
+                  <div className="slot-pills">
+                    {comparisonDiff.added.map((slot) => (
+                      <button key={`add-${slot}`} type="button" className="slot-pill add" onClick={() => { void openLedgerDetail(slot); }}>
+                        #{slot}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
+              {comparisonDiff.removed.length > 0 && (
+                <div className="slot-group">
+                  <span className="slot-group-title">移出命中</span>
+                  <div className="slot-pills">
+                    {comparisonDiff.removed.map((slot) => (
+                      <button key={`rm-${slot}`} type="button" className="slot-pill remove" onClick={() => { void openLedgerDetail(slot); }}>
+                        #{slot}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+          {traceBackRows.length > 0 && (
+            <div className="context-traceback">
+              <span className="context-traceback-title">回溯变化</span>
+              <div className="context-traceback-list">
+                {traceBackRows.slice(0, 8).map((row) => (
+                  <button
+                    key={`trace-${row.round.id}`}
+                    type="button"
+                    className={`traceback-row ${comparisonRound?.id === row.round.id ? 'active' : ''}`}
+                    onClick={() => { setCompareRoundId(row.round.id); }}
+                    title="点击设置为对比基线"
+                  >
+                    <span className="traceback-round">#{row.round.slotStart}-{row.round.slotEnd}</span>
+                    <span className="traceback-diff">+{row.addedCount} / -{row.removedCount} / ={row.overlapCount}</span>
+                    <span className="traceback-metric">
+                      {row.historyDelta !== undefined ? `history ${row.historyDelta > 0 ? '+' : ''}${row.historyDelta}` : 'history -'}
+                    </span>
+                    <span className="traceback-metric">
+                      {row.tokenDelta !== undefined ? `ctxTok ${row.tokenDelta > 0 ? '+' : ''}${row.tokenDelta}` : 'ctxTok -'}
+                    </span>
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
         </div>
       </div>
 
@@ -481,11 +863,22 @@ export const ContextMonitor: React.FC<ContextMonitorProps> = ({
               {!selectedRound && <div className="context-monitor-empty">请选择一个 round</div>}
               {selectedRound?.events.map((event) => {
                 const hit = selectedSlots.has(event.slot);
+                const compareHit = compareSlots.has(event.slot);
+                const deltaState: 'added' | 'removed' | 'same' | 'none' = hit && !compareHit
+                  ? 'added'
+                  : (!hit && compareHit
+                    ? 'removed'
+                    : (hit && compareHit ? 'same' : 'none'));
+                const deltaLabel = deltaState === 'added'
+                  ? '新增'
+                  : (deltaState === 'removed'
+                    ? '移出'
+                    : (deltaState === 'same' ? '保留' : '未选'));
                 return (
                   <button
                     key={`${event.id}-${event.slot}`}
                     type="button"
-                    className={`context-ledger-item ${hit ? 'selected' : ''}`}
+                    className={`context-ledger-item ${hit ? 'selected' : ''} ${deltaState !== 'none' ? `delta-${deltaState}` : ''}`}
                     onClick={() => { void openLedgerDetail(event.slot); }}
                     title="点击查看原始消息"
                   >
@@ -493,7 +886,7 @@ export const ContextMonitor: React.FC<ContextMonitorProps> = ({
                     <span className="ledger-event">{eventLabel(event.eventType)}</span>
                     <span className="ledger-role">{roleLabel(event.role || '-')}</span>
                     <span className="ledger-time">{formatTimestamp(event.timestampIso)}</span>
-                    <span className={`ledger-hit ${hit ? 'yes' : 'no'}`}>{hit ? '已选' : '未选'}</span>
+                    <span className={`ledger-hit ${deltaState}`}>{deltaLabel}</span>
                     <span className="ledger-preview">{shorten(event.preview, 100)}</span>
                   </button>
                 );
@@ -522,11 +915,11 @@ export const ContextMonitor: React.FC<ContextMonitorProps> = ({
 
   return (
     <>
-      {renderMonitorCard()}
+      {renderMonitorCard({ cardRef })}
       {expanded && typeof document !== 'undefined' && createPortal(
         <div className="context-monitor-overlay" onClick={() => { setExpanded(false); }}>
           <div className="context-monitor-modal" onClick={(event) => { event.stopPropagation(); }}>
-            {renderMonitorCard({ expandedView: true })}
+            {renderMonitorCard({ expandedView: true, cardRef: expandedCardRef })}
           </div>
         </div>,
         document.body,

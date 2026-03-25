@@ -162,6 +162,7 @@ export class KernelAgentBase {
       const providedHistory = this.config.contextHistoryProvider
         ? await this.config.contextHistoryProvider(session.id, this.config.maxContextMessages)
         : null;
+      const contextHistoryMetadata = extractContextHistoryMetadata(providedHistory);
       const history = Array.isArray(providedHistory)
         ? providedHistory.map((item, idx) => ({
             id: item.id ?? `ctx-${Date.now()}-${idx}`,
@@ -200,6 +201,7 @@ export class KernelAgentBase {
         mode: threadMode,
         threadKey,
         slotMetadata,
+        extra: contextHistoryMetadata,
         contextSlotsRendered:
           this.config.appendContextSlotsToSystemPrompt === false
             ? contextSlots?.rendered
@@ -398,6 +400,7 @@ export class KernelAgentBase {
     contextSlotsRendered?: string;
     extra?: Record<string, unknown>;
   }): Record<string, unknown> {
+    const hasMediaInput = this.hasMediaInputItems(params.inputMetadata);
     const metadata: Record<string, unknown> = {
       ...(params.inputMetadata ?? {}),
       ...(params.roleProfileId ? { roleProfile: params.roleProfileId } : {}),
@@ -431,11 +434,23 @@ export class KernelAgentBase {
     };
 
     const existingApiHistory = this.apiHistoryByThread.get(params.threadKey);
-    if (existingApiHistory && existingApiHistory.length > 0) {
+    if (!hasMediaInput && existingApiHistory && existingApiHistory.length > 0) {
       metadata.kernelApiHistory = existingApiHistory;
     }
 
+    if (hasMediaInput) {
+      delete metadata.kernelApiHistory;
+      metadata.kernelApiHistoryBypassed = true;
+      metadata.kernelApiHistoryBypassedReason = 'media_input';
+    }
+
     return metadata;
+  }
+
+  private hasMediaInputItems(metadata?: Record<string, unknown>): boolean {
+    const inputItems = this.parseInputItems(metadata);
+    if (!inputItems || inputItems.length === 0) return false;
+    return inputItems.some((item) => item.type === 'image' || item.type === 'local_image');
   }
 
   private resolveReviewSettings(metadata?: Record<string, unknown>): ReviewSettings | undefined {
@@ -976,6 +991,42 @@ function resolvePlanModeEnabled(metadata?: Record<string, unknown>): boolean | u
   if (typeof metadata.planModeEnabled === 'boolean') return metadata.planModeEnabled;
   if (typeof metadata.includePlanTool === 'boolean') return metadata.includePlanTool;
   if (typeof metadata.mode === 'string' && metadata.mode.trim().toLowerCase() === 'plan') return true;
+  return undefined;
+}
+
+function extractContextHistoryMetadata(
+  providedHistory:
+    | Array<{
+      metadata?: Record<string, unknown>;
+    }>
+    | null
+    | undefined,
+): Record<string, unknown> | undefined {
+  if (!Array.isArray(providedHistory) || providedHistory.length === 0) return undefined;
+  for (let index = providedHistory.length - 1; index >= 0; index -= 1) {
+    const metadata = providedHistory[index]?.metadata;
+    if (!metadata || typeof metadata !== 'object') continue;
+    const source = typeof metadata.contextBuilderHistorySource === 'string'
+      ? metadata.contextBuilderHistorySource
+      : undefined;
+    const bypassed = typeof metadata.contextBuilderBypassed === 'boolean'
+      ? metadata.contextBuilderBypassed
+      : undefined;
+    const bypassReason = typeof metadata.contextBuilderBypassReason === 'string'
+      ? metadata.contextBuilderBypassReason
+      : undefined;
+    const rebuilt = typeof metadata.contextBuilderRebuilt === 'boolean'
+      ? metadata.contextBuilderRebuilt
+      : undefined;
+    if (source || bypassed !== undefined || bypassReason || rebuilt !== undefined) {
+      return {
+        ...(source ? { contextHistorySource: source } : {}),
+        ...(bypassed !== undefined ? { contextBuilderBypassed: bypassed } : {}),
+        ...(bypassReason ? { contextBuilderBypassReason: bypassReason } : {}),
+        ...(rebuilt !== undefined ? { contextBuilderRebuilt: rebuilt } : {}),
+      };
+    }
+  }
   return undefined;
 }
 

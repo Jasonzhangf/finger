@@ -1,5 +1,6 @@
 import React, { useState, useCallback, useEffect } from 'react';
 import { useWebSocket } from '../../hooks/useWebSocket.js';
+import type { RuntimeOverview } from '../../hooks/useWorkflowExecution.types.js';
 import './PerformanceCard.css';
 
 interface PerformanceMetrics {
@@ -32,7 +33,15 @@ interface PerformanceMetrics {
   };
 }
 
-export const PerformanceCard: React.FC<{ paused?: boolean }> = ({ paused = false }) => {
+export const PerformanceCard: React.FC<{
+  paused?: boolean;
+  runtimeOverview?: RuntimeOverview;
+  onContextAction?: (action: 'focus_latest_round' | 'focus_latest_strategy_change' | 'step_compare_prev' | 'step_compare_next') => void;
+}> = ({
+  paused = false,
+  runtimeOverview,
+  onContextAction,
+}) => {
   const [metrics, setMetrics] = useState<PerformanceMetrics | null>(null);
   const [lastWsMessageAt, setLastWsMessageAt] = useState<number | null>(null);
   const [lastLiveEventAt, setLastLiveEventAt] = useState<number | null>(null);
@@ -128,6 +137,17 @@ export const PerformanceCard: React.FC<{ paused?: boolean }> = ({ paused = false
     return `${Math.floor(seconds / 3600)}h ${Math.floor((seconds % 3600) / 60)}m`;
   };
 
+  const formatSigned = (value: number): string => (value > 0 ? `+${value}` : `${value}`);
+  const strategyLabel = runtimeOverview?.contextStrategyLabel;
+  const strategyChipClass = runtimeOverview?.contextBuilderBypassed === true
+    ? 'warning'
+    : strategyLabel && strategyLabel.includes('CONTEXT_BUILDER')
+      ? 'good'
+      : 'subtle';
+  const strategySwitchText = runtimeOverview?.contextStrategyChanged
+    ? `策略切换 ${runtimeOverview.contextPrevStrategyLabel || '?'} → ${runtimeOverview.contextStrategyLabel || '?'}`
+    : null;
+
   if (!metrics) {
     return (
       <div className="performance-bar">
@@ -177,6 +197,57 @@ export const PerformanceCard: React.FC<{ paused?: boolean }> = ({ paused = false
         <span className={`metric-chip ${liveEventChipClass}`}>
           {liveEventText}
         </span>
+        {strategyLabel && (
+          <button
+            type="button"
+            className={`metric-chip metric-chip-button ${strategyChipClass}`}
+            onClick={() => { onContextAction?.('focus_latest_round'); }}
+            title="定位到 Context Monitor 的最新 round"
+          >
+            策略 {strategyLabel}
+          </button>
+        )}
+        {strategySwitchText && (
+          <button
+            type="button"
+            className="metric-chip metric-chip-button warning"
+            onClick={() => { onContextAction?.('focus_latest_strategy_change'); }}
+            title="定位到最近一次策略切换 round"
+          >
+            {strategySwitchText}
+          </button>
+        )}
+        {typeof runtimeOverview?.contextHistoryDelta === 'number' && (
+          <span className={`metric-chip ${runtimeOverview.contextHistoryDelta === 0 ? 'subtle' : runtimeOverview.contextHistoryDelta > 0 ? 'warning' : 'good'}`}>
+            Δhistory {formatSigned(runtimeOverview.contextHistoryDelta)}
+          </span>
+        )}
+        {typeof runtimeOverview?.contextTokensDelta === 'number' && (
+          <span className={`metric-chip ${runtimeOverview.contextTokensDelta === 0 ? 'subtle' : runtimeOverview.contextTokensDelta > 0 ? 'warning' : 'good'}`}>
+            ΔctxTok {formatSigned(runtimeOverview.contextTokensDelta)}
+          </span>
+        )}
+        {typeof runtimeOverview?.contextUsageDelta === 'number' && (
+          <span className={`metric-chip ${runtimeOverview.contextUsageDelta === 0 ? 'subtle' : runtimeOverview.contextUsageDelta > 0 ? 'warning' : 'good'}`}>
+            Δusage {formatSigned(runtimeOverview.contextUsageDelta)}%
+          </span>
+        )}
+        <button
+          type="button"
+          className="metric-chip metric-chip-button subtle"
+          onClick={() => { onContextAction?.('step_compare_prev'); }}
+          title="Context 对比基线向前回溯"
+        >
+          对比←
+        </button>
+        <button
+          type="button"
+          className="metric-chip metric-chip-button subtle"
+          onClick={() => { onContextAction?.('step_compare_next'); }}
+          title="Context 对比基线向后回溯"
+        >
+          对比→
+        </button>
         <span className="metric-chip subtle">
           运行 {formatUptime(metrics.system.uptimeSeconds)}
         </span>

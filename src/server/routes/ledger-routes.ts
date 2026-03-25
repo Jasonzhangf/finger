@@ -392,6 +392,17 @@ interface ContextMonitorSlotEntry {
   preview: string;
   finishReason?: string;
   content?: string;
+  contextHistorySource?: string;
+  contextBuilderBypassed?: boolean;
+  contextBuilderBypassReason?: string;
+  contextBuilderRebuilt?: boolean;
+  modelRound?: number;
+  historyItemsCount?: number;
+  contextUsagePercent?: number;
+  contextTokensInWindow?: number;
+  inputTokens?: number;
+  outputTokens?: number;
+  totalTokens?: number;
 }
 
 interface ContextMonitorRound {
@@ -402,6 +413,24 @@ interface ContextMonitorRound {
   endTimeIso: string;
   userPrompt: string;
   finishReason?: string;
+  contextStrategy?: {
+    source?: string;
+    bypassed?: boolean;
+    bypassReason?: string;
+    rebuilt?: boolean;
+    derivedFromEventType?: string;
+    derivedFromSlot?: number;
+  };
+  modelSummary?: {
+    round?: number;
+    historyItemsCount?: number;
+    contextUsagePercent?: number;
+    contextTokensInWindow?: number;
+    inputTokens?: number;
+    outputTokens?: number;
+    totalTokens?: number;
+    derivedFromSlot?: number;
+  };
   contextMessages: Array<{
     id: string;
     slot?: number;
@@ -441,6 +470,42 @@ function toMonitorEntry(entry: Record<string, unknown>, slot: number): ContextMo
   const payload = entry.payload && typeof entry.payload === 'object'
     ? entry.payload as Record<string, unknown>
     : {};
+  const payloadMetadata = payload.metadata && typeof payload.metadata === 'object'
+    ? payload.metadata as Record<string, unknown>
+    : {};
+  const extractString = (value: unknown): string | undefined => {
+    if (typeof value !== 'string') return undefined;
+    const trimmed = value.trim();
+    return trimmed.length > 0 ? trimmed : undefined;
+  };
+  const extractBoolean = (value: unknown): boolean | undefined => {
+    if (typeof value === 'boolean') return value;
+    if (typeof value === 'string') {
+      const normalized = value.trim().toLowerCase();
+      if (normalized === 'true') return true;
+      if (normalized === 'false') return false;
+    }
+    return undefined;
+  };
+  const extractNumber = (value: unknown): number | undefined => {
+    if (typeof value === 'number' && Number.isFinite(value)) return value;
+    if (typeof value === 'string') {
+      const parsed = Number(value);
+      if (Number.isFinite(parsed)) return parsed;
+    }
+    return undefined;
+  };
+  const contextHistorySource = extractString(payload.contextHistorySource) ?? extractString(payloadMetadata.contextHistorySource);
+  const contextBuilderBypassed = extractBoolean(payload.contextBuilderBypassed) ?? extractBoolean(payloadMetadata.contextBuilderBypassed);
+  const contextBuilderBypassReason = extractString(payload.contextBuilderBypassReason) ?? extractString(payloadMetadata.contextBuilderBypassReason);
+  const contextBuilderRebuilt = extractBoolean(payload.contextBuilderRebuilt) ?? extractBoolean(payloadMetadata.contextBuilderRebuilt);
+  const modelRound = extractNumber(payload.round) ?? extractNumber(payload.modelRound);
+  const historyItemsCount = extractNumber(payload.historyItemsCount) ?? extractNumber(payload.history_items_count);
+  const contextUsagePercent = extractNumber(payload.contextUsagePercent) ?? extractNumber(payload.context_usage_percent);
+  const contextTokensInWindow = extractNumber(payload.estimatedTokensInContextWindow) ?? extractNumber(payload.estimated_tokens_in_context_window);
+  const inputTokens = extractNumber(payload.inputTokens) ?? extractNumber(payload.input_tokens);
+  const outputTokens = extractNumber(payload.outputTokens) ?? extractNumber(payload.output_tokens);
+  const totalTokens = extractNumber(payload.totalTokens) ?? extractNumber(payload.total_tokens);
   const finishReason = typeof payload.finish_reason === 'string'
     ? payload.finish_reason
     : (typeof payload.stopReason === 'string' ? payload.stopReason : undefined);
@@ -454,6 +519,17 @@ function toMonitorEntry(entry: Record<string, unknown>, slot: number): ContextMo
     preview: extractPreview(payload),
     ...(finishReason ? { finishReason } : {}),
     ...(typeof payload.content === 'string' ? { content: payload.content } : {}),
+    ...(contextHistorySource ? { contextHistorySource } : {}),
+    ...(contextBuilderBypassed !== undefined ? { contextBuilderBypassed } : {}),
+    ...(contextBuilderBypassReason ? { contextBuilderBypassReason } : {}),
+    ...(contextBuilderRebuilt !== undefined ? { contextBuilderRebuilt } : {}),
+    ...(modelRound !== undefined ? { modelRound } : {}),
+    ...(historyItemsCount !== undefined ? { historyItemsCount } : {}),
+    ...(contextUsagePercent !== undefined ? { contextUsagePercent } : {}),
+    ...(contextTokensInWindow !== undefined ? { contextTokensInWindow } : {}),
+    ...(inputTokens !== undefined ? { inputTokens } : {}),
+    ...(outputTokens !== undefined ? { outputTokens } : {}),
+    ...(totalTokens !== undefined ? { totalTokens } : {}),
   };
 }
 
@@ -492,8 +568,39 @@ function buildContextMonitorRounds(entries: ContextMonitorSlotEntry[]): ContextM
 
     activeRound.events.push(item);
 
+    if (
+      !activeRound.contextStrategy
+      && (
+        typeof item.contextHistorySource === 'string'
+        || typeof item.contextBuilderBypassed === 'boolean'
+        || typeof item.contextBuilderBypassReason === 'string'
+        || typeof item.contextBuilderRebuilt === 'boolean'
+      )
+    ) {
+      activeRound.contextStrategy = {
+        ...(typeof item.contextHistorySource === 'string' ? { source: item.contextHistorySource } : {}),
+        ...(typeof item.contextBuilderBypassed === 'boolean' ? { bypassed: item.contextBuilderBypassed } : {}),
+        ...(typeof item.contextBuilderBypassReason === 'string' ? { bypassReason: item.contextBuilderBypassReason } : {}),
+        ...(typeof item.contextBuilderRebuilt === 'boolean' ? { rebuilt: item.contextBuilderRebuilt } : {}),
+        derivedFromEventType: item.eventType,
+        derivedFromSlot: item.slot,
+      };
+    }
+
     if (item.eventType === 'model_round' && item.finishReason && activeRound.finishReason === undefined) {
       activeRound.finishReason = item.finishReason;
+    }
+    if (item.eventType === 'model_round') {
+      activeRound.modelSummary = {
+        ...(item.modelRound !== undefined ? { round: item.modelRound } : {}),
+        ...(item.historyItemsCount !== undefined ? { historyItemsCount: item.historyItemsCount } : {}),
+        ...(item.contextUsagePercent !== undefined ? { contextUsagePercent: item.contextUsagePercent } : {}),
+        ...(item.contextTokensInWindow !== undefined ? { contextTokensInWindow: item.contextTokensInWindow } : {}),
+        ...(item.inputTokens !== undefined ? { inputTokens: item.inputTokens } : {}),
+        ...(item.outputTokens !== undefined ? { outputTokens: item.outputTokens } : {}),
+        ...(item.totalTokens !== undefined ? { totalTokens: item.totalTokens } : {}),
+        derivedFromSlot: item.slot,
+      };
     }
 
     if (item.eventType === 'task_complete') {

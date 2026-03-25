@@ -81,6 +81,35 @@ import type {
   UseWorkflowExecutionReturn,
 } from './useWorkflowExecution.types.js';
 
+function parseBooleanLike(value: unknown): boolean | undefined {
+  if (typeof value === 'boolean') return value;
+  if (typeof value === 'string') {
+    const normalized = value.trim().toLowerCase();
+    if (normalized === 'true') return true;
+    if (normalized === 'false') return false;
+  }
+  return undefined;
+}
+
+function buildContextStrategyLabel(input: {
+  source?: string;
+  bypassed?: boolean;
+  bypassReason?: string;
+  rebuilt?: boolean;
+}): string | undefined {
+  const source = typeof input.source === 'string' ? input.source.trim() : '';
+  if (input.bypassed === true) {
+    const reason = typeof input.bypassReason === 'string' && input.bypassReason.trim().length > 0
+      ? `(${input.bypassReason.trim()})`
+      : '';
+    return `RAW_SESSION${reason}`;
+  }
+  if (source === 'context_builder' || input.rebuilt === true) return 'CONTEXT_BUILDER';
+  if (source === 'raw_session') return 'RAW_SESSION';
+  if (source.length > 0) return source;
+  return undefined;
+}
+
 export function useWorkflowExecution(
   sessionId: string,
   projectPath?: string,
@@ -341,6 +370,43 @@ export function useWorkflowExecution(
         ? `Review 回合${typeof reviewIteration === 'number' ? ` #${reviewIteration}` : ''}`
         : '主回合';
       if (phase === 'turn_start') {
+        const contextHistorySource = typeof payload.contextHistorySource === 'string'
+          ? payload.contextHistorySource.trim()
+          : '';
+        const contextBuilderBypassed = parseBooleanLike(payload.contextBuilderBypassed);
+        const contextBuilderBypassReason = typeof payload.contextBuilderBypassReason === 'string'
+          ? payload.contextBuilderBypassReason.trim()
+          : '';
+        const contextBuilderRebuilt = parseBooleanLike(payload.contextBuilderRebuilt);
+        const nextStrategyLabel = buildContextStrategyLabel({
+          source: contextHistorySource,
+          bypassed: contextBuilderBypassed,
+          bypassReason: contextBuilderBypassReason,
+          rebuilt: contextBuilderRebuilt,
+        });
+        if (
+          nextStrategyLabel
+          || contextBuilderBypassed !== undefined
+          || contextBuilderRebuilt !== undefined
+          || contextBuilderBypassReason.length > 0
+          || contextHistorySource.length > 0
+        ) {
+          setRuntimeOverview((prev) => {
+            const prevLabel = typeof prev.contextStrategyLabel === 'string' ? prev.contextStrategyLabel : undefined;
+            const changed = !!(nextStrategyLabel && prevLabel && nextStrategyLabel !== prevLabel);
+            return {
+              ...prev,
+              ...(contextHistorySource.length > 0 ? { contextHistorySource } : {}),
+              ...(contextBuilderBypassed !== undefined ? { contextBuilderBypassed } : {}),
+              ...(contextBuilderBypassReason.length > 0 ? { contextBuilderBypassReason } : {}),
+              ...(contextBuilderRebuilt !== undefined ? { contextBuilderRebuilt } : {}),
+              ...(nextStrategyLabel ? { contextStrategyLabel: nextStrategyLabel } : {}),
+              contextStrategyChanged: changed,
+              ...(changed && prevLabel ? { contextPrevStrategyLabel: prevLabel } : {}),
+              updatedAt: new Date().toISOString(),
+            };
+          });
+        }
         setAgentRunStatus({
           phase: 'running',
           text: `${label}开始执行...`,
@@ -383,6 +449,7 @@ export function useWorkflowExecution(
           : undefined;
         if (round && round > 0) {
           const finishReason = typeof payload.finishReason === 'string' ? payload.finishReason.trim() : '';
+          const historyItemsCount = parseNumberLike(payload.historyItemsCount, payload.history_items_count);
           const contextUsagePercent =
             typeof payload.contextUsagePercent === 'number' && Number.isFinite(payload.contextUsagePercent)
               ? Math.max(0, Math.floor(payload.contextUsagePercent))
@@ -441,22 +508,41 @@ export function useWorkflowExecution(
             || maxInputTokens !== undefined
             || thresholdPercent !== undefined
           ) {
-            setRuntimeOverview((prev) => ({
-              ...prev,
-              ...(inputTokens !== undefined ? { reqTokens: inputTokens } : {}),
-              ...(outputTokens !== undefined ? { respTokens: outputTokens } : {}),
-              ...(totalTokens !== undefined ? { totalTokens } : {}),
-              ...((inputTokens !== undefined || outputTokens !== undefined || totalTokens !== undefined)
-                ? { tokenUpdatedAtLocal: new Date().toLocaleString() }
-                : {}),
-              ...(effectiveContextUsagePercent !== undefined ? { contextUsagePercent: effectiveContextUsagePercent } : {}),
-              ...(estimatedTokensInContextWindow !== undefined
-                ? { contextTokensInWindow: estimatedTokensInContextWindow }
-                : {}),
-              ...(maxInputTokens !== undefined ? { contextMaxInputTokens: maxInputTokens } : {}),
-              ...(thresholdPercent !== undefined ? { contextThresholdPercent: thresholdPercent } : {}),
-              updatedAt: new Date().toISOString(),
-            }));
+            setRuntimeOverview((prev) => {
+              const nextContextTokens = estimatedTokensInContextWindow !== undefined
+                ? estimatedTokensInContextWindow
+                : prev.contextTokensInWindow;
+              const nextUsage = effectiveContextUsagePercent !== undefined
+                ? effectiveContextUsagePercent
+                : prev.contextUsagePercent;
+              return {
+                ...prev,
+                ...(inputTokens !== undefined ? { reqTokens: inputTokens } : {}),
+                ...(outputTokens !== undefined ? { respTokens: outputTokens } : {}),
+                ...(totalTokens !== undefined ? { totalTokens } : {}),
+                ...((inputTokens !== undefined || outputTokens !== undefined || totalTokens !== undefined)
+                  ? { tokenUpdatedAtLocal: new Date().toLocaleString() }
+                  : {}),
+                ...(effectiveContextUsagePercent !== undefined ? { contextUsagePercent: effectiveContextUsagePercent } : {}),
+                ...(estimatedTokensInContextWindow !== undefined
+                  ? { contextTokensInWindow: estimatedTokensInContextWindow }
+                  : {}),
+                ...(maxInputTokens !== undefined ? { contextMaxInputTokens: maxInputTokens } : {}),
+                ...(thresholdPercent !== undefined ? { contextThresholdPercent: thresholdPercent } : {}),
+                ...(historyItemsCount !== undefined ? { contextHistoryItemsCount: Math.max(0, Math.floor(historyItemsCount)) } : {}),
+                contextRound: round,
+                ...(historyItemsCount !== undefined && prev.contextHistoryItemsCount !== undefined
+                  ? { contextHistoryDelta: Math.max(0, Math.floor(historyItemsCount)) - prev.contextHistoryItemsCount }
+                  : {}),
+                ...(nextContextTokens !== undefined && prev.contextTokensInWindow !== undefined
+                  ? { contextTokensDelta: nextContextTokens - prev.contextTokensInWindow }
+                  : {}),
+                ...(nextUsage !== undefined && prev.contextUsagePercent !== undefined
+                  ? { contextUsageDelta: nextUsage - prev.contextUsagePercent }
+                  : {}),
+                updatedAt: new Date().toISOString(),
+              };
+            });
           }
         }
       } else if (phase === 'kernel_event' && payload.type === 'context_compact') {
@@ -1820,6 +1906,24 @@ export function useWorkflowExecution(
         const effectiveContextUsagePercent = contextUsagePercent
           ?? computeContextUsagePercent(contextTokens, contextMaxInputTokens);
         const roundTraceUsage = extractTokenUsageFromRoundTrace(metadata);
+        const contextHistorySourceRaw = metadata.contextHistorySource;
+        const contextBuilderBypassedRaw = metadata.contextBuilderBypassed;
+        const contextBuilderBypassReasonRaw = metadata.contextBuilderBypassReason;
+        const contextBuilderRebuiltRaw = metadata.contextBuilderRebuilt;
+        const contextHistorySource = typeof contextHistorySourceRaw === 'string'
+          ? contextHistorySourceRaw.trim()
+          : '';
+        const contextBuilderBypassed = parseBooleanLike(contextBuilderBypassedRaw);
+        const contextBuilderBypassReason = typeof contextBuilderBypassReasonRaw === 'string'
+          ? contextBuilderBypassReasonRaw.trim()
+          : '';
+        const contextBuilderRebuilt = parseBooleanLike(contextBuilderRebuiltRaw);
+        const nextStrategyLabel = buildContextStrategyLabel({
+          source: contextHistorySource,
+          bypassed: contextBuilderBypassed,
+          bypassReason: contextBuilderBypassReason,
+          rebuilt: contextBuilderRebuilt,
+        });
         const exposedToolsFromMetadata = normalizeToolNameList(metadata.tools);
         if (exposedToolsFromMetadata.length > 0) {
           setToolPanelOverview((prev) => ({
@@ -1834,24 +1938,40 @@ export function useWorkflowExecution(
           || contextMaxInputTokens !== undefined
           || contextThresholdPercent !== undefined
           || roundTraceUsage
+          || nextStrategyLabel
+          || contextHistorySource.length > 0
+          || contextBuilderBypassed !== undefined
+          || contextBuilderRebuilt !== undefined
+          || contextBuilderBypassReason.length > 0
         ) {
-          setRuntimeOverview((prev) => ({
-            ...prev,
-            ...(focusMaxChars !== undefined ? { ledgerFocusMaxChars: focusMaxChars } : {}),
-            ...(effectiveContextUsagePercent !== undefined ? { contextUsagePercent: effectiveContextUsagePercent } : {}),
-            ...(contextTokens !== undefined ? { contextTokensInWindow: contextTokens } : {}),
-            ...(contextMaxInputTokens !== undefined ? { contextMaxInputTokens } : {}),
-            ...(contextThresholdPercent !== undefined ? { contextThresholdPercent } : {}),
-            ...(roundTraceUsage?.inputTokens !== undefined ? { reqTokens: roundTraceUsage.inputTokens } : {}),
-            ...(roundTraceUsage?.outputTokens !== undefined ? { respTokens: roundTraceUsage.outputTokens } : {}),
-            ...(roundTraceUsage?.totalTokens !== undefined ? { totalTokens: roundTraceUsage.totalTokens } : {}),
-            ...((roundTraceUsage?.inputTokens !== undefined
-              || roundTraceUsage?.outputTokens !== undefined
-              || roundTraceUsage?.totalTokens !== undefined)
-              ? { tokenUpdatedAtLocal: new Date().toLocaleString() }
-              : {}),
-            updatedAt: new Date().toISOString(),
-          }));
+          setRuntimeOverview((prev) => {
+            const prevLabel = typeof prev.contextStrategyLabel === 'string' ? prev.contextStrategyLabel : undefined;
+            const changed = !!(nextStrategyLabel && prevLabel && nextStrategyLabel !== prevLabel);
+            return {
+              ...prev,
+              ...(focusMaxChars !== undefined ? { ledgerFocusMaxChars: focusMaxChars } : {}),
+              ...(effectiveContextUsagePercent !== undefined ? { contextUsagePercent: effectiveContextUsagePercent } : {}),
+              ...(contextTokens !== undefined ? { contextTokensInWindow: contextTokens } : {}),
+              ...(contextMaxInputTokens !== undefined ? { contextMaxInputTokens } : {}),
+              ...(contextThresholdPercent !== undefined ? { contextThresholdPercent } : {}),
+              ...(roundTraceUsage?.inputTokens !== undefined ? { reqTokens: roundTraceUsage.inputTokens } : {}),
+              ...(roundTraceUsage?.outputTokens !== undefined ? { respTokens: roundTraceUsage.outputTokens } : {}),
+              ...(roundTraceUsage?.totalTokens !== undefined ? { totalTokens: roundTraceUsage.totalTokens } : {}),
+              ...((roundTraceUsage?.inputTokens !== undefined
+                || roundTraceUsage?.outputTokens !== undefined
+                || roundTraceUsage?.totalTokens !== undefined)
+                ? { tokenUpdatedAtLocal: new Date().toLocaleString() }
+                : {}),
+              ...(contextHistorySource.length > 0 ? { contextHistorySource } : {}),
+              ...(contextBuilderBypassed !== undefined ? { contextBuilderBypassed } : {}),
+              ...(contextBuilderBypassReason.length > 0 ? { contextBuilderBypassReason } : {}),
+              ...(contextBuilderRebuilt !== undefined ? { contextBuilderRebuilt } : {}),
+              ...(nextStrategyLabel ? { contextStrategyLabel: nextStrategyLabel } : {}),
+              ...(nextStrategyLabel ? { contextStrategyChanged: changed } : {}),
+              ...(changed && prevLabel ? { contextPrevStrategyLabel: prevLabel } : {}),
+              updatedAt: new Date().toISOString(),
+            };
+          });
         }
       }
       await loadSessionMessages();

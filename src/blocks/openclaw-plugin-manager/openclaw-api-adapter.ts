@@ -12,15 +12,70 @@ const clog = createConsoleLikeLogger('OpenclawApiAdapter');
 const log = logger.module('OpenclawApiAdapter');
 
 function asStringArray(value: unknown): string[] {
+  const PATH_OR_URL_HINT = /(path|url|file|attachment|media|src|href)/i;
+  const LOOKS_LIKE_REF = /^(\/|https?:\/\/|file:\/\/)/i;
+
+  const fromObjectLike = (obj: Record<string, unknown>): string[] => {
+    const candidates = [
+      obj.path,
+      obj.url,
+      obj.filePath,
+      obj.filepath,
+      obj.file_url,
+      obj.fileUrl,
+      obj.localPath,
+      obj.remoteUrl,
+      obj.src,
+      obj.href,
+    ];
+    return candidates
+      .map((item) => (typeof item === 'string' ? item.trim() : ''))
+      .filter((item) => item.length > 0);
+  };
+
+  const fromNested = (input: unknown, keyHint = ''): string[] => {
+    if (typeof input === 'string') {
+      const trimmed = input.trim();
+      if (!trimmed) return [];
+      if (PATH_OR_URL_HINT.test(keyHint) || LOOKS_LIKE_REF.test(trimmed)) {
+        return [trimmed];
+      }
+      return [];
+    }
+    if (Array.isArray(input)) {
+      return input.flatMap((item) => fromNested(item, keyHint));
+    }
+    if (input && typeof input === 'object') {
+      const obj = input as Record<string, unknown>;
+      const direct = fromObjectLike(obj);
+      const children = Object.entries(obj).flatMap(([k, v]) => fromNested(v, k));
+      return [...direct, ...children];
+    }
+    return [];
+  };
+
   if (Array.isArray(value)) {
     return value
-      .map((item) => (typeof item === 'string' ? item.trim() : ''))
+      .flatMap((item) => {
+        if (typeof item === 'string') return [item.trim()];
+        if (item && typeof item === 'object') return fromNested(item);
+        return [];
+      })
       .filter((item) => item.length > 0);
   }
 
   if (typeof value === 'string') {
     const trimmed = value.trim();
     if (!trimmed) return [];
+    if ((trimmed.startsWith('[') && trimmed.endsWith(']')) || (trimmed.startsWith('{') && trimmed.endsWith('}'))) {
+      try {
+        const parsed = JSON.parse(trimmed) as unknown;
+        // JSON 字符串解析成功后，直接以解析结果为准（即使是空数组）。
+        return asStringArray(parsed);
+      } catch {
+        // ignore json parse error; fallback to plain string handling below
+      }
+    }
     if (trimmed.includes('\n')) {
       return trimmed.split('\n').map((item) => item.trim()).filter((item) => item.length > 0);
     }
@@ -28,6 +83,11 @@ function asStringArray(value: unknown): string[] {
       return trimmed.split(',').map((item) => item.trim()).filter((item) => item.length > 0);
     }
     return [trimmed];
+  }
+
+
+  if (value && typeof value === 'object') {
+    return fromNested(value);
   }
 
   return [];
@@ -46,28 +106,139 @@ function guessAttachmentType(candidateType: string, source: string): ChannelAtta
   return 'file';
 }
 
+function parseAttachmentRefsFromBodyText(bodyText: string): Array<{ ref: string; mimeType?: string }> {
+  if (!bodyText || bodyText.trim().length === 0) return [];
+  // 兼容真实换行与字面量 "\\n"
+  const normalized = bodyText.includes('\\n') ? bodyText.replace(/\\n/g, '\n') : bodyText;
+  const lines = normalized.split('\n');
+  const result: Array<{ ref: string; mimeType?: string }> = [];
+  for (const rawLine of lines) {
+    const line = rawLine.trim();
+    // 匹配形如:
+    // - /Users/.../a.pdf (application/pdf)
+    // - https://.../a.png (image/png)
+    const m = line.match(/^(?:-+|•)\s+(?<ref>(?:\/[^\s()]+|https?:\/\/[^\s()]+))(?:\s+\((?<mime>[^)]+)\))?$/u);
+    if (!m?.groups?.ref) continue;
+    const ref = m.groups.ref.trim();
+    if (!ref) continue;
+    const mimeType = typeof m.groups.mime === 'string' ? m.groups.mime.trim() : undefined;
+    result.push({ ref, ...(mimeType ? { mimeType } : {}) });
+  }
+
+  // 宽松兜底：从全文抓取本地路径/URL（常见附件扩展名）
+  if (result.length === 0) {
+    const refPattern = /(?:file:\/\/)?(?:\/Users\/|\/home\/|[A-Za-z]:[\\/])[^\s"'`<>]+?\.(?:png|jpe?g|gif|webp|bmp|svg|pdf|docx?|xlsx?|pptx?|txt|md|csv|zip|rar|7z|mp3|wav|ogg|mp4|mov|avi|mkv)\b|https?:\/\/[^\s"'`<>]+?\.(?:png|jpe?g|gif|webp|bmp|svg|pdf|docx?|xlsx?|pptx?|txt|md|csv|zip|rar|7z|mp3|wav|ogg|mp4|mov|avi|mkv)\b/giu;
+    const refs = normalized.match(refPattern) ?? [];
+    for (const r of refs) {
+      const ref = r.trim();
+      if (!ref) continue;
+      result.push({ ref });
+    }
+  }
+
+  // 再兜底：识别“仅文件名”形式（例如附件列表里只有 xxx.pdf）
+  if (result.length === 0) {
+    const filenamePattern = /\b[^\s"'`<>|\\/]+?\.(?:png|jpe?g|gif|webp|bmp|svg|pdf|docx?|xlsx?|pptx?|txt|md|csv|zip|rar|7z|mp3|wav|ogg|mp4|mov|avi|mkv)\b/giu;
+    const refs = normalized.match(filenamePattern) ?? [];
+    for (const r of refs) {
+      const ref = r.trim();
+      if (!ref) continue;
+      result.push({ ref });
+    }
+  }
+
+  const dedup = new Set<string>();
+  const unique: Array<{ ref: string; mimeType?: string }> = [];
+  for (const item of result) {
+    const key = `${item.ref}::${item.mimeType ?? ''}`;
+    if (dedup.has(key)) continue;
+    dedup.add(key);
+    unique.push(item);
+  }
+  return unique;
+}
+
+function isResolvableAttachmentRef(ref: string): boolean {
+  if (!ref || ref.trim().length === 0) return false;
+  if (ref.startsWith('http://') || ref.startsWith('https://') || ref.startsWith('file://')) return true;
+  return /^(?:\/|[A-Za-z]:[\\/])/u.test(ref);
+}
+
 export function extractChannelAttachmentsFromContext(ctx: Record<string, unknown>): ChannelAttachment[] {
-  const mediaPaths = asStringArray(ctx.MediaPaths ?? ctx.MediaPath);
+  const mediaPaths = asStringArray(
+    ctx.MediaPaths
+    ?? ctx.MediaPath
+    ?? ctx.QQAttachmentPaths
+    ?? ctx.QQAttachmentPath
+    ?? ctx.QQVoiceAttachmentPaths
+    ?? ctx.QQVoiceAttachmentPath
+    ?? ctx.FilePaths
+    ?? ctx.FilePath
+  );
   const mediaUrls = asStringArray(
     ctx.MediaUrls
     ?? ctx.MediaUrl
     ?? ctx.QQAttachmentUrls
+    ?? ctx.QQAttachmentUrl
     ?? ctx.QQVoiceAttachmentUrls
     ?? ctx.QQVoiceAttachmentUrl
+    ?? ctx.FileUrls
+    ?? ctx.FileUrl
   );
   const mediaTypes = asStringArray(ctx.MediaTypes ?? ctx.MediaType);
 
-  const maxLen = Math.max(mediaPaths.length, mediaUrls.length);
+  // 容错：当上游字段名变化时，自动收集包含 attachment/file + path/url 的键。
+  const dynamicPaths: string[] = [];
+  const dynamicUrls: string[] = [];
+  for (const [key, raw] of Object.entries(ctx)) {
+    const lower = key.toLowerCase();
+    if ((lower.includes('attachment') || lower.includes('file')) && lower.includes('path')) {
+      dynamicPaths.push(...asStringArray(raw));
+      continue;
+    }
+    if ((lower.includes('attachment') || lower.includes('file')) && lower.includes('url')) {
+      dynamicUrls.push(...asStringArray(raw));
+    }
+  }
+
+  const mergedPaths = Array.from(new Set([...mediaPaths, ...dynamicPaths].filter((item) => item.length > 0)));
+  const mergedUrls = Array.from(new Set([...mediaUrls, ...dynamicUrls].filter((item) => item.length > 0)));
+
+  let fallbackMediaTypes: string[] = [];
+  if (mergedPaths.length === 0 && mergedUrls.length === 0) {
+    const bodyText = [
+      ctx.BodyForAgent,
+      ctx.CommandBody,
+      ctx.RawBody,
+      ctx.Body,
+    ].find((v) => typeof v === 'string' && v.trim().length > 0) as string | undefined;
+    if (typeof bodyText === 'string') {
+      const parsedRefs = parseAttachmentRefsFromBodyText(bodyText);
+      for (const item of parsedRefs) {
+        if (!isResolvableAttachmentRef(item.ref)) {
+          continue;
+        }
+        if (item.ref.startsWith('http://') || item.ref.startsWith('https://')) {
+          mergedUrls.push(item.ref);
+        } else {
+          mergedPaths.push(item.ref);
+        }
+        fallbackMediaTypes.push(item.mimeType ?? '');
+      }
+    }
+  }
+
+  const maxLen = Math.max(mergedPaths.length, mergedUrls.length);
   if (maxLen === 0) return [];
 
   const attachments: ChannelAttachment[] = [];
   for (let i = 0; i < maxLen; i += 1) {
-    const localPath = mediaPaths[i] ?? '';
-    const remoteUrl = mediaUrls[i] ?? '';
+    const localPath = mergedPaths[i] ?? '';
+    const remoteUrl = mergedUrls[i] ?? '';
     const ref = remoteUrl || localPath;
     if (!ref) continue;
 
-    const mediaType = mediaTypes[i] ?? mediaTypes[0] ?? '';
+    const mediaType = mediaTypes[i] ?? mediaTypes[0] ?? fallbackMediaTypes[i] ?? '';
     const type = guessAttachmentType(mediaType, ref);
     const filename = localPath
       ? path.basename(localPath)
@@ -398,13 +569,69 @@ export function createOpenClawRuntimeApi(params: {
                ?? ctx?.content
                ?? ''
            );
-           const attachments = extractChannelAttachmentsFromContext(ctx);
+           const bodyForAgent = String(ctx?.BodyForAgent ?? '');
+           const attachmentsFromContext = extractChannelAttachmentsFromContext(ctx);
+           const bodyRefs = parseAttachmentRefsFromBodyText(bodyForAgent);
+           const unresolvedBodyRefs = bodyRefs
+             .map((item) => item.ref.trim())
+             .filter((ref) => ref.length > 0 && !isResolvableAttachmentRef(ref));
+           const attachmentsFromBody = bodyRefs
+             .filter((item) => isResolvableAttachmentRef(item.ref.trim()))
+             .map((item, idx) => {
+               const ref = item.ref.trim();
+               const filename = (() => {
+                 try {
+                   if (ref.startsWith('http://') || ref.startsWith('https://')) {
+                     return path.basename(new URL(ref).pathname);
+                   }
+                 } catch {
+                   // ignore
+                 }
+                 const local = ref.replace(/^file:\/\//, '');
+                 return path.basename(local);
+               })();
+               const guessedType = guessAttachmentType(item.mimeType ?? '', ref);
+               return {
+                 id: `bodyforagent-${Date.now()}-${idx}`,
+                 type: guessedType,
+                 url: ref,
+                 ...(filename ? { filename, name: filename } : {}),
+                 ...(item.mimeType ? { mimeType: item.mimeType } : {}),
+                 source: 'openclaw',
+                 metadata: {
+                   fallback: 'BodyForAgent',
+                 },
+               } as ChannelAttachment;
+             });
+           const attachmentMap = new Map<string, ChannelAttachment>();
+           for (const att of [...attachmentsFromContext, ...attachmentsFromBody]) {
+             const key = `${att.type}:${String(att.url || '').trim()}`;
+             if (!key || key.endsWith(':')) continue;
+             if (!attachmentMap.has(key)) {
+               attachmentMap.set(key, att);
+             }
+           }
+           const attachments = Array.from(attachmentMap.values());
+           if (attachmentsFromBody.length > 0) {
+             logger.info?.(`[channel.reply] Recovered ${attachmentsFromBody.length} attachment(s) from BodyForAgent fallback`);
+           }
            const hasAttachments = attachments.length > 0;
            const content = rawContent.trim().length > 0
              ? rawContent
              : (hasAttachments
                ? `【附件消息】${attachments.map((a) => a.type).join(',')}`
-               : '');
+               : (unresolvedBodyRefs.length > 0
+                 ? `【附件解析提示】检测到附件名：${unresolvedBodyRefs.slice(0, 3).join(', ')}。当前未解析到可读路径，请提示用户重发附件或补充文本说明。`
+                 : '【系统提示】收到一条空消息（无文本且未识别到附件）。请提示用户重新发送。'));
+           const bodyForAgentPreview = bodyForAgent.replace(/\s+/g, ' ').slice(0, 180);
+           log.info('[channel.reply] Attachment extraction summary', {
+             rawContentLength: rawContent.length,
+             fromContext: attachmentsFromContext.length,
+             fromBody: attachmentsFromBody.length,
+             unresolvedBodyRefs: unresolvedBodyRefs.slice(0, 3),
+             finalAttachments: attachments.length,
+             bodyForAgentPreview,
+           });
            clog.log('[channel.reply] Extracted content:', content.slice(0, 100));
            const senderId = String(ctx?.SenderId ?? ctx?.senderId ?? '');
            const senderName = String(ctx?.SenderName ?? ctx?.senderName ?? '');
@@ -420,11 +647,6 @@ export function createOpenClawRuntimeApi(params: {
            );
 
            logger.info?.(`[channel.reply] dispatchReply called - content: "${content.slice(0, 50)}", senderId: ${senderId}, peerKind: ${peerKind}, attachments: ${attachments.length}`);
-
-            if (!content.trim() && !hasAttachments) {
-              logger.warn?.('[channel.reply] Empty content, skip dispatch');
-              return;
-            }
 
             // 立即回应“处理中”，避免阻塞导致超时
             const deliver = params.dispatcherOptions?.deliver;

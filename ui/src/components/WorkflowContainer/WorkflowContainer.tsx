@@ -210,6 +210,10 @@ export const WorkflowContainer: React.FC = () => {
     if (typeof window === 'undefined' || !window.localStorage) return { ...DEFAULT_UI_DISABLE };
     return readUiDisableState();
   });
+  const [contextMonitorCommand, setContextMonitorCommand] = useState<{
+    id: string;
+    action: 'focus_latest_round' | 'focus_latest_strategy_change' | 'step_compare_prev' | 'step_compare_next';
+  } | null>(null);
 
   const orchestratorSessionId = currentSession?.sessionTier === 'runtime'
     ? (currentSession.rootSessionId || currentSession.parentSessionId || (sessions.length > 0 ? sessions[0].id : 'default-session'))
@@ -680,6 +684,14 @@ export const WorkflowContainer: React.FC = () => {
     error: agentPanelError,
   }, panelFreeze.bottom);
   const systemMonitor = useSystemMonitor();
+  const handleContextCommand = useCallback((
+    action: 'focus_latest_round' | 'focus_latest_strategy_change' | 'step_compare_prev' | 'step_compare_next',
+  ) => {
+    setContextMonitorCommand({
+      id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      action,
+    });
+  }, []);
 
   const canvasElement = useMemo(() => {
     // 去重：每个 projectPath 只显示一个窗口
@@ -722,7 +734,11 @@ export const WorkflowContainer: React.FC = () => {
     const secondaryProject = monitorPanels[1];
     return (
       <div className="canvas-shell">
-        <PerformanceCard paused={panelFreeze.performance || uiDisable.performance} />
+        <PerformanceCard
+          paused={panelFreeze.performance || uiDisable.performance}
+          runtimeOverview={systemAgentExecution.runtimeOverview}
+          onContextAction={handleContextCommand}
+        />
         <div className="canvas-body">
           <div className="session-grid-2x2">
             <div className="session-grid-cell">
@@ -772,6 +788,7 @@ export const WorkflowContainer: React.FC = () => {
                 sessionId={systemAgentSessionId}
                 label="Context Builder Monitor"
                 liveUpdatesEnabled={monitorLiveUpdatesEnabled}
+                externalCommand={contextMonitorCommand}
               />
             </div>
           </div>

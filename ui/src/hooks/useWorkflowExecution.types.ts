@@ -96,6 +96,18 @@ export interface RuntimeOverview {
   contextTokensInWindow?: number;
   contextMaxInputTokens?: number;
   contextThresholdPercent?: number;
+  contextHistoryItemsCount?: number;
+  contextRound?: number;
+  contextHistoryDelta?: number;
+  contextTokensDelta?: number;
+  contextUsageDelta?: number;
+  contextHistorySource?: string;
+  contextBuilderBypassed?: boolean;
+  contextBuilderBypassReason?: string;
+  contextBuilderRebuilt?: boolean;
+  contextStrategyLabel?: string;
+  contextStrategyChanged?: boolean;
+  contextPrevStrategyLabel?: string;
   ledgerFocusMaxChars: number;
   lastLedgerInsertChars?: number;
   compactCount: number;

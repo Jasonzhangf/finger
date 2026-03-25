@@ -195,7 +195,7 @@ describe('channel-bridge-hub-route user.ask async adaptation', () => {
     }));
   });
 
-  it('injects multimodal hint with no-guess fallback into prompt and persists attachment summary', async () => {
+  it('passes image inputItems to metadata and persists attachment summary', async () => {
     getChannelContextManager().updateContext('qqbot', 'business', 'finger-project-agent');
     const askManager = new AskManager(5_000);
     const sendMessage = vi.fn().mockResolvedValue({ messageId: 'reply-4' });
@@ -256,7 +256,7 @@ describe('channel-bridge-hub-route user.ask async adaptation', () => {
     expect(directSendToModule).toHaveBeenCalledWith(
       'finger-system-agent',
       expect.objectContaining({
-        prompt: expect.stringContaining('若模型反馈看不到图片'),
+        prompt: '请结合图片分析',
         metadata: expect.objectContaining({
           inputItems: [
             expect.objectContaining({
@@ -278,7 +278,7 @@ describe('channel-bridge-hub-route user.ask async adaptation', () => {
     });
   });
 
-  it('injects local image path for view_image fallback when attachment is local file', async () => {
+  it('converts local image attachment to data-url image inputItem', async () => {
     const localImagePath = `/tmp/fake-image-${Date.now()}.png`;
     writeFileSync(localImagePath, 'fake-image');
     try {
@@ -342,12 +342,12 @@ describe('channel-bridge-hub-route user.ask async adaptation', () => {
       expect(directSendToModule).toHaveBeenCalledWith(
         'finger-system-agent',
         expect.objectContaining({
-          prompt: expect.stringContaining(localImagePath),
+          prompt: '看这张图',
           metadata: expect.objectContaining({
             inputItems: [
               expect.objectContaining({
-                type: 'local_image',
-                path: localImagePath,
+                type: 'image',
+                image_url: expect.stringMatching(/^data:image\/png;base64,/),
               }),
             ],
           }),
@@ -356,5 +356,70 @@ describe('channel-bridge-hub-route user.ask async adaptation', () => {
     } finally {
       rmSync(localImagePath, { force: true });
     }
+  });
+
+  it('injects missing-attachment notice and suppresses kernelApiHistory for media-like prompt without attachment', async () => {
+    getChannelContextManager().updateContext('qqbot', 'business', 'finger-project-agent');
+    const askManager = new AskManager(5_000);
+    const sendMessage = vi.fn().mockResolvedValue({ messageId: 'reply-6' });
+    const addMessage = vi.fn().mockResolvedValue(undefined);
+    const ensureSession = vi.fn();
+    const updateContext = vi.fn();
+    const getSession = vi.fn().mockReturnValue({
+      id: 'system-session-6',
+      context: {},
+    });
+    const getOrCreateSystemSession = vi.fn().mockReturnValue({ id: 'system-session-6' });
+    const dispatchTaskToAgent = vi.fn();
+    const directSendToModule = vi.fn().mockResolvedValue({
+      success: true,
+      response: 'ok',
+    });
+
+    const route = createChannelBridgeHubRoute({
+      channelBridgeManager: {
+        sendMessage,
+      } as any,
+      sessionManager: {
+        ensureSession,
+        updateContext,
+        getSession,
+        getOrCreateSystemSession,
+        addMessage,
+        getMessages: vi.fn().mockReturnValue([
+          { role: 'user', content: 'old context' },
+          { role: 'assistant', content: 'old answer' },
+        ]),
+      } as any,
+      askManager,
+      dispatchTaskToAgent,
+      directSendToModule,
+      eventBus: new UnifiedEventBus(),
+      runtime: {},
+    });
+
+    await route({
+      payload: {
+        id: 'msg-6',
+        channelId: 'qqbot',
+        accountId: 'acc-1',
+        type: 'direct',
+        senderId: 'user-1',
+        senderName: 'User 1',
+        content: '帮我描述这张图片内容',
+        timestamp: Date.now(),
+        metadata: {},
+      },
+    });
+
+    expect(directSendToModule).toHaveBeenCalledWith(
+      'finger-system-agent',
+      expect.objectContaining({
+        prompt: expect.stringContaining('当前这条消息未携带附件'),
+        metadata: expect.not.objectContaining({
+          kernelApiHistory: expect.anything(),
+        }),
+      }),
+    );
   });
 });

@@ -747,6 +747,10 @@ export function createChatCodexModule(
       );
       const toolSpecificationsForTurn = toolSpecifications;
       const mode = parseOptionalString(context?.metadata?.kernelMode) ?? parseOptionalString(context?.metadata?.mode) ?? 'main';
+      const contextHistorySource = parseOptionalString(context?.metadata?.contextHistorySource);
+      const contextBuilderBypassed = parseOptionalBoolean(context?.metadata?.contextBuilderBypassed);
+      const contextBuilderBypassReason = parseOptionalString(context?.metadata?.contextBuilderBypassReason);
+      const contextBuilderRebuilt = parseOptionalBoolean(context?.metadata?.contextBuilderRebuilt);
       const reviewMeta = isRecord(context?.metadata?.review) ? context.metadata.review : undefined;
       const reviewIteration = parseOptionalNumber(reviewMeta?.iteration);
       const reviewPhase = parseOptionalString(reviewMeta?.phase);
@@ -790,6 +794,10 @@ export function createChatCodexModule(
           inputTypes: normalizedInputItems.map((item) => item.type),
           toolCount: toolSpecificationsForTurn.length,
           mode,
+          ...(contextHistorySource ? { contextHistorySource } : {}),
+          ...(contextBuilderBypassed !== undefined ? { contextBuilderBypassed } : {}),
+          ...(contextBuilderBypassReason ? { contextBuilderBypassReason } : {}),
+          ...(contextBuilderRebuilt !== undefined ? { contextBuilderRebuilt } : {}),
           ...(reviewPhase ? { reviewPhase } : {}),
           ...(typeof reviewIteration === 'number' ? { reviewIteration } : {}),
         },
@@ -1939,8 +1947,9 @@ function resolveHistoryItems(
   history: Array<{ role: 'user' | 'assistant' | 'system'; content: string }> | undefined,
   metadata: Record<string, unknown> | undefined,
 ): Array<Record<string, unknown>> {
+  const hasMediaInput = hasMediaInputItemsInMetadata(metadata);
   const fromMetadata = metadata?.kernelApiHistory;
-  if (Array.isArray(fromMetadata)) {
+  if (!hasMediaInput && Array.isArray(fromMetadata)) {
     const normalized = fromMetadata.filter((item): item is Record<string, unknown> => isRecord(item));
     if (normalized.length > 0) return normalized;
   }
@@ -1957,6 +1966,16 @@ function resolveHistoryItems(
         },
       ],
     }));
+}
+
+function hasMediaInputItemsInMetadata(metadata: Record<string, unknown> | undefined): boolean {
+  if (!metadata) return false;
+  const raw = metadata.inputItems;
+  if (!Array.isArray(raw)) return false;
+  return raw.some((item) => {
+    if (!isRecord(item) || typeof item.type !== 'string') return false;
+    return item.type === 'image' || item.type === 'local_image';
+  });
 }
 
 function resolveDeveloperInstructions(

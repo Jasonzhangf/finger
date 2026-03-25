@@ -512,6 +512,7 @@ impl ResponsesChatEngine {
         for call in function_calls {
             let runtime_tool_name = resolve_runtime_tool_name(&call.name, tool_bindings);
             let tool_input_snapshot = parse_function_arguments(&call.arguments);
+            let mut view_image_local_path: Option<String> = None;
             let tool_call_seq = next_progress_seq(progress_seq);
             emit_progress_event(
                 progress_tx,
@@ -544,6 +545,9 @@ impl ResponsesChatEngine {
                 .await
             {
                 Ok(result) => {
+                    if runtime_tool_name == "view_image" {
+                        view_image_local_path = extract_view_image_local_path(&result);
+                    }
                     let duration_ms = started_at.elapsed().as_millis() as u64;
                     let tool_result_seq = next_progress_seq(progress_seq);
                     emit_progress_event(
@@ -635,6 +639,22 @@ impl ResponsesChatEngine {
                 "call_id": call.call_id,
                 "output": output_payload.to_string(),
             }));
+
+            if runtime_tool_name == "view_image" {
+                if let Some(local_path) = view_image_local_path.as_deref() {
+                    if let Ok(image_url) = to_data_url_from_local_image(local_path) {
+                        output_items.push(json!({
+                            "role": "user",
+                            "content": [
+                                {
+                                    "type": "input_image",
+                                    "image_url": image_url,
+                                }
+                            ],
+                        }));
+                    }
+                }
+            }
         }
 
         ToolExecutionBatch {
@@ -834,6 +854,18 @@ struct TurnCompletion {
 struct ToolExecutionBatch {
     output_items: Vec<Value>,
     traces: Vec<Value>,
+}
+
+fn extract_view_image_local_path(result: &Value) -> Option<String> {
+    let ok = result.get("ok").and_then(Value::as_bool).unwrap_or(false);
+    if !ok {
+        return None;
+    }
+    let path = result.get("path").and_then(Value::as_str).map(str::trim)?;
+    if path.is_empty() {
+        return None;
+    }
+    Some(path.to_string())
 }
 
 fn emit_progress_event(progress_tx: Option<&UnboundedSender<EventMsg>>, event: EventMsg) {

@@ -32,6 +32,63 @@ export interface LegacyAliasOptions {
   legacyAllowedTools: string[];
 }
 
+function hasMediaInputInMessage(message: { metadata?: Record<string, unknown> } | null | undefined): boolean {
+  if (!message?.metadata || typeof message.metadata !== 'object') return false;
+  const inputItems = (message.metadata as Record<string, unknown>).inputItems;
+  if (!Array.isArray(inputItems)) return false;
+  return inputItems.some((item) => {
+    if (!item || typeof item !== 'object') return false;
+    const type = (item as { type?: unknown }).type;
+    return type === 'image' || type === 'local_image';
+  });
+}
+
+function resolveLatestUserPrompt(
+  messages: Array<{ role: string; content: string }> | undefined,
+): string | undefined {
+  if (!Array.isArray(messages) || messages.length === 0) return undefined;
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const item = messages[index];
+    if (item.role !== 'user') continue;
+    const text = typeof item.content === 'string' ? item.content.trim() : '';
+    if (text.length > 0) return text;
+  }
+  return undefined;
+}
+
+function mapRawSessionMessages(
+  messages: Array<{
+    id?: string;
+    role: string;
+    content: string;
+    timestamp?: string;
+    metadata?: Record<string, unknown>;
+  }>,
+  limit: number,
+  extraMetadata?: Record<string, unknown>,
+): Array<{
+  id: string;
+  role: 'user' | 'assistant' | 'system';
+  content: string;
+  timestamp: string;
+  metadata?: Record<string, unknown>;
+}> {
+  const sliced = Number.isFinite(limit) && limit > 0
+    ? messages.slice(-limit)
+    : messages;
+  return sliced
+    .filter((item) => typeof item.content === 'string' && item.content.trim().length > 0)
+    .map((item, index) => ({
+      id: item.id ?? `raw-${Date.now()}-${index}`,
+      role: item.role === 'assistant' || item.role === 'system' ? item.role : 'user',
+      content: item.content,
+      timestamp: item.timestamp ?? new Date().toISOString(),
+      ...((item.metadata && typeof item.metadata === 'object') || (extraMetadata && typeof extraMetadata === 'object')
+        ? { metadata: { ...(item.metadata ?? {}), ...(extraMetadata ?? {}) } }
+        : {}),
+    }));
+}
+
 export async function registerFingerRoleModules(
   deps: RegisterFingerRoleModulesDeps,
   roles: FingerRoleSpec[],
@@ -99,11 +156,43 @@ export async function registerFingerRoleModules(
       const settings = loadContextBuilderSettings();
       if (!settings.enabled) {
         // Disabled => signal fallback to traditional in-memory history path
+        logger.module('finger-role-modules').info('Context builder disabled, fallback to session history', {
+          roleId: role.id,
+          sessionId,
+        });
         return null;
       }
 
       const session = runtime.getSession(sessionId);
       if (!session) return [];
+      const sessionMessages = Array.isArray((session as { messages?: unknown }).messages)
+        ? ((session as { messages?: Array<{
+          id?: string;
+          role: string;
+          content: string;
+          timestamp?: string;
+          metadata?: Record<string, unknown>;
+        }> }).messages ?? [])
+        : [];
+
+      const latestMessage = sessionMessages.length > 0 ? sessionMessages[sessionMessages.length - 1] : null;
+      const hasMediaInput = hasMediaInputInMessage(latestMessage);
+      if (hasMediaInput) {
+        // Media turn: keep raw session order, do not rewrite context via context builder.
+        const mapped = mapRawSessionMessages(sessionMessages, limit, {
+          contextBuilderHistorySource: 'raw_session',
+          contextBuilderBypassed: true,
+          contextBuilderBypassReason: 'media_turn',
+          contextBuilderRebuilt: false,
+        });
+        logger.module('finger-role-modules').info('Context builder bypassed for media turn', {
+          roleId: role.id,
+          sessionId,
+          rawMessageCount: sessionMessages.length,
+          selectedCount: mapped.length,
+        });
+        return mapped;
+      }
 
       const sessionContext = (session.context ?? {}) as Record<string, unknown>;
       const agentId = typeof sessionContext.ownerAgentId === 'string' && sessionContext.ownerAgentId.trim().length > 0
@@ -114,7 +203,13 @@ export async function registerFingerRoleModules(
         : undefined;
 
       const built = await buildContext(
-        { rootDir, sessionId, agentId, mode: 'main' },
+        {
+          rootDir,
+          sessionId,
+          agentId,
+          mode: 'main',
+          currentPrompt: resolveLatestUserPrompt(sessionMessages),
+        },
         {
           targetBudget: 1_000_000,
           buildMode: settings.mode,
@@ -134,7 +229,7 @@ export async function registerFingerRoleModules(
         ? built.messages.slice(-limit)
         : built.messages;
 
-      return sliced.map((m) => ({
+      const mapped = sliced.map((m) => ({
         id: m.messageId || m.id,
         role: m.role === 'orchestrator' ? 'assistant' as const : m.role,
         content: m.content,
@@ -143,8 +238,18 @@ export async function registerFingerRoleModules(
           ...(m.metadata ?? {}),
           ...(m.attachments ? { attachments: m.attachments } : {}),
           ...(m.messageId ? { messageId: m.messageId } : {}),
+          contextBuilderHistorySource: 'context_builder',
+          contextBuilderBypassed: false,
+          contextBuilderRebuilt: true,
         },
       }));
+      logger.module('finger-role-modules').info('Context builder rebuilt session history', {
+        roleId: role.id,
+        sessionId,
+        selectedCount: mapped.length,
+        mode: settings.mode,
+      });
+      return mapped;
     };
 
     const roleModule = createFingerGeneralModule({

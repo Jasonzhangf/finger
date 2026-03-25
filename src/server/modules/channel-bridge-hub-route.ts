@@ -4,9 +4,11 @@
  * 提供统一的 MessageHub 路由逻辑，用于 dynamic channel routing。
  */
 
-import type { ChannelMessage } from '../../bridges/types.js';
+import type { ChannelAttachment, ChannelMessage } from '../../bridges/types.js';
 import type { AgentDispatchRequest } from './agent-runtime/types.js';
 import { existsSync } from 'node:fs';
+import { readFileSync } from 'node:fs';
+import { extname } from 'node:path';
 import type { ChannelBridgeManager } from '../../bridges/manager.js';
 import type { AskManager } from '../../orchestration/ask/ask-manager.js';
 import type { SessionManager } from '../../orchestration/session-manager.js';
@@ -72,7 +74,10 @@ function toKernelInputItemsFromAttachments(message: ChannelMessage): Array<Recor
         })()
       : rawUrl;
     if (existsSync(localPath)) {
-      items.push({ type: 'local_image', path: localPath });
+      const dataUrl = toImageDataUrl(localPath);
+      if (dataUrl) {
+        items.push({ type: 'image', image_url: dataUrl });
+      }
       continue;
     }
 
@@ -83,48 +88,65 @@ function toKernelInputItemsFromAttachments(message: ChannelMessage): Array<Recor
   return items;
 }
 
+const IMAGE_MIME_BY_EXT: Record<string, string> = {
+  '.png': 'image/png',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.gif': 'image/gif',
+  '.webp': 'image/webp',
+  '.bmp': 'image/bmp',
+  '.svg': 'image/svg+xml',
+  '.heic': 'image/heic',
+  '.heif': 'image/heif',
+};
+
+function toImageDataUrl(localPath: string): string | null {
+  try {
+    const bytes = readFileSync(localPath);
+    const mime = IMAGE_MIME_BY_EXT[extname(localPath).toLowerCase()] ?? 'application/octet-stream';
+    if (!mime.startsWith('image/')) return null;
+    return `data:${mime};base64,${bytes.toString('base64')}`;
+  } catch {
+    return null;
+  }
+}
+
 function sanitizePromptForInjectedImages(content: string): string {
   if (!content || content.trim().length === 0) return content;
   const localImagePathPattern = /(?:file:\/\/)?(?:\/Users\/|\/home\/|[A-Za-z]:[\\/])[^\s<>"']+\.(?:png|jpe?g|gif|webp|bmp|svg|tiff?)/gi;
   return content.replace(localImagePathPattern, '[local-image]');
 }
 
-function extractLocalImagePathsFromKernelItems(items: Array<Record<string, unknown>>): string[] {
-  const result: string[] = [];
-  for (const item of items) {
-    if (!item || typeof item !== 'object') continue;
-    if (item.type !== 'local_image') continue;
-    if (typeof item.path !== 'string') continue;
-    const trimmed = item.path.trim();
-    if (trimmed.length === 0) continue;
-    result.push(trimmed);
-  }
-  return result;
+function isAttachmentMarkerText(content: string): boolean {
+  return /^【附件消息】/u.test((content || '').trim());
 }
 
-function withInjectedImageHint(content: string, localImagePaths: string[] = []): string {
-  const dedupedPaths = Array.from(new Set(localImagePaths.filter((path) => typeof path === 'string' && path.trim().length > 0)));
-  const hintLines = [
-    '【图像输入说明】图片已作为 input_image 注入本轮上下文，请先直接识别图片内容。',
-    dedupedPaths.length > 0
-      ? '本轮包含本地图片路径，必须先调用 view_image 查看后再回答，禁止猜测。'
-      : '若模型反馈看不到图片（例如出现 [Image omitted]）或无法确认，请立即调用 view_image 查看本地图片后再回答，禁止猜测。',
-    ...(dedupedPaths.length > 0
-      ? [
-          '可用本地图片路径：',
-          ...dedupedPaths.map((path) => `- ${path}`),
-        ]
-      : []),
-  ];
-  const hint = hintLines.join('\n');
-  if (!content || content.trim().length === 0) return hint;
-  if (content.includes('【图像输入说明】')) {
-    if (content.includes('若模型反馈看不到图片') && dedupedPaths.every((path) => content.includes(path))) {
-      return content;
-    }
-    return `${content}\n\n${hint}`;
+function buildNonImageAttachmentPrompt(attachments: ChannelAttachment[]): string {
+  const lines = ['我刚发送了附件，请先读取附件内容再回答。', '附件列表：'];
+  const maxItems = Math.min(attachments.length, 6);
+  for (let i = 0; i < maxItems; i += 1) {
+    const att = attachments[i];
+    const type = typeof att.type === 'string' ? att.type : 'file';
+    const name = typeof att.name === 'string'
+      ? att.name
+      : (typeof att.filename === 'string' ? att.filename : '');
+    const url = typeof att.url === 'string' ? att.url.trim() : '';
+    const displayName = name || (url ? url.split('/').pop() || 'attachment' : `attachment-${i + 1}`);
+    // 非图片附件允许带本地路径/URL，便于 agent 读取文件；图片附件不走这条路径。
+    lines.push(`- [${type}] ${displayName}${url ? ` | ${url}` : ''}`);
   }
-  return `${content}\n\n${hint}`;
+  if (attachments.length > maxItems) {
+    lines.push(`- ... 另外 ${attachments.length - maxItems} 个附件`);
+  }
+  return lines.join('\n');
+}
+
+function looksLikeCurrentTurnMediaRequest(content: string): boolean {
+  const text = (content || '').trim().toLowerCase();
+  if (!text) return false;
+  const zh = /(图片|图像|照片|截图|识图|看图|附件|文档|pdf|文件)/u;
+  const en = /\b(image|picture|photo|screenshot|attachment|file|pdf|document)\b/u;
+  return zh.test(text) || en.test(text);
 }
 
 function isDuplicateMessage(msgId: string): boolean {
@@ -325,13 +347,14 @@ export function createChannelBridgeHubRoute(deps: ChannelBridgeHubRouteDeps) {
     // 解析命令时剥离 marker，传递给 agent 的内容不包含 <##...##>
     const cleanContent = parsed.effectiveContent || channelMsg.content;
 
-    // 处理附件（图片等）：构建真实图片 inputItems，禁止 mock 路径描述
+    // 处理附件（图片等）：图片走 inputItems；非图片附件提供最小可读提示
     let enrichedContent = cleanContent;
     let kernelInputItems: Array<Record<string, unknown>> = [];
-    if (channelMsg.attachments && Array.isArray(channelMsg.attachments) && channelMsg.attachments.length > 0) {
-      const imageAttachments = channelMsg.attachments.filter(
-        (a: any) => a.type === 'image' && a.url
-      );
+    const channelAttachments = Array.isArray(channelMsg.attachments) ? channelMsg.attachments : [];
+    let missingCurrentMediaAttachment = false;
+    if (channelAttachments.length > 0) {
+      const imageAttachments = channelAttachments.filter((a: any) => a.type === 'image' && a.url);
+      const nonImageAttachments = channelAttachments.filter((a: any) => a.type !== 'image' && a.url);
       if (imageAttachments.length > 0) {
         kernelInputItems = toKernelInputItemsFromAttachments(channelMsg);
         log.info('Message contains image attachments', {
@@ -342,15 +365,27 @@ export function createChannelBridgeHubRoute(deps: ChannelBridgeHubRouteDeps) {
         if (kernelInputItems.length > 0) {
           enrichedContent = sanitizePromptForInjectedImages(enrichedContent);
         }
-        // 避免把本地路径注入 prompt；仅保留用户文本或最小提示
-        if (!enrichedContent || enrichedContent.trim().length === 0 || enrichedContent.trim() === '【附件消息】image') {
-          enrichedContent = '请查看我发送的图片并回答。';
-        }
-        if (kernelInputItems.length > 0) {
-          const localImagePaths = extractLocalImagePathsFromKernelItems(kernelInputItems);
-          enrichedContent = withInjectedImageHint(enrichedContent, localImagePaths);
+        // 媒体轮只保留用户文本本身，不注入本地路径/额外流程提示。
+        if (!enrichedContent || enrichedContent.trim().length === 0 || isAttachmentMarkerText(enrichedContent)) {
+          enrichedContent = '请描述这张图片的内容。';
         }
       }
+      if (nonImageAttachments.length > 0 && (!enrichedContent || enrichedContent.trim().length === 0 || isAttachmentMarkerText(enrichedContent))) {
+        enrichedContent = buildNonImageAttachmentPrompt(nonImageAttachments);
+      }
+    } else if (looksLikeCurrentTurnMediaRequest(enrichedContent)) {
+      missingCurrentMediaAttachment = true;
+      enrichedContent = [
+        '【附件状态】当前这条消息未携带附件。',
+        '请不要基于历史图片/文件作答；如需识别附件，请先提示用户重新发送当前附件。',
+        '',
+        enrichedContent,
+      ].join('\n');
+      log.warn('Current turn looks like media request but has no attachments', {
+        channelId: channelMsg.channelId,
+        messageId: channelMsg.id,
+        senderId: channelMsg.senderId,
+      });
     }
 
     // Check channel policy
@@ -414,7 +449,9 @@ export function createChannelBridgeHubRoute(deps: ChannelBridgeHubRouteDeps) {
         type: channelMsg.type,
         contextLedgerRootDir,
         ...(kernelInputItems.length > 0 ? { inputItems: kernelInputItems } : {}),
-        ...(kernelApiHistory.length > 0 ? { kernelApiHistory } : {}),
+        ...(channelAttachments.length > 0 ? { attachments: channelAttachments } : {}),
+        // 附件轮（含图片/文件）或“当前轮疑似媒体请求但无附件”场景，禁止注入旧 kernelApiHistory，避免沿用上一轮内容。
+        ...(channelAttachments.length === 0 && !missingCurrentMediaAttachment && kernelApiHistory.length > 0 ? { kernelApiHistory } : {}),
       };
 
       if (kernelInputItems.length > 0) {

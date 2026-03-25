@@ -61,6 +61,49 @@ describe('KernelAgentBase session binding', () => {
     expect(contexts[0]?.history.length).toBe(0);
   });
 
+  it('propagates context-builder routing metadata from provided history to runner metadata', async () => {
+    const contexts: KernelRunContext[] = [];
+    const runner: KernelAgentRunner = {
+      runTurn: vi.fn(async (_text: string, _inputItems?: KernelInputItem[], context?: KernelRunContext) => {
+        if (context) contexts.push(context);
+        return { reply: 'ok' };
+      }),
+    };
+    const agent = new KernelAgentBase(
+      {
+        moduleId: 'chat-codex',
+        provider: 'codex',
+        maxContextMessages: 20,
+        contextHistoryProvider: async () => [
+          {
+            role: 'user',
+            content: '历史消息',
+            metadata: {
+              contextBuilderHistorySource: 'raw_session',
+              contextBuilderBypassed: true,
+              contextBuilderBypassReason: 'media_turn',
+              contextBuilderRebuilt: false,
+            },
+          },
+        ],
+      },
+      runner,
+    );
+
+    await agent.handle({
+      text: '当前输入',
+      sessionId: 'ui-session-context-meta-1',
+    });
+
+    expect(contexts).toHaveLength(1);
+    expect(contexts[0]?.metadata).toMatchObject({
+      contextHistorySource: 'raw_session',
+      contextBuilderBypassed: true,
+      contextBuilderBypassReason: 'media_turn',
+      contextBuilderRebuilt: false,
+    });
+  });
+
   it('ignores inline review loop and returns main-thread reply directly', async () => {
     const contexts: KernelRunContext[] = [];
     let mainTurns = 0;
