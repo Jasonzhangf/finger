@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { useWebSocket } from '../../hooks/useWebSocket.js';
 import type { WsMessage } from '../../api/types.js';
 import './ContextMonitor.css';
@@ -170,6 +171,7 @@ export const ContextMonitor: React.FC<ContextMonitorProps> = ({
   const [data, setData] = useState<ContextMonitorResponse | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [expanded, setExpanded] = useState(false);
   const [selectedRoundId, setSelectedRoundId] = useState<string | null>(null);
   const [detail, setDetail] = useState<{ title: string; content: string; meta?: string } | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
@@ -240,6 +242,19 @@ export const ContextMonitor: React.FC<ContextMonitorProps> = ({
       }
     };
   }, []);
+
+  useEffect(() => {
+    if (!expanded) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        setExpanded(false);
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => {
+      window.removeEventListener('keydown', onKeyDown);
+    };
+  }, [expanded]);
 
   const handleWsMessage = useCallback((msg: WsMessage) => {
     if (!liveUpdatesEnabled) return;
@@ -321,10 +336,34 @@ export const ContextMonitor: React.FC<ContextMonitorProps> = ({
   const selectedContextCount = selectedRound?.contextMessages.length ?? 0;
   const selectedLedgerCount = selectedSlots.size;
 
-  return (
-    <div className="context-monitor-card">
+  const renderMonitorCard = (options?: { expandedView?: boolean }) => (
+    <div className={`context-monitor-card${options?.expandedView ? ' context-monitor-card-expanded' : ''}`}>
       <div className="context-monitor-header">
-        <div className="context-monitor-title">{label}</div>
+        <div className="context-monitor-title-row">
+          <div className="context-monitor-title">{label}</div>
+          <div className="context-monitor-actions">
+            {!options?.expandedView && (
+              <button
+                type="button"
+                className="context-monitor-expand-btn"
+                onClick={() => { setExpanded(true); }}
+                title="展开为大视图"
+              >
+                展开
+              </button>
+            )}
+            {options?.expandedView && (
+              <button
+                type="button"
+                className="context-monitor-expand-btn close"
+                onClick={() => { setExpanded(false); }}
+                title="关闭大视图"
+              >
+                关闭
+              </button>
+            )}
+          </div>
+        </div>
         <div className="context-monitor-meta">
           <span>session: {sessionId || '—'}</span>
           <span>rounds: {sortedRounds.length}</span>
@@ -471,6 +510,20 @@ export const ContextMonitor: React.FC<ContextMonitorProps> = ({
         )}
       </div>
     </div>
+  );
+
+  return (
+    <>
+      {renderMonitorCard()}
+      {expanded && typeof document !== 'undefined' && createPortal(
+        <div className="context-monitor-overlay" onClick={() => { setExpanded(false); }}>
+          <div className="context-monitor-modal" onClick={(event) => { event.stopPropagation(); }}>
+            {renderMonitorCard({ expandedView: true })}
+          </div>
+        </div>,
+        document.body,
+      )}
+    </>
   );
 };
 

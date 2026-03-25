@@ -15,10 +15,43 @@
   gap: 4px;
 }
 
+.context-monitor-title-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
 .context-monitor-title {
   font-size: 12px;
   font-weight: 600;
   color: #dbeafe;
+}
+
+.context-monitor-actions {
+  display: flex;
+  align-items: center;
+}
+
+.context-monitor-expand-btn {
+  border: 1px solid rgba(59, 130, 246, 0.45);
+  background: rgba(30, 58, 138, 0.2);
+  color: #93c5fd;
+  border-radius: 4px;
+  font-size: 10px;
+  line-height: 1.1;
+  padding: 2px 8px;
+  cursor: pointer;
+}
+
+.context-monitor-expand-btn:hover {
+  border-color: rgba(147, 197, 253, 0.85);
+}
+
+.context-monitor-expand-btn.close {
+  border-color: rgba(239, 68, 68, 0.4);
+  background: rgba(127, 29, 29, 0.22);
+  color: #fda4af;
 }
 
 .context-monitor-meta {
@@ -349,4 +382,29 @@
   border-radius: 3px;
   font-size: 10px;
   font-weight: 500;
+}
+
+.context-monitor-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 10030;
+  background: rgba(2, 6, 23, 0.72);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+}
+
+.context-monitor-modal {
+  width: min(96vw, 1800px);
+  height: min(92vh, 1200px);
+  border: 1px solid rgba(51, 65, 85, 0.92);
+  border-radius: 8px;
+  overflow: hidden;
+  background: rgba(15, 23, 42, 0.98);
+  box-shadow: 0 22px 64px rgba(2, 6, 23, 0.7);
+}
+
+.context-monitor-card-expanded {
+  height: 100%;
 }

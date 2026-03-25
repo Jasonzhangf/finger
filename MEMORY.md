@@ -345,3 +345,5 @@ Tags: permission, reject-config, codex-alignment
   Tags: context-builder, mode, dryrun, moderate, ui-settings, user-settings, api
 - [2026-03-24] Context Monitor 调整为“只观测”面板：移除面板内 CB 开关/模式下拉/ranking 下拉（避免和 Settings 双入口冲突），配置入口统一在 LeftSidebar → Settings。Context Monitor 仅展示 build 元数据（mode/ranking/history-only）与 round 对照；通过 websocket 订阅触发刷新。  
   Tags: context-monitor, ui, observer-only, settings, context-builder
+- [2026-03-25] Context Monitor 新增“展开大视图”能力：小卡片右上角 `展开` 按钮可打开全屏 overlay，完整显示 Round 列表 / Selected Context / Ledger 对照 / 详情四区；支持遮罩点击与 `Esc` 关闭。该能力只影响 UI 展示层，不改变 context builder 逻辑与数据源。  
+  Tags: context-monitor, ui, modal, overlay, esc, observability
