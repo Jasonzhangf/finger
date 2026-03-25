@@ -292,6 +292,8 @@ describe('context-ledger-memory', () => {
     expect(preview.selected_total).toBe(2);
     expect(preview.selected_slots[0]?.slot).toBe(1);
     expect(preview.selected_slots[1]?.slot).toBe(2);
+    expect(preview.confirmation_phrase).toContain('CONFIRM_DELETE_SLOTS:');
+    expect(preview.intent_id).toBeTruthy();
 
     const query = await executeContextLedgerMemory({
       action: 'query',
@@ -332,13 +334,18 @@ describe('context-ledger-memory', () => {
     }
     expect(denied.preview_only).toBe(true);
     expect(denied.deleted_count).toBe(0);
+    const confirmPhrase = denied.confirmation_phrase;
+    const intentId = denied.intent_id;
+    expect(confirmPhrase).toContain('CONFIRM_DELETE_SLOTS:');
+    expect(intentId).toBeTruthy();
 
     const confirmed = await executeContextLedgerMemory({
       action: 'delete_slots',
       slot_ids: [1],
+      intent_id: intentId,
       confirm: true,
       user_authorized: true,
-      user_confirmation: 'CONFIRM_DELETE_SLOTS',
+      user_confirmation: confirmPhrase,
       reason: 'user approved delete',
       _runtime_context: {
         root_dir: setup.rootDir,

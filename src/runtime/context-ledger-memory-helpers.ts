@@ -56,6 +56,7 @@ export function parseInput(rawInput: unknown): ContextLedgerMemoryInput {
     user_confirmation: valueAsString(rawInput.user_confirmation),
     reason: valueAsString(rawInput.reason),
     user_authorized: rawInput.user_authorized === true,
+    intent_id: valueAsString(rawInput.intent_id),
     replacement_history: Array.isArray(rawInput.replacement_history)
       ? rawInput.replacement_history.filter((item): item is Record<string, unknown> => isRecord(item))
       : undefined,

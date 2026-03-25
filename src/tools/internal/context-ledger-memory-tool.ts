@@ -39,6 +39,7 @@ interface ContextLedgerMemoryToolInput {
   user_confirmation?: string;
   reason?: string;
   user_authorized?: boolean;
+  intent_id?: string;
   replacement_history?: Array<Record<string, unknown>>;
   _runtime_context?: Record<string, unknown>;
 }
@@ -90,9 +91,10 @@ export const contextLedgerMemoryTool: InternalTool<unknown, ContextLedgerMemoryT
       slot_ids: { type: 'array', items: { type: 'number' }, description: 'For delete_slots: 1-based slot numbers to delete' },
       preview_only: { type: 'boolean', description: 'For delete_slots: when true, summarize candidate slots without deleting' },
       confirm: { type: 'boolean', description: 'For delete_slots: true means execute deletion (still requires confirmation token + user_authorized=true)' },
-      user_confirmation: { type: 'string', description: 'For delete_slots: must equal CONFIRM_DELETE_SLOTS when confirm=true' },
+      user_confirmation: { type: 'string', description: 'For delete_slots: must equal the returned confirmation_phrase when confirm=true' },
       user_authorized: { type: 'boolean', description: 'For delete_slots: must be true only after explicit user consent in current interaction' },
       reason: { type: 'string', description: 'For delete_slots: user-provided reason for deletion' },
+      intent_id: { type: 'string', description: 'For delete_slots: optional stable intent id for multi-step confirmation flow' },
    },
    required: ['action'],
    additionalProperties: true,
@@ -213,6 +215,7 @@ function parseInput(rawInput: unknown): ContextLedgerMemoryToolInput {
     user_confirmation: typeof rawInput.user_confirmation === 'string' ? rawInput.user_confirmation : undefined,
     reason: typeof rawInput.reason === 'string' ? rawInput.reason : undefined,
     user_authorized: rawInput.user_authorized === true,
+    intent_id: typeof rawInput.intent_id === 'string' ? rawInput.intent_id : undefined,
     replacement_history: Array.isArray(rawInput.replacement_history)
       ? rawInput.replacement_history.filter((item): item is Record<string, unknown> => isRecord(item))
       : undefined,

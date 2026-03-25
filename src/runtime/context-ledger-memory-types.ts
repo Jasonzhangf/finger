@@ -42,6 +42,7 @@ export interface ContextLedgerMemoryInput {
   user_confirmation?: string;
   reason?: string;
   user_authorized?: boolean;
+  intent_id?: string;
   replacement_history?: Array<Record<string, unknown>>;
   _runtime_context?: ContextLedgerMemoryRuntimeContext;
 }
@@ -183,6 +184,8 @@ export interface ContextLedgerMemoryDeleteSlotsResult {
   preview_only: boolean;
   requires_confirmation: boolean;
   reason?: string;
+  intent_id?: string;
+  confirmation_phrase?: string;
   note: string;
 }
 

@@ -584,14 +584,18 @@ async function executeDeleteSlotsAction(
       deleted_count: 0,
       preview_only: true,
       requires_confirmation: true,
+      intent_id: normalizeText(input.intent_id) ?? undefined,
       note: 'No deletable slots matched. context_compact entries are protected and cannot be deleted by this action.',
     };
   }
 
-  const confirmToken = normalizeText(input.user_confirmation)?.toUpperCase();
+  const resolvedIntentId = normalizeText(input.intent_id)
+    ?? `DEL-${context.targetAgentId}-${selectedSlots.map((item) => item.slot).join('-')}`;
+  const confirmationPhrase = `CONFIRM_DELETE_SLOTS:${resolvedIntentId}:${selectedSlots.map((item) => item.slot).join(',')}`;
+  const confirmToken = normalizeText(input.user_confirmation);
   const authorized = input.user_authorized === true;
   const previewOnly = input.preview_only === true || input.confirm !== true;
-  const confirmed = input.confirm === true && confirmToken === 'CONFIRM_DELETE_SLOTS' && authorized;
+  const confirmed = input.confirm === true && confirmToken === confirmationPhrase && authorized;
 
   if (previewOnly || !confirmed) {
     return {
@@ -605,10 +609,12 @@ async function executeDeleteSlotsAction(
       preview_only: true,
       requires_confirmation: true,
       reason: normalizeText(input.reason),
+      intent_id: resolvedIntentId,
+      confirmation_phrase: confirmationPhrase,
       note: [
         'Deletion preview only. No ledger data has been deleted.',
         'Before delete, show this summary to user and ask explicit permission.',
-        'To execute deletion, call again with confirm=true, user_authorized=true, user_confirmation="CONFIRM_DELETE_SLOTS".',
+        'To execute deletion, call again with confirm=true, user_authorized=true, and exact user_confirmation=confirmation_phrase.',
       ].join(' '),
     };
   }
@@ -633,6 +639,8 @@ async function executeDeleteSlotsAction(
       deleted_count: selectedSlots.length,
       reason: normalizeText(input.reason),
       user_confirmation: confirmToken,
+      intent_id: resolvedIntentId,
+      confirmation_phrase: confirmationPhrase,
     },
   });
 
@@ -647,6 +655,8 @@ async function executeDeleteSlotsAction(
     preview_only: false,
     requires_confirmation: false,
     reason: normalizeText(input.reason),
+    intent_id: resolvedIntentId,
+    confirmation_phrase: confirmationPhrase,
     note: 'Ledger slots deleted successfully after explicit user authorization.',
   };
 }
