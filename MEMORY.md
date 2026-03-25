@@ -351,3 +351,9 @@ Tags: permission, reject-config, codex-alignment
   Tags: context-monitor, ui, modal, overlay, esc, observability
 - [2026-03-25] 修复 UI 实时刷新滞后：Ledger/Context Monitor 的 WS 触发类型补齐 `chat_codex_turn`、`user_message`、`tool_call`、`messageCreated/messageCompleted`；并放宽会话相关性判断（无 session hints 的全局事件也允许触发刷新）。同时 `useWorkflowExecution` 将 `chat_codex_turn/assistant_complete/session_changed/session_compressed` 纳入消息刷新触发，避免“必须手动刷新页面才看到新事件”。  
   Tags: websocket, live-update, ledger-monitor, context-monitor, workflow-execution, session
+
+- [2026-03-25] 修复渠道消息重复推送：删除 `AgentStatusSubscriber.isVerboseTextChannel()` 硬编码绕过（之前 qqbot/openclaw-weixin 无条件绕过 pushSettings），所有渠道严格遵循 `channels.json` 的 `pushSettings` 配置（唯一真源）。`sendBodyUpdate()` 新增去重：相同 sessionId + 相同内容不重复推送；新增 `markFinalReplySent()` 记录主回复链路发送时间，`sendBodyUpdate` 在 10s 内检测到相同归一化内容则跳过。`channel-bridge-hub-route.ts` 的 `sendReply()` 成功后调用 `markFinalReplySent()` 联动去重。commit: c6d549c, 636f7ac。
+  Tags: channel-dedup, pushSettings, isVerboseTextChannel, body-update, markFinalReplySent, agent-status-subscriber
+
+- [2026-03-25] Ledger delete_slots 安全机制落地：`context_ledger.memory` 新增 `delete_slots` action，支持 `preview_only`/`confirm`/`user_authorized`/`user_confirmation`(intent-scoped phrase)/`intent_id`/`reason`。preview 返回 slot 摘要（time/event_type/preview），real delete 写入 `ledger_slots_deleted` 审计事件。确认短语格式 `CONFIRM_DELETE_SLOTS:<intent_id>:<slot_csv>`，防止对话漂移导致误删。`context_compact` 类型 slot 受保护不可删除。Skill 文档 `~/.finger/skills/context-ledger-memory/SKILL.md` 更新交互式删除工作流。
+  Tags: ledger, delete-slots, safety, intent-scoped, confirmation, audit
