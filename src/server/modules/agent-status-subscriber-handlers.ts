@@ -361,7 +361,7 @@ export async function handleToolResult(
       },
     },
     display: {
-      title: `${getAgentIcon(agentInfo.agentRole)} ${taskDescription}`,
+      title: `${getAgentIcon(agentInfo.agentRole)} ${agentInfo.agentName || agentId}`,
       subtitle: `${agentInfo.agentName || agentId}`,
       icon: getAgentIcon(agentInfo.agentRole),
       level: 'summary',
@@ -419,7 +419,7 @@ export async function handleToolError(
       },
     },
     display: {
-      title: `${getAgentIcon(agentInfo.agentRole)} ${taskDescription}`,
+      title: `${getAgentIcon(agentInfo.agentRole)} ${agentInfo.agentName || agentId}`,
       subtitle: event.payload?.error,
       icon: getAgentIcon(agentInfo.agentRole),
       level: 'detailed',

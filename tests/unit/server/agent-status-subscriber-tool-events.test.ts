@@ -81,13 +81,19 @@ describe('AgentStatusSubscriber tool event formatting', () => {
 
     expect(mockMessageHub.routeToOutput).toHaveBeenCalledTimes(1);
     const call = mockMessageHub.routeToOutput.mock.calls[0];
-    const payload = call[1] as { statusUpdate?: { task?: { taskDescription?: string }; status?: { summary?: string } } };
+    const payload = call[1] as {
+      content?: string;
+      statusUpdate?: { task?: { taskDescription?: string }; status?: { summary?: string } };
+    };
     const description = payload.statusUpdate?.task?.taskDescription ?? '';
     const summary = payload.statusUpdate?.status?.summary ?? '';
     expect(description).toContain('[read]');
     expect(description).toContain('HEARTBEAT.md');
     expect(description).toContain('success');
     expect(summary).toBe(description);
+    const content = payload.content ?? '';
+    expect(content).toContain(description);
+    expect((content.match(new RegExp(description.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g')) || []).length).toBe(1);
   });
 
   it('pushes mailbox.status summary with unread counters from real payload', async () => {

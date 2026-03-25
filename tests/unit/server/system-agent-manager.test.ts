@@ -43,9 +43,6 @@ describe('SystemAgentManager - Session Reuse', () => {
     // Verify getOrCreateSystemSession was called
     expect(mockSessionManager.getOrCreateSystemSession).toHaveBeenCalled();
 
-    // Verify listRootSessions was called during registry initialization (no WARN)
-    expect(mockSessionManager.listRootSessions).toHaveBeenCalled();
-
     // Startup bootstrap auto-check is disabled: no dispatch should be sent automatically
     const dispatchCall = mockAgentRuntimeBlock.execute.mock.calls.find(
       (call: unknown[]) => call[0] === 'dispatch'
@@ -137,7 +134,7 @@ describe('SystemAgentManager - Session Reuse', () => {
     expect(deployCall[1].sessionId).toBe('default');
   });
 
-  it('should respect periodic check switch (default on, optional off)', async () => {
+  it('should respect periodic check switch (default off, optional on)', async () => {
     const startSpy = vi.spyOn(PeriodicCheckRunner.prototype, 'start');
     const stopSpy = vi.spyOn(PeriodicCheckRunner.prototype, 'stop');
     const session = {

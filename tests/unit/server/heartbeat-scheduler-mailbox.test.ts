@@ -1,5 +1,6 @@
 import { beforeEach, afterEach, describe, expect, it, vi } from 'vitest';
 import * as registry from '../../../src/agents/finger-system-agent/registry.js';
+import { SYSTEM_PROJECT_PATH } from '../../../src/agents/finger-system-agent/index.js';
 import * as heartbeatParser from '../../../src/server/modules/heartbeat-md-parser.js';
 import { heartbeatMailbox } from '../../../src/server/modules/heartbeat-mailbox.js';
 import { HeartbeatScheduler } from '../../../src/server/modules/heartbeat-scheduler.js';
@@ -236,5 +237,119 @@ describe('HeartbeatScheduler mailbox lifecycle', () => {
       category: 'heartbeat-task',
     });
     expect(pending).toHaveLength(0);
+  });
+
+  it('skips heartbeat dispatch when checklist is empty (no actionable tasks)', async () => {
+    vi.spyOn(heartbeatParser, 'resolveHeartbeatMdPath').mockReturnValue('/tmp/fake-heartbeat-empty.md');
+    vi.spyOn(heartbeatParser, 'validateHeartbeatMd').mockResolvedValue({
+      valid: true,
+      errors: [],
+      warnings: [],
+      canAutoRepair: false,
+    });
+    vi.spyOn(heartbeatParser, 'shouldStopHeartbeat').mockResolvedValue({
+      shouldStop: false,
+      checklistStats: {
+        total: 0,
+        checked: 0,
+        unchecked: 0,
+      },
+    });
+
+    const execute = vi.fn(async () => ({ ok: true }));
+    const scheduler = new HeartbeatScheduler({
+      agentRuntimeBlock: { execute },
+      sessionManager: {
+        getOrCreateSystemSession: vi.fn(() => ({ id: 'system-session-test' })),
+      },
+    } as any);
+
+    await (scheduler as any).dispatchTask(
+      SYSTEM_AGENT_ID,
+      'global',
+      undefined,
+      { dispatch: 'mailbox' },
+    );
+
+    const pending = heartbeatMailbox.list(SYSTEM_AGENT_ID, {
+      status: 'pending',
+      category: 'heartbeat-task',
+    });
+    expect(pending).toHaveLength(0);
+    expect(execute).not.toHaveBeenCalledWith('dispatch', expect.anything());
+  });
+
+  it('dispatches project heartbeat only for monitored registry entries', async () => {
+    vi.spyOn(registry, 'listAgents').mockResolvedValue([
+      {
+        projectId: 'project-monitored',
+        projectPath: '/repo/monitored',
+        monitored: true,
+        agentId: 'project-monitored-agent',
+        status: 'idle',
+      } as any,
+      {
+        projectId: 'project-unmonitored',
+        projectPath: '/repo/unmonitored',
+        monitored: false,
+        agentId: 'project-unmonitored-agent',
+        status: 'idle',
+      } as any,
+    ]);
+
+    const scheduler = new HeartbeatScheduler({
+      agentRuntimeBlock: { execute: vi.fn(async () => ({ ok: true })) },
+      sessionManager: {
+        getOrCreateSystemSession: vi.fn(() => ({ id: 'system-session-test' })),
+      },
+    } as any);
+
+    (scheduler as any).config = {
+      global: { enabled: false },
+      projects: {
+        'project-monitored': { enabled: true, intervalMs: 1000 },
+        'project-unmonitored': { enabled: true, intervalMs: 1000 },
+      },
+    };
+
+    const dispatchTaskSpy = vi.spyOn(scheduler as any, 'dispatchTask').mockResolvedValue(undefined);
+    await (scheduler as any).dispatchDueTasks();
+
+    expect(dispatchTaskSpy).toHaveBeenCalledTimes(1);
+    expect(dispatchTaskSpy).toHaveBeenCalledWith(
+      'project-monitored-agent',
+      'project:project-monitored',
+      'project-monitored',
+      expect.objectContaining({ enabled: true }),
+    );
+  });
+
+  it('uses explicit system path in global heartbeat default prompt', async () => {
+    vi.spyOn(heartbeatParser, 'resolveHeartbeatMdPath').mockReturnValue(null);
+    const execute = vi.fn(async () => ({ ok: true }));
+    const scheduler = new HeartbeatScheduler({
+      agentRuntimeBlock: { execute },
+      sessionManager: {
+        getOrCreateSystemSession: vi.fn(() => ({ id: 'system-session-test' })),
+      },
+    } as any);
+
+    await (scheduler as any).dispatchTask(
+      SYSTEM_AGENT_ID,
+      'global',
+      undefined,
+      { dispatch: 'dispatch' },
+    );
+
+    expect(execute).toHaveBeenCalledWith(
+      'dispatch',
+      expect.objectContaining({
+        targetAgentId: SYSTEM_AGENT_ID,
+        task: expect.stringContaining(`系统路径: ${SYSTEM_PROJECT_PATH}`),
+      }),
+    );
+
+    const dispatchedTask = execute.mock.calls.find((call: unknown[]) => call[0] === 'dispatch')?.[1]?.task;
+    expect(String(dispatchedTask)).not.toContain('请检查项目根目录的 HEARTBEAT.md');
   });
 });

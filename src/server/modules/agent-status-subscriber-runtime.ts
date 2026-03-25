@@ -21,6 +21,28 @@ import { logger } from '../../core/logger.js';
 
 const log = logger.module('AgentStatusSubscriber');
 
+function normalizeLineForDedup(value: string): string {
+  return value
+    .replace(/\s+/g, ' ')
+    .replace(/^[^\p{L}\p{N}[]+/gu, '')
+    .trim()
+    .toLowerCase();
+}
+
+function joinUniqueLines(parts: Array<string | undefined>): string {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const raw of parts) {
+    const text = typeof raw === 'string' ? raw.trim() : '';
+    if (!text) continue;
+    const key = normalizeLineForDedup(text);
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    out.push(text);
+  }
+  return out.join('\n');
+}
+
 /**
  * Check if a specific push setting is enabled for a channel.
  * Centralizes all pushSettings checks in one place.
@@ -76,8 +98,11 @@ export async function sendStatusUpdate(
       },
     };
 
-    const text = `${statusUpdate.display.title}\n${statusUpdate.status.summary}`
-      + (statusUpdate.display.subtitle ? `\n${statusUpdate.display.subtitle}` : '');
+    const text = joinUniqueLines([
+      statusUpdate.display.title,
+      statusUpdate.status.summary,
+      statusUpdate.display.subtitle,
+    ]);
 
     const message = {
       channelId: channel,

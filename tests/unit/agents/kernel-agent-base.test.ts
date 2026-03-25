@@ -1,11 +1,11 @@
 import { describe, expect, it, vi } from 'vitest';
-import { KernelAgentBase, type KernelAgentRunner, type KernelRunContext } from '../../../src/agents/base/kernel-agent-base.js';
+import { KernelAgentBase, type KernelAgentRunner, type KernelRunContext, type KernelInputItem } from '../../../src/agents/base/kernel-agent-base.js';
 
 describe('KernelAgentBase session binding', () => {
   it('reuses internal session for repeated external sessionId', async () => {
     const contexts: KernelRunContext[] = [];
     const runner: KernelAgentRunner = {
-      runTurn: vi.fn(async (_text: string, context?: KernelRunContext) => {
+      runTurn: vi.fn(async (_text: string, _inputItems?: KernelInputItem[], context?: KernelRunContext) => {
         if (context) {
           contexts.push(context);
         }
@@ -35,7 +35,7 @@ describe('KernelAgentBase session binding', () => {
 
   it('skips session persistence when client controls session messages', async () => {
     const runner: KernelAgentRunner = {
-      runTurn: vi.fn(async () => ({ reply: 'ok' })),
+      runTurn: vi.fn(async (_text: string, _inputItems?: KernelInputItem[], _context?: KernelRunContext) => ({ reply: 'ok' })),
     };
     const agent = new KernelAgentBase(
       {
@@ -54,7 +54,7 @@ describe('KernelAgentBase session binding', () => {
 
     const contexts: KernelRunContext[] = [];
     (runner.runTurn as any).mock.calls.forEach((call: unknown[]) => {
-      const context = call[1] as KernelRunContext | undefined;
+      const context = call[2] as KernelRunContext | undefined;
       if (context) contexts.push(context);
     });
     expect(contexts).toHaveLength(1);
@@ -66,7 +66,7 @@ describe('KernelAgentBase session binding', () => {
     let mainTurns = 0;
     let reviewTurns = 0;
     const runner: KernelAgentRunner = {
-      runTurn: vi.fn(async (text: string, context?: KernelRunContext) => {
+      runTurn: vi.fn(async (text: string, _inputItems?: KernelInputItem[], context?: KernelRunContext) => {
         if (context) {
           contexts.push(context);
         }
@@ -131,7 +131,7 @@ describe('KernelAgentBase session binding', () => {
     let mainTurns = 0;
     let reviewTurns = 0;
     const runner: KernelAgentRunner = {
-      runTurn: vi.fn(async (_text: string, context?: KernelRunContext) => {
+      runTurn: vi.fn(async (_text: string, _inputItems?: KernelInputItem[], context?: KernelRunContext) => {
         const mode = typeof context?.metadata?.mode === 'string' ? context.metadata.mode : 'main';
         if (mode === 'review') {
           reviewTurns += 1;
@@ -177,7 +177,7 @@ describe('KernelAgentBase session binding', () => {
 
   it('nudges once when execution request gets promise-only reply without tool evidence', async () => {
     const runner: KernelAgentRunner = {
-      runTurn: vi.fn(async (text: string, context?: KernelRunContext) => {
+      runTurn: vi.fn(async (text: string, _inputItems?: KernelInputItem[], context?: KernelRunContext) => {
         if (text.includes('[SYSTEM CONTINUATION REQUEST]')) {
           expect(context?.metadata?.executionNudgeApplied).toBe(true);
           return {
@@ -216,7 +216,7 @@ describe('KernelAgentBase session binding', () => {
 
   it('repairs structured output locally when JSON has fences and trailing comma', async () => {
     const runner: KernelAgentRunner = {
-      runTurn: vi.fn(async () => ({
+      runTurn: vi.fn(async (_text: string, _inputItems?: KernelInputItem[], _context?: KernelRunContext) => ({
         reply: '```json\n{"role":"executor","summary":"done","status":"completed","outputs":[],"evidence":[],"nextAction":"none",}\n```',
       })),
     };
@@ -245,7 +245,7 @@ describe('KernelAgentBase session binding', () => {
 
   it('requests one structured output retry with field-level errors when schema validation fails', async () => {
     const runner: KernelAgentRunner = {
-      runTurn: vi.fn(async (text: string) => {
+      runTurn: vi.fn(async (text: string, _inputItems?: KernelInputItem[], _context?: KernelRunContext) => {
         if (text.includes('[STRUCTURED OUTPUT RETRY]')) {
           expect(text).toContain('$.summary: is required');
           expect(text).toContain('$.status: must be one of');
@@ -296,7 +296,7 @@ describe('KernelAgentBase session binding', () => {
 
   it('fails with explicit resend paths when structured output is still invalid after retry', async () => {
     const runner: KernelAgentRunner = {
-      runTurn: vi.fn(async (text: string) => {
+      runTurn: vi.fn(async (text: string, _inputItems?: KernelInputItem[], _context?: KernelRunContext) => {
         if (text.includes('[STRUCTURED OUTPUT RETRY]')) {
           return {
             reply: JSON.stringify({
@@ -340,7 +340,7 @@ describe('KernelAgentBase session binding', () => {
   it('supports configurable structured output retry count', async () => {
     let attempts = 0;
     const runner: KernelAgentRunner = {
-      runTurn: vi.fn(async (text: string) => {
+      runTurn: vi.fn(async (text: string, _inputItems?: KernelInputItem[], _context?: KernelRunContext) => {
         if (text.includes('[STRUCTURED OUTPUT RETRY]')) {
           attempts += 1;
           if (attempts === 1) {
@@ -411,7 +411,7 @@ describe('inference chain uses MemorySessionManager not ledger/context builder',
 
     const contexts: KernelRunContext[] = [];
     const runner: KernelAgentRunner = {
-      runTurn: vi.fn(async (_text: string, context?: KernelRunContext) => {
+      runTurn: vi.fn(async (_text: string, _inputItems?: KernelInputItem[], context?: KernelRunContext) => {
         if (context) contexts.push(context);
         return { reply: 'done' };
       }),
@@ -465,5 +465,62 @@ describe('inference chain uses MemorySessionManager not ledger/context builder',
     expect(contexts[0]?.history[0]).not.toHaveProperty('isCurrentTurn');
     expect(contexts[0]?.history[0]).not.toHaveProperty('tokenCount');
     expect(contexts[0]?.history[0]).not.toHaveProperty('timestampIso');
+  });
+});
+
+describe('KernelAgentBase inputItems forwarding', () => {
+  it('forwards inputItems from metadata to runner', async () => {
+    const receivedItems: KernelInputItem[][] = [];
+    const runner: KernelAgentRunner = {
+      runTurn: vi.fn(async (_text: string, _inputItems?: KernelInputItem[], _context?: KernelRunContext) => {
+        if (_inputItems) receivedItems.push(_inputItems);
+        return { reply: 'ok' };
+      }),
+    };
+
+    const agent = new KernelAgentBase(
+      { moduleId: 'test-img', provider: 'test', maxContextMessages: 20 },
+      runner,
+    );
+
+    await agent.handle({
+      text: 'describe this image',
+      sessionId: 'img-session-1',
+      metadata: {
+        inputItems: [
+          { type: 'text', text: 'describe this image' },
+          { type: 'local_image', path: '/tmp/test.jpg' },
+        ],
+      },
+    });
+
+    expect(receivedItems).toHaveLength(1);
+    expect(receivedItems[0]).toHaveLength(2);
+    expect(receivedItems[0][0].type).toBe('text');
+    expect(receivedItems[0][1].type).toBe('local_image');
+    expect(receivedItems[0][1]).toEqual({ type: 'local_image', path: '/tmp/test.jpg' });
+  });
+
+  it('passes undefined inputItems when metadata has no inputItems', async () => {
+    const receivedItems: (KernelInputItem[] | undefined)[] = [];
+    const runner: KernelAgentRunner = {
+      runTurn: vi.fn(async (_text: string, inputItems?: KernelInputItem[]) => {
+        receivedItems.push(inputItems);
+        return { reply: 'ok' };
+      }),
+    };
+
+    const agent = new KernelAgentBase(
+      { moduleId: 'test-noimg', provider: 'test', maxContextMessages: 20 },
+      runner,
+    );
+
+    await agent.handle({
+      text: 'hello',
+      sessionId: 'text-session-1',
+    });
+
+    expect(receivedItems).toHaveLength(1);
+    expect(receivedItems[0]).toBeUndefined();
   });
 });

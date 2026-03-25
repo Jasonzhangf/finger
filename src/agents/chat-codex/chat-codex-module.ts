@@ -735,8 +735,9 @@ export function createChatCodexModule(
     });
 
   const kernelRunner: KernelAgentRunner = {
-    runTurn: async (text: string, context) => {
-      const inputItems = parseKernelInputItems(context?.metadata);
+    runTurn: async (text: string, inputItems?: KernelInputItem[], context?: KernelRunContext) => {
+      const resolvedInputItems = inputItems ?? parseKernelInputItems(context?.metadata);
+      const normalizedInputItems = normalizeKernelInputItems(resolvedInputItems, text);
       const sessionId = context?.sessionId ?? 'unknown';
       const toolSpecifications = await resolveToolSpecifications(
         Array.isArray(context?.tools) && context?.tools.every((item) => typeof item === 'string')
@@ -744,6 +745,7 @@ export function createChatCodexModule(
           : undefined,
         mergedConfig.resolveToolSpecifications,
       );
+      const toolSpecificationsForTurn = toolSpecifications;
       const mode = parseOptionalString(context?.metadata?.kernelMode) ?? parseOptionalString(context?.metadata?.mode) ?? 'main';
       const reviewMeta = isRecord(context?.metadata?.review) ? context.metadata.review : undefined;
       const reviewIteration = parseOptionalNumber(reviewMeta?.iteration);
@@ -758,7 +760,7 @@ export function createChatCodexModule(
         })),
         metadata: context?.metadata,
         developerPromptPaths: currentPromptPaths.developerPromptPaths ?? mergedConfig.developerPromptPaths,
-        tools: toolSpecifications,
+        tools: toolSpecificationsForTurn,
         toolExecution: mergedConfig.toolExecution,
       };
       const optionsSnapshot = buildKernelUserTurnOptions(
@@ -772,8 +774,8 @@ export function createChatCodexModule(
         systemPrompt: context?.systemPrompt,
         metadata: isRecord(context?.metadata) ? context?.metadata : undefined,
         roleProfile: parseOptionalString(context?.metadata?.roleProfile) ?? parseOptionalString(context?.metadata?.contextLedgerRole),
-        toolSpecifications,
-        inputItems,
+        toolSpecifications: toolSpecificationsForTurn,
+        inputItems: normalizedInputItems,
         history: snapshotContext.history,
         options: optionsSnapshot,
       });
@@ -784,9 +786,9 @@ export function createChatCodexModule(
         timestamp: new Date().toISOString(),
         payload: {
           text,
-          inputItemCount: inputItems?.length ?? 0,
-          inputTypes: (inputItems ?? []).map((item) => item.type),
-          toolCount: toolSpecifications.length,
+          inputItemCount: normalizedInputItems.length,
+          inputTypes: normalizedInputItems.map((item) => item.type),
+          toolCount: toolSpecificationsForTurn.length,
           mode,
           ...(reviewPhase ? { reviewPhase } : {}),
           ...(typeof reviewIteration === 'number' ? { reviewIteration } : {}),
@@ -1013,13 +1015,13 @@ export function createChatCodexModule(
       let lastRunError: unknown = null;
       for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
         try {
-          runResult = await activeRunner.runTurn(text, inputItems, {
+          runResult = await activeRunner.runTurn(text, normalizedInputItems, {
             sessionId,
             systemPrompt: context?.systemPrompt,
             history: context?.history,
             metadata: context?.metadata,
             developerPromptPaths: currentPromptPaths.developerPromptPaths ?? mergedConfig.developerPromptPaths,
-            tools: toolSpecifications,
+            tools: toolSpecificationsForTurn,
             toolExecution: mergedConfig.toolExecution,
             onKernelEvent: (event) => {
               streamedKernelEventCount += 1;
@@ -1734,8 +1736,23 @@ function parseKernelInputItems(metadata?: Record<string, unknown>): KernelInputI
 }
 
 function normalizeKernelInputItems(items: KernelInputItem[] | undefined, fallbackText: string): KernelInputItem[] {
-  if (items && items.length > 0) return items;
+  const normalizedText = fallbackText.trim();
+  const hasTextInItems = Array.isArray(items)
+    && items.some((item) => item.type === 'text' && item.text.trim().length > 0);
+  const merged: KernelInputItem[] = [];
+  if (normalizedText.length > 0 && !hasTextInItems) {
+    merged.push({ type: 'text', text: fallbackText });
+  }
+  if (items && items.length > 0) {
+    merged.push(...items);
+  }
+  if (merged.length > 0) return merged;
   return [{ type: 'text', text: fallbackText }];
+}
+
+function hasImageInputItems(items: KernelInputItem[] | undefined): boolean {
+  if (!items || items.length === 0) return false;
+  return items.some((item) => item.type === 'image' || item.type === 'local_image');
 }
 
 function buildKernelUserTurnOptions(

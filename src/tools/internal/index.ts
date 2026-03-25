@@ -18,7 +18,7 @@ import { webSearchTool } from './codex-web-search-tool.js';
 import { contextLedgerMemoryTool } from './context-ledger-memory-tool.js';
 import { noopTool } from './codex-noop-tool.js';
 import { permissionTools } from './permission-tools.js';
-import { heartbeatEnableTool, heartbeatDisableTool, heartbeatStatusTool } from './heartbeat-control-tool.js';
+import { heartbeatEnableTool, heartbeatDisableTool, heartbeatStatusTool, heartbeatAddTaskTool, heartbeatCompleteTaskTool, heartbeatRemoveTaskTool, heartbeatListTasksTool, heartbeatBatchAddTool, heartbeatBatchCompleteTool, heartbeatBatchRemoveTool } from './heartbeat-control-tool.js';
 import {
   mailboxListTool,
   mailboxReadTool,
@@ -68,6 +68,13 @@ export function createDefaultInternalToolRegistry(): InternalToolRegistry {
   registry.register(heartbeatEnableTool);
   registry.register(heartbeatDisableTool);
   registry.register(heartbeatStatusTool);
+  registry.register(heartbeatAddTaskTool);
+  registry.register(heartbeatCompleteTaskTool);
+  registry.register(heartbeatRemoveTaskTool);
+  registry.register(heartbeatListTasksTool);
+  registry.register(heartbeatBatchAddTool);
+  registry.register(heartbeatBatchCompleteTool);
+  registry.register(heartbeatBatchRemoveTool);
   registry.register(mailboxListTool);
   registry.register(mailboxReadTool);
   registry.register(mailboxReadAllTool);

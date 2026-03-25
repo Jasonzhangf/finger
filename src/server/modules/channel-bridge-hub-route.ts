@@ -6,6 +6,7 @@
 
 import type { ChannelMessage } from '../../bridges/types.js';
 import type { AgentDispatchRequest } from './agent-runtime/types.js';
+import { existsSync } from 'node:fs';
 import type { ChannelBridgeManager } from '../../bridges/manager.js';
 import type { AskManager } from '../../orchestration/ask/ask-manager.js';
 import type { SessionManager } from '../../orchestration/session-manager.js';
@@ -13,7 +14,6 @@ import type { UnifiedEventBus } from '../../runtime/event-bus.js';
 import { ChannelContextManager } from '../../orchestration/channel-context-manager.js';
 import { getCommandHub, parseCommands } from '../../blocks/command-hub/index.js';
 import { loadFingerConfig, getChannelAuth } from '../../core/config/channel-config.js';
-import { CommandType } from '../../blocks/command-hub/types.js';
 import { logger } from '../../core/logger.js';
 import { SYSTEM_AGENT_CONFIG } from '../../agents/finger-system-agent/index.js';
 import type { AgentStatusSubscriber } from './agent-status-subscriber.js';
@@ -40,6 +40,91 @@ function toKernelHistoryItems(
         ],
       };
     });
+}
+
+function toKernelInputItemsFromAttachments(message: ChannelMessage): Array<Record<string, unknown>> {
+  const attachments = Array.isArray(message.attachments) ? message.attachments : [];
+  const imageAttachments = attachments.filter((a) => a?.type === 'image' && typeof a.url === 'string' && a.url.trim().length > 0);
+  if (imageAttachments.length === 0) return [];
+
+  const items: Array<Record<string, unknown>> = [];
+  for (const att of imageAttachments) {
+    const rawUrl = att.url.trim();
+    if (!rawUrl) continue;
+
+    if (rawUrl.startsWith('data:image/')) {
+      items.push({ type: 'image', image_url: rawUrl });
+      continue;
+    }
+
+    if (rawUrl.startsWith('http://') || rawUrl.startsWith('https://')) {
+      items.push({ type: 'image', image_url: rawUrl });
+      continue;
+    }
+
+    const localPath = rawUrl.startsWith('file://')
+      ? (() => {
+          try {
+            return decodeURIComponent(rawUrl.replace(/^file:\/\//, ''));
+          } catch {
+            return rawUrl.replace(/^file:\/\//, '');
+          }
+        })()
+      : rawUrl;
+    if (existsSync(localPath)) {
+      items.push({ type: 'local_image', path: localPath });
+      continue;
+    }
+
+    // 最后兜底：当作 image_url 传给 kernel，由 provider/模型决定是否可访问
+    items.push({ type: 'image', image_url: rawUrl });
+  }
+
+  return items;
+}
+
+function sanitizePromptForInjectedImages(content: string): string {
+  if (!content || content.trim().length === 0) return content;
+  const localImagePathPattern = /(?:file:\/\/)?(?:\/Users\/|\/home\/|[A-Za-z]:[\\/])[^\s<>"']+\.(?:png|jpe?g|gif|webp|bmp|svg|tiff?)/gi;
+  return content.replace(localImagePathPattern, '[local-image]');
+}
+
+function extractLocalImagePathsFromKernelItems(items: Array<Record<string, unknown>>): string[] {
+  const result: string[] = [];
+  for (const item of items) {
+    if (!item || typeof item !== 'object') continue;
+    if (item.type !== 'local_image') continue;
+    if (typeof item.path !== 'string') continue;
+    const trimmed = item.path.trim();
+    if (trimmed.length === 0) continue;
+    result.push(trimmed);
+  }
+  return result;
+}
+
+function withInjectedImageHint(content: string, localImagePaths: string[] = []): string {
+  const dedupedPaths = Array.from(new Set(localImagePaths.filter((path) => typeof path === 'string' && path.trim().length > 0)));
+  const hintLines = [
+    '【图像输入说明】图片已作为 input_image 注入本轮上下文，请先直接识别图片内容。',
+    dedupedPaths.length > 0
+      ? '本轮包含本地图片路径，必须先调用 view_image 查看后再回答，禁止猜测。'
+      : '若模型反馈看不到图片（例如出现 [Image omitted]）或无法确认，请立即调用 view_image 查看本地图片后再回答，禁止猜测。',
+    ...(dedupedPaths.length > 0
+      ? [
+          '可用本地图片路径：',
+          ...dedupedPaths.map((path) => `- ${path}`),
+        ]
+      : []),
+  ];
+  const hint = hintLines.join('\n');
+  if (!content || content.trim().length === 0) return hint;
+  if (content.includes('【图像输入说明】')) {
+    if (content.includes('若模型反馈看不到图片') && dedupedPaths.every((path) => content.includes(path))) {
+      return content;
+    }
+    return `${content}\n\n${hint}`;
+  }
+  return `${content}\n\n${hint}`;
 }
 
 function isDuplicateMessage(msgId: string): boolean {
@@ -126,17 +211,6 @@ export function createChannelBridgeHubRoute(deps: ChannelBridgeHubRouteDeps) {
       ? `group:${channelMsg.metadata.groupId}`
       : channelMsg.senderId;
 
-    // 生成稳定的 sessionId（避免渠道来源影响 session）
-    const stableSessionId = (() => {
-      if (channelMsg.type === 'group' && channelMsg.metadata?.groupId) {
-        return `group-${channelMsg.metadata.groupId}`;
-      }
-      return `user-${channelMsg.senderId}`;
-    })();
-
-    // sendReply closure - resolveSessionId will be set after target agent is determined
-    let resolveSessionId: () => string = () => stableSessionId;
-    const setReplySessionId = (sid: string) => { resolveSessionId = () => sid; };
     const routedAgentId = channelContextManager.getTargetAgent(channelMsg.channelId, {
       type: 'normal',
       targetAgent: ''
@@ -151,7 +225,6 @@ export function createChannelBridgeHubRoute(deps: ChannelBridgeHubRouteDeps) {
       });
     }
     const fixedSessionId = sessionManager.getOrCreateSystemSession().id;
-    setReplySessionId(fixedSessionId);
     sessionManager.ensureSession(fixedSessionId, SYSTEM_PROJECT_PATH, `channel:${channelMsg.channelId}`);
     const runtimeSetCurrentSession = (deps.runtime as { setCurrentSession?: (sessionId: string) => boolean }).setCurrentSession;
     if (typeof runtimeSetCurrentSession === 'function') {
@@ -203,7 +276,6 @@ export function createChannelBridgeHubRoute(deps: ChannelBridgeHubRouteDeps) {
 
       if (askResolution) {
         const askSessionId = pendingAsk?.sessionId ?? fixedSessionId;
-        setReplySessionId(askSessionId);
         void sessionManager.addMessage(askSessionId, 'user', channelMsg.content, {
           type: 'text',
           metadata: {
@@ -253,21 +325,31 @@ export function createChannelBridgeHubRoute(deps: ChannelBridgeHubRouteDeps) {
     // 解析命令时剥离 marker，传递给 agent 的内容不包含 <##...##>
     const cleanContent = parsed.effectiveContent || channelMsg.content;
 
-    // 处理附件（图片等）：如果消息包含图片附件，附加到 prompt 中
+    // 处理附件（图片等）：构建真实图片 inputItems，禁止 mock 路径描述
     let enrichedContent = cleanContent;
+    let kernelInputItems: Array<Record<string, unknown>> = [];
     if (channelMsg.attachments && Array.isArray(channelMsg.attachments) && channelMsg.attachments.length > 0) {
       const imageAttachments = channelMsg.attachments.filter(
         (a: any) => a.type === 'image' && a.url
       );
       if (imageAttachments.length > 0) {
-        const imageDescs = imageAttachments.map((a: any, i: number) =>
-          `[图片${i + 1}: ${a.filename || a.url}]`
-        ).join('\n');
-        enrichedContent = imageDescs + '\n' + cleanContent;
+        kernelInputItems = toKernelInputItemsFromAttachments(channelMsg);
         log.info('Message contains image attachments', {
           count: imageAttachments.length,
           urls: imageAttachments.map((a: any) => a.url),
+          kernelInputItemCount: kernelInputItems.length,
         });
+        if (kernelInputItems.length > 0) {
+          enrichedContent = sanitizePromptForInjectedImages(enrichedContent);
+        }
+        // 避免把本地路径注入 prompt；仅保留用户文本或最小提示
+        if (!enrichedContent || enrichedContent.trim().length === 0 || enrichedContent.trim() === '【附件消息】image') {
+          enrichedContent = '请查看我发送的图片并回答。';
+        }
+        if (kernelInputItems.length > 0) {
+          const localImagePaths = extractLocalImagePathsFromKernelItems(kernelInputItems);
+          enrichedContent = withInjectedImageHint(enrichedContent, localImagePaths);
+        }
       }
     }
 
@@ -331,8 +413,18 @@ export function createChannelBridgeHubRoute(deps: ChannelBridgeHubRouteDeps) {
         messageId: channelMsg.id,
         type: channelMsg.type,
         contextLedgerRootDir,
+        ...(kernelInputItems.length > 0 ? { inputItems: kernelInputItems } : {}),
         ...(kernelApiHistory.length > 0 ? { kernelApiHistory } : {}),
       };
+
+      if (kernelInputItems.length > 0) {
+        log.info('Prepared kernel image inputItems for multimodal turn', {
+          sessionId: fixedSessionId,
+          targetAgentId,
+          itemCount: kernelInputItems.length,
+          itemTypes: kernelInputItems.map((i) => i.type),
+        });
+      }
 
       // 注册 session-envelope 映射（用于 Agent Status Subscriber）
       if (agentStatusSubscriber) {
@@ -442,7 +534,10 @@ export function createChannelBridgeHubRoute(deps: ChannelBridgeHubRouteDeps) {
       log.error('Hub route dispatch error', err instanceof Error ? err : undefined);
       await sendReply('处理失败，请稍后再试', 'messagehub');
     } finally {
-      // 交给 AgentStatusSubscriber 自己根据终态/清理周期回收映射
+      // 当前用户轮次结束后及时解绑 envelope，避免后续 heartbeat/mailbox 后台任务继续向同一用户外发噪音更新。
+      if (agentStatusSubscriber) {
+        agentStatusSubscriber.unregisterSession(fixedSessionId);
+      }
     }
   };
 }

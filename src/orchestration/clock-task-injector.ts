@@ -55,7 +55,7 @@ export class ClockTaskInjector {
   private running = false;
 
   constructor(private deps: ClockInjectorDeps, storePath?: string) {
-    this.storePath = storePath || path.join(FINGER_PATHS.runtime.clockDir, 'tool-timers.json');
+    this.storePath = storePath || path.join(FINGER_PATHS.runtime.schedulesDir, 'clock-timers.jsonl');
   }
 
   start(intervalMs: number = DEFAULT_POLL_MS): void {
@@ -140,8 +140,17 @@ export class ClockTaskInjector {
     try {
       if (!fs.existsSync(this.storePath)) return { timers: [] };
       const content = fs.readFileSync(this.storePath, 'utf-8');
-      const parsed = JSON.parse(content) as ClockInjectStore;
-      return parsed;
+      const lines = content.split('\n').map((l) => l.trim()).filter((l) => l.length > 0);
+      const timers: ClockInjectTimer[] = [];
+      for (const line of lines) {
+        try {
+          const timer = JSON.parse(line) as ClockInjectTimer;
+          timers.push(timer);
+        } catch {
+          // skip invalid line
+        }
+      }
+      return { timers };
     } catch {
       return { timers: [] };
     }
@@ -150,6 +159,7 @@ export class ClockTaskInjector {
   private saveStore(store: ClockInjectStore): void {
     const dir = path.dirname(this.storePath);
     if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-    fs.writeFileSync(this.storePath, JSON.stringify(store, null, 2), 'utf-8');
+    const lines = store.timers.map((t) => JSON.stringify(t));
+    fs.writeFileSync(this.storePath, `${lines.join('\n')}${lines.length > 0 ? '\n' : ''}`, 'utf-8');
   }
 }

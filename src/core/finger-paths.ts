@@ -41,8 +41,9 @@ export function getFingerPaths(homeOverride?: string) {
       pluginsDir: join(home, 'runtime', 'plugins'),
       pluginsCliDir: join(home, 'runtime', 'plugins', 'cli'),
       gatewaysDir: join(home, 'runtime', 'gateways'),
-      clockDir: join(home, 'runtime', 'clock'),
-      eventsDir: join(home, 'runtime', 'events'),
+    clockDir: join(home, 'runtime', 'clock'),
+    schedulesDir: join(home, 'schedules'),
+    eventsDir: join(home, 'runtime', 'events'),
       workflowsDir: join(home, 'runtime', 'workflows'),
       daemonPid: join(home, 'runtime', 'daemon.pid'),
     },
@@ -83,6 +84,7 @@ export function ensureFingerLayout(): void {
   ensureDir(paths.config.dir);
   ensureDir(paths.config.promptsDir);
   ensureDir(paths.runtime.dir);
+  ensureDir(paths.runtime.schedulesDir);
   ensureDir(paths.logs.dir);
   ensureDir(paths.sessions.dir);
   ensureDir(paths.tmp.dir);

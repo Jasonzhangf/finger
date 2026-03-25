@@ -34,8 +34,14 @@ export interface KernelRunnerResult {
 }
 
 export interface KernelAgentRunner {
-  runTurn(text: string, context?: KernelRunContext): Promise<KernelRunnerResult>;
+  runTurn(text: string, inputItems?: KernelInputItem[], context?: KernelRunContext): Promise<KernelRunnerResult>;
 }
+
+/** Multimodal input item for image attachments. */
+export type KernelInputItem =
+  | { type: 'text'; text: string }
+  | { type: 'image'; image_url: string }
+  | { type: 'local_image'; path: string };
 
 export interface KernelAgentBaseConfig {
   moduleId: string;
@@ -200,13 +206,15 @@ export class KernelAgentBase {
             : undefined,
       });
 
-      let runResult = await this.runner.runTurn(input.text, {
+      const inputItems = this.parseInputItems(input.metadata);
+      const runnerContext = {
         sessionId: runnerSessionId,
         systemPrompt,
         history: toUnifiedHistory(mergedHistory),
         tools,
         metadata: runtimeMetadata,
-      });
+      };
+      let runResult = await this.runner.runTurn(input.text, inputItems, runnerContext);
 
       this.captureApiHistory(threadKey, runResult.metadata);
       const pendingInputAccepted = runResult.metadata?.pendingInputAccepted === true;
@@ -544,6 +552,7 @@ export class KernelAgentBase {
           assistantOutput: currentReply,
           assistantMetadata: currentResult.metadata,
         }),
+        undefined,
         {
           sessionId: params.sessionId,
           systemPrompt: reviewSystemPrompt,
@@ -601,6 +610,7 @@ export class KernelAgentBase {
           strictness: reviewSettings.strictness,
           feedback: verdict.feedback,
         }),
+        undefined,
         {
           sessionId: params.sessionId,
           systemPrompt: params.systemPrompt,
@@ -688,6 +698,28 @@ export class KernelAgentBase {
     if (fromMetadata.length > 0) return fromMetadata;
     return 'main';
   }
+  
+  private parseInputItems(metadata?: Record<string, unknown>): KernelInputItem[] | undefined {
+    if (!metadata) return undefined;
+    const raw = metadata.inputItems;
+    if (!Array.isArray(raw)) return undefined;
+    const parsed: KernelInputItem[] = [];
+    for (const item of raw) {
+      if (!isRecord(item) || typeof item.type !== 'string') continue;
+      if (item.type === 'text' && typeof item.text === 'string' && item.text.trim().length > 0) {
+        parsed.push({ type: 'text', text: item.text });
+        continue;
+      }
+      if (item.type === 'image' && typeof item.image_url === 'string' && item.image_url.trim().length > 0) {
+        parsed.push({ type: 'image', image_url: item.image_url });
+        continue;
+      }
+      if (item.type === 'local_image' && typeof item.path === 'string' && item.path.trim().length > 0) {
+        parsed.push({ type: 'local_image', path: item.path });
+      }
+    }
+    return parsed.length > 0 ? parsed : undefined;
+  }
 
   private captureApiHistory(threadKey: string, metadata?: Record<string, unknown>): void {
     if (!metadata) return;
@@ -726,7 +758,7 @@ export class KernelAgentBase {
       '结果必须包含关键证据（如命令输出、文件路径、变更摘要）。',
     ].join('\n');
 
-    const followUpResult = await this.runner.runTurn(followUpInput, {
+    const followUpResult = await this.runner.runTurn(followUpInput, undefined, {
       sessionId: params.sessionId,
       systemPrompt: params.systemPrompt,
       history: params.history,
@@ -834,7 +866,7 @@ export class KernelAgentBase {
         parseFailure: lastParseFailure,
       });
 
-      const retried = await this.runner.runTurn(retryPrompt, {
+      const retried = await this.runner.runTurn(retryPrompt, undefined, {
         sessionId: params.sessionId,
         systemPrompt: params.systemPrompt,
         history: params.history,

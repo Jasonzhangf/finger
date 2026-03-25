@@ -6,9 +6,9 @@
 
 import type { AgentRuntimeDeps } from './agent-runtime/types.js';
 import { PeriodicCheckRunner } from '../../agents/finger-system-agent/periodic-check.js';
-import { loadRegistry, saveRegistry, projectIdFromPath, registerAgent } from '../../agents/finger-system-agent/registry.js';
+import { loadRegistry } from '../../agents/finger-system-agent/registry.js';
 import type { AgentInfo } from '../../agents/finger-system-agent/registry.js';
-import { SYSTEM_AGENT_CONFIG, SYSTEM_PROJECT_PATH } from '../../agents/finger-system-agent/index.js';
+import { SYSTEM_AGENT_CONFIG } from '../../agents/finger-system-agent/index.js';
 import { logger } from '../../core/logger.js';
 import { FINGER_PATHS } from '../../core/finger-paths.js';
 import { promises as fs } from 'fs';
@@ -46,7 +46,7 @@ export class SystemAgentManager {
     if (this.started) return;
     this.started = true;
 
-    // 0. 从现有 sessions 初始化 registry（含默认监控）
+    // 0. 仅确保 registry 可读（监控项目以 registry 为唯一真源，不再从 sessions 自动导入）
     await this.initializeRegistryFromSessions();
 
     // 1. 创建或获取 System Agent 的 session
@@ -166,7 +166,8 @@ export class SystemAgentManager {
 
   private async resolvePeriodicCheckConfig(): Promise<{ enabled: boolean; intervalMs: number }> {
     const defaults = {
-      enabled: true,
+      // 默认关闭：避免与 HeartbeatScheduler 重复触发、导致空转与无意义唤醒。
+      enabled: false,
       intervalMs: DEFAULT_PERIODIC_CHECK_INTERVAL_MS,
     };
 
@@ -196,56 +197,15 @@ export class SystemAgentManager {
   }
 
   /**
-   * 从现有 sessions 初始化 registry，对已有项目默认启用监控
-   *
-   * 扫描 sessionManager 中所有 root sessions 的 projectPath，
-   * 对尚未注册的 project 自动创建 registry entry 并设置 monitored=true。
-   * 过滤掉系统内部路径（~/.finger/system 等）。
+   * 监控项目唯一真源：registry。
+   * 不再从 sessions 自动导入并开启 monitored，避免“显示项目 A，实际检查项目 B”。
    */
   private async initializeRegistryFromSessions(): Promise<void> {
     try {
-      const sessions = this.deps.sessionManager.listRootSessions();
-      const homeDir = FINGER_PATHS.home.replace(/\/+$/, '').toLowerCase();
-
-      let registry = await loadRegistry();
-      let needsSave = false;
-
-      for (const session of sessions) {
-        const rawPath = session.projectPath?.trim();
-        if (!rawPath) continue;
-
-        // 过滤系统内部路径
-        if (rawPath.toLowerCase().startsWith(homeDir + '/') || rawPath.toLowerCase() === homeDir) continue;
-        if (rawPath === SYSTEM_PROJECT_PATH) continue;
-        // 过滤临时路径
-        if (rawPath.startsWith('/tmp/') || rawPath.startsWith('/var/folders/')) continue;
-
-        const projectId = projectIdFromPath(rawPath);
-        if (registry.agents[projectId]) continue; // 已存在则跳过
-
-        const projectName = session.name || rawPath.split('/').pop() || 'unknown';
-        const now = new Date().toISOString();
-
-        await registerAgent({
-          projectId,
-          projectPath: rawPath,
-          projectName,
-          agentId: '',
-          status: 'idle',
-          lastHeartbeat: now,
-          monitored: true,
-          monitorUpdatedAt: now,
-          stats: { tasksCompleted: 0, tasksFailed: 0, uptime: 0 },
-        } satisfies AgentInfo);
-        registry = await loadRegistry();
-        needsSave = false;
-        log.info(`[SystemAgentManager] Registered project: ${rawPath} (monitoring enabled)`);
-      }
-
-      if (needsSave) {
-        await saveRegistry(registry);
-        log.info(`[SystemAgentManager] Registry initialized: ${Object.keys(registry.agents).length} projects`);
-      }
+      const registry = await loadRegistry();
+      log.info('[SystemAgentManager] Registry loaded (session auto-import disabled)', {
+        projects: Object.keys(registry.agents).length,
+      });
     } catch (err) {
       const error = err instanceof Error ? err : new Error(String(err));
       log.error('[SystemAgentManager] Failed to initialize registry from sessions:', error);

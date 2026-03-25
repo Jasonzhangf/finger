@@ -9,7 +9,6 @@ const CORE_EXECUTION_TOOLS = [
   'web_search',
   'update_plan',
   'context_ledger.memory',
-  'report-task-completion',
   'clock',
   'command.exec',
 ] as const;
@@ -80,7 +79,7 @@ export const BASE_AGENT_ROLE_CONFIG: Record<BaseAgentRole, BaseAgentRoleConfig> 
   project: {
     role: 'project',
     description: 'Project agent. Handles project-scoped planning, coding, execution, and verification work.',
-    allowedTools: dedupeTools([...ORCHESTRATOR_FULL_TOOLS], [...MAILBOX_TOOLS]),
+    allowedTools: dedupeTools([...ORCHESTRATOR_FULL_TOOLS], [...MAILBOX_TOOLS], ['report-task-completion']),
     defaultLedgerCanReadAll: true,
   },
   reviewer: {

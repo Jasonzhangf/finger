@@ -9,9 +9,8 @@
 
 import type { AgentRuntimeDeps } from '../../server/modules/agent-runtime/types.js';
 import { SessionControlPlaneStore } from '../../runtime/session-control-plane.js';
-import { updateAgentStatus, updateHeartbeat, listAgents } from './registry.js';
+import { updateAgentStatus, listAgents } from './registry.js';
 import { emitAgentStatusChanged } from './system-events.js';
-import { logger } from '../../core/logger.js';
 import { createConsoleLikeLogger } from '../../core/logger/console-like.js';
 
 const clog = createConsoleLikeLogger('PeriodicCheck');
@@ -21,8 +20,6 @@ const DEFAULT_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes
 export interface PeriodicCheckConfig {
   intervalMs?: number;
 }
-
-const log = logger.module('PeriodicCheckRunner');
 
 export class PeriodicCheckRunner {
   private timer: NodeJS.Timeout | null = null;
@@ -78,8 +75,8 @@ export class PeriodicCheckRunner {
       await updateAgentStatus(registryEntry.projectId, nextStatus);
       emitAgentStatusChanged(this.deps, { agentId, status: nextStatus, projectId: registryEntry.projectId });
 
-      // 仅对 idle agent 发送心跳提示词
-      if (status === 'idle') {
+      // 仅对 idle + monitored agent 发送心跳提示词（监控路径以 registry 为真源）
+      if (status === 'idle' && registryEntry.monitored === true) {
         await this.sendHeartbeatPrompt(agentId, registryEntry.projectPath);
       }
     }

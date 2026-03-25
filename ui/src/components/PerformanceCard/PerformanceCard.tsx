@@ -1,4 +1,4 @@
-import React, { useState, useCallback } from 'react';
+import React, { useState, useCallback, useEffect } from 'react';
 import { useWebSocket } from '../../hooks/useWebSocket.js';
 import './PerformanceCard.css';
 
@@ -34,8 +34,26 @@ interface PerformanceMetrics {
 
 export const PerformanceCard: React.FC<{ paused?: boolean }> = ({ paused = false }) => {
   const [metrics, setMetrics] = useState<PerformanceMetrics | null>(null);
+  const [lastWsMessageAt, setLastWsMessageAt] = useState<number | null>(null);
+  const [lastLiveEventAt, setLastLiveEventAt] = useState<number | null>(null);
+  const [nowMs, setNowMs] = useState(Date.now());
+
+  useEffect(() => {
+    const timer = setInterval(() => setNowMs(Date.now()), 1000);
+    return () => clearInterval(timer);
+  }, []);
+
   const handleWebSocketMessage = useCallback((msg: { type: string; payload?: unknown }) => {
     if (paused) return;
+    const now = Date.now();
+    setLastWsMessageAt(now);
+    if (
+      msg.type !== 'performance_metrics'
+      && msg.type !== 'subscribe_confirmed'
+      && msg.type !== 'client_id_assigned'
+    ) {
+      setLastLiveEventAt(now);
+    }
     if (msg.type !== 'performance_metrics') return;
     const payload = msg.payload as Record<string, unknown> | null;
     const next = payload && typeof payload === 'object' && payload !== null && 'metrics' in payload
@@ -46,7 +64,46 @@ export const PerformanceCard: React.FC<{ paused?: boolean }> = ({ paused = false
     }
   }, [paused]);
 
-  useWebSocket(handleWebSocketMessage);
+  const { isConnected } = useWebSocket(handleWebSocketMessage);
+
+  const ageSeconds = (timestamp: number | null): number | null => {
+    if (!timestamp) return null;
+    return Math.max(0, Math.floor((nowMs - timestamp) / 1000));
+  };
+
+  const wsAge = ageSeconds(lastWsMessageAt);
+  const liveEventAge = ageSeconds(lastLiveEventAt);
+
+  const wsChipClass = !isConnected
+    ? 'critical'
+    : wsAge == null
+      ? 'warning'
+      : wsAge > 12
+        ? 'warning'
+        : 'good';
+
+  const liveEventChipClass = (() => {
+    if (!isConnected) return 'critical';
+    const activeTasks = metrics?.scheduling.activeTasks ?? 0;
+    if (activeTasks > 0) {
+      if (liveEventAge == null || liveEventAge > 20) return 'critical';
+      if (liveEventAge > 8) return 'warning';
+      return 'good';
+    }
+    if (liveEventAge == null) return 'subtle';
+    if (liveEventAge > 120) return 'warning';
+    return 'good';
+  })();
+
+  const wsText = !isConnected
+    ? 'WS 断开'
+    : wsAge == null
+      ? 'WS 连接中'
+      : `WS ${wsAge}s`;
+
+  const liveEventText = liveEventAge == null
+    ? '实时事件 idle'
+    : `实时事件 ${liveEventAge}s`;
 
   const getStatusClass = (value: number, thresholds: { warning: number; critical: number }) => {
     if (value >= thresholds.critical) return 'critical';
@@ -78,7 +135,11 @@ export const PerformanceCard: React.FC<{ paused?: boolean }> = ({ paused = false
           <span className="performance-indicator"></span>
           Performance
         </div>
-        <div className="performance-bar-loading">Waiting for metrics...</div>
+        <div className="performance-bar-metrics">
+          <span className={`metric-chip ${wsChipClass}`}>{wsText}</span>
+          <span className={`metric-chip ${liveEventChipClass}`}>{liveEventText}</span>
+          <span className="performance-bar-loading">Waiting for metrics...</span>
+        </div>
       </div>
     );
   }
@@ -109,6 +170,12 @@ export const PerformanceCard: React.FC<{ paused?: boolean }> = ({ paused = false
         </span>
         <span className={`metric-chip ${getStatusClass(metrics.system.memoryUsedMB, { warning: 256, critical: 512 })}`}>
           内存 {metrics.system.memoryUsedMB}MB
+        </span>
+        <span className={`metric-chip ${wsChipClass}`}>
+          {wsText}
+        </span>
+        <span className={`metric-chip ${liveEventChipClass}`}>
+          {liveEventText}
         </span>
         <span className="metric-chip subtle">
           运行 {formatUptime(metrics.system.uptimeSeconds)}

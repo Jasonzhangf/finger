@@ -42,6 +42,7 @@ import { registerDryrunRoutes } from './dryrun.js';
 import { registerRuntimePathRoutes } from './runtime-paths.js';
 import { registerProjectRoutes } from './projects.js';
 import { registerClockRoutes } from './clock.js';
+import { registerHeartbeatRoutes } from './heartbeat.js';
 import { registerSystemRegistryRoutes } from './system-registry.js';
 import { registerLedgerRoutes } from './ledger-routes.js';
 
@@ -239,6 +240,9 @@ export function registerAllRoutes(app: Express, deps: RegisterAllRoutesDeps): vo
   registerProjectRoutes(app, {
     registry: deps.registry,
   });
+
+  registerHeartbeatRoutes(app);
+  registerClockRoutes(app, {});
 
   registerSystemRegistryRoutes(app);
 

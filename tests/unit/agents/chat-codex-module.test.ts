@@ -52,7 +52,7 @@ describe('chat-codex module', () => {
     expect(runTurnMock).toHaveBeenCalledTimes(1);
     const callArgs = runTurnMock.mock.calls[0];
     expect(callArgs[0]).toBe('hello');
-    expect(callArgs[1]).toBeUndefined();
+    expect(callArgs[1]).toEqual([{ type: 'text', text: 'hello' }]);
     expect(callArgs[2]).toEqual(
       expect.objectContaining({
         sessionId: expect.any(String),
@@ -84,7 +84,7 @@ describe('chat-codex module', () => {
 
     expect(runTurnMock).toHaveBeenCalledWith(
       'alias-input',
-      undefined,
+      [{ type: 'text', text: 'alias-input' }],
       expect.objectContaining({
         sessionId: expect.any(String),
       }),
@@ -174,6 +174,56 @@ describe('chat-codex module', () => {
     );
   });
 
+  it('keeps user text when metadata.inputItems only contains image', async () => {
+    runTurnMock.mockResolvedValue({
+      reply: 'IMAGE_WITH_TEXT_OK',
+      events: [],
+      usedBinaryPath: '/tmp/finger-kernel-bridge-bin',
+    });
+    const module = createChatCodexModule({}, runner);
+
+    await module.handle({
+      text: '请描述这张图',
+      metadata: {
+        inputItems: [
+          { type: 'local_image', path: '/tmp/demo.jpg' },
+        ],
+      },
+    });
+
+    expect(runTurnMock).toHaveBeenCalledWith(
+      '请描述这张图',
+      [
+        { type: 'text', text: '请描述这张图' },
+        { type: 'local_image', path: '/tmp/demo.jpg' },
+      ],
+      expect.objectContaining({
+        sessionId: expect.any(String),
+      }),
+    );
+  });
+
+  it('keeps view_image tool available when turn has injected image input', async () => {
+    runTurnMock.mockResolvedValue({
+      reply: 'IMAGE_TOOL_FILTER_OK',
+      events: [],
+      usedBinaryPath: '/tmp/finger-kernel-bridge-bin',
+    });
+    const module = createChatCodexModule({}, runner);
+
+    await module.handle({
+      text: '请看图',
+      metadata: {
+        inputItems: [
+          { type: 'local_image', path: '/tmp/demo.jpg' },
+        ],
+      },
+    });
+
+    const tools = (runTurnMock.mock.calls[0]?.[2]?.tools ?? []).map((tool) => tool.name);
+    expect(tools).toContain('view_image');
+  });
+
   it('maps unified input tools into structured tool specifications', async () => {
     runTurnMock.mockResolvedValue({
       reply: 'TOOLS_OK',
@@ -189,7 +239,7 @@ describe('chat-codex module', () => {
 
     expect(runTurnMock).toHaveBeenCalledWith(
       'run tool',
-      undefined,
+      [{ type: 'text', text: 'run tool' }],
       expect.objectContaining({
         tools: [
           expect.objectContaining({

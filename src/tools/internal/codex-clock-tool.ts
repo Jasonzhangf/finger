@@ -6,7 +6,6 @@ import { InternalTool } from './types.js';
 import { computeNextCronFireAt, validateTimezone } from './codex-clock-cron.js';
 import {
   type ClockTimer,
-  type ClockStore,
   type ClockCreatePayload,
   type ClockListPayload,
   type ClockCancelPayload,
@@ -142,9 +141,18 @@ class ClockStoreManager {
 
     if (!existsSync(this.storePath)) return;
     try {
-      const parsed = JSON.parse(readFileSync(this.storePath, 'utf-8')) as ClockStore;
-      for (const timer of Array.isArray(parsed.timers) ? parsed.timers : []) {
-        if (isClockTimer(timer)) this.timers.set(timer.timer_id, timer);
+      const raw = readFileSync(this.storePath, 'utf-8');
+      const lines = raw
+        .split('\n')
+        .map((line) => line.trim())
+        .filter((line) => line.length > 0);
+      for (const line of lines) {
+        try {
+          const timer = JSON.parse(line) as ClockTimer;
+          if (isClockTimer(timer)) this.timers.set(timer.timer_id, timer);
+        } catch {
+          // ignore invalid jsonl line
+        }
       }
     } catch {
       // ignore invalid persisted store
@@ -199,10 +207,10 @@ class ClockStoreManager {
     const dir = path.dirname(this.storePath);
     if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
 
-    const payload: ClockStore = {
-      timers: Array.from(this.timers.values()).sort((left, right) => left.timer_id.localeCompare(right.timer_id)),
-    };
-    writeFileSync(this.storePath, JSON.stringify(payload, null, 2), 'utf-8');
+    const lines = Array.from(this.timers.values())
+      .sort((left, right) => left.timer_id.localeCompare(right.timer_id))
+      .map((timer) => JSON.stringify(timer));
+    writeFileSync(this.storePath, `${lines.join('\n')}${lines.length > 0 ? '\n' : ''}`, 'utf-8');
   }
 }
 
@@ -275,8 +283,8 @@ export function resetClockStore(): void {
 function resolveClockStorePath(): string {
   const envPath = process.env.FINGER_CLOCK_STORE_PATH;
   if (envPath && envPath.trim().length > 0) return envPath.trim();
-  ensureDir(FINGER_PATHS.runtime.clockDir);
-  return path.join(FINGER_PATHS.runtime.clockDir, 'tool-timers.json');
+  ensureDir(FINGER_PATHS.runtime.schedulesDir);
+  return path.join(FINGER_PATHS.runtime.schedulesDir, 'clock-timers.jsonl');
 }
 
 function normalizeCreateSchedule(payload: ClockCreatePayload, now: Date): NormalizedSchedule {

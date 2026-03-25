@@ -6,15 +6,12 @@ import { heartbeatMailbox } from './heartbeat-mailbox.js';
 import { listAgents } from '../../agents/finger-system-agent/registry.js';
 import type { AgentRuntimeDeps } from './agent-runtime/types.js';
 import { SessionControlPlaneStore } from '../../runtime/session-control-plane.js';
+import { SYSTEM_PROJECT_PATH } from '../../agents/finger-system-agent/index.js';
+import { buildHeartbeatEnvelope, type MailboxEnvelope } from './mailbox-envelope.js';
 import {
-  resolveHeartbeatMdPath,
-  shouldStopHeartbeat,
-  validateHeartbeatMd,
-  truncateHeartbeatRecords,
-  checkHeartbeatNeedsTruncation,
-} from './heartbeat-md-parser.js';
-import { buildHeartbeatEnvelope, formatEnvelopesForContext, type MailboxEnvelope } from './mailbox-envelope.js';
-import { formatLegacyMailboxPrompt, resolveProjectPath, dispatchAutoRepairTask, buildMailboxCheckTargets, cleanupDispatchResultNotifications } from './heartbeat-helpers.js';
+  resolveProjectPath,
+  promptMailboxChecks,
+} from './heartbeat-helpers.js';
 
 const log = logger.module('HeartbeatScheduler');
 
@@ -29,6 +26,8 @@ interface HeartbeatTaskConfig {
 }
 
 interface HeartbeatProjectConfig extends HeartbeatTaskConfig {
+  path?: string;
+  realPath?: string;
   tasks?: Record<string, HeartbeatTaskConfig>;
 }
 
@@ -44,14 +43,87 @@ interface LoadConfigResult {
   created?: boolean;
 }
 
-const DEFAULT_TICK_MS = 10_000; // 10 seconds (configurable via heartbeat-tasks.json)
-const DEFAULT_TASK_INTERVAL_MS = 5 * 60_000; // 5 minutes
-const DEFAULT_MAILBOX_CHECK_INTERVAL_MS = 5 * 60_000; // 5 minutes
-const HEARTBEAT_RECORDS_MAX = 10;
-const HEARTBEAT_TRUNCATE_CHECK_INTERVAL_MS = 10 * 60_000; // 10 minutes
-const CONFIG_PATH = path.join(FINGER_PATHS.config.dir, 'heartbeat-tasks.json');
+const DEFAULT_TICK_MS = 10_000;
+const DEFAULT_TASK_INTERVAL_MS = 5 * 60_000;
+const DEFAULT_MAILBOX_CHECK_INTERVAL_MS = 5 * 60_000;
+const CONFIG_PATH = path.join(FINGER_PATHS.runtime.schedulesDir, 'heartbeat-config.jsonl');
+const TASK_PATH = path.join(FINGER_PATHS.runtime.schedulesDir, 'heartbeat-tasks.jsonl');
 const CONFIG_RELOAD_DEBOUNCE_MS = 1000;
 const SYSTEM_AGENT_ID = 'finger-system-agent';
+
+function normalizeProjectPath(value: string): string {
+  return value.trim().replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
+}
+
+async function readJsonlHeartbeatConfig(configPath: string): Promise<HeartbeatConfig> {
+  try {
+    const raw = await fs.readFile(configPath, 'utf-8');
+    const lines = raw.split('\n').map((l) => l.trim()).filter((l) => l.length > 0);
+    for (let i = lines.length - 1; i >= 0; i -= 1) {
+      try {
+        const parsed = JSON.parse(lines[i]);
+        if (parsed?.type === 'heartbeat_config' && typeof parsed.config === 'object') return parsed.config;
+      } catch { /* skip */ }
+    }
+  } catch { /* file does not exist */ }
+  return { global: { intervalMs: DEFAULT_TASK_INTERVAL_MS, enabled: true, dispatch: 'mailbox' }, projects: {} };
+}
+
+interface JsonlTaskRecord {
+  ts: string;
+  type: string;
+  action: string;
+  task: { text: string; section?: string; status?: string };
+  batch?: Array<{ text: string; section?: string; status?: string }>;
+}
+
+async function readJsonlTasks(): Promise<string[]> {
+  try {
+    const raw = await fs.readFile(TASK_PATH, 'utf-8');
+    const lines = raw.split('\n').map((l) => l.trim()).filter((l) => l.length > 0);
+    const byText = new Map<string, 'pending' | 'completed'>();
+    for (const line of lines) {
+      try {
+        const rec = JSON.parse(line) as JsonlTaskRecord;
+        if (rec.type !== 'heartbeat_task') continue;
+        if (rec.action === 'batch_add' && Array.isArray(rec.batch)) {
+          for (const item of rec.batch) {
+            const text = (item.text ?? '').trim();
+            if (text && item.status !== 'completed') byText.set(text, 'pending');
+          }
+          continue;
+        }
+        if (rec.action === 'batch_complete' && Array.isArray(rec.batch)) {
+          for (const item of rec.batch) { const t = (item.text ?? '').trim(); if (t) byText.set(t, 'completed'); }
+          continue;
+        }
+        if (rec.action === 'batch_remove' && Array.isArray(rec.batch)) {
+          for (const item of rec.batch) { const t = (item.text ?? '').trim(); if (t) byText.delete(t); }
+          continue;
+        }
+        const text = (rec.task?.text ?? '').trim();
+        if (!text) continue;
+        if (rec.action === 'remove') { byText.delete(text); continue; }
+        if (rec.action === 'add') { byText.set(text, rec.task?.status === 'completed' ? 'completed' : 'pending'); continue; }
+        if (rec.action === 'complete') { byText.set(text, 'completed'); continue; }
+      } catch { /* skip */ }
+    }
+    return Array.from(byText.entries()).filter(([, s]) => s === 'pending').map(([t]) => t);
+  } catch { return []; }
+}
+
+function buildHeartbeatPrompt(pendingTasks: string[]): string {
+  if (pendingTasks.length === 0) return '';
+  const taskLines = pendingTasks.map((text, i) => `${i + 1}. ${text}`).join('\n');
+  return [
+    '# Heartbeat Check', '',
+    '当前待办任务：', taskLines, '',
+    '处理规则：',
+    '1. 使用 heartbeat.completeTask 标记已完成的任务。',
+    '2. 无法处理的任务保持现状，等待下一轮。',
+    '3. 完成后用 heartbeat.listTasks 确认剩余任务。',
+  ].join('\n');
+}
 
 export class HeartbeatScheduler {
   private timer: NodeJS.Timeout | null = null;
@@ -61,7 +133,6 @@ export class HeartbeatScheduler {
   private lastRun: Map<string, number> = new Map();
   private lastMailboxPromptAt: Map<string, number> = new Map();
   private mailboxPromptDeferredByAgent: Set<string> = new Set();
-  private lastHeartbeatTruncateCheckAt = 0;
 
   constructor(private deps: AgentRuntimeDeps) {}
 
@@ -69,22 +140,14 @@ export class HeartbeatScheduler {
     await this.loadConfig();
     this.watchConfig();
     if (!this.timer) {
-      this.timer = setInterval(() => {
-        void this.tick();
-      }, DEFAULT_TICK_MS);
+      this.timer = setInterval(() => { void this.tick(); }, DEFAULT_TICK_MS);
       log.info(`[HeartbeatScheduler] Started (tick=${DEFAULT_TICK_MS}ms)`);
     }
   }
 
   stop(): void {
-    if (this.timer) {
-      clearInterval(this.timer);
-      this.timer = null;
-    }
-    if (this.configWatcher) {
-      this.configWatcher.close();
-      this.configWatcher = null;
-    }
+    if (this.timer) { clearInterval(this.timer); this.timer = null; }
+    if (this.configWatcher) { this.configWatcher.close(); this.configWatcher = null; }
   }
 
   private async loadConfig(): Promise<LoadConfigResult> {
@@ -96,24 +159,16 @@ export class HeartbeatScheduler {
           global: { intervalMs: DEFAULT_TASK_INTERVAL_MS, enabled: true, dispatch: 'mailbox' },
           projects: {},
         };
-        await fs.writeFile(CONFIG_PATH, JSON.stringify(defaultConfig, null, 2), 'utf-8');
+        await fs.appendFile(CONFIG_PATH,
+          `${JSON.stringify({ ts: new Date().toISOString(), type: 'heartbeat_config', config: defaultConfig })}\n`, 'utf-8');
         this.config = defaultConfig;
         log.info('[HeartbeatScheduler] Default config created');
         return { ok: true, config: defaultConfig, created: true };
       }
-      const raw = await fs.readFile(CONFIG_PATH, 'utf-8');
-      let parsed: HeartbeatConfig;
-      try {
-        parsed = JSON.parse(raw) as HeartbeatConfig;
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        log.warn('[HeartbeatScheduler] Failed to parse config', { message });
-        return { ok: false, error: message };
-      }
-      this.config = parsed;
+      this.config = await readJsonlHeartbeatConfig(CONFIG_PATH);
       this.lastConfigReloadAt = Date.now();
       log.info('[HeartbeatScheduler] Config loaded');
-      return { ok: true, config: parsed };
+      return { ok: true, config: this.config, created: false };
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       log.warn('[HeartbeatScheduler] Failed to load config', { message });
@@ -126,8 +181,7 @@ export class HeartbeatScheduler {
     try {
       this.configWatcher = watch(CONFIG_PATH, { persistent: false }, (eventType) => {
         if (eventType !== 'change') return;
-        const now = Date.now();
-        if (now - this.lastConfigReloadAt < CONFIG_RELOAD_DEBOUNCE_MS) return;
+        if (Date.now() - this.lastConfigReloadAt < CONFIG_RELOAD_DEBOUNCE_MS) return;
         void this.loadConfig();
       });
       log.info(`[HeartbeatScheduler] Watching config: ${CONFIG_PATH}`);
@@ -137,74 +191,38 @@ export class HeartbeatScheduler {
   }
 
   private async tick(): Promise<void> {
-    try {
-      await this.trimHeartbeatRecordsIfNeeded();
-    } catch (error) {
-      log.error('[HeartbeatScheduler] trimHeartbeatRecordsIfNeeded error', error instanceof Error ? error : undefined);
-    }
-    try {
-      await this.dispatchDueTasks();
-    } catch (error) {
-      log.error('[HeartbeatScheduler] dispatchDueTasks error', error instanceof Error ? error : undefined);
-    }
-    try {
-      await this.promptMailboxChecks();
-    } catch (error) {
-      log.error('[HeartbeatScheduler] promptMailboxChecks error', error instanceof Error ? error : undefined);
-    }
-  }
-
-  private async trimHeartbeatRecordsIfNeeded(): Promise<void> {
-    const now = Date.now();
-    if (now - this.lastHeartbeatTruncateCheckAt < HEARTBEAT_TRUNCATE_CHECK_INTERVAL_MS) {
-      return;
-    }
-    this.lastHeartbeatTruncateCheckAt = now;
-
-    const heartbeatMdPath = resolveHeartbeatMdPath('finger-system-agent', undefined, FINGER_PATHS.home);
-    if (!heartbeatMdPath) return;
-
-    const needsTruncate = await checkHeartbeatNeedsTruncation(heartbeatMdPath, HEARTBEAT_RECORDS_MAX * 2);
-    if (!needsTruncate) return;
-
-    const result = await truncateHeartbeatRecords(heartbeatMdPath, HEARTBEAT_RECORDS_MAX);
-    if (result.truncated) {
-      log.info('[HeartbeatScheduler] Truncated HEARTBEAT.md records', {
-        path: heartbeatMdPath,
-        before: result.before,
-        after: result.after,
-      });
-    }
+    try { await this.dispatchDueTasks(); }
+    catch (error) { log.error('[HeartbeatScheduler] dispatchDueTasks error', error instanceof Error ? error : undefined); }
+    try { await this.promptMailboxChecks(); }
+    catch (error) { log.error('[HeartbeatScheduler] promptMailboxChecks error', error instanceof Error ? error : undefined); }
   }
 
   private async dispatchDueTasks(): Promise<void> {
     const agents = await listAgents();
-    const projectById = new Map(agents.map(a => [a.projectId, a]));
+    const monitoredAgents = agents.filter((a) => a.monitored === true);
 
-    // Global task
     if (this.config.global?.enabled !== false) {
       const interval = this.config.global?.intervalMs ?? DEFAULT_TASK_INTERVAL_MS;
       if (this.shouldRun('global', interval)) {
-        await this.dispatchTask('finger-system-agent', 'global', undefined, this.config.global);
+        const pendingTasks = await readJsonlTasks();
+        if (pendingTasks.length > 0) {
+          const prompt = this.config.global?.prompt ?? buildHeartbeatPrompt(pendingTasks);
+          await this.dispatchTask('finger-system-agent', 'global', undefined, { ...this.config.global, prompt });
+        }
         this.lastRun.set('global', Date.now());
       }
     }
 
-    // Project tasks
-    for (const [projectId, projectConfig] of Object.entries(this.config.projects ?? {})) {
+    for (const agent of monitoredAgents) {
+      const projectId = agent.projectId;
+      const projectConfig = this.resolveProjectConfig(agent.projectId, agent.projectPath);
       if (projectConfig.enabled === false) continue;
-      const agent = projectById.get(projectId);
-      if (!agent) continue;
-
-      // Project-level heartbeat
       const projectKey = `project:${projectId}`;
       const projectInterval = projectConfig.intervalMs ?? this.config.global?.intervalMs ?? DEFAULT_TASK_INTERVAL_MS;
       if (this.shouldRun(projectKey, projectInterval)) {
         await this.dispatchTask(agent.agentId, projectKey, projectId, projectConfig);
         this.lastRun.set(projectKey, Date.now());
       }
-
-      // Task-level overrides
       for (const [taskId, taskConfig] of Object.entries(projectConfig.tasks ?? {})) {
         if (taskConfig.enabled === false) continue;
         const taskKey = `task:${projectId}:${taskId}`;
@@ -217,296 +235,113 @@ export class HeartbeatScheduler {
     }
   }
 
-  private shouldRun(key: string, intervalMs: number): boolean {
-    const last = this.lastRun.get(key) ?? 0;
-    return Date.now() - last >= intervalMs;
+  private resolveProjectConfig(projectId: string, projectPath: string): HeartbeatProjectConfig {
+    const byId = this.config.projects?.[projectId];
+    if (byId) return byId;
+    const normalizedPath = normalizeProjectPath(projectPath);
+    for (const config of Object.values(this.config.projects ?? {})) {
+      const candidates = [config.path, config.realPath]
+        .filter((item): item is string => typeof item === 'string' && item.trim().length > 0)
+        .map((item) => normalizeProjectPath(item));
+      if (candidates.includes(normalizedPath)) return config;
+    }
+    return {};
   }
 
-  private hasPendingHeartbeatTask(
-    targetAgentId: string,
-    taskId: string,
-    projectId: string | undefined,
-  ): boolean {
-    const pending = heartbeatMailbox.list(targetAgentId, {
-      status: 'pending',
-      category: 'heartbeat-task',
-    });
+  private shouldRun(key: string, intervalMs: number): boolean {
+    return Date.now() - (this.lastRun.get(key) ?? 0) >= intervalMs;
+  }
+
+  private hasPendingHeartbeatTask(targetAgentId: string, taskId: string, projectId: string | undefined): boolean {
+    const pending = heartbeatMailbox.list(targetAgentId, { status: 'pending', category: 'heartbeat-task' });
     return pending.some((message) => {
-      const content = typeof message.content === 'object' && message.content
-        ? message.content as Record<string, unknown>
-        : {};
-      const contentTaskId = typeof content.taskId === 'string' ? content.taskId.trim() : '';
-      const contentProjectId = typeof content.projectId === 'string' ? content.projectId.trim() : '';
-      const normalizedProjectId = (projectId ?? '').trim();
-      return contentTaskId === taskId && contentProjectId === normalizedProjectId;
+      const content = typeof message.content === 'object' && message.content ? message.content as Record<string, unknown> : {};
+      return (typeof content.taskId === 'string' ? content.taskId.trim() : '') === taskId
+        && (typeof content.projectId === 'string' ? content.projectId.trim() : '') === (projectId ?? '').trim();
     });
   }
 
   private async dispatchTask(
-    targetAgentId: string,
-    taskId: string,
-    projectId: string | undefined,
-    config?: HeartbeatTaskConfig,
+    targetAgentId: string, taskId: string, projectId: string | undefined, config?: HeartbeatTaskConfig,
   ): Promise<void> {
-    const heartbeatMdPath = resolveHeartbeatMdPath(projectId, await resolveProjectPath(projectId), FINGER_PATHS.home);
-
-    // Validate HEARTBEAT.md format
-    if (heartbeatMdPath) {
-      const validation = await validateHeartbeatMd(heartbeatMdPath);
-      if (!validation.valid) {
-        log.warn('[HeartbeatScheduler] HEARTBEAT.md validation failed', {
-          projectId,
-          heartbeatMdPath,
-          errors: validation.errors,
-          warnings: validation.warnings,
-        });
-
-        // Dispatch auto-repair task to system agent
-        dispatchAutoRepairTask(projectId, heartbeatMdPath, validation);
-
-        // Do not proceed with heartbeat dispatch when format is invalid
-        return;
-      }
-
-      // Check auto-stop conditions
-      const stopResult = await shouldStopHeartbeat(heartbeatMdPath);
-      if (stopResult.shouldStop) {
-        log.info('[HeartbeatScheduler] Heartbeat auto-stop triggered', {
-          projectId,
-          heartbeatMdPath,
-          reason: stopResult.reason,
-        });
-        return;
-      }
-
-      // If checklist exists and there is no open task, skip this heartbeat dispatch.
-      const checklistStats = stopResult.checklistStats;
-      if (
-        checklistStats
-        && checklistStats.total > 0
-        && checklistStats.unchecked === 0
-      ) {
-        log.debug('[HeartbeatScheduler] Skip heartbeat dispatch: no open checklist tasks', {
-          targetAgentId,
-          taskId,
-          projectId,
-          total: checklistStats.total,
-          checked: checklistStats.checked,
-          unchecked: checklistStats.unchecked,
-        });
-        return;
-      }
+    const projectPath = projectId ? await resolveProjectPath(projectId) : SYSTEM_PROJECT_PATH;
+    if (projectId && !projectPath) {
+      log.warn('[HeartbeatScheduler] Skip: project path not found', { targetAgentId, taskId, projectId });
+      return;
     }
 
-    const dispatchMode = config?.dispatch ?? 'mailbox';
-    const prompt = config?.prompt
-      ?? `# Heartbeat Check\n\n请检查项目根目录的 HEARTBEAT.md 并执行待办任务。\n\n` +
-         (projectId ? `项目ID: ${projectId}\n` : '');
+    let prompt = config?.prompt ?? '';
+    if (!prompt && !projectId) {
+      const pendingTasks = await readJsonlTasks();
+      if (pendingTasks.length === 0) {
+        log.debug('[HeartbeatScheduler] Skip: no pending tasks', { targetAgentId, taskId });
+        return;
+      }
+      prompt = buildHeartbeatPrompt(pendingTasks);
+    } else if (!prompt && projectId) {
+      prompt = buildHeartbeatPrompt([]);
+    }
+    if (!prompt.trim()) {
+      log.debug('[HeartbeatScheduler] Skip: empty prompt', { targetAgentId, taskId, projectId });
+      return;
+    }
 
-    if (dispatchMode === 'dispatch') {
+    if (config?.dispatch === 'dispatch') {
       await this.dispatchDirect(targetAgentId, taskId, projectId, prompt);
       return;
     }
 
     if (this.hasPendingHeartbeatTask(targetAgentId, taskId, projectId)) {
-      log.debug('[HeartbeatScheduler] Skip heartbeat mailbox append: pending task already exists', {
-        targetAgentId,
-        taskId,
-        projectId,
-      });
+      log.debug('[HeartbeatScheduler] Skip: pending heartbeat task exists', { targetAgentId, taskId, projectId });
       return;
     }
 
     const envelope = buildHeartbeatEnvelope(prompt, projectId);
     heartbeatMailbox.append(targetAgentId, {
-      type: 'heartbeat-task',
-      taskId,
-      projectId,
-      prompt,
-      envelope,
-      envelopeId: envelope.id,
-      requiresFeedback: true,
+      type: 'heartbeat-task', taskId, projectId, prompt, envelope, envelopeId: envelope.id, requiresFeedback: true,
     }, {
-      sender: 'system-heartbeat',
-      sourceType: 'control',
-      category: 'heartbeat-task',
-      priority: 1,
-      metadata: { envelope },
+      sender: 'system-heartbeat', sourceType: 'control', category: 'heartbeat-task', priority: 1, metadata: { envelope },
     });
-    log.debug('[HeartbeatScheduler] Appended heartbeat envelope to mailbox', {
-      agentId: targetAgentId,
-      envelopeId: envelope.id,
-      taskId,
-    });
+    log.debug('[HeartbeatScheduler] Appended heartbeat envelope', { agentId: targetAgentId, envelopeId: envelope.id, taskId });
   }
 
   private async dispatchDirect(
-    targetAgentId: string,
-    taskId: string,
-    projectId: string | undefined,
-    prompt: string,
+    targetAgentId: string, taskId: string, projectId: string | undefined, prompt: string,
   ): Promise<void> {
     const sessionStore = new SessionControlPlaneStore();
     const bindings = sessionStore.list({ agentId: targetAgentId });
-    const latest = bindings[0];
-    let sessionId = latest?.fingerSessionId;
+    let sessionId = bindings[0]?.fingerSessionId;
     if (!sessionId && targetAgentId === SYSTEM_AGENT_ID) {
       const getSystemSession = (this.deps.sessionManager as any)?.getOrCreateSystemSession;
       if (typeof getSystemSession === 'function') {
         const systemSession = getSystemSession.call(this.deps.sessionManager);
-        if (systemSession?.id && typeof systemSession.id === 'string') {
-          sessionId = systemSession.id;
-        }
+        if (systemSession?.id && typeof systemSession.id === 'string') sessionId = systemSession.id;
       }
     }
     if (!sessionId) {
-      log.debug('[HeartbeatScheduler] Skip dispatchDirect without session binding', {
-        targetAgentId,
-        taskId,
-        projectId,
-      });
+      log.debug('[HeartbeatScheduler] Skip dispatchDirect: no session', { targetAgentId, taskId, projectId });
       return;
     }
-
     await this.deps.agentRuntimeBlock.execute('dispatch', {
-      sourceAgentId: 'system-heartbeat',
-      targetAgentId,
-      task: prompt,
-      sessionId,
-      metadata: {
-        source: 'system-heartbeat',
-        role: 'system',
-        systemDirectInject: true,
-        deliveryMode: 'direct',
-        taskId,
-        projectId,
-      },
+      sourceAgentId: 'system-heartbeat', targetAgentId, task: prompt, sessionId,
+      metadata: { source: 'system-heartbeat', role: 'system', systemDirectInject: true, deliveryMode: 'direct', taskId, projectId },
       blocking: false,
     });
   }
 
   private async promptMailboxChecks(): Promise<void> {
-    const projectAgents = await listAgents();
-    const agents = buildMailboxCheckTargets(projectAgents);
-    for (const agent of agents) {
-      const now = Date.now();
-      const mailboxCheckIntervalMs = this.resolveMailboxCheckIntervalMs(agent.projectId);
-      const lastPrompt = this.lastMailboxPromptAt.get(agent.agentId) ?? 0;
-      const due = now - lastPrompt >= mailboxCheckIntervalMs;
-
-      // Need pending snapshot before busy check:
-      // if check time arrives while busy, remember deferred check and execute it
-      // at the first idle window.
-      const pendingAll = heartbeatMailbox.listPending(agent.agentId) ?? [];
-
-      // Skip agents that are actively executing tasks
-      if (agent.status === 'busy') {
-        if (due && pendingAll.length > 0) {
-          this.mailboxPromptDeferredByAgent.add(agent.agentId);
-        }
-        log.debug('[HeartbeatScheduler] Skipping busy agent', { agentId: agent.agentId, status: agent.status });
-        continue;
-      }
-
-      const notificationCleanup = cleanupDispatchResultNotifications(agent.agentId);
-      if (notificationCleanup.removed > 0) {
-        log.debug('[HeartbeatScheduler] Cleaned dispatch-result notifications', {
-          agentId: agent.agentId,
-          matched: notificationCleanup.matched,
-          removed: notificationCleanup.removed,
-        });
-      }
-
-      const pendingSnapshot = notificationCleanup.removed > 0
-        ? (heartbeatMailbox.listPending(agent.agentId) ?? [])
-        : pendingAll;
-
-      if (pendingSnapshot.length === 0) {
-        this.mailboxPromptDeferredByAgent.delete(agent.agentId);
-        continue;
-      }
-
-      const actionablePending = pendingSnapshot.filter((msg) => msg.category !== 'notification');
-      const notificationOnly = actionablePending.length === 0;
-      const pending = notificationOnly ? pendingSnapshot : actionablePending;
-      const deferredNotificationCount = notificationOnly ? 0 : pendingSnapshot.length - actionablePending.length;
-      if (pending.length === 0) continue;
-
-      const deferred = this.mailboxPromptDeferredByAgent.has(agent.agentId);
-      if (!deferred && !due) continue;
-
-      // Build envelopes from pending messages
-      const envelopes: MailboxEnvelope[] = [];
-      const messageRefs: string[] = [];
-      for (const msg of pending) {
-        const msgContent = typeof msg.content === 'object' && msg.content ? msg.content as Record<string, unknown> : {};
-        const storedEnvelope = typeof msgContent.envelope === 'object' && msgContent.envelope
-          ? msgContent.envelope as MailboxEnvelope
-          : undefined;
-        if (storedEnvelope) {
-          envelopes.push(storedEnvelope);
-        } else if (msgContent.envelopeId) {
-          // Reconstruct a minimal envelope from stored content for formatting
-          const prompt = typeof msgContent.prompt === 'string' ? msgContent.prompt : '';
-          const projectId = typeof msgContent.projectId === 'string' ? msgContent.projectId : undefined;
-          if (prompt) {
-            envelopes.push(buildHeartbeatEnvelope(prompt, projectId));
-          }
-        }
-        const refParts = [
-          `messageId=${msg.id}`,
-          typeof msgContent.dispatchId === 'string' ? `dispatchId=${msgContent.dispatchId}` : null,
-          typeof msgContent.taskId === 'string' ? `taskId=${msgContent.taskId}` : null,
-        ].filter((part): part is string => typeof part === 'string');
-        messageRefs.push(`- ${refParts.join(' ')}`);
-      }
-
-      // Format mailbox context using envelope builder
-      const mailboxContext = envelopes.length > 0
-        ? formatEnvelopesForContext(envelopes)
-        : formatLegacyMailboxPrompt(pending);
-
-      const prompt = [
-        mailboxContext,
-        '',
-        ...(deferredNotificationCount > 0
-          ? [`还有 ${deferredNotificationCount} 条 notification 已延后，等当前待办清空后再读。`, '']
-          : []),
-        '待确认消息：',
-        ...(messageRefs.length > 0 ? messageRefs : ['- (none)']),
-        '',
-        ...(notificationOnly
-          ? [
-              '处理规则：',
-              '1. 这些是 notification 类消息，只在空闲时阅读。',
-              '2. 少量通知可直接 mailbox.read(id)；如果通知很多，优先用 mailbox.read_all({ category: "notification", unreadOnly: true }) 批量标记已读。',
-              '3. 如果只是通知，不需要 ack，也不要强行 report-task-completion；清理已消费通知可用 mailbox.remove_all({ category: "notification" })。',
-              '4. 如果读到其中包含真正待执行任务，再按任务语义处理。',
-            ]
-          : [
-              '处理规则：',
-              '1. 少量任务可逐条 mailbox.read(id)；如果同类待办很多，可先用 mailbox.read_all({ unreadOnly: true, category: "<category>" }) 批量读取，并将 pending 任务切到 processing。',
-              '2. 只有真正处理完成后才能调用 mailbox.ack(id, { summary/result })；失败时用 mailbox.ack(id, { status: "failed", error })。ack 后消息会自动清理。',
-              '3. 如果暂时无法处理，不要 ack；未读取的保持 pending，已读取的保持 processing。手动 mailbox.remove_all(...) 只用于清理 notification 或历史噪音。',
-              '',
-              '每个任务完成后必须调用 report-task-completion 工具提交 summary。',
-              '如果提交失败必须重试直到成功，避免断链。',
-            ]),
-      ].join('\n');
-      await this.dispatchDirect(agent.agentId, 'mailbox-check', agent.projectId, prompt);
-      this.lastMailboxPromptAt.set(agent.agentId, now);
-      this.mailboxPromptDeferredByAgent.delete(agent.agentId);
-    }
+    await promptMailboxChecks({
+      lastMailboxPromptAt: this.lastMailboxPromptAt,
+      mailboxPromptDeferredByAgent: this.mailboxPromptDeferredByAgent,
+      resolveMailboxCheckIntervalMs: (projectId?: string) => {
+        const projectConfig = projectId ? this.config.projects?.[projectId] : undefined;
+        const raw = projectConfig?.mailboxCheckIntervalMs
+          ?? this.config.global?.mailboxCheckIntervalMs
+          ?? DEFAULT_MAILBOX_CHECK_INTERVAL_MS;
+        return Number.isFinite(raw) && raw > 0 ? Math.floor(raw) : DEFAULT_MAILBOX_CHECK_INTERVAL_MS;
+      },
+      dispatchDirect: (targetAgentId, taskId, projectId, prompt) =>
+        this.dispatchDirect(targetAgentId, taskId, projectId, prompt),
+    });
   }
-
-  private resolveMailboxCheckIntervalMs(projectId?: string): number {
-    const projectConfig = projectId ? this.config.projects?.[projectId] : undefined;
-    const raw = projectConfig?.mailboxCheckIntervalMs
-      ?? this.config.global?.mailboxCheckIntervalMs
-      ?? DEFAULT_MAILBOX_CHECK_INTERVAL_MS;
-    return Number.isFinite(raw) && raw > 0
-      ? Math.floor(raw)
-      : DEFAULT_MAILBOX_CHECK_INTERVAL_MS;
-  }
-
 }

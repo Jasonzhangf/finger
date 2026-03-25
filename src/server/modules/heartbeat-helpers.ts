@@ -2,7 +2,7 @@
  * Heartbeat Scheduler Helpers
  *
  * Extracted from heartbeat-scheduler.ts to stay under 500-line limit.
- * Contains mailbox prompt formatting, auto-repair dispatch, and project resolution utilities.
+ * Contains mailbox prompt formatting, mailbox check dispatch, and project resolution utilities.
  */
 
 import { isObjectRecord } from '../common/object.js';
@@ -14,12 +14,10 @@ import { logger } from '../../core/logger.js';
 
 const log = logger.module('HeartbeatHelpers');
 
-
 const SYSTEM_AGENT_ID = 'finger-system-agent';
 
 /**
  * Build mailbox check targets from project agents list.
- * Ensures system agent is always included for dispatch-result notification handling.
  */
 export function buildMailboxCheckTargets(
   projectAgents: Awaited<ReturnType<typeof listAgents>>,
@@ -35,21 +33,14 @@ export function buildMailboxCheckTargets(
       status: agent.status,
     });
   }
-
-  // System agent mailbox is also part of runtime dispatch lifecycle.
-  // Must be checked periodically, otherwise dispatch-result notifications can accumulate.
   if (!seen.has(SYSTEM_AGENT_ID)) {
-    targets.push({
-      agentId: SYSTEM_AGENT_ID,
-      status: 'idle',
-    });
+    targets.push({ agentId: SYSTEM_AGENT_ID, status: 'idle' });
   }
   return targets;
 }
 
 /**
  * Clean up dispatch-result notifications from agent mailbox.
- * Returns count of matched and removed notifications.
  */
 export function cleanupDispatchResultNotifications(
   agentId: string,
@@ -58,17 +49,13 @@ export function cleanupDispatchResultNotifications(
     status: 'pending',
     category: 'notification',
   });
-  if (notifications.length === 0) {
-    return { matched: 0, removed: 0 };
-  }
+  if (notifications.length === 0) return { matched: 0, removed: 0 };
 
   const targets = notifications.filter((message) => {
     const content = isObjectRecord(message.content) ? message.content : null;
     return content?.type === 'dispatch-result';
   });
-  if (targets.length === 0) {
-    return { matched: notifications.length, removed: 0 };
-  }
+  if (targets.length === 0) return { matched: notifications.length, removed: 0 };
 
   let removed = 0;
   for (const message of targets) {
@@ -105,46 +92,129 @@ export async function resolveProjectPath(projectId: string | undefined): Promise
   return agent?.projectPath;
 }
 
+export interface MailboxCheckTarget {
+  agentId: string;
+  projectId?: string;
+  status: string;
+}
+
+export interface MailboxCheckContext {
+  lastMailboxPromptAt: Map<string, number>;
+  mailboxPromptDeferredByAgent: Set<string>;
+  resolveMailboxCheckIntervalMs: (projectId?: string) => number;
+  dispatchDirect: (targetAgentId: string, taskId: string, projectId: string | undefined, prompt: string) => Promise<void>;
+}
+
 /**
- * Dispatch an auto-repair task for HEARTBEAT.md format issues.
+ * Build and dispatch mailbox check prompts for all agents with pending messages.
+ * Extracted from HeartbeatScheduler to keep under 500-line limit.
  */
-export function dispatchAutoRepairTask(
-  projectId: string | undefined,
-  heartbeatMdPath: string,
-  validation: { errors: string[]; warnings: string[] },
-): void {
-  const targetAgentId = 'finger-system-agent';
-  const taskId = `heartbeat-repair:${projectId ?? 'global'}`;
+export async function promptMailboxChecks(
+  ctx: MailboxCheckContext,
+): Promise<void> {
+  const projectAgents = await listAgents();
+  const agents = buildMailboxCheckTargets(projectAgents);
+  for (const agent of agents) {
+    const now = Date.now();
+    const mailboxCheckIntervalMs = ctx.resolveMailboxCheckIntervalMs(agent.projectId);
+    const lastPrompt = ctx.lastMailboxPromptAt.get(agent.agentId) ?? 0;
+    const due = now - lastPrompt >= mailboxCheckIntervalMs;
 
-  const promptLines = [
-    '# HEARTBEAT.md Auto-Repair Request',
-    'The HEARTBEAT.md format is invalid or missing. Please repair it to the routecodex format.',
-    '',
-    `File: ${heartbeatMdPath}`,
-    projectId ? `Project ID: ${projectId}` : 'Project ID: global',
-    '',
-    'Validation errors:',
-    ...validation.errors.map(err => `- ${err}`),
-    '',
-    'Warnings:',
-    ...validation.warnings.map(warn => `- ${warn}`),
-    '',
-    'Required format: YAML front matter (---) with title, version, updated_at, and optional Heartbeat-Stop-When / Heartbeat-Until fields.',
-    'Make sure to preserve existing checklist items if possible.',
-  ];
+    const pendingAll = heartbeatMailbox.listPending(agent.agentId) ?? [];
 
-  const mailboxPayload = {
-    type: 'heartbeat-repair',
-    taskId,
-    projectId,
-    prompt: promptLines.join('\n'),
-    requiresFeedback: true,
-  };
+    if (agent.status === 'busy') {
+      if (due && pendingAll.length > 0) {
+        ctx.mailboxPromptDeferredByAgent.add(agent.agentId);
+      }
+      log.debug('[HeartbeatScheduler] Skipping busy agent', { agentId: agent.agentId, status: agent.status });
+      continue;
+    }
 
-  heartbeatMailbox.append(targetAgentId, mailboxPayload, {
-    sender: 'system-heartbeat',
-    sourceType: 'control',
-    category: 'heartbeat-repair',
-    priority: 0,
-  });
+    const notificationCleanup = cleanupDispatchResultNotifications(agent.agentId);
+    if (notificationCleanup.removed > 0) {
+      log.debug('[HeartbeatScheduler] Cleaned dispatch-result notifications', {
+        agentId: agent.agentId,
+        matched: notificationCleanup.matched,
+        removed: notificationCleanup.removed,
+      });
+    }
+
+    const pendingSnapshot = notificationCleanup.removed > 0
+      ? (heartbeatMailbox.listPending(agent.agentId) ?? [])
+      : pendingAll;
+
+    if (pendingSnapshot.length === 0) {
+      ctx.mailboxPromptDeferredByAgent.delete(agent.agentId);
+      continue;
+    }
+
+    const actionablePending = pendingSnapshot.filter((msg) => msg.category !== 'notification');
+    const notificationOnly = actionablePending.length === 0;
+    const pending = notificationOnly ? pendingSnapshot : actionablePending;
+    const deferredNotificationCount = notificationOnly ? 0 : pendingSnapshot.length - actionablePending.length;
+    if (notificationOnly || pending.length === 0) {
+      ctx.mailboxPromptDeferredByAgent.delete(agent.agentId);
+      continue;
+    }
+
+    const deferred = ctx.mailboxPromptDeferredByAgent.has(agent.agentId);
+    if (!deferred && !due) continue;
+
+    const envelopes: MailboxEnvelope[] = [];
+    const messageRefs: string[] = [];
+    for (const msg of pending) {
+      const msgContent = typeof msg.content === 'object' && msg.content ? msg.content as Record<string, unknown> : {};
+      const storedEnvelope = typeof msgContent.envelope === 'object' && msgContent.envelope
+        ? msgContent.envelope as MailboxEnvelope
+        : undefined;
+      if (storedEnvelope) {
+        envelopes.push(storedEnvelope);
+      } else if (msgContent.envelopeId) {
+        const prompt = typeof msgContent.prompt === 'string' ? msgContent.prompt : '';
+        const projId = typeof msgContent.projectId === 'string' ? msgContent.projectId : undefined;
+        if (prompt) envelopes.push(buildHeartbeatEnvelope(prompt, projId));
+      }
+      const refParts = [
+        `messageId=${msg.id}`,
+        typeof msgContent.dispatchId === 'string' ? `dispatchId=${msgContent.dispatchId}` : null,
+        typeof msgContent.taskId === 'string' ? `taskId=${msgContent.taskId}` : null,
+      ].filter((part): part is string => typeof part === 'string');
+      messageRefs.push(`- ${refParts.join(' ')}`);
+    }
+
+    const mailboxContext = envelopes.length > 0
+      ? formatEnvelopesForContext(envelopes)
+      : pending.map((m) => `- ${m.id}: ${typeof m.content === 'string' ? m.content.slice(0, 80) : JSON.stringify(m.content).slice(0, 80)}`).join('\n');
+
+    const prompt = [
+      mailboxContext,
+      '',
+      ...(deferredNotificationCount > 0
+        ? [`还有 ${deferredNotificationCount} 条 notification 已延后，等当前待办清空后再读。`, '']
+        : []),
+      '待确认消息：',
+      ...(messageRefs.length > 0 ? messageRefs : ['- (none)']),
+      '',
+      '处理规则：',
+      '1. 少量任务可逐条 mailbox.read(id)；如果同类待办很多，可先用 mailbox.read_all({ unreadOnly: true, category: "<category>" }) 批量读取。',
+      '2. 只有真正处理完成后才能调用 mailbox.ack(id, { summary/result })；失败时用 mailbox.ack(id, { status: "failed", error })。',
+      '3. 如果暂时无法处理，不要 ack；未读取的保持 pending，已读取的保持 processing。',
+      '',
+      '每个任务完成后必须调用 report-task-completion 工具提交 summary。',
+      '如果提交失败必须重试直到成功，避免断链。',
+    ].join('\n');
+    await ctx.dispatchDirect(agent.agentId, 'mailbox-check', agent.projectId, prompt);
+    ctx.lastMailboxPromptAt.set(agent.agentId, now);
+    ctx.mailboxPromptDeferredByAgent.delete(agent.agentId);
+  }
+}
+
+/**
+ * Format mailbox check prompt (exported for scheduler compatibility).
+ */
+export function formatMailboxCheckPrompt(envelopes: MailboxEnvelope[], messageRefs: string[]): string {
+  const mailboxContext = envelopes.length > 0
+    ? formatEnvelopesForContext(envelopes)
+    : messageRefs.map((r) => `- ${r}`).join('\n');
+  return mailboxContext;
 }

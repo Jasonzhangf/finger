@@ -1,4 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
+import { rmSync, writeFileSync } from 'node:fs';
 import { createChannelBridgeHubRoute } from '../../../src/server/modules/channel-bridge-hub-route.js';
 import { AskManager } from '../../../src/orchestration/ask/ask-manager.js';
 import { getChannelContextManager } from '../../../src/orchestration/channel-context-manager.js';
@@ -194,7 +195,7 @@ describe('channel-bridge-hub-route user.ask async adaptation', () => {
     }));
   });
 
-  it('injects image attachment hints into prompt and persists attachments into session message', async () => {
+  it('injects multimodal hint with no-guess fallback into prompt and persists attachment summary', async () => {
     getChannelContextManager().updateContext('qqbot', 'business', 'finger-project-agent');
     const askManager = new AskManager(5_000);
     const sendMessage = vi.fn().mockResolvedValue({ messageId: 'reply-4' });
@@ -255,19 +256,105 @@ describe('channel-bridge-hub-route user.ask async adaptation', () => {
     expect(directSendToModule).toHaveBeenCalledWith(
       'finger-system-agent',
       expect.objectContaining({
-        prompt: expect.stringContaining('[图片1: fake-image-1.png]'),
+        prompt: expect.stringContaining('若模型反馈看不到图片'),
+        metadata: expect.objectContaining({
+          inputItems: [
+            expect.objectContaining({
+              type: 'image',
+              image_url: '/tmp/fake-image-1.png',
+            }),
+          ],
+        }),
       }),
     );
 
     const userWrite = addMessage.mock.calls.find((call) => call[1] === 'user');
     expect(userWrite).toBeTruthy();
     expect(userWrite?.[3]).toMatchObject({
-      attachments: [
-        expect.objectContaining({
-          type: 'image',
-          url: '/tmp/fake-image-1.png',
-        }),
-      ],
+      metadata: expect.objectContaining({
+        hasAttachments: true,
+        attachmentCount: 1,
+      }),
     });
+  });
+
+  it('injects local image path for view_image fallback when attachment is local file', async () => {
+    const localImagePath = `/tmp/fake-image-${Date.now()}.png`;
+    writeFileSync(localImagePath, 'fake-image');
+    try {
+      getChannelContextManager().updateContext('qqbot', 'business', 'finger-project-agent');
+      const askManager = new AskManager(5_000);
+      const sendMessage = vi.fn().mockResolvedValue({ messageId: 'reply-5' });
+      const addMessage = vi.fn().mockResolvedValue(undefined);
+      const ensureSession = vi.fn();
+      const updateContext = vi.fn();
+      const getSession = vi.fn().mockReturnValue({
+        id: 'system-session-4',
+        context: {},
+      });
+      const getOrCreateSystemSession = vi.fn().mockReturnValue({ id: 'system-session-4' });
+      const dispatchTaskToAgent = vi.fn();
+      const directSendToModule = vi.fn().mockResolvedValue({
+        success: true,
+        response: 'ok',
+      });
+
+      const route = createChannelBridgeHubRoute({
+        channelBridgeManager: {
+          sendMessage,
+        } as any,
+        sessionManager: {
+          ensureSession,
+          updateContext,
+          getSession,
+          getOrCreateSystemSession,
+          addMessage,
+          getMessages: vi.fn().mockReturnValue([]),
+        } as any,
+        askManager,
+        dispatchTaskToAgent,
+        directSendToModule,
+        eventBus: new UnifiedEventBus(),
+        runtime: {},
+      });
+
+      await route({
+        payload: {
+          id: 'msg-5',
+          channelId: 'qqbot',
+          accountId: 'acc-1',
+          type: 'direct',
+          senderId: 'user-1',
+          senderName: 'User 1',
+          content: '看这张图',
+          attachments: [
+            {
+              type: 'image',
+              url: localImagePath,
+              filename: 'local-fake-image.png',
+            },
+          ],
+          timestamp: Date.now(),
+          metadata: {},
+        },
+      });
+
+      expect(directSendToModule).toHaveBeenCalledWith(
+        'finger-system-agent',
+        expect.objectContaining({
+          prompt: expect.stringContaining(localImagePath),
+          metadata: expect.objectContaining({
+            inputItems: [
+              expect.objectContaining({
+                type: 'local_image',
+                path: localImagePath,
+              }),
+            ],
+          }),
+        }),
+      );
+    } finally {
+      rmSync(localImagePath, { force: true });
+    }
   });
 });
