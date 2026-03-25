@@ -63,6 +63,7 @@ describe('KernelAgentBase session binding', () => {
 
   it('propagates context-builder routing metadata from provided history to runner metadata', async () => {
     const contexts: KernelRunContext[] = [];
+    const providerSessionIds: string[] = [];
     const runner: KernelAgentRunner = {
       runTurn: vi.fn(async (_text: string, _inputItems?: KernelInputItem[], context?: KernelRunContext) => {
         if (context) contexts.push(context);
@@ -74,7 +75,9 @@ describe('KernelAgentBase session binding', () => {
         moduleId: 'chat-codex',
         provider: 'codex',
         maxContextMessages: 20,
-        contextHistoryProvider: async () => [
+        contextHistoryProvider: async (sessionId) => {
+          providerSessionIds.push(sessionId);
+          return [
           {
             role: 'user',
             content: '历史消息',
@@ -85,7 +88,8 @@ describe('KernelAgentBase session binding', () => {
               contextBuilderRebuilt: false,
             },
           },
-        ],
+          ];
+        },
       },
       runner,
     );
@@ -102,6 +106,7 @@ describe('KernelAgentBase session binding', () => {
       contextBuilderBypassReason: 'media_turn',
       contextBuilderRebuilt: false,
     });
+    expect(providerSessionIds).toEqual(['ui-session-context-meta-1']);
   });
 
   it('ignores inline review loop and returns main-thread reply directly', async () => {

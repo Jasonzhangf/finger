@@ -160,8 +160,9 @@ export class KernelAgentBase {
         });
       }
 
+      const contextHistorySessionId = responseSessionId || input.sessionId || session.id;
       const providedHistory = this.config.contextHistoryProvider
-        ? await this.config.contextHistoryProvider(session.id, this.config.maxContextMessages)
+        ? await this.config.contextHistoryProvider(contextHistorySessionId, this.config.maxContextMessages)
         : null;
       const contextHistoryMetadata = extractContextHistoryMetadata(providedHistory);
       const history = Array.isArray(providedHistory)

@@ -359,3 +359,10 @@ Tags: permission, reject-config, codex-alignment
 
 - [2026-03-25] Ledger delete_slots 安全机制落地：`context_ledger.memory` 新增 `delete_slots` action，支持 `preview_only`/`confirm`/`user_authorized`/`user_confirmation`(intent-scoped phrase)/`intent_id`/`reason`。preview 返回 slot 摘要（time/event_type/preview），real delete 写入 `ledger_slots_deleted` 审计事件。确认短语格式 `CONFIRM_DELETE_SLOTS:<intent_id>:<slot_csv>`，防止对话漂移导致误删。`context_compact` 类型 slot 受保护不可删除。Skill 文档 `~/.finger/skills/context-ledger-memory/SKILL.md` 更新交互式删除工作流。
   Tags: ledger, delete-slots, safety, intent-scoped, confirmation, audit
+
+- [2026-03-25] 修复 context builder session miss： 调用  时改用外部/响应 sessionId（），不再强制用内部 memory session id，避免  在  查询不到导致持续 fallback。新增单测断言 provider 接收外部 sessionId（）。并落盘设计文档 ，定义 task 粒度 summary+多 tag、保守续接、topic 切换时按 tag 置信度+时间选择 session、无匹配新建 session。bd Epic: ，子任务  已完成。
+  Tags: context-builder, session-id, external-session-binding, task-tagging, session-switch, epic
+
+
+- [2026-03-25] 修复 context builder session miss：`KernelAgentBase` 调用 `contextHistoryProvider` 时改用外部/响应 sessionId（`responseSessionId || input.sessionId || session.id`），不再强制用内部 memory session id，避免 `finger-role-modules` 在 `runtime.getSession(sessionId)` 查询不到导致持续 fallback。新增单测断言 provider 接收外部 sessionId（`ui-session-context-meta-1`）。并落盘设计文档 `docs/design/SESSION_CLASSIFICATION_CONTEXT_BUILDER_EPIC.md`，定义 task 粒度 summary+多 tag、保守续接、topic 切换时按 tag 置信度+时间选择 session、无匹配新建 session。bd Epic: `finger-261`，子任务 `finger-261.1` 已完成。
+  Tags: context-builder, session-id, external-session-binding, task-tagging, session-switch, epic
