@@ -6,27 +6,53 @@
 
 export type ToolCategory = '读写' | '搜索' | '工具' | '其他';
 
+function parseToolPayload(input?: unknown): Record<string, unknown> {
+  if (typeof input === 'string') {
+    try {
+      const parsed = JSON.parse(input);
+      if (parsed && typeof parsed === 'object') return parsed as Record<string, unknown>;
+    } catch {
+      return { cmd: input };
+    }
+    return { cmd: input };
+  }
+  if (typeof input === 'object' && input !== null) return input as Record<string, unknown>;
+  return {};
+}
+
+function extractExecLikeCommand(input?: unknown): string {
+  const payload = parseToolPayload(input);
+
+  if (typeof payload.cmd === 'string' && payload.cmd.trim().length > 0) {
+    return payload.cmd.trim();
+  }
+
+  const command = payload.command;
+  if (typeof command === 'string' && command.trim().length > 0) {
+    return command.trim();
+  }
+  if (Array.isArray(command)) {
+    const parts = command.filter((item): item is string => typeof item === 'string' && item.trim().length > 0);
+    if (parts.length > 0) return parts.join(' ').trim();
+  }
+
+  if (typeof payload.input === 'string' && payload.input.trim().length > 0) {
+    return payload.input.trim();
+  }
+
+  return '';
+}
+
 /**
  * Classify a tool call into a human-readable category.
  */
 export function classifyToolCall(toolName: string, input?: unknown): ToolCategory {
   // 搜索类优先
   if (['web_search', 'web_search_results'].includes(toolName)) return '搜索';
+  if (toolName === 'command.exec') return '工具';
 
   if (['shell.exec', 'exec_command'].includes(toolName)) {
-    const cmd = (() => {
-      if (typeof input === 'string') {
-        try {
-          const parsed = JSON.parse(input) as { cmd?: unknown };
-          if (parsed && typeof parsed.cmd === 'string') return parsed.cmd;
-        } catch { /* ignore */ }
-        return input;
-      }
-      if (typeof input === 'object' && input !== null && 'cmd' in input) {
-        return String((input as { cmd: unknown }).cmd);
-      }
-      return '';
-    })();
+    const cmd = extractExecLikeCommand(input);
     const lower = cmd.toLowerCase();
 
     if (/^(rg|grep|ag|fd|fzf|find)\b/.test(lower) || /\b(search|grep|rg|find|locate)\b/.test(lower)) {
@@ -54,19 +80,7 @@ export function classifyToolCall(toolName: string, input?: unknown): ToolCategor
  * Extract a meaningful file/dir name from tool input.
  */
 export function extractTargetFile(toolName: string, input?: unknown): string {
-  const obj: Record<string, unknown> = (() => {
-    if (typeof input === 'string') {
-      try {
-        const parsed = JSON.parse(input);
-        if (parsed && typeof parsed === 'object') return parsed as Record<string, unknown>;
-      } catch {
-        return { cmd: input };
-      }
-      return { cmd: input };
-    }
-    if (typeof input === 'object' && input !== null) return input as Record<string, unknown>;
-    return {};
-  })();
+  const obj = parseToolPayload(input);
 
   if (Object.keys(obj).length === 0) return '';
 
@@ -75,8 +89,8 @@ export function extractTargetFile(toolName: string, input?: unknown): string {
     return m ? m[1] : '';
   }
 
-  if ('cmd' in obj) {
-    const cmd = String(obj.cmd);
+  if ('cmd' in obj || 'command' in obj) {
+    const cmd = extractExecLikeCommand(obj);
     const m = cmd.match(/\s+([\w./~][\w./\-]+\.\w{1,6})/);
     return m ? m[1] : '';
   }
@@ -123,15 +137,17 @@ export function buildCompactSummary(
   const includeTask = options?.includeTask ?? true;
   const includeReasoning = options?.includeReasoning ?? true;
   const headerMode = options?.headerMode ?? 'full';
-  const elapsed = formatElapsed(p.elapsedMs);
+  // Use local time instead of elapsed
+  const now = new Date();
+  const localTime = String(now.getHours()).padStart(2, '0') + ':' + String(now.getMinutes()).padStart(2, '0');
   const task = p.currentTask || '';
   const recentTools = p.toolCallHistory.slice(-5);
 
   const lines: string[] = [];
   if (headerMode === 'minimal') {
-    lines.push(`📊 ${p.agentId} | ${elapsed}`);
+    lines.push(`📊 ${localTime} | ${p.status === 'running' ? '执行中' : p.status}`);
   } else {
-    lines.push(`📊 ${p.agentId} | ${elapsed} | ${task || '执行中'}`);
+    lines.push(`📊 ${localTime} | ${task || '执行中'}`);
   }
 
   if (includeTask && task) {
@@ -223,6 +239,14 @@ function extractToolDetail(
     return target ? '\u2192 ' + target : '';
   }
 
+  // command.exec: show the command-hub token
+  if (toolName === 'command.exec') {
+    const p = parse(params ?? '');
+    const raw = typeof p.input === 'string' ? p.input.trim() : '';
+    if (!raw) return '';
+    return truncate(raw, 90);
+  }
+
   // write_stdin: show what is being written
   if (toolName === 'write_stdin') {
     const p = parse(params ?? '');
@@ -241,20 +265,18 @@ function extractToolDetail(
  * For shell.exec/exec_command, extract the actual command verb instead of showing "shell.exec".
  */
 export function resolveToolDisplayName(toolName: string, input?: unknown): string {
+  if (toolName === 'command.exec') {
+    const raw = extractExecLikeCommand(input);
+    if (!raw) return 'command.exec';
+    const tokenMatch = raw.match(/<##\s*@?([^#>]+?)\s*##>/);
+    if (tokenMatch && tokenMatch[1]) {
+      return `cmd:${tokenMatch[1].trim()}`;
+    }
+    return `cmd:${raw.replace(/\s+/g, ' ').trim().slice(0, 40)}`;
+  }
+
   if (['shell.exec', 'exec_command'].includes(toolName)) {
-    const cmd = (() => {
-      if (typeof input === 'string') {
-        try {
-          const parsed = JSON.parse(input) as { cmd?: unknown };
-          if (parsed && typeof parsed.cmd === 'string') return parsed.cmd;
-        } catch { /* ignore */ }
-        return input;
-      }
-      if (typeof input === 'object' && input !== null && 'cmd' in input) {
-        return String((input as { cmd: unknown }).cmd);
-      }
-      return '';
-    })();
+    const cmd = extractExecLikeCommand(input);
     const trimmed = cmd.trim();
     if (!trimmed) return toolName;
     // Extract primary command name (and subcommand for known command families)

@@ -195,25 +195,14 @@ export function createChannelBridgeHubRoute(deps: ChannelBridgeHubRouteDeps) {
   const channelContextManager = ChannelContextManager.getInstance();
   const ASYNC_USER_ASK_CHANNELS = new Set(['qqbot', 'weixin']);
 
-  function formatLocalTimestamp(date: Date = new Date()): string {
-    const year = date.getFullYear();
-    const month = String(date.getMonth() + 1).padStart(2, '0');
-    const day = String(date.getDate()).padStart(2, '0');
-    const hours = String(date.getHours()).padStart(2, '0');
-    const minutes = String(date.getMinutes()).padStart(2, '0');
-    const seconds = String(date.getSeconds()).padStart(2, '0');
-    const ms = String(date.getMilliseconds()).padStart(3, '0');
-    const offset = -date.getTimezoneOffset();
-    const offsetHours = String(Math.floor(Math.abs(offset) / 60)).padStart(2, '0');
-    const offsetMinutes = String(Math.abs(offset) % 60).padStart(2, '0');
-    const offsetSign = offset >= 0 ? '+' : '-';
-    return `${year}-${month}-${day} ${hours}:${minutes}:${seconds}.${ms} ${offsetSign}${offsetHours}:${offsetMinutes}`;
+  function formatLocalTime(date: Date = new Date()): string {
+    return String(date.getHours()).padStart(2, '0') + ':' + String(date.getMinutes()).padStart(2, '0');
   }
 
   function addAgentPrefix(content: string, agentId?: string): string {
-    const timestamp = formatLocalTimestamp();
+    const time = formatLocalTime();
     const agentName = agentId?.replace(/^finger-/, '').replace(/-/g, ' ') || 'orchestrator';
-    return `[${agentName}] [${timestamp}] ${content}`;
+    return `[${time}] ${content}`;
   }
 
   return async (message: unknown): Promise<void> => {
@@ -578,10 +567,7 @@ export function createChannelBridgeHubRoute(deps: ChannelBridgeHubRouteDeps) {
       log.error('Hub route dispatch error', err instanceof Error ? err : undefined);
       await sendReply('处理失败，请稍后再试', 'messagehub');
     } finally {
-      // 当前用户轮次结束后及时解绑 envelope，避免后续 heartbeat/mailbox 后台任务继续向同一用户外发噪音更新。
-      if (agentStatusSubscriber) {
-        agentStatusSubscriber.unregisterSession(fixedSessionId);
-      }
+      // 会话级 channel observers 由 turn_complete / turn_error 统一收敛。
     }
   };
 }
