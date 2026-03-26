@@ -108,6 +108,16 @@ export async function loadFingerConfig(): Promise<FingerConfig> {
           highRiskCommands: ['rm -rf', 'git reset --hard', 'git checkout', 'file.delete'],
           rejectConfig: {},
         },
+        {
+          id: 'system',
+          type: 'direct',
+          priority: 1,
+          permissionMode: 'full',
+          permissionWhitelist: [],
+          permissionBlacklist: [],
+          highRiskCommands: [],
+          rejectConfig: {},
+        },
       ],
     },
     systemAuth: {

@@ -80,7 +80,7 @@ export function registerMailboxCommand(program: Command): void {
           const wakeText = `Mailbox notification arrived (messageId=${String(notifyData.messageId ?? '')}). Please check mailbox and handle pending notification(s).`;
           const wakeRes = await fetch(`${MAILBOX_BASE_URL}/api/v1/message`, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: { 'Content-Type': 'application/json', 'x-finger-channel': 'system' },
             body: JSON.stringify({
               target: options.targetAgent,
               sender: options.sender || 'mailbox-cli',
