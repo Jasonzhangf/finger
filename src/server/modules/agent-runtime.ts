@@ -217,6 +217,38 @@ export function registerAgentRuntimeTools(deps: AgentRuntimeDeps): string[] {
   });
   loaded.push('orchestrator.loop_templates');
 
+  // Progress update tool - lets agent inject progress text without breaking execution flow
+  deps.runtime.registerTool({
+    name: 'update_progress',
+    description:
+      'Inject a progress update to the user. Use this to announce your goal before starting a task, or report progress mid-execution. Returns immediately so your workflow is not interrupted.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        text: {
+          type: 'string',
+          description: 'Progress message to show the user (concise, actionable).',
+        },
+      },
+      required: ['text'],
+      additionalProperties: false,
+    },
+    handler: async (input: unknown): Promise<unknown> => {
+      const raw = isObjectRecord(input) ? input : {};
+      const text = typeof raw.text === 'string' ? raw.text.trim() : '';
+      if (!text) return { ok: true, message: 'empty' };
+
+      deps.broadcast({
+        type: 'reasoning',
+        payload: { text: text.slice(0, 500) },
+        timestamp: new Date().toISOString(),
+      });
+
+      return { ok: true, message: 'progress updated' };
+    },
+  });
+  loaded.push('update_progress');
+
 
   // Session switching tool
   deps.runtime.registerTool({

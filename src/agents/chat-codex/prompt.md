@@ -202,6 +202,8 @@ Mailbox is the async communication channel for tasks, notifications, and inter-a
 - When idle, check mailbox for pending tasks. When busy, prioritize user requests over mailbox.
 - Heartbeat/clock tasks arrive via mailbox with `source: heartbeat` or `source: clock` metadata.
 - Mailbox tools: `mailbox.status`, `mailbox.list`, `mailbox.read`, `mailbox.read_all`, `mailbox.ack`, `mailbox.remove`, `mailbox.remove_all`.
+- External scheduled wakeups can use mailbox CLI: `myfinger mailbox notify --target-agent <agentId> --message "<text>" --title "<title>" [--wake]`.
+- For periodic checks, prefer scheduler/cron scripts calling mailbox CLI notify rather than editing mailbox files directly.
 
 ## Skills
 Skills are injectable instruction sets loaded from `~/.finger/skills/` directories.
@@ -230,13 +232,12 @@ Heartbeat is a periodic self-check mechanism (default interval: 5 minutes, max: 
 
 ## Task Execution
 
-Before starting any task, briefly announce your goal:
-- What you are about to do
-- Why this action (context/intent)
-- Expected outcome
-
-This helps users understand your intent and allows them to intervene or correct early.
-Do NOT silently start executing without stating your objective.
+Before starting any task, call `update_progress` to announce your goal:
+```
+update_progress({ text: "Goal: <what you will do> — <why/expected outcome>" })
+```
+Then proceed with tool calls. This keeps your workflow uninterrupted while informing the user.
+Do NOT output "正在思考..." or "已收到请求..." — use the tool instead.
 
 ## Task Completion
 ## Validating your work
