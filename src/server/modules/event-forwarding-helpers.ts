@@ -277,3 +277,23 @@ export function buildLedgerPointerInfo(params: {
 export function formatLedgerPointerContent(info: LedgerPointerInfo, label: string): string {
   return `[ledger_pointer:${label}] session=${info.sessionId} agent=${info.agentId} mode=${info.mode} root=${info.rootDir} path=${info.ledgerPath}`;
 }
+
+export function extractDispatchResultTags(result: unknown): string[] | undefined {
+  if (!result || typeof result !== 'object') return undefined;
+  const r = result as Record<string, unknown>;
+  const tags = r.tags;
+  if (Array.isArray(tags)) {
+    const normalized = tags
+      .map((t: unknown) => typeof t === 'string' ? t.trim() : undefined)
+      .filter((t: string | undefined): t is string => typeof t === 'string' && t.length > 0);
+    return normalized.length > 0 ? [...new Set(normalized)] : undefined;
+  }
+  return undefined;
+}
+
+export function extractDispatchResultTopic(result: unknown): string | undefined {
+  if (!result || typeof result !== 'object') return undefined;
+  const r = result as Record<string, unknown>;
+  const topic = r.topic;
+  return typeof topic === 'string' && topic.trim().length > 0 ? topic.trim() : undefined;
+}

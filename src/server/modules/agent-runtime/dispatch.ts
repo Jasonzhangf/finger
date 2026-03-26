@@ -509,6 +509,8 @@ export async function dispatchTaskToAgent(deps: AgentRuntimeDeps, input: AgentDi
         rawResult: result.result?.rawPayload ?? result.result,
       };
       if (result.error) ledgerMetadata.error = result.error;
+      if (result.result?.tags) ledgerMetadata.tags = result.result.tags;
+      if (result.result?.topic) ledgerMetadata.topic = result.result.topic;
 
       void deps.sessionManager.addMessage(dispatchSessionId, 'assistant', replyContent, {
         type: 'dispatch',

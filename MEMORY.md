@@ -1,3 +1,32 @@
+## [task] Task-End Tagging Pipeline (session classification 基础) {#mem-tags-pipeline-20260326}
+时间: 2026-03-26 08:00
+状态: completed
+
+### 变更内容
+
+1. **DispatchSummaryResult 新增 tags/topic 字段** (`src/common/agent-dispatch.ts`)
+   - `tags?: string[]` — 动态多标签，从 raw.tags / response.tags / topic 合并去重
+   - `topic?: string` — 粗路由主题提示
+   - `normalizeStringArray()` / `coalesceTags()` 辅助函数
+   - `DispatchEvidenceItem.tags` 也支持透传
+
+2. **Ledger metadata 持久化 tags** (`src/server/modules/agent-runtime/dispatch.ts`)
+   - dispatch 结果写入 session 时，ledgerMetadata 附带 tags + topic
+
+3. **Mailbox envelope 包含 tags** (`src/server/modules/mailbox-envelope.ts` + `event-forwarding.ts`)
+   - `buildDispatchResultEnvelope()` 新增可选 tags/topic 参数
+   - shortDescription 附加 `[topic]` 后缀
+   - fullText 附加 **Tags** / **Topic** 段
+   - event-forwarding 通过 `extractDispatchResultTags/Topic` 从 payload.result 提取
+
+4. **测试覆盖**
+   - `tests/modules/agent-dispatch-tags.test.ts` — 12 ��用例覆盖全部 tags 提取场景
+   - 原有 `agent-dispatch-sanitize.test.ts` / `mailbox-envelope.test.ts` / `dispatch-task-to-agent.test.ts` 全部通过
+
+### Epic
+关联: finger-261 (SESSION_CLASSIFICATION_CONTEXT_BUILDER_EPIC)
+子任务: finger-261.2 — task-end tagging pipeline ✅
+
 # MEMORY.md
 
 ## General Memory

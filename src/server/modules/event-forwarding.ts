@@ -8,6 +8,8 @@ import {
   buildDispatchFeedbackPayload,
   buildLedgerPointerInfo,
   extractAssistantBodyUpdate,
+  extractDispatchResultTags,
+  extractDispatchResultTopic,
   extractLoopToolTrace,
   formatLedgerPointerContent,
 } from './event-forwarding-helpers.js';
@@ -222,6 +224,22 @@ export function attachEventForwarding(deps: EventForwardingDeps): {
   const emitLoopEventToEventBus = (event: ChatCodexLoopEvent): void => {
     if (!event.sessionId || event.sessionId === 'unknown') return;
     if (event.phase === 'turn_complete' || event.phase === 'turn_error') {
+      const latestBody = latestBodyBySession.get(event.sessionId);
+      if (agentStatusSubscriber) {
+        const finalReply = event.phase === 'turn_complete'
+          ? (latestBody || (typeof event.payload.replyPreview === 'string' ? event.payload.replyPreview : ''))
+          : (typeof event.payload.error === 'string' ? `处理失败：${event.payload.error}` : '处理失败，请稍后再试');
+        agentStatusSubscriber.finalizeChannelTurn(
+          event.sessionId,
+          finalReply,
+          generalAgentId,
+        ).catch((err) => {
+          logger.module('event-forwarding').error(
+            'Failed to finalize channel turn',
+            err instanceof Error ? err : new Error(String(err)),
+          );
+        });
+      }
       latestBodyBySession.delete(event.sessionId);
     }
     emitToolStepEventsFromLoopEvent(event);
@@ -487,7 +505,9 @@ export function attachEventForwarding(deps: EventForwardingDeps): {
           try {
             const summary = formatDispatchResultContent(payload.result, asString(payload.error));
             const errorMessage = asString(payload.error) || undefined;
-            const envelope = buildDispatchResultEnvelope(childSessionId || sessionId, summary, errorMessage);
+            const resultTags = extractDispatchResultTags(payload.result);
+            const resultTopic = extractDispatchResultTopic(payload.result);
+            const envelope = buildDispatchResultEnvelope(childSessionId || sessionId, summary, errorMessage, undefined, resultTags, resultTopic);
             heartbeatMailbox.append(parentAgentId, {
               type: 'dispatch-result',
               dispatchId: payload.dispatchId,

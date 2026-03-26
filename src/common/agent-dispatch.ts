@@ -7,6 +7,7 @@ export interface DispatchOutputArtifact {
 export interface DispatchEvidenceItem {
   tool?: string;
   detail: string;
+  tags?: string[];
 }
 
 export interface DispatchSummaryResult {
@@ -25,6 +26,10 @@ export interface DispatchSummaryResult {
   error?: string;
   /** Full raw response data - NEVER truncated, for ledger storage */
   rawPayload?: unknown;
+  /** Dynamic classification tags extracted from dispatch result for session routing */
+  tags?: string[];
+  /** Topic classification hint for coarse session routing */
+  topic?: string;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -35,6 +40,21 @@ function asNonEmptyString(value: unknown): string | undefined {
   if (typeof value !== 'string') return undefined;
   const trimmed = value.trim();
   return trimmed.length > 0 ? trimmed : undefined;
+}
+
+function normalizeStringArray(value: unknown): string[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const tags = value
+    .map((entry) => typeof entry === 'string' ? entry.trim() : undefined)
+    .filter((entry): entry is string => typeof entry === 'string' && entry.length > 0 && entry.length <= 50);
+  return tags.length > 0 ? [...new Set(tags)] : undefined;
+}
+
+function coalesceTags(...sources: (string[] | undefined)[]): string[] | undefined {
+  const all = sources
+    .flat()
+    .filter((entry): entry is string => typeof entry === 'string' && entry.length > 0);
+  return all.length > 0 ? [...new Set(all)] : undefined;
 }
 
 function truncateInline(value: string, max = 800): string {
@@ -141,9 +161,11 @@ function normalizeEvidence(raw: unknown): DispatchEvidenceItem[] | undefined {
       const detail = asNonEmptyString(entry.detail) ?? asNonEmptyString(entry.evidence) ?? asNonEmptyString(entry.observation);
       if (!detail) return null;
       const tool = asNonEmptyString(entry.tool);
+      const tags = normalizeStringArray(entry.tags);
       return {
         ...(tool ? { tool } : {}),
         detail,
+        ...(tags ? { tags } : {}),
       };
     })
     .filter((entry): entry is DispatchEvidenceItem => entry !== null);
@@ -200,6 +222,17 @@ export function sanitizeDispatchResult(raw: unknown): DispatchSummaryResult {
     ?? asNonEmptyString(error)
     ?? extractReadableSummary(raw);
 
+  // Extract tags for session routing (multi-tag support)
+  const tags = coalesceTags(
+    normalizeStringArray(raw.tags),
+    normalizeStringArray(responseRecord?.tags),
+    asNonEmptyString(raw.topic) ? [asNonEmptyString(raw.topic)!] : undefined,
+    asNonEmptyString(responseRecord?.topic) ? [asNonEmptyString(responseRecord?.topic)!] : undefined,
+  );
+
+  // Extract topic for coarse routing hint
+  const topic = asNonEmptyString(raw.topic ?? responseRecord?.topic);
+
   return {
     success: explicitSuccess ?? !error,
     status,
@@ -214,6 +247,8 @@ export function sanitizeDispatchResult(raw: unknown): DispatchSummaryResult {
     ...(evidence ? { evidence } : {}),
     ...(asNonEmptyString(responseRecord?.nextAction) ? { nextAction: asNonEmptyString(responseRecord?.nextAction) } : {}),
     ...(error ? { error } : {}),
+    ...(tags ? { tags } : {}),
+    ...(topic ? { topic } : {}),
     // Store full raw response for ledger - NEVER truncate
     rawPayload: raw,
   };

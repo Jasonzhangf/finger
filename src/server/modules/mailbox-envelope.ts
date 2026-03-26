@@ -173,17 +173,23 @@ export function buildDispatchResultEnvelope(
   summary: string,
   error?: string,
   projectId?: string,
+  tags?: string[],
+  topic?: string,
 ): MailboxEnvelope {
   const isError = Boolean(error);
+  const tagLine = tags && tags.length > 0
+    ? `\n\n**Tags**: ${tags.join(', ')}`
+    : '';
+  const topicLine = topic ? `\n\n**Topic**: ${topic}` : '';
   return buildMailboxEnvelope({
     category: 'System',
     title: isError ? 'Dispatch 任务失败' : 'Dispatch 任务完成',
     shortDescription: isError
       ? `子任务执行失败: ${error}`
-      : `子任务已完成，摘要: ${summary.substring(0, 100)}${summary.length > 100 ? '...' : ''}`,
+      : `子任务已完成，摘要: ${summary.substring(0, 100)}${summary.length > 100 ? '...' : ''}${topic ? ` [${topic}]` : ''}`,
     fullText: isError
-      ? `## Dispatch 任务失败\n\n**子会话ID**: ${childSessionId}\n\n**错误信息**: ${error}\n\n请检查错误并决定是否重试。`
-      : `## Dispatch 任务完成\n\n**子会话ID**: ${childSessionId}\n\n**执行摘要**:\n${summary}`,
+      ? `## Dispatch 任务失败\n\n**子会话ID**: ${childSessionId}\n\n**错误信息**: ${error}\n\n请检查错误并决定是否重试。${tagLine}${topicLine}`
+      : `## Dispatch 任务完成\n\n**子会话ID**: ${childSessionId}\n\n**执行摘要**:\n${summary}${tagLine}${topicLine}`,
     source: 'dispatch',
     priority: isError ? 'high' : 'medium',
     expectedReply: {
