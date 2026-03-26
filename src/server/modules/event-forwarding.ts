@@ -257,9 +257,7 @@ export function attachEventForwarding(deps: EventForwardingDeps): {
     // On turn_start, inject main session ledger pointer
     if (event.phase === 'turn_start') {
       addLedgerPointerMessage(event.sessionId, 'main', generalAgentId);
-    }
-
-    // Persist reasoning events into session
+      // Persist reasoning events into session
     if (event.phase === 'kernel_event' && event.payload.type === 'reasoning') {
       const reasoningText = typeof event.payload.text === 'string'
         ? event.payload.text.trim()

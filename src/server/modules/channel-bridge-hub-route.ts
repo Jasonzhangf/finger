@@ -404,11 +404,9 @@ export function createChannelBridgeHubRoute(deps: ChannelBridgeHubRouteDeps) {
         sessionId: fixedSessionId
       });
     }
-    void sessionManager.addMessage(fixedSessionId, 'system', '已收到，正在处理中…', {
-      agentId: targetAgentId,
-      type: 'dispatch',
-      metadata: { channelId: channelMsg.channelId, messageId: channelMsg.id },
-    });
+    // Auto-reply handled by event-forwarding
+    // // Auto-reply removed - handled by event-forwarding turn_start reasoning pulse
+    // User will see progress updates via update_progress tool or reasoning events
 
     // 将用户原始输入以 'user' 角色写入 session（保证 WebUI 可见）
     void sessionManager.addMessage(fixedSessionId, 'user', enrichedContent, {
