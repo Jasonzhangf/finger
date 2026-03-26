@@ -340,6 +340,58 @@ describe('progress-monitor-utils', () => {
       expect(result).toContain('→ finger-project-agent');
     });
 
+
+    it('view_image shows image path detail', () => {
+      const data: SessionProgressData = {
+        agentId: 'test',
+        status: 'running',
+        elapsedMs: 30000,
+        toolCallHistory: [
+          {
+            toolName: 'view_image',
+            params: JSON.stringify({ path: '/tmp/screenshot.png' }),
+            success: true,
+          },
+        ],
+      };
+      const result = buildCompactSummary(data, formatElapsed);
+      expect(result).toContain('🖼');
+      expect(result).toContain('/tmp/screenshot.png');
+    });
+
+    it('context_ledger.memory shows action and query', () => {
+      const data: SessionProgressData = {
+        agentId: 'test',
+        status: 'running',
+        elapsedMs: 30000,
+        toolCallHistory: [
+          {
+            toolName: 'context_ledger.memory',
+            params: JSON.stringify({ action: 'search', query: 'mailbox wake issue' }),
+            success: true,
+          },
+        ],
+      };
+      const result = buildCompactSummary(data, formatElapsed);
+      expect(result).toContain('search: mailbox wake issue');
+    });
+
+    it('agent.control shows action and agent id', () => {
+      const data: SessionProgressData = {
+        agentId: 'test',
+        status: 'running',
+        elapsedMs: 30000,
+        toolCallHistory: [
+          {
+            toolName: 'agent.control',
+            params: JSON.stringify({ action: 'stop', agentId: 'finger-project-agent' }),
+            success: true,
+          },
+        ],
+      };
+      const result = buildCompactSummary(data, formatElapsed);
+      expect(result).toContain('stop finger-project-agent');
+    });
     it('write_stdin shows the chars being written', () => {
       const data: SessionProgressData = {
         agentId: 'test',

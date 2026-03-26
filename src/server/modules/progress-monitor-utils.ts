@@ -310,6 +310,73 @@ function extractToolDetail(
     return '';
   }
 
+  // view_image: show image path
+  if (toolName === 'view_image') {
+    const p = parse(params ?? '');
+    const path = typeof p.path === 'string' ? p.path.trim() : '';
+    return path ? '\ud83d\uddbc ' + truncate(path, 80) : '';
+  }
+
+  // context_ledger.memory: show action / query
+  if (toolName === 'context_ledger.memory') {
+    const p = parse(params ?? '');
+    const action = typeof p.action === 'string' ? p.action.trim() : '';
+    const query = typeof p.query === 'string' ? p.query.trim() : '';
+    if (action && query) return `${action}: ${truncate(query, 50)}`;
+    if (action) return action;
+    return '';
+  }
+
+  // context_builder.rebuild: show mode
+  if (toolName === 'context_builder.rebuild') {
+    const p = parse(params ?? '');
+    const mode = typeof p.mode === 'string' ? p.mode.trim() : '';
+    return mode ? `mode=${mode}` : '';
+  }
+
+  // agent.* helpers
+  if (toolName === 'agent.deploy') {
+    const p = parse(params ?? '');
+    const id = typeof p.agentId === 'string' ? p.agentId.trim() : '';
+    const role = typeof p.roleProfile === 'string' ? p.roleProfile.trim() : '';
+    if (id && role) return `${id} (${role})`;
+    return id || role || '';
+  }
+
+  if (toolName === 'agent.capabilities') {
+    const p = parse(params ?? '');
+    const id = typeof p.agentId === 'string' ? p.agentId.trim() : '';
+    return id ? `agent=${id}` : '';
+  }
+
+  if (toolName === 'agent.control') {
+    const p = parse(params ?? '');
+    const action = typeof p.action === 'string' ? p.action.trim() : '';
+    const id = typeof p.agentId === 'string' ? p.agentId.trim() : '';
+    if (action && id) return `${action} ${id}`;
+    return action || id || '';
+  }
+
+  if (toolName === 'agent.list') {
+    const p = parse(params ?? '');
+    const status = typeof p.status === 'string' ? p.status.trim() : '';
+    return status ? `status=${status}` : '';
+  }
+
+  // mailbox.* tools
+  if (/^mailbox\./.test(toolName)) {
+    const p = parse(params ?? '');
+    const id = typeof p.message_id === 'string' ? p.message_id.trim() : '';
+    return id ? `id=${id}` : '';
+  }
+
+  // skills.* tools
+  if (/^skills\./.test(toolName)) {
+    const p = parse(params ?? '');
+    const name = typeof p.name === 'string' ? p.name.trim() : '';
+    return name ? `name=${name}` : '';
+  }
+
   return '';
 }
 
