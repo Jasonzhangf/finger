@@ -161,7 +161,7 @@ export function buildCompactSummary(
 
 /**
  * Extract a meaningful one-line detail from tool input for progress display.
- * Currently handles: update_plan, web_search, agent.dispatch.
+ * Currently handles: update_plan, web_search, agent.dispatch, write_stdin.
  */
 function extractToolDetail(
   toolName: string,
@@ -221,6 +221,16 @@ function extractToolDetail(
       : typeof p.targetAgentId === 'string' ? p.targetAgentId.trim()
       : '';
     return target ? '\u2192 ' + target : '';
+  }
+
+  // write_stdin: show what is being written
+  if (toolName === 'write_stdin') {
+    const p = parse(params ?? '');
+    const chars = typeof p.chars === 'string' ? p.chars.trim() : '';
+    if (chars) {
+      return '\u270d ' + truncate(chars, 80);
+    }
+    return '';
   }
 
   return '';

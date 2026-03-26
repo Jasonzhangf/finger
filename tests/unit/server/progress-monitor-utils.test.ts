@@ -310,22 +310,22 @@ describe('progress-monitor-utils', () => {
       expect(result).toContain('→ finger-project-agent');
     });
 
-    it('shell.exec shows no extra detail for non-special tools', () => {
+    it('write_stdin shows the chars being written', () => {
       const data: SessionProgressData = {
         agentId: 'test',
         status: 'running',
         elapsedMs: 30000,
         toolCallHistory: [
           {
-            toolName: 'shell.exec',
-            params: JSON.stringify({ cmd: 'pnpm build' }),
+            toolName: 'write_stdin',
+            params: JSON.stringify({ chars: 'sed -i "s/old/new/" file.ts' }),
             success: true,
           },
         ],
       };
       const result = buildCompactSummary(data, formatElapsed);
-      // shell.exec detail is empty (resolvedName already shows pnpm build)
-      expect(result).toContain('pnpm build');
+      expect(result).toContain('\u270d'); // ✍
+      expect(result).toContain('sed -i');
     });
   });
 });
