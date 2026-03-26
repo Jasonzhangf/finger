@@ -34,6 +34,11 @@ let rl: readline.Interface | null = null;
 let hub: MessageHub | null = null;
 let moduleRegistry: ModuleRegistry | null = null;
 
+function getSessionMessageCount(sessionId: string): number {
+  if (!sessionManager) return 0;
+  return sessionManager.getSessionMessageSnapshot(sessionId, 0).messageCount;
+}
+
 /**
  * 运行 App CLI
  */
@@ -226,7 +231,7 @@ function handleSessionCommand(args: string[]): void {
       clog.log('\nSessions:');
       sessions.forEach((s, i) => {
         const current = s.id === currentSessionId ? ' (current)' : '';
-        clog.log(`  ${i + 1}. ${s.name}${current} - ${s.messages.length} messages`);
+        clog.log(`  ${i + 1}. ${s.name}${current} - ${getSessionMessageCount(s.id)} messages`);
       });
       break;
     }
@@ -285,7 +290,7 @@ function printStatus(): void {
   clog.log(`
 Session: ${session.name}
   ID: ${session.id}
-  Messages: ${session.messages.length}
+  Messages: ${getSessionMessageCount(session.id)}
   Compressed: ${compression.compressed ? `Yes (${compression.originalCount} messages)` : 'No'}
   Paused: ${sessionManager.isPaused(currentSessionId) ? 'Yes' : 'No'}
 `);

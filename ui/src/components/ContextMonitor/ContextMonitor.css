@@ -437,6 +437,16 @@
   min-width: 36px;
 }
 
+.context-message-slot.zone-working {
+  color: #86efac;
+  min-width: 44px;
+}
+
+.context-message-slot.zone-history {
+  color: #93c5fd;
+  min-width: 44px;
+}
+
 .context-message-preview {
   color: #cbd5e1;
   line-height: 1.35;

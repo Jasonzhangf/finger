@@ -49,6 +49,11 @@ export class ProgressMonitor {
   private _cleanupTimer: NodeJS.Timeout | null = null;
   private latestStepSummary = new Map<string, string>(); // sessionId -> latest step summary
 
+  private snippetLimitForTool(toolName?: string): number {
+    if (toolName === 'update_plan') return 12_000;
+    return 200;
+  }
+
   constructor(
     private eventBus: UnifiedEventBus,
     private deps: AgentRuntimeDeps,
@@ -217,6 +222,33 @@ export class ProgressMonitor {
         if (typeof event.payload?.reasoning === 'string' && event.payload.reasoning.length > 0) {
           progress.latestReasoning = event.payload.reasoning.slice(0, 120);
         }
+        {
+          const contextUsagePercentRaw = typeof event.payload?.contextUsagePercent === 'number'
+            ? event.payload.contextUsagePercent
+            : typeof event.payload?.context_usage_percent === 'number'
+              ? event.payload.context_usage_percent
+              : undefined;
+          const estimatedTokensRaw = typeof event.payload?.estimatedTokensInContextWindow === 'number'
+            ? event.payload.estimatedTokensInContextWindow
+            : typeof event.payload?.estimated_tokens_in_context_window === 'number'
+              ? event.payload.estimated_tokens_in_context_window
+              : undefined;
+          const maxInputTokensRaw = typeof event.payload?.maxInputTokens === 'number'
+            ? event.payload.maxInputTokens
+            : typeof event.payload?.max_input_tokens === 'number'
+              ? event.payload.max_input_tokens
+              : undefined;
+
+          if (typeof contextUsagePercentRaw === 'number' && Number.isFinite(contextUsagePercentRaw)) {
+            progress.contextUsagePercent = Math.max(0, Math.floor(contextUsagePercentRaw));
+          }
+          if (typeof estimatedTokensRaw === 'number' && Number.isFinite(estimatedTokensRaw)) {
+            progress.estimatedTokensInContextWindow = Math.max(0, Math.floor(estimatedTokensRaw));
+          }
+          if (typeof maxInputTokensRaw === 'number' && Number.isFinite(maxInputTokensRaw)) {
+            progress.maxInputTokens = Math.max(0, Math.floor(maxInputTokensRaw));
+          }
+        }
         break;
       case 'agent_runtime_status':
         const status = event.payload?.status;
@@ -269,7 +301,7 @@ export class ProgressMonitor {
     const record: ToolCallRecord = {
       toolId,
       toolName: toolName || 'unknown',
-      params: this.safeSnippet(input, toolName === 'update_plan' ? 2000 : 200),
+      params: this.safeSnippet(input, this.snippetLimitForTool(toolName)),
       timestamp: Date.now(),
     };
     progress.toolCallHistory.push(record);
@@ -294,7 +326,7 @@ export class ProgressMonitor {
 
     // 如果按 toolId 找不到，按 toolName 查找最近的未完成记录
     if (!existing && toolName) {
-      const inputSnippet = this.safeSnippet(input);
+      const inputSnippet = this.safeSnippet(input, this.snippetLimitForTool(toolName));
       // 从后往前找最后一个未完成的同名工具
       for (let i = progress.toolCallHistory.length - 1; i >= 0; i--) {
         const t = progress.toolCallHistory[i];
@@ -324,7 +356,7 @@ export class ProgressMonitor {
     const record: ToolCallRecord = existing || {
       toolId,
       toolName: toolName || 'unknown',
-      params: this.safeSnippet(input),
+      params: this.safeSnippet(input, this.snippetLimitForTool(toolName)),
       timestamp: Date.now(),
     };
     record.result = output !== undefined ? this.safeSnippet(output) : record.result;
@@ -377,7 +409,10 @@ export class ProgressMonitor {
       const newToolCalls = p.toolCallHistory.slice(lastReportedIdx + 1);
       const currentTaskChanged = (p.currentTask ?? '') !== (p.lastReportedCurrentTask ?? '');
       const reasoningChanged = (p.latestReasoning ?? '') !== (p.lastReportedReasoning ?? '');
-      if (newToolCalls.length === 0 && !currentTaskChanged && !reasoningChanged) {
+      const contextChanged = (p.contextUsagePercent ?? -1) !== (p.lastReportedContextUsagePercent ?? -1)
+        || (p.estimatedTokensInContextWindow ?? -1) !== (p.lastReportedEstimatedTokensInContextWindow ?? -1)
+        || (p.maxInputTokens ?? -1) !== (p.lastReportedMaxInputTokens ?? -1);
+      if (newToolCalls.length === 0 && !currentTaskChanged && !reasoningChanged && !contextChanged) {
         continue;
       }
 
@@ -395,6 +430,9 @@ export class ProgressMonitor {
       p.lastReportedToolIndex = p.toolCallHistory.length - 1;
       p.lastReportedCurrentTask = p.currentTask;
       p.lastReportedReasoning = p.latestReasoning;
+      p.lastReportedContextUsagePercent = p.contextUsagePercent;
+      p.lastReportedEstimatedTokensInContextWindow = p.estimatedTokensInContextWindow;
+      p.lastReportedMaxInputTokens = p.maxInputTokens;
 
       if (this.callbacks?.onProgressReport) {
         await this.callbacks.onProgressReport(report);
@@ -421,6 +459,9 @@ export class ProgressMonitor {
         success: t.success,
       })),
       latestReasoning: p.latestReasoning,
+      contextUsagePercent: p.contextUsagePercent,
+      estimatedTokensInContextWindow: p.estimatedTokensInContextWindow,
+      maxInputTokens: p.maxInputTokens,
     };
     return buildCompactSummary(
       data,
@@ -445,6 +486,9 @@ export class ProgressMonitor {
         success: t.success,
       })),
       latestReasoning: p.latestReasoning,
+      contextUsagePercent: p.contextUsagePercent,
+      estimatedTokensInContextWindow: p.estimatedTokensInContextWindow,
+      maxInputTokens: p.maxInputTokens,
     };
     return buildReportKeyUtil(data, this.latestStepSummary.get(p.sessionId));
   }

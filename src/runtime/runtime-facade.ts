@@ -51,7 +51,17 @@ export interface ISessionManager {
   setCurrentSession(sessionId: string): boolean;
   listSessions(): SessionInfo[];
   addMessage(sessionId: string, role: string, content: string, metadata?: { attachments?: Attachment[] }): Promise<{ id: string; timestamp: string } | null>;
-  getMessages(sessionId: string, limit?: number): Array<{ id: string; role: string; content: string; timestamp: string }>;
+  getMessages(
+    sessionId: string,
+    limit?: number,
+  ): Array<{
+    id: string;
+    role: string;
+    content: string;
+    timestamp: string;
+    metadata?: Record<string, unknown>;
+    attachments?: Attachment[];
+  }>;
   deleteSession(sessionId: string): boolean;
   pauseSession?(sessionId: string): boolean;
   resumeSession?(sessionId: string): boolean;
@@ -187,6 +197,23 @@ export class RuntimeFacade {
    */
   listSessions(): SessionInfo[] {
     return this.sessionManager.listSessions();
+  }
+
+  /**
+   * 获取会话消息（Ledger 动态视图）
+   */
+  getMessages(
+    sessionId: string,
+    limit?: number,
+  ): Array<{
+    id: string;
+    role: string;
+    content: string;
+    timestamp: string;
+    metadata?: Record<string, unknown>;
+    attachments?: Attachment[];
+  }> {
+    return this.sessionManager.getMessages(sessionId, limit);
   }
 
   /**

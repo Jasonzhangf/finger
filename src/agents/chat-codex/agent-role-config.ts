@@ -1,7 +1,6 @@
 export type BaseAgentRole = 'system' | 'project' | 'reviewer';
 
 const CORE_EXECUTION_TOOLS = [
-  'shell.exec',
   'exec_command',
   'write_stdin',
   'apply_patch',
@@ -9,6 +8,7 @@ const CORE_EXECUTION_TOOLS = [
   'web_search',
   'update_plan',
   'context_ledger.memory',
+  'context_builder.rebuild',
   'clock',
   'command.exec',
 ] as const;
@@ -23,14 +23,19 @@ const MAILBOX_TOOLS = [
   'mailbox.remove_all',
 ] as const;
 
+const SKILLS_TOOLS = [
+  'skills.list',
+  'skills.status',
+] as const;
+
 const READ_ONLY_COORDINATION_TOOLS = [
-  'shell.exec',
   'exec_command',
   'write_stdin',
   'view_image',
   'web_search',
   'update_plan',
   'context_ledger.memory',
+  'context_builder.rebuild',
   'clock',
   'command.exec',
 ] as const;
@@ -73,21 +78,22 @@ export const BASE_AGENT_ROLE_CONFIG: Record<BaseAgentRole, BaseAgentRoleConfig> 
   system: {
     role: 'system',
     description: 'System agent. Owns system-level coordination, registry access, and cross-project dispatch.',
-    allowedTools: dedupeTools([...ORCHESTRATOR_FULL_TOOLS], [...MAILBOX_TOOLS]),
+    allowedTools: dedupeTools([...ORCHESTRATOR_FULL_TOOLS], [...MAILBOX_TOOLS], [...SKILLS_TOOLS]),
     defaultLedgerCanReadAll: true,
   },
   project: {
     role: 'project',
     description: 'Project agent. Handles project-scoped planning, coding, execution, and verification work.',
-    allowedTools: dedupeTools([...ORCHESTRATOR_FULL_TOOLS], [...MAILBOX_TOOLS], ['report-task-completion']),
+    allowedTools: dedupeTools([...ORCHESTRATOR_FULL_TOOLS], [...MAILBOX_TOOLS], [...SKILLS_TOOLS], ['report-task-completion']),
     defaultLedgerCanReadAll: true,
   },
   reviewer: {
     role: 'reviewer',
     description: 'Reviewer agent. Focuses on evidence, risk, regression checks, and mailbox-driven review tasks.',
     allowedTools: dedupeTools(
-      ['shell.exec', 'exec_command', 'view_image', 'web_search', 'context_ledger.memory', 'user.ask'],
+      ['exec_command', 'view_image', 'web_search', 'context_ledger.memory', 'context_builder.rebuild', 'user.ask'],
       [...MAILBOX_TOOLS],
+      [...SKILLS_TOOLS],
     ),
     defaultLedgerCanReadAll: false,
   },

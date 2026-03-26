@@ -17,12 +17,15 @@ import {
 } from './agent-role-config.js';
 import { FINGER_PATHS, ensureDir, normalizeSessionDirName } from '../../core/finger-paths.js';
 import { FINGER_SOURCE_ROOT } from '../../core/source-root.js';
+import { getContextWindow } from '../../core/user-settings.js';
 import type { MailboxSnapshot } from '../../runtime/mailbox-snapshot.js';
 import { hasNewUnreadSinceLastNotified, getNewUnreadEntries } from '../../runtime/mailbox-snapshot.js';
 import { formatSkillsAsPromptSync } from '../../skills/skill-prompt-injector.js';
 
 const DEFAULT_KERNEL_TIMEOUT_MS = 600_000;
 const DEFAULT_KERNEL_TIMEOUT_RETRY_COUNT = 5;
+const FLOW_PROMPT_MAX_CHARS = 10_000;
+const DEFAULT_CONTEXT_WINDOW_TOKENS = 262_144;
 export const CHAT_CODEX_ORCHESTRATOR_ALLOWED_TOOLS = [
   ...BASE_AGENT_ROLE_CONFIG.project.allowedTools,
 ];
@@ -806,6 +809,74 @@ export function createChatCodexModule(
         },
       });
 
+      const emittedReasoningKeys = new Set<string>();
+      const emittedReasoningTextKeys = new Set<string>();
+      const resolveReasoningIdentity = (metadataInput?: Record<string, unknown>): { agentId: string; roleProfile: string } => {
+        const agentId = parseOptionalString(context?.metadata?.contextLedgerAgentId)
+          ?? parseOptionalString(metadataInput?.contextLedgerAgentId)
+          ?? 'unknown-agent';
+        const roleProfile = parseOptionalString(context?.metadata?.roleProfile)
+          ?? parseOptionalString(context?.metadata?.contextLedgerRole)
+          ?? parseOptionalString(metadataInput?.roleProfile)
+          ?? 'orchestrator';
+        return { agentId, roleProfile };
+      };
+      const markReasoningDedup = (agentId: string, roleProfile: string, text: string, index?: number): void => {
+        const normalizedText = text.trim();
+        if (!normalizedText) return;
+        emittedReasoningTextKeys.add(`${agentId}|${roleProfile}|${normalizedText}`);
+        if (typeof index === 'number' && Number.isFinite(index)) {
+          emittedReasoningKeys.add(`${agentId}|${roleProfile}|${index}|${normalizedText}`);
+        }
+      };
+
+      const emitReasoningTraceFromMetadata = (
+        event: ChatCodexKernelEvent,
+        metadataInput?: Record<string, unknown>,
+      ): boolean => {
+        const metadata = metadataInput
+          ?? (
+            event.msg.metadata_json && event.msg.metadata_json.trim().length > 0
+              ? parseKernelMetadata(event.msg.metadata_json)
+              : undefined
+          );
+        if (!metadata) return false;
+
+        const reasoningTrace = extractKernelReasoningTrace(metadata);
+        if (reasoningTrace.length === 0) return false;
+
+        const identity = resolveReasoningIdentity(metadata);
+        const reasoningAgentId = identity.agentId;
+        const reasoningRoleProfile = identity.roleProfile;
+
+        let emitted = false;
+        for (let i = 0; i < reasoningTrace.length; i += 1) {
+          const reasoningText = reasoningTrace[i];
+          if (!reasoningText) continue;
+          const textDedupKey = `${reasoningAgentId}|${reasoningRoleProfile}|${reasoningText}`;
+          if (emittedReasoningTextKeys.has(textDedupKey)) continue;
+          const dedupKey = `${reasoningAgentId}|${reasoningRoleProfile}|${i}|${reasoningText}`;
+          if (emittedReasoningKeys.has(dedupKey)) continue;
+          markReasoningDedup(reasoningAgentId, reasoningRoleProfile, reasoningText, i);
+          emitted = true;
+          safeNotifyLoopEvent(mergedConfig.onLoopEvent, {
+            sessionId,
+            phase: 'kernel_event',
+            timestamp: new Date().toISOString(),
+            payload: {
+              id: event.id,
+              type: 'reasoning',
+              index: i,
+              text: reasoningText,
+              agentId: reasoningAgentId,
+              roleProfile: reasoningRoleProfile,
+            },
+          });
+        }
+
+        return emitted;
+      };
+
       const isRealtimeKernelStepEvent = (eventType: string): boolean =>
         eventType === 'tool_call'
         || eventType === 'tool_result'
@@ -896,32 +967,7 @@ export function createChatCodexModule(
          });
        }
 
-        const reasoningTrace = extractKernelReasoningTrace(metadata);
-        const reasoningAgentId = parseOptionalString(context?.metadata?.contextLedgerAgentId)
-          ?? parseOptionalString(metadata?.contextLedgerAgentId)
-          ?? 'unknown-agent';
-        const reasoningRoleProfile = parseOptionalString(context?.metadata?.roleProfile)
-          ?? parseOptionalString(context?.metadata?.contextLedgerRole)
-          ?? parseOptionalString(metadata?.roleProfile)
-          ?? 'orchestrator';
-        for (let i = 0; i < reasoningTrace.length; i += 1) {
-          const reasoningText = reasoningTrace[i];
-          if (!reasoningText) continue;
-          emitted = true;
-          safeNotifyLoopEvent(mergedConfig.onLoopEvent, {
-            sessionId,
-            phase: 'kernel_event',
-            timestamp: new Date().toISOString(),
-            payload: {
-              id: event.id,
-              type: 'reasoning',
-              index: i,
-              text: reasoningText,
-              agentId: reasoningAgentId,
-              roleProfile: reasoningRoleProfile,
-            },
-          });
-        }
+        emitted = emitReasoningTraceFromMetadata(event, metadata) || emitted;
 
         return emitted;
       };
@@ -937,7 +983,20 @@ export function createChatCodexModule(
           ...(event.msg.message ? { message: event.msg.message } : {}),
           ...(event.msg.last_agent_message ? { lastAgentMessage: event.msg.last_agent_message } : {}),
         };
-        if (event.msg.type === 'tool_call') {
+        if (event.msg.type === 'reasoning') {
+          const reasoningText = parseOptionalString(event.msg.message)
+            ?? parseOptionalString(event.msg.last_agent_message);
+          if (reasoningText) {
+            const metadata = event.msg.metadata_json && event.msg.metadata_json.trim().length > 0
+              ? parseKernelMetadata(event.msg.metadata_json)
+              : undefined;
+            const identity = resolveReasoningIdentity(metadata);
+            payload.text = reasoningText;
+            payload.agentId = identity.agentId;
+            payload.roleProfile = identity.roleProfile;
+            markReasoningDedup(identity.agentId, identity.roleProfile, reasoningText);
+          }
+        } else if (event.msg.type === 'tool_call') {
           if (event.msg.tool_name) payload.toolName = event.msg.tool_name;
           if (event.msg.call_id) payload.toolId = event.msg.call_id;
           if (event.msg.input !== undefined) payload.input = event.msg.input;
@@ -1004,6 +1063,7 @@ export function createChatCodexModule(
                 payload.realtimeToolEvents = true;
               }
             }
+            emitReasoningTraceFromMetadata(event, metadata);
           }
         }
 
@@ -1115,36 +1175,10 @@ export function createChatCodexModule(
           emitSyntheticKernelEventsFromTaskComplete(event);
         }
       } else {
-        // Streaming path produced realtime steps; still extract reasoning from task_complete metadata.
-        const rAgentId = parseOptionalString(context?.metadata?.contextLedgerAgentId)
-          ?? parseOptionalString(context?.metadata?.contextLedgerRole)
-          ?? 'unknown-agent';
-        const rRoleProfile = parseOptionalString(context?.metadata?.roleProfile)
-          ?? parseOptionalString(context?.metadata?.contextLedgerRole)
-          ?? parseOptionalString(context?.metadata?.roleProfile)
-          ?? 'orchestrator';
+        // Streaming path may still carry reasoning trace inside metadata_json.
+        // Re-scan final events as a fallback; turn-level dedup prevents duplicate pushes.
         for (const event of runResult.events) {
-          if (event.msg.type !== 'task_complete' || !event.msg.metadata_json || event.msg.metadata_json.trim().length === 0) continue;
-          const metadata = parseKernelMetadata(event.msg.metadata_json);
-          if (!metadata) continue;
-          const reasoningTrace = extractKernelReasoningTrace(metadata);
-          for (let i = 0; i < reasoningTrace.length; i += 1) {
-            const reasoningText = reasoningTrace[i];
-            if (!reasoningText) continue;
-            safeNotifyLoopEvent(mergedConfig.onLoopEvent, {
-              sessionId,
-              phase: 'kernel_event',
-              timestamp: new Date().toISOString(),
-              payload: {
-                id: event.id,
-                type: 'reasoning',
-                index: i,
-                text: reasoningText,
-                agentId: rAgentId,
-                roleProfile: rRoleProfile,
-              },
-            });
-          }
+          emitReasoningTraceFromMetadata(event);
         }
       }
 
@@ -1185,7 +1219,9 @@ export function createChatCodexModule(
       defaultSystemPromptResolver: resolveSystemPrompt,
       defaultRoleProfileId: normalizeDefaultRoleProfileId(mergedConfig.defaultRoleProfileId),
       appendContextSlotsToSystemPrompt: false,
-      maxContextMessages: 20,
+      // Context history is budgeted by token-aware context builder (task-granularity),
+      // not by message count.
+      maxContextMessages: 0,
       roleProfiles: {
         general: {
           id: 'general',
@@ -1825,13 +1861,16 @@ function buildKernelUserTurnOptions(
   let developerInstructions = resolveDeveloperInstructions(metadata, developerPromptPaths, role);
   const skillsPromptBlock = buildSkillsPromptBlock(metadata);
   const mailboxBaselineBlock = buildMailboxBaselineBlock(context?.mailboxSnapshot, metadata);
+  const flowPromptBlock = buildFlowPromptBlock(metadata);
 
   if (isSystemRole) {
     options.system_prompt = appendPromptSection(options.system_prompt, skillsPromptBlock);
     options.system_prompt = appendPromptSection(options.system_prompt, mailboxBaselineBlock);
+    options.system_prompt = appendPromptSection(options.system_prompt, flowPromptBlock);
   } else {
     developerInstructions = appendPromptSection(developerInstructions, skillsPromptBlock);
     developerInstructions = appendPromptSection(developerInstructions, mailboxBaselineBlock);
+    developerInstructions = appendPromptSection(developerInstructions, flowPromptBlock);
   }
 
   // Inject mailbox pending entries into context (works for all roles including system)
@@ -1985,6 +2024,64 @@ function buildMailboxBaselineBlock(
     lines.push(`snapshot.currentSeq=${snapshot.currentSeq}`);
     lines.push(`snapshot.unread=${unread}`);
   }
+  return lines.join('\n');
+}
+
+function buildFlowPromptBlock(metadata: Record<string, unknown> | undefined): string | undefined {
+  const enabled = parseOptionalBoolean(metadata?.flowPromptEnabled)
+    ?? parseOptionalBoolean(metadata?.flowInjectionEnabled)
+    ?? true;
+  if (!enabled) return undefined;
+
+  const resolveFlowPath = (): string | undefined => {
+    const explicit = parseOptionalString(metadata?.flowFilePath) ?? parseOptionalString(metadata?.flow_file_path);
+    if (explicit) return explicit;
+
+    const projectPath = parseOptionalString(metadata?.projectPath) ?? parseOptionalString(metadata?.project_path);
+    if (projectPath) return join(projectPath, 'FLOW.md');
+
+    const cwd = parseOptionalString(metadata?.cwd);
+    if (cwd) return join(cwd, 'FLOW.md');
+
+    return join(process.cwd(), 'FLOW.md');
+  };
+
+  const flowPath = resolveFlowPath();
+  const rawFlow = (() => {
+    if (!flowPath || !existsSync(flowPath)) return undefined;
+    try {
+      const content = readFileSync(flowPath, 'utf-8');
+      return content.length > 0 ? content : undefined;
+    } catch {
+      return undefined;
+    }
+  })();
+
+  const lines = [
+    '# Task Flow Runtime',
+    '- Flow context file: `FLOW.md` (current task process memory).',
+    '- FLOW budget in prompt is strictly 10,000 chars; content beyond this is truncated.',
+    '- Complex tasks: first propose a closure flow hypothesis and ask user confirmation once before execution.',
+    '- After confirmation: write/update FLOW.md, then continue by flow state-machine progression without repeatedly asking the same confirmation.',
+    '- Simple tasks (e.g. quick search/read/single-step lookup) can execute directly without creating a flow.',
+    '- If new sub-flow appears during current task, update FLOW.md to reflect latest plan/state.',
+    '- Cleanup rule: only after user explicitly confirms task completion, reset FLOW.md content to avoid contaminating next task.',
+    '- Do not clear FLOW.md before explicit user completion confirmation.',
+    flowPath ? `FLOW.path=${flowPath}` : 'FLOW.path=unresolved',
+  ];
+
+  if (!rawFlow || rawFlow.trim().length === 0) {
+    lines.push('FLOW.state=empty');
+    return lines.join('\n');
+  }
+
+  const truncated = rawFlow.length > FLOW_PROMPT_MAX_CHARS
+    ? `${rawFlow.slice(0, FLOW_PROMPT_MAX_CHARS)}\n...[TRUNCATED_AT_10000_CHARS]`
+    : rawFlow;
+  lines.push('FLOW.content:');
+  lines.push('```md');
+  lines.push(truncated);
+  lines.push('```');
   return lines.join('\n');
 }
 
@@ -2143,6 +2240,12 @@ function buildLedgerDeveloperInstructions(
     : [];
   const focusEnabled = parseOptionalBoolean(metadata?.contextLedgerFocusEnabled) ?? true;
   const focusMaxChars = parseOptionalNumber(metadata?.contextLedgerFocusMaxChars) ?? 20_000;
+  const workingSetTaskBlockCount = parseOptionalNumber(metadata?.workingSetTaskBlockCount);
+  const historicalTaskBlockCount = parseOptionalNumber(metadata?.historicalTaskBlockCount);
+  const workingSetMessageCount = parseOptionalNumber(metadata?.workingSetMessageCount);
+  const historicalMessageCount = parseOptionalNumber(metadata?.historicalMessageCount);
+  const workingSetTokens = parseOptionalNumber(metadata?.workingSetTokens);
+  const historicalTokens = parseOptionalNumber(metadata?.historicalTokens);
 
   const lines = [
     '[context_ledger]',
@@ -2154,12 +2257,23 @@ function buildLedgerDeveloperInstructions(
     `readable_agents=${readableAgents.join(',')}`,
     `focus_enabled=${focusEnabled ? 'true' : 'false'}`,
     `focus_max_chars=${focusMaxChars}`,
+    workingSetTaskBlockCount !== undefined ? `working_set_task_blocks=${workingSetTaskBlockCount}` : '',
+    historicalTaskBlockCount !== undefined ? `historical_task_blocks=${historicalTaskBlockCount}` : '',
+    workingSetMessageCount !== undefined ? `working_set_messages=${workingSetMessageCount}` : '',
+    historicalMessageCount !== undefined ? `historical_messages=${historicalMessageCount}` : '',
+    workingSetTokens !== undefined ? `working_set_tokens=${workingSetTokens}` : '',
+    historicalTokens !== undefined ? `historical_tokens=${historicalTokens}` : '',
+    'Current prompt history is a budgeted dynamic view, not the full ledger.',
+    'working_set contains the active task block at higher fidelity; historical_memory contains relevance-selected prior blocks.',
+    'Stable layers such as system/developer prompts, skills, mailbox summaries, and current user input are injected separately from historical recall.',
+    'Absence from the visible prompt does not prove the event never happened.',
     enabled
-      ? 'Use `context_ledger.memory` for timeline query/insert when historical context is required.'
+      ? 'When historical context is missing, first call `context_ledger.memory` with action="search", then inspect raw entries with action="query", detail=true, slot_start, and slot_end.'
       : 'Do not call `context_ledger.memory` because ledger is disabled for this turn.',
-    'Treat recalled focus as historical memory, not guaranteed latest state.',
+    'Treat compact/focus hits as retrieval hints and verify important claims with detailed ledger query before relying on them.',
+    'Do not guess hidden history; retrieve evidence from ledger first.',
   ];
-  return lines.join('\n');
+  return lines.filter((line) => line.length > 0).join('\n');
 }
 
 function resolveUserInstructions(
@@ -2240,9 +2354,12 @@ function resolveContextWindow(
 }
 
 function resolveContextWindowFromFingerConfig(metadata: Record<string, unknown> | undefined): number | undefined {
+  const defaultWindow = readDefaultContextWindow();
   const snapshot = readFingerKernelConfigSnapshot();
   if (!snapshot) {
-    return inferModelContextWindowFromMetadata(metadata);
+    const inferred = inferModelContextWindowFromMetadata(metadata);
+    if (typeof inferred === 'number' && Number.isFinite(inferred) && inferred > 0) return Math.floor(inferred);
+    return defaultWindow;
   }
 
   const providerId = resolveProviderIdForContextWindow(metadata, snapshot.activeProviderId);
@@ -2256,7 +2373,21 @@ function resolveContextWindowFromFingerConfig(metadata: Record<string, unknown> 
   }
 
   if (snapshot.globalMaxInputTokens !== undefined) return snapshot.globalMaxInputTokens;
-  return inferModelContextWindowFromMetadata(metadata);
+  const inferred = inferModelContextWindowFromMetadata(metadata);
+  if (typeof inferred === 'number' && Number.isFinite(inferred) && inferred > 0) return Math.floor(inferred);
+  return defaultWindow;
+}
+
+function readDefaultContextWindow(): number {
+  try {
+    const value = getContextWindow();
+    if (typeof value === 'number' && Number.isFinite(value) && value > 0) {
+      return Math.floor(value);
+    }
+  } catch {
+    // ignore and fallback to built-in default
+  }
+  return DEFAULT_CONTEXT_WINDOW_TOKENS;
 }
 
 function resolveProviderIdForContextWindow(
@@ -2500,26 +2631,47 @@ function defaultToolSpecification(name: string): ChatCodexToolSpecification {
     return {
       name,
       description:
-        'Timeline context memory tool. Supports search/query/insert. Search returns slot summaries, and query can fetch detailed ledger entries by slot range.',
+        'Canonical ledger history tool. Visible prompt history may be partial. Use action="search" to find relevant slot ranges, task-block overflow candidates, or compact hits, then action="query" with detail=true plus slot_start/slot_end to inspect raw ledger entries. index/compact/delete_slots are maintenance actions.',
       inputSchema: {
         type: 'object',
         properties: {
-          action: { type: 'string', enum: ['query', 'search', 'insert'] },
-          session_id: { type: 'string' },
-          agent_id: { type: 'string' },
-          mode: { type: 'string' },
-          since_ms: { type: 'number' },
-          until_ms: { type: 'number' },
-          limit: { type: 'number' },
-          slot_start: { type: 'number' },
-          slot_end: { type: 'number' },
-          contains: { type: 'string' },
-          fuzzy: { type: 'boolean' },
-          detail: { type: 'boolean' },
-          event_types: { type: 'array', items: { type: 'string' } },
-          text: { type: 'string' },
-          append: { type: 'boolean' },
-          focus_max_chars: { type: 'number' },
+          action: { type: 'string', enum: ['query', 'search', 'index', 'compact', 'delete_slots'], description: 'Use search/query for historical retrieval; other actions are maintenance only.' },
+          session_id: { type: 'string', description: 'Optional session scope override. Usually auto-filled by runtime.' },
+          agent_id: { type: 'string', description: 'Ledger owner agent id. Requires permission when reading other agents.' },
+          mode: { type: 'string', description: 'Conversation mode / thread name, such as main or review.' },
+          since_ms: { type: 'number', description: 'Inclusive start timestamp in unix milliseconds.' },
+          until_ms: { type: 'number', description: 'Inclusive end timestamp in unix milliseconds.' },
+          limit: { type: 'number', description: 'Maximum records to return.' },
+          slot_start: { type: 'number', description: '1-based slot start for detailed query.' },
+          slot_end: { type: 'number', description: '1-based slot end for detailed query.' },
+          contains: { type: 'string', description: 'Keyword/topic search text. Search also returns task-block overflow candidates.' },
+          fuzzy: { type: 'boolean', description: 'Enable compact/fuzzy/task-block recall before detailed lookup.' },
+          detail: { type: 'boolean', description: 'When true with query, return raw ledger entries for the slot window.' },
+          event_types: { type: 'array', items: { type: 'string' }, description: 'Optional event type filter.' },
+          text: { type: 'string', description: 'Reserved for maintenance flows; not needed for normal history lookup.' },
+          append: { type: 'boolean', description: 'Reserved for maintenance flows.' },
+          focus_max_chars: { type: 'number', description: 'Optional focus text budget.' },
+        },
+        additionalProperties: true,
+      },
+    };
+  }
+
+  if (name === 'context_builder.rebuild') {
+    return {
+      name,
+      description:
+        'Rebuild dynamic history context from ledger for topic switches/mixed threads. Use when current topic is not continuous with visible history and you need a cleaner working_set/historical_memory split.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          session_id: { type: 'string', description: 'Optional session id override. Usually auto-filled from tool context.' },
+          agent_id: { type: 'string', description: 'Optional agent id override. Usually auto-filled from tool context.' },
+          mode: { type: 'string', enum: ['minimal', 'moderate', 'aggressive'], description: 'Context build mode override for this rebuild.' },
+          target_budget: { type: 'number', description: 'Optional token budget override for this rebuild.' },
+          current_prompt: { type: 'string', description: 'Current user intent/topic used for relevance sorting.' },
+          include_messages: { type: 'boolean', description: 'Whether to include compact message previews in output.' },
+          message_limit: { type: 'number', description: 'Max preview messages when include_messages=true.' },
         },
         additionalProperties: true,
       },

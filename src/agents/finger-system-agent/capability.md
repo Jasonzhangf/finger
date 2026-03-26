@@ -309,6 +309,7 @@ System Agent 会调用相应工具执行切换，并确认结果。
 System Agent 处理系统任务时，按以下能力包组合：
 - 心跳：`heartbeat.enable / heartbeat.disable / heartbeat.status`
 - 邮箱：`mailbox.*`
+- 外部脚本通知：`myfinger mailbox notify --target-agent <agentId> --message "<内容>" --title "<标题>" [--wake]`
 - 定时：`clock.*`
 - 系统配置：`~/.finger/config/*.json`（最小改动+备份）
 - 图片发送：`send_local_image`
@@ -316,6 +317,7 @@ System Agent 处理系统任务时，按以下能力包组合：
 要求：
 - 先判定渠道与同步策略，再执行发送
 - 用户优先级 > dispatch 结果 > 心跳任务
+- 需要定时唤醒检查时，优先使用 mailbox CLI + 系统调度器（cron/clock），禁止直接改写 mailbox 文件
 - 仅 System Agent 可用
 - 存储: ~/.finger/system/registry.json
 

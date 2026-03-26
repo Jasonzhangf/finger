@@ -10,6 +10,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import type { RuntimeEvent } from '../../../src/runtime/events';
 import { AgentStatusSubscriber, SubscriptionLevel } from '../../../src/server/modules/agent-status-subscriber';
 import { UnifiedEventBus } from '../../../src/runtime/event-bus';
+import { heartbeatMailbox } from '../../../src/server/modules/heartbeat-mailbox';
 
 describe('AgentStatusSubscriber', () => {
   let eventBus: UnifiedEventBus;
@@ -348,6 +349,116 @@ describe('AgentStatusSubscriber', () => {
       const content = typeof payload?.content === 'string' ? payload.content : '';
       const summaryOccurrences = (content.match(/派发 agent-2/g) || []).length;
       expect(summaryOccurrences).toBe(1);
+
+      dispatchSubscriber.stop();
+    });
+
+    it('mailbox 派发状态应显示语义摘要而不是原始 mailbox id', async () => {
+      const mockMessageHub = {
+        routeToOutput: vi.fn().mockResolvedValue(undefined),
+      };
+
+      const dispatchSubscriber = new AgentStatusSubscriber(eventBus, mockAgentRuntimeDeps, mockMessageHub);
+      dispatchSubscriber.setPrimaryAgent('agent-1');
+      dispatchSubscriber.registerSession('session-dispatch-mailbox', {
+        channel: 'qqbot',
+        envelopeId: 'env-dispatch-mailbox',
+      });
+      dispatchSubscriber.start();
+
+      const mailboxAppend = heartbeatMailbox.append('agent-2', {
+        type: 'dispatch-task',
+        envelope: {
+          title: 'Queued Dispatch Task',
+          shortDescription: '队列超时后转入邮箱，等待 agent-2 空闲后处理。',
+        },
+      }, {
+        category: 'dispatch-task',
+      });
+
+      const dispatchEvent: RuntimeEvent = {
+        type: 'agent_runtime_dispatch',
+        sessionId: 'session-dispatch-mailbox',
+        timestamp: new Date().toISOString(),
+        payload: {
+          dispatchId: 'dispatch-mailbox-1',
+          sourceAgentId: 'agent-1',
+          targetAgentId: 'agent-2',
+          status: 'queued',
+          result: {
+            status: 'queued_mailbox',
+            messageId: mailboxAppend.id,
+            summary: `Target busy timeout; task moved to mailbox (${mailboxAppend.id}) for agent-2`,
+          },
+        },
+      };
+
+      await eventBus.emit(dispatchEvent);
+      await new Promise(resolve => setTimeout(resolve, 80));
+
+      const dispatchCall = mockMessageHub.routeToOutput.mock.calls.find(
+        (call: unknown[]) => call[0] === 'channel-bridge-qqbot',
+      );
+      expect(dispatchCall).toBeDefined();
+      const payload = dispatchCall?.[1] as { content?: string; statusUpdate?: { status?: { summary?: string } } };
+      const content = typeof payload?.content === 'string' ? payload.content : '';
+      const summary = payload?.statusUpdate?.status?.summary ?? '';
+      expect(content).toContain('mailbox: Queued Dispatch Task');
+      expect(summary).toContain('mailbox: Queued Dispatch Task');
+      expect(content).not.toContain(mailboxAppend.id);
+      expect(summary).not.toContain(mailboxAppend.id);
+
+      heartbeatMailbox.remove('agent-2', mailboxAppend.id);
+      dispatchSubscriber.stop();
+    });
+
+    it('普通 dispatch result.messageId 不应被错误标记为 mailbox', async () => {
+      const mockMessageHub = {
+        routeToOutput: vi.fn().mockResolvedValue(undefined),
+      };
+
+      const dispatchSubscriber = new AgentStatusSubscriber(eventBus, mockAgentRuntimeDeps, mockMessageHub);
+      dispatchSubscriber.setPrimaryAgent('agent-1');
+      dispatchSubscriber.registerSession('session-dispatch-normal', {
+        channel: 'qqbot',
+        envelopeId: 'env-dispatch-normal',
+      });
+      dispatchSubscriber.start();
+
+      const externalMessageId = 'ROBOT1.0_RfEjr0m4Gkchob94UGP.rBgrInWXSDk2G3yXlkKGQs7EL3SmZjNW7ZjW4ULCIXyI';
+      const dispatchEvent: RuntimeEvent = {
+        type: 'agent_runtime_dispatch',
+        sessionId: 'session-dispatch-normal',
+        timestamp: new Date().toISOString(),
+        payload: {
+          dispatchId: 'dispatch-normal-1',
+          sourceAgentId: 'agent-1',
+          targetAgentId: 'agent-2',
+          status: 'completed',
+          result: {
+            status: 'completed',
+            messageId: externalMessageId,
+            summary: '任务已完成并返回结果',
+          },
+        },
+      };
+
+      await eventBus.emit(dispatchEvent);
+      await new Promise(resolve => setTimeout(resolve, 80));
+
+      const dispatchCall = mockMessageHub.routeToOutput.mock.calls.find(
+        (call: unknown[]) => call[0] === 'channel-bridge-qqbot',
+      );
+      expect(dispatchCall).toBeDefined();
+      const payload = dispatchCall?.[1] as { content?: string; statusUpdate?: { status?: { summary?: string } } };
+      const content = typeof payload?.content === 'string' ? payload.content : '';
+      const summary = payload?.statusUpdate?.status?.summary ?? '';
+      expect(content).toContain('摘要: 任务已完成并返回结果');
+      expect(summary).toContain('摘要: 任务已完成并返回结果');
+      expect(content).not.toContain('mailbox:');
+      expect(summary).not.toContain('mailbox:');
+      expect(content).not.toContain(externalMessageId);
+      expect(summary).not.toContain(externalMessageId);
 
       dispatchSubscriber.stop();
     });

@@ -4,7 +4,7 @@
  * 在Agent启动时自动加载Skills并注入到系统提示词中
  */
 
-import { SkillsManager } from './skill-manager.js';
+import { getGlobalSkillsManager } from './skill-manager.js';
 import { logger } from '../core/logger.js';
 import { createConsoleLikeLogger } from '../core/logger/console-like.js';
 
@@ -12,7 +12,7 @@ const clog = createConsoleLikeLogger('SkillPromptInjector');
 
 const log = logger.module('SkillPromptInjector');
 
-const skillsManager = new SkillsManager();
+const skillsManager = getGlobalSkillsManager();
 
 function renderSkillsPrompt(skills: Array<{ name: string; description: string; path: string }>): string {
   if (skills.length === 0) return '';
@@ -28,6 +28,8 @@ function renderSkillsPrompt(skills: Array<{ name: string; description: string; p
   lines.push('### How to use skills');
   lines.push('- If the task clearly matches a listed skill, prefer following that skill workflow.');
   lines.push('- Open the target `SKILL.md` and follow only the relevant sections; avoid bulk loading unrelated references.');
+  lines.push('- Skills are workflows, not the canonical history store. If a skill depends on prior decisions that are not visible, retrieve them via `context_ledger.memory` instead of guessing.');
+  lines.push('- The visible prompt history can be budgeted/partial; absence from prompt does not prove the event never happened.');
   lines.push('- When a skill cannot be applied (missing files/unclear instructions), state the issue and continue with best fallback.');
   return `\n\n${lines.join('\n')}`;
 }

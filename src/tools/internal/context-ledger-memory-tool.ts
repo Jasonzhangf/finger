@@ -53,27 +53,27 @@ export interface ContextLedgerMemoryToolOutput {
 export const contextLedgerMemoryTool: InternalTool<unknown, ContextLedgerMemoryToolOutput> = {
   name: 'context_ledger.memory',
   description: [
-    'Time-ordered context memory tool with two-level retrieval.',
-    'Query timeline ledger by time range / keyword / event type.',
-    'For fuzzy queries, it checks compact memory first; then detail query can drill into raw timeline.',
-    'Read-only for agents: query/search timeline memory.',
+    'Canonical time-ordered ledger history tool with two-level retrieval.',
+    'Use it when visible prompt history is incomplete or budgeted and you need prior decisions, evidence, or raw timeline details.',
+    'Search can use compact/fuzzy/task-block recall to find relevant overflow-history windows; query with detail=true can drill into raw ledger entries by slot range.',
+    'Read-only for normal agent retrieval: query/search timeline memory.',
     'System-level maintenance actions compact/index are allowed for automatic ledger maintenance.',
     'Dangerous action delete_slots requires interactive user authorization and explicit confirmation token.',
   ].join(' '),
   inputSchema: {
     type: 'object',
     properties: {
-      action: { type: 'string', enum: ['query', 'search', 'index', 'compact', 'delete_slots'], description: 'query/search: search timeline memory; index: rebuild compact index; compact: persist a compaction summary and align ledger; delete_slots: preview/delete selected slots (requires explicit user authorization)' },
+      action: { type: 'string', enum: ['query', 'search', 'index', 'compact', 'delete_slots'], description: 'Use search first to find relevant history, then query with detail=true for raw entries. index/compact/delete_slots are maintenance actions.' },
       session_id: { type: 'string', description: 'Optional override session id; usually auto-filled by runtime context' },
       agent_id: { type: 'string', description: 'Target agent ledger id. Requires read permission when not self.' },
       mode: { type: 'string', description: 'Conversation mode/thread name, e.g. main or review' },
       since_ms: { type: 'number', description: 'Unix milliseconds start boundary (inclusive)' },
       until_ms: { type: 'number', description: 'Unix milliseconds end boundary (inclusive)' },
       limit: { type: 'number', description: 'Max records to return, default 50, max 500' },
-      slot_start: { type: 'number', description: '1-based slot start for query detail retrieval' },
-      slot_end: { type: 'number', description: '1-based slot end for query detail retrieval' },
-      contains: { type: 'string', description: 'Keyword query; fuzzy search supported' },
-      fuzzy: { type: 'boolean', description: 'When true, fuzzy query checks compact memory first' },
+      slot_start: { type: 'number', description: '1-based slot start for raw detail retrieval after search identified a relevant range' },
+      slot_end: { type: 'number', description: '1-based slot end for raw detail retrieval after search identified a relevant range' },
+      contains: { type: 'string', description: 'Keyword/topic query; use for search when history details are missing from prompt. Search also returns task-block candidates with detail_query_hint.' },
+      fuzzy: { type: 'boolean', description: 'When true, search checks compact memory first and may use semantic/task-block recall before raw ledger lookup' },
       event_types: { type: 'array', items: { type: 'string' }, description: 'Filter by event types, e.g. tool_call/tool_result/context_compact' },
       detail: { type: 'boolean', description: 'When true on query, return raw ledger entries for the selected slot window' },
       text: { type: 'string', description: 'Reserved (disabled for agent manual writes)' },
@@ -98,9 +98,9 @@ export const contextLedgerMemoryTool: InternalTool<unknown, ContextLedgerMemoryT
    },
    required: ['action'],
    additionalProperties: true,
- },
+  },
   execute: async (rawInput: unknown, context: ToolExecutionContext): Promise<ContextLedgerMemoryToolOutput> => {
-    const input = parseInput(rawInput);
+    const input = mergeRuntimeContext(parseInput(rawInput), context);
     const invocation = resolveCliInvocation();
     const commandArray = [...invocation, 'memory-ledger', 'run', '--from-env', '--json-line'];
 
@@ -220,6 +220,22 @@ function parseInput(rawInput: unknown): ContextLedgerMemoryToolInput {
       ? rawInput.replacement_history.filter((item): item is Record<string, unknown> => isRecord(item))
       : undefined,
     _runtime_context: isRecord(rawInput._runtime_context) ? rawInput._runtime_context : undefined,
+  };
+}
+
+function mergeRuntimeContext(
+  input: ContextLedgerMemoryToolInput,
+  context: ToolExecutionContext,
+): ContextLedgerMemoryToolInput {
+  const runtimeContext = isRecord(input._runtime_context) ? { ...input._runtime_context } : {};
+  if (!runtimeContext.session_id && context.sessionId) runtimeContext.session_id = context.sessionId;
+  if (!runtimeContext.agent_id && context.agentId) runtimeContext.agent_id = context.agentId;
+
+  return {
+    ...input,
+    session_id: input.session_id ?? context.sessionId,
+    agent_id: input.agent_id ?? context.agentId,
+    _runtime_context: runtimeContext,
   };
 }
 

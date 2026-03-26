@@ -22,9 +22,15 @@ describe('registerDefaultRuntimeTools', () => {
     expect(loaded).toContain('clock');
     expect(loaded).toContain('no-op');
     expect(loaded).toContain('web_search');
+    expect(loaded).toContain('context_builder.rebuild');
+    expect(loaded).toContain('skills.list');
+    expect(loaded).toContain('skills.status');
     expect(registry.isAvailable('shell.exec')).toBe(true);
     expect(registry.isAvailable('exec_command')).toBe(true);
     expect(registry.isAvailable('update_plan')).toBe(true);
+    expect(registry.isAvailable('context_builder.rebuild')).toBe(true);
+    expect(registry.isAvailable('skills.list')).toBe(true);
+    expect(registry.isAvailable('skills.status')).toBe(true);
 
     const result = await registry.execute('shell.exec', { command: 'echo runtime_tool_ok' }) as {
       ok: boolean;

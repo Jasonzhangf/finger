@@ -7,6 +7,10 @@ import { createFingerGeneralModule, type ChatCodexLoopEvent } from '../../agents
 import type { ChatCodexDeveloperRole } from '../../agents/chat-codex/developer-prompt-templates.js';
 import { buildContext } from '../../runtime/context-builder.js';
 import { loadContextBuilderSettings } from '../../core/user-settings.js';
+import {
+  consumeContextBuilderOnDemandView,
+  shouldRunContextBuilderBootstrapOnce,
+} from '../../runtime/context-builder-on-demand-state.js';
 import { join, isAbsolute } from 'path';
 import { FINGER_PATHS } from '../../core/finger-paths.js';
 
@@ -78,28 +82,38 @@ function resolveRolePromptOverridesFromConfig(
   };
 }
 
-function hasMediaInputInMessage(message: { metadata?: Record<string, unknown> } | null | undefined): boolean {
-  if (!message?.metadata || typeof message.metadata !== 'object') return false;
-  const inputItems = (message.metadata as Record<string, unknown>).inputItems;
+function hasMediaInputInMessage(
+  message: {
+    metadata?: Record<string, unknown>;
+    attachments?: unknown[];
+  } | null | undefined,
+): boolean {
+  if (!message) return false;
+  const directAttachments = Array.isArray(message.attachments) ? message.attachments : [];
+  const metadataAttachments = Array.isArray(message.metadata?.attachments)
+    ? message.metadata.attachments as unknown[]
+    : [];
+  const allAttachments = [...directAttachments, ...metadataAttachments];
+  if (allAttachments.some((item) => {
+    if (!item || typeof item !== 'object') return false;
+    const attachment = item as Record<string, unknown>;
+    const kind = typeof attachment.kind === 'string' ? attachment.kind : '';
+    const mimeType = typeof attachment.mimeType === 'string' ? attachment.mimeType : '';
+    const type = typeof attachment.type === 'string' ? attachment.type : '';
+    return kind === 'image'
+      || mimeType.startsWith('image/')
+      || type === 'image';
+  })) {
+    return true;
+  }
+
+  const inputItems = message.metadata?.inputItems;
   if (!Array.isArray(inputItems)) return false;
   return inputItems.some((item) => {
     if (!item || typeof item !== 'object') return false;
     const type = (item as { type?: unknown }).type;
     return type === 'image' || type === 'local_image';
   });
-}
-
-function resolveLatestUserPrompt(
-  messages: Array<{ role: string; content: string }> | undefined,
-): string | undefined {
-  if (!Array.isArray(messages) || messages.length === 0) return undefined;
-  for (let index = messages.length - 1; index >= 0; index -= 1) {
-    const item = messages[index];
-    if (item.role !== 'user') continue;
-    const text = typeof item.content === 'string' ? item.content.trim() : '';
-    if (text.length > 0) return text;
-  }
-  return undefined;
 }
 
 function mapRawSessionMessages(
@@ -194,32 +208,15 @@ export async function registerFingerRoleModules(
   const registerFingerRoleModule = async (role: FingerRoleSpec): Promise<void> => {
     const contextHistoryProvider = async (sessionId: string, limit: number) => {
       const settings = loadContextBuilderSettings();
-      if (!settings.enabled) {
-        // Disabled => signal fallback to traditional in-memory history path
-        logger.module('finger-role-modules').info('Context builder disabled, fallback to session history', {
-          roleId: role.id,
-          sessionId,
-        });
-        return null;
-      }
-
       const session = runtime.getSession(sessionId);
       if (!session) {
-        logger.module('finger-role-modules').warn('Context builder session not found, fallback to session history', {
+        logger.module('finger-role-modules').warn('Context history session not found, fallback to session history', {
           roleId: role.id,
           sessionId,
         });
         return null;
       }
-      const sessionMessages = Array.isArray((session as { messages?: unknown }).messages)
-        ? ((session as { messages?: Array<{
-          id?: string;
-          role: string;
-          content: string;
-          timestamp?: string;
-          metadata?: Record<string, unknown>;
-        }> }).messages ?? [])
-        : [];
+      const sessionMessages = runtime.getMessages(sessionId, 0);
 
       const latestMessage = sessionMessages.length > 0 ? sessionMessages[sessionMessages.length - 1] : null;
       const hasMediaInput = hasMediaInputInMessage(latestMessage);
@@ -248,68 +245,155 @@ export async function registerFingerRoleModules(
         ? deps.resolveSessionLedgerRoot({ id: session.id, projectPath: session.projectPath })
         : undefined;
 
-      const built = await buildContext(
-        {
-          rootDir,
+      // 默认不自动重组，只在模型显式调用 context_builder.rebuild 后
+      // 在下一轮消费一次按需重组视图。
+      if (!settings.enabled) {
+        const mapped = mapRawSessionMessages(sessionMessages, limit, {
+          contextBuilderHistorySource: 'raw_session',
+          contextBuilderBypassed: true,
+          contextBuilderBypassReason: 'context_builder_disabled',
+          contextBuilderRebuilt: false,
+        });
+        logger.module('finger-role-modules').info('Context builder disabled, using raw session history', {
+          roleId: role.id,
           sessionId,
-          agentId,
-          mode: 'main',
-          currentPrompt: resolveLatestUserPrompt(sessionMessages),
-        },
-        {
-          targetBudget: 1_000_000,
-          buildMode: settings.mode,
-          includeMemoryMd: settings.includeMemoryMd,
-          enableTaskGrouping: true,
-          enableModelRanking: settings.enableModelRanking,
-          rankingProviderId: settings.rankingProviderId,
-          timeWindow: {
-            nowMs: Date.now(),
-            halfLifeMs: settings.halfLifeMs,
-            overThresholdRelevance: settings.overThresholdRelevance,
-          },
-        },
-      );
+          selectedCount: mapped.length,
+        });
+        return mapped;
+      }
+
+      const onDemand = consumeContextBuilderOnDemandView(sessionId, agentId);
+      if (!onDemand) {
+        if (shouldRunContextBuilderBootstrapOnce(sessionId, agentId)) {
+          const configuredBudget = Number.isFinite(settings.historyBudgetTokens) && settings.historyBudgetTokens > 0
+            ? Math.floor(settings.historyBudgetTokens)
+            : 100000;
+          const bootstrapped = await buildContext(
+            {
+              rootDir,
+              sessionId,
+              agentId,
+              mode: 'main',
+            },
+            {
+              targetBudget: configuredBudget,
+              buildMode: settings.mode,
+              includeMemoryMd: false,
+              enableTaskGrouping: true,
+              enableModelRanking: settings.enableModelRanking,
+              rankingProviderId: settings.rankingProviderId,
+              timeWindow: {
+                nowMs: Date.now(),
+                halfLifeMs: settings.halfLifeMs,
+                overThresholdRelevance: settings.overThresholdRelevance,
+              },
+            },
+          );
+
+          const bootstrappedSliced = Number.isFinite(limit) && limit > 0
+            ? bootstrapped.messages.slice(-limit)
+            : bootstrapped.messages;
+          const bootstrappedMapped = bootstrappedSliced.map((message) => ({
+            id: message.messageId || message.id,
+            role: message.role === 'orchestrator' ? 'assistant' as const : message.role,
+            content: message.content,
+            timestamp: message.timestampIso,
+            metadata: {
+              ...(message.metadata ?? {}),
+              ...(message.attachments ? { attachments: message.attachments } : {}),
+              ...(message.messageId ? { messageId: message.messageId } : {}),
+              ...(message.contextZone ? { contextZone: message.contextZone } : {}),
+              contextBuilderHistorySource: 'context_builder_bootstrap',
+              contextBuilderBypassed: false,
+              contextBuilderRebuilt: true,
+              contextBuilderOnDemand: false,
+              contextBuilderBootstrap: true,
+              contextBuilderBuildMode: settings.mode,
+              contextBuilderTargetBudget: configuredBudget,
+              contextBuilderSelectedBlockCount: bootstrapped.rankedTaskBlocks.length,
+              contextBuilderAppliedAt: new Date().toISOString(),
+            },
+          }));
+          if (bootstrappedMapped.length > 0) {
+            logger.module('finger-role-modules').info('Applied one-time bootstrap context rebuild', {
+              roleId: role.id,
+              sessionId,
+              selectedCount: bootstrappedMapped.length,
+              mode: settings.mode,
+              targetBudget: configuredBudget,
+            });
+            return bootstrappedMapped;
+          }
+
+          logger.module('finger-role-modules').debug('Bootstrap rebuild yielded empty history, fallback to raw session', {
+            roleId: role.id,
+            sessionId,
+            rawMessageCount: sessionMessages.length,
+          });
+        }
+
+        const mapped = mapRawSessionMessages(sessionMessages, limit, {
+          contextBuilderHistorySource: 'raw_session',
+          contextBuilderBypassed: true,
+          contextBuilderBypassReason: 'on_demand_not_requested',
+          contextBuilderRebuilt: false,
+        });
+        logger.module('finger-role-modules').debug('Context builder not requested, using raw session history', {
+          roleId: role.id,
+          sessionId,
+          selectedCount: mapped.length,
+        });
+        return mapped;
+      }
 
       const sliced = Number.isFinite(limit) && limit > 0
-        ? built.messages.slice(-limit)
-        : built.messages;
+        ? onDemand.messages.slice(-limit)
+        : onDemand.messages;
 
-      const mapped = sliced.map((m) => ({
-        id: m.messageId || m.id,
-        role: m.role === 'orchestrator' ? 'assistant' as const : m.role,
-        content: m.content,
-        timestamp: m.timestampIso,
+      const mapped = sliced.map((message) => ({
+        id: message.messageId || message.id,
+        role: message.role === 'orchestrator' ? 'assistant' as const : message.role,
+        content: message.content,
+        timestamp: message.timestampIso,
         metadata: {
-          ...(m.metadata ?? {}),
-          ...(m.attachments ? { attachments: m.attachments } : {}),
-          ...(m.messageId ? { messageId: m.messageId } : {}),
-          contextBuilderHistorySource: 'context_builder',
+          ...(message.metadata ?? {}),
+          ...(message.attachments ? { attachments: message.attachments } : {}),
+          ...(message.messageId ? { messageId: message.messageId } : {}),
+          ...(message.contextZone ? { contextZone: message.contextZone } : {}),
+          contextBuilderHistorySource: 'context_builder_on_demand',
           contextBuilderBypassed: false,
           contextBuilderRebuilt: true,
+          contextBuilderOnDemand: true,
+          contextBuilderBuildMode: onDemand.buildMode,
+          contextBuilderTargetBudget: onDemand.targetBudget,
+          contextBuilderSelectedBlockCount: onDemand.selectedBlockIds.length,
+          contextBuilderAppliedAt: onDemand.createdAt,
         },
       }));
+
       if (mapped.length === 0 && sessionMessages.length > 0) {
         const fallback = mapRawSessionMessages(sessionMessages, limit, {
           contextBuilderHistorySource: 'raw_session_fallback',
           contextBuilderBypassed: true,
-          contextBuilderBypassReason: 'empty_context_builder_result',
+          contextBuilderBypassReason: 'empty_on_demand_result',
           contextBuilderRebuilt: false,
         });
-        logger.module('finger-role-modules').warn('Context builder returned empty history, fallback to raw session', {
+        logger.module('finger-role-modules').warn('On-demand context builder returned empty history, fallback to raw session', {
           roleId: role.id,
           sessionId,
           rawMessageCount: sessionMessages.length,
           selectedCount: fallback.length,
-          mode: settings.mode,
+          mode: onDemand.buildMode,
         });
         return fallback;
       }
-      logger.module('finger-role-modules').info('Context builder rebuilt session history', {
+
+      logger.module('finger-role-modules').info('Applied on-demand context builder history', {
         roleId: role.id,
         sessionId,
         selectedCount: mapped.length,
-        mode: settings.mode,
+        mode: onDemand.buildMode,
+        targetBudget: onDemand.targetBudget,
       });
       return mapped;
     };

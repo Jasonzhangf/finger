@@ -53,6 +53,14 @@
   - 三、时间相关性（最后维度）
 - block preview 包含 tags/topic 信息供排序模型参考
 
+### 4) Embedding hybrid recall ✅
+- context builder 在模型排序前新增 session-local embedding recall 层
+- 基于 task block 的 `tags + topic + 首条 user + 最后一条 assistant` 构建 embedding 文本
+- embedding index 持久化到 session ledger 目录下的 `task-embedding-index.json`
+- 当前 prompt 先对历史 task 做语义召回，再交给后续 build mode / 模型排序处理
+- 无 tag task 也能依赖 summary/content 语义命中，不再只靠 tag 精确匹配
+- 当前 task 不参与历史重排，始终保留在尾部
+
 ## 数据流
 
 ```
@@ -77,6 +85,7 @@
 
 - `src/common/agent-dispatch.ts` — tags 提取和标准化
 - `src/runtime/context-builder.ts` — tag-aware 排序和 prompt
+- `src/runtime/context-builder-embedding-recall.ts` — session-local task embedding index + semantic recall
 - `src/runtime/context-builder-types.ts` — TaskBlock tags/topic 类型
 - `src/server/modules/agent-runtime/dispatch.ts` — ledger metadata 持久化
 - `src/server/modules/mailbox-envelope.ts` — envelope tags

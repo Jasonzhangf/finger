@@ -497,6 +497,7 @@ export type ContextBuilderRankingMode = boolean | 'dryrun';
 export interface ContextBuilderSettings {
   enabled: boolean;
   mode: ContextBuilderMode;
+  historyBudgetTokens: number;
   budgetRatio: number;
   halfLifeMs: number;
   overThresholdRelevance: number;

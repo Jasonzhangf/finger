@@ -144,6 +144,13 @@ export function registerSystemRoutes(app: Express, deps: SystemRouteDeps): void 
         next.mode = patch.mode as ContextBuilderSettings['mode'];
       }
     }
+    if (Object.prototype.hasOwnProperty.call(patch, 'historyBudgetTokens')) {
+      if (typeof patch.historyBudgetTokens !== 'number' || patch.historyBudgetTokens <= 0) {
+        validationErrors.push('historyBudgetTokens must be a positive number');
+      } else {
+        next.historyBudgetTokens = Math.floor(patch.historyBudgetTokens);
+      }
+    }
     if (Object.prototype.hasOwnProperty.call(patch, 'budgetRatio')) {
       if (typeof patch.budgetRatio !== 'number' || patch.budgetRatio <= 0 || patch.budgetRatio > 1) {
         validationErrors.push('budgetRatio must be number in (0, 1]');
@@ -178,7 +185,7 @@ export function registerSystemRoutes(app: Express, deps: SystemRouteDeps): void 
     }
     if (Object.prototype.hasOwnProperty.call(patch, 'includeMemoryMd')) {
       if (typeof patch.includeMemoryMd !== 'boolean') validationErrors.push('includeMemoryMd must be boolean');
-      else next.includeMemoryMd = patch.includeMemoryMd;
+      else next.includeMemoryMd = false;
     }
 
     if (validationErrors.length > 0) {

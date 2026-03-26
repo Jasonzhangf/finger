@@ -8,6 +8,13 @@ export interface ContextLedgerMemoryRuntimeContext {
   can_read_all?: boolean;
   readable_agents?: string[];
   focus_max_chars?: number;
+  context_builder?: {
+    working_set_block_ids?: string[];
+    historical_block_ids?: string[];
+    ranking_ids?: string[];
+    raw_task_block_count?: number;
+    filtered_task_block_count?: number;
+  };
 }
 
 export interface ContextLedgerMemoryInput {
@@ -128,6 +135,34 @@ export interface ContextLedgerMemoryQueryResult {
   compact_source: string;
   compact_total: number;
   compact_truncated: boolean;
+  task_blocks: Array<{
+    id: string;
+    start_slot: number;
+    end_slot: number;
+    start_time_ms: number;
+    end_time_ms: number;
+    start_time_iso: string;
+    end_time_iso: string;
+    preview: string;
+    tags?: string[];
+    topic?: string;
+    score?: number;
+    match_reason: 'keyword' | 'embedding' | 'keyword+embedding' | 'recency';
+    visibility: 'working_set' | 'historical_memory' | 'omitted_history' | 'unknown';
+    detail_query_hint: {
+      action: 'query';
+      detail: true;
+      slot_start: number;
+      slot_end: number;
+    };
+  }>;
+  context_bridge: {
+    searched_full_ledger: boolean;
+    total_slots: number;
+    note: string;
+    working_set_block_ids?: string[];
+    historical_block_ids?: string[];
+  };
   next_query_hint?: Record<string, unknown>;
   note: string;
 }

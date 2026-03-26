@@ -3,10 +3,17 @@
 > Last updated: 2026-03-24 23:55 +08:00  
 > Status: Active  
 > Owner: Jason
+>
+> 配套架构文档：
+> - `docs/design/ledger-only-dynamic-session-views.md`
 
 ## 1. 目标
 
-Context Builder 只负责**重建 history 上下文**（会话历史片段），不改其他注入段：
+Context Builder 负责动态重建模型可见上下文中的 **history 区**，并显式区分：
+- **Working Set / 本轮推理区**
+- **Historical Memory Zone / 历史记忆区**
+
+它不改其他固定注入段：
 - skills
 - mailbox
 - 系统/开发者提示词
@@ -23,7 +30,7 @@ Context Builder 只负责**重建 history 上下文**（会话历史片段），
 ### 2.1 minimal（最轻模式）
 - 仅移除无关 task
 - 不从历史补充 task
-- 当前 task 始终保留在尾部
+- 当前 task（Working Set）始终保留在尾部，不参与历史竞争
 
 示意：
 - 原始: `[task1] [task2(无关)] [task3] [task4(当前)]`
@@ -34,7 +41,7 @@ Context Builder 只负责**重建 history 上下文**（会话历史片段），
 - 再从历史按相关性补充 task
 - **关键规则**：
   - 如果单个补充 task 超过“移除量”，但总 tokens 仍在上下文预算内，仍允许补充
-- 当前 task 始终保留在尾部
+- 当前 task（Working Set）始终保留在尾部
 
 流程：
 1. 识别并移除无关 task，记录 `removedTokens`
@@ -46,7 +53,7 @@ Context Builder 只负责**重建 history 上下文**（会话历史片段），
 
 ### 2.3 aggressive（激进模式）
 - 完全按相关性重排历史 task
-- 当前 task 固定尾部
+- 当前 task（Working Set）固定尾部
 - 最大化相关性
 
 示意：
@@ -67,6 +74,33 @@ Context Builder 只负责**重建 history 上下文**（会话历史片段），
 
 ---
 
+## 3.1 上下文显式分区
+
+### Working Set（本轮推理区）
+- 当前 task block
+- 当前用户输入及其直接相关的本轮消息
+- 不参与历史 recall 竞争
+- 必须稳定保留在上下文尾部
+
+### Historical Memory Zone（历史记忆区）
+- 所有非当前 task 的历史候选
+- 可经过 embedding recall / model ranking / budget truncation
+- 是预算受限区
+
+### 观测要求
+构建结果 metadata 必须暴露：
+- `workingSetTaskBlockCount`
+- `historicalTaskBlockCount`
+- `workingSetMessageCount`
+- `historicalMessageCount`
+- `workingSetTokens`
+- `historicalTokens`
+
+每条 context message 也应标记所属分区：
+- `contextZone = working_set | historical_memory`
+
+---
+
 ## 4. 关键配置
 
 文件：`~/.finger/config/user-settings.json`
@@ -76,15 +110,21 @@ Context Builder 只负责**重建 history 上下文**（会话历史片段），
   "contextBuilder": {
     "enabled": true,
     "mode": "minimal | moderate | aggressive",
+    "historyBudgetTokens": 100000,
     "budgetRatio": 0.85,
     "halfLifeMs": 86400000,
     "overThresholdRelevance": 0.5,
     "enableModelRanking": false,
     "rankingProviderId": "tcm",
-    "includeMemoryMd": true
+    "includeMemoryMd": false
   }
 }
 ```
+
+说明：
+- 历史重建预算以 `historyBudgetTokens` 为准，按 task 粒度累计，不按消息条数截断。
+- `budgetRatio` 仅作兼容回退；当 `historyBudgetTokens` 存在时优先使用固定 token 预算。
+- `MEMORY.md` 不直接注入模型上下文；长期记忆需保持精简，只记录可验证的 ground truth。
 
 ---
 
@@ -94,6 +134,7 @@ Context Builder 只负责**重建 history 上下文**（会话历史片段），
 在左侧 `Settings` 新增 Context Builder 控件：
 - 启用/禁用
 - `mode` 选择：minimal / moderate / aggressive
+- `historyBudgetTokens`（历史 token 预算）
 - `ranking` 选择：off / dryrun / active
 
 ### 5.2 API
@@ -126,4 +167,3 @@ Context Monitor 会显示：
 - `src/orchestration/session-manager.ts`：将 `mode` 传入 `buildContext`
 - `src/server/routes/ledger-routes.ts`：Context Monitor 返回 mode/ranking 元数据
 - `ui/src/components/LeftSidebar/LeftSidebar.tsx`：Settings 选择器
-

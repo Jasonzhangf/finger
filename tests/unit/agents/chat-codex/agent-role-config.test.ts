@@ -13,6 +13,8 @@ describe('agent-role-config', () => {
   it('keeps only system/project/reviewer base roles and exposes mailbox tools', () => {
     expect(Object.keys(BASE_AGENT_ROLE_CONFIG).sort()).toEqual(['project', 'reviewer', 'system']);
     expect(BASE_AGENT_ROLE_CONFIG.project.allowedTools).toEqual(expect.arrayContaining([
+      'skills.list',
+      'skills.status',
       'mailbox.status',
       'mailbox.list',
       'mailbox.read',
@@ -23,6 +25,8 @@ describe('agent-role-config', () => {
     ]));
     expect(BASE_AGENT_ROLE_CONFIG.reviewer.allowedTools).toEqual(expect.arrayContaining([
       'user.ask',
+      'skills.list',
+      'skills.status',
       'mailbox.status',
       'mailbox.list',
       'mailbox.read',
@@ -31,6 +35,12 @@ describe('agent-role-config', () => {
       'mailbox.remove',
       'mailbox.remove_all',
     ]));
+    expect(BASE_AGENT_ROLE_CONFIG.system.allowedTools).toEqual(expect.arrayContaining([
+      'skills.list',
+      'skills.status',
+    ]));
     expect(BASE_AGENT_ROLE_CONFIG.project.allowedTools).toContain('report-task-completion');
+    expect(BASE_AGENT_ROLE_CONFIG.system.allowedTools).toContain('exec_command');
+    expect(BASE_AGENT_ROLE_CONFIG.system.allowedTools).not.toContain('shell.exec');
   });
 });

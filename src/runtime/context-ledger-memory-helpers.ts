@@ -68,6 +68,15 @@ export function parseInput(rawInput: unknown): ContextLedgerMemoryInput {
 
 export function parseRuntimeContext(rawInput: unknown): ContextLedgerMemoryRuntimeContext {
   if (!isRecord(rawInput)) return {};
+  const contextBuilder = isRecord(rawInput.context_builder)
+    ? {
+        working_set_block_ids: normalizeStringArray(rawInput.context_builder.working_set_block_ids),
+        historical_block_ids: normalizeStringArray(rawInput.context_builder.historical_block_ids),
+        ranking_ids: normalizeStringArray(rawInput.context_builder.ranking_ids),
+        raw_task_block_count: normalizePositiveInt(rawInput.context_builder.raw_task_block_count),
+        filtered_task_block_count: normalizePositiveInt(rawInput.context_builder.filtered_task_block_count),
+      }
+    : undefined;
   return {
     root_dir: valueAsString(rawInput.root_dir),
     session_id: valueAsString(rawInput.session_id),
@@ -76,6 +85,7 @@ export function parseRuntimeContext(rawInput: unknown): ContextLedgerMemoryRunti
     can_read_all: rawInput.can_read_all === true,
     readable_agents: normalizeStringArray(rawInput.readable_agents),
     focus_max_chars: normalizePositiveInt(rawInput.focus_max_chars),
+    ...(contextBuilder ? { context_builder: contextBuilder } : {}),
   };
 }
 

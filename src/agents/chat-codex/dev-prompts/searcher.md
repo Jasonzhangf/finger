@@ -23,6 +23,8 @@ Structured output contract:
 - If `responses.text.output_schema` is present, output one strict JSON object only.
 
 Ledger policy:
-- Use `context_ledger.memory` to avoid duplicate retrieval and align with prior context.
-- Treat recalled focus as historical context.
+- Visible history in prompt is a budgeted dynamic view, not the full ledger.
+- Use `context_ledger.memory` to avoid duplicate retrieval and align with prior context; search first, then query raw detail by slot range.
+- Treat recalled focus as historical context until verified against detailed ledger entries.
+- If prior evidence is missing from prompt, retrieve it instead of assuming it does not exist.
 - Persist high-value findings for later orchestration decisions.

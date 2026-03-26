@@ -382,4 +382,234 @@ describe('AgentRuntimeBlock queue timeout fallback', () => {
     expect(hubSendToModule).toHaveBeenCalledTimes(1);
     expect(onDispatchQueueTimeout).not.toHaveBeenCalled();
   });
+
+  it('does not route system self-dispatch to mailbox by source policy', async () => {
+    const hubSendToModule = vi.fn().mockResolvedValue({ ok: true, output: 'self-ok' });
+    const onDispatchQueueTimeout = vi.fn().mockReturnValue({
+      delivery: 'mailbox',
+      mailboxMessageId: 'msg-system-self-mailbox',
+      summary: 'should not be used for self-dispatch',
+    });
+
+    const block = new AgentRuntimeBlock('agent-runtime-test-system-self', {
+      moduleRegistry: {
+        getAllModules: () => [{
+          id: 'finger-system-agent',
+          name: 'finger-system-agent',
+          type: 'agent',
+          metadata: { role: 'system' },
+        }] as never,
+        getModule: (id: string) => (id === 'finger-system-agent'
+          ? {
+              id: 'finger-system-agent',
+              name: 'finger-system-agent',
+              type: 'agent',
+              metadata: { role: 'system' },
+            } as never
+          : null),
+      } as never,
+      hub: {
+        sendToModule: hubSendToModule,
+      } as never,
+      runtime: {
+        getAgentToolPolicy: () => ({
+          whitelist: ['agent.dispatch'],
+          blacklist: [],
+        }),
+        getAgentRuntimeConfig: () => null,
+        setAgentRuntimeConfig: vi.fn(),
+      } as never,
+      toolRegistry: {
+        list: () => [{ name: 'agent.dispatch', policy: 'allow' }],
+      } as never,
+      eventBus: {
+        emit: vi.fn().mockResolvedValue(undefined),
+      } as never,
+      workflowManager: {
+        listWorkflows: () => [],
+        pauseWorkflow: () => true,
+        resumeWorkflow: () => true,
+      },
+      sessionManager: {
+        pauseSession: () => true,
+        resumeSession: () => true,
+        getCurrentSession: () => ({ id: 'session-system' }),
+      },
+      chatCodexRunner: {
+        listSessionStates: () => [],
+        interruptSession: () => [],
+      },
+      resourcePool: {
+        getAllResources: () => [],
+        addResource: vi.fn(),
+      } as never,
+      getLoadedAgentConfigs: () => [{
+        filePath: '/tmp/finger-system-agent.agent.json',
+        config: {
+          id: 'finger-system-agent',
+          name: 'System Agent',
+          role: 'system',
+          implementations: [
+            { id: 'native-main', kind: 'native', moduleId: 'finger-system-agent', enabled: true },
+          ],
+          tools: {
+            whitelist: ['agent.dispatch'],
+          },
+        },
+      }],
+      primaryOrchestratorAgentId: 'chat-codex',
+      onDispatchQueueTimeout,
+    });
+
+    await block.initialize();
+    await block.start();
+    await block.execute('deploy', {
+      targetAgentId: 'finger-system-agent',
+      targetImplementationId: 'native-main',
+      sessionId: 'session-system',
+      instanceCount: 1,
+      launchMode: 'orchestrator',
+    });
+
+    const result = await block.execute('dispatch', {
+      sourceAgentId: 'finger-system-agent',
+      targetAgentId: 'finger-system-agent',
+      task: { text: 'self-dispatch' },
+      blocking: false,
+    }) as {
+      ok: boolean;
+      status: string;
+      result?: unknown;
+    };
+
+    expect(result.ok).toBe(true);
+    expect(result.status).toBe('queued');
+    expect(hubSendToModule).toHaveBeenCalledTimes(1);
+    expect(onDispatchQueueTimeout).not.toHaveBeenCalled();
+  });
+
+  it('keeps self-dispatch queued without timeout fallback while target is busy', async () => {
+    vi.useFakeTimers();
+    try {
+      const first = createDeferred<{ ok: boolean }>();
+      const second = createDeferred<{ ok: boolean }>();
+      const hubSendToModule = vi.fn()
+        .mockImplementationOnce(() => first.promise)
+        .mockImplementationOnce(() => second.promise);
+      const onDispatchQueueTimeout = vi.fn().mockReturnValue({
+        delivery: 'mailbox',
+        mailboxMessageId: 'msg-self-timeout-should-not-happen',
+        summary: 'should not happen',
+      });
+
+      const block = new AgentRuntimeBlock('agent-runtime-test-system-self-timeout', {
+        moduleRegistry: {
+          getAllModules: () => [{
+            id: 'finger-system-agent',
+            name: 'finger-system-agent',
+            type: 'agent',
+            metadata: { role: 'system' },
+          }] as never,
+          getModule: (id: string) => (id === 'finger-system-agent'
+            ? {
+                id: 'finger-system-agent',
+                name: 'finger-system-agent',
+                type: 'agent',
+                metadata: { role: 'system' },
+              } as never
+            : null),
+        } as never,
+        hub: {
+          sendToModule: hubSendToModule,
+        } as never,
+        runtime: {
+          getAgentToolPolicy: () => ({
+            whitelist: ['agent.dispatch'],
+            blacklist: [],
+          }),
+          getAgentRuntimeConfig: () => null,
+          setAgentRuntimeConfig: vi.fn(),
+        } as never,
+        toolRegistry: {
+          list: () => [{ name: 'agent.dispatch', policy: 'allow' }],
+        } as never,
+        eventBus: {
+          emit: vi.fn().mockResolvedValue(undefined),
+        } as never,
+        workflowManager: {
+          listWorkflows: () => [],
+          pauseWorkflow: () => true,
+          resumeWorkflow: () => true,
+        },
+        sessionManager: {
+          pauseSession: () => true,
+          resumeSession: () => true,
+          getCurrentSession: () => ({ id: 'session-system' }),
+        },
+        chatCodexRunner: {
+          listSessionStates: () => [],
+          interruptSession: () => [],
+        },
+        resourcePool: {
+          getAllResources: () => [],
+          addResource: vi.fn(),
+        } as never,
+        getLoadedAgentConfigs: () => [{
+          filePath: '/tmp/finger-system-agent.agent.json',
+          config: {
+            id: 'finger-system-agent',
+            name: 'System Agent',
+            role: 'system',
+            implementations: [
+              { id: 'native-main', kind: 'native', moduleId: 'finger-system-agent', enabled: true },
+            ],
+            tools: {
+              whitelist: ['agent.dispatch'],
+            },
+          },
+        }],
+        primaryOrchestratorAgentId: 'chat-codex',
+        onDispatchQueueTimeout,
+      });
+
+      await block.initialize();
+      await block.start();
+      await block.execute('deploy', {
+        targetAgentId: 'finger-system-agent',
+        targetImplementationId: 'native-main',
+        sessionId: 'session-system',
+        instanceCount: 1,
+        launchMode: 'orchestrator',
+      });
+
+      await block.execute('dispatch', {
+        sourceAgentId: 'finger-system-agent',
+        targetAgentId: 'finger-system-agent',
+        task: { text: 'self-dispatch-1' },
+        blocking: false,
+      });
+
+      const queuedResult = await block.execute('dispatch', {
+        sourceAgentId: 'finger-system-agent',
+        targetAgentId: 'finger-system-agent',
+        task: { text: 'self-dispatch-2' },
+        blocking: false,
+        queueOnBusy: true,
+        maxQueueWaitMs: 1_000,
+      }) as { ok: boolean; status: string };
+      expect(queuedResult.ok).toBe(true);
+      expect(queuedResult.status).toBe('queued');
+
+      await vi.advanceTimersByTimeAsync(5_000);
+      expect(onDispatchQueueTimeout).not.toHaveBeenCalled();
+
+      first.resolve({ ok: true });
+      second.resolve({ ok: true });
+      await vi.runAllTimersAsync();
+      await Promise.resolve();
+      expect(hubSendToModule).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });

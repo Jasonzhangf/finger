@@ -44,6 +44,8 @@ export interface TaskBlock {
 /**
  * 任务消息
  */
+export type ContextMessageZone = 'working_set' | 'historical_memory';
+
 export interface TaskMessage {
   id: string;
   role: 'user' | 'assistant' | 'system' | 'orchestrator';
@@ -63,6 +65,8 @@ export interface TaskMessage {
     count: number;
     summary: string;
   };
+  /** 所属上下文分区 */
+  contextZone?: ContextMessageZone;
   /** 是否属于当前轮次（最后一条用户输入） */
   isCurrentTurn?: boolean;
 }
@@ -108,6 +112,10 @@ export interface ContextBuildOptions {
   enableModelRanking?: boolean | 'dryrun';
   /** 排序模型 providerId（从 user-settings.aiProviders 读取） */
   rankingProviderId?: string;
+  /** 是否启用 embedding recall 作为历史候选召回层 */
+  enableEmbeddingRecall?: boolean;
+  /** embedding recall 候选数量 */
+  embeddingTopK?: number;
 }
 
 /**
@@ -138,6 +146,15 @@ export interface ContextBuildResult {
     timeWindowFilteredCount: number;
     /** 预算截断的任务块数量 */
     budgetTruncatedCount: number;
+    /** 因预算被排除的任务块（按相关性顺序后仍未能放入） */
+    budgetTruncatedTasks?: Array<{
+      id: string;
+      tokenCount: number;
+      startTimeIso: string;
+      topic?: string;
+      tags?: string[];
+      summary?: string;
+    }>;
     /** 上下文预算 */
     targetBudget: number;
     /** 实际使用 */
@@ -160,6 +177,34 @@ export interface ContextBuildResult {
     rankingProviderId?: string;
     /** Ranking provider model（仅观测） */
     rankingProviderModel?: string;
+    /** Ranking 执行/跳过原因 */
+    rankingReason?: string;
+    /** Embedding recall 是否执行 */
+    embeddingRecallExecuted?: boolean;
+    /** Embedding recall 候选数量 */
+    embeddingCandidateCount?: number;
+    /** Embedding recall 执行/跳过原因 */
+    embeddingRecallReason?: string;
+    /** Embedding index 文件路径 */
+    embeddingIndexPath?: string;
+    /** Embedding recall 错误（仅观测） */
+    embeddingRecallError?: string;
+    /** 工作集 task block 数量（当前 task 区） */
+    workingSetTaskBlockCount?: number;
+    /** 历史记忆区 task block 数量 */
+    historicalTaskBlockCount?: number;
+    /** 工作集消息数 */
+    workingSetMessageCount?: number;
+    /** 历史记忆区消息数 */
+    historicalMessageCount?: number;
+    /** 工作集 token 数 */
+    workingSetTokens?: number;
+    /** 历史记忆区 token 数 */
+    historicalTokens?: number;
+    /** 工作集 block IDs */
+    workingSetBlockIds?: string[];
+    /** 历史记忆区 block IDs */
+    historicalBlockIds?: string[];
   };
 }
 

@@ -52,6 +52,21 @@
 - `mailbox.remove_all`：批量清理已消费消息，支持 `status/category/unreadOnly/ids/limit`
 - Mailbox 默认是**内存态（ephemeral）**，不做磁盘持久化
 
+## Mailbox CLI（外部脚本/定时器）
+- 新增命令：`myfinger mailbox notify --target-agent <agentId> --message "<text>" --title "<title>" [--wake]`
+- 用途：外部脚本（cron/CI/系统定时器）向目标 agent mailbox 注入 `notification`，并可选触发唤醒消息。
+- 禁止直接改写 mailbox 文件；统一通过 CLI/API 入口写入。
+
+示例（每 10 分钟提醒 system agent 检查异步结果）：
+
+```bash
+*/10 * * * * myfinger mailbox notify \
+  --target-agent finger-system-agent \
+  --title "Scheduled Result Check" \
+  --message "请检查最近异步任务状态并汇总结果" \
+  --wake
+```
+
 ### notification 规则
 - `notification` 只在 agent **空闲** 且 **没有 actionable mailbox work** 时处理
 - `notification` 读取后只写 `readAt`，**不进入 processing**

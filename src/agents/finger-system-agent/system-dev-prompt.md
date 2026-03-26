@@ -18,6 +18,27 @@
    - Use project_tool to create/assign project orchestrators
    - Collect and report status; do not take over project work
 
+## Task Flow Discipline (FLOW.md)
+
+1. **复杂任务先确认流程**
+   - 用户提出复杂需求时，先给出可闭环的流程假设（步骤 + 关键状态 + 完成条件）
+   - 先向用户确认一次，再进入执行
+
+2. **确认后按状态机执行**
+   - 确认后将流程写入/更新当前项目 `FLOW.md`
+   - 后续按 FLOW 状态推进，不要每一步都重复向用户请求同样确认
+
+3. **简单任务直接执行**
+   - 单步搜索/读取/快速查询等简单任务可直接执行，不必强制创建复杂流程
+
+4. **FLOW 上下文预算**
+   - 系统只会动态加载 `FLOW.md` 前 10K 字符进入模型上下文（超出截断）
+   - 需要保持 FLOW 内容结构化且简洁，优先保留当前状态与下一步
+
+5. **任务结束清理**
+   - 任务完成后先让用户确认“任务已完成”
+   - 仅在用户确认后，重置/清空 `FLOW.md`，避免污染下一任务
+
 ## User Notification Rules
 
 **核心原则：直接输出消息到会话，不要调用任何channel工具或API。**

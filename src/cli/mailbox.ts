@@ -25,6 +25,101 @@ export function registerMailboxCommand(program: Command): void {
   const mailbox = program.command('mailbox').description('Mailbox management');
 
   mailbox
+    .command('notify')
+    .description('Append a mailbox notification to an agent mailbox (script-friendly)')
+    .requiredOption('-t, --target-agent <id>', 'Target agent ID (e.g. finger-system-agent)')
+    .requiredOption('--message <text>', 'Notification text')
+    .option('--title <text>', 'Notification title', 'Scheduled Mailbox Notification')
+    .option('--priority <level>', 'Priority: high|medium|low', 'medium')
+    .option('--sender <id>', 'Sender identifier', 'mailbox-cli')
+    .option('--source <id>', 'Notification source', 'mailbox-cli')
+    .option('--channel <id>', 'Optional channel id')
+    .option('-s, --session-id <id>', 'Optional session id')
+    .option('--wake', 'After writing mailbox, send a direct wake message to target agent', true)
+    .option('--no-wake', 'Only write mailbox, do not send wake message')
+    .action(async (options: {
+      targetAgent: string;
+      message: string;
+      title: string;
+      priority: string;
+      sender: string;
+      source: string;
+      channel?: string;
+      sessionId?: string;
+      wake: boolean;
+    }) => {
+      try {
+        const notifyPayload = {
+          targetAgentId: options.targetAgent,
+          message: options.message,
+          title: options.title,
+          priority: options.priority,
+          sender: options.sender,
+          source: options.source,
+          ...(options.channel ? { channel: options.channel } : {}),
+          ...(options.sessionId ? { sessionId: options.sessionId } : {}),
+        };
+
+        const notifyRes = await fetch(`${MAILBOX_BASE_URL}/api/v1/heartbeat/mailbox/notify`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(notifyPayload),
+        });
+
+        const notifyData = await notifyRes.json();
+        if (!notifyRes.ok || notifyData?.success === false) {
+          throw new Error(
+            typeof notifyData?.error === 'string'
+              ? notifyData.error
+              : `notify failed with status ${notifyRes.status}`,
+          );
+        }
+
+        let wakeResult: Record<string, unknown> | null = null;
+        if (options.wake) {
+          const wakeText = `Mailbox notification arrived (messageId=${String(notifyData.messageId ?? '')}). Please check mailbox and handle pending notification(s).`;
+          const wakeRes = await fetch(`${MAILBOX_BASE_URL}/api/v1/message`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              target: options.targetAgent,
+              sender: options.sender || 'mailbox-cli',
+              message: {
+                text: wakeText,
+                metadata: {
+                  role: 'system',
+                  source: options.source || 'mailbox-cli',
+                  systemDirectInject: true,
+                  deliveryMode: 'direct',
+                },
+              },
+              blocking: false,
+            }),
+          });
+          const wakeData = await wakeRes.json();
+          if (!wakeRes.ok) {
+            throw new Error(
+              typeof wakeData?.error === 'string'
+                ? wakeData.error
+                : `wake dispatch failed with status ${wakeRes.status}`,
+            );
+          }
+          wakeResult = wakeData as Record<string, unknown>;
+        }
+
+        clog.log(JSON.stringify({
+          success: true,
+          mailbox: notifyData,
+          ...(wakeResult ? { wake: wakeResult } : {}),
+        }, null, 2));
+        process.exit(0);
+      } catch (err) {
+        clog.error('Failed to send mailbox notification:', err);
+        process.exit(1);
+      }
+    });
+
+  mailbox
     .command('list')
     .description('List messages in mailbox')
     .option('-t, --target <id>', 'Filter by target module')

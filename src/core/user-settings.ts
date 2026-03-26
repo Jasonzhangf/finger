@@ -121,6 +121,8 @@ export interface ContextBuilderSettings {
   enabled: boolean;
   /** 构建模式：minimal=最轻(只移除无关), moderate=中等(移除+补充), aggressive=激进(完全重排) */
   mode: 'minimal' | 'moderate' | 'aggressive';
+  /** 历史区 token 预算：按 task 粒度从高相关到低相关填充，不按消息条数截断 */
+  historyBudgetTokens: number;
   budgetRatio: number;
   halfLifeMs: number;
   overThresholdRelevance: number;
@@ -179,12 +181,13 @@ const DEFAULT_USER_SETTINGS: UserSettings = {
   contextBuilder: {
     enabled: false,
     mode: 'moderate',
+    historyBudgetTokens: 100000,
     budgetRatio: 0.85,
     halfLifeMs: 86400000,
     overThresholdRelevance: 0.5,
     enableModelRanking: false,
     rankingProviderId: '',
-    includeMemoryMd: true,
+    includeMemoryMd: false,
   }
 };
 
@@ -369,12 +372,13 @@ export function validateUserSettings(settings: any): void {
     settings.contextBuilder = {
       enabled: false,
       mode: 'moderate',
+      historyBudgetTokens: 100000,
       budgetRatio: 0.85,
       halfLifeMs: 86400000,
       overThresholdRelevance: 0.5,
       enableModelRanking: false,
       rankingProviderId: '',
-      includeMemoryMd: true,
+      includeMemoryMd: false,
     };
   }
   if (typeof settings.contextBuilder.enabled !== 'boolean') {
@@ -383,6 +387,10 @@ export function validateUserSettings(settings: any): void {
   const validModes: Array<string> = ['minimal', 'moderate', 'aggressive'];
   if (!validModes.includes(settings.contextBuilder.mode)) {
     settings.contextBuilder.mode = 'moderate';
+  }
+  if (typeof settings.contextBuilder.historyBudgetTokens !== 'number'
+    || settings.contextBuilder.historyBudgetTokens <= 0) {
+    settings.contextBuilder.historyBudgetTokens = 100000;
   }
   if (typeof settings.contextBuilder.budgetRatio !== 'number' || settings.contextBuilder.budgetRatio <= 0 || settings.contextBuilder.budgetRatio > 1) {
     settings.contextBuilder.budgetRatio = 0.85;
@@ -400,9 +408,8 @@ export function validateUserSettings(settings: any): void {
   if (typeof settings.contextBuilder.rankingProviderId !== 'string') {
     settings.contextBuilder.rankingProviderId = '';
   }
-  if (typeof settings.contextBuilder.includeMemoryMd !== 'boolean') {
-    settings.contextBuilder.includeMemoryMd = true;
-  }
+  // MEMORY.md 不能直接注入模型上下文，配置字段仅做兼容保留。
+  settings.contextBuilder.includeMemoryMd = false;
 }
 
 /**
@@ -525,12 +532,13 @@ export function loadContextBuilderSettings(): ContextBuilderSettings {
     return {
       enabled: false,
       mode: 'moderate',
+      historyBudgetTokens: 100000,
       budgetRatio: 0.85,
       halfLifeMs: 86400000,
       overThresholdRelevance: 0.5,
       enableModelRanking: false,
       rankingProviderId: '',
-      includeMemoryMd: true,
+      includeMemoryMd: false,
     };
   }
   return settings.contextBuilder;

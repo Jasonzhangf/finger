@@ -85,10 +85,12 @@ export function mergeHistory(
   inputHistory: UnifiedHistoryItem[] | undefined,
   limit: number,
 ): SessionMessage[] {
+  const unlimited = !Number.isFinite(limit) || limit <= 0;
+  const safeLimit = Math.max(1, Math.floor(limit));
   // Session 历史是唯一真源，优先使用 session 存储中的历史
   // 前端传来的 inputHistory 仅在 session 为空时作为补充（首次会话场景）
   if (sessionHistory && sessionHistory.length > 0) {
-    return sessionHistory.slice(-Math.max(1, limit));
+    return unlimited ? [...sessionHistory] : sessionHistory.slice(-safeLimit);
   }
 
   // 只有当 session 历史为空时，才使用前端传来的历史（首次会话）
@@ -99,7 +101,7 @@ export function mergeHistory(
       content: item.content,
       timestamp: new Date().toISOString(),
     }));
-    return normalized.slice(-Math.max(1, limit));
+    return unlimited ? normalized : normalized.slice(-safeLimit);
   }
 
   return [];

@@ -18,6 +18,7 @@ import {
   type UnifiedHistoryItem,
 } from './unified-agent-types.js';
 import type { MessageHub } from '../../orchestration/message-hub.js';
+import { inferTagsAndTopic } from '../../common/tag-topic-inference.js';
 
 export interface KernelRunContext {
   sessionId: string;
@@ -77,7 +78,6 @@ const DEFAULT_REVIEW_MAX_TURNS = 10;
 const REVIEW_MODE = 'review';
 const MAIN_MODE = 'main';
 const REVIEW_READONLY_TOOLS = new Set([
-  'shell.exec',
   'exec_command',
   'view_image',
   'web_search',
@@ -277,12 +277,23 @@ export class KernelAgentBase {
 
       let assistantMessage: SessionMessage | null = null;
       if (input.sessionId && !clientPersist) {
+        const inferred = inferTagsAndTopic({
+          texts: [input.text, reply],
+          seedTags: [
+            roleProfile?.id ?? '',
+            this.config.moduleId,
+            typeof input.metadata?.channelId === 'string' ? input.metadata.channelId : '',
+          ].filter((item) => item.trim().length > 0),
+          maxTags: 8,
+        });
         assistantMessage = await this.sessionManager.addMessage(session.id, {
           role: 'assistant',
           content: reply,
           metadata: {
             roleProfile: roleProfile?.id,
             tools,
+            ...(inferred.tags ? { tags: inferred.tags } : {}),
+            ...(inferred.topic ? { topic: inferred.topic } : {}),
           },
         });
       }
@@ -400,6 +411,7 @@ export class KernelAgentBase {
     roleProfileId: string | undefined;
     mode: string;
     threadKey: string;
+    sessionProjectPath?: string;
     slotMetadata?: Record<string, unknown>;
     contextSlotsRendered?: string;
     extra?: Record<string, unknown>;
@@ -436,6 +448,18 @@ export class KernelAgentBase {
       ...(params.slotMetadata ?? {}),
       ...(params.extra ?? {}),
     };
+
+    const normalizedProjectPath = typeof params.sessionProjectPath === 'string'
+      ? params.sessionProjectPath.trim()
+      : '';
+    if (normalizedProjectPath.length > 0) {
+      if (typeof metadata.projectPath !== 'string' || metadata.projectPath.trim().length === 0) {
+        metadata.projectPath = normalizedProjectPath;
+      }
+      if (typeof metadata.cwd !== 'string' || metadata.cwd.trim().length === 0) {
+        metadata.cwd = normalizedProjectPath;
+      }
+    }
 
     const existingApiHistory = this.apiHistoryByThread.get(params.threadKey);
     if (!hasMediaInput && existingApiHistory && existingApiHistory.length > 0) {

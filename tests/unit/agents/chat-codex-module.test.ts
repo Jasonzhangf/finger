@@ -1,4 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { mkdtempSync, rmSync, writeFileSync } from 'fs';
+import { tmpdir } from 'os';
+import { join } from 'path';
 import {
   __chatCodexInternals,
   type ChatCodexRunContext,
@@ -234,7 +237,7 @@ describe('chat-codex module', () => {
 
     await module.handle({
       text: 'run tool',
-      tools: ['shell.exec'],
+      tools: ['exec_command'],
     });
 
     expect(runTurnMock).toHaveBeenCalledWith(
@@ -243,7 +246,7 @@ describe('chat-codex module', () => {
       expect.objectContaining({
         tools: [
           expect.objectContaining({
-            name: 'shell.exec',
+            name: 'exec_command',
           }),
         ],
       }),
@@ -442,6 +445,117 @@ describe('chat-codex module', () => {
     expect(taskCompletePayload?.realtimeToolEvents).toBe(true);
   });
 
+  it('emits reasoning immediately from model_round metadata and deduplicates repeated task_complete reasoning', async () => {
+    const onLoopEvent = vi.fn();
+    const streamingRunner: ChatCodexRunner = {
+      runTurn: async (_text, _items, context) => {
+        const metadataJson = JSON.stringify({
+          reasoning_trace: ['先检查日志再决定下一步'],
+        });
+        context?.onKernelEvent?.({
+          id: 'turn-reasoning-stream',
+          msg: {
+            type: 'model_round',
+            seq: 1,
+            round: 1,
+            reasoning_count: 1,
+            metadata_json: metadataJson,
+          },
+        });
+        const taskCompleteEvent = {
+          id: 'turn-reasoning-stream',
+          msg: {
+            type: 'task_complete',
+            last_agent_message: 'DONE',
+            metadata_json: metadataJson,
+          },
+        } as const;
+        context?.onKernelEvent?.(taskCompleteEvent);
+        return {
+          reply: 'DONE',
+          events: [taskCompleteEvent],
+          usedBinaryPath: '/tmp/finger-kernel-bridge-bin',
+        };
+      },
+    };
+
+    const module = createChatCodexModule({ onLoopEvent }, streamingRunner);
+    await module.handle({ text: 'stream reasoning test' });
+
+    const events = onLoopEvent.mock.calls.map((call) => call[0] as Record<string, unknown>);
+    const reasoningEvents = events.filter((event) => {
+      if (event.phase !== 'kernel_event') return false;
+      const payload = asRecord(event.payload);
+      return payload.type === 'reasoning';
+    });
+
+    expect(reasoningEvents).toHaveLength(1);
+    expect(asRecord(reasoningEvents[0].payload).text).toBe('先检查日志再决定下一步');
+
+    const reasoningIndex = events.findIndex((event) => {
+      if (event.phase !== 'kernel_event') return false;
+      const payload = asRecord(event.payload);
+      return payload.type === 'reasoning';
+    });
+    const turnCompleteIndex = events.findIndex((event) => event.phase === 'turn_complete');
+    expect(reasoningIndex).toBeGreaterThanOrEqual(0);
+    expect(turnCompleteIndex).toBeGreaterThan(reasoningIndex);
+  });
+
+  it('emits realtime reasoning kernel events immediately (without waiting for metadata trace)', async () => {
+    const onLoopEvent = vi.fn();
+    const streamingRunner: ChatCodexRunner = {
+      runTurn: async (_text, _items, context) => {
+        context?.onKernelEvent?.({
+          id: 'turn-reasoning-direct',
+          msg: {
+            type: 'reasoning',
+            seq: 1,
+            message: '先读取配置再继续执行',
+          },
+        });
+        const taskCompleteEvent = {
+          id: 'turn-reasoning-direct',
+          msg: {
+            type: 'task_complete',
+            last_agent_message: 'DONE',
+          },
+        } as const;
+        context?.onKernelEvent?.(taskCompleteEvent);
+        return {
+          reply: 'DONE',
+          events: [taskCompleteEvent],
+          usedBinaryPath: '/tmp/finger-kernel-bridge-bin',
+        };
+      },
+    };
+
+    const module = createChatCodexModule({ onLoopEvent }, streamingRunner);
+    await module.handle({ text: 'stream realtime reasoning test' });
+
+    const events = onLoopEvent.mock.calls.map((call) => call[0] as Record<string, unknown>);
+    const reasoningEvents = events.filter((event) => {
+      if (event.phase !== 'kernel_event') return false;
+      const payload = asRecord(event.payload);
+      return payload.type === 'reasoning';
+    });
+
+    expect(reasoningEvents).toHaveLength(1);
+    const reasoningPayload = asRecord(reasoningEvents[0].payload);
+    expect(reasoningPayload.text).toBe('先读取配置再继续执行');
+    expect(reasoningPayload.agentId).toBeDefined();
+    expect(reasoningPayload.roleProfile).toBeDefined();
+
+    const reasoningIndex = events.findIndex((event) => {
+      if (event.phase !== 'kernel_event') return false;
+      const payload = asRecord(event.payload);
+      return payload.type === 'reasoning';
+    });
+    const turnCompleteIndex = events.findIndex((event) => event.phase === 'turn_complete');
+    expect(reasoningIndex).toBeGreaterThanOrEqual(0);
+    expect(turnCompleteIndex).toBeGreaterThan(reasoningIndex);
+  });
+
   it('keeps system prompt stable across orchestrator and reviewer roles', async () => {
     runTurnMock.mockResolvedValue({
       reply: 'OK',
@@ -495,7 +609,7 @@ describe('chat-codex module', () => {
     expect(orchestrator?.developer_instructions).not.toBe(reviewer?.developer_instructions);
   });
 
-  it('supports executor and searcher developer role templates', () => {
+  it('maps project-like roles onto orchestrator developer instructions', () => {
     const executor = __chatCodexInternals.resolveDeveloperInstructions({
       roleProfile: 'executor',
       contextLedgerEnabled: true,
@@ -507,9 +621,38 @@ describe('chat-codex module', () => {
       kernelMode: 'main',
     });
 
-    expect(executor).toContain('role=executor');
-    expect(searcher).toContain('role=searcher');
-    expect(executor).not.toBe(searcher);
+    expect(executor).toContain('role=orchestrator');
+    expect(searcher).toContain('role=orchestrator');
+    expect(executor).toContain('[context_ledger]');
+    expect(searcher).toContain('[context_ledger]');
+    expect(executor).toBe(searcher);
+  });
+
+  it('teaches ledger retrieval model inside developer instructions', () => {
+    const instructions = __chatCodexInternals.buildLedgerDeveloperInstructions(
+      {
+        contextLedgerEnabled: true,
+        contextLedgerAgentId: 'finger-system-agent',
+        contextLedgerRole: 'orchestrator',
+        kernelMode: 'main',
+        workingSetTaskBlockCount: 1,
+        historicalTaskBlockCount: 2,
+        workingSetMessageCount: 3,
+        historicalMessageCount: 8,
+        workingSetTokens: 500,
+        historicalTokens: 1500,
+      },
+      'orchestrator',
+    );
+
+    expect(instructions).toContain('Current prompt history is a budgeted dynamic view, not the full ledger.');
+    expect(instructions).toContain('working_set contains the active task block at higher fidelity; historical_memory contains relevance-selected prior blocks.');
+    expect(instructions).toContain('When historical context is missing, first call `context_ledger.memory` with action="search"');
+    expect(instructions).toContain('Do not guess hidden history; retrieve evidence from ledger first.');
+    expect(instructions).toContain('working_set_task_blocks=1');
+    expect(instructions).toContain('historical_task_blocks=2');
+    expect(instructions).toContain('working_set_tokens=500');
+    expect(instructions).toContain('historical_tokens=1500');
   });
 
   it('grants orchestrator documentation write tool and keeps reviewer read-only', async () => {
@@ -565,7 +708,7 @@ describe('chat-codex module', () => {
     expect(schema?.properties).toMatchObject({
       role: { type: 'string', const: 'reviewer' },
       reviewLevel: { type: 'string', enum: ['feedback', 'soft_gate', 'hard_gate'] },
-      target: { type: 'string', enum: ['executor', 'orchestrator', 'general'] },
+      target: { type: 'string', enum: ['project', 'reviewer', 'system'] },
     });
   });
 
@@ -593,6 +736,63 @@ describe('chat-codex module', () => {
 
     expect(options?.responses?.text?.output_schema).toEqual(explicitSchema);
   });
+
+  it('loads FLOW.md with hard 10k-char truncation controlled by code', () => {
+    const tempDir = mkdtempSync(join(tmpdir(), 'finger-flow-test-'));
+    const flowPath = join(tempDir, 'FLOW.md');
+    const overLimit = `${'A'.repeat(10_050)}\nEND`;
+    writeFileSync(flowPath, overLimit, 'utf-8');
+
+    try {
+      const options = __chatCodexInternals.buildKernelUserTurnOptions(
+        {
+          sessionId: 'session-1',
+          metadata: {
+            roleProfile: 'orchestrator',
+            kernelMode: 'main',
+            skillsPromptEnabled: false,
+            mailboxPromptEnabled: false,
+            flowFilePath: flowPath,
+          },
+        },
+        undefined,
+      );
+
+      const instructions = options?.developer_instructions ?? '';
+      expect(instructions).toContain('# Task Flow Runtime');
+      expect(instructions).toContain('...[TRUNCATED_AT_10000_CHARS]');
+      expect(instructions).toContain(`FLOW.path=${flowPath}`);
+
+      const fenceStart = instructions.indexOf('```md');
+      const fenceEnd = instructions.indexOf('```', fenceStart + 5);
+      expect(fenceStart).toBeGreaterThanOrEqual(0);
+      expect(fenceEnd).toBeGreaterThan(fenceStart);
+      const fencedContent = instructions.slice(fenceStart + '```md\n'.length, fenceEnd).trimEnd();
+      expect(fencedContent.startsWith('A'.repeat(10_000))).toBe(true);
+      expect(fencedContent).not.toContain('END');
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it('does not inject FLOW block when flow prompt is disabled', () => {
+    const options = __chatCodexInternals.buildKernelUserTurnOptions(
+      {
+        sessionId: 'session-1',
+        metadata: {
+          roleProfile: 'orchestrator',
+          kernelMode: 'main',
+          flowPromptEnabled: false,
+          skillsPromptEnabled: false,
+          mailboxPromptEnabled: false,
+        },
+      },
+      undefined,
+    );
+
+    expect(options?.developer_instructions ?? '').not.toContain('# Task Flow Runtime');
+  });
+
 });
 
 describe('isRetryableRunError', () => {

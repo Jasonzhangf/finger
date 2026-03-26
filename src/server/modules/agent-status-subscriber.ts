@@ -57,12 +57,22 @@ const DEFAULT_SUBSCRIBED_EVENTS = [
 ] as const;
 
 const log = logger.module('AgentStatusSubscriber');
+const DEFAULT_REASONING_BODY_BUFFER_MS = 0;
+
+function resolveReasoningBodyBufferMs(): number {
+  const raw = process.env.FINGER_REASONING_BODY_BUFFER_MS;
+  if (typeof raw !== 'string' || raw.trim().length === 0) return DEFAULT_REASONING_BODY_BUFFER_MS;
+  const parsed = Number.parseInt(raw.trim(), 10);
+  if (!Number.isFinite(parsed) || parsed < 0) return DEFAULT_REASONING_BODY_BUFFER_MS;
+  return parsed;
+}
 
 export type { SubscriptionLevel, AgentSubscriptionConfig, SessionEnvelopeMapping, TaskContext, AgentInfo, WrappedStatusUpdate };
 
 export class AgentStatusSubscriber {
   private unsubscribe: (() => void) | null = null;
   private sessionEnvelopeMap = new Map<string, SessionEnvelopeMapping>();
+  private sessionObserverMap = new Map<string, SessionEnvelopeMapping['envelope'][]>();
   private agentSubscriptions = new Map<string, AgentSubscriptionConfig>(); // agentId -> config
   private primaryAgentId: string | null = null; // 当前主 Agent（编排者）
   private readonly cleanupIntervalMs = 24 * 60 * 60 * 1000; // 24小时清理一次过期映射（避免长任务丢失更新）
@@ -72,6 +82,9 @@ export class AgentStatusSubscriber {
   private stepBuffer = new Map<string, Array<{ index: number; summary: string; timestamp: string }>>();
   private stepBatchDefault = 5;
   private finalReplyBySession = new Map<string, { normalized: string; at: number }>();
+  private lastProgressMailboxSummaryBySession = new Map<string, string>();
+  private lastReasoningPushAtByRoute = new Map<string, number>();
+  private readonly reasoningBodyBufferMs = resolveReasoningBodyBufferMs();
 
   private getHandlerContext(): HandlerContext {
     return {
@@ -79,6 +92,7 @@ export class AgentStatusSubscriber {
       channelBridgeManager: this.channelBridgeManager,
       broadcast: this.broadcast,
       resolveEnvelopeMapping: (sessionId: string) => this.resolveEnvelopeMapping(sessionId),
+      resolveEnvelopeMappings: (sessionId: string) => this.resolveEnvelopeMappings(sessionId),
       getAgentInfo: (agentId: string) => this.getAgentInfo(agentId),
       sendReasoningUpdate: (sessionId: string, agentId: string, reasoningText: string) =>
         this.sendReasoningUpdate(sessionId, agentId, reasoningText),
@@ -97,6 +111,40 @@ export class AgentStatusSubscriber {
    private channelBridgeManager?: import('../../bridges/manager.js').ChannelBridgeManager,
     private broadcast?: (message: unknown) => void,
  ) {}
+
+  private buildRouteKey(sessionId: string, mapping: SessionEnvelopeMapping): string {
+    const envelope = mapping.envelope;
+    return [
+      sessionId,
+      envelope.channel,
+      envelope.envelopeId,
+      envelope.userId ?? '',
+      envelope.groupId ?? '',
+    ].join(':');
+  }
+
+  private async waitReasoningBufferIfNeeded(sessionId: string, mapping: SessionEnvelopeMapping): Promise<void> {
+    if (this.reasoningBodyBufferMs <= 0) return;
+    if (mapping.envelope.channel !== 'qqbot') return;
+
+    const routeKey = this.buildRouteKey(sessionId, mapping);
+    const lastReasoningAt = this.lastReasoningPushAtByRoute.get(routeKey);
+    if (!lastReasoningAt) return;
+
+    const elapsed = Date.now() - lastReasoningAt;
+    const waitMs = this.reasoningBodyBufferMs - elapsed;
+    if (waitMs <= 0) return;
+    await new Promise((resolve) => setTimeout(resolve, waitMs));
+  }
+
+  private cleanupRouteStateBySession(sessionId: string): void {
+    const prefix = `${sessionId}:`;
+    for (const key of this.lastReasoningPushAtByRoute.keys()) {
+      if (key.startsWith(prefix)) {
+        this.lastReasoningPushAtByRoute.delete(key);
+      }
+    }
+  }
 
   /**
    * 启动订阅
@@ -131,51 +179,59 @@ export class AgentStatusSubscriber {
     label: 'reasoning' | 'body',
     prefix: string,
   ): Promise<void> {
-    const mapping = this.resolveEnvelopeMapping(sessionId);
-    if (!mapping) return; // heartbeat/system task不用回推通道
+    const mappings = this.resolveEnvelopeMappings(sessionId);
+    if (mappings.length === 0) return; // heartbeat/system task不用回推通道
     if (!this.messageHub) {
       log.warn(`[AgentStatusSubscriber] No messageHub available for ${label} update`);
       return;
     }
-
-    if (this.channelBridgeManager) {
-      const pushSettings = this.channelBridgeManager.getPushSettings(mapping.envelope.channel);
-      const enabled = Boolean(pushSettings[setting]);
-      if (!enabled) {
-        return;
+    for (const mapping of mappings) {
+      if (this.channelBridgeManager) {
+        const pushSettings = this.channelBridgeManager.getPushSettings(mapping.envelope.channel);
+        const enabled = Boolean(pushSettings[setting]);
+        if (!enabled) {
+          continue;
+        }
       }
+
+      const outputId = 'channel-bridge-' + mapping.envelope.channel;
+      const originalEnvelope: ChannelBridgeEnvelope = {
+        id: mapping.envelope.envelopeId,
+        channelId: mapping.envelope.channel,
+        accountId: 'default',
+        type: mapping.envelope.groupId ? 'group' : 'direct',
+        senderId: mapping.envelope.userId || 'unknown',
+        senderName: 'user',
+        content: '',
+        timestamp: Date.now(),
+        metadata: {
+          messageId: mapping.envelope.envelopeId,
+          ...(mapping.envelope.groupId ? { groupId: mapping.envelope.groupId } : {}),
+        },
+      };
+
+      if (label === 'body') {
+        await this.waitReasoningBufferIfNeeded(sessionId, mapping);
+      }
+
+      const content = `${prefix}${text}`;
+      const message = {
+        channelId: mapping.envelope.channel,
+        target: mapping.envelope.groupId ? `group:${mapping.envelope.groupId}` : (mapping.envelope.userId || 'unknown'),
+        content,
+        originalEnvelope,
+        [label]: {
+          sessionId,
+          agentId,
+        },
+      };
+
+      await this.messageHub.routeToOutput(outputId, message);
+      if (label === 'reasoning') {
+        this.lastReasoningPushAtByRoute.set(this.buildRouteKey(sessionId, mapping), Date.now());
+      }
+      log.debug(`[AgentStatusSubscriber] Sent ${label} update via MessageHub: ${outputId}`);
     }
-
-    const outputId = 'channel-bridge-' + mapping.envelope.channel;
-    const originalEnvelope: ChannelBridgeEnvelope = {
-      id: mapping.envelope.envelopeId,
-      channelId: mapping.envelope.channel,
-      accountId: 'default',
-      type: mapping.envelope.groupId ? 'group' : 'direct',
-      senderId: mapping.envelope.userId || 'unknown',
-      senderName: 'user',
-      content: '',
-      timestamp: Date.now(),
-      metadata: {
-        messageId: mapping.envelope.envelopeId,
-        ...(mapping.envelope.groupId ? { groupId: mapping.envelope.groupId } : {}),
-      },
-    };
-
-    const content = `${prefix}${text}`;
-    const message = {
-      channelId: mapping.envelope.channel,
-      target: mapping.envelope.groupId ? `group:${mapping.envelope.groupId}` : (mapping.envelope.userId || 'unknown'),
-      content,
-      originalEnvelope,
-      [label]: {
-        sessionId,
-        agentId,
-      },
-    };
-
-    await this.messageHub.routeToOutput(outputId, message);
-    log.debug(`[AgentStatusSubscriber] Sent ${label} update via MessageHub: ${outputId}`);
   }
 
   async sendReasoningUpdate(sessionId: string, agentId: string, reasoningText: string): Promise<void> {
@@ -307,11 +363,27 @@ export class AgentStatusSubscriber {
    */
   registerSession(sessionId: string, envelope: SessionEnvelopeMapping['envelope']): void {
     log.info(`[AgentStatusSubscriber] Registering session ${sessionId}`);
-    this.sessionEnvelopeMap.set(sessionId, {
-      sessionId,
-      envelope,
-      timestamp: Date.now(),
-    });
+    const existing = this.sessionEnvelopeMap.get(sessionId);
+    if (!existing) {
+      this.sessionEnvelopeMap.set(sessionId, {
+        sessionId,
+        envelope,
+        timestamp: Date.now(),
+      });
+      return;
+    }
+
+    existing.timestamp = Date.now();
+    if (this.sameEnvelope(existing.envelope, envelope)) {
+      return;
+    }
+
+    const observers = this.sessionObserverMap.get(sessionId) ?? [];
+    if (!observers.some((item) => this.sameEnvelope(item, envelope))) {
+      observers.push(envelope);
+      this.sessionObserverMap.set(sessionId, observers);
+      log.info(`[AgentStatusSubscriber] Registered additional session observer: ${sessionId} -> ${envelope.channel}`);
+    }
   }
 
   /**
@@ -319,6 +391,15 @@ export class AgentStatusSubscriber {
    */
   unregisterSession(sessionId: string): void {
     this.sessionEnvelopeMap.delete(sessionId);
+    this.sessionObserverMap.delete(sessionId);
+    this.cleanupRouteStateBySession(sessionId);
+  }
+
+  clearSessionObservers(sessionId: string): void {
+    this.sessionEnvelopeMap.delete(sessionId);
+    this.sessionObserverMap.delete(sessionId);
+    this.lastProgressMailboxSummaryBySession.delete(sessionId);
+    this.cleanupRouteStateBySession(sessionId);
   }
 
   /**
@@ -378,6 +459,84 @@ export class AgentStatusSubscriber {
     };
     this.sessionEnvelopeMap.set(sessionId, mapped);
     return mapped;
+  }
+
+  private resolveEnvelopeMappings(sessionId: string): SessionEnvelopeMapping[] {
+    const primary = this.resolveEnvelopeMapping(sessionId);
+    if (!primary) return [];
+
+    const observers = this.sessionObserverMap.get(sessionId) ?? [];
+    if (observers.length === 0) return [primary];
+
+    const mappings: SessionEnvelopeMapping[] = [primary];
+    for (const envelope of observers) {
+      mappings.push({
+        sessionId,
+        envelope,
+        timestamp: primary.timestamp,
+      });
+    }
+    return mappings;
+  }
+
+  private sameEnvelope(
+    left: SessionEnvelopeMapping['envelope'],
+    right: SessionEnvelopeMapping['envelope'],
+  ): boolean {
+    return left.channel === right.channel
+      && left.envelopeId === right.envelopeId
+      && left.userId === right.userId
+      && left.groupId === right.groupId;
+  }
+
+  async finalizeChannelTurn(sessionId: string, finalReply?: string, agentId?: string): Promise<void> {
+    const primary = this.resolveEnvelopeMapping(sessionId);
+    if (!primary) return;
+
+    const observers = this.sessionObserverMap.get(sessionId) ?? [];
+    if (finalReply && finalReply.trim().length > 0 && observers.length > 0 && this.messageHub) {
+      const timestamp = new Date();
+      const year = timestamp.getFullYear();
+      const month = String(timestamp.getMonth() + 1).padStart(2, '0');
+      const day = String(timestamp.getDate()).padStart(2, '0');
+      const hours = String(timestamp.getHours()).padStart(2, '0');
+      const minutes = String(timestamp.getMinutes()).padStart(2, '0');
+      const seconds = String(timestamp.getSeconds()).padStart(2, '0');
+      const ms = String(timestamp.getMilliseconds()).padStart(3, '0');
+      const offset = -timestamp.getTimezoneOffset();
+      const offsetHours = String(Math.floor(Math.abs(offset) / 60)).padStart(2, '0');
+      const offsetMinutes = String(Math.abs(offset) % 60).padStart(2, '0');
+      const offsetSign = offset >= 0 ? '+' : '-';
+      const formattedTimestamp = `${year}-${month}-${day} ${hours}:${minutes}:${seconds}.${ms} ${offsetSign}${offsetHours}:${offsetMinutes}`;
+      const agentName = agentId?.replace(/^finger-/, '').replace(/-/g, ' ') || 'system agent';
+      const content = `[${agentName}] [${formattedTimestamp}] ${finalReply.trim()}`;
+
+      for (const envelope of observers) {
+        const outputId = 'channel-bridge-' + envelope.channel;
+        const originalEnvelope: ChannelBridgeEnvelope = {
+          id: envelope.envelopeId,
+          channelId: envelope.channel,
+          accountId: 'default',
+          type: envelope.groupId ? 'group' : 'direct',
+          senderId: envelope.userId || 'unknown',
+          senderName: 'user',
+          content: '',
+          timestamp: Date.now(),
+          metadata: {
+            messageId: envelope.envelopeId,
+            ...(envelope.groupId ? { groupId: envelope.groupId } : {}),
+          },
+        };
+        await this.messageHub.routeToOutput(outputId, {
+          channelId: envelope.channel,
+          target: envelope.groupId ? `group:${envelope.groupId}` : (envelope.userId || 'unknown'),
+          content,
+          originalEnvelope,
+        });
+      }
+    }
+
+    this.clearSessionObservers(sessionId);
   }
 
   /**
@@ -451,18 +610,19 @@ export class AgentStatusSubscriber {
 
     // 查找对应的 session
     const sessionId = event.sessionId;
-    const mapping = this.resolveEnvelopeMapping(sessionId);
+    const mappings = this.resolveEnvelopeMappings(sessionId);
 
-    if (!mapping) {
+    if (mappings.length === 0) {
       log.debug(`[AgentStatusSubscriber] No envelope mapping for session ${sessionId}`);
       return;
     }
 
-    // 更新时间戳，避免长任务被清理
-    mapping.timestamp = Date.now();
+    for (const mapping of mappings) {
+      mapping.timestamp = Date.now();
+    }
 
     // 发送状态更新到通信通道 (QQBot)
-    if (this.messageHub) { await sendStatusUpdate(mapping.envelope, wrappedUpdate, this.messageHub, this.channelBridgeManager); };
+    if (this.messageHub) { await sendStatusUpdate(mappings.map((item) => item.envelope), wrappedUpdate, this.messageHub, this.channelBridgeManager); };
 
     // 同时广播到 WebUI
     if (this.broadcast) {
@@ -484,7 +644,7 @@ export class AgentStatusSubscriber {
     if (payload.status === 'completed' || payload.status === 'failed') {
       const remainingBuffer = this.stepBuffer.get(sessionId);
       if (remainingBuffer && remainingBuffer.length > 0) {
-        await this.flushStepBuffer(sessionId, mapping);
+        await this.flushStepBuffer(sessionId, mappings[0]);
       }
     }
 
@@ -506,24 +666,45 @@ export class AgentStatusSubscriber {
     sessionId: string;
     agentId: string;
     summary: string;
-    progress: { status: string; toolCallsCount: number; modelRoundsCount: number; elapsedMs: number };
+    progress: {
+      status: string;
+      toolCallsCount: number;
+      modelRoundsCount: number;
+      elapsedMs: number;
+      contextUsagePercent?: number;
+      estimatedTokensInContextWindow?: number;
+      maxInputTokens?: number;
+    };
   }): Promise<void> {
-    const mapping = this.resolveEnvelopeMapping(report.sessionId);
-    if (!mapping) return;
+    const mappings = this.resolveEnvelopeMappings(report.sessionId);
+    if (mappings.length === 0) return;
     if (!this.messageHub) return;
 
     // 检查该 channel 是否配置了 progressUpdates
     if (this.channelBridgeManager) {
-      const pushSettings = this.channelBridgeManager.getPushSettings(mapping.envelope.channel);
-      if (pushSettings.updateMode === 'command') return;
-      if (!pushSettings.progressUpdates) return;
+      const canPush = mappings.some((mapping) => {
+        const pushSettings = this.channelBridgeManager!.getPushSettings(mapping.envelope.channel);
+        return pushSettings.updateMode !== 'command' && pushSettings.progressUpdates;
+      });
+      if (!canPush) return;
     }
 
     const mailboxSnapshot = buildMailboxProgressSnapshot(report.agentId, this.primaryAgentId || 'finger-system-agent');
-    const mailboxSummary = mailboxSnapshot
-      ? `📬 ${mailboxSnapshot.summaryText}`
+    const mailboxSummaryText = mailboxSnapshot?.summaryText;
+    const lastMailboxSummary = this.lastProgressMailboxSummaryBySession.get(report.sessionId);
+    const includeMailboxSummary = typeof mailboxSummaryText === 'string'
+      && mailboxSummaryText.length > 0
+      && mailboxSummaryText !== lastMailboxSummary;
+    if (includeMailboxSummary && mailboxSummaryText) {
+      this.lastProgressMailboxSummaryBySession.set(report.sessionId, mailboxSummaryText);
+    }
+    const mailboxSummary = includeMailboxSummary && mailboxSummaryText
+      ? `📬 ${mailboxSummaryText}`
       : undefined;
-    const summary = mailboxSummary ? `${report.summary}\n${mailboxSummary}` : report.summary;
+    const summary = [report.summary, mailboxSummary]
+      .filter((item): item is string => typeof item === 'string' && item.trim().length > 0)
+      .join('\n');
+    if (!summary) return;
 
     const wrappedUpdate: WrappedStatusUpdate = {
       type: 'agent_status',
@@ -541,6 +722,15 @@ export class AgentStatusSubscriber {
           toolCalls: report.progress.toolCallsCount,
           modelRounds: report.progress.modelRoundsCount,
           elapsedMs: report.progress.elapsedMs,
+          ...(typeof report.progress.contextUsagePercent === 'number'
+            ? { contextUsagePercent: report.progress.contextUsagePercent }
+            : {}),
+          ...(typeof report.progress.estimatedTokensInContextWindow === 'number'
+            ? { estimatedTokensInContextWindow: report.progress.estimatedTokensInContextWindow }
+            : {}),
+          ...(typeof report.progress.maxInputTokens === 'number'
+            ? { maxInputTokens: report.progress.maxInputTokens }
+            : {}),
           ...(mailboxSnapshot
             ? {
                 mailboxStatus: {
@@ -561,7 +751,7 @@ export class AgentStatusSubscriber {
       },
     };
 
-    await sendStatusUpdate(mapping.envelope, wrappedUpdate, this.messageHub, this.channelBridgeManager);
+    await sendStatusUpdate(mappings.map((item) => item.envelope), wrappedUpdate, this.messageHub, this.channelBridgeManager);
   }
 
   /**

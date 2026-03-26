@@ -19,9 +19,11 @@ import { registerGatewayWorkerCommand } from './gateway-worker.js';
 import { registerOpenClawGatewayBridgeCommand } from './openclaw-gateway-bridge.js';
 import { registerOpenClawIntegrationCommand } from './openclaw-integration.js';
 import { registerFingerShortcuts } from './finger-shortcuts.js';
+import { registerInitCommand } from './init.js';
 import { registerMemoryLedgerCommand } from './memory-ledger.js';
 import { registerTestCommand } from './test-command.js';
 import { registerCommandHubCommand } from './command-hub.js';
+import { registerMailboxCommand } from './mailbox.js';
 import { ensureFingerLayout } from '../core/finger-paths.js';
 import { DualDaemonSupervisor, enableAutoStart, disableAutoStart } from '../daemon/dual-daemon.js';
 import { createConsoleLikeLogger } from '../core/logger/console-like.js';
@@ -223,6 +225,8 @@ async function main(): Promise<void> {
   registerMemoryLedgerCommand(program);
   registerTestCommand(program);
   registerCommandHubCommand(program);
+  registerMailboxCommand(program);
+  registerInitCommand(program);
   registerFingerShortcuts(program);
 
   // ========== Register Dynamic Plugins ==========

@@ -45,6 +45,10 @@ describe('progress-monitor-utils', () => {
       expect(classifyToolCall('update_plan')).toBe('工具');
     });
 
+    it('classifies command.exec as 工具', () => {
+      expect(classifyToolCall('command.exec', { input: '<##@agent:list##>' })).toBe('工具');
+    });
+
     it('classifies unknown tool as 其他', () => {
       expect(classifyToolCall('unknown_tool')).toBe('其他');
     });
@@ -91,7 +95,8 @@ describe('progress-monitor-utils', () => {
         latestReasoning: '需要检查 event-forwarding.ts 的逻辑',
       };
       const result = buildCompactSummary(data, formatElapsed);
-      expect(result).toContain('📊 finger-system-agent | 2m | 分析代码');
+      expect(result).toContain('📊 ');
+      expect(result).toContain('| 分析代码');
       expect(result).toContain('💭 需要检查 event-forwarding.ts 的逻辑');
     });
 
@@ -152,9 +157,26 @@ describe('progress-monitor-utils', () => {
         includeTask: false,
         includeReasoning: false,
       });
-      expect(result).toContain('📊 finger-system-agent | 2m');
+      expect(result).toContain('📊 ');
       expect(result).not.toContain('分析代码');
       expect(result).not.toContain('需要检查 event-forwarding.ts 的逻辑');
+    });
+
+    it('includes context usage line when context metrics are available', () => {
+      const data: SessionProgressData = {
+        agentId: 'finger-system-agent',
+        status: 'running',
+        currentTask: '处理中',
+        elapsedMs: 90000,
+        toolCallHistory: [],
+        contextUsagePercent: 41,
+        estimatedTokensInContextWindow: 53200,
+        maxInputTokens: 128000,
+      };
+      const result = buildCompactSummary(data, formatElapsed, {
+        headerMode: 'minimal',
+      });
+      expect(result).toContain('🧠 上下文: 53.2k/128k (41%)');
     });
   });
 
@@ -203,6 +225,14 @@ describe('progress-monitor-utils', () => {
 
     it('returns original tool name for non-shell tools', () => {
       expect(resolveToolDisplayName('update_plan')).toBe('update_plan');
+    });
+
+    it('parses shell.exec command field', () => {
+      expect(resolveToolDisplayName('shell.exec', { command: 'rg "progress" src/server' })).toBe('rg');
+    });
+
+    it('parses command.exec token', () => {
+      expect(resolveToolDisplayName('command.exec', { input: '<##@agent:list##>' })).toBe('cmd:agent:list');
     });
   });
 

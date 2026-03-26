@@ -61,61 +61,74 @@ function shouldPush(
  * Filters based on pushSettings.statusUpdate.
  */
 export async function sendStatusUpdate(
-  envelope: SessionEnvelopeMapping['envelope'],
+  envelope: SessionEnvelopeMapping['envelope'] | SessionEnvelopeMapping['envelope'][],
   statusUpdate: WrappedStatusUpdate,
   messageHub: MessageHub,
   channelBridgeManager?: ChannelBridgeManager,
 ): Promise<void> {
-  const channel = envelope.channel;
+  const envelopes = Array.isArray(envelope) ? envelope : [envelope];
+  if (envelopes.length === 0) return;
 
-  // Check statusUpdate permission before sending
-  if (!shouldPush(channelBridgeManager, channel, 'statusUpdate')) {
-    log.debug(`[AgentStatusSubscriber] Skipping status update for ${channel} (statusUpdate disabled)`);
-    return;
+  // Dedup by actual delivery target to avoid duplicate pushes when a session
+  // has multiple observer envelopes (same channel/user/group but different envelopeId).
+  const dedupedByTarget = new Map<string, SessionEnvelopeMapping['envelope']>();
+  for (const item of envelopes) {
+    const targetKey = `${item.channel}::${item.groupId ?? ''}::${item.userId ?? ''}`;
+    dedupedByTarget.set(targetKey, item); // keep latest envelope for reply threading
   }
+  const dedupedEnvelopes = Array.from(dedupedByTarget.values());
 
-  try {
-    log.info(`[AgentStatusSubscriber] Sending status update to channel ${channel}:`, {
-      agent: statusUpdate.agent.agentName || statusUpdate.agent.agentId,
-      status: statusUpdate.status.state,
-      level: statusUpdate.display.level,
-      task: statusUpdate.task.taskDescription,
-    });
+  for (const item of dedupedEnvelopes) {
+    const channel = item.channel;
 
-    const outputId = 'channel-bridge-' + channel;
-    const originalEnvelope: ChannelBridgeEnvelope = {
-      id: envelope.envelopeId,
-      channelId: channel,
-      accountId: 'default',
-      type: envelope.groupId ? 'group' : 'direct',
-      senderId: envelope.userId || 'unknown',
-      senderName: 'user',
-      content: '',
-      timestamp: Date.now(),
-      metadata: {
-        messageId: envelope.envelopeId,
-        ...(envelope.groupId ? { groupId: envelope.groupId } : {}),
-      },
-    };
+    if (!shouldPush(channelBridgeManager, channel, 'statusUpdate')) {
+      log.debug(`[AgentStatusSubscriber] Skipping status update for ${channel} (statusUpdate disabled)`);
+      continue;
+    }
 
-    const text = joinUniqueLines([
-      statusUpdate.display.title,
-      statusUpdate.status.summary,
-      statusUpdate.display.subtitle,
-    ]);
+    try {
+      log.info(`[AgentStatusSubscriber] Sending status update to channel ${channel}:`, {
+        agent: statusUpdate.agent.agentName || statusUpdate.agent.agentId,
+        status: statusUpdate.status.state,
+        level: statusUpdate.display.level,
+        task: statusUpdate.task.taskDescription,
+      });
 
-    const message = {
-      channelId: channel,
-      target: envelope.groupId ? `group:${envelope.groupId}` : (envelope.userId || 'unknown'),
-      content: text,
-      originalEnvelope,
-      statusUpdate,
-    };
+      const outputId = 'channel-bridge-' + channel;
+      const originalEnvelope: ChannelBridgeEnvelope = {
+        id: item.envelopeId,
+        channelId: channel,
+        accountId: 'default',
+        type: item.groupId ? 'group' : 'direct',
+        senderId: item.userId || 'unknown',
+        senderName: 'user',
+        content: '',
+        timestamp: Date.now(),
+        metadata: {
+          messageId: item.envelopeId,
+          ...(item.groupId ? { groupId: item.groupId } : {}),
+        },
+      };
 
-    await messageHub.routeToOutput(outputId, message);
-    log.debug('[AgentStatusSubscriber] Sent status update via MessageHub: ' + outputId);
-  } catch (error) {
-    log.error('[AgentStatusSubscriber] Failed to send status update:', error instanceof Error ? error : new Error(String(error)));
+      const text = joinUniqueLines([
+        statusUpdate.display.title,
+        statusUpdate.status.summary,
+        statusUpdate.display.subtitle,
+      ]);
+
+      const message = {
+        channelId: channel,
+        target: item.groupId ? `group:${item.groupId}` : (item.userId || 'unknown'),
+        content: text,
+        originalEnvelope,
+        statusUpdate,
+      };
+
+      await messageHub.routeToOutput(outputId, message);
+      log.debug('[AgentStatusSubscriber] Sent status update via MessageHub: ' + outputId);
+    } catch (error) {
+      log.error('[AgentStatusSubscriber] Failed to send status update:', error instanceof Error ? error : new Error(String(error)));
+    }
   }
 }
 

@@ -16,6 +16,7 @@ import { updatePlanTool } from './codex-update-plan-tool.js';
 import { viewImageTool } from './codex-view-image-tool.js';
 import { webSearchTool } from './codex-web-search-tool.js';
 import { contextLedgerMemoryTool } from './context-ledger-memory-tool.js';
+import { contextBuilderRebuildTool } from './context-builder-rebuild-tool.js';
 import { noopTool } from './codex-noop-tool.js';
 import { permissionTools } from './permission-tools.js';
 import { heartbeatEnableTool, heartbeatDisableTool, heartbeatStatusTool, heartbeatAddTaskTool, heartbeatCompleteTaskTool, heartbeatRemoveTaskTool, heartbeatListTasksTool, heartbeatBatchAddTool, heartbeatBatchCompleteTool, heartbeatBatchRemoveTool } from './heartbeat-control-tool.js';
@@ -27,6 +28,7 @@ import {
   mailboxStatusTool,
 } from './mailbox-tool.js';
 import { mailboxRemoveTool, mailboxRemoveAllTool } from './mailbox-tool-remove.js';
+import { skillsListTool, skillsStatusTool } from './skills-tool.js';
 
 export * from './types.js';
 export * from './registry.js';
@@ -45,11 +47,13 @@ export * from './codex-clock-tool.js';
 export * from './codex-noop-tool.js';
 export * from './codex-web-search-tool.js';
 export * from './context-ledger-memory-tool.js';
+export * from './context-builder-rebuild-tool.js';
 export * from './permission-tools.js';
 export * from './heartbeat-control-tool.js';
 export * from './mailbox-tool.js';
 export * from './mailbox-tool-remove.js';
 export * from './send-local-image-tool.js';
+export * from './skills-tool.js';
 
 export function createDefaultInternalToolRegistry(): InternalToolRegistry {
   const registry = new InternalToolRegistry();
@@ -64,6 +68,7 @@ export function createDefaultInternalToolRegistry(): InternalToolRegistry {
   registry.register(viewImageTool);
   registry.register(webSearchTool);
   registry.register(contextLedgerMemoryTool);
+  registry.register(contextBuilderRebuildTool);
   registry.register(noopTool);
   registry.register(heartbeatEnableTool);
   registry.register(heartbeatDisableTool);
@@ -82,6 +87,8 @@ export function createDefaultInternalToolRegistry(): InternalToolRegistry {
   registry.register(mailboxRemoveTool);
   registry.register(mailboxRemoveAllTool);
   registry.register(mailboxStatusTool);
+  registry.register(skillsListTool);
+  registry.register(skillsStatusTool);
   for (const tool of permissionTools) {
     registry.register(tool);
   }

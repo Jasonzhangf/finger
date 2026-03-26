@@ -1126,12 +1126,13 @@ const AIProviderTab: FC = () => {
 const DEFAULT_CONTEXT_BUILDER_SETTINGS: ContextBuilderSettings = {
   enabled: false,
   mode: 'moderate',
+  historyBudgetTokens: 100000,
   budgetRatio: 0.85,
   halfLifeMs: 86400000,
   overThresholdRelevance: 0.5,
   enableModelRanking: false,
   rankingProviderId: '',
-  includeMemoryMd: true,
+  includeMemoryMd: false,
 };
 
 const SettingsTab: FC<{
@@ -1161,6 +1162,7 @@ const SettingsTab: FC<{
   const [contextLoading, setContextLoading] = useState(true);
   const [contextSaving, setContextSaving] = useState(false);
   const [contextHint, setContextHint] = useState('');
+  const [historyBudgetDraft, setHistoryBudgetDraft] = useState('100000');
 
   const rankingModeValue = useMemo<'off' | 'dryrun' | 'active'>(() => {
     if (contextBuilder.enableModelRanking === 'dryrun') return 'dryrun';
@@ -1204,6 +1206,22 @@ const SettingsTab: FC<{
       cancelled = true;
     };
   }, []);
+
+  useEffect(() => {
+    const value = Number.isFinite(contextBuilder.historyBudgetTokens) && contextBuilder.historyBudgetTokens > 0
+      ? Math.floor(contextBuilder.historyBudgetTokens)
+      : 100000;
+    setHistoryBudgetDraft(String(value));
+  }, [contextBuilder.historyBudgetTokens]);
+
+  const commitHistoryBudget = useCallback(() => {
+    const parsed = Math.floor(Number(historyBudgetDraft));
+    const normalized = Number.isFinite(parsed) && parsed > 0 ? parsed : 100000;
+    setHistoryBudgetDraft(String(normalized));
+    if (normalized === contextBuilder.historyBudgetTokens) return;
+    setContextBuilder((prev) => ({ ...prev, historyBudgetTokens: normalized }));
+    void saveContextBuilderPatch({ historyBudgetTokens: normalized });
+  }, [contextBuilder.historyBudgetTokens, historyBudgetDraft, saveContextBuilderPatch]);
 
   return (
     <div className="tab-content">
@@ -1259,6 +1277,26 @@ const SettingsTab: FC<{
                   <option value="moderate">moderate（移除+补充）</option>
                   <option value="aggressive">aggressive（全量重排）</option>
                 </select>
+              </label>
+
+              <label className="freeze-row" style={{ alignItems: 'center', gap: 8 }}>
+                <span style={{ minWidth: 98 }}>History Budget</span>
+                <input
+                  type="number"
+                  min={1000}
+                  step={1000}
+                  value={historyBudgetDraft}
+                  disabled={contextSaving}
+                  onChange={(e) => { setHistoryBudgetDraft(e.target.value); }}
+                  onBlur={() => { commitHistoryBudget(); }}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') {
+                      e.preventDefault();
+                      commitHistoryBudget();
+                    }
+                  }}
+                />
+                <span style={{ fontSize: 12, opacity: 0.75 }}>tokens</span>
               </label>
 
               <label className="freeze-row" style={{ alignItems: 'center', gap: 8 }}>

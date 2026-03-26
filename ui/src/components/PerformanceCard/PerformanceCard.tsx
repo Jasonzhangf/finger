@@ -138,6 +138,52 @@ export const PerformanceCard: React.FC<{
   };
 
   const formatSigned = (value: number): string => (value > 0 ? `+${value}` : `${value}`);
+  const formatCompactTokens = (value: number): string => {
+    if (!Number.isFinite(value)) return `${value}`;
+    if (value >= 1_000_000) {
+      return `${(value / 1_000_000).toFixed(1).replace(/\.0$/, '')}m`;
+    }
+    if (value >= 1_000) {
+      return `${(value / 1_000).toFixed(value >= 100_000 ? 0 : 1).replace(/\.0$/, '')}k`;
+    }
+    return `${Math.floor(value)}`;
+  };
+  const computeContextUsage = (): number | undefined => {
+    if (typeof runtimeOverview?.contextUsagePercent === 'number') {
+      return Math.max(0, Math.floor(runtimeOverview.contextUsagePercent));
+    }
+    if (
+      typeof runtimeOverview?.contextTokensInWindow === 'number'
+      && typeof runtimeOverview?.contextMaxInputTokens === 'number'
+      && runtimeOverview.contextMaxInputTokens > 0
+    ) {
+      return Math.max(0, Math.floor((runtimeOverview.contextTokensInWindow / runtimeOverview.contextMaxInputTokens) * 100));
+    }
+    return undefined;
+  };
+  const contextUsage = computeContextUsage();
+  const contextThreshold = typeof runtimeOverview?.contextThresholdPercent === 'number'
+    ? Math.max(1, Math.floor(runtimeOverview.contextThresholdPercent))
+    : 75;
+  const contextChipClass = (() => {
+    if (contextUsage === undefined) return 'subtle';
+    if (contextUsage >= contextThreshold + 10) return 'critical';
+    if (contextUsage >= contextThreshold) return 'warning';
+    return 'good';
+  })();
+  const contextAbsoluteText = (() => {
+    if (typeof runtimeOverview?.contextTokensInWindow === 'number' && typeof runtimeOverview?.contextMaxInputTokens === 'number') {
+      const usage = contextUsage !== undefined ? `${contextUsage}%` : '?%';
+      return `上下文 ${formatCompactTokens(runtimeOverview.contextTokensInWindow)}/${formatCompactTokens(runtimeOverview.contextMaxInputTokens)} (${usage})`;
+    }
+    if (contextUsage !== undefined) {
+      return `上下文 ${contextUsage}%`;
+    }
+    if (typeof runtimeOverview?.contextTokensInWindow === 'number') {
+      return `上下文 ${formatCompactTokens(runtimeOverview.contextTokensInWindow)} tokens`;
+    }
+    return null;
+  })();
   const strategyLabel = runtimeOverview?.contextStrategyLabel;
   const strategyChipClass = runtimeOverview?.contextBuilderBypassed === true
     ? 'warning'
@@ -197,6 +243,14 @@ export const PerformanceCard: React.FC<{
         <span className={`metric-chip ${liveEventChipClass}`}>
           {liveEventText}
         </span>
+        {contextAbsoluteText && (
+          <span
+            className={`metric-chip ${contextChipClass}`}
+            title={`Context threshold ${contextThreshold}%`}
+          >
+            {contextAbsoluteText}
+          </span>
+        )}
         {strategyLabel && (
           <button
             type="button"
@@ -224,7 +278,7 @@ export const PerformanceCard: React.FC<{
         )}
         {typeof runtimeOverview?.contextTokensDelta === 'number' && (
           <span className={`metric-chip ${runtimeOverview.contextTokensDelta === 0 ? 'subtle' : runtimeOverview.contextTokensDelta > 0 ? 'warning' : 'good'}`}>
-            ΔctxTok {formatSigned(runtimeOverview.contextTokensDelta)}
+            Δctx {formatSigned(runtimeOverview.contextTokensDelta)}
           </span>
         )}
         {typeof runtimeOverview?.contextUsageDelta === 'number' && (

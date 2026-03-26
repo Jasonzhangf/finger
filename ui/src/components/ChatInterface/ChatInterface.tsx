@@ -542,6 +542,12 @@ function buildToolDashboard(
 
 function formatRuntimeOverview(overview?: RuntimeOverview): string {
   if (!overview) return '上下文: N/A · Ledger: N/A';
+  const formatCompactTokens = (value: number): string => {
+    if (!Number.isFinite(value)) return `${value}`;
+    if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(1).replace(/\.0$/, '')}m`;
+    if (value >= 1_000) return `${(value / 1_000).toFixed(value >= 100_000 ? 0 : 1).replace(/\.0$/, '')}k`;
+    return `${Math.floor(value)}`;
+  };
   const derivedUsagePercent = (
     typeof overview.contextTokensInWindow === 'number'
     && typeof overview.contextMaxInputTokens === 'number'
@@ -554,10 +560,10 @@ function formatRuntimeOverview(overview?: RuntimeOverview): string {
     : derivedUsagePercent;
   const contextText = typeof contextUsagePercent === 'number'
     ? (typeof overview.contextTokensInWindow === 'number' && typeof overview.contextMaxInputTokens === 'number'
-      ? `上下文 ${contextUsagePercent}% (${overview.contextTokensInWindow}/${overview.contextMaxInputTokens})`
+      ? `上下文 ${formatCompactTokens(overview.contextTokensInWindow)}/${formatCompactTokens(overview.contextMaxInputTokens)} (${contextUsagePercent}%)`
       : `上下文 ${contextUsagePercent}%`)
     : (typeof overview.contextTokensInWindow === 'number'
-      ? `上下文 ${overview.contextTokensInWindow} tokens`
+      ? `上下文 ${formatCompactTokens(overview.contextTokensInWindow)} tokens`
       : '上下文 N/A');
   const thresholdText = typeof overview.contextThresholdPercent === 'number'
     ? `阈值 ${overview.contextThresholdPercent}%`

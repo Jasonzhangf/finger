@@ -18,9 +18,10 @@ import { needsCompression, compressSession, type CompressResult } from '../runti
 import { estimateTokens } from '../utils/token-counter.js';
 import { getContextWindow } from '../core/user-settings.js';
 import { loadContextBuilderSettings } from '../core/user-settings.js';
-import { buildContext, buildMemoryMdInjection } from '../runtime/context-builder.js';
+import { buildContext } from '../runtime/context-builder.js';
 import { logger } from '../core/logger.js';
 import { createConsoleLikeLogger } from '../core/logger/console-like.js';
+import { inferTagsAndTopic } from '../common/tag-topic-inference.js';
 
 const clog = createConsoleLikeLogger('SessionManager');
 
@@ -164,6 +165,10 @@ export class SessionManager {
     session.projectPath = this.normalizeProjectPath(session.projectPath);
     // Ensure ledger pointer fields exist for backward compatibility
     ensureLedgerPointers(session);
+    // Session file no longer stores message history as source-of-truth.
+    // Keep persisted metadata, but force in-memory message cache empty and rebuild from ledger views.
+    session.messages = [];
+    delete (session as Session & { _cachedView?: unknown })._cachedView;
     this.sessions.set(session.id, session);
     this.sessionFilePaths.set(session.id, filePath);
   }
@@ -275,7 +280,12 @@ export class SessionManager {
     }
 
     const filePath = this.getSessionPath(session);
-    fs.writeFileSync(filePath, JSON.stringify(session, null, 2));
+    const persistedSession: Session = {
+      ...session,
+      messages: [],
+    };
+    delete (persistedSession as Session & { _cachedView?: unknown })._cachedView;
+    fs.writeFileSync(filePath, JSON.stringify(persistedSession, null, 2));
 
     const previousPath = this.sessionFilePaths.get(session.id);
     if (previousPath && previousPath !== filePath && fs.existsSync(previousPath)) {
@@ -428,7 +438,7 @@ export class SessionManager {
   }
 
   private isEmptySession(session: Session): boolean {
-    return session.messages.length === 0 && session.activeWorkflows.length === 0;
+    return this.getLedgerMessageCountSync(session) === 0 && session.activeWorkflows.length === 0;
   }
 
   private findReusableEmptySession(projectPath: string): Session | null {
@@ -547,6 +557,8 @@ export class SessionManager {
       toolDurationMs?: number;
       toolInput?: unknown;
       toolOutput?: unknown;
+      tags?: string[];
+      topic?: string;
       metadata?: Record<string, unknown>;
     }
   ): Promise<SessionMessage | null> {
@@ -571,6 +583,19 @@ export class SessionManager {
     const baseLedgerMetadata = rawLedgerMetadata && typeof rawLedgerMetadata === 'object'
       ? (rawLedgerMetadata as Record<string, unknown>)
       : {};
+    const topLevelTags = Array.isArray(metadata?.tags)
+      ? metadata.tags.filter((item): item is string => typeof item === 'string' && item.trim().length > 0)
+      : [];
+    const topLevelTopic = typeof metadata?.topic === 'string' && metadata.topic.trim().length > 0
+      ? metadata.topic.trim()
+      : undefined;
+    const mergedLedgerMetadata: Record<string, unknown> = { ...baseLedgerMetadata };
+    if (!Array.isArray(mergedLedgerMetadata.tags) && topLevelTags.length > 0) {
+      mergedLedgerMetadata.tags = topLevelTags;
+    }
+    if (typeof mergedLedgerMetadata.topic !== 'string' && topLevelTopic) {
+      mergedLedgerMetadata.topic = topLevelTopic;
+    }
     const rawCodexAlignedContext = baseLedgerMetadata.codexAlignedContext;
     const baseCodexAlignedContext = rawCodexAlignedContext && typeof rawCodexAlignedContext === 'object'
       ? (rawCodexAlignedContext as Record<string, unknown>)
@@ -585,8 +610,34 @@ export class SessionManager {
       ...(messageType ? { message_type: messageType } : {}),
       ...(role === 'user' ? { user_input: content } : {}),
     };
+    // 默认对 user/assistant 文本写入做 tag/topic 推断（若调用方未显式提供）
+    if (role === 'user' || role === 'assistant') {
+      const hasTags = Array.isArray(mergedLedgerMetadata.tags)
+        && mergedLedgerMetadata.tags.some((item) => typeof item === 'string' && item.trim().length > 0);
+      const hasTopic = typeof mergedLedgerMetadata.topic === 'string'
+        && mergedLedgerMetadata.topic.trim().length > 0;
+      if (!hasTags || !hasTopic) {
+        const inferred = inferTagsAndTopic({
+          texts: [content],
+          seedTags: [
+            agentId,
+            role,
+            messageType ?? '',
+          ],
+          seedTopic: hasTopic ? String(mergedLedgerMetadata.topic) : undefined,
+          maxTags: 10,
+        });
+        if (!hasTags && inferred.tags) {
+          mergedLedgerMetadata.tags = inferred.tags;
+        }
+        if (!hasTopic && inferred.topic) {
+          mergedLedgerMetadata.topic = inferred.topic;
+        }
+      }
+    }
+
     const ledgerMetadata: Record<string, unknown> = {
-      ...baseLedgerMetadata,
+      ...mergedLedgerMetadata,
       codexAlignedContext,
       _fingerLedger: {
         schema: 'finger.session_message.v1',
@@ -609,12 +660,10 @@ export class SessionManager {
         },
       );
     } catch (err) {
-      // Log but do not fail - ledger write is best-effort during migration
-      clog.error('[SessionManager] Ledger write failed, falling back to session.messages:', err);
+      clog.error('[SessionManager] Ledger write failed, message append aborted:', err);
+      return null;
     }
 
-    // Keep session.messages in sync for backward compatibility
-    session.messages.push(message);
     session.lastAccessedAt = new Date().toISOString();
 
     // Update ledger pointers
@@ -632,16 +681,7 @@ export class SessionManager {
     const session = this.sessions.get(sessionId);
     if (!session) return [];
 
-    // Try Ledger as source of truth first
-    if (session.originalEndIndex > 0) {
-      return this.getMessagesFromLedger(session, limit);
-    }
-
-    // Fallback to session.messages for sessions not yet migrated to Ledger
-    if (!Number.isFinite(limit) || limit <= 0) {
-      return [...session.messages];
-    }
-    return session.messages.slice(-limit);
+    return this.getMessagesFromLedger(session, limit);
   }
 
   /**
@@ -655,15 +695,15 @@ export class SessionManager {
     const contextWindow = getContextWindow();
     const contextBuilder = loadContextBuilderSettings();
     const maxTokens = options?.maxTokens ?? contextWindow;
-    const latestUserPrompt = [...session.messages]
-      .reverse()
-      .find((item) => item.role === 'user' && typeof item.content === 'string' && item.content.trim().length > 0)
-      ?.content;
+    const latestUserPrompt = this.getLatestUserPromptFromLedgerSync(session, agentId);
 
     // Context Builder path (default enabled)
     if (contextBuilder.enabled) {
       try {
-        const targetBudget = Math.max(1, Math.floor(maxTokens * contextBuilder.budgetRatio));
+        const configuredBudget = Number.isFinite(contextBuilder.historyBudgetTokens) && contextBuilder.historyBudgetTokens > 0
+          ? Math.floor(contextBuilder.historyBudgetTokens)
+          : Math.floor(maxTokens * contextBuilder.budgetRatio);
+        const targetBudget = Math.max(1, Math.min(maxTokens, configuredBudget));
         const built = await buildContext(
           {
             rootDir,
@@ -675,7 +715,7 @@ export class SessionManager {
           {
             targetBudget,
             buildMode: contextBuilder.mode,
-            includeMemoryMd: contextBuilder.includeMemoryMd,
+            includeMemoryMd: false,
             timeWindow: {
               nowMs: Date.now(),
               halfLifeMs: contextBuilder.halfLifeMs,
@@ -687,20 +727,7 @@ export class SessionManager {
           },
         );
 
-        const memoryInjection = contextBuilder.includeMemoryMd
-          ? buildMemoryMdInjection(path.join(process.cwd(), 'MEMORY.md'))
-          : null;
-
         const mappedMessages: SessionViewMessage[] = [];
-        if (memoryInjection) {
-          mappedMessages.push({
-            role: 'system',
-            content: memoryInjection.content,
-            tokenCount: memoryInjection.tokenCount,
-            timestamp: new Date().toISOString(),
-            messageId: `memory-md-${Date.now()}`,
-          });
-        }
 
         for (const msg of built.messages) {
           mappedMessages.push({
@@ -709,6 +736,7 @@ export class SessionManager {
             tokenCount: msg.tokenCount,
             messageId: msg.id,
             timestamp: msg.timestampIso,
+            metadata: msg.contextZone ? { contextZone: msg.contextZone } : undefined,
           });
         }
 
@@ -748,12 +776,7 @@ export class SessionManager {
       return this.viewMessagesToSessionMessages(msgs.slice(-limit));
     }
 
-    // Synchronous fallback: return from session.messages (kept in sync by addMessage)
-    // Callers needing fresh Ledger data should use getMessagesAsync()
-    if (!Number.isFinite(limit) || limit <= 0) {
-      return [...session.messages];
-    }
-    return session.messages.slice(-limit);
+    return this.readLedgerSessionMessagesSync(session, limit);
   }
 
   /**
@@ -784,41 +807,18 @@ export class SessionManager {
   }
 
   updateMessage(sessionId: string, messageId: string, content: string): SessionMessage | null {
-    const session = this.sessions.get(sessionId);
-    if (!session) return null;
-
-    const normalized = content.trim();
-    if (normalized.length === 0) {
-      throw new Error('Message content cannot be empty');
-    }
-
-    const index = session.messages.findIndex((item) => item.id === messageId);
-    if (index < 0) return null;
-
-    const updated: SessionMessage = {
-      ...session.messages[index],
-      content: normalized,
-      timestamp: new Date().toISOString(),
-    };
-    session.messages[index] = updated;
-    session.lastAccessedAt = new Date().toISOString();
-    this.saveSession(session);
-    return updated;
+    void sessionId;
+    void messageId;
+    void content;
+    log.warn('[SessionManager] updateMessage skipped: ledger-only mode does not support in-place history mutation');
+    return null;
   }
 
   deleteMessage(sessionId: string, messageId: string): boolean {
-    const session = this.sessions.get(sessionId);
-    if (!session) return false;
-
-    const next = session.messages.filter((item) => item.id !== messageId);
-    if (next.length === session.messages.length) {
-      return false;
-    }
-
-    session.messages = next;
-    session.lastAccessedAt = new Date().toISOString();
-    this.saveSession(session);
-    return true;
+    void sessionId;
+    void messageId;
+    log.warn('[SessionManager] deleteMessage skipped: ledger-only mode does not support in-place history deletion');
+    return false;
   }
 
   /**
@@ -830,7 +830,7 @@ export class SessionManager {
 
     const compressed = session.context.compressedHistory as { summary?: string } | undefined;
     return {
-      messages: session.messages,
+      messages: this.getMessages(sessionId, 0),
       compressedSummary: compressed?.summary,
     };
   }
@@ -1014,5 +1014,104 @@ export class SessionManager {
     session.lastAccessedAt = new Date().toISOString();
     this.saveSession(session);
     return session;
+  }
+
+  getSessionMessageSnapshot(
+    sessionId: string,
+    previewLimit = 3,
+  ): {
+    messageCount: number;
+    previewMessages: SessionMessage[];
+    lastMessageAt?: string;
+  } {
+    const session = this.sessions.get(sessionId);
+    if (!session) {
+      return {
+        messageCount: 0,
+        previewMessages: [],
+      };
+    }
+    const allMessages = this.readLedgerSessionMessagesSync(session, 0);
+    const previewMessages = previewLimit > 0 ? allMessages.slice(-previewLimit) : [];
+    const lastMessageAt = previewMessages.length > 0 ? previewMessages[previewMessages.length - 1].timestamp : undefined;
+    return {
+      messageCount: allMessages.length,
+      previewMessages,
+      ...(lastMessageAt ? { lastMessageAt } : {}),
+    };
+  }
+
+  private getLatestUserPromptFromLedgerSync(session: Session, agentId: string): string | undefined {
+    const messages = this.readLedgerSessionMessagesSync(session, 0, agentId);
+    for (let index = messages.length - 1; index >= 0; index -= 1) {
+      const message = messages[index];
+      if (message.role === 'user' && typeof message.content === 'string' && message.content.trim().length > 0) {
+        return message.content;
+      }
+    }
+    return undefined;
+  }
+
+  private getLedgerMessageCountSync(session: Session): number {
+    return this.readLedgerSessionMessagesSync(session, 0).length;
+  }
+
+  private readLedgerSessionMessagesSync(
+    session: Session,
+    limit: number,
+    explicitAgentId?: string,
+  ): SessionMessage[] {
+    const context = session.context ?? {};
+    const agentId = explicitAgentId
+      ?? (typeof context.ownerAgentId === 'string' && context.ownerAgentId.trim().length > 0
+        ? context.ownerAgentId
+        : SYSTEM_AGENT_ID);
+    const rootDir = this.resolveSessionsRoot(session);
+    const ledgerPath = path.join(rootDir, session.id, agentId, 'main', 'context-ledger.jsonl');
+    if (!fs.existsSync(ledgerPath)) return [];
+
+    try {
+      const lines = fs.readFileSync(ledgerPath, 'utf-8')
+        .split('\n')
+        .map((line) => line.trim())
+        .filter((line) => line.length > 0);
+      const parsed = lines
+        .flatMap((line) => {
+          try {
+            return [JSON.parse(line) as Record<string, unknown>];
+          } catch {
+            return [];
+          }
+        })
+        .filter((entry) => entry.event_type === 'session_message')
+        .map((entry) => {
+          const payload = typeof entry.payload === 'object' && entry.payload !== null
+            ? entry.payload as Record<string, unknown>
+            : {};
+          const role = typeof payload.role === 'string'
+            ? payload.role as SessionMessage['role']
+            : 'user';
+          const content = typeof payload.content === 'string' ? payload.content : '';
+          const timestamp = typeof entry.timestamp_iso === 'string'
+            ? entry.timestamp_iso
+            : new Date().toISOString();
+          const messageId = typeof payload.message_id === 'string'
+            ? payload.message_id
+            : (typeof entry.id === 'string' ? entry.id : `ledger-${Date.now()}`);
+          return {
+            id: messageId,
+            role,
+            content,
+            timestamp,
+            ...(Array.isArray(payload.attachments) ? { attachments: payload.attachments as Attachment[] } : {}),
+            ...(typeof payload.metadata === 'object' && payload.metadata !== null ? { metadata: payload.metadata as Record<string, unknown> } : {}),
+          } as SessionMessage;
+        });
+      if (!Number.isFinite(limit) || limit <= 0) return parsed;
+      return parsed.slice(-limit);
+    } catch (error) {
+      clog.error('[SessionManager] Failed to read ledger messages sync:', error);
+      return [];
+    }
   }
 }

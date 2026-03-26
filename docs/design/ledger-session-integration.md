@@ -6,6 +6,7 @@
 >
 > 相关场景文档：
 > - `docs/design/system-project-ledger-lifecycle.md`（System ↔ Project 派发/回传/mailbox 生命周期）
+> - `docs/design/ledger-only-dynamic-session-views.md`（Ledger-only persistence + dynamic session views 新收敛方向）
 
 ## 1. 核心原则
 

@@ -11,6 +11,7 @@ interface ContextMonitorMessage {
   content: string;
   timestampIso: string;
   tokenCount: number;
+  contextZone?: 'working_set' | 'historical_memory';
 }
 
 interface ContextMonitorEvent {
@@ -73,6 +74,7 @@ interface ContextMonitorResponse {
   updatedAt: string;
   contextBuilder: {
     enabled: boolean;
+    historyBudgetTokens?: number;
     budgetRatio: number;
     targetBudget: number;
     historyOnly?: boolean;
@@ -94,6 +96,14 @@ interface ContextMonitorResponse {
       rawTaskBlockCount: number;
       timeWindowFilteredCount: number;
       budgetTruncatedCount: number;
+      budgetTruncatedTasks?: Array<{
+        id: string;
+        tokenCount: number;
+        startTimeIso: string;
+        topic?: string;
+        tags?: string[];
+        summary?: string;
+      }>;
       targetBudget: number;
       actualTokens: number;
       buildMode?: string;
@@ -101,6 +111,12 @@ interface ContextMonitorResponse {
       supplementedCount?: number;
       removedTokens?: number;
       supplementedTokens?: number;
+      workingSetTaskBlockCount?: number;
+      historicalTaskBlockCount?: number;
+      workingSetMessageCount?: number;
+      historicalMessageCount?: number;
+      workingSetTokens?: number;
+      historicalTokens?: number;
     };
     messages: Array<{
       id: string;
@@ -108,6 +124,7 @@ interface ContextMonitorResponse {
       content: string;
       timestampIso: string;
       tokenCount: number;
+      contextZone?: 'working_set' | 'historical_memory';
     }>;
   };
   slotWindow: {
@@ -143,6 +160,12 @@ function roleLabel(role: string): string {
   if (role === 'system') return '系统';
   if (role === 'orchestrator') return '编排';
   return role || '未知';
+}
+
+function contextZoneLabel(zone?: 'working_set' | 'historical_memory'): string {
+  if (zone === 'working_set') return '工作集';
+  if (zone === 'historical_memory') return '历史';
+  return '未分区';
 }
 
 function eventLabel(eventType: string): string {
@@ -643,6 +666,9 @@ export const ContextMonitor: React.FC<ContextMonitorProps> = ({
           <span>session: {sessionId || '—'}</span>
           <span>rounds: {sortedRounds.length}</span>
           {data?.contextBuild?.ok && <span>ctx: {data.contextBuild.totalTokens || 0} tok</span>}
+          {data?.contextBuilder?.historyBudgetTokens != null && (
+            <span>histBudget:{data.contextBuilder.historyBudgetTokens}</span>
+          )}
           {data?.contextBuilder?.historyOnly !== false && <span>history-only</span>}
           {data?.contextBuilder?.enableModelRanking && typeof data.contextBuilder.enableModelRanking === 'string' && (
             <span className="context-ranking-badge" title="dryrun 模式：排序已执行但未重排上下文">
@@ -665,6 +691,19 @@ export const ContextMonitor: React.FC<ContextMonitorProps> = ({
           )}
           {data?.contextBuild?.metadata?.supplementedCount != null && data.contextBuild.metadata.supplementedCount > 0 && (
             <span title="补充的历史 task">+{data.contextBuild.metadata.supplementedCount}</span>
+          )}
+          {data?.contextBuild?.metadata?.budgetTruncatedCount != null && data.contextBuild.metadata.budgetTruncatedCount > 0 && (
+            <span title="因预算被截断的 task">cut:{data.contextBuild.metadata.budgetTruncatedCount}</span>
+          )}
+          {data?.contextBuild?.metadata?.workingSetMessageCount != null && (
+            <span title="本轮推理区消息数">
+              ws:{data.contextBuild.metadata.workingSetMessageCount}/{data.contextBuild.metadata.workingSetTokens ?? 0}tok
+            </span>
+          )}
+          {data?.contextBuild?.metadata?.historicalMessageCount != null && (
+            <span title="历史记忆区消息数">
+              hist:{data.contextBuild.metadata.historicalMessageCount}/{data.contextBuild.metadata.historicalTokens ?? 0}tok
+            </span>
           )}
           <span>{liveUpdatesEnabled ? 'live:on' : 'live:off'}</span>
           <span>{loading ? '刷新中…' : `更新 ${data?.updatedAt ? formatTimestamp(data.updatedAt) : '--:--:--'}`}</span>
@@ -722,6 +761,22 @@ export const ContextMonitor: React.FC<ContextMonitorProps> = ({
             </span>
             <span className="context-key-hint">快捷键：←/→ 或 [/]</span>
           </div>
+          {Array.isArray(data?.contextBuild?.metadata?.budgetTruncatedTasks)
+            && data.contextBuild.metadata.budgetTruncatedTasks.length > 0 && (
+            <div className="context-insight-line">
+              预算截断：
+              {data.contextBuild.metadata.budgetTruncatedTasks.slice(0, 3).map((task) => (
+                <span key={task.id} style={{ marginLeft: 8 }}>
+                  [{task.id} · {task.tokenCount}tok]
+                </span>
+              ))}
+              {data.contextBuild.metadata.budgetTruncatedTasks.length > 3 && (
+                <span style={{ marginLeft: 8 }}>
+                  +{data.contextBuild.metadata.budgetTruncatedTasks.length - 3}
+                </span>
+              )}
+            </div>
+          )}
           <div className="context-insight-diff">
             <span className="diff-added">+{comparisonDiff.added.length}</span>
             <span className="diff-removed">-{comparisonDiff.removed.length}</span>
@@ -847,6 +902,9 @@ export const ContextMonitor: React.FC<ContextMonitorProps> = ({
                   title="点击查看完整内容"
                 >
                   <span className="context-message-role">{roleLabel(message.role)}</span>
+                  <span className={`context-message-slot ${message.contextZone === 'working_set' ? 'zone-working' : 'zone-history'}`}>
+                    {contextZoneLabel(message.contextZone)}
+                  </span>
                   <span className="context-message-slot">{typeof message.slot === 'number' ? `#${message.slot}` : '#-'}</span>
                   <span className="context-message-preview">{shorten(message.content, 120)}</span>
                 </button>

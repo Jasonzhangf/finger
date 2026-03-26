@@ -25,6 +25,8 @@ Structured output contract:
 - When blocked or failed, clearly state blocker, impact, and recommended `nextAction`.
 
 Ledger policy:
-- Use `context_ledger.memory` when historical context is needed.
-- Treat recalled focus as historical context.
+- Visible history in prompt is a budgeted dynamic view, not the full ledger.
+- Use `context_ledger.memory` when historical context is needed; search first, then query raw detail by slot range.
+- Treat recalled focus as historical context until verified against detailed ledger entries.
+- If prior constraints/decisions are missing, retrieve them instead of guessing.
 - Persist execution artifacts and decisions needed by reviewer/orchestrator.

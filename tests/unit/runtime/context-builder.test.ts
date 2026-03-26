@@ -227,6 +227,39 @@ describe('context-builder', () => {
     });
   });
 
+  describe('working set vs historical memory zone', () => {
+    it('marks current task as working set and older tasks as historical memory', async () => {
+      const setup = setupLedgerForContextBuilder('zones');
+      try {
+        const result = await buildContext(
+          { rootDir: setup.rootDir, sessionId: setup.sessionId, agentId: setup.agentId, mode: setup.mode },
+          {
+            targetBudget: 1_000_000,
+            includeMemoryMd: false,
+            buildMode: 'aggressive',
+          },
+        );
+
+        expect(result.metadata.workingSetTaskBlockCount).toBe(1);
+        expect(result.metadata.historicalTaskBlockCount).toBe(2);
+        expect(result.metadata.workingSetMessageCount).toBe(2);
+        expect(result.metadata.historicalMessageCount).toBe(4);
+
+        const currentZoneMessages = result.messages.filter((m) => m.contextZone === 'working_set');
+        const historicalZoneMessages = result.messages.filter((m) => m.contextZone === 'historical_memory');
+
+        expect(currentZoneMessages).toHaveLength(2);
+        expect(historicalZoneMessages).toHaveLength(4);
+        expect(currentZoneMessages.map((m) => m.content)).toEqual([
+          'Run the build now',
+          'Running the build.',
+        ]);
+      } finally {
+        rmSync(setup.rootDir, { recursive: true, force: true });
+      }
+    });
+  });
+
   describe('MEMORY.md injection', () => {
     it('returns null when MEMORY.md does not exist', () => {
       // Since cwd has MEMORY.md in this project, we test with an explicit nonexistent

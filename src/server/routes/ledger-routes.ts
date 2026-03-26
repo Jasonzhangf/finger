@@ -279,8 +279,6 @@ function summarizeLedgerSessionDir(dirPath: string): {
       : undefined;
     const rootSessionId = typeof context.rootSessionId === 'string' ? context.rootSessionId : undefined;
     const parentSessionId = typeof context.parentSessionId === 'string' ? context.parentSessionId : undefined;
-    const metadataMessageCount = Array.isArray(metadata?.messages) ? metadata.messages.length : undefined;
-
     if (ledgerEntries.length === 0) {
       if (!metadata) return null;
       const fallbackProjectPath = typeof metadata.projectPath === 'string'
@@ -294,7 +292,7 @@ function summarizeLedgerSessionDir(dirPath: string): {
         id: sessionId,
         name: typeof metadata.name === 'string' ? metadata.name : sessionId,
         projectPath: fallbackProjectPath,
-        messageCount: typeof metadataMessageCount === 'number' ? metadataMessageCount : 0,
+        messageCount: 0,
         totalTokens: fallbackTotalTokens,
         lastAccessedAt: fallbackLastAccessedAt,
         ...(sessionTier ? { sessionTier } : {}),
@@ -325,7 +323,7 @@ function summarizeLedgerSessionDir(dirPath: string): {
       id: sessionId,
       name: typeof metadata?.name === 'string' ? metadata.name : sessionId,
       projectPath,
-      messageCount: typeof metadataMessageCount === 'number' ? metadataMessageCount : messages.length,
+      messageCount: messages.length,
       totalTokens,
       lastAccessedAt: String(last?.timestamp_iso || new Date(stat.mtimeMs).toISOString()),
       ...(sessionTier ? { sessionTier } : {}),
@@ -438,6 +436,7 @@ interface ContextMonitorRound {
     content: string;
     timestampIso: string;
     tokenCount: number;
+    contextZone?: 'working_set' | 'historical_memory';
   }>;
   events: ContextMonitorSlotEntry[];
 }
@@ -711,7 +710,11 @@ export function registerLedgerRoutes(app: Express, deps: LedgerRouteDeps): void 
 
       const contextBuilderSettings = loadContextBuilderSettings();
       const contextWindow = getContextWindow();
-      const targetBudget = Math.max(1, Math.floor(contextWindow * contextBuilderSettings.budgetRatio));
+      const configuredBudget = Number.isFinite(contextBuilderSettings.historyBudgetTokens)
+        && contextBuilderSettings.historyBudgetTokens > 0
+        ? Math.floor(contextBuilderSettings.historyBudgetTokens)
+        : Math.floor(contextWindow * contextBuilderSettings.budgetRatio);
+      const targetBudget = Math.max(1, Math.min(contextWindow, configuredBudget));
       const nowMs = Date.now();
 
       let contextBuild:
@@ -726,8 +729,24 @@ export function registerLedgerRoutes(app: Express, deps: LedgerRouteDeps): void 
             rawTaskBlockCount: number;
             timeWindowFilteredCount: number;
             budgetTruncatedCount: number;
+            budgetTruncatedTasks?: Array<{
+              id: string;
+              tokenCount: number;
+              startTimeIso: string;
+              topic?: string;
+              tags?: string[];
+              summary?: string;
+            }>;
             targetBudget: number;
             actualTokens: number;
+            workingSetTaskBlockCount?: number;
+            historicalTaskBlockCount?: number;
+            workingSetMessageCount?: number;
+            historicalMessageCount?: number;
+            workingSetTokens?: number;
+            historicalTokens?: number;
+            workingSetBlockIds?: string[];
+            historicalBlockIds?: string[];
           };
           messages: Array<{
             id: string;
@@ -735,6 +754,7 @@ export function registerLedgerRoutes(app: Express, deps: LedgerRouteDeps): void 
             content: string;
             timestampIso: string;
             tokenCount: number;
+            contextZone?: 'working_set' | 'historical_memory';
           }>;
         }
         | {
@@ -759,7 +779,7 @@ export function registerLedgerRoutes(app: Express, deps: LedgerRouteDeps): void 
           {
             targetBudget,
             buildMode: contextBuilderSettings.mode,
-            includeMemoryMd: contextBuilderSettings.includeMemoryMd,
+            includeMemoryMd: false,
             timeWindow: {
               nowMs,
               halfLifeMs: contextBuilderSettings.halfLifeMs,
@@ -785,6 +805,7 @@ export function registerLedgerRoutes(app: Express, deps: LedgerRouteDeps): void 
             content: message.content,
             timestampIso: message.timestampIso,
             tokenCount: message.tokenCount,
+            ...(message.contextZone ? { contextZone: message.contextZone } : {}),
           })),
         };
       } catch (error) {
@@ -818,6 +839,7 @@ export function registerLedgerRoutes(app: Express, deps: LedgerRouteDeps): void 
           content: message.content,
           timestampIso: message.timestampIso,
           tokenCount: message.tokenCount,
+          ...(typeof message.contextZone === 'string' ? { contextZone: message.contextZone } : {}),
         });
       }
 
@@ -829,11 +851,12 @@ export function registerLedgerRoutes(app: Express, deps: LedgerRouteDeps): void 
         updatedAt: new Date().toISOString(),
         contextBuilder: {
           enabled: contextBuilderSettings.enabled,
+          historyBudgetTokens: contextBuilderSettings.historyBudgetTokens,
           budgetRatio: contextBuilderSettings.budgetRatio,
           targetBudget,
           historyOnly: true,
           halfLifeMs: contextBuilderSettings.halfLifeMs,
-          includeMemoryMd: contextBuilderSettings.includeMemoryMd,
+          includeMemoryMd: false,
           enableModelRanking: contextBuilderSettings.enableModelRanking,
           rankingProviderId: contextBuilderSettings.rankingProviderId,
           mode: contextBuilderSettings.mode,

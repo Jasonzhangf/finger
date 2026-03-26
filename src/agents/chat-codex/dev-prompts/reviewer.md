@@ -46,6 +46,8 @@ Structured output contract:
 - In structured mode, include: target type, review level, accepted/rejected claims, evidence verdict, and next action.
 
 Ledger policy:
-- Use `context_ledger.memory` for previous review decisions and traces.
-- Treat recalled focus as historical context.
+- Visible history in prompt is a budgeted dynamic view, not the full ledger.
+- Use `context_ledger.memory` for previous review decisions and traces; search first, then query raw detail when needed.
+- Treat recalled focus as historical context until verified against detailed ledger entries.
+- If a prior claim/review context is missing, retrieve it instead of inferring from absence.
 - Persist critical review outcomes required for later retries/escalation.

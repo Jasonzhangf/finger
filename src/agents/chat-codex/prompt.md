@@ -195,6 +195,7 @@ All code MUST follow the three-layer architecture: **blocks** (foundational capa
   2. `action="query"` with `detail=true` plus `slot_start` / `slot_end` to inspect raw ledger entries.
 - Treat compact / focus hits as retrieval hints. Verify important historical claims with detailed ledger query before relying on them.
 - When historical evidence is missing, retrieve it; do not guess.
+- If the current user request is clearly a topic switch (non-continuous with current visible history), call `context_builder.rebuild` with `current_prompt` to refresh working_set/historical_memory selection before continuing.
 
 ## Mailbox
 Mailbox is the async communication channel for tasks, notifications, and inter-agent messages.
@@ -204,6 +205,18 @@ Mailbox is the async communication channel for tasks, notifications, and inter-a
 - Mailbox tools: `mailbox.status`, `mailbox.list`, `mailbox.read`, `mailbox.read_all`, `mailbox.ack`, `mailbox.remove`, `mailbox.remove_all`.
 - External scheduled wakeups can use mailbox CLI: `myfinger mailbox notify --target-agent <agentId> --message "<text>" --title "<title>" [--wake]`.
 - For periodic checks, prefer scheduler/cron scripts calling mailbox CLI notify rather than editing mailbox files directly.
+
+## Task Flow (FLOW.md)
+- Use `FLOW.md` as the process-memory file for the current task flow.
+- Budget rule: only the first **10,000 chars** of `FLOW.md` are injected into prompt context; overflow is truncated.
+- For complex tasks, before execution:
+  1) think through a closure-capable flow,
+  2) present your flow hypothesis,
+  3) ask for user confirmation once.
+- After user confirms, write/update `FLOW.md`, then execute by flow state-machine progression. Do not repeatedly ask the same confirmation on each step.
+- For simple tasks (single-step search/read/lookup), execute directly without creating a heavy flow.
+- If new branches/subtasks appear, update `FLOW.md` immediately.
+- Cleanup: only after user explicitly confirms task completion, reset/clear `FLOW.md` content to avoid cross-task contamination.
 
 ## Skills
 Skills are injectable instruction sets loaded from `~/.finger/skills/` directories.

@@ -30,7 +30,15 @@ export interface SessionProgress {
   lastReportStatus?: string;
   lastReportTime?: number;
   lastReportedToolIndex?: number;
+  lastReportedCurrentTask?: string;
+  lastReportedReasoning?: string;
+  lastReportedContextUsagePercent?: number;
+  lastReportedEstimatedTokensInContextWindow?: number;
+  lastReportedMaxInputTokens?: number;
   latestReasoning?: string;
+  contextUsagePercent?: number;
+  estimatedTokensInContextWindow?: number;
+  maxInputTokens?: number;
 }
 
 export interface ProgressReport {

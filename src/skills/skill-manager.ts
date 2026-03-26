@@ -5,7 +5,7 @@
  */
 
 import { promises as fs } from 'fs';
-import { existsSync, readFileSync, readdirSync, watch, type FSWatcher } from 'fs';
+import { existsSync, mkdirSync, readFileSync, readdirSync, watch, type FSWatcher } from 'fs';
 import path from 'path';
 import { logger } from '../core/logger.js';
 import { FINGER_PATHS } from '../core/finger-paths.js';
@@ -17,6 +17,15 @@ export interface SkillMetadata {
   description: string;
   path: string;
   exists: boolean;
+}
+
+export interface SkillsManagerStatus {
+  skillsDir: string;
+  watcherActive: boolean;
+  cacheSize: number;
+  cachedSkillNames: string[];
+  lastReloadAt?: string;
+  lastReloadReason?: string;
 }
 
 function parseSkillMetadataFromContent(content: string, fallbackName: string): SkillMetadata {
@@ -59,6 +68,9 @@ export class SkillsManager {
   private skillsDir: string;
   private skillsCache: Map<string, SkillMetadata>;
   private watcher: FSWatcher | null = null;
+  private reloadTimer: NodeJS.Timeout | null = null;
+  private lastReloadAt: string | null = null;
+  private lastReloadReason: string | null = null;
 
   constructor() {
     this.skillsDir = path.join(FINGER_PATHS.home, 'skills');
@@ -74,18 +86,18 @@ export class SkillsManager {
     try {
       if (!existsSync(this.skillsDir)) {
         log.info(`[SkillsManager] Skills directory does not exist, creating: ${this.skillsDir}`);
-        fs.mkdir(this.skillsDir, { recursive: true }).catch(err => {
-          log.warn('[SkillsManager] Failed to create skills directory:', err);
-        });
+        mkdirSync(this.skillsDir, { recursive: true });
       }
 
       this.watcher = watch(this.skillsDir, { recursive: true }, (eventType, filename) => {
-        if (filename && filename.endsWith('SKILL.md')) {
-          log.info(`[SkillsManager] Skills changed: ${filename}, reloading cache`);
-          this.listSkills().catch(err => {
-            log.warn('[SkillsManager] Failed to reload cache after change:', err);
-          });
-        }
+        const normalized = typeof filename === 'string' ? filename.replace(/\\/g, '/') : '';
+        const shouldReload = normalized.length === 0
+          || normalized.endsWith('SKILL.md')
+          || normalized.endsWith('.md')
+          || !normalized.includes('.');
+        if (!shouldReload) return;
+
+        this.scheduleReload(`${eventType}:${normalized || '(unknown)'}`);
       });
 
       log.info(`[SkillsManager] Watching skills directory: ${this.skillsDir}`);
@@ -134,6 +146,7 @@ export class SkillsManager {
       for (const skill of skills) {
         this.skillsCache.set(skill.name, skill);
       }
+      this.markReload('listSkills');
 
       return skills;
     } catch (error) {
@@ -184,10 +197,21 @@ export class SkillsManager {
    * Returns empty array if cache is not initialized
    */
   listSkillsSync(): SkillMetadata[] {
-    if (this.skillsCache.size === 0) {
-      this.loadSkillsFromDiskSync();
-    }
+    // Always refresh from disk so newly installed skills are visible
+    // on the very next turn even if fs.watch missed the install event.
+    this.loadSkillsFromDiskSync();
     return Array.from(this.skillsCache.values());
+  }
+
+  getStatus(): SkillsManagerStatus {
+    return {
+      skillsDir: this.skillsDir,
+      watcherActive: this.watcher !== null,
+      cacheSize: this.skillsCache.size,
+      cachedSkillNames: Array.from(this.skillsCache.keys()).sort(),
+      ...(this.lastReloadAt ? { lastReloadAt: this.lastReloadAt } : {}),
+      ...(this.lastReloadReason ? { lastReloadReason: this.lastReloadReason } : {}),
+    };
   }
 
   /**
@@ -199,6 +223,29 @@ export class SkillsManager {
       this.watcher = null;
       log.info('[SkillsManager] Stopped watching skills directory');
     }
+    if (this.reloadTimer) {
+      clearTimeout(this.reloadTimer);
+      this.reloadTimer = null;
+    }
+  }
+
+  private scheduleReload(reason: string): void {
+    if (this.reloadTimer) {
+      clearTimeout(this.reloadTimer);
+    }
+    this.reloadTimer = setTimeout(() => {
+      this.reloadTimer = null;
+      log.info(`[SkillsManager] Skills changed (${reason}), reloading cache`);
+      this.lastReloadReason = reason;
+      this.listSkills().catch(err => {
+        log.warn('[SkillsManager] Failed to reload cache after change:', err);
+      });
+    }, 100);
+  }
+
+  private markReload(reason: string): void {
+    this.lastReloadAt = new Date().toISOString();
+    this.lastReloadReason = reason;
   }
 
   private loadSkillsFromDiskSync(): void {
@@ -238,10 +285,20 @@ export class SkillsManager {
       for (const skill of skills) {
         this.skillsCache.set(skill.name, skill);
       }
+      this.markReload('loadSkillsFromDiskSync');
     } catch (error) {
       log.error('[SkillsManager] Failed to load skills sync:', error instanceof Error ? error : new Error(String(error)));
     }
   }
+}
+
+let globalSkillsManager: SkillsManager | null = null;
+
+export function getGlobalSkillsManager(): SkillsManager {
+  if (!globalSkillsManager) {
+    globalSkillsManager = new SkillsManager();
+  }
+  return globalSkillsManager;
 }
 
 export default SkillsManager;

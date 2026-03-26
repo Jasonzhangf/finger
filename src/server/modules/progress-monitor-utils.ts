@@ -71,7 +71,7 @@ export function classifyToolCall(toolName: string, input?: unknown): ToolCategor
 
   if (['apply_patch', 'write_stdin'].includes(toolName)) return '读写';
 
-  if (/^(agent\.|context_ledger|memsearch|update_plan|clock\.|user\.|bd\b)/.test(toolName)) return '工具';
+  if (/^(agent\.|context_ledger|context_builder|memsearch|update_plan|clock\.|user\.|bd\b)/.test(toolName)) return '工具';
 
   return '其他';
 }
@@ -85,15 +85,26 @@ export function extractTargetFile(toolName: string, input?: unknown): string {
   if (Object.keys(obj).length === 0) return '';
 
   if (toolName === 'apply_patch' && obj.patch) {
-    const m = String(obj.patch).match(/^--- a\/(\S+)/m);
+    const patchStr = String(obj.patch);
+    // Try apply_patch format first: *** Update File: path
+    const updateFileMatch = patchStr.match(/^\*{3}\s+Update\s+File:\s*(\S+)/m);
+    if (updateFileMatch) return updateFileMatch[1];
+    // Try unified diff format: --- a/path
+    const m = patchStr.match(/^--- a\/(\S+)/m);
     return m ? m[1] : '';
   }
 
   if ('cmd' in obj || 'command' in obj) {
     const cmd = extractExecLikeCommand(obj);
-    const m = cmd.match(/\s+([\w./~][\w./\-]+\.\w{1,6})/);
-    return m ? m[1] : '';
+    if (!cmd) return '';
+    // Match paths starting with ~ / . followed by file tokens
+    const pathMatch = cmd.match(/(?:^|[\s|;])([~./][\w./@\-]*[\w./\-])(?:[\s|;]|$)/);
+    if (pathMatch) return pathMatch[1];
+    // Fallback: any token with a file extension
+    const extMatch = cmd.match(/([\w./~][\w./\-]+\.[\w]{1,6})/);
+    return extMatch ? extMatch[0] : '';
   }
+
 
   if ('path' in obj && typeof obj.path === 'string') {
     return obj.path;
@@ -118,6 +129,18 @@ export interface SessionProgressData {
     success?: boolean;
   }>;
   latestReasoning?: string;
+  contextUsagePercent?: number;
+  estimatedTokensInContextWindow?: number;
+  maxInputTokens?: number;
+}
+
+function formatTokenCount(value: number): string {
+  if (!Number.isFinite(value) || value < 0) return String(value);
+  if (value >= 1000) {
+    const compact = (value / 1000).toFixed(value >= 100000 ? 0 : 1);
+    return `${compact.replace(/\.0$/, '')}k`;
+  }
+  return String(Math.floor(value));
 }
 
 /**
@@ -156,6 +179,33 @@ export function buildCompactSummary(
 
   if (includeReasoning && p.latestReasoning) {
     lines.push(`💭 ${p.latestReasoning}`);
+  }
+
+  if (
+    typeof p.contextUsagePercent === 'number'
+    || typeof p.estimatedTokensInContextWindow === 'number'
+    || typeof p.maxInputTokens === 'number'
+  ) {
+    const usagePercent = typeof p.contextUsagePercent === 'number'
+      ? Math.max(0, Math.floor(p.contextUsagePercent))
+      : undefined;
+    const estimated = typeof p.estimatedTokensInContextWindow === 'number'
+      ? Math.max(0, Math.floor(p.estimatedTokensInContextWindow))
+      : undefined;
+    const maxInput = typeof p.maxInputTokens === 'number'
+      ? Math.max(0, Math.floor(p.maxInputTokens))
+      : undefined;
+
+    if (estimated !== undefined && maxInput !== undefined) {
+      const percent = usagePercent !== undefined
+        ? usagePercent
+        : Math.max(0, Math.floor((estimated / Math.max(1, maxInput)) * 100));
+      lines.push(`🧠 上下文: ${formatTokenCount(estimated)}/${formatTokenCount(maxInput)} (${percent}%)`);
+    } else if (usagePercent !== undefined) {
+      lines.push(`🧠 上下文: ${usagePercent}%`);
+    } else if (estimated !== undefined) {
+      lines.push(`🧠 上下文: ~${formatTokenCount(estimated)} tokens`);
+    }
   }
 
   if (recentTools.length > 0) {
@@ -305,5 +355,5 @@ export function buildReportKey(
     .slice(-3)
     .map(t => `${t.toolName}:${classifyToolCall(t.toolName, t.params)}:${extractTargetFile(t.toolName, t.params)}:${t.success ?? ''}`)
     .join('|');
-  return `${p.status}|${p.currentTask ?? ''}|${latestStepSummary ?? ''}|${recentTools}|${p.latestReasoning ?? ''}`;
+  return `${p.status}|${p.currentTask ?? ''}|${latestStepSummary ?? ''}|${recentTools}|${p.latestReasoning ?? ''}|${p.contextUsagePercent ?? ''}|${p.estimatedTokensInContextWindow ?? ''}|${p.maxInputTokens ?? ''}`;
 }

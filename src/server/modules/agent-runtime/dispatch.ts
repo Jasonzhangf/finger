@@ -3,6 +3,7 @@ import { isObjectRecord } from '../../common/object.js';
 import { asString, firstNonEmptyString } from '../../common/strings.js';
 import { getGlobalDispatchTracker } from './dispatch-tracker.js';
 import { sanitizeDispatchResult, type DispatchSummaryResult } from '../../../common/agent-dispatch.js';
+import { inferTagsAndTopic } from '../../../common/tag-topic-inference.js';
 import type { AgentDispatchRequest, AgentRuntimeDeps } from './types.js';
 import { SYSTEM_AGENT_CONFIG } from '../../../agents/finger-system-agent/index.js';
 import { promises as fs } from 'fs';
@@ -32,6 +33,40 @@ function formatDispatchTaskContent(task: unknown): string {
   } catch {
     return String(task);
   }
+}
+
+function enrichDispatchTagsAndTopic(
+  result: DispatchSummaryResult,
+  params: {
+    task: unknown;
+    targetAgentId: string;
+    sourceAgentId?: string;
+  },
+): DispatchSummaryResult {
+  const inferred = inferTagsAndTopic({
+    texts: [
+      formatDispatchTaskContent(params.task),
+      result.summary,
+      result.error,
+      result.nextAction,
+      result.status,
+    ],
+    seedTags: [
+      params.targetAgentId,
+      params.sourceAgentId ?? '',
+      result.success ? 'completed' : 'failed',
+      'dispatch',
+      ...(result.tags ?? []),
+    ],
+    seedTopic: result.topic,
+    maxTags: 10,
+  });
+
+  return {
+    ...result,
+    ...(inferred.tags ? { tags: inferred.tags } : {}),
+    ...(inferred.topic ? { topic: inferred.topic } : {}),
+  };
 }
 
 function resolveDispatchSessionStrategy(input: AgentDispatchRequest): NonNullable<AgentDispatchRequest['sessionStrategy']> {
@@ -482,6 +517,11 @@ export async function dispatchTaskToAgent(deps: AgentRuntimeDeps, input: AgentDi
   }
   if (result.result !== undefined) {
     result.result = sanitizeDispatchResult(result.result);
+    result.result = enrichDispatchTagsAndTopic(result.result, {
+      task: normalizedInput.task,
+      targetAgentId: normalizedInput.targetAgentId,
+      sourceAgentId: normalizedInput.sourceAgentId,
+    });
   }
   // Always record result to memory (success or failure)
   const summaryForMemory = result.result?.summary || result.error || undefined;

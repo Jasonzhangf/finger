@@ -369,6 +369,9 @@ const progressMonitor = new ProgressMonitor(globalEventBus, getAgentRuntimeDeps(
         toolCallsCount: report.progress.toolCallsCount,
         modelRoundsCount: report.progress.modelRoundsCount,
         elapsedMs: report.progress.elapsedMs,
+        contextUsagePercent: report.progress.contextUsagePercent,
+        estimatedTokensInContextWindow: report.progress.estimatedTokensInContextWindow,
+        maxInputTokens: report.progress.maxInputTokens,
       },
     });
   },

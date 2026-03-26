@@ -80,12 +80,16 @@ function summarizePreviewContent(content: string, maxChars = 80): string {
   return `${normalized.slice(0, maxChars)}...`;
 }
 
-function formatSessionPreview(session: ReturnType<SessionManager['listSessions']>[number]): {
+function formatSessionPreview(
+  sessionManager: SessionManager,
+  session: ReturnType<SessionManager['listSessions']>[number],
+): {
   previewSummary: string;
   previewMessages: Array<{ role: string; timestamp: string; summary: string }>;
   lastMessageAt?: string;
 } {
-  const previewMessages = session.messages.slice(-3).map((item) => ({
+  const snapshot = sessionManager.getSessionMessageSnapshot(session.id, 3);
+  const previewMessages = snapshot.previewMessages.map((item) => ({
     role: item.role,
     timestamp: item.timestamp,
     summary: summarizePreviewContent(item.content),
@@ -96,17 +100,21 @@ function formatSessionPreview(session: ReturnType<SessionManager['listSessions']
   return {
     previewSummary,
     previewMessages,
-    ...(previewMessages.length > 0 ? { lastMessageAt: previewMessages[previewMessages.length - 1].timestamp } : {}),
+    ...(snapshot.lastMessageAt ? { lastMessageAt: snapshot.lastMessageAt } : {}),
   };
 }
 
-function toSessionResponse(session: ReturnType<SessionManager['listSessions']>[number]): Record<string, unknown> {
+function toSessionResponse(
+  sessionManager: SessionManager,
+  session: ReturnType<SessionManager['listSessions']>[number],
+): Record<string, unknown> {
   const context = isObjectRecord(session.context) ? session.context : {};
   const sessionTier = asString(context.sessionTier);
   const ownerAgentId = asString(context.ownerAgentId);
   const rootSessionId = asString(context.rootSessionId);
   const parentSessionId = asString(context.parentSessionId);
   const sessionWorkspaceRoot = asString(context.sessionWorkspaceRoot);
+  const snapshot = sessionManager.getSessionMessageSnapshot(session.id, 3);
   return {
     id: session.id,
     name: session.name,
@@ -114,14 +122,14 @@ function toSessionResponse(session: ReturnType<SessionManager['listSessions']>[n
     createdAt: session.createdAt,
     updatedAt: session.updatedAt,
     lastAccessedAt: session.lastAccessedAt,
-    messageCount: session.messages.length,
+    messageCount: snapshot.messageCount,
     activeWorkflows: session.activeWorkflows,
     ...(sessionTier ? { sessionTier } : {}),
     ...(ownerAgentId ? { ownerAgentId } : {}),
     ...(rootSessionId ? { rootSessionId } : {}),
     ...(parentSessionId ? { parentSessionId } : {}),
     ...(sessionWorkspaceRoot ? { sessionWorkspaceRoot } : {}),
-    ...formatSessionPreview(session),
+    ...formatSessionPreview(sessionManager, session),
   };
 }
 
@@ -164,7 +172,7 @@ export function registerSessionRoutes(app: Express, deps: SessionRouteDeps): voi
           id: session.id,
           name: session.name,
           projectPath: session.projectPath,
-          messages: session.messages,
+          messages: sessionManager.getMessages(session.id, 0),
           activeWorkflows: session.activeWorkflows,
         },
         executionLogs: relatedLogs,
@@ -188,7 +196,7 @@ export function registerSessionRoutes(app: Express, deps: SessionRouteDeps): voi
       createdAt: session.createdAt,
       updatedAt: session.updatedAt,
       lastAccessedAt: session.lastAccessedAt,
-      messageCount: session.messages.length,
+      messageCount: sessionManager.getSessionMessageSnapshot(session.id, 0).messageCount,
       activeWorkflows: session.activeWorkflows,
     })));
   });
@@ -233,7 +241,7 @@ export function registerSessionRoutes(app: Express, deps: SessionRouteDeps): voi
       res.status(404).json({ error: 'No current session' });
       return;
     }
-    res.json(toSessionResponse(session));
+    res.json(toSessionResponse(sessionManager, session));
   });
 
   app.post('/api/v1/sessions/current', (req, res) => {
@@ -253,7 +261,7 @@ export function registerSessionRoutes(app: Express, deps: SessionRouteDeps): voi
   app.post('/api/v1/sessions', (req, res) => {
     const { projectPath, name } = req.body;
     const session = sessionManager.createSession(projectPath || process.cwd(), name);
-    res.json(toSessionResponse(session));
+    res.json(toSessionResponse(sessionManager, session));
   });
 
   app.post('/api/v1/sessions/project/delete', (req, res) => {
@@ -278,7 +286,7 @@ export function registerSessionRoutes(app: Express, deps: SessionRouteDeps): voi
       res.status(404).json({ error: 'Session not found' });
       return;
     }
-    res.json(toSessionResponse(session));
+    res.json(toSessionResponse(sessionManager, session));
   });
 
   app.patch('/api/v1/sessions/:id', (req, res) => {
@@ -293,7 +301,7 @@ export function registerSessionRoutes(app: Express, deps: SessionRouteDeps): voi
         res.status(404).json({ error: 'Session not found' });
         return;
       }
-      res.json(toSessionResponse(session));
+      res.json(toSessionResponse(sessionManager, session));
     } catch (error) {
       res.status(400).json({ error: error instanceof Error ? error.message : 'Failed to rename session' });
     }

@@ -100,6 +100,18 @@
   Tags: session, ledger, ssot, ui
 - [2026-03-25] Jason 明确补充：要对齐 codex 的模型可见性。`ledger` 只负责重建历史消息；`system prompt / developer instructions / skills / mailbox baseline / user input` 必须稳定注入，不得因 context builder 重建历史而丢失。`system agent` 与 `project agent` 各自维护独立 session/ledger；派发与回报要写入各自 ledger 流水。  
   Tags: session, ledger, codex-alignment, prompt-injection, mailbox, user-input
+- [2026-03-26] ChatCodex reasoning 实时推送修复：`src/agents/chat-codex/chat-codex-module.ts` 不再只在 `task_complete.metadata_json.reasoning_trace` 阶段补发 reasoning，而是在 streaming `model_round` 等 kernel event 携带 `metadata_json.reasoning_trace` 时立即抽取并转成 `kernel_event(type=reasoning)`；同一 turn 内按 `agentId + roleProfile + index + text` 去重，避免结尾重复批量推送。相关验证已覆盖 `tests/unit/agents/chat-codex-module.test.ts`，并联通 `event-forwarding` / `agent-status-subscriber` 定向测试。  
+  Tags: reasoning, streaming, chat-codex, event-forwarding, progress-update
+- [2026-03-26] Jason 明确要求 ledger/context builder 必须开始使用 embedding recall，而不是只靠 tags/topic 的精确或 fuzzy 文本匹配。已在 `src/runtime/context-builder.ts` 前置接入 session-local hybrid recall：对历史 task block 建立 `task-embedding-index.json`（保存在 ledger 目录），embedding 文本由 `tags + topic + 首条 user + 最后一条 assistant` 组成；当前 prompt 先做语义召回，再进入 build mode / 可选模型 rerank。当前 task 不参与历史重排，始终保留在尾部。  
+  Tags: ledger, context-builder, embedding, hybrid-recall, tag-recall
+- [2026-03-26] Jason 提出新的长期收敛方向：废弃“session 文件=持久化会话真源”的概念，收敛到 **Ledger-only persistence + dynamic session views**。新的上下文结构应明确拆分为：`本轮推理区(working set)` 与 `历史记忆区(history memory zone)`；超出预算的历史不再强行注入，而是通过 `context_ledger.memory search/query` 按需检索。该方向已落盘设计文档 `docs/design/ledger-only-dynamic-session-views.md`，并要求后续提示词明确告诉模型：当前上下文不是完整历史，证据不足时必须主动检索 ledger。  
+  Tags: ledger, session, dynamic-view, context-builder, prompt, history-zone
+- [2026-03-26] `finger-262.3` 已实现第一步：context builder 显式区分 `working_set` 与 `historical_memory`。当前 task block 不再参与历史 recall 竞争，始终保留在尾部；`buildContext()` 的 messages 会标记 `contextZone`，metadata 追加 `workingSetTaskBlockCount / historicalTaskBlockCount / workingSetMessageCount / historicalMessageCount / workingSetTokens / historicalTokens`。Context Monitor / session view 映射链路已透出这些分区信息，验证通过：context-builder 定向测试 + TypeScript 编译。  
+  Tags: context-builder, working-set, history-zone, ledger, observability
+- [2026-03-26] `finger-262.2` 已完成：prompt 层正式教会模型“当前上下文不是完整历史”。`src/agents/chat-codex/prompt.md`、`coding-cli-system-prompt.ts`、各角色 developer prompt、`skill-prompt-injector.ts` 与 `context_ledger.memory` 工具描述都已统一强调：`working_set` / `historical_memory` 只是 budgeted dynamic view，缺失历史证据时必须先 `context_ledger.memory search`，再 `query(detail=true, slot_start, slot_end)`，不能把 prompt 中缺失当成历史不存在。  
+  Tags: ledger, prompt, dynamic-view, context-builder, skills, tool-contract
+- [2026-03-26] `finger-262.1` 已完成：`context_ledger.memory` 现在会把 search 结果提升到 **overflow-history retrieval path**。除了原有 compact hits / slot summaries 外，`search` 会返回 task-block candidates（含 `start_slot/end_slot`、`detail_query_hint`、`match_reason`、`visibility`），并附带 `context_bridge` 明确说明本次检索扫描的是 full ledger、结果可能位于当前 prompt budget 之外。内部 tool wrapper 还会自动补齐 `session_id / agent_id` 到 `_runtime_context`，减少模型手填作用域参数。  
+  Tags: ledger, overflow-history, context-ledger, task-blocks, retrieval, runtime-context
 - [2026-03-13] Session 管理迁移到 Agent 层：移除 MessageHub `/resume`；新增 `session.list` / `session.switch` 工具；System Agent 可跨 agent 切换。
   Tags: session-management, agent-tools
 - [2026-03-13] `system:restart` 仍在 MessageHub 层直连 daemon，避免交给 agent。
@@ -429,3 +441,9 @@ Tags: permission, reject-config, codex-alignment
 
 - [2026-03-25] 修复 context builder session miss：`KernelAgentBase` 调用 `contextHistoryProvider` 时改用外部/响应 sessionId（`responseSessionId || input.sessionId || session.id`），不再强制用内部 memory session id，避免 `finger-role-modules` 在 `runtime.getSession(sessionId)` 查询不到导致持续 fallback。新增单测断言 provider 接收外部 sessionId（`ui-session-context-meta-1`）。并落盘设计文档 `docs/design/SESSION_CLASSIFICATION_CONTEXT_BUILDER_EPIC.md`，定义 task 粒度 summary+多 tag、保守续接、topic 切换时按 tag 置信度+时间选择 session、无匹配新建 session。bd Epic: `finger-261`，子任务 `finger-261.1` 已完成。
   Tags: context-builder, session-id, external-session-binding, task-tagging, session-switch, epic
+
+- [2026-03-26] **finger-262.4（ledger-only session 收口）**：Session 文件彻底去真源化（加载/保存统一 `messages=[]`），`SessionManager` 读历史与计数统一改走 ledger；`updateMessage/deleteMessage` 在 ledger-only append-only 模式下禁用。`session.ts`、`messagehub-command-handler.ts`、`ledger-routes.ts` 移除 `session.messages` 与 `metadata.messages` 计数依赖，统一使用 ledger snapshot；`finger-role-modules` 的 context builder 历史源改为 `runtime.getMessages(sessionId, 0)`，并补齐附件媒体检测。验证：`pnpm -s tsc --noEmit` + 5 个关键回归测试通过。
+  Tags: ledger-only, session, session-manager, context-builder, messagehub, routes, finger-262
+
+- [2026-03-26] Context Builder 预算策略调整：历史重建改为固定 token 预算 `contextBuilder.historyBudgetTokens`（默认 100000），按 task 粒度从高相关到低相关填充，不再按消息条数截断；`chat-codex` 的 `maxContextMessages` 设为 0（unlimited），由 token 预算控制实际输入。`MEMORY.md` 不再直接注入上下文，`includeMemoryMd` 兼容字段保留但运行时固定为 false。Context Monitor 增加预算截断可观测：`budgetTruncatedTasks`（含 task id/token/summary）。
+  Tags: context-builder, token-budget, historyBudgetTokens, memory-ground-truth, context-monitor

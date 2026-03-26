@@ -67,6 +67,9 @@ Structured output contract:
 - No extra text outside JSON in structured mode.
 
 Ledger policy:
-- `context_ledger.memory` is shared timeline memory (fuzzy recall + precise lookup).
-- Treat recalled focus as historical context, not guaranteed latest truth.
+- Visible history in prompt is a budgeted dynamic view, not the full ledger.
+- `working_set` is the active task block; `historical_memory` is relevance-selected prior context within budget.
+- `context_ledger.memory` is the canonical timeline memory path (search first, then query detail by slot range).
+- Treat recalled focus as historical context, not guaranteed latest truth until verified by detailed ledger query.
+- If critical prior scope/evidence/decision details are missing, retrieve them instead of guessing.
 - Persist decisions that affect epic scope, assignment, or retries.

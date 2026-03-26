@@ -1751,7 +1751,12 @@ export class AgentRuntimeBlock extends BaseBlock {
   }
 
   private shouldRouteSystemDispatchToMailbox(input: AgentDispatchRequest): boolean {
-    if ((input.targetAgentId || '').trim() !== SYSTEM_AGENT_ID) return false;
+    const targetAgentId = (input.targetAgentId || '').trim();
+    if (targetAgentId !== SYSTEM_AGENT_ID) return false;
+    const sourceAgentId = (input.sourceAgentId || '').trim();
+    // Self-dispatch should follow the same in-flight queue merge semantics as normal user input
+    // (chat-codex pending_input_queued), not mailbox fallback.
+    if (sourceAgentId === targetAgentId) return false;
     const policy = resolveSystemDispatchPolicy();
     if (!policy.routeSystemDispatchToMailboxByDefault) return false;
     return !this.isSystemDirectInjectDispatch(input);
@@ -1932,40 +1937,45 @@ export class AgentRuntimeBlock extends BaseBlock {
           assignment,
           resolve,
         };
-        queued.timeoutHandle = setTimeout(() => {
-          const removed = this.removeQueuedDispatch(target, dispatchId);
-          if (!removed) return;
-          const fallbackResult = this.buildMailboxFallbackDispatchResult({
-            dispatchId,
-            input: normalizedInput,
-            targetAgentId: target,
-            targetModuleId,
-            assignment,
-            blocking,
-          });
-          if (fallbackResult) {
-            resolve(fallbackResult);
-            return;
-          }
-          this.emitDispatchEvent({
-            dispatchId,
-            sourceAgentId: normalizedInput.sourceAgentId,
-            targetAgentId: target,
-            status: 'failed',
-            blocking,
-            sessionId: normalizedInput.sessionId,
-            workflowId: normalizedInput.workflowId,
-            assignment: this.withAssignmentPhase(assignment, 'failed'),
-            error: 'dispatch queue timeout',
-          });
-          resolve({
-            ok: false,
-            dispatchId,
-            status: 'failed',
-            targetModuleId,
-            error: 'dispatch queue timeout',
-          });
-        }, normalizedInput.maxQueueWaitMs);
+        const isSelfDispatch = normalizedInput.sourceAgentId === target;
+        // Self-dispatch should always wait for next runnable slot (same semantic as
+        // in-flight pending user input merge), never timeout into mailbox.
+        if (!isSelfDispatch) {
+          queued.timeoutHandle = setTimeout(() => {
+            const removed = this.removeQueuedDispatch(target, dispatchId);
+            if (!removed) return;
+            const fallbackResult = this.buildMailboxFallbackDispatchResult({
+              dispatchId,
+              input: normalizedInput,
+              targetAgentId: target,
+              targetModuleId,
+              assignment,
+              blocking,
+            });
+            if (fallbackResult) {
+              resolve(fallbackResult);
+              return;
+            }
+            this.emitDispatchEvent({
+              dispatchId,
+              sourceAgentId: normalizedInput.sourceAgentId,
+              targetAgentId: target,
+              status: 'failed',
+              blocking,
+              sessionId: normalizedInput.sessionId,
+              workflowId: normalizedInput.workflowId,
+              assignment: this.withAssignmentPhase(assignment, 'failed'),
+              error: 'dispatch queue timeout',
+            });
+            resolve({
+              ok: false,
+              dispatchId,
+              status: 'failed',
+              targetModuleId,
+              error: 'dispatch queue timeout',
+            });
+          }, normalizedInput.maxQueueWaitMs);
+        }
         this.enqueueDispatch(target, queued);
       });
 

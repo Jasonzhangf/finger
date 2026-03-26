@@ -265,6 +265,97 @@ describe('context-ledger-memory', () => {
     rmSync(setup.rootDir, { recursive: true, force: true });
   });
 
+  it('returns task-block overflow candidates for search and marks omitted history via runtime context', async () => {
+    const setup = setupLedgerRoot('task-block-search');
+    const dir = join(setup.rootDir, setup.sessionId, setup.agentId, setup.mode);
+    const now = Date.now();
+
+    writeFileSync(
+      join(dir, 'context-ledger.jsonl'),
+      [
+        JSON.stringify({
+          id: 'msg-1',
+          timestamp_ms: now - 8_000,
+          timestamp_iso: new Date(now - 8_000).toISOString(),
+          session_id: setup.sessionId,
+          agent_id: setup.agentId,
+          mode: setup.mode,
+          event_type: 'message',
+          payload: { role: 'user', content: '帮我修复 mailbox 未读消息堆积问题' },
+        }),
+        JSON.stringify({
+          id: 'msg-2',
+          timestamp_ms: now - 7_000,
+          timestamp_iso: new Date(now - 7_000).toISOString(),
+          session_id: setup.sessionId,
+          agent_id: setup.agentId,
+          mode: setup.mode,
+          event_type: 'message',
+          payload: {
+            role: 'assistant',
+            content: '已定位 mailbox backlog 根因，准备修复。',
+            metadata: { tags: ['mailbox', 'backlog'], topic: 'mailbox cleanup' },
+          },
+        }),
+        JSON.stringify({
+          id: 'msg-3',
+          timestamp_ms: now - 4_000,
+          timestamp_iso: new Date(now - 4_000).toISOString(),
+          session_id: setup.sessionId,
+          agent_id: setup.agentId,
+          mode: setup.mode,
+          event_type: 'message',
+          payload: { role: 'user', content: '顺便检查 session ledger 是否会丢历史' },
+        }),
+        JSON.stringify({
+          id: 'msg-4',
+          timestamp_ms: now - 3_000,
+          timestamp_iso: new Date(now - 3_000).toISOString(),
+          session_id: setup.sessionId,
+          agent_id: setup.agentId,
+          mode: setup.mode,
+          event_type: 'message',
+          payload: {
+            role: 'assistant',
+            content: 'session history 已切到 ledger 读取。',
+            metadata: { tags: ['ledger'], topic: 'session ledger' },
+          },
+        }),
+        '',
+      ].join('\n'),
+      'utf-8',
+    );
+
+    const result = await executeContextLedgerMemory({
+      action: 'search',
+      contains: 'mailbox backlog',
+      _runtime_context: {
+        root_dir: setup.rootDir,
+        session_id: setup.sessionId,
+        agent_id: setup.agentId,
+        mode: setup.mode,
+        context_builder: {
+          historical_block_ids: ['task-should-not-match'],
+          working_set_block_ids: ['task-should-not-match-either'],
+        },
+      },
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.action).toBe('search');
+    if (result.action !== 'search') {
+      throw new Error('expected search result');
+    }
+    expect(result.task_blocks.length).toBeGreaterThan(0);
+    expect(result.task_blocks[0]?.preview).toContain('mailbox');
+    expect(result.task_blocks[0]?.detail_query_hint).toMatchObject({ action: 'query', detail: true });
+    expect(result.context_bridge.searched_full_ledger).toBe(true);
+    expect(result.context_bridge.total_slots).toBe(4);
+    expect(result.task_blocks[0]?.visibility).toBe('omitted_history');
+
+    rmSync(setup.rootDir, { recursive: true, force: true });
+  });
+
   it('delete_slots returns interactive preview and does not mutate ledger without confirmation', async () => {
     const setup = setupLedgerRoot('delete-preview');
 

@@ -15,6 +15,7 @@ import type { SessionEnvelopeMapping, AgentInfo, WrappedStatusUpdate } from './a
 import { getAgentIcon } from './agent-status-subscriber-helpers.js';
 import { sendStatusUpdate } from './agent-status-subscriber-runtime.js';
 import { logger } from '../../core/logger.js';
+import { heartbeatMailbox } from './heartbeat-mailbox.js';
 
 const log = logger.module('AgentStatusSubscriberHandlers');
 const RAW_TOOL_ERROR_SUPPRESSED_CHANNELS = new Set(['qqbot', 'openclaw-weixin']);
@@ -138,6 +139,71 @@ function parseMailboxVerb(toolName: string): ToolVerb {
   const action = toolName.replace(/^mailbox\./i, '').toLowerCase();
   if (action === 'ack' || action === 'remove' || action === 'remove_all') return 'write';
   return 'read';
+}
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  if (!value || typeof value !== 'object') return null;
+  return value as Record<string, unknown>;
+}
+
+function asTrimmedString(value: unknown): string {
+  return typeof value === 'string' ? value.trim() : '';
+}
+
+function isMailboxDispatchStatus(status: string): boolean {
+  return status.toLowerCase().includes('mailbox');
+}
+
+function extractMailboxEnvelopeSummary(targetAgentId: string, mailboxMessageId: string): string {
+  const mailboxMessage = heartbeatMailbox.get(targetAgentId, mailboxMessageId);
+  if (!mailboxMessage) return '';
+  const content = asRecord(mailboxMessage.content);
+  const envelope = asRecord(content?.envelope);
+  const title = asTrimmedString(envelope?.title);
+  const shortDescription = asTrimmedString(envelope?.shortDescription);
+  if (title && shortDescription) {
+    return `${truncateInline(title, 36)} - ${truncateInline(shortDescription, 72)}`;
+  }
+  if (title) return truncateInline(title, 100);
+  if (shortDescription) return truncateInline(shortDescription, 100);
+  return '';
+}
+
+function sanitizeDispatchMailboxText(text: string, mailboxMessageId: string): string {
+  let sanitized = text;
+  if (mailboxMessageId) {
+    sanitized = sanitized.split(mailboxMessageId).join('').replace(/\(\s*\)/g, '');
+  }
+  sanitized = sanitized
+    .replace(/ROBOT[0-9.]*_[A-Za-z0-9._\-!]+/gi, '')
+    .replace(/\bmsg-[a-z0-9-]{8,}\b/gi, '')
+    .replace(/\s{2,}/g, ' ')
+    .trim();
+  return truncateInline(sanitized, 100);
+}
+
+function buildDispatchMailboxPreview(params: {
+  targetAgentId: string;
+  mailboxMessageId: string;
+  resultSummary: string;
+  nextAction: string;
+}): string {
+  if (params.mailboxMessageId) {
+    const envelopeSummary = extractMailboxEnvelopeSummary(params.targetAgentId, params.mailboxMessageId);
+    if (envelopeSummary) return envelopeSummary;
+  }
+
+  if (params.resultSummary) {
+    const sanitized = sanitizeDispatchMailboxText(params.resultSummary, params.mailboxMessageId);
+    if (sanitized) return sanitized;
+  }
+
+  if (params.nextAction) {
+    const sanitized = sanitizeDispatchMailboxText(params.nextAction, params.mailboxMessageId);
+    if (sanitized) return sanitized;
+  }
+
+  return '已转入待处理队列';
 }
 
 function parseToolSummary(toolName: string, input: unknown, output?: unknown): {
@@ -315,13 +381,14 @@ function parseToolSummary(toolName: string, input: unknown, output?: unknown): {
   return { verb: 'run', target: normalizedToolName };
 }
 
-function shouldPushCommandStyleUpdates(ctx: HandlerContext, mapping: SessionEnvelopeMapping): boolean {
+function shouldPushCommandStyleUpdates(ctx: HandlerContext, mappings: SessionEnvelopeMapping[]): boolean {
   if (!ctx.channelBridgeManager) return true;
-  const settings = ctx.channelBridgeManager.getPushSettings(mapping.envelope.channel);
-  if (settings.updateMode === 'progress') return false;
-  if (settings.updateMode === 'command') return true;
-  // both: require explicit toolCalls=true to avoid noisy default
-  return settings.toolCalls === true;
+  return mappings.some((mapping) => {
+    const settings = ctx.channelBridgeManager!.getPushSettings(mapping.envelope.channel);
+    if (settings.updateMode === 'progress') return false;
+    if (settings.updateMode === 'command') return true;
+    return settings.toolCalls === true;
+  });
 }
 
 /**
@@ -332,6 +399,7 @@ export interface HandlerContext {
   channelBridgeManager?: import('../../bridges/manager.js').ChannelBridgeManager;
   broadcast?: (message: unknown) => void;
   resolveEnvelopeMapping: (sessionId: string) => SessionEnvelopeMapping | null;
+  resolveEnvelopeMappings: (sessionId: string) => SessionEnvelopeMapping[];
   getAgentInfo: (agentId: string) => Promise<AgentInfo>;
   sendReasoningUpdate?: (sessionId: string, agentId: string, reasoningText: string) => Promise<void>;
   stepBuffer: Map<string, Array<{ index: number; summary: string; timestamp: string }>>;
@@ -364,9 +432,9 @@ export async function handleToolResult(
   ctx: HandlerContext,
 ): Promise<void> {
   const sessionId = event.sessionId;
-  const mapping = ctx.resolveEnvelopeMapping(sessionId);
-  if (!mapping || !ctx.messageHub) return;
-  if (!shouldPushCommandStyleUpdates(ctx, mapping)) return;
+  const mappings = ctx.resolveEnvelopeMappings(sessionId);
+  if (mappings.length === 0 || !ctx.messageHub) return;
+  if (!shouldPushCommandStyleUpdates(ctx, mappings)) return;
 
 
   const agentId = event.agentId || 'unknown-agent';
@@ -406,7 +474,7 @@ export async function handleToolResult(
     },
   };
 
-  await sendStatusUpdate(mapping.envelope, wrappedUpdate, ctx.messageHub, ctx.channelBridgeManager);
+  await sendStatusUpdate(mappings.map((item) => item.envelope), wrappedUpdate, ctx.messageHub, ctx.channelBridgeManager);
 }
 
 /**
@@ -418,13 +486,13 @@ export async function handleToolError(
 ): Promise<void> {
   const agentId = event.agentId || 'unknown-agent';
   const sessionId = event.sessionId;
-  const mapping = ctx.resolveEnvelopeMapping(sessionId);
-  if (!mapping) return;
-  if (!shouldPushCommandStyleUpdates(ctx, mapping)) return;
+  const mappings = ctx.resolveEnvelopeMappings(sessionId);
+  if (mappings.length === 0) return;
+  if (!shouldPushCommandStyleUpdates(ctx, mappings)) return;
 
-  if (shouldSuppressRawToolError(mapping.envelope.channel)) {
+  if (mappings.every((mapping) => shouldSuppressRawToolError(mapping.envelope.channel))) {
     log.info('[AgentStatusSubscriber] Suppressed raw tool_error push for external channel', {
-      channel: mapping.envelope.channel,
+      channel: mappings.map((mapping) => mapping.envelope.channel).join(','),
       sessionId,
       agentId,
       toolName: event.toolName,
@@ -466,7 +534,7 @@ export async function handleToolError(
   };
 
   if (ctx.messageHub) {
-    await sendStatusUpdate(mapping.envelope, wrappedUpdate, ctx.messageHub, ctx.channelBridgeManager);
+    await sendStatusUpdate(mappings.map((item) => item.envelope), wrappedUpdate, ctx.messageHub, ctx.channelBridgeManager);
   }
 }
 
@@ -478,8 +546,8 @@ export async function handleSystemError(
   ctx: HandlerContext,
 ): Promise<void> {
   const sessionId = event.sessionId;
-  const mapping = ctx.resolveEnvelopeMapping(sessionId);
-  if (!mapping) return;
+  const mappings = ctx.resolveEnvelopeMappings(sessionId);
+  if (mappings.length === 0) return;
 
   const wrappedUpdate: WrappedStatusUpdate = {
     type: 'agent_status',
@@ -504,7 +572,7 @@ export async function handleSystemError(
   };
 
   if (ctx.messageHub) {
-    await sendStatusUpdate(mapping.envelope, wrappedUpdate, ctx.messageHub, ctx.channelBridgeManager);
+    await sendStatusUpdate(mappings.map((item) => item.envelope), wrappedUpdate, ctx.messageHub, ctx.channelBridgeManager);
   }
 }
 
@@ -534,14 +602,31 @@ export async function handleDispatch(
   }
 
   const sessionId = event.sessionId;
-  const mapping = ctx.resolveEnvelopeMapping(sessionId);
-  if (!mapping || !ctx.messageHub) return;
+  const mappings = ctx.resolveEnvelopeMappings(sessionId);
+  if (mappings.length === 0 || !ctx.messageHub) return;
 
 
   const agentInfo = await ctx.getAgentInfo(targetAgentId);
   const dispatchStatus = typeof payload.status === 'string' ? payload.status : 'queued';
   const queuePosition = typeof payload.queuePosition === 'number' ? payload.queuePosition : undefined;
-  const mailboxMessageId = typeof payload.result?.messageId === 'string' ? payload.result.messageId : undefined;
+  const resultRecord = asRecord(payload.result);
+  const resultStatus = asTrimmedString(resultRecord?.status);
+  const resultSummary = asTrimmedString(resultRecord?.summary);
+  const nextAction = asTrimmedString(resultRecord?.nextAction);
+  const explicitMailboxMessageId = asTrimmedString(resultRecord?.mailboxMessageId);
+  const candidateMessageId = asTrimmedString(resultRecord?.messageId);
+  const mailboxFlow = isMailboxDispatchStatus(dispatchStatus)
+    || isMailboxDispatchStatus(resultStatus)
+    || explicitMailboxMessageId.length > 0;
+  const mailboxMessageId = explicitMailboxMessageId || (mailboxFlow ? candidateMessageId : '');
+  const mailboxPreview = mailboxFlow
+    ? buildDispatchMailboxPreview({
+        targetAgentId,
+        mailboxMessageId,
+        resultSummary,
+        nextAction,
+      })
+    : '';
   const state: WrappedStatusUpdate['status']['state'] = dispatchStatus === 'failed'
     ? 'failed'
     : dispatchStatus === 'completed'
@@ -551,7 +636,8 @@ export async function handleDispatch(
     `派发 ${targetAgentId}`,
     `状态: ${dispatchStatus}`,
     typeof queuePosition === 'number' ? `队列 #${queuePosition}` : '',
-    mailboxMessageId ? `mailbox: ${mailboxMessageId}` : '',
+    mailboxPreview ? `mailbox: ${mailboxPreview}` : '',
+    !mailboxFlow && resultSummary ? `摘要: ${truncateInline(resultSummary, 96)}` : '',
   ].filter((item) => item.length > 0).join(' · ');
 
   const wrappedUpdate: WrappedStatusUpdate = {
@@ -575,7 +661,10 @@ export async function handleDispatch(
         targetAgentId,
         dispatchStatus,
         ...(typeof queuePosition === 'number' ? { queuePosition } : {}),
-        ...(mailboxMessageId ? { mailboxMessageId } : {}),
+        ...(resultStatus ? { resultStatus } : {}),
+        ...(resultSummary ? { resultSummary: truncateInline(resultSummary, 240) } : {}),
+        ...(mailboxFlow ? { mailboxFlow: true } : {}),
+        ...(mailboxPreview ? { mailboxPreview } : {}),
       },
     },
     display: {
@@ -587,15 +676,15 @@ export async function handleDispatch(
     },
   };
 
-  await sendStatusUpdate(mapping.envelope, wrappedUpdate, ctx.messageHub, ctx.channelBridgeManager);
+  await sendStatusUpdate(mappings.map((item) => item.envelope), wrappedUpdate, ctx.messageHub, ctx.channelBridgeManager);
 }
 
 export async function handleWaitingForUser(
   event: RuntimeEvent,
   ctx: HandlerContext,
 ): Promise<void> {
-  const mapping = ctx.resolveEnvelopeMapping(event.sessionId);
-  if (!mapping || !ctx.messageHub) return;
+  const mappings = ctx.resolveEnvelopeMappings(event.sessionId);
+  if (mappings.length === 0 || !ctx.messageHub) return;
 
 
   const payload = event.payload as {
@@ -649,7 +738,7 @@ export async function handleWaitingForUser(
     },
   };
 
-  await sendStatusUpdate(mapping.envelope, wrappedUpdate, ctx.messageHub, ctx.channelBridgeManager);
+  await sendStatusUpdate(mappings.map((item) => item.envelope), wrappedUpdate, ctx.messageHub, ctx.channelBridgeManager);
 }
 
 /**

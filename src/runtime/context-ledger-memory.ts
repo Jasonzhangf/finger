@@ -10,6 +10,7 @@ import type {
   ContextLedgerMemoryResult,
   LedgerEntryFile,
 } from './context-ledger-memory-types.js';
+import type { TaskBlock, TaskMessage } from './context-builder-types.js';
 import {
   appendLedgerEvent,
   buildPreview,
@@ -37,6 +38,7 @@ import {
   valueAsString,
   writeJsonFile,
 } from './context-ledger-memory-helpers.js';
+import { runTaskEmbeddingRecall } from './context-builder-embedding-recall.js';
 
 export type {
   CompactMemoryEntryFile,
@@ -159,6 +161,16 @@ async function executeQueryAction(
   );
 
   const allEntries = await readJsonLines<LedgerEntryFile>(ledgerPath);
+  const ledgerTaskBlocks = await buildLedgerTaskBlocks(allEntries, {
+    rootDir: context.rootDir,
+    sessionId: context.sessionId,
+    agentId: context.targetAgentId,
+    mode: context.mode,
+    query: query.contains,
+    fuzzy: query.fuzzy,
+    limit: query.limit,
+    runtimeContext: input._runtime_context,
+  });
   const preciseHits = filterLedgerEntries(allEntries, { ...query, fuzzy: false });
   const directHits = filterLedgerEntries(allEntries, query);
   const hasPreciseHits = query.contains ? preciseHits.length > 0 : directHits.length > 0;
@@ -186,6 +198,8 @@ async function executeQueryAction(
       compact_source: compactEntries.length > 0 ? compactIndexPath : compactPath,
       compact_total: compactHits.length,
       compact_truncated: false,
+      task_blocks: ledgerTaskBlocks,
+      context_bridge: buildContextBridge(allEntries.length, ledgerTaskBlocks, input._runtime_context),
       next_query_hint: {
         action: 'query',
         detail: true,
@@ -247,6 +261,8 @@ async function executeQueryAction(
     compact_source: compactEntries.length > 0 ? compactIndexPath : compactPath,
     compact_total: compactHits.length,
     compact_truncated: false,
+    task_blocks: ledgerTaskBlocks,
+    context_bridge: buildContextBridge(allEntries.length, ledgerTaskBlocks, input._runtime_context),
     next_query_hint: slots.length > 0
       ? {
           action: 'query',
@@ -669,6 +685,281 @@ function buildCompactSummaryFromEntries(entries: LedgerEntryFile[]): string {
   return previews.join('\n');
 }
 
+type LedgerTaskBlockSearchResult = ContextLedgerMemoryQueryResult['task_blocks'][number];
+
+interface LedgerTaskBlockInternal {
+  id: string;
+  startSlot: number;
+  endSlot: number;
+  startTime: number;
+  endTime: number;
+  startTimeIso: string;
+  endTimeIso: string;
+  entries: LedgerEntryFile[];
+  tags?: string[];
+  topic?: string;
+  preview: string;
+  searchText: string;
+  taskBlock: TaskBlock;
+}
+
+type TaskBlockMatchReason = LedgerTaskBlockSearchResult['match_reason'];
+
+async function buildLedgerTaskBlocks(
+  entries: LedgerEntryFile[],
+  options: {
+    rootDir: string;
+    sessionId: string;
+    agentId: string;
+    mode: string;
+    query?: string;
+    fuzzy: boolean;
+    limit: number;
+    runtimeContext?: ContextLedgerMemoryInput['_runtime_context'];
+  },
+): Promise<ContextLedgerMemoryQueryResult['task_blocks']> {
+  const blocks = groupLedgerEntriesByTaskBoundary(entries);
+  if (blocks.length === 0) return [];
+
+  const normalizedQuery = normalizeText(options.query)?.toLowerCase();
+  const keywordScored = blocks.map((block) => {
+    if (!normalizedQuery) {
+      return { block, score: 0, matchReason: 'recency' as const };
+    }
+
+    const lowered = block.searchText.toLowerCase();
+    const direct = lowered.includes(normalizedQuery) ? 1 : 0;
+    const fuzzy = options.fuzzy ? fuzzyScore(lowered, normalizedQuery) : 0;
+    const score = direct > 0 ? 2 + fuzzy : fuzzy;
+    return {
+      block,
+      score,
+      matchReason: direct > 0
+        ? (fuzzy > 0 ? 'keyword+embedding' as const : 'keyword' as const)
+        : (fuzzy > 0 ? 'embedding' as const : 'recency' as const),
+    };
+  });
+
+  let embeddingRank = new Map<string, number>();
+  if (normalizedQuery) {
+    try {
+      const embeddingRecall = await runTaskEmbeddingRecall({
+        rootDir: options.rootDir,
+        sessionId: options.sessionId,
+        agentId: options.agentId,
+        mode: options.mode,
+        blocks: blocks.map((block) => block.taskBlock),
+        currentPrompt: normalizedQuery,
+        topK: Math.min(Math.max(1, options.limit), blocks.length),
+      });
+      if (embeddingRecall.executed) {
+        embeddingRank = new Map(embeddingRecall.rankedTaskIds.map((id, index) => [id, index]));
+      }
+    } catch {
+      embeddingRank = new Map();
+    }
+  }
+
+  const ranked = keywordScored
+    .map(({ block, score, matchReason }) => {
+      const embeddingIndex = embeddingRank.get(block.id);
+      const embeddingBoost = embeddingIndex === undefined
+        ? 0
+        : Math.max(0, (blocks.length - embeddingIndex) / Math.max(1, blocks.length));
+      const combinedScore = score + embeddingBoost;
+      let finalReason: TaskBlockMatchReason = 'recency';
+      if (score > 0 && embeddingBoost > 0) {
+        finalReason = 'keyword+embedding';
+      } else if (score > 0) {
+        finalReason = matchReason === 'embedding' ? 'keyword' : matchReason;
+      } else if (embeddingBoost > 0) {
+        finalReason = 'embedding';
+      }
+      return {
+        block,
+        score: combinedScore,
+        matchReason: finalReason,
+        embeddingIndex: embeddingIndex ?? Number.MAX_SAFE_INTEGER,
+      };
+    })
+    .filter((item) => {
+      if (!normalizedQuery) return true;
+      if (item.score > 0) return true;
+      return item.embeddingIndex !== Number.MAX_SAFE_INTEGER && item.embeddingIndex < options.limit;
+    })
+    .sort((a, b) => {
+      if (b.score !== a.score) return b.score - a.score;
+      if (a.embeddingIndex !== b.embeddingIndex) return a.embeddingIndex - b.embeddingIndex;
+      return b.block.startTime - a.block.startTime;
+    })
+    .slice(0, Math.max(1, options.limit));
+
+  return ranked.map(({ block, score, matchReason }) => ({
+    id: block.id,
+    start_slot: block.startSlot,
+    end_slot: block.endSlot,
+    start_time_ms: block.startTime,
+    end_time_ms: block.endTime,
+    start_time_iso: block.startTimeIso,
+    end_time_iso: block.endTimeIso,
+    preview: block.preview,
+    ...(block.tags && block.tags.length > 0 ? { tags: block.tags } : {}),
+    ...(block.topic ? { topic: block.topic } : {}),
+    ...(Number.isFinite(score) ? { score: Number(score.toFixed(4)) } : {}),
+    match_reason: matchReason,
+    visibility: resolveTaskBlockVisibility(block.id, options.runtimeContext),
+    detail_query_hint: {
+      action: 'query',
+      detail: true,
+      slot_start: block.startSlot,
+      slot_end: block.endSlot,
+    },
+  }));
+}
+
+function groupLedgerEntriesByTaskBoundary(entries: LedgerEntryFile[]): LedgerTaskBlockInternal[] {
+  const sanitized = entries
+    .filter((entry) => {
+      const searchable = `${entry.event_type}\n${JSON.stringify(entry.payload)}`;
+      return !containsPromptLikeBlock(searchable);
+    })
+    .sort((a, b) => a.timestamp_ms - b.timestamp_ms);
+  if (sanitized.length === 0) return [];
+
+  const blocks: LedgerTaskBlockInternal[] = [];
+  let currentEntries: LedgerEntryFile[] = [];
+  let currentStartSlot = 1;
+
+  const flush = () => {
+    if (currentEntries.length === 0) return;
+    blocks.push(finalizeLedgerTaskBlock(currentEntries, currentStartSlot, currentStartSlot + currentEntries.length - 1));
+  };
+
+  for (let index = 0; index < sanitized.length; index += 1) {
+    const entry = sanitized[index];
+    const payload = isRecord(entry.payload) ? entry.payload : {};
+    const role = valueAsString(payload.role) ?? 'system';
+    if (role === 'user' && currentEntries.length > 0) {
+      flush();
+      currentEntries = [entry];
+      currentStartSlot = index + 1;
+      continue;
+    }
+    if (currentEntries.length === 0) {
+      currentStartSlot = index + 1;
+    }
+    currentEntries.push(entry);
+  }
+  flush();
+  return blocks;
+}
+
+function finalizeLedgerTaskBlock(entries: LedgerEntryFile[], startSlot: number, endSlot: number): LedgerTaskBlockInternal {
+  const taskMessages: TaskMessage[] = entries.map((entry) => {
+    const payload = isRecord(entry.payload) ? entry.payload : {};
+    const content = valueAsString(payload.content) ?? JSON.stringify(payload);
+    return {
+      id: entry.id,
+      role: ((valueAsString(payload.role) ?? 'system') as TaskMessage['role']),
+      content,
+      timestamp: entry.timestamp_ms,
+      timestampIso: entry.timestamp_iso,
+      tokenCount: Math.max(1, Math.ceil(content.length / 4)),
+      metadata: isRecord(payload.metadata) ? payload.metadata : undefined,
+    };
+  });
+
+  let tags: string[] | undefined;
+  let topic: string | undefined;
+  for (let index = taskMessages.length - 1; index >= 0; index -= 1) {
+    const metadata = taskMessages[index].metadata;
+    if (!metadata) continue;
+    if (Array.isArray(metadata.tags)) {
+      const normalized = metadata.tags
+        .filter((item): item is string => typeof item === 'string' && item.trim().length > 0)
+        .map((item) => item.trim());
+      if (normalized.length > 0) {
+        tags = tags ? Array.from(new Set([...tags, ...normalized])) : normalized;
+      }
+    }
+    const metaTopic = valueAsString(metadata.topic);
+    if (!topic && metaTopic) topic = metaTopic;
+  }
+
+  const firstUser = taskMessages.find((message) => message.role === 'user')?.content;
+  const lastAssistant = [...taskMessages].reverse().find((message) => message.role === 'assistant')?.content;
+  const preview = firstUser
+    ? buildPreview(firstUser, 200)
+    : lastAssistant
+      ? buildPreview(lastAssistant, 200)
+      : buildPreview(JSON.stringify(entries[entries.length - 1]?.payload ?? {}), 200);
+  const searchText = [
+    tags && tags.length > 0 ? `tags: ${tags.join(', ')}` : '',
+    topic ? `topic: ${topic}` : '',
+    ...entries.map((entry) => `${entry.event_type} ${JSON.stringify(entry.payload)}`),
+  ]
+    .filter((item) => item.length > 0)
+    .join('\n');
+
+  return {
+    id: `task-${entries[0]?.timestamp_ms ?? Date.now()}`,
+    startSlot,
+    endSlot,
+    startTime: entries[0]?.timestamp_ms ?? Date.now(),
+    endTime: entries[entries.length - 1]?.timestamp_ms ?? Date.now(),
+    startTimeIso: entries[0]?.timestamp_iso ?? new Date().toISOString(),
+    endTimeIso: entries[entries.length - 1]?.timestamp_iso ?? new Date().toISOString(),
+    entries,
+    ...(tags && tags.length > 0 ? { tags } : {}),
+    ...(topic ? { topic } : {}),
+    preview,
+    searchText,
+    taskBlock: {
+      id: `task-${entries[0]?.timestamp_ms ?? Date.now()}`,
+      startTime: entries[0]?.timestamp_ms ?? Date.now(),
+      endTime: entries[entries.length - 1]?.timestamp_ms ?? Date.now(),
+      startTimeIso: entries[0]?.timestamp_iso ?? new Date().toISOString(),
+      endTimeIso: entries[entries.length - 1]?.timestamp_iso ?? new Date().toISOString(),
+      messages: taskMessages,
+      tokenCount: taskMessages.reduce((sum, message) => sum + message.tokenCount, 0),
+      ...(tags && tags.length > 0 ? { tags } : {}),
+      ...(topic ? { topic } : {}),
+    },
+  };
+}
+
+function resolveTaskBlockVisibility(
+  blockId: string,
+  runtimeContext?: ContextLedgerMemoryInput['_runtime_context'],
+): LedgerTaskBlockSearchResult['visibility'] {
+  const builder = runtimeContext?.context_builder;
+  if (!builder) return 'unknown';
+  if (builder.working_set_block_ids?.includes(blockId)) return 'working_set';
+  if (builder.historical_block_ids?.includes(blockId)) return 'historical_memory';
+  return 'omitted_history';
+}
+
+function buildContextBridge(
+  totalSlots: number,
+  taskBlocks: ContextLedgerMemoryQueryResult['task_blocks'],
+  runtimeContext?: ContextLedgerMemoryInput['_runtime_context'],
+): ContextLedgerMemoryQueryResult['context_bridge'] {
+  const builder = runtimeContext?.context_builder;
+  return {
+    searched_full_ledger: true,
+    total_slots: totalSlots,
+    note: taskBlocks.length > 0
+      ? 'Search inspected the full ledger and returned task-block candidates that can be drilled into with detail_query_hint. These candidates may sit outside the currently injected prompt history budget.'
+      : 'Search inspected the full ledger but did not find task-block candidates for this query.',
+    ...(builder?.working_set_block_ids && builder.working_set_block_ids.length > 0
+      ? { working_set_block_ids: builder.working_set_block_ids }
+      : {}),
+    ...(builder?.historical_block_ids && builder.historical_block_ids.length > 0
+      ? { historical_block_ids: builder.historical_block_ids }
+      : {}),
+  };
+}
+
 function filterLedgerEntries(
   entries: LedgerEntryFile[],
   options: { sinceMs?: number; untilMs?: number; contains?: string; fuzzy: boolean; eventTypes: string[] },
@@ -822,4 +1113,8 @@ function ensureReadableAgent(
   if (canReadAll) return;
   if (readableAgents.map(normalize).includes(target)) return;
   throw new Error(`permission denied to read ledger for agent '${targetAgentId}'`);
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null;
 }

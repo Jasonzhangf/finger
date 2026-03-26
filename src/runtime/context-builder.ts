@@ -24,11 +24,13 @@ import {
   normalizeRootDir,
   resolveLedgerPath,
 } from './context-ledger-memory-helpers.js';
+import { logger } from '../core/logger.js';
 import type {
   LedgerEntryFile,
   CompactMemoryEntryFile,
 } from './context-ledger-memory-types.js';
 import type {
+  ContextMessageZone,
   TaskBlock,
   TaskMessage,
   ContextBuildOptions,
@@ -37,6 +39,7 @@ import type {
   RankingOutput,
   ContextBuildMode,
 } from './context-builder-types.js';
+import { runTaskEmbeddingRecall } from './context-builder-embedding-recall.js';
 
 type AttachmentPlaceholder = {
   count: number;
@@ -48,6 +51,7 @@ type AttachmentPlaceholder = {
 const DEFAULT_HALF_LIFE_MS = 24 * 60 * 60 * 1000; // 24 hours
 const DEFAULT_OVER_THRESHOLD_RELEVANCE = 0.5; // 超过24h后相关性阈值
 const DEFAULT_BUDGET_RATIO = 0.85; // 目标上下文占模型窗口的比例
+const log = logger.module('ContextBuilder');
 
 function compactAttachments(raw: unknown): AttachmentPlaceholder | undefined {
   if (!Array.isArray(raw) || raw.length === 0) return undefined;
@@ -269,17 +273,23 @@ async function runModelRanking(
     providerId?: string;
     currentPrompt?: string;
   },
-): Promise<{ rankedTaskIds: string[]; providerId?: string; providerModel?: string; executed: boolean }> {
+): Promise<{
+  rankedTaskIds: string[];
+  providerId?: string;
+  providerModel?: string;
+  executed: boolean;
+  reason: string;
+}> {
   if (blocks.length <= 1) {
-    return { rankedTaskIds: blocks.map((b) => b.id), executed: false };
+    return { rankedTaskIds: blocks.map((b) => b.id), executed: false, reason: 'insufficient_blocks' };
   }
   const providerId = (params.providerId || '').trim();
   if (!providerId) {
-    return { rankedTaskIds: blocks.map((b) => b.id), executed: false };
+    return { rankedTaskIds: blocks.map((b) => b.id), executed: false, reason: 'missing_provider_id' };
   }
   const provider = getAIProvider(providerId);
   if (!provider) {
-    return { rankedTaskIds: blocks.map((b) => b.id), executed: false };
+    return { rankedTaskIds: blocks.map((b) => b.id), executed: false, reason: 'provider_not_found' };
   }
 
   const payload = {
@@ -376,16 +386,34 @@ async function runModelRanking(
       body: JSON.stringify(payload),
     });
     if (!response.ok) {
-      return { rankedTaskIds: blocks.map((b) => b.id), providerId, providerModel: provider.model, executed: false };
+      return {
+        rankedTaskIds: blocks.map((b) => b.id),
+        providerId,
+        providerModel: provider.model,
+        executed: false,
+        reason: `http_${response.status}`,
+      };
     }
     const data = await response.json() as Record<string, unknown>;
     const outputText = extractResponseOutputText(data);
     if (!outputText) {
-      return { rankedTaskIds: blocks.map((b) => b.id), providerId, providerModel: provider.model, executed: false };
+      return {
+        rankedTaskIds: blocks.map((b) => b.id),
+        providerId,
+        providerModel: provider.model,
+        executed: false,
+        reason: 'empty_output',
+      };
     }
     const parsed = tryParseRankingOutput(outputText);
     if (!parsed) {
-      return { rankedTaskIds: blocks.map((b) => b.id), providerId, providerModel: provider.model, executed: false };
+      return {
+        rankedTaskIds: blocks.map((b) => b.id),
+        providerId,
+        providerModel: provider.model,
+        executed: false,
+        reason: 'parse_failed',
+      };
     }
     const allowed = new Set(blocks.map((b) => b.id));
     const deduped = parsed.rankedTaskIds.filter((id) => allowed.has(id));
@@ -397,9 +425,16 @@ async function runModelRanking(
       providerId,
       providerModel: provider.model,
       executed: true,
+      reason: 'ok',
     };
   } catch {
-    return { rankedTaskIds: blocks.map((b) => b.id), providerId, providerModel: provider.model, executed: false };
+    return {
+      rankedTaskIds: blocks.map((b) => b.id),
+      providerId,
+      providerModel: provider.model,
+      executed: false,
+      reason: 'exception',
+    };
   }
 }
 
@@ -450,6 +485,14 @@ function reorderBlocksByRanking(blocks: TaskBlock[], rankedTaskIds: string[]): T
   return reordered;
 }
 
+function summarizeTaskBlock(block: TaskBlock): string | undefined {
+  const firstUser = block.messages.find((message) => message.role === 'user')?.content?.trim() ?? '';
+  if (firstUser.length === 0) return undefined;
+  const normalized = firstUser.replace(/\s+/g, ' ');
+  if (normalized.length <= 120) return normalized;
+  return `${normalized.slice(0, 120)}...`;
+}
+
 function resolveBuildMode(mode: ContextBuildOptions['buildMode'] | undefined): ContextBuildMode {
   if (mode === 'minimal' || mode === 'moderate' || mode === 'aggressive') return mode;
   return 'moderate';
@@ -465,18 +508,50 @@ function splitCurrentAndHistorical(blocks: TaskBlock[]): {
   return { current, historical };
 }
 
+function buildPromptTerms(prompt: string | undefined): string[] {
+  if (!prompt) return [];
+  const lowered = prompt.toLowerCase();
+  const terms = new Set<string>();
+  const english = lowered.match(/[a-z0-9_.-]{2,}/g) ?? [];
+  const chinese = lowered.match(/[\u4e00-\u9fff]{2,}/g) ?? [];
+  for (const term of [...english, ...chinese]) {
+    const normalized = term.trim();
+    if (normalized.length < 2) continue;
+    terms.add(normalized);
+  }
+  return Array.from(terms);
+}
+
+function taskBlockMatchesPrompt(block: TaskBlock, promptTerms: string[]): boolean {
+  if (promptTerms.length === 0) return false;
+  const tagText = (block.tags ?? []).join(' ').toLowerCase();
+  const topicText = (block.topic ?? '').toLowerCase();
+  const userText = block.messages
+    .filter((message) => message.role === 'user')
+    .map((message) => message.content.toLowerCase())
+    .join('\n');
+  const assistantText = block.messages
+    .filter((message) => message.role === 'assistant')
+    .map((message) => message.content.toLowerCase())
+    .join('\n');
+
+  const searchable = `${tagText}\n${topicText}\n${userText}\n${assistantText}`;
+  return promptTerms.some((term) => searchable.includes(term));
+}
+
 function applyModerateSupplement(params: {
   relatedBlocks: TaskBlock[];
   currentBlock: TaskBlock;
   removedBlocks: TaskBlock[];
   historicalPoolByRanking: TaskBlock[];
   effectiveBudget: number;
+  currentPrompt?: string;
 }): {
   blocks: TaskBlock[];
   supplementedCount: number;
   supplementedTokens: number;
 } {
-  const { relatedBlocks, currentBlock, removedBlocks, historicalPoolByRanking, effectiveBudget } = params;
+  const { relatedBlocks, currentBlock, removedBlocks, historicalPoolByRanking, effectiveBudget, currentPrompt } = params;
   const keptBlocks = [...relatedBlocks, currentBlock];
   const keptTokens = keptBlocks.reduce((sum, b) => sum + b.tokenCount, 0);
   if (keptTokens >= effectiveBudget) {
@@ -487,10 +562,12 @@ function applyModerateSupplement(params: {
   const keptIds = new Set(keptBlocks.map((b) => b.id));
   let supplementedTokens = 0;
   const supplemented: TaskBlock[] = [];
+  const promptTerms = buildPromptTerms(currentPrompt);
 
   for (const candidate of historicalPoolByRanking) {
     if (keptIds.has(candidate.id)) continue;
     if (supplemented.some((b) => b.id === candidate.id)) continue;
+    if (!taskBlockMatchesPrompt(candidate, promptTerms)) continue;
 
     const newTotal = keptTokens + supplementedTokens + candidate.tokenCount;
     // 中等模式规则：
@@ -581,7 +658,6 @@ export async function buildContext(
   // 读取配置
   const contextWindow = getContextWindow();
   const targetBudget = options?.targetBudget ?? Math.floor(contextWindow * DEFAULT_BUDGET_RATIO);
-  const includeMemoryMd = options?.includeMemoryMd !== false; // 默认包含
   const enableTaskGrouping = options?.enableTaskGrouping !== false;
 
   // ── Step 1: 读取 Ledger 条目 ──
@@ -621,61 +697,92 @@ export async function buildContext(
     filteredBlocks = applyTimeWindowFilter(rawBlocks, options.timeWindow);
     timeWindowFilteredCount = rawBlocks.length - filteredBlocks.length;
   }
+  const { current, historical } = splitCurrentAndHistorical(filteredBlocks);
+  let rankedHistorical = historical;
+
+  // ── Step 3.5: embedding recall（历史候选召回） ──
+  const embeddingRecallEnabled = options?.enableEmbeddingRecall !== false;
+  let embeddingRecallExecuted = false;
+  let embeddingCandidateCount = 0;
+  let embeddingIndexPath: string | undefined;
+  let embeddingRecallReason: string | undefined;
+  let embeddingRecallError: string | undefined;
+  let embeddingRecallIds: string[] | undefined;
+  if (embeddingRecallEnabled) {
+    const embeddingRecall = await runTaskEmbeddingRecall({
+      rootDir,
+      sessionId: input.sessionId,
+      agentId,
+      mode,
+      blocks: historical,
+      currentPrompt: input.currentPrompt,
+      topK: options?.embeddingTopK,
+    });
+    embeddingRecallExecuted = embeddingRecall.executed;
+    embeddingCandidateCount = embeddingRecall.candidateCount;
+    embeddingIndexPath = embeddingRecall.indexPath;
+    embeddingRecallReason = embeddingRecall.reason;
+    embeddingRecallError = embeddingRecall.error;
+    embeddingRecallIds = embeddingRecall.rankedTaskIds;
+    if (embeddingRecall.executed) {
+      rankedHistorical = reorderBlocksByRanking(historical, embeddingRecall.rankedTaskIds);
+    }
+  }
 
   // ── Step 4: 可选模型排序（active/dryrun） ──
   const rankingMode = resolveRankingMode(options?.enableModelRanking);
   let rankingExecuted = false;
   let rankingProviderId: string | undefined;
   let rankingProviderModel: string | undefined;
+  let rankingReason: string | undefined;
   let rankingIds: string[] | undefined;
-  if (rankingMode === 'active' || rankingMode === 'dryrun') {
-    const ranking = await runModelRanking(filteredBlocks, {
+  if ((rankingMode === 'active' || rankingMode === 'dryrun') && rankedHistorical.length > 0) {
+    const ranking = await runModelRanking(rankedHistorical, {
       providerId: options?.rankingProviderId,
       currentPrompt: input.currentPrompt,
     });
     rankingExecuted = ranking.executed;
     rankingProviderId = ranking.providerId;
     rankingProviderModel = ranking.providerModel;
+    rankingReason = ranking.reason;
     rankingIds = ranking.rankedTaskIds;
 
     if (rankingMode === 'active' && ranking.executed) {
-      filteredBlocks = reorderBlocksByRanking(filteredBlocks, ranking.rankedTaskIds);
+      rankedHistorical = reorderBlocksByRanking(rankedHistorical, ranking.rankedTaskIds);
     }
+  } else if (embeddingRecallExecuted && embeddingRecallIds) {
+    rankingIds = embeddingRecallIds;
+    rankingReason = 'embedding_recall_only';
   }
 
-  // ── Step 5: MEMORY.md 预算预留 ──
-  let memoryMdTokens = 0;
-  let memoryMdContent = '';
-  let memoryMdIncluded = false;
-  if (includeMemoryMd) {
-    const md = readMemoryMd(options?.memoryMdPath);
-    if (md.content.length > 0) {
-      memoryMdContent = md.content;
-      memoryMdTokens = md.tokenCount;
-      memoryMdIncluded = true;
-    }
-  }
-
-  const effectiveBudget = Math.max(0, targetBudget - memoryMdTokens);
+  // ── Step 5: 预算控制（不再为 MEMORY.md 预留） ──
+  const memoryMdTokens = 0;
+  const memoryMdIncluded = false;
+  const effectiveBudget = Math.max(0, targetBudget);
 
   const buildMode = resolveBuildMode(options?.buildMode);
-  const { current, historical } = splitCurrentAndHistorical(filteredBlocks);
   let removedIrrelevantCount = 0;
   let removedTokens = 0;
   let supplementedCount = 0;
   let supplementedTokens = 0;
+  filteredBlocks = current ? [...rankedHistorical, current] : rankedHistorical;
 
   if (current) {
     const rankedHistory = rankingIds
-      ? reorderBlocksByRanking(historical, rankingIds)
-      : historical;
+      ? reorderBlocksByRanking(rankedHistorical, rankingIds)
+      : rankedHistorical;
 
     if (buildMode === 'minimal' || buildMode === 'moderate') {
       // related = 在 ranking 结果中靠前的历史块（若无 ranking 则全部视为相关）
-      // 这里采用简单策略：若执行了 ranking，则保留前 60% 作为“相关”，其余视为可移除
+      // 这里采用简单策略：
+      // - model ranking 执行时：保留前 60% 作为“相关”
+      // - 仅 embedding recall 执行时：保留 embedding topK 候选
+      // - 否则：全部视为相关
       const relatedCutoff = rankingExecuted
         ? Math.max(1, Math.ceil(rankedHistory.length * 0.6))
-        : rankedHistory.length;
+        : embeddingRecallExecuted
+          ? Math.max(1, Math.min(rankedHistory.length, embeddingCandidateCount))
+          : rankedHistory.length;
       const related = rankedHistory.slice(0, relatedCutoff);
       const removed = rankedHistory.slice(relatedCutoff);
 
@@ -691,6 +798,7 @@ export async function buildContext(
           removedBlocks: removed,
           historicalPoolByRanking: rankedHistory,
           effectiveBudget,
+          currentPrompt: input.currentPrompt,
         });
         filteredBlocks = supplemented.blocks;
         supplementedCount = supplemented.supplementedCount;
@@ -703,13 +811,32 @@ export async function buildContext(
 
   // ── Step 6: 预算截断 ──
   const { included, truncated } = applyBudgetTruncation(filteredBlocks, effectiveBudget);
+  const includedIds = new Set(included.map((block) => block.id));
+  const budgetTruncatedTasks = filteredBlocks
+    .filter((block) => !includedIds.has(block.id))
+    .map((block) => {
+      const summary = summarizeTaskBlock(block);
+      return {
+        id: block.id,
+        tokenCount: block.tokenCount,
+        startTimeIso: block.startTimeIso,
+        ...(block.topic ? { topic: block.topic } : {}),
+        ...(block.tags && block.tags.length > 0 ? { tags: block.tags } : {}),
+        ...(summary ? { summary } : {}),
+      };
+    });
 
   // ── Step 7: 展平为消息列表 ──
   const messages: TaskMessage[] = [];
+  const workingSetBlockId = current?.id;
+  const workingSetBlocks = included.filter((block) => block.id === workingSetBlockId);
+  const historicalBlocksIncluded = included.filter((block) => block.id !== workingSetBlockId);
   for (const block of included) {
+    const contextZone: ContextMessageZone = block.id === workingSetBlockId ? 'working_set' : 'historical_memory';
     for (const msg of block.messages) {
       messages.push({
         ...msg,
+        contextZone,
         isCurrentTurn: block === included[included.length - 1]
           && msg === block.messages[block.messages.length - 1],
       });
@@ -717,6 +844,35 @@ export async function buildContext(
   }
 
   const actualTokens = messages.reduce((sum, m) => sum + m.tokenCount, 0) + memoryMdTokens;
+  const workingSetMessageCount = messages.filter((message) => message.contextZone === 'working_set').length;
+  const historicalMessageCount = messages.filter((message) => message.contextZone === 'historical_memory').length;
+  const workingSetTokens = messages
+    .filter((message) => message.contextZone === 'working_set')
+    .reduce((sum, message) => sum + message.tokenCount, 0);
+  const historicalTokens = messages
+    .filter((message) => message.contextZone === 'historical_memory')
+    .reduce((sum, message) => sum + message.tokenCount, 0);
+
+  log.info('Context build completed', {
+    sessionId: input.sessionId,
+    agentId,
+    mode,
+    buildMode,
+    targetBudget,
+    actualTokens,
+    rawTaskBlockCount,
+    selectedTaskBlockCount: included.length,
+    rankingMode,
+    rankingExecuted,
+    rankingReason: rankingReason ?? 'not_requested',
+    rankingProviderId,
+    rankingProviderModel,
+    embeddingRecallExecuted,
+    embeddingRecallReason: embeddingRecallReason ?? 'not_requested',
+    embeddingRecallError,
+    removedIrrelevantCount,
+    supplementedCount,
+  });
 
   return {
     ok: true,
@@ -731,6 +887,7 @@ export async function buildContext(
       rawTaskBlockCount,
       timeWindowFilteredCount,
       budgetTruncatedCount: truncated,
+      ...(budgetTruncatedTasks.length > 0 ? { budgetTruncatedTasks } : {}),
       targetBudget,
       actualTokens,
       buildMode,
@@ -742,7 +899,21 @@ export async function buildContext(
       rankingMode,
       ...(rankingProviderId ? { rankingProviderId } : {}),
       ...(rankingProviderModel ? { rankingProviderModel } : {}),
+      ...(rankingReason ? { rankingReason } : {}),
       ...(rankingIds ? { rankingIds } : {}),
+      embeddingRecallExecuted,
+      embeddingCandidateCount,
+      ...(embeddingRecallReason ? { embeddingRecallReason } : {}),
+      ...(embeddingIndexPath ? { embeddingIndexPath } : {}),
+      ...(embeddingRecallError ? { embeddingRecallError } : {}),
+      workingSetTaskBlockCount: workingSetBlocks.length,
+      historicalTaskBlockCount: historicalBlocksIncluded.length,
+      workingSetMessageCount,
+      historicalMessageCount,
+      workingSetTokens,
+      historicalTokens,
+      workingSetBlockIds: workingSetBlocks.map((block) => block.id),
+      historicalBlockIds: historicalBlocksIncluded.map((block) => block.id),
     },
   };
 }

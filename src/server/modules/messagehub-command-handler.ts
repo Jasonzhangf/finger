@@ -30,6 +30,12 @@ function resolveLatestSession(sessionManager: SessionManager, projectPath: strin
   return sorted[0];
 }
 
+function summarizeMessage(content: string, maxChars = 100): string {
+  const normalized = content.replace(/\s+/g, ' ').trim();
+  if (normalized.length <= maxChars) return normalized;
+  return `${normalized.slice(0, maxChars)}...`;
+}
+
 /**
  * 辅助函数：触发 session_changed 事件
  */
@@ -40,13 +46,14 @@ async function emitSessionChanged(
 ): Promise<void> {
   if (!eventBus) return;
   const session = sessionManager.getSession(sessionId);
+  const snapshot = session ? sessionManager.getSessionMessageSnapshot(session.id, 0) : null;
   await eventBus.emit({
     type: 'session_changed',
     sessionId,
     timestamp: new Date().toISOString(),
     payload: {
       projectPath: session?.projectPath,
-      messageCount: session?.messages.length ?? 0,
+      messageCount: snapshot?.messageCount ?? 0,
     },
   });
 }
@@ -94,11 +101,12 @@ export async function handleAgentList(
   const currentId = sessionManager.getCurrentSession()?.id;
   const lines = [`项目：${resolvedPath}\n会话列表：\n`];
   sorted.forEach((s, i) => {
-    const lastMsg = s.messages[s.messages.length - 1];
-    const summary = lastMsg ? lastMsg.content.substring(0, 100) : '(空)';
+    const snapshot = sessionManager.getSessionMessageSnapshot(s.id, 1);
+    const lastMsg = snapshot.previewMessages[0];
+    const summary = lastMsg ? summarizeMessage(lastMsg.content, 100) : '(空)';
     const date = new Date(s.lastAccessedAt).toLocaleString('zh-CN');
     const isCurrent = s.id === currentId ? ' [当前]' : '';
-    lines.push(`  ${i + 1}. [${s.id}]${isCurrent} ${date} - "${summary}" (${s.messages.length} 条消息)`);
+    lines.push(`  ${i + 1}. [${s.id}]${isCurrent} ${date} - "${summary}" (${snapshot.messageCount} 条消息)`);
   });
 
   lines.push('\n使用 <##@agent:switch@session-id##> 切换会话');
@@ -145,8 +153,8 @@ export async function handleAgentSwitch(
 
   await emitSessionChanged(sessionManager, sessionId, eventBus);
 
-  const messageCount = session.messages.length;
-  return `✓ 已切换到会话：[${sessionId}]\n项目路径：${session.projectPath}\n\n加载会话历史... (${messageCount} ��消息)\n继续对话...`;
+  const messageCount = sessionManager.getSessionMessageSnapshot(session.id, 0).messageCount;
+  return `✓ 已切换到会话：[${sessionId}]\n项目路径：${session.projectPath}\n\n加载会话历史... (${messageCount} 条消息)\n继续对话...`;
 }
 
 /**
@@ -211,8 +219,9 @@ export async function handleSystemCommand(
   ];
 
   systemSessions.forEach((s, i) => {
-    const lastMsg = s.messages[s.messages.length - 1];
-    const summary = lastMsg ? lastMsg.content.substring(0, 100) : '(空)';
+    const snapshot = sessionManager.getSessionMessageSnapshot(s.id, 1);
+    const lastMsg = snapshot.previewMessages[0];
+    const summary = lastMsg ? summarizeMessage(lastMsg.content, 100) : '(空)';
     const date = new Date(s.lastAccessedAt).toLocaleString('zh-CN');
     lines.push(`  ${i + 1}. [${s.id}] ${date} - "${summary}"`);
   });
@@ -278,7 +287,8 @@ export async function handleProjectSwitch(
   sessionManager.setCurrentSession(session.id);
   await emitSessionChanged(sessionManager, session.id, eventBus);
 
-  return `✓ 已切换到项目：${resolvedPath}\n\n当前会话：[${session.id}]\n${session.messages.length} 条消息\n\n继续对话...`;
+  const messageCount = sessionManager.getSessionMessageSnapshot(session.id, 0).messageCount;
+  return `✓ 已切换到项目：${resolvedPath}\n\n当前会话：[${session.id}]\n${messageCount} 条消息\n\n继续对话...`;
 }
 
 /**

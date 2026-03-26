@@ -52,10 +52,41 @@ This document defines the prompt and request-construction contract for chat-code
   - `user_instructions`
   - `environment_context`
   - `responses.text.output_schema` (when enabled)
+  - `FLOW.md` runtime block (`# Task Flow Runtime`) injected into system/developer prompt zone
 - Rust side injects blocks and builds Responses payload:
   - `instructions` from `system_prompt`
   - `input[]` from history + context blocks + current user input
   - `text.format` with json schema when `output_schema` is provided
+
+## 5.1) FLOW.md Hard Runtime Limit (mandatory)
+
+- Source of truth: `src/agents/chat-codex/chat-codex-module.ts`
+  - `const FLOW_PROMPT_MAX_CHARS = 10_000`
+  - `buildFlowPromptBlock(metadata)` applies runtime truncation before prompt injection.
+- Behavior is **code-enforced**, not prompt-only guidance:
+  - if `FLOW.md` length `<= 10,000`, inject full content
+  - if `FLOW.md` length `> 10,000`, inject first `10,000` chars and append marker:
+    - `...[TRUNCATED_AT_10000_CHARS]`
+- Path resolution priority:
+  1. `metadata.flowFilePath` / `metadata.flow_file_path`
+  2. `metadata.projectPath/FLOW.md`
+  3. `metadata.cwd/FLOW.md`
+  4. `process.cwd()/FLOW.md`
+- This hard limit is mandatory and must not be replaced by soft policy text.
+
+## 5.2) Context Rebuild On-Demand Tool
+
+- Tool: `context_builder.rebuild`
+- Purpose: when the model detects a topic switch or mixed-thread history noise, it can proactively trigger a rebuild for the current session using the latest user prompt as relevance signal.
+- Contract:
+  - Input: `current_prompt`, optional `mode`, optional `target_budget`
+  - Output: selected block ids + rebuild metadata (working_set/historical split stats) + `appliesNextTurn=true`
+- Note:
+  - This tool is for on-demand rebuild observability and control.
+  - Canonical source of truth is still ledger; rebuild output is a dynamic view.
+  - Runtime strategy is **on-demand-first**:
+    - default history path uses raw session order (no automatic rebuild)
+    - when `context_builder.rebuild` is called, rebuilt history is staged and applied on the next turn history assembly once.
 
 ## 6) Validation
 
@@ -67,6 +98,7 @@ This document defines the prompt and request-construction contract for chat-code
   - structured schema disabled by default
   - role-default structured schema when enabled
   - explicit schema override precedence
+  - FLOW.md hard 10k truncation behavior and disable switch
 
 ### Rust unit
 
