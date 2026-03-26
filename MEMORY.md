@@ -1,3 +1,37 @@
+## [task] Tag-Aware Context Builder Enhancement {#mem-tag-aware-cb-20260326}
+时间: 2026-03-26 08:30
+状态: completed
+
+### 架构简化
+用户提出：既然已打 tag，无需拆分 session。直接在 ledger 层按 tag 聚合 + 大模型排序��好。
+
+### 变更内容
+
+1. **TaskBlock tags/topic 提取** (`src/runtime/context-builder.ts`)
+   - `finalizeBlock` 从 assistant 消息的 metadata 中提取 tags/topic
+   - TaskBlock 类型新增 `tags?: string[]` + `topic?: string`
+
+2. **三重维度排序 prompt** (`src/runtime/context-builder.ts`)
+   - 原来只有内容相关性 + 时间（双重维度）
+   - 新增标签匹配作为最高优先级维度
+   - 排序原则：标签匹配 > 内容相关性 > 时间接近度
+   - 判断标准新增：tag/topic 匹配优先级
+
+3. **Block preview 包含 tags** (`src/runtime/context-builder.ts`)
+   - 排序候选预览中显示 `标签: xxx` 和 `主题: xxx`
+
+4. **移除 tag 长度限制** (`src/common/agent-dispatch.ts`)
+   - `normalizeStringArray` 不再限制 tag 字符串 <= 50 字符
+   - 仅过滤空值和纯空白
+
+5. **设计文档更新** (`docs/design/SESSION_CLASSIFICATION_CONTEXT_BUILDER_EPIC.md`)
+   - 简化为 tag-aggregated 方案（无 session switch）
+   - 完整记录数据流和设计决策
+
+### Epic
+关联: finger-261
+子任务: finger-261.3 — tag-aware context builder ✅
+
 ## [task] Task-End Tagging Pipeline (session classification 基础) {#mem-tags-pipeline-20260326}
 时间: 2026-03-26 08:00
 状态: completed
