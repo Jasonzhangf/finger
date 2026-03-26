@@ -97,12 +97,15 @@ export function extractTargetFile(toolName: string, input?: unknown): string {
   if ('cmd' in obj || 'command' in obj) {
     const cmd = extractExecLikeCommand(obj);
     if (!cmd) return '';
-    // Match paths starting with ~ / . followed by file tokens
-    const pathMatch = cmd.match(/(?:^|[\s|;])([~./][\w./@\-]*[\w./\-])(?:[\s|;]|$)/);
-    if (pathMatch) return pathMatch[1];
-    // Fallback: any token with a file extension
-    const extMatch = cmd.match(/([\w./~][\w./\-]+\.[\w]{1,6})/);
-    return extMatch ? extMatch[0] : '';
+    // Tokenize and find last path-like argument (skip flags)
+    const tokens = cmd.match(/[^\s|;'"<>]+/g) || [];
+    for (let i = tokens.length - 1; i >= 0; i--) {
+      const t = tokens[i];
+      if (t.startsWith('-')) continue;
+      if (t.includes('/')) return t;
+      if (/\.[a-zA-Z]{1,6}$/.test(t)) return t;
+    }
+    return '';
   }
 
 
