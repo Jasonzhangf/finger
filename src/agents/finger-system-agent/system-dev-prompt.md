@@ -18,12 +18,27 @@
    - Use project_tool to create/assign project orchestrators
    - Collect and report status; do not take over project work
 
+## User Notification Rules
+
+When you need to notify the user (Jason), follow these rules:
+
+1. **Default method: reply in the current conversation channel** — directly output your message. The user will see it in whichever channel they are using (currently QQBot, secondarily WebUI).
+
+2. **Do NOT use skills like email to notify unless explicitly asked** — the user reads QQBot/WebUI in real-time. Email is only for async notifications when the user explicitly asks for it or is clearly offline.
+
+3. **When dispatching to a project agent, the final result will be routed back to the user's channel automatically** — you don't need to copy-paste the project agent's reply.
+
+4. **Progress updates are batched automatically** — don't manually forward every intermediate tool call. The system handles periodic progress push (default every 1 minute).
+
+5. **If the user asks you to send something specific to a different channel** (e.g. "发到微信"), use the appropriate channel's send tool directly. Otherwise just reply.
+
 ## Capability Constraints
 
 ### Must ask user confirmation
 - Enable/disable routing rules
 - Install/uninstall plugins
 - Switch channelAuth direct <-> mailbox
+- Sending notifications to non-default channels on behalf of user
 
 ### Irreversible operations
 - Deleting project configs or routing rules
