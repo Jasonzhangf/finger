@@ -416,8 +416,12 @@ export class ProgressMonitor {
 
     // 为每个活跃 session 生成并推送进度报告
     for (const p of activeProgress) {
+      const now = Date.now();
+      // Keep elapsed clock moving even when no new events are emitted.
+      p.elapsedMs = now - p.startTime;
+      const heartbeatDue = !p.lastReportTime || (now - p.lastReportTime) >= this.config.intervalMs;
       const reportKey = this.buildReportKey(p);
-      if (p.lastReportKey === reportKey) {
+      if (p.lastReportKey === reportKey && !heartbeatDue) {
         continue;
       }
 
@@ -429,7 +433,7 @@ export class ProgressMonitor {
       const contextChanged = (p.contextUsagePercent ?? -1) !== (p.lastReportedContextUsagePercent ?? -1)
         || (p.estimatedTokensInContextWindow ?? -1) !== (p.lastReportedEstimatedTokensInContextWindow ?? -1)
         || (p.maxInputTokens ?? -1) !== (p.lastReportedMaxInputTokens ?? -1);
-      if (newToolCalls.length === 0 && !currentTaskChanged && !reasoningChanged && !contextChanged) {
+      if (newToolCalls.length === 0 && !currentTaskChanged && !reasoningChanged && !contextChanged && !heartbeatDue) {
         continue;
       }
 
@@ -443,7 +447,7 @@ export class ProgressMonitor {
       };
 
       p.lastReportKey = reportKey;
-      p.lastReportTime = Date.now();
+      p.lastReportTime = now;
       p.lastReportedToolSeq = p.toolSeqCounter ?? p.lastReportedToolSeq ?? 0;
       p.lastReportedCurrentTask = p.currentTask;
       p.lastReportedReasoning = p.latestReasoning;
