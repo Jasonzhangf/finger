@@ -5,7 +5,6 @@ import type { AgentCapabilityLayer, AgentRuntimeDeps } from './agent-runtime/typ
 import { dispatchTaskToAgent } from './agent-runtime/dispatch.js';
 import { controlAgentRuntime } from './agent-runtime/control.js';
 import { registerMailboxRuntimeTools } from './agent-runtime/mailbox.js';
-import { parseAskToolInput, runBlockingAsk } from './agent-runtime/ask.js';
 import {
   parseAgentControlToolInput,
   parseAgentDeployToolInput,
@@ -218,31 +217,6 @@ export function registerAgentRuntimeTools(deps: AgentRuntimeDeps): string[] {
   });
   loaded.push('orchestrator.loop_templates');
 
-  deps.runtime.registerTool({
-    name: 'user.ask',
-    description:
-      'Ask user for clarification/decision in blocking mode. Returns when answer is provided or timeout is reached.',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        question: { type: 'string' },
-        options: { type: 'array', items: { type: 'string' } },
-        context: { type: 'string' },
-        agent_id: { type: 'string' },
-        session_id: { type: 'string' },
-        workflow_id: { type: 'string' },
-        epic_id: { type: 'string' },
-        timeout_ms: { type: 'number' },
-      },
-      required: ['question'],
-      additionalProperties: true,
-    },
-    handler: async (input: unknown): Promise<unknown> => {
-      const askInput = parseAskToolInput(input);
-      return runBlockingAsk(deps, askInput);
-    },
-  });
-  loaded.push('user.ask');
 
   // Session switching tool
   deps.runtime.registerTool({
