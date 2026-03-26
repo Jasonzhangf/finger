@@ -176,6 +176,7 @@ export class ProgressMonitor {
         status: 'running',
         elapsedMs: 0,
         toolCallHistory: [],
+        toolSeqCounter: 0,
       };
       this.sessionProgress.set(sessionId, progress);
     }
@@ -298,7 +299,10 @@ export class ProgressMonitor {
   }
 
   private recordToolCall(progress: SessionProgress, toolId?: string, toolName?: string, input?: unknown): void {
+    const nextSeq = (progress.toolSeqCounter ?? 0) + 1;
+    progress.toolSeqCounter = nextSeq;
     const record: ToolCallRecord = {
+      seq: nextSeq,
       toolId,
       toolName: toolName || 'unknown',
       params: this.safeSnippet(input, this.snippetLimitForTool(toolName)),
@@ -318,7 +322,7 @@ export class ProgressMonitor {
    output?: unknown,
    error?: string,
    success?: boolean,
- ): void {
+  ): void {
     // 先按 toolId 查找
     let existing = toolId
       ? progress.toolCallHistory.find(t => t.toolId === toolId && !t.result && !t.error)
@@ -353,12 +357,25 @@ export class ProgressMonitor {
       }
     }
 
-    const record: ToolCallRecord = existing || {
-      toolId,
-      toolName: toolName || 'unknown',
-      params: this.safeSnippet(input, this.snippetLimitForTool(toolName)),
-      timestamp: Date.now(),
-    };
+    let record: ToolCallRecord;
+    if (existing) {
+      record = existing;
+      if (typeof record.seq !== 'number' || !Number.isFinite(record.seq)) {
+        const nextSeq = (progress.toolSeqCounter ?? 0) + 1;
+        progress.toolSeqCounter = nextSeq;
+        record.seq = nextSeq;
+      }
+    } else {
+      const nextSeq = (progress.toolSeqCounter ?? 0) + 1;
+      progress.toolSeqCounter = nextSeq;
+      record = {
+        seq: nextSeq,
+        toolId,
+        toolName: toolName || 'unknown',
+        params: this.safeSnippet(input, this.snippetLimitForTool(toolName)),
+        timestamp: Date.now(),
+      };
+    }
     record.result = output !== undefined ? this.safeSnippet(output) : record.result;
     record.error = error ? this.safeSnippet(error) : record.error;
     record.success = success;
@@ -405,8 +422,8 @@ export class ProgressMonitor {
       }
 
       // 仅发送新增工具调用（避免重复）
-      const lastReportedIdx = p.lastReportedToolIndex ?? -1;
-      const newToolCalls = p.toolCallHistory.slice(lastReportedIdx + 1);
+      const lastReportedSeq = p.lastReportedToolSeq ?? 0;
+      const newToolCalls = p.toolCallHistory.filter((tool) => (tool.seq ?? 0) > lastReportedSeq);
       const currentTaskChanged = (p.currentTask ?? '') !== (p.lastReportedCurrentTask ?? '');
       const reasoningChanged = (p.latestReasoning ?? '') !== (p.lastReportedReasoning ?? '');
       const contextChanged = (p.contextUsagePercent ?? -1) !== (p.lastReportedContextUsagePercent ?? -1)
@@ -427,7 +444,7 @@ export class ProgressMonitor {
 
       p.lastReportKey = reportKey;
       p.lastReportTime = Date.now();
-      p.lastReportedToolIndex = p.toolCallHistory.length - 1;
+      p.lastReportedToolSeq = p.toolSeqCounter ?? p.lastReportedToolSeq ?? 0;
       p.lastReportedCurrentTask = p.currentTask;
       p.lastReportedReasoning = p.latestReasoning;
       p.lastReportedContextUsagePercent = p.contextUsagePercent;

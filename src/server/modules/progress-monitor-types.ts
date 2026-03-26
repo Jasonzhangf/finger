@@ -5,6 +5,7 @@ export interface ProgressMonitorConfig {
 }
 
 export interface ToolCallRecord {
+  seq?: number;
   toolId?: string;
   toolName: string;
   params?: string;
@@ -29,7 +30,15 @@ export interface SessionProgress {
   lastReportKey?: string;
   lastReportStatus?: string;
   lastReportTime?: number;
-  lastReportedToolIndex?: number;
+  /**
+   * Monotonic tool sequence cursor for incremental progress reports.
+   * We cannot rely on array index because toolCallHistory is capped/sliding.
+   */
+  lastReportedToolSeq?: number;
+  /**
+   * Monotonic sequence generator for tool history records.
+   */
+  toolSeqCounter?: number;
   lastReportedCurrentTask?: string;
   lastReportedReasoning?: string;
   lastReportedContextUsagePercent?: number;
