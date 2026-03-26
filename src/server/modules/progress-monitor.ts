@@ -14,7 +14,12 @@
 import type { AgentRuntimeDeps } from './agent-runtime/types.js';
 import type { UnifiedEventBus } from '../../runtime/event-bus.js';
 import { logger } from '../../core/logger.js';
-import { buildCompactSummary, buildReportKey as buildReportKeyUtil, type SessionProgressData } from './progress-monitor-utils.js';
+import {
+  buildCompactSummary,
+  buildReportKey as buildReportKeyUtil,
+  resolveToolDisplayName,
+  type SessionProgressData,
+} from './progress-monitor-utils.js';
 import {
   DEFAULT_PROGRESS_MONITOR_CONFIG,
   loadProgressMonitorConfig,
@@ -192,9 +197,17 @@ export class ProgressMonitor {
         break;
       case 'tool_result':
         this.recordToolResult(progress, event.toolId, event.toolName, event.payload?.input, event.payload?.output, undefined, true);
+        if (event.toolName) {
+          const resolved = resolveToolDisplayName(event.toolName, event.payload?.input);
+          progress.currentTask = `${resolved} → ✅`;
+        }
         break;
       case 'tool_error':
         this.recordToolResult(progress, event.toolId, event.toolName, event.payload?.input, undefined, event.payload?.error, false);
+        if (event.toolName) {
+          const resolved = resolveToolDisplayName(event.toolName, event.payload?.input);
+          progress.currentTask = `${resolved} → ❌`;
+        }
         break;
       case 'model_round':
         progress.modelRoundsCount++;
@@ -256,7 +269,7 @@ export class ProgressMonitor {
     const record: ToolCallRecord = {
       toolId,
       toolName: toolName || 'unknown',
-      params: this.safeSnippet(input),
+      params: this.safeSnippet(input, toolName === 'update_plan' ? 2000 : 200),
       timestamp: Date.now(),
     };
     progress.toolCallHistory.push(record);
@@ -323,7 +336,8 @@ export class ProgressMonitor {
     if (progress.toolCallHistory.length > 10) {
       progress.toolCallHistory.shift();
     }
-    progress.currentTask = `${record.toolName} → ${success ? '✅' : '❌'}`;
+    const displayName = resolveToolDisplayName(record.toolName, record.params);
+    progress.currentTask = `${displayName} → ${success ? '✅' : '❌'}`;
   }
 
   private safeSnippet(value: unknown, limit = 200): string | undefined {
@@ -357,13 +371,13 @@ export class ProgressMonitor {
       if (p.lastReportKey === reportKey) {
         continue;
       }
-      p.lastReportKey = reportKey;
-      p.lastReportTime = Date.now();
 
       // 仅发送新增工具调用（避免重复）
       const lastReportedIdx = p.lastReportedToolIndex ?? -1;
       const newToolCalls = p.toolCallHistory.slice(lastReportedIdx + 1);
-      if (newToolCalls.length === 0) {
+      const currentTaskChanged = (p.currentTask ?? '') !== (p.lastReportedCurrentTask ?? '');
+      const reasoningChanged = (p.latestReasoning ?? '') !== (p.lastReportedReasoning ?? '');
+      if (newToolCalls.length === 0 && !currentTaskChanged && !reasoningChanged) {
         continue;
       }
 
@@ -376,7 +390,11 @@ export class ProgressMonitor {
         summary: this.buildSingleProgressSummary(p, newToolCalls),
       };
 
+      p.lastReportKey = reportKey;
+      p.lastReportTime = Date.now();
       p.lastReportedToolIndex = p.toolCallHistory.length - 1;
+      p.lastReportedCurrentTask = p.currentTask;
+      p.lastReportedReasoning = p.latestReasoning;
 
       if (this.callbacks?.onProgressReport) {
         await this.callbacks.onProgressReport(report);
@@ -389,6 +407,9 @@ export class ProgressMonitor {
    */
   private buildSingleProgressSummary(p: SessionProgress, newToolCalls?: ToolCallRecord[]): string {
     const toolsToShow = (newToolCalls && newToolCalls.length > 0) ? newToolCalls : [];
+    const firstReport = !p.lastReportTime;
+    const currentTaskChanged = (p.currentTask ?? '') !== (p.lastReportedCurrentTask ?? '');
+    const reasoningChanged = (p.latestReasoning ?? '') !== (p.lastReportedReasoning ?? '');
     const data: SessionProgressData = {
       agentId: p.agentId,
       status: p.status,
@@ -401,7 +422,15 @@ export class ProgressMonitor {
       })),
       latestReasoning: p.latestReasoning,
     };
-    return buildCompactSummary(data, (ms) => this.formatElapsed(ms));
+    return buildCompactSummary(
+      data,
+      (ms) => this.formatElapsed(ms),
+      {
+        includeTask: firstReport || currentTaskChanged,
+        includeReasoning: firstReport || reasoningChanged,
+        headerMode: 'minimal',
+      },
+    );
   }
 
   private buildReportKey(p: SessionProgress): string {
