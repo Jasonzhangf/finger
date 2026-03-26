@@ -78,6 +78,22 @@ describe('progress-monitor-utils', () => {
     it('extracts path from workdir', () => {
       expect(extractTargetFile('shell.exec', { workdir: '/tmp/project' })).toBe('/tmp/project');
     });
+
+    it('extracts file from bash -c wrapped command', () => {
+      expect(extractTargetFile('exec_command', { cmd: 'bash -c "cat src/server/index.ts"' })).toBe('src/server/index.ts');
+    });
+
+    it('extracts file from /bin/bash -lc wrapped command', () => {
+      expect(extractTargetFile('exec_command', { cmd: '/bin/bash -lc "grep -rn pattern src/server/"' })).toBe('src/server/');
+    });
+
+    it('extracts file from explicit filepath field', () => {
+      expect(extractTargetFile('view_image', { filepath: '/tmp/screenshot.png' })).toBe('/tmp/screenshot.png');
+    });
+
+    it('extracts file from paths array field', () => {
+      expect(extractTargetFile('shell.exec', { paths: ['src/a.ts', 'src/b.ts'] })).toBe('src/a.ts');
+    });
   });
 
   const formatElapsed = (ms: number) => `${Math.floor(ms / 60000)}m`;

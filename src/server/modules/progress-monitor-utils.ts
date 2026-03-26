@@ -43,6 +43,40 @@ function extractExecLikeCommand(input?: unknown): string {
   return '';
 }
 
+function stripWrappingQuotes(value: string): string {
+  const trimmed = value.trim();
+  if (trimmed.length < 2) return trimmed;
+  const first = trimmed[0];
+  const last = trimmed[trimmed.length - 1];
+  if ((first === '"' && last === '"') || (first === '\'' && last === '\'')) {
+    return trimmed.slice(1, -1).trim();
+  }
+  return trimmed;
+}
+
+function extractPathFromCommand(cmd: string): string {
+  const normalized = cmd.trim();
+  if (!normalized) return '';
+
+  // Handle shell wrappers: bash -c "...", sh -lc '...'
+  const shellWrapper = normalized.match(/^(?:\/bin\/)?(?:bash|sh|zsh)\s+-[a-zA-Z]+\s+(.+)$/);
+  if (shellWrapper && shellWrapper[1]) {
+    const nested = stripWrappingQuotes(shellWrapper[1]);
+    const nestedPath = extractPathFromCommand(nested);
+    if (nestedPath) return nestedPath;
+  }
+
+  const tokens = normalized.match(/[^\s|;'"<>]+/g) || [];
+  for (let i = tokens.length - 1; i >= 0; i--) {
+    const t = tokens[i];
+    if (!t || t === '&&' || t === '||') continue;
+    if (t.startsWith('-')) continue;
+    if (t.includes('/')) return t;
+    if (/\.[a-zA-Z]{1,8}$/.test(t)) return t;
+  }
+  return '';
+}
+
 /**
  * Classify a tool call into a human-readable category.
  */
@@ -96,16 +130,18 @@ export function extractTargetFile(toolName: string, input?: unknown): string {
 
   if ('cmd' in obj || 'command' in obj) {
     const cmd = extractExecLikeCommand(obj);
-    if (!cmd) return '';
-    // Tokenize and find last path-like argument (skip flags)
-    const tokens = cmd.match(/[^\s|;'"<>]+/g) || [];
-    for (let i = tokens.length - 1; i >= 0; i--) {
-      const t = tokens[i];
-      if (t.startsWith('-')) continue;
-      if (t.includes('/')) return t;
-      if (/\.[a-zA-Z]{1,6}$/.test(t)) return t;
-    }
-    return '';
+    return extractPathFromCommand(cmd);
+  }
+
+  if ('file' in obj && typeof obj.file === 'string') return obj.file;
+  if ('filepath' in obj && typeof obj.filepath === 'string') return obj.filepath;
+  if ('filename' in obj && typeof obj.filename === 'string') return obj.filename;
+  if ('dir' in obj && typeof obj.dir === 'string') return obj.dir;
+  if ('directory' in obj && typeof obj.directory === 'string') return obj.directory;
+
+  if ('paths' in obj && Array.isArray(obj.paths)) {
+    const firstPath = obj.paths.find((item): item is string => typeof item === 'string' && item.trim().length > 0);
+    if (firstPath) return firstPath;
   }
 
 
