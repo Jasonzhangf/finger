@@ -100,6 +100,7 @@ export interface SessionProgressData {
   toolCallHistory: Array<{
     toolName: string;
     params?: string;
+    result?: string;
     success?: boolean;
   }>;
   latestReasoning?: string;
@@ -108,18 +109,36 @@ export interface SessionProgressData {
 /**
  * Build a compact, mobile-readable progress summary for one session.
  */
+export interface BuildCompactSummaryOptions {
+  includeTask?: boolean;
+  includeReasoning?: boolean;
+  headerMode?: 'full' | 'minimal';
+}
+
 export function buildCompactSummary(
   p: SessionProgressData,
   formatElapsed: (ms: number) => string,
+  options?: BuildCompactSummaryOptions,
 ): string {
+  const includeTask = options?.includeTask ?? true;
+  const includeReasoning = options?.includeReasoning ?? true;
+  const headerMode = options?.headerMode ?? 'full';
   const elapsed = formatElapsed(p.elapsedMs);
   const task = p.currentTask || '';
   const recentTools = p.toolCallHistory.slice(-5);
 
   const lines: string[] = [];
-  lines.push(`📊 ${p.agentId} | ${elapsed} | ${task || '执行中'}`);
+  if (headerMode === 'minimal') {
+    lines.push(`📊 ${p.agentId} | ${elapsed}`);
+  } else {
+    lines.push(`📊 ${p.agentId} | ${elapsed} | ${task || '执行中'}`);
+  }
 
-  if (p.latestReasoning) {
+  if (includeTask && task) {
+    lines.push(`🧭 ${task}`);
+  }
+
+  if (includeReasoning && p.latestReasoning) {
     lines.push(`💭 ${p.latestReasoning}`);
   }
 
@@ -130,12 +149,81 @@ export function buildCompactSummary(
       const resolvedName = resolveToolDisplayName(t.toolName, t.params);
       const file = extractTargetFile(t.toolName, t.params);
       const filePart = file ? ` | ${file}` : '';
-      return `${icon} [${cat}] ${resolvedName}${filePart}`;
+      const detail = extractToolDetail(t.toolName, t.params, t.result);
+      const detailPart = detail ? ` ${detail}` : '';
+      return `${icon} [${cat}] ${resolvedName}${filePart}${detailPart}`;
     });
     lines.push(toolLines.join('\n'));
   }
 
   return lines.join('\n');
+}
+
+/**
+ * Extract a meaningful one-line detail from tool input for progress display.
+ * Currently handles: update_plan, web_search, agent.dispatch.
+ */
+function extractToolDetail(
+  toolName: string,
+  params?: string,
+  result?: string,
+): string {
+  if (!params && !result) return '';
+
+  const parse = (raw: string): Record<string, unknown> => {
+    if (!raw) return {};
+    try {
+      const obj = JSON.parse(raw);
+      return typeof obj === 'object' && obj !== null ? obj as Record<string, unknown> : {};
+    } catch {
+      return {};
+    }
+  };
+
+  const truncate = (text: string, max = 60): string => {
+    const trimmed = text.replace(/\s+/g, ' ').trim();
+    return trimmed.length > max ? trimmed.slice(0, max - 1) + '\u2026' : trimmed;
+  };
+
+  // update_plan: show the in-progress or latest step
+  if (toolName === 'update_plan') {
+    const p = parse(params ?? '');
+    const planItems = Array.isArray(p.plan) ? p.plan as Array<Record<string, unknown>> : [];
+    if (planItems.length === 0) return '';
+    const inProgress = planItems.find((item) => item.status === 'in_progress');
+    if (inProgress && typeof inProgress.step === 'string') {
+      return '\u25b6 ' + truncate(inProgress.step, 80);
+    }
+    // Show last step with status icon
+    for (let i = planItems.length - 1; i >= 0; i--) {
+      const step = planItems[i];
+      if (typeof step.step === 'string') {
+        const statusIcon = step.status === 'completed' ? '\u2713' : step.status === 'in_progress' ? '\u25b6' : '\u25cb';
+        return statusIcon + ' ' + truncate(step.step, 60);
+      }
+    }
+    return '';
+  }
+
+  // web_search: show the search query
+  if (toolName === 'web_search' || toolName === 'search_query') {
+    const p = parse(params ?? '');
+    const query = typeof p.query === 'string' ? p.query.trim()
+      : typeof p.q === 'string' ? p.q.trim()
+      : '';
+    return query ? '\u300c' + truncate(query, 50) + '\u300d' : '';
+  }
+
+  // agent.dispatch: show target agent
+  if (toolName === 'agent.dispatch' || toolName === 'dispatch') {
+    const p = parse(params ?? '');
+    const target = typeof p.target_agent_id === 'string' ? p.target_agent_id.trim()
+      : typeof p.targetAgentId === 'string' ? p.targetAgentId.trim()
+      : '';
+    return target ? '\u2192 ' + target : '';
+  }
+
+  return '';
 }
 
 /**

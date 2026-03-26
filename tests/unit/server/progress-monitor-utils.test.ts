@@ -76,8 +76,10 @@ describe('progress-monitor-utils', () => {
     });
   });
 
+  const formatElapsed = (ms: number) => `${Math.floor(ms / 60000)}m`;
+
   describe('buildCompactSummary', () => {
-    const formatElapsed = (ms: number) => `${Math.floor(ms / 60000)}m`;
+    
 
     it('builds summary with reasoning', () => {
       const data: SessionProgressData = {
@@ -135,6 +137,25 @@ describe('progress-monitor-utils', () => {
       const result = buildCompactSummary(data, formatElapsed);
       expect(result).toContain('执行中');
     });
+
+    it('supports minimal header and delta-only task/reasoning lines', () => {
+      const data: SessionProgressData = {
+        agentId: 'finger-system-agent',
+        status: 'running',
+        currentTask: '分析代码',
+        elapsedMs: 120000,
+        toolCallHistory: [],
+        latestReasoning: '需要检查 event-forwarding.ts 的逻辑',
+      };
+      const result = buildCompactSummary(data, formatElapsed, {
+        headerMode: 'minimal',
+        includeTask: false,
+        includeReasoning: false,
+      });
+      expect(result).toContain('📊 finger-system-agent | 2m');
+      expect(result).not.toContain('分析代码');
+      expect(result).not.toContain('需要检查 event-forwarding.ts 的逻辑');
+    });
   });
 
   describe('buildReportKey', () => {
@@ -182,6 +203,129 @@ describe('progress-monitor-utils', () => {
 
     it('returns original tool name for non-shell tools', () => {
       expect(resolveToolDisplayName('update_plan')).toBe('update_plan');
+    });
+  });
+
+
+  describe('extractToolDetail', () => {
+    // extractToolDetail is internal, we test it through buildCompactSummary output
+
+    it('update_plan shows in_progress step', () => {
+      const data: SessionProgressData = {
+        agentId: 'test',
+        status: 'running',
+        elapsedMs: 60000,
+        toolCallHistory: [
+          {
+            toolName: 'update_plan',
+            params: JSON.stringify({
+              plan: [
+                { step: 'Fix dispatch tags', status: 'completed' },
+                { step: 'Build context builder', status: 'in_progress' },
+                { step: 'Write tests', status: 'pending' },
+              ],
+            }),
+            success: true,
+          },
+        ],
+      };
+      const result = buildCompactSummary(data, formatElapsed);
+      expect(result).toContain('▶');
+      expect(result).toContain('Build context builder');
+    });
+
+    it('update_plan shows completed step when no in_progress', () => {
+      const data: SessionProgressData = {
+        agentId: 'test',
+        status: 'running',
+        elapsedMs: 60000,
+        toolCallHistory: [
+          {
+            toolName: 'update_plan',
+            params: JSON.stringify({
+              plan: [
+                { step: 'First step done', status: 'completed' },
+                { step: 'Second step done', status: 'completed' },
+              ],
+            }),
+            success: true,
+          },
+        ],
+      };
+      const result = buildCompactSummary(data, formatElapsed);
+      expect(result).toContain('✓');
+      expect(result).toContain('Second step done');
+    });
+
+    it('web_search shows the search query', () => {
+      const data: SessionProgressData = {
+        agentId: 'test',
+        status: 'running',
+        elapsedMs: 30000,
+        toolCallHistory: [
+          {
+            toolName: 'web_search',
+            params: JSON.stringify({ query: 'openclaw-weixin npm plugin' }),
+            success: true,
+          },
+        ],
+      };
+      const result = buildCompactSummary(data, formatElapsed);
+      expect(result).toContain('「');
+      expect(result).toContain('openclaw-weixin');
+      expect(result).toContain('」');
+    });
+
+    it('web_search with q parameter shows query', () => {
+      const data: SessionProgressData = {
+        agentId: 'test',
+        status: 'running',
+        elapsedMs: 30000,
+        toolCallHistory: [
+          {
+            toolName: 'web_search',
+            params: JSON.stringify({ q: 'typescript context builder pattern' }),
+            success: true,
+          },
+        ],
+      };
+      const result = buildCompactSummary(data, formatElapsed);
+      expect(result).toContain('「typescript context builder pattern');
+    });
+
+    it('agent.dispatch shows target agent', () => {
+      const data: SessionProgressData = {
+        agentId: 'test',
+        status: 'running',
+        elapsedMs: 30000,
+        toolCallHistory: [
+          {
+            toolName: 'agent.dispatch',
+            params: JSON.stringify({ target_agent_id: 'finger-project-agent' }),
+            success: true,
+          },
+        ],
+      };
+      const result = buildCompactSummary(data, formatElapsed);
+      expect(result).toContain('→ finger-project-agent');
+    });
+
+    it('shell.exec shows no extra detail for non-special tools', () => {
+      const data: SessionProgressData = {
+        agentId: 'test',
+        status: 'running',
+        elapsedMs: 30000,
+        toolCallHistory: [
+          {
+            toolName: 'shell.exec',
+            params: JSON.stringify({ cmd: 'pnpm build' }),
+            success: true,
+          },
+        ],
+      };
+      const result = buildCompactSummary(data, formatElapsed);
+      // shell.exec detail is empty (resolvedName already shows pnpm build)
+      expect(result).toContain('pnpm build');
     });
   });
 });
