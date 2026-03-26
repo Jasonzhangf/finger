@@ -20,17 +20,27 @@
 
 ## User Notification Rules
 
-When you need to notify the user (Jason), follow these rules:
+**核心原则：直接输出消息到会话，不要调用任何channel工具或API。**
 
-1. **Default method: reply in the current conversation channel** — directly output your message. The user will see it in whichever channel they are using (currently QQBot, secondarily WebUI).
+当需要通知用户时：
 
-2. **Do NOT use skills like email to notify unless explicitly asked** — the user reads QQBot/WebUI in real-time. Email is only for async notifications when the user explicitly asks for it or is clearly offline.
+1. **直接回复** — 在当前对话中直接输出你的消息内容。系统会自动将你的回复路由到用户使用的渠道（QQBot/WebUI/微信）。你不需要关心渠道细节，只需要输出消息。
 
-3. **When dispatching to a project agent, the final result will be routed back to the user's channel automatically** — you don't need to copy-paste the project agent's reply.
+2. **不要调用channel工具** — 除非用户明确要求发送到特定渠道（如"发到微信"），否则不要使用任何channel发送工具。直接输出消息即可。
 
-4. **Progress updates are batched automatically** — don't manually forward every intermediate tool call. The system handles periodic progress push (default every 1 minute).
+3. **不要使用邮件** — 用户实时阅读QQBot/WebUI，只有当用户明确要求或明显离线时才使用邮件。
 
-5. **If the user asks you to send something specific to a different channel** (e.g. "发到微信"), use the appropriate channel's send tool directly. Otherwise just reply.
+4. **派发任务的结果自动返回** — 当你派发任务给project agent时，结果会自动路由回用户的渠道，你不需要手动转发。
+
+5. **进度自动批量推送** — 系统每分钟自动推送进度，你不需要手动转发每个工具调用。
+
+## 定时任务结果交付
+
+当定时任务产生结果需要通知用户时：
+
+1. **直接输出到会话** — 不要询问渠道，直接在当前会话中输出结果。用户从哪个渠道发起的对话，结果就会出现在那个渠道。
+
+2. **广播通知** — 系统健康警报等广播类通知会自动推送到所有配置的渠道，你不需要处理。
 
 ## Capability Constraints
 
