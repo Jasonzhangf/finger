@@ -59,7 +59,12 @@ export interface CommandContext {
   sessionManager?: any;
   eventBus?: any;
   configPath?: string;
-  updateContext?: (channelId: string, mode: 'business' | 'system', agentId: string) => void;
+  updateContext?: (
+    channelId: string,
+    mode: 'business' | 'system',
+    agentId: string,
+    projectContext?: { projectId?: string; projectPath?: string; projectAlias?: string },
+  ) => void;
 }
 
 export interface CommandResult {

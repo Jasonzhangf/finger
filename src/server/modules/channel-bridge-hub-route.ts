@@ -14,7 +14,7 @@ import type { AskManager } from '../../orchestration/ask/ask-manager.js';
 import type { SessionManager } from '../../orchestration/session-manager.js';
 import type { UnifiedEventBus } from '../../runtime/event-bus.js';
 import { ChannelContextManager } from '../../orchestration/channel-context-manager.js';
-import { getCommandHub, parseCommands } from '../../blocks/command-hub/index.js';
+import { CommandType, getCommandHub, parseCommands } from '../../blocks/command-hub/index.js';
 import { loadFingerConfig, getChannelAuth } from '../../core/config/channel-config.js';
 import { logger } from '../../core/logger.js';
 import { SYSTEM_AGENT_CONFIG } from '../../agents/finger-system-agent/index.js';
@@ -226,17 +226,34 @@ export function createChannelBridgeHubRoute(deps: ChannelBridgeHubRouteDeps) {
       type: 'normal',
       targetAgent: ''
     });
-    // Channel ingress must always go through System Agent first.
-    const targetAgentId = SYSTEM_AGENT_CONFIG.id;
-    if (routedAgentId !== targetAgentId) {
-      log.info('Channel target overridden to system agent', {
-        channelId: channelMsg.channelId,
-        routedAgentId,
-        targetAgentId,
-      });
-    }
-    const fixedSessionId = sessionManager.getOrCreateSystemSession().id;
-    sessionManager.ensureSession(fixedSessionId, SYSTEM_PROJECT_PATH, `channel:${channelMsg.channelId}`);
+    const targetAgentId = routedAgentId || SYSTEM_AGENT_CONFIG.id;
+    const channelContext = channelContextManager.getContext(channelMsg.channelId);
+
+    const resolveSessionForTarget = (): { sessionId: string; projectPath: string } => {
+      if (targetAgentId === SYSTEM_AGENT_CONFIG.id) {
+        const systemSession = sessionManager.getOrCreateSystemSession();
+        sessionManager.ensureSession(systemSession.id, SYSTEM_PROJECT_PATH, `channel:${channelMsg.channelId}`);
+        return { sessionId: systemSession.id, projectPath: SYSTEM_PROJECT_PATH };
+      }
+
+      const preferredProjectPath = channelContext?.projectPath?.trim();
+      const projectPath = preferredProjectPath && preferredProjectPath.length > 0
+        ? preferredProjectPath
+        : (() => {
+            const current = sessionManager.getCurrentSession();
+            if (current && current.projectPath !== SYSTEM_PROJECT_PATH) {
+              return current.projectPath;
+            }
+            return process.cwd();
+          })();
+
+      const latest = sessionManager.findSessionsByProjectPath(projectPath)[0];
+      const session = latest ?? sessionManager.createSession(projectPath, `channel:${channelMsg.channelId}`, { allowReuse: true });
+      sessionManager.ensureSession(session.id, projectPath, `channel:${channelMsg.channelId}`);
+      return { sessionId: session.id, projectPath };
+    };
+
+    const { sessionId: fixedSessionId, projectPath: sessionProjectPath } = resolveSessionForTarget();
     const runtimeSetCurrentSession = (deps.runtime as { setCurrentSession?: (sessionId: string) => boolean }).setCurrentSession;
     if (typeof runtimeSetCurrentSession === 'function') {
       const switched = runtimeSetCurrentSession.call(deps.runtime, fixedSessionId);
@@ -327,14 +344,29 @@ export function createChannelBridgeHubRoute(deps: ChannelBridgeHubRouteDeps) {
         sessionManager,
         eventBus,
         configPath: `${process.env.HOME || ''}/.finger/config/config.json`,
-        updateContext: (id: string, mode: 'business' | 'system', agentId: string) => {
-          channelContextManager.updateContext(id, mode, agentId);
+        updateContext: (
+          id: string,
+          mode: 'business' | 'system',
+          agentId: string,
+          projectContext?: { projectId?: string; projectPath?: string; projectAlias?: string },
+        ) => {
+          channelContextManager.updateContext(id, mode, agentId, undefined, projectContext);
         }
       };
 
       const result = await commandHub.execute(command, ctx);
-      await sendReply(result.output || result.error || 'CommandHub 执行失败', 'messagehub');
-      return;
+      const hasFollowupContent = parsed.effectiveContent.trim().length > 0;
+      const shouldContinueAfterSwitch = result.success
+        && hasFollowupContent
+        && (command.type === CommandType.AGENT || command.type === CommandType.SYSTEM);
+      if (!shouldContinueAfterSwitch) {
+        await sendReply(result.output || result.error || 'CommandHub 执行失败', 'messagehub');
+        return;
+      }
+      log.info('Command switch applied, continuing with effective content in same turn', {
+        commandType: command.type,
+        channelId: channelMsg.channelId,
+      });
     }
 
     // 解析命令时剥离 marker，传递给 agent 的内容不包含 <##...##>
@@ -430,9 +462,7 @@ export function createChannelBridgeHubRoute(deps: ChannelBridgeHubRouteDeps) {
       // Build stable history snapshot for kernel from SessionManager (SSOT)
       const history = sessionManager.getMessages(fixedSessionId, 50);
       const kernelApiHistory = toKernelHistoryItems(history);
-      const contextLedgerRootDir = SYSTEM_PROJECT_PATH.endsWith('/system')
-        ? `${SYSTEM_PROJECT_PATH}/sessions`
-        : `${SYSTEM_PROJECT_PATH}/sessions`;
+      const contextLedgerRootDir = `${sessionProjectPath}/sessions`;
       const sharedMetadata = {
         role: 'user',
         source: 'channel',
@@ -442,6 +472,9 @@ export function createChannelBridgeHubRoute(deps: ChannelBridgeHubRouteDeps) {
         messageId: channelMsg.id,
         type: channelMsg.type,
         contextLedgerRootDir,
+        ...(channelContext?.projectAlias ? { projectAlias: channelContext.projectAlias } : {}),
+        ...(channelContext?.projectPath ? { projectPath: channelContext.projectPath } : {}),
+        ...(channelContext?.projectId ? { projectId: channelContext.projectId } : {}),
         ...(kernelInputItems.length > 0 ? { inputItems: kernelInputItems } : {}),
         ...(channelAttachments.length > 0 ? { attachments: channelAttachments } : {}),
         // 附件轮（含图片/文件）或“当前轮疑似媒体请求但无附件”场景，禁止注入旧 kernelApiHistory，避免沿用上一轮内容。

@@ -12,6 +12,9 @@ export interface ChannelContext {
   channelId: string;
   currentMode: 'business' | 'system';
   currentAgentId: string;
+  projectId?: string;
+  projectPath?: string;
+  projectAlias?: string;
   previousContext?: {
     agentId: string;
     sessionId: string;
@@ -57,7 +60,8 @@ export class ChannelContextManager {
     channelId: string,
     mode: 'business' | 'system',
     agentId: string,
-    previousContext?: ChannelContext['previousContext']
+    previousContext?: ChannelContext['previousContext'],
+    projectContext?: { projectId?: string; projectPath?: string; projectAlias?: string },
   ): void {
     const now = Date.now();
     const existing = this.contexts.get(channelId);
@@ -66,6 +70,9 @@ export class ChannelContextManager {
       channelId,
       currentMode: mode,
       currentAgentId: agentId,
+      projectId: projectContext?.projectId ?? existing?.projectId,
+      projectPath: projectContext?.projectPath ?? existing?.projectPath,
+      projectAlias: projectContext?.projectAlias ?? existing?.projectAlias,
       previousContext: previousContext ?? existing?.previousContext,
       switchedAt: now,
     });

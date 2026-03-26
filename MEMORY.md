@@ -96,6 +96,8 @@
   Tags: messagehub, commands, auth, session
 
 ## Session Management & Agent Runtime SSOT
+- [2026-03-26] Jason 确认切换语义：`<##@agent##>` / `<##@agent:alias##>` / `<##@system##>` 采用**持久化 channel context**，未显式切换就保持当前目标；默认使用 latest（固定续写）而不是自动 `new`。`<##...##>` 是唯一有效切换语法（不使用 `<**...**>`）。  
+  Tags: channel-context, super-command, agent-switch, latest-session, ledger
 - [2026-03-24] 约束更新（Jason 明确）：旧的 `new / resume / session` 语义是基于旧 session 文件模型；新架构中这些操作必须以 **ledger 为唯一真源** 解释与实现。UI 的会话切换/新建/恢复都要对应 ledger（持久化），动态 session 只是按 ledger slots 拼接的上下文视图。
   Tags: session, ledger, ssot, ui
 - [2026-03-25] Jason 明确补充：要对齐 codex 的模型可见性。`ledger` 只负责重建历史消息；`system prompt / developer instructions / skills / mailbox baseline / user input` 必须稳定注入，不得因 context builder 重建历史而丢失。`system agent` 与 `project agent` 各自维护独立 session/ledger；派发与回报要写入各自 ledger 流水。  
