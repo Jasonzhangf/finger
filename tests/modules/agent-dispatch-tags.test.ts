@@ -59,13 +59,22 @@ describe('sanitizeDispatchResult - tags extraction', () => {
     expect(result.topic).toBe('top-level-topic');
   });
 
-  it('ignores tags with empty or overly long entries', () => {
+  it('ignores empty and whitespace-only tag entries', () => {
     const raw = {
       summary: 'Done',
-      tags: ['', 'valid-tag', '   ', 'x'.repeat(51), 'another-valid'],
+      tags: ['', 'valid-tag', '   ', 'another-valid', '  trimmed  '],
     };
     const result = sanitizeDispatchResult(raw as any);
-    expect(result.tags).toEqual(['valid-tag', 'another-valid']);
+    expect(result.tags).toEqual(['valid-tag', 'another-valid', 'trimmed']);
+  });
+
+  it('allows tags of any length', () => {
+    const raw = {
+      summary: 'Done',
+      tags: ['short', 'medium-length-tag', 'x'.repeat(200)],
+    };
+    const result = sanitizeDispatchResult(raw as any);
+    expect(result.tags).toEqual(['short', 'medium-length-tag', 'x'.repeat(200)]);
   });
 
   it('handles non-string tag entries gracefully', () => {

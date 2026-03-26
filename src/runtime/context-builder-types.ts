@@ -21,7 +21,7 @@ export interface TaskBlock {
   /** 时间戳 ISO 格式 */
   startTimeIso: string;
   endTimeIso: string;
-  /** 消息列表 */
+  /** 消��列表 */
   messages: TaskMessage[];
   /** Token 数量估算 */
   tokenCount: number;
@@ -29,6 +29,16 @@ export interface TaskBlock {
   relevanceScore?: number;
   /** 任务摘要 */
   summary?: string;
+  /**
+   * 分类标签（从 ledger metadata 提取）
+   * 用于上下文聚合和相关性排序
+   */
+  tags?: string[];
+  /**
+   * 主题分类（粗粒度）
+   * 从 ledger metadata.topic 提取
+   */
+  topic?: string;
 }
 
 /**

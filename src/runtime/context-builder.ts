@@ -130,6 +130,35 @@ function finalizeBlock(id: string, startTs: number, messages: TaskMessage[]): Ta
   const endTs = messages.length > 0 ? messages[messages.length - 1].timestamp : startTs;
   const tokenCount = messages.reduce((sum, m) => sum + m.tokenCount, 0);
 
+  // Extract tags/topic from assistant message metadata (dispatch result)
+  let tags: string[] | undefined;
+  let topic: string | undefined;
+  
+  // Look for tags in assistant messages (dispatch completion writes tags to metadata)
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const msg = messages[i];
+    if (msg.role !== 'assistant') continue;
+    const metadata = msg.metadata;
+    if (!metadata || typeof metadata !== 'object') continue;
+    
+    // Extract tags from metadata
+    const metaTags = metadata.tags;
+    if (Array.isArray(metaTags)) {
+      const normalized = metaTags
+        .filter((t): t is string => typeof t === 'string' && t.trim().length > 0)
+        .map((t) => t.trim());
+      if (normalized.length > 0) {
+        tags = tags ? [...new Set([...tags, ...normalized])] : normalized;
+      }
+    }
+    
+    // Extract topic from metadata
+    const metaTopic = metadata.topic;
+    if (typeof metaTopic === 'string' && metaTopic.trim().length > 0 && !topic) {
+      topic = metaTopic.trim();
+    }
+  }
+
   return {
     id,
     startTime: startTs,
@@ -138,6 +167,8 @@ function finalizeBlock(id: string, startTs: number, messages: TaskMessage[]): Ta
     endTimeIso: new Date(endTs).toISOString(),
     messages,
     tokenCount,
+    ...(tags ? { tags } : {}),
+    ...(topic ? { topic } : {}),
   };
 }
 
@@ -264,27 +295,32 @@ async function runModelRanking(
             text: [
               '你是上下文相关性排序助手。',
               '',
-              '任务：根据用户当前的输入意图，在历史对话任务中找到相关的执行记录，按「内容相关性优先，时间次之」的原则排序。',
+              '任务：根据用户当前的输入意图，在历史对话任务中找到相关的执行记录，按「标签匹配优先，内容相关性次之，时间最后」的原则排序。',
               '',
-              '排序原则（双重维度）：',
+              '排序原则（三重维度）：',
               '',
-              '一、内容相关性（首要维度）',
+              '一、标签匹配（最高优先级）',
+              '- 每个 task 可能带有 tags（分类标签）和 topic（主题）',
+              '- 如果用户当前问题与 task 的 tags/topic 有匹配，优先级最高',
+              '- 标签匹配是强信号，应优先考虑',
+              '',
+              '二、内容相关性（次要维度）',
               '- 高相关：task 直接涉及当前问题的话题/文件/概念',
               '- 中相关：task 与当前问题有间接关联（相关领域、依赖模块等）',
               '- 低相关：task 与当前问题无明显关联',
               '',
-              '二、时间相关性（次要维度）',
-              '- 在相同内容相关性级别内，时间更近的 task 排在前面',
-              '- 最近的任���优先级更高，因为上下文更连贯',
-              '',
-              '最终排序：高相关(时间倒序) → 中相关(时间倒序) → 低相关(时间倒序)',
+              '三、时间相关性（最后维度）',
+              '- 在相同标签匹配和内容相关性级别内，时间更近的 task 排在前面',
+              '- 最近的任务优先级更高，因为上下文更连贯',
               '',
               '判断内容相关性的依据：',
-              '1. 话题匹配：task 讨论/解决的问题与当前问题是否同类',
-              '2. 文件匹配：task 操作的文件/目录是否与当前问题相关',
-              '3. 概念匹配：task 涉及的技术概念/术语是否与当前问题相关',
-              '4. 结论复用：task 的结论/结果是否对解决当前问题有帮助',
+              '1. 标签匹配：task 的 tags/topic 是否与当前问题相关（最高优先）',
+              '2. 话题匹配：task 讨论/解决的问题与当前问题是否同类',
+              '3. 文件匹配：task 操作的文件/目录是否与当前问题相关',
+              '4. 概念匹配：task 涉及的技术概念/术语是否与当前问题相关',
+              '5. 结论复用：task 的结论/结果是否对解决当前问题有帮助',
               '',
+              '最终排序：标签匹配(时间倒序) → 高相关(时间倒序) → 中相关(时间倒序) → 低相关(时间倒序)',
               '返回格式（严格 JSON，不要 markdown）：',
               '{"rankedTaskIds": ["task-id-1", "task-id-2", ...]}',
             ].join('\n'),
@@ -307,12 +343,16 @@ async function runModelRanking(
                 const userMsg = b.messages.find((m) => m.role === 'user');
                 const assistantMsgs = b.messages.filter((m) => m.role === 'assistant');
                 const lastAssistant = assistantMsgs[assistantMsgs.length - 1];
+                const tagsLine = b.tags && b.tags.length > 0 ? `标签: ${b.tags.join(", ")}` : "";
+                const topicLine = b.topic ? `主题: ${b.topic}` : "";
                 const preview = [
                   `[${b.id}]`,
                   `时间: ${b.startTimeIso}`,
-                  userMsg ? `用户: ${userMsg.content.slice(0, 300)}` : '',
-                  lastAssistant ? `助手: ${lastAssistant.content.slice(0, 500)}` : '',
-                ].filter(Boolean).join('\n');
+                  tagsLine,
+                  topicLine,
+                  userMsg ? `用户: ${userMsg.content.slice(0, 300)}` : "",
+                  lastAssistant ? `助手: ${lastAssistant.content.slice(0, 500)}` : "",
+                ].filter(Boolean).join("\n");
                 return preview;
               }).join('\n\n'),
               '',

@@ -46,7 +46,7 @@ function normalizeStringArray(value: unknown): string[] | undefined {
   if (!Array.isArray(value)) return undefined;
   const tags = value
     .map((entry) => typeof entry === 'string' ? entry.trim() : undefined)
-    .filter((entry): entry is string => typeof entry === 'string' && entry.length > 0 && entry.length <= 50);
+    .filter((entry): entry is string => typeof entry === 'string' && entry.trim().length > 0);
   return tags.length > 0 ? [...new Set(tags)] : undefined;
 }
 
