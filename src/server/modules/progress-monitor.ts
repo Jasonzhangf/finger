@@ -31,6 +31,18 @@ import type {
   SessionProgress,
   ToolCallRecord,
 } from './progress-monitor-types.js';
+import {
+  handleAgentRuntimeDispatch,
+  handleAgentRuntimeStatus,
+  handleAgentStepCompleted,
+  handleModelRound,
+  handleToolCallEvent,
+  handleToolErrorEvent,
+  handleToolResultEvent,
+  handleTurnComplete,
+  handleTurnStart,
+  snippetLimitForTool,
+} from './progress-monitor-event-handlers.js';
 
 const log = logger.module('ProgressMonitor');
 export type {
@@ -48,11 +60,6 @@ export class ProgressMonitor {
   private _stopCleanup: (() => void) | null = null;
   private _cleanupTimer: NodeJS.Timeout | null = null;
   private latestStepSummary = new Map<string, string>(); // sessionId -> latest step summary
-
-  private snippetLimitForTool(toolName?: string): number {
-    if (toolName === 'update_plan') return 12_000;
-    return 200;
-  }
 
   constructor(
     private eventBus: UnifiedEventBus,
@@ -187,217 +194,35 @@ export class ProgressMonitor {
 
     switch (eventType) {
       case 'turn_start':
-        progress.status = 'running';
-        if (typeof event.payload?.reasoning === 'string' && event.payload.reasoning.length > 0) {
-          progress.latestReasoning = event.payload.reasoning.slice(0, 120);
-        }
+        handleTurnStart(progress, event);
         break;
       case 'turn_complete':
-        if (typeof event.payload?.reasoning === 'string' && event.payload.reasoning.length > 0) {
-          progress.latestReasoning = event.payload.reasoning.slice(0, 120);
-        }
+        handleTurnComplete(progress, event);
         break;
       case 'tool_call':
-        progress.toolCallsCount++;
-        this.recordToolCall(progress, event.toolId, event.toolName, event.payload?.input);
+        handleToolCallEvent(progress, event);
         break;
       case 'tool_result':
-        this.recordToolResult(progress, event.toolId, event.toolName, event.payload?.input, event.payload?.output, undefined, true);
-        if (event.toolName) {
-          const resolved = resolveToolDisplayName(event.toolName, event.payload?.input);
-          progress.currentTask = `${resolved} → ✅`;
-        }
+        handleToolResultEvent(progress, event);
         break;
       case 'tool_error':
-        this.recordToolResult(progress, event.toolId, event.toolName, event.payload?.input, undefined, event.payload?.error, false);
-        if (event.toolName) {
-          const resolved = resolveToolDisplayName(event.toolName, event.payload?.input);
-          progress.currentTask = `${resolved} → ❌`;
-        }
+        handleToolErrorEvent(progress, event);
         break;
       case 'model_round':
-        progress.modelRoundsCount++;
-        if (event.payload?.reasoning_count) {
-          progress.reasoningCount += event.payload.reasoning_count;
-        }
-        if (typeof event.payload?.reasoning === 'string' && event.payload.reasoning.length > 0) {
-          progress.latestReasoning = event.payload.reasoning.slice(0, 120);
-        }
-        {
-          const contextUsagePercentRaw = typeof event.payload?.contextUsagePercent === 'number'
-            ? event.payload.contextUsagePercent
-            : typeof event.payload?.context_usage_percent === 'number'
-              ? event.payload.context_usage_percent
-              : undefined;
-          const estimatedTokensRaw = typeof event.payload?.estimatedTokensInContextWindow === 'number'
-            ? event.payload.estimatedTokensInContextWindow
-            : typeof event.payload?.estimated_tokens_in_context_window === 'number'
-              ? event.payload.estimated_tokens_in_context_window
-              : undefined;
-          const maxInputTokensRaw = typeof event.payload?.maxInputTokens === 'number'
-            ? event.payload.maxInputTokens
-            : typeof event.payload?.max_input_tokens === 'number'
-              ? event.payload.max_input_tokens
-              : undefined;
-
-          if (typeof contextUsagePercentRaw === 'number' && Number.isFinite(contextUsagePercentRaw)) {
-            progress.contextUsagePercent = Math.max(0, Math.floor(contextUsagePercentRaw));
-          }
-          if (typeof estimatedTokensRaw === 'number' && Number.isFinite(estimatedTokensRaw)) {
-            progress.estimatedTokensInContextWindow = Math.max(0, Math.floor(estimatedTokensRaw));
-          }
-          if (typeof maxInputTokensRaw === 'number' && Number.isFinite(maxInputTokensRaw)) {
-            progress.maxInputTokens = Math.max(0, Math.floor(maxInputTokensRaw));
-          }
-        }
+        handleModelRound(progress, event);
         break;
       case 'agent_runtime_status':
-        const status = event.payload?.status;
-        if (status === 'completed') {
-          progress.status = 'completed';
-        } else if (status === 'failed') {
-          progress.status = 'failed';
-        } else if (status === 'idle') {
-          progress.status = 'idle';
-        }
-        if (event.payload?.summary) {
-          progress.currentTask = event.payload.summary;
-        }
+        handleAgentRuntimeStatus(progress, event);
         break;
       case 'agent_runtime_dispatch':
-        // Skip heartbeat/bootstrap dispatches only (system dispatch is now business-critical).
-        const source = event.payload?.sourceAgentId || (event as any).sourceAgentId || '';
-        if (source.includes('heartbeat') || source.includes('bootstrap')) {
-          break;
-        }
-        // Skip self-dispatch (system agent dispatching to itself)
-        const target = event.payload?.targetAgentId;
-        if (target && target === progress.agentId) {
-          break;
-        }
-        if (target) {
-          const status = event.payload?.status || 'queued';
-          progress.currentTask = `派发 ${target} (${status})`;
-          if (status === 'failed') progress.status = 'failed';
-        }
+        handleAgentRuntimeDispatch(progress, event);
         break;
       case 'agent_step_completed':
-        progress.modelRoundsCount++;
-        const payload = event.payload as { round?: number; thought?: string; action?: string; observation?: string };
-        const parts: string[] = [];
-        if (payload.thought) parts.push(payload.thought);
-        if (payload.action) parts.push(payload.action);
-        if (payload.thought) {
-          progress.latestReasoning = payload.thought.slice(0, 120);
-        }
-        this.latestStepSummary.set(sessionId, parts.join(' → ') || `步骤 ${payload.round ?? '?'}`);
-        progress.currentTask = this.latestStepSummary.get(sessionId);
+        handleAgentStepCompleted(progress, event, this.latestStepSummary);
         break;
     }
 
     progress.elapsedMs = Date.now() - progress.startTime;
-  }
-
-  private recordToolCall(progress: SessionProgress, toolId?: string, toolName?: string, input?: unknown): void {
-    const nextSeq = (progress.toolSeqCounter ?? 0) + 1;
-    progress.toolSeqCounter = nextSeq;
-    const record: ToolCallRecord = {
-      seq: nextSeq,
-      toolId,
-      toolName: toolName || 'unknown',
-      params: this.safeSnippet(input, this.snippetLimitForTool(toolName)),
-      timestamp: Date.now(),
-    };
-    progress.toolCallHistory.push(record);
-    if (progress.toolCallHistory.length > 10) {
-      progress.toolCallHistory.shift();
-    }
-  }
-
- private recordToolResult(
-   progress: SessionProgress,
-   toolId?: string,
-   toolName?: string,
-   input?: unknown,
-   output?: unknown,
-   error?: string,
-   success?: boolean,
-  ): void {
-    // 先按 toolId 查找
-    let existing = toolId
-      ? progress.toolCallHistory.find(t => t.toolId === toolId && !t.result && !t.error)
-      : undefined;
-
-    // 如果按 toolId 找不到，按 toolName 查找最近的未完成记录
-    if (!existing && toolName) {
-      const inputSnippet = this.safeSnippet(input, this.snippetLimitForTool(toolName));
-      // 从后往前找最后一个未完成的同名工具
-      for (let i = progress.toolCallHistory.length - 1; i >= 0; i--) {
-        const t = progress.toolCallHistory[i];
-        if (
-          t.toolName === toolName
-          && !t.result
-          && !t.error
-          && (inputSnippet === undefined || t.params === inputSnippet)
-        ) {
-          existing = t;
-          break;
-        }
-      }
-
-      // 若带参数匹配失败，再降级到同名匹配
-      if (!existing) {
-        for (let i = progress.toolCallHistory.length - 1; i >= 0; i--) {
-          const t = progress.toolCallHistory[i];
-          if (t.toolName === toolName && !t.result && !t.error) {
-            existing = t;
-            break;
-          }
-        }
-      }
-    }
-
-    let record: ToolCallRecord;
-    if (existing) {
-      record = existing;
-      if (typeof record.seq !== 'number' || !Number.isFinite(record.seq)) {
-        const nextSeq = (progress.toolSeqCounter ?? 0) + 1;
-        progress.toolSeqCounter = nextSeq;
-        record.seq = nextSeq;
-      }
-    } else {
-      const nextSeq = (progress.toolSeqCounter ?? 0) + 1;
-      progress.toolSeqCounter = nextSeq;
-      record = {
-        seq: nextSeq,
-        toolId,
-        toolName: toolName || 'unknown',
-        params: this.safeSnippet(input, this.snippetLimitForTool(toolName)),
-        timestamp: Date.now(),
-      };
-    }
-    record.result = output !== undefined ? this.safeSnippet(output) : record.result;
-    record.error = error ? this.safeSnippet(error) : record.error;
-    record.success = success;
-    if (!existing) {
-      progress.toolCallHistory.push(record);
-    }
-    if (progress.toolCallHistory.length > 10) {
-      progress.toolCallHistory.shift();
-    }
-    const displayName = resolveToolDisplayName(record.toolName, record.params);
-    progress.currentTask = `${displayName} → ${success ? '✅' : '❌'}`;
-  }
-
-  private safeSnippet(value: unknown, limit = 200): string | undefined {
-    if (value === undefined || value === null) return undefined;
-    try {
-      const text = typeof value === 'string' ? value : JSON.stringify(value);
-      return text.length > limit ? text.slice(0, limit) + '...' : text;
-    } catch {
-      const text = String(value);
-      return text.length > limit ? text.slice(0, limit) + '...' : text;
-    }
   }
 
   /**

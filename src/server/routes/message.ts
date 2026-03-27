@@ -40,70 +40,7 @@ import {
   prefixAgentResponse,
 } from './message-helpers.js';
 
-function inferInboundRole(message: unknown, sender: string): 'user' | 'system' {
-  const metadata = isObjectRecord(message) && isObjectRecord(message.metadata)
-    ? message.metadata
-    : null;
-
-  if (metadata) {
-    const explicitRole = typeof metadata.role === 'string' ? metadata.role.trim().toLowerCase() : '';
-    if (explicitRole === 'system') return 'system';
-    if (explicitRole === 'user') return 'user';
-
-    if (metadata.systemDirectInject === true) return 'system';
-
-    const source = typeof metadata.source === 'string' ? metadata.source.trim().toLowerCase() : '';
-    if (
-      source.startsWith('system-')
-      || source === 'heartbeat'
-      || source === 'scheduler'
-      || source === 'clock'
-      || source === 'timer'
-    ) {
-      return 'system';
-    }
-  }
-
-  const normalizedSender = sender.trim().toLowerCase();
-  if (
-    normalizedSender === 'system'
-    || normalizedSender.includes('heartbeat')
-    || normalizedSender.includes('scheduler')
-    || normalizedSender.includes('daemon')
-    || normalizedSender.includes('timer')
-  ) {
-    return 'system';
-  }
-
-  return 'user';
-}
-
-function ensureMessageMetadataRole(message: unknown, role: 'user' | 'system'): unknown {
-  if (isObjectRecord(message)) {
-    const metadata = isObjectRecord(message.metadata) ? message.metadata : {};
-    if (typeof metadata.role === 'string' && metadata.role.trim().length > 0) {
-      return message;
-    }
-    return {
-      ...message,
-      metadata: {
-        ...metadata,
-        role,
-      },
-    };
-  }
-
-  if (typeof message === 'string') {
-    return {
-      text: message,
-      content: message,
-      metadata: { role },
-    };
-  }
-
-  return message;
-}
-
+import { inferInboundRole, ensureMessageMetadataRole } from './message-role-utils.js';
 
 
 export function registerMessageRoutes(app: Express, deps: MessageRouteDeps): void {
@@ -433,19 +370,25 @@ export function registerMessageRoutes(app: Express, deps: MessageRouteDeps): voi
         }
 
         if (body.sender) {
-          try {
-            senderResponse = await deps.hub.sendToModule(body.sender, {
-              type: 'callback',
-              payload: primaryResult,
-              originalMessageId: messageId,
-            });
-            log.info('Callback result sent to sender', { sender: body.sender });
-          } catch (err) {
-            log.error(
-              'Failed to route callback result to sender',
-              err instanceof Error ? err : undefined,
-              { sender: body.sender },
-            );
+          // Only send callback if sender is a registered module (not a CLI/system sender)
+          const nonModuleSenders = ['mailbox-cli', 'cli', 'heartbeat', 'system'];
+          const isNonModuleSender = nonModuleSenders.includes(body.sender) || body.sender.startsWith('cli-');
+          
+          if (!isNonModuleSender) {
+            try {
+              senderResponse = await deps.hub.sendToModule(body.sender, {
+                type: 'callback',
+                payload: primaryResult,
+                originalMessageId: messageId,
+              });
+              log.info('Callback result sent to sender', { sender: body.sender });
+            } catch (err) {
+              log.error(
+                'Failed to route callback result to sender',
+                err instanceof Error ? err : undefined,
+                { sender: body.sender },
+              );
+            }
           }
         }
 
@@ -498,8 +441,13 @@ export function registerMessageRoutes(app: Express, deps: MessageRouteDeps): voi
 
       deps.hub.sendToModule(targetId, requestMessage, body.sender ? (result: any) => {
         if (body.sender) {
-          deps.hub.sendToModule(body.sender, { type: 'callback', payload: result, originalMessageId: messageId })
-            .catch(() => { /* Ignore sender callback errors */ });
+          // Only send callback if sender is a registered module (not a CLI/system sender)
+          const nonModuleSenders = ['mailbox-cli', 'cli', 'heartbeat', 'system'];
+          const isNonModuleSender = nonModuleSenders.includes(body.sender) || body.sender.startsWith('cli-');
+          if (!isNonModuleSender) {
+            deps.hub.sendToModule(body.sender, { type: 'callback', payload: result, originalMessageId: messageId })
+              .catch(() => { /* Ignore sender callback errors */ });
+          }
         }
         return result;
       } : undefined)

@@ -3,88 +3,37 @@ import { isObjectRecord } from '../../common/object.js';
 import { asString, firstNonEmptyString } from '../../common/strings.js';
 import { getGlobalDispatchTracker } from './dispatch-tracker.js';
 import { sanitizeDispatchResult, type DispatchSummaryResult } from '../../../common/agent-dispatch.js';
-import { inferTagsAndTopic } from '../../../common/tag-topic-inference.js';
 import type { AgentDispatchRequest, AgentRuntimeDeps } from './types.js';
 import { SYSTEM_AGENT_CONFIG } from '../../../agents/finger-system-agent/index.js';
 import { promises as fs } from 'fs';
 import * as path from 'path';
-import { formatLocalTimestamp, normalizeProjectPathHint } from './dispatch-helpers.js';
+import {
+  enrichDispatchTagsAndTopic,
+  formatDispatchTaskContent,
+  formatLocalTimestamp,
+  normalizeProjectPathHint,
+  resolveDispatchSessionStrategy,
+} from './dispatch-helpers.js';
 
-function formatDispatchTaskContent(task: unknown): string {
-  if (typeof task === 'string') return task;
-  if (!isObjectRecord(task)) return String(task);
-  const direct = asString(task.text)
-    ?? asString(task.content)
-    ?? asString(task.prompt)
-    ?? asString(task.description)
-    ?? asString(task.title)
-    ?? asString(task.task)
-    ?? asString(task.message);
-  if (direct) return direct;
-  if (isObjectRecord(task.input)) {
-    const nested = asString(task.input.text)
-      ?? asString(task.input.content)
-      ?? asString(task.input.prompt)
-      ?? asString(task.input.description);
-    if (nested) return nested;
-  }
-  try {
-    return JSON.stringify(task, null, 2);
-  } catch {
-    return String(task);
-  }
+const DISPATCH_ERROR_MAX_RETRIES = Number.isFinite(Number(process.env.FINGER_DISPATCH_ERROR_MAX_RETRIES))
+  ? Math.max(0, Math.floor(Number(process.env.FINGER_DISPATCH_ERROR_MAX_RETRIES)))
+  : 10;
+const DISPATCH_RETRY_BASE_DELAY_MS = Number.isFinite(Number(process.env.FINGER_DISPATCH_RETRY_BASE_DELAY_MS))
+  ? Math.max(100, Math.floor(Number(process.env.FINGER_DISPATCH_RETRY_BASE_DELAY_MS)))
+  : 1_000;
+const DISPATCH_RETRY_MAX_DELAY_MS = Number.isFinite(Number(process.env.FINGER_DISPATCH_RETRY_MAX_DELAY_MS))
+  ? Math.max(1_000, Math.floor(Number(process.env.FINGER_DISPATCH_RETRY_MAX_DELAY_MS)))
+  : 60_000;
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-function enrichDispatchTagsAndTopic(
-  result: DispatchSummaryResult,
-  params: {
-    task: unknown;
-    targetAgentId: string;
-    sourceAgentId?: string;
-  },
-): DispatchSummaryResult {
-  const inferred = inferTagsAndTopic({
-    texts: [
-      formatDispatchTaskContent(params.task),
-      result.summary,
-      result.error,
-      result.nextAction,
-      result.status,
-    ],
-    seedTags: [
-      params.targetAgentId,
-      params.sourceAgentId ?? '',
-      result.success ? 'completed' : 'failed',
-      'dispatch',
-      ...(result.tags ?? []),
-    ],
-    seedTopic: result.topic,
-    maxTags: 10,
-  });
-
-  return {
-    ...result,
-    ...(inferred.tags ? { tags: inferred.tags } : {}),
-    ...(inferred.topic ? { topic: inferred.topic } : {}),
-  };
+function resolveRetryBackoffMs(retryAttempt: number): number {
+  const exponent = Math.max(0, retryAttempt - 1);
+  const raw = DISPATCH_RETRY_BASE_DELAY_MS * Math.pow(2, exponent);
+  return Math.min(DISPATCH_RETRY_MAX_DELAY_MS, Math.max(DISPATCH_RETRY_BASE_DELAY_MS, Math.floor(raw)));
 }
-
-function resolveDispatchSessionStrategy(input: AgentDispatchRequest): NonNullable<AgentDispatchRequest['sessionStrategy']> {
-  const metadata = isObjectRecord(input.metadata) ? input.metadata : {};
-  const raw = firstNonEmptyString(
-    input.sessionStrategy,
-    asString(metadata.sessionStrategy),
-    asString(metadata.session_strategy),
-    asString(metadata.sessionMode),
-    asString(metadata.session_mode),
-  );
-  const normalized = (raw ?? '').trim().toLowerCase();
-  if (normalized === 'latest') return 'latest';
-  if (normalized === 'new') return 'new';
-  if (normalized === 'current') return 'current';
-  return 'latest';
-}
-
 function resolveDispatchProjectPath(input: AgentDispatchRequest, deps: AgentRuntimeDeps): string {
   const metadata = isObjectRecord(input.metadata) ? input.metadata : {};
   const taskRecord = isObjectRecord(input.task) ? input.task : {};
@@ -394,12 +343,11 @@ Tags: output, agent, ${status}
   }
 }
 
-function shouldAutoDeployForSystemDispatch(input: AgentDispatchRequest, result: { ok: boolean; status: string; error?: string }): boolean {
+function shouldAutoDeployForMissingTarget(input: AgentDispatchRequest, result: { ok: boolean; status: string; error?: string }): boolean {
   if (result.ok || result.status !== 'failed') return false;
-  const source = typeof input.sourceAgentId === 'string' ? input.sourceAgentId.trim().toLowerCase() : '';
-  if (!source.includes('system')) return false;
   const error = typeof result.error === 'string' ? result.error : '';
-  return error.includes('target agent is not started in resource pool:');
+  if (!error.includes('target agent is not started in resource pool:')) return false;
+  return typeof input.targetAgentId === 'string' && input.targetAgentId.trim().length > 0;
 }
 
 function resolveAutoDeployInstanceCount(input: AgentDispatchRequest): number {
@@ -446,11 +394,90 @@ export async function dispatchTaskToAgent(deps: AgentRuntimeDeps, input: AgentDi
     result?: DispatchSummaryResult;
     error?: string;
     queuePosition?: number;
-  };
+  } | undefined;
+  let finalExecuteError: unknown;
 
-  try {
-    result = await deps.agentRuntimeBlock.execute('dispatch', normalizedInput as unknown as Record<string, unknown>) as typeof result;
-  } catch (executeError) {
+  for (let attempt = 0; attempt <= DISPATCH_ERROR_MAX_RETRIES; attempt += 1) {
+    try {
+      result = await deps.agentRuntimeBlock.execute('dispatch', normalizedInput as unknown as Record<string, unknown>) as Exclude<typeof result, undefined>;
+      finalExecuteError = undefined;
+    } catch (executeError) {
+      finalExecuteError = executeError;
+      if (attempt >= DISPATCH_ERROR_MAX_RETRIES) break;
+      const retryDelayMs = resolveRetryBackoffMs(attempt + 1);
+      logger.module('dispatch').warn('Dispatch execute threw error, retrying with exponential backoff', {
+        retryAttempt: attempt + 1,
+        maxRetries: DISPATCH_ERROR_MAX_RETRIES,
+        retryDelayMs,
+        targetAgentId: normalizedInput.targetAgentId,
+        sessionId: normalizedInput.sessionId,
+        error: executeError instanceof Error ? executeError.message : String(executeError),
+      });
+      await sleep(retryDelayMs);
+      continue;
+    }
+
+    if (shouldAutoDeployForMissingTarget(normalizedInput, result)) {
+      const deployRequest = {
+        targetAgentId: normalizedInput.targetAgentId,
+        sessionId: normalizedInput.sessionId,
+        scope: 'session' as const,
+        launchMode: 'orchestrator' as const,
+        instanceCount: resolveAutoDeployInstanceCount(normalizedInput),
+      };
+      try {
+        const deployResult = await deps.agentRuntimeBlock.execute('deploy', deployRequest as unknown as Record<string, unknown>) as {
+          success?: boolean;
+          error?: string;
+        };
+        if (deployResult?.success) {
+          logger.module('dispatch').info('Auto-deployed missing target agent before dispatch retry', {
+            sourceAgentId: normalizedInput.sourceAgentId,
+            targetAgentId: normalizedInput.targetAgentId,
+            instanceCount: deployRequest.instanceCount,
+            retryAttempt: attempt + 1,
+            maxRetries: DISPATCH_ERROR_MAX_RETRIES,
+          });
+          if (attempt >= DISPATCH_ERROR_MAX_RETRIES) break;
+          const retryDelayMs = resolveRetryBackoffMs(attempt + 1);
+          await sleep(retryDelayMs);
+          continue;
+        }
+        if (deployResult?.error) {
+          logger.module('dispatch').warn('Auto-deploy failed before dispatch retry', {
+            targetAgentId: normalizedInput.targetAgentId,
+            error: deployResult.error,
+          });
+        }
+      } catch (deployError) {
+        logger.module('dispatch').warn('Auto-deploy retry threw error', {
+          targetAgentId: normalizedInput.targetAgentId,
+          error: deployError instanceof Error ? deployError.message : String(deployError),
+        });
+      }
+    }
+
+    if (result.ok || result.status !== 'failed') {
+      break;
+    }
+
+    if (attempt >= DISPATCH_ERROR_MAX_RETRIES) {
+      break;
+    }
+    const retryDelayMs = resolveRetryBackoffMs(attempt + 1);
+    logger.module('dispatch').warn('Dispatch returned failed result, retrying with exponential backoff', {
+      retryAttempt: attempt + 1,
+      maxRetries: DISPATCH_ERROR_MAX_RETRIES,
+      retryDelayMs,
+      targetAgentId: normalizedInput.targetAgentId,
+      sessionId: normalizedInput.sessionId,
+      error: result.error,
+    });
+    await sleep(retryDelayMs);
+  }
+
+  if (finalExecuteError) {
+    const executeError = finalExecuteError;
     const message = executeError instanceof Error ? executeError.message : String(executeError);
     logger.module('dispatch').error('AgentRuntimeBlock.execute failed', executeError instanceof Error ? executeError : undefined, {
       dispatchId: fallbackDispatchId,
@@ -469,39 +496,8 @@ export async function dispatchTaskToAgent(deps: AgentRuntimeDeps, input: AgentDi
     await persistAgentSummaryToMemory(deps, normalizedInput, { ok: false, summary: message }, true);
     return { ok: false, dispatchId: fallbackDispatchId, status: 'failed', error: message };
   }
-
-  if (shouldAutoDeployForSystemDispatch(normalizedInput, result)) {
-    const deployRequest = {
-      targetAgentId: normalizedInput.targetAgentId,
-      sessionId: normalizedInput.sessionId,
-      scope: 'session' as const,
-      launchMode: 'orchestrator' as const,
-      instanceCount: resolveAutoDeployInstanceCount(normalizedInput),
-    };
-    try {
-      const deployResult = await deps.agentRuntimeBlock.execute('deploy', deployRequest as unknown as Record<string, unknown>) as {
-        success?: boolean;
-        error?: string;
-      };
-      if (deployResult?.success) {
-        logger.module('dispatch').info('Auto-deployed target agent for system dispatch retry', {
-          sourceAgentId: normalizedInput.sourceAgentId,
-          targetAgentId: normalizedInput.targetAgentId,
-          instanceCount: deployRequest.instanceCount,
-        });
-        result = await deps.agentRuntimeBlock.execute('dispatch', normalizedInput as unknown as Record<string, unknown>) as typeof result;
-      } else if (deployResult?.error) {
-        logger.module('dispatch').warn('Auto-deploy failed before retry', {
-          targetAgentId: normalizedInput.targetAgentId,
-          error: deployResult.error,
-        });
-      }
-    } catch (deployError) {
-      logger.module('dispatch').warn('Auto-deploy retry threw error', {
-        targetAgentId: normalizedInput.targetAgentId,
-        error: deployError instanceof Error ? deployError.message : String(deployError),
-      });
-    }
+  if (!result) {
+    return { ok: false, dispatchId: fallbackDispatchId, status: 'failed', error: 'dispatch result is empty after retries' };
   }
 
   const newSessionId = typeof normalizedInput.sessionId === 'string' ? normalizedInput.sessionId.trim() : '';

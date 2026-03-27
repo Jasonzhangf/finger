@@ -16,6 +16,7 @@ import {
 import { attachBroadcastHandlers } from './event-forwarding-handlers.js';
 import { buildDispatchResultEnvelope } from './mailbox-envelope.js';
 import { heartbeatMailbox } from './heartbeat-mailbox.js';
+import { normalizeDispatchLedgerSessionId as _normalizeDispatchLedgerSessionId } from './event-forwarding-session-utils.js';
 
 const SYSTEM_AGENT_ID = 'finger-system-agent';
 
@@ -62,67 +63,9 @@ export function attachEventForwarding(deps: EventForwardingDeps): {
   const dispatchLedgerDedup = new Map<string, number>();
   const DISPATCH_LEDGER_DEDUP_TTL_MS = 10 * 60_000;
 
-  const normalizeDispatchLedgerSessionId = (
-    rawSessionId: string | undefined,
-  ): { sessionId?: string; originalSessionId?: string } => {
-    const lookup = (sessionId: string): { sessionId?: string; originalSessionId?: string } | null => {
-      const normalized = sessionId.trim();
-      if (normalized.length === 0) return null;
-      if (normalized.startsWith('msg-')) return null;
-      const getSession = (sessionManager as unknown as { getSession?: (id: string) => unknown }).getSession;
-      if (typeof getSession !== 'function') {
-        return { sessionId: normalized };
-      }
-      const session = getSession.call(sessionManager, normalized) as { id?: string; context?: unknown } | null;
-      if (!session || typeof session.id !== 'string' || session.id.trim().length === 0) {
-        return null;
-      }
-      const context = isObjectRecord(session.context) ? session.context : {};
-      const rootSessionId = asString(context.rootSessionId) ?? asString(context.parentSessionId);
-      if (rootSessionId) {
-        const root = getSession.call(sessionManager, rootSessionId) as { id?: string } | null;
-        if (root?.id && root.id.trim().length > 0) {
-          return {
-            sessionId: root.id,
-            ...(root.id !== normalized ? { originalSessionId: normalized } : {}),
-          };
-        }
-      }
-      return { sessionId: session.id };
-    };
+  const normalizeDispatchLedgerSessionId = (rawSessionId: string | undefined) =>
+    _normalizeDispatchLedgerSessionId(sessionManager, rawSessionId);
 
-    const candidates: string[] = [];
-    if (typeof rawSessionId === 'string' && rawSessionId.trim().length > 0) {
-      candidates.push(rawSessionId.trim());
-    }
-
-    const getCurrentSession = (sessionManager as unknown as { getCurrentSession?: () => { id?: string } | null }).getCurrentSession;
-    const currentSessionId = typeof getCurrentSession === 'function'
-      ? asString(getCurrentSession.call(sessionManager)?.id)
-      : undefined;
-    if (currentSessionId) candidates.push(currentSessionId);
-
-    const getSystemSession = (sessionManager as unknown as { getOrCreateSystemSession?: () => { id?: string } | null }).getOrCreateSystemSession;
-    const systemSessionId = typeof getSystemSession === 'function'
-      ? asString(getSystemSession.call(sessionManager)?.id)
-      : undefined;
-    if (systemSessionId) candidates.push(systemSessionId);
-
-    for (const candidate of candidates) {
-      const resolved = lookup(candidate);
-      if (resolved?.sessionId) {
-        return resolved;
-      }
-    }
-
-    if (typeof rawSessionId === 'string') {
-      const fallback = rawSessionId.trim();
-      if (fallback.length > 0 && !fallback.startsWith('msg-')) {
-        return { sessionId: fallback };
-      }
-    }
-    return {};
-  };
 
   const shouldSkipDispatchLedgerEntry = (key: string): boolean => {
     const now = Date.now();
@@ -170,57 +113,6 @@ export function attachEventForwarding(deps: EventForwardingDeps): {
       },
     });
   };
-
-  const emitToolStepEventsFromLoopEvent = (event: ChatCodexLoopEvent): void => {
-    if (event.phase !== 'kernel_event') return;
-    if (event.payload.enableLegacyToolTraceFallback !== true) return;
-    const eventType = typeof event.payload.type === 'string' ? event.payload.type : '';
-    if (eventType !== 'task_complete') return;
-    if (event.payload.syntheticToolEvents === true || event.payload.realtimeToolEvents === true) return;
-
-    const toolTrace = extractLoopToolTrace(event.payload.toolTrace);
-    if (toolTrace.length === 0) return;
-
-    const base = Date.parse(event.timestamp);
-    const baseMs = Number.isFinite(base) ? base : Date.now();
-    for (let i = 0; i < toolTrace.length; i += 1) {
-      const trace = toolTrace[i];
-      const toolId = trace.callId ?? `${event.sessionId}-tool-${i + 1}`;
-      const resultTimestamp = new Date(baseMs + i * 2 + 1).toISOString();
-
-      if (trace.status === 'ok') {
-        broadcast({
-          type: 'tool_result',
-          sessionId: event.sessionId,
-          agentId: generalAgentId,
-          timestamp: resultTimestamp,
-          payload: {
-            toolId,
-            toolName: trace.tool,
-            ...(trace.input !== undefined ? { input: trace.input } : {}),
-            ...(trace.output !== undefined ? { output: trace.output } : {}),
-            ...(typeof trace.durationMs === 'number' ? { duration: trace.durationMs } : {}),
-          },
-        });
-        continue;
-      }
-
-      broadcast({
-        type: 'tool_error',
-        sessionId: event.sessionId,
-        agentId: generalAgentId,
-        timestamp: resultTimestamp,
-        payload: {
-          toolId,
-          toolName: trace.tool,
-          ...(trace.input !== undefined ? { input: trace.input } : {}),
-          error: trace.error ?? `工具执行失败：${trace.tool}`,
-          ...(typeof trace.durationMs === 'number' ? { duration: trace.durationMs } : {}),
-        },
-      });
-    }
-  };
-
   const emitLoopEventToEventBus = (event: ChatCodexLoopEvent): void => {
     if (!event.sessionId || event.sessionId === 'unknown') return;
     if (event.phase === 'turn_complete' || event.phase === 'turn_error') {
@@ -242,7 +134,8 @@ export function attachEventForwarding(deps: EventForwardingDeps): {
       }
       latestBodyBySession.delete(event.sessionId);
     }
-    emitToolStepEventsFromLoopEvent(event);
+    // TODO: implement emitToolStepEventsFromLoopEvent
+    // emitToolStepEventsFromLoopEvent(event);
 
     broadcast({
       type: 'chat_codex_turn',

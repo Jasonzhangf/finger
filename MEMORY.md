@@ -449,3 +449,42 @@ Tags: permission, reject-config, codex-alignment
 
 - [2026-03-26] Context Builder 预算策略调整：历史重建改为固定 token 预算 `contextBuilder.historyBudgetTokens`（默认 100000），按 task 粒度从高相关到低相关填充，不再按消息条数截断；`chat-codex` 的 `maxContextMessages` 设为 0（unlimited），由 token 预算控制实际输入。`MEMORY.md` 不再直接注入上下文，`includeMemoryMd` 兼容字段保留但运行时固定为 false。Context Monitor 增加预算截断可观测：`budgetTruncatedTasks`（含 task id/token/summary）。
   Tags: context-builder, token-budget, historyBudgetTokens, memory-ground-truth, context-monitor
+
+## 2026-03-27 新闻推送Sender回调修复
+
+### 问题
+定时新闻推送脚本运行成功，但日志中反复出现错误：
+```
+Error: Module mailbox-cli not registered as input or output
+```
+
+### 根因
+在`src/server/routes/message.ts`中，当`body.sender`存在时，会尝试调用`deps.hub.sendToModule(body.sender, ...)`发送回调。但是当sender是`mailbox-cli`时，它不是一个注册的模块，所以会报错。
+
+### 修复
+在message.ts的两处sender回调逻辑中添加了非模块sender检查：
+
+1. **阻塞路径**（第372-393行）：添加`nonModuleSenders`列表，检查sender是否为非模块标识符
+2. **非阻塞路径**（第442-453行）：同样添加检查
+
+```typescript
+const nonModuleSenders = ['mailbox-cli', 'cli', 'heartbeat', 'system'];
+const isNonModuleSender = nonModuleSenders.includes(body.sender) || body.sender.startsWith('cli-');
+
+if (!isNonModuleSender) {
+  // 发送回调
+}
+```
+
+### 验证
+- 编译通过
+- Daemon重启成功
+- 手动运行新闻脚本后��日志中不再出现`Module mailbox-cli not registered as input or output`错误
+- System agent正常处理mailbox消息（mailbox.list → mailbox.read → exec_command → mailbox.read → mailbox.ack）
+
+### 文件变更
+- `src/server/routes/message.ts`：添加非模块sender检查
+- `src/server/modules/event-forwarding.ts`：注释掉未定义的`emitToolStepEventsFromLoopEvent`调用
+
+### 待确认
+- 新闻内容是否真正推送到用户的对话渠道（需要用户确认是否收到QQ消息）
