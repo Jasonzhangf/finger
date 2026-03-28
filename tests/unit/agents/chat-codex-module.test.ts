@@ -700,6 +700,35 @@ describe('chat-codex module', () => {
     expect(instructions).toContain('historical_tokens=1500');
   });
 
+  it('injects continuity anchors into developer instructions so model can judge whether rebuild is needed', () => {
+    const options = __chatCodexInternals.buildKernelUserTurnOptions(
+      {
+        sessionId: 'session-1',
+        history: [
+          { role: 'user', content: '先检查邮件去重脚本是否还在重复发送。' },
+          { role: 'assistant', content: '我先看邮件去重逻辑和最近日志。' },
+          { role: 'user', content: '然后顺便看下新闻推送格式。' },
+          { role: 'assistant', content: '我会一起核查新闻推送模板。' },
+          { role: 'user', content: '继续处理，不要中断。' },
+        ],
+        metadata: {
+          roleProfile: 'orchestrator',
+          kernelMode: 'main',
+          contextLedgerEnabled: true,
+          contextHistorySource: 'context_builder_indexed',
+        },
+      },
+      undefined,
+    );
+
+    const instructions = options?.developer_instructions ?? '';
+    expect(instructions).toContain('[conversation_continuity]');
+    expect(instructions).toContain('history_source=context_builder_indexed');
+    expect(instructions).toContain('recent_task_turns=');
+    expect(instructions).toContain('recent_user_inputs=');
+    expect(instructions).toContain('If the current request is clearly discontinuous with these anchors');
+  });
+
   it('grants orchestrator documentation write tool and keeps reviewer read-only', async () => {
     runTurnMock.mockResolvedValue({
       reply: 'OK',
@@ -836,6 +865,37 @@ describe('chat-codex module', () => {
     );
 
     expect(options?.developer_instructions ?? '').not.toContain('# Task Flow Runtime');
+  });
+
+  it('falls back to metadata kernelApiHistory when context-builder history is preferred but runtime history is empty', () => {
+    const metadataHistory = [
+      {
+        role: 'user',
+        content: [{ type: 'input_text', text: 'previous user context' }],
+      },
+      {
+        role: 'assistant',
+        content: [{ type: 'output_text', text: 'previous assistant context' }],
+      },
+    ];
+    const options = __chatCodexInternals.buildKernelUserTurnOptions(
+      {
+        sessionId: 'session-1',
+        history: [],
+        metadata: {
+          roleProfile: 'system',
+          role: 'user',
+          source: 'channel',
+          kernelMode: 'main',
+          contextHistorySource: 'context_builder_indexed',
+          contextBuilderRebuilt: false,
+          kernelApiHistory: metadataHistory,
+        },
+      },
+      undefined,
+    );
+
+    expect(options?.history_items).toEqual(metadataHistory);
   });
 
 });

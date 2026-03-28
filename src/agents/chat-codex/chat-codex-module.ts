@@ -1948,7 +1948,7 @@ function buildKernelUserTurnOptions(
   }
 
   const role = resolveDeveloperRoleFromMetadata(metadata);
-  let developerInstructions = resolveDeveloperInstructions(metadata, developerPromptPaths, role);
+  let developerInstructions = resolveDeveloperInstructions(metadata, developerPromptPaths, role, context?.history);
   const skillsPromptBlock = buildSkillsPromptBlock(metadata);
   const mailboxBaselineBlock = buildMailboxBaselineBlock(context?.mailboxSnapshot, metadata);
   const flowPromptBlock = buildFlowPromptBlock(metadata);
@@ -2300,13 +2300,18 @@ function resolveHistoryItems(
   const hasMediaInput = hasMediaInputItemsInMetadata(metadata);
   const preferContextBuilderHistory = shouldPreferContextBuilderHistory(metadata);
   const fromMetadata = metadata?.kernelApiHistory;
-  if (!hasMediaInput && !preferContextBuilderHistory && Array.isArray(fromMetadata)) {
-    const normalized = fromMetadata.filter((item): item is Record<string, unknown> => isRecord(item));
-    if (normalized.length > 0) return normalized;
+  const normalizedFromMetadata = !hasMediaInput && Array.isArray(fromMetadata)
+    ? fromMetadata.filter((item): item is Record<string, unknown> => isRecord(item))
+    : [];
+  if (!preferContextBuilderHistory && normalizedFromMetadata.length > 0) {
+    return normalizedFromMetadata;
   }
 
-  if (!history || history.length === 0) return [];
-  return history
+  if (!history || history.length === 0) {
+    return normalizedFromMetadata;
+  }
+
+  const normalizedFromHistory = history
     .filter((item) => item.content.trim().length > 0)
     .map((item) => ({
       role: item.role === 'system' ? 'user' : item.role,
@@ -2317,6 +2322,16 @@ function resolveHistoryItems(
         },
       ],
     }));
+
+  if (normalizedFromHistory.length > 0) {
+    return normalizedFromHistory;
+  }
+
+  if (normalizedFromMetadata.length > 0) {
+    return normalizedFromMetadata;
+  }
+
+  return [];
 }
 
 function shouldPreferContextBuilderHistory(metadata: Record<string, unknown> | undefined): boolean {
@@ -2343,6 +2358,7 @@ function resolveDeveloperInstructions(
   metadata: Record<string, unknown> | undefined,
   developerPromptPaths?: Partial<Record<ChatCodexDeveloperRole, string>>,
   resolvedRole?: ChatCodexDeveloperRole,
+  history?: Array<{ role: 'user' | 'assistant' | 'system'; content: string }>,
 ): string | undefined {
   const explicit = parseOptionalString(metadata?.developerInstructions)
     ?? parseOptionalString(metadata?.developer_instructions);
@@ -2353,6 +2369,7 @@ function resolveDeveloperInstructions(
   const role = resolvedRole ?? resolveDeveloperRoleFromMetadata(metadata);
   const rolePrompt = resolveDeveloperPromptTemplate(role, developerPromptPaths?.[role]);
   const ledgerBlock = buildLedgerDeveloperInstructions(metadata, role);
+  const continuityBlock = buildContinuityDeveloperInstructions(history, metadata);
   const contextSlotsRendered = parseOptionalString(metadata?.contextSlotsRendered)
     ?? parseOptionalString(metadata?.context_slots_rendered);
 
@@ -2360,7 +2377,7 @@ function resolveDeveloperInstructions(
   if (collaborationMode) hints.push(`collaboration_mode=${collaborationMode}`);
   if (modelSwitchHint) hints.push(`model_switch_hint=${modelSwitchHint}`);
 
-  const sections = [rolePrompt, ledgerBlock, contextSlotsRendered, hints.join('\n'), explicit]
+  const sections = [rolePrompt, ledgerBlock, continuityBlock, contextSlotsRendered, hints.join('\n'), explicit]
     .map((item) => item?.trim() ?? '')
     .filter((item) => item.length > 0);
   if (sections.length === 0) return undefined;
@@ -2370,6 +2387,69 @@ function resolveDeveloperInstructions(
     if (!deduped.includes(section)) deduped.push(section);
   }
   return deduped.join('\n\n');
+}
+
+function buildContinuityDeveloperInstructions(
+  history: Array<{ role: 'user' | 'assistant' | 'system'; content: string }> | undefined,
+  metadata: Record<string, unknown> | undefined,
+): string {
+  const source = parseOptionalString(metadata?.contextHistorySource) ?? 'unknown';
+  const recentUsers = (history ?? [])
+    .filter((item) => item.role === 'user' && typeof item.content === 'string' && item.content.trim().length > 0)
+    .slice(-10)
+    .map((item, index) => `${index + 1}. ${truncateInlineText(item.content, 180)}`);
+  const recentTaskTurns = extractRecentTaskTurnsFromHistory(history, 2)
+    .map((task, index) => {
+      const preview = task
+        .map((item) => `${item.role}: ${truncateInlineText(item.content, 120)}`)
+        .join(' | ');
+      return `${index + 1}. ${preview}`;
+    });
+
+  if (recentUsers.length === 0 && recentTaskTurns.length === 0) {
+    return [
+      '[conversation_continuity]',
+      `history_source=${source}`,
+      'No recent continuity anchors were extracted from visible history.',
+      'If the current request seems disconnected from the visible context, consider `context_builder.rebuild` with `current_prompt`.',
+    ].join('\n');
+  }
+
+  return [
+    '[conversation_continuity]',
+    `history_source=${source}`,
+    'Visible history keeps continuity anchors on purpose even after rebuild: recent task turns and recent user inputs are preserved to help you judge whether the thread is continuous.',
+    'Use these anchors to decide whether the user is continuing the same topic, switching topics, or resuming interrupted work.',
+    'If the current request is clearly discontinuous with these anchors, call `context_builder.rebuild` with `current_prompt` before proceeding.',
+    recentTaskTurns.length > 0 ? 'recent_task_turns=' : '',
+    ...recentTaskTurns,
+    recentUsers.length > 0 ? 'recent_user_inputs=' : '',
+    ...recentUsers,
+  ].filter((line) => line.length > 0).join('\n');
+}
+
+function extractRecentTaskTurnsFromHistory(
+  history: Array<{ role: 'user' | 'assistant' | 'system'; content: string }> | undefined,
+  taskCount = 2,
+): Array<Array<{ role: 'user' | 'assistant' | 'system'; content: string }>> {
+  if (!Array.isArray(history) || history.length === 0) return [];
+  const turns: Array<Array<{ role: 'user' | 'assistant' | 'system'; content: string }>> = [];
+  let current: Array<{ role: 'user' | 'assistant' | 'system'; content: string }> = [];
+  for (const item of history) {
+    if (item.role === 'user' && current.length > 0) {
+      turns.push(current);
+      current = [];
+    }
+    current.push(item);
+  }
+  if (current.length > 0) turns.push(current);
+  return turns.slice(-Math.max(1, Math.floor(taskCount)));
+}
+
+function truncateInlineText(value: string, maxChars: number): string {
+  const flattened = value.replace(/\s+/g, ' ').trim();
+  if (flattened.length <= maxChars) return flattened;
+  return `${flattened.slice(0, Math.max(0, maxChars - 3))}...`;
 }
 
 function resolveDeveloperRoleFromMetadata(
@@ -2863,14 +2943,16 @@ function defaultToolSpecification(name: string): ChatCodexToolSpecification {
     return {
       name,
       description:
-        'Rebuild dynamic history context from ledger for topic switches/mixed threads. Use when current topic is not continuous with visible history and you need a cleaner working_set/historical_memory split.',
+        'Rebuild dynamic history context from ledger. Default history budget is 20k; use this for topic switches or coding/debugging turns that need a cleaner working_set/historical_memory split. Prefer rebuild_budget=50000 first, and only escalate to 110000 if needed.',
       inputSchema: {
         type: 'object',
         properties: {
           session_id: { type: 'string', description: 'Optional session id override. Usually auto-filled from tool context.' },
           agent_id: { type: 'string', description: 'Optional agent id override. Usually auto-filled from tool context.' },
           mode: { type: 'string', enum: ['minimal', 'moderate', 'aggressive'], description: 'Context build mode override for this rebuild.' },
-          target_budget: { type: 'number', description: 'Optional token budget override for this rebuild.' },
+          target_budget: { type: 'number', description: 'Optional token budget override for this rebuild. Default is 20k when not configured otherwise.' },
+          rebuild_budget: { type: 'number', description: 'Preferred rebuild budget alias. Recommended ladder: 50k first for coding/debugging, 110k only if 50k is insufficient.' },
+          budget_tokens: { type: 'number', description: 'Alias for rebuild token budget; same meaning as rebuild_budget/target_budget.' },
           current_prompt: { type: 'string', description: 'Current user intent/topic used for relevance sorting.' },
           include_messages: { type: 'boolean', description: 'Whether to include compact message previews in output.' },
           message_limit: { type: 'number', description: 'Max preview messages when include_messages=true.' },

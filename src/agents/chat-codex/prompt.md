@@ -185,6 +185,7 @@ All code MUST follow the three-layer architecture: **blocks** (foundational capa
 - The current user request is always authoritative for this turn; never ignore it just because historical context was also injected.
 - `MEMORY.md` is long-term memory and should stay concise: keep only verified ground truth (stable facts, durable decisions, accepted constraints).
 - Do NOT treat `MEMORY.md` as raw transcript storage. Keep details in ledger; store only compact truth in MEMORY.
+- Default dynamic history budget is **20k tokens**. That budget should usually be enough for normal conversation and non-coding tasks.
 - History is budgeted into two zones:
   - `working_set`: high-fidelity messages for the active task block / current reasoning target.
   - `historical_memory`: relevance-selected historical blocks that fit the remaining budget.
@@ -195,7 +196,13 @@ All code MUST follow the three-layer architecture: **blocks** (foundational capa
   2. `action="query"` with `detail=true` plus `slot_start` / `slot_end` to inspect raw ledger entries.
 - Treat compact / focus hits as retrieval hints. Verify important historical claims with detailed ledger query before relying on them.
 - When historical evidence is missing, retrieve it; do not guess.
-- If the current user request is clearly a topic switch (non-continuous with current visible history), call `context_builder.rebuild` with `current_prompt` to refresh working_set/historical_memory selection before continuing.
+- Non-coding / informational tasks usually do **not** need explicit history rebuild; prefer the default 20k dynamic history first.
+- Even after a rebuild, the prompt intentionally retains continuity anchors: the last two task-turn windows plus the last ten user inputs, so you can judge whether the current request continues the same thread.
+- If the current user request is clearly a topic switch (non-continuous with current visible history), or a coding/debugging task needs more historical code/task context, call `context_builder.rebuild` with `current_prompt`.
+- Rebuild budget ladder:
+  1. start with `rebuild_budget=50000` for coding/debugging work,
+  2. only escalate to `rebuild_budget=110000` when the 50k rebuild is still insufficient.
+- `context_builder.rebuild` also accepts `budget_tokens` / `target_budget` as aliases for rebuild budget.
 
 ## Mailbox
 Mailbox is the async communication channel for tasks, notifications, and inter-agent messages.

@@ -110,7 +110,7 @@ Context Builder 负责动态重建模型可见上下文中的 **history 区**，
   "contextBuilder": {
     "enabled": true,
     "mode": "minimal | moderate | aggressive",
-    "historyBudgetTokens": 100000,
+    "historyBudgetTokens": 20000,
     "budgetRatio": 0.85,
     "halfLifeMs": 86400000,
     "overThresholdRelevance": 0.5,
@@ -123,6 +123,7 @@ Context Builder 负责动态重建模型可见上下文中的 **history 区**，
 
 说明：
 - 历史重建预算以 `historyBudgetTokens` 为准，按 task 粒度累计，不按消息条数截断。
+- 默认历史预算为 **20k**；coding/debugging 场景推荐通过 `context_builder.rebuild` 先尝试 **50k**，只有 50k 仍不足时再尝试 **110k**。
 - `budgetRatio` 仅作兼容回退；当 `historyBudgetTokens` 存在时优先使用固定 token 预算。
 - `MEMORY.md` 不直接注入模型上下文；长期记忆需保持精简，只记录可验证的 ground truth。
 
@@ -134,7 +135,7 @@ Context Builder 负责动态重建模型可见上下文中的 **history 区**，
 在左侧 `Settings` 新增 Context Builder 控件：
 - 启用/禁用
 - `mode` 选择：minimal / moderate / aggressive
-- `historyBudgetTokens`（历史 token 预算）
+- `historyBudgetTokens`（历史 token 预算，默认 20k）
 - `ranking` 选择：off / dryrun / active
 
 ### 5.2 API

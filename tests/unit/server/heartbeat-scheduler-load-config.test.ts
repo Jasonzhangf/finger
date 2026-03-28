@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { promises as fs } from 'fs';
 import path from 'path';
 import os from 'os';
-import { ensureFingerLayout } from '../../../src/core/finger-paths.js';
+import { ensureFingerLayout, getFingerPaths } from '../../../src/core/finger-paths.js';
 
 describe('HeartbeatScheduler loadConfig', () => {
   let tempDir: string;
@@ -20,9 +20,8 @@ describe('HeartbeatScheduler loadConfig', () => {
   });
 
   it('returns ok:false when config JSON is invalid', async () => {
-    const configDir = path.join(tempDir, 'config');
-    await fs.mkdir(configDir, { recursive: true });
-    const configPath = path.join(configDir, 'heartbeat-tasks.json');
+    const configPath = path.join(getFingerPaths(tempDir).runtime.schedulesDir, 'heartbeat-config.jsonl');
+    await fs.mkdir(path.dirname(configPath), { recursive: true });
     await fs.writeFile(configPath, '{ invalid json', 'utf-8');
 
     // Dynamically import to pick up FINGER_HOME override

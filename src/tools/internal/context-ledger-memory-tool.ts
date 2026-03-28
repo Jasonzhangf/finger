@@ -50,6 +50,7 @@ export const contextLedgerMemoryTool: InternalTool<unknown, ContextLedgerMemoryT
   description: [
     'Canonical time-ordered ledger history tool with two-level retrieval.',
     'Use it when visible prompt history is incomplete or budgeted and you need prior decisions, evidence, or raw timeline details.',
+    'Default dynamic history budget is 20k tokens; for topic switches or coding work that needs more context, pair this with context_builder.rebuild (try rebuild_budget=50000 before 110000).',
     'Search can use compact/fuzzy/task-block recall to find relevant overflow-history windows; query with detail=true can drill into raw ledger entries by slot range.',
     'Read-only for normal agent retrieval: query/search timeline memory.',
     'System-level maintenance actions compact/index are allowed for automatic ledger maintenance.',

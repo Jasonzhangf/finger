@@ -51,7 +51,7 @@ describe('context-builder-history-index', () => {
     expect(index.anchorTimestamp).toBe('2026-03-28T00:00:02.000Z');
   });
 
-  it('buildIndexedHistoryFromSnapshot merges pinned/history/current+delta and preserves high-priority on limit', () => {
+  it('buildIndexedHistoryFromSnapshot preserves recent turns and delta when limit is tight', () => {
     const result = buildIndexedHistoryFromSnapshot(
       [
         { id: 'm1', role: 'system', content: 'sys', timestamp: '2026-03-28T00:00:00.000Z' },
@@ -80,9 +80,9 @@ describe('context-builder-history-index', () => {
     );
 
     expect(result).not.toBeNull();
-    expect(result?.messages.map((m) => m.id)).toEqual(['m1', 'm2', 'm3', 'm4']);
+    expect(result?.messages.map((m) => m.id)).toEqual(['m3', 'm4', 'm5', 'm6']);
     expect(result?.selectedCount).toBe(4);
-    expect(result?.deltaCount).toBe(0);
+    expect(result?.deltaCount).toBe(2);
   });
 
   it('buildNextIndexedHistoryIndex keeps historical ids and rolls current context by max window', () => {

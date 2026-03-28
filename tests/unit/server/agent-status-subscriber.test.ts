@@ -519,6 +519,11 @@ describe('AgentStatusSubscriber', () => {
           }),
         })
       );
+      const relationCall = mockMessageHub.routeToOutput.mock.calls.find(
+        (call: unknown[]) => call[0] === 'channel-bridge-qqbot',
+      );
+      const relationPayload = relationCall?.[1] as { content?: string };
+      expect(relationPayload?.content ?? '').toContain('关系: 子会话');
 
       fallbackSubscriber.stop();
     });

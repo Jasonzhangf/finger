@@ -113,19 +113,21 @@ describe('agent runtime mailbox tools', () => {
     expect(heartbeatMailbox.get(targetAgentId, appended.id)).toBeUndefined();
   });
 
-  it('keeps heartbeat mailbox ephemeral (no ~/.finger/mailbox persistence)', () => {
+  it('persists heartbeat mailbox under ~/.finger/mailbox', () => {
     const targetAgentId = `test-mailbox-agent-${Date.now()}-ephemeral`;
     cleanupTargets.add(targetAgentId);
     const mailboxDir = path.join(FINGER_PATHS.home, 'mailbox', targetAgentId);
     fs.rmSync(mailboxDir, { recursive: true, force: true });
 
-    heartbeatMailbox.append(targetAgentId, { type: 'dispatch-task' }, {
+    const appended = heartbeatMailbox.append(targetAgentId, { type: 'dispatch-task' }, {
       sender: 'finger-system-agent',
       category: 'dispatch-task',
       priority: 0,
     });
 
-    expect(fs.existsSync(mailboxDir)).toBe(false);
+    expect(fs.existsSync(mailboxDir)).toBe(true);
+    expect(fs.existsSync(path.join(mailboxDir, 'inbox.jsonl'))).toBe(true);
+    expect(heartbeatMailbox.get(targetAgentId, appended.id)?.id).toBe(appended.id);
   });
 
   it('keeps notification as pending when read and rejects ack before read for tasks', async () => {

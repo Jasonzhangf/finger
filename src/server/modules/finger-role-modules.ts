@@ -19,8 +19,17 @@ import {
   persistContextBuilderHistoryIndex,
   readPersistedContextBuilderHistoryIndex,
 } from './context-builder-history-index.js';
-import { join, isAbsolute } from 'path';
-import { FINGER_PATHS } from '../../core/finger-paths.js';
+import {
+  augmentHistoryWithContinuityAnchors,
+  extractRecentTaskMessages,
+  extractRecentUserInputs,
+} from './finger-role-modules-continuity.js';
+import {
+  hasMediaInputInMessage,
+  mapRawSessionMessages,
+  resolveRolePromptOverridesFromConfig,
+  type RuntimePromptConfig,
+} from './finger-role-modules-helpers.js';
 
 export type FingerRoleProfile = 'project' | 'reviewer' | 'system';
 
@@ -44,117 +53,6 @@ export interface LegacyAliasOptions {
   enableLegacyChatCodexAlias: boolean;
   legacyAgentId: string;
   legacyAllowedTools: string[];
-}
-
-type RuntimePromptConfig = {
-  prompts?: {
-    system?: string;
-    developer?: string;
-  };
-};
-
-function resolveRolePromptOverridesFromConfig(
-  runtimeConfig: RuntimePromptConfig | undefined | null,
-  role: FingerRoleSpec,
-  developerRole: ChatCodexDeveloperRole,
-  agentId: string,
-): {
-  developerPromptPath?: string;
-  developerPromptPaths?: Partial<Record<ChatCodexDeveloperRole, string>>;
-} {
-  const systemPath = runtimeConfig?.prompts?.system?.trim();
-  const developerPath = runtimeConfig?.prompts?.developer?.trim();
-
-  // Prompt convergence rule:
-  // - Keep coding/system prompt on the shared Codex general prompt track.
-  // - Finger system prompt should be injected as developer prompt (not system field).
-  const effectiveDeveloperPath = role.roleProfile === 'system'
-    ? (systemPath && systemPath.length > 0 ? systemPath : developerPath)
-    : developerPath;
-
-  if (!effectiveDeveloperPath || effectiveDeveloperPath.length === 0) {
-    return {};
-  }
-
-  // Resolve relative paths against the agent's runtime directory
-  const agentDir = join(FINGER_PATHS.runtime.agentsDir, agentId);
-  const resolvedPath = isAbsolute(effectiveDeveloperPath)
-    ? effectiveDeveloperPath
-    : join(agentDir, effectiveDeveloperPath);
-
-  return {
-    developerPromptPath: resolvedPath,
-    developerPromptPaths: {
-      [developerRole]: resolvedPath,
-    } as Partial<Record<ChatCodexDeveloperRole, string>>,
-  };
-}
-
-function hasMediaInputInMessage(
-  message: {
-    metadata?: Record<string, unknown>;
-    attachments?: unknown[];
-  } | null | undefined,
-): boolean {
-  if (!message) return false;
-  const directAttachments = Array.isArray(message.attachments) ? message.attachments : [];
-  const metadataAttachments = Array.isArray(message.metadata?.attachments)
-    ? message.metadata.attachments as unknown[]
-    : [];
-  const allAttachments = [...directAttachments, ...metadataAttachments];
-  if (allAttachments.some((item) => {
-    if (!item || typeof item !== 'object') return false;
-    const attachment = item as Record<string, unknown>;
-    const kind = typeof attachment.kind === 'string' ? attachment.kind : '';
-    const mimeType = typeof attachment.mimeType === 'string' ? attachment.mimeType : '';
-    const type = typeof attachment.type === 'string' ? attachment.type : '';
-    return kind === 'image'
-      || mimeType.startsWith('image/')
-      || type === 'image';
-  })) {
-    return true;
-  }
-
-  const inputItems = message.metadata?.inputItems;
-  if (!Array.isArray(inputItems)) return false;
-  return inputItems.some((item) => {
-    if (!item || typeof item !== 'object') return false;
-    const type = (item as { type?: unknown }).type;
-    return type === 'image' || type === 'local_image';
-  });
-}
-
-function mapRawSessionMessages(
-  messages: Array<{
-    id?: string;
-    role: string;
-    content: string;
-    timestamp?: string;
-    metadata?: Record<string, unknown>;
-  }>,
-  limit: number,
-  extraMetadata?: Record<string, unknown>,
-): Array<{
-  id: string;
-  role: 'user' | 'assistant' | 'system';
-  content: string;
-  timestamp: string;
-  metadata?: Record<string, unknown>;
-}> {
-  const sliced = Number.isFinite(limit) && limit > 0
-    ? messages.slice(-limit)
-    : messages;
-  return sliced
-    .filter((item) => typeof item.content === 'string' && item.content.trim().length > 0)
-    .map((item, index) => ({
-      id: item.id ?? `raw-${Date.now()}-${index}`,
-      role: item.role === 'assistant' || item.role === 'system' ? item.role : 'user',
-      content: item.content,
-      timestamp: item.timestamp ?? new Date().toISOString(),
-      ...((item.metadata && typeof item.metadata === 'object') || (extraMetadata && typeof extraMetadata === 'object')
-        ? { metadata: { ...(item.metadata ?? {}), ...(extraMetadata ?? {}) } }
-        : {}),
-    }));
 }
 
 export async function registerFingerRoleModules(
@@ -230,7 +128,12 @@ export async function registerFingerRoleModules(
       const hasMediaInput = hasMediaInputInMessage(latestMessage);
       if (hasMediaInput) {
         // Media turn: keep raw session order, do not rewrite context via context builder.
-        const mapped = mapRawSessionMessages(sessionMessages, limit, {
+        const mapped = augmentHistoryWithContinuityAnchors(mapRawSessionMessages(sessionMessages, limit, {
+          contextBuilderHistorySource: 'raw_session',
+          contextBuilderBypassed: true,
+          contextBuilderBypassReason: 'media_turn',
+          contextBuilderRebuilt: false,
+        }), sessionMessages, limit, {
           contextBuilderHistorySource: 'raw_session',
           contextBuilderBypassed: true,
           contextBuilderBypassReason: 'media_turn',
@@ -258,7 +161,12 @@ export async function registerFingerRoleModules(
       // 默认不自动重组，只在模型显式调用 context_builder.rebuild 后
       // 在下一轮消费一次按需重组视图。
       if (!settings.enabled) {
-        const mapped = mapRawSessionMessages(sessionMessages, limit, {
+        const mapped = augmentHistoryWithContinuityAnchors(mapRawSessionMessages(sessionMessages, limit, {
+          contextBuilderHistorySource: 'raw_session',
+          contextBuilderBypassed: true,
+          contextBuilderBypassReason: 'context_builder_disabled',
+          contextBuilderRebuilt: false,
+        }), sessionMessages, limit, {
           contextBuilderHistorySource: 'raw_session',
           contextBuilderBypassed: true,
           contextBuilderBypassReason: 'context_builder_disabled',
@@ -296,7 +204,12 @@ export async function registerFingerRoleModules(
             }));
             logger.module('finger-role-modules').info('Applied indexed context history from persisted snapshot', { roleId: role.id, sessionId, selectedCount: indexedMapped.length, selectedMessageCount: persistedIndex.selectedMessageIds.length, deltaCount: indexed.deltaCount, buildMode: persistedIndex.buildMode });
             persistContextBuilderHistoryIndex(runtime, sessionId, buildNextIndexedHistoryIndex(persistedIndex, indexedMapped));
-            return indexedMapped;
+            return augmentHistoryWithContinuityAnchors(indexedMapped, sessionMessages, limit, {
+              contextBuilderHistorySource: 'context_builder_indexed',
+              contextBuilderBypassed: false,
+              contextBuilderRebuilt: false,
+              contextBuilderIndexed: true,
+            });
           }
           logger.module('finger-role-modules').debug('Persisted context history index yielded no messages, fallback to bootstrap/raw', {
             roleId: role.id,
@@ -308,7 +221,7 @@ export async function registerFingerRoleModules(
         if (shouldRunContextBuilderBootstrapOnce(sessionId, agentId)) {
           const configuredBudget = Number.isFinite(settings.historyBudgetTokens) && settings.historyBudgetTokens > 0
             ? Math.floor(settings.historyBudgetTokens)
-            : 100000;
+            : 20000;
           const bootstrapped = await buildContext(
             {
               rootDir,
@@ -366,12 +279,22 @@ export async function registerFingerRoleModules(
             );
             persistContextBuilderHistoryIndex(runtime, sessionId, indexSnapshot);
             logger.module('finger-role-modules').info('Applied one-time bootstrap context rebuild', { roleId: role.id, sessionId, selectedCount: bootstrappedMapped.length, mode: settings.mode, targetBudget: configuredBudget });
-            return bootstrappedMapped;
+            return augmentHistoryWithContinuityAnchors(bootstrappedMapped, sessionMessages, limit, {
+              contextBuilderHistorySource: 'context_builder_bootstrap',
+              contextBuilderBypassed: false,
+              contextBuilderRebuilt: true,
+              contextBuilderBootstrap: true,
+            });
           }
 
           logger.module('finger-role-modules').debug('Bootstrap rebuild yielded empty history, fallback to raw session', { roleId: role.id, sessionId });
         }
-        const mapped = mapRawSessionMessages(sessionMessages, limit, {
+        const mapped = augmentHistoryWithContinuityAnchors(mapRawSessionMessages(sessionMessages, limit, {
+          contextBuilderHistorySource: 'raw_session',
+          contextBuilderBypassed: true,
+          contextBuilderBypassReason: 'on_demand_not_requested',
+          contextBuilderRebuilt: false,
+        }), sessionMessages, limit, {
           contextBuilderHistorySource: 'raw_session',
           contextBuilderBypassed: true,
           contextBuilderBypassReason: 'on_demand_not_requested',
@@ -407,7 +330,12 @@ export async function registerFingerRoleModules(
       }));
 
       if (mapped.length === 0 && sessionMessages.length > 0) {
-        const fallback = mapRawSessionMessages(sessionMessages, limit, {
+        const fallback = augmentHistoryWithContinuityAnchors(mapRawSessionMessages(sessionMessages, limit, {
+          contextBuilderHistorySource: 'raw_session_fallback',
+          contextBuilderBypassed: true,
+          contextBuilderBypassReason: 'empty_on_demand_result',
+          contextBuilderRebuilt: false,
+        }), sessionMessages, limit, {
           contextBuilderHistorySource: 'raw_session_fallback',
           contextBuilderBypassed: true,
           contextBuilderBypassReason: 'empty_on_demand_result',
@@ -434,7 +362,12 @@ export async function registerFingerRoleModules(
         mode: onDemand.buildMode,
         targetBudget: onDemand.targetBudget,
       });
-      return mapped;
+      return augmentHistoryWithContinuityAnchors(mapped, sessionMessages, limit, {
+        contextBuilderHistorySource: 'context_builder_on_demand',
+        contextBuilderBypassed: false,
+        contextBuilderRebuilt: true,
+        contextBuilderOnDemand: true,
+      });
     };
 
     const roleModule = createFingerGeneralModule({
@@ -490,4 +423,7 @@ export async function registerFingerRoleModules(
 
 export const __fingerRoleModulesInternals = {
   resolveRolePromptOverridesFromConfig,
+  extractRecentTaskMessages,
+  extractRecentUserInputs,
+  augmentHistoryWithContinuityAnchors,
 };

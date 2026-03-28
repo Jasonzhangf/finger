@@ -65,14 +65,34 @@ async function readJsonlHeartbeatConfig(configPath: string): Promise<HeartbeatCo
   try {
     const raw = await fs.readFile(configPath, 'utf-8');
     const lines = raw.split('\n').map((l) => l.trim()).filter((l) => l.length > 0);
-    for (let i = lines.length - 1; i >= 0; i -= 1) {
-      try {
-        const parsed = JSON.parse(lines[i]);
-        if (parsed?.type === 'heartbeat_config' && typeof parsed.config === 'object') return parsed.config;
-      } catch { /* skip */ }
+    if (lines.length === 0) {
+      return { global: { intervalMs: DEFAULT_TASK_INTERVAL_MS, enabled: true, dispatch: 'mailbox' }, projects: {} };
     }
-  } catch { /* file does not exist */ }
-  return { global: { intervalMs: DEFAULT_TASK_INTERVAL_MS, enabled: true, dispatch: 'mailbox' }, projects: {} };
+
+    let latestConfig: HeartbeatConfig | null = null;
+    for (let i = 0; i < lines.length; i += 1) {
+      const line = lines[i];
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(line);
+      } catch (error) {
+        const detail = error instanceof Error ? error.message : String(error);
+        throw new Error(`Invalid heartbeat config JSONL at line ${i + 1}: ${detail}`);
+      }
+      const record = parsed as { type?: unknown; config?: unknown };
+      if (record?.type === 'heartbeat_config' && record.config && typeof record.config === 'object') {
+        latestConfig = record.config as HeartbeatConfig;
+      }
+    }
+
+    if (latestConfig) return latestConfig;
+    throw new Error('Heartbeat config file exists but contains no heartbeat_config records');
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException | undefined)?.code === 'ENOENT') {
+      return { global: { intervalMs: DEFAULT_TASK_INTERVAL_MS, enabled: true, dispatch: 'mailbox' }, projects: {} };
+    }
+    throw error;
+  }
 }
 
 interface JsonlTaskRecord {

@@ -5,7 +5,7 @@
  */
 
 import type { SessionProgress, ToolCallRecord } from './progress-monitor-types.js';
-import { resolveToolDisplayName } from './progress-monitor-utils.js';
+import { resolveToolDisplayName } from './progress-monitor-reporting.js';
 
 /**
  * 安全截取字符串

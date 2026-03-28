@@ -302,6 +302,18 @@ export interface SessionInfo {
     timestamp: string;
     summary: string;
   }>;
+  relationKind?: 'standalone' | 'root' | 'child';
+  isRuntimeChild?: boolean;
+  childSessionCount?: number;
+  childSessions?: Array<{
+    id: string;
+    name: string;
+    ownerAgentId?: string;
+    sessionTier?: string;
+    messageCount: number;
+    lastAccessedAt: string;
+    lastMessageAt?: string;
+  }>;
 }
 
 export interface PickDirectoryResponse {

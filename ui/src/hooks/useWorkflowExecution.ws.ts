@@ -339,6 +339,11 @@ export function mapWsMessageToRuntimeEvent(
         (result && typeof result.messageId === 'string' ? result.messageId : undefined)
         ?? (result && typeof result.mailboxMessageId === 'string' ? result.mailboxMessageId : undefined);
       const rootSessionId = typeof payload.rootSessionId === 'string' ? payload.rootSessionId : undefined;
+      const parentSessionId = typeof payload.parentSessionId === 'string' ? payload.parentSessionId : undefined;
+      const childSessionId =
+        (result && typeof result.childSessionId === 'string' ? result.childSessionId : undefined)
+        ?? (typeof payload.childSessionId === 'string' ? payload.childSessionId : undefined)
+        ?? (result && typeof result.sessionId === 'string' ? result.sessionId : undefined);
       const taskId = assignment && typeof assignment.taskId === 'string' ? assignment.taskId : undefined;
       const bdTaskId = assignment && typeof assignment.bdTaskId === 'string' ? assignment.bdTaskId : undefined;
       const checklist = parseDispatchChecklist(
@@ -353,6 +358,8 @@ export function mapWsMessageToRuntimeEvent(
         dispatchId ? `id=${dispatchId}` : '',
         typeof queuePosition === 'number' ? `queue=#${queuePosition}` : '',
         mailboxMessageId ? `mailbox=${mailboxMessageId}` : '',
+        childSessionId ? `child=${childSessionId}` : '',
+        (parentSessionId || rootSessionId) && childSessionId ? `parent=${parentSessionId || rootSessionId}` : '',
         taskId ? `task=${taskId}` : '',
         !taskId && bdTaskId ? `bd=${bdTaskId}` : '',
         checklist.length > 0 ? `checklist=${checklist.length}` : '',
@@ -379,6 +386,8 @@ export function mapWsMessageToRuntimeEvent(
           bdTaskId,
           sessionId: eventSessionId,
           rootSessionId,
+          parentSessionId,
+          childSessionId,
           payload,
         },
         ...(checklist.length > 0 ? { planSteps: checklist } : {}),

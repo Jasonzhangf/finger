@@ -181,7 +181,7 @@ const DEFAULT_USER_SETTINGS: UserSettings = {
   contextBuilder: {
     enabled: false,
     mode: 'moderate',
-    historyBudgetTokens: 100000,
+    historyBudgetTokens: 20000,
     budgetRatio: 0.85,
     halfLifeMs: 86400000,
     overThresholdRelevance: 0.5,
@@ -372,7 +372,7 @@ export function validateUserSettings(settings: any): void {
     settings.contextBuilder = {
       enabled: false,
       mode: 'moderate',
-      historyBudgetTokens: 100000,
+      historyBudgetTokens: 20000,
       budgetRatio: 0.85,
       halfLifeMs: 86400000,
       overThresholdRelevance: 0.5,
@@ -390,7 +390,7 @@ export function validateUserSettings(settings: any): void {
   }
   if (typeof settings.contextBuilder.historyBudgetTokens !== 'number'
     || settings.contextBuilder.historyBudgetTokens <= 0) {
-    settings.contextBuilder.historyBudgetTokens = 100000;
+    settings.contextBuilder.historyBudgetTokens = 20000;
   }
   if (typeof settings.contextBuilder.budgetRatio !== 'number' || settings.contextBuilder.budgetRatio <= 0 || settings.contextBuilder.budgetRatio > 1) {
     settings.contextBuilder.budgetRatio = 0.85;
@@ -532,7 +532,7 @@ export function loadContextBuilderSettings(): ContextBuilderSettings {
     return {
       enabled: false,
       mode: 'moderate',
-      historyBudgetTokens: 100000,
+      historyBudgetTokens: 20000,
       budgetRatio: 0.85,
       halfLifeMs: 86400000,
       overThresholdRelevance: 0.5,

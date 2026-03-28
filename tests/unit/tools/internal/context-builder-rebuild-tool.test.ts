@@ -88,7 +88,7 @@ describe('context_builder.rebuild tool', () => {
       expect(result.selectedBlockIds.length).toBeGreaterThan(0);
       expect(result.metadata).toEqual(expect.objectContaining({
         rawTaskBlockCount: expect.any(Number),
-        targetBudget: expect.any(Number),
+        targetBudget: 20_000,
       }));
       expect(result.messages).toBeDefined();
       expect((result.messages ?? []).length).toBeGreaterThan(0);
@@ -103,6 +103,73 @@ describe('context_builder.rebuild tool', () => {
       expect(consumed).toBeDefined();
       const consumedAgain = consumeContextBuilderOnDemandView(sessionId, agentId);
       expect(consumedAgain).toBeUndefined();
+    } finally {
+      rmSync(rootDir, { recursive: true, force: true });
+    }
+  });
+
+  it('prefers rebuild_budget over other budget aliases', async () => {
+    const rootDir = mkdtempSync(join(tmpdir(), 'finger-context-rebuild-tool-'));
+    const { sessionId, agentId } = writeLedger(rootDir);
+
+    try {
+      const result = await contextBuilderRebuildTool.execute(
+        {
+          session_id: sessionId,
+          agent_id: agentId,
+          current_prompt: 'mailbox coding task',
+          rebuild_budget: 50_000,
+          budget_tokens: 60_000,
+          target_budget: 70_000,
+          _runtime_context: { root_dir: rootDir },
+        },
+        {
+          invocationId: 'tool-ctx-rebuild-2',
+          cwd: process.cwd(),
+          timestamp: new Date().toISOString(),
+          sessionId,
+          agentId,
+        },
+      );
+
+      expect(result.ok).toBe(true);
+      expect(result.metadata.targetBudget).toBe(50_000);
+
+      const staged = consumeContextBuilderOnDemandView(sessionId, agentId);
+      expect(staged?.targetBudget).toBe(50_000);
+    } finally {
+      rmSync(rootDir, { recursive: true, force: true });
+    }
+  });
+
+  it('uses budget_tokens when rebuild_budget is absent', async () => {
+    const rootDir = mkdtempSync(join(tmpdir(), 'finger-context-rebuild-tool-'));
+    const { sessionId, agentId } = writeLedger(rootDir);
+
+    try {
+      const result = await contextBuilderRebuildTool.execute(
+        {
+          session_id: sessionId,
+          agent_id: agentId,
+          current_prompt: 'mailbox coding task',
+          budget_tokens: 50_000,
+          target_budget: 70_000,
+          _runtime_context: { root_dir: rootDir },
+        },
+        {
+          invocationId: 'tool-ctx-rebuild-3',
+          cwd: process.cwd(),
+          timestamp: new Date().toISOString(),
+          sessionId,
+          agentId,
+        },
+      );
+
+      expect(result.ok).toBe(true);
+      expect(result.metadata.targetBudget).toBe(50_000);
+
+      const staged = consumeContextBuilderOnDemandView(sessionId, agentId);
+      expect(staged?.targetBudget).toBe(50_000);
     } finally {
       rmSync(rootDir, { recursive: true, force: true });
     }

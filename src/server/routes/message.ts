@@ -42,10 +42,11 @@ import {
 
 import { inferInboundRole, ensureMessageMetadataRole } from './message-role-utils.js';
 import { normalizeProgressDeliveryPolicy } from '../../common/progress-delivery-policy.js';
+import { applyExecutionLifecycleTransition } from '../modules/execution-lifecycle.js';
 import {
-  applyExecutionLifecycleTransition,
-  resolveLifecycleStageFromResultStatus,
-} from '../modules/execution-lifecycle.js';
+  executeAsyncMessageRoute,
+  executeBlockingMessageRoute,
+} from './message-route-execution.js';
 
 
 export function registerMessageRoutes(app: Express, deps: MessageRouteDeps): void {
@@ -358,210 +359,19 @@ export function registerMessageRoutes(app: Express, deps: MessageRouteDeps): voi
 
     try {
       if (body.blocking) {
-        let primaryResult: unknown;
-        let senderResponse: unknown | undefined;
-        let attempt = 0;
-        let lastError: Error | null = null;
-        if (requestSessionId) {
-          applyExecutionLifecycleTransition(deps.sessionManager, requestSessionId, {
-            stage: 'dispatching',
-            substage: 'blocking_send',
-            updatedBy: 'message-route',
-            messageId,
-            targetAgentId: targetId,
-            detail: body.blocking ? 'blocking' : 'non-blocking',
-            lastError: null,
-          });
-        }
-        while (attempt <= deps.blockingMaxRetries) {
-          let timeoutHandle: NodeJS.Timeout | null = null;
-          try {
-            log.info('Sending to module', { targetId, sessionId: requestSessionId ?? 'none', messageId });
-            primaryResult = await Promise.race([
-              deps.hub.sendToModule(targetId, requestMessage),
-              new Promise<never>((_, reject) => {
-                timeoutHandle = setTimeout(
-                  () => {
-                    log.warn('Module response timed out', { targetId, sessionId: requestSessionId ?? 'none' });
-                    reject(new Error(`Timed out waiting for module response: ${targetId}`));
-                  },
-                  deps.blockingTimeoutMs,
-                );
-              }),
-            ]);
-            lastError = null;
-            break;
-          } catch (err) {
-            const errorMessage = err instanceof Error ? err.message : String(err);
-            lastError = err instanceof Error ? err : new Error(errorMessage);
-            const canRetry = shouldRetryBlockingMessage(errorMessage) && attempt < deps.blockingMaxRetries;
-            if (!canRetry) break;
-            const backoffMs = Math.min(
-              30_000,
-              Math.floor(deps.blockingRetryBaseMs * Math.pow(2, attempt)),
-            );
-            attempt += 1;
-            if (requestSessionId) {
-              applyExecutionLifecycleTransition(deps.sessionManager, requestSessionId, {
-                stage: 'retrying',
-                substage: 'blocking_retry',
-                updatedBy: 'message-route',
-                messageId,
-                targetAgentId: targetId,
-                detail: `attempt=${attempt}`,
-                lastError: errorMessage,
-                timeoutMs: deps.blockingTimeoutMs,
-                retryDelayMs: backoffMs,
-                recoveryAction: 'retry',
-                incrementRetry: true,
-              });
-            }
-            await new Promise((resolve) => setTimeout(resolve, backoffMs));
-          } finally {
-            if (timeoutHandle) {
-              clearTimeout(timeoutHandle);
-            }
-          }
-        }
-
-        if (lastError) {
-          const errorMessage = lastError.message;
-          const statusCode = resolveBlockingErrorStatus(errorMessage);
-          deps.writeMessageErrorSample({
-            phase: 'blocking_send_failed',
-            responseStatus: statusCode,
-            messageId,
-            error: errorMessage,
-            request: {
-              target: targetId,
-              blocking: body.blocking === true,
-              sender: body.sender,
-              callbackId: body.callbackId,
-              message: requestMessage,
-              timeoutMs: deps.blockingTimeoutMs,
-              retryCount: deps.blockingMaxRetries,
-            },
-            response: {
-              status: 'failed',
-              error: errorMessage,
-            },
-          });
-          deps.mailbox.updateStatus(messageId, 'failed', undefined, errorMessage);
-          if (requestSessionId) {
-            applyExecutionLifecycleTransition(deps.sessionManager, requestSessionId, {
-              stage: 'failed',
-              substage: 'blocking_failed',
-              updatedBy: 'message-route',
-              messageId,
-              targetAgentId: targetId,
-              detail: `status=${statusCode}`,
-              lastError: errorMessage,
-              timeoutMs: deps.blockingTimeoutMs,
-              recoveryAction: 'failed',
-            });
-          }
-          res.status(statusCode).json({ messageId, status: 'failed', error: errorMessage });
-          return;
-        }
-
-        if (primaryResult === undefined) {
-          const errorMessage = `No result returned from module: ${body.target}`;
-          deps.mailbox.updateStatus(messageId, 'failed', undefined, errorMessage);
-          if (requestSessionId) {
-            applyExecutionLifecycleTransition(deps.sessionManager, requestSessionId, {
-              stage: 'failed',
-              substage: 'empty_result',
-              updatedBy: 'message-route',
-              messageId,
-              targetAgentId: targetId,
-              lastError: errorMessage,
-            });
-          }
-          res.status(502).json({ messageId, status: 'failed', error: errorMessage });
-          return;
-        }
-
-        if (body.sender) {
-          // Only send callback if sender is a registered module (not a CLI/system sender)
-          const nonModuleSenders = ['mailbox-cli', 'cli', 'heartbeat', 'system'];
-          const isNonModuleSender = nonModuleSenders.includes(body.sender) || body.sender.startsWith('cli-');
-          
-          if (!isNonModuleSender) {
-            try {
-              senderResponse = await deps.hub.sendToModule(body.sender, {
-                type: 'callback',
-                payload: primaryResult,
-                originalMessageId: messageId,
-              });
-              log.info('Callback result sent to sender', { sender: body.sender });
-            } catch (err) {
-              log.error(
-                'Failed to route callback result to sender',
-                err instanceof Error ? err : undefined,
-                { sender: body.sender },
-              );
-            }
-          }
-        }
-
-        const actualResult = primaryResult;
-        const agentTarget = targetId ?? deps.primaryOrchestratorAgentId;
-          const agentInfo = buildAgentEnvelope(agentTarget);
-        const rawAssistantContent = extractResultTextForSession(actualResult) ?? '';
-        const assistantContent = rawAssistantContent.trim().length > 0
-          ? prefixAgentResponse(agentTarget, rawAssistantContent)
-          : rawAssistantContent;
-
-        const responsePayload = {
-          ...(isObjectRecord(actualResult) ? actualResult : { response: assistantContent || actualResult }),
-          response: assistantContent || (typeof actualResult === 'string' ? actualResult : extractResultTextForSession(actualResult) ?? ''),
-          agent: agentInfo,
-          ...(parsedCommand.shouldSwitch ? {
-            contextSwitch: {
-              from: parsedCommand.targetAgent === 'finger-system-agent' ? 'finger-project-agent' : 'finger-system-agent',
-              to: agentTarget,
-              previousMode: parsedCommand.targetAgent === 'finger-system-agent' ? 'business' : 'system',
-            },
-          } : {}),
-          timestamp: {
-            utc: new Date().toISOString(),
-            local: new Date().toLocaleString('sv-SE', { timeZone: 'Asia/Shanghai' }).replace(' ', ' ') + ' +08:00',
-            tz: 'Asia/Shanghai',
-            nowMs: Date.now(),
-          },
-        };
-
-        if (shouldPersistSession && requestSessionId) {
-          if (assistantContent && assistantContent.trim().length > 0) {
-            void deps.sessionManager.addMessage(requestSessionId, 'assistant', assistantContent, {
-              agentId: agentTarget,
-              metadata: { channelId, mode: agentInfo.mode },
-            });
-          }
-        }
-
-        if (displayChannels.length > 0) {
-          sendDisplayFanout(deps.channelBridgeManager, displayChannels, responsePayload.response)
-            .catch((err) => log.error('Failed to send display fanout', err instanceof Error ? err : undefined));
-        }
-        deps.mailbox.updateStatus(messageId, 'completed', responsePayload);
-        if (requestSessionId) {
-          const resultStatus = resolveLifecycleStageFromResultStatus(
-            isObjectRecord(actualResult) ? actualResult.status : undefined,
-          );
-          applyExecutionLifecycleTransition(deps.sessionManager, requestSessionId, {
-            stage: resultStatus ?? 'completed',
-            substage: resultStatus === 'dispatching' ? 'blocking_pending' : 'blocking_done',
-            updatedBy: 'message-route',
-            messageId,
-            targetAgentId: agentTarget,
-            detail: typeof responsePayload.response === 'string' ? responsePayload.response.slice(0, 120) : undefined,
-            lastError: null,
-          });
-        }
-
-        deps.broadcast({ type: 'messageCompleted', messageId, result: responsePayload, callbackResult: senderResponse });
-        res.json({ messageId, status: 'completed', result: responsePayload, callbackResult: senderResponse });
+        const blockingResult = await executeBlockingMessageRoute({
+          deps,
+          body,
+          targetId,
+          requestMessage,
+          requestSessionId,
+          messageId,
+          shouldPersistSession,
+          channelId,
+          displayChannels,
+          parsedCommand,
+        });
+        res.status(blockingResult.statusCode).json(blockingResult.payload);
         return;
       }
 
@@ -577,87 +387,18 @@ export function registerMessageRoutes(app: Express, deps: MessageRouteDeps): voi
         });
       }
 
-      deps.hub.sendToModule(targetId, requestMessage, body.sender ? (result: any) => {
-        if (body.sender) {
-          // Only send callback if sender is a registered module (not a CLI/system sender)
-          const nonModuleSenders = ['mailbox-cli', 'cli', 'heartbeat', 'system'];
-          const isNonModuleSender = nonModuleSenders.includes(body.sender) || body.sender.startsWith('cli-');
-          if (!isNonModuleSender) {
-            deps.hub.sendToModule(body.sender, { type: 'callback', payload: result, originalMessageId: messageId })
-              .catch(() => { /* Ignore sender callback errors */ });
-          }
-        }
-        return result;
-      } : undefined)
-        .then((result) => {
-          const agentTarget = targetId ?? deps.primaryOrchestratorAgentId;
-          const agentInfo = buildAgentEnvelope(agentTarget);
-          const rawAssistantContent = extractResultTextForSession(result) ?? '';
-          const assistantContent = rawAssistantContent.trim().length > 0
-            ? prefixAgentResponse(agentTarget, rawAssistantContent)
-            : rawAssistantContent;
-          const responsePayload = {
-            ...(isObjectRecord(result) ? result : { response: assistantContent || result }),
-            response: assistantContent || (typeof result === 'string' ? result : extractResultTextForSession(result) ?? ''),
-            agent: agentInfo,
-            ...(parsedCommand.shouldSwitch ? {
-              contextSwitch: {
-                from: parsedCommand.targetAgent === 'finger-system-agent' ? 'finger-project-agent' : 'finger-system-agent',
-                to: agentTarget,
-                previousMode: parsedCommand.targetAgent === 'finger-system-agent' ? 'business' : 'system',
-              },
-            } : {}),
-            timestamp: {
-              utc: new Date().toISOString(),
-              local: new Date().toLocaleString('sv-SE', { timeZone: 'Asia/Shanghai' }).replace(' ', ' ') + ' +08:00',
-              tz: 'Asia/Shanghai',
-              nowMs: Date.now(),
-            },
-          };
-          if (shouldPersistSession && requestSessionId) {
-            if (assistantContent && assistantContent.trim().length > 0) {
-              void deps.sessionManager.addMessage(requestSessionId, 'assistant', assistantContent, {
-                agentId: agentTarget,
-                metadata: { channelId, mode: agentInfo.mode },
-              });
-            }
-          }
-
-          if (displayChannels.length > 0) {
-            sendDisplayFanout(deps.channelBridgeManager, displayChannels, responsePayload.response)
-              .catch((err) => log.error('Failed to send display fanout', err instanceof Error ? err : undefined));
-          }
-          deps.mailbox.updateStatus(messageId, 'completed', responsePayload);
-          if (requestSessionId) {
-            const lifecycleStage = resolveLifecycleStageFromResultStatus(
-              isObjectRecord(result) ? result.status : undefined,
-            );
-            applyExecutionLifecycleTransition(deps.sessionManager, requestSessionId, {
-              stage: lifecycleStage ?? 'completed',
-              substage: lifecycleStage === 'dispatching' ? 'async_pending' : 'async_done',
-              updatedBy: 'message-route',
-              messageId,
-              targetAgentId: agentTarget,
-              detail: typeof responsePayload.response === 'string' ? responsePayload.response.slice(0, 120) : undefined,
-              lastError: null,
-            });
-          }
-          deps.broadcast({ type: 'messageCompleted', messageId, result: responsePayload });
-        })
-        .catch((err) => {
-          log.error('Hub send error', err instanceof Error ? err : undefined, { target: targetId, messageId });
-          deps.mailbox.updateStatus(messageId, 'failed', undefined, err.message);
-          if (requestSessionId) {
-            applyExecutionLifecycleTransition(deps.sessionManager, requestSessionId, {
-              stage: 'failed',
-              substage: 'async_failed',
-              updatedBy: 'message-route',
-              messageId,
-              targetAgentId: targetId,
-              lastError: err instanceof Error ? err.message : String(err),
-            });
-          }
-        });
+      executeAsyncMessageRoute({
+        deps,
+        body,
+        targetId,
+        requestMessage,
+        requestSessionId,
+        messageId,
+        shouldPersistSession,
+        channelId,
+        displayChannels,
+        parsedCommand,
+      });
 
       res.json({ messageId, status: 'queued' });
     } catch (err) {

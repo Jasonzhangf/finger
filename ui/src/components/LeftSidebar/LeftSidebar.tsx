@@ -134,6 +134,30 @@ function buildSessionPreviewLines(session: SessionInfo): string[] {
   });
 }
 
+function shortenSessionId(sessionId: string): string {
+  const trimmed = sessionId.trim();
+  if (trimmed.length <= 18) return trimmed;
+  return `${trimmed.slice(0, 8)}...${trimmed.slice(-6)}`;
+}
+
+function buildSessionRelationMeta(session: SessionInfo): string | null {
+  const kind = session.relationKind;
+  if (kind === 'child') {
+    const parent = session.parentSessionId || session.rootSessionId;
+    const parts = [
+      `子会话`,
+      parent ? `父 ${shortenSessionId(parent)}` : '',
+      session.ownerAgentId ? `Agent ${session.ownerAgentId}` : '',
+    ].filter((item) => item.length > 0);
+    return parts.join(' · ');
+  }
+  if (kind === 'root') {
+    const childCount = typeof session.childSessionCount === 'number' ? session.childSessionCount : 0;
+    return childCount > 0 ? `根会话 · 子会话 ${childCount}` : '根会话';
+  }
+  return null;
+}
+
 function formatRuntimeStatus(status: string): string {
   const normalized = status.trim().toLowerCase();
   if (normalized === 'queued') return '排队中';
@@ -724,6 +748,13 @@ const ProjectTab: FC<ProjectTabProps> = ({
               const isSelected = selectedSessionIds.has(session.id);
               const isActive = currentSession?.id === session.id;
               const previewLines = buildSessionPreviewLines(session);
+              const relationMeta = buildSessionRelationMeta(session);
+              const childPreview = session.childSessions && session.childSessions.length > 0
+                ? session.childSessions
+                  .slice(0, 2)
+                  .map((child) => `${child.ownerAgentId || 'agent'}:${shortenSessionId(child.id)}`)
+                  .join(' · ')
+                : '';
               return (
                 <button
                   key={session.id}
@@ -744,6 +775,8 @@ const ProjectTab: FC<ProjectTabProps> = ({
                   <span className="session-content">
                     <span className="session-name">{session.name}</span>
                     <span className="session-meta">{new Date(session.lastAccessedAt).toLocaleString()}</span>
+                    {relationMeta && <span className="session-meta">{relationMeta}</span>}
+                    {childPreview && <span className="session-preview">子链路: {childPreview}</span>}
                     {previewLines.map((line, index) => (
                       <span className="session-preview" key={`${session.id}-preview-${index}`}>{line}</span>
                     ))}

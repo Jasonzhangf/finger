@@ -6,7 +6,7 @@ import type { UnifiedEventBus } from '../../runtime/event-bus.js';
 import type { Attachment } from '../../runtime/events.js';
 import { SYSTEM_PROJECT_PATH } from '../../agents/finger-system-agent/index.js';
 import { buildContext } from '../../runtime/context-builder.js';
-import { listLedgerSessionsSnapshot } from './ledger-routes.js';
+import { listLedgerSessionsSnapshot } from './ledger-routes-storage.js';
 import {
   hasActiveWorkflowEntry,
   loadAllSessionLogs,
@@ -106,10 +106,10 @@ export function registerSessionRoutes(app: Express, deps: SessionRouteDeps): voi
     const sessions = listLedgerSessionsSnapshot();
     const filtered = includeSystem
       ? sessions
-      : sessions.filter((s) => {
+      : sessions.filter((s: Record<string, unknown>) => {
           const projectPath = String(s.projectPath || '');
-          const sessionTier = String((s as Record<string, unknown>).sessionTier || '');
-          const ownerAgentId = String((s as Record<string, unknown>).ownerAgentId || '');
+          const sessionTier = String(s.sessionTier || '');
+          const ownerAgentId = String(s.ownerAgentId || '');
           const id = String(s.id || '');
           return projectPath !== SYSTEM_PROJECT_PATH
             && sessionTier !== 'system'

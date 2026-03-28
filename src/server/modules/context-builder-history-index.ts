@@ -39,6 +39,33 @@ export interface PersistedContextBuilderHistoryIndex {
 }
 
 const DEFAULT_CURRENT_CONTEXT_MAX_ITEMS = 240;
+const DEFAULT_RECENT_USER_TURN_COUNT = 2;
+
+function messageIdentity(item: SessionMessageLike): string {
+  return typeof item.id === 'string' && item.id.trim().length > 0
+    ? item.id
+    : `${item.role}:${item.timestamp ?? ''}:${item.content.slice(0, 32)}`;
+}
+
+function extractRecentTurnWindow(
+  sessionMessages: SessionMessageLike[],
+  recentUserTurnCount = DEFAULT_RECENT_USER_TURN_COUNT,
+): SessionMessageLike[] {
+  if (!Array.isArray(sessionMessages) || sessionMessages.length === 0) return [];
+  let remainingUserTurns = Math.max(1, Math.floor(recentUserTurnCount));
+  let startIndex = 0;
+  for (let index = sessionMessages.length - 1; index >= 0; index -= 1) {
+    const item = sessionMessages[index];
+    if (item.role === 'user' && typeof item.content === 'string' && item.content.trim().length > 0) {
+      remainingUserTurns -= 1;
+      if (remainingUserTurns === 0) {
+        startIndex = index;
+        break;
+      }
+    }
+  }
+  return sessionMessages.slice(startIndex);
+}
 
 export function readPersistedContextBuilderHistoryIndex(
   sessionContext: Record<string, unknown> | undefined,
@@ -55,7 +82,7 @@ export function readPersistedContextBuilderHistoryIndex(
     : 'moderate';
   const targetBudget = typeof value.targetBudget === 'number' && Number.isFinite(value.targetBudget) && value.targetBudget > 0
     ? Math.floor(value.targetBudget)
-    : 100000;
+    : 20000;
   const selectedBlockIds = Array.isArray(value.selectedBlockIds)
     ? value.selectedBlockIds.filter((item): item is string => typeof item === 'string' && item.trim().length > 0)
     : [];
@@ -193,6 +220,8 @@ export function buildIndexedHistoryFromSnapshot(
     : index.selectedMessageIds;
   const currentContextMessageIds = index.currentContextMessageIds ?? [];
   const pinnedMessageIds = index.pinnedMessageIds ?? [];
+  const recentTurnWindow = extractRecentTurnWindow(sessionMessages);
+  const recentTurnIds = new Set(recentTurnWindow.map((item) => messageIdentity(item)));
   const selected = [
     ...pinnedMessageIds,
     ...historySelectedMessageIds,
@@ -220,37 +249,41 @@ export function buildIndexedHistoryFromSnapshot(
     : [];
 
   const seenIds = new Set<string>();
-  const prioritized: SessionMessageLike[] = [];
-  const currentMerged: SessionMessageLike[] = [];
+  const prioritizedHistorical: SessionMessageLike[] = [];
+  const recentPreserved: SessionMessageLike[] = [];
+  const deltaMerged: SessionMessageLike[] = [];
   const pushUnique = (item: SessionMessageLike): void => {
-    const key = typeof item.id === 'string' && item.id.trim().length > 0
-      ? item.id
-      : `${item.role}:${item.timestamp ?? ''}:${item.content.slice(0, 32)}`;
+    const key = messageIdentity(item);
     if (seenIds.has(key)) return;
     seenIds.add(key);
-    prioritized.push(item);
+    if (recentTurnIds.has(key)) {
+      recentPreserved.push(item);
+      return;
+    }
+    prioritizedHistorical.push(item);
   };
 
   for (const item of selected) pushUnique(item);
   for (const item of delta) {
-    const key = typeof item.id === 'string' && item.id.trim().length > 0
-      ? item.id
-      : `${item.role}:${item.timestamp ?? ''}:${item.content.slice(0, 32)}`;
+    const key = messageIdentity(item);
     if (seenIds.has(key)) continue;
     seenIds.add(key);
-    currentMerged.push(item);
+    deltaMerged.push(item);
   }
-  const merged = [...prioritized, ...currentMerged];
+  const merged = [...prioritizedHistorical, ...recentPreserved, ...deltaMerged];
   if (merged.length === 0) return null;
 
   let sliced = merged;
   if (Number.isFinite(limit) && limit > 0) {
-    const high = prioritized;
-    const low = currentMerged;
-    if (high.length >= limit) {
-      sliced = high.slice(-limit);
+    const mustKeep = [...recentPreserved, ...deltaMerged];
+    const mustKeepKeys = new Set(mustKeep.map((item) => messageIdentity(item)));
+    const dedupMustKeep = mustKeep.filter((item, index, arr) => arr.findIndex((candidate) => messageIdentity(candidate) === messageIdentity(item)) === index);
+    if (dedupMustKeep.length >= limit) {
+      sliced = dedupMustKeep.slice(-limit);
     } else {
-      sliced = [...high, ...low.slice(-(limit - high.length))];
+      const remaining = limit - dedupMustKeep.length;
+      const historicalPool = prioritizedHistorical.filter((item) => !mustKeepKeys.has(messageIdentity(item)));
+      sliced = [...historicalPool.slice(-remaining), ...dedupMustKeep];
     }
   }
   const mapped = sliced
@@ -271,8 +304,8 @@ export function buildIndexedHistoryFromSnapshot(
   if (mapped.length === 0) return null;
   return {
     messages: mapped,
-    selectedCount: prioritized.length,
-    deltaCount: Math.max(0, mapped.length - Math.min(mapped.length, prioritized.length)),
+    selectedCount: prioritizedHistorical.length + recentPreserved.length,
+    deltaCount: Math.max(0, deltaMerged.length),
   };
 }
 
