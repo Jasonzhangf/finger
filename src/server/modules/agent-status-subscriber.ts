@@ -17,6 +17,7 @@ import type { AgentRuntimeDeps } from './agent-runtime/types.js';
 import type { UnifiedEventBus } from '../../runtime/event-bus.js';
 import type { RuntimeEvent, ToolErrorEvent, SystemErrorEvent } from '../../runtime/events.js';
 import type { ChannelBridgeEnvelope } from '../../bridges/envelope.js';
+import type { PushSettings } from '../../bridges/types.js';
 import {
   type SubscriptionLevel,
   type AgentSubscriptionConfig,
@@ -40,6 +41,10 @@ import {
   flushStepBuffer as flushStepBufferEvent,
   type HandlerContext,
 } from './agent-status-subscriber-handlers.js';
+import {
+  applyProgressDeliveryPolicy,
+  normalizeProgressDeliveryPolicy,
+} from '../../common/progress-delivery-policy.js';
 
 /**
  * 默认订阅的事件类型列表
@@ -58,6 +63,16 @@ const DEFAULT_SUBSCRIBED_EVENTS = [
 
 const log = logger.module('AgentStatusSubscriber');
 const DEFAULT_REASONING_BODY_BUFFER_MS = 0;
+const FALLBACK_PUSH_SETTINGS: PushSettings = {
+  updateMode: 'both',
+  reasoning: true,
+  bodyUpdates: true,
+  statusUpdate: true,
+  toolCalls: true,
+  stepUpdates: true,
+  stepBatch: 1,
+  progressUpdates: true,
+};
 
 function resolveReasoningBodyBufferMs(): number {
   const raw = process.env.FINGER_REASONING_BODY_BUFFER_MS;
@@ -82,6 +97,8 @@ export class AgentStatusSubscriber {
   private stepBuffer = new Map<string, Array<{ index: number; summary: string; timestamp: string }>>();
   private stepBatchDefault = 5;
   private finalReplyBySession = new Map<string, { normalized: string; at: number }>();
+  private lastBodySentBySession = new Map<string, { normalized: string; at: number }>();
+  private lastBodySentByRoute = new Map<string, { normalized: string; at: number }>();
   private lastProgressMailboxSummaryBySession = new Map<string, string>();
   private lastReasoningPushAtByRoute = new Map<string, number>();
   private readonly reasoningBodyBufferMs = resolveReasoningBodyBufferMs();
@@ -101,6 +118,7 @@ export class AgentStatusSubscriber {
       primaryAgentId: this.primaryAgentId,
       registerChildAgent: (childAgentId: string, parentAgentId: string) => this.registerChildAgent(childAgentId, parentAgentId),
       registerChildSession: (childSessionId: string, envelope: SessionEnvelopeMapping[ 'envelope']) => this.registerChildSession(childSessionId, envelope),
+      resolvePushSettings: (sessionId: string, channelId: string) => this.resolvePushSettings(sessionId, channelId),
     };
   }
 
@@ -121,6 +139,10 @@ export class AgentStatusSubscriber {
       envelope.userId ?? '',
       envelope.groupId ?? '',
     ].join(':');
+  }
+
+  private buildDeliveryRouteKey(channelId: string, userId?: string, groupId?: string): string {
+    return [channelId.trim(), (groupId ?? '').trim(), (userId ?? '').trim()].join('::');
   }
 
   private async waitReasoningBufferIfNeeded(sessionId: string, mapping: SessionEnvelopeMapping): Promise<void> {
@@ -144,6 +166,23 @@ export class AgentStatusSubscriber {
         this.lastReasoningPushAtByRoute.delete(key);
       }
     }
+  }
+
+  private resolvePushSettings(sessionId: string, channelId: string): PushSettings {
+    const base = this.channelBridgeManager
+      ? this.channelBridgeManager.getPushSettings(channelId)
+      : FALLBACK_PUSH_SETTINGS;
+    const session = this.deps.sessionManager.getSession(sessionId);
+    const context = (session?.context && typeof session.context === 'object')
+      ? (session.context as Record<string, unknown>)
+      : {};
+    const policy = normalizeProgressDeliveryPolicy(
+      context.progressDelivery
+      ?? context.progress_delivery
+      ?? context.scheduledProgressDelivery
+      ?? context.scheduled_progress_delivery,
+    );
+    return applyProgressDeliveryPolicy(base, policy);
   }
 
   /**
@@ -185,14 +224,15 @@ export class AgentStatusSubscriber {
       log.warn(`[AgentStatusSubscriber] No messageHub available for ${label} update`);
       return;
     }
+    const deduped = new Map<string, SessionEnvelopeMapping>();
     for (const mapping of mappings) {
-      if (this.channelBridgeManager) {
-        const pushSettings = this.channelBridgeManager.getPushSettings(mapping.envelope.channel);
-        const enabled = Boolean(pushSettings[setting]);
-        if (!enabled) {
-          continue;
-        }
-      }
+      const targetKey = `${mapping.envelope.channel}::${mapping.envelope.groupId ?? ''}::${mapping.envelope.userId ?? ''}`;
+      deduped.set(targetKey, mapping);
+    }
+
+    for (const mapping of deduped.values()) {
+      const pushSettings = this.resolvePushSettings(sessionId, mapping.envelope.channel);
+      if (!pushSettings[setting]) continue;
 
       const outputId = 'channel-bridge-' + mapping.envelope.channel;
       const originalEnvelope: ChannelBridgeEnvelope = {
@@ -214,19 +254,33 @@ export class AgentStatusSubscriber {
         await this.waitReasoningBufferIfNeeded(sessionId, mapping);
       }
 
-      const content = `${prefix}${text}`;
-      const message = {
-        channelId: mapping.envelope.channel,
-        target: mapping.envelope.groupId ? `group:${mapping.envelope.groupId}` : (mapping.envelope.userId || 'unknown'),
-        content,
-        originalEnvelope,
-        [label]: {
-          sessionId,
-          agentId,
-        },
-      };
+      const payloadText = label === 'body'
+        ? this.normalizeBodyForChannel(text, mapping.envelope.channel)
+        : text;
+      const chunks = label === 'body'
+        ? this.chunkBodyForChannel(payloadText, mapping.envelope.channel)
+        : [payloadText];
 
-      await this.messageHub.routeToOutput(outputId, message);
+      for (let i = 0; i < chunks.length; i += 1) {
+        const content = `${prefix}${chunks[i]}`;
+        const message = {
+          channelId: mapping.envelope.channel,
+          target: mapping.envelope.groupId ? `group:${mapping.envelope.groupId}` : (mapping.envelope.userId || 'unknown'),
+          content,
+          originalEnvelope,
+          [label]: {
+            sessionId,
+            agentId,
+            chunkIndex: i + 1,
+            chunkTotal: chunks.length,
+          },
+        };
+
+        await this.messageHub.routeToOutput(outputId, message);
+        if (i < chunks.length - 1) {
+          await new Promise((resolve) => setTimeout(resolve, 120));
+        }
+      }
       if (label === 'reasoning') {
         this.lastReasoningPushAtByRoute.set(this.buildRouteKey(sessionId, mapping), Date.now());
       }
@@ -241,15 +295,16 @@ export class AgentStatusSubscriber {
   }
 
   async sendBodyUpdate(sessionId: string, agentId: string, bodyText: string): Promise<void> {
-    const text = bodyText.trim();
+    const text = this.normalizeLinkDigestBody(bodyText).trim();
     if (!text) return;
+    const pureLinkDigest = this.isPureLinkDigest(text);
+    const normalizedBody = this.normalizeBodyForDedup(text);
 
     // If the same final reply has already been sent through the main reply
     // chain for this session, skip additional body push to avoid duplicates.
     const finalReply = this.finalReplyBySession.get(sessionId);
     if (finalReply) {
       const ageMs = Date.now() - finalReply.at;
-      const normalizedBody = this.normalizeBodyForDedup(text);
       if (ageMs <= 10_000 && finalReply.normalized === normalizedBody) {
         this.finalReplyBySession.delete(sessionId);
         return;
@@ -261,13 +316,41 @@ export class AgentStatusSubscriber {
 
     // Dedup: skip if the same body was already sent for this session.
     // Prevents duplicate pushes when identical body text arrives multiple times.
-    const dedupKey = `${sessionId}:${text.slice(0, 200)}`;
+    const dedupKey = `${sessionId}:${normalizedBody.slice(0, 200)}`;
     if ((this as any)._lastBodyDedupKey === dedupKey) {
       return;
     }
     (this as any)._lastBodyDedupKey = dedupKey;
 
-    await this.sendTextUpdate(sessionId, agentId, text, 'bodyUpdates', 'body', '正文：');
+    // Pre-mark body sent before actual channel IO to close race:
+    // directSendToModule may try to send final reply concurrently.
+    // Marking first allows route-level dedup to suppress duplicate direct replies.
+    const sentAt = Date.now();
+    this.lastBodySentBySession.set(sessionId, {
+      normalized: normalizedBody,
+      at: sentAt,
+    });
+    const preMappings = this.resolveEnvelopeMappings(sessionId);
+    for (const mapping of preMappings) {
+      const routeKey = this.buildDeliveryRouteKey(
+        mapping.envelope.channel,
+        mapping.envelope.userId,
+        mapping.envelope.groupId,
+      );
+      this.lastBodySentByRoute.set(routeKey, {
+        normalized: normalizedBody,
+        at: sentAt,
+      });
+    }
+
+    await this.sendTextUpdate(
+      sessionId,
+      agentId,
+      text,
+      'bodyUpdates',
+      'body',
+      pureLinkDigest ? '' : '正文：',
+    );
   }
 
   markFinalReplySent(sessionId: string, replyText: string): void {
@@ -279,12 +362,159 @@ export class AgentStatusSubscriber {
     });
   }
 
+  clearFinalReplySent(sessionId: string): void {
+    this.finalReplyBySession.delete(sessionId);
+  }
+
+  wasBodyUpdateRecentlySent(sessionId: string, text: string, windowMs = 12_000): boolean {
+    const normalized = this.normalizeBodyForDedup(text);
+    if (!normalized) return false;
+    const recent = this.lastBodySentBySession.get(sessionId);
+    if (!recent) return false;
+    const ageMs = Date.now() - recent.at;
+    if (ageMs > windowMs) {
+      this.lastBodySentBySession.delete(sessionId);
+      return false;
+    }
+    return recent.normalized === normalized;
+  }
+
+  wasBodyUpdateRecentlySentForRoute(
+    route: { channelId: string; userId?: string; groupId?: string },
+    text: string,
+    windowMs = 12_000,
+  ): boolean {
+    const normalized = this.normalizeBodyForDedup(text);
+    if (!normalized) return false;
+    const routeKey = this.buildDeliveryRouteKey(route.channelId, route.userId, route.groupId);
+    const recent = this.lastBodySentByRoute.get(routeKey);
+    if (!recent) return false;
+    const ageMs = Date.now() - recent.at;
+    if (ageMs > windowMs) {
+      this.lastBodySentByRoute.delete(routeKey);
+      return false;
+    }
+    return recent.normalized === normalized;
+  }
+
+  wasAnyBodyUpdateRecentlySentForRoute(
+    route: { channelId: string; userId?: string; groupId?: string },
+    windowMs = 12_000,
+  ): boolean {
+    const routeKey = this.buildDeliveryRouteKey(route.channelId, route.userId, route.groupId);
+    const recent = this.lastBodySentByRoute.get(routeKey);
+    if (!recent) return false;
+    const ageMs = Date.now() - recent.at;
+    if (ageMs > windowMs) {
+      this.lastBodySentByRoute.delete(routeKey);
+      return false;
+    }
+    return true;
+  }
+
   private normalizeBodyForDedup(text: string): string {
     return text
       .trim()
       .replace(/^正文\s*[：:]\s*/u, '')
       .replace(/^\[[^\]]+\]\s*/u, '')
       .trim();
+  }
+
+  /**
+   * 对新闻类大段链接正文进行硬规范化，确保客户端可解析：
+   * - 仅保留 Markdown 链接 [标题](URL)
+   * - 一行一个链接（禁止前缀/列表符号）
+   * - 自动去重（按 URL）
+   * 仅在检测到大量链接时生效，避免影响普通对话正文。
+   */
+  private normalizeLinkDigestBody(text: string): string {
+    const source = text.trim();
+    if (!source) return source;
+    const pairs = this.extractLinkDigestPairs(source);
+    if (pairs.length < 3) return source;
+
+    // Strict digest format: one markdown link per line, no extra text.
+    return pairs
+      .map((pair) => `[${pair.title}](${pair.url})`)
+      .join('\n');
+  }
+
+  private isPureLinkDigest(text: string): boolean {
+    const lines = text
+      .split('\n')
+      .map((line) => line.trim())
+      .filter((line) => line.length > 0);
+    if (lines.length === 0) return false;
+    const markdownLinkCount = lines.filter((line) => /^\[[^\]\n]{1,220}\]\(https?:\/\/[^)\s]+\)$/u.test(line)).length;
+    const urlLineCount = lines.filter((line) => /^https?:\/\/\S+$/u.test(line)).length;
+    // Accept either strict markdown link lines, or plain URL-only lines.
+    // Require all non-empty lines to be link-like to avoid suppressing "正文：" for normal text.
+    return (
+      (markdownLinkCount >= 3 && markdownLinkCount === lines.length)
+      || (urlLineCount >= 3 && urlLineCount === lines.length)
+    );
+  }
+
+  private normalizeBodyForChannel(text: string, channelId: string): string {
+    const source = text.trim();
+    if (!source) return source;
+    // QQ/Weixin plain text rendering is more stable with URL on its own line.
+    // Convert digest markdown links to:
+    // 标题
+    // URL
+    if (channelId !== 'qqbot' && channelId !== 'openclaw-weixin') {
+      return source;
+    }
+    const pairs = this.extractLinkDigestPairs(source);
+    if (pairs.length < 3) return source;
+    return pairs
+      .map((pair) => `${pair.title}\n${pair.url}`)
+      .join('\n\n');
+  }
+
+  private chunkBodyForChannel(text: string, channelId: string): string[] {
+    if (channelId !== 'qqbot' && channelId !== 'openclaw-weixin') {
+      return [text];
+    }
+
+    const blocks = text
+      .split(/\n\s*\n/u)
+      .map((item) => item.trim())
+      .filter((item) => item.length > 0);
+    if (blocks.length <= 5) return [text];
+
+    const digestLikeBlocks = blocks.filter((block) => {
+      const lines = block.split('\n').map((line) => line.trim()).filter(Boolean);
+      if (lines.length < 2) return false;
+      const urlLine = lines[lines.length - 1];
+      return /^https?:\/\/\S+$/u.test(urlLine);
+    });
+    // Only chunk when it clearly looks like a title+url digest.
+    if (digestLikeBlocks.length < Math.max(5, Math.floor(blocks.length * 0.8))) {
+      return [text];
+    }
+
+    const chunks: string[] = [];
+    const chunkSize = 5;
+    for (let i = 0; i < blocks.length; i += chunkSize) {
+      chunks.push(blocks.slice(i, i + chunkSize).join('\n\n'));
+    }
+    return chunks;
+  }
+
+  private extractLinkDigestPairs(text: string): Array<{ title: string; url: string }> {
+    const regex = /\[([^\]\n]{1,220})\]\((https?:\/\/[^)\s]+)\)/gu;
+    const seen = new Set<string>();
+    const pairs: Array<{ title: string; url: string }> = [];
+    for (const match of text.matchAll(regex)) {
+      const title = (match[1] ?? '').trim();
+      const url = (match[2] ?? '').trim();
+      if (!title || !url) continue;
+      if (seen.has(url)) continue;
+      seen.add(url);
+      pairs.push({ title, url });
+    }
+    return pairs;
   }
 
   /**
@@ -377,8 +607,18 @@ export class AgentStatusSubscriber {
     if (this.sameEnvelope(existing.envelope, envelope)) {
       return;
     }
+    if (this.sameDeliveryRoute(existing.envelope, envelope)) {
+      existing.envelope = envelope;
+      return;
+    }
 
     const observers = this.sessionObserverMap.get(sessionId) ?? [];
+    const sameRouteIndex = observers.findIndex((item) => this.sameDeliveryRoute(item, envelope));
+    if (sameRouteIndex >= 0) {
+      observers[sameRouteIndex] = envelope;
+      this.sessionObserverMap.set(sessionId, observers);
+      return;
+    }
     if (!observers.some((item) => this.sameEnvelope(item, envelope))) {
       observers.push(envelope);
       this.sessionObserverMap.set(sessionId, observers);
@@ -440,9 +680,45 @@ export class AgentStatusSubscriber {
     const session = this.deps.sessionManager.getSession(sessionId);
     if (!session) return null;
 
-    const context = (session.context && typeof session.context === 'object')
+    // daemon 重启后，内存映射会丢失；从 session.context 恢复通道路由信息
+    // 可让 mailbox/heartbeat 等后台触发任务继续向原 channel 推送进度。
+    const sessionContext = (session.context && typeof session.context === 'object')
       ? (session.context as Record<string, unknown>)
       : {};
+    const contextChannelId = typeof sessionContext.channelId === 'string'
+      ? sessionContext.channelId.trim()
+      : '';
+    const contextUserId = typeof sessionContext.channelUserId === 'string'
+      ? sessionContext.channelUserId.trim()
+      : '';
+    const contextGroupId = typeof sessionContext.channelGroupId === 'string'
+      ? sessionContext.channelGroupId.trim()
+      : undefined;
+    const contextMessageId = typeof sessionContext.lastChannelMessageId === 'string'
+      ? sessionContext.lastChannelMessageId.trim()
+      : '';
+
+    if (contextChannelId && contextUserId) {
+      const recovered: SessionEnvelopeMapping = {
+        sessionId,
+        envelope: {
+          channel: contextChannelId,
+          envelopeId: contextMessageId,
+          userId: contextUserId,
+          ...(contextGroupId ? { groupId: contextGroupId } : {}),
+        },
+        timestamp: Date.now(),
+      };
+      this.sessionEnvelopeMap.set(sessionId, recovered);
+      log.info('[AgentStatusSubscriber] Recovered session envelope from session.context', {
+        sessionId,
+        channel: contextChannelId,
+        hasMessageId: contextMessageId.length > 0,
+      });
+      return recovered;
+    }
+
+    const context = sessionContext;
     const parentSessionId = typeof context.parentSessionId === 'string' ? context.parentSessionId : '';
     const rootSessionId = typeof context.rootSessionId === 'string' ? context.rootSessionId : '';
     const fallbackId = rootSessionId || parentSessionId;
@@ -485,6 +761,15 @@ export class AgentStatusSubscriber {
   ): boolean {
     return left.channel === right.channel
       && left.envelopeId === right.envelopeId
+      && left.userId === right.userId
+      && left.groupId === right.groupId;
+  }
+
+  private sameDeliveryRoute(
+    left: SessionEnvelopeMapping['envelope'],
+    right: SessionEnvelopeMapping['envelope'],
+  ): boolean {
+    return left.channel === right.channel
       && left.userId === right.userId
       && left.groupId === right.groupId;
   }
@@ -610,7 +895,8 @@ export class AgentStatusSubscriber {
 
     // 查找对应的 session
     const sessionId = event.sessionId;
-    const mappings = this.resolveEnvelopeMappings(sessionId);
+    const mappings = this.resolveEnvelopeMappings(sessionId)
+      .filter((mapping) => this.resolvePushSettings(sessionId, mapping.envelope.channel).statusUpdate);
 
     if (mappings.length === 0) {
       log.debug(`[AgentStatusSubscriber] No envelope mapping for session ${sessionId}`);
@@ -646,6 +932,17 @@ export class AgentStatusSubscriber {
       if (remainingBuffer && remainingBuffer.length > 0) {
         await this.flushStepBuffer(sessionId, mappings[0]);
       }
+
+      const session = this.deps.sessionManager.getSession(sessionId);
+      const context = (session?.context && typeof session.context === 'object')
+        ? (session.context as Record<string, unknown>)
+        : {};
+      if (context.progressDeliveryTransient === true) {
+        this.deps.sessionManager.updateContext(sessionId, {
+          progressDelivery: null,
+          progressDeliveryTransient: false,
+        });
+      }
     }
 
     // NOTE:
@@ -680,14 +977,11 @@ export class AgentStatusSubscriber {
     if (mappings.length === 0) return;
     if (!this.messageHub) return;
 
-    // 检查该 channel 是否配置了 progressUpdates
-    if (this.channelBridgeManager) {
-      const canPush = mappings.some((mapping) => {
-        const pushSettings = this.channelBridgeManager!.getPushSettings(mapping.envelope.channel);
-        return pushSettings.updateMode !== 'command' && pushSettings.progressUpdates;
-      });
-      if (!canPush) return;
-    }
+    const progressMappings = mappings.filter((mapping) => {
+      const pushSettings = this.resolvePushSettings(report.sessionId, mapping.envelope.channel);
+      return pushSettings.statusUpdate && pushSettings.updateMode !== 'command' && pushSettings.progressUpdates;
+    });
+    if (progressMappings.length === 0) return;
 
     const mailboxSnapshot = buildMailboxProgressSnapshot(report.agentId, this.primaryAgentId || 'finger-system-agent');
     const mailboxSummaryText = mailboxSnapshot?.summaryText;
@@ -751,7 +1045,7 @@ export class AgentStatusSubscriber {
       },
     };
 
-    await sendStatusUpdate(mappings.map((item) => item.envelope), wrappedUpdate, this.messageHub, this.channelBridgeManager);
+    await sendStatusUpdate(progressMappings.map((item) => item.envelope), wrappedUpdate, this.messageHub, this.channelBridgeManager);
   }
 
   /**

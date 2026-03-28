@@ -8,7 +8,7 @@ import type { ChannelAttachment, ChannelMessage } from '../../bridges/types.js';
 import type { AgentDispatchRequest } from './agent-runtime/types.js';
 import { existsSync } from 'node:fs';
 import { readFileSync } from 'node:fs';
-import { extname } from 'node:path';
+import { extname, resolve as resolvePath, sep as pathSep } from 'node:path';
 import type { ChannelBridgeManager } from '../../bridges/manager.js';
 import type { AskManager } from '../../orchestration/ask/ask-manager.js';
 import type { SessionManager } from '../../orchestration/session-manager.js';
@@ -233,6 +233,7 @@ export function createChannelBridgeHubRoute(deps: ChannelBridgeHubRouteDeps) {
       if (targetAgentId === SYSTEM_AGENT_CONFIG.id) {
         const systemSession = sessionManager.getOrCreateSystemSession();
         sessionManager.ensureSession(systemSession.id, SYSTEM_PROJECT_PATH, `channel:${channelMsg.channelId}`);
+        channelContextManager.pinSession(channelMsg.channelId, targetAgentId, systemSession.id);
         return { sessionId: systemSession.id, projectPath: SYSTEM_PROJECT_PATH };
       }
 
@@ -240,16 +241,92 @@ export function createChannelBridgeHubRoute(deps: ChannelBridgeHubRouteDeps) {
       const projectPath = preferredProjectPath && preferredProjectPath.length > 0
         ? preferredProjectPath
         : (() => {
-            const current = sessionManager.getCurrentSession();
-            if (current && current.projectPath !== SYSTEM_PROJECT_PATH) {
+            const getCurrentSession = (sessionManager as unknown as {
+              getCurrentSession?: () => { projectPath?: string } | null;
+            }).getCurrentSession;
+            const current = typeof getCurrentSession === 'function'
+              ? getCurrentSession.call(sessionManager)
+              : null;
+            if (
+              current
+              && typeof current.projectPath === 'string'
+              && current.projectPath.length > 0
+              && current.projectPath !== SYSTEM_PROJECT_PATH
+            ) {
               return current.projectPath;
             }
             return process.cwd();
           })();
 
-      const latest = sessionManager.findSessionsByProjectPath(projectPath)[0];
-      const session = latest ?? sessionManager.createSession(projectPath, `channel:${channelMsg.channelId}`, { allowReuse: true });
-      sessionManager.ensureSession(session.id, projectPath, `channel:${channelMsg.channelId}`);
+      const pinnedSessionId = channelContextManager.getPinnedSession(channelMsg.channelId, targetAgentId);
+      if (pinnedSessionId) {
+        const pinned = sessionManager.getSession(pinnedSessionId);
+        if (pinned) {
+          return { sessionId: pinned.id, projectPath: pinned.projectPath };
+        }
+      }
+
+      const normalizedProjectPath = resolvePath(projectPath);
+      const normalizedPrefix = normalizedProjectPath.endsWith(pathSep)
+        ? normalizedProjectPath
+        : `${normalizedProjectPath}${pathSep}`;
+
+      const listSessions = (sessionManager as unknown as {
+        listSessions?: () => Array<{
+          id?: string;
+          projectPath?: string;
+          lastAccessedAt?: string;
+          context?: Record<string, unknown>;
+        }>;
+      }).listSessions;
+      const sessionsForTarget = (typeof listSessions === 'function' ? listSessions.call(sessionManager) : [])
+        .filter((session): session is {
+          id: string;
+          projectPath: string;
+          lastAccessedAt?: string;
+          context?: Record<string, unknown>;
+        } => {
+          if (typeof session.id !== 'string' || session.id.trim().length === 0) return false;
+          if (typeof session.projectPath !== 'string' || session.projectPath.length === 0) return false;
+          const candidatePath = resolvePath(session.projectPath);
+          const projectPathMatched = candidatePath === normalizedProjectPath || candidatePath.startsWith(normalizedPrefix);
+          if (!projectPathMatched) return false;
+          const sessionContext = (session.context ?? {}) as Record<string, unknown>;
+          return typeof sessionContext.ownerAgentId === 'string' && sessionContext.ownerAgentId === targetAgentId;
+        })
+        .sort((a, b) => {
+          const ta = typeof a.lastAccessedAt === 'string' ? new Date(a.lastAccessedAt).getTime() : 0;
+          const tb = typeof b.lastAccessedAt === 'string' ? new Date(b.lastAccessedAt).getTime() : 0;
+          return tb - ta;
+        });
+
+      const findSessionsByProjectPath = (sessionManager as unknown as {
+        findSessionsByProjectPath?: (projectPath: string) => Array<{ id: string }>;
+      }).findSessionsByProjectPath;
+      const latest = typeof findSessionsByProjectPath === 'function'
+        ? (findSessionsByProjectPath.call(sessionManager, projectPath) ?? [])[0]
+        : undefined;
+      const createSession = (sessionManager as unknown as {
+        createSession?: (
+          projectPath: string,
+          source?: string,
+          options?: { allowReuse?: boolean },
+        ) => { id: string };
+      }).createSession;
+      const ensureSession = (sessionManager as unknown as {
+        ensureSession?: (sessionId: string, projectPath: string, source?: string) => void;
+      }).ensureSession;
+
+      const session = sessionsForTarget[0]
+        ?? latest
+        ?? (typeof createSession === 'function'
+          ? createSession.call(sessionManager, projectPath, `channel:${channelMsg.channelId}`, { allowReuse: true })
+          : sessionManager.getOrCreateSystemSession());
+
+      if (typeof ensureSession === 'function') {
+        ensureSession.call(sessionManager, session.id, projectPath, `channel:${channelMsg.channelId}`);
+      }
+      channelContextManager.pinSession(channelMsg.channelId, targetAgentId, session.id);
       return { sessionId: session.id, projectPath };
     };
 
@@ -264,6 +341,10 @@ export function createChannelBridgeHubRoute(deps: ChannelBridgeHubRouteDeps) {
         });
       }
     }
+    const runtimeBindAgentSession = (deps.runtime as { bindAgentSession?: (agentId: string, sessionId: string) => void }).bindAgentSession;
+    if (typeof runtimeBindAgentSession === 'function') {
+      runtimeBindAgentSession.call(deps.runtime, targetAgentId, fixedSessionId);
+    }
     sessionManager.updateContext(fixedSessionId, {
       channelId: channelMsg.channelId,
       channelUserId: channelMsg.senderId,
@@ -275,7 +356,36 @@ export function createChannelBridgeHubRoute(deps: ChannelBridgeHubRouteDeps) {
 
     const sendReply = async (text: string, agentId?: string) => {
       if (!text || !text.trim()) return;
+      const routeRef = {
+        channelId: channelMsg.channelId,
+        userId: channelMsg.senderId,
+        groupId: channelMsg.type === 'group' && typeof channelMsg.metadata?.groupId === 'string'
+          ? channelMsg.metadata.groupId
+          : undefined,
+      };
+      const routeDedupHit = agentStatusSubscriber?.wasBodyUpdateRecentlySentForRoute(
+        routeRef,
+        text,
+      );
+      const sessionDedupHit = agentStatusSubscriber?.wasBodyUpdateRecentlySent(fixedSessionId, text);
+      const routeRecentBodyHit = agentStatusSubscriber?.wasAnyBodyUpdateRecentlySentForRoute(routeRef);
+      if (routeDedupHit || sessionDedupHit || routeRecentBodyHit) {
+        log.info('Skip direct sendReply because same body update was already pushed', {
+          sessionId: fixedSessionId,
+          channelId: channelMsg.channelId,
+          targetAgentId: agentId,
+          routeDedupHit: Boolean(routeDedupHit),
+          sessionDedupHit: Boolean(sessionDedupHit),
+          routeRecentBodyHit: Boolean(routeRecentBodyHit),
+        });
+        return;
+      }
       try {
+        // Pre-mark final reply before channel IO so concurrent bodyUpdates can
+        // dedup against this reply and avoid double delivery.
+        if (agentStatusSubscriber) {
+          agentStatusSubscriber.markFinalReplySent(fixedSessionId, text);
+        }
         const replyWithPrefix = addAgentPrefix(text, agentId);
         const sendResult = await channelBridgeManager.sendMessage(channelMsg.channelId, {
           to: target,
@@ -283,11 +393,10 @@ export function createChannelBridgeHubRoute(deps: ChannelBridgeHubRouteDeps) {
           replyTo: (channelMsg.metadata?.messageId as string) || channelMsg.id,
         });
         log.info('Hub route reply sent', { messageId: sendResult.messageId });
-        // Mark final reply sent so bodyUpdates dedup can skip duplicate pushes
-        if (agentStatusSubscriber) {
-          agentStatusSubscriber.markFinalReplySent(fixedSessionId, text);
-        }
       } catch (sendErr) {
+        if (agentStatusSubscriber) {
+          agentStatusSubscriber.clearFinalReplySent(fixedSessionId);
+        }
         log.error('Failed to send reply (hub route)', sendErr instanceof Error ? sendErr : undefined);
       }
 
@@ -505,10 +614,9 @@ export function createChannelBridgeHubRoute(deps: ChannelBridgeHubRouteDeps) {
       }
 
       let result: unknown;
-      if (targetAgentId === SYSTEM_AGENT_CONFIG.id) {
-        if (typeof directSendToModule !== 'function') {
-          throw new Error('system-agent direct input path unavailable (dispatch fallback disabled)');
-        }
+      if (typeof directSendToModule === 'function') {
+        // User/channel inbound should go straight to target agent module for in-turn
+        // prompt-merge semantics (same as pending_input queue), not via runtime dispatch.
         log.info('Hub route sending direct user input to agent module', {
           targetAgentId,
           sessionId: fixedSessionId,
@@ -520,6 +628,11 @@ export function createChannelBridgeHubRoute(deps: ChannelBridgeHubRouteDeps) {
           metadata: sharedMetadata,
         });
       } else {
+        log.warn('Direct user input path unavailable, falling back to runtime dispatch', {
+          targetAgentId,
+          sessionId: fixedSessionId,
+          channelId: channelMsg.channelId,
+        });
         const dispatchRequest: AgentDispatchRequest = {
           sourceAgentId: 'channel-bridge',
           targetAgentId,
@@ -528,7 +641,9 @@ export function createChannelBridgeHubRoute(deps: ChannelBridgeHubRouteDeps) {
           metadata: sharedMetadata,
           blocking: true,
           queueOnBusy: true,
-          maxQueueWaitMs: 180000,
+          // User channel input must eventually be merged and consumed by the target agent.
+          // Disable queue timeout fallback-to-mailbox here to avoid "busy timeout" drops.
+          maxQueueWaitMs: 0,
         };
         log.info('Hub route dispatching to agent', { targetAgentId });
         // Progress is handled by ProgressMonitor - do not duplicate here
