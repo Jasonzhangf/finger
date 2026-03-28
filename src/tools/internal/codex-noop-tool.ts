@@ -14,6 +14,7 @@ export interface NoopOutput {
 
 export const noopTool: InternalTool<unknown, NoopOutput> = {
   name: 'no-op',
+  executionModel: 'state',
   description:
     'Use no-op when you need to report progress in the middle of work. It reports progress/details and has no side effects.',
   inputSchema: {

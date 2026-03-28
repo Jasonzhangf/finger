@@ -1,21 +1,27 @@
 import { beforeEach, afterEach, describe, expect, it, vi } from 'vitest';
+import { promises as fs } from 'fs';
+import path from 'path';
 import * as registry from '../../../src/agents/finger-system-agent/registry.js';
-import { SYSTEM_PROJECT_PATH } from '../../../src/agents/finger-system-agent/index.js';
+import { FINGER_PATHS } from '../../../src/core/finger-paths.js';
 import * as heartbeatParser from '../../../src/server/modules/heartbeat-md-parser.js';
 import { heartbeatMailbox } from '../../../src/server/modules/heartbeat-mailbox.js';
 import { HeartbeatScheduler } from '../../../src/server/modules/heartbeat-scheduler.js';
 import { cleanupDispatchResultNotifications } from '../../../src/server/modules/heartbeat-helpers.js';
 
 const SYSTEM_AGENT_ID = 'finger-system-agent';
+const TASK_PATH = path.join(FINGER_PATHS.runtime.schedulesDir, 'heartbeat-tasks.jsonl');
 
 describe('HeartbeatScheduler mailbox lifecycle', () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     vi.restoreAllMocks();
     heartbeatMailbox.removeAll(SYSTEM_AGENT_ID);
+    await fs.mkdir(path.dirname(TASK_PATH), { recursive: true });
+    await fs.writeFile(TASK_PATH, '', 'utf-8');
   });
 
-  afterEach(() => {
+  afterEach(async () => {
     heartbeatMailbox.removeAll(SYSTEM_AGENT_ID);
+    await fs.writeFile(TASK_PATH, '', 'utf-8');
   });
 
   it('checks system agent mailbox even when registry has no project agents', async () => {
@@ -23,6 +29,9 @@ describe('HeartbeatScheduler mailbox lifecycle', () => {
     const execute = vi.fn(async (command: string) => {
       if (command === 'catalog') {
         return { agents: [{ id: SYSTEM_AGENT_ID, status: 'idle' }] };
+      }
+      if (command === 'runtime_view') {
+        return { agents: [{ id: SYSTEM_AGENT_ID, status: 'completed' }] };
       }
       return { ok: true };
     });
@@ -50,6 +59,46 @@ describe('HeartbeatScheduler mailbox lifecycle', () => {
         blocking: false,
         metadata: expect.objectContaining({
           taskId: 'mailbox-check',
+          progressDelivery: { mode: 'result_only' },
+        }),
+      }),
+    );
+  });
+
+  it('allows heartbeat dispatch progress policy override from task config', async () => {
+    vi.spyOn(registry, 'listAgents').mockResolvedValue([]);
+    const execute = vi.fn(async (command: string) => {
+      if (command === 'runtime_view') {
+        return { agents: [{ id: SYSTEM_AGENT_ID, status: 'completed' }] };
+      }
+      return { ok: true };
+    });
+    const scheduler = new HeartbeatScheduler({
+      agentRuntimeBlock: { execute },
+      sessionManager: {
+        getOrCreateSystemSession: vi.fn(() => ({ id: 'system-session-test' })),
+      },
+    } as any);
+
+    heartbeatMailbox.append(
+      SYSTEM_AGENT_ID,
+      {
+        type: 'heartbeat-task',
+        taskId: 'mailbox-check',
+        prompt: 'run mailbox check',
+        progressDelivery: { mode: 'all' },
+      },
+      { category: 'heartbeat-task', priority: 1 },
+    );
+
+    await (scheduler as any).promptMailboxChecks();
+
+    expect(execute).toHaveBeenCalledWith(
+      'dispatch',
+      expect.objectContaining({
+        metadata: expect.objectContaining({
+          taskId: 'mailbox-check',
+          progressDelivery: { mode: 'all' },
         }),
       }),
     );
@@ -60,6 +109,9 @@ describe('HeartbeatScheduler mailbox lifecycle', () => {
     const execute = vi.fn(async (command: string) => {
       if (command === 'catalog') {
         return { agents: [{ id: SYSTEM_AGENT_ID, status: 'idle' }] };
+      }
+      if (command === 'runtime_view') {
+        return { agents: [{ id: SYSTEM_AGENT_ID, status: 'completed' }] };
       }
       return { ok: true };
     });
@@ -95,7 +147,12 @@ describe('HeartbeatScheduler mailbox lifecycle', () => {
         status: runtimeStatus,
       } as any,
     ]));
-    const execute = vi.fn(async () => ({ ok: true }));
+    const execute = vi.fn(async (command: string) => {
+      if (command === 'runtime_view') {
+        return { agents: [{ id: SYSTEM_AGENT_ID, status: runtimeStatus === 'busy' ? 'running' : 'completed' }] };
+      }
+      return { ok: true };
+    });
     const scheduler = new HeartbeatScheduler({
       agentRuntimeBlock: { execute },
       sessionManager: {
@@ -184,13 +241,13 @@ describe('HeartbeatScheduler mailbox lifecycle', () => {
       SYSTEM_AGENT_ID,
       'global',
       undefined,
-      { dispatch: 'mailbox' },
+      { dispatch: 'mailbox', prompt: 'run mailbox check' },
     );
     await (scheduler as any).dispatchTask(
       SYSTEM_AGENT_ID,
       'global',
       undefined,
-      { dispatch: 'mailbox' },
+      { dispatch: 'mailbox', prompt: 'run mailbox check' },
     );
 
     const pending = heartbeatMailbox.list(SYSTEM_AGENT_ID, {
@@ -324,9 +381,24 @@ describe('HeartbeatScheduler mailbox lifecycle', () => {
     );
   });
 
-  it('uses explicit system path in global heartbeat default prompt', async () => {
+  it('dispatches global heartbeat prompt from pending task list on direct mode', async () => {
     vi.spyOn(heartbeatParser, 'resolveHeartbeatMdPath').mockReturnValue(null);
-    const execute = vi.fn(async () => ({ ok: true }));
+    await fs.writeFile(
+      TASK_PATH,
+      `${JSON.stringify({
+        ts: new Date().toISOString(),
+        type: 'heartbeat_task',
+        action: 'add',
+        task: { text: '检查系统 HEARTBEAT 默认流程', status: 'pending' },
+      })}\n`,
+      'utf-8',
+    );
+    const execute = vi.fn(async (command: string) => {
+      if (command === 'runtime_view') {
+        return { agents: [{ id: SYSTEM_AGENT_ID, status: 'completed' }] };
+      }
+      return { ok: true };
+    });
     const scheduler = new HeartbeatScheduler({
       agentRuntimeBlock: { execute },
       sessionManager: {
@@ -345,11 +417,8 @@ describe('HeartbeatScheduler mailbox lifecycle', () => {
       'dispatch',
       expect.objectContaining({
         targetAgentId: SYSTEM_AGENT_ID,
-        task: expect.stringContaining(`系统路径: ${SYSTEM_PROJECT_PATH}`),
+        task: expect.stringContaining('检查系统 HEARTBEAT 默认流程'),
       }),
     );
-
-    const dispatchedTask = execute.mock.calls.find((call: unknown[]) => call[0] === 'dispatch')?.[1]?.task;
-    expect(String(dispatchedTask)).not.toContain('请检查项目根目录的 HEARTBEAT.md');
   });
 });

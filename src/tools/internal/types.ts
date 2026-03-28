@@ -7,8 +7,11 @@ export interface ToolExecutionContext {
   sessionId?: string;
 }
 
+export type InternalToolExecutionModel = 'state' | 'execution';
+
 export interface InternalTool<Input = unknown, Output = unknown> {
   name: string;
+  executionModel: InternalToolExecutionModel;
   description: string;
   inputSchema: Record<string, unknown>;
   execute: (input: Input, context: ToolExecutionContext) => Promise<Output>;
@@ -16,6 +19,7 @@ export interface InternalTool<Input = unknown, Output = unknown> {
 
 export interface InternalToolInfo {
   name: string;
+  executionModel: InternalToolExecutionModel;
   description: string;
   inputSchema: Record<string, unknown>;
 }

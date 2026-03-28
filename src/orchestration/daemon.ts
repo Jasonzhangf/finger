@@ -8,7 +8,7 @@
  * - 自动加载 autostart 目录模块
  */
 
-import { spawn, execSync } from 'child_process';
+import { spawn } from 'child_process';
 import { existsSync, readFileSync, writeFileSync, unlinkSync, openSync, mkdirSync, readdirSync } from 'fs';
 import { join } from 'path';
 import { FINGER_SOURCE_ROOT } from '../core/source-root.js';
@@ -16,6 +16,7 @@ import { FINGER_PATHS, ensureDir } from '../core/finger-paths.js';
 import { logger } from '../core/logger.js';
 import { loadModuleManifest } from './module-manifest.js';
 import { createConsoleLikeLogger } from '../core/logger/console-like.js';
+import { ensureSingleInstance } from '../server/modules/port-guard.js';
 
 const clog = createConsoleLikeLogger('Daemon');
 
@@ -59,48 +60,9 @@ export class OrchestrationDaemon {
     ensureDir(this.config.autostartDir);
   }
 
-  private isPortInUse(port: number): boolean {
-    try {
-      execSync(`lsof -ti :${port}`, { stdio: 'ignore' });
-      return true;
-    } catch {
-      return false;
-    }
-  }
-
-  private getPidOnPort(port: number): number | null {
-    try {
-      const output = execSync(`lsof -ti :${port}`, { encoding: 'utf-8' });
-      const pid = parseInt(output.trim(), 10);
-      return isNaN(pid) ? null : pid;
-    } catch {
-      return null;
-    }
-  }
-
-  private killProcessOnPort(port: number): void {
-    const pid = this.getPidOnPort(port);
-    if (pid) {
-      try {
-        process.kill(pid, 'SIGTERM');
-        let attempts = 0;
-        while (this.isPortInUse(port) && attempts < 10) {
-          execSync('sleep 0.1');
-          attempts++;
-        }
-        if (this.isPortInUse(port)) {
-          process.kill(pid, 'SIGKILL');
-        }
-        log.info(`Killed old process on port ${port}`, { pid });
-      } catch {
-        // Ignore
-      }
-    }
-  }
-
-  private cleanupOrphans(): void {
-    this.killProcessOnPort(this.config.port);
-    this.killProcessOnPort(this.config.wsPort);
+  private async cleanupOrphans(): Promise<void> {
+    await ensureSingleInstance(this.config.port);
+    await ensureSingleInstance(this.config.wsPort);
     
     if (existsSync(this.config.pidFile)) {
       try {
@@ -192,7 +154,7 @@ export class OrchestrationDaemon {
       return;
     }
 
-    this.cleanupOrphans();
+    await this.cleanupOrphans();
 
     if (!existsSync(this.config.serverScript)) {
       const msg = `Server script not found: ${this.config.serverScript}. Run 'npm run build' first.`;
@@ -233,7 +195,7 @@ export class OrchestrationDaemon {
   }
 
   async stop(): Promise<void> {
-    this.cleanupOrphans();
+    await this.cleanupOrphans();
     this.running = false;
     log.info('Daemon stopped');
     log.info('Stopped');

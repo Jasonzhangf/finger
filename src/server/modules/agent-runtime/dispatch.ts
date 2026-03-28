@@ -14,6 +14,11 @@ import {
   normalizeProjectPathHint,
   resolveDispatchSessionStrategy,
 } from './dispatch-helpers.js';
+import { normalizeProgressDeliveryPolicy } from '../../../common/progress-delivery-policy.js';
+import {
+  applyExecutionLifecycleTransition,
+  resolveLifecycleStageFromResultStatus,
+} from '../execution-lifecycle.js';
 
 const DISPATCH_ERROR_MAX_RETRIES = Number.isFinite(Number(process.env.FINGER_DISPATCH_ERROR_MAX_RETRIES))
   ? Math.max(0, Math.floor(Number(process.env.FINGER_DISPATCH_ERROR_MAX_RETRIES)))
@@ -161,6 +166,57 @@ function withDispatchWorkspaceDefaults(deps: AgentRuntimeDeps, input: AgentDispa
     task: normalizedTask,
     metadata: withWorkspaceMetadata(inputMetadata),
   };
+}
+
+function applySessionProgressDeliveryFromDispatch(deps: AgentRuntimeDeps, input: AgentDispatchRequest): void {
+  const sessionId = typeof input.sessionId === 'string' ? input.sessionId.trim() : '';
+  if (!sessionId) return;
+
+  const metadata = isObjectRecord(input.metadata) ? input.metadata : {};
+  const taskRecord = isObjectRecord(input.task) ? input.task : {};
+  const taskMetadata = isObjectRecord(taskRecord.metadata) ? taskRecord.metadata : {};
+  const interactivePolicy = normalizeProgressDeliveryPolicy(
+    metadata.progressDelivery
+      ?? metadata.progress_delivery
+      ?? taskMetadata.progressDelivery
+      ?? taskMetadata.progress_delivery,
+  );
+  const scheduledPolicy = normalizeProgressDeliveryPolicy(
+    metadata.scheduledProgressDelivery
+      ?? metadata.scheduled_progress_delivery
+      ?? taskMetadata.scheduledProgressDelivery
+      ?? taskMetadata.scheduled_progress_delivery,
+  );
+  const source = typeof metadata.source === 'string'
+    ? metadata.source.trim().toLowerCase()
+    : typeof taskMetadata.source === 'string'
+      ? taskMetadata.source.trim().toLowerCase()
+      : '';
+  const isScheduledSource = source === 'clock'
+    || source === 'system-heartbeat'
+    || source === 'mailbox-check'
+    || source.endsWith('-cron')
+    || metadata.systemDirectInject === true
+    || taskMetadata.systemDirectInject === true;
+
+  const useScheduledPolicy = !!scheduledPolicy || (isScheduledSource && !!interactivePolicy);
+  const resolvedPolicy = scheduledPolicy ?? interactivePolicy;
+  if (!resolvedPolicy) return;
+
+  if (useScheduledPolicy) {
+    deps.sessionManager.updateContext(sessionId, {
+      scheduledProgressDelivery: resolvedPolicy,
+      scheduledProgressDeliveryTransient: true,
+      scheduledProgressDeliveryUpdatedAt: new Date().toISOString(),
+    });
+    return;
+  }
+
+  deps.sessionManager.updateContext(sessionId, {
+    progressDelivery: resolvedPolicy,
+    progressDeliveryTransient: true,
+    progressDeliveryUpdatedAt: new Date().toISOString(),
+  });
 }
 
 function resolveRootSessionForDispatch(deps: AgentRuntimeDeps, sessionId?: string) {
@@ -375,12 +431,36 @@ export async function dispatchTaskToAgent(deps: AgentRuntimeDeps, input: AgentDi
     const sessionSelectedInput = resolveDispatchSessionSelection(deps, input);
     const boundInput = bindDispatchSessionToRuntime(deps, sessionSelectedInput);
     normalizedInput = withDispatchWorkspaceDefaults(deps, boundInput);
+    if (typeof normalizedInput.sessionId === 'string' && normalizedInput.sessionId.trim().length > 0) {
+      deps.runtime.bindAgentSession(normalizedInput.targetAgentId, normalizedInput.sessionId);
+      deps.runtime.setCurrentSession(normalizedInput.sessionId);
+    }
+    applySessionProgressDeliveryFromDispatch(deps, normalizedInput);
+    if (typeof normalizedInput.sessionId === 'string' && normalizedInput.sessionId.trim().length > 0) {
+      applyExecutionLifecycleTransition(deps.sessionManager, normalizedInput.sessionId, {
+        stage: 'dispatching',
+        substage: 'normalized',
+        updatedBy: 'dispatch',
+        targetAgentId: normalizedInput.targetAgentId,
+        detail: normalizedInput.sourceAgentId,
+        lastError: null,
+      });
+    }
   } catch (preError) {
     const message = preError instanceof Error ? preError.message : String(preError);
     logger.module('dispatch').error('Pre-dispatch setup failed', preError instanceof Error ? preError : undefined, {
       targetAgentId: input.targetAgentId,
       sessionId: originalSessionId,
     });
+    if (originalSessionId) {
+      applyExecutionLifecycleTransition(deps.sessionManager, originalSessionId, {
+        stage: 'failed',
+        substage: 'dispatch_prepare_failed',
+        updatedBy: 'dispatch',
+        targetAgentId: input.targetAgentId,
+        lastError: message,
+      });
+    }
     return { ok: false, dispatchId: fallbackDispatchId, status: 'failed', error: message };
   }
 
@@ -405,6 +485,19 @@ export async function dispatchTaskToAgent(deps: AgentRuntimeDeps, input: AgentDi
       finalExecuteError = executeError;
       if (attempt >= DISPATCH_ERROR_MAX_RETRIES) break;
       const retryDelayMs = resolveRetryBackoffMs(attempt + 1);
+      if (typeof normalizedInput.sessionId === 'string' && normalizedInput.sessionId.trim().length > 0) {
+        applyExecutionLifecycleTransition(deps.sessionManager, normalizedInput.sessionId, {
+          stage: 'retrying',
+          substage: 'dispatch_execute_throw',
+          updatedBy: 'dispatch',
+          targetAgentId: normalizedInput.targetAgentId,
+          lastError: executeError instanceof Error ? executeError.message : String(executeError),
+          detail: `attempt=${attempt + 1}`,
+          retryDelayMs,
+          recoveryAction: 'retry',
+          incrementRetry: true,
+        });
+      }
       logger.module('dispatch').warn('Dispatch execute threw error, retrying with exponential backoff', {
         retryAttempt: attempt + 1,
         maxRetries: DISPATCH_ERROR_MAX_RETRIES,
@@ -431,6 +524,18 @@ export async function dispatchTaskToAgent(deps: AgentRuntimeDeps, input: AgentDi
           error?: string;
         };
         if (deployResult?.success) {
+          if (typeof normalizedInput.sessionId === 'string' && normalizedInput.sessionId.trim().length > 0) {
+            applyExecutionLifecycleTransition(deps.sessionManager, normalizedInput.sessionId, {
+              stage: 'retrying',
+              substage: 'auto_deploy_retry',
+              updatedBy: 'dispatch',
+              targetAgentId: normalizedInput.targetAgentId,
+              detail: `attempt=${attempt + 1}`,
+              retryDelayMs: resolveRetryBackoffMs(attempt + 1),
+              recoveryAction: 'retry',
+              incrementRetry: true,
+            });
+          }
           logger.module('dispatch').info('Auto-deployed missing target agent before dispatch retry', {
             sourceAgentId: normalizedInput.sourceAgentId,
             targetAgentId: normalizedInput.targetAgentId,
@@ -465,6 +570,19 @@ export async function dispatchTaskToAgent(deps: AgentRuntimeDeps, input: AgentDi
       break;
     }
     const retryDelayMs = resolveRetryBackoffMs(attempt + 1);
+    if (typeof normalizedInput.sessionId === 'string' && normalizedInput.sessionId.trim().length > 0) {
+      applyExecutionLifecycleTransition(deps.sessionManager, normalizedInput.sessionId, {
+        stage: 'retrying',
+        substage: 'dispatch_result_failed',
+        updatedBy: 'dispatch',
+        targetAgentId: normalizedInput.targetAgentId,
+        lastError: result.error,
+        detail: `attempt=${attempt + 1}`,
+        retryDelayMs,
+        recoveryAction: 'retry',
+        incrementRetry: true,
+      });
+    }
     logger.module('dispatch').warn('Dispatch returned failed result, retrying with exponential backoff', {
       retryAttempt: attempt + 1,
       maxRetries: DISPATCH_ERROR_MAX_RETRIES,
@@ -492,12 +610,59 @@ export async function dispatchTaskToAgent(deps: AgentRuntimeDeps, input: AgentDi
         agentId: normalizedInput.targetAgentId,
         metadata: { error: message, dispatchId: fallbackDispatchId },
       });
+      applyExecutionLifecycleTransition(deps.sessionManager, failSessionId, {
+        stage: 'failed',
+        substage: 'dispatch_execute_final_error',
+        updatedBy: 'dispatch',
+        dispatchId: fallbackDispatchId,
+        targetAgentId: normalizedInput.targetAgentId,
+        lastError: message,
+      });
     }
     await persistAgentSummaryToMemory(deps, normalizedInput, { ok: false, summary: message }, true);
     return { ok: false, dispatchId: fallbackDispatchId, status: 'failed', error: message };
   }
   if (!result) {
+    if (typeof normalizedInput.sessionId === 'string' && normalizedInput.sessionId.trim().length > 0) {
+      applyExecutionLifecycleTransition(deps.sessionManager, normalizedInput.sessionId, {
+        stage: 'failed',
+        substage: 'dispatch_result_empty',
+        updatedBy: 'dispatch',
+        targetAgentId: normalizedInput.targetAgentId,
+        lastError: 'dispatch result is empty after retries',
+      });
+    }
     return { ok: false, dispatchId: fallbackDispatchId, status: 'failed', error: 'dispatch result is empty after retries' };
+  }
+
+  if (typeof normalizedInput.sessionId === 'string' && normalizedInput.sessionId.trim().length > 0) {
+    const mailboxQueued = result.status === 'queued'
+      && (result.result?.status === 'queued_mailbox' || typeof result.result?.messageId === 'string');
+    applyExecutionLifecycleTransition(deps.sessionManager, normalizedInput.sessionId, {
+      stage: resolveLifecycleStageFromResultStatus(result.status) ?? (result.ok ? 'completed' : 'failed'),
+      substage: result.status === 'queued'
+        ? (mailboxQueued ? 'dispatch_mailbox_wait_ack' : 'dispatch_queued')
+        : result.status === 'completed'
+          ? 'dispatch_completed'
+          : 'dispatch_failed',
+      updatedBy: 'dispatch',
+      dispatchId: result.dispatchId,
+      targetAgentId: normalizedInput.targetAgentId,
+      lastError: result.ok ? null : (result.error ?? null),
+      detail: result.result?.summary?.slice(0, 120) ?? result.error,
+      timeoutMs: typeof result.result?.timeoutMs === 'number' ? result.result.timeoutMs : undefined,
+      retryDelayMs: typeof result.result?.retryDelayMs === 'number' ? result.result.retryDelayMs : undefined,
+      recoveryAction: mailboxQueued
+        ? (result.result?.recoveryAction ?? 'mailbox')
+        : result.ok
+          ? (result.result?.recoveryAction ?? 'completed')
+          : (result.result?.recoveryAction ?? 'failed'),
+      delivery: mailboxQueued
+        ? (result.result?.delivery ?? 'mailbox')
+        : result.status === 'queued'
+          ? (result.result?.delivery ?? 'queue')
+          : result.result?.delivery ?? null,
+    });
   }
 
   const newSessionId = typeof normalizedInput.sessionId === 'string' ? normalizedInput.sessionId.trim() : '';

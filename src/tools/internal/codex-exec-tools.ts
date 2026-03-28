@@ -31,6 +31,7 @@ const sessionManager = new CodexExecSessionManager();
 
 export const execCommandTool: InternalTool<unknown, ExecCommandToolOutput> = {
   name: 'exec_command',
+  executionModel: 'execution',
   description:
     'Execute shell commands on the local machine with streaming output. Use apply_patch for file modifications.',
   inputSchema: {
@@ -61,6 +62,7 @@ export const execCommandTool: InternalTool<unknown, ExecCommandToolOutput> = {
 
 export const writeStdinTool: InternalTool<unknown, ExecCommandToolOutput> = {
   name: 'write_stdin',
+  executionModel: 'execution',
   description:
     "Write characters to an exec session's stdin and return stdout+stderr received within yield_time_ms.",
   inputSchema: {

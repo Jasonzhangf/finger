@@ -148,6 +148,9 @@ export function handleTurnComplete(progress: SessionProgress, event: any): void 
   if (typeof event.payload?.reasoning === 'string' && event.payload.reasoning.length > 0) {
     progress.latestReasoning = event.payload.reasoning.slice(0, 120);
   }
+  // A turn is finished; switch to idle so periodic progress heartbeat
+  // does not keep pushing when there is no active execution.
+  progress.status = 'idle';
 }
 
 /**
@@ -214,6 +217,38 @@ export function handleModelRound(progress: SessionProgress, event: any): void {
     ? event.payload.maxInputTokens
     : typeof event.payload?.max_input_tokens === 'number'
       ? event.payload.max_input_tokens
+      : undefined;
+
+  if (typeof contextUsagePercentRaw === 'number' && Number.isFinite(contextUsagePercentRaw)) {
+    progress.contextUsagePercent = Math.max(0, Math.floor(contextUsagePercentRaw));
+  }
+  if (typeof estimatedTokensRaw === 'number' && Number.isFinite(estimatedTokensRaw)) {
+    progress.estimatedTokensInContextWindow = Math.max(0, Math.floor(estimatedTokensRaw));
+  }
+  if (typeof maxInputTokensRaw === 'number' && Number.isFinite(maxInputTokensRaw)) {
+    progress.maxInputTokens = Math.max(0, Math.floor(maxInputTokensRaw));
+  }
+}
+
+/**
+ * 处理 system_notice 事件
+ */
+export function handleSystemNoticeEvent(progress: SessionProgress, event: any): void {
+  const payload = event?.payload ?? {};
+  const contextUsagePercentRaw = typeof payload.contextUsagePercent === 'number'
+    ? payload.contextUsagePercent
+    : typeof payload.context_usage_percent === 'number'
+      ? payload.context_usage_percent
+      : undefined;
+  const estimatedTokensRaw = typeof payload.estimatedTokensInContextWindow === 'number'
+    ? payload.estimatedTokensInContextWindow
+    : typeof payload.estimated_tokens_in_context_window === 'number'
+      ? payload.estimated_tokens_in_context_window
+      : undefined;
+  const maxInputTokensRaw = typeof payload.maxInputTokens === 'number'
+    ? payload.maxInputTokens
+    : typeof payload.max_input_tokens === 'number'
+      ? payload.max_input_tokens
       : undefined;
 
   if (typeof contextUsagePercentRaw === 'number' && Number.isFinite(contextUsagePercentRaw)) {

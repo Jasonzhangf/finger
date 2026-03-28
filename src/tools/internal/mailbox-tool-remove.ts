@@ -15,6 +15,7 @@ import {
  */
 export const mailboxRemoveTool: InternalTool = {
   name: 'mailbox.remove',
+  executionModel: 'state',
   description: 'Remove one mailbox message by id after it is no longer needed.',
   inputSchema: {
     type: 'object',
@@ -61,6 +62,7 @@ export const mailboxRemoveTool: InternalTool = {
  */
 export const mailboxRemoveAllTool: InternalTool = {
   name: 'mailbox.remove_all',
+  executionModel: 'state',
   description: 'Remove mailbox messages in bulk. Supports status/category/unread filters or explicit ids.',
   inputSchema: {
     type: 'object',

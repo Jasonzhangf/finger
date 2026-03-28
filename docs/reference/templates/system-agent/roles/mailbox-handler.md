@@ -59,6 +59,28 @@ updated_at: "2026-03-15T11:57:00Z"
 - 通知很多时，先 `mailbox.read_all({ category: "notification", unreadOnly: true })`
 - 需要清理时，再 `mailbox.remove_all({ category: "notification" })`
 
+### news-cron 通知（强制）
+
+- 对 `source=news-cron` 的通知，必须把最终结果直接发给用户，不能只说“已处理/已保存文件”。
+- 输出内容至少包含本轮新闻正文（例如逐行 `[中文标题](URL)`）。
+- 输出完成后再 `mailbox.ack`。
+- 若与上次推送内容完全重复，允许静默 `ack`（不重复打扰用户）。
+
+### 进度推送策略（progressDelivery，强制）
+
+- Mailbox / 定时触发消息可携带 `progressDelivery` 策略，处理时必须严格遵守。
+- 支持模式：
+  - `all`：允许过程 + 结果都推送；
+  - `result_only`：仅推最终正文，不推过程（tool/status/step/progress/reasoning）；
+  - `silent`：不向用户推送，仅内部处理并 ack。
+- 若存在字段白名单 `fields`，仅允许白名单字段推送。
+- 默认约定：`source` 含 `news` / `email` 且未显式指定时，按 `result_only` 执行。
+
+### 静默规则（强制）
+
+- 邮件检查“无新邮件”等无增量结果：仅内部记录/ack，不向用户发送消息。
+- 非任务执行态不要发“心跳式进度”消息；只有在实际执行任务且有新增进展时才推送。
+
 ## 典型场景
 
 1. **系统告警**：磁盘空间不足

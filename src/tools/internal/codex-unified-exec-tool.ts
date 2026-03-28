@@ -26,6 +26,7 @@ const DEFAULT_TIMEOUT_MS = 10_000;
 
 export const unifiedExecTool: InternalTool<unknown, UnifiedExecOutput> = {
   name: 'unified_exec',
+  executionModel: 'execution',
   description: 'Runs a command in a PTY. Provide a session_id to reuse an existing interactive session.',
   inputSchema: {
     type: 'object',

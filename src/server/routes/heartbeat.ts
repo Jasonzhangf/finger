@@ -18,6 +18,7 @@ import {
 import { createToolExecutionContext } from '../../tools/internal/types.js';
 import { heartbeatMailbox } from '../modules/heartbeat-mailbox.js';
 import { buildUserNotificationEnvelope } from '../modules/mailbox-envelope.js';
+import { normalizeProgressDeliveryPolicy } from '../../common/progress-delivery-policy.js';
 
 type MailboxNotifyPriority = 'high' | 'medium' | 'low';
 
@@ -32,6 +33,15 @@ function mapPriorityToMailboxLevel(priority: MailboxNotifyPriority): 0 | 1 | 2 |
   if (priority === 'high') return 0;
   if (priority === 'medium') return 1;
   return 2;
+}
+
+function defaultProgressDeliveryForSource(source: string) {
+  const normalized = source.trim().toLowerCase();
+  if (!normalized) return undefined;
+  if (normalized.includes('news') || normalized.includes('email')) {
+    return normalizeProgressDeliveryPolicy({ mode: 'result_only' });
+  }
+  return undefined;
 }
 
 function pickNonEmptyString(raw: unknown, fallback?: string): string | undefined {
@@ -163,6 +173,9 @@ export function registerHeartbeatRoutes(app: Express): void {
       const source = pickNonEmptyString(body.source, 'mailbox-cli')!;
       const sessionId = pickNonEmptyString(body.sessionId);
       const channel = pickNonEmptyString(body.channel);
+      const progressDelivery = normalizeProgressDeliveryPolicy(
+        body.progressDelivery ?? body.progress_delivery,
+      ) ?? defaultProgressDeliveryForSource(source);
 
       const envelope = buildUserNotificationEnvelope(title, message, priority);
       const appended = heartbeatMailbox.append(targetAgentId, {
@@ -172,6 +185,7 @@ export function registerHeartbeatRoutes(app: Express): void {
         message,
         envelopeId: envelope.id,
         envelope,
+        ...(progressDelivery ? { progressDelivery } : {}),
       }, {
         ...(sender ? { sender } : {}),
         ...(sessionId ? { sessionId } : {}),

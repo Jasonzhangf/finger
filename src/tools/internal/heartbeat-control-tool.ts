@@ -158,6 +158,7 @@ function resolveCurrentTasks(records: HeartbeatTaskRecord[]): Array<{
 
 export const heartbeatEnableTool: InternalTool = {
   name: 'heartbeat.enable',
+  executionModel: 'state',
   description: 'Enable heartbeat scheduler. Optionally set interval (max 1 hour).',
   inputSchema: {
     type: 'object',
@@ -187,6 +188,7 @@ export const heartbeatEnableTool: InternalTool = {
 
 export const heartbeatDisableTool: InternalTool = {
   name: 'heartbeat.disable',
+  executionModel: 'state',
   description: 'Disable heartbeat scheduler globally or for a specific project.',
   inputSchema: {
     type: 'object',
@@ -213,6 +215,7 @@ export const heartbeatDisableTool: InternalTool = {
 
 export const heartbeatStatusTool: InternalTool = {
   name: 'heartbeat.status',
+  executionModel: 'state',
   description: 'Get current heartbeat configuration. Does NOT expose file paths.',
   inputSchema: { type: 'object', properties: {} },
   async execute() {
@@ -234,6 +237,7 @@ export const heartbeatStatusTool: InternalTool = {
 
 export const heartbeatAddTaskTool: InternalTool = {
   name: 'heartbeat.addTask',
+  executionModel: 'state',
   description: 'Add a task to heartbeat task list. Do NOT write any markdown files directly.',
   inputSchema: {
     type: 'object',
@@ -259,6 +263,7 @@ export const heartbeatAddTaskTool: InternalTool = {
 
 export const heartbeatCompleteTaskTool: InternalTool = {
   name: 'heartbeat.completeTask',
+  executionModel: 'state',
   description: 'Mark a task as completed. Do NOT edit any markdown files directly.',
   inputSchema: {
     type: 'object',
@@ -283,6 +288,7 @@ export const heartbeatCompleteTaskTool: InternalTool = {
 
 export const heartbeatRemoveTaskTool: InternalTool = {
   name: 'heartbeat.removeTask',
+  executionModel: 'state',
   description: 'Remove a task from the heartbeat task list. Do NOT edit any markdown files directly.',
   inputSchema: {
     type: 'object',
@@ -307,6 +313,7 @@ export const heartbeatRemoveTaskTool: InternalTool = {
 
 export const heartbeatListTasksTool: InternalTool = {
   name: 'heartbeat.listTasks',
+  executionModel: 'state',
   description: 'List current heartbeat tasks. Do NOT cat any markdown files directly.',
   inputSchema: {
     type: 'object',
@@ -329,6 +336,7 @@ export const heartbeatListTasksTool: InternalTool = {
 
 export const heartbeatBatchAddTool: InternalTool = {
   name: 'heartbeat.batchAdd',
+  executionModel: 'state',
   description: 'Batch add multiple tasks to heartbeat task list in a single operation.',
   inputSchema: {
     type: 'object',
@@ -373,6 +381,7 @@ export const heartbeatBatchAddTool: InternalTool = {
 
 export const heartbeatBatchCompleteTool: InternalTool = {
   name: 'heartbeat.batchComplete',
+  executionModel: 'state',
   description: 'Batch mark multiple tasks as completed in a single operation.',
   inputSchema: {
     type: 'object',
@@ -406,6 +415,7 @@ export const heartbeatBatchCompleteTool: InternalTool = {
 
 export const heartbeatBatchRemoveTool: InternalTool = {
   name: 'heartbeat.batchRemove',
+  executionModel: 'state',
   description: 'Batch remove multiple tasks from the heartbeat task list in a single operation.',
   inputSchema: {
     type: 'object',

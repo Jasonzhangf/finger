@@ -22,6 +22,7 @@ import { buildContext } from '../runtime/context-builder.js';
 import { logger } from '../core/logger.js';
 import { createConsoleLikeLogger } from '../core/logger/console-like.js';
 import { inferTagsAndTopic } from '../common/tag-topic-inference.js';
+import { pruneOrphanSessionRootDirs } from '../core/runtime-hygiene.js';
 
 const clog = createConsoleLikeLogger('SessionManager');
 
@@ -49,6 +50,8 @@ export class SessionManager {
   private ensureDirs(): void {
     ensureDir(SESSIONS_DIR);
     ensureDir(SYSTEM_SESSIONS_DIR);
+    pruneOrphanSessionRootDirs(SESSIONS_DIR);
+    pruneOrphanSessionRootDirs(SYSTEM_SESSIONS_DIR);
   }
 
   private isSystemSessionId(sessionId: string): boolean {
@@ -384,23 +387,23 @@ export class SessionManager {
   }
 
  getOrCreateSystemSession(): Session {
-   // Find existing system session with correct projectPath and sessionTier
-   for (const session of this.sessions.values()) {
-      if (session.projectPath === SYSTEM_PROJECT_PATH && !this.isRuntimeSession(session)) {
-        session.lastAccessedAt = new Date().toISOString();
-        return session;
-      }
-    }
-   // Find system session with sessionTier === 'system' (properly created)
-   for (const session of this.sessions.values()) {
-     const ctx = session.context ?? {};
-      if ((ctx.sessionTier === 'system' || session.id.startsWith(SYSTEM_SESSION_PREFIX)) && !this.isRuntimeSession(session)) {
-        session.lastAccessedAt = new Date().toISOString();
-        return session;
-      }
+   const candidates = this.listSessions()
+     .filter((session) => this.isSystemSession(session) && !this.isRuntimeSession(session))
+     .sort((a, b) => {
+       const tierA = a.projectPath === SYSTEM_PROJECT_PATH ? 3 : a.id.startsWith(SYSTEM_SESSION_PREFIX) ? 2 : 1;
+       const tierB = b.projectPath === SYSTEM_PROJECT_PATH ? 3 : b.id.startsWith(SYSTEM_SESSION_PREFIX) ? 2 : 1;
+       if (tierA !== tierB) return tierB - tierA;
+       return new Date(b.lastAccessedAt).getTime() - new Date(a.lastAccessedAt).getTime();
+     });
+
+   const existing = candidates[0];
+   if (existing) {
+     existing.lastAccessedAt = new Date().toISOString();
+     this.saveSession(existing);
+     return existing;
    }
-    // Create new system session if none exists
-    return this.createSystemSession();
+
+   return this.createSystemSession();
   }
 
  ensureSession(sessionId: string, projectPath: string, name?: string): Session {

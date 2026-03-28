@@ -17,6 +17,7 @@ import { attachBroadcastHandlers } from './event-forwarding-handlers.js';
 import { buildDispatchResultEnvelope } from './mailbox-envelope.js';
 import { heartbeatMailbox } from './heartbeat-mailbox.js';
 import { normalizeDispatchLedgerSessionId as _normalizeDispatchLedgerSessionId } from './event-forwarding-session-utils.js';
+import { applyExecutionLifecycleTransition } from './execution-lifecycle.js';
 
 const SYSTEM_AGENT_ID = 'finger-system-agent';
 
@@ -115,6 +116,97 @@ export function attachEventForwarding(deps: EventForwardingDeps): {
   };
   const emitLoopEventToEventBus = (event: ChatCodexLoopEvent): void => {
     if (!event.sessionId || event.sessionId === 'unknown') return;
+    if (event.phase === 'turn_start') {
+      applyExecutionLifecycleTransition(sessionManager, event.sessionId, {
+        stage: 'running',
+        substage: 'turn_start',
+        updatedBy: 'event-forwarding',
+        finishReason: null,
+      });
+    } else if (event.phase === 'turn_complete') {
+      const pendingInputAccepted = event.payload.pendingInputAccepted === true;
+      const finishReason = typeof event.payload.finishReason === 'string' && event.payload.finishReason.trim().length > 0
+        ? event.payload.finishReason.trim()
+        : undefined;
+      const isFinishedStop = finishReason === 'stop';
+      applyExecutionLifecycleTransition(sessionManager, event.sessionId, {
+        stage: pendingInputAccepted
+          ? 'running'
+          : isFinishedStop
+            ? 'completed'
+            : 'interrupted',
+        substage: pendingInputAccepted
+          ? 'pending_input_queued'
+          : isFinishedStop
+            ? 'turn_complete'
+            : 'turn_incomplete',
+        updatedBy: 'event-forwarding',
+        turnId: typeof event.payload.responseId === 'string' ? event.payload.responseId : undefined,
+        finishReason: finishReason ?? null,
+        detail: pendingInputAccepted
+          ? (typeof event.payload.pendingTurnId === 'string' ? `pendingTurn=${event.payload.pendingTurnId}` : 'pending input accepted')
+          : typeof event.payload.replyPreview === 'string'
+            ? event.payload.replyPreview.slice(0, 120)
+            : undefined,
+        lastError: null,
+      });
+    } else if (event.phase === 'turn_error') {
+      const errorMessage = typeof event.payload.error === 'string' ? event.payload.error : 'turn_error';
+      const normalizedError = errorMessage.toLowerCase();
+      applyExecutionLifecycleTransition(sessionManager, event.sessionId, {
+        stage: normalizedError.includes('interrupt') ? 'interrupted' : 'failed',
+        substage: normalizedError.includes('interrupt') ? 'turn_interrupted' : 'turn_error',
+        updatedBy: 'event-forwarding',
+        lastError: normalizedError.includes('interrupt') ? null : errorMessage,
+        detail: errorMessage,
+        timeoutMs: typeof event.payload.timeoutMs === 'number' ? event.payload.timeoutMs : undefined,
+        recoveryAction: asString(event.payload.recoveryAction)
+          ?? (normalizedError.includes('interrupt') ? 'interrupted' : 'failed'),
+      });
+    } else if (event.phase === 'kernel_event' && isObjectRecord(event.payload)) {
+      if (event.payload.type === 'tool_call') {
+        applyExecutionLifecycleTransition(sessionManager, event.sessionId, {
+          stage: 'waiting_tool',
+          substage: 'tool_call',
+          updatedBy: 'event-forwarding',
+          toolName: asString(event.payload.toolName),
+          detail: asString(event.payload.toolId),
+        });
+      } else if (
+        event.payload.type === 'tool_result'
+        || event.payload.type === 'tool_error'
+        || event.payload.type === 'model_round'
+        || event.payload.type === 'reasoning'
+      ) {
+        applyExecutionLifecycleTransition(sessionManager, event.sessionId, {
+          stage: 'waiting_model',
+          substage: event.payload.type,
+          updatedBy: 'event-forwarding',
+          toolName: event.payload.type === 'tool_result' || event.payload.type === 'tool_error'
+            ? asString(event.payload.toolName)
+            : undefined,
+          turnId: event.payload.type === 'model_round' ? asString(event.payload.responseId) : undefined,
+          detail: event.payload.type === 'tool_error'
+            ? asString(event.payload.error)
+            : event.payload.type === 'reasoning'
+              ? asString(event.payload.text)?.slice(0, 120)
+              : undefined,
+          lastError: event.payload.type === 'tool_error' ? asString(event.payload.error) : null,
+        });
+      } else if (event.payload.type === 'turn_retry') {
+        applyExecutionLifecycleTransition(sessionManager, event.sessionId, {
+          stage: 'retrying',
+          substage: 'turn_retry',
+          updatedBy: 'event-forwarding',
+          detail: typeof event.payload.attempt === 'number' ? `attempt=${event.payload.attempt}` : undefined,
+          lastError: asString(event.payload.error),
+          timeoutMs: typeof event.payload.timeoutMs === 'number' ? event.payload.timeoutMs : undefined,
+          retryDelayMs: typeof event.payload.retryDelayMs === 'number' ? event.payload.retryDelayMs : undefined,
+          recoveryAction: asString(event.payload.recoveryAction) ?? 'retry',
+          incrementRetry: true,
+        });
+      }
+    }
     if (event.phase === 'turn_complete' || event.phase === 'turn_error') {
       const latestBody = latestBodyBySession.get(event.sessionId);
       if (agentStatusSubscriber) {
@@ -125,6 +217,9 @@ export function attachEventForwarding(deps: EventForwardingDeps): {
           event.sessionId,
           finalReply,
           generalAgentId,
+          event.phase === 'turn_complete' && typeof event.payload.finishReason === 'string'
+            ? event.payload.finishReason
+            : undefined,
         ).catch((err) => {
           logger.module('event-forwarding').error(
             'Failed to finalize channel turn',
@@ -295,6 +390,35 @@ export function attachEventForwarding(deps: EventForwardingDeps): {
         bdTaskId && !taskId ? `bd ${bdTaskId}` : '',
       ].filter((part) => part.length > 0);
       const dispatchContent = dispatchParts.join(' · ');
+      if (sessionId) {
+        applyExecutionLifecycleTransition(sessionManager, sessionId, {
+          stage: status === 'completed'
+            ? 'completed'
+            : status === 'failed'
+              ? 'failed'
+              : 'dispatching',
+          substage: status === 'queued'
+            ? (isMailboxQueued ? 'dispatch_mailbox_wait_ack' : 'dispatch_queued')
+            : status === 'processing'
+              ? 'dispatch_processing'
+              : status === 'completed'
+                ? 'dispatch_completed'
+                : status === 'failed'
+                  ? 'dispatch_failed'
+                  : 'dispatch_update',
+          updatedBy: 'event-forwarding',
+          dispatchId,
+          targetAgentId,
+          detail: dispatchContent.slice(0, 120),
+          lastError: status === 'failed' ? asString(payload.error) : null,
+          timeoutMs: typeof dispatchResult?.timeoutMs === 'number' ? dispatchResult.timeoutMs : undefined,
+          retryDelayMs: typeof dispatchResult?.retryDelayMs === 'number' ? dispatchResult.retryDelayMs : undefined,
+          recoveryAction: asString(dispatchResult?.recoveryAction)
+            ?? (isMailboxQueued ? 'mailbox' : status === 'failed' ? 'failed' : status === 'completed' ? 'completed' : 'queue'),
+          delivery: asString(dispatchResult?.delivery)
+            ?? (isMailboxQueued ? 'mailbox' : status === 'queued' ? 'queue' : null),
+        });
+      }
       if (sessionId && dispatchContent.length > 0) {
         const statusDedupeKey = [
           sessionId,
@@ -458,6 +582,33 @@ export function attachEventForwarding(deps: EventForwardingDeps): {
         type: 'orchestrator_feedback',
         payload: feedback,
         timestamp: event.timestamp,
+      });
+    },
+  );
+
+  eventBus.subscribe(
+    'agent_runtime_control',
+    (event) => {
+      const payload: Record<string, unknown> = isObjectRecord(event.payload) ? event.payload : {};
+      const action = asString(payload.action) ?? '';
+      const status = asString(payload.status) ?? '';
+      const sessionId = asString(payload.sessionId) ?? asString(event.sessionId);
+      if (!sessionId) return;
+
+      const stage = (action === 'interrupt' || action === 'cancel') && status === 'completed'
+        ? 'interrupted'
+        : status === 'failed'
+          ? 'failed'
+          : 'completed';
+      const substage = action ? `control_${action}` : 'control';
+      const error = asString(payload.error);
+
+      applyExecutionLifecycleTransition(sessionManager, sessionId, {
+        stage,
+        substage,
+        updatedBy: 'event-forwarding',
+        detail: action || status || undefined,
+        lastError: stage === 'failed' ? error : null,
       });
     },
   );

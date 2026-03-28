@@ -235,6 +235,7 @@ async function semanticSearch(
 
 export const memoryTool: InternalTool<unknown, MemoryOutput> = {
   name: 'memory',
+  executionModel: 'state',
   description: 'Manage agent memory in MEMORY.md with semantic search. Actions: insert, search, list, compact, edit, delete, reindex. Scope: project (default) or system.',
   inputSchema: {
     type: 'object',

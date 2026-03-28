@@ -1,3 +1,6 @@
+import type { ProgressDeliveryPolicy } from '../../common/progress-delivery-policy.js';
+import { normalizeProgressDeliveryPolicy } from '../../common/progress-delivery-policy.js';
+
 export type ClockTimerStatus = 'active' | 'completed' | 'canceled';
 export type ClockScheduleType = 'delay' | 'at' | 'cron';
 export type ClockAction = 'create' | 'list' | 'cancel' | 'update';
@@ -27,6 +30,7 @@ export interface ClockInjectPayload {
   projectPath?: string;
   prompt: string;
   channelId?: string;
+  progressDelivery?: ProgressDeliveryPolicy;
 }
 
 export interface ClockStore {
@@ -52,6 +56,7 @@ export interface ClockCreatePayload {
     sessionId?: string;
     projectPath?: string;
     prompt: string;
+    progressDelivery?: ProgressDeliveryPolicy;
   };
 }
 
@@ -114,11 +119,15 @@ export function parseCreatePayload(payload: Record<string, unknown>): ClockCreat
   if (isRecord(payload.inject)) {
     const agentId = requireNonEmptyString(payload.inject.agentId, 'inject.agentId is required');
     const prompt = requireNonEmptyString(payload.inject.prompt, 'inject.prompt is required');
+    const progressDelivery = normalizeProgressDeliveryPolicy(
+      payload.inject.progressDelivery ?? payload.inject.progress_delivery,
+    );
     inject = {
       agentId,
       prompt,
       ...(typeof payload.inject.sessionId === 'string' ? { sessionId: payload.inject.sessionId } : {}),
       ...(typeof payload.inject.projectPath === 'string' ? { projectPath: payload.inject.projectPath } : {}),
+      ...(progressDelivery ? { progressDelivery } : {}),
     };
   }
   return {
@@ -150,12 +159,16 @@ export function parseUpdatePayload(payload: Record<string, unknown>): ClockUpdat
   if (isRecord(payload.inject)) {
     const agentId = requireNonEmptyString(payload.inject.agentId, 'inject.agentId is required');
     const prompt = requireNonEmptyString(payload.inject.prompt, 'inject.prompt is required');
+    const progressDelivery = normalizeProgressDeliveryPolicy(
+      payload.inject.progressDelivery ?? payload.inject.progress_delivery,
+    );
     inject = {
       agentId,
       prompt,
       ...(typeof payload.inject.sessionId === 'string' ? { sessionId: payload.inject.sessionId } : {}),
       ...(typeof payload.inject.projectPath === 'string' ? { projectPath: payload.inject.projectPath } : {}),
       ...(typeof payload.inject.channelId === 'string' ? { channelId: payload.inject.channelId } : {}),
+      ...(progressDelivery ? { progressDelivery } : {}),
     };
   }
   return {

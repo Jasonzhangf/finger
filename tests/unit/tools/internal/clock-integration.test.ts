@@ -5,12 +5,30 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { clockTool, resetClockStore } from '../../../../src/tools/internal/codex-clock-tool.js';
 import { ClockTaskInjector } from '../../../../src/orchestration/clock-task-injector.js';
-import { existsSync, mkdirSync, rmSync, writeFileSync, readFileSync } from 'fs';
+import { existsSync, mkdirSync, rmSync, readFileSync } from 'fs';
 import path from 'path';
 import os from 'os';
+import { isClockTimer, type ClockTimer } from '../../../../src/tools/internal/codex-clock-schema.js';
 
 const TEST_STORE_DIR = path.join(os.tmpdir(), 'finger-clock-integration-test');
 const TEST_STORE_PATH = path.join(TEST_STORE_DIR, 'tool-timers.json');
+
+function readClockTimers(filePath: string): ClockTimer[] {
+  const raw = readFileSync(filePath, 'utf-8').trim();
+  if (!raw) return [];
+  if (raw.startsWith('{')) {
+    const parsed = JSON.parse(raw) as { timers?: unknown[] };
+    if (Array.isArray(parsed.timers)) {
+      return parsed.timers.filter(isClockTimer);
+    }
+  }
+  return raw
+    .split('\n')
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0)
+    .map((line) => JSON.parse(line) as unknown)
+    .filter(isClockTimer);
+}
 
 describe('clock tool dynamic tests', () => {
   beforeEach(() => {
@@ -40,6 +58,9 @@ describe('clock tool dynamic tests', () => {
           inject: {
             agentId: 'test-agent',
             prompt: 'run test',
+            progressDelivery: {
+              mode: 'result_only',
+            },
           },
         },
       },
@@ -52,11 +73,14 @@ describe('clock tool dynamic tests', () => {
     expect(result.data.next_fire_at).toBeDefined();
 
     // Verify store persistence
-    const store = JSON.parse(readFileSync(TEST_STORE_PATH, 'utf-8'));
-    expect(store.timers).toHaveLength(1);
-    expect(store.timers[0].inject).toEqual({
+    const timers = readClockTimers(TEST_STORE_PATH);
+    expect(timers).toHaveLength(1);
+    expect(timers[0].inject).toEqual({
       agentId: 'test-agent',
       prompt: 'run test',
+      progressDelivery: {
+        mode: 'result_only',
+      },
     });
   });
 
@@ -94,8 +118,8 @@ describe('clock tool dynamic tests', () => {
 
     expect(updateResult.ok).toBe(true);
 
-    const store = JSON.parse(readFileSync(TEST_STORE_PATH, 'utf-8'));
-    expect(store.timers[0].inject).toEqual({
+    const timers = readClockTimers(TEST_STORE_PATH);
+    expect(timers[0].inject).toEqual({
       agentId: 'updated-agent',
       prompt: 'updated prompt',
       sessionId: 'session-123',
@@ -136,8 +160,11 @@ describe('clock tool dynamic tests', () => {
 
     expect(listResult.ok).toBe(true);
     expect(listResult.data.timers).toHaveLength(2);
-    expect(listResult.data.timers[0].inject.agentId).toBe('agent-1');
-    expect(listResult.data.timers[1].inject.agentId).toBe('agent-2');
+    const agents = (listResult.data.timers as Array<{ inject?: { agentId?: string } }>)
+      .map((timer) => timer.inject?.agentId)
+      .filter((value): value is string => typeof value === 'string')
+      .sort();
+    expect(agents).toEqual(['agent-1', 'agent-2']);
   });
 
   it('should cancel timer', async () => {
@@ -216,6 +243,9 @@ describe('ClockTaskInjector', () => {
             projectPath: '/test/project',
             prompt: 'execute this task',
             channelId: 'test-channel',
+            progressDelivery: {
+              mode: 'result_only',
+            },
           },
         },
       },
@@ -236,6 +266,7 @@ describe('ClockTaskInjector', () => {
     expect(dispatchCall.task.prompt).toBe('execute this task');
     expect(dispatchCall.sessionId).toBe('test-session');
     expect(dispatchCall.metadata.source).toBe('clock');
+    expect(dispatchCall.metadata.progressDelivery).toEqual({ mode: 'result_only' });
   });
 
   it('should not inject task if inject payload is missing', async () => {
@@ -279,10 +310,10 @@ describe('ClockTaskInjector', () => {
     await new Promise(resolve => setTimeout(resolve, 1100));
     await (injector as any).tick();
 
-    const store = JSON.parse(readFileSync(TEST_STORE_PATH, 'utf-8'));
-    expect(store.timers[0].status).toBe('completed');
-    expect(store.timers[0].run_count).toBe(1);
-    expect(store.timers[0].last_injected_at).toBeDefined();
+    const timers = readClockTimers(TEST_STORE_PATH);
+    expect(timers[0].status).toBe('completed');
+    expect(timers[0].run_count).toBe(1);
+    expect(timers[0].last_injected_at).toBeDefined();
   });
 
   it('should repeat timer with max_runs', async () => {
@@ -308,24 +339,59 @@ describe('ClockTaskInjector', () => {
     await new Promise(resolve => setTimeout(resolve, 1100));
     await (injector as any).tick();
 
-    let store = JSON.parse(readFileSync(TEST_STORE_PATH, 'utf-8'));
-    expect(store.timers[0].run_count).toBe(1);
-    expect(store.timers[0].status).toBe('active');
+    let timers = readClockTimers(TEST_STORE_PATH);
+    expect(timers[0].run_count).toBe(1);
+    expect(timers[0].status).toBe('active');
 
     // Second run
     await new Promise(resolve => setTimeout(resolve, 1100));
     await (injector as any).tick();
 
-    store = JSON.parse(readFileSync(TEST_STORE_PATH, 'utf-8'));
-    expect(store.timers[0].run_count).toBe(2);
-    expect(store.timers[0].status).toBe('active');
+    timers = readClockTimers(TEST_STORE_PATH);
+    expect(timers[0].run_count).toBe(2);
+    expect(timers[0].status).toBe('active');
 
     // Third run - should complete
     await new Promise(resolve => setTimeout(resolve, 1100));
     await (injector as any).tick();
 
-    store = JSON.parse(readFileSync(TEST_STORE_PATH, 'utf-8'));
-    expect(store.timers[0].run_count).toBe(3);
-    expect(store.timers[0].status).toBe('completed');
+    timers = readClockTimers(TEST_STORE_PATH);
+    expect(timers[0].run_count).toBe(3);
+    expect(timers[0].status).toBe('completed');
+  });
+
+  it('list should not consume due timers before injector dispatch', async () => {
+    await clockTool.execute(
+      {
+        action: 'create',
+        payload: {
+          message: 'due-soon',
+          schedule_type: 'delay',
+          delay_seconds: 1,
+          inject: { agentId: 'agent', prompt: 'task' },
+        },
+      },
+      { cwd: process.cwd(), invocationId: 'test', timestamp: Date.now() }
+    );
+
+    await new Promise(resolve => setTimeout(resolve, 1100));
+
+    const listResult = await clockTool.execute(
+      { action: 'list', payload: { status: 'active' } },
+      { cwd: process.cwd(), invocationId: 'test', timestamp: Date.now() }
+    );
+    expect(listResult.ok).toBe(true);
+    expect((listResult.data.timers as Array<{ timer_id: string }>).length).toBe(1);
+
+    const timersBeforeTick = readClockTimers(TEST_STORE_PATH);
+    expect(timersBeforeTick[0].status).toBe('active');
+    expect(timersBeforeTick[0].run_count).toBe(0);
+
+    await (injector as any).tick();
+    expect(dispatchMock).toHaveBeenCalledTimes(1);
+
+    const timersAfterTick = readClockTimers(TEST_STORE_PATH);
+    expect(timersAfterTick[0].status).toBe('completed');
+    expect(timersAfterTick[0].run_count).toBe(1);
   });
 });

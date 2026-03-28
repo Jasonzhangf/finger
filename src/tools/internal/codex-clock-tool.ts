@@ -32,14 +32,12 @@ const CLOCK_MAX_ACTIVE_TIMERS = 3;
 const CLOCK_DEFAULT_LIST_LIMIT = 50;
 
 class ClockStoreManager {
-  private loaded = false;
   private readonly timers = new Map<string, ClockTimer>();
 
   constructor(private readonly storePath: string) {}
 
   create(payload: ClockCreatePayload): ClockTimer {
-    this.ensureLoaded();
-    this.refreshDueTimers();
+    this.reloadFromDisk();
 
     if (this.countActiveTimers() >= CLOCK_MAX_ACTIVE_TIMERS) {
       throw new Error(`active timer limit reached (max ${CLOCK_MAX_ACTIVE_TIMERS} per task)`);
@@ -70,8 +68,7 @@ class ClockStoreManager {
   }
 
   list(payload: ClockListPayload): ClockTimer[] {
-    this.ensureLoaded();
-    this.refreshDueTimers();
+    this.reloadFromDisk();
 
     const status = parseListStatus(payload.status);
     const limit = normalizePositiveInteger(payload.limit, CLOCK_DEFAULT_LIST_LIMIT);
@@ -82,8 +79,7 @@ class ClockStoreManager {
   }
 
   cancel(payload: ClockCancelPayload): ClockTimer {
-    this.ensureLoaded();
-    this.refreshDueTimers();
+    this.reloadFromDisk();
 
     const timer = this.timers.get(payload.timer_id);
     if (!timer) throw new Error(`timer not found: ${payload.timer_id}`);
@@ -96,8 +92,7 @@ class ClockStoreManager {
   }
 
   update(payload: ClockUpdatePayload): ClockTimer {
-    this.ensureLoaded();
-    this.refreshDueTimers();
+    this.reloadFromDisk();
 
     const timer = this.timers.get(payload.timer_id);
     if (!timer) throw new Error(`timer not found: ${payload.timer_id}`);
@@ -135,10 +130,8 @@ class ClockStoreManager {
     return active;
   }
 
-  private ensureLoaded(): void {
-    if (this.loaded) return;
-    this.loaded = true;
-
+  private reloadFromDisk(): void {
+    this.timers.clear();
     if (!existsSync(this.storePath)) return;
     try {
       const raw = readFileSync(this.storePath, 'utf-8');
@@ -159,50 +152,6 @@ class ClockStoreManager {
     }
   }
 
-  private refreshDueTimers(): void {
-    this.ensureLoaded();
-    const now = Date.now();
-    let changed = false;
-
-    for (const timer of this.timers.values()) {
-      if (timer.status !== 'active' || !timer.next_fire_at) continue;
-
-      let nextAtMs = Date.parse(timer.next_fire_at);
-      if (!Number.isFinite(nextAtMs)) {
-        timer.status = 'completed';
-        timer.next_fire_at = null;
-        timer.updated_at = new Date().toISOString();
-        changed = true;
-        continue;
-      }
-
-      while (nextAtMs <= now) {
-        timer.run_count += 1;
-        changed = true;
-
-        if (!timer.repeat || (timer.max_runs !== null && timer.run_count >= timer.max_runs)) {
-          timer.status = 'completed';
-          timer.next_fire_at = null;
-          break;
-        }
-
-        const next = computeNextRunForTimer(timer, nextAtMs);
-        if (!next) {
-          timer.status = 'completed';
-          timer.next_fire_at = null;
-          break;
-        }
-
-        nextAtMs = next.getTime();
-        timer.next_fire_at = next.toISOString();
-      }
-
-      timer.updated_at = new Date().toISOString();
-    }
-
-    if (changed) this.persist();
-  }
-
   private persist(): void {
     const dir = path.dirname(this.storePath);
     if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
@@ -216,6 +165,7 @@ class ClockStoreManager {
 
 export const clockTool: InternalTool<unknown, ClockOutput> = {
   name: 'clock',
+  executionModel: 'state',
   description:
     'Use clock when you need to wait or schedule progress supervision. Supports create/list/cancel/update actions.',
   inputSchema: {
@@ -387,7 +337,7 @@ function compactSchedule(timer: ClockTimer): Record<string, unknown> {
   };
 }
 
-function computeNextRunForTimer(timer: ClockTimer, previousFireMs: number): Date | null {
+export function computeNextClockRunForTimer(timer: ClockTimer, previousFireMs: number): Date | null {
   if (timer.schedule_type === 'delay') {
     if (!timer.delay_seconds || timer.delay_seconds <= 0) return null;
     return new Date(previousFireMs + timer.delay_seconds * 1000);

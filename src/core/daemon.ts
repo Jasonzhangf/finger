@@ -58,6 +58,9 @@ export class CoreDaemon {
   private stopTimeout: NodeJS.Timeout | null = null;
   private openClawGate = new OpenClawGateBlock('openclaw-gate');
   private channelBridgeManager: ChannelBridgeManager | null = null;
+  private channelsConfigWatcherPath: string | null = null;
+  private channelsConfigReloadTimer: NodeJS.Timeout | null = null;
+  private channelsConfigLastRaw = '';
 
   constructor(private config: CoreDaemonConfig = {}) {
     this.hub = new HubCore(registry);
@@ -148,6 +151,7 @@ export class CoreDaemon {
 
     // Load channel bridge configs
     await this.loadChannelBridgeConfigs();
+    this.startChannelConfigHotReload();
 
     for (const route of routesCfg.routes) {
       registry.addRoute(route);
@@ -254,6 +258,16 @@ export class CoreDaemon {
 
     if (this.healthTimer) {
       clearInterval(this.healthTimer);
+    }
+    if (this.channelsConfigWatcherPath) {
+      try {
+        fs.unwatchFile(this.channelsConfigWatcherPath);
+      } catch {}
+      this.channelsConfigWatcherPath = null;
+    }
+    if (this.channelsConfigReloadTimer) {
+      clearTimeout(this.channelsConfigReloadTimer);
+      this.channelsConfigReloadTimer = null;
     }
 
     try {
@@ -374,11 +388,12 @@ export class CoreDaemon {
 
     const channelsConfigPath = path.join(FINGER_PATHS.config.dir, 'channels.json');
     let configs: ChannelBridgeConfig[] = [];
+    let rawConfig = '';
 
     try {
       if (fs.existsSync(channelsConfigPath)) {
-        const raw = fs.readFileSync(channelsConfigPath, 'utf-8');
-        const parsed = JSON.parse(raw);
+        rawConfig = fs.readFileSync(channelsConfigPath, 'utf-8');
+        const parsed = JSON.parse(rawConfig);
         configs = parsed.channels || [];
         clog.log('[Daemon] Found channels config file, channels:', configs.length);
       } else {
@@ -392,6 +407,7 @@ export class CoreDaemon {
       log.info('Loading channel bridge configs...');
       try {
         await this.channelBridgeManager.loadConfigs(configs);
+        this.channelsConfigLastRaw = rawConfig;
         clog.log('[Daemon] Loaded', configs.length, 'channel bridge configs successfully');
       } catch (err) {
         clog.error('[Daemon] Failed to load channel bridges:', err instanceof Error ? err.message : String(err));
@@ -399,6 +415,49 @@ export class CoreDaemon {
     } else {
       log.info('No channel bridge configs to load');
     }
+  }
+
+  private startChannelConfigHotReload(): void {
+    if (!this.channelBridgeManager) return;
+
+    const channelsConfigPath = path.join(FINGER_PATHS.config.dir, 'channels.json');
+    this.channelsConfigWatcherPath = channelsConfigPath;
+    fs.watchFile(channelsConfigPath, { interval: 1000 }, (curr, prev) => {
+      if (curr.mtimeMs === prev.mtimeMs) return;
+      this.scheduleChannelConfigReload();
+    });
+    clog.log('[Daemon] Watching channels.json for hot reload:', channelsConfigPath);
+  }
+
+  private scheduleChannelConfigReload(): void {
+    if (this.channelsConfigReloadTimer) {
+      clearTimeout(this.channelsConfigReloadTimer);
+    }
+    this.channelsConfigReloadTimer = setTimeout(() => {
+      this.channelsConfigReloadTimer = null;
+      this.reloadChannelConfigHot().catch((err) => {
+        clog.error('[Daemon] channels.json hot reload failed:', err instanceof Error ? err.message : String(err));
+      });
+    }, 400);
+  }
+
+  private async reloadChannelConfigHot(): Promise<void> {
+    if (!this.channelBridgeManager) return;
+    const channelsConfigPath = path.join(FINGER_PATHS.config.dir, 'channels.json');
+    if (!fs.existsSync(channelsConfigPath)) return;
+
+    const raw = fs.readFileSync(channelsConfigPath, 'utf-8');
+    if (raw === this.channelsConfigLastRaw) return;
+
+    const parsed = JSON.parse(raw);
+    const configs: ChannelBridgeConfig[] = Array.isArray(parsed.channels) ? parsed.channels : [];
+    this.channelBridgeManager.upsertConfigs(configs);
+    this.channelsConfigLastRaw = raw;
+
+    clog.log('[Daemon] Hot reloaded channels config:', {
+      channels: configs.length,
+      updatedAt: new Date().toISOString(),
+    });
   }
 
   getStatus() {

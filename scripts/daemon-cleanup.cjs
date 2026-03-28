@@ -1,9 +1,15 @@
 #!/usr/bin/env node
 const fs = require('fs');
 const path = require('path');
-const { execSync } = require('child_process');
+const os = require('os');
 
-const RUNTIME_DIR = path.join(process.cwd(), '.finger', 'runtime');
+function resolveFingerHome() {
+  const override = process.env.FINGER_HOME;
+  if (typeof override === 'string' && override.trim().length > 0) return override.trim();
+  return path.join(os.homedir(), '.finger');
+}
+const FINGER_HOME = resolveFingerHome();
+const RUNTIME_DIR = path.join(FINGER_HOME, 'runtime');
 const PID_FILE = path.join(RUNTIME_DIR, 'server.pid');
 const GUARD_PID_FILE = path.join(RUNTIME_DIR, 'guard.pid');
 const HEARTBEAT_FILE = path.join(RUNTIME_DIR, 'daemon.heartbeat');

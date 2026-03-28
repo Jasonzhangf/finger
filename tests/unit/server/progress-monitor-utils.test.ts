@@ -192,7 +192,22 @@ describe('progress-monitor-utils', () => {
       const result = buildCompactSummary(data, formatElapsed, {
         headerMode: 'minimal',
       });
-      expect(result).toContain('🧠 上下文: 53.2k/128k (41%)');
+      expect(result).toContain('🧠 上下文: 41% · 53.2k/128k');
+    });
+
+    it('includes inferred context size when only usage percent is available', () => {
+      const data: SessionProgressData = {
+        agentId: 'finger-system-agent',
+        status: 'running',
+        currentTask: '处理中',
+        elapsedMs: 90000,
+        toolCallHistory: [],
+        contextUsagePercent: 50,
+      };
+      const result = buildCompactSummary(data, formatElapsed, {
+        headerMode: 'minimal',
+      });
+      expect(result).toContain('🧠 上下文: 50% · ~131k/262k');
     });
   });
 

@@ -45,6 +45,7 @@ import {
   applyProgressDeliveryPolicy,
   normalizeProgressDeliveryPolicy,
 } from '../../common/progress-delivery-policy.js';
+import { buildContextUsageLine, normalizeContextUsageSnapshot } from './progress-monitor-utils.js';
 
 /**
  * 默认订阅的事件类型列表
@@ -168,14 +169,39 @@ export class AgentStatusSubscriber {
     }
   }
 
+  private resolveContextWithFallback(sessionId: string): Record<string, unknown> {
+    const visited = new Set<string>();
+    let currentSessionId = sessionId;
+    while (currentSessionId && !visited.has(currentSessionId)) {
+      visited.add(currentSessionId);
+      const session = this.deps.sessionManager.getSession(currentSessionId);
+      const context = (session?.context && typeof session.context === 'object')
+        ? (session.context as Record<string, unknown>)
+        : {};
+      const hasInteractive = context.progressDelivery !== undefined || context.progress_delivery !== undefined;
+      const hasScheduled = context.scheduledProgressDelivery !== undefined || context.scheduled_progress_delivery !== undefined;
+      if (hasInteractive || hasScheduled) {
+        return context;
+      }
+      const nextSessionId = typeof context.rootSessionId === 'string' && context.rootSessionId.trim().length > 0
+        ? context.rootSessionId.trim()
+        : typeof context.parentSessionId === 'string' && context.parentSessionId.trim().length > 0
+          ? context.parentSessionId.trim()
+          : '';
+      if (!nextSessionId) break;
+      currentSessionId = nextSessionId;
+    }
+    const session = this.deps.sessionManager.getSession(sessionId);
+    return (session?.context && typeof session.context === 'object')
+      ? (session.context as Record<string, unknown>)
+      : {};
+  }
+
   private resolvePushSettings(sessionId: string, channelId: string): PushSettings {
     const base = this.channelBridgeManager
       ? this.channelBridgeManager.getPushSettings(channelId)
       : FALLBACK_PUSH_SETTINGS;
-    const session = this.deps.sessionManager.getSession(sessionId);
-    const context = (session?.context && typeof session.context === 'object')
-      ? (session.context as Record<string, unknown>)
-      : {};
+    const context = this.resolveContextWithFallback(sessionId);
     const policy = normalizeProgressDeliveryPolicy(
       context.progressDelivery
       ?? context.progress_delivery
@@ -774,29 +800,21 @@ export class AgentStatusSubscriber {
       && left.groupId === right.groupId;
   }
 
-  async finalizeChannelTurn(sessionId: string, finalReply?: string, agentId?: string): Promise<void> {
+  async finalizeChannelTurn(sessionId: string, finalReply?: string, agentId?: string, finishReason?: string): Promise<void> {
     const primary = this.resolveEnvelopeMapping(sessionId);
     if (!primary) return;
 
     const observers = this.sessionObserverMap.get(sessionId) ?? [];
-    if (finalReply && finalReply.trim().length > 0 && observers.length > 0 && this.messageHub) {
-      const timestamp = new Date();
-      const year = timestamp.getFullYear();
-      const month = String(timestamp.getMonth() + 1).padStart(2, '0');
-      const day = String(timestamp.getDate()).padStart(2, '0');
-      const hours = String(timestamp.getHours()).padStart(2, '0');
-      const minutes = String(timestamp.getMinutes()).padStart(2, '0');
-      const seconds = String(timestamp.getSeconds()).padStart(2, '0');
-      const ms = String(timestamp.getMilliseconds()).padStart(3, '0');
-      const offset = -timestamp.getTimezoneOffset();
-      const offsetHours = String(Math.floor(Math.abs(offset) / 60)).padStart(2, '0');
-      const offsetMinutes = String(Math.abs(offset) % 60).padStart(2, '0');
-      const offsetSign = offset >= 0 ? '+' : '-';
-      const formattedTimestamp = `${year}-${month}-${day} ${hours}:${minutes}:${seconds}.${ms} ${offsetSign}${offsetHours}:${offsetMinutes}`;
-      const agentName = agentId?.replace(/^finger-/, '').replace(/-/g, ' ') || 'system agent';
-      const content = `[${agentName}] [${formattedTimestamp}] ${finalReply.trim()}`;
+    const allEnvelopes = [primary.envelope, ...observers];
+    const dedupedEnvelopes = new Map<string, SessionEnvelopeMapping['envelope']>();
+    for (const envelope of allEnvelopes) {
+      const key = `${envelope.channel}::${envelope.groupId ?? ''}::${envelope.userId ?? ''}`;
+      dedupedEnvelopes.set(key, envelope);
+    }
 
-      for (const envelope of observers) {
+    const deliverText = async (envelopes: SessionEnvelopeMapping['envelope'][], content: string): Promise<void> => {
+      if (!this.messageHub || !content.trim()) return;
+      for (const envelope of envelopes) {
         const outputId = 'channel-bridge-' + envelope.channel;
         const originalEnvelope: ChannelBridgeEnvelope = {
           id: envelope.envelopeId,
@@ -818,6 +836,33 @@ export class AgentStatusSubscriber {
           content,
           originalEnvelope,
         });
+      }
+    };
+
+    if (finalReply && finalReply.trim().length > 0 && observers.length > 0 && this.messageHub) {
+      const timestamp = new Date();
+      const year = timestamp.getFullYear();
+      const month = String(timestamp.getMonth() + 1).padStart(2, '0');
+      const day = String(timestamp.getDate()).padStart(2, '0');
+      const hours = String(timestamp.getHours()).padStart(2, '0');
+      const minutes = String(timestamp.getMinutes()).padStart(2, '0');
+      const seconds = String(timestamp.getSeconds()).padStart(2, '0');
+      const ms = String(timestamp.getMilliseconds()).padStart(3, '0');
+      const offset = -timestamp.getTimezoneOffset();
+      const offsetHours = String(Math.floor(Math.abs(offset) / 60)).padStart(2, '0');
+      const offsetMinutes = String(Math.abs(offset) % 60).padStart(2, '0');
+      const offsetSign = offset >= 0 ? '+' : '-';
+      const formattedTimestamp = `${year}-${month}-${day} ${hours}:${minutes}:${seconds}.${ms} ${offsetSign}${offsetHours}:${offsetMinutes}`;
+      const agentName = agentId?.replace(/^finger-/, '').replace(/-/g, ' ') || 'system agent';
+      const content = `[${agentName}] [${formattedTimestamp}] ${finalReply.trim()}`;
+      await deliverText(observers, content);
+    }
+
+    if (finishReason === 'stop') {
+      const noticeTargets = Array.from(dedupedEnvelopes.values())
+        .filter((envelope) => envelope.channel === 'qqbot' || envelope.channel === 'openclaw-weixin');
+      if (noticeTargets.length > 0) {
+        await deliverText(noticeTargets, '本轮推理已结束。');
       }
     }
 
@@ -937,11 +982,18 @@ export class AgentStatusSubscriber {
       const context = (session?.context && typeof session.context === 'object')
         ? (session.context as Record<string, unknown>)
         : {};
+      const cleanupContext: Record<string, unknown> = {};
       if (context.progressDeliveryTransient === true) {
-        this.deps.sessionManager.updateContext(sessionId, {
-          progressDelivery: null,
-          progressDeliveryTransient: false,
-        });
+        cleanupContext.progressDelivery = null;
+        cleanupContext.progressDeliveryTransient = false;
+        cleanupContext.progressDeliveryUpdatedAt = null;
+      }
+      if (context.scheduledProgressDeliveryTransient === true) {
+        cleanupContext.scheduledProgressDelivery = null;
+        cleanupContext.scheduledProgressDeliveryTransient = false;
+      }
+      if (Object.keys(cleanupContext).length > 0) {
+        this.deps.sessionManager.updateContext(sessionId, cleanupContext);
       }
     }
 
@@ -983,8 +1035,13 @@ export class AgentStatusSubscriber {
     });
     if (progressMappings.length === 0) return;
 
-    const mailboxSnapshot = buildMailboxProgressSnapshot(report.agentId, this.primaryAgentId || 'finger-system-agent');
-    const mailboxSummaryText = mailboxSnapshot?.summaryText;
+    const mailboxTargetAgent = typeof report.agentId === 'string' && report.agentId.trim().length > 0 && report.agentId !== 'unknown'
+      ? report.agentId
+      : (this.primaryAgentId || 'finger-system-agent');
+    const mailboxSnapshot = buildMailboxProgressSnapshot(mailboxTargetAgent, this.primaryAgentId || 'finger-system-agent');
+    const mailboxHasSignal = !!mailboxSnapshot
+      && (mailboxSnapshot.counts.unread > 0 || mailboxSnapshot.counts.pending > 0 || mailboxSnapshot.counts.processing > 0);
+    const mailboxSummaryText = mailboxHasSignal ? mailboxSnapshot?.summaryText : undefined;
     const lastMailboxSummary = this.lastProgressMailboxSummaryBySession.get(report.sessionId);
     const includeMailboxSummary = typeof mailboxSummaryText === 'string'
       && mailboxSummaryText.length > 0
@@ -995,7 +1052,17 @@ export class AgentStatusSubscriber {
     const mailboxSummary = includeMailboxSummary && mailboxSummaryText
       ? `📬 ${mailboxSummaryText}`
       : undefined;
-    const summary = [report.summary, mailboxSummary]
+    const contextSnapshot = normalizeContextUsageSnapshot({
+      contextUsagePercent: report.progress.contextUsagePercent,
+      estimatedTokensInContextWindow: report.progress.estimatedTokensInContextWindow,
+      maxInputTokens: report.progress.maxInputTokens,
+    });
+    const contextSummary = buildContextUsageLine(contextSnapshot);
+    const normalizedReportSummary = report.summary ?? '';
+    const appendContextSummary = contextSummary && !normalizedReportSummary.includes(contextSummary)
+      ? contextSummary
+      : undefined;
+    const summary = [report.summary, appendContextSummary, mailboxSummary]
       .filter((item): item is string => typeof item === 'string' && item.trim().length > 0)
       .join('\n');
     if (!summary) return;
@@ -1022,10 +1089,8 @@ export class AgentStatusSubscriber {
           ...(typeof report.progress.estimatedTokensInContextWindow === 'number'
             ? { estimatedTokensInContextWindow: report.progress.estimatedTokensInContextWindow }
             : {}),
-          ...(typeof report.progress.maxInputTokens === 'number'
-            ? { maxInputTokens: report.progress.maxInputTokens }
-            : {}),
-          ...(mailboxSnapshot
+          maxInputTokens: contextSnapshot.maxInputTokens,
+          ...(mailboxHasSignal && mailboxSnapshot
             ? {
                 mailboxStatus: {
                   target: mailboxSnapshot.target,

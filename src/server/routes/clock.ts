@@ -12,10 +12,24 @@ export interface ClockRouteDeps {
 
 export function registerClockRoutes(app: Express, _deps: ClockRouteDeps): void {
   // GET /api/v1/clock/list - 列出所有定时任务
-  app.get('/api/v1/clock/list', async (_req, res) => {
+  app.get('/api/v1/clock/list', async (req, res) => {
+    const rawStatus = req.query.status;
+    const rawLimit = req.query.limit;
+    const status = typeof rawStatus === 'string' ? rawStatus : undefined;
+    let limit: number | undefined;
+    if (typeof rawLimit === 'string' && rawLimit.trim().length > 0) {
+      const parsed = Number.parseInt(rawLimit, 10);
+      if (Number.isFinite(parsed) && parsed > 0) limit = parsed;
+    }
     try {
       const result = await clockTool.execute(
-        { action: 'list', payload: {} },
+        {
+          action: 'list',
+          payload: {
+            ...(status ? { status } : {}),
+            ...(typeof limit === 'number' ? { limit } : {}),
+          },
+        },
         createToolExecutionContext()
       );
       res.json({ success: result.ok, timers: result.data.timers });

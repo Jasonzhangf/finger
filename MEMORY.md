@@ -72,6 +72,8 @@
 ## Architecture & Runtime
 - [2026-03-11] 三层架构：blocks（唯一真源）/ orchestration（编排）/ ui（展示），保持层间解耦。  
   Tags: architecture, blocks, orchestration, ui
+- [2026-03-28] Jason 明确要求：每次编译都必须自动 bump 一个可读 build 版本（当前用 `package.json.fingerBuildVersion`，格式如 `0.1.0001`），并且每次交付安装后都必须明确重启 daemon 并校验 `/health`；不能靠人工口头确认“应该已经重启”。  
+  Tags: build-version, daemon, release, automation, runtime
 - [2026-03-11] 标准化 Channel Bridge：统一 types/manager/openclaw-adapter，消息闭环为 `channel-message -> handleChannelMessage -> hub.route -> outputs`。  
   Tags: channel-bridge, openclaw, messagehub
 - [2026-03-11] 双 daemon 架构：两组端口（9999/9998 & 9997/9996），5s 健康检查，故障自动重启；CLI 提供 start/stop/restart/status/enable-autostart。  
@@ -96,6 +98,16 @@
   Tags: messagehub, commands, auth, session
 
 ## Session Management & Agent Runtime SSOT
+- [2026-03-28] Jason 确认当前 System Agent 收敛策略采用两阶段路线：**第一阶段先靠 prompt 约束收敛行为**（长时自运行、停止前复盘目标、伪完成转真完成、真完成后再看 heartbeat）；若后续实测 prompt 约束仍不稳定，则进入 **第二阶段 reviewer gate**：在 `finish_reason=stop` 时强制走 reviewer/审查环节，未通过则直接打回进入下一轮继续执行，而不是把 stop 视为最终完成。  
+  Tags: system-agent, prompt, reviewer-gate, stop-review, closure, roadmap
+- [2026-03-28] Jason 明确收敛 System Agent/heartbeat 启动顺序：**先收上一轮任务，再处理 heartbeat**。具体规则：daemon/heartbeat 启动后先检查上一轮执行状态；若上一轮未到 `finish_reason=stop`，必须直接从中断处继续；若已 `stop`，也必须先审查是否只是“伪完成”，若未真正完成则继续执行直到真完成；只有上一轮任务真正闭环后，才允许查看/处理 heartbeat 文件。System prompt / developer prompt / `SystemAgentManager` 启动恢复逻辑已同步到该规则。  
+  Tags: system-agent, heartbeat, recovery, stop-review, startup-order, closure
+- [2026-03-28] Daemon 守护链路进一步收敛：`daemon-restart/guard/stop/cleanup` 脚本已统一改为读取 `FINGER_HOME`（默认 `~/.finger`）下的 `runtime/logs`，不再错误使用仓库内 `.finger/runtime`。同时 `port-guard.ensureSingleInstance()` 改为“只回收 finger 自己的占口进程”：先用 `lsof + ps` 校验 cmdline 命中当前 `FINGER_SOURCE_ROOT` 的 `dist/server/index.js / dist/daemon/dual-daemon / daemon-guard.cjs`，再按显式 PID 树发送 `SIGTERM -> SIGKILL`；若端口被无关进程占用则直接报错，不误杀。`src/orchestration/daemon.ts` 也已切到复用这套安全守卫，不再保留旧的按端口直接 kill 逻辑。  
+  Tags: daemon, self-heal, single-instance, runtime-hygiene, port-guard, ssot
+- [2026-03-28] `finger-263.2` 阶段性收敛：执行生命周期现在不只记录 `stage/substage`，还会透传结构化恢复字段 `timeoutMs / retryDelayMs / recoveryAction / delivery`。本轮已把这些字段从 `message-route` 的 blocking timeout/retry、`dispatch.ts` 的 execute-throw/result-failed/auto-deploy retry、`queued_mailbox` fallback、以及 `event-forwarding` 的 `turn_retry/turn_error` 全链路写入 `executionLifecycle`。另外修复了 `message-route` blocking `Promise.race` 的 timeout timer 未清理问题，避免旧 timer 在后续轮次里残留触发。  
+  Tags: execution-lifecycle, watchdog, retry, timeout, mailbox, dispatch, pending-input
+- [2026-03-28] Jason 明确要求：内部工具必须统一分为两类——`state`（结构化真源/状态工具，必须进程内直连，禁止依赖 CLI stdout 解析）与 `execution`（命令/PTTY/外部执行器，可使用 subprocess）。已将 `context_ledger.memory` 从 CLI/stdout 协议改为直接调用 `executeContextLedgerMemory(...)`，并新增 `docs/design/internal-tool-execution-model.md` 作为规则说明。  
+  Tags: internal-tools, ledger, state-tool, execution-tool, ssot
 - [2026-03-26] Jason 确认切换语义：`<##@agent##>` / `<##@agent:alias##>` / `<##@system##>` 采用**持久化 channel context**，未显式切换就保持当前目标；默认使用 latest（固定续写）而不是自动 `new`。`<##...##>` 是唯一有效切换语法（不使用 `<**...**>`）。  
   Tags: channel-context, super-command, agent-switch, latest-session, ledger
 - [2026-03-24] 约束更新（Jason 明确）：旧的 `new / resume / session` 语义是基于旧 session 文件模型；新架构中这些操作必须以 **ledger 为唯一真源** 解释与实现。UI 的会话切换/新建/恢复都要对应 ledger（持久化），动态 session 只是按 ledger slots 拼接的上下文视图。

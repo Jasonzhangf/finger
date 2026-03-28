@@ -209,7 +209,9 @@ export class UnifiedEventBus {
     this.persistenceDir = logsDir || join(process.cwd(), 'logs', 'events');
     this.persistenceEnabled = true;
     
-    mkdir(this.persistenceDir, { recursive: true }).catch(() => {});
+    mkdir(this.persistenceDir, { recursive: true }).catch((error) => {
+      clog.warn('[EventBus] Failed to create persistence dir', error);
+    });
   }
 
   /**

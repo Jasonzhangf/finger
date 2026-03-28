@@ -18,13 +18,15 @@ function createDeps(executeImpl?: ReturnType<typeof vi.fn>) {
     findSessionsByProjectPath: vi.fn((projectPath: string) => rootSessions.filter((item) => item.projectPath === projectPath)),
     createSession: vi.fn((projectPath: string) => ({ id: `new-session-${projectPath.split('/').pop()}`, context: {}, projectPath, messages: [] })),
     setCurrentSession: vi.fn(() => true),
-    updateContext: vi.fn(),
+    updateContext: vi.fn(() => true),
   };
 
   return {
     deps: {
       runtime: {
         getCurrentSession: vi.fn(() => runtimeCurrentSession),
+        bindAgentSession: vi.fn(),
+        setCurrentSession: vi.fn(),
       },
       sessionManager,
       agentRuntimeBlock: {
@@ -75,11 +77,13 @@ describe('dispatchTaskToAgent', () => {
 
   beforeEach(async () => {
     vi.clearAllMocks();
+    vi.resetModules();
+    process.env.FINGER_DISPATCH_ERROR_MAX_RETRIES = '0';
     mod = await import('../../src/server/modules/agent-runtime/dispatch.js');
   });
 
   it('returns completed result and records dispatch user message', async () => {
-    const { deps, sessionCalls } = createDeps();
+    const { deps, sessionCalls, sessionManager } = createDeps();
     const res = await mod.dispatchTaskToAgent(deps as any, {
       sourceAgentId: 'chat-codex',
       targetAgentId: 'finger-coder',
@@ -90,10 +94,18 @@ describe('dispatchTaskToAgent', () => {
     expect(res.ok).toBe(true);
     expect(res.status).toBe('completed');
     expect(sessionCalls.some((c) => c.role === 'user' && c.content === 'run test' && c.type === 'dispatch')).toBe(true);
+    expect(sessionManager.updateContext).toHaveBeenCalledWith('child-session-1', expect.objectContaining({
+      executionLifecycle: expect.objectContaining({
+        stage: 'completed',
+        dispatchId: 'dispatch-1',
+        updatedBy: 'dispatch',
+        targetAgentId: 'finger-coder',
+      }),
+    }));
   });
 
   it('returns failed result when execute throws', async () => {
-    const { deps } = createDeps(vi.fn(async () => { throw new Error('provider timeout'); }));
+    const { deps, sessionManager } = createDeps(vi.fn(async () => { throw new Error('provider timeout'); }));
     const res = await mod.dispatchTaskToAgent(deps as any, {
       sourceAgentId: 'chat-codex',
       targetAgentId: 'finger-coder',
@@ -104,10 +116,18 @@ describe('dispatchTaskToAgent', () => {
     expect(res.ok).toBe(false);
     expect(res.status).toBe('failed');
     expect(String(res.error)).toContain('provider timeout');
+    expect(sessionManager.updateContext).toHaveBeenCalledWith('child-session-1', expect.objectContaining({
+      executionLifecycle: expect.objectContaining({
+        stage: 'failed',
+        substage: 'dispatch_execute_final_error',
+        updatedBy: 'dispatch',
+        targetAgentId: 'finger-coder',
+      }),
+    }));
   });
 
   it('passes through failed dispatch result', async () => {
-    const { deps } = createDeps(
+    const { deps, sessionManager } = createDeps(
       vi.fn(async () => ({ ok: false, dispatchId: 'dispatch-fail', status: 'failed', error: 'target busy' })),
     );
     const res = await mod.dispatchTaskToAgent(deps as any, {
@@ -120,9 +140,19 @@ describe('dispatchTaskToAgent', () => {
     expect(res.ok).toBe(false);
     expect(res.status).toBe('failed');
     expect(String(res.error)).toContain('target busy');
+    expect(sessionManager.updateContext).toHaveBeenCalledWith('child-session-1', expect.objectContaining({
+      executionLifecycle: expect.objectContaining({
+        stage: 'failed',
+        dispatchId: 'dispatch-fail',
+        lastError: 'target busy',
+      }),
+    }));
   });
 
   it('auto deploys and retries when system dispatch target is not started', async () => {
+    vi.resetModules();
+    process.env.FINGER_DISPATCH_ERROR_MAX_RETRIES = '1';
+    const modWithRetry = await import('../../src/server/modules/agent-runtime/dispatch.js');
     const execute = vi.fn(async (command: string) => {
       if (command === 'dispatch' && execute.mock.calls.filter((c) => c[0] === 'dispatch').length === 1) {
         return {
@@ -144,7 +174,7 @@ describe('dispatchTaskToAgent', () => {
     });
     const { deps } = createDeps(execute);
 
-    const res = await mod.dispatchTaskToAgent(deps as any, {
+    const res = await modWithRetry.dispatchTaskToAgent(deps as any, {
       sourceAgentId: 'finger-system-agent',
       targetAgentId: 'finger-project-agent',
       task: 'run task',
@@ -208,5 +238,35 @@ describe('dispatchTaskToAgent', () => {
     expect(sessionManager.createSession).toHaveBeenCalledWith('/tmp/project-b', undefined, { allowReuse: false });
     expect(sessionManager.setCurrentSession).toHaveBeenCalledWith('new-session-project-b');
     expect((deps as any).ensureRuntimeChildSession).toHaveBeenCalledWith(expect.objectContaining({ id: 'new-session-project-b' }), 'finger-project-agent');
+  });
+
+  it('marks queued_mailbox dispatches as dispatch_mailbox_wait_ack in lifecycle', async () => {
+    const { deps, sessionManager } = createDeps(
+      vi.fn(async () => ({
+        ok: true,
+        dispatchId: 'dispatch-mailbox-1',
+        status: 'queued',
+        result: { summary: 'busy timeout -> mailbox', status: 'queued_mailbox', messageId: 'msg-mailbox-1' },
+      })),
+    );
+
+    const res = await mod.dispatchTaskToAgent(deps as any, {
+      sourceAgentId: 'finger-system-agent',
+      targetAgentId: 'finger-project-agent',
+      task: 'run task',
+      sessionId: 'session-1',
+    } as any);
+
+    expect(res.ok).toBe(true);
+    expect(res.status).toBe('queued');
+    expect(sessionManager.updateContext).toHaveBeenCalledWith('child-session-1', expect.objectContaining({
+      executionLifecycle: expect.objectContaining({
+        stage: 'dispatching',
+        substage: 'dispatch_mailbox_wait_ack',
+        dispatchId: 'dispatch-mailbox-1',
+        recoveryAction: 'mailbox',
+        delivery: 'mailbox',
+      }),
+    }));
   });
 });

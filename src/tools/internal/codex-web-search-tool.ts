@@ -29,6 +29,7 @@ const DEFAULT_TIMEOUT_MS = 15_000;
 export function createWebSearchTool(search: WebSearchPerformer = performWebSearch): InternalTool<unknown, WebSearchToolOutput> {
   return {
     name: 'web_search',
+    executionModel: 'state',
     description: 'Search the web and return summarized results from configured providers.',
     inputSchema: {
       type: 'object',

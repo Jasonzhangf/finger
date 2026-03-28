@@ -6,6 +6,7 @@ import { heartbeatMailbox } from '../../src/server/modules/heartbeat-mailbox.js'
 
 function createMockSessionManager(): SessionManager {
   const messages: Array<{ id: string; role: string; content: string; timestamp: string; type?: string; metadata?: Record<string, unknown> }> = [];
+  const sessions = new Map<string, { id: string; context: Record<string, unknown> }>();
   return {
     addMessage: vi.fn((_sessionId: string, _role: string, content: string, _detail?: Record<string, unknown>) => {
       messages.push({
@@ -16,8 +17,23 @@ function createMockSessionManager(): SessionManager {
         type: (_detail as any)?.type,
         metadata: (_detail as any)?.metadata,
       });
+      if (!sessions.has(_sessionId)) {
+        sessions.set(_sessionId, { id: _sessionId, context: {} });
+      }
     }),
     getMessages: vi.fn(() => messages),
+    getSession: vi.fn((sessionId: string) => {
+      if (!sessions.has(sessionId)) {
+        sessions.set(sessionId, { id: sessionId, context: {} });
+      }
+      return sessions.get(sessionId);
+    }),
+    updateContext: vi.fn((sessionId: string, context: Record<string, unknown>) => {
+      const existing = sessions.get(sessionId) ?? { id: sessionId, context: {} };
+      existing.context = { ...existing.context, ...context };
+      sessions.set(sessionId, existing);
+      return true;
+    }),
     compressContext: vi.fn(async () => 'compressed'),
   } as unknown as SessionManager;
 }
@@ -226,6 +242,222 @@ describe('Event Forwarding - Reasoning Persistence', () => {
       'finger-system-agent',
       '这是正文更新内容',
     );
+  });
+});
+
+describe('Event Forwarding - Execution Lifecycle', () => {
+  it('updates lifecycle across turn_start -> tool_call -> tool_result -> turn_complete', () => {
+    const sessionManager = createMockSessionManager();
+    const deps = createDeps({ sessionManager });
+    const { emitLoopEventToEventBus } = attachEventForwarding(deps);
+
+    emitLoopEventToEventBus({
+      sessionId: 'lifecycle-session-1',
+      phase: 'turn_start',
+      timestamp: new Date().toISOString(),
+      payload: { text: 'start' },
+    });
+    emitLoopEventToEventBus({
+      sessionId: 'lifecycle-session-1',
+      phase: 'kernel_event',
+      timestamp: new Date().toISOString(),
+      payload: { type: 'tool_call', toolName: 'shell.exec', toolId: 'call-1' },
+    });
+    emitLoopEventToEventBus({
+      sessionId: 'lifecycle-session-1',
+      phase: 'kernel_event',
+      timestamp: new Date().toISOString(),
+      payload: { type: 'tool_result', toolName: 'shell.exec' },
+    });
+    emitLoopEventToEventBus({
+      sessionId: 'lifecycle-session-1',
+      phase: 'turn_complete',
+      timestamp: new Date().toISOString(),
+      payload: { replyPreview: 'done' },
+    });
+
+    const session = (sessionManager.getSession as ReturnType<typeof vi.fn>).mock.results.at(-1)?.value
+      ?? (sessionManager.getSession as ReturnType<typeof vi.fn>)('lifecycle-session-1');
+    expect(session.context.executionLifecycle).toEqual(expect.objectContaining({
+      stage: 'completed',
+      substage: 'turn_complete',
+      updatedBy: 'event-forwarding',
+    }));
+
+    const lifecycleWrites = (sessionManager.updateContext as ReturnType<typeof vi.fn>).mock.calls.map((call) => (
+      (call[1] as Record<string, unknown>).executionLifecycle as Record<string, unknown>
+    ));
+    expect(lifecycleWrites.map((item) => item.stage)).toEqual([
+      'running',
+      'waiting_tool',
+      'waiting_model',
+      'completed',
+    ]);
+  });
+
+  it('marks dispatch queue events as dispatching in execution lifecycle', () => {
+    const sessionManager = createMockSessionManager();
+    const captured: { eventName: string; handler: (event: any) => void }[] = [];
+    const eventBus = {
+      subscribe: vi.fn((eventName: string, handler: (event: any) => void) => captured.push({ eventName, handler })),
+      subscribeMultiple: vi.fn(),
+      emit: vi.fn(async () => {}),
+    } as unknown as UnifiedEventBus;
+
+    attachEventForwarding(createDeps({ sessionManager, eventBus }));
+    const handler = captured.find((entry) => entry.eventName === 'agent_runtime_dispatch')?.handler;
+    expect(handler).toBeDefined();
+
+    handler?.({
+      type: 'agent_runtime_dispatch',
+      sessionId: 'dispatch-session-1',
+      timestamp: new Date().toISOString(),
+      payload: {
+        dispatchId: 'dispatch-queue-1',
+        sourceAgentId: 'finger-system-agent',
+        targetAgentId: 'finger-project-agent',
+        status: 'queued',
+      },
+    });
+
+    const session = (sessionManager.getSession as ReturnType<typeof vi.fn>)('dispatch-session-1');
+    expect(session.context.executionLifecycle).toEqual(expect.objectContaining({
+      stage: 'dispatching',
+      substage: 'dispatch_queued',
+      dispatchId: 'dispatch-queue-1',
+      targetAgentId: 'finger-project-agent',
+    }));
+  });
+
+  it('persists retry metadata for turn_retry lifecycle transitions', () => {
+    const sessionManager = createMockSessionManager();
+    const deps = createDeps({ sessionManager });
+    const { emitLoopEventToEventBus } = attachEventForwarding(deps);
+
+    emitLoopEventToEventBus({
+      sessionId: 'retry-session-1',
+      phase: 'kernel_event',
+      timestamp: new Date().toISOString(),
+      payload: {
+        type: 'turn_retry',
+        attempt: 1,
+        error: 'responses stream did not contain a completed response payload',
+        timeoutMs: 120000,
+        retryDelayMs: 2000,
+        recoveryAction: 'retry',
+      },
+    });
+
+    const session = (sessionManager.getSession as ReturnType<typeof vi.fn>)('retry-session-1');
+    expect(session.context.executionLifecycle).toEqual(expect.objectContaining({
+      stage: 'retrying',
+      substage: 'turn_retry',
+      timeoutMs: 120000,
+      retryDelayMs: 2000,
+      recoveryAction: 'retry',
+      retryCount: 1,
+    }));
+  });
+
+  it('marks mailbox queued dispatches as waiting for ack in execution lifecycle', () => {
+    const sessionManager = createMockSessionManager();
+    const captured: { eventName: string; handler: (event: any) => void }[] = [];
+    const eventBus = {
+      subscribe: vi.fn((eventName: string, handler: (event: any) => void) => captured.push({ eventName, handler })),
+      subscribeMultiple: vi.fn(),
+      emit: vi.fn(async () => {}),
+    } as unknown as UnifiedEventBus;
+
+    attachEventForwarding(createDeps({ sessionManager, eventBus }));
+    const handler = captured.find((entry) => entry.eventName === 'agent_runtime_dispatch')?.handler;
+    expect(handler).toBeDefined();
+
+    handler?.({
+      type: 'agent_runtime_dispatch',
+      sessionId: 'dispatch-session-mailbox-1',
+      timestamp: new Date().toISOString(),
+      payload: {
+        dispatchId: 'dispatch-mailbox-1',
+        sourceAgentId: 'finger-system-agent',
+        targetAgentId: 'finger-project-agent',
+        status: 'queued',
+        result: {
+          status: 'queued_mailbox',
+          messageId: 'msg-mailbox-1',
+        },
+      },
+    });
+
+    const session = (sessionManager.getSession as ReturnType<typeof vi.fn>)('dispatch-session-mailbox-1');
+    expect(session.context.executionLifecycle).toEqual(expect.objectContaining({
+      stage: 'dispatching',
+      substage: 'dispatch_mailbox_wait_ack',
+      dispatchId: 'dispatch-mailbox-1',
+      targetAgentId: 'finger-project-agent',
+    }));
+  });
+
+  it('marks interrupt control events as interrupted in execution lifecycle', () => {
+    const sessionManager = createMockSessionManager();
+    const captured: { eventName: string; handler: (event: any) => void }[] = [];
+    const eventBus = {
+      subscribe: vi.fn((eventName: string, handler: (event: any) => void) => captured.push({ eventName, handler })),
+      subscribeMultiple: vi.fn(),
+      emit: vi.fn(async () => {}),
+    } as unknown as UnifiedEventBus;
+
+    attachEventForwarding(createDeps({ sessionManager, eventBus }));
+    const handler = captured.find((entry) => entry.eventName === 'agent_runtime_control')?.handler;
+    expect(handler).toBeDefined();
+
+    handler?.({
+      type: 'agent_runtime_control',
+      sessionId: 'interrupt-session-1',
+      timestamp: new Date().toISOString(),
+      payload: {
+        action: 'interrupt',
+        status: 'completed',
+        sessionId: 'interrupt-session-1',
+      },
+    });
+
+    const session = (sessionManager.getSession as ReturnType<typeof vi.fn>)('interrupt-session-1');
+    expect(session.context.executionLifecycle).toEqual(expect.objectContaining({
+      stage: 'interrupted',
+      substage: 'control_interrupt',
+      updatedBy: 'event-forwarding',
+    }));
+  });
+
+  it('keeps lifecycle running when turn_complete only acknowledges pending input merge', () => {
+    const sessionManager = createMockSessionManager();
+    const deps = createDeps({ sessionManager });
+    const { emitLoopEventToEventBus } = attachEventForwarding(deps);
+
+    emitLoopEventToEventBus({
+      sessionId: 'pending-merge-session-1',
+      phase: 'turn_start',
+      timestamp: new Date().toISOString(),
+      payload: { text: 'start' },
+    });
+    emitLoopEventToEventBus({
+      sessionId: 'pending-merge-session-1',
+      phase: 'turn_complete',
+      timestamp: new Date().toISOString(),
+      payload: {
+        replyPreview: '已加入当前执行队列，等待本轮合并处理。',
+        pendingInputAccepted: true,
+        pendingTurnId: 'pending-1',
+      },
+    });
+
+    const session = (sessionManager.getSession as ReturnType<typeof vi.fn>)('pending-merge-session-1');
+    expect(session.context.executionLifecycle).toEqual(expect.objectContaining({
+      stage: 'running',
+      substage: 'pending_input_queued',
+      updatedBy: 'event-forwarding',
+      detail: 'pendingTurn=pending-1',
+    }));
   });
 });
 

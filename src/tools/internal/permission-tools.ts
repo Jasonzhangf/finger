@@ -275,6 +275,7 @@ export const permissionState = new PermissionStateManager();
 
 export const permissionCheckTool: InternalTool<unknown, PermissionCheckResult> = {
   name: 'permission.check',
+  executionModel: 'state',
   description: `检查工具或命令是否需要用户授权。
 
 在执行高危命令（如 shell.exec、file.delete）前调用此工具，判断是否需要用户确认。
@@ -388,6 +389,7 @@ export const permissionCheckTool: InternalTool<unknown, PermissionCheckResult> =
 
 export const permissionGrantTool: InternalTool<unknown, PermissionGrantResult> = {
   name: 'permission.grant',
+  executionModel: 'state',
   description: `授权执行某个工具或命令。
 
 用户通过 QQBot 回复 <##auth:xxx##> 或 WebUI 点击授权按钮后，调用此工具完成授权。
@@ -431,6 +433,7 @@ export const permissionGrantTool: InternalTool<unknown, PermissionGrantResult> =
 
 export const permissionDenyTool: InternalTool<unknown, PermissionDenyResult> = {
   name: 'permission.deny',
+  executionModel: 'state',
   description: `拒绝执行某个工具或命令。
 
 用户拒绝授权后调用此工具，模型会收到拒绝结果和建议。
@@ -474,6 +477,7 @@ export const permissionDenyTool: InternalTool<unknown, PermissionDenyResult> = {
 
 export const permissionListTool: InternalTool<unknown, PermissionListResult> = {
   name: 'permission.list',
+  executionModel: 'state',
   description: `查看当前权限状态。
 
 返回待审批列表、已授权列表和当前权限模式。`,

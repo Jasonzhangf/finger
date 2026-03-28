@@ -30,6 +30,14 @@ export interface DispatchSummaryResult {
   tags?: string[];
   /** Topic classification hint for coarse session routing */
   topic?: string;
+  /** Structured recovery hint for timeout / retry / mailbox fallback */
+  recoveryAction?: string;
+  /** Delivery path when the dispatch is queued or deferred */
+  delivery?: string;
+  /** Watchdog / timeout budget associated with this result */
+  timeoutMs?: number;
+  /** Retry delay selected for the next recovery step */
+  retryDelayMs?: number;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

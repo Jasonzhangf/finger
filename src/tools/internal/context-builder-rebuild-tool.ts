@@ -71,6 +71,7 @@ function resolveRootDir(input: ContextBuilderRebuildInput, agentId: string, cont
 
 export const contextBuilderRebuildTool: InternalTool<unknown, ContextBuilderRebuildOutput> = {
   name: 'context_builder.rebuild',
+  executionModel: 'state',
   description: [
     'Rebuild dynamic history context from ledger for the current session.',
     'Use this when topic switches or mixed threads make current prompt history noisy.',

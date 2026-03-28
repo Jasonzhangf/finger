@@ -4,6 +4,8 @@
  * Extracted from progress-monitor.ts to keep file under 500 lines.
  */
 
+import { getContextWindow } from '../../core/user-settings.js';
+
 export type ToolCategory = '读写' | '搜索' | '工具' | '其他';
 
 function parseToolPayload(input?: unknown): Record<string, unknown> {
@@ -182,6 +184,68 @@ function formatTokenCount(value: number): string {
   return String(Math.floor(value));
 }
 
+export interface ContextUsageSnapshot {
+  contextUsagePercent?: number;
+  estimatedTokensInContextWindow?: number;
+  maxInputTokens?: number;
+}
+
+export function buildContextUsageLine(snapshot: ContextUsageSnapshot): string | undefined {
+  const configuredWindow = getContextWindow();
+  const maxInput = typeof snapshot.maxInputTokens === 'number' && Number.isFinite(snapshot.maxInputTokens)
+    ? Math.max(1, Math.floor(snapshot.maxInputTokens))
+    : Math.max(1, Math.floor(configuredWindow));
+
+  const explicitEstimated = typeof snapshot.estimatedTokensInContextWindow === 'number'
+    && Number.isFinite(snapshot.estimatedTokensInContextWindow)
+    ? Math.max(0, Math.floor(snapshot.estimatedTokensInContextWindow))
+    : undefined;
+
+  const explicitPercent = typeof snapshot.contextUsagePercent === 'number'
+    && Number.isFinite(snapshot.contextUsagePercent)
+    ? Math.max(0, Math.floor(snapshot.contextUsagePercent))
+    : undefined;
+
+  const inferredEstimated = explicitEstimated !== undefined
+    ? explicitEstimated
+    : explicitPercent !== undefined
+      ? Math.max(0, Math.floor((explicitPercent / 100) * maxInput))
+      : undefined;
+
+  const inferredPercent = explicitPercent !== undefined
+    ? explicitPercent
+    : inferredEstimated !== undefined
+      ? Math.max(0, Math.floor((inferredEstimated / Math.max(1, maxInput)) * 100))
+      : undefined;
+
+  if (inferredEstimated === undefined && inferredPercent === undefined) {
+    return undefined;
+  }
+
+  const estimatedLabel = explicitEstimated === undefined && inferredEstimated !== undefined
+    ? `~${formatTokenCount(inferredEstimated)}`
+    : formatTokenCount(inferredEstimated ?? 0);
+
+  if (inferredEstimated !== undefined && inferredPercent !== undefined) {
+    return `🧠 上下文: ${inferredPercent}% · ${estimatedLabel}/${formatTokenCount(maxInput)}`;
+  }
+  if (inferredEstimated !== undefined) {
+    return `🧠 上下文: ${estimatedLabel}/${formatTokenCount(maxInput)}`;
+  }
+  return `🧠 上下文: ${inferredPercent}% · ?/${formatTokenCount(maxInput)}`;
+}
+
+export function normalizeContextUsageSnapshot(snapshot: ContextUsageSnapshot): Required<Pick<ContextUsageSnapshot, 'maxInputTokens'>> & ContextUsageSnapshot {
+  const configuredWindow = Math.max(1, Math.floor(getContextWindow()));
+  const maxInputTokens = typeof snapshot.maxInputTokens === 'number' && Number.isFinite(snapshot.maxInputTokens)
+    ? Math.max(1, Math.floor(snapshot.maxInputTokens))
+    : configuredWindow;
+  return {
+    ...snapshot,
+    maxInputTokens,
+  };
+}
+
 /**
  * Build a compact, mobile-readable progress summary for one session.
  */
@@ -220,31 +284,13 @@ export function buildCompactSummary(
     lines.push(`💭 ${p.latestReasoning}`);
   }
 
-  if (
-    typeof p.contextUsagePercent === 'number'
-    || typeof p.estimatedTokensInContextWindow === 'number'
-    || typeof p.maxInputTokens === 'number'
-  ) {
-    const usagePercent = typeof p.contextUsagePercent === 'number'
-      ? Math.max(0, Math.floor(p.contextUsagePercent))
-      : undefined;
-    const estimated = typeof p.estimatedTokensInContextWindow === 'number'
-      ? Math.max(0, Math.floor(p.estimatedTokensInContextWindow))
-      : undefined;
-    const maxInput = typeof p.maxInputTokens === 'number'
-      ? Math.max(0, Math.floor(p.maxInputTokens))
-      : undefined;
-
-    if (estimated !== undefined && maxInput !== undefined) {
-      const percent = usagePercent !== undefined
-        ? usagePercent
-        : Math.max(0, Math.floor((estimated / Math.max(1, maxInput)) * 100));
-      lines.push(`🧠 上下文: ${formatTokenCount(estimated)}/${formatTokenCount(maxInput)} (${percent}%)`);
-    } else if (usagePercent !== undefined) {
-      lines.push(`🧠 上下文: ${usagePercent}%`);
-    } else if (estimated !== undefined) {
-      lines.push(`🧠 上下文: ~${formatTokenCount(estimated)} tokens`);
-    }
+  const contextLine = buildContextUsageLine({
+    contextUsagePercent: p.contextUsagePercent,
+    estimatedTokensInContextWindow: p.estimatedTokensInContextWindow,
+    maxInputTokens: p.maxInputTokens,
+  });
+  if (contextLine) {
+    lines.push(contextLine);
   }
 
   if (recentTools.length > 0) {

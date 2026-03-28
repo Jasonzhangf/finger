@@ -12,6 +12,11 @@ export interface ChannelContext {
   channelId: string;
   currentMode: 'business' | 'system';
   currentAgentId: string;
+  /**
+   * Per-agent session pinning for this channel.
+   * Key: agentId, Value: sessionId
+   */
+  agentSessions?: Record<string, string>;
   projectId?: string;
   projectPath?: string;
   projectAlias?: string;
@@ -70,6 +75,7 @@ export class ChannelContextManager {
       channelId,
       currentMode: mode,
       currentAgentId: agentId,
+      agentSessions: existing?.agentSessions,
       projectId: projectContext?.projectId ?? existing?.projectId,
       projectPath: projectContext?.projectPath ?? existing?.projectPath,
       projectAlias: projectContext?.projectAlias ?? existing?.projectAlias,
@@ -82,6 +88,45 @@ export class ChannelContextManager {
 
   getContext(channelId: string): ChannelContext | undefined {
     return this.contexts.get(channelId);
+  }
+
+  getPinnedSession(channelId: string, agentId: string): string | undefined {
+    const context = this.contexts.get(channelId);
+    if (!context) return undefined;
+    const pinned = context.agentSessions?.[agentId];
+    if (typeof pinned !== 'string') return undefined;
+    const normalized = pinned.trim();
+    return normalized.length > 0 ? normalized : undefined;
+  }
+
+  pinSession(channelId: string, agentId: string, sessionId: string): void {
+    const normalizedAgentId = agentId.trim();
+    const normalizedSessionId = sessionId.trim();
+    if (normalizedAgentId.length === 0 || normalizedSessionId.length === 0) return;
+
+    const existing = this.contexts.get(channelId);
+    if (!existing) {
+      this.contexts.set(channelId, {
+        channelId,
+        currentMode: 'business',
+        currentAgentId: this.defaultTargetAgentId,
+        agentSessions: {
+          [normalizedAgentId]: normalizedSessionId,
+        },
+      });
+      this.persistContexts();
+      return;
+    }
+
+    const nextAgentSessions = {
+      ...(existing.agentSessions ?? {}),
+      [normalizedAgentId]: normalizedSessionId,
+    };
+    this.contexts.set(channelId, {
+      ...existing,
+      agentSessions: nextAgentSessions,
+    });
+    this.persistContexts();
   }
 
   getCurrentMode(channelId: string): 'business' | 'system' {

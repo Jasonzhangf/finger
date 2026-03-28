@@ -32,6 +32,7 @@ interface ApplyPatchCommandDescriptor {
 
 export const applyPatchTool: InternalTool<unknown, ApplyPatchOutput> = {
   name: 'apply_patch',
+  executionModel: 'execution',
   description:
     'Use the apply_patch tool to edit files. Do not call apply_patch through exec_command for file modifications.',
   inputSchema: {

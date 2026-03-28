@@ -26,6 +26,7 @@ const MIME_BY_EXTENSION: Record<string, string> = {
 
 export const viewImageTool: InternalTool<unknown, ViewImageOutput> = {
   name: 'view_image',
+  executionModel: 'state',
   description: 'Attach a local image (by filesystem path) to the conversation context for this turn.',
   inputSchema: {
     type: 'object',

@@ -69,6 +69,20 @@ export class ChannelBridgeManager {
   }
 
   /**
+   * Upsert runtime channel configs without restarting daemon.
+   * Useful for hot-reload of pushSettings (reasoning/progress/bodyUpdates).
+   */
+  upsertConfigs(configs: ChannelBridgeConfig[]): { updated: number } {
+    let updated = 0;
+    for (const config of configs) {
+      if (!config?.id) continue;
+      this.configs.set(config.id, config);
+      updated += 1;
+    }
+    return { updated };
+  }
+
+  /**
    * Get config for a channel
    */
   getConfig(channelId: string): ChannelBridgeConfig | undefined {

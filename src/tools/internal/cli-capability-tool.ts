@@ -31,6 +31,7 @@ export function createCliCapabilityTool(
   const toolName = `capability.${descriptor.id}`;
   return {
     name: toolName,
+    executionModel: 'execution',
     description: descriptor.runtimeDescription ?? `${descriptor.description} (CLI: ${descriptor.command})`,
     inputSchema: {
       type: 'object',

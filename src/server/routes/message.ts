@@ -41,6 +41,11 @@ import {
 } from './message-helpers.js';
 
 import { inferInboundRole, ensureMessageMetadataRole } from './message-role-utils.js';
+import { normalizeProgressDeliveryPolicy } from '../../common/progress-delivery-policy.js';
+import {
+  applyExecutionLifecycleTransition,
+  resolveLifecycleStageFromResultStatus,
+} from '../modules/execution-lifecycle.js';
 
 
 export function registerMessageRoutes(app: Express, deps: MessageRouteDeps): void {
@@ -110,7 +115,6 @@ export function registerMessageRoutes(app: Express, deps: MessageRouteDeps): voi
       : body.message;
     const inferredRole = inferInboundRole(effectiveMessage, sender);
     const effectiveMessageWithRole = ensureMessageMetadataRole(effectiveMessage, inferredRole);
-
     if (channelPolicy === 'mailbox') {
       const messageId = deps.mailbox.createMessage(targetId, effectiveMessageWithRole, {
         sender: body.sender,
@@ -262,13 +266,40 @@ export function registerMessageRoutes(app: Express, deps: MessageRouteDeps): voi
       action: requestSessionId ? 'reuse' : 'new',
       target: targetId,
     });
-    if (requestSessionId) {
-      const sessionProjectPath = isSystemRoute ? SYSTEM_PROJECT_PATH : undefined;
-      ensureSessionExists(deps.sessionManager, requestSessionId, body.target, sessionProjectPath);
+      if (requestSessionId) {
+        const sessionProjectPath = isSystemRoute ? SYSTEM_PROJECT_PATH : undefined;
+        ensureSessionExists(deps.sessionManager, requestSessionId, body.target, sessionProjectPath);
+      if (isObjectRecord(requestMessage)) {
+        const metadata = isObjectRecord(requestMessage.metadata) ? requestMessage.metadata : {};
+        const explicitProgressDelivery = normalizeProgressDeliveryPolicy(
+          metadata.progressDelivery ?? metadata.progress_delivery,
+        );
+        const progressDelivery = explicitProgressDelivery;
+        if (progressDelivery) {
+          deps.sessionManager.updateContext(requestSessionId, {
+            progressDelivery,
+            progressDeliveryTransient: true,
+            progressDeliveryUpdatedAt: new Date().toISOString(),
+          });
+        } else {
+          const session = deps.sessionManager.getSession(requestSessionId);
+          const context = (session?.context && typeof session.context === 'object')
+            ? (session.context as Record<string, unknown>)
+            : {};
+          if (context.progressDeliveryTransient === true) {
+            deps.sessionManager.updateContext(requestSessionId, {
+              progressDelivery: null,
+              progressDeliveryTransient: false,
+              progressDeliveryUpdatedAt: null,
+            });
+          }
+        }
+      }
     }
     requestMessage = withSessionWorkspaceDefaults(requestMessage, requestSessionId, deps.sessionWorkspaces);
     if (requestSessionId) {
       deps.runtime.setCurrentSession(requestSessionId);
+      deps.runtime.bindAgentSession(targetId, requestSessionId);
     }
     // 记录当前渠道授权策略（供工具调用时使用）
 
@@ -287,7 +318,13 @@ export function registerMessageRoutes(app: Express, deps: MessageRouteDeps): voi
     if (inputChannels.length > 0) {
       const userContent = extractMessageTextForSession(requestMessage)
         ?? JSON.stringify(requestMessage);
-      sendInputSync(deps.channelBridgeManager, inputChannels, userContent).catch(() => {});
+      sendInputSync(deps.channelBridgeManager, inputChannels, userContent).catch((error) => {
+        log.warn('input sync failed', {
+          targetId,
+          inputChannels,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      });
     }
 
     const messageId = deps.mailbox.createMessage(targetId, requestMessage, {
@@ -295,6 +332,27 @@ export function registerMessageRoutes(app: Express, deps: MessageRouteDeps): voi
       callbackId: body.callbackId
     });
     deps.mailbox.updateStatus(messageId, 'processing');
+
+    if (requestSessionId) {
+      applyExecutionLifecycleTransition(deps.sessionManager, requestSessionId, {
+        stage: 'received',
+        substage: 'route_accept',
+        updatedBy: 'message-route',
+        messageId,
+        targetAgentId: targetId,
+        detail: channelId,
+        lastError: null,
+      });
+      applyExecutionLifecycleTransition(deps.sessionManager, requestSessionId, {
+        stage: 'session_bound',
+        substage: 'route_bound',
+        updatedBy: 'message-route',
+        messageId,
+        targetAgentId: targetId,
+        detail: requestSessionId,
+        lastError: null,
+      });
+    }
 
     deps.broadcast({ type: 'messageCreated', messageId, status: 'processing' });
 
@@ -304,17 +362,29 @@ export function registerMessageRoutes(app: Express, deps: MessageRouteDeps): voi
         let senderResponse: unknown | undefined;
         let attempt = 0;
         let lastError: Error | null = null;
+        if (requestSessionId) {
+          applyExecutionLifecycleTransition(deps.sessionManager, requestSessionId, {
+            stage: 'dispatching',
+            substage: 'blocking_send',
+            updatedBy: 'message-route',
+            messageId,
+            targetAgentId: targetId,
+            detail: body.blocking ? 'blocking' : 'non-blocking',
+            lastError: null,
+          });
+        }
         while (attempt <= deps.blockingMaxRetries) {
+          let timeoutHandle: NodeJS.Timeout | null = null;
           try {
             log.info('Sending to module', { targetId, sessionId: requestSessionId ?? 'none', messageId });
             primaryResult = await Promise.race([
               deps.hub.sendToModule(targetId, requestMessage),
               new Promise<never>((_, reject) => {
-                setTimeout(
+                timeoutHandle = setTimeout(
                   () => {
-        log.warn('Module response timed out', { targetId, sessionId: requestSessionId ?? 'none' });
-        reject(new Error(`Timed out waiting for module response: ${targetId}`));
-      },
+                    log.warn('Module response timed out', { targetId, sessionId: requestSessionId ?? 'none' });
+                    reject(new Error(`Timed out waiting for module response: ${targetId}`));
+                  },
                   deps.blockingTimeoutMs,
                 );
               }),
@@ -331,7 +401,26 @@ export function registerMessageRoutes(app: Express, deps: MessageRouteDeps): voi
               Math.floor(deps.blockingRetryBaseMs * Math.pow(2, attempt)),
             );
             attempt += 1;
+            if (requestSessionId) {
+              applyExecutionLifecycleTransition(deps.sessionManager, requestSessionId, {
+                stage: 'retrying',
+                substage: 'blocking_retry',
+                updatedBy: 'message-route',
+                messageId,
+                targetAgentId: targetId,
+                detail: `attempt=${attempt}`,
+                lastError: errorMessage,
+                timeoutMs: deps.blockingTimeoutMs,
+                retryDelayMs: backoffMs,
+                recoveryAction: 'retry',
+                incrementRetry: true,
+              });
+            }
             await new Promise((resolve) => setTimeout(resolve, backoffMs));
+          } finally {
+            if (timeoutHandle) {
+              clearTimeout(timeoutHandle);
+            }
           }
         }
 
@@ -358,6 +447,19 @@ export function registerMessageRoutes(app: Express, deps: MessageRouteDeps): voi
             },
           });
           deps.mailbox.updateStatus(messageId, 'failed', undefined, errorMessage);
+          if (requestSessionId) {
+            applyExecutionLifecycleTransition(deps.sessionManager, requestSessionId, {
+              stage: 'failed',
+              substage: 'blocking_failed',
+              updatedBy: 'message-route',
+              messageId,
+              targetAgentId: targetId,
+              detail: `status=${statusCode}`,
+              lastError: errorMessage,
+              timeoutMs: deps.blockingTimeoutMs,
+              recoveryAction: 'failed',
+            });
+          }
           res.status(statusCode).json({ messageId, status: 'failed', error: errorMessage });
           return;
         }
@@ -365,6 +467,16 @@ export function registerMessageRoutes(app: Express, deps: MessageRouteDeps): voi
         if (primaryResult === undefined) {
           const errorMessage = `No result returned from module: ${body.target}`;
           deps.mailbox.updateStatus(messageId, 'failed', undefined, errorMessage);
+          if (requestSessionId) {
+            applyExecutionLifecycleTransition(deps.sessionManager, requestSessionId, {
+              stage: 'failed',
+              substage: 'empty_result',
+              updatedBy: 'message-route',
+              messageId,
+              targetAgentId: targetId,
+              lastError: errorMessage,
+            });
+          }
           res.status(502).json({ messageId, status: 'failed', error: errorMessage });
           return;
         }
@@ -433,10 +545,36 @@ export function registerMessageRoutes(app: Express, deps: MessageRouteDeps): voi
             .catch((err) => log.error('Failed to send display fanout', err instanceof Error ? err : undefined));
         }
         deps.mailbox.updateStatus(messageId, 'completed', responsePayload);
+        if (requestSessionId) {
+          const resultStatus = resolveLifecycleStageFromResultStatus(
+            isObjectRecord(actualResult) ? actualResult.status : undefined,
+          );
+          applyExecutionLifecycleTransition(deps.sessionManager, requestSessionId, {
+            stage: resultStatus ?? 'completed',
+            substage: resultStatus === 'dispatching' ? 'blocking_pending' : 'blocking_done',
+            updatedBy: 'message-route',
+            messageId,
+            targetAgentId: agentTarget,
+            detail: typeof responsePayload.response === 'string' ? responsePayload.response.slice(0, 120) : undefined,
+            lastError: null,
+          });
+        }
 
         deps.broadcast({ type: 'messageCompleted', messageId, result: responsePayload, callbackResult: senderResponse });
         res.json({ messageId, status: 'completed', result: responsePayload, callbackResult: senderResponse });
         return;
+      }
+
+      if (requestSessionId) {
+        applyExecutionLifecycleTransition(deps.sessionManager, requestSessionId, {
+          stage: 'dispatching',
+          substage: 'async_send',
+          updatedBy: 'message-route',
+          messageId,
+          targetAgentId: targetId,
+          detail: 'non-blocking',
+          lastError: null,
+        });
       }
 
       deps.hub.sendToModule(targetId, requestMessage, body.sender ? (result: any) => {
@@ -490,11 +628,35 @@ export function registerMessageRoutes(app: Express, deps: MessageRouteDeps): voi
               .catch((err) => log.error('Failed to send display fanout', err instanceof Error ? err : undefined));
           }
           deps.mailbox.updateStatus(messageId, 'completed', responsePayload);
+          if (requestSessionId) {
+            const lifecycleStage = resolveLifecycleStageFromResultStatus(
+              isObjectRecord(result) ? result.status : undefined,
+            );
+            applyExecutionLifecycleTransition(deps.sessionManager, requestSessionId, {
+              stage: lifecycleStage ?? 'completed',
+              substage: lifecycleStage === 'dispatching' ? 'async_pending' : 'async_done',
+              updatedBy: 'message-route',
+              messageId,
+              targetAgentId: agentTarget,
+              detail: typeof responsePayload.response === 'string' ? responsePayload.response.slice(0, 120) : undefined,
+              lastError: null,
+            });
+          }
           deps.broadcast({ type: 'messageCompleted', messageId, result: responsePayload });
         })
         .catch((err) => {
           log.error('Hub send error', err instanceof Error ? err : undefined, { target: targetId, messageId });
           deps.mailbox.updateStatus(messageId, 'failed', undefined, err.message);
+          if (requestSessionId) {
+            applyExecutionLifecycleTransition(deps.sessionManager, requestSessionId, {
+              stage: 'failed',
+              substage: 'async_failed',
+              updatedBy: 'message-route',
+              messageId,
+              targetAgentId: targetId,
+              lastError: err instanceof Error ? err.message : String(err),
+            });
+          }
         });
 
       res.json({ messageId, status: 'queued' });
@@ -518,6 +680,16 @@ export function registerMessageRoutes(app: Express, deps: MessageRouteDeps): voi
         },
       });
       deps.mailbox.updateStatus(messageId, 'failed', undefined, errorMessage);
+      if (requestSessionId) {
+        applyExecutionLifecycleTransition(deps.sessionManager, requestSessionId, {
+          stage: 'failed',
+          substage: 'route_exception',
+          updatedBy: 'message-route',
+          messageId,
+          targetAgentId: targetId,
+          lastError: errorMessage,
+        });
+      }
       res.status(400).json({ messageId, status: 'failed', error: errorMessage });
     }
   });

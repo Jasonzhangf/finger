@@ -18,6 +18,7 @@ export class InternalToolRegistry {
   list(): InternalToolInfo[] {
     return Array.from(this.tools.values()).map((tool) => ({
       name: tool.name,
+      executionModel: tool.executionModel,
       description: tool.description,
       inputSchema: tool.inputSchema,
     }));

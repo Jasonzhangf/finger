@@ -240,6 +240,7 @@ export interface DispatchQueueTimeoutFallbackResult {
   mailboxMessageId: string;
   summary?: string;
   nextAction?: string;
+  timeoutMs?: number;
 }
 
 export interface AgentDeployRequest {
@@ -1787,6 +1788,11 @@ export class AgentRuntimeBlock extends BaseBlock {
       status: 'queued_mailbox',
       summary: fallback.summary ?? `Target agent busy; task moved to mailbox for ${params.targetAgentId}`,
       messageId: fallback.mailboxMessageId,
+      delivery: fallback.delivery,
+      recoveryAction: 'mailbox',
+      timeoutMs: typeof fallback.timeoutMs === 'number'
+        ? Math.max(0, Math.floor(fallback.timeoutMs))
+        : params.input.maxQueueWaitMs,
       ...(fallback.nextAction ? { nextAction: fallback.nextAction } : {}),
     };
     this.emitDispatchEvent({
@@ -1879,9 +1885,16 @@ export class AgentRuntimeBlock extends BaseBlock {
       sourceAgentId: input.sourceAgentId.trim(),
       targetAgentId: target,
       queueOnBusy: input.queueOnBusy !== false,
-      maxQueueWaitMs: Number.isFinite(input.maxQueueWaitMs)
-        ? Math.max(1_000, Math.floor(input.maxQueueWaitMs as number))
-        : 300_000,
+      ...(Number.isFinite(input.maxQueueWaitMs)
+        ? (() => {
+            const parsed = Math.floor(input.maxQueueWaitMs as number);
+            if (parsed <= 0) {
+              // <= 0 means "disable queue timeout" for this dispatch.
+              return { maxQueueWaitMs: 0 };
+            }
+            return { maxQueueWaitMs: Math.max(1_000, parsed) };
+          })()
+        : { maxQueueWaitMs: 300_000 }),
     };
     const blocking = input.blocking === true;
     const dispatchId = `dispatch-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -1940,7 +1953,7 @@ export class AgentRuntimeBlock extends BaseBlock {
         const isSelfDispatch = normalizedInput.sourceAgentId === target;
         // Self-dispatch should always wait for next runnable slot (same semantic as
         // in-flight pending user input merge), never timeout into mailbox.
-        if (!isSelfDispatch) {
+        if (!isSelfDispatch && (normalizedInput.maxQueueWaitMs ?? 0) > 0) {
           queued.timeoutHandle = setTimeout(() => {
             const removed = this.removeQueuedDispatch(target, dispatchId);
             if (!removed) return;

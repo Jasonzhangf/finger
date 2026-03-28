@@ -87,10 +87,12 @@ export function createSendOptions(
     ? `group:${envelope.metadata.groupId}`
     : envelope.senderId;
 
+  const replyTo = extractReplyTo(envelope);
+
   return {
     to: target,
     text: replyContent,
-    replyTo: extractReplyTo(envelope),
+    ...(typeof replyTo === 'string' && replyTo.trim().length > 0 ? { replyTo } : {}),
   };
 }
 

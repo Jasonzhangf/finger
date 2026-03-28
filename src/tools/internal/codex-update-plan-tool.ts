@@ -25,6 +25,7 @@ let lastPlanSnapshot: UpdatePlanOutput | null = null;
 
 export const updatePlanTool: InternalTool<unknown, UpdatePlanOutput> = {
   name: 'update_plan',
+  executionModel: 'state',
   description:
     'Updates the task plan. Each plan item must have a "step" field (the step description) and a "status" field (pending, in_progress, or completed).',
   inputSchema: {

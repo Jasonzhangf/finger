@@ -16,6 +16,7 @@ import { getAgentIcon } from './agent-status-subscriber-helpers.js';
 import { sendStatusUpdate } from './agent-status-subscriber-runtime.js';
 import { logger } from '../../core/logger.js';
 import { heartbeatMailbox } from './heartbeat-mailbox.js';
+import type { PushSettings } from '../../bridges/types.js';
 
 const log = logger.module('AgentStatusSubscriberHandlers');
 const RAW_TOOL_ERROR_SUPPRESSED_CHANNELS = new Set(['qqbot', 'openclaw-weixin']);
@@ -381,13 +382,42 @@ function parseToolSummary(toolName: string, input: unknown, output?: unknown): {
   return { verb: 'run', target: normalizedToolName };
 }
 
-function shouldPushCommandStyleUpdates(ctx: HandlerContext, mappings: SessionEnvelopeMapping[]): boolean {
-  if (!ctx.channelBridgeManager) return true;
+function resolvePushSettingsForChannel(
+  ctx: HandlerContext,
+  sessionId: string,
+  channelId: string,
+): PushSettings | null {
+  if (typeof ctx.resolvePushSettings === 'function') {
+    return ctx.resolvePushSettings(sessionId, channelId);
+  }
+  if (!ctx.channelBridgeManager) return null;
+  return ctx.channelBridgeManager.getPushSettings(channelId);
+}
+
+function shouldPushCommandStyleUpdates(
+  ctx: HandlerContext,
+  sessionId: string,
+  mappings: SessionEnvelopeMapping[],
+): boolean {
+  if (!ctx.channelBridgeManager && typeof ctx.resolvePushSettings !== 'function') return true;
   return mappings.some((mapping) => {
-    const settings = ctx.channelBridgeManager!.getPushSettings(mapping.envelope.channel);
+    const settings = resolvePushSettingsForChannel(ctx, sessionId, mapping.envelope.channel);
+    if (!settings) return true;
     if (settings.updateMode === 'progress') return false;
     if (settings.updateMode === 'command') return true;
     return settings.toolCalls === true;
+  });
+}
+
+function filterStatusMappings(
+  ctx: HandlerContext,
+  sessionId: string,
+  mappings: SessionEnvelopeMapping[],
+): SessionEnvelopeMapping[] {
+  return mappings.filter((mapping) => {
+    const settings = resolvePushSettingsForChannel(ctx, sessionId, mapping.envelope.channel);
+    if (!settings) return true;
+    return settings.statusUpdate;
   });
 }
 
@@ -407,6 +437,7 @@ export interface HandlerContext {
   primaryAgentId: string | null;
   registerChildAgent: (childAgentId: string, parentAgentId: string) => void;
   registerChildSession: (childSessionId: string, envelope: SessionEnvelopeMapping[ 'envelope']) => void;
+  resolvePushSettings?: (sessionId: string, channelId: string) => PushSettings;
 }
 
 /**
@@ -434,7 +465,7 @@ export async function handleToolResult(
   const sessionId = event.sessionId;
   const mappings = ctx.resolveEnvelopeMappings(sessionId);
   if (mappings.length === 0 || !ctx.messageHub) return;
-  if (!shouldPushCommandStyleUpdates(ctx, mappings)) return;
+  if (!shouldPushCommandStyleUpdates(ctx, sessionId, mappings)) return;
 
 
   const agentId = event.agentId || 'unknown-agent';
@@ -488,7 +519,7 @@ export async function handleToolError(
   const sessionId = event.sessionId;
   const mappings = ctx.resolveEnvelopeMappings(sessionId);
   if (mappings.length === 0) return;
-  if (!shouldPushCommandStyleUpdates(ctx, mappings)) return;
+  if (!shouldPushCommandStyleUpdates(ctx, sessionId, mappings)) return;
 
   if (mappings.every((mapping) => shouldSuppressRawToolError(mapping.envelope.channel))) {
     log.info('[AgentStatusSubscriber] Suppressed raw tool_error push for external channel', {
@@ -546,7 +577,7 @@ export async function handleSystemError(
   ctx: HandlerContext,
 ): Promise<void> {
   const sessionId = event.sessionId;
-  const mappings = ctx.resolveEnvelopeMappings(sessionId);
+  const mappings = filterStatusMappings(ctx, sessionId, ctx.resolveEnvelopeMappings(sessionId));
   if (mappings.length === 0) return;
 
   const wrappedUpdate: WrappedStatusUpdate = {
@@ -602,7 +633,7 @@ export async function handleDispatch(
   }
 
   const sessionId = event.sessionId;
-  const mappings = ctx.resolveEnvelopeMappings(sessionId);
+  const mappings = filterStatusMappings(ctx, sessionId, ctx.resolveEnvelopeMappings(sessionId));
   if (mappings.length === 0 || !ctx.messageHub) return;
 
 
@@ -683,7 +714,7 @@ export async function handleWaitingForUser(
   event: RuntimeEvent,
   ctx: HandlerContext,
 ): Promise<void> {
-  const mappings = ctx.resolveEnvelopeMappings(event.sessionId);
+  const mappings = filterStatusMappings(ctx, event.sessionId, ctx.resolveEnvelopeMappings(event.sessionId));
   if (mappings.length === 0 || !ctx.messageHub) return;
 
 
@@ -754,10 +785,12 @@ export async function handleStepCompleted(
 
   let stepBatch = ctx.stepBatchDefault;
   let stepUpdatesEnabled = true;
-  if (ctx.channelBridgeManager) {
-    const pushSettings = ctx.channelBridgeManager.getPushSettings(mapping.envelope.channel);
+  if (ctx.channelBridgeManager || typeof ctx.resolvePushSettings === 'function') {
+    const pushSettings = resolvePushSettingsForChannel(ctx, sessionId, mapping.envelope.channel);
+    if (pushSettings) {
     stepUpdatesEnabled = pushSettings.stepUpdates;
     stepBatch = Math.max(1, pushSettings.stepBatch);
+    }
   }
   if (!stepUpdatesEnabled) return;
 

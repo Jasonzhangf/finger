@@ -353,6 +353,17 @@ export function createChannelBridgeHubRoute(deps: ChannelBridgeHubRouteDeps) {
         : {}),
       lastChannelMessageId: channelMsg.id,
     });
+    const sessionContext = sessionManager.getSession(fixedSessionId)?.context;
+    if (sessionContext && typeof sessionContext === 'object') {
+      const ctx = sessionContext as Record<string, unknown>;
+      if (ctx.progressDeliveryTransient === true) {
+        sessionManager.updateContext(fixedSessionId, {
+          progressDelivery: null,
+          progressDeliveryTransient: false,
+          progressDeliveryUpdatedAt: null,
+        });
+      }
+    }
 
     const sendReply = async (text: string, agentId?: string) => {
       if (!text || !text.trim()) return;

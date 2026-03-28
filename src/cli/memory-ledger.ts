@@ -2,6 +2,7 @@ import type { Command } from 'commander';
 import { executeContextLedgerMemory } from '../runtime/context-ledger-memory.js';
 
 const ENV_INPUT_KEY = 'FINGER_CONTEXT_LEDGER_TOOL_INPUT';
+const JSON_LINE_PREFIX = '__FINGER_MEMORY_LEDGER_JSON__';
 
 interface MemoryLedgerRunOptions {
   input?: string;
@@ -23,19 +24,19 @@ export function registerMemoryLedgerCommand(program: Command): void {
         const rawInput = resolveInputPayload(options);
         const result = await executeContextLedgerMemory(rawInput);
         if (options.jsonLine) {
-          await writeStream(process.stdout, `${JSON.stringify(result)}\n`);
+          await writeStream(process.stdout, `${JSON_LINE_PREFIX}${JSON.stringify(result)}\n`);
         } else {
           await writeStream(process.stdout, `${JSON.stringify(result, null, 2)}\n`);
         }
-        process.exitCode = 0;
+        process.exit(0);
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         if (options.jsonLine) {
-          await writeStream(process.stdout, `${JSON.stringify({ ok: false, error: message })}\n`);
+          await writeStream(process.stdout, `${JSON_LINE_PREFIX}${JSON.stringify({ ok: false, error: message })}\n`);
         } else {
           await writeStream(process.stderr, `[memory-ledger] failed: ${message}\n`);
         }
-        process.exitCode = 1;
+        process.exit(1);
       }
     });
 }

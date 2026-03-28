@@ -10,11 +10,14 @@
   },
   "type": "module",
   "scripts": {
-    "prebuild": "node scripts/prebuild-check.mjs",
-    "build": "npm run prebuild && npm run build:backend && npm run build:ui && npm run build:rust && npm run build:bump-version",
-    "build:backend": "tsc --noEmit false && chmod +x dist/cli/index.js",
-    "build:ui": "npm --prefix ui run build",
-    "build:rust": "cargo build --workspace --manifest-path rust/Cargo.toml",
+    "build:precheck": "node scripts/prebuild-check.mjs",
+    "build": "bash scripts/run-build-step.sh bash -lc 'npm run build:precheck && npm run build:backend:raw && npm run build:ui:raw && npm run build:rust:raw'",
+    "build:backend": "bash scripts/run-build-step.sh bash -lc 'npm run build:backend:raw'",
+    "build:backend:raw": "tsc --noEmit false && chmod +x dist/cli/index.js",
+    "build:ui": "bash scripts/run-build-step.sh bash -lc 'npm run build:ui:raw'",
+    "build:ui:raw": "npm --prefix ui run build",
+    "build:rust": "bash scripts/run-build-step.sh bash -lc 'npm run build:rust:raw'",
+    "build:rust:raw": "cargo build --workspace --manifest-path rust/Cargo.toml",
     "build:bump-version": "node scripts/bump-build-version.mjs",
     "build:dev": "npm run build",
     "build:install": "bash scripts/build-and-install.sh",
@@ -70,7 +73,7 @@
     "vitest": "^1.6.0",
     "execa": "^8.0.1"
   },
-  "fingerBuildVersion": "0.1.0008",
+  "fingerBuildVersion": "0.1.0026",
   "pnpm": {
     "packageExtensions": {
       "vitest@*": {

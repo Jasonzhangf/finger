@@ -19,6 +19,9 @@ import {
 } from './unified-agent-types.js';
 import type { MessageHub } from '../../orchestration/message-hub.js';
 import { inferTagsAndTopic } from '../../common/tag-topic-inference.js';
+import { promises as fs } from 'node:fs';
+import path from 'node:path';
+import { FINGER_PATHS } from '../../core/finger-paths.js';
 
 export interface KernelRunContext {
   sessionId: string;
@@ -63,6 +66,22 @@ export interface KernelAgentBaseConfig {
     timestamp?: string;
     metadata?: Record<string, unknown>;
   }> | null>;
+}
+
+interface PersistedThreadApiHistorySnapshot {
+  threadKey: string;
+  items: unknown[];
+  updatedAt: string;
+}
+
+interface ResumeKernelTurnSnapshot {
+  userGoal: string;
+  systemPrompt?: string;
+  inputItems?: KernelInputItem[];
+  history?: Array<{ role: 'user' | 'assistant' | 'system'; content: string }>;
+  metadata?: Record<string, unknown>;
+  tools?: Array<{ name: string; description?: string; inputSchema?: Record<string, unknown> }>;
+  options?: Record<string, unknown>;
 }
 
 const DEFAULT_KERNEL_AGENT_CONFIG: Omit<KernelAgentBaseConfig, 'moduleId'> = {
@@ -144,15 +163,20 @@ export class KernelAgentBase {
 
     await this.ensureInitialized();
 
+    const resumeSnapshotPath = this.resolveResumeKernelTurnSnapshotPath(input.metadata);
+    const isRecoveryReplay = typeof resumeSnapshotPath === 'string' && resumeSnapshotPath.length > 0;
+
     // Intercept user request and write to CACHE.md
-    await this.cacheMemoryInterceptor.interceptRequest(input);
+    if (!isRecoveryReplay) {
+      await this.cacheMemoryInterceptor.interceptRequest(input);
+    }
 
     try {
       const { session, responseSessionId } = await this.resolveSession(input);
       const clientPersist = input.metadata?.sessionPersistence === 'client'
         || input.metadata?.session_persistence === 'client'
         || input.metadata?.persistSession === false;
-      if (input.sessionId && !clientPersist) {
+      if (input.sessionId && !clientPersist && !isRecoveryReplay) {
         await this.sessionManager.addMessage(session.id, {
           role: 'user',
           content: input.text,
@@ -179,6 +203,10 @@ export class KernelAgentBase {
       const threadMode = this.resolveThreadMode(input.metadata);
       const runnerSessionId = responseSessionId || session.id;
       const threadKey = this.resolveThreadKey(runnerSessionId, threadMode);
+      await this.restoreApiHistoryForThreadIfNeeded(runnerSessionId, threadKey);
+      const recoverySnapshot = resumeSnapshotPath
+        ? await this.loadResumeKernelTurnSnapshot(resumeSnapshotPath)
+        : null;
       const tools = this.resolveTools(input.tools, roleProfile, input.metadata);
       const contextSlots = composeTurnContextSlots({
         cacheKey: session.id,
@@ -202,6 +230,7 @@ export class KernelAgentBase {
         roleProfileId: roleProfile?.id,
         mode: threadMode,
         threadKey,
+        sessionId: runnerSessionId,
         slotMetadata,
         extra: contextHistoryMetadata,
         contextSlotsRendered:
@@ -212,7 +241,21 @@ export class KernelAgentBase {
 
       const inputItems = this.parseInputItems(input.metadata);
       const mailboxSnapshot = this.parseMailboxSnapshot(input.metadata?.mailboxSnapshot);
-      const runnerContext = {
+      const runnerContext = recoverySnapshot
+        ? {
+            sessionId: runnerSessionId,
+            systemPrompt: recoverySnapshot.systemPrompt,
+            history: recoverySnapshot.history ?? [],
+            tools: recoverySnapshot.tools ?? tools,
+            metadata: {
+              ...(recoverySnapshot.metadata ?? {}),
+              ...(input.metadata ?? {}),
+              recoveryReplay: true,
+              recoveryReplaySource: 'prompt_injection_snapshot',
+            },
+            prebuiltOptions: recoverySnapshot.options,
+          }
+        : {
         sessionId: runnerSessionId,
         systemPrompt,
         history: toUnifiedHistory(mergedHistory),
@@ -220,9 +263,13 @@ export class KernelAgentBase {
         metadata: runtimeMetadata,
         ...(mailboxSnapshot ? { mailboxSnapshot } : {}),
       };
-      let runResult = await this.runner.runTurn(input.text, inputItems, runnerContext);
+      let runResult = await this.runner.runTurn(
+        recoverySnapshot?.userGoal ?? input.text,
+        recoverySnapshot?.inputItems ?? inputItems,
+        runnerContext,
+      );
 
-      this.captureApiHistory(threadKey, runResult.metadata);
+      this.captureApiHistory(runnerSessionId, threadKey, runResult.metadata);
       const pendingInputAccepted = runResult.metadata?.pendingInputAccepted === true;
       if (pendingInputAccepted) {
         return {
@@ -411,6 +458,7 @@ export class KernelAgentBase {
     roleProfileId: string | undefined;
     mode: string;
     threadKey: string;
+    sessionId: string;
     sessionProjectPath?: string;
     slotMetadata?: Record<string, unknown>;
     contextSlotsRendered?: string;
@@ -461,7 +509,7 @@ export class KernelAgentBase {
       }
     }
 
-    const existingApiHistory = this.apiHistoryByThread.get(params.threadKey);
+    const existingApiHistory = this.getApiHistoryForThread(params.sessionId, params.threadKey);
     if (!hasMediaInput && existingApiHistory && existingApiHistory.length > 0) {
       metadata.kernelApiHistory = existingApiHistory;
     }
@@ -540,6 +588,7 @@ export class KernelAgentBase {
     }
 
     const reviewThreadKey = this.resolveThreadKey(params.sessionId, REVIEW_MODE);
+    await this.restoreApiHistoryForThreadIfNeeded(params.sessionId, reviewThreadKey);
     const reviewTools = resolveReviewTools(params.tools);
     const reviewSystemPrompt = buildReviewSystemPrompt(this.buildSystemPrompt(this.resolveRoleProfile(params.roleProfileId)));
     const reviewCwd = resolveReviewCwd(params.input.metadata);
@@ -550,6 +599,7 @@ export class KernelAgentBase {
       roleProfileId: params.roleProfileId,
       mode: REVIEW_MODE,
       threadKey: reviewThreadKey,
+      sessionId: params.sessionId,
       extra: {
         contextLedgerEnabled: false,
         review: {
@@ -560,7 +610,7 @@ export class KernelAgentBase {
         },
       },
     });
-    this.captureApiHistory(reviewThreadKey, reviewStartMetadata);
+    this.captureApiHistory(params.sessionId, reviewThreadKey, reviewStartMetadata);
 
     const hasLimit = reviewSettings.maxTurns > 0;
     const traces: Array<Record<string, unknown>> = [];
@@ -574,6 +624,7 @@ export class KernelAgentBase {
         roleProfileId: params.roleProfileId,
         mode: REVIEW_MODE,
         threadKey: reviewThreadKey,
+        sessionId: params.sessionId,
         extra: {
           contextLedgerEnabled: false,
           review: {
@@ -604,7 +655,7 @@ export class KernelAgentBase {
           metadata: reviewMetadata,
         },
       );
-      this.captureApiHistory(reviewThreadKey, reviewResult.metadata);
+      this.captureApiHistory(params.sessionId, reviewThreadKey, reviewResult.metadata);
 
       const verdict = parseReviewVerdict(reviewResult.reply);
       traces.push({
@@ -636,6 +687,7 @@ export class KernelAgentBase {
         roleProfileId: params.roleProfileId,
         mode: MAIN_MODE,
         threadKey: params.mainThreadKey,
+        sessionId: params.sessionId,
         slotMetadata: params.slotMetadata,
         extra: {
           review: {
@@ -662,7 +714,7 @@ export class KernelAgentBase {
           metadata: followupMetadata,
         },
       );
-      this.captureApiHistory(params.mainThreadKey, followup.metadata);
+      this.captureApiHistory(params.sessionId, params.mainThreadKey, followup.metadata);
       currentResult = followup;
       currentReply = followup.reply.trim();
       if (currentReply.length === 0) {
@@ -809,12 +861,122 @@ export class KernelAgentBase {
     };
   }
 
-  private captureApiHistory(threadKey: string, metadata?: Record<string, unknown>): void {
+  private captureApiHistory(sessionId: string, threadKey: string, metadata?: Record<string, unknown>): void {
     if (!metadata) return;
     const raw = metadata.api_history;
     if (!Array.isArray(raw)) return;
     const normalized = raw.filter((item) => typeof item === 'object' && item !== null);
     this.apiHistoryByThread.set(threadKey, normalized);
+    void this.persistApiHistorySnapshot(sessionId, threadKey, normalized);
+  }
+
+  private resolveResumeKernelTurnSnapshotPath(metadata?: Record<string, unknown>): string | undefined {
+    if (!metadata) return undefined;
+    const direct = typeof metadata.resumeKernelTurnFile === 'string' ? metadata.resumeKernelTurnFile.trim() : '';
+    if (direct.length > 0) return direct;
+    const nested = isRecord(metadata.recovery) && typeof metadata.recovery.resumeKernelTurnFile === 'string'
+      ? metadata.recovery.resumeKernelTurnFile.trim()
+      : '';
+    return nested.length > 0 ? nested : undefined;
+  }
+
+  private async loadResumeKernelTurnSnapshot(filePath: string): Promise<ResumeKernelTurnSnapshot | null> {
+    try {
+      const raw = await fs.readFile(filePath, 'utf8');
+      const lines = raw.split('\n').filter((line) => line.trim().length > 0);
+      if (lines.length === 0) return null;
+      const parsed = JSON.parse(lines[lines.length - 1]) as Record<string, unknown>;
+      const userGoal = typeof parsed.userGoal === 'string' ? parsed.userGoal.trim() : '';
+      if (!userGoal) return null;
+      const systemPrompt = typeof parsed.systemPrompt === 'string' && parsed.systemPrompt.trim().length > 0
+        ? parsed.systemPrompt
+        : undefined;
+      const inputItems = Array.isArray(parsed.inputItems)
+        ? parsed.inputItems.filter((item): item is KernelInputItem => isRecord(item) && typeof item.type === 'string') as KernelInputItem[]
+        : undefined;
+      const history = Array.isArray(parsed.history)
+        ? parsed.history
+            .filter((item): item is { role: 'user' | 'assistant' | 'system'; content: string } =>
+              isRecord(item)
+              && typeof item.role === 'string'
+              && (item.role === 'user' || item.role === 'assistant' || item.role === 'system')
+              && typeof item.content === 'string')
+        : undefined;
+      const snapshotMetadata = isRecord(parsed.metadata) ? parsed.metadata : undefined;
+      const tools = Array.isArray(parsed.tools)
+        ? parsed.tools
+            .filter((item): item is { name: string; description?: string; inputSchema?: Record<string, unknown> } =>
+              isRecord(item) && typeof item.name === 'string' && item.name.trim().length > 0)
+            .map((item) => ({
+              name: item.name,
+              ...(typeof item.description === 'string' ? { description: item.description } : {}),
+              ...(isRecord(item.inputSchema) ? { inputSchema: item.inputSchema } : {}),
+            }))
+        : undefined;
+      const injections = isRecord(parsed.injections) ? parsed.injections : undefined;
+      const options = injections && isRecord(injections.options) ? injections.options : undefined;
+      return {
+        userGoal,
+        ...(systemPrompt ? { systemPrompt } : {}),
+        ...(inputItems && inputItems.length > 0 ? { inputItems } : {}),
+        ...(history && history.length > 0 ? { history } : {}),
+        ...(snapshotMetadata ? { metadata: snapshotMetadata } : {}),
+        ...(tools && tools.length > 0 ? { tools } : {}),
+        ...(options ? { options } : {}),
+      };
+    } catch {
+      return null;
+    }
+  }
+
+  private getApiHistoryForThread(_sessionId: string, threadKey: string): unknown[] | undefined {
+    const existing = this.apiHistoryByThread.get(threadKey);
+    if (Array.isArray(existing) && existing.length > 0) {
+      return existing;
+    }
+    return undefined;
+  }
+
+  private async persistApiHistorySnapshot(sessionId: string, threadKey: string, items: unknown[]): Promise<void> {
+    try {
+      const sessionDir = path.join(FINGER_PATHS.home, 'runtime', 'api-history', encodeURIComponent(sessionId));
+      await fs.mkdir(sessionDir, { recursive: true });
+      const snapshot: PersistedThreadApiHistorySnapshot = {
+        threadKey,
+        items,
+        updatedAt: new Date().toISOString(),
+      };
+      await fs.writeFile(
+        path.join(sessionDir, `${encodeURIComponent(threadKey)}.json`),
+        JSON.stringify(snapshot),
+        'utf8',
+      );
+    } catch {
+      // Do not fail the turn because persistence is best-effort.
+    }
+  }
+
+  private async restoreApiHistoryForThreadIfNeeded(sessionId: string, threadKey: string): Promise<void> {
+    if (this.apiHistoryByThread.has(threadKey)) return;
+    try {
+      const file = path.join(
+        FINGER_PATHS.home,
+        'runtime',
+        'api-history',
+        encodeURIComponent(sessionId),
+        `${encodeURIComponent(threadKey)}.json`,
+      );
+      const raw = await fs.readFile(file, 'utf8');
+      const parsed = JSON.parse(raw) as Partial<PersistedThreadApiHistorySnapshot>;
+      const items = Array.isArray(parsed.items)
+        ? parsed.items.filter((item) => typeof item === 'object' && item !== null)
+        : [];
+      if (items.length > 0) {
+        this.apiHistoryByThread.set(threadKey, items);
+      }
+    } catch {
+      // Ignore missing/unreadable snapshots.
+    }
   }
 
   private async applyExecutionNudgeIfNeeded(params: {
@@ -853,7 +1015,7 @@ export class KernelAgentBase {
       tools: params.tools,
       metadata: followUpMetadata,
     });
-    this.captureApiHistory(params.threadKey, followUpResult.metadata);
+    this.captureApiHistory(params.sessionId, params.threadKey, followUpResult.metadata);
     return followUpResult;
   }
 
@@ -961,7 +1123,7 @@ export class KernelAgentBase {
         tools: params.tools,
         metadata: retryMetadata,
       });
-      this.captureApiHistory(params.threadKey, retried.metadata);
+      this.captureApiHistory(params.sessionId, params.threadKey, retried.metadata);
 
       const retriedReply = retried.reply?.trim() ?? '';
       const parsedRetry = tryParseStructuredJson(retriedReply);

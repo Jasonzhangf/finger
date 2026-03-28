@@ -14,6 +14,7 @@ import type { OrchestrationConfigV1 } from '../../orchestration/orchestration-co
 import { attachEventForwarding } from './event-forwarding.js';
 import { registerAllRoutes } from '../routes/index.js';
 import type { RegisterAllRoutesDeps } from '../routes/index.js';
+import { extractAgentStatusFromRuntimeView } from '../../core/agent-runtime-status.js';
 import {
   asString,
   formatDispatchResultContent,
@@ -65,25 +66,13 @@ export async function runPostInit(deps: {
         if (typeof (result as Promise<unknown>)?.then === 'function') {
           return (result as Promise<unknown>)
             .then((view) => {
-              if (!view || typeof view !== 'object') return true;
-              const agents = Array.isArray((view as { agents?: unknown }).agents)
-                ? (view as { agents: Array<Record<string, unknown>> }).agents
-                : [];
-              const agent = agents.find((item) => typeof item.id === 'string' && item.id === agentId);
-              if (!agent) return true;
-              const status = typeof agent.status === 'string' ? agent.status : '';
-              return status === 'running' || status === 'queued' || status === 'waiting_input' || status === 'paused';
+              const busyState = extractAgentStatusFromRuntimeView(view, agentId);
+              return busyState.busy !== false;
             })
             .catch(() => true);
         }
-        if (!result || typeof result !== 'object') return true;
-        const agents = Array.isArray((result as { agents?: unknown }).agents)
-          ? (result as { agents: Array<Record<string, unknown>> }).agents
-          : [];
-        const agent = agents.find((item) => typeof item.id === 'string' && item.id === agentId);
-        if (!agent) return true;
-        const status = typeof agent.status === 'string' ? agent.status : '';
-        return status === 'running' || status === 'queued' || status === 'waiting_input' || status === 'paused';
+        const busyState = extractAgentStatusFromRuntimeView(result, agentId);
+        return busyState.busy !== false;
       } catch {
         return true;
       }

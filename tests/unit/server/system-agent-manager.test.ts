@@ -15,6 +15,7 @@ describe('SystemAgentManager - Session Reuse', () => {
       ensureSession: vi.fn(),
       listRootSessions: vi.fn().mockReturnValue([]),
       getSession: vi.fn(),
+      updateContext: vi.fn().mockReturnValue(true),
     };
 
     // Mock agentRuntimeBlock
@@ -163,5 +164,106 @@ describe('SystemAgentManager - Session Reuse', () => {
     expect(startSpy).not.toHaveBeenCalled();
     disabledManager.stop();
     expect(stopSpy).not.toHaveBeenCalled();
+  });
+
+  it('should dispatch interrupted execution recovery on startup when previous turn did not stop', async () => {
+    const session = {
+      id: 'system-session-recover',
+      name: 'finger-system-agent runtime',
+      projectPath: '/tmp/system',
+      createdAt: '2026-03-28T00:00:00Z',
+      context: {
+        executionLifecycle: {
+          stage: 'running',
+          startedAt: '2026-03-28T00:00:00Z',
+          lastTransitionAt: '2026-03-28T00:01:00Z',
+          retryCount: 0,
+          substage: 'turn_start',
+        },
+      },
+    };
+    mockSessionManager.getOrCreateSystemSession.mockReturnValue(session);
+    mockSessionManager.getSession.mockReturnValue(session);
+
+    const manager = new SystemAgentManager(deps);
+    await manager.start();
+
+    const dispatchCall = mockAgentRuntimeBlock.execute.mock.calls.find(
+      (call: unknown[]) => call[0] === 'dispatch',
+    );
+    expect(dispatchCall).toBeDefined();
+    expect(dispatchCall?.[1]?.metadata?.source).toBe('system-recovery');
+  });
+
+  it('should dispatch silent startup delivery review on startup when previous turn stopped', async () => {
+    const session = {
+      id: 'system-session-review',
+      name: 'finger-system-agent runtime',
+      projectPath: '/tmp/system',
+      createdAt: '2026-03-28T00:00:00Z',
+      context: {
+        executionLifecycle: {
+          stage: 'completed',
+          startedAt: '2026-03-28T00:00:00Z',
+          lastTransitionAt: '2026-03-28T00:02:00Z',
+          retryCount: 0,
+          substage: 'turn_complete',
+          finishReason: 'stop',
+          turnId: 'turn-1',
+        },
+      },
+    };
+    mockSessionManager.getOrCreateSystemSession.mockReturnValue(session);
+    mockSessionManager.getSession.mockReturnValue(session);
+
+    const manager = new SystemAgentManager(deps);
+    await manager.start();
+
+    const dispatchCall = mockAgentRuntimeBlock.execute.mock.calls.find(
+      (call: unknown[]) => call[0] === 'dispatch',
+    );
+    expect(dispatchCall).toBeDefined();
+    expect(dispatchCall?.[1]?.metadata?.source).toBe('system-startup-review');
+    expect(dispatchCall?.[1]?.metadata?.progressDelivery).toEqual({ mode: 'silent' });
+    expect(mockSessionManager.updateContext).toHaveBeenCalledWith(
+      session.id,
+      expect.objectContaining({
+        startupCompletionReviewCheckpoint: expect.any(String),
+      }),
+    );
+  });
+
+  it('should not dispatch duplicate startup review after restart when same stopped task only changed turn metadata', async () => {
+    const checkpoint = 'startup-review::stop::msg-user-1';
+    const session = {
+      id: 'system-session-review-dedupe',
+      name: 'finger-system-agent runtime',
+      projectPath: '/tmp/system',
+      createdAt: '2026-03-28T00:00:00Z',
+      context: {
+        executionLifecycle: {
+          stage: 'completed',
+          startedAt: '2026-03-28T00:00:00Z',
+          lastTransitionAt: '2026-03-28T00:05:00Z',
+          retryCount: 0,
+          substage: 'turn_complete',
+          finishReason: 'stop',
+          messageId: 'msg-user-1',
+          turnId: 'internal-review-turn-2',
+          dispatchId: 'dispatch-internal-review-2',
+        },
+        startupCompletionReviewCheckpoint: checkpoint,
+      },
+    };
+    mockSessionManager.getOrCreateSystemSession.mockReturnValue(session);
+    mockSessionManager.getSession.mockReturnValue(session);
+
+    const manager = new SystemAgentManager(deps);
+    await manager.start();
+
+    const dispatchCalls = mockAgentRuntimeBlock.execute.mock.calls.filter(
+      (call: unknown[]) => call[0] === 'dispatch',
+    );
+    expect(dispatchCalls).toHaveLength(0);
   });
 });

@@ -391,7 +391,7 @@ describe('AgentStatusSubscriber text updates', () => {
     await subscriber.sendProgressUpdate({
       sessionId: 'session-progress',
       agentId: targetAgent,
-      summary: '正在处理任务\n🧠 上下文: 53.2k/128k (41%)',
+      summary: '正在处理任务\n🧠 上下文: 41% · 53.2k/128k',
       progress: {
         status: 'running',
         toolCallsCount: 2,
@@ -406,7 +406,7 @@ describe('AgentStatusSubscriber text updates', () => {
     expect(messageHub.routeToOutput).toHaveBeenCalledTimes(1);
     const [, payload] = messageHub.routeToOutput.mock.calls[0];
     expect(payload.content).toContain('📬 mailbox.status(');
-    expect(payload.content).toContain('🧠 上下文: 53.2k/128k (41%)');
+    expect(payload.content).toContain('🧠 上下文: 41% · 53.2k/128k');
     expect(payload.content).toContain(`mailbox.status(${targetAgent}): unread=2 pending=2 processing=0`);
     expect(payload.statusUpdate.status.details.mailboxStatus.counts.unread).toBe(2);
     expect(payload.statusUpdate.status.details.contextUsagePercent).toBe(41);
@@ -414,6 +414,51 @@ describe('AgentStatusSubscriber text updates', () => {
     expect(payload.statusUpdate.status.details.maxInputTokens).toBe(128000);
 
     heartbeatMailbox.removeAll(targetAgent);
+  });
+
+  it('appends inferred context ratio and size to progress updates when only percent is available', async () => {
+    const eventBus = new UnifiedEventBus();
+    const messageHub = {
+      routeToOutput: vi.fn(async () => undefined),
+    };
+    const channelBridgeManager = {
+      getPushSettings: vi.fn(() => ({
+        statusUpdate: true,
+        bodyUpdates: true,
+        reasoning: true,
+        progressUpdates: true,
+      })),
+    };
+
+    const subscriber = new AgentStatusSubscriber(
+      eventBus,
+      createMinimalDeps(),
+      messageHub as any,
+      channelBridgeManager as any,
+    );
+    subscriber.registerSession('session-progress-fallback', {
+      channel: 'qqbot',
+      envelopeId: 'env-progress-fallback',
+      userId: 'user-progress-fallback',
+    });
+
+    await subscriber.sendProgressUpdate({
+      sessionId: 'session-progress-fallback',
+      agentId: 'finger-system-agent',
+      summary: '正在处理任务',
+      progress: {
+        status: 'running',
+        toolCallsCount: 1,
+        modelRoundsCount: 1,
+        elapsedMs: 1200,
+        contextUsagePercent: 50,
+      },
+    });
+
+    expect(messageHub.routeToOutput).toHaveBeenCalledTimes(1);
+    const [, payload] = messageHub.routeToOutput.mock.calls[0];
+    expect(payload.content).toContain('🧠 上下文: 50% · ~131k/262k');
+    expect(payload.statusUpdate.status.details.maxInputTokens).toBe(262144);
   });
 
   it('does not repeat unchanged mailbox.status summary in next progress update', async () => {

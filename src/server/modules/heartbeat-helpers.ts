@@ -11,6 +11,8 @@ import { heartbeatMailbox } from './heartbeat-mailbox.js';
 import { listAgents } from '../../agents/finger-system-agent/registry.js';
 import { buildHeartbeatEnvelope, formatEnvelopesForContext, type MailboxEnvelope } from './mailbox-envelope.js';
 import { logger } from '../../core/logger.js';
+import type { ProgressDeliveryPolicy } from '../../common/progress-delivery-policy.js';
+import { normalizeProgressDeliveryPolicy } from '../../common/progress-delivery-policy.js';
 
 const log = logger.module('HeartbeatHelpers');
 
@@ -102,7 +104,13 @@ export interface MailboxCheckContext {
   lastMailboxPromptAt: Map<string, number>;
   mailboxPromptDeferredByAgent: Set<string>;
   resolveMailboxCheckIntervalMs: (projectId?: string) => number;
-  dispatchDirect: (targetAgentId: string, taskId: string, projectId: string | undefined, prompt: string) => Promise<void>;
+  dispatchDirect: (
+    targetAgentId: string,
+    taskId: string,
+    projectId: string | undefined,
+    prompt: string,
+    options?: { progressDelivery?: ProgressDeliveryPolicy },
+  ) => Promise<void>;
 }
 
 /**
@@ -148,13 +156,28 @@ export async function promptMailboxChecks(
       continue;
     }
 
-    const actionablePending = pendingSnapshot.filter((msg) => msg.category !== 'notification');
-    const notificationOnly = actionablePending.length === 0;
-    const pending = notificationOnly ? pendingSnapshot : actionablePending;
-    const deferredNotificationCount = notificationOnly ? 0 : pendingSnapshot.length - actionablePending.length;
-    if (notificationOnly || pending.length === 0) {
-      ctx.mailboxPromptDeferredByAgent.delete(agent.agentId);
-      continue;
+    // Keep notifications actionable at idle time (news/email/channel notices),
+    // only auto-clean dispatch-result notifications above.
+    const pending = pendingSnapshot;
+    const deferredNotificationCount = 0;
+
+    const progressPolicies = pending
+      .map((msg) => {
+        const msgContent = typeof msg.content === 'object' && msg.content ? msg.content as Record<string, unknown> : {};
+        return normalizeProgressDeliveryPolicy(msgContent.progressDelivery ?? msgContent.progress_delivery);
+      })
+      .filter((item): item is ProgressDeliveryPolicy => !!item);
+    let progressDelivery: ProgressDeliveryPolicy | undefined;
+    if (progressPolicies.length > 0) {
+      const keys = Array.from(new Set(progressPolicies.map((item) => JSON.stringify(item))));
+      if (keys.length === 1) {
+        progressDelivery = progressPolicies[0];
+      } else {
+        log.warn('[HeartbeatScheduler] mailbox pending messages have mixed progressDelivery policies; skip session override', {
+          agentId: agent.agentId,
+          policyCount: keys.length,
+        });
+      }
     }
 
     const deferred = ctx.mailboxPromptDeferredByAgent.has(agent.agentId);
@@ -203,7 +226,13 @@ export async function promptMailboxChecks(
       '每个任务完成后必须调用 report-task-completion 工具提交 summary。',
       '如果提交失败必须重试直到成功，避免断链。',
     ].join('\n');
-    await ctx.dispatchDirect(agent.agentId, 'mailbox-check', agent.projectId, prompt);
+    await ctx.dispatchDirect(
+      agent.agentId,
+      'mailbox-check',
+      agent.projectId,
+      prompt,
+      progressDelivery ? { progressDelivery } : undefined,
+    );
     ctx.lastMailboxPromptAt.set(agent.agentId, now);
     ctx.mailboxPromptDeferredByAgent.delete(agent.agentId);
   }

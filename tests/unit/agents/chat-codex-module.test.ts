@@ -146,6 +146,16 @@ describe('chat-codex module', () => {
     expect(payload.error).toBe('chat-codex timed out after 600000ms');
   });
 
+  it('treats stalled kernel turns as retryable', () => {
+    expect(isRetryableRunError(new Error('chat-codex stalled without kernel events for 180000ms'))).toBe(true);
+  });
+
+  it('treats incomplete responses stream payload errors as retryable', () => {
+    expect(
+      isRetryableRunError(new Error('run_turn failed: responses stream did not contain a completed response payload')),
+    ).toBe(true);
+  });
+
   it('forwards metadata.inputItems into kernel user turn items', async () => {
     runTurnMock.mockResolvedValue({
       reply: 'IMAGE_OK',
@@ -554,6 +564,41 @@ describe('chat-codex module', () => {
     const turnCompleteIndex = events.findIndex((event) => event.phase === 'turn_complete');
     expect(reasoningIndex).toBeGreaterThanOrEqual(0);
     expect(turnCompleteIndex).toBeGreaterThan(reasoningIndex);
+  });
+
+  it('marks turn_complete as pending-input acknowledgement when active turn already exists', async () => {
+    const onLoopEvent = vi.fn();
+    const queuedRunner: ChatCodexRunner = {
+      runTurn: async () => ({
+        reply: '已加入当前执行队列，等待本轮合并处理。',
+        events: [
+          {
+            id: 'pending-1',
+            msg: {
+              type: 'pending_input_queued',
+              message: 'pending input queued to active turn',
+            },
+          },
+        ],
+        usedBinaryPath: '/tmp/finger-kernel-bridge-bin',
+        kernelMetadata: {
+          pendingInputAccepted: true,
+          activeTurnId: 'active-1',
+          pendingTurnId: 'pending-1',
+        },
+      }),
+    };
+
+    const module = createChatCodexModule({ onLoopEvent }, queuedRunner);
+    await module.handle({ text: '继续处理' });
+
+    const turnComplete = onLoopEvent.mock.calls
+      .map((call) => call[0] as Record<string, unknown>)
+      .find((event) => event.phase === 'turn_complete');
+    expect(turnComplete).toBeDefined();
+    expect(asRecord(turnComplete?.payload).pendingInputAccepted).toBe(true);
+    expect(asRecord(turnComplete?.payload).pendingTurnId).toBe('pending-1');
+    expect(asRecord(turnComplete?.payload).activeTurnId).toBe('active-1');
   });
 
   it('keeps system prompt stable across orchestrator and reviewer roles', async () => {

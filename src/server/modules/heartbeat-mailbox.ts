@@ -1,112 +1,265 @@
-import { MailboxBlock, type MailboxMessage } from '../../blocks/mailbox-block/index.js';
-import type { MailboxAckOptions } from '../../blocks/mailbox-block/protocol.js';
+import fs from 'fs';
+import path from 'path';
+import type { MailboxMessage } from '../../blocks/mailbox-block/index.js';
+import {
+  applyMailboxAckTransition,
+  applyMailboxReadTransition,
+  type MailboxAckOptions,
+} from '../../blocks/mailbox-block/protocol.js';
+import { FINGER_HOME } from '../../core/finger-paths.js';
+import { withFileMutexSync } from '../../core/file-mutex.js';
 import { logger } from '../../core/logger.js';
 
 export type HeartbeatMailboxMessage = MailboxMessage;
 const log = logger.module('HeartbeatMailboxManager');
 
-export class HeartbeatMailboxManager {
-  private mailboxes = new Map<string, MailboxBlock>();
+interface MailboxListOptions {
+  status?: MailboxMessage['status'];
+  sessionId?: string;
+  channel?: string;
+  category?: string;
+  unreadOnly?: boolean;
+  limit?: number;
+  offset?: number;
+  ids?: string[];
+}
 
+export class HeartbeatMailboxManager {
   private normalizeAgentId(agentId: string): string {
     const normalized = agentId.trim();
     return normalized.length > 0 ? normalized : 'finger-system-agent';
   }
 
-  private resolveMailbox(agentId: string): MailboxBlock {
+  private resolveMailboxPath(agentId: string): string {
     const normalized = this.normalizeAgentId(agentId);
-    const cached = this.mailboxes.get(normalized);
-    if (cached) return cached;
-
-    // Mailbox is intentionally ephemeral (in-memory only): no storagePath.
-    const mailbox = new MailboxBlock(`mailbox-${normalized}`);
-    this.mailboxes.set(normalized, mailbox);
-    return mailbox;
+    return path.join(FINGER_HOME, 'mailbox', normalized, 'inbox.jsonl');
   }
 
-  private getMailbox(agentId: string): MailboxBlock | undefined {
-    const normalized = this.normalizeAgentId(agentId);
-    return this.mailboxes.get(normalized);
+  private resolveMailboxLockPath(agentId: string): string {
+    return `${this.resolveMailboxPath(agentId)}.lock`;
   }
 
-  private releaseMailboxIfEmpty(agentId: string, mailbox: MailboxBlock): void {
-    const normalized = this.normalizeAgentId(agentId);
-    const remain = mailbox.list({ target: normalized });
-    if (remain.length === 0) {
-      this.mailboxes.delete(normalized);
+  private readMessages(agentId: string): HeartbeatMailboxMessage[] {
+    const mailboxPath = this.resolveMailboxPath(agentId);
+    try {
+      if (!fs.existsSync(mailboxPath)) return [];
+      const content = fs.readFileSync(mailboxPath, 'utf-8');
+      if (content.trim().length === 0) return [];
+      return content
+        .split('\n')
+        .map((line) => line.trim())
+        .filter((line) => line.length > 0)
+        .map((line) => JSON.parse(line) as HeartbeatMailboxMessage);
+    } catch (error) {
+      log.error('Failed to read mailbox file', error instanceof Error ? error : undefined, { agentId, mailboxPath });
+      return [];
     }
+  }
+
+  private writeMessages(agentId: string, messages: HeartbeatMailboxMessage[]): void {
+    const mailboxPath = this.resolveMailboxPath(agentId);
+    try {
+      fs.mkdirSync(path.dirname(mailboxPath), { recursive: true });
+      const payload = messages.length > 0
+        ? messages.map((message) => JSON.stringify(message)).join('\n') + '\n'
+        : '';
+      fs.writeFileSync(mailboxPath, payload, 'utf-8');
+    } catch (error) {
+      log.error('Failed to write mailbox file', error instanceof Error ? error : undefined, { agentId, mailboxPath });
+      throw error;
+    }
+  }
+
+  private filterMessages(
+    agentId: string,
+    messages: HeartbeatMailboxMessage[],
+    options?: MailboxListOptions,
+  ): HeartbeatMailboxMessage[] {
+    const normalized = this.normalizeAgentId(agentId);
+    let filtered = messages.filter((message) => message.target === normalized);
+
+    if (options?.status) {
+      filtered = filtered.filter((message) => message.status === options.status);
+    }
+    if (options?.sessionId) {
+      filtered = filtered.filter((message) => message.sessionId === options.sessionId);
+    }
+    if (options?.channel) {
+      filtered = filtered.filter((message) => message.channel === options.channel);
+    }
+    if (options?.category) {
+      filtered = filtered.filter((message) => message.category === options.category);
+    }
+    if (options?.unreadOnly) {
+      filtered = filtered.filter((message) => !message.readAt);
+    }
+    if (Array.isArray(options?.ids) && options.ids.length > 0) {
+      const allowedIds = new Set(options.ids);
+      filtered = filtered.filter((message) => allowedIds.has(message.id));
+    }
+
+    filtered.sort((a, b) => {
+      const aPriority = typeof a.priority === 'number' ? a.priority : 2;
+      const bPriority = typeof b.priority === 'number' ? b.priority : 2;
+      if (aPriority !== bPriority) return aPriority - bPriority;
+      return b.seq - a.seq;
+    });
+
+    if (options?.offset && options.offset > 0) {
+      filtered = filtered.slice(options.offset);
+    }
+    if (options?.limit && options.limit > 0) {
+      filtered = filtered.slice(0, options.limit);
+    }
+    return filtered;
+  }
+
+  private nextSeq(messages: HeartbeatMailboxMessage[]): number {
+    let maxSeq = 0;
+    for (const message of messages) {
+      if (message.seq > maxSeq) maxSeq = message.seq;
+    }
+    return maxSeq + 1;
   }
 
   append(agentId: string, content: unknown, options?: Record<string, unknown>): { id: string; seq: number } {
     const normalized = this.normalizeAgentId(agentId);
-    const mailbox = this.resolveMailbox(normalized);
-    return mailbox.append(normalized, content, options);
+    return withFileMutexSync(this.resolveMailboxLockPath(normalized), () => {
+      const messages = this.readMessages(normalized);
+      const seq = this.nextSeq(messages);
+      const id = `msg-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+      const now = new Date().toISOString();
+
+      const message: HeartbeatMailboxMessage = {
+        id,
+        seq,
+        target: normalized,
+        content,
+        status: 'pending',
+        createdAt: now,
+        updatedAt: now,
+        sender: typeof options?.sender === 'string' ? options.sender : undefined,
+        callbackId: typeof options?.callbackId === 'string' ? options.callbackId : undefined,
+        sessionId: typeof options?.sessionId === 'string' ? options.sessionId : undefined,
+        runtimeSessionId: typeof options?.runtimeSessionId === 'string' ? options.runtimeSessionId : undefined,
+        channel: typeof options?.channel === 'string' ? options.channel : undefined,
+        accountId: typeof options?.accountId === 'string' ? options.accountId : undefined,
+        threadId: typeof options?.threadId === 'string' ? options.threadId : undefined,
+        sourceType: options?.sourceType as HeartbeatMailboxMessage['sourceType'],
+        category: typeof options?.category === 'string' ? options.category : undefined,
+        priority: options?.priority as HeartbeatMailboxMessage['priority'],
+        deliveryPolicy: options?.deliveryPolicy as HeartbeatMailboxMessage['deliveryPolicy'],
+      };
+
+      messages.push(message);
+      this.writeMessages(normalized, messages);
+      return { id, seq };
+    });
   }
 
   get(agentId: string, messageId: string): HeartbeatMailboxMessage | undefined {
-    const mailbox = this.getMailbox(agentId);
-    if (!mailbox) return undefined;
-    return mailbox.get(messageId);
+    const normalized = this.normalizeAgentId(agentId);
+    const messages = this.readMessages(normalized);
+    return messages.find((message) => message.id === messageId);
   }
 
-  list(agentId: string, options?: {
-    status?: MailboxMessage['status'];
-    sessionId?: string;
-    channel?: string;
-    category?: string;
-    unreadOnly?: boolean;
-    limit?: number;
-    offset?: number;
-    ids?: string[];
-  }): HeartbeatMailboxMessage[] {
+  list(agentId: string, options?: MailboxListOptions): HeartbeatMailboxMessage[] {
     const normalized = this.normalizeAgentId(agentId);
-    const mailbox = this.getMailbox(normalized);
-    if (!mailbox) return [];
-    return mailbox.list({ target: normalized, ...options });
+    const messages = this.readMessages(normalized);
+    return this.filterMessages(normalized, messages, options);
   }
 
   listPending(agentId: string): HeartbeatMailboxMessage[] {
     return this.list(agentId, { status: 'pending' });
   }
 
-  updateStatus(agentId: string, messageId: string, status: MailboxMessage['status'], result?: unknown, error?: string): boolean {
-    const mailbox = this.getMailbox(agentId);
-    if (!mailbox) return false;
-    return mailbox.updateStatus(messageId, status, result, error).updated;
+  updateStatus(
+    agentId: string,
+    messageId: string,
+    status: MailboxMessage['status'],
+    result?: unknown,
+    error?: string,
+  ): boolean {
+    const normalized = this.normalizeAgentId(agentId);
+    return withFileMutexSync(this.resolveMailboxLockPath(normalized), () => {
+      const messages = this.readMessages(normalized);
+      const index = messages.findIndex((message) => message.id === messageId);
+      if (index < 0) return false;
+
+      const current = messages[index];
+      const updated: HeartbeatMailboxMessage = {
+        ...current,
+        status,
+        updatedAt: new Date().toISOString(),
+        ...(result !== undefined ? { result } : {}),
+        ...(error !== undefined ? { error } : {}),
+      };
+      messages[index] = updated;
+      this.writeMessages(normalized, messages);
+      return true;
+    });
   }
 
   markRead(agentId: string, messageId: string): { read: boolean; updated?: HeartbeatMailboxMessage } {
-    const mailbox = this.getMailbox(agentId);
-    if (!mailbox) return { read: false };
-    return mailbox.markRead(messageId);
+    const normalized = this.normalizeAgentId(agentId);
+    return withFileMutexSync(this.resolveMailboxLockPath(normalized), () => {
+      const messages = this.readMessages(normalized);
+      const index = messages.findIndex((message) => message.id === messageId);
+      if (index < 0) return { read: false };
+
+      const transitioned = applyMailboxReadTransition(messages[index]);
+      messages[index] = transitioned.message;
+      this.writeMessages(normalized, messages);
+      return { read: true, updated: transitioned.message };
+    });
   }
 
-  markReadAll(agentId: string, options?: {
-    status?: MailboxMessage['status'];
-    sessionId?: string;
-    channel?: string;
-    category?: string;
-    unreadOnly?: boolean;
-    limit?: number;
-    offset?: number;
-    ids?: string[];
-  }): {
+  markReadAll(agentId: string, options?: MailboxListOptions): {
     matched: number;
     changed: number;
     movedToProcessing: number;
     updatedMessages: HeartbeatMailboxMessage[];
   } {
     const normalized = this.normalizeAgentId(agentId);
-    const mailbox = this.getMailbox(normalized);
-    if (!mailbox) {
+    return withFileMutexSync(this.resolveMailboxLockPath(normalized), () => {
+      const messages = this.readMessages(normalized);
+      const selected = this.filterMessages(normalized, messages, options);
+      if (selected.length === 0) {
+        return {
+          matched: 0,
+          changed: 0,
+          movedToProcessing: 0,
+          updatedMessages: [],
+        };
+      }
+
+      let changed = 0;
+      let movedToProcessing = 0;
+      const updatedMessages: HeartbeatMailboxMessage[] = [];
+      const byId = new Map(messages.map((message, index) => [message.id, index] as const));
+
+      for (const item of selected) {
+        const index = byId.get(item.id);
+        if (index === undefined) continue;
+        const transitioned = applyMailboxReadTransition(messages[index]);
+        updatedMessages.push(transitioned.message);
+        if (!transitioned.changed) continue;
+        changed += 1;
+        if (transitioned.movedToProcessing) movedToProcessing += 1;
+        messages[index] = transitioned.message;
+      }
+
+      if (changed > 0) {
+        this.writeMessages(normalized, messages);
+      }
+
       return {
-        matched: 0,
-        changed: 0,
-        movedToProcessing: 0,
-        updatedMessages: [],
+        matched: selected.length,
+        changed,
+        movedToProcessing,
+        updatedMessages,
       };
-    }
-    return mailbox.markReadAll({ target: normalized, ...options });
+    });
   }
 
   ack(agentId: string, messageId: string, options?: MailboxAckOptions): {
@@ -116,63 +269,67 @@ export class HeartbeatMailboxManager {
     removed?: boolean;
   } {
     const normalized = this.normalizeAgentId(agentId);
-    const mailbox = this.getMailbox(normalized);
-    if (!mailbox) return { acked: false };
-    const ackResult = mailbox.ack(messageId, options);
-    if (!ackResult.acked || !ackResult.updated) {
-      return ackResult;
-    }
+    return withFileMutexSync(this.resolveMailboxLockPath(normalized), () => {
+      const messages = this.readMessages(normalized);
+      const index = messages.findIndex((message) => message.id === messageId);
+      if (index < 0) return { acked: false };
 
-    const removed = mailbox.remove(messageId);
-    if (!removed.removed) {
-      log.warn('Acked mailbox message could not be auto-removed', {
-        agentId: normalized,
-        messageId,
-      });
-    }
-    this.releaseMailboxIfEmpty(normalized, mailbox);
+      const transitioned = applyMailboxAckTransition(messages[index], options);
+      if (!transitioned.ok || !transitioned.message) {
+        return { acked: false, error: transitioned.error };
+      }
 
-    return {
-      ...ackResult,
-      removed: removed.removed,
-    };
+      // ACK 后自动移除，保持与现有行为一致
+      messages.splice(index, 1);
+      this.writeMessages(normalized, messages);
+
+      return {
+        acked: true,
+        updated: transitioned.message,
+        removed: true,
+      };
+    });
   }
 
   remove(agentId: string, messageId: string): { removed: boolean; removedId?: string } {
     const normalized = this.normalizeAgentId(agentId);
-    const mailbox = this.getMailbox(normalized);
-    if (!mailbox) return { removed: false };
-    const result = mailbox.remove(messageId);
-    this.releaseMailboxIfEmpty(normalized, mailbox);
-    return result;
+    return withFileMutexSync(this.resolveMailboxLockPath(normalized), () => {
+      const messages = this.readMessages(normalized);
+      const index = messages.findIndex((message) => message.id === messageId);
+      if (index < 0) return { removed: false };
+      messages.splice(index, 1);
+      this.writeMessages(normalized, messages);
+      return { removed: true, removedId: messageId };
+    });
   }
 
-  removeAll(agentId: string, options?: {
-    status?: MailboxMessage['status'];
-    sessionId?: string;
-    channel?: string;
-    category?: string;
-    unreadOnly?: boolean;
-    limit?: number;
-    offset?: number;
-    ids?: string[];
-  }): {
+  removeAll(agentId: string, options?: MailboxListOptions): {
     matched: number;
     removed: number;
     removedIds: string[];
   } {
     const normalized = this.normalizeAgentId(agentId);
-    const mailbox = this.getMailbox(normalized);
-    if (!mailbox) {
+    return withFileMutexSync(this.resolveMailboxLockPath(normalized), () => {
+      const messages = this.readMessages(normalized);
+      const selected = this.filterMessages(normalized, messages, options);
+      if (selected.length === 0) {
+        return {
+          matched: 0,
+          removed: 0,
+          removedIds: [],
+        };
+      }
+
+      const removeSet = new Set(selected.map((message) => message.id));
+      const remaining = messages.filter((message) => !removeSet.has(message.id));
+      this.writeMessages(normalized, remaining);
+
       return {
-        matched: 0,
-        removed: 0,
-        removedIds: [],
+        matched: selected.length,
+        removed: selected.length,
+        removedIds: selected.map((message) => message.id),
       };
-    }
-    const result = mailbox.removeAll({ target: normalized, ...options });
-    this.releaseMailboxIfEmpty(normalized, mailbox);
-    return result;
+    });
   }
 }
 

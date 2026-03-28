@@ -1,11 +1,5 @@
-import { existsSync } from 'fs';
-import { join } from 'path';
-import { FINGER_SOURCE_ROOT } from '../../core/source-root.js';
-import { runSpawnCommand } from './spawn-runner.js';
+import { executeContextLedgerMemory } from '../../runtime/context-ledger-memory.js';
 import { InternalTool, ToolExecutionContext } from './types.js';
-
-const DEFAULT_TIMEOUT_MS = 15_000;
-const TOOL_INPUT_ENV_KEY = 'FINGER_CONTEXT_LEDGER_TOOL_INPUT';
 
 interface ContextLedgerMemoryToolInput {
   action?: 'query' | 'search' | 'index' | 'compact' | 'delete_slots';
@@ -52,6 +46,7 @@ export interface ContextLedgerMemoryToolOutput {
 
 export const contextLedgerMemoryTool: InternalTool<unknown, ContextLedgerMemoryToolOutput> = {
   name: 'context_ledger.memory',
+  executionModel: 'state',
   description: [
     'Canonical time-ordered ledger history tool with two-level retrieval.',
     'Use it when visible prompt history is incomplete or budgeted and you need prior decisions, evidence, or raw timeline details.',
@@ -95,71 +90,16 @@ export const contextLedgerMemoryTool: InternalTool<unknown, ContextLedgerMemoryT
       user_authorized: { type: 'boolean', description: 'For delete_slots: must be true only after explicit user consent in current interaction' },
       reason: { type: 'string', description: 'For delete_slots: user-provided reason for deletion' },
       intent_id: { type: 'string', description: 'For delete_slots: optional stable intent id for multi-step confirmation flow' },
-   },
-   required: ['action'],
-   additionalProperties: true,
+    },
+    required: ['action'],
+    additionalProperties: true,
   },
   execute: async (rawInput: unknown, context: ToolExecutionContext): Promise<ContextLedgerMemoryToolOutput> => {
     const input = mergeRuntimeContext(parseInput(rawInput), context);
-    const invocation = resolveCliInvocation();
-    const commandArray = [...invocation, 'memory-ledger', 'run', '--from-env', '--json-line'];
-
-    const execution = await runSpawnCommand({
-      commandArray,
-      cwd: context.cwd,
-      timeoutMs: DEFAULT_TIMEOUT_MS,
-      env: {
-        [TOOL_INPUT_ENV_KEY]: JSON.stringify(input),
-      },
-    });
-
-    const stdout = execution.stdout.trim();
-    if (execution.exitCode !== 0 || execution.timedOut) {
-      const detail = execution.stderr.trim() || stdout || 'unknown error';
-      throw new Error(`context_ledger.memory cli failed: ${detail}`);
-    }
-    if (stdout.length === 0) {
-      throw new Error('context_ledger.memory cli returned empty output');
-    }
-
-    const candidateLine = stdout
-      .split('\n')
-      .map((line) => line.trim())
-      .filter((line) => line.length > 0)
-      .at(-1);
-    if (!candidateLine) {
-      throw new Error('context_ledger.memory cli returned empty output');
-    }
-
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(candidateLine);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      throw new Error(`context_ledger.memory output is not JSON: ${message}`);
-    }
-
-    if (!isRecord(parsed)) {
-      throw new Error('context_ledger.memory output must be object');
-    }
-
-    return parsed as ContextLedgerMemoryToolOutput;
+    const result = await executeContextLedgerMemory(input);
+    return result as unknown as ContextLedgerMemoryToolOutput;
   },
 };
-
-function resolveCliInvocation(): string[] {
-  const envBin = process.env.FINGER_CLI_BIN?.trim();
-  if (envBin && envBin.length > 0) {
-    return [envBin];
-  }
-
-  const distCli = join(FINGER_SOURCE_ROOT, 'dist', 'cli', 'index.js');
-  if (existsSync(distCli)) {
-    return [process.execPath, distCli];
-  }
-
-  return ['myfinger'];
-}
 
 function parseInput(rawInput: unknown): ContextLedgerMemoryToolInput {
   if (!isRecord(rawInput)) {

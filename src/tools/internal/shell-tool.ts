@@ -135,6 +135,7 @@ function shouldRunArrayWithShell(command: string[]): boolean {
 
 export const shellExecTool: InternalTool<unknown, ShellExecOutput> = {
   name: 'shell.exec',
+  executionModel: 'execution',
   description: 'Execute shell command locally and return stdout/stderr/exit code',
   inputSchema: {
     type: 'object',

@@ -16,6 +16,7 @@ import type { UnifiedEventBus } from '../../runtime/event-bus.js';
 import { logger } from '../../core/logger.js';
 import {
   buildCompactSummary,
+  buildContextUsageLine,
   buildReportKey as buildReportKeyUtil,
   resolveToolDisplayName,
   type SessionProgressData,
@@ -36,6 +37,7 @@ import {
   handleAgentRuntimeStatus,
   handleAgentStepCompleted,
   handleModelRound,
+  handleSystemNoticeEvent,
   handleToolCallEvent,
   handleToolErrorEvent,
   handleToolResultEvent,
@@ -60,6 +62,13 @@ export class ProgressMonitor {
   private _stopCleanup: (() => void) | null = null;
   private _cleanupTimer: NodeJS.Timeout | null = null;
   private latestStepSummary = new Map<string, string>(); // sessionId -> latest step summary
+
+  private static readonly LOW_VALUE_TOOLS = new Set([
+    'mailbox.status',
+    'mailbox.list',
+    'mailbox.read',
+    'mailbox.ack',
+  ]);
 
   constructor(
     private eventBus: UnifiedEventBus,
@@ -127,7 +136,7 @@ export class ProgressMonitor {
    */
   private subscribeToEvents(): void {
     const unsubscribe = this.eventBus.subscribeMultiple(
-      ['turn_start', 'turn_complete', 'tool_call', 'tool_result', 'tool_error', 'model_round', 'agent_runtime_status', 'agent_step_completed', 'agent_runtime_dispatch'],
+      ['turn_start', 'turn_complete', 'tool_call', 'tool_result', 'tool_error', 'model_round', 'system_notice', 'agent_runtime_status', 'agent_step_completed', 'agent_runtime_dispatch'],
       (event: any) => {
         this.handleEvent(event).catch(err => {
           log.error('[ProgressMonitor] Error handling event:', err);
@@ -166,7 +175,11 @@ export class ProgressMonitor {
     if (!sessionId) return;
 
     const eventType = event.type;
-    const agentId = event.agentId || 'unknown';
+    const incomingAgentId = typeof event.agentId === 'string' && event.agentId.trim().length > 0
+      ? event.agentId.trim()
+      : (typeof event.payload?.agentId === 'string' && event.payload.agentId.trim().length > 0
+          ? event.payload.agentId.trim()
+          : undefined);
 
     // 获取或创建进度记录
     let progress = this.sessionProgress.get(sessionId);
@@ -174,7 +187,7 @@ export class ProgressMonitor {
       const now = Date.now();
       progress = {
         sessionId,
-        agentId,
+        agentId: incomingAgentId || 'unknown',
         startTime: now,
         lastUpdateTime: now,
         toolCallsCount: 0,
@@ -190,7 +203,9 @@ export class ProgressMonitor {
 
     // 更新进度
     progress.lastUpdateTime = Date.now();
-    progress.agentId = agentId;
+    if (incomingAgentId) {
+      progress.agentId = incomingAgentId;
+    }
 
     switch (eventType) {
       case 'turn_start':
@@ -210,6 +225,9 @@ export class ProgressMonitor {
         break;
       case 'model_round':
         handleModelRound(progress, event);
+        break;
+      case 'system_notice':
+        handleSystemNoticeEvent(progress, event);
         break;
       case 'agent_runtime_status':
         handleAgentRuntimeStatus(progress, event);
@@ -231,9 +249,14 @@ export class ProgressMonitor {
   private async generateProgressReport(): Promise<void> {
     if (!this.config.progressUpdates) return;
 
-    // 获取所有活跃的 session
+    const now = Date.now();
+    // 获取所有活跃的 session；先按 startTime 刷新 elapsed，避免运行中但尚未回填 elapsedMs 的 session 被漏掉。
     const activeProgress = Array.from(this.sessionProgress.values())
-      .filter(p => p.status === 'running' && p.elapsedMs > 0);
+      .filter((p) => {
+        if (p.status !== 'running') return false;
+        p.elapsedMs = Math.max(0, now - p.startTime);
+        return true;
+      });
 
     if (activeProgress.length === 0) return;
 
@@ -241,13 +264,14 @@ export class ProgressMonitor {
 
     // 为每个活跃 session 生成并推送进度报告
     for (const p of activeProgress) {
-      const now = Date.now();
       // Keep elapsed clock moving even when no new events are emitted.
-      p.elapsedMs = now - p.startTime;
-      const heartbeatDue = !p.lastReportTime || (now - p.lastReportTime) >= this.config.intervalMs;
+      p.elapsedMs = Math.max(0, now - p.startTime);
       const reportKey = this.buildReportKey(p);
-      if (p.lastReportKey === reportKey && !heartbeatDue) {
-        continue;
+      const stalled = now - p.lastUpdateTime >= this.config.intervalMs;
+      if (p.lastReportKey === reportKey) {
+        if (!stalled || !this.shouldEmitHeartbeat(p, now)) {
+          continue;
+        }
       }
 
       // 仅发送新增工具调用（避免重复）
@@ -255,10 +279,39 @@ export class ProgressMonitor {
       const newToolCalls = p.toolCallHistory.filter((tool) => (tool.seq ?? 0) > lastReportedSeq);
       const currentTaskChanged = (p.currentTask ?? '') !== (p.lastReportedCurrentTask ?? '');
       const reasoningChanged = (p.latestReasoning ?? '') !== (p.lastReportedReasoning ?? '');
-      const contextChanged = (p.contextUsagePercent ?? -1) !== (p.lastReportedContextUsagePercent ?? -1)
-        || (p.estimatedTokensInContextWindow ?? -1) !== (p.lastReportedEstimatedTokensInContextWindow ?? -1)
-        || (p.maxInputTokens ?? -1) !== (p.lastReportedMaxInputTokens ?? -1);
-      if (newToolCalls.length === 0 && !currentTaskChanged && !reasoningChanged && !contextChanged && !heartbeatDue) {
+      const contextChanged =
+        p.contextUsagePercent !== p.lastReportedContextUsagePercent
+        || p.estimatedTokensInContextWindow !== p.lastReportedEstimatedTokensInContextWindow
+        || p.maxInputTokens !== p.lastReportedMaxInputTokens;
+      const meaningfulToolCalls = newToolCalls.filter((tool) => !this.isLowValueToolCall(tool));
+      const meaningfulTaskChange = currentTaskChanged && !this.isLowValueTask(p.currentTask);
+      const shouldHeartbeat = this.shouldEmitHeartbeat(p, now);
+      const pendingMeaningfulTool = this.findPendingMeaningfulTool(p);
+      const hasMeaningfulSignal = meaningfulToolCalls.length > 0
+        || meaningfulTaskChange
+        || reasoningChanged
+        || contextChanged;
+
+      // 没有新的真实信号时保持静默；不要伪造“等待模型响应”心跳。
+      // 只有明确存在未完成的工具调用时，才允许发送等待类更新。
+      if (!hasMeaningfulSignal) {
+        if (!shouldHeartbeat || !pendingMeaningfulTool) {
+          continue;
+        }
+
+        const heartbeatReport: ProgressReport = {
+          type: 'progress_report',
+          timestamp: new Date().toISOString(),
+          sessionId: p.sessionId,
+          agentId: p.agentId,
+          progress: p,
+          summary: this.buildHeartbeatSummary(p, now, pendingMeaningfulTool),
+        };
+
+        p.lastReportTime = now;
+        if (this.callbacks?.onProgressReport) {
+          await this.callbacks.onProgressReport(heartbeatReport);
+        }
         continue;
       }
 
@@ -268,7 +321,7 @@ export class ProgressMonitor {
         sessionId: p.sessionId,
         agentId: p.agentId,
         progress: p,
-        summary: this.buildSingleProgressSummary(p, newToolCalls),
+        summary: this.buildSingleProgressSummary(p, meaningfulToolCalls),
       };
 
       p.lastReportKey = reportKey;
@@ -320,12 +373,71 @@ export class ProgressMonitor {
     );
   }
 
+  private isLowValueTask(task?: string): boolean {
+    if (!task) return true;
+    const normalized = task.toLowerCase();
+    if (!normalized.trim()) return true;
+    if (
+      normalized.includes('mailbox.status')
+      || normalized.includes('mailbox.list')
+      || normalized.includes('mailbox.read')
+      || normalized.includes('mailbox.ack')
+    ) {
+      return true;
+    }
+    if ([
+      '处理中',
+      '处理中…',
+      '处理中...',
+      '执行中',
+      '等待中',
+      '继续处理',
+    ].includes(normalized)) {
+      return true;
+    }
+    // suppress generic filesystem peeks that are high-frequency and low-value for user progress
+    if (/^\s*cat\b/.test(normalized)) {
+      return true;
+    }
+    return false;
+  }
+
+  private extractCommandFromParams(params?: string): string {
+    if (!params || params.trim().length === 0) return '';
+    try {
+      const parsed = JSON.parse(params) as Record<string, unknown>;
+      if (typeof parsed.cmd === 'string') return parsed.cmd.trim();
+      if (typeof parsed.command === 'string') return parsed.command.trim();
+      if (typeof parsed.input === 'string') return parsed.input.trim();
+      return '';
+    } catch {
+      return params;
+    }
+  }
+
+  private isLowValueToolCall(tool: ToolCallRecord): boolean {
+    const toolName = (tool.toolName || '').trim().toLowerCase();
+    if (!toolName) return true;
+    if (ProgressMonitor.LOW_VALUE_TOOLS.has(toolName)) return true;
+
+    if (toolName === 'exec_command' || toolName === 'shell.exec') {
+      const command = this.extractCommandFromParams(tool.params).toLowerCase();
+      if (!command.trim()) return true;
+      if (/^\s*cat\b/.test(command)) return true;
+      if (/^\s*(ls|pwd|head|tail|sed\s+-n|wc|stat)\b/.test(command)) return true;
+    }
+
+    return false;
+  }
+
   private buildReportKey(p: SessionProgress): string {
     const data: SessionProgressData = {
       agentId: p.agentId,
       status: p.status,
       currentTask: p.currentTask,
-      elapsedMs: p.elapsedMs,
+      // Intentionally exclude elapsed wall-clock from dedup key.
+      // Otherwise key changes every tick and causes noisy periodic pushes.
+      elapsedMs: 0,
       toolCallHistory: p.toolCallHistory.map(t => ({
         toolName: t.toolName,
         params: t.params,
@@ -337,6 +449,40 @@ export class ProgressMonitor {
       maxInputTokens: p.maxInputTokens,
     };
     return buildReportKeyUtil(data, this.latestStepSummary.get(p.sessionId));
+  }
+
+  private shouldEmitHeartbeat(p: SessionProgress, now: number): boolean {
+    if (p.status !== 'running') return false;
+    const lastReportTime = p.lastReportTime ?? 0;
+    if (now - lastReportTime < this.config.intervalMs) return false;
+    return now - p.lastUpdateTime >= this.config.intervalMs;
+  }
+
+  private findPendingMeaningfulTool(p: SessionProgress): ToolCallRecord | undefined {
+    return [...p.toolCallHistory]
+      .reverse()
+      .find((tool) => !this.isLowValueToolCall(tool) && tool.success === undefined && !tool.result && !tool.error);
+  }
+
+  private buildHeartbeatSummary(p: SessionProgress, now: number, pendingTool: ToolCallRecord): string {
+    const waitingMs = Math.max(0, now - p.lastUpdateTime);
+    const localTime = new Date();
+    const hh = String(localTime.getHours()).padStart(2, '0');
+    const mm = String(localTime.getMinutes()).padStart(2, '0');
+    const lines = [`📊 ${hh}:${mm} | 执行中`];
+    const toolName = resolveToolDisplayName(pendingTool.toolName?.trim() || '工具', pendingTool.params);
+    lines.push(`⏳ ${this.formatElapsed(waitingMs)} 无新事件，当前等待工具 ${toolName} 返回`);
+
+    const contextLine = buildContextUsageLine({
+      contextUsagePercent: p.contextUsagePercent,
+      estimatedTokensInContextWindow: p.estimatedTokensInContextWindow,
+      maxInputTokens: p.maxInputTokens,
+    });
+    if (contextLine) {
+      lines.push(contextLine);
+    }
+
+    return lines.join('\n');
   }
 
   /**

@@ -21,11 +21,14 @@ import { getContextWindow } from '../../core/user-settings.js';
 import type { MailboxSnapshot } from '../../runtime/mailbox-snapshot.js';
 import { hasNewUnreadSinceLastNotified, getNewUnreadEntries } from '../../runtime/mailbox-snapshot.js';
 import { formatSkillsAsPromptSync } from '../../skills/skill-prompt-injector.js';
+import { logger } from '../../core/logger.js';
 
 const DEFAULT_KERNEL_TIMEOUT_MS = 600_000;
 const DEFAULT_KERNEL_TIMEOUT_RETRY_COUNT = 5;
+const DEFAULT_KERNEL_STALL_TIMEOUT_MS = 180_000;
 const FLOW_PROMPT_MAX_CHARS = 10_000;
 const DEFAULT_CONTEXT_WINDOW_TOKENS = 262_144;
+const chatCodexLog = logger.module('ChatCodexModule');
 export const CHAT_CODEX_ORCHESTRATOR_ALLOWED_TOOLS = [
   ...BASE_AGENT_ROLE_CONFIG.project.allowedTools,
 ];
@@ -147,6 +150,7 @@ export interface ChatCodexRunContext {
   systemPrompt?: string;
   history?: Array<{ role: 'user' | 'assistant' | 'system'; content: string }>;
   metadata?: Record<string, unknown>;
+  prebuiltOptions?: Record<string, unknown>;
   mailboxSnapshot?: MailboxSnapshot;
   developerPromptPaths?: Partial<Record<ChatCodexDeveloperRole, string>>;
   tools?: ChatCodexToolSpecification[];
@@ -270,6 +274,7 @@ interface ActiveKernelTurn {
   replyText?: string;
   kernelMetadata?: Record<string, unknown>;
   timeout: NodeJS.Timeout;
+  stallTimeout: NodeJS.Timeout;
   settled: boolean;
   seenSessionConfigured: boolean;
   onKernelEvent?: (event: ChatCodexKernelEvent) => void;
@@ -342,7 +347,13 @@ function safeNotifyLoopEvent(
   event: ChatCodexLoopEvent,
 ): void {
   if (!callback) return;
-  void Promise.resolve(callback(event)).catch(() => {});
+  void Promise.resolve(callback(event)).catch((error) => {
+    chatCodexLog.warn('Loop event callback failed', {
+      sessionId: event.sessionId,
+      phase: event.phase,
+      error: error instanceof Error ? error.message : String(error),
+    });
+  });
 }
 
 function isTimeoutError(error: unknown): boolean {
@@ -363,6 +374,11 @@ export function isRetryableRunError(error: unknown): boolean {
   if (normalized.includes(' 403') || normalized.includes('_403') || normalized.includes('error code: 403')) return false;
 
   return isTimeoutError(error)
+    || normalized.includes('stalled without kernel events')
+    || normalized.includes('did not contain a completed response payload')
+    || normalized.includes('completed response payload')
+    || normalized.includes('stream ended before completed response')
+    || normalized.includes('response stream ended prematurely')
     || normalized.includes('fetch failed')
     || normalized.includes('gateway')
     || normalized.includes('result timeout')
@@ -396,13 +412,19 @@ function retryDelayMs(attempt: number): number {
 
 export class ProcessChatCodexRunner implements ChatCodexRunner {
   private readonly timeoutMs: number;
+  private readonly stallTimeoutMs: number;
   private readonly binaryPath?: string;
   private readonly toolExecution?: ChatCodexToolExecutionConfig;
   private readonly developerPromptPaths?: Partial<Record<ChatCodexDeveloperRole, string>>;
   private readonly sessions = new Map<string, KernelSessionProcess>();
 
-  constructor(options: Pick<ChatCodexModuleConfig, 'timeoutMs' | 'binaryPath' | 'toolExecution' | 'developerPromptPaths'>) {
+  constructor(options: Pick<ChatCodexModuleConfig, 'timeoutMs' | 'binaryPath' | 'toolExecution' | 'developerPromptPaths'> & {
+    stallTimeoutMs?: number;
+  }) {
     this.timeoutMs = options.timeoutMs;
+    this.stallTimeoutMs = Number.isFinite(options.stallTimeoutMs)
+      ? Math.max(30_000, Math.floor(options.stallTimeoutMs as number))
+      : DEFAULT_KERNEL_STALL_TIMEOUT_MS;
     this.binaryPath = options.binaryPath;
     this.toolExecution = options.toolExecution;
     this.developerPromptPaths = options.developerPromptPaths;
@@ -418,11 +440,18 @@ export class ProcessChatCodexRunner implements ChatCodexRunner {
     const sessionKey = resolveRunnerSessionKey(context?.sessionId, providerId);
     const session = this.ensureSession(sessionKey, resolvedPath, providerId);
     const normalizedItems = normalizeKernelInputItems(items, text);
-    const options = buildKernelUserTurnOptions(
-      context,
-      this.toolExecution,
-      context?.developerPromptPaths ?? this.developerPromptPaths,
-    );
+    const options = isRecord(context?.prebuiltOptions)
+      ? hydratePrebuiltKernelUserTurnOptions(
+          context.prebuiltOptions as KernelUserTurnOptions,
+          context,
+          this.toolExecution,
+          context?.developerPromptPaths ?? this.developerPromptPaths,
+        )
+      : buildKernelUserTurnOptions(
+          context,
+          this.toolExecution,
+          context?.developerPromptPaths ?? this.developerPromptPaths,
+        );
     if (session.activeTurn) {
       const pendingTurnId = this.nextSubmissionId(session, 'pending');
       this.sendUserTurnSubmission(session, pendingTurnId, normalizedItems, options);
@@ -455,6 +484,7 @@ export class ProcessChatCodexRunner implements ChatCodexRunner {
           true,
         );
       }, this.timeoutMs);
+      const stallTimeout = this.createStallTimeout(session);
 
       session.activeTurn = {
         id: turnId,
@@ -462,6 +492,7 @@ export class ProcessChatCodexRunner implements ChatCodexRunner {
         reject,
         events: [],
         timeout,
+        stallTimeout,
         settled: false,
         seenSessionConfigured: false,
         onKernelEvent: context?.onKernelEvent,
@@ -593,6 +624,7 @@ export class ProcessChatCodexRunner implements ChatCodexRunner {
 
     const activeTurn = session.activeTurn;
     if (!activeTurn) return;
+    this.resetStallTimeout(session);
 
     if (parsed.msg.type === 'session_configured') {
       if (!activeTurn.seenSessionConfigured) {
@@ -640,8 +672,12 @@ export class ProcessChatCodexRunner implements ChatCodexRunner {
     if (!activeTurn.onKernelEvent) return;
     try {
       activeTurn.onKernelEvent(event);
-    } catch {
-      // ignore callback failures to avoid breaking kernel stream
+    } catch (error) {
+      chatCodexLog.warn('Kernel event callback failed', {
+        turnId: activeTurn.id,
+        eventType: event.msg.type,
+        error: error instanceof Error ? error.message : String(error),
+      });
     }
   }
 
@@ -650,6 +686,7 @@ export class ProcessChatCodexRunner implements ChatCodexRunner {
     if (!activeTurn || activeTurn.settled) return;
     activeTurn.settled = true;
     clearTimeout(activeTurn.timeout);
+    clearTimeout(activeTurn.stallTimeout);
     session.activeTurn = null;
     activeTurn.resolve(result);
   }
@@ -668,11 +705,29 @@ export class ProcessChatCodexRunner implements ChatCodexRunner {
     }
     activeTurn.settled = true;
     clearTimeout(activeTurn.timeout);
+    clearTimeout(activeTurn.stallTimeout);
     session.activeTurn = null;
     activeTurn.reject(error);
     if (terminateSession) {
       this.disposeSession(session);
     }
+  }
+
+  private createStallTimeout(session: KernelSessionProcess): NodeJS.Timeout {
+    return setTimeout(() => {
+      this.rejectActiveTurn(
+        session,
+        new Error(`chat-codex stalled without kernel events for ${this.stallTimeoutMs}ms`),
+        true,
+      );
+    }, this.stallTimeoutMs);
+  }
+
+  private resetStallTimeout(session: KernelSessionProcess): void {
+    const activeTurn = session.activeTurn;
+    if (!activeTurn || activeTurn.settled) return;
+    clearTimeout(activeTurn.stallTimeout);
+    activeTurn.stallTimeout = this.createStallTimeout(session);
   }
 
   private sendUserTurnSubmission(
@@ -703,8 +758,11 @@ export class ProcessChatCodexRunner implements ChatCodexRunner {
       if (!session.child.killed) {
         session.child.kill('SIGTERM');
       }
-    } catch {
-      // ignore dispose errors
+    } catch (error) {
+      chatCodexLog.warn('Failed to dispose kernel session cleanly', {
+        sessionKey: session.key,
+        error: error instanceof Error ? error.message : String(error),
+      });
     }
     this.sessions.delete(session.key);
   }
@@ -744,12 +802,14 @@ export function createChatCodexModule(
       const resolvedInputItems = inputItems ?? parseKernelInputItems(context?.metadata);
       const normalizedInputItems = normalizeKernelInputItems(resolvedInputItems, text);
       const sessionId = context?.sessionId ?? 'unknown';
-      const toolSpecifications = await resolveToolSpecifications(
-        Array.isArray(context?.tools) && context?.tools.every((item) => typeof item === 'string')
-          ? (context?.tools as string[])
-          : undefined,
-        mergedConfig.resolveToolSpecifications,
-      );
+      const toolSpecifications = Array.isArray(context?.tools) && context.tools.every((item) => isToolSpecificationLike(item))
+        ? normalizeProvidedToolSpecifications(context.tools as ChatCodexToolSpecification[])
+        : await resolveToolSpecifications(
+            Array.isArray(context?.tools) && context?.tools.every((item) => typeof item === 'string')
+              ? (context?.tools as string[])
+              : undefined,
+            mergedConfig.resolveToolSpecifications,
+          );
       const toolSpecificationsForTurn = toolSpecifications;
       const mode = parseOptionalString(context?.metadata?.kernelMode) ?? parseOptionalString(context?.metadata?.mode) ?? 'main';
       const contextHistorySource = parseOptionalString(context?.metadata?.contextHistorySource);
@@ -1109,6 +1169,19 @@ export function createChatCodexModule(
         } catch (error) {
           lastRunError = error;
           const retryable = isRetryableRunError(error);
+          const errorMessage = error instanceof Error ? error.message : String(error);
+          const normalizedError = errorMessage.toLowerCase();
+          const errorCategory = isTimeoutError(error)
+            ? 'timeout'
+            : normalizedError.includes('stalled')
+              ? 'stall'
+              : normalizedError.includes('completed response payload')
+                || normalizedError.includes('response stream ended prematurely')
+                || normalizedError.includes('stream ended before completed response')
+                ? 'stream_incomplete'
+                : normalizedError.includes('interrupted')
+                  ? 'interrupted'
+                  : 'fatal';
           if (retryable && attempt < maxAttempts) {
             const delayMs = retryDelayMs(attempt);
             safeNotifyLoopEvent(mergedConfig.onLoopEvent, {
@@ -1121,7 +1194,10 @@ export function createChatCodexModule(
                 maxAttempts,
                 timeoutMs: mergedConfig.timeoutMs,
                 retryDelayMs: delayMs,
-                error: error instanceof Error ? error.message : String(error),
+                error: errorMessage,
+                retryable: true,
+                recoveryAction: 'retry',
+                errorCategory,
               },
             });
             await new Promise((resolve) => setTimeout(resolve, delayMs));
@@ -1133,10 +1209,13 @@ export function createChatCodexModule(
             phase: 'turn_error',
             timestamp: new Date().toISOString(),
             payload: {
-              error: error instanceof Error ? error.message : String(error),
+              error: errorMessage,
               attempt,
               maxAttempts,
               timeoutRetryCount: normalizedTimeoutRetryCount,
+              retryable: false,
+              recoveryAction: errorCategory === 'interrupted' ? 'interrupted' : 'failed',
+              errorCategory,
             },
           });
           throw error;
@@ -1154,6 +1233,9 @@ export function createChatCodexModule(
             error: fallbackError.message,
             maxAttempts,
             timeoutRetryCount: normalizedTimeoutRetryCount,
+            retryable: false,
+            recoveryAction: 'failed',
+            errorCategory: 'fatal',
           },
         });
         throw fallbackError;
@@ -1182,6 +1264,7 @@ export function createChatCodexModule(
         }
       }
 
+      const stopReason = resolveStopReasonFromKernelMetadata(runResult.kernelMetadata);
       safeNotifyLoopEvent(mergedConfig.onLoopEvent, {
         sessionId,
         phase: 'turn_complete',
@@ -1193,11 +1276,18 @@ export function createChatCodexModule(
           mode,
           timeoutMs: mergedConfig.timeoutMs,
           timeoutRetryCount: normalizedTimeoutRetryCount,
+          finishReason: stopReason,
+          ...(runResult.kernelMetadata?.pendingInputAccepted === true ? { pendingInputAccepted: true } : {}),
+          ...(typeof runResult.kernelMetadata?.activeTurnId === 'string'
+            ? { activeTurnId: runResult.kernelMetadata.activeTurnId }
+            : {}),
+          ...(typeof runResult.kernelMetadata?.pendingTurnId === 'string'
+            ? { pendingTurnId: runResult.kernelMetadata.pendingTurnId }
+            : {}),
           ...(reviewPhase ? { reviewPhase } : {}),
           ...(typeof reviewIteration === 'number' ? { reviewIteration } : {}),
         },
       });
-      const stopReason = resolveStopReasonFromKernelMetadata(runResult.kernelMetadata);
 
       return {
         reply: runResult.reply,
@@ -1976,8 +2066,86 @@ function buildKernelUserTurnOptions(
   return options;
 }
 
+function hydratePrebuiltKernelUserTurnOptions(
+  prebuilt: KernelUserTurnOptions,
+  context: ChatCodexRunContext | undefined,
+  defaultToolExecution: ChatCodexToolExecutionConfig | undefined,
+  developerPromptPaths?: Partial<Record<ChatCodexDeveloperRole, string>>,
+): KernelUserTurnOptions {
+  const rebuilt = buildKernelUserTurnOptions(context, defaultToolExecution, developerPromptPaths) ?? {};
+  const merged: KernelUserTurnOptions = {
+    ...rebuilt,
+    ...prebuilt,
+  };
+
+  if ((!Array.isArray(prebuilt.history_items) || prebuilt.history_items.length === 0) && Array.isArray(rebuilt.history_items) && rebuilt.history_items.length > 0) {
+    merged.history_items = rebuilt.history_items;
+  }
+
+  if ((!Array.isArray(prebuilt.tools) || prebuilt.tools.length === 0) && Array.isArray(rebuilt.tools) && rebuilt.tools.length > 0) {
+    merged.tools = rebuilt.tools;
+  }
+
+  if ((!isRecord(prebuilt.tool_execution) || Object.keys(prebuilt.tool_execution).length === 0) && isRecord(rebuilt.tool_execution)) {
+    merged.tool_execution = rebuilt.tool_execution;
+  }
+
+  if ((!isRecord(prebuilt.context_ledger) || Object.keys(prebuilt.context_ledger).length === 0) && isRecord(rebuilt.context_ledger)) {
+    merged.context_ledger = rebuilt.context_ledger;
+  }
+
+  if ((!isRecord(prebuilt.responses) || Object.keys(prebuilt.responses).length === 0) && isRecord(rebuilt.responses)) {
+    merged.responses = rebuilt.responses;
+  }
+
+  if (typeof prebuilt.system_prompt !== 'string' && typeof rebuilt.system_prompt === 'string') {
+    merged.system_prompt = rebuilt.system_prompt;
+  }
+
+  if (typeof prebuilt.session_id !== 'string' && typeof rebuilt.session_id === 'string') {
+    merged.session_id = rebuilt.session_id;
+  }
+
+  if (typeof prebuilt.mode !== 'string' && typeof rebuilt.mode === 'string') {
+    merged.mode = rebuilt.mode;
+  }
+
+  if (typeof prebuilt.developer_instructions !== 'string' && typeof rebuilt.developer_instructions === 'string') {
+    merged.developer_instructions = rebuilt.developer_instructions;
+  }
+
+  if (typeof prebuilt.user_instructions !== 'string' && typeof rebuilt.user_instructions === 'string') {
+    merged.user_instructions = rebuilt.user_instructions;
+  }
+
+  if (typeof prebuilt.environment_context !== 'string' && typeof rebuilt.environment_context === 'string') {
+    merged.environment_context = rebuilt.environment_context;
+  }
+
+  if (!isRecord(prebuilt.turn_context) && isRecord(rebuilt.turn_context)) {
+    merged.turn_context = rebuilt.turn_context;
+  }
+
+  if (!isRecord(prebuilt.context_window) && isRecord(rebuilt.context_window)) {
+    merged.context_window = rebuilt.context_window;
+  }
+
+  if (!isRecord(prebuilt.compact) && isRecord(rebuilt.compact)) {
+    merged.compact = rebuilt.compact;
+  }
+
+  if (typeof prebuilt.fork_user_message_index !== 'number' && typeof rebuilt.fork_user_message_index === 'number') {
+    merged.fork_user_message_index = rebuilt.fork_user_message_index;
+  }
+
+  return merged;
+}
+
 function isSystemControlTurn(metadata: Record<string, unknown> | undefined): boolean {
   if (!metadata) return false;
+  if (parseOptionalBoolean(metadata.recoveryReplay) === true) {
+    return false;
+  }
   const explicitDirect = parseOptionalBoolean(metadata.systemDirectInject);
   if (explicitDirect === true) return true;
 
@@ -2635,6 +2803,29 @@ async function resolveToolSpecifications(
   }
 
   return normalizedNames.map((name) => defaultToolSpecification(name));
+}
+
+function isToolSpecificationLike(value: unknown): value is ChatCodexToolSpecification {
+  return isRecord(value) && typeof value.name === 'string' && value.name.trim().length > 0;
+}
+
+function normalizeProvidedToolSpecifications(
+  specs: ChatCodexToolSpecification[],
+): ChatCodexToolSpecification[] {
+  const seen = new Set<string>();
+  const normalized: ChatCodexToolSpecification[] = [];
+  for (const spec of specs) {
+    if (!isToolSpecificationLike(spec)) continue;
+    const name = spec.name.trim();
+    if (seen.has(name)) continue;
+    seen.add(name);
+    normalized.push({
+      name,
+      ...(typeof spec.description === 'string' ? { description: spec.description } : {}),
+      ...(isRecord(spec.inputSchema) ? { inputSchema: spec.inputSchema } : {}),
+    });
+  }
+  return normalized;
 }
 
 function defaultToolSpecification(name: string): ChatCodexToolSpecification {

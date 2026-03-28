@@ -5,10 +5,13 @@ type SkillsToolInput = {
   refresh?: boolean;
 };
 
-const skillsManager = getGlobalSkillsManager();
+function getSkillsManager() {
+  return getGlobalSkillsManager();
+}
 
 export const skillsListTool: InternalTool = {
   name: 'skills.list',
+  executionModel: 'state',
   description: 'List currently installed Finger skills from ~/.finger/skills. Use this to verify whether a newly installed skill is visible to the next turn.',
   inputSchema: {
     type: 'object',
@@ -20,6 +23,7 @@ export const skillsListTool: InternalTool = {
     },
   },
   async execute(input: unknown, _context: ToolExecutionContext) {
+    const skillsManager = getSkillsManager();
     const refresh = Boolean((input as SkillsToolInput | undefined)?.refresh);
     const skills = refresh
       ? await skillsManager.listSkills()
@@ -43,6 +47,7 @@ export const skillsListTool: InternalTool = {
 
 export const skillsStatusTool: InternalTool = {
   name: 'skills.status',
+  executionModel: 'state',
   description: 'Show current skills loader status, watcher state, cache status, and optionally force a disk refresh. Use this when a newly installed skill does not appear immediately.',
   inputSchema: {
     type: 'object',
@@ -54,6 +59,7 @@ export const skillsStatusTool: InternalTool = {
     },
   },
   async execute(input: unknown, _context: ToolExecutionContext) {
+    const skillsManager = getSkillsManager();
     const refresh = Boolean((input as SkillsToolInput | undefined)?.refresh);
     if (refresh) {
       await skillsManager.listSkills();

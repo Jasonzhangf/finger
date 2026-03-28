@@ -276,7 +276,12 @@ describe('Tool error handling regression', () => {
 
     expect(res.status).toBe(200);
     expect(runtime.setCurrentSession).toHaveBeenCalledWith('session-abc');
-    expect(runtime.callTool).toHaveBeenCalledWith('test-agent', 'echo.test', { message: 'hello' }, { authorizationToken: undefined });
+    expect(runtime.callTool).toHaveBeenCalledWith(
+      'test-agent',
+      'echo.test',
+      { message: 'hello' },
+      { authorizationToken: undefined, sessionId: 'session-abc' },
+    );
 
     await stopServer();
   });

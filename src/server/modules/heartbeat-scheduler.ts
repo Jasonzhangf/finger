@@ -1,6 +1,7 @@
 import { promises as fs, watch, type FSWatcher } from 'fs';
 import path from 'path';
 import { logger } from '../../core/logger.js';
+import { extractAgentStatusFromRuntimeView } from '../../core/agent-runtime-status.js';
 import { FINGER_PATHS } from '../../core/finger-paths.js';
 import { heartbeatMailbox } from './heartbeat-mailbox.js';
 import { listAgents } from '../../agents/finger-system-agent/registry.js';
@@ -12,6 +13,8 @@ import {
   resolveProjectPath,
   promptMailboxChecks,
 } from './heartbeat-helpers.js';
+import type { ProgressDeliveryPolicy } from '../../common/progress-delivery-policy.js';
+import { normalizeProgressDeliveryPolicy } from '../../common/progress-delivery-policy.js';
 
 const log = logger.module('HeartbeatScheduler');
 
@@ -23,6 +26,7 @@ interface HeartbeatTaskConfig {
   dispatch?: DispatchMode;
   prompt?: string;
   mailboxCheckIntervalMs?: number;
+  progressDelivery?: ProgressDeliveryPolicy;
 }
 
 interface HeartbeatProjectConfig extends HeartbeatTaskConfig {
@@ -48,8 +52,10 @@ const DEFAULT_TASK_INTERVAL_MS = 5 * 60_000;
 const DEFAULT_MAILBOX_CHECK_INTERVAL_MS = 5 * 60_000;
 const CONFIG_PATH = path.join(FINGER_PATHS.runtime.schedulesDir, 'heartbeat-config.jsonl');
 const TASK_PATH = path.join(FINGER_PATHS.runtime.schedulesDir, 'heartbeat-tasks.jsonl');
+const RUNTIME_STATE_PATH = path.join(FINGER_PATHS.runtime.schedulesDir, 'heartbeat-runtime-state.json');
 const CONFIG_RELOAD_DEBOUNCE_MS = 1000;
 const SYSTEM_AGENT_ID = 'finger-system-agent';
+const DEFAULT_SCHEDULED_PROGRESS_DELIVERY = normalizeProgressDeliveryPolicy({ mode: 'result_only' });
 
 function normalizeProjectPath(value: string): string {
   return value.trim().replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
@@ -75,6 +81,12 @@ interface JsonlTaskRecord {
   action: string;
   task: { text: string; section?: string; status?: string };
   batch?: Array<{ text: string; section?: string; status?: string }>;
+}
+
+interface HeartbeatRuntimeState {
+  lastRun?: Record<string, number>;
+  lastMailboxPromptAt?: Record<string, number>;
+  mailboxPromptDeferredByAgent?: string[];
 }
 
 async function readJsonlTasks(): Promise<string[]> {
@@ -133,20 +145,22 @@ export class HeartbeatScheduler {
   private lastRun: Map<string, number> = new Map();
   private lastMailboxPromptAt: Map<string, number> = new Map();
   private mailboxPromptDeferredByAgent: Set<string> = new Set();
+  private ticking = false;
 
   constructor(private deps: AgentRuntimeDeps) {}
 
   async start(): Promise<void> {
     await this.loadConfig();
+    await this.loadRuntimeState();
     this.watchConfig();
     if (!this.timer) {
-      this.timer = setInterval(() => { void this.tick(); }, DEFAULT_TICK_MS);
+      this.armTick(0);
       log.info(`[HeartbeatScheduler] Started (tick=${DEFAULT_TICK_MS}ms)`);
     }
   }
 
   stop(): void {
-    if (this.timer) { clearInterval(this.timer); this.timer = null; }
+    if (this.timer) { clearTimeout(this.timer); this.timer = null; }
     if (this.configWatcher) { this.configWatcher.close(); this.configWatcher = null; }
   }
 
@@ -191,10 +205,20 @@ export class HeartbeatScheduler {
   }
 
   private async tick(): Promise<void> {
+    if (this.ticking) {
+      log.debug('[HeartbeatScheduler] Skip tick: previous round still running');
+      this.armTick(DEFAULT_TICK_MS);
+      return;
+    }
+    this.ticking = true;
     try { await this.dispatchDueTasks(); }
     catch (error) { log.error('[HeartbeatScheduler] dispatchDueTasks error', error instanceof Error ? error : undefined); }
     try { await this.promptMailboxChecks(); }
     catch (error) { log.error('[HeartbeatScheduler] promptMailboxChecks error', error instanceof Error ? error : undefined); }
+    try { await this.persistRuntimeState(); }
+    catch (error) { log.error('[HeartbeatScheduler] persistRuntimeState error', error instanceof Error ? error : undefined); }
+    this.ticking = false;
+    this.armTick(DEFAULT_TICK_MS);
   }
 
   private async dispatchDueTasks(): Promise<void> {
@@ -287,7 +311,7 @@ export class HeartbeatScheduler {
     }
 
     if (config?.dispatch === 'dispatch') {
-      await this.dispatchDirect(targetAgentId, taskId, projectId, prompt);
+      await this.dispatchDirect(targetAgentId, taskId, projectId, prompt, config);
       return;
     }
 
@@ -306,7 +330,11 @@ export class HeartbeatScheduler {
   }
 
   private async dispatchDirect(
-    targetAgentId: string, taskId: string, projectId: string | undefined, prompt: string,
+    targetAgentId: string,
+    taskId: string,
+    projectId: string | undefined,
+    prompt: string,
+    config?: HeartbeatTaskConfig | { progressDelivery?: ProgressDeliveryPolicy },
   ): Promise<void> {
     const sessionStore = new SessionControlPlaneStore();
     const bindings = sessionStore.list({ agentId: targetAgentId });
@@ -322,9 +350,39 @@ export class HeartbeatScheduler {
       log.debug('[HeartbeatScheduler] Skip dispatchDirect: no session', { targetAgentId, taskId, projectId });
       return;
     }
+    try {
+      const snapshot = await this.deps.agentRuntimeBlock.execute('runtime_view', {});
+      const busyState = extractAgentStatusFromRuntimeView(snapshot, targetAgentId);
+      if (busyState.busy !== false) {
+        log.debug('[HeartbeatScheduler] Skip dispatchDirect: target busy or unknown, mailbox only', {
+          targetAgentId,
+          taskId,
+          projectId,
+          status: busyState.status ?? 'unknown',
+        });
+        return;
+      }
+    } catch (error) {
+      log.warn('[HeartbeatScheduler] runtime_view lookup failed; keep mailbox only', {
+        targetAgentId,
+        taskId,
+        projectId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return;
+    }
+    const resolvedProgressDelivery = config?.progressDelivery ?? DEFAULT_SCHEDULED_PROGRESS_DELIVERY;
     await this.deps.agentRuntimeBlock.execute('dispatch', {
       sourceAgentId: 'system-heartbeat', targetAgentId, task: prompt, sessionId,
-      metadata: { source: 'system-heartbeat', role: 'system', systemDirectInject: true, deliveryMode: 'direct', taskId, projectId },
+      metadata: {
+        source: 'system-heartbeat',
+        role: 'system',
+        systemDirectInject: true,
+        deliveryMode: 'direct',
+        taskId,
+        projectId,
+        ...(resolvedProgressDelivery ? { scheduledProgressDelivery: resolvedProgressDelivery } : {}),
+      },
       blocking: false,
     });
   }
@@ -340,8 +398,59 @@ export class HeartbeatScheduler {
           ?? DEFAULT_MAILBOX_CHECK_INTERVAL_MS;
         return Number.isFinite(raw) && raw > 0 ? Math.floor(raw) : DEFAULT_MAILBOX_CHECK_INTERVAL_MS;
       },
-      dispatchDirect: (targetAgentId, taskId, projectId, prompt) =>
-        this.dispatchDirect(targetAgentId, taskId, projectId, prompt),
+      dispatchDirect: (targetAgentId, taskId, projectId, prompt, options) =>
+        this.dispatchDirect(targetAgentId, taskId, projectId, prompt, options),
     });
+  }
+
+  private armTick(delayMs: number): void {
+    if (this.timer) {
+      clearTimeout(this.timer);
+      this.timer = null;
+    }
+    const normalized = Number.isFinite(delayMs) && delayMs >= 0 ? Math.floor(delayMs) : DEFAULT_TICK_MS;
+    this.timer = setTimeout(() => {
+      void this.tick();
+    }, normalized);
+    this.timer.unref?.();
+  }
+
+  private async loadRuntimeState(): Promise<void> {
+    try {
+      const raw = await fs.readFile(RUNTIME_STATE_PATH, 'utf-8');
+      const parsed = JSON.parse(raw) as HeartbeatRuntimeState;
+      if (parsed.lastRun && typeof parsed.lastRun === 'object') {
+        this.lastRun = new Map(Object.entries(parsed.lastRun)
+          .filter(([, value]) => Number.isFinite(value as number))
+          .map(([key, value]) => [key, Math.floor(value as number)]));
+      }
+      if (parsed.lastMailboxPromptAt && typeof parsed.lastMailboxPromptAt === 'object') {
+        this.lastMailboxPromptAt = new Map(Object.entries(parsed.lastMailboxPromptAt)
+          .filter(([, value]) => Number.isFinite(value as number))
+          .map(([key, value]) => [key, Math.floor(value as number)]));
+      }
+      if (Array.isArray(parsed.mailboxPromptDeferredByAgent)) {
+        this.mailboxPromptDeferredByAgent = new Set(
+          parsed.mailboxPromptDeferredByAgent.filter((value): value is string => typeof value === 'string' && value.trim().length > 0),
+        );
+      }
+      log.info('[HeartbeatScheduler] Runtime state loaded', {
+        runKeys: this.lastRun.size,
+        mailboxPromptKeys: this.lastMailboxPromptAt.size,
+      });
+    } catch {
+      // No state file yet.
+    }
+  }
+
+  private async persistRuntimeState(): Promise<void> {
+    const state: HeartbeatRuntimeState = {
+      lastRun: Object.fromEntries(this.lastRun.entries()),
+      lastMailboxPromptAt: Object.fromEntries(this.lastMailboxPromptAt.entries()),
+      mailboxPromptDeferredByAgent: Array.from(this.mailboxPromptDeferredByAgent.values()),
+    };
+    const tempPath = `${RUNTIME_STATE_PATH}.tmp`;
+    await fs.writeFile(tempPath, JSON.stringify(state, null, 2), 'utf-8');
+    await fs.rename(tempPath, RUNTIME_STATE_PATH);
   }
 }

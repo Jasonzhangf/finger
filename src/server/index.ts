@@ -75,6 +75,7 @@ import { createChannelBridgeHubRoute } from './modules/channel-bridge-hub-route.
 import { checkAIProviderConfig } from './modules/ai-provider-config.js';
 
 import { ensureFingerLayout, FINGER_PATHS } from '../core/finger-paths.js';
+import { sanitizeFingerRuntimeState } from '../core/runtime-hygiene.js';
 import { syncUserSettingsToKernelConfig } from '../core/user-settings-sync.js';
 import {
   ERROR_SAMPLE_DIR,
@@ -131,6 +132,7 @@ const USE_MOCK_SEARCHER_LOOP = runtimeFlags.useMockSearcherLoop;
 let runtimeDebugMode = runtimeFlags.runtimeDebugMode;
 
 ensureFingerLayout();
+sanitizeFingerRuntimeState();
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);

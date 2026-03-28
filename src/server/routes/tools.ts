@@ -3,6 +3,30 @@ import type { RuntimeFacade } from '../../runtime/runtime-facade.js';
 import type { ToolRegistry } from '../../runtime/tool-registry.js';
 import { isObjectRecord } from '../common/object.js';
 
+function extractSessionIdFromInput(input: unknown): string | undefined {
+  if (!isObjectRecord(input)) return undefined;
+
+  const direct = [
+    input.sessionId,
+    input.session_id,
+  ];
+  for (const candidate of direct) {
+    if (typeof candidate === 'string' && candidate.trim().length > 0) {
+      return candidate.trim();
+    }
+  }
+
+  const runtimeContext = isObjectRecord(input._runtime_context) ? input._runtime_context : undefined;
+  if (runtimeContext) {
+    const nested = runtimeContext.session_id;
+    if (typeof nested === 'string' && nested.trim().length > 0) {
+      return nested.trim();
+    }
+  }
+
+  return undefined;
+}
+
 export interface ToolRouteDeps {
   toolRegistry: ToolRegistry;
   runtime: RuntimeFacade;
@@ -87,13 +111,7 @@ export function registerToolRoutes(app: Express, deps: ToolRouteDeps): void {
         ? req.body.sessionId.trim()
         : typeof req.body?.session_id === 'string' && req.body.session_id.trim().length > 0
           ? req.body.session_id.trim()
-          : isObjectRecord(input)
-            ? (typeof input.sessionId === 'string' && input.sessionId.trim().length > 0
-                ? input.sessionId.trim()
-                : typeof input.session_id === 'string' && input.session_id.trim().length > 0
-                  ? input.session_id.trim()
-                  : undefined)
-            : undefined;
+          : extractSessionIdFromInput(input);
 
     if (typeof agentId !== 'string' || agentId.trim().length === 0) {
       res.status(400).json({ error: 'agentId is required' });
@@ -112,6 +130,9 @@ export function registerToolRoutes(app: Express, deps: ToolRouteDeps): void {
       if (requestSessionId && typeof runtime.setCurrentSession === 'function') {
         runtime.setCurrentSession(requestSessionId);
       }
+      if (requestSessionId && typeof runtime.bindAgentSession === 'function') {
+        runtime.bindAgentSession(agentId, requestSessionId);
+      }
       const executionInput = isObjectRecord(input)
         ? toolName === 'user.ask'
           ? {
@@ -129,7 +150,10 @@ export function registerToolRoutes(app: Express, deps: ToolRouteDeps): void {
               }
             : input
         : input;
-      const result = await runtime.callTool(agentId, toolName, executionInput, { authorizationToken });
+      const result = await runtime.callTool(agentId, toolName, executionInput, {
+        authorizationToken,
+        sessionId: requestSessionId,
+      });
       res.json({
         success: true,
         result,

@@ -27,6 +27,7 @@ export interface CodexShellOutput {
 
 export const codexShellTool: InternalTool<unknown, CodexShellOutput> = {
   name: 'shell',
+  executionModel: 'execution',
   description: 'Runs a shell command and returns its output.',
   inputSchema: {
     type: 'object',

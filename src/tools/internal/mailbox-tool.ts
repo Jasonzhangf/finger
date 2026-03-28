@@ -22,6 +22,7 @@ const log = logger.module('MailboxTool');
  */
 export const mailboxStatusTool: InternalTool = {
   name: 'mailbox.status',
+  executionModel: 'state',
   description: 'Get mailbox status overview: count of unread and pending messages. Use this to check if there are new messages requiring attention.',
   inputSchema: {
     type: 'object',
@@ -69,6 +70,7 @@ export const mailboxStatusTool: InternalTool = {
  */
 export const mailboxListTool: InternalTool = {
   name: 'mailbox.list',
+  executionModel: 'state',
   description: 'List messages in mailbox with optional filters. Returns message summaries with id, status, sender, and short description.',
   inputSchema: {
     type: 'object',
@@ -144,6 +146,7 @@ export const mailboxListTool: InternalTool = {
  */
 export const mailboxReadAllTool: InternalTool = {
   name: 'mailbox.read_all',
+  executionModel: 'state',
   description: 'Read multiple mailbox messages. By default reads unread messages; normal tasks move pending → processing while notifications stay pending.',
   inputSchema: {
     type: 'object',
@@ -237,6 +240,7 @@ export const mailboxReadAllTool: InternalTool = {
  */
 export const mailboxReadTool: InternalTool = {
   name: 'mailbox.read',
+  executionModel: 'state',
   description: 'Read a specific message by ID. First read will mark it as read and transition pending → processing.',
   inputSchema: {
     type: 'object',
@@ -309,6 +313,7 @@ export const mailboxReadTool: InternalTool = {
  */
 export const mailboxAckTool: InternalTool = {
   name: 'mailbox.ack',
+  executionModel: 'state',
   description: 'Acknowledge a mailbox task after handling it. Requires mailbox.read(id) first and supports completed/failed terminal states.',
   inputSchema: {
     type: 'object',

@@ -19,6 +19,9 @@ import {
   type ToolAuthorizationGrant,
 } from './tool-authorization.js';
 import { executeContextLedgerMemory } from './context-ledger-memory.js';
+import { buildContext } from './context-builder.js';
+import { setContextBuilderOnDemandView } from './context-builder-on-demand-state.js';
+import { getContextWindow, loadContextBuilderSettings } from '../core/user-settings.js';
 
 import { logger } from '../core/logger.js';
 
@@ -65,6 +68,7 @@ export interface ISessionManager {
   deleteSession(sessionId: string): boolean;
   pauseSession?(sessionId: string): boolean;
   resumeSession?(sessionId: string): boolean;
+  updateContext?(sessionId: string, context: Record<string, unknown>): boolean;
   compressContext?(sessionId: string, summarizer?: unknown): Promise<string>;
   getCompressionStatus?(sessionId: string): { compressed: boolean; summary?: string; originalCount?: number };
   isPaused?(sessionId: string): boolean;
@@ -117,6 +121,7 @@ const log = logger.module('RuntimeFacade');
 
 export class RuntimeFacade {
   private currentSessionId: string | null = null;
+  private readonly agentSessionBindings = new Map<string, string>();
   private readonly toolAccessControl = new AgentToolAccessControl();
   private readonly toolAuthorization = new ToolAuthorizationManager();
   private roleToolPolicyPresets: RoleToolPolicyPresetMap = {};
@@ -197,6 +202,14 @@ export class RuntimeFacade {
    */
   listSessions(): SessionInfo[] {
     return this.sessionManager.listSessions();
+  }
+
+  /**
+   * Merge partial context fields into a session context and persist.
+   */
+  updateSessionContext(sessionId: string, context: Record<string, unknown>): boolean {
+    if (typeof this.sessionManager.updateContext !== 'function') return false;
+    return this.sessionManager.updateContext(sessionId, context);
   }
 
   /**
@@ -308,11 +321,22 @@ export class RuntimeFacade {
     agentId: string,
     toolName: string,
     input: unknown,
-    options: { authorizationToken?: string } = {},
+    options: { authorizationToken?: string; sessionId?: string } = {},
   ): Promise<unknown> {
     const startTime = Date.now();
     const toolId = `${agentId}-${toolName}-${startTime}`;
-    const sessionId = this.currentSessionId || 'default';
+    const optionSessionId = typeof options.sessionId === 'string' && options.sessionId.trim().length > 0
+      ? options.sessionId.trim()
+      : null;
+    const boundSessionId = this.agentSessionBindings.get(agentId) ?? null;
+    const sessionId = optionSessionId
+      ?? boundSessionId
+      ?? this.currentSessionId
+      ?? this.sessionManager.getCurrentSession()?.id
+      ?? 'default';
+    if (sessionId !== 'default') {
+      this.agentSessionBindings.set(agentId, sessionId);
+    }
 
     const access = this.toolAccessControl.canUse(agentId, toolName);
     if (!access.allowed) {
@@ -427,6 +451,17 @@ export class RuntimeFacade {
 
       throw error;
     }
+  }
+
+  /**
+   * Bind an agent to a session as the preferred tool-execution context.
+   * This avoids cross-turn/cross-agent session drift when tool requests do not carry sessionId.
+   */
+  bindAgentSession(agentId: string, sessionId: string): void {
+    const normalizedAgentId = agentId.trim();
+    const normalizedSessionId = sessionId.trim();
+    if (normalizedAgentId.length === 0 || normalizedSessionId.length === 0) return;
+    this.agentSessionBindings.set(normalizedAgentId, normalizedSessionId);
   }
 
   private async appendViewImageAttachmentEvent(sessionId: string, toolResult: unknown): Promise<void> {
@@ -841,12 +876,92 @@ export class RuntimeFacade {
     const dedupeKey = turnId && turnId.trim().length > 0 ? `${sessionId}:${turnId}` : undefined;
     if (dedupeKey && this.autoCompactTriggeredTurns.has(dedupeKey)) return false;
 
-    await this.compressContext(sessionId, {
-      trigger: 'auto',
-      contextUsagePercent,
-    });
-    if (dedupeKey) this.autoCompactTriggeredTurns.add(dedupeKey);
-    return true;
+    try {
+      const sessionContext = (session.context ?? {}) as Record<string, unknown>;
+      const agentId = typeof sessionContext.ownerAgentId === 'string' && sessionContext.ownerAgentId.trim().length > 0
+        ? sessionContext.ownerAgentId.trim()
+        : 'finger-project-agent';
+
+      const configuredRootDir =
+        typeof sessionContext.contextLedgerRootDir === 'string' && sessionContext.contextLedgerRootDir.trim().length > 0
+          ? sessionContext.contextLedgerRootDir.trim()
+          : undefined;
+      const systemRoot = path.join(FINGER_PATHS.home, 'system');
+      const inferredRootDir = typeof session.projectPath === 'string' && session.projectPath.startsWith(systemRoot)
+        ? path.join(systemRoot, 'sessions')
+        : FINGER_PATHS.sessions.dir;
+      const rootDir = configuredRootDir ?? inferredRootDir;
+
+      const settings = loadContextBuilderSettings();
+      const configuredBudget = Number.isFinite(settings.historyBudgetTokens) && settings.historyBudgetTokens > 0
+        ? Math.floor(settings.historyBudgetTokens)
+        : Math.floor(getContextWindow() * settings.budgetRatio);
+      const targetBudget = Math.max(1, configuredBudget);
+      const buildMode = settings.mode;
+
+      const rebuilt = await buildContext(
+        {
+          rootDir,
+          sessionId,
+          agentId,
+          mode: 'main',
+        },
+        {
+          targetBudget,
+          buildMode,
+          includeMemoryMd: false,
+          enableTaskGrouping: true,
+          enableModelRanking: settings.enableModelRanking,
+          rankingProviderId: settings.rankingProviderId,
+          timeWindow: {
+            nowMs: Date.now(),
+            halfLifeMs: settings.halfLifeMs,
+            overThresholdRelevance: settings.overThresholdRelevance,
+          },
+        },
+      );
+
+      setContextBuilderOnDemandView({
+        sessionId,
+        agentId,
+        mode: 'main',
+        buildMode,
+        targetBudget,
+        selectedBlockIds: rebuilt.rankedTaskBlocks.map((block) => block.id),
+        metadata: {
+          ...(rebuilt.metadata ?? {}),
+          autoRebuild: true,
+          contextUsagePercent,
+        },
+        messages: rebuilt.messages,
+        createdAt: new Date().toISOString(),
+      });
+
+      this.eventBus.emit({
+        type: 'system_notice',
+        sessionId,
+        timestamp: new Date().toISOString(),
+        payload: {
+          source: 'auto_context_rebuild',
+          contextUsagePercent,
+          turnId,
+          agentId,
+          targetBudget,
+          buildMode,
+          selectedBlockCount: rebuilt.rankedTaskBlocks.length,
+        },
+      });
+
+      if (dedupeKey) this.autoCompactTriggeredTurns.add(dedupeKey);
+      return true;
+    } catch (error) {
+      log.warn('auto context rebuild failed', {
+        sessionId,
+        contextUsagePercent,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return false;
+    }
   }
 
   // ==================== 事件订阅 ====================
