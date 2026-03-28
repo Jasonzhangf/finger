@@ -29,6 +29,8 @@ use protocol::transport::send_responses_http;
 
 const DEFAULT_AUTO_COMPACT_THRESHOLD_RATIO: f64 = 0.85;
 const DEFAULT_FOCUS_MAX_CHARS: usize = 20_000;
+const MAX_MISSING_STREAM_RETRIES: u8 = 10;
+const INITIAL_MISSING_STREAM_BACKOFF_MS: u64 = 500;
 
 #[derive(Debug, Error)]
 pub enum ModelError {
@@ -428,6 +430,7 @@ impl ResponsesChatEngine {
         let mut sanitized_input_override: Option<Vec<Value>> = None;
         let mut has_retried_without_reasoning = false;
         let mut authentication_retry_count: u8 = 0;
+        let mut missing_stream_retry_count: u8 = 0;
 
         loop {
             let request_input = sanitized_input_override.as_deref().unwrap_or(input);
@@ -489,7 +492,20 @@ impl ResponsesChatEngine {
                 Err(error) => return Err(error),
             };
 
-            return parse_wire_response(wire_body);
+            match parse_wire_response(wire_body) {
+                Ok(parsed) => return Ok(parsed),
+                Err(ModelError::MissingStreamResponse)
+                    if missing_stream_retry_count < MAX_MISSING_STREAM_RETRIES =>
+                {
+                    missing_stream_retry_count = missing_stream_retry_count.saturating_add(1);
+                    let exponent = missing_stream_retry_count.saturating_sub(1).min(6);
+                    let backoff_ms =
+                        INITIAL_MISSING_STREAM_BACKOFF_MS.saturating_mul(1_u64 << exponent);
+                    sleep(Duration::from_millis(backoff_ms)).await;
+                    continue;
+                }
+                Err(error) => return Err(error),
+            }
         }
     }
 
@@ -2526,6 +2542,60 @@ mod tests {
             .await
             .expect("complete text should retry on transient auth failure");
         assert_eq!(output, "auth retry ok");
+
+        first_response_mock.assert_async().await;
+        second_response_mock.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn retries_when_sse_stream_missing_completed_payload() {
+        let mut server = Server::new_async().await;
+
+        let first_response_mock = server
+            .mock("POST", "/v1/responses")
+            .match_header("authorization", "Bearer test-key")
+            .with_status(200)
+            .with_header("content-type", "text/event-stream")
+            .with_body(concat!(
+                "event: response.created\n",
+                "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_only_created\"}}\n\n",
+                "data: [DONE]\n\n"
+            ))
+            .expect(1)
+            .create_async()
+            .await;
+
+        let second_response_mock = server
+            .mock("POST", "/v1/responses")
+            .match_header("authorization", "Bearer test-key")
+            .with_status(200)
+            .with_header("content-type", "text/event-stream")
+            .with_body(concat!(
+                "event: response.completed\n",
+                "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_retry_missing_completed\",\"output\":[{\"type\":\"message\",\"content\":[{\"type\":\"output_text\",\"text\":\"missing completed retry ok\"}]}]}}\n\n",
+                "data: [DONE]\n\n"
+            ))
+            .expect(1)
+            .create_async()
+            .await;
+
+        let engine = ResponsesChatEngine::new(LocalModelConfig {
+            provider_id: "test".to_string(),
+            provider_name: "test".to_string(),
+            base_url: server.url(),
+            wire_api: "responses".to_string(),
+            env_key: "TEST_KEY".to_string(),
+            api_key: "test-key".to_string(),
+            model: "gpt-test".to_string(),
+            tool_daemon_url: server.url(),
+            tool_agent_id: "chat-codex".to_string(),
+        });
+
+        let output = engine
+            .complete_text("hello")
+            .await
+            .expect("complete text should retry when stream misses completed payload");
+        assert_eq!(output, "missing completed retry ok");
 
         first_response_mock.assert_async().await;
         second_response_mock.assert_async().await;
