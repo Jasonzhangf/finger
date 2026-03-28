@@ -11,6 +11,14 @@ import {
   consumeContextBuilderOnDemandView,
   shouldRunContextBuilderBootstrapOnce,
 } from '../../runtime/context-builder-on-demand-state.js';
+import {
+  buildContextBuilderHistoryIndex,
+  buildNextIndexedHistoryIndex,
+  buildIndexedHistoryFromSnapshot,
+  extractPinnedMessageIdsFromSessionContext,
+  persistContextBuilderHistoryIndex,
+  readPersistedContextBuilderHistoryIndex,
+} from './context-builder-history-index.js';
 import { join, isAbsolute } from 'path';
 import { FINGER_PATHS } from '../../core/finger-paths.js';
 
@@ -244,6 +252,8 @@ export async function registerFingerRoleModules(
       const rootDir = deps.resolveSessionLedgerRoot
         ? deps.resolveSessionLedgerRoot({ id: session.id, projectPath: session.projectPath })
         : undefined;
+      const persistedIndex = readPersistedContextBuilderHistoryIndex(sessionContext);
+      const pinnedMessageIds = extractPinnedMessageIdsFromSessionContext(sessionContext);
 
       // 默认不自动重组，只在模型显式调用 context_builder.rebuild 后
       // 在下一轮消费一次按需重组视图。
@@ -264,6 +274,37 @@ export async function registerFingerRoleModules(
 
       const onDemand = consumeContextBuilderOnDemandView(sessionId, agentId);
       if (!onDemand) {
+        if (persistedIndex) {
+          const indexed = buildIndexedHistoryFromSnapshot(sessionMessages, persistedIndex, limit);
+          if (indexed && indexed.messages.length > 0) {
+            const indexedMapped = indexed.messages.map((message) => ({
+              ...message,
+              metadata: {
+                ...(message.metadata ?? {}),
+                contextBuilderHistorySource: 'context_builder_indexed',
+                contextBuilderBypassed: false,
+                contextBuilderRebuilt: false,
+                contextBuilderIndexed: true,
+                contextBuilderBuildMode: persistedIndex.buildMode,
+                contextBuilderTargetBudget: persistedIndex.targetBudget,
+                contextBuilderSelectedBlockCount: persistedIndex.selectedBlockIds.length,
+                contextBuilderSelectedMessageCount: persistedIndex.selectedMessageIds.length,
+                contextBuilderDeltaMessageCount: indexed.deltaCount,
+                contextBuilderIndexAnchorMessageId: persistedIndex.anchorMessageId,
+                contextBuilderIndexUpdatedAt: persistedIndex.updatedAt,
+              },
+            }));
+            logger.module('finger-role-modules').info('Applied indexed context history from persisted snapshot', { roleId: role.id, sessionId, selectedCount: indexedMapped.length, selectedMessageCount: persistedIndex.selectedMessageIds.length, deltaCount: indexed.deltaCount, buildMode: persistedIndex.buildMode });
+            persistContextBuilderHistoryIndex(runtime, sessionId, buildNextIndexedHistoryIndex(persistedIndex, indexedMapped));
+            return indexedMapped;
+          }
+          logger.module('finger-role-modules').debug('Persisted context history index yielded no messages, fallback to bootstrap/raw', {
+            roleId: role.id,
+            sessionId,
+            selectedMessageCount: persistedIndex.selectedMessageIds.length,
+          });
+        }
+
         if (shouldRunContextBuilderBootstrapOnce(sessionId, agentId)) {
           const configuredBudget = Number.isFinite(settings.historyBudgetTokens) && settings.historyBudgetTokens > 0
             ? Math.floor(settings.historyBudgetTokens)
@@ -315,34 +356,28 @@ export async function registerFingerRoleModules(
             },
           }));
           if (bootstrappedMapped.length > 0) {
-            logger.module('finger-role-modules').info('Applied one-time bootstrap context rebuild', {
-              roleId: role.id,
-              sessionId,
-              selectedCount: bootstrappedMapped.length,
-              mode: settings.mode,
-              targetBudget: configuredBudget,
-            });
+            const indexSnapshot = buildContextBuilderHistoryIndex(
+              'context_builder_bootstrap',
+              settings.mode,
+              configuredBudget,
+              bootstrapped.rankedTaskBlocks.map((block) => block.id),
+              bootstrapped.messages,
+              pinnedMessageIds.length > 0 ? { pinnedMessageIds } : undefined,
+            );
+            persistContextBuilderHistoryIndex(runtime, sessionId, indexSnapshot);
+            logger.module('finger-role-modules').info('Applied one-time bootstrap context rebuild', { roleId: role.id, sessionId, selectedCount: bootstrappedMapped.length, mode: settings.mode, targetBudget: configuredBudget });
             return bootstrappedMapped;
           }
 
-          logger.module('finger-role-modules').debug('Bootstrap rebuild yielded empty history, fallback to raw session', {
-            roleId: role.id,
-            sessionId,
-            rawMessageCount: sessionMessages.length,
-          });
+          logger.module('finger-role-modules').debug('Bootstrap rebuild yielded empty history, fallback to raw session', { roleId: role.id, sessionId });
         }
-
         const mapped = mapRawSessionMessages(sessionMessages, limit, {
           contextBuilderHistorySource: 'raw_session',
           contextBuilderBypassed: true,
           contextBuilderBypassReason: 'on_demand_not_requested',
           contextBuilderRebuilt: false,
         });
-        logger.module('finger-role-modules').debug('Context builder not requested, using raw session history', {
-          roleId: role.id,
-          sessionId,
-          selectedCount: mapped.length,
-        });
+        logger.module('finger-role-modules').debug('Context builder not requested, using raw session history', { roleId: role.id, sessionId, selectedCount: mapped.length });
         return mapped;
       }
 
@@ -378,15 +413,19 @@ export async function registerFingerRoleModules(
           contextBuilderBypassReason: 'empty_on_demand_result',
           contextBuilderRebuilt: false,
         });
-        logger.module('finger-role-modules').warn('On-demand context builder returned empty history, fallback to raw session', {
-          roleId: role.id,
-          sessionId,
-          rawMessageCount: sessionMessages.length,
-          selectedCount: fallback.length,
-          mode: onDemand.buildMode,
-        });
+        logger.module('finger-role-modules').warn('On-demand context builder returned empty history, fallback to raw session', { roleId: role.id, sessionId, rawMessageCount: sessionMessages.length, selectedCount: fallback.length, mode: onDemand.buildMode });
         return fallback;
       }
+
+      const indexSnapshot = buildContextBuilderHistoryIndex(
+        'context_builder_on_demand',
+        onDemand.buildMode,
+        onDemand.targetBudget,
+        onDemand.selectedBlockIds,
+        onDemand.messages,
+        pinnedMessageIds.length > 0 ? { pinnedMessageIds } : undefined,
+      );
+      persistContextBuilderHistoryIndex(runtime, sessionId, indexSnapshot);
 
       logger.module('finger-role-modules').info('Applied on-demand context builder history', {
         roleId: role.id,

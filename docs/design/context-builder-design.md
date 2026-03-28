@@ -1,6 +1,6 @@
 # Context Builder 动态上下文构建设计
 
-> Last updated: 2026-03-24 23:55 +08:00  
+> Last updated: 2026-03-28 14:25 +08:00  
 > Status: Active  
 > Owner: Jason
 >
@@ -167,3 +167,22 @@ Context Monitor 会显示：
 - `src/orchestration/session-manager.ts`：将 `mode` 传入 `buildContext`
 - `src/server/routes/ledger-routes.ts`：Context Monitor 返回 mode/ranking 元数据
 - `ui/src/components/LeftSidebar/LeftSidebar.tsx`：Settings 选择器
+
+---
+
+## 8. Indexed Continuity（2026-03-28）
+
+为避免“首轮重建后，后续又退回 raw session 顺序”的断裂，新增 `contextBuilderHistoryIndex` 持久化索引（session context 字段）：
+
+- 首次 bootstrap / on-demand rebuild 后，落盘：
+  - `historySelectedMessageIds`
+  - `currentContextMessageIds`
+  - `pinnedMessageIds`（可选）
+  - `anchorMessageId` / `anchorTimestamp`
+- 后续轮次优先走 `context_builder_indexed`：
+  - 合并顺序：`pinned + 历史选中 + 上轮 current + 本轮 delta(anchor 之后)`
+  - 受 `currentContextMaxItems` 约束滚动更新 current 区
+- 仅当索引缺失或索引产物为空时，才退回 bootstrap / raw fallback。
+
+同时，模型侧历史组装新增保护：
+- 当 `contextHistorySource` 为 `context_builder_*` 时，不再让 `metadata.kernelApiHistory` 覆盖 builder 产物。

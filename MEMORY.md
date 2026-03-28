@@ -110,6 +110,8 @@
   Tags: ledger, session, dynamic-view, context-builder, prompt, history-zone
 - [2026-03-26] `finger-262.3` 已实现第一步：context builder 显式区分 `working_set` 与 `historical_memory`。当前 task block 不再参与历史 recall 竞争，始终保留在尾部；`buildContext()` 的 messages 会标记 `contextZone`，metadata 追加 `workingSetTaskBlockCount / historicalTaskBlockCount / workingSetMessageCount / historicalMessageCount / workingSetTokens / historicalTokens`。Context Monitor / session view 映射链路已透出这些分区信息，验证通过：context-builder 定向测试 + TypeScript 编译。  
   Tags: context-builder, working-set, history-zone, ledger, observability
+- [2026-03-28] Context Builder 连续性修复：新增 `contextBuilderHistoryIndex` 持久化索引（history/current/pinned/anchor），并在 `finger-role-modules` 中改为“先走 persisted indexed history，再按需 bootstrap”，避免重启后每次首轮都重建导致历史顺序反复抖动。`chat-codex-module` 同步加保护：当 `contextHistorySource=context_builder_*` 时，不再优先使用 `metadata.kernelApiHistory` 覆盖 builder 结果。新增测试 `tests/unit/server/context-builder-history-index.test.ts`。  
+  Tags: context-builder, indexed-history, bootstrap, kernelApiHistory, ledger
 - [2026-03-26] `finger-262.2` 已完成：prompt 层正式教会模型“当前上下文不是完整历史”。`src/agents/chat-codex/prompt.md`、`coding-cli-system-prompt.ts`、各角色 developer prompt、`skill-prompt-injector.ts` 与 `context_ledger.memory` 工具描述都已统一强调：`working_set` / `historical_memory` 只是 budgeted dynamic view，缺失历史证据时必须先 `context_ledger.memory search`，再 `query(detail=true, slot_start, slot_end)`，不能把 prompt 中缺失当成历史不存在。  
   Tags: ledger, prompt, dynamic-view, context-builder, skills, tool-contract
 - [2026-03-26] `finger-262.1` 已完成：`context_ledger.memory` 现在会把 search 结果提升到 **overflow-history retrieval path**。除了原有 compact hits / slot summaries 外，`search` 会返回 task-block candidates（含 `start_slot/end_slot`、`detail_query_hint`、`match_reason`、`visibility`），并附带 `context_bridge` 明确说明本次检索扫描的是 full ledger、结果可能位于当前 prompt budget 之外。内部 tool wrapper 还会自动补齐 `session_id / agent_id` 到 `_runtime_context`，减少模型手填作用域参数。  
@@ -488,3 +490,30 @@ if (!isNonModuleSender) {
 
 ### 待确认
 - 新闻内容是否真正推送到用户的对话渠道（需要用户确认是否收到QQ消息）
+
+## 2026-03-27 定时可靠性改造（对齐 OpenClaw 方案）
+
+### 目标
+把“定时触发可靠性”从外部 `sleep/at` 依赖，收敛到 Finger 进程内持久调度（OpenClaw 风格）：  
+`daemon 常驻 + 持久任务文件 + 启动补偿 + 调度防重入/防热循环`。
+
+### 本次改动
+1. `ClockTaskInjector` 重构为 **self-rearm setTimeout**（不再 setInterval 叠加）  
+   - 启动立即 `tick`（0ms）执行 missed catch-up。  
+   - 每轮 `finally` 重置下一轮定时，避免卡死后不再调度。  
+   - 自动按最近 `next_fire_at` 计算下一次 wake，空闲时按 poll 间隔巡检。
+2. `ClockTaskInjector` 执行语义修复  
+   - repeat 定时按 `computeNextClockRunForTimer()` 正确推进下一次触发。  
+   - dispatch 失败不吞，记录错误并指数退避重试（30s 起，最高 30min）。  
+   - 写盘改为 `tmp + rename` 原子落盘，降低中断损坏风险。
+3. `clockTool` 去副作用修复  
+   - 移除 `create/list/cancel/update` 里“读取即消费 due timer”逻辑。  
+   - `list` 不再提前把到期任务标记 completed，避免“定时未执行但被查询吞掉”。
+4. `HeartbeatScheduler` 调度可靠性增强  
+   - 改为 one-shot rearm（避免重入）。  
+   - 增加运行态持久化：`~/.finger/schedules/heartbeat-runtime-state.json`。  
+   - 重启后恢复 `lastRun/lastMailboxPromptAt`，并在首轮立即调度。
+
+### 验证
+- `pnpm -s tsc --noEmit` ✅  
+- `pnpm -s vitest tests/unit/tools/internal/clock-integration.test.ts --run` ✅（9/9）

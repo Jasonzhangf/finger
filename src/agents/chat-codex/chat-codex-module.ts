@@ -2130,8 +2130,9 @@ function resolveHistoryItems(
   metadata: Record<string, unknown> | undefined,
 ): Array<Record<string, unknown>> {
   const hasMediaInput = hasMediaInputItemsInMetadata(metadata);
+  const preferContextBuilderHistory = shouldPreferContextBuilderHistory(metadata);
   const fromMetadata = metadata?.kernelApiHistory;
-  if (!hasMediaInput && Array.isArray(fromMetadata)) {
+  if (!hasMediaInput && !preferContextBuilderHistory && Array.isArray(fromMetadata)) {
     const normalized = fromMetadata.filter((item): item is Record<string, unknown> => isRecord(item));
     if (normalized.length > 0) return normalized;
   }
@@ -2148,6 +2149,16 @@ function resolveHistoryItems(
         },
       ],
     }));
+}
+
+function shouldPreferContextBuilderHistory(metadata: Record<string, unknown> | undefined): boolean {
+  if (!metadata) return false;
+  const source = parseOptionalString(metadata.contextHistorySource)?.trim().toLowerCase() ?? '';
+  if (source.startsWith('context_builder')) return true;
+  if (parseOptionalBoolean(metadata.contextBuilderIndexed) === true) return true;
+  if (parseOptionalBoolean(metadata.contextBuilderRebuilt) === true) return true;
+  if (parseOptionalBoolean(metadata.contextBuilderBypassed) === false) return true;
+  return false;
 }
 
 function hasMediaInputItemsInMetadata(metadata: Record<string, unknown> | undefined): boolean {
