@@ -11,6 +11,7 @@ import {
   FINGER_PROJECT_AGENT_ID,
   FINGER_SYSTEM_AGENT_ID,
 } from '../../../agents/finger-general/finger-general-module.js';
+import { setupReviewRuntimeForDispatch } from '../../../agents/finger-system-agent/review-runtime.js';
 import {
   applyExecutionLifecycleTransition,
   resolveLifecycleStageFromResultStatus,
@@ -119,6 +120,7 @@ export async function dispatchTaskToAgent(deps: AgentRuntimeDeps, input: AgentDi
         ...normalizedInput,
         assignment,
       };
+      await setupReviewRuntimeForDispatch(deps, normalizedInput);
     }
     if (originalSessionId
       && typeof normalizedInput.sessionId === 'string'

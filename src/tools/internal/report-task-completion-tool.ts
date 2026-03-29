@@ -10,6 +10,7 @@ import type { ToolRegistry } from '../../runtime/tool-registry.js';
 import type { AgentRuntimeDeps } from '../../server/modules/agent-runtime/types.js';
 import { dispatchTaskToSystemAgent } from '../../agents/finger-system-agent/task-report-dispatcher.js';
 import { emitTaskCompleted } from '../../agents/finger-system-agent/system-events.js';
+import { getReviewRoute } from '../../agents/finger-system-agent/review-route-registry.js';
 
 export interface ReportTaskCompletionInput {
   action: 'report';
@@ -65,6 +66,62 @@ export function registerReportTaskCompletionTool(
         const deliveryArtifacts = typeof params.deliveryArtifacts === 'string'
           ? params.deliveryArtifacts.trim()
           : '';
+
+        const reviewRoute = getReviewRoute(params.taskId);
+        if (reviewRoute?.reviewRequired) {
+          const reviewPrompt = [
+            '[Project Delivery for Review]',
+            `任务ID: ${params.taskId}`,
+            `任务摘要: ${params.taskSummary}`,
+            `结果: ${params.result}`,
+            `项目: ${params.projectId}`,
+            reviewRoute.acceptanceCriteria ? `验收标准: ${reviewRoute.acceptanceCriteria}` : '',
+            deliveryArtifacts ? `交付标的: ${deliveryArtifacts}` : '',
+            '',
+            '请 review agent 执行审查：',
+            '- 通过：报告给 system agent 并标记 task 完成',
+            '- 拒绝：把拒绝意见发回 project agent，要求下一轮修复',
+          ].filter(Boolean).join('\n');
+
+          const reviewDispatch = await deps.agentRuntimeBlock.execute('dispatch', {
+            sourceAgentId: 'finger-project-agent',
+            targetAgentId: reviewRoute.reviewAgentId,
+            task: { prompt: reviewPrompt },
+            sessionId: params.sessionId,
+            blocking: false,
+            metadata: {
+              source: 'project-delivery-report',
+              role: 'system',
+              taskId: params.taskId,
+              projectId: params.projectId,
+              result: params.result,
+              deliveryArtifacts,
+              reviewRequired: true,
+            },
+          } as unknown as Record<string, unknown>) as {
+            ok?: boolean;
+            dispatchId?: string;
+            status?: 'queued' | 'completed' | 'failed';
+            error?: string;
+          };
+
+          if (!reviewDispatch?.ok || reviewDispatch.status === 'failed') {
+            return {
+              ok: false,
+              action: 'report',
+              dispatchId: reviewDispatch?.dispatchId,
+              status: reviewDispatch?.status,
+              error: reviewDispatch?.error ?? 'dispatch to review agent failed',
+            };
+          }
+
+          return {
+            ok: true,
+            action: 'report',
+            dispatchId: reviewDispatch.dispatchId,
+            status: reviewDispatch.status,
+          };
+        }
 
         const dispatch = await dispatchTaskToSystemAgent(deps, {
           taskId: params.taskId,

@@ -14,6 +14,8 @@ export interface TaskReportPayload {
   projectId: string;
   /** 交付标的 */
   deliveryArtifacts?: string;
+  /** 上报来源，默认 finger-project-agent；review 通过上报时会改为 finger-reviewer */
+  sourceAgentId?: string;
 }
 
 export interface TaskReportDispatchResult {
@@ -93,7 +95,9 @@ export async function dispatchTaskToSystemAgent(
   const systemBusy = await isSystemAgentBusy(deps);
 
   const raw = await deps.agentRuntimeBlock.execute('dispatch', {
-    sourceAgentId: 'finger-project-agent',
+    sourceAgentId: typeof payload.sourceAgentId === 'string' && payload.sourceAgentId.trim().length > 0
+      ? payload.sourceAgentId.trim()
+      : 'finger-project-agent',
     targetAgentId: SYSTEM_AGENT_ID,
     task: {
       prompt: `[Task Report]
