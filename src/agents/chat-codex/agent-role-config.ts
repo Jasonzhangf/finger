@@ -5,6 +5,7 @@ const CORE_EXECUTION_TOOLS = [
   'write_stdin',
   'apply_patch',
   'view_image',
+  'send_local_image',
   'web_search',
   'update_plan',
   'context_ledger.memory',

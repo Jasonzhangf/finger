@@ -35,6 +35,16 @@ const MIME_BY_EXTENSION: Record<string, string> = {
   '.heif': 'image/heif',
 };
 
+function resolveAttachmentUrlForChannel(channelId: string, resolvedPath: string): string {
+  const normalized = channelId.trim().toLowerCase();
+  // openclaw-qqbot currently expects plain local path for "local file" detection.
+  // Passing file:// URL causes it to be classified as unsupported media URL.
+  if (normalized === 'qqbot') {
+    return resolvedPath;
+  }
+  return pathToFileURL(resolvedPath).toString();
+}
+
 function parseInput(input: unknown): SendLocalImageInput {
   if (!input || typeof input !== 'object') {
     throw new Error('send_local_image input must be an object');
@@ -139,7 +149,7 @@ export function registerSendLocalImageTool(
         attachments: [
           {
             type: 'image',
-            url: pathToFileURL(resolvedPath).toString(),
+            url: resolveAttachmentUrlForChannel(channelId, resolvedPath),
             filename: path.basename(resolvedPath),
             name: path.basename(resolvedPath),
             mimeType,
@@ -158,3 +168,7 @@ export function registerSendLocalImageTool(
     },
   });
 }
+
+export const __sendLocalImageInternals = {
+  resolveAttachmentUrlForChannel,
+};

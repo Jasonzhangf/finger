@@ -6,6 +6,7 @@ use finger_kernel_protocol::{
     ErrorEvent, Event, EventMsg, InputItem, Op, SessionConfiguredEvent, Submission,
     TaskCompleteEvent, TaskStartedEvent, TurnAbortReason, TurnAbortedEvent, UserTurnOptions,
 };
+use serde_json::Value;
 use thiserror::Error;
 use tokio::sync::mpsc::{self, UnboundedSender};
 use tokio::task::JoinHandle;
@@ -265,9 +266,13 @@ fn spawn_task(
         let mut pending = initial_request;
         let mut last_agent_message: Option<String> = None;
         let mut last_metadata_json: Option<String> = None;
+        let mut continuation_history_items: Option<Vec<Value>> = None;
 
         loop {
             if !pending.items.is_empty() {
+                if let Some(history_items) = continuation_history_items.as_ref() {
+                    pending.options.history_items = history_items.clone();
+                }
                 let (progress_tx, mut progress_rx) = mpsc::unbounded_channel::<EventMsg>();
                 let progress_event_tx = event_tx.clone();
                 let progress_event_id = task_sub_id.clone();
@@ -301,6 +306,13 @@ fn spawn_task(
                     Ok(turn_result) => {
                         if turn_result.last_agent_message.is_some() {
                             last_agent_message = turn_result.last_agent_message;
+                        }
+                        if let Some(metadata_json) = turn_result.metadata_json.as_deref() {
+                            if let Some(history_items) =
+                                extract_api_history_items_from_metadata(metadata_json)
+                            {
+                                continuation_history_items = Some(history_items);
+                            }
                         }
                         if turn_result.metadata_json.is_some() {
                             last_metadata_json = turn_result.metadata_json;
@@ -351,6 +363,13 @@ fn spawn_task(
     }
 }
 
+fn extract_api_history_items_from_metadata(metadata_json: &str) -> Option<Vec<Value>> {
+    let parsed: Value = serde_json::from_str(metadata_json).ok()?;
+    let object = parsed.as_object()?;
+    let api_history = object.get("api_history")?.as_array()?;
+    Some(api_history.to_vec())
+}
+
 async fn send_event(
     event_tx: &mpsc::Sender<Event>,
     event: Event,
@@ -365,6 +384,7 @@ mod tests {
         EventMsg, InputItem, ModelRoundEvent, Op, Submission, ToolCallEvent, ToolResultEvent,
         TurnAbortReason, UserTurnOptions,
     };
+    use std::sync::{Arc, Mutex};
 
     async fn recv_event(rx: &mut mpsc::Receiver<Event>) -> Event {
         tokio::time::timeout(Duration::from_secs(2), rx.recv())
@@ -530,6 +550,123 @@ mod tests {
             .await
             .expect("submit shutdown");
         runtime.join().await.expect("join runtime");
+    }
+
+    struct ContinuationHistoryEngine {
+        history_counts: Arc<Mutex<Vec<usize>>>,
+    }
+
+    #[async_trait]
+    impl ChatEngine for ContinuationHistoryEngine {
+        async fn run_turn(
+            &self,
+            request: &TurnRequest,
+            _progress_tx: Option<UnboundedSender<EventMsg>>,
+        ) -> Result<TurnRunResult, String> {
+            let mut guard = self.history_counts.lock().expect("history count lock poisoned");
+            let call_index = guard.len();
+            guard.push(request.options.history_items.len());
+            drop(guard);
+
+            let metadata_json = if call_index == 0 {
+                Some(
+                    serde_json::json!({
+                        "api_history": [
+                            {
+                                "role": "user",
+                                "content": [{"type":"input_text","text":"first"}]
+                            },
+                            {
+                                "role": "assistant",
+                                "content": [{"type":"output_text","text":"ok"}]
+                            }
+                        ]
+                    })
+                    .to_string(),
+                )
+            } else {
+                None
+            };
+
+            let last = request.items.iter().rev().find_map(|item| match item {
+                InputItem::Text { text } => Some(text.clone()),
+                InputItem::Image { .. } | InputItem::LocalImage { .. } => None,
+            });
+            Ok(TurnRunResult {
+                last_agent_message: last,
+                metadata_json,
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn queued_followup_turn_reuses_previous_api_history_items() {
+        let history_counts = Arc::new(Mutex::new(Vec::<usize>::new()));
+        let engine: Arc<dyn ChatEngine> = Arc::new(ContinuationHistoryEngine {
+            history_counts: Arc::clone(&history_counts),
+        });
+        let mut runtime = KernelRuntime::spawn_with_engine(
+            KernelConfig {
+                task_idle_timeout: Duration::from_millis(250),
+                ..KernelConfig::default()
+            },
+            engine,
+        );
+        let _ = recv_event(runtime.events_mut()).await;
+
+        runtime
+            .submit(Submission {
+                id: "sub-1".to_string(),
+                op: Op::UserTurn {
+                    items: vec![InputItem::Text {
+                        text: "first".to_string(),
+                    }],
+                    options: UserTurnOptions::default(),
+                },
+            })
+            .await
+            .expect("submit first turn");
+        let started = recv_event(runtime.events_mut()).await;
+        assert!(matches!(started.msg, EventMsg::TaskStarted(_)));
+
+        runtime
+            .submit(Submission {
+                id: "sub-2".to_string(),
+                op: Op::UserTurn {
+                    items: vec![InputItem::Text {
+                        text: "second".to_string(),
+                    }],
+                    options: UserTurnOptions::default(),
+                },
+            })
+            .await
+            .expect("submit second turn");
+
+        let completed = recv_event(runtime.events_mut()).await;
+        assert!(matches!(
+            completed.msg,
+            EventMsg::TaskComplete(TaskCompleteEvent {
+                last_agent_message: Some(ref message),
+                ..
+            }) if message == "second"
+        ));
+
+        runtime
+            .submit(Submission {
+                id: "shutdown".to_string(),
+                op: Op::Shutdown,
+            })
+            .await
+            .expect("submit shutdown");
+        runtime.join().await.expect("join runtime");
+
+        let counts = history_counts.lock().expect("history count lock poisoned");
+        assert!(counts.len() >= 2, "expected two run_turn calls, got {:?}", *counts);
+        assert_eq!(counts[0], 0, "first run should keep submitted history");
+        assert_eq!(
+            counts[1], 2,
+            "queued follow-up run should reuse prior api_history items"
+        );
     }
 
     struct ProgressTestEngine;
