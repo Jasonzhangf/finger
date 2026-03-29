@@ -239,6 +239,7 @@ export function registerAllRoutes(app: Express, deps: RegisterAllRoutesDeps): vo
 
   registerProjectRoutes(app, {
     registry: deps.registry,
+    sessionManager: deps.sessionManager,
   });
 
   registerHeartbeatRoutes(app);

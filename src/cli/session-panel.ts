@@ -29,6 +29,8 @@ interface SessionPanelState {
   target: string;
   sessionId: string;
   history: PanelHistoryEntry[];
+  projectAgentTarget?: string;
+  panelName?: string;
 }
 
 interface SessionPanelOptions {
@@ -37,6 +39,8 @@ interface SessionPanelOptions {
   target: string;
   sessionId?: string;
   events: boolean;
+  projectAgentTarget?: string;
+  panelName?: string;
 }
 
 interface SessionRecord {
@@ -83,6 +87,8 @@ export async function startSessionPanel(options: SessionPanelOptions): Promise<v
     target: options.target,
     sessionId: await resolveSessionId(options.daemonUrl, options.sessionId),
     history: [],
+    projectAgentTarget: options.projectAgentTarget,
+    panelName: options.panelName,
   };
 
   state.history = await loadSessionHistory(options.daemonUrl, state.sessionId);
@@ -192,7 +198,7 @@ async function runPanelCommand(input: string, state: SessionPanelState, daemonUr
   }
 
   if (command === 'help') {
-    printHelp();
+    printHelp(state);
     return true;
   }
 
@@ -204,7 +210,27 @@ async function runPanelCommand(input: string, state: SessionPanelState, daemonUr
   if (command === 'session') {
     clog.log(`Session: ${state.sessionId}`);
     clog.log(`Target:  ${state.target}`);
+    if (typeof state.projectAgentTarget === 'string' && state.projectAgentTarget.trim().length > 0) {
+      clog.log(`Project Agent: ${state.projectAgentTarget}`);
+    }
     clog.log('');
+    return true;
+  }
+
+  if (command === 'systemagent') {
+    state.target = 'finger-system-agent';
+    clog.log(`Target switched to: ${state.target}\n`);
+    return true;
+  }
+
+  if (command === 'agent') {
+    const projectTarget = state.projectAgentTarget?.trim();
+    if (!projectTarget) {
+      clog.log('No project agent bound for this panel. Use /target <moduleId>.\n');
+      return true;
+    }
+    state.target = projectTarget;
+    clog.log(`Target switched to project agent: ${state.target}\n`);
     return true;
   }
 
@@ -243,7 +269,7 @@ async function runPanelCommand(input: string, state: SessionPanelState, daemonUr
   }
 
   clog.log(`Unknown command: /${command}`);
-  printHelp();
+  printHelp(state);
   return true;
 }
 
@@ -501,19 +527,28 @@ async function requestJson<T>(url: string, init: RequestInit = {}): Promise<T> {
 }
 
 function printHeader(state: SessionPanelState): void {
-  clog.log('\nSession Panel (CLI IO Gateway)');
+  const panelName = state.panelName?.trim() || 'Session Panel (CLI IO Gateway)';
+  clog.log(`\n${panelName}`);
   clog.log('------------------------------');
   clog.log(`Session: ${state.sessionId}`);
   clog.log(`Target:  ${state.target}`);
-  printHelp();
+  if (typeof state.projectAgentTarget === 'string' && state.projectAgentTarget.trim().length > 0) {
+    clog.log(`Project Agent: ${state.projectAgentTarget}`);
+  }
+  printHelp(state);
 }
 
-function printHelp(): void {
+function printHelp(state?: Pick<SessionPanelState, 'projectAgentTarget'>): void {
+  const hasProjectAgent = typeof state?.projectAgentTarget === 'string' && state.projectAgentTarget.trim().length > 0;
   clog.log('Commands:');
   clog.log('  /help                 Show this help');
   clog.log('  /history              Show local conversation history');
   clog.log('  /session              Show current session and target');
   clog.log('  /target <moduleId>    Switch target gateway/agent');
+  if (hasProjectAgent) {
+    clog.log('  /systemagent          Switch target to finger-system-agent');
+    clog.log('  /agent                Switch target back to current project agent');
+  }
   clog.log('  /new [name]           Create and switch to new session');
   clog.log('  /switch <sessionId>   Switch to existing session');
   clog.log('  /exit                 Exit panel');

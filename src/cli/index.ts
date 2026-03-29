@@ -11,6 +11,7 @@ import { registerDaemonCommand } from './daemon.js';
 import { registerChatCommand } from './chat-mode.js';
 import { registerChatCodexCommand } from './chat-codex.js';
 import { registerSessionPanelCommand } from './session-panel.js';
+import { registerTuiCommand } from './tui.js';
 import { loadDynamicCliPlugins, registerPluginCommand } from './plugin-loader.js';
 import { registerCapabilityCommand, registerCliCapabilityAliases } from './cli-capability-loader.js';
 import { registerToolCommand } from './tool-command.js';
@@ -215,6 +216,7 @@ async function main(): Promise<void> {
   registerChatCommand(program);
   registerChatCodexCommand(program);
   registerSessionPanelCommand(program);
+  registerTuiCommand(program);
   registerPluginCommand(program);
   registerCapabilityCommand(program);
   registerToolCommand(program);
