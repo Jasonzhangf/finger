@@ -7,6 +7,12 @@ export interface OrchestrationReviewPolicy {
   enabled: boolean;
   stages?: string[];
   strictness?: string;
+  /**
+   * Dispatch review mode:
+   * - off: do not auto-review project dispatch completion
+   * - always: every system -> project dispatch completion must go through reviewer
+   */
+  dispatchReviewMode?: 'off' | 'always';
 }
 
 export interface OrchestrationAgentEntry {
@@ -53,6 +59,7 @@ export const DEFAULT_ORCHESTRATION_CONFIG: OrchestrationConfigV1 = {
       reviewPolicy: {
         enabled: false,
         stages: ['execution_post'],
+        dispatchReviewMode: 'off',
       },
       agents: [
         {
@@ -108,6 +115,7 @@ export const DEFAULT_ORCHESTRATION_CONFIG: OrchestrationConfigV1 = {
       reviewPolicy: {
         enabled: false,
         stages: ['execution_post'],
+        dispatchReviewMode: 'off',
       },
       agents: [
         {
@@ -162,7 +170,7 @@ export const DEFAULT_ORCHESTRATION_CONFIG: OrchestrationConfigV1 = {
 
 export function normalizeReviewPolicy(raw: unknown): OrchestrationReviewPolicy {
   if (typeof raw !== 'object' || raw === null) {
-    return { enabled: false };
+    return { enabled: false, dispatchReviewMode: 'off' };
   }
   const record = raw as Record<string, unknown>;
   const stages = Array.isArray(record.stages)
@@ -178,10 +186,15 @@ export function normalizeReviewPolicy(raw: unknown): OrchestrationReviewPolicy {
   const strictness = typeof record.strictness === 'string' && record.strictness.trim().length > 0
     ? record.strictness.trim()
     : undefined;
+  const dispatchReviewMode = record.dispatchReviewMode === 'always'
+    || record.dispatch_review_mode === 'always'
+    ? 'always'
+    : 'off';
   return {
     enabled: record.enabled === true,
     ...(stages.length > 0 ? { stages } : {}),
     ...(strictness ? { strictness } : {}),
+    dispatchReviewMode,
   };
 }
 

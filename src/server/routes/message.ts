@@ -48,6 +48,43 @@ import {
   executeBlockingMessageRoute,
 } from './message-route-execution.js';
 
+const TRANSIENT_LEDGER_SOURCE_ALLOWLIST = new Set([
+  'system-heartbeat',
+  'mailbox-check',
+  'clock',
+  'news-cron',
+  'email-cron',
+  'user_notification',
+  'mailbox-cli',
+]);
+
+function parseBooleanFlag(value: unknown): boolean | undefined {
+  if (typeof value === 'boolean') return value;
+  if (typeof value === 'string') {
+    const normalized = value.trim().toLowerCase();
+    if (normalized === 'true' || normalized === '1' || normalized === 'yes') return true;
+    if (normalized === 'false' || normalized === '0' || normalized === 'no') return false;
+  }
+  return undefined;
+}
+
+function shouldUseTransientLedgerForInboundMessage(message: unknown): {
+  enabled: boolean;
+  source?: string;
+} {
+  if (!isObjectRecord(message)) return { enabled: false };
+  const metadata = isObjectRecord(message.metadata) ? message.metadata : {};
+  const source = typeof metadata.source === 'string' ? metadata.source.trim().toLowerCase() : '';
+  const explicit = parseBooleanFlag(metadata.transientLedger ?? metadata.transient_ledger);
+  if (explicit === true) return { enabled: true, ...(source ? { source } : {}) };
+  if (explicit === false) return { enabled: false, ...(source ? { source } : {}) };
+  if (metadata.systemDirectInject === true) return { enabled: true, ...(source ? { source } : {}) };
+  if (source && TRANSIENT_LEDGER_SOURCE_ALLOWLIST.has(source)) {
+    return { enabled: true, source };
+  }
+  return { enabled: false, ...(source ? { source } : {}) };
+}
+
 
 export function registerMessageRoutes(app: Express, deps: MessageRouteDeps): void {
   app.post('/api/v1/message', async (req, res) => {
@@ -301,6 +338,18 @@ export function registerMessageRoutes(app: Express, deps: MessageRouteDeps): voi
     if (requestSessionId) {
       deps.runtime.setCurrentSession(requestSessionId);
       deps.runtime.bindAgentSession(targetId, requestSessionId);
+    }
+    if (requestSessionId) {
+      const transientPolicy = shouldUseTransientLedgerForInboundMessage(requestMessage);
+      if (transientPolicy.enabled) {
+        const mode = `transient-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+        deps.sessionManager.setTransientLedgerMode(requestSessionId, mode, {
+          source: transientPolicy.source,
+          autoDeleteOnStop: true,
+        });
+      } else if (inferredRole === 'user') {
+        deps.sessionManager.clearTransientLedgerMode(requestSessionId);
+      }
     }
     // 记录当前渠道授权策略（供工具调用时使用）
 

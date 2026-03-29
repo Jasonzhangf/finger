@@ -21,6 +21,7 @@ import {
 import { executeContextLedgerMemory } from './context-ledger-memory.js';
 import { buildContext } from './context-builder.js';
 import { setContextBuilderOnDemandView } from './context-builder-on-demand-state.js';
+import { SessionControlPlaneStore } from './session-control-plane.js';
 import { getContextWindow, loadContextBuilderSettings } from '../core/user-settings.js';
 
 import { logger } from '../core/logger.js';
@@ -122,6 +123,7 @@ const log = logger.module('RuntimeFacade');
 export class RuntimeFacade {
   private currentSessionId: string | null = null;
   private readonly agentSessionBindings = new Map<string, string>();
+  private readonly sessionControlPlaneStore = new SessionControlPlaneStore();
   private readonly toolAccessControl = new AgentToolAccessControl();
   private readonly toolAuthorization = new ToolAuthorizationManager();
   private roleToolPolicyPresets: RoleToolPolicyPresetMap = {};
@@ -462,6 +464,28 @@ export class RuntimeFacade {
     const normalizedSessionId = sessionId.trim();
     if (normalizedAgentId.length === 0 || normalizedSessionId.length === 0) return;
     this.agentSessionBindings.set(normalizedAgentId, normalizedSessionId);
+    try {
+      const provider = 'finger';
+      const latest = this.sessionControlPlaneStore.list({ agentId: normalizedAgentId, provider })[0];
+      const sameBinding = latest
+        && latest.fingerSessionId === normalizedSessionId
+        && latest.providerSessionId === normalizedSessionId;
+      if (!sameBinding) {
+        this.sessionControlPlaneStore.set(
+          normalizedSessionId,
+          normalizedAgentId,
+          provider,
+          normalizedSessionId,
+          { source: 'runtime.bindAgentSession' },
+        );
+      }
+    } catch (error) {
+      log.warn('Failed to persist session control-plane binding', {
+        agentId: normalizedAgentId,
+        sessionId: normalizedSessionId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
   }
 
   private async appendViewImageAttachmentEvent(sessionId: string, toolResult: unknown): Promise<void> {

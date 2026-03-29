@@ -127,11 +127,13 @@ function parseSingleCommand(
       }
     }
   } else if (category === 'agent') {
-    if (action === 'list' || !action) {
+    if (action === 'list') {
       type = CommandType.AGENT_LIST;
       if (param && param.startsWith('/')) {
         params.path = param;
       }
+    } else if (!action) {
+      type = CommandType.AGENT;
     } else if (action === 'new') {
       type = CommandType.AGENT_NEW;
     } else if (action === 'switch' && param) {

@@ -2,6 +2,7 @@ import { logger } from '../../core/logger.js';
 import type { SessionManager } from '../../orchestration/session-manager.js';
 import type { UnifiedEventBus } from '../../runtime/event-bus.js';
 import type { ChatCodexLoopEvent } from '../../agents/finger-general/finger-general-module.js';
+import type { AgentDispatchRequest } from './agent-runtime/types.js';
 import type { AgentStatusSubscriber } from './agent-status-subscriber.js';
 import { isObjectRecord } from '../common/object.js';
 import {
@@ -46,6 +47,8 @@ export interface EventForwardingDeps {
   asString: (value: unknown) => string | undefined;
   generalAgentId: string;
   isAgentBusy?: (agentId: string) => boolean | Promise<boolean>;
+  dispatchTaskToAgent?: (request: AgentDispatchRequest) => Promise<unknown>;
+  resolveReviewPolicy?: () => { enabled: boolean; dispatchReviewMode?: 'off' | 'always' };
 }
 
 
@@ -63,6 +66,8 @@ export function attachEventForwarding(deps: EventForwardingDeps): {
     asString,
     generalAgentId,
     isAgentBusy,
+    dispatchTaskToAgent,
+    resolveReviewPolicy,
   } = deps;
   const latestBodyBySession = new Map<string, string>();
   const dispatchLedgerDedup = new Map<string, number>();
@@ -212,6 +217,28 @@ export function attachEventForwarding(deps: EventForwardingDeps): {
       }
     }
     if (event.phase === 'turn_complete' || event.phase === 'turn_error') {
+      const finalizeFinishReason = event.phase === 'turn_complete'
+        && typeof event.payload.finishReason === 'string'
+        ? event.payload.finishReason
+        : undefined;
+      const sessionManagerWithTransientFinalize = sessionManager as {
+        finalizeTransientLedgerMode?: (
+          sessionId: string,
+          options?: { finishReason?: string; keepOnFailure?: boolean },
+        ) => Promise<unknown>;
+      };
+      if (typeof sessionManagerWithTransientFinalize.finalizeTransientLedgerMode === 'function') {
+        void sessionManagerWithTransientFinalize.finalizeTransientLedgerMode(event.sessionId, {
+          finishReason: finalizeFinishReason,
+          keepOnFailure: event.phase === 'turn_error',
+        }).catch((err) => {
+          logger.module('event-forwarding').warn('Failed to finalize transient ledger mode', {
+            sessionId: event.sessionId,
+            finishReason: finalizeFinishReason,
+            error: err instanceof Error ? err.message : String(err),
+          });
+        });
+      }
       const latestBody = latestBodyBySession.get(event.sessionId);
       if (agentStatusSubscriber) {
         const finalReply = event.phase === 'turn_complete'
@@ -365,6 +392,8 @@ export function attachEventForwarding(deps: EventForwardingDeps): {
     shouldSkipDispatchLedgerEntry,
     addLedgerPointerMessage,
     isAgentBusy,
+    dispatchTaskToAgent,
+    resolveReviewPolicy,
   });
 
   attachControlLifecycleForwarding({

@@ -94,7 +94,7 @@ describe('dispatchTaskToAgent', () => {
     expect(res.ok).toBe(true);
     expect(res.status).toBe('completed');
     expect(sessionCalls.some((c) => c.role === 'user' && c.content === 'run test' && c.type === 'dispatch')).toBe(true);
-    expect(sessionManager.updateContext).toHaveBeenCalledWith('child-session-1', expect.objectContaining({
+    expect(sessionManager.updateContext).toHaveBeenCalledWith('session-1', expect.objectContaining({
       executionLifecycle: expect.objectContaining({
         stage: 'completed',
         dispatchId: 'dispatch-1',
@@ -116,7 +116,7 @@ describe('dispatchTaskToAgent', () => {
     expect(res.ok).toBe(false);
     expect(res.status).toBe('failed');
     expect(String(res.error)).toContain('provider timeout');
-    expect(sessionManager.updateContext).toHaveBeenCalledWith('child-session-1', expect.objectContaining({
+    expect(sessionManager.updateContext).toHaveBeenCalledWith('session-1', expect.objectContaining({
       executionLifecycle: expect.objectContaining({
         stage: 'failed',
         substage: 'dispatch_execute_final_error',
@@ -140,7 +140,7 @@ describe('dispatchTaskToAgent', () => {
     expect(res.ok).toBe(false);
     expect(res.status).toBe('failed');
     expect(String(res.error)).toContain('target busy');
-    expect(sessionManager.updateContext).toHaveBeenCalledWith('child-session-1', expect.objectContaining({
+    expect(sessionManager.updateContext).toHaveBeenCalledWith('session-1', expect.objectContaining({
       executionLifecycle: expect.objectContaining({
         stage: 'failed',
         dispatchId: 'dispatch-fail',
@@ -205,7 +205,7 @@ describe('dispatchTaskToAgent', () => {
     expect(sessionManager.findSessionsByProjectPath).toHaveBeenCalledWith('/tmp/project-a');
     expect(sessionManager.createSession).not.toHaveBeenCalled();
     expect(sessionManager.setCurrentSession).toHaveBeenCalledWith('root-session-2');
-    expect((deps as any).ensureRuntimeChildSession).toHaveBeenCalledWith(expect.objectContaining({ id: 'root-session-2' }), 'finger-project-agent');
+    expect((deps as any).ensureRuntimeChildSession).not.toHaveBeenCalled();
   });
 
   it('defaults to latest existing session when no session/sessionStrategy is provided', async () => {
@@ -221,7 +221,7 @@ describe('dispatchTaskToAgent', () => {
     expect(sessionManager.findSessionsByProjectPath).toHaveBeenCalledWith('/tmp/project-a');
     expect(sessionManager.createSession).not.toHaveBeenCalled();
     expect(sessionManager.setCurrentSession).toHaveBeenCalledWith('root-session-2');
-    expect((deps as any).ensureRuntimeChildSession).toHaveBeenCalledWith(expect.objectContaining({ id: 'root-session-2' }), 'finger-project-agent');
+    expect((deps as any).ensureRuntimeChildSession).not.toHaveBeenCalled();
   });
 
   it('creates a new root session when sessionStrategy=new', async () => {
@@ -237,7 +237,7 @@ describe('dispatchTaskToAgent', () => {
     expect(res.ok).toBe(true);
     expect(sessionManager.createSession).toHaveBeenCalledWith('/tmp/project-b', undefined, { allowReuse: false });
     expect(sessionManager.setCurrentSession).toHaveBeenCalledWith('new-session-project-b');
-    expect((deps as any).ensureRuntimeChildSession).toHaveBeenCalledWith(expect.objectContaining({ id: 'new-session-project-b' }), 'finger-project-agent');
+    expect((deps as any).ensureRuntimeChildSession).not.toHaveBeenCalled();
   });
 
   it('marks queued_mailbox dispatches as dispatch_mailbox_wait_ack in lifecycle', async () => {
@@ -259,7 +259,7 @@ describe('dispatchTaskToAgent', () => {
 
     expect(res.ok).toBe(true);
     expect(res.status).toBe('queued');
-    expect(sessionManager.updateContext).toHaveBeenCalledWith('child-session-1', expect.objectContaining({
+    expect(sessionManager.updateContext).toHaveBeenCalledWith('session-1', expect.objectContaining({
       executionLifecycle: expect.objectContaining({
         stage: 'dispatching',
         substage: 'dispatch_mailbox_wait_ack',
@@ -268,5 +268,20 @@ describe('dispatchTaskToAgent', () => {
         delivery: 'mailbox',
       }),
     }));
+  });
+
+  it('uses runtime child session only for reviewer target', async () => {
+    const { deps, sessionManager } = createDeps();
+    const res = await mod.dispatchTaskToAgent(deps as any, {
+      sourceAgentId: 'finger-system-agent',
+      targetAgentId: 'finger-reviewer',
+      task: 'review this',
+      sessionStrategy: 'latest',
+      projectPath: '/tmp/project-a',
+    } as any);
+
+    expect(res.ok).toBe(true);
+    expect(sessionManager.setCurrentSession).toHaveBeenCalledWith('root-session-2');
+    expect((deps as any).ensureRuntimeChildSession).toHaveBeenCalledWith(expect.objectContaining({ id: 'root-session-2' }), 'finger-reviewer');
   });
 });

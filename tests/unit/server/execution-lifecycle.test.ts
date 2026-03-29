@@ -106,4 +106,38 @@ describe('execution-lifecycle', () => {
     expect(resolveLifecycleStageFromResultStatus('failed')).toBe('failed');
     expect(resolveLifecycleStageFromResultStatus('weird-status')).toBeNull();
   });
+
+  it('self-heals stale system alias session ids by remapping to current system session', () => {
+    const sessionManager = createSessionManager() as ReturnType<typeof createSessionManager> & {
+      getOrCreateSystemSession: () => { id: string };
+    };
+    sessionManager.sessions.set('session-system-current', {
+      id: 'session-system-current',
+      context: {},
+    });
+    sessionManager.getOrCreateSystemSession = vi.fn(() => ({
+      id: 'session-system-current',
+    }));
+
+    const applied = applyExecutionLifecycleTransition(
+      sessionManager as any,
+      'system-legacy-stale',
+      {
+        stage: 'running',
+        updatedBy: 'test',
+      },
+    );
+
+    expect(applied).not.toBeNull();
+    expect(sessionManager.getOrCreateSystemSession).toHaveBeenCalledTimes(1);
+    expect(sessionManager.updateContext).toHaveBeenCalledWith(
+      'session-system-current',
+      expect.objectContaining({
+        executionLifecycle: expect.objectContaining({
+          stage: 'running',
+          updatedBy: 'test',
+        }),
+      }),
+    );
+  });
 });

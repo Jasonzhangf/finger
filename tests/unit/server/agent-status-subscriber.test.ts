@@ -463,6 +463,52 @@ describe('AgentStatusSubscriber', () => {
       dispatchSubscriber.stop();
     });
 
+    it('当 childSessionId 与父会话相同/等于当前会话时，不应显示子会话关系', async () => {
+      const mockMessageHub = {
+        routeToOutput: vi.fn().mockResolvedValue(undefined),
+      };
+
+      const dispatchSubscriber = new AgentStatusSubscriber(eventBus, mockAgentRuntimeDeps, mockMessageHub);
+      dispatchSubscriber.setPrimaryAgent('agent-1');
+      dispatchSubscriber.registerSession('session-dispatch-relation', {
+        channel: 'qqbot',
+        envelopeId: 'env-dispatch-relation',
+      });
+      dispatchSubscriber.start();
+
+      const dispatchEvent: RuntimeEvent = {
+        type: 'agent_runtime_dispatch',
+        sessionId: 'session-dispatch-relation',
+        timestamp: new Date().toISOString(),
+        payload: {
+          dispatchId: 'dispatch-relation-1',
+          sourceAgentId: 'agent-1',
+          targetAgentId: 'finger-system-agent',
+          status: 'completed',
+          childSessionId: 'session-dispatch-relation',
+          parentSessionId: 'session-dispatch-relation',
+          result: {
+            status: 'completed',
+            summary: 'ok',
+          },
+        },
+      };
+
+      await eventBus.emit(dispatchEvent);
+      await new Promise(resolve => setTimeout(resolve, 80));
+
+      const dispatchCall = mockMessageHub.routeToOutput.mock.calls.find(
+        (call: unknown[]) => call[0] === 'channel-bridge-qqbot',
+      );
+      expect(dispatchCall).toBeDefined();
+      const payload = dispatchCall?.[1] as { content?: string };
+      const content = typeof payload?.content === 'string' ? payload.content : '';
+      expect(content).not.toContain('关系: 子会话');
+      expect(content).not.toContain('父会话');
+
+      dispatchSubscriber.stop();
+    });
+
     it('应该回退 runtime 子会话到 root session 的 envelope 映射', async () => {
       const mockMessageHub = {
         routeToOutput: vi.fn().mockResolvedValue(undefined),

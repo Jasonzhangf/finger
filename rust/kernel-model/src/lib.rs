@@ -1641,10 +1641,20 @@ fn estimate_chars_in_json(value: &Value) -> usize {
         Value::Number(_) => 8,
         Value::String(text) => text.len(),
         Value::Array(items) => items.iter().map(estimate_chars_in_json).sum(),
-        Value::Object(map) => map
-            .iter()
-            .map(|(key, item)| key.len() + estimate_chars_in_json(item))
-            .sum(),
+        Value::Object(map) => {
+            // Image attachments should not inflate text-context budget.
+            // They are non-text multimodal payloads and are billed/handled separately by model providers.
+            if matches!(
+                map.get("type").and_then(Value::as_str),
+                Some("input_image") | Some("image") | Some("local_image")
+            ) {
+                return 16;
+            }
+
+            map.iter()
+                .map(|(key, item)| key.len() + estimate_chars_in_json(item))
+                .sum()
+        }
     }
 }
 
@@ -2302,6 +2312,31 @@ mod tests {
         let trigger_by_compactable = compactable_tokens > threshold_tokens;
         assert!(trigger_by_total);
         assert!(!trigger_by_compactable);
+    }
+
+    #[test]
+    fn context_budget_ignores_large_input_image_payload_size() {
+        let plain_history = vec![json!({
+            "role": "user",
+            "content": [{ "type": "input_text", "text": "hello" }]
+        })];
+        let plain_tokens = estimate_tokens_in_history(&plain_history);
+
+        let huge_data_url = format!("data:image/png;base64,{}", "A".repeat(800_000));
+        let with_image_history = vec![
+            json!({
+                "role": "user",
+                "content": [{ "type": "input_text", "text": "hello" }]
+            }),
+            json!({
+                "role": "user",
+                "content": [{ "type": "input_image", "image_url": huge_data_url }]
+            }),
+        ];
+        let with_image_tokens = estimate_tokens_in_history(&with_image_history);
+
+        // Non-text image payloads are tracked as a tiny fixed placeholder, not by base64 size.
+        assert!(with_image_tokens.saturating_sub(plain_tokens) < 64);
     }
 
     #[test]

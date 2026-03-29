@@ -58,7 +58,7 @@ export function createOrchestrationConfigApplier(deps: OrchestrationConfigApplie
 
     for (const entry of profile.agents) {
       if (entry.enabled === false) continue;
-      const targetSessionId = entry.role === 'orchestrator'
+      const targetSessionId = entry.role === 'orchestrator' || entry.role !== 'reviewer'
         ? rootSession.id
         : sessionWorkspaces.ensureRuntimeChildSession(rootSession, entry.targetAgentId).id;
       await agentRuntimeBlock.execute('deploy', {

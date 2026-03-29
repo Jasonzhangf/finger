@@ -8,6 +8,10 @@ import {
   enrichDispatchTagsAndTopic,
 } from './dispatch-helpers.js';
 import {
+  FINGER_PROJECT_AGENT_ID,
+  FINGER_SYSTEM_AGENT_ID,
+} from '../../../agents/finger-general/finger-general-module.js';
+import {
   applyExecutionLifecycleTransition,
   resolveLifecycleStageFromResultStatus,
 } from '../execution-lifecycle.js';
@@ -20,6 +24,7 @@ import {
   resolveAutoDeployInstanceCount,
   resolveDispatchSessionSelection,
   resolveRetryBackoffMs,
+  shouldUseTransientLedgerForDispatch,
   shouldAutoDeployForMissingTarget,
   sleep,
   syncBdDispatchLifecycle,
@@ -46,9 +51,72 @@ export async function dispatchTaskToAgent(deps: AgentRuntimeDeps, input: AgentDi
     const sessionSelectedInput = resolveDispatchSessionSelection(deps, input);
     const boundInput = bindDispatchSessionToRuntime(deps, sessionSelectedInput);
     normalizedInput = withDispatchWorkspaceDefaults(deps, boundInput);
+    if (
+      normalizedInput.sourceAgentId === FINGER_SYSTEM_AGENT_ID
+      && normalizedInput.targetAgentId === FINGER_PROJECT_AGENT_ID
+    ) {
+      const assignment = isObjectRecord(normalizedInput.assignment) ? { ...normalizedInput.assignment } : {};
+      const hasTaskId = typeof assignment.taskId === 'string' && assignment.taskId.trim().length > 0;
+      if (!hasTaskId) {
+        assignment.taskId = `task-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
+      }
+      if (typeof assignment.assignerAgentId !== 'string' || assignment.assignerAgentId.trim().length === 0) {
+        assignment.assignerAgentId = FINGER_SYSTEM_AGENT_ID;
+      }
+      if (typeof assignment.assigneeAgentId !== 'string' || assignment.assigneeAgentId.trim().length === 0) {
+        assignment.assigneeAgentId = FINGER_PROJECT_AGENT_ID;
+      }
+      if (typeof assignment.attempt !== 'number' || !Number.isFinite(assignment.attempt) || assignment.attempt < 1) {
+        assignment.attempt = 1;
+      }
+      if (typeof assignment.phase !== 'string' || assignment.phase.trim().length === 0) {
+        assignment.phase = 'assigned';
+      }
+      normalizedInput = {
+        ...normalizedInput,
+        assignment,
+      };
+    }
+    if (originalSessionId
+      && typeof normalizedInput.sessionId === 'string'
+      && normalizedInput.sessionId.trim().length > 0
+      && originalSessionId !== normalizedInput.sessionId.trim()) {
+      const metadata = isObjectRecord(normalizedInput.metadata) ? { ...normalizedInput.metadata } : {};
+      metadata.dispatchParentSessionId = originalSessionId;
+      metadata.dispatchChildSessionId = normalizedInput.sessionId.trim();
+      normalizedInput = {
+        ...normalizedInput,
+        metadata,
+      };
+    }
     if (typeof normalizedInput.sessionId === 'string' && normalizedInput.sessionId.trim().length > 0) {
       deps.runtime.bindAgentSession(normalizedInput.targetAgentId, normalizedInput.sessionId);
       deps.runtime.setCurrentSession(normalizedInput.sessionId);
+    }
+    const sessionIdForLedger = typeof normalizedInput.sessionId === 'string' ? normalizedInput.sessionId.trim() : '';
+    if (sessionIdForLedger) {
+      const transientPolicy = shouldUseTransientLedgerForDispatch(normalizedInput);
+      if (transientPolicy.enabled) {
+        const transientLedgerMode = `transient-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+        deps.sessionManager.setTransientLedgerMode(sessionIdForLedger, transientLedgerMode, {
+          source: transientPolicy.source,
+          autoDeleteOnStop: true,
+        });
+        const metadata = isObjectRecord(normalizedInput.metadata) ? { ...normalizedInput.metadata } : {};
+        metadata.ledgerMode = transientLedgerMode;
+        metadata.transientLedger = true;
+        metadata.transientLedgerMode = transientLedgerMode;
+        normalizedInput = {
+          ...normalizedInput,
+          metadata,
+        };
+      } else {
+        const dispatchMetadata = isObjectRecord(normalizedInput.metadata) ? normalizedInput.metadata : {};
+        const isUserInbound = dispatchMetadata.role === 'user';
+        if (isUserInbound) {
+          deps.sessionManager.clearTransientLedgerMode(sessionIdForLedger);
+        }
+      }
     }
     applySessionProgressDeliveryFromDispatch(deps, normalizedInput);
     if (typeof normalizedInput.sessionId === 'string' && normalizedInput.sessionId.trim().length > 0) {

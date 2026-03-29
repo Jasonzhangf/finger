@@ -7,7 +7,7 @@
  * - <##@system:pwd=xxx##>message -> switch to system agent with password
  * - <##@system:restart##> -> trigger daemon restart (MessageHub handled)
  * - <##@agent##>message -> switch back to business agent
- * - <##@agent:list##> -> list sessions in current project
+ * - <##@agent:list##> -> list monitored project aliases
  * - <##@agent:list@/path##> -> list sessions in specified project
  * - <##@agent:new##> -> create new session in current project
  * - <##@agent:new@/path##> -> create new session in specified project
@@ -111,11 +111,16 @@ export function parseSuperCommand(content: string): ParsedMessage {
   }
 
   if (category === 'agent') {
-    if (action === 'list' || !action) {
+    if (action === 'list') {
       block = {
         type: 'agent_list',
         content: '',
         path: param && param.startsWith('/') ? param : undefined,
+      };
+    } else if (!action) {
+      block = {
+        type: 'agent',
+        content: remainingContent,
       };
     } else if (action === 'new') {
       block = {

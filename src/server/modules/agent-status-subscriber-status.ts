@@ -9,6 +9,20 @@ import { logger } from '../../core/logger.js';
 
 const log = logger.module('AgentStatusSubscriberStatus');
 
+function inferAgentRole(agentId: string): 'system' | 'project' | 'reviewer' | 'agent' {
+  const normalized = agentId.trim().toLowerCase();
+  if (!normalized) return 'agent';
+  if (normalized.includes('system-agent')) return 'system';
+  if (normalized.includes('project-agent')) return 'project';
+  if (normalized.includes('review')) return 'reviewer';
+  return 'agent';
+}
+
+function buildAgentIdentityLine(agentId: string): string {
+  const role = inferAgentRole(agentId);
+  return `👤 [${role}] ${agentId}`;
+}
+
 export async function handleAgentRuntimeStatus(params: {
   event: RuntimeEvent;
   deps: AgentRuntimeDeps;
@@ -187,7 +201,8 @@ export async function sendProgressUpdateToChannels(params: {
   const appendContextSummary = contextSummary && !normalizedReportSummary.includes(contextSummary)
     ? contextSummary
     : undefined;
-  const summary = [params.report.summary, relationLine, appendContextSummary, mailboxSummary]
+  const agentIdentityLine = buildAgentIdentityLine(params.report.agentId || 'unknown-agent');
+  const summary = [agentIdentityLine, params.report.summary, relationLine, appendContextSummary, mailboxSummary]
     .filter((item): item is string => typeof item === 'string' && item.trim().length > 0)
     .join('\n');
   if (!summary) return;
@@ -205,6 +220,7 @@ export async function sendProgressUpdateToChannels(params: {
         : 'running',
       summary,
       details: {
+        agentRole: inferAgentRole(params.report.agentId || 'unknown-agent'),
         toolCalls: params.report.progress.toolCallsCount,
         modelRounds: params.report.progress.modelRoundsCount,
         elapsedMs: params.report.progress.elapsedMs,

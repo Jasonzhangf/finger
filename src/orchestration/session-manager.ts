@@ -13,6 +13,7 @@ import { FINGER_PATHS, ensureDir, normalizeSessionDirName } from '../core/finger
 import { Session, SessionMessage, LEDGER_POINTER_DEFAULTS, ensureLedgerPointers } from './session-types.js';
 import type { Attachment } from '../runtime/events.js';
 import { appendSessionMessage } from '../runtime/ledger-writer.js';
+import { resolveBaseDir } from '../runtime/context-ledger-memory-helpers.js';
 import { buildSessionView, type SessionView, type SessionViewMessage } from '../runtime/ledger-reader.js';
 import { needsCompression, compressSession, type CompressResult } from '../runtime/session-compressor.js';
 import { estimateTokens } from '../utils/token-counter.js';
@@ -604,12 +605,13 @@ export class SessionManager {
       ? (rawCodexAlignedContext as Record<string, unknown>)
       : {};
     const messageType = typeof metadata?.type === 'string' ? metadata.type : undefined;
+    const resolvedLedgerMode = this.resolveLedgerModeForWrite(session, metadata);
     const codexAlignedContext: Record<string, unknown> = {
       ...baseCodexAlignedContext,
       role,
       session_id: session.id,
       agent_id: agentId,
-      mode: 'main',
+      mode: resolvedLedgerMode,
       ...(messageType ? { message_type: messageType } : {}),
       ...(role === 'user' ? { user_input: content } : {}),
     };
@@ -647,13 +649,13 @@ export class SessionManager {
         role,
         session_id: session.id,
         agent_id: agentId,
-        mode: 'main',
+        mode: resolvedLedgerMode,
         ...(messageType ? { message_type: messageType } : {}),
       },
     };
     try {
       await appendSessionMessage(
-        { rootDir, sessionId: session.id, agentId, mode: 'main' },
+        { rootDir, sessionId: session.id, agentId, mode: resolvedLedgerMode },
         {
           role,
           content,
@@ -678,6 +680,106 @@ export class SessionManager {
 
     this.saveSession(session);
     return message;
+  }
+
+  private resolveLedgerModeForWrite(
+    session: Session,
+    metadata?: {
+      metadata?: Record<string, unknown>;
+    },
+  ): string {
+    const sessionCtx = session.context ?? {};
+    const explicit = metadata?.metadata && typeof metadata.metadata === 'object'
+      ? metadata.metadata as Record<string, unknown>
+      : {};
+    const explicitMode = typeof explicit.ledgerMode === 'string'
+      ? explicit.ledgerMode.trim()
+      : '';
+    if (explicitMode.length > 0) return explicitMode;
+    const activeMode = typeof sessionCtx.activeLedgerMode === 'string'
+      ? sessionCtx.activeLedgerMode.trim()
+      : '';
+    if (activeMode.length > 0) return activeMode;
+    return 'main';
+  }
+
+  setTransientLedgerMode(sessionId: string, mode: string, options?: {
+    source?: string;
+    autoDeleteOnStop?: boolean;
+  }): boolean {
+    const session = this.sessions.get(sessionId);
+    if (!session) return false;
+    const normalizedMode = mode.trim();
+    if (!normalizedMode) return false;
+    session.context = {
+      ...session.context,
+      activeLedgerMode: normalizedMode,
+      transientLedgerMode: normalizedMode,
+      transientLedgerSource: options?.source ?? session.context.transientLedgerSource,
+      transientLedgerAutoDeleteOnStop: options?.autoDeleteOnStop !== false,
+      transientLedgerSetAt: new Date().toISOString(),
+    };
+    this.saveSession(session);
+    return true;
+  }
+
+  clearTransientLedgerMode(sessionId: string): boolean {
+    const session = this.sessions.get(sessionId);
+    if (!session) return false;
+    const nextContext = { ...session.context };
+    delete nextContext.activeLedgerMode;
+    delete nextContext.transientLedgerMode;
+    delete nextContext.transientLedgerSource;
+    delete nextContext.transientLedgerAutoDeleteOnStop;
+    delete nextContext.transientLedgerSetAt;
+    session.context = nextContext;
+    this.saveSession(session);
+    return true;
+  }
+
+  async finalizeTransientLedgerMode(sessionId: string, options: {
+    finishReason?: string;
+    keepOnFailure?: boolean;
+  } = {}): Promise<{ active: boolean; deleted: boolean; mode?: string }> {
+    const session = this.sessions.get(sessionId);
+    if (!session) return { active: false, deleted: false };
+    const context = session.context ?? {};
+    const mode = typeof context.transientLedgerMode === 'string'
+      ? context.transientLedgerMode.trim()
+      : typeof context.activeLedgerMode === 'string'
+        ? context.activeLedgerMode.trim()
+        : '';
+    if (!mode || mode === 'main') return { active: false, deleted: false };
+
+    const autoDeleteOnStop = context.transientLedgerAutoDeleteOnStop !== false;
+    const finishedStop = options.finishReason === 'stop';
+    const shouldDelete = autoDeleteOnStop && finishedStop && options.keepOnFailure !== true;
+    let deleted = false;
+    if (shouldDelete) {
+      try {
+        const ownerAgentId = typeof context.ownerAgentId === 'string' && context.ownerAgentId.trim().length > 0
+          ? context.ownerAgentId.trim()
+          : SYSTEM_AGENT_ID;
+        const rootDir = this.resolveSessionsRoot(session);
+        const dir = resolveBaseDir(rootDir, session.id, ownerAgentId, mode);
+        await fs.promises.rm(dir, { recursive: true, force: true });
+        deleted = true;
+        log.info('[SessionManager] transient ledger removed on successful completion', {
+          sessionId: session.id,
+          agentId: ownerAgentId,
+          mode,
+        });
+      } catch (error) {
+        log.warn('[SessionManager] failed to remove transient ledger mode', {
+          sessionId: session.id,
+          mode,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+      this.clearTransientLedgerMode(sessionId);
+      return { active: true, deleted, mode };
+    }
+    return { active: true, deleted: false, mode };
   }
 
   getMessages(sessionId: string, limit = 50): SessionMessage[] {

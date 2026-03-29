@@ -197,6 +197,7 @@ describe('ProgressMonitor incremental updates', () => {
     await (monitor as any).generateProgressReport();
     expect(reports).toHaveLength(2);
     expect(reports[1]).toContain('🧠 上下文: 55% · 70.4k/128k');
+    expect(reports[1]).toContain('🧭 处理上下文');
 
     monitor.stop();
   });
@@ -231,6 +232,17 @@ describe('ProgressMonitor incremental updates', () => {
         summary: '处理中',
       },
     } as any);
+    await eventBus.emit({
+      type: 'tool_call',
+      sessionId: 'session-stalled-progress',
+      agentId: 'finger-system-agent',
+      toolId: 'tool-pending',
+      toolName: 'shell.exec',
+      timestamp: new Date().toISOString(),
+      payload: {
+        input: { cmd: 'rg "dispatch" src/server/modules' },
+      },
+    } as any);
 
     const progress = monitor.getProgress('session-stalled-progress');
     expect(progress).toBeTruthy();
@@ -243,13 +255,17 @@ describe('ProgressMonitor incremental updates', () => {
       progress.contextUsagePercent = 41;
       progress.estimatedTokensInContextWindow = 53_200;
       progress.maxInputTokens = 128_000;
+      progress.lastReportedToolSeq = progress.toolSeqCounter;
+      progress.lastReportedContextUsagePercent = 41;
+      progress.lastReportedEstimatedTokensInContextWindow = 53_200;
+      progress.lastReportedMaxInputTokens = 128_000;
     }
 
     await (monitor as any).generateProgressReport();
 
     expect(reports).toHaveLength(1);
     expect(reports[0]).toContain('无新事件');
-    expect(reports[0]).toContain('等待模型响应');
+    expect(reports[0]).toContain('等待工具');
     expect(reports[0]).toContain('🧠 上下文: 41% · 53.2k/128k');
 
     monitor.stop();

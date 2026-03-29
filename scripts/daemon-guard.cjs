@@ -26,6 +26,9 @@ const HEARTBEAT_FILE = path.join(RUNTIME_DIR, 'daemon.heartbeat');
 const HEARTBEAT_PATTERN = /daemon\.heartbeat/;
 const USER_LOG_DIR = path.join(FINGER_HOME, 'logs');
 const USER_DAEMON_LOG = path.join(USER_LOG_DIR, 'daemon.log');
+const DAEMON_LOG_MAX_MB = Number.parseInt(process.env.FINGER_DAEMON_LOG_MAX_MB || '20', 10);
+const DAEMON_LOG_ARCHIVE_LIMIT = Number.parseInt(process.env.FINGER_DAEMON_LOG_ARCHIVE_LIMIT || '8', 10);
+const DAEMON_LOG_KEEP_MB_AFTER_COMPACT = Number.parseInt(process.env.FINGER_DAEMON_LOG_KEEP_MB_AFTER_COMPACT || '5', 10);
 const HEARTBEAT_INTERVAL_MS = 5000;
 const HEARTBEAT_TIMEOUT_MS = 30000;
 const RESTART_DELAY_MS = 2000;
@@ -55,6 +58,7 @@ class DaemonGuard {
         console.log('[DaemonGuard] Starting main daemon...');
         await this.waitForPorts([9998, 9999]);
         fs.mkdirSync(USER_LOG_DIR, { recursive: true });
+        this.ensureDaemonLogWithinBudget();
 
         // Set NODE_PATH to include global openclaw package so that
         // external plugins (e.g. openclaw-weixin) can resolve "openclaw/plugin-sdk"
@@ -101,9 +105,82 @@ class DaemonGuard {
                     pid: this.mainPid,
                     guardPid: this.guardPid
                 }));
+                this.ensureDaemonLogWithinBudget();
             } catch (_) {}
         }, HEARTBEAT_INTERVAL_MS);
         console.log('[DaemonGuard] Heartbeat monitor started');
+    }
+
+    formatArchiveTimestamp(now = new Date()) {
+        const pad = (n) => String(n).padStart(2, '0');
+        return `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}-${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`;
+    }
+
+    listDaemonArchiveLogs() {
+        try {
+            const entries = fs.readdirSync(USER_LOG_DIR);
+            return entries
+                .filter((name) => /^daemon-.*\.log$/.test(name))
+                .map((name) => path.join(USER_LOG_DIR, name))
+                .map((filePath) => {
+                    try {
+                        return { filePath, mtimeMs: fs.statSync(filePath).mtimeMs };
+                    } catch (_) {
+                        return null;
+                    }
+                })
+                .filter(Boolean)
+                .sort((a, b) => b.mtimeMs - a.mtimeMs);
+        } catch (_) {
+            return [];
+        }
+    }
+
+    pruneDaemonArchiveLogs() {
+        const maxArchives = Number.isFinite(DAEMON_LOG_ARCHIVE_LIMIT) && DAEMON_LOG_ARCHIVE_LIMIT >= 0
+            ? DAEMON_LOG_ARCHIVE_LIMIT
+            : 8;
+        const archives = this.listDaemonArchiveLogs();
+        if (archives.length <= maxArchives) return;
+        const stale = archives.slice(maxArchives);
+        for (const item of stale) {
+            try {
+                fs.unlinkSync(item.filePath);
+            } catch (_) {}
+        }
+    }
+
+    ensureDaemonLogWithinBudget() {
+        const maxBytes = Math.max(1, DAEMON_LOG_MAX_MB) * 1024 * 1024;
+        const keepBytes = Math.max(1, DAEMON_LOG_KEEP_MB_AFTER_COMPACT) * 1024 * 1024;
+        try {
+            if (!fs.existsSync(USER_DAEMON_LOG)) return;
+            const stat = fs.statSync(USER_DAEMON_LOG);
+            if (!stat.isFile() || stat.size <= maxBytes) return;
+
+            const archivePath = path.join(USER_LOG_DIR, `daemon-${this.formatArchiveTimestamp()}.log`);
+            try {
+                fs.copyFileSync(USER_DAEMON_LOG, archivePath);
+            } catch (_) {}
+
+            let tail = Buffer.alloc(0);
+            const bytesToRead = Math.min(stat.size, keepBytes);
+            if (bytesToRead > 0) {
+                const fd = fs.openSync(USER_DAEMON_LOG, 'r');
+                try {
+                    tail = Buffer.alloc(bytesToRead);
+                    const start = Math.max(0, stat.size - bytesToRead);
+                    fs.readSync(fd, tail, 0, bytesToRead, start);
+                } finally {
+                    fs.closeSync(fd);
+                }
+            }
+            fs.writeFileSync(USER_DAEMON_LOG, tail);
+            this.pruneDaemonArchiveLogs();
+            console.warn(`[DaemonGuard] daemon.log compacted: ${Math.round(stat.size / 1024 / 1024)}MB -> ${Math.round(tail.length / 1024 / 1024)}MB`);
+        } catch (error) {
+            console.warn('[DaemonGuard] ensureDaemonLogWithinBudget failed:', error.message);
+        }
     }
 
     startMainProcessCheck() {

@@ -98,6 +98,12 @@
   Tags: messagehub, commands, auth, session
 
 ## Session Management & Agent Runtime SSOT
+- [2026-03-29] Jason 新增约束：`mailbox/news-cron/email-cron/clock/systemDirectInject` 等后台推理链路默认写入 **transient ledger**（非 main ledger）；当该轮 `finishReason=stop` 成功闭环时自动删除对应 transient ledger，未完成/失败必须保留以便恢复与排查。实现上通过 `SessionManager.setTransientLedgerMode()/finalizeTransientLedgerMode()` 与 message/dispatch 路由的 source 策略联动。  
+  Tags: transient-ledger, mailbox, news-cron, recovery, session-manager
+- [2026-03-29] Jason 确认 reviewer gate 必须可配置：`orchestration.reviewPolicy.dispatchReviewMode` 支持 `off|always`（默认 `off`），仅在 `enabled=true && dispatchReviewMode=always` 时，对 `system -> project` 完成态自动派发 reviewer；review 不通过可按 attempt 回传重派 project。  
+  Tags: reviewer-gate, dispatch-review-mode, orchestration-config, optional
+- [2026-03-28] Jason 明确新增硬约束：Context Builder 的最小历史单位必须是“完整 task block”，禁止 task 内编辑。也就是每个被选中的 task 必须保留从 `role=user` 到该轮结束（含 assistant/tool_call/tool_result/tool_error/reasoning，直到 `finish_reason=stop`）的完整链路；允许做的只有 task 级别选择/重排/整块剔除，禁止在 task 内删消息、改顺序或用摘要片段替代事件链。该规则已同步到 `docs/design/context-builder-design.md`。  
+  Tags: context-builder, task-granularity, history, invariant, ledger
 - [2026-03-28] Jason 确认当前 System Agent 收敛策略采用两阶段路线：**第一阶段先靠 prompt 约束收敛行为**（长时自运行、停止前复盘目标、伪完成转真完成、真完成后再看 heartbeat）；若后续实测 prompt 约束仍不稳定，则进入 **第二阶段 reviewer gate**：在 `finish_reason=stop` 时强制走 reviewer/审查环节，未通过则直接打回进入下一轮继续执行，而不是把 stop 视为最终完成。  
   Tags: system-agent, prompt, reviewer-gate, stop-review, closure, roadmap
 - [2026-03-28] Jason 明确收敛 System Agent/heartbeat 启动顺序：**先收上一轮任务，再处理 heartbeat**。具体规则：daemon/heartbeat 启动后先检查上一轮执行状态；若上一轮未到 `finish_reason=stop`，必须直接从中断处继续；若已 `stop`，也必须先审查是否只是“伪完成”，若未真正完成则继续执行直到真完成；只有上一轮任务真正闭环后，才允许查看/处理 heartbeat 文件。System prompt / developer prompt / `SystemAgentManager` 启动恢复逻辑已同步到该规则。  

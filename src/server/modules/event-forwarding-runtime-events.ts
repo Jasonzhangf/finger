@@ -2,6 +2,7 @@ import { logger } from '../../core/logger.js';
 import type { SessionManager } from '../../orchestration/session-manager.js';
 import type { UnifiedEventBus } from '../../runtime/event-bus.js';
 import { isObjectRecord } from '../common/object.js';
+import type { AgentDispatchRequest } from './agent-runtime/types.js';
 import { heartbeatMailbox } from './heartbeat-mailbox.js';
 import { buildDispatchResultEnvelope } from './mailbox-envelope.js';
 import {
@@ -12,8 +13,16 @@ import {
   extractDispatchResultTags,
   extractDispatchResultTopic,
 } from './event-forwarding-helpers.js';
+import {
+  FINGER_PROJECT_AGENT_ID,
+  FINGER_REVIEWER_AGENT_ID,
+  FINGER_SYSTEM_AGENT_ID,
+} from '../../agents/finger-general/finger-general-module.js';
 
-const SYSTEM_AGENT_ID = 'finger-system-agent';
+const SYSTEM_AGENT_ID = FINGER_SYSTEM_AGENT_ID;
+const REVIEW_REDISPATCH_MAX_ATTEMPTS = Number.isFinite(Number(process.env.FINGER_REVIEW_REDISPATCH_MAX_ATTEMPTS))
+  ? Math.max(1, Math.floor(Number(process.env.FINGER_REVIEW_REDISPATCH_MAX_ATTEMPTS)))
+  : 3;
 
 interface AttachDispatchForwardingOptions {
   eventBus: UnifiedEventBus;
@@ -27,6 +36,46 @@ interface AttachDispatchForwardingOptions {
   shouldSkipDispatchLedgerEntry: (key: string) => boolean;
   addLedgerPointerMessage: (sessionId: string, label: string, agentId: string) => void;
   isAgentBusy?: (agentId: string) => boolean | Promise<boolean>;
+  dispatchTaskToAgent?: (request: AgentDispatchRequest) => Promise<unknown>;
+  resolveReviewPolicy?: () => { enabled: boolean; dispatchReviewMode?: 'off' | 'always' };
+}
+
+function extractReviewDecision(result: unknown): 'pass' | 'retry' | 'block' | 'feedback' | undefined {
+  const asRecord = (value: unknown): Record<string, unknown> | undefined => (
+    isObjectRecord(value) ? value as Record<string, unknown> : undefined
+  );
+  const normalize = (value: unknown): 'pass' | 'retry' | 'block' | 'feedback' | undefined => {
+    if (typeof value !== 'string') return undefined;
+    const normalized = value.trim().toLowerCase();
+    if (normalized === 'pass' || normalized === 'passed' || normalized === 'approve' || normalized === 'approved') return 'pass';
+    if (normalized === 'retry' || normalized === 'rework' || normalized === 'needs_changes' || normalized === 'needs-changes') return 'retry';
+    if (normalized === 'block' || normalized === 'blocked' || normalized === 'reject' || normalized === 'rejected' || normalized === 'fail' || normalized === 'failed') return 'block';
+    if (normalized === 'feedback') return 'feedback';
+    return undefined;
+  };
+  const root = asRecord(result);
+  const direct = normalize(root?.decision);
+  if (direct) return direct;
+
+  const rawPayload = asRecord(root?.rawPayload);
+  const fromRawPayload = normalize(rawPayload?.decision);
+  if (fromRawPayload) return fromRawPayload;
+
+  const responseRecord = asRecord(rawPayload?.response);
+  const fromResponseRecord = normalize(responseRecord?.decision);
+  if (fromResponseRecord) return fromResponseRecord;
+
+  const responseText = typeof rawPayload?.response === 'string' ? rawPayload.response : '';
+  if (responseText) {
+    try {
+      const parsed = JSON.parse(responseText) as Record<string, unknown>;
+      const parsedDecision = normalize(parsed?.decision);
+      if (parsedDecision) return parsedDecision;
+    } catch {
+      // noop
+    }
+  }
+  return undefined;
 }
 
 export function attachDispatchLifecycleForwarding(options: AttachDispatchForwardingOptions): void {
@@ -42,6 +91,8 @@ export function attachDispatchLifecycleForwarding(options: AttachDispatchForward
     shouldSkipDispatchLedgerEntry,
     addLedgerPointerMessage,
     isAgentBusy,
+    dispatchTaskToAgent,
+    resolveReviewPolicy,
   } = options;
 
   eventBus.subscribe(
@@ -260,6 +311,162 @@ export function attachDispatchLifecycleForwarding(options: AttachDispatchForward
         payload: feedback,
         timestamp: event.timestamp,
       });
+
+      const reviewPolicy = resolveReviewPolicy?.();
+      const autoReviewEnabled = reviewPolicy?.enabled === true && reviewPolicy.dispatchReviewMode === 'always';
+      if (!autoReviewEnabled || typeof dispatchTaskToAgent !== 'function') return;
+
+      const assignmentTaskId = typeof assignment.taskId === 'string' && assignment.taskId.trim().length > 0
+        ? assignment.taskId.trim()
+        : '';
+      if (!assignmentTaskId) return;
+
+      const assignmentAttempt = typeof assignment.attempt === 'number' && Number.isFinite(assignment.attempt)
+        ? Math.max(1, Math.floor(assignment.attempt))
+        : 1;
+
+      // Stage 1: system -> project completed => dispatch reviewer gate
+      if (
+        status === 'completed'
+        && sourceAgentId === FINGER_SYSTEM_AGENT_ID
+        && targetAgentId === FINGER_PROJECT_AGENT_ID
+      ) {
+        const reviewDispatchKey = [
+          'auto-review-dispatch',
+          dispatchId,
+          assignmentTaskId,
+          String(assignmentAttempt),
+        ].join('|');
+        if (shouldSkipDispatchLedgerEntry(reviewDispatchKey)) return;
+
+        const executorSummary = formatDispatchResultContent(payload.result, asString(payload.error));
+        const reviewPrompt = [
+          '[AUTO-REVIEW GATE]',
+          `taskId: ${assignmentTaskId}`,
+          `attempt: ${assignmentAttempt}`,
+          `executor: ${FINGER_PROJECT_AGENT_ID}`,
+          '',
+          '请对该任务交付做严格审查：',
+          '- 必须检查交付是否完整覆盖任务目标；',
+          '- 证据不足或未闭环时，不得通过；',
+          '- 给出明确 decision（pass / retry / block）和可执行反馈。',
+          '',
+          '[Executor Summary]',
+          executorSummary,
+        ].join('\n');
+
+        const reviewRequest: AgentDispatchRequest = {
+          sourceAgentId: FINGER_SYSTEM_AGENT_ID,
+          targetAgentId: FINGER_REVIEWER_AGENT_ID,
+          task: { prompt: reviewPrompt },
+          ...(sessionId ? { sessionId } : {}),
+          assignment: {
+            ...(typeof assignment.epicId === 'string' ? { epicId: assignment.epicId } : {}),
+            taskId: assignmentTaskId,
+            ...(typeof assignment.bdTaskId === 'string' ? { bdTaskId: assignment.bdTaskId } : {}),
+            assignerAgentId: FINGER_SYSTEM_AGENT_ID,
+            assigneeAgentId: FINGER_REVIEWER_AGENT_ID,
+            phase: 'reviewing',
+            attempt: assignmentAttempt,
+          },
+          metadata: {
+            role: 'system',
+            source: 'review-gate',
+            systemDirectInject: true,
+            parentDispatchId: dispatchId,
+            reviewGate: true,
+          },
+          blocking: false,
+          queueOnBusy: true,
+        };
+        void dispatchTaskToAgent(reviewRequest).catch((reviewDispatchError) => {
+          logger.module('event-forwarding').warn('Failed to dispatch reviewer gate task', {
+            dispatchId,
+            taskId: assignmentTaskId,
+            error: reviewDispatchError instanceof Error ? reviewDispatchError.message : String(reviewDispatchError),
+          });
+        });
+        return;
+      }
+
+      // Stage 2: reviewer completed => pass or re-dispatch to project
+      if (
+        status === 'completed'
+        && sourceAgentId === FINGER_SYSTEM_AGENT_ID
+        && targetAgentId === FINGER_REVIEWER_AGENT_ID
+      ) {
+        const decision = extractReviewDecision(payload.result);
+        if (decision === 'pass') return;
+
+        if (assignmentAttempt >= REVIEW_REDISPATCH_MAX_ATTEMPTS) {
+          logger.module('event-forwarding').warn('Review gate rejected but max redispatch attempts reached', {
+            taskId: assignmentTaskId,
+            attempt: assignmentAttempt,
+            maxAttempts: REVIEW_REDISPATCH_MAX_ATTEMPTS,
+            dispatchId,
+          });
+          return;
+        }
+
+        const reworkDispatchKey = [
+          'auto-review-redispatch',
+          dispatchId,
+          assignmentTaskId,
+          String(assignmentAttempt),
+          decision ?? 'unknown',
+        ].join('|');
+        if (shouldSkipDispatchLedgerEntry(reworkDispatchKey)) return;
+
+        const reviewFeedback = formatDispatchResultContent(payload.result, asString(payload.error));
+        const retryAttempt = assignmentAttempt + 1;
+        const reworkPrompt = [
+          '[REVIEW FAILED — REWORK REQUIRED]',
+          `taskId: ${assignmentTaskId}`,
+          `retryAttempt: ${retryAttempt}`,
+          '',
+          '上轮交付未通过 reviewer 审查。请基于以下反馈继续修复并完成闭环交付：',
+          reviewFeedback,
+          '',
+          '要求：',
+          '- 完整覆盖任务目标；',
+          '- 明确列出变更与验证证据；',
+          '- 完成后调用 report-task-completion 上报。',
+        ].join('\n');
+
+        const reworkRequest: AgentDispatchRequest = {
+          sourceAgentId: FINGER_SYSTEM_AGENT_ID,
+          targetAgentId: FINGER_PROJECT_AGENT_ID,
+          task: { prompt: reworkPrompt },
+          ...(sessionId ? { sessionId } : {}),
+          assignment: {
+            ...(typeof assignment.epicId === 'string' ? { epicId: assignment.epicId } : {}),
+            taskId: assignmentTaskId,
+            ...(typeof assignment.bdTaskId === 'string' ? { bdTaskId: assignment.bdTaskId } : {}),
+            assignerAgentId: FINGER_SYSTEM_AGENT_ID,
+            assigneeAgentId: FINGER_PROJECT_AGENT_ID,
+            phase: 'retry',
+            attempt: retryAttempt,
+          },
+          metadata: {
+            role: 'system',
+            source: 'review-gate-redispatch',
+            systemDirectInject: true,
+            parentDispatchId: dispatchId,
+            reviewDecision: decision ?? 'retry',
+            reviewGate: true,
+          },
+          blocking: false,
+          queueOnBusy: true,
+        };
+        void dispatchTaskToAgent(reworkRequest).catch((redispatchError) => {
+          logger.module('event-forwarding').warn('Failed to redispatch project task after reviewer rejection', {
+            dispatchId,
+            taskId: assignmentTaskId,
+            retryAttempt,
+            error: redispatchError instanceof Error ? redispatchError.message : String(redispatchError),
+          });
+        });
+      }
     },
   );
 }

@@ -273,7 +273,7 @@ describe('Event Forwarding - Execution Lifecycle', () => {
       sessionId: 'lifecycle-session-1',
       phase: 'turn_complete',
       timestamp: new Date().toISOString(),
-      payload: { replyPreview: 'done' },
+      payload: { replyPreview: 'done', finishReason: 'stop' },
     });
 
     const session = (sessionManager.getSession as ReturnType<typeof vi.fn>).mock.results.at(-1)?.value
@@ -458,6 +458,32 @@ describe('Event Forwarding - Execution Lifecycle', () => {
       updatedBy: 'event-forwarding',
       detail: 'pendingTurn=pending-1',
     }));
+  });
+
+  it('calls finalizeTransientLedgerMode with bound sessionManager context', async () => {
+    const base = createMockSessionManager() as unknown as Record<string, unknown>;
+    base.marker = 'bound-ok';
+    base.finalizeTransientLedgerMode = vi.fn(function (
+      this: Record<string, unknown>,
+      _sessionId: string,
+      _options?: { finishReason?: string; keepOnFailure?: boolean },
+    ) {
+      expect(this.marker).toBe('bound-ok');
+      return Promise.resolve({ active: false, deleted: false });
+    });
+
+    const deps = createDeps({ sessionManager: base as unknown as SessionManager });
+    const { emitLoopEventToEventBus } = attachEventForwarding(deps);
+
+    emitLoopEventToEventBus({
+      sessionId: 'transient-finalize-binding-session',
+      phase: 'turn_complete',
+      timestamp: new Date().toISOString(),
+      payload: { replyPreview: 'done', finishReason: 'stop' },
+    });
+
+    await Promise.resolve();
+    expect(base.finalizeTransientLedgerMode).toHaveBeenCalledTimes(1);
   });
 });
 

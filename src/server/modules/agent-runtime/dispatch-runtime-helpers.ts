@@ -3,6 +3,7 @@ import { isObjectRecord } from '../../common/object.js';
 import { asString, firstNonEmptyString } from '../../common/strings.js';
 import type { AgentDispatchRequest, AgentRuntimeDeps } from './types.js';
 import { SYSTEM_AGENT_CONFIG } from '../../../agents/finger-system-agent/index.js';
+import { FINGER_REVIEWER_AGENT_ID } from '../../../agents/finger-general/finger-general-module.js';
 import { promises as fs } from 'fs';
 import * as path from 'path';
 import {
@@ -19,6 +20,15 @@ const DISPATCH_RETRY_BASE_DELAY_MS = Number.isFinite(Number(process.env.FINGER_D
 const DISPATCH_RETRY_MAX_DELAY_MS = Number.isFinite(Number(process.env.FINGER_DISPATCH_RETRY_MAX_DELAY_MS))
   ? Math.max(1_000, Math.floor(Number(process.env.FINGER_DISPATCH_RETRY_MAX_DELAY_MS)))
   : 60_000;
+const TRANSIENT_LEDGER_SOURCE_ALLOWLIST = new Set([
+  'system-heartbeat',
+  'mailbox-check',
+  'clock',
+  'news-cron',
+  'email-cron',
+  'user_notification',
+  'mailbox-cli',
+]);
 
 export function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -28,6 +38,56 @@ export function resolveRetryBackoffMs(retryAttempt: number): number {
   const exponent = Math.max(0, retryAttempt - 1);
   const raw = DISPATCH_RETRY_BASE_DELAY_MS * Math.pow(2, exponent);
   return Math.min(DISPATCH_RETRY_MAX_DELAY_MS, Math.max(DISPATCH_RETRY_BASE_DELAY_MS, Math.floor(raw)));
+}
+
+function parseBooleanFlag(value: unknown): boolean | undefined {
+  if (typeof value === 'boolean') return value;
+  if (typeof value === 'string') {
+    const normalized = value.trim().toLowerCase();
+    if (normalized === 'true' || normalized === '1' || normalized === 'yes') return true;
+    if (normalized === 'false' || normalized === '0' || normalized === 'no') return false;
+  }
+  return undefined;
+}
+
+export function shouldUseTransientLedgerForDispatch(input: AgentDispatchRequest): {
+  enabled: boolean;
+  source?: string;
+} {
+  const metadata = isObjectRecord(input.metadata) ? input.metadata : {};
+  const taskRecord = isObjectRecord(input.task) ? input.task : {};
+  const taskMetadata = isObjectRecord(taskRecord.metadata) ? taskRecord.metadata : {};
+  const source = typeof metadata.source === 'string'
+    ? metadata.source.trim().toLowerCase()
+    : typeof taskMetadata.source === 'string'
+      ? taskMetadata.source.trim().toLowerCase()
+      : '';
+
+  const explicit =
+    parseBooleanFlag(
+      metadata.transientLedger
+      ?? metadata.transient_ledger
+      ?? taskMetadata.transientLedger
+      ?? taskMetadata.transient_ledger,
+    );
+  if (explicit === true) {
+    return { enabled: true, ...(source ? { source } : {}) };
+  }
+  if (explicit === false) {
+    return { enabled: false, ...(source ? { source } : {}) };
+  }
+
+  const directInject =
+    metadata.systemDirectInject === true
+    || taskMetadata.systemDirectInject === true;
+  if (directInject) {
+    return { enabled: true, ...(source ? { source } : {}) };
+  }
+
+  if (source && TRANSIENT_LEDGER_SOURCE_ALLOWLIST.has(source)) {
+    return { enabled: true, source };
+  }
+  return { enabled: false, ...(source ? { source } : {}) };
 }
 
 function resolveDispatchProjectPath(input: AgentDispatchRequest, deps: AgentRuntimeDeps): string {
@@ -238,19 +298,45 @@ export function bindDispatchSessionToRuntime(deps: AgentRuntimeDeps, input: Agen
   const targetAgentId = typeof input.targetAgentId === 'string' ? input.targetAgentId.trim() : '';
   if (targetAgentId === SYSTEM_AGENT_CONFIG.id) return input;
   if (!targetAgentId || deps.isPrimaryOrchestratorTarget(targetAgentId)) return input;
+  const allowRuntimeChildSession = targetAgentId === FINGER_REVIEWER_AGENT_ID;
 
   const requestedSessionId = typeof input.sessionId === 'string' ? input.sessionId.trim() : '';
+  if (!allowRuntimeChildSession && requestedSessionId) {
+    const session = deps.sessionManager.getSession(requestedSessionId);
+    if (session) {
+      const context = isObjectRecord(session.context) ? session.context : {};
+      const rootSessionId = asString(context.rootSessionId) || asString(context.parentSessionId);
+      if (rootSessionId) {
+        const root = deps.sessionManager.getSession(rootSessionId);
+        if (root && !deps.isRuntimeChildSession(root)) {
+          return { ...input, sessionId: root.id };
+        }
+      }
+    }
+  }
+
+  if (!allowRuntimeChildSession) return input;
+
   if (requestedSessionId) {
     const session = deps.sessionManager.getSession(requestedSessionId);
     if (session) {
       const context = isObjectRecord(session.context) ? session.context : {};
-      if (context.sessionTier === 'runtime' || typeof context.parentSessionId === 'string') {
+      if ((context.sessionTier === 'runtime' || typeof context.parentSessionId === 'string')
+        && asString(context.ownerAgentId) === FINGER_REVIEWER_AGENT_ID) {
         return input;
       }
     }
   }
 
   const rootSession = resolveRootSessionForDispatch(deps, requestedSessionId || undefined);
+  const dispatchProjectPath = resolveDispatchProjectPath(input, deps);
+  const sameProject = normalizeProjectPathHint(dispatchProjectPath) === normalizeProjectPathHint(rootSession.projectPath);
+  if (!sameProject) {
+    return {
+      ...input,
+      sessionId: rootSession.id,
+    };
+  }
   const runtimeSessionId = deps.ensureRuntimeChildSession(rootSession, targetAgentId).id;
   return {
     ...input,

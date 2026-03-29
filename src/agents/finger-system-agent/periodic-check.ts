@@ -84,10 +84,41 @@ export class PeriodicCheckRunner {
 
   private async sendHeartbeatPrompt(agentId: string, projectPath: string): Promise<void> {
     const sessionStore = new SessionControlPlaneStore();
-    const bindings = sessionStore.list({ agentId });
-    const latest = bindings[0];
-
+    const sessionManager = (this.deps as { sessionManager?: unknown }).sessionManager as {
+      getSession?: (sessionId: string) => unknown;
+    } | undefined;
+    const getSession = (sessionManager as {
+      getSession?: (sessionId: string) => unknown;
+    } | undefined)?.getSession;
+    const bindings = sessionStore.list({ agentId, provider: 'finger' });
+    const latest = bindings.find((binding) => (
+      typeof getSession === 'function' ? !!getSession.call(sessionManager, binding.fingerSessionId) : true
+    ))
+      ?? bindings[0];
     if (!latest) return;
+
+    let sessionId = latest.fingerSessionId;
+    const hasSession = typeof getSession === 'function'
+      ? !!getSession.call(sessionManager, sessionId)
+      : true;
+    if (!hasSession && agentId === 'finger-system-agent') {
+      const getSystemSession = (sessionManager as any)?.getOrCreateSystemSession;
+      if (typeof getSystemSession === 'function') {
+        const systemSession = getSystemSession.call(sessionManager);
+        if (systemSession?.id && typeof systemSession.id === 'string') {
+          sessionId = systemSession.id;
+          try {
+            sessionStore.set(sessionId, agentId, 'finger', sessionId, { source: 'periodic-check-self-heal' });
+          } catch (error) {
+            clog.error('[PeriodicCheckRunner] Failed to heal session binding:', error);
+          }
+        }
+      }
+    }
+    const hasResolvedSession = typeof getSession === 'function'
+      ? !!getSession.call(sessionManager, sessionId)
+      : true;
+    if (!hasResolvedSession) return;
 
     const prompt = `# Heartbeat Check\n\n请检查项目根目录的 HEARTBEAT.md 并执行待办任务。\n\n项目路径: ${projectPath}`;
 
@@ -95,7 +126,7 @@ export class PeriodicCheckRunner {
       sourceAgentId: 'system-heartbeat',
       targetAgentId: agentId,
       task: prompt,
-      sessionId: latest.fingerSessionId,
+      sessionId,
       metadata: {
         source: 'system-heartbeat',
         role: 'system',

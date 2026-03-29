@@ -192,21 +192,40 @@ export function applyExecutionLifecycleTransition(
 ): ExecutionLifecycleState | null {
   if (!sessionId || sessionId.trim().length === 0) return null;
   if (typeof (sessionManager as { updateContext?: unknown }).updateContext !== 'function') return null;
-  const current = getExecutionLifecycleState(sessionManager, sessionId);
+  const normalizeSessionId = sessionId.trim();
+  let resolvedSessionId = normalizeSessionId;
+  if (!sessionManager.getSession(normalizeSessionId)) {
+    const fallbackSystemSession = (sessionManager as {
+      getOrCreateSystemSession?: () => { id?: string };
+    }).getOrCreateSystemSession;
+    const isSystemAlias = normalizeSessionId === 'system-default-session'
+      || normalizeSessionId === 'system-1'
+      || normalizeSessionId.startsWith('system-');
+    if (isSystemAlias && typeof fallbackSystemSession === 'function') {
+      const systemSession = fallbackSystemSession.call(sessionManager);
+      if (systemSession?.id && typeof systemSession.id === 'string' && systemSession.id.trim().length > 0) {
+        resolvedSessionId = systemSession.id.trim();
+      }
+    }
+  }
+
+  const current = getExecutionLifecycleState(sessionManager, resolvedSessionId);
   const next = transitionExecutionLifecycle(current, transition);
-  const updated = sessionManager.updateContext(sessionId, {
+  const updated = sessionManager.updateContext(resolvedSessionId, {
     executionLifecycle: next,
   });
   if (!updated) {
     log.warn('Failed to persist execution lifecycle transition: session not found', {
-      sessionId,
+      sessionId: normalizeSessionId,
+      resolvedSessionId: resolvedSessionId !== normalizeSessionId ? resolvedSessionId : undefined,
       stage: transition.stage,
       substage: transition.substage,
     });
     return null;
   }
   log.debug('Execution lifecycle transition applied', {
-    sessionId,
+    sessionId: resolvedSessionId,
+    originalSessionId: resolvedSessionId !== normalizeSessionId ? normalizeSessionId : undefined,
     fromStage: current?.stage,
     toStage: next.stage,
     substage: next.substage,

@@ -94,6 +94,7 @@ export function resolveSessionRelationInfo(
 export function buildSessionRelationLine(info: SessionRelationInfo): string | undefined {
   if (info.relation !== 'child') return undefined;
   const parent = info.parentSessionId || info.rootSessionId;
+  if (parent && parent === info.sessionId) return undefined;
   const parts = [
     `子会话 ${shortSessionId(info.sessionId)}`,
     parent ? `父会话 ${shortSessionId(parent)}` : '',

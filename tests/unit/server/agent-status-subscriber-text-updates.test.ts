@@ -405,9 +405,11 @@ describe('AgentStatusSubscriber text updates', () => {
 
     expect(messageHub.routeToOutput).toHaveBeenCalledTimes(1);
     const [, payload] = messageHub.routeToOutput.mock.calls[0];
+    expect(payload.content).toContain(`👤 [agent] ${targetAgent}`);
     expect(payload.content).toContain('📬 mailbox.status(');
     expect(payload.content).toContain('🧠 上下文: 41% · 53.2k/128k');
     expect(payload.content).toContain(`mailbox.status(${targetAgent}): unread=2 pending=2 processing=0`);
+    expect(payload.statusUpdate.status.details.agentRole).toBe('agent');
     expect(payload.statusUpdate.status.details.mailboxStatus.counts.unread).toBe(2);
     expect(payload.statusUpdate.status.details.contextUsagePercent).toBe(41);
     expect(payload.statusUpdate.status.details.estimatedTokensInContextWindow).toBe(53200);
@@ -457,8 +459,80 @@ describe('AgentStatusSubscriber text updates', () => {
 
     expect(messageHub.routeToOutput).toHaveBeenCalledTimes(1);
     const [, payload] = messageHub.routeToOutput.mock.calls[0];
+    expect(payload.content).toContain('👤 [system] finger-system-agent');
     expect(payload.content).toContain('🧠 上下文: 50% · ~131k/262k');
+    expect(payload.statusUpdate.status.details.agentRole).toBe('system');
     expect(payload.statusUpdate.status.details.maxInputTokens).toBe(262144);
+  });
+
+  it('routes child project-session progress after dispatch and keeps role marker', async () => {
+    const eventBus = new UnifiedEventBus();
+    const routeCalls: Array<{ outputId: string; content: string }> = [];
+    const messageHub = {
+      routeToOutput: vi.fn().mockImplementation((outputId: string, msg: any) => {
+        routeCalls.push({ outputId, content: String(msg.content ?? '') });
+        return Promise.resolve();
+      }),
+    };
+    const channelBridgeManager = {
+      getPushSettings: vi.fn().mockReturnValue({
+        reasoning: true,
+        bodyUpdates: true,
+        statusUpdate: true,
+        toolCalls: false,
+        stepUpdates: true,
+        stepBatch: 5,
+        progressUpdates: true,
+      }),
+    };
+
+    const subscriber = new AgentStatusSubscriber(
+      eventBus,
+      createMinimalDeps(),
+      messageHub as any,
+      channelBridgeManager as any,
+    );
+    subscriber.registerSession('session-root', {
+      channel: 'qqbot',
+      envelopeId: 'env-root',
+      userId: 'user-root',
+    });
+    subscriber.setPrimaryAgent('finger-system-agent');
+    subscriber.start();
+
+    await eventBus.emit({
+      type: 'agent_runtime_dispatch',
+      sessionId: 'session-root',
+      timestamp: new Date().toISOString(),
+      payload: {
+        dispatchId: 'dispatch-child-progress',
+        sourceAgentId: 'finger-system-agent',
+        targetAgentId: 'finger-project-agent',
+        childSessionId: 'session-project-1',
+        status: 'running',
+      },
+    } as RuntimeEvent);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    routeCalls.length = 0;
+    await subscriber.sendProgressUpdate({
+      sessionId: 'session-project-1',
+      agentId: 'finger-project-agent',
+      summary: '📊 12:11 | 执行中\n🧭 rg → ✅',
+      progress: {
+        status: 'running',
+        toolCallsCount: 2,
+        modelRoundsCount: 1,
+        elapsedMs: 1100,
+      },
+    });
+
+    expect(routeCalls).toHaveLength(1);
+    expect(routeCalls[0].outputId).toBe('channel-bridge-qqbot');
+    expect(routeCalls[0].content).toContain('👤 [project] finger-project-agent');
+    expect(routeCalls[0].content).toContain('🧭 rg → ✅');
+
+    subscriber.stop();
   });
 
   it('does not repeat unchanged mailbox.status summary in next progress update', async () => {

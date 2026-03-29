@@ -357,13 +357,43 @@ export class HeartbeatScheduler {
     config?: HeartbeatTaskConfig | { progressDelivery?: ProgressDeliveryPolicy },
   ): Promise<void> {
     const sessionStore = new SessionControlPlaneStore();
-    const bindings = sessionStore.list({ agentId: targetAgentId });
-    let sessionId = bindings[0]?.fingerSessionId;
+    const getSession = (this.deps.sessionManager as {
+      getSession?: (sessionId: string) => unknown;
+    }).getSession;
+    const bindings = sessionStore.list({ agentId: targetAgentId, provider: 'finger' });
+    const validBinding = bindings.find((binding) => (
+      typeof getSession === 'function' ? !!getSession.call(this.deps.sessionManager, binding.fingerSessionId) : true
+    ));
+    let sessionId = validBinding?.fingerSessionId;
+    if (!sessionId && bindings.length > 0) {
+      log.warn('[HeartbeatScheduler] Skip stale session-control-plane bindings and self-heal', {
+        targetAgentId,
+        staleBindingCount: bindings.length,
+      });
+    }
     if (!sessionId && targetAgentId === SYSTEM_AGENT_ID) {
       const getSystemSession = (this.deps.sessionManager as any)?.getOrCreateSystemSession;
       if (typeof getSystemSession === 'function') {
         const systemSession = getSystemSession.call(this.deps.sessionManager);
-        if (systemSession?.id && typeof systemSession.id === 'string') sessionId = systemSession.id;
+        if (systemSession?.id && typeof systemSession.id === 'string') {
+          const healedSessionId = systemSession.id.trim();
+          sessionId = healedSessionId;
+          try {
+            sessionStore.set(
+              healedSessionId,
+              targetAgentId,
+              'finger',
+              healedSessionId,
+              { source: 'heartbeat-scheduler-self-heal' },
+            );
+          } catch (error) {
+            log.warn('[HeartbeatScheduler] Failed to persist healed system session binding', {
+              targetAgentId,
+              sessionId,
+              error: error instanceof Error ? error.message : String(error),
+            });
+          }
+        }
       }
     }
     if (!sessionId) {

@@ -47,7 +47,9 @@
     "daemon:start": "node scripts/daemon-restart.cjs --start-only",
     "daemon:stop": "node scripts/daemon-stop.cjs",
     "daemon:restart": "node scripts/daemon-restart.cjs",
-    "daemon:cleanup": "node scripts/daemon-cleanup.cjs"
+    "daemon:cleanup": "node scripts/daemon-cleanup.cjs",
+    "logs:cleanup": "node scripts/log-cleanup.cjs",
+    "logs:cleanup:all": "node scripts/log-cleanup.cjs --all"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.40.1",
@@ -73,7 +75,7 @@
     "vitest": "^1.6.0",
     "execa": "^8.0.1"
   },
-  "fingerBuildVersion": "0.1.0033",
+  "fingerBuildVersion": "0.1.0041",
   "pnpm": {
     "packageExtensions": {
       "vitest@*": {

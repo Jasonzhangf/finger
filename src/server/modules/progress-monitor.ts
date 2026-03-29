@@ -295,33 +295,13 @@ export class ProgressMonitor {
         || p.maxInputTokens !== p.lastReportedMaxInputTokens;
       const meaningfulToolCalls = newToolCalls.filter((tool) => !this.isLowValueToolCall(tool));
       const meaningfulTaskChange = currentTaskChanged && !this.isLowValueTask(p.currentTask);
-      const shouldHeartbeat = this.shouldEmitHeartbeat(p, now);
-      const pendingMeaningfulTool = this.findPendingMeaningfulTool(p);
+      // 只有工具调用、任务变化、reasoning 变化才触发推送；上下文变化不触发。
       const hasMeaningfulSignal = meaningfulToolCalls.length > 0
         || meaningfulTaskChange
-        || reasoningChanged
-        || contextChanged;
+        || reasoningChanged;
 
-      // 没有新的真实信号时保持静默；不要伪造“等待模型响应”心跳。
-      // 只有明确存在未完成的工具调用时，才允许发送等待类更新。
+      // 没有新的真实信号时保持完全静默；不发送任何心跳。
       if (!hasMeaningfulSignal) {
-        if (!shouldHeartbeat || !pendingMeaningfulTool) {
-          continue;
-        }
-
-        const heartbeatReport: ProgressReport = {
-          type: 'progress_report',
-          timestamp: new Date().toISOString(),
-          sessionId: p.sessionId,
-          agentId: p.agentId,
-          progress: p,
-          summary: this.buildHeartbeatSummary(p, now, pendingMeaningfulTool),
-        };
-
-        p.lastReportTime = now;
-        if (this.callbacks?.onProgressReport) {
-          await this.callbacks.onProgressReport(heartbeatReport);
-        }
         continue;
       }
 
@@ -331,7 +311,10 @@ export class ProgressMonitor {
         sessionId: p.sessionId,
         agentId: p.agentId,
         progress: p,
-        summary: this.buildSingleProgressSummary(p, meaningfulToolCalls),
+        summary: this.buildSingleProgressSummary(
+          p,
+          meaningfulToolCalls.length > 0 ? meaningfulToolCalls : newToolCalls.slice(-1),
+        ),
       };
 
       p.lastReportKey = reportKey;
@@ -357,6 +340,7 @@ export class ProgressMonitor {
     const firstReport = !p.lastReportTime;
     const currentTaskChanged = (p.currentTask ?? '') !== (p.lastReportedCurrentTask ?? '');
     const reasoningChanged = (p.latestReasoning ?? '') !== (p.lastReportedReasoning ?? '');
+    const includeTaskFallback = toolsToShow.length === 0 && !reasoningChanged;
     const data: SessionProgressData = {
       agentId: p.agentId,
       status: p.status,
@@ -376,7 +360,7 @@ export class ProgressMonitor {
       data,
       (ms) => formatElapsed(ms),
       {
-        includeTask: firstReport || currentTaskChanged,
+        includeTask: firstReport || currentTaskChanged || includeTaskFallback,
         includeReasoning: firstReport || reasoningChanged,
         headerMode: 'minimal',
       },

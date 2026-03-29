@@ -294,9 +294,19 @@ export async function handleDispatch(
   const dispatchParentSessionId = asTrimmedString(payload.parentSessionId)
     || asTrimmedString(payload.rootSessionId)
     || asTrimmedString(payload.sessionId);
+  const normalizedChildSessionId = childSessionId
+    && childSessionId !== dispatchParentSessionId
+    && childSessionId !== sessionId
+    ? childSessionId
+    : '';
+  if (normalizedChildSessionId) {
+    for (const mapping of mappings) {
+      ctx.registerChildSession(normalizedChildSessionId, mapping.envelope);
+    }
+  }
   const relationParts = [
-    childSessionId ? `子会话 ${truncateInline(childSessionId, 40)}` : '',
-    dispatchParentSessionId && childSessionId ? `父会话 ${truncateInline(dispatchParentSessionId, 40)}` : '',
+    normalizedChildSessionId ? `子会话 ${truncateInline(normalizedChildSessionId, 40)}` : '',
+    dispatchParentSessionId && normalizedChildSessionId ? `父会话 ${truncateInline(dispatchParentSessionId, 40)}` : '',
     targetAgentId ? `Agent ${targetAgentId}` : '',
   ].filter((item) => item.length > 0);
   const dispatchRelationLine = relationParts.length > 0 ? `关系: ${relationParts.join(' · ')}` : '';
@@ -339,7 +349,7 @@ export async function handleDispatch(
         ...(typeof queuePosition === 'number' ? { queuePosition } : {}),
         ...(resultStatus ? { resultStatus } : {}),
         ...(resultSummary ? { resultSummary: truncateInline(resultSummary, 240) } : {}),
-        ...(childSessionId ? { childSessionId } : {}),
+        ...(normalizedChildSessionId ? { childSessionId: normalizedChildSessionId } : {}),
         ...(dispatchParentSessionId ? { parentSessionId: dispatchParentSessionId } : {}),
         ...(mailboxFlow ? { mailboxFlow: true } : {}),
         ...(mailboxPreview ? { mailboxPreview } : {}),

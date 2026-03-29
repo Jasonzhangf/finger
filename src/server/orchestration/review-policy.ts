@@ -9,3 +9,8 @@ export function setActiveReviewPolicy(policy: OrchestrationReviewPolicy): void {
 export function getActiveReviewPolicy(): OrchestrationReviewPolicy {
   return activeOrchestrationReviewPolicy;
 }
+
+export function shouldAutoReviewDispatch(): boolean {
+  const policy = getActiveReviewPolicy();
+  return policy.enabled === true && policy.dispatchReviewMode === 'always';
+}

@@ -1,6 +1,6 @@
 # Context Builder 动态上下文构建设计
 
-> Last updated: 2026-03-28 14:25 +08:00  
+> Last updated: 2026-03-28 23:58 +08:00  
 > Status: Active  
 > Owner: Jason
 >
@@ -20,6 +20,33 @@ Context Builder 负责动态重建模型可见上下文中的 **history 区**，
 - AGENTS 路由、HEARTBEAT 等
 
 即：**history-only**。
+
+---
+
+## 1.1 不可破坏约束（硬规则）
+
+### 最小历史单位 = 一个完整 task
+
+Context Builder 只能在 **task block** 级别做选择/排序/预算截断，不能在 task 内做裁剪。
+
+一个 task 的边界定义为：
+- 从一条用户请求（`role=user`）开始
+- 包含该轮中间的全部执行轨迹（assistant/tool_call/tool_result/tool_error/reasoning 等）
+- 直到该轮完成（`finish_reason=stop`，或进入下一条用户请求前的完整链路）
+
+### 禁止 task 内编辑
+
+对已选中的 task block：
+- 不允许删除 task 内部消息
+- 不允许改写 task 内部顺序
+- 不允许只保留 task 的“摘要片段”替代原始链路
+
+可做的仅有：
+- 选择哪些 task block 进入 history
+- 调整 task block 之间顺序（按 mode/ranking）
+- 在超预算时整块丢弃某些 task block（绝不拆块）
+
+> 备注：附件可使用占位摘要（`attachments: {count, summary}`）以控制输入体积，但不改变 task 内事件链路语义。
 
 ---
 
@@ -123,6 +150,7 @@ Context Builder 负责动态重建模型可见上下文中的 **history 区**，
 
 说明：
 - 历史重建预算以 `historyBudgetTokens` 为准，按 task 粒度累计，不按消息条数截断。
+- 预算控制必须在 task block 边界生效，不允许对 task 内消息做 budget slice。
 - 默认历史预算为 **20k**；coding/debugging 场景推荐通过 `context_builder.rebuild` 先尝试 **50k**，只有 50k 仍不足时再尝试 **110k**。
 - `budgetRatio` 仅作兼容回退；当 `historyBudgetTokens` 存在时优先使用固定 token 预算。
 - `MEMORY.md` 不直接注入模型上下文；长期记忆需保持精简，只记录可验证的 ground truth。

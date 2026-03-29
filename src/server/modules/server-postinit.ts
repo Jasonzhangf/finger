@@ -23,6 +23,7 @@ import {
 import { createChannelBridgeHubRoute } from './channel-bridge-hub-route.js';
 import { loadOrchestrationConfig } from '../../orchestration/orchestration-config.js';
 import type { AgentDispatchRequest } from './agent-runtime/types.js';
+import { getActiveReviewPolicy } from '../orchestration/review-policy.js';
 
 export async function runPostInit(deps: {
   hub: MessageHub;
@@ -57,6 +58,8 @@ export async function runPostInit(deps: {
     formatDispatchResultContent,
     asString,
     generalAgentId: deps.generalAgentId,
+    dispatchTaskToAgent: deps.dispatchTaskToAgent,
+    resolveReviewPolicy: () => getActiveReviewPolicy(),
     isAgentBusy: (agentId: string) => {
       try {
         const runtimeDeps = deps.registerAllRoutesDeps.getAgentRuntimeDeps();
