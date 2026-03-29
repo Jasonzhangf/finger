@@ -117,7 +117,7 @@ export function registerAgentRuntimeTools(deps: AgentRuntimeDeps): string[] {
         blocking: { type: 'boolean' },
         queue_on_busy: { type: 'boolean' },
         max_queue_wait_ms: { type: 'number' },
-        assignment: { type: 'object' },
+        assignment: { type: "object", properties: { acceptance_criteria: { type: "string", description: "交付验收标准" }, review_required: { type: "boolean", description: "是否需要 review agent 审查" } } },
         metadata: { type: 'object' },
       },
       required: ['target_agent_id', 'task'],

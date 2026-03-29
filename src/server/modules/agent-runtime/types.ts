@@ -29,6 +29,10 @@ export interface AgentDispatchRequest {
     assigneeAgentId?: string;
     phase?: 'assigned' | 'queued' | 'started' | 'reviewing' | 'retry' | 'passed' | 'failed' | 'closed';
     attempt?: number;
+    /** 交付验收标准，project agent 完成后按此标准 review */
+    acceptanceCriteria?: string;
+    /** 是否需要 review agent 审查交付结果 */
+    reviewRequired?: boolean;
   };
   metadata?: Record<string, unknown>;
 }

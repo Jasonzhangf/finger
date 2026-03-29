@@ -1,6 +1,6 @@
 import { logger } from '../../../core/logger.js';
 import { isObjectRecord } from '../../common/object.js';
-import { asString } from '../../common/strings.js';
+import { asString, firstNonEmptyString } from '../../common/strings.js';
 import { getGlobalDispatchTracker } from './dispatch-tracker.js';
 import { sanitizeDispatchResult, type DispatchSummaryResult } from '../../../common/agent-dispatch.js';
 import type { AgentDispatchRequest, AgentRuntimeDeps } from './types.js';
@@ -30,6 +30,7 @@ import {
   syncBdDispatchLifecycle,
   withDispatchWorkspaceDefaults,
 } from './dispatch-runtime-helpers.js';
+import { setMonitorStatus } from '../../../agents/finger-system-agent/registry.js';
 
 const DISPATCH_ERROR_MAX_RETRIES = Number.isFinite(Number(process.env.FINGER_DISPATCH_ERROR_MAX_RETRIES))
   ? Math.max(0, Math.floor(Number(process.env.FINGER_DISPATCH_ERROR_MAX_RETRIES)))
@@ -51,6 +52,48 @@ export async function dispatchTaskToAgent(deps: AgentRuntimeDeps, input: AgentDi
     const sessionSelectedInput = resolveDispatchSessionSelection(deps, input);
     const boundInput = bindDispatchSessionToRuntime(deps, sessionSelectedInput);
     normalizedInput = withDispatchWorkspaceDefaults(deps, boundInput);
+    if (normalizedInput.targetAgentId === FINGER_PROJECT_AGENT_ID) {
+      const metadata = isObjectRecord(normalizedInput.metadata) ? normalizedInput.metadata : {};
+      const taskRecord = isObjectRecord(normalizedInput.task) ? normalizedInput.task : {};
+      const taskMetadata = isObjectRecord(taskRecord.metadata) ? taskRecord.metadata : {};
+      const sessionId = typeof normalizedInput.sessionId === 'string' ? normalizedInput.sessionId.trim() : '';
+      const boundSession = sessionId ? deps.sessionManager.getSession(sessionId) : null;
+      const projectPathHint = firstNonEmptyString(
+        normalizedInput.projectPath,
+        asString(metadata.projectPath),
+        asString(metadata.project_path),
+        asString(metadata.cwd),
+        asString(taskRecord.projectPath),
+        asString(taskRecord.project_path),
+        asString(taskRecord.cwd),
+        asString(taskMetadata.projectPath),
+        asString(taskMetadata.project_path),
+        asString(taskMetadata.cwd),
+        boundSession?.projectPath,
+      );
+      if (projectPathHint) {
+        try {
+          const monitoredAgent = await setMonitorStatus(projectPathHint, true);
+          const nextMetadata = { ...(isObjectRecord(normalizedInput.metadata) ? normalizedInput.metadata : {}) };
+          nextMetadata.projectId = monitoredAgent.projectId;
+          nextMetadata.projectPath = monitoredAgent.projectPath;
+          nextMetadata.projectAgentId = monitoredAgent.agentId;
+          nextMetadata.projectMonitored = monitoredAgent.monitored === true;
+          normalizedInput = {
+            ...normalizedInput,
+            projectPath: monitoredAgent.projectPath,
+            metadata: nextMetadata,
+          };
+        } catch (registerError) {
+          logger.module('dispatch').warn('Auto monitor registration failed for project dispatch', {
+            targetAgentId: normalizedInput.targetAgentId,
+            sessionId,
+            projectPathHint,
+            error: registerError instanceof Error ? registerError.message : String(registerError),
+          });
+        }
+      }
+    }
     if (
       normalizedInput.sourceAgentId === FINGER_SYSTEM_AGENT_ID
       && normalizedInput.targetAgentId === FINGER_PROJECT_AGENT_ID

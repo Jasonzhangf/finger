@@ -12,6 +12,8 @@ export interface TaskReportPayload {
   sessionId: string;
   result: 'success' | 'failure';
   projectId: string;
+  /** 交付标的 */
+  deliveryArtifacts?: string;
 }
 
 export interface TaskReportDispatchResult {
@@ -94,7 +96,11 @@ export async function dispatchTaskToSystemAgent(
     sourceAgentId: 'finger-project-agent',
     targetAgentId: SYSTEM_AGENT_ID,
     task: {
-      prompt: `[Task Report]\n任务ID: ${payload.taskId}\n任务摘要: ${payload.taskSummary}\n结果: ${payload.result}\n项目: ${payload.projectId}`,
+      prompt: `[Task Report]
+任务ID: ${payload.taskId}
+任务摘要: ${payload.taskSummary}
+结果: ${payload.result}
+项目: ${payload.projectId}${payload.deliveryArtifacts ? "\n交付标的: " + payload.deliveryArtifacts : ""}`,
     },
     sessionId,
     metadata: {

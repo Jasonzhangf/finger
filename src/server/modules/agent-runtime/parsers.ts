@@ -129,6 +129,12 @@ export function parseAgentDispatchToolInput(rawInput: unknown, deps: AgentRuntim
     ...(typeof assignmentInput.attempt === 'number' && Number.isFinite(assignmentInput.attempt)
       ? { attempt: Math.max(1, Math.floor(assignmentInput.attempt)) }
       : {}),
+    ...(typeof assignmentInput.acceptance_criteria === 'string' && assignmentInput.acceptance_criteria.trim().length > 0
+      ? { acceptanceCriteria: assignmentInput.acceptance_criteria.trim() }
+      : {}),
+    ...(typeof assignmentInput.review_required === 'boolean'
+      ? { reviewRequired: assignmentInput.review_required }
+      : {}),
   };
   return {
     sourceAgentId: sourceAgentId.trim().length > 0 ? sourceAgentId.trim() : deps.primaryOrchestratorAgentId,

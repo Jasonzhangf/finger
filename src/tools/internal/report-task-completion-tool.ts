@@ -1,7 +1,9 @@
+
 /**
  * Report Task Completion Tool
  *
- * Project Agent 报告任务完成
+ * Project Agent 报告任务完成，附交付标的。
+ * System Agent 根据 dispatch 时的 review_required 决定是否触发 review。
  */
 
 import type { ToolRegistry } from '../../runtime/tool-registry.js';
@@ -16,6 +18,8 @@ export interface ReportTaskCompletionInput {
   sessionId: string;
   result: 'success' | 'failure';
   projectId: string;
+  /** 交付标的：截图路径、执行结果、关键变更文件列表等 */
+  deliveryArtifacts?: string;
 }
 
 export interface ReportTaskCompletionOutput {
@@ -32,7 +36,7 @@ export function registerReportTaskCompletionTool(
 ): void {
   toolRegistry.register({
     name: 'report-task-completion',
-    description: 'Project Agent 报告任务完成（仅 Project Agent 可用）',
+    description: 'Project Agent 报告任务完成，附交付标的（仅 Project Agent 可用）',
     inputSchema: {
       type: 'object',
       properties: {
@@ -42,6 +46,10 @@ export function registerReportTaskCompletionTool(
         sessionId: { type: 'string' },
         result: { type: 'string', enum: ['success', 'failure'] },
         projectId: { type: 'string' },
+        delivery_artifacts: {
+          type: 'string',
+          description: '交付标的描述：截图路径、执行结果、关键变更文件列表等',
+        },
       },
       required: ['action', 'taskId', 'taskSummary', 'sessionId', 'result', 'projectId'],
     },
@@ -54,12 +62,17 @@ export function registerReportTaskCompletionTool(
 
       try {
         const deps = getAgentRuntimeDeps();
+        const deliveryArtifacts = typeof params.deliveryArtifacts === 'string'
+          ? params.deliveryArtifacts.trim()
+          : '';
+
         const dispatch = await dispatchTaskToSystemAgent(deps, {
           taskId: params.taskId,
           taskSummary: params.taskSummary,
           sessionId: params.sessionId,
           result: params.result,
           projectId: params.projectId,
+          deliveryArtifacts,
         });
 
         const sessionManager = deps.sessionManager as
@@ -97,6 +110,7 @@ export function registerReportTaskCompletionTool(
               dispatchId: dispatch.dispatchId,
               status: dispatch.status,
               result: params.result,
+              ...(deliveryArtifacts ? { deliveryArtifacts } : {}),
               ...(dispatch.error ? { error: dispatch.error } : {}),
             },
           });

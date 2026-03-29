@@ -9,6 +9,7 @@ import { PeriodicCheckRunner } from '../../agents/finger-system-agent/periodic-c
 import { loadRegistry } from '../../agents/finger-system-agent/registry.js';
 import type { AgentInfo } from '../../agents/finger-system-agent/registry.js';
 import { SYSTEM_AGENT_CONFIG } from '../../agents/finger-system-agent/index.js';
+import { FINGER_PROJECT_AGENT_ID } from '../../agents/finger-general/finger-general-module.js';
 import { logger } from '../../core/logger.js';
 import { FINGER_PATHS } from '../../core/finger-paths.js';
 import { promises as fs } from 'fs';
@@ -197,13 +198,121 @@ export class SystemAgentManager {
     const { projectPath, projectId, agentId } = agent;
 
     log.info(`Starting Project Agent ${agentId} for ${projectId} at ${projectPath}`);
+    const sessionId = this.resolveProjectSessionIdForRecovery(agent);
+    const deployResult = await this.deps.agentRuntimeBlock.execute('deploy', {
+      targetAgentId: FINGER_PROJECT_AGENT_ID,
+      sessionId,
+      instanceCount: 1,
+      launchMode: 'orchestrator',
+      scope: 'session',
+      config: {
+        enabled: true,
+      },
+    }) as { success?: boolean; deployment?: { id?: string; status?: string }; error?: string };
 
-    // TODO: 实现启动 Orchestrator Agent 的逻辑
-    // 这应该通过 AgentRuntimeBlock.execute('dispatch', {...}) 来实现
-    // Agent 启动后会自动调用 system-registry-tool 注册自己
+    if (deployResult?.success) {
+      log.info('[SystemAgentManager] Project Agent deployed for monitored project', {
+        projectPath,
+        projectId,
+        sessionId,
+        deploymentId: deployResult.deployment?.id,
+        deploymentStatus: deployResult.deployment?.status,
+      });
+    } else {
+      log.warn('[SystemAgentManager] Failed to deploy monitored project agent', {
+        projectPath,
+        projectId,
+        sessionId,
+        error: deployResult?.error ?? 'unknown',
+      });
+      return;
+    }
 
-    // 临时占位：实际启动逻辑需要集成到 AgentRuntimeBlock
-    log.info(`[TODO] Project Agent ${agentId} would be started here`);
+    await this.resumeProjectSessionIfNeeded(agent, sessionId);
+  }
+
+  private resolveProjectSessionIdForRecovery(agent: AgentInfo): string {
+    const projectPath = path.resolve(agent.projectPath);
+    const candidateFromRegistry = typeof agent.lastSessionId === 'string'
+      ? this.deps.sessionManager.getSession(agent.lastSessionId)
+      : null;
+    if (candidateFromRegistry
+      && !this.deps.isRuntimeChildSession(candidateFromRegistry)
+      && path.resolve(candidateFromRegistry.projectPath) === projectPath) {
+      return candidateFromRegistry.id;
+    }
+
+    const latestRoot = this.deps.sessionManager.findSessionsByProjectPath(projectPath)
+      .filter((session) => !this.deps.isRuntimeChildSession(session))
+      .sort((a, b) => new Date(b.lastAccessedAt).getTime() - new Date(a.lastAccessedAt).getTime())[0];
+    if (latestRoot) return latestRoot.id;
+
+    const created = this.deps.sessionManager.createSession(projectPath, agent.projectName, { allowReuse: true });
+    return created.id;
+  }
+
+  private async resumeProjectSessionIfNeeded(agent: AgentInfo, sessionId: string): Promise<void> {
+    const lifecycle = getExecutionLifecycleState(this.deps.sessionManager, sessionId);
+    if (!lifecycle) {
+      log.info('[SystemAgentManager] Monitored project has no lifecycle state; skip startup recovery', {
+        projectId: agent.projectId,
+        projectPath: agent.projectPath,
+        sessionId,
+      });
+      return;
+    }
+    if (!this.shouldResumeLifecycle(lifecycle)) {
+      log.info('[SystemAgentManager] Monitored project lifecycle already completed; no recovery needed', {
+        projectId: agent.projectId,
+        projectPath: agent.projectPath,
+        sessionId,
+        stage: lifecycle.stage,
+        finishReason: lifecycle.finishReason ?? 'none',
+      });
+      return;
+    }
+
+    const prompt = [
+      '系统重启恢复：检测到该项目会话上一轮未完成。',
+      `项目路径：${agent.projectPath}`,
+      `状态：${lifecycle.stage}${lifecycle.substage ? `/${lifecycle.substage}` : ''}`,
+      '请从当前中断点继续执行，直到任务真正完成（finish_reason=stop）。',
+    ].join('\n');
+
+    const result = await this.deps.agentRuntimeBlock.execute('dispatch', {
+      sourceAgentId: 'system-project-recovery',
+      targetAgentId: FINGER_PROJECT_AGENT_ID,
+      task: prompt,
+      sessionId,
+      metadata: {
+        source: 'system-project-recovery',
+        role: 'system',
+        deliveryMode: 'direct',
+        progressDelivery: { mode: 'silent' },
+        projectPath: agent.projectPath,
+        recovery: {
+          type: 'resume_monitored_project_execution',
+          stage: lifecycle.stage,
+          substage: lifecycle.substage,
+          finishReason: lifecycle.finishReason,
+          lastTransitionAt: lifecycle.lastTransitionAt,
+          turnId: lifecycle.turnId,
+          dispatchId: lifecycle.dispatchId,
+        },
+      },
+      blocking: false,
+    }) as { status?: string; dispatchId?: string; ok?: boolean; error?: string };
+
+    log.info('[SystemAgentManager] Monitored project recovery dispatched', {
+      projectId: agent.projectId,
+      projectPath: agent.projectPath,
+      sessionId,
+      lifecycleStage: lifecycle.stage,
+      lifecycleSubstage: lifecycle.substage,
+      status: result?.status ?? 'unknown',
+      dispatchId: result?.dispatchId,
+      error: result?.ok === false ? (result.error ?? 'unknown') : undefined,
+    });
   }
 
   private async handleStartupExecutionState(): Promise<void> {
