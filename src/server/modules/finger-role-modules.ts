@@ -7,6 +7,9 @@ import { createFingerGeneralModule, type ChatCodexLoopEvent } from '../../agents
 import type { ChatCodexDeveloperRole } from '../../agents/chat-codex/developer-prompt-templates.js';
 import { buildContext } from '../../runtime/context-builder.js';
 import { loadContextBuilderSettings } from '../../core/user-settings.js';
+import { estimateTokens } from '../../utils/token-counter.js';
+import { normalizeRootDir, readJsonLines, resolveLedgerPath } from '../../runtime/context-ledger-memory-helpers.js';
+import type { LedgerEntryFile } from '../../runtime/context-ledger-memory-types.js';
 import {
   consumeContextBuilderOnDemandView,
   shouldRunContextBuilderBootstrapOnce,
@@ -23,6 +26,7 @@ import {
   augmentHistoryWithContinuityAnchors,
   extractRecentTaskMessages,
   extractRecentUserInputs,
+  sessionMessageIdentity,
 } from './finger-role-modules-continuity.js';
 import {
   hasMediaInputInMessage,
@@ -53,6 +57,170 @@ export interface LegacyAliasOptions {
   enableLegacyChatCodexAlias: boolean;
   legacyAgentId: string;
   legacyAllowedTools: string[];
+}
+
+type HistoryMessage = {
+  id: string;
+  role: 'user' | 'assistant' | 'system';
+  content: string;
+  timestamp: string;
+  metadata?: Record<string, unknown>;
+};
+
+function isEffectivelyEmptyHistoryForBootstrap(messages: HistoryMessage[]): boolean {
+  if (!Array.isArray(messages) || messages.length === 0) return true;
+  const nonEmpty = messages.filter((item) => typeof item.content === 'string' && item.content.trim().length > 0);
+  if (nonEmpty.length === 0) return true;
+  if (nonEmpty.length === 1 && nonEmpty[0].role === 'user') return true;
+  return false;
+}
+
+function normalizeHistoryMessages(
+  messages: Array<{
+    id?: string;
+    role: string;
+    content: string;
+    timestamp?: string;
+    metadata?: Record<string, unknown>;
+  }>,
+): HistoryMessage[] {
+  return messages.map((message, index) => ({
+    id: typeof message.id === 'string' && message.id.trim().length > 0 ? message.id : `norm-${Date.now()}-${index}`,
+    role: message.role === 'assistant' || message.role === 'system' ? message.role : 'user',
+    content: typeof message.content === 'string' ? message.content : '',
+    timestamp: typeof message.timestamp === 'string' ? message.timestamp : new Date().toISOString(),
+    ...(message.metadata ? { metadata: message.metadata } : {}),
+  }));
+}
+
+async function readRawSessionMessagesFromLedger(params: {
+  rootDir?: string;
+  sessionId: string;
+  agentId: string;
+  mode?: string;
+}): Promise<HistoryMessage[]> {
+  const rootDir = normalizeRootDir(params.rootDir);
+  const mode = params.mode ?? 'main';
+  const ledgerPath = resolveLedgerPath(rootDir, params.sessionId, params.agentId, mode);
+  const entries = await readJsonLines<LedgerEntryFile>(ledgerPath);
+  return entries
+    .filter((entry) => entry.event_type === 'session_message')
+    .map((entry, index) => {
+      const payload = entry.payload && typeof entry.payload === 'object' && !Array.isArray(entry.payload)
+        ? entry.payload as Record<string, unknown>
+        : {};
+      const rawRole = typeof payload.role === 'string' ? payload.role : 'user';
+      const role: 'user' | 'assistant' | 'system' = rawRole === 'assistant' || rawRole === 'system' ? rawRole : 'user';
+      const content = typeof payload.content === 'string' ? payload.content : '';
+      const timestamp = typeof entry.timestamp_iso === 'string' ? entry.timestamp_iso : new Date(entry.timestamp_ms).toISOString();
+      const messageId = typeof payload.message_id === 'string' && payload.message_id.trim().length > 0
+        ? payload.message_id
+        : (typeof entry.id === 'string' && entry.id.trim().length > 0 ? entry.id : `raw-${entry.timestamp_ms}-${index}`);
+      const metadata = payload.metadata && typeof payload.metadata === 'object' && !Array.isArray(payload.metadata)
+        ? payload.metadata as Record<string, unknown>
+        : undefined;
+      return {
+        id: messageId,
+        role,
+        content,
+        timestamp,
+        ...(metadata ? { metadata } : {}),
+      };
+    });
+}
+
+function topUpHistoryToBudget(
+  selected: Array<{
+    id: string;
+    role: 'user' | 'assistant' | 'system';
+    content: string;
+    timestamp: string;
+    metadata?: Record<string, unknown>;
+  }>,
+  rawMessages: HistoryMessage[],
+  budgetTokens: number,
+  extraMetadata?: Record<string, unknown>,
+): Array<{
+  id: string;
+  role: 'user' | 'assistant' | 'system';
+  content: string;
+  timestamp: string;
+  metadata?: Record<string, unknown>;
+}> {
+  if (!Number.isFinite(budgetTokens) || budgetTokens <= 0) return selected;
+  if (!Array.isArray(selected) || selected.length === 0) return selected;
+  if (!Array.isArray(rawMessages) || rawMessages.length === 0) return selected;
+
+  let usedTokens = selected.reduce((sum, item) => sum + estimateTokens(item.content), 0);
+  if (usedTokens >= budgetTokens) return selected;
+
+  const selectedKeys = new Set(selected.map((item) => sessionMessageIdentity(item)));
+  const addKeys = new Set<string>();
+
+  for (let index = rawMessages.length - 1; index >= 0; index -= 1) {
+    const item = rawMessages[index];
+    if (!item.content || item.content.trim().length === 0) continue;
+    const key = sessionMessageIdentity(item);
+    if (selectedKeys.has(key)) continue;
+    const itemTokens = estimateTokens(item.content);
+    if (usedTokens + itemTokens > budgetTokens) continue;
+    addKeys.add(key);
+    selectedKeys.add(key);
+    usedTokens += itemTokens;
+    if (usedTokens >= budgetTokens) break;
+  }
+
+  if (addKeys.size === 0) return selected;
+
+  const byKey = new Map<string, {
+    id: string;
+    role: 'user' | 'assistant' | 'system';
+    content: string;
+    timestamp: string;
+    metadata?: Record<string, unknown>;
+  }>();
+  for (const item of selected) {
+    byKey.set(sessionMessageIdentity(item), item);
+  }
+  for (const item of rawMessages) {
+    const key = sessionMessageIdentity(item);
+    if (!addKeys.has(key)) continue;
+    byKey.set(key, {
+      id: item.id,
+      role: item.role,
+      content: item.content,
+      timestamp: item.timestamp,
+      metadata: {
+        ...(item.metadata ?? {}),
+        ...(extraMetadata ?? {}),
+        contextBuilderHistoryTopup: true,
+      },
+    });
+  }
+
+  const merged: Array<{
+    id: string;
+    role: 'user' | 'assistant' | 'system';
+    content: string;
+    timestamp: string;
+    metadata?: Record<string, unknown>;
+  }> = [];
+  const pushed = new Set<string>();
+  for (const raw of rawMessages) {
+    const key = sessionMessageIdentity(raw);
+    const hit = byKey.get(key);
+    if (!hit || pushed.has(key)) continue;
+    pushed.add(key);
+    merged.push(hit);
+  }
+  for (const item of selected) {
+    const key = sessionMessageIdentity(item);
+    if (pushed.has(key)) continue;
+    pushed.add(key);
+    merged.push(item);
+  }
+
+  return merged;
 }
 
 export async function registerFingerRoleModules(
@@ -122,8 +290,22 @@ export async function registerFingerRoleModules(
         });
         return null;
       }
-      const sessionMessages = runtime.getMessages(sessionId, 0);
-
+      const sessionContext = (session.context ?? {}) as Record<string, unknown>;
+      const agentId = typeof sessionContext.ownerAgentId === 'string' && sessionContext.ownerAgentId.trim().length > 0
+        ? sessionContext.ownerAgentId
+        : role.id;
+      const rootDir = deps.resolveSessionLedgerRoot
+        ? deps.resolveSessionLedgerRoot({ id: session.id, projectPath: session.projectPath })
+        : undefined;
+      const rawSessionMessages = await readRawSessionMessagesFromLedger({
+        rootDir,
+        sessionId,
+        agentId,
+        mode: 'main',
+      });
+      const sessionMessages = rawSessionMessages.length > 0
+        ? rawSessionMessages
+        : normalizeHistoryMessages(runtime.getMessages(sessionId, 0));
       const latestMessage = sessionMessages.length > 0 ? sessionMessages[sessionMessages.length - 1] : null;
       const hasMediaInput = hasMediaInputInMessage(latestMessage);
       if (hasMediaInput) {
@@ -147,16 +329,11 @@ export async function registerFingerRoleModules(
         });
         return mapped;
       }
-
-      const sessionContext = (session.context ?? {}) as Record<string, unknown>;
-      const agentId = typeof sessionContext.ownerAgentId === 'string' && sessionContext.ownerAgentId.trim().length > 0
-        ? sessionContext.ownerAgentId
-        : role.id;
-      const rootDir = deps.resolveSessionLedgerRoot
-        ? deps.resolveSessionLedgerRoot({ id: session.id, projectPath: session.projectPath })
-        : undefined;
       const persistedIndex = readPersistedContextBuilderHistoryIndex(sessionContext);
       const pinnedMessageIds = extractPinnedMessageIdsFromSessionContext(sessionContext);
+      const historyBudgetTokens = Number.isFinite(settings.historyBudgetTokens) && settings.historyBudgetTokens > 0
+        ? Math.floor(settings.historyBudgetTokens)
+        : 20000;
 
       // 默认不自动重组，只在模型显式调用 context_builder.rebuild 后
       // 在下一轮消费一次按需重组视图。
@@ -204,11 +381,15 @@ export async function registerFingerRoleModules(
             }));
             logger.module('finger-role-modules').info('Applied indexed context history from persisted snapshot', { roleId: role.id, sessionId, selectedCount: indexedMapped.length, selectedMessageCount: persistedIndex.selectedMessageIds.length, deltaCount: indexed.deltaCount, buildMode: persistedIndex.buildMode });
             persistContextBuilderHistoryIndex(runtime, sessionId, buildNextIndexedHistoryIndex(persistedIndex, indexedMapped));
-            return augmentHistoryWithContinuityAnchors(indexedMapped, sessionMessages, limit, {
+            const merged = augmentHistoryWithContinuityAnchors(indexedMapped, sessionMessages, limit, {
               contextBuilderHistorySource: 'context_builder_indexed',
               contextBuilderBypassed: false,
               contextBuilderRebuilt: false,
               contextBuilderIndexed: true,
+            });
+            return topUpHistoryToBudget(merged, sessionMessages, historyBudgetTokens, {
+              contextBuilderHistorySource: 'context_builder_indexed',
+              contextBuilderHistoryTopup: true,
             });
           }
           logger.module('finger-role-modules').debug('Persisted context history index yielded no messages, fallback to bootstrap/raw', {
@@ -218,7 +399,8 @@ export async function registerFingerRoleModules(
           });
         }
 
-        if (shouldRunContextBuilderBootstrapOnce(sessionId, agentId)) {
+        const canAutoBootstrap = isEffectivelyEmptyHistoryForBootstrap(sessionMessages);
+        if (shouldRunContextBuilderBootstrapOnce(sessionId, agentId) && canAutoBootstrap) {
           const configuredBudget = Number.isFinite(settings.historyBudgetTokens) && settings.historyBudgetTokens > 0
             ? Math.floor(settings.historyBudgetTokens)
             : 20000;
@@ -279,15 +461,25 @@ export async function registerFingerRoleModules(
             );
             persistContextBuilderHistoryIndex(runtime, sessionId, indexSnapshot);
             logger.module('finger-role-modules').info('Applied one-time bootstrap context rebuild', { roleId: role.id, sessionId, selectedCount: bootstrappedMapped.length, mode: settings.mode, targetBudget: configuredBudget });
-            return augmentHistoryWithContinuityAnchors(bootstrappedMapped, sessionMessages, limit, {
+            const merged = augmentHistoryWithContinuityAnchors(bootstrappedMapped, sessionMessages, limit, {
               contextBuilderHistorySource: 'context_builder_bootstrap',
               contextBuilderBypassed: false,
               contextBuilderRebuilt: true,
               contextBuilderBootstrap: true,
             });
+            return topUpHistoryToBudget(merged, sessionMessages, historyBudgetTokens, {
+              contextBuilderHistorySource: 'context_builder_bootstrap',
+              contextBuilderHistoryTopup: true,
+            });
           }
 
           logger.module('finger-role-modules').debug('Bootstrap rebuild yielded empty history, fallback to raw session', { roleId: role.id, sessionId });
+        } else if (!canAutoBootstrap) {
+          logger.module('finger-role-modules').debug('Skip bootstrap rebuild because session history is not empty', {
+            roleId: role.id,
+            sessionId,
+            historyCount: sessionMessages.length,
+          });
         }
         const mapped = augmentHistoryWithContinuityAnchors(mapRawSessionMessages(sessionMessages, limit, {
           contextBuilderHistorySource: 'raw_session',
@@ -301,7 +493,10 @@ export async function registerFingerRoleModules(
           contextBuilderRebuilt: false,
         });
         logger.module('finger-role-modules').debug('Context builder not requested, using raw session history', { roleId: role.id, sessionId, selectedCount: mapped.length });
-        return mapped;
+        return topUpHistoryToBudget(mapped, sessionMessages, historyBudgetTokens, {
+          contextBuilderHistorySource: 'raw_session',
+          contextBuilderHistoryTopup: true,
+        });
       }
 
       const sliced = Number.isFinite(limit) && limit > 0
@@ -362,11 +557,15 @@ export async function registerFingerRoleModules(
         mode: onDemand.buildMode,
         targetBudget: onDemand.targetBudget,
       });
-      return augmentHistoryWithContinuityAnchors(mapped, sessionMessages, limit, {
+      const merged = augmentHistoryWithContinuityAnchors(mapped, sessionMessages, limit, {
         contextBuilderHistorySource: 'context_builder_on_demand',
         contextBuilderBypassed: false,
         contextBuilderRebuilt: true,
         contextBuilderOnDemand: true,
+      });
+      return topUpHistoryToBudget(merged, sessionMessages, historyBudgetTokens, {
+        contextBuilderHistorySource: 'context_builder_on_demand',
+        contextBuilderHistoryTopup: true,
       });
     };
 
@@ -426,4 +625,5 @@ export const __fingerRoleModulesInternals = {
   extractRecentTaskMessages,
   extractRecentUserInputs,
   augmentHistoryWithContinuityAnchors,
+  isEffectivelyEmptyHistoryForBootstrap,
 };
