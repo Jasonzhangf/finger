@@ -317,3 +317,10 @@ log.endTrace(traceId);  // 自动写入快照文件
 2. 关键路径是否有足够的日志覆盖
 3. 错误处理路径是否有日志
 4. 是否有残留的 `console.*` 调用
+
+## 永远禁止的命令（强制）
+
+- **永远禁止** `git reset`、`git reset --hard`、`git checkout --` 等会丢失提交历史的命令
+- **永远禁止** `git push --force`、`git push -f`
+- 如需回退代码，只能用 `git revert` 创建新提交来撤销
+- 如果发现误操作，立即用 `git reflog` 恢复
