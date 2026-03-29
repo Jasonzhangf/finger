@@ -3,15 +3,16 @@
  *
  * 职责：
  * 1. 读取 MEMORY.md 作为强制性长期记忆上下文
- * 2. 从 Ledger 读取历史记录（只读）
+ * 2. 从运行时 session 快照或 Ledger 读取历史记录（默认优先 session 快照）
  * 3. 24小时半衰期时间窗口过滤
  * 4. 任务边界分组（一次完整用户请求 = 一个 task）
  * 5. 模型辅助排序（可选）
  * 6. 预算控制组装上下文
  *
  * 设计原则：
- * - Ledger 是唯一真源，不截断原始数据
- * - 截断只发生在构建 session 时
+ * - Ledger 是存储真源（append-only timeline）
+ * - 运行时默认消费 session 视图，不直接消费 raw ledger 回放
+ * - 截断/重组只发生在构建 session 视图时
  * - MEMORY.md 是强制上下文
  */
 
@@ -46,12 +47,28 @@ type AttachmentPlaceholder = {
   summary: string;
 };
 
+interface SessionSnapshotMessage {
+  id?: string;
+  role: string;
+  content: string;
+  timestamp: string;
+  metadata?: Record<string, unknown>;
+  attachments?: unknown[];
+}
+
 // ── 常量 ──────────────────────────────────────────────────────────────
 
 const DEFAULT_HALF_LIFE_MS = 24 * 60 * 60 * 1000; // 24 hours
 const DEFAULT_OVER_THRESHOLD_RELEVANCE = 0.5; // 超过24h后相关性阈值
 const DEFAULT_BUDGET_RATIO = 0.85; // 目标上下文占模型窗口的比例
 const log = logger.module('ContextBuilder');
+
+function normalizeTaskMessageRole(input: unknown): TaskMessage['role'] {
+  if (input === 'assistant' || input === 'system' || input === 'orchestrator' || input === 'user') {
+    return input;
+  }
+  return 'user';
+}
 
 function compactAttachments(raw: unknown): AttachmentPlaceholder | undefined {
   if (!Array.isArray(raw) || raw.length === 0) return undefined;
@@ -86,7 +103,7 @@ function groupByTaskBoundary(entries: LedgerEntryFile[]): TaskBlock[] {
 
   for (const entry of entries) {
     const payload = entry.payload as Record<string, unknown>;
-    const role = (payload.role as string) || 'system';
+    const role = normalizeTaskMessageRole(payload.role);
     const content = typeof payload.content === 'string' ? payload.content : '';
     const metadata = payload.metadata && typeof payload.metadata === 'object' && !Array.isArray(payload.metadata)
       ? payload.metadata as Record<string, unknown>
@@ -99,7 +116,7 @@ function groupByTaskBoundary(entries: LedgerEntryFile[]): TaskBlock[] {
 
     const msg: TaskMessage = {
       id: entry.id,
-      role: role as TaskMessage['role'],
+      role,
       content,
       timestamp: entry.timestamp_ms,
       timestampIso: entry.timestamp_iso,
@@ -127,6 +144,62 @@ function groupByTaskBoundary(entries: LedgerEntryFile[]): TaskBlock[] {
     blocks.push(finalizeBlock(blockId, blockStartTs, currentBlock));
   }
 
+  return blocks;
+}
+
+function normalizeSessionSnapshotMessages(
+  messages: SessionSnapshotMessage[],
+): TaskMessage[] {
+  if (!Array.isArray(messages) || messages.length === 0) return [];
+  return messages
+    .filter((item) => typeof item.content === 'string' && item.content.trim().length > 0)
+    .map((item, index) => {
+      const parsedTs = Date.parse(item.timestamp);
+      const timestampMs = Number.isFinite(parsedTs) ? parsedTs : Date.now() + index;
+      const metadata = item.metadata && typeof item.metadata === 'object'
+        ? item.metadata
+        : undefined;
+      const role = normalizeTaskMessageRole(item.role);
+      return {
+        id: typeof item.id === 'string' && item.id.trim().length > 0
+          ? item.id
+          : `session-msg-${timestampMs}-${index}`,
+        role,
+        content: item.content,
+        timestamp: timestampMs,
+        timestampIso: new Date(timestampMs).toISOString(),
+        tokenCount: estimateTokens(item.content),
+        messageId: typeof metadata?.messageId === 'string' && metadata.messageId.trim().length > 0
+          ? metadata.messageId
+          : undefined,
+        metadata,
+        attachments: compactAttachments(item.attachments ?? metadata?.attachments),
+      } satisfies TaskMessage;
+    });
+}
+
+function groupByTaskBoundaryFromSessionMessages(messages: SessionSnapshotMessage[]): TaskBlock[] {
+  const normalized = normalizeSessionSnapshotMessages(messages);
+  if (normalized.length === 0) return [];
+  const blocks: TaskBlock[] = [];
+  let currentBlock: TaskMessage[] = [];
+  let blockStartTs = normalized[0].timestamp;
+  let blockId = `task-${normalized[0].timestamp}`;
+
+  for (const msg of normalized) {
+    if (msg.role === 'user' && currentBlock.length > 0) {
+      blocks.push(finalizeBlock(blockId, blockStartTs, currentBlock));
+      blockStartTs = msg.timestamp;
+      blockId = `task-${msg.timestamp}`;
+      currentBlock = [msg];
+    } else {
+      currentBlock.push(msg);
+    }
+  }
+
+  if (currentBlock.length > 0) {
+    blocks.push(finalizeBlock(blockId, blockStartTs, currentBlock));
+  }
   return blocks;
 }
 
@@ -634,6 +707,8 @@ export interface ContextBuilderInput {
   mode?: string;
   /** 用户当前输入（用于相关性排序） */
   currentPrompt?: string;
+  /** Runtime session snapshot messages; when provided, consumes this view instead of raw ledger replay. */
+  sessionMessages?: SessionSnapshotMessage[];
 }
 
 /**
@@ -660,20 +735,26 @@ export async function buildContext(
   const targetBudget = options?.targetBudget ?? Math.floor(contextWindow * DEFAULT_BUDGET_RATIO);
   const enableTaskGrouping = options?.enableTaskGrouping !== false;
 
-  // ── Step 1: 读取 Ledger 条目 ──
-  const allEntries = await readJsonLines<LedgerEntryFile>(ledgerPath);
-  const messageEntries = allEntries.filter(
-    (e) => e.event_type === 'session_message' && typeof (e.payload as Record<string, unknown>).content === 'string',
-  );
+  // ── Step 1: 读取 session 快照（优先）或 Ledger 条目 ──
+  const snapshotMessages = Array.isArray(input.sessionMessages) ? input.sessionMessages : [];
+  let messageEntries: LedgerEntryFile[] = [];
+  if (snapshotMessages.length === 0) {
+    const allEntries = await readJsonLines<LedgerEntryFile>(ledgerPath);
+    messageEntries = allEntries.filter(
+      (e) => e.event_type === 'session_message' && typeof (e.payload as Record<string, unknown>).content === 'string',
+    );
+  }
 
   // ── Step 2: 按任务边界分组 ──
-  const rawBlocks = enableTaskGrouping
-    ? groupByTaskBoundary(messageEntries)
-    : messageEntries.map((entry) => {
+  const rawBlocks = snapshotMessages.length > 0
+    ? groupByTaskBoundaryFromSessionMessages(snapshotMessages)
+    : enableTaskGrouping
+      ? groupByTaskBoundary(messageEntries)
+      : messageEntries.map((entry) => {
         const payload = entry.payload as Record<string, unknown>;
         return finalizeBlock(`task-${entry.timestamp_ms}`, entry.timestamp_ms, [{
       id: entry.id,
-      role: (payload.role as TaskMessage['role']) || 'user',
+      role: normalizeTaskMessageRole(payload.role),
       content: payload.content as string,
       timestamp: entry.timestamp_ms,
       timestampIso: entry.timestamp_iso,

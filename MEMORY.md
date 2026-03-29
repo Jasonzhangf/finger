@@ -537,3 +537,30 @@ if (!isNonModuleSender) {
 ### 验证
 - `pnpm -s tsc --noEmit` ✅  
 - `pnpm -s vitest tests/unit/tools/internal/clock-integration.test.ts --run` ✅（9/9）
+
+## 2026-03-29 Context Consumption Rule (User Confirmed)
+
+- Jason clarified and confirmed a hard rule for runtime context behavior:
+  - **Ledger is append-only storage/timeline, not the default consumption source for model turns.**
+  - The model should consume the **built session view** as the runtime single source of truth.
+  - Session history should continue to evolve in-place; writes are mirrored into ledger for storage/audit.
+- Implementation adjustment in this round:
+  - `finger-role-modules` context history provider now reads from runtime session snapshot instead of raw-ledger message replay.
+  - Existing indexed continuity (`contextBuilderHistoryIndex`) remains active so rebuilt history + delta can continue across turns.
+- Operational expectation:
+  - New user input should not implicitly switch history source to raw ledger or cause abrupt context detachment.
+
+## 2026-03-29 Session Snapshot Consumption Enforcement
+
+- Runtime read path hardened to prefer **session snapshot (`session.messages`)** as the model-visible history source.
+- `SessionManager.addMessage(...)` now performs write-through:
+  1) append to ledger (storage/audit),
+  2) append the same message to `session.messages` (runtime consumption truth).
+- `SessionManager.getMessages(...)` and `getMessagesAsync(...)` now:
+  - read from `session.messages` first,
+  - only perform one-time compatibility hydration from ledger when snapshot is empty,
+  - persist hydrated snapshot for subsequent turns (avoids repeated raw-ledger replay on runtime path).
+- `getLatestUserPromptFromLedgerSync(...)` now checks session snapshot first to keep context-builder prompt alignment on the same runtime truth.
+- Further tightened in strict mode:
+  - removed runtime compatibility fallback that hydrated from ledger when `session.messages` is empty;
+  - `getMessages()` / `getMessagesAsync()` now return snapshot-only data (or empty), no runtime ledger replay path.

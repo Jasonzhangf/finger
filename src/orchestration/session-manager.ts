@@ -670,6 +670,10 @@ export class SessionManager {
     }
 
     session.lastAccessedAt = new Date().toISOString();
+    if (!Array.isArray(session.messages)) {
+      session.messages = [];
+    }
+    session.messages.push(message);
 
     // Update ledger pointers
     session.originalEndIndex = (session.originalEndIndex || 0) + 1;
@@ -790,8 +794,8 @@ export class SessionManager {
   }
 
   /**
-   * Build messages from Ledger via LedgerReader.
-   * Returns SessionMessage[] for backward compatibility.
+   * Build session view from ledger via Context Builder / LedgerReader.
+   * Used only when session snapshot needs hydration or explicit async view refresh.
    */
   private async getLedgerView(session: Session, options?: { maxTokens?: number; includeSummary?: boolean }): Promise<SessionView> {
     const ctx = session.context ?? {};
@@ -872,6 +876,14 @@ export class SessionManager {
   }
 
   private getMessagesFromLedger(session: Session, limit: number): SessionMessage[] {
+    const snapshot = Array.isArray(session.messages) ? session.messages : [];
+    if (snapshot.length > 0) {
+      if (!Number.isFinite(limit) || limit <= 0) {
+        return [...snapshot];
+      }
+      return snapshot.slice(-limit);
+    }
+
     const view = session._cachedView;
     if (view) {
       const msgs = view.messages;
@@ -881,24 +893,27 @@ export class SessionManager {
       return this.viewMessagesToSessionMessages(msgs.slice(-limit));
     }
 
-    return this.readLedgerSessionMessagesSync(session, limit);
+    return [];
   }
 
   /**
-   * Async version of getMessages that always reads from Ledger.
+   * Async version of getMessages.
+   * Prefers session snapshot; hydrates from ledger view only when snapshot is empty.
    */
   async getMessagesAsync(sessionId: string, limit = 50): Promise<SessionMessage[]> {
     const session = this.sessions.get(sessionId);
     if (!session) return [];
 
-    const view = await this.getLedgerView(session, { includeSummary: false });
-    session._cachedView = view;
-
-    const msgs = view.messages;
-    if (!Number.isFinite(limit) || limit <= 0) {
-      return this.viewMessagesToSessionMessages(msgs);
+    const snapshot = Array.isArray(session.messages) ? session.messages : [];
+    if (snapshot.length > 0) {
+      if (!Number.isFinite(limit) || limit <= 0) {
+        return [...snapshot];
+      }
+      return snapshot.slice(-limit);
     }
-    return this.viewMessagesToSessionMessages(msgs.slice(-limit));
+
+    // Runtime consumption strict mode: do not read ledger replay as message source.
+    return [];
   }
 
   private viewMessagesToSessionMessages(msgs: SessionViewMessage[]): SessionMessage[] {
@@ -1147,6 +1162,22 @@ export class SessionManager {
   }
 
   private getLatestUserPromptFromLedgerSync(session: Session, agentId: string): string | undefined {
+    const snapshot = this.getMessagesFromLedger(session, 0);
+    if (snapshot.length > 0) {
+      for (let index = snapshot.length - 1; index >= 0; index -= 1) {
+        const message = snapshot[index];
+        if (message.role === 'user' && typeof message.content === 'string' && message.content.trim().length > 0) {
+          return message.content;
+        }
+      }
+      return undefined;
+    }
+
+    // Runtime strict mode: no ledger replay fallback for prompt extraction.
+    void agentId;
+    return undefined;
+
+    /*
     const messages = this.readLedgerSessionMessagesSync(session, 0, agentId);
     for (let index = messages.length - 1; index >= 0; index -= 1) {
       const message = messages[index];
@@ -1155,6 +1186,7 @@ export class SessionManager {
       }
     }
     return undefined;
+    */
   }
 
   private getLedgerMessageCountSync(session: Session): number {
