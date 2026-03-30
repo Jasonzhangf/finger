@@ -121,4 +121,41 @@ describe('progress-monitor-reporting', () => {
     expect(result).toContain('📜 跟踪日志');
     expect(result).toContain('daemon.log');
   });
+
+  it('folds repeated search actions and keeps latest keyword hints', () => {
+    const data: SessionProgressData = {
+      agentId: 'finger-system-agent',
+      status: 'running',
+      currentTask: '搜索中',
+      elapsedMs: 20_000,
+      toolCallHistory: [
+        {
+          toolName: 'shell.exec',
+          params: JSON.stringify({ cmd: 'rg "mailbox" src/server/modules' }),
+          success: true,
+        },
+        {
+          toolName: 'shell.exec',
+          params: JSON.stringify({ cmd: 'rg "dispatch" src/server/modules' }),
+          success: true,
+        },
+        {
+          toolName: 'shell.exec',
+          params: JSON.stringify({ cmd: 'rg "heartbeat" src/server/modules' }),
+          success: true,
+        },
+      ],
+    };
+
+    const result = buildCompactSummary(data, formatElapsed, { headerMode: 'minimal' });
+    const searchLineCount = result
+      .split('\n')
+      .filter((line) => line.includes('[搜索]') && line.includes('×3'))
+      .length;
+    expect(searchLineCount).toBe(1);
+    expect(result).toContain('×3');
+    expect(result).toContain('最近关键词');
+    expect(result).toContain('dispatch');
+    expect(result).toContain('heartbeat');
+  });
 });

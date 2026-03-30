@@ -85,11 +85,15 @@ function extractPathFromCommand(cmd: string): string {
 export function classifyToolCall(toolName: string, input?: unknown): ToolCategory {
   // 搜索类优先
   if (['web_search', 'web_search_results'].includes(toolName)) return '搜索';
-  if (toolName === 'command.exec' || toolName === 'report-task-completion') return '工具';
+  if (toolName === 'report-task-completion') return '工具';
 
-  if (['shell.exec', 'exec_command'].includes(toolName)) {
+  if (['shell.exec', 'exec_command', 'command.exec'].includes(toolName)) {
     const cmd = extractExecLikeCommand(input);
     const lower = cmd.toLowerCase();
+
+    if (/^<##/.test(cmd.trim())) {
+      return '工具';
+    }
 
     if (/^(rg|grep|ag|fd|fzf|find)\b/.test(lower) || /\b(search|grep|rg|find|locate)\b/.test(lower)) {
       return '搜索';

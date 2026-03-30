@@ -53,20 +53,109 @@ export function buildCompactSummary(
   }
 
   if (recentTools.length > 0) {
-    const toolLines = recentTools.map((t) => {
+    const toolItems = recentTools.map((t) => {
       const icon = t.success === false ? '❌' : t.success === true ? '✅' : '⏳';
       const cat = classifyToolCall(t.toolName, t.params);
       const resolvedName = resolveToolDisplayName(t.toolName, t.params);
       const file = extractTargetFile(t.toolName, t.params);
-      const filePart = file ? ` | ${file}` : '';
       const detail = extractToolDetail(t.toolName, t.params, t.result);
+      const filePart = file ? ` | ${file}` : '';
       const detailPart = detail ? ` ${detail}` : '';
-      return `${icon} [${cat}] ${resolvedName}${filePart}${detailPart}`;
+      const line = `${icon} [${cat}] ${resolvedName}${filePart}${detailPart}`;
+      return {
+        icon,
+        cat,
+        resolvedName,
+        file,
+        detail,
+        line,
+        foldable: isFoldableToolItem(cat, resolvedName, detail),
+      };
     });
-    lines.push(toolLines.join('\n'));
+
+    lines.push(foldToolLines(toolItems).join('\n'));
   }
 
   return lines.join('\n');
+}
+
+function isFoldableToolItem(cat: string, resolvedName: string, detail: string): boolean {
+  if (cat === '搜索') return true;
+  if (/^(rg|grep|ag|find|fd|fzf)$/i.test(resolvedName)) return true;
+  if (/^\s*🔍\s/.test(detail)) return true;
+  if (['cat', 'head', 'less', 'more', 'tail', 'ls', 'wc'].includes(resolvedName)) return true;
+  return false;
+}
+
+interface FoldToolItem {
+  icon: string;
+  cat: string;
+  resolvedName: string;
+  file: string;
+  detail: string;
+  line: string;
+  foldable: boolean;
+}
+
+function foldToolLines(items: FoldToolItem[]): string[] {
+  if (items.length <= 1) return items.map((item) => item.line);
+
+  type Group = {
+    key: string;
+    item: FoldToolItem;
+    count: number;
+    details: string[];
+  };
+
+  const groups: Group[] = [];
+  const makeKey = (item: FoldToolItem): string => [
+    item.icon,
+    item.cat,
+    item.resolvedName,
+    item.file,
+  ].join('|');
+
+  for (const item of items) {
+    const key = makeKey(item);
+    const prev = groups[groups.length - 1];
+    const canFoldIntoPrev = !!prev
+      && item.foldable
+      && prev.item.foldable
+      && prev.key === key;
+    if (canFoldIntoPrev) {
+      prev.count += 1;
+      if (item.detail) prev.details.push(item.detail);
+      continue;
+    }
+    groups.push({
+      key,
+      item,
+      count: 1,
+      details: item.detail ? [item.detail] : [],
+    });
+  }
+
+  return groups.map((g) => {
+    if (g.count <= 1) return g.item.line;
+    const filePart = g.item.file ? ` | ${g.item.file}` : '';
+    const keywordHints = extractKeywordHints(g.details);
+    const keywordPart = keywordHints.length > 0
+      ? ` · 最近关键词: ${keywordHints.join(' / ')}`
+      : '';
+    return `${g.item.icon} [${g.item.cat}] ${g.item.resolvedName}${filePart} ×${g.count}${keywordPart}`;
+  });
+}
+
+function extractKeywordHints(details: string[]): string[] {
+  const keywords: string[] = [];
+  for (const d of details) {
+    const m = d.match(/「([^」]+)」/);
+    if (m && m[1]) {
+      const kw = m[1].trim();
+      if (kw.length > 0 && !keywords.includes(kw)) keywords.push(kw);
+    }
+  }
+  return keywords.slice(-2);
 }
 
 /**
