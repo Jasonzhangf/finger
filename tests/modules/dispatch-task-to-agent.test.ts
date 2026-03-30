@@ -1,5 +1,27 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
+const { setMonitorStatusMock } = vi.hoisted(() => ({
+  setMonitorStatusMock: vi.fn(async (projectPath: string, enabled: boolean) => ({
+    projectId: 'project-test',
+    projectPath,
+    projectName: 'project-test',
+    agentId: 'project-test-agent',
+    status: 'idle',
+    lastHeartbeat: new Date().toISOString(),
+    monitored: enabled,
+    monitorUpdatedAt: new Date().toISOString(),
+    stats: {
+      tasksCompleted: 0,
+      tasksFailed: 0,
+      uptime: 0,
+    },
+  })),
+}));
+
+vi.mock('../../src/agents/finger-system-agent/registry.js', () => ({
+  setMonitorStatus: setMonitorStatusMock,
+}));
+
 function createDeps(executeImpl?: ReturnType<typeof vi.fn>) {
   const calls: Array<{ sessionId: string; role: string; content: string; type?: string }> = [];
   const rootSessions = [
@@ -78,6 +100,21 @@ describe('dispatchTaskToAgent', () => {
   beforeEach(async () => {
     vi.clearAllMocks();
     vi.resetModules();
+    setMonitorStatusMock.mockImplementation(async (projectPath: string, enabled: boolean) => ({
+      projectId: 'project-test',
+      projectPath,
+      projectName: 'project-test',
+      agentId: 'project-test-agent',
+      status: 'idle',
+      lastHeartbeat: new Date().toISOString(),
+      monitored: enabled,
+      monitorUpdatedAt: new Date().toISOString(),
+      stats: {
+        tasksCompleted: 0,
+        tasksFailed: 0,
+        uptime: 0,
+      },
+    }));
     process.env.FINGER_DISPATCH_ERROR_MAX_RETRIES = '0';
     mod = await import('../../src/server/modules/agent-runtime/dispatch.js');
   });
@@ -100,6 +137,29 @@ describe('dispatchTaskToAgent', () => {
         dispatchId: 'dispatch-1',
         updatedBy: 'dispatch',
         targetAgentId: 'finger-coder',
+      }),
+    }));
+  });
+
+  it('fails fast on self-dispatch and does not call runtime dispatch', async () => {
+    const { deps, sessionManager } = createDeps();
+    const res = await mod.dispatchTaskToAgent(deps as any, {
+      sourceAgentId: 'finger-system-agent',
+      targetAgentId: 'finger-system-agent',
+      task: 'self dispatch should fail',
+      sessionId: 'session-1',
+    } as any);
+
+    expect(res.ok).toBe(false);
+    expect(res.status).toBe('failed');
+    expect(String(res.error)).toContain('self-dispatch forbidden');
+    expect((deps as any).agentRuntimeBlock.execute).not.toHaveBeenCalled();
+    expect(sessionManager.updateContext).toHaveBeenCalledWith('session-1', expect.objectContaining({
+      executionLifecycle: expect.objectContaining({
+        stage: 'failed',
+        substage: 'dispatch_self_forbidden',
+        updatedBy: 'dispatch',
+        targetAgentId: 'finger-system-agent',
       }),
     }));
   });
@@ -392,6 +452,230 @@ describe('dispatchTaskToAgent', () => {
     expect(execute).not.toHaveBeenCalledWith('dispatch', expect.anything());
     expect(sessionCalls.length).toBe(0);
     expect(sessionManager.updateContext).toHaveBeenCalledWith('session-1', expect.objectContaining({
+      executionLifecycle: expect.objectContaining({
+        substage: 'dispatch_suppressed_active_lifecycle',
+      }),
+    }));
+  });
+
+  it('syncs project task state to caller session when dispatch auto-selects latest project session', async () => {
+    const { deps, sessionManager } = createDeps();
+    const res = await mod.dispatchTaskToAgent(deps as any, {
+      sourceAgentId: 'finger-system-agent',
+      targetAgentId: 'finger-project-agent',
+      task: { prompt: 'sync state to caller session' },
+      assignment: { taskId: 'task-sync-1', taskName: 'task-sync' },
+      sessionStrategy: 'latest',
+      projectPath: '/tmp/project-a',
+    } as any);
+
+    expect(res.ok).toBe(true);
+    expect(sessionManager.updateContext).toHaveBeenCalledWith('runtime-current', expect.objectContaining({
+      projectTaskState: expect.objectContaining({
+        taskId: 'task-sync-1',
+        targetAgentId: 'finger-project-agent',
+      }),
+    }));
+  });
+
+  it('suppresses duplicate system->project dispatch from active source task context', async () => {
+    const execute = vi.fn(async (command: string) => {
+      if (command === 'runtime_view') {
+        return {
+          agents: [
+            {
+              id: 'finger-project-agent',
+              status: 'idle',
+            },
+          ],
+        };
+      }
+      return {
+        ok: true,
+        dispatchId: 'dispatch-should-not-run',
+        status: 'completed',
+        result: { summary: 'should not run' },
+      };
+    });
+    const { deps, sessionManager } = createDeps(execute);
+    sessionManager.getSession.mockImplementation((id: string) => {
+      if (id === 'runtime-current') {
+        return {
+          id,
+          context: {
+            projectTaskState: {
+              active: true,
+              status: 'in_progress',
+              sourceAgentId: 'finger-system-agent',
+              targetAgentId: 'finger-project-agent',
+              updatedAt: new Date().toISOString(),
+              taskId: 'task-active-source-1',
+              taskName: 'task-active-source',
+              dispatchId: 'dispatch-active-source-1',
+            },
+          },
+          projectPath: '/tmp/system',
+          messages: [],
+        };
+      }
+      return {
+        id,
+        context: {},
+        projectPath: '/tmp/project-a',
+        messages: [],
+      };
+    });
+
+    const res = await mod.dispatchTaskToAgent(deps as any, {
+      sourceAgentId: 'finger-system-agent',
+      targetAgentId: 'finger-project-agent',
+      sessionStrategy: 'latest',
+      projectPath: '/tmp/project-a',
+      task: { prompt: 'duplicate dispatch should be blocked' },
+      assignment: { taskId: 'task-active-source-1', taskName: 'task-active-source' },
+    } as any);
+
+    expect(res.ok).toBe(true);
+    expect(res.status).toBe('queued');
+    expect(res.result?.status).toBe('queued_source_task_suppressed');
+    expect(execute).not.toHaveBeenCalledWith('dispatch', expect.anything());
+    expect(sessionManager.updateContext).toHaveBeenCalledWith('root-session-2', expect.objectContaining({
+      executionLifecycle: expect.objectContaining({
+        substage: 'dispatch_suppressed_source_task_active',
+      }),
+    }));
+  });
+
+  it('skips system-heartbeat -> project dispatch when task state is completed and non-actionable', async () => {
+    const execute = vi.fn(async (command: string) => {
+      if (command === 'runtime_view') {
+        return {
+          agents: [
+            { id: 'finger-project-agent', status: 'idle' },
+          ],
+        };
+      }
+      if (command === 'dispatch') {
+        return {
+          ok: true,
+          dispatchId: 'dispatch-should-not-run',
+          status: 'completed',
+          result: { summary: 'should not run' },
+        };
+      }
+      return { ok: true };
+    });
+    const { deps, sessionManager } = createDeps(execute);
+    sessionManager.getSession.mockImplementation((id: string) => {
+      if (id === 'session-1') {
+        return {
+          id,
+          context: {
+            projectTaskState: {
+              active: false,
+              status: 'completed',
+              sourceAgentId: 'finger-system-agent',
+              targetAgentId: 'finger-project-agent',
+              updatedAt: new Date().toISOString(),
+              taskId: 'task-completed-1',
+              taskName: 'completed-task',
+              dispatchId: 'dispatch-completed-1',
+            },
+            executionLifecycle: {
+              stage: 'completed',
+              finishReason: 'stop',
+              lastTransitionAt: new Date().toISOString(),
+            },
+          },
+          projectPath: '/tmp/project-a',
+          messages: [],
+        };
+      }
+      return {
+        id,
+        context: {},
+        projectPath: '/tmp/project-a',
+        messages: [],
+      };
+    });
+
+    const res = await mod.dispatchTaskToAgent(deps as any, {
+      sourceAgentId: 'system-heartbeat',
+      targetAgentId: 'finger-project-agent',
+      sessionId: 'session-1',
+      task: 'heartbeat watchdog prompt',
+    } as any);
+
+    expect(res.ok).toBe(true);
+    expect(res.status).toBe('completed');
+    expect(res.result?.status).toBe('skipped_no_actionable');
+    expect(res.result?.autoClosedMonitor).toBe(true);
+    expect(res.result?.closeReason).toBe('expired_no_actionable');
+    expect(execute).not.toHaveBeenCalledWith('dispatch', expect.anything());
+    expect(setMonitorStatusMock).toHaveBeenCalledWith('/tmp/project-a', false);
+    expect(sessionManager.updateContext).toHaveBeenCalledWith('session-1', expect.objectContaining({
+      executionLifecycle: expect.objectContaining({
+        substage: 'dispatch_heartbeat_no_actionable',
+      }),
+    }));
+    expect(sessionManager.updateContext).toHaveBeenCalledWith('session-1', expect.objectContaining({
+      projectTaskState: expect.objectContaining({
+        active: false,
+        status: 'completed',
+      }),
+    }));
+  });
+
+  it('does not self-suppress fresh system->project dispatch after lifecycle normalization', async () => {
+    const execute = vi.fn(async (command: string) => {
+      if (command === 'runtime_view') {
+        return {
+          agents: [
+            { id: 'finger-project-agent', status: 'idle' },
+          ],
+        };
+      }
+      if (command === 'dispatch') {
+        return {
+          ok: true,
+          dispatchId: 'dispatch-fresh-1',
+          status: 'completed',
+          result: { summary: 'ok' },
+        };
+      }
+      return { ok: true };
+    });
+    const { deps, sessionManager } = createDeps(execute);
+    const sessionContexts: Record<string, Record<string, unknown>> = {
+      'session-1': {},
+    };
+    sessionManager.getSession.mockImplementation((id: string) => ({
+      id,
+      context: sessionContexts[id] ?? {},
+      projectPath: '/tmp/project-a',
+      messages: [],
+    }));
+    sessionManager.updateContext.mockImplementation((id: string, patch: Record<string, unknown>) => {
+      const current = sessionContexts[id] ?? {};
+      sessionContexts[id] = { ...current, ...patch };
+      return true;
+    });
+
+    const res = await mod.dispatchTaskToAgent(deps as any, {
+      sourceAgentId: 'finger-system-agent',
+      targetAgentId: 'finger-project-agent',
+      sessionId: 'session-1',
+      task: { prompt: 'fresh dispatch' },
+      assignment: { taskId: 'task-fresh-1' },
+    } as any);
+
+    expect(res.ok).toBe(true);
+    expect(res.status).toBe('completed');
+    expect(execute).toHaveBeenCalledWith('dispatch', expect.objectContaining({
+      targetAgentId: 'finger-project-agent',
+      sessionId: 'session-1',
+    }));
+    expect(sessionManager.updateContext).not.toHaveBeenCalledWith('session-1', expect.objectContaining({
       executionLifecycle: expect.objectContaining({
         substage: 'dispatch_suppressed_active_lifecycle',
       }),

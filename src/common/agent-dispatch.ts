@@ -38,6 +38,10 @@ export interface DispatchSummaryResult {
   timeoutMs?: number;
   /** Retry delay selected for the next recovery step */
   retryDelayMs?: number;
+  /** True when runtime auto-closed stale monitor/heartbeat for this dispatch */
+  autoClosedMonitor?: boolean;
+  /** Structured close reason for monitor/heartbeat closure */
+  closeReason?: string;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -257,6 +261,8 @@ export function sanitizeDispatchResult(raw: unknown): DispatchSummaryResult {
     ...(error ? { error } : {}),
     ...(tags ? { tags } : {}),
     ...(topic ? { topic } : {}),
+    ...(typeof raw.autoClosedMonitor === 'boolean' ? { autoClosedMonitor: raw.autoClosedMonitor } : {}),
+    ...(asNonEmptyString(raw.closeReason) ? { closeReason: asNonEmptyString(raw.closeReason) } : {}),
     // Store full raw response for ledger - NEVER truncate
     rawPayload: raw,
   };
