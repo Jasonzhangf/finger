@@ -86,6 +86,13 @@
    - 压缩视图可重建、可丢弃；原始 ledger 不可破坏。
 
 ### 2.2 查询流程硬约束（必须）
+复杂任务的前置判定（新增）：
+- 当用户提出复杂任务（尤其 coding/debugging/长链路任务）时，默认先做 ledger 检索，不允许“先重建再说”。
+- 必须先完成：
+  1) `context_ledger.memory(action="search")` 定位相关 task/slot；
+  2) `context_ledger.memory(action="query", detail=true, slot_start, slot_end)` 抽样核对原始证据；
+- 再根据检索结果判断是否需要 `context_builder.rebuild`（仅在当前可见历史不足或连续性明显缺失时触发）。
+
 当可见上下文不足时，统一按以下顺序查询：
 1. `MEMORY.md`：先取长期稳定事实（ground truth）。
 2. `context_ledger.memory(action="search")`：定位相关 task / slot。
@@ -148,6 +155,15 @@
 - `request_raw` 使用首条 user 原文（可做长度上限防爆）。
 - `finish_summary` 优先使用任务结束摘要；无摘要时回退为末条 assistant 的压缩预览。
 - 不在 digest 中注入大段工具 stdout/stderr 原文。
+
+### 4.5 专用排序模型不可用时的运行时降级（新增）
+- 触发条件：`context_builder` 处于 active ranking，但排序 provider 不可用（`provider_not_found/http_* / exception / parse_failed`）。
+- 降级动作：
+  1. 历史区直接转为 task digest blocks（请求 + 结果 + 关键工具）；
+  2. 当前任务（working set）保持完整链路，不做 task 内裁剪；
+  3. 本轮继续执行，不中断；
+  4. metadata 记录 `rankingReason=digest_fallback:<reason>`。
+- 目标：避免“因排序模型不可用导致 context build 失败”，同时保持关键可追踪信息。
 
 ### 4.4 与现有 context builder 的关系
 - context builder 仍做：任务分组、相关性排序、预算控制。

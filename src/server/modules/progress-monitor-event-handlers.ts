@@ -6,9 +6,48 @@
 
 import type { SessionProgress, ToolCallRecord } from './progress-monitor-types.js';
 import { resolveToolDisplayName } from './progress-monitor-reporting.js';
+import { estimateTokensWithTiktoken } from '../../utils/tiktoken-estimator.js';
 
 function buildProgressEntryKey(progress: SessionProgress): string {
   return `${progress.sessionId}::${progress.agentId || 'unknown'}`;
+}
+
+function joinTokenParts(parts: Array<string | undefined>): string {
+  return parts
+    .map((part) => (typeof part === 'string' ? part.trim() : ''))
+    .filter((part) => part.length > 0)
+    .join('\n');
+}
+
+function applyAddedContextTokens(progress: SessionProgress, text: string): void {
+  const normalized = text.trim();
+  if (!normalized) return;
+  const addedTokens = estimateTokensWithTiktoken(normalized);
+  if (!Number.isFinite(addedTokens) || addedTokens <= 0) return;
+
+  const baseTokens = typeof progress.contextUsageBaseTokens === 'number' && Number.isFinite(progress.contextUsageBaseTokens)
+    ? Math.max(0, Math.floor(progress.contextUsageBaseTokens))
+    : typeof progress.estimatedTokensInContextWindow === 'number' && Number.isFinite(progress.estimatedTokensInContextWindow)
+      ? Math.max(0, Math.floor(progress.estimatedTokensInContextWindow))
+      : 0;
+  const currentAdded = typeof progress.contextUsageAddedTokens === 'number' && Number.isFinite(progress.contextUsageAddedTokens)
+    ? Math.max(0, Math.floor(progress.contextUsageAddedTokens))
+    : 0;
+  const nextAdded = currentAdded + addedTokens;
+  const nextEstimated = baseTokens + nextAdded;
+  progress.contextUsageBaseTokens = baseTokens;
+  progress.contextUsageAddedTokens = nextAdded;
+  progress.estimatedTokensInContextWindow = nextEstimated;
+  if (typeof progress.maxInputTokens === 'number' && Number.isFinite(progress.maxInputTokens) && progress.maxInputTokens > 0) {
+    progress.contextUsagePercent = Math.max(0, Math.floor((nextEstimated / progress.maxInputTokens) * 100));
+  }
+}
+
+function setContextEvent(progress: SessionProgress, detail: string): void {
+  const normalized = detail.trim();
+  if (!normalized) return;
+  progress.lastContextEvent = normalized;
+  progress.lastContextEventAt = Date.now();
 }
 
 /**
@@ -169,6 +208,13 @@ export function handleToolCallEvent(
   }
   progress.toolCallsCount++;
   recordToolCall(progress, event.toolId, event.toolName, event.payload?.input);
+  applyAddedContextTokens(
+    progress,
+    joinTokenParts([
+      event.toolName,
+      safeSnippet(event.payload?.input, snippetLimitForTool(event.toolName)),
+    ]),
+  );
 }
 
 /**
@@ -186,6 +232,20 @@ export function handleToolResultEvent(
     const resolved = resolveToolDisplayName(event.toolName, event.payload?.input);
     progress.currentTask = `${resolved} → ✅`;
   }
+  if (event.toolName === 'context_builder.rebuild') {
+    progress.allowContextDropOnce = true;
+    setContextEvent(progress, '手动执行 context_builder.rebuild，准备重组历史上下文');
+  } else if (event.toolName === 'context_ledger.expand_task') {
+    setContextEvent(progress, '扩展任务摘要为全文片段，补充当前上下文细节');
+  }
+  applyAddedContextTokens(
+    progress,
+    joinTokenParts([
+      event.toolName,
+      safeSnippet(event.payload?.input, snippetLimitForTool(event.toolName)),
+      safeSnippet(event.payload?.output),
+    ]),
+  );
 }
 
 /**
@@ -203,6 +263,14 @@ export function handleToolErrorEvent(
     const resolved = resolveToolDisplayName(event.toolName, event.payload?.input);
     progress.currentTask = `${resolved} → ❌`;
   }
+  applyAddedContextTokens(
+    progress,
+    joinTokenParts([
+      event.toolName,
+      safeSnippet(event.payload?.input, snippetLimitForTool(event.toolName)),
+      safeSnippet(event.payload?.error),
+    ]),
+  );
 }
 
 /**
@@ -234,15 +302,64 @@ export function handleModelRound(progress: SessionProgress, event: any): void {
     : typeof event.payload?.max_input_tokens === 'number'
       ? event.payload.max_input_tokens
       : undefined;
+  const inputTokensRaw = typeof event.payload?.inputTokens === 'number'
+    ? event.payload.inputTokens
+    : typeof event.payload?.input_tokens === 'number'
+      ? event.payload.input_tokens
+      : undefined;
+  const totalTokensRaw = typeof event.payload?.totalTokens === 'number'
+    ? event.payload.totalTokens
+    : typeof event.payload?.total_tokens === 'number'
+      ? event.payload.total_tokens
+      : undefined;
 
-  if (typeof contextUsagePercentRaw === 'number' && Number.isFinite(contextUsagePercentRaw)) {
-    progress.contextUsagePercent = Math.max(0, Math.floor(contextUsagePercentRaw));
-  }
-  if (typeof estimatedTokensRaw === 'number' && Number.isFinite(estimatedTokensRaw)) {
-    progress.estimatedTokensInContextWindow = Math.max(0, Math.floor(estimatedTokensRaw));
+  const normalizedPercent = typeof contextUsagePercentRaw === 'number' && Number.isFinite(contextUsagePercentRaw)
+    ? Math.max(0, Math.floor(contextUsagePercentRaw))
+    : undefined;
+  // baseline = model-round usage for current context window:
+  // prefer explicit estimatedTokensInContextWindow, fallback to usage.input_tokens, then total_tokens.
+  const usageEstimatedRaw = estimatedTokensRaw ?? inputTokensRaw ?? totalTokensRaw;
+  const normalizedEstimated = typeof usageEstimatedRaw === 'number' && Number.isFinite(usageEstimatedRaw)
+    ? Math.max(0, Math.floor(usageEstimatedRaw))
+    : undefined;
+  const canDrop = progress.allowContextDropOnce === true;
+  const currentPercent = typeof progress.contextUsagePercent === 'number' ? progress.contextUsagePercent : undefined;
+  const shouldApplyPercent =
+    normalizedPercent !== undefined
+    && (currentPercent === undefined || normalizedPercent >= currentPercent || canDrop);
+  if (shouldApplyPercent) {
+    const dropped = currentPercent !== undefined && normalizedPercent < currentPercent;
+    progress.contextUsagePercent = normalizedPercent;
+    if (normalizedEstimated !== undefined) {
+      progress.estimatedTokensInContextWindow = normalizedEstimated;
+    }
+    if (canDrop && currentPercent !== undefined && normalizedPercent < currentPercent) {
+      progress.allowContextDropOnce = false;
+    }
+    if (dropped && canDrop) {
+      const currentTokens = typeof progress.contextUsageBaseTokens === 'number' ? progress.contextUsageBaseTokens : undefined;
+      const nextTokens = normalizedEstimated;
+      const left = typeof currentPercent === 'number' ? `${currentPercent}%` : '?';
+      const right = `${normalizedPercent}%`;
+      const tokenPart = typeof currentTokens === 'number' && typeof nextTokens === 'number'
+        ? `（~${currentTokens} → ~${nextTokens}）`
+        : '';
+      setContextEvent(progress, `上下文已重组：${left} → ${right}${tokenPart}`);
+    }
+  } else if (normalizedEstimated !== undefined) {
+    const currentEstimated = typeof progress.estimatedTokensInContextWindow === 'number'
+      ? progress.estimatedTokensInContextWindow
+      : undefined;
+    if (currentEstimated === undefined || normalizedEstimated >= currentEstimated) {
+      progress.estimatedTokensInContextWindow = normalizedEstimated;
+    }
   }
   if (typeof maxInputTokensRaw === 'number' && Number.isFinite(maxInputTokensRaw)) {
     progress.maxInputTokens = Math.max(0, Math.floor(maxInputTokensRaw));
+  }
+  if (typeof progress.estimatedTokensInContextWindow === 'number' && Number.isFinite(progress.estimatedTokensInContextWindow)) {
+    progress.contextUsageBaseTokens = Math.max(0, Math.floor(progress.estimatedTokensInContextWindow));
+    progress.contextUsageAddedTokens = 0;
   }
 }
 
@@ -269,16 +386,100 @@ export function handleSystemNoticeEvent(progress: SessionProgress, event: any): 
     : typeof payload.max_input_tokens === 'number'
       ? payload.max_input_tokens
       : undefined;
+  const inputTokensRaw = typeof payload.inputTokens === 'number'
+    ? payload.inputTokens
+    : typeof payload.input_tokens === 'number'
+      ? payload.input_tokens
+      : undefined;
+  const totalTokensRaw = typeof payload.totalTokens === 'number'
+    ? payload.totalTokens
+    : typeof payload.total_tokens === 'number'
+      ? payload.total_tokens
+      : undefined;
 
-  if (typeof contextUsagePercentRaw === 'number' && Number.isFinite(contextUsagePercentRaw)) {
-    progress.contextUsagePercent = Math.max(0, Math.floor(contextUsagePercentRaw));
+  const source = typeof payload.source === 'string' ? payload.source : '';
+  if (source === 'auto_context_rebuild' || source === 'manual_context_rebuild' || source === 'session_compressed') {
+    progress.allowContextDropOnce = true;
+    const trigger = source === 'auto_context_rebuild'
+      ? '自动 context rebuild'
+      : source === 'manual_context_rebuild'
+        ? '手动 context rebuild'
+        : 'session 压缩';
+    const percentLabel = typeof contextUsagePercentRaw === 'number' && Number.isFinite(contextUsagePercentRaw)
+      ? `${Math.max(0, Math.floor(contextUsagePercentRaw))}%`
+      : '';
+    const reason = percentLabel ? `${trigger}（触发时上下文 ${percentLabel}）` : trigger;
+    setContextEvent(progress, reason);
   }
-  if (typeof estimatedTokensRaw === 'number' && Number.isFinite(estimatedTokensRaw)) {
-    progress.estimatedTokensInContextWindow = Math.max(0, Math.floor(estimatedTokensRaw));
+
+  const normalizedPercent = typeof contextUsagePercentRaw === 'number' && Number.isFinite(contextUsagePercentRaw)
+    ? Math.max(0, Math.floor(contextUsagePercentRaw))
+    : undefined;
+  const usageEstimatedRaw = estimatedTokensRaw ?? inputTokensRaw ?? totalTokensRaw;
+  const normalizedEstimated = typeof usageEstimatedRaw === 'number' && Number.isFinite(usageEstimatedRaw)
+    ? Math.max(0, Math.floor(usageEstimatedRaw))
+    : undefined;
+  const canDrop = progress.allowContextDropOnce === true;
+  const currentPercent = typeof progress.contextUsagePercent === 'number' ? progress.contextUsagePercent : undefined;
+  const shouldApplyPercent =
+    normalizedPercent !== undefined
+    && (currentPercent === undefined || normalizedPercent >= currentPercent || canDrop);
+  if (shouldApplyPercent) {
+    progress.contextUsagePercent = normalizedPercent;
+    if (normalizedEstimated !== undefined) {
+      progress.estimatedTokensInContextWindow = normalizedEstimated;
+    }
+    if (canDrop && currentPercent !== undefined && normalizedPercent < currentPercent) {
+      progress.allowContextDropOnce = false;
+    }
+  } else if (normalizedEstimated !== undefined) {
+    const currentEstimated = typeof progress.estimatedTokensInContextWindow === 'number'
+      ? progress.estimatedTokensInContextWindow
+      : undefined;
+    if (currentEstimated === undefined || normalizedEstimated >= currentEstimated) {
+      progress.estimatedTokensInContextWindow = normalizedEstimated;
+    }
   }
   if (typeof maxInputTokensRaw === 'number' && Number.isFinite(maxInputTokensRaw)) {
     progress.maxInputTokens = Math.max(0, Math.floor(maxInputTokensRaw));
   }
+  if (
+    source === 'auto_context_rebuild'
+    || source === 'manual_context_rebuild'
+    || source === 'session_compressed'
+  ) {
+    if (typeof progress.estimatedTokensInContextWindow === 'number' && Number.isFinite(progress.estimatedTokensInContextWindow)) {
+      progress.contextUsageBaseTokens = Math.max(0, Math.floor(progress.estimatedTokensInContextWindow));
+      progress.contextUsageAddedTokens = 0;
+    }
+  }
+}
+
+/**
+ * 处理 session_compressed 事件
+ */
+export function handleSessionCompressedEvent(progress: SessionProgress, event?: any): void {
+  if (progress.status !== 'completed' && progress.status !== 'failed') {
+    progress.status = 'running';
+  }
+  progress.allowContextDropOnce = true;
+  const payload = event?.payload ?? {};
+  const trigger = typeof payload.trigger === 'string' ? payload.trigger.trim() : '';
+  const percent = typeof payload.contextUsagePercent === 'number' && Number.isFinite(payload.contextUsagePercent)
+    ? Math.max(0, Math.floor(payload.contextUsagePercent))
+    : undefined;
+  const fromSize = typeof payload.originalSize === 'number' && Number.isFinite(payload.originalSize)
+    ? Math.max(0, Math.floor(payload.originalSize))
+    : undefined;
+  const toSize = typeof payload.compressedSize === 'number' && Number.isFinite(payload.compressedSize)
+    ? Math.max(0, Math.floor(payload.compressedSize))
+    : undefined;
+  const triggerLabel = trigger ? `session 压缩(${trigger})` : 'session 压缩';
+  const sizeLabel = typeof fromSize === 'number' && typeof toSize === 'number'
+    ? `，消息 ${fromSize} → ${toSize}`
+    : '';
+  const percentLabel = typeof percent === 'number' ? `，触发时上下文 ${percent}%` : '';
+  setContextEvent(progress, `${triggerLabel}${percentLabel}${sizeLabel}`);
 }
 
 /**

@@ -23,6 +23,81 @@ Context Builder 负责动态重建模型可见上下文中的 **history 区**，
 
 ---
 
+## 1.2 Runtime Context Layout（ASCII）
+
+```text
++----------------------------------------------------------------------------------+
+| P0 core_instructions                                                            |
+|    - system/developer/global hard rules                                         |
++----------------------------------------------------------------------------------+
+| P1 runtime_capabilities                                                         |
+|    - skills / mailbox / FLOW / tool contracts                                   |
++----------------------------------------------------------------------------------+
+| P2 current_turn                                                                  |
+|    - current user input + attachments                                            |
++----------------------------------------------------------------------------------+
+| P3 continuity_anchors                                                            |
+|    - recent tasks + recent user turns (continuity pins)                         |
++----------------------------------------------------------------------------------+
+| P4 dynamic_history   <-- only this zone is rebuilt/reordered/compressed         |
+|    +------------------------------------+-------------------------------------+  |
+|    | historical_memory                  | working_set                         |  |
+|    | - compact task digest preferred    | - current task full chain          |  |
+|    | - from compact-memory replacement  | - always kept at tail              |  |
+|    +------------------------------------+-------------------------------------+  |
++----------------------------------------------------------------------------------+
+| P5 canonical_storage (not directly injected as full text)                       |
+|    - context-ledger.jsonl (raw truth)                                           |
+|    - compact-memory.jsonl (digest/summary truth)                                |
++----------------------------------------------------------------------------------+
+```
+
+---
+
+## 1.3 压缩与重建流程（ASCII）
+
+```text
+[Turn execution]
+   |
+   +--> session.messages (runtime snapshot grows continuously)
+   +--> context-ledger.jsonl (append-only raw)
+   |
+   +--> context usage >= threshold (85%)
+          |
+          +--> compressContext()
+                 |
+                 +--> sessionManager.compressContext()    (pointer advance)
+                 +--> build replacement_history digests   (task-level compact)
+                 +--> context_ledger.memory(action=compact, replacement_history=...)
+                        -> compact-memory.jsonl
+
+[Later context rebuild / bootstrap/on-demand]
+   |
+   +--> buildContext(session snapshot)
+          |
+          +--> if compact replacement_history exists:
+                  historical_memory := compact digests
+                  working_set := latest live task
+              else:
+                  historical_memory := raw task blocks
+                  working_set := latest live task
+```
+
+---
+
+## 1.4 Ranking Provider 不可用时的降级策略（新增）
+
+当 `enableModelRanking=active` 且排序模型不可用（例如 `provider_not_found/http_xxx/exception/parse_failed`）时：
+
+1. 不中断本轮；
+2. 将 `historical_memory` 转为 task digest blocks（请求 + 结果 + 关键工具）；
+3. `working_set` 保持当前任务完整链路；
+4. metadata 记录 `rankingReason=digest_fallback:<reason>`，便于进度与排障可见。
+
+> 该策略确保 context builder 专用大模型不可用时，系统仍可继续推理而不丢关键上下文。
+
+---
+
 ## 1.1 不可破坏约束（硬规则）
 
 ### 最小历史单位 = 一个完整 task
@@ -152,6 +227,7 @@ Context Builder 只能在 **task block** 级别做选择/排序/预算截断，�
 - 历史重建预算以 `historyBudgetTokens` 为准，按 task 粒度累计，不按消息条数截断。
 - 预算控制必须在 task block 边界生效，不允许对 task 内消息做 budget slice。
 - 默认历史预算为 **20k**；coding/debugging 场景推荐通过 `context_builder.rebuild` 先尝试 **50k**，只有 50k 仍不足时再尝试 **110k**。
+- 复杂任务的默认策略：先用 `context_ledger.memory` 做 `search` → `query(detail=true)` 证据检索，再决定是否触发 `context_builder.rebuild`；禁止无证据的惯性重建。
 - `budgetRatio` 仅作兼容回退；当 `historyBudgetTokens` 存在时优先使用固定 token 预算。
 - `MEMORY.md` 不直接注入模型上下文；长期记忆需保持精简，只记录可验证的 ground truth。
 

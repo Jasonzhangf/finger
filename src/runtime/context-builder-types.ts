@@ -116,6 +116,11 @@ export interface ContextBuildOptions {
   enableEmbeddingRecall?: boolean;
   /** embedding recall 候选数量 */
   embeddingTopK?: number;
+  /**
+   * Prefer compact task digests from compact-memory replacement_history for historical blocks.
+   * Working set (latest task) still comes from live session snapshot.
+   */
+  preferCompactHistory?: boolean;
 }
 
 /**

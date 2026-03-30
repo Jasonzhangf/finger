@@ -1,16 +1,3 @@
-/**
- * Progress Monitor
- *
- * 刚性进度监控机制：
- * - 定期扫描 ledger/session 生成进度报告
- * - 统计工具调用次数、推理轮次、执行时间等
- * - 通过 AgentStatusSubscriber 或 MessageHub 推送进度
- *
- * 配置：
- * - intervalMs: 心跳间隔（默认 60000ms，即 1 分钟）
- * - enabled: 是否启用（默认 true）
- */
-
 import type { AgentRuntimeDeps } from './agent-runtime/types.js';
 import type { UnifiedEventBus } from '../../runtime/event-bus.js';
 import { logger } from '../../core/logger.js';
@@ -47,6 +34,7 @@ import {
   handleAgentRuntimeStatus,
   handleAgentStepCompleted,
   handleModelRound,
+  handleSessionCompressedEvent,
   handleSystemNoticeEvent,
   handleToolCallEvent,
   handleToolErrorEvent,
@@ -120,9 +108,6 @@ export class ProgressMonitor {
     };
   }
 
-  /**
-   * 启动进度监控
-   */
   start(): void {
     if (this.timer) {
       log.warn('[ProgressMonitor] Already started');
@@ -151,9 +136,6 @@ export class ProgressMonitor {
     }, this.config.intervalMs);
   }
 
-  /**
-   * 停止进度监控
-   */
   stop(): void {
     if (this.timer) {
       clearInterval(this.timer);
@@ -168,12 +150,9 @@ export class ProgressMonitor {
     log.info('[ProgressMonitor] Stopped');
   }
 
-  /**
-   * 订阅事件来跟踪进度
-   */
   private subscribeToEvents(): void {
     const unsubscribe = this.eventBus.subscribeMultiple(
-      ['turn_start', 'turn_complete', 'tool_call', 'tool_result', 'tool_error', 'model_round', 'system_notice', 'agent_runtime_status', 'agent_step_completed', 'agent_runtime_dispatch'],
+      ['turn_start', 'turn_complete', 'tool_call', 'tool_result', 'tool_error', 'model_round', 'system_notice', 'session_compressed', 'agent_runtime_status', 'agent_step_completed', 'agent_runtime_dispatch'],
       (event: any) => {
         this.handleEvent(event).catch(err => {
           log.error('[ProgressMonitor] Error handling event:', err);
@@ -204,9 +183,6 @@ export class ProgressMonitor {
     };
   }
 
-  /**
-   * 处理事件
-   */
   private async handleEvent(event: any): Promise<void> {
     const sessionId = event.sessionId;
     if (!sessionId) return;
@@ -244,6 +220,15 @@ export class ProgressMonitor {
           handleTurnComplete(entry, event);
           entry.elapsedMs = now - entry.startTime;
         }
+        return;
+      }
+
+      if (eventType === 'session_compressed') {
+        for (const [, entry] of sessionEntries) {
+          entry.lastUpdateTime = now;
+          handleSessionCompressedEvent(entry, event);
+          entry.elapsedMs = now - entry.startTime;
+        }
       }
       return;
     }
@@ -263,6 +248,7 @@ export class ProgressMonitor {
         elapsedMs: 0,
         toolCallHistory: [],
         toolSeqCounter: 0,
+        contextUsageAddedTokens: 0,
       };
       this.sessionProgress.set(progressKey, progress);
     }
@@ -292,6 +278,9 @@ export class ProgressMonitor {
       case 'system_notice':
         handleSystemNoticeEvent(progress, event);
         break;
+      case 'session_compressed':
+        handleSessionCompressedEvent(progress, event);
+        break;
       case 'agent_runtime_status':
         handleAgentRuntimeStatus(progress, event);
         break;
@@ -306,9 +295,6 @@ export class ProgressMonitor {
     progress.elapsedMs = now - progress.startTime;
   }
 
-  /**
-   * 生成进度报告并通过 callbacks 推送
-   */
   private async generateProgressReport(): Promise<void> {
     if (!this.config.progressUpdates) return;
 
@@ -344,13 +330,44 @@ export class ProgressMonitor {
       const reasoningChanged = (p.latestReasoning ?? '') !== (p.lastReportedReasoning ?? '');
       const meaningfulToolCalls = newToolCalls.filter((tool) => !this.isLowValueToolCall(tool));
       const meaningfulTaskChange = currentTaskChanged && !this.isLowValueTask(p.currentTask);
-      // 只有工具调用、任务变化、reasoning 变化才触发推送；上下文变化不触发。
+      const contextChanged =
+        (p.contextUsagePercent ?? undefined) !== (p.lastReportedContextUsagePercent ?? undefined)
+        || (p.estimatedTokensInContextWindow ?? undefined) !== (p.lastReportedEstimatedTokensInContextWindow ?? undefined)
+        || (p.maxInputTokens ?? undefined) !== (p.lastReportedMaxInputTokens ?? undefined);
+      const contextEventChanged =
+        (p.lastContextEventAt ?? undefined) !== (p.lastReportedContextEventAt ?? undefined);
+      // 触发条件：工具调用、任务变化、reasoning 变化、上下文变化。
       const hasMeaningfulSignal = meaningfulToolCalls.length > 0
         || meaningfulTaskChange
-        || reasoningChanged;
+        || reasoningChanged
+        || contextChanged
+        || contextEventChanged;
 
-      // 没有新的真实信号时保持完全静默；不发送任何心跳。
+      // 没有真实信号时，仅在 stall 且存在挂起工具时发送心跳。
       if (!hasMeaningfulSignal) {
+        if (stalled && this.shouldEmitHeartbeat(p, now)) {
+          const pendingTool = this.findPendingMeaningfulTool(p);
+          if (pendingTool) {
+            const report: ProgressReport = {
+              type: 'progress_report',
+              timestamp: new Date().toISOString(),
+              sessionId: p.sessionId,
+              agentId: p.agentId,
+              progress: p,
+              summary: this.buildHeartbeatSummary(p, now, pendingTool),
+            };
+            if (this.callbacks?.onProgressReport) {
+              await this.callbacks.onProgressReport(report);
+            }
+            p.lastReportTime = now;
+            p.lastReportedCurrentTask = p.currentTask;
+            p.lastReportedReasoning = p.latestReasoning;
+            p.lastReportedContextUsagePercent = p.contextUsagePercent;
+            p.lastReportedEstimatedTokensInContextWindow = p.estimatedTokensInContextWindow;
+            p.lastReportedMaxInputTokens = p.maxInputTokens;
+            p.lastReportedContextEventAt = p.lastContextEventAt;
+          }
+        }
         continue;
       }
 
@@ -364,6 +381,7 @@ export class ProgressMonitor {
         summary: this.buildSingleProgressSummary(
           p,
           reportToolCalls,
+          contextEventChanged,
         ),
       };
 
@@ -387,13 +405,15 @@ export class ProgressMonitor {
       p.lastReportedContextUsagePercent = p.contextUsagePercent;
       p.lastReportedEstimatedTokensInContextWindow = p.estimatedTokensInContextWindow;
       p.lastReportedMaxInputTokens = p.maxInputTokens;
+      p.lastReportedContextEventAt = p.lastContextEventAt;
     }
   }
 
-  /**
-   * 构建单个 session 的进度摘要
-   */
-  private buildSingleProgressSummary(p: SessionProgress, newToolCalls?: ToolCallRecord[]): string {
+  private buildSingleProgressSummary(
+    p: SessionProgress,
+    newToolCalls?: ToolCallRecord[],
+    includeContextEvent = false,
+  ): string {
     const toolsToShow = (newToolCalls && newToolCalls.length > 0) ? newToolCalls : [];
     const firstReport = !p.lastReportTime;
     const currentTaskChanged = (p.currentTask ?? '') !== (p.lastReportedCurrentTask ?? '');
@@ -413,6 +433,7 @@ export class ProgressMonitor {
       contextUsagePercent: p.contextUsagePercent,
       estimatedTokensInContextWindow: p.estimatedTokensInContextWindow,
       maxInputTokens: p.maxInputTokens,
+      lastContextEvent: includeContextEvent ? p.lastContextEvent : undefined,
     };
     return buildCompactSummary(
       data,
@@ -427,10 +448,6 @@ export class ProgressMonitor {
 
   private isLowValueTask(task?: string): boolean {
     return isLowValueTask(task);
-  }
-
-  private extractCommandFromParams(params?: string): string {
-    return '';
   }
 
   private isLowValueToolCall(tool: ToolCallRecord): boolean {
@@ -455,6 +472,7 @@ export class ProgressMonitor {
       contextUsagePercent: p.contextUsagePercent,
       estimatedTokensInContextWindow: p.estimatedTokensInContextWindow,
       maxInputTokens: p.maxInputTokens,
+      lastContextEvent: p.lastContextEvent,
     };
     return buildReportKeyUtil(data, this.latestStepSummary.get(progressKey));
   }
@@ -471,16 +489,6 @@ export class ProgressMonitor {
     return buildHeartbeatSummary(p, now, pendingTool);
   }
 
-  /**
-   * 格式化时间
-   */
-  private formatElapsed(ms: number): string {
-    return formatElapsed(ms);
-  }
-
-  /**
-   * 获取指定 session 的进度
-   */
   getProgress(sessionId: string): SessionProgress | undefined {
     const entries = this.getProgressEntriesBySession(sessionId).map(([, progress]) => progress);
     if (entries.length === 0) return undefined;
@@ -493,9 +501,6 @@ export class ProgressMonitor {
     return entries.sort((a, b) => b.lastUpdateTime - a.lastUpdateTime)[0];
   }
 
-  /**
-   * 清理已完成的 session 进度
-   */
   cleanupCompleted(): void {
     for (const [progressKey, progress] of this.sessionProgress.entries()) {
       if (progress.status === 'completed' || progress.status === 'failed' || progress.status === 'idle') {
@@ -508,9 +513,6 @@ export class ProgressMonitor {
     }
   }
 
-  /**
-   * 手动触发进度报告（用于用户请求时）
-   */
   async getProgressReport(sessionId: string): Promise<ProgressReport | null> {
     const progress = this.getProgress(sessionId);
     if (!progress) return null;

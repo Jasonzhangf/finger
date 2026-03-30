@@ -19,10 +19,7 @@ import {
   type ToolAuthorizationGrant,
 } from './tool-authorization.js';
 import { executeContextLedgerMemory } from './context-ledger-memory.js';
-import { buildContext } from './context-builder.js';
-import { setContextBuilderOnDemandView } from './context-builder-on-demand-state.js';
 import { SessionControlPlaneStore } from './session-control-plane.js';
-import { getContextWindow, loadContextBuilderSettings } from '../core/user-settings.js';
 
 import { logger } from '../core/logger.js';
 
@@ -119,6 +116,156 @@ export interface AgentRuntimeConfig {
 }
 
 const log = logger.module('RuntimeFacade');
+const AUTO_CONTEXT_COMPACT_THRESHOLD_PERCENT = Number.isFinite(Number(process.env.FINGER_CONTEXT_AUTO_COMPACT_THRESHOLD_PERCENT))
+  ? Math.max(1, Math.min(100, Math.floor(Number(process.env.FINGER_CONTEXT_AUTO_COMPACT_THRESHOLD_PERCENT))))
+  : 85;
+const AUTO_CONTEXT_COMPACT_COOLDOWN_MS = Number.isFinite(Number(process.env.FINGER_CONTEXT_AUTO_COMPACT_COOLDOWN_MS))
+  ? Math.max(1_000, Math.floor(Number(process.env.FINGER_CONTEXT_AUTO_COMPACT_COOLDOWN_MS)))
+  : 60_000;
+const autoCompactStateBySession = new Map<string, { lastAttemptAt: number; lastTurnId?: string }>();
+const autoCompactInFlightBySession = new Map<string, Promise<boolean>>();
+
+interface CompactDigestTask {
+  id: string;
+  task_id: string;
+  start_time_iso: string;
+  end_time_iso: string;
+  request: string;
+  summary: string;
+  key_tools: string[];
+  key_reads: string[];
+  key_writes: string[];
+  tags?: string[];
+  topic?: string;
+}
+
+function truncateInline(text: string, max = 180): string {
+  const normalized = text.replace(/\s+/g, ' ').trim();
+  return normalized.length > max ? `${normalized.slice(0, max - 1)}…` : normalized;
+}
+
+function normalizePathHint(input: string): string {
+  const trimmed = input.trim();
+  if (!trimmed) return '';
+  if (trimmed.startsWith('~')) return trimmed;
+  if (trimmed.startsWith('/')) return trimmed;
+  if (trimmed.includes('/')) return trimmed;
+  return trimmed;
+}
+
+function extractReadWritePaths(command: string): { reads: string[]; writes: string[] } {
+  const tokens = command.match(/[^\s|;'"<>]+/g) || [];
+  const reads = new Set<string>();
+  const writes = new Set<string>();
+  for (let index = 0; index < tokens.length; index += 1) {
+    const token = tokens[index];
+    if (!token || token.startsWith('-')) continue;
+    const normalized = normalizePathHint(token);
+    if (!normalized || (!normalized.includes('/') && !/\.[a-zA-Z0-9]{1,8}$/.test(normalized))) continue;
+    const prev = tokens[index - 1] ?? '';
+    const next = tokens[index + 1] ?? '';
+    if (prev === '>' || prev === '>>' || next === '>' || next === '>>') {
+      writes.add(normalized);
+      continue;
+    }
+    reads.add(normalized);
+  }
+  return {
+    reads: Array.from(reads).slice(0, 8),
+    writes: Array.from(writes).slice(0, 8),
+  };
+}
+
+function buildCompactReplacementHistory(messages: Array<Record<string, unknown>>): CompactDigestTask[] {
+  if (!Array.isArray(messages) || messages.length === 0) return [];
+  const tasks: Array<{
+    startAt: string;
+    endAt: string;
+    entries: Array<Record<string, unknown>>;
+  }> = [];
+  let current: { startAt: string; endAt: string; entries: Array<Record<string, unknown>> } | null = null;
+
+  for (const message of messages) {
+    const role = typeof message.role === 'string' ? message.role : 'user';
+    const timestamp = typeof message.timestamp === 'string' ? message.timestamp : new Date().toISOString();
+    if (role === 'user' && current && current.entries.length > 0) {
+      tasks.push(current);
+      current = {
+        startAt: timestamp,
+        endAt: timestamp,
+        entries: [message],
+      };
+      continue;
+    }
+    if (!current) {
+      current = {
+        startAt: timestamp,
+        endAt: timestamp,
+        entries: [message],
+      };
+      continue;
+    }
+    current.entries.push(message);
+    current.endAt = timestamp;
+  }
+  if (current && current.entries.length > 0) tasks.push(current);
+
+  return tasks.map((task, index) => {
+    const firstUser = task.entries.find((entry) => entry.role === 'user');
+    const request = typeof firstUser?.content === 'string' ? truncateInline(firstUser.content, 220) : '(no user request)';
+    const lastAssistant = [...task.entries].reverse().find((entry) => entry.role === 'assistant' || entry.role === 'orchestrator');
+    const summary = typeof lastAssistant?.content === 'string'
+      ? truncateInline(lastAssistant.content, 260)
+      : 'Task executed without assistant completion summary.';
+    const toolSet = new Set<string>();
+    const readSet = new Set<string>();
+    const writeSet = new Set<string>();
+    const tagSet = new Set<string>();
+    let topic: string | undefined;
+
+    for (const entry of task.entries) {
+      const toolName = typeof entry.toolName === 'string' ? entry.toolName.trim() : '';
+      if (toolName) toolSet.add(toolName);
+      const metadata = entry.metadata && typeof entry.metadata === 'object'
+        ? entry.metadata as Record<string, unknown>
+        : undefined;
+      const tags = metadata?.tags;
+      if (Array.isArray(tags)) {
+        for (const tag of tags) {
+          if (typeof tag === 'string' && tag.trim().length > 0) tagSet.add(tag.trim());
+        }
+      }
+      if (!topic && typeof metadata?.topic === 'string' && metadata.topic.trim().length > 0) {
+        topic = metadata.topic.trim();
+      }
+      const toolInput = typeof entry.toolInput === 'string'
+        ? entry.toolInput
+        : entry.toolInput !== undefined
+          ? JSON.stringify(entry.toolInput)
+          : '';
+      const content = typeof entry.content === 'string' ? entry.content : '';
+      const text = `${content}\n${toolInput}`;
+      const extracted = extractReadWritePaths(text);
+      for (const read of extracted.reads) readSet.add(read);
+      for (const write of extracted.writes) writeSet.add(write);
+    }
+
+    const taskId = `task-${Date.parse(task.startAt) || Date.now()}-${index + 1}`;
+    return {
+      id: taskId,
+      task_id: taskId,
+      start_time_iso: task.startAt,
+      end_time_iso: task.endAt,
+      request,
+      summary,
+      key_tools: Array.from(toolSet).slice(0, 12),
+      key_reads: Array.from(readSet).slice(0, 8),
+      key_writes: Array.from(writeSet).slice(0, 8),
+      ...(tagSet.size > 0 ? { tags: Array.from(tagSet).slice(0, 12) } : {}),
+      ...(topic ? { topic } : {}),
+    };
+  });
+}
 
 export class RuntimeFacade {
   private currentSessionId: string | null = null;
@@ -128,8 +275,6 @@ export class RuntimeFacade {
   private readonly toolAuthorization = new ToolAuthorizationManager();
   private roleToolPolicyPresets: RoleToolPolicyPresetMap = {};
   private readonly agentRuntimeConfigs = new Map<string, AgentRuntimeConfig>();
-  private readonly AUTO_COMPACT_THRESHOLD_PERCENT = 85;
-  private readonly autoCompactTriggeredTurns = new Set<string>();
 
   constructor(
     private eventBus: UnifiedEventBus,
@@ -861,6 +1006,9 @@ export class RuntimeFacade {
     const nowIso = new Date().toISOString();
 
     const messages = this.sessionManager.getMessages(sessionId);
+    const replacementHistory = buildCompactReplacementHistory(
+      messages.map((message) => message as Record<string, unknown>),
+    );
     const sessionContext = session.context ?? {};
     const ownerAgentId = typeof sessionContext.ownerAgentId === 'string' && sessionContext.ownerAgentId.trim().length > 0
       ? sessionContext.ownerAgentId.trim()
@@ -888,6 +1036,7 @@ export class RuntimeFacade {
         source_time_end: sourceTimeEnd,
         source_slot_start: messages.length > 0 ? 1 : undefined,
         source_slot_end: messages.length > 0 ? messages.length : undefined,
+        replacement_history: replacementHistory,
         _runtime_context: {
           session_id: sessionId,
           agent_id: ownerAgentId,
@@ -897,6 +1046,13 @@ export class RuntimeFacade {
     } catch (error) {
       // Keep session compression successful even if ledger compact persistence fails.
       log.warn('ledger compact persistence failed', { sessionId, error: error instanceof Error ? error.message : String(error) });
+    }
+
+    if (replacementHistory.length > 0) {
+      this.updateSessionContext(sessionId, {
+        contextCompactReplacementHistory: replacementHistory,
+        contextCompactReplacementUpdatedAt: new Date().toISOString(),
+      });
     }
 
     this.eventBus.emit({
@@ -923,100 +1079,60 @@ export class RuntimeFacade {
   }
 
   async maybeAutoCompact(sessionId: string, contextUsagePercent?: number, turnId?: string): Promise<boolean> {
+    const normalizedSessionId = typeof sessionId === 'string' ? sessionId.trim() : '';
+    if (!normalizedSessionId) return false;
     if (typeof contextUsagePercent !== 'number' || !Number.isFinite(contextUsagePercent)) return false;
-    if (contextUsagePercent < this.AUTO_COMPACT_THRESHOLD_PERCENT) return false;
-    const session = this.sessionManager.getSession(sessionId);
-    if (!session) return false;
-    const dedupeKey = turnId && turnId.trim().length > 0 ? `${sessionId}:${turnId}` : undefined;
-    if (dedupeKey && this.autoCompactTriggeredTurns.has(dedupeKey)) return false;
 
+    const normalizedPercent = Math.max(0, Math.floor(contextUsagePercent));
+    if (normalizedPercent < AUTO_CONTEXT_COMPACT_THRESHOLD_PERCENT) return false;
+
+    const existing = autoCompactInFlightBySession.get(normalizedSessionId);
+    if (existing) return existing;
+
+    const compactJob = (async () => {
+      const now = Date.now();
+      const state = autoCompactStateBySession.get(normalizedSessionId);
+      const normalizedTurnId = typeof turnId === 'string' && turnId.trim().length > 0
+        ? turnId.trim()
+        : undefined;
+      if (state) {
+        if (normalizedTurnId && state.lastTurnId === normalizedTurnId) return false;
+        if (now - state.lastAttemptAt < AUTO_CONTEXT_COMPACT_COOLDOWN_MS) return false;
+      }
+
+      autoCompactStateBySession.set(normalizedSessionId, {
+        lastAttemptAt: now,
+        ...(normalizedTurnId ? { lastTurnId: normalizedTurnId } : {}),
+      });
+
+      try {
+        await this.compressContext(normalizedSessionId, {
+          trigger: 'auto',
+          contextUsagePercent: normalizedPercent,
+        });
+        log.info('Auto context compact triggered', {
+          sessionId: normalizedSessionId,
+          contextUsagePercent: normalizedPercent,
+          thresholdPercent: AUTO_CONTEXT_COMPACT_THRESHOLD_PERCENT,
+          turnId: normalizedTurnId,
+        });
+        return true;
+      } catch (error) {
+        log.warn('Auto context compact failed', {
+          sessionId: normalizedSessionId,
+          contextUsagePercent: normalizedPercent,
+          turnId: normalizedTurnId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+        return false;
+      }
+    })();
+
+    autoCompactInFlightBySession.set(normalizedSessionId, compactJob);
     try {
-      const sessionContext = (session.context ?? {}) as Record<string, unknown>;
-      const agentId = typeof sessionContext.ownerAgentId === 'string' && sessionContext.ownerAgentId.trim().length > 0
-        ? sessionContext.ownerAgentId.trim()
-        : 'finger-project-agent';
-
-      const configuredRootDir =
-        typeof sessionContext.contextLedgerRootDir === 'string' && sessionContext.contextLedgerRootDir.trim().length > 0
-          ? sessionContext.contextLedgerRootDir.trim()
-          : undefined;
-      const systemRoot = path.join(FINGER_PATHS.home, 'system');
-      const inferredRootDir = typeof session.projectPath === 'string' && session.projectPath.startsWith(systemRoot)
-        ? path.join(systemRoot, 'sessions')
-        : FINGER_PATHS.sessions.dir;
-      const rootDir = configuredRootDir ?? inferredRootDir;
-      const sessionMessages = this.sessionManager.getMessages(sessionId, 0);
-
-      const settings = loadContextBuilderSettings();
-      const configuredBudget = Number.isFinite(settings.historyBudgetTokens) && settings.historyBudgetTokens > 0
-        ? Math.floor(settings.historyBudgetTokens)
-        : Math.floor(getContextWindow() * settings.budgetRatio);
-      const targetBudget = Math.max(1, configuredBudget);
-      const buildMode = settings.mode;
-
-      const rebuilt = await buildContext(
-        {
-          rootDir,
-          sessionId,
-          agentId,
-          mode: 'main',
-          sessionMessages,
-        },
-        {
-          targetBudget,
-          buildMode,
-          includeMemoryMd: false,
-          enableTaskGrouping: true,
-          enableModelRanking: settings.enableModelRanking,
-          rankingProviderId: settings.rankingProviderId,
-          timeWindow: {
-            nowMs: Date.now(),
-            halfLifeMs: settings.halfLifeMs,
-            overThresholdRelevance: settings.overThresholdRelevance,
-          },
-        },
-      );
-
-      setContextBuilderOnDemandView({
-        sessionId,
-        agentId,
-        mode: 'main',
-        buildMode,
-        targetBudget,
-        selectedBlockIds: rebuilt.rankedTaskBlocks.map((block) => block.id),
-        metadata: {
-          ...(rebuilt.metadata ?? {}),
-          autoRebuild: true,
-          contextUsagePercent,
-        },
-        messages: rebuilt.messages,
-        createdAt: new Date().toISOString(),
-      });
-
-      this.eventBus.emit({
-        type: 'system_notice',
-        sessionId,
-        timestamp: new Date().toISOString(),
-        payload: {
-          source: 'auto_context_rebuild',
-          contextUsagePercent,
-          turnId,
-          agentId,
-          targetBudget,
-          buildMode,
-          selectedBlockCount: rebuilt.rankedTaskBlocks.length,
-        },
-      });
-
-      if (dedupeKey) this.autoCompactTriggeredTurns.add(dedupeKey);
-      return true;
-    } catch (error) {
-      log.warn('auto context rebuild failed', {
-        sessionId,
-        contextUsagePercent,
-        error: error instanceof Error ? error.message : String(error),
-      });
-      return false;
+      return await compactJob;
+    } finally {
+      autoCompactInFlightBySession.delete(normalizedSessionId);
     }
   }
 

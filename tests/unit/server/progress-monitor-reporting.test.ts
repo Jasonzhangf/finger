@@ -5,6 +5,61 @@ import type { SessionProgressData } from '../../../src/server/modules/progress-m
 const formatElapsed = (ms: number) => `${Math.floor(ms / 1000)}s`;
 
 describe('progress-monitor-reporting', () => {
+  it('shows full update_plan list instead of single step', () => {
+    const data: SessionProgressData = {
+      agentId: 'finger-system-agent',
+      status: 'running',
+      currentTask: 'update_plan → ✅',
+      elapsedMs: 10_000,
+      toolCallHistory: [
+        {
+          toolName: 'update_plan',
+          params: JSON.stringify({
+            plan: [
+              { step: 'Collect requirements', status: 'completed' },
+              { step: 'Implement progress rendering', status: 'in_progress' },
+              { step: 'Run tests and verify output', status: 'pending' },
+            ],
+          }),
+          success: true,
+        },
+      ],
+    };
+
+    const result = buildCompactSummary(data, formatElapsed, { headerMode: 'minimal' });
+    expect(result).toContain('计划共 3 项');
+    expect(result).toContain('✓ Collect requirements');
+    expect(result).toContain('▶ Implement progress rendering');
+    expect(result).toContain('○ Run tests and verify output');
+  });
+
+  it('shows dispatch task identity and content preview', () => {
+    const data: SessionProgressData = {
+      agentId: 'finger-system-agent',
+      status: 'running',
+      currentTask: 'agent.dispatch → ✅',
+      elapsedMs: 10_000,
+      toolCallHistory: [
+        {
+          toolName: 'agent.dispatch',
+          params: JSON.stringify({
+            target_agent_id: 'finger-project-agent',
+            assignment: { taskName: 'Fix progress report details' },
+            metadata: { taskId: 'task-123' },
+            task: 'Update progress monitor so write_stdin/update_plan/dispatch are fully visible',
+          }),
+          success: true,
+        },
+      ],
+    };
+
+    const result = buildCompactSummary(data, formatElapsed, { headerMode: 'minimal' });
+    expect(result).toContain('→ finger-project-agent');
+    expect(result).toContain('task=task-123');
+    expect(result).toContain('name=Fix progress report details');
+    expect(result).toContain('内容=Update progress monitor');
+  });
+
   it('shows stdin write content instead of generic command label', () => {
     const data: SessionProgressData = {
       agentId: 'finger-system-agent',

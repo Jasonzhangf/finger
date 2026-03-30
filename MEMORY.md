@@ -32,6 +32,42 @@
 关联: finger-261
 子任务: finger-261.3 — tag-aware context builder ✅
 
+## [task] Context digest-first rebuild + ranking fallback + progress readability {#mem-context-digest-fallback-20260330}
+时间: 2026-03-30 22:31
+状态: completed
+
+### 用户要求（Jason）
+1. 进度更新中 `update_plan` 需展示完整计划清单；  
+2. `dispatch` 需展示派发任务身份与内容；  
+3. `write_stdin` 需展示实际写入内容；  
+4. context rebuild 优先使用 compact digest 历史；  
+5. context builder 专用排序模型不可用时，不中断，降级到 digest 历史继续执行。
+
+### 关键实现
+1. **Progress 可读性增强**
+   - `src/server/modules/progress-monitor-reporting.ts`
+   - `src/server/modules/progress-monitor-reporting-helpers.ts`
+   - `tests/unit/server/progress-monitor-reporting.test.ts`
+   - `update_plan` 全量项输出、`dispatch` 输出 task/name/content、`write_stdin` 输出 stdin 内容。
+
+2. **压缩产出 replacement_history（digest）**
+   - `src/runtime/runtime-facade.ts`
+   - `compressContext()` 在 compact 写入时附带 task-level `replacement_history`（request/summary/key_tools/key_reads/key_writes）。
+
+3. **Rebuild 优先 compact history**
+   - `src/runtime/context-builder.ts`
+   - `src/runtime/context-builder-types.ts`
+   - 若存在 `compact-memory.replacement_history`，historical_memory 优先使用 compact digest；working_set 仍保留 live task。
+
+4. **排序模型不可用降级**
+   - `src/runtime/context-builder.ts`
+   - `enableModelRanking=active` 且 provider 不可用时，historical_memory 自动降级为 digest blocks，继续执行；
+   - metadata 标记 `rankingReason=digest_fallback:<reason>`。
+
+5. **测试验证**
+   - `tests/unit/runtime/context-builder.test.ts` 新增 ranking fallback 场景；
+   - TypeScript 编译 + 单测通过。
+
 ## [task] Task-End Tagging Pipeline (session classification 基础) {#mem-tags-pipeline-20260326}
 时间: 2026-03-26 08:00
 状态: completed
@@ -564,3 +600,16 @@ if (!isNonModuleSender) {
 - Further tightened in strict mode:
   - removed runtime compatibility fallback that hydrated from ledger when `session.messages` is empty;
   - `getMessages()` / `getMessagesAsync()` now return snapshot-only data (or empty), no runtime ledger replay path.
+
+- [2026-03-30] Jason 要求把 channel 链接自动下载能力收敛为“可配置触发骨架”：`channelAutoDetail.triggers[]` 统一通过 `match/input/command` 配置触发条件、输入文件模板和执行命令；`weibo/xiaohongshu` 仅作为 legacy fallback。并新增系统技能 `~/.finger/skills/channel-auto-trigger/SKILL.md`，后续配置修改走 skills 流程（含模板、校验、回滚步骤）。
+  Tags: channel-auto-detail, triggers, config-skeleton, skills, qqbot, webauto
+- [2026-03-30] Jason 追加要求：channel auto trigger 规则除输入模板外，还必须支持“输出目录”可配置。实现为 trigger 级 `output.outputRoot`（并支持 `${output_root}` 占位符注入命令参数）；当 trigger 未配置时回退全局 `channelAutoDetail.outputRoot`。
+  Tags: channel-auto-trigger, output-root, trigger-config, placeholders
+- [2026-03-30] Jason 确认 channel auto trigger 需要“每个触发器独立可配置输出目录”。已在 `~/.finger/config/config.json` 配置：`weibo-detail.output.outputRoot=~/.webauto/download-weibo`，`xhs-detail.output.outputRoot=~/.webauto/download-xhs`，命令参数统一使用 `${output_root}`。
+  Tags: channel-auto-trigger, per-trigger-output, config
+
+- [2026-03-30] Jason 新增 System Agent 派发前硬约束：面对用户开发任务，System Agent 必须先完整澄清需求并给出“执行合同包”（需求理解/详细开发需求/开发流程/测试流程/验证与交付清单/风险与疑问），得到用户完整确认后，先写入目标项目 `FLOW.md`，再派发给 project agent；禁止“未确认先派发”。
+  Tags: system-agent, prompt, dispatch-gate, flow-md, requirement-clarification
+
+- [2026-03-30] Jason 要求补充 ledger 使用规则：复杂任务默认先做 `context_ledger.memory search -> query(detail=true)` 检索，再决定是否 `context_builder.rebuild`；该规则需同时写入 ledger 说明文档与 context-ledger-memory skill，禁止“无证据先重建”。
+  Tags: ledger, context-builder, rebuild-gate, skills, complex-task

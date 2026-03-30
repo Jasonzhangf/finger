@@ -181,6 +181,7 @@ export interface SessionProgressData {
   contextUsagePercent?: number;
   estimatedTokensInContextWindow?: number;
   maxInputTokens?: number;
+  lastContextEvent?: string;
 }
 
 function formatTokenCount(value: number): string {

@@ -83,6 +83,86 @@ describe('context-builder', () => {
         rmSync(setup.rootDir, { recursive: true, force: true });
       }
     });
+
+    it('prefers compact replacement history for historical blocks when available', async () => {
+      const setup = setupLedgerForContextBuilder('compact-history-preferred');
+      const compactPath = join(setup.rootDir, setup.sessionId, setup.agentId, setup.mode, 'compact-memory.jsonl');
+      const nowIso = new Date(setup.now).toISOString();
+      writeFileSync(
+        compactPath,
+        `${JSON.stringify({
+          id: 'cpt-compact-1',
+          timestamp_ms: setup.now,
+          timestamp_iso: nowIso,
+          session_id: setup.sessionId,
+          agent_id: setup.agentId,
+          mode: setup.mode,
+          payload: {
+            summary: 'compact summary',
+            replacement_history: [
+              {
+                id: 'digest-task-1',
+                task_id: 'digest-task-1',
+                start_time_iso: new Date(setup.now - 100_000).toISOString(),
+                end_time_iso: new Date(setup.now - 90_000).toISOString(),
+                request: 'Fix the login bug',
+                summary: 'Patched login flow and validated with tests',
+                key_tools: ['update_plan', 'apply_patch'],
+                key_reads: ['src/auth/login.ts'],
+                key_writes: ['src/auth/login.ts'],
+              },
+            ],
+          },
+        })}\n`,
+        'utf-8',
+      );
+
+      const sessionMessages = [
+        {
+          id: 'snap-1',
+          role: 'user' as const,
+          content: 'Fix the login bug',
+          timestamp: new Date(setup.now - 100_000).toISOString(),
+        },
+        {
+          id: 'snap-2',
+          role: 'assistant' as const,
+          content: 'I will fix the login bug now.',
+          timestamp: new Date(setup.now - 95_000).toISOString(),
+        },
+        {
+          id: 'snap-3',
+          role: 'user' as const,
+          content: 'Run the build now',
+          timestamp: new Date(setup.now - 10_000).toISOString(),
+        },
+        {
+          id: 'snap-4',
+          role: 'assistant' as const,
+          content: 'Running the build.',
+          timestamp: new Date(setup.now - 5_000).toISOString(),
+        },
+      ];
+
+      try {
+        const result = await buildContext(
+          {
+            rootDir: setup.rootDir,
+            sessionId: setup.sessionId,
+            agentId: setup.agentId,
+            mode: setup.mode,
+            sessionMessages,
+          },
+          { targetBudget: 1_000_000, includeMemoryMd: false, buildMode: 'aggressive' },
+        );
+
+        expect(result.ok).toBe(true);
+        expect(result.messages.some((message) => message.content.includes('Patched login flow and validated with tests'))).toBe(true);
+        expect(result.messages.some((message) => message.content === 'I will fix the login bug now.')).toBe(false);
+      } finally {
+        rmSync(setup.rootDir, { recursive: true, force: true });
+      }
+    });
   });
 
   describe('time window filter', () => {
@@ -254,6 +334,33 @@ describe('context-builder', () => {
           'Run the build now',
           'Running the build.',
         ]);
+      } finally {
+        rmSync(setup.rootDir, { recursive: true, force: true });
+      }
+    });
+  });
+
+  describe('ranking model unavailable fallback', () => {
+    it('falls back to compact digest blocks for historical context when ranking model is unavailable', async () => {
+      const setup = setupLedgerForContextBuilder('ranking-fallback');
+      try {
+        const result = await buildContext(
+          { rootDir: setup.rootDir, sessionId: setup.sessionId, agentId: setup.agentId, mode: setup.mode },
+          {
+            targetBudget: 1_000_000,
+            includeMemoryMd: false,
+            enableModelRanking: true,
+            rankingProviderId: 'provider-does-not-exist',
+            buildMode: 'aggressive',
+          },
+        );
+
+        expect(result.ok).toBe(true);
+        expect(result.metadata.rankingExecuted).toBe(false);
+        expect(result.metadata.rankingReason).toContain('digest_fallback:provider_not_found');
+        expect(result.messages.some((m) => m.content.includes('请求:'))).toBe(true);
+        const historicalDigestMessage = result.messages.find((m) => m.metadata?.compactDigest === true);
+        expect(historicalDigestMessage).toBeDefined();
       } finally {
         rmSync(setup.rootDir, { recursive: true, force: true });
       }

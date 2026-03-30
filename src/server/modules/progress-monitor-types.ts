@@ -48,6 +48,16 @@ export interface SessionProgress {
   contextUsagePercent?: number;
   estimatedTokensInContextWindow?: number;
   maxInputTokens?: number;
+  contextUsageBaseTokens?: number;
+  contextUsageAddedTokens?: number;
+  lastContextEvent?: string;
+  lastContextEventAt?: number;
+  lastReportedContextEventAt?: number;
+  /**
+   * Allow exactly one downward context update (used after explicit rebuild/compress actions).
+   * Prevents misleading "new turn low baseline" resets in normal turns.
+   */
+  allowContextDropOnce?: boolean;
 }
 
 export interface ProgressReport {

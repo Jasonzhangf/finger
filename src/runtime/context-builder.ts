@@ -24,6 +24,7 @@ import {
   readJsonLines,
   normalizeRootDir,
   resolveLedgerPath,
+  resolveCompactMemoryPath,
 } from './context-ledger-memory-helpers.js';
 import { logger } from '../core/logger.js';
 import type {
@@ -56,6 +57,20 @@ interface SessionSnapshotMessage {
   attachments?: unknown[];
 }
 
+interface CompactReplacementHistoryItem {
+  id?: string;
+  task_id?: string;
+  start_time_iso?: string;
+  end_time_iso?: string;
+  request?: string;
+  summary?: string;
+  key_tools?: string[];
+  key_reads?: string[];
+  key_writes?: string[];
+  topic?: string;
+  tags?: string[];
+}
+
 // ── 常量 ──────────────────────────────────────────────────────────────
 
 const DEFAULT_HALF_LIFE_MS = 24 * 60 * 60 * 1000; // 24 hours
@@ -68,6 +83,101 @@ function normalizeTaskMessageRole(input: unknown): TaskMessage['role'] {
     return input;
   }
   return 'user';
+}
+
+function safeParseIsoToMs(iso?: string, fallback = Date.now()): number {
+  if (!iso || typeof iso !== 'string') return fallback;
+  const parsed = Date.parse(iso);
+  return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+function normalizeStringArray(input: unknown, maxItems = 8): string[] {
+  if (!Array.isArray(input)) return [];
+  const normalized = input
+    .filter((item): item is string => typeof item === 'string' && item.trim().length > 0)
+    .map((item) => item.trim())
+    .filter((item, index, arr) => arr.indexOf(item) === index);
+  return normalized.slice(0, Math.max(1, maxItems));
+}
+
+function buildCompactDigestContent(item: CompactReplacementHistoryItem): string {
+  const request = typeof item.request === 'string' ? item.request.trim() : '';
+  const summary = typeof item.summary === 'string' ? item.summary.trim() : '';
+  const keyTools = normalizeStringArray(item.key_tools, 12);
+  const keyReads = normalizeStringArray(item.key_reads, 8);
+  const keyWrites = normalizeStringArray(item.key_writes, 8);
+  const lines: string[] = [];
+  if (request) lines.push(`请求: ${request}`);
+  if (summary) lines.push(`结果: ${summary}`);
+  if (keyTools.length > 0) lines.push(`工具: ${keyTools.join(', ')}`);
+  if (keyReads.length > 0) lines.push(`读取: ${keyReads.join(', ')}`);
+  if (keyWrites.length > 0) lines.push(`写入: ${keyWrites.join(', ')}`);
+  if (lines.length === 0) return '(compact task digest)';
+  return lines.join('\n');
+}
+
+function buildTaskBlockFromCompactDigest(
+  item: CompactReplacementHistoryItem,
+  fallbackTs: number,
+): TaskBlock | null {
+  const content = buildCompactDigestContent(item).trim();
+  if (!content) return null;
+  const startTs = safeParseIsoToMs(item.start_time_iso, fallbackTs);
+  const endTs = safeParseIsoToMs(item.end_time_iso, Math.max(startTs, fallbackTs));
+  const digestMessageId = typeof item.id === 'string' && item.id.trim().length > 0
+    ? item.id.trim()
+    : typeof item.task_id === 'string' && item.task_id.trim().length > 0
+      ? item.task_id.trim()
+      : `compact-${startTs}`;
+  const tags = normalizeStringArray(item.tags, 12);
+  const topic = typeof item.topic === 'string' && item.topic.trim().length > 0 ? item.topic.trim() : undefined;
+  const digestMessage: TaskMessage = {
+    id: `compact-msg-${digestMessageId}`,
+    role: 'assistant',
+    content,
+    timestamp: endTs,
+    timestampIso: new Date(endTs).toISOString(),
+    tokenCount: estimateTokens(content),
+    messageId: digestMessageId,
+    metadata: {
+      compactDigest: true,
+      digestId: digestMessageId,
+      ...(typeof item.task_id === 'string' && item.task_id.trim().length > 0 ? { taskId: item.task_id.trim() } : {}),
+      ...(topic ? { topic } : {}),
+      ...(tags.length > 0 ? { tags } : {}),
+    },
+  };
+  return finalizeBlock(
+    `compact-task-${digestMessageId}`,
+    startTs,
+    [digestMessage],
+  );
+}
+
+async function loadCompactReplacementHistoryBlocks(
+  rootDir: string,
+  sessionId: string,
+  agentId: string,
+  mode: string,
+): Promise<TaskBlock[]> {
+  const compactPath = resolveCompactMemoryPath(rootDir, sessionId, agentId, mode);
+  const compactEntries = await readJsonLines<CompactMemoryEntryFile>(compactPath);
+  if (compactEntries.length === 0) return [];
+  const latest = compactEntries[compactEntries.length - 1];
+  const payload = latest?.payload && typeof latest.payload === 'object'
+    ? latest.payload as Record<string, unknown>
+    : undefined;
+  if (!payload) return [];
+  const rawHistory = Array.isArray(payload.replacement_history) ? payload.replacement_history : [];
+  if (rawHistory.length === 0) return [];
+  const fallbackTs = typeof latest.timestamp_ms === 'number' && Number.isFinite(latest.timestamp_ms)
+    ? latest.timestamp_ms
+    : Date.now();
+  const blocks = rawHistory
+    .filter((item): item is CompactReplacementHistoryItem => typeof item === 'object' && item !== null && !Array.isArray(item))
+    .map((item, index) => buildTaskBlockFromCompactDigest(item, fallbackTs + index))
+    .filter((item): item is TaskBlock => !!item);
+  return blocks;
 }
 
 function compactAttachments(raw: unknown): AttachmentPlaceholder | undefined {
@@ -566,6 +676,57 @@ function summarizeTaskBlock(block: TaskBlock): string | undefined {
   return `${normalized.slice(0, 120)}...`;
 }
 
+function toCompactTaskDigestBlock(block: TaskBlock): TaskBlock {
+  const firstUser = block.messages.find((message) => message.role === 'user')?.content?.trim() ?? '';
+  const lastAssistant = [...block.messages].reverse().find((message) => message.role === 'assistant' || message.role === 'orchestrator')?.content?.trim() ?? '';
+  const toolNames = Array.from(new Set(
+    block.messages
+      .map((message) => {
+        const raw = message.metadata?.toolName;
+        return typeof raw === 'string' && raw.trim().length > 0 ? raw.trim() : '';
+      })
+      .filter((item) => item.length > 0),
+  )).slice(0, 8);
+  const digestParts = [
+    firstUser ? `请求: ${firstUser.replace(/\s+/g, ' ').slice(0, 220)}` : '',
+    lastAssistant ? `结果: ${lastAssistant.replace(/\s+/g, ' ').slice(0, 260)}` : '',
+    toolNames.length > 0 ? `工具: ${toolNames.join(', ')}` : '',
+  ].filter((item) => item.length > 0);
+  const digestContent = digestParts.length > 0 ? digestParts.join('\n') : `(task digest ${block.id})`;
+  const digestId = `digest-${block.id}`;
+  const digestMessage: TaskMessage = {
+    id: `${digestId}-msg`,
+    role: 'assistant',
+    content: digestContent,
+    timestamp: block.endTime,
+    timestampIso: block.endTimeIso,
+    tokenCount: estimateTokens(digestContent),
+    messageId: digestId,
+    metadata: {
+      compactDigest: true,
+      compactDigestFromTaskId: block.id,
+      ...(block.topic ? { topic: block.topic } : {}),
+      ...(block.tags && block.tags.length > 0 ? { tags: block.tags } : {}),
+    },
+  };
+  return {
+    id: digestId,
+    startTime: block.startTime,
+    endTime: block.endTime,
+    startTimeIso: block.startTimeIso,
+    endTimeIso: block.endTimeIso,
+    messages: [digestMessage],
+    tokenCount: digestMessage.tokenCount,
+    ...(block.tags && block.tags.length > 0 ? { tags: block.tags } : {}),
+    ...(block.topic ? { topic: block.topic } : {}),
+  };
+}
+
+function toCompactTaskDigestBlocks(blocks: TaskBlock[]): TaskBlock[] {
+  if (!Array.isArray(blocks) || blocks.length === 0) return [];
+  return blocks.map((block) => toCompactTaskDigestBlock(block));
+}
+
 function resolveBuildMode(mode: ContextBuildOptions['buildMode'] | undefined): ContextBuildMode {
   if (mode === 'minimal' || mode === 'moderate' || mode === 'aggressive') return mode;
   return 'moderate';
@@ -734,6 +895,7 @@ export async function buildContext(
   const contextWindow = getContextWindow();
   const targetBudget = options?.targetBudget ?? Math.floor(contextWindow * DEFAULT_BUDGET_RATIO);
   const enableTaskGrouping = options?.enableTaskGrouping !== false;
+  const preferCompactHistory = options?.preferCompactHistory !== false;
 
   // ── Step 1: 读取 session 快照（优先）或 Ledger 条目 ──
   const snapshotMessages = Array.isArray(input.sessionMessages) ? input.sessionMessages : [];
@@ -769,14 +931,34 @@ export async function buildContext(
     }]);
       });
 
-  const rawTaskBlockCount = rawBlocks.length;
+  let normalizedRawBlocks = rawBlocks;
+  if (snapshotMessages.length > 0 && preferCompactHistory) {
+    try {
+      const compactHistoryBlocks = await loadCompactReplacementHistoryBlocks(rootDir, input.sessionId, agentId, mode);
+      if (compactHistoryBlocks.length > 0) {
+        const currentFromSnapshot = rawBlocks.length > 0 ? rawBlocks[rawBlocks.length - 1] : undefined;
+        normalizedRawBlocks = currentFromSnapshot
+          ? [...compactHistoryBlocks, currentFromSnapshot]
+          : compactHistoryBlocks;
+      }
+    } catch (error) {
+      log.debug('Failed to load compact replacement history, fallback to snapshot blocks', {
+        sessionId: input.sessionId,
+        agentId,
+        mode,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
+  const rawTaskBlockCount = normalizedRawBlocks.length;
 
   // ── Step 3: 时间窗口过滤 ──
-  let filteredBlocks = rawBlocks;
+  let filteredBlocks = normalizedRawBlocks;
   let timeWindowFilteredCount = 0;
   if (options?.timeWindow) {
-    filteredBlocks = applyTimeWindowFilter(rawBlocks, options.timeWindow);
-    timeWindowFilteredCount = rawBlocks.length - filteredBlocks.length;
+    filteredBlocks = applyTimeWindowFilter(normalizedRawBlocks, options.timeWindow);
+    timeWindowFilteredCount = normalizedRawBlocks.length - filteredBlocks.length;
   }
   const { current, historical } = splitCurrentAndHistorical(filteredBlocks);
   let rankedHistorical = historical;
@@ -834,6 +1016,16 @@ export async function buildContext(
   } else if (embeddingRecallExecuted && embeddingRecallIds) {
     rankingIds = embeddingRecallIds;
     rankingReason = 'embedding_recall_only';
+  }
+
+  const rankingUnavailableForFallback = rankingMode === 'active'
+    && rankedHistorical.length > 0
+    && !rankingExecuted
+    && typeof rankingReason === 'string'
+    && rankingReason !== 'insufficient_blocks';
+  if (rankingUnavailableForFallback) {
+    rankedHistorical = toCompactTaskDigestBlocks(rankedHistorical);
+    rankingReason = `digest_fallback:${rankingReason}`;
   }
 
   // ── Step 5: 预算控制（不再为 MEMORY.md 预留） ──
