@@ -477,13 +477,7 @@ export class ProcessChatCodexRunner implements ChatCodexRunner {
 
     const turnId = this.nextSubmissionId(session, 'turn');
     return new Promise<ChatCodexRunResult>((resolve, reject) => {
-      const timeout = setTimeout(() => {
-        this.rejectActiveTurn(
-          session,
-          new Error(`chat-codex timed out after ${this.timeoutMs}ms`),
-          true,
-        );
-      }, this.timeoutMs);
+      const timeout = this.createHardTimeout(session);
       const stallTimeout = this.createStallTimeout(session);
 
       session.activeTurn = {
@@ -624,6 +618,7 @@ export class ProcessChatCodexRunner implements ChatCodexRunner {
 
     const activeTurn = session.activeTurn;
     if (!activeTurn) return;
+    this.resetHardTimeout(session);
     this.resetStallTimeout(session);
 
     if (parsed.msg.type === 'session_configured') {
@@ -721,6 +716,23 @@ export class ProcessChatCodexRunner implements ChatCodexRunner {
         true,
       );
     }, this.stallTimeoutMs);
+  }
+
+  private createHardTimeout(session: KernelSessionProcess): NodeJS.Timeout {
+    return setTimeout(() => {
+      this.rejectActiveTurn(
+        session,
+        new Error(`chat-codex timed out after ${this.timeoutMs}ms`),
+        true,
+      );
+    }, this.timeoutMs);
+  }
+
+  private resetHardTimeout(session: KernelSessionProcess): void {
+    const activeTurn = session.activeTurn;
+    if (!activeTurn || activeTurn.settled) return;
+    clearTimeout(activeTurn.timeout);
+    activeTurn.timeout = this.createHardTimeout(session);
   }
 
   private resetStallTimeout(session: KernelSessionProcess): void {
@@ -2201,12 +2213,26 @@ function buildFlowPromptBlock(metadata: Record<string, unknown> | undefined): st
     ?? true;
   if (!enabled) return undefined;
 
-  const resolveFlowPath = (): string | undefined => {
-    const explicit = parseOptionalString(metadata?.flowFilePath) ?? parseOptionalString(metadata?.flow_file_path);
-    if (explicit) return explicit;
+  const resolveGlobalFlowPath = (): string => {
+    const explicitGlobal = parseOptionalString(metadata?.globalFlowFilePath)
+      ?? parseOptionalString(metadata?.global_flow_file_path);
+    if (explicitGlobal) return explicitGlobal;
+    return join(FINGER_PATHS.home, 'FLOW.md');
+  };
+
+  const resolveLocalFlowPath = (): string => {
+    const explicitLocal = parseOptionalString(metadata?.flowFilePath) ?? parseOptionalString(metadata?.flow_file_path);
+    if (explicitLocal) return explicitLocal;
 
     const projectPath = parseOptionalString(metadata?.projectPath) ?? parseOptionalString(metadata?.project_path);
     if (projectPath) return join(projectPath, 'FLOW.md');
+
+    const agentId = parseOptionalString(metadata?.contextLedgerAgentId)
+      ?? parseOptionalString(metadata?.agentId)
+      ?? parseOptionalString(metadata?.agent_id);
+    if (agentId === 'finger-system-agent') {
+      return join(FINGER_PATHS.home, 'system', 'FLOW.md');
+    }
 
     const cwd = parseOptionalString(metadata?.cwd);
     if (cwd) return join(cwd, 'FLOW.md');
@@ -2214,8 +2240,7 @@ function buildFlowPromptBlock(metadata: Record<string, unknown> | undefined): st
     return join(process.cwd(), 'FLOW.md');
   };
 
-  const flowPath = resolveFlowPath();
-  const rawFlow = (() => {
+  const readFlowContent = (flowPath: string): string | undefined => {
     if (!flowPath || !existsSync(flowPath)) return undefined;
     try {
       const content = readFileSync(flowPath, 'utf-8');
@@ -2223,33 +2248,59 @@ function buildFlowPromptBlock(metadata: Record<string, unknown> | undefined): st
     } catch {
       return undefined;
     }
-  })();
+  };
+
+  const renderTruncatedFlow = (raw: string | undefined): string | undefined => {
+    if (!raw || raw.trim().length === 0) return undefined;
+    return raw.length > FLOW_PROMPT_MAX_CHARS
+      ? `${raw.slice(0, FLOW_PROMPT_MAX_CHARS)}\n...[TRUNCATED_AT_10000_CHARS]`
+      : raw;
+  };
+
+  const globalFlowPath = resolveGlobalFlowPath();
+  const localFlowPath = resolveLocalFlowPath();
+  const globalFlow = renderTruncatedFlow(readFlowContent(globalFlowPath));
+  const localFlow = renderTruncatedFlow(readFlowContent(localFlowPath));
 
   const lines = [
     '# Task Flow Runtime',
-    '- Flow context file: `FLOW.md` (current task process memory).',
-    '- FLOW budget in prompt is strictly 10,000 chars; content beyond this is truncated.',
+    '- Flow context uses two layers: Global FLOW + Local FLOW.',
+    '- Load order is fixed: Global first, Local second.',
+    '- Conflict rule: Local FLOW has higher priority than Global FLOW.',
+    '- Each FLOW file has strict 10,000-char truncation in prompt (hard cap).',
     '- Complex tasks: first propose a closure flow hypothesis and ask user confirmation once before execution.',
     '- After confirmation: write/update FLOW.md, then continue by flow state-machine progression without repeatedly asking the same confirmation.',
     '- Simple tasks (e.g. quick search/read/single-step lookup) can execute directly without creating a flow.',
     '- If new sub-flow appears during current task, update FLOW.md to reflect latest plan/state.',
     '- Cleanup rule: only after user explicitly confirms task completion, reset FLOW.md content to avoid contaminating next task.',
     '- Do not clear FLOW.md before explicit user completion confirmation.',
-    flowPath ? `FLOW.path=${flowPath}` : 'FLOW.path=unresolved',
+    `FLOW.global.path=${globalFlowPath}`,
+    `FLOW.local.path=${localFlowPath}`,
   ];
 
-  if (!rawFlow || rawFlow.trim().length === 0) {
-    lines.push('FLOW.state=empty');
+  if (!globalFlow && !localFlow) {
+    lines.push('FLOW.state=empty(global+local)');
     return lines.join('\n');
   }
 
-  const truncated = rawFlow.length > FLOW_PROMPT_MAX_CHARS
-    ? `${rawFlow.slice(0, FLOW_PROMPT_MAX_CHARS)}\n...[TRUNCATED_AT_10000_CHARS]`
-    : rawFlow;
-  lines.push('FLOW.content:');
-  lines.push('```md');
-  lines.push(truncated);
-  lines.push('```');
+  lines.push('FLOW.content.global:');
+  if (globalFlow) {
+    lines.push('```md');
+    lines.push(globalFlow);
+    lines.push('```');
+  } else {
+    lines.push('(empty)');
+  }
+
+  lines.push('FLOW.content.local:');
+  if (localFlow) {
+    lines.push('```md');
+    lines.push(localFlow);
+    lines.push('```');
+  } else {
+    lines.push('(empty)');
+  }
+
   return lines.join('\n');
 }
 
@@ -2337,6 +2388,7 @@ function resolveHistoryItems(
 function shouldPreferContextBuilderHistory(metadata: Record<string, unknown> | undefined): boolean {
   if (!metadata) return false;
   const source = parseOptionalString(metadata.contextHistorySource)?.trim().toLowerCase() ?? '';
+  if (source === 'raw_session' || source === 'raw_session_fallback') return true;
   if (source.startsWith('context_builder')) return true;
   if (parseOptionalBoolean(metadata.contextBuilderIndexed) === true) return true;
   if (parseOptionalBoolean(metadata.contextBuilderRebuilt) === true) return true;
@@ -2522,9 +2574,18 @@ function buildLedgerDeveloperInstructions(
     historicalMessageCount !== undefined ? `historical_messages=${historicalMessageCount}` : '',
     workingSetTokens !== undefined ? `working_set_tokens=${workingSetTokens}` : '',
     historicalTokens !== undefined ? `historical_tokens=${historicalTokens}` : '',
+    '[context_partitions]',
+    'P0.core_instructions=system+developer prompts (stable, never rewritten by history rebuild)',
+    'P1.runtime_capabilities=skills+mailbox+flow runtime blocks (stable, injected independently from history)',
+    'P2.current_turn=current user input + current-turn attachments/input items (highest priority for this turn)',
+    'P3.continuity_anchors=recent task turns + recent user inputs for continuity judgment',
+    'P4.dynamic_history=working_set + historical_memory (ledger-selected, budgeted, mutable)',
+    'P5.canonical_storage=context ledger raw records + MEMORY.md (not fully injected)',
+    'rebuild_scope=P4 only',
     'Current prompt history is a budgeted dynamic view, not the full ledger.',
     'working_set contains the active task block at higher fidelity; historical_memory contains relevance-selected prior blocks.',
     'Stable layers such as system/developer prompts, skills, mailbox summaries, and current user input are injected separately from historical recall.',
+    'Query order: MEMORY.md (durable facts) -> context_ledger.memory search -> context_ledger.memory query(detail=true,slot_start,slot_end) -> context_ledger.expand_task(task_id or slot range).',
     'Absence from the visible prompt does not prove the event never happened.',
     enabled
       ? 'When historical context is missing, first call `context_ledger.memory` with action="search", then inspect raw entries with action="query", detail=true, slot_start, and slot_end.'
@@ -2956,6 +3017,26 @@ function defaultToolSpecification(name: string): ChatCodexToolSpecification {
           current_prompt: { type: 'string', description: 'Current user intent/topic used for relevance sorting.' },
           include_messages: { type: 'boolean', description: 'Whether to include compact message previews in output.' },
           message_limit: { type: 'number', description: 'Max preview messages when include_messages=true.' },
+        },
+        additionalProperties: true,
+      },
+    };
+  }
+
+  if (name === 'context_ledger.expand_task') {
+    return {
+      name,
+      description:
+        'Expand one compact task digest into full ledger records. Provide task_id or slot_start/slot_end; tool resolves slot range and returns detailed original entries.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          session_id: { type: 'string', description: 'Optional session id override. Usually auto-filled from tool context.' },
+          agent_id: { type: 'string', description: 'Optional agent id override. Usually auto-filled from tool context.' },
+          mode: { type: 'string', description: 'Conversation mode / thread, defaults to main.' },
+          task_id: { type: 'string', description: 'Task digest/task_block id to expand (preferred).' },
+          slot_start: { type: 'number', description: '1-based ledger slot start; use with slot_end if task_id is unavailable.' },
+          slot_end: { type: 'number', description: '1-based ledger slot end; use with slot_start if task_id is unavailable.' },
         },
         additionalProperties: true,
       },

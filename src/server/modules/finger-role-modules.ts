@@ -8,16 +8,14 @@ import type { ChatCodexDeveloperRole } from '../../agents/chat-codex/developer-p
 import { buildContext } from '../../runtime/context-builder.js';
 import { loadContextBuilderSettings } from '../../core/user-settings.js';
 import { estimateTokens } from '../../utils/token-counter.js';
-import { normalizeRootDir, readJsonLines, resolveLedgerPath } from '../../runtime/context-ledger-memory-helpers.js';
-import type { LedgerEntryFile } from '../../runtime/context-ledger-memory-types.js';
 import {
   consumeContextBuilderOnDemandView,
   shouldRunContextBuilderBootstrapOnce,
 } from '../../runtime/context-builder-on-demand-state.js';
 import {
   buildContextBuilderHistoryIndex,
-  buildNextIndexedHistoryIndex,
   buildIndexedHistoryFromSnapshot,
+  buildNextIndexedHistoryIndex,
   extractPinnedMessageIdsFromSessionContext,
   persistContextBuilderHistoryIndex,
   readPersistedContextBuilderHistoryIndex,
@@ -70,9 +68,7 @@ type HistoryMessage = {
 function isEffectivelyEmptyHistoryForBootstrap(messages: HistoryMessage[]): boolean {
   if (!Array.isArray(messages) || messages.length === 0) return true;
   const nonEmpty = messages.filter((item) => typeof item.content === 'string' && item.content.trim().length > 0);
-  if (nonEmpty.length === 0) return true;
-  if (nonEmpty.length === 1 && nonEmpty[0].role === 'user') return true;
-  return false;
+  return nonEmpty.length === 0;
 }
 
 function normalizeHistoryMessages(
@@ -91,42 +87,6 @@ function normalizeHistoryMessages(
     timestamp: typeof message.timestamp === 'string' ? message.timestamp : new Date().toISOString(),
     ...(message.metadata ? { metadata: message.metadata } : {}),
   }));
-}
-
-async function readRawSessionMessagesFromLedger(params: {
-  rootDir?: string;
-  sessionId: string;
-  agentId: string;
-  mode?: string;
-}): Promise<HistoryMessage[]> {
-  const rootDir = normalizeRootDir(params.rootDir);
-  const mode = params.mode ?? 'main';
-  const ledgerPath = resolveLedgerPath(rootDir, params.sessionId, params.agentId, mode);
-  const entries = await readJsonLines<LedgerEntryFile>(ledgerPath);
-  return entries
-    .filter((entry) => entry.event_type === 'session_message')
-    .map((entry, index) => {
-      const payload = entry.payload && typeof entry.payload === 'object' && !Array.isArray(entry.payload)
-        ? entry.payload as Record<string, unknown>
-        : {};
-      const rawRole = typeof payload.role === 'string' ? payload.role : 'user';
-      const role: 'user' | 'assistant' | 'system' = rawRole === 'assistant' || rawRole === 'system' ? rawRole : 'user';
-      const content = typeof payload.content === 'string' ? payload.content : '';
-      const timestamp = typeof entry.timestamp_iso === 'string' ? entry.timestamp_iso : new Date(entry.timestamp_ms).toISOString();
-      const messageId = typeof payload.message_id === 'string' && payload.message_id.trim().length > 0
-        ? payload.message_id
-        : (typeof entry.id === 'string' && entry.id.trim().length > 0 ? entry.id : `raw-${entry.timestamp_ms}-${index}`);
-      const metadata = payload.metadata && typeof payload.metadata === 'object' && !Array.isArray(payload.metadata)
-        ? payload.metadata as Record<string, unknown>
-        : undefined;
-      return {
-        id: messageId,
-        role,
-        content,
-        timestamp,
-        ...(metadata ? { metadata } : {}),
-      };
-    });
 }
 
 function topUpHistoryToBudget(
@@ -297,15 +257,9 @@ export async function registerFingerRoleModules(
       const rootDir = deps.resolveSessionLedgerRoot
         ? deps.resolveSessionLedgerRoot({ id: session.id, projectPath: session.projectPath })
         : undefined;
-      const rawSessionMessages = await readRawSessionMessagesFromLedger({
-        rootDir,
-        sessionId,
-        agentId,
-        mode: 'main',
-      });
-      const sessionMessages = rawSessionMessages.length > 0
-        ? rawSessionMessages
-        : normalizeHistoryMessages(runtime.getMessages(sessionId, 0));
+      // Runtime consumption truth: use current built session snapshot only.
+      // Ledger stays append-only storage and explicit query surface.
+      const sessionMessages = normalizeHistoryMessages(runtime.getMessages(sessionId, 0));
       const latestMessage = sessionMessages.length > 0 ? sessionMessages[sessionMessages.length - 1] : null;
       const hasMediaInput = hasMediaInputInMessage(latestMessage);
       if (hasMediaInput) {
@@ -329,7 +283,6 @@ export async function registerFingerRoleModules(
         });
         return mapped;
       }
-      const persistedIndex = readPersistedContextBuilderHistoryIndex(sessionContext);
       const pinnedMessageIds = extractPinnedMessageIdsFromSessionContext(sessionContext);
       const historyBudgetTokens = Number.isFinite(settings.historyBudgetTokens) && settings.historyBudgetTokens > 0
         ? Math.floor(settings.historyBudgetTokens)
@@ -359,10 +312,11 @@ export async function registerFingerRoleModules(
 
       const onDemand = consumeContextBuilderOnDemandView(sessionId, agentId);
       if (!onDemand) {
+        const persistedIndex = readPersistedContextBuilderHistoryIndex(sessionContext);
         if (persistedIndex) {
           const indexed = buildIndexedHistoryFromSnapshot(sessionMessages, persistedIndex, limit);
           if (indexed && indexed.messages.length > 0) {
-            const indexedMapped = indexed.messages.map((message) => ({
+            const mappedIndexed = indexed.messages.map((message) => ({
               ...message,
               metadata: {
                 ...(message.metadata ?? {}),
@@ -370,37 +324,56 @@ export async function registerFingerRoleModules(
                 contextBuilderBypassed: false,
                 contextBuilderRebuilt: false,
                 contextBuilderIndexed: true,
+                contextBuilderOnDemand: false,
                 contextBuilderBuildMode: persistedIndex.buildMode,
                 contextBuilderTargetBudget: persistedIndex.targetBudget,
                 contextBuilderSelectedBlockCount: persistedIndex.selectedBlockIds.length,
-                contextBuilderSelectedMessageCount: persistedIndex.selectedMessageIds.length,
-                contextBuilderDeltaMessageCount: indexed.deltaCount,
-                contextBuilderIndexAnchorMessageId: persistedIndex.anchorMessageId,
-                contextBuilderIndexUpdatedAt: persistedIndex.updatedAt,
+                contextBuilderAppliedAt: persistedIndex.updatedAt,
               },
             }));
-            logger.module('finger-role-modules').info('Applied indexed context history from persisted snapshot', { roleId: role.id, sessionId, selectedCount: indexedMapped.length, selectedMessageCount: persistedIndex.selectedMessageIds.length, deltaCount: indexed.deltaCount, buildMode: persistedIndex.buildMode });
-            persistContextBuilderHistoryIndex(runtime, sessionId, buildNextIndexedHistoryIndex(persistedIndex, indexedMapped));
-            const merged = augmentHistoryWithContinuityAnchors(indexedMapped, sessionMessages, limit, {
+            const merged = augmentHistoryWithContinuityAnchors(mappedIndexed, sessionMessages, limit, {
               contextBuilderHistorySource: 'context_builder_indexed',
               contextBuilderBypassed: false,
               contextBuilderRebuilt: false,
               contextBuilderIndexed: true,
             });
-            return topUpHistoryToBudget(merged, sessionMessages, historyBudgetTokens, {
-              contextBuilderHistorySource: 'context_builder_indexed',
-              contextBuilderHistoryTopup: true,
+            const nextIndex = buildNextIndexedHistoryIndex(
+              persistedIndex,
+              merged.map((item) => ({
+                id: item.id,
+                timestamp: item.timestamp,
+                ...(item.metadata ? { metadata: item.metadata } : {}),
+              })),
+            );
+            persistContextBuilderHistoryIndex(runtime, sessionId, nextIndex);
+            logger.module('finger-role-modules').debug('Applied indexed context history continuity view', {
+              roleId: role.id,
+              sessionId,
+              selectedCount: indexed.selectedCount,
+              deltaCount: indexed.deltaCount,
+              buildMode: persistedIndex.buildMode,
+              targetBudget: persistedIndex.targetBudget,
             });
+            return topUpHistoryToBudget(
+              merged,
+              sessionMessages,
+              Math.max(historyBudgetTokens, persistedIndex.targetBudget),
+              {
+                contextBuilderHistorySource: 'context_builder_indexed',
+                contextBuilderHistoryTopup: true,
+                contextBuilderIndexed: true,
+              },
+            );
           }
-          logger.module('finger-role-modules').debug('Persisted context history index yielded no messages, fallback to bootstrap/raw', {
+          logger.module('finger-role-modules').warn('Persisted indexed history unavailable on snapshot, fallback to raw/anchors', {
             roleId: role.id,
             sessionId,
+            buildMode: persistedIndex.buildMode,
             selectedMessageCount: persistedIndex.selectedMessageIds.length,
           });
         }
-
         const canAutoBootstrap = isEffectivelyEmptyHistoryForBootstrap(sessionMessages);
-        if (shouldRunContextBuilderBootstrapOnce(sessionId, agentId) && canAutoBootstrap) {
+        if (canAutoBootstrap && shouldRunContextBuilderBootstrapOnce(sessionId, agentId)) {
           const configuredBudget = Number.isFinite(settings.historyBudgetTokens) && settings.historyBudgetTokens > 0
             ? Math.floor(settings.historyBudgetTokens)
             : 20000;

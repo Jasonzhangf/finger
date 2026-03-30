@@ -66,8 +66,12 @@ describe('registerDefaultRuntimeTools', () => {
     expect(loaded).toContain('project_tool');
     expect(loaded).toContain('system-registry-tool');
     expect(loaded).toContain('report-task-completion');
+    expect(loaded).toContain('project.task.status');
+    expect(loaded).toContain('project.task.update');
     expect(registry.isAvailable('project_tool')).toBe(true);
     expect(registry.isAvailable('system-registry-tool')).toBe(true);
     expect(registry.isAvailable('report-task-completion')).toBe(true);
+    expect(registry.isAvailable('project.task.status')).toBe(true);
+    expect(registry.isAvailable('project.task.update')).toBe(true);
   });
 });

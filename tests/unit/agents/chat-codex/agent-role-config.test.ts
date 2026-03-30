@@ -38,6 +38,8 @@ describe('agent-role-config', () => {
     expect(BASE_AGENT_ROLE_CONFIG.system.allowedTools).toEqual(expect.arrayContaining([
       'skills.list',
       'skills.status',
+      'project.task.status',
+      'project.task.update',
     ]));
     expect(BASE_AGENT_ROLE_CONFIG.project.allowedTools).toContain('report-task-completion');
     expect(BASE_AGENT_ROLE_CONFIG.system.allowedTools).toContain('exec_command');

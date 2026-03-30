@@ -265,6 +265,27 @@ const CONTEXT_MONITOR_TRIGGER_TYPES = new Set<string>([
   'messageCompleted',
 ]);
 
+const CONTEXT_PARTITIONS: Array<{
+  key: string;
+  title: string;
+  summary: string;
+  mutable?: boolean;
+}> = [
+  { key: 'P0', title: 'core_instructions', summary: 'system/developer prompts (stable)' },
+  { key: 'P1', title: 'runtime_capabilities', summary: 'skills + mailbox + FLOW blocks (stable)' },
+  { key: 'P2', title: 'current_turn', summary: 'current user input + attachments (highest priority)' },
+  { key: 'P3', title: 'continuity_anchors', summary: 'recent task/user anchors for continuity checks' },
+  { key: 'P4', title: 'dynamic_history', summary: 'working_set + historical_memory (rebuild scope)', mutable: true },
+  { key: 'P5', title: 'canonical_storage', summary: 'ledger raw timeline + MEMORY.md (truth source)' },
+];
+
+const CONTEXT_QUERY_PLAYBOOK = [
+  '1) MEMORY.md: durable ground truth only',
+  '2) context_ledger.memory search: find slot/task hits',
+  '3) context_ledger.memory query(detail=true, slot_start, slot_end): raw evidence',
+  '4) context_ledger.expand_task: expand one compact task block',
+];
+
 export const ContextMonitor: React.FC<ContextMonitorProps> = ({
   sessionId,
   label = 'Context Builder Monitor',
@@ -714,6 +735,29 @@ export const ContextMonitor: React.FC<ContextMonitorProps> = ({
           <span>③ 右侧对照原始 Ledger（已选/未选）</span>
           <span>④ 对比上一轮变化 + 回溯</span>
           <span>⑤ 点击任意行看详情</span>
+        </div>
+        <div className="context-partition-legend">
+          <div className="context-partition-title">
+            Context Partitions（重建仅允许改写 P4）
+          </div>
+          <div className="context-partition-grid">
+            {CONTEXT_PARTITIONS.map((partition) => (
+              <div
+                key={partition.key}
+                className={`context-partition-chip${partition.mutable ? ' mutable' : ''}`}
+                title={partition.summary}
+              >
+                <span className="partition-key">{partition.key}</span>
+                <span className="partition-name">{partition.title}</span>
+                <span className="partition-summary">{partition.summary}</span>
+              </div>
+            ))}
+          </div>
+          <div className="context-query-playbook">
+            {CONTEXT_QUERY_PLAYBOOK.map((step) => (
+              <span key={step} className="query-step">{step}</span>
+            ))}
+          </div>
         </div>
         <div className="context-monitor-insight">
           <div className={`context-strategy-chip tone-${strategyView.tone}`} title={strategyView.detail}>

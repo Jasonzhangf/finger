@@ -7,6 +7,10 @@
 import type { SessionProgress, ToolCallRecord } from './progress-monitor-types.js';
 import { resolveToolDisplayName } from './progress-monitor-reporting.js';
 
+function buildProgressEntryKey(progress: SessionProgress): string {
+  return `${progress.sessionId}::${progress.agentId || 'unknown'}`;
+}
+
 /**
  * 安全截取字符串
  */
@@ -160,6 +164,9 @@ export function handleToolCallEvent(
   progress: SessionProgress,
   event: any,
 ): void {
+  if (progress.status !== 'completed' && progress.status !== 'failed') {
+    progress.status = 'running';
+  }
   progress.toolCallsCount++;
   recordToolCall(progress, event.toolId, event.toolName, event.payload?.input);
 }
@@ -171,6 +178,9 @@ export function handleToolResultEvent(
   progress: SessionProgress,
   event: any,
 ): void {
+  if (progress.status !== 'completed' && progress.status !== 'failed') {
+    progress.status = 'running';
+  }
   recordToolResult(progress, event.toolId, event.toolName, event.payload?.input, event.payload?.output, undefined, true);
   if (event.toolName) {
     const resolved = resolveToolDisplayName(event.toolName, event.payload?.input);
@@ -185,6 +195,9 @@ export function handleToolErrorEvent(
   progress: SessionProgress,
   event: any,
 ): void {
+  if (progress.status !== 'completed' && progress.status !== 'failed') {
+    progress.status = 'running';
+  }
   recordToolResult(progress, event.toolId, event.toolName, event.payload?.input, undefined, event.payload?.error, false);
   if (event.toolName) {
     const resolved = resolveToolDisplayName(event.toolName, event.payload?.input);
@@ -196,6 +209,9 @@ export function handleToolErrorEvent(
  * 处理 model_round 事件
  */
 export function handleModelRound(progress: SessionProgress, event: any): void {
+  if (progress.status !== 'completed' && progress.status !== 'failed') {
+    progress.status = 'running';
+  }
   progress.modelRoundsCount++;
   if (event.payload?.reasoning_count) {
     progress.reasoningCount += event.payload.reasoning_count;
@@ -234,6 +250,9 @@ export function handleModelRound(progress: SessionProgress, event: any): void {
  * 处理 system_notice 事件
  */
 export function handleSystemNoticeEvent(progress: SessionProgress, event: any): void {
+  if (progress.status !== 'completed' && progress.status !== 'failed') {
+    progress.status = 'running';
+  }
   const payload = event?.payload ?? {};
   const contextUsagePercentRaw = typeof payload.contextUsagePercent === 'number'
     ? payload.contextUsagePercent
@@ -308,6 +327,9 @@ export function handleAgentStepCompleted(
   event: any,
   latestStepSummary: Map<string, string>,
 ): void {
+  if (progress.status !== 'completed' && progress.status !== 'failed') {
+    progress.status = 'running';
+  }
   progress.modelRoundsCount++;
   const payload = event.payload as { round?: number; thought?: string; action?: string; observation?: string };
   const parts: string[] = [];
@@ -316,6 +338,7 @@ export function handleAgentStepCompleted(
   if (payload.thought) {
     progress.latestReasoning = payload.thought.slice(0, 120);
   }
-  latestStepSummary.set(progress.sessionId, parts.join(' → ') || `步骤 ${payload.round ?? '?'}`);
-  progress.currentTask = latestStepSummary.get(progress.sessionId);
+  const progressKey = buildProgressEntryKey(progress);
+  latestStepSummary.set(progressKey, parts.join(' → ') || `步骤 ${payload.round ?? '?'}`);
+  progress.currentTask = latestStepSummary.get(progressKey);
 }

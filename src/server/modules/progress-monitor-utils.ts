@@ -85,7 +85,7 @@ function extractPathFromCommand(cmd: string): string {
 export function classifyToolCall(toolName: string, input?: unknown): ToolCategory {
   // 搜索类优先
   if (['web_search', 'web_search_results'].includes(toolName)) return '搜索';
-  if (toolName === 'command.exec') return '工具';
+  if (toolName === 'command.exec' || toolName === 'report-task-completion') return '工具';
 
   if (['shell.exec', 'exec_command'].includes(toolName)) {
     const cmd = extractExecLikeCommand(input);
@@ -102,6 +102,10 @@ export function classifyToolCall(toolName: string, input?: unknown): ToolCategor
     if (/^(cat|head|tail|less|more|sed\s+-n|ls\b|find\b|rg\b|grep\b|wc\b|file\b|stat\b|tree\b|which\b|type\b)/.test(lower)
       || /\b(read|show|list|get|check|dump|print|display)\b/.test(lower)) {
       return '读写';
+    }
+
+    if (/^echo\b/.test(lower)) {
+      return '工具';
     }
   }
 

@@ -22,6 +22,13 @@ import { inferTagsAndTopic } from '../../common/tag-topic-inference.js';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { FINGER_PATHS } from '../../core/finger-paths.js';
+import { peekContextBuilderOnDemandView } from '../../runtime/context-builder-on-demand-state.js';
+import {
+  isProjectTaskStateActive,
+  parseDelegatedProjectTaskRegistry,
+  parseProjectTaskState,
+  PROJECT_AGENT_ID,
+} from '../../common/project-task-state.js';
 
 export interface KernelRunContext {
   sessionId: string;
@@ -123,6 +130,11 @@ export class KernelAgentBase {
   private readonly runner: KernelAgentRunner;
   private readonly sessionManager: MemorySessionManager;
   private readonly apiHistoryByThread = new Map<string, unknown[]>();
+  private readonly lockedHistoryByThread = new Map<string, {
+    history: SessionMessage[];
+    contextHistoryMetadata?: Record<string, unknown>;
+  }>();
+  private readonly unfinishedTurnByThread = new Map<string, boolean>();
   private readonly externalSessionBindings = new Map<string, string>();
   private readonly cacheMemoryInterceptor: CacheMemoryInterceptor;
   private initialized = false;
@@ -149,6 +161,9 @@ export class KernelAgentBase {
   async handle(message: unknown): Promise<UnifiedAgentOutput> {
     const startedAt = Date.now();
     const input = parseUnifiedAgentInput(message);
+    let activeThreadKey: string | null = null;
+    let activeHistoryForLock: SessionMessage[] | null = null;
+    let activeHistoryMetadataForLock: Record<string, unknown> | undefined;
 
     if (!input) {
       return {
@@ -184,25 +199,28 @@ export class KernelAgentBase {
         });
       }
 
-      const contextHistorySessionId = responseSessionId || input.sessionId || session.id;
-      const providedHistory = this.config.contextHistoryProvider
-        ? await this.config.contextHistoryProvider(contextHistorySessionId, this.config.maxContextMessages)
-        : null;
-      const contextHistoryMetadata = extractContextHistoryMetadata(providedHistory);
-      const history = Array.isArray(providedHistory)
-        ? providedHistory.map((item, idx) => ({
-            id: item.id ?? `ctx-${Date.now()}-${idx}`,
-            role: item.role,
-            content: item.content,
-            timestamp: item.timestamp ?? new Date().toISOString(),
-            metadata: item.metadata,
-          }))
-        : await this.sessionManager.getMessageHistory(session.id, this.config.maxContextMessages);
-      const mergedHistory = mergeHistory(history, input.history, this.config.maxContextMessages);
       const roleProfile = this.resolveRoleProfile(input.roleProfile);
+      const effectiveInputMetadata = this.injectProjectTaskContextSlots({
+        inputMetadata: input.metadata,
+        roleProfileId: roleProfile?.id,
+      });
       const threadMode = this.resolveThreadMode(input.metadata);
       const runnerSessionId = responseSessionId || session.id;
       const threadKey = this.resolveThreadKey(runnerSessionId, threadMode);
+      activeThreadKey = threadKey;
+      const contextHistorySessionId = responseSessionId || input.sessionId || session.id;
+      const resolvedHistory = await this.resolveHistoryForTurn({
+        inputMetadata: effectiveInputMetadata,
+        sessionId: session.id,
+        contextHistorySessionId,
+        threadKey,
+        threadMode,
+      });
+      const contextHistoryMetadata = resolvedHistory.contextHistoryMetadata;
+      const history = resolvedHistory.history;
+      const mergedHistory = mergeHistory(history, input.history, this.config.maxContextMessages);
+      activeHistoryForLock = mergedHistory;
+      activeHistoryMetadataForLock = contextHistoryMetadata;
       await this.restoreApiHistoryForThreadIfNeeded(runnerSessionId, threadKey);
       const recoverySnapshot = resumeSnapshotPath
         ? await this.loadResumeKernelTurnSnapshot(resumeSnapshotPath)
@@ -213,7 +231,7 @@ export class KernelAgentBase {
         userInput: input.text,
         history: toUnifiedHistory(mergedHistory),
         tools,
-        metadata: input.metadata,
+        metadata: effectiveInputMetadata,
       });
       const systemPrompt = this.buildSystemPrompt(
         roleProfile,
@@ -226,7 +244,7 @@ export class KernelAgentBase {
           }
         : undefined;
       const runtimeMetadata = this.buildRuntimeMetadata({
-        inputMetadata: input.metadata,
+        inputMetadata: effectiveInputMetadata,
         roleProfileId: roleProfile?.id,
         mode: threadMode,
         threadKey,
@@ -271,6 +289,12 @@ export class KernelAgentBase {
 
       this.captureApiHistory(runnerSessionId, threadKey, runResult.metadata);
       const pendingInputAccepted = runResult.metadata?.pendingInputAccepted === true;
+      this.updateHistoryLockState({
+        threadKey,
+        history: mergedHistory,
+        contextHistoryMetadata,
+        runMetadata: runResult.metadata,
+      });
       if (pendingInputAccepted) {
         return {
           success: true,
@@ -307,11 +331,17 @@ export class KernelAgentBase {
         systemPrompt,
         history: toUnifiedHistory(mergedHistory),
         tools,
-        inputMetadata: input.metadata,
+        inputMetadata: effectiveInputMetadata,
         runtimeMetadata,
         roleProfileId: roleProfile?.id ?? input.roleProfile,
         threadKey,
         current: runResult,
+      });
+      this.updateHistoryLockState({
+        threadKey,
+        history: mergedHistory,
+        contextHistoryMetadata,
+        runMetadata: runResult.metadata,
       });
 
       // Kernel-level inline review loop is disabled.
@@ -367,6 +397,13 @@ export class KernelAgentBase {
       return output;
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
+      if (activeThreadKey && activeHistoryForLock && activeHistoryForLock.length > 0) {
+        this.lockedHistoryByThread.set(activeThreadKey, {
+          history: cloneSessionMessages(activeHistoryForLock),
+          ...(activeHistoryMetadataForLock ? { contextHistoryMetadata: { ...activeHistoryMetadataForLock } } : {}),
+        });
+        this.unfinishedTurnByThread.set(activeThreadKey, true);
+      }
 
       // Ensure failure is recorded in session history so model has context on retry
       if (input.sessionId) {
@@ -453,6 +490,98 @@ export class KernelAgentBase {
     return `${sessionId}:${normalizedMode}`;
   }
 
+  private async resolveHistoryForTurn(params: {
+    inputMetadata: Record<string, unknown> | undefined;
+    sessionId: string;
+    contextHistorySessionId: string;
+    threadKey: string;
+    threadMode: string;
+  }): Promise<{
+    history: SessionMessage[];
+    contextHistoryMetadata?: Record<string, unknown>;
+  }> {
+    const canReuseLockedHistory = this.shouldReuseLockedHistory({
+      inputMetadata: params.inputMetadata,
+      sessionId: params.contextHistorySessionId,
+      threadKey: params.threadKey,
+      threadMode: params.threadMode,
+    });
+    if (canReuseLockedHistory) {
+      const locked = this.lockedHistoryByThread.get(params.threadKey);
+      if (locked && locked.history.length > 0) {
+        return {
+          history: cloneSessionMessages(locked.history),
+          ...(locked.contextHistoryMetadata ? { contextHistoryMetadata: { ...locked.contextHistoryMetadata } } : {}),
+        };
+      }
+    }
+
+    const providedHistory = this.config.contextHistoryProvider
+      ? await this.config.contextHistoryProvider(params.contextHistorySessionId, this.config.maxContextMessages)
+      : null;
+    const contextHistoryMetadata = extractContextHistoryMetadata(providedHistory);
+    const history = Array.isArray(providedHistory)
+      ? maybeCompressHistoryToTaskDigests(
+          providedHistory.map((item, idx) => ({
+            id: item.id ?? `ctx-${Date.now()}-${idx}`,
+            role: item.role,
+            content: item.content,
+            timestamp: item.timestamp ?? new Date().toISOString(),
+            metadata: item.metadata,
+          })),
+          {
+            ...(params.inputMetadata ?? {}),
+            ...(contextHistoryMetadata ?? {}),
+          },
+        )
+      : await this.sessionManager.getMessageHistory(params.sessionId, this.config.maxContextMessages);
+    return {
+      history,
+      ...(contextHistoryMetadata ? { contextHistoryMetadata } : {}),
+    };
+  }
+
+  private shouldReuseLockedHistory(params: {
+    inputMetadata: Record<string, unknown> | undefined;
+    sessionId: string;
+    threadKey: string;
+    threadMode: string;
+  }): boolean {
+    if (!this.lockedHistoryByThread.has(params.threadKey)) return false;
+    if (this.unfinishedTurnByThread.get(params.threadKey) !== true) return false;
+    if (isExplicitContextRebuildRequested(params.inputMetadata)) return false;
+    const pendingOnDemandView = peekContextBuilderOnDemandView(params.sessionId, this.config.moduleId);
+    if (pendingOnDemandView && pendingOnDemandView.mode === params.threadMode) {
+      return false;
+    }
+    return true;
+  }
+
+  private updateHistoryLockState(params: {
+    threadKey: string;
+    history: SessionMessage[];
+    contextHistoryMetadata?: Record<string, unknown>;
+    runMetadata?: Record<string, unknown>;
+  }): void {
+    const unfinished = isKernelTurnUnfinished(params.runMetadata);
+    if (!unfinished) {
+      this.unfinishedTurnByThread.set(params.threadKey, false);
+      this.lockedHistoryByThread.delete(params.threadKey);
+      return;
+    }
+
+    if (params.history.length === 0) {
+      this.unfinishedTurnByThread.set(params.threadKey, true);
+      return;
+    }
+
+    this.lockedHistoryByThread.set(params.threadKey, {
+      history: cloneSessionMessages(params.history),
+      ...(params.contextHistoryMetadata ? { contextHistoryMetadata: { ...params.contextHistoryMetadata } } : {}),
+    });
+    this.unfinishedTurnByThread.set(params.threadKey, true);
+  }
+
   private buildRuntimeMetadata(params: {
     inputMetadata: Record<string, unknown> | undefined;
     roleProfileId: string | undefined;
@@ -520,6 +649,127 @@ export class KernelAgentBase {
       metadata.kernelApiHistoryBypassedReason = 'media_input';
     }
 
+    return metadata;
+  }
+
+  private injectProjectTaskContextSlots(params: {
+    inputMetadata?: Record<string, unknown>;
+    roleProfileId?: string;
+  }): Record<string, unknown> | undefined {
+    const roleProfileId = (params.roleProfileId ?? '').trim().toLowerCase();
+    const isSystemLike = roleProfileId === 'system' || roleProfileId === 'orchestrator' || this.config.moduleId === 'finger-system-agent';
+    const isProjectLike = roleProfileId === 'project' || this.config.moduleId === 'finger-project-agent';
+    if (!isSystemLike && !isProjectLike) return params.inputMetadata;
+
+    const metadata = { ...(params.inputMetadata ?? {}) };
+    const snapshot = isRecord(metadata.sessionContextSnapshot)
+      ? metadata.sessionContextSnapshot as Record<string, unknown>
+      : {};
+    const rawState = snapshot.projectTaskState ?? metadata.projectTaskState;
+    const rawRegistry = snapshot.projectTaskRegistry ?? metadata.projectTaskRegistry;
+    const taskState = parseProjectTaskState(rawState);
+    const registry = parseDelegatedProjectTaskRegistry(rawRegistry);
+    const activeRegistry = registry.filter((item) => item.active === true);
+    const taskRouterPath = (
+      typeof snapshot.taskRouterPath === 'string' && snapshot.taskRouterPath.trim().length > 0
+        ? snapshot.taskRouterPath.trim()
+        : typeof metadata.taskRouterPath === 'string' && metadata.taskRouterPath.trim().length > 0
+          ? metadata.taskRouterPath.trim()
+          : ''
+    );
+
+    const slotPatches = Array.isArray(metadata.contextSlots)
+      ? metadata.contextSlots.filter((item) => (
+        isRecord(item) ? !['task.router', 'task.project_state', 'task.project_registry'].includes(String(item.id ?? '')) : true
+      ))
+      : [];
+    const slotOrder = Array.isArray(metadata.contextSlotOrder)
+      ? metadata.contextSlotOrder.filter((item) => typeof item === 'string' && item.trim().length > 0)
+      : [];
+
+    const routerLines = [
+      'Task routing source of truth:',
+      taskRouterPath.length > 0 ? `- TASK.md: ${taskRouterPath}` : '- TASK.md: <not_set>',
+      '- Keep context summary concise; details must stay in TASK.md.',
+    ];
+    slotPatches.push({
+      id: 'task.router',
+      mode: 'replace',
+      priority: 12,
+      maxChars: 600,
+      content: routerLines.join('\n'),
+    });
+
+    if (isSystemLike) {
+      const lines: string[] = [
+        'System dispatch lifecycle (managed state, not history-only):',
+      ];
+      if (activeRegistry.length === 0) {
+        lines.push('- No active delegated project task.');
+      } else {
+        for (const item of activeRegistry.slice(0, 8)) {
+          lines.push(
+            `- [${item.status}] ${item.targetAgentId}`
+            + `${item.taskId ? ` taskId=${item.taskId}` : ''}`
+            + `${item.taskName ? ` task="${item.taskName}"` : ''}`
+            + `${item.dispatchId ? ` dispatch=${item.dispatchId}` : ''}`,
+          );
+        }
+      }
+      if (isProjectTaskStateActive(taskState) && taskState) {
+        lines.push('');
+        lines.push('Current active task focus:');
+        lines.push(
+          `- target=${taskState.targetAgentId}`
+          + `${taskState.taskId ? ` taskId=${taskState.taskId}` : ''}`
+          + `${taskState.taskName ? ` task="${taskState.taskName}"` : ''}`
+          + ` status=${taskState.status}`,
+        );
+      }
+      lines.push('');
+      lines.push('Rule: if task already delegated/in-progress, do NOT re-dispatch same task; monitor via project.task.status.');
+      lines.push('If user changes requirements for in-flight task, use project.task.update with same task identity.');
+      slotPatches.push({
+        id: 'task.project_registry',
+        mode: 'replace',
+        priority: 13,
+        maxChars: 1800,
+        content: lines.join('\n'),
+      });
+    }
+
+    if (isProjectLike && taskState) {
+      const lines = [
+        'Project task lifecycle state:',
+        `- active=${taskState.active}`,
+        `- status=${taskState.status}`,
+        `- source=${taskState.sourceAgentId}`,
+        `- target=${taskState.targetAgentId}`,
+        taskState.taskId ? `- taskId=${taskState.taskId}` : '',
+        taskState.taskName ? `- taskName=${taskState.taskName}` : '',
+        taskState.dispatchId ? `- dispatchId=${taskState.dispatchId}` : '',
+        taskState.note ? `- note=${taskState.note}` : '',
+        taskState.summary ? `- summary=${taskState.summary}` : '',
+      ].filter(Boolean);
+      slotPatches.push({
+        id: 'task.project_state',
+        mode: 'replace',
+        priority: 13,
+        maxChars: 1200,
+        content: lines.join('\n'),
+      });
+    }
+
+    const ensureOrder = ['turn.user_input', 'task.router', 'task.project_registry', 'task.project_state', 'turn.recent_history', 'turn.allowed_tools'];
+    for (const item of ensureOrder) {
+      if (!slotOrder.includes(item)) slotOrder.push(item);
+    }
+
+    metadata.contextSlots = slotPatches;
+    metadata.contextSlotOrder = slotOrder;
+    metadata.projectTaskState = rawState;
+    metadata.projectTaskRegistry = rawRegistry;
+    if (taskRouterPath.length > 0) metadata.taskRouterPath = taskRouterPath;
     return metadata;
   }
 
@@ -1187,6 +1437,169 @@ export class KernelAgentBase {
     if (containsExecutionEvidence(replyText)) return false;
     return looksLikePromiseOnlyReply(replyText);
   }
+}
+
+function cloneSessionMessages(history: SessionMessage[]): SessionMessage[] {
+  return history.map((item) => ({
+    ...item,
+    ...(item.metadata ? { metadata: { ...item.metadata } } : {}),
+  }));
+}
+
+function isExplicitContextRebuildRequested(metadata?: Record<string, unknown>): boolean {
+  if (!metadata) return false;
+  if (metadata.contextBuilderRebuildRequested === true) return true;
+  const source = typeof metadata.contextHistorySource === 'string'
+    ? metadata.contextHistorySource.trim().toLowerCase()
+    : '';
+  if (source === 'context_builder_on_demand') return true;
+  const toolTrace = Array.isArray(metadata.tool_trace) ? metadata.tool_trace : [];
+  for (const item of toolTrace) {
+    if (!isRecord(item)) continue;
+    if (item.tool === 'context_builder.rebuild') return true;
+  }
+  return false;
+}
+
+function isKernelTurnUnfinished(metadata?: Record<string, unknown>): boolean {
+  if (!metadata) return false;
+  if (metadata.pendingInputAccepted === true) return true;
+
+  const rounds = Array.isArray(metadata.round_trace)
+    ? metadata.round_trace.filter((item): item is Record<string, unknown> => isRecord(item))
+    : [];
+  if (rounds.length > 0) {
+    const lastRound = rounds[rounds.length - 1];
+    const finishReasonRaw = typeof lastRound.finish_reason === 'string'
+      ? lastRound.finish_reason
+      : typeof lastRound.finishReason === 'string'
+        ? lastRound.finishReason
+        : '';
+    const responseStatusRaw = typeof lastRound.response_status === 'string'
+      ? lastRound.response_status
+      : typeof lastRound.responseStatus === 'string'
+        ? lastRound.responseStatus
+        : '';
+    const finishReason = finishReasonRaw.trim().toLowerCase();
+    const responseStatus = responseStatusRaw.trim().toLowerCase();
+    if (responseStatus.length > 0 && responseStatus !== 'completed') return true;
+    if (finishReason.length > 0 && finishReason !== 'stop') return true;
+    return false;
+  }
+
+  const stopReason = typeof metadata.stopReason === 'string'
+    ? metadata.stopReason.trim().toLowerCase()
+    : '';
+  if (stopReason.length > 0 && stopReason !== 'stop' && stopReason !== 'model_stop') return true;
+
+  const responseStatus = typeof metadata.responseStatus === 'string'
+    ? metadata.responseStatus.trim().toLowerCase()
+    : '';
+  if (responseStatus.length > 0 && responseStatus !== 'completed') return true;
+
+  return false;
+}
+
+function maybeCompressHistoryToTaskDigests(
+  history: SessionMessage[],
+  metadata?: Record<string, unknown>,
+): SessionMessage[] {
+  const enabled = metadata?.contextHistoryDigestEnabled !== false
+    && metadata?.historyDigestEnabled !== false;
+  if (!enabled) return history;
+  if (!Array.isArray(history) || history.length === 0) return history;
+
+  const source = typeof metadata?.contextHistorySource === 'string'
+    ? metadata.contextHistorySource.trim().toLowerCase()
+    : '';
+  const isHistoryView = source.startsWith('context_builder')
+    || source === 'raw_session'
+    || source === 'raw_session_fallback'
+    || metadata?.contextBuilderBypassed === true
+    || metadata?.contextBuilderRebuilt === true;
+  if (!isHistoryView) return history;
+
+  // Design rule: task digest compression is only applied on rebuild turns.
+  // Normal continuation turns must preserve recent full-fidelity messages
+  // to avoid losing near-term execution/tool context.
+  const rebuiltThisTurn = metadata?.contextBuilderRebuilt === true
+    || source === 'context_builder_on_demand'
+    || source === 'context_builder_bootstrap';
+  if (!rebuiltThisTurn) return history;
+
+  const grouped: SessionMessage[][] = [];
+  let current: SessionMessage[] = [];
+  for (const item of history) {
+    const content = typeof item.content === 'string' ? item.content.trim() : '';
+    if (content.length === 0) continue;
+    if (item.role === 'user' && current.length > 0) {
+      grouped.push(current);
+      current = [item];
+      continue;
+    }
+    current.push(item);
+  }
+  if (current.length > 0) grouped.push(current);
+  if (grouped.length === 0) return history;
+
+  return grouped.map((task, index) => {
+    const firstUser = task.find((item) => item.role === 'user')?.content ?? task[0]?.content ?? '';
+    const lastAssistant = [...task].reverse().find((item) => item.role === 'assistant')?.content
+      ?? task[task.length - 1]?.content
+      ?? '';
+    const startTs = task[0]?.timestamp ?? new Date().toISOString();
+    const endTs = task[task.length - 1]?.timestamp ?? startTs;
+    const slotRange = resolveTaskSlotRange(task);
+    const taskId = task[0]?.id ?? `task-${index + 1}`;
+    const lines = [
+      `[task_digest ${index + 1}/${grouped.length}] id=${taskId}`,
+      `request: ${compressDigestText(firstUser, 260)}`,
+      `finish_summary: ${compressDigestText(lastAssistant, 260)}`,
+      `time: ${startTs} -> ${endTs}`,
+      slotRange
+        ? `ledger_slots: ${slotRange.start}-${slotRange.end}`
+        : 'ledger_slots: unknown',
+      slotRange
+        ? `expand_hint: context_ledger.expand_task { slot_start: ${slotRange.start}, slot_end: ${slotRange.end} }`
+        : 'expand_hint: use context_ledger.memory search/query(detail=true) to expand this task.',
+    ];
+    return {
+      id: `digest-${taskId}-${index + 1}`,
+      role: 'assistant',
+      content: lines.join('\n'),
+      timestamp: endTs,
+      metadata: {
+        taskDigest: true,
+        taskDigestIndex: index + 1,
+        taskDigestTotal: grouped.length,
+        taskDigestTaskId: taskId,
+        ...(slotRange ? { taskDigestSlotStart: slotRange.start, taskDigestSlotEnd: slotRange.end } : {}),
+      },
+    } satisfies SessionMessage;
+  });
+}
+
+function resolveTaskSlotRange(task: SessionMessage[]): { start: number; end: number } | undefined {
+  const slots = task
+    .map((item) => {
+      const direct = item.metadata?.contextLedgerSlot;
+      const fallback = item.metadata?.slot;
+      if (typeof direct === 'number' && Number.isFinite(direct) && direct > 0) return Math.floor(direct);
+      if (typeof fallback === 'number' && Number.isFinite(fallback) && fallback > 0) return Math.floor(fallback);
+      return null;
+    })
+    .filter((item): item is number => item !== null);
+  if (slots.length === 0) return undefined;
+  return {
+    start: Math.min(...slots),
+    end: Math.max(...slots),
+  };
+}
+
+function compressDigestText(text: string, maxLen: number): string {
+  const normalized = text.replace(/\s+/g, ' ').trim();
+  if (normalized.length <= maxLen) return normalized;
+  return `${normalized.slice(0, maxLen)}...`;
 }
 
 function toUnifiedHistory(history: SessionMessage[]): UnifiedHistoryItem[] {

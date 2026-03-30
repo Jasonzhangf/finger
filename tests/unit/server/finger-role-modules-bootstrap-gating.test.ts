@@ -10,12 +10,12 @@ describe('finger-role-modules bootstrap gating', () => {
     expect(isEffectivelyEmptyHistoryForBootstrap([])).toBe(true);
   });
 
-  it('treats single current user turn as effectively empty history', () => {
+  it('does not auto-bootstrap when a single user turn already exists', () => {
     expect(
       isEffectivelyEmptyHistoryForBootstrap([
         { role: 'user', content: '继续执行这个任务' },
       ]),
-    ).toBe(true);
+    ).toBe(false);
   });
 
   it('disables auto bootstrap when prior conversation exists', () => {

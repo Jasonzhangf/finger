@@ -68,10 +68,12 @@ export type {
 export class ProgressMonitor {
   private timer: NodeJS.Timeout | null = null;
   private config: Required<ProgressMonitorConfig>;
+  // key: `${sessionId}::${agentId}`
   private sessionProgress = new Map<string, SessionProgress>();
   private _stopCleanup: (() => void) | null = null;
   private _cleanupTimer: NodeJS.Timeout | null = null;
-  private latestStepSummary = new Map<string, string>(); // sessionId -> latest step summary
+  // key: `${sessionId}::${agentId}`
+  private latestStepSummary = new Map<string, string>();
 
   private static readonly LOW_VALUE_TOOLS = new Set([
     'mailbox.status',
@@ -79,6 +81,31 @@ export class ProgressMonitor {
     'mailbox.read',
     'mailbox.ack',
   ]);
+
+  private buildProgressKey(sessionId: string, agentId: string): string {
+    return `${sessionId}::${agentId}`;
+  }
+
+  private parseEventAgentId(event: any): string | undefined {
+    if (typeof event?.agentId === 'string' && event.agentId.trim().length > 0) {
+      return event.agentId.trim();
+    }
+    if (typeof event?.payload?.agentId === 'string' && event.payload.agentId.trim().length > 0) {
+      return event.payload.agentId.trim();
+    }
+    if (typeof event?.payload?.targetAgentId === 'string' && event.payload.targetAgentId.trim().length > 0) {
+      return event.payload.targetAgentId.trim();
+    }
+    return undefined;
+  }
+
+  private getProgressEntriesBySession(sessionId: string): Array<[string, SessionProgress]> {
+    const entries: Array<[string, SessionProgress]> = [];
+    for (const [key, progress] of this.sessionProgress.entries()) {
+      if (progress.sessionId === sessionId) entries.push([key, progress]);
+    }
+    return entries;
+  }
 
   constructor(
     private eventBus: UnifiedEventBus,
@@ -161,12 +188,12 @@ export class ProgressMonitor {
     const unsubscribe = this.eventBus.subscribe('kernel_reasoning', (event: any) => {
       const sessionId = event?.sessionId;
       if (!sessionId) return;
-      const progress = this.sessionProgress.get(sessionId);
-      if (!progress) return;
 
       const text = typeof event?.payload?.text === 'string' ? event.payload.text : '';
       if (text.length > 0) {
-        progress.latestReasoning = text.slice(0, 120);
+        for (const [, progress] of this.getProgressEntriesBySession(sessionId)) {
+          progress.latestReasoning = text.slice(0, 120);
+        }
       }
     });
 
@@ -185,19 +212,48 @@ export class ProgressMonitor {
     if (!sessionId) return;
 
     const eventType = event.type;
-    const incomingAgentId = typeof event.agentId === 'string' && event.agentId.trim().length > 0
-      ? event.agentId.trim()
-      : (typeof event.payload?.agentId === 'string' && event.payload.agentId.trim().length > 0
-          ? event.payload.agentId.trim()
-          : undefined);
+    const incomingAgentId = this.parseEventAgentId(event);
+    const now = Date.now();
 
-    // 获取或创建进度记录
-    let progress = this.sessionProgress.get(sessionId);
+    // Session-level event without explicit agentId: update existing entries only.
+    if (!incomingAgentId) {
+      const sessionEntries = this.getProgressEntriesBySession(sessionId);
+      if (sessionEntries.length === 0) return;
+
+      if (eventType === 'system_notice') {
+        for (const [, entry] of sessionEntries) {
+          entry.lastUpdateTime = now;
+          handleSystemNoticeEvent(entry, event);
+          entry.elapsedMs = now - entry.startTime;
+        }
+        return;
+      }
+
+      if (eventType === 'turn_start') {
+        for (const [, entry] of sessionEntries) {
+          entry.lastUpdateTime = now;
+          handleTurnStart(entry, event);
+          entry.elapsedMs = now - entry.startTime;
+        }
+        return;
+      }
+
+      if (eventType === 'turn_complete') {
+        for (const [, entry] of sessionEntries) {
+          entry.lastUpdateTime = now;
+          handleTurnComplete(entry, event);
+          entry.elapsedMs = now - entry.startTime;
+        }
+      }
+      return;
+    }
+
+    const progressKey = this.buildProgressKey(sessionId, incomingAgentId);
+    let progress = this.sessionProgress.get(progressKey);
     if (!progress) {
-      const now = Date.now();
       progress = {
         sessionId,
-        agentId: incomingAgentId || 'unknown',
+        agentId: incomingAgentId,
         startTime: now,
         lastUpdateTime: now,
         toolCallsCount: 0,
@@ -208,14 +264,11 @@ export class ProgressMonitor {
         toolCallHistory: [],
         toolSeqCounter: 0,
       };
-      this.sessionProgress.set(sessionId, progress);
+      this.sessionProgress.set(progressKey, progress);
     }
 
-    // 更新进度
-    progress.lastUpdateTime = Date.now();
-    if (incomingAgentId) {
-      progress.agentId = incomingAgentId;
-    }
+    progress.lastUpdateTime = now;
+    progress.agentId = incomingAgentId;
 
     switch (eventType) {
       case 'turn_start':
@@ -250,7 +303,7 @@ export class ProgressMonitor {
         break;
     }
 
-    progress.elapsedMs = Date.now() - progress.startTime;
+    progress.elapsedMs = now - progress.startTime;
   }
 
   /**
@@ -270,7 +323,7 @@ export class ProgressMonitor {
 
     if (activeProgress.length === 0) return;
 
-    log.debug(`[ProgressMonitor] Generating progress report for ${activeProgress.length} sessions`);
+    log.debug(`[ProgressMonitor] Generating progress report for ${activeProgress.length} active entries`);
 
     // 为每个活跃 session 生成并推送进度报告
     for (const p of activeProgress) {
@@ -289,10 +342,6 @@ export class ProgressMonitor {
       const newToolCalls = p.toolCallHistory.filter((tool) => (tool.seq ?? 0) > lastReportedSeq);
       const currentTaskChanged = (p.currentTask ?? '') !== (p.lastReportedCurrentTask ?? '');
       const reasoningChanged = (p.latestReasoning ?? '') !== (p.lastReportedReasoning ?? '');
-      const contextChanged =
-        p.contextUsagePercent !== p.lastReportedContextUsagePercent
-        || p.estimatedTokensInContextWindow !== p.lastReportedEstimatedTokensInContextWindow
-        || p.maxInputTokens !== p.lastReportedMaxInputTokens;
       const meaningfulToolCalls = newToolCalls.filter((tool) => !this.isLowValueToolCall(tool));
       const meaningfulTaskChange = currentTaskChanged && !this.isLowValueTask(p.currentTask);
       // 只有工具调用、任务变化、reasoning 变化才触发推送；上下文变化不触发。
@@ -380,6 +429,7 @@ export class ProgressMonitor {
   }
 
   private buildReportKey(p: SessionProgress): string {
+    const progressKey = this.buildProgressKey(p.sessionId, p.agentId || 'unknown');
     const data: SessionProgressData = {
       agentId: p.agentId,
       status: p.status,
@@ -397,7 +447,7 @@ export class ProgressMonitor {
       estimatedTokensInContextWindow: p.estimatedTokensInContextWindow,
       maxInputTokens: p.maxInputTokens,
     };
-    return buildReportKeyUtil(data, this.latestStepSummary.get(p.sessionId));
+    return buildReportKeyUtil(data, this.latestStepSummary.get(progressKey));
   }
 
   private shouldEmitHeartbeat(p: SessionProgress, now: number): boolean {
@@ -423,18 +473,27 @@ export class ProgressMonitor {
    * 获取指定 session 的进度
    */
   getProgress(sessionId: string): SessionProgress | undefined {
-    return this.sessionProgress.get(sessionId);
+    const entries = this.getProgressEntriesBySession(sessionId).map(([, progress]) => progress);
+    if (entries.length === 0) return undefined;
+
+    const running = entries
+      .filter((progress) => progress.status === 'running')
+      .sort((a, b) => b.lastUpdateTime - a.lastUpdateTime);
+    if (running.length > 0) return running[0];
+
+    return entries.sort((a, b) => b.lastUpdateTime - a.lastUpdateTime)[0];
   }
 
   /**
    * 清理已完成的 session 进度
    */
   cleanupCompleted(): void {
-    for (const [sessionId, progress] of this.sessionProgress.entries()) {
+    for (const [progressKey, progress] of this.sessionProgress.entries()) {
       if (progress.status === 'completed' || progress.status === 'failed' || progress.status === 'idle') {
         // 保留最近 5 分钟的完成记录
         if (Date.now() - progress.lastUpdateTime > 5 * 60 * 1000) {
-          this.sessionProgress.delete(sessionId);
+          this.sessionProgress.delete(progressKey);
+          this.latestStepSummary.delete(progressKey);
         }
       }
     }
@@ -444,7 +503,7 @@ export class ProgressMonitor {
    * 手动触发进度报告（用于用户请求时）
    */
   async getProgressReport(sessionId: string): Promise<ProgressReport | null> {
-    const progress = this.sessionProgress.get(sessionId);
+    const progress = this.getProgress(sessionId);
     if (!progress) return null;
 
     return {

@@ -4,6 +4,7 @@ import type { ChannelBridgeEnvelope } from '../../bridges/envelope.js';
 import type { SessionEnvelopeMapping } from './agent-status-subscriber-types.js';
 import type { SubscriberRouteState } from './agent-status-subscriber-session-utils.js';
 import { buildDeliveryRouteKey, buildRouteKey, waitReasoningBufferIfNeeded } from './agent-status-subscriber-session-utils.js';
+import { enqueueUpdateStreamDelivery } from './update-stream-delivery-adapter.js';
 import { logger } from '../../core/logger.js';
 
 const log = logger.module('AgentStatusSubscriberText');
@@ -105,7 +106,16 @@ async function sendTextUpdate(params: {
   label: 'reasoning' | 'body';
   prefix: string;
   resolveEnvelopeMappings: (sessionId: string) => SessionEnvelopeMapping[];
-  resolvePushSettings: (sessionId: string, channelId: string) => PushSettings;
+  resolvePushSettings: (
+    sessionId: string,
+    channelId: string,
+    options?: {
+      phase?: string;
+      kind?: string;
+      sourceType?: string;
+      agentId?: string;
+    },
+  ) => PushSettings;
   messageHub?: MessageHub;
   state: SubscriberRouteState;
   reasoningBodyBufferMs: number;
@@ -123,7 +133,11 @@ async function sendTextUpdate(params: {
   }
 
   for (const mapping of deduped.values()) {
-    const pushSettings = params.resolvePushSettings(params.sessionId, mapping.envelope.channel);
+    const pushSettings = params.resolvePushSettings(params.sessionId, mapping.envelope.channel, {
+      phase: params.label === 'reasoning' ? 'execution' : 'delivery',
+      kind: params.label === 'reasoning' ? 'reasoning' : 'artifact',
+      agentId: params.agentId,
+    });
     if (!pushSettings[params.setting]) continue;
 
     const outputId = 'channel-bridge-' + mapping.envelope.channel;
@@ -172,8 +186,26 @@ async function sendTextUpdate(params: {
           chunkTotal: chunks.length,
         },
       };
-
-      await params.messageHub.routeToOutput(outputId, message);
+      const deliveryRouteKey = buildDeliveryRouteKey(
+        mapping.envelope.channel,
+        mapping.envelope.userId,
+        mapping.envelope.groupId,
+      );
+      await enqueueUpdateStreamDelivery({
+        routeKey: deliveryRouteKey,
+        dedupSignature: `${params.sessionId}|${params.agentId}|${params.label}|${content}`,
+        send: async () => {
+          await params.messageHub!.routeToOutput(outputId, message);
+        },
+        meta: {
+          channelId: mapping.envelope.channel,
+          sessionId: params.sessionId,
+          agentId: params.agentId,
+          updateType: params.label,
+          chunkIndex: i + 1,
+          chunkTotal: chunks.length,
+        },
+      });
       if (i < chunks.length - 1) {
         await new Promise((resolve) => setTimeout(resolve, 120));
       }
@@ -189,7 +221,16 @@ export async function sendReasoningUpdate(params: {
   agentId: string;
   reasoningText: string;
   resolveEnvelopeMappings: (sessionId: string) => SessionEnvelopeMapping[];
-  resolvePushSettings: (sessionId: string, channelId: string) => PushSettings;
+  resolvePushSettings: (
+    sessionId: string,
+    channelId: string,
+    options?: {
+      phase?: string;
+      kind?: string;
+      sourceType?: string;
+      agentId?: string;
+    },
+  ) => PushSettings;
   messageHub?: MessageHub;
   state: SubscriberRouteState;
   reasoningBodyBufferMs: number;
@@ -210,7 +251,16 @@ export async function sendBodyUpdate(params: {
   agentId: string;
   bodyText: string;
   resolveEnvelopeMappings: (sessionId: string) => SessionEnvelopeMapping[];
-  resolvePushSettings: (sessionId: string, channelId: string) => PushSettings;
+  resolvePushSettings: (
+    sessionId: string,
+    channelId: string,
+    options?: {
+      phase?: string;
+      kind?: string;
+      sourceType?: string;
+      agentId?: string;
+    },
+  ) => PushSettings;
   messageHub?: MessageHub;
   state: SubscriberRouteState;
   reasoningBodyBufferMs: number;

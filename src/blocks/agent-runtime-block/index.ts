@@ -325,6 +325,36 @@ function resolveTerminalAssignmentPhase(
   return { ...assignment, phase: 'closed' };
 }
 
+function resolveDispatchCompletionStatus(result: DispatchSummaryResult): {
+  ok: boolean;
+  status: 'completed' | 'failed';
+  error?: string;
+} {
+  const normalizedStatus = typeof result.status === 'string'
+    ? result.status.trim().toLowerCase()
+    : '';
+  const failedByStatus = (
+    normalizedStatus === 'failed'
+    || normalizedStatus === 'error'
+    || normalizedStatus === 'timeout'
+    || normalizedStatus === 'timed_out'
+    || normalizedStatus === 'interrupted'
+    || normalizedStatus === 'cancelled'
+    || normalizedStatus === 'canceled'
+    || normalizedStatus === 'aborted'
+  );
+  const failed = result.success === false || failedByStatus || (typeof result.error === 'string' && result.error.trim().length > 0);
+  if (!failed) return { ok: true, status: 'completed' };
+  const resolvedError = (result.error && result.error.trim().length > 0)
+    ? result.error.trim()
+    : result.summary;
+  return {
+    ok: false,
+    status: 'failed',
+    ...(resolvedError ? { error: resolvedError } : {}),
+  };
+}
+
 interface WorkflowLike {
   id: string;
   sessionId: string;
@@ -1596,18 +1626,25 @@ export class AgentRuntimeBlock extends BaseBlock {
       log.info('[AgentRuntimeBlock] Sending to module (non-blocking)', { dispatchId, targetModuleId });
       void this.deps.hub.sendToModule(targetModuleId, payload)
         .then((result) => {
-          log.info('[AgentRuntimeBlock] Module result (non-blocking)', { dispatchId, targetModuleId, status: 'completed' });
           const summarized = this.summarizeDispatchResult(result);
+          const completion = resolveDispatchCompletionStatus(summarized);
+          log.info('[AgentRuntimeBlock] Module result (non-blocking)', {
+            dispatchId,
+            targetModuleId,
+            status: completion.status,
+            ...(completion.error ? { error: completion.error } : {}),
+          });
           this.emitDispatchEvent({
             dispatchId,
             sourceAgentId: input.sourceAgentId,
             targetAgentId: input.targetAgentId,
-            status: 'completed',
+            status: completion.status,
             blocking,
             sessionId: input.sessionId,
             workflowId: input.workflowId,
-            assignment: resolveTerminalAssignmentPhase(assignment, true, result),
+            assignment: resolveTerminalAssignmentPhase(assignment, completion.ok, result),
             result: summarized,
+            ...(completion.error ? { error: completion.error } : {}),
           });
         })
         .catch((error: unknown) => {
@@ -1635,20 +1672,34 @@ export class AgentRuntimeBlock extends BaseBlock {
     try {
       log.info('[AgentRuntimeBlock] Sending to module (blocking)', { dispatchId, targetModuleId });
       const result = await this.deps.hub.sendToModule(targetModuleId, payload);
-      log.info('[AgentRuntimeBlock] Module result (blocking)', { dispatchId, targetModuleId, status: 'completed' });
       const summarized = this.summarizeDispatchResult(result);
+      const completion = resolveDispatchCompletionStatus(summarized);
+      log.info('[AgentRuntimeBlock] Module result (blocking)', {
+        dispatchId,
+        targetModuleId,
+        status: completion.status,
+        ...(completion.error ? { error: completion.error } : {}),
+      });
       this.emitDispatchEvent({
         dispatchId,
         sourceAgentId: input.sourceAgentId,
         targetAgentId: input.targetAgentId,
-        status: 'completed',
+        status: completion.status,
         blocking,
         sessionId: input.sessionId,
         workflowId: input.workflowId,
-        assignment: resolveTerminalAssignmentPhase(assignment, true, result),
+        assignment: resolveTerminalAssignmentPhase(assignment, completion.ok, result),
         result: summarized,
+        ...(completion.error ? { error: completion.error } : {}),
       });
-      return { ok: true, dispatchId, status: 'completed', result: summarized, targetModuleId };
+      return {
+        ok: completion.ok,
+        dispatchId,
+        status: completion.status,
+        result: summarized,
+        ...(completion.error ? { error: completion.error } : {}),
+        targetModuleId,
+      };
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       log.error('[AgentRuntimeBlock] Module error (blocking)', undefined, { dispatchId, targetModuleId, error: message });

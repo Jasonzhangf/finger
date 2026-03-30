@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { KernelAgentBase, type KernelAgentRunner, type KernelRunContext, type KernelInputItem } from '../../../src/agents/base/kernel-agent-base.js';
+import { setContextBuilderOnDemandView } from '../../../src/runtime/context-builder-on-demand-state.js';
 
 describe('KernelAgentBase session binding', () => {
   it('reuses internal session for repeated external sessionId', async () => {
@@ -107,6 +108,231 @@ describe('KernelAgentBase session binding', () => {
       contextBuilderRebuilt: false,
     });
     expect(providerSessionIds).toEqual(['ui-session-context-meta-1']);
+  });
+
+  it('compresses context-builder history into task digests by default', async () => {
+    const contexts: KernelRunContext[] = [];
+    const runner: KernelAgentRunner = {
+      runTurn: vi.fn(async (_text: string, _inputItems?: KernelInputItem[], context?: KernelRunContext) => {
+        if (context) contexts.push(context);
+        return { reply: 'ok' };
+      }),
+    };
+    const agent = new KernelAgentBase(
+      {
+        moduleId: 'chat-codex',
+        provider: 'codex',
+        maxContextMessages: 20,
+        contextHistoryProvider: async () => [
+          {
+            id: 'u1',
+            role: 'user',
+            content: '任务A：检查 mailbox 流程',
+            metadata: { contextLedgerSlot: 10, contextBuilderHistorySource: 'raw_session', contextBuilderBypassed: true },
+          },
+          {
+            id: 'a1',
+            role: 'assistant',
+            content: '任务A完成：已验证 mailbox',
+            metadata: { contextLedgerSlot: 13, contextBuilderHistorySource: 'raw_session', contextBuilderBypassed: true },
+          },
+          {
+            id: 'u2',
+            role: 'user',
+            content: '任务B：修复 context rebuild',
+            metadata: { contextLedgerSlot: 20, contextBuilderHistorySource: 'raw_session', contextBuilderBypassed: true },
+          },
+          {
+            id: 'a2',
+            role: 'assistant',
+            content: '任务B完成：修复完毕',
+            metadata: { contextLedgerSlot: 28, contextBuilderHistorySource: 'raw_session', contextBuilderBypassed: true },
+          },
+        ],
+      },
+      runner,
+    );
+
+    await agent.handle({
+      text: '继续',
+      sessionId: 'ui-session-digest-1',
+    });
+
+    expect(contexts).toHaveLength(1);
+    expect(contexts[0]?.history.length).toBe(2);
+    expect(contexts[0]?.history[0]?.content).toContain('[task_digest 1/2]');
+    expect(contexts[0]?.history[0]?.content).toContain('ledger_slots: 10-13');
+    expect(contexts[0]?.history[1]?.content).toContain('[task_digest 2/2]');
+    expect(contexts[0]?.history[1]?.content).toContain('ledger_slots: 20-28');
+  });
+
+  it('allows disabling history digest via metadata.contextHistoryDigestEnabled=false', async () => {
+    const contexts: KernelRunContext[] = [];
+    const runner: KernelAgentRunner = {
+      runTurn: vi.fn(async (_text: string, _inputItems?: KernelInputItem[], context?: KernelRunContext) => {
+        if (context) contexts.push(context);
+        return { reply: 'ok' };
+      }),
+    };
+    const agent = new KernelAgentBase(
+      {
+        moduleId: 'chat-codex',
+        provider: 'codex',
+        maxContextMessages: 20,
+        contextHistoryProvider: async () => [
+          {
+            role: 'user',
+            content: '原始历史用户消息',
+            metadata: { contextBuilderHistorySource: 'raw_session', contextBuilderBypassed: true },
+          },
+          {
+            role: 'assistant',
+            content: '原始历史助手消息',
+            metadata: { contextBuilderHistorySource: 'raw_session', contextBuilderBypassed: true },
+          },
+        ],
+      },
+      runner,
+    );
+
+    await agent.handle({
+      text: '继续',
+      sessionId: 'ui-session-digest-off-1',
+      metadata: {
+        contextHistoryDigestEnabled: false,
+      },
+    });
+
+    expect(contexts).toHaveLength(1);
+    expect(contexts[0]?.history.length).toBe(2);
+    expect(contexts[0]?.history[0]?.content).toBe('原始历史用户消息');
+    expect(contexts[0]?.history[1]?.content).toBe('原始历史助手消息');
+  });
+
+  it('keeps history provider output stable while previous turn is unfinished', async () => {
+    const contexts: KernelRunContext[] = [];
+    const providerCalls: string[] = [];
+    let turn = 0;
+    const runner: KernelAgentRunner = {
+      runTurn: vi.fn(async (_text: string, _inputItems?: KernelInputItem[], context?: KernelRunContext) => {
+        if (context) contexts.push(context);
+        turn += 1;
+        if (turn === 1) {
+          return {
+            reply: 'still running',
+            metadata: {
+              round_trace: [{ round: 1, finish_reason: 'length', response_status: 'incomplete' }],
+            },
+          };
+        }
+        return {
+          reply: 'done',
+          metadata: {
+            round_trace: [{ round: 2, finish_reason: 'stop', response_status: 'completed' }],
+          },
+        };
+      }),
+    };
+
+    const agent = new KernelAgentBase(
+      {
+        moduleId: 'chat-codex',
+        provider: 'codex',
+        maxContextMessages: 0,
+        contextHistoryProvider: async (sessionId) => {
+          providerCalls.push(sessionId);
+          return [
+            {
+              role: 'user',
+              content: providerCalls.length === 1 ? 'provider-history-v1' : 'provider-history-v2',
+              metadata: {
+                contextBuilderHistorySource: providerCalls.length === 1 ? 'raw_session' : 'context_builder_indexed',
+              },
+            },
+          ];
+        },
+      },
+      runner,
+    );
+
+    await agent.handle({ text: '第一轮', sessionId: 'ui-session-lock-1' });
+    await agent.handle({ text: '继续', sessionId: 'ui-session-lock-1' });
+
+    expect(providerCalls).toEqual(['ui-session-lock-1']);
+    expect(contexts).toHaveLength(2);
+    expect(contexts[0]?.history.some((item) => item.content.includes('provider-history-v1'))).toBe(true);
+    expect(contexts[1]?.history.some((item) => item.content.includes('provider-history-v1'))).toBe(true);
+    expect(contexts[1]?.history.some((item) => item.content.includes('provider-history-v2'))).toBe(false);
+  });
+
+  it('allows explicit context_builder.rebuild to refresh history even during unfinished continuation', async () => {
+    const contexts: KernelRunContext[] = [];
+    const providerCalls: string[] = [];
+    let turn = 0;
+    const runner: KernelAgentRunner = {
+      runTurn: vi.fn(async (_text: string, _inputItems?: KernelInputItem[], context?: KernelRunContext) => {
+        if (context) contexts.push(context);
+        turn += 1;
+        if (turn === 1) {
+          return {
+            reply: 'still running',
+            metadata: {
+              round_trace: [{ round: 1, finish_reason: 'length', response_status: 'incomplete' }],
+            },
+          };
+        }
+        return {
+          reply: 'done',
+          metadata: {
+            round_trace: [{ round: 2, finish_reason: 'stop', response_status: 'completed' }],
+          },
+        };
+      }),
+    };
+
+    const sessionId = 'ui-session-lock-rebuild-1';
+    const moduleId = 'chat-codex';
+    const agent = new KernelAgentBase(
+      {
+        moduleId,
+        provider: 'codex',
+        maxContextMessages: 0,
+        contextHistoryProvider: async (providerSessionId) => {
+          providerCalls.push(providerSessionId);
+          return [
+            {
+              role: 'user',
+              content: providerCalls.length === 1 ? 'provider-history-v1' : 'provider-history-v2',
+              metadata: {
+                contextBuilderHistorySource: providerCalls.length === 1 ? 'raw_session' : 'context_builder_on_demand',
+                contextBuilderRebuilt: providerCalls.length !== 1,
+              },
+            },
+          ];
+        },
+      },
+      runner,
+    );
+
+    await agent.handle({ text: '第一轮', sessionId });
+
+    setContextBuilderOnDemandView({
+      sessionId,
+      agentId: moduleId,
+      mode: 'main',
+      buildMode: 'moderate',
+      targetBudget: 50_000,
+      selectedBlockIds: ['task-1'],
+      metadata: { trigger: 'test' },
+      messages: [],
+      createdAt: new Date().toISOString(),
+    });
+
+    await agent.handle({ text: '继续', sessionId });
+
+    expect(providerCalls).toEqual([sessionId, sessionId]);
+    expect(contexts).toHaveLength(2);
+    expect(contexts[1]?.history.some((item) => item.content.includes('provider-history-v2'))).toBe(true);
   });
 
   it('ignores inline review loop and returns main-thread reply directly', async () => {

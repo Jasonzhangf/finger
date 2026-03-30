@@ -13,6 +13,7 @@ import type { MessageHub } from '../../orchestration/message-hub.js';
 import type { ChannelBridgeManager } from '../../bridges/manager.js';
 import type { PushSettings } from '../../bridges/types.js';
 import { heartbeatMailbox } from './heartbeat-mailbox.js';
+import { enqueueUpdateStreamDelivery } from './update-stream-delivery-adapter.js';
 import type {
   SessionEnvelopeMapping,
   WrappedStatusUpdate,
@@ -124,7 +125,51 @@ export async function sendStatusUpdate(
         statusUpdate,
       };
 
-      await messageHub.routeToOutput(outputId, message);
+      const outputRegistered = typeof (messageHub as { getOutputs?: unknown }).getOutputs === 'function'
+        ? messageHub.getOutputs().some((output) => output.id === outputId)
+        : true;
+      const deliveryRouteKey = `${channel}::${item.groupId ?? ''}::${item.userId ?? ''}`;
+      const dedupSignature = `${statusUpdate.sessionId}|${statusUpdate.agent.agentId}|status|${text}|${statusUpdate.status.state}|${statusUpdate.task.taskDescription}`;
+      if (!outputRegistered) {
+        if (!channelBridgeManager) {
+          log.warn(`[AgentStatusSubscriber] Output ${outputId} not registered and no bridge manager fallback`);
+          continue;
+        }
+        const directTarget = item.groupId ? `group:${item.groupId}` : (item.userId || 'unknown');
+        await enqueueUpdateStreamDelivery({
+          routeKey: deliveryRouteKey,
+          dedupSignature,
+          send: async () => {
+            await channelBridgeManager.sendMessage(channel, {
+              to: directTarget,
+              text,
+              ...(item.envelopeId ? { replyTo: item.envelopeId } : {}),
+            });
+          },
+          meta: {
+            channelId: channel,
+            sessionId: statusUpdate.sessionId,
+            agentId: statusUpdate.agent.agentId,
+            updateType: 'status-direct',
+          },
+        });
+        log.info(`[AgentStatusSubscriber] Sent status update via direct bridge fallback: ${channel}`);
+        continue;
+      }
+
+      await enqueueUpdateStreamDelivery({
+        routeKey: deliveryRouteKey,
+        dedupSignature,
+        send: async () => {
+          await messageHub.routeToOutput(outputId, message);
+        },
+        meta: {
+          channelId: channel,
+          sessionId: statusUpdate.sessionId,
+          agentId: statusUpdate.agent.agentId,
+          updateType: 'status',
+        },
+      });
       log.debug('[AgentStatusSubscriber] Sent status update via MessageHub: ' + outputId);
     } catch (error) {
       log.error('[AgentStatusSubscriber] Failed to send status update:', error instanceof Error ? error : new Error(String(error)));

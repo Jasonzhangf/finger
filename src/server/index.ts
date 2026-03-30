@@ -56,6 +56,7 @@ import { registerDefaultModuleRoutes } from './modules/module-registry-bootstrap
 import { resolveRuntimeFlags, shouldUseMockChatCodexRunner } from './modules/server-flags.js';
 import { HeartbeatScheduler } from './modules/heartbeat-scheduler.js';
 import { ProgressMonitor, type ProgressReport } from './modules/progress-monitor.js';
+import { ExecutionUpdateShadowPipeline } from './modules/execution-update-shadow-pipeline.js';
 import {
   loadChannelBridgeConfigs,
   registerChannelBridgeOutputs,
@@ -381,6 +382,11 @@ const progressMonitor = new ProgressMonitor(globalEventBus, getAgentRuntimeDeps(
 progressMonitor.start();
 logger.module('server').info('Progress Monitor started');
 
+// Start canonical execution update shadow pipeline (phase A: shadow mode).
+const executionUpdatePipeline = new ExecutionUpdateShadowPipeline(globalEventBus, getAgentRuntimeDeps());
+executionUpdatePipeline.start();
+logger.module('server').info('Execution update shadow pipeline started');
+
 await gatewayManager.start().catch((err) => {
   logger.module('server').error('Failed to start gateway manager', err instanceof Error ? err : undefined);
 });
@@ -430,6 +436,7 @@ startServer(app, process.env.HOST || '0.0.0.0', PORT, {
   agentStatusSubscriber,
   heartbeatScheduler,
   progressMonitor,
+  executionUpdatePipeline,
 });
 
 logger.module('server').info('Finger role modules ready', {

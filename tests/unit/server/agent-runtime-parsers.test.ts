@@ -62,4 +62,29 @@ describe('parseAgentDispatchToolInput', () => {
     expect(result.sessionStrategy).toBe('new');
     expect(result.projectPath).toBe('/tmp/project-b');
   });
+
+  it('parses assignment task contract fields for plan/review linkage', () => {
+    const deps = createDeps('session-123');
+    const result = parseAgentDispatchToolInput({
+      target_agent_id: 'finger-project-agent',
+      task: 'implement context builder guard',
+      assignment: {
+        task_id: 'task-ctx-001',
+        task_name: 'context-builder-guard',
+        acceptance_criteria: 'No implicit history rebuild during continuation turns.',
+        review_required: true,
+        attempt: 2,
+        phase: 'retry',
+      },
+    }, deps as any);
+
+    expect(result.assignment).toEqual(expect.objectContaining({
+      taskId: 'task-ctx-001',
+      taskName: 'context-builder-guard',
+      acceptanceCriteria: 'No implicit history rebuild during continuation turns.',
+      reviewRequired: true,
+      attempt: 2,
+      phase: 'retry',
+    }));
+  });
 });

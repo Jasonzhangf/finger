@@ -279,6 +279,72 @@ describe('AgentRuntimeBlock', () => {
     );
   });
 
+  it('treats blocking dispatch result with success=false as failed (timeout-safe)', async () => {
+    ctx.hubSendToModule.mockResolvedValueOnce({
+      success: false,
+      error: 'chat-codex timed out after 600000ms',
+    });
+
+    await ctx.block.execute('deploy', {
+      targetAgentId: 'executor-a',
+      targetImplementationId: 'native-main',
+      sessionId: 'session-1',
+      instanceCount: 1,
+      launchMode: 'orchestrator',
+    });
+
+    const dispatchResult = await ctx.block.execute('dispatch', {
+      sourceAgentId: 'chat-codex',
+      targetAgentId: 'executor-a',
+      task: { text: 'long running task' },
+      sessionId: 'session-1',
+      blocking: true,
+    }) as { ok: boolean; status: string; error?: string };
+
+    expect(dispatchResult.ok).toBe(false);
+    expect(dispatchResult.status).toBe('failed');
+    expect(dispatchResult.error).toContain('timed out');
+  });
+
+  it('emits failed dispatch event for non-blocking timeout-like result', async () => {
+    ctx.hubSendToModule.mockResolvedValueOnce({
+      success: false,
+      error: 'chat-codex timed out after 600000ms',
+    });
+
+    await ctx.block.execute('deploy', {
+      targetAgentId: 'executor-a',
+      targetImplementationId: 'native-main',
+      sessionId: 'session-1',
+      instanceCount: 1,
+      launchMode: 'orchestrator',
+    });
+
+    const dispatchResult = await ctx.block.execute('dispatch', {
+      sourceAgentId: 'chat-codex',
+      targetAgentId: 'executor-a',
+      task: { text: 'long running task' },
+      sessionId: 'session-1',
+      blocking: false,
+    }) as { ok: boolean; status: string; dispatchId: string };
+
+    expect(dispatchResult.ok).toBe(true);
+    expect(dispatchResult.status).toBe('queued');
+
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    const dispatchEvents = ctx.emittedEvents.mock.calls
+      .map((call) => call[0])
+      .filter((event: any) => event?.type === 'agent_runtime_dispatch' && event?.payload?.dispatchId === dispatchResult.dispatchId);
+
+    const failedEvent = dispatchEvents.find((event: any) => event?.payload?.status === 'failed');
+    expect(failedEvent).toBeDefined();
+    expect(failedEvent?.payload?.error).toContain('timed out');
+
+    const completedEvent = dispatchEvents.find((event: any) => event?.payload?.status === 'completed');
+    expect(completedEvent).toBeUndefined();
+  });
+
   it('applies runtime provider config while deploying provider-backed targets', async () => {
     const result = await ctx.block.execute('deploy', {
       targetAgentId: 'executor-a',

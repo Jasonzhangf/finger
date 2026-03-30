@@ -126,14 +126,58 @@ function extractToolDetail(
     const target = typeof p.target_agent_id === 'string' ? p.target_agent_id.trim()
       : typeof p.targetAgentId === 'string' ? p.targetAgentId.trim()
       : '';
-    return target ? '\u2192 ' + target : '';
+    const metadata = typeof p.metadata === 'object' && p.metadata !== null
+      ? p.metadata as Record<string, unknown>
+      : {};
+    const taskId = typeof metadata.taskId === 'string' ? metadata.taskId.trim()
+      : typeof p.task_id === 'string' ? p.task_id.trim()
+      : typeof p.taskId === 'string' ? p.taskId.trim()
+      : '';
+    const source = typeof metadata.source === 'string' ? metadata.source.trim() : '';
+    const targetPart = target ? '\u2192 ' + target : '';
+    if (taskId.startsWith('watchdog:')) {
+      const watchdogLabel = taskId
+        .replace(/^watchdog:/, '')
+        .replace(/:/g, ' · ');
+      return [targetPart, `watchdog(${truncate(watchdogLabel, 48)})`].filter(Boolean).join(' ');
+    }
+    if (source === 'system-heartbeat' && taskId) {
+      return [targetPart, `task=${truncate(taskId, 36)}`].filter(Boolean).join(' ');
+    }
+    return targetPart;
   }
 
   if (toolName === 'command.exec') {
     const p = parse(params ?? '');
-    const raw = typeof p.input === 'string' ? p.input.trim() : '';
+    const raw = typeof p.input === 'string' ? p.input.trim()
+      : typeof p.cmd === 'string' ? p.cmd.trim()
+      : '';
     if (!raw) return '';
     return truncate(raw, 90);
+  }
+
+  if (toolName === 'report-task-completion') {
+    const p = parse(params ?? '');
+    const r = parse(result ?? '');
+    const taskId = typeof p.task_id === 'string' ? p.task_id.trim()
+      : typeof p.taskId === 'string' ? p.taskId.trim()
+      : '';
+    const dispatchId = typeof p.dispatch_id === 'string' ? p.dispatch_id.trim()
+      : typeof p.dispatchId === 'string' ? p.dispatchId.trim()
+      : '';
+    const status = typeof p.status === 'string' ? p.status.trim()
+      : typeof r.status === 'string' ? r.status.trim()
+      : '';
+    const summary = typeof p.summary === 'string' ? p.summary.trim()
+      : typeof r.summary === 'string' ? r.summary.trim()
+      : '';
+
+    const details: string[] = [];
+    if (taskId) details.push(`task=${truncate(taskId, 24)}`);
+    if (dispatchId) details.push(`dispatch=${truncate(dispatchId, 24)}`);
+    if (status) details.push(`status=${truncate(status, 18)}`);
+    if (summary) details.push(truncate(summary, 40));
+    return details.join(' · ');
   }
 
   if (toolName === 'write_stdin') {

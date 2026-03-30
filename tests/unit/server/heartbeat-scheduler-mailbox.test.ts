@@ -50,19 +50,18 @@ describe('HeartbeatScheduler mailbox lifecycle', () => {
 
     await (scheduler as any).promptMailboxChecks();
 
-    expect(execute).toHaveBeenCalledWith(
-      'dispatch',
-      expect.objectContaining({
-        sourceAgentId: 'system-heartbeat',
-        targetAgentId: SYSTEM_AGENT_ID,
-        sessionId: expect.any(String),
-        blocking: false,
-        metadata: expect.objectContaining({
-          taskId: 'mailbox-check',
-          progressDelivery: { mode: 'result_only' },
-        }),
+    const dispatchCall = execute.mock.calls.find((call: unknown[]) => call[0] === 'dispatch');
+    expect(dispatchCall).toBeDefined();
+    expect(dispatchCall?.[1]).toEqual(expect.objectContaining({
+      sourceAgentId: 'system-heartbeat',
+      targetAgentId: SYSTEM_AGENT_ID,
+      sessionId: expect.any(String),
+      blocking: false,
+      metadata: expect.objectContaining({
+        taskId: 'mailbox-check',
+        scheduledProgressDelivery: { mode: 'result_only' },
       }),
-    );
+    }));
   });
 
   it('allows heartbeat dispatch progress policy override from task config', async () => {
@@ -93,15 +92,14 @@ describe('HeartbeatScheduler mailbox lifecycle', () => {
 
     await (scheduler as any).promptMailboxChecks();
 
-    expect(execute).toHaveBeenCalledWith(
-      'dispatch',
-      expect.objectContaining({
-        metadata: expect.objectContaining({
-          taskId: 'mailbox-check',
-          progressDelivery: { mode: 'all' },
-        }),
+    const dispatchCall = execute.mock.calls.find((call: unknown[]) => call[0] === 'dispatch');
+    expect(dispatchCall).toBeDefined();
+    expect(dispatchCall?.[1]).toEqual(expect.objectContaining({
+      metadata: expect.objectContaining({
+        taskId: 'mailbox-check',
+        scheduledProgressDelivery: { mode: 'all' },
       }),
-    );
+    }));
   });
 
   it('uses 5-minute mailbox prompt interval when agent stays idle', async () => {

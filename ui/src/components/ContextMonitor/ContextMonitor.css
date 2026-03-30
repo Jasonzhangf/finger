@@ -82,6 +82,82 @@
   padding: 1px 6px;
 }
 
+.context-partition-legend {
+  margin-top: 2px;
+  padding: 6px 8px;
+  border: 1px solid rgba(51, 65, 85, 0.6);
+  border-radius: 6px;
+  background: rgba(2, 6, 23, 0.46);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.context-partition-title {
+  font-size: 10px;
+  color: #93c5fd;
+  font-weight: 600;
+}
+
+.context-partition-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.context-partition-chip {
+  border: 1px solid rgba(71, 85, 105, 0.6);
+  border-radius: 6px;
+  background: rgba(15, 23, 42, 0.75);
+  padding: 4px 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.context-partition-chip.mutable {
+  border-color: rgba(74, 222, 128, 0.45);
+  box-shadow: inset 0 0 0 1px rgba(22, 163, 74, 0.2);
+}
+
+.partition-key {
+  font-size: 10px;
+  color: #60a5fa;
+  font-weight: 700;
+}
+
+.context-partition-chip.mutable .partition-key {
+  color: #4ade80;
+}
+
+.partition-name {
+  font-size: 10px;
+  color: #cbd5e1;
+}
+
+.partition-summary {
+  font-size: 10px;
+  color: #94a3b8;
+  line-height: 1.2;
+}
+
+.context-query-playbook {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.query-step {
+  display: inline-flex;
+  align-items: center;
+  border: 1px solid rgba(51, 65, 85, 0.75);
+  border-radius: 999px;
+  padding: 2px 8px;
+  font-size: 10px;
+  color: #a5b4fc;
+  background: rgba(15, 23, 42, 0.86);
+}
+
 .context-monitor-insight {
   margin-top: 2px;
   padding: 6px 8px;

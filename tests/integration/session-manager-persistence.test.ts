@@ -68,4 +68,17 @@ describe('Session Manager Persistence', () => {
     expect(restored?.id).toBe(session.id);
     expect(restored?.projectPath).toBe(TEST_PROJECT_PATH);
   });
+
+  it('persists session snapshot messages across restart', async () => {
+    const manager = new SessionManager();
+    const session = manager.createSession(TEST_PROJECT_PATH, 'Snapshot Persist Session');
+
+    const appendResult = await manager.addMessage(session.id, 'user', 'hello snapshot');
+    expect(appendResult).not.toBeNull();
+
+    const manager2 = new SessionManager();
+    const messages = manager2.getMessages(session.id, 10);
+    expect(messages.length).toBeGreaterThan(0);
+    expect(messages[messages.length - 1]?.content).toBe('hello snapshot');
+  });
 });

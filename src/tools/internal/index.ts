@@ -6,6 +6,7 @@ import type { AgentRuntimeDeps } from '../../server/modules/agent-runtime/types.
 import { registerProjectTool } from './project-tool/project-tool.js';
 import { registerSystemRegistryTool } from './system-registry-tool.js';
 import { registerReportTaskCompletionTool } from './report-task-completion-tool.js';
+import { registerProjectTaskTool } from './project-task-tool.js';
 import { registerSendLocalImageTool } from './send-local-image-tool.js';
 import { clockTool } from './codex-clock-tool.js';
 import { execCommandTool, writeStdinTool } from './codex-exec-tools.js';
@@ -16,6 +17,7 @@ import { updatePlanTool } from './codex-update-plan-tool.js';
 import { viewImageTool } from './codex-view-image-tool.js';
 import { webSearchTool } from './codex-web-search-tool.js';
 import { contextLedgerMemoryTool } from './context-ledger-memory-tool.js';
+import { contextLedgerExpandTaskTool } from './context-ledger-expand-task-tool.js';
 import { contextBuilderRebuildTool } from './context-builder-rebuild-tool.js';
 import { noopTool } from './codex-noop-tool.js';
 import { permissionTools } from './permission-tools.js';
@@ -47,6 +49,7 @@ export * from './codex-clock-tool.js';
 export * from './codex-noop-tool.js';
 export * from './codex-web-search-tool.js';
 export * from './context-ledger-memory-tool.js';
+export * from './context-ledger-expand-task-tool.js';
 export * from './context-builder-rebuild-tool.js';
 export * from './permission-tools.js';
 export * from './heartbeat-control-tool.js';
@@ -54,6 +57,7 @@ export * from './mailbox-tool.js';
 export * from './mailbox-tool-remove.js';
 export * from './send-local-image-tool.js';
 export * from './skills-tool.js';
+export * from './project-task-tool.js';
 
 export function createDefaultInternalToolRegistry(): InternalToolRegistry {
   const registry = new InternalToolRegistry();
@@ -68,6 +72,7 @@ export function createDefaultInternalToolRegistry(): InternalToolRegistry {
   registry.register(viewImageTool);
   registry.register(webSearchTool);
   registry.register(contextLedgerMemoryTool);
+  registry.register(contextLedgerExpandTaskTool);
   registry.register(contextBuilderRebuildTool);
   registry.register(noopTool);
   registry.register(heartbeatEnableTool);
@@ -125,6 +130,16 @@ export function registerReportTaskCompletionToolInRuntime(
   getAgentRuntimeDeps: () => AgentRuntimeDeps
 ): void {
   registerReportTaskCompletionTool(toolRegistry, getAgentRuntimeDeps);
+}
+
+/**
+ * 在运行时注册 project.task.status / project.task.update（项目任务状态与更新）
+ */
+export function registerProjectTaskToolInRuntime(
+  toolRegistry: ToolRegistry,
+  getAgentRuntimeDeps: () => AgentRuntimeDeps,
+): void {
+  registerProjectTaskTool(toolRegistry, getAgentRuntimeDeps);
 }
 
 /**

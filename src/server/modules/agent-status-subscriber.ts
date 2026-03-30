@@ -129,7 +129,7 @@ export class AgentStatusSubscriber {
       primaryAgentId: this.primaryAgentId,
       registerChildAgent: (childAgentId: string, parentAgentId: string) => this.registerChildAgent(childAgentId, parentAgentId),
       registerChildSession: (childSessionId: string, envelope: SessionEnvelopeMapping[ 'envelope']) => this.registerChildSession(childSessionId, envelope),
-      resolvePushSettings: (sessionId: string, channelId: string) => this.resolvePushSettings(sessionId, channelId),
+      resolvePushSettings: (sessionId: string, channelId: string, options) => this.resolvePushSettings(sessionId, channelId, options),
       deps: this.deps,
     };
   }
@@ -173,7 +173,7 @@ export class AgentStatusSubscriber {
       agentId,
       reasoningText,
       resolveEnvelopeMappings: (targetSessionId) => this.resolveEnvelopeMappings(targetSessionId),
-      resolvePushSettings: (targetSessionId, channelId) => this.resolvePushSettings(targetSessionId, channelId),
+      resolvePushSettings: (targetSessionId, channelId, options) => this.resolvePushSettings(targetSessionId, channelId, options),
       messageHub: this.messageHub,
       state: this.getRouteState(),
       reasoningBodyBufferMs: this.reasoningBodyBufferMs,
@@ -186,7 +186,7 @@ export class AgentStatusSubscriber {
       agentId,
       bodyText,
       resolveEnvelopeMappings: (targetSessionId) => this.resolveEnvelopeMappings(targetSessionId),
-      resolvePushSettings: (targetSessionId, channelId) => this.resolvePushSettings(targetSessionId, channelId),
+      resolvePushSettings: (targetSessionId, channelId, options) => this.resolvePushSettings(targetSessionId, channelId, options),
       messageHub: this.messageHub,
       state: this.getRouteState(),
       reasoningBodyBufferMs: this.reasoningBodyBufferMs,
@@ -376,6 +376,7 @@ export class AgentStatusSubscriber {
       state: this.getRouteState(),
       messageHub: this.messageHub,
       resolveEnvelopeMapping: (targetSessionId) => this.resolveEnvelopeMapping(targetSessionId),
+      resolvePushSettings: (targetSessionId, channelId, options) => this.resolvePushSettings(targetSessionId, channelId, options),
     });
   }
 
@@ -419,7 +420,7 @@ export class AgentStatusSubscriber {
       stepBuffer: this.stepBuffer,
       getAgentInfo: (agentId) => this.getAgentInfo(agentId),
       resolveEnvelopeMappings: (sessionId) => this.resolveEnvelopeMappings(sessionId),
-      resolvePushSettings: (sessionId, channelId) => this.resolvePushSettings(sessionId, channelId),
+      resolvePushSettings: (sessionId, channelId, options) => this.resolvePushSettings(sessionId, channelId, options),
       flushStepBuffer: (sessionId, mapping) => this.flushStepBuffer(sessionId, mapping),
       messageHub: this.messageHub,
       channelBridgeManager: this.channelBridgeManager,
@@ -450,7 +451,7 @@ export class AgentStatusSubscriber {
       primaryAgentId: this.primaryAgentId,
       lastProgressMailboxSummaryBySession: this.lastProgressMailboxSummaryBySession,
       resolveEnvelopeMappings: (sessionId) => this.resolveEnvelopeMappings(sessionId),
-      resolvePushSettings: (sessionId, channelId) => this.resolvePushSettings(sessionId, channelId),
+      resolvePushSettings: (sessionId, channelId, options) => this.resolvePushSettings(sessionId, channelId, options),
       messageHub: this.messageHub,
       channelBridgeManager: this.channelBridgeManager,
     });
@@ -476,7 +477,16 @@ export class AgentStatusSubscriber {
     return { agentId };
   }
 
-  private resolvePushSettings(sessionId: string, channelId: string): PushSettings {
+  private resolvePushSettings(
+    sessionId: string,
+    channelId: string,
+    options?: {
+      phase?: string;
+      kind?: string;
+      sourceType?: string;
+      agentId?: string;
+    },
+  ): PushSettings {
     return resolvePushSettingsForSession({
       sessionId,
       channelId,
@@ -485,6 +495,10 @@ export class AgentStatusSubscriber {
       fallbackPushSettings: FALLBACK_PUSH_SETTINGS,
       normalizePolicy: normalizeProgressDeliveryPolicy,
       applyPolicy: applyProgressDeliveryPolicy,
+      phase: options?.phase,
+      kind: options?.kind,
+      sourceType: options?.sourceType,
+      agentId: options?.agentId,
     });
   }
 }

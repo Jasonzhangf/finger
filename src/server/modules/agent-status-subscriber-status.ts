@@ -23,6 +23,16 @@ function buildAgentIdentityLine(agentId: string): string {
   return `👤 [${role}] ${agentId}`;
 }
 
+function buildSessionTitleLine(params: {
+  deps: AgentRuntimeDeps;
+  sessionId: string;
+}): string | undefined {
+  const session = params.deps.sessionManager.getSession(params.sessionId);
+  const rawName = typeof session?.name === 'string' ? session.name.trim() : '';
+  if (!rawName) return undefined;
+  return `🗂 会话: ${rawName}`;
+}
+
 export async function handleAgentRuntimeStatus(params: {
   event: RuntimeEvent;
   deps: AgentRuntimeDeps;
@@ -31,7 +41,16 @@ export async function handleAgentRuntimeStatus(params: {
   stepBuffer: Map<string, Array<{ index: number; summary: string; timestamp: string }>>;
   getAgentInfo: (agentId: string) => Promise<{ agentId: string; agentName?: string; agentRole?: 'system' | 'project' | 'reviewer' }>;
   resolveEnvelopeMappings: (sessionId: string) => SessionEnvelopeMapping[];
-  resolvePushSettings: (sessionId: string, channelId: string) => { statusUpdate: boolean };
+  resolvePushSettings: (
+    sessionId: string,
+    channelId: string,
+    options?: {
+      phase?: string;
+      kind?: string;
+      sourceType?: string;
+      agentId?: string;
+    },
+  ) => { statusUpdate: boolean };
   flushStepBuffer: (sessionId: string, mapping: SessionEnvelopeMapping) => Promise<void>;
   messageHub?: import('../../orchestration/message-hub.js').MessageHub;
   channelBridgeManager?: import('../../bridges/manager.js').ChannelBridgeManager;
@@ -66,7 +85,11 @@ export async function handleAgentRuntimeStatus(params: {
   const wrappedUpdate = wrapStatusUpdate(params.event, payload, agentInfo, taskContext, level);
   const sessionId = params.event.sessionId;
   const mappings = params.resolveEnvelopeMappings(sessionId)
-    .filter((mapping) => params.resolvePushSettings(sessionId, mapping.envelope.channel).statusUpdate);
+    .filter((mapping) => params.resolvePushSettings(sessionId, mapping.envelope.channel, {
+      phase: payload.status === 'completed' || payload.status === 'failed' ? 'completion' : 'execution',
+      kind: payload.status === 'failed' ? 'error' : 'status',
+      agentId,
+    }).statusUpdate);
   if (mappings.length === 0) {
     return;
   }
@@ -155,7 +178,16 @@ export async function sendProgressUpdateToChannels(params: {
   primaryAgentId: string | null;
   lastProgressMailboxSummaryBySession: Map<string, string>;
   resolveEnvelopeMappings: (sessionId: string) => SessionEnvelopeMapping[];
-  resolvePushSettings: (sessionId: string, channelId: string) => {
+  resolvePushSettings: (
+    sessionId: string,
+    channelId: string,
+    options?: {
+      phase?: string;
+      kind?: string;
+      sourceType?: string;
+      agentId?: string;
+    },
+  ) => {
     statusUpdate: boolean;
     updateMode: string;
     progressUpdates: boolean;
@@ -167,8 +199,14 @@ export async function sendProgressUpdateToChannels(params: {
   if (mappings.length === 0 || !params.messageHub) return;
 
   const progressMappings = mappings.filter((mapping) => {
-    const pushSettings = params.resolvePushSettings(params.report.sessionId, mapping.envelope.channel);
-    return pushSettings.statusUpdate && pushSettings.updateMode !== 'command' && pushSettings.progressUpdates;
+    const hintedPushSettings = params.resolvePushSettings(params.report.sessionId, mapping.envelope.channel, {
+      phase: params.report.progress.status === 'completed' || params.report.progress.status === 'failed'
+        ? 'completion'
+        : 'execution',
+      kind: 'status',
+      agentId: params.report.agentId,
+    });
+    return hintedPushSettings.statusUpdate && hintedPushSettings.updateMode !== 'command' && hintedPushSettings.progressUpdates;
   });
   if (progressMappings.length === 0) return;
 
@@ -191,6 +229,10 @@ export async function sendProgressUpdateToChannels(params: {
     : undefined;
   const relationInfo = resolveSessionRelationInfo(params.deps, params.report.sessionId);
   const relationLine = buildSessionRelationLine(relationInfo);
+  const sessionTitleLine = buildSessionTitleLine({
+    deps: params.deps,
+    sessionId: params.report.sessionId,
+  });
   const contextSnapshot = normalizeContextUsageSnapshot({
     contextUsagePercent: params.report.progress.contextUsagePercent,
     estimatedTokensInContextWindow: params.report.progress.estimatedTokensInContextWindow,
@@ -202,7 +244,7 @@ export async function sendProgressUpdateToChannels(params: {
     ? contextSummary
     : undefined;
   const agentIdentityLine = buildAgentIdentityLine(params.report.agentId || 'unknown-agent');
-  const summary = [agentIdentityLine, params.report.summary, relationLine, appendContextSummary, mailboxSummary]
+  const summary = [agentIdentityLine, sessionTitleLine, params.report.summary, relationLine, appendContextSummary, mailboxSummary]
     .filter((item): item is string => typeof item === 'string' && item.trim().length > 0)
     .join('\n');
   if (!summary) return;
@@ -243,6 +285,11 @@ export async function sendProgressUpdateToChannels(params: {
         ...(relationLine
           ? {
               sessionRelation: relationInfo,
+            }
+          : {}),
+        ...(sessionTitleLine
+          ? {
+              sessionTitle: sessionTitleLine.replace(/^🗂\s*会话:\s*/, ''),
             }
           : {}),
       },

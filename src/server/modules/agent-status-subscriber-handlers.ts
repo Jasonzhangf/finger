@@ -19,7 +19,9 @@ import type { PushSettings } from '../../bridges/types.js';
 import {
   asRecord,
   asTrimmedString,
+  buildDispatchReasonSummary,
   buildDispatchMailboxPreview,
+  buildDispatchSourceSummary,
   buildDispatchMailboxPreviewFromResult,
   filterStatusMappings,
   isMailboxDispatchStatus,
@@ -52,7 +54,16 @@ export interface HandlerContext {
   primaryAgentId: string | null;
   registerChildAgent: (childAgentId: string, parentAgentId: string) => void;
   registerChildSession: (childSessionId: string, envelope: SessionEnvelopeMapping[ 'envelope']) => void;
-  resolvePushSettings?: (sessionId: string, channelId: string) => PushSettings;
+  resolvePushSettings?: (
+    sessionId: string,
+    channelId: string,
+    options?: {
+      phase?: string;
+      kind?: string;
+      sourceType?: string;
+      agentId?: string;
+    },
+  ) => PushSettings;
   deps?: import('./agent-runtime/types.js').AgentRuntimeDeps;
 }
 
@@ -81,7 +92,13 @@ export async function handleToolResult(
   const sessionId = event.sessionId;
   const mappings = ctx.resolveEnvelopeMappings(sessionId);
   if (mappings.length === 0 || !ctx.messageHub) return;
-  if (!shouldPushCommandStyleUpdates(ctx, sessionId, mappings)) return;
+  const toolPayload = asRecord(event.payload);
+  if (!shouldPushCommandStyleUpdates(ctx, sessionId, mappings, {
+    phase: 'execution',
+    kind: 'tool',
+    sourceType: typeof toolPayload?.source === 'string' ? toolPayload.source : undefined,
+    agentId: event.agentId,
+  })) return;
 
 
   const agentId = event.agentId || 'unknown-agent';
@@ -141,7 +158,13 @@ export async function handleToolError(
   const sessionId = event.sessionId;
   const mappings = ctx.resolveEnvelopeMappings(sessionId);
   if (mappings.length === 0) return;
-  if (!shouldPushCommandStyleUpdates(ctx, sessionId, mappings)) return;
+  const toolPayload = asRecord(event.payload);
+  if (!shouldPushCommandStyleUpdates(ctx, sessionId, mappings, {
+    phase: 'execution',
+    kind: 'error',
+    sourceType: typeof toolPayload?.source === 'string' ? toolPayload.source : undefined,
+    agentId,
+  })) return;
 
   if (mappings.every((mapping) => shouldSuppressRawToolError(mapping.envelope.channel))) {
     log.info('[AgentStatusSubscriber] Suppressed raw tool_error push for external channel', {
@@ -205,7 +228,11 @@ export async function handleSystemError(
   ctx: HandlerContext,
 ): Promise<void> {
   const sessionId = event.sessionId;
-  const mappings = filterStatusMappings(ctx, sessionId, ctx.resolveEnvelopeMappings(sessionId));
+  const mappings = filterStatusMappings(ctx, sessionId, ctx.resolveEnvelopeMappings(sessionId), {
+    phase: 'completion',
+    kind: 'error',
+    sourceType: 'system-inject',
+  });
   if (mappings.length === 0) return;
 
   const wrappedUpdate: WrappedStatusUpdate = {
@@ -249,6 +276,7 @@ export async function handleDispatch(
     status?: string;
     queuePosition?: number;
     result?: Record<string, unknown>;
+    assignment?: Record<string, unknown>;
     childSessionId?: string;
     sessionId?: string;
     rootSessionId?: string;
@@ -263,17 +291,55 @@ export async function handleDispatch(
   }
 
   const sessionId = event.sessionId;
-  const mappings = filterStatusMappings(ctx, sessionId, ctx.resolveEnvelopeMappings(sessionId));
+  const dispatchParentSessionId = asTrimmedString(payload.parentSessionId)
+    || asTrimmedString(payload.rootSessionId)
+    || asTrimmedString(payload.sessionId);
+  const resultRecord = asRecord(payload.result);
+  const dispatchSourceType = typeof payload.sourceAgentId === 'string'
+    ? payload.sourceAgentId
+    : (typeof resultRecord?.source === 'string' ? resultRecord.source : undefined);
+
+  let mappings = filterStatusMappings(ctx, sessionId, ctx.resolveEnvelopeMappings(sessionId), {
+    phase: 'dispatch',
+    kind: 'status',
+    sourceType: dispatchSourceType,
+    agentId: targetAgentId,
+  });
+  if (mappings.length === 0 && dispatchParentSessionId) {
+    const parentMappings = filterStatusMappings(
+      ctx,
+      dispatchParentSessionId,
+      ctx.resolveEnvelopeMappings(dispatchParentSessionId),
+      {
+        phase: 'dispatch',
+        kind: 'status',
+        sourceType: dispatchSourceType,
+        agentId: targetAgentId,
+      },
+    );
+    if (parentMappings.length > 0) {
+      for (const mapping of parentMappings) {
+        ctx.registerChildSession(sessionId, mapping.envelope);
+      }
+      mappings = filterStatusMappings(ctx, sessionId, ctx.resolveEnvelopeMappings(sessionId), {
+        phase: 'dispatch',
+        kind: 'status',
+        sourceType: dispatchSourceType,
+        agentId: targetAgentId,
+      });
+    }
+  }
   if (mappings.length === 0 || !ctx.messageHub) return;
 
 
   const agentInfo = await ctx.getAgentInfo(targetAgentId);
   const dispatchStatus = typeof payload.status === 'string' ? payload.status : 'queued';
   const queuePosition = typeof payload.queuePosition === 'number' ? payload.queuePosition : undefined;
-  const resultRecord = asRecord(payload.result);
   const resultStatus = asTrimmedString(resultRecord?.status);
   const resultSummary = asTrimmedString(resultRecord?.summary);
   const nextAction = asTrimmedString(resultRecord?.nextAction);
+  const assignmentRecord = asRecord(payload.assignment);
+  const assignmentTaskId = asTrimmedString(assignmentRecord?.taskId);
   const explicitMailboxMessageId = asTrimmedString(resultRecord?.mailboxMessageId);
   const candidateMessageId = asTrimmedString(resultRecord?.messageId);
   const mailboxFlow = isMailboxDispatchStatus(dispatchStatus)
@@ -288,12 +354,20 @@ export async function handleDispatch(
         nextAction,
       })
     : '';
+  const sourceAgentSummary = buildDispatchSourceSummary(asTrimmedString(payload.sourceAgentId) || 'unknown');
+  const reasonSummary = buildDispatchReasonSummary({
+    dispatchStatus,
+    resultStatus,
+    queuePosition,
+    mailboxFlow,
+    mailboxPreview,
+    resultSummary,
+    nextAction,
+    assignmentTaskId,
+  });
   const childSessionId = asTrimmedString(payload.childSessionId)
     || asTrimmedString(resultRecord?.childSessionId)
     || (mailboxFlow ? '' : asTrimmedString(resultRecord?.sessionId));
-  const dispatchParentSessionId = asTrimmedString(payload.parentSessionId)
-    || asTrimmedString(payload.rootSessionId)
-    || asTrimmedString(payload.sessionId);
   const normalizedChildSessionId = childSessionId
     && childSessionId !== dispatchParentSessionId
     && childSessionId !== sessionId
@@ -318,6 +392,8 @@ export async function handleDispatch(
   const summary = [
     `派发 ${targetAgentId}`,
     `状态: ${dispatchStatus}`,
+    `来源: ${sourceAgentSummary}`,
+    `原因: ${reasonSummary}`,
     typeof queuePosition === 'number' ? `队列 #${queuePosition}` : '',
     mailboxPreview ? `mailbox: ${mailboxPreview}` : '',
     !mailboxFlow && resultSummary ? `摘要: ${truncateInline(resultSummary, 96)}` : '',
@@ -344,8 +420,10 @@ export async function handleDispatch(
       details: {
         dispatchId: payload.dispatchId,
         sourceAgentId: payload.sourceAgentId,
+        dispatchSourceSummary: sourceAgentSummary,
         targetAgentId,
         dispatchStatus,
+        dispatchReasonSummary: reasonSummary,
         ...(typeof queuePosition === 'number' ? { queuePosition } : {}),
         ...(resultStatus ? { resultStatus } : {}),
         ...(resultSummary ? { resultSummary: truncateInline(resultSummary, 240) } : {}),
@@ -372,7 +450,13 @@ export async function handleWaitingForUser(
   event: RuntimeEvent,
   ctx: HandlerContext,
 ): Promise<void> {
-  const mappings = filterStatusMappings(ctx, event.sessionId, ctx.resolveEnvelopeMappings(event.sessionId));
+  const payloadRecord = asRecord(event.payload);
+  const mappings = filterStatusMappings(ctx, event.sessionId, ctx.resolveEnvelopeMappings(event.sessionId), {
+    phase: 'execution',
+    kind: 'decision',
+    sourceType: typeof payloadRecord?.source === 'string' ? payloadRecord.source : undefined,
+    agentId: typeof (event as { agentId?: string }).agentId === 'string' ? (event as { agentId?: string }).agentId : undefined,
+  });
   if (mappings.length === 0 || !ctx.messageHub) return;
 
 
@@ -440,11 +524,17 @@ export async function handleStepCompleted(
   const sessionId = event.sessionId;
   const mapping = ctx.resolveEnvelopeMapping(sessionId);
   if (!mapping) return;
+  const payloadRecord = asRecord(event.payload);
 
   let stepBatch = ctx.stepBatchDefault;
   let stepUpdatesEnabled = true;
   if (ctx.channelBridgeManager || typeof ctx.resolvePushSettings === 'function') {
-    const pushSettings = resolvePushSettingsForChannel(ctx, sessionId, mapping.envelope.channel);
+    const pushSettings = resolvePushSettingsForChannel(ctx, sessionId, mapping.envelope.channel, {
+      phase: 'execution',
+      kind: 'reasoning',
+      sourceType: typeof payloadRecord?.source === 'string' ? payloadRecord.source : undefined,
+      agentId: typeof (event as { agentId?: string }).agentId === 'string' ? (event as { agentId?: string }).agentId : undefined,
+    });
     if (pushSettings) {
     stepUpdatesEnabled = pushSettings.stepUpdates;
     stepBatch = Math.max(1, pushSettings.stepBatch);

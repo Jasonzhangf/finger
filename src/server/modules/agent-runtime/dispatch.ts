@@ -1,4 +1,5 @@
 import { logger } from '../../../core/logger.js';
+import { writeFileSync } from 'fs';
 import { isObjectRecord } from '../../common/object.js';
 import { asString, firstNonEmptyString } from '../../common/strings.js';
 import { getGlobalDispatchTracker } from './dispatch-tracker.js';
@@ -11,9 +12,16 @@ import {
   FINGER_PROJECT_AGENT_ID,
   FINGER_SYSTEM_AGENT_ID,
 } from '../../../agents/finger-general/finger-general-module.js';
+import {
+  parseDelegatedProjectTaskRegistry,
+  mergeProjectTaskState,
+  parseProjectTaskState,
+  upsertDelegatedProjectTaskRegistry,
+} from '../../../common/project-task-state.js';
 import { setupReviewRuntimeForDispatch } from '../../../agents/finger-system-agent/review-runtime.js';
 import {
   applyExecutionLifecycleTransition,
+  getExecutionLifecycleState,
   resolveLifecycleStageFromResultStatus,
 } from '../execution-lifecycle.js';
 import {
@@ -36,6 +44,258 @@ import { setMonitorStatus } from '../../../agents/finger-system-agent/registry.j
 const DISPATCH_ERROR_MAX_RETRIES = Number.isFinite(Number(process.env.FINGER_DISPATCH_ERROR_MAX_RETRIES))
   ? Math.max(0, Math.floor(Number(process.env.FINGER_DISPATCH_ERROR_MAX_RETRIES)))
   : 10;
+const BUSY_RUNTIME_STATUSES = new Set(['running', 'queued', 'waiting_input', 'paused']);
+const ACTIVE_PROJECT_LIFECYCLE_STAGES = new Set([
+  'received',
+  'session_bound',
+  'dispatching',
+  'running',
+  'waiting_tool',
+  'waiting_model',
+  'retrying',
+  'interrupted',
+]);
+
+function asTrimmedString(value: unknown): string {
+  return typeof value === 'string' ? value.trim() : '';
+}
+
+function resolveDispatchTaskIdentity(input: AgentDispatchRequest): { taskId?: string; taskName?: string } {
+  const assignment = isObjectRecord(input.assignment) ? input.assignment : {};
+  const taskRecord = isObjectRecord(input.task) ? input.task : {};
+  const taskId = firstNonEmptyString(
+    asString(assignment.taskId),
+    asString(taskRecord.taskId),
+    asString(taskRecord.task_id),
+  );
+  const taskName = firstNonEmptyString(
+    asString(assignment.taskName),
+    asString(taskRecord.taskName),
+    asString(taskRecord.task_name),
+    asString(taskRecord.title),
+    asString(taskRecord.name),
+  );
+  return {
+    ...(taskId ? { taskId } : {}),
+    ...(taskName ? { taskName } : {}),
+  };
+}
+
+function allowDispatchWhileBusy(input: AgentDispatchRequest): boolean {
+  const metadata = isObjectRecord(input.metadata) ? input.metadata : {};
+  const taskRecord = isObjectRecord(input.task) ? input.task : {};
+  const taskMetadata = isObjectRecord(taskRecord.metadata) ? taskRecord.metadata : {};
+  const explicit =
+    metadata.allowDispatchWhileBusy
+    ?? metadata.allow_dispatch_while_busy
+    ?? metadata.forceDispatch
+    ?? metadata.force_dispatch
+    ?? taskMetadata.allowDispatchWhileBusy
+    ?? taskMetadata.allow_dispatch_while_busy
+    ?? taskMetadata.forceDispatch
+    ?? taskMetadata.force_dispatch;
+  return explicit === true;
+}
+
+async function resolveBusyProjectAgentState(
+  deps: AgentRuntimeDeps,
+  input: AgentDispatchRequest,
+): Promise<{
+  busy: boolean;
+  status?: string;
+  dispatchId?: string;
+  taskId?: string;
+  summary?: string;
+}> {
+  if (input.sourceAgentId !== FINGER_SYSTEM_AGENT_ID || input.targetAgentId !== FINGER_PROJECT_AGENT_ID) {
+    return { busy: false };
+  }
+  if (allowDispatchWhileBusy(input)) {
+    return { busy: false };
+  }
+  try {
+    const snapshot = await deps.agentRuntimeBlock.execute('runtime_view', {});
+    const view = isObjectRecord(snapshot) ? snapshot : {};
+    const agents = Array.isArray(view.agents) ? view.agents : [];
+    const target = agents.find((agent) => (
+      isObjectRecord(agent)
+      && asTrimmedString(agent.id) === FINGER_PROJECT_AGENT_ID
+    ));
+    if (!isObjectRecord(target)) return { busy: false };
+    const status = asTrimmedString(target.status).toLowerCase();
+    const busy = BUSY_RUNTIME_STATUSES.has(status);
+    if (!busy) {
+      return { busy: false, ...(status ? { status } : {}) };
+    }
+    const lastEvent = isObjectRecord(target.lastEvent) ? target.lastEvent : {};
+    const eventTaskId = asTrimmedString(lastEvent.taskId);
+    const eventDispatchId = asTrimmedString(lastEvent.dispatchId);
+    const eventSummary = asTrimmedString(lastEvent.summary);
+    return {
+      busy: true,
+      ...(status ? { status } : {}),
+      ...(eventDispatchId ? { dispatchId: eventDispatchId } : {}),
+      ...(eventTaskId ? { taskId: eventTaskId } : {}),
+      ...(eventSummary ? { summary: eventSummary } : {}),
+    };
+  } catch {
+    // Best effort: if runtime_view fails, don't block dispatch.
+    return { busy: false };
+  }
+}
+
+function resolveActiveProjectLifecycleState(
+  deps: AgentRuntimeDeps,
+  input: AgentDispatchRequest,
+): {
+  active: boolean;
+  stage?: string;
+  substage?: string;
+  finishReason?: string;
+  dispatchId?: string;
+  turnId?: string;
+} {
+  if (input.sourceAgentId !== FINGER_SYSTEM_AGENT_ID || input.targetAgentId !== FINGER_PROJECT_AGENT_ID) {
+    return { active: false };
+  }
+  if (allowDispatchWhileBusy(input)) return { active: false };
+  const sessionId = typeof input.sessionId === 'string' ? input.sessionId.trim() : '';
+  if (!sessionId) return { active: false };
+  const lifecycle = getExecutionLifecycleState(deps.sessionManager, sessionId);
+  if (!lifecycle) return { active: false };
+  if (lifecycle.finishReason === 'stop') {
+    return {
+      active: false,
+      stage: lifecycle.stage,
+      ...(lifecycle.substage ? { substage: lifecycle.substage } : {}),
+      ...(lifecycle.finishReason ? { finishReason: lifecycle.finishReason } : {}),
+    };
+  }
+  if (!ACTIVE_PROJECT_LIFECYCLE_STAGES.has(lifecycle.stage)) {
+    return {
+      active: false,
+      stage: lifecycle.stage,
+      ...(lifecycle.substage ? { substage: lifecycle.substage } : {}),
+      ...(lifecycle.finishReason ? { finishReason: lifecycle.finishReason } : {}),
+    };
+  }
+  return {
+    active: true,
+    stage: lifecycle.stage,
+    ...(lifecycle.substage ? { substage: lifecycle.substage } : {}),
+    ...(lifecycle.finishReason ? { finishReason: lifecycle.finishReason } : {}),
+    ...(lifecycle.dispatchId ? { dispatchId: lifecycle.dispatchId } : {}),
+    ...(lifecycle.turnId ? { turnId: lifecycle.turnId } : {}),
+  };
+}
+
+function resolveProjectTaskStateSessionIds(
+  originalSessionId: string,
+  normalizedSessionId?: string,
+): string[] {
+  const values = [originalSessionId, normalizedSessionId ?? '']
+    .map((item) => item.trim())
+    .filter((item) => item.length > 0);
+  return Array.from(new Set(values));
+}
+
+function persistProjectTaskState(
+  deps: AgentRuntimeDeps,
+  sessionIds: string[],
+  patch: {
+    active?: boolean;
+    status?: 'dispatching' | 'in_progress' | 'waiting_review' | 'completed' | 'failed' | 'cancelled';
+    taskId?: string;
+    taskName?: string;
+    dispatchId?: string;
+    summary?: string;
+    note?: string;
+    sourceAgentId?: string;
+    targetAgentId?: string;
+  },
+): void {
+  for (const sessionId of sessionIds) {
+    const session = deps.sessionManager.getSession(sessionId);
+    if (!session) continue;
+    const current = parseProjectTaskState(session.context?.projectTaskState);
+    const next = mergeProjectTaskState(current, {
+      ...patch,
+      sourceAgentId: patch.sourceAgentId ?? current?.sourceAgentId ?? FINGER_SYSTEM_AGENT_ID,
+      targetAgentId: patch.targetAgentId ?? current?.targetAgentId ?? FINGER_PROJECT_AGENT_ID,
+    });
+    const currentRegistry = parseDelegatedProjectTaskRegistry(session.context?.projectTaskRegistry);
+    const nextRegistry = upsertDelegatedProjectTaskRegistry(currentRegistry, {
+      sourceAgentId: next.sourceAgentId,
+      targetAgentId: next.targetAgentId,
+      taskId: next.taskId,
+      taskName: next.taskName,
+      status: next.status,
+      active: next.active,
+      dispatchId: next.dispatchId,
+      summary: next.summary,
+      note: next.note,
+    });
+    deps.sessionManager.updateContext(sessionId, {
+      projectTaskState: next,
+      projectTaskRegistry: nextRegistry,
+    });
+    writeTaskRouterMarkdown(session.projectPath, next, nextRegistry);
+  }
+}
+
+function writeTaskRouterMarkdown(
+  projectPath: string,
+  state: ReturnType<typeof mergeProjectTaskState>,
+  registry: ReturnType<typeof upsertDelegatedProjectTaskRegistry>,
+): void {
+  if (typeof projectPath !== 'string' || projectPath.trim().length === 0) return;
+  const normalized = projectPath.replace(/\/+$/, '');
+  const taskFilePath = `${normalized}/TASK.md`;
+  const nowIso = new Date().toISOString();
+  const lines: string[] = [
+    '# TASK Router',
+    '',
+    `Updated: ${nowIso}`,
+    '',
+    '## Current Task State',
+    `- active: ${state.active}`,
+    `- status: ${state.status}`,
+    `- source: ${state.sourceAgentId}`,
+    `- target: ${state.targetAgentId}`,
+    state.taskId ? `- taskId: ${state.taskId}` : '- taskId: N/A',
+    state.taskName ? `- taskName: ${state.taskName}` : '- taskName: N/A',
+    state.dispatchId ? `- dispatchId: ${state.dispatchId}` : '- dispatchId: N/A',
+    state.note ? `- note: ${state.note}` : '- note: N/A',
+    '',
+    '## Delegated Project List (latest)',
+  ];
+
+  const ordered = [...registry]
+    .sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt))
+    .slice(0, 20);
+  if (ordered.length === 0) {
+    lines.push('- (empty)');
+  } else {
+    for (const item of ordered) {
+      lines.push(
+        `- [${item.status}] active=${item.active} target=${item.targetAgentId}`
+        + `${item.taskId ? ` taskId=${item.taskId}` : ''}`
+        + `${item.taskName ? ` task="${item.taskName}"` : ''}`
+        + `${item.dispatchId ? ` dispatch=${item.dispatchId}` : ''}`
+        + ` updated=${item.updatedAt}`,
+      );
+    }
+  }
+  lines.push('');
+  lines.push('## Routing Rule');
+  lines.push('- Context exposes concise status only.');
+  lines.push('- Full task details and progression should be maintained in this TASK.md.');
+  try {
+    writeFileSync(taskFilePath, lines.join('\n') + '\n', 'utf8');
+  } catch {
+    // Best effort only: task state remains in session context even if file write fails.
+  }
+}
 
 export async function dispatchTaskToAgent(deps: AgentRuntimeDeps, input: AgentDispatchRequest): Promise<{
   ok: boolean;
@@ -165,6 +425,29 @@ export async function dispatchTaskToAgent(deps: AgentRuntimeDeps, input: AgentDi
     }
     applySessionProgressDeliveryFromDispatch(deps, normalizedInput);
     if (typeof normalizedInput.sessionId === 'string' && normalizedInput.sessionId.trim().length > 0) {
+      const sessionForSnapshot = deps.sessionManager.getSession(normalizedInput.sessionId.trim());
+      const sessionContext = (sessionForSnapshot?.context && typeof sessionForSnapshot.context === 'object')
+        ? (sessionForSnapshot.context as Record<string, unknown>)
+        : {};
+      const metadata = isObjectRecord(normalizedInput.metadata) ? { ...normalizedInput.metadata } : {};
+      const taskRouterPath = (
+        typeof sessionForSnapshot?.projectPath === 'string' && sessionForSnapshot.projectPath.trim().length > 0
+          ? `${sessionForSnapshot.projectPath.replace(/\/+$/, '')}/TASK.md`
+          : undefined
+      );
+      metadata.sessionContextSnapshot = {
+        executionLifecycle: sessionContext.executionLifecycle,
+        projectTaskState: sessionContext.projectTaskState,
+        projectTaskRegistry: sessionContext.projectTaskRegistry,
+        ...(taskRouterPath ? { taskRouterPath } : {}),
+      };
+      if (taskRouterPath) metadata.taskRouterPath = taskRouterPath;
+      normalizedInput = {
+        ...normalizedInput,
+        metadata,
+      };
+    }
+    if (typeof normalizedInput.sessionId === 'string' && normalizedInput.sessionId.trim().length > 0) {
       applyExecutionLifecycleTransition(deps.sessionManager, normalizedInput.sessionId, {
         stage: 'dispatching',
         substage: 'normalized',
@@ -190,6 +473,148 @@ export async function dispatchTaskToAgent(deps: AgentRuntimeDeps, input: AgentDi
       });
     }
     return { ok: false, dispatchId: fallbackDispatchId, status: 'failed', error: message };
+  }
+
+  const projectTaskIdentity = resolveDispatchTaskIdentity(normalizedInput);
+  const projectTaskStateSessionIds = (
+    normalizedInput.sourceAgentId === FINGER_SYSTEM_AGENT_ID
+    && normalizedInput.targetAgentId === FINGER_PROJECT_AGENT_ID
+  )
+    ? resolveProjectTaskStateSessionIds(
+      originalSessionId,
+      typeof normalizedInput.sessionId === 'string' ? normalizedInput.sessionId : '',
+    )
+    : [];
+  if (projectTaskStateSessionIds.length > 0) {
+    persistProjectTaskState(deps, projectTaskStateSessionIds, {
+      active: true,
+      status: 'dispatching',
+      taskId: projectTaskIdentity.taskId,
+      taskName: projectTaskIdentity.taskName,
+      sourceAgentId: normalizedInput.sourceAgentId,
+      targetAgentId: normalizedInput.targetAgentId,
+      note: 'system_dispatched_project_task',
+    });
+  }
+
+  const activeLifecycle = resolveActiveProjectLifecycleState(deps, normalizedInput);
+  if (activeLifecycle.active) {
+    const fallbackDispatchId = activeLifecycle.dispatchId || `dispatch-active-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const summary = [
+      `target ${normalizedInput.targetAgentId} has active lifecycle`,
+      activeLifecycle.stage ? `stage=${activeLifecycle.stage}` : '',
+      activeLifecycle.substage ? `substage=${activeLifecycle.substage}` : '',
+      activeLifecycle.turnId ? `turn=${activeLifecycle.turnId}` : '',
+      '- dispatch suppressed; waiting for project update/reviewer pass',
+    ].filter(Boolean).join(' ');
+    if (typeof normalizedInput.sessionId === 'string' && normalizedInput.sessionId.trim().length > 0) {
+      applyExecutionLifecycleTransition(deps.sessionManager, normalizedInput.sessionId, {
+        stage: 'dispatching',
+        substage: 'dispatch_suppressed_active_lifecycle',
+        updatedBy: 'dispatch',
+        dispatchId: fallbackDispatchId,
+        targetAgentId: normalizedInput.targetAgentId,
+        detail: summary,
+        recoveryAction: 'wait_current_task',
+        delivery: 'queue',
+      });
+    }
+    logger.module('dispatch').info('Suppressed system->project dispatch due to active lifecycle', {
+      sourceAgentId: normalizedInput.sourceAgentId,
+      targetAgentId: normalizedInput.targetAgentId,
+      sessionId: normalizedInput.sessionId,
+      stage: activeLifecycle.stage,
+      substage: activeLifecycle.substage,
+      taskId: projectTaskIdentity.taskId,
+      taskName: projectTaskIdentity.taskName,
+      dispatchId: fallbackDispatchId,
+    });
+    if (projectTaskStateSessionIds.length > 0) {
+      persistProjectTaskState(deps, projectTaskStateSessionIds, {
+        active: true,
+        status: 'in_progress',
+        taskId: projectTaskIdentity.taskId,
+        taskName: projectTaskIdentity.taskName,
+        dispatchId: fallbackDispatchId,
+        summary,
+        note: 'dispatch_suppressed_active_lifecycle',
+      });
+    }
+    return {
+      ok: true,
+      dispatchId: fallbackDispatchId,
+      status: 'queued',
+      result: sanitizeDispatchResult({
+        success: true,
+        status: 'queued_active_lifecycle_suppressed',
+        summary,
+        recoveryAction: 'wait_current_task',
+        delivery: 'queue',
+        ...(projectTaskIdentity.taskId ? { taskId: projectTaskIdentity.taskId } : {}),
+        ...(projectTaskIdentity.taskName ? { taskName: projectTaskIdentity.taskName } : {}),
+        ...(activeLifecycle.stage ? { lifecycleStage: activeLifecycle.stage } : {}),
+        ...(activeLifecycle.substage ? { lifecycleSubstage: activeLifecycle.substage } : {}),
+      }),
+    };
+  }
+
+  const busyState = await resolveBusyProjectAgentState(deps, normalizedInput);
+  if (busyState.busy) {
+    const fallbackDispatchId = busyState.dispatchId || `dispatch-busy-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const busySummary = [
+      `target ${normalizedInput.targetAgentId} busy`,
+      busyState.taskId ? `(task=${busyState.taskId})` : '',
+      busyState.status ? `status=${busyState.status}` : '',
+      '- dispatch suppressed; wait for current task update',
+    ].filter(Boolean).join(' ');
+    if (typeof normalizedInput.sessionId === 'string' && normalizedInput.sessionId.trim().length > 0) {
+      applyExecutionLifecycleTransition(deps.sessionManager, normalizedInput.sessionId, {
+        stage: 'dispatching',
+        substage: 'dispatch_suppressed_target_busy',
+        updatedBy: 'dispatch',
+        dispatchId: fallbackDispatchId,
+        targetAgentId: normalizedInput.targetAgentId,
+        detail: busySummary,
+        recoveryAction: 'wait_current_task',
+        delivery: 'queue',
+      });
+    }
+    logger.module('dispatch').info('Suppressed duplicate system->project dispatch while target is busy', {
+      sourceAgentId: normalizedInput.sourceAgentId,
+      targetAgentId: normalizedInput.targetAgentId,
+      sessionId: normalizedInput.sessionId,
+      busyStatus: busyState.status,
+      currentTaskId: busyState.taskId,
+      taskId: projectTaskIdentity.taskId,
+      taskName: projectTaskIdentity.taskName,
+      dispatchId: fallbackDispatchId,
+    });
+    if (projectTaskStateSessionIds.length > 0) {
+      persistProjectTaskState(deps, projectTaskStateSessionIds, {
+        active: true,
+        status: 'in_progress',
+        taskId: projectTaskIdentity.taskId,
+        taskName: projectTaskIdentity.taskName,
+        dispatchId: fallbackDispatchId,
+        summary: busySummary,
+        note: 'dispatch_suppressed_target_busy',
+      });
+    }
+    return {
+      ok: true,
+      dispatchId: fallbackDispatchId,
+      status: 'queued',
+      result: sanitizeDispatchResult({
+        success: true,
+        status: 'queued_busy_suppressed',
+        summary: busySummary,
+        recoveryAction: 'wait_current_task',
+        delivery: 'queue',
+        ...(busyState.taskId ? { currentTaskId: busyState.taskId } : {}),
+        ...(projectTaskIdentity.taskId ? { taskId: projectTaskIdentity.taskId } : {}),
+        ...(projectTaskIdentity.taskName ? { taskName: projectTaskIdentity.taskName } : {}),
+      }),
+    };
   }
 
   await persistDispatchUserMessage(deps, normalizedInput);
@@ -348,6 +773,17 @@ export async function dispatchTaskToAgent(deps: AgentRuntimeDeps, input: AgentDi
       });
     }
     await persistAgentSummaryToMemory(deps, normalizedInput, { ok: false, summary: message }, true);
+    if (projectTaskStateSessionIds.length > 0) {
+      persistProjectTaskState(deps, projectTaskStateSessionIds, {
+        active: false,
+        status: 'failed',
+        taskId: projectTaskIdentity.taskId,
+        taskName: projectTaskIdentity.taskName,
+        dispatchId: fallbackDispatchId,
+        summary: message,
+        note: 'dispatch_execute_final_error',
+      });
+    }
     return { ok: false, dispatchId: fallbackDispatchId, status: 'failed', error: message };
   }
   if (!result) {
@@ -358,6 +794,17 @@ export async function dispatchTaskToAgent(deps: AgentRuntimeDeps, input: AgentDi
         updatedBy: 'dispatch',
         targetAgentId: normalizedInput.targetAgentId,
         lastError: 'dispatch result is empty after retries',
+      });
+    }
+    if (projectTaskStateSessionIds.length > 0) {
+      persistProjectTaskState(deps, projectTaskStateSessionIds, {
+        active: false,
+        status: 'failed',
+        taskId: projectTaskIdentity.taskId,
+        taskName: projectTaskIdentity.taskName,
+        dispatchId: fallbackDispatchId,
+        summary: 'dispatch result is empty after retries',
+        note: 'dispatch_result_empty',
       });
     }
     return { ok: false, dispatchId: fallbackDispatchId, status: 'failed', error: 'dispatch result is empty after retries' };
@@ -449,5 +896,22 @@ export async function dispatchTaskToAgent(deps: AgentRuntimeDeps, input: AgentDi
     }
   }
   await syncBdDispatchLifecycle(deps, normalizedInput, result);
+  if (projectTaskStateSessionIds.length > 0) {
+    const mappedStatus = result.status === 'failed' ? 'failed' : 'in_progress';
+    const shouldStayActive = result.status !== 'failed';
+    persistProjectTaskState(deps, projectTaskStateSessionIds, {
+      active: shouldStayActive,
+      status: mappedStatus,
+      taskId: projectTaskIdentity.taskId,
+      taskName: projectTaskIdentity.taskName,
+      dispatchId: result.dispatchId,
+      summary: result.result?.summary ?? result.error,
+      note: result.status === 'failed'
+        ? 'dispatch_failed'
+        : result.status === 'queued'
+          ? 'dispatch_queued'
+          : 'dispatch_completed_waiting_project_delivery',
+    });
+  }
   return result;
 }

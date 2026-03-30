@@ -108,6 +108,11 @@ export function parseAgentDispatchToolInput(rawInput: unknown, deps: AgentRuntim
       : typeof assignmentInput.taskId === 'string'
         ? { taskId: assignmentInput.taskId }
         : {}),
+    ...(typeof assignmentInput.task_name === 'string'
+      ? { taskName: assignmentInput.task_name }
+      : typeof assignmentInput.taskName === 'string'
+        ? { taskName: assignmentInput.taskName }
+        : {}),
     ...(typeof assignmentInput.bd_task_id === 'string'
       ? { bdTaskId: assignmentInput.bd_task_id }
       : typeof assignmentInput.bdTaskId === 'string'

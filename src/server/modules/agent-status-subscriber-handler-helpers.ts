@@ -190,6 +190,71 @@ export function buildDispatchMailboxPreview(params: {
   return '已转入待处理队列';
 }
 
+function humanizeDispatchSource(sourceAgentId: string): string {
+  const normalized = sourceAgentId.trim();
+  if (!normalized) return 'unknown';
+  const mapping: Record<string, string> = {
+    'channel-bridge': '用户输入(channel)',
+    api: 'API输入',
+    webui: 'WebUI输入',
+    'system-project-recovery': '系统恢复(project)',
+    'system-recovery': '系统恢复(system)',
+    'system-startup-review': '系统启动审查',
+    'mailbox-check': 'mailbox巡检',
+    'mailbox-cli': 'mailbox工具链路',
+    heartbeat: '心跳巡检',
+  };
+  return mapping[normalized] ?? normalized;
+}
+
+export function buildDispatchSourceSummary(sourceAgentId: string): string {
+  return humanizeDispatchSource(sourceAgentId);
+}
+
+export function buildDispatchReasonSummary(params: {
+  dispatchStatus: string;
+  resultStatus: string;
+  queuePosition?: number;
+  mailboxFlow: boolean;
+  mailboxPreview: string;
+  resultSummary: string;
+  nextAction: string;
+  assignmentTaskId: string;
+}): string {
+  if (params.mailboxFlow) {
+    if (params.mailboxPreview) return truncateInline(params.mailboxPreview, 120);
+    if (params.resultStatus === 'queued_mailbox') return '目标繁忙，已转入 mailbox 等待处理';
+    return '目标繁忙，已切换到 mailbox 流程';
+  }
+
+  if (params.resultSummary) return truncateInline(params.resultSummary, 120);
+  if (params.nextAction) return truncateInline(params.nextAction, 120);
+
+  if (params.dispatchStatus === 'queued') {
+    if (typeof params.queuePosition === 'number') {
+      return `目标繁忙，进入执行队列 #${params.queuePosition}`;
+    }
+    if (params.assignmentTaskId) {
+      return `任务 ${params.assignmentTaskId} 已派发，等待执行`;
+    }
+    return '新任务已派发，等待执行';
+  }
+
+  if (params.dispatchStatus === 'completed') {
+    return params.assignmentTaskId
+      ? `任务 ${params.assignmentTaskId} 已完成派发`
+      : '任务派发执行完成';
+  }
+
+  if (params.dispatchStatus === 'failed') {
+    return params.assignmentTaskId
+      ? `任务 ${params.assignmentTaskId} 派发失败`
+      : '任务派发失败';
+  }
+
+  return '调度状态更新';
+}
+
 export function parseToolSummary(toolName: string, input: unknown, output?: unknown): {
   verb: ToolVerb;
   target?: string;
@@ -367,16 +432,31 @@ export interface PushSettingsResolverContext {
   channelBridgeManager?: {
     getPushSettings: (channelId: string) => PushSettings;
   };
-  resolvePushSettings?: (sessionId: string, channelId: string) => PushSettings;
+  resolvePushSettings?: (
+    sessionId: string,
+    channelId: string,
+    options?: {
+      phase?: string;
+      kind?: string;
+      sourceType?: string;
+      agentId?: string;
+    },
+  ) => PushSettings;
 }
 
 export function resolvePushSettingsForChannel(
   ctx: PushSettingsResolverContext,
   sessionId: string,
   channelId: string,
+  options?: {
+    phase?: string;
+    kind?: string;
+    sourceType?: string;
+    agentId?: string;
+  },
 ): PushSettings | null {
   if (typeof ctx.resolvePushSettings === 'function') {
-    return ctx.resolvePushSettings(sessionId, channelId);
+    return ctx.resolvePushSettings(sessionId, channelId, options);
   }
   if (!ctx.channelBridgeManager) return null;
   return ctx.channelBridgeManager.getPushSettings(channelId);
@@ -386,10 +466,16 @@ export function shouldPushCommandStyleUpdates(
   ctx: PushSettingsResolverContext,
   sessionId: string,
   mappings: SessionEnvelopeMapping[],
+  options?: {
+    phase?: string;
+    kind?: string;
+    sourceType?: string;
+    agentId?: string;
+  },
 ): boolean {
   if (!ctx.channelBridgeManager && typeof ctx.resolvePushSettings !== 'function') return true;
   return mappings.some((mapping) => {
-    const settings = resolvePushSettingsForChannel(ctx, sessionId, mapping.envelope.channel);
+    const settings = resolvePushSettingsForChannel(ctx, sessionId, mapping.envelope.channel, options);
     if (!settings) return true;
     if (settings.updateMode === 'progress') return false;
     if (settings.updateMode === 'command') return true;
@@ -401,9 +487,15 @@ export function filterStatusMappings(
   ctx: PushSettingsResolverContext,
   sessionId: string,
   mappings: SessionEnvelopeMapping[],
+  options?: {
+    phase?: string;
+    kind?: string;
+    sourceType?: string;
+    agentId?: string;
+  },
 ): SessionEnvelopeMapping[] {
   return mappings.filter((mapping) => {
-    const settings = resolvePushSettingsForChannel(ctx, sessionId, mapping.envelope.channel);
+    const settings = resolvePushSettingsForChannel(ctx, sessionId, mapping.envelope.channel, options);
     if (!settings) return true;
     return settings.statusUpdate;
   });

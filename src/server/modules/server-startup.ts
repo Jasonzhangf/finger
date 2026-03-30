@@ -18,6 +18,7 @@ export interface ServerLifecycleDeps {
   agentStatusSubscriber?: { stop(): void } | null;
   heartbeatScheduler?: { stop(): void } | null;
   progressMonitor?: { stop(): void } | null;
+  executionUpdatePipeline?: { stop(): void } | null;
 }
 
 export function startServer(
@@ -69,6 +70,7 @@ export function startServer(
     if (deps.agentStatusSubscriber) deps.agentStatusSubscriber.stop();
     if (deps.heartbeatScheduler) deps.heartbeatScheduler.stop();
     if (deps.progressMonitor) deps.progressMonitor.stop();
+    if (deps.executionUpdatePipeline) deps.executionUpdatePipeline.stop();
     cleanupPidFile();
   });
 

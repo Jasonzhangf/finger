@@ -5,6 +5,25 @@ import { upsertReviewRoute } from './review-route-registry.js';
 
 const log = logger.module('review-runtime');
 
+function extractTaskName(input: AgentDispatchRequest): string | undefined {
+  const assignmentName = typeof input.assignment?.taskName === 'string' ? input.assignment.taskName.trim() : '';
+  if (assignmentName.length > 0) return assignmentName;
+
+  const taskRecord = typeof input.task === 'object' && input.task !== null
+    ? (input.task as Record<string, unknown>)
+    : null;
+  const explicit =
+    (typeof taskRecord?.title === 'string' ? taskRecord.title.trim() : '')
+    || (typeof taskRecord?.name === 'string' ? taskRecord.name.trim() : '')
+    || (typeof taskRecord?.taskName === 'string' ? taskRecord.taskName.trim() : '');
+  if (explicit.length > 0) return explicit;
+
+  const prompt = typeof taskRecord?.prompt === 'string' ? taskRecord.prompt.trim() : '';
+  if (prompt.length === 0) return undefined;
+  const firstLine = prompt.split('\n').map((line) => line.trim()).find((line) => line.length > 0);
+  return firstLine && firstLine.length <= 120 ? firstLine : undefined;
+}
+
 export async function setupReviewRuntimeForDispatch(
   deps: AgentRuntimeDeps,
   input: AgentDispatchRequest,
@@ -19,6 +38,7 @@ export async function setupReviewRuntimeForDispatch(
   const acceptanceCriteria = typeof assignment.acceptanceCriteria === 'string'
     ? assignment.acceptanceCriteria.trim()
     : '';
+  const taskName = extractTaskName(input);
 
   // 1) Ensure reviewer runtime is deployed
   try {
@@ -40,6 +60,7 @@ export async function setupReviewRuntimeForDispatch(
   // 2) Register routing metadata for automatic delivery->review route
   upsertReviewRoute({
     taskId,
+    ...(taskName ? { taskName } : {}),
     reviewRequired: true,
     reviewAgentId: FINGER_REVIEWER_AGENT_ID,
     acceptanceCriteria: acceptanceCriteria || undefined,
@@ -47,31 +68,10 @@ export async function setupReviewRuntimeForDispatch(
     parentSessionId: input.metadata?.dispatchParentSessionId as string | undefined,
     projectSessionId: input.sessionId,
   });
-
-  // 3) Send review goal to reviewer upfront
-  if (!acceptanceCriteria) return;
-  try {
-    await deps.agentRuntimeBlock.execute('dispatch', {
-      sourceAgentId: 'finger-system-agent',
-      targetAgentId: FINGER_REVIEWER_AGENT_ID,
-      task: {
-        prompt: `[Review Goal]\n任务ID: ${taskId}\n验收标准: ${acceptanceCriteria}\n请等待 project agent 的交付上报，按标准审查。`,
-      },
-      sessionId: input.sessionId,
-      blocking: false,
-      metadata: {
-        source: 'review-bootstrap',
-        role: 'system',
-        taskId,
-        acceptanceCriteria,
-      },
-    } as unknown as Record<string, unknown>);
-  } catch (err) {
-    log.warn('Failed to dispatch review goal', {
-      taskId,
-      reviewer: FINGER_REVIEWER_AGENT_ID,
-      error: err instanceof Error ? err.message : String(err),
-    });
-  }
+  log.info('Registered review contract for project task', {
+    taskId,
+    taskName,
+    reviewer: FINGER_REVIEWER_AGENT_ID,
+    hasAcceptanceCriteria: acceptanceCriteria.length > 0,
+  });
 }
-

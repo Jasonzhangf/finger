@@ -18,6 +18,15 @@ interface ContextBuilderRebuildInput {
   _runtime_context?: Record<string, unknown>;
 }
 
+interface RuntimeContextSessionMessage {
+  id?: string;
+  role: 'user' | 'assistant' | 'system' | 'orchestrator';
+  content: string;
+  timestamp: string;
+  metadata?: Record<string, unknown>;
+  attachments?: unknown[];
+}
+
 interface ContextBuilderRebuildOutput {
   ok: boolean;
   action: 'rebuild';
@@ -73,6 +82,40 @@ function resolveRootDir(input: ContextBuilderRebuildInput, agentId: string, cont
   return FINGER_PATHS.sessions.dir;
 }
 
+function parseRuntimeSessionMessages(
+  runtimeContext: Record<string, unknown> | undefined,
+): RuntimeContextSessionMessage[] | undefined {
+  const raw = runtimeContext?.session_messages;
+  if (!Array.isArray(raw) || raw.length === 0) return undefined;
+  const parsed = raw
+    .filter((item): item is Record<string, unknown> => typeof item === 'object' && item !== null && !Array.isArray(item))
+    .map((item, index) => {
+      const roleRaw = typeof item.role === 'string' ? item.role.trim() : '';
+      const role: RuntimeContextSessionMessage['role'] =
+        roleRaw === 'assistant' || roleRaw === 'system' || roleRaw === 'orchestrator'
+          ? roleRaw
+          : 'user';
+      const content = typeof item.content === 'string' ? item.content : '';
+      const timestamp = typeof item.timestamp === 'string' && item.timestamp.trim().length > 0
+        ? item.timestamp
+        : new Date(Date.now() + index).toISOString();
+      const metadata = item.metadata && typeof item.metadata === 'object' && !Array.isArray(item.metadata)
+        ? item.metadata as Record<string, unknown>
+        : undefined;
+      const attachments = Array.isArray(item.attachments) ? item.attachments : undefined;
+      return {
+        ...(typeof item.id === 'string' && item.id.trim().length > 0 ? { id: item.id } : {}),
+        role,
+        content,
+        timestamp,
+        ...(metadata ? { metadata } : {}),
+        ...(attachments ? { attachments } : {}),
+      } satisfies RuntimeContextSessionMessage;
+    })
+    .filter((item) => item.content.trim().length > 0);
+  return parsed.length > 0 ? parsed : undefined;
+}
+
 export const contextBuilderRebuildTool: InternalTool<unknown, ContextBuilderRebuildOutput> = {
   name: 'context_builder.rebuild',
   executionModel: 'state',
@@ -117,6 +160,7 @@ export const contextBuilderRebuildTool: InternalTool<unknown, ContextBuilderRebu
         : Math.floor(contextWindow * settings.budgetRatio);
     const buildMode = input.mode ?? settings.mode;
     const rootDir = resolveRootDir(input, agentId, context);
+    const sessionMessages = parseRuntimeSessionMessages(input._runtime_context);
 
     const built = await buildContext(
       {
@@ -125,6 +169,7 @@ export const contextBuilderRebuildTool: InternalTool<unknown, ContextBuilderRebu
         agentId,
         mode: 'main',
         currentPrompt: input.current_prompt,
+        ...(sessionMessages ? { sessionMessages } : {}),
       },
       {
         targetBudget,

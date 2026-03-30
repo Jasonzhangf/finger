@@ -9,6 +9,7 @@ const CORE_EXECUTION_TOOLS = [
   'web_search',
   'update_plan',
   'context_ledger.memory',
+  'context_ledger.expand_task',
   'context_builder.rebuild',
   'clock',
   'command.exec',
@@ -36,6 +37,7 @@ const READ_ONLY_COORDINATION_TOOLS = [
   'web_search',
   'update_plan',
   'context_ledger.memory',
+  'context_ledger.expand_task',
   'context_builder.rebuild',
   'clock',
   'command.exec',
@@ -55,6 +57,11 @@ const ORCHESTRATION_TOOLS = [
 
 const ORCHESTRATOR_DOCUMENTATION_TOOLS = [
   'apply_patch',
+] as const;
+
+const PROJECT_TASK_MANAGEMENT_TOOLS = [
+  'project.task.status',
+  'project.task.update',
 ] as const;
 
 function dedupeTools(...groups: ReadonlyArray<ReadonlyArray<string>>): string[] {
@@ -79,7 +86,12 @@ export const BASE_AGENT_ROLE_CONFIG: Record<BaseAgentRole, BaseAgentRoleConfig> 
   system: {
     role: 'system',
     description: 'System agent. Owns system-level coordination, registry access, and cross-project dispatch.',
-    allowedTools: dedupeTools([...ORCHESTRATOR_FULL_TOOLS], [...MAILBOX_TOOLS], [...SKILLS_TOOLS]),
+    allowedTools: dedupeTools(
+      [...ORCHESTRATOR_FULL_TOOLS],
+      [...MAILBOX_TOOLS],
+      [...SKILLS_TOOLS],
+      [...PROJECT_TASK_MANAGEMENT_TOOLS],
+    ),
     defaultLedgerCanReadAll: true,
   },
   project: {
@@ -92,7 +104,17 @@ export const BASE_AGENT_ROLE_CONFIG: Record<BaseAgentRole, BaseAgentRoleConfig> 
     role: 'reviewer',
     description: 'Reviewer agent. Focuses on evidence, risk, regression checks, and mailbox-driven review tasks.',
     allowedTools: dedupeTools(
-      ['exec_command', 'view_image', 'web_search', 'context_ledger.memory', 'context_builder.rebuild', 'user.ask'],
+      [
+        'exec_command',
+        'view_image',
+        'web_search',
+        'context_ledger.memory',
+        'context_ledger.expand_task',
+        'context_builder.rebuild',
+        'user.ask',
+        'agent.dispatch',
+        'report-task-completion',
+      ],
       [...MAILBOX_TOOLS],
       [...SKILLS_TOOLS],
     ),

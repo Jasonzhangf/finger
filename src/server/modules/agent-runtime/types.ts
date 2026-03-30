@@ -24,6 +24,7 @@ export interface AgentDispatchRequest {
   assignment?: {
     epicId?: string;
     taskId?: string;
+    taskName?: string;
     bdTaskId?: string;
     assignerAgentId?: string;
     assigneeAgentId?: string;

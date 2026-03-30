@@ -117,7 +117,21 @@ export function registerAgentRuntimeTools(deps: AgentRuntimeDeps): string[] {
         blocking: { type: 'boolean' },
         queue_on_busy: { type: 'boolean' },
         max_queue_wait_ms: { type: 'number' },
-        assignment: { type: "object", properties: { acceptance_criteria: { type: "string", description: "交付验收标准" }, review_required: { type: "boolean", description: "是否需要 review agent 审查" } } },
+        assignment: {
+          type: 'object',
+          properties: {
+            task_id: { type: 'string', description: 'Stable task identifier for dispatch/review linkage.' },
+            task_name: { type: 'string', description: 'Human-readable task name for review contract matching.' },
+            acceptance_criteria: { type: 'string', description: 'Delivery acceptance criteria used by reviewer.' },
+            review_required: { type: 'boolean', description: 'Whether reviewer gate is required before completion.' },
+            attempt: { type: 'number', description: 'Retry attempt number (starts at 1).' },
+            phase: {
+              type: 'string',
+              enum: ['assigned', 'queued', 'started', 'reviewing', 'retry', 'passed', 'failed', 'closed'],
+              description: 'Assignment lifecycle phase.',
+            },
+          },
+        },
         metadata: { type: 'object' },
       },
       required: ['target_agent_id', 'task'],

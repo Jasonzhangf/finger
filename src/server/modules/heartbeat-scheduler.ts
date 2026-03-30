@@ -9,6 +9,8 @@ import type { AgentRuntimeDeps } from './agent-runtime/types.js';
 import { SessionControlPlaneStore } from '../../runtime/session-control-plane.js';
 import { SYSTEM_PROJECT_PATH } from '../../agents/finger-system-agent/index.js';
 import { buildHeartbeatEnvelope, type MailboxEnvelope } from './mailbox-envelope.js';
+import { listReviewRoutes } from '../../agents/finger-system-agent/review-route-registry.js';
+import { getExecutionLifecycleState, type ExecutionLifecycleState } from './execution-lifecycle.js';
 import {
   resolveProjectPath,
   promptMailboxChecks,
@@ -56,6 +58,16 @@ const RUNTIME_STATE_PATH = path.join(FINGER_PATHS.runtime.schedulesDir, 'heartbe
 const CONFIG_RELOAD_DEBOUNCE_MS = 1000;
 const SYSTEM_AGENT_ID = 'finger-system-agent';
 const DEFAULT_SCHEDULED_PROGRESS_DELIVERY = normalizeProgressDeliveryPolicy({ mode: 'result_only' });
+const ACTIVE_LIFECYCLE_STAGES = new Set([
+  'received',
+  'session_bound',
+  'dispatching',
+  'running',
+  'waiting_tool',
+  'waiting_model',
+  'retrying',
+  'interrupted',
+]);
 
 function normalizeProjectPath(value: string): string {
   return value.trim().replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
@@ -248,6 +260,7 @@ export class HeartbeatScheduler {
     if (this.config.global?.enabled !== false) {
       const interval = this.config.global?.intervalMs ?? DEFAULT_TASK_INTERVAL_MS;
       if (this.shouldRun('global', interval)) {
+        await this.runExecutionWatchdog(SYSTEM_AGENT_ID, undefined);
         const pendingTasks = await readJsonlTasks();
         if (pendingTasks.length > 0) {
           const prompt = this.config.global?.prompt ?? buildHeartbeatPrompt(pendingTasks);
@@ -264,6 +277,7 @@ export class HeartbeatScheduler {
       const projectKey = `project:${projectId}`;
       const projectInterval = projectConfig.intervalMs ?? this.config.global?.intervalMs ?? DEFAULT_TASK_INTERVAL_MS;
       if (this.shouldRun(projectKey, projectInterval)) {
+        await this.runExecutionWatchdog(agent.agentId, projectId);
         await this.dispatchTask(agent.agentId, projectKey, projectId, projectConfig);
         this.lastRun.set(projectKey, Date.now());
       }
@@ -277,6 +291,69 @@ export class HeartbeatScheduler {
         }
       }
     }
+  }
+
+  private shouldResumeLifecycle(lifecycle: ExecutionLifecycleState): boolean {
+    if (lifecycle.finishReason === 'stop') return false;
+    if (ACTIVE_LIFECYCLE_STAGES.has(lifecycle.stage)) return true;
+    return lifecycle.stage === 'failed';
+  }
+
+  private resolveLatestBoundSessionId(agentId: string): string | null {
+    const store = new SessionControlPlaneStore();
+    const sessionManager = this.deps.sessionManager as {
+      getSession?: (sessionId: string) => unknown;
+      getOrCreateSystemSession?: () => { id?: string };
+    };
+    const getSession = sessionManager.getSession;
+    const bindings = store.list({ agentId, provider: 'finger' });
+    const latest = bindings.find((binding) => (
+      typeof getSession === 'function' ? !!getSession.call(this.deps.sessionManager, binding.fingerSessionId) : true
+    )) ?? bindings[0];
+    if (latest?.fingerSessionId) return latest.fingerSessionId;
+    if (agentId === SYSTEM_AGENT_ID && typeof sessionManager.getOrCreateSystemSession === 'function') {
+      const session = sessionManager.getOrCreateSystemSession();
+      if (session?.id && typeof session.id === 'string' && session.id.trim().length > 0) {
+        return session.id.trim();
+      }
+    }
+    return null;
+  }
+
+  private async runExecutionWatchdog(agentId: string, projectId?: string): Promise<void> {
+    const sessionId = this.resolveLatestBoundSessionId(agentId);
+    if (!sessionId) return;
+    const lifecycle = getExecutionLifecycleState(this.deps.sessionManager, sessionId);
+    const lifecycleNeedsResume = lifecycle ? this.shouldResumeLifecycle(lifecycle) : false;
+    const openRoutes = projectId
+      ? listReviewRoutes().filter((route) => route.projectId === projectId)
+      : [];
+    if (!lifecycleNeedsResume && openRoutes.length === 0) return;
+
+    const routeSummary = openRoutes.length > 0
+      ? openRoutes.slice(0, 3).map((route) => route.taskName || route.taskId).join('；')
+      : '';
+    const watchdogReason = lifecycleNeedsResume ? 'lifecycle_resume' : 'open_task_resume';
+    const watchdogTaskId = `watchdog:${watchdogReason}:${projectId ?? 'system'}`;
+    const promptLines = [
+      '# Execution Watchdog',
+      lifecycleNeedsResume
+        ? '检测到上一轮执行未 finish_reason=stop，请从中断点继续执行直到真正完成。'
+        : '检测到该 agent 仍有未完成任务，请继续执行，不要提前停止。',
+      `agent: ${agentId}`,
+      `session: ${sessionId}`,
+      lifecycle?.stage ? `lifecycle: ${lifecycle.stage}${lifecycle.substage ? `/${lifecycle.substage}` : ''}` : '',
+      openRoutes.length > 0 ? `openTaskCount: ${openRoutes.length}` : '',
+      routeSummary ? `openTasks: ${routeSummary}` : '',
+    ].filter(Boolean);
+
+    await this.dispatchDirect(
+      agentId,
+      watchdogTaskId,
+      projectId,
+      promptLines.join('\n'),
+      { progressDelivery: normalizeProgressDeliveryPolicy({ mode: 'silent' }) ?? undefined },
+    );
   }
 
   private resolveProjectConfig(projectId: string, projectPath: string): HeartbeatProjectConfig {

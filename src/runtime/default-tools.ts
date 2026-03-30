@@ -3,6 +3,7 @@ import {
   registerProjectToolInRuntime,
   registerSystemRegistryToolInRuntime,
   registerReportTaskCompletionToolInRuntime,
+  registerProjectTaskToolInRuntime,
   registerSendLocalImageToolInRuntime,
 } from '../tools/internal/index.js';
 import { ToolRegistry } from './tool-registry.js';
@@ -35,6 +36,9 @@ export function registerDefaultRuntimeTools(
     loadedToolNames.push('system-registry-tool');
     registerReportTaskCompletionToolInRuntime(runtimeToolRegistry, getAgentRuntimeDeps);
     loadedToolNames.push('report-task-completion');
+    registerProjectTaskToolInRuntime(runtimeToolRegistry, getAgentRuntimeDeps);
+    loadedToolNames.push('project.task.status');
+    loadedToolNames.push('project.task.update');
     registerSendLocalImageToolInRuntime(runtimeToolRegistry, getAgentRuntimeDeps);
     loadedToolNames.push('send_local_image');
   }

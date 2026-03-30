@@ -2,19 +2,14 @@
  * Session Types - 会话相关类型定义
  *
  * Ledger-Session 一体化架构：
- * - Ledger 是唯一数据真源 (SSOT)
- * - Session 是动态视图，缓存当前有效窗口
- * - messages 字段已废弃，仅保留向后兼容
+ * - Ledger 负责 append-only 持久化流水
+ * - Session messages 是运行时消费的唯一会话快照（projection）
+ * - 每次写入先落 Ledger，再同步更新 Session snapshot
  */
 
 import type { Attachment } from '../runtime/events.js';
 
-/**
- * Session 元数据 + Ledger 指针
- *
- * Session 不再存储 messages 数组作为真源。
- * 所有消息写入 Ledger JSONL，Session 只保存指针和缓存视图。
- */
+/** Session 元数据 + Ledger 指针 */
 export interface Session {
   id: string;
   name: string;
@@ -24,9 +19,9 @@ export interface Session {
   lastAccessedAt: string;
 
   /**
-   * @deprecated 消息已迁移至 Ledger (context-ledger.jsonl)。
-   * 此字段仅保留向后兼容，新代码不应直接读写。
-   * 将在 finger-249.7 中完全移除。
+   * Runtime session snapshot (projection).
+   * Runtime context/history consumption should read from this field.
+   * Ledger remains append-only canonical timeline for persistence/query.
    */
   messages: SessionMessage[];
 

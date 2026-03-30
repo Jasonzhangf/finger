@@ -174,4 +174,57 @@ describe('context_builder.rebuild tool', () => {
       rmSync(rootDir, { recursive: true, force: true });
     }
   });
+
+  it('rebuilds from runtime session snapshot when provided (without ledger replay)', async () => {
+    const rootDir = mkdtempSync(join(tmpdir(), 'finger-context-rebuild-tool-session-'));
+    const sessionId = 'ctx-runtime-snapshot';
+    const agentId = 'finger-system-agent';
+    try {
+      const result = await contextBuilderRebuildTool.execute(
+        {
+          session_id: sessionId,
+          agent_id: agentId,
+          current_prompt: 'context continuity',
+          include_messages: true,
+          _runtime_context: {
+            root_dir: rootDir,
+            session_messages: [
+              {
+                id: 'ss1',
+                role: 'user',
+                content: 'task one request',
+                timestamp: new Date(Date.now() - 10_000).toISOString(),
+              },
+              {
+                id: 'ss2',
+                role: 'assistant',
+                content: 'task one summary',
+                timestamp: new Date(Date.now() - 9_000).toISOString(),
+              },
+              {
+                id: 'ss3',
+                role: 'user',
+                content: 'task two request',
+                timestamp: new Date(Date.now() - 1_000).toISOString(),
+              },
+            ],
+          },
+        },
+        {
+          invocationId: 'tool-ctx-rebuild-runtime-1',
+          cwd: process.cwd(),
+          timestamp: new Date().toISOString(),
+          sessionId,
+          agentId,
+        },
+      );
+
+      expect(result.ok).toBe(true);
+      expect(result.selectedBlockIds.length).toBeGreaterThan(0);
+      expect(result.messages?.some((item) => item.id === 'ss1')).toBe(true);
+      expect(result.messages?.some((item) => item.id === 'ss3')).toBe(true);
+    } finally {
+      rmSync(rootDir, { recursive: true, force: true });
+    }
+  });
 });

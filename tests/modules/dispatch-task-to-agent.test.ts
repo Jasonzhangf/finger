@@ -284,4 +284,117 @@ describe('dispatchTaskToAgent', () => {
     expect(sessionManager.setCurrentSession).toHaveBeenCalledWith('root-session-2');
     expect((deps as any).ensureRuntimeChildSession).toHaveBeenCalledWith(expect.objectContaining({ id: 'root-session-2' }), 'finger-reviewer');
   });
+
+  it('suppresses system->project dispatch when project agent is already busy', async () => {
+    const execute = vi.fn(async (command: string) => {
+      if (command === 'runtime_view') {
+        return {
+          agents: [
+            {
+              id: 'finger-project-agent',
+              status: 'running',
+              lastEvent: {
+                dispatchId: 'dispatch-active-1',
+                taskId: 'task-active-1',
+                summary: 'project task is executing',
+              },
+            },
+          ],
+        };
+      }
+      return {
+        ok: true,
+        dispatchId: 'dispatch-new',
+        status: 'completed',
+        result: { summary: 'should not run' },
+      };
+    });
+    const { deps, sessionCalls, sessionManager } = createDeps(execute);
+    const res = await mod.dispatchTaskToAgent(deps as any, {
+      sourceAgentId: 'finger-system-agent',
+      targetAgentId: 'finger-project-agent',
+      sessionId: 'session-1',
+      task: {
+        prompt: 'run weibo detail task',
+      },
+      assignment: {
+        taskId: 'task-active-1',
+      },
+    } as any);
+
+    expect(res.ok).toBe(true);
+    expect(res.status).toBe('queued');
+    expect(res.dispatchId).toBe('dispatch-active-1');
+    expect(execute).not.toHaveBeenCalledWith('dispatch', expect.anything());
+    expect(sessionCalls.length).toBe(0);
+    expect(sessionManager.updateContext).toHaveBeenCalledWith('session-1', expect.objectContaining({
+      executionLifecycle: expect.objectContaining({
+        substage: 'dispatch_suppressed_target_busy',
+        recoveryAction: 'wait_current_task',
+      }),
+    }));
+  });
+
+  it('suppresses system->project dispatch when project session lifecycle is still active', async () => {
+    const execute = vi.fn(async (command: string) => {
+      if (command === 'runtime_view') {
+        return {
+          agents: [
+            {
+              id: 'finger-project-agent',
+              status: 'idle',
+              lastEvent: {
+                dispatchId: 'dispatch-idle',
+                taskId: 'task-idle',
+              },
+            },
+          ],
+        };
+      }
+      return {
+        ok: true,
+        dispatchId: 'dispatch-new',
+        status: 'completed',
+        result: { summary: 'should not run' },
+      };
+    });
+    const { deps, sessionCalls, sessionManager } = createDeps(execute);
+    sessionManager.getSession.mockImplementation((id: string) => {
+      if (id === 'session-1') {
+        return {
+          id,
+          context: {
+            executionLifecycle: {
+              stage: 'running',
+              substage: 'turn_start',
+              startedAt: '2026-03-29T10:00:00.000Z',
+              lastTransitionAt: '2026-03-29T10:01:00.000Z',
+              retryCount: 0,
+            },
+          },
+          projectPath: '/tmp/project-a',
+          messages: [],
+        };
+      }
+      return { id, context: {}, projectPath: '/tmp/project-a', messages: [] };
+    });
+
+    const res = await mod.dispatchTaskToAgent(deps as any, {
+      sourceAgentId: 'finger-system-agent',
+      targetAgentId: 'finger-project-agent',
+      sessionId: 'session-1',
+      task: { prompt: 'dispatch again' },
+      assignment: { taskId: 'task-idle' },
+    } as any);
+
+    expect(res.ok).toBe(true);
+    expect(res.status).toBe('queued');
+    expect(execute).not.toHaveBeenCalledWith('dispatch', expect.anything());
+    expect(sessionCalls.length).toBe(0);
+    expect(sessionManager.updateContext).toHaveBeenCalledWith('session-1', expect.objectContaining({
+      executionLifecycle: expect.objectContaining({
+        substage: 'dispatch_suppressed_active_lifecycle',
+      }),
+    }));
+  });
 });

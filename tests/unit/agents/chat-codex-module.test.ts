@@ -811,11 +811,14 @@ describe('chat-codex module', () => {
     expect(options?.responses?.text?.output_schema).toEqual(explicitSchema);
   });
 
-  it('loads FLOW.md with hard 10k-char truncation controlled by code', () => {
+  it('loads Global+Local FLOW in order with per-file hard 10k truncation', () => {
     const tempDir = mkdtempSync(join(tmpdir(), 'finger-flow-test-'));
-    const flowPath = join(tempDir, 'FLOW.md');
-    const overLimit = `${'A'.repeat(10_050)}\nEND`;
-    writeFileSync(flowPath, overLimit, 'utf-8');
+    const globalFlowPath = join(tempDir, 'FLOW.global.md');
+    const localFlowPath = join(tempDir, 'FLOW.local.md');
+    const globalContent = `GLOBAL\n${'G'.repeat(10_050)}\nGLOBAL_END`;
+    const localContent = `LOCAL\n${'L'.repeat(10_050)}\nLOCAL_END`;
+    writeFileSync(globalFlowPath, globalContent, 'utf-8');
+    writeFileSync(localFlowPath, localContent, 'utf-8');
 
     try {
       const options = __chatCodexInternals.buildKernelUserTurnOptions(
@@ -826,7 +829,8 @@ describe('chat-codex module', () => {
             kernelMode: 'main',
             skillsPromptEnabled: false,
             mailboxPromptEnabled: false,
-            flowFilePath: flowPath,
+            globalFlowFilePath: globalFlowPath,
+            flowFilePath: localFlowPath,
           },
         },
         undefined,
@@ -834,16 +838,24 @@ describe('chat-codex module', () => {
 
       const instructions = options?.developer_instructions ?? '';
       expect(instructions).toContain('# Task Flow Runtime');
+      expect(instructions).toContain('Load order is fixed: Global first, Local second.');
+      expect(instructions).toContain('Conflict rule: Local FLOW has higher priority than Global FLOW.');
       expect(instructions).toContain('...[TRUNCATED_AT_10000_CHARS]');
-      expect(instructions).toContain(`FLOW.path=${flowPath}`);
+      expect(instructions).toContain(`FLOW.global.path=${globalFlowPath}`);
+      expect(instructions).toContain(`FLOW.local.path=${localFlowPath}`);
+      const globalHeaderIndex = instructions.indexOf('FLOW.content.global:');
+      const localHeaderIndex = instructions.indexOf('FLOW.content.local:');
+      expect(globalHeaderIndex).toBeGreaterThanOrEqual(0);
+      expect(localHeaderIndex).toBeGreaterThan(globalHeaderIndex);
 
-      const fenceStart = instructions.indexOf('```md');
-      const fenceEnd = instructions.indexOf('```', fenceStart + 5);
-      expect(fenceStart).toBeGreaterThanOrEqual(0);
-      expect(fenceEnd).toBeGreaterThan(fenceStart);
-      const fencedContent = instructions.slice(fenceStart + '```md\n'.length, fenceEnd).trimEnd();
-      expect(fencedContent.startsWith('A'.repeat(10_000))).toBe(true);
-      expect(fencedContent).not.toContain('END');
+      const fencedBlocks = Array.from(instructions.matchAll(/```md\n([\s\S]*?)```/g)).map((match) => match[1] ?? '');
+      expect(fencedBlocks.length).toBe(2);
+      expect(fencedBlocks[0]?.startsWith('GLOBAL')).toBe(true);
+      expect(fencedBlocks[1]?.startsWith('LOCAL')).toBe(true);
+      expect(fencedBlocks[0]).toContain('...[TRUNCATED_AT_10000_CHARS]');
+      expect(fencedBlocks[1]).toContain('...[TRUNCATED_AT_10000_CHARS]');
+      expect(fencedBlocks[0]).not.toContain('GLOBAL_END');
+      expect(fencedBlocks[1]).not.toContain('LOCAL_END');
     } finally {
       rmSync(tempDir, { recursive: true, force: true });
     }
@@ -865,6 +877,86 @@ describe('chat-codex module', () => {
     );
 
     expect(options?.developer_instructions ?? '').not.toContain('# Task Flow Runtime');
+  });
+
+  it('keeps skills/mailbox/flow prompt blocks stable across raw and rebuilt history sources', () => {
+    const tempDir = mkdtempSync(join(tmpdir(), 'finger-flow-stability-'));
+    const globalFlowPath = join(tempDir, 'global-flow.md');
+    const localFlowPath = join(tempDir, 'local-flow.md');
+    writeFileSync(globalFlowPath, 'GLOBAL_FLOW_STABILITY_MARKER', 'utf-8');
+    writeFileSync(localFlowPath, 'LOCAL_FLOW_STABILITY_MARKER', 'utf-8');
+
+    try {
+      const baseContext = {
+        sessionId: 'session-1',
+        metadata: {
+          roleProfile: 'orchestrator',
+          kernelMode: 'main',
+          globalFlowFilePath: globalFlowPath,
+          flowFilePath: localFlowPath,
+          mailboxPromptEnabled: true,
+          skillsPromptEnabled: true,
+        },
+        mailboxSnapshot: {
+          currentSeq: 12,
+          hasUnread: false,
+          entries: [],
+        },
+      } as const;
+
+      const rawOptions = __chatCodexInternals.buildKernelUserTurnOptions(
+        {
+          ...baseContext,
+          history: [
+            { role: 'user', content: 'raw source task' },
+            { role: 'assistant', content: 'raw source reply' },
+          ],
+          metadata: {
+            ...baseContext.metadata,
+            contextHistorySource: 'raw_session',
+            contextBuilderBypassed: true,
+          },
+        },
+        undefined,
+      );
+
+      const rebuiltOptions = __chatCodexInternals.buildKernelUserTurnOptions(
+        {
+          ...baseContext,
+          history: [
+            { role: 'user', content: 'rebuilt source task' },
+            { role: 'assistant', content: 'rebuilt source reply' },
+          ],
+          metadata: {
+            ...baseContext.metadata,
+            contextHistorySource: 'context_builder_on_demand',
+            contextBuilderRebuilt: true,
+          },
+        },
+        undefined,
+      );
+
+      const rawInstructions = rawOptions?.developer_instructions ?? '';
+      const rebuiltInstructions = rebuiltOptions?.developer_instructions ?? '';
+
+      const requiredMarkers = [
+        '# Task Flow Runtime',
+        '# Mailbox Runtime',
+        `FLOW.global.path=${globalFlowPath}`,
+        `FLOW.local.path=${localFlowPath}`,
+        'GLOBAL_FLOW_STABILITY_MARKER',
+        'LOCAL_FLOW_STABILITY_MARKER',
+      ];
+      for (const marker of requiredMarkers) {
+        expect(rawInstructions).toContain(marker);
+        expect(rebuiltInstructions).toContain(marker);
+      }
+
+      const skillsHeader = '## Skills';
+      expect(rawInstructions.includes(skillsHeader)).toBe(rebuiltInstructions.includes(skillsHeader));
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true });
+    }
   });
 
   it('falls back to metadata kernelApiHistory when context-builder history is preferred but runtime history is empty', () => {
@@ -896,6 +988,41 @@ describe('chat-codex module', () => {
     );
 
     expect(options?.history_items).toEqual(metadataHistory);
+  });
+
+  it('prefers runtime raw_session history over metadata kernelApiHistory when both exist', () => {
+    const metadataHistory = [
+      {
+        role: 'user',
+        content: [{ type: 'input_text', text: 'metadata history user' }],
+      },
+    ];
+    const options = __chatCodexInternals.buildKernelUserTurnOptions(
+      {
+        sessionId: 'session-1',
+        history: [
+          { role: 'user', content: 'runtime user history' },
+          { role: 'assistant', content: 'runtime assistant history' },
+        ],
+        metadata: {
+          roleProfile: 'system',
+          role: 'user',
+          source: 'channel',
+          kernelMode: 'main',
+          contextHistorySource: 'raw_session',
+          contextBuilderBypassed: true,
+          contextBuilderBypassReason: 'on_demand_not_requested',
+          kernelApiHistory: metadataHistory,
+        },
+      },
+      undefined,
+    );
+
+    expect(Array.isArray(options?.history_items)).toBe(true);
+    const historyItems = options?.history_items ?? [];
+    expect(historyItems.length).toBe(2);
+    expect(JSON.stringify(historyItems)).toContain('runtime user history');
+    expect(JSON.stringify(historyItems)).not.toContain('metadata history user');
   });
 
 });

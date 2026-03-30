@@ -75,7 +75,7 @@ describe('AgentStatusSubscriber text updates', () => {
     }
   });
 
-  it('respects pushSettings for qqbot (no longer hard-coded verbose)', async () => {
+  it('applies update-stream policy before channel pushSettings for qqbot', async () => {
     const eventBus = new UnifiedEventBus();
     const messageHub = {
       routeToOutput: vi.fn().mockResolvedValue(undefined),
@@ -104,15 +104,25 @@ describe('AgentStatusSubscriber text updates', () => {
       userId: 'user-qq',
     });
 
-    // qqbot is no longer hard-coded verbose; it respects pushSettings
+    // Merge priority: session > update-stream > channel pushSettings.
+    // With default update-stream policy, qqbot still emits reasoning/body.
     await subscriber.sendReasoningUpdate('session-qq', 'finger-system-agent', '先检查日志');
     await subscriber.sendBodyUpdate('session-qq', 'finger-system-agent', '正文增量');
 
-    // reasoning=false and bodyUpdates=false => nothing pushed
-    expect(messageHub.routeToOutput).not.toHaveBeenCalled();
+    expect(messageHub.routeToOutput).toHaveBeenCalledTimes(2);
+    expect(messageHub.routeToOutput).toHaveBeenNthCalledWith(
+      1,
+      'channel-bridge-qqbot',
+      expect.objectContaining({ content: '思考：先检查日志' }),
+    );
+    expect(messageHub.routeToOutput).toHaveBeenNthCalledWith(
+      2,
+      'channel-bridge-qqbot',
+      expect.objectContaining({ content: '正文：正文增量' }),
+    );
   });
 
-  it('respects pushSettings for webui channels', async () => {
+  it('applies update-stream policy before channel pushSettings for webui', async () => {
     const eventBus = new UnifiedEventBus();
     const messageHub = {
       routeToOutput: vi.fn().mockResolvedValue(undefined),
@@ -144,7 +154,17 @@ describe('AgentStatusSubscriber text updates', () => {
     await subscriber.sendReasoningUpdate('session-webui', 'finger-system-agent', '不会推送');
     await subscriber.sendBodyUpdate('session-webui', 'finger-system-agent', '不会推送');
 
-    expect(messageHub.routeToOutput).not.toHaveBeenCalled();
+    expect(messageHub.routeToOutput).toHaveBeenCalledTimes(2);
+    expect(messageHub.routeToOutput).toHaveBeenNthCalledWith(
+      1,
+      'channel-bridge-webui',
+      expect.objectContaining({ content: '思考：不会推送' }),
+    );
+    expect(messageHub.routeToOutput).toHaveBeenNthCalledWith(
+      2,
+      'channel-bridge-webui',
+      expect.objectContaining({ content: '正文：不会推送' }),
+    );
   });
 
   it('deduplicates identical body updates within same session', async () => {

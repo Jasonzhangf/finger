@@ -3,8 +3,9 @@
  * 负责会话创建、恢复、隔离、上下文压缩
  *
  * Ledger-Session 一体化架构：
- * - Ledger (context-ledger.jsonl) 是消息的唯一数据真源
- * - Session 只存元数据和指针，messages 字段已废弃
+ * - Ledger (context-ledger.jsonl) 负责 append-only 持久化
+ * - Session messages 是运行时消费的会话快照（projection）
+ * - 写入顺序：先 Ledger，再同步更新 Session snapshot
  */
 
 import fs from 'fs';
@@ -169,9 +170,8 @@ export class SessionManager {
     session.projectPath = this.normalizeProjectPath(session.projectPath);
     // Ensure ledger pointer fields exist for backward compatibility
     ensureLedgerPointers(session);
-    // Session file no longer stores message history as source-of-truth.
-    // Keep persisted metadata, but force in-memory message cache empty and rebuild from ledger views.
-    session.messages = [];
+    session.messages = Array.isArray(session.messages) ? session.messages : [];
+    this.updateSessionProjectionState(session);
     delete (session as Session & { _cachedView?: unknown })._cachedView;
     this.sessions.set(session.id, session);
     this.sessionFilePaths.set(session.id, filePath);
@@ -278,16 +278,17 @@ export class SessionManager {
 
   private saveSession(session: Session): void {
     session.updatedAt = new Date().toISOString();
+    if (!Array.isArray(session.messages)) {
+      session.messages = [];
+    }
+    this.updateSessionProjectionState(session);
     const sessionDir = this.getSessionDir(session);
     if (!fs.existsSync(sessionDir)) {
       fs.mkdirSync(sessionDir, { recursive: true });
     }
 
     const filePath = this.getSessionPath(session);
-    const persistedSession: Session = {
-      ...session,
-      messages: [],
-    };
+    const persistedSession: Session = { ...session };
     delete (persistedSession as Session & { _cachedView?: unknown })._cachedView;
     fs.writeFileSync(filePath, JSON.stringify(persistedSession, null, 2));
 
@@ -300,6 +301,22 @@ export class SessionManager {
       }
     }
     this.sessionFilePaths.set(session.id, filePath);
+  }
+
+  private updateSessionProjectionState(session: Session): void {
+    const messages = Array.isArray(session.messages) ? session.messages : [];
+    const last = messages.length > 0 ? messages[messages.length - 1] : undefined;
+    const context = (session.context ?? {}) as Record<string, unknown>;
+    session.context = {
+      ...context,
+      sessionProjection: {
+        version: 1,
+        messageCount: messages.length,
+        ...(last?.id ? { lastMessageId: last.id } : {}),
+        ...(last?.timestamp ? { lastMessageAt: last.timestamp } : {}),
+        updatedAt: new Date().toISOString(),
+      },
+    };
   }
 
   createSession(projectPath: string, name?: string, options?: { allowReuse?: boolean }): Session {
@@ -898,7 +915,7 @@ export class SessionManager {
 
   /**
    * Async version of getMessages.
-   * Prefers session snapshot; hydrates from ledger view only when snapshot is empty.
+   * Runtime strict mode: consumes session snapshot only.
    */
   async getMessagesAsync(sessionId: string, limit = 50): Promise<SessionMessage[]> {
     const session = this.sessions.get(sessionId);
@@ -912,7 +929,14 @@ export class SessionManager {
       return snapshot.slice(-limit);
     }
 
-    // Runtime consumption strict mode: do not read ledger replay as message source.
+    const view = session._cachedView;
+    if (view) {
+      const msgs = view.messages;
+      if (!Number.isFinite(limit) || limit <= 0) {
+        return this.viewMessagesToSessionMessages(msgs);
+      }
+      return this.viewMessagesToSessionMessages(msgs.slice(-limit));
+    }
     return [];
   }
 

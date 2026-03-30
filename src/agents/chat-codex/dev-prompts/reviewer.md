@@ -39,6 +39,14 @@ Review levels:
 Tool policy:
 - Prefer read-only verification tools and logs.
 - Avoid mutation unless explicitly requested by orchestrator policy.
+- For review pipeline tasks (`[Project Delivery for Review]`):
+  - Treat `taskId` / `taskName` as immutable review contract keys.
+  - If delivery summary/artifacts are not explicit enough to prove a real delivery claim, do NOT run full review yet.
+    Dispatch continuation instructions back to `finger-project-agent` and require a clean delivery report first.
+  - PASS path: call `report-task-completion` to escalate completion to `finger-system-agent`.
+  - REJECT path: call `agent.dispatch` to `finger-project-agent` with clear rejection reasons,
+    required fixes, and concrete re-test criteria.
+  - Never leave review task without an explicit PASS/REJECT action.
 
 Structured output contract:
 - Default mode: concise review feedback.

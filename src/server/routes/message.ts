@@ -304,9 +304,9 @@ export function registerMessageRoutes(app: Express, deps: MessageRouteDeps): voi
       action: requestSessionId ? 'reuse' : 'new',
       target: targetId,
     });
-      if (requestSessionId) {
-        const sessionProjectPath = isSystemRoute ? SYSTEM_PROJECT_PATH : undefined;
-        ensureSessionExists(deps.sessionManager, requestSessionId, body.target, sessionProjectPath);
+    if (requestSessionId) {
+      const sessionProjectPath = isSystemRoute ? SYSTEM_PROJECT_PATH : undefined;
+      ensureSessionExists(deps.sessionManager, requestSessionId, body.target, sessionProjectPath);
       if (isObjectRecord(requestMessage)) {
         const metadata = isObjectRecord(requestMessage.metadata) ? requestMessage.metadata : {};
         const explicitProgressDelivery = normalizeProgressDeliveryPolicy(
@@ -333,6 +333,31 @@ export function registerMessageRoutes(app: Express, deps: MessageRouteDeps): voi
           }
         }
       }
+    }
+    if (requestSessionId && isObjectRecord(requestMessage)) {
+      const session = deps.sessionManager.getSession(requestSessionId);
+      const sessionContext = (session?.context && typeof session.context === 'object')
+        ? (session.context as Record<string, unknown>)
+        : {};
+      const metadata = isObjectRecord(requestMessage.metadata) ? requestMessage.metadata : {};
+      const taskRouterPath = (
+        typeof session?.projectPath === 'string' && session.projectPath.trim().length > 0
+          ? `${session.projectPath.replace(/\/+$/, '')}/TASK.md`
+          : undefined
+      );
+      requestMessage = {
+        ...requestMessage,
+        metadata: {
+          ...metadata,
+          sessionContextSnapshot: {
+            executionLifecycle: sessionContext.executionLifecycle,
+            projectTaskState: sessionContext.projectTaskState,
+            projectTaskRegistry: sessionContext.projectTaskRegistry,
+            ...(taskRouterPath ? { taskRouterPath } : {}),
+          },
+          ...(taskRouterPath ? { taskRouterPath } : {}),
+        },
+      };
     }
     requestMessage = withSessionWorkspaceDefaults(requestMessage, requestSessionId, deps.sessionWorkspaces);
     if (requestSessionId) {

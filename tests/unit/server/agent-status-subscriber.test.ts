@@ -874,7 +874,7 @@ describe('AgentStatusSubscriber', () => {
       stepSubscriber.stop();
     });
 
-    it('应该在 stepUpdates=false 时不推送 step', async () => {
+    it('应该在 channel stepUpdates=false 时仍遵循 update-stream 默认策略推送 step', async () => {
       const mockMessageHub = {
         routeToOutput: vi.fn().mockResolvedValue(undefined),
       };
@@ -898,7 +898,9 @@ describe('AgentStatusSubscriber', () => {
       });
       stepSubscriber.start();
 
-      // 发送 10 个 step 事件（全部应被跳过）
+      // 发送 10 个 step 事件。
+      // 合并优先级：session > update-stream > channel pushSettings。
+      // 因此即使 channel stepUpdates=false，默认 update-stream 仍会推送 step 批次。
       for (let i = 1; i <= 10; i++) {
         const stepEvent: RuntimeEvent = {
           type: 'agent_step_completed',
@@ -911,7 +913,13 @@ describe('AgentStatusSubscriber', () => {
       }
       await new Promise(resolve => setTimeout(resolve, 100));
 
-      expect(mockMessageHub.routeToOutput).not.toHaveBeenCalled();
+      expect(mockMessageHub.routeToOutput).toHaveBeenCalledTimes(2);
+      const firstCall = mockMessageHub.routeToOutput.mock.calls[0];
+      const secondCall = mockMessageHub.routeToOutput.mock.calls[1];
+      expect(firstCall[0]).toBe('channel-bridge-qqbot');
+      expect(secondCall[0]).toBe('channel-bridge-qqbot');
+      expect(firstCall[1]?.statusUpdate?.status?.summary).toContain('5');
+      expect(secondCall[1]?.statusUpdate?.status?.summary).toContain('5');
       stepSubscriber.stop();
     });
 

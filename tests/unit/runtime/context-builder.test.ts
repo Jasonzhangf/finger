@@ -308,6 +308,55 @@ describe('context-builder', () => {
     });
   });
 
+  describe('session snapshot source', () => {
+    it('builds context from session snapshot without reading ledger replay', async () => {
+      const now = Date.now();
+      const rootDir = join(tmpdir(), `finger-ctx-builder-session-${now}`);
+      mkdirSync(rootDir, { recursive: true });
+      try {
+        const result = await buildContext(
+          {
+            rootDir,
+            sessionId: 'ctx-session-snapshot',
+            agentId: 'finger-system-agent',
+            mode: 'main',
+            sessionMessages: [
+              {
+                id: 's1',
+                role: 'user',
+                content: 'task A request',
+                timestamp: new Date(now - 10_000).toISOString(),
+              },
+              {
+                id: 's2',
+                role: 'assistant',
+                content: 'task A summary',
+                timestamp: new Date(now - 9_000).toISOString(),
+              },
+              {
+                id: 's3',
+                role: 'user',
+                content: 'task B request',
+                timestamp: new Date(now - 2_000).toISOString(),
+              },
+            ],
+          },
+          {
+            targetBudget: 1_000_000,
+            includeMemoryMd: false,
+            enableTaskGrouping: true,
+          },
+        );
+
+        expect(result.ok).toBe(true);
+        expect(result.metadata.rawTaskBlockCount).toBe(2);
+        expect(result.messages.map((item) => item.id)).toEqual(['s1', 's2', 's3']);
+      } finally {
+        rmSync(rootDir, { recursive: true, force: true });
+      }
+    });
+  });
+
   describe('no task grouping mode', () => {
     it('creates one block per entry when task grouping is disabled', async () => {
       const setup = setupLedgerForContextBuilder('no-group');

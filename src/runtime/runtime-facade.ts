@@ -415,7 +415,37 @@ export class RuntimeFacade {
     });
 
     try {
-      const result = await this.toolRegistry.execute(toolName, input, {
+      const executionInput = (
+        toolName === 'context_builder.rebuild'
+        && typeof input === 'object'
+        && input !== null
+        && !Array.isArray(input)
+      )
+        ? (() => {
+            const payload = { ...(input as Record<string, unknown>) };
+            const runtimeContextRaw = (
+              typeof payload._runtime_context === 'object'
+              && payload._runtime_context !== null
+              && !Array.isArray(payload._runtime_context)
+            )
+              ? (payload._runtime_context as Record<string, unknown>)
+              : {};
+            const hasSessionMessages = Array.isArray(runtimeContextRaw.session_messages);
+            if (!hasSessionMessages) {
+              runtimeContextRaw.session_messages = this.sessionManager.getMessages(sessionId, 0);
+            }
+            if (typeof runtimeContextRaw.session_id !== 'string' || runtimeContextRaw.session_id.trim().length === 0) {
+              runtimeContextRaw.session_id = sessionId;
+            }
+            if (typeof runtimeContextRaw.agent_id !== 'string' || runtimeContextRaw.agent_id.trim().length === 0) {
+              runtimeContextRaw.agent_id = agentId;
+            }
+            payload._runtime_context = runtimeContextRaw;
+            return payload;
+          })()
+        : input;
+
+      const result = await this.toolRegistry.execute(toolName, executionInput, {
         agentId,
         sessionId,
       });
@@ -429,7 +459,7 @@ export class RuntimeFacade {
         agentId,
         sessionId,
         timestamp: new Date().toISOString(),
-        payload: { input, output: result, duration },
+        payload: { input: executionInput, output: result, duration },
       });
 
       if (toolName === 'view_image') {
@@ -915,6 +945,7 @@ export class RuntimeFacade {
         ? path.join(systemRoot, 'sessions')
         : FINGER_PATHS.sessions.dir;
       const rootDir = configuredRootDir ?? inferredRootDir;
+      const sessionMessages = this.sessionManager.getMessages(sessionId, 0);
 
       const settings = loadContextBuilderSettings();
       const configuredBudget = Number.isFinite(settings.historyBudgetTokens) && settings.historyBudgetTokens > 0
@@ -929,6 +960,7 @@ export class RuntimeFacade {
           sessionId,
           agentId,
           mode: 'main',
+          sessionMessages,
         },
         {
           targetBudget,

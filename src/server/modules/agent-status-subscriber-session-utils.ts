@@ -4,6 +4,12 @@ import type { MessageHub } from '../../orchestration/message-hub.js';
 import type { AgentRuntimeDeps } from './agent-runtime/types.js';
 import type { SessionEnvelopeMapping } from './agent-status-subscriber-types.js';
 import type { ProgressDeliveryPolicy } from '../../common/progress-delivery-policy.js';
+import { enqueueUpdateStreamDelivery } from './update-stream-delivery-adapter.js';
+import {
+  inferUpdateStreamRole,
+  inferUpdateStreamSourceType,
+  resolveUpdateStreamPolicy,
+} from './update-stream-policy.js';
 
 export interface SessionRelationInfo {
   sessionId: string;
@@ -168,18 +174,41 @@ export function resolvePushSettingsForSession(params: {
   fallbackPushSettings: PushSettings;
   normalizePolicy: (value: unknown) => ProgressDeliveryPolicy | undefined;
   applyPolicy: (base: PushSettings, policy?: ProgressDeliveryPolicy) => PushSettings;
+  phase?: string;
+  kind?: string;
+  sourceType?: string;
+  agentId?: string;
 }): PushSettings {
   const base = params.channelBridgeManager
     ? params.channelBridgeManager.getPushSettings(params.channelId)
     : params.fallbackPushSettings;
   const context = resolveContextWithFallback(params.sessionId, params.deps);
-  const policy = params.normalizePolicy(
+  const ownerAgentId = typeof context.ownerAgentId === 'string' ? context.ownerAgentId.trim() : '';
+  const candidateAgentId = typeof params.agentId === 'string' && params.agentId.trim().length > 0
+    ? params.agentId.trim()
+    : ownerAgentId;
+  const hasScheduledPolicy = context.scheduledProgressDelivery !== undefined || context.scheduled_progress_delivery !== undefined;
+  const sourceType = inferUpdateStreamSourceType({
+    explicit: params.sourceType ?? context.sourceType ?? context.source_type,
+    hasScheduledPolicy,
+  });
+  const role = inferUpdateStreamRole(candidateAgentId);
+  const updateStreamPolicy = resolveUpdateStreamPolicy({
+    channelId: params.channelId,
+    role,
+    sourceType,
+    phase: params.phase,
+    kind: params.kind,
+  });
+  const mergedBase = params.applyPolicy(base, updateStreamPolicy);
+
+  const sessionPolicy = params.normalizePolicy(
     context.progressDelivery
     ?? context.progress_delivery
     ?? context.scheduledProgressDelivery
     ?? context.scheduled_progress_delivery,
   );
-  return params.applyPolicy(base, policy);
+  return params.applyPolicy(mergedBase, sessionPolicy);
 }
 
 export function registerSessionMapping(
@@ -230,7 +259,12 @@ export function resolveEnvelopeMappingForSession(
   sessionId: string,
   deps: AgentRuntimeDeps,
   state: SubscriberRouteState,
+  visited?: Set<string>,
 ): SessionEnvelopeMapping | null {
+  const cycleGuard = visited ?? new Set<string>();
+  if (cycleGuard.has(sessionId)) return null;
+  cycleGuard.add(sessionId);
+
   const direct = state.sessionEnvelopeMap.get(sessionId);
   if (direct) return direct;
 
@@ -297,19 +331,29 @@ export function resolveEnvelopeMappingForSession(
 
   const parentSessionId = typeof sessionContext.parentSessionId === 'string' ? sessionContext.parentSessionId : '';
   const rootSessionId = typeof sessionContext.rootSessionId === 'string' ? sessionContext.rootSessionId : '';
-  const fallbackId = rootSessionId || parentSessionId;
-  if (!fallbackId) return null;
+  const statusRouteSessionId = typeof sessionContext.statusRouteSessionId === 'string'
+    ? sessionContext.statusRouteSessionId
+    : '';
+  const candidates = [parentSessionId, statusRouteSessionId, rootSessionId]
+    .map((value) => value.trim())
+    .filter((value, index, all) => value.length > 0 && value !== sessionId && all.indexOf(value) === index);
+  if (candidates.length === 0) return null;
 
-  const fallback = state.sessionEnvelopeMap.get(fallbackId);
-  if (!fallback) return null;
+  for (const fallbackId of candidates) {
+    const fallback = state.sessionEnvelopeMap.get(fallbackId)
+      ?? resolveEnvelopeMappingForSession(fallbackId, deps, state, cycleGuard);
+    if (!fallback) continue;
 
-  const mapped: SessionEnvelopeMapping = {
-    sessionId,
-    envelope: fallback.envelope,
-    timestamp: Date.now(),
-  };
-  state.sessionEnvelopeMap.set(sessionId, mapped);
-  return mapped;
+    const mapped: SessionEnvelopeMapping = {
+      sessionId,
+      envelope: fallback.envelope,
+      timestamp: Date.now(),
+    };
+    state.sessionEnvelopeMap.set(sessionId, mapped);
+    return mapped;
+  }
+
+  return null;
 }
 
 export function resolveEnvelopeMappingsForSession(
@@ -362,6 +406,16 @@ export async function finalizeChannelTurnDelivery(params: {
   state: SubscriberRouteState;
   messageHub?: MessageHub;
   resolveEnvelopeMapping: (sessionId: string) => SessionEnvelopeMapping | null;
+  resolvePushSettings?: (
+    sessionId: string,
+    channelId: string,
+    options?: {
+      phase?: string;
+      kind?: string;
+      sourceType?: string;
+      agentId?: string;
+    },
+  ) => PushSettings;
 }): Promise<void> {
   const primary = params.resolveEnvelopeMapping(params.sessionId);
   if (!primary) return;
@@ -374,9 +428,21 @@ export async function finalizeChannelTurnDelivery(params: {
     dedupedEnvelopes.set(key, envelope);
   }
 
-  const deliverText = async (envelopes: SessionEnvelopeMapping['envelope'][], content: string): Promise<void> => {
+  const deliverText = async (
+    envelopes: SessionEnvelopeMapping['envelope'][],
+    content: string,
+    setting: keyof Pick<PushSettings, 'bodyUpdates' | 'statusUpdate'>,
+  ): Promise<void> => {
     if (!params.messageHub || !content.trim()) return;
     for (const envelope of envelopes) {
+      if (params.resolvePushSettings) {
+        const pushSettings = params.resolvePushSettings(params.sessionId, envelope.channel, {
+          phase: setting === 'bodyUpdates' ? 'delivery' : 'completion',
+          kind: setting === 'bodyUpdates' ? 'artifact' : 'status',
+          agentId: params.agentId,
+        });
+        if (!pushSettings[setting]) continue;
+      }
       const outputId = 'channel-bridge-' + envelope.channel;
       const originalEnvelope: ChannelBridgeEnvelope = {
         id: envelope.envelopeId,
@@ -392,11 +458,28 @@ export async function finalizeChannelTurnDelivery(params: {
           ...(envelope.groupId ? { groupId: envelope.groupId } : {}),
         },
       };
-      await params.messageHub.routeToOutput(outputId, {
-        channelId: envelope.channel,
-        target: envelope.groupId ? `group:${envelope.groupId}` : (envelope.userId || 'unknown'),
-        content,
-        originalEnvelope,
+      const routeKey = buildDeliveryRouteKey(
+        envelope.channel,
+        envelope.userId,
+        envelope.groupId,
+      );
+      await enqueueUpdateStreamDelivery({
+        routeKey,
+        dedupSignature: `${params.sessionId}|${params.agentId ?? 'unknown'}|finalize|${setting}|${content}`,
+        send: async () => {
+          await params.messageHub!.routeToOutput(outputId, {
+            channelId: envelope.channel,
+            target: envelope.groupId ? `group:${envelope.groupId}` : (envelope.userId || 'unknown'),
+            content,
+            originalEnvelope,
+          });
+        },
+        meta: {
+          channelId: envelope.channel,
+          sessionId: params.sessionId,
+          agentId: params.agentId ?? 'unknown',
+          updateType: setting === 'bodyUpdates' ? 'finalize-body' : 'finalize-status',
+        },
       });
     }
   };
@@ -417,14 +500,14 @@ export async function finalizeChannelTurnDelivery(params: {
     const formattedTimestamp = `${year}-${month}-${day} ${hours}:${minutes}:${seconds}.${ms} ${offsetSign}${offsetHours}:${offsetMinutes}`;
     const agentName = params.agentId?.replace(/^finger-/, '').replace(/-/g, ' ') || 'system agent';
     const content = `[${agentName}] [${formattedTimestamp}] ${params.finalReply.trim()}`;
-    await deliverText(observers, content);
+    await deliverText(observers, content, 'bodyUpdates');
   }
 
   if (params.finishReason === 'stop') {
     const noticeTargets = Array.from(dedupedEnvelopes.values())
       .filter((envelope) => envelope.channel === 'qqbot' || envelope.channel === 'openclaw-weixin');
     if (noticeTargets.length > 0) {
-      await deliverText(noticeTargets, '本轮推理已结束。');
+      await deliverText(noticeTargets, '本轮推理已结束。', 'statusUpdate');
     }
   }
 

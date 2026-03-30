@@ -119,6 +119,59 @@ function resolveLatestProjectRootSession(deps: AgentRuntimeDeps, projectPath: st
   return sessions[0] ?? null;
 }
 
+function asTrimmed(value: unknown): string {
+  return typeof value === 'string' && value.trim().length > 0 ? value.trim() : '';
+}
+
+function bindDispatchRouteContext(
+  deps: AgentRuntimeDeps,
+  selectedSessionId: string,
+  sourceSessionId: string,
+): void {
+  if (!selectedSessionId || !sourceSessionId || selectedSessionId === sourceSessionId) return;
+  const selected = deps.sessionManager.getSession(selectedSessionId);
+  const source = deps.sessionManager.getSession(sourceSessionId);
+  if (!selected || !source) return;
+
+  const selectedContext = isObjectRecord(selected.context) ? selected.context : {};
+  const sourceContext = isObjectRecord(source.context) ? source.context : {};
+  const sourceRootCandidate = asTrimmed(sourceContext.statusRouteSessionId)
+    || asTrimmed(sourceContext.rootSessionId)
+    || asTrimmed(sourceContext.parentSessionId)
+    || source.id;
+  const sourceRoot = deps.sessionManager.getSession(sourceRootCandidate) ?? source;
+  const sourceRootContext = isObjectRecord(sourceRoot.context) ? sourceRoot.context : {};
+  const routeSessionId = sourceRoot.id !== selected.id
+    ? sourceRoot.id
+    : source.id !== selected.id
+      ? source.id
+      : '';
+
+  const patch: Record<string, unknown> = {
+    ...(routeSessionId ? { statusRouteSessionId: routeSessionId } : {}),
+  };
+
+  const sourceChannelId = asTrimmed(sourceRootContext.channelId) || asTrimmed(sourceContext.channelId);
+  const sourceChannelUserId = asTrimmed(sourceRootContext.channelUserId) || asTrimmed(sourceContext.channelUserId);
+  const sourceChannelGroupId = asTrimmed(sourceRootContext.channelGroupId) || asTrimmed(sourceContext.channelGroupId);
+  const sourceMessageId = asTrimmed(sourceRootContext.lastChannelMessageId) || asTrimmed(sourceContext.lastChannelMessageId);
+
+  if (!asTrimmed(selectedContext.channelId) && sourceChannelId) {
+    patch.channelId = sourceChannelId;
+  }
+  if (!asTrimmed(selectedContext.channelUserId) && sourceChannelUserId) {
+    patch.channelUserId = sourceChannelUserId;
+  }
+  if (!asTrimmed(selectedContext.channelGroupId) && sourceChannelGroupId) {
+    patch.channelGroupId = sourceChannelGroupId;
+  }
+  if (!asTrimmed(selectedContext.lastChannelMessageId) && sourceMessageId) {
+    patch.lastChannelMessageId = sourceMessageId;
+  }
+
+  deps.sessionManager.updateContext(selected.id, patch);
+}
+
 export function resolveDispatchSessionSelection(deps: AgentRuntimeDeps, input: AgentDispatchRequest): AgentDispatchRequest {
   const explicitSessionId = typeof input.sessionId === 'string' ? input.sessionId.trim() : '';
   if (explicitSessionId.length > 0) {
@@ -129,6 +182,11 @@ export function resolveDispatchSessionSelection(deps: AgentRuntimeDeps, input: A
   }
 
   const strategy = resolveDispatchSessionStrategy(input);
+  const sourceSessionId = firstNonEmptyString(
+    explicitSessionId,
+    deps.runtime.getCurrentSession()?.id,
+    deps.sessionManager.getCurrentSession()?.id,
+  ) ?? '';
   if (strategy === 'current') {
     const currentSessionId = deps.runtime.getCurrentSession()?.id ?? deps.sessionManager.getCurrentSession()?.id;
     if (!currentSessionId) return input;
@@ -144,6 +202,9 @@ export function resolveDispatchSessionSelection(deps: AgentRuntimeDeps, input: A
     ? deps.sessionManager.createSession(projectPath, undefined, { allowReuse: false })
     : resolveLatestProjectRootSession(deps, projectPath)
       ?? deps.sessionManager.createSession(projectPath, undefined, { allowReuse: false });
+  if (sourceSessionId) {
+    bindDispatchRouteContext(deps, selectedSession.id, sourceSessionId);
+  }
   deps.sessionManager.setCurrentSession(selectedSession.id);
   return {
     ...input,
