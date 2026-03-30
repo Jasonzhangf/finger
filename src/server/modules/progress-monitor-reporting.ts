@@ -95,6 +95,48 @@ function extractToolDetail(
     return trimmed.length > max ? trimmed.slice(0, max - 1) + '\u2026' : trimmed;
   };
 
+  const truncateVerbatim = (text: string, max = 80): string => {
+    const trimmed = text.trim();
+    return trimmed.length > max ? trimmed.slice(0, max - 1) + '\u2026' : trimmed;
+  };
+
+  const humanizeMs = (ms: number): string => {
+    if (!Number.isFinite(ms) || ms <= 0) return `${ms}ms`;
+    if (ms % 3600000 === 0) return `${ms / 3600000}h`;
+    if (ms % 60000 === 0) return `${ms / 60000}m`;
+    if (ms % 1000 === 0) return `${ms / 1000}s`;
+    if (ms >= 1000) return `${(ms / 1000).toFixed(1).replace(/\.0$/, '')}s`;
+    return `${Math.floor(ms)}ms`;
+  };
+
+  const formatTypedInput = (text: string): string => {
+    const visual = text
+      .replace(/\r/g, '\\r')
+      .replace(/\n/g, '\\n')
+      .replace(/\t/g, '\\t');
+    return truncateVerbatim(visual, 100);
+  };
+
+  const detectSleepDuration = (rawCommand: string): string | undefined => {
+    const match = rawCommand.match(/\bsleep\s+([0-9]*\.?[0-9]+)\s*([smhd]?)(?=\s|$|;|&&|\|\|)/i);
+    if (!match) return undefined;
+    const value = match[1];
+    const unit = (match[2] || 's').toLowerCase();
+    return `${value}${unit}`;
+  };
+
+  const readExecCommand = (payload: Record<string, unknown>): string => {
+    const input = payload.input;
+    if (typeof input === 'string' && input.trim().length > 0) return input.trim();
+    if (typeof payload.cmd === 'string' && payload.cmd.trim().length > 0) return payload.cmd.trim();
+    if (typeof payload.command === 'string' && payload.command.trim().length > 0) return payload.command.trim();
+    if (Array.isArray(payload.command)) {
+      const parts = payload.command.filter((item): item is string => typeof item === 'string' && item.trim().length > 0);
+      if (parts.length > 0) return parts.join(' ').trim();
+    }
+    return '';
+  };
+
   if (toolName === 'update_plan') {
     const p = parse(params ?? '');
     const planItems = Array.isArray(p.plan) ? p.plan as Array<Record<string, unknown>> : [];
@@ -147,13 +189,43 @@ function extractToolDetail(
     return targetPart;
   }
 
-  if (toolName === 'command.exec') {
+  if (toolName === 'command.exec' || toolName === 'shell.exec' || toolName === 'exec_command') {
     const p = parse(params ?? '');
-    const raw = typeof p.input === 'string' ? p.input.trim()
-      : typeof p.cmd === 'string' ? p.cmd.trim()
-      : '';
+    const raw = readExecCommand(p);
     if (!raw) return '';
-    return truncate(raw, 90);
+    const sleepDuration = detectSleepDuration(raw);
+    if (sleepDuration) {
+      return `\u23f1 sleep ${sleepDuration}`;
+    }
+    // For exec-like tools, show a concise meaningful action body rather than raw wrapper.
+    if (toolName === 'command.exec') {
+      return truncate(raw, 90);
+    }
+    return '';
+  }
+
+  if (toolName === 'write_stdin') {
+    const p = parse(params ?? '');
+    const chars = typeof p.chars === 'string' ? p.chars : '';
+    if (chars.trim().length > 0) {
+      return '\u270d ' + formatTypedInput(chars);
+    }
+    const yieldMs = typeof p.yield_time_ms === 'number' && Number.isFinite(p.yield_time_ms)
+      ? Math.max(0, Math.floor(p.yield_time_ms))
+      : undefined;
+    if (typeof yieldMs === 'number' && yieldMs > 0) {
+      return `\u23f1 等待输出 ${humanizeMs(yieldMs)}`;
+    }
+    const maxOutputTokens = typeof p.max_output_tokens === 'number' && Number.isFinite(p.max_output_tokens)
+      ? Math.max(0, Math.floor(p.max_output_tokens))
+      : undefined;
+    if (typeof maxOutputTokens === 'number' && maxOutputTokens > 0) {
+      return `\u23f1 轮询输出 max=${maxOutputTokens}`;
+    }
+    if (typeof p.chars === 'string') {
+      return '\u23f1 轮询输出';
+    }
+    return '';
   }
 
   if (toolName === 'report-task-completion') {
@@ -178,15 +250,6 @@ function extractToolDetail(
     if (status) details.push(`status=${truncate(status, 18)}`);
     if (summary) details.push(truncate(summary, 40));
     return details.join(' · ');
-  }
-
-  if (toolName === 'write_stdin') {
-    const p = parse(params ?? '');
-    const chars = typeof p.chars === 'string' ? p.chars.trim() : '';
-    if (chars) {
-      return '\u270d ' + truncate(chars, 80);
-    }
-    return '';
   }
 
   if (toolName === 'view_image') {
