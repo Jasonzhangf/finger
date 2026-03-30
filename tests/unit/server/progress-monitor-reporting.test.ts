@@ -62,5 +62,63 @@ describe('progress-monitor-reporting', () => {
     const result = buildCompactSummary(data, formatElapsed, { headerMode: 'minimal' });
     expect(result).toContain('⏱ sleep 120s');
   });
-});
 
+  it('shows semantic read detail for shell cat command', () => {
+    const data: SessionProgressData = {
+      agentId: 'finger-system-agent',
+      status: 'running',
+      currentTask: 'cat → ✅',
+      elapsedMs: 8_000,
+      toolCallHistory: [
+        {
+          toolName: 'shell.exec',
+          params: JSON.stringify({ cmd: 'cat /tmp/runtime.log' }),
+          success: true,
+        },
+      ],
+    };
+
+    const result = buildCompactSummary(data, formatElapsed, { headerMode: 'minimal' });
+    expect(result).toContain('📖 读取 /tmp/runtime.log');
+  });
+
+  it('shows semantic search detail for rg command', () => {
+    const data: SessionProgressData = {
+      agentId: 'finger-system-agent',
+      status: 'running',
+      currentTask: 'rg → ✅',
+      elapsedMs: 8_000,
+      toolCallHistory: [
+        {
+          toolName: 'shell.exec',
+          params: JSON.stringify({ cmd: 'rg "mailbox" src/server/modules' }),
+          success: true,
+        },
+      ],
+    };
+
+    const result = buildCompactSummary(data, formatElapsed, { headerMode: 'minimal' });
+    expect(result).toContain('🔍 搜索「mailbox」');
+    expect(result).toContain('src/server/modules');
+  });
+
+  it('shows semantic follow detail for tail -f command', () => {
+    const data: SessionProgressData = {
+      agentId: 'finger-system-agent',
+      status: 'running',
+      currentTask: 'tail → ✅',
+      elapsedMs: 8_000,
+      toolCallHistory: [
+        {
+          toolName: 'shell.exec',
+          params: JSON.stringify({ cmd: 'tail -f ~/.finger/logs/daemon.log' }),
+          success: true,
+        },
+      ],
+    };
+
+    const result = buildCompactSummary(data, formatElapsed, { headerMode: 'minimal' });
+    expect(result).toContain('📜 跟踪日志');
+    expect(result).toContain('daemon.log');
+  });
+});

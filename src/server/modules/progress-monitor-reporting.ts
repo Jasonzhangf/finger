@@ -125,6 +125,105 @@ function extractToolDetail(
     return `${value}${unit}`;
   };
 
+  const unwrapShellWrapper = (raw: string): string => {
+    const trimmed = raw.trim();
+    const wrapped = trimmed.match(/^(?:\/bin\/)?(?:bash|sh|zsh)\s+-[a-zA-Z]+\s+(.+)$/);
+    if (!wrapped || !wrapped[1]) return trimmed;
+    const inner = wrapped[1].trim();
+    const quote = inner[0];
+    if ((quote === '"' || quote === '\'') && inner.endsWith(quote)) {
+      return inner.slice(1, -1).trim();
+    }
+    return inner;
+  };
+
+  const extractReadablePath = (command: string): string => {
+    const tokens = command.match(/[^\s|;'"<>]+/g) || [];
+    for (let i = tokens.length - 1; i >= 0; i--) {
+      const t = tokens[i];
+      if (!t || t.startsWith('-')) continue;
+      if (t === '&&' || t === '||') continue;
+      if (t.includes('/') || /\.[a-zA-Z0-9]{1,8}$/.test(t)) return t;
+    }
+    return '';
+  };
+
+  const extractSearchPattern = (command: string): string => {
+    const quoted = command.match(/["']([^"']{1,80})["']/);
+    if (quoted && quoted[1]) return quoted[1].trim();
+    const tokens = command.trim().split(/\s+/);
+    if (tokens.length <= 1) return '';
+    for (let i = 1; i < tokens.length; i++) {
+      const token = tokens[i];
+      if (!token || token.startsWith('-') || token.startsWith('/')) continue;
+      if (token.includes('*') || token.includes('(') || token.includes(')')) continue;
+      if (token.includes('/')) continue;
+      return token.trim();
+    }
+    return '';
+  };
+
+  const describeExecCommand = (rawCommand: string): string => {
+    const raw = unwrapShellWrapper(rawCommand);
+    const lower = raw.toLowerCase();
+
+    const sleepDuration = detectSleepDuration(raw);
+    if (sleepDuration) return `\u23f1 sleep ${sleepDuration}`;
+
+    const cdMatch = raw.match(/^\s*cd\s+(.+)$/i);
+    if (cdMatch && cdMatch[1]) return `\ud83d\udcc1 切换目录 ${truncate(cdMatch[1].trim(), 60)}`;
+
+    if (/^\s*tail\b/.test(lower) && (/\s-f(\s|$)/.test(lower) || /--follow\b/.test(lower))) {
+      const path = extractReadablePath(raw);
+      return path ? `\ud83d\udcdc 跟踪日志 ${truncate(path, 64)}` : '\ud83d\udcdc 跟踪日志输出';
+    }
+
+    if (/^\s*(cat|head|less|more)\b/.test(lower)) {
+      const path = extractReadablePath(raw);
+      return path ? `\ud83d\udcd6 读取 ${truncate(path, 64)}` : '\ud83d\udcd6 读取文件';
+    }
+
+    if (/^\s*tail\b/.test(lower)) {
+      const path = extractReadablePath(raw);
+      return path ? `\ud83d\udcd6 读取尾部 ${truncate(path, 64)}` : '\ud83d\udcd6 读取文件尾部';
+    }
+
+    if (/^\s*(rg|grep|ag)\b/.test(lower)) {
+      const pattern = extractSearchPattern(raw);
+      const path = extractReadablePath(raw);
+      const patternPart = pattern ? `「${truncate(pattern, 36)}」` : '';
+      if (path && patternPart) return `\ud83d\udd0d 搜索${patternPart} @ ${truncate(path, 40)}`;
+      if (patternPart) return `\ud83d\udd0d 搜索${patternPart}`;
+      if (path) return `\ud83d\udd0d 搜索 @ ${truncate(path, 40)}`;
+      return '\ud83d\udd0d 搜索文本';
+    }
+
+    if (/^\s*find\b/.test(lower)) {
+      const path = extractReadablePath(raw);
+      const pattern = extractSearchPattern(raw);
+      if (path && pattern) return `\ud83d\udd0d 查找 ${truncate(path, 40)} (${truncate(pattern, 28)})`;
+      if (path) return `\ud83d\udd0d 查找 ${truncate(path, 40)}`;
+      return '\ud83d\udd0d 查找文件';
+    }
+
+    if (/^\s*ls\b/.test(lower)) {
+      const path = extractReadablePath(raw);
+      return path ? `\ud83d\udcc2 列目录 ${truncate(path, 64)}` : '\ud83d\udcc2 列目录';
+    }
+
+    if (/^\s*wc\b/.test(lower)) {
+      const path = extractReadablePath(raw);
+      return path ? `\ud83d\udccf 统计 ${truncate(path, 64)}` : '\ud83d\udccf 统计内容';
+    }
+
+    if (/^\s*git\s+status\b/.test(lower)) return '\ud83e\udded 检查 Git 状态';
+    if (/^\s*git\s+diff\b/.test(lower)) return '\ud83e\udded 查看 Git 差异';
+    if (/^\s*(pnpm|npm|yarn)\s+test\b/.test(lower)) return '\ud83e\uddea 运行测试';
+    if (/^\s*(pnpm|npm|yarn)\s+build\b/.test(lower)) return '\ud83d\udee0\ufe0f 执行构建';
+
+    return truncate(raw, 90);
+  };
+
   const readExecCommand = (payload: Record<string, unknown>): string => {
     const input = payload.input;
     if (typeof input === 'string' && input.trim().length > 0) return input.trim();
@@ -193,15 +292,7 @@ function extractToolDetail(
     const p = parse(params ?? '');
     const raw = readExecCommand(p);
     if (!raw) return '';
-    const sleepDuration = detectSleepDuration(raw);
-    if (sleepDuration) {
-      return `\u23f1 sleep ${sleepDuration}`;
-    }
-    // For exec-like tools, show a concise meaningful action body rather than raw wrapper.
-    if (toolName === 'command.exec') {
-      return truncate(raw, 90);
-    }
-    return '';
+    return describeExecCommand(raw);
   }
 
   if (toolName === 'write_stdin') {
