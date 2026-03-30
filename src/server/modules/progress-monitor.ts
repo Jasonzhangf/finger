@@ -354,6 +354,7 @@ export class ProgressMonitor {
         continue;
       }
 
+      const reportToolCalls = meaningfulToolCalls.length > 0 ? meaningfulToolCalls : newToolCalls.slice(-1);
       const report: ProgressReport = {
         type: 'progress_report',
         timestamp: new Date().toISOString(),
@@ -362,22 +363,30 @@ export class ProgressMonitor {
         progress: p,
         summary: this.buildSingleProgressSummary(
           p,
-          meaningfulToolCalls.length > 0 ? meaningfulToolCalls : newToolCalls.slice(-1),
+          reportToolCalls,
         ),
       };
 
+      if (this.callbacks?.onProgressReport) {
+        await this.callbacks.onProgressReport(report);
+      }
+
+      // Move dedup cursor only after report delivery succeeds.
+      // This avoids dropping updates when callback throws.
+      if (newToolCalls.length > 0) {
+        const maxSeqInBatch = newToolCalls.reduce((max, tool) => {
+          const seq = typeof tool.seq === 'number' && Number.isFinite(tool.seq) ? tool.seq : 0;
+          return seq > max ? seq : max;
+        }, p.lastReportedToolSeq ?? 0);
+        p.lastReportedToolSeq = maxSeqInBatch;
+      }
       p.lastReportKey = reportKey;
       p.lastReportTime = now;
-      p.lastReportedToolSeq = p.toolSeqCounter ?? p.lastReportedToolSeq ?? 0;
       p.lastReportedCurrentTask = p.currentTask;
       p.lastReportedReasoning = p.latestReasoning;
       p.lastReportedContextUsagePercent = p.contextUsagePercent;
       p.lastReportedEstimatedTokensInContextWindow = p.estimatedTokensInContextWindow;
       p.lastReportedMaxInputTokens = p.maxInputTokens;
-
-      if (this.callbacks?.onProgressReport) {
-        await this.callbacks.onProgressReport(report);
-      }
     }
   }
 

@@ -270,4 +270,118 @@ describe('ProgressMonitor incremental updates', () => {
 
     monitor.stop();
   });
+
+  it('dedups tool lines independently for system/project agents in same session', async () => {
+    const eventBus = new UnifiedEventBus();
+    const reports: Array<{ agentId: string; summary: string }> = [];
+    const monitor = new ProgressMonitor(
+      eventBus,
+      createMinimalDeps(),
+      {
+        onProgressReport: (report) => {
+          reports.push({
+            agentId: report.agentId,
+            summary: report.summary,
+          });
+        },
+      },
+      {
+        enabled: true,
+        progressUpdates: true,
+        intervalMs: 60_000,
+      },
+    );
+
+    monitor.start();
+
+    const sessionId = 'session-multi-agent-dedup';
+    await eventBus.emit({
+      type: 'tool_call',
+      sessionId,
+      agentId: 'finger-system-agent',
+      toolId: 'sys-1',
+      toolName: 'command.exec',
+      timestamp: new Date().toISOString(),
+      payload: {
+        input: 'echo system-first',
+      },
+    } as any);
+    await eventBus.emit({
+      type: 'tool_result',
+      sessionId,
+      agentId: 'finger-system-agent',
+      toolId: 'sys-1',
+      toolName: 'command.exec',
+      timestamp: new Date().toISOString(),
+      payload: {
+        input: 'echo system-first',
+        output: 'ok',
+      },
+    } as any);
+
+    await eventBus.emit({
+      type: 'tool_call',
+      sessionId,
+      agentId: 'finger-project-agent',
+      toolId: 'proj-1',
+      toolName: 'command.exec',
+      timestamp: new Date().toISOString(),
+      payload: {
+        input: 'echo project-first',
+      },
+    } as any);
+    await eventBus.emit({
+      type: 'tool_result',
+      sessionId,
+      agentId: 'finger-project-agent',
+      toolId: 'proj-1',
+      toolName: 'command.exec',
+      timestamp: new Date().toISOString(),
+      payload: {
+        input: 'echo project-first',
+        output: 'ok',
+      },
+    } as any);
+
+    await (monitor as any).generateProgressReport();
+    expect(reports).toHaveLength(2);
+    const firstSystem = reports.find((item) => item.agentId === 'finger-system-agent');
+    const firstProject = reports.find((item) => item.agentId === 'finger-project-agent');
+    expect(firstSystem?.summary).toContain('system-first');
+    expect(firstProject?.summary).toContain('project-first');
+
+    await eventBus.emit({
+      type: 'tool_call',
+      sessionId,
+      agentId: 'finger-system-agent',
+      toolId: 'sys-2',
+      toolName: 'command.exec',
+      timestamp: new Date().toISOString(),
+      payload: {
+        input: 'echo system-second',
+      },
+    } as any);
+    await eventBus.emit({
+      type: 'tool_result',
+      sessionId,
+      agentId: 'finger-system-agent',
+      toolId: 'sys-2',
+      toolName: 'command.exec',
+      timestamp: new Date().toISOString(),
+      payload: {
+        input: 'echo system-second',
+        output: 'ok',
+      },
+    } as any);
+
+    await (monitor as any).generateProgressReport();
+    expect(reports).toHaveLength(3);
+    const latest = reports[2];
+    expect(latest.agentId).toBe('finger-system-agent');
+    expect(latest.summary).toContain('system-second');
+    expect(latest.summary).not.toContain('system-first');
+    expect(latest.summary).not.toContain('project-first');
+
+    monitor.stop();
+  });
 });
