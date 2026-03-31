@@ -2,9 +2,10 @@ export const SYSTEM_AGENT_ID = 'finger-system-agent';
 export const PROJECT_AGENT_ID = 'finger-project-agent';
 
 export type ProjectTaskLifecycleStatus =
-  | 'dispatching'
+  | 'dispatched'
   | 'in_progress'
   | 'waiting_review'
+  | 'pending_approval'
   | 'completed'
   | 'failed'
   | 'cancelled';
@@ -18,6 +19,8 @@ export interface ProjectTaskState {
   taskId?: string;
   taskName?: string;
   dispatchId?: string;
+  boundSessionId?: string;
+  revision?: number;
   summary?: string;
   note?: string;
 }
@@ -32,6 +35,8 @@ export interface DelegatedProjectTaskRecord {
   taskId?: string;
   taskName?: string;
   dispatchId?: string;
+  boundSessionId?: string;
+  revision?: number;
   summary?: string;
   note?: string;
 }
@@ -52,13 +57,21 @@ function normalizeStatus(value: unknown): ProjectTaskLifecycleStatus | null {
   if (typeof value !== 'string') return null;
   const normalized = value.trim().toLowerCase();
   if (!normalized) return null;
-  if (normalized === 'dispatching') return 'dispatching';
+  if (normalized === 'dispatching' || normalized === 'dispatched') return 'dispatched';
   if (normalized === 'in_progress' || normalized === 'running' || normalized === 'queued') return 'in_progress';
   if (normalized === 'waiting_review') return 'waiting_review';
+  if (normalized === 'pending_approval' || normalized === 'pending approval') return 'pending_approval';
   if (normalized === 'completed' || normalized === 'done' || normalized === 'pass') return 'completed';
   if (normalized === 'failed' || normalized === 'error') return 'failed';
   if (normalized === 'cancelled' || normalized === 'canceled') return 'cancelled';
   return null;
+}
+
+function normalizeRevision(value: unknown): number | undefined {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return undefined;
+  const normalized = Math.floor(value);
+  if (normalized < 1) return undefined;
+  return normalized;
 }
 
 export function parseProjectTaskState(value: unknown): ProjectTaskState | null {
@@ -78,6 +91,8 @@ export function parseProjectTaskState(value: unknown): ProjectTaskState | null {
     ...(asOptionalString(value.taskId) ? { taskId: asOptionalString(value.taskId) } : {}),
     ...(asOptionalString(value.taskName) ? { taskName: asOptionalString(value.taskName) } : {}),
     ...(asOptionalString(value.dispatchId) ? { dispatchId: asOptionalString(value.dispatchId) } : {}),
+    ...(asOptionalString(value.boundSessionId) ? { boundSessionId: asOptionalString(value.boundSessionId) } : {}),
+    ...(normalizeRevision(value.revision) ? { revision: normalizeRevision(value.revision) } : {}),
     ...(asOptionalString(value.summary) ? { summary: asOptionalString(value.summary) } : {}),
     ...(asOptionalString(value.note) ? { note: asOptionalString(value.note) } : {}),
   };
@@ -98,7 +113,7 @@ export function mergeProjectTaskState(
   patch: Partial<ProjectTaskState>,
 ): ProjectTaskState {
   const nowIso = new Date().toISOString();
-  const nextStatus = normalizeStatus(patch.status) ?? current?.status ?? 'dispatching';
+  const nextStatus = normalizeStatus(patch.status) ?? current?.status ?? 'dispatched';
   const nextTarget = asOptionalString(patch.targetAgentId) ?? current?.targetAgentId ?? PROJECT_AGENT_ID;
   const nextSource = asOptionalString(patch.sourceAgentId) ?? current?.sourceAgentId ?? SYSTEM_AGENT_ID;
   const nextActive = typeof patch.active === 'boolean'
@@ -114,6 +129,12 @@ export function mergeProjectTaskState(
     ...(asOptionalString(patch.taskId) ?? current?.taskId ? { taskId: asOptionalString(patch.taskId) ?? current?.taskId } : {}),
     ...(asOptionalString(patch.taskName) ?? current?.taskName ? { taskName: asOptionalString(patch.taskName) ?? current?.taskName } : {}),
     ...(asOptionalString(patch.dispatchId) ?? current?.dispatchId ? { dispatchId: asOptionalString(patch.dispatchId) ?? current?.dispatchId } : {}),
+    ...(asOptionalString(patch.boundSessionId) ?? current?.boundSessionId
+      ? { boundSessionId: asOptionalString(patch.boundSessionId) ?? current?.boundSessionId }
+      : {}),
+    ...(normalizeRevision(patch.revision) ?? current?.revision
+      ? { revision: normalizeRevision(patch.revision) ?? current?.revision }
+      : {}),
     ...(asOptionalString(patch.summary) ?? current?.summary ? { summary: asOptionalString(patch.summary) ?? current?.summary } : {}),
     ...(asOptionalString(patch.note) ?? current?.note ? { note: asOptionalString(patch.note) ?? current?.note } : {}),
   };
@@ -140,6 +161,8 @@ export function parseDelegatedProjectTaskRegistry(value: unknown): DelegatedProj
       ...(asOptionalString(item.taskId) ? { taskId: asOptionalString(item.taskId) } : {}),
       ...(asOptionalString(item.taskName) ? { taskName: asOptionalString(item.taskName) } : {}),
       ...(asOptionalString(item.dispatchId) ? { dispatchId: asOptionalString(item.dispatchId) } : {}),
+      ...(asOptionalString(item.boundSessionId) ? { boundSessionId: asOptionalString(item.boundSessionId) } : {}),
+      ...(normalizeRevision(item.revision) ? { revision: normalizeRevision(item.revision) } : {}),
       ...(asOptionalString(item.summary) ? { summary: asOptionalString(item.summary) } : {}),
       ...(asOptionalString(item.note) ? { note: asOptionalString(item.note) } : {}),
     });
@@ -159,11 +182,13 @@ export function upsertDelegatedProjectTaskRegistry(
     status?: ProjectTaskLifecycleStatus;
     active?: boolean;
     dispatchId?: string;
+    boundSessionId?: string;
+    revision?: number;
     summary?: string;
     note?: string;
   },
 ): DelegatedProjectTaskRecord[] {
-  const status = normalizeStatus(patch.status) ?? 'dispatching';
+  const status = normalizeStatus(patch.status) ?? 'dispatched';
   const sourceAgentId = asOptionalString(patch.sourceAgentId) ?? SYSTEM_AGENT_ID;
   const targetAgentId = asOptionalString(patch.targetAgentId) ?? PROJECT_AGENT_ID;
   const taskId = asOptionalString(patch.taskId);
@@ -190,6 +215,12 @@ export function upsertDelegatedProjectTaskRegistry(
     ...(taskId ?? previous?.taskId ? { taskId: taskId ?? previous?.taskId } : {}),
     ...(taskName ?? previous?.taskName ? { taskName: taskName ?? previous?.taskName } : {}),
     ...(asOptionalString(patch.dispatchId) ?? previous?.dispatchId ? { dispatchId: asOptionalString(patch.dispatchId) ?? previous?.dispatchId } : {}),
+    ...(asOptionalString(patch.boundSessionId) ?? previous?.boundSessionId
+      ? { boundSessionId: asOptionalString(patch.boundSessionId) ?? previous?.boundSessionId }
+      : {}),
+    ...(normalizeRevision(patch.revision) ?? previous?.revision
+      ? { revision: normalizeRevision(patch.revision) ?? previous?.revision }
+      : {}),
     ...(asOptionalString(patch.summary) ?? previous?.summary ? { summary: asOptionalString(patch.summary) ?? previous?.summary } : {}),
     ...(asOptionalString(patch.note) ?? previous?.note ? { note: asOptionalString(patch.note) ?? previous?.note } : {}),
   };

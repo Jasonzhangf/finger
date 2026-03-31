@@ -1,15 +1,18 @@
 import type { Express } from 'express';
+import path from 'path';
 import { recommendLoopTemplates } from '../../orchestration/loop/loop-template-registry.js';
 import { isObjectRecord } from '../common/object.js';
 import type { AgentCapabilityLayer, AgentRuntimeDeps } from './agent-runtime/types.js';
 import { dispatchTaskToAgent } from './agent-runtime/dispatch.js';
 import { controlAgentRuntime } from './agent-runtime/control.js';
 import { registerMailboxRuntimeTools } from './agent-runtime/mailbox.js';
+import { SYSTEM_PROJECT_PATH } from '../../agents/finger-system-agent/index.js';
 import {
   parseAgentControlToolInput,
   parseAgentDeployToolInput,
   parseAgentDispatchToolInput,
 } from './agent-runtime/parsers.js';
+import { parseProjectTaskState } from '../../common/project-task-state.js';
 
 function resolveAgentCapabilityLayer(value: unknown): AgentCapabilityLayer {
   if (typeof value !== 'string') return 'summary';
@@ -18,6 +21,41 @@ function resolveAgentCapabilityLayer(value: unknown): AgentCapabilityLayer {
   if (normalized === 'governance') return 'governance';
   if (normalized === 'full') return 'full';
   return 'summary';
+}
+
+function normalizeProjectPathInput(value: string): string {
+  const trimmed = value.trim();
+  if (!trimmed) return '';
+  if (trimmed.startsWith('~/')) {
+    const home = process.env.HOME || '';
+    if (home) {
+      return path.resolve(path.join(home, trimmed.slice(2)));
+    }
+  }
+  return path.resolve(trimmed);
+}
+
+function asTrimmedString(value: unknown): string {
+  return typeof value === 'string' ? value.trim() : '';
+}
+
+function isReviewerAgentId(agentId: string): boolean {
+  const normalized = agentId.trim().toLowerCase();
+  return normalized.includes('reviewer') || normalized.includes('review');
+}
+
+function resolveContinueSessionId(
+  deps: AgentRuntimeDeps,
+  input: Record<string, unknown>,
+  context?: Record<string, unknown>,
+): string {
+  const fromInput = asTrimmedString(input.session_id ?? input.sessionId);
+  if (fromInput) return fromInput;
+  const fromContext = asTrimmedString(context?.sessionId);
+  if (fromContext) return fromContext;
+  const fromRuntime = asTrimmedString(deps.runtime.getCurrentSession()?.id);
+  if (fromRuntime) return fromRuntime;
+  return '';
 }
 
 export function registerAgentRuntimeTools(deps: AgentRuntimeDeps): string[] {
@@ -137,12 +175,122 @@ export function registerAgentRuntimeTools(deps: AgentRuntimeDeps): string[] {
       required: ['target_agent_id', 'task'],
       additionalProperties: true,
     },
-    handler: async (input: unknown): Promise<unknown> => {
+    handler: async (input: unknown, context?: Record<string, unknown>): Promise<unknown> => {
+      const callerAgentId = asTrimmedString(context?.agentId);
+      if (callerAgentId && isReviewerAgentId(callerAgentId)) {
+        throw new Error('agent.dispatch forbidden for reviewer role; reviewer must use report-task-completion');
+      }
+      const rawInput = isObjectRecord(input) ? input : {};
+      const explicitSourceAgentId = asTrimmedString(rawInput.source_agent_id ?? rawInput.sourceAgentId);
+      if (callerAgentId && explicitSourceAgentId && explicitSourceAgentId !== callerAgentId) {
+        throw new Error(`agent.dispatch forbidden: source_agent_id must match caller agent (${callerAgentId})`);
+      }
+
       const dispatchInput = parseAgentDispatchToolInput(input, deps);
+      if (callerAgentId && !explicitSourceAgentId) {
+        dispatchInput.sourceAgentId = callerAgentId;
+      }
       return dispatchTaskToAgent(deps, dispatchInput);
     },
   });
   loaded.push('agent.dispatch');
+
+  deps.runtime.registerTool({
+    name: 'agent.continue',
+    description:
+      'Continue an in-flight task/session without creating a new task identity. Uses bound session + active task contract.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        target_agent_id: { type: 'string' },
+        session_id: { type: 'string' },
+        task_id: { type: 'string' },
+        task_name: { type: 'string' },
+        prompt: { type: 'string' },
+      },
+      required: ['target_agent_id'],
+      additionalProperties: true,
+    },
+    handler: async (input: unknown, context?: Record<string, unknown>): Promise<unknown> => {
+      const rawInput = isObjectRecord(input) ? input : {};
+      const callerAgentId = asTrimmedString(context?.agentId) || deps.primaryOrchestratorAgentId;
+      if (isReviewerAgentId(callerAgentId)) {
+        throw new Error('agent.continue forbidden for reviewer role');
+      }
+
+      const targetAgentId = asTrimmedString(rawInput.target_agent_id ?? rawInput.targetAgentId);
+      if (!targetAgentId) throw new Error('agent.continue target_agent_id is required');
+      if (targetAgentId === callerAgentId) {
+        throw new Error(`agent.continue self-dispatch forbidden: source and target are both ${targetAgentId}`);
+      }
+
+      const requestedSessionId = resolveContinueSessionId(deps, rawInput, context);
+      if (!requestedSessionId) throw new Error('agent.continue session_id is required');
+      const session = deps.sessionManager.getSession(requestedSessionId);
+      if (!session) throw new Error(`agent.continue session not found: ${requestedSessionId}`);
+
+      const taskState = parseProjectTaskState(session.context?.projectTaskState);
+      const activeTaskId = asTrimmedString(taskState?.taskId);
+      const activeTaskName = asTrimmedString(taskState?.taskName);
+      const activeBoundSessionId = asTrimmedString(taskState?.boundSessionId);
+
+      const taskId = asTrimmedString(rawInput.task_id ?? rawInput.taskId) || activeTaskId;
+      const taskName = asTrimmedString(rawInput.task_name ?? rawInput.taskName) || activeTaskName;
+      if (!taskId && !taskName) {
+        throw new Error('agent.continue requires active task identity (task_id/task_name)');
+      }
+
+      const prompt = asTrimmedString(rawInput.prompt) || [
+        '[Continue In-Flight Task]',
+        taskId ? `taskId: ${taskId}` : '',
+        taskName ? `taskName: ${taskName}` : '',
+        'Continue execution on the same task/session; do not create a new task identity.',
+      ].filter(Boolean).join('\n');
+
+      const boundSessionId = activeBoundSessionId || requestedSessionId;
+      const dispatchInput = {
+        sourceAgentId: callerAgentId,
+        targetAgentId,
+        sessionId: boundSessionId,
+        task: {
+          prompt,
+          metadata: {
+            continueLane: true,
+            continuedTask: true,
+            taskId,
+            taskName,
+          },
+        },
+        assignment: {
+          ...(taskId ? { taskId } : {}),
+          ...(taskName ? { taskName } : {}),
+          phase: 'started' as const,
+        },
+        metadata: {
+          source: 'agent-continue',
+          role: 'system',
+          continueLane: true,
+          continuedTask: true,
+          ...(taskId ? { taskId } : {}),
+          ...(taskName ? { taskName } : {}),
+          boundSessionId,
+        },
+        queueOnBusy: true,
+        maxQueueWaitMs: 0,
+        blocking: false,
+      };
+
+      const dispatchResult = await dispatchTaskToAgent(deps, dispatchInput);
+      return {
+        ...dispatchResult,
+        continue: true,
+        ...(taskId ? { taskId } : {}),
+        ...(taskName ? { taskName } : {}),
+        sessionId: boundSessionId,
+      };
+    },
+  });
+  loaded.push('agent.continue');
 
   deps.runtime.registerTool({
     name: 'agent.control',
@@ -267,12 +415,11 @@ export function registerAgentRuntimeTools(deps: AgentRuntimeDeps): string[] {
   // Session switching tool
   deps.runtime.registerTool({
     name: 'session.switch',
-    description: 'Switch to a different session within the current project',
+    description: 'Switch current agent to another session in the same project (self-only, no cross-agent switch)',
     inputSchema: {
       type: 'object',
       properties: {
         session_id: { type: 'string' },
-        target_agent_id: { type: 'string' }
       },
       required: ['session_id'],
       additionalProperties: false
@@ -288,10 +435,25 @@ export function registerAgentRuntimeTools(deps: AgentRuntimeDeps): string[] {
       }
 
       const currentAgentId = deps.primaryOrchestratorAgentId;
-      const targetAgentId = typeof input.target_agent_id === 'string' ? input.target_agent_id.trim() : currentAgentId;
+      if (
+        typeof input.target_agent_id === 'string'
+        || typeof input.targetAgentId === 'string'
+      ) {
+        throw new Error('session.switch does not accept target_agent_id; agent can only switch its own session');
+      }
+      const targetSession = deps.runtime.getSession(sessionId);
+      if (!targetSession) {
+        throw new Error(`Session not found: ${sessionId}`);
+      }
 
-      if (currentAgentId !== 'finger-system-agent' && targetAgentId !== currentAgentId) {
-        throw new Error(`Agent ${currentAgentId} can only switch its own sessions`);
+      // 所有 agent：禁止跨项目切换，避免 session 串线
+      const currentSession = deps.runtime.getCurrentSession();
+      const currentProjectPath = normalizeProjectPathInput(currentSession?.projectPath ?? process.cwd());
+      const targetProjectPath = normalizeProjectPathInput(targetSession.projectPath);
+      if (currentProjectPath && targetProjectPath && currentProjectPath !== targetProjectPath) {
+        throw new Error(
+          `Cross-project session switch forbidden: current=${currentProjectPath}, target=${targetProjectPath}`,
+        );
       }
 
       const success = deps.runtime.setCurrentSession(sessionId);
@@ -299,7 +461,12 @@ export function registerAgentRuntimeTools(deps: AgentRuntimeDeps): string[] {
         throw new Error(`Failed to switch to session: ${sessionId}`);
       }
 
-      return { success: true, session_id: sessionId, agent_id: targetAgentId };
+      return {
+        success: true,
+        session_id: sessionId,
+        agent_id: currentAgentId,
+        project_path: targetSession.projectPath,
+      };
     }
   });
   loaded.push('session.switch');
@@ -311,23 +478,59 @@ export function registerAgentRuntimeTools(deps: AgentRuntimeDeps): string[] {
     inputSchema: {
       type: 'object',
       properties: {
-        limit: { type: 'number' }
+        limit: { type: 'number' },
+        project_path: { type: 'string' },
+        cwd: { type: 'string' },
+        include_runtime_child: { type: 'boolean' },
+        include_system: { type: 'boolean' },
       },
       additionalProperties: false
     },
     handler: async (input: unknown): Promise<unknown> => {
-      const limit = isObjectRecord(input) && typeof input.limit === 'number' ? input.limit : undefined;
-      const sessions = deps.runtime.listSessions();
+      const raw = isObjectRecord(input) ? input : {};
+      const limit = typeof raw.limit === 'number' ? raw.limit : undefined;
+      const includeRuntimeChild = raw.include_runtime_child === true;
+      const includeSystem = raw.include_system === true;
+      const requestedProjectPath = typeof raw.project_path === 'string'
+        ? raw.project_path
+        : typeof raw.cwd === 'string'
+          ? raw.cwd
+          : deps.runtime.getCurrentSession()?.projectPath ?? process.cwd();
+      const normalizedProjectPath = normalizeProjectPathInput(requestedProjectPath);
+      const normalizedSystemPath = normalizeProjectPathInput(SYSTEM_PROJECT_PATH);
+      const sessions = deps.runtime.listSessions()
+        .filter((session) => normalizeProjectPathInput(session.projectPath) === normalizedProjectPath)
+        .filter((session) => {
+          if (includeRuntimeChild) return true;
+          const full = deps.sessionManager.getSession(session.id);
+          return !deps.isRuntimeChildSession(full);
+        })
+        .filter((session) => {
+          if (includeSystem) return true;
+          const normalized = normalizeProjectPathInput(session.projectPath);
+          if (normalized === normalizedSystemPath) return false;
+          const full = deps.sessionManager.getSession(session.id);
+          const context = full?.context && typeof full.context === 'object'
+            ? full.context as Record<string, unknown>
+            : {};
+          const ownerAgentId = typeof context.ownerAgentId === 'string' ? context.ownerAgentId : '';
+          const sessionTier = typeof context.sessionTier === 'string' ? context.sessionTier : '';
+          return ownerAgentId !== 'finger-system-agent' && sessionTier !== 'system' && !session.id.startsWith('system-');
+        })
+        .sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());
       const result = limit && limit > 0 ? sessions.slice(0, limit) : sessions;
 
       return {
         sessions: result.map(s => ({
           session_id: s.id,
+          name: s.name,
+          project_path: s.projectPath,
           created_at: s.createdAt,
           last_accessed_at: s.updatedAt,
           message_count: s.messageCount
         })),
-        total: sessions.length
+        total: sessions.length,
+        project_path: normalizedProjectPath,
       };
     }
   });

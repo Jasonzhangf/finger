@@ -28,6 +28,15 @@ function createDeps(executeImpl?: ReturnType<typeof vi.fn>) {
     { id: 'root-session-1', context: {}, projectPath: '/tmp/project-a', messages: [], lastAccessedAt: '2026-03-24T00:00:00.000Z' },
     { id: 'root-session-2', context: {}, projectPath: '/tmp/project-a', messages: [], lastAccessedAt: '2026-03-24T00:10:00.000Z' },
   ];
+  const sessionProjectPathById: Record<string, string> = {
+    'root-session-1': '/tmp/project-a',
+    'root-session-2': '/tmp/project-a',
+    'child-session-1': '/tmp/project-a',
+    'new-session-project-a': '/tmp/project-a',
+    'new-session-project-b': '/tmp/project-b',
+    'runtime-current': '/tmp/runtime-current',
+    'session-manager-current': '/tmp/session-manager-current',
+  };
   const runtimeCurrentSession = { id: 'runtime-current', projectPath: '/tmp/runtime-current' };
   const sessionManager = {
     addMessage: vi.fn(async (sessionId: string, role: string, content: string, detail?: Record<string, unknown>) => {
@@ -35,7 +44,12 @@ function createDeps(executeImpl?: ReturnType<typeof vi.fn>) {
       return { id: 'msg', role, content, timestamp: new Date().toISOString() };
     }),
     getMessages: vi.fn(() => calls),
-    getSession: vi.fn((id: string) => ({ id, context: {}, projectPath: '/tmp', messages: [] })),
+    getSession: vi.fn((id: string) => ({
+      id,
+      context: {},
+      projectPath: sessionProjectPathById[id] ?? '/tmp',
+      messages: [],
+    })),
     getCurrentSession: vi.fn(() => ({ id: 'session-manager-current', projectPath: '/tmp/session-manager-current' })),
     findSessionsByProjectPath: vi.fn((projectPath: string) => rootSessions.filter((item) => item.projectPath === projectPath)),
     createSession: vi.fn((projectPath: string) => ({ id: `new-session-${projectPath.split('/').pop()}`, context: {}, projectPath, messages: [] })),
@@ -253,6 +267,7 @@ describe('dispatchTaskToAgent', () => {
 
   it('resolves latest project session when sessionStrategy=latest', async () => {
     const { deps, sessionManager } = createDeps();
+    const execute = (deps as any).agentRuntimeBlock.execute as ReturnType<typeof vi.fn>;
     const res = await mod.dispatchTaskToAgent(deps as any, {
       sourceAgentId: 'finger-system-agent',
       targetAgentId: 'finger-project-agent',
@@ -264,12 +279,13 @@ describe('dispatchTaskToAgent', () => {
     expect(res.ok).toBe(true);
     expect(sessionManager.findSessionsByProjectPath).toHaveBeenCalledWith('/tmp/project-a');
     expect(sessionManager.createSession).not.toHaveBeenCalled();
-    expect(sessionManager.setCurrentSession).toHaveBeenCalledWith('root-session-2');
+    expect(execute).toHaveBeenCalledWith('dispatch', expect.objectContaining({ sessionId: 'root-session-2' }));
     expect((deps as any).ensureRuntimeChildSession).not.toHaveBeenCalled();
   });
 
   it('defaults to latest existing session when no session/sessionStrategy is provided', async () => {
     const { deps, sessionManager } = createDeps();
+    const execute = (deps as any).agentRuntimeBlock.execute as ReturnType<typeof vi.fn>;
     const res = await mod.dispatchTaskToAgent(deps as any, {
       sourceAgentId: 'finger-system-agent',
       targetAgentId: 'finger-project-agent',
@@ -280,7 +296,7 @@ describe('dispatchTaskToAgent', () => {
     expect(res.ok).toBe(true);
     expect(sessionManager.findSessionsByProjectPath).toHaveBeenCalledWith('/tmp/project-a');
     expect(sessionManager.createSession).not.toHaveBeenCalled();
-    expect(sessionManager.setCurrentSession).toHaveBeenCalledWith('root-session-2');
+    expect(execute).toHaveBeenCalledWith('dispatch', expect.objectContaining({ sessionId: 'root-session-2' }));
     expect((deps as any).ensureRuntimeChildSession).not.toHaveBeenCalled();
   });
 
@@ -296,7 +312,7 @@ describe('dispatchTaskToAgent', () => {
 
     expect(res.ok).toBe(true);
     expect(sessionManager.createSession).toHaveBeenCalledWith('/tmp/project-b', undefined, { allowReuse: false });
-    expect(sessionManager.setCurrentSession).toHaveBeenCalledWith('new-session-project-b');
+    expect(sessionManager.setCurrentSession).toHaveBeenCalledWith('session-manager-current');
     expect((deps as any).ensureRuntimeChildSession).not.toHaveBeenCalled();
   });
 
@@ -341,7 +357,6 @@ describe('dispatchTaskToAgent', () => {
     } as any);
 
     expect(res.ok).toBe(true);
-    expect(sessionManager.setCurrentSession).toHaveBeenCalledWith('root-session-2');
     expect((deps as any).ensureRuntimeChildSession).toHaveBeenCalledWith(expect.objectContaining({ id: 'root-session-2' }), 'finger-reviewer');
   });
 
@@ -680,5 +695,147 @@ describe('dispatchTaskToAgent', () => {
         substage: 'dispatch_suppressed_active_lifecycle',
       }),
     }));
+  });
+
+  it('rejects cross-project dispatch when explicit session does not belong to requested project', async () => {
+    const { deps } = createDeps();
+    const sessionManager = (deps as any).sessionManager;
+    sessionManager.getSession.mockImplementation((id: string) => ({
+      id,
+      context: {},
+      projectPath: '/tmp/project-a',
+      messages: [],
+    }));
+
+    const res = await mod.dispatchTaskToAgent(deps as any, {
+      sourceAgentId: 'finger-system-agent',
+      targetAgentId: 'finger-project-agent',
+      sessionId: 'session-project-a',
+      projectPath: '/tmp/project-b',
+      task: 'cross project should fail',
+    } as any);
+
+    expect(res.ok).toBe(false);
+    expect(res.status).toBe('failed');
+    expect(String(res.error)).toContain('dispatch session/project scope mismatch');
+    expect((deps as any).agentRuntimeBlock.execute).not.toHaveBeenCalled();
+  });
+
+  it('rejects system->project dispatch when active task identity mismatches immutable binding', async () => {
+    const { deps, sessionManager } = createDeps();
+    sessionManager.getSession.mockImplementation((id: string) => {
+      if (id === 'runtime-current') {
+        return {
+          id,
+          context: {
+            projectTaskState: {
+              active: true,
+              status: 'in_progress',
+              sourceAgentId: 'finger-system-agent',
+              targetAgentId: 'finger-project-agent',
+              updatedAt: new Date().toISOString(),
+              taskId: 'task-active-binding-1',
+              taskName: 'active-binding-task',
+              dispatchId: 'dispatch-binding-1',
+            },
+          },
+          projectPath: '/tmp/project-a',
+          messages: [],
+        };
+      }
+      return {
+        id,
+        context: {},
+        projectPath: '/tmp/project-a',
+        messages: [],
+      };
+    });
+
+    const res = await mod.dispatchTaskToAgent(deps as any, {
+      sourceAgentId: 'finger-system-agent',
+      targetAgentId: 'finger-project-agent',
+      sessionStrategy: 'latest',
+      projectPath: '/tmp/project-a',
+      task: { prompt: 'new different task should be rejected' },
+      assignment: { taskId: 'task-new-binding-2', taskName: 'new-task' },
+    } as any);
+
+    expect(res.ok).toBe(false);
+    expect(res.status).toBe('failed');
+    expect(String(res.error)).toContain('project task binding mismatch');
+    expect((deps as any).agentRuntimeBlock.execute).not.toHaveBeenCalledWith('dispatch', expect.anything());
+  });
+
+  it('rejects dispatch when active bound session differs from selected session', async () => {
+    const { deps, sessionManager } = createDeps();
+    sessionManager.getSession.mockImplementation((id: string) => {
+      if (id === 'runtime-current') {
+        return {
+          id,
+          context: {
+            projectTaskState: {
+              active: true,
+              status: 'in_progress',
+              sourceAgentId: 'finger-system-agent',
+              targetAgentId: 'finger-project-agent',
+              updatedAt: new Date().toISOString(),
+              taskId: 'task-active-bound-1',
+              taskName: 'active-bound-task',
+              dispatchId: 'dispatch-bound-1',
+              boundSessionId: 'runtime-current',
+              revision: 2,
+            },
+          },
+          projectPath: '/tmp/project-a',
+          messages: [],
+        };
+      }
+      return {
+        id,
+        context: {},
+        projectPath: '/tmp/project-a',
+        messages: [],
+      };
+    });
+
+    const res = await mod.dispatchTaskToAgent(deps as any, {
+      sourceAgentId: 'finger-system-agent',
+      targetAgentId: 'finger-project-agent',
+      sessionStrategy: 'latest',
+      projectPath: '/tmp/project-a',
+      task: { prompt: 'same task but wrong session should fail' },
+      assignment: { taskId: 'task-active-bound-1', taskName: 'active-bound-task' },
+    } as any);
+
+    expect(res.ok).toBe(false);
+    expect(res.status).toBe('failed');
+    expect(String(res.error)).toContain('boundSessionId');
+    expect((deps as any).agentRuntimeBlock.execute).not.toHaveBeenCalledWith('dispatch', expect.anything());
+  });
+
+  it('rejects project dispatch on system-owned session even without explicit projectPath', async () => {
+    const { deps } = createDeps();
+    const sessionManager = (deps as any).sessionManager;
+    sessionManager.getSession.mockImplementation((id: string) => ({
+      id,
+      context: {
+        sessionTier: 'system',
+        ownerAgentId: 'finger-system-agent',
+      },
+      projectPath: '/Users/fanzhang/.finger/system',
+      messages: [],
+    }));
+
+    const res = await mod.dispatchTaskToAgent(deps as any, {
+      sourceAgentId: 'finger-system-agent',
+      targetAgentId: 'finger-project-agent',
+      sessionId: 'system-abc123',
+      task: 'system session must not be used by project agent',
+    } as any);
+
+    expect(res.ok).toBe(false);
+    expect(res.status).toBe('failed');
+    expect(String(res.error)).toContain('project agent cannot run on system-owned session');
+    expect((deps as any).agentRuntimeBlock.execute).not.toHaveBeenCalled();
   });
 });

@@ -7,6 +7,7 @@ import { sanitizeDispatchResult, type DispatchSummaryResult } from '../../../com
 import type { AgentDispatchRequest, AgentRuntimeDeps } from './types.js';
 import {
   enrichDispatchTagsAndTopic,
+  normalizeProjectPathHint,
 } from './dispatch-helpers.js';
 import {
   FINGER_PROJECT_AGENT_ID,
@@ -60,6 +61,49 @@ const ACTIVE_PROJECT_LIFECYCLE_STAGES = new Set([
 
 function asTrimmedString(value: unknown): string {
   return typeof value === 'string' ? value.trim() : '';
+}
+
+function validateDispatchSessionScope(
+  deps: AgentRuntimeDeps,
+  input: AgentDispatchRequest,
+): { ok: true } | { ok: false; error: string } {
+  const sessionId = typeof input.sessionId === 'string' ? input.sessionId.trim() : '';
+  if (!sessionId) return { ok: true };
+  const targetAgentId = asTrimmedString(input.targetAgentId);
+  if (targetAgentId === FINGER_SYSTEM_AGENT_ID) return { ok: true };
+
+  const session = deps.sessionManager.getSession(sessionId);
+  if (!session) return { ok: true };
+  const sessionProjectPath = normalizeProjectPathHint(
+    typeof session.projectPath === 'string' ? session.projectPath : '',
+  );
+  const projectHintRaw = resolveDispatchProjectPathHint(input);
+  const projectHint = normalizeProjectPathHint(projectHintRaw);
+
+  if (projectHint && sessionProjectPath && projectHint !== sessionProjectPath) {
+    return {
+      ok: false,
+      error: `dispatch session/project scope mismatch: session(${sessionId}) belongs to ${sessionProjectPath}, requested project ${projectHint}`,
+    };
+  }
+
+  if (targetAgentId === FINGER_PROJECT_AGENT_ID) {
+    const context = isObjectRecord(session.context) ? session.context : {};
+    const ownerAgentId = asString(context.ownerAgentId);
+    const sessionTier = asString(context.sessionTier);
+    if (
+      sessionId.startsWith('system-')
+      || sessionTier === 'system'
+      || ownerAgentId === FINGER_SYSTEM_AGENT_ID
+    ) {
+      return {
+        ok: false,
+        error: `dispatch session/project scope mismatch: project agent cannot run on system-owned session ${sessionId}`,
+      };
+    }
+  }
+
+  return { ok: true };
 }
 
 function resolveDispatchTaskIdentity(input: AgentDispatchRequest): { taskId?: string; taskName?: string } {
@@ -261,6 +305,88 @@ function isSameProjectTaskIdentity(
   return false;
 }
 
+function isProjectTaskUpdateDispatch(input: AgentDispatchRequest): boolean {
+  const metadata = isObjectRecord(input.metadata) ? input.metadata : {};
+  const taskRecord = isObjectRecord(input.task) ? input.task : {};
+  const taskMetadata = isObjectRecord(taskRecord.metadata) ? taskRecord.metadata : {};
+  return metadata.projectTaskUpdate === true
+    || metadata.project_task_update === true
+    || metadata.source === 'project-task-update'
+    || taskMetadata.taskUpdate === true
+    || taskMetadata.task_update === true;
+}
+
+function resolveRequestedTaskSessionId(
+  callerSessionId: string,
+  normalizedSessionId: string,
+  routeSessionId: string,
+): string {
+  return firstNonEmptyString(normalizedSessionId, routeSessionId, callerSessionId) ?? '';
+}
+
+function validateProjectTaskBindingGuard(params: {
+  input: AgentDispatchRequest;
+  sourceTaskState: ReturnType<typeof parseProjectTaskState>;
+  identity: { taskId?: string; taskName?: string };
+  requestedSessionId: string;
+}): { ok: true; boundSessionId: string; revision: number } | { ok: false; error: string } {
+  const { input, sourceTaskState, identity, requestedSessionId } = params;
+  if (!(input.sourceAgentId === FINGER_SYSTEM_AGENT_ID && input.targetAgentId === FINGER_PROJECT_AGENT_ID)) {
+    return { ok: true, boundSessionId: requestedSessionId, revision: 1 };
+  }
+
+  if (!isProjectTaskStateActive(sourceTaskState)) {
+    return {
+      ok: true,
+      boundSessionId: requestedSessionId,
+      revision: 1,
+    };
+  }
+
+  const activeTaskId = asTrimmedString(sourceTaskState?.taskId);
+  const activeTaskName = asTrimmedString(sourceTaskState?.taskName);
+  const activeBoundSessionId = asTrimmedString(sourceTaskState?.boundSessionId);
+  const incomingTaskId = asTrimmedString(identity.taskId);
+  const incomingTaskName = asTrimmedString(identity.taskName);
+  const incomingSessionId = asTrimmedString(requestedSessionId);
+  const updateDispatch = isProjectTaskUpdateDispatch(input);
+
+  if (activeTaskId && incomingTaskId && activeTaskId !== incomingTaskId) {
+    return {
+      ok: false,
+      error: `project task binding mismatch: active taskId=${activeTaskId}, incoming taskId=${incomingTaskId}; use project.task.update for same task only`,
+    };
+  }
+  if (!activeTaskId && activeTaskName && incomingTaskName && activeTaskName !== incomingTaskName) {
+    return {
+      ok: false,
+      error: `project task binding mismatch: active taskName=${activeTaskName}, incoming taskName=${incomingTaskName}; use project.task.update for same task only`,
+    };
+  }
+  if (activeBoundSessionId && incomingSessionId && activeBoundSessionId !== incomingSessionId) {
+    return {
+      ok: false,
+      error: `project task binding mismatch: active boundSessionId=${activeBoundSessionId}, incoming sessionId=${incomingSessionId}; resume bound session instead of switching`,
+    };
+  }
+  if ((activeTaskId || activeTaskName) && !incomingTaskId && !incomingTaskName && !updateDispatch) {
+    return {
+      ok: false,
+      error: 'project task binding mismatch: active task exists but incoming dispatch has no task identity',
+    };
+  }
+
+  const nextRevisionBase = typeof sourceTaskState?.revision === 'number' && Number.isFinite(sourceTaskState.revision)
+    ? Math.max(1, Math.floor(sourceTaskState.revision))
+    : 1;
+  const nextRevision = updateDispatch ? nextRevisionBase + 1 : nextRevisionBase;
+  return {
+    ok: true,
+    boundSessionId: activeBoundSessionId || incomingSessionId,
+    revision: nextRevision,
+  };
+}
+
 function appendProjectTaskHint(
   summary: string,
   params: {
@@ -291,6 +417,8 @@ function persistProjectTaskState(
     taskId?: string;
     taskName?: string;
     dispatchId?: string;
+    boundSessionId?: string;
+    revision?: number;
     summary?: string;
     note?: string;
     sourceAgentId?: string;
@@ -315,6 +443,8 @@ function persistProjectTaskState(
       status: next.status,
       active: next.active,
       dispatchId: next.dispatchId,
+      boundSessionId: next.boundSessionId,
+      revision: next.revision,
       summary: next.summary,
       note: next.note,
     });
@@ -348,6 +478,8 @@ function writeTaskRouterMarkdown(
     state.taskId ? `- taskId: ${state.taskId}` : '- taskId: N/A',
     state.taskName ? `- taskName: ${state.taskName}` : '- taskName: N/A',
     state.dispatchId ? `- dispatchId: ${state.dispatchId}` : '- dispatchId: N/A',
+    state.boundSessionId ? `- boundSessionId: ${state.boundSessionId}` : '- boundSessionId: N/A',
+    typeof state.revision === 'number' ? `- revision: ${state.revision}` : '- revision: N/A',
     state.note ? `- note: ${state.note}` : '- note: N/A',
     '',
     '## Delegated Project List (latest)',
@@ -365,6 +497,8 @@ function writeTaskRouterMarkdown(
         + `${item.taskId ? ` taskId=${item.taskId}` : ''}`
         + `${item.taskName ? ` task="${item.taskName}"` : ''}`
         + `${item.dispatchId ? ` dispatch=${item.dispatchId}` : ''}`
+        + `${item.boundSessionId ? ` boundSession=${item.boundSessionId}` : ''}`
+        + `${typeof item.revision === 'number' ? ` rev=${item.revision}` : ''}`
         + ` updated=${item.updatedAt}`,
       );
     }
@@ -483,6 +617,28 @@ export async function dispatchTaskToAgent(deps: AgentRuntimeDeps, input: AgentDi
       };
       await setupReviewRuntimeForDispatch(deps, normalizedInput);
     }
+    if (normalizedInput.targetAgentId === FINGER_SYSTEM_AGENT_ID) {
+      const getSystemSession = (deps.sessionManager as {
+        getOrCreateSystemSession?: () => { id?: string };
+      }).getOrCreateSystemSession;
+      if (typeof getSystemSession === 'function') {
+        const systemSession = getSystemSession.call(deps.sessionManager);
+        const forcedSystemSessionId = typeof systemSession?.id === 'string' ? systemSession.id.trim() : '';
+        const currentDispatchSessionId = typeof normalizedInput.sessionId === 'string'
+          ? normalizedInput.sessionId.trim()
+          : '';
+        if (forcedSystemSessionId.length > 0 && forcedSystemSessionId !== currentDispatchSessionId) {
+          const metadata = isObjectRecord(normalizedInput.metadata) ? { ...normalizedInput.metadata } : {};
+          metadata.dispatchForcedSystemSession = true;
+          metadata.dispatchOriginalSessionId = currentDispatchSessionId || undefined;
+          normalizedInput = {
+            ...normalizedInput,
+            sessionId: forcedSystemSessionId,
+            metadata,
+          };
+        }
+      }
+    }
     if (originalSessionId
       && typeof normalizedInput.sessionId === 'string'
       && normalizedInput.sessionId.trim().length > 0
@@ -495,9 +651,37 @@ export async function dispatchTaskToAgent(deps: AgentRuntimeDeps, input: AgentDi
         metadata,
       };
     }
+    const scopeValidation = validateDispatchSessionScope(deps, normalizedInput);
+    if (!scopeValidation.ok) {
+      const failedSessionId = firstNonEmptyString(
+        asTrimmedString(normalizedInput.sessionId),
+        callerSessionId,
+      );
+      logger.module('dispatch').warn('Rejected dispatch due to session/project scope mismatch', {
+        sourceAgentId: normalizedInput.sourceAgentId,
+        targetAgentId: normalizedInput.targetAgentId,
+        sessionId: asTrimmedString(normalizedInput.sessionId) || undefined,
+        projectPath: resolveDispatchProjectPathHint(normalizedInput) || undefined,
+        error: scopeValidation.error,
+      });
+      if (failedSessionId) {
+        applyExecutionLifecycleTransition(deps.sessionManager, failedSessionId, {
+          stage: 'failed',
+          substage: 'dispatch_session_scope_mismatch',
+          updatedBy: 'dispatch',
+          targetAgentId: normalizedInput.targetAgentId,
+          lastError: scopeValidation.error,
+        });
+      }
+      return {
+        ok: false,
+        dispatchId: fallbackDispatchId,
+        status: 'failed',
+        error: scopeValidation.error,
+      };
+    }
     if (typeof normalizedInput.sessionId === 'string' && normalizedInput.sessionId.trim().length > 0) {
       deps.runtime.bindAgentSession(normalizedInput.targetAgentId, normalizedInput.sessionId);
-      deps.runtime.setCurrentSession(normalizedInput.sessionId);
     }
     const sessionIdForLedger = typeof normalizedInput.sessionId === 'string' ? normalizedInput.sessionId.trim() : '';
     if (sessionIdForLedger) {
@@ -540,6 +724,7 @@ export async function dispatchTaskToAgent(deps: AgentRuntimeDeps, input: AgentDi
         executionLifecycle: sessionContext.executionLifecycle,
         projectTaskState: sessionContext.projectTaskState,
         projectTaskRegistry: sessionContext.projectTaskRegistry,
+        systemTaskState: sessionContext.systemTaskState,
         ...(taskRouterPath ? { taskRouterPath } : {}),
       };
       if (taskRouterPath) metadata.taskRouterPath = taskRouterPath;
@@ -570,6 +755,40 @@ export async function dispatchTaskToAgent(deps: AgentRuntimeDeps, input: AgentDi
   const normalizedSessionId = typeof normalizedInput.sessionId === 'string' ? normalizedInput.sessionId.trim() : '';
   const routeSessionId = resolveSessionContextRouteSessionId(deps, normalizedSessionId);
   const sourceTaskState = resolveSourceProjectTaskState(deps, callerSessionId);
+  const requestedTaskSessionId = resolveRequestedTaskSessionId(callerSessionId, normalizedSessionId, routeSessionId);
+  const bindingGuard = validateProjectTaskBindingGuard({
+    input: normalizedInput,
+    sourceTaskState,
+    identity: projectTaskIdentity,
+    requestedSessionId: requestedTaskSessionId,
+  });
+  if (!bindingGuard.ok) {
+    const failedSessionId = requestedTaskSessionId || normalizedSessionId || callerSessionId || routeSessionId;
+    if (failedSessionId) {
+      applyExecutionLifecycleTransition(deps.sessionManager, failedSessionId, {
+        stage: 'failed',
+        substage: 'dispatch_binding_mismatch',
+        updatedBy: 'dispatch',
+        targetAgentId: normalizedInput.targetAgentId,
+        lastError: bindingGuard.error,
+      });
+    }
+    const fallbackDispatchId = `dispatch-binding-mismatch-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+    logger.module('dispatch').warn('Rejected dispatch due to immutable project-task binding mismatch', {
+      sourceAgentId: normalizedInput.sourceAgentId,
+      targetAgentId: normalizedInput.targetAgentId,
+      taskId: projectTaskIdentity.taskId,
+      taskName: projectTaskIdentity.taskName,
+      sessionId: requestedTaskSessionId || undefined,
+      error: bindingGuard.error,
+    });
+    return {
+      ok: false,
+      dispatchId: fallbackDispatchId,
+      status: 'failed',
+      error: bindingGuard.error,
+    };
+  }
   const projectTaskStateSessionIds = (
     normalizedInput.sourceAgentId === FINGER_SYSTEM_AGENT_ID
     && normalizedInput.targetAgentId === FINGER_PROJECT_AGENT_ID
@@ -589,6 +808,8 @@ export async function dispatchTaskToAgent(deps: AgentRuntimeDeps, input: AgentDi
       taskName: projectTaskIdentity.taskName,
       sourceAgentId: normalizedInput.sourceAgentId,
       targetAgentId: normalizedInput.targetAgentId,
+      boundSessionId: bindingGuard.boundSessionId || requestedTaskSessionId,
+      revision: bindingGuard.revision,
       note: 'system_dispatched_project_task',
     });
   }

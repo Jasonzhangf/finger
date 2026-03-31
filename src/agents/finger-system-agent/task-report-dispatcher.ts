@@ -5,9 +5,15 @@
  */
 
 import type { AgentRuntimeDeps } from '../../server/modules/agent-runtime/types.js';
+import {
+  buildTaskReportContract,
+  parseTaskReportContract,
+  type TaskReportContract,
+} from '../../common/task-report-contract.js';
 
 export interface TaskReportPayload {
   taskId: string;
+  taskName?: string;
   taskSummary: string;
   sessionId: string;
   result: 'success' | 'failure';
@@ -16,6 +22,13 @@ export interface TaskReportPayload {
   deliveryArtifacts?: string;
   /** 上报来源，默认 finger-project-agent；review 通过上报时会改为 finger-reviewer */
   sourceAgentId?: string;
+  /** Structured report payload (preferred). */
+  taskReport?: TaskReportContract;
+  evidence?: string[] | string;
+  status?: string;
+  nextAction?: string;
+  reviewDecision?: string;
+  deliveryClaim?: boolean;
 }
 
 export interface TaskReportDispatchResult {
@@ -93,15 +106,33 @@ export async function dispatchTaskToSystemAgent(
   const sessionId = resolveTaskReportSessionId(deps, payload.sessionId);
   const sessionSubstituted = payload.sessionId.trim() !== sessionId;
   const systemBusy = await isSystemAgentBusy(deps);
+  const sourceAgentId = typeof payload.sourceAgentId === 'string' && payload.sourceAgentId.trim().length > 0
+    ? payload.sourceAgentId.trim()
+    : 'finger-project-agent';
+  const structuredTaskReport = parseTaskReportContract(payload.taskReport)
+    ?? buildTaskReportContract({
+      taskId: payload.taskId,
+      taskName: payload.taskName,
+      sessionId: payload.sessionId,
+      projectId: payload.projectId,
+      sourceAgentId,
+      result: payload.result,
+      summary: payload.taskSummary,
+      status: payload.status,
+      deliveryArtifacts: payload.deliveryArtifacts,
+      evidence: payload.evidence,
+      nextAction: payload.nextAction,
+      reviewDecision: payload.reviewDecision,
+      deliveryClaim: payload.deliveryClaim,
+    });
 
   const raw = await deps.agentRuntimeBlock.execute('dispatch', {
-    sourceAgentId: typeof payload.sourceAgentId === 'string' && payload.sourceAgentId.trim().length > 0
-      ? payload.sourceAgentId.trim()
-      : 'finger-project-agent',
+    sourceAgentId,
     targetAgentId: SYSTEM_AGENT_ID,
     task: {
       prompt: `[Task Report]
 任务ID: ${payload.taskId}
+${payload.taskName ? `任务名: ${payload.taskName}\n` : ''}任务状态: ${structuredTaskReport.status}
 任务摘要: ${payload.taskSummary}
 结果: ${payload.result}
 项目: ${payload.projectId}${payload.deliveryArtifacts ? "\n交付标的: " + payload.deliveryArtifacts : ""}`,
@@ -112,6 +143,9 @@ export async function dispatchTaskToSystemAgent(
       role: 'system',
       projectId: payload.projectId,
       taskId: payload.taskId,
+      ...(payload.taskName ? { taskName: payload.taskName } : {}),
+      taskReport: structuredTaskReport,
+      taskReportSchema: structuredTaskReport.schema,
       ...(systemBusy ? {} : { deliveryMode: 'direct' }),
       ...(sessionSubstituted ? { originalSessionId: payload.sessionId } : {}),
     },

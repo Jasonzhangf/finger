@@ -24,6 +24,14 @@ vi.mock('../../../../src/agents/finger-system-agent/review-route-registry.js', (
 }));
 
 describe('review closure pipeline (project -> reviewer -> system)', () => {
+  function createSessionManagerStub() {
+    return {
+      getSession: vi.fn().mockReturnValue(null),
+      updateContext: vi.fn(),
+      addMessage: vi.fn(),
+    };
+  }
+
   beforeEach(() => {
     vi.clearAllMocks();
     vi.mocked(getReviewRoute).mockReturnValue({
@@ -52,7 +60,7 @@ describe('review closure pipeline (project -> reviewer -> system)', () => {
 
     registerReportTaskCompletionTool(registry, () => ({
       agentRuntimeBlock: { execute: runtimeExecute },
-      sessionManager: {},
+      sessionManager: createSessionManagerStub(),
     }) as any);
 
     // Step 1: project agent reports completion -> dispatch to reviewer
@@ -95,6 +103,11 @@ describe('review closure pipeline (project -> reviewer -> system)', () => {
       taskId: 'task-100',
       sourceAgentId: 'finger-reviewer',
       sessionId: 'session-project-1',
+      taskReport: expect.objectContaining({
+        schema: 'finger.task-report.v1',
+        taskId: 'task-100',
+        sourceAgentId: 'finger-reviewer',
+      }),
     }));
     expect(removeReviewRoute).toHaveBeenCalledWith('task-100');
     expect(emitTaskCompleted).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
@@ -103,4 +116,3 @@ describe('review closure pipeline (project -> reviewer -> system)', () => {
     }));
   });
 });
-

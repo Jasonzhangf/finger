@@ -26,6 +26,14 @@ vi.mock('../../../../src/agents/finger-system-agent/review-route-registry.js', (
 }));
 
 describe('report-task-completion tool', () => {
+  function createSessionManagerStub() {
+    return {
+      getSession: vi.fn().mockReturnValue(null),
+      updateContext: vi.fn(),
+      addMessage: vi.fn(),
+    };
+  }
+
   beforeEach(() => {
     vi.clearAllMocks();
     vi.mocked(getReviewRoute).mockReturnValue({
@@ -41,10 +49,7 @@ describe('report-task-completion tool', () => {
     const registry = new ToolRegistry({ internalRegistry: undefined, tools: [] });
     registerReportTaskCompletionTool(registry, () => ({
       runtimeInstructionBus: {},
-      sessionManager: {
-        getSession: vi.fn().mockReturnValue(null),
-        addMessage: vi.fn(),
-      },
+      sessionManager: createSessionManagerStub(),
     }) as any);
 
     const result = await registry.execute('report-task-completion', {
@@ -68,6 +73,7 @@ describe('report-task-completion tool', () => {
       runtimeInstructionBus: {},
       sessionManager: {
         getSession: vi.fn().mockReturnValue({ id: 'session-1' }),
+        updateContext: vi.fn(),
         addMessage,
       },
       agentRuntimeBlock: {
@@ -93,7 +99,16 @@ describe('report-task-completion tool', () => {
     });
 
     expect((result as any).ok).toBe(true);
-    expect(dispatchTaskToSystemAgent).toHaveBeenCalled();
+    expect(dispatchTaskToSystemAgent).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      taskId: 'task-1',
+      status: 'completed',
+      taskReport: expect.objectContaining({
+        schema: 'finger.task-report.v1',
+        taskId: 'task-1',
+        status: 'completed',
+        summary: 'Done',
+      }),
+    }));
     expect(addMessage).not.toHaveBeenCalled();
   });
 
@@ -106,7 +121,7 @@ describe('report-task-completion tool', () => {
     });
     registerReportTaskCompletionTool(registry, () => ({
       runtimeInstructionBus: {},
-      sessionManager: {},
+      sessionManager: createSessionManagerStub(),
       agentRuntimeBlock: {
         execute: runtimeExecute,
       },
@@ -137,6 +152,104 @@ describe('report-task-completion tool', () => {
       metadata: expect.objectContaining({
         taskId: 'task-continue-1',
         noDeliveryClaim: true,
+      }),
+    }));
+    expect(dispatchTaskToSystemAgent).not.toHaveBeenCalled();
+  });
+
+  it('uses structured delivery_claim=false to force continue path even if summary looks completed', async () => {
+    const registry = new ToolRegistry({ internalRegistry: undefined, tools: [] });
+    const runtimeExecute = vi.fn().mockResolvedValue({
+      ok: true,
+      dispatchId: 'dispatch-continue-structured',
+      status: 'queued',
+    });
+    registerReportTaskCompletionTool(registry, () => ({
+      runtimeInstructionBus: {},
+      sessionManager: createSessionManagerStub(),
+      agentRuntimeBlock: {
+        execute: runtimeExecute,
+      },
+    }) as any);
+
+    vi.mocked(getReviewRoute).mockReturnValue({
+      taskId: 'task-continue-structured',
+      reviewRequired: true,
+      reviewAgentId: 'finger-reviewer',
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    } as any);
+
+    const result = await registry.execute('report-task-completion', {
+      action: 'report',
+      taskId: 'task-continue-structured',
+      taskSummary: 'completed with evidence',
+      sessionId: 'session-continue-structured',
+      result: 'success',
+      projectId: 'proj-continue',
+      delivery_claim: false,
+      status: 'in_progress',
+      next_action: 'continue',
+    }, { agentId: 'finger-project-agent' });
+
+    expect((result as any).ok).toBe(true);
+    expect((result as any).action).toBe('continue');
+    expect(runtimeExecute).toHaveBeenCalledWith('dispatch', expect.objectContaining({
+      metadata: expect.objectContaining({
+        noDeliveryClaim: true,
+        taskReport: expect.objectContaining({
+          taskId: 'task-continue-structured',
+          status: 'in_progress',
+          deliveryClaim: false,
+        }),
+      }),
+    }));
+    expect(dispatchTaskToSystemAgent).not.toHaveBeenCalled();
+  });
+
+  it('reviewer reject redispatches directly to project without notifying system agent', async () => {
+    const registry = new ToolRegistry({ internalRegistry: undefined, tools: [] });
+    const runtimeExecute = vi.fn().mockResolvedValue({
+      ok: true,
+      dispatchId: 'dispatch-reject-redispatch',
+      status: 'queued',
+    });
+    registerReportTaskCompletionTool(registry, () => ({
+      runtimeInstructionBus: {},
+      sessionManager: createSessionManagerStub(),
+      agentRuntimeBlock: {
+        execute: runtimeExecute,
+      },
+    }) as any);
+
+    vi.mocked(getReviewRoute).mockReturnValue({
+      taskId: 'task-reject-1',
+      taskName: 'weibo-detail-refactor',
+      reviewRequired: true,
+      reviewAgentId: 'finger-reviewer',
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    } as any);
+
+    const result = await registry.execute('report-task-completion', {
+      action: 'report',
+      taskId: 'task-reject-1',
+      taskSummary: 'BLOCK: missing dist sync and validation evidence',
+      sessionId: 'session-review-1',
+      result: 'failure',
+      projectId: 'webauto',
+      delivery_artifacts: 'dist missing common.mjs',
+    }, { agentId: 'finger-reviewer' });
+
+    expect((result as any).ok).toBe(true);
+    expect((result as any).action).toBe('continue');
+    expect(runtimeExecute).toHaveBeenCalledWith('dispatch', expect.objectContaining({
+      sourceAgentId: 'finger-reviewer',
+      targetAgentId: 'finger-project-agent',
+      metadata: expect.objectContaining({
+        source: 'review-reject-redispatch',
+        reviewDecision: 'reject',
+        taskId: 'task-reject-1',
       }),
     }));
     expect(dispatchTaskToSystemAgent).not.toHaveBeenCalled();

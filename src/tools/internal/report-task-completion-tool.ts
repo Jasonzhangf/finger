@@ -11,6 +11,11 @@ import type { AgentRuntimeDeps } from '../../server/modules/agent-runtime/types.
 import { dispatchTaskToSystemAgent } from '../../agents/finger-system-agent/task-report-dispatcher.js';
 import { emitTaskCompleted } from '../../agents/finger-system-agent/system-events.js';
 import {
+  buildTaskReportContract,
+  resolveStructuredDeliveryClaim,
+  type TaskReportContract,
+} from '../../common/task-report-contract.js';
+import {
   getReviewRoute,
   getReviewRouteByTaskName,
   removeReviewRoute,
@@ -34,6 +39,14 @@ export interface ReportTaskCompletionInput {
   projectId: string;
   /** 交付标的：截图路径、执行结果、关键变更文件列表等 */
   deliveryArtifacts?: string;
+  /** structured status for deterministic routing */
+  status?: string;
+  /** structured next action for deterministic routing */
+  nextAction?: string;
+  /** explicit delivery claim; overrides legacy text heuristics */
+  deliveryClaim?: boolean;
+  /** evidence lines / artifacts */
+  evidence?: string[] | string;
 }
 
 export interface ReportTaskCompletionOutput {
@@ -83,12 +96,30 @@ function hasDeliveryClaim(summary: string, artifacts: string, result: 'success' 
   return CLAIM_MARKERS.some((marker) => summaryLc.includes(marker));
 }
 
+function normalizeOptionalBoolean(value: unknown): boolean | undefined {
+  if (typeof value === 'boolean') return value;
+  if (typeof value !== 'string') return undefined;
+  const normalized = value.trim().toLowerCase();
+  if (normalized === 'true' || normalized === '1' || normalized === 'yes') return true;
+  if (normalized === 'false' || normalized === '0' || normalized === 'no') return false;
+  return undefined;
+}
+
+function resolveEvidence(raw: Record<string, unknown>, params: ReportTaskCompletionInput): string[] | string | undefined {
+  if (Array.isArray(params.evidence) || typeof params.evidence === 'string') return params.evidence;
+  if (Array.isArray(raw.evidence)) return raw.evidence as string[];
+  if (typeof raw.evidence === 'string') return raw.evidence.trim();
+  if (typeof raw.evidence_items === 'string') return raw.evidence_items.trim();
+  if (Array.isArray(raw.evidence_items)) return raw.evidence_items as string[];
+  return undefined;
+}
+
 function updateProjectTaskStateForSession(
   deps: AgentRuntimeDeps,
   sessionId: string | undefined,
   patch: {
     active?: boolean;
-    status?: 'dispatching' | 'in_progress' | 'waiting_review' | 'completed' | 'failed' | 'cancelled';
+    status?: 'dispatched' | 'in_progress' | 'waiting_review' | 'pending_approval' | 'completed' | 'failed' | 'cancelled';
     taskId?: string;
     taskName?: string;
     dispatchId?: string;
@@ -198,6 +229,22 @@ export function registerReportTaskCompletionTool(
           type: 'string',
           description: '交付标的描述：截图路径、执行结果、关键变更文件列表等',
         },
+        status: {
+          type: 'string',
+          description: 'Structured task status (in_progress/review_ready/completed/failed/blocked/needs_rework)',
+        },
+        next_action: {
+          type: 'string',
+          description: 'Structured next action (continue/review/approve/rework/none)',
+        },
+        delivery_claim: {
+          type: 'boolean',
+          description: 'Explicit delivery claim for review pipeline routing. Preferred over text heuristics.',
+        },
+        evidence: {
+          oneOf: [{ type: 'string' }, { type: 'array', items: { type: 'string' } }],
+          description: 'Structured evidence list or text lines.',
+        },
       },
       required: ['action', 'taskId', 'taskSummary', 'sessionId', 'result', 'projectId'],
     },
@@ -225,6 +272,24 @@ export function registerReportTaskCompletionTool(
           : typeof raw.delivery_artifacts === 'string'
             ? raw.delivery_artifacts.trim()
             : '';
+        const structuredStatus = typeof params.status === 'string'
+          ? params.status.trim()
+          : typeof raw.status === 'string'
+            ? raw.status.trim()
+            : typeof raw.task_status === 'string'
+              ? raw.task_status.trim()
+              : '';
+        const nextAction = typeof params.nextAction === 'string'
+          ? params.nextAction.trim()
+          : typeof raw.next_action === 'string'
+            ? raw.next_action.trim()
+            : typeof raw.nextAction === 'string'
+              ? raw.nextAction.trim()
+              : '';
+        const deliveryClaim = normalizeOptionalBoolean(
+          params.deliveryClaim ?? raw.delivery_claim ?? raw.deliveryClaim
+        );
+        const evidence = resolveEvidence(raw, params);
         const callerAgentId = typeof context?.agentId === 'string' ? context.agentId.trim() : '';
         const isReviewerCaller = callerAgentId.toLowerCase().includes('review');
         const reviewRoute = taskId
@@ -235,7 +300,30 @@ export function registerReportTaskCompletionTool(
         const routeTaskName = typeof reviewRoute?.taskName === 'string' ? reviewRoute.taskName.trim() : '';
         const effectiveTaskName = routeTaskName || taskName;
         const normalizedSummary = normalizeText(params.taskSummary);
-        const hasClaim = hasDeliveryClaim(normalizedSummary, deliveryArtifacts, params.result);
+        const taskReport: TaskReportContract = buildTaskReportContract({
+          taskId: effectiveTaskId || params.taskId,
+          taskName: effectiveTaskName || taskName || undefined,
+          sessionId: params.sessionId,
+          projectId: params.projectId,
+          sourceAgentId: isReviewerCaller ? (callerAgentId || 'finger-reviewer') : 'finger-project-agent',
+          result: params.result,
+          summary: normalizedSummary,
+          status: structuredStatus,
+          deliveryArtifacts,
+          evidence,
+          nextAction,
+          reviewDecision: typeof raw.review_decision === 'string' ? raw.review_decision : undefined,
+          deliveryClaim,
+        });
+        const hasStructuredClaimSignal = typeof deliveryClaim === 'boolean'
+          || structuredStatus.length > 0
+          || nextAction.length > 0;
+        const structuredClaim = hasStructuredClaimSignal
+          ? resolveStructuredDeliveryClaim(taskReport)
+          : undefined;
+        const hasClaim = typeof structuredClaim === 'boolean'
+          ? structuredClaim
+          : hasDeliveryClaim(normalizedSummary, deliveryArtifacts, params.result);
 
         // Project -> Reviewer
         if (!isReviewerCaller && !reviewRoute) {
@@ -273,6 +361,7 @@ export function registerReportTaskCompletionTool(
               projectId: params.projectId,
               reviewRequired: true,
               noDeliveryClaim: true,
+              taskReport,
             },
             queueOnBusy: true,
             maxQueueWaitMs: 0,
@@ -351,6 +440,13 @@ export function registerReportTaskCompletionTool(
               result: params.result,
               deliveryArtifacts,
               reviewRequired: true,
+              taskReport: {
+                ...taskReport,
+                status: (taskReport.status === 'in_progress' || taskReport.status === 'blocked')
+                  ? 'review_ready'
+                  : taskReport.status,
+                nextAction: 'review',
+              },
             },
             queueOnBusy: true,
             maxQueueWaitMs: 0,
@@ -398,6 +494,95 @@ export function registerReportTaskCompletionTool(
           };
         }
 
+        // Reviewer reject -> Project redispatch (do not notify system on reject path)
+        if (reviewRoute?.reviewRequired && isReviewerCaller && params.result === 'failure') {
+          const rejectPrompt = [
+            '[REVIEW REJECTED — REWORK REQUIRED]',
+            `任务ID: ${effectiveTaskId || params.taskId}`,
+            effectiveTaskName ? `任务名: ${effectiveTaskName}` : '',
+            `项目: ${params.projectId}`,
+            reviewRoute.acceptanceCriteria ? `验收标准: ${reviewRoute.acceptanceCriteria}` : '',
+            '',
+            'reviewer 已拒绝当前交付，请基于以下反馈继续修复：',
+            normalizedSummary || '(no summary)',
+            deliveryArtifacts ? `交付线索: ${deliveryArtifacts}` : '',
+            '',
+            '要求：',
+            '- 完整覆盖任务目标与验收标准',
+            '- 提供明确变更与验证证据（文件/命令/测试）',
+            '- 完成后再次调用 report-task-completion 上报',
+          ].filter(Boolean).join('\n');
+
+          const rejectDispatch = await deps.agentRuntimeBlock.execute('dispatch', {
+            sourceAgentId: callerAgentId || 'finger-reviewer',
+            targetAgentId: 'finger-project-agent',
+            task: { prompt: rejectPrompt },
+            sessionId: reviewRoute.projectSessionId ?? params.sessionId,
+            blocking: false,
+            metadata: {
+              source: 'review-reject-redispatch',
+              role: 'system',
+              taskId: effectiveTaskId || params.taskId,
+              ...(effectiveTaskName ? { taskName: effectiveTaskName } : {}),
+              projectId: params.projectId,
+              reviewRequired: true,
+              reviewDecision: 'reject',
+              reviewerFeedback: normalizedSummary,
+              deliveryArtifacts,
+              taskReport: {
+                ...taskReport,
+                status: 'needs_rework',
+                nextAction: 'rework',
+                reviewDecision: 'reject',
+                deliveryClaim: false,
+              },
+            },
+            queueOnBusy: true,
+            maxQueueWaitMs: 0,
+          } as unknown as Record<string, unknown>) as {
+            ok?: boolean;
+            dispatchId?: string;
+            status?: 'queued' | 'completed' | 'failed';
+            error?: string;
+          };
+
+          if (!rejectDispatch?.ok || rejectDispatch.status === 'failed') {
+            return {
+              ok: false,
+              action: 'report',
+              dispatchId: rejectDispatch?.dispatchId,
+              status: rejectDispatch?.status,
+              error: rejectDispatch?.error ?? 'review reject redispatch to project failed',
+            };
+          }
+
+          updateProjectTaskStateForSession(deps, reviewRoute.projectSessionId ?? params.sessionId, {
+            active: true,
+            status: 'in_progress',
+            taskId: effectiveTaskId || params.taskId,
+            taskName: effectiveTaskName || taskName || undefined,
+            dispatchId: rejectDispatch.dispatchId,
+            summary: normalizedSummary || 'review rejected; rework required',
+            note: 'review_rejected_redispatch',
+          });
+          updateProjectTaskStateForSession(deps, reviewRoute.parentSessionId, {
+            active: true,
+            status: 'in_progress',
+            taskId: effectiveTaskId || params.taskId,
+            taskName: effectiveTaskName || taskName || undefined,
+            dispatchId: rejectDispatch.dispatchId,
+            summary: normalizedSummary || 'review rejected; waiting project rework',
+            note: 'review_rejected_redispatch',
+          });
+
+          return {
+            ok: true,
+            action: 'continue',
+            dispatchId: rejectDispatch.dispatchId,
+            status: rejectDispatch.status,
+          };
+        }
+
         // Reviewer -> System (pass path)
         const dispatch = await dispatchTaskToSystemAgent(deps, {
           taskId: effectiveTaskId || params.taskId,
@@ -407,27 +592,34 @@ export function registerReportTaskCompletionTool(
           projectId: params.projectId,
           deliveryArtifacts,
           sourceAgentId: isReviewerCaller ? (callerAgentId || 'finger-reviewer') : 'finger-project-agent',
+          taskName: effectiveTaskName || taskName || undefined,
+          taskReport,
+          evidence,
+          status: taskReport.status,
+          nextAction: taskReport.nextAction,
+          reviewDecision: taskReport.reviewDecision,
+          deliveryClaim: taskReport.deliveryClaim,
         });
 
         if (isReviewerCaller && dispatch.ok && dispatch.status !== 'failed') {
           removeReviewRoute(effectiveTaskId || params.taskId);
           updateProjectTaskStateForSession(deps, reviewRoute?.projectSessionId ?? params.sessionId, {
-            active: false,
-            status: params.result === 'success' ? 'completed' : 'failed',
+            active: params.result !== 'success',
+            status: params.result === 'success' ? 'pending_approval' : 'failed',
             taskId: effectiveTaskId || params.taskId,
             taskName: effectiveTaskName || taskName || undefined,
             dispatchId: dispatch.dispatchId,
             summary: params.taskSummary,
-            note: params.result === 'success' ? 'review_passed' : 'review_failed',
+            note: params.result === 'success' ? 'review_passed_pending_system_approval' : 'review_failed',
           });
           updateProjectTaskStateForSession(deps, reviewRoute?.parentSessionId, {
-            active: false,
-            status: params.result === 'success' ? 'completed' : 'failed',
+            active: params.result !== 'success',
+            status: params.result === 'success' ? 'pending_approval' : 'failed',
             taskId: effectiveTaskId || params.taskId,
             taskName: effectiveTaskName || taskName || undefined,
             dispatchId: dispatch.dispatchId,
             summary: params.taskSummary,
-            note: params.result === 'success' ? 'review_passed' : 'review_failed',
+            note: params.result === 'success' ? 'review_passed_pending_system_approval' : 'review_failed',
           });
         }
 

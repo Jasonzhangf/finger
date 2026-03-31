@@ -73,6 +73,13 @@ describe('task-report-dispatcher', () => {
       blocking: false,
       metadata: expect.objectContaining({
         deliveryMode: 'direct',
+        taskReportSchema: 'finger.task-report.v1',
+        taskReport: expect.objectContaining({
+          taskId: 'task-1',
+          sessionId: 'session-1',
+          projectId: 'project-1',
+          status: 'completed',
+        }),
       }),
     }));
   });
@@ -149,6 +156,48 @@ describe('task-report-dispatcher', () => {
       metadata: expect.objectContaining({
         deliveryMode: 'direct',
         originalSessionId: 'msg-1774330605368-q3vkv5',
+      }),
+    }));
+  });
+
+  it('uses provided structured taskReport in dispatch metadata', async () => {
+    const { deps, execute } = createDeps({
+      sessions: [{ id: 'session-structured-1' }],
+    });
+
+    await dispatchTaskToSystemAgent(deps, {
+      taskId: 'task-structured-1',
+      taskName: 'structured-report-path',
+      taskSummary: 'Submitted for review',
+      sessionId: 'session-structured-1',
+      result: 'success',
+      projectId: 'project-structured-1',
+      sourceAgentId: 'finger-reviewer',
+      taskReport: {
+        schema: 'finger.task-report.v1',
+        taskId: 'task-structured-1',
+        taskName: 'structured-report-path',
+        sessionId: 'session-structured-1',
+        projectId: 'project-structured-1',
+        sourceAgentId: 'finger-reviewer',
+        result: 'success',
+        status: 'review_ready',
+        summary: 'Submitted for review',
+        nextAction: 'review',
+        deliveryClaim: true,
+        createdAt: new Date().toISOString(),
+      },
+    });
+
+    expect(execute).toHaveBeenCalledWith('dispatch', expect.objectContaining({
+      sourceAgentId: 'finger-reviewer',
+      metadata: expect.objectContaining({
+        taskReport: expect.objectContaining({
+          taskId: 'task-structured-1',
+          status: 'review_ready',
+          nextAction: 'review',
+          deliveryClaim: true,
+        }),
       }),
     }));
   });

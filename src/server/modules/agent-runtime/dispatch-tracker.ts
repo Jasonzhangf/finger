@@ -8,7 +8,10 @@
  */
 
 import { logger } from '../../../core/logger.js';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs';
+import path from 'path';
 import type { SessionManager } from '../../../orchestration/session-manager.js';
+import { FINGER_PATHS } from '../../../core/finger-paths.js';
 
 const log = logger.module('DispatchTracker');
 
@@ -23,10 +26,27 @@ interface DispatchRecord {
   completedAt?: number;
 }
 
+interface DispatchTrackerFile {
+  version: '1.0.0';
+  records: DispatchRecord[];
+}
+
+const DEFAULT_DISPATCH_TRACKER_PATH = path.join(FINGER_PATHS.runtime.schedulesDir, 'dispatch-graph.json');
+
 export class DispatchTracker {
   private readonly records = new Map<string, DispatchRecord>();
   private readonly byParentSession = new Map<string, Set<string>>();
   private readonly byChildSession = new Map<string, string>();
+  private readonly filePath: string;
+
+  constructor(filePath = DEFAULT_DISPATCH_TRACKER_PATH) {
+    this.filePath = filePath;
+    this.loadFromDisk();
+  }
+
+  getPath(): string {
+    return this.filePath;
+  }
 
   track(record: {
     dispatchId: string;
@@ -50,6 +70,7 @@ export class DispatchTracker {
     parentSet.add(record.dispatchId);
 
     this.byChildSession.set(record.childSessionId, record.dispatchId);
+    this.persistToDisk();
 
     log.debug('[DispatchTracker] Tracked dispatch', {
       dispatchId: record.dispatchId,
@@ -65,6 +86,7 @@ export class DispatchTracker {
     if (record) {
       record.completed = true;
       record.completedAt = Date.now();
+      this.persistToDisk();
     }
   }
 
@@ -123,11 +145,103 @@ export class DispatchTracker {
     let removed = 0;
     for (const [dispatchId, record] of this.records) {
       if (record.completed && record.completedAt && (now - record.completedAt) > maxAgeMs) {
+        const parentSet = this.byParentSession.get(record.parentSessionId);
+        if (parentSet) {
+          parentSet.delete(dispatchId);
+          if (parentSet.size === 0) this.byParentSession.delete(record.parentSessionId);
+        }
+        const mappedDispatchId = this.byChildSession.get(record.childSessionId);
+        if (mappedDispatchId === dispatchId) this.byChildSession.delete(record.childSessionId);
         this.records.delete(dispatchId);
         removed++;
       }
     }
+    if (removed > 0) this.persistToDisk();
     return removed;
+  }
+
+  private loadFromDisk(): void {
+    if (!existsSync(this.filePath)) return;
+    try {
+      const parsed = JSON.parse(readFileSync(this.filePath, 'utf8')) as unknown;
+      const file = this.parseFile(parsed);
+      for (const record of file.records) {
+        this.records.set(record.dispatchId, record);
+        let parentSet = this.byParentSession.get(record.parentSessionId);
+        if (!parentSet) {
+          parentSet = new Set();
+          this.byParentSession.set(record.parentSessionId, parentSet);
+        }
+        parentSet.add(record.dispatchId);
+        this.byChildSession.set(record.childSessionId, record.dispatchId);
+      }
+    } catch (error) {
+      log.warn('[DispatchTracker] Failed to load persisted dispatch graph, fallback to empty tracker', {
+        filePath: this.filePath,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
+  private persistToDisk(): void {
+    try {
+      const dir = path.dirname(this.filePath);
+      if (!existsSync(dir)) {
+        mkdirSync(dir, { recursive: true });
+      }
+      const file: DispatchTrackerFile = {
+        version: '1.0.0',
+        records: Array.from(this.records.values())
+          .sort((a, b) => b.dispatchedAt - a.dispatchedAt)
+          .slice(0, 4000),
+      };
+      writeFileSync(this.filePath, JSON.stringify(file, null, 2), 'utf8');
+    } catch (error) {
+      log.warn('[DispatchTracker] Failed to persist dispatch graph', {
+        filePath: this.filePath,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
+  private parseFile(value: unknown): DispatchTrackerFile {
+    if (
+      typeof value !== 'object'
+      || value === null
+      || !Array.isArray((value as { records?: unknown }).records)
+    ) {
+      return { version: '1.0.0', records: [] };
+    }
+    const records: DispatchRecord[] = [];
+    for (const item of (value as { records: unknown[] }).records) {
+      if (typeof item !== 'object' || item === null) continue;
+      const raw = item as Record<string, unknown>;
+      const dispatchId = typeof raw.dispatchId === 'string' ? raw.dispatchId.trim() : '';
+      const parentSessionId = typeof raw.parentSessionId === 'string' ? raw.parentSessionId.trim() : '';
+      const childSessionId = typeof raw.childSessionId === 'string' ? raw.childSessionId.trim() : '';
+      const sourceAgentId = typeof raw.sourceAgentId === 'string' ? raw.sourceAgentId.trim() : '';
+      const targetAgentId = typeof raw.targetAgentId === 'string' ? raw.targetAgentId.trim() : '';
+      const dispatchedAt = typeof raw.dispatchedAt === 'number' && Number.isFinite(raw.dispatchedAt)
+        ? raw.dispatchedAt
+        : Date.now();
+      if (!dispatchId || !parentSessionId || !childSessionId || !sourceAgentId || !targetAgentId) continue;
+      records.push({
+        dispatchId,
+        parentSessionId,
+        childSessionId,
+        sourceAgentId,
+        targetAgentId,
+        dispatchedAt,
+        completed: raw.completed === true,
+        ...(typeof raw.completedAt === 'number' && Number.isFinite(raw.completedAt)
+          ? { completedAt: raw.completedAt }
+          : {}),
+      });
+    }
+    return {
+      version: '1.0.0',
+      records,
+    };
   }
 }
 
