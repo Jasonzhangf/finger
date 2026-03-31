@@ -29,6 +29,10 @@ import {
   parseProjectTaskState,
   PROJECT_AGENT_ID,
 } from '../../common/project-task-state.js';
+import {
+  isStopReasoningStopTool,
+  resolveStopReasoningPolicy,
+} from '../../common/stop-reasoning-policy.js';
 
 export interface KernelRunContext {
   sessionId: string;
@@ -226,6 +230,7 @@ export class KernelAgentBase {
         ? await this.loadResumeKernelTurnSnapshot(resumeSnapshotPath)
         : null;
       const tools = this.resolveTools(input.tools, roleProfile, input.metadata);
+      const stopReasoningPolicy = resolveStopReasoningPolicy(effectiveInputMetadata);
       const contextSlots = composeTurnContextSlots({
         cacheKey: session.id,
         userInput: input.text,
@@ -233,10 +238,6 @@ export class KernelAgentBase {
         tools,
         metadata: effectiveInputMetadata,
       });
-      const systemPrompt = this.buildSystemPrompt(
-        roleProfile,
-        this.config.appendContextSlotsToSystemPrompt === false ? undefined : contextSlots?.rendered,
-      );
       const slotMetadata = contextSlots
         ? {
             contextSlotIds: contextSlots.slotIds,
@@ -255,7 +256,19 @@ export class KernelAgentBase {
           this.config.appendContextSlotsToSystemPrompt === false
             ? contextSlots?.rendered
             : undefined,
+        stopReasoningPolicy,
       });
+      const stopReasoningPrompt = this.buildStopReasoningPrompt({
+        tools,
+        metadata: runtimeMetadata,
+      });
+      const systemPrompt = this.appendPromptSections(
+        this.buildSystemPrompt(
+          roleProfile,
+          this.config.appendContextSlotsToSystemPrompt === false ? undefined : contextSlots?.rendered,
+        ),
+        stopReasoningPrompt,
+      );
 
       const inputItems = this.parseInputItems(input.metadata);
       const mailboxSnapshot = this.parseMailboxSnapshot(input.metadata?.mailboxSnapshot);
@@ -334,6 +347,17 @@ export class KernelAgentBase {
         inputMetadata: effectiveInputMetadata,
         runtimeMetadata,
         roleProfileId: roleProfile?.id ?? input.roleProfile,
+        threadKey,
+        current: runResult,
+      });
+      runResult = await this.applyStopReasoningGateIfNeeded({
+        mode: threadMode,
+        inputText: input.text,
+        sessionId: runnerSessionId,
+        systemPrompt,
+        history: toUnifiedHistory(mergedHistory),
+        tools,
+        runtimeMetadata,
         threadKey,
         current: runResult,
       });
@@ -592,6 +616,13 @@ export class KernelAgentBase {
     slotMetadata?: Record<string, unknown>;
     contextSlotsRendered?: string;
     extra?: Record<string, unknown>;
+    stopReasoningPolicy?: {
+      requireToolForStop: boolean;
+      promptInjectionEnabled: boolean;
+      stopToolNames: string[];
+      maxAutoContinueTurns: number;
+      source: string;
+    };
   }): Record<string, unknown> {
     const hasMediaInput = this.hasMediaInputItems(params.inputMetadata);
     const metadata: Record<string, unknown> = {
@@ -619,6 +650,11 @@ export class KernelAgentBase {
           : 20_000,
       contextLedgerFocusEnabled:
         params.inputMetadata?.contextLedgerFocusEnabled !== false,
+      stopToolGateEnabled: params.stopReasoningPolicy?.requireToolForStop ?? false,
+      stopToolPromptInjectionEnabled: params.stopReasoningPolicy?.promptInjectionEnabled ?? false,
+      stopToolNames: params.stopReasoningPolicy?.stopToolNames ?? [],
+      stopToolMaxAutoContinueTurns: params.stopReasoningPolicy?.maxAutoContinueTurns ?? 0,
+      stopToolGateSource: params.stopReasoningPolicy?.source ?? 'unknown',
       ...(typeof params.contextSlotsRendered === 'string' && params.contextSlotsRendered.trim().length > 0
         ? { contextSlotsRendered: params.contextSlotsRendered }
         : {}),
@@ -738,25 +774,63 @@ export class KernelAgentBase {
       });
     }
 
-    if (isProjectLike && taskState) {
-      const lines = [
-        'Project task lifecycle state:',
-        `- active=${taskState.active}`,
-        `- status=${taskState.status}`,
-        `- source=${taskState.sourceAgentId}`,
-        `- target=${taskState.targetAgentId}`,
-        taskState.taskId ? `- taskId=${taskState.taskId}` : '',
-        taskState.taskName ? `- taskName=${taskState.taskName}` : '',
-        taskState.dispatchId ? `- dispatchId=${taskState.dispatchId}` : '',
-        taskState.note ? `- note=${taskState.note}` : '',
-        taskState.summary ? `- summary=${taskState.summary}` : '',
-      ].filter(Boolean);
+    if (isProjectLike) {
+      const lines = taskState
+        ? [
+          'Project task lifecycle state:',
+          `- active=${taskState.active}`,
+          `- status=${taskState.status}`,
+          `- source=${taskState.sourceAgentId}`,
+          `- target=${taskState.targetAgentId}`,
+          taskState.taskId ? `- taskId=${taskState.taskId}` : '',
+          taskState.taskName ? `- taskName=${taskState.taskName}` : '',
+          taskState.dispatchId ? `- dispatchId=${taskState.dispatchId}` : '',
+          taskState.note ? `- note=${taskState.note}` : '',
+          taskState.summary ? `- summary=${taskState.summary}` : '',
+          `- updatedAt=${taskState.updatedAt}`,
+        ].filter(Boolean)
+        : [
+          'Project task lifecycle state:',
+          '- active=false',
+          '- status=<none>',
+          '- source=<none>',
+          '- target=finger-project-agent',
+          '- note=No active projectTaskState in session context.',
+        ];
       slotPatches.push({
         id: 'task.project_state',
         mode: 'replace',
         priority: 13,
         maxChars: 1200,
         content: lines.join('\n'),
+      });
+
+      const projectRegistry = registry.filter((item) => item.targetAgentId === PROJECT_AGENT_ID);
+      const historyLines: string[] = [
+        'Project dispatch history (latest first):',
+      ];
+      if (projectRegistry.length === 0) {
+        historyLines.push('- No dispatch history for finger-project-agent in this session.');
+      } else {
+        for (const item of projectRegistry.slice(0, 10)) {
+          historyLines.push(
+            `- [${item.status}] active=${item.active} updatedAt=${item.updatedAt}`
+            + ` source=${item.sourceAgentId}`
+            + `${item.taskId ? ` taskId=${item.taskId}` : ''}`
+            + `${item.taskName ? ` task="${item.taskName}"` : ''}`
+            + `${item.dispatchId ? ` dispatch=${item.dispatchId}` : ''}`,
+          );
+        }
+      }
+      historyLines.push('');
+      historyLines.push('Execution rule: treat this slot as authoritative dispatch history for current project session.');
+      historyLines.push('If active task exists, continue that task first; do not start unrelated work unless assigner/user explicitly updates task scope.');
+      slotPatches.push({
+        id: 'task.project_registry',
+        mode: 'replace',
+        priority: 13,
+        maxChars: 1800,
+        content: historyLines.join('\n'),
       });
     }
 
@@ -1028,6 +1102,34 @@ export class KernelAgentBase {
     if (!slotPrompt) return resolvedBasePrompt;
     if (!resolvedBasePrompt) return slotPrompt;
     return `${resolvedBasePrompt}\n\n${slotPrompt}`;
+  }
+
+  private appendPromptSections(basePrompt: string | undefined, ...sections: Array<string | undefined>): string | undefined {
+    const normalized = [basePrompt, ...sections]
+      .map((item) => (typeof item === 'string' ? item.trim() : ''))
+      .filter((item) => item.length > 0);
+    if (normalized.length === 0) return undefined;
+    return normalized.join('\n\n');
+  }
+
+  private buildStopReasoningPrompt(params: {
+    tools: string[] | import('../chat-codex/chat-codex-module.js').ChatCodexToolSpecification[];
+    metadata?: Record<string, unknown>;
+  }): string | undefined {
+    const policy = resolveStopReasoningPolicy(params.metadata);
+    if (!policy.requireToolForStop || !policy.promptInjectionEnabled) return undefined;
+
+    const toolNames = collectToolNames(params.tools);
+    const availableStopTools = policy.stopToolNames.filter((name) => toolNames.has(name));
+    if (availableStopTools.length === 0) return undefined;
+
+    return [
+      '[Turn Stop Control]',
+      `- Explicit stop tool required: ${availableStopTools.join(', ')}`,
+      '- If you believe the current task is truly complete, call the stop tool first and provide a concise completion summary.',
+      '- If the task is NOT complete, do NOT call stop tool; continue execution/reasoning.',
+      '- If you return finish_reason=stop without stop tool, runtime will continue this task automatically.',
+    ].join('\n');
   }
 
   private resolvePrompt(prompt?: string, resolver?: () => string | undefined): string | undefined {
@@ -1415,6 +1517,61 @@ export class KernelAgentBase {
     ].join('\n'));
   }
 
+  private async applyStopReasoningGateIfNeeded(params: {
+    mode: string;
+    inputText: string;
+    sessionId: string;
+    systemPrompt?: string;
+    history: UnifiedHistoryItem[];
+    tools: string[];
+    runtimeMetadata: Record<string, unknown>;
+    threadKey: string;
+    current: KernelRunnerResult;
+  }): Promise<KernelRunnerResult> {
+    if (params.mode !== MAIN_MODE) return params.current;
+    const policy = resolveStopReasoningPolicy(params.runtimeMetadata);
+    if (!policy.requireToolForStop) return params.current;
+    if (policy.maxAutoContinueTurns <= 0) return params.current;
+    const availableTools = collectToolNames(params.tools);
+    if (!policy.stopToolNames.some((toolName) => availableTools.has(toolName))) {
+      return params.current;
+    }
+
+    let current = params.current;
+    let attempt = 0;
+    while (attempt < policy.maxAutoContinueTurns) {
+      if (!isFinishReasonStop(current.metadata)) return current;
+      if (hasStopReasoningToolEvidence(current.metadata, policy.stopToolNames)) return current;
+
+      const followUpMetadata: Record<string, unknown> = {
+        ...params.runtimeMetadata,
+        stopToolGateApplied: true,
+        stopToolGateAttempt: attempt + 1,
+        stopToolNames: policy.stopToolNames,
+      };
+      const followUpInput = [
+        '[STOP TOOL GATE CONTINUATION REQUEST]',
+        '上一轮 finish_reason=stop，但你没有调用 stop 工具。',
+        `如果任务已完成：先调用 ${policy.stopToolNames.join(' / ')} 工具并给出 summary，再结束。`,
+        '如果任务未完成：继续执行，不要结束。',
+        '',
+        '[Original User Input]',
+        params.inputText,
+      ].join('\n');
+
+      current = await this.runner.runTurn(followUpInput, undefined, {
+        sessionId: params.sessionId,
+        systemPrompt: params.systemPrompt,
+        history: params.history,
+        tools: params.tools,
+        metadata: followUpMetadata,
+      });
+      this.captureApiHistory(params.sessionId, params.threadKey, current.metadata);
+      attempt += 1;
+    }
+    return current;
+  }
+
   private resolveSchemaRole(roleProfileId?: string): 'orchestrator' | 'reviewer' | 'executor' | 'searcher' | 'router' {
     const normalized = (roleProfileId ?? '').trim().toLowerCase();
     if (normalized.includes('review')) return 'reviewer';
@@ -1542,7 +1699,18 @@ function maybeCompressHistoryToTaskDigests(
   if (current.length > 0) grouped.push(current);
   if (grouped.length === 0) return history;
 
-  return grouped.map((task, index) => {
+  const keepRecentTaskCount = 2;
+  const keepRecentFrom = Math.max(0, grouped.length - keepRecentTaskCount);
+  const output: SessionMessage[] = [];
+
+  for (let index = 0; index < grouped.length; index += 1) {
+    const task = grouped[index];
+    const preserveFullTask = index >= keepRecentFrom || taskContainsCriticalLifecycleSignals(task);
+    if (preserveFullTask) {
+      output.push(...task);
+      continue;
+    }
+
     const firstUser = task.find((item) => item.role === 'user')?.content ?? task[0]?.content ?? '';
     const lastAssistant = [...task].reverse().find((item) => item.role === 'assistant')?.content
       ?? task[task.length - 1]?.content
@@ -1563,7 +1731,7 @@ function maybeCompressHistoryToTaskDigests(
         ? `expand_hint: context_ledger.expand_task { slot_start: ${slotRange.start}, slot_end: ${slotRange.end} }`
         : 'expand_hint: use context_ledger.memory search/query(detail=true) to expand this task.',
     ];
-    return {
+    output.push({
       id: `digest-${taskId}-${index + 1}`,
       role: 'assistant',
       content: lines.join('\n'),
@@ -1575,8 +1743,9 @@ function maybeCompressHistoryToTaskDigests(
         taskDigestTaskId: taskId,
         ...(slotRange ? { taskDigestSlotStart: slotRange.start, taskDigestSlotEnd: slotRange.end } : {}),
       },
-    } satisfies SessionMessage;
-  });
+    } satisfies SessionMessage);
+  }
+  return output;
 }
 
 function resolveTaskSlotRange(task: SessionMessage[]): { start: number; end: number } | undefined {
@@ -1602,6 +1771,61 @@ function compressDigestText(text: string, maxLen: number): string {
   return `${normalized.slice(0, maxLen)}...`;
 }
 
+const CRITICAL_LIFECYCLE_TOOLS = new Set([
+  'update_plan',
+  'agent.dispatch',
+  'dispatch',
+  'report-task-completion',
+  'project.task.status',
+  'project.task.update',
+]);
+
+const CRITICAL_LIFECYCLE_PATTERNS: RegExp[] = [
+  /\bupdate_plan\b/i,
+  /\bagent\.dispatch\b/i,
+  /\bdispatch\b/i,
+  /\breport-task-completion\b/i,
+  /\bproject\.task\.(status|update)\b/i,
+  /\btask[_\s-]?completed\b/i,
+  /\btask[_\s-]?result\b/i,
+  /\breview(er)?\s+(result|pass|passed|reject|rejected|block|blocked)\b/i,
+  /\bdecision:\s*(pass|passed|reject|rejected|block|blocked)\b/i,
+  /审核(通过|拒绝|驳回|结论)/,
+  /任务(完成|结果|交付)/,
+];
+
+function taskContainsCriticalLifecycleSignals(task: SessionMessage[]): boolean {
+  for (const item of task) {
+    const content = typeof item.content === 'string' ? item.content : '';
+    if (CRITICAL_LIFECYCLE_PATTERNS.some((pattern) => pattern.test(content))) {
+      return true;
+    }
+
+    const metadata = item.metadata;
+    if (!metadata || typeof metadata !== 'object') continue;
+
+    const toolTrace = Array.isArray(metadata.tool_trace) ? metadata.tool_trace : [];
+    for (const trace of toolTrace) {
+      if (!isRecord(trace)) continue;
+      const toolName = typeof trace.tool === 'string' ? trace.tool.trim() : '';
+      if (toolName.length > 0 && CRITICAL_LIFECYCLE_TOOLS.has(toolName)) {
+        return true;
+      }
+    }
+
+    const toolName = typeof metadata.toolName === 'string' ? metadata.toolName.trim() : '';
+    if (toolName.length > 0 && CRITICAL_LIFECYCLE_TOOLS.has(toolName)) {
+      return true;
+    }
+
+    const eventType = typeof metadata.eventType === 'string' ? metadata.eventType.trim().toLowerCase() : '';
+    if (eventType === 'task_completed' || eventType === 'task_result' || eventType === 'review_result') {
+      return true;
+    }
+  }
+  return false;
+}
+
 function toUnifiedHistory(history: SessionMessage[]): UnifiedHistoryItem[] {
   return history.map((item) => ({
     role: item.role,
@@ -1614,6 +1838,62 @@ function hasToolEvidence(metadata?: Record<string, unknown>): boolean {
   if (Array.isArray(metadata.tool_trace) && metadata.tool_trace.length > 0) return true;
   if (typeof metadata.toolTraceCount === 'number' && metadata.toolTraceCount > 0) return true;
   return false;
+}
+
+function hasStopReasoningToolEvidence(
+  metadata: Record<string, unknown> | undefined,
+  stopToolNames: string[],
+): boolean {
+  if (!metadata) return false;
+  const names = Array.isArray(stopToolNames) && stopToolNames.length > 0
+    ? stopToolNames
+    : resolveStopReasoningPolicy(metadata).stopToolNames;
+
+  const traces = Array.isArray(metadata.tool_trace) ? metadata.tool_trace : [];
+  for (const trace of traces) {
+    if (!isRecord(trace)) continue;
+    const toolName = typeof trace.tool === 'string' ? trace.tool : '';
+    if (isStopReasoningStopTool(toolName, names)) return true;
+  }
+
+  const lastToolName = typeof metadata.toolName === 'string' ? metadata.toolName : '';
+  if (isStopReasoningStopTool(lastToolName, names)) return true;
+  return false;
+}
+
+function isFinishReasonStop(metadata?: Record<string, unknown>): boolean {
+  if (!metadata) return false;
+  const rounds = Array.isArray(metadata.round_trace)
+    ? metadata.round_trace.filter((item): item is Record<string, unknown> => isRecord(item))
+    : [];
+  const lastRound = rounds.length > 0 ? rounds[rounds.length - 1] : undefined;
+  const roundFinish = typeof lastRound?.finish_reason === 'string'
+    ? lastRound.finish_reason
+    : typeof lastRound?.finishReason === 'string'
+      ? lastRound.finishReason
+      : '';
+  if (roundFinish.trim().toLowerCase() === 'stop') return true;
+
+  const stopReason = typeof metadata.stopReason === 'string' ? metadata.stopReason.trim().toLowerCase() : '';
+  if (stopReason === 'stop' || stopReason === 'model_stop') return true;
+  return false;
+}
+
+function collectToolNames(
+  tools: string[] | import('../chat-codex/chat-codex-module.js').ChatCodexToolSpecification[],
+): Set<string> {
+  const names = new Set<string>();
+  for (const tool of tools) {
+    if (typeof tool === 'string') {
+      const normalized = tool.trim();
+      if (normalized.length > 0) names.add(normalized);
+      continue;
+    }
+    if (tool && typeof tool === 'object' && typeof tool.name === 'string' && tool.name.trim().length > 0) {
+      names.add(tool.name.trim());
+    }
+  }
+  return names;
 }
 
 function looksLikeExecutionRequest(text: string): boolean {

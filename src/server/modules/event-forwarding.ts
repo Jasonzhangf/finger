@@ -14,6 +14,10 @@ import {
   extractLoopToolTrace,
   formatLedgerPointerContent,
 } from './event-forwarding-helpers.js';
+import {
+  isStopReasoningStopTool,
+  resolveStopReasoningPolicy,
+} from '../../common/stop-reasoning-policy.js';
 import { attachBroadcastHandlers } from './event-forwarding-handlers.js';
 import { buildDispatchResultEnvelope } from './mailbox-envelope.js';
 import { heartbeatMailbox } from './heartbeat-mailbox.js';
@@ -49,6 +53,9 @@ export interface EventForwardingDeps {
   isAgentBusy?: (agentId: string) => boolean | Promise<boolean>;
   dispatchTaskToAgent?: (request: AgentDispatchRequest) => Promise<unknown>;
   resolveReviewPolicy?: () => { enabled: boolean; dispatchReviewMode?: 'off' | 'always' };
+  runtime?: {
+    maybeAutoCompact?: (sessionId: string, contextUsagePercent?: number, turnId?: string) => Promise<boolean>;
+  };
 }
 
 
@@ -68,8 +75,10 @@ export function attachEventForwarding(deps: EventForwardingDeps): {
     isAgentBusy,
     dispatchTaskToAgent,
     resolveReviewPolicy,
+    runtime,
   } = deps;
   const latestBodyBySession = new Map<string, string>();
+  const stopToolSeenBySession = new Map<string, boolean>();
   const dispatchLedgerDedup = new Map<string, number>();
   const DISPATCH_LEDGER_DEDUP_TTL_MS = 10 * 60_000;
 
@@ -123,9 +132,30 @@ export function attachEventForwarding(deps: EventForwardingDeps): {
       },
     });
   };
+
+  const resolveStopGateState = (event: ChatCodexLoopEvent): {
+    requiresStopTool: boolean;
+    stopToolSeen: boolean;
+    holding: boolean;
+  } => {
+    const policy = resolveStopReasoningPolicy();
+    const requiresStopTool = policy.requireToolForStop;
+    const stopToolSeen = stopToolSeenBySession.get(event.sessionId) === true;
+    const finishReason = event.phase === 'turn_complete' && typeof event.payload.finishReason === 'string'
+      ? event.payload.finishReason.trim().toLowerCase()
+      : '';
+    const pendingInputAccepted = event.phase === 'turn_complete' && event.payload.pendingInputAccepted === true;
+    const holding = event.phase === 'turn_complete'
+      && finishReason === 'stop'
+      && !pendingInputAccepted
+      && requiresStopTool
+      && !stopToolSeen;
+    return { requiresStopTool, stopToolSeen, holding };
+  };
   const emitLoopEventToEventBus = (event: ChatCodexLoopEvent): void => {
     if (!event.sessionId || event.sessionId === 'unknown') return;
     if (event.phase === 'turn_start') {
+      stopToolSeenBySession.set(event.sessionId, false);
       applyExecutionLifecycleTransition(sessionManager, event.sessionId, {
         stage: 'running',
         substage: 'turn_start',
@@ -138,14 +168,19 @@ export function attachEventForwarding(deps: EventForwardingDeps): {
         ? event.payload.finishReason.trim()
         : undefined;
       const isFinishedStop = finishReason === 'stop';
+      const stopGateState = resolveStopGateState(event);
       applyExecutionLifecycleTransition(sessionManager, event.sessionId, {
         stage: pendingInputAccepted
           ? 'running'
-          : isFinishedStop
+          : stopGateState.holding
+            ? 'interrupted'
+            : isFinishedStop
             ? 'completed'
             : 'interrupted',
         substage: pendingInputAccepted
           ? 'pending_input_queued'
+          : stopGateState.holding
+            ? 'turn_stop_tool_pending'
           : isFinishedStop
             ? 'turn_complete'
             : 'turn_incomplete',
@@ -154,6 +189,8 @@ export function attachEventForwarding(deps: EventForwardingDeps): {
         finishReason: finishReason ?? null,
         detail: pendingInputAccepted
           ? (typeof event.payload.pendingTurnId === 'string' ? `pendingTurn=${event.payload.pendingTurnId}` : 'pending input accepted')
+          : stopGateState.holding
+            ? 'finish_reason=stop but reasoning.stop was not called'
           : typeof event.payload.replyPreview === 'string'
             ? event.payload.replyPreview.slice(0, 120)
             : undefined,
@@ -173,6 +210,13 @@ export function attachEventForwarding(deps: EventForwardingDeps): {
           ?? (normalizedError.includes('interrupt') ? 'interrupted' : 'failed'),
       });
     } else if (event.phase === 'kernel_event' && isObjectRecord(event.payload)) {
+      if (event.payload.type === 'tool_call') {
+        const toolName = typeof event.payload.toolName === 'string' ? event.payload.toolName.trim() : '';
+        const policy = resolveStopReasoningPolicy();
+        if (isStopReasoningStopTool(toolName, policy.stopToolNames)) {
+          stopToolSeenBySession.set(event.sessionId, true);
+        }
+      }
       if (event.payload.type === 'tool_call') {
         applyExecutionLifecycleTransition(sessionManager, event.sessionId, {
           stage: 'waiting_tool',
@@ -217,48 +261,61 @@ export function attachEventForwarding(deps: EventForwardingDeps): {
       }
     }
     if (event.phase === 'turn_complete' || event.phase === 'turn_error') {
+      const stopGateState = resolveStopGateState(event);
+      const shouldFinalizeTurn = event.phase === 'turn_error' || !stopGateState.holding;
       const finalizeFinishReason = event.phase === 'turn_complete'
         && typeof event.payload.finishReason === 'string'
         ? event.payload.finishReason
         : undefined;
-      const sessionManagerWithTransientFinalize = sessionManager as {
-        finalizeTransientLedgerMode?: (
-          sessionId: string,
-          options?: { finishReason?: string; keepOnFailure?: boolean },
-        ) => Promise<unknown>;
-      };
-      if (typeof sessionManagerWithTransientFinalize.finalizeTransientLedgerMode === 'function') {
-        void sessionManagerWithTransientFinalize.finalizeTransientLedgerMode(event.sessionId, {
-          finishReason: finalizeFinishReason,
-          keepOnFailure: event.phase === 'turn_error',
-        }).catch((err) => {
-          logger.module('event-forwarding').warn('Failed to finalize transient ledger mode', {
-            sessionId: event.sessionId,
+      if (shouldFinalizeTurn) {
+        const sessionManagerWithTransientFinalize = sessionManager as {
+          finalizeTransientLedgerMode?: (
+            sessionId: string,
+            options?: { finishReason?: string; keepOnFailure?: boolean },
+          ) => Promise<unknown>;
+        };
+        if (typeof sessionManagerWithTransientFinalize.finalizeTransientLedgerMode === 'function') {
+          void sessionManagerWithTransientFinalize.finalizeTransientLedgerMode(event.sessionId, {
             finishReason: finalizeFinishReason,
+            keepOnFailure: event.phase === 'turn_error',
+          }).catch((err) => {
+            logger.module('event-forwarding').warn('Failed to finalize transient ledger mode', {
+              sessionId: event.sessionId,
+              finishReason: finalizeFinishReason,
+              error: err instanceof Error ? err.message : String(err),
+            });
+          });
+        }
+        const latestBody = latestBodyBySession.get(event.sessionId);
+        if (agentStatusSubscriber) {
+          const finalReply = event.phase === 'turn_complete'
+            ? (latestBody || (typeof event.payload.replyPreview === 'string' ? event.payload.replyPreview : ''))
+            : (typeof event.payload.error === 'string' ? `处理失败：${event.payload.error}` : '处理失败，请稍后再试');
+          agentStatusSubscriber.finalizeChannelTurn(
+            event.sessionId,
+            finalReply,
+            generalAgentId,
+            event.phase === 'turn_complete' && typeof event.payload.finishReason === 'string'
+              ? event.payload.finishReason
+              : undefined,
+          ).catch((err) => {
+            logger.module('event-forwarding').error(
+              'Failed to finalize channel turn',
+              err instanceof Error ? err : new Error(String(err)),
+            );
+          });
+        }
+        latestBodyBySession.delete(event.sessionId);
+        stopToolSeenBySession.delete(event.sessionId);
+      } else if (agentStatusSubscriber) {
+        const holdNotice = '继续执行：检测到 finish_reason=stop，但未调用 reasoning.stop，当前轮不会收口。';
+        agentStatusSubscriber.sendBodyUpdate(event.sessionId, generalAgentId, holdNotice).catch((err) => {
+          logger.module('event-forwarding').warn('Failed to send stop-tool hold notice', {
+            sessionId: event.sessionId,
             error: err instanceof Error ? err.message : String(err),
           });
         });
       }
-      const latestBody = latestBodyBySession.get(event.sessionId);
-      if (agentStatusSubscriber) {
-        const finalReply = event.phase === 'turn_complete'
-          ? (latestBody || (typeof event.payload.replyPreview === 'string' ? event.payload.replyPreview : ''))
-          : (typeof event.payload.error === 'string' ? `处理失败：${event.payload.error}` : '处理失败，请稍后再试');
-        agentStatusSubscriber.finalizeChannelTurn(
-          event.sessionId,
-          finalReply,
-          generalAgentId,
-          event.phase === 'turn_complete' && typeof event.payload.finishReason === 'string'
-            ? event.payload.finishReason
-            : undefined,
-        ).catch((err) => {
-          logger.module('event-forwarding').error(
-            'Failed to finalize channel turn',
-            err instanceof Error ? err : new Error(String(err)),
-          );
-        });
-      }
-      latestBodyBySession.delete(event.sessionId);
     }
     // TODO: implement emitToolStepEventsFromLoopEvent
     // emitToolStepEventsFromLoopEvent(event);
@@ -359,6 +416,17 @@ export function attachEventForwarding(deps: EventForwardingDeps): {
             turnId,
           },
         });
+        if (runtime?.maybeAutoCompact) {
+          void runtime.maybeAutoCompact(event.sessionId, contextUsagePercent, turnId)
+            .catch((error) => {
+              logger.module('event-forwarding').warn('Failed to run auto compact probe', {
+                sessionId: event.sessionId,
+                contextUsagePercent,
+                turnId,
+                error: error instanceof Error ? error.message : String(error),
+              });
+            });
+        }
       }
     }
 

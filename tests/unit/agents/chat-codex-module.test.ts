@@ -49,7 +49,13 @@ describe('chat-codex module', () => {
 
     const module = createChatCodexModule({}, runner);
     const callback = vi.fn<(result: unknown) => void>();
-    const result = await module.handle({ text: 'hello' }, callback);
+    const result = await module.handle(
+      {
+        text: 'hello',
+        metadata: { stopToolMaxAutoContinueTurns: 0 },
+      },
+      callback,
+    );
     const payload = asRecord(result);
 
     expect(runTurnMock).toHaveBeenCalledTimes(1);
@@ -120,7 +126,10 @@ describe('chat-codex module', () => {
     const onLoopEvent = vi.fn();
     const module = createChatCodexModule({ onLoopEvent }, runner);
 
-    const result = await module.handle({ text: 'retry timeout' });
+    const result = await module.handle({
+      text: 'retry timeout',
+      metadata: { stopToolMaxAutoContinueTurns: 0 },
+    });
     const payload = asRecord(result);
 
     expect(payload.success).toBe(true);
@@ -441,7 +450,10 @@ describe('chat-codex module', () => {
     };
 
     const module = createChatCodexModule({ onLoopEvent }, streamingRunner);
-    await module.handle({ text: 'stream test' });
+    await module.handle({
+      text: 'stream test',
+      metadata: { stopToolMaxAutoContinueTurns: 0 },
+    });
 
     const kernelPayloads = onLoopEvent.mock.calls
       .map((call) => call[0] as Record<string, unknown>)
@@ -490,7 +502,10 @@ describe('chat-codex module', () => {
     };
 
     const module = createChatCodexModule({ onLoopEvent }, streamingRunner);
-    await module.handle({ text: 'stream reasoning test' });
+    await module.handle({
+      text: 'stream reasoning test',
+      metadata: { stopToolMaxAutoContinueTurns: 0 },
+    });
 
     const events = onLoopEvent.mock.calls.map((call) => call[0] as Record<string, unknown>);
     const reasoningEvents = events.filter((event) => {
@@ -541,7 +556,10 @@ describe('chat-codex module', () => {
     };
 
     const module = createChatCodexModule({ onLoopEvent }, streamingRunner);
-    await module.handle({ text: 'stream realtime reasoning test' });
+    await module.handle({
+      text: 'stream realtime reasoning test',
+      metadata: { stopToolMaxAutoContinueTurns: 0 },
+    });
 
     const events = onLoopEvent.mock.calls.map((call) => call[0] as Record<string, unknown>);
     const reasoningEvents = events.filter((event) => {
@@ -609,8 +627,16 @@ describe('chat-codex module', () => {
     });
     const module = createChatCodexModule({}, runner);
 
-    await module.handle({ text: 'orchestrate this', roleProfile: 'orchestrator' });
-    await module.handle({ text: 'review this', roleProfile: 'reviewer' });
+    await module.handle({
+      text: 'orchestrate this',
+      roleProfile: 'orchestrator',
+      metadata: { stopToolMaxAutoContinueTurns: 0 },
+    });
+    await module.handle({
+      text: 'review this',
+      roleProfile: 'reviewer',
+      metadata: { stopToolMaxAutoContinueTurns: 0 },
+    });
 
     expect(runTurnMock).toHaveBeenCalledTimes(2);
     const firstPrompt = runTurnMock.mock.calls[0][2]?.systemPrompt;
@@ -737,8 +763,16 @@ describe('chat-codex module', () => {
     });
     const module = createChatCodexModule({}, runner);
 
-    await module.handle({ text: 'write plan doc', roleProfile: 'orchestrator' });
-    await module.handle({ text: 'review only', roleProfile: 'reviewer' });
+    await module.handle({
+      text: 'write plan doc',
+      roleProfile: 'orchestrator',
+      metadata: { stopToolMaxAutoContinueTurns: 0 },
+    });
+    await module.handle({
+      text: 'review only',
+      roleProfile: 'reviewer',
+      metadata: { stopToolMaxAutoContinueTurns: 0 },
+    });
 
     const orchestratorTools = (runTurnMock.mock.calls[0][2]?.tools ?? []).map((item) => item.name);
     const reviewerTools = (runTurnMock.mock.calls[1][2]?.tools ?? []).map((item) => item.name);

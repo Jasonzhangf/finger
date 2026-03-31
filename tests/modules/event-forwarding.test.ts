@@ -243,6 +243,28 @@ describe('Event Forwarding - Reasoning Persistence', () => {
       '这是正文更新内容',
     );
   });
+
+  it('forwards model_round context usage to runtime auto-compact probe', () => {
+    const runtime = {
+      maybeAutoCompact: vi.fn(async () => true),
+    };
+    const deps = createDeps({ runtime });
+    const { emitLoopEventToEventBus } = attachEventForwarding(deps);
+
+    emitLoopEventToEventBus({
+      sessionId: 'test-session-auto-compact',
+      phase: 'kernel_event',
+      timestamp: new Date().toISOString(),
+      payload: {
+        id: 'evt-auto-compact-1',
+        type: 'model_round',
+        contextUsagePercent: 92,
+        responseId: 'resp-1',
+      },
+    });
+
+    expect(runtime.maybeAutoCompact).toHaveBeenCalledWith('test-session-auto-compact', 92, 'resp-1');
+  });
 });
 
 describe('Event Forwarding - Execution Lifecycle', () => {
@@ -271,6 +293,12 @@ describe('Event Forwarding - Execution Lifecycle', () => {
     });
     emitLoopEventToEventBus({
       sessionId: 'lifecycle-session-1',
+      phase: 'kernel_event',
+      timestamp: new Date().toISOString(),
+      payload: { type: 'tool_call', toolName: 'reasoning.stop', toolId: 'stop-1' },
+    });
+    emitLoopEventToEventBus({
+      sessionId: 'lifecycle-session-1',
       phase: 'turn_complete',
       timestamp: new Date().toISOString(),
       payload: { replyPreview: 'done', finishReason: 'stop' },
@@ -291,6 +319,7 @@ describe('Event Forwarding - Execution Lifecycle', () => {
       'running',
       'waiting_tool',
       'waiting_model',
+      'waiting_tool',
       'completed',
     ]);
   });
@@ -474,6 +503,13 @@ describe('Event Forwarding - Execution Lifecycle', () => {
 
     const deps = createDeps({ sessionManager: base as unknown as SessionManager });
     const { emitLoopEventToEventBus } = attachEventForwarding(deps);
+
+    emitLoopEventToEventBus({
+      sessionId: 'transient-finalize-binding-session',
+      phase: 'kernel_event',
+      timestamp: new Date().toISOString(),
+      payload: { type: 'tool_call', toolName: 'reasoning.stop', toolId: 'stop-finalize-1' },
+    });
 
     emitLoopEventToEventBus({
       sessionId: 'transient-finalize-binding-session',

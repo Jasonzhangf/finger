@@ -11,6 +11,7 @@ const CORE_EXECUTION_TOOLS = [
   'context_ledger.memory',
   'context_ledger.expand_task',
   'context_builder.rebuild',
+  'reasoning.stop',
   'clock',
   'command.exec',
 ] as const;
@@ -64,6 +65,10 @@ const PROJECT_TASK_MANAGEMENT_TOOLS = [
   'project.task.update',
 ] as const;
 
+const SYSTEM_ONLY_CONTROL_TOOLS = [
+  'reasoning.stop_policy',
+] as const;
+
 function dedupeTools(...groups: ReadonlyArray<ReadonlyArray<string>>): string[] {
   return Array.from(new Set(groups.flatMap((group) => group)));
 }
@@ -91,6 +96,7 @@ export const BASE_AGENT_ROLE_CONFIG: Record<BaseAgentRole, BaseAgentRoleConfig> 
       [...MAILBOX_TOOLS],
       [...SKILLS_TOOLS],
       [...PROJECT_TASK_MANAGEMENT_TOOLS],
+      [...SYSTEM_ONLY_CONTROL_TOOLS],
     ),
     defaultLedgerCanReadAll: true,
   },
@@ -111,8 +117,8 @@ export const BASE_AGENT_ROLE_CONFIG: Record<BaseAgentRole, BaseAgentRoleConfig> 
         'context_ledger.memory',
         'context_ledger.expand_task',
         'context_builder.rebuild',
+        'reasoning.stop',
         'user.ask',
-        'agent.dispatch',
         'report-task-completion',
       ],
       [...MAILBOX_TOOLS],
