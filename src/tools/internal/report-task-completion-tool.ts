@@ -8,6 +8,7 @@
 import type { ToolRegistry } from '../../runtime/tool-registry.js';
 import { writeFileSync } from 'fs';
 import type { AgentRuntimeDeps } from '../../server/modules/agent-runtime/types.js';
+import { logger } from '../../core/logger.js';
 import { dispatchTaskToSystemAgent } from '../../agents/finger-system-agent/task-report-dispatcher.js';
 import { emitTaskCompleted } from '../../agents/finger-system-agent/system-events.js';
 import {
@@ -22,12 +23,18 @@ import {
 } from '../../agents/finger-system-agent/review-route-registry.js';
 import {
   parseDelegatedProjectTaskRegistry,
+  pruneDelegatedRegistryForContextAfterTaskClosed,
   mergeProjectTaskState,
   parseProjectTaskState,
   PROJECT_AGENT_ID,
   SYSTEM_AGENT_ID,
+  shouldArchiveAndClearProjectTaskState,
   upsertDelegatedProjectTaskRegistry,
 } from '../../common/project-task-state.js';
+import { buildVerificationPrompt } from '../../agents/prompts/verifier-prompts.js';
+import { appendClosedProjectTaskArchive } from '../../core/project-task-archive.js';
+
+const log = logger.module('report-task-completion-tool');
 
 export interface ReportTaskCompletionInput {
   action: 'report';
@@ -82,6 +89,35 @@ const CLAIM_MARKERS = [
   'pass',
 ];
 
+function inferVerificationChangeCategoryFromFiles(
+  changedFiles: string[],
+): 'backend_api' | 'infrastructure' | 'frontend' | 'config' | 'multi_file' {
+  if (changedFiles.length >= 3) return 'multi_file';
+  if (changedFiles.some((file) => /(^|\/)(api|server|runtime|backend)(\/|$)/i.test(file))) return 'backend_api';
+  if (changedFiles.some((file) => /(Dockerfile|docker-compose|k8s|infra|deployment|helm|terraform)/i.test(file))) return 'infrastructure';
+  if (changedFiles.some((file) => /(^|\/)(ui|web|frontend)(\/|$)|\.(tsx?|jsx?)$/i.test(file))) return 'frontend';
+  if (changedFiles.some((file) => /\.(json|ya?ml|toml|ini)$/i.test(file) || /config/i.test(file))) return 'config';
+  return 'multi_file';
+}
+
+function extractChangedFilesFromReportPayload(input: {
+  summary: string;
+  artifacts: string;
+  evidence?: string[] | string;
+}): string[] {
+  const evidenceText = Array.isArray(input.evidence)
+    ? input.evidence.join('\n')
+    : typeof input.evidence === 'string'
+      ? input.evidence
+      : '';
+  const text = [input.summary, input.artifacts, evidenceText].filter(Boolean).join('\n');
+  const matches = text.match(/(?:~\/|\/)[^\s"'`]+|[A-Za-z0-9_.-]+\/[A-Za-z0-9_./-]+\.[A-Za-z0-9]{1,8}/g) ?? [];
+  return matches
+    .map((item) => item.trim())
+    .filter((item, index, arr) => item.length > 0 && arr.indexOf(item) === index)
+    .slice(0, 24);
+}
+
 function normalizeText(value: unknown): string {
   return typeof value === 'string' ? value.trim() : '';
 }
@@ -120,6 +156,10 @@ function updateProjectTaskStateForSession(
   patch: {
     active?: boolean;
     status?: 'create' | 'dispatched' | 'accepted' | 'in_progress' | 'claiming_finished' | 'reviewed' | 'reported' | 'closed' | 'blocked' | 'failed' | 'cancelled';
+    assigneeWorkerId?: string;
+    deliveryWorkerId?: string;
+    reviewerId?: string;
+    reassignReason?: string;
     taskId?: string;
     taskName?: string;
     dispatchId?: string;
@@ -129,31 +169,53 @@ function updateProjectTaskStateForSession(
 ): void {
   const normalizedSessionId = typeof sessionId === 'string' ? sessionId.trim() : '';
   if (!normalizedSessionId) return;
-  const session = deps.sessionManager.getSession(normalizedSessionId);
-  if (!session) return;
-  const current = parseProjectTaskState(session.context?.projectTaskState);
-  const next = mergeProjectTaskState(current, {
-    ...patch,
-    sourceAgentId: current?.sourceAgentId ?? SYSTEM_AGENT_ID,
-    targetAgentId: current?.targetAgentId ?? PROJECT_AGENT_ID,
-  });
-  const currentRegistry = parseDelegatedProjectTaskRegistry(session.context?.projectTaskRegistry);
-  const nextRegistry = upsertDelegatedProjectTaskRegistry(currentRegistry, {
-    sourceAgentId: next.sourceAgentId,
-    targetAgentId: next.targetAgentId,
-    taskId: next.taskId,
-    taskName: next.taskName,
-    status: next.status,
-    active: next.active,
-    dispatchId: next.dispatchId,
-    summary: next.summary,
-    note: next.note,
-  });
-  deps.sessionManager.updateContext(normalizedSessionId, {
-    projectTaskState: next,
-    projectTaskRegistry: nextRegistry,
-  });
-  writeTaskRouterMarkdown(session.projectPath, next, nextRegistry);
+  try {
+    const session = deps.sessionManager.getSession(normalizedSessionId);
+    if (!session) return;
+    const current = parseProjectTaskState(session.context?.projectTaskState);
+    const next = mergeProjectTaskState(current, {
+      ...patch,
+      sourceAgentId: current?.sourceAgentId ?? SYSTEM_AGENT_ID,
+      targetAgentId: current?.targetAgentId ?? PROJECT_AGENT_ID,
+    });
+    const currentRegistry = parseDelegatedProjectTaskRegistry(session.context?.projectTaskRegistry);
+    const nextRegistry = upsertDelegatedProjectTaskRegistry(currentRegistry, {
+      sourceAgentId: next.sourceAgentId,
+      targetAgentId: next.targetAgentId,
+      taskId: next.taskId,
+      taskName: next.taskName,
+      status: next.status,
+      active: next.active,
+      assigneeWorkerId: next.assigneeWorkerId,
+      deliveryWorkerId: next.deliveryWorkerId,
+      reviewerId: next.reviewerId,
+      reassignReason: next.reassignReason,
+      dispatchId: next.dispatchId,
+      summary: next.summary,
+      note: next.note,
+    });
+    const shouldArchiveAndClear = shouldArchiveAndClearProjectTaskState(next);
+    if (shouldArchiveAndClear) {
+      appendClosedProjectTaskArchive(session.projectPath, next);
+    }
+    const contextState = shouldArchiveAndClear ? null : next;
+    const contextRegistry = shouldArchiveAndClear
+      ? pruneDelegatedRegistryForContextAfterTaskClosed(nextRegistry, next)
+      : nextRegistry;
+    deps.sessionManager.updateContext(normalizedSessionId, {
+      projectTaskState: contextState,
+      projectTaskRegistry: contextRegistry,
+    });
+    writeTaskRouterMarkdown(session.projectPath, next, nextRegistry);
+  } catch (error) {
+    log.warn('[report-task-completion] Failed to update project task state', {
+      sessionId: normalizedSessionId,
+      taskId: patch.taskId,
+      taskName: patch.taskName,
+      status: patch.status,
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
 }
 
 function writeTaskRouterMarkdown(
@@ -174,6 +236,10 @@ function writeTaskRouterMarkdown(
     `- status: ${state.status}`,
     `- source: ${state.sourceAgentId}`,
     `- target: ${state.targetAgentId}`,
+    state.assigneeWorkerId ? `- assigneeWorkerId: ${state.assigneeWorkerId}` : '- assigneeWorkerId: N/A',
+    state.deliveryWorkerId ? `- deliveryWorkerId: ${state.deliveryWorkerId}` : '- deliveryWorkerId: N/A',
+    state.reviewerId ? `- reviewerId: ${state.reviewerId}` : '- reviewerId: N/A',
+    state.reassignReason ? `- reassignReason: ${state.reassignReason}` : '- reassignReason: N/A',
     state.taskId ? `- taskId: ${state.taskId}` : '- taskId: N/A',
     state.taskName ? `- taskName: ${state.taskName}` : '- taskName: N/A',
     state.dispatchId ? `- dispatchId: ${state.dispatchId}` : '- dispatchId: N/A',
@@ -190,6 +256,10 @@ function writeTaskRouterMarkdown(
     for (const item of ordered) {
       lines.push(
         `- [${item.status}] active=${item.active} target=${item.targetAgentId}`
+        + `${item.assigneeWorkerId ? ` assignee=${item.assigneeWorkerId}` : ''}`
+        + `${item.deliveryWorkerId ? ` delivery=${item.deliveryWorkerId}` : ''}`
+        + `${item.reviewerId ? ` reviewer=${item.reviewerId}` : ''}`
+        + `${item.reassignReason ? ` reassign_reason=${item.reassignReason}` : ''}`
         + `${item.taskId ? ` taskId=${item.taskId}` : ''}`
         + `${item.taskName ? ` task="${item.taskName}"` : ''}`
         + `${item.dispatchId ? ` dispatch=${item.dispatchId}` : ''}`
@@ -203,8 +273,13 @@ function writeTaskRouterMarkdown(
   lines.push('- Full task details and progression should be maintained in this TASK.md.');
   try {
     writeFileSync(taskFilePath, lines.join('\n') + '\n', 'utf8');
-  } catch {
-    // Best effort.
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException | undefined)?.code;
+    if (code === 'ENOENT') return;
+    log.warn('[report-task-completion] Failed to write TASK.md router snapshot', {
+      taskFilePath,
+      error: error instanceof Error ? error.message : String(error),
+    });
   }
 }
 
@@ -410,19 +485,39 @@ export function registerReportTaskCompletionTool(
         }
 
         if (reviewRoute?.reviewRequired && !isReviewerCaller) {
+          const changedFiles = extractChangedFilesFromReportPayload({
+            summary: normalizedSummary,
+            artifacts: deliveryArtifacts,
+            evidence: taskReport.evidence,
+          });
+          const acceptanceCriteria = reviewRoute.acceptanceCriteria
+            ? reviewRoute.acceptanceCriteria
+              .split(/\n|;/)
+              .map((item) => item.trim())
+              .filter((item) => item.length > 0)
+            : ['Validate delivery against the task objective and provide concrete evidence.'];
           const reviewPrompt = [
             '[Project Delivery for Review]',
-            `任务ID: ${effectiveTaskId || 'N/A'}`,
-            effectiveTaskName ? `任务名: ${effectiveTaskName}` : '',
-            `任务摘要: ${normalizedSummary}`,
-            `结果: ${params.result}`,
-            `项目: ${params.projectId}`,
-            reviewRoute.acceptanceCriteria ? `验收标准: ${reviewRoute.acceptanceCriteria}` : '',
-            deliveryArtifacts ? `交付标的: ${deliveryArtifacts}` : '',
+            `taskId: ${effectiveTaskId || 'N/A'}`,
+            effectiveTaskName ? `taskName: ${effectiveTaskName}` : '',
+            `projectId: ${params.projectId}`,
+            `result: ${params.result}`,
+            deliveryArtifacts ? `deliveryArtifacts: ${deliveryArtifacts}` : '',
             '',
-            '请 review agent 执行审查：',
-            '- 通过：调用 report-task-completion 上报 system agent',
-            '- 拒绝：调用 agent.dispatch 把拒绝意见发回 project agent',
+            buildVerificationPrompt({
+              changedFiles: changedFiles.length > 0 ? changedFiles : ['(unspecified-by-project-agent)'],
+              changeCategory: inferVerificationChangeCategoryFromFiles(changedFiles),
+              implementationSummary: normalizedSummary,
+              acceptanceCriteria,
+            }),
+            '',
+            '[Decision Contract]',
+            'Return one JSON decision on the last line:',
+            '{"decision":"pass|retry|block","summary":"...","evidence":["..."]}',
+            'PASS -> pass; PARTIAL/FAIL -> retry (or block if truly blocked).',
+            'Then call report-task-completion:',
+            '- pass => result=success',
+            '- retry/block => result=failure and include reviewer summary/evidence',
           ].filter(Boolean).join('\n');
 
           const reviewDispatch = await deps.agentRuntimeBlock.execute('dispatch', {
@@ -604,7 +699,7 @@ export function registerReportTaskCompletionTool(
         if (isReviewerCaller && dispatch.ok && dispatch.status !== 'failed') {
           removeReviewRoute(effectiveTaskId || params.taskId);
           updateProjectTaskStateForSession(deps, reviewRoute?.projectSessionId ?? params.sessionId, {
-            active: params.result !== 'success',
+            active: true,
             status: params.result === 'success' ? 'reviewed' : 'failed',
             taskId: effectiveTaskId || params.taskId,
             taskName: effectiveTaskName || taskName || undefined,
@@ -613,13 +708,15 @@ export function registerReportTaskCompletionTool(
             note: params.result === 'success' ? 'review_passed_waiting_system_report' : 'review_failed',
           });
           updateProjectTaskStateForSession(deps, reviewRoute?.parentSessionId, {
-            active: params.result !== 'success',
-            status: params.result === 'success' ? 'reviewed' : 'failed',
+            active: params.result === 'success',
+            status: params.result === 'success' ? 'reported' : 'failed',
             taskId: effectiveTaskId || params.taskId,
             taskName: effectiveTaskName || taskName || undefined,
             dispatchId: dispatch.dispatchId,
             summary: params.taskSummary,
-            note: params.result === 'success' ? 'review_passed_waiting_system_report' : 'review_failed',
+            note: params.result === 'success'
+              ? 'system_report_pending_user_approval'
+              : 'review_failed',
           });
         }
 

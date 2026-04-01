@@ -21,6 +21,10 @@ export interface ProjectTaskState {
   sourceAgentId: string;
   targetAgentId: string;
   updatedAt: string;
+  assigneeWorkerId?: string;
+  deliveryWorkerId?: string;
+  reviewerId?: string;
+  reassignReason?: string;
   taskId?: string;
   taskName?: string;
   dispatchId?: string;
@@ -38,6 +42,10 @@ export interface DelegatedProjectTaskRecord {
   status: ProjectTaskLifecycleStatus;
   active: boolean;
   updatedAt: string;
+  assigneeWorkerId?: string;
+  deliveryWorkerId?: string;
+  reviewerId?: string;
+  reassignReason?: string;
   taskId?: string;
   taskName?: string;
   dispatchId?: string;
@@ -111,7 +119,8 @@ function normalizeStatus(value: unknown): ProjectTaskLifecycleStatus | null {
     || normalized === 'review_pending'
     || normalized === 'review_ready'
   ) return 'claiming_finished';
-  if (normalized === 'reviewed' || normalized === 'pending_approval' || normalized === 'pending approval') return 'reviewed';
+  if (normalized === 'reviewed') return 'reviewed';
+  if (normalized === 'pending_approval' || normalized === 'pending approval') return 'reported';
   if (normalized === 'reported' || normalized === 'report_to_user' || normalized === 'report2user') return 'reported';
   if (normalized === 'closed' || normalized === 'completed' || normalized === 'done' || normalized === 'pass') return 'closed';
   if (normalized === 'blocked') return 'blocked';
@@ -141,6 +150,18 @@ export function parseProjectTaskState(value: unknown): ProjectTaskState | null {
     sourceAgentId,
     targetAgentId,
     updatedAt,
+    ...(asOptionalString(value.assigneeWorkerId ?? value.assignee_worker_id)
+      ? { assigneeWorkerId: asOptionalString(value.assigneeWorkerId ?? value.assignee_worker_id) }
+      : {}),
+    ...(asOptionalString(value.deliveryWorkerId ?? value.delivery_worker_id)
+      ? { deliveryWorkerId: asOptionalString(value.deliveryWorkerId ?? value.delivery_worker_id) }
+      : {}),
+    ...(asOptionalString(value.reviewerId ?? value.reviewer_id)
+      ? { reviewerId: asOptionalString(value.reviewerId ?? value.reviewer_id) }
+      : {}),
+    ...(asOptionalString(value.reassignReason ?? value.reassign_reason)
+      ? { reassignReason: asOptionalString(value.reassignReason ?? value.reassign_reason) }
+      : {}),
     ...(asOptionalString(value.taskId) ? { taskId: asOptionalString(value.taskId) } : {}),
     ...(asOptionalString(value.taskName) ? { taskName: asOptionalString(value.taskName) } : {}),
     ...(asOptionalString(value.dispatchId) ? { dispatchId: asOptionalString(value.dispatchId) } : {}),
@@ -182,6 +203,18 @@ export function mergeProjectTaskState(
     sourceAgentId: nextSource,
     targetAgentId: nextTarget,
     updatedAt: nowIso,
+    ...(asOptionalString(patch.assigneeWorkerId) ?? current?.assigneeWorkerId
+      ? { assigneeWorkerId: asOptionalString(patch.assigneeWorkerId) ?? current?.assigneeWorkerId }
+      : {}),
+    ...(asOptionalString(patch.deliveryWorkerId) ?? current?.deliveryWorkerId
+      ? { deliveryWorkerId: asOptionalString(patch.deliveryWorkerId) ?? current?.deliveryWorkerId }
+      : {}),
+    ...(asOptionalString(patch.reviewerId) ?? current?.reviewerId
+      ? { reviewerId: asOptionalString(patch.reviewerId) ?? current?.reviewerId }
+      : {}),
+    ...(asOptionalString(patch.reassignReason) ?? current?.reassignReason
+      ? { reassignReason: asOptionalString(patch.reassignReason) ?? current?.reassignReason }
+      : {}),
     ...(asOptionalString(patch.taskId) ?? current?.taskId ? { taskId: asOptionalString(patch.taskId) ?? current?.taskId } : {}),
     ...(asOptionalString(patch.taskName) ?? current?.taskName ? { taskName: asOptionalString(patch.taskName) ?? current?.taskName } : {}),
     ...(asOptionalString(patch.dispatchId) ?? current?.dispatchId ? { dispatchId: asOptionalString(patch.dispatchId) ?? current?.dispatchId } : {}),
@@ -215,6 +248,18 @@ export function parseDelegatedProjectTaskRegistry(value: unknown): DelegatedProj
       status,
       active: item.active === true,
       updatedAt,
+      ...(asOptionalString(item.assigneeWorkerId ?? item.assignee_worker_id)
+        ? { assigneeWorkerId: asOptionalString(item.assigneeWorkerId ?? item.assignee_worker_id) }
+        : {}),
+      ...(asOptionalString(item.deliveryWorkerId ?? item.delivery_worker_id)
+        ? { deliveryWorkerId: asOptionalString(item.deliveryWorkerId ?? item.delivery_worker_id) }
+        : {}),
+      ...(asOptionalString(item.reviewerId ?? item.reviewer_id)
+        ? { reviewerId: asOptionalString(item.reviewerId ?? item.reviewer_id) }
+        : {}),
+      ...(asOptionalString(item.reassignReason ?? item.reassign_reason)
+        ? { reassignReason: asOptionalString(item.reassignReason ?? item.reassign_reason) }
+        : {}),
       ...(asOptionalString(item.taskId) ? { taskId: asOptionalString(item.taskId) } : {}),
       ...(asOptionalString(item.taskName) ? { taskName: asOptionalString(item.taskName) } : {}),
       ...(asOptionalString(item.dispatchId) ? { dispatchId: asOptionalString(item.dispatchId) } : {}),
@@ -239,6 +284,10 @@ export function upsertDelegatedProjectTaskRegistry(
     taskName?: string;
     status?: ProjectTaskLifecycleStatus;
     active?: boolean;
+    assigneeWorkerId?: string;
+    deliveryWorkerId?: string;
+    reviewerId?: string;
+    reassignReason?: string;
     dispatchId?: string;
     boundSessionId?: string;
     revision?: number;
@@ -273,6 +322,18 @@ export function upsertDelegatedProjectTaskRegistry(
     status,
     active,
     updatedAt: nowIso,
+    ...(asOptionalString(patch.assigneeWorkerId) ?? previous?.assigneeWorkerId
+      ? { assigneeWorkerId: asOptionalString(patch.assigneeWorkerId) ?? previous?.assigneeWorkerId }
+      : {}),
+    ...(asOptionalString(patch.deliveryWorkerId) ?? previous?.deliveryWorkerId
+      ? { deliveryWorkerId: asOptionalString(patch.deliveryWorkerId) ?? previous?.deliveryWorkerId }
+      : {}),
+    ...(asOptionalString(patch.reviewerId) ?? previous?.reviewerId
+      ? { reviewerId: asOptionalString(patch.reviewerId) ?? previous?.reviewerId }
+      : {}),
+    ...(asOptionalString(patch.reassignReason) ?? previous?.reassignReason
+      ? { reassignReason: asOptionalString(patch.reassignReason) ?? previous?.reassignReason }
+      : {}),
     ...(taskId ?? previous?.taskId ? { taskId: taskId ?? previous?.taskId } : {}),
     ...(taskName ?? previous?.taskName ? { taskName: taskName ?? previous?.taskName } : {}),
     ...(asOptionalString(patch.dispatchId) ?? previous?.dispatchId ? { dispatchId: asOptionalString(patch.dispatchId) ?? previous?.dispatchId } : {}),
@@ -292,6 +353,36 @@ export function upsertDelegatedProjectTaskRegistry(
     next.unshift(record);
   }
   return next
+    .sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt))
+    .slice(0, 64);
+}
+
+export function shouldArchiveAndClearProjectTaskState(
+  state: ProjectTaskState | null | undefined,
+): state is ProjectTaskState {
+  return !!state && state.active === false && state.status === 'closed';
+}
+
+function isSameTaskIdentity(
+  record: DelegatedProjectTaskRecord,
+  state: ProjectTaskState,
+): boolean {
+  if (state.taskId && record.taskId) return state.taskId === record.taskId;
+  if (!state.taskId && state.taskName && record.taskName) return state.taskName === record.taskName;
+  if (state.dispatchId && record.dispatchId) return state.dispatchId === record.dispatchId;
+  return false;
+}
+
+export function pruneDelegatedRegistryForContextAfterTaskClosed(
+  current: DelegatedProjectTaskRecord[],
+  closedState: ProjectTaskState,
+): DelegatedProjectTaskRecord[] {
+  return current
+    .filter((record) => {
+      if (record.status === 'closed' && record.active === false) return false;
+      if (isSameTaskIdentity(record, closedState)) return false;
+      return true;
+    })
     .sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt))
     .slice(0, 64);
 }

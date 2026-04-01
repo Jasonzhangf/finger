@@ -735,6 +735,79 @@ describe('AgentRuntimeBlock', () => {
     second.resolve({ ok: true });
   });
 
+  it('supports Jason scenario: A->Lisa, B->Robert, A-feature->Kelvin parallel lanes', async () => {
+    const lisa = createDeferred<{ ok: boolean }>();
+    const robert = createDeferred<{ ok: boolean }>();
+    const kelvin = createDeferred<{ ok: boolean }>();
+    ctx.hubSendToModule.mockImplementationOnce(() => lisa.promise);
+    ctx.hubSendToModule.mockImplementationOnce(() => robert.promise);
+    ctx.hubSendToModule.mockImplementationOnce(() => kelvin.promise);
+
+    await ctx.block.execute('deploy', {
+      targetAgentId: 'executor-a',
+      targetImplementationId: 'native-main',
+      sessionId: 'session-1',
+      instanceCount: 1,
+      launchMode: 'orchestrator',
+    });
+
+    await ctx.block.execute('dispatch', {
+      sourceAgentId: 'finger-system-agent',
+      targetAgentId: 'executor-a',
+      sessionId: 'session-project-a-lisa',
+      task: { text: 'Task A main implementation', projectId: 'project-a' },
+      metadata: { projectId: 'project-a', workerId: 'Lisa' },
+      blocking: false,
+    });
+    await ctx.block.execute('dispatch', {
+      sourceAgentId: 'finger-system-agent',
+      targetAgentId: 'executor-a',
+      sessionId: 'session-project-b-robert',
+      task: { text: 'Task B independent implementation', projectId: 'project-b' },
+      metadata: { projectId: 'project-b', workerId: 'Robert' },
+      blocking: false,
+    });
+    await ctx.block.execute('dispatch', {
+      sourceAgentId: 'finger-system-agent',
+      targetAgentId: 'executor-a',
+      sessionId: 'session-project-a-kelvin',
+      task: { text: 'Task A feature extension', projectId: 'project-a' },
+      metadata: { projectId: 'project-a', workerId: 'Kelvin' },
+      blocking: false,
+    });
+
+    expect(ctx.hubSendToModule).toHaveBeenCalledTimes(3);
+
+    const view = await ctx.block.execute('runtime_view', {}) as {
+      agents: Array<{ id: string; runningCount: number; queuedCount: number }>;
+      lanes: Array<{ laneKey: string; agentId: string; runningCount: number; queuedCount: number }>;
+    };
+    const agent = view.agents.find((item) => item.id === 'executor-a');
+    expect(agent?.runningCount).toBe(3);
+    expect(agent?.queuedCount).toBe(0);
+    expect(view.lanes).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        laneKey: 'project-a:Lisa:session-project-a-lisa',
+        runningCount: 1,
+        queuedCount: 0,
+      }),
+      expect.objectContaining({
+        laneKey: 'project-b:Robert:session-project-b-robert',
+        runningCount: 1,
+        queuedCount: 0,
+      }),
+      expect.objectContaining({
+        laneKey: 'project-a:Kelvin:session-project-a-kelvin',
+        runningCount: 1,
+        queuedCount: 0,
+      }),
+    ]));
+
+    lisa.resolve({ ok: true });
+    robert.resolve({ ok: true });
+    kelvin.resolve({ ok: true });
+  });
+
   it('enforces immutable (project,worker)->session binding and rejects cross-worker session reuse', async () => {
     await ctx.block.execute('deploy', {
       targetAgentId: 'executor-a',

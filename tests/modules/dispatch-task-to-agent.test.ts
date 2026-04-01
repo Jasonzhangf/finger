@@ -604,6 +604,31 @@ describe('dispatchTaskToAgent', () => {
     }));
   });
 
+  it('persists assigneeWorkerId into project task state during system->project dispatch', async () => {
+    const { deps, sessionManager } = createDeps();
+    const res = await mod.dispatchTaskToAgent(deps as any, {
+      sourceAgentId: 'finger-system-agent',
+      targetAgentId: 'finger-project-agent',
+      task: { prompt: 'dispatch with assignee worker' },
+      assignment: {
+        taskId: 'task-assignee-sync-1',
+        taskName: 'task-assignee-sync',
+        blocked_by: ['none'],
+        assigneeWorkerId: 'Lisa',
+      },
+      sessionStrategy: 'latest',
+      projectPath: '/tmp/project-a',
+    } as any);
+
+    expect(res.ok).toBe(true);
+    expect(sessionManager.updateContext).toHaveBeenCalledWith('runtime-current', expect.objectContaining({
+      projectTaskState: expect.objectContaining({
+        taskId: 'task-assignee-sync-1',
+        assigneeWorkerId: 'Lisa',
+      }),
+    }));
+  });
+
   it('keeps async dispatch for active source task context (no hard suppression)', async () => {
     const execute = vi.fn(async (command: string) => {
       if (command === 'runtime_view') {
@@ -749,10 +774,7 @@ describe('dispatchTaskToAgent', () => {
       }),
     }));
     expect(sessionManager.updateContext).toHaveBeenCalledWith('session-1', expect.objectContaining({
-      projectTaskState: expect.objectContaining({
-        active: false,
-        status: 'closed',
-      }),
+      projectTaskState: null,
     }));
   });
 

@@ -19,6 +19,14 @@ import {
   type ExecutionLifecycleState,
 } from './execution-lifecycle.js';
 import {
+  isProjectTaskStateActive,
+  mergeProjectTaskState,
+  parseDelegatedProjectTaskRegistry,
+  parseProjectTaskState,
+  type ProjectTaskState,
+  upsertDelegatedProjectTaskRegistry,
+} from '../../common/project-task-state.js';
+import {
   buildCompletedExecutionReviewPrompt,
   buildInterruptedExecutionResumePrompt,
   getStartupReviewCheckpoint,
@@ -27,6 +35,9 @@ import {
 const log = logger.module('SystemAgentManager');
 const DEFAULT_PERIODIC_CHECK_INTERVAL_MS = 5 * 60_000;
 const SYSTEM_AGENT_MANAGER_CONFIG_PATH = path.join(FINGER_PATHS.config.dir, 'system-agent-manager.json');
+const SYSTEM_PROJECT_PATH = path.join(FINGER_PATHS.home, 'system');
+const SYSTEM_SESSION_PREFIX = 'system-';
+const SYSTEM_AGENT_ID = 'finger-system-agent';
 const ACTIVE_LIFECYCLE_STAGES = new Set([
   'received',
   'session_bound',
@@ -37,6 +48,7 @@ const ACTIVE_LIFECYCLE_STAGES = new Set([
   'retrying',
   'interrupted',
 ]);
+const ACTIVE_PROJECT_TASK_RECOVERY_MAX_AGE_MS = 45 * 60_000;
 
 interface SystemAgentManagerFileConfig {
   periodicCheck?: {
@@ -57,6 +69,12 @@ interface LoopTerminalEvent {
   timestamp?: string;
   finishReason?: string;
   error?: string;
+}
+
+interface InflightKernelTurnState {
+  hasInFlight: boolean;
+  activeTurnId?: string;
+  providerId?: string;
 }
 
 export class SystemAgentManager {
@@ -206,6 +224,15 @@ export class SystemAgentManager {
 
   private async startProjectAgent(agent: AgentInfo): Promise<void> {
     const { projectPath, projectId, agentId } = agent;
+    const normalizedProjectPath = path.resolve(projectPath);
+    if (normalizedProjectPath === path.resolve(SYSTEM_PROJECT_PATH)) {
+      log.warn('[SystemAgentManager] Skip monitored project start for system workspace path', {
+        projectPath,
+        projectId,
+        agentId,
+      });
+      return;
+    }
 
     log.info(`Starting Project Agent ${agentId} for ${projectId} at ${projectPath}`);
     const sessionId = this.resolveProjectSessionIdForRecovery(agent);
@@ -247,12 +274,14 @@ export class SystemAgentManager {
       getSession?: (sessionId: string) => { id?: string; projectPath?: string; context?: Record<string, unknown> } | null;
       findSessionsByProjectPath?: (projectPath: string) => Array<{ id: string; projectPath: string; lastAccessedAt: string; context?: Record<string, unknown> }>;
       createSession?: (projectPath: string, name?: string, options?: { allowReuse?: boolean }) => { id: string };
+      ensureSession?: (sessionId: string, projectPath: string, name?: string) => { id: string };
     };
     const candidateFromRegistry = typeof agent.lastSessionId === 'string'
       ? sessionManager.getSession?.(agent.lastSessionId)
       : null;
     if (candidateFromRegistry
       && !this.deps.isRuntimeChildSession(candidateFromRegistry)
+      && !this.isSystemOwnedSessionCandidate(candidateFromRegistry)
       && typeof candidateFromRegistry.projectPath === 'string'
       && candidateFromRegistry.projectPath.trim().length > 0
       && typeof candidateFromRegistry.id === 'string'
@@ -265,6 +294,7 @@ export class SystemAgentManager {
     const latestRoot = typeof findSessionsByProjectPath === 'function'
       ? findSessionsByProjectPath.call(sessionManager, projectPath)
         .filter((session) => !this.deps.isRuntimeChildSession(session))
+        .filter((session) => !this.isSystemOwnedSessionCandidate(session))
         .sort((a, b) => new Date(b.lastAccessedAt).getTime() - new Date(a.lastAccessedAt).getTime())[0]
       : undefined;
     if (latestRoot) return latestRoot.id;
@@ -272,15 +302,43 @@ export class SystemAgentManager {
     const createSession = sessionManager.createSession;
     if (typeof createSession === 'function') {
       const created = createSession.call(sessionManager, projectPath, agent.projectName, { allowReuse: true });
-      if (created?.id) return created.id;
+      if (created?.id) {
+        const createdSession = sessionManager.getSession?.(created.id);
+        if (!this.isSystemOwnedSessionCandidate(createdSession ?? { id: created.id, projectPath })) {
+          return created.id;
+        }
+      }
     }
-    if (this.systemSessionId) return this.systemSessionId;
-    return 'default';
+    const ensureSession = sessionManager.ensureSession;
+    if (typeof ensureSession === 'function') {
+      const generatedSessionId = `session-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+      const ensured = ensureSession.call(sessionManager, generatedSessionId, projectPath, agent.projectName);
+      if (ensured?.id) return ensured.id;
+    }
+    return `session-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
   }
 
   private async resumeProjectSessionIfNeeded(agent: AgentInfo, sessionId: string): Promise<void> {
     const lifecycle = getExecutionLifecycleState(this.deps.sessionManager, sessionId);
-    if (!lifecycle) {
+    const inflight = await this.detectInFlightKernelTurn(sessionId);
+    const actionableTaskState = this.resolveActionableProjectTaskStateForRecovery(sessionId);
+    const taskStateNeedsResume = actionableTaskState !== null;
+    log.info('[SystemAgentManager] Startup recovery decision (project)', {
+      projectId: agent.projectId,
+      projectPath: agent.projectPath,
+      sessionId,
+      lifecycleStage: lifecycle?.stage ?? 'none',
+      lifecycleSubstage: lifecycle?.substage ?? 'none',
+      lifecycleFinishReason: lifecycle?.finishReason ?? 'none',
+      inFlightKernelTurn: inflight.hasInFlight,
+      inFlightKernelTurnId: inflight.activeTurnId,
+      inFlightProviderId: inflight.providerId,
+      taskStateNeedsResume,
+      taskStateSessionId: actionableTaskState?.sessionId,
+      taskStateTaskId: actionableTaskState?.state.taskId,
+      taskStateStatus: actionableTaskState?.state.status,
+    });
+    if (!lifecycle && !taskStateNeedsResume) {
       log.info('[SystemAgentManager] Monitored project has no lifecycle state; skip startup recovery', {
         projectId: agent.projectId,
         projectPath: agent.projectPath,
@@ -288,24 +346,57 @@ export class SystemAgentManager {
       });
       return;
     }
-    const staleCompletedReason = await this.detectStaleCompletedLifecycleForMonitoredProject(sessionId, lifecycle);
-    if (!this.shouldResumeLifecycle(lifecycle) && !staleCompletedReason) {
+    const lifecycleNeedsResume = lifecycle ? (this.shouldResumeLifecycle(lifecycle) && lifecycle.stage !== 'completed') : false;
+    const staleCompletedReason = lifecycle
+      ? await this.detectStaleCompletedLifecycleForMonitoredProject(sessionId, lifecycle)
+      : null;
+    const workerRecovery = this.resolveWorkerRecoveryPlan(
+      taskStateNeedsResume ? actionableTaskState?.state : null,
+    );
+    const recoveryWorkerId = workerRecovery.workerId;
+    const recoveryReassignReason = workerRecovery.reassignReason;
+    if (!lifecycleNeedsResume && !staleCompletedReason && !taskStateNeedsResume) {
       log.info('[SystemAgentManager] Monitored project lifecycle already completed; no recovery needed', {
         projectId: agent.projectId,
         projectPath: agent.projectPath,
         sessionId,
-        stage: lifecycle.stage,
-        finishReason: lifecycle.finishReason ?? 'none',
+        stage: lifecycle?.stage,
+        finishReason: lifecycle?.finishReason ?? 'none',
+      });
+      return;
+    }
+
+    if (taskStateNeedsResume && actionableTaskState) {
+      this.patchRecoveredProjectTaskState(actionableTaskState.sessionId, actionableTaskState.state, {
+        ...(recoveryWorkerId ? { assigneeWorkerId: recoveryWorkerId } : {}),
+        ...(recoveryReassignReason ? { reassignReason: recoveryReassignReason } : {}),
+      });
+    }
+
+    if (inflight.hasInFlight) {
+      log.info('[SystemAgentManager] Skip monitored project recovery dispatch due to in-flight turn', {
+        projectId: agent.projectId,
+        projectPath: agent.projectPath,
+        sessionId,
+        lifecycleStage: lifecycle?.stage ?? 'none',
+        lifecycleSubstage: lifecycle?.substage ?? 'none',
+        activeTurnId: inflight.activeTurnId,
+        providerId: inflight.providerId,
+        reason: 'skip_recovery_dispatch_due_to_inflight_turn',
       });
       return;
     }
 
     const prompt = [
-      staleCompletedReason
-        ? `系统重启恢复：检测到该项目会话标记为 completed，但最近一轮出现异常（${staleCompletedReason}）。`
-        : '系统重启恢复：检测到该项目会话上一轮未完成。',
+      taskStateNeedsResume
+        ? `系统重启恢复：检测到项目任务仍处于进行中（task=${actionableTaskState?.state.taskId ?? 'unknown'}，status=${actionableTaskState?.state.status ?? 'in_progress'}）。`
+        : staleCompletedReason
+          ? `系统重启恢复：检测到该项目会话标记为 completed，但最近一轮出现异常（${staleCompletedReason}）。`
+          : '系统重启恢复：检测到该项目会话上一轮未完成。',
       `项目路径：${agent.projectPath}`,
-      `状态：${lifecycle.stage}${lifecycle.substage ? `/${lifecycle.substage}` : ''}`,
+      recoveryWorkerId ? `恢复 worker：${recoveryWorkerId}` : '',
+      recoveryReassignReason ? `重分配原因：${recoveryReassignReason}` : '',
+      lifecycle?.stage ? `状态：${lifecycle.stage}${lifecycle.substage ? `/${lifecycle.substage}` : ''}` : '状态：<none>',
       '请从当前中断点继续执行，直到任务真正完成（finish_reason=stop）。',
     ].join('\n');
 
@@ -320,14 +411,29 @@ export class SystemAgentManager {
         deliveryMode: 'direct',
         progressDelivery: { mode: 'silent' },
         projectPath: agent.projectPath,
+        ...(recoveryWorkerId ? { assigneeWorkerId: recoveryWorkerId, workerId: recoveryWorkerId } : {}),
           recovery: {
             type: 'resume_monitored_project_execution',
-            stage: lifecycle.stage,
-            substage: lifecycle.substage,
-            finishReason: lifecycle.finishReason,
-          lastTransitionAt: lifecycle.lastTransitionAt,
-            turnId: lifecycle.turnId,
-            dispatchId: lifecycle.dispatchId,
+            stage: lifecycle?.stage,
+            substage: lifecycle?.substage,
+            finishReason: lifecycle?.finishReason,
+            lastTransitionAt: lifecycle?.lastTransitionAt,
+            turnId: lifecycle?.turnId,
+            dispatchId: lifecycle?.dispatchId,
+            ...(taskStateNeedsResume
+              ? {
+                  projectTask: {
+                    sessionId: actionableTaskState?.sessionId,
+                    taskId: actionableTaskState?.state.taskId,
+                    taskName: actionableTaskState?.state.taskName,
+                    status: actionableTaskState?.state.status,
+                    updatedAt: actionableTaskState?.state.updatedAt,
+                    note: actionableTaskState?.state.note,
+                    ...(recoveryWorkerId ? { assigneeWorkerId: recoveryWorkerId } : {}),
+                    ...(recoveryReassignReason ? { reassignReason: recoveryReassignReason } : {}),
+                  },
+                }
+              : {}),
             ...(staleCompletedReason ? { staleCompletedReason } : {}),
           },
         },
@@ -338,13 +444,238 @@ export class SystemAgentManager {
       projectId: agent.projectId,
       projectPath: agent.projectPath,
       sessionId,
-      lifecycleStage: lifecycle.stage,
-      lifecycleSubstage: lifecycle.substage,
+      lifecycleStage: lifecycle?.stage,
+      lifecycleSubstage: lifecycle?.substage,
+      taskStateNeedsResume,
+      taskStateSessionId: actionableTaskState?.sessionId,
+      taskStateTaskId: actionableTaskState?.state.taskId,
       staleCompletedReason: staleCompletedReason ?? undefined,
       status: result?.status ?? 'unknown',
       dispatchId: result?.dispatchId,
       error: result?.ok === false ? (result.error ?? 'unknown') : undefined,
     });
+  }
+
+  private resolveActionableProjectTaskStateForRecovery(
+    primarySessionId: string,
+  ): { sessionId: string; state: ProjectTaskState } | null {
+    const sessionManager = this.deps.sessionManager as {
+      getSession?: (id: string) => { context?: Record<string, unknown> } | null;
+      getOrCreateSystemSession?: () => { id?: string } | null;
+      findSessionsByProjectPath?: (projectPath: string) => Array<{
+        id: string;
+        projectPath?: string;
+        context?: Record<string, unknown>;
+      }>;
+    };
+    const getSession = sessionManager.getSession;
+    if (typeof getSession !== 'function') return null;
+
+    const primarySession = getSession.call(this.deps.sessionManager, primarySessionId);
+    const primaryContext = (primarySession?.context && typeof primarySession.context === 'object')
+      ? (primarySession.context as Record<string, unknown>)
+      : {};
+    const linkedRouteSessionId = typeof primaryContext.statusRouteSessionId === 'string'
+      ? primaryContext.statusRouteSessionId.trim()
+      : '';
+    const projectPath = typeof (primarySession as { projectPath?: string } | null)?.projectPath === 'string'
+      ? (primarySession as { projectPath?: string }).projectPath!.trim()
+      : '';
+    const candidates = [primarySessionId, linkedRouteSessionId];
+
+    const findSessionsByProjectPath = sessionManager.findSessionsByProjectPath;
+    if (projectPath && typeof findSessionsByProjectPath === 'function') {
+      const sameProjectSessions = findSessionsByProjectPath.call(this.deps.sessionManager, projectPath);
+      for (const session of sameProjectSessions) {
+        if (typeof session?.id !== 'string' || session.id.trim().length === 0) continue;
+        candidates.push(session.id.trim());
+        const sessionContext = (session.context && typeof session.context === 'object')
+          ? (session.context as Record<string, unknown>)
+          : {};
+        const route = typeof sessionContext.statusRouteSessionId === 'string'
+          ? sessionContext.statusRouteSessionId.trim()
+          : '';
+        if (route) candidates.push(route);
+      }
+    }
+    if (typeof sessionManager.getOrCreateSystemSession === 'function') {
+      try {
+        const systemSession = sessionManager.getOrCreateSystemSession();
+        const systemSessionId = typeof systemSession?.id === 'string' ? systemSession.id.trim() : '';
+        if (systemSessionId) candidates.push(systemSessionId);
+      } catch {
+        // best effort only
+      }
+    }
+
+    const dedupedCandidates = candidates
+      .filter((item, index, list) => item.length > 0 && list.indexOf(item) === index);
+
+    let newest: { sessionId: string; state: ProjectTaskState; updatedAtMs: number } | null = null;
+
+    for (const sessionId of dedupedCandidates) {
+      const session = getSession.call(this.deps.sessionManager, sessionId);
+      const context = (session?.context && typeof session.context === 'object')
+        ? (session.context as Record<string, unknown>)
+        : {};
+      const state = parseProjectTaskState(context.projectTaskState);
+      if (!state) continue;
+      if (!isProjectTaskStateActive(state)) continue;
+      if (state.targetAgentId !== FINGER_PROJECT_AGENT_ID) continue;
+      const updatedAtMs = Date.parse(state.updatedAt);
+      if (Number.isFinite(updatedAtMs) && (Date.now() - updatedAtMs) > ACTIVE_PROJECT_TASK_RECOVERY_MAX_AGE_MS) {
+        continue;
+      }
+      const score = Number.isFinite(updatedAtMs) ? updatedAtMs : -1;
+      if (!newest || score >= newest.updatedAtMs) {
+        newest = {
+          sessionId,
+          state,
+          updatedAtMs: score,
+        };
+      }
+    }
+    if (!newest) return null;
+    return {
+      sessionId: newest.sessionId,
+      state: newest.state,
+    };
+  }
+
+  private resolveWorkerRecoveryPlan(
+    state: ProjectTaskState | null,
+  ): { workerId?: string; reassignReason?: string } {
+    const explicitWorkerId = typeof state?.assigneeWorkerId === 'string'
+      ? state.assigneeWorkerId.trim()
+      : '';
+    if (explicitWorkerId.length > 0) {
+      return { workerId: explicitWorkerId };
+    }
+    if (!state) return {};
+    return {
+      workerId: FINGER_PROJECT_AGENT_ID,
+      reassignReason: 'assignee_worker_missing_reassigned_to_default',
+    };
+  }
+
+  private patchRecoveredProjectTaskState(
+    sessionId: string,
+    state: ProjectTaskState,
+    patch: {
+      assigneeWorkerId?: string;
+      reassignReason?: string;
+    },
+  ): void {
+    if (!sessionId.trim()) return;
+    const hasPatch = (typeof patch.assigneeWorkerId === 'string' && patch.assigneeWorkerId.trim().length > 0)
+      || (typeof patch.reassignReason === 'string' && patch.reassignReason.trim().length > 0);
+    if (!hasPatch) return;
+    const currentAssignee = typeof state.assigneeWorkerId === 'string' ? state.assigneeWorkerId.trim() : '';
+    const nextAssignee = typeof patch.assigneeWorkerId === 'string' ? patch.assigneeWorkerId.trim() : '';
+    const currentReassignReason = typeof state.reassignReason === 'string' ? state.reassignReason.trim() : '';
+    const nextReassignReason = typeof patch.reassignReason === 'string' ? patch.reassignReason.trim() : '';
+    if (currentAssignee === nextAssignee && currentReassignReason === nextReassignReason) return;
+
+    try {
+      const session = this.deps.sessionManager.getSession(sessionId);
+      if (!session) return;
+      const current = parseProjectTaskState(session.context?.projectTaskState);
+      if (!current) return;
+      const next = mergeProjectTaskState(current, {
+        ...(nextAssignee ? { assigneeWorkerId: nextAssignee } : {}),
+        ...(nextReassignReason ? { reassignReason: nextReassignReason } : {}),
+      });
+      const currentRegistry = parseDelegatedProjectTaskRegistry(session.context?.projectTaskRegistry);
+      const nextRegistry = upsertDelegatedProjectTaskRegistry(currentRegistry, {
+        sourceAgentId: next.sourceAgentId,
+        targetAgentId: next.targetAgentId,
+        taskId: next.taskId,
+        taskName: next.taskName,
+        status: next.status,
+        active: next.active,
+        assigneeWorkerId: next.assigneeWorkerId,
+        reassignReason: next.reassignReason,
+        dispatchId: next.dispatchId,
+        boundSessionId: next.boundSessionId,
+        revision: next.revision,
+        summary: next.summary,
+        note: next.note,
+        blockedBy: next.blockedBy,
+      });
+      this.deps.sessionManager.updateContext(sessionId, {
+        projectTaskState: next,
+        projectTaskRegistry: nextRegistry,
+      });
+    } catch (error) {
+      log.warn('[SystemAgentManager] Failed to patch recovered project task worker assignment', {
+        sessionId,
+        taskId: state.taskId,
+        assigneeWorkerId: patch.assigneeWorkerId,
+        reassignReason: patch.reassignReason,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
+  private async detectInFlightKernelTurn(sessionId: string): Promise<InflightKernelTurnState> {
+    try {
+      const result = await this.deps.agentRuntimeBlock.execute('control', {
+        action: 'status',
+        sessionId,
+        targetAgentId: FINGER_PROJECT_AGENT_ID,
+      }) as {
+        ok?: boolean;
+        result?: {
+          chatCodexSessions?: unknown[];
+        };
+      };
+
+      const chatCodexSessions = Array.isArray(result?.result?.chatCodexSessions)
+        ? result.result.chatCodexSessions
+        : [];
+      for (const item of chatCodexSessions) {
+        if (!item || typeof item !== 'object') continue;
+        const record = item as Record<string, unknown>;
+        const recordSessionId = typeof record.sessionId === 'string' ? record.sessionId.trim() : '';
+        if (recordSessionId !== sessionId) continue;
+        const hasActiveTurn = record.hasActiveTurn === true;
+        if (!hasActiveTurn) continue;
+        return {
+          hasInFlight: true,
+          ...(typeof record.activeTurnId === 'string' && record.activeTurnId.trim().length > 0
+            ? { activeTurnId: record.activeTurnId.trim() }
+            : {}),
+          ...(typeof record.providerId === 'string' && record.providerId.trim().length > 0
+            ? { providerId: record.providerId.trim() }
+            : {}),
+        };
+      }
+      return { hasInFlight: false };
+    } catch (error) {
+      log.warn('[SystemAgentManager] Failed to inspect in-flight kernel turn for startup recovery', {
+        sessionId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return { hasInFlight: false };
+    }
+  }
+
+  private isSystemOwnedSessionCandidate(
+    session: { id?: string; projectPath?: string; context?: Record<string, unknown> } | null | undefined,
+  ): boolean {
+    if (!session || typeof session !== 'object') return false;
+    const sessionId = typeof session.id === 'string' ? session.id.trim() : '';
+    if (sessionId.startsWith(SYSTEM_SESSION_PREFIX)) return true;
+
+    const projectPath = typeof session.projectPath === 'string' ? session.projectPath.trim() : '';
+    if (projectPath.length > 0 && path.resolve(projectPath) === path.resolve(SYSTEM_PROJECT_PATH)) return true;
+
+    const context = (session.context && typeof session.context === 'object')
+      ? (session.context as Record<string, unknown>)
+      : {};
+    if (context.sessionTier === 'system') return true;
+    if (typeof context.ownerAgentId === 'string' && context.ownerAgentId.trim() === SYSTEM_AGENT_ID) return true;
+    return false;
   }
 
   private async detectStaleCompletedLifecycleForMonitoredProject(
@@ -555,7 +886,15 @@ export class SystemAgentManager {
   }
 
   private shouldResumeLifecycle(lifecycle: ExecutionLifecycleState): boolean {
-    if (lifecycle.finishReason === 'stop') return false;
+    const finishReason = typeof lifecycle.finishReason === 'string'
+      ? lifecycle.finishReason.trim().toLowerCase()
+      : '';
+    const substage = typeof lifecycle.substage === 'string'
+      ? lifecycle.substage.trim().toLowerCase()
+      : '';
+    if (substage === 'turn_stop_tool_pending') return true;
+    if (lifecycle.stage === 'completed') return finishReason !== 'stop';
+    if (finishReason === 'stop') return true;
     if (ACTIVE_LIFECYCLE_STAGES.has(lifecycle.stage)) return true;
     return lifecycle.stage === 'failed';
   }
@@ -690,7 +1029,14 @@ export class SystemAgentManager {
 
   private async tryResumeInterruptedKernelTurn(lifecycle: ExecutionLifecycleState): Promise<boolean> {
     if (!this.systemSessionId) return false;
-    if (lifecycle.finishReason === 'stop') return false;
+    const finishReason = typeof lifecycle.finishReason === 'string'
+      ? lifecycle.finishReason.trim().toLowerCase()
+      : '';
+    const substage = typeof lifecycle.substage === 'string'
+      ? lifecycle.substage.trim().toLowerCase()
+      : '';
+    const isStopToolPending = substage === 'turn_stop_tool_pending';
+    if (lifecycle.stage === 'completed' && finishReason === 'stop' && !isStopToolPending) return false;
 
     const snapshotPath = path.join(
       FINGER_PATHS.home,
@@ -700,6 +1046,15 @@ export class SystemAgentManager {
       'diagnostics',
       `${SYSTEM_AGENT_CONFIG.id}.prompt-injection.jsonl`,
     );
+
+    log.info('[SystemAgentManager] Startup recovery decision (system)', {
+      sessionId: this.systemSessionId,
+      lifecycleStage: lifecycle.stage,
+      lifecycleSubstage: lifecycle.substage ?? 'none',
+      finishReason: lifecycle.finishReason ?? 'none',
+      snapshotPath,
+      stopToolPending: isStopToolPending,
+    });
 
     try {
       await fs.access(snapshotPath);

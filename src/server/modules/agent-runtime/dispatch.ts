@@ -18,10 +18,13 @@ import {
   isProjectTaskStateActive,
   normalizeBlockedByForTaskState,
   parseDelegatedProjectTaskRegistry,
+  pruneDelegatedRegistryForContextAfterTaskClosed,
   mergeProjectTaskState,
   parseProjectTaskState,
+  shouldArchiveAndClearProjectTaskState,
   upsertDelegatedProjectTaskRegistry,
 } from '../../../common/project-task-state.js';
+import { appendClosedProjectTaskArchive } from '../../../core/project-task-archive.js';
 import { setupReviewRuntimeForDispatch } from '../../../agents/finger-system-agent/review-runtime.js';
 import {
   applyExecutionLifecycleTransition,
@@ -137,6 +140,28 @@ function resolveDispatchTaskIdentity(input: AgentDispatchRequest): { taskId?: st
     ...(taskId ? { taskId } : {}),
     ...(taskName ? { taskName } : {}),
   };
+}
+
+function resolveAssigneeWorkerIdFromDispatch(
+  input: AgentDispatchRequest,
+  currentState: ReturnType<typeof parseProjectTaskState>,
+): string | undefined {
+  const assignmentRecord: Record<string, unknown> = isObjectRecord(input.assignment) ? input.assignment : {};
+  const metadata = isObjectRecord(input.metadata) ? input.metadata : {};
+  const taskRecord = isObjectRecord(input.task) ? input.task : {};
+  const taskMetadata = isObjectRecord(taskRecord.metadata) ? taskRecord.metadata : {};
+  const raw = firstNonEmptyString(
+    asString(assignmentRecord.assigneeWorkerId),
+    asString(assignmentRecord.assignee_worker_id),
+    asString(metadata.assigneeWorkerId),
+    asString(metadata.assignee_worker_id),
+    asString(taskMetadata.assigneeWorkerId),
+    asString(taskMetadata.assignee_worker_id),
+    currentState?.assigneeWorkerId ?? '',
+  );
+  if (!raw) return undefined;
+  if (raw === FINGER_PROJECT_AGENT_ID) return undefined;
+  return raw;
 }
 
 function resolveBlockedByRawFromDispatch(input: AgentDispatchRequest): unknown {
@@ -627,6 +652,10 @@ function persistProjectTaskState(
   patch: {
     active?: boolean;
     status?: 'create' | 'dispatched' | 'accepted' | 'in_progress' | 'claiming_finished' | 'reviewed' | 'reported' | 'closed' | 'blocked' | 'failed' | 'cancelled';
+    assigneeWorkerId?: string;
+    deliveryWorkerId?: string;
+    reviewerId?: string;
+    reassignReason?: string;
     taskId?: string;
     taskName?: string;
     dispatchId?: string;
@@ -640,34 +669,57 @@ function persistProjectTaskState(
   },
 ): void {
   for (const sessionId of sessionIds) {
-    const session = deps.sessionManager.getSession(sessionId);
-    if (!session) continue;
-    const current = parseProjectTaskState(session.context?.projectTaskState);
-    const next = mergeProjectTaskState(current, {
-      ...patch,
-      sourceAgentId: patch.sourceAgentId ?? current?.sourceAgentId ?? FINGER_SYSTEM_AGENT_ID,
-      targetAgentId: patch.targetAgentId ?? current?.targetAgentId ?? FINGER_PROJECT_AGENT_ID,
-    });
-    const currentRegistry = parseDelegatedProjectTaskRegistry(session.context?.projectTaskRegistry);
-    const nextRegistry = upsertDelegatedProjectTaskRegistry(currentRegistry, {
-      sourceAgentId: next.sourceAgentId,
-      targetAgentId: next.targetAgentId,
-      taskId: next.taskId,
-      taskName: next.taskName,
-      status: next.status,
-      active: next.active,
-      dispatchId: next.dispatchId,
-      boundSessionId: next.boundSessionId,
-      revision: next.revision,
-      summary: next.summary,
-      note: next.note,
-      blockedBy: next.blockedBy,
-    });
-    deps.sessionManager.updateContext(sessionId, {
-      projectTaskState: next,
-      projectTaskRegistry: nextRegistry,
-    });
-    writeTaskRouterMarkdown(session.projectPath, next, nextRegistry);
+    try {
+      const session = deps.sessionManager.getSession(sessionId);
+      if (!session) continue;
+      const current = parseProjectTaskState(session.context?.projectTaskState);
+      const next = mergeProjectTaskState(current, {
+        ...patch,
+        sourceAgentId: patch.sourceAgentId ?? current?.sourceAgentId ?? FINGER_SYSTEM_AGENT_ID,
+        targetAgentId: patch.targetAgentId ?? current?.targetAgentId ?? FINGER_PROJECT_AGENT_ID,
+      });
+      const currentRegistry = parseDelegatedProjectTaskRegistry(session.context?.projectTaskRegistry);
+      const nextRegistry = upsertDelegatedProjectTaskRegistry(currentRegistry, {
+        sourceAgentId: next.sourceAgentId,
+        targetAgentId: next.targetAgentId,
+        taskId: next.taskId,
+        taskName: next.taskName,
+        status: next.status,
+        active: next.active,
+        assigneeWorkerId: next.assigneeWorkerId,
+        deliveryWorkerId: next.deliveryWorkerId,
+        reviewerId: next.reviewerId,
+        reassignReason: next.reassignReason,
+        dispatchId: next.dispatchId,
+        boundSessionId: next.boundSessionId,
+        revision: next.revision,
+        summary: next.summary,
+        note: next.note,
+        blockedBy: next.blockedBy,
+      });
+      const shouldArchiveAndClear = shouldArchiveAndClearProjectTaskState(next);
+      if (shouldArchiveAndClear) {
+        appendClosedProjectTaskArchive(session.projectPath, next);
+      }
+      const contextState = shouldArchiveAndClear ? null : next;
+      const contextRegistry = shouldArchiveAndClear
+        ? pruneDelegatedRegistryForContextAfterTaskClosed(nextRegistry, next)
+        : nextRegistry;
+      deps.sessionManager.updateContext(sessionId, {
+        projectTaskState: contextState,
+        projectTaskRegistry: contextRegistry,
+      });
+      writeTaskRouterMarkdown(session.projectPath, next, nextRegistry);
+    } catch (error) {
+      logger.module('dispatch').warn('Failed to persist project task state patch', {
+        sessionId,
+        taskId: patch.taskId,
+        taskName: patch.taskName,
+        status: patch.status,
+        note: patch.note,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
   }
 }
 
@@ -690,6 +742,10 @@ function writeTaskRouterMarkdown(
     `- status: ${state.status}`,
     `- source: ${state.sourceAgentId}`,
     `- target: ${state.targetAgentId}`,
+    state.assigneeWorkerId ? `- assigneeWorkerId: ${state.assigneeWorkerId}` : '- assigneeWorkerId: N/A',
+    state.deliveryWorkerId ? `- deliveryWorkerId: ${state.deliveryWorkerId}` : '- deliveryWorkerId: N/A',
+    state.reviewerId ? `- reviewerId: ${state.reviewerId}` : '- reviewerId: N/A',
+    state.reassignReason ? `- reassignReason: ${state.reassignReason}` : '- reassignReason: N/A',
     state.taskId ? `- taskId: ${state.taskId}` : '- taskId: N/A',
     state.taskName ? `- taskName: ${state.taskName}` : '- taskName: N/A',
     state.dispatchId ? `- dispatchId: ${state.dispatchId}` : '- dispatchId: N/A',
@@ -712,6 +768,10 @@ function writeTaskRouterMarkdown(
     for (const item of ordered) {
       lines.push(
         `- [${item.status}] active=${item.active} target=${item.targetAgentId}`
+        + `${item.assigneeWorkerId ? ` assignee=${item.assigneeWorkerId}` : ''}`
+        + `${item.deliveryWorkerId ? ` delivery=${item.deliveryWorkerId}` : ''}`
+        + `${item.reviewerId ? ` reviewer=${item.reviewerId}` : ''}`
+        + `${item.reassignReason ? ` reassign_reason=${item.reassignReason}` : ''}`
         + `${item.taskId ? ` taskId=${item.taskId}` : ''}`
         + `${item.taskName ? ` task="${item.taskName}"` : ''}`
         + `${item.dispatchId ? ` dispatch=${item.dispatchId}` : ''}`
@@ -728,8 +788,13 @@ function writeTaskRouterMarkdown(
   lines.push('- Full task details and progression should be maintained in this TASK.md.');
   try {
     writeFileSync(taskFilePath, lines.join('\n') + '\n', 'utf8');
-  } catch {
-    // Best effort only: task state remains in session context even if file write fails.
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException | undefined)?.code;
+    if (code === 'ENOENT') return;
+    logger.module('dispatch').warn('Failed to write TASK.md router snapshot', {
+      taskFilePath,
+      error: error instanceof Error ? error.message : String(error),
+    });
   }
 }
 
@@ -1058,6 +1123,7 @@ export async function dispatchTaskToAgent(deps: AgentRuntimeDeps, input: AgentDi
     routeSessionId,
     canonicalSystemSessionId,
   );
+  const assigneeWorkerId = resolveAssigneeWorkerIdFromDispatch(normalizedInput, sourceTaskState);
   const requestedTaskSessionId = resolveRequestedTaskSessionId(callerSessionId, normalizedSessionId, routeSessionId);
   const bindingGuard = validateProjectTaskBindingGuard({
     input: normalizedInput,
@@ -1149,6 +1215,23 @@ export async function dispatchTaskToAgent(deps: AgentRuntimeDeps, input: AgentDi
       assignment: {
         ...normalizedInput.assignment,
         blockedBy,
+        ...(assigneeWorkerId ? { assigneeWorkerId } : {}),
+      },
+    };
+  }
+  if (
+    normalizedInput.sourceAgentId === FINGER_SYSTEM_AGENT_ID
+    && normalizedInput.targetAgentId === FINGER_PROJECT_AGENT_ID
+    && assigneeWorkerId
+  ) {
+    const nextMetadata = isObjectRecord(normalizedInput.metadata)
+      ? normalizedInput.metadata
+      : {};
+    normalizedInput = {
+      ...normalizedInput,
+      metadata: {
+        ...nextMetadata,
+        assigneeWorkerId,
       },
     };
   }
@@ -1158,6 +1241,7 @@ export async function dispatchTaskToAgent(deps: AgentRuntimeDeps, input: AgentDi
       persistProjectTaskState(deps, projectTaskStateSessionIds, {
         active: true,
         status: 'create',
+        assigneeWorkerId,
         taskId: projectTaskIdentity.taskId,
         taskName: projectTaskIdentity.taskName,
         sourceAgentId: normalizedInput.sourceAgentId,
@@ -1171,6 +1255,7 @@ export async function dispatchTaskToAgent(deps: AgentRuntimeDeps, input: AgentDi
     persistProjectTaskState(deps, projectTaskStateSessionIds, {
       active: true,
       status: 'dispatched',
+      assigneeWorkerId,
       taskId: projectTaskIdentity.taskId,
       taskName: projectTaskIdentity.taskName,
       sourceAgentId: normalizedInput.sourceAgentId,
