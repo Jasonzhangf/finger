@@ -43,6 +43,8 @@ import {
 import { inferInboundRole, ensureMessageMetadataRole } from './message-role-utils.js';
 import { normalizeProgressDeliveryPolicy } from '../../common/progress-delivery-policy.js';
 import { applyExecutionLifecycleTransition } from '../modules/execution-lifecycle.js';
+import { mergeSystemTaskState, parseSystemTaskState } from '../../common/system-task-state.js';
+import { mergeProjectTaskState, parseProjectTaskState } from '../../common/project-task-state.js';
 import {
   executeAsyncMessageRoute,
   executeBlockingMessageRoute,
@@ -85,6 +87,30 @@ function shouldUseTransientLedgerForInboundMessage(message: unknown): {
   return { enabled: false, ...(source ? { source } : {}) };
 }
 
+function buildSystemTaskSeedFromInboundRequest(requestMessage: unknown): {
+  taskName?: string;
+  summary?: string;
+} {
+  const content = (extractMessageTextForSession(requestMessage) ?? '').trim();
+  if (!content) return {};
+  const firstLine = content.split('\n').find((line) => line.trim().length > 0)?.trim() ?? '';
+  const taskName = firstLine ? firstLine.slice(0, 120) : content.slice(0, 120);
+  const summary = content.slice(0, 280);
+  return {
+    ...(taskName ? { taskName } : {}),
+    ...(summary ? { summary } : {}),
+  };
+}
+
+function isExplicitTaskCloseApproval(text: string): boolean {
+  const normalized = text.trim().toLowerCase();
+  if (!normalized) return false;
+  const shortApproveOnly = new Set(['ok', 'okay', 'yes', '同意', '可以', '通过', '批准', 'approve', 'approved']);
+  if (normalized.length <= 16 && shortApproveOnly.has(normalized)) return true;
+  const approvalHints = /(approve|approved|同意|通过|批准|确认)/i;
+  const closeHints = /(close|closed|closure|关闭|结案|收口|归档)/i;
+  return approvalHints.test(normalized) && closeHints.test(normalized);
+}
 
 export function registerMessageRoutes(app: Express, deps: MessageRouteDeps): void {
   app.post('/api/v1/message', async (req, res) => {
@@ -334,6 +360,42 @@ export function registerMessageRoutes(app: Express, deps: MessageRouteDeps): voi
         }
       }
     }
+    if (requestSessionId && isSystemRoute && inferredRole === 'user') {
+      const session = deps.sessionManager.getSession(requestSessionId);
+      const context = (session?.context && typeof session.context === 'object')
+        ? (session.context as Record<string, unknown>)
+        : {};
+      const userText = (extractMessageTextForSession(requestMessage) ?? '').trim();
+      const currentProjectTaskState = parseProjectTaskState(context.projectTaskState);
+      const userApprovedClose = Boolean(
+        currentProjectTaskState
+        && currentProjectTaskState.active
+        && currentProjectTaskState.status === 'reported'
+        && isExplicitTaskCloseApproval(userText),
+      );
+      if (userApprovedClose && currentProjectTaskState) {
+        deps.sessionManager.updateContext(requestSessionId, {
+          projectTaskState: mergeProjectTaskState(currentProjectTaskState, {
+            active: false,
+            status: 'closed',
+            note: 'user_approved_close',
+            summary: userText.slice(0, 240) || 'user approved final closure',
+          }),
+        });
+      }
+      const currentSystemTaskState = parseSystemTaskState(context.systemTaskState);
+      const seed = buildSystemTaskSeedFromInboundRequest(requestMessage);
+      const nextSystemTaskState = mergeSystemTaskState(currentSystemTaskState, {
+        active: !userApprovedClose,
+        status: userApprovedClose ? 'completed' : 'planning',
+        note: userApprovedClose ? 'user_approved_task_closure' : 'inbound_user_request',
+        ...(seed.taskName ? { taskName: seed.taskName } : {}),
+        ...(seed.summary ? { summary: seed.summary } : {}),
+      });
+      deps.sessionManager.updateContext(requestSessionId, {
+        systemTaskState: nextSystemTaskState,
+      });
+    }
     if (requestSessionId && isObjectRecord(requestMessage)) {
       const session = deps.sessionManager.getSession(requestSessionId);
       const sessionContext = (session?.context && typeof session.context === 'object')
@@ -353,6 +415,7 @@ export function registerMessageRoutes(app: Express, deps: MessageRouteDeps): voi
             executionLifecycle: sessionContext.executionLifecycle,
             projectTaskState: sessionContext.projectTaskState,
             projectTaskRegistry: sessionContext.projectTaskRegistry,
+            systemTaskState: sessionContext.systemTaskState,
             ...(taskRouterPath ? { taskRouterPath } : {}),
           },
           ...(taskRouterPath ? { taskRouterPath } : {}),

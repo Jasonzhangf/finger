@@ -254,4 +254,60 @@ describe('report-task-completion tool', () => {
     }));
     expect(dispatchTaskToSystemAgent).not.toHaveBeenCalled();
   });
+
+  it('reviewer pass updates project task lifecycle to reviewed before system reporting', async () => {
+    const registry = new ToolRegistry({ internalRegistry: undefined, tools: [] });
+    const updateContext = vi.fn();
+    registerReportTaskCompletionTool(registry, () => ({
+      runtimeInstructionBus: {},
+      sessionManager: {
+        getSession: vi.fn().mockReturnValue({
+          id: 'session-review-pass',
+          context: {},
+          projectPath: '/tmp/project-a',
+        }),
+        updateContext,
+        addMessage: vi.fn(),
+      },
+      agentRuntimeBlock: {
+        execute: vi.fn(),
+      },
+    }) as any);
+
+    vi.mocked(getReviewRoute).mockReturnValue({
+      taskId: 'task-pass-1',
+      taskName: 'weibo-detail-refactor',
+      reviewRequired: true,
+      reviewAgentId: 'finger-reviewer',
+      parentSessionId: 'system-session-1',
+      projectSessionId: 'project-session-1',
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    } as any);
+
+    const result = await registry.execute('report-task-completion', {
+      action: 'report',
+      taskId: 'task-pass-1',
+      taskSummary: 'PASS: all acceptance criteria satisfied with evidence',
+      sessionId: 'project-session-1',
+      result: 'success',
+      projectId: 'webauto',
+      delivery_artifacts: 'tests passed + screenshots',
+    }, { agentId: 'finger-reviewer' });
+
+    expect((result as any).ok).toBe(true);
+    expect(dispatchTaskToSystemAgent).toHaveBeenCalled();
+    expect(updateContext).toHaveBeenCalledWith('project-session-1', expect.objectContaining({
+      projectTaskState: expect.objectContaining({
+        status: 'reviewed',
+        note: 'review_passed_waiting_system_report',
+      }),
+    }));
+    expect(updateContext).toHaveBeenCalledWith('system-session-1', expect.objectContaining({
+      projectTaskState: expect.objectContaining({
+        status: 'reviewed',
+        note: 'review_passed_waiting_system_report',
+      }),
+    }));
+  });
 });

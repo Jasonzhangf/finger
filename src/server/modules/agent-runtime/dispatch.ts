@@ -9,12 +9,14 @@ import {
   enrichDispatchTagsAndTopic,
   normalizeProjectPathHint,
 } from './dispatch-helpers.js';
+import { normalizeDispatchTargetAgentId } from './dispatch-target-normalization.js';
 import {
   FINGER_PROJECT_AGENT_ID,
   FINGER_SYSTEM_AGENT_ID,
 } from '../../../agents/finger-general/finger-general-module.js';
 import {
   isProjectTaskStateActive,
+  normalizeBlockedByForTaskState,
   parseDelegatedProjectTaskRegistry,
   mergeProjectTaskState,
   parseProjectTaskState,
@@ -47,6 +49,7 @@ const DISPATCH_ERROR_MAX_RETRIES = Number.isFinite(Number(process.env.FINGER_DIS
   ? Math.max(0, Math.floor(Number(process.env.FINGER_DISPATCH_ERROR_MAX_RETRIES)))
   : 10;
 const HEARTBEAT_SOURCE_AGENT_ID = 'system-heartbeat';
+const BLOCKED_BY_NONE = 'none';
 const BUSY_RUNTIME_STATUSES = new Set(['running', 'queued', 'waiting_input', 'paused']);
 const ACTIVE_PROJECT_LIFECYCLE_STAGES = new Set([
   'received',
@@ -57,6 +60,15 @@ const ACTIVE_PROJECT_LIFECYCLE_STAGES = new Set([
   'waiting_model',
   'retrying',
   'interrupted',
+]);
+const DISPATCH_BLOCKED_BY_OPTIONAL_SOURCES = new Set([
+  'system-heartbeat',
+  'mailbox-check',
+  'project-task-update',
+  'project-delivery-report',
+  'project-delivery-continue',
+  'review-reject-redispatch',
+  'task-report',
 ]);
 
 function asTrimmedString(value: unknown): string {
@@ -125,6 +137,152 @@ function resolveDispatchTaskIdentity(input: AgentDispatchRequest): { taskId?: st
     ...(taskId ? { taskId } : {}),
     ...(taskName ? { taskName } : {}),
   };
+}
+
+function resolveBlockedByRawFromDispatch(input: AgentDispatchRequest): unknown {
+  const assignment: Record<string, unknown> = isObjectRecord(input.assignment) ? input.assignment : {};
+  const taskRecord: Record<string, unknown> = isObjectRecord(input.task) ? input.task : {};
+  const metadata: Record<string, unknown> = isObjectRecord(input.metadata) ? input.metadata : {};
+  const taskMetadata: Record<string, unknown> = isObjectRecord(taskRecord.metadata) ? taskRecord.metadata : {};
+  return (
+    assignment.blockedBy
+    ?? assignment.blocked_by
+    ?? assignment.depends_on
+    ?? assignment.dependsOn
+    ?? taskRecord.blockedBy
+    ?? taskRecord.blocked_by
+    ?? taskRecord.depends_on
+    ?? taskRecord.dependsOn
+    ?? metadata.blockedBy
+    ?? metadata.blocked_by
+    ?? metadata.depends_on
+    ?? metadata.dependsOn
+    ?? taskMetadata.blockedBy
+    ?? taskMetadata.blocked_by
+    ?? taskMetadata.depends_on
+    ?? taskMetadata.dependsOn
+  );
+}
+
+function normalizeBlockedByFromDispatch(input: AgentDispatchRequest): string[] | undefined {
+  return normalizeBlockedByForTaskState(resolveBlockedByRawFromDispatch(input));
+}
+
+function hasBlockedByMixedNoneAndDependencies(value: unknown): boolean {
+  const list = Array.isArray(value)
+    ? value
+    : typeof value === 'string'
+      ? value.split(/[\n,]/)
+      : [];
+  if (!Array.isArray(list) || list.length === 0) return false;
+  let hasNone = false;
+  let hasDependency = false;
+  for (const item of list) {
+    const normalized = asTrimmedString(item).toLowerCase();
+    if (!normalized) continue;
+    if (normalized === BLOCKED_BY_NONE) {
+      hasNone = true;
+    } else {
+      hasDependency = true;
+    }
+    if (hasNone && hasDependency) return true;
+  }
+  return false;
+}
+
+function resolveDispatchSourceTag(input: AgentDispatchRequest): string {
+  const metadata = isObjectRecord(input.metadata) ? input.metadata : {};
+  const taskRecord = isObjectRecord(input.task) ? input.task : {};
+  const taskMetadata = isObjectRecord(taskRecord.metadata) ? taskRecord.metadata : {};
+  return asTrimmedString(
+    metadata.source
+    ?? taskMetadata.source
+    ?? '',
+  ).toLowerCase();
+}
+
+function isTaskUpdateDispatch(input: AgentDispatchRequest): boolean {
+  const metadata = isObjectRecord(input.metadata) ? input.metadata : {};
+  const taskRecord = isObjectRecord(input.task) ? input.task : {};
+  const taskMetadata = isObjectRecord(taskRecord.metadata) ? taskRecord.metadata : {};
+  return metadata.projectTaskUpdate === true
+    || metadata.taskUpdate === true
+    || taskMetadata.projectTaskUpdate === true
+    || taskMetadata.taskUpdate === true;
+}
+
+function validateBlockedByForProjectTaskCreation(params: {
+  input: AgentDispatchRequest;
+  sourceTaskState: ReturnType<typeof parseProjectTaskState>;
+  identity: { taskId?: string; taskName?: string };
+}): { ok: true; blockedBy: string[] } | { ok: false; error: string } {
+  const { input, sourceTaskState, identity } = params;
+  const sameTask = (
+    !!sourceTaskState
+    && (
+      (!!identity.taskId && identity.taskId === sourceTaskState.taskId)
+      || (!!identity.taskName && identity.taskName === sourceTaskState.taskName)
+    )
+  );
+  if (isTaskUpdateDispatch(input) || sameTask) {
+    const blockedBy = normalizeBlockedByFromDispatch(input) ?? sourceTaskState?.blockedBy ?? [BLOCKED_BY_NONE];
+    return { ok: true, blockedBy };
+  }
+
+  const sourceTag = resolveDispatchSourceTag(input);
+  if (DISPATCH_BLOCKED_BY_OPTIONAL_SOURCES.has(sourceTag)) {
+    return { ok: true, blockedBy: normalizeBlockedByFromDispatch(input) ?? [BLOCKED_BY_NONE] };
+  }
+
+  const blockedBy = normalizeBlockedByFromDispatch(input);
+  const blockedByRaw = resolveBlockedByRawFromDispatch(input);
+  if (!blockedBy || blockedBy.length === 0) {
+    return {
+      ok: false,
+      error: 'project task dispatch requires assignment.blocked_by (use ["none"] when no blockers)',
+    };
+  }
+  if (hasBlockedByMixedNoneAndDependencies(blockedByRaw)) {
+    return {
+      ok: false,
+      error: 'project task dispatch blocked_by cannot mix "none" with real task ids',
+    };
+  }
+  return {
+    ok: true,
+    blockedBy: blockedBy.length === 0 ? [BLOCKED_BY_NONE] : blockedBy,
+  };
+}
+
+function resolveBlockingDependencies(params: {
+  deps: AgentRuntimeDeps;
+  sessionIds: string[];
+  blockedBy: string[];
+}): string[] {
+  if (params.blockedBy.length === 0 || (params.blockedBy.length === 1 && params.blockedBy[0] === BLOCKED_BY_NONE)) {
+    return [];
+  }
+  const unresolved = new Set<string>();
+  for (const sessionId of params.sessionIds) {
+    const session = params.deps.sessionManager.getSession(sessionId);
+    if (!session) continue;
+    const registry = parseDelegatedProjectTaskRegistry(session.context?.projectTaskRegistry);
+    const byTaskId = new Map<string, string>();
+    for (const record of registry) {
+      const taskId = asTrimmedString(record.taskId);
+      if (!taskId) continue;
+      byTaskId.set(taskId, asTrimmedString(record.status));
+    }
+    for (const blocker of params.blockedBy) {
+      const blockerId = asTrimmedString(blocker);
+      if (!blockerId || blockerId.toLowerCase() === BLOCKED_BY_NONE) continue;
+      const status = asTrimmedString(byTaskId.get(blockerId)).toLowerCase();
+      if (status !== 'closed') {
+        unresolved.add(blockerId);
+      }
+    }
+  }
+  return Array.from(unresolved.values());
 }
 
 function allowDispatchWhileBusy(input: AgentDispatchRequest): boolean {
@@ -264,13 +422,50 @@ function resolveSessionContextRouteSessionId(
 
 function resolveSourceProjectTaskState(
   deps: AgentRuntimeDeps,
-  sessionId: string,
+  ...sessionIds: Array<string | undefined>
 ): ReturnType<typeof parseProjectTaskState> {
-  if (!sessionId) return null;
-  const session = deps.sessionManager.getSession(sessionId);
-  if (!session || !isObjectRecord(session.context)) return null;
-  const context = session.context as Record<string, unknown>;
-  return parseProjectTaskState(context.projectTaskState);
+  const candidates = Array.from(new Set(
+    sessionIds
+      .map((item) => (typeof item === 'string' ? item.trim() : ''))
+      .filter((item) => item.length > 0),
+  ));
+  if (candidates.length === 0) return null;
+  let newestActive: ReturnType<typeof parseProjectTaskState> = null;
+  let newestActiveUpdatedAt = -1;
+  let newestAny: ReturnType<typeof parseProjectTaskState> = null;
+  let newestAnyUpdatedAt = -1;
+  for (const sessionId of candidates) {
+    const session = deps.sessionManager.getSession(sessionId);
+    if (!session || !isObjectRecord(session.context)) continue;
+    const context = session.context as Record<string, unknown>;
+    const parsed = parseProjectTaskState(context.projectTaskState);
+    if (!parsed) continue;
+    const updatedAtMs = Date.parse(parsed.updatedAt);
+    const normalizedUpdatedAt = Number.isFinite(updatedAtMs) ? updatedAtMs : -1;
+    if (isProjectTaskStateActive(parsed) && normalizedUpdatedAt >= newestActiveUpdatedAt) {
+      newestActive = parsed;
+      newestActiveUpdatedAt = normalizedUpdatedAt;
+    }
+    if (normalizedUpdatedAt >= newestAnyUpdatedAt) {
+      newestAny = parsed;
+      newestAnyUpdatedAt = normalizedUpdatedAt;
+    }
+  }
+  return newestActive ?? newestAny;
+}
+
+function resolveCanonicalSystemSessionId(deps: AgentRuntimeDeps): string {
+  const sessionManager = deps.sessionManager as {
+    getOrCreateSystemSession?: () => { id?: string } | null;
+  };
+  if (typeof sessionManager.getOrCreateSystemSession !== 'function') return '';
+  try {
+    const session = sessionManager.getOrCreateSystemSession();
+    const sessionId = typeof session?.id === 'string' ? session.id.trim() : '';
+    return sessionId;
+  } catch {
+    return '';
+  }
 }
 
 function resolveDispatchProjectPathHint(
@@ -350,6 +545,24 @@ function validateProjectTaskBindingGuard(params: {
   const incomingTaskName = asTrimmedString(identity.taskName);
   const incomingSessionId = asTrimmedString(requestedSessionId);
   const updateDispatch = isProjectTaskUpdateDispatch(input);
+  const asyncProjectDispatch = (
+    input.sourceAgentId === FINGER_SYSTEM_AGENT_ID
+    && input.targetAgentId === FINGER_PROJECT_AGENT_ID
+    && input.blocking !== true
+    && input.queueOnBusy !== false
+  );
+
+  if (asyncProjectDispatch) {
+    const nextRevisionBase = typeof sourceTaskState?.revision === 'number' && Number.isFinite(sourceTaskState.revision)
+      ? Math.max(1, Math.floor(sourceTaskState.revision))
+      : 1;
+    const nextRevision = updateDispatch ? nextRevisionBase + 1 : nextRevisionBase;
+    return {
+      ok: true,
+      boundSessionId: activeBoundSessionId || incomingSessionId,
+      revision: nextRevision,
+    };
+  }
 
   if (activeTaskId && incomingTaskId && activeTaskId !== incomingTaskId) {
     return {
@@ -413,7 +626,7 @@ function persistProjectTaskState(
   sessionIds: string[],
   patch: {
     active?: boolean;
-    status?: 'dispatched' | 'in_progress' | 'waiting_review' | 'pending_approval' | 'completed' | 'failed' | 'cancelled';
+    status?: 'create' | 'dispatched' | 'accepted' | 'in_progress' | 'claiming_finished' | 'reviewed' | 'reported' | 'closed' | 'blocked' | 'failed' | 'cancelled';
     taskId?: string;
     taskName?: string;
     dispatchId?: string;
@@ -421,6 +634,7 @@ function persistProjectTaskState(
     revision?: number;
     summary?: string;
     note?: string;
+    blockedBy?: string[];
     sourceAgentId?: string;
     targetAgentId?: string;
   },
@@ -447,6 +661,7 @@ function persistProjectTaskState(
       revision: next.revision,
       summary: next.summary,
       note: next.note,
+      blockedBy: next.blockedBy,
     });
     deps.sessionManager.updateContext(sessionId, {
       projectTaskState: next,
@@ -480,6 +695,9 @@ function writeTaskRouterMarkdown(
     state.dispatchId ? `- dispatchId: ${state.dispatchId}` : '- dispatchId: N/A',
     state.boundSessionId ? `- boundSessionId: ${state.boundSessionId}` : '- boundSessionId: N/A',
     typeof state.revision === 'number' ? `- revision: ${state.revision}` : '- revision: N/A',
+    state.blockedBy && state.blockedBy.length > 0
+      ? `- blocked_by: ${state.blockedBy.join(', ')}`
+      : '- blocked_by: none',
     state.note ? `- note: ${state.note}` : '- note: N/A',
     '',
     '## Delegated Project List (latest)',
@@ -499,6 +717,7 @@ function writeTaskRouterMarkdown(
         + `${item.dispatchId ? ` dispatch=${item.dispatchId}` : ''}`
         + `${item.boundSessionId ? ` boundSession=${item.boundSessionId}` : ''}`
         + `${typeof item.revision === 'number' ? ` rev=${item.revision}` : ''}`
+        + `${item.blockedBy && item.blockedBy.length > 0 ? ` blocked_by=${item.blockedBy.join('|')}` : ''}`
         + ` updated=${item.updatedAt}`,
       );
     }
@@ -522,6 +741,51 @@ export async function dispatchTaskToAgent(deps: AgentRuntimeDeps, input: AgentDi
   error?: string;
   queuePosition?: number;
 }> {
+  const targetNormalization = normalizeDispatchTargetAgentId(asTrimmedString(input.targetAgentId));
+  if (targetNormalization.invalidReason) {
+    const failedSessionId = firstNonEmptyString(
+      asTrimmedString(input.sessionId),
+      asTrimmedString(deps.runtime.getCurrentSession()?.id),
+      asTrimmedString(deps.sessionManager.getCurrentSession()?.id),
+    );
+    if (failedSessionId) {
+      applyExecutionLifecycleTransition(deps.sessionManager, failedSessionId, {
+        stage: 'failed',
+        substage: 'dispatch_target_invalid',
+        updatedBy: 'dispatch',
+        targetAgentId: asTrimmedString(input.targetAgentId),
+        lastError: targetNormalization.invalidReason,
+      });
+    }
+    return {
+      ok: false,
+      dispatchId: 'dispatch-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8),
+      status: 'failed',
+      error: targetNormalization.invalidReason,
+    };
+  }
+  if (
+    targetNormalization.targetAgentId
+    && targetNormalization.targetAgentId !== asTrimmedString(input.targetAgentId)
+  ) {
+    const nextMetadata = isObjectRecord(input.metadata) ? { ...input.metadata } : {};
+    nextMetadata.normalizedDispatchTarget = {
+      from: targetNormalization.normalizedFrom ?? asTrimmedString(input.targetAgentId),
+      to: targetNormalization.targetAgentId,
+    };
+    input = {
+      ...input,
+      targetAgentId: targetNormalization.targetAgentId,
+      metadata: nextMetadata,
+    };
+    logger.module('dispatch').info('Normalized dispatch target alias', {
+      from: targetNormalization.normalizedFrom ?? asTrimmedString(input.targetAgentId),
+      to: targetNormalization.targetAgentId,
+      sourceAgentId: asTrimmedString(input.sourceAgentId),
+      sessionId: asTrimmedString(input.sessionId) || undefined,
+    });
+  }
+
   const originalSessionId = typeof input.sessionId === 'string' ? input.sessionId.trim() : '';
   const callerSessionId = firstNonEmptyString(
     originalSessionId,
@@ -611,6 +875,19 @@ export async function dispatchTaskToAgent(deps: AgentRuntimeDeps, input: AgentDi
       if (typeof assignment.phase !== 'string' || assignment.phase.trim().length === 0) {
         assignment.phase = 'assigned';
       }
+      const blockedBy = normalizeBlockedByFromDispatch({
+        ...normalizedInput,
+        assignment,
+      });
+      const hasExplicitBlockedByInAssignment = (
+        Array.isArray((assignment as Record<string, unknown>).blockedBy)
+        || typeof (assignment as Record<string, unknown>).blockedBy === 'string'
+        || Array.isArray((assignment as Record<string, unknown>).blocked_by)
+        || typeof (assignment as Record<string, unknown>).blocked_by === 'string'
+      );
+      if (!hasExplicitBlockedByInAssignment && blockedBy && blockedBy.length > 0) {
+        assignment.blockedBy = blockedBy;
+      }
       normalizedInput = {
         ...normalizedInput,
         assignment,
@@ -648,6 +925,21 @@ export async function dispatchTaskToAgent(deps: AgentRuntimeDeps, input: AgentDi
       metadata.dispatchChildSessionId = normalizedInput.sessionId.trim();
       normalizedInput = {
         ...normalizedInput,
+        metadata,
+      };
+    }
+    if (
+      normalizedInput.sourceAgentId === FINGER_SYSTEM_AGENT_ID
+      && normalizedInput.targetAgentId === FINGER_PROJECT_AGENT_ID
+    ) {
+      const metadata = isObjectRecord(normalizedInput.metadata) ? { ...normalizedInput.metadata } : {};
+      metadata.dispatchMode = 'system_async_project';
+      metadata.dispatchNonBlockingEnforced = true;
+      normalizedInput = {
+        ...normalizedInput,
+        blocking: false,
+        queueOnBusy: true,
+        maxQueueWaitMs: 0,
         metadata,
       };
     }
@@ -752,9 +1044,20 @@ export async function dispatchTaskToAgent(deps: AgentRuntimeDeps, input: AgentDi
   }
 
   const projectTaskIdentity = resolveDispatchTaskIdentity(normalizedInput);
+  const forceAsyncSystemProjectDispatch = (
+    normalizedInput.sourceAgentId === FINGER_SYSTEM_AGENT_ID
+    && normalizedInput.targetAgentId === FINGER_PROJECT_AGENT_ID
+  );
   const normalizedSessionId = typeof normalizedInput.sessionId === 'string' ? normalizedInput.sessionId.trim() : '';
   const routeSessionId = resolveSessionContextRouteSessionId(deps, normalizedSessionId);
-  const sourceTaskState = resolveSourceProjectTaskState(deps, callerSessionId);
+  const canonicalSystemSessionId = resolveCanonicalSystemSessionId(deps);
+  const sourceTaskState = resolveSourceProjectTaskState(
+    deps,
+    callerSessionId,
+    normalizedSessionId,
+    routeSessionId,
+    canonicalSystemSessionId,
+  );
   const requestedTaskSessionId = resolveRequestedTaskSessionId(callerSessionId, normalizedSessionId, routeSessionId);
   const bindingGuard = validateProjectTaskBindingGuard({
     input: normalizedInput,
@@ -798,9 +1101,73 @@ export async function dispatchTaskToAgent(deps: AgentRuntimeDeps, input: AgentDi
       normalizedSessionId,
       callerSessionId,
       routeSessionId,
+      bindingGuard.boundSessionId,
+      canonicalSystemSessionId,
+      typeof deps.runtime.getBoundSessionId === 'function'
+        ? deps.runtime.getBoundSessionId(FINGER_PROJECT_AGENT_ID) ?? ''
+        : '',
     )
     : [];
+  const sourceTaskStateActive = isProjectTaskStateActive(sourceTaskState);
+  const sameTaskIdentity = isSameProjectTaskIdentity(sourceTaskState, projectTaskIdentity);
+  const blockedByValidation = (
+    normalizedInput.sourceAgentId === FINGER_SYSTEM_AGENT_ID
+    && normalizedInput.targetAgentId === FINGER_PROJECT_AGENT_ID
+  )
+    ? validateBlockedByForProjectTaskCreation({
+      input: normalizedInput,
+      sourceTaskState,
+      identity: projectTaskIdentity,
+    })
+    : { ok: true as const, blockedBy: normalizeBlockedByFromDispatch(normalizedInput) ?? sourceTaskState?.blockedBy ?? [BLOCKED_BY_NONE] };
+  if (!blockedByValidation.ok) {
+    const failedSessionId = requestedTaskSessionId || normalizedSessionId || callerSessionId || routeSessionId;
+    if (failedSessionId) {
+      applyExecutionLifecycleTransition(deps.sessionManager, failedSessionId, {
+        stage: 'failed',
+        substage: 'dispatch_blocked_by_invalid',
+        updatedBy: 'dispatch',
+        targetAgentId: normalizedInput.targetAgentId,
+        lastError: blockedByValidation.error,
+      });
+    }
+    return {
+      ok: false,
+      dispatchId: fallbackDispatchId,
+      status: 'failed',
+      error: blockedByValidation.error,
+    };
+  }
+  const blockedBy = blockedByValidation.blockedBy;
+  if (
+    normalizedInput.sourceAgentId === FINGER_SYSTEM_AGENT_ID
+    && normalizedInput.targetAgentId === FINGER_PROJECT_AGENT_ID
+    && isObjectRecord(normalizedInput.assignment)
+  ) {
+    normalizedInput = {
+      ...normalizedInput,
+      assignment: {
+        ...normalizedInput.assignment,
+        blockedBy,
+      },
+    };
+  }
   if (projectTaskStateSessionIds.length > 0) {
+    const isNewTaskLifecycle = !sourceTaskStateActive || !sameTaskIdentity;
+    if (isNewTaskLifecycle) {
+      persistProjectTaskState(deps, projectTaskStateSessionIds, {
+        active: true,
+        status: 'create',
+        taskId: projectTaskIdentity.taskId,
+        taskName: projectTaskIdentity.taskName,
+        sourceAgentId: normalizedInput.sourceAgentId,
+        targetAgentId: normalizedInput.targetAgentId,
+        boundSessionId: bindingGuard.boundSessionId || requestedTaskSessionId,
+        revision: bindingGuard.revision,
+        blockedBy,
+        note: 'project_task_created',
+      });
+    }
     persistProjectTaskState(deps, projectTaskStateSessionIds, {
       active: true,
       status: 'dispatched',
@@ -810,18 +1177,59 @@ export async function dispatchTaskToAgent(deps: AgentRuntimeDeps, input: AgentDi
       targetAgentId: normalizedInput.targetAgentId,
       boundSessionId: bindingGuard.boundSessionId || requestedTaskSessionId,
       revision: bindingGuard.revision,
+      blockedBy,
       note: 'system_dispatched_project_task',
     });
   }
 
-  const sourceTaskStateActive = isProjectTaskStateActive(sourceTaskState);
-  const sameTaskIdentity = isSameProjectTaskIdentity(sourceTaskState, projectTaskIdentity);
+  const unresolvedBlockers = (
+    normalizedInput.sourceAgentId === FINGER_SYSTEM_AGENT_ID
+    && normalizedInput.targetAgentId === FINGER_PROJECT_AGENT_ID
+  )
+    ? resolveBlockingDependencies({
+      deps,
+      sessionIds: projectTaskStateSessionIds,
+      blockedBy,
+    })
+    : [];
+  if (unresolvedBlockers.length > 0) {
+    const blockerSummary = `blocked by unresolved dependencies: ${unresolvedBlockers.join(', ')}`;
+    if (projectTaskStateSessionIds.length > 0) {
+      persistProjectTaskState(deps, projectTaskStateSessionIds, {
+        active: true,
+        status: 'blocked',
+        taskId: projectTaskIdentity.taskId,
+        taskName: projectTaskIdentity.taskName,
+        blockedBy,
+        summary: blockerSummary,
+        note: 'blocked_by_dependency',
+      });
+    }
+    return {
+      ok: true,
+      dispatchId: fallbackDispatchId,
+      status: 'queued',
+      result: sanitizeDispatchResult({
+        success: true,
+        status: 'blocked_dependencies',
+        summary: blockerSummary,
+        recoveryAction: 'wait_dependencies',
+        delivery: 'queue',
+        blockers: unresolvedBlockers,
+        blockedBy,
+        ...(projectTaskIdentity.taskId ? { taskId: projectTaskIdentity.taskId } : {}),
+        ...(projectTaskIdentity.taskName ? { taskName: projectTaskIdentity.taskName } : {}),
+      }),
+    };
+  }
+
   if (
     normalizedInput.sourceAgentId === FINGER_SYSTEM_AGENT_ID
     && normalizedInput.targetAgentId === FINGER_PROJECT_AGENT_ID
     && sourceTaskStateActive
     && (sameTaskIdentity || (!projectTaskIdentity.taskId && !projectTaskIdentity.taskName))
     && !allowDispatchWhileBusy(normalizedInput)
+    && !forceAsyncSystemProjectDispatch
   ) {
     const activeDispatchId = sourceTaskState?.dispatchId || `dispatch-active-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     const summaryBase = [
@@ -889,7 +1297,7 @@ export async function dispatchTaskToAgent(deps: AgentRuntimeDeps, input: AgentDi
   }
 
   const activeLifecycle = resolveActiveProjectLifecycleState(deps, normalizedInput);
-  if (activeLifecycle.active) {
+  if (activeLifecycle.active && !forceAsyncSystemProjectDispatch) {
     const fallbackDispatchId = activeLifecycle.dispatchId || `dispatch-active-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     const summaryBase = [
       `target ${normalizedInput.targetAgentId} has active lifecycle`,
@@ -1012,7 +1420,7 @@ export async function dispatchTaskToAgent(deps: AgentRuntimeDeps, input: AgentDi
       if (closeSessionIds.length > 0) {
         persistProjectTaskState(deps, closeSessionIds, {
           active: false,
-          status: 'completed',
+          status: 'closed',
           taskId: heartbeatTaskState?.taskId,
           taskName: heartbeatTaskState?.taskName,
           dispatchId: heartbeatTaskState?.dispatchId,
@@ -1054,7 +1462,7 @@ export async function dispatchTaskToAgent(deps: AgentRuntimeDeps, input: AgentDi
   }
 
   const busyState = await resolveBusyProjectAgentState(deps, normalizedInput);
-  if (busyState.busy) {
+  if (busyState.busy && !forceAsyncSystemProjectDispatch) {
     const fallbackDispatchId = busyState.dispatchId || `dispatch-busy-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     const busySummaryBase = [
       `target ${normalizedInput.targetAgentId} busy`,
@@ -1424,7 +1832,7 @@ export async function dispatchTaskToAgent(deps: AgentRuntimeDeps, input: AgentDi
   }
   await syncBdDispatchLifecycle(deps, normalizedInput, result);
   if (projectTaskStateSessionIds.length > 0) {
-    const mappedStatus = result.status === 'failed' ? 'failed' : 'dispatched';
+    const mappedStatus = result.status === 'failed' ? 'failed' : 'accepted';
     const shouldStayActive = result.status !== 'failed';
     persistProjectTaskState(deps, projectTaskStateSessionIds, {
       active: shouldStayActive,
@@ -1432,12 +1840,13 @@ export async function dispatchTaskToAgent(deps: AgentRuntimeDeps, input: AgentDi
       taskId: projectTaskIdentity.taskId,
       taskName: projectTaskIdentity.taskName,
       dispatchId: result.dispatchId,
+      blockedBy,
       summary: result.result?.summary ?? result.error,
       note: result.status === 'failed'
         ? 'dispatch_failed'
         : result.status === 'queued'
-          ? 'dispatch_queued'
-          : 'dispatch_completed_waiting_project_delivery',
+          ? 'dispatch_accepted_queued'
+          : 'dispatch_accepted',
     });
   }
   return result;

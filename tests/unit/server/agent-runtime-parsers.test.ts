@@ -87,4 +87,67 @@ describe('parseAgentDispatchToolInput', () => {
       phase: 'retry',
     }));
   });
+
+  it('parses assignment.blocked_by into blockedBy array', () => {
+    const deps = createDeps('session-123');
+    const result = parseAgentDispatchToolInput({
+      target_agent_id: 'finger-project-agent',
+      task: 'implement task',
+      assignment: {
+        task_id: 'task-123',
+        blocked_by: ['dep-1', 'dep-2'],
+      },
+    }, deps as any);
+
+    expect(result.assignment).toEqual(expect.objectContaining({
+      taskId: 'task-123',
+      blockedBy: ['dep-1', 'dep-2'],
+    }));
+  });
+
+  it('parses assignment.depends_on alias into blockedBy array', () => {
+    const deps = createDeps('session-123');
+    const result = parseAgentDispatchToolInput({
+      target_agent_id: 'finger-project-agent',
+      task: 'implement task',
+      assignment: {
+        task_id: 'task-124',
+        depends_on: 'dep-a, dep-b',
+      },
+    }, deps as any);
+
+    expect(result.assignment).toEqual(expect.objectContaining({
+      taskId: 'task-124',
+      blockedBy: ['dep-a', 'dep-b'],
+    }));
+  });
+
+  it('rejects self-dispatch when source and target are identical', () => {
+    const deps = createDeps('session-123');
+    expect(() => parseAgentDispatchToolInput({
+      source_agent_id: 'finger-system-agent',
+      target_agent_id: 'finger-system-agent',
+      task: 'should fail',
+    }, deps as any)).toThrow(/self-dispatch forbidden/i);
+  });
+
+  it('normalizes legacy orchestrator gateway target to project agent id', () => {
+    const deps = createDeps('session-123');
+    const result = parseAgentDispatchToolInput({
+      source_agent_id: 'finger-system-agent',
+      target_agent_id: 'finger-orchestrator-gateway',
+      task: 'run task',
+    }, deps as any);
+
+    expect(result.targetAgentId).toBe('finger-project-agent');
+  });
+
+  it('rejects unknown gateway target ids as non-dispatchable', () => {
+    const deps = createDeps('session-123');
+    expect(() => parseAgentDispatchToolInput({
+      source_agent_id: 'finger-system-agent',
+      target_agent_id: 'custom-gateway',
+      task: 'run task',
+    }, deps as any)).toThrow(/target_agent_id invalid/i);
+  });
 });

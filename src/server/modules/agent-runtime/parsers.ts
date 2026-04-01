@@ -1,5 +1,23 @@
 import { isObjectRecord } from '../../common/object.js';
 import type { AgentControlRequest, AgentDispatchRequest, AgentRuntimeDeps } from './types.js';
+import { normalizeDispatchTargetAgentId } from './dispatch-target-normalization.js';
+
+function parseStringArray(value: unknown): string[] | undefined {
+  if (Array.isArray(value)) {
+    const normalized = value
+      .map((item) => (typeof item === 'string' ? item.trim() : ''))
+      .filter((item) => item.length > 0);
+    return normalized.length > 0 ? normalized : undefined;
+  }
+  if (typeof value === 'string') {
+    const normalized = value
+      .split(/[\n,]/)
+      .map((item) => item.trim())
+      .filter((item) => item.length > 0);
+    return normalized.length > 0 ? normalized : undefined;
+  }
+  return undefined;
+}
 
 function parseDispatchSessionStrategy(rawInput: Record<string, unknown>): AgentDispatchRequest['sessionStrategy'] | undefined {
   const rawValue = typeof rawInput.session_strategy === 'string'
@@ -52,6 +70,17 @@ export function parseAgentDispatchToolInput(rawInput: unknown, deps: AgentRuntim
   if (!targetAgentId || targetAgentId.trim().length === 0) {
     throw new Error('agent.dispatch target_agent_id is required');
   }
+  const normalizedSourceAgentId = sourceAgentId.trim().length > 0
+    ? sourceAgentId.trim()
+    : deps.primaryOrchestratorAgentId.trim();
+  const normalizedTarget = normalizeDispatchTargetAgentId(targetAgentId);
+  if (normalizedTarget.invalidReason) {
+    throw new Error(`agent.dispatch target_agent_id invalid: ${normalizedTarget.invalidReason}`);
+  }
+  const normalizedTargetAgentId = normalizedTarget.targetAgentId;
+  if (normalizedSourceAgentId.length > 0 && normalizedSourceAgentId === normalizedTargetAgentId) {
+    throw new Error(`agent.dispatch self-dispatch forbidden: source and target are both ${normalizedTargetAgentId}`);
+  }
   if (task === undefined) {
     throw new Error('agent.dispatch task is required');
   }
@@ -82,8 +111,8 @@ export function parseAgentDispatchToolInput(rawInput: unknown, deps: AgentRuntim
   const assignmentInput = isObjectRecord(rawInput.assignment) ? rawInput.assignment : undefined;
   if (!assignmentInput) {
     return {
-      sourceAgentId: sourceAgentId.trim().length > 0 ? sourceAgentId.trim() : deps.primaryOrchestratorAgentId,
-      targetAgentId: targetAgentId.trim(),
+      sourceAgentId: normalizedSourceAgentId,
+      targetAgentId: normalizedTargetAgentId,
       task,
       ...(typeof sessionId === 'string' && sessionId.trim().length > 0 ? { sessionId: sessionId.trim() } : {}),
       ...(sessionStrategy ? { sessionStrategy } : {}),
@@ -113,6 +142,19 @@ export function parseAgentDispatchToolInput(rawInput: unknown, deps: AgentRuntim
       : typeof assignmentInput.taskName === 'string'
         ? { taskName: assignmentInput.taskName }
         : {}),
+    ...(parseStringArray(
+      assignmentInput.blocked_by
+      ?? assignmentInput.blockedBy
+      ?? assignmentInput.depends_on
+      ?? assignmentInput.dependsOn,
+    ) ? {
+      blockedBy: parseStringArray(
+        assignmentInput.blocked_by
+        ?? assignmentInput.blockedBy
+        ?? assignmentInput.depends_on
+        ?? assignmentInput.dependsOn,
+      ),
+    } : {}),
     ...(typeof assignmentInput.bd_task_id === 'string'
       ? { bdTaskId: assignmentInput.bd_task_id }
       : typeof assignmentInput.bdTaskId === 'string'
@@ -142,8 +184,8 @@ export function parseAgentDispatchToolInput(rawInput: unknown, deps: AgentRuntim
       : {}),
   };
   return {
-    sourceAgentId: sourceAgentId.trim().length > 0 ? sourceAgentId.trim() : deps.primaryOrchestratorAgentId,
-    targetAgentId: targetAgentId.trim(),
+    sourceAgentId: normalizedSourceAgentId,
+    targetAgentId: normalizedTargetAgentId,
     task,
     ...(typeof sessionId === 'string' && sessionId.trim().length > 0 ? { sessionId: sessionId.trim() } : {}),
     ...(sessionStrategy ? { sessionStrategy } : {}),

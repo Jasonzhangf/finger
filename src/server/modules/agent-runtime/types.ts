@@ -25,6 +25,8 @@ export interface AgentDispatchRequest {
     epicId?: string;
     taskId?: string;
     taskName?: string;
+    /** Required blocker declaration for task generation. Use ['none'] when not blocked. */
+    blockedBy?: string[];
     bdTaskId?: string;
     assignerAgentId?: string;
     assigneeAgentId?: string;

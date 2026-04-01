@@ -119,7 +119,7 @@ function updateProjectTaskStateForSession(
   sessionId: string | undefined,
   patch: {
     active?: boolean;
-    status?: 'dispatched' | 'in_progress' | 'waiting_review' | 'pending_approval' | 'completed' | 'failed' | 'cancelled';
+    status?: 'create' | 'dispatched' | 'accepted' | 'in_progress' | 'claiming_finished' | 'reviewed' | 'reported' | 'closed' | 'blocked' | 'failed' | 'cancelled';
     taskId?: string;
     taskName?: string;
     dispatchId?: string;
@@ -469,21 +469,21 @@ export function registerReportTaskCompletionTool(
 
           updateProjectTaskStateForSession(deps, reviewRoute.projectSessionId ?? params.sessionId, {
             active: true,
-            status: 'waiting_review',
+            status: 'claiming_finished',
             taskId: effectiveTaskId || params.taskId,
             taskName: effectiveTaskName || taskName || undefined,
             dispatchId: reviewDispatch.dispatchId,
             summary: 'delivery submitted to reviewer',
-            note: 'waiting_review',
+            note: 'claiming_finished_waiting_reviewer',
           });
           updateProjectTaskStateForSession(deps, reviewRoute.parentSessionId, {
             active: true,
-            status: 'waiting_review',
+            status: 'claiming_finished',
             taskId: effectiveTaskId || params.taskId,
             taskName: effectiveTaskName || taskName || undefined,
             dispatchId: reviewDispatch.dispatchId,
             summary: 'project delivery under reviewer validation',
-            note: 'waiting_review',
+            note: 'claiming_finished_waiting_reviewer',
           });
 
           return {
@@ -605,21 +605,21 @@ export function registerReportTaskCompletionTool(
           removeReviewRoute(effectiveTaskId || params.taskId);
           updateProjectTaskStateForSession(deps, reviewRoute?.projectSessionId ?? params.sessionId, {
             active: params.result !== 'success',
-            status: params.result === 'success' ? 'pending_approval' : 'failed',
+            status: params.result === 'success' ? 'reviewed' : 'failed',
             taskId: effectiveTaskId || params.taskId,
             taskName: effectiveTaskName || taskName || undefined,
             dispatchId: dispatch.dispatchId,
             summary: params.taskSummary,
-            note: params.result === 'success' ? 'review_passed_pending_system_approval' : 'review_failed',
+            note: params.result === 'success' ? 'review_passed_waiting_system_report' : 'review_failed',
           });
           updateProjectTaskStateForSession(deps, reviewRoute?.parentSessionId, {
             active: params.result !== 'success',
-            status: params.result === 'success' ? 'pending_approval' : 'failed',
+            status: params.result === 'success' ? 'reviewed' : 'failed',
             taskId: effectiveTaskId || params.taskId,
             taskName: effectiveTaskName || taskName || undefined,
             dispatchId: dispatch.dispatchId,
             summary: params.taskSummary,
-            note: params.result === 'success' ? 'review_passed_pending_system_approval' : 'review_failed',
+            note: params.result === 'success' ? 'review_passed_waiting_system_report' : 'review_failed',
           });
         }
 

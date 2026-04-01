@@ -3,6 +3,12 @@ import type { AgentRuntimeDeps } from '../../server/modules/agent-runtime/types.
 import { FINGER_PROJECT_AGENT_ID, FINGER_SYSTEM_AGENT_ID } from '../../agents/finger-general/finger-general-module.js';
 import { listReviewRoutes, getReviewRoute, getReviewRouteByTaskName } from '../../agents/finger-system-agent/review-route-registry.js';
 import { getExecutionLifecycleState } from '../../server/modules/execution-lifecycle.js';
+import {
+  parseProjectTaskState,
+  mergeProjectTaskState,
+  parseDelegatedProjectTaskRegistry,
+  upsertDelegatedProjectTaskRegistry,
+} from '../../common/project-task-state.js';
 
 type ProjectTaskAction = 'status' | 'update';
 
@@ -39,6 +45,17 @@ interface ProjectTaskToolOutput {
     hasOpenRoute: boolean;
     routeTaskId?: string;
     routeTaskName?: string;
+  };
+  taskState?: {
+    active: boolean;
+    status: string;
+    sourceAgentId: string;
+    targetAgentId: string;
+    updatedAt: string;
+    taskId?: string;
+    taskName?: string;
+    dispatchId?: string;
+    note?: string;
   };
 }
 
@@ -101,6 +118,63 @@ function buildLifecycleSnapshot(deps: AgentRuntimeDeps, sessionId: string) {
   };
 }
 
+function resolveSessionProjectTaskState(deps: AgentRuntimeDeps, sessionId: string) {
+  if (!sessionId) return null;
+  const session = deps.sessionManager.getSession(sessionId);
+  if (!session) return null;
+  return parseProjectTaskState(session.context?.projectTaskState);
+}
+
+function isProjectExecutingLifecycle(stage: string | undefined): boolean {
+  const normalized = asTrimmedString(stage).toLowerCase();
+  return normalized === 'running'
+    || normalized === 'dispatching'
+    || normalized === 'waiting_model'
+    || normalized === 'retrying';
+}
+
+function maybePromoteDispatchedToInProgress(
+  deps: AgentRuntimeDeps,
+  sessionId: string,
+  lifecycleStage: string | undefined,
+  agentBusy: boolean,
+): ReturnType<typeof parseProjectTaskState> {
+  const session = deps.sessionManager.getSession(sessionId);
+  if (!session) return null;
+  const current = parseProjectTaskState(session.context?.projectTaskState);
+  if (!current) return null;
+  if (!current.active || (current.status !== 'dispatched' && current.status !== 'accepted')) return current;
+  if (!agentBusy && !isProjectExecutingLifecycle(lifecycleStage)) return current;
+
+  const nextStatus = current.status === 'dispatched' ? 'accepted' : 'in_progress';
+  const nextNote = current.status === 'dispatched'
+    ? 'project_dispatch_accepted'
+    : 'project_started_execution';
+  const next = mergeProjectTaskState(current, {
+    status: nextStatus,
+    note: nextNote,
+  });
+  const registry = upsertDelegatedProjectTaskRegistry(
+    parseDelegatedProjectTaskRegistry(session.context?.projectTaskRegistry),
+    {
+      sourceAgentId: next.sourceAgentId,
+      targetAgentId: next.targetAgentId,
+      taskId: next.taskId,
+      taskName: next.taskName,
+      status: next.status,
+      active: next.active,
+      dispatchId: next.dispatchId,
+      summary: next.summary,
+      note: next.note,
+    },
+  );
+  deps.sessionManager.updateContext(sessionId, {
+    projectTaskState: next,
+    projectTaskRegistry: registry,
+  });
+  return next;
+}
+
 export function registerProjectTaskTool(
   toolRegistry: ToolRegistry,
   getAgentRuntimeDeps: () => AgentRuntimeDeps,
@@ -139,16 +213,36 @@ export function registerProjectTaskTool(
       const agentState = resolveProjectAgentState(runtimeView, projectAgentId);
       const route = resolveTaskRoute(taskId, taskName);
       const lifecycle = sessionId ? buildLifecycleSnapshot(deps, sessionId) : undefined;
+      const sessionTaskState = sessionId
+        ? maybePromoteDispatchedToInProgress(deps, sessionId, lifecycle?.stage, agentState.busy)
+        : null;
+      const effectiveStatus = asTrimmedString(sessionTaskState?.status) || agentState.status;
+      const effectiveTaskId = asTrimmedString(sessionTaskState?.taskId) || agentState.taskId || taskId;
+      const effectiveTaskName = asTrimmedString(sessionTaskState?.taskName) || taskName;
+      const effectiveDispatchId = asTrimmedString(sessionTaskState?.dispatchId) || agentState.dispatchId;
       return {
         ok: true,
         action: 'status',
         busy: agentState.busy,
-        ...(agentState.status ? { status: agentState.status } : {}),
-        ...(agentState.taskId ? { taskId: agentState.taskId } : taskId ? { taskId } : {}),
-        ...(taskName ? { taskName } : {}),
-        ...(agentState.dispatchId ? { dispatchId: agentState.dispatchId } : {}),
+        ...(effectiveStatus ? { status: effectiveStatus } : {}),
+        ...(effectiveTaskId ? { taskId: effectiveTaskId } : {}),
+        ...(effectiveTaskName ? { taskName: effectiveTaskName } : {}),
+        ...(effectiveDispatchId ? { dispatchId: effectiveDispatchId } : {}),
         ...(agentState.summary ? { summary: agentState.summary } : {}),
         ...(lifecycle ? { lifecycle } : {}),
+        ...(sessionTaskState ? {
+          taskState: {
+            active: sessionTaskState.active,
+            status: sessionTaskState.status,
+            sourceAgentId: sessionTaskState.sourceAgentId,
+            targetAgentId: sessionTaskState.targetAgentId,
+            updatedAt: sessionTaskState.updatedAt,
+            ...(sessionTaskState.taskId ? { taskId: sessionTaskState.taskId } : {}),
+            ...(sessionTaskState.taskName ? { taskName: sessionTaskState.taskName } : {}),
+            ...(sessionTaskState.dispatchId ? { dispatchId: sessionTaskState.dispatchId } : {}),
+            ...(sessionTaskState.note ? { note: sessionTaskState.note } : {}),
+          },
+        } : {}),
         review: {
           required: route?.reviewRequired === true,
           hasOpenRoute: !!route,
