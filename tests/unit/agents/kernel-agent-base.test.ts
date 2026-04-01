@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { KernelAgentBase, type KernelAgentRunner, type KernelRunContext, type KernelInputItem } from '../../../src/agents/base/kernel-agent-base.js';
 import { setContextBuilderOnDemandView } from '../../../src/runtime/context-builder-on-demand-state.js';
+import { resetUpdatePlanToolState, updatePlanTool } from '../../../src/tools/internal/codex-update-plan-tool.js';
 
 describe('KernelAgentBase session binding', () => {
   it('reuses internal session for repeated external sessionId', async () => {
@@ -110,7 +111,7 @@ describe('KernelAgentBase session binding', () => {
     expect(providerSessionIds).toEqual(['ui-session-context-meta-1']);
   });
 
-  it('compresses context-builder history into task digests by default', async () => {
+  it('keeps raw-session history unchanged when rebuild is not requested', async () => {
     const contexts: KernelRunContext[] = [];
     const runner: KernelAgentRunner = {
       runTurn: vi.fn(async (_text: string, _inputItems?: KernelInputItem[], context?: KernelRunContext) => {
@@ -159,11 +160,11 @@ describe('KernelAgentBase session binding', () => {
     });
 
     expect(contexts).toHaveLength(1);
-    expect(contexts[0]?.history.length).toBe(2);
-    expect(contexts[0]?.history[0]?.content).toContain('[task_digest 1/2]');
-    expect(contexts[0]?.history[0]?.content).toContain('ledger_slots: 10-13');
-    expect(contexts[0]?.history[1]?.content).toContain('[task_digest 2/2]');
-    expect(contexts[0]?.history[1]?.content).toContain('ledger_slots: 20-28');
+    expect(contexts[0]?.history.length).toBe(4);
+    expect(contexts[0]?.history[0]?.content).toBe('任务A：检查 mailbox 流程');
+    expect(contexts[0]?.history[1]?.content).toBe('任务A完成：已验证 mailbox');
+    expect(contexts[0]?.history[2]?.content).toBe('任务B：修复 context rebuild');
+    expect(contexts[0]?.history[3]?.content).toBe('任务B完成：修复完毕');
   });
 
   it('allows disabling history digest via metadata.contextHistoryDigestEnabled=false', async () => {
@@ -207,6 +208,48 @@ describe('KernelAgentBase session binding', () => {
     expect(contexts[0]?.history.length).toBe(2);
     expect(contexts[0]?.history[0]?.content).toBe('原始历史用户消息');
     expect(contexts[0]?.history[1]?.content).toBe('原始历史助手消息');
+  });
+
+  it('preserves critical lifecycle calls when rebuild-turn digest is enabled', async () => {
+    const contexts: KernelRunContext[] = [];
+    const runner: KernelAgentRunner = {
+      runTurn: vi.fn(async (_text: string, _inputItems?: KernelInputItem[], context?: KernelRunContext) => {
+        if (context) contexts.push(context);
+        return { reply: 'ok' };
+      }),
+    };
+    const rebuiltMeta = {
+      contextBuilderHistorySource: 'context_builder_on_demand',
+      contextBuilderRebuilt: true,
+    };
+    const agent = new KernelAgentBase(
+      {
+        moduleId: 'chat-codex',
+        provider: 'codex',
+        maxContextMessages: 40,
+        contextHistoryProvider: async () => [
+          { id: 'u1', role: 'user', content: '任务1：编排方案', metadata: { ...rebuiltMeta, contextLedgerSlot: 1 } },
+          { id: 'a1', role: 'assistant', content: '✅ [工具] agent.dispatch | 已派发给 project', metadata: { ...rebuiltMeta, contextLedgerSlot: 2 } },
+          { id: 'u2', role: 'user', content: '任务2：普通修复', metadata: { ...rebuiltMeta, contextLedgerSlot: 3 } },
+          { id: 'a2', role: 'assistant', content: '任务2完成', metadata: { ...rebuiltMeta, contextLedgerSlot: 4 } },
+          { id: 'u3', role: 'user', content: '任务3：继续执行', metadata: { ...rebuiltMeta, contextLedgerSlot: 5 } },
+          { id: 'a3', role: 'assistant', content: '任务3完成', metadata: { ...rebuiltMeta, contextLedgerSlot: 6 } },
+          { id: 'u4', role: 'user', content: '任务4：review', metadata: { ...rebuiltMeta, contextLedgerSlot: 7 } },
+          { id: 'a4', role: 'assistant', content: 'Decision: PASS', metadata: { ...rebuiltMeta, contextLedgerSlot: 8 } },
+        ],
+      },
+      runner,
+    );
+
+    await agent.handle({
+      text: '继续',
+      sessionId: 'ui-session-digest-critical-1',
+    });
+
+    expect(contexts).toHaveLength(1);
+    const history = contexts[0]?.history ?? [];
+    expect(history.some((item) => item.content.includes('agent.dispatch'))).toBe(true);
+    expect(history.some((item) => item.content.includes('[task_digest'))).toBe(true);
   });
 
   it('keeps history provider output stable while previous turn is unfinished', async () => {
@@ -486,6 +529,149 @@ describe('KernelAgentBase session binding', () => {
     expect(result.success).toBe(true);
     expect(result.response).toBe('已执行并完成：列出了目录并写入文件。');
     expect(runner.runTurn).toHaveBeenCalledTimes(2);
+  });
+
+  it('always injects reasoning.stop into turn tools when stop-tool policy is enabled', async () => {
+    const seenTools: string[][] = [];
+    const runner: KernelAgentRunner = {
+      runTurn: vi.fn(async (_text: string, _inputItems?: KernelInputItem[], context?: KernelRunContext) => {
+        seenTools.push([...(context?.tools ?? [])]);
+        return {
+          reply: '执行完成，调用 stop 工具后结束。',
+          metadata: {
+            tool_trace: [{ tool: 'reasoning.stop', status: 'ok' }],
+          },
+        };
+      }),
+    };
+
+    const agent = new KernelAgentBase(
+      {
+        moduleId: 'chat-codex',
+        provider: 'codex',
+        maxContextMessages: 20,
+      },
+      runner,
+    );
+
+    const result = await agent.handle({
+      text: '执行后停止',
+      sessionId: 'ui-session-stop-tool-inject-1',
+      tools: ['exec_command'],
+      metadata: {
+        stopToolNames: ['reasoning.stop'],
+        stopToolMaxAutoContinueTurns: 2,
+      },
+    });
+
+    expect(result.success).toBe(true);
+    expect(seenTools.length).toBeGreaterThan(0);
+    expect(seenTools[0]).toContain('exec_command');
+    expect(seenTools[0]).toContain('reasoning.stop');
+  });
+
+  it('injects task.plan_view into system agent context slots with all-project active plans', async () => {
+    resetUpdatePlanToolState();
+    const systemCtx = {
+      invocationId: 't-system',
+      cwd: '/repo/a',
+      timestamp: new Date().toISOString(),
+      agentId: 'finger-system-agent',
+      sessionId: 'system-1',
+    };
+    await updatePlanTool.execute({
+      action: 'create',
+      projectPath: '/repo/a',
+      item: { title: 'Plan A', assigneeWorkerId: 'finger-worker-01' },
+    }, systemCtx);
+    await updatePlanTool.execute({
+      action: 'create',
+      projectPath: '/repo/b',
+      item: { title: 'Plan B', assigneeWorkerId: 'finger-worker-02' },
+    }, { ...systemCtx, cwd: '/repo/b' });
+
+    let capturedContext: KernelRunContext | undefined;
+    const runner: KernelAgentRunner = {
+      runTurn: vi.fn(async (_text: string, _inputItems?: KernelInputItem[], context?: KernelRunContext) => {
+        capturedContext = context;
+        return { reply: 'ok' };
+      }),
+    };
+    const agent = new KernelAgentBase(
+      {
+        moduleId: 'finger-system-agent',
+        provider: 'codex',
+        maxContextMessages: 20,
+      },
+      runner,
+    );
+
+    await agent.handle({
+      text: '检查计划视图',
+      sessionId: 'system-plan-view-1',
+      metadata: { cwd: '/repo/a' },
+    });
+
+    const slots = Array.isArray(capturedContext?.metadata?.contextSlots)
+      ? capturedContext?.metadata?.contextSlots as Array<Record<string, unknown>>
+      : [];
+    const planSlot = slots.find((slot) => slot.id === 'task.plan_view');
+    expect(planSlot).toBeTruthy();
+    const content = String(planSlot?.content ?? '');
+    expect(content).toContain('Plan A');
+    expect(content).toContain('Plan B');
+  });
+
+  it('injects task.plan_view into project agent context slots scoped by project path', async () => {
+    resetUpdatePlanToolState();
+    const systemCtx = {
+      invocationId: 't-system',
+      cwd: '/repo/a',
+      timestamp: new Date().toISOString(),
+      agentId: 'finger-system-agent',
+      sessionId: 'system-1',
+    };
+    await updatePlanTool.execute({
+      action: 'create',
+      projectPath: '/repo/a',
+      item: { title: 'Scoped Plan A', assigneeWorkerId: 'finger-project-agent' },
+    }, systemCtx);
+    await updatePlanTool.execute({
+      action: 'create',
+      projectPath: '/repo/b',
+      item: { title: 'Scoped Plan B', assigneeWorkerId: 'finger-project-agent' },
+    }, { ...systemCtx, cwd: '/repo/b' });
+
+    let capturedContext: KernelRunContext | undefined;
+    const runner: KernelAgentRunner = {
+      runTurn: vi.fn(async (_text: string, _inputItems?: KernelInputItem[], context?: KernelRunContext) => {
+        capturedContext = context;
+        return { reply: 'ok' };
+      }),
+    };
+    const agent = new KernelAgentBase(
+      {
+        moduleId: 'finger-project-agent',
+        provider: 'codex',
+        maxContextMessages: 20,
+      },
+      runner,
+    );
+
+    await agent.handle({
+      text: '检查项目计划视图',
+      sessionId: 'project-plan-view-1',
+      metadata: { cwd: '/repo/a' },
+    });
+
+    const slots = Array.isArray(capturedContext?.metadata?.contextSlots)
+      ? capturedContext?.metadata?.contextSlots as Array<Record<string, unknown>>
+      : [];
+    const planSlot = slots.find((slot) => slot.id === 'task.plan_view');
+    expect(planSlot).toBeTruthy();
+    const content = String(planSlot?.content ?? '');
+    expect(content).toContain('Scoped Plan A');
+    expect(content).not.toContain('Scoped Plan B');
   });
 
   it('repairs structured output locally when JSON has fences and trailing comma', async () => {

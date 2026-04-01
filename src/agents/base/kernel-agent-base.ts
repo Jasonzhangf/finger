@@ -30,9 +30,14 @@ import {
   PROJECT_AGENT_ID,
 } from '../../common/project-task-state.js';
 import {
+  parseSystemTaskState,
+} from '../../common/system-task-state.js';
+import { getUpdatePlanRuntimeView } from '../../tools/internal/codex-update-plan-tool.js';
+import {
   isStopReasoningStopTool,
   resolveStopReasoningPolicy,
 } from '../../common/stop-reasoning-policy.js';
+import { estimateTokensWithTiktoken } from '../../utils/tiktoken-estimator.js';
 
 export interface KernelRunContext {
   sessionId: string;
@@ -223,6 +228,7 @@ export class KernelAgentBase {
       const contextHistoryMetadata = resolvedHistory.contextHistoryMetadata;
       const history = resolvedHistory.history;
       const mergedHistory = mergeHistory(history, input.history, this.config.maxContextMessages);
+      const historyBreakdown = summarizeHistoryBreakdown(mergedHistory);
       activeHistoryForLock = mergedHistory;
       activeHistoryMetadataForLock = contextHistoryMetadata;
       await this.restoreApiHistoryForThreadIfNeeded(runnerSessionId, threadKey);
@@ -252,6 +258,7 @@ export class KernelAgentBase {
         sessionId: runnerSessionId,
         slotMetadata,
         extra: contextHistoryMetadata,
+        historyBreakdown,
         contextSlotsRendered:
           this.config.appendContextSlotsToSystemPrompt === false
             ? contextSlots?.rendered
@@ -616,6 +623,14 @@ export class KernelAgentBase {
     slotMetadata?: Record<string, unknown>;
     contextSlotsRendered?: string;
     extra?: Record<string, unknown>;
+    historyBreakdown?: {
+      historyContextTokens: number;
+      historyCurrentTokens: number;
+      historyTotalTokens: number;
+      historyContextMessages: number;
+      historyCurrentMessages: number;
+      source: 'context_zone' | 'all_current';
+    };
     stopReasoningPolicy?: {
       requireToolForStop: boolean;
       promptInjectionEnabled: boolean;
@@ -660,6 +675,16 @@ export class KernelAgentBase {
         : {}),
       ...(params.slotMetadata ?? {}),
       ...(params.extra ?? {}),
+      ...(params.historyBreakdown
+        ? {
+            historyContextTokens: params.historyBreakdown.historyContextTokens,
+            historyCurrentTokens: params.historyBreakdown.historyCurrentTokens,
+            historyTotalTokens: params.historyBreakdown.historyTotalTokens,
+            historyContextMessages: params.historyBreakdown.historyContextMessages,
+            historyCurrentMessages: params.historyBreakdown.historyCurrentMessages,
+            historyBreakdownSource: params.historyBreakdown.source,
+          }
+        : {}),
     };
 
     const normalizedProjectPath = typeof params.sessionProjectPath === 'string'
@@ -703,8 +728,10 @@ export class KernelAgentBase {
       : {};
     const rawState = snapshot.projectTaskState ?? metadata.projectTaskState;
     const rawRegistry = snapshot.projectTaskRegistry ?? metadata.projectTaskRegistry;
+    const rawSystemTaskState = snapshot.systemTaskState ?? metadata.systemTaskState;
     const taskState = parseProjectTaskState(rawState);
     const registry = parseDelegatedProjectTaskRegistry(rawRegistry);
+    const systemTaskState = parseSystemTaskState(rawSystemTaskState);
     const activeRegistry = registry.filter((item) => item.active === true);
     const taskRouterPath = (
       typeof snapshot.taskRouterPath === 'string' && snapshot.taskRouterPath.trim().length > 0
@@ -713,10 +740,21 @@ export class KernelAgentBase {
           ? metadata.taskRouterPath.trim()
           : ''
     );
+    const sessionProjectPath = (
+      typeof snapshot.projectPath === 'string' && snapshot.projectPath.trim().length > 0
+        ? snapshot.projectPath.trim()
+        : typeof metadata.projectPath === 'string' && metadata.projectPath.trim().length > 0
+          ? metadata.projectPath.trim()
+          : typeof metadata.cwd === 'string' && metadata.cwd.trim().length > 0
+            ? metadata.cwd.trim()
+            : ''
+    );
 
     const slotPatches = Array.isArray(metadata.contextSlots)
       ? metadata.contextSlots.filter((item) => (
-        isRecord(item) ? !['task.router', 'task.project_state', 'task.project_registry'].includes(String(item.id ?? '')) : true
+        isRecord(item)
+          ? !['task.router', 'task.system_state', 'task.project_state', 'task.project_registry', 'task.plan_view'].includes(String(item.id ?? ''))
+          : true
       ))
       : [];
     const slotOrder = Array.isArray(metadata.contextSlotOrder)
@@ -736,7 +774,61 @@ export class KernelAgentBase {
       content: routerLines.join('\n'),
     });
 
+    const planView = getUpdatePlanRuntimeView({
+      agentId: this.config.moduleId,
+      ...(isSystemLike ? {} : { projectPath: sessionProjectPath || undefined }),
+      cwd: typeof metadata.cwd === 'string' ? metadata.cwd : undefined,
+      maxItems: isSystemLike ? 12 : 10,
+      maxEvents: 8,
+    });
+    const planLines: string[] = [
+      'Plan view (`update_plan` authoritative state):',
+    ];
+    if (planView.items.length === 0) {
+      planLines.push('- No active plan items in scope.');
+    } else {
+      for (const item of planView.items) {
+        const projectTag = isSystemLike
+          ? ` · project=${path.basename(item.projectPath)}`
+          : '';
+        planLines.push(
+          `- [${item.status}] ${item.title} · id=${item.id} · assignee=${item.assigneeWorkerId}${projectTag}`,
+        );
+      }
+    }
+    slotPatches.push({
+      id: 'task.plan_view',
+      mode: 'replace',
+      priority: 12,
+      maxChars: 1800,
+      content: planLines.join('\n'),
+    });
+
     if (isSystemLike) {
+      const systemLines = [
+        'Current system self task state (`current_system_task`):',
+        `- active=${systemTaskState?.active === true}`,
+        `- status=${systemTaskState?.status ?? 'planning'}`,
+        systemTaskState?.taskId ? `- taskId=${systemTaskState.taskId}` : '',
+        systemTaskState?.taskName ? `- taskName=${systemTaskState.taskName}` : '',
+        systemTaskState?.currentStep ? `- currentStep=${systemTaskState.currentStep}` : '',
+        systemTaskState?.nextStep ? `- nextStep=${systemTaskState.nextStep}` : '',
+        typeof systemTaskState?.planCompleted === 'number' || typeof systemTaskState?.planTotal === 'number'
+          ? `- planProgress=${systemTaskState?.planCompleted ?? 0}/${systemTaskState?.planTotal ?? 0}`
+          : '',
+        systemTaskState?.summary ? `- summary=${systemTaskState.summary}` : '',
+        systemTaskState?.note ? `- note=${systemTaskState.note}` : '',
+        systemTaskState?.updatedAt ? `- updatedAt=${systemTaskState.updatedAt}` : '',
+        'Rule: for each new user request, analyze first and call update_plan before execution/dispatch.',
+      ].filter((line) => line.length > 0);
+      slotPatches.push({
+        id: 'task.system_state',
+        mode: 'replace',
+        priority: 13,
+        maxChars: 1200,
+        content: systemLines.join('\n'),
+      });
+
       const lines: string[] = [
         'System dispatch lifecycle (managed state, not history-only):',
       ];
@@ -768,7 +860,7 @@ export class KernelAgentBase {
       slotPatches.push({
         id: 'task.project_registry',
         mode: 'replace',
-        priority: 13,
+        priority: 14,
         maxChars: 1800,
         content: lines.join('\n'),
       });
@@ -834,7 +926,16 @@ export class KernelAgentBase {
       });
     }
 
-    const ensureOrder = ['turn.user_input', 'task.router', 'task.project_registry', 'task.project_state', 'turn.recent_history', 'turn.allowed_tools'];
+    const ensureOrder = [
+      'turn.user_input',
+      'task.router',
+      'task.plan_view',
+      'task.system_state',
+      'task.project_registry',
+      'task.project_state',
+      'turn.recent_history',
+      'turn.allowed_tools',
+    ];
     for (const item of ensureOrder) {
       if (!slotOrder.includes(item)) slotOrder.push(item);
     }
@@ -843,6 +944,7 @@ export class KernelAgentBase {
     metadata.contextSlotOrder = slotOrder;
     metadata.projectTaskState = rawState;
     metadata.projectTaskRegistry = rawRegistry;
+    metadata.systemTaskState = rawSystemTaskState;
     if (taskRouterPath.length > 0) metadata.taskRouterPath = taskRouterPath;
     return metadata;
   }
@@ -1082,11 +1184,24 @@ export class KernelAgentBase {
         ? Array.from(new Set(inputTools))
         : Array.from(new Set(inputTools.filter((item) => roleTools.includes(item))));
 
+    const stopReasoningPolicy = resolveStopReasoningPolicy(metadata);
+    const withStopTool = [...resolved];
+    const shouldBackfillStopTool = Array.isArray(inputTools) && inputTools.length > 0;
+    if (stopReasoningPolicy.requireToolForStop && shouldBackfillStopTool) {
+      for (const stopToolName of stopReasoningPolicy.stopToolNames) {
+        const allowedByRole = roleTools.length === 0 || roleTools.includes(stopToolName);
+        if (!allowedByRole) continue;
+        if (!withStopTool.includes(stopToolName)) {
+          withStopTool.push(stopToolName);
+        }
+      }
+    }
+
     const planModeEnabled = resolvePlanModeEnabled(metadata);
     if (planModeEnabled === false) {
-      return resolved.filter((tool) => tool !== 'update_plan');
+      return withStopTool.filter((tool) => tool !== 'update_plan');
     }
-    return resolved;
+    return withStopTool;
   }
 
   private buildSystemPrompt(roleProfile?: UnifiedAgentRoleProfile, slotPrompt?: string): string | undefined {
@@ -1596,6 +1711,51 @@ export class KernelAgentBase {
   }
 }
 
+function summarizeHistoryBreakdown(history: SessionMessage[]): {
+  historyContextTokens: number;
+  historyCurrentTokens: number;
+  historyTotalTokens: number;
+  historyContextMessages: number;
+  historyCurrentMessages: number;
+  source: 'context_zone' | 'all_current';
+} {
+  let historyContextTokens = 0;
+  let historyCurrentTokens = 0;
+  let historyContextMessages = 0;
+  let historyCurrentMessages = 0;
+  let hasContextZone = false;
+
+  for (const item of history) {
+    const content = typeof item.content === 'string' ? item.content.trim() : '';
+    if (!content) continue;
+    const tokens = estimateTokensWithTiktoken(content);
+    const metadata = item.metadata && typeof item.metadata === 'object'
+      ? item.metadata as Record<string, unknown>
+      : undefined;
+    const zone = typeof metadata?.contextZone === 'string'
+      ? metadata.contextZone.trim()
+      : '';
+    if (zone === 'historical_memory') {
+      hasContextZone = true;
+      historyContextTokens += tokens;
+      historyContextMessages += 1;
+    } else {
+      historyCurrentTokens += tokens;
+      historyCurrentMessages += 1;
+    }
+  }
+
+  const historyTotalTokens = historyContextTokens + historyCurrentTokens;
+  return {
+    historyContextTokens,
+    historyCurrentTokens,
+    historyTotalTokens,
+    historyContextMessages,
+    historyCurrentMessages,
+    source: hasContextZone ? 'context_zone' : 'all_current',
+  };
+}
+
 function cloneSessionMessages(history: SessionMessage[]): SessionMessage[] {
   return history.map((item) => ({
     ...item,
@@ -1670,8 +1830,8 @@ function maybeCompressHistoryToTaskDigests(
     ? metadata.contextHistorySource.trim().toLowerCase()
     : '';
   const isHistoryView = source.startsWith('context_builder')
-    || source === 'raw_session'
-    || source === 'raw_session_fallback'
+    || source === 'session_view_passthrough'
+    || source === 'session_view_fallback'
     || metadata?.contextBuilderBypassed === true
     || metadata?.contextBuilderRebuilt === true;
   if (!isHistoryView) return history;
