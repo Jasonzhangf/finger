@@ -3,6 +3,7 @@ import { join } from 'path';
 import { tmpdir } from 'os';
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
 import { buildContext, buildMemoryMdInjection } from '../../../src/runtime/context-builder.js';
+import * as kernelProviderClient from '../../../src/core/kernel-provider-client.js';
 
 function setupLedgerForContextBuilder(tag: string, overrides?: {
   entries?: Array<{ id: string; timestamp_ms: number; role: string; content: string; token_count?: number; event_type?: string }>;
@@ -341,8 +342,43 @@ describe('context-builder', () => {
   });
 
   describe('ranking model unavailable fallback', () => {
-    it('falls back to compact digest blocks for historical context when ranking model is unavailable', async () => {
-      const setup = setupLedgerForContextBuilder('ranking-fallback');
+    it('falls back to default provider before digest fallback', async () => {
+      const setup = setupLedgerForContextBuilder('ranking-default-fallback');
+      const resolveSpy = vi.spyOn(kernelProviderClient, 'resolveKernelProvider').mockImplementation((providerId?: string) => {
+        if (providerId === 'context-big') {
+          return {
+            provider: {
+              id: 'context-big',
+              base_url: 'https://ranking-big.example',
+              wire_api: 'responses',
+              env_key: 'RANKING_BIG_KEY',
+              model: 'big-model',
+            },
+          };
+        }
+        if (providerId === undefined || providerId === 'default-main') {
+          return {
+            provider: {
+              id: 'default-main',
+              base_url: 'https://default-main.example',
+              wire_api: 'responses',
+              env_key: 'DEFAULT_KEY',
+              model: 'default-model',
+            },
+          };
+        }
+        return { reason: 'provider_not_found' };
+      });
+      const fetchSpy = vi.fn(async (url: string) => {
+        if (url.includes('ranking-big.example')) {
+          return new Response('unauthorized', { status: 401 });
+        }
+        return new Response(
+          JSON.stringify({ output_text: '{"rankedTaskIds":["nonexistent-task-id"]}' }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } },
+        );
+      });
+      vi.stubGlobal('fetch', fetchSpy);
       try {
         const result = await buildContext(
           { rootDir: setup.rootDir, sessionId: setup.sessionId, agentId: setup.agentId, mode: setup.mode },
@@ -350,18 +386,82 @@ describe('context-builder', () => {
             targetBudget: 1_000_000,
             includeMemoryMd: false,
             enableModelRanking: true,
-            rankingProviderId: 'provider-does-not-exist',
+            rankingProviderId: 'context-big',
+            buildMode: 'aggressive',
+          },
+        );
+
+        expect(result.ok).toBe(true);
+        expect(result.metadata.rankingExecuted).toBe(true);
+        expect(result.metadata.rankingProviderId).toBe('default-main');
+        expect(result.metadata.rankingReason).toBe('ok');
+        expect(fetchSpy).toHaveBeenCalledTimes(2);
+        const [firstCall, secondCall] = fetchSpy.mock.calls;
+        expect(String(firstCall?.[0])).toContain('ranking-big.example');
+        expect(String(secondCall?.[0])).toContain('default-main.example');
+      } finally {
+        resolveSpy.mockRestore();
+        vi.unstubAllGlobals();
+        rmSync(setup.rootDir, { recursive: true, force: true });
+      }
+    });
+
+    it('falls back to compact digest blocks when both ranking provider and default provider fail', async () => {
+      const setup = setupLedgerForContextBuilder('ranking-fallback');
+      const resolveSpy = vi.spyOn(kernelProviderClient, 'resolveKernelProvider').mockImplementation((providerId?: string) => {
+        if (providerId === 'context-big') {
+          return {
+            provider: {
+              id: 'context-big',
+              base_url: 'https://ranking-big.example',
+              wire_api: 'responses',
+              env_key: 'RANKING_BIG_KEY',
+              model: 'big-model',
+            },
+          };
+        }
+        if (providerId === undefined || providerId === 'default-main') {
+          return {
+            provider: {
+              id: 'default-main',
+              base_url: 'https://default-main.example',
+              wire_api: 'responses',
+              env_key: 'DEFAULT_KEY',
+              model: 'default-model',
+            },
+          };
+        }
+        return { reason: 'provider_not_found' };
+      });
+      const fetchSpy = vi.fn(async () => new Response('unauthorized', { status: 401 }));
+      vi.stubGlobal('fetch', fetchSpy);
+      try {
+        const result = await buildContext(
+          { rootDir: setup.rootDir, sessionId: setup.sessionId, agentId: setup.agentId, mode: setup.mode },
+          {
+            targetBudget: 1_000_000,
+            includeMemoryMd: false,
+            enableModelRanking: true,
+            rankingProviderId: 'context-big',
             buildMode: 'aggressive',
           },
         );
 
         expect(result.ok).toBe(true);
         expect(result.metadata.rankingExecuted).toBe(false);
-        expect(result.metadata.rankingReason).toContain('digest_fallback:provider_not_found');
+        expect(result.metadata.rankingReason).toContain('digest_fallback:');
+        expect(result.metadata.rankingReason).toContain('context-big:http_401');
+        expect(result.metadata.rankingReason).toContain('default-main:http_401');
         expect(result.messages.some((m) => m.content.includes('请求:'))).toBe(true);
         const historicalDigestMessage = result.messages.find((m) => m.metadata?.compactDigest === true);
         expect(historicalDigestMessage).toBeDefined();
+        const historicalDigests = result.messages.filter((m) => m.metadata?.compactDigest === true);
+        expect(historicalDigests.length).toBeGreaterThanOrEqual(2);
+        expect(historicalDigests[0]?.content).toContain('Fix the login bug');
+        expect(historicalDigests[1]?.content).toContain('Also check the API rate limiter');
       } finally {
+        resolveSpy.mockRestore();
+        vi.unstubAllGlobals();
         rmSync(setup.rootDir, { recursive: true, force: true });
       }
     });

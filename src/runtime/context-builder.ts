@@ -19,7 +19,12 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { estimateTokens } from '../utils/token-counter.js';
-import { getAIProvider, getContextWindow } from '../core/user-settings.js';
+import { getContextWindow } from '../core/user-settings.js';
+import {
+  resolveKernelProvider,
+  buildProviderHeaders,
+  buildResponsesEndpoints,
+} from '../core/kernel-provider-client.js';
 import {
   readJsonLines,
   normalizeRootDir,
@@ -466,15 +471,78 @@ async function runModelRanking(
   if (blocks.length <= 1) {
     return { rankedTaskIds: blocks.map((b) => b.id), executed: false, reason: 'insufficient_blocks' };
   }
-  const providerId = (params.providerId || '').trim();
-  if (!providerId) {
-    return { rankedTaskIds: blocks.map((b) => b.id), executed: false, reason: 'missing_provider_id' };
+  const configuredProviderId = (params.providerId || '').trim();
+  const defaultProviderResolved = resolveKernelProvider(undefined);
+  const defaultProviderId = defaultProviderResolved.provider?.id?.trim() ?? '';
+  const providerCandidates = [configuredProviderId, defaultProviderId]
+    .filter((item, index, arr): item is string => item.length > 0 && arr.indexOf(item) === index);
+  if (providerCandidates.length === 0) {
+    return {
+      rankedTaskIds: blocks.map((b) => b.id),
+      executed: false,
+      reason: `missing_provider_id:${defaultProviderResolved.reason ?? 'default_provider_unavailable'}`,
+    };
   }
-  const provider = getAIProvider(providerId);
-  if (!provider) {
-    return { rankedTaskIds: blocks.map((b) => b.id), executed: false, reason: 'provider_not_found' };
+  const attempts: string[] = [];
+  let latestProviderModel: string | undefined;
+  let latestProviderId: string | undefined;
+  for (const providerCandidateId of providerCandidates) {
+    const singleResult = await runModelRankingWithProvider(blocks, params.currentPrompt, providerCandidateId);
+    latestProviderModel = singleResult.providerModel ?? latestProviderModel;
+    latestProviderId = singleResult.providerId ?? latestProviderId;
+    if (singleResult.executed) {
+      return singleResult;
+    }
+    attempts.push(`${providerCandidateId}:${singleResult.reason}`);
   }
+  return {
+    rankedTaskIds: blocks.map((b) => b.id),
+    providerId: latestProviderId,
+    providerModel: latestProviderModel,
+    executed: false,
+    reason: `providers_exhausted:${attempts.join('|')}`,
+  };
+}
 
+async function runModelRankingWithProvider(
+  blocks: TaskBlock[],
+  currentPrompt: string | undefined,
+  providerId: string,
+): Promise<{
+  rankedTaskIds: string[];
+  providerId?: string;
+  providerModel?: string;
+  executed: boolean;
+  reason: string;
+}> {
+  const providerResolved = resolveKernelProvider(providerId);
+  const provider = providerResolved.provider;
+  if (!provider) {
+    return {
+      rankedTaskIds: blocks.map((b) => b.id),
+      providerId,
+      executed: false,
+      reason: providerResolved.reason ?? 'provider_not_found',
+    };
+  }
+  if (provider.enabled === false) {
+    return {
+      rankedTaskIds: blocks.map((b) => b.id),
+      providerId,
+      providerModel: provider.model,
+      executed: false,
+      reason: 'provider_disabled',
+    };
+  }
+  if (provider.wire_api !== 'responses') {
+    return {
+      rankedTaskIds: blocks.map((b) => b.id),
+      providerId,
+      providerModel: provider.model,
+      executed: false,
+      reason: `unsupported_wire_api:${provider.wire_api}`,
+    };
+  }
   const payload = {
     model: provider.model,
     reasoning: { effort: 'minimal' },
@@ -527,7 +595,7 @@ async function runModelRanking(
             type: 'input_text',
             text: [
               '【用户当前输入】',
-              params.currentPrompt || '（无）',
+              currentPrompt || '（无）',
               '',
               '【历史任务候选】',
               '以下是与用户当前会话相关的历史任务记录，请根据相关性排序：',
@@ -558,23 +626,38 @@ async function runModelRanking(
   };
 
   try {
-    const endpoint = provider.base_url.endsWith('/')
-      ? `${provider.base_url}responses`
-      : `${provider.base_url}/responses`;
-    const response = await fetch(endpoint, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify(payload),
-    });
-    if (!response.ok) {
+    const endpoints = buildResponsesEndpoints(provider.base_url);
+    if (endpoints.length === 0) {
       return {
         rankedTaskIds: blocks.map((b) => b.id),
         providerId,
         providerModel: provider.model,
         executed: false,
-        reason: `http_${response.status}`,
+        reason: 'provider_base_url_missing',
+      };
+    }
+    const headers = buildProviderHeaders(provider);
+    let response: Response | null = null;
+    for (const endpoint of endpoints) {
+      const candidate = await fetch(endpoint, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify(payload),
+      });
+      if (candidate.status === 404) {
+        response = candidate;
+        continue;
+      }
+      response = candidate;
+      break;
+    }
+    if (!response || !response.ok) {
+      return {
+        rankedTaskIds: blocks.map((b) => b.id),
+        providerId,
+        providerModel: provider.model,
+        executed: false,
+        reason: response ? `http_${response.status}` : 'http_unknown',
       };
     }
     const data = await response.json() as Record<string, unknown>;
@@ -1023,8 +1106,10 @@ export async function buildContext(
     && !rankingExecuted
     && typeof rankingReason === 'string'
     && rankingReason !== 'insufficient_blocks';
+  const conservativeDigestFallback = rankingUnavailableForFallback;
   if (rankingUnavailableForFallback) {
-    rankedHistorical = toCompactTaskDigestBlocks(rankedHistorical);
+    // Provider 不可用时：按 raw ledger 时间顺序做 digest，预算内保守加载
+    rankedHistorical = toCompactTaskDigestBlocks(historical);
     rankingReason = `digest_fallback:${rankingReason}`;
   }
 
@@ -1040,7 +1125,9 @@ export async function buildContext(
   let supplementedTokens = 0;
   filteredBlocks = current ? [...rankedHistorical, current] : rankedHistorical;
 
-  if (current) {
+  if (current && conservativeDigestFallback) {
+    filteredBlocks = [...rankedHistorical, current];
+  } else if (current) {
     const rankedHistory = rankingIds
       ? reorderBlocksByRanking(rankedHistorical, rankingIds)
       : rankedHistorical;
