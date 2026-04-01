@@ -36,6 +36,15 @@ export interface AgentDefinition {
   tags: string[];
 }
 
+function firstNonEmptyString(...values: unknown[]): string | undefined {
+  for (const value of values) {
+    if (typeof value !== 'string') continue;
+    const normalized = value.trim();
+    if (normalized.length > 0) return normalized;
+  }
+  return undefined;
+}
+
 export interface AgentStartupTemplate {
   id: string;
   name: string;
@@ -88,11 +97,23 @@ interface AgentLastEventView {
   status: string;
   summary: string;
   timestamp: string;
+  laneKey?: string;
   sessionId?: string;
   workflowId?: string;
   dispatchId?: string;
   sourceAgentId?: string;
   taskId?: string;
+}
+
+interface AgentDispatchLaneView {
+  laneKey: string;
+  agentId: string;
+  projectId?: string;
+  workerId?: string;
+  sessionId?: string;
+  runningCount: number;
+  queuedCount: number;
+  capacity: number;
 }
 
 interface AgentRuntimeViewItem {
@@ -276,11 +297,20 @@ interface WorkflowTaskView {
 
 interface QueuedDispatchItem {
   dispatchId: string;
+  laneKey: string;
   input: AgentDispatchRequest;
   targetModuleId: string;
   assignment?: AgentAssignmentLifecycle;
   resolve: (result: DispatchResult) => void;
   timeoutHandle?: NodeJS.Timeout;
+}
+
+interface DispatchLaneMeta {
+  laneKey: string;
+  targetAgentId: string;
+  projectId?: string;
+  workerId?: string;
+  sessionId?: string;
 }
 
 interface DispatchResult {
@@ -549,8 +579,9 @@ export class AgentRuntimeBlock extends BaseBlock {
   };
 
   private readonly deployments = new Map<string, AgentDeploymentRecord>();
-  private readonly activeDispatchCountByAgent = new Map<string, number>();
-  private readonly dispatchQueueByAgent = new Map<string, QueuedDispatchItem[]>();
+  private readonly activeDispatchCountByLane = new Map<string, number>();
+  private readonly dispatchQueueByLane = new Map<string, QueuedDispatchItem[]>();
+  private readonly dispatchLaneMetaByKey = new Map<string, DispatchLaneMeta>();
   private readonly runtimeConfigByAgent = new Map<string, AgentRuntimeConfigProfile>();
   private readonly lastEventByAgent = new Map<string, AgentLastEventView>();
 
@@ -739,8 +770,14 @@ export class AgentRuntimeBlock extends BaseBlock {
       this.deployments.delete(deploymentId);
     }
 
-    this.dispatchQueueByAgent.delete(agentId);
-    this.activeDispatchCountByAgent.delete(agentId);
+    const laneKeys = Array.from(this.dispatchLaneMetaByKey.entries())
+      .filter(([, meta]) => meta.targetAgentId === agentId)
+      .map(([laneKey]) => laneKey);
+    for (const laneKey of laneKeys) {
+      this.dispatchQueueByLane.delete(laneKey);
+      this.activeDispatchCountByLane.delete(laneKey);
+      this.dispatchLaneMetaByKey.delete(laneKey);
+    }
     this.runtimeConfigByAgent.delete(agentId);
 
     if (!this.deps.resourcePool) return;
@@ -969,6 +1006,7 @@ export class AgentRuntimeBlock extends BaseBlock {
   private getRuntimeView(): {
     agents: AgentRuntimeViewItem[];
     instances: AgentRuntimeViewInstance[];
+    lanes: AgentDispatchLaneView[];
     configs: Array<{
       id: string;
       name: string;
@@ -1005,7 +1043,7 @@ export class AgentRuntimeBlock extends BaseBlock {
       const baseStatus = normalizeAgentStatus(deployment.status);
       const instanceTotal = Math.max(1, Number.isFinite(deployment.instanceCount) ? Math.floor(deployment.instanceCount) : 1);
       const runningCount = this.getActiveDispatchCount(deployment.agentId);
-      const queuedCount = this.dispatchQueueByAgent.get(deployment.agentId)?.length ?? 0;
+      const queuedCount = this.getQueuedDispatchCount(deployment.agentId);
       const lastEvent = this.lastEventByAgent.get(deployment.agentId);
       const sessionId = typeof deployment.sessionId === 'string' ? deployment.sessionId : '';
       const hasRunnerActiveTurn = sessionId.length > 0 && runnerActiveSessionIds.has(sessionId);
@@ -1070,7 +1108,7 @@ export class AgentRuntimeBlock extends BaseBlock {
     for (const def of definitions.values()) {
       const related = byAgentId.get(def.id) ?? [];
       const profile = this.resolveRuntimeConfigProfile(def.id);
-      const queuedCount = this.dispatchQueueByAgent.get(def.id)?.length ?? 0;
+      const queuedCount = this.getQueuedDispatchCount(def.id);
       const runningCount = Math.max(
         this.getActiveDispatchCount(def.id),
         related.filter((item) => item.status === 'running' || item.status === 'waiting_input').length,
@@ -1165,10 +1203,12 @@ export class AgentRuntimeBlock extends BaseBlock {
     const startupTargets = Array.from(definitions.values())
       .filter((def) => (byAgentId.get(def.id)?.length ?? 0) === 0)
       .sort((a, b) => a.name.localeCompare(b.name));
+    const lanes = this.listDispatchLanes();
 
     return {
       agents: agents.sort((a, b) => a.name.localeCompare(b.name)),
       instances: instances.sort((a, b) => a.name.localeCompare(b.name)),
+      lanes,
       configs,
       definitions: Array.from(definitions.values()).sort((a, b) => a.name.localeCompare(b.name)),
       startupTargets,
@@ -1322,23 +1362,150 @@ export class AgentRuntimeBlock extends BaseBlock {
     return Math.max(1, count);
   }
 
-  private getActiveDispatchCount(agentId: string): number {
-    const current = this.activeDispatchCountByAgent.get(agentId);
+  private getQueueForLane(laneKey: string): QueuedDispatchItem[] {
+    return this.dispatchQueueByLane.get(laneKey) ?? [];
+  }
+
+  private getActiveDispatchCountForLane(laneKey: string): number {
+    const current = this.activeDispatchCountByLane.get(laneKey);
     if (!Number.isFinite(current)) return 0;
     return Math.max(0, Math.floor(current as number));
   }
 
-  private increaseActiveDispatch(agentId: string): void {
-    this.activeDispatchCountByAgent.set(agentId, this.getActiveDispatchCount(agentId) + 1);
+  private getActiveDispatchCount(agentId: string): number {
+    let total = 0;
+    for (const [laneKey, current] of this.activeDispatchCountByLane.entries()) {
+      if (!Number.isFinite(current) || current <= 0) continue;
+      const meta = this.dispatchLaneMetaByKey.get(laneKey);
+      if (!meta || meta.targetAgentId !== agentId) continue;
+      total += Math.max(0, Math.floor(current));
+    }
+    return total;
   }
 
-  private decreaseActiveDispatch(agentId: string): void {
-    const next = this.getActiveDispatchCount(agentId) - 1;
-    if (next <= 0) {
-      this.activeDispatchCountByAgent.delete(agentId);
-      return;
+  private getQueuedDispatchCount(agentId: string): number {
+    let total = 0;
+    for (const [laneKey, queue] of this.dispatchQueueByLane.entries()) {
+      const meta = this.dispatchLaneMetaByKey.get(laneKey);
+      if (!meta || meta.targetAgentId !== agentId) continue;
+      total += queue.length;
     }
-    this.activeDispatchCountByAgent.set(agentId, next);
+    return total;
+  }
+
+  private increaseActiveDispatch(lane: DispatchLaneMeta): void {
+    this.dispatchLaneMetaByKey.set(lane.laneKey, lane);
+    const next = this.getActiveDispatchCountForLane(lane.laneKey) + 1;
+    this.activeDispatchCountByLane.set(lane.laneKey, next);
+  }
+
+  private decreaseActiveDispatch(laneKey: string): void {
+    const next = this.getActiveDispatchCountForLane(laneKey) - 1;
+    if (next <= 0) {
+      this.activeDispatchCountByLane.delete(laneKey);
+      this.cleanupLaneIfIdle(laneKey);
+    } else {
+      this.activeDispatchCountByLane.set(laneKey, next);
+    }
+  }
+
+  private cleanupLaneIfIdle(laneKey: string): void {
+    const active = this.getActiveDispatchCountForLane(laneKey);
+    const queued = this.getQueueForLane(laneKey).length;
+    if (active > 0 || queued > 0) return;
+    this.dispatchLaneMetaByKey.delete(laneKey);
+    this.dispatchQueueByLane.delete(laneKey);
+  }
+
+  private resolveDispatchLane(input: AgentDispatchRequest): DispatchLaneMeta {
+    const metadata = isObjectRecord(input.metadata) ? input.metadata : {};
+    const taskRecord = isObjectRecord(input.task) ? input.task : {};
+    const taskMetadata = isObjectRecord(taskRecord.metadata) ? taskRecord.metadata : {};
+    const assignment = isObjectRecord(input.assignment) ? input.assignment : {};
+
+    const projectId = firstNonEmptyString(
+      typeof metadata.projectId === 'string' ? metadata.projectId : '',
+      typeof taskRecord.projectId === 'string' ? taskRecord.projectId : '',
+      typeof assignment.projectId === 'string' ? assignment.projectId : '',
+      typeof taskMetadata.projectId === 'string' ? taskMetadata.projectId : '',
+    )?.trim();
+    const workerId = firstNonEmptyString(
+      typeof metadata.workerId === 'string' ? metadata.workerId : '',
+      typeof metadata.assigneeWorkerId === 'string' ? metadata.assigneeWorkerId : '',
+      typeof taskRecord.workerId === 'string' ? taskRecord.workerId : '',
+      typeof taskRecord.assigneeWorkerId === 'string' ? taskRecord.assigneeWorkerId : '',
+      typeof assignment.assigneeAgentId === 'string' ? assignment.assigneeAgentId : '',
+      typeof taskMetadata.workerId === 'string' ? taskMetadata.workerId : '',
+      typeof taskMetadata.assigneeWorkerId === 'string' ? taskMetadata.assigneeWorkerId : '',
+    )?.trim();
+    const sessionId = firstNonEmptyString(
+      typeof input.sessionId === 'string' ? input.sessionId : '',
+      typeof taskRecord.sessionId === 'string' ? taskRecord.sessionId : '',
+      typeof metadata.sessionId === 'string' ? metadata.sessionId : '',
+      typeof taskMetadata.sessionId === 'string' ? taskMetadata.sessionId : '',
+    )?.trim();
+
+    const explicitLane = firstNonEmptyString(
+      typeof metadata.laneKey === 'string' ? metadata.laneKey : '',
+      typeof taskMetadata.laneKey === 'string' ? taskMetadata.laneKey : '',
+    )?.trim();
+
+    if (explicitLane) {
+      return {
+        laneKey: explicitLane,
+        targetAgentId: input.targetAgentId,
+        ...(projectId ? { projectId } : {}),
+        ...(workerId ? { workerId } : {}),
+        ...(sessionId ? { sessionId } : {}),
+      };
+    }
+
+    if (projectId || workerId) {
+      const resolvedProjectId = projectId || 'project-unknown';
+      const resolvedWorkerId = workerId || input.targetAgentId;
+      const resolvedSessionId = sessionId || 'session-default';
+      return {
+        laneKey: `${resolvedProjectId}:${resolvedWorkerId}:${resolvedSessionId}`,
+        targetAgentId: input.targetAgentId,
+        projectId: resolvedProjectId,
+        workerId: resolvedWorkerId,
+        sessionId: resolvedSessionId,
+      };
+    }
+
+    return {
+      laneKey: `agent:${input.targetAgentId}`,
+      targetAgentId: input.targetAgentId,
+      ...(sessionId ? { sessionId } : {}),
+    };
+  }
+
+  private listDispatchLanes(): AgentDispatchLaneView[] {
+    const laneKeys = new Set<string>([
+      ...this.dispatchLaneMetaByKey.keys(),
+      ...this.activeDispatchCountByLane.keys(),
+      ...this.dispatchQueueByLane.keys(),
+    ]);
+    const lanes: AgentDispatchLaneView[] = [];
+    for (const laneKey of laneKeys) {
+      const meta = this.dispatchLaneMetaByKey.get(laneKey);
+      if (!meta) continue;
+      const runningCount = this.getActiveDispatchCountForLane(laneKey);
+      const queuedCount = this.getQueueForLane(laneKey).length;
+      const capacity = this.resolveDispatchCapacity(meta.targetAgentId);
+      lanes.push({
+        laneKey,
+        agentId: meta.targetAgentId,
+        runningCount,
+        queuedCount,
+        capacity,
+        ...(meta.projectId ? { projectId: meta.projectId } : {}),
+        ...(meta.workerId ? { workerId: meta.workerId } : {}),
+        ...(meta.sessionId ? { sessionId: meta.sessionId } : {}),
+      });
+    }
+    lanes.sort((a, b) => a.laneKey.localeCompare(b.laneKey));
+    return lanes;
   }
 
   private normalizeAssignment(input: AgentDispatchRequest): AgentAssignmentLifecycle | undefined {
@@ -1442,6 +1609,7 @@ export class AgentRuntimeBlock extends BaseBlock {
 
   private emitDispatchEvent(params: {
     dispatchId: string;
+    laneKey?: string;
     sourceAgentId: string;
     targetAgentId: string;
     status: 'queued' | 'completed' | 'failed';
@@ -1484,6 +1652,7 @@ export class AgentRuntimeBlock extends BaseBlock {
       status: params.status,
       summary,
       timestamp,
+      ...(params.laneKey ? { laneKey: params.laneKey } : {}),
       sourceAgentId: params.sourceAgentId,
       ...(typeof params.assignment?.taskId === 'string' && params.assignment.taskId.trim().length > 0
         ? { taskId: params.assignment.taskId.trim() }
@@ -1499,6 +1668,7 @@ export class AgentRuntimeBlock extends BaseBlock {
       timestamp,
       payload: {
         dispatchId: params.dispatchId,
+        ...(params.laneKey ? { laneKey: params.laneKey } : {}),
         sourceAgentId: params.sourceAgentId,
         targetAgentId: params.targetAgentId,
         status: params.status,
@@ -1580,24 +1750,26 @@ export class AgentRuntimeBlock extends BaseBlock {
     });
   }
 
-  private removeQueuedDispatch(targetAgentId: string, dispatchId: string): QueuedDispatchItem | null {
-    const queue = this.dispatchQueueByAgent.get(targetAgentId);
+  private removeQueuedDispatch(laneKey: string, dispatchId: string): QueuedDispatchItem | null {
+    const queue = this.dispatchQueueByLane.get(laneKey);
     if (!queue || queue.length === 0) return null;
     const idx = queue.findIndex((item) => item.dispatchId === dispatchId);
     if (idx < 0) return null;
     const [removed] = queue.splice(idx, 1);
     if (queue.length === 0) {
-      this.dispatchQueueByAgent.delete(targetAgentId);
+      this.dispatchQueueByLane.delete(laneKey);
+      this.cleanupLaneIfIdle(laneKey);
     } else {
-      this.dispatchQueueByAgent.set(targetAgentId, queue);
+      this.dispatchQueueByLane.set(laneKey, queue);
     }
     return removed;
   }
 
-  private enqueueDispatch(targetAgentId: string, item: QueuedDispatchItem): number {
-    const queue = this.dispatchQueueByAgent.get(targetAgentId) ?? [];
+  private enqueueDispatch(lane: DispatchLaneMeta, item: QueuedDispatchItem): number {
+    this.dispatchLaneMetaByKey.set(lane.laneKey, lane);
+    const queue = this.dispatchQueueByLane.get(lane.laneKey) ?? [];
     queue.push(item);
-    this.dispatchQueueByAgent.set(targetAgentId, queue);
+    this.dispatchQueueByLane.set(lane.laneKey, queue);
     return queue.length;
   }
 
@@ -1605,6 +1777,7 @@ export class AgentRuntimeBlock extends BaseBlock {
     input: AgentDispatchRequest,
     dispatchId: string,
     targetModuleId: string,
+    lane: DispatchLaneMeta,
     assignment?: AgentAssignmentLifecycle,
   ): Promise<DispatchResult> {
     const blocking = input.blocking === true;
@@ -1612,7 +1785,7 @@ export class AgentRuntimeBlock extends BaseBlock {
       ...input,
       ...(assignment ? { assignment } : {}),
     }, dispatchId);
-    this.increaseActiveDispatch(input.targetAgentId);
+    this.increaseActiveDispatch(lane);
 
     log.info('[AgentRuntimeBlock] Execute dispatch start', {
       dispatchId,
@@ -1636,6 +1809,7 @@ export class AgentRuntimeBlock extends BaseBlock {
           });
           this.emitDispatchEvent({
             dispatchId,
+            laneKey: lane.laneKey,
             sourceAgentId: input.sourceAgentId,
             targetAgentId: input.targetAgentId,
             status: completion.status,
@@ -1652,6 +1826,7 @@ export class AgentRuntimeBlock extends BaseBlock {
           log.error('[AgentRuntimeBlock] Module error (non-blocking)', undefined, { dispatchId, targetModuleId, error: message });
           this.emitDispatchEvent({
             dispatchId,
+            laneKey: lane.laneKey,
             sourceAgentId: input.sourceAgentId,
             targetAgentId: input.targetAgentId,
             status: 'failed',
@@ -1663,8 +1838,8 @@ export class AgentRuntimeBlock extends BaseBlock {
           });
         })
         .finally(() => {
-          this.decreaseActiveDispatch(input.targetAgentId);
-          this.drainDispatchQueue(input.targetAgentId);
+          this.decreaseActiveDispatch(lane.laneKey);
+          this.drainDispatchQueue(lane);
         });
       return { ok: true, dispatchId, status: 'queued', targetModuleId };
     }
@@ -1682,6 +1857,7 @@ export class AgentRuntimeBlock extends BaseBlock {
       });
       this.emitDispatchEvent({
         dispatchId,
+        laneKey: lane.laneKey,
         sourceAgentId: input.sourceAgentId,
         targetAgentId: input.targetAgentId,
         status: completion.status,
@@ -1705,6 +1881,7 @@ export class AgentRuntimeBlock extends BaseBlock {
       log.error('[AgentRuntimeBlock] Module error (blocking)', undefined, { dispatchId, targetModuleId, error: message });
       this.emitDispatchEvent({
         dispatchId,
+        laneKey: lane.laneKey,
         sourceAgentId: input.sourceAgentId,
         targetAgentId: input.targetAgentId,
         status: 'failed',
@@ -1716,18 +1893,18 @@ export class AgentRuntimeBlock extends BaseBlock {
       });
       return { ok: false, dispatchId, status: 'failed', error: message, targetModuleId };
     } finally {
-      this.decreaseActiveDispatch(input.targetAgentId);
-      this.drainDispatchQueue(input.targetAgentId);
+      this.decreaseActiveDispatch(lane.laneKey);
+      this.drainDispatchQueue(lane);
     }
   }
 
-  private drainDispatchQueue(targetAgentId: string): void {
-    const queue = this.dispatchQueueByAgent.get(targetAgentId);
+  private drainDispatchQueue(lane: DispatchLaneMeta): void {
+    const queue = this.dispatchQueueByLane.get(lane.laneKey);
     if (!queue || queue.length === 0) return;
-    const capacity = this.resolveDispatchCapacity(targetAgentId);
+    const capacity = this.resolveDispatchCapacity(lane.targetAgentId);
     if (capacity <= 0) return;
 
-    while (this.getActiveDispatchCount(targetAgentId) < capacity) {
+    while (this.getActiveDispatchCountForLane(lane.laneKey) < capacity) {
       const next = queue.shift();
       if (!next) break;
       if (next.timeoutHandle) {
@@ -1735,13 +1912,15 @@ export class AgentRuntimeBlock extends BaseBlock {
         next.timeoutHandle = undefined;
       }
       if (queue.length === 0) {
-        this.dispatchQueueByAgent.delete(targetAgentId);
+        this.dispatchQueueByLane.delete(lane.laneKey);
+        this.cleanupLaneIfIdle(lane.laneKey);
       } else {
-        this.dispatchQueueByAgent.set(targetAgentId, queue);
+        this.dispatchQueueByLane.set(lane.laneKey, queue);
       }
 
       this.emitDispatchEvent({
         dispatchId: next.dispatchId,
+        laneKey: lane.laneKey,
         sourceAgentId: next.input.sourceAgentId,
         targetAgentId: next.input.targetAgentId,
         status: 'queued',
@@ -1755,6 +1934,7 @@ export class AgentRuntimeBlock extends BaseBlock {
         next.input,
         next.dispatchId,
         next.targetModuleId,
+        lane,
         this.withAssignmentPhase(next.assignment, 'started'),
       ).then((result) => {
         next.resolve(result);
@@ -1893,6 +2073,21 @@ export class AgentRuntimeBlock extends BaseBlock {
         error: 'targetAgentId is required',
       };
     }
+    const source = typeof input.sourceAgentId === 'string' ? input.sourceAgentId.trim() : '';
+    if (source.length > 0 && source === target) {
+      const dispatchId = `dispatch-${Date.now()}-self-forbidden`;
+      log.warn('[AgentRuntimeBlock] Self-dispatch forbidden', {
+        sourceAgentId: source,
+        targetAgentId: target,
+        sessionId: input.sessionId,
+      });
+      return {
+        ok: false,
+        dispatchId,
+        status: 'failed',
+        error: `self-dispatch forbidden: source and target are both ${target}`,
+      };
+    }
 
     log.debug('[AgentRuntimeBlock] Checking deployment', {
       targetAgentId: target,
@@ -1950,7 +2145,8 @@ export class AgentRuntimeBlock extends BaseBlock {
     const blocking = input.blocking === true;
     const dispatchId = `dispatch-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     const assignment = this.normalizeAssignment(normalizedInput);
-    const activeCount = this.getActiveDispatchCount(target);
+    const lane = this.resolveDispatchLane(normalizedInput);
+    const activeCount = this.getActiveDispatchCountForLane(lane.laneKey);
     const capacity = this.resolveDispatchCapacity(target);
 
     if (this.shouldRouteSystemDispatchToMailbox(normalizedInput)) {
@@ -1965,6 +2161,7 @@ export class AgentRuntimeBlock extends BaseBlock {
       if (mailboxFallback) {
         log.info('[AgentRuntimeBlock] Routed system dispatch to mailbox by source policy', {
           dispatchId,
+          laneKey: lane.laneKey,
           sourceAgentId: normalizedInput.sourceAgentId,
           targetAgentId: target,
         });
@@ -1996,6 +2193,7 @@ export class AgentRuntimeBlock extends BaseBlock {
       const pendingResult = new Promise<DispatchResult>((resolve) => {
         const queued: QueuedDispatchItem = {
           dispatchId,
+          laneKey: lane.laneKey,
           input: normalizedInput,
           targetModuleId,
           assignment,
@@ -2006,7 +2204,7 @@ export class AgentRuntimeBlock extends BaseBlock {
         // in-flight pending user input merge), never timeout into mailbox.
         if (!isSelfDispatch && (normalizedInput.maxQueueWaitMs ?? 0) > 0) {
           queued.timeoutHandle = setTimeout(() => {
-            const removed = this.removeQueuedDispatch(target, dispatchId);
+            const removed = this.removeQueuedDispatch(lane.laneKey, dispatchId);
             if (!removed) return;
             const fallbackResult = this.buildMailboxFallbackDispatchResult({
               dispatchId,
@@ -2022,6 +2220,7 @@ export class AgentRuntimeBlock extends BaseBlock {
             }
             this.emitDispatchEvent({
               dispatchId,
+              laneKey: lane.laneKey,
               sourceAgentId: normalizedInput.sourceAgentId,
               targetAgentId: target,
               status: 'failed',
@@ -2040,12 +2239,13 @@ export class AgentRuntimeBlock extends BaseBlock {
             });
           }, normalizedInput.maxQueueWaitMs);
         }
-        this.enqueueDispatch(target, queued);
+        this.enqueueDispatch(lane, queued);
       });
 
-      const queuePosition = this.dispatchQueueByAgent.get(target)?.length ?? 1;
+      const queuePosition = this.getQueueForLane(lane.laneKey).length || 1;
       this.emitDispatchEvent({
         dispatchId,
+        laneKey: lane.laneKey,
         sourceAgentId: normalizedInput.sourceAgentId,
         targetAgentId: target,
         status: 'queued',
@@ -2071,6 +2271,7 @@ export class AgentRuntimeBlock extends BaseBlock {
 
     this.emitDispatchEvent({
       dispatchId,
+      laneKey: lane.laneKey,
       sourceAgentId: normalizedInput.sourceAgentId,
       targetAgentId: target,
       status: 'queued',
@@ -2083,6 +2284,7 @@ export class AgentRuntimeBlock extends BaseBlock {
       normalizedInput,
       dispatchId,
       targetModuleId,
+      lane,
       this.withAssignmentPhase(assignment, 'started'),
     );
   }

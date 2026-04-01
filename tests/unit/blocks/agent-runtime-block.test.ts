@@ -227,11 +227,8 @@ describe('AgentRuntimeBlock', () => {
   it('returns base startup templates for finger role agents', async () => {
     const templates = await ctx.block.execute('list_startup_templates', {}) as Array<{ id: string; role: string }>;
     expect(templates).toEqual(expect.arrayContaining([
-      expect.objectContaining({ id: 'finger-orchestrator', role: 'orchestrator' }),
-      expect.objectContaining({ id: 'finger-researcher', role: 'searcher' }),
-      expect.objectContaining({ id: 'finger-executor', role: 'executor' }),
-      expect.objectContaining({ id: 'finger-coder', role: 'executor' }),
-      expect.objectContaining({ id: 'finger-reviewer', role: 'reviewer' }),
+      expect.objectContaining({ id: 'finger-project-agent', role: 'project' }),
+      expect.objectContaining({ id: 'finger-system-agent', role: 'system' }),
     ]));
   });
 
@@ -450,10 +447,7 @@ describe('AgentRuntimeBlock', () => {
     expect(agent?.runningCount).toBeGreaterThanOrEqual(1);
   });
 
-  it('guards against self-dispatch blocking deadlock when capacity is exhausted', async () => {
-    const first = createDeferred<{ ok: boolean }>();
-    ctx.hubSendToModule.mockImplementationOnce(() => first.promise);
-
+  it('rejects self-dispatch immediately', async () => {
     await ctx.block.execute('deploy', {
       targetAgentId: 'executor-a',
       targetImplementationId: 'native-main',
@@ -462,24 +456,16 @@ describe('AgentRuntimeBlock', () => {
       launchMode: 'orchestrator',
     });
 
-    await ctx.block.execute('dispatch', {
-      sourceAgentId: 'executor-a',
-      targetAgentId: 'executor-a',
-      task: { text: 't1' },
-      blocking: false,
-    });
-
     const blocked = await ctx.block.execute('dispatch', {
       sourceAgentId: 'executor-a',
       targetAgentId: 'executor-a',
-      task: { text: 't2' },
-      blocking: true,
+      task: { text: 'self' },
+      blocking: false,
     }) as { ok: boolean; status: string; error?: string };
     expect(blocked.ok).toBe(false);
     expect(blocked.status).toBe('failed');
-    expect(blocked.error).toContain('deadlock');
-
-    first.resolve({ ok: true });
+    expect(blocked.error).toContain('self-dispatch forbidden');
+    expect(ctx.hubSendToModule).not.toHaveBeenCalled();
   });
 
   it('propagates assignment lifecycle metadata through dispatch payload and events', async () => {
@@ -602,7 +588,7 @@ describe('AgentRuntimeBlock', () => {
         text: expect.stringContaining('[DISPATCH CONTRACT]'),
         metadata: expect.objectContaining({
           responsesStructuredOutput: true,
-          responsesOutputSchemaPreset: 'executor',
+          responsesOutputSchemaPreset: 'orchestrator',
         }),
       }),
     );
@@ -688,6 +674,65 @@ describe('AgentRuntimeBlock', () => {
     expect(agent?.lastEvent?.status).toBe('queued');
 
     first.resolve({ ok: true });
+  });
+
+  it('isolates busy/queue by dispatch lane and exposes lanes in runtime view', async () => {
+    const first = createDeferred<{ ok: boolean }>();
+    const second = createDeferred<{ ok: boolean }>();
+    ctx.hubSendToModule.mockImplementationOnce(() => first.promise);
+    ctx.hubSendToModule.mockImplementationOnce(() => second.promise);
+
+    await ctx.block.execute('deploy', {
+      targetAgentId: 'executor-a',
+      targetImplementationId: 'native-main',
+      sessionId: 'session-1',
+      instanceCount: 1,
+      launchMode: 'orchestrator',
+    });
+
+    await ctx.block.execute('dispatch', {
+      sourceAgentId: 'finger-system-agent',
+      targetAgentId: 'executor-a',
+      sessionId: 'session-worker-lisa',
+      task: { text: 'project-a task', projectId: 'project-a' },
+      metadata: { projectId: 'project-a', workerId: 'Lisa' },
+      blocking: false,
+    });
+    await ctx.block.execute('dispatch', {
+      sourceAgentId: 'finger-system-agent',
+      targetAgentId: 'executor-a',
+      sessionId: 'session-worker-robert',
+      task: { text: 'project-b task', projectId: 'project-b' },
+      metadata: { projectId: 'project-b', workerId: 'Robert' },
+      blocking: false,
+      queueOnBusy: true,
+    });
+
+    expect(ctx.hubSendToModule).toHaveBeenCalledTimes(2);
+
+    const view = await ctx.block.execute('runtime_view', {}) as {
+      agents: Array<{ id: string; runningCount: number; queuedCount: number }>;
+      lanes: Array<{ laneKey: string; agentId: string; runningCount: number; queuedCount: number }>;
+    };
+
+    const agent = view.agents.find((item) => item.id === 'executor-a');
+    expect(agent?.runningCount).toBe(2);
+    expect(agent?.queuedCount).toBe(0);
+    expect(view.lanes).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        laneKey: 'project-a:Lisa:session-worker-lisa',
+        agentId: 'executor-a',
+        runningCount: 1,
+      }),
+      expect.objectContaining({
+        laneKey: 'project-b:Robert:session-worker-robert',
+        agentId: 'executor-a',
+        runningCount: 1,
+      }),
+    ]));
+
+    first.resolve({ ok: true });
+    second.resolve({ ok: true });
   });
 
   it('applies runtime quota config from deploy request', async () => {
