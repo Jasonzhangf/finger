@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, writeFileSync } from 'fs';
+import { existsSync, readFileSync, renameSync, writeFileSync } from 'fs';
 import { ensureFingerLayout, getFingerPaths, resolveFingerHome, FINGER_PATHS } from '../core/finger-paths.js';
 
 export type OrchestrationAgentRole = 'orchestrator' | 'executor' | 'reviewer' | 'searcher';
@@ -41,6 +41,43 @@ export interface OrchestrationConfigV1 {
   version: 1;
   activeProfileId: string;
   profiles: OrchestrationProfile[];
+  runtime?: OrchestrationRuntimeConfig;
+}
+
+export interface RuntimeSystemAgentConfig {
+  id: string;
+  maxInstances: 1;
+}
+
+export interface RuntimeWorkerConfig {
+  id: string;
+  name: string;
+  enabled: boolean;
+}
+
+export interface RuntimeProjectWorkersConfig {
+  maxWorkers: number;
+  autoNameOnFirstAssign: boolean;
+  nameCandidates: string[];
+  workers: RuntimeWorkerConfig[];
+}
+
+export interface RuntimeReviewerAgentConfig {
+  id: string;
+  name: string;
+  enabled: boolean;
+}
+
+export interface RuntimeReviewersConfig {
+  maxInstances: number;
+  reviewerName: string;
+  agents: RuntimeReviewerAgentConfig[];
+}
+
+export interface OrchestrationRuntimeConfig {
+  systemAgent: RuntimeSystemAgentConfig;
+  projectWorkers: RuntimeProjectWorkersConfig;
+  reviewers: RuntimeReviewersConfig;
 }
 
 export interface LoadedOrchestrationConfig {
@@ -49,9 +86,49 @@ export interface LoadedOrchestrationConfig {
   created: boolean;
 }
 
+const DEFAULT_WORKER_NAME_CANDIDATES = [
+  'Alex', 'Maya', 'Leo', 'Nora', 'Iris',
+  'Ethan', 'Luna', 'Owen', 'Zoe', 'Noah',
+  'Mila', 'Ryan', 'Ava', 'Eli', 'Ruby',
+  'Liam', 'Aria', 'Jack', 'Emma', 'Kai',
+];
+
+const DEFAULT_SYSTEM_AGENT_ID = 'finger-system-agent';
+const DEFAULT_PROJECT_WORKER_ID = 'finger-project-agent';
+const DEFAULT_REVIEWER_AGENT_ID = 'finger-reviewer';
+
 export const DEFAULT_ORCHESTRATION_CONFIG: OrchestrationConfigV1 = {
   version: 1,
   activeProfileId: 'default',
+  runtime: {
+    systemAgent: {
+      id: DEFAULT_SYSTEM_AGENT_ID,
+      maxInstances: 1,
+    },
+    projectWorkers: {
+      maxWorkers: 6,
+      autoNameOnFirstAssign: true,
+      nameCandidates: [...DEFAULT_WORKER_NAME_CANDIDATES],
+      workers: [
+        {
+          id: DEFAULT_PROJECT_WORKER_ID,
+          name: 'Alex',
+          enabled: true,
+        },
+      ],
+    },
+    reviewers: {
+      maxInstances: 2,
+      reviewerName: 'Sentinel',
+      agents: [
+        {
+          id: DEFAULT_REVIEWER_AGENT_ID,
+          name: 'Sentinel-A',
+          enabled: true,
+        },
+      ],
+    },
+  },
   profiles: [
     {
       id: 'default',
@@ -270,6 +347,222 @@ function normalizeEntry(raw: unknown): OrchestrationAgentEntry {
   };
 }
 
+function normalizeNonEmptyString(raw: unknown): string | undefined {
+  if (typeof raw !== 'string') return undefined;
+  const normalized = raw.trim();
+  return normalized.length > 0 ? normalized : undefined;
+}
+
+function normalizePositiveInteger(raw: unknown, fallback: number, minimum = 1): number {
+  if (typeof raw !== 'number' || !Number.isFinite(raw)) return fallback;
+  return Math.max(minimum, Math.floor(raw));
+}
+
+function ensureUniqueCaseInsensitive(values: string[], label: string): void {
+  const seen = new Set<string>();
+  for (const value of values) {
+    const key = value.toLowerCase();
+    if (seen.has(key)) {
+      throw new Error(`duplicate ${label}: ${value}`);
+    }
+    seen.add(key);
+  }
+}
+
+function pickUniqueFallbackName(usedNames: Set<string>): string {
+  let sequence = usedNames.size + 1;
+  while (sequence < usedNames.size + 10000) {
+    const candidate = `Worker-${String(sequence).padStart(2, '0')}`;
+    const key = candidate.toLowerCase();
+    if (!usedNames.has(key)) return candidate;
+    sequence += 1;
+  }
+  return `Worker-${Date.now()}`;
+}
+
+function assignMissingWorkerNames(
+  workers: RuntimeWorkerConfig[],
+  candidates: string[],
+): RuntimeWorkerConfig[] {
+  const usedNames = new Set<string>();
+  for (const worker of workers) {
+    const normalized = worker.name.trim().toLowerCase();
+    if (normalized.length > 0) usedNames.add(normalized);
+  }
+
+  return workers.map((worker) => {
+    const existingName = worker.name.trim();
+    if (existingName.length > 0) return worker;
+    let resolvedName = '';
+    for (const candidate of candidates) {
+      const normalized = candidate.toLowerCase();
+      if (usedNames.has(normalized)) continue;
+      resolvedName = candidate;
+      usedNames.add(normalized);
+      break;
+    }
+    if (!resolvedName) {
+      resolvedName = pickUniqueFallbackName(usedNames);
+      usedNames.add(resolvedName.toLowerCase());
+    }
+    return {
+      ...worker,
+      name: resolvedName,
+    };
+  });
+}
+
+function inferRuntimeAnchorIds(
+  profiles: OrchestrationProfile[],
+  activeProfileId: string,
+): {
+  systemAgentId: string;
+  workerAgentId: string;
+  reviewerAgentId: string;
+} {
+  const active = profiles.find((item) => item.id === activeProfileId);
+  const enabledAgents = active?.agents?.filter((item) => item.enabled !== false) ?? [];
+  const orchestrator = enabledAgents.find((item) => item.role === 'orchestrator');
+  const worker = enabledAgents.find((item) => item.role === 'executor')
+    ?? enabledAgents.find((item) => item.targetAgentId.toLowerCase().includes('project'));
+  const reviewer = enabledAgents.find((item) => item.role === 'reviewer')
+    ?? active?.agents.find((item) => item.role === 'reviewer');
+
+  return {
+    systemAgentId: orchestrator?.targetAgentId || DEFAULT_SYSTEM_AGENT_ID,
+    workerAgentId: worker?.targetAgentId || DEFAULT_PROJECT_WORKER_ID,
+    reviewerAgentId: reviewer?.targetAgentId || DEFAULT_REVIEWER_AGENT_ID,
+  };
+}
+
+function normalizeRuntimeConfig(
+  rawRuntime: unknown,
+  profiles: OrchestrationProfile[],
+  activeProfileId: string,
+): OrchestrationRuntimeConfig {
+  const anchors = inferRuntimeAnchorIds(profiles, activeProfileId);
+  const runtimeRecord = typeof rawRuntime === 'object' && rawRuntime !== null
+    ? rawRuntime as Record<string, unknown>
+    : {};
+
+  const systemRecord = typeof runtimeRecord.systemAgent === 'object' && runtimeRecord.systemAgent !== null
+    ? runtimeRecord.systemAgent as Record<string, unknown>
+    : {};
+  const systemAgentId = normalizeNonEmptyString(systemRecord.id) || anchors.systemAgentId;
+  const systemAgent: RuntimeSystemAgentConfig = {
+    id: systemAgentId,
+    maxInstances: 1,
+  };
+
+  const projectWorkersRecord = typeof runtimeRecord.projectWorkers === 'object' && runtimeRecord.projectWorkers !== null
+    ? runtimeRecord.projectWorkers as Record<string, unknown>
+    : {};
+  const maxWorkers = normalizePositiveInteger(projectWorkersRecord.maxWorkers, 6, 1);
+  const autoNameOnFirstAssign = projectWorkersRecord.autoNameOnFirstAssign !== false;
+  const nameCandidatesRaw = Array.isArray(projectWorkersRecord.nameCandidates)
+    ? projectWorkersRecord.nameCandidates
+    : DEFAULT_WORKER_NAME_CANDIDATES;
+  const nameCandidates = Array.from(
+    new Set(
+      nameCandidatesRaw
+        .map((item) => normalizeNonEmptyString(item))
+        .filter((item): item is string => Boolean(item)),
+    ),
+  );
+  const normalizedCandidates = nameCandidates.length > 0
+    ? nameCandidates
+    : [...DEFAULT_WORKER_NAME_CANDIDATES];
+
+  const workersRaw = Array.isArray(projectWorkersRecord.workers) ? projectWorkersRecord.workers : [];
+  const workersBase = workersRaw.length > 0
+    ? workersRaw.map((item, index): RuntimeWorkerConfig => {
+      if (typeof item !== 'object' || item === null) {
+        throw new Error(`runtime.projectWorkers.workers[${index}] must be object`);
+      }
+      const record = item as Record<string, unknown>;
+      const id = normalizeNonEmptyString(record.id);
+      if (!id) {
+        throw new Error(`runtime.projectWorkers.workers[${index}].id is required`);
+      }
+      return {
+        id,
+        name: normalizeNonEmptyString(record.name) || '',
+        enabled: record.enabled !== false,
+      };
+    })
+    : [
+      {
+        id: anchors.workerAgentId,
+        name: '',
+        enabled: true,
+      },
+    ];
+  if (workersBase.length > maxWorkers) {
+    throw new Error(`runtime.projectWorkers.workers exceeds maxWorkers=${maxWorkers}`);
+  }
+  ensureUniqueCaseInsensitive(workersBase.map((item) => item.id), 'worker id');
+  const workers = autoNameOnFirstAssign
+    ? assignMissingWorkerNames(workersBase, normalizedCandidates)
+    : workersBase.map((item) => ({ ...item, name: item.name.trim() }));
+  const nonEmptyWorkerNames = workers.map((item) => item.name.trim()).filter((item) => item.length > 0);
+  ensureUniqueCaseInsensitive(nonEmptyWorkerNames, 'worker name');
+
+  const reviewersRecord = typeof runtimeRecord.reviewers === 'object' && runtimeRecord.reviewers !== null
+    ? runtimeRecord.reviewers as Record<string, unknown>
+    : {};
+  const reviewerMaxInstances = normalizePositiveInteger(reviewersRecord.maxInstances, 2, 1);
+  const reviewerName = normalizeNonEmptyString(reviewersRecord.reviewerName) || 'Sentinel';
+  const reviewerAgentsRaw = Array.isArray(reviewersRecord.agents) ? reviewersRecord.agents : [];
+  const reviewerAgents = reviewerAgentsRaw.length > 0
+    ? reviewerAgentsRaw.map((item, index): RuntimeReviewerAgentConfig => {
+      if (typeof item !== 'object' || item === null) {
+        throw new Error(`runtime.reviewers.agents[${index}] must be object`);
+      }
+      const record = item as Record<string, unknown>;
+      const id = normalizeNonEmptyString(record.id);
+      if (!id) throw new Error(`runtime.reviewers.agents[${index}].id is required`);
+      return {
+        id,
+        name: normalizeNonEmptyString(record.name) || `${reviewerName}-${String(index + 1).padStart(2, '0')}`,
+        enabled: record.enabled !== false,
+      };
+    })
+    : [
+      {
+        id: anchors.reviewerAgentId,
+        name: `${reviewerName}-A`,
+        enabled: true,
+      },
+    ];
+  ensureUniqueCaseInsensitive(reviewerAgents.map((item) => item.id), 'reviewer id');
+  ensureUniqueCaseInsensitive(reviewerAgents.map((item) => item.name), 'reviewer name');
+  const enabledReviewers = reviewerAgents.filter((item) => item.enabled);
+  if (enabledReviewers.length > reviewerMaxInstances) {
+    throw new Error(`runtime.reviewers enabled agents exceeds maxInstances=${reviewerMaxInstances}`);
+  }
+
+  return {
+    systemAgent,
+    projectWorkers: {
+      maxWorkers,
+      autoNameOnFirstAssign,
+      nameCandidates: normalizedCandidates,
+      workers,
+    },
+    reviewers: {
+      maxInstances: reviewerMaxInstances,
+      reviewerName,
+      agents: reviewerAgents,
+    },
+  };
+}
+
+function writeConfigFileAtomic(path: string, config: OrchestrationConfigV1): void {
+  const tempPath = `${path}.tmp-${process.pid}-${Date.now()}`;
+  writeFileSync(tempPath, `${JSON.stringify(config, null, 2)}\n`, 'utf-8');
+  renameSync(tempPath, path);
+}
+
 export function resolveOrchestrationConfigPath(): string {
   const overrideHome = process.env.FINGER_HOME;
   if (typeof overrideHome === 'string' && overrideHome.trim().length > 0) {
@@ -349,10 +642,12 @@ export function validateOrchestrationConfig(raw: unknown): OrchestrationConfigV1
   if (!profiles.some((item) => item.id === activeProfileId)) {
     throw new Error(`activeProfileId not found: ${activeProfileId}`);
   }
+  const runtime = normalizeRuntimeConfig(record.runtime, profiles, activeProfileId);
   return {
     version,
     activeProfileId,
     profiles,
+    runtime,
   };
 }
 
@@ -362,7 +657,7 @@ export function saveOrchestrationConfig(
   ensureFingerLayout();
   const path = resolveOrchestrationConfigPath();
   const config = validateOrchestrationConfig(raw);
-  writeFileSync(path, `${JSON.stringify(config, null, 2)}\n`, 'utf-8');
+  writeConfigFileAtomic(path, config);
   return {
     path,
     config,
@@ -375,18 +670,25 @@ export function loadOrchestrationConfig(): LoadedOrchestrationConfig {
   const path = resolveOrchestrationConfigPath();
   if (!existsSync(path)) {
     const initial = DEFAULT_ORCHESTRATION_CONFIG;
-    writeFileSync(path, `${JSON.stringify(initial, null, 2)}\n`, 'utf-8');
+    const validated = validateOrchestrationConfig(initial);
+    writeConfigFileAtomic(path, validated);
     return {
       path,
-      config: validateOrchestrationConfig(initial),
+      config: validated,
       created: true,
     };
   }
   const content = readFileSync(path, 'utf-8');
   const parsed = JSON.parse(content) as unknown;
+  const config = validateOrchestrationConfig(parsed);
+  const normalizedSource = JSON.stringify(parsed);
+  const normalizedTarget = JSON.stringify(config);
+  if (normalizedSource !== normalizedTarget) {
+    writeConfigFileAtomic(path, config);
+  }
   return {
     path,
-    config: validateOrchestrationConfig(parsed),
+    config,
     created: false,
   };
 }
