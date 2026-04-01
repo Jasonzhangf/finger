@@ -735,6 +735,48 @@ describe('AgentRuntimeBlock', () => {
     second.resolve({ ok: true });
   });
 
+  it('enforces immutable (project,worker)->session binding and rejects cross-worker session reuse', async () => {
+    await ctx.block.execute('deploy', {
+      targetAgentId: 'executor-a',
+      targetImplementationId: 'native-main',
+      sessionId: 'session-1',
+      instanceCount: 1,
+      launchMode: 'orchestrator',
+    });
+
+    const ok = await ctx.block.execute('dispatch', {
+      sourceAgentId: 'finger-system-agent',
+      targetAgentId: 'executor-a',
+      sessionId: 'session-worker-lisa',
+      task: { text: 'initial', projectId: 'project-a' },
+      metadata: { projectId: 'project-a', workerId: 'Lisa' },
+      blocking: true,
+    }) as { ok: boolean };
+    expect(ok.ok).toBe(true);
+
+    const mismatch = await ctx.block.execute('dispatch', {
+      sourceAgentId: 'finger-system-agent',
+      targetAgentId: 'executor-a',
+      sessionId: 'session-worker-lisa-2',
+      task: { text: 'same worker, wrong session', projectId: 'project-a' },
+      metadata: { projectId: 'project-a', workerId: 'Lisa' },
+      blocking: true,
+    }) as { ok: boolean; error?: string };
+    expect(mismatch.ok).toBe(false);
+    expect(mismatch.error).toContain('session_binding_mismatch');
+
+    const crossWorkerReuse = await ctx.block.execute('dispatch', {
+      sourceAgentId: 'finger-system-agent',
+      targetAgentId: 'executor-a',
+      sessionId: 'session-worker-lisa',
+      task: { text: 'other worker reuses session', projectId: 'project-a' },
+      metadata: { projectId: 'project-a', workerId: 'Robert' },
+      blocking: true,
+    }) as { ok: boolean; error?: string };
+    expect(crossWorkerReuse.ok).toBe(false);
+    expect(crossWorkerReuse.error).toContain('session_binding_scope_violation');
+  });
+
   it('applies runtime quota config from deploy request', async () => {
     await ctx.block.execute('deploy', {
       targetAgentId: 'executor-a',

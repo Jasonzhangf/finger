@@ -582,6 +582,8 @@ export class AgentRuntimeBlock extends BaseBlock {
   private readonly activeDispatchCountByLane = new Map<string, number>();
   private readonly dispatchQueueByLane = new Map<string, QueuedDispatchItem[]>();
   private readonly dispatchLaneMetaByKey = new Map<string, DispatchLaneMeta>();
+  private readonly workerProjectSessionByKey = new Map<string, string>();
+  private readonly sessionOwnerKeyBySession = new Map<string, string>();
   private readonly runtimeConfigByAgent = new Map<string, AgentRuntimeConfigProfile>();
   private readonly lastEventByAgent = new Map<string, AgentLastEventView>();
 
@@ -1480,6 +1482,36 @@ export class AgentRuntimeBlock extends BaseBlock {
     };
   }
 
+  private validateAndRememberWorkerProjectSessionBinding(
+    lane: DispatchLaneMeta,
+  ): { ok: true } | { ok: false; error: string } {
+    const projectId = typeof lane.projectId === 'string' ? lane.projectId.trim() : '';
+    const workerId = typeof lane.workerId === 'string' ? lane.workerId.trim() : '';
+    const sessionId = typeof lane.sessionId === 'string' ? lane.sessionId.trim() : '';
+    if (!projectId || !workerId || !sessionId) return { ok: true };
+
+    const bindingKey = `${projectId}::${workerId}`;
+    const existingSession = this.workerProjectSessionByKey.get(bindingKey);
+    if (existingSession && existingSession !== sessionId) {
+      return {
+        ok: false,
+        error: `session_binding_mismatch: (${projectId}, ${workerId}) already bound to ${existingSession}, rejected ${sessionId}`,
+      };
+    }
+
+    const existingOwnerKey = this.sessionOwnerKeyBySession.get(sessionId);
+    if (existingOwnerKey && existingOwnerKey !== bindingKey) {
+      return {
+        ok: false,
+        error: `session_binding_scope_violation: session ${sessionId} already owned by ${existingOwnerKey}, rejected ${bindingKey}`,
+      };
+    }
+
+    this.workerProjectSessionByKey.set(bindingKey, sessionId);
+    this.sessionOwnerKeyBySession.set(sessionId, bindingKey);
+    return { ok: true };
+  }
+
   private listDispatchLanes(): AgentDispatchLaneView[] {
     const laneKeys = new Set<string>([
       ...this.dispatchLaneMetaByKey.keys(),
@@ -2146,6 +2178,22 @@ export class AgentRuntimeBlock extends BaseBlock {
     const dispatchId = `dispatch-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     const assignment = this.normalizeAssignment(normalizedInput);
     const lane = this.resolveDispatchLane(normalizedInput);
+    const sessionBindingCheck = this.validateAndRememberWorkerProjectSessionBinding(lane);
+    if (!sessionBindingCheck.ok) {
+      log.warn('[AgentRuntimeBlock] Rejected dispatch by worker-project session binding rule', {
+        dispatchId,
+        laneKey: lane.laneKey,
+        targetAgentId: target,
+        error: sessionBindingCheck.error,
+      });
+      return {
+        ok: false,
+        dispatchId,
+        status: 'failed',
+        targetModuleId,
+        error: sessionBindingCheck.error,
+      };
+    }
     const activeCount = this.getActiveDispatchCountForLane(lane.laneKey);
     const capacity = this.resolveDispatchCapacity(target);
 
