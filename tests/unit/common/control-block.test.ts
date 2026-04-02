@@ -362,4 +362,51 @@ describe('control-block', () => {
     expect(normalized.controlBlock.learning.flow_patch.required).toBe(true);
     expect(normalized.controlBlock.learning.flow_patch.changes).toEqual(['add preflight checks']);
   });
+
+  it('extracts learning patches from alias fields via mask-based shape repair', () => {
+    const normalized = normalizeControlBlock({
+      schema_version: '1.3',
+      task_completed: false,
+      evidence_ready: true,
+      needs_user_input: false,
+      has_blocker: false,
+      dispatch_required: false,
+      review_required: false,
+      wait: { enabled: false, seconds: 0, reason: '' },
+      user_signal: { negative_score: 0, profile_update_required: false, why: '' },
+      tags: 'dispatch,session',
+      antiPatterns: 'avoid session alias drift',
+      self_eval: { score: 30, confidence: 60, goal_gap: 'patch fields', why: 'shape mismatch' },
+      learning: {
+        didRight: 'captured root cause',
+        didWrong: 'asked repeated confirmation',
+        repeatedWrong: 'project path alias mismatch',
+        flowPatch: 'normalize project path before lane binding',
+        memory: 'session ownership should use canonical project id',
+      },
+      profile_patch: 'user hates workaround-style fixes',
+    });
+
+    expect(normalized.controlBlock.tags).toEqual(['dispatch', 'session']);
+    expect(normalized.controlBlock.anti_patterns).toEqual(['avoid session alias drift']);
+    expect(normalized.controlBlock.learning.did_right).toEqual(['captured root cause']);
+    expect(normalized.controlBlock.learning.did_wrong).toEqual(['asked repeated confirmation']);
+    expect(normalized.controlBlock.learning.repeated_wrong).toEqual(['project path alias mismatch']);
+    expect(normalized.controlBlock.learning.flow_patch.required).toBe(true);
+    expect(normalized.controlBlock.learning.flow_patch.changes).toEqual([
+      'normalize project path before lane binding',
+    ]);
+    expect(normalized.controlBlock.learning.memory_patch.required).toBe(true);
+    expect(normalized.controlBlock.learning.memory_patch.long_term_items).toEqual([
+      'session ownership should use canonical project id',
+    ]);
+    expect(normalized.controlBlock.learning.user_profile_patch.required).toBe(true);
+    expect(normalized.controlBlock.learning.user_profile_patch.items).toEqual([
+      'user hates workaround-style fixes',
+    ]);
+    const hooks = evaluateControlHooks(normalized.controlBlock);
+    expect(hooks.hooks).toContain('hook.project.flow.update');
+    expect(hooks.hooks).toContain('hook.project.memory.update');
+    expect(hooks.hooks).toContain('hook.user.profile.update');
+  });
 });

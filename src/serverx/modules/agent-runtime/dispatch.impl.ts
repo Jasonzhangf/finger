@@ -500,7 +500,7 @@ function resolveDispatchProjectPathHint(
   const metadata = isObjectRecord(input.metadata) ? input.metadata : {};
   const taskRecord = isObjectRecord(input.task) ? input.task : {};
   const taskMetadata = isObjectRecord(taskRecord.metadata) ? taskRecord.metadata : {};
-  return firstNonEmptyString(
+  const raw = firstNonEmptyString(
     input.projectPath,
     asString(metadata.projectPath),
     asString(metadata.project_path),
@@ -513,6 +513,8 @@ function resolveDispatchProjectPathHint(
     asString(taskMetadata.cwd),
     fallbackProjectPath,
   ) ?? '';
+  if (!raw) return '';
+  return normalizeProjectPathHint(raw);
 }
 
 function isSameProjectTaskIdentity(

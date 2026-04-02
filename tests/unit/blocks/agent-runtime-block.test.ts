@@ -1,4 +1,7 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import fs from 'fs';
+import os from 'os';
+import path from 'path';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { AgentRuntimeBlock } from '../../../src/blocks/agent-runtime-block/index.js';
 import type { LoadedAgentConfig } from '../../../src/runtime/agent-json-config.js';
 
@@ -10,6 +13,20 @@ interface TestContext {
   chatCodexListSessionStates: ReturnType<typeof vi.fn>;
   resourcePoolEntries: Array<{ id: string; status: string }>;
 }
+
+const tempPaths: string[] = [];
+
+afterEach(() => {
+  while (tempPaths.length > 0) {
+    const next = tempPaths.pop();
+    if (!next) continue;
+    try {
+      fs.rmSync(next, { recursive: true, force: true });
+    } catch {
+      // ignore cleanup failures in tests
+    }
+  }
+});
 
 function createDeferred<T>() {
   let resolve!: (value: T | PromiseLike<T>) => void;
@@ -848,6 +865,45 @@ describe('AgentRuntimeBlock', () => {
     }) as { ok: boolean; error?: string };
     expect(crossWorkerReuse.ok).toBe(false);
     expect(crossWorkerReuse.error).toContain('session_binding_scope_violation');
+  });
+
+  it('treats symlinked project paths as the same binding scope', async () => {
+    const base = fs.mkdtempSync(path.join(os.tmpdir(), 'finger-runtime-lane-'));
+    tempPaths.push(base);
+    const realDir = path.join(base, 'real-project');
+    const linkDir = path.join(base, 'alias-project');
+    fs.mkdirSync(realDir, { recursive: true });
+    fs.symlinkSync(realDir, linkDir);
+
+    await ctx.block.execute('deploy', {
+      targetAgentId: 'executor-a',
+      targetImplementationId: 'native-main',
+      sessionId: 'session-1',
+      instanceCount: 1,
+      launchMode: 'orchestrator',
+    });
+
+    const first = await ctx.block.execute('dispatch', {
+      sourceAgentId: 'finger-system-agent',
+      targetAgentId: 'executor-a',
+      sessionId: 'session-worker-lisa',
+      task: { text: 'first', projectId: realDir },
+      metadata: { projectId: realDir, workerId: 'Lisa' },
+      blocking: true,
+    }) as { ok: boolean };
+    expect(first.ok).toBe(true);
+
+    const second = await ctx.block.execute('dispatch', {
+      sourceAgentId: 'finger-system-agent',
+      targetAgentId: 'executor-a',
+      sessionId: 'session-worker-lisa',
+      task: { text: 'second', projectId: linkDir },
+      metadata: { projectId: linkDir, workerId: 'Lisa' },
+      blocking: true,
+    }) as { ok: boolean; error?: string };
+
+    expect(second.ok).toBe(true);
+    expect(second.error).toBeUndefined();
   });
 
   it('applies runtime quota config from deploy request', async () => {

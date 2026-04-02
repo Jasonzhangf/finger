@@ -158,6 +158,49 @@ function asStringArrayLoose(value: unknown, maxItems: number): string[] {
   return [];
 }
 
+type PathMask = readonly string[];
+
+function readMaskedValue(root: Record<string, unknown>, mask: PathMask): unknown {
+  if (mask.length === 0) return undefined;
+  let current: unknown = root;
+  for (let index = 0; index < mask.length; index += 1) {
+    const key = mask[index];
+    const record = asRecord(current);
+    if (!record || !Object.prototype.hasOwnProperty.call(record, key)) return undefined;
+    current = record[key];
+  }
+  return current;
+}
+
+function collectStringsFromMasks(
+  root: Record<string, unknown>,
+  masks: PathMask[],
+  maxItems: number,
+): string[] {
+  const merged: string[] = [];
+  for (const mask of masks) {
+    const value = readMaskedValue(root, mask);
+    const items = asStringArrayLoose(value, maxItems);
+    if (items.length === 0) continue;
+    for (const item of items) {
+      if (merged.includes(item)) continue;
+      merged.push(item);
+      if (merged.length >= maxItems) return merged;
+    }
+  }
+  return merged;
+}
+
+function pickStringFromMasks(root: Record<string, unknown>, masks: PathMask[]): string | undefined {
+  for (const mask of masks) {
+    const value = readMaskedValue(root, mask);
+    if (typeof value !== 'string') continue;
+    const normalized = value.trim();
+    if (normalized.length > 0) return normalized;
+  }
+  return undefined;
+}
+
 function extractLastControlFence(rawReply: string): { blockText: string; strippedReply: string } | undefined {
   const pattern = /```finger-control\s*([\s\S]*?)```/gi;
   let match: RegExpExecArray | null = null;
@@ -361,10 +404,69 @@ export function normalizeControlBlock(rawValue: unknown): { controlBlock: Finger
   const flowPatchInput = asRecord(learningInput.flow_patch ?? root.flow_patch) ?? {};
   const memoryPatchInput = asRecord(learningInput.memory_patch ?? root.memory_patch) ?? {};
   const userProfilePatchInput = asRecord(learningInput.user_profile_patch ?? root.user_profile_patch) ?? {};
-  const looseFlowChanges = asStringArrayLoose(flowPatchInput.changes, 32);
-  const looseLongTermItems = asStringArrayLoose(memoryPatchInput.long_term_items, 64);
-  const looseShortTermItems = asStringArrayLoose(memoryPatchInput.short_term_items, 64);
-  const looseUserProfileItems = asStringArrayLoose(userProfilePatchInput.items, 64);
+  const looseFlowChanges = collectStringsFromMasks(root, [
+    ['learning', 'flow_patch', 'changes'],
+    ['learning', 'flow_patch', 'patch'],
+    ['learning', 'flowPatch', 'changes'],
+    ['learning', 'flowPatch'],
+    ['learning', 'flow_changes'],
+    ['flow_patch', 'changes'],
+    ['flow_patch_changes'],
+    ['flowChanges'],
+  ], 32);
+  const looseLongTermItems = collectStringsFromMasks(root, [
+    ['learning', 'memory_patch', 'long_term_items'],
+    ['learning', 'memory_patch', 'longTermItems'],
+    ['learning', 'memory_patch', 'items'],
+    ['learning', 'memoryPatch', 'long_term_items'],
+    ['learning', 'memoryPatch', 'longTermItems'],
+    ['learning', 'memoryPatch', 'items'],
+    ['learning', 'memory'],
+    ['learning', 'long_term_items'],
+    ['memory_patch', 'long_term_items'],
+    ['memory_patch', 'longTermItems'],
+    ['memory_patch', 'items'],
+    ['long_term_items'],
+    ['memory'],
+  ], 64);
+  const looseShortTermItems = collectStringsFromMasks(root, [
+    ['learning', 'memory_patch', 'short_term_items'],
+    ['learning', 'memory_patch', 'shortTermItems'],
+    ['learning', 'memoryPatch', 'short_term_items'],
+    ['learning', 'memoryPatch', 'shortTermItems'],
+    ['learning', 'short_term_items'],
+    ['memory_patch', 'short_term_items'],
+    ['memory_patch', 'shortTermItems'],
+    ['short_term_items'],
+  ], 64);
+  const looseUserProfileItems = collectStringsFromMasks(root, [
+    ['learning', 'user_profile_patch', 'items'],
+    ['learning', 'userProfilePatch', 'items'],
+    ['learning', 'profile_patch'],
+    ['learning', 'user_profile'],
+    ['user_profile_patch', 'items'],
+    ['userProfilePatch', 'items'],
+    ['user_profile_items'],
+    ['profile_patch'],
+  ], 64);
+  const didRight = collectStringsFromMasks(root, [
+    ['learning', 'did_right'],
+    ['learning', 'didRight'],
+    ['did_right'],
+    ['didRight'],
+  ], 32);
+  const didWrong = collectStringsFromMasks(root, [
+    ['learning', 'did_wrong'],
+    ['learning', 'didWrong'],
+    ['did_wrong'],
+    ['didWrong'],
+  ], 32);
+  const repeatedWrong = collectStringsFromMasks(root, [
+    ['learning', 'repeated_wrong'],
+    ['learning', 'repeatedWrong'],
+    ['repeated_wrong'],
+    ['repeatedWrong'],
+  ], 32);
   const learningText = typeof learningRaw === 'string' ? learningRaw.trim() : '';
   const flowText = typeof flowPatchInput === 'object' && typeof flowPatchInput.changes === 'string'
     ? flowPatchInput.changes.trim()
@@ -375,42 +477,96 @@ export function normalizeControlBlock(rawValue: unknown): { controlBlock: Finger
   const userProfileText = typeof userProfilePatchInput === 'object' && typeof userProfilePatchInput.items === 'string'
     ? userProfilePatchInput.items.trim()
     : '';
+  const fallbackFlowText = pickStringFromMasks(root, [
+    ['learning', 'flow_patch', 'changes'],
+    ['learning', 'flow_patch', 'patch'],
+    ['learning', 'flowPatch', 'changes'],
+    ['learning', 'flowPatch'],
+    ['learning', 'flow_changes'],
+    ['flow_patch', 'changes'],
+    ['flow_patch_changes'],
+    ['flowChanges'],
+  ]) ?? '';
+  const fallbackMemoryText = pickStringFromMasks(root, [
+    ['learning', 'memory_patch', 'long_term_items'],
+    ['learning', 'memory_patch', 'items'],
+    ['learning', 'memoryPatch', 'long_term_items'],
+    ['learning', 'memoryPatch', 'items'],
+    ['learning', 'memory'],
+    ['memory_patch', 'long_term_items'],
+    ['memory_patch', 'items'],
+    ['long_term_items'],
+    ['memory'],
+  ]) ?? '';
+  const fallbackUserProfileText = pickStringFromMasks(root, [
+    ['learning', 'user_profile_patch', 'items'],
+    ['learning', 'userProfilePatch', 'items'],
+    ['learning', 'profile_patch'],
+    ['learning', 'user_profile'],
+    ['user_profile_patch', 'items'],
+    ['userProfilePatch', 'items'],
+    ['user_profile_items'],
+    ['profile_patch'],
+  ]) ?? '';
+  const flowProjectScope = pickStringFromMasks(root, [
+    ['learning', 'flow_patch', 'project_scope'],
+    ['learning', 'flowPatch', 'project_scope'],
+    ['flow_patch', 'project_scope'],
+  ]) ?? '';
+  const memoryProjectScope = pickStringFromMasks(root, [
+    ['learning', 'memory_patch', 'project_scope'],
+    ['learning', 'memoryPatch', 'project_scope'],
+    ['memory_patch', 'project_scope'],
+  ]) ?? '';
   const sensitivityRaw = asString(userProfilePatchInput.sensitivity, 'normal').toLowerCase();
 
   const learning = {
     ...learningInput,
-    did_right: asStringArrayLoose(learningInput.did_right, 32),
-    did_wrong: asStringArrayLoose(learningInput.did_wrong, 32),
-    repeated_wrong: asStringArrayLoose(learningInput.repeated_wrong, 32),
+    did_right: didRight,
+    did_wrong: didWrong,
+    repeated_wrong: repeatedWrong,
     flow_patch: {
       ...flowPatchInput,
-      required: asBoolean(flowPatchInput.required, looseFlowChanges.length > 0 || flowText.length > 0),
-      project_scope: asString(flowPatchInput.project_scope, ''),
+      required: asBoolean(flowPatchInput.required, looseFlowChanges.length > 0 || flowText.length > 0 || fallbackFlowText.length > 0),
+      project_scope: asString(flowPatchInput.project_scope, flowProjectScope),
       changes: looseFlowChanges.length > 0
         ? looseFlowChanges
-        : (flowText.length > 0 ? [flowText] : []),
+        : (flowText.length > 0 ? [flowText] : (fallbackFlowText.length > 0 ? [fallbackFlowText] : [])),
     },
     memory_patch: {
       ...memoryPatchInput,
-      required: asBoolean(memoryPatchInput.required, looseLongTermItems.length > 0 || memoryText.length > 0 || learningText.length > 0),
-      project_scope: asString(memoryPatchInput.project_scope, ''),
+      required: asBoolean(memoryPatchInput.required, looseLongTermItems.length > 0 || memoryText.length > 0 || fallbackMemoryText.length > 0 || learningText.length > 0),
+      project_scope: asString(memoryPatchInput.project_scope, memoryProjectScope),
       long_term_items: looseLongTermItems.length > 0
         ? looseLongTermItems
         : (memoryText.length > 0
           ? [memoryText]
-          : (learningText.length > 0 ? [learningText] : [])),
+          : (fallbackMemoryText.length > 0
+            ? [fallbackMemoryText]
+            : (learningText.length > 0 ? [learningText] : []))),
       short_term_items: looseShortTermItems,
     },
     user_profile_patch: {
       ...userProfilePatchInput,
-      required: asBoolean(userProfilePatchInput.required, looseUserProfileItems.length > 0 || userProfileText.length > 0),
+      required: asBoolean(userProfilePatchInput.required, looseUserProfileItems.length > 0 || userProfileText.length > 0 || fallbackUserProfileText.length > 0),
       items: looseUserProfileItems.length > 0
         ? looseUserProfileItems
-        : (userProfileText.length > 0 ? [userProfileText] : []),
+        : (userProfileText.length > 0 ? [userProfileText] : (fallbackUserProfileText.length > 0 ? [fallbackUserProfileText] : [])),
       sensitivity: (sensitivityRaw === 'sensitive' ? 'sensitive' : 'normal') as 'normal' | 'sensitive',
     },
     ...(learningText.length > 0 ? { note: learningText } : {}),
   };
+
+  const tags = collectStringsFromMasks(root, [
+    ['tags'],
+    ['tag'],
+    ['labels'],
+  ], 128);
+  const antiPatterns = collectStringsFromMasks(root, [
+    ['anti_patterns'],
+    ['antiPatterns'],
+    ['antipatterns'],
+  ], 32);
 
   const controlBlock: FingerControlBlock = {
     ...root,
@@ -424,8 +580,8 @@ export function normalizeControlBlock(rawValue: unknown): { controlBlock: Finger
     context_review_hint,
     wait,
     user_signal: userSignal,
-    tags: asStringArrayLoose(root.tags, 128),
-    anti_patterns: asStringArrayLoose(root.anti_patterns, 32),
+    tags,
+    anti_patterns: antiPatterns,
     self_eval: selfEval,
     learning,
   };

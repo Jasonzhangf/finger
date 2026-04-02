@@ -9,6 +9,7 @@ import type { ResourcePool } from '../../orchestration/resource-pool.js';
 
 import { buildDispatchTaskText, extractTaskText, sanitizeDispatchResult, type DispatchSummaryResult } from '../../common/agent-dispatch.js';
 import { resolveSystemDispatchPolicy } from '../../core/system-dispatch-policy.js';
+import { normalizeProjectPathCanonical } from '../../common/path-normalize.js';
 
 import { logger } from '../../core/logger.js';
 
@@ -43,6 +44,25 @@ function firstNonEmptyString(...values: unknown[]): string | undefined {
     if (normalized.length > 0) return normalized;
   }
   return undefined;
+}
+
+function isPathLikeProjectId(input: string): boolean {
+  if (input.includes('/') || input.includes('\\')) return true;
+  if (input.startsWith('~')) return true;
+  if (input.startsWith('.')) return true;
+  return /^[A-Za-z]:[\\/]/.test(input);
+}
+
+function normalizeDispatchProjectId(projectId: string | undefined): string | undefined {
+  if (typeof projectId !== 'string') return undefined;
+  const trimmed = projectId.trim();
+  if (!trimmed) return undefined;
+  if (!isPathLikeProjectId(trimmed)) return trimmed;
+  const canonical = normalizeProjectPathCanonical(trimmed)
+    .replace(/\\/g, '/')
+    .replace(/\/+$/, '');
+  if (!canonical) return trimmed;
+  return canonical.toLowerCase();
 }
 
 export interface AgentStartupTemplate {
@@ -1425,12 +1445,13 @@ export class AgentRuntimeBlock extends BaseBlock {
     const taskMetadata = isObjectRecord(taskRecord.metadata) ? taskRecord.metadata : {};
     const assignment = isObjectRecord(input.assignment) ? input.assignment : {};
 
-    const projectId = firstNonEmptyString(
+    const projectIdRaw = firstNonEmptyString(
       typeof metadata.projectId === 'string' ? metadata.projectId : '',
       typeof taskRecord.projectId === 'string' ? taskRecord.projectId : '',
       typeof assignment.projectId === 'string' ? assignment.projectId : '',
       typeof taskMetadata.projectId === 'string' ? taskMetadata.projectId : '',
     )?.trim();
+    const projectId = normalizeDispatchProjectId(projectIdRaw);
     const workerId = firstNonEmptyString(
       typeof metadata.workerId === 'string' ? metadata.workerId : '',
       typeof metadata.assigneeWorkerId === 'string' ? metadata.assigneeWorkerId : '',

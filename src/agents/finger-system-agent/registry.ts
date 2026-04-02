@@ -9,6 +9,7 @@ import path from 'path';
 import { FINGER_PATHS } from '../../core/finger-paths.js';
 import { logger } from '../../core/logger.js';
 import { createConsoleLikeLogger } from '../../core/logger/console-like.js';
+import { normalizeProjectPathCanonical } from '../../common/path-normalize.js';
 
 const clog = createConsoleLikeLogger('Registry');
 
@@ -45,7 +46,10 @@ const REGISTRY_VERSION = 1;
 const REGISTRY_PATH = path.join(FINGER_PATHS.home, 'system', 'registry.json');
 
 export function normalizeProjectPath(value: string): string {
-  return value.trim().replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
+  const canonical = normalizeProjectPathCanonical(value.trim())
+    .replace(/\\/g, '/')
+    .replace(/\/+$/, '');
+  return canonical.toLowerCase();
 }
 
 export function projectIdFromPath(projectPath: string): string {
@@ -290,7 +294,11 @@ export async function setMonitorStatus(projectPath: string, enabled: boolean): P
     throw new Error('projectPath is required');
   }
 
-  const projectId = projectIdFromPath(trimmedPath);
+  const canonicalPath = normalizeProjectPathCanonical(trimmedPath)
+    .replace(/\\/g, '/')
+    .replace(/\/+$/, '');
+
+  const projectId = projectIdFromPath(canonicalPath || trimmedPath);
   const registry = await loadRegistry();
   const existing = registry.agents[projectId];
   const existingAgentId = existing?.agentId;
@@ -298,9 +306,9 @@ export async function setMonitorStatus(projectPath: string, enabled: boolean): P
 
   const base: AgentInfo = existing || {
     projectId,
-    projectPath: trimmedPath,
-    projectName: deriveProjectName(trimmedPath),
-    agentId: allocateProjectAgentId(registry, deriveProjectName(trimmedPath), projectId, existingAgentId),
+    projectPath: canonicalPath || trimmedPath,
+    projectName: deriveProjectName(canonicalPath || trimmedPath),
+    agentId: allocateProjectAgentId(registry, deriveProjectName(canonicalPath || trimmedPath), projectId, existingAgentId),
     status: 'idle',
     lastHeartbeat: now,
     stats: {
@@ -312,8 +320,8 @@ export async function setMonitorStatus(projectPath: string, enabled: boolean): P
 
   const next: AgentInfo = {
     ...base,
-    projectPath: trimmedPath || base.projectPath,
-    projectName: base.projectName || deriveProjectName(trimmedPath),
+    projectPath: canonicalPath || base.projectPath,
+    projectName: base.projectName || deriveProjectName(canonicalPath || trimmedPath),
     monitored: enabled,
     monitorUpdatedAt: now,
   };
