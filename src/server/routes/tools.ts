@@ -3,18 +3,13 @@ import type { RuntimeFacade } from '../../runtime/runtime-facade.js';
 import type { ToolRegistry } from '../../runtime/tool-registry.js';
 import { isObjectRecord } from '../common/object.js';
 
-function extractSessionIdFromInput(input: unknown): string | undefined {
+function extractSessionIdFromInput(toolName: string, input: unknown): string | undefined {
   if (!isObjectRecord(input)) return undefined;
-
-  const direct = [
-    input.sessionId,
-    input.session_id,
-  ];
-  for (const candidate of direct) {
-    if (typeof candidate === 'string' && candidate.trim().length > 0) {
-      return candidate.trim();
-    }
-  }
+  // IMPORTANT:
+  // Do not infer runtime execution session from generic tool arguments like input.session_id.
+  // Many tools use session_id as a domain argument (e.g. agent.control status target),
+  // and binding runtime session from those fields causes cross-session drift.
+  if (toolName !== 'context_builder.rebuild') return undefined;
 
   const runtimeContext = isObjectRecord(input._runtime_context) ? input._runtime_context : undefined;
   if (runtimeContext) {
@@ -111,7 +106,7 @@ export function registerToolRoutes(app: Express, deps: ToolRouteDeps): void {
         ? req.body.sessionId.trim()
         : typeof req.body?.session_id === 'string' && req.body.session_id.trim().length > 0
           ? req.body.session_id.trim()
-          : extractSessionIdFromInput(input);
+          : extractSessionIdFromInput(toolName, input);
 
     if (typeof agentId !== 'string' || agentId.trim().length === 0) {
       res.status(400).json({ error: 'agentId is required' });
@@ -127,12 +122,13 @@ export function registerToolRoutes(app: Express, deps: ToolRouteDeps): void {
     }
 
     try {
-      if (requestSessionId && typeof runtime.setCurrentSession === 'function') {
-        runtime.setCurrentSession(requestSessionId);
-      }
-      if (requestSessionId && typeof runtime.bindAgentSession === 'function') {
-        runtime.bindAgentSession(agentId, requestSessionId);
-      }
+      const bindableSessionId = (
+        requestSessionId
+        && typeof runtime.getSession === 'function'
+        && runtime.getSession(requestSessionId)
+      )
+        ? requestSessionId
+        : undefined;
       const executionInput = isObjectRecord(input)
         ? toolName === 'user.ask'
           ? {
@@ -152,7 +148,7 @@ export function registerToolRoutes(app: Express, deps: ToolRouteDeps): void {
         : input;
       const result = await runtime.callTool(agentId, toolName, executionInput, {
         authorizationToken,
-        sessionId: requestSessionId,
+        sessionId: bindableSessionId,
       });
       res.json({
         success: true,

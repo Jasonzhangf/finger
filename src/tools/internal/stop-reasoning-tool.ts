@@ -11,6 +11,16 @@ interface StopReasoningInput {
   status?: 'completed' | 'blocked' | 'handoff';
   task?: string;
   nextAction?: string;
+  goal?: string;
+  assumptions?: string;
+  tags?: string[];
+  toolsUsed?: Array<{
+    tool: string;
+    args?: string;
+    status?: 'success' | 'failure' | 'unknown';
+  }>;
+  successes?: string[];
+  failures?: string[];
 }
 
 interface StopReasoningPolicyInput {
@@ -44,8 +54,45 @@ export const stopReasoningTool: InternalTool = {
         type: 'string',
         description: 'If blocked/handoff, what should happen next.',
       },
+      goal: {
+        type: 'string',
+        description: 'Task objective for this turn.',
+      },
+      assumptions: {
+        type: 'string',
+        description: 'Main assumptions/hypotheses made during this turn.',
+      },
+      tags: {
+        type: 'array',
+        items: { type: 'string' },
+        description: 'Task type / keyword tags for retrieval.',
+      },
+      toolsUsed: {
+        type: 'array',
+        description: 'Tool usage summary for this turn.',
+        items: {
+          type: 'object',
+          properties: {
+            tool: { type: 'string' },
+            args: { type: 'string' },
+            status: { type: 'string', enum: ['success', 'failure', 'unknown'] },
+          },
+          required: ['tool'],
+          additionalProperties: true,
+        },
+      },
+      successes: {
+        type: 'array',
+        items: { type: 'string' },
+        description: 'Successful execution experiences learned in this turn.',
+      },
+      failures: {
+        type: 'array',
+        items: { type: 'string' },
+        description: 'Failed attempts / lessons in this turn.',
+      },
     },
-    required: ['summary'],
+    required: ['summary', 'goal', 'assumptions', 'tags', 'toolsUsed', 'successes', 'failures'],
   },
   async execute(rawInput: unknown, context) {
     const input = (rawInput ?? {}) as StopReasoningInput;
@@ -55,6 +102,77 @@ export const stopReasoningTool: InternalTool = {
         ok: false,
         stopRequested: false,
         error: 'summary is required',
+      };
+    }
+    const goal = typeof input?.goal === 'string' ? input.goal.trim() : '';
+    if (goal.length === 0) {
+      return {
+        ok: false,
+        stopRequested: false,
+        error: 'goal is required',
+      };
+    }
+    const assumptions = typeof input?.assumptions === 'string' ? input.assumptions.trim() : '';
+    if (assumptions.length === 0) {
+      return {
+        ok: false,
+        stopRequested: false,
+        error: 'assumptions is required',
+      };
+    }
+    const tags = Array.isArray(input?.tags)
+      ? input.tags
+        .filter((item): item is string => typeof item === 'string' && item.trim().length > 0)
+        .map((item) => item.trim())
+      : [];
+    if (tags.length === 0) {
+      return {
+        ok: false,
+        stopRequested: false,
+        error: 'tags is required',
+      };
+    }
+    const toolsUsed = Array.isArray(input?.toolsUsed)
+      ? input.toolsUsed
+        .filter((item): item is { tool: string; args?: string; status?: 'success' | 'failure' | 'unknown' } =>
+          typeof item === 'object' && item !== null && typeof item.tool === 'string' && item.tool.trim().length > 0)
+        .map((item) => ({
+          tool: item.tool.trim(),
+          ...(typeof item.args === 'string' && item.args.trim().length > 0 ? { args: item.args.trim() } : {}),
+          ...(item.status === 'success' || item.status === 'failure' || item.status === 'unknown'
+            ? { status: item.status }
+            : {}),
+        }))
+      : [];
+    if (toolsUsed.length === 0) {
+      return {
+        ok: false,
+        stopRequested: false,
+        error: 'toolsUsed is required',
+      };
+    }
+    const successes = Array.isArray(input?.successes)
+      ? input.successes
+        .filter((item): item is string => typeof item === 'string' && item.trim().length > 0)
+        .map((item) => item.trim())
+      : [];
+    if (!Array.isArray(input?.successes)) {
+      return {
+        ok: false,
+        stopRequested: false,
+        error: 'successes is required',
+      };
+    }
+    const failures = Array.isArray(input?.failures)
+      ? input.failures
+        .filter((item): item is string => typeof item === 'string' && item.trim().length > 0)
+        .map((item) => item.trim())
+      : [];
+    if (!Array.isArray(input?.failures)) {
+      return {
+        ok: false,
+        stopRequested: false,
+        error: 'failures is required',
       };
     }
     const status = input?.status && ['completed', 'blocked', 'handoff'].includes(input.status)
@@ -70,6 +188,12 @@ export const stopReasoningTool: InternalTool = {
       ...(typeof input?.nextAction === 'string' && input.nextAction.trim().length > 0
         ? { nextAction: input.nextAction.trim() }
         : {}),
+      goal,
+      assumptions,
+      tags,
+      toolsUsed,
+      successes,
+      failures,
       sessionId: context.sessionId,
       agentId: context.agentId,
       timestamp: new Date().toISOString(),

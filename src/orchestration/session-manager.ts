@@ -25,6 +25,7 @@ import { logger } from '../core/logger.js';
 import { createConsoleLikeLogger } from '../core/logger/console-like.js';
 import { inferTagsAndTopic } from '../common/tag-topic-inference.js';
 import { pruneOrphanSessionRootDirs } from '../core/runtime-hygiene.js';
+import { normalizeProjectPathCanonical } from '../common/path-normalize.js';
 
 const clog = createConsoleLikeLogger('SessionManager');
 
@@ -74,7 +75,7 @@ export class SessionManager {
   }
 
   private getProjectDirName(projectPath: string): string {
-    const normalizedPath = path.resolve(projectPath).replace(/\\/g, '/');
+    const normalizedPath = this.normalizeProjectPath(projectPath).replace(/\\/g, '/');
     const encoded = normalizedPath.replace(/[/:]/g, '_');
     return encoded.length > 0 ? encoded : '_';
   }
@@ -178,7 +179,7 @@ export class SessionManager {
   }
 
   private normalizeProjectPath(projectPath: string): string {
-    const normalized = path.resolve(projectPath);
+    const normalized = normalizeProjectPathCanonical(projectPath);
     const marker = `${path.sep}.finger${path.sep}session${path.sep}`;
     const idx = normalized.indexOf(marker);
     if (idx > 0) {
@@ -324,7 +325,7 @@ export class SessionManager {
     if (projectPath === SYSTEM_PROJECT_PATH) {
       return this.createSystemSession(name, options);
     }
-   const normalizedPath = path.resolve(projectPath);
+   const normalizedPath = this.normalizeProjectPath(projectPath);
     const now = new Date().toISOString();
     const finalAllowReuse = options?.allowReuse !== false;
 
@@ -437,7 +438,7 @@ export class SessionManager {
       return existing;
     }
 
-    const normalizedPath = path.resolve(projectPath);
+    const normalizedPath = this.normalizeProjectPath(projectPath);
     const now = new Date().toISOString();
     const resolvedName = name && name.trim().length > 0 ? name.trim() : (path.basename(normalizedPath) || sessionId);
     const session: Session = {
@@ -463,7 +464,7 @@ export class SessionManager {
   }
 
   private findReusableEmptySession(projectPath: string): Session | null {
-    const normalized = path.resolve(projectPath);
+    const normalized = this.normalizeProjectPath(projectPath);
     const candidates = this.listSessions()
       .filter((session) =>
         session.projectPath === normalized
@@ -481,7 +482,7 @@ export class SessionManager {
   }
 
   private cleanupEmptySessionsForProject(projectPath: string): void {
-    const normalized = path.resolve(projectPath);
+    const normalized = this.normalizeProjectPath(projectPath);
     const emptySessions = this.listSessions()
       .filter((session) =>
         session.projectPath === normalized
@@ -555,7 +556,7 @@ export class SessionManager {
   }
 
   findSessionsByProjectPath(projectPath: string): Session[] {
-    const normalized = path.resolve(projectPath);
+    const normalized = this.normalizeProjectPath(projectPath);
     const prefix = normalized.endsWith(path.sep) ? normalized : `${normalized}${path.sep}`;
     return this.listSessions().filter((session) => {
       if (this.isRuntimeSession(session)) return false;
@@ -842,11 +843,6 @@ export class SessionManager {
             targetBudget,
             buildMode: contextBuilder.mode,
             includeMemoryMd: false,
-            timeWindow: {
-              nowMs: Date.now(),
-              halfLifeMs: contextBuilder.halfLifeMs,
-              overThresholdRelevance: contextBuilder.overThresholdRelevance,
-            },
             enableTaskGrouping: true,
             enableModelRanking: contextBuilder.enableModelRanking,
             rankingProviderId: contextBuilder.rankingProviderId,
@@ -1123,7 +1119,7 @@ export class SessionManager {
     projectDir: string;
     hadActive: boolean;
   } {
-    const normalized = path.resolve(projectPath);
+    const normalized = this.normalizeProjectPath(projectPath);
     const projectDir = this.getProjectSessionsDir(normalized);
     const candidates = Array.from(this.sessions.values()).filter(
       (session) => session.projectPath === normalized,

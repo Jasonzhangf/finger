@@ -8,6 +8,109 @@ import type { SessionProgress, ToolCallRecord } from './progress-monitor-types.j
 import { resolveToolDisplayName } from './progress-monitor-reporting.js';
 import { estimateTokensWithTiktoken } from '../../utils/tiktoken-estimator.js';
 
+function normalizeNonNegativeInt(value: unknown): number | undefined {
+  if (typeof value === 'number' && Number.isFinite(value) && value >= 0) return Math.floor(value);
+  if (typeof value === 'string') {
+    const parsed = Number(value);
+    if (Number.isFinite(parsed) && parsed >= 0) return Math.floor(parsed);
+  }
+  return undefined;
+}
+
+function parseContextBreakdown(payload: Record<string, unknown> | undefined): SessionProgress['contextBreakdown'] | undefined {
+  if (!payload || typeof payload !== 'object') return undefined;
+  const raw = (typeof payload.contextBreakdown === 'object' && payload.contextBreakdown !== null)
+    ? payload.contextBreakdown as Record<string, unknown>
+    : (typeof payload.context_breakdown === 'object' && payload.context_breakdown !== null)
+      ? payload.context_breakdown as Record<string, unknown>
+      : undefined;
+  if (!raw) return undefined;
+
+  const historyContextTokens = normalizeNonNegativeInt(raw.historyContextTokens ?? raw.history_context_tokens);
+  const historyCurrentTokens = normalizeNonNegativeInt(raw.historyCurrentTokens ?? raw.history_current_tokens);
+  const historyTotalTokens = normalizeNonNegativeInt(raw.historyTotalTokens ?? raw.history_total_tokens);
+  const historyContextMessages = normalizeNonNegativeInt(raw.historyContextMessages ?? raw.history_context_messages);
+  const historyCurrentMessages = normalizeNonNegativeInt(raw.historyCurrentMessages ?? raw.history_current_messages);
+  const systemPromptTokens = normalizeNonNegativeInt(raw.systemPromptTokens ?? raw.system_prompt_tokens);
+  const developerPromptTokens = normalizeNonNegativeInt(raw.developerPromptTokens ?? raw.developer_prompt_tokens);
+  const userInstructionsTokens = normalizeNonNegativeInt(raw.userInstructionsTokens ?? raw.user_instructions_tokens);
+  const environmentContextTokens = normalizeNonNegativeInt(raw.environmentContextTokens ?? raw.environment_context_tokens);
+  const turnContextTokens = normalizeNonNegativeInt(raw.turnContextTokens ?? raw.turn_context_tokens);
+  const skillsTokens = normalizeNonNegativeInt(raw.skillsTokens ?? raw.skills_tokens);
+  const mailboxTokens = normalizeNonNegativeInt(raw.mailboxTokens ?? raw.mailbox_tokens);
+  const projectTokens = normalizeNonNegativeInt(raw.projectTokens ?? raw.project_tokens);
+  const flowTokens = normalizeNonNegativeInt(raw.flowTokens ?? raw.flow_tokens);
+  const contextSlotsTokens = normalizeNonNegativeInt(raw.contextSlotsTokens ?? raw.context_slots_tokens);
+  const inputTextTokens = normalizeNonNegativeInt(raw.inputTextTokens ?? raw.input_text_tokens);
+  const inputMediaTokens = normalizeNonNegativeInt(raw.inputMediaTokens ?? raw.input_media_tokens);
+  const inputMediaCount = normalizeNonNegativeInt(raw.inputMediaCount ?? raw.input_media_count);
+  const inputTotalTokens = normalizeNonNegativeInt(raw.inputTotalTokens ?? raw.input_total_tokens);
+  const toolsSchemaTokens = normalizeNonNegativeInt(raw.toolsSchemaTokens ?? raw.tools_schema_tokens);
+  const toolExecutionTokens = normalizeNonNegativeInt(raw.toolExecutionTokens ?? raw.tool_execution_tokens);
+  const contextLedgerConfigTokens = normalizeNonNegativeInt(raw.contextLedgerConfigTokens ?? raw.context_ledger_config_tokens);
+  const responsesConfigTokens = normalizeNonNegativeInt(raw.responsesConfigTokens ?? raw.responses_config_tokens);
+  const totalKnownTokens = normalizeNonNegativeInt(raw.totalKnownTokens ?? raw.total_known_tokens);
+  const source = typeof raw.source === 'string' ? raw.source.trim() : '';
+
+  if (
+    historyContextTokens === undefined
+    && historyCurrentTokens === undefined
+    && historyTotalTokens === undefined
+    && historyContextMessages === undefined
+    && historyCurrentMessages === undefined
+    && systemPromptTokens === undefined
+    && developerPromptTokens === undefined
+    && userInstructionsTokens === undefined
+    && environmentContextTokens === undefined
+    && turnContextTokens === undefined
+    && skillsTokens === undefined
+    && mailboxTokens === undefined
+    && projectTokens === undefined
+    && flowTokens === undefined
+    && contextSlotsTokens === undefined
+    && inputTextTokens === undefined
+    && inputMediaTokens === undefined
+    && inputMediaCount === undefined
+    && inputTotalTokens === undefined
+    && toolsSchemaTokens === undefined
+    && toolExecutionTokens === undefined
+    && contextLedgerConfigTokens === undefined
+    && responsesConfigTokens === undefined
+    && totalKnownTokens === undefined
+    && source.length === 0
+  ) {
+    return undefined;
+  }
+
+  return {
+    ...(historyContextTokens !== undefined ? { historyContextTokens } : {}),
+    ...(historyCurrentTokens !== undefined ? { historyCurrentTokens } : {}),
+    ...(historyTotalTokens !== undefined ? { historyTotalTokens } : {}),
+    ...(historyContextMessages !== undefined ? { historyContextMessages } : {}),
+    ...(historyCurrentMessages !== undefined ? { historyCurrentMessages } : {}),
+    ...(systemPromptTokens !== undefined ? { systemPromptTokens } : {}),
+    ...(developerPromptTokens !== undefined ? { developerPromptTokens } : {}),
+    ...(userInstructionsTokens !== undefined ? { userInstructionsTokens } : {}),
+    ...(environmentContextTokens !== undefined ? { environmentContextTokens } : {}),
+    ...(turnContextTokens !== undefined ? { turnContextTokens } : {}),
+    ...(skillsTokens !== undefined ? { skillsTokens } : {}),
+    ...(mailboxTokens !== undefined ? { mailboxTokens } : {}),
+    ...(projectTokens !== undefined ? { projectTokens } : {}),
+    ...(flowTokens !== undefined ? { flowTokens } : {}),
+    ...(contextSlotsTokens !== undefined ? { contextSlotsTokens } : {}),
+    ...(inputTextTokens !== undefined ? { inputTextTokens } : {}),
+    ...(inputMediaTokens !== undefined ? { inputMediaTokens } : {}),
+    ...(inputMediaCount !== undefined ? { inputMediaCount } : {}),
+    ...(inputTotalTokens !== undefined ? { inputTotalTokens } : {}),
+    ...(toolsSchemaTokens !== undefined ? { toolsSchemaTokens } : {}),
+    ...(toolExecutionTokens !== undefined ? { toolExecutionTokens } : {}),
+    ...(contextLedgerConfigTokens !== undefined ? { contextLedgerConfigTokens } : {}),
+    ...(responsesConfigTokens !== undefined ? { responsesConfigTokens } : {}),
+    ...(totalKnownTokens !== undefined ? { totalKnownTokens } : {}),
+    ...(source.length > 0 ? { source } : {}),
+  };
+}
+
 function buildProgressEntryKey(progress: SessionProgress): string {
   return `${progress.sessionId}::${progress.agentId || 'unknown'}`;
 }
@@ -19,17 +122,53 @@ function joinTokenParts(parts: Array<string | undefined>): string {
     .join('\n');
 }
 
+function inferEstimatedFromPercent(
+  percent: number | undefined,
+  maxInputTokens: number | undefined,
+): number | undefined {
+  if (typeof percent !== 'number' || !Number.isFinite(percent) || percent < 0) return undefined;
+  if (typeof maxInputTokens !== 'number' || !Number.isFinite(maxInputTokens) || maxInputTokens <= 0) return undefined;
+  return Math.max(0, Math.floor((percent / 100) * maxInputTokens));
+}
+
+function resolveContextBaselineTokens(progress: SessionProgress): number | undefined {
+  if (typeof progress.contextUsageBaseTokens === 'number' && Number.isFinite(progress.contextUsageBaseTokens)) {
+    return Math.max(0, Math.floor(progress.contextUsageBaseTokens));
+  }
+  if (
+    typeof progress.estimatedTokensInContextWindow === 'number'
+    && Number.isFinite(progress.estimatedTokensInContextWindow)
+  ) {
+    return Math.max(0, Math.floor(progress.estimatedTokensInContextWindow));
+  }
+  if (
+    typeof progress.contextBreakdown?.totalKnownTokens === 'number'
+    && Number.isFinite(progress.contextBreakdown.totalKnownTokens)
+    && progress.contextBreakdown.totalKnownTokens >= 0
+  ) {
+    return Math.max(0, Math.floor(progress.contextBreakdown.totalKnownTokens));
+  }
+  if (
+    typeof progress.contextUsagePercent === 'number'
+    && Number.isFinite(progress.contextUsagePercent)
+    && progress.contextUsagePercent >= 0
+    && typeof progress.maxInputTokens === 'number'
+    && Number.isFinite(progress.maxInputTokens)
+    && progress.maxInputTokens > 0
+  ) {
+    return Math.max(0, Math.floor((progress.contextUsagePercent / 100) * progress.maxInputTokens));
+  }
+  return undefined;
+}
+
 function applyAddedContextTokens(progress: SessionProgress, text: string): void {
   const normalized = text.trim();
   if (!normalized) return;
   const addedTokens = estimateTokensWithTiktoken(normalized);
   if (!Number.isFinite(addedTokens) || addedTokens <= 0) return;
 
-  const baseTokens = typeof progress.contextUsageBaseTokens === 'number' && Number.isFinite(progress.contextUsageBaseTokens)
-    ? Math.max(0, Math.floor(progress.contextUsageBaseTokens))
-    : typeof progress.estimatedTokensInContextWindow === 'number' && Number.isFinite(progress.estimatedTokensInContextWindow)
-      ? Math.max(0, Math.floor(progress.estimatedTokensInContextWindow))
-      : 0;
+  const baseTokens = resolveContextBaselineTokens(progress);
+  if (baseTokens === undefined) return;
   const currentAdded = typeof progress.contextUsageAddedTokens === 'number' && Number.isFinite(progress.contextUsageAddedTokens)
     ? Math.max(0, Math.floor(progress.contextUsageAddedTokens))
     : 0;
@@ -41,6 +180,91 @@ function applyAddedContextTokens(progress: SessionProgress, text: string): void 
   if (typeof progress.maxInputTokens === 'number' && Number.isFinite(progress.maxInputTokens) && progress.maxInputTokens > 0) {
     progress.contextUsagePercent = Math.max(0, Math.floor((nextEstimated / progress.maxInputTokens) * 100));
   }
+  applyAddedTokensToContextBreakdown(progress, addedTokens);
+}
+
+function applyAddedTokensToContextBreakdown(progress: SessionProgress, addedTokens: number): void {
+  const breakdown = progress.contextBreakdown;
+  if (!breakdown) return;
+  if (!Number.isFinite(addedTokens) || addedTokens <= 0) return;
+  const delta = Math.max(0, Math.floor(addedTokens));
+  if (delta <= 0) return;
+
+  const currentHistoryCurrent = typeof breakdown.historyCurrentTokens === 'number' && Number.isFinite(breakdown.historyCurrentTokens)
+    ? Math.max(0, Math.floor(breakdown.historyCurrentTokens))
+    : 0;
+  const nextHistoryCurrent = currentHistoryCurrent + delta;
+  breakdown.historyCurrentTokens = nextHistoryCurrent;
+
+  const historyContext = typeof breakdown.historyContextTokens === 'number' && Number.isFinite(breakdown.historyContextTokens)
+    ? Math.max(0, Math.floor(breakdown.historyContextTokens))
+    : 0;
+  breakdown.historyTotalTokens = historyContext + nextHistoryCurrent;
+
+  if (typeof breakdown.totalKnownTokens === 'number' && Number.isFinite(breakdown.totalKnownTokens)) {
+    breakdown.totalKnownTokens = Math.max(0, Math.floor(breakdown.totalKnownTokens)) + delta;
+  } else {
+    breakdown.totalKnownTokens = breakdown.historyTotalTokens;
+  }
+}
+
+function mergeContextBreakdown(
+  progress: SessionProgress,
+  incoming: NonNullable<SessionProgress['contextBreakdown']>,
+  options?: { allowDrop?: boolean },
+): void {
+  const allowDrop = options?.allowDrop === true;
+  const existing = progress.contextBreakdown;
+  if (!existing || allowDrop) {
+    progress.contextBreakdown = { ...incoming };
+    return;
+  }
+
+  const merged: SessionProgress['contextBreakdown'] = { ...existing };
+  const numericKeys: Array<keyof NonNullable<SessionProgress['contextBreakdown']>> = [
+    'historyContextTokens',
+    'historyCurrentTokens',
+    'historyTotalTokens',
+    'historyContextMessages',
+    'historyCurrentMessages',
+    'systemPromptTokens',
+    'developerPromptTokens',
+    'userInstructionsTokens',
+    'environmentContextTokens',
+    'turnContextTokens',
+    'skillsTokens',
+    'mailboxTokens',
+    'projectTokens',
+    'flowTokens',
+    'contextSlotsTokens',
+    'inputTextTokens',
+    'inputMediaTokens',
+    'inputMediaCount',
+    'inputTotalTokens',
+    'toolsSchemaTokens',
+    'toolExecutionTokens',
+    'contextLedgerConfigTokens',
+    'responsesConfigTokens',
+    'totalKnownTokens',
+  ];
+
+  for (const key of numericKeys) {
+    const next = incoming[key];
+    const prev = merged[key];
+    const nextNum = typeof next === 'number' && Number.isFinite(next) ? Math.max(0, Math.floor(next)) : undefined;
+    const prevNum = typeof prev === 'number' && Number.isFinite(prev) ? Math.max(0, Math.floor(prev)) : undefined;
+    if (nextNum === undefined) continue;
+    if (prevNum === undefined) {
+      (merged as Record<string, unknown>)[key] = nextNum;
+      continue;
+    }
+    (merged as Record<string, unknown>)[key] = Math.max(prevNum, nextNum);
+  }
+
+  if (typeof incoming.source === 'string' && incoming.source.trim().length > 0) {
+    merged.source = incoming.source.trim();
+  }
+  progress.contextBreakdown = merged;
 }
 
 function setContextEvent(progress: SessionProgress, detail: string): void {
@@ -287,6 +511,12 @@ export function handleModelRound(progress: SessionProgress, event: any): void {
   if (typeof event.payload?.reasoning === 'string' && event.payload.reasoning.length > 0) {
     progress.latestReasoning = event.payload.reasoning.slice(0, 120);
   }
+  const parsedBreakdown = parseContextBreakdown(
+    event?.payload && typeof event.payload === 'object' ? event.payload as Record<string, unknown> : undefined,
+  );
+  if (parsedBreakdown) {
+    mergeContextBreakdown(progress, parsedBreakdown);
+  }
   const contextUsagePercentRaw = typeof event.payload?.contextUsagePercent === 'number'
     ? event.payload.contextUsagePercent
     : typeof event.payload?.context_usage_percent === 'number'
@@ -316,12 +546,20 @@ export function handleModelRound(progress: SessionProgress, event: any): void {
   const normalizedPercent = typeof contextUsagePercentRaw === 'number' && Number.isFinite(contextUsagePercentRaw)
     ? Math.max(0, Math.floor(contextUsagePercentRaw))
     : undefined;
+  const normalizedMaxInput = typeof maxInputTokensRaw === 'number' && Number.isFinite(maxInputTokensRaw)
+    ? Math.max(0, Math.floor(maxInputTokensRaw))
+    : (typeof progress.maxInputTokens === 'number' && Number.isFinite(progress.maxInputTokens)
+      ? Math.max(0, Math.floor(progress.maxInputTokens))
+      : undefined);
   // baseline = model-round usage for current context window:
   // prefer explicit estimatedTokensInContextWindow, fallback to usage.input_tokens, then total_tokens.
   const usageEstimatedRaw = estimatedTokensRaw ?? inputTokensRaw ?? totalTokensRaw;
-  const normalizedEstimated = typeof usageEstimatedRaw === 'number' && Number.isFinite(usageEstimatedRaw)
+  let normalizedEstimated = typeof usageEstimatedRaw === 'number' && Number.isFinite(usageEstimatedRaw)
     ? Math.max(0, Math.floor(usageEstimatedRaw))
     : undefined;
+  if (normalizedEstimated === undefined) {
+    normalizedEstimated = inferEstimatedFromPercent(normalizedPercent, normalizedMaxInput);
+  }
   const canDrop = progress.allowContextDropOnce === true;
   const currentPercent = typeof progress.contextUsagePercent === 'number' ? progress.contextUsagePercent : undefined;
   const shouldApplyPercent =
@@ -371,6 +609,16 @@ export function handleSystemNoticeEvent(progress: SessionProgress, event: any): 
     progress.status = 'running';
   }
   const payload = event?.payload ?? {};
+  const source = typeof payload.source === 'string' ? payload.source : '';
+  const parsedBreakdown = parseContextBreakdown(
+    payload && typeof payload === 'object' ? payload as Record<string, unknown> : undefined,
+  );
+  const shouldAllowBreakdownDrop = source === 'auto_context_rebuild'
+    || source === 'manual_context_rebuild'
+    || source === 'session_compressed';
+  if (parsedBreakdown) {
+    mergeContextBreakdown(progress, parsedBreakdown, { allowDrop: shouldAllowBreakdownDrop });
+  }
   const contextUsagePercentRaw = typeof payload.contextUsagePercent === 'number'
     ? payload.contextUsagePercent
     : typeof payload.context_usage_percent === 'number'
@@ -397,7 +645,6 @@ export function handleSystemNoticeEvent(progress: SessionProgress, event: any): 
       ? payload.total_tokens
       : undefined;
 
-  const source = typeof payload.source === 'string' ? payload.source : '';
   if (source === 'auto_context_rebuild' || source === 'manual_context_rebuild' || source === 'session_compressed') {
     progress.allowContextDropOnce = true;
     const trigger = source === 'auto_context_rebuild'
@@ -415,10 +662,18 @@ export function handleSystemNoticeEvent(progress: SessionProgress, event: any): 
   const normalizedPercent = typeof contextUsagePercentRaw === 'number' && Number.isFinite(contextUsagePercentRaw)
     ? Math.max(0, Math.floor(contextUsagePercentRaw))
     : undefined;
+  const normalizedMaxInput = typeof maxInputTokensRaw === 'number' && Number.isFinite(maxInputTokensRaw)
+    ? Math.max(0, Math.floor(maxInputTokensRaw))
+    : (typeof progress.maxInputTokens === 'number' && Number.isFinite(progress.maxInputTokens)
+      ? Math.max(0, Math.floor(progress.maxInputTokens))
+      : undefined);
   const usageEstimatedRaw = estimatedTokensRaw ?? inputTokensRaw ?? totalTokensRaw;
-  const normalizedEstimated = typeof usageEstimatedRaw === 'number' && Number.isFinite(usageEstimatedRaw)
+  let normalizedEstimated = typeof usageEstimatedRaw === 'number' && Number.isFinite(usageEstimatedRaw)
     ? Math.max(0, Math.floor(usageEstimatedRaw))
     : undefined;
+  if (normalizedEstimated === undefined) {
+    normalizedEstimated = inferEstimatedFromPercent(normalizedPercent, normalizedMaxInput);
+  }
   const canDrop = progress.allowContextDropOnce === true;
   const currentPercent = typeof progress.contextUsagePercent === 'number' ? progress.contextUsagePercent : undefined;
   const shouldApplyPercent =

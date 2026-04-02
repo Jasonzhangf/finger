@@ -4,7 +4,12 @@ import type { SessionEnvelopeMapping, TaskContext, WrappedStatusUpdate } from '.
 import { wrapStatusUpdate } from './agent-status-subscriber-helpers.js';
 import { sendStatusUpdate, buildMailboxProgressSnapshot } from './agent-status-subscriber-runtime.js';
 import { buildContextUsageLine, normalizeContextUsageSnapshot } from './progress-monitor-utils.js';
-import { buildSessionRelationLine, resolveSessionRelationInfo } from './agent-status-subscriber-session-utils.js';
+import type { ContextBreakdownSnapshot } from './progress-monitor-types.js';
+import {
+  buildSessionRelationLine,
+  inferSessionUpdateSourceType,
+  resolveSessionRelationInfo,
+} from './agent-status-subscriber-session-utils.js';
 import { logger } from '../../core/logger.js';
 
 const log = logger.module('AgentStatusSubscriberStatus');
@@ -18,8 +23,19 @@ function inferAgentRole(agentId: string): 'system' | 'project' | 'reviewer' | 'a
   return 'agent';
 }
 
-function buildAgentIdentityLine(agentId: string): string {
+function buildAgentIdentityLine(agentId: string, sourceType?: string): string {
   const role = inferAgentRole(agentId);
+  const normalizedSource = typeof sourceType === 'string' ? sourceType.trim().toLowerCase() : '';
+  const isHeartbeatLikeSource = normalizedSource === 'heartbeat'
+    || normalizedSource === 'mailbox'
+    || normalizedSource === 'cron'
+    || normalizedSource === 'system-inject';
+  if (isHeartbeatLikeSource && role === 'system') {
+    return `👤 [system agent:hb] ${agentId}`;
+  }
+  if (isHeartbeatLikeSource) {
+    return `👤 [${role}:hb] ${agentId}`;
+  }
   return `👤 [${role}] ${agentId}`;
 }
 
@@ -173,6 +189,8 @@ export async function sendProgressUpdateToChannels(params: {
       contextUsagePercent?: number;
       estimatedTokensInContextWindow?: number;
       maxInputTokens?: number;
+      contextBreakdown?: ContextBreakdownSnapshot;
+      contextBreakdownMode?: 'release' | 'dev';
     };
   };
   primaryAgentId: string | null;
@@ -243,7 +261,11 @@ export async function sendProgressUpdateToChannels(params: {
   const appendContextSummary = contextSummary && !normalizedReportSummary.includes(contextSummary)
     ? contextSummary
     : undefined;
-  const agentIdentityLine = buildAgentIdentityLine(params.report.agentId || 'unknown-agent');
+  const sourceType = inferSessionUpdateSourceType({
+    sessionId: params.report.sessionId,
+    deps: params.deps,
+  });
+  const agentIdentityLine = buildAgentIdentityLine(params.report.agentId || 'unknown-agent', sourceType);
   const summary = [agentIdentityLine, sessionTitleLine, params.report.summary, relationLine, appendContextSummary, mailboxSummary]
     .filter((item): item is string => typeof item === 'string' && item.trim().length > 0)
     .join('\n');
@@ -273,6 +295,12 @@ export async function sendProgressUpdateToChannels(params: {
           ? { estimatedTokensInContextWindow: params.report.progress.estimatedTokensInContextWindow }
           : {}),
         maxInputTokens: contextSnapshot.maxInputTokens,
+        ...(params.report.progress.contextBreakdown
+          ? { contextBreakdown: params.report.progress.contextBreakdown }
+          : {}),
+        ...(params.report.progress.contextBreakdownMode
+          ? { contextBreakdownMode: params.report.progress.contextBreakdownMode }
+          : {}),
         ...(mailboxHasSignal && mailboxSnapshot
           ? {
               mailboxStatus: {

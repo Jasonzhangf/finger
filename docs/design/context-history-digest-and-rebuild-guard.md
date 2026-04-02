@@ -1,3 +1,9 @@
+# Historical Rationale (Non-Canonical)
+
+> This document is historical rationale only.
+> The only authoritative lifecycle and context policy contract is:
+> `docs/design/project-task-lifecycle-state-machine.md`
+
 # Context History Digest + Rebuild Guard 设计（Draft）
 
 ## 索引概要

@@ -7,6 +7,7 @@ import {
   handleAgentSwitch,
   handleAgentDelete,
   handleSystemCommand,
+  handleSystemProgressMode,
   handleProjectList,
   handleProjectSwitch,
 } from '../modules/messagehub-command-handler.js';
@@ -52,7 +53,13 @@ export async function handleSuperCommand(
     cmd_list: handleCmdList,
     agent_list: () => handleAgentList(deps.sessionManager, firstBlock.path),
     agent_new: () => handleAgentNew(deps.sessionManager, firstBlock.path, deps.eventBus),
-    system: () => handleSystemCommand(deps.sessionManager, deps.eventBus),
+    system: () => {
+      if (typeof firstBlock.content === 'string' && firstBlock.content.startsWith('progress_mode:')) {
+        const mode = firstBlock.content.slice('progress_mode:'.length);
+        return handleSystemProgressMode(mode);
+      }
+      return handleSystemCommand(deps.sessionManager, deps.eventBus);
+    },
     project_list: () => handleProjectList(deps.sessionManager),
   };
 

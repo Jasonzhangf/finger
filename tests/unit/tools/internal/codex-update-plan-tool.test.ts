@@ -1,9 +1,13 @@
 import { describe, it, expect, beforeEach } from 'vitest';
-import { updatePlanTool, getLastPlanSnapshot } from '../../../../src/tools/internal/codex-update-plan-tool.js';
+import {
+  updatePlanTool,
+  getLastPlanSnapshot,
+  resetUpdatePlanToolState,
+} from '../../../../src/tools/internal/codex-update-plan-tool.js';
 
 describe('update_plan tool', () => {
   beforeEach(() => {
-    // No explicit reset available; snapshot updated by tool execution
+    resetUpdatePlanToolState();
   });
 
   describe('parseUpdatePlanInput validation', () => {

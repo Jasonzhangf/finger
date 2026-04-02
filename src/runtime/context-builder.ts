@@ -4,10 +4,9 @@
  * 职责：
  * 1. 读取 MEMORY.md 作为强制性长期记忆上下文
  * 2. 从运行时 session 快照或 Ledger 读取历史记录（默认优先 session 快照）
- * 3. 24小时半衰期时间窗口过滤
- * 4. 任务边界分组（一次完整用户请求 = 一个 task）
- * 5. 模型辅助排序（可选）
- * 6. 预算控制组装上下文
+ * 3. 任务边界分组（一次完整用户请求 = 一个 task）
+ * 4. 模型辅助排序（可选）
+ * 5. 预算控制组装上下文
  *
  * 设计原则：
  * - Ledger 是存储真源（append-only timeline）
@@ -26,11 +25,13 @@ import {
   buildResponsesEndpoints,
 } from '../core/kernel-provider-client.js';
 import {
+  buildPreview,
   readJsonLines,
   normalizeRootDir,
   resolveLedgerPath,
   resolveCompactMemoryPath,
 } from './context-ledger-memory-helpers.js';
+import { executeContextLedgerMemory } from './context-ledger-memory.js';
 import { logger } from '../core/logger.js';
 import type {
   LedgerEntryFile,
@@ -42,7 +43,6 @@ import type {
   TaskMessage,
   ContextBuildOptions,
   ContextBuildResult,
-  TimeWindowFilterOptions,
   RankingOutput,
   ContextBuildMode,
 } from './context-builder-types.js';
@@ -72,15 +72,32 @@ interface CompactReplacementHistoryItem {
   key_tools?: string[];
   key_reads?: string[];
   key_writes?: string[];
+  tool_calls?: Array<{
+    tool?: string;
+    input?: string;
+    status?: string;
+    output?: string;
+  }>;
   topic?: string;
   tags?: string[];
 }
 
+interface DigestCoverageCheckResult {
+  checked: boolean;
+  ledgerSlots: number;
+  compactEntries: number;
+  maxCompactedSlot: number;
+  missingSlots: number;
+  backfilled: boolean;
+  taskDigestCount?: number;
+  note?: string;
+  error?: string;
+}
+
 // ── 常量 ──────────────────────────────────────────────────────────────
 
-const DEFAULT_HALF_LIFE_MS = 24 * 60 * 60 * 1000; // 24 hours
-const DEFAULT_OVER_THRESHOLD_RELEVANCE = 0.5; // 超过24h后相关性阈值
 const DEFAULT_BUDGET_RATIO = 0.85; // 目标上下文占模型窗口的比例
+const DEFAULT_SYSTEM_ONLY_TASK_GAP_MS = 3 * 60 * 1000; // 无 user 边界时，超过 3 分钟按新任务分段
 const log = logger.module('ContextBuilder');
 
 function normalizeTaskMessageRole(input: unknown): TaskMessage['role'] {
@@ -111,10 +128,37 @@ function buildCompactDigestContent(item: CompactReplacementHistoryItem): string 
   const keyTools = normalizeStringArray(item.key_tools, 12);
   const keyReads = normalizeStringArray(item.key_reads, 8);
   const keyWrites = normalizeStringArray(item.key_writes, 8);
+  const toolCalls = Array.isArray(item.tool_calls)
+    ? item.tool_calls
+      .filter((call): call is { tool?: string; input?: string; status?: string; output?: string } =>
+        typeof call === 'object' && call !== null && !Array.isArray(call))
+      .map((call) => ({
+        tool: typeof call.tool === 'string' ? call.tool.trim() : '',
+        input: typeof call.input === 'string' ? call.input.trim() : '',
+        status: typeof call.status === 'string' ? call.status.trim().toLowerCase() : 'unknown',
+        output: typeof call.output === 'string' ? call.output.trim() : '',
+      }))
+      .filter((call) => call.tool.length > 0)
+    : [];
   const lines: string[] = [];
   if (request) lines.push(`请求: ${request}`);
   if (summary) lines.push(`结果: ${summary}`);
   if (keyTools.length > 0) lines.push(`工具: ${keyTools.join(', ')}`);
+  if (toolCalls.length > 0) {
+    lines.push('工具调用:');
+    for (const call of toolCalls) {
+      const status = call.status === 'success'
+        ? 'success'
+        : call.status === 'failure'
+          ? 'failure'
+          : 'unknown';
+      const argsPart = call.input ? ` args=${buildPreview(call.input, 220)}` : '';
+      lines.push(`- ${call.tool}${argsPart} -> ${status}`);
+      if (call.output) {
+        lines.push(`  output=${call.output}`);
+      }
+    }
+  }
   if (keyReads.length > 0) lines.push(`读取: ${keyReads.join(', ')}`);
   if (keyWrites.length > 0) lines.push(`写入: ${keyWrites.join(', ')}`);
   if (lines.length === 0) return '(compact task digest)';
@@ -185,6 +229,88 @@ async function loadCompactReplacementHistoryBlocks(
   return blocks;
 }
 
+function readCompactSourceSlotEnd(entry: CompactMemoryEntryFile): number {
+  const payload = entry?.payload && typeof entry.payload === 'object'
+    ? entry.payload as Record<string, unknown>
+    : {};
+  const sourceSlotEnd = payload.source_slot_end;
+  if (typeof sourceSlotEnd === 'number' && Number.isFinite(sourceSlotEnd) && sourceSlotEnd > 0) {
+    return Math.floor(sourceSlotEnd);
+  }
+  return 0;
+}
+
+async function ensureCompactDigestCoverage(params: {
+  rootDir: string;
+  sessionId: string;
+  agentId: string;
+  mode: string;
+}): Promise<DigestCoverageCheckResult> {
+  const ledgerPath = resolveLedgerPath(params.rootDir, params.sessionId, params.agentId, params.mode);
+  const compactPath = resolveCompactMemoryPath(params.rootDir, params.sessionId, params.agentId, params.mode);
+  const fullLedgerEntries = await readJsonLines<LedgerEntryFile>(ledgerPath);
+  const ledgerSlots = fullLedgerEntries.filter((entry) => entry.event_type !== 'context_compact').length;
+  const compactEntries = await readJsonLines<CompactMemoryEntryFile>(compactPath);
+  const maxCompactedSlot = compactEntries.reduce((max, entry) => Math.max(max, readCompactSourceSlotEnd(entry)), 0);
+  const missingSlots = Math.max(0, ledgerSlots - maxCompactedSlot);
+  if (ledgerSlots <= 0) {
+    return {
+      checked: true,
+      ledgerSlots,
+      compactEntries: compactEntries.length,
+      maxCompactedSlot,
+      missingSlots,
+      backfilled: false,
+      note: 'ledger_empty',
+    };
+  }
+  if (missingSlots <= 0 && compactEntries.length > 0) {
+    return {
+      checked: true,
+      ledgerSlots,
+      compactEntries: compactEntries.length,
+      maxCompactedSlot,
+      missingSlots: 0,
+      backfilled: false,
+      note: 'already_covered',
+    };
+  }
+  try {
+    const result = await executeContextLedgerMemory({
+      action: 'digest_backfill',
+      _runtime_context: {
+        root_dir: params.rootDir,
+        session_id: params.sessionId,
+        agent_id: params.agentId,
+        mode: params.mode,
+      },
+    });
+    return {
+      checked: true,
+      ledgerSlots,
+      compactEntries: compactEntries.length,
+      maxCompactedSlot,
+      missingSlots,
+      backfilled: true,
+      ...(result.action === 'digest_backfill' && typeof result.task_digest_count === 'number'
+        ? { taskDigestCount: Math.max(0, Math.floor(result.task_digest_count)) }
+        : {}),
+      note: result.action === 'digest_backfill' && typeof result.note === 'string' ? result.note : 'backfilled',
+    };
+  } catch (error) {
+    return {
+      checked: true,
+      ledgerSlots,
+      compactEntries: compactEntries.length,
+      maxCompactedSlot,
+      missingSlots,
+      backfilled: false,
+      note: 'backfill_failed',
+      error: error instanceof Error ? error.message : String(error),
+    };
+  }
+}
+
 function compactAttachments(raw: unknown): AttachmentPlaceholder | undefined {
   if (!Array.isArray(raw) || raw.length === 0) return undefined;
   const typeCounts: Record<string, number> = {};
@@ -201,6 +327,74 @@ function compactAttachments(raw: unknown): AttachmentPlaceholder | undefined {
   };
 }
 
+function extractDispatchId(metadata: Record<string, unknown> | undefined): string | undefined {
+  if (!metadata || typeof metadata !== 'object') return undefined;
+  const candidates = [metadata.dispatchId, metadata.dispatch_id, metadata.dispatch_id_v2];
+  for (const item of candidates) {
+    if (typeof item === 'string' && item.trim().length > 0) {
+      return item.trim();
+    }
+  }
+  return undefined;
+}
+
+function isReasoningStopBoundary(message: TaskMessage): boolean {
+  const metadata = message.metadata;
+  if (metadata && typeof metadata === 'object') {
+    const toolName = typeof metadata.toolName === 'string' ? metadata.toolName.trim() : '';
+    if (toolName === 'reasoning.stop') return true;
+  }
+  const content = typeof message.content === 'string' ? message.content : '';
+  if (!content) return false;
+  return /\breasoning\.stop\b/i.test(content);
+}
+
+function groupWithoutUserBoundary(messages: TaskMessage[]): TaskBlock[] {
+  if (messages.length === 0) return [];
+  const blocks: TaskBlock[] = [];
+  let currentBlock: TaskMessage[] = [];
+  let blockStartTs = 0;
+  let blockId = '';
+  let currentDispatchId: string | undefined;
+  let previousTs = 0;
+
+  const flush = () => {
+    if (currentBlock.length === 0) return;
+    blocks.push(finalizeBlock(blockId, blockStartTs, currentBlock));
+    currentBlock = [];
+    currentDispatchId = undefined;
+  };
+
+  for (const message of messages) {
+    if (currentBlock.length === 0) {
+      blockStartTs = message.timestamp;
+      blockId = `task-${message.timestamp}`;
+      previousTs = message.timestamp;
+    }
+    const dispatchId = extractDispatchId(message.metadata);
+    const gapMs = Math.max(0, message.timestamp - previousTs);
+    const dispatchChanged = !!dispatchId && !!currentDispatchId && dispatchId !== currentDispatchId;
+    const gapBoundary = gapMs > DEFAULT_SYSTEM_ONLY_TASK_GAP_MS;
+
+    if (currentBlock.length > 0 && (dispatchChanged || gapBoundary)) {
+      flush();
+      blockStartTs = message.timestamp;
+      blockId = `task-${message.timestamp}`;
+    }
+
+    currentBlock.push(message);
+    if (!currentDispatchId && dispatchId) currentDispatchId = dispatchId;
+    if (isReasoningStopBoundary(message)) {
+      flush();
+      continue;
+    }
+    previousTs = message.timestamp;
+  }
+
+  flush();
+  return blocks;
+}
+
 // ── 工具函数 ──────────────────────────────────────────────────────────
 
 /**
@@ -211,11 +405,7 @@ function compactAttachments(raw: unknown): AttachmentPlaceholder | undefined {
 function groupByTaskBoundary(entries: LedgerEntryFile[]): TaskBlock[] {
   if (entries.length === 0) return [];
 
-  const blocks: TaskBlock[] = [];
-  let currentBlock: TaskMessage[] = [];
-  let blockStartTs = entries[0].timestamp_ms;
-  let blockId = `task-${entries[0].timestamp_ms}`;
-
+  const messages: TaskMessage[] = [];
   for (const entry of entries) {
     const payload = entry.payload as Record<string, unknown>;
     const role = normalizeTaskMessageRole(payload.role);
@@ -229,7 +419,7 @@ function groupByTaskBoundary(entries: LedgerEntryFile[]): TaskBlock[] {
       ? Math.max(0, Math.floor(payload.token_count))
       : estimateTokens(content);
 
-    const msg: TaskMessage = {
+    messages.push({
       id: entry.id,
       role,
       content,
@@ -239,22 +429,35 @@ function groupByTaskBoundary(entries: LedgerEntryFile[]): TaskBlock[] {
       messageId,
       metadata,
       attachments,
-    };
-
-    // 新的 user 消息 = 新任务开始（除非是第一个块）
-    if (role === 'user' && currentBlock.length > 0) {
-      // 关闭当前块
-      blocks.push(finalizeBlock(blockId, blockStartTs, currentBlock));
-      // 开始新块
-      blockStartTs = entry.timestamp_ms;
-      blockId = `task-${entry.timestamp_ms}`;
-      currentBlock = [msg];
-    } else {
-      currentBlock.push(msg);
-    }
+    });
   }
 
-  // 关闭最后一个块
+  const hasUserBoundary = messages.some((message) => message.role === 'user');
+  if (!hasUserBoundary) {
+    return groupWithoutUserBoundary(messages);
+  }
+
+  const blocks: TaskBlock[] = [];
+  let currentBlock: TaskMessage[] = [];
+  let blockStartTs = 0;
+  let blockId = '';
+
+  for (const msg of messages) {
+    if (currentBlock.length === 0) {
+      blockStartTs = msg.timestamp;
+      blockId = `task-${msg.timestamp}`;
+    } else if (msg.role === 'user') {
+      blocks.push(finalizeBlock(blockId, blockStartTs, currentBlock));
+      blockStartTs = msg.timestamp;
+      blockId = `task-${msg.timestamp}`;
+      currentBlock = [];
+    }
+    currentBlock.push(msg);
+    if (isReasoningStopBoundary(msg)) {
+      blocks.push(finalizeBlock(blockId, blockStartTs, currentBlock));
+      currentBlock = [];
+    }
+  }
   if (currentBlock.length > 0) {
     blocks.push(finalizeBlock(blockId, blockStartTs, currentBlock));
   }
@@ -296,19 +499,29 @@ function normalizeSessionSnapshotMessages(
 function groupByTaskBoundaryFromSessionMessages(messages: SessionSnapshotMessage[]): TaskBlock[] {
   const normalized = normalizeSessionSnapshotMessages(messages);
   if (normalized.length === 0) return [];
+  const hasUserBoundary = normalized.some((message) => message.role === 'user');
+  if (!hasUserBoundary) {
+    return groupWithoutUserBoundary(normalized);
+  }
   const blocks: TaskBlock[] = [];
   let currentBlock: TaskMessage[] = [];
-  let blockStartTs = normalized[0].timestamp;
-  let blockId = `task-${normalized[0].timestamp}`;
+  let blockStartTs = 0;
+  let blockId = '';
 
   for (const msg of normalized) {
-    if (msg.role === 'user' && currentBlock.length > 0) {
+    if (currentBlock.length === 0) {
+      blockStartTs = msg.timestamp;
+      blockId = `task-${msg.timestamp}`;
+    } else if (msg.role === 'user') {
       blocks.push(finalizeBlock(blockId, blockStartTs, currentBlock));
       blockStartTs = msg.timestamp;
       blockId = `task-${msg.timestamp}`;
-      currentBlock = [msg];
-    } else {
-      currentBlock.push(msg);
+      currentBlock = [];
+    }
+    currentBlock.push(msg);
+    if (isReasoningStopBoundary(msg)) {
+      blocks.push(finalizeBlock(blockId, blockStartTs, currentBlock));
+      currentBlock = [];
     }
   }
 
@@ -362,49 +575,6 @@ function finalizeBlock(id: string, startTs: number, messages: TaskMessage[]): Ta
     ...(tags ? { tags } : {}),
     ...(topic ? { topic } : {}),
   };
-}
-
-/**
- * 24小时半衰期时间窗口过滤
- * - 24小时内的全部保留
- * - 超过24小时只保留相关性非常高的部分
- *   （当前阶段相关性无法计算，使用启发式规则：
- *    包含 user 消息且有 substantial 内容的保留）
- */
-function applyTimeWindowFilter(
-  blocks: TaskBlock[],
-  options: TimeWindowFilterOptions,
-): TaskBlock[] {
-  const halfLifeMs = options.halfLifeMs ?? DEFAULT_HALF_LIFE_MS;
-  const cutoff = options.nowMs - halfLifeMs;
-
-  const recent: TaskBlock[] = [];
-  const old: TaskBlock[] = [];
-
-  for (const block of blocks) {
-    // 块的任何部分在24小时内的都算"近期"
-    if (block.endTime >= cutoff) {
-      recent.push(block);
-    } else {
-      old.push(block);
-    }
-  }
-
-  // 近期块全部保留，按时间升序
-  recent.sort((a, b) => a.startTime - b.startTime);
-
-  // 旧块：只保留有 substantial user 消息的块
-  const overThreshold = options.overThresholdRelevance ?? DEFAULT_OVER_THRESHOLD_RELEVANCE;
-  const keptOld = old
-    .filter((block) => {
-      const hasSubstantialUserMsg = block.messages.some(
-        (m) => m.role === 'user' && m.tokenCount > 20,
-      );
-      return hasSubstantialUserMsg;
-    })
-    .sort((a, b) => b.startTime - a.startTime); // 旧的按时间倒序，最新的旧块优先
-
-  return [...recent, ...keptOld];
 }
 
 /**
@@ -961,9 +1131,8 @@ export interface ContextBuilderInput {
  * 流程：
  * 1. 从 Ledger 读取所有 session_message 条目
  * 2. 按任务边界分组
- * 3. 24小时半衰期过滤
- * 4. 按预算截断
- * 5. 展平为消息列表（可选附加 MEMORY.md）
+ * 3. 按预算截断
+ * 4. 展平为消息列表（可选附加 MEMORY.md）
  */
 export async function buildContext(
   input: ContextBuilderInput,
@@ -979,6 +1148,7 @@ export async function buildContext(
   const targetBudget = options?.targetBudget ?? Math.floor(contextWindow * DEFAULT_BUDGET_RATIO);
   const enableTaskGrouping = options?.enableTaskGrouping !== false;
   const preferCompactHistory = options?.preferCompactHistory !== false;
+  let digestCoverageCheck: DigestCoverageCheckResult | undefined;
 
   // ── Step 1: 读取 session 快照（优先）或 Ledger 条目 ──
   const snapshotMessages = Array.isArray(input.sessionMessages) ? input.sessionMessages : [];
@@ -1016,6 +1186,33 @@ export async function buildContext(
 
   let normalizedRawBlocks = rawBlocks;
   if (snapshotMessages.length > 0 && preferCompactHistory) {
+    digestCoverageCheck = await ensureCompactDigestCoverage({
+      rootDir,
+      sessionId: input.sessionId,
+      agentId,
+      mode,
+    });
+    if (digestCoverageCheck.backfilled) {
+      log.info('Context rebuild auto backfilled missing digest coverage', {
+        sessionId: input.sessionId,
+        agentId,
+        mode,
+        ledgerSlots: digestCoverageCheck.ledgerSlots,
+        maxCompactedSlot: digestCoverageCheck.maxCompactedSlot,
+        missingSlots: digestCoverageCheck.missingSlots,
+        taskDigestCount: digestCoverageCheck.taskDigestCount ?? 0,
+      });
+    } else if (digestCoverageCheck.error) {
+      log.warn('Context rebuild digest backfill check failed', {
+        sessionId: input.sessionId,
+        agentId,
+        mode,
+        error: digestCoverageCheck.error,
+        ledgerSlots: digestCoverageCheck.ledgerSlots,
+        maxCompactedSlot: digestCoverageCheck.maxCompactedSlot,
+        missingSlots: digestCoverageCheck.missingSlots,
+      });
+    }
     try {
       const compactHistoryBlocks = await loadCompactReplacementHistoryBlocks(rootDir, input.sessionId, agentId, mode);
       if (compactHistoryBlocks.length > 0) {
@@ -1036,13 +1233,9 @@ export async function buildContext(
 
   const rawTaskBlockCount = normalizedRawBlocks.length;
 
-  // ── Step 3: 时间窗口过滤 ──
+  // ── Step 3: 历史候选集合（不使用时间窗口过滤） ──
   let filteredBlocks = normalizedRawBlocks;
-  let timeWindowFilteredCount = 0;
-  if (options?.timeWindow) {
-    filteredBlocks = applyTimeWindowFilter(normalizedRawBlocks, options.timeWindow);
-    timeWindowFilteredCount = normalizedRawBlocks.length - filteredBlocks.length;
-  }
+  const timeWindowFilteredCount = 0;
   const { current, historical } = splitCurrentAndHistorical(filteredBlocks);
   let rankedHistorical = historical;
 
@@ -1266,6 +1459,21 @@ export async function buildContext(
       ...(embeddingRecallReason ? { embeddingRecallReason } : {}),
       ...(embeddingIndexPath ? { embeddingIndexPath } : {}),
       ...(embeddingRecallError ? { embeddingRecallError } : {}),
+      ...(digestCoverageCheck
+        ? {
+          digestCoverageChecked: digestCoverageCheck.checked,
+          digestCoverageLedgerSlots: digestCoverageCheck.ledgerSlots,
+          digestCoverageCompactEntries: digestCoverageCheck.compactEntries,
+          digestCoverageMaxCompactedSlot: digestCoverageCheck.maxCompactedSlot,
+          digestCoverageMissingSlots: digestCoverageCheck.missingSlots,
+          digestCoverageBackfilled: digestCoverageCheck.backfilled,
+          ...(typeof digestCoverageCheck.taskDigestCount === 'number'
+            ? { digestCoverageTaskDigestCount: digestCoverageCheck.taskDigestCount }
+            : {}),
+          ...(digestCoverageCheck.note ? { digestCoverageNote: digestCoverageCheck.note } : {}),
+          ...(digestCoverageCheck.error ? { digestCoverageError: digestCoverageCheck.error } : {}),
+        }
+        : {}),
       workingSetTaskBlockCount: workingSetBlocks.length,
       historicalTaskBlockCount: historicalBlocksIncluded.length,
       workingSetMessageCount,
@@ -1304,5 +1512,4 @@ export type {
   TaskMessage,
   ContextBuildOptions,
   ContextBuildResult,
-  TimeWindowFilterOptions,
 } from './context-builder-types.js';

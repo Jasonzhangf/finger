@@ -5,11 +5,28 @@ import type { AgentRuntimeDeps } from './agent-runtime/types.js';
 import type { SessionEnvelopeMapping } from './agent-status-subscriber-types.js';
 import type { ProgressDeliveryPolicy } from '../../common/progress-delivery-policy.js';
 import { enqueueUpdateStreamDelivery } from './update-stream-delivery-adapter.js';
+import { isNoActionableWatchdogText, isScheduledSourceType } from './agent-status-subscriber-noop.js';
 import {
   inferUpdateStreamRole,
   inferUpdateStreamSourceType,
+  type UpdateStreamSourceType,
   resolveUpdateStreamPolicy,
 } from './update-stream-policy.js';
+import {
+  resolveEnvelopeMappingForSession,
+  resolveEnvelopeMappingsForSession,
+  sameDeliveryRoute,
+  sameEnvelope,
+} from './agent-status-subscriber-mapping-utils.js';
+import {
+  parseProjectTaskState,
+  mergeProjectTaskState,
+} from '../../common/project-task-state.js';
+
+export {
+  resolveEnvelopeMappingForSession,
+  resolveEnvelopeMappingsForSession,
+} from './agent-status-subscriber-mapping-utils.js';
 
 export interface SessionRelationInfo {
   sessionId: string;
@@ -187,10 +204,10 @@ export function resolvePushSettingsForSession(params: {
   const candidateAgentId = typeof params.agentId === 'string' && params.agentId.trim().length > 0
     ? params.agentId.trim()
     : ownerAgentId;
-  const hasScheduledPolicy = context.scheduledProgressDelivery !== undefined || context.scheduled_progress_delivery !== undefined;
-  const sourceType = inferUpdateStreamSourceType({
-    explicit: params.sourceType ?? context.sourceType ?? context.source_type,
-    hasScheduledPolicy,
+  const sourceType = inferSessionUpdateSourceType({
+    sessionId: params.sessionId,
+    deps: params.deps,
+    sourceTypeHint: params.sourceType,
   });
   const role = inferUpdateStreamRole(candidateAgentId);
   const updateStreamPolicy = resolveUpdateStreamPolicy({
@@ -209,6 +226,49 @@ export function resolvePushSettingsForSession(params: {
     ?? context.scheduled_progress_delivery,
   );
   return params.applyPolicy(mergedBase, sessionPolicy);
+}
+
+export function inferSessionUpdateSourceType(params: {
+  sessionId: string;
+  deps: AgentRuntimeDeps;
+  sourceTypeHint?: string;
+}): UpdateStreamSourceType {
+  const context = resolveContextWithFallback(params.sessionId, params.deps);
+  const hasScheduledPolicy = context.scheduledProgressDelivery !== undefined || context.scheduled_progress_delivery !== undefined;
+  const explicitRaw = typeof params.sourceTypeHint === 'string' && params.sourceTypeHint.trim().length > 0
+    ? params.sourceTypeHint
+    : typeof context.sourceType === 'string' && context.sourceType.trim().length > 0
+      ? context.sourceType
+      : typeof context.source_type === 'string' && context.source_type.trim().length > 0
+        ? context.source_type
+        : typeof context.source === 'string' && context.source.trim().length > 0
+          ? context.source
+          : undefined;
+  const explicit = normalizeSourceTypeAlias(explicitRaw);
+  return inferUpdateStreamSourceType({
+    explicit,
+    hasScheduledPolicy,
+  });
+}
+
+function normalizeSourceTypeAlias(raw: unknown): UpdateStreamSourceType | undefined {
+  if (typeof raw !== 'string') return undefined;
+  const normalized = raw.trim().toLowerCase();
+  if (!normalized) return undefined;
+  if (normalized === 'user') return 'user';
+  if (normalized === 'heartbeat' || normalized === 'system-heartbeat' || normalized.includes('heartbeat')) {
+    return 'heartbeat';
+  }
+  if (normalized === 'mailbox' || normalized === 'mailbox-check' || normalized.includes('mailbox')) {
+    return 'mailbox';
+  }
+  if (normalized === 'cron' || normalized === 'clock' || normalized.endsWith('-cron') || normalized.includes('schedule')) {
+    return 'cron';
+  }
+  if (normalized === 'system-inject' || normalized === 'system_direct_inject' || normalized.includes('inject')) {
+    return 'system-inject';
+  }
+  return undefined;
 }
 
 export function registerSessionMapping(
@@ -255,148 +315,6 @@ export function clearSessionObservers(sessionId: string, state: SubscriberRouteS
   cleanupRouteStateBySession(sessionId, state);
 }
 
-export function resolveEnvelopeMappingForSession(
-  sessionId: string,
-  deps: AgentRuntimeDeps,
-  state: SubscriberRouteState,
-  visited?: Set<string>,
-): SessionEnvelopeMapping | null {
-  const cycleGuard = visited ?? new Set<string>();
-  if (cycleGuard.has(sessionId)) return null;
-  cycleGuard.add(sessionId);
-
-  const direct = state.sessionEnvelopeMap.get(sessionId);
-  if (direct) return direct;
-
-  if (sessionId === 'default' || sessionId === 'system-default-session') {
-    const currentSession = deps.sessionManager.getCurrentSession?.();
-    if (currentSession?.id) {
-      const currentMapping = state.sessionEnvelopeMap.get(currentSession.id);
-      if (currentMapping) {
-        return {
-          sessionId,
-          envelope: currentMapping.envelope,
-          timestamp: Date.now(),
-        };
-      }
-    }
-
-    const getSystemSession = (deps.sessionManager as any).getOrCreateSystemSession;
-    if (typeof getSystemSession === 'function') {
-      const systemSession = getSystemSession.call(deps.sessionManager);
-      const systemMapping = systemSession ? state.sessionEnvelopeMap.get(systemSession.id) : null;
-      if (systemMapping) {
-        return {
-          sessionId,
-          envelope: systemMapping.envelope,
-          timestamp: Date.now(),
-        };
-      }
-    }
-  }
-
-  const session = deps.sessionManager.getSession(sessionId);
-  if (!session) return null;
-
-  const sessionContext = (session.context && typeof session.context === 'object')
-    ? (session.context as Record<string, unknown>)
-    : {};
-  const contextChannelId = typeof sessionContext.channelId === 'string'
-    ? sessionContext.channelId.trim()
-    : '';
-  const contextUserId = typeof sessionContext.channelUserId === 'string'
-    ? sessionContext.channelUserId.trim()
-    : '';
-  const contextGroupId = typeof sessionContext.channelGroupId === 'string'
-    ? sessionContext.channelGroupId.trim()
-    : undefined;
-  const contextMessageId = typeof sessionContext.lastChannelMessageId === 'string'
-    ? sessionContext.lastChannelMessageId.trim()
-    : '';
-
-  if (contextChannelId && contextUserId) {
-    const recovered: SessionEnvelopeMapping = {
-      sessionId,
-      envelope: {
-        channel: contextChannelId,
-        envelopeId: contextMessageId,
-        userId: contextUserId,
-        ...(contextGroupId ? { groupId: contextGroupId } : {}),
-      },
-      timestamp: Date.now(),
-    };
-    state.sessionEnvelopeMap.set(sessionId, recovered);
-    return recovered;
-  }
-
-  const parentSessionId = typeof sessionContext.parentSessionId === 'string' ? sessionContext.parentSessionId : '';
-  const rootSessionId = typeof sessionContext.rootSessionId === 'string' ? sessionContext.rootSessionId : '';
-  const statusRouteSessionId = typeof sessionContext.statusRouteSessionId === 'string'
-    ? sessionContext.statusRouteSessionId
-    : '';
-  const candidates = [parentSessionId, statusRouteSessionId, rootSessionId]
-    .map((value) => value.trim())
-    .filter((value, index, all) => value.length > 0 && value !== sessionId && all.indexOf(value) === index);
-  if (candidates.length === 0) return null;
-
-  for (const fallbackId of candidates) {
-    const fallback = state.sessionEnvelopeMap.get(fallbackId)
-      ?? resolveEnvelopeMappingForSession(fallbackId, deps, state, cycleGuard);
-    if (!fallback) continue;
-
-    const mapped: SessionEnvelopeMapping = {
-      sessionId,
-      envelope: fallback.envelope,
-      timestamp: Date.now(),
-    };
-    state.sessionEnvelopeMap.set(sessionId, mapped);
-    return mapped;
-  }
-
-  return null;
-}
-
-export function resolveEnvelopeMappingsForSession(
-  sessionId: string,
-  deps: AgentRuntimeDeps,
-  state: SubscriberRouteState,
-): SessionEnvelopeMapping[] {
-  const primary = resolveEnvelopeMappingForSession(sessionId, deps, state);
-  if (!primary) return [];
-
-  const observers = state.sessionObserverMap.get(sessionId) ?? [];
-  if (observers.length === 0) return [primary];
-
-  const mappings: SessionEnvelopeMapping[] = [primary];
-  for (const envelope of observers) {
-    mappings.push({
-      sessionId,
-      envelope,
-      timestamp: primary.timestamp,
-    });
-  }
-  return mappings;
-}
-
-export function sameEnvelope(
-  left: SessionEnvelopeMapping['envelope'],
-  right: SessionEnvelopeMapping['envelope'],
-): boolean {
-  return left.channel === right.channel
-    && left.envelopeId === right.envelopeId
-    && left.userId === right.userId
-    && left.groupId === right.groupId;
-}
-
-export function sameDeliveryRoute(
-  left: SessionEnvelopeMapping['envelope'],
-  right: SessionEnvelopeMapping['envelope'],
-): boolean {
-  return left.channel === right.channel
-    && left.userId === right.userId
-    && left.groupId === right.groupId;
-}
-
 export async function finalizeChannelTurnDelivery(params: {
   sessionId: string;
   finalReply?: string;
@@ -416,6 +334,10 @@ export async function finalizeChannelTurnDelivery(params: {
       agentId?: string;
     },
   ) => PushSettings;
+  resolveSourceType?: (
+    sessionId: string,
+    sourceTypeHint?: string,
+  ) => UpdateStreamSourceType;
 }): Promise<void> {
   const primary = params.resolveEnvelopeMapping(params.sessionId);
   if (!primary) return;
@@ -426,6 +348,51 @@ export async function finalizeChannelTurnDelivery(params: {
   for (const envelope of allEnvelopes) {
     const key = `${envelope.channel}::${envelope.groupId ?? ''}::${envelope.userId ?? ''}`;
     dedupedEnvelopes.set(key, envelope);
+  }
+
+  const sourceType = typeof params.resolveSourceType === 'function'
+    ? params.resolveSourceType(params.sessionId)
+    : inferSessionUpdateSourceType({
+      sessionId: params.sessionId,
+      deps: params.deps,
+    });
+  const normalizedAgentId = typeof params.agentId === 'string' ? params.agentId.trim().toLowerCase() : '';
+  const isSystemLikeAgent = normalizedAgentId.includes('system-agent') || normalizedAgentId === 'finger-system-agent';
+  const noopWatchdogReply = isNoActionableWatchdogText(params.finalReply);
+  const suppressNoopDelivery = noopWatchdogReply
+    && (isScheduledSourceType(sourceType) || isSystemLikeAgent);
+  if (suppressNoopDelivery) {
+    const session = params.deps.sessionManager.getSession(params.sessionId);
+    const currentProjectTaskState = parseProjectTaskState(session?.context?.projectTaskState);
+    const targetAgentId = typeof params.agentId === 'string' ? params.agentId.trim() : '';
+    const finishReason = typeof params.finishReason === 'string' ? params.finishReason.trim().toLowerCase() : '';
+    const stateUpdatedAtMs = currentProjectTaskState ? Date.parse(currentProjectTaskState.updatedAt) : Number.NaN;
+    const stateAgeMs = Number.isFinite(stateUpdatedAtMs) ? Date.now() - stateUpdatedAtMs : Number.POSITIVE_INFINITY;
+    const currentNote = typeof currentProjectTaskState?.note === 'string'
+      ? currentProjectTaskState.note.trim().toLowerCase()
+      : '';
+    const allowAutoClose = finishReason === 'stop'
+      && (
+        currentNote.startsWith('dispatch_suppressed_')
+        || stateAgeMs >= 15 * 60 * 1000
+      );
+    if (
+      currentProjectTaskState
+      && currentProjectTaskState.active
+      && (!targetAgentId || currentProjectTaskState.targetAgentId === targetAgentId)
+      && allowAutoClose
+    ) {
+      params.deps.sessionManager.updateContext(params.sessionId, {
+        projectTaskState: mergeProjectTaskState(currentProjectTaskState, {
+          active: false,
+          status: 'closed',
+          note: 'watchdog_no_actionable_auto_closed',
+          summary: typeof params.finalReply === 'string' ? params.finalReply.slice(0, 240) : 'watchdog_no_actionable',
+        }),
+      });
+    }
+    clearSessionObservers(params.sessionId, params.state);
+    return;
   }
 
   const deliverText = async (
@@ -503,11 +470,20 @@ export async function finalizeChannelTurnDelivery(params: {
     await deliverText(observers, content, 'bodyUpdates');
   }
 
-  if (params.finishReason === 'stop') {
+  const shouldEmitStopNotice = params.finishReason === 'stop'
+    && !isScheduledSourceType(sourceType)
+    && !noopWatchdogReply;
+  if (shouldEmitStopNotice) {
     const noticeTargets = Array.from(dedupedEnvelopes.values())
       .filter((envelope) => envelope.channel === 'qqbot' || envelope.channel === 'openclaw-weixin');
     if (noticeTargets.length > 0) {
-      await deliverText(noticeTargets, '本轮推理已结束。', 'statusUpdate');
+      const finalReplyPreview = typeof params.finalReply === 'string'
+        ? params.finalReply.trim().replace(/\s+/g, ' ').slice(0, 140)
+        : '';
+      const stopNotice = finalReplyPreview.length > 0
+        ? `本轮推理已结束：${finalReplyPreview}`
+        : '本轮推理已结束。';
+      await deliverText(noticeTargets, stopNotice, 'statusUpdate');
     }
   }
 

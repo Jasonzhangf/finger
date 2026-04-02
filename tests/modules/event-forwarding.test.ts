@@ -3,10 +3,14 @@ import { attachEventForwarding, type EventForwardingDeps } from '../../src/serve
 import type { SessionManager } from '../../src/orchestration/session-manager.js';
 import type { UnifiedEventBus } from '../../src/runtime/event-bus.js';
 import { heartbeatMailbox } from '../../src/server/modules/heartbeat-mailbox.js';
+import { resetClockStore } from '../../src/tools/internal/codex-clock-tool.js';
+import { mkdtemp, readFile } from 'fs/promises';
+import os from 'os';
+import path from 'path';
 
 function createMockSessionManager(): SessionManager {
   const messages: Array<{ id: string; role: string; content: string; timestamp: string; type?: string; metadata?: Record<string, unknown> }> = [];
-  const sessions = new Map<string, { id: string; context: Record<string, unknown> }>();
+  const sessions = new Map<string, { id: string; context: Record<string, unknown>; projectPath?: string }>();
   return {
     addMessage: vi.fn((_sessionId: string, _role: string, content: string, _detail?: Record<string, unknown>) => {
       messages.push({
@@ -24,7 +28,7 @@ function createMockSessionManager(): SessionManager {
     getMessages: vi.fn(() => messages),
     getSession: vi.fn((sessionId: string) => {
       if (!sessions.has(sessionId)) {
-        sessions.set(sessionId, { id: sessionId, context: {} });
+        sessions.set(sessionId, { id: sessionId, context: {}, projectPath: process.cwd() });
       }
       return sessions.get(sessionId);
     }),
@@ -322,6 +326,231 @@ describe('Event Forwarding - Execution Lifecycle', () => {
       'waiting_tool',
       'completed',
     ]);
+  });
+
+  it('triggers runtime auto stop digest when turn completes with stop and reasoning.stop tool was called', async () => {
+    const sessionManager = createMockSessionManager();
+    const runtime = {
+      maybeAutoDigestOnStop: vi.fn(async () => true),
+    };
+    const deps = createDeps({ sessionManager, runtime });
+    const { emitLoopEventToEventBus } = attachEventForwarding(deps);
+
+    emitLoopEventToEventBus({
+      sessionId: 'auto-stop-digest-session-1',
+      phase: 'turn_start',
+      timestamp: new Date().toISOString(),
+      payload: { text: 'start' },
+    });
+    emitLoopEventToEventBus({
+      sessionId: 'auto-stop-digest-session-1',
+      phase: 'kernel_event',
+      timestamp: new Date().toISOString(),
+      payload: { type: 'tool_call', toolName: 'reasoning.stop', toolId: 'stop-tool-1' },
+    });
+    emitLoopEventToEventBus({
+      sessionId: 'auto-stop-digest-session-1',
+      phase: 'turn_complete',
+      timestamp: new Date().toISOString(),
+      payload: { finishReason: 'stop', responseId: 'resp-stop-1', replyPreview: 'done' },
+    });
+
+    await Promise.resolve();
+    expect(runtime.maybeAutoDigestOnStop).toHaveBeenCalledWith('auto-stop-digest-session-1', 'resp-stop-1');
+  });
+
+  it('holds finalization when control gate requests continue on stop', async () => {
+    const sessionManager = createMockSessionManager();
+    const runtime = {
+      maybeAutoDigestOnStop: vi.fn(async () => true),
+    };
+    const eventBus = createMockEventBus();
+    const statusSubscriber = {
+      sendBodyUpdate: vi.fn(async () => undefined),
+      sendReasoningUpdate: vi.fn(async () => undefined),
+      finalizeChannelTurn: vi.fn(async () => undefined),
+    } as any;
+    const deps = createDeps({ sessionManager, runtime, eventBus, agentStatusSubscriber: statusSubscriber });
+    const { emitLoopEventToEventBus } = attachEventForwarding(deps);
+
+    emitLoopEventToEventBus({
+      sessionId: 'control-gate-hold-session-1',
+      phase: 'turn_start',
+      timestamp: new Date().toISOString(),
+      payload: { text: 'start' },
+    });
+    emitLoopEventToEventBus({
+      sessionId: 'control-gate-hold-session-1',
+      phase: 'turn_complete',
+      timestamp: new Date().toISOString(),
+      payload: {
+        finishReason: 'stop',
+        replyPreview: 'done',
+        controlGateHold: true,
+        controlBlockValid: false,
+        controlHookNames: ['hook.task.continue'],
+      },
+    });
+
+    const session = (sessionManager.getSession as ReturnType<typeof vi.fn>)('control-gate-hold-session-1');
+    expect(session.context.executionLifecycle).toEqual(expect.objectContaining({
+      stage: 'interrupted',
+      substage: 'turn_stop_tool_pending',
+      updatedBy: 'event-forwarding',
+    }));
+    await Promise.resolve();
+    expect(runtime.maybeAutoDigestOnStop).not.toHaveBeenCalled();
+    expect(statusSubscriber.finalizeChannelTurn).not.toHaveBeenCalled();
+    expect(statusSubscriber.sendBodyUpdate).not.toHaveBeenCalled();
+    expect(eventBus.emit).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'system_notice',
+      sessionId: 'control-gate-hold-session-1',
+      payload: expect.objectContaining({
+        source: 'stop_gate',
+        hold: true,
+      }),
+    }));
+  });
+
+  it('executes hook.scheduler.wait by creating a clock timer with inject payload', async () => {
+    const tmpDir = await mkdtemp(path.join(os.tmpdir(), 'finger-hook-wait-'));
+    const storePath = path.join(tmpDir, 'clock-timers.jsonl');
+    const previousStorePath = process.env.FINGER_CLOCK_STORE_PATH;
+    process.env.FINGER_CLOCK_STORE_PATH = storePath;
+    resetClockStore();
+    try {
+      const sessionManager = createMockSessionManager();
+      const session = (sessionManager.getSession as ReturnType<typeof vi.fn>)('hook-wait-session-1');
+      session.projectPath = tmpDir;
+      const eventBus = createMockEventBus();
+      const deps = createDeps({ sessionManager, eventBus });
+      const { emitLoopEventToEventBus } = attachEventForwarding(deps);
+
+      emitLoopEventToEventBus({
+        sessionId: 'hook-wait-session-1',
+        phase: 'turn_complete',
+        timestamp: new Date().toISOString(),
+        payload: {
+          finishReason: 'stop',
+          responseId: 'resp-hook-wait-1',
+          controlHookNames: ['hook.scheduler.wait'],
+          controlBlockValid: true,
+          controlBlock: {
+            wait: { enabled: true, seconds: 15, reason: 'continue later' },
+          },
+        },
+      });
+
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      const stored = await readFile(storePath, 'utf-8');
+      expect(stored).toContain('"schedule_type":"delay"');
+      expect(stored).toContain('"delay_seconds":15');
+      expect(stored).toContain('"agentId":"finger-general"');
+      expect(stored).toContain('"sessionId":"hook-wait-session-1"');
+      expect(eventBus.emit).toHaveBeenCalledWith(expect.objectContaining({
+        type: 'system_notice',
+        sessionId: 'hook-wait-session-1',
+        payload: expect.objectContaining({
+          source: 'control_hook_action',
+          hook: 'hook.scheduler.wait',
+          action: 'scheduled_wait_resume',
+        }),
+      }));
+    } finally {
+      if (typeof previousStorePath === 'string') {
+        process.env.FINGER_CLOCK_STORE_PATH = previousStorePath;
+      } else {
+        delete process.env.FINGER_CLOCK_STORE_PATH;
+      }
+      resetClockStore();
+    }
+  });
+
+  it('executes hook.project.flow.update via append-only write with dedupe', async () => {
+    const tmpDir = await mkdtemp(path.join(os.tmpdir(), 'finger-hook-flow-'));
+    const flowPath = path.join(tmpDir, 'FLOW.md');
+    const sessionManager = createMockSessionManager();
+    const session = (sessionManager.getSession as ReturnType<typeof vi.fn>)('hook-flow-session-1');
+    session.projectPath = tmpDir;
+    const eventBus = createMockEventBus();
+    const deps = createDeps({ sessionManager, eventBus });
+    const { emitLoopEventToEventBus } = attachEventForwarding(deps);
+
+    const turnPayload = {
+      finishReason: 'stop',
+      responseId: 'resp-hook-flow-1',
+      controlHookNames: ['hook.project.flow.update'],
+      controlBlockValid: true,
+      controlBlock: {
+        learning: {
+          flow_patch: {
+            required: true,
+            project_scope: tmpDir,
+            changes: ['sync plan state before dispatch', 'avoid stale heartbeat wake'],
+          },
+        },
+      },
+    };
+
+    emitLoopEventToEventBus({
+      sessionId: 'hook-flow-session-1',
+      phase: 'turn_complete',
+      timestamp: new Date().toISOString(),
+      payload: turnPayload,
+    });
+    emitLoopEventToEventBus({
+      sessionId: 'hook-flow-session-1',
+      phase: 'turn_complete',
+      timestamp: new Date().toISOString(),
+      payload: turnPayload,
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    const flowText = await readFile(flowPath, 'utf-8');
+    expect(flowText).toContain('Control Hook Flow Patch');
+    expect(flowText).toContain('flow_change: sync plan state before dispatch');
+    const occurrence = (flowText.match(/idempotency_key:/g) ?? []).length;
+    expect(occurrence).toBe(1);
+  });
+
+  it('executes hook.dispatch by enqueueing enforcement dispatch task', async () => {
+    const sessionManager = createMockSessionManager();
+    const session = (sessionManager.getSession as ReturnType<typeof vi.fn>)('hook-dispatch-session-1');
+    session.context.ownerAgentId = 'finger-system-agent';
+    const dispatchTaskToAgent = vi.fn(async () => ({ ok: true, status: 'queued' }));
+    const eventBus = createMockEventBus();
+    const deps = createDeps({ sessionManager, eventBus, dispatchTaskToAgent });
+    const { emitLoopEventToEventBus } = attachEventForwarding(deps);
+
+    emitLoopEventToEventBus({
+      sessionId: 'hook-dispatch-session-1',
+      phase: 'turn_complete',
+      timestamp: new Date().toISOString(),
+      payload: {
+        finishReason: 'stop',
+        responseId: 'resp-hook-dispatch-1',
+        controlHookNames: ['hook.dispatch'],
+        controlBlockValid: true,
+      },
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(dispatchTaskToAgent).toHaveBeenCalledWith(expect.objectContaining({
+      sourceAgentId: 'control-hook-enforcer',
+      targetAgentId: 'finger-system-agent',
+      sessionId: 'hook-dispatch-session-1',
+      queueOnBusy: true,
+      blocking: false,
+    }));
+    expect(eventBus.emit).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'system_notice',
+      sessionId: 'hook-dispatch-session-1',
+      payload: expect.objectContaining({
+        source: 'control_hook_action',
+        hook: 'hook.dispatch',
+        action: 'enforcement_dispatched',
+      }),
+    }));
   });
 
   it('marks dispatch queue events as dispatching in execution lifecycle', () => {
@@ -1123,5 +1352,111 @@ describe('Event Forwarding - Dispatch Ledger Session Lifecycle', () => {
 
     // One system status message + one assistant result message
     expect(writes.length).toBe(2);
+  });
+});
+
+describe('Event Forwarding - Auto Review Prompt Integration', () => {
+  it('builds verification-aware reviewer prompt when auto review is enabled', async () => {
+    const sessionManager = createMockSessionManager();
+    const dispatchTaskToAgent = vi.fn(async () => ({
+      ok: true,
+      status: 'queued',
+      dispatchId: 'dispatch-reviewer-1',
+    }));
+    const captured: { eventName: string; handler: (event: any) => void }[] = [];
+    const eventBus = {
+      subscribe: vi.fn((eventName: string, handler: (event: any) => void) => captured.push({ eventName, handler })),
+      subscribeMultiple: vi.fn(),
+      emit: vi.fn(async () => {}),
+    } as unknown as UnifiedEventBus;
+    attachEventForwarding(createDeps({
+      eventBus,
+      sessionManager,
+      dispatchTaskToAgent,
+      resolveReviewPolicy: () => ({ enabled: true, dispatchReviewMode: 'always' }),
+    }));
+    const handler = captured.find((entry) => entry.eventName === 'agent_runtime_dispatch')?.handler;
+    expect(handler).toBeDefined();
+
+    handler?.({
+      type: 'agent_runtime_dispatch',
+      sessionId: 'system-main',
+      timestamp: new Date().toISOString(),
+      payload: {
+        dispatchId: 'dispatch-project-done-1',
+        sourceAgentId: 'finger-system-agent',
+        targetAgentId: 'finger-project-agent',
+        status: 'completed',
+        assignment: {
+          taskId: 'task-auto-review-1',
+          attempt: 1,
+          acceptanceCriteria: ['must pass tests', 'must provide evidence'],
+        },
+        result: {
+          summary: 'implemented changes',
+          changedFiles: ['src/runtime/runtime-facade.ts'],
+        },
+      },
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(dispatchTaskToAgent).toHaveBeenCalledTimes(1);
+    const request = dispatchTaskToAgent.mock.calls[0]?.[0] as Record<string, unknown>;
+    expect(request.targetAgentId).toBe('finger-reviewer');
+    const task = request.task as Record<string, unknown>;
+    const prompt = typeof task?.prompt === 'string' ? task.prompt : '';
+    expect(prompt).toContain('[AUTO-REVIEW GATE]');
+    expect(prompt).toContain('<verification>');
+    expect(prompt).toContain('Decision Contract');
+    expect(prompt).toContain('report-task-completion');
+  });
+
+  it('parses verifier verdict output and redispatches rework to project agent', async () => {
+    const sessionManager = createMockSessionManager();
+    const dispatchTaskToAgent = vi.fn(async () => ({
+      ok: true,
+      status: 'queued',
+      dispatchId: 'dispatch-project-rework-1',
+    }));
+    const captured: { eventName: string; handler: (event: any) => void }[] = [];
+    const eventBus = {
+      subscribe: vi.fn((eventName: string, handler: (event: any) => void) => captured.push({ eventName, handler })),
+      subscribeMultiple: vi.fn(),
+      emit: vi.fn(async () => {}),
+    } as unknown as UnifiedEventBus;
+    attachEventForwarding(createDeps({
+      eventBus,
+      sessionManager,
+      dispatchTaskToAgent,
+      resolveReviewPolicy: () => ({ enabled: true, dispatchReviewMode: 'always' }),
+    }));
+    const handler = captured.find((entry) => entry.eventName === 'agent_runtime_dispatch')?.handler;
+    expect(handler).toBeDefined();
+
+    handler?.({
+      type: 'agent_runtime_dispatch',
+      sessionId: 'system-main',
+      timestamp: new Date().toISOString(),
+      payload: {
+        dispatchId: 'dispatch-reviewer-done-1',
+        sourceAgentId: 'finger-system-agent',
+        targetAgentId: 'finger-reviewer',
+        status: 'completed',
+        assignment: {
+          taskId: 'task-auto-review-2',
+          attempt: 1,
+        },
+        result: {
+          response: '<verification><verdict>FAIL</verdict></verification>',
+        },
+      },
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(dispatchTaskToAgent).toHaveBeenCalledTimes(1);
+    const request = dispatchTaskToAgent.mock.calls[0]?.[0] as Record<string, unknown>;
+    expect(request.targetAgentId).toBe('finger-project-agent');
+    const metadata = request.metadata as Record<string, unknown>;
+    expect(metadata.reviewDecision).toBe('retry');
   });
 });

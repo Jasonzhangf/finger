@@ -3,7 +3,9 @@ import type { MessageHub } from '../../orchestration/message-hub.js';
 import type { ChannelBridgeEnvelope } from '../../bridges/envelope.js';
 import type { SessionEnvelopeMapping } from './agent-status-subscriber-types.js';
 import type { SubscriberRouteState } from './agent-status-subscriber-session-utils.js';
+import type { UpdateStreamSourceType } from './update-stream-policy.js';
 import { buildDeliveryRouteKey, buildRouteKey, waitReasoningBufferIfNeeded } from './agent-status-subscriber-session-utils.js';
+import { isNoActionableWatchdogText, isScheduledSourceType } from './agent-status-subscriber-noop.js';
 import { enqueueUpdateStreamDelivery } from './update-stream-delivery-adapter.js';
 import { logger } from '../../core/logger.js';
 
@@ -116,6 +118,11 @@ async function sendTextUpdate(params: {
       agentId?: string;
     },
   ) => PushSettings;
+  resolveSourceType: (
+    sessionId: string,
+    sourceTypeHint?: string,
+  ) => UpdateStreamSourceType;
+  sourceTypeHint?: string;
   messageHub?: MessageHub;
   state: SubscriberRouteState;
   reasoningBodyBufferMs: number;
@@ -133,9 +140,24 @@ async function sendTextUpdate(params: {
   }
 
   for (const mapping of deduped.values()) {
+    const sourceType = params.resolveSourceType(params.sessionId, params.sourceTypeHint);
+    if (
+      params.label === 'body'
+      && isScheduledSourceType(sourceType)
+      && isNoActionableWatchdogText(params.text)
+    ) {
+      log.debug('[AgentStatusSubscriber] Suppress no-action watchdog body update', {
+        sessionId: params.sessionId,
+        agentId: params.agentId,
+        sourceType,
+        channel: mapping.envelope.channel,
+      });
+      continue;
+    }
     const pushSettings = params.resolvePushSettings(params.sessionId, mapping.envelope.channel, {
       phase: params.label === 'reasoning' ? 'execution' : 'delivery',
       kind: params.label === 'reasoning' ? 'reasoning' : 'artifact',
+      sourceType,
       agentId: params.agentId,
     });
     if (!pushSettings[params.setting]) continue;
@@ -231,6 +253,10 @@ export async function sendReasoningUpdate(params: {
       agentId?: string;
     },
   ) => PushSettings;
+  resolveSourceType: (
+    sessionId: string,
+    sourceTypeHint?: string,
+  ) => UpdateStreamSourceType;
   messageHub?: MessageHub;
   state: SubscriberRouteState;
   reasoningBodyBufferMs: number;
@@ -261,6 +287,10 @@ export async function sendBodyUpdate(params: {
       agentId?: string;
     },
   ) => PushSettings;
+  resolveSourceType: (
+    sessionId: string,
+    sourceTypeHint?: string,
+  ) => UpdateStreamSourceType;
   messageHub?: MessageHub;
   state: SubscriberRouteState;
   reasoningBodyBufferMs: number;
@@ -318,6 +348,7 @@ export async function sendBodyUpdate(params: {
     prefix: pureLinkDigest ? '' : '正文：',
     resolveEnvelopeMappings: params.resolveEnvelopeMappings,
     resolvePushSettings: params.resolvePushSettings,
+    resolveSourceType: params.resolveSourceType,
     messageHub: params.messageHub,
     state: params.state,
     reasoningBodyBufferMs: params.reasoningBodyBufferMs,

@@ -5,6 +5,7 @@
  */
 
 import { getContextWindow } from '../../core/user-settings.js';
+import type { ContextBreakdownSnapshot } from './progress-monitor-types.js';
 
 export type ToolCategory = '读写' | '搜索' | '工具' | '其他';
 
@@ -182,6 +183,8 @@ export interface SessionProgressData {
   estimatedTokensInContextWindow?: number;
   maxInputTokens?: number;
   lastContextEvent?: string;
+  contextBreakdown?: ContextBreakdownSnapshot;
+  contextBreakdownMode?: 'release' | 'dev';
 }
 
 function formatTokenCount(value: number): string {
@@ -226,22 +229,45 @@ export function buildContextUsageLine(snapshot: ContextUsageSnapshot): string | 
     : inferredEstimated !== undefined
       ? Math.max(0, Math.floor((inferredEstimated / Math.max(1, maxInput)) * 100))
       : undefined;
+  const derivedPercentFromEstimated = inferredEstimated !== undefined
+    ? Math.max(0, Math.floor((inferredEstimated / Math.max(1, maxInput)) * 100))
+    : undefined;
+  const drift = inferredPercent !== undefined && derivedPercentFromEstimated !== undefined
+    ? Math.abs(inferredPercent - derivedPercentFromEstimated)
+    : 0;
+  const preferPercentDerivedTokens =
+    explicitPercent !== undefined
+    && explicitEstimated !== undefined
+    && derivedPercentFromEstimated !== undefined
+    && drift >= 3;
+  const normalizedPercent = (() => {
+    if (preferPercentDerivedTokens) return explicitPercent;
+    if (inferredPercent === undefined) return derivedPercentFromEstimated;
+    if (derivedPercentFromEstimated === undefined) return inferredPercent;
+    return inferredPercent;
+  })();
+  const normalizedEstimated = preferPercentDerivedTokens
+    ? Math.max(0, Math.floor((explicitPercent as number / 100) * maxInput))
+    : inferredEstimated;
 
-  if (inferredEstimated === undefined && inferredPercent === undefined) {
+  if (inferredEstimated === undefined && normalizedPercent === undefined) {
     return undefined;
   }
 
-  const estimatedLabel = explicitEstimated === undefined && inferredEstimated !== undefined
-    ? `~${formatTokenCount(inferredEstimated)}`
-    : formatTokenCount(inferredEstimated ?? 0);
+  const estimatedLabel = explicitEstimated === undefined && normalizedEstimated !== undefined
+    ? `~${formatTokenCount(normalizedEstimated)}`
+    : formatTokenCount(normalizedEstimated ?? 0);
+  const percentLabel = normalizedPercent !== undefined
+    ? (normalizedPercent === 0 && (normalizedEstimated ?? 0) > 0 ? '<1%' : `${normalizedPercent}%`)
+    : undefined;
 
-  if (inferredEstimated !== undefined && inferredPercent !== undefined) {
-    return `🧠 上下文: ${inferredPercent}% · ${estimatedLabel}/${formatTokenCount(maxInput)}`;
+  if (normalizedEstimated !== undefined && percentLabel !== undefined) {
+    return `🧠 上下文: ${percentLabel} · ${estimatedLabel}/${formatTokenCount(maxInput)}`;
   }
-  if (inferredEstimated !== undefined) {
+  if (normalizedEstimated !== undefined) {
     return `🧠 上下文: ${estimatedLabel}/${formatTokenCount(maxInput)}`;
   }
-  return `🧠 上下文: ${inferredPercent}% · ?/${formatTokenCount(maxInput)}`;
+  return `🧠 上下文: ${percentLabel ?? '?'} · ?/${formatTokenCount(maxInput)}`;
 }
 
 export function normalizeContextUsageSnapshot(snapshot: ContextUsageSnapshot): Required<Pick<ContextUsageSnapshot, 'maxInputTokens'>> & ContextUsageSnapshot {

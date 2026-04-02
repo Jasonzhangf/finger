@@ -14,6 +14,7 @@ import { CommandExecutor } from './executor.js';
 import { CommandType } from './types.js';
 import {
   SystemRestartHandler,
+  SystemProgressModeHandler,
   SystemSwitchHandler,
   ProviderListHandler,
   ProviderSwitchHandler
@@ -39,6 +40,7 @@ export function initCommandHub(): CommandExecutor {
   // Register system command handlers
   executor.registerHandler(CommandType.SYSTEM, new SystemSwitchHandler());
   executor.registerHandler(CommandType.SYSTEM_RESTART, new SystemRestartHandler());
+  executor.registerHandler(CommandType.SYSTEM_PROGRESS_MODE, new SystemProgressModeHandler());
   executor.registerHandler(CommandType.PROVIDER_LIST, new ProviderListHandler());
   executor.registerHandler(CommandType.PROVIDER_SWITCH, new ProviderSwitchHandler());
 

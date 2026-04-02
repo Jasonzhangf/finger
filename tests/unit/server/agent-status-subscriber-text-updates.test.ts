@@ -375,6 +375,174 @@ describe('AgentStatusSubscriber text updates', () => {
     expect(routeCalls).toHaveLength(0);
   });
 
+  it('suppresses scheduled no-action watchdog body updates', async () => {
+    const eventBus = new UnifiedEventBus();
+    const routeCalls: Array<{ outputId: string; content: string }> = [];
+    const messageHub = {
+      routeToOutput: vi.fn().mockImplementation((outputId: string, msg: any) => {
+        routeCalls.push({ outputId, content: String(msg.content ?? '') });
+        return Promise.resolve();
+      }),
+    };
+    const channelBridgeManager = {
+      getPushSettings: vi.fn().mockReturnValue({
+        reasoning: true,
+        bodyUpdates: true,
+        statusUpdate: true,
+        toolCalls: false,
+        stepUpdates: true,
+        stepBatch: 5,
+        progressUpdates: true,
+      }),
+    };
+    const deps = createMinimalDeps();
+    (deps.sessionManager.getSession as any) = vi.fn((sessionId: string) => {
+      if (sessionId === 'session-noop-watchdog') {
+        return {
+          context: {
+            source: 'system-heartbeat',
+            scheduledProgressDelivery: { mode: 'result_only' },
+          },
+        };
+      }
+      return null;
+    });
+
+    const subscriber = new AgentStatusSubscriber(
+      eventBus,
+      deps,
+      messageHub as any,
+      channelBridgeManager as any,
+    );
+    subscriber.registerSession('session-noop-watchdog', {
+      channel: 'qqbot',
+      envelopeId: 'env-noop-watchdog',
+      userId: 'user-noop-watchdog',
+    });
+
+    await subscriber.sendBodyUpdate(
+      'session-noop-watchdog',
+      'finger-project-agent',
+      'No actionable work. This is a stale watchdog trigger from an already-completed task.',
+    );
+
+    expect(routeCalls).toHaveLength(0);
+  });
+
+  it('suppresses scheduled no-action watchdog body updates (zh variants)', async () => {
+    const eventBus = new UnifiedEventBus();
+    const routeCalls: Array<{ outputId: string; content: string }> = [];
+    const messageHub = {
+      routeToOutput: vi.fn().mockImplementation((outputId: string, msg: any) => {
+        routeCalls.push({ outputId, content: String(msg.content ?? '') });
+        return Promise.resolve();
+      }),
+    };
+    const channelBridgeManager = {
+      getPushSettings: vi.fn().mockReturnValue({
+        reasoning: true,
+        bodyUpdates: true,
+        statusUpdate: true,
+        toolCalls: false,
+        stepUpdates: true,
+        stepBatch: 5,
+        progressUpdates: true,
+      }),
+    };
+    const deps = createMinimalDeps();
+    (deps.sessionManager.getSession as any) = vi.fn((sessionId: string) => {
+      if (sessionId === 'session-noop-watchdog-zh') {
+        return {
+          context: {
+            source: 'system-heartbeat',
+            scheduledProgressDelivery: { mode: 'result_only' },
+          },
+        };
+      }
+      return null;
+    });
+
+    const subscriber = new AgentStatusSubscriber(
+      eventBus,
+      deps,
+      messageHub as any,
+      channelBridgeManager as any,
+    );
+    subscriber.registerSession('session-noop-watchdog-zh', {
+      channel: 'qqbot',
+      envelopeId: 'env-noop-watchdog-zh',
+      userId: 'user-noop-watchdog-zh',
+    });
+
+    await subscriber.sendBodyUpdate(
+      'session-noop-watchdog-zh',
+      'finger-project-agent',
+      '这是一个过期的监控触发器。Watchdog 误报，无待办工作。',
+    );
+
+    expect(routeCalls).toHaveLength(0);
+  });
+
+  it('suppresses scheduled no-action watchdog turn-finalization notices', async () => {
+    const eventBus = new UnifiedEventBus();
+    const routeCalls: Array<{ outputId: string; content: string }> = [];
+    const messageHub = {
+      routeToOutput: vi.fn().mockImplementation((outputId: string, msg: any) => {
+        routeCalls.push({ outputId, content: String(msg.content ?? '') });
+        return Promise.resolve();
+      }),
+    };
+    const channelBridgeManager = {
+      getPushSettings: vi.fn().mockReturnValue({
+        reasoning: true,
+        bodyUpdates: true,
+        statusUpdate: true,
+        toolCalls: false,
+        stepUpdates: true,
+        stepBatch: 5,
+        progressUpdates: true,
+      }),
+    };
+    const deps = createMinimalDeps();
+    (deps.sessionManager.getSession as any) = vi.fn((sessionId: string) => {
+      if (sessionId === 'session-finalize-noop-watchdog') {
+        return {
+          context: {
+            source: 'system-heartbeat',
+            scheduledProgressDelivery: { mode: 'result_only' },
+          },
+        };
+      }
+      return null;
+    });
+
+    const subscriber = new AgentStatusSubscriber(
+      eventBus,
+      deps,
+      messageHub as any,
+      channelBridgeManager as any,
+    );
+    subscriber.registerSession('session-finalize-noop-watchdog', {
+      channel: 'openclaw-weixin',
+      envelopeId: 'env-noop-primary',
+      userId: 'user-noop-primary',
+    });
+    subscriber.registerSession('session-finalize-noop-watchdog', {
+      channel: 'qqbot',
+      envelopeId: 'env-noop-observer',
+      userId: 'user-noop-observer',
+    });
+
+    await subscriber.finalizeChannelTurn(
+      'session-finalize-noop-watchdog',
+      'No actionable work. This is a stale watchdog trigger from the already-completed task.',
+      'finger-project-agent',
+      'stop',
+    );
+
+    expect(routeCalls).toHaveLength(0);
+  });
+
   it('includes mailbox.status snapshot in progress update', async () => {
     const eventBus = new UnifiedEventBus();
     const messageHub = {

@@ -18,6 +18,7 @@ export interface ParseResult {
  */
 export function parseCommands(input: string): ParseResult {
   const commands: Command[] = [];
+  COMMAND_PATTERN.lastIndex = 0;
   const matches = [...input.matchAll(COMMAND_PATTERN)];
 
   if (matches.length === 0) {
@@ -89,6 +90,11 @@ function parseSingleCommand(
   } else if (category === 'system') {
     if (action === 'restart') {
       type = CommandType.SYSTEM_RESTART;
+    } else if (action === 'progress:mode') {
+      type = CommandType.SYSTEM_PROGRESS_MODE;
+      if (typeof param === 'string' && param.trim().length > 0) {
+        params.mode = param.trim().toLowerCase();
+      }
     } else if (action === 'provider:list') {
       type = CommandType.PROVIDER_LIST;
     } else if (action?.startsWith('provider:switch@')) {

@@ -210,17 +210,11 @@ const {
 const workflowManager = sharedWorkflowManager;
 const runtime = new RuntimeFacade(globalEventBus, sessionManager, globalToolRegistry);
 
-globalEventBus.subscribe('system_notice', (event) => {
-  const payload = (typeof event.payload === 'object' && event.payload !== null)
-    ? event.payload as Record<string, unknown>
-    : {};
-  if (payload.source !== 'auto_compact_probe') return;
-  const contextUsagePercent = typeof payload.contextUsagePercent === 'number'
-    ? payload.contextUsagePercent
-    : undefined;
-  const turnId = typeof payload.turnId === 'string' ? payload.turnId : undefined;
-  void runtime.maybeAutoCompact(event.sessionId, contextUsagePercent, turnId);
-});
+// IMPORTANT:
+// Context rebuild remains explicit (context_builder.rebuild), or one-time bootstrap
+// on truly empty history only.
+// Separately, runtime auto-compaction is enabled when context usage crosses threshold
+// to avoid hard-overflow stalls during long turns.
 const askManager = new AskManager(
   Number.isFinite(Number(process.env.FINGER_ASK_TOOL_TIMEOUT_MS))
     ? Math.max(1_000, Math.floor(Number(process.env.FINGER_ASK_TOOL_TIMEOUT_MS)))
@@ -375,6 +369,7 @@ const progressMonitor = new ProgressMonitor(globalEventBus, getAgentRuntimeDeps(
         contextUsagePercent: report.progress.contextUsagePercent,
         estimatedTokensInContextWindow: report.progress.estimatedTokensInContextWindow,
         maxInputTokens: report.progress.maxInputTokens,
+        contextBreakdown: report.progress.contextBreakdown,
       },
     });
   },
@@ -462,6 +457,7 @@ await runPostInit({
   askManager,
   eventBus: globalEventBus,
   sessionManager,
+  runtime,
   dispatchTaskToAgent,
   broadcast,
   agentStatusSubscriber,

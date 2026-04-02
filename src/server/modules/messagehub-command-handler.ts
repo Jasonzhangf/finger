@@ -16,12 +16,16 @@ import {
 import * as fs from 'fs';
 import * as path from 'path';
 import { FINGER_PATHS } from '../../core/finger-paths.js';
+import { normalizeProjectPathCanonical } from '../../common/path-normalize.js';
 
 /**
  * 解析指定项目的最新 session
  */
 function resolveLatestSession(sessionManager: SessionManager, projectPath: string): Session | null {
-  const sessions = sessionManager.listSessions().filter(s => s.projectPath === projectPath);
+  const normalizedProjectPath = normalizeProjectPathCanonical(projectPath);
+  const sessions = sessionManager.listSessions().filter(
+    (s) => normalizeProjectPathCanonical(s.projectPath) === normalizedProjectPath,
+  );
   if (sessions.length === 0) return null;
 
   const sorted = sessions.sort((a, b) =>
@@ -64,6 +68,8 @@ async function emitSessionChanged(
 export async function handleCmdList(): Promise<string> {
   return `可用命令：
   <##@system##>                    - 切换到系统代理（project=~/.finger，最新 session）
+  <##@system:progress:mode@dev##>  - 切换进度上下文显示为 DEV（详细分解）
+  <##@system:progress:mode@release##> - 切换进度上下文显示为 RELEASE（精简）
   <##@agent:list##>                 - 列出当前项目的会话
   <##@agent:list@/path/to/proj##>   - 列出指定项目的会话
   <##@agent:new##>                  - 在当前项目创建新会话
@@ -88,8 +94,11 @@ export async function handleAgentList(
   const resolvedPath = projectPath
     ? resolveHomePath(projectPath)
     : resolveDefaultProject(config, sessionManager.getCurrentSession()?.projectPath || null);
+  const normalizedResolvedPath = normalizeProjectPathCanonical(resolvedPath);
 
-  const sessions = sessionManager.listSessions().filter(s => s.projectPath === resolvedPath);
+  const sessions = sessionManager.listSessions().filter(
+    (s) => normalizeProjectPathCanonical(s.projectPath) === normalizedResolvedPath,
+  );
   const sorted = sessions.slice().sort((a, b) =>
     new Date(b.lastAccessedAt).getTime() - new Date(a.lastAccessedAt).getTime()
   );
@@ -207,8 +216,9 @@ export async function handleSystemCommand(
   sessionManager.setCurrentSession(session.id);
   await emitSessionChanged(sessionManager, session.id, eventBus);
 
+  const normalizedSystemProject = normalizeProjectPathCanonical(systemProject);
   const systemSessions = sessionManager.listSessions()
-    .filter(s => s.projectPath === systemProject)
+    .filter((s) => normalizeProjectPathCanonical(s.projectPath) === normalizedSystemProject)
     .sort((a, b) => new Date(b.lastAccessedAt).getTime() - new Date(a.lastAccessedAt).getTime())
     .slice(0, 3);
 
@@ -330,6 +340,37 @@ function saveProviderConfig(providerId: string): boolean {
   } catch (err) {
     logger.module('messagehub-command-handler').error('Failed to save provider config', err instanceof Error ? err : undefined);
     return false;
+  }
+}
+
+/**
+ * <##@system:progress:mode@dev|release##>
+ */
+export async function handleSystemProgressMode(modeRaw: string): Promise<string> {
+  const mode = modeRaw.trim().toLowerCase();
+  if (mode !== 'dev' && mode !== 'release') {
+    return '❌ 无效模式。请使用：<##@system:progress:mode@dev##> 或 <##@system:progress:mode@release##>';
+  }
+
+  const configPath = path.join(FINGER_PATHS.config.dir, 'progress-monitor.json');
+  try {
+    fs.mkdirSync(path.dirname(configPath), { recursive: true });
+    let existing: Record<string, unknown> = {};
+    if (fs.existsSync(configPath)) {
+      const raw = fs.readFileSync(configPath, 'utf-8');
+      const parsed = JSON.parse(raw);
+      existing = typeof parsed === 'object' && parsed !== null ? parsed as Record<string, unknown> : {};
+    }
+    const next = {
+      ...existing,
+      contextBreakdownMode: mode,
+    };
+    fs.writeFileSync(configPath, JSON.stringify(next, null, 2), 'utf-8');
+    return mode === 'dev'
+      ? '✓ 已切换进度上下文模式为 DEV（详细分解）'
+      : '✓ 已切换进度上下文模式为 RELEASE（精简视图）';
+  } catch (error) {
+    return `❌ 设置失败：${error instanceof Error ? error.message : String(error)}`;
   }
 }
 

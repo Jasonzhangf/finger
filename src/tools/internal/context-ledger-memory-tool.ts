@@ -2,7 +2,7 @@ import { executeContextLedgerMemory } from '../../runtime/context-ledger-memory.
 import { InternalTool, ToolExecutionContext } from './types.js';
 
 interface ContextLedgerMemoryToolInput {
-  action?: 'query' | 'search' | 'index' | 'compact' | 'delete_slots';
+  action?: 'query' | 'search' | 'index' | 'compact' | 'delete_slots' | 'digest_backfill' | 'digest_incremental';
   session_id?: string;
   agent_id?: string;
   mode?: string;
@@ -59,7 +59,7 @@ export const contextLedgerMemoryTool: InternalTool<unknown, ContextLedgerMemoryT
   inputSchema: {
     type: 'object',
     properties: {
-      action: { type: 'string', enum: ['query', 'search', 'index', 'compact', 'delete_slots'], description: 'Use search first to find relevant history, then query with detail=true for raw entries. index/compact/delete_slots are maintenance actions.' },
+      action: { type: 'string', enum: ['query', 'search', 'index', 'compact', 'delete_slots', 'digest_backfill', 'digest_incremental'], description: 'Use search first to find relevant history, then query with detail=true for raw entries. digest_backfill can generate full digests; digest_incremental appends digest only for newly added ledger slots since last compaction.' },
       session_id: { type: 'string', description: 'Optional override session id; usually auto-filled by runtime context' },
       agent_id: { type: 'string', description: 'Target agent ledger id. Requires read permission when not self.' },
       mode: { type: 'string', description: 'Conversation mode/thread name, e.g. main or review' },
@@ -110,6 +110,8 @@ function parseInput(rawInput: unknown): ContextLedgerMemoryToolInput {
     || rawInput.action === 'compact'
     || rawInput.action === 'search'
     || rawInput.action === 'delete_slots'
+    || rawInput.action === 'digest_backfill'
+    || rawInput.action === 'digest_incremental'
       ? rawInput.action
       : 'query';
 

@@ -7,6 +7,9 @@
 
 import type { ToolRegistry } from '../../runtime/tool-registry.js';
 import { writeFileSync } from 'fs';
+import { promises as fs } from 'fs';
+import { homedir } from 'os';
+import path from 'path';
 import type { AgentRuntimeDeps } from '../../server/modules/agent-runtime/types.js';
 import { logger } from '../../core/logger.js';
 import { dispatchTaskToSystemAgent } from '../../agents/finger-system-agent/task-report-dispatcher.js';
@@ -33,6 +36,10 @@ import {
 } from '../../common/project-task-state.js';
 import { buildVerificationPrompt } from '../../agents/prompts/verifier-prompts.js';
 import { appendClosedProjectTaskArchive } from '../../core/project-task-archive.js';
+import { releaseProjectDreamLock } from '../../core/project-dream-lock.js';
+import { writeProjectDreamMemory } from '../../core/project-dream-memory-store.js';
+import { FINGER_PATHS } from '../../core/finger-paths.js';
+import { SYSTEM_PROJECT_PATH } from '../../agents/finger-system-agent/index.js';
 
 const log = logger.module('report-task-completion-tool');
 
@@ -62,7 +69,51 @@ export interface ReportTaskCompletionOutput {
   dispatchId?: string;
   status?: 'queued' | 'completed' | 'failed';
   error?: string;
+  warnings?: string[];
 }
+
+interface DailySystemReviewTask {
+  dateKey: string;
+}
+
+interface DailySystemReviewBackupConfig {
+  enabled: boolean;
+  localDir: string;
+  obsidianDir?: string;
+}
+
+interface DailySystemReviewBaselineEntry {
+  name: string;
+  targetPath: string;
+  existed: boolean;
+  snapshotPath?: string;
+}
+
+interface DailySystemReviewDispatchState {
+  date?: string;
+  status?: string;
+  runId?: string;
+  appendOnly?: boolean;
+  backup?: DailySystemReviewBackupConfig;
+  baseline?: DailySystemReviewBaselineEntry[];
+  note?: string;
+}
+
+const HEARTBEAT_RUNTIME_STATE_PATH = path.join(
+  FINGER_PATHS.runtime.schedulesDir,
+  'heartbeat-runtime-state.json',
+);
+const HEARTBEAT_CONFIG_PATH = path.join(
+  FINGER_PATHS.runtime.schedulesDir,
+  'heartbeat-config.jsonl',
+);
+const DEFAULT_DAILY_SYSTEM_REVIEW_BACKUP_LOCAL_DIR = path.join(
+  FINGER_PATHS.home,
+  'system',
+  'backup',
+  'daily-review',
+);
+const DEFAULT_DAILY_SYSTEM_REVIEW_BACKUP_OBSIDIAN_DIR = '~/Documents/Obsidian/finger日志/backups/daily-review';
 
 const INCOMPLETE_MARKERS = [
   'wip',
@@ -148,6 +199,234 @@ function resolveEvidence(raw: Record<string, unknown>, params: ReportTaskComplet
   if (typeof raw.evidence_items === 'string') return raw.evidence_items.trim();
   if (Array.isArray(raw.evidence_items)) return raw.evidence_items as string[];
   return undefined;
+}
+
+function parseNightlyDreamTaskId(taskId: string): { projectSlug: string; dateKey: string } | null {
+  const normalized = typeof taskId === 'string' ? taskId.trim() : '';
+  if (!normalized.startsWith('nightly-dream:')) return null;
+  const parts = normalized.split(':');
+  if (parts.length !== 3) return null;
+  const projectSlug = parts[1]?.trim() ?? '';
+  const dateKey = parts[2]?.trim() ?? '';
+  if (!projectSlug || !dateKey) return null;
+  return { projectSlug, dateKey };
+}
+
+function parseDailySystemReviewTaskId(taskId: string): DailySystemReviewTask | null {
+  const normalized = typeof taskId === 'string' ? taskId.trim() : '';
+  if (!normalized.startsWith('daily-system-review:')) return null;
+  const parts = normalized.split(':');
+  if (parts.length !== 2) return null;
+  const dateKey = parts[1]?.trim() ?? '';
+  if (!dateKey) return null;
+  return { dateKey };
+}
+
+function expandHomePath(inputPath: string): string {
+  if (!inputPath.startsWith('~/')) return inputPath;
+  return path.join(homedir(), inputPath.slice(2));
+}
+
+function normalizeDailyReviewObsidianDir(rawValue: unknown): string | undefined {
+  if (typeof rawValue !== 'string') return undefined;
+  const trimmed = rawValue.trim();
+  if (!trimmed) return undefined;
+  if (trimmed.includes('/Documents/ObsidianVault/')) {
+    return DEFAULT_DAILY_SYSTEM_REVIEW_BACKUP_OBSIDIAN_DIR;
+  }
+  const homePrefix = `${homedir()}/`;
+  if (trimmed.startsWith(homePrefix)) {
+    return `~/${trimmed.slice(homePrefix.length)}`;
+  }
+  return trimmed;
+}
+
+function resolveDailySystemReviewTargets(): Array<{ name: string; targetPath: string }> {
+  return [
+    { name: 'USER.md', targetPath: path.join(FINGER_PATHS.home, 'USER.md') },
+    { name: 'FLOW.md', targetPath: path.join(SYSTEM_PROJECT_PATH, 'FLOW.md') },
+    { name: 'MEMORY.md', targetPath: path.join(SYSTEM_PROJECT_PATH, 'MEMORY.md') },
+  ];
+}
+
+async function readLatestDailySystemReviewBackupConfig(): Promise<DailySystemReviewBackupConfig> {
+  const fallback: DailySystemReviewBackupConfig = {
+    enabled: false,
+    localDir: DEFAULT_DAILY_SYSTEM_REVIEW_BACKUP_LOCAL_DIR,
+  };
+  let raw = '';
+  try {
+    raw = await fs.readFile(HEARTBEAT_CONFIG_PATH, 'utf-8');
+  } catch {
+    return fallback;
+  }
+  const lines = raw.split('\n').map((line) => line.trim()).filter((line) => line.length > 0);
+  for (let i = lines.length - 1; i >= 0; i -= 1) {
+    try {
+      const parsed = JSON.parse(lines[i]) as {
+        type?: unknown;
+        config?: {
+          dailySystemReview?: {
+            backup?: {
+              enabled?: boolean;
+              localDir?: string;
+              obsidianDir?: string;
+            };
+          };
+        };
+      };
+      if (parsed?.type !== 'heartbeat_config') continue;
+      const rawBackup = parsed.config?.dailySystemReview?.backup;
+      const localDir = typeof rawBackup?.localDir === 'string' && rawBackup.localDir.trim().length > 0
+        ? rawBackup.localDir.trim()
+        : DEFAULT_DAILY_SYSTEM_REVIEW_BACKUP_LOCAL_DIR;
+      const obsidianDir = normalizeDailyReviewObsidianDir(rawBackup?.obsidianDir);
+      return {
+        enabled: rawBackup?.enabled === true,
+        localDir,
+        ...(obsidianDir ? { obsidianDir } : {}),
+      };
+    } catch {
+      // Ignore malformed historical line; keep scanning backwards.
+    }
+  }
+  return fallback;
+}
+
+async function loadDailySystemReviewDispatchState(
+  taskId: string,
+  dateKey: string,
+): Promise<{ state: DailySystemReviewDispatchState | null; runtimeState: Record<string, unknown> }> {
+  try {
+    const raw = await fs.readFile(HEARTBEAT_RUNTIME_STATE_PATH, 'utf-8');
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
+    const dispatchState = parsed.dailySystemReviewDispatchState;
+    if (!dispatchState || typeof dispatchState !== 'object') {
+      return { state: null, runtimeState: parsed };
+    }
+    const state = dispatchState as DailySystemReviewDispatchState;
+    const runId = typeof state.runId === 'string' ? state.runId.trim() : '';
+    const stateDate = typeof state.date === 'string' ? state.date.trim() : '';
+    if ((runId && runId !== taskId) || (stateDate && stateDate !== dateKey)) {
+      return { state: null, runtimeState: parsed };
+    }
+    return { state, runtimeState: parsed };
+  } catch {
+    return { state: null, runtimeState: {} };
+  }
+}
+
+async function persistDailySystemReviewDispatchState(
+  runtimeState: Record<string, unknown>,
+  next: DailySystemReviewDispatchState,
+): Promise<void> {
+  const updated = {
+    ...runtimeState,
+    dailySystemReviewDispatchState: next,
+  };
+  await fs.mkdir(path.dirname(HEARTBEAT_RUNTIME_STATE_PATH), { recursive: true });
+  const tempPath = `${HEARTBEAT_RUNTIME_STATE_PATH}.tmp`;
+  await fs.writeFile(tempPath, JSON.stringify(updated, null, 2), 'utf-8');
+  await fs.rename(tempPath, HEARTBEAT_RUNTIME_STATE_PATH);
+}
+
+async function verifyDailySystemReviewAppendOnly(
+  baseline: DailySystemReviewBaselineEntry[],
+): Promise<{ ok: boolean; violations: string[] }> {
+  const violations: string[] = [];
+  for (const entry of baseline) {
+    if (!entry.existed) continue;
+    if (typeof entry.snapshotPath !== 'string' || entry.snapshotPath.trim().length === 0) {
+      violations.push(`${entry.name}: missing baseline snapshot`);
+      continue;
+    }
+    let snapshotContent = '';
+    let currentContent = '';
+    try {
+      snapshotContent = await fs.readFile(entry.snapshotPath, 'utf-8');
+    } catch (error) {
+      violations.push(`${entry.name}: baseline read failed (${error instanceof Error ? error.message : String(error)})`);
+      continue;
+    }
+    try {
+      currentContent = await fs.readFile(entry.targetPath, 'utf-8');
+    } catch (error) {
+      violations.push(`${entry.name}: current read failed (${error instanceof Error ? error.message : String(error)})`);
+      continue;
+    }
+    if (!currentContent.startsWith(snapshotContent)) {
+      violations.push(`${entry.name}: append-only violation (content prefix mismatch)`);
+    }
+  }
+  return { ok: violations.length === 0, violations };
+}
+
+async function runDailySystemReviewBackups(params: {
+  dateKey: string;
+  backup: DailySystemReviewBackupConfig;
+  targets: Array<{ name: string; targetPath: string }>;
+}): Promise<{ warnings: string[] }> {
+  const warnings: string[] = [];
+  const localRoot = path.join(expandHomePath(params.backup.localDir), params.dateKey);
+  try {
+    await fs.mkdir(localRoot, { recursive: true });
+  } catch (error) {
+    warnings.push(`local backup root mkdir failed: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  const obsidianRoot = params.backup.enabled && params.backup.obsidianDir
+    ? path.join(expandHomePath(params.backup.obsidianDir), params.dateKey)
+    : undefined;
+  if (obsidianRoot) {
+    try {
+      await fs.mkdir(obsidianRoot, { recursive: true });
+    } catch (error) {
+      warnings.push(`obsidian backup root mkdir failed: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+  for (const target of params.targets) {
+    const sourcePath = target.targetPath;
+    try {
+      await fs.access(sourcePath);
+    } catch {
+      continue;
+    }
+    const localTargetPath = path.join(localRoot, target.name);
+    try {
+      await fs.copyFile(sourcePath, localTargetPath);
+    } catch (error) {
+      warnings.push(`${target.name}: local backup copy failed (${error instanceof Error ? error.message : String(error)})`);
+    }
+    if (obsidianRoot) {
+      const obsidianTargetPath = path.join(obsidianRoot, target.name);
+      try {
+        await fs.copyFile(sourcePath, obsidianTargetPath);
+      } catch (error) {
+        warnings.push(`${target.name}: obsidian backup copy failed (${error instanceof Error ? error.message : String(error)})`);
+      }
+    }
+  }
+  return { warnings };
+}
+
+function resolveHighSignalItemsCount(summary: string, artifacts: string, evidence?: string[] | string): number {
+  const evidenceCount = Array.isArray(evidence)
+    ? evidence.filter((item) => typeof item === 'string' && item.trim().length > 0).length
+    : typeof evidence === 'string'
+      ? evidence.split('\n').map((item) => item.trim()).filter((item) => item.length > 0).length
+      : 0;
+  const text = `${summary}\n${artifacts}`.toLowerCase();
+  const keywordHits = ['rule', 'guardrail', 'playbook', 'delivery pattern', '规则', '防呆', '交付模式', '模板']
+    .filter((keyword) => text.includes(keyword))
+    .length;
+  return Math.max(evidenceCount, keywordHits);
+}
+
+function resolveNoiseDroppedCount(artifacts: string): number {
+  const text = typeof artifacts === 'string' ? artifacts : '';
+  const hit = text.match(/noise[_\s-]?dropped[_\s-]?count\s*[:=]\s*(\d+)/i);
+  if (!hit) return 0;
+  const value = Number.parseInt(hit[1] ?? '', 10);
+  return Number.isFinite(value) && value >= 0 ? value : 0;
 }
 
 function updateProjectTaskStateForSession(
@@ -374,6 +653,8 @@ export function registerReportTaskCompletionTool(
         const effectiveTaskId = routeTaskId || taskId;
         const routeTaskName = typeof reviewRoute?.taskName === 'string' ? reviewRoute.taskName.trim() : '';
         const effectiveTaskName = routeTaskName || taskName;
+        const nightlyDreamTask = parseNightlyDreamTaskId(effectiveTaskId || params.taskId);
+        const dailySystemReviewTask = parseDailySystemReviewTaskId(effectiveTaskId || params.taskId);
         const normalizedSummary = normalizeText(params.taskSummary);
         const taskReport: TaskReportContract = buildTaskReportContract({
           taskId: effectiveTaskId || params.taskId,
@@ -399,6 +680,170 @@ export function registerReportTaskCompletionTool(
         const hasClaim = typeof structuredClaim === 'boolean'
           ? structuredClaim
           : hasDeliveryClaim(normalizedSummary, deliveryArtifacts, params.result);
+
+        if (nightlyDreamTask && !reviewRoute) {
+          const nightlyStartedAt = Date.now();
+          let memoryWrite:
+            | { projectRoot: string; memoryIndexPath: string; dreamStatePath: string; assetPath: string }
+            | undefined;
+          const changedFiles = extractChangedFilesFromReportPayload({
+            summary: normalizedSummary,
+            artifacts: deliveryArtifacts,
+            evidence,
+          });
+          const highSignalItemsCount = resolveHighSignalItemsCount(normalizedSummary, deliveryArtifacts, evidence);
+          const noiseDroppedCount = resolveNoiseDroppedCount(deliveryArtifacts);
+          try {
+            memoryWrite = await writeProjectDreamMemory({
+              projectSlug: nightlyDreamTask.projectSlug,
+              taskId: effectiveTaskId || params.taskId,
+              projectId: params.projectId,
+              status: taskReport.status,
+              result: params.result,
+              summary: normalizedSummary,
+              deliveryArtifacts,
+              evidence,
+            });
+          } catch (error) {
+            return {
+              ok: false,
+              action: 'report',
+              error: `nightly dream memory write failed: ${error instanceof Error ? error.message : String(error)}`,
+            };
+          }
+          const enrichedArtifacts = [
+            deliveryArtifacts,
+            memoryWrite ? `project_memory_asset=${memoryWrite.assetPath}` : '',
+            memoryWrite ? `project_memory_index=${memoryWrite.memoryIndexPath}` : '',
+          ].filter(Boolean).join('\n');
+          const dispatch = await dispatchTaskToSystemAgent(deps, {
+            taskId: effectiveTaskId || params.taskId,
+            taskSummary: params.taskSummary,
+            sessionId: params.sessionId,
+            result: params.result,
+            projectId: params.projectId,
+            deliveryArtifacts: enrichedArtifacts,
+            sourceAgentId: isReviewerCaller ? (callerAgentId || 'finger-reviewer') : 'finger-project-agent',
+            taskName: effectiveTaskName || taskName || undefined,
+            taskReport,
+            evidence,
+            status: taskReport.status,
+            nextAction: taskReport.nextAction,
+            reviewDecision: taskReport.reviewDecision,
+            deliveryClaim: taskReport.deliveryClaim,
+          });
+          const lockRelease = await releaseProjectDreamLock({
+            projectSlug: nightlyDreamTask.projectSlug,
+            runId: effectiveTaskId || params.taskId,
+          });
+          if (!lockRelease.released && lockRelease.reason !== 'missing') {
+            log.warn('[report-task-completion] nightly dream lock release not released', {
+              taskId: effectiveTaskId || params.taskId,
+              projectSlug: nightlyDreamTask.projectSlug,
+              reason: lockRelease.reason,
+              existingRunId: lockRelease.existingRunId,
+            });
+          }
+          if (!dispatch.ok || dispatch.status === 'failed') {
+            log.warn('[report-task-completion] nightly dream dispatch to system failed', {
+              dream_run_id: effectiveTaskId || params.taskId,
+              project_slug: nightlyDreamTask.projectSlug,
+              source: 'nightly-dream',
+              status: 'failed',
+              duration_ms: Date.now() - nightlyStartedAt,
+              changed_files_count: changedFiles.length,
+              high_signal_items_count: highSignalItemsCount,
+              noise_dropped_count: noiseDroppedCount,
+              error: dispatch.error ?? 'dispatch to system agent failed',
+            });
+            return {
+              ok: false,
+              action: 'report',
+              dispatchId: dispatch.dispatchId,
+              status: dispatch.status,
+              error: dispatch.error ?? 'dispatch to system agent failed',
+            };
+          }
+          emitTaskCompleted(deps, {
+            taskId: effectiveTaskId || params.taskId,
+            projectId: params.projectId,
+          });
+          log.info('[report-task-completion] nightly dream terminal report', {
+            dream_run_id: effectiveTaskId || params.taskId,
+            project_slug: nightlyDreamTask.projectSlug,
+            source: 'nightly-dream',
+            status: params.result === 'success' ? 'completed' : 'failed',
+            duration_ms: Date.now() - nightlyStartedAt,
+            changed_files_count: changedFiles.length,
+            high_signal_items_count: highSignalItemsCount,
+            noise_dropped_count: noiseDroppedCount,
+          });
+          return {
+            ok: true,
+            action: 'report',
+            dispatchId: dispatch.dispatchId,
+            status: dispatch.status,
+          };
+        }
+
+        if (dailySystemReviewTask && !reviewRoute) {
+          const targets = resolveDailySystemReviewTargets();
+          const { state: dailyDispatchState, runtimeState } = await loadDailySystemReviewDispatchState(
+            effectiveTaskId || params.taskId,
+            dailySystemReviewTask.dateKey,
+          );
+          const appendOnly = dailyDispatchState?.appendOnly !== false;
+          const baseline = Array.isArray(dailyDispatchState?.baseline)
+            ? dailyDispatchState?.baseline
+            : [];
+          if (appendOnly && baseline.length > 0) {
+            const appendOnlyResult = await verifyDailySystemReviewAppendOnly(baseline);
+            if (!appendOnlyResult.ok) {
+              await persistDailySystemReviewDispatchState(runtimeState, {
+                ...(dailyDispatchState ?? {}),
+                date: dailySystemReviewTask.dateKey,
+                status: 'failed',
+                runId: effectiveTaskId || params.taskId,
+                note: `append_only_violation:${appendOnlyResult.violations.join(' | ')}`,
+              });
+              return {
+                ok: false,
+                action: 'report',
+                status: 'failed',
+                error: `daily system review append-only violation: ${appendOnlyResult.violations.join('; ')}`,
+              };
+            }
+          }
+
+          const backup = dailyDispatchState?.backup ?? await readLatestDailySystemReviewBackupConfig();
+          const backupResult = await runDailySystemReviewBackups({
+            dateKey: dailySystemReviewTask.dateKey,
+            backup,
+            targets,
+          });
+
+          await persistDailySystemReviewDispatchState(runtimeState, {
+            ...(dailyDispatchState ?? {}),
+            date: dailySystemReviewTask.dateKey,
+            status: params.result === 'success' ? 'completed' : 'failed',
+            runId: effectiveTaskId || params.taskId,
+            appendOnly,
+            backup,
+            ...(backupResult.warnings.length > 0
+              ? { note: `backup_warning:${backupResult.warnings.join(' | ')}` }
+              : {}),
+          });
+          emitTaskCompleted(deps, {
+            taskId: effectiveTaskId || params.taskId,
+            projectId: params.projectId,
+          });
+          return {
+            ok: true,
+            action: 'report',
+            status: 'completed',
+            ...(backupResult.warnings.length > 0 ? { warnings: backupResult.warnings } : {}),
+          };
+        }
 
         // Project -> Reviewer
         if (!isReviewerCaller && !reviewRoute) {

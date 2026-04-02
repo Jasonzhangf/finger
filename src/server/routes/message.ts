@@ -44,7 +44,13 @@ import { inferInboundRole, ensureMessageMetadataRole } from './message-role-util
 import { normalizeProgressDeliveryPolicy } from '../../common/progress-delivery-policy.js';
 import { applyExecutionLifecycleTransition } from '../modules/execution-lifecycle.js';
 import { mergeSystemTaskState, parseSystemTaskState } from '../../common/system-task-state.js';
-import { mergeProjectTaskState, parseProjectTaskState } from '../../common/project-task-state.js';
+import {
+  mergeProjectTaskState,
+  parseDelegatedProjectTaskRegistry,
+  parseProjectTaskState,
+  pruneDelegatedRegistryForContextAfterTaskClosed,
+} from '../../common/project-task-state.js';
+import { appendClosedProjectTaskArchive } from '../../core/project-task-archive.js';
 import {
   executeAsyncMessageRoute,
   executeBlockingMessageRoute,
@@ -68,6 +74,23 @@ function parseBooleanFlag(value: unknown): boolean | undefined {
     if (normalized === 'false' || normalized === '0' || normalized === 'no') return false;
   }
   return undefined;
+}
+
+function isHeartbeatControlSession(session: { id?: string; context?: Record<string, unknown> } | null | undefined): boolean {
+  if (!session) return false;
+  const sessionId = typeof session.id === 'string' ? session.id.trim() : '';
+  const context = session.context && typeof session.context === 'object'
+    ? session.context
+    : {};
+  const sessionTier = typeof context.sessionTier === 'string' ? context.sessionTier.trim() : '';
+  const controlPath = typeof context.controlPath === 'string' ? context.controlPath.trim().toLowerCase() : '';
+  const controlSession = context.controlSession === true;
+  const userInputAllowed = context.userInputAllowed;
+  if (sessionTier === 'heartbeat-control') return true;
+  if (controlPath === 'heartbeat') return true;
+  if (controlSession) return true;
+  if (typeof userInputAllowed === 'boolean' && userInputAllowed === false) return true;
+  return sessionId.startsWith('hb-session-');
 }
 
 function shouldUseTransientLedgerForInboundMessage(message: unknown): {
@@ -325,6 +348,47 @@ export function registerMessageRoutes(app: Express, deps: MessageRouteDeps): voi
       }
     }
 
+    if (requestSessionId && inferredRole === 'user') {
+      const current = deps.sessionManager.getSession(requestSessionId);
+      if (isHeartbeatControlSession(current)) {
+        const fallbackSessionId = isSystemRoute
+          ? deps.sessionManager.getOrCreateSystemSession().id
+          : deps.sessionManager.getCurrentSession()?.id ?? null;
+        const reboundSessionId = (
+          typeof fallbackSessionId === 'string'
+          && fallbackSessionId.trim().length > 0
+          && fallbackSessionId !== requestSessionId
+        )
+          ? fallbackSessionId
+          : null;
+        log.warn('Reject user input to heartbeat control session; rebinding session', {
+          requestedSessionId: requestSessionId,
+          reboundSessionId: reboundSessionId ?? 'auto',
+          target: targetId,
+          role: inferredRole,
+        });
+        requestSessionId = reboundSessionId;
+        if (isObjectRecord(requestMessage)) {
+          const metadata = isObjectRecord(requestMessage.metadata) ? requestMessage.metadata : {};
+          const { sessionId: _ignoredSessionId, ...messageWithoutSessionId } = requestMessage;
+          const {
+            sessionId: _ignoredMetaSessionId,
+            session_id: _ignoredMetaUnderscore,
+            ...metadataWithoutSessionId
+          } = metadata;
+          requestMessage = {
+            ...messageWithoutSessionId,
+            ...(requestSessionId ? { sessionId: requestSessionId } : {}),
+            metadata: {
+              ...metadataWithoutSessionId,
+              ...(requestSessionId ? { sessionId: requestSessionId } : {}),
+              controlSessionRejected: true,
+            },
+          };
+        }
+      }
+    }
+
     log.info('Session reuse decision', {
       sessionId: requestSessionId ?? 'none',
       action: requestSessionId ? 'reuse' : 'new',
@@ -374,13 +438,18 @@ export function registerMessageRoutes(app: Express, deps: MessageRouteDeps): voi
         && isExplicitTaskCloseApproval(userText),
       );
       if (userApprovedClose && currentProjectTaskState) {
+        const closedState = mergeProjectTaskState(currentProjectTaskState, {
+          active: false,
+          status: 'closed',
+          note: 'user_approved_close',
+          summary: userText.slice(0, 240) || 'user approved final closure',
+        });
+        const currentRegistry = parseDelegatedProjectTaskRegistry(context.projectTaskRegistry);
+        const prunedRegistry = pruneDelegatedRegistryForContextAfterTaskClosed(currentRegistry, closedState);
+        appendClosedProjectTaskArchive(session?.projectPath ?? '', closedState);
         deps.sessionManager.updateContext(requestSessionId, {
-          projectTaskState: mergeProjectTaskState(currentProjectTaskState, {
-            active: false,
-            status: 'closed',
-            note: 'user_approved_close',
-            summary: userText.slice(0, 240) || 'user approved final closure',
-          }),
+          projectTaskState: null,
+          projectTaskRegistry: prunedRegistry,
         });
       }
       const currentSystemTaskState = parseSystemTaskState(context.systemTaskState);

@@ -2,10 +2,12 @@
  * System Command Handlers
 */
 
+import * as fs from 'fs';
 import * as path from 'path';
 import { Command, CommandContext, CommandResult, CommandType, CommandHandler } from '../types.js';
 import { loadProviderConfig, saveProviderConfig } from '../executor.js';
 import { clockTool } from '../../../tools/internal/codex-clock-tool.js';
+import { FINGER_PATHS } from '../../../core/finger-paths.js';
 
 export class SystemRestartHandler implements CommandHandler {
   canHandle(cmd: Command): boolean {
@@ -50,6 +52,56 @@ export class SystemSwitchHandler implements CommandHandler {
       success: true,
       output: '已切换到 System Agent（上下文持久）'
     };
+  }
+}
+
+function loadJsonObject(filePath: string): Record<string, unknown> {
+  try {
+    if (!fs.existsSync(filePath)) return {};
+    const raw = fs.readFileSync(filePath, 'utf-8');
+    const parsed = JSON.parse(raw);
+    return typeof parsed === 'object' && parsed !== null ? parsed as Record<string, unknown> : {};
+  } catch {
+    return {};
+  }
+}
+
+export class SystemProgressModeHandler implements CommandHandler {
+  canHandle(cmd: Command): boolean {
+    return cmd.type === CommandType.SYSTEM_PROGRESS_MODE;
+  }
+
+  async execute(cmd: Command): Promise<CommandResult> {
+    const mode = typeof cmd.params?.mode === 'string' ? cmd.params.mode.trim().toLowerCase() : '';
+    if (mode !== 'dev' && mode !== 'release') {
+      return {
+        success: false,
+        output: '❌ 无效模式。请使用：<##@system:progress:mode@dev##> 或 <##@system:progress:mode@release##>',
+      };
+    }
+
+    const configPath = path.join(FINGER_PATHS.config.dir, 'progress-monitor.json');
+    try {
+      fs.mkdirSync(path.dirname(configPath), { recursive: true });
+      const existing = loadJsonObject(configPath);
+      const next: Record<string, unknown> = {
+        ...existing,
+        contextBreakdownMode: mode,
+      };
+      fs.writeFileSync(configPath, JSON.stringify(next, null, 2), 'utf-8');
+      return {
+        success: true,
+        output: mode === 'dev'
+          ? '✓ 已切换进度上下文模式为 DEV（详细分解）'
+          : '✓ 已切换进度上下文模式为 RELEASE（精简视图）',
+      };
+    } catch (error) {
+      return {
+        success: false,
+        output: '',
+        error: error instanceof Error ? error.message : String(error),
+      };
+    }
   }
 }
 import { createToolExecutionContext } from '../../../tools/internal/types.js';

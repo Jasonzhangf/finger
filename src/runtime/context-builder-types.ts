@@ -4,7 +4,7 @@
  * Context Builder 负责动态构建会话上下文
  * - 读取 MEMORY.md 作为强制性长期记忆
  * - 使用 ledger 工具（只读/搜索/index权限）查询历史
- * - 24小时半衰期过滤 + 模型辅助排序
+ * - 模型辅助排序
  * - 任务边界分组 + 预算控制
  */
 
@@ -72,18 +72,6 @@ export interface TaskMessage {
 }
 
 /**
- * 时间窗口过滤选项
- */
-export interface TimeWindowFilterOptions {
-  /** 当前时间戳 */
-  nowMs: number;
-  /** 半衰期（毫秒），默认 24 小时 */
-  halfLifeMs?: number;
-  /** 超过半衰期后，相关性阈值（0-1），低于此值的丢弃 */
-  overThresholdRelevance?: number;
-}
-
-/**
  * Context builder 构建模式
  *
  * - minimal:    最轻模式 — 保持原始顺序，只移除与最新用户输入无关的 task
@@ -104,8 +92,6 @@ export interface ContextBuildOptions {
   includeMemoryMd?: boolean;
   /** MEMORY.md 路径（默认从项目根目录读取） */
   memoryMdPath?: string;
-  /** 时间窗口过滤选项 */
-  timeWindow?: TimeWindowFilterOptions;
   /** 任务分组是否启用 */
   enableTaskGrouping?: boolean;
   /** 模型排序开关：true=生效重排，'dryrun'=只计算不重排 */
@@ -147,7 +133,7 @@ export interface ContextBuildResult {
   metadata: {
     /** 原始任务块总数 */
     rawTaskBlockCount: number;
-    /** 时间窗口过滤后的数量 */
+    /** 时间窗口过滤后的数量（已弃用，当前固定为 0） */
     timeWindowFilteredCount: number;
     /** 预算截断的任务块数量 */
     budgetTruncatedCount: number;

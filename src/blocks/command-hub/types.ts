@@ -9,6 +9,7 @@ export enum CommandType {
   // System commands
   SYSTEM = 'system',
   SYSTEM_RESTART = 'system_restart',
+  SYSTEM_PROGRESS_MODE = 'system_progress_mode',
   PROVIDER_LIST = 'provider_list',
   PROVIDER_SWITCH = 'provider_switch',
   

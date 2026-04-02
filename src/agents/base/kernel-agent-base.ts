@@ -38,6 +38,11 @@ import {
   resolveStopReasoningPolicy,
 } from '../../common/stop-reasoning-policy.js';
 import { estimateTokensWithTiktoken } from '../../utils/tiktoken-estimator.js';
+import {
+  evaluateControlHooks,
+  parseControlBlockFromReply,
+  resolveControlBlockPolicy,
+} from '../../common/control-block.js';
 
 export interface KernelRunContext {
   sessionId: string;
@@ -269,12 +274,14 @@ export class KernelAgentBase {
         tools,
         metadata: runtimeMetadata,
       });
+      const controlBlockPrompt = this.buildControlBlockPrompt(runtimeMetadata);
       const systemPrompt = this.appendPromptSections(
         this.buildSystemPrompt(
           roleProfile,
           this.config.appendContextSlotsToSystemPrompt === false ? undefined : contextSlots?.rendered,
         ),
         stopReasoningPrompt,
+        controlBlockPrompt,
       );
 
       const inputItems = this.parseInputItems(input.metadata);
@@ -358,6 +365,17 @@ export class KernelAgentBase {
         current: runResult,
       });
       runResult = await this.applyStopReasoningGateIfNeeded({
+        mode: threadMode,
+        inputText: input.text,
+        sessionId: runnerSessionId,
+        systemPrompt,
+        history: toUnifiedHistory(mergedHistory),
+        tools,
+        runtimeMetadata,
+        threadKey,
+        current: runResult,
+      });
+      runResult = await this.applyControlBlockGateIfNeeded({
         mode: threadMode,
         inputText: input.text,
         sessionId: runnerSessionId,
@@ -796,6 +814,10 @@ export class KernelAgentBase {
         );
       }
     }
+    planLines.push('');
+    planLines.push('Execution rule (mandatory):');
+    planLines.push('- At task start, call update_plan first to summarize objective + planned steps before execution.');
+    planLines.push('- At task end, call reasoning.stop with full turn summary (goal, assumptions, tags, tools used, successes, failures).');
     slotPatches.push({
       id: 'task.plan_view',
       mode: 'replace',
@@ -1241,9 +1263,26 @@ export class KernelAgentBase {
     return [
       '[Turn Stop Control]',
       `- Explicit stop tool required: ${availableStopTools.join(', ')}`,
-      '- If you believe the current task is truly complete, call the stop tool first and provide a concise completion summary.',
+      '- If task is complete, call stop tool first with a FULL summary payload:',
+      '  summary + goal + assumptions + tags + toolsUsed[{tool,args,status}] + successes + failures.',
+      '- The summary payload is machine-oriented for runtime/model continuity, not user-facing narration.',
+      '- Prefer compact, structured, evidence-linked fields that can be replayed by downstream agents.',
       '- If the task is NOT complete, do NOT call stop tool; continue execution/reasoning.',
       '- If you return finish_reason=stop without stop tool, runtime will continue this task automatically.',
+    ].join('\n');
+  }
+
+  private buildControlBlockPrompt(metadata?: Record<string, unknown>): string | undefined {
+    const policy = resolveControlBlockPolicy(metadata);
+    if (!policy.enabled || !policy.promptInjectionEnabled) return undefined;
+    return [
+      '[Control Block Contract]',
+      '- Every turn response MUST include a fenced `finger-control` JSON block.',
+      '- Required baseline fields: schema_version, task_completed, evidence_ready, needs_user_input, has_blocker, dispatch_required, review_required, wait, user_signal, tags, self_eval, anti_patterns, learning.',
+      '- `tags` are free-form (no fixed enum).',
+      '- Primary target is runtime/model control; keep machine control fields complete and deterministic.',
+      '- Keep non-control text outside fence and concise; do not duplicate control data in prose.',
+      '- Compatibility: schema_version 1.x.',
     ].join('\n');
   }
 
@@ -1667,7 +1706,7 @@ export class KernelAgentBase {
       const followUpInput = [
         '[STOP TOOL GATE CONTINUATION REQUEST]',
         '上一轮 finish_reason=stop，但你没有调用 stop 工具。',
-        `如果任务已完成：先调用 ${policy.stopToolNames.join(' / ')} 工具并给出 summary，再结束。`,
+        `如果任务已完成：先调用 ${policy.stopToolNames.join(' / ')} 工具，并完整填写 summary/goal/assumptions/tags/toolsUsed/successes/failures 再结束。`,
         '如果任务未完成：继续执行，不要结束。',
         '',
         '[Original User Input]',
@@ -1685,6 +1724,90 @@ export class KernelAgentBase {
       attempt += 1;
     }
     return current;
+  }
+
+  private async applyControlBlockGateIfNeeded(params: {
+    mode: string;
+    inputText: string;
+    sessionId: string;
+    systemPrompt?: string;
+    history: UnifiedHistoryItem[];
+    tools: string[];
+    runtimeMetadata: Record<string, unknown>;
+    threadKey: string;
+    current: KernelRunnerResult;
+  }): Promise<KernelRunnerResult> {
+    if (params.mode !== MAIN_MODE) return params.current;
+    const policy = resolveControlBlockPolicy(params.runtimeMetadata);
+    if (!policy.enabled || !policy.requireOnStop || policy.maxAutoContinueTurns <= 0) {
+      return this.attachControlBlockMetadata(params.current);
+    }
+
+    let current = this.attachControlBlockMetadata(params.current);
+    let attempt = 0;
+    while (attempt < policy.maxAutoContinueTurns) {
+      const metadata = isRecord(current.metadata) ? current.metadata : {};
+      const finishStop = isFinishReasonStop(metadata);
+      const controlGateHold = metadata.controlGateHold === true;
+      if (!finishStop || !controlGateHold) return current;
+
+      const followUpMetadata: Record<string, unknown> = {
+        ...params.runtimeMetadata,
+        controlBlockGateApplied: true,
+        controlBlockGateAttempt: attempt + 1,
+      };
+      const issues = Array.isArray(metadata.controlBlockIssues)
+        ? metadata.controlBlockIssues.filter((item): item is string => typeof item === 'string')
+        : [];
+      const followUpInput = [
+        '[CONTROL BLOCK GATE CONTINUATION REQUEST]',
+        '上一轮 finish_reason=stop，但 control block 缺失/无效或与收口条件冲突。',
+        '请继续执行并在回复末尾补齐 ```finger-control JSON```。',
+        '若 task_completed=true，则 evidence_ready 必须与证据状态一致；证据不足时保持未收口。',
+        issues.length > 0 ? `Known issues: ${issues.slice(0, 6).join('; ')}` : '',
+        '',
+        '[Original User Input]',
+        params.inputText,
+      ].filter((line) => line.length > 0).join('\n');
+
+      current = await this.runner.runTurn(followUpInput, undefined, {
+        sessionId: params.sessionId,
+        systemPrompt: params.systemPrompt,
+        history: params.history,
+        tools: params.tools,
+        metadata: followUpMetadata,
+      });
+      this.captureApiHistory(params.sessionId, params.threadKey, current.metadata);
+      current = this.attachControlBlockMetadata(current);
+      attempt += 1;
+    }
+    return current;
+  }
+
+  private attachControlBlockMetadata(result: KernelRunnerResult): KernelRunnerResult {
+    const metadata = isRecord(result.metadata) ? result.metadata : {};
+    if (metadata.controlBlockPresent === true || metadata.controlBlockPresent === false) {
+      return {
+        ...result,
+        metadata,
+      };
+    }
+    const parsed = parseControlBlockFromReply(result.reply);
+    const hooks = parsed.controlBlock ? evaluateControlHooks(parsed.controlBlock) : { hooks: [], holdStop: false };
+    const controlGateHold = isFinishReasonStop(metadata) && (!parsed.valid || hooks.holdStop);
+    return {
+      ...result,
+      reply: parsed.humanResponse.trim().length > 0 ? parsed.humanResponse : result.reply,
+      metadata: {
+        ...metadata,
+        controlBlockPresent: parsed.present,
+        controlBlockValid: parsed.valid,
+        controlBlockIssues: parsed.issues,
+        controlHookNames: hooks.hooks,
+        controlGateHold,
+        ...(parsed.controlBlock ? { controlBlock: parsed.controlBlock } : {}),
+      },
+    };
   }
 
   private resolveSchemaRole(roleProfileId?: string): 'orchestrator' | 'reviewer' | 'executor' | 'searcher' | 'router' {

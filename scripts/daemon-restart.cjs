@@ -23,6 +23,11 @@ const RUNTIME_DIR = path.join(FINGER_HOME, 'runtime');
 const GUARD_PID_FILE = path.join(RUNTIME_DIR, 'guard.pid');
 const SERVER_PID_FILE = path.join(RUNTIME_DIR, 'server.pid');
 const DUAL_DAEMON_PID_FILE = path.join(RUNTIME_DIR, 'dual-daemon.pid');
+const COMPAT_PID_FILES = [
+  path.join(RUNTIME_DIR, 'daemon.pid'),
+  path.join(FINGER_HOME, 'daemon.pid'),
+  path.join(FINGER_HOME, 'finger-daemon.pid'),
+];
 const GUARD_LOCK_FILE = path.join(RUNTIME_DIR, 'guard.lock');
 const STOP_SCRIPT = path.join(__dirname, 'daemon-stop.cjs');
 const GUARD_SCRIPT = path.join(__dirname, 'daemon-guard.cjs');
@@ -106,6 +111,28 @@ function sanitizePidFiles() {
       console.warn(`[DaemonRestart] Removed dirty ${check.tag}: pid ${pid} cmdline mismatch`);
     }
   }
+  for (const file of COMPAT_PID_FILES) {
+    const pid = readPid(file);
+    if (!pid) {
+      try { if (fs.existsSync(file)) fs.unlinkSync(file); } catch {}
+      continue;
+    }
+    const cmdline = cmdByPid.get(pid);
+    if (!cmdline || !cmdline.includes(PROJECT_ROOT) || !cmdline.includes('dist/server/index.js')) {
+      try { fs.unlinkSync(file); } catch {}
+      console.warn(`[DaemonRestart] Removed stale compat pid: ${path.basename(file)} pid=${pid}`);
+    }
+  }
+}
+
+function syncCompatPidFiles(pid) {
+  if (!pid) return;
+  for (const file of COMPAT_PID_FILES) {
+    try {
+      fs.mkdirSync(path.dirname(file), { recursive: true });
+      fs.writeFileSync(file, String(pid));
+    } catch {}
+  }
 }
 
 function pingHealth(url, timeoutMs = 1_500) {
@@ -182,6 +209,7 @@ async function main() {
     if (healthy) {
       const guardPid = readPid(GUARD_PID_FILE);
       const serverPid = readPid(SERVER_PID_FILE);
+      syncCompatPidFiles(serverPid);
       console.log('[DaemonRestart] ✅ Daemon is healthy.');
       console.log(`[DaemonRestart] guard.pid=${guardPid ?? 'unknown'} server.pid=${serverPid ?? 'unknown'}`);
       process.exit(0);

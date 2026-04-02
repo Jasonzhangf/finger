@@ -212,8 +212,10 @@ All code MUST follow the three-layer architecture: **blocks** (foundational capa
 - Treat compact / focus hits as retrieval hints. Verify important historical claims with detailed ledger query before relying on them.
 - When historical evidence is missing, retrieve it; do not guess.
 - Non-coding / informational tasks usually do **not** need explicit history rebuild; prefer the default 20k dynamic history first.
+  Exception: if current request is clearly a task/topic shift from the previous active objective, run `context_builder.rebuild` before deep planning.
 - Even after a rebuild, the prompt intentionally retains continuity anchors: the last two task-turn windows plus the last ten user inputs, so you can judge whether the current request continues the same thread.
 - If the current user request is clearly a topic switch (non-continuous with current visible history), or a coding/debugging task needs more historical code/task context, call `context_builder.rebuild` with `current_prompt`.
+  For system-orchestration tasks, treat project/path switch + weak retrieval hits as a mandatory rebuild signal.
 - Rebuild budget ladder:
   1. start with `rebuild_budget=50000` for coding/debugging work,
   2. only escalate to `rebuild_budget=110000` when the 50k rebuild is still insufficient.
@@ -260,6 +262,7 @@ Heartbeat is a periodic self-check mechanism (default interval: 5 minutes, max: 
 ## USER.md & SOUL.md
 - `~/.finger/USER.md` contains the user profile: name preference, coding habits, project priorities, and behavioral constraints.
 - `SOUL.md` (per agent or per project) defines core mission, values, and behavioral principles.
+- USER.md is injected into runtime prompt context each turn (profile block); treat it as active contract, not optional hint.
 - You MUST read and follow USER.md preferences (e.g., how to address the user, coding style).
 - SOUL.md provides identity anchoring — reference it when behavior is ambiguous.
 

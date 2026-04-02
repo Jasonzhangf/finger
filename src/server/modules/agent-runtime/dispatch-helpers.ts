@@ -2,12 +2,12 @@
  * Dispatch Helpers
  * Extracted from dispatch.ts to stay under 500-line limit.
  */
-import * as path from 'path';
 
 import { isObjectRecord } from '../../common/object.js';
 import { asString, firstNonEmptyString } from '../../common/strings.js';
 import { sanitizeDispatchResult, type DispatchSummaryResult } from '../../../common/agent-dispatch.js';
 import { inferTagsAndTopic } from '../../../common/tag-topic-inference.js';
+import { normalizeProjectPathCanonical } from '../../../common/path-normalize.js';
 import type { AgentDispatchRequest } from './types.js';
 export function resolveDispatchSessionStrategy(input: AgentDispatchRequest): NonNullable<AgentDispatchRequest['sessionStrategy']> {
 
@@ -44,10 +44,7 @@ export function formatLocalTimestamp(date: Date = new Date()): string {
 export function normalizeProjectPathHint(rawPath: string): string {
   const trimmed = rawPath.trim();
   if (!trimmed) return '';
-  const expanded = trimmed.startsWith('~/')
-    ? path.join(process.env.HOME || '', trimmed.slice(2))
-    : trimmed;
-  return path.resolve(expanded);
+  return normalizeProjectPathCanonical(trimmed);
 }
 export function formatDispatchTaskContent(task: unknown): string {
   if (typeof task === 'string') return task;

@@ -110,7 +110,7 @@ export interface MailboxCheckContext {
     projectId: string | undefined,
     prompt: string,
     options?: { progressDelivery?: ProgressDeliveryPolicy },
-  ) => Promise<void>;
+  ) => Promise<boolean>;
 }
 
 /**
@@ -130,12 +130,14 @@ export async function promptMailboxChecks(
 
     const pendingAll = heartbeatMailbox.listPending(agent.agentId) ?? [];
 
-    if (agent.status === 'busy') {
-      if (due && pendingAll.length > 0) {
-        ctx.mailboxPromptDeferredByAgent.add(agent.agentId);
-      }
-      log.debug('[HeartbeatScheduler] Skipping busy agent', { agentId: agent.agentId, status: agent.status });
-      continue;
+    if (agent.status === 'busy' && due && pendingAll.length > 0) {
+      // Registry-level busy can be stale. Mark deferred, but still allow
+      // dispatchDirect to decide via runtime_view / queue behavior.
+      ctx.mailboxPromptDeferredByAgent.add(agent.agentId);
+      log.debug('[HeartbeatScheduler] Agent marked busy by registry; allow mailbox-check dispatch decision', {
+        agentId: agent.agentId,
+        status: agent.status,
+      });
     }
 
     const notificationCleanup = cleanupDispatchResultNotifications(agent.agentId);
@@ -226,15 +228,19 @@ export async function promptMailboxChecks(
       '每个任务完成后必须调用 report-task-completion 工具提交 summary。',
       '如果提交失败必须重试直到成功，避免断链。',
     ].join('\n');
-    await ctx.dispatchDirect(
+    const dispatched = await ctx.dispatchDirect(
       agent.agentId,
       'mailbox-check',
       agent.projectId,
       prompt,
       progressDelivery ? { progressDelivery } : undefined,
     );
-    ctx.lastMailboxPromptAt.set(agent.agentId, now);
-    ctx.mailboxPromptDeferredByAgent.delete(agent.agentId);
+    if (dispatched) {
+      ctx.lastMailboxPromptAt.set(agent.agentId, now);
+      ctx.mailboxPromptDeferredByAgent.delete(agent.agentId);
+    } else {
+      ctx.mailboxPromptDeferredByAgent.add(agent.agentId);
+    }
   }
 }
 

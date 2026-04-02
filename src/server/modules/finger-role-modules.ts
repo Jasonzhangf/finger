@@ -127,6 +127,21 @@ function resolveLatestUserPrompt(messages: HistoryMessage[]): string | undefined
   return undefined;
 }
 
+function resolveBootstrapPrompt(
+  sessionMessages: HistoryMessage[],
+  bootstrapSeedMessages: HistoryMessage[],
+): { prompt?: string; source: 'session_messages' | 'bootstrap_seed' | 'none' } {
+  const fromSession = resolveLatestUserPrompt(sessionMessages);
+  if (typeof fromSession === 'string' && fromSession.trim().length > 0) {
+    return { prompt: fromSession, source: 'session_messages' };
+  }
+  const fromSeed = resolveLatestUserPrompt(bootstrapSeedMessages);
+  if (typeof fromSeed === 'string' && fromSeed.trim().length > 0) {
+    return { prompt: fromSeed, source: 'bootstrap_seed' };
+  }
+  return { source: 'none' };
+}
+
 function keepDigestOnlyHistoricalMessages(
   messages: Array<{
     id: string;
@@ -603,7 +618,8 @@ export async function registerFingerRoleModules(
             ? resolveCrossSessionBootstrapSeed(runtime, sessionId, agentId, session.projectPath)
             : null;
           const bootstrapSeedMessages = crossSessionSeed?.messages ?? sessionMessages;
-          const latestUserPrompt = resolveLatestUserPrompt(bootstrapSeedMessages);
+          const bootstrapPrompt = resolveBootstrapPrompt(sessionMessages, bootstrapSeedMessages);
+          const latestUserPrompt = bootstrapPrompt.prompt;
           if (crossSessionSeed) {
             logger.module('finger-role-modules').info('Bootstrap uses cross-session seed history', {
               roleId: role.id,
@@ -613,6 +629,13 @@ export async function registerFingerRoleModules(
               trigger: bootstrapTrigger,
             });
           }
+          logger.module('finger-role-modules').info('Bootstrap prompt source resolved', {
+            roleId: role.id,
+            sessionId,
+            trigger: bootstrapTrigger,
+            promptSource: bootstrapPrompt.source,
+            promptLength: typeof latestUserPrompt === 'string' ? latestUserPrompt.length : 0,
+          });
           let bootstrapped:
             | Awaited<ReturnType<typeof buildContext>>
             | null = null;
@@ -627,10 +650,10 @@ export async function registerFingerRoleModules(
                 ...(latestUserPrompt ? { currentPrompt: latestUserPrompt } : {}),
               },
               {
-                targetBudget: configuredBudget,
-                buildMode: bootstrapBuildMode,
-                includeMemoryMd: false,
-                enableTaskGrouping: true,
+              targetBudget: configuredBudget,
+              buildMode: bootstrapBuildMode,
+              includeMemoryMd: false,
+              enableTaskGrouping: true,
                 enableModelRanking: settings.enableModelRanking,
                 rankingProviderId: settings.rankingProviderId,
               },
@@ -655,6 +678,13 @@ export async function registerFingerRoleModules(
               historicalTaskBlockCount: bootstrapped.metadata?.historicalTaskBlockCount,
               historicalMessageCount: bootstrapped.metadata?.historicalMessageCount,
               historicalTokens: bootstrapped.metadata?.historicalTokens,
+              rankingExecuted: bootstrapped.metadata?.rankingExecuted,
+              rankingMode: bootstrapped.metadata?.rankingMode,
+              rankingReason: bootstrapped.metadata?.rankingReason,
+              rankingProviderId: bootstrapped.metadata?.rankingProviderId,
+              rankingProviderModel: bootstrapped.metadata?.rankingProviderModel,
+              promptSource: bootstrapPrompt.source,
+              promptLength: typeof latestUserPrompt === 'string' ? latestUserPrompt.length : 0,
             });
           }
           if (!bootstrapped) {
@@ -940,6 +970,7 @@ export const __fingerRoleModulesInternals = {
   augmentHistoryWithContinuityAnchors,
   isEffectivelyEmptyHistoryForBootstrap,
   resolveBootstrapRebuildPolicy,
+  resolveBootstrapPrompt,
   keepDigestOnlyHistoricalMessages,
   buildHistoricalFallbackFromSeed,
 };

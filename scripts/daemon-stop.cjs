@@ -15,6 +15,11 @@ const RUNTIME_DIR = path.join(FINGER_HOME, 'runtime');
 const PID_FILE = path.join(RUNTIME_DIR, 'server.pid');
 const GUARD_PID_FILE = path.join(RUNTIME_DIR, 'guard.pid');
 const DUAL_DAEMON_PID_FILE = path.join(RUNTIME_DIR, 'dual-daemon.pid');
+const COMPAT_PID_FILES = [
+  path.join(RUNTIME_DIR, 'daemon.pid'),
+  path.join(FINGER_HOME, 'daemon.pid'),
+  path.join(FINGER_HOME, 'finger-daemon.pid'),
+];
 const HEARTBEAT_PATTERN = /daemon\.heartbeat/;
 const ORPHAN_MAIL_PATTERN = /(\/\.finger\/scripts\/email_poll\.sh|email envelope list --account)/;
 const killedPids = new Set();
@@ -161,6 +166,11 @@ for (const row of processRows) {
 // 3. Clean heartbeat file
 if (fs.existsSync(path.join(RUNTIME_DIR, 'daemon.heartbeat'))) {
   try { fs.unlinkSync(path.join(RUNTIME_DIR, 'daemon.heartbeat')); } catch (_) {}
+}
+for (const file of COMPAT_PID_FILES) {
+  if (fs.existsSync(file)) {
+    try { fs.unlinkSync(file); } catch (_) {}
+  }
 }
 
 console.log('[DaemonStop] All finger daemon processes stopped');

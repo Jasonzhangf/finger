@@ -1,4 +1,4 @@
-import { mkdirSync, rmSync, writeFileSync } from 'fs';
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import { describe, expect, it } from 'vitest';
@@ -122,6 +122,402 @@ describe('context-ledger-memory', () => {
     expect(result.strategy).toBe('compact_then_detail');
     expect(result.entries.length).toBeGreaterThan(0);
     expect(result.slots.length).toBeGreaterThan(0);
+
+    rmSync(setup.rootDir, { recursive: true, force: true });
+  });
+
+  it('digest_backfill generates replacement_history digests from ledger timeline', async () => {
+    const setup = setupLedgerRoot('digest-backfill');
+
+    const result = await executeContextLedgerMemory({
+      action: 'digest_backfill',
+      _runtime_context: {
+        root_dir: setup.rootDir,
+        session_id: setup.sessionId,
+        agent_id: setup.agentId,
+        mode: setup.mode,
+      },
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.action).toBe('digest_backfill');
+    if (result.action !== 'digest_backfill') {
+      throw new Error('expected digest_backfill result');
+    }
+    expect(result.task_digest_count).toBeGreaterThan(0);
+
+    const compactRaw = readFileSync(result.compact_path, 'utf-8')
+      .trim()
+      .split('\n')
+      .filter((line) => line.trim().length > 0)
+      .map((line) => JSON.parse(line) as { payload?: { replacement_history?: unknown[] } });
+    const latest = compactRaw[compactRaw.length - 1];
+    const replacementHistory = Array.isArray(latest?.payload?.replacement_history)
+      ? latest.payload?.replacement_history
+      : [];
+    expect(replacementHistory.length).toBe(result.task_digest_count);
+
+    rmSync(setup.rootDir, { recursive: true, force: true });
+  });
+
+  it('digest_incremental compacts only newly appended slots since previous digest', async () => {
+    const setup = setupLedgerRoot('digest-incremental');
+    const dir = join(setup.rootDir, setup.sessionId, setup.agentId, setup.mode);
+    const now = Date.now();
+
+    writeFileSync(
+      join(dir, 'context-ledger.jsonl'),
+      [
+        JSON.stringify({
+          id: 'msg-1',
+          timestamp_ms: now - 10_000,
+          timestamp_iso: new Date(now - 10_000).toISOString(),
+          session_id: setup.sessionId,
+          agent_id: setup.agentId,
+          mode: setup.mode,
+          event_type: 'session_message',
+          payload: { role: 'user', content: 'task A' },
+        }),
+        JSON.stringify({
+          id: 'msg-2',
+          timestamp_ms: now - 9_000,
+          timestamp_iso: new Date(now - 9_000).toISOString(),
+          session_id: setup.sessionId,
+          agent_id: setup.agentId,
+          mode: setup.mode,
+          event_type: 'session_message',
+          payload: { role: 'assistant', content: 'doing task A' },
+        }),
+        JSON.stringify({
+          id: 'msg-3',
+          timestamp_ms: now - 8_000,
+          timestamp_iso: new Date(now - 8_000).toISOString(),
+          session_id: setup.sessionId,
+          agent_id: setup.agentId,
+          mode: setup.mode,
+          event_type: 'session_message',
+          payload: { role: 'assistant', content: '调用工具: reasoning.stop' },
+        }),
+        JSON.stringify({
+          id: 'msg-4',
+          timestamp_ms: now - 4_000,
+          timestamp_iso: new Date(now - 4_000).toISOString(),
+          session_id: setup.sessionId,
+          agent_id: setup.agentId,
+          mode: setup.mode,
+          event_type: 'session_message',
+          payload: { role: 'user', content: 'task B' },
+        }),
+        JSON.stringify({
+          id: 'msg-5',
+          timestamp_ms: now - 3_000,
+          timestamp_iso: new Date(now - 3_000).toISOString(),
+          session_id: setup.sessionId,
+          agent_id: setup.agentId,
+          mode: setup.mode,
+          event_type: 'session_message',
+          payload: { role: 'assistant', content: 'done task B' },
+        }),
+        JSON.stringify({
+          id: 'msg-6',
+          timestamp_ms: now - 2_000,
+          timestamp_iso: new Date(now - 2_000).toISOString(),
+          session_id: setup.sessionId,
+          agent_id: setup.agentId,
+          mode: setup.mode,
+          event_type: 'session_message',
+          payload: { role: 'assistant', content: '调用工具: reasoning.stop' },
+        }),
+        '',
+      ].join('\n'),
+      'utf-8',
+    );
+
+    writeFileSync(
+      join(dir, 'compact-memory.jsonl'),
+      `${JSON.stringify({
+        id: 'cpt-old',
+        timestamp_ms: now - 6_000,
+        timestamp_iso: new Date(now - 6_000).toISOString(),
+        session_id: setup.sessionId,
+        agent_id: setup.agentId,
+        mode: setup.mode,
+        payload: {
+          summary: 'old digest',
+          source_slot_start: 1,
+          source_slot_end: 3,
+          replacement_history: [],
+        },
+      })}\n`,
+      'utf-8',
+    );
+
+    const result = await executeContextLedgerMemory({
+      action: 'digest_incremental',
+      _runtime_context: {
+        root_dir: setup.rootDir,
+        session_id: setup.sessionId,
+        agent_id: setup.agentId,
+        mode: setup.mode,
+      },
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.action).toBe('digest_incremental');
+    if (result.action !== 'digest_incremental') {
+      throw new Error('expected digest_incremental result');
+    }
+    expect(result.no_new_entries).toBe(false);
+    expect(result.previous_compacted_slot_end).toBe(3);
+    expect(result.source_slot_start).toBe(4);
+    expect(result.source_slot_end).toBe(6);
+    expect(result.task_digest_count).toBeGreaterThan(0);
+
+    const compactRaw = readFileSync(result.compact_path, 'utf-8')
+      .trim()
+      .split('\n')
+      .filter((line) => line.trim().length > 0)
+      .map((line) => JSON.parse(line) as { payload?: { replacement_history?: unknown[]; source_slot_start?: number; source_slot_end?: number } });
+    const latest = compactRaw[compactRaw.length - 1];
+    expect(latest?.payload?.source_slot_start).toBe(4);
+    expect(latest?.payload?.source_slot_end).toBe(6);
+    const replacementHistory = Array.isArray(latest?.payload?.replacement_history)
+      ? latest.payload?.replacement_history
+      : [];
+    expect(replacementHistory.length).toBe(result.task_digest_count);
+
+    rmSync(setup.rootDir, { recursive: true, force: true });
+  });
+
+  it('digest_backfill keeps full key_tools list without truncation and parses tool names from payload', async () => {
+    const setup = setupLedgerRoot('digest-tools-full');
+    const dir = join(setup.rootDir, setup.sessionId, setup.agentId, setup.mode);
+    const now = Date.now();
+    const toolNames = Array.from({ length: 16 }, (_, index) => `tool.${index + 1}`);
+
+    const rows = [
+      JSON.stringify({
+        id: 'user-1',
+        timestamp_ms: now - 20_000,
+        timestamp_iso: new Date(now - 20_000).toISOString(),
+        session_id: setup.sessionId,
+        agent_id: setup.agentId,
+        mode: setup.mode,
+        event_type: 'session_message',
+        payload: { role: 'user', content: 'run many tools' },
+      }),
+      ...toolNames.flatMap((toolName, index) => ([
+        JSON.stringify({
+          id: `tool-call-${index + 1}`,
+          timestamp_ms: now - 19_000 + (index * 200),
+          timestamp_iso: new Date(now - 19_000 + (index * 200)).toISOString(),
+          session_id: setup.sessionId,
+          agent_id: setup.agentId,
+          mode: setup.mode,
+          event_type: 'tool_call',
+          payload: { tool: toolName, input: { n: index + 1 } },
+        }),
+        JSON.stringify({
+          id: `tool-result-${index + 1}`,
+          timestamp_ms: now - 18_900 + (index * 200),
+          timestamp_iso: new Date(now - 18_900 + (index * 200)).toISOString(),
+          session_id: setup.sessionId,
+          agent_id: setup.agentId,
+          mode: setup.mode,
+          event_type: 'tool_result',
+          payload: { tool: toolName, ok: true },
+        }),
+      ])),
+      JSON.stringify({
+        id: 'assistant-stop',
+        timestamp_ms: now - 1_000,
+        timestamp_iso: new Date(now - 1_000).toISOString(),
+        session_id: setup.sessionId,
+        agent_id: setup.agentId,
+        mode: setup.mode,
+        event_type: 'session_message',
+        payload: { role: 'assistant', content: '调用工具: reasoning.stop' },
+      }),
+      '',
+    ];
+
+    writeFileSync(join(dir, 'context-ledger.jsonl'), rows.join('\n'), 'utf-8');
+    writeFileSync(join(dir, 'compact-memory.jsonl'), '', 'utf-8');
+
+    const result = await executeContextLedgerMemory({
+      action: 'digest_backfill',
+      _runtime_context: {
+        root_dir: setup.rootDir,
+        session_id: setup.sessionId,
+        agent_id: setup.agentId,
+        mode: setup.mode,
+      },
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.action).toBe('digest_backfill');
+    if (result.action !== 'digest_backfill') {
+      throw new Error('expected digest_backfill result');
+    }
+
+    const compactRaw = readFileSync(result.compact_path, 'utf-8')
+      .trim()
+      .split('\n')
+      .filter((line) => line.trim().length > 0)
+      .map((line) => JSON.parse(line) as { payload?: { replacement_history?: unknown[] } });
+    const latest = compactRaw[compactRaw.length - 1];
+    const replacementHistory = Array.isArray(latest?.payload?.replacement_history)
+      ? latest.payload?.replacement_history
+      : [];
+    expect(replacementHistory.length).toBeGreaterThan(0);
+    const firstTask = replacementHistory[0] as { key_tools?: unknown };
+    expect(Array.isArray(firstTask.key_tools)).toBe(true);
+    const keyTools = firstTask.key_tools as string[];
+    expect(keyTools.length).toBe(toolNames.length + 1); // + reasoning.stop
+    for (const toolName of toolNames) {
+      expect(keyTools.includes(toolName)).toBe(true);
+    }
+    expect(keyTools.includes('reasoning.stop')).toBe(true);
+
+    rmSync(setup.rootDir, { recursive: true, force: true });
+  });
+
+  it('digest_backfill keeps tool call args + status and preserves full output for key tools', async () => {
+    const setup = setupLedgerRoot('digest-tool-calls-status');
+    const dir = join(setup.rootDir, setup.sessionId, setup.agentId, setup.mode);
+    const now = Date.now();
+
+    const rows = [
+      JSON.stringify({
+        id: 'user-1',
+        timestamp_ms: now - 20_000,
+        timestamp_iso: new Date(now - 20_000).toISOString(),
+        session_id: setup.sessionId,
+        agent_id: setup.agentId,
+        mode: setup.mode,
+        event_type: 'session_message',
+        payload: { role: 'user', content: 'plan and execute' },
+      }),
+      JSON.stringify({
+        id: 'tool-call-update-plan',
+        timestamp_ms: now - 19_000,
+        timestamp_iso: new Date(now - 19_000).toISOString(),
+        session_id: setup.sessionId,
+        agent_id: setup.agentId,
+        mode: setup.mode,
+        event_type: 'tool_call',
+        payload: {
+          call_id: 'call-up-1',
+          tool_name: 'update_plan',
+          input: { plan: [{ step: 'A', status: 'in_progress' }] },
+        },
+      }),
+      JSON.stringify({
+        id: 'tool-result-update-plan',
+        timestamp_ms: now - 18_000,
+        timestamp_iso: new Date(now - 18_000).toISOString(),
+        session_id: setup.sessionId,
+        agent_id: setup.agentId,
+        mode: setup.mode,
+        event_type: 'tool_result',
+        payload: {
+          call_id: 'call-up-1',
+          tool_name: 'update_plan',
+          output: {
+            ok: true,
+            content: 'Plan updated',
+            plan: [{ step: 'A', status: 'in_progress' }],
+          },
+        },
+      }),
+      JSON.stringify({
+        id: 'tool-call-rg',
+        timestamp_ms: now - 17_000,
+        timestamp_iso: new Date(now - 17_000).toISOString(),
+        session_id: setup.sessionId,
+        agent_id: setup.agentId,
+        mode: setup.mode,
+        event_type: 'tool_call',
+        payload: {
+          call_id: 'call-rg-1',
+          tool_name: 'exec_command',
+          input: { cmd: 'rg -n TODO src' },
+        },
+      }),
+      JSON.stringify({
+        id: 'tool-error-rg',
+        timestamp_ms: now - 16_000,
+        timestamp_iso: new Date(now - 16_000).toISOString(),
+        session_id: setup.sessionId,
+        agent_id: setup.agentId,
+        mode: setup.mode,
+        event_type: 'tool_error',
+        payload: {
+          call_id: 'call-rg-1',
+          tool_name: 'exec_command',
+          error: 'permission denied',
+        },
+      }),
+      JSON.stringify({
+        id: 'assistant-stop',
+        timestamp_ms: now - 1_000,
+        timestamp_iso: new Date(now - 1_000).toISOString(),
+        session_id: setup.sessionId,
+        agent_id: setup.agentId,
+        mode: setup.mode,
+        event_type: 'session_message',
+        payload: { role: 'assistant', content: 'done and stopping' },
+      }),
+      '',
+    ];
+
+    writeFileSync(join(dir, 'context-ledger.jsonl'), rows.join('\n'), 'utf-8');
+    writeFileSync(join(dir, 'compact-memory.jsonl'), '', 'utf-8');
+
+    const result = await executeContextLedgerMemory({
+      action: 'digest_backfill',
+      _runtime_context: {
+        root_dir: setup.rootDir,
+        session_id: setup.sessionId,
+        agent_id: setup.agentId,
+        mode: setup.mode,
+      },
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.action).toBe('digest_backfill');
+    if (result.action !== 'digest_backfill') {
+      throw new Error('expected digest_backfill result');
+    }
+
+    const compactRaw = readFileSync(result.compact_path, 'utf-8')
+      .trim()
+      .split('\n')
+      .filter((line) => line.trim().length > 0)
+      .map((line) => JSON.parse(line) as { payload?: { replacement_history?: unknown[] } });
+    const latest = compactRaw[compactRaw.length - 1];
+    const replacementHistory = Array.isArray(latest?.payload?.replacement_history)
+      ? latest.payload?.replacement_history
+      : [];
+    expect(replacementHistory.length).toBeGreaterThan(0);
+    const firstTask = replacementHistory[0] as { tool_calls?: unknown[] };
+    expect(Array.isArray(firstTask.tool_calls)).toBe(true);
+    const toolCalls = (firstTask.tool_calls ?? []) as Array<{ tool?: string; status?: string; input?: string; output?: string }>;
+    const updatePlanCall = toolCalls.find((item) => item.tool === 'update_plan');
+    expect(updatePlanCall).toBeDefined();
+    expect(updatePlanCall?.status).toBe('success');
+    expect(typeof updatePlanCall?.input).toBe('string');
+    expect(updatePlanCall?.input).toContain('in_progress');
+    // key tool output should be kept (not just success/failure)
+    expect(typeof updatePlanCall?.output).toBe('string');
+    expect(updatePlanCall?.output).toContain('Plan updated');
+
+    const execCall = toolCalls.find((item) => item.tool === 'exec_command');
+    expect(execCall).toBeDefined();
+    expect(execCall?.status).toBe('failure');
+    expect(typeof execCall?.input).toBe('string');
+    // non-key tools should not keep full output/error payload
+    expect(execCall?.output).toBeUndefined();
 
     rmSync(setup.rootDir, { recursive: true, force: true });
   });

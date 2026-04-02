@@ -3,7 +3,10 @@ import { isObjectRecord } from '../../common/object.js';
 import { asString, firstNonEmptyString } from '../../common/strings.js';
 import type { AgentDispatchRequest, AgentRuntimeDeps } from './types.js';
 import { SYSTEM_AGENT_CONFIG } from '../../../agents/finger-system-agent/index.js';
-import { FINGER_REVIEWER_AGENT_ID } from '../../../agents/finger-general/finger-general-module.js';
+import {
+  FINGER_PROJECT_AGENT_ID,
+  FINGER_REVIEWER_AGENT_ID,
+} from '../../../agents/finger-general/finger-general-module.js';
 import { promises as fs } from 'fs';
 import * as path from 'path';
 import {
@@ -181,6 +184,39 @@ export function resolveDispatchSessionSelection(deps: AgentRuntimeDeps, input: A
     };
   }
 
+  const targetAgentId = typeof input.targetAgentId === 'string' ? input.targetAgentId.trim() : '';
+  if (targetAgentId) {
+    const boundSessionId = typeof deps.runtime.getBoundSessionId === 'function'
+      ? deps.runtime.getBoundSessionId(targetAgentId)
+      : null;
+    if (boundSessionId) {
+      const boundSession = deps.sessionManager.getSession(boundSessionId);
+      const requestedProjectPath = resolveDispatchProjectPath(input, deps);
+      const boundProjectPath = normalizeProjectPathHint(boundSession?.projectPath ?? '');
+      const requestProjectPath = normalizeProjectPathHint(requestedProjectPath);
+      const allowBoundSession = !(
+        targetAgentId === FINGER_PROJECT_AGENT_ID
+        && requestProjectPath
+        && boundProjectPath
+        && requestProjectPath !== boundProjectPath
+      );
+      if (!allowBoundSession) {
+        logger.module('dispatch').warn('Ignoring mismatched bound session for project dispatch; selecting session by project path', {
+          targetAgentId,
+          boundSessionId,
+          boundProjectPath,
+          requestedProjectPath: requestProjectPath,
+        });
+      } else {
+      return {
+        ...input,
+        sessionId: boundSessionId,
+        sessionStrategy: 'current',
+      };
+      }
+    }
+  }
+
   const strategy = resolveDispatchSessionStrategy(input);
   const sourceSessionId = firstNonEmptyString(
     explicitSessionId,
@@ -198,14 +234,21 @@ export function resolveDispatchSessionSelection(deps: AgentRuntimeDeps, input: A
   }
 
   const projectPath = resolveDispatchProjectPath(input, deps);
+  const previousCurrentSessionId = deps.sessionManager.getCurrentSession()?.id ?? null;
+  const createIsolatedSession = (): { id: string } => {
+    const created = deps.sessionManager.createSession(projectPath, undefined, { allowReuse: false });
+    if (previousCurrentSessionId && previousCurrentSessionId !== created.id) {
+      deps.sessionManager.setCurrentSession(previousCurrentSessionId);
+    }
+    return created;
+  };
   const selectedSession = strategy === 'new'
-    ? deps.sessionManager.createSession(projectPath, undefined, { allowReuse: false })
+    ? createIsolatedSession()
     : resolveLatestProjectRootSession(deps, projectPath)
-      ?? deps.sessionManager.createSession(projectPath, undefined, { allowReuse: false });
+      ?? createIsolatedSession();
   if (sourceSessionId) {
     bindDispatchRouteContext(deps, selectedSession.id, sourceSessionId);
   }
-  deps.sessionManager.setCurrentSession(selectedSession.id);
   return {
     ...input,
     sessionId: selectedSession.id,
@@ -357,7 +400,15 @@ function resolveRootSessionForDispatch(deps: AgentRuntimeDeps, sessionId?: strin
 
 export function bindDispatchSessionToRuntime(deps: AgentRuntimeDeps, input: AgentDispatchRequest): AgentDispatchRequest {
   const targetAgentId = typeof input.targetAgentId === 'string' ? input.targetAgentId.trim() : '';
-  if (targetAgentId === SYSTEM_AGENT_CONFIG.id) return input;
+  if (targetAgentId === SYSTEM_AGENT_CONFIG.id) {
+    const systemSession = deps.sessionManager.getOrCreateSystemSession();
+    const systemSessionId = typeof systemSession.id === 'string' ? systemSession.id.trim() : '';
+    if (!systemSessionId) return input;
+    return {
+      ...input,
+      sessionId: systemSessionId,
+    };
+  }
   if (!targetAgentId || deps.isPrimaryOrchestratorTarget(targetAgentId)) return input;
   const allowRuntimeChildSession = targetAgentId === FINGER_REVIEWER_AGENT_ID;
 

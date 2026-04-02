@@ -19,6 +19,7 @@ describe('AgentStatusSubscriber', () => {
   // Mock AgentRuntimeDeps
   const mockSessionManager = {
     getSession: vi.fn(),
+    updateContext: vi.fn(),
   };
 
   const mockAgentRuntimeDeps = {
@@ -45,6 +46,7 @@ describe('AgentStatusSubscriber', () => {
     eventBus = new UnifiedEventBus();
     subscriber = new AgentStatusSubscriber(eventBus, mockAgentRuntimeDeps);
     mockSessionManager.getSession.mockReturnValue(null);
+    mockSessionManager.updateContext.mockReset();
   });
 
   afterEach(() => {
@@ -349,6 +351,106 @@ describe('AgentStatusSubscriber', () => {
       const content = typeof payload?.content === 'string' ? payload.content : '';
       const summaryOccurrences = (content.match(/派发 agent-2/g) || []).length;
       expect(summaryOccurrences).toBe(1);
+
+      dispatchSubscriber.stop();
+    });
+
+    it('heartbeat 无动作（No actionable work）不应推送派发更新', async () => {
+      const mockMessageHub = {
+        routeToOutput: vi.fn().mockResolvedValue(undefined),
+      };
+      const dispatchSubscriber = new AgentStatusSubscriber(eventBus, mockAgentRuntimeDeps, mockMessageHub);
+      dispatchSubscriber.setPrimaryAgent('agent-1');
+      dispatchSubscriber.registerSession('session-dispatch-heartbeat-noop', {
+        channel: 'qqbot',
+        envelopeId: 'env-dispatch-heartbeat-noop',
+      });
+      dispatchSubscriber.start();
+
+      mockSessionManager.getSession.mockReturnValue({
+        context: {
+          projectTaskState: {
+            active: true,
+            status: 'in_progress',
+            sourceAgentId: 'finger-system-agent',
+            targetAgentId: 'finger-project-agent',
+            updatedAt: new Date().toISOString(),
+            taskId: 'task-heartbeat-noop',
+          },
+        },
+      });
+      const dispatchEvent: RuntimeEvent = {
+        type: 'agent_runtime_dispatch',
+        sessionId: 'session-dispatch-heartbeat-noop',
+        timestamp: new Date().toISOString(),
+        payload: {
+          dispatchId: 'dispatch-heartbeat-noop-1',
+          sourceAgentId: 'system-heartbeat',
+          targetAgentId: 'finger-project-agent',
+          status: 'completed',
+          result: {
+            status: 'completed',
+            summary: 'No actionable work. stale watchdog phantom entries already complete.',
+          },
+        },
+      };
+
+      await eventBus.emit(dispatchEvent);
+      await new Promise(resolve => setTimeout(resolve, 80));
+
+      expect(mockMessageHub.routeToOutput).not.toHaveBeenCalled();
+      expect(mockSessionManager.updateContext).toHaveBeenCalledWith(
+        'session-dispatch-heartbeat-noop',
+        expect.objectContaining({
+          projectTaskState: expect.objectContaining({
+            active: false,
+            status: 'closed',
+          }),
+        }),
+      );
+      dispatchSubscriber.stop();
+    });
+
+    it('heartbeat 有效派发更新应包含心跳时间标签', async () => {
+      const mockMessageHub = {
+        routeToOutput: vi.fn().mockResolvedValue(undefined),
+      };
+      const dispatchSubscriber = new AgentStatusSubscriber(eventBus, mockAgentRuntimeDeps, mockMessageHub);
+      dispatchSubscriber.setPrimaryAgent('agent-1');
+      dispatchSubscriber.registerSession('session-dispatch-heartbeat-active', {
+        channel: 'qqbot',
+        envelopeId: 'env-dispatch-heartbeat-active',
+      });
+      dispatchSubscriber.start();
+
+      const dispatchEvent: RuntimeEvent = {
+        type: 'agent_runtime_dispatch',
+        sessionId: 'session-dispatch-heartbeat-active',
+        timestamp: '2026-03-30T13:08:00.000Z',
+        payload: {
+          dispatchId: 'dispatch-heartbeat-active-1',
+          sourceAgentId: 'system-heartbeat',
+          targetAgentId: 'finger-project-agent',
+          status: 'queued',
+          queuePosition: 1,
+          result: {
+            status: 'queued',
+            summary: '发现待处理任务，进入队列',
+          },
+        },
+      };
+
+      await eventBus.emit(dispatchEvent);
+      await new Promise(resolve => setTimeout(resolve, 80));
+
+      expect(mockMessageHub.routeToOutput).toHaveBeenCalled();
+      const dispatchCall = mockMessageHub.routeToOutput.mock.calls.find(
+        (call: unknown[]) => call[0] === 'channel-bridge-qqbot',
+      );
+      expect(dispatchCall).toBeDefined();
+      const payload = dispatchCall?.[1] as { statusUpdate?: { status?: { summary?: string } } };
+      const summary = payload?.statusUpdate?.status?.summary ?? '';
+      expect(summary).toContain('心跳时间:');
 
       dispatchSubscriber.stop();
     });

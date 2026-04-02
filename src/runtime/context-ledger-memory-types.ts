@@ -1,4 +1,12 @@
-export type ContextLedgerMemoryAction = 'query' | 'search' | 'insert' | 'index' | 'compact' | 'delete_slots';
+export type ContextLedgerMemoryAction =
+  | 'query'
+  | 'search'
+  | 'insert'
+  | 'index'
+  | 'compact'
+  | 'delete_slots'
+  | 'digest_backfill'
+  | 'digest_incremental';
 
 export interface ContextLedgerMemoryRuntimeContext {
   root_dir?: string;
@@ -224,9 +232,37 @@ export interface ContextLedgerMemoryDeleteSlotsResult {
   note: string;
 }
 
+export interface ContextLedgerMemoryDigestBackfillResult {
+  ok: true;
+  action: 'digest_backfill';
+  compact_path: string;
+  compact_index_path: string;
+  task_digest_count: number;
+  linked_event_count: number;
+  linked_message_count: number;
+  note: string;
+}
+
+export interface ContextLedgerMemoryDigestIncrementalResult {
+  ok: true;
+  action: 'digest_incremental';
+  compact_path: string;
+  compact_index_path: string;
+  task_digest_count: number;
+  linked_event_count: number;
+  linked_message_count: number;
+  source_slot_start: number;
+  source_slot_end: number;
+  previous_compacted_slot_end: number;
+  no_new_entries: boolean;
+  note: string;
+}
+
 export type ContextLedgerMemoryResult =
   | ContextLedgerMemoryQueryResult
   | ContextLedgerMemoryInsertResult
   | ContextLedgerMemoryIndexResult
   | ContextLedgerMemoryCompactResult
-  | ContextLedgerMemoryDeleteSlotsResult;
+  | ContextLedgerMemoryDeleteSlotsResult
+  | ContextLedgerMemoryDigestBackfillResult
+  | ContextLedgerMemoryDigestIncrementalResult;

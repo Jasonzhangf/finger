@@ -2,6 +2,35 @@ export interface ProgressMonitorConfig {
   intervalMs?: number;
   enabled?: boolean;
   progressUpdates?: boolean;
+  contextBreakdownMode?: 'release' | 'dev';
+}
+
+export interface ContextBreakdownSnapshot {
+  historyContextTokens?: number;
+  historyCurrentTokens?: number;
+  historyTotalTokens?: number;
+  historyContextMessages?: number;
+  historyCurrentMessages?: number;
+  systemPromptTokens?: number;
+  developerPromptTokens?: number;
+  userInstructionsTokens?: number;
+  environmentContextTokens?: number;
+  turnContextTokens?: number;
+  skillsTokens?: number;
+  mailboxTokens?: number;
+  projectTokens?: number;
+  flowTokens?: number;
+  contextSlotsTokens?: number;
+  inputTextTokens?: number;
+  inputMediaTokens?: number;
+  inputMediaCount?: number;
+  inputTotalTokens?: number;
+  toolsSchemaTokens?: number;
+  toolExecutionTokens?: number;
+  contextLedgerConfigTokens?: number;
+  responsesConfigTokens?: number;
+  totalKnownTokens?: number;
+  source?: string;
 }
 
 export interface ToolCallRecord {
@@ -53,6 +82,8 @@ export interface SessionProgress {
   lastContextEvent?: string;
   lastContextEventAt?: number;
   lastReportedContextEventAt?: number;
+  contextBreakdown?: ContextBreakdownSnapshot;
+  lastReportedContextBreakdownKey?: string;
   /**
    * Allow exactly one downward context update (used after explicit rebuild/compress actions).
    * Prevents misleading "new turn low baseline" resets in normal turns.

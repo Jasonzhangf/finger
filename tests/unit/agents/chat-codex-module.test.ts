@@ -159,6 +159,12 @@ describe('chat-codex module', () => {
     expect(isRetryableRunError(new Error('chat-codex stalled without kernel events for 180000ms'))).toBe(true);
   });
 
+  it('treats active-turn supersede/epipe errors as retryable', () => {
+    expect(isRetryableRunError(new Error('chat-codex active turn superseded by newer user input'))).toBe(true);
+    expect(isRetryableRunError(new Error('chat-codex stale active turn evicted (idle=15232ms, age=697906ms)'))).toBe(true);
+    expect(isRetryableRunError(new Error('chat-codex kernel stdin stream error: write EPIPE'))).toBe(true);
+  });
+
   it('treats incomplete responses stream payload errors as retryable', () => {
     expect(
       isRetryableRunError(new Error('run_turn failed: responses stream did not contain a completed response payload')),
@@ -263,11 +269,11 @@ describe('chat-codex module', () => {
       'run tool',
       [{ type: 'text', text: 'run tool' }],
       expect.objectContaining({
-        tools: [
+        tools: expect.arrayContaining([
           expect.objectContaining({
             name: 'exec_command',
           }),
-        ],
+        ]),
       }),
     );
   });
@@ -697,6 +703,35 @@ describe('chat-codex module', () => {
     expect(executor).toContain('[context_ledger]');
     expect(searcher).toContain('[context_ledger]');
     expect(executor).toBe(searcher);
+  });
+
+  it('injects prompt optimization runtime section with agent contract and output style', () => {
+    const instructions = __chatCodexInternals.resolveDeveloperInstructions({
+      roleProfile: 'reviewer',
+      promptOptimizationEnabled: true,
+      promptOptAgentDefinitionEnabled: true,
+      promptOptFunctionResultClearingEnabled: true,
+      promptOptOutputStyleEnabled: true,
+      outputStyle: 'technical',
+      contextLedgerEnabled: true,
+      kernelMode: 'main',
+    });
+
+    expect(instructions).toContain('# Prompt Optimization Runtime');
+    expect(instructions).toContain('agent_type=reviewer');
+    expect(instructions).toContain('Function Result Clearing');
+    expect(instructions).toContain('Output Style: Technical');
+  });
+
+  it('can disable prompt optimization runtime section', () => {
+    const instructions = __chatCodexInternals.resolveDeveloperInstructions({
+      roleProfile: 'reviewer',
+      promptOptimizationEnabled: false,
+      contextLedgerEnabled: true,
+      kernelMode: 'main',
+    });
+
+    expect(instructions).not.toContain('# Prompt Optimization Runtime');
   });
 
   it('teaches ledger retrieval model inside developer instructions', () => {

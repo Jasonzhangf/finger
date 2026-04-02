@@ -176,11 +176,6 @@ export const contextBuilderRebuildTool: InternalTool<unknown, ContextBuilderRebu
         buildMode,
         includeMemoryMd: false,
         enableTaskGrouping: true,
-        timeWindow: {
-          nowMs: Date.now(),
-          halfLifeMs: settings.halfLifeMs,
-          overThresholdRelevance: settings.overThresholdRelevance,
-        },
         enableModelRanking: settings.enableModelRanking,
         rankingProviderId: settings.rankingProviderId,
       },

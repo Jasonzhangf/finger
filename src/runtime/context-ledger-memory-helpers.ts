@@ -18,6 +18,8 @@ export function parseInput(rawInput: unknown): ContextLedgerMemoryInput {
     || rawAction === 'compact'
     || rawAction === 'search'
     || rawAction === 'delete_slots'
+    || rawAction === 'digest_backfill'
+    || rawAction === 'digest_incremental'
       ? rawAction
       : 'query';
   return {

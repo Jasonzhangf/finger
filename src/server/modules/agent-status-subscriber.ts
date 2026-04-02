@@ -32,6 +32,7 @@ import {
   cleanupRouteStateBySession,
   clearSessionObservers,
   finalizeChannelTurnDelivery,
+  inferSessionUpdateSourceType,
   registerSessionMapping,
   resolveEnvelopeMappingForSession,
   resolveEnvelopeMappingsForSession,
@@ -174,6 +175,7 @@ export class AgentStatusSubscriber {
       reasoningText,
       resolveEnvelopeMappings: (targetSessionId) => this.resolveEnvelopeMappings(targetSessionId),
       resolvePushSettings: (targetSessionId, channelId, options) => this.resolvePushSettings(targetSessionId, channelId, options),
+      resolveSourceType: (targetSessionId, sourceTypeHint) => this.resolveSourceType(targetSessionId, sourceTypeHint),
       messageHub: this.messageHub,
       state: this.getRouteState(),
       reasoningBodyBufferMs: this.reasoningBodyBufferMs,
@@ -187,6 +189,7 @@ export class AgentStatusSubscriber {
       bodyText,
       resolveEnvelopeMappings: (targetSessionId) => this.resolveEnvelopeMappings(targetSessionId),
       resolvePushSettings: (targetSessionId, channelId, options) => this.resolvePushSettings(targetSessionId, channelId, options),
+      resolveSourceType: (targetSessionId, sourceTypeHint) => this.resolveSourceType(targetSessionId, sourceTypeHint),
       messageHub: this.messageHub,
       state: this.getRouteState(),
       reasoningBodyBufferMs: this.reasoningBodyBufferMs,
@@ -377,6 +380,7 @@ export class AgentStatusSubscriber {
       messageHub: this.messageHub,
       resolveEnvelopeMapping: (targetSessionId) => this.resolveEnvelopeMapping(targetSessionId),
       resolvePushSettings: (targetSessionId, channelId, options) => this.resolvePushSettings(targetSessionId, channelId, options),
+      resolveSourceType: (targetSessionId, sourceTypeHint) => this.resolveSourceType(targetSessionId, sourceTypeHint),
     });
   }
 
@@ -443,6 +447,34 @@ export class AgentStatusSubscriber {
       contextUsagePercent?: number;
       estimatedTokensInContextWindow?: number;
       maxInputTokens?: number;
+      contextBreakdown?: {
+        historyContextTokens?: number;
+        historyCurrentTokens?: number;
+        historyTotalTokens?: number;
+        historyContextMessages?: number;
+        historyCurrentMessages?: number;
+        systemPromptTokens?: number;
+        developerPromptTokens?: number;
+        userInstructionsTokens?: number;
+        environmentContextTokens?: number;
+        turnContextTokens?: number;
+        skillsTokens?: number;
+        mailboxTokens?: number;
+        projectTokens?: number;
+        flowTokens?: number;
+        contextSlotsTokens?: number;
+        inputTextTokens?: number;
+        inputMediaTokens?: number;
+        inputMediaCount?: number;
+        inputTotalTokens?: number;
+        toolsSchemaTokens?: number;
+        toolExecutionTokens?: number;
+        contextLedgerConfigTokens?: number;
+        responsesConfigTokens?: number;
+        totalKnownTokens?: number;
+        source?: string;
+      };
+      contextBreakdownMode?: 'release' | 'dev';
     };
   }): Promise<void> {
     await sendProgressUpdateToChannels({
@@ -499,6 +531,14 @@ export class AgentStatusSubscriber {
       kind: options?.kind,
       sourceType: options?.sourceType,
       agentId: options?.agentId,
+    });
+  }
+
+  private resolveSourceType(sessionId: string, sourceTypeHint?: string) {
+    return inferSessionUpdateSourceType({
+      sessionId,
+      deps: this.deps,
+      sourceTypeHint,
     });
   }
 }

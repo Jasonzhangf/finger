@@ -19,7 +19,8 @@
     "build:rust": "bash scripts/run-build-step.sh bash -lc 'npm run build:rust:raw'",
     "build:rust:raw": "cargo build --workspace --manifest-path rust/Cargo.toml",
     "build:bump-version": "node scripts/bump-build-version.mjs",
-    "build:dev": "npm run build",
+    "build:dev": "node scripts/set-progress-context-mode.mjs dev && npm run build",
+    "build:release": "node scripts/set-progress-context-mode.mjs release && npm run build",
     "build:install": "bash scripts/build-and-install.sh",
     "dev": "tsx watch src/cli/index.ts",
     "start": "node dist/server/index.js",
@@ -48,19 +49,22 @@
     "daemon:stop": "node scripts/daemon-stop.cjs",
     "daemon:restart": "node scripts/daemon-restart.cjs",
     "daemon:cleanup": "node scripts/daemon-cleanup.cjs",
+    "digest:backfill:all": "tsx scripts/digest-backfill-all.ts",
     "logs:cleanup": "node scripts/log-cleanup.cjs",
-    "logs:cleanup:all": "node scripts/log-cleanup.cjs --all"
+    "logs:cleanup:all": "node scripts/log-cleanup.cjs --all",
+    "test:update-plan-v2-gate": "vitest run tests/unit/tools/internal/codex-update-plan-tool.test.ts tests/unit/tools/internal/codex-update-plan-tool-v2.test.ts tests/integration/update-plan-v2-workflow.test.ts && npm run build:backend:raw"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.40.1",
+    "@zilliz/milvus2-sdk-node": "^2.5.9",
     "chalk": "^5.4.0",
     "commander": "^11.1.0",
     "express": "^5.2.1",
+    "js-tiktoken": "^1.0.21",
+    "mem0ai": "^2.3.0",
     "ora": "^9.3.0",
     "ws": "^8.18.0",
-    "yaml": "^2.8.2",
-    "mem0ai": "^2.3.0",
-    "@zilliz/milvus2-sdk-node": "^2.5.9"
+    "yaml": "^2.8.2"
   },
   "devDependencies": {
     "@eslint/js": "^9.18.0",
@@ -68,14 +72,14 @@
     "@types/node": "^20.10.0",
     "@types/ws": "^8.5.13",
     "eslint": "^9.18.0",
+    "execa": "^8.0.1",
     "globals": "^15.14.0",
     "tsx": "^4.19.2",
     "typescript": "^5.3.3",
     "typescript-eslint": "^8.56.1",
-    "vitest": "^1.6.0",
-    "execa": "^8.0.1"
+    "vitest": "^1.6.0"
   },
-  "fingerBuildVersion": "0.1.0053",
+  "fingerBuildVersion": "0.1.0103",
   "pnpm": {
     "packageExtensions": {
       "vitest@*": {

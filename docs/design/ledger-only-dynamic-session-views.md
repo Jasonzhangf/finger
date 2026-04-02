@@ -1,3 +1,9 @@
+# Historical Rationale (Non-Canonical)
+
+> This document is historical rationale only.
+> The only authoritative implementation contract is:
+> `docs/design/project-task-lifecycle-state-machine.md`
+
 # Ledger-Only Persistence + Dynamic Session Views 设计
 
 > Last updated: 2026-03-26  

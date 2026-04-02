@@ -57,7 +57,7 @@ describe('context-builder', () => {
       try {
         const result = await buildContext(
           { rootDir: setup.rootDir, sessionId: setup.sessionId, agentId: setup.agentId, mode: setup.mode },
-          { targetBudget: 1_000_000, includeMemoryMd: false, enableTaskGrouping: true, timeWindow: undefined },
+          { targetBudget: 1_000_000, includeMemoryMd: false, enableTaskGrouping: true },
         );
 
         expect(result.ok).toBe(true);
@@ -85,6 +85,141 @@ describe('context-builder', () => {
       }
     });
 
+    it('splits task blocks by dispatch/time boundary when no user messages exist', async () => {
+      const now = Date.now();
+      const setup = setupLedgerForContextBuilder('system-only-boundary', {
+        entries: [
+          {
+            id: 'sys-1',
+            timestamp_ms: now - 120_000,
+            role: 'system',
+            content: 'dispatch A queued',
+            event_type: 'session_message',
+          },
+          {
+            id: 'sys-2',
+            timestamp_ms: now - 110_000,
+            role: 'assistant',
+            content: 'working on dispatch A',
+            event_type: 'session_message',
+          },
+          {
+            id: 'sys-3',
+            timestamp_ms: now - 50_000,
+            role: 'system',
+            content: 'dispatch B queued',
+            event_type: 'session_message',
+          },
+          {
+            id: 'sys-4',
+            timestamp_ms: now - 45_000,
+            role: 'assistant',
+            content: 'working on dispatch B',
+            event_type: 'session_message',
+          },
+        ],
+      });
+
+      const dir = join(setup.rootDir, setup.sessionId, setup.agentId, setup.mode);
+      const ledgerPath = join(dir, 'context-ledger.jsonl');
+      writeFileSync(
+        ledgerPath,
+        [
+          JSON.stringify({
+            id: 'sys-1',
+            timestamp_ms: now - 120_000,
+            timestamp_iso: new Date(now - 120_000).toISOString(),
+            session_id: setup.sessionId,
+            agent_id: setup.agentId,
+            mode: setup.mode,
+            event_type: 'session_message',
+            payload: {
+              role: 'system',
+              content: 'dispatch A queued',
+              metadata: { dispatchId: 'dispatch-A' },
+            },
+          }),
+          JSON.stringify({
+            id: 'sys-2',
+            timestamp_ms: now - 110_000,
+            timestamp_iso: new Date(now - 110_000).toISOString(),
+            session_id: setup.sessionId,
+            agent_id: setup.agentId,
+            mode: setup.mode,
+            event_type: 'session_message',
+            payload: {
+              role: 'assistant',
+              content: 'working on dispatch A',
+              metadata: { dispatchId: 'dispatch-A' },
+            },
+          }),
+          JSON.stringify({
+            id: 'sys-3',
+            timestamp_ms: now - 50_000,
+            timestamp_iso: new Date(now - 50_000).toISOString(),
+            session_id: setup.sessionId,
+            agent_id: setup.agentId,
+            mode: setup.mode,
+            event_type: 'session_message',
+            payload: {
+              role: 'system',
+              content: 'dispatch B queued',
+              metadata: { dispatchId: 'dispatch-B' },
+            },
+          }),
+          JSON.stringify({
+            id: 'sys-4',
+            timestamp_ms: now - 45_000,
+            timestamp_iso: new Date(now - 45_000).toISOString(),
+            session_id: setup.sessionId,
+            agent_id: setup.agentId,
+            mode: setup.mode,
+            event_type: 'session_message',
+            payload: {
+              role: 'assistant',
+              content: 'working on dispatch B',
+              metadata: { dispatchId: 'dispatch-B' },
+            },
+          }),
+          '',
+        ].join('\n'),
+        'utf-8',
+      );
+
+      try {
+        const result = await buildContext(
+          { rootDir: setup.rootDir, sessionId: setup.sessionId, agentId: setup.agentId, mode: setup.mode },
+          { targetBudget: 1_000_000, includeMemoryMd: false, enableTaskGrouping: true, buildMode: 'aggressive' },
+        );
+        expect(result.metadata.rawTaskBlockCount).toBe(2);
+        expect(result.metadata.historicalTaskBlockCount).toBe(1);
+      } finally {
+        rmSync(setup.rootDir, { recursive: true, force: true });
+      }
+    });
+
+    it('splits task blocks on reasoning.stop marker to keep per-turn digest boundaries', async () => {
+      const now = Date.now();
+      const setup = setupLedgerForContextBuilder('reasoning-stop-boundary', {
+        entries: [
+          { id: 's1', timestamp_ms: now - 90_000, role: 'system', content: '调用工具: reasoning.stop', event_type: 'session_message' },
+          { id: 's2', timestamp_ms: now - 89_000, role: 'system', content: '工具完成: reasoning.stop', event_type: 'session_message' },
+          { id: 's3', timestamp_ms: now - 30_000, role: 'assistant', content: 'next task starts', event_type: 'session_message' },
+        ],
+      });
+
+      try {
+        const result = await buildContext(
+          { rootDir: setup.rootDir, sessionId: setup.sessionId, agentId: setup.agentId, mode: setup.mode },
+          { targetBudget: 1_000_000, includeMemoryMd: false, enableTaskGrouping: true, buildMode: 'aggressive' },
+        );
+        expect(result.metadata.rawTaskBlockCount).toBeGreaterThanOrEqual(2);
+        expect(result.metadata.historicalTaskBlockCount).toBeGreaterThanOrEqual(1);
+      } finally {
+        rmSync(setup.rootDir, { recursive: true, force: true });
+      }
+    });
+
     it('prefers compact replacement history for historical blocks when available', async () => {
       const setup = setupLedgerForContextBuilder('compact-history-preferred');
       const compactPath = join(setup.rootDir, setup.sessionId, setup.agentId, setup.mode, 'compact-memory.jsonl');
@@ -100,6 +235,8 @@ describe('context-builder', () => {
           mode: setup.mode,
           payload: {
             summary: 'compact summary',
+            source_slot_start: 1,
+            source_slot_end: 6,
             replacement_history: [
               {
                 id: 'digest-task-1',
@@ -164,94 +301,74 @@ describe('context-builder', () => {
         rmSync(setup.rootDir, { recursive: true, force: true });
       }
     });
-  });
 
-  describe('time window filter', () => {
-    it('keeps all blocks within 24h half-life', async () => {
-      const setup = setupLedgerForContextBuilder('time-all-recent');
-      try {
-        const result = await buildContext(
-          { rootDir: setup.rootDir, sessionId: setup.sessionId, agentId: setup.agentId, mode: setup.mode },
-          {
-            targetBudget: 1_000_000,
-            includeMemoryMd: false,
-            timeWindow: {
-              nowMs: setup.now,
-              halfLifeMs: 200_000, // 200 seconds, so all entries are within range
-            },
+    it('auto-backfills digest coverage when snapshot rebuild detects compact gap', async () => {
+      const setup = setupLedgerForContextBuilder('compact-history-auto-backfill');
+      const compactPath = join(setup.rootDir, setup.sessionId, setup.agentId, setup.mode, 'compact-memory.jsonl');
+      // stale compact entry: only covers slot 1, while ledger has multiple slots
+      writeFileSync(
+        compactPath,
+        `${JSON.stringify({
+          id: 'cpt-stale-1',
+          timestamp_ms: setup.now,
+          timestamp_iso: new Date(setup.now).toISOString(),
+          session_id: setup.sessionId,
+          agent_id: setup.agentId,
+          mode: setup.mode,
+          payload: {
+            summary: 'stale compact',
+            source_slot_start: 1,
+            source_slot_end: 1,
+            replacement_history: [
+              {
+                id: 'digest-stale-1',
+                task_id: 'digest-stale-1',
+                request: 'stale',
+                summary: 'stale',
+              },
+            ],
           },
-        );
-
-        expect(result.metadata.rawTaskBlockCount).toBe(3);
-        expect(result.metadata.timeWindowFilteredCount).toBe(0);
-      } finally {
-        rmSync(setup.rootDir, { recursive: true, force: true });
-      }
-    });
-
-    it('filters out old blocks without substantial user messages', async () => {
-      const now = Date.now();
-      const setup = setupLedgerForContextBuilder('time-filter-old', {
-        entries: [
-          // Old block - user message with only 5 tokens (below substantial threshold of 20)
-          { id: 'msg-1', timestamp_ms: now - 200_000, role: 'user', content: 'ok', token_count: 5, event_type: 'session_message' },
-          { id: 'msg-2', timestamp_ms: now - 195_000, role: 'assistant', content: 'Done.', token_count: 10, event_type: 'session_message' },
-          // Recent block
-          { id: 'msg-3', timestamp_ms: now - 1_000, role: 'user', content: 'Please review the code changes', token_count: 30, event_type: 'session_message' },
-          { id: 'msg-4', timestamp_ms: now - 500, role: 'assistant', content: 'Reviewing code changes now.', token_count: 20, event_type: 'session_message' },
-        ],
-      });
-
-      try {
-        const result = await buildContext(
-          { rootDir: setup.rootDir, sessionId: setup.sessionId, agentId: setup.agentId, mode: setup.mode },
-          {
-            targetBudget: 1_000_000,
-            includeMemoryMd: false,
-            timeWindow: {
-              nowMs: now,
-              halfLifeMs: 100_000, // 100 seconds
-            },
-          },
-        );
-
-        // Old block should be filtered out (user message token_count=5 < 20 threshold)
-        expect(result.metadata.timeWindowFilteredCount).toBe(1);
-        expect(result.taskBlockCount).toBe(1);
-      } finally {
-        rmSync(setup.rootDir, { recursive: true, force: true });
-      }
-    });
-
-    it('keeps old blocks with substantial user messages', async () => {
-      const now = Date.now();
-      const setup = setupLedgerForContextBuilder('time-keep-substantial', {
-        entries: [
-          // Old block but user message is substantial (50 tokens)
-          { id: 'msg-1', timestamp_ms: now - 200_000, role: 'user', content: 'Please implement the new authentication system with OAuth2 support and refresh token rotation', token_count: 50, event_type: 'session_message' },
-          { id: 'msg-2', timestamp_ms: now - 195_000, role: 'assistant', content: 'Implementing OAuth2...', token_count: 30, event_type: 'session_message' },
-          // Recent block
-          { id: 'msg-3', timestamp_ms: now - 1_000, role: 'user', content: 'What is the status?', token_count: 10, event_type: 'session_message' },
-          { id: 'msg-4', timestamp_ms: now - 500, role: 'assistant', content: 'Still working.', token_count: 10, event_type: 'session_message' },
-        ],
-      });
+        })}\n`,
+        'utf-8',
+      );
+      const sessionMessages = [
+        {
+          id: 'snap-u-1',
+          role: 'user' as const,
+          content: 'Fix the login bug',
+          timestamp: new Date(setup.now - 100_000).toISOString(),
+        },
+        {
+          id: 'snap-a-1',
+          role: 'assistant' as const,
+          content: 'I will fix the login bug now.',
+          timestamp: new Date(setup.now - 95_000).toISOString(),
+        },
+        {
+          id: 'snap-u-2',
+          role: 'user' as const,
+          content: 'Run the build now',
+          timestamp: new Date(setup.now - 10_000).toISOString(),
+        },
+      ];
 
       try {
         const result = await buildContext(
-          { rootDir: setup.rootDir, sessionId: setup.sessionId, agentId: setup.agentId, mode: setup.mode },
           {
-            targetBudget: 1_000_000,
-            includeMemoryMd: false,
-            timeWindow: {
-              nowMs: now,
-              halfLifeMs: 100_000,
-            },
+            rootDir: setup.rootDir,
+            sessionId: setup.sessionId,
+            agentId: setup.agentId,
+            mode: setup.mode,
+            sessionMessages,
           },
+          { targetBudget: 1_000_000, includeMemoryMd: false, buildMode: 'aggressive' },
         );
 
-        // Both blocks kept: old one has substantial user message, recent one is within window
-        expect(result.metadata.timeWindowFilteredCount).toBe(0);
-        expect(result.taskBlockCount).toBe(2);
+        expect(result.ok).toBe(true);
+        expect(result.metadata.digestCoverageChecked).toBe(true);
+        expect(result.metadata.digestCoverageBackfilled).toBe(true);
+        expect((result.metadata.digestCoverageMissingSlots as number) > 0).toBe(true);
+        expect((result.metadata.digestCoverageTaskDigestCount as number) >= 1).toBe(true);
       } finally {
         rmSync(setup.rootDir, { recursive: true, force: true });
       }

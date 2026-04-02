@@ -1,5 +1,4 @@
 import type { Express } from 'express';
-import path from 'path';
 import { recommendLoopTemplates } from '../../orchestration/loop/loop-template-registry.js';
 import { isObjectRecord } from '../common/object.js';
 import type { AgentCapabilityLayer, AgentRuntimeDeps } from './agent-runtime/types.js';
@@ -13,6 +12,7 @@ import {
   parseAgentDispatchToolInput,
 } from './agent-runtime/parsers.js';
 import { parseProjectTaskState } from '../../common/project-task-state.js';
+import { normalizeProjectPathCanonical } from '../../common/path-normalize.js';
 
 function resolveAgentCapabilityLayer(value: unknown): AgentCapabilityLayer {
   if (typeof value !== 'string') return 'summary';
@@ -26,13 +26,7 @@ function resolveAgentCapabilityLayer(value: unknown): AgentCapabilityLayer {
 function normalizeProjectPathInput(value: string): string {
   const trimmed = value.trim();
   if (!trimmed) return '';
-  if (trimmed.startsWith('~/')) {
-    const home = process.env.HOME || '';
-    if (home) {
-      return path.resolve(path.join(home, trimmed.slice(2)));
-    }
-  }
-  return path.resolve(trimmed);
+  return normalizeProjectPathCanonical(trimmed);
 }
 
 function asTrimmedString(value: unknown): string {
@@ -415,7 +409,7 @@ export function registerAgentRuntimeTools(deps: AgentRuntimeDeps): string[] {
   // Session switching tool
   deps.runtime.registerTool({
     name: 'session.switch',
-    description: 'Switch current agent to another session in the same project (self-only, no cross-agent switch)',
+    description: 'Session switching is disabled by system policy.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -425,48 +419,8 @@ export function registerAgentRuntimeTools(deps: AgentRuntimeDeps): string[] {
       additionalProperties: false
     },
     handler: async (input: unknown): Promise<unknown> => {
-      if (!isObjectRecord(input)) {
-        throw new Error('session.switch input must be object');
-      }
-
-      const sessionId = typeof input.session_id === 'string' ? input.session_id.trim() : '';
-      if (sessionId.length === 0) {
-        throw new Error('session.switch session_id is required');
-      }
-
-      const currentAgentId = deps.primaryOrchestratorAgentId;
-      if (
-        typeof input.target_agent_id === 'string'
-        || typeof input.targetAgentId === 'string'
-      ) {
-        throw new Error('session.switch does not accept target_agent_id; agent can only switch its own session');
-      }
-      const targetSession = deps.runtime.getSession(sessionId);
-      if (!targetSession) {
-        throw new Error(`Session not found: ${sessionId}`);
-      }
-
-      // 所有 agent：禁止跨项目切换，避免 session 串线
-      const currentSession = deps.runtime.getCurrentSession();
-      const currentProjectPath = normalizeProjectPathInput(currentSession?.projectPath ?? process.cwd());
-      const targetProjectPath = normalizeProjectPathInput(targetSession.projectPath);
-      if (currentProjectPath && targetProjectPath && currentProjectPath !== targetProjectPath) {
-        throw new Error(
-          `Cross-project session switch forbidden: current=${currentProjectPath}, target=${targetProjectPath}`,
-        );
-      }
-
-      const success = deps.runtime.setCurrentSession(sessionId);
-      if (!success) {
-        throw new Error(`Failed to switch to session: ${sessionId}`);
-      }
-
-      return {
-        success: true,
-        session_id: sessionId,
-        agent_id: currentAgentId,
-        project_path: targetSession.projectPath,
-      };
+      void input;
+      throw new Error('session.switch is disabled by system policy. Session binding is runtime-init only.');
     }
   });
   loaded.push('session.switch');

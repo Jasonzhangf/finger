@@ -22,11 +22,35 @@ import type { MailboxSnapshot } from '../../runtime/mailbox-snapshot.js';
 import { hasNewUnreadSinceLastNotified, getNewUnreadEntries } from '../../runtime/mailbox-snapshot.js';
 import { formatSkillsAsPromptSync } from '../../skills/skill-prompt-injector.js';
 import { logger } from '../../core/logger.js';
+import { estimateTokensWithTiktoken } from '../../utils/tiktoken-estimator.js';
+import {
+  evaluateControlHooks,
+  parseControlBlockFromReply,
+  resolveControlBlockPolicy,
+} from '../../common/control-block.js';
+import {
+  AUTONOMOUS_WORK_SECTION,
+  FUNCTION_RESULT_CLEARING_SECTION,
+  getAgentDefinition,
+  getOutputStyleSection,
+  type OutputStyle,
+} from '../prompts/agent-definitions.js';
+import {
+  filterSections,
+  type GuardedSection,
+} from '../prompts/conditional-injector.js';
 
 const DEFAULT_KERNEL_TIMEOUT_MS = 600_000;
 const DEFAULT_KERNEL_TIMEOUT_RETRY_COUNT = 5;
-const DEFAULT_KERNEL_STALL_TIMEOUT_MS = 180_000;
+// NOTE:
+// 180s stall timeout is too aggressive when context is large (50k+ tokens) or provider
+// has high queue latency. It caused false-positive "stalled" retries while the upstream
+// request was still in progress, which then kept new inputs in pending queue forever.
+// Align stall timeout with hard timeout by default to avoid premature interruption.
+const DEFAULT_KERNEL_STALL_TIMEOUT_MS = 600_000;
+const ACTIVE_TURN_STALE_GRACE_MS = 15_000;
 const FLOW_PROMPT_MAX_CHARS = 10_000;
+const USER_PROFILE_PROMPT_MAX_CHARS = 8_000;
 const DEFAULT_CONTEXT_WINDOW_TOKENS = 262_144;
 const chatCodexLog = logger.module('ChatCodexModule');
 export const CHAT_CODEX_ORCHESTRATOR_ALLOWED_TOOLS = [
@@ -143,6 +167,34 @@ interface KernelRoundTraceItem {
   contextUsagePercent?: number;
   maxInputTokens?: number;
   thresholdPercent?: number;
+}
+
+interface ContextBreakdownSnapshot {
+  historyContextTokens?: number;
+  historyCurrentTokens?: number;
+  historyTotalTokens?: number;
+  historyContextMessages?: number;
+  historyCurrentMessages?: number;
+  systemPromptTokens?: number;
+  developerPromptTokens?: number;
+  userInstructionsTokens?: number;
+  environmentContextTokens?: number;
+  turnContextTokens?: number;
+  skillsTokens?: number;
+  mailboxTokens?: number;
+  projectTokens?: number;
+  flowTokens?: number;
+  contextSlotsTokens?: number;
+  inputTextTokens?: number;
+  inputMediaTokens?: number;
+  inputMediaCount?: number;
+  inputTotalTokens?: number;
+  toolsSchemaTokens?: number;
+  toolExecutionTokens?: number;
+  contextLedgerConfigTokens?: number;
+  responsesConfigTokens?: number;
+  totalKnownTokens?: number;
+  source?: string;
 }
 
 export interface ChatCodexRunContext {
@@ -268,6 +320,10 @@ export interface ChatCodexKernelEvent {
 
 interface ActiveKernelTurn {
   id: string;
+  startedAtMs: number;
+  lastKernelEventAtMs: number;
+  pendingInputQueued: boolean;
+  pendingTurnId?: string;
   resolve: (value: ChatCodexRunResult) => void;
   reject: (reason?: unknown) => void;
   events: ChatCodexKernelEvent[];
@@ -375,6 +431,10 @@ export function isRetryableRunError(error: unknown): boolean {
 
   return isTimeoutError(error)
     || normalized.includes('stalled without kernel events')
+    || normalized.includes('stale active turn evicted')
+    || normalized.includes('active turn superseded')
+    || normalized.includes('kernel stdin stream error')
+    || normalized.includes('write epipe')
     || normalized.includes('did not contain a completed response payload')
     || normalized.includes('completed response payload')
     || normalized.includes('stream ended before completed response')
@@ -438,7 +498,7 @@ export class ProcessChatCodexRunner implements ChatCodexRunner {
 
     const providerId = resolveRunnerProviderId(context);
     const sessionKey = resolveRunnerSessionKey(context?.sessionId, providerId);
-    const session = this.ensureSession(sessionKey, resolvedPath, providerId);
+    let session = this.ensureSession(sessionKey, resolvedPath, providerId);
     const normalizedItems = normalizeKernelInputItems(items, text);
     const options = isRecord(context?.prebuiltOptions)
       ? hydratePrebuiltKernelUserTurnOptions(
@@ -452,9 +512,75 @@ export class ProcessChatCodexRunner implements ChatCodexRunner {
           this.toolExecution,
           context?.developerPromptPaths ?? this.developerPromptPaths,
         );
+    let mustRefreshSession = false;
+    if (session.activeTurn) {
+      const childUnavailable = session.child.killed
+        || session.child.exitCode !== null
+        || session.child.stdin.destroyed
+        || !session.child.stdin.writable;
+      if (childUnavailable) {
+        chatCodexLog.warn('Active turn session process is not writable/alive; evicting stale turn immediately', {
+          sessionKey,
+          activeTurnId: session.activeTurn.id,
+          killed: session.child.killed,
+          exitCode: session.child.exitCode,
+          stdinDestroyed: session.child.stdin.destroyed,
+          stdinWritable: session.child.stdin.writable,
+        });
+        this.rejectActiveTurn(
+          session,
+          new Error('chat-codex active turn session is unavailable (process/stdin stale)'),
+          true,
+        );
+        mustRefreshSession = true;
+      }
+    }
+    if (session.activeTurn) {
+      const staleCheck = this.inspectActiveTurnStaleness(session.activeTurn);
+      if (staleCheck.stale) {
+        chatCodexLog.warn('Detected stale active turn while new input arrived; evicting stale turn', {
+          sessionKey,
+          activeTurnId: session.activeTurn.id,
+          idleMs: staleCheck.idleMs,
+          ageMs: staleCheck.ageMs,
+          stallTimeoutMs: this.stallTimeoutMs,
+          timeoutMs: this.timeoutMs,
+        });
+        this.rejectActiveTurn(
+          session,
+          new Error(`chat-codex stale active turn evicted (idle=${staleCheck.idleMs}ms, age=${staleCheck.ageMs}ms)`),
+          true,
+        );
+        mustRefreshSession = true;
+      }
+    }
+    if (session.activeTurn) {
+      if (session.activeTurn.pendingInputQueued) {
+        // Source-level anti-stall: if another input arrives while one pending input is
+        // already queued behind the same active turn, that turn is likely not draining.
+        // Supersede immediately instead of waiting for timeout.
+        const supersededTurnId = session.activeTurn.id;
+        chatCodexLog.warn('Active turn superseded by newer input after pending queue already existed', {
+          sessionKey,
+          activeTurnId: supersededTurnId,
+          pendingTurnId: session.activeTurn.pendingTurnId,
+        });
+        this.rejectActiveTurn(
+          session,
+          new Error('chat-codex active turn superseded by newer user input'),
+          true,
+        );
+        mustRefreshSession = true;
+      }
+    }
+    if (mustRefreshSession) {
+      session = this.ensureSession(sessionKey, resolvedPath, providerId);
+    }
     if (session.activeTurn) {
       const pendingTurnId = this.nextSubmissionId(session, 'pending');
       this.sendUserTurnSubmission(session, pendingTurnId, normalizedItems, options);
+      session.activeTurn.pendingInputQueued = true;
+      session.activeTurn.pendingTurnId = pendingTurnId;
       return {
         reply: '已加入当前执行队列，等待本轮合并处理。',
         events: [
@@ -479,9 +605,13 @@ export class ProcessChatCodexRunner implements ChatCodexRunner {
     return new Promise<ChatCodexRunResult>((resolve, reject) => {
       const timeout = this.createHardTimeout(session);
       const stallTimeout = this.createStallTimeout(session);
+      const now = Date.now();
 
       session.activeTurn = {
         id: turnId,
+        startedAtMs: now,
+        lastKernelEventAtMs: now,
+        pendingInputQueued: false,
         resolve,
         reject,
         events: [],
@@ -594,6 +724,19 @@ export class ProcessChatCodexRunner implements ChatCodexRunner {
       session.stderrBuffer += chunk.toString();
     });
 
+    session.child.stdin.on('error', (error: Error) => {
+      chatCodexLog.warn('Kernel stdin stream error', {
+        sessionKey: session.key,
+        error: error.message,
+      });
+      this.rejectActiveTurn(
+        session,
+        new Error(`chat-codex kernel stdin stream error: ${error.message}`),
+        true,
+      );
+      this.sessions.delete(session.key);
+    });
+
     session.child.on('error', (error: Error) => {
       this.rejectActiveTurn(session, error, true);
       this.sessions.delete(session.key);
@@ -618,6 +761,7 @@ export class ProcessChatCodexRunner implements ChatCodexRunner {
 
     const activeTurn = session.activeTurn;
     if (!activeTurn) return;
+    activeTurn.lastKernelEventAtMs = Date.now();
     this.resetHardTimeout(session);
     this.resetStallTimeout(session);
 
@@ -783,6 +927,19 @@ export class ProcessChatCodexRunner implements ChatCodexRunner {
     session.submissionSeq += 1;
     return `${kind}-${Date.now()}-${session.submissionSeq}`;
   }
+
+  private inspectActiveTurnStaleness(activeTurn: ActiveKernelTurn): {
+    stale: boolean;
+    idleMs: number;
+    ageMs: number;
+  } {
+    const now = Date.now();
+    const idleMs = Math.max(0, now - activeTurn.lastKernelEventAtMs);
+    const ageMs = Math.max(0, now - activeTurn.startedAtMs);
+    const stale = idleMs >= (this.stallTimeoutMs + ACTIVE_TURN_STALE_GRACE_MS)
+      || ageMs >= (this.timeoutMs + ACTIVE_TURN_STALE_GRACE_MS);
+    return { stale, idleMs, ageMs };
+  }
 }
 
 export function createChatCodexModule(
@@ -844,11 +1001,25 @@ export function createChatCodexModule(
         tools: toolSpecificationsForTurn,
         toolExecution: mergedConfig.toolExecution,
       };
-      const optionsSnapshot = buildKernelUserTurnOptions(
-        snapshotContext,
-        mergedConfig.toolExecution,
-        snapshotContext.developerPromptPaths,
-      );
+      const optionsSnapshot = isRecord(snapshotContext.prebuiltOptions)
+        ? hydratePrebuiltKernelUserTurnOptions(
+            snapshotContext.prebuiltOptions as KernelUserTurnOptions,
+            snapshotContext,
+            mergedConfig.toolExecution,
+            snapshotContext.developerPromptPaths,
+          )
+        : buildKernelUserTurnOptions(
+            snapshotContext,
+            mergedConfig.toolExecution,
+            snapshotContext.developerPromptPaths,
+          );
+      const contextBreakdownSnapshot = resolveContextBreakdownSnapshot({
+        options: optionsSnapshot,
+        metadata: isRecord(context?.metadata) ? context.metadata : undefined,
+        mailboxSnapshot: context?.mailboxSnapshot,
+        inputItems: normalizedInputItems,
+        userText: text,
+      });
       writePromptInjectionSnapshot({
         sessionId,
         text,
@@ -878,6 +1049,7 @@ export function createChatCodexModule(
           ...(contextBuilderRebuilt !== undefined ? { contextBuilderRebuilt } : {}),
           ...(reviewPhase ? { reviewPhase } : {}),
           ...(typeof reviewIteration === 'number' ? { reviewIteration } : {}),
+          ...(contextBreakdownSnapshot ? { contextBreakdown: contextBreakdownSnapshot } : {}),
         },
       });
 
@@ -1000,6 +1172,7 @@ export function createChatCodexModule(
               ...(round.contextUsagePercent !== undefined ? { contextUsagePercent: round.contextUsagePercent } : {}),
               ...(round.maxInputTokens !== undefined ? { maxInputTokens: round.maxInputTokens } : {}),
               ...(round.thresholdPercent !== undefined ? { thresholdPercent: round.thresholdPercent } : {}),
+              ...(contextBreakdownSnapshot ? { contextBreakdown: contextBreakdownSnapshot } : {}),
             },
           });
         }
@@ -1115,6 +1288,7 @@ export function createChatCodexModule(
           if (typeof event.msg.context_usage_percent === 'number') payload.contextUsagePercent = event.msg.context_usage_percent;
           if (typeof event.msg.max_input_tokens === 'number') payload.maxInputTokens = event.msg.max_input_tokens;
           if (typeof event.msg.threshold_percent === 'number') payload.thresholdPercent = event.msg.threshold_percent;
+          if (contextBreakdownSnapshot) payload.contextBreakdown = contextBreakdownSnapshot;
         } else if (event.msg.type === 'task_started') {
           if (typeof event.msg.model_context_window === 'number') {
             payload.modelContextWindow = event.msg.model_context_window;
@@ -1277,18 +1451,49 @@ export function createChatCodexModule(
       }
 
       const stopReason = resolveStopReasonFromKernelMetadata(runResult.kernelMetadata);
+      const controlPolicy = resolveControlBlockPolicy(isRecord(context?.metadata) ? context.metadata : undefined);
+      const controlParsed = controlPolicy.enabled
+        ? parseControlBlockFromReply(runResult.reply)
+        : {
+          present: false,
+          valid: true,
+          repaired: false,
+          humanResponse: runResult.reply,
+          issues: [] as string[],
+          controlBlock: undefined,
+        };
+      const controlHooks = controlParsed.controlBlock
+        ? evaluateControlHooks(controlParsed.controlBlock)
+        : { hooks: [] as string[], holdStop: false };
+      const normalizedReply = controlPolicy.enabled
+        ? (controlParsed.humanResponse.trim().length > 0 ? controlParsed.humanResponse : runResult.reply)
+        : runResult.reply;
+      const controlGateHold = controlPolicy.enabled
+        && controlPolicy.requireOnStop
+        && stopReason === 'stop'
+        && (
+          !controlParsed.valid
+          || controlHooks.holdStop
+        );
+
       safeNotifyLoopEvent(mergedConfig.onLoopEvent, {
         sessionId,
         phase: 'turn_complete',
         timestamp: new Date().toISOString(),
         payload: {
-          replyPreview: runResult.reply.slice(0, 300),
+          replyPreview: normalizedReply.slice(0, 300),
           eventCount: runResult.events.length,
           finalKernelEvent: runResult.events.length > 0 ? runResult.events[runResult.events.length - 1].msg.type : null,
           mode,
           timeoutMs: mergedConfig.timeoutMs,
           timeoutRetryCount: normalizedTimeoutRetryCount,
           finishReason: stopReason,
+          controlBlockPresent: controlParsed.present,
+          controlBlockValid: controlParsed.valid,
+          controlBlockIssues: controlParsed.issues.slice(0, 8),
+          controlHookNames: controlHooks.hooks.slice(0, 32),
+          controlGateHold,
+          ...(controlParsed.controlBlock ? { controlBlock: controlParsed.controlBlock } : {}),
           ...(runResult.kernelMetadata?.pendingInputAccepted === true ? { pendingInputAccepted: true } : {}),
           ...(typeof runResult.kernelMetadata?.activeTurnId === 'string'
             ? { activeTurnId: runResult.kernelMetadata.activeTurnId }
@@ -1302,12 +1507,18 @@ export function createChatCodexModule(
       });
 
       return {
-        reply: runResult.reply,
+        reply: normalizedReply,
         metadata: {
           binaryPath: runResult.usedBinaryPath,
           eventCount: runResult.events.length,
           kernelEventTypes: runResult.events.map((event) => event.msg.type),
           stopReason,
+          controlBlockPresent: controlParsed.present,
+          controlBlockValid: controlParsed.valid,
+          controlBlockIssues: controlParsed.issues,
+          controlHookNames: controlHooks.hooks,
+          controlGateHold,
+          ...(controlParsed.controlBlock ? { controlBlock: controlParsed.controlBlock } : {}),
           ...(runResult.kernelMetadata ?? {}),
         },
       };
@@ -1960,18 +2171,35 @@ function buildKernelUserTurnOptions(
   }
 
   const role = resolveDeveloperRoleFromMetadata(metadata);
-  let developerInstructions = resolveDeveloperInstructions(metadata, developerPromptPaths, role, context?.history);
+  const availableToolNames = Array.isArray(context?.tools)
+    ? context.tools
+      .map((tool) => (tool && typeof tool.name === 'string' ? tool.name.trim() : ''))
+      .filter((name) => name.length > 0)
+    : undefined;
+  let developerInstructions = resolveDeveloperInstructions(
+    metadata,
+    developerPromptPaths,
+    role,
+    context?.history,
+    availableToolNames,
+  );
   const skillsPromptBlock = buildSkillsPromptBlock(metadata);
   const mailboxBaselineBlock = buildMailboxBaselineBlock(context?.mailboxSnapshot, metadata);
+  const userProfilePromptBlock = buildUserProfilePromptBlock(metadata);
+  const memoryRoutingPromptBlock = buildMemoryRetrievalPromptBlock(metadata);
   const flowPromptBlock = buildFlowPromptBlock(metadata);
 
   if (isSystemRole) {
     options.system_prompt = appendPromptSection(options.system_prompt, skillsPromptBlock);
     options.system_prompt = appendPromptSection(options.system_prompt, mailboxBaselineBlock);
+    options.system_prompt = appendPromptSection(options.system_prompt, userProfilePromptBlock);
+    options.system_prompt = appendPromptSection(options.system_prompt, memoryRoutingPromptBlock);
     options.system_prompt = appendPromptSection(options.system_prompt, flowPromptBlock);
   } else {
     developerInstructions = appendPromptSection(developerInstructions, skillsPromptBlock);
     developerInstructions = appendPromptSection(developerInstructions, mailboxBaselineBlock);
+    developerInstructions = appendPromptSection(developerInstructions, userProfilePromptBlock);
+    developerInstructions = appendPromptSection(developerInstructions, memoryRoutingPromptBlock);
     developerInstructions = appendPromptSection(developerInstructions, flowPromptBlock);
   }
 
@@ -2207,6 +2435,65 @@ function buildMailboxBaselineBlock(
   return lines.join('\n');
 }
 
+function buildUserProfilePromptBlock(metadata: Record<string, unknown> | undefined): string | undefined {
+  const enabled = parseOptionalBoolean(metadata?.userProfilePromptEnabled)
+    ?? parseOptionalBoolean(metadata?.userProfileInjectionEnabled)
+    ?? true;
+  if (!enabled) return undefined;
+
+  const explicitPath = parseOptionalString(metadata?.userProfileFilePath)
+    ?? parseOptionalString(metadata?.user_profile_file_path)
+    ?? parseOptionalString(metadata?.userProfilePath)
+    ?? parseOptionalString(metadata?.user_profile_path);
+  const profilePath = explicitPath && explicitPath.trim().length > 0
+    ? explicitPath.trim()
+    : join(FINGER_PATHS.home, 'USER.md');
+
+  let profileContent = '';
+  if (existsSync(profilePath)) {
+    try {
+      profileContent = readFileSync(profilePath, 'utf-8').trim();
+    } catch {
+      profileContent = '';
+    }
+  }
+
+  const lines = [
+    '# User Profile Runtime (USER.md)',
+    `USER.path=${profilePath}`,
+    '- USER.md is injected as runtime profile context for this turn; follow it strictly.',
+    '- If user gives repeated corrections / strong negative feedback, update USER.md immediately (append-only, evidence-based).',
+  ];
+
+  if (profileContent.length === 0) {
+    lines.push('USER.state=empty');
+    return lines.join('\n');
+  }
+
+  const rendered = profileContent.length > USER_PROFILE_PROMPT_MAX_CHARS
+    ? `${profileContent.slice(0, USER_PROFILE_PROMPT_MAX_CHARS)}\n...[TRUNCATED_AT_8000_CHARS]`
+    : profileContent;
+  lines.push('USER.content.begin');
+  lines.push(rendered);
+  lines.push('USER.content.end');
+  return lines.join('\n');
+}
+
+function buildMemoryRetrievalPromptBlock(metadata: Record<string, unknown> | undefined): string | undefined {
+  const enabled = parseOptionalBoolean(metadata?.memoryRoutingPromptEnabled)
+    ?? parseOptionalBoolean(metadata?.memoryRoutingInjectionEnabled)
+    ?? true;
+  if (!enabled) return undefined;
+  return [
+    '# Memory Retrieval Routing (mandatory)',
+    '- Long-term durable facts/constraints: read MEMORY.md.',
+    '- Timeline/history/tool traces: use context_ledger.memory (search -> query detail=true with slot_start/slot_end).',
+    '- Need full details from a compact digest/task block: use context_ledger.expand_task.',
+    '- Need broader relevant history in prompt: use context_builder.rebuild (P4 dynamic_history only).',
+    '- Do not treat visible prompt history as complete truth when historical evidence is required.',
+  ].join('\n');
+}
+
 function buildFlowPromptBlock(metadata: Record<string, unknown> | undefined): string | undefined {
   const enabled = parseOptionalBoolean(metadata?.flowPromptEnabled)
     ?? parseOptionalBoolean(metadata?.flowInjectionEnabled)
@@ -2268,8 +2555,11 @@ function buildFlowPromptBlock(metadata: Record<string, unknown> | undefined): st
     '- Load order is fixed: Global first, Local second.',
     '- Conflict rule: Local FLOW has higher priority than Global FLOW.',
     '- Each FLOW file has strict 10,000-char truncation in prompt (hard cap).',
-    '- Complex tasks: first propose a closure flow hypothesis and ask user confirmation once before execution.',
-    '- After confirmation: write/update FLOW.md, then continue by flow state-machine progression without repeatedly asking the same confirmation.',
+    '- Mode split is mandatory: Development mode vs Debug mode.',
+    '- Development mode: propose a comprehensive implementation plan, ask user confirmation once, then write/update FLOW.md and execute by flow state-machine progression.',
+    '- Debug mode: reproduce/validate issue -> root-cause analysis -> compare options -> choose the best root fix -> implement directly (no redundant confirmation before fix).',
+    '- In debug mode, only ask before fix when action is dangerous, irreversible, permission-gated, or materially ambiguous.',
+    '- Root-fix quality bar: prefer rigorous root-cause solutions; avoid workaround-only/patch-around fixes unless explicitly requested.',
     '- Simple tasks (e.g. quick search/read/single-step lookup) can execute directly without creating a flow.',
     '- If new sub-flow appears during current task, update FLOW.md to reflect latest plan/state.',
     '- Cleanup rule: only after user explicitly confirms task completion, reset FLOW.md content to avoid contaminating next task.',
@@ -2344,6 +2634,252 @@ function resolveResponsesOptions(
   };
 }
 
+function estimateTextTokens(text: string | undefined): number {
+  if (typeof text !== 'string') return 0;
+  const normalized = text.trim();
+  if (!normalized) return 0;
+  return estimateTokensWithTiktoken(normalized);
+}
+
+function estimateHistoryItemsTokens(items: Array<Record<string, unknown>> | undefined): number {
+  if (!Array.isArray(items) || items.length === 0) return 0;
+  let total = 0;
+  for (const item of items) {
+    if (!isRecord(item)) continue;
+    const role = typeof item.role === 'string' ? item.role : '';
+    const content = Array.isArray(item.content) ? item.content : [];
+    const contentText = content
+      .filter((entry): entry is Record<string, unknown> => isRecord(entry))
+      .map((entry) => {
+        if (typeof entry.text === 'string') return entry.text;
+        if (typeof entry.image_url === 'string') return `[image] ${entry.image_url}`;
+        if (typeof entry.path === 'string') return `[local_image] ${entry.path}`;
+        return '';
+      })
+      .filter((entry) => entry.length > 0)
+      .join('\n');
+    total += estimateTokensWithTiktoken(`${role}\n${contentText}`);
+  }
+  return total;
+}
+
+function estimateTaskContextSlotTokensFromMetadata(metadata: Record<string, unknown> | undefined): number {
+  if (!metadata || !Array.isArray(metadata.contextSlots)) return 0;
+  let total = 0;
+  for (const item of metadata.contextSlots) {
+    if (!isRecord(item)) continue;
+    const id = typeof item.id === 'string' ? item.id.trim() : '';
+    if (!id.startsWith('task.')) continue;
+    const content = typeof item.content === 'string' ? item.content : '';
+    total += estimateTextTokens(content);
+  }
+  return total;
+}
+
+function estimateTaskContextSlotTokensFromRendered(rendered: string | undefined): number {
+  if (typeof rendered !== 'string' || rendered.trim().length === 0) return 0;
+  const pattern = /<slot id="(task\.[^"]+)">\n([\s\S]*?)\n<\/slot>/g;
+  let match: RegExpExecArray | null = pattern.exec(rendered);
+  let total = 0;
+  while (match) {
+    total += estimateTextTokens(match[2]);
+    match = pattern.exec(rendered);
+  }
+  return total;
+}
+
+function estimateStructuredTokens(value: unknown): number {
+  if (value === undefined || value === null) return 0;
+  try {
+    return estimateTokensWithTiktoken(JSON.stringify(value));
+  } catch {
+    return estimateTextTokens(String(value));
+  }
+}
+
+function estimateInputItemsBreakdown(
+  inputItems: KernelInputItem[] | undefined,
+  fallbackUserText?: string,
+): { inputTextTokens: number; inputMediaTokens: number; inputMediaCount: number; inputTotalTokens: number } {
+  if (!Array.isArray(inputItems) || inputItems.length === 0) {
+    const fallback = estimateTextTokens(fallbackUserText);
+    return { inputTextTokens: fallback, inputMediaTokens: 0, inputMediaCount: 0, inputTotalTokens: fallback };
+  }
+
+  let inputTextTokens = 0;
+  let inputMediaTokens = 0;
+  let inputMediaCount = 0;
+  for (const item of inputItems) {
+    if (!item || typeof item !== 'object') continue;
+    if (item.type === 'text') {
+      inputTextTokens += estimateTextTokens(item.text);
+      continue;
+    }
+    if (item.type === 'image') {
+      inputMediaCount += 1;
+      continue;
+    }
+    if (item.type === 'local_image') {
+      inputMediaCount += 1;
+    }
+  }
+
+  // Media attachments are not counted into model context token budget in our policy.
+  inputMediaTokens = 0;
+  const inputTotalTokens = inputTextTokens + inputMediaTokens;
+  return { inputTextTokens, inputMediaTokens, inputMediaCount, inputTotalTokens };
+}
+
+function parseOptionalNonNegativeNumber(value: unknown): number | undefined {
+  if (typeof value === 'number' && Number.isFinite(value) && value >= 0) {
+    return value;
+  }
+  if (typeof value === 'string') {
+    const parsed = Number(value);
+    if (Number.isFinite(parsed) && parsed >= 0) return parsed;
+  }
+  return undefined;
+}
+
+function resolveContextBreakdownSnapshot(params: {
+  options?: KernelUserTurnOptions;
+  metadata?: Record<string, unknown>;
+  mailboxSnapshot?: MailboxSnapshot;
+  inputItems?: KernelInputItem[];
+  userText?: string;
+}): ContextBreakdownSnapshot | undefined {
+  const metadata = params.metadata;
+  const options = params.options;
+  const historyItems = Array.isArray(options?.history_items) ? options?.history_items : [];
+  const historyTotalTokens = estimateHistoryItemsTokens(historyItems);
+  const metadataHistoryContextTokens =
+    parseOptionalNonNegativeNumber(metadata?.historyContextTokens)
+    ?? parseOptionalNonNegativeNumber(metadata?.history_context_tokens);
+  const metadataHistoryCurrentTokens =
+    parseOptionalNonNegativeNumber(metadata?.historyCurrentTokens)
+    ?? parseOptionalNonNegativeNumber(metadata?.history_current_tokens);
+  const metadataHistoryContextMessages =
+    parseOptionalNonNegativeNumber(metadata?.historyContextMessages)
+    ?? parseOptionalNonNegativeNumber(metadata?.history_context_messages);
+  const metadataHistoryCurrentMessages =
+    parseOptionalNonNegativeNumber(metadata?.historyCurrentMessages)
+    ?? parseOptionalNonNegativeNumber(metadata?.history_current_messages);
+  const historyContextTokens = metadataHistoryContextTokens !== undefined
+    ? Math.max(0, Math.floor(metadataHistoryContextTokens))
+    : undefined;
+  const historyCurrentTokens = metadataHistoryCurrentTokens !== undefined
+    ? Math.max(0, Math.floor(metadataHistoryCurrentTokens))
+    : historyContextTokens !== undefined
+      ? Math.max(0, historyTotalTokens - historyContextTokens)
+      : historyTotalTokens;
+  const skillsBlock = buildSkillsPromptBlock(metadata);
+  const mailboxBaselineBlock = buildMailboxBaselineBlock(params.mailboxSnapshot, metadata);
+  const unreadEntries = params.mailboxSnapshot && hasNewUnreadSinceLastNotified(params.mailboxSnapshot)
+    ? getNewUnreadEntries(params.mailboxSnapshot)
+    : [];
+  const mailboxUnreadBlock = unreadEntries.length > 0
+    ? [
+        '# Mailbox',
+        `pending=${unreadEntries.length}`,
+        ...unreadEntries.map((entry) => `- ${entry.shortDescription}`),
+      ].join('\n')
+    : undefined;
+  const flowBlock = buildFlowPromptBlock(metadata);
+  const contextSlotsRendered = parseOptionalString(metadata?.contextSlotsRendered)
+    ?? parseOptionalString(metadata?.context_slots_rendered);
+
+  const systemPromptTokens = estimateTextTokens(options?.system_prompt);
+  const developerPromptTokens = estimateTextTokens(options?.developer_instructions);
+  const userInstructionsTokens = estimateTextTokens(options?.user_instructions);
+  const environmentContextTokens = estimateTextTokens(options?.environment_context);
+  const turnContextTokens = estimateStructuredTokens(options?.turn_context);
+  const skillsTokens = estimateTextTokens(skillsBlock);
+  const mailboxTokens = estimateTextTokens(mailboxBaselineBlock) + estimateTextTokens(mailboxUnreadBlock);
+  const flowTokens = estimateTextTokens(flowBlock);
+  const contextSlotsTokens = estimateTextTokens(contextSlotsRendered);
+  const projectTokensFromMetadata = estimateTaskContextSlotTokensFromMetadata(metadata);
+  const projectTokensFromRendered = estimateTaskContextSlotTokensFromRendered(contextSlotsRendered);
+  const projectTokens = Math.max(projectTokensFromMetadata, projectTokensFromRendered);
+  const { inputTextTokens, inputMediaTokens, inputMediaCount, inputTotalTokens } = estimateInputItemsBreakdown(
+    params.inputItems,
+    params.userText,
+  );
+  const toolsSchemaTokens = estimateStructuredTokens(options?.tools);
+  const toolExecutionTokens = estimateStructuredTokens(options?.tool_execution);
+  const contextLedgerConfigTokens = estimateStructuredTokens(options?.context_ledger);
+  const responsesConfigTokens = estimateStructuredTokens(options?.responses);
+  const totalKnownTokens = historyTotalTokens
+    + systemPromptTokens
+    + developerPromptTokens
+    + userInstructionsTokens
+    + environmentContextTokens
+    + turnContextTokens
+    + skillsTokens
+    + mailboxTokens
+    + flowTokens
+    + contextSlotsTokens
+    + inputTotalTokens
+    + toolsSchemaTokens
+    + toolExecutionTokens
+    + contextLedgerConfigTokens
+    + responsesConfigTokens;
+
+  if (
+    historyTotalTokens <= 0
+    && (historyContextTokens === undefined || historyContextTokens <= 0)
+    && (historyCurrentTokens === undefined || historyCurrentTokens <= 0)
+    && systemPromptTokens <= 0
+    && developerPromptTokens <= 0
+    && userInstructionsTokens <= 0
+    && environmentContextTokens <= 0
+    && turnContextTokens <= 0
+    && skillsTokens <= 0
+    && mailboxTokens <= 0
+    && flowTokens <= 0
+    && projectTokens <= 0
+    && contextSlotsTokens <= 0
+    && inputTotalTokens <= 0
+    && toolsSchemaTokens <= 0
+    && toolExecutionTokens <= 0
+    && contextLedgerConfigTokens <= 0
+    && responsesConfigTokens <= 0
+  ) {
+    return undefined;
+  }
+
+  return {
+    ...(historyContextTokens !== undefined ? { historyContextTokens } : {}),
+    ...(historyCurrentTokens !== undefined ? { historyCurrentTokens } : {}),
+    ...(historyTotalTokens >= 0 ? { historyTotalTokens } : {}),
+    ...(metadataHistoryContextMessages !== undefined
+      ? { historyContextMessages: Math.max(0, Math.floor(metadataHistoryContextMessages)) }
+      : {}),
+    ...(metadataHistoryCurrentMessages !== undefined
+      ? { historyCurrentMessages: Math.max(0, Math.floor(metadataHistoryCurrentMessages)) }
+      : {}),
+    ...(systemPromptTokens >= 0 ? { systemPromptTokens } : {}),
+    ...(developerPromptTokens >= 0 ? { developerPromptTokens } : {}),
+    ...(userInstructionsTokens >= 0 ? { userInstructionsTokens } : {}),
+    ...(environmentContextTokens >= 0 ? { environmentContextTokens } : {}),
+    ...(turnContextTokens >= 0 ? { turnContextTokens } : {}),
+    ...(skillsTokens >= 0 ? { skillsTokens } : {}),
+    ...(mailboxTokens >= 0 ? { mailboxTokens } : {}),
+    ...(projectTokens >= 0 ? { projectTokens } : {}),
+    ...(flowTokens >= 0 ? { flowTokens } : {}),
+    ...(contextSlotsTokens >= 0 ? { contextSlotsTokens } : {}),
+    ...(inputTextTokens >= 0 ? { inputTextTokens } : {}),
+    ...(inputMediaTokens >= 0 ? { inputMediaTokens } : {}),
+    ...(inputMediaCount >= 0 ? { inputMediaCount } : {}),
+    ...(inputTotalTokens >= 0 ? { inputTotalTokens } : {}),
+    ...(toolsSchemaTokens >= 0 ? { toolsSchemaTokens } : {}),
+    ...(toolExecutionTokens >= 0 ? { toolExecutionTokens } : {}),
+    ...(contextLedgerConfigTokens >= 0 ? { contextLedgerConfigTokens } : {}),
+    ...(responsesConfigTokens >= 0 ? { responsesConfigTokens } : {}),
+    ...(totalKnownTokens > 0 ? { totalKnownTokens } : {}),
+    source: 'prompt_options+tiktoken',
+  };
+}
+
 function resolveHistoryItems(
   history: Array<{ role: 'user' | 'assistant' | 'system'; content: string }> | undefined,
   metadata: Record<string, unknown> | undefined,
@@ -2389,6 +2925,7 @@ function shouldPreferContextBuilderHistory(metadata: Record<string, unknown> | u
   if (!metadata) return false;
   const source = parseOptionalString(metadata.contextHistorySource)?.trim().toLowerCase() ?? '';
   if (source === 'raw_session' || source === 'raw_session_fallback') return true;
+  if (source === 'session_view_passthrough' || source === 'session_view_fallback') return true;
   if (source.startsWith('context_builder')) return true;
   if (parseOptionalBoolean(metadata.contextBuilderIndexed) === true) return true;
   if (parseOptionalBoolean(metadata.contextBuilderRebuilt) === true) return true;
@@ -2411,6 +2948,7 @@ function resolveDeveloperInstructions(
   developerPromptPaths?: Partial<Record<ChatCodexDeveloperRole, string>>,
   resolvedRole?: ChatCodexDeveloperRole,
   history?: Array<{ role: 'user' | 'assistant' | 'system'; content: string }>,
+  availableToolNames?: string[],
 ): string | undefined {
   const explicit = parseOptionalString(metadata?.developerInstructions)
     ?? parseOptionalString(metadata?.developer_instructions);
@@ -2422,6 +2960,11 @@ function resolveDeveloperInstructions(
   const rolePrompt = resolveDeveloperPromptTemplate(role, developerPromptPaths?.[role]);
   const ledgerBlock = buildLedgerDeveloperInstructions(metadata, role);
   const continuityBlock = buildContinuityDeveloperInstructions(history, metadata);
+  const promptOptimizationBlock = buildPromptOptimizationDeveloperInstructions(
+    metadata,
+    role,
+    availableToolNames,
+  );
   const contextSlotsRendered = parseOptionalString(metadata?.contextSlotsRendered)
     ?? parseOptionalString(metadata?.context_slots_rendered);
 
@@ -2429,7 +2972,15 @@ function resolveDeveloperInstructions(
   if (collaborationMode) hints.push(`collaboration_mode=${collaborationMode}`);
   if (modelSwitchHint) hints.push(`model_switch_hint=${modelSwitchHint}`);
 
-  const sections = [rolePrompt, ledgerBlock, continuityBlock, contextSlotsRendered, hints.join('\n'), explicit]
+  const sections = [
+    rolePrompt,
+    promptOptimizationBlock,
+    ledgerBlock,
+    continuityBlock,
+    contextSlotsRendered,
+    hints.join('\n'),
+    explicit,
+  ]
     .map((item) => item?.trim() ?? '')
     .filter((item) => item.length > 0);
   if (sections.length === 0) return undefined;
@@ -2439,6 +2990,132 @@ function resolveDeveloperInstructions(
     if (!deduped.includes(section)) deduped.push(section);
   }
   return deduped.join('\n\n');
+}
+
+function buildPromptOptimizationDeveloperInstructions(
+  metadata: Record<string, unknown> | undefined,
+  role: ChatCodexDeveloperRole,
+  availableToolNames?: string[],
+): string | undefined {
+  const enabled = parseOptionalBoolean(metadata?.promptOptimizationEnabled)
+    ?? parseOptionalBoolean(metadata?.prompt_optimization_enabled)
+    ?? true;
+  if (!enabled) return undefined;
+
+  const outputStyle = parseOutputStyle(metadata);
+  const agentType = mapDeveloperRoleToPromptAgentType(role);
+  const agentDefinition = getAgentDefinition(agentType);
+
+  const source = parseOptionalString(metadata?.source)?.toLowerCase() ?? '';
+  const mode = parseOptionalString(metadata?.kernelMode)
+    ?? parseOptionalString(metadata?.mode)
+    ?? 'main';
+  const sessionType = source.includes('heartbeat') ? 'heartbeat' : mode;
+
+  const featureFlags = {
+    prompt_agent_definition: parseOptionalBoolean(metadata?.promptOptAgentDefinitionEnabled)
+      ?? parseOptionalBoolean(metadata?.prompt_opt_agent_definition_enabled)
+      ?? true,
+    prompt_frc: parseOptionalBoolean(metadata?.promptOptFunctionResultClearingEnabled)
+      ?? parseOptionalBoolean(metadata?.prompt_opt_function_result_clearing_enabled)
+      ?? true,
+    prompt_autonomous: parseOptionalBoolean(metadata?.promptOptAutonomousEnabled)
+      ?? parseOptionalBoolean(metadata?.prompt_opt_autonomous_enabled)
+      ?? true,
+    prompt_output_style: parseOptionalBoolean(metadata?.promptOptOutputStyleEnabled)
+      ?? parseOptionalBoolean(metadata?.prompt_opt_output_style_enabled)
+      ?? true,
+  };
+
+  const guardedSections: GuardedSection[] = [];
+  if (agentDefinition) {
+    guardedSections.push({
+      section: {
+        name: `agent-definition-${agentDefinition.agentType}`,
+        cacheBreak: false,
+        compute: () => {
+          const lines = [
+            '# Prompt Optimization · Agent Contract',
+            `agent_type=${agentDefinition.agentType}`,
+            `when_to_use=${agentDefinition.whenToUse}`,
+            agentDefinition.getSystemPrompt(),
+          ];
+          return lines.join('\n');
+        },
+      },
+      requiredFeatureFlags: ['prompt_agent_definition'],
+    });
+  }
+
+  guardedSections.push({
+    section: FUNCTION_RESULT_CLEARING_SECTION,
+    requiredFeatureFlags: ['prompt_frc'],
+  });
+
+  guardedSections.push({
+    section: AUTONOMOUS_WORK_SECTION,
+    requiredFeatureFlags: ['prompt_autonomous'],
+    applicableSessionTypes: ['heartbeat'],
+  });
+
+  guardedSections.push({
+    section: getOutputStyleSection(outputStyle),
+    requiredFeatureFlags: ['prompt_output_style'],
+  });
+
+  const filtered = filterSections(guardedSections, {
+    availableTools: new Set(availableToolNames ?? []),
+    featureFlags,
+    sessionType,
+    agentType,
+    ...(outputStyle ? { outputStyle } : {}),
+  });
+
+  const sections = filtered
+    .map((section) => {
+      const computed = section.compute();
+      return typeof computed === 'string' ? computed.trim() : '';
+    })
+    .filter((item) => item.length > 0);
+  if (sections.length === 0) return undefined;
+
+  return [
+    '# Prompt Optimization Runtime',
+    `enabled=true`,
+    `role=${role}`,
+    `agent_type=${agentType}`,
+    `session_type=${sessionType}`,
+    ...sections,
+  ].join('\n\n');
+}
+
+function parseOutputStyle(metadata: Record<string, unknown> | undefined): OutputStyle | undefined {
+  const raw = parseOptionalString(metadata?.outputStyle)
+    ?? parseOptionalString(metadata?.output_style)
+    ?? parseOptionalString(metadata?.responseStyle)
+    ?? parseOptionalString(metadata?.response_style);
+  if (!raw) return undefined;
+  const normalized = raw.trim().toLowerCase();
+  if (normalized === 'concise' || normalized === 'detailed' || normalized === 'technical') {
+    return normalized;
+  }
+  return undefined;
+}
+
+function mapDeveloperRoleToPromptAgentType(role: ChatCodexDeveloperRole): string {
+  switch (role) {
+    case 'reviewer':
+      return 'reviewer';
+    case 'router':
+      return 'planner';
+    case 'searcher':
+      return 'explorer';
+    case 'executor':
+      return 'executor';
+    case 'orchestrator':
+    default:
+      return 'orchestrator';
+  }
 }
 
 function buildContinuityDeveloperInstructions(
@@ -2974,11 +3651,11 @@ function defaultToolSpecification(name: string): ChatCodexToolSpecification {
     return {
       name,
       description:
-        'Canonical ledger history tool. Visible prompt history may be partial. Use action="search" to find relevant slot ranges, task-block overflow candidates, or compact hits, then action="query" with detail=true plus slot_start/slot_end to inspect raw ledger entries. index/compact/delete_slots are maintenance actions.',
+        'Canonical history truth tool (ledger is full raw timeline). Always follow this retrieval order: (1) action="search" to locate relevant task blocks/slots, (2) action="query" with detail=true + slot_start/slot_end to read exact raw evidence, (3) if search hit is compact digest, call context_ledger.expand_task to restore full task records. Do not assume prompt history is complete.',
       inputSchema: {
         type: 'object',
         properties: {
-          action: { type: 'string', enum: ['query', 'search', 'index', 'compact', 'delete_slots'], description: 'Use search/query for historical retrieval; other actions are maintenance only.' },
+          action: { type: 'string', enum: ['query', 'search', 'index', 'compact', 'delete_slots', 'digest_backfill', 'digest_incremental'], description: 'Use search/query for historical retrieval; digest_backfill can one-shot synthesize full task digests; digest_incremental appends digest only for newly added ledger range since last compaction; other actions are maintenance only.' },
           session_id: { type: 'string', description: 'Optional session scope override. Usually auto-filled by runtime.' },
           agent_id: { type: 'string', description: 'Ledger owner agent id. Requires permission when reading other agents.' },
           mode: { type: 'string', description: 'Conversation mode / thread name, such as main or review.' },
@@ -3004,7 +3681,7 @@ function defaultToolSpecification(name: string): ChatCodexToolSpecification {
     return {
       name,
       description:
-        'Rebuild dynamic history context from ledger. Default history budget is 20k; use this for topic switches or coding/debugging turns that need a cleaner working_set/historical_memory split. Prefer rebuild_budget=50000 first, and only escalate to 110000 if needed.',
+        'Rebuild dynamic history from ledger digests into working_set + historical_memory. historical_memory should be digest-first; expand to full records only when needed via context_ledger.expand_task. Use when topic changed, evidence is missing, or history context is empty. Default budget is 20k (prefer 50k for complex coding/debugging, 110k only if still insufficient).',
       inputSchema: {
         type: 'object',
         properties: {
@@ -3027,7 +3704,7 @@ function defaultToolSpecification(name: string): ChatCodexToolSpecification {
     return {
       name,
       description:
-        'Expand one compact task digest into full ledger records. Provide task_id or slot_start/slot_end; tool resolves slot range and returns detailed original entries.',
+        'Expand one historical digest/task block into full raw ledger entries and return slot-aligned details. Prefer task_id (stable id aligned with ledger), fallback to slot_start/slot_end. After expansion, use returned full entries as concrete historical_memory evidence for current reasoning.',
       inputSchema: {
         type: 'object',
         properties: {

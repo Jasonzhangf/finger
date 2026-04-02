@@ -261,6 +261,7 @@ const CODEX_BASE_PROMPT = [
   "## USER.md & SOUL.md",
   "- `~/.finger/USER.md` contains the user profile: name preference, coding habits, project priorities, and behavioral constraints.",
   "- `SOUL.md` (per agent or per project) defines core mission, values, and behavioral principles.",
+  "- USER.md is injected into runtime prompt context each turn (profile block); treat it as active contract, not optional hint.",
   "- You MUST read and follow USER.md preferences (e.g., how to address the user, coding style).",
   "- SOUL.md provides identity anchoring \u2014 reference it when behavior is ambiguous.",
   "",

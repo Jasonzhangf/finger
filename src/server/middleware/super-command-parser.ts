@@ -6,6 +6,8 @@
  * - <##@system##>message -> switch to system agent
  * - <##@system:pwd=xxx##>message -> switch to system agent with password
  * - <##@system:restart##> -> trigger daemon restart (MessageHub handled)
+ * - <##@system:progress:mode@dev##> -> set progress context mode to dev
+ * - <##@system:progress:mode@release##> -> set progress context mode to release
  * - <##@agent##>message -> switch back to business agent
  * - <##@agent:list##> -> list monitored project aliases
  * - <##@agent:list@/path##> -> list sessions in specified project
@@ -161,6 +163,15 @@ export function parseSuperCommand(content: string): ParsedMessage {
         type: 'system' as const,
         password: undefined,
         content: 'restart',
+      };
+    } else if (action === 'progress:mode') {
+      const mode = typeof param === 'string' ? param.trim().toLowerCase() : '';
+      block = {
+        type: 'system' as const,
+        password: undefined,
+        content: mode === 'dev' || mode === 'release'
+          ? `progress_mode:${mode}`
+          : 'progress_mode:invalid',
       };
     } else if (action === 'provider:list') {
       block = {

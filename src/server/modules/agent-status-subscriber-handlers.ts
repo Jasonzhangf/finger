@@ -35,8 +35,26 @@ import {
   buildSessionRelationLine,
   resolveSessionRelationInfo,
 } from './agent-status-subscriber-session-utils.js';
+import {
+  mergeProjectTaskState,
+  parseProjectTaskState,
+} from '../../common/project-task-state.js';
+import {
+  mergeSystemTaskState,
+  parseSystemTaskState,
+} from '../../common/system-task-state.js';
+import { isNoActionableWatchdogText, isSystemRecoverySourceAgent } from './agent-status-subscriber-noop.js';
 
 const log = logger.module('AgentStatusSubscriberHandlers');
+const DISPATCH_QUEUED_SYSTEM_PUSH_COOLDOWN_MS = 10 * 60 * 1000;
+const lastQueuedSystemDispatchPushByKey = new Map<string, number>();
+const SYSTEM_AGENT_ID = 'finger-system-agent';
+
+type PlanStepStatus = 'pending' | 'in_progress' | 'completed';
+interface PlanStep {
+  step: string;
+  status: PlanStepStatus;
+}
 
 /**
  * 处理上下文，包含事件处理所需的依赖
@@ -389,9 +407,85 @@ export async function handleDispatch(
     : dispatchStatus === 'completed'
       ? 'completed'
       : 'running';
+  const sourceAgentId = asTrimmedString(payload.sourceAgentId);
+  const isProjectRecoverySource = sourceAgentId === 'system-project-recovery';
+  const isHeartbeatSource = sourceAgentId === 'system-heartbeat';
+  const isSystemRecoverySource = isSystemRecoverySourceAgent(sourceAgentId);
+  if (dispatchStatus === 'queued' && isProjectRecoverySource && !mailboxFlow) {
+    // Startup recovery often emits many queued dispatch events across monitored projects.
+    // Suppress these low-signal queue notifications to avoid channel spam.
+    return;
+  }
+  const isSystemLikeSource = sourceAgentId === 'system-heartbeat'
+    || sourceAgentId === 'finger-system-agent'
+    || sourceAgentId.includes('system-agent');
+  const isProjectTarget = targetAgentId.includes('project-agent');
+  if (dispatchStatus === 'queued' && isSystemLikeSource && isProjectTarget && !mailboxFlow) {
+    const suppressKey = `${sessionId}::${targetAgentId}::queued_system_dispatch`;
+    const now = Date.now();
+    const last = lastQueuedSystemDispatchPushByKey.get(suppressKey) ?? 0;
+    if (now - last < DISPATCH_QUEUED_SYSTEM_PUSH_COOLDOWN_MS) {
+      return;
+    }
+    lastQueuedSystemDispatchPushByKey.set(suppressKey, now);
+  }
+  const heartbeatNoopText = [
+    reasonSummary,
+    resultSummary,
+    nextAction,
+  ]
+    .filter((item): item is string => typeof item === 'string' && item.trim().length > 0)
+    .join(' ');
+  const isHeartbeatNoop = isHeartbeatSource && isNoActionableWatchdogText(heartbeatNoopText);
+  const isRecoveryNoop = isSystemRecoverySource && isNoActionableWatchdogText(heartbeatNoopText);
+  if (isHeartbeatNoop) {
+    const sessionManager = ctx.deps?.sessionManager as {
+      getSession?: (id: string) => { context?: Record<string, unknown> } | undefined;
+      updateContext?: (id: string, patch: Record<string, unknown>) => void;
+    } | undefined;
+    if (sessionManager && typeof sessionManager.getSession === 'function' && typeof sessionManager.updateContext === 'function') {
+      const session = sessionManager.getSession(sessionId);
+      const currentProjectTaskState = parseProjectTaskState(session?.context?.projectTaskState);
+      if (currentProjectTaskState && currentProjectTaskState.targetAgentId === targetAgentId && currentProjectTaskState.active) {
+        const closedState = mergeProjectTaskState(currentProjectTaskState, {
+          active: false,
+          status: 'closed',
+          note: 'watchdog_no_actionable_auto_closed',
+          summary: reasonSummary || 'watchdog_no_actionable',
+        });
+        sessionManager.updateContext(sessionId, {
+          projectTaskState: closedState,
+        });
+      }
+    }
+    log.debug('[AgentStatusSubscriber] Suppress heartbeat no-op dispatch update', {
+      sessionId,
+      targetAgentId,
+      dispatchStatus,
+      resultStatus,
+      reasonSummary,
+    });
+    return;
+  }
+  if (isRecoveryNoop) {
+    log.debug('[AgentStatusSubscriber] Suppress recovery no-op dispatch update', {
+      sessionId,
+      targetAgentId,
+      dispatchStatus,
+      resultStatus,
+      reasonSummary,
+      sourceAgentId,
+    });
+    return;
+  }
+  const heartbeatTimeLabel = isHeartbeatSource
+    ? `心跳时间: ${new Date(event.timestamp).toLocaleTimeString('zh-CN', { hour12: false })}`
+    : '';
+
   const summary = [
     `派发 ${targetAgentId}`,
     `状态: ${dispatchStatus}`,
+    heartbeatTimeLabel,
     `来源: ${sourceAgentSummary}`,
     `原因: ${reasonSummary}`,
     typeof queuePosition === 'number' ? `队列 #${queuePosition}` : '',

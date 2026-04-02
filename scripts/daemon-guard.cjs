@@ -22,6 +22,11 @@ const FINGER_HOME = resolveFingerHome();
 const RUNTIME_DIR = path.join(FINGER_HOME, 'runtime');
 const PID_FILE = path.join(RUNTIME_DIR, 'server.pid');
 const GUARD_PID_FILE = path.join(RUNTIME_DIR, 'guard.pid');
+const LEGACY_PID_FILES = [
+    path.join(RUNTIME_DIR, 'daemon.pid'),
+    path.join(FINGER_HOME, 'daemon.pid'),
+    path.join(FINGER_HOME, 'finger-daemon.pid'),
+];
 const HEARTBEAT_FILE = path.join(RUNTIME_DIR, 'daemon.heartbeat');
 const HEARTBEAT_PATTERN = /daemon\.heartbeat/;
 const USER_LOG_DIR = path.join(FINGER_HOME, 'logs');
@@ -46,6 +51,7 @@ class DaemonGuard {
     }
 
     async start() {
+        this.cleanupLegacyPidFiles();
         // Kill any leftover daemon tree from a previous guard that died unexpectedly
         this.cleanupOrphanTree();
         await this.spawnMainDaemon();
@@ -473,12 +479,21 @@ class DaemonGuard {
             if (fs.existsSync(GUARD_PID_FILE)) {
                 fs.unlinkSync(GUARD_PID_FILE);
             }
+            this.cleanupLegacyPidFiles();
             if (fs.existsSync(HEARTBEAT_FILE)) {
                 fs.unlinkSync(HEARTBEAT_FILE);
             }
             console.log('[DaemonGuard] Guard files cleaned up');
         } catch (e) {
             console.error('[DaemonGuard] Error cleaning up guard files:', e);
+        }
+    }
+
+    cleanupLegacyPidFiles() {
+        for (const file of LEGACY_PID_FILES) {
+            try {
+                if (fs.existsSync(file)) fs.unlinkSync(file);
+            } catch (_) {}
         }
     }
 

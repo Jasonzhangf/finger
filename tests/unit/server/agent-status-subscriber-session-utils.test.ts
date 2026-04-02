@@ -114,5 +114,56 @@ describe('agent-status-subscriber-session-utils finalizeChannelTurnDelivery', ()
     expect(content).toContain('ship it');
     expect(content).not.toContain('本轮推理已结束');
   });
-});
 
+  it('does not auto-close fresh active project task state on no-actionable watchdog text', async () => {
+    const state = createRouteState();
+    state.sessionEnvelopeMap.set('session-3', {
+      sessionId: 'session-3',
+      envelope: {
+        channel: 'qqbot',
+        envelopeId: 'env-3',
+        userId: 'u-3',
+      },
+      timestamp: Date.now(),
+    });
+    const updateContext = vi.fn(() => true);
+    await finalizeChannelTurnDelivery({
+      sessionId: 'session-3',
+      finalReply: 'No actionable work. stale watchdog phantom entries already complete.',
+      finishReason: 'stop',
+      agentId: 'finger-project-agent',
+      deps: {
+        sessionManager: {
+          getSession: () => ({
+            context: {
+              projectTaskState: {
+                active: true,
+                status: 'in_progress',
+                sourceAgentId: 'finger-system-agent',
+                targetAgentId: 'finger-project-agent',
+                updatedAt: new Date().toISOString(),
+                note: 'system_dispatched_project_task',
+              },
+            },
+          }),
+          updateContext,
+        },
+      } as any,
+      state,
+      messageHub: { routeToOutput: vi.fn(async () => undefined) } as any,
+      resolveEnvelopeMapping: () => ({
+        sessionId: 'session-3',
+        envelope: {
+          channel: 'qqbot',
+          envelopeId: 'env-3',
+          userId: 'u-3',
+        },
+        timestamp: Date.now(),
+      }),
+      resolveSourceType: () => 'clock',
+      resolvePushSettings: () => createPushSettings(),
+    });
+
+    expect(updateContext).not.toHaveBeenCalled();
+  });
+});

@@ -4,6 +4,7 @@ import {
   extractTargetFile,
   type SessionProgressData,
 } from './progress-monitor-utils.js';
+import type { ContextBreakdownSnapshot } from './progress-monitor-types.js';
 import {
   describeExecCommand,
   foldToolLines,
@@ -30,6 +31,133 @@ function parsePayload(raw: string): Record<string, unknown> {
 function truncateInline(text: string, max = 60): string {
   const trimmed = text.replace(/\s+/g, ' ').trim();
   return trimmed.length > max ? trimmed.slice(0, max - 1) + '\u2026' : trimmed;
+}
+
+function compactToken(value?: number): string | undefined {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) return undefined;
+  if (value >= 1000) {
+    const compact = (value / 1000).toFixed(value >= 100000 ? 0 : 1);
+    return `${compact.replace(/\.0$/, '')}k`;
+  }
+  return `${Math.floor(value)}`;
+}
+
+function shareLabel(tokens: number | undefined, maxInputTokens: number | undefined): string {
+  if (typeof tokens !== 'number' || !Number.isFinite(tokens) || tokens < 0) return '?';
+  if (typeof maxInputTokens === 'number' && Number.isFinite(maxInputTokens) && maxInputTokens > 0) {
+    const ratio = Math.max(0, (tokens / maxInputTokens) * 100);
+    const pct = ratio < 0.1 && tokens > 0 ? '<0.1%' : `${ratio.toFixed(1).replace(/\.0$/, '')}%`;
+    return `${compactToken(tokens)}(${pct})`;
+  }
+  return compactToken(tokens) ?? '?';
+}
+
+function buildContextBreakdownLines(
+  breakdown: ContextBreakdownSnapshot | undefined,
+  mode: 'release' | 'dev' | undefined,
+  maxInputTokens: number | undefined,
+  estimatedContextTokens: number | undefined,
+): string[] {
+  if (!breakdown) {
+    return ['🧩 构成统计: 等待模型回传模块占用'];
+  }
+  const lines: string[] = [];
+  const historyContext = shareLabel(breakdown?.historyContextTokens, maxInputTokens);
+  const historyCurrent = shareLabel(breakdown?.historyCurrentTokens, maxInputTokens);
+  const systemPrompt = shareLabel(breakdown?.systemPromptTokens, maxInputTokens);
+  const developerPrompt = shareLabel(breakdown?.developerPromptTokens, maxInputTokens);
+  const userInstructions = shareLabel(breakdown?.userInstructionsTokens, maxInputTokens);
+  const environmentContext = shareLabel(breakdown?.environmentContextTokens, maxInputTokens);
+  const turnContext = shareLabel(breakdown?.turnContextTokens, maxInputTokens);
+  const skills = shareLabel(breakdown?.skillsTokens, maxInputTokens);
+  const mailbox = shareLabel(breakdown?.mailboxTokens, maxInputTokens);
+  const project = shareLabel(breakdown?.projectTokens, maxInputTokens);
+  const flow = shareLabel(breakdown?.flowTokens, maxInputTokens);
+  const contextSlots = shareLabel(breakdown?.contextSlotsTokens, maxInputTokens);
+  const inputText = shareLabel(breakdown?.inputTextTokens, maxInputTokens);
+  const inputMedia = shareLabel(breakdown?.inputMediaTokens, maxInputTokens);
+  const inputMediaCount = typeof breakdown?.inputMediaCount === 'number' && Number.isFinite(breakdown.inputMediaCount)
+    ? Math.max(0, Math.floor(breakdown.inputMediaCount))
+    : undefined;
+  const inputMediaItems = inputMediaCount !== undefined ? `${inputMediaCount} item${inputMediaCount === 1 ? '' : 's'}` : '?';
+  const inputTotal = shareLabel(
+    typeof breakdown?.inputTotalTokens === 'number'
+      ? breakdown.inputTotalTokens
+      : (typeof breakdown?.inputTextTokens === 'number' || typeof breakdown?.inputMediaTokens === 'number')
+        ? (breakdown.inputTextTokens ?? 0) + (breakdown.inputMediaTokens ?? 0)
+        : undefined,
+    maxInputTokens,
+  );
+  const toolsSchema = shareLabel(breakdown?.toolsSchemaTokens, maxInputTokens);
+  const toolExecution = shareLabel(breakdown?.toolExecutionTokens, maxInputTokens);
+  const contextLedger = shareLabel(breakdown?.contextLedgerConfigTokens, maxInputTokens);
+  const responsesConfig = shareLabel(breakdown?.responsesConfigTokens, maxInputTokens);
+  const trackedTokensRaw = typeof breakdown?.totalKnownTokens === 'number' && Number.isFinite(breakdown.totalKnownTokens)
+    ? Math.max(0, Math.floor(breakdown.totalKnownTokens))
+    : undefined;
+  const trackedTotal = shareLabel(trackedTokensRaw, maxInputTokens);
+  const allUnknown = [
+    historyContext,
+    historyCurrent,
+    systemPrompt,
+    developerPrompt,
+    userInstructions,
+    environmentContext,
+    turnContext,
+    skills,
+    mailbox,
+    project,
+    flow,
+    contextSlots,
+    inputText,
+    inputMedia,
+    inputTotal,
+    inputMediaItems,
+    toolsSchema,
+    toolExecution,
+    contextLedger,
+    responsesConfig,
+    trackedTotal,
+  ]
+    .every((value) => value === '?');
+  if (allUnknown) {
+    return ['🧩 构成统计: 等待模型回传模块占用'];
+  }
+  if (mode !== 'dev') {
+    lines.push(
+      `🧩 构成: H(c=${historyContext},cur=${historyCurrent}) · P(sys=${systemPrompt},dev=${developerPrompt}) · C(sk=${skills},mb=${mailbox},prj=${project},flow=${flow},slot=${contextSlots})`,
+    );
+    lines.push(
+      `🧩 构成: I(text=${inputText},media=${inputMedia}) · T(schema=${toolsSchema},exec=${toolExecution},ledger=${contextLedger}) · Σ=${trackedTotal}`,
+    );
+    return lines;
+  }
+  lines.push(`🧩 构成: H(c=${historyContext},cur=${historyCurrent}) · P(sys=${systemPrompt},dev=${developerPrompt})`);
+  lines.push(`🧩 构成: C(sk=${skills},mb=${mailbox},prj=${project},flow=${flow},slot=${contextSlots})`);
+  lines.push(`🧩 构成: I(total=${inputTotal},text=${inputText},media=${inputMedia}/${inputMediaItems}) · T(schema=${toolsSchema},exec=${toolExecution},ledger=${contextLedger},resp=${responsesConfig})`);
+  lines.push(`🧩 构成: E(env=${environmentContext},turn=${turnContext},userInst=${userInstructions}) · Σ=${trackedTotal}`);
+  return lines;
+}
+
+function resolveEstimatedContextTokens(
+  contextUsagePercent: number | undefined,
+  estimatedTokensInContextWindow: number | undefined,
+  maxInputTokens: number | undefined,
+): number | undefined {
+  if (typeof estimatedTokensInContextWindow === 'number' && Number.isFinite(estimatedTokensInContextWindow) && estimatedTokensInContextWindow >= 0) {
+    return Math.floor(estimatedTokensInContextWindow);
+  }
+  if (
+    typeof contextUsagePercent === 'number'
+    && Number.isFinite(contextUsagePercent)
+    && contextUsagePercent >= 0
+    && typeof maxInputTokens === 'number'
+    && Number.isFinite(maxInputTokens)
+    && maxInputTokens > 0
+  ) {
+    return Math.max(0, Math.floor((contextUsagePercent / 100) * maxInputTokens));
+  }
+  return undefined;
 }
 
 function readExecCommand(payload: Record<string, unknown>): string {
@@ -71,7 +199,22 @@ export function buildCompactSummary(
     estimatedTokensInContextWindow: p.estimatedTokensInContextWindow,
     maxInputTokens: p.maxInputTokens,
   });
-  if (contextLine) lines.push(contextLine);
+  if (contextLine) {
+    lines.push(contextLine);
+  } else {
+    lines.push('🧠 上下文: 等待 model_round 回传（未关闭）');
+  }
+  const estimatedContextTokens = resolveEstimatedContextTokens(
+    p.contextUsagePercent,
+    p.estimatedTokensInContextWindow,
+    p.maxInputTokens,
+  );
+  lines.push(...buildContextBreakdownLines(
+    p.contextBreakdown,
+    p.contextBreakdownMode,
+    p.maxInputTokens,
+    estimatedContextTokens,
+  ));
   if (p.lastContextEvent && p.lastContextEvent.trim().length > 0) {
     lines.push(`♻️ ${truncateInline(p.lastContextEvent, 120)}`);
   }
@@ -291,5 +434,8 @@ export function buildReportKey(p: SessionProgressData, latestStepSummary: string
     .slice(-3)
     .map((t) => `${t.toolName}:${classifyToolCall(t.toolName, t.params)}:${extractTargetFile(t.toolName, t.params)}:${t.success ?? ''}`)
     .join('|');
-  return `${p.status}|${p.currentTask ?? ''}|${latestStepSummary ?? ''}|${recentTools}|${p.latestReasoning ?? ''}|${p.contextUsagePercent ?? ''}|${p.estimatedTokensInContextWindow ?? ''}|${p.maxInputTokens ?? ''}|${p.lastContextEvent ?? ''}`;
+  const breakdownKey = p.contextBreakdown
+    ? JSON.stringify(p.contextBreakdown)
+    : '';
+  return `${p.status}|${p.currentTask ?? ''}|${latestStepSummary ?? ''}|${recentTools}|${p.latestReasoning ?? ''}|${p.contextUsagePercent ?? ''}|${p.estimatedTokensInContextWindow ?? ''}|${p.maxInputTokens ?? ''}|${p.lastContextEvent ?? ''}|${p.contextBreakdownMode ?? ''}|${breakdownKey}`;
 }

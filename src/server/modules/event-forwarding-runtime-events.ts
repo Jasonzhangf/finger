@@ -18,6 +18,7 @@ import {
   FINGER_REVIEWER_AGENT_ID,
   FINGER_SYSTEM_AGENT_ID,
 } from '../../agents/finger-general/finger-general-module.js';
+import { buildVerificationPrompt } from '../../agents/prompts/verifier-prompts.js';
 
 const SYSTEM_AGENT_ID = FINGER_SYSTEM_AGENT_ID;
 const REVIEW_REDISPATCH_MAX_ATTEMPTS = Number.isFinite(Number(process.env.FINGER_REVIEW_REDISPATCH_MAX_ATTEMPTS))
@@ -75,7 +76,83 @@ function extractReviewDecision(result: unknown): 'pass' | 'retry' | 'block' | 'f
       // noop
     }
   }
+
+  const verdictFromText = (text: string): 'pass' | 'retry' | 'block' | 'feedback' | undefined => {
+    const normalizedText = text.trim();
+    if (!normalizedText) return undefined;
+    if (/<verdict>\s*PASS\s*<\/verdict>/i.test(normalizedText) || /VERDICT\s*:\s*PASS/i.test(normalizedText)) {
+      return 'pass';
+    }
+    if (/<verdict>\s*PARTIAL\s*<\/verdict>/i.test(normalizedText) || /VERDICT\s*:\s*PARTIAL/i.test(normalizedText)) {
+      return 'retry';
+    }
+    if (/<verdict>\s*FAIL\s*<\/verdict>/i.test(normalizedText) || /VERDICT\s*:\s*FAIL/i.test(normalizedText)) {
+      return 'retry';
+    }
+    const decisionInline = normalizedText.match(/\bdecision\b[^a-zA-Z0-9]+(pass|retry|block|feedback)\b/i);
+    if (decisionInline) return normalize(decisionInline[1]);
+    return undefined;
+  };
+
+  const resultTextCandidates: string[] = [];
+  const directResponse = root && typeof root.response === 'string' ? root.response : '';
+  if (directResponse) resultTextCandidates.push(directResponse);
+  if (responseText) resultTextCandidates.push(responseText);
+  for (const candidate of resultTextCandidates) {
+    const parsed = verdictFromText(candidate);
+    if (parsed) return parsed;
+  }
   return undefined;
+}
+
+function asStringArray(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .filter((item): item is string => typeof item === 'string' && item.trim().length > 0)
+    .map((item) => item.trim())
+    .filter((item, index, arr) => arr.indexOf(item) === index);
+}
+
+function inferVerificationChangeCategory(
+  changedFiles: string[],
+): 'backend_api' | 'infrastructure' | 'frontend' | 'config' | 'multi_file' {
+  if (changedFiles.length >= 3) return 'multi_file';
+  if (changedFiles.some((file) => /(^|\/)(api|server|runtime|backend)(\/|$)/i.test(file))) return 'backend_api';
+  if (changedFiles.some((file) => /(Dockerfile|docker-compose|k8s|infra|deployment|helm|terraform)/i.test(file))) return 'infrastructure';
+  if (changedFiles.some((file) => /(^|\/)(ui|web|frontend)(\/|$)|\.(tsx?|jsx?)$/i.test(file))) return 'frontend';
+  if (changedFiles.some((file) => /\.(json|ya?ml|toml|ini)$/i.test(file) || /config/i.test(file))) return 'config';
+  return 'multi_file';
+}
+
+function extractChangedFilesForVerification(result: unknown): string[] {
+  if (!isObjectRecord(result)) return [];
+  const direct = [
+    ...asStringArray(result.changedFiles),
+    ...asStringArray(result.changed_files),
+    ...asStringArray(result.files),
+  ];
+  const rawPayload = isObjectRecord(result.rawPayload) ? result.rawPayload : undefined;
+  const raw = rawPayload ? [
+    ...asStringArray(rawPayload.changedFiles),
+    ...asStringArray(rawPayload.changed_files),
+    ...asStringArray(rawPayload.files),
+  ] : [];
+  return [...direct, ...raw].filter((item, index, arr) => arr.indexOf(item) === index);
+}
+
+function extractAcceptanceCriteriaForVerification(assignment: Record<string, unknown> | null): string[] {
+  if (!assignment) return ['Validate delivery completeness against the dispatched task goal and provide evidence.'];
+  const direct = [
+    ...asStringArray(assignment.acceptanceCriteria),
+    ...asStringArray(assignment.acceptance_criteria),
+    ...asStringArray(assignment.ac),
+  ];
+  const rawCriteria = typeof assignment.acceptanceCriteria === 'string' && assignment.acceptanceCriteria.trim().length > 0
+    ? [assignment.acceptanceCriteria.trim()]
+    : [];
+  const normalized = [...direct, ...rawCriteria].filter((item, index, arr) => arr.indexOf(item) === index);
+  if (normalized.length > 0) return normalized;
+  return ['Validate delivery completeness against the dispatched task goal and provide evidence.'];
 }
 
 export function attachDispatchLifecycleForwarding(options: AttachDispatchForwardingOptions): void {
@@ -340,19 +417,28 @@ export function attachDispatchLifecycleForwarding(options: AttachDispatchForward
         if (shouldSkipDispatchLedgerEntry(reviewDispatchKey)) return;
 
         const executorSummary = formatDispatchResultContent(payload.result, asString(payload.error));
+        const changedFiles = extractChangedFilesForVerification(payload.result);
+        const acceptanceCriteria = extractAcceptanceCriteriaForVerification(assignment);
         const reviewPrompt = [
           '[AUTO-REVIEW GATE]',
           `taskId: ${assignmentTaskId}`,
           `attempt: ${assignmentAttempt}`,
           `executor: ${FINGER_PROJECT_AGENT_ID}`,
           '',
-          '请对该任务交付做严格审查：',
-          '- 必须检查交付是否完整覆盖任务目标；',
-          '- 证据不足或未闭环时，不得通过；',
-          '- 给出明确 decision（pass / retry / block）和可执行反馈。',
+          buildVerificationPrompt({
+            changedFiles: changedFiles.length > 0 ? changedFiles : ['(unspecified-by-executor)'],
+            changeCategory: inferVerificationChangeCategory(changedFiles),
+            implementationSummary: executorSummary,
+            acceptanceCriteria,
+          }),
           '',
-          '[Executor Summary]',
-          executorSummary,
+          '[Decision Contract]',
+          'You must end with a machine-readable decision JSON:',
+          '{"decision":"pass|retry|block","summary":"...","evidence":["..."]}',
+          'Mapping rule: PASS -> pass, PARTIAL/FAIL -> retry (or block if truly blocked).',
+          'After review, report via report-task-completion:',
+          '- pass => result=success',
+          '- retry/block => result=failure with clear reviewer feedback',
         ].join('\n');
 
         const reviewRequest: AgentDispatchRequest = {

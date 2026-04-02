@@ -8,6 +8,7 @@ import { logger } from '../../core/logger.js';
 const log = logger.module('ChannelBridgeHubRouteHelpers');
 const processedMessages = new Map<string, number>();
 const DEDUP_TTL_MS = 60_000;
+const ALLOWED_INBOUND_ATTACHMENT_TYPES = new Set<ChannelAttachment['type']>(['image']);
 
 export function toKernelHistoryItems(
   history: Array<{ role: string; content: string }>,
@@ -92,6 +93,30 @@ export function toKernelInputItemsFromAttachments(message: ChannelMessage): Arra
   }
 
   return items;
+}
+
+export function splitInboundAttachmentsByWhitelist(
+  attachments: ChannelAttachment[] | undefined,
+): { accepted: ChannelAttachment[]; rejected: ChannelAttachment[] } {
+  const list = Array.isArray(attachments) ? attachments : [];
+  const accepted: ChannelAttachment[] = [];
+  const rejected: ChannelAttachment[] = [];
+  for (const attachment of list) {
+    if (!attachment || typeof attachment.type !== 'string' || typeof attachment.url !== 'string') {
+      rejected.push(attachment as ChannelAttachment);
+      continue;
+    }
+    if (!ALLOWED_INBOUND_ATTACHMENT_TYPES.has(attachment.type)) {
+      rejected.push(attachment);
+      continue;
+    }
+    if (attachment.url.trim().length === 0) {
+      rejected.push(attachment);
+      continue;
+    }
+    accepted.push(attachment);
+  }
+  return { accepted, rejected };
 }
 
 export function sanitizePromptForInjectedImages(content: string): string {

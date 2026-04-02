@@ -55,6 +55,62 @@ export interface FingerConfig {
   channelAuth?: ChannelAuthSection;
   systemAuth?: SystemAuthConfig;
   defaults?: DefaultsConfig;
+  channelAutoDetail?: ChannelAutoDetailConfig;
+}
+
+export interface ChannelAutoDetailPlatformConfig {
+  enabled?: boolean;
+  profile?: string;
+  outputRoot?: string;
+  env?: string;
+  maxPosts?: number;
+  maxNotes?: number;
+  keyword?: string;
+}
+
+export interface ChannelAutoDetailTriggerMatchConfig {
+  urlHosts?: string[];
+  urlHostRegex?: string[];
+  containsAny?: string[];
+}
+
+export interface ChannelAutoDetailTriggerInputConfig {
+  format?: 'jsonl';
+  fileNamePrefix?: string;
+  rowTemplate?: string;
+}
+
+export interface ChannelAutoDetailTriggerOutputConfig {
+  outputRoot?: string;
+}
+
+export interface ChannelAutoDetailTriggerCommandConfig {
+  bin?: string;
+  args: string[];
+  cwd?: string;
+  timeoutMs?: number;
+}
+
+export interface ChannelAutoDetailTriggerRule {
+  id: string;
+  enabled?: boolean;
+  channels?: string[];
+  match?: ChannelAutoDetailTriggerMatchConfig;
+  input?: ChannelAutoDetailTriggerInputConfig;
+  output?: ChannelAutoDetailTriggerOutputConfig;
+  command: ChannelAutoDetailTriggerCommandConfig;
+}
+
+export interface ChannelAutoDetailConfig {
+  enabled?: boolean;
+  channels?: string[];
+  webautoBin?: string;
+  webautoWorkdir?: string;
+  submitTimeoutMs?: number;
+  outputRoot?: string;
+  triggers?: ChannelAutoDetailTriggerRule[];
+  weibo?: ChannelAutoDetailPlatformConfig;
+  xiaohongshu?: ChannelAutoDetailPlatformConfig;
 }
 
 /**
@@ -128,6 +184,28 @@ export async function loadFingerConfig(): Promise<FingerConfig> {
       projectPath: '~/.finger',
       useLastProject: true,
     },
+    channelAutoDetail: {
+      enabled: true,
+      channels: ['qqbot', 'openclaw-weixin'],
+      webautoBin: 'webauto',
+      webautoWorkdir: '~/github/webauto',
+      submitTimeoutMs: 15_000,
+      outputRoot: '~/.webauto/download',
+      triggers: [],
+      weibo: {
+        enabled: true,
+        profile: 'weibo',
+        env: 'prod',
+        maxPosts: 1,
+        keyword: 'channel-link',
+      },
+      xiaohongshu: {
+        enabled: true,
+        profile: 'xiaohongshu-batch-1',
+        env: 'prod',
+        maxNotes: 1,
+      },
+    },
   };
 
   if (!fs.existsSync(configPath)) {
@@ -152,6 +230,21 @@ export async function loadFingerConfig(): Promise<FingerConfig> {
       defaults: {
         ...defaultConfig.defaults,
         ...parsed.defaults,
+      },
+      channelAutoDetail: {
+        ...defaultConfig.channelAutoDetail,
+        ...(parsed.channelAutoDetail ?? {}),
+        triggers: Array.isArray(parsed.channelAutoDetail?.triggers)
+          ? parsed.channelAutoDetail?.triggers
+          : defaultConfig.channelAutoDetail?.triggers,
+        weibo: {
+          ...defaultConfig.channelAutoDetail?.weibo,
+          ...(parsed.channelAutoDetail?.weibo ?? {}),
+        },
+        xiaohongshu: {
+          ...defaultConfig.channelAutoDetail?.xiaohongshu,
+          ...(parsed.channelAutoDetail?.xiaohongshu ?? {}),
+        },
       },
     };
   } catch (error) {

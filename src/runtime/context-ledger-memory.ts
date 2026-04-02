@@ -4,6 +4,8 @@ import type {
   CompactMemorySearchEntry,
   ContextLedgerMemoryCompactResult,
   ContextLedgerMemoryDeleteSlotsResult,
+  ContextLedgerMemoryDigestBackfillResult,
+  ContextLedgerMemoryDigestIncrementalResult,
   ContextLedgerMemoryIndexResult,
   ContextLedgerMemoryInput,
   ContextLedgerMemoryQueryResult,
@@ -110,6 +112,25 @@ export async function executeContextLedgerMemory(rawInput: unknown): Promise<Con
     });
   }
 
+  if (input.action === 'digest_backfill') {
+    return executeDigestBackfillAction({
+      rootDir,
+      sessionId,
+      currentAgentId,
+      mode,
+    });
+  }
+
+  if (input.action === 'digest_incremental') {
+    return executeDigestIncrementalAction({
+      rootDir,
+      sessionId,
+      currentAgentId,
+      mode,
+      sourceSlotStart: input.source_slot_start,
+    });
+  }
+
   return executeQueryAction(input, {
     rootDir,
     sessionId,
@@ -119,6 +140,143 @@ export async function executeContextLedgerMemory(rawInput: unknown): Promise<Con
     canReadAll: runtime.can_read_all === true,
     readableAgents: runtime.readable_agents ?? [],
   });
+}
+
+async function executeDigestBackfillAction(
+  context: {
+    rootDir: string;
+    sessionId: string;
+    currentAgentId: string;
+    mode: string;
+  },
+): Promise<ContextLedgerMemoryDigestBackfillResult> {
+  const ledgerPath = resolveLedgerPath(context.rootDir, context.sessionId, context.currentAgentId, context.mode);
+  const compactPath = resolveCompactMemoryPath(context.rootDir, context.sessionId, context.currentAgentId, context.mode);
+  const fullLedgerEntries = await readJsonLines<LedgerEntryFile>(ledgerPath);
+  const candidateEntries = fullLedgerEntries.filter((entry) => entry.event_type !== 'context_compact');
+  const grouped = groupLedgerEntriesByTaskBoundary(candidateEntries, { slotOffset: 0 });
+  const replacementHistory = buildReplacementHistoryFromTaskBlocks(grouped);
+
+  const compactResult = await executeCompactAction(
+    {
+      action: 'compact',
+      trigger: 'auto',
+      summary: `auto digest backfill (${replacementHistory.length} tasks)`,
+      replacement_history: replacementHistory,
+      source_event_ids: candidateEntries.map((entry) => entry.id),
+      source_message_ids: candidateEntries
+        .map((entry) => {
+          const payload = isRecord(entry.payload) ? entry.payload : {};
+          const messageId = valueAsString(payload.message_id);
+          return messageId ?? '';
+        })
+        .filter((item) => item.length > 0),
+      source_time_start: candidateEntries.length > 0 ? candidateEntries[0].timestamp_iso : undefined,
+      source_time_end: candidateEntries.length > 0 ? candidateEntries[candidateEntries.length - 1].timestamp_iso : undefined,
+      source_slot_start: candidateEntries.length > 0 ? 1 : undefined,
+      source_slot_end: candidateEntries.length > 0 ? candidateEntries.length : undefined,
+    },
+    context,
+  );
+
+  return {
+    ok: true,
+    action: 'digest_backfill',
+    compact_path: compactPath,
+    compact_index_path: compactResult.compact_index_path,
+    task_digest_count: replacementHistory.length,
+    linked_event_count: candidateEntries.length,
+    linked_message_count: compactResult.linked_message_ids.length,
+    note: replacementHistory.length > 0
+      ? 'Backfilled task digests from full ledger into compact memory.'
+      : 'Ledger has no task candidates; compact entry still refreshed for consistency.',
+  };
+}
+
+async function executeDigestIncrementalAction(
+  context: {
+    rootDir: string;
+    sessionId: string;
+    currentAgentId: string;
+    mode: string;
+    sourceSlotStart?: number;
+  },
+): Promise<ContextLedgerMemoryDigestIncrementalResult> {
+  const ledgerPath = resolveLedgerPath(context.rootDir, context.sessionId, context.currentAgentId, context.mode);
+  const compactPath = resolveCompactMemoryPath(context.rootDir, context.sessionId, context.currentAgentId, context.mode);
+  const compactIndexPath = resolveCompactMemoryIndexPath(context.rootDir, context.sessionId, context.currentAgentId, context.mode);
+  const fullLedgerEntries = await readJsonLines<LedgerEntryFile>(ledgerPath);
+  const candidateEntries = fullLedgerEntries.filter((entry) => entry.event_type !== 'context_compact');
+  const compactEntries = await readCompactSearchEntries(compactPath, compactIndexPath);
+
+  const previousCompactedSlotEnd = compactEntries
+    .map((entry) => normalizePositiveInt(entry.source_slot_end))
+    .filter((value): value is number => typeof value === 'number')
+    .reduce((max, value) => Math.max(max, value), 0);
+
+  const totalSlots = candidateEntries.length;
+  const forcedStart = normalizePositiveInt(context.sourceSlotStart);
+  const sourceSlotStart = Math.max(1, forcedStart ?? (previousCompactedSlotEnd + 1));
+  const sourceSlotEnd = Math.max(0, totalSlots);
+
+  if (sourceSlotStart > sourceSlotEnd || totalSlots === 0) {
+    return {
+      ok: true,
+      action: 'digest_incremental',
+      compact_path: compactPath,
+      compact_index_path: compactIndexPath,
+      task_digest_count: 0,
+      linked_event_count: 0,
+      linked_message_count: 0,
+      source_slot_start: sourceSlotStart,
+      source_slot_end: sourceSlotEnd,
+      previous_compacted_slot_end: previousCompactedSlotEnd,
+      no_new_entries: true,
+      note: 'No new ledger entries since last digest compaction.',
+    };
+  }
+
+  const sliceStartIndex = sourceSlotStart - 1;
+  const rangeEntries = candidateEntries.slice(sliceStartIndex, sourceSlotEnd);
+  const grouped = groupLedgerEntriesByTaskBoundary(rangeEntries, { slotOffset: sliceStartIndex });
+  const replacementHistory = buildReplacementHistoryFromTaskBlocks(grouped);
+  const compactResult = await executeCompactAction(
+    {
+      action: 'compact',
+      trigger: 'auto',
+      summary: `auto incremental digest (${replacementHistory.length} tasks, slots ${sourceSlotStart}-${sourceSlotEnd})`,
+      replacement_history: replacementHistory,
+      source_event_ids: rangeEntries.map((entry) => entry.id),
+      source_message_ids: rangeEntries
+        .map((entry) => {
+          const payload = isRecord(entry.payload) ? entry.payload : {};
+          return valueAsString(payload.message_id) ?? '';
+        })
+        .filter((value) => value.length > 0),
+      source_time_start: rangeEntries[0]?.timestamp_iso,
+      source_time_end: rangeEntries[rangeEntries.length - 1]?.timestamp_iso,
+      source_slot_start: sourceSlotStart,
+      source_slot_end: sourceSlotEnd,
+    },
+    context,
+  );
+
+  return {
+    ok: true,
+    action: 'digest_incremental',
+    compact_path: compactPath,
+    compact_index_path: compactResult.compact_index_path,
+    task_digest_count: replacementHistory.length,
+    linked_event_count: rangeEntries.length,
+    linked_message_count: compactResult.linked_message_ids.length,
+    source_slot_start: sourceSlotStart,
+    source_slot_end: sourceSlotEnd,
+    previous_compacted_slot_end: previousCompactedSlotEnd,
+    no_new_entries: false,
+    note: replacementHistory.length > 0
+      ? 'Incremental digest compaction completed for newly appended ledger range.'
+      : 'Incremental digest compaction completed; no task blocks detected in new range.',
+  };
 }
 
 async function executeQueryAction(
@@ -703,6 +861,28 @@ interface LedgerTaskBlockInternal {
   taskBlock: TaskBlock;
 }
 
+interface ToolDigestEvent {
+  toolName: string;
+  eventType: 'tool_call' | 'tool_result' | 'tool_error';
+  callId?: string;
+  input?: unknown;
+  output?: unknown;
+  error?: unknown;
+}
+
+interface ToolDigestCall {
+  tool: string;
+  status: 'success' | 'failure' | 'unknown';
+  input?: string;
+  output?: string;
+}
+
+const DIGEST_VERBOSE_OUTPUT_TOOLS = new Set([
+  'update_plan',
+  'reasoning.stop',
+  'report-task-completion',
+]);
+
 type TaskBlockMatchReason = LedgerTaskBlockSearchResult['match_reason'];
 
 async function buildLedgerTaskBlocks(
@@ -817,7 +997,10 @@ async function buildLedgerTaskBlocks(
   }));
 }
 
-function groupLedgerEntriesByTaskBoundary(entries: LedgerEntryFile[]): LedgerTaskBlockInternal[] {
+function groupLedgerEntriesByTaskBoundary(
+  entries: LedgerEntryFile[],
+  options?: { slotOffset?: number },
+): LedgerTaskBlockInternal[] {
   const sanitized = entries
     .filter((entry) => {
       const searchable = `${entry.event_type}\n${JSON.stringify(entry.payload)}`;
@@ -829,6 +1012,7 @@ function groupLedgerEntriesByTaskBoundary(entries: LedgerEntryFile[]): LedgerTas
   const blocks: LedgerTaskBlockInternal[] = [];
   let currentEntries: LedgerEntryFile[] = [];
   let currentStartSlot = 1;
+  const slotOffset = Number.isFinite(options?.slotOffset) ? Math.max(0, Math.floor(options?.slotOffset as number)) : 0;
 
   const flush = () => {
     if (currentEntries.length === 0) return;
@@ -842,22 +1026,256 @@ function groupLedgerEntriesByTaskBoundary(entries: LedgerEntryFile[]): LedgerTas
     if (role === 'user' && currentEntries.length > 0) {
       flush();
       currentEntries = [entry];
-      currentStartSlot = index + 1;
+      currentStartSlot = slotOffset + index + 1;
       continue;
     }
     if (currentEntries.length === 0) {
-      currentStartSlot = index + 1;
+      currentStartSlot = slotOffset + index + 1;
     }
     currentEntries.push(entry);
+    if (isReasoningStopLedgerBoundary(entry)) {
+      flush();
+      currentEntries = [];
+      currentStartSlot = slotOffset + index + 2;
+      continue;
+    }
   }
   flush();
   return blocks;
+}
+
+function isReasoningStopLedgerBoundary(entry: LedgerEntryFile): boolean {
+  const payload = isRecord(entry.payload) ? entry.payload : {};
+  const content = valueAsString(payload.content) ?? '';
+  if (/\breasoning\.stop\b/i.test(content)) return true;
+  const metadata = isRecord(payload.metadata) ? payload.metadata : undefined;
+  if (metadata) {
+    const directTool = valueAsString(metadata.toolName) ?? valueAsString(metadata.tool);
+    if (directTool === 'reasoning.stop') return true;
+    const event = isRecord(metadata.event) ? metadata.event : undefined;
+    const eventTool = event ? (valueAsString(event.toolName) ?? valueAsString(event.tool)) : undefined;
+    if (eventTool === 'reasoning.stop') return true;
+  }
+  return false;
+}
+
+function serializeUnknown(value: unknown, maxChars?: number): string | undefined {
+  if (value === undefined) return undefined;
+  const raw = typeof value === 'string'
+    ? value
+    : (() => {
+        try {
+          return JSON.stringify(value);
+        } catch {
+          return String(value);
+        }
+      })();
+  const normalized = raw.trim();
+  if (!normalized) return undefined;
+  if (typeof maxChars === 'number' && Number.isFinite(maxChars) && maxChars > 0) {
+    return buildPreview(normalized, Math.max(32, Math.floor(maxChars)));
+  }
+  return normalized;
+}
+
+function normalizeToolDigestStatus(eventType: ToolDigestEvent['eventType'], output?: unknown, error?: unknown): ToolDigestCall['status'] {
+  if (eventType === 'tool_error') return 'failure';
+  if (error !== undefined && error !== null && String(error).trim().length > 0) return 'failure';
+  if (eventType === 'tool_result') {
+    if (output && typeof output === 'object' && !Array.isArray(output)) {
+      const asRecord = output as Record<string, unknown>;
+      if (asRecord.ok === false || asRecord.success === false || asRecord.error) return 'failure';
+    }
+    return 'success';
+  }
+  return 'unknown';
+}
+
+function normalizeToolNameFromPayload(payload: Record<string, unknown>): string {
+  return (
+    valueAsString(payload.toolName)
+    ?? valueAsString(payload.tool_name)
+    ?? valueAsString(payload.tool)
+    ?? ''
+  ).trim();
+}
+
+function extractToolDigestEventFromEntry(entry: LedgerEntryFile): ToolDigestEvent | null {
+  const payload = isRecord(entry.payload) ? entry.payload : {};
+  const eventTypeFromEntry = entry.event_type === 'tool_call'
+    || entry.event_type === 'tool_result'
+    || entry.event_type === 'tool_error'
+    ? entry.event_type
+    : undefined;
+
+  if (eventTypeFromEntry) {
+    const toolName = normalizeToolNameFromPayload(payload);
+    if (!toolName) return null;
+    const callId = (
+      valueAsString(payload.call_id)
+      ?? valueAsString(payload.callId)
+      ?? valueAsString(payload.toolId)
+      ?? ''
+    ).trim();
+    return {
+      toolName,
+      eventType: eventTypeFromEntry,
+      ...(callId ? { callId } : {}),
+      ...(payload.input !== undefined ? { input: payload.input } : {}),
+      ...(payload.output !== undefined ? { output: payload.output } : {}),
+      ...(payload.error !== undefined ? { error: payload.error } : {}),
+    };
+  }
+
+  const metadata = isRecord(payload.metadata) ? payload.metadata : undefined;
+  const event = metadata && isRecord(metadata.event) ? metadata.event : undefined;
+  const eventType = event && (
+    valueAsString(event.type) === 'tool_call'
+    || valueAsString(event.type) === 'tool_result'
+    || valueAsString(event.type) === 'tool_error'
+  )
+    ? (valueAsString(event.type) as ToolDigestEvent['eventType'])
+    : undefined;
+  if (!eventType || !event) return null;
+  const toolName = normalizeToolNameFromPayload(event);
+  if (!toolName) return null;
+  const callId = (
+    valueAsString(event.call_id)
+    ?? valueAsString(event.callId)
+    ?? valueAsString(event.toolId)
+    ?? ''
+  ).trim();
+  const eventPayload = isRecord(event.payload) ? event.payload : {};
+  return {
+    toolName,
+    eventType,
+    ...(callId ? { callId } : {}),
+    ...(eventPayload.input !== undefined ? { input: eventPayload.input } : {}),
+    ...(eventPayload.output !== undefined ? { output: eventPayload.output } : {}),
+    ...(eventPayload.error !== undefined ? { error: eventPayload.error } : {}),
+  };
+}
+
+function buildToolCallsDigest(entries: LedgerEntryFile[]): ToolDigestCall[] {
+  const calls: ToolDigestCall[] = [];
+  const callIndexByKey = new Map<string, number>();
+  let anonymousCounter = 0;
+  const allocateKey = (toolName: string, callId?: string): string => {
+    if (callId && callId.trim().length > 0) return callId.trim();
+    anonymousCounter += 1;
+    return `${toolName}#${anonymousCounter}`;
+  };
+
+  for (const entry of entries) {
+    const event = extractToolDigestEventFromEntry(entry);
+    if (!event || !event.toolName) continue;
+    const key = allocateKey(event.toolName, event.callId);
+    const status = normalizeToolDigestStatus(event.eventType, event.output, event.error);
+    const inputText = serializeUnknown(event.input, 1200);
+    const shouldKeepVerboseOutput = DIGEST_VERBOSE_OUTPUT_TOOLS.has(event.toolName);
+    const outputText = shouldKeepVerboseOutput
+      ? serializeUnknown(
+          event.error !== undefined && event.error !== null ? { error: event.error } : event.output,
+        )
+      : undefined;
+
+    const existingIndex = callIndexByKey.get(key);
+    if (existingIndex === undefined) {
+      calls.push({
+        tool: event.toolName,
+        status,
+        ...(inputText ? { input: inputText } : {}),
+        ...(outputText ? { output: outputText } : {}),
+      });
+      callIndexByKey.set(key, calls.length - 1);
+      continue;
+    }
+
+    const current = calls[existingIndex];
+    calls[existingIndex] = {
+      ...current,
+      tool: event.toolName || current.tool,
+      status: status === 'unknown' ? current.status : status,
+      ...(inputText ? { input: inputText } : current.input ? { input: current.input } : {}),
+      ...(outputText ? { output: outputText } : current.output ? { output: current.output } : {}),
+    };
+  }
+
+  return calls;
+}
+
+function buildReplacementHistoryFromTaskBlocks(blocks: LedgerTaskBlockInternal[]): Array<Record<string, unknown>> {
+  return blocks.map((block) => {
+    const firstUser = block.taskBlock.messages.find((message) => message.role === 'user')?.content ?? '';
+    const lastAssistant = [...block.taskBlock.messages]
+      .reverse()
+      .find((message) => message.role === 'assistant' || message.role === 'orchestrator')
+      ?.content ?? '';
+    const toolCalls = buildToolCallsDigest(block.entries);
+    const fallbackKeyTools = block.taskBlock.messages
+      .map((message) => extractToolNameFromTaskMessage(message))
+      .filter((name) => name.length > 0);
+    const keyTools = Array.from(new Set([
+      ...toolCalls.map((item) => item.tool).filter((name) => name.length > 0),
+      ...fallbackKeyTools,
+    ]));
+    const taskId = block.id.startsWith('task-') ? block.id : `task-${block.startTime}`;
+    const normalizedSummary = (lastAssistant || block.preview).trim();
+    return {
+      id: `digest-${taskId}`,
+      task_id: taskId,
+      start_time_iso: block.startTimeIso,
+      end_time_iso: block.endTimeIso,
+      request: buildPreview(firstUser || block.preview, 220),
+      summary: normalizedSummary.length > 0 ? normalizedSummary : buildPreview(block.preview, 280),
+      key_tools: keyTools,
+      tool_calls: toolCalls,
+      ...(block.tags && block.tags.length > 0 ? { tags: block.tags } : {}),
+      ...(block.topic ? { topic: block.topic } : {}),
+    } satisfies Record<string, unknown>;
+  });
+}
+
+function extractToolNameFromTaskMessage(message: TaskMessage): string {
+  const metadata = message.metadata;
+  if (metadata && typeof metadata === 'object') {
+    const direct = valueAsString(metadata.toolName) ?? valueAsString(metadata.tool_name) ?? valueAsString(metadata.tool);
+    if (direct) return direct;
+    const event = isRecord(metadata.event) ? metadata.event : undefined;
+    const fromEvent = event ? (valueAsString(event.toolName) ?? valueAsString(event.tool_name) ?? valueAsString(event.tool)) : undefined;
+    if (fromEvent) return fromEvent;
+  }
+  const content = typeof message.content === 'string' ? message.content : '';
+  const parsedFromJson = (() => {
+    try {
+      const obj = JSON.parse(content) as Record<string, unknown>;
+      return valueAsString(obj.toolName) ?? valueAsString(obj.tool_name) ?? valueAsString(obj.tool) ?? '';
+    } catch {
+      return '';
+    }
+  })();
+  if (parsedFromJson.trim().length > 0) return parsedFromJson.trim();
+  if (/\breasoning\.stop\b/i.test(content)) return 'reasoning.stop';
+  const matched = content.match(/(?:调用工具|工具完成|工具失败)\s*:\s*([^\s]+)/);
+  return matched?.[1]?.trim() ?? '';
 }
 
 function finalizeLedgerTaskBlock(entries: LedgerEntryFile[], startSlot: number, endSlot: number): LedgerTaskBlockInternal {
   const taskMessages: TaskMessage[] = entries.map((entry) => {
     const payload = isRecord(entry.payload) ? entry.payload : {};
     const content = valueAsString(payload.content) ?? JSON.stringify(payload);
+    const metadataSeed: Record<string, unknown> = isRecord(payload.metadata)
+      ? { ...payload.metadata }
+      : {};
+    const payloadToolName = valueAsString(payload.toolName) ?? valueAsString(payload.tool);
+    if (payloadToolName && !valueAsString(metadataSeed.toolName) && !valueAsString(metadataSeed.tool)) {
+      metadataSeed.toolName = payloadToolName;
+    }
+    const payloadEvent = isRecord(payload.event) ? payload.event : undefined;
+    if (payloadEvent && !isRecord(metadataSeed.event)) {
+      metadataSeed.event = payloadEvent;
+    }
+    const normalizedMetadata = Object.keys(metadataSeed).length > 0 ? metadataSeed : undefined;
     return {
       id: entry.id,
       role: ((valueAsString(payload.role) ?? 'system') as TaskMessage['role']),
@@ -865,7 +1283,7 @@ function finalizeLedgerTaskBlock(entries: LedgerEntryFile[], startSlot: number, 
       timestamp: entry.timestamp_ms,
       timestampIso: entry.timestamp_iso,
       tokenCount: Math.max(1, Math.ceil(content.length / 4)),
-      metadata: isRecord(payload.metadata) ? payload.metadata : undefined,
+      metadata: normalizedMetadata,
     };
   });
 

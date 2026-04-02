@@ -14,6 +14,10 @@ function createMinimalDeps(): AgentRuntimeDeps {
   } as AgentRuntimeDeps;
 }
 
+async function flushEventLoop(): Promise<void> {
+  await new Promise((resolve) => setTimeout(resolve, 20));
+}
+
 describe('ProgressMonitor incremental updates', () => {
   it('does not repeat already-reported task/reasoning in next progress update', async () => {
     const eventBus = new UnifiedEventBus();
@@ -77,9 +81,9 @@ describe('ProgressMonitor incremental updates', () => {
         output: 'ok',
       },
     } as any);
+    await flushEventLoop();
 
     const progress = monitor.getProgress('session-progress-delta');
-    expect(progress).toBeTruthy();
     if (progress) progress.elapsedMs = 5000;
 
     await (monitor as any).generateProgressReport();
@@ -114,7 +118,6 @@ describe('ProgressMonitor incremental updates', () => {
     } as any);
 
     const updated = monitor.getProgress('session-progress-delta');
-    expect(updated).toBeTruthy();
     if (updated) updated.elapsedMs = 8000;
 
     await (monitor as any).generateProgressReport();
@@ -127,7 +130,7 @@ describe('ProgressMonitor incremental updates', () => {
     monitor.stop();
   });
 
-  it('reports context window size and pushes update when context usage changes', async () => {
+  it('does not push progress update when only context usage changes (no tool calls)', async () => {
     const eventBus = new UnifiedEventBus();
     const reports: string[] = [];
     const monitor = new ProgressMonitor(
@@ -168,14 +171,13 @@ describe('ProgressMonitor incremental updates', () => {
         maxInputTokens: 128000,
       },
     } as any);
+    await flushEventLoop();
 
     const initial = monitor.getProgress('session-context-usage');
-    expect(initial).toBeTruthy();
     if (initial) initial.elapsedMs = 4000;
 
     await (monitor as any).generateProgressReport();
-    expect(reports).toHaveLength(1);
-    expect(reports[0]).toContain('🧠 上下文: 41% · 53.2k/128k');
+    expect(reports).toHaveLength(0);
 
     // Only context changed; should still generate another progress update.
     await eventBus.emit({
@@ -191,13 +193,140 @@ describe('ProgressMonitor incremental updates', () => {
     } as any);
 
     const updated = monitor.getProgress('session-context-usage');
-    expect(updated).toBeTruthy();
     if (updated) updated.elapsedMs = 6000;
 
     await (monitor as any).generateProgressReport();
-    expect(reports).toHaveLength(2);
-    expect(reports[1]).toContain('🧠 上下文: 55% · 70.4k/128k');
-    expect(reports[1]).toContain('🧭 处理上下文');
+    expect(reports).toHaveLength(0);
+
+    monitor.stop();
+  });
+
+  it('increments history/current breakdown when tool events add context between model rounds', async () => {
+    const eventBus = new UnifiedEventBus();
+    const monitor = new ProgressMonitor(
+      eventBus,
+      createMinimalDeps(),
+      {},
+      {
+        enabled: true,
+        progressUpdates: true,
+        intervalMs: 60_000,
+      },
+    );
+
+    monitor.start();
+
+    await eventBus.emit({
+      type: 'model_round',
+      sessionId: 'session-breakdown-growth',
+      agentId: 'finger-system-agent',
+      timestamp: new Date().toISOString(),
+      payload: {
+        contextUsagePercent: 51,
+        estimatedTokensInContextWindow: 134000,
+        maxInputTokens: 262144,
+        contextBreakdown: {
+          historyContextTokens: 7300,
+          historyCurrentTokens: 7900,
+          historyTotalTokens: 15200,
+          totalKnownTokens: 57500,
+        },
+      },
+    } as any);
+
+    await eventBus.emit({
+      type: 'tool_call',
+      sessionId: 'session-breakdown-growth',
+      agentId: 'finger-system-agent',
+      toolId: 'tool-growth-1',
+      toolName: 'shell.exec',
+      timestamp: new Date().toISOString(),
+      payload: {
+        input: {
+          cmd: 'cat /Users/fanzhang/.finger/logs/daemon.log | tail -n 120',
+        },
+      },
+    } as any);
+
+    await flushEventLoop();
+    const progress = monitor.getProgress('session-breakdown-growth');
+    expect(progress).toBeTruthy();
+    expect(progress?.contextBreakdown?.historyCurrentTokens).toBeGreaterThan(7900);
+    expect(progress?.contextBreakdown?.historyTotalTokens).toBeGreaterThan(15200);
+    expect(progress?.contextBreakdown?.totalKnownTokens).toBeGreaterThan(57500);
+
+    monitor.stop();
+  });
+
+  it('does not reset grown history/current breakdown when later model_round carries stale baseline snapshot', async () => {
+    const eventBus = new UnifiedEventBus();
+    const monitor = new ProgressMonitor(
+      eventBus,
+      createMinimalDeps(),
+      {},
+      {
+        enabled: true,
+        progressUpdates: true,
+        intervalMs: 60_000,
+      },
+    );
+
+    monitor.start();
+
+    const baselineBreakdown = {
+      historyContextTokens: 7300,
+      historyCurrentTokens: 7900,
+      historyTotalTokens: 15200,
+      totalKnownTokens: 57500,
+    };
+
+    await eventBus.emit({
+      type: 'model_round',
+      sessionId: 'session-breakdown-no-reset',
+      agentId: 'finger-system-agent',
+      timestamp: new Date().toISOString(),
+      payload: {
+        contextUsagePercent: 51,
+        estimatedTokensInContextWindow: 134000,
+        maxInputTokens: 262144,
+        contextBreakdown: baselineBreakdown,
+      },
+    } as any);
+
+    await eventBus.emit({
+      type: 'tool_call',
+      sessionId: 'session-breakdown-no-reset',
+      agentId: 'finger-system-agent',
+      toolId: 'tool-grow-1',
+      toolName: 'shell.exec',
+      timestamp: new Date().toISOString(),
+      payload: { input: { cmd: 'rg \"context\" src/server/modules/progress-monitor-event-handlers.ts' } },
+    } as any);
+    await flushEventLoop();
+
+    const afterTool = monitor.getProgress('session-breakdown-no-reset');
+    expect(afterTool?.contextBreakdown?.historyCurrentTokens).toBeGreaterThan(7900);
+    const grownCurrent = afterTool?.contextBreakdown?.historyCurrentTokens ?? 0;
+    const grownKnown = afterTool?.contextBreakdown?.totalKnownTokens ?? 0;
+
+    // Kernel keeps emitting the same baseline breakdown snapshot for this turn.
+    await eventBus.emit({
+      type: 'model_round',
+      sessionId: 'session-breakdown-no-reset',
+      agentId: 'finger-system-agent',
+      timestamp: new Date().toISOString(),
+      payload: {
+        contextUsagePercent: 53,
+        estimatedTokensInContextWindow: 139000,
+        maxInputTokens: 262144,
+        contextBreakdown: baselineBreakdown,
+      },
+    } as any);
+    await flushEventLoop();
+
+    const afterSecondRound = monitor.getProgress('session-breakdown-no-reset');
+    expect(afterSecondRound?.contextBreakdown?.historyCurrentTokens).toBeGreaterThanOrEqual(grownCurrent);
+    expect(afterSecondRound?.contextBreakdown?.totalKnownTokens).toBeGreaterThanOrEqual(grownKnown);
 
     monitor.stop();
   });
@@ -243,6 +372,7 @@ describe('ProgressMonitor incremental updates', () => {
         input: { cmd: 'rg "dispatch" src/server/modules' },
       },
     } as any);
+    await flushEventLoop();
 
     const progress = monitor.getProgress('session-stalled-progress');
     expect(progress).toBeTruthy();

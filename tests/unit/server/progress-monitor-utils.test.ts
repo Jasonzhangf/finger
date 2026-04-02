@@ -1,5 +1,12 @@
 import { describe, it, expect } from 'vitest';
-import { classifyToolCall, extractTargetFile, buildCompactSummary, buildReportKey, resolveToolDisplayName } from '../../../src/server/modules/progress-monitor-utils.js';
+import {
+  classifyToolCall,
+  extractTargetFile,
+  buildCompactSummary,
+  buildReportKey,
+  resolveToolDisplayName,
+  buildContextUsageLine,
+} from '../../../src/server/modules/progress-monitor-utils.js';
 import type { SessionProgressData } from '../../../src/server/modules/progress-monitor-utils.js';
 
 describe('progress-monitor-utils', () => {
@@ -208,6 +215,18 @@ describe('progress-monitor-utils', () => {
         headerMode: 'minimal',
       });
       expect(result).toContain('🧠 上下文: 50% · ~131k/262k');
+    });
+
+  });
+
+  describe('buildContextUsageLine', () => {
+    it('prefers explicit percent and re-derives token estimate when usage sources drift', () => {
+      const line = buildContextUsageLine({
+        contextUsagePercent: 29,
+        estimatedTokensInContextWindow: 1900,
+        maxInputTokens: 262144,
+      });
+      expect(line).toContain('🧠 上下文: 29% · 76k/262k');
     });
   });
 

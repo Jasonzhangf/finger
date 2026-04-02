@@ -15,6 +15,7 @@ import { attachEventForwarding } from './event-forwarding.js';
 import { registerAllRoutes } from '../routes/index.js';
 import type { RegisterAllRoutesDeps } from '../routes/index.js';
 import { extractAgentStatusFromRuntimeView } from '../../core/agent-runtime-status.js';
+import type { RuntimeFacade } from '../../runtime/runtime-facade.js';
 import {
   asString,
   formatDispatchResultContent,
@@ -42,6 +43,7 @@ export async function runPostInit(deps: {
   generalAgentId: string;
   setLoopEventEmitter: (emitter: any) => void;
   runtimeInstructionBus: any;
+  runtime: RuntimeFacade;
   app: any;
   registerAllRoutesDeps: RegisterAllRoutesDeps;
 }): Promise<void> {
@@ -59,6 +61,7 @@ export async function runPostInit(deps: {
     asString,
     generalAgentId: deps.generalAgentId,
     dispatchTaskToAgent: deps.dispatchTaskToAgent,
+    runtime: deps.runtime,
     resolveReviewPolicy: () => getActiveReviewPolicy(),
     isAgentBusy: (agentId: string) => {
       try {

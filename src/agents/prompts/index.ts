@@ -8,6 +8,21 @@
 // 类型定义
 export * from './types.js';
 
+// Section 基础设施
+export * from './sections.js';
+
+// Agent 类型化定义
+export * from './agent-definitions.js';
+
+// Compaction Prompt 体系
+export * from './compaction-prompts.js';
+
+// Conditional Section Injector
+export * from './conditional-injector.js';
+
+// Verification Agent Prompts
+export * from './verifier-prompts.js';
+
 // 各阶段提示词
 export * from './understanding-prompts.js';
 export * from './router-prompts.js';

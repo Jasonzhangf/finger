@@ -1,4 +1,6 @@
 import { logger } from '../../core/logger.js';
+import { appendFile, mkdir, readFile } from 'fs/promises';
+import { dirname, join } from 'path';
 import type { SessionManager } from '../../orchestration/session-manager.js';
 import type { UnifiedEventBus } from '../../runtime/event-bus.js';
 import type { ChatCodexLoopEvent } from '../../agents/finger-general/finger-general-module.js';
@@ -27,8 +29,12 @@ import {
   attachControlLifecycleForwarding,
   attachDispatchLifecycleForwarding,
 } from './event-forwarding-runtime-events.js';
+import { FINGER_PATHS } from '../../core/finger-paths.js';
+import { clockTool } from '../../tools/internal/codex-clock-tool.js';
+import { contextBuilderRebuildTool } from '../../tools/internal/context-builder-rebuild-tool.js';
 
 const SYSTEM_AGENT_ID = 'finger-system-agent';
+const CONTROL_HOOK_DEDUP_TTL_MS = 60 * 60_000;
 
 type SessionEventRecord = {
   type: 'tool_call' | 'tool_result' | 'tool_error' | 'agent_step' | 'reasoning';
@@ -55,7 +61,122 @@ export interface EventForwardingDeps {
   resolveReviewPolicy?: () => { enabled: boolean; dispatchReviewMode?: 'off' | 'always' };
   runtime?: {
     maybeAutoCompact?: (sessionId: string, contextUsagePercent?: number, turnId?: string) => Promise<boolean>;
+    maybeAutoDigestOnStop?: (sessionId: string, turnId?: string) => Promise<boolean>;
   };
+}
+
+function asTrimmedString(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined;
+  const normalized = value.trim();
+  return normalized.length > 0 ? normalized : undefined;
+}
+
+function extractStopSummaryText(value: unknown): string | undefined {
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    if (!trimmed) return undefined;
+    try {
+      const parsed = JSON.parse(trimmed) as Record<string, unknown>;
+      const parsedSummary = asTrimmedString(parsed?.summary)
+        ?? asTrimmedString(parsed?.message)
+        ?? asTrimmedString(parsed?.result);
+      return parsedSummary ?? trimmed;
+    } catch {
+      return trimmed;
+    }
+  }
+  if (!isObjectRecord(value)) return undefined;
+  return asTrimmedString(value.summary)
+    ?? asTrimmedString(value.message)
+    ?? asTrimmedString(value.result)
+    ?? undefined;
+}
+
+function extractStopSummaryFromToolPayload(
+  payload: Record<string, unknown>,
+  stopToolNames: string[],
+): string | undefined {
+  const eventType = asTrimmedString(payload.type)?.toLowerCase();
+  if (eventType !== 'tool_result') return undefined;
+  const toolName = asTrimmedString(payload.toolName)
+    ?? asTrimmedString(payload.tool)
+    ?? asTrimmedString(payload.name)
+    ?? '';
+  if (!toolName || !isStopReasoningStopTool(toolName, stopToolNames)) return undefined;
+  return extractStopSummaryText(payload.output)
+    ?? extractStopSummaryText(payload.result)
+    ?? extractStopSummaryText(payload.response)
+    ?? extractStopSummaryText(payload.message);
+}
+
+function extractControlHookNames(payload: Record<string, unknown>): string[] {
+  const raw = payload.controlHookNames;
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .filter((item): item is string => typeof item === 'string' && item.trim().length > 0)
+    .map((item) => item.trim())
+    .filter((item, index, arr) => arr.indexOf(item) === index)
+    .slice(0, 64);
+}
+
+function parseInteger(value: unknown, fallback = 0): number {
+  const parsed = typeof value === 'number'
+    ? value
+    : typeof value === 'string' && value.trim().length > 0
+      ? Number(value)
+      : Number.NaN;
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.floor(parsed);
+}
+
+function toUniqueStringArray(value: unknown, limit: number): string[] {
+  if (!Array.isArray(value)) return [];
+  const normalized = value
+    .filter((item): item is string => typeof item === 'string' && item.trim().length > 0)
+    .map((item) => item.trim());
+  const deduped = normalized.filter((item, index, arr) => arr.indexOf(item) === index);
+  return deduped.slice(0, limit);
+}
+
+function asControlBlockRecord(payload: Record<string, unknown>): Record<string, unknown> | undefined {
+  if (!isObjectRecord(payload.controlBlock)) return undefined;
+  return payload.controlBlock;
+}
+
+async function appendMarkdownEntry(params: {
+  filePath: string;
+  title: string;
+  idempotencyKey: string;
+  lines: string[];
+}): Promise<{ written: boolean; filePath: string }> {
+  const normalizedLines = params.lines
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0);
+  if (normalizedLines.length === 0) {
+    return { written: false, filePath: params.filePath };
+  }
+
+  await mkdir(dirname(params.filePath), { recursive: true });
+  let existing = '';
+  try {
+    existing = await readFile(params.filePath, 'utf-8');
+  } catch {
+    existing = '';
+  }
+  if (existing.includes(`idempotency_key: ${params.idempotencyKey}`)) {
+    return { written: false, filePath: params.filePath };
+  }
+  const ts = new Date().toISOString();
+  const section = [
+    '',
+    `## ${params.title}`,
+    `- idempotency_key: ${params.idempotencyKey}`,
+    `- updated_at: ${ts}`,
+    ...normalizedLines.map((line) => `- ${line}`),
+    '',
+  ].join('\n');
+  await appendFile(params.filePath, section, 'utf-8');
+  return { written: true, filePath: params.filePath };
 }
 
 
@@ -78,8 +199,10 @@ export function attachEventForwarding(deps: EventForwardingDeps): {
     runtime,
   } = deps;
   const latestBodyBySession = new Map<string, string>();
+  const latestStopSummaryBySession = new Map<string, string>();
   const stopToolSeenBySession = new Map<string, boolean>();
   const dispatchLedgerDedup = new Map<string, number>();
+  const controlHookActionDedup = new Map<string, number>();
   const DISPATCH_LEDGER_DEDUP_TTL_MS = 10 * 60_000;
 
   const normalizeDispatchLedgerSessionId = (rawSessionId: string | undefined) =>
@@ -96,6 +219,300 @@ export function attachEventForwarding(deps: EventForwardingDeps): {
     if (dispatchLedgerDedup.has(key)) return true;
     dispatchLedgerDedup.set(key, now);
     return false;
+  };
+
+  const shouldSkipControlHookAction = (key: string): boolean => {
+    const now = Date.now();
+    for (const [existingKey, ts] of controlHookActionDedup.entries()) {
+      if (now - ts > CONTROL_HOOK_DEDUP_TTL_MS) {
+        controlHookActionDedup.delete(existingKey);
+      }
+    }
+    if (controlHookActionDedup.has(key)) return true;
+    controlHookActionDedup.set(key, now);
+    return false;
+  };
+
+  const emitControlHookActionNotice = (
+    event: ChatCodexLoopEvent,
+    hook: string,
+    action: string,
+    detail?: Record<string, unknown>,
+  ): void => {
+    void eventBus.emit({
+      type: 'system_notice',
+      sessionId: event.sessionId,
+      timestamp: event.timestamp,
+      payload: {
+        source: 'control_hook_action',
+        hook,
+        action,
+        ...(detail ?? {}),
+      },
+    });
+  };
+
+  const executeControlHookActions = async (event: ChatCodexLoopEvent): Promise<void> => {
+    if (event.phase !== 'turn_complete') return;
+    if (!isObjectRecord(event.payload)) return;
+    const payload = event.payload as Record<string, unknown>;
+    const hooks = extractControlHookNames(payload);
+    if (hooks.length === 0) return;
+    const controlBlock = asControlBlockRecord(payload);
+    const turnId = asTrimmedString(payload.responseId) ?? `turn-${Date.now()}`;
+    const session = sessionManager.getSession(event.sessionId);
+    const projectPath = session?.projectPath || process.cwd();
+    const ownerAgentId = session && isObjectRecord(session.context) && typeof session.context.ownerAgentId === 'string'
+      ? session.context.ownerAgentId.trim() || generalAgentId
+      : generalAgentId;
+    const controlHint = controlBlock && typeof controlBlock.context_review_hint === 'string'
+      ? controlBlock.context_review_hint.trim().toLowerCase()
+      : 'none';
+    const controlWait = controlBlock && isObjectRecord(controlBlock.wait) ? controlBlock.wait : undefined;
+    const userSignal = controlBlock && isObjectRecord(controlBlock.user_signal) ? controlBlock.user_signal : undefined;
+    const learning = controlBlock && isObjectRecord(controlBlock.learning) ? controlBlock.learning : undefined;
+    const flowPatch = learning && isObjectRecord(learning.flow_patch) ? learning.flow_patch : undefined;
+    const memoryPatch = learning && isObjectRecord(learning.memory_patch) ? learning.memory_patch : undefined;
+    const userProfilePatch = learning && isObjectRecord(learning.user_profile_patch) ? learning.user_profile_patch : undefined;
+    const antiPatterns = toUniqueStringArray(controlBlock?.anti_patterns, 32);
+    const sessionManagerWithLedgerRoot = sessionManager as SessionManager & {
+      resolveLedgerRootForSession?: (sessionId: string) => string | null;
+    };
+    const sessionLedgerRoot = typeof sessionManagerWithLedgerRoot.resolveLedgerRootForSession === 'function'
+      ? sessionManagerWithLedgerRoot.resolveLedgerRootForSession(event.sessionId) ?? undefined
+      : undefined;
+
+    for (const hook of hooks) {
+      const dedupeKey = `${event.sessionId}|${turnId}|${hook}`;
+      if (shouldSkipControlHookAction(dedupeKey)) continue;
+      try {
+        if (hook === 'hook.waiting_user') {
+          await eventBus.emit({
+            type: 'waiting_for_user',
+            workflowId: event.sessionId,
+            sessionId: event.sessionId,
+            timestamp: event.timestamp,
+            payload: {
+              reason: 'confirmation_required',
+              options: [],
+              context: {
+                question: '模型标记当前轮需要用户输入，等待用户回复后继续。',
+                source: 'control_hook',
+                hook,
+                controlBlockValid: payload.controlBlockValid === true,
+              },
+            },
+          });
+          emitControlHookActionNotice(event, hook, 'emitted_waiting_for_user');
+          continue;
+        }
+
+        if (hook === 'hook.scheduler.wait') {
+          const waitEnabled = controlWait ? controlWait.enabled === true : false;
+          const waitSeconds = Math.max(1, Math.min(86_400, parseInteger(controlWait?.seconds, 0)));
+          if (!waitEnabled || waitSeconds <= 0) {
+            emitControlHookActionNotice(event, hook, 'skipped_invalid_wait_config');
+            continue;
+          }
+          const waitReason = typeof controlWait?.reason === 'string' ? controlWait.reason.trim() : '';
+          const waitPrompt = [
+            '[CONTROL HOOK RESUME]',
+            `source_session=${event.sessionId}`,
+            `source_turn=${turnId}`,
+            `hook=${hook}`,
+            waitReason ? `reason=${waitReason}` : '',
+            'Please resume the unfinished task and continue execution from the latest state.',
+          ].filter((line) => line.length > 0).join('\n');
+          const timerResult = await clockTool.execute(
+            {
+              action: 'create',
+              payload: {
+                message: `control_hook.wait ${event.sessionId}`,
+                schedule_type: 'delay',
+                delay_seconds: waitSeconds,
+                repeat: false,
+                inject: {
+                  agentId: ownerAgentId,
+                  sessionId: event.sessionId,
+                  projectPath,
+                  prompt: waitPrompt,
+                },
+              },
+            },
+            {
+              invocationId: `control-hook-wait-${Date.now()}`,
+              cwd: projectPath,
+              timestamp: new Date().toISOString(),
+              sessionId: event.sessionId,
+              agentId: ownerAgentId,
+              channelId: 'system',
+            },
+          );
+          emitControlHookActionNotice(event, hook, 'scheduled_wait_resume', {
+            waitSeconds,
+            timerId: timerResult.timer_id,
+          });
+          continue;
+        }
+
+        if (hook === 'hook.context.review') {
+          const mode = controlHint === 'aggressive' ? 'aggressive' : 'moderate';
+          const rebuildResult = await contextBuilderRebuildTool.execute(
+            {
+              session_id: event.sessionId,
+              agent_id: ownerAgentId,
+              mode,
+              current_prompt: typeof payload.replyPreview === 'string' ? payload.replyPreview : undefined,
+              _runtime_context: {
+                ...(sessionLedgerRoot ? { root_dir: sessionLedgerRoot } : {}),
+              },
+            },
+            {
+              invocationId: `control-hook-rebuild-${Date.now()}`,
+              cwd: projectPath,
+              timestamp: new Date().toISOString(),
+              sessionId: event.sessionId,
+              agentId: ownerAgentId,
+              channelId: 'system',
+            },
+          );
+          emitControlHookActionNotice(event, hook, 'rebuild_applied', {
+            buildMode: rebuildResult.buildMode,
+            selectedBlockCount: rebuildResult.selectedBlockIds.length,
+          });
+          continue;
+        }
+
+        if (hook === 'hook.digest.negative') {
+          const digested = typeof runtime?.maybeAutoDigestOnStop === 'function'
+            ? await runtime.maybeAutoDigestOnStop(event.sessionId, `${turnId}:negative`)
+            : false;
+          emitControlHookActionNotice(event, hook, 'digest_incremental_triggered', { digested });
+          continue;
+        }
+
+        if (hook === 'hook.digest.defer_positive') {
+          emitControlHookActionNotice(event, hook, 'deferred_to_compaction');
+          continue;
+        }
+
+        if (hook === 'hook.user.profile.update' || hook === 'hook.user.guardrails.candidate') {
+          const userPatchItems = toUniqueStringArray(userProfilePatch?.items, 64);
+          const why = typeof userSignal?.why === 'string' ? userSignal.why.trim() : '';
+          const negativeScore = parseInteger(userSignal?.negative_score, 0);
+          const lines = [
+            `source_session: ${event.sessionId}`,
+            `source_turn: ${turnId}`,
+            `hook: ${hook}`,
+            `negative_score: ${negativeScore}`,
+            ...(why ? [`reason: ${why}`] : []),
+            ...antiPatterns.map((item) => `anti_pattern: ${item}`),
+            ...userPatchItems.map((item) => `profile_patch: ${item}`),
+          ];
+          const writeResult = await appendMarkdownEntry({
+            filePath: join(FINGER_PATHS.home, 'USER.md'),
+            title: `Control Hook Update (${hook})`,
+            idempotencyKey: dedupeKey,
+            lines,
+          });
+          emitControlHookActionNotice(event, hook, writeResult.written ? 'user_profile_appended' : 'user_profile_skipped', {
+            filePath: writeResult.filePath,
+          });
+          continue;
+        }
+
+        if (hook === 'hook.dispatch' || hook === 'hook.reviewer') {
+          if (typeof dispatchTaskToAgent !== 'function') {
+            emitControlHookActionNotice(event, hook, 'skipped_dispatch_bridge_unavailable');
+            continue;
+          }
+          const enforcePrompt = [
+            '[CONTROL HOOK ENFORCEMENT]',
+            `hook=${hook}`,
+            `session=${event.sessionId}`,
+            `turn=${turnId}`,
+            'The previous turn indicates mandatory control action is still pending.',
+            hook === 'hook.dispatch'
+              ? 'You must perform required task dispatch now and keep task identity/ownership consistent.'
+              : 'You must trigger required reviewer path now with explicit review payload and evidence.',
+          ].join('\n');
+          const dispatchResult = await dispatchTaskToAgent({
+            sourceAgentId: 'control-hook-enforcer',
+            targetAgentId: ownerAgentId,
+            task: { prompt: enforcePrompt },
+            sessionId: event.sessionId,
+            metadata: {
+              source: 'control_hook',
+              role: 'system',
+              controlHook: hook,
+              controlHookTurnId: turnId,
+              controlHookEnforced: true,
+            },
+            blocking: false,
+            queueOnBusy: true,
+            maxQueueWaitMs: 60_000,
+          });
+          emitControlHookActionNotice(event, hook, 'enforcement_dispatched', {
+            targetAgentId: ownerAgentId,
+            result: isObjectRecord(dispatchResult) ? dispatchResult.status ?? dispatchResult.ok : undefined,
+          });
+          continue;
+        }
+
+        if (hook === 'hook.project.flow.update') {
+          const changes = toUniqueStringArray(flowPatch?.changes, 64);
+          const lines = [
+            `source_session: ${event.sessionId}`,
+            `source_turn: ${turnId}`,
+            ...changes.map((item) => `flow_change: ${item}`),
+          ];
+          const writeResult = await appendMarkdownEntry({
+            filePath: join(projectPath, 'FLOW.md'),
+            title: 'Control Hook Flow Patch',
+            idempotencyKey: dedupeKey,
+            lines,
+          });
+          emitControlHookActionNotice(event, hook, writeResult.written ? 'flow_appended' : 'flow_skipped', {
+            filePath: writeResult.filePath,
+          });
+          continue;
+        }
+
+        if (hook === 'hook.project.memory.update') {
+          const longTerm = toUniqueStringArray(memoryPatch?.long_term_items, 64);
+          const shortTerm = toUniqueStringArray(memoryPatch?.short_term_items, 64);
+          const lines = [
+            `source_session: ${event.sessionId}`,
+            `source_turn: ${turnId}`,
+            ...longTerm.map((item) => `long_term: ${item}`),
+            ...shortTerm.map((item) => `short_term: ${item}`),
+          ];
+          const writeResult = await appendMarkdownEntry({
+            filePath: join(projectPath, 'MEMORY.md'),
+            title: 'Control Hook Memory Patch',
+            idempotencyKey: dedupeKey,
+            lines,
+          });
+          emitControlHookActionNotice(event, hook, writeResult.written ? 'memory_appended' : 'memory_skipped', {
+            filePath: writeResult.filePath,
+          });
+          continue;
+        }
+
+        // For remaining hooks, emit explicit action notice to make it auditable.
+        emitControlHookActionNotice(event, hook, 'acknowledged_noop');
+      } catch (error) {
+        logger.module('event-forwarding').warn('Failed to execute control hook action', {
+          sessionId: event.sessionId,
+          hook,
+          turnId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+        emitControlHookActionNotice(event, hook, 'failed', {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
   };
 
   const persistSessionEventMessage = (
@@ -136,7 +553,9 @@ export function attachEventForwarding(deps: EventForwardingDeps): {
   const resolveStopGateState = (event: ChatCodexLoopEvent): {
     requiresStopTool: boolean;
     stopToolSeen: boolean;
+    controlGateHold: boolean;
     holding: boolean;
+    holdReason?: string;
   } => {
     const policy = resolveStopReasoningPolicy();
     const requiresStopTool = policy.requireToolForStop;
@@ -145,17 +564,28 @@ export function attachEventForwarding(deps: EventForwardingDeps): {
       ? event.payload.finishReason.trim().toLowerCase()
       : '';
     const pendingInputAccepted = event.phase === 'turn_complete' && event.payload.pendingInputAccepted === true;
-    const holding = event.phase === 'turn_complete'
+    const stopToolHolding = event.phase === 'turn_complete'
       && finishReason === 'stop'
       && !pendingInputAccepted
       && requiresStopTool
       && !stopToolSeen;
-    return { requiresStopTool, stopToolSeen, holding };
+    const controlGateHold = event.phase === 'turn_complete'
+      && finishReason === 'stop'
+      && !pendingInputAccepted
+      && event.payload.controlGateHold === true;
+    const holding = stopToolHolding || controlGateHold;
+    const holdReason = stopToolHolding
+      ? 'finish_reason=stop but reasoning.stop was not called'
+      : controlGateHold
+        ? 'finish_reason=stop but control block is missing/invalid or evidence is not ready'
+        : undefined;
+    return { requiresStopTool, stopToolSeen, controlGateHold, holding, holdReason };
   };
   const emitLoopEventToEventBus = (event: ChatCodexLoopEvent): void => {
     if (!event.sessionId || event.sessionId === 'unknown') return;
     if (event.phase === 'turn_start') {
       stopToolSeenBySession.set(event.sessionId, false);
+      latestStopSummaryBySession.delete(event.sessionId);
       applyExecutionLifecycleTransition(sessionManager, event.sessionId, {
         stage: 'running',
         substage: 'turn_start',
@@ -190,7 +620,7 @@ export function attachEventForwarding(deps: EventForwardingDeps): {
         detail: pendingInputAccepted
           ? (typeof event.payload.pendingTurnId === 'string' ? `pendingTurn=${event.payload.pendingTurnId}` : 'pending input accepted')
           : stopGateState.holding
-            ? 'finish_reason=stop but reasoning.stop was not called'
+            ? stopGateState.holdReason
           : typeof event.payload.replyPreview === 'string'
             ? event.payload.replyPreview.slice(0, 120)
             : undefined,
@@ -215,6 +645,12 @@ export function attachEventForwarding(deps: EventForwardingDeps): {
         const policy = resolveStopReasoningPolicy();
         if (isStopReasoningStopTool(toolName, policy.stopToolNames)) {
           stopToolSeenBySession.set(event.sessionId, true);
+        }
+      } else if (event.payload.type === 'tool_result') {
+        const policy = resolveStopReasoningPolicy();
+        const stopSummary = extractStopSummaryFromToolPayload(event.payload, policy.stopToolNames);
+        if (typeof stopSummary === 'string' && stopSummary.trim().length > 0) {
+          latestStopSummaryBySession.set(event.sessionId, stopSummary.trim());
         }
       }
       if (event.payload.type === 'tool_call') {
@@ -261,13 +697,45 @@ export function attachEventForwarding(deps: EventForwardingDeps): {
       }
     }
     if (event.phase === 'turn_complete' || event.phase === 'turn_error') {
+      if (event.phase === 'turn_complete' && isObjectRecord(event.payload)) {
+        const controlHooks = extractControlHookNames(event.payload);
+        if (controlHooks.length > 0) {
+          for (const hookName of controlHooks) {
+            void eventBus.emit({
+              type: 'system_notice',
+              sessionId: event.sessionId,
+              timestamp: event.timestamp,
+              payload: {
+                source: 'control_hook',
+                hook: hookName,
+                controlBlockValid: event.payload.controlBlockValid === true,
+              },
+            });
+          }
+          void executeControlHookActions(event);
+        }
+      }
       const stopGateState = resolveStopGateState(event);
       const shouldFinalizeTurn = event.phase === 'turn_error' || !stopGateState.holding;
       const finalizeFinishReason = event.phase === 'turn_complete'
         && typeof event.payload.finishReason === 'string'
         ? event.payload.finishReason
         : undefined;
+      const finalizeTurnId = event.phase === 'turn_complete'
+        && typeof event.payload.responseId === 'string'
+        && event.payload.responseId.trim().length > 0
+        ? event.payload.responseId.trim()
+        : undefined;
       if (shouldFinalizeTurn) {
+        if (event.phase === 'turn_complete' && finalizeFinishReason === 'stop' && runtime?.maybeAutoDigestOnStop) {
+          void runtime.maybeAutoDigestOnStop(event.sessionId, finalizeTurnId).catch((error) => {
+            logger.module('event-forwarding').warn('Failed to run auto stop digest', {
+              sessionId: event.sessionId,
+              turnId: finalizeTurnId,
+              error: error instanceof Error ? error.message : String(error),
+            });
+          });
+        }
         const sessionManagerWithTransientFinalize = sessionManager as {
           finalizeTransientLedgerMode?: (
             sessionId: string,
@@ -287,9 +755,15 @@ export function attachEventForwarding(deps: EventForwardingDeps): {
           });
         }
         const latestBody = latestBodyBySession.get(event.sessionId);
+        const stopSummary = event.phase === 'turn_complete'
+          && finalizeFinishReason === 'stop'
+          ? latestStopSummaryBySession.get(event.sessionId)
+          : undefined;
         if (agentStatusSubscriber) {
           const finalReply = event.phase === 'turn_complete'
-            ? (latestBody || (typeof event.payload.replyPreview === 'string' ? event.payload.replyPreview : ''))
+            ? (stopSummary
+              || latestBody
+              || (typeof event.payload.replyPreview === 'string' ? event.payload.replyPreview : ''))
             : (typeof event.payload.error === 'string' ? `处理失败：${event.payload.error}` : '处理失败，请稍后再试');
           agentStatusSubscriber.finalizeChannelTurn(
             event.sessionId,
@@ -306,14 +780,21 @@ export function attachEventForwarding(deps: EventForwardingDeps): {
           });
         }
         latestBodyBySession.delete(event.sessionId);
+        latestStopSummaryBySession.delete(event.sessionId);
         stopToolSeenBySession.delete(event.sessionId);
-      } else if (agentStatusSubscriber) {
-        const holdNotice = '继续执行：检测到 finish_reason=stop，但未调用 reasoning.stop，当前轮不会收口。';
-        agentStatusSubscriber.sendBodyUpdate(event.sessionId, generalAgentId, holdNotice).catch((err) => {
-          logger.module('event-forwarding').warn('Failed to send stop-tool hold notice', {
-            sessionId: event.sessionId,
-            error: err instanceof Error ? err.message : String(err),
-          });
+      } else {
+        void eventBus.emit({
+          type: 'system_notice',
+          sessionId: event.sessionId,
+          timestamp: event.timestamp,
+          payload: {
+            source: 'stop_gate',
+            hold: true,
+            holdReason: stopGateState.holdReason ?? null,
+            controlGateHold: stopGateState.controlGateHold,
+            requiresStopTool: stopGateState.requiresStopTool,
+            stopToolSeen: stopGateState.stopToolSeen,
+          },
         });
       }
     }
@@ -400,6 +881,18 @@ export function attachEventForwarding(deps: EventForwardingDeps): {
       const contextUsagePercent = typeof event.payload.contextUsagePercent === 'number'
         ? event.payload.contextUsagePercent
         : undefined;
+      const estimatedTokensInContextWindow =
+        typeof event.payload.estimatedTokensInContextWindow === 'number'
+          ? event.payload.estimatedTokensInContextWindow
+          : undefined;
+      const maxInputTokens =
+        typeof event.payload.maxInputTokens === 'number'
+          ? event.payload.maxInputTokens
+          : undefined;
+      const contextBreakdown =
+        isObjectRecord(event.payload.contextBreakdown)
+          ? event.payload.contextBreakdown
+          : undefined;
       const turnId = typeof event.payload.responseId === 'string' && event.payload.responseId.trim().length > 0
         ? event.payload.responseId.trim()
         : typeof event.payload.round === 'number'
@@ -413,6 +906,11 @@ export function attachEventForwarding(deps: EventForwardingDeps): {
           payload: {
             source: 'auto_compact_probe',
             contextUsagePercent,
+            ...(typeof estimatedTokensInContextWindow === 'number'
+              ? { estimatedTokensInContextWindow }
+              : {}),
+            ...(typeof maxInputTokens === 'number' ? { maxInputTokens } : {}),
+            ...(contextBreakdown ? { contextBreakdown } : {}),
             turnId,
           },
         });

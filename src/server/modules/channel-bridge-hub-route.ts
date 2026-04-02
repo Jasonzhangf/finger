@@ -19,15 +19,16 @@ import type { AgentStatusSubscriber } from './agent-status-subscriber.js';
 import { SYSTEM_PROJECT_PATH } from '../../agents/finger-system-agent/index.js';
 import {
   addAgentPrefix,
-  buildNonImageAttachmentPrompt,
   isAttachmentMarkerText,
   isDuplicateMessage,
   looksLikeCurrentTurnMediaRequest,
   resolveSessionForChannelTarget,
   sanitizePromptForInjectedImages,
+  splitInboundAttachmentsByWhitelist,
   toKernelHistoryItems,
   toKernelInputItemsFromAttachments,
 } from './channel-bridge-hub-route-helpers.js';
+import { triggerChannelLinkAutoDetail } from './channel-link-auto-detail.js';
 
 const log = logger.module('ChannelBridgeHubRoute');
 
@@ -248,14 +249,28 @@ export function createChannelBridgeHubRoute(deps: ChannelBridgeHubRouteDeps) {
     // 解析命令时剥离 marker，传递给 agent 的内容不包含 <##...##>
     const cleanContent = parsed.effectiveContent || channelMsg.content;
 
-    // 处理附件（图片等）：图片走 inputItems；非图片附件提供最小可读提示
+    // 处理附件（白名单）：当前仅允许 image。其他类型直接拒绝本轮输入，避免污染推理会话。
     let enrichedContent = cleanContent;
     let kernelInputItems: Array<Record<string, unknown>> = [];
-    const channelAttachments = Array.isArray(channelMsg.attachments) ? channelMsg.attachments : [];
+    const rawAttachments = Array.isArray(channelMsg.attachments) ? channelMsg.attachments : [];
+    const { accepted: channelAttachments, rejected: rejectedAttachments } = splitInboundAttachmentsByWhitelist(rawAttachments);
+    if (rejectedAttachments.length > 0) {
+      const rejectedTypes = Array.from(new Set(rejectedAttachments
+        .map((attachment) => (typeof attachment?.type === 'string' ? attachment.type : 'unknown'))
+        .filter((type) => type.length > 0)));
+      log.warn('Ignored unsupported inbound channel attachments by whitelist', {
+        channelId: channelMsg.channelId,
+        messageId: channelMsg.id,
+        senderId: channelMsg.senderId,
+        rejectedTypes,
+        rejectedCount: rejectedAttachments.length,
+      });
+      // Jason 规则：不支持附件仅剥离，不丢弃整条输入。
+      // 继续处理文本与支持的附件（当前支持 image）。
+    }
     let missingCurrentMediaAttachment = false;
     if (channelAttachments.length > 0) {
       const imageAttachments = channelAttachments.filter((a: any) => a.type === 'image' && a.url);
-      const nonImageAttachments = channelAttachments.filter((a: any) => a.type !== 'image' && a.url);
       if (imageAttachments.length > 0) {
         kernelInputItems = toKernelInputItemsFromAttachments(channelMsg);
         log.info('Message contains image attachments', {
@@ -270,9 +285,6 @@ export function createChannelBridgeHubRoute(deps: ChannelBridgeHubRouteDeps) {
         if (!enrichedContent || enrichedContent.trim().length === 0 || isAttachmentMarkerText(enrichedContent)) {
           enrichedContent = '请描述这张图片的内容。';
         }
-      }
-      if (nonImageAttachments.length > 0 && (!enrichedContent || enrichedContent.trim().length === 0 || isAttachmentMarkerText(enrichedContent))) {
-        enrichedContent = buildNonImageAttachmentPrompt(nonImageAttachments);
       }
     } else if (looksLikeCurrentTurnMediaRequest(enrichedContent)) {
       missingCurrentMediaAttachment = true;
@@ -289,8 +301,19 @@ export function createChannelBridgeHubRoute(deps: ChannelBridgeHubRouteDeps) {
       });
     }
 
-    // Check channel policy
+    // Check channel policy / channel automation config
     const fingerConfig = await loadFingerConfig();
+    void triggerChannelLinkAutoDetail({
+      channelId: channelMsg.channelId,
+      messageId: channelMsg.id,
+      content: cleanContent,
+      fingerConfig,
+    }).catch((error) => {
+      log.error('channel link auto-detail trigger failed', error instanceof Error ? error : undefined, {
+        channelId: channelMsg.channelId,
+        messageId: channelMsg.id,
+      });
+    });
     const channelPolicy = getChannelAuth(fingerConfig, channelMsg.channelId);
     if (channelPolicy === 'mailbox') {
       log.info('Channel policy is mailbox, creating pending entry');
@@ -315,22 +338,6 @@ export function createChannelBridgeHubRoute(deps: ChannelBridgeHubRouteDeps) {
     // Auto-reply handled by event-forwarding
     // // Auto-reply removed - handled by event-forwarding turn_start reasoning pulse
     // User will see progress updates via update_progress tool or reasoning events
-
-    // 将用户原始输入以 'user' 角色写入 session（保证 WebUI 可见）
-    void sessionManager.addMessage(fixedSessionId, 'user', enrichedContent, {
-      agentId: targetAgentId,
-      type: 'text',
-      metadata: {
-        channelId: channelMsg.channelId,
-        senderId: channelMsg.senderId,
-        senderName: channelMsg.senderName,
-        messageId: channelMsg.id,
-        // 附件不保存完整对象，只保留占位摘要（已在 enrichedContent 中）
-        ...(Array.isArray(channelMsg.attachments) && channelMsg.attachments.length > 0
-          ? { hasAttachments: true, attachmentCount: channelMsg.attachments.length }
-          : {}),
-      },
-    });
 
     // Dispatch to current agent
     // Progress handled by ProgressMonitor
@@ -424,6 +431,38 @@ export function createChannelBridgeHubRoute(deps: ChannelBridgeHubRouteDeps) {
         success: typeof result === 'object' && result !== null && 'success' in result ? (result as any).success : undefined,
       });
 
+      const dispatchFailed = (() => {
+        if (!result || typeof result !== 'object') return false;
+        const typed = result as Record<string, unknown>;
+        if ('ok' in typed && typed.ok === false) return true;
+        if ('success' in typed && typed.success === false) return true;
+        if (typeof typed.status === 'string' && typed.status.toLowerCase() === 'failed') return true;
+        return false;
+      })();
+      if (!dispatchFailed) {
+        // 延后写盘：仅在请求成功发往目标模块后才持久化用户输入。
+        // 若本轮输入在发送前/发送中失败，则不写盘，避免下次恢复污染会话。
+        void sessionManager.addMessage(fixedSessionId, 'user', enrichedContent, {
+          agentId: targetAgentId,
+          type: 'text',
+          metadata: {
+            channelId: channelMsg.channelId,
+            senderId: channelMsg.senderId,
+            senderName: channelMsg.senderName,
+            messageId: channelMsg.id,
+            ...(channelAttachments.length > 0
+              ? { hasAttachments: true, attachmentCount: channelAttachments.length }
+              : {}),
+          },
+        });
+      } else {
+        log.warn('Skip persisting user turn because dispatch failed', {
+          sessionId: fixedSessionId,
+          channelId: channelMsg.channelId,
+          messageId: channelMsg.id,
+          targetAgentId,
+        });
+      }
 
       if (result && typeof result === 'object' && 'ok' in result) {
         if (result.ok && 'result' in result) {

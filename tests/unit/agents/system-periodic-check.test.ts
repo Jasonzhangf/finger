@@ -36,12 +36,12 @@ describe('PeriodicCheckRunner', () => {
     const dispatchMock = vi.fn();
     const deps = {
       agentRuntimeBlock: {
-        execute: async (command: string) => {
+        execute: async (command: string, payload?: Record<string, unknown>) => {
           if (command === 'runtime_view') {
             return { agents: [{ id: 'agent-1', status: 'idle' }] };
           }
           if (command === 'dispatch') {
-            dispatchMock();
+            dispatchMock(payload);
           }
           return {};
         },
@@ -52,5 +52,14 @@ describe('PeriodicCheckRunner', () => {
     await runner.runOnce();
 
     expect(dispatchMock).toHaveBeenCalledTimes(1);
+    expect(dispatchMock).toHaveBeenCalledWith(expect.objectContaining({
+      queueOnBusy: false,
+      maxQueueWaitMs: 0,
+      blocking: false,
+      metadata: expect.objectContaining({
+        source: 'system-heartbeat',
+        deliveryMode: 'direct',
+      }),
+    }));
   });
 });

@@ -20,6 +20,18 @@ import {
 } from './tool-authorization.js';
 import { executeContextLedgerMemory } from './context-ledger-memory.js';
 import { SessionControlPlaneStore } from './session-control-plane.js';
+import { SYSTEM_PROJECT_PATH } from '../agents/finger-system-agent/index.js';
+import {
+  getCompactionPrompt,
+  parseCompactionOutput,
+  validateSummary,
+} from '../agents/prompts/compaction-prompts.js';
+import {
+  buildProviderHeaders,
+  buildResponsesEndpoints,
+  resolveKernelProvider,
+} from '../core/kernel-provider-client.js';
+import { loadContextBuilderSettings } from '../core/user-settings.js';
 
 import { logger } from '../core/logger.js';
 
@@ -124,6 +136,9 @@ const AUTO_CONTEXT_COMPACT_COOLDOWN_MS = Number.isFinite(Number(process.env.FING
   : 60_000;
 const autoCompactStateBySession = new Map<string, { lastAttemptAt: number; lastTurnId?: string }>();
 const autoCompactInFlightBySession = new Map<string, Promise<boolean>>();
+const autoDigestStopStateBySession = new Map<string, { lastAttemptAt: number; lastTurnId?: string }>();
+const autoDigestStopInFlightBySession = new Map<string, Promise<boolean>>();
+const COMPACTION_PROMPT_PRESERVE_RECENT_COUNT = 8;
 
 interface CompactDigestTask {
   id: string;
@@ -133,10 +148,23 @@ interface CompactDigestTask {
   request: string;
   summary: string;
   key_tools: string[];
+  tool_calls?: Array<{
+    tool: string;
+    input?: string;
+    status: 'success' | 'failure' | 'unknown';
+    output?: string;
+  }>;
   key_reads: string[];
   key_writes: string[];
   tags?: string[];
   topic?: string;
+}
+
+interface CompactionModelAttemptResult {
+  summary?: string;
+  reason: string;
+  providerId: string;
+  providerModel?: string;
 }
 
 function truncateInline(text: string, max = 180): string {
@@ -214,13 +242,14 @@ function buildCompactReplacementHistory(messages: Array<Record<string, unknown>>
     const firstUser = task.entries.find((entry) => entry.role === 'user');
     const request = typeof firstUser?.content === 'string' ? truncateInline(firstUser.content, 220) : '(no user request)';
     const lastAssistant = [...task.entries].reverse().find((entry) => entry.role === 'assistant' || entry.role === 'orchestrator');
-    const summary = typeof lastAssistant?.content === 'string'
-      ? truncateInline(lastAssistant.content, 260)
+    const summary = typeof lastAssistant?.content === 'string' && lastAssistant.content.trim().length > 0
+      ? lastAssistant.content.trim()
       : 'Task executed without assistant completion summary.';
     const toolSet = new Set<string>();
     const readSet = new Set<string>();
     const writeSet = new Set<string>();
     const tagSet = new Set<string>();
+    const toolCalls: Array<{ tool: string; input?: string; status: 'success' | 'failure' | 'unknown'; output?: string }> = [];
     let topic: string | undefined;
 
     for (const entry of task.entries) {
@@ -248,6 +277,34 @@ function buildCompactReplacementHistory(messages: Array<Record<string, unknown>>
       const extracted = extractReadWritePaths(text);
       for (const read of extracted.reads) readSet.add(read);
       for (const write of extracted.writes) writeSet.add(write);
+
+      if (toolName) {
+        const statusRaw = typeof entry.toolStatus === 'string' ? entry.toolStatus.trim().toLowerCase() : '';
+        const status: 'success' | 'failure' | 'unknown' = statusRaw === 'success' || statusRaw === 'ok'
+          ? 'success'
+          : statusRaw === 'failure' || statusRaw === 'error' || statusRaw === 'failed'
+            ? 'failure'
+            : 'unknown';
+        const inputText = typeof entry.toolInput === 'string'
+          ? entry.toolInput.trim()
+          : entry.toolInput !== undefined
+            ? JSON.stringify(entry.toolInput)
+            : '';
+        const outputText = typeof entry.toolOutput === 'string'
+          ? entry.toolOutput.trim()
+          : entry.toolOutput !== undefined
+            ? JSON.stringify(entry.toolOutput)
+            : '';
+        const keepVerboseOutput = toolName === 'update_plan'
+          || toolName === 'reasoning.stop'
+          || toolName === 'report-task-completion';
+        toolCalls.push({
+          tool: toolName,
+          status,
+          ...(inputText.length > 0 ? { input: truncateInline(inputText, 400) } : {}),
+          ...(keepVerboseOutput && outputText.length > 0 ? { output: outputText } : {}),
+        });
+      }
     }
 
     const taskId = `task-${Date.parse(task.startAt) || Date.now()}-${index + 1}`;
@@ -258,13 +315,272 @@ function buildCompactReplacementHistory(messages: Array<Record<string, unknown>>
       end_time_iso: task.endAt,
       request,
       summary,
-      key_tools: Array.from(toolSet).slice(0, 12),
+      key_tools: Array.from(toolSet),
+      ...(toolCalls.length > 0 ? { tool_calls: toolCalls } : {}),
       key_reads: Array.from(readSet).slice(0, 8),
       key_writes: Array.from(writeSet).slice(0, 8),
       ...(tagSet.size > 0 ? { tags: Array.from(tagSet).slice(0, 12) } : {}),
       ...(topic ? { topic } : {}),
     };
   });
+}
+
+function extractResponseOutputText(data: Record<string, unknown>): string {
+  const outputText = data.output_text;
+  if (typeof outputText === 'string' && outputText.trim().length > 0) return outputText;
+  const output = Array.isArray(data.output) ? data.output : [];
+  for (const item of output) {
+    if (!item || typeof item !== 'object') continue;
+    const content = Array.isArray((item as Record<string, unknown>).content)
+      ? (item as Record<string, unknown>).content as Array<Record<string, unknown>>
+      : [];
+    for (const c of content) {
+      const text = c?.text;
+      if (typeof text === 'string' && text.trim().length > 0) return text;
+    }
+  }
+  return '';
+}
+
+function buildFallbackCompactionSummary(messages: Array<{ role: string; content: string }>): string {
+  const userMessages = messages
+    .filter((item) => item.role === 'user' && item.content.trim().length > 0)
+    .map((item) => truncateInline(item.content, 220))
+    .slice(-24);
+  const assistantMessages = messages
+    .filter((item) => item.role === 'assistant' && item.content.trim().length > 0)
+    .map((item) => truncateInline(item.content, 220))
+    .slice(-24);
+  const recentWork = messages
+    .slice(-10)
+    .map((item, index) => `${index + 1}. [${item.role}] ${truncateInline(item.content, 140)}`);
+  const filePathMatches = Array.from(
+    new Set(
+      messages
+        .flatMap((item) => item.content.match(/(?:~\/|\/)[^\s"'`]+/g) ?? [])
+        .slice(0, 40),
+    ),
+  );
+  const errorHighlights = messages
+    .map((item) => item.content)
+    .filter((content) => /(error|failed|timeout|exception|traceback)/i.test(content))
+    .map((content) => truncateInline(content, 200))
+    .slice(-12);
+  const primaryIntent = userMessages.length > 0
+    ? userMessages[userMessages.length - 1]
+    : 'No explicit user intent found in compressible messages.';
+
+  return [
+    '1. **Primary Request and Intent**:',
+    `   ${primaryIntent}`,
+    '',
+    '2. **Key Technical Concepts**:',
+    '   - Session compaction fallback summary',
+    '   - Deterministic digest preserved when provider compaction is unavailable',
+    '',
+    '3. **Files and Code Sections**:',
+    filePathMatches.length > 0
+      ? `   - ${filePathMatches.join('\n   - ')}`
+      : '   - No explicit file paths detected in compacted window.',
+    '',
+    '4. **Errors and Fixes**:',
+    errorHighlights.length > 0
+      ? `   - ${errorHighlights.join('\n   - ')}`
+      : '   - No explicit error snippets captured.',
+    '',
+    '5. **Problem Solving**:',
+    assistantMessages.length > 0
+      ? `   - ${assistantMessages.slice(-8).join('\n   - ')}`
+      : '   - No assistant problem-solving summaries captured.',
+    '',
+    '6. **All User Messages**:',
+    userMessages.length > 0
+      ? `   - ${userMessages.join('\n   - ')}`
+      : '   - No user messages captured.',
+    '',
+    '7. **Pending Tasks**:',
+    '   - Pending tasks must be inferred from latest user request and unfinished execution evidence.',
+    '',
+    '8. **Current Work**:',
+    recentWork.length > 0
+      ? `   - ${recentWork.join('\n   - ')}`
+      : '   - No recent work entries captured.',
+    '',
+    '9. **Optional Next Step**:',
+    '   - Resume from latest unfinished task and verify with evidence before closure.',
+  ].join('\n');
+}
+
+function resolveCompactionProviderCandidates(): string[] {
+  const contextBuilderSettings = loadContextBuilderSettings();
+  const preferredProviderId = typeof contextBuilderSettings.rankingProviderId === 'string'
+    ? contextBuilderSettings.rankingProviderId.trim()
+    : '';
+  const defaultProviderId = resolveKernelProvider(undefined).provider?.id?.trim() ?? '';
+  return [preferredProviderId, defaultProviderId]
+    .filter((item, index, arr): item is string => item.length > 0 && arr.indexOf(item) === index);
+}
+
+async function summarizeCompactionWithProvider(
+  providerId: string,
+  prompt: string,
+): Promise<CompactionModelAttemptResult> {
+  const providerResolved = resolveKernelProvider(providerId);
+  const provider = providerResolved.provider;
+  if (!provider) {
+    return { providerId, reason: providerResolved.reason ?? 'provider_not_found' };
+  }
+  if (provider.enabled === false) {
+    return {
+      providerId,
+      providerModel: provider.model,
+      reason: 'provider_disabled',
+    };
+  }
+  if (provider.wire_api !== 'responses') {
+    return {
+      providerId,
+      providerModel: provider.model,
+      reason: `unsupported_wire_api:${provider.wire_api}`,
+    };
+  }
+
+  const payload = {
+    model: provider.model,
+    reasoning: { effort: 'minimal' },
+    text: { verbosity: 'low' },
+    input: [
+      {
+        role: 'user',
+        content: [
+          {
+            type: 'input_text',
+            text: prompt,
+          },
+        ],
+      },
+    ],
+  };
+
+  try {
+    const endpoints = buildResponsesEndpoints(provider.base_url);
+    if (endpoints.length === 0) {
+      return { providerId, providerModel: provider.model, reason: 'provider_base_url_missing' };
+    }
+    const headers = buildProviderHeaders(provider);
+    let response: Response | null = null;
+    for (const endpoint of endpoints) {
+      const candidate = await fetch(endpoint, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify(payload),
+      });
+      if (candidate.status === 404) {
+        response = candidate;
+        continue;
+      }
+      response = candidate;
+      break;
+    }
+    if (!response || !response.ok) {
+      return {
+        providerId,
+        providerModel: provider.model,
+        reason: response ? `http_${response.status}` : 'http_unknown',
+      };
+    }
+    const data = await response.json() as Record<string, unknown>;
+    const outputText = extractResponseOutputText(data);
+    if (!outputText) {
+      return {
+        providerId,
+        providerModel: provider.model,
+        reason: 'empty_output',
+      };
+    }
+    const parsed = parseCompactionOutput(outputText);
+    const normalizedSummary = typeof parsed.summary === 'string' && parsed.summary.trim().length > 0
+      ? parsed.summary.trim()
+      : outputText.trim();
+    if (!normalizedSummary) {
+      return {
+        providerId,
+        providerModel: provider.model,
+        reason: 'empty_summary',
+      };
+    }
+    const validation = validateSummary(normalizedSummary);
+    if (!validation.complete) {
+      return {
+        providerId,
+        providerModel: provider.model,
+        reason: `incomplete_summary:${validation.missing.join('|')}`,
+      };
+    }
+    return {
+      providerId,
+      providerModel: provider.model,
+      summary: normalizedSummary,
+      reason: 'ok',
+    };
+  } catch {
+    return {
+      providerId,
+      providerModel: provider.model,
+      reason: 'exception',
+    };
+  }
+}
+
+function createCompactionSummarizer(params: {
+  sessionId: string;
+  trigger?: 'manual' | 'auto';
+  contextUsagePercent?: number;
+}): ((messages: Array<{ role: string; content: string }>) => Promise<string>) | undefined {
+  const providerCandidates = resolveCompactionProviderCandidates();
+  if (providerCandidates.length === 0) return undefined;
+
+  return async (messages: Array<{ role: string; content: string }>): Promise<string> => {
+    const normalizedMessages = Array.isArray(messages)
+      ? messages
+        .filter((item) => typeof item.content === 'string' && item.content.trim().length > 0)
+        .map((item) => ({
+          role: typeof item.role === 'string' && item.role.trim().length > 0 ? item.role.trim() : 'user',
+          content: item.content,
+        }))
+      : [];
+    if (normalizedMessages.length === 0) return 'No compressible messages';
+
+    const compactionPrompt = getCompactionPrompt({
+      messages: normalizedMessages,
+      preserveRecentCount: COMPACTION_PROMPT_PRESERVE_RECENT_COUNT,
+      customInstructions: [
+        `session_id=${params.sessionId}`,
+        `trigger=${params.trigger ?? 'manual'}`,
+        typeof params.contextUsagePercent === 'number' && Number.isFinite(params.contextUsagePercent)
+          ? `context_usage_percent=${Math.floor(params.contextUsagePercent)}`
+          : '',
+        'Preserve task lifecycle markers (update_plan, agent.dispatch, review result, task result) in summary.',
+      ].filter((line) => line.length > 0).join('\n'),
+    });
+
+    const attempts: string[] = [];
+    for (const providerId of providerCandidates) {
+      const attempted = await summarizeCompactionWithProvider(providerId, compactionPrompt);
+      if (typeof attempted.summary === 'string' && attempted.summary.trim().length > 0) {
+        return attempted.summary;
+      }
+      attempts.push(`${attempted.providerId}:${attempted.reason}`);
+    }
+
+    log.warn('Compaction summarizer provider attempts exhausted; fallback to deterministic digest summary', {
+      sessionId: params.sessionId,
+      trigger: params.trigger ?? 'manual',
+      contextUsagePercent: params.contextUsagePercent,
+      attempts,
+    });
+    return buildFallbackCompactionSummary(normalizedMessages);
+  };
 }
 
 export class RuntimeFacade {
@@ -286,6 +602,91 @@ export class RuntimeFacade {
     if (wsClients) {
       // eventBus 将在发送时直接检查 wsClients
     }
+  }
+
+  private isEphemeralDispatchSessionId(sessionId: string): boolean {
+    return /^dispatch-/i.test(sessionId.trim());
+  }
+
+  private isSystemAgent(agentId: string): boolean {
+    return agentId.trim() === 'finger-system-agent';
+  }
+
+  private isSessionAllowedForAgent(agentId: string, session: SessionInfo): boolean {
+    const normalizedAgentId = agentId.trim();
+    const context = (session.context && typeof session.context === 'object')
+      ? (session.context as Record<string, unknown>)
+      : {};
+    const ownerAgentId = typeof context.ownerAgentId === 'string' ? context.ownerAgentId.trim() : '';
+    const sessionTier = typeof context.sessionTier === 'string' ? context.sessionTier.trim().toLowerCase() : '';
+    const isSystemSession = session.projectPath === SYSTEM_PROJECT_PATH
+      || sessionTier === 'system'
+      || ownerAgentId === 'finger-system-agent'
+      || session.id.startsWith('system-');
+
+    if (ownerAgentId && ownerAgentId !== normalizedAgentId) {
+      return false;
+    }
+    if (this.isSystemAgent(normalizedAgentId)) {
+      return isSystemSession;
+    }
+    return !isSystemSession;
+  }
+
+  private isBindableSessionId(agentId: string, sessionId: string): boolean {
+    const normalized = sessionId.trim();
+    if (normalized.length === 0) return false;
+    if (normalized === 'default') return false;
+    if (this.isEphemeralDispatchSessionId(normalized)) return false;
+    const session = this.sessionManager.getSession(normalized);
+    if (!session) return false;
+    return this.isSessionAllowedForAgent(agentId, session);
+  }
+
+  private sanitizeToolSessionCandidate(
+    agentId: string,
+    candidate: string | null | undefined,
+    source: string,
+    options?: { suppressWarn?: boolean },
+  ): string | null {
+    if (!candidate) return null;
+    const normalized = candidate.trim();
+    if (!normalized) return null;
+    if (this.isBindableSessionId(agentId, normalized)) return normalized;
+    if (!options?.suppressWarn) {
+      log.warn('Ignored invalid tool session candidate', {
+        agentId,
+        source,
+        sessionId: normalized,
+        reason: this.isEphemeralDispatchSessionId(normalized)
+          ? 'ephemeral_dispatch_id_forbidden'
+          : 'session_not_found_or_agent_scope_forbidden',
+      });
+    }
+    return null;
+  }
+
+  private resolvePersistedAgentSessionBinding(agentId: string): string | null {
+    const normalizedAgentId = agentId.trim();
+    if (!normalizedAgentId) return null;
+    try {
+      const records = this.sessionControlPlaneStore.list({ agentId: normalizedAgentId, provider: 'finger' });
+      for (const record of records) {
+        const candidate = this.sanitizeToolSessionCandidate(
+          normalizedAgentId,
+          record.fingerSessionId,
+          'callTool.persistedAgentBinding',
+          { suppressWarn: true },
+        );
+        if (candidate) return candidate;
+      }
+    } catch (error) {
+      log.warn('Failed to resolve persisted agent-session binding', {
+        agentId: normalizedAgentId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+    return null;
   }
 
   // ==================== Session 管理 ====================
@@ -336,6 +737,14 @@ export class RuntimeFacade {
    * 设置当前会话
    */
   setCurrentSession(sessionId: string): boolean {
+    if (this.isEphemeralDispatchSessionId(sessionId)) {
+      log.warn('Rejected runtime current-session switch to ephemeral dispatch id', { sessionId });
+      return false;
+    }
+    if (!this.sessionManager.getSession(sessionId)) {
+      log.warn('Rejected runtime current-session switch to non-existent session', { sessionId });
+      return false;
+    }
     const result = this.sessionManager.setCurrentSession(sessionId);
     if (result) {
       this.currentSessionId = sessionId;
@@ -472,14 +881,20 @@ export class RuntimeFacade {
   ): Promise<unknown> {
     const startTime = Date.now();
     const toolId = `${agentId}-${toolName}-${startTime}`;
-    const optionSessionId = typeof options.sessionId === 'string' && options.sessionId.trim().length > 0
-      ? options.sessionId.trim()
-      : null;
-    const boundSessionId = this.agentSessionBindings.get(agentId) ?? null;
+    const optionSessionId = this.sanitizeToolSessionCandidate(
+      agentId,
+      typeof options.sessionId === 'string' ? options.sessionId : null,
+      'callTool.options.sessionId',
+    );
+    const boundSessionId = this.sanitizeToolSessionCandidate(
+      agentId,
+      this.agentSessionBindings.get(agentId) ?? null,
+      'callTool.boundAgentSession',
+    );
+    const persistedSessionId = this.resolvePersistedAgentSessionBinding(agentId);
     const sessionId = optionSessionId
       ?? boundSessionId
-      ?? this.currentSessionId
-      ?? this.sessionManager.getCurrentSession()?.id
+      ?? persistedSessionId
       ?? 'default';
     if (sessionId !== 'default') {
       this.agentSessionBindings.set(agentId, sessionId);
@@ -638,6 +1053,16 @@ export class RuntimeFacade {
     const normalizedAgentId = agentId.trim();
     const normalizedSessionId = sessionId.trim();
     if (normalizedAgentId.length === 0 || normalizedSessionId.length === 0) return;
+    if (!this.isBindableSessionId(normalizedAgentId, normalizedSessionId)) {
+      log.warn('Rejected agent-session binding', {
+        agentId: normalizedAgentId,
+        sessionId: normalizedSessionId,
+        reason: this.isEphemeralDispatchSessionId(normalizedSessionId)
+          ? 'ephemeral_dispatch_id_forbidden'
+          : 'session_not_found_or_agent_scope_forbidden',
+      });
+      return;
+    }
     this.agentSessionBindings.set(normalizedAgentId, normalizedSessionId);
     try {
       const provider = 'finger';
@@ -661,6 +1086,25 @@ export class RuntimeFacade {
         error: error instanceof Error ? error.message : String(error),
       });
     }
+  }
+
+  /**
+   * Resolve the current preferred session binding for an agent.
+   * Used by dispatch/session orchestration to keep agent runtime stable across turns/restarts.
+   */
+  getBoundSessionId(agentId: string): string | null {
+    const normalizedAgentId = agentId.trim();
+    if (!normalizedAgentId) return null;
+    const bound = this.sanitizeToolSessionCandidate(
+      normalizedAgentId,
+      this.agentSessionBindings.get(normalizedAgentId) ?? null,
+      'runtime.getBoundSessionId.bound',
+    );
+    if (bound) return bound;
+    const persisted = this.resolvePersistedAgentSessionBinding(normalizedAgentId);
+    if (!persisted) return null;
+    this.agentSessionBindings.set(normalizedAgentId, persisted);
+    return persisted;
   }
 
   private async appendViewImageAttachmentEvent(sessionId: string, toolResult: unknown): Promise<void> {
@@ -1001,7 +1445,12 @@ export class RuntimeFacade {
     }
 
     const originalSize = session.messageCount ?? 0;
-    const summary = await this.sessionManager.compressContext(sessionId);
+    const summarizer = createCompactionSummarizer({
+      sessionId,
+      trigger: options?.trigger,
+      contextUsagePercent: options?.contextUsagePercent,
+    });
+    const summary = await this.sessionManager.compressContext(sessionId, summarizer);
     const compressedSize = summary.length;
     const nowIso = new Date().toISOString();
 
@@ -1133,6 +1582,90 @@ export class RuntimeFacade {
       return await compactJob;
     } finally {
       autoCompactInFlightBySession.delete(normalizedSessionId);
+    }
+  }
+
+  async maybeAutoDigestOnStop(sessionId: string, turnId?: string): Promise<boolean> {
+    const normalizedSessionId = typeof sessionId === 'string' ? sessionId.trim() : '';
+    if (!normalizedSessionId) return false;
+    const existing = autoDigestStopInFlightBySession.get(normalizedSessionId);
+    if (existing) return existing;
+
+    const digestJob = (async () => {
+      const now = Date.now();
+      const normalizedTurnId = typeof turnId === 'string' && turnId.trim().length > 0
+        ? turnId.trim()
+        : undefined;
+      const state = autoDigestStopStateBySession.get(normalizedSessionId);
+      if (state && normalizedTurnId && state.lastTurnId === normalizedTurnId) return false;
+      autoDigestStopStateBySession.set(normalizedSessionId, {
+        lastAttemptAt: now,
+        ...(normalizedTurnId ? { lastTurnId: normalizedTurnId } : {}),
+      });
+
+      const session = this.sessionManager.getSession(normalizedSessionId);
+      if (!session) return false;
+      const sessionContext = session.context ?? {};
+      const ownerAgentId = typeof sessionContext.ownerAgentId === 'string' && sessionContext.ownerAgentId.trim().length > 0
+        ? sessionContext.ownerAgentId.trim()
+        : 'finger-project-agent';
+      const mode = typeof sessionContext.sessionTier === 'string' && sessionContext.sessionTier.trim().length > 0
+        ? sessionContext.sessionTier.trim()
+        : 'main';
+
+      try {
+        const digestResult = await executeContextLedgerMemory({
+          action: 'digest_incremental',
+          session_id: normalizedSessionId,
+          agent_id: ownerAgentId,
+          mode,
+          trigger: 'auto',
+          _runtime_context: {
+            session_id: normalizedSessionId,
+            agent_id: ownerAgentId,
+            mode,
+          },
+        });
+        if (digestResult.action !== 'digest_incremental') return false;
+        if (digestResult.no_new_entries === true || digestResult.task_digest_count <= 0) {
+          log.info('Auto stop digest skipped (no new entries)', {
+            sessionId: normalizedSessionId,
+            turnId: normalizedTurnId,
+            sourceSlotStart: digestResult.source_slot_start,
+            sourceSlotEnd: digestResult.source_slot_end,
+            previousCompactedSlotEnd: digestResult.previous_compacted_slot_end,
+          });
+          return false;
+        }
+        this.updateSessionContext(normalizedSessionId, {
+          contextDigestLastSourceSlotStart: digestResult.source_slot_start,
+          contextDigestLastSourceSlotEnd: digestResult.source_slot_end,
+          contextDigestLastUpdatedAt: new Date().toISOString(),
+        });
+        log.info('Auto stop digest completed', {
+          sessionId: normalizedSessionId,
+          turnId: normalizedTurnId,
+          taskDigestCount: digestResult.task_digest_count,
+          sourceSlotStart: digestResult.source_slot_start,
+          sourceSlotEnd: digestResult.source_slot_end,
+          previousCompactedSlotEnd: digestResult.previous_compacted_slot_end,
+        });
+        return true;
+      } catch (error) {
+        log.warn('Auto stop digest failed', {
+          sessionId: normalizedSessionId,
+          turnId: normalizedTurnId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+        return false;
+      }
+    })();
+
+    autoDigestStopInFlightBySession.set(normalizedSessionId, digestJob);
+    try {
+      return await digestJob;
+    } finally {
+      autoDigestStopInFlightBySession.delete(normalizedSessionId);
     }
   }
 

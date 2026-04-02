@@ -14,7 +14,6 @@ import {
   buildHeartbeatSummary,
   findPendingMeaningfulTool,
   formatElapsed,
-  isLowValueTask,
   isLowValueToolCall,
   shouldEmitHeartbeat,
 } from './progress-monitor-helpers.js';
@@ -56,6 +55,9 @@ export type {
 export class ProgressMonitor {
   private timer: NodeJS.Timeout | null = null;
   private config: Required<ProgressMonitorConfig>;
+  private lastConfigReloadAt = 0;
+  private configReloadInFlight: Promise<void> | null = null;
+  private static readonly CONFIG_RELOAD_COOLDOWN_MS = 5_000;
   // key: `${sessionId}::${agentId}`
   private sessionProgress = new Map<string, SessionProgress>();
   private _stopCleanup: (() => void) | null = null;
@@ -105,6 +107,7 @@ export class ProgressMonitor {
       intervalMs: config?.intervalMs ?? DEFAULT_PROGRESS_MONITOR_CONFIG.intervalMs,
       enabled: config?.enabled ?? DEFAULT_PROGRESS_MONITOR_CONFIG.enabled,
       progressUpdates: config?.progressUpdates ?? DEFAULT_PROGRESS_MONITOR_CONFIG.progressUpdates,
+      contextBreakdownMode: config?.contextBreakdownMode ?? DEFAULT_PROGRESS_MONITOR_CONFIG.contextBreakdownMode,
     };
   }
 
@@ -118,6 +121,8 @@ export class ProgressMonitor {
       log.info('[ProgressMonitor] Disabled by config');
       return;
     }
+
+    void this.refreshConfigIfNeeded(true);
 
     log.info(`[ProgressMonitor] Starting with interval ${this.config.intervalMs}ms`);
 
@@ -134,6 +139,59 @@ export class ProgressMonitor {
         log.error('[ProgressMonitor] Error generating progress report:', err);
       });
     }, this.config.intervalMs);
+  }
+
+  private restartReportTimer(): void {
+    if (this.timer) {
+      clearInterval(this.timer);
+      this.timer = null;
+    }
+    this.timer = setInterval(() => {
+      this.generateProgressReport().catch(err => {
+        log.error('[ProgressMonitor] Error generating progress report:', err);
+      });
+    }, this.config.intervalMs);
+  }
+
+  private async refreshConfigIfNeeded(force = false): Promise<void> {
+    const now = Date.now();
+    if (!force && now - this.lastConfigReloadAt < ProgressMonitor.CONFIG_RELOAD_COOLDOWN_MS) {
+      return;
+    }
+    if (this.configReloadInFlight) {
+      await this.configReloadInFlight;
+      return;
+    }
+    this.configReloadInFlight = (async () => {
+      try {
+        const loaded = await loadProgressMonitorConfig();
+        const intervalChanged = loaded.intervalMs !== this.config.intervalMs;
+        const modeChanged = loaded.contextBreakdownMode !== this.config.contextBreakdownMode;
+        this.config = {
+          ...this.config,
+          intervalMs: loaded.intervalMs,
+          enabled: loaded.enabled,
+          progressUpdates: loaded.progressUpdates,
+          contextBreakdownMode: loaded.contextBreakdownMode,
+        };
+        if (intervalChanged && this.timer) {
+          this.restartReportTimer();
+        }
+        if (modeChanged) {
+          log.info('[ProgressMonitor] contextBreakdownMode changed', {
+            contextBreakdownMode: this.config.contextBreakdownMode,
+          });
+        }
+      } catch (error) {
+        log.warn('[ProgressMonitor] Failed to refresh config, keep current', {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      } finally {
+        this.lastConfigReloadAt = Date.now();
+        this.configReloadInFlight = null;
+      }
+    })();
+    await this.configReloadInFlight;
   }
 
   stop(): void {
@@ -184,6 +242,7 @@ export class ProgressMonitor {
   }
 
   private async handleEvent(event: any): Promise<void> {
+    await this.refreshConfigIfNeeded();
     const sessionId = event.sessionId;
     if (!sessionId) return;
 
@@ -296,6 +355,7 @@ export class ProgressMonitor {
   }
 
   private async generateProgressReport(): Promise<void> {
+    await this.refreshConfigIfNeeded();
     if (!this.config.progressUpdates) return;
 
     const now = Date.now();
@@ -326,22 +386,13 @@ export class ProgressMonitor {
       // 仅发送新增工具调用（避免重复）
       const lastReportedSeq = p.lastReportedToolSeq ?? 0;
       const newToolCalls = p.toolCallHistory.filter((tool) => (tool.seq ?? 0) > lastReportedSeq);
-      const currentTaskChanged = (p.currentTask ?? '') !== (p.lastReportedCurrentTask ?? '');
-      const reasoningChanged = (p.latestReasoning ?? '') !== (p.lastReportedReasoning ?? '');
       const meaningfulToolCalls = newToolCalls.filter((tool) => !this.isLowValueToolCall(tool));
-      const meaningfulTaskChange = currentTaskChanged && !this.isLowValueTask(p.currentTask);
-      const contextChanged =
-        (p.contextUsagePercent ?? undefined) !== (p.lastReportedContextUsagePercent ?? undefined)
-        || (p.estimatedTokensInContextWindow ?? undefined) !== (p.lastReportedEstimatedTokensInContextWindow ?? undefined)
-        || (p.maxInputTokens ?? undefined) !== (p.lastReportedMaxInputTokens ?? undefined);
+      const contextBreakdownKey = p.contextBreakdown ? JSON.stringify(p.contextBreakdown) : '';
       const contextEventChanged =
         (p.lastContextEventAt ?? undefined) !== (p.lastReportedContextEventAt ?? undefined);
-      // 触发条件：工具调用、任务变化、reasoning 变化、上下文变化。
-      const hasMeaningfulSignal = meaningfulToolCalls.length > 0
-        || meaningfulTaskChange
-        || reasoningChanged
-        || contextChanged
-        || contextEventChanged;
+      // 硬约束：没有工具调用就不推送常规进度更新。
+      // 任务/reasoning/上下文变化仅用于补充已存在工具更新的摘要，不单独触发推送。
+      const hasMeaningfulSignal = newToolCalls.length > 0;
 
       // 没有真实信号时，仅在 stall 且存在挂起工具时发送心跳。
       if (!hasMeaningfulSignal) {
@@ -366,6 +417,7 @@ export class ProgressMonitor {
             p.lastReportedEstimatedTokensInContextWindow = p.estimatedTokensInContextWindow;
             p.lastReportedMaxInputTokens = p.maxInputTokens;
             p.lastReportedContextEventAt = p.lastContextEventAt;
+            p.lastReportedContextBreakdownKey = contextBreakdownKey;
           }
         }
         continue;
@@ -406,6 +458,7 @@ export class ProgressMonitor {
       p.lastReportedEstimatedTokensInContextWindow = p.estimatedTokensInContextWindow;
       p.lastReportedMaxInputTokens = p.maxInputTokens;
       p.lastReportedContextEventAt = p.lastContextEventAt;
+      p.lastReportedContextBreakdownKey = contextBreakdownKey;
     }
   }
 
@@ -434,6 +487,8 @@ export class ProgressMonitor {
       estimatedTokensInContextWindow: p.estimatedTokensInContextWindow,
       maxInputTokens: p.maxInputTokens,
       lastContextEvent: includeContextEvent ? p.lastContextEvent : undefined,
+      contextBreakdown: p.contextBreakdown,
+      contextBreakdownMode: this.config.contextBreakdownMode,
     };
     return buildCompactSummary(
       data,
@@ -444,10 +499,6 @@ export class ProgressMonitor {
         headerMode: 'minimal',
       },
     );
-  }
-
-  private isLowValueTask(task?: string): boolean {
-    return isLowValueTask(task);
   }
 
   private isLowValueToolCall(tool: ToolCallRecord): boolean {
@@ -473,6 +524,8 @@ export class ProgressMonitor {
       estimatedTokensInContextWindow: p.estimatedTokensInContextWindow,
       maxInputTokens: p.maxInputTokens,
       lastContextEvent: p.lastContextEvent,
+      contextBreakdown: p.contextBreakdown,
+      contextBreakdownMode: this.config.contextBreakdownMode,
     };
     return buildReportKeyUtil(data, this.latestStepSummary.get(progressKey));
   }

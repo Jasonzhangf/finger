@@ -175,11 +175,6 @@ export function registerLedgerRoutes(app: Express, deps: LedgerRouteDeps): void 
             targetBudget,
             buildMode: contextBuilderSettings.mode,
             includeMemoryMd: false,
-            timeWindow: {
-              nowMs,
-              halfLifeMs: contextBuilderSettings.halfLifeMs,
-              overThresholdRelevance: contextBuilderSettings.overThresholdRelevance,
-            },
             enableTaskGrouping: true,
             enableModelRanking: contextBuilderSettings.enableModelRanking,
             rankingProviderId: contextBuilderSettings.rankingProviderId,

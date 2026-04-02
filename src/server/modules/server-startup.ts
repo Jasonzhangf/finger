@@ -9,6 +9,13 @@ import { initOpenClawGate, writePidFile, cleanupPidFile } from './server-lifecyc
 
 const log = logger.module('ServerStartup');
 
+function isIgnorableUncaughtException(err: Error): boolean {
+  const code = (err as NodeJS.ErrnoException).code;
+  if (code === 'EPIPE' || code === 'ECONNRESET') return true;
+  const message = typeof err.message === 'string' ? err.message : '';
+  return message.includes('EPIPE') || message.includes('ECONNRESET');
+}
+
 export interface ServerLifecycleDeps {
   chatCodexRunner: {
     listSessionStates(): Array<{ sessionId: string; providerId: string }>;
@@ -85,6 +92,13 @@ export function startServer(
 
   // Global error handlers to prevent silent crashes
   process.on('uncaughtException', (err: Error) => {
+    if (isIgnorableUncaughtException(err)) {
+      log.warn('Ignored non-fatal uncaught exception', {
+        code: (err as NodeJS.ErrnoException).code,
+        message: err.message,
+      });
+      return;
+    }
     log.error('Uncaught exception', err);
     try {
       const sessions = deps.chatCodexRunner.listSessionStates();

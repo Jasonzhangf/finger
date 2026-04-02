@@ -12,6 +12,7 @@ export const DEFAULT_PROGRESS_MONITOR_CONFIG: Required<ProgressMonitorConfig> = 
   intervalMs: 60_000,
   enabled: true,
   progressUpdates: true,
+  contextBreakdownMode: 'release',
 };
 
 export async function loadProgressMonitorConfig(): Promise<Required<ProgressMonitorConfig>> {
@@ -24,10 +25,12 @@ export async function loadProgressMonitorConfig(): Promise<Required<ProgressMoni
     }
     const raw = await fs.readFile(CONFIG_PATH, 'utf-8');
     const parsed = JSON.parse(raw) as ProgressMonitorConfig;
+    const contextBreakdownMode = parsed.contextBreakdownMode === 'dev' ? 'dev' : 'release';
     return {
       intervalMs: parsed.intervalMs ?? DEFAULT_PROGRESS_MONITOR_CONFIG.intervalMs,
       enabled: parsed.enabled ?? DEFAULT_PROGRESS_MONITOR_CONFIG.enabled,
       progressUpdates: parsed.progressUpdates ?? DEFAULT_PROGRESS_MONITOR_CONFIG.progressUpdates,
+      contextBreakdownMode,
     };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);

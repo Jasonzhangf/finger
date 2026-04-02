@@ -229,6 +229,10 @@ function ensureConfigFileExists(): void {
 }
 
 export function loadUpdateStreamConfigSync(force = false): UpdateStreamConfigResolved {
+  if (process.env.NODE_ENV === 'test' || process.env.VITEST) {
+    return normalizeConfig(DEFAULT_UPDATE_STREAM_CONFIG);
+  }
+
   const now = Date.now();
   if (!force && cache && now - cache.checkedAt < CHECK_INTERVAL_MS) {
     return cache.config;

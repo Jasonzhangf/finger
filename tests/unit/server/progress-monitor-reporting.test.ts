@@ -213,4 +213,141 @@ describe('progress-monitor-reporting', () => {
     expect(result).toContain('dispatch');
     expect(result).toContain('heartbeat');
   });
+
+  it('shows module token breakdown in release mode when context breakdown is available', () => {
+    const data: SessionProgressData = {
+      agentId: 'finger-system-agent',
+      status: 'running',
+      currentTask: '处理中',
+      elapsedMs: 12_000,
+      toolCallHistory: [],
+      contextUsagePercent: 35,
+      maxInputTokens: 262144,
+      contextBreakdownMode: 'release',
+      contextBreakdown: {
+        historyContextTokens: 20_000,
+        historyCurrentTokens: 12_000,
+        systemPromptTokens: 2_400,
+        developerPromptTokens: 1_600,
+        userInstructionsTokens: 1_000,
+        environmentContextTokens: 700,
+        turnContextTokens: 400,
+        skillsTokens: 3_000,
+        mailboxTokens: 900,
+        projectTokens: 4_200,
+        inputTextTokens: 500,
+        inputMediaTokens: 120,
+        inputTotalTokens: 620,
+        toolsSchemaTokens: 6_000,
+        toolExecutionTokens: 300,
+        contextLedgerConfigTokens: 200,
+        responsesConfigTokens: 350,
+        totalKnownTokens: 53_690,
+      },
+    };
+
+    const result = buildCompactSummary(data, formatElapsed, { headerMode: 'minimal' });
+    expect(result).toContain('🧩 构成: H(');
+    expect(result).toContain('🧩 构成: I(');
+    expect(result).not.toContain('🧪 校验:');
+    expect(result).toContain('c=');
+    expect(result).toContain('sys=');
+    expect(result).toContain('sk=');
+    expect(result).toContain('T(schema=');
+    expect(result).toContain('text=');
+    expect(result).toContain('Σ=');
+  });
+
+  it('shows detailed layout lines in dev mode', () => {
+    const data: SessionProgressData = {
+      agentId: 'finger-system-agent',
+      status: 'running',
+      currentTask: '处理中',
+      elapsedMs: 12_000,
+      toolCallHistory: [],
+      contextUsagePercent: 20,
+      maxInputTokens: 262144,
+      contextBreakdownMode: 'dev',
+      contextBreakdown: {
+        historyContextTokens: 10_000,
+        historyCurrentTokens: 8_000,
+        systemPromptTokens: 2_000,
+        developerPromptTokens: 1_500,
+        userInstructionsTokens: 600,
+        environmentContextTokens: 400,
+        turnContextTokens: 220,
+        skillsTokens: 900,
+        mailboxTokens: 300,
+        projectTokens: 1_000,
+        inputTextTokens: 180,
+        inputMediaTokens: 40,
+        inputTotalTokens: 220,
+        toolsSchemaTokens: 2_400,
+        toolExecutionTokens: 160,
+        contextLedgerConfigTokens: 120,
+        responsesConfigTokens: 110,
+        totalKnownTokens: 27_930,
+      },
+    };
+
+    const result = buildCompactSummary(data, formatElapsed, { headerMode: 'minimal' });
+    expect(result).toContain('🧩 构成: H(');
+    expect(result).toContain('🧩 构成: I(');
+    expect(result).toContain('🧩 构成: E(');
+    expect(result).toContain('Σ=');
+    expect(result).not.toContain('🧪 校验:');
+  });
+
+  it('keeps tracked-only layout even when context usage is higher than known modules', () => {
+    const data: SessionProgressData = {
+      agentId: 'finger-system-agent',
+      status: 'running',
+      currentTask: '处理中',
+      elapsedMs: 12_000,
+      toolCallHistory: [],
+      contextUsagePercent: 45,
+      estimatedTokensInContextWindow: 120_000,
+      maxInputTokens: 262144,
+      contextBreakdownMode: 'dev',
+      contextBreakdown: {
+        historyContextTokens: 0,
+        historyCurrentTokens: 27_200,
+        systemPromptTokens: 7_000,
+        developerPromptTokens: 12_700,
+        skillsTokens: 1_200,
+        mailboxTokens: 69,
+        projectTokens: 5_500,
+        inputTextTokens: 291,
+        inputMediaTokens: 0,
+        inputTotalTokens: 291,
+        toolsSchemaTokens: 4_400,
+        toolExecutionTokens: 40,
+        contextLedgerConfigTokens: 43,
+        responsesConfigTokens: 42,
+        totalKnownTokens: 90_800,
+      },
+    };
+
+    const result = buildCompactSummary(data, formatElapsed, { headerMode: 'minimal' });
+    expect(result).toContain('🧩 构成: E(');
+    expect(result).toContain('Σ=');
+    expect(result).not.toContain('runtime_overhead');
+    expect(result).not.toContain('构成[overhead说明]');
+  });
+
+  it('shows waiting hint when breakdown is unavailable', () => {
+    const data: SessionProgressData = {
+      agentId: 'finger-system-agent',
+      status: 'running',
+      currentTask: '处理中',
+      elapsedMs: 8_000,
+      toolCallHistory: [],
+      contextUsagePercent: 12,
+      maxInputTokens: 262144,
+      contextBreakdownMode: 'release',
+    };
+
+    const result = buildCompactSummary(data, formatElapsed, { headerMode: 'minimal' });
+    expect(result).toContain('🧩 构成统计: 等待模型回传模块占用');
+  });
 });

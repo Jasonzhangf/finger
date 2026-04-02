@@ -425,6 +425,140 @@ describe('channel-bridge-hub-route user.ask async adaptation', () => {
     });
   });
 
+  it('strips unsupported attachments but still processes the same turn', async () => {
+    ChannelContextManager.getInstance().clearContext('qqbot');
+    ChannelContextManager.getInstance().updateContext('qqbot', 'system', 'finger-system-agent');
+    const askManager = new AskManager(5_000);
+    const sendMessage = vi.fn().mockResolvedValue({ messageId: 'reply-unsupported-1' });
+    const addMessage = vi.fn().mockResolvedValue(undefined);
+    const ensureSession = vi.fn();
+    const updateContext = vi.fn();
+    const getSession = vi.fn().mockReturnValue({
+      id: 'system-session-unsupported',
+      context: {},
+    });
+    const getOrCreateSystemSession = vi.fn().mockReturnValue({ id: 'system-session-unsupported' });
+    const dispatchTaskToAgent = vi.fn();
+    const directSendToModule = vi.fn().mockResolvedValue({
+      success: true,
+      response: 'processed with stripped attachments',
+    });
+
+    const route = createChannelBridgeHubRoute({
+      channelBridgeManager: {
+        sendMessage,
+      } as any,
+      sessionManager: {
+        ensureSession,
+        updateContext,
+        getSession,
+        getOrCreateSystemSession,
+        addMessage,
+        getMessages: vi.fn().mockReturnValue([]),
+      } as any,
+      askManager,
+      dispatchTaskToAgent,
+      directSendToModule,
+      eventBus: new UnifiedEventBus(),
+      runtime: {},
+    });
+
+    await route({
+      payload: {
+        id: 'msg-unsupported-1',
+        channelId: 'qqbot',
+        accountId: 'acc-1',
+        type: 'direct',
+        senderId: 'user-1',
+        senderName: 'User 1',
+        content: '检查这个任务',
+        attachments: [
+          { type: 'video', url: '/tmp/fake.mp4', filename: 'fake.mp4' },
+          { type: 'file', url: '/tmp/fake.md', filename: 'fake.md' },
+        ],
+        timestamp: Date.now(),
+        metadata: {},
+      },
+    });
+
+    expect(directSendToModule).toHaveBeenCalledTimes(1);
+    expect(directSendToModule).toHaveBeenCalledWith(
+      'finger-system-agent',
+      expect.objectContaining({
+        prompt: '检查这个任务',
+        metadata: expect.not.objectContaining({
+          attachments: expect.anything(),
+          inputItems: expect.anything(),
+        }),
+      }),
+    );
+    expect(dispatchTaskToAgent).not.toHaveBeenCalled();
+    expect(addMessage).toHaveBeenCalled();
+    expect(sendMessage).toHaveBeenCalledWith('qqbot', expect.objectContaining({
+      to: 'user-1',
+      text: expect.stringContaining('processed with stripped attachments'),
+    }));
+  });
+
+  it('does not persist user turn when direct send reports failed result', async () => {
+    ChannelContextManager.getInstance().clearContext('qqbot');
+    ChannelContextManager.getInstance().updateContext('qqbot', 'system', 'finger-system-agent');
+    const askManager = new AskManager(5_000);
+    const sendMessage = vi.fn().mockResolvedValue({ messageId: 'reply-failed-1' });
+    const addMessage = vi.fn().mockResolvedValue(undefined);
+    const ensureSession = vi.fn();
+    const updateContext = vi.fn();
+    const getSession = vi.fn().mockReturnValue({
+      id: 'system-session-failed-persist',
+      context: {},
+    });
+    const getOrCreateSystemSession = vi.fn().mockReturnValue({ id: 'system-session-failed-persist' });
+    const dispatchTaskToAgent = vi.fn();
+    const directSendToModule = vi.fn().mockResolvedValue({
+      success: false,
+      error: 'unrecoverable_input',
+    });
+
+    const route = createChannelBridgeHubRoute({
+      channelBridgeManager: {
+        sendMessage,
+      } as any,
+      sessionManager: {
+        ensureSession,
+        updateContext,
+        getSession,
+        getOrCreateSystemSession,
+        addMessage,
+        getMessages: vi.fn().mockReturnValue([]),
+      } as any,
+      askManager,
+      dispatchTaskToAgent,
+      directSendToModule,
+      eventBus: new UnifiedEventBus(),
+      runtime: {},
+    });
+
+    await route({
+      payload: {
+        id: 'msg-failed-persist-1',
+        channelId: 'qqbot',
+        accountId: 'acc-1',
+        type: 'direct',
+        senderId: 'user-1',
+        senderName: 'User 1',
+        content: 'this should not persist',
+        timestamp: Date.now(),
+        metadata: {},
+      },
+    });
+
+    expect(directSendToModule).toHaveBeenCalledTimes(1);
+    expect(addMessage).not.toHaveBeenCalled();
+    expect(sendMessage).toHaveBeenCalledWith('qqbot', expect.objectContaining({
+      text: expect.stringContaining('处理失败'),
+    }));
+  });
+
   it('converts local image attachment to data-url image inputItem', async () => {
     const localImagePath = `/tmp/fake-image-${Date.now()}.png`;
     writeFileSync(localImagePath, 'fake-image');

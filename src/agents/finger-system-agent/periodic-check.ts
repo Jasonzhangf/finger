@@ -86,10 +86,40 @@ export class PeriodicCheckRunner {
     const sessionStore = new SessionControlPlaneStore();
     const sessionManager = (this.deps as { sessionManager?: unknown }).sessionManager as {
       getSession?: (sessionId: string) => unknown;
+      getOrCreateSystemSession?: () => { id?: string };
     } | undefined;
     const getSession = (sessionManager as {
       getSession?: (sessionId: string) => unknown;
     } | undefined)?.getSession;
+    if (agentId === 'finger-system-agent' && sessionManager && typeof sessionManager.getOrCreateSystemSession === 'function') {
+      const systemSession = sessionManager.getOrCreateSystemSession();
+      const systemSessionId = typeof systemSession?.id === 'string' ? systemSession.id.trim() : '';
+      if (systemSessionId.length > 0) {
+        try {
+          sessionStore.set(systemSessionId, agentId, 'finger', systemSessionId, { source: 'periodic-check-system-session' });
+        } catch (error) {
+          clog.error('[PeriodicCheckRunner] Failed to persist system session binding:', error);
+        }
+        const prompt = `# Heartbeat Check\n\n请检查项目根目录的 HEARTBEAT.md 并执行待办任务。\n\n项目路径: ${projectPath}`;
+        await this.deps.agentRuntimeBlock.execute('dispatch', {
+          sourceAgentId: 'system-heartbeat',
+          targetAgentId: agentId,
+          task: prompt,
+          sessionId: systemSessionId,
+          queueOnBusy: false,
+          maxQueueWaitMs: 0,
+          metadata: {
+            source: 'system-heartbeat',
+            role: 'system',
+            systemDirectInject: true,
+            deliveryMode: 'direct',
+          },
+          blocking: false,
+        });
+        return;
+      }
+    }
+
     const bindings = sessionStore.list({ agentId, provider: 'finger' });
     const latest = bindings.find((binding) => (
       typeof getSession === 'function' ? !!getSession.call(sessionManager, binding.fingerSessionId) : true
@@ -127,9 +157,13 @@ export class PeriodicCheckRunner {
       targetAgentId: agentId,
       task: prompt,
       sessionId,
+      queueOnBusy: false,
+      maxQueueWaitMs: 0,
       metadata: {
         source: 'system-heartbeat',
         role: 'system',
+        systemDirectInject: true,
+        deliveryMode: 'direct',
       },
       blocking: false,
     });

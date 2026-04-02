@@ -1,14 +1,18 @@
 import { heartbeatMailbox } from './heartbeat-mailbox.js';
 import type { PushSettings } from '../../bridges/types.js';
 import type { SessionEnvelopeMapping } from './agent-status-subscriber-types.js';
+import {
+  classifyExecCommand,
+  parseExecCommandTarget,
+  parseMailboxVerb,
+} from './agent-status-subscriber-tool-parse.js';
 
 export type ToolVerb = 'search' | 'read' | 'write' | 'run' | 'edit' | 'plan' | 'other';
 
 const RAW_TOOL_ERROR_SUPPRESSED_CHANNELS = new Set(['qqbot', 'openclaw-weixin']);
 
 export function shouldSuppressRawToolError(channelId?: string): boolean {
-  if (!channelId) return false;
-  return RAW_TOOL_ERROR_SUPPRESSED_CHANNELS.has(channelId);
+  return !!channelId && RAW_TOOL_ERROR_SUPPRESSED_CHANNELS.has(channelId);
 }
 
 export function truncateInline(value: string, max = 72): string {
@@ -17,13 +21,19 @@ export function truncateInline(value: string, max = 72): string {
   return `${normalized.slice(0, max)}...`;
 }
 
+function pickFileName(token: string): string {
+  const normalized = token.trim().replace(/\\/g, '/');
+  const compact = normalized.endsWith('/') ? normalized.slice(0, -1) : normalized;
+  const parts = compact.split('/').filter((part) => part.length > 0);
+  return parts[parts.length - 1] ?? token;
+}
+
 function resolveOutputRecord(output: unknown): Record<string, unknown> | null {
   if (!output || typeof output !== 'object') return null;
   const record = output as Record<string, unknown>;
-  if (record.result && typeof record.result === 'object' && record.result !== null) {
-    return record.result as Record<string, unknown>;
-  }
-  return record;
+  return record.result && typeof record.result === 'object' && record.result !== null
+    ? record.result as Record<string, unknown>
+    : record;
 }
 
 function extractStdout(output: unknown): string | undefined {
@@ -50,79 +60,6 @@ function extractStderr(output: unknown): string | undefined {
       : '';
   const normalized = stderr.trim();
   return normalized.length > 0 ? truncateInline(normalized, 100) : undefined;
-}
-
-function tokenizeCommand(command: string): string[] {
-  const tokens: string[] = [];
-  const regex = /"([^"\\]*(?:\\.[^"\\]*)*)"|'([^'\\]*(?:\\.[^'\\]*)*)'|(\S+)/g;
-  let match: RegExpExecArray | null = regex.exec(command);
-  while (match) {
-    const token = (match[1] ?? match[2] ?? match[3] ?? '').trim();
-    if (token.length > 0) tokens.push(token);
-    match = regex.exec(command);
-  }
-  return tokens;
-}
-
-function looksLikePathToken(token: string): boolean {
-  if (!token || token.startsWith('-')) return false;
-  if (token.startsWith('~') || token.startsWith('/') || token.startsWith('./') || token.startsWith('../')) return true;
-  if (/^[A-Za-z]:[\\/]/.test(token)) return true;
-  if (/[\\/]/.test(token)) return true;
-  return /\.[A-Za-z0-9_-]{1,8}$/.test(token);
-}
-
-function pickFileName(token: string): string {
-  const normalized = token.trim().replace(/\\/g, '/');
-  const compact = normalized.endsWith('/') ? normalized.slice(0, -1) : normalized;
-  const parts = compact.split('/').filter((part) => part.length > 0);
-  return parts[parts.length - 1] ?? token;
-}
-
-function classifyExecCommand(command: string): ToolVerb {
-  const normalized = command.trim().toLowerCase();
-  if (normalized.length === 0) return 'run';
-  if (/(^|\s)(rg|grep|find|fd)\b/.test(normalized)) return 'search';
-  if (/(^|\s)(cat|sed|head|tail|less|more|ls|pwd|stat|wc|du|git\s+(show|status|log|diff))\b/.test(normalized)) return 'read';
-  if (/(^|\s)(echo|tee|cp|mv|rm|mkdir|rmdir|touch|chmod|chown|git\s+(add|commit|checkout|restore)|npm\s+install|pnpm\s+install|yarn\s+add)\b/.test(normalized) || />\s*[^ ]/.test(normalized)) {
-    return 'write';
-  }
-  return 'run';
-}
-
-function parseExecCommandTarget(command: string, verb: ToolVerb): string | undefined {
-  const firstSegment = command.split(/(?:\|\||&&|\||;)/)[0]?.trim() ?? command.trim();
-  const tokens = tokenizeCommand(firstSegment);
-  if (tokens.length <= 1) return undefined;
-  const executable = tokens[0].toLowerCase();
-  const args = tokens.slice(1);
-
-  if ((executable === 'cp' || executable === 'mv') && args.length >= 2) {
-    const last = [...args].reverse().find((token) => looksLikePathToken(token) && token !== '.');
-    return last ? pickFileName(last) : undefined;
-  }
-
-  if (executable === 'find') {
-    const path = args.find((token) => looksLikePathToken(token));
-    return path ? pickFileName(path) : undefined;
-  }
-
-  if (executable === 'rg' || executable === 'grep') {
-    const candidates = args.filter((token) => looksLikePathToken(token) && !token.startsWith('-'));
-    const target = candidates[candidates.length - 1];
-    return target ? pickFileName(target) : undefined;
-  }
-
-  const candidate = args.find((token) => looksLikePathToken(token) && token !== '.');
-  if (candidate) return pickFileName(candidate);
-  if (verb === 'run') return executable;
-  return undefined;
-}
-
-function parseMailboxVerb(toolName: string): ToolVerb {
-  const action = toolName.replace(/^mailbox\./i, '').toLowerCase();
-  if (action === 'ack' || action === 'remove' || action === 'remove_all') return 'write';
-  return 'read';
 }
 
 export function asRecord(value: unknown): Record<string, unknown> | null {

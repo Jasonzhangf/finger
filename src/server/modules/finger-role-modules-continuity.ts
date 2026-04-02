@@ -17,6 +17,10 @@ export type MappedHistoryMessage = {
   metadata?: Record<string, unknown>;
 };
 
+const STOP_TOOL_NAME = 'reasoning.stop';
+const STOP_CALL_PATTERN = /(调用工具|call(?:ing)?\s+tool|tool\s+call(?:ed)?|invok(?:e|ing)\s+tool)\s*:?\s*reasoning\.stop\b/i;
+const STOP_COMPLETE_PATTERN = /(工具完成|tool\s+(?:completed|finished|result))\s*:?\s*reasoning\.stop\b/i;
+
 export function sessionMessageIdentity(message: SessionHistoryMessage | MappedHistoryMessage): string {
   if (typeof message.id === 'string' && message.id.trim().length > 0) {
     return message.id.trim();
@@ -24,11 +28,44 @@ export function sessionMessageIdentity(message: SessionHistoryMessage | MappedHi
   return `${message.role}:${message.timestamp ?? ''}:${message.content.slice(0, 48)}`;
 }
 
-export function extractRecentTaskMessages(
+function normalizeToolName(value: unknown): string {
+  return typeof value === 'string' ? value.trim().toLowerCase() : '';
+}
+
+function hasStopToolInMetadata(metadata: Record<string, unknown> | undefined): boolean {
+  if (!metadata || typeof metadata !== 'object') return false;
+  const directTool = normalizeToolName(metadata.toolName ?? metadata.tool);
+  if (directTool === STOP_TOOL_NAME) return true;
+
+  if (metadata.stopReasoningCalled === true || metadata.stop_reasoning_called === true) {
+    return true;
+  }
+
+  const toolTrace = Array.isArray(metadata.tool_trace)
+    ? metadata.tool_trace
+    : Array.isArray(metadata.toolTrace)
+      ? metadata.toolTrace
+      : [];
+  return toolTrace.some((entry) => {
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return false;
+    const tool = normalizeToolName((entry as Record<string, unknown>).tool);
+    return tool === STOP_TOOL_NAME;
+  });
+}
+
+function resolveStopMarkerType(message: SessionHistoryMessage): 'call' | 'complete' | null {
+  if (hasStopToolInMetadata(message.metadata)) return 'call';
+  const content = typeof message.content === 'string' ? message.content.trim() : '';
+  if (!content) return null;
+  if (STOP_CALL_PATTERN.test(content)) return 'call';
+  if (STOP_COMPLETE_PATTERN.test(content)) return 'complete';
+  return null;
+}
+
+function extractRecentByUserTurns(
   sessionMessages: SessionHistoryMessage[],
-  taskCount = DEFAULT_RECENT_TASK_COUNT,
+  taskCount: number,
 ): SessionHistoryMessage[] {
-  if (!Array.isArray(sessionMessages) || sessionMessages.length === 0) return [];
   let remainingUserTurns = Math.max(1, Math.floor(taskCount));
   let startIndex = 0;
   for (let index = sessionMessages.length - 1; index >= 0; index -= 1) {
@@ -42,6 +79,40 @@ export function extractRecentTaskMessages(
     }
   }
   return sessionMessages.slice(startIndex);
+}
+
+export function extractRecentTaskMessages(
+  sessionMessages: SessionHistoryMessage[],
+  taskCount = DEFAULT_RECENT_TASK_COUNT,
+): SessionHistoryMessage[] {
+  if (!Array.isArray(sessionMessages) || sessionMessages.length === 0) return [];
+  const requestedTaskCount = Math.max(1, Math.floor(taskCount));
+  const callMarkers: number[] = [];
+  const completionMarkers: number[] = [];
+  for (let index = 0; index < sessionMessages.length; index += 1) {
+    const markerType = resolveStopMarkerType(sessionMessages[index]);
+    if (markerType === 'call') callMarkers.push(index);
+    if (markerType === 'complete') completionMarkers.push(index);
+  }
+  const completionBoundaries = callMarkers.length > 0 ? callMarkers : completionMarkers;
+  if (completionBoundaries.length === 0) {
+    return extractRecentByUserTurns(sessionMessages, requestedTaskCount);
+  }
+
+  const lastBoundaryIndex = completionBoundaries[completionBoundaries.length - 1];
+  if (!Number.isFinite(lastBoundaryIndex) || lastBoundaryIndex < 0) {
+    return extractRecentByUserTurns(sessionMessages, requestedTaskCount);
+  }
+
+  const previousBoundaryIndexPos = completionBoundaries.length - requestedTaskCount - 1;
+  const startIndex = previousBoundaryIndexPos >= 0
+    ? completionBoundaries[previousBoundaryIndexPos] + 1
+    : 0;
+  const endExclusive = Math.min(sessionMessages.length, lastBoundaryIndex + 1);
+  if (startIndex >= endExclusive) {
+    return extractRecentByUserTurns(sessionMessages, requestedTaskCount);
+  }
+  return sessionMessages.slice(startIndex, endExclusive);
 }
 
 export function extractRecentUserInputs(
@@ -67,17 +138,18 @@ export function augmentHistoryWithContinuityAnchors(
   const recentTaskMessages = extractRecentTaskMessages(sessionMessages);
   const recentUserInputs = extractRecentUserInputs(sessionMessages);
   const requiredOrder = [...recentTaskMessages, ...recentUserInputs];
-  const requiredMetaById = new Map<string, { continuityAnchorTypes: string[] }>();
+  const requiredMetaById = new Map<string, { continuityAnchorTypes: string[]; forceWorkingSet?: boolean }>();
 
   for (const item of recentTaskMessages) {
     const key = sessionMessageIdentity(item);
-    const current = requiredMetaById.get(key) ?? { continuityAnchorTypes: [] };
+    const current = requiredMetaById.get(key) ?? { continuityAnchorTypes: [] as string[] };
     if (!current.continuityAnchorTypes.includes('recent_task')) current.continuityAnchorTypes.push('recent_task');
+    current.forceWorkingSet = true;
     requiredMetaById.set(key, current);
   }
   for (const item of recentUserInputs) {
     const key = sessionMessageIdentity(item);
-    const current = requiredMetaById.get(key) ?? { continuityAnchorTypes: [] };
+    const current = requiredMetaById.get(key) ?? { continuityAnchorTypes: [] as string[] };
     if (!current.continuityAnchorTypes.includes('recent_user_input')) current.continuityAnchorTypes.push('recent_user_input');
     requiredMetaById.set(key, current);
   }
@@ -96,7 +168,13 @@ export function augmentHistoryWithContinuityAnchors(
       content: item.content,
       timestamp: item.timestamp ?? new Date().toISOString(),
       ...((item.metadata && typeof item.metadata === 'object') || (extraMetadata && typeof extraMetadata === 'object')
-        ? { metadata: { ...(item.metadata ?? {}), ...(extraMetadata ?? {}) } }
+        ? {
+          metadata: {
+            ...(item.metadata ?? {}),
+            ...(extraMetadata ?? {}),
+            ...(requiredMetaById.get(key)?.forceWorkingSet ? { contextZone: 'working_set' } : {}),
+          },
+        }
         : {}),
     });
   }
@@ -141,6 +219,7 @@ export function augmentHistoryWithContinuityAnchors(
         metadata: {
           ...(base.metadata ?? {}),
           ...(extraMetadata ?? {}),
+          ...(anchorMeta.forceWorkingSet ? { contextZone: 'working_set' } : {}),
           continuityAnchor: true,
           continuityAnchorTypes: anchorMeta.continuityAnchorTypes,
         },

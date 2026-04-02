@@ -16,8 +16,15 @@ function createMockRuntime(opts?: { callToolThrows?: Error | null }) {
   const callTool = opts?.callToolThrows !== undefined && opts?.callToolThrows !== null
     ? vi.fn().mockRejectedValue(opts.callToolThrows)
     : vi.fn().mockResolvedValue({ output: 'ok' });
+  const getSession = vi.fn((sessionId: string) => {
+    if (typeof sessionId === 'string' && sessionId.trim().length > 0) {
+      return { id: sessionId };
+    }
+    return undefined;
+  });
   return {
     callTool,
+    getSession,
     setCurrentSession: vi.fn().mockReturnValue(true),
     setToolAuthorizationRequired: vi.fn(),
     issueToolAuthorization: vi.fn(),
@@ -259,7 +266,7 @@ describe('Tool error handling regression', () => {
     await stopServer();
   });
 
-  it('binds tool execution to provided sessionId before calling runtime', async () => {
+  it('passes provided sessionId to runtime.callTool without forcing runtime session switch', async () => {
     const { app, runtime } = setupApp();
     baseUrl = await startServer(app, 19998);
 
@@ -275,12 +282,44 @@ describe('Tool error handling regression', () => {
     });
 
     expect(res.status).toBe(200);
-    expect(runtime.setCurrentSession).toHaveBeenCalledWith('session-abc');
+    expect(runtime.setCurrentSession).not.toHaveBeenCalled();
     expect(runtime.callTool).toHaveBeenCalledWith(
       'test-agent',
       'echo.test',
       { message: 'hello' },
       { authorizationToken: undefined, sessionId: 'session-abc' },
+    );
+
+    await stopServer();
+  });
+
+  it('does not infer runtime session from generic input.session_id for non-context-builder tools', async () => {
+    const { app, runtime } = setupApp();
+    baseUrl = await startServer(app, 19999);
+
+    const res = await fetch(`${baseUrl}/api/v1/tools/execute`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        agentId: 'finger-system-agent',
+        toolName: 'agent.control',
+        input: {
+          action: 'status',
+          session_id: 'dispatch-1775001674720-m0qd55',
+        },
+      }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(runtime.setCurrentSession).not.toHaveBeenCalled();
+    expect(runtime.callTool).toHaveBeenCalledWith(
+      'finger-system-agent',
+      'agent.control',
+      {
+        action: 'status',
+        session_id: 'dispatch-1775001674720-m0qd55',
+      },
+      { authorizationToken: undefined, sessionId: undefined },
     );
 
     await stopServer();

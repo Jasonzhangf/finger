@@ -383,7 +383,7 @@ describe('AgentRuntimeBlock queue timeout fallback', () => {
     expect(onDispatchQueueTimeout).not.toHaveBeenCalled();
   });
 
-  it('does not route system self-dispatch to mailbox by source policy', async () => {
+  it('rejects self-dispatch instead of routing/queuing', async () => {
     const hubSendToModule = vi.fn().mockResolvedValue({ ok: true, output: 'self-ok' });
     const onDispatchQueueTimeout = vi.fn().mockReturnValue({
       delivery: 'mailbox',
@@ -482,20 +482,17 @@ describe('AgentRuntimeBlock queue timeout fallback', () => {
       result?: unknown;
     };
 
-    expect(result.ok).toBe(true);
-    expect(result.status).toBe('queued');
-    expect(hubSendToModule).toHaveBeenCalledTimes(1);
+    expect(result.ok).toBe(false);
+    expect(result.status).toBe('failed');
+    expect((result as { error?: string }).error).toContain('self-dispatch forbidden');
+    expect(hubSendToModule).not.toHaveBeenCalled();
     expect(onDispatchQueueTimeout).not.toHaveBeenCalled();
   });
 
-  it('keeps self-dispatch queued without timeout fallback while target is busy', async () => {
+  it('keeps self-dispatch fail-fast even while target would otherwise be busy', async () => {
     vi.useFakeTimers();
     try {
-      const first = createDeferred<{ ok: boolean }>();
-      const second = createDeferred<{ ok: boolean }>();
-      const hubSendToModule = vi.fn()
-        .mockImplementationOnce(() => first.promise)
-        .mockImplementationOnce(() => second.promise);
+      const hubSendToModule = vi.fn();
       const onDispatchQueueTimeout = vi.fn().mockReturnValue({
         delivery: 'mailbox',
         mailboxMessageId: 'msg-self-timeout-should-not-happen',
@@ -582,12 +579,15 @@ describe('AgentRuntimeBlock queue timeout fallback', () => {
         launchMode: 'orchestrator',
       });
 
-      await block.execute('dispatch', {
+      const firstResult = await block.execute('dispatch', {
         sourceAgentId: 'finger-system-agent',
         targetAgentId: 'finger-system-agent',
         task: { text: 'self-dispatch-1' },
         blocking: false,
-      });
+      }) as { ok: boolean; status: string; error?: string };
+      expect(firstResult.ok).toBe(false);
+      expect(firstResult.status).toBe('failed');
+      expect(firstResult.error).toContain('self-dispatch forbidden');
 
       const queuedResult = await block.execute('dispatch', {
         sourceAgentId: 'finger-system-agent',
@@ -597,17 +597,15 @@ describe('AgentRuntimeBlock queue timeout fallback', () => {
         queueOnBusy: true,
         maxQueueWaitMs: 1_000,
       }) as { ok: boolean; status: string };
-      expect(queuedResult.ok).toBe(true);
-      expect(queuedResult.status).toBe('queued');
+      expect(queuedResult.ok).toBe(false);
+      expect(queuedResult.status).toBe('failed');
+      expect((queuedResult as { error?: string }).error).toContain('self-dispatch forbidden');
 
       await vi.advanceTimersByTimeAsync(5_000);
       expect(onDispatchQueueTimeout).not.toHaveBeenCalled();
-
-      first.resolve({ ok: true });
-      second.resolve({ ok: true });
       await vi.runAllTimersAsync();
       await Promise.resolve();
-      expect(hubSendToModule).toHaveBeenCalledTimes(2);
+      expect(hubSendToModule).not.toHaveBeenCalled();
     } finally {
       vi.useRealTimers();
     }
