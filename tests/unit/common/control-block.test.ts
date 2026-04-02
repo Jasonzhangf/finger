@@ -4,6 +4,7 @@ import {
   normalizeControlBlock,
   parseControlBlockFromReply,
   resolveControlBlockPolicy,
+  shouldHoldStopByControlBlock,
 } from '../../../src/common/control-block.js';
 
 describe('control-block', () => {
@@ -173,5 +174,83 @@ describe('control-block', () => {
     expect(strict.promptInjectionEnabled).toBe(false);
     expect(strict.requireOnStop).toBe(true);
     expect(strict.maxAutoContinueTurns).toBe(3);
+  });
+
+  it('holds stop when needs_user_input=true but task is not completed', () => {
+    const normalized = normalizeControlBlock({
+      schema_version: '1.3',
+      task_completed: false,
+      evidence_ready: true,
+      needs_user_input: true,
+      has_blocker: true,
+      dispatch_required: false,
+      review_required: false,
+      wait: { enabled: false, seconds: 0, reason: '' },
+      user_signal: { negative_score: 0, profile_update_required: false, why: '' },
+      tags: ['debug'],
+      self_eval: { score: 10, confidence: 70, goal_gap: 'pending fix', why: 'approval style question' },
+      anti_patterns: [],
+      learning: {
+        did_right: [],
+        did_wrong: [],
+        repeated_wrong: [],
+        flow_patch: { required: false, project_scope: '', changes: [] },
+        memory_patch: { required: false, project_scope: '', long_term_items: [], short_term_items: [] },
+        user_profile_patch: { required: false, items: [], sensitivity: 'normal' },
+      },
+    });
+    const hooks = evaluateControlHooks(normalized.controlBlock);
+    const hold = shouldHoldStopByControlBlock({
+      finishReasonStop: true,
+      parsed: {
+        present: true,
+        valid: true,
+        repaired: false,
+        humanResponse: '需要确认',
+        issues: [],
+        controlBlock: normalized.controlBlock,
+      },
+      hooks,
+    });
+    expect(hold).toBe(true);
+  });
+
+  it('allows stop when task is completed and evidence is ready', () => {
+    const normalized = normalizeControlBlock({
+      schema_version: '1.3',
+      task_completed: true,
+      evidence_ready: true,
+      needs_user_input: false,
+      has_blocker: false,
+      dispatch_required: false,
+      review_required: false,
+      wait: { enabled: false, seconds: 0, reason: '' },
+      user_signal: { negative_score: 0, profile_update_required: false, why: '' },
+      tags: ['done'],
+      self_eval: { score: 90, confidence: 95, goal_gap: '', why: 'complete' },
+      anti_patterns: [],
+      learning: {
+        did_right: [],
+        did_wrong: [],
+        repeated_wrong: [],
+        flow_patch: { required: false, project_scope: '', changes: [] },
+        memory_patch: { required: false, project_scope: '', long_term_items: [], short_term_items: [] },
+        user_profile_patch: { required: false, items: [], sensitivity: 'normal' },
+      },
+    });
+    const hooks = evaluateControlHooks(normalized.controlBlock);
+    const hold = shouldHoldStopByControlBlock({
+      finishReasonStop: true,
+      parsed: {
+        present: true,
+        valid: true,
+        repaired: false,
+        humanResponse: '完成',
+        issues: [],
+        controlBlock: normalized.controlBlock,
+      },
+      hooks,
+    });
+    expect(hold).toBe(false);
   });
 });

@@ -1280,6 +1280,8 @@ export class KernelAgentBase {
       '[Control Block Contract]',
       '- Every turn response MUST include a fenced `finger-control` JSON block.',
       '- Required baseline fields: schema_version, task_completed, evidence_ready, needs_user_input, has_blocker, dispatch_required, review_required, wait, user_signal, tags, self_eval, anti_patterns, learning.',
+      '- `needs_user_input=true` is STRICT: only set when execution is truly blocked by missing external facts/credentials the runtime cannot infer.',
+      '- Never use `needs_user_input=true` for approval-only yes/no prompts (e.g., “要我修吗？”). If user asked to fix/debug, proceed directly.',
       '- `tags` are free-form (no fixed enum).',
       '- Primary target is runtime/model control; keep machine control fields complete and deterministic.',
       '- Keep non-control text outside fence and concise; do not duplicate control data in prose.',

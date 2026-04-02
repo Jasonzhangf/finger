@@ -405,7 +405,9 @@ export function shouldHoldStopByControlBlock(input: ControlStopDecisionInput): b
   if (!input.parsed.valid) return true;
   const controlBlock = input.parsed.controlBlock;
   if (!controlBlock) return true;
-  if (controlBlock.needs_user_input) return false;
+  // needs_user_input alone is not sufficient to allow stop. In practice models may emit
+  // "needs_user_input=true" for approval-style questions ("是否修复"), which should continue.
+  // Runtime only allows stop when there is a completed/evidence-backed outcome or an explicit timed wait.
   if (controlBlock.wait.enabled && controlBlock.wait.seconds > 0) return false;
   if (controlBlock.task_completed && controlBlock.evidence_ready) return false;
   if (input.hooks.holdStop) return true;
