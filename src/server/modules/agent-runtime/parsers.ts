@@ -78,9 +78,6 @@ export function parseAgentDispatchToolInput(rawInput: unknown, deps: AgentRuntim
     throw new Error(`agent.dispatch target_agent_id invalid: ${normalizedTarget.invalidReason}`);
   }
   const normalizedTargetAgentId = normalizedTarget.targetAgentId;
-  if (normalizedSourceAgentId.length > 0 && normalizedSourceAgentId === normalizedTargetAgentId) {
-    throw new Error(`agent.dispatch self-dispatch forbidden: source and target are both ${normalizedTargetAgentId}`);
-  }
   if (task === undefined) {
     throw new Error('agent.dispatch task is required');
   }

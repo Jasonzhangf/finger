@@ -76,6 +76,14 @@ export class ProgressMonitor {
     return `${sessionId}::${agentId}`;
   }
 
+  private hasPendingToolCalls(progress: SessionProgress): boolean {
+    return progress.toolCallHistory.some((tool) => {
+      if (tool.success === true || tool.success === false) return false;
+      if (tool.result || tool.error) return false;
+      return true;
+    });
+  }
+
   private parseEventAgentId(event: any): string | undefined {
     if (typeof event?.agentId === 'string' && event.agentId.trim().length > 0) {
       return event.agentId.trim();
@@ -396,6 +404,13 @@ export class ProgressMonitor {
 
       // 没有真实信号时，仅在 stall 且存在挂起工具时发送心跳。
       if (!hasMeaningfulSignal) {
+        // Tool-only flows may end without turn_complete/model_round.
+        // Auto-demote to idle to avoid stale "running" records.
+        if (stalled && p.hasOpenTurn !== true && !this.hasPendingToolCalls(p)) {
+          p.status = 'idle';
+          p.lastUpdateTime = now;
+          continue;
+        }
         if (stalled && this.shouldEmitHeartbeat(p, now)) {
           const pendingTool = this.findPendingMeaningfulTool(p);
           if (pendingTool) {
@@ -459,6 +474,9 @@ export class ProgressMonitor {
       p.lastReportedMaxInputTokens = p.maxInputTokens;
       p.lastReportedContextEventAt = p.lastContextEventAt;
       p.lastReportedContextBreakdownKey = contextBreakdownKey;
+      if (p.hasOpenTurn !== true && !this.hasPendingToolCalls(p) && p.status === 'running') {
+        p.status = 'idle';
+      }
     }
   }
 

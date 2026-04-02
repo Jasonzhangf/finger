@@ -866,7 +866,7 @@ export async function dispatchTaskToAgent(deps: AgentRuntimeDeps, input: AgentDi
   ) ?? '';
   const targetAgentId = asTrimmedString(input.targetAgentId);
   if (sourceAgentId.length > 0 && targetAgentId.length > 0 && sourceAgentId === targetAgentId) {
-    const error = `self-dispatch forbidden: source and target are both ${targetAgentId}`;
+    const error = `self-dispatch forbidden: source and target are both ${targetAgentId}; recovery: execute task locally in current agent or dispatch to a different target_agent_id`;
     logger.module('dispatch').warn('Rejected self-dispatch request', {
       sourceAgentId,
       targetAgentId,

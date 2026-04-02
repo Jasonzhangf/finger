@@ -93,6 +93,11 @@ export interface SessionProgress {
    * Prevents misleading "new turn low baseline" resets in normal turns.
    */
   allowContextDropOnce?: boolean;
+  /**
+   * Whether current turn is open (turn_start seen, turn_complete not yet seen).
+   * Tool-only execution paths may not emit turn_start/turn_complete.
+   */
+  hasOpenTurn?: boolean;
 }
 
 export interface ProgressReport {

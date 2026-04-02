@@ -412,6 +412,7 @@ export function recordToolResult(
  */
 export function handleTurnStart(progress: SessionProgress, event: any): void {
   progress.status = 'running';
+  progress.hasOpenTurn = true;
   if (typeof event.payload?.reasoning === 'string' && event.payload.reasoning.length > 0) {
     progress.latestReasoning = event.payload.reasoning.slice(0, 120);
   }
@@ -443,6 +444,7 @@ export function handleTurnComplete(progress: SessionProgress, event: any): void 
   }
   // A turn is finished; switch to idle so periodic progress heartbeat
   // does not keep pushing when there is no active execution.
+  progress.hasOpenTurn = false;
   progress.status = 'idle';
 }
 
@@ -530,6 +532,7 @@ export function handleModelRound(progress: SessionProgress, event: any): void {
   if (progress.status !== 'completed' && progress.status !== 'failed') {
     progress.status = 'running';
   }
+  progress.hasOpenTurn = true;
   progress.modelRoundsCount++;
   if (event.payload?.reasoning_count) {
     progress.reasoningCount += event.payload.reasoning_count;
@@ -769,10 +772,13 @@ export function handleSessionCompressedEvent(progress: SessionProgress, event?: 
 export function handleAgentRuntimeStatus(progress: SessionProgress, event: any): void {
   const status = event.payload?.status;
   if (status === 'completed') {
+    progress.hasOpenTurn = false;
     progress.status = 'completed';
   } else if (status === 'failed') {
+    progress.hasOpenTurn = false;
     progress.status = 'failed';
   } else if (status === 'idle') {
+    progress.hasOpenTurn = false;
     progress.status = 'idle';
   }
   if (event.payload?.summary) {
@@ -793,6 +799,7 @@ export function handleAgentRuntimeDispatch(progress: SessionProgress, event: any
   // model_round close event is missing but dispatch already completed.
   if (target && target === progress.agentId) {
     if (isTerminal) {
+      progress.hasOpenTurn = false;
       progress.status = status as SessionProgress['status'];
       progress.currentTask = `派发 ${target} (${status})`;
     }

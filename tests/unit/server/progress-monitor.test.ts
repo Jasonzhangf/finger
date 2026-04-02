@@ -401,6 +401,62 @@ describe('ProgressMonitor incremental updates', () => {
     monitor.stop();
   });
 
+  it('auto-demotes tool-only running progress to idle after report to avoid stale waiting state', async () => {
+    const eventBus = new UnifiedEventBus();
+    const reports: string[] = [];
+    const monitor = new ProgressMonitor(
+      eventBus,
+      createMinimalDeps(),
+      {
+        onProgressReport: (report) => {
+          reports.push(report.summary);
+        },
+      },
+      {
+        enabled: true,
+        progressUpdates: true,
+        intervalMs: 60_000,
+      },
+    );
+
+    monitor.start();
+
+    await eventBus.emit({
+      type: 'tool_call',
+      sessionId: 'session-tool-only-idle',
+      agentId: 'finger-project-agent',
+      toolId: 'tool-only-1',
+      toolName: 'agent.dispatch',
+      timestamp: new Date().toISOString(),
+      payload: {
+        input: { target_agent_id: 'finger-project-agent-2', task: 'dispatch work item' },
+      },
+    } as any);
+    await eventBus.emit({
+      type: 'tool_result',
+      sessionId: 'session-tool-only-idle',
+      agentId: 'finger-project-agent',
+      toolId: 'tool-only-1',
+      toolName: 'agent.dispatch',
+      timestamp: new Date().toISOString(),
+      payload: {
+        input: { target_agent_id: 'finger-project-agent-2', task: 'dispatch work item' },
+        output: { ok: true, status: 'queued' },
+      },
+    } as any);
+    await flushEventLoop();
+
+    await (monitor as any).generateProgressReport();
+
+    expect(reports).toHaveLength(1);
+    expect(reports[0]).toContain('暂无 model_round 上下文统计（工具流）');
+    expect(reports[0]).not.toContain('未关闭');
+    const progress = monitor.getProgress('session-tool-only-idle');
+    expect(progress?.status).toBe('idle');
+
+    monitor.stop();
+  });
+
   it('dedups tool lines independently for system/project agents in same session', async () => {
     const eventBus = new UnifiedEventBus();
     const reports: Array<{ agentId: string; summary: string }> = [];

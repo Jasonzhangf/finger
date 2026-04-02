@@ -212,7 +212,7 @@ export function buildCompactSummary(
   if (contextLine) {
     lines.push(contextLine);
   } else {
-    lines.push('🧠 上下文: 等待 model_round 回传（未关闭）');
+    lines.push('🧠 上下文: 暂无 model_round 上下文统计（工具流）');
   }
   const estimatedContextTokens = resolveEstimatedContextTokens(
     p.contextUsagePercent,

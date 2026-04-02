@@ -122,13 +122,15 @@ describe('parseAgentDispatchToolInput', () => {
     }));
   });
 
-  it('rejects self-dispatch when source and target are identical', () => {
+  it('keeps self-dispatch input parseable and defers guard to dispatch runtime', () => {
     const deps = createDeps('session-123');
-    expect(() => parseAgentDispatchToolInput({
+    const result = parseAgentDispatchToolInput({
       source_agent_id: 'finger-system-agent',
       target_agent_id: 'finger-system-agent',
       task: 'should fail',
-    }, deps as any)).toThrow(/self-dispatch forbidden/i);
+    }, deps as any);
+    expect(result.sourceAgentId).toBe('finger-system-agent');
+    expect(result.targetAgentId).toBe('finger-system-agent');
   });
 
   it('normalizes legacy orchestrator gateway target to project agent id', () => {
