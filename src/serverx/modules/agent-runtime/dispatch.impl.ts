@@ -24,6 +24,7 @@ import {
   shouldArchiveAndClearProjectTaskState,
   upsertDelegatedProjectTaskRegistry,
 } from '../../../common/project-task-state.js';
+import { resolveAgentDisplayName } from '../../../server/modules/agent-name-resolver.js';
 import { appendClosedProjectTaskArchive } from '../../../core/project-task-archive.js';
 import { setupReviewRuntimeForDispatch } from '../../../agents/finger-system-agent/review-runtime.js';
 import {
@@ -654,9 +655,13 @@ function persistProjectTaskState(
   patch: {
     active?: boolean;
     status?: 'create' | 'dispatched' | 'accepted' | 'in_progress' | 'claiming_finished' | 'reviewed' | 'reported' | 'closed' | 'blocked' | 'failed' | 'cancelled';
+    assignerName?: string;
     assigneeWorkerId?: string;
+    assigneeWorkerName?: string;
     deliveryWorkerId?: string;
+    deliveryWorkerName?: string;
     reviewerId?: string;
+    reviewerName?: string;
     reassignReason?: string;
     taskId?: string;
     taskName?: string;
@@ -688,9 +693,13 @@ function persistProjectTaskState(
         taskName: next.taskName,
         status: next.status,
         active: next.active,
+        assignerName: next.assignerName,
         assigneeWorkerId: next.assigneeWorkerId,
+        assigneeWorkerName: next.assigneeWorkerName,
         deliveryWorkerId: next.deliveryWorkerId,
+        deliveryWorkerName: next.deliveryWorkerName,
         reviewerId: next.reviewerId,
+        reviewerName: next.reviewerName,
         reassignReason: next.reassignReason,
         dispatchId: next.dispatchId,
         boundSessionId: next.boundSessionId,
@@ -744,9 +753,13 @@ function writeTaskRouterMarkdown(
     `- status: ${state.status}`,
     `- source: ${state.sourceAgentId}`,
     `- target: ${state.targetAgentId}`,
+    state.assignerName ? `- assignerName: ${state.assignerName}` : '- assignerName: N/A',
     state.assigneeWorkerId ? `- assigneeWorkerId: ${state.assigneeWorkerId}` : '- assigneeWorkerId: N/A',
+    state.assigneeWorkerName ? `- assigneeWorkerName: ${state.assigneeWorkerName}` : '- assigneeWorkerName: N/A',
     state.deliveryWorkerId ? `- deliveryWorkerId: ${state.deliveryWorkerId}` : '- deliveryWorkerId: N/A',
+    state.deliveryWorkerName ? `- deliveryWorkerName: ${state.deliveryWorkerName}` : '- deliveryWorkerName: N/A',
     state.reviewerId ? `- reviewerId: ${state.reviewerId}` : '- reviewerId: N/A',
+    state.reviewerName ? `- reviewerName: ${state.reviewerName}` : '- reviewerName: N/A',
     state.reassignReason ? `- reassignReason: ${state.reassignReason}` : '- reassignReason: N/A',
     state.taskId ? `- taskId: ${state.taskId}` : '- taskId: N/A',
     state.taskName ? `- taskName: ${state.taskName}` : '- taskName: N/A',
@@ -770,9 +783,13 @@ function writeTaskRouterMarkdown(
     for (const item of ordered) {
       lines.push(
         `- [${item.status}] active=${item.active} target=${item.targetAgentId}`
+        + `${item.assignerName ? ` assigner=${item.assignerName}` : ''}`
         + `${item.assigneeWorkerId ? ` assignee=${item.assigneeWorkerId}` : ''}`
+        + `${item.assigneeWorkerName ? ` assigneeName=${item.assigneeWorkerName}` : ''}`
         + `${item.deliveryWorkerId ? ` delivery=${item.deliveryWorkerId}` : ''}`
+        + `${item.deliveryWorkerName ? ` deliveryName=${item.deliveryWorkerName}` : ''}`
         + `${item.reviewerId ? ` reviewer=${item.reviewerId}` : ''}`
+        + `${item.reviewerName ? ` reviewerName=${item.reviewerName}` : ''}`
         + `${item.reassignReason ? ` reassign_reason=${item.reassignReason}` : ''}`
         + `${item.taskId ? ` taskId=${item.taskId}` : ''}`
         + `${item.taskName ? ` task="${item.taskName}"` : ''}`
@@ -1193,6 +1210,10 @@ export async function dispatchTaskToAgent(deps: AgentRuntimeDeps, input: AgentDi
     canonicalSystemSessionId,
   );
   const assigneeWorkerId = resolveAssigneeWorkerIdFromDispatch(normalizedInput, sourceTaskState);
+  const assignerName = resolveAgentDisplayName(normalizedInput.sourceAgentId);
+  const assigneeWorkerName = assigneeWorkerId
+    ? resolveAgentDisplayName(assigneeWorkerId)
+    : resolveAgentDisplayName(normalizedInput.targetAgentId);
   const requestedTaskSessionId = resolveRequestedTaskSessionId(callerSessionId, normalizedSessionId, routeSessionId);
   const bindingGuard = validateProjectTaskBindingGuard({
     input: normalizedInput,
@@ -1285,6 +1306,8 @@ export async function dispatchTaskToAgent(deps: AgentRuntimeDeps, input: AgentDi
         ...normalizedInput.assignment,
         blockedBy,
         ...(assigneeWorkerId ? { assigneeWorkerId } : {}),
+        assignerName,
+        assigneeName: assigneeWorkerName,
       },
     };
   }
@@ -1301,6 +1324,8 @@ export async function dispatchTaskToAgent(deps: AgentRuntimeDeps, input: AgentDi
       metadata: {
         ...nextMetadata,
         assigneeWorkerId,
+        assignerName,
+        assigneeWorkerName,
       },
     };
   }
@@ -1310,7 +1335,9 @@ export async function dispatchTaskToAgent(deps: AgentRuntimeDeps, input: AgentDi
       persistProjectTaskState(deps, projectTaskStateSessionIds, {
         active: true,
         status: 'create',
+        assignerName,
         assigneeWorkerId,
+        assigneeWorkerName,
         taskId: projectTaskIdentity.taskId,
         taskName: projectTaskIdentity.taskName,
         sourceAgentId: normalizedInput.sourceAgentId,
@@ -1324,7 +1351,9 @@ export async function dispatchTaskToAgent(deps: AgentRuntimeDeps, input: AgentDi
     persistProjectTaskState(deps, projectTaskStateSessionIds, {
       active: true,
       status: 'dispatched',
+      assignerName,
       assigneeWorkerId,
+      assigneeWorkerName,
       taskId: projectTaskIdentity.taskId,
       taskName: projectTaskIdentity.taskName,
       sourceAgentId: normalizedInput.sourceAgentId,

@@ -29,6 +29,7 @@ describe('orchestration-config', () => {
       expect(active?.agents.some((item) => item.role === 'searcher' && item.enabled !== false)).toBe(true);
       expect(loaded.config.profiles.some((item) => item.id === 'full_mock')).toBe(true);
       expect(loaded.config.runtime?.systemAgent.maxInstances).toBe(1);
+      expect(loaded.config.runtime?.systemAgent.name).toBe('Mirror');
       expect(loaded.config.runtime?.projectWorkers.maxWorkers).toBeGreaterThanOrEqual(1);
       expect(loaded.config.runtime?.reviewers.maxInstances).toBe(2);
     } finally {
@@ -106,6 +107,7 @@ describe('orchestration-config', () => {
       expect(loaded.config.activeProfileId).toBe('mock');
       expect(loaded.config.profiles).toHaveLength(2);
       expect(loaded.config.profiles[1].agents[1].targetAgentId).toBe('executor-debug-loop');
+      expect(loaded.config.runtime?.systemAgent.name).toBe('Mirror');
       expect(loaded.config.runtime?.projectWorkers.workers[0].id).toBe('executor-debug-loop');
       expect(loaded.config.runtime?.projectWorkers.workers[0].name.length).toBeGreaterThan(0);
       expect(loaded.config.runtime?.reviewers.maxInstances).toBe(2);

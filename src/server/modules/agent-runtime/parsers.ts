@@ -162,10 +162,20 @@ export function parseAgentDispatchToolInput(rawInput: unknown, deps: AgentRuntim
       : typeof assignmentInput.assignerAgentId === 'string'
         ? { assignerAgentId: assignmentInput.assignerAgentId }
         : {}),
+    ...(typeof assignmentInput.assigner_name === 'string'
+      ? { assignerName: assignmentInput.assigner_name }
+      : typeof assignmentInput.assignerName === 'string'
+        ? { assignerName: assignmentInput.assignerName }
+        : {}),
     ...(typeof assignmentInput.assignee_agent_id === 'string'
       ? { assigneeAgentId: assignmentInput.assignee_agent_id }
       : typeof assignmentInput.assigneeAgentId === 'string'
         ? { assigneeAgentId: assignmentInput.assigneeAgentId }
+        : {}),
+    ...(typeof assignmentInput.assignee_name === 'string'
+      ? { assigneeName: assignmentInput.assignee_name }
+      : typeof assignmentInput.assigneeName === 'string'
+        ? { assigneeName: assignmentInput.assigneeName }
         : {}),
     ...(typeof assignmentInput.phase === 'string'
       ? { phase: assignmentInput.phase as NonNullable<AgentDispatchRequest['assignment']>['phase'] }

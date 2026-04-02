@@ -5,6 +5,7 @@ import type { SessionManager } from '../../orchestration/session-manager.js';
 import { getActiveReviewPolicy } from '../orchestration/review-policy.js';
 import { isObjectRecord } from '../common/object.js';
 import type { MessageRouteDeps } from './message-types.js';
+import { resolveAgentDisplayIdentity } from '../modules/agent-name-resolver.js';
 
 export function resolveActiveOrchestrationProfile(config: { activeProfileId: string; profiles: OrchestrationProfile[] }): OrchestrationProfile | null {
   const activeId = config.activeProfileId;
@@ -191,31 +192,30 @@ export function withMessageContent(message: unknown, content: string): unknown {
 }
 
 export function buildAgentEnvelope(agentId: string) {
-  if (agentId === 'finger-system-agent') {
-    return { id: 'finger-system-agent', name: 'SystemBot', role: 'system', mode: 'system' as const };
-  }
-  if (agentId === 'finger-project-agent' || agentId === 'finger-orchestrator' || agentId === 'finger-general') {
-    return { id: 'finger-project-agent', name: 'Project Agent', role: 'project', mode: 'business' as const };
-  }
-  if (agentId === 'finger-reviewer') {
-    return { id: 'finger-reviewer', name: 'Reviewer', role: 'reviewer', mode: 'business' as const };
-  }
-  return { id: agentId, name: agentId, role: 'agent', mode: 'business' as const };
+  const resolved = resolveAgentDisplayIdentity(agentId);
+  return {
+    id: agentId,
+    name: resolved.name,
+    role: resolved.role,
+    mode: resolved.role === 'system' ? 'system' as const : 'business' as const,
+  };
+}
+
+function stripKnownLegacyPrefix(text: string): string {
+  return text
+    .replace(/^\s*SystemBot:\s*/i, '')
+    .replace(/^\s*Project Agent:\s*/i, '')
+    .replace(/^\s*Reviewer:\s*/i, '')
+    .trim();
 }
 
 export function prefixAgentResponse(agentId: string, text: string): string {
-  const normalized = text.trim();
-  if (agentId === 'finger-system-agent') {
-    if (normalized.toLowerCase().startsWith('systembot:')) return normalized;
-    return `SystemBot: ${normalized}`;
+  const resolved = resolveAgentDisplayIdentity(agentId);
+  const normalized = stripKnownLegacyPrefix(text.trim());
+  if (!normalized) return normalized;
+  if (normalized.toLowerCase().startsWith(`${resolved.name.toLowerCase()}:`)) {
+    return normalized;
   }
-  if (agentId === 'finger-project-agent' || agentId === 'finger-orchestrator' || agentId === 'finger-general') {
-    if (normalized.toLowerCase().startsWith('project agent:')) return normalized;
-    return `Project Agent: ${normalized}`;
-  }
-  if (agentId === 'finger-reviewer') {
-    if (normalized.toLowerCase().startsWith('reviewer:')) return normalized;
-    return `Reviewer: ${normalized}`;
-  }
-  return normalized;
+  if (resolved.role === 'agent') return normalized;
+  return `${resolved.name}: ${normalized}`;
 }

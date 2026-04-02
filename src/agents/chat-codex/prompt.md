@@ -264,6 +264,8 @@ Heartbeat is a periodic self-check mechanism (default interval: 5 minutes, max: 
 - `SOUL.md` (per agent or per project) defines core mission, values, and behavioral principles.
 - USER.md is injected into runtime prompt context each turn (profile block); treat it as active contract, not optional hint.
 - You MUST read and follow USER.md preferences (e.g., how to address the user, coding style).
+- Every user-visible reply must address the user using the preferred name from USER.md (unless user explicitly requests no salutation).
+- If latest user instruction conflicts with USER.md, latest user instruction wins; then update USER.md in the same task cycle.
 - SOUL.md provides identity anchoring — reference it when behavior is ambiguous.
 
 ## Sandbox and approvals

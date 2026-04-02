@@ -46,6 +46,7 @@ export interface OrchestrationConfigV1 {
 
 export interface RuntimeSystemAgentConfig {
   id: string;
+  name: string;
   maxInstances: 1;
 }
 
@@ -94,6 +95,7 @@ const DEFAULT_WORKER_NAME_CANDIDATES = [
 ];
 
 const DEFAULT_SYSTEM_AGENT_ID = 'finger-system-agent';
+const DEFAULT_SYSTEM_AGENT_NAME = 'Mirror';
 const DEFAULT_PROJECT_WORKER_ID = 'finger-project-agent';
 const DEFAULT_REVIEWER_AGENT_ID = 'finger-reviewer';
 
@@ -103,6 +105,7 @@ export const DEFAULT_ORCHESTRATION_CONFIG: OrchestrationConfigV1 = {
   runtime: {
     systemAgent: {
       id: DEFAULT_SYSTEM_AGENT_ID,
+      name: DEFAULT_SYSTEM_AGENT_NAME,
       maxInstances: 1,
     },
     projectWorkers: {
@@ -449,8 +452,10 @@ function normalizeRuntimeConfig(
     ? runtimeRecord.systemAgent as Record<string, unknown>
     : {};
   const systemAgentId = normalizeNonEmptyString(systemRecord.id) || anchors.systemAgentId;
+  const systemAgentName = normalizeNonEmptyString(systemRecord.name) || DEFAULT_SYSTEM_AGENT_NAME;
   const systemAgent: RuntimeSystemAgentConfig = {
     id: systemAgentId,
+    name: systemAgentName,
     maxInstances: 1,
   };
 

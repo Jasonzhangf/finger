@@ -861,6 +861,8 @@ export class KernelAgentBase {
         for (const item of activeRegistry.slice(0, 8)) {
           lines.push(
             `- [${item.status}] ${item.targetAgentId}`
+            + `${item.assignerName ? ` assigner=${item.assignerName}` : ''}`
+            + `${item.assigneeWorkerName ? ` assigneeName=${item.assigneeWorkerName}` : ''}`
             + `${item.taskId ? ` taskId=${item.taskId}` : ''}`
             + `${item.taskName ? ` task="${item.taskName}"` : ''}`
             + `${item.dispatchId ? ` dispatch=${item.dispatchId}` : ''}`,
@@ -896,7 +898,9 @@ export class KernelAgentBase {
           `- active=${taskState.active}`,
           `- status=${taskState.status}`,
           `- source=${taskState.sourceAgentId}`,
+          taskState.assignerName ? `- assignerName=${taskState.assignerName}` : '',
           `- target=${taskState.targetAgentId}`,
+          taskState.assigneeWorkerName ? `- assigneeWorkerName=${taskState.assigneeWorkerName}` : '',
           taskState.taskId ? `- taskId=${taskState.taskId}` : '',
           taskState.taskName ? `- taskName=${taskState.taskName}` : '',
           taskState.dispatchId ? `- dispatchId=${taskState.dispatchId}` : '',
@@ -931,6 +935,8 @@ export class KernelAgentBase {
           historyLines.push(
             `- [${item.status}] active=${item.active} updatedAt=${item.updatedAt}`
             + ` source=${item.sourceAgentId}`
+            + `${item.assignerName ? ` assigner=${item.assignerName}` : ''}`
+            + `${item.assigneeWorkerName ? ` assigneeName=${item.assigneeWorkerName}` : ''}`
             + `${item.taskId ? ` taskId=${item.taskId}` : ''}`
             + `${item.taskName ? ` task="${item.taskName}"` : ''}`
             + `${item.dispatchId ? ` dispatch=${item.dispatchId}` : ''}`,

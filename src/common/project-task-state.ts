@@ -21,9 +21,13 @@ export interface ProjectTaskState {
   sourceAgentId: string;
   targetAgentId: string;
   updatedAt: string;
+  assignerName?: string;
   assigneeWorkerId?: string;
+  assigneeWorkerName?: string;
   deliveryWorkerId?: string;
+  deliveryWorkerName?: string;
   reviewerId?: string;
+  reviewerName?: string;
   reassignReason?: string;
   taskId?: string;
   taskName?: string;
@@ -42,9 +46,13 @@ export interface DelegatedProjectTaskRecord {
   status: ProjectTaskLifecycleStatus;
   active: boolean;
   updatedAt: string;
+  assignerName?: string;
   assigneeWorkerId?: string;
+  assigneeWorkerName?: string;
   deliveryWorkerId?: string;
+  deliveryWorkerName?: string;
   reviewerId?: string;
+  reviewerName?: string;
   reassignReason?: string;
   taskId?: string;
   taskName?: string;
@@ -150,14 +158,26 @@ export function parseProjectTaskState(value: unknown): ProjectTaskState | null {
     sourceAgentId,
     targetAgentId,
     updatedAt,
+    ...(asOptionalString(value.assignerName ?? value.assigner_name)
+      ? { assignerName: asOptionalString(value.assignerName ?? value.assigner_name) }
+      : {}),
     ...(asOptionalString(value.assigneeWorkerId ?? value.assignee_worker_id)
       ? { assigneeWorkerId: asOptionalString(value.assigneeWorkerId ?? value.assignee_worker_id) }
+      : {}),
+    ...(asOptionalString(value.assigneeWorkerName ?? value.assignee_worker_name)
+      ? { assigneeWorkerName: asOptionalString(value.assigneeWorkerName ?? value.assignee_worker_name) }
       : {}),
     ...(asOptionalString(value.deliveryWorkerId ?? value.delivery_worker_id)
       ? { deliveryWorkerId: asOptionalString(value.deliveryWorkerId ?? value.delivery_worker_id) }
       : {}),
+    ...(asOptionalString(value.deliveryWorkerName ?? value.delivery_worker_name)
+      ? { deliveryWorkerName: asOptionalString(value.deliveryWorkerName ?? value.delivery_worker_name) }
+      : {}),
     ...(asOptionalString(value.reviewerId ?? value.reviewer_id)
       ? { reviewerId: asOptionalString(value.reviewerId ?? value.reviewer_id) }
+      : {}),
+    ...(asOptionalString(value.reviewerName ?? value.reviewer_name)
+      ? { reviewerName: asOptionalString(value.reviewerName ?? value.reviewer_name) }
       : {}),
     ...(asOptionalString(value.reassignReason ?? value.reassign_reason)
       ? { reassignReason: asOptionalString(value.reassignReason ?? value.reassign_reason) }
@@ -203,14 +223,26 @@ export function mergeProjectTaskState(
     sourceAgentId: nextSource,
     targetAgentId: nextTarget,
     updatedAt: nowIso,
+    ...(asOptionalString(patch.assignerName) ?? current?.assignerName
+      ? { assignerName: asOptionalString(patch.assignerName) ?? current?.assignerName }
+      : {}),
     ...(asOptionalString(patch.assigneeWorkerId) ?? current?.assigneeWorkerId
       ? { assigneeWorkerId: asOptionalString(patch.assigneeWorkerId) ?? current?.assigneeWorkerId }
+      : {}),
+    ...(asOptionalString(patch.assigneeWorkerName) ?? current?.assigneeWorkerName
+      ? { assigneeWorkerName: asOptionalString(patch.assigneeWorkerName) ?? current?.assigneeWorkerName }
       : {}),
     ...(asOptionalString(patch.deliveryWorkerId) ?? current?.deliveryWorkerId
       ? { deliveryWorkerId: asOptionalString(patch.deliveryWorkerId) ?? current?.deliveryWorkerId }
       : {}),
+    ...(asOptionalString(patch.deliveryWorkerName) ?? current?.deliveryWorkerName
+      ? { deliveryWorkerName: asOptionalString(patch.deliveryWorkerName) ?? current?.deliveryWorkerName }
+      : {}),
     ...(asOptionalString(patch.reviewerId) ?? current?.reviewerId
       ? { reviewerId: asOptionalString(patch.reviewerId) ?? current?.reviewerId }
+      : {}),
+    ...(asOptionalString(patch.reviewerName) ?? current?.reviewerName
+      ? { reviewerName: asOptionalString(patch.reviewerName) ?? current?.reviewerName }
       : {}),
     ...(asOptionalString(patch.reassignReason) ?? current?.reassignReason
       ? { reassignReason: asOptionalString(patch.reassignReason) ?? current?.reassignReason }
@@ -248,14 +280,26 @@ export function parseDelegatedProjectTaskRegistry(value: unknown): DelegatedProj
       status,
       active: item.active === true,
       updatedAt,
+      ...(asOptionalString(item.assignerName ?? item.assigner_name)
+        ? { assignerName: asOptionalString(item.assignerName ?? item.assigner_name) }
+        : {}),
       ...(asOptionalString(item.assigneeWorkerId ?? item.assignee_worker_id)
         ? { assigneeWorkerId: asOptionalString(item.assigneeWorkerId ?? item.assignee_worker_id) }
+        : {}),
+      ...(asOptionalString(item.assigneeWorkerName ?? item.assignee_worker_name)
+        ? { assigneeWorkerName: asOptionalString(item.assigneeWorkerName ?? item.assignee_worker_name) }
         : {}),
       ...(asOptionalString(item.deliveryWorkerId ?? item.delivery_worker_id)
         ? { deliveryWorkerId: asOptionalString(item.deliveryWorkerId ?? item.delivery_worker_id) }
         : {}),
+      ...(asOptionalString(item.deliveryWorkerName ?? item.delivery_worker_name)
+        ? { deliveryWorkerName: asOptionalString(item.deliveryWorkerName ?? item.delivery_worker_name) }
+        : {}),
       ...(asOptionalString(item.reviewerId ?? item.reviewer_id)
         ? { reviewerId: asOptionalString(item.reviewerId ?? item.reviewer_id) }
+        : {}),
+      ...(asOptionalString(item.reviewerName ?? item.reviewer_name)
+        ? { reviewerName: asOptionalString(item.reviewerName ?? item.reviewer_name) }
         : {}),
       ...(asOptionalString(item.reassignReason ?? item.reassign_reason)
         ? { reassignReason: asOptionalString(item.reassignReason ?? item.reassign_reason) }
@@ -280,13 +324,17 @@ export function upsertDelegatedProjectTaskRegistry(
   patch: {
     sourceAgentId?: string;
     targetAgentId?: string;
+    assignerName?: string;
     taskId?: string;
     taskName?: string;
     status?: ProjectTaskLifecycleStatus;
     active?: boolean;
     assigneeWorkerId?: string;
+    assigneeWorkerName?: string;
     deliveryWorkerId?: string;
+    deliveryWorkerName?: string;
     reviewerId?: string;
+    reviewerName?: string;
     reassignReason?: string;
     dispatchId?: string;
     boundSessionId?: string;
@@ -322,14 +370,26 @@ export function upsertDelegatedProjectTaskRegistry(
     status,
     active,
     updatedAt: nowIso,
+    ...(asOptionalString(patch.assignerName) ?? previous?.assignerName
+      ? { assignerName: asOptionalString(patch.assignerName) ?? previous?.assignerName }
+      : {}),
     ...(asOptionalString(patch.assigneeWorkerId) ?? previous?.assigneeWorkerId
       ? { assigneeWorkerId: asOptionalString(patch.assigneeWorkerId) ?? previous?.assigneeWorkerId }
+      : {}),
+    ...(asOptionalString(patch.assigneeWorkerName) ?? previous?.assigneeWorkerName
+      ? { assigneeWorkerName: asOptionalString(patch.assigneeWorkerName) ?? previous?.assigneeWorkerName }
       : {}),
     ...(asOptionalString(patch.deliveryWorkerId) ?? previous?.deliveryWorkerId
       ? { deliveryWorkerId: asOptionalString(patch.deliveryWorkerId) ?? previous?.deliveryWorkerId }
       : {}),
+    ...(asOptionalString(patch.deliveryWorkerName) ?? previous?.deliveryWorkerName
+      ? { deliveryWorkerName: asOptionalString(patch.deliveryWorkerName) ?? previous?.deliveryWorkerName }
+      : {}),
     ...(asOptionalString(patch.reviewerId) ?? previous?.reviewerId
       ? { reviewerId: asOptionalString(patch.reviewerId) ?? previous?.reviewerId }
+      : {}),
+    ...(asOptionalString(patch.reviewerName) ?? previous?.reviewerName
+      ? { reviewerName: asOptionalString(patch.reviewerName) ?? previous?.reviewerName }
       : {}),
     ...(asOptionalString(patch.reassignReason) ?? previous?.reassignReason
       ? { reassignReason: asOptionalString(patch.reassignReason) ?? previous?.reassignReason }

@@ -29,7 +29,9 @@ export interface AgentDispatchRequest {
     blockedBy?: string[];
     bdTaskId?: string;
     assignerAgentId?: string;
+    assignerName?: string;
     assigneeAgentId?: string;
+    assigneeName?: string;
     phase?: 'assigned' | 'queued' | 'started' | 'reviewing' | 'retry' | 'passed' | 'failed' | 'closed';
     attempt?: number;
     /** 交付验收标准，project agent 完成后按此标准 review */

@@ -179,8 +179,12 @@ function humanizeDispatchSource(sourceAgentId: string): string {
   return mapping[normalized] ?? normalized;
 }
 
-export function buildDispatchSourceSummary(sourceAgentId: string): string {
-  return humanizeDispatchSource(sourceAgentId);
+export function buildDispatchSourceSummary(sourceAgentId: string, sourceAgentName?: string): string {
+  const humanized = humanizeDispatchSource(sourceAgentId);
+  const normalizedName = typeof sourceAgentName === 'string' ? sourceAgentName.trim() : '';
+  if (!normalizedName) return humanized;
+  if (normalizedName === humanized) return humanized;
+  return `${normalizedName}(${humanized})`;
 }
 
 export function buildDispatchReasonSummary(params: {

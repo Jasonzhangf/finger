@@ -49,6 +49,7 @@ import {
   handleAgentRuntimeStatus,
   sendProgressUpdateToChannels,
 } from '../../server/modules/agent-status-subscriber-status.js';
+import { resolveAgentDisplayIdentity } from '../../server/modules/agent-name-resolver.js';
 
 /**
  * 默认订阅的事件类型列表
@@ -493,20 +494,34 @@ export class AgentStatusSubscriber {
    * 获取 Agent 信息
    */
   private async getAgentInfo(agentId: string): Promise<AgentInfo> {
+    const resolved = resolveAgentDisplayIdentity(agentId);
     try {
       const catalog = await this.deps.agentRuntimeBlock.execute('catalog', { layer: 'summary' });
       const agents = Array.isArray((catalog as any).agents) ? (catalog as any).agents : [];
       const agent = agents.find((a: any) => a.id === agentId);
 
       if (agent) {
-        return { agentId: agent.id, agentName: agent.name, agentRole: agent.type };
+        const resolvedRole = resolved.role === 'agent' ? undefined : resolved.role;
+        const catalogName = typeof agent.name === 'string' ? agent.name.trim() : '';
+        const preferredName = resolved.role === 'agent'
+          ? (catalogName || resolved.name)
+          : (resolved.name || catalogName || agentId);
+        return {
+          agentId: agent.id,
+          agentName: preferredName,
+          agentRole: resolvedRole ?? agent.type,
+        };
       }
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
       log.warn(`[AgentStatusSubscriber] Failed to get agent info for :`, { error: errorMessage });
     }
 
-    return { agentId };
+    return {
+      agentId,
+      agentName: resolved.name,
+      ...(resolved.role === 'agent' ? {} : { agentRole: resolved.role }),
+    };
   }
 
   private resolvePushSettings(

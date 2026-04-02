@@ -45,6 +45,7 @@ import {
   parseSystemTaskState,
 } from '../../common/system-task-state.js';
 import { isNoActionableWatchdogText, isSystemRecoverySourceAgent } from '../../server/modules/agent-status-subscriber-noop.js';
+import { resolveAgentDisplayName } from '../../server/modules/agent-name-resolver.js';
 
 const log = logger.module('AgentStatusSubscriberHandlers');
 const DISPATCH_QUEUED_SYSTEM_PUSH_COOLDOWN_MS = 10 * 60 * 1000;
@@ -358,6 +359,20 @@ export async function handleDispatch(
   const resultSummary = sanitizeUserFacingStatusText(asTrimmedString(resultRecord?.summary), 240);
   const nextAction = sanitizeUserFacingStatusText(asTrimmedString(resultRecord?.nextAction), 240);
   const assignmentRecord = asRecord(payload.assignment);
+  const assignerAgentId = asTrimmedString(
+    assignmentRecord?.assignerAgentId
+    ?? assignmentRecord?.assigner_agent_id
+    ?? payload.sourceAgentId,
+  );
+  const assigneeAgentId = asTrimmedString(
+    assignmentRecord?.assigneeAgentId
+    ?? assignmentRecord?.assignee_agent_id
+    ?? targetAgentId,
+  );
+  const assignerName = asTrimmedString(assignmentRecord?.assignerName ?? assignmentRecord?.assigner_name)
+    || resolveAgentDisplayName(assignerAgentId || payload.sourceAgentId || 'unknown');
+  const assigneeName = asTrimmedString(assignmentRecord?.assigneeName ?? assignmentRecord?.assignee_name)
+    || resolveAgentDisplayName(assigneeAgentId || targetAgentId);
   const assignmentTaskId = asTrimmedString(assignmentRecord?.taskId);
   const explicitMailboxMessageId = asTrimmedString(resultRecord?.mailboxMessageId);
   const candidateMessageId = asTrimmedString(resultRecord?.messageId);
@@ -373,7 +388,7 @@ export async function handleDispatch(
         nextAction,
       })
     : '';
-  const sourceAgentSummary = buildDispatchSourceSummary(asTrimmedString(payload.sourceAgentId) || 'unknown');
+  const sourceAgentSummary = buildDispatchSourceSummary(asTrimmedString(payload.sourceAgentId) || 'unknown', assignerName);
   const reasonSummary = buildDispatchReasonSummary({
     dispatchStatus,
     resultStatus,
@@ -400,7 +415,7 @@ export async function handleDispatch(
   const relationParts = [
     normalizedChildSessionId ? `子会话 ${truncateInline(normalizedChildSessionId, 40)}` : '',
     dispatchParentSessionId && normalizedChildSessionId ? `父会话 ${truncateInline(dispatchParentSessionId, 40)}` : '',
-    targetAgentId ? `Agent ${targetAgentId}` : '',
+    targetAgentId ? `Agent ${assigneeName}(${targetAgentId})` : '',
   ].filter((item) => item.length > 0);
   const dispatchRelationLine = relationParts.length > 0 ? `关系: ${relationParts.join(' · ')}` : '';
   const state: WrappedStatusUpdate['status']['state'] = dispatchStatus === 'failed'
@@ -484,8 +499,10 @@ export async function handleDispatch(
     : '';
 
   const summary = [
-    `派发 ${targetAgentId}`,
+    `派发 ${assigneeName}(${targetAgentId})`,
     `状态: ${dispatchStatus}`,
+    `assigner: ${assignerName}${assignerAgentId ? `(${assignerAgentId})` : ''}`,
+    `assignee: ${assigneeName}${assigneeAgentId ? `(${assigneeAgentId})` : ''}`,
     heartbeatTimeLabel,
     `来源: ${sourceAgentSummary}`,
     `原因: ${reasonSummary}`,
@@ -515,6 +532,8 @@ export async function handleDispatch(
       details: {
         dispatchId: payload.dispatchId,
         sourceAgentId: payload.sourceAgentId,
+        assignerName,
+        assigneeName,
         dispatchSourceSummary: sourceAgentSummary,
         targetAgentId,
         dispatchStatus,

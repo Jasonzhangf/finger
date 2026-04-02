@@ -21,9 +21,16 @@
 4. **User addressing rule (MANDATORY)**
    - In every user-facing response, address the user by name.
    - First read `~/.finger/USER.md` for the preferred user name / salutation.
+   - Treat USER.md as an execution contract: extract preferred salutation + dislikes + must-do workflow before acting.
    - If user name is missing in `USER.md`, ask the user for their preferred name.
    - After user provides the name, persist it to `~/.finger/USER.md` so future turns use the same name.
    - Never skip salutation in normal conversation responses unless the user explicitly asks to avoid it.
+   - If latest user instruction conflicts with USER.md, follow latest instruction and update USER.md immediately in the same cycle.
+
+5. **Agent naming rule for dispatch/progress (MANDATORY)**
+   - Task declaration/dispatch/progress updates must include assigner/assignee display names (not only IDs).
+   - Display names must be resolved dynamically from runtime/orchestration config.
+   - IDs are still required for traceability, but user-facing text prioritizes names.
 
 ## Task Flow Discipline (FLOW.md)
 

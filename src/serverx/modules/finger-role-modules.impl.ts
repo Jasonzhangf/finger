@@ -34,6 +34,7 @@ import {
   type RuntimePromptConfig,
 } from '../../server/modules/finger-role-modules-helpers.js';
 import { normalizeProjectPathCanonical } from '../../common/path-normalize.js';
+import { resolveAgentDisplayName } from '../../server/modules/agent-name-resolver.js';
 
 export type FingerRoleProfile = 'project' | 'reviewer' | 'system';
 
@@ -1146,7 +1147,7 @@ export async function registerFingerRoleModules(
 
     const roleModule = createFingerGeneralModule({
       id: role.id,
-      name: role.id,
+      name: resolveAgentDisplayName(role.id),
       roleProfile: role.roleProfile,
       ...resolvePromptOverrides(role.id, role),
       resolvePromptPaths: () => resolvePromptOverrides(role.id, role),
@@ -1170,7 +1171,7 @@ export async function registerFingerRoleModules(
   if (legacy?.enableLegacyChatCodexAlias) {
     const legacyChatCodexAlias = createFingerGeneralModule({
       id: legacy.legacyAgentId,
-      name: legacy.legacyAgentId,
+      name: resolveAgentDisplayName(legacy.legacyAgentId),
       roleProfile: 'project',
       ...resolvePromptOverrides(legacy.legacyAgentId, {
         id: legacy.legacyAgentId,
