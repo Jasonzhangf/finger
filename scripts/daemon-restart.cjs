@@ -36,6 +36,7 @@ const HEALTH_URL = process.env.FINGER_DAEMON_HEALTH_URL || 'http://127.0.0.1:999
 const HEALTH_TIMEOUT_MS = Number(process.env.FINGER_DAEMON_HEALTH_TIMEOUT_MS || 45_000);
 const MAX_START_ATTEMPTS = Number(process.env.FINGER_DAEMON_START_ATTEMPTS || 5);
 const RETRY_DELAY_MS = Number(process.env.FINGER_DAEMON_RETRY_DELAY_MS || 2_000);
+const SHUTDOWN_WAIT_TIMEOUT_MS = Number(process.env.FINGER_DAEMON_SHUTDOWN_WAIT_TIMEOUT_MS || 15_000);
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -160,6 +161,34 @@ async function waitHealthy(timeoutMs) {
   return false;
 }
 
+function listDaemonFamilyProcesses() {
+  const processRows = loadProcessSnapshot();
+  return processRows.filter(({ command }) => {
+    const cmd = command || '';
+    if (cmd.includes(PROJECT_ROOT) && cmd.includes('scripts/daemon-guard.cjs')) return true;
+    if (cmd.includes(PROJECT_ROOT) && cmd.includes('dist/server/index.js')) return true;
+    // flock fallback runner that holds guard.lock and spawns daemon-guard
+    if (cmd.includes('guard-lock-runner.py') && cmd.includes(GUARD_SCRIPT)) return true;
+    return false;
+  });
+}
+
+async function waitForDaemonTeardown(timeoutMs) {
+  const deadline = Date.now() + Math.max(0, timeoutMs);
+  while (Date.now() <= deadline) {
+    sanitizePidFiles();
+    const alive = listDaemonFamilyProcesses();
+    if (alive.length === 0) return true;
+    await sleep(250);
+  }
+  const alive = listDaemonFamilyProcesses();
+  if (alive.length > 0) {
+    const summary = alive.map((row) => `pid=${row.pid}`).join(', ');
+    console.warn(`[DaemonRestart] Teardown wait timed out; daemon family still alive: ${summary}`);
+  }
+  return alive.length === 0;
+}
+
 function stopDaemon() {
   execFileSync(process.execPath, [STOP_SCRIPT], {
     cwd: PROJECT_ROOT,
@@ -197,6 +226,7 @@ async function main() {
   if (!startOnly) {
     console.log('[DaemonRestart] Restart mode: stopping existing daemon first...');
     stopDaemon();
+    await waitForDaemonTeardown(SHUTDOWN_WAIT_TIMEOUT_MS);
   } else {
     console.log('[DaemonRestart] Start-only mode...');
   }
@@ -218,6 +248,7 @@ async function main() {
 
     console.error(`[DaemonRestart] Health check timeout (${HEALTH_TIMEOUT_MS}ms), cleaning up and retrying...`);
     stopDaemon();
+    await waitForDaemonTeardown(SHUTDOWN_WAIT_TIMEOUT_MS);
     if (attempt < MAX_START_ATTEMPTS) {
       await sleep(RETRY_DELAY_MS);
     }
