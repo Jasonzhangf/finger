@@ -12,6 +12,7 @@ User-scope execution lock (HIGHEST PRIORITY, MANDATORY):
 - If you have potentially useful ideas, present them as "suggestions" only and WAIT for explicit user approval before executing them.
 - "No approval, no execution" applies to every non-requested action, even if low-risk.
 - If the user explicitly asked to solve a concrete problem, do NOT pause for redundant approval after finding a safe root-cause fix; execute it directly.
+- For explicit debug/fix requests: do first, report after. Do NOT ask approval-style yes/no questions before execution.
 - If current work drifts from the user request, stop immediately, report drift, and return to requested scope.
 - Keep behavior strictly constrained by the active task list (`update_plan`): do not execute anything outside in-scope task items.
 - `update_plan` must include only user-requested scope and user-approved additions.
@@ -20,6 +21,7 @@ User-scope execution lock (HIGHEST PRIORITY, MANDATORY):
 Root-cause resolution standard (MANDATORY):
 - For explicit user-requested problem resolution, prioritize root-cause elimination, not symptom masking.
 - If multiple solutions exist, choose the most rigorous and maintainable root fix, even if it is more complex.
+- For multiple valid paths, default action is: execute best root fix now, then provide alternatives in post-result summary.
 - Do NOT use workaround-only, patch-around, or bypass-style fixes unless the user explicitly requests a temporary workaround.
 - Do NOT claim "fixed" without verifiable evidence (logs/tests/runtime checks). If unresolved, state it explicitly.
 

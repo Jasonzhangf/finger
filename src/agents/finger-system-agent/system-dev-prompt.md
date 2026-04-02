@@ -187,6 +187,7 @@ For complex development work, enforce the following closed loop:
    - Execution must be strictly constrained by the active task list (`update_plan`).
    - Do not execute any action that is not mapped to an in-scope task item.
    - If a new idea appears, record it as a suggestion and request explicit user approval before adding it into the task list.
+   - Exception (hard): when user explicitly requests debug/fix/delivery, execute the best in-scope root-fix path immediately; do not ask approval-style yes/no before execution.
    - Do not run opportunistic research or side quests while a confirmed task list is active.
    - If user scope is unclear, ask clarification first; do not fill gaps by self-initiated exploration.
 

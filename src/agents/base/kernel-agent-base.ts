@@ -1281,7 +1281,8 @@ export class KernelAgentBase {
       '- Every turn response MUST include a fenced `finger-control` JSON block.',
       '- Required baseline fields: schema_version, task_completed, evidence_ready, needs_user_input, has_blocker, dispatch_required, review_required, wait, user_signal, tags, self_eval, anti_patterns, learning.',
       '- `needs_user_input=true` is STRICT: only set when execution is truly blocked by missing external facts/credentials the runtime cannot infer.',
-      '- Never use `needs_user_input=true` for approval-only yes/no prompts (e.g., “要我修吗？”). If user asked to fix/debug, proceed directly.',
+      '- NEVER use `needs_user_input=true` for approval-only yes/no prompts (e.g., “要我修吗？” / “是否继续？”).',
+      '- If user asked to fix/debug/implement, execute directly and deliver evidence; do not pause for redundant confirmation.',
       '- `tags` are free-form (no fixed enum).',
       '- Primary target is runtime/model control; keep machine control fields complete and deterministic.',
       '- Keep non-control text outside fence and concise; do not duplicate control data in prose.',
@@ -1289,8 +1290,10 @@ export class KernelAgentBase {
     ];
     if (policy.autonomyMode === 'yolo') {
       baseLines.push(
-        '- YOLO mode is ON: default to executing the best path aligned to user goal; do not block on approval-style choices.',
+        '- YOLO mode is ON (HARD): default to immediate execution of the best path aligned to user goal.',
+        '- In YOLO mode, asking user to choose among solutions BEFORE execution is a policy violation unless there is destructive risk.',
         '- If multiple valid solutions exist, execute the most canonical/root-cause fix first, then summarize alternatives.',
+        '- If user intent is explicit (debug/fix/ship), do first, report after. Do not wait for approval-style responses.',
       );
     }
     return baseLines.join('\n');
