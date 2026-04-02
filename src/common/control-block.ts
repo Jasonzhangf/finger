@@ -142,6 +142,22 @@ function asStringArray(value: unknown, maxItems: number): string[] {
     .slice(0, maxItems);
 }
 
+function asStringArrayLoose(value: unknown, maxItems: number): string[] {
+  if (Array.isArray(value)) return asStringArray(value, maxItems);
+  if (typeof value === 'string') {
+    const normalized = value.trim();
+    if (!normalized) return [];
+    const split = normalized
+      .split(/[,\n;]/g)
+      .map((item) => item.trim())
+      .filter((item) => item.length > 0)
+      .slice(0, maxItems);
+    if (split.length > 0) return split;
+    return [normalized];
+  }
+  return [];
+}
+
 function extractLastControlFence(rawReply: string): { blockText: string; strippedReply: string } | undefined {
   const pattern = /```finger-control\s*([\s\S]*?)```/gi;
   let match: RegExpExecArray | null = null;
@@ -299,19 +315,23 @@ export function normalizeControlBlock(rawValue: unknown): { controlBlock: Finger
   if (!compatible) issues.push(`schema_incompatible:${schemaVersion}`);
 
   const waitInput = asRecord(root.wait) ?? {};
+  const waitScalar = root.wait;
+  const waitFromScalar = asBoolean(waitScalar, false);
   const wait = {
     ...waitInput,
-    enabled: asBoolean(waitInput.enabled, false),
+    enabled: asBoolean(waitInput.enabled, waitFromScalar),
     seconds: asInt(waitInput.seconds, 0, 0, 86_400),
-    reason: asString(waitInput.reason, ''),
+    reason: asString(waitInput.reason, typeof waitScalar === 'string' ? waitScalar : ''),
   };
 
   const userSignalInput = asRecord(root.user_signal) ?? {};
+  const userSignalScalar = root.user_signal;
+  const userSignalNegativeFromScalar = asInt(userSignalScalar, 0, 0, 100);
   const userSignal = {
     ...userSignalInput,
-    negative_score: asInt(userSignalInput.negative_score, 0, 0, 100),
+    negative_score: asInt(userSignalInput.negative_score, userSignalNegativeFromScalar, 0, 100),
     profile_update_required: asBoolean(userSignalInput.profile_update_required, false),
-    why: asString(userSignalInput.why, ''),
+    why: asString(userSignalInput.why, typeof userSignalScalar === 'string' ? userSignalScalar : ''),
     ...(Object.prototype.hasOwnProperty.call(userSignalInput, 'friction_score')
       ? { friction_score: asInt(userSignalInput.friction_score, 0, 0, 100) }
       : {}),
@@ -326,44 +346,70 @@ export function normalizeControlBlock(rawValue: unknown): { controlBlock: Finger
   ) ? contextReviewHintRaw : 'none';
 
   const selfEvalInput = asRecord(root.self_eval) ?? {};
+  const selfEvalScalar = root.self_eval;
+  const selfEvalScoreFromScalar = asInt(selfEvalScalar, 0, -100, 100);
   const selfEval = {
     ...selfEvalInput,
-    score: asInt(selfEvalInput.score, 0, -100, 100),
+    score: asInt(selfEvalInput.score, selfEvalScoreFromScalar, -100, 100),
     confidence: asInt(selfEvalInput.confidence, 0, 0, 100),
     goal_gap: asString(selfEvalInput.goal_gap, ''),
-    why: asString(selfEvalInput.why, ''),
+    why: asString(selfEvalInput.why, typeof selfEvalScalar === 'string' ? selfEvalScalar : ''),
   };
 
-  const learningInput = asRecord(root.learning) ?? {};
-  const flowPatchInput = asRecord(learningInput.flow_patch) ?? {};
-  const memoryPatchInput = asRecord(learningInput.memory_patch) ?? {};
-  const userProfilePatchInput = asRecord(learningInput.user_profile_patch) ?? {};
+  const learningRaw = root.learning;
+  const learningInput = asRecord(learningRaw) ?? {};
+  const flowPatchInput = asRecord(learningInput.flow_patch ?? root.flow_patch) ?? {};
+  const memoryPatchInput = asRecord(learningInput.memory_patch ?? root.memory_patch) ?? {};
+  const userProfilePatchInput = asRecord(learningInput.user_profile_patch ?? root.user_profile_patch) ?? {};
+  const looseFlowChanges = asStringArrayLoose(flowPatchInput.changes, 32);
+  const looseLongTermItems = asStringArrayLoose(memoryPatchInput.long_term_items, 64);
+  const looseShortTermItems = asStringArrayLoose(memoryPatchInput.short_term_items, 64);
+  const looseUserProfileItems = asStringArrayLoose(userProfilePatchInput.items, 64);
+  const learningText = typeof learningRaw === 'string' ? learningRaw.trim() : '';
+  const flowText = typeof flowPatchInput === 'object' && typeof flowPatchInput.changes === 'string'
+    ? flowPatchInput.changes.trim()
+    : '';
+  const memoryText = typeof memoryPatchInput === 'object' && typeof memoryPatchInput.long_term_items === 'string'
+    ? memoryPatchInput.long_term_items.trim()
+    : '';
+  const userProfileText = typeof userProfilePatchInput === 'object' && typeof userProfilePatchInput.items === 'string'
+    ? userProfilePatchInput.items.trim()
+    : '';
   const sensitivityRaw = asString(userProfilePatchInput.sensitivity, 'normal').toLowerCase();
 
   const learning = {
     ...learningInput,
-    did_right: asStringArray(learningInput.did_right, 32),
-    did_wrong: asStringArray(learningInput.did_wrong, 32),
-    repeated_wrong: asStringArray(learningInput.repeated_wrong, 32),
+    did_right: asStringArrayLoose(learningInput.did_right, 32),
+    did_wrong: asStringArrayLoose(learningInput.did_wrong, 32),
+    repeated_wrong: asStringArrayLoose(learningInput.repeated_wrong, 32),
     flow_patch: {
       ...flowPatchInput,
-      required: asBoolean(flowPatchInput.required, false),
+      required: asBoolean(flowPatchInput.required, looseFlowChanges.length > 0 || flowText.length > 0),
       project_scope: asString(flowPatchInput.project_scope, ''),
-      changes: asStringArray(flowPatchInput.changes, 32),
+      changes: looseFlowChanges.length > 0
+        ? looseFlowChanges
+        : (flowText.length > 0 ? [flowText] : []),
     },
     memory_patch: {
       ...memoryPatchInput,
-      required: asBoolean(memoryPatchInput.required, false),
+      required: asBoolean(memoryPatchInput.required, looseLongTermItems.length > 0 || memoryText.length > 0 || learningText.length > 0),
       project_scope: asString(memoryPatchInput.project_scope, ''),
-      long_term_items: asStringArray(memoryPatchInput.long_term_items, 64),
-      short_term_items: asStringArray(memoryPatchInput.short_term_items, 64),
+      long_term_items: looseLongTermItems.length > 0
+        ? looseLongTermItems
+        : (memoryText.length > 0
+          ? [memoryText]
+          : (learningText.length > 0 ? [learningText] : [])),
+      short_term_items: looseShortTermItems,
     },
     user_profile_patch: {
       ...userProfilePatchInput,
-      required: asBoolean(userProfilePatchInput.required, false),
-      items: asStringArray(userProfilePatchInput.items, 64),
+      required: asBoolean(userProfilePatchInput.required, looseUserProfileItems.length > 0 || userProfileText.length > 0),
+      items: looseUserProfileItems.length > 0
+        ? looseUserProfileItems
+        : (userProfileText.length > 0 ? [userProfileText] : []),
       sensitivity: (sensitivityRaw === 'sensitive' ? 'sensitive' : 'normal') as 'normal' | 'sensitive',
     },
+    ...(learningText.length > 0 ? { note: learningText } : {}),
   };
 
   const controlBlock: FingerControlBlock = {
@@ -378,8 +424,8 @@ export function normalizeControlBlock(rawValue: unknown): { controlBlock: Finger
     context_review_hint,
     wait,
     user_signal: userSignal,
-    tags: asStringArray(root.tags, 128),
-    anti_patterns: asStringArray(root.anti_patterns, 32),
+    tags: asStringArrayLoose(root.tags, 128),
+    anti_patterns: asStringArrayLoose(root.anti_patterns, 32),
     self_eval: selfEval,
     learning,
   };

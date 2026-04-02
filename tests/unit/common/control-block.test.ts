@@ -297,4 +297,69 @@ describe('control-block', () => {
     });
     expect(hold).toBe(false);
   });
+
+  it('repairs non-standard learning string as memory_patch shape without semantic rewrite', () => {
+    const raw = [
+      'done',
+      '',
+      '```json',
+      JSON.stringify({
+        schema_version: '1.0',
+        task_completed: true,
+        evidence_ready: true,
+        needs_user_input: false,
+        has_blocker: false,
+        dispatch_required: false,
+        review_required: false,
+        wait: { enabled: false, seconds: 0, reason: '' },
+        user_signal: { negative_score: 0, profile_update_required: false, why: '' },
+        tags: ['compat', 'learning'],
+        self_eval: { score: 80, confidence: 90, goal_gap: '', why: 'ok' },
+        anti_patterns: [],
+        learning: 'skill files have two types of ** usage',
+      }),
+      '```',
+    ].join('\n');
+
+    const parsed = parseControlBlockFromReply(raw);
+    expect(parsed.valid).toBe(true);
+    expect(parsed.controlBlock?.learning?.memory_patch?.required).toBe(true);
+    expect(parsed.controlBlock?.learning?.memory_patch?.long_term_items).toEqual([
+      'skill files have two types of ** usage',
+    ]);
+    const hooks = evaluateControlHooks(parsed.controlBlock!);
+    expect(hooks.hooks).toContain('hook.project.memory.update');
+  });
+
+  it('repairs string tags/anti_patterns/wait scalar into canonical shapes', () => {
+    const normalized = normalizeControlBlock({
+      schema_version: '1.0',
+      task_completed: false,
+      evidence_ready: false,
+      needs_user_input: true,
+      has_blocker: true,
+      dispatch_required: false,
+      review_required: false,
+      wait: 'need user confirmation',
+      user_signal: 75,
+      tags: 'debug,weibo, push',
+      self_eval: 'not finished yet',
+      anti_patterns: 'no speculative fix',
+      learning: {
+        did_right: 'kept logs',
+        did_wrong: 'asked approval repeatedly',
+        repeated_wrong: 'context loss',
+        flow_patch: { changes: 'add preflight checks' },
+      },
+    });
+
+    expect(normalized.controlBlock.tags).toEqual(['debug', 'weibo', 'push']);
+    expect(normalized.controlBlock.anti_patterns).toEqual(['no speculative fix']);
+    expect(normalized.controlBlock.wait.reason).toBe('need user confirmation');
+    expect(normalized.controlBlock.user_signal.negative_score).toBe(75);
+    expect(normalized.controlBlock.self_eval.why).toBe('not finished yet');
+    expect(normalized.controlBlock.learning.did_right).toEqual(['kept logs']);
+    expect(normalized.controlBlock.learning.flow_patch.required).toBe(true);
+    expect(normalized.controlBlock.learning.flow_patch.changes).toEqual(['add preflight checks']);
+  });
 });
