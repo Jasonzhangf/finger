@@ -758,18 +758,27 @@ export function handleAgentRuntimeStatus(progress: SessionProgress, event: any):
  * 处理 agent_runtime_dispatch 事件
  */
 export function handleAgentRuntimeDispatch(progress: SessionProgress, event: any): void {
+  const target = event.payload?.targetAgentId;
+  const status = typeof event.payload?.status === 'string' ? event.payload.status : 'queued';
+  const isTerminal = status === 'completed' || status === 'failed' || status === 'idle';
+
+  // Self-target dispatch updates are authoritative for turn closure.
+  // Do not drop them, otherwise progress can stay "running" forever when
+  // model_round close event is missing but dispatch already completed.
+  if (target && target === progress.agentId) {
+    if (isTerminal) {
+      progress.status = status as SessionProgress['status'];
+      progress.currentTask = `派发 ${target} (${status})`;
+    }
+    return;
+  }
+
   // Skip heartbeat/bootstrap dispatches only (system dispatch is now business-critical).
   const source = event.payload?.sourceAgentId || (event as any).sourceAgentId || '';
   if (source.includes('heartbeat') || source.includes('bootstrap')) {
     return;
   }
-  // Skip self-dispatch (system agent dispatching to itself)
-  const target = event.payload?.targetAgentId;
-  if (target && target === progress.agentId) {
-    return;
-  }
   if (target) {
-    const status = event.payload?.status || 'queued';
     progress.currentTask = `派发 ${target} (${status})`;
     if (status === 'failed') progress.status = 'failed';
   }

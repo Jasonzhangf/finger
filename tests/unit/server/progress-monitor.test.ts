@@ -514,4 +514,52 @@ describe('ProgressMonitor incremental updates', () => {
 
     monitor.stop();
   });
+
+  it('marks progress completed when self-target dispatch reports completed (without waiting model_round close)', async () => {
+    const eventBus = new UnifiedEventBus();
+    const monitor = new ProgressMonitor(
+      eventBus,
+      createMinimalDeps(),
+      {},
+      {
+        enabled: true,
+        progressUpdates: true,
+        intervalMs: 60_000,
+      },
+    );
+
+    monitor.start();
+
+    await eventBus.emit({
+      type: 'agent_runtime_status',
+      sessionId: 'session-reviewer-close',
+      agentId: 'finger-reviewer',
+      timestamp: new Date().toISOString(),
+      payload: {
+        status: 'running',
+        summary: '执行中',
+      },
+    } as any);
+
+    await eventBus.emit({
+      type: 'agent_runtime_dispatch',
+      sessionId: 'session-reviewer-close',
+      agentId: 'finger-reviewer',
+      timestamp: new Date().toISOString(),
+      payload: {
+        sourceAgentId: 'finger-system-agent',
+        targetAgentId: 'finger-reviewer',
+        status: 'completed',
+      },
+    } as any);
+
+    await flushEventLoop();
+
+    const progress = monitor.getProgress('session-reviewer-close');
+    expect(progress).toBeTruthy();
+    expect(progress?.status).toBe('completed');
+    expect(progress?.currentTask).toContain('派发 finger-reviewer (completed)');
+
+    monitor.stop();
+  });
 });
