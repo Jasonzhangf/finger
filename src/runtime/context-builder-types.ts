@@ -98,6 +98,14 @@ export interface ContextBuildOptions {
   enableModelRanking?: boolean | 'dryrun';
   /** 排序模型 providerId（从 user-settings.aiProviders 读取） */
   rankingProviderId?: string;
+  /**
+   * Rebuild trigger hint.
+   * - bootstrap_first: first rebuild when history is empty (prefer tag-selection by model)
+   * - history_context_zero: history zone missing, force rebuild
+   * - manual: explicit tool-triggered rebuild
+   * - default: normal rebuild path
+   */
+  rebuildTrigger?: 'bootstrap_first' | 'history_context_zero' | 'manual' | 'default';
   /** 是否启用 embedding recall 作为历史候选召回层 */
   enableEmbeddingRecall?: boolean;
   /** embedding recall 候选数量 */
@@ -170,6 +178,18 @@ export interface ContextBuildResult {
     rankingProviderModel?: string;
     /** Ranking 执行/跳过原因 */
     rankingReason?: string;
+    /** Tag selection（bootstrap-first）是否执行 */
+    tagSelectionExecuted?: boolean;
+    /** Tag selection provider ID */
+    tagSelectionProviderId?: string;
+    /** Tag selection provider model */
+    tagSelectionProviderModel?: string;
+    /** Tag selection 执行/跳过原因 */
+    tagSelectionReason?: string;
+    /** Tag selection 结果 tags */
+    selectedTags?: string[];
+    /** Tag selection 结果 task IDs */
+    selectedTaskIds?: string[];
     /** Embedding recall 是否执行 */
     embeddingRecallExecuted?: boolean;
     /** Embedding recall 候选数量 */

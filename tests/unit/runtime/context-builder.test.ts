@@ -584,6 +584,102 @@ describe('context-builder', () => {
     });
   });
 
+  describe('bootstrap-first tag selection rebuild', () => {
+    it('uses model-selected tags to filter historical digests, then composes by time', async () => {
+      const now = Date.now();
+      const rootDir = join(tmpdir(), `finger-ctx-builder-bootstrap-tags-${now}`);
+      mkdirSync(rootDir, { recursive: true });
+      const resolveSpy = vi.spyOn(kernelProviderClient, 'resolveKernelProvider').mockImplementation((providerId?: string) => {
+        if (providerId === 'ranker' || providerId === undefined || providerId === 'default-main') {
+          return {
+            provider: {
+              id: 'default-main',
+              base_url: 'https://default-main.example',
+              wire_api: 'responses',
+              env_key: 'DEFAULT_KEY',
+              model: 'default-model',
+            },
+          };
+        }
+        return { reason: 'provider_not_found' };
+      });
+      const fetchSpy = vi.fn(async () => new Response(
+        JSON.stringify({
+          output_text: '{"selectedTags":["weibo"],"selectedTaskIds":[]}',
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
+      ));
+      vi.stubGlobal('fetch', fetchSpy);
+      try {
+        const result = await buildContext(
+          {
+            rootDir,
+            sessionId: 'ctx-bootstrap-tags',
+            agentId: 'finger-system-agent',
+            mode: 'main',
+            currentPrompt: '请继续修复微博推送',
+            sessionMessages: [
+              {
+                id: 't1-u',
+                role: 'user',
+                content: '修复微博推送失败',
+                timestamp: new Date(now - 60_000).toISOString(),
+              },
+              {
+                id: 't1-a',
+                role: 'assistant',
+                content: '已定位微博推送路径问题',
+                timestamp: new Date(now - 58_000).toISOString(),
+                metadata: { tags: ['weibo', 'push'], topic: 'weibo' },
+              },
+              {
+                id: 't2-u',
+                role: 'user',
+                content: '排查小红书详情爬取',
+                timestamp: new Date(now - 40_000).toISOString(),
+              },
+              {
+                id: 't2-a',
+                role: 'assistant',
+                content: '小红书任务正常',
+                timestamp: new Date(now - 38_000).toISOString(),
+                metadata: { tags: ['xhs', 'detail'], topic: 'xhs' },
+              },
+              {
+                id: 't3-u',
+                role: 'user',
+                content: '继续修复微博推送并验证',
+                timestamp: new Date(now - 10_000).toISOString(),
+              },
+            ],
+          },
+          {
+            targetBudget: 1_000_000,
+            includeMemoryMd: false,
+            enableTaskGrouping: true,
+            enableModelRanking: true,
+            rankingProviderId: 'ranker',
+            rebuildTrigger: 'bootstrap_first',
+            buildMode: 'aggressive',
+          },
+        );
+
+        expect(result.ok).toBe(true);
+        expect(result.metadata.tagSelectionExecuted).toBe(true);
+        expect(result.metadata.selectedTags).toEqual(['weibo']);
+        expect(result.metadata.tagSelectionReason).toBe('ok');
+        expect(result.metadata.rankingReason).toBe('skipped_due_to_bootstrap_tag_selection');
+        const contents = result.messages.map((m) => m.content).join('\n');
+        expect(contents).toContain('修复微博推送失败');
+        expect(contents).not.toContain('排查小红书详情爬取');
+      } finally {
+        resolveSpy.mockRestore();
+        vi.unstubAllGlobals();
+        rmSync(rootDir, { recursive: true, force: true });
+      }
+    });
+  });
+
   describe('MEMORY.md injection', () => {
     it('returns null when MEMORY.md does not exist', () => {
       // Since cwd has MEMORY.md in this project, we test with an explicit nonexistent

@@ -619,10 +619,37 @@ function applyBudgetTruncation(
 
 type RankingMode = 'off' | 'active' | 'dryrun';
 
+interface TagSelectionOutput {
+  selectedTags?: string[];
+  selectedTaskIds?: string[];
+}
+
 function resolveRankingMode(flag: ContextBuildOptions['enableModelRanking'] | undefined): RankingMode {
   if (flag === 'dryrun') return 'dryrun';
   if (flag === true) return 'active';
   return 'off';
+}
+
+function normalizeTagToken(value: string): string {
+  return value.trim().toLowerCase();
+}
+
+function collectTagCatalog(blocks: TaskBlock[]): string[] {
+  const tags = new Set<string>();
+  for (const block of blocks) {
+    if (Array.isArray(block.tags)) {
+      for (const tag of block.tags) {
+        if (typeof tag !== 'string') continue;
+        const normalized = normalizeTagToken(tag);
+        if (normalized.length > 0) tags.add(normalized);
+      }
+    }
+    if (typeof block.topic === 'string') {
+      const topic = normalizeTagToken(block.topic);
+      if (topic.length > 0) tags.add(topic);
+    }
+  }
+  return Array.from(tags);
 }
 
 async function runModelRanking(
@@ -906,6 +933,226 @@ function tryParseRankingOutput(text: string): RankingOutput | null {
   } catch {
     return null;
   }
+}
+
+function tryParseTagSelectionOutput(text: string): TagSelectionOutput | null {
+  const trimmed = text.trim();
+  const start = trimmed.indexOf('{');
+  const end = trimmed.lastIndexOf('}');
+  if (start < 0 || end <= start) return null;
+  try {
+    const parsed = JSON.parse(trimmed.slice(start, end + 1)) as Record<string, unknown>;
+    const selectedTags = Array.isArray(parsed.selectedTags)
+      ? parsed.selectedTags
+        .filter((v): v is string => typeof v === 'string' && v.trim().length > 0)
+        .map((v) => normalizeTagToken(v))
+      : [];
+    const selectedTaskIds = Array.isArray(parsed.selectedTaskIds)
+      ? parsed.selectedTaskIds
+        .filter((v): v is string => typeof v === 'string' && v.trim().length > 0)
+      : [];
+    if (selectedTags.length === 0 && selectedTaskIds.length === 0) return null;
+    return {
+      ...(selectedTags.length > 0 ? { selectedTags } : {}),
+      ...(selectedTaskIds.length > 0 ? { selectedTaskIds } : {}),
+    };
+  } catch {
+    return null;
+  }
+}
+
+async function runModelTagSelection(
+  blocks: TaskBlock[],
+  params: {
+    providerId?: string;
+    currentPrompt?: string;
+  },
+): Promise<{
+  selectedTags: string[];
+  selectedTaskIds: string[];
+  providerId?: string;
+  providerModel?: string;
+  executed: boolean;
+  reason: string;
+}> {
+  if (blocks.length === 0) {
+    return {
+      selectedTags: [],
+      selectedTaskIds: [],
+      executed: false,
+      reason: 'empty_blocks',
+    };
+  }
+  const currentPrompt = typeof params.currentPrompt === 'string' ? params.currentPrompt.trim() : '';
+  if (currentPrompt.length === 0) {
+    return {
+      selectedTags: [],
+      selectedTaskIds: [],
+      executed: false,
+      reason: 'missing_prompt',
+    };
+  }
+  const tagCatalog = collectTagCatalog(blocks);
+  if (tagCatalog.length === 0) {
+    return {
+      selectedTags: [],
+      selectedTaskIds: [],
+      executed: false,
+      reason: 'empty_tag_catalog',
+    };
+  }
+
+  const configuredProviderId = (params.providerId || '').trim();
+  const defaultProviderResolved = resolveKernelProvider(undefined);
+  const defaultProviderId = defaultProviderResolved.provider?.id?.trim() ?? '';
+  const providerCandidates = [configuredProviderId, defaultProviderId]
+    .filter((item, index, arr): item is string => item.length > 0 && arr.indexOf(item) === index);
+  if (providerCandidates.length === 0) {
+    return {
+      selectedTags: [],
+      selectedTaskIds: [],
+      executed: false,
+      reason: `missing_provider_id:${defaultProviderResolved.reason ?? 'default_provider_unavailable'}`,
+    };
+  }
+
+  const taskPreview = blocks.map((block) => {
+    const blockTags = (block.tags ?? []).map((tag) => normalizeTagToken(tag)).filter((tag) => tag.length > 0);
+    const topic = typeof block.topic === 'string' ? normalizeTagToken(block.topic) : '';
+    const tokens = [
+      `[${block.id}]`,
+      blockTags.length > 0 ? `tags=${blockTags.join(',')}` : '',
+      topic ? `topic=${topic}` : '',
+      `time=${block.startTimeIso}`,
+    ].filter((item) => item.length > 0);
+    return tokens.join(' ');
+  }).join('\n');
+
+  const payloadBase = {
+    reasoning: { effort: 'minimal' },
+    text: { verbosity: 'low' },
+    input: [
+      {
+        role: 'system',
+        content: [
+          {
+            type: 'input_text',
+            text: [
+              '你是上下文标签筛选助手。',
+              '任务：根据用户当前输入，从给定 tags/topic 中选出最相关标签，并可选返回直接命中的 task IDs。',
+              '规则：',
+              '- 只可使用候选 tags，不要创造新标签；',
+              '- 优先选择语义明确、与当前输入直接相关的标签；',
+              '- 如果没有强相关标签，返回空数组；',
+              '- JSON 输出，不要 markdown。',
+              '输出格式：{"selectedTags":["tag1"],"selectedTaskIds":["task-id-1"]}',
+            ].join('\n'),
+          },
+        ],
+      },
+      {
+        role: 'user',
+        content: [
+          {
+            type: 'input_text',
+            text: [
+              `用户输入: ${currentPrompt}`,
+              '',
+              `候选标签: ${tagCatalog.join(', ')}`,
+              '',
+              '任务候选（仅供必要时返回 selectedTaskIds）：',
+              taskPreview,
+            ].join('\n'),
+          },
+        ],
+      },
+    ],
+  };
+
+  const attempts: string[] = [];
+  let latestProviderModel: string | undefined;
+  let latestProviderId: string | undefined;
+  for (const providerCandidateId of providerCandidates) {
+    const providerResolved = resolveKernelProvider(providerCandidateId);
+    const provider = providerResolved.provider;
+    if (!provider) {
+      attempts.push(`${providerCandidateId}:${providerResolved.reason ?? 'provider_not_found'}`);
+      continue;
+    }
+    latestProviderModel = provider.model;
+    latestProviderId = provider.id;
+    if (provider.enabled === false) {
+      attempts.push(`${providerCandidateId}:provider_disabled`);
+      continue;
+    }
+    if (provider.wire_api !== 'responses') {
+      attempts.push(`${providerCandidateId}:unsupported_wire_api:${provider.wire_api}`);
+      continue;
+    }
+    try {
+      const payload = {
+        ...payloadBase,
+        model: provider.model,
+      };
+      const endpoints = buildResponsesEndpoints(provider.base_url);
+      if (endpoints.length === 0) {
+        attempts.push(`${providerCandidateId}:provider_base_url_missing`);
+        continue;
+      }
+      const headers = buildProviderHeaders(provider);
+      let response: Response | null = null;
+      for (const endpoint of endpoints) {
+        const candidate = await fetch(endpoint, {
+          method: 'POST',
+          headers,
+          body: JSON.stringify(payload),
+        });
+        if (candidate.status === 404) {
+          response = candidate;
+          continue;
+        }
+        response = candidate;
+        break;
+      }
+      if (!response || !response.ok) {
+        attempts.push(`${providerCandidateId}:${response ? `http_${response.status}` : 'http_unknown'}`);
+        continue;
+      }
+      const data = await response.json() as Record<string, unknown>;
+      const outputText = extractResponseOutputText(data);
+      if (!outputText) {
+        attempts.push(`${providerCandidateId}:empty_output`);
+        continue;
+      }
+      const parsed = tryParseTagSelectionOutput(outputText);
+      if (!parsed) {
+        attempts.push(`${providerCandidateId}:parse_failed`);
+        continue;
+      }
+      const allowedTaskIds = new Set(blocks.map((block) => block.id));
+      const selectedTaskIds = (parsed.selectedTaskIds ?? []).filter((id) => allowedTaskIds.has(id));
+      const allowedTagSet = new Set(tagCatalog.map((tag) => normalizeTagToken(tag)));
+      const selectedTags = (parsed.selectedTags ?? []).filter((tag) => allowedTagSet.has(normalizeTagToken(tag)));
+      return {
+        selectedTags,
+        selectedTaskIds,
+        providerId: provider.id,
+        providerModel: provider.model,
+        executed: true,
+        reason: 'ok',
+      };
+    } catch {
+      attempts.push(`${providerCandidateId}:exception`);
+    }
+  }
+  return {
+    selectedTags: [],
+    selectedTaskIds: [],
+    providerId: latestProviderId,
+    providerModel: latestProviderModel,
+    executed: false,
+    reason: `providers_exhausted:${attempts.join('|')}`,
+  };
 }
 
 function reorderBlocksByRanking(blocks: TaskBlock[], rankedTaskIds: string[]): TaskBlock[] {
@@ -1247,8 +1494,11 @@ export async function buildContext(
   const { current, historical } = splitCurrentAndHistorical(filteredBlocks);
   let rankedHistorical = historical;
 
+  const rebuildTrigger = options?.rebuildTrigger ?? 'default';
+  const useBootstrapTagSelection = rebuildTrigger === 'bootstrap_first';
+
   // ── Step 3.5: embedding recall（历史候选召回） ──
-  const embeddingRecallEnabled = options?.enableEmbeddingRecall !== false;
+  const embeddingRecallEnabled = !useBootstrapTagSelection && options?.enableEmbeddingRecall !== false;
   let embeddingRecallExecuted = false;
   let embeddingCandidateCount = 0;
   let embeddingIndexPath: string | undefined;
@@ -1276,14 +1526,52 @@ export async function buildContext(
     }
   }
 
-  // ── Step 4: 可选模型排序（active/dryrun） ──
+  // ── Step 4: 首次 bootstrap 重建：按 tag 相关性筛选（模型） ──
+  let tagSelectionExecuted = false;
+  let tagSelectionProviderId: string | undefined;
+  let tagSelectionProviderModel: string | undefined;
+  let tagSelectionReason: string | undefined;
+  let selectedTags: string[] | undefined;
+  let selectedTaskIds: string[] | undefined;
+  if (useBootstrapTagSelection && rankedHistorical.length > 0) {
+    const tagSelection = await runModelTagSelection(rankedHistorical, {
+      providerId: options?.rankingProviderId,
+      currentPrompt: input.currentPrompt,
+    });
+    tagSelectionExecuted = tagSelection.executed;
+    tagSelectionProviderId = tagSelection.providerId;
+    tagSelectionProviderModel = tagSelection.providerModel;
+    tagSelectionReason = tagSelection.reason;
+    selectedTags = tagSelection.selectedTags;
+    selectedTaskIds = tagSelection.selectedTaskIds;
+    if (tagSelection.executed) {
+      const tagSet = new Set((tagSelection.selectedTags ?? []).map((tag) => normalizeTagToken(tag)));
+      const selectedIdSet = new Set(tagSelection.selectedTaskIds ?? []);
+      const filtered = rankedHistorical.filter((block) => {
+        if (selectedIdSet.has(block.id)) return true;
+        if (typeof block.topic === 'string' && tagSet.has(normalizeTagToken(block.topic))) return true;
+        if (Array.isArray(block.tags)) {
+          for (const tag of block.tags) {
+            if (tagSet.has(normalizeTagToken(tag))) return true;
+          }
+        }
+        return false;
+      });
+      if (filtered.length > 0) {
+        // Filter by relevance, then sort by time (newer first for budget fill).
+        rankedHistorical = [...filtered].sort((a, b) => b.endTime - a.endTime);
+      }
+    }
+  }
+
+  // ── Step 5: 可选模型排序（active/dryrun） ──
   const rankingMode = resolveRankingMode(options?.enableModelRanking);
   let rankingExecuted = false;
   let rankingProviderId: string | undefined;
   let rankingProviderModel: string | undefined;
   let rankingReason: string | undefined;
   let rankingIds: string[] | undefined;
-  if ((rankingMode === 'active' || rankingMode === 'dryrun') && rankedHistorical.length > 0) {
+  if (!useBootstrapTagSelection && (rankingMode === 'active' || rankingMode === 'dryrun') && rankedHistorical.length > 0) {
     const ranking = await runModelRanking(rankedHistorical, {
       providerId: options?.rankingProviderId,
       currentPrompt: input.currentPrompt,
@@ -1300,9 +1588,12 @@ export async function buildContext(
   } else if (embeddingRecallExecuted && embeddingRecallIds) {
     rankingIds = embeddingRecallIds;
     rankingReason = 'embedding_recall_only';
+  } else if (useBootstrapTagSelection) {
+    rankingReason = 'skipped_due_to_bootstrap_tag_selection';
   }
 
-  const rankingUnavailableForFallback = rankingMode === 'active'
+  const rankingUnavailableForFallback = !useBootstrapTagSelection
+    && rankingMode === 'active'
     && rankedHistorical.length > 0
     && !rankingExecuted
     && typeof rankingReason === 'string'
@@ -1419,6 +1710,7 @@ export async function buildContext(
     sessionId: input.sessionId,
     agentId,
     mode,
+    rebuildTrigger,
     buildMode,
     targetBudget,
     actualTokens,
@@ -1429,6 +1721,10 @@ export async function buildContext(
     rankingReason: rankingReason ?? 'not_requested',
     rankingProviderId,
     rankingProviderModel,
+    tagSelectionExecuted,
+    tagSelectionReason: tagSelectionReason ?? 'not_requested',
+    tagSelectionProviderId,
+    tagSelectionProviderModel,
     embeddingRecallExecuted,
     embeddingRecallReason: embeddingRecallReason ?? 'not_requested',
     embeddingRecallError,
@@ -1463,6 +1759,12 @@ export async function buildContext(
       ...(rankingProviderModel ? { rankingProviderModel } : {}),
       ...(rankingReason ? { rankingReason } : {}),
       ...(rankingIds ? { rankingIds } : {}),
+      tagSelectionExecuted,
+      ...(tagSelectionProviderId ? { tagSelectionProviderId } : {}),
+      ...(tagSelectionProviderModel ? { tagSelectionProviderModel } : {}),
+      ...(tagSelectionReason ? { tagSelectionReason } : {}),
+      ...(selectedTags && selectedTags.length > 0 ? { selectedTags } : {}),
+      ...(selectedTaskIds && selectedTaskIds.length > 0 ? { selectedTaskIds } : {}),
       embeddingRecallExecuted,
       embeddingCandidateCount,
       ...(embeddingRecallReason ? { embeddingRecallReason } : {}),

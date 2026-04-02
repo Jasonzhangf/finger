@@ -107,7 +107,7 @@ describe('RuntimeFacade compaction summarizer integration', () => {
     expect(sessionManager.compressContext).toHaveBeenCalledTimes(1);
   });
 
-  it('uses model-based compaction summarizer when provider is available', async () => {
+  it('uses model-based compaction summarizer for manual compaction when provider is available', async () => {
     const session = createSessionStub('session-compact-model');
     const modelSummary = [
       '1. **Primary Request and Intent**: request',
@@ -196,12 +196,74 @@ describe('RuntimeFacade compaction summarizer integration', () => {
 
     const runtime = createRuntimeWithSessionManager(sessionManager);
     const summary = await runtime.compressContext('session-compact-model', {
-      trigger: 'auto',
+      trigger: 'manual',
       contextUsagePercent: 92,
     });
 
     expect(summary).toContain('Primary Request and Intent');
     expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(sessionManager.compressContext).toHaveBeenCalledTimes(1);
+  });
+
+  it('uses deterministic no-model summarizer for auto compaction even when provider is available', async () => {
+    const session = createSessionStub('session-compact-auto-no-model');
+    const sessionManager: ISessionManager = {
+      createSession: vi.fn(),
+      getSession: vi.fn(() => session),
+      getCurrentSession: vi.fn(() => null),
+      setCurrentSession: vi.fn(() => true),
+      listSessions: vi.fn(() => [session]),
+      addMessage: vi.fn(async () => null),
+      getMessages: vi.fn(() => [
+        {
+          id: 'u1',
+          role: 'user',
+          content: 'compress automatically',
+          timestamp: new Date().toISOString(),
+        },
+      ]),
+      deleteSession: vi.fn(() => true),
+      compressContext: vi.fn(async (_sessionId: string, summarizer?: unknown) => {
+        expect(summarizer).toBeUndefined();
+        return 'auto-fallback-summary';
+      }),
+      updateContext: vi.fn(() => true),
+    };
+    vi.mocked(loadContextBuilderSettings).mockReturnValue({
+      rankingProviderId: 'ranker',
+    });
+    vi.mocked(resolveKernelProvider).mockImplementation((providerId?: string) => {
+      if (providerId === 'ranker' || providerId === undefined) {
+        return {
+          provider: {
+            id: 'ranker',
+            base_url: 'https://example.invalid/v1',
+            wire_api: 'responses',
+            env_key: 'TEST_KEY',
+            model: 'ranker-model',
+            enabled: true,
+          },
+        };
+      }
+      return { reason: 'provider_not_found' };
+    });
+    vi.mocked(buildResponsesEndpoints).mockReturnValue(['https://example.invalid/v1/responses']);
+    vi.mocked(buildProviderHeaders).mockReturnValue({});
+    const fetchMock = vi.fn(async () => ({
+      status: 200,
+      ok: true,
+      json: async () => ({ output_text: 'should not be used' }),
+    }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const runtime = createRuntimeWithSessionManager(sessionManager);
+    const summary = await runtime.compressContext('session-compact-auto-no-model', {
+      trigger: 'auto',
+      contextUsagePercent: 91,
+    });
+
+    expect(summary).toBe('auto-fallback-summary');
+    expect(fetchMock).not.toHaveBeenCalled();
     expect(sessionManager.compressContext).toHaveBeenCalledTimes(1);
   });
 

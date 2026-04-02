@@ -176,6 +176,7 @@ export const contextBuilderRebuildTool: InternalTool<unknown, ContextBuilderRebu
         buildMode,
         includeMemoryMd: false,
         enableTaskGrouping: true,
+        rebuildTrigger: 'manual',
         enableModelRanking: settings.enableModelRanking,
         rankingProviderId: settings.rankingProviderId,
       },

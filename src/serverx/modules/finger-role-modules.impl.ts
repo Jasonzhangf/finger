@@ -654,6 +654,7 @@ export async function registerFingerRoleModules(
               buildMode: bootstrapBuildMode,
               includeMemoryMd: false,
               enableTaskGrouping: true,
+                rebuildTrigger: bootstrapTrigger === 'history_empty' ? 'bootstrap_first' : 'history_context_zero',
                 enableModelRanking: settings.enableModelRanking,
                 rankingProviderId: settings.rankingProviderId,
               },

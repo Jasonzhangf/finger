@@ -537,6 +537,10 @@ function createCompactionSummarizer(params: {
   trigger?: 'manual' | 'auto';
   contextUsagePercent?: number;
 }): ((messages: Array<{ role: string; content: string }>) => Promise<string>) | undefined {
+  if (params.trigger === 'auto') {
+    // 上下文超限自动压缩：走无模型 deterministic digest，避免引入额外模型不稳定性/延迟。
+    return undefined;
+  }
   const providerCandidates = resolveCompactionProviderCandidates();
   if (providerCandidates.length === 0) return undefined;
 
