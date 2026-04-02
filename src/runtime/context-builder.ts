@@ -921,6 +921,14 @@ function reorderBlocksByRanking(blocks: TaskBlock[], rankedTaskIds: string[]): T
   return reordered;
 }
 
+function reorderBlocksChronologically(blocks: TaskBlock[]): TaskBlock[] {
+  return [...blocks].sort((a, b) => {
+    if (a.startTime !== b.startTime) return a.startTime - b.startTime;
+    if (a.endTime !== b.endTime) return a.endTime - b.endTime;
+    return a.id.localeCompare(b.id);
+  });
+}
+
 function summarizeTaskBlock(block: TaskBlock): string | undefined {
   const firstUser = block.messages.find((message) => message.role === 'user')?.content?.trim() ?? '';
   if (firstUser.length === 0) return undefined;
@@ -1364,6 +1372,7 @@ export async function buildContext(
 
   // ── Step 6: 预算截断 ──
   const { included, truncated } = applyBudgetTruncation(filteredBlocks, effectiveBudget);
+  const includedChronological = reorderBlocksChronologically(included);
   const includedIds = new Set(included.map((block) => block.id));
   const budgetTruncatedTasks = filteredBlocks
     .filter((block) => !includedIds.has(block.id))
@@ -1382,15 +1391,15 @@ export async function buildContext(
   // ── Step 7: 展平为消息列表 ──
   const messages: TaskMessage[] = [];
   const workingSetBlockId = current?.id;
-  const workingSetBlocks = included.filter((block) => block.id === workingSetBlockId);
-  const historicalBlocksIncluded = included.filter((block) => block.id !== workingSetBlockId);
-  for (const block of included) {
+  const workingSetBlocks = includedChronological.filter((block) => block.id === workingSetBlockId);
+  const historicalBlocksIncluded = includedChronological.filter((block) => block.id !== workingSetBlockId);
+  for (const block of includedChronological) {
     const contextZone: ContextMessageZone = block.id === workingSetBlockId ? 'working_set' : 'historical_memory';
     for (const msg of block.messages) {
       messages.push({
         ...msg,
         contextZone,
-        isCurrentTurn: block === included[included.length - 1]
+        isCurrentTurn: block === includedChronological[includedChronological.length - 1]
           && msg === block.messages[block.messages.length - 1],
       });
     }
@@ -1414,7 +1423,7 @@ export async function buildContext(
     targetBudget,
     actualTokens,
     rawTaskBlockCount,
-    selectedTaskBlockCount: included.length,
+    selectedTaskBlockCount: includedChronological.length,
     rankingMode,
     rankingExecuted,
     rankingReason: rankingReason ?? 'not_requested',
@@ -1432,9 +1441,9 @@ export async function buildContext(
     messages,
     totalTokens: actualTokens,
     memoryMdIncluded,
-    taskBlockCount: included.length,
+    taskBlockCount: includedChronological.length,
     filteredTaskBlockCount: timeWindowFilteredCount + truncated,
-    rankedTaskBlocks: included,
+    rankedTaskBlocks: includedChronological,
     buildTimestamp: new Date().toISOString(),
     metadata: {
       rawTaskBlockCount,

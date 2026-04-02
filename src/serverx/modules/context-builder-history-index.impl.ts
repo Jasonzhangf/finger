@@ -572,7 +572,14 @@ export function buildIndexedHistoryFromSnapshot(
       sliced = [...historicalPool.slice(-remaining), ...dedupMustKeep];
     }
   }
-  const mapped = sliced
+  const slicedChronological = [...sliced].sort((a, b) => {
+    const aMs = normalizeSessionMessageTimestampMs(a);
+    const bMs = normalizeSessionMessageTimestampMs(b);
+    if (aMs !== bMs) return aMs - bMs;
+    return messageIdentity(a).localeCompare(messageIdentity(b));
+  });
+
+  const mapped = slicedChronological
     .filter((item) => typeof item.content === 'string' && item.content.trim().length > 0)
     .map((item, idx) => {
       const role: 'user' | 'assistant' | 'system' = item.role === 'assistant' || item.role === 'system'
