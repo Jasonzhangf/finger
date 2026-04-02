@@ -13,7 +13,7 @@
     "build:precheck": "node scripts/prebuild-check.mjs",
     "build": "bash scripts/run-build-step.sh bash -lc 'npm run build:precheck && npm run build:backend:raw && npm run build:ui:raw && npm run build:rust:raw'",
     "build:backend": "bash scripts/run-build-step.sh bash -lc 'npm run build:backend:raw'",
-    "build:backend:raw": "tsc --noEmit false && chmod +x dist/cli/index.js",
+    "build:backend:raw": "npm run test:session-regression && tsc --noEmit false && chmod +x dist/cli/index.js",
     "build:ui": "bash scripts/run-build-step.sh bash -lc 'npm run build:ui:raw'",
     "build:ui:raw": "npm --prefix ui run build",
     "build:rust": "bash scripts/run-build-step.sh bash -lc 'npm run build:rust:raw'",
@@ -52,7 +52,8 @@
     "digest:backfill:all": "tsx scripts/digest-backfill-all.ts",
     "logs:cleanup": "node scripts/log-cleanup.cjs",
     "logs:cleanup:all": "node scripts/log-cleanup.cjs --all",
-    "test:update-plan-v2-gate": "vitest run tests/unit/tools/internal/codex-update-plan-tool.test.ts tests/unit/tools/internal/codex-update-plan-tool-v2.test.ts tests/integration/update-plan-v2-workflow.test.ts && npm run build:backend:raw"
+    "test:update-plan-v2-gate": "vitest run tests/unit/tools/internal/codex-update-plan-tool.test.ts tests/unit/tools/internal/codex-update-plan-tool-v2.test.ts tests/integration/update-plan-v2-workflow.test.ts && npm run build:backend:raw",
+    "test:session-regression": "vitest run tests/unit/server/message-helpers-session.test.ts tests/unit/server/dispatch-session-selection.test.ts tests/unit/server/channel-session-selection.test.ts tests/unit/server/channel-bridge-hub-route.test.ts tests/unit/server/agent-runtime-dispatch-guard.test.ts tests/unit/server/finger-role-modules-bootstrap-gating.test.ts tests/modules/agent-status-subscriber-sanitization.test.ts tests/modules/agent-dispatch-tags.test.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.40.1",
@@ -79,7 +80,7 @@
     "typescript-eslint": "^8.56.1",
     "vitest": "^1.6.0"
   },
-  "fingerBuildVersion": "0.1.0123",
+  "fingerBuildVersion": "0.1.0131",
   "pnpm": {
     "packageExtensions": {
       "vitest@*": {

@@ -28,6 +28,7 @@ import {
   parseToolSummary,
   resolvePushSettingsForChannel,
   shouldPushCommandStyleUpdates,
+  sanitizeUserFacingStatusText,
   shouldSuppressRawToolError,
   truncateInline,
 } from '../../server/modules/agent-status-subscriber-handler-helpers.js';
@@ -354,8 +355,8 @@ export async function handleDispatch(
   const dispatchStatus = typeof payload.status === 'string' ? payload.status : 'queued';
   const queuePosition = typeof payload.queuePosition === 'number' ? payload.queuePosition : undefined;
   const resultStatus = asTrimmedString(resultRecord?.status);
-  const resultSummary = asTrimmedString(resultRecord?.summary);
-  const nextAction = asTrimmedString(resultRecord?.nextAction);
+  const resultSummary = sanitizeUserFacingStatusText(asTrimmedString(resultRecord?.summary), 240);
+  const nextAction = sanitizeUserFacingStatusText(asTrimmedString(resultRecord?.nextAction), 240);
   const assignmentRecord = asRecord(payload.assignment);
   const assignmentTaskId = asTrimmedString(assignmentRecord?.taskId);
   const explicitMailboxMessageId = asTrimmedString(resultRecord?.mailboxMessageId);

@@ -3,7 +3,6 @@ import type { OrchestrationProfile } from '../../orchestration/orchestration-con
 import { buildOrchestrationDispatchPrompt, type OrchestrationPromptAgent } from '../../orchestration/orchestration-prompt.js';
 import type { SessionManager } from '../../orchestration/session-manager.js';
 import { getActiveReviewPolicy } from '../orchestration/review-policy.js';
-import { SYSTEM_PROJECT_PATH } from '../../agents/finger-system-agent/index.js';
 import { isObjectRecord } from '../common/object.js';
 import type { MessageRouteDeps } from './message-types.js';
 
@@ -118,16 +117,56 @@ export function resolveDryRunFlag(req: Request, message: unknown): boolean {
   return false;
 }
 
-export function ensureSessionExists(sessionManager: SessionManager, sessionId: string, nameHint?: string, projectPathOverride?: string): void {
-  const existing = sessionManager.getSession(sessionId);
-  if (existing) return;
-  // Use SYSTEM_PROJECT_PATH for system sessions to prevent projectPath corruption
-  const isSystemSession = sessionId.startsWith('system-') || sessionId === 'system-default-session';
-  const currentSession = sessionManager.getCurrentSession();
-  const fallbackProjectPath = isSystemSession
-    ? SYSTEM_PROJECT_PATH
-    : (projectPathOverride ?? currentSession?.projectPath ?? process.cwd());
-  sessionManager.ensureSession(sessionId, fallbackProjectPath, nameHint);
+export function ensureSessionExists(sessionManager: SessionManager, sessionId: string): boolean {
+  const normalized = typeof sessionId === 'string' ? sessionId.trim() : '';
+  if (!normalized) return false;
+  const existing = sessionManager.getSession(normalized);
+  return !!existing;
+}
+
+export function resolveStableSessionFallbackForUnknownPayload(params: {
+  requestedSessionId: string;
+  isSystemRoute: boolean;
+  systemSessionId?: string | null;
+  boundSessionId?: string | null;
+  boundSessionExists?: boolean;
+  currentSession?: { id?: string; projectPath?: string } | null;
+  systemProjectPath: string;
+}): string | null {
+  const requestedSessionId = typeof params.requestedSessionId === 'string'
+    ? params.requestedSessionId.trim()
+    : '';
+  if (!requestedSessionId) return null;
+
+  const systemSessionId = typeof params.systemSessionId === 'string'
+    ? params.systemSessionId.trim()
+    : '';
+  if (params.isSystemRoute) {
+    if (!systemSessionId || systemSessionId === requestedSessionId) return null;
+    return systemSessionId;
+  }
+
+  const boundSessionId = typeof params.boundSessionId === 'string'
+    ? params.boundSessionId.trim()
+    : '';
+  if (boundSessionId && params.boundSessionExists && boundSessionId !== requestedSessionId) {
+    return boundSessionId;
+  }
+
+  const currentSessionId = typeof params.currentSession?.id === 'string'
+    ? params.currentSession.id.trim()
+    : '';
+  const currentProjectPath = typeof params.currentSession?.projectPath === 'string'
+    ? params.currentSession.projectPath.trim()
+    : '';
+  if (
+    currentSessionId
+    && currentSessionId !== requestedSessionId
+    && currentProjectPath !== params.systemProjectPath
+  ) {
+    return currentSessionId;
+  }
+  return null;
 }
 
 export function buildChannelId(req: Request, sender: string): string {

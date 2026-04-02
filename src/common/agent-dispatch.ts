@@ -85,6 +85,17 @@ function stripControlBlockForHuman(text: string): string {
   return cleaned || source;
 }
 
+function extractSummaryFromStructuredText(text: string): string {
+  const source = stripControlBlockForHuman(text).trim();
+  if (!source) return '';
+  const structured = parseJsonObject(source);
+  if (!structured) return source;
+  return asNonEmptyString(structured.summary)
+    ?? asNonEmptyString(structured.message)
+    ?? asNonEmptyString(structured.result)
+    ?? source;
+}
+
 function parseJsonObject(text: string | undefined): Record<string, unknown> | undefined {
   if (!text) return undefined;
   try {
@@ -211,7 +222,7 @@ function resolveResponseRecord(raw: Record<string, unknown>): Record<string, unk
 
 export function sanitizeDispatchResult(raw: unknown): DispatchSummaryResult {
   if (typeof raw === 'string') {
-    const summary = truncateInline(stripControlBlockForHuman(raw));
+    const summary = truncateInline(extractSummaryFromStructuredText(raw));
     return {
       success: true,
       status: 'completed',
@@ -243,7 +254,7 @@ export function sanitizeDispatchResult(raw: unknown): DispatchSummaryResult {
     ?? asNonEmptyString(responseRecord?.summary)
     ?? asNonEmptyString(error)
     ?? extractReadableSummary(raw);
-  const normalizedSummary = truncateInline(stripControlBlockForHuman(summary));
+  const normalizedSummary = truncateInline(extractSummaryFromStructuredText(summary));
 
   // Extract tags for session routing (multi-tag support)
   const tags = coalesceTags(

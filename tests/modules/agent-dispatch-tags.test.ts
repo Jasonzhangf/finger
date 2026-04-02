@@ -154,4 +154,16 @@ describe('sanitizeDispatchResult - tags extraction', () => {
     expect(result.summary).toContain('已定位根因并修复。');
     expect(result.summary).not.toContain('schema_version');
   });
+
+  it('extracts human summary from structured role payload', () => {
+    const raw = {
+      summary: JSON.stringify({
+        role: 'orchestrator',
+        summary: 'mailbox ping 已完成，消息已投递',
+      }),
+    };
+    const result = sanitizeDispatchResult(raw as any);
+    expect(result.summary).toBe('mailbox ping 已完成，消息已投递');
+    expect(result.summary).not.toContain('orchestrator');
+  });
 });

@@ -1010,6 +1010,73 @@ export async function dispatchTaskToAgent(deps: AgentRuntimeDeps, input: AgentDi
         metadata,
       };
     }
+    const resolvedSessionId = typeof normalizedInput.sessionId === 'string'
+      ? normalizedInput.sessionId.trim()
+      : '';
+    if (!resolvedSessionId) {
+      const error = 'dispatch requires an existing session binding (auto session create/switch disabled)';
+      const failedSessionId = firstNonEmptyString(
+        callerSessionId,
+        deps.runtime.getCurrentSession()?.id,
+        deps.sessionManager.getCurrentSession()?.id,
+      );
+      logger.module('dispatch').warn('Rejected dispatch: sessionId missing after strict selection', {
+        sourceAgentId: normalizedInput.sourceAgentId,
+        targetAgentId: normalizedInput.targetAgentId,
+        strategy: normalizedInput.sessionStrategy,
+        projectPath: resolveDispatchProjectPathHint(normalizedInput) || undefined,
+      });
+      if (failedSessionId) {
+        applyExecutionLifecycleTransition(deps.sessionManager, failedSessionId, {
+          stage: 'failed',
+          substage: 'dispatch_missing_session_binding',
+          updatedBy: 'dispatch',
+          targetAgentId: normalizedInput.targetAgentId,
+          lastError: error,
+        });
+      }
+      return {
+        ok: false,
+        dispatchId: fallbackDispatchId,
+        status: 'failed',
+        error,
+      };
+    }
+    const resolvedSession = deps.sessionManager.getSession(resolvedSessionId);
+    if (!resolvedSession) {
+      const error = `dispatch session not found: ${resolvedSessionId}`;
+      const failedSessionId = firstNonEmptyString(
+        callerSessionId,
+        deps.runtime.getCurrentSession()?.id,
+        deps.sessionManager.getCurrentSession()?.id,
+      );
+      logger.module('dispatch').warn('Rejected dispatch: resolved session missing', {
+        sourceAgentId: normalizedInput.sourceAgentId,
+        targetAgentId: normalizedInput.targetAgentId,
+        sessionId: resolvedSessionId,
+      });
+      if (failedSessionId) {
+        applyExecutionLifecycleTransition(deps.sessionManager, failedSessionId, {
+          stage: 'failed',
+          substage: 'dispatch_missing_session_record',
+          updatedBy: 'dispatch',
+          targetAgentId: normalizedInput.targetAgentId,
+          lastError: error,
+        });
+      }
+      return {
+        ok: false,
+        dispatchId: fallbackDispatchId,
+        status: 'failed',
+        error,
+      };
+    }
+    if (resolvedSessionId !== normalizedInput.sessionId) {
+      normalizedInput = {
+        ...normalizedInput,
+        sessionId: resolvedSessionId,
+      };
+    }
     const scopeValidation = validateDispatchSessionScope(deps, normalizedInput);
     if (!scopeValidation.ok) {
       const failedSessionId = firstNonEmptyString(

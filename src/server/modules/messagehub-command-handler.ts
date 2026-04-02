@@ -17,6 +17,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { FINGER_PATHS } from '../../core/finger-paths.js';
 import { normalizeProjectPathCanonical } from '../../common/path-normalize.js';
+export { handleDisplayCommand } from './messagehub-display-command.js';
 
 /**
  * 解析指定项目的最新 session
@@ -78,6 +79,11 @@ export async function handleCmdList(): Promise<string> {
   <##@agent:delete@session-id##>   - 删除会话
   <##@project:list##>              - 列出所有项目
   <##@project:switch@/path##>      - 切换项目路径（使用最新 session）
+  <##display:"ctx:on|off|simple|verbose"##> - 当前渠道上下文显示策略
+  <##display:"toolcall:on|off"##>  - 当前渠道工具调用显示开关
+  <##display:"progress:on|off"##>  - 当前渠道进度更新显示开关
+  <##display:"heartbeat:on|off"##> - 当前渠道心跳类更新显示开关
+  发送微博/小红书链接（QQ/微信）        - 自动触发链接解析与详情流程（channel auto detail）
   /resume                           - 列出当前项目会话（等同 <##@agent:list##>）
   /resume session-id                - 直接切换会话（等同 <##@agent:switch@...##>）
   <##@cmd:list##>                  - 显示此帮助`;

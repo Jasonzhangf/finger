@@ -149,6 +149,14 @@ function sanitizeSessionKey(value: string): string {
     .slice(0, 80);
 }
 
+function describeWatcherError(error: unknown): { message: string; code?: string } {
+  if (error instanceof Error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    return { message: error.message, ...(code ? { code } : {}) };
+  }
+  return { message: String(error) };
+}
+
 function normalizeDailyReviewObsidianDir(rawValue: string | undefined): { value?: string; migrated: boolean } {
   if (typeof rawValue !== 'string') return { value: undefined, migrated: false };
   const trimmed = rawValue.trim();
@@ -440,6 +448,14 @@ export class HeartbeatScheduler {
         if (eventType !== 'change') return;
         if (Date.now() - this.lastConfigReloadAt < CONFIG_RELOAD_DEBOUNCE_MS) return;
         void this.loadConfig();
+      });
+      this.configWatcher.on('error', (error) => {
+        const detail = describeWatcherError(error);
+        log.warn('[HeartbeatScheduler] Config watcher error, disabling watcher', detail);
+        if (this.configWatcher) {
+          this.configWatcher.close();
+          this.configWatcher = null;
+        }
       });
       log.info(`[HeartbeatScheduler] Watching config: ${CONFIG_PATH}`);
     } catch (error) {

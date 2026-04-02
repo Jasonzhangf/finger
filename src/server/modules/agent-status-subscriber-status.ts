@@ -115,6 +115,10 @@ export async function handleAgentRuntimeStatus(params: {
   }
 
   if (params.messageHub) {
+    const sourceType = inferSessionUpdateSourceType({
+      sessionId,
+      deps: params.deps,
+    });
     const relationInfo = resolveSessionRelationInfo(params.deps, sessionId);
     const relationLine = buildSessionRelationLine(relationInfo);
     if (relationLine) {
@@ -123,6 +127,7 @@ export async function handleAgentRuntimeStatus(params: {
         .join('\n');
       wrappedUpdate.status.details = {
         ...(wrappedUpdate.status.details ?? {}),
+        sourceType,
         sessionRelation: relationInfo,
       };
     }
@@ -288,6 +293,7 @@ export async function sendProgressUpdateToChannels(params: {
         toolCalls: params.report.progress.toolCallsCount,
         modelRounds: params.report.progress.modelRoundsCount,
         elapsedMs: params.report.progress.elapsedMs,
+        sourceType,
         ...(typeof params.report.progress.contextUsagePercent === 'number'
           ? { contextUsagePercent: params.report.progress.contextUsagePercent }
           : {}),

@@ -8,6 +8,7 @@ import {
   handleAgentDelete,
   handleSystemCommand,
   handleSystemProgressMode,
+  handleDisplayCommand,
   handleProjectList,
   handleProjectSwitch,
 } from '../modules/messagehub-command-handler.js';
@@ -60,6 +61,7 @@ export async function handleSuperCommand(
       }
       return handleSystemCommand(deps.sessionManager, deps.eventBus);
     },
+    display: () => handleDisplayCommand(channelId, firstBlock.content, deps.channelBridgeManager),
     project_list: () => handleProjectList(deps.sessionManager),
   };
 

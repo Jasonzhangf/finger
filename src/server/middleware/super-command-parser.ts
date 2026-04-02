@@ -17,6 +17,10 @@
  * - <##@agent:delete@id##> -> delete session
  * - <##@project:list##> -> list all projects
  * - <##@project:switch@/path##> -> switch project
+ * - <##display:"ctx:on|off|simple|verbose"##> -> channel context display policy
+ * - <##display:"toolcall:on|off"##> -> channel tool-call display policy
+ * - <##display:"progress:on|off"##> -> channel progress display policy
+ * - <##display:"heartbeat:on|off"##> -> channel heartbeat display policy
  * - <##cmd:list##> or <##help##> -> list all commands
  *
  * Note: /resume is now handled by agents (not MessageHub)
@@ -37,6 +41,7 @@ export interface SuperCommandBlock {
     | 'project_switch'
     | 'session_list'
     | 'session_switch'
+    | 'display'
     | 'cmd_list'
     | 'invalid';
   password?: string;
@@ -58,11 +63,37 @@ export interface ParsedMessage {
 // - <##help##> (alias for cmd:list)
 // NOTE: /resume is NOT handled here anymore - agents handle it via their session tools
 const TAG_PATTERN = /<##(?:@(\w+)(?::([^@#>]+))?(?:@([^>]+))?|help)##>/;
+const DISPLAY_TAG_PATTERN = /<##\s*display\s*:\s*"([^"]+)"\s*##>/i;
 
 /**
  * Parse message content for super command tags
  */
 export function parseSuperCommand(content: string): ParsedMessage {
+  const displayMatch = content.match(DISPLAY_TAG_PATTERN);
+  if (displayMatch) {
+    const [fullMatch, displaySpecRaw] = displayMatch;
+    const matchIndex = displayMatch.index ?? 0;
+    const remainingContent = `${content.slice(0, matchIndex)}${content.slice(matchIndex + fullMatch.length)}`.trim();
+    const displaySpec = typeof displaySpecRaw === 'string' ? displaySpecRaw.trim() : '';
+    const block: SuperCommandBlock = displaySpec
+      ? {
+          type: 'display',
+          content: displaySpec,
+        }
+      : {
+          type: 'invalid',
+          content: remainingContent,
+        };
+
+    return {
+      type: 'super_command',
+      blocks: [block],
+      effectiveContent: remainingContent,
+      targetAgent: '',
+      shouldSwitch: false,
+    };
+  }
+
   const match = content.match(TAG_PATTERN);
 
   if (!match) {

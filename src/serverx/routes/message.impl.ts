@@ -34,6 +34,7 @@ import {
   buildOrchestrationPromptInjection,
   resolveDryRunFlag,
   ensureSessionExists,
+  resolveStableSessionFallbackForUnknownPayload,
   buildChannelId,
   withMessageContent,
   buildAgentEnvelope,
@@ -402,8 +403,59 @@ export function registerMessageRoutes(app: Express, deps: MessageRouteDeps): voi
       target: targetId,
     });
     if (requestSessionId) {
-      const sessionProjectPath = isSystemRoute ? SYSTEM_PROJECT_PATH : undefined;
-      ensureSessionExists(deps.sessionManager, requestSessionId, body.target, sessionProjectPath);
+      const requestedSessionId = requestSessionId;
+      const exists = ensureSessionExists(deps.sessionManager, requestedSessionId);
+      if (!exists) {
+        const boundSessionId = typeof (deps.runtime as { getBoundSessionId?: (agentId: string) => string | null }).getBoundSessionId === 'function'
+          ? (deps.runtime as { getBoundSessionId: (agentId: string) => string | null }).getBoundSessionId(targetId)
+          : null;
+        const fallbackSessionId = resolveStableSessionFallbackForUnknownPayload({
+          requestedSessionId,
+          isSystemRoute,
+          systemSessionId: isSystemRoute ? deps.sessionManager.getOrCreateSystemSession().id : null,
+          boundSessionId,
+          boundSessionExists: (
+            typeof boundSessionId === 'string'
+            && boundSessionId.trim().length > 0
+            && !!deps.sessionManager.getSession(boundSessionId.trim())
+          ),
+          currentSession: deps.sessionManager.getCurrentSession(),
+          systemProjectPath: SYSTEM_PROJECT_PATH,
+        });
+        if (fallbackSessionId && fallbackSessionId !== requestedSessionId) {
+          log.warn('Reject unknown sessionId from payload, rebound to stable session', {
+            requestedSessionId,
+            reboundSessionId: fallbackSessionId,
+            target: targetId,
+            role: inferredRole,
+          });
+          requestSessionId = fallbackSessionId;
+          if (isObjectRecord(requestMessage)) {
+            const metadata = isObjectRecord(requestMessage.metadata) ? requestMessage.metadata : {};
+            requestMessage = {
+              ...requestMessage,
+              sessionId: requestSessionId,
+              metadata: {
+                ...metadata,
+                sessionId: requestSessionId,
+                unknownSessionIdRejected: requestedSessionId,
+              },
+            };
+          }
+        } else {
+          log.warn('Reject message: sessionId not found and no stable fallback available', {
+            requestedSessionId,
+            target: targetId,
+            role: inferredRole,
+          });
+          res.status(400).json({
+            error: `Unknown sessionId: ${requestedSessionId}. Session auto-create is disabled.`,
+            code: 'SESSION_NOT_FOUND',
+            sessionId: requestedSessionId,
+          });
+          return;
+        }
+      }
       if (isObjectRecord(requestMessage)) {
         const metadata = isObjectRecord(requestMessage.metadata) ? requestMessage.metadata : {};
         const explicitProgressDelivery = normalizeProgressDeliveryPolicy(

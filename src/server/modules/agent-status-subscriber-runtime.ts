@@ -14,6 +14,7 @@ import type { ChannelBridgeManager } from '../../bridges/manager.js';
 import type { PushSettings } from '../../bridges/types.js';
 import { heartbeatMailbox } from './heartbeat-mailbox.js';
 import { enqueueUpdateStreamDelivery } from './update-stream-delivery-adapter.js';
+import { sanitizeUserFacingStatusText } from './agent-status-subscriber-handler-helpers.js';
 import type {
   SessionEnvelopeMapping,
   WrappedStatusUpdate,
@@ -21,6 +22,12 @@ import type {
 import { logger } from '../../core/logger.js';
 
 const log = logger.module('AgentStatusSubscriber');
+
+type ContextDisplayMode = 'on' | 'off' | 'simple' | 'verbose';
+interface ChannelDisplaySettings {
+  context: ContextDisplayMode;
+  heartbeat: boolean;
+}
 
 function normalizeLineForDedup(value: string): string {
   return value
@@ -34,7 +41,7 @@ function joinUniqueLines(parts: Array<string | undefined>): string {
   const out: string[] = [];
   const seen = new Set<string>();
   for (const raw of parts) {
-    const text = typeof raw === 'string' ? raw.trim() : '';
+    const text = sanitizeUserFacingStatusText(typeof raw === 'string' ? raw : '', 400);
     if (!text) continue;
     const key = normalizeLineForDedup(text);
     if (!key || seen.has(key)) continue;
@@ -42,6 +49,92 @@ function joinUniqueLines(parts: Array<string | undefined>): string {
     out.push(text);
   }
   return out.join('\n');
+}
+
+function resolveChannelDisplaySettings(
+  channelBridgeManager: ChannelBridgeManager | undefined,
+  channelId: string,
+): ChannelDisplaySettings {
+  if (
+    !channelBridgeManager
+    || typeof (channelBridgeManager as { getConfig?: unknown }).getConfig !== 'function'
+  ) {
+    return { context: 'on', heartbeat: true };
+  }
+  const config = channelBridgeManager.getConfig(channelId);
+  const options = (config?.options && typeof config.options === 'object')
+    ? config.options as Record<string, unknown>
+    : {};
+  const displaySettings = (options.displaySettings && typeof options.displaySettings === 'object')
+    ? options.displaySettings as Record<string, unknown>
+    : {};
+  const contextRaw = typeof displaySettings.context === 'string'
+    ? displaySettings.context.trim().toLowerCase()
+    : '';
+  const context = contextRaw === 'off' || contextRaw === 'simple' || contextRaw === 'verbose' || contextRaw === 'on'
+    ? contextRaw
+    : 'on';
+  const heartbeat = typeof displaySettings.heartbeat === 'boolean'
+    ? displaySettings.heartbeat
+    : true;
+  return {
+    context,
+    heartbeat,
+  };
+}
+
+function isHeartbeatLikeStatusUpdate(statusUpdate: WrappedStatusUpdate): boolean {
+  const summary = typeof statusUpdate?.status?.summary === 'string' ? statusUpdate.status.summary : '';
+  if (/\[[a-z]+:hb\]/i.test(summary) || /\[system agent:hb\]/i.test(summary)) {
+    return true;
+  }
+  const details = (statusUpdate?.status?.details && typeof statusUpdate.status.details === 'object')
+    ? statusUpdate.status.details as Record<string, unknown>
+    : {};
+  const sourceType = typeof details.sourceType === 'string' ? details.sourceType.trim().toLowerCase() : '';
+  return sourceType === 'heartbeat'
+    || sourceType === 'cron'
+    || sourceType === 'mailbox'
+    || sourceType === 'system-inject';
+}
+
+function applyContextDisplayMode(text: string, modeRaw: ContextDisplayMode): string {
+  const segments = text
+    .split(/(?=📊|👤|🗂|🤖|📬|✅|❌|⏳|🧠|🧩|🧪)/g)
+    .map((item) => item.trim())
+    .filter((item) => item.length > 0);
+  const mode: ContextDisplayMode = modeRaw === 'on' ? 'simple' : modeRaw;
+  if (mode === 'verbose') return text;
+  const isContextLine = (line: string): boolean => {
+    const normalized = line.trim();
+    return normalized.startsWith('🧠 上下文:')
+      || normalized.startsWith('🧩 构成')
+      || normalized.startsWith('🧪 校验');
+  };
+  if (mode === 'off') {
+    return segments.filter((line) => !isContextLine(line)).join('\n').trim();
+  }
+  const output: string[] = [];
+  let contextHeadlineAdded = false;
+  let contextSummaryAdded = false;
+  for (const line of segments) {
+    if (!isContextLine(line)) {
+      output.push(line);
+      continue;
+    }
+    const normalized = line.trim();
+    if (normalized.startsWith('🧠 上下文:') && !contextHeadlineAdded) {
+      output.push(line);
+      contextHeadlineAdded = true;
+      continue;
+    }
+    if (normalized.startsWith('🧩 构成: H(') && !contextSummaryAdded) {
+      output.push(line);
+      contextSummaryAdded = true;
+      continue;
+    }
+  }
+  return output.join('\n').trim();
 }
 
 /**
@@ -86,6 +179,11 @@ export async function sendStatusUpdate(
       log.debug(`[AgentStatusSubscriber] Skipping status update for ${channel} (statusUpdate disabled)`);
       continue;
     }
+    const displaySettings = resolveChannelDisplaySettings(channelBridgeManager, channel);
+    if (!displaySettings.heartbeat && isHeartbeatLikeStatusUpdate(statusUpdate)) {
+      log.debug(`[AgentStatusSubscriber] Skipping heartbeat-like status update for ${channel} (displaySettings.heartbeat=false)`);
+      continue;
+    }
 
     try {
       log.info(`[AgentStatusSubscriber] Sending status update to channel ${channel}:`, {
@@ -116,11 +214,16 @@ export async function sendStatusUpdate(
         statusUpdate.status.summary,
         statusUpdate.display.subtitle,
       ]);
+      const displayText = applyContextDisplayMode(text, displaySettings.context);
+      if (!displayText) {
+        log.debug(`[AgentStatusSubscriber] Empty status text after display filtering for ${channel}`);
+        continue;
+      }
 
       const message = {
         channelId: channel,
         target: item.groupId ? `group:${item.groupId}` : (item.userId || 'unknown'),
-        content: text,
+        content: displayText,
         originalEnvelope,
         statusUpdate,
       };
@@ -129,7 +232,7 @@ export async function sendStatusUpdate(
         ? messageHub.getOutputs().some((output) => output.id === outputId)
         : true;
       const deliveryRouteKey = `${channel}::${item.groupId ?? ''}::${item.userId ?? ''}`;
-      const dedupSignature = `${statusUpdate.sessionId}|${statusUpdate.agent.agentId}|status|${text}|${statusUpdate.status.state}|${statusUpdate.task.taskDescription}`;
+      const dedupSignature = `${statusUpdate.sessionId}|${statusUpdate.agent.agentId}|status|${displayText}|${statusUpdate.status.state}|${statusUpdate.task.taskDescription}`;
       if (!outputRegistered) {
         if (!channelBridgeManager) {
           log.warn(`[AgentStatusSubscriber] Output ${outputId} not registered and no bridge manager fallback`);
@@ -142,7 +245,7 @@ export async function sendStatusUpdate(
           send: async () => {
             await channelBridgeManager.sendMessage(channel, {
               to: directTarget,
-              text,
+              text: displayText,
               ...(item.envelopeId ? { replyTo: item.envelopeId } : {}),
             });
           },

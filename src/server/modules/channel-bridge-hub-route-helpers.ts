@@ -52,6 +52,31 @@ function toImageDataUrl(localPath: string): string | null {
   }
 }
 
+function sanitizeSessionKey(value: string): string {
+  return value
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 48);
+}
+
+function hashText(value: string): string {
+  let hash = 2166136261;
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= value.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return (hash >>> 0).toString(36);
+}
+
+function buildStableChannelSessionId(channelId: string, targetAgentId: string, projectPath: string): string {
+  const channelKey = sanitizeSessionKey(channelId || 'channel');
+  const agentKey = sanitizeSessionKey(targetAgentId || 'agent');
+  const projectHash = hashText(resolvePath(projectPath || process.cwd()));
+  return `chan-${channelKey}-${agentKey}-${projectHash}`;
+}
+
 export function toKernelInputItemsFromAttachments(message: ChannelMessage): Array<Record<string, unknown>> {
   const attachments = Array.isArray(message.attachments) ? message.attachments : [];
   const imageAttachments = attachments.filter((a) => a?.type === 'image' && typeof a.url === 'string' && a.url.trim().length > 0);
@@ -258,12 +283,6 @@ export function resolveSessionForChannelTarget(params: {
       return tb - ta;
     });
 
-  const findSessionsByProjectPath = (sessionManager as unknown as {
-    findSessionsByProjectPath?: (projectPath: string) => Array<{ id: string }>;
-  }).findSessionsByProjectPath;
-  const latest = typeof findSessionsByProjectPath === 'function'
-    ? (findSessionsByProjectPath.call(sessionManager, projectPath) ?? [])[0]
-    : undefined;
   const createSession = (sessionManager as unknown as {
     createSession?: (
       projectPath: string,
@@ -274,11 +293,30 @@ export function resolveSessionForChannelTarget(params: {
   const ensureSession = (sessionManager as unknown as {
     ensureSession?: (sessionId: string, projectPath: string, source?: string) => void;
   }).ensureSession;
+  const getSession = (sessionManager as unknown as {
+    getSession?: (sessionId: string) => { id?: string } | null;
+  }).getSession;
 
-  const session = sessionsForTarget[0]
-    ?? latest
-    ?? (typeof createSession === 'function'
-      ? createSession.call(sessionManager, projectPath, `channel:${channelId}`, { allowReuse: true })
+  if (sessionsForTarget.length > 0) {
+    const selected = sessionsForTarget[0];
+    if (typeof ensureSession === 'function') {
+      ensureSession.call(sessionManager, selected.id, projectPath, `channel:${channelId}`);
+    }
+    channelContextManager.pinSession(channelId, targetAgentId, selected.id);
+    return { sessionId: selected.id, projectPath };
+  }
+
+  const stableSessionId = buildStableChannelSessionId(channelId, targetAgentId, projectPath);
+  if (typeof ensureSession === 'function') {
+    ensureSession.call(sessionManager, stableSessionId, projectPath, `channel:${channelId}`);
+  }
+  const ensuredStable = typeof getSession === 'function'
+    ? getSession.call(sessionManager, stableSessionId)
+    : null;
+  const session = (ensuredStable && typeof ensuredStable.id === 'string' && ensuredStable.id.trim().length > 0)
+    ? { id: ensuredStable.id.trim() }
+    : (typeof createSession === 'function'
+      ? createSession.call(sessionManager, projectPath, `channel:${channelId}`, { allowReuse: false })
       : sessionManager.getOrCreateSystemSession());
 
   if (typeof ensureSession === 'function') {

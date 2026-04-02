@@ -15,4 +15,12 @@ describe('super-command-parser @agent behavior', () => {
     expect(parsed.type).toBe('super_command');
     expect(parsed.blocks?.[0]?.type).toBe('agent_list');
   });
+
+  it('parses display command tags with quoted payload', () => {
+    const parsed = parseSuperCommand('<##display:"ctx:verbose"##>');
+    expect(parsed.type).toBe('super_command');
+    expect(parsed.blocks?.[0]?.type).toBe('display');
+    expect(parsed.blocks?.[0]?.content).toBe('ctx:verbose');
+    expect(parsed.shouldSwitch).toBe(false);
+  });
 });

@@ -13,7 +13,6 @@ import {
   formatDispatchTaskContent,
   formatLocalTimestamp,
   normalizeProjectPathHint,
-  resolveDispatchSessionStrategy,
 } from '../../../server/modules/agent-runtime/dispatch-helpers.js';
 import { normalizeProgressDeliveryPolicy } from '../../../common/progress-delivery-policy.js';
 
@@ -217,43 +216,15 @@ export function resolveDispatchSessionSelection(deps: AgentRuntimeDeps, input: A
     }
   }
 
-  const strategy = resolveDispatchSessionStrategy(input);
-  const sourceSessionId = firstNonEmptyString(
-    explicitSessionId,
-    deps.runtime.getCurrentSession()?.id,
-    deps.sessionManager.getCurrentSession()?.id,
-  ) ?? '';
-  if (strategy === 'current') {
-    const currentSessionId = deps.runtime.getCurrentSession()?.id ?? deps.sessionManager.getCurrentSession()?.id;
-    if (!currentSessionId) return input;
-    return {
-      ...input,
-      sessionId: currentSessionId,
-      sessionStrategy: 'current',
-    };
-  }
-
-  const projectPath = resolveDispatchProjectPath(input, deps);
-  const previousCurrentSessionId = deps.sessionManager.getCurrentSession()?.id ?? null;
-  const createIsolatedSession = (): { id: string } => {
-    const created = deps.sessionManager.createSession(projectPath, undefined, { allowReuse: false });
-    if (previousCurrentSessionId && previousCurrentSessionId !== created.id) {
-      deps.sessionManager.setCurrentSession(previousCurrentSessionId);
-    }
-    return created;
-  };
-  const selectedSession = strategy === 'new'
-    ? createIsolatedSession()
-    : resolveLatestProjectRootSession(deps, projectPath)
-      ?? createIsolatedSession();
-  if (sourceSessionId) {
-    bindDispatchRouteContext(deps, selectedSession.id, sourceSessionId);
-  }
+  // Hard lifecycle rule:
+  // never auto-create session, never auto-switch to latest/new.
+  // Dispatch can only use already-bound or currently-active session.
+  const currentSessionId = deps.runtime.getCurrentSession()?.id ?? deps.sessionManager.getCurrentSession()?.id;
+  if (!currentSessionId) return input;
   return {
     ...input,
-    sessionId: selectedSession.id,
-    sessionStrategy: strategy,
-    projectPath,
+    sessionId: currentSessionId,
+    sessionStrategy: 'current',
   };
 }
 

@@ -1,6 +1,8 @@
 import { heartbeatMailbox } from './heartbeat-mailbox.js';
 import type { PushSettings } from '../../bridges/types.js';
 import type { SessionEnvelopeMapping } from './agent-status-subscriber-types.js';
+import { parseControlBlockFromReply } from '../../common/control-block.js';
+import { tryParseStructuredJson } from '../../common/structured-output.js';
 import {
   classifyExecCommand,
   parseExecCommandTarget,
@@ -19,6 +21,38 @@ export function truncateInline(value: string, max = 72): string {
   const normalized = value.replace(/\s+/g, ' ').trim();
   if (normalized.length <= max) return normalized;
   return `${normalized.slice(0, max)}...`;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null;
+}
+
+function extractStructuredSummaryText(raw: string): string {
+  const normalized = raw.trim();
+  if (!normalized) return '';
+  const parsed = tryParseStructuredJson(normalized);
+  if (!isRecord(parsed.parsed)) return normalized;
+  const summary = typeof parsed.parsed.summary === 'string' ? parsed.parsed.summary.trim() : '';
+  if (summary) return summary;
+  const message = typeof parsed.parsed.message === 'string' ? parsed.parsed.message.trim() : '';
+  if (message) return message;
+  const result = typeof parsed.parsed.result === 'string' ? parsed.parsed.result.trim() : '';
+  if (result) return result;
+  return normalized;
+}
+
+export function sanitizeUserFacingStatusText(text: string, max = 120): string {
+  const source = typeof text === 'string' ? text.trim() : '';
+  if (!source) return '';
+  const controlParsed = parseControlBlockFromReply(source);
+  let sanitized = typeof controlParsed.humanResponse === 'string' ? controlParsed.humanResponse.trim() : source;
+  if (!sanitized) return '';
+  sanitized = sanitized.replace(/```finger-control[\s\S]*$/giu, '').trim();
+  sanitized = extractStructuredSummaryText(sanitized)
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (!sanitized) return '';
+  return truncateInline(sanitized, max);
 }
 
 function pickFileName(token: string): string {
@@ -91,7 +125,8 @@ function extractMailboxEnvelopeSummary(targetAgentId: string, mailboxMessageId: 
 }
 
 function sanitizeDispatchMailboxText(text: string, mailboxMessageId: string): string {
-  let sanitized = text;
+  let sanitized = sanitizeUserFacingStatusText(text, 200);
+  if (!sanitized) return '';
   if (mailboxMessageId) {
     sanitized = sanitized.split(mailboxMessageId).join('').replace(/\(\s*\)/g, '');
   }
@@ -158,14 +193,16 @@ export function buildDispatchReasonSummary(params: {
   nextAction: string;
   assignmentTaskId: string;
 }): string {
+  const normalizedResultSummary = sanitizeUserFacingStatusText(params.resultSummary, 120);
+  const normalizedNextAction = sanitizeUserFacingStatusText(params.nextAction, 120);
   if (params.mailboxFlow) {
     if (params.mailboxPreview) return truncateInline(params.mailboxPreview, 120);
     if (params.resultStatus === 'queued_mailbox') return '目标繁忙，已转入 mailbox 等待处理';
     return '目标繁忙，已切换到 mailbox 流程';
   }
 
-  if (params.resultSummary) return truncateInline(params.resultSummary, 120);
-  if (params.nextAction) return truncateInline(params.nextAction, 120);
+  if (normalizedResultSummary) return normalizedResultSummary;
+  if (normalizedNextAction) return normalizedNextAction;
 
   if (params.dispatchStatus === 'queued') {
     if (typeof params.queuePosition === 'number') {

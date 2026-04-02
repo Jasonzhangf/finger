@@ -207,22 +207,48 @@ function resolveCrossSessionBootstrapSeed(
     .filter((session) => normalizeProjectPathCanonical(session.projectPath) === normalizedProject)
     .sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());
 
+  let best: { sourceSessionId: string; messages: HistoryMessage[]; score: number } | null = null;
+
   for (const candidate of candidates) {
+    if (candidate.id.startsWith('hb-session-')) continue;
     const fullSession = runtime.getSession(candidate.id);
     if (!fullSession) continue;
     const context = (fullSession.context ?? {}) as Record<string, unknown>;
+    const sessionTier = typeof context.sessionTier === 'string' ? context.sessionTier.trim().toLowerCase() : '';
     const ownerAgentId = typeof context.ownerAgentId === 'string' ? context.ownerAgentId.trim() : '';
     if (ownerAgentId && ownerAgentId !== agentId) continue;
-    if (context.sessionTier === 'runtime') continue;
+    if (sessionTier === 'runtime' || sessionTier === 'heartbeat-control' || sessionTier === 'heartbeat') continue;
     const messages = normalizeHistoryMessages(runtime.getMessages(candidate.id, 0));
     if (messages.length === 0 || isEffectivelyEmptyHistoryForBootstrap(messages)) continue;
-    return {
-      sourceSessionId: candidate.id,
-      messages,
-    };
+    const historicalCount = messages.reduce((count, message) => {
+      const zone = typeof message.metadata?.contextZone === 'string'
+        ? message.metadata.contextZone.trim()
+        : '';
+      return zone === 'historical_memory' ? count + 1 : count;
+    }, 0);
+    const hasHistorical = hasHistoricalContextZone(messages);
+    const updatedAtScore = Number.isFinite(Date.parse(candidate.updatedAt))
+      ? Math.floor(Date.parse(candidate.updatedAt) / 1000)
+      : 0;
+    const score = (hasHistorical ? 1_000_000 : 0)
+      + (historicalCount * 2_000)
+      + (messages.length * 10)
+      + Math.floor(updatedAtScore / 10_000);
+    if (!best || score > best.score) {
+      best = {
+        sourceSessionId: candidate.id,
+        messages,
+        score,
+      };
+    }
   }
 
-  return null;
+  return best
+    ? {
+      sourceSessionId: best.sourceSessionId,
+      messages: best.messages,
+    }
+    : null;
 }
 
 function topUpHistoryToBudget(
@@ -654,6 +680,10 @@ export async function registerFingerRoleModules(
               buildMode: bootstrapBuildMode,
               includeMemoryMd: false,
               enableTaskGrouping: true,
+                // When we bootstrap from cross-session seed, keep that seed as source of truth.
+                // Do not replace with current-session compact history (usually only a few fresh slots),
+                // otherwise bootstrap degrades to tiny history (tens of tokens).
+                ...(crossSessionSeed ? { preferCompactHistory: false } : {}),
                 rebuildTrigger: bootstrapTrigger === 'history_empty' ? 'bootstrap_first' : 'history_context_zero',
                 enableModelRanking: settings.enableModelRanking,
                 rankingProviderId: settings.rankingProviderId,

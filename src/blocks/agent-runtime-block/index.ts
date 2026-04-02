@@ -1506,6 +1506,8 @@ export class AgentRuntimeBlock extends BaseBlock {
   private validateAndRememberWorkerProjectSessionBinding(
     lane: DispatchLaneMeta,
   ): { ok: true } | { ok: false; error: string } {
+    const targetAgentId = typeof lane.targetAgentId === 'string' ? lane.targetAgentId.trim().toLowerCase() : '';
+    if (targetAgentId.includes('reviewer')) return { ok: true };
     const projectId = typeof lane.projectId === 'string' ? lane.projectId.trim() : '';
     const workerId = typeof lane.workerId === 'string' ? lane.workerId.trim() : '';
     const sessionId = typeof lane.sessionId === 'string' ? lane.sessionId.trim() : '';

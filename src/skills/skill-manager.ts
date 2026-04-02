@@ -12,6 +12,14 @@ import { FINGER_PATHS } from '../core/finger-paths.js';
 
 const log = logger.module('SkillsManager');
 
+function describeWatcherError(error: unknown): { message: string; code?: string } {
+  if (error instanceof Error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    return { message: error.message, ...(code ? { code } : {}) };
+  }
+  return { message: String(error) };
+}
+
 export interface SkillMetadata {
   name: string;
   description: string;
@@ -98,6 +106,11 @@ export class SkillsManager {
         if (!shouldReload) return;
 
         this.scheduleReload(`${eventType}:${normalized || '(unknown)'}`);
+      });
+      this.watcher.on('error', (error) => {
+        const detail = describeWatcherError(error);
+        log.warn('[SkillsManager] Skills watcher error, disabling watcher', detail);
+        this.stopWatching();
       });
 
       log.info(`[SkillsManager] Watching skills directory: ${this.skillsDir}`);
