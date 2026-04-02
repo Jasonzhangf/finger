@@ -84,6 +84,10 @@ export interface SessionProgress {
   lastReportedContextEventAt?: number;
   contextBreakdown?: ContextBreakdownSnapshot;
   lastReportedContextBreakdownKey?: string;
+  controlTags?: string[];
+  controlHookNames?: string[];
+  controlBlockValid?: boolean;
+  controlIssues?: string[];
   /**
    * Allow exactly one downward context update (used after explicit rebuild/compress actions).
    * Prevents misleading "new turn low baseline" resets in normal turns.

@@ -350,4 +350,26 @@ describe('progress-monitor-reporting', () => {
     const result = buildCompactSummary(data, formatElapsed, { headerMode: 'minimal' });
     expect(result).toContain('🧩 构成统计: 等待模型回传模块占用');
   });
+
+  it('shows control tags/hooks in dev mode when available', () => {
+    const data: SessionProgressData = {
+      agentId: 'finger-system-agent',
+      status: 'running',
+      currentTask: '处理中',
+      elapsedMs: 3_000,
+      toolCallHistory: [],
+      contextUsagePercent: 10,
+      maxInputTokens: 262144,
+      contextBreakdownMode: 'dev',
+      controlTags: ['debug', 'weibo', 'push'],
+      controlHookNames: ['hook.project.memory.update', 'hook.context.review'],
+      controlBlockValid: true,
+      controlIssues: [],
+    };
+    const result = buildCompactSummary(data, formatElapsed, { headerMode: 'minimal' });
+    expect(result).toContain('🏷 控制:');
+    expect(result).toContain('tags=debug,weibo,push');
+    expect(result).toContain('hooks=hook.project.memory.update,hook.context.review');
+    expect(result).toContain('valid=true');
+  });
 });

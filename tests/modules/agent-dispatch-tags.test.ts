@@ -124,4 +124,34 @@ describe('sanitizeDispatchResult - tags extraction', () => {
     expect(result.evidence![0].tags).toEqual(['search', 'file-search']);
     expect(result.evidence![1].tags).toBeUndefined();
   });
+
+  it('strips control block json from dispatch summary text', () => {
+    const raw = {
+      summary: `已定位根因并修复。\n\`\`\`json\n${JSON.stringify({
+        schema_version: '1.0',
+        task_completed: true,
+        evidence_ready: true,
+        needs_user_input: false,
+        has_blocker: false,
+        dispatch_required: false,
+        review_required: false,
+        wait: { enabled: false, seconds: 0, reason: '' },
+        user_signal: { negative_score: 0, profile_update_required: false, why: '' },
+        tags: ['debug', 'dispatch'],
+        self_eval: { score: 90, confidence: 90, goal_gap: '', why: 'done' },
+        anti_patterns: [],
+        learning: {
+          did_right: [],
+          did_wrong: [],
+          repeated_wrong: [],
+          flow_patch: { required: false, project_scope: '', changes: [] },
+          memory_patch: { required: false, project_scope: '', long_term_items: [], short_term_items: [] },
+          user_profile_patch: { required: false, items: [], sensitivity: 'normal' },
+        },
+      })}\n\`\`\``,
+    };
+    const result = sanitizeDispatchResult(raw as any);
+    expect(result.summary).toContain('已定位根因并修复。');
+    expect(result.summary).not.toContain('schema_version');
+  });
 });

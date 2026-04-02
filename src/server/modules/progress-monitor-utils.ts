@@ -185,6 +185,10 @@ export interface SessionProgressData {
   lastContextEvent?: string;
   contextBreakdown?: ContextBreakdownSnapshot;
   contextBreakdownMode?: 'release' | 'dev';
+  controlTags?: string[];
+  controlHookNames?: string[];
+  controlBlockValid?: boolean;
+  controlIssues?: string[];
 }
 
 function formatTokenCount(value: number): string {

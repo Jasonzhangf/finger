@@ -17,6 +17,15 @@ function normalizeNonNegativeInt(value: unknown): number | undefined {
   return undefined;
 }
 
+function normalizeStringArray(value: unknown, maxItems = 32): string[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const normalized = value
+    .map((item) => typeof item === 'string' ? item.trim() : '')
+    .filter((item) => item.length > 0);
+  if (normalized.length === 0) return undefined;
+  return [...new Set(normalized)].slice(0, Math.max(1, maxItems));
+}
+
 function parseContextBreakdown(payload: Record<string, unknown> | undefined): SessionProgress['contextBreakdown'] | undefined {
   if (!payload || typeof payload !== 'object') return undefined;
   const raw = (typeof payload.contextBreakdown === 'object' && payload.contextBreakdown !== null)
@@ -414,6 +423,23 @@ export function handleTurnStart(progress: SessionProgress, event: any): void {
 export function handleTurnComplete(progress: SessionProgress, event: any): void {
   if (typeof event.payload?.reasoning === 'string' && event.payload.reasoning.length > 0) {
     progress.latestReasoning = event.payload.reasoning.slice(0, 120);
+  }
+  const payload = event?.payload && typeof event.payload === 'object'
+    ? event.payload as Record<string, unknown>
+    : undefined;
+  if (payload) {
+    const controlBlock = payload.controlBlock && typeof payload.controlBlock === 'object'
+      ? payload.controlBlock as Record<string, unknown>
+      : undefined;
+    const controlTags = normalizeStringArray(controlBlock?.tags, 48);
+    if (controlTags) progress.controlTags = controlTags;
+    const controlHooks = normalizeStringArray(payload.controlHookNames, 48);
+    if (controlHooks) progress.controlHookNames = controlHooks;
+    if (typeof payload.controlBlockValid === 'boolean') {
+      progress.controlBlockValid = payload.controlBlockValid;
+    }
+    const issues = normalizeStringArray(payload.controlBlockIssues, 16);
+    if (issues) progress.controlIssues = issues;
   }
   // A turn is finished; switch to idle so periodic progress heartbeat
   // does not keep pushing when there is no active execution.

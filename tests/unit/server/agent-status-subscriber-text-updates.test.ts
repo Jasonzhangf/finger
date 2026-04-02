@@ -214,6 +214,70 @@ describe('AgentStatusSubscriber text updates', () => {
     expect(bodyCalls[1][1].content).toBe('正文：新增了补充说明。');
   });
 
+  it('strips control json block from user-facing body update', async () => {
+    const eventBus = new UnifiedEventBus();
+    const messageHub = {
+      routeToOutput: vi.fn().mockResolvedValue(undefined),
+    };
+    const channelBridgeManager = {
+      getPushSettings: vi.fn().mockReturnValue({
+        reasoning: true,
+        bodyUpdates: true,
+        statusUpdate: true,
+        toolCalls: false,
+        stepUpdates: true,
+        stepBatch: 5,
+        progressUpdates: true,
+      }),
+    };
+
+    const subscriber = new AgentStatusSubscriber(
+      eventBus,
+      createMinimalDeps(),
+      messageHub as any,
+      channelBridgeManager as any,
+    );
+    subscriber.registerSession('session-control-strip', {
+      channel: 'qqbot',
+      envelopeId: 'env-control-strip',
+      userId: 'user-control-strip',
+    });
+
+    const body = [
+      'Jason，已完成修复。',
+      '```json',
+      JSON.stringify({
+        schema_version: '1.0',
+        task_completed: true,
+        evidence_ready: true,
+        needs_user_input: false,
+        has_blocker: false,
+        dispatch_required: false,
+        review_required: false,
+        wait: { enabled: false, seconds: 0, reason: '' },
+        user_signal: { negative_score: 0, profile_update_required: false, why: '' },
+        tags: ['debug', 'fix'],
+        self_eval: { score: 90, confidence: 90, goal_gap: '', why: 'done' },
+        anti_patterns: [],
+        learning: {
+          did_right: [],
+          did_wrong: [],
+          repeated_wrong: [],
+          flow_patch: { required: false, project_scope: '', changes: [] },
+          memory_patch: { required: false, project_scope: '', long_term_items: [], short_term_items: [] },
+          user_profile_patch: { required: false, items: [], sensitivity: 'normal' },
+        },
+      }),
+      '```',
+    ].join('\n');
+
+    await subscriber.sendBodyUpdate('session-control-strip', 'finger-system-agent', body);
+    expect(messageHub.routeToOutput).toHaveBeenCalledTimes(1);
+    const payload = messageHub.routeToOutput.mock.calls[0][1];
+    expect(payload.content).toBe('正文：Jason，已完成修复。');
+    expect(payload.content).not.toContain('schema_version');
+  });
+
   it('bodyUpdates + mirror: qqbot push mirrors to openclaw-weixin only once', async () => {
     const eventBus = new UnifiedEventBus();
     const routeCalls: Array<{ outputId: string; content: string }> = [];

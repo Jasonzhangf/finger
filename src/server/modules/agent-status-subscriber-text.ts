@@ -8,6 +8,7 @@ import { buildDeliveryRouteKey, buildRouteKey, waitReasoningBufferIfNeeded } fro
 import { isNoActionableWatchdogText, isScheduledSourceType } from './agent-status-subscriber-noop.js';
 import { enqueueUpdateStreamDelivery } from './update-stream-delivery-adapter.js';
 import { logger } from '../../core/logger.js';
+import { parseControlBlockFromReply } from '../../common/control-block.js';
 
 const log = logger.module('AgentStatusSubscriberText');
 
@@ -69,6 +70,14 @@ export function normalizeBodyForChannel(text: string, channelId: string): string
   return pairs
     .map((pair) => `${pair.title}\n${pair.url}`)
     .join('\n\n');
+}
+
+function stripControlBlockForChannel(text: string): string {
+  const source = text.trim();
+  if (!source) return source;
+  const parsed = parseControlBlockFromReply(source);
+  const cleaned = typeof parsed.humanResponse === 'string' ? parsed.humanResponse.trim() : '';
+  return cleaned || source;
 }
 
 export function chunkBodyForChannel(text: string, channelId: string): string[] {
@@ -298,7 +307,7 @@ export async function sendBodyUpdate(params: {
   lastBodySentBySession: Map<string, { normalized: string; at: number }>;
   lastBodySentByRoute: Map<string, { normalized: string; at: number }>;
 }): Promise<void> {
-  const text = normalizeLinkDigestBody(params.bodyText).trim();
+  const text = normalizeLinkDigestBody(stripControlBlockForChannel(params.bodyText)).trim();
   if (!text) return;
   const pureLinkDigest = isPureLinkDigest(text);
   const normalizedBody = normalizeBodyForDedup(text);

@@ -489,6 +489,10 @@ export class ProgressMonitor {
       lastContextEvent: includeContextEvent ? p.lastContextEvent : undefined,
       contextBreakdown: p.contextBreakdown,
       contextBreakdownMode: this.config.contextBreakdownMode,
+      controlTags: p.controlTags,
+      controlHookNames: p.controlHookNames,
+      controlBlockValid: p.controlBlockValid,
+      controlIssues: p.controlIssues,
     };
     return buildCompactSummary(
       data,
@@ -526,6 +530,10 @@ export class ProgressMonitor {
       lastContextEvent: p.lastContextEvent,
       contextBreakdown: p.contextBreakdown,
       contextBreakdownMode: this.config.contextBreakdownMode,
+      controlTags: p.controlTags,
+      controlHookNames: p.controlHookNames,
+      controlBlockValid: p.controlBlockValid,
+      controlIssues: p.controlIssues,
     };
     return buildReportKeyUtil(data, this.latestStepSummary.get(progressKey));
   }

@@ -1,3 +1,5 @@
+import { parseControlBlockFromReply } from './control-block.js';
+
 export interface DispatchOutputArtifact {
   type?: string;
   path?: string;
@@ -73,6 +75,14 @@ function truncateInline(value: string, max = 800): string {
   const compact = value.replace(/\s+/g, ' ').trim();
   if (compact.length <= max) return compact;
   return `${compact.slice(0, Math.max(0, max - 3))}...`;
+}
+
+function stripControlBlockForHuman(text: string): string {
+  const source = typeof text === 'string' ? text.trim() : '';
+  if (!source) return '';
+  const parsed = parseControlBlockFromReply(source);
+  const cleaned = typeof parsed.humanResponse === 'string' ? parsed.humanResponse.trim() : '';
+  return cleaned || source;
 }
 
 function parseJsonObject(text: string | undefined): Record<string, unknown> | undefined {
@@ -201,7 +211,7 @@ function resolveResponseRecord(raw: Record<string, unknown>): Record<string, unk
 
 export function sanitizeDispatchResult(raw: unknown): DispatchSummaryResult {
   if (typeof raw === 'string') {
-    const summary = truncateInline(raw);
+    const summary = truncateInline(stripControlBlockForHuman(raw));
     return {
       success: true,
       status: 'completed',
@@ -233,6 +243,7 @@ export function sanitizeDispatchResult(raw: unknown): DispatchSummaryResult {
     ?? asNonEmptyString(responseRecord?.summary)
     ?? asNonEmptyString(error)
     ?? extractReadableSummary(raw);
+  const normalizedSummary = truncateInline(stripControlBlockForHuman(summary));
 
   // Extract tags for session routing (multi-tag support)
   const tags = coalesceTags(
@@ -248,7 +259,7 @@ export function sanitizeDispatchResult(raw: unknown): DispatchSummaryResult {
   return {
     success: explicitSuccess ?? !error,
     status,
-    summary,
+    summary: normalizedSummary,
     ...(asNonEmptyString(raw.sessionId) ? { childSessionId: asNonEmptyString(raw.sessionId) } : {}),
     ...(asNonEmptyString(raw.module) ? { module: asNonEmptyString(raw.module) } : {}),
     ...(asNonEmptyString(raw.provider) ? { provider: asNonEmptyString(raw.provider) } : {}),

@@ -33,6 +33,16 @@ function truncateInline(text: string, max = 60): string {
   return trimmed.length > max ? trimmed.slice(0, max - 1) + '\u2026' : trimmed;
 }
 
+function compactList(values: string[] | undefined, maxItems = 8, maxLen = 180): string {
+  if (!Array.isArray(values) || values.length === 0) return '';
+  const items = values
+    .map((item) => item.trim())
+    .filter((item) => item.length > 0)
+    .slice(0, Math.max(1, maxItems));
+  if (items.length === 0) return '';
+  return truncateInline(items.join(','), maxLen);
+}
+
 function compactToken(value?: number): string | undefined {
   if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) return undefined;
   if (value >= 1000) {
@@ -217,6 +227,16 @@ export function buildCompactSummary(
   ));
   if (p.lastContextEvent && p.lastContextEvent.trim().length > 0) {
     lines.push(`♻️ ${truncateInline(p.lastContextEvent, 120)}`);
+  }
+  if (p.contextBreakdownMode === 'dev') {
+    const tags = compactList(p.controlTags, 10, 180);
+    const hooks = compactList(p.controlHookNames, 10, 180);
+    const issues = compactList(p.controlIssues, 6, 180);
+    if (tags || hooks || issues || typeof p.controlBlockValid === 'boolean') {
+      lines.push(
+        `🏷 控制: tags=${tags || '-'} · hooks=${hooks || '-'} · valid=${typeof p.controlBlockValid === 'boolean' ? String(p.controlBlockValid) : '?'}${issues ? ` · issues=${issues}` : ''}`,
+      );
+    }
   }
 
   if (recentTools.length > 0) {
@@ -437,5 +457,5 @@ export function buildReportKey(p: SessionProgressData, latestStepSummary: string
   const breakdownKey = p.contextBreakdown
     ? JSON.stringify(p.contextBreakdown)
     : '';
-  return `${p.status}|${p.currentTask ?? ''}|${latestStepSummary ?? ''}|${recentTools}|${p.latestReasoning ?? ''}|${p.contextUsagePercent ?? ''}|${p.estimatedTokensInContextWindow ?? ''}|${p.maxInputTokens ?? ''}|${p.lastContextEvent ?? ''}|${p.contextBreakdownMode ?? ''}|${breakdownKey}`;
+  return `${p.status}|${p.currentTask ?? ''}|${latestStepSummary ?? ''}|${recentTools}|${p.latestReasoning ?? ''}|${p.contextUsagePercent ?? ''}|${p.estimatedTokensInContextWindow ?? ''}|${p.maxInputTokens ?? ''}|${p.lastContextEvent ?? ''}|${p.contextBreakdownMode ?? ''}|${breakdownKey}|${(p.controlTags ?? []).join(',')}|${(p.controlHookNames ?? []).join(',')}|${typeof p.controlBlockValid === 'boolean' ? String(p.controlBlockValid) : ''}|${(p.controlIssues ?? []).join(',')}`;
 }
