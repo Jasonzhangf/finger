@@ -35,11 +35,19 @@ export interface PersistedContextBuilderHistoryIndex {
   currentContextMaxItems?: number;
   anchorMessageId?: string;
   anchorTimestamp?: string;
+  historicalDigestMessages?: Array<{
+    id: string;
+    role: 'user' | 'assistant' | 'system';
+    content: string;
+    timestamp: string;
+    metadata?: Record<string, unknown>;
+  }>;
   updatedAt: string;
 }
 
 const DEFAULT_CURRENT_CONTEXT_MAX_ITEMS = 240;
 const DEFAULT_RECENT_USER_TURN_COUNT = 2;
+const DEFAULT_SYSTEM_ONLY_TASK_GAP_MS = 3 * 60 * 1000;
 
 function messageIdentity(item: SessionMessageLike): string {
   return typeof item.id === 'string' && item.id.trim().length > 0
@@ -65,6 +73,151 @@ function extractRecentTurnWindow(
     }
   }
   return sessionMessages.slice(startIndex);
+}
+
+function normalizeSessionMessageTimestampMs(item: SessionMessageLike, fallback = Date.now()): number {
+  const raw = typeof item.timestamp === 'string' ? Date.parse(item.timestamp) : NaN;
+  return Number.isFinite(raw) ? raw : fallback;
+}
+
+function extractDispatchId(metadata: Record<string, unknown> | undefined): string | undefined {
+  if (!metadata || typeof metadata !== 'object') return undefined;
+  const candidates = [metadata.dispatchId, metadata.dispatch_id, metadata.dispatch_id_v2];
+  for (const item of candidates) {
+    if (typeof item === 'string' && item.trim().length > 0) {
+      return item.trim();
+    }
+  }
+  return undefined;
+}
+
+function isReasoningStopBoundary(message: SessionMessageLike): boolean {
+  const metadata = message.metadata;
+  if (metadata && typeof metadata === 'object') {
+    const toolName = metadata.toolName;
+    if (typeof toolName === 'string' && toolName.trim() === 'reasoning.stop') return true;
+  }
+  const content = typeof message.content === 'string' ? message.content : '';
+  if (!content) return false;
+  return /\breasoning\.stop\b/i.test(content);
+}
+
+interface SessionTaskBlockLike {
+  id: string;
+  startTimeMs: number;
+  endTimeMs: number;
+  messages: SessionMessageLike[];
+}
+
+function groupSessionMessagesByTaskBoundary(sessionMessages: SessionMessageLike[]): SessionTaskBlockLike[] {
+  if (!Array.isArray(sessionMessages) || sessionMessages.length === 0) return [];
+  const hasUserBoundary = sessionMessages.some(
+    (item) => item.role === 'user' && typeof item.content === 'string' && item.content.trim().length > 0,
+  );
+  const blocks: SessionTaskBlockLike[] = [];
+  let current: SessionMessageLike[] = [];
+  let blockStartMs = 0;
+  let currentDispatchId: string | undefined;
+  let previousTs = 0;
+  for (const item of sessionMessages) {
+    if (current.length === 0) {
+      blockStartMs = normalizeSessionMessageTimestampMs(item);
+      previousTs = blockStartMs;
+    }
+    const isUser = item.role === 'user';
+    const itemTs = normalizeSessionMessageTimestampMs(item, previousTs);
+    const dispatchId = extractDispatchId(item.metadata);
+    const dispatchChanged = !hasUserBoundary && !!dispatchId && !!currentDispatchId && dispatchId !== currentDispatchId;
+    const gapBoundary = !hasUserBoundary && current.length > 0 && Math.max(0, itemTs - previousTs) > DEFAULT_SYSTEM_ONLY_TASK_GAP_MS;
+    if (current.length > 0 && ((hasUserBoundary && isUser) || dispatchChanged || gapBoundary)) {
+      const endTimeMs = normalizeSessionMessageTimestampMs(current[current.length - 1], blockStartMs);
+      blocks.push({
+        id: `task-${blockStartMs}`,
+        startTimeMs: blockStartMs,
+        endTimeMs,
+        messages: current,
+      });
+      current = [];
+      currentDispatchId = undefined;
+      blockStartMs = normalizeSessionMessageTimestampMs(item, endTimeMs);
+    }
+    current.push(item);
+    if (isReasoningStopBoundary(item)) {
+      const endTimeMs = normalizeSessionMessageTimestampMs(current[current.length - 1], blockStartMs);
+      blocks.push({
+        id: `task-${blockStartMs}`,
+        startTimeMs: blockStartMs,
+        endTimeMs,
+        messages: current,
+      });
+      current = [];
+      currentDispatchId = undefined;
+      continue;
+    }
+    if (!currentDispatchId && dispatchId) currentDispatchId = dispatchId;
+    previousTs = itemTs;
+  }
+  if (current.length > 0) {
+    const endTimeMs = normalizeSessionMessageTimestampMs(current[current.length - 1], blockStartMs);
+    blocks.push({
+      id: `task-${blockStartMs}`,
+      startTimeMs: blockStartMs,
+      endTimeMs,
+      messages: current,
+    });
+  }
+  return blocks;
+}
+
+function compactContent(input: string, limit: number): string {
+  const normalized = input.replace(/\s+/g, ' ').trim();
+  if (normalized.length <= limit) return normalized;
+  return `${normalized.slice(0, limit)}...`;
+}
+
+function synthesizeDigestMessageFromTaskBlock(block: SessionTaskBlockLike): SessionMessageLike {
+  const firstUser = block.messages.find((message) => message.role === 'user')?.content ?? '';
+  const lastAssistant = [...block.messages].reverse().find((message) => message.role === 'assistant')?.content ?? '';
+  const toolNames = Array.from(new Set(
+    block.messages
+      .map((message) => {
+        const metadata = message.metadata;
+        if (!metadata || typeof metadata !== 'object') return '';
+        const name = metadata.toolName;
+        return typeof name === 'string' && name.trim().length > 0 ? name.trim() : '';
+      })
+      .filter((name) => name.length > 0),
+  )).slice(0, 8);
+  const parts = [
+    firstUser.trim().length > 0 ? `请求: ${compactContent(firstUser, 220)}` : '',
+    lastAssistant.trim().length > 0 ? `结果: ${compactContent(lastAssistant, 260)}` : '',
+    toolNames.length > 0 ? `工具: ${toolNames.join(', ')}` : '',
+  ].filter((part) => part.length > 0);
+  const digestId = `digest-${block.id}`;
+  const digestContent = parts.length > 0 ? parts.join('\n') : `(task digest ${block.id})`;
+  return {
+    id: digestId,
+    role: 'assistant',
+    content: digestContent,
+    timestamp: new Date(block.endTimeMs).toISOString(),
+    metadata: {
+      compactDigest: true,
+      compactDigestFromTaskId: block.id,
+      messageId: digestId,
+      contextZone: 'historical_memory',
+    },
+  };
+}
+
+function buildSyntheticDigestById(sessionMessages: SessionMessageLike[]): Map<string, SessionMessageLike> {
+  const map = new Map<string, SessionMessageLike>();
+  for (const block of groupSessionMessagesByTaskBoundary(sessionMessages)) {
+    const digest = synthesizeDigestMessageFromTaskBlock(block);
+    if (typeof digest.id === 'string' && digest.id.trim().length > 0) {
+      map.set(digest.id, digest);
+    }
+  }
+  return map;
 }
 
 export function readPersistedContextBuilderHistoryIndex(
@@ -104,6 +257,38 @@ export function readPersistedContextBuilderHistoryIndex(
   const anchorTimestamp = typeof value.anchorTimestamp === 'string' && value.anchorTimestamp.trim().length > 0
     ? value.anchorTimestamp
     : undefined;
+  const historicalDigestMessages = Array.isArray(value.historicalDigestMessages)
+    ? value.historicalDigestMessages
+      .filter((item): item is Record<string, unknown> => !!item && typeof item === 'object' && !Array.isArray(item))
+      .map((item) => {
+        const id = typeof item.id === 'string' && item.id.trim().length > 0 ? item.id.trim() : '';
+        const content = typeof item.content === 'string' ? item.content : '';
+        if (!id || content.trim().length === 0) return null;
+        const role: 'user' | 'assistant' | 'system' = item.role === 'assistant' || item.role === 'system'
+          ? item.role
+          : 'user';
+        const timestamp = typeof item.timestamp === 'string' && item.timestamp.trim().length > 0
+          ? item.timestamp
+          : new Date().toISOString();
+        const metadata = item.metadata && typeof item.metadata === 'object' && !Array.isArray(item.metadata)
+          ? item.metadata as Record<string, unknown>
+          : undefined;
+        return {
+          id,
+          role,
+          content,
+          timestamp,
+          ...(metadata ? { metadata } : {}),
+        };
+      })
+      .filter((item): item is {
+        id: string;
+        role: 'user' | 'assistant' | 'system';
+        content: string;
+        timestamp: string;
+        metadata?: Record<string, unknown>;
+      } => !!item)
+    : undefined;
 
   return {
     version: 1,
@@ -118,6 +303,7 @@ export function readPersistedContextBuilderHistoryIndex(
     currentContextMaxItems,
     ...(anchorMessageId ? { anchorMessageId } : {}),
     ...(anchorTimestamp ? { anchorTimestamp } : {}),
+    ...(historicalDigestMessages && historicalDigestMessages.length > 0 ? { historicalDigestMessages } : {}),
     updatedAt: typeof value.updatedAt === 'string' && value.updatedAt.trim().length > 0
       ? value.updatedAt
       : new Date().toISOString(),
@@ -142,13 +328,75 @@ export function buildContextBuilderHistoryIndex(
     .filter((message) => message.contextZone === 'historical_memory')
     .map((message) => (typeof message.messageId === 'string' && message.messageId.trim().length > 0 ? message.messageId : message.id))
     .filter((item, index, arr) => item.length > 0 && arr.indexOf(item) === index);
-  const historySelectedMessageIds = historySelectedMessageIdsRaw.length > 0
+  let historySelectedMessageIds = historySelectedMessageIdsRaw.length > 0
     ? historySelectedMessageIdsRaw
     : selectedMessageIdsRaw;
   const currentContextMessageIds = messages
     .filter((message) => message.contextZone !== 'historical_memory')
     .map((message) => (typeof message.messageId === 'string' && message.messageId.trim().length > 0 ? message.messageId : message.id))
     .filter((item, index, arr) => item.length > 0 && arr.indexOf(item) === index);
+  let historicalDigestMessages = messages
+    .filter((message) => {
+      if (message.contextZone !== 'historical_memory') return false;
+      const content = typeof message.content === 'string' ? message.content.trim() : '';
+      if (!content) return false;
+      const compact = message.metadata && typeof message.metadata === 'object'
+        ? message.metadata.compactDigest === true
+        : false;
+      const messageId = typeof message.messageId === 'string' && message.messageId.trim().length > 0
+        ? message.messageId
+        : message.id;
+      return compact || messageId.startsWith('digest-');
+    })
+    .map((message) => {
+      const id = typeof message.messageId === 'string' && message.messageId.trim().length > 0
+        ? message.messageId
+        : message.id;
+      const role: 'user' | 'assistant' | 'system' = message.role === 'assistant' || message.role === 'system'
+        ? message.role
+        : 'user';
+      const metadata = message.metadata && typeof message.metadata === 'object'
+        ? { ...message.metadata, contextZone: 'historical_memory' }
+        : { contextZone: 'historical_memory' };
+      return {
+        id,
+        role,
+        content: message.content,
+        timestamp: message.timestampIso,
+        metadata,
+      };
+    });
+  if (historicalDigestMessages.length === 0) {
+    const historicalMessages = messages
+      .filter((message) => message.contextZone === 'historical_memory')
+      .map((message) => ({
+        id: typeof message.messageId === 'string' && message.messageId.trim().length > 0
+          ? message.messageId
+          : message.id,
+        role: message.role,
+        content: message.content,
+        timestamp: message.timestampIso,
+        ...(message.metadata ? { metadata: { ...message.metadata } } : {}),
+      } satisfies SessionMessageLike));
+    if (historicalMessages.length > 0) {
+      historicalDigestMessages = groupSessionMessagesByTaskBoundary(historicalMessages)
+        .map((block) => synthesizeDigestMessageFromTaskBlock(block))
+        .map((digest) => ({
+          id: digest.id ?? `digest-${Date.now()}`,
+          role: digest.role === 'assistant' || digest.role === 'system' ? digest.role : 'assistant',
+          content: digest.content,
+          timestamp: digest.timestamp ?? new Date().toISOString(),
+          metadata: {
+            ...(digest.metadata ?? {}),
+            contextZone: 'historical_memory',
+            compactDigest: true,
+          },
+        }));
+    }
+  }
+  if (historicalDigestMessages.length > 0) {
+    historySelectedMessageIds = historicalDigestMessages.map((item) => item.id);
+  }
   const selectedMessageIds = Array.from(new Set([
     ...historySelectedMessageIds,
     ...currentContextMessageIds,
@@ -177,6 +425,7 @@ export function buildContextBuilderHistoryIndex(
       : DEFAULT_CURRENT_CONTEXT_MAX_ITEMS,
     ...(anchorMessageId ? { anchorMessageId } : {}),
     ...(anchorTimestamp ? { anchorTimestamp } : {}),
+    ...(historicalDigestMessages.length > 0 ? { historicalDigestMessages } : {}),
     updatedAt: new Date().toISOString(),
   };
 }
@@ -205,6 +454,9 @@ export function buildIndexedHistoryFromSnapshot(
   }>;
   selectedCount: number;
   deltaCount: number;
+  requestedHistoricalCount: number;
+  resolvedHistoricalCount: number;
+  missingHistoricalCount: number;
 } | null {
   if (!Array.isArray(sessionMessages) || sessionMessages.length === 0) return null;
 
@@ -214,11 +466,24 @@ export function buildIndexedHistoryFromSnapshot(
       byId.set(message.id, message);
     }
   }
+  const syntheticDigestById = buildSyntheticDigestById(sessionMessages);
+  const persistedDigestById = new Map<string, SessionMessageLike>();
+  for (const item of index.historicalDigestMessages ?? []) {
+    persistedDigestById.set(item.id, {
+      id: item.id,
+      role: item.role,
+      content: item.content,
+      timestamp: item.timestamp,
+      ...(item.metadata ? { metadata: { ...item.metadata } } : {}),
+    });
+  }
 
   const historySelectedMessageIds = (index.historySelectedMessageIds && index.historySelectedMessageIds.length > 0)
     ? index.historySelectedMessageIds
     : index.selectedMessageIds;
   const currentContextMessageIds = index.currentContextMessageIds ?? [];
+  const historySelectedSet = new Set(historySelectedMessageIds);
+  const currentContextSet = new Set(currentContextMessageIds);
   const pinnedMessageIds = index.pinnedMessageIds ?? [];
   const recentTurnWindow = extractRecentTurnWindow(sessionMessages);
   const recentTurnIds = new Set(recentTurnWindow.map((item) => messageIdentity(item)));
@@ -227,8 +492,29 @@ export function buildIndexedHistoryFromSnapshot(
     ...historySelectedMessageIds,
     ...currentContextMessageIds,
   ]
-    .map((id) => byId.get(id))
+    .map((id) => byId.get(id) ?? persistedDigestById.get(id) ?? syntheticDigestById.get(id))
     .filter((item): item is SessionMessageLike => !!item);
+  const selectedHistoryCount = selected.filter((item) => {
+    const key = messageIdentity(item);
+    return historySelectedSet.has(key);
+  }).length;
+  const requestedHistoricalCount = historySelectedSet.size;
+  const resolvedHistoricalCount = selectedHistoryCount;
+  const missingHistoricalCount = Math.max(0, requestedHistoricalCount - resolvedHistoricalCount);
+  if (selectedHistoryCount === 0 && historySelectedSet.size > 0 && syntheticDigestById.size > 0) {
+    const fallbackDigests = Array.from(syntheticDigestById.values())
+      .slice(-Math.min(12, syntheticDigestById.size))
+      .map((item) => ({
+        ...item,
+        metadata: {
+          ...(item.metadata ?? {}),
+          contextZone: 'historical_memory',
+          compactDigest: true,
+          contextBuilderAutoDigest: true,
+        },
+      }));
+    selected.push(...fallbackDigests);
+  }
 
   let deltaStart = -1;
   if (index.anchorMessageId) {
@@ -292,12 +578,26 @@ export function buildIndexedHistoryFromSnapshot(
       const role: 'user' | 'assistant' | 'system' = item.role === 'assistant' || item.role === 'system'
         ? item.role
         : 'user';
+      const messageId = typeof item.id === 'string' && item.id.trim().length > 0 ? item.id : undefined;
+      const inferredContextZone = messageId
+        ? (historySelectedSet.has(messageId)
+          ? 'historical_memory'
+          : currentContextSet.has(messageId)
+            ? 'working_set'
+            : undefined)
+        : undefined;
+      const metadata = item.metadata && typeof item.metadata === 'object'
+        ? { ...item.metadata }
+        : {};
+      if (!metadata.contextZone && inferredContextZone) {
+        metadata.contextZone = inferredContextZone;
+      }
       return {
         id: item.id ?? `ctx-indexed-${Date.now()}-${idx}`,
         role,
         content: item.content,
         timestamp: item.timestamp ?? new Date().toISOString(),
-        ...(item.metadata && typeof item.metadata === 'object' ? { metadata: item.metadata } : {}),
+        ...(Object.keys(metadata).length > 0 ? { metadata } : {}),
       };
     });
 
@@ -306,6 +606,9 @@ export function buildIndexedHistoryFromSnapshot(
     messages: mapped,
     selectedCount: prioritizedHistorical.length + recentPreserved.length,
     deltaCount: Math.max(0, deltaMerged.length),
+    requestedHistoricalCount,
+    resolvedHistoricalCount,
+    missingHistoricalCount,
   };
 }
 
@@ -369,6 +672,9 @@ export function buildNextIndexedHistoryIndex(
     currentContextMaxItems: maxCurrent,
     ...(anchorMessageId ? { anchorMessageId } : {}),
     ...(anchorTimestamp ? { anchorTimestamp } : {}),
+    ...(previous.historicalDigestMessages && previous.historicalDigestMessages.length > 0
+      ? { historicalDigestMessages: previous.historicalDigestMessages }
+      : {}),
     updatedAt: new Date().toISOString(),
   };
 }

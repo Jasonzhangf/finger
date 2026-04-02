@@ -10,6 +10,7 @@ import { loadContextBuilderSettings } from '../../core/user-settings.js';
 import { estimateTokens } from '../../utils/token-counter.js';
 import {
   consumeContextBuilderOnDemandView,
+  resetContextBuilderBootstrapOnce,
   shouldRunContextBuilderBootstrapOnce,
 } from '../../runtime/context-builder-on-demand-state.js';
 import {
@@ -32,6 +33,7 @@ import {
   resolveRolePromptOverridesFromConfig,
   type RuntimePromptConfig,
 } from './finger-role-modules-helpers.js';
+import { normalizeProjectPathCanonical } from '../../common/path-normalize.js';
 
 export type FingerRoleProfile = 'project' | 'reviewer' | 'system';
 
@@ -65,10 +67,98 @@ type HistoryMessage = {
   metadata?: Record<string, unknown>;
 };
 
+const INDEXED_HISTORY_MISSING_RATIO_REBUILD_THRESHOLD = 0.2;
+const INDEXED_HISTORY_MISSING_COUNT_REBUILD_THRESHOLD = 64;
+
 function isEffectivelyEmptyHistoryForBootstrap(messages: HistoryMessage[]): boolean {
   if (!Array.isArray(messages) || messages.length === 0) return true;
   const nonEmpty = messages.filter((item) => typeof item.content === 'string' && item.content.trim().length > 0);
   return nonEmpty.length === 0;
+}
+
+function hasHistoricalContextZone(messages: HistoryMessage[]): boolean {
+  if (!Array.isArray(messages) || messages.length === 0) return false;
+  return messages.some((item) => {
+    const metadata = item.metadata;
+    if (!metadata || typeof metadata !== 'object') return false;
+    const zone = typeof metadata.contextZone === 'string' ? metadata.contextZone.trim() : '';
+    return zone === 'historical_memory';
+  });
+}
+
+function resolveBootstrapRebuildPolicy(
+  historyEmpty: boolean,
+  hasHistoryContext: boolean,
+): {
+  shouldBootstrap: boolean;
+  enforceOnceGuard: boolean;
+  trigger: 'history_empty' | 'history_context_zero' | 'none';
+} {
+  if (historyEmpty) {
+    return {
+      shouldBootstrap: true,
+      enforceOnceGuard: true,
+      trigger: 'history_empty',
+    };
+  }
+  if (!hasHistoryContext) {
+    // Jason 规则：history context=0 必须触发 rebuild（不受 once gating 限制）。
+    return {
+      shouldBootstrap: true,
+      enforceOnceGuard: false,
+      trigger: 'history_context_zero',
+    };
+  }
+  return {
+    shouldBootstrap: false,
+    enforceOnceGuard: false,
+    trigger: 'none',
+  };
+}
+
+function resolveLatestUserPrompt(messages: HistoryMessage[]): string | undefined {
+  if (!Array.isArray(messages) || messages.length === 0) return undefined;
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const item = messages[index];
+    if (item.role !== 'user') continue;
+    const content = typeof item.content === 'string' ? item.content.trim() : '';
+    if (content.length > 0) return content;
+  }
+  return undefined;
+}
+
+function keepDigestOnlyHistoricalMessages(
+  messages: Array<{
+    id: string;
+    role: 'user' | 'assistant' | 'system';
+    content: string;
+    timestamp: string;
+    metadata?: Record<string, unknown>;
+  }>,
+): Array<{
+    id: string;
+    role: 'user' | 'assistant' | 'system';
+    content: string;
+    timestamp: string;
+    metadata?: Record<string, unknown>;
+  }> {
+  const hasCompactHistorical = messages.some((item) => {
+    const metadata = item.metadata;
+    const zone = typeof metadata?.contextZone === 'string' ? metadata.contextZone.trim() : '';
+    if (zone !== 'historical_memory') return false;
+    return metadata?.compactDigest === true;
+  });
+  if (!hasCompactHistorical) {
+    // 防止 “history context=0” 死循环：当构建结果暂时没有 compactDigest 标记时，
+    // 保留历史消息（而不是全部丢弃），让下一轮至少能继续携带 historical_memory。
+    return messages;
+  }
+  return messages.filter((item) => {
+    const metadata = item.metadata;
+    const zone = typeof metadata?.contextZone === 'string' ? metadata.contextZone.trim() : '';
+    if (zone !== 'historical_memory') return true;
+    return metadata?.compactDigest === true;
+  });
 }
 
 function normalizeHistoryMessages(
@@ -87,6 +177,37 @@ function normalizeHistoryMessages(
     timestamp: typeof message.timestamp === 'string' ? message.timestamp : new Date().toISOString(),
     ...(message.metadata ? { metadata: message.metadata } : {}),
   }));
+}
+
+function resolveCrossSessionBootstrapSeed(
+  runtime: RuntimeFacade,
+  currentSessionId: string,
+  agentId: string,
+  projectPath: string,
+): { sourceSessionId: string; messages: HistoryMessage[] } | null {
+  const normalizedProject = normalizeProjectPathCanonical(projectPath);
+  if (!normalizedProject) return null;
+  const candidates = runtime.listSessions()
+    .filter((session) => session.id !== currentSessionId)
+    .filter((session) => normalizeProjectPathCanonical(session.projectPath) === normalizedProject)
+    .sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());
+
+  for (const candidate of candidates) {
+    const fullSession = runtime.getSession(candidate.id);
+    if (!fullSession) continue;
+    const context = (fullSession.context ?? {}) as Record<string, unknown>;
+    const ownerAgentId = typeof context.ownerAgentId === 'string' ? context.ownerAgentId.trim() : '';
+    if (ownerAgentId && ownerAgentId !== agentId) continue;
+    if (context.sessionTier === 'runtime') continue;
+    const messages = normalizeHistoryMessages(runtime.getMessages(candidate.id, 0));
+    if (messages.length === 0 || isEffectivelyEmptyHistoryForBootstrap(messages)) continue;
+    return {
+      sourceSessionId: candidate.id,
+      messages,
+    };
+  }
+
+  return null;
 }
 
 function topUpHistoryToBudget(
@@ -183,6 +304,50 @@ function topUpHistoryToBudget(
   return merged;
 }
 
+function buildHistoricalFallbackFromSeed(
+  seedMessages: HistoryMessage[],
+  budgetTokens: number,
+  limit: number,
+): Array<{
+  id: string;
+  role: 'user' | 'assistant' | 'system';
+  content: string;
+  timestamp: string;
+  metadata?: Record<string, unknown>;
+}> {
+  if (!Array.isArray(seedMessages) || seedMessages.length === 0) return [];
+  const normalizedBudget = Number.isFinite(budgetTokens) && budgetTokens > 0 ? Math.floor(budgetTokens) : 20000;
+  const selected: HistoryMessage[] = [];
+  let used = 0;
+  for (let index = seedMessages.length - 1; index >= 0; index -= 1) {
+    const item = seedMessages[index];
+    const content = typeof item.content === 'string' ? item.content.trim() : '';
+    if (!content) continue;
+    const tokens = estimateTokens(content);
+    if (used + tokens > normalizedBudget) continue;
+    selected.push(item);
+    used += tokens;
+    if (used >= normalizedBudget) break;
+  }
+  selected.reverse();
+  const limited = Number.isFinite(limit) && limit > 0 ? selected.slice(-limit) : selected;
+  return limited.map((item) => ({
+    id: item.id,
+    role: item.role,
+    content: item.content,
+    timestamp: item.timestamp,
+    metadata: {
+      ...(item.metadata ?? {}),
+      contextZone: 'historical_memory',
+      compactDigest: true,
+      contextBuilderHistorySource: 'cross_session_seed_fallback',
+      contextBuilderBypassed: false,
+      contextBuilderRebuilt: true,
+      contextBuilderBootstrap: true,
+    },
+  }));
+}
+
 export async function registerFingerRoleModules(
   deps: RegisterFingerRoleModulesDeps,
   roles: FingerRoleSpec[],
@@ -263,14 +428,14 @@ export async function registerFingerRoleModules(
       const latestMessage = sessionMessages.length > 0 ? sessionMessages[sessionMessages.length - 1] : null;
       const hasMediaInput = hasMediaInputInMessage(latestMessage);
       if (hasMediaInput) {
-        // Media turn: keep raw session order, do not rewrite context via context builder.
+        // Media turn: keep session-view order, do not rewrite context via context builder.
         const mapped = augmentHistoryWithContinuityAnchors(mapRawSessionMessages(sessionMessages, limit, {
-          contextBuilderHistorySource: 'raw_session',
+          contextBuilderHistorySource: 'session_view_passthrough',
           contextBuilderBypassed: true,
           contextBuilderBypassReason: 'media_turn',
           contextBuilderRebuilt: false,
         }), sessionMessages, limit, {
-          contextBuilderHistorySource: 'raw_session',
+          contextBuilderHistorySource: 'session_view_passthrough',
           contextBuilderBypassed: true,
           contextBuilderBypassReason: 'media_turn',
           contextBuilderRebuilt: false,
@@ -292,17 +457,17 @@ export async function registerFingerRoleModules(
       // 在下一轮消费一次按需重组视图。
       if (!settings.enabled) {
         const mapped = augmentHistoryWithContinuityAnchors(mapRawSessionMessages(sessionMessages, limit, {
-          contextBuilderHistorySource: 'raw_session',
+          contextBuilderHistorySource: 'session_view_passthrough',
           contextBuilderBypassed: true,
           contextBuilderBypassReason: 'context_builder_disabled',
           contextBuilderRebuilt: false,
         }), sessionMessages, limit, {
-          contextBuilderHistorySource: 'raw_session',
+          contextBuilderHistorySource: 'session_view_passthrough',
           contextBuilderBypassed: true,
           contextBuilderBypassReason: 'context_builder_disabled',
           contextBuilderRebuilt: false,
         });
-        logger.module('finger-role-modules').info('Context builder disabled, using raw session history', {
+        logger.module('finger-role-modules').info('Context builder disabled, using session-view passthrough history', {
           roleId: role.id,
           sessionId,
           selectedCount: mapped.length,
@@ -316,54 +481,90 @@ export async function registerFingerRoleModules(
         if (persistedIndex) {
           const indexed = buildIndexedHistoryFromSnapshot(sessionMessages, persistedIndex, limit);
           if (indexed && indexed.messages.length > 0) {
-            const mappedIndexed = indexed.messages.map((message) => ({
-              ...message,
-              metadata: {
-                ...(message.metadata ?? {}),
+            const requestedHistoricalCount = indexed.requestedHistoricalCount;
+            const missingHistoricalCount = indexed.missingHistoricalCount;
+            const missingHistoricalRatio = requestedHistoricalCount > 0
+              ? missingHistoricalCount / requestedHistoricalCount
+              : 0;
+            const indexedCoverageInsufficient = requestedHistoricalCount > 0 && (
+              missingHistoricalCount >= INDEXED_HISTORY_MISSING_COUNT_REBUILD_THRESHOLD
+              || missingHistoricalRatio >= INDEXED_HISTORY_MISSING_RATIO_REBUILD_THRESHOLD
+            );
+            if (indexedCoverageInsufficient) {
+              logger.module('finger-role-modules').warn('Persisted indexed history coverage stale; fallback to bootstrap rebuild path', {
+                roleId: role.id,
+                sessionId,
+                buildMode: persistedIndex.buildMode,
+                targetBudget: persistedIndex.targetBudget,
+                requestedHistoricalCount,
+                resolvedHistoricalCount: indexed.resolvedHistoricalCount,
+                missingHistoricalCount,
+                missingHistoricalRatio: Number(missingHistoricalRatio.toFixed(3)),
+                thresholdRatio: INDEXED_HISTORY_MISSING_RATIO_REBUILD_THRESHOLD,
+              });
+            } else {
+              const mappedIndexed = indexed.messages.map((message) => ({
+                ...message,
+                metadata: {
+                  ...(message.metadata ?? {}),
+                  contextBuilderHistorySource: 'context_builder_indexed',
+                  contextBuilderBypassed: false,
+                  contextBuilderRebuilt: false,
+                  contextBuilderIndexed: true,
+                  contextBuilderOnDemand: false,
+                  contextBuilderBuildMode: persistedIndex.buildMode,
+                  contextBuilderTargetBudget: persistedIndex.targetBudget,
+                  contextBuilderSelectedBlockCount: persistedIndex.selectedBlockIds.length,
+                  contextBuilderAppliedAt: persistedIndex.updatedAt,
+                },
+              }));
+              const merged = augmentHistoryWithContinuityAnchors(mappedIndexed, sessionMessages, limit, {
                 contextBuilderHistorySource: 'context_builder_indexed',
                 contextBuilderBypassed: false,
                 contextBuilderRebuilt: false,
                 contextBuilderIndexed: true,
-                contextBuilderOnDemand: false,
-                contextBuilderBuildMode: persistedIndex.buildMode,
-                contextBuilderTargetBudget: persistedIndex.targetBudget,
-                contextBuilderSelectedBlockCount: persistedIndex.selectedBlockIds.length,
-                contextBuilderAppliedAt: persistedIndex.updatedAt,
-              },
-            }));
-            const merged = augmentHistoryWithContinuityAnchors(mappedIndexed, sessionMessages, limit, {
-              contextBuilderHistorySource: 'context_builder_indexed',
-              contextBuilderBypassed: false,
-              contextBuilderRebuilt: false,
-              contextBuilderIndexed: true,
-            });
-            const nextIndex = buildNextIndexedHistoryIndex(
-              persistedIndex,
-              merged.map((item) => ({
-                id: item.id,
-                timestamp: item.timestamp,
-                ...(item.metadata ? { metadata: item.metadata } : {}),
-              })),
-            );
-            persistContextBuilderHistoryIndex(runtime, sessionId, nextIndex);
-            logger.module('finger-role-modules').debug('Applied indexed context history continuity view', {
-              roleId: role.id,
-              sessionId,
-              selectedCount: indexed.selectedCount,
-              deltaCount: indexed.deltaCount,
-              buildMode: persistedIndex.buildMode,
-              targetBudget: persistedIndex.targetBudget,
-            });
-            return topUpHistoryToBudget(
-              merged,
-              sessionMessages,
-              Math.max(historyBudgetTokens, persistedIndex.targetBudget),
-              {
-                contextBuilderHistorySource: 'context_builder_indexed',
-                contextBuilderHistoryTopup: true,
-                contextBuilderIndexed: true,
-              },
-            );
+              });
+              const hasIndexedHistoricalContext = hasHistoricalContextZone(
+                merged as unknown as HistoryMessage[],
+              );
+              if (hasIndexedHistoricalContext) {
+                const nextIndex = buildNextIndexedHistoryIndex(
+                  persistedIndex,
+                  merged.map((item) => ({
+                    id: item.id,
+                    timestamp: item.timestamp,
+                    ...(item.metadata ? { metadata: item.metadata } : {}),
+                  })),
+                );
+                persistContextBuilderHistoryIndex(runtime, sessionId, nextIndex);
+                logger.module('finger-role-modules').debug('Applied indexed context history continuity view', {
+                  roleId: role.id,
+                  sessionId,
+                  selectedCount: indexed.selectedCount,
+                  deltaCount: indexed.deltaCount,
+                  buildMode: persistedIndex.buildMode,
+                  targetBudget: persistedIndex.targetBudget,
+                });
+                return topUpHistoryToBudget(
+                  merged,
+                  sessionMessages,
+                  Math.max(historyBudgetTokens, persistedIndex.targetBudget),
+                  {
+                    contextBuilderHistorySource: 'context_builder_indexed',
+                    contextBuilderHistoryTopup: true,
+                    contextBuilderIndexed: true,
+                  },
+                );
+              }
+              logger.module('finger-role-modules').warn('Indexed history has no historical_memory zone; fallback to bootstrap path', {
+                roleId: role.id,
+                sessionId,
+                selectedCount: indexed.selectedCount,
+                deltaCount: indexed.deltaCount,
+                buildMode: persistedIndex.buildMode,
+                targetBudget: persistedIndex.targetBudget,
+              });
+            }
           }
           logger.module('finger-role-modules').warn('Persisted indexed history unavailable on snapshot, fallback to raw/anchors', {
             roleId: role.id,
@@ -372,32 +573,107 @@ export async function registerFingerRoleModules(
             selectedMessageCount: persistedIndex.selectedMessageIds.length,
           });
         }
-        const canAutoBootstrap = isEffectivelyEmptyHistoryForBootstrap(sessionMessages);
-        if (canAutoBootstrap && shouldRunContextBuilderBootstrapOnce(sessionId, agentId)) {
+        const hasHistoryContext = hasHistoricalContextZone(sessionMessages);
+        const historyEmpty = isEffectivelyEmptyHistoryForBootstrap(sessionMessages);
+        const bootstrapPolicy = resolveBootstrapRebuildPolicy(historyEmpty, hasHistoryContext);
+        const canAutoBootstrap = bootstrapPolicy.shouldBootstrap;
+        const bootstrapTrigger = bootstrapPolicy.trigger;
+        const bootstrapAllowedByOnceGuard = !bootstrapPolicy.enforceOnceGuard
+          || shouldRunContextBuilderBootstrapOnce(sessionId, agentId);
+        if (canAutoBootstrap) {
+          logger.module('finger-role-modules').info('Context bootstrap decision', {
+            roleId: role.id,
+            sessionId,
+            trigger: bootstrapTrigger,
+            historyEmpty,
+            hasHistoryContext,
+            sessionMessageCount: sessionMessages.length,
+            enforceOnceGuard: bootstrapPolicy.enforceOnceGuard,
+            bootstrapAllowedByOnceGuard,
+          });
+        }
+        if (canAutoBootstrap && bootstrapAllowedByOnceGuard) {
           const configuredBudget = Number.isFinite(settings.historyBudgetTokens) && settings.historyBudgetTokens > 0
             ? Math.floor(settings.historyBudgetTokens)
             : 20000;
-          const bootstrapped = await buildContext(
-            {
-              rootDir,
+          const bootstrapBuildMode = bootstrapTrigger === 'history_context_zero'
+            ? 'aggressive'
+            : settings.mode;
+          const crossSessionSeed = !hasHistoryContext
+            ? resolveCrossSessionBootstrapSeed(runtime, sessionId, agentId, session.projectPath)
+            : null;
+          const bootstrapSeedMessages = crossSessionSeed?.messages ?? sessionMessages;
+          const latestUserPrompt = resolveLatestUserPrompt(bootstrapSeedMessages);
+          if (crossSessionSeed) {
+            logger.module('finger-role-modules').info('Bootstrap uses cross-session seed history', {
+              roleId: role.id,
               sessionId,
-              agentId,
-              mode: 'main',
-            },
-            {
-              targetBudget: configuredBudget,
-              buildMode: settings.mode,
-              includeMemoryMd: false,
-              enableTaskGrouping: true,
-              enableModelRanking: settings.enableModelRanking,
-              rankingProviderId: settings.rankingProviderId,
-              timeWindow: {
-                nowMs: Date.now(),
-                halfLifeMs: settings.halfLifeMs,
-                overThresholdRelevance: settings.overThresholdRelevance,
+              sourceSessionId: crossSessionSeed.sourceSessionId,
+              sourceMessageCount: crossSessionSeed.messages.length,
+              trigger: bootstrapTrigger,
+            });
+          }
+          let bootstrapped:
+            | Awaited<ReturnType<typeof buildContext>>
+            | null = null;
+          try {
+            bootstrapped = await buildContext(
+              {
+                rootDir,
+                sessionId,
+                agentId,
+                mode: 'main',
+                ...(bootstrapSeedMessages.length > 0 ? { sessionMessages: bootstrapSeedMessages } : {}),
+                ...(latestUserPrompt ? { currentPrompt: latestUserPrompt } : {}),
               },
-            },
-          );
+              {
+                targetBudget: configuredBudget,
+                buildMode: bootstrapBuildMode,
+                includeMemoryMd: false,
+                enableTaskGrouping: true,
+                enableModelRanking: settings.enableModelRanking,
+                rankingProviderId: settings.rankingProviderId,
+              },
+            );
+          } catch (error) {
+            resetContextBuilderBootstrapOnce(sessionId, agentId);
+            logger.module('finger-role-modules').warn('Bootstrap rebuild failed, will retry on next turn', {
+              roleId: role.id,
+              sessionId,
+              trigger: bootstrapTrigger,
+              error: error instanceof Error ? error.message : String(error),
+            });
+          }
+          if (bootstrapped) {
+            logger.module('finger-role-modules').info('Context bootstrap build result', {
+              roleId: role.id,
+              sessionId,
+              trigger: bootstrapTrigger,
+              messageCount: bootstrapped.messages.length,
+              taskBlockCount: bootstrapped.taskBlockCount,
+              totalTokens: bootstrapped.totalTokens,
+              historicalTaskBlockCount: bootstrapped.metadata?.historicalTaskBlockCount,
+              historicalMessageCount: bootstrapped.metadata?.historicalMessageCount,
+              historicalTokens: bootstrapped.metadata?.historicalTokens,
+            });
+          }
+          if (!bootstrapped) {
+            const mapped = augmentHistoryWithContinuityAnchors(mapRawSessionMessages(sessionMessages, limit, {
+              contextBuilderHistorySource: 'session_view_passthrough',
+              contextBuilderBypassed: true,
+              contextBuilderBypassReason: 'bootstrap_failed',
+              contextBuilderRebuilt: false,
+            }), sessionMessages, limit, {
+              contextBuilderHistorySource: 'session_view_passthrough',
+              contextBuilderBypassed: true,
+              contextBuilderBypassReason: 'bootstrap_failed',
+              contextBuilderRebuilt: false,
+            });
+            return topUpHistoryToBudget(mapped, sessionMessages, historyBudgetTokens, {
+              contextBuilderHistorySource: 'session_view_passthrough',
+              contextBuilderHistoryTopup: true,
+            });
+          }
 
           const bootstrappedSliced = Number.isFinite(limit) && limit > 0
             ? bootstrapped.messages.slice(-limit)
@@ -417,57 +693,121 @@ export async function registerFingerRoleModules(
               contextBuilderRebuilt: true,
               contextBuilderOnDemand: false,
               contextBuilderBootstrap: true,
-              contextBuilderBuildMode: settings.mode,
+              contextBuilderBuildMode: bootstrapBuildMode,
               contextBuilderTargetBudget: configuredBudget,
               contextBuilderSelectedBlockCount: bootstrapped.rankedTaskBlocks.length,
               contextBuilderAppliedAt: new Date().toISOString(),
             },
           }));
+          const digestOnlyBootstrappedMapped = keepDigestOnlyHistoricalMessages(bootstrappedMapped);
+          const hasBootstrappedHistoricalContext = hasHistoricalContextZone(
+            digestOnlyBootstrappedMapped as unknown as HistoryMessage[],
+          );
+          if (!hasBootstrappedHistoricalContext) {
+            if (crossSessionSeed && crossSessionSeed.messages.length > 0) {
+              const crossSessionFallback = buildHistoricalFallbackFromSeed(
+                crossSessionSeed.messages,
+                configuredBudget,
+                limit,
+              );
+              if (crossSessionFallback.length > 0) {
+                logger.module('finger-role-modules').warn('Bootstrap returned no historical_memory; apply cross-session historical fallback', {
+                  roleId: role.id,
+                  sessionId,
+                  sourceSessionId: crossSessionSeed.sourceSessionId,
+                  selectedCount: crossSessionFallback.length,
+                  trigger: bootstrapTrigger,
+                });
+                const merged = augmentHistoryWithContinuityAnchors(crossSessionFallback, sessionMessages, limit, {
+                  contextBuilderHistorySource: 'cross_session_seed_fallback',
+                  contextBuilderBypassed: false,
+                  contextBuilderRebuilt: true,
+                  contextBuilderBootstrap: true,
+                });
+                return merged;
+              }
+            }
+            resetContextBuilderBootstrapOnce(sessionId, agentId);
+            logger.module('finger-role-modules').warn('Bootstrap rebuild returned no historical_memory messages; retry bootstrap on next turn', {
+              roleId: role.id,
+              sessionId,
+              selectedCount: bootstrappedMapped.length,
+              digestOnlySelectedCount: digestOnlyBootstrappedMapped.length,
+              trigger: bootstrapTrigger,
+            });
+            const mapped = augmentHistoryWithContinuityAnchors(mapRawSessionMessages(sessionMessages, limit, {
+              contextBuilderHistorySource: 'session_view_passthrough',
+              contextBuilderBypassed: true,
+              contextBuilderBypassReason: 'bootstrap_no_historical_output',
+              contextBuilderRebuilt: false,
+            }), sessionMessages, limit, {
+              contextBuilderHistorySource: 'session_view_passthrough',
+              contextBuilderBypassed: true,
+              contextBuilderBypassReason: 'bootstrap_no_historical_output',
+              contextBuilderRebuilt: false,
+            });
+            return topUpHistoryToBudget(mapped, sessionMessages, historyBudgetTokens, {
+              contextBuilderHistorySource: 'session_view_passthrough',
+              contextBuilderHistoryTopup: true,
+            });
+          }
           if (bootstrappedMapped.length > 0) {
             const indexSnapshot = buildContextBuilderHistoryIndex(
               'context_builder_bootstrap',
-              settings.mode,
+              bootstrapBuildMode,
               configuredBudget,
               bootstrapped.rankedTaskBlocks.map((block) => block.id),
               bootstrapped.messages,
               pinnedMessageIds.length > 0 ? { pinnedMessageIds } : undefined,
             );
             persistContextBuilderHistoryIndex(runtime, sessionId, indexSnapshot);
-            logger.module('finger-role-modules').info('Applied one-time bootstrap context rebuild', { roleId: role.id, sessionId, selectedCount: bootstrappedMapped.length, mode: settings.mode, targetBudget: configuredBudget });
-            const merged = augmentHistoryWithContinuityAnchors(bootstrappedMapped, sessionMessages, limit, {
+            logger.module('finger-role-modules').info('Applied one-time bootstrap context rebuild', {
+              roleId: role.id,
+              sessionId,
+              selectedCount: bootstrappedMapped.length,
+              digestOnlySelectedCount: digestOnlyBootstrappedMapped.length,
+              mode: bootstrapBuildMode,
+              targetBudget: configuredBudget,
+              trigger: bootstrapTrigger,
+            });
+            const merged = augmentHistoryWithContinuityAnchors(digestOnlyBootstrappedMapped, sessionMessages, limit, {
               contextBuilderHistorySource: 'context_builder_bootstrap',
               contextBuilderBypassed: false,
               contextBuilderRebuilt: true,
               contextBuilderBootstrap: true,
             });
-            return topUpHistoryToBudget(merged, sessionMessages, historyBudgetTokens, {
-              contextBuilderHistorySource: 'context_builder_bootstrap',
-              contextBuilderHistoryTopup: true,
-            });
+            return merged;
           }
 
-          logger.module('finger-role-modules').debug('Bootstrap rebuild yielded empty history, fallback to raw session', { roleId: role.id, sessionId });
+          resetContextBuilderBootstrapOnce(sessionId, agentId);
+          logger.module('finger-role-modules').debug('Bootstrap rebuild yielded empty history, fallback to session-view passthrough', { roleId: role.id, sessionId });
         } else if (!canAutoBootstrap) {
           logger.module('finger-role-modules').debug('Skip bootstrap rebuild because session history is not empty', {
             roleId: role.id,
             sessionId,
             historyCount: sessionMessages.length,
           });
+        } else {
+          logger.module('finger-role-modules').debug('Skip bootstrap rebuild due once-guard gate', {
+            roleId: role.id,
+            sessionId,
+            trigger: bootstrapTrigger,
+          });
         }
         const mapped = augmentHistoryWithContinuityAnchors(mapRawSessionMessages(sessionMessages, limit, {
-          contextBuilderHistorySource: 'raw_session',
+          contextBuilderHistorySource: 'session_view_passthrough',
           contextBuilderBypassed: true,
           contextBuilderBypassReason: 'on_demand_not_requested',
           contextBuilderRebuilt: false,
         }), sessionMessages, limit, {
-          contextBuilderHistorySource: 'raw_session',
+          contextBuilderHistorySource: 'session_view_passthrough',
           contextBuilderBypassed: true,
           contextBuilderBypassReason: 'on_demand_not_requested',
           contextBuilderRebuilt: false,
         });
-        logger.module('finger-role-modules').debug('Context builder not requested, using raw session history', { roleId: role.id, sessionId, selectedCount: mapped.length });
+        logger.module('finger-role-modules').debug('Context builder not requested, using session-view passthrough history', { roleId: role.id, sessionId, selectedCount: mapped.length });
         return topUpHistoryToBudget(mapped, sessionMessages, historyBudgetTokens, {
-          contextBuilderHistorySource: 'raw_session',
+          contextBuilderHistorySource: 'session_view_passthrough',
           contextBuilderHistoryTopup: true,
         });
       }
@@ -499,17 +839,17 @@ export async function registerFingerRoleModules(
 
       if (mapped.length === 0 && sessionMessages.length > 0) {
         const fallback = augmentHistoryWithContinuityAnchors(mapRawSessionMessages(sessionMessages, limit, {
-          contextBuilderHistorySource: 'raw_session_fallback',
+          contextBuilderHistorySource: 'session_view_fallback',
           contextBuilderBypassed: true,
           contextBuilderBypassReason: 'empty_on_demand_result',
           contextBuilderRebuilt: false,
         }), sessionMessages, limit, {
-          contextBuilderHistorySource: 'raw_session_fallback',
+          contextBuilderHistorySource: 'session_view_fallback',
           contextBuilderBypassed: true,
           contextBuilderBypassReason: 'empty_on_demand_result',
           contextBuilderRebuilt: false,
         });
-        logger.module('finger-role-modules').warn('On-demand context builder returned empty history, fallback to raw session', { roleId: role.id, sessionId, rawMessageCount: sessionMessages.length, selectedCount: fallback.length, mode: onDemand.buildMode });
+        logger.module('finger-role-modules').warn('On-demand context builder returned empty history, fallback to session-view passthrough', { roleId: role.id, sessionId, rawMessageCount: sessionMessages.length, selectedCount: fallback.length, mode: onDemand.buildMode });
         return fallback;
       }
 
@@ -599,4 +939,7 @@ export const __fingerRoleModulesInternals = {
   extractRecentUserInputs,
   augmentHistoryWithContinuityAnchors,
   isEffectivelyEmptyHistoryForBootstrap,
+  resolveBootstrapRebuildPolicy,
+  keepDigestOnlyHistoricalMessages,
+  buildHistoricalFallbackFromSeed,
 };

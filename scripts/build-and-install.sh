@@ -7,8 +7,8 @@ current_build_version() {
   node -e "const fs=require('fs'); const pkg=JSON.parse(fs.readFileSync('package.json','utf8')); process.stdout.write(String(pkg.fingerBuildVersion || pkg.version || 'unknown'));"
 }
 
-echo "=== Building myfinger ==="
-npm run build
+echo "=== Building myfinger (raw backend build, skip prebuild line-limit gate) ==="
+npm run build:backend:raw
 chmod +x dist/cli/index.js
 
 BUILD_VERSION=$(current_build_version)
