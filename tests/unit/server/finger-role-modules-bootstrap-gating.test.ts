@@ -22,6 +22,41 @@ const { isEffectivelyEmptyHistoryForBootstrap, hasHistoricalContextZone, resolve
     sessionMessages: Array<{ id: string; role: 'user' | 'assistant' | 'system'; content: string; timestamp: string; metadata?: Record<string, unknown> }>,
     bootstrapSeedMessages: Array<{ id: string; role: 'user' | 'assistant' | 'system'; content: string; timestamp: string; metadata?: Record<string, unknown> }>,
   ) => { prompt?: string; source: 'session_messages' | 'bootstrap_seed' | 'none' };
+  parsePersistedBootstrapOnceState: (
+    sessionContext: Record<string, unknown> | undefined,
+  ) => {
+    version: 1;
+    byAgent: Record<string, {
+      lastAttemptAt: string;
+      lastOutcome: 'started' | 'success' | 'failed' | 'no_historical';
+      lastTrigger: 'history_empty' | 'history_context_zero' | 'none';
+      messageCountAtAttempt: number;
+    }>;
+  } | null;
+  shouldAllowBootstrapFromPersistedState: (
+    state: {
+      version: 1;
+      byAgent: Record<string, {
+        lastAttemptAt: string;
+        lastOutcome: 'started' | 'success' | 'failed' | 'no_historical';
+        lastTrigger: 'history_empty' | 'history_context_zero' | 'none';
+        messageCountAtAttempt: number;
+      }>;
+    } | null,
+    agentId: string,
+    sessionMessageCount: number,
+    nowMs: number,
+    cooldownMs?: number,
+  ) => {
+    allowed: boolean;
+    reason: string;
+    previous?: {
+      lastAttemptAt: string;
+      lastOutcome: 'started' | 'success' | 'failed' | 'no_historical';
+      lastTrigger: 'history_empty' | 'history_context_zero' | 'none';
+      messageCountAtAttempt: number;
+    };
+  };
 };
 
 describe('finger-role-modules bootstrap gating', () => {
@@ -161,5 +196,98 @@ describe('finger-role-modules bootstrap gating', () => {
       prompt: '旧任务：检查 cron',
       source: 'bootstrap_seed',
     });
+  });
+
+  it('parses persisted bootstrap once state from session context', () => {
+    const parsed = __fingerRoleModulesInternals.parsePersistedBootstrapOnceState({
+      contextBuilderBootstrapOnceState: {
+        version: 1,
+        byAgent: {
+          'finger-system-agent': {
+            lastAttemptAt: '2026-04-02T01:00:00.000Z',
+            lastOutcome: 'failed',
+            lastTrigger: 'history_empty',
+            messageCountAtAttempt: 0,
+          },
+        },
+      },
+    });
+    expect(parsed).not.toBeNull();
+    expect(parsed?.byAgent['finger-system-agent']?.lastOutcome).toBe('failed');
+  });
+
+  it('blocks bootstrap once when persisted outcome already succeeded', () => {
+    const parsed = __fingerRoleModulesInternals.parsePersistedBootstrapOnceState({
+      contextBuilderBootstrapOnceState: {
+        version: 1,
+        byAgent: {
+          'finger-system-agent': {
+            lastAttemptAt: '2026-04-02T01:00:00.000Z',
+            lastOutcome: 'success',
+            lastTrigger: 'history_empty',
+            messageCountAtAttempt: 1,
+          },
+        },
+      },
+    });
+    const decision = __fingerRoleModulesInternals.shouldAllowBootstrapFromPersistedState(
+      parsed,
+      'finger-system-agent',
+      1,
+      Date.parse('2026-04-02T01:10:00.000Z'),
+      120_000,
+    );
+    expect(decision.allowed).toBe(false);
+    expect(decision.reason).toBe('already_succeeded');
+  });
+
+  it('allows retry after cooldown for persisted failed bootstrap once', () => {
+    const parsed = __fingerRoleModulesInternals.parsePersistedBootstrapOnceState({
+      contextBuilderBootstrapOnceState: {
+        version: 1,
+        byAgent: {
+          'finger-system-agent': {
+            lastAttemptAt: '2026-04-02T01:00:00.000Z',
+            lastOutcome: 'failed',
+            lastTrigger: 'history_empty',
+            messageCountAtAttempt: 3,
+          },
+        },
+      },
+    });
+    const decision = __fingerRoleModulesInternals.shouldAllowBootstrapFromPersistedState(
+      parsed,
+      'finger-system-agent',
+      3,
+      Date.parse('2026-04-02T01:03:01.000Z'),
+      120_000,
+    );
+    expect(decision.allowed).toBe(true);
+    expect(decision.reason).toBe('retry_cooldown_elapsed');
+  });
+
+  it('allows retry immediately when new messages arrived since failed attempt', () => {
+    const parsed = __fingerRoleModulesInternals.parsePersistedBootstrapOnceState({
+      contextBuilderBootstrapOnceState: {
+        version: 1,
+        byAgent: {
+          'finger-system-agent': {
+            lastAttemptAt: '2026-04-02T01:00:00.000Z',
+            lastOutcome: 'failed',
+            lastTrigger: 'history_empty',
+            messageCountAtAttempt: 3,
+          },
+        },
+      },
+    });
+    const decision = __fingerRoleModulesInternals.shouldAllowBootstrapFromPersistedState(
+      parsed,
+      'finger-system-agent',
+      4,
+      Date.parse('2026-04-02T01:00:30.000Z'),
+      120_000,
+    );
+    expect(decision.allowed).toBe(true);
+    expect(decision.reason).toBe('new_messages_since_attempt');
   });
 });

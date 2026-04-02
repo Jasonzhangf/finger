@@ -514,28 +514,17 @@ export class SessionManager {
     return this.getSession(this.currentSessionId) || null;
   }
 
-  private applySessionCwd(session: Session): boolean {
-    const target = session.projectPath?.trim();
-    if (!target) return false;
-    try {
-      process.chdir(target);
-      return true;
-    } catch (error) {
-      clog.error(`[SessionManager] Failed to set cwd to ${target}:`, error);
-      return false;
-    }
+  private applySessionCwd(_session: Session): boolean {
+    // 根因修复：禁止 SessionManager 通过 process.chdir() 修改全局 cwd。
+    // 全局 cwd 是进程级共享状态，会导致并发请求出现 session 串扰。
+    // 工具执行路径必须显式从 session/projectPath 传递，不依赖全局 cwd。
+    return true;
   }
 
   setCurrentSession(sessionId: string): boolean {
     if (!this.sessions.has(sessionId)) return false;
     const session = this.sessions.get(sessionId)!;
-    const cwdApplied = this.applySessionCwd(session);
-    if (!cwdApplied) {
-      log.warn('setCurrentSession fallback to state-only switch (cwd apply failed)', {
-        sessionId,
-        projectPath: session.projectPath,
-      });
-    }
+    this.applySessionCwd(session);
     this.currentSessionId = sessionId;
     session.lastAccessedAt = new Date().toISOString();
     this.saveSession(session);

@@ -98,6 +98,38 @@ Context Builder 负责动态重建模型可见上下文中的 **history 区**，
 
 ---
 
+## 1.5 Bootstrap once gate 持久化与限流（2026-04-02）
+
+为避免 daemon 重启后反复触发首次 bootstrap（抖动），`history_empty` 场景新增持久化 once gate：
+
+1. 状态落盘到 session context：`contextBuilderBootstrapOnceState`。
+2. 维度：`byAgent[agentId]`，记录：
+   - `lastAttemptAt`
+   - `lastOutcome`（`started|success|failed|no_historical`）
+   - `lastTrigger`
+   - `messageCountAtAttempt`
+3. 判定规则（仅 `history_empty` 生效）：
+   - 上次 `success`：本 session 不再自动 bootstrap once。
+   - 上次失败但有新消息：允许立即重试。
+   - 上次失败且无新消息：进入 cooldown（默认 120s，可由 `FINGER_BOOTSTRAP_ONCE_RETRY_COOLDOWN_MS` 覆盖）。
+
+`history_context_zero` 仍保持强制重建策略，不受 once gate 限制。
+
+---
+
+## 1.6 Session 生命周期：禁止全局 cwd 切换（2026-04-02）
+
+`SessionManager.setCurrentSession()` 不再调用 `process.chdir()`。
+
+原因：
+- `process.cwd` 是进程级共享状态，在并发路由下会引入 session 串扰风险。
+- Session 切换应只更新 session state，不得影响其他并发请求。
+
+执行路径要求：
+- 工具执行必须显式携带 `cwd/projectPath`（来自 session/workspace），禁止依赖全局 cwd 作为真源。
+
+---
+
 ## 1.1 不可破坏约束（硬规则）
 
 ### 最小历史单位 = 一个完整 task

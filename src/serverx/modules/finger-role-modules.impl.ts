@@ -69,6 +69,114 @@ type HistoryMessage = {
 
 const INDEXED_HISTORY_MISSING_RATIO_REBUILD_THRESHOLD = 0.2;
 const INDEXED_HISTORY_MISSING_COUNT_REBUILD_THRESHOLD = 64;
+const BOOTSTRAP_ONCE_RETRY_COOLDOWN_MS = Number.isFinite(Number(process.env.FINGER_BOOTSTRAP_ONCE_RETRY_COOLDOWN_MS))
+  ? Math.max(10_000, Math.floor(Number(process.env.FINGER_BOOTSTRAP_ONCE_RETRY_COOLDOWN_MS)))
+  : 120_000;
+
+type BootstrapOnceOutcome = 'started' | 'success' | 'failed' | 'no_historical';
+type BootstrapTrigger = 'history_empty' | 'history_context_zero' | 'none';
+
+interface PersistedBootstrapOnceAgentState {
+  lastAttemptAt: string;
+  lastOutcome: BootstrapOnceOutcome;
+  lastTrigger: BootstrapTrigger;
+  messageCountAtAttempt: number;
+}
+
+interface PersistedBootstrapOnceState {
+  version: 1;
+  byAgent: Record<string, PersistedBootstrapOnceAgentState>;
+}
+
+function parsePersistedBootstrapOnceState(
+  sessionContext: Record<string, unknown> | undefined,
+): PersistedBootstrapOnceState | null {
+  const raw = sessionContext?.contextBuilderBootstrapOnceState;
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  const value = raw as Record<string, unknown>;
+  const byAgentRaw = value.byAgent;
+  if (!byAgentRaw || typeof byAgentRaw !== 'object' || Array.isArray(byAgentRaw)) return null;
+  const byAgent: Record<string, PersistedBootstrapOnceAgentState> = {};
+  for (const [agentId, candidate] of Object.entries(byAgentRaw as Record<string, unknown>)) {
+    if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate)) continue;
+    const state = candidate as Record<string, unknown>;
+    const lastAttemptAt = typeof state.lastAttemptAt === 'string' ? state.lastAttemptAt.trim() : '';
+    const lastOutcome = state.lastOutcome === 'started'
+      || state.lastOutcome === 'success'
+      || state.lastOutcome === 'failed'
+      || state.lastOutcome === 'no_historical'
+      ? state.lastOutcome
+      : undefined;
+    const lastTrigger = state.lastTrigger === 'history_empty'
+      || state.lastTrigger === 'history_context_zero'
+      || state.lastTrigger === 'none'
+      ? state.lastTrigger
+      : undefined;
+    const messageCountAtAttempt = typeof state.messageCountAtAttempt === 'number' && Number.isFinite(state.messageCountAtAttempt)
+      ? Math.max(0, Math.floor(state.messageCountAtAttempt))
+      : undefined;
+    if (!lastAttemptAt || !lastOutcome || !lastTrigger || messageCountAtAttempt === undefined) continue;
+    byAgent[agentId] = {
+      lastAttemptAt,
+      lastOutcome,
+      lastTrigger,
+      messageCountAtAttempt,
+    };
+  }
+  return {
+    version: 1,
+    byAgent,
+  };
+}
+
+function shouldAllowBootstrapFromPersistedState(
+  state: PersistedBootstrapOnceState | null,
+  agentId: string,
+  sessionMessageCount: number,
+  nowMs: number,
+  cooldownMs = BOOTSTRAP_ONCE_RETRY_COOLDOWN_MS,
+): { allowed: boolean; reason: string; previous?: PersistedBootstrapOnceAgentState } {
+  const previous = state?.byAgent?.[agentId];
+  if (!previous) return { allowed: true, reason: 'no_previous_attempt' };
+  if (previous.lastOutcome === 'success') {
+    return { allowed: false, reason: 'already_succeeded', previous };
+  }
+  if (sessionMessageCount > previous.messageCountAtAttempt) {
+    return { allowed: true, reason: 'new_messages_since_attempt', previous };
+  }
+  const lastAttemptMs = Date.parse(previous.lastAttemptAt);
+  if (Number.isFinite(lastAttemptMs) && nowMs - lastAttemptMs >= cooldownMs) {
+    return { allowed: true, reason: 'retry_cooldown_elapsed', previous };
+  }
+  return { allowed: false, reason: 'retry_cooldown_active', previous };
+}
+
+function persistBootstrapOnceState(
+  runtime: RuntimeFacade,
+  sessionId: string,
+  sessionContext: Record<string, unknown> | undefined,
+  agentId: string,
+  trigger: BootstrapTrigger,
+  outcome: BootstrapOnceOutcome,
+  sessionMessageCount: number,
+): void {
+  const previous = parsePersistedBootstrapOnceState(sessionContext);
+  const byAgent = {
+    ...(previous?.byAgent ?? {}),
+    [agentId]: {
+      lastAttemptAt: new Date().toISOString(),
+      lastOutcome: outcome,
+      lastTrigger: trigger,
+      messageCountAtAttempt: Math.max(0, Math.floor(sessionMessageCount)),
+    },
+  };
+  runtime.updateSessionContext(sessionId, {
+    contextBuilderBootstrapOnceState: {
+      version: 1,
+      byAgent,
+    },
+  });
+}
 
 function isEffectivelyEmptyHistoryForBootstrap(messages: HistoryMessage[]): boolean {
   if (!Array.isArray(messages) || messages.length === 0) return true;
@@ -628,8 +736,22 @@ export async function registerFingerRoleModules(
         const bootstrapPolicy = resolveBootstrapRebuildPolicy(historyEmpty, hasHistoryContext);
         const canAutoBootstrap = bootstrapPolicy.shouldBootstrap;
         const bootstrapTrigger = bootstrapPolicy.trigger;
-        const bootstrapAllowedByOnceGuard = !bootstrapPolicy.enforceOnceGuard
-          || shouldRunContextBuilderBootstrapOnce(sessionId, agentId);
+        const persistedBootstrapState = parsePersistedBootstrapOnceState(
+          (session.context ?? {}) as Record<string, unknown>,
+        );
+        const persistedBootstrapDecision = bootstrapPolicy.enforceOnceGuard
+          ? shouldAllowBootstrapFromPersistedState(
+            persistedBootstrapState,
+            agentId,
+            sessionMessages.length,
+            Date.now(),
+          )
+          : { allowed: true, reason: 'not_enforced' };
+        let bootstrapAllowedByInMemoryGuard = true;
+        if (bootstrapPolicy.enforceOnceGuard && persistedBootstrapDecision.allowed) {
+          bootstrapAllowedByInMemoryGuard = shouldRunContextBuilderBootstrapOnce(sessionId, agentId);
+        }
+        const bootstrapAllowedByOnceGuard = persistedBootstrapDecision.allowed && bootstrapAllowedByInMemoryGuard;
         if (canAutoBootstrap) {
           logger.module('finger-role-modules').info('Context bootstrap decision', {
             roleId: role.id,
@@ -640,9 +762,22 @@ export async function registerFingerRoleModules(
             sessionMessageCount: sessionMessages.length,
             enforceOnceGuard: bootstrapPolicy.enforceOnceGuard,
             bootstrapAllowedByOnceGuard,
+            bootstrapAllowedByPersistedGuard: persistedBootstrapDecision.allowed,
+            persistedGuardReason: persistedBootstrapDecision.reason,
+            persistedGuardPreviousOutcome: persistedBootstrapDecision.previous?.lastOutcome,
+            persistedGuardPreviousAttemptAt: persistedBootstrapDecision.previous?.lastAttemptAt,
           });
         }
         if (canAutoBootstrap && bootstrapAllowedByOnceGuard) {
+          persistBootstrapOnceState(
+            runtime,
+            sessionId,
+            (session.context ?? {}) as Record<string, unknown>,
+            agentId,
+            bootstrapTrigger,
+            'started',
+            sessionMessages.length,
+          );
           const configuredBudget = Number.isFinite(settings.historyBudgetTokens) && settings.historyBudgetTokens > 0
             ? Math.floor(settings.historyBudgetTokens)
             : 20000;
@@ -700,6 +835,15 @@ export async function registerFingerRoleModules(
             );
           } catch (error) {
             resetContextBuilderBootstrapOnce(sessionId, agentId);
+            persistBootstrapOnceState(
+              runtime,
+              sessionId,
+              (runtime.getSession(sessionId)?.context ?? session.context ?? {}) as Record<string, unknown>,
+              agentId,
+              bootstrapTrigger,
+              'failed',
+              sessionMessages.length,
+            );
             logger.module('finger-role-modules').warn('Bootstrap rebuild failed, will retry on next turn', {
               roleId: role.id,
               sessionId,
@@ -728,6 +872,15 @@ export async function registerFingerRoleModules(
             });
           }
           if (!bootstrapped) {
+            persistBootstrapOnceState(
+              runtime,
+              sessionId,
+              (runtime.getSession(sessionId)?.context ?? session.context ?? {}) as Record<string, unknown>,
+              agentId,
+              bootstrapTrigger,
+              'failed',
+              sessionMessages.length,
+            );
             const mapped = augmentHistoryWithContinuityAnchors(mapRawSessionMessages(sessionMessages, limit, {
               contextBuilderHistorySource: 'session_view_passthrough',
               contextBuilderBypassed: true,
@@ -781,6 +934,15 @@ export async function registerFingerRoleModules(
                 limit,
               );
               if (crossSessionFallback.length > 0) {
+                persistBootstrapOnceState(
+                  runtime,
+                  sessionId,
+                  (runtime.getSession(sessionId)?.context ?? session.context ?? {}) as Record<string, unknown>,
+                  agentId,
+                  bootstrapTrigger,
+                  'success',
+                  sessionMessages.length,
+                );
                 logger.module('finger-role-modules').warn('Bootstrap returned no historical_memory; apply cross-session historical fallback', {
                   roleId: role.id,
                   sessionId,
@@ -798,6 +960,15 @@ export async function registerFingerRoleModules(
               }
             }
             resetContextBuilderBootstrapOnce(sessionId, agentId);
+            persistBootstrapOnceState(
+              runtime,
+              sessionId,
+              (runtime.getSession(sessionId)?.context ?? session.context ?? {}) as Record<string, unknown>,
+              agentId,
+              bootstrapTrigger,
+              'no_historical',
+              sessionMessages.length,
+            );
             logger.module('finger-role-modules').warn('Bootstrap rebuild returned no historical_memory messages; retry bootstrap on next turn', {
               roleId: role.id,
               sessionId,
@@ -831,6 +1002,15 @@ export async function registerFingerRoleModules(
               pinnedMessageIds.length > 0 ? { pinnedMessageIds } : undefined,
             );
             persistContextBuilderHistoryIndex(runtime, sessionId, indexSnapshot);
+            persistBootstrapOnceState(
+              runtime,
+              sessionId,
+              (runtime.getSession(sessionId)?.context ?? session.context ?? {}) as Record<string, unknown>,
+              agentId,
+              bootstrapTrigger,
+              'success',
+              sessionMessages.length,
+            );
             logger.module('finger-role-modules').info('Applied one-time bootstrap context rebuild', {
               roleId: role.id,
               sessionId,
@@ -850,6 +1030,15 @@ export async function registerFingerRoleModules(
           }
 
           resetContextBuilderBootstrapOnce(sessionId, agentId);
+          persistBootstrapOnceState(
+            runtime,
+            sessionId,
+            (runtime.getSession(sessionId)?.context ?? session.context ?? {}) as Record<string, unknown>,
+            agentId,
+            bootstrapTrigger,
+            'failed',
+            sessionMessages.length,
+          );
           logger.module('finger-role-modules').debug('Bootstrap rebuild yielded empty history, fallback to session-view passthrough', { roleId: role.id, sessionId });
         } else if (!canAutoBootstrap) {
           logger.module('finger-role-modules').debug('Skip bootstrap rebuild because session history is not empty', {
@@ -862,6 +1051,9 @@ export async function registerFingerRoleModules(
             roleId: role.id,
             sessionId,
             trigger: bootstrapTrigger,
+            persistedGuardReason: persistedBootstrapDecision.reason,
+            persistedGuardPreviousOutcome: persistedBootstrapDecision.previous?.lastOutcome,
+            persistedGuardPreviousAttemptAt: persistedBootstrapDecision.previous?.lastAttemptAt,
           });
         }
         const mapped = augmentHistoryWithContinuityAnchors(mapRawSessionMessages(sessionMessages, limit, {
@@ -1014,4 +1206,6 @@ export const __fingerRoleModulesInternals = {
   resolveBootstrapPrompt,
   keepDigestOnlyHistoricalMessages,
   buildHistoricalFallbackFromSeed,
+  parsePersistedBootstrapOnceState,
+  shouldAllowBootstrapFromPersistedState,
 };
