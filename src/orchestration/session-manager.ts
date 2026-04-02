@@ -581,6 +581,7 @@ export class SessionManager {
       toolOutput?: unknown;
       tags?: string[];
       topic?: string;
+      timestamp?: string;
       metadata?: Record<string, unknown>;
     }
   ): Promise<SessionMessage | null> {
@@ -588,11 +589,18 @@ export class SessionManager {
     if (!session) return null;
 
     const messageId = `msg-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const requestedTimestamp = typeof metadata?.timestamp === 'string' && metadata.timestamp.trim().length > 0
+      ? metadata.timestamp.trim()
+      : '';
+    const normalizedTimestamp = requestedTimestamp.length > 0
+      ? requestedTimestamp
+      : new Date().toISOString();
+
     const message: SessionMessage = {
       id: messageId,
       role,
       content,
-      timestamp: new Date().toISOString(),
+      timestamp: normalizedTimestamp,
       ...metadata,
       attachments: metadata?.attachments,
     };
@@ -691,7 +699,18 @@ export class SessionManager {
     if (!Array.isArray(session.messages)) {
       session.messages = [];
     }
-    session.messages.push(message);
+    const lastMessage = session.messages.length > 0 ? session.messages[session.messages.length - 1] : undefined;
+    if (!lastMessage || typeof lastMessage.timestamp !== 'string' || lastMessage.timestamp <= message.timestamp) {
+      session.messages.push(message);
+    } else {
+      let insertAt = session.messages.length;
+      while (insertAt > 0) {
+        const prev = session.messages[insertAt - 1];
+        if (typeof prev.timestamp !== 'string' || prev.timestamp <= message.timestamp) break;
+        insertAt -= 1;
+      }
+      session.messages.splice(insertAt, 0, message);
+    }
 
     // Update ledger pointers
     session.originalEndIndex = (session.originalEndIndex || 0) + 1;

@@ -440,11 +440,15 @@ export function createChannelBridgeHubRoute(deps: ChannelBridgeHubRouteDeps) {
         return false;
       })();
       if (!dispatchFailed) {
+        const inboundTimestampIso = Number.isFinite(channelMsg.timestamp)
+          ? new Date(channelMsg.timestamp).toISOString()
+          : new Date().toISOString();
         // 延后写盘：仅在请求成功发往目标模块后才持久化用户输入。
         // 若本轮输入在发送前/发送中失败，则不写盘，避免下次恢复污染会话。
         void sessionManager.addMessage(fixedSessionId, 'user', enrichedContent, {
           agentId: targetAgentId,
           type: 'text',
+          timestamp: inboundTimestampIso,
           metadata: {
             channelId: channelMsg.channelId,
             senderId: channelMsg.senderId,
