@@ -529,7 +529,13 @@ export class SessionManager {
   setCurrentSession(sessionId: string): boolean {
     if (!this.sessions.has(sessionId)) return false;
     const session = this.sessions.get(sessionId)!;
-    if (!this.applySessionCwd(session)) return false;
+    const cwdApplied = this.applySessionCwd(session);
+    if (!cwdApplied) {
+      log.warn('setCurrentSession fallback to state-only switch (cwd apply failed)', {
+        sessionId,
+        projectPath: session.projectPath,
+      });
+    }
     this.currentSessionId = sessionId;
     session.lastAccessedAt = new Date().toISOString();
     this.saveSession(session);
@@ -925,6 +931,11 @@ export class SessionManager {
       return this.viewMessagesToSessionMessages(msgs.slice(-limit));
     }
 
+    const hydrated = this.readLedgerSessionMessagesSync(session, limit);
+    if (hydrated.length > 0) {
+      return hydrated;
+    }
+
     return [];
   }
 
@@ -951,6 +962,11 @@ export class SessionManager {
         return this.viewMessagesToSessionMessages(msgs);
       }
       return this.viewMessagesToSessionMessages(msgs.slice(-limit));
+    }
+
+    const hydrated = this.readLedgerSessionMessagesSync(session, limit);
+    if (hydrated.length > 0) {
+      return hydrated;
     }
     return [];
   }
@@ -1212,11 +1228,6 @@ export class SessionManager {
       return undefined;
     }
 
-    // Runtime strict mode: no ledger replay fallback for prompt extraction.
-    void agentId;
-    return undefined;
-
-    /*
     const messages = this.readLedgerSessionMessagesSync(session, 0, agentId);
     for (let index = messages.length - 1; index >= 0; index -= 1) {
       const message = messages[index];
@@ -1225,7 +1236,6 @@ export class SessionManager {
       }
     }
     return undefined;
-    */
   }
 
   private getLedgerMessageCountSync(session: Session): number {
@@ -1238,55 +1248,86 @@ export class SessionManager {
     explicitAgentId?: string,
   ): SessionMessage[] {
     const context = session.context ?? {};
-    const agentId = explicitAgentId
-      ?? (typeof context.ownerAgentId === 'string' && context.ownerAgentId.trim().length > 0
-        ? context.ownerAgentId
-        : SYSTEM_AGENT_ID);
     const rootDir = this.resolveSessionsRoot(session);
-    const ledgerPath = path.join(rootDir, session.id, agentId, 'main', 'context-ledger.jsonl');
-    if (!fs.existsSync(ledgerPath)) return [];
+    const ownerAgentId = typeof context.ownerAgentId === 'string' && context.ownerAgentId.trim().length > 0
+      ? context.ownerAgentId.trim()
+      : '';
+    const preferredAgentIds = Array.from(new Set([
+      typeof explicitAgentId === 'string' ? explicitAgentId.trim() : '',
+      ownerAgentId,
+      SYSTEM_AGENT_ID,
+    ].filter((item) => item.length > 0)));
 
+    const readFromLedgerPath = (ledgerPath: string): SessionMessage[] => {
+      if (!fs.existsSync(ledgerPath)) return [];
+      try {
+        const lines = fs.readFileSync(ledgerPath, 'utf-8')
+          .split('\n')
+          .map((line) => line.trim())
+          .filter((line) => line.length > 0);
+        const parsed = lines
+          .flatMap((line) => {
+            try {
+              return [JSON.parse(line) as Record<string, unknown>];
+            } catch {
+              return [];
+            }
+          })
+          .filter((entry) => entry.event_type === 'session_message')
+          .map((entry) => {
+            const payload = typeof entry.payload === 'object' && entry.payload !== null
+              ? entry.payload as Record<string, unknown>
+              : {};
+            const role = typeof payload.role === 'string'
+              ? payload.role as SessionMessage['role']
+              : 'user';
+            const content = typeof payload.content === 'string' ? payload.content : '';
+            const timestamp = typeof entry.timestamp_iso === 'string'
+              ? entry.timestamp_iso
+              : new Date().toISOString();
+            const messageId = typeof payload.message_id === 'string'
+              ? payload.message_id
+              : (typeof entry.id === 'string' ? entry.id : `ledger-${Date.now()}`);
+            return {
+              id: messageId,
+              role,
+              content,
+              timestamp,
+              ...(Array.isArray(payload.attachments) ? { attachments: payload.attachments as Attachment[] } : {}),
+              ...(typeof payload.metadata === 'object' && payload.metadata !== null ? { metadata: payload.metadata as Record<string, unknown> } : {}),
+            } as SessionMessage;
+          });
+        if (!Number.isFinite(limit) || limit <= 0) return parsed;
+        return parsed.slice(-limit);
+      } catch (error) {
+        clog.error('[SessionManager] Failed to read ledger messages sync:', error);
+        return [];
+      }
+    };
+
+    for (const agentId of preferredAgentIds) {
+      const ledgerPath = path.join(rootDir, session.id, agentId, 'main', 'context-ledger.jsonl');
+      const hit = readFromLedgerPath(ledgerPath);
+      if (hit.length > 0) return hit;
+    }
+
+    const sessionRoot = path.join(rootDir, session.id);
+    if (!fs.existsSync(sessionRoot)) return [];
     try {
-      const lines = fs.readFileSync(ledgerPath, 'utf-8')
-        .split('\n')
-        .map((line) => line.trim())
-        .filter((line) => line.length > 0);
-      const parsed = lines
-        .flatMap((line) => {
-          try {
-            return [JSON.parse(line) as Record<string, unknown>];
-          } catch {
-            return [];
-          }
-        })
-        .filter((entry) => entry.event_type === 'session_message')
-        .map((entry) => {
-          const payload = typeof entry.payload === 'object' && entry.payload !== null
-            ? entry.payload as Record<string, unknown>
-            : {};
-          const role = typeof payload.role === 'string'
-            ? payload.role as SessionMessage['role']
-            : 'user';
-          const content = typeof payload.content === 'string' ? payload.content : '';
-          const timestamp = typeof entry.timestamp_iso === 'string'
-            ? entry.timestamp_iso
-            : new Date().toISOString();
-          const messageId = typeof payload.message_id === 'string'
-            ? payload.message_id
-            : (typeof entry.id === 'string' ? entry.id : `ledger-${Date.now()}`);
-          return {
-            id: messageId,
-            role,
-            content,
-            timestamp,
-            ...(Array.isArray(payload.attachments) ? { attachments: payload.attachments as Attachment[] } : {}),
-            ...(typeof payload.metadata === 'object' && payload.metadata !== null ? { metadata: payload.metadata as Record<string, unknown> } : {}),
-          } as SessionMessage;
-        });
-      if (!Number.isFinite(limit) || limit <= 0) return parsed;
-      return parsed.slice(-limit);
+      const agentDirs = fs.readdirSync(sessionRoot, { withFileTypes: true })
+        .filter((item) => item.isDirectory())
+        .map((item) => item.name);
+      let best: SessionMessage[] = [];
+      for (const agentId of agentDirs) {
+        const ledgerPath = path.join(sessionRoot, agentId, 'main', 'context-ledger.jsonl');
+        const hit = readFromLedgerPath(ledgerPath);
+        if (hit.length > best.length) {
+          best = hit;
+        }
+      }
+      return best;
     } catch (error) {
-      clog.error('[SessionManager] Failed to read ledger messages sync:', error);
+      clog.error('[SessionManager] Failed to scan session ledger roots:', error);
       return [];
     }
   }

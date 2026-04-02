@@ -82,7 +82,16 @@ function hasHistoricalContextZone(messages: HistoryMessage[]): boolean {
     const metadata = item.metadata;
     if (!metadata || typeof metadata !== 'object') return false;
     const zone = typeof metadata.contextZone === 'string' ? metadata.contextZone.trim() : '';
-    return zone === 'historical_memory';
+    if (zone === 'historical_memory') return true;
+    // zone 丢失时，仍允许通过 compactDigest / rebuild source 判定历史上下文存在，
+    // 避免误判成 history_context_zero 并反复触发 bootstrap。
+    if (metadata.compactDigest === true) return true;
+    const historySource = typeof metadata.contextBuilderHistorySource === 'string'
+      ? metadata.contextBuilderHistorySource.trim()
+      : '';
+    if (historySource.startsWith('context_builder_')) return true;
+    if (historySource === 'cross_session_seed_fallback') return true;
+    return false;
   });
 }
 
@@ -1000,6 +1009,7 @@ export const __fingerRoleModulesInternals = {
   extractRecentUserInputs,
   augmentHistoryWithContinuityAnchors,
   isEffectivelyEmptyHistoryForBootstrap,
+  hasHistoricalContextZone,
   resolveBootstrapRebuildPolicy,
   resolveBootstrapPrompt,
   keepDigestOnlyHistoricalMessages,

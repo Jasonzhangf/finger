@@ -551,9 +551,26 @@ export function registerMessageRoutes(app: Express, deps: MessageRouteDeps): voi
       };
     }
     requestMessage = withSessionWorkspaceDefaults(requestMessage, requestSessionId, deps.sessionWorkspaces);
-    if (requestSessionId) {
-      deps.runtime.setCurrentSession(requestSessionId);
+    const requestSession = requestSessionId
+      ? deps.sessionManager.getSession(requestSessionId)
+      : null;
+    const requestTargetsHeartbeatControlSession = isHeartbeatControlSession(
+      requestSession
+        ? {
+            id: requestSession.id,
+            context: isObjectRecord(requestSession.context)
+              ? requestSession.context
+              : undefined,
+          }
+        : null,
+    );
+    if (requestSessionId && !requestTargetsHeartbeatControlSession) {
       deps.runtime.bindAgentSession(targetId, requestSessionId);
+    } else if (requestSessionId && requestTargetsHeartbeatControlSession) {
+      log.debug('Skip runtime session binding for heartbeat/control session', {
+        sessionId: requestSessionId,
+        target: targetId,
+      });
     }
     if (requestSessionId) {
       const transientPolicy = shouldUseTransientLedgerForInboundMessage(requestMessage);

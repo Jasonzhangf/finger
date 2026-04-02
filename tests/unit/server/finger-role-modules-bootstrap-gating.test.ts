@@ -1,8 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import { __fingerRoleModulesInternals } from '../../../src/server/modules/finger-role-modules';
 
-const { isEffectivelyEmptyHistoryForBootstrap, resolveBootstrapRebuildPolicy } = __fingerRoleModulesInternals as {
+const { isEffectivelyEmptyHistoryForBootstrap, hasHistoricalContextZone, resolveBootstrapRebuildPolicy } = __fingerRoleModulesInternals as {
   isEffectivelyEmptyHistoryForBootstrap: (messages: Array<{ role: string; content: string }>) => boolean;
+  hasHistoricalContextZone: (
+    messages: Array<{ id: string; role: 'user' | 'assistant' | 'system'; content: string; timestamp: string; metadata?: Record<string, unknown> }>
+  ) => boolean;
   resolveBootstrapRebuildPolicy: (
     historyEmpty: boolean,
     hasHistoryContext: boolean,
@@ -49,6 +52,19 @@ describe('finger-role-modules bootstrap gating', () => {
       enforceOnceGuard: false,
       trigger: 'none',
     });
+  });
+
+  it('detects historical context from compactDigest metadata even without contextZone', () => {
+    const hasHistorical = hasHistoricalContextZone([
+      {
+        id: 'h-1',
+        role: 'assistant',
+        content: 'digest history',
+        timestamp: '2026-03-28T00:00:00.000Z',
+        metadata: { compactDigest: true },
+      },
+    ]);
+    expect(hasHistorical).toBe(true);
   });
 
   it('keeps historical messages when no compactDigest is available to avoid history=0 loop', () => {

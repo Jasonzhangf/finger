@@ -341,8 +341,19 @@ function extractDispatchId(metadata: Record<string, unknown> | undefined): strin
 function isReasoningStopBoundary(message: TaskMessage): boolean {
   const metadata = message.metadata;
   if (metadata && typeof metadata === 'object') {
-    const toolName = typeof metadata.toolName === 'string' ? metadata.toolName.trim() : '';
-    if (toolName === 'reasoning.stop') return true;
+    const directTool = typeof metadata.toolName === 'string'
+      ? metadata.toolName.trim()
+      : (typeof metadata.tool === 'string' ? metadata.tool.trim() : '');
+    if (directTool === 'reasoning.stop') return true;
+    const event = metadata.event;
+    if (event && typeof event === 'object') {
+      const eventTool = typeof (event as Record<string, unknown>).toolName === 'string'
+        ? ((event as Record<string, unknown>).toolName as string).trim()
+        : (typeof (event as Record<string, unknown>).tool === 'string'
+          ? ((event as Record<string, unknown>).tool as string).trim()
+          : '');
+      if (eventTool === 'reasoning.stop') return true;
+    }
   }
   const content = typeof message.content === 'string' ? message.content : '';
   if (!content) return false;
@@ -405,8 +416,13 @@ function groupWithoutUserBoundary(messages: TaskMessage[]): TaskBlock[] {
 function groupByTaskBoundary(entries: LedgerEntryFile[]): TaskBlock[] {
   if (entries.length === 0) return [];
 
+  const orderedEntries = [...entries].sort((a, b) => {
+    if (a.timestamp_ms !== b.timestamp_ms) return a.timestamp_ms - b.timestamp_ms;
+    return String(a.id).localeCompare(String(b.id));
+  });
+
   const messages: TaskMessage[] = [];
-  for (const entry of entries) {
+  for (const entry of orderedEntries) {
     const payload = entry.payload as Record<string, unknown>;
     const role = normalizeTaskMessageRole(payload.role);
     const content = typeof payload.content === 'string' ? payload.content : '';
@@ -586,6 +602,7 @@ function finalizeBlock(id: string, startTs: number, messages: TaskMessage[]): Ta
 function applyBudgetTruncation(
   blocks: TaskBlock[],
   targetBudget: number,
+  options?: { preferRecentForUnranked?: boolean },
 ): { included: TaskBlock[]; truncated: number } {
   if (blocks.length === 0) return { included: [], truncated: 0 };
 
@@ -600,8 +617,12 @@ function applyBudgetTruncation(
   // MEMORY.md 通常占 500-2000 tokens，保守预留 2000
   // 这个预留由调用者在上层处理
 
+  const fillCandidates = options?.preferRecentForUnranked
+    ? [...otherBlocks].reverse()
+    : otherBlocks;
+
   // 先填入非当前块（按排序顺序）
-  for (const block of otherBlocks) {
+  for (const block of fillCandidates) {
     if (budget - block.tokenCount >= 0) {
       included.push(block);
       budget -= block.tokenCount;
@@ -1662,7 +1683,10 @@ export async function buildContext(
   }
 
   // ── Step 6: 预算截断 ──
-  const { included, truncated } = applyBudgetTruncation(filteredBlocks, effectiveBudget);
+  const preferRecentForUnranked = !rankingExecuted && !embeddingRecallExecuted && !tagSelectionExecuted;
+  const { included, truncated } = applyBudgetTruncation(filteredBlocks, effectiveBudget, {
+    preferRecentForUnranked,
+  });
   const includedChronological = reorderBlocksChronologically(included);
   const includedIds = new Set(included.map((block) => block.id));
   const budgetTruncatedTasks = filteredBlocks

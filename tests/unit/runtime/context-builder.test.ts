@@ -85,6 +85,28 @@ describe('context-builder', () => {
       }
     });
 
+    it('sorts ledger entries by timestamp before task grouping', async () => {
+      const now = Date.now();
+      const setup = setupLedgerForContextBuilder('task-order-unsorted', {
+        entries: [
+          { id: 'u-2', timestamp_ms: now - 50_000, role: 'user', content: 'second user', token_count: 5, event_type: 'session_message' },
+          { id: 'a-2', timestamp_ms: now - 49_000, role: 'assistant', content: 'second reply', token_count: 5, event_type: 'session_message' },
+          { id: 'u-1', timestamp_ms: now - 70_000, role: 'user', content: 'first user', token_count: 5, event_type: 'session_message' },
+          { id: 'a-1', timestamp_ms: now - 69_000, role: 'assistant', content: 'first reply', token_count: 5, event_type: 'session_message' },
+        ],
+      });
+      try {
+        const result = await buildContext(
+          { rootDir: setup.rootDir, sessionId: setup.sessionId, agentId: setup.agentId, mode: setup.mode },
+          { targetBudget: 1_000_000, includeMemoryMd: false, enableTaskGrouping: true, buildMode: 'aggressive' },
+        );
+        const userContents = result.messages.filter((m) => m.role === 'user').map((m) => m.content);
+        expect(userContents).toEqual(['first user', 'second user']);
+      } finally {
+        rmSync(setup.rootDir, { recursive: true, force: true });
+      }
+    });
+
     it('splits task blocks by dispatch/time boundary when no user messages exist', async () => {
       const now = Date.now();
       const setup = setupLedgerForContextBuilder('system-only-boundary', {
@@ -220,6 +242,57 @@ describe('context-builder', () => {
       }
     });
 
+    it('splits task blocks on reasoning.stop tool metadata boundary', async () => {
+      const now = Date.now();
+      const setup = setupLedgerForContextBuilder('reasoning-stop-metadata-boundary');
+      const ledgerPath = join(setup.rootDir, setup.sessionId, setup.agentId, setup.mode, 'context-ledger.jsonl');
+      writeFileSync(
+        ledgerPath,
+        [
+          JSON.stringify({
+            id: 'm-1',
+            timestamp_ms: now - 90_000,
+            timestamp_iso: new Date(now - 90_000).toISOString(),
+            session_id: setup.sessionId,
+            agent_id: setup.agentId,
+            mode: setup.mode,
+            event_type: 'session_message',
+            payload: {
+              role: 'assistant',
+              content: 'tool call started',
+              token_count: 8,
+              metadata: { tool: 'reasoning.stop' },
+            },
+          }),
+          JSON.stringify({
+            id: 'm-2',
+            timestamp_ms: now - 70_000,
+            timestamp_iso: new Date(now - 70_000).toISOString(),
+            session_id: setup.sessionId,
+            agent_id: setup.agentId,
+            mode: setup.mode,
+            event_type: 'session_message',
+            payload: {
+              role: 'assistant',
+              content: 'new task work',
+              token_count: 8,
+            },
+          }),
+          '',
+        ].join('\n'),
+        'utf-8',
+      );
+      try {
+        const result = await buildContext(
+          { rootDir: setup.rootDir, sessionId: setup.sessionId, agentId: setup.agentId, mode: setup.mode },
+          { targetBudget: 1_000_000, includeMemoryMd: false, enableTaskGrouping: true, buildMode: 'aggressive' },
+        );
+        expect(result.metadata.rawTaskBlockCount).toBeGreaterThanOrEqual(2);
+      } finally {
+        rmSync(setup.rootDir, { recursive: true, force: true });
+      }
+    });
+
     it('prefers compact replacement history for historical blocks when available', async () => {
       const setup = setupLedgerForContextBuilder('compact-history-preferred');
       const compactPath = join(setup.rootDir, setup.sessionId, setup.agentId, setup.mode, 'compact-memory.jsonl');
@@ -297,6 +370,44 @@ describe('context-builder', () => {
         expect(result.ok).toBe(true);
         expect(result.messages.some((message) => message.content.includes('Patched login flow and validated with tests'))).toBe(true);
         expect(result.messages.some((message) => message.content === 'I will fix the login bug now.')).toBe(false);
+      } finally {
+        rmSync(setup.rootDir, { recursive: true, force: true });
+      }
+    });
+
+    it('prefers recent historical tasks when no ranking is available under tight budget', async () => {
+      const now = Date.now();
+      const setup = setupLedgerForContextBuilder('recent-priority-budget', {
+        entries: [
+          { id: 'u-1', timestamp_ms: now - 80_000, role: 'user', content: 'task-1', token_count: 5, event_type: 'session_message' },
+          { id: 'a-1', timestamp_ms: now - 79_000, role: 'assistant', content: 'done-1', token_count: 5, event_type: 'session_message' },
+          { id: 'u-2', timestamp_ms: now - 60_000, role: 'user', content: 'task-2', token_count: 5, event_type: 'session_message' },
+          { id: 'a-2', timestamp_ms: now - 59_000, role: 'assistant', content: 'done-2', token_count: 5, event_type: 'session_message' },
+          { id: 'u-3', timestamp_ms: now - 40_000, role: 'user', content: 'task-3', token_count: 5, event_type: 'session_message' },
+          { id: 'a-3', timestamp_ms: now - 39_000, role: 'assistant', content: 'done-3', token_count: 5, event_type: 'session_message' },
+          { id: 'u-4', timestamp_ms: now - 20_000, role: 'user', content: 'task-4', token_count: 5, event_type: 'session_message' },
+          { id: 'a-4', timestamp_ms: now - 19_000, role: 'assistant', content: 'done-4', token_count: 5, event_type: 'session_message' },
+        ],
+      });
+
+      try {
+        const result = await buildContext(
+          { rootDir: setup.rootDir, sessionId: setup.sessionId, agentId: setup.agentId, mode: setup.mode },
+          {
+            targetBudget: 20, // historical budget fill takes 2 blocks, then current block is force-included
+            includeMemoryMd: false,
+            enableTaskGrouping: true,
+            buildMode: 'aggressive',
+            enableModelRanking: false,
+            enableEmbeddingRecall: false,
+          },
+        );
+        const historicalUserContents = result.messages
+          .filter((m) => m.contextZone === 'historical_memory' && m.role === 'user')
+          .map((m) => m.content);
+        expect(historicalUserContents).toContain('task-3');
+        expect(historicalUserContents).toContain('task-2');
+        expect(historicalUserContents).not.toContain('task-1');
       } finally {
         rmSync(setup.rootDir, { recursive: true, force: true });
       }
