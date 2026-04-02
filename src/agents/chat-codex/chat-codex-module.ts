@@ -27,6 +27,7 @@ import {
   evaluateControlHooks,
   parseControlBlockFromReply,
   resolveControlBlockPolicy,
+  shouldHoldStopByControlBlock,
 } from '../../common/control-block.js';
 import {
   AUTONOMOUS_WORK_SECTION,
@@ -1470,11 +1471,11 @@ export function createChatCodexModule(
         : runResult.reply;
       const controlGateHold = controlPolicy.enabled
         && controlPolicy.requireOnStop
-        && stopReason === 'stop'
-        && (
-          !controlParsed.valid
-          || controlHooks.holdStop
-        );
+        && shouldHoldStopByControlBlock({
+          finishReasonStop: stopReason === 'stop',
+          parsed: controlParsed,
+          hooks: controlHooks,
+        });
 
       safeNotifyLoopEvent(mergedConfig.onLoopEvent, {
         sessionId,

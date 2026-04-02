@@ -51,6 +51,44 @@ describe('control-block', () => {
     expect(parsed.issues).toContain('control_block_missing');
   });
 
+  it('parses generic json fence control block and strips it from user-facing text', () => {
+    const raw = [
+      'Root cause found.',
+      '',
+      '```json',
+      JSON.stringify({
+        schema_version: '1.3',
+        task_completed: false,
+        evidence_ready: true,
+        needs_user_input: true,
+        has_blocker: true,
+        dispatch_required: false,
+        review_required: false,
+        wait: { enabled: false, seconds: 0, reason: '' },
+        user_signal: { negative_score: 0, profile_update_required: false, why: '' },
+        tags: ['weibo', 'debug'],
+        self_eval: { score: 20, confidence: 60, goal_gap: 'need fix', why: 'blocked by env' },
+        anti_patterns: [],
+        learning: {
+          did_right: [],
+          did_wrong: [],
+          repeated_wrong: [],
+          flow_patch: { required: false, project_scope: '', changes: [] },
+          memory_patch: { required: false, project_scope: '', long_term_items: [], short_term_items: [] },
+          user_profile_patch: { required: false, items: [], sensitivity: 'normal' },
+        },
+      }, null, 2),
+      '```',
+    ].join('\n');
+
+    const parsed = parseControlBlockFromReply(raw);
+    expect(parsed.present).toBe(true);
+    expect(parsed.valid).toBe(true);
+    expect(parsed.humanResponse).toBe('Root cause found.');
+    expect(parsed.controlBlock?.task_completed).toBe(false);
+    expect(parsed.controlBlock?.needs_user_input).toBe(true);
+  });
+
   it('normalizes fields and preserves unknown extension keys', () => {
     const normalized = normalizeControlBlock({
       schema_version: '1.2',
@@ -123,7 +161,7 @@ describe('control-block', () => {
     const defaults = resolveControlBlockPolicy();
     expect(defaults.enabled).toBe(true);
     expect(defaults.promptInjectionEnabled).toBe(true);
-    expect(defaults.requireOnStop).toBe(false);
+    expect(defaults.requireOnStop).toBe(true);
     expect(defaults.maxAutoContinueTurns).toBe(1);
 
     const strict = resolveControlBlockPolicy({

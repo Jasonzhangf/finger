@@ -81,6 +81,12 @@ export interface ControlHookEvaluation {
   holdStop: boolean;
 }
 
+export interface ControlStopDecisionInput {
+  finishReasonStop: boolean;
+  parsed: ControlBlockParseResult;
+  hooks: ControlHookEvaluation;
+}
+
 const REQUIRED_BASE_KEYS = [
   'schema_version',
   'task_completed',
@@ -151,8 +157,115 @@ function extractLastControlFence(rawReply: string): { blockText: string; strippe
   };
 }
 
+function extractAllGenericJsonFences(rawReply: string): Array<{ blockText: string; strippedReply: string }> {
+  const pattern = /```(?:json)?\s*([\s\S]*?)```/gi;
+  const results: Array<{ blockText: string; strippedReply: string }> = [];
+  let match: RegExpExecArray | null = null;
+  while ((match = pattern.exec(rawReply)) !== null) {
+    const matchedText = match[0] ?? '';
+    const blockText = (match[1] ?? '').trim();
+    const index = typeof match.index === 'number' ? match.index : -1;
+    if (index < 0 || blockText.length === 0) continue;
+    const stripped = `${rawReply.slice(0, index)}${rawReply.slice(index + matchedText.length)}`.trim();
+    results.push({ blockText, strippedReply: stripped });
+  }
+  return results;
+}
+
+function extractTrailingJsonObject(rawReply: string): { blockText: string; strippedReply: string } | undefined {
+  const source = rawReply.trimEnd();
+  const end = source.lastIndexOf('}');
+  if (end < 0) return undefined;
+
+  let inString = false;
+  let escaped = false;
+  let depth = 0;
+  let start = -1;
+  for (let index = end; index >= 0; index -= 1) {
+    const ch = source[index];
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+    if (ch === '\\') {
+      escaped = true;
+      continue;
+    }
+    if (ch === '"') {
+      inString = !inString;
+      continue;
+    }
+    if (inString) continue;
+    if (ch === '}') {
+      depth += 1;
+      continue;
+    }
+    if (ch === '{') {
+      depth -= 1;
+      if (depth === 0) {
+        start = index;
+        break;
+      }
+    }
+  }
+
+  if (start < 0 || start >= end) return undefined;
+  const blockText = source.slice(start, end + 1).trim();
+  if (blockText.length === 0) return undefined;
+  const prefix = source.slice(0, start).trimEnd();
+  const suffix = source.slice(end + 1).trim();
+  const strippedReply = [prefix, suffix].filter((item) => item.length > 0).join('\n').trim();
+  return { blockText, strippedReply };
+}
+
+function looksLikeControlBlockCandidate(parsedObject: Record<string, unknown>): boolean {
+  if (asRecord(parsedObject.control_block)) return true;
+  const requiredHints = [
+    'schema_version',
+    'task_completed',
+    'evidence_ready',
+    'needs_user_input',
+    'has_blocker',
+    'dispatch_required',
+    'review_required',
+    'wait',
+    'user_signal',
+    'tags',
+    'self_eval',
+    'anti_patterns',
+    'learning',
+  ];
+  const hitCount = requiredHints.reduce((count, key) => (
+    Object.prototype.hasOwnProperty.call(parsedObject, key) ? count + 1 : count
+  ), 0);
+  return hitCount >= 4 && (
+    Object.prototype.hasOwnProperty.call(parsedObject, 'schema_version')
+    || Object.prototype.hasOwnProperty.call(parsedObject, 'task_completed')
+  );
+}
+
+function tryParseControlBlockCandidate(
+  blockText: string,
+  strippedReply: string,
+): ControlBlockParseResult | undefined {
+  const parsed = tryParseStructuredJson(blockText);
+  if (parsed.parsed === undefined) return undefined;
+  const parsedObject = asRecord(parsed.parsed) ?? {};
+  if (!looksLikeControlBlockCandidate(parsedObject)) return undefined;
+  const candidate = asRecord(parsedObject.control_block) ?? parsedObject;
+  const normalized = normalizeControlBlock(candidate);
+  return {
+    present: true,
+    valid: normalized.issues.length === 0 && normalized.compatible,
+    repaired: parsed.repaired,
+    humanResponse: strippedReply,
+    issues: normalized.issues,
+    controlBlock: normalized.controlBlock,
+  };
+}
+
 export function resolveControlBlockPolicy(metadata?: Record<string, unknown>): ControlBlockPolicy {
-  const requireOnStop = asBoolean(metadata?.controlBlockRequireOnStop, false);
+  const requireOnStop = asBoolean(metadata?.controlBlockRequireOnStop, true);
   const maxAutoContinueTurns = asInt(metadata?.controlBlockMaxAutoContinueTurns, 1, 0, 5);
   return {
     enabled: asBoolean(metadata?.controlBlockEnabled, true),
@@ -287,10 +400,35 @@ export function evaluateControlHooks(controlBlock: FingerControlBlock): ControlH
   };
 }
 
+export function shouldHoldStopByControlBlock(input: ControlStopDecisionInput): boolean {
+  if (!input.finishReasonStop) return false;
+  if (!input.parsed.valid) return true;
+  const controlBlock = input.parsed.controlBlock;
+  if (!controlBlock) return true;
+  if (controlBlock.needs_user_input) return false;
+  if (controlBlock.wait.enabled && controlBlock.wait.seconds > 0) return false;
+  if (controlBlock.task_completed && controlBlock.evidence_ready) return false;
+  if (input.hooks.holdStop) return true;
+  // Default strict policy: if model requested stop but task is not fully complete/evidence-ready,
+  // continue reasoning unless explicitly waiting for user or scheduled wait.
+  return true;
+}
+
 export function parseControlBlockFromReply(rawReply: string): ControlBlockParseResult {
   const normalizedReply = typeof rawReply === 'string' ? rawReply : '';
   const fenced = extractLastControlFence(normalizedReply);
   if (!fenced) {
+    const genericFences = extractAllGenericJsonFences(normalizedReply);
+    for (let index = genericFences.length - 1; index >= 0; index -= 1) {
+      const candidate = genericFences[index];
+      const parsedCandidate = tryParseControlBlockCandidate(candidate.blockText, candidate.strippedReply);
+      if (parsedCandidate) return parsedCandidate;
+    }
+    const trailing = extractTrailingJsonObject(normalizedReply);
+    if (trailing) {
+      const parsedTrailing = tryParseControlBlockCandidate(trailing.blockText, trailing.strippedReply);
+      if (parsedTrailing) return parsedTrailing;
+    }
     return {
       present: false,
       valid: false,

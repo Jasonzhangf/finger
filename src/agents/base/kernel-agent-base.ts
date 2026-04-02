@@ -42,6 +42,7 @@ import {
   evaluateControlHooks,
   parseControlBlockFromReply,
   resolveControlBlockPolicy,
+  shouldHoldStopByControlBlock,
 } from '../../common/control-block.js';
 
 export interface KernelRunContext {
@@ -1794,7 +1795,11 @@ export class KernelAgentBase {
     }
     const parsed = parseControlBlockFromReply(result.reply);
     const hooks = parsed.controlBlock ? evaluateControlHooks(parsed.controlBlock) : { hooks: [], holdStop: false };
-    const controlGateHold = isFinishReasonStop(metadata) && (!parsed.valid || hooks.holdStop);
+    const controlGateHold = shouldHoldStopByControlBlock({
+      finishReasonStop: isFinishReasonStop(metadata),
+      parsed,
+      hooks,
+    });
     return {
       ...result,
       reply: parsed.humanResponse.trim().length > 0 ? parsed.humanResponse : result.reply,
