@@ -27,6 +27,7 @@ const VALID_VERBOSITY = ['high', 'medium', 'low'];
 const VALID_REASONING_EFFORT = ['high', 'medium', 'low'];
 const VALID_REASONING_SUMMARY = ['detailed', 'medium', 'short'];
 const VALID_WEB_SEARCH = ['live', 'off'];
+const VALID_AUTONOMY_MODE = ['balanced', 'yolo'];
 
 /**
  * 验证URL格式
@@ -98,6 +99,7 @@ export interface Preferences {
   reasoningSummary: 'detailed' | 'medium' | 'short';
   verbosity: 'high' | 'medium' | 'low';
   webSearch: 'live' | 'off';
+  autonomyMode?: 'balanced' | 'yolo';
 }
 
 export interface UISettings {
@@ -167,7 +169,8 @@ const DEFAULT_USER_SETTINGS: UserSettings = {
     reasoningEffort: 'high',
     reasoningSummary: 'detailed',
     verbosity: 'medium',
-    webSearch: 'live'
+    webSearch: 'live',
+    autonomyMode: 'balanced',
   },
   ui: {
     theme: 'dark',
@@ -331,6 +334,12 @@ export function validateUserSettings(settings: any): void {
   }
   if (settings.preferences.webSearch && !VALID_WEB_SEARCH.includes(settings.preferences.webSearch)) {
     throw new Error(`Invalid settings: preferences.webSearch must be one of: ${VALID_WEB_SEARCH.join(', ')}`);
+  }
+  if (settings.preferences.autonomyMode && !VALID_AUTONOMY_MODE.includes(settings.preferences.autonomyMode)) {
+    throw new Error(`Invalid settings: preferences.autonomyMode must be one of: ${VALID_AUTONOMY_MODE.join(', ')}`);
+  }
+  if (!settings.preferences.autonomyMode) {
+    settings.preferences.autonomyMode = 'balanced';
   }
   }
 

@@ -1475,6 +1475,7 @@ export function createChatCodexModule(
           finishReasonStop: stopReason === 'stop',
           parsed: controlParsed,
           hooks: controlHooks,
+          yoloMode: controlPolicy.autonomyMode === 'yolo',
         });
 
       safeNotifyLoopEvent(mergedConfig.onLoopEvent, {

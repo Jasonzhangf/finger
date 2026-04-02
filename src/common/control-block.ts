@@ -74,6 +74,7 @@ export interface ControlBlockPolicy {
   promptInjectionEnabled: boolean;
   requireOnStop: boolean;
   maxAutoContinueTurns: number;
+  autonomyMode: 'balanced' | 'yolo';
 }
 
 export interface ControlHookEvaluation {
@@ -85,6 +86,7 @@ export interface ControlStopDecisionInput {
   finishReasonStop: boolean;
   parsed: ControlBlockParseResult;
   hooks: ControlHookEvaluation;
+  yoloMode?: boolean;
 }
 
 const REQUIRED_BASE_KEYS = [
@@ -265,13 +267,22 @@ function tryParseControlBlockCandidate(
 }
 
 export function resolveControlBlockPolicy(metadata?: Record<string, unknown>): ControlBlockPolicy {
+  const autonomyModeRaw = typeof metadata?.autonomyMode === 'string'
+    ? metadata.autonomyMode.trim().toLowerCase()
+    : '';
+  const yoloModeFromFlag = asBoolean(metadata?.yoloMode, false);
+  const autonomyMode: 'balanced' | 'yolo' = (
+    autonomyModeRaw === 'yolo' || yoloModeFromFlag
+  ) ? 'yolo' : 'balanced';
   const requireOnStop = asBoolean(metadata?.controlBlockRequireOnStop, true);
-  const maxAutoContinueTurns = asInt(metadata?.controlBlockMaxAutoContinueTurns, 1, 0, 5);
+  const defaultMaxTurns = autonomyMode === 'yolo' ? 4 : 2;
+  const maxAutoContinueTurns = asInt(metadata?.controlBlockMaxAutoContinueTurns, defaultMaxTurns, 0, 5);
   return {
     enabled: asBoolean(metadata?.controlBlockEnabled, true),
     promptInjectionEnabled: asBoolean(metadata?.controlBlockPromptInjectionEnabled, true),
     requireOnStop,
     maxAutoContinueTurns,
+    autonomyMode,
   };
 }
 
@@ -405,9 +416,10 @@ export function shouldHoldStopByControlBlock(input: ControlStopDecisionInput): b
   if (!input.parsed.valid) return true;
   const controlBlock = input.parsed.controlBlock;
   if (!controlBlock) return true;
-  // needs_user_input alone is not sufficient to allow stop. In practice models may emit
-  // "needs_user_input=true" for approval-style questions ("是否修复"), which should continue.
-  // Runtime only allows stop when there is a completed/evidence-backed outcome or an explicit timed wait.
+  const yoloMode = input.yoloMode === true;
+  if (!yoloMode && controlBlock.needs_user_input) return false;
+  // YOLO mode: ignore approval-only user input gating and keep executing unless task is truly complete
+  // or an explicit timed wait is scheduled.
   if (controlBlock.wait.enabled && controlBlock.wait.seconds > 0) return false;
   if (controlBlock.task_completed && controlBlock.evidence_ready) return false;
   if (input.hooks.holdStop) return true;

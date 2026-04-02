@@ -163,20 +163,23 @@ describe('control-block', () => {
     expect(defaults.enabled).toBe(true);
     expect(defaults.promptInjectionEnabled).toBe(true);
     expect(defaults.requireOnStop).toBe(true);
-    expect(defaults.maxAutoContinueTurns).toBe(1);
+    expect(defaults.maxAutoContinueTurns).toBe(2);
+    expect(defaults.autonomyMode).toBe('balanced');
 
     const strict = resolveControlBlockPolicy({
       controlBlockEnabled: true,
       controlBlockPromptInjectionEnabled: false,
       controlBlockRequireOnStop: true,
       controlBlockMaxAutoContinueTurns: 3,
+      autonomyMode: 'yolo',
     });
     expect(strict.promptInjectionEnabled).toBe(false);
     expect(strict.requireOnStop).toBe(true);
     expect(strict.maxAutoContinueTurns).toBe(3);
+    expect(strict.autonomyMode).toBe('yolo');
   });
 
-  it('holds stop when needs_user_input=true but task is not completed', () => {
+  it('holds stop when needs_user_input=true in yolo mode and task is not completed', () => {
     const normalized = normalizeControlBlock({
       schema_version: '1.3',
       task_completed: false,
@@ -211,8 +214,49 @@ describe('control-block', () => {
         controlBlock: normalized.controlBlock,
       },
       hooks,
+      yoloMode: true,
     });
     expect(hold).toBe(true);
+  });
+
+  it('allows stop on needs_user_input=true in balanced mode', () => {
+    const normalized = normalizeControlBlock({
+      schema_version: '1.3',
+      task_completed: false,
+      evidence_ready: false,
+      needs_user_input: true,
+      has_blocker: true,
+      dispatch_required: false,
+      review_required: false,
+      wait: { enabled: false, seconds: 0, reason: '' },
+      user_signal: { negative_score: 0, profile_update_required: false, why: '' },
+      tags: ['ask-user'],
+      self_eval: { score: 0, confidence: 50, goal_gap: 'need required info', why: 'blocked' },
+      anti_patterns: [],
+      learning: {
+        did_right: [],
+        did_wrong: [],
+        repeated_wrong: [],
+        flow_patch: { required: false, project_scope: '', changes: [] },
+        memory_patch: { required: false, project_scope: '', long_term_items: [], short_term_items: [] },
+        user_profile_patch: { required: false, items: [], sensitivity: 'normal' },
+      },
+    });
+    const hooks = evaluateControlHooks(normalized.controlBlock);
+    const hold = shouldHoldStopByControlBlock({
+      finishReasonStop: true,
+      parsed: {
+        present: true,
+        valid: true,
+        repaired: false,
+        humanResponse: '需要用户信息',
+        issues: [],
+        controlBlock: normalized.controlBlock,
+      },
+      hooks,
+      yoloMode: false,
+    });
+    expect(hold).toBe(false);
   });
 
   it('allows stop when task is completed and evidence is ready', () => {

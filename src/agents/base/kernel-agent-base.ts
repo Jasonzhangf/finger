@@ -1276,7 +1276,7 @@ export class KernelAgentBase {
   private buildControlBlockPrompt(metadata?: Record<string, unknown>): string | undefined {
     const policy = resolveControlBlockPolicy(metadata);
     if (!policy.enabled || !policy.promptInjectionEnabled) return undefined;
-    return [
+    const baseLines = [
       '[Control Block Contract]',
       '- Every turn response MUST include a fenced `finger-control` JSON block.',
       '- Required baseline fields: schema_version, task_completed, evidence_ready, needs_user_input, has_blocker, dispatch_required, review_required, wait, user_signal, tags, self_eval, anti_patterns, learning.',
@@ -1286,7 +1286,14 @@ export class KernelAgentBase {
       '- Primary target is runtime/model control; keep machine control fields complete and deterministic.',
       '- Keep non-control text outside fence and concise; do not duplicate control data in prose.',
       '- Compatibility: schema_version 1.x.',
-    ].join('\n');
+    ];
+    if (policy.autonomyMode === 'yolo') {
+      baseLines.push(
+        '- YOLO mode is ON: default to executing the best path aligned to user goal; do not block on approval-style choices.',
+        '- If multiple valid solutions exist, execute the most canonical/root-cause fix first, then summarize alternatives.',
+      );
+    }
+    return baseLines.join('\n');
   }
 
   private resolvePrompt(prompt?: string, resolver?: () => string | undefined): string | undefined {
@@ -1795,12 +1802,14 @@ export class KernelAgentBase {
         metadata,
       };
     }
+    const policy = resolveControlBlockPolicy(metadata);
     const parsed = parseControlBlockFromReply(result.reply);
     const hooks = parsed.controlBlock ? evaluateControlHooks(parsed.controlBlock) : { hooks: [], holdStop: false };
     const controlGateHold = shouldHoldStopByControlBlock({
       finishReasonStop: isFinishReasonStop(metadata),
       parsed,
       hooks,
+      yoloMode: policy.autonomyMode === 'yolo',
     });
     return {
       ...result,

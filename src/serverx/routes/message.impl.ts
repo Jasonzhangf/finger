@@ -308,6 +308,13 @@ export function registerMessageRoutes(app: Express, deps: MessageRouteDeps): voi
       if (typeof metadata.responsesReasoningSummary !== 'string') {
         metadata.responsesReasoningSummary = userSettings.preferences.reasoningSummary ?? 'detailed';
       }
+      const autonomyMode = userSettings.preferences.autonomyMode === 'yolo' ? 'yolo' : 'balanced';
+      if (typeof metadata.autonomyMode !== 'string') {
+        metadata.autonomyMode = autonomyMode;
+      }
+      if (typeof metadata.yoloMode !== 'boolean') {
+        metadata.yoloMode = autonomyMode === 'yolo';
+      }
       // Store thinking state in metadata for session recording
       metadata.thinkingEnabled = userSettings.preferences.thinkingEnabled;
       metadata.reasoningEffort = userSettings.preferences.reasoningEffort;
