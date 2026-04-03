@@ -1,4 +1,6 @@
 export type TaskReportResult = 'success' | 'failure';
+import { type TypedEvidence, stringsToTypedEvidence, validateEvidence } from './evidence-schema.js';
+
 
 export type TaskReportStatus =
   | 'in_progress'
@@ -21,7 +23,7 @@ export interface TaskReportContract {
   status: TaskReportStatus;
   summary: string;
   deliveryArtifacts?: string;
-  evidence?: string[];
+  evidence?: TypedEvidence[];
   nextAction?: TaskReportNextAction;
   reviewDecision?: 'pass' | 'reject' | 'retry' | 'reviewing';
   deliveryClaim?: boolean;
@@ -90,12 +92,24 @@ function normalizeReviewDecision(value: string): TaskReportContract['reviewDecis
   return undefined;
 }
 
-function normalizeEvidence(value: unknown): string[] | undefined {
+function normalizeEvidence(value: unknown): TypedEvidence[] | undefined {
   if (Array.isArray(value)) {
-    const items = value
-      .map((item) => asTrimmedString(item))
-      .filter((item) => item.length > 0);
-    return items.length > 0 ? items : undefined;
+    const typed: TypedEvidence[] = [];
+    for (const item of value) {
+      if (typeof item === 'object' && item !== null && 'type' in item) {
+        const candidate = item as TypedEvidence;
+        const validation = validateEvidence(candidate);
+        if (validation.valid) {
+          typed.push(candidate);
+          continue;
+        }
+      }
+      const str = asTrimmedString(item);
+      if (str.length > 0) {
+        typed.push(stringsToTypedEvidence([str])[0]);
+      }
+    }
+    return typed.length > 0 ? typed : undefined;
   }
   const raw = asTrimmedString(value);
   if (!raw) return undefined;
@@ -103,7 +117,7 @@ function normalizeEvidence(value: unknown): string[] | undefined {
     .split(/\n|,/)
     .map((item) => item.trim())
     .filter((item) => item.length > 0);
-  return items.length > 0 ? items : undefined;
+  return items.length > 0 ? stringsToTypedEvidence(items) : undefined;
 }
 
 function hasTaskReportShape(record: Record<string, unknown>): boolean {

@@ -22,6 +22,9 @@ const childProcessMocks = vi.hoisted(() => ({
 
 vi.mock('fs', () => fsMocks);
 vi.mock('child_process', () => childProcessMocks);
+vi.mock('../../../src/server/modules/port-guard.js', () => ({
+  ensureSingleInstance: vi.fn(async () => ({ ok: true })),
+}));
 
 // Mock os module
 vi.mock('os', () => ({

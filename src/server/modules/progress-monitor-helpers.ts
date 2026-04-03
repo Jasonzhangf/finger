@@ -91,15 +91,19 @@ export function findPendingMeaningfulTool(
 export function buildHeartbeatSummary(
   p: SessionProgress,
   now: number,
-  pendingTool: ToolCallRecord,
+  pendingTool?: ToolCallRecord,
 ): string {
   const waitingMs = Math.max(0, now - p.lastUpdateTime);
   const localTime = new Date();
   const hh = String(localTime.getHours()).padStart(2, '0');
   const mm = String(localTime.getMinutes()).padStart(2, '0');
   const lines = [`📊 ${hh}:${mm} | 执行中`];
-  const toolName = resolveToolDisplayName(pendingTool.toolName?.trim() || '工具', pendingTool.params);
-  lines.push(`⏳ ${formatElapsed(waitingMs)} 无新事件，当前等待工具 ${toolName} 返回`);
+  if (pendingTool) {
+    const toolName = resolveToolDisplayName(pendingTool.toolName?.trim() || '工具', pendingTool.params);
+    lines.push(`⏳ ${formatElapsed(waitingMs)} 无新事件，当前等待工具 ${toolName} 返回`);
+  } else {
+    lines.push(`⏳ ${formatElapsed(waitingMs)} 无新事件，当前轮仍在运行`);
+  }
 
   const contextLine = buildContextUsageLine({
     contextUsagePercent: p.contextUsagePercent,

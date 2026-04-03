@@ -17,7 +17,8 @@ import {
   SystemProgressModeHandler,
   SystemSwitchHandler,
   ProviderListHandler,
-  ProviderSwitchHandler
+  ProviderSwitchHandler,
+  DisplayHandler,
 } from './handlers/index.js';
 import { ClockCreateHandler } from './handlers/system-handler.js';
 import { AgentSwitchHandler } from './handlers/agent-handler.js';
@@ -66,6 +67,9 @@ export function initCommandHub(): CommandExecutor {
   executor.registerHandler(CommandType.AUTH_GRANT, new AuthGrantHandler());
   executor.registerHandler(CommandType.AUTH_DENY, new AuthDenyHandler());
   executor.registerHandler(CommandType.AUTH_STATUS, new AuthStatusHandler());
+
+  // Register display command handler
+  executor.registerHandler(CommandType.DISPLAY, new DisplayHandler());
 
   // TODO: Add more handlers (agent, project, session, cmd_list)
 

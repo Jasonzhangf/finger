@@ -18,7 +18,7 @@ import {
 } from '../../server/modules/message-session.js';
 import { loadFingerConfig, getChannelAuth } from '../../core/config/channel-config.js';
 import { getChannelContextManager } from '../../orchestration/channel-context-manager.js';
-import { loadUserSettings } from '../../core/user-settings.js';
+import { loadUserSettings, resolveAutonomyModeForRole } from '../../core/user-settings.js';
 import { SYSTEM_PROJECT_PATH, getSystemSessionPath } from '../../agents/finger-system-agent/index.js';
 import path from 'path';
 import type { MessageRouteDeps } from '../../server/routes/message-types.js';
@@ -46,12 +46,9 @@ import { normalizeProgressDeliveryPolicy } from '../../common/progress-delivery-
 import { applyExecutionLifecycleTransition } from '../../server/modules/execution-lifecycle.js';
 import { mergeSystemTaskState, parseSystemTaskState } from '../../common/system-task-state.js';
 import {
-  mergeProjectTaskState,
-  parseDelegatedProjectTaskRegistry,
   parseProjectTaskState,
-  pruneDelegatedRegistryForContextAfterTaskClosed,
 } from '../../common/project-task-state.js';
-import { appendClosedProjectTaskArchive } from '../../core/project-task-archive.js';
+import { applyProjectStatusGatewayPatch } from '../../server/modules/project-status-gateway.js';
 import {
   executeAsyncMessageRoute,
   executeBlockingMessageRoute,
@@ -134,6 +131,20 @@ function isExplicitTaskCloseApproval(text: string): boolean {
   const approvalHints = /(approve|approved|同意|通过|批准|确认)/i;
   const closeHints = /(close|closed|closure|关闭|结案|收口|归档)/i;
   return approvalHints.test(normalized) && closeHints.test(normalized);
+}
+
+function resolveAutonomyRoleForTarget(
+  targetId: string,
+  metadata: Record<string, unknown>,
+): 'system' | 'project' | 'reviewer' | 'orchestrator' {
+  const normalizedTarget = targetId.trim().toLowerCase();
+  if (normalizedTarget === 'finger-system-agent') return 'system';
+  if (normalizedTarget.includes('review')) return 'reviewer';
+  const roleProfile = typeof metadata.roleProfile === 'string' ? metadata.roleProfile.trim().toLowerCase() : '';
+  if (roleProfile === 'system') return 'system';
+  if (roleProfile === 'reviewer') return 'reviewer';
+  if (roleProfile === 'orchestrator') return 'orchestrator';
+  return 'project';
 }
 
 export function registerMessageRoutes(app: Express, deps: MessageRouteDeps): void {
@@ -309,7 +320,8 @@ export function registerMessageRoutes(app: Express, deps: MessageRouteDeps): voi
       if (typeof metadata.responsesReasoningSummary !== 'string') {
         metadata.responsesReasoningSummary = userSettings.preferences.reasoningSummary ?? 'detailed';
       }
-      const autonomyMode = userSettings.preferences.autonomyMode === 'yolo' ? 'yolo' : 'balanced';
+      const autonomyRole = resolveAutonomyRoleForTarget(targetId, metadata);
+      const autonomyMode = resolveAutonomyModeForRole(userSettings.preferences, autonomyRole);
       if (typeof metadata.autonomyMode !== 'string') {
         metadata.autonomyMode = autonomyMode;
       }
@@ -497,18 +509,29 @@ export function registerMessageRoutes(app: Express, deps: MessageRouteDeps): voi
         && isExplicitTaskCloseApproval(userText),
       );
       if (userApprovedClose && currentProjectTaskState) {
-        const closedState = mergeProjectTaskState(currentProjectTaskState, {
-          active: false,
-          status: 'closed',
-          note: 'user_approved_close',
-          summary: userText.slice(0, 240) || 'user approved final closure',
-        });
-        const currentRegistry = parseDelegatedProjectTaskRegistry(context.projectTaskRegistry);
-        const prunedRegistry = pruneDelegatedRegistryForContextAfterTaskClosed(currentRegistry, closedState);
-        appendClosedProjectTaskArchive(session?.projectPath ?? '', closedState);
-        deps.sessionManager.updateContext(requestSessionId, {
-          projectTaskState: null,
-          projectTaskRegistry: prunedRegistry,
+        const revision = typeof currentProjectTaskState.revision === 'number'
+          ? currentProjectTaskState.revision + 1
+          : 1;
+        applyProjectStatusGatewayPatch({
+          sessionManager: deps.sessionManager,
+          sessionIds: [requestSessionId],
+          source: 'message-route.user_approved_close',
+          patch: {
+            active: false,
+            status: 'closed',
+            revision,
+            note: 'user_approved_close',
+            summary: userText.slice(0, 240) || 'user approved final closure',
+            taskId: currentProjectTaskState.taskId,
+            taskName: currentProjectTaskState.taskName,
+            dispatchId: currentProjectTaskState.dispatchId,
+            boundSessionId: currentProjectTaskState.boundSessionId,
+            sourceAgentId: currentProjectTaskState.sourceAgentId,
+            targetAgentId: currentProjectTaskState.targetAgentId,
+            assigneeWorkerId: currentProjectTaskState.assigneeWorkerId,
+            assigneeWorkerName: currentProjectTaskState.assigneeWorkerName,
+            blockedBy: currentProjectTaskState.blockedBy,
+          },
         });
       }
       const currentSystemTaskState = parseSystemTaskState(context.systemTaskState);
@@ -591,9 +614,36 @@ export function registerMessageRoutes(app: Express, deps: MessageRouteDeps): voi
       const content = extractMessageTextForSession(requestMessage)
         ?? JSON.stringify(requestMessage);
       if (content.trim().length > 0) {
-        void deps.sessionManager.addMessage(requestSessionId, 'user', content, {
-          agentId: targetId,
-        });
+        try {
+          await deps.sessionManager.addMessage(requestSessionId, 'user', content, {
+            agentId: targetId,
+          });
+        } catch (error) {
+          const errorMessage = error instanceof Error ? error.message : String(error);
+          log.error(
+            'Failed to persist inbound user message before dispatch',
+            error instanceof Error ? error : undefined,
+            { sessionId: requestSessionId, targetId },
+          );
+          deps.writeMessageErrorSample({
+            phase: 'persist_user_message_failed',
+            responseStatus: 500,
+            error: errorMessage,
+            request: {
+              target: targetId,
+              sender: body.sender,
+              callbackId: body.callbackId,
+              message: requestMessage,
+              sessionId: requestSessionId,
+            },
+          });
+          res.status(500).json({
+            error: 'Failed to persist inbound user message before dispatch',
+            code: 'PERSIST_USER_MESSAGE_FAILED',
+            message: errorMessage,
+          });
+          return;
+        }
       }
     }
 

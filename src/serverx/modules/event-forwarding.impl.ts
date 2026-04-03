@@ -38,6 +38,7 @@ const CONTROL_HOOK_DEDUP_TTL_MS = 60 * 60_000;
 
 type SessionEventRecord = {
   type: 'tool_call' | 'tool_result' | 'tool_error' | 'agent_step' | 'reasoning';
+  timestamp?: string;
   agentId?: string;
   toolName?: string;
   toolStatus?: 'success' | 'error';
@@ -138,6 +139,20 @@ function toUniqueStringArray(value: unknown, limit: number): string[] {
   return deduped.slice(0, limit);
 }
 
+function normalizeReasoningForHistory(text: string): string {
+  const source = text.trim();
+  if (!source) return '';
+  const maxChars = 1600;
+  const clipped = source.length > maxChars
+    ? `${source.slice(0, maxChars)}\n...[reasoning truncated]`
+    : source;
+  return [
+    '<context_priority tier="P2.reasoning" foldable="true">',
+    clipped,
+    '</context_priority>',
+  ].join('\n');
+}
+
 function asControlBlockRecord(payload: Record<string, unknown>): Record<string, unknown> | undefined {
   if (!isObjectRecord(payload.controlBlock)) return undefined;
   return payload.controlBlock;
@@ -201,12 +216,26 @@ export function attachEventForwarding(deps: EventForwardingDeps): {
   const latestBodyBySession = new Map<string, string>();
   const latestStopSummaryBySession = new Map<string, string>();
   const stopToolSeenBySession = new Map<string, boolean>();
+  const sessionPersistQueue = new Map<string, Promise<void>>();
+  const finalReplyDedupKeys = new Map<string, string>();
   const dispatchLedgerDedup = new Map<string, number>();
   const controlHookActionDedup = new Map<string, number>();
   const DISPATCH_LEDGER_DEDUP_TTL_MS = 10 * 60_000;
 
   const normalizeDispatchLedgerSessionId = (rawSessionId: string | undefined) =>
     _normalizeDispatchLedgerSessionId(sessionManager, rawSessionId);
+
+  const resolveSessionOwnerAgentId = (sessionId: string): string => {
+    if (typeof (sessionManager as SessionManager & { getSession?: unknown }).getSession !== 'function') {
+      return generalAgentId;
+    }
+    const session = sessionManager.getSession(sessionId);
+    if (session && isObjectRecord(session.context)) {
+      const owner = asTrimmedString(session.context.ownerAgentId);
+      if (owner) return owner;
+    }
+    return generalAgentId;
+  };
 
 
   const shouldSkipDispatchLedgerEntry = (key: string): boolean => {
@@ -515,14 +544,46 @@ export function attachEventForwarding(deps: EventForwardingDeps): {
     }
   };
 
+  const enqueueSessionPersist = (sessionId: string, task: () => Promise<void>): Promise<void> => {
+    const previous = sessionPersistQueue.get(sessionId);
+    const runTask = () => task();
+    const chained = (previous
+      ? previous.catch(() => undefined).then(runTask)
+      : (() => {
+        try {
+          return Promise.resolve(runTask());
+        } catch (error) {
+          return Promise.reject(error);
+        }
+      })())
+      .catch((error) => {
+        logger.module('event-forwarding').warn('Session event persistence failed', {
+          sessionId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      })
+      .finally(() => {
+        if (sessionPersistQueue.get(sessionId) === chained) {
+          sessionPersistQueue.delete(sessionId);
+        }
+      });
+    sessionPersistQueue.set(sessionId, chained);
+    return chained;
+  };
+
   const persistSessionEventMessage = (
     sessionId: string,
     content: string,
     detail: SessionEventRecord,
     role: 'user' | 'assistant' | 'system' | 'orchestrator' = 'system',
-  ): void => {
-    if (!sessionId || sessionId.trim().length === 0) return;
-    void sessionManager.addMessage(sessionId, role, content, detail);
+  ): Promise<void> => {
+    if (!sessionId || sessionId.trim().length === 0) return Promise.resolve();
+    return enqueueSessionPersist(sessionId, async () => {
+      await sessionManager.addMessage(sessionId, role, content, {
+        ...detail,
+        ...(detail.timestamp ? { timestamp: detail.timestamp } : {}),
+      });
+    });
   };
 
   const hasLedgerPointerMessage = (sessionId: string, label: string): boolean => {
@@ -765,7 +826,12 @@ export function attachEventForwarding(deps: EventForwardingDeps): {
             || (typeof event.payload.replyPreview === 'string' ? event.payload.replyPreview : ''))
           : (typeof event.payload.error === 'string' ? `处理失败：${event.payload.error}` : '处理失败，请稍后再试');
         const normalizedFinalReply = finalReply.trim();
+        const finalizeAgentId = asString(event.payload.agentId) ?? resolveSessionOwnerAgentId(event.sessionId);
+        let finalReplyPersistPromise: Promise<void> = Promise.resolve();
         if (normalizedFinalReply.length > 0) {
+          const dedupTurnKey = `${event.sessionId}::${finalizeTurnId ?? 'no-turn-id'}::${normalizedFinalReply}`;
+          const dedupSeen = finalReplyDedupKeys.get(event.sessionId);
+          const alreadySeenByTurn = dedupSeen === dedupTurnKey;
           const recentMessages = sessionManager.getMessages(event.sessionId, 8);
           const duplicated = recentMessages.some((message) => (
             message.role === 'assistant'
@@ -774,13 +840,15 @@ export function attachEventForwarding(deps: EventForwardingDeps): {
             && isObjectRecord(message.metadata)
             && message.metadata.source === 'turn_final_reply'
           ));
-          if (!duplicated) {
-            persistSessionEventMessage(
+          if (!duplicated && !alreadySeenByTurn) {
+            finalReplyDedupKeys.set(event.sessionId, dedupTurnKey);
+            finalReplyPersistPromise = persistSessionEventMessage(
               event.sessionId,
               normalizedFinalReply,
               {
                 type: 'agent_step',
-                agentId: generalAgentId,
+                timestamp: event.timestamp,
+                agentId: finalizeAgentId,
                 metadata: {
                   source: 'turn_final_reply',
                   phase: event.phase,
@@ -794,18 +862,20 @@ export function attachEventForwarding(deps: EventForwardingDeps): {
           }
         }
         if (agentStatusSubscriber) {
-          agentStatusSubscriber.finalizeChannelTurn(
-            event.sessionId,
-            finalReply,
-            generalAgentId,
-            event.phase === 'turn_complete' && typeof event.payload.finishReason === 'string'
-              ? event.payload.finishReason
-              : undefined,
-          ).catch((err) => {
-            logger.module('event-forwarding').error(
-              'Failed to finalize channel turn',
-              err instanceof Error ? err : new Error(String(err)),
-            );
+          void finalReplyPersistPromise.finally(() => {
+            agentStatusSubscriber.finalizeChannelTurn(
+              event.sessionId,
+              finalReply,
+              finalizeAgentId,
+              event.phase === 'turn_complete' && typeof event.payload.finishReason === 'string'
+                ? event.payload.finishReason
+                : undefined,
+            ).catch((err) => {
+              logger.module('event-forwarding').error(
+                'Failed to finalize channel turn',
+                err instanceof Error ? err : new Error(String(err)),
+              );
+            });
           });
         }
         latestBodyBySession.delete(event.sessionId);
@@ -842,11 +912,11 @@ export function attachEventForwarding(deps: EventForwardingDeps): {
 
     // On turn_start, inject main session ledger pointer
     if (event.phase === 'turn_start') {
-      addLedgerPointerMessage(event.sessionId, 'main', generalAgentId);
+      addLedgerPointerMessage(event.sessionId, 'main', resolveSessionOwnerAgentId(event.sessionId));
     }
 
-    // Reasoning is transient: do not persist it into assistant history.
-    // Persisting raw reasoning pollutes context continuity for follow-up turns.
+    // Reasoning is persisted as lower-priority foldable context (P2),
+    // while core dialog (user/assistant final replies) remains highest priority.
     if (event.phase === 'kernel_event' && event.payload.type === 'reasoning') {
       const reasoningText = typeof event.payload.text === 'string'
         ? event.payload.text.trim()
@@ -854,7 +924,24 @@ export function attachEventForwarding(deps: EventForwardingDeps): {
       if (reasoningText.length > 0) {
         const reasoningAgentId = typeof event.payload.agentId === 'string' && event.payload.agentId.trim().length > 0
           ? event.payload.agentId.trim()
-          : generalAgentId;
+          : resolveSessionOwnerAgentId(event.sessionId);
+
+        void persistSessionEventMessage(
+          event.sessionId,
+          normalizeReasoningForHistory(reasoningText),
+          {
+            type: 'reasoning',
+            timestamp: event.timestamp,
+            agentId: reasoningAgentId,
+            metadata: {
+              source: 'kernel_reasoning',
+              contextPriority: 'P2.reasoning',
+              foldable: true,
+              roleProfile: typeof event.payload.roleProfile === 'string' ? event.payload.roleProfile : undefined,
+            },
+          },
+          'system',
+        );
 
         // Send reasoning to channel bridge (QQBot) based on pushSettings.reasoning config
         if (agentStatusSubscriber) {
@@ -875,7 +962,7 @@ export function attachEventForwarding(deps: EventForwardingDeps): {
         const normalized = bodyUpdate.trim();
         if (normalized.length > 0 && latestBodyBySession.get(event.sessionId) !== normalized) {
           latestBodyBySession.set(event.sessionId, normalized);
-          const bodyAgentId = asString(event.payload.agentId) ?? generalAgentId;
+          const bodyAgentId = asString(event.payload.agentId) ?? resolveSessionOwnerAgentId(event.sessionId);
           agentStatusSubscriber.sendBodyUpdate(event.sessionId, bodyAgentId, normalized)
             .catch((err) => {
               logger.module('event-forwarding').error(
@@ -908,13 +995,21 @@ export function attachEventForwarding(deps: EventForwardingDeps): {
         : typeof event.payload.round === 'number'
           ? `round-${event.payload.round}`
           : undefined;
-      if (contextUsagePercent !== undefined) {
+      const modelRoundAgentId = typeof event.payload.agentId === 'string' && event.payload.agentId.trim().length > 0
+        ? event.payload.agentId.trim()
+        : resolveSessionOwnerAgentId(event.sessionId);
+      const hasModelRoundContextStats = contextUsagePercent !== undefined
+        || typeof estimatedTokensInContextWindow === 'number'
+        || typeof maxInputTokens === 'number'
+        || !!contextBreakdown;
+      if (hasModelRoundContextStats) {
         void deps.eventBus.emit({
           type: 'system_notice',
           sessionId: event.sessionId,
           timestamp: event.timestamp,
           payload: {
             source: 'auto_compact_probe',
+            agentId: modelRoundAgentId,
             contextUsagePercent,
             ...(typeof estimatedTokensInContextWindow === 'number'
               ? { estimatedTokensInContextWindow }

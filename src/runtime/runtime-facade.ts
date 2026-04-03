@@ -922,22 +922,61 @@ export class RuntimeFacade {
     ]
       .map((item) => item.trim())
       .filter((item, index, list) => item.length > 0 && item !== requested && list.indexOf(item) === index);
-    if (aliasCandidates.length === 0) {
-      return requested;
+    if (aliasCandidates.length > 0) {
+      for (const candidate of aliasCandidates) {
+        if (!this.toolAccessControl.canUse(agentId, candidate).allowed) continue;
+        if (!this.toolRegistry.isAvailable(candidate)) continue;
+        log.warn('Normalized tool alias for agent', {
+          agentId,
+          requestedToolName: requested,
+          resolvedToolName: candidate,
+        });
+        return candidate;
+      }
     }
 
-    for (const candidate of aliasCandidates) {
-      if (!this.toolAccessControl.canUse(agentId, candidate).allowed) continue;
-      if (!this.toolRegistry.isAvailable(candidate)) continue;
-      log.warn('Normalized tool alias for agent', {
+    const fuzzyMatched = this.resolveToolByFuzzyAlias(agentId, requested);
+    if (fuzzyMatched) {
+      log.warn('Normalized tool alias for agent via fuzzy matching', {
         agentId,
         requestedToolName: requested,
-        resolvedToolName: candidate,
+        resolvedToolName: fuzzyMatched,
       });
-      return candidate;
+      return fuzzyMatched;
     }
 
     return requested;
+  }
+
+  private resolveToolByFuzzyAlias(agentId: string, requestedToolName: string): string | null {
+    const requested = requestedToolName.trim();
+    if (!requested) return null;
+    const requestedKey = normalizeToolAliasLookupKey(requested);
+    if (!requestedKey) return null;
+
+    const policy = this.toolAccessControl.getPolicy(agentId);
+    const whitelist = Array.isArray(policy.whitelist) ? policy.whitelist : [];
+    if (whitelist.length === 0) return null;
+
+    const candidates = whitelist
+      .map((name) => name.trim())
+      .filter((name) => name.length > 0)
+      .filter((name) => this.toolRegistry.isAvailable(name))
+      .filter((name, index, list) => list.indexOf(name) === index);
+    if (candidates.length === 0) return null;
+
+    const matched = candidates.filter((candidate) => normalizeToolAliasLookupKey(candidate) === requestedKey);
+    if (matched.length === 0) return null;
+    if (matched.length === 1) return matched[0] ?? null;
+
+    const requestedSeparators = collectToolNameSeparators(requested);
+    const ranked = [...matched].sort((left, right) => {
+      const leftScore = computeSeparatorScore(left, requestedSeparators);
+      const rightScore = computeSeparatorScore(right, requestedSeparators);
+      if (leftScore !== rightScore) return rightScore - leftScore;
+      return left.localeCompare(right);
+    });
+    return ranked[0] ?? null;
   }
 
   /**
@@ -1762,6 +1801,27 @@ export class RuntimeFacade {
     }
     return this.eventBus.getHistory(limit);
   }
+}
+
+function normalizeToolAliasLookupKey(rawToolName: string): string {
+  return rawToolName.trim().toLowerCase().replace(/[^a-z0-9]/g, '');
+}
+
+function collectToolNameSeparators(toolName: string): Set<string> {
+  const separators = new Set<string>();
+  for (const char of toolName) {
+    if (char === '.' || char === '_' || char === '-') separators.add(char);
+  }
+  return separators;
+}
+
+function computeSeparatorScore(candidate: string, preferredSeparators: Set<string>): number {
+  if (preferredSeparators.size === 0) return 0;
+  let score = 0;
+  for (const separator of preferredSeparators) {
+    if (candidate.includes(separator)) score += 1;
+  }
+  return score;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

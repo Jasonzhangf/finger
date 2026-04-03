@@ -77,6 +77,40 @@ describe('messagehub display command', () => {
     expect(next.channels[0].options.pushSettings.progressUpdates).toBe(false);
   });
 
+  it('updates full push display fields and supports show command', async () => {
+    const { configDir, channelsPath } = createTempConfig();
+
+    await handleDisplayCommand('qqbot', 'mode:both', undefined, { configDir });
+    await handleDisplayCommand('qqbot', 'reasoning:on', undefined, { configDir });
+    await handleDisplayCommand('qqbot', 'body:off', undefined, { configDir });
+    await handleDisplayCommand('qqbot', 'status:off', undefined, { configDir });
+    await handleDisplayCommand('qqbot', 'step:off', undefined, { configDir });
+    await handleDisplayCommand('qqbot', 'stepbatch:9', undefined, { configDir });
+    const show = await handleDisplayCommand('qqbot', 'show', undefined, { configDir });
+
+    const next = JSON.parse(fs.readFileSync(channelsPath, 'utf-8')) as any;
+    expect(next.channels[0].options.pushSettings.updateMode).toBe('both');
+    expect(next.channels[0].options.pushSettings.reasoning).toBe(true);
+    expect(next.channels[0].options.pushSettings.bodyUpdates).toBe(false);
+    expect(next.channels[0].options.pushSettings.statusUpdate).toBe(false);
+    expect(next.channels[0].options.pushSettings.stepUpdates).toBe(false);
+    expect(next.channels[0].options.pushSettings.stepBatch).toBe(9);
+
+    expect(show).toContain('当前 display 设置');
+    expect(show).toContain('mode=both');
+    expect(show).toContain('reasoning=on');
+    expect(show).toContain('body=off');
+    expect(show).toContain('status=off');
+    expect(show).toContain('step=off');
+    expect(show).toContain('stepbatch=9');
+  });
+
+  it('rejects invalid stepbatch value', async () => {
+    const { configDir } = createTempConfig();
+    const result = await handleDisplayCommand('qqbot', 'stepbatch:0', undefined, { configDir });
+    expect(result).toContain('stepbatch 仅支持 1-50 的整数');
+  });
+
   it('rejects unsupported channels', async () => {
     const { configDir } = createTempConfig();
     const result = await handleDisplayCommand('webui', 'ctx:on', undefined, { configDir });

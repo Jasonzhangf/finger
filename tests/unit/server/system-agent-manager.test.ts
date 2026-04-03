@@ -196,6 +196,7 @@ describe('SystemAgentManager - Session Reuse', () => {
     );
     expect(dispatchCall).toBeDefined();
     expect(dispatchCall?.[1]?.metadata?.source).toBe('system-recovery');
+    expect(dispatchCall?.[1]?.metadata?.progressDelivery).toEqual({ mode: 'silent' });
   });
 
   it('should treat completed lifecycle without finish_reason=stop as interrupted and resume on startup', async () => {
@@ -225,6 +226,8 @@ describe('SystemAgentManager - Session Reuse', () => {
         && ((call[1] as { metadata?: { source?: string } }).metadata?.source === 'system-recovery'),
     );
     expect(recoveryDispatchCall).toBeDefined();
+    expect((recoveryDispatchCall?.[1] as { metadata?: { progressDelivery?: unknown } })?.metadata?.progressDelivery)
+      .toEqual({ mode: 'silent' });
   });
 
   it('should dispatch silent startup delivery review on startup when previous turn stopped', async () => {
@@ -294,6 +297,8 @@ describe('SystemAgentManager - Session Reuse', () => {
         && ((call[1] as { metadata?: { source?: string } }).metadata?.source === 'system-recovery'),
     );
     expect(recoveryDispatchCall).toBeDefined();
+    expect((recoveryDispatchCall?.[1] as { metadata?: { progressDelivery?: unknown } })?.metadata?.progressDelivery)
+      .toEqual({ mode: 'silent' });
   });
 
   it('should not dispatch duplicate startup review after restart when same stopped task only changed turn metadata', async () => {

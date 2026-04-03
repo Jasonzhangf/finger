@@ -2,10 +2,10 @@ import { describe, it, expect } from 'vitest';
 import { ChannelContextManager } from '../../../src/orchestration/channel-context-manager.js';
 
 describe('ChannelContextManager', () => {
-  it('returns default orchestrator for unknown channel', () => {
+  it('returns default system agent for unknown channel', () => {
     const manager = new ChannelContextManager();
     manager.clearContext('unit-test-default');
-    expect(manager.getTargetAgent('unit-test-default', { type: 'normal', targetAgent: '' })).toBe('finger-orchestrator');
+    expect(manager.getTargetAgent('unit-test-default', { type: 'normal', targetAgent: '' })).toBe('finger-system-agent');
   });
 
   it('persists switched agent for channel routing', () => {

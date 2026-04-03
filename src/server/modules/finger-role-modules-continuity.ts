@@ -87,6 +87,19 @@ export function extractRecentTaskMessages(
 ): SessionHistoryMessage[] {
   if (!Array.isArray(sessionMessages) || sessionMessages.length === 0) return [];
   const requestedTaskCount = Math.max(1, Math.floor(taskCount));
+  const hasUserTurns = sessionMessages.some((item) =>
+    item.role === 'user'
+    && typeof item.content === 'string'
+    && item.content.trim().length > 0,
+  );
+
+  // 用户会话优先使用 user-turn 连续窗口，确保“用户提问 + 助手最终回复”
+  // 不会被 reasoning.stop 边界截断（这是连续性丢失的根因之一）。
+  if (hasUserTurns) {
+    return extractRecentByUserTurns(sessionMessages, requestedTaskCount);
+  }
+
+  // 无 user 边界（如系统控制流）时，才退回 stop 边界窗口。
   const callMarkers: number[] = [];
   const completionMarkers: number[] = [];
   for (let index = 0; index < sessionMessages.length; index += 1) {

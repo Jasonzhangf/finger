@@ -64,6 +64,15 @@ export class ProgressMonitor {
   private _cleanupTimer: NodeJS.Timeout | null = null;
   // key: `${sessionId}::${agentId}`
   private latestStepSummary = new Map<string, string>();
+  // key: sessionId
+  private sessionContextSnapshot = new Map<string, {
+    contextUsagePercent?: number;
+    estimatedTokensInContextWindow?: number;
+    maxInputTokens?: number;
+    contextBreakdown?: SessionProgress['contextBreakdown'];
+    lastContextEvent?: string;
+    updatedAt: number;
+  }>();
 
   private static readonly LOW_VALUE_TOOLS = new Set([
     'mailbox.status',
@@ -103,6 +112,212 @@ export class ProgressMonitor {
       if (progress.sessionId === sessionId) entries.push([key, progress]);
     }
     return entries;
+  }
+
+  private normalizeNumber(value: unknown): number | undefined {
+    if (typeof value === 'number' && Number.isFinite(value)) return Math.floor(value);
+    if (typeof value === 'string') {
+      const parsed = Number(value);
+      if (Number.isFinite(parsed)) return Math.floor(parsed);
+    }
+    return undefined;
+  }
+
+  private normalizeContextBreakdownFromPayload(payload: Record<string, unknown>): SessionProgress['contextBreakdown'] | undefined {
+    const raw = (typeof payload.contextBreakdown === 'object' && payload.contextBreakdown !== null)
+      ? payload.contextBreakdown as Record<string, unknown>
+      : (typeof payload.context_breakdown === 'object' && payload.context_breakdown !== null)
+        ? payload.context_breakdown as Record<string, unknown>
+        : undefined;
+    if (!raw) return undefined;
+
+    const normalized: NonNullable<SessionProgress['contextBreakdown']> = {};
+    const setNumeric = (targetKey: keyof NonNullable<SessionProgress['contextBreakdown']>, ...sourceKeys: string[]) => {
+      for (const key of sourceKeys) {
+        const num = this.normalizeNumber(raw[key]);
+        if (num !== undefined && num >= 0) {
+          (normalized as Record<string, unknown>)[targetKey as string] = Math.max(0, num);
+          return;
+        }
+      }
+    };
+
+    setNumeric('historyContextTokens', 'historyContextTokens', 'history_context_tokens');
+    setNumeric('historyCurrentTokens', 'historyCurrentTokens', 'history_current_tokens');
+    setNumeric('historyTotalTokens', 'historyTotalTokens', 'history_total_tokens');
+    setNumeric('historyContextMessages', 'historyContextMessages', 'history_context_messages');
+    setNumeric('historyCurrentMessages', 'historyCurrentMessages', 'history_current_messages');
+    setNumeric('systemPromptTokens', 'systemPromptTokens', 'system_prompt_tokens');
+    setNumeric('developerPromptTokens', 'developerPromptTokens', 'developer_prompt_tokens');
+    setNumeric('userInstructionsTokens', 'userInstructionsTokens', 'user_instructions_tokens');
+    setNumeric('environmentContextTokens', 'environmentContextTokens', 'environment_context_tokens');
+    setNumeric('turnContextTokens', 'turnContextTokens', 'turn_context_tokens');
+    setNumeric('skillsTokens', 'skillsTokens', 'skills_tokens');
+    setNumeric('mailboxTokens', 'mailboxTokens', 'mailbox_tokens');
+    setNumeric('projectTokens', 'projectTokens', 'project_tokens');
+    setNumeric('flowTokens', 'flowTokens', 'flow_tokens');
+    setNumeric('contextSlotsTokens', 'contextSlotsTokens', 'context_slots_tokens');
+    setNumeric('inputTextTokens', 'inputTextTokens', 'input_text_tokens');
+    setNumeric('inputMediaTokens', 'inputMediaTokens', 'input_media_tokens');
+    setNumeric('inputMediaCount', 'inputMediaCount', 'input_media_count');
+    setNumeric('inputTotalTokens', 'inputTotalTokens', 'input_total_tokens');
+    setNumeric('toolsSchemaTokens', 'toolsSchemaTokens', 'tools_schema_tokens');
+    setNumeric('toolExecutionTokens', 'toolExecutionTokens', 'tool_execution_tokens');
+    setNumeric('contextLedgerConfigTokens', 'contextLedgerConfigTokens', 'context_ledger_config_tokens');
+    setNumeric('responsesConfigTokens', 'responsesConfigTokens', 'responses_config_tokens');
+    setNumeric('totalKnownTokens', 'totalKnownTokens', 'total_known_tokens');
+
+    if (typeof raw.source === 'string' && raw.source.trim().length > 0) {
+      normalized.source = raw.source.trim();
+    }
+
+    return Object.keys(normalized).length > 0 ? normalized : undefined;
+  }
+
+  private extractContextSnapshotFromEvent(event: any): {
+    contextUsagePercent?: number;
+    estimatedTokensInContextWindow?: number;
+    maxInputTokens?: number;
+    contextBreakdown?: SessionProgress['contextBreakdown'];
+    lastContextEvent?: string;
+  } | null {
+    const payload = event?.payload && typeof event.payload === 'object'
+      ? event.payload as Record<string, unknown>
+      : undefined;
+    if (!payload) return null;
+
+    const contextUsagePercent = this.normalizeNumber(payload.contextUsagePercent ?? payload.context_usage_percent);
+    const estimatedTokensInContextWindow = this.normalizeNumber(
+      payload.estimatedTokensInContextWindow
+      ?? payload.estimated_tokens_in_context_window
+      ?? payload.inputTokens
+      ?? payload.input_tokens
+      ?? payload.totalTokens
+      ?? payload.total_tokens,
+    );
+    const maxInputTokens = this.normalizeNumber(
+      payload.maxInputTokens
+      ?? payload.max_input_tokens
+      ?? payload.modelContextWindow
+      ?? payload.model_context_window,
+    );
+    const contextBreakdown = this.normalizeContextBreakdownFromPayload(payload);
+    const lastContextEvent = typeof payload.source === 'string' && payload.source.trim().length > 0
+      ? payload.source.trim()
+      : undefined;
+
+    const derivedEstimated = estimatedTokensInContextWindow
+      ?? (contextBreakdown && typeof contextBreakdown.totalKnownTokens === 'number'
+        ? contextBreakdown.totalKnownTokens
+        : undefined);
+
+    if (
+      contextUsagePercent === undefined
+      && derivedEstimated === undefined
+      && maxInputTokens === undefined
+      && !contextBreakdown
+      && !lastContextEvent
+    ) {
+      return null;
+    }
+
+    return {
+      ...(contextUsagePercent !== undefined ? { contextUsagePercent } : {}),
+      ...(derivedEstimated !== undefined ? { estimatedTokensInContextWindow: Math.max(0, derivedEstimated) } : {}),
+      ...(maxInputTokens !== undefined ? { maxInputTokens: Math.max(1, maxInputTokens) } : {}),
+      ...(contextBreakdown ? { contextBreakdown } : {}),
+      ...(lastContextEvent ? { lastContextEvent } : {}),
+    };
+  }
+
+  private mergeSessionContextSnapshot(
+    sessionId: string,
+    snapshot: {
+      contextUsagePercent?: number;
+      estimatedTokensInContextWindow?: number;
+      maxInputTokens?: number;
+      contextBreakdown?: SessionProgress['contextBreakdown'];
+      lastContextEvent?: string;
+    },
+  ): void {
+    const prev = this.sessionContextSnapshot.get(sessionId);
+    this.sessionContextSnapshot.set(sessionId, {
+      contextUsagePercent: snapshot.contextUsagePercent ?? prev?.contextUsagePercent,
+      estimatedTokensInContextWindow: snapshot.estimatedTokensInContextWindow ?? prev?.estimatedTokensInContextWindow,
+      maxInputTokens: snapshot.maxInputTokens ?? prev?.maxInputTokens,
+      contextBreakdown: snapshot.contextBreakdown ?? prev?.contextBreakdown,
+      lastContextEvent: snapshot.lastContextEvent ?? prev?.lastContextEvent,
+      updatedAt: Date.now(),
+    });
+  }
+
+  private applyExtractedContextSnapshot(
+    progress: SessionProgress,
+    snapshot: {
+      contextUsagePercent?: number;
+      estimatedTokensInContextWindow?: number;
+      maxInputTokens?: number;
+      contextBreakdown?: SessionProgress['contextBreakdown'];
+      lastContextEvent?: string;
+    },
+  ): void {
+    if (snapshot.contextUsagePercent !== undefined) {
+      progress.contextUsagePercent = snapshot.contextUsagePercent;
+    }
+    if (snapshot.estimatedTokensInContextWindow !== undefined) {
+      progress.estimatedTokensInContextWindow = snapshot.estimatedTokensInContextWindow;
+    }
+    if (snapshot.maxInputTokens !== undefined) {
+      progress.maxInputTokens = snapshot.maxInputTokens;
+    }
+    if (snapshot.contextBreakdown) {
+      progress.contextBreakdown = { ...snapshot.contextBreakdown };
+    }
+    if (snapshot.lastContextEvent) {
+      progress.lastContextEvent = snapshot.lastContextEvent;
+    }
+  }
+
+  private applySessionContextSnapshot(progress: SessionProgress): void {
+    const snapshot = this.sessionContextSnapshot.get(progress.sessionId);
+    if (!snapshot) return;
+
+    if (progress.contextUsagePercent === undefined && snapshot.contextUsagePercent !== undefined) {
+      progress.contextUsagePercent = snapshot.contextUsagePercent;
+    }
+    if (progress.estimatedTokensInContextWindow === undefined && snapshot.estimatedTokensInContextWindow !== undefined) {
+      progress.estimatedTokensInContextWindow = snapshot.estimatedTokensInContextWindow;
+    }
+    if (progress.maxInputTokens === undefined && snapshot.maxInputTokens !== undefined) {
+      progress.maxInputTokens = snapshot.maxInputTokens;
+    }
+    if (!progress.contextBreakdown && snapshot.contextBreakdown) {
+      progress.contextBreakdown = { ...snapshot.contextBreakdown };
+    }
+    if (!progress.lastContextEvent && snapshot.lastContextEvent) {
+      progress.lastContextEvent = snapshot.lastContextEvent;
+    }
+  }
+
+  private cacheProgressContextSnapshot(progress: SessionProgress): void {
+    if (
+      progress.contextUsagePercent === undefined
+      && progress.estimatedTokensInContextWindow === undefined
+      && progress.maxInputTokens === undefined
+      && !progress.contextBreakdown
+      && !progress.lastContextEvent
+    ) {
+      return;
+    }
+    this.mergeSessionContextSnapshot(progress.sessionId, {
+      ...(progress.contextUsagePercent !== undefined ? { contextUsagePercent: progress.contextUsagePercent } : {}),
+      ...(progress.estimatedTokensInContextWindow !== undefined
+        ? { estimatedTokensInContextWindow: progress.estimatedTokensInContextWindow }
+        : {}),
+      ...(progress.maxInputTokens !== undefined ? { maxInputTokens: progress.maxInputTokens } : {}),
+      ...(progress.contextBreakdown ? { contextBreakdown: progress.contextBreakdown } : {}),
+      ...(progress.lastContextEvent ? { lastContextEvent: progress.lastContextEvent } : {}),
+    });
   }
 
   constructor(
@@ -254,13 +469,22 @@ export class ProgressMonitor {
     const sessionId = event.sessionId;
     if (!sessionId) return;
 
+    const extractedSnapshot = this.extractContextSnapshotFromEvent(event);
+    if (extractedSnapshot) {
+      this.mergeSessionContextSnapshot(sessionId, extractedSnapshot);
+    }
+
     const eventType = event.type;
     const incomingAgentId = this.parseEventAgentId(event);
     const now = Date.now();
-
+    const sessionEntries = this.getProgressEntriesBySession(sessionId);
+    if (extractedSnapshot && !incomingAgentId && sessionEntries.length > 0) {
+      for (const [, entry] of sessionEntries) {
+        this.applyExtractedContextSnapshot(entry, extractedSnapshot);
+      }
+    }
     // Session-level event without explicit agentId: update existing entries only.
     if (!incomingAgentId) {
-      const sessionEntries = this.getProgressEntriesBySession(sessionId);
       if (sessionEntries.length === 0) return;
 
       if (eventType === 'system_notice') {
@@ -268,6 +492,7 @@ export class ProgressMonitor {
           entry.lastUpdateTime = now;
           handleSystemNoticeEvent(entry, event);
           entry.elapsedMs = now - entry.startTime;
+          this.cacheProgressContextSnapshot(entry);
         }
         return;
       }
@@ -277,6 +502,7 @@ export class ProgressMonitor {
           entry.lastUpdateTime = now;
           handleTurnStart(entry, event);
           entry.elapsedMs = now - entry.startTime;
+          this.cacheProgressContextSnapshot(entry);
         }
         return;
       }
@@ -286,6 +512,7 @@ export class ProgressMonitor {
           entry.lastUpdateTime = now;
           handleTurnComplete(entry, event);
           entry.elapsedMs = now - entry.startTime;
+          this.cacheProgressContextSnapshot(entry);
         }
         return;
       }
@@ -295,12 +522,21 @@ export class ProgressMonitor {
           entry.lastUpdateTime = now;
           handleSessionCompressedEvent(entry, event);
           entry.elapsedMs = now - entry.startTime;
+          this.cacheProgressContextSnapshot(entry);
         }
       }
       return;
     }
 
     const progressKey = this.buildProgressKey(sessionId, incomingAgentId);
+    if (extractedSnapshot && !this.sessionProgress.has(progressKey) && sessionEntries.length > 0) {
+      // Attribution mismatch safeguard:
+      // if context snapshot arrives with an unknown agentId but session already has active progress entries,
+      // mirror snapshot into existing entries instead of dropping it.
+      for (const [, entry] of sessionEntries) {
+        this.applyExtractedContextSnapshot(entry, extractedSnapshot);
+      }
+    }
     let progress = this.sessionProgress.get(progressKey);
     if (!progress) {
       progress = {
@@ -317,6 +553,7 @@ export class ProgressMonitor {
         toolSeqCounter: 0,
         contextUsageAddedTokens: 0,
       };
+      this.applySessionContextSnapshot(progress);
       this.sessionProgress.set(progressKey, progress);
     }
 
@@ -360,6 +597,7 @@ export class ProgressMonitor {
     }
 
     progress.elapsedMs = now - progress.startTime;
+    this.cacheProgressContextSnapshot(progress);
   }
 
   private async generateProgressReport(): Promise<void> {
@@ -384,15 +622,22 @@ export class ProgressMonitor {
       // Keep elapsed clock moving even when no new events are emitted.
       p.elapsedMs = Math.max(0, now - p.startTime);
       const reportKey = this.buildReportKey(p);
+      const lastReportedSeq = p.lastReportedToolSeq ?? 0;
+      const hasUnreportedTools = p.toolCallHistory.some((tool) => (tool.seq ?? 0) > lastReportedSeq);
+      const enoughSinceLastReport = now - (p.lastReportTime ?? 0) >= this.config.intervalMs;
       const stalled = now - p.lastUpdateTime >= this.config.intervalMs;
       if (p.lastReportKey === reportKey) {
+        // Even when summary key is stable, if tools keep flowing we still emit
+        // one periodic update per interval to avoid long "silent running" windows.
+        if (hasUnreportedTools && enoughSinceLastReport) {
+          // continue below and send a compact batch update
+        } else
         if (!stalled || !this.shouldEmitHeartbeat(p, now)) {
           continue;
         }
       }
 
       // 仅发送新增工具调用（避免重复）
-      const lastReportedSeq = p.lastReportedToolSeq ?? 0;
       const newToolCalls = p.toolCallHistory.filter((tool) => (tool.seq ?? 0) > lastReportedSeq);
       const meaningfulToolCalls = newToolCalls.filter((tool) => !this.isLowValueToolCall(tool));
       const contextBreakdownKey = p.contextBreakdown ? JSON.stringify(p.contextBreakdown) : '';
@@ -406,14 +651,23 @@ export class ProgressMonitor {
       if (!hasMeaningfulSignal) {
         // Tool-only flows may end without turn_complete/model_round.
         // Auto-demote to idle to avoid stale "running" records.
-        if (stalled && p.hasOpenTurn !== true && !this.hasPendingToolCalls(p)) {
+        const pendingTool = this.findPendingMeaningfulTool(p);
+        if (stalled && p.hasOpenTurn !== true && !this.hasPendingToolCalls(p) && !pendingTool) {
           p.status = 'idle';
           p.lastUpdateTime = now;
           continue;
         }
         if (stalled && this.shouldEmitHeartbeat(p, now)) {
-          const pendingTool = this.findPendingMeaningfulTool(p);
-          if (pendingTool) {
+          const shouldEmitStalledHeartbeatWithoutPendingTool = (
+            !pendingTool
+            && (
+              p.hasOpenTurn === true
+              || p.modelRoundsCount > 0
+              || Boolean((p.currentTask ?? '').trim())
+              || Boolean((p.latestReasoning ?? '').trim())
+            )
+          );
+          if (pendingTool || shouldEmitStalledHeartbeatWithoutPendingTool) {
             const report: ProgressReport = {
               type: 'progress_report',
               timestamp: new Date().toISOString(),
@@ -564,7 +818,7 @@ export class ProgressMonitor {
     return findPendingMeaningfulTool(p, ProgressMonitor.LOW_VALUE_TOOLS);
   }
 
-  private buildHeartbeatSummary(p: SessionProgress, now: number, pendingTool: ToolCallRecord): string {
+  private buildHeartbeatSummary(p: SessionProgress, now: number, pendingTool?: ToolCallRecord): string {
     return buildHeartbeatSummary(p, now, pendingTool);
   }
 
@@ -585,6 +839,11 @@ export class ProgressMonitor {
       if (progress.status === 'completed' || progress.status === 'failed' || progress.status === 'idle') {
         // 保留最近 5 分钟的完成记录
         if (Date.now() - progress.lastUpdateTime > 5 * 60 * 1000) {
+          const sameSessionRemaining = Array.from(this.sessionProgress.values())
+            .some((entry) => entry !== progress && entry.sessionId === progress.sessionId);
+          if (!sameSessionRemaining) {
+            this.sessionContextSnapshot.delete(progress.sessionId);
+          }
           this.sessionProgress.delete(progressKey);
           this.latestStepSummary.delete(progressKey);
         }

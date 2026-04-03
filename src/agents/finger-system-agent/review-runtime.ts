@@ -40,24 +40,8 @@ export async function setupReviewRuntimeForDispatch(
     : '';
   const taskName = extractTaskName(input);
 
-  // 1) Ensure reviewer runtime is deployed
-  try {
-    await deps.agentRuntimeBlock.execute('deploy', {
-      targetAgentId: FINGER_REVIEWER_AGENT_ID,
-      sessionId: input.sessionId,
-      scope: 'session',
-      launchMode: 'orchestrator',
-      instanceCount: 1,
-    } as unknown as Record<string, unknown>);
-  } catch (err) {
-    log.warn('Failed to deploy reviewer runtime', {
-      taskId,
-      reviewer: FINGER_REVIEWER_AGENT_ID,
-      error: err instanceof Error ? err.message : String(err),
-    });
-  }
-
-  // 2) Register routing metadata for automatic delivery->review route
+  // Register routing metadata for automatic delivery->review route.
+  // Reviewer is stateless: no pre-deploy/no pre-bound session required here.
   upsertReviewRoute({
     taskId,
     ...(taskName ? { taskName } : {}),
@@ -72,6 +56,7 @@ export async function setupReviewRuntimeForDispatch(
     taskId,
     taskName,
     reviewer: FINGER_REVIEWER_AGENT_ID,
+    reviewerStateless: true,
     hasAcceptanceCriteria: acceptanceCriteria.length > 0,
   });
 }

@@ -9,7 +9,7 @@ vi.mock('../../../src/server/routes/message-route-execution.js', () => ({
   executeBlockingMessageRoute: vi.fn(async () => ({ statusCode: 200, payload: { ok: true } })),
 }));
 
-function createDeps() {
+function createDeps(options?: { addMessageError?: Error }) {
   const runtime = {
     bindAgentSession: vi.fn(),
     setCurrentSession: vi.fn(),
@@ -30,12 +30,26 @@ function createDeps() {
           },
         };
       }
+      if (sessionId === 'session-regular') {
+        return {
+          id: 'session-regular',
+          projectPath: '/tmp/project',
+          context: {
+            sessionTier: 'business',
+            controlPath: 'conversation',
+            userInputAllowed: true,
+          },
+        };
+      }
       return undefined;
     }),
     getCurrentSession: vi.fn(() => null),
     getOrCreateSystemSession: vi.fn(() => ({ id: 'system-main' })),
     updateContext: vi.fn(),
-    addMessage: vi.fn(async () => ({ id: 'm-user', role: 'user', content: 'tick', timestamp: new Date().toISOString() })),
+    addMessage: vi.fn(async () => {
+      if (options?.addMessageError) throw options.addMessageError;
+      return { id: 'm-user', role: 'user', content: 'tick', timestamp: new Date().toISOString() };
+    }),
     setTransientLedgerMode: vi.fn(),
     clearTransientLedgerMode: vi.fn(),
   } as unknown as MessageRouteDeps['sessionManager'];
@@ -121,5 +135,36 @@ describe('message route control-session binding guard', () => {
 
     await server.close();
   });
-});
 
+  it('returns 500 and aborts dispatch when persisting inbound user message fails', async () => {
+    const { deps } = createDeps({ addMessageError: new Error('disk write failed') });
+    const app = express();
+    app.use(express.json());
+    registerMessageRoutes(app, deps);
+
+    const server = await startServer(app, 19996);
+    const response = await fetch(`${server.url}/api/v1/message`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        target: 'finger-project-agent',
+        sender: 'webui',
+        message: {
+          sessionId: 'session-regular',
+          content: 'run task',
+          metadata: {
+            sessionId: 'session-regular',
+            role: 'user',
+          },
+        },
+      }),
+    });
+
+    expect(response.status).toBe(500);
+    const payload = await response.json();
+    expect(payload.code).toBe('PERSIST_USER_MESSAGE_FAILED');
+    expect((deps.hub.sendToModule as any)).not.toHaveBeenCalled();
+
+    await server.close();
+  });
+});

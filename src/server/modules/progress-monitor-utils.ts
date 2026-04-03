@@ -284,3 +284,11 @@ export function normalizeContextUsageSnapshot(snapshot: ContextUsageSnapshot): R
     maxInputTokens,
   };
 }
+
+// Backward-compatible re-exports: reporting helpers were split into progress-monitor-reporting.ts
+// but existing imports/tests still consume them from progress-monitor-utils.
+export {
+  buildCompactSummary,
+  buildReportKey,
+  resolveToolDisplayName,
+} from './progress-monitor-reporting.js';

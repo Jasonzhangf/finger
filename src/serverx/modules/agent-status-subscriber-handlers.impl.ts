@@ -37,7 +37,6 @@ import {
   resolveSessionRelationInfo,
 } from '../../server/modules/agent-status-subscriber-session-utils.js';
 import {
-  mergeProjectTaskState,
   parseProjectTaskState,
 } from '../../common/project-task-state.js';
 import {
@@ -46,16 +45,34 @@ import {
 } from '../../common/system-task-state.js';
 import { isNoActionableWatchdogText, isSystemRecoverySourceAgent } from '../../server/modules/agent-status-subscriber-noop.js';
 import { resolveAgentDisplayName } from '../../server/modules/agent-name-resolver.js';
+import { applyProjectStatusGatewayPatch } from '../../server/modules/project-status-gateway.js';
 
 const log = logger.module('AgentStatusSubscriberHandlers');
 const DISPATCH_QUEUED_SYSTEM_PUSH_COOLDOWN_MS = 10 * 60 * 1000;
 const lastQueuedSystemDispatchPushByKey = new Map<string, number>();
 const SYSTEM_AGENT_ID = 'finger-system-agent';
+const STARTUP_NOISE_SOURCE_AGENTS = new Set([
+  'system-recovery',
+  'system-project-recovery',
+  'system-reviewer-recovery',
+  'system-startup-review',
+]);
 
 type PlanStepStatus = 'pending' | 'in_progress' | 'completed';
 interface PlanStep {
   step: string;
   status: PlanStepStatus;
+}
+
+function isRestartInterruptionText(value: string): boolean {
+  const text = value.trim().toLowerCase();
+  if (!text) return false;
+  return (
+    text.includes('process exited with signal sigterm')
+    || text.includes('exited with signal sigterm')
+    || text.includes('signal sigterm')
+    || text.includes('shutdown initiated: sigterm')
+  );
 }
 
 /**
@@ -389,7 +406,7 @@ export async function handleDispatch(
       })
     : '';
   const sourceAgentSummary = buildDispatchSourceSummary(asTrimmedString(payload.sourceAgentId) || 'unknown', assignerName);
-  const reasonSummary = buildDispatchReasonSummary({
+  const reasonSummaryRaw = buildDispatchReasonSummary({
     dispatchStatus,
     resultStatus,
     queuePosition,
@@ -399,6 +416,17 @@ export async function handleDispatch(
     nextAction,
     assignmentTaskId,
   });
+  const rawError = asTrimmedString(resultRecord?.error) || '';
+  const restartInterrupted = dispatchStatus === 'failed'
+    && (
+      isRestartInterruptionText(rawError)
+      || isRestartInterruptionText(resultSummary)
+      || isRestartInterruptionText(reasonSummaryRaw)
+    );
+  const displayDispatchStatus = restartInterrupted ? 'interrupted' : dispatchStatus;
+  const reasonSummary = restartInterrupted
+    ? '运行时重启导致本次派发中断，系统将继续恢复/重试'
+    : reasonSummaryRaw;
   const childSessionId = asTrimmedString(payload.childSessionId)
     || asTrimmedString(resultRecord?.childSessionId)
     || (mailboxFlow ? '' : asTrimmedString(resultRecord?.sessionId));
@@ -418,18 +446,47 @@ export async function handleDispatch(
     targetAgentId ? `Agent ${assigneeName}(${targetAgentId})` : '',
   ].filter((item) => item.length > 0);
   const dispatchRelationLine = relationParts.length > 0 ? `关系: ${relationParts.join(' · ')}` : '';
-  const state: WrappedStatusUpdate['status']['state'] = dispatchStatus === 'failed'
-    ? 'failed'
-    : dispatchStatus === 'completed'
-      ? 'completed'
-      : 'running';
+  const state: WrappedStatusUpdate['status']['state'] = restartInterrupted
+    ? 'waiting'
+    : dispatchStatus === 'failed'
+      ? 'failed'
+      : dispatchStatus === 'completed'
+        ? 'completed'
+        : 'running';
   const sourceAgentId = asTrimmedString(payload.sourceAgentId);
   const isProjectRecoverySource = sourceAgentId === 'system-project-recovery';
   const isHeartbeatSource = sourceAgentId === 'system-heartbeat';
   const isSystemRecoverySource = isSystemRecoverySourceAgent(sourceAgentId);
+  const isSystemTarget = targetAgentId === SYSTEM_AGENT_ID;
+  const isStartupNoiseSource = STARTUP_NOISE_SOURCE_AGENTS.has(sourceAgentId);
+  const isStartupTransientStatus = dispatchStatus === 'queued'
+    || dispatchStatus === 'running'
+    || dispatchStatus === 'completed'
+    || restartInterrupted;
+  if (isStartupNoiseSource && isStartupTransientStatus && !mailboxFlow) {
+    log.debug('[AgentStatusSubscriber] Suppress startup/recovery dispatch noise', {
+      sessionId,
+      targetAgentId,
+      sourceAgentId,
+      dispatchStatus,
+      resultStatus,
+      reasonSummary,
+      restartInterrupted,
+    });
+    return;
+  }
   if (dispatchStatus === 'queued' && isProjectRecoverySource && !mailboxFlow) {
     // Startup recovery often emits many queued dispatch events across monitored projects.
     // Suppress these low-signal queue notifications to avoid channel spam.
+    return;
+  }
+  if (isSystemTarget && isHeartbeatSource && dispatchStatus === 'queued' && !mailboxFlow) {
+    // Heartbeat queued->system is internal control flow and creates frequent startup/runtime noise.
+    return;
+  }
+  if (isSystemTarget && mailboxFlow && dispatchStatus !== 'failed' && !restartInterrupted) {
+    // Mailbox handoff events routed back to system agent are internal coordination updates.
+    // Keep hard failures visible; suppress routine queued/processing/completed noise.
     return;
   }
   const isSystemLikeSource = sourceAgentId === 'system-heartbeat'
@@ -457,20 +514,34 @@ export async function handleDispatch(
   if (isHeartbeatNoop) {
     const sessionManager = ctx.deps?.sessionManager as {
       getSession?: (id: string) => { context?: Record<string, unknown> } | undefined;
-      updateContext?: (id: string, patch: Record<string, unknown>) => void;
     } | undefined;
-    if (sessionManager && typeof sessionManager.getSession === 'function' && typeof sessionManager.updateContext === 'function') {
+    if (ctx.deps?.sessionManager && sessionManager && typeof sessionManager.getSession === 'function') {
       const session = sessionManager.getSession(sessionId);
       const currentProjectTaskState = parseProjectTaskState(session?.context?.projectTaskState);
       if (currentProjectTaskState && currentProjectTaskState.targetAgentId === targetAgentId && currentProjectTaskState.active) {
-        const closedState = mergeProjectTaskState(currentProjectTaskState, {
-          active: false,
-          status: 'closed',
-          note: 'watchdog_no_actionable_auto_closed',
-          summary: reasonSummary || 'watchdog_no_actionable',
-        });
-        sessionManager.updateContext(sessionId, {
-          projectTaskState: closedState,
+        const nextRevision = typeof currentProjectTaskState.revision === 'number'
+          ? currentProjectTaskState.revision + 1
+          : undefined;
+        applyProjectStatusGatewayPatch({
+          sessionManager: ctx.deps.sessionManager,
+          sessionIds: [sessionId],
+          source: 'agent-status-subscriber.dispatch.heartbeat_noop',
+          patch: {
+            active: false,
+            status: 'closed',
+            ...(typeof nextRevision === 'number' ? { revision: nextRevision } : {}),
+            note: 'watchdog_no_actionable_auto_closed',
+            summary: reasonSummary || 'watchdog_no_actionable',
+            taskId: currentProjectTaskState.taskId,
+            taskName: currentProjectTaskState.taskName,
+            dispatchId: currentProjectTaskState.dispatchId,
+            boundSessionId: currentProjectTaskState.boundSessionId,
+            sourceAgentId: currentProjectTaskState.sourceAgentId,
+            targetAgentId: currentProjectTaskState.targetAgentId,
+            assigneeWorkerId: currentProjectTaskState.assigneeWorkerId,
+            assigneeWorkerName: currentProjectTaskState.assigneeWorkerName,
+            blockedBy: currentProjectTaskState.blockedBy,
+          },
         });
       }
     }
@@ -500,7 +571,7 @@ export async function handleDispatch(
 
   const summary = [
     `派发 ${assigneeName}(${targetAgentId})`,
-    `状态: ${dispatchStatus}`,
+    `状态: ${displayDispatchStatus}`,
     `assigner: ${assignerName}${assignerAgentId ? `(${assignerAgentId})` : ''}`,
     `assignee: ${assigneeName}${assigneeAgentId ? `(${assigneeAgentId})` : ''}`,
     heartbeatTimeLabel,
@@ -537,7 +608,9 @@ export async function handleDispatch(
         dispatchSourceSummary: sourceAgentSummary,
         targetAgentId,
         dispatchStatus,
+        displayDispatchStatus,
         dispatchReasonSummary: reasonSummary,
+        ...(restartInterrupted ? { restartInterrupted: true } : {}),
         ...(typeof queuePosition === 'number' ? { queuePosition } : {}),
         ...(resultStatus ? { resultStatus } : {}),
         ...(resultSummary ? { resultSummary: truncateInline(resultSummary, 240) } : {}),

@@ -7,26 +7,25 @@ const CHAT_CODEX_MODULE_PATH = join(process.cwd(), 'src/agents/chat-codex/chat-c
 describe('System Agent role=system Handling', () => {
   it('chat-codex-module handles role=system metadata', () => {
     const content = readFileSync(CHAT_CODEX_MODULE_PATH, 'utf-8');
-    
-    // Check for isSystemRole detection
-    expect(content).toContain("metadata?.role === 'system'");
-    expect(content).toContain('const isSystemRole');
+
+    // System role detection should be centralized via isSystemControlTurn()
+    expect(content).toContain('const isSystemRole = isSystemControlTurn(metadata)');
+    expect(content).toContain('function isSystemControlTurn(');
   });
 
   it('role=system skips history to avoid contamination', () => {
     const content = readFileSync(CHAT_CODEX_MODULE_PATH, 'utf-8');
-    
-    // Check that system role skips history
-    expect(content).toContain('isSystemRole');
-    expect(content).toContain('resolveHistoryItems');
+
+    expect(content).toContain('const historyItems = isSystemRole');
+    expect(content).toContain('resolveHistoryItems(context?.history, metadata)');
   });
 
   it('role=system skips developer instructions', () => {
     const content = readFileSync(CHAT_CODEX_MODULE_PATH, 'utf-8');
-    
-    // Check that system role skips developer instructions
+
+    // System role keeps a dedicated prompt path (different from non-system roles)
     expect(content).toContain('developerInstructions');
-    expect(content).toContain('!isSystemRole');
+    expect(content).toContain('if (isSystemRole) {');
   });
 
   it('system prompt files exist', () => {

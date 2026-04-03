@@ -20,10 +20,12 @@ describe('UserSettings', () => {
   });
 
   it('returns defaults when settings file is missing', async () => {
-    const { loadUserSettings } = await import('../../../src/core/user-settings.js');
+    const { loadUserSettings, resolveAutonomyModeForRole } = await import('../../../src/core/user-settings.js');
     const settings = loadUserSettings();
     expect(settings.aiProviders.default).toBe('tcm');
     expect(settings.preferences.defaultModel).toBe('tabglm.glm-5-turbo');
+    expect(resolveAutonomyModeForRole(settings.preferences, 'system')).toBe('balanced');
+    expect(resolveAutonomyModeForRole(settings.preferences, 'project')).toBe('yolo');
   });
 
   it('saves and reloads user settings', async () => {
@@ -92,6 +94,11 @@ describe('UserSettings', () => {
         verbosity: 'medium',
         thinkingEnabled: true,
         webSearch: 'live',
+        autonomyMode: 'balanced',
+        autonomyByRole: {
+          system: 'balanced',
+          project: 'yolo',
+        },
       },
       ui: {
         theme: 'dark',
@@ -102,8 +109,25 @@ describe('UserSettings', () => {
 
     writeFileSync(settingsPath, JSON.stringify(payload, null, 2), 'utf-8');
 
-    const { loadUserSettings } = await import('../../../src/core/user-settings.js');
+    const { loadUserSettings, resolveAutonomyModeForRole } = await import('../../../src/core/user-settings.js');
     const settings = loadUserSettings();
     expect(settings.aiProviders.default).toBe('tcm');
+    expect(resolveAutonomyModeForRole(settings.preferences, 'project')).toBe('yolo');
+    expect(resolveAutonomyModeForRole(settings.preferences, 'reviewer')).toBe('balanced');
+  });
+
+  it('falls back to global autonomy mode for unknown role', async () => {
+    const { loadUserSettings, saveUserSettings, resolveAutonomyModeForRole } = await import('../../../src/core/user-settings.js');
+    const settings = loadUserSettings();
+    settings.preferences.autonomyMode = 'yolo';
+    settings.preferences.autonomyByRole = {
+      system: 'balanced',
+      project: 'yolo',
+      reviewer: 'balanced',
+    };
+    saveUserSettings(settings);
+    const reloaded = loadUserSettings();
+    expect(resolveAutonomyModeForRole(reloaded.preferences, 'unknown')).toBe('yolo');
+    expect(resolveAutonomyModeForRole(reloaded.preferences, 'system')).toBe('balanced');
   });
 });

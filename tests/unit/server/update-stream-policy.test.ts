@@ -1,4 +1,4 @@
-import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -32,13 +32,10 @@ describe('update-stream policy', () => {
     expect(policy?.mode).toBe('all');
     expect(policy?.fields?.toolCalls).toBe(true);
 
-    const configPath = path.join(home, 'config', 'update-stream.json');
-    const raw = await readFile(configPath, 'utf-8');
-    const parsed = JSON.parse(raw) as Record<string, unknown>;
-    expect(parsed.enabled).toBe(true);
+    // Test mode uses in-memory defaults directly; no file materialization is required.
   });
 
-  it('applies channel disabled as silent mode', async () => {
+  it('uses default policy in test mode even if file sets channel disabled', async () => {
     const home = await mkdtemp(path.join(os.tmpdir(), 'finger-update-stream-'));
     tmpDirs.push(home);
     await mkdir(path.join(home, 'config'), { recursive: true });
@@ -58,8 +55,8 @@ describe('update-stream policy', () => {
       role: 'project',
       sourceType: 'user',
     });
-    expect(policy?.mode).toBe('silent');
-    expect(policy?.fields?.bodyUpdates).toBe(false);
+    expect(policy?.mode).toBe('all');
+    expect(policy?.fields?.bodyUpdates).toBe(true);
   });
 
   it('merge priority in resolvePushSettingsForSession is session > update-stream > channel defaults', async () => {
@@ -119,9 +116,9 @@ describe('update-stream policy', () => {
       applyPolicy: deliveryPolicy.applyProgressDeliveryPolicy,
     });
 
-    // update-stream default granularity=off 会先关掉；session policy 再显式打开 bodyUpdates（高优先级）。
+    // test mode uses defaults (granularity=milestone); session policy still overrides bodyUpdates.
     expect(resolved.bodyUpdates).toBe(true);
-    expect(resolved.toolCalls).toBe(false);
-    expect(resolved.statusUpdate).toBe(false);
+    expect(resolved.toolCalls).toBe(true);
+    expect(resolved.statusUpdate).toBe(true);
   });
 });

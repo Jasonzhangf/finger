@@ -431,8 +431,18 @@ export function isRetryableRunError(error: unknown): boolean {
   if (normalized.includes(' 401') || normalized.includes('_401') || normalized.includes('error code: 401')) return false;
   if (normalized.includes(' 402') || normalized.includes('_402') || normalized.includes('error code: 402')) return false;
   if (normalized.includes(' 403') || normalized.includes('_403') || normalized.includes('error code: 403')) return false;
+  const noEndpoint404 = (
+    normalized.includes('no endpoints found for')
+    && (
+      normalized.includes('status: 404')
+      || normalized.includes('http 404')
+      || normalized.includes('code":"http_404')
+      || normalized.includes("code:'http_404")
+    )
+  );
 
   return isTimeoutError(error)
+    || noEndpoint404
     || normalized.includes('stalled without kernel events')
     || normalized.includes('stale active turn evicted')
     || normalized.includes('active turn superseded')
@@ -982,12 +992,18 @@ export function createChatCodexModule(
               : undefined,
             mergedConfig.resolveToolSpecifications,
           );
-      const toolSpecificationsForTurn = toolSpecifications;
+      const toolSpecificationsForTurn = augmentToolSpecificationsWithCompatAliases(toolSpecifications);
       const mode = parseOptionalString(context?.metadata?.kernelMode) ?? parseOptionalString(context?.metadata?.mode) ?? 'main';
       const contextHistorySource = parseOptionalString(context?.metadata?.contextHistorySource);
       const contextBuilderBypassed = parseOptionalBoolean(context?.metadata?.contextBuilderBypassed);
       const contextBuilderBypassReason = parseOptionalString(context?.metadata?.contextBuilderBypassReason);
       const contextBuilderRebuilt = parseOptionalBoolean(context?.metadata?.contextBuilderRebuilt);
+      const contextLedgerAgentId = parseOptionalString(context?.metadata?.contextLedgerAgentId)
+        ?? parseOptionalString(context?.metadata?.agentId)
+        ?? 'unknown-agent';
+      const contextLedgerRole = parseOptionalString(context?.metadata?.contextLedgerRole)
+        ?? parseOptionalString(context?.metadata?.roleProfile)
+        ?? 'orchestrator';
       const reviewMeta = isRecord(context?.metadata?.review) ? context.metadata.review : undefined;
       const reviewIteration = parseOptionalNumber(reviewMeta?.iteration);
       const reviewPhase = parseOptionalString(reviewMeta?.phase);
@@ -1046,6 +1062,8 @@ export function createChatCodexModule(
           inputTypes: normalizedInputItems.map((item) => item.type),
           toolCount: toolSpecificationsForTurn.length,
           mode,
+          agentId: contextLedgerAgentId,
+          roleProfile: contextLedgerRole,
           ...(contextHistorySource ? { contextHistorySource } : {}),
           ...(contextBuilderBypassed !== undefined ? { contextBuilderBypassed } : {}),
           ...(contextBuilderBypassReason ? { contextBuilderBypassReason } : {}),
@@ -1130,7 +1148,17 @@ export function createChatCodexModule(
         || eventType === 'tool_error'
         || eventType === 'model_round';
 
-      const emitSyntheticKernelEventsFromTaskComplete = (event: ChatCodexKernelEvent): boolean => {
+      const emitSyntheticKernelEventsFromTaskComplete = (
+        event: ChatCodexKernelEvent,
+        options?: {
+          emitModelRound?: boolean;
+          emitToolTrace?: boolean;
+          emitReasoning?: boolean;
+        },
+      ): boolean => {
+        const emitModelRound = options?.emitModelRound !== false;
+        const emitToolTrace = options?.emitToolTrace !== false;
+        const emitReasoning = options?.emitReasoning !== false;
         if (
           event.msg.type !== 'task_complete'
           || !event.msg.metadata_json
@@ -1143,79 +1171,87 @@ export function createChatCodexModule(
         if (!metadata) return false;
 
         let emitted = false;
-        const roundTrace = extractKernelRoundTrace(metadata);
-        for (const round of roundTrace) {
-          emitted = true;
-          safeNotifyLoopEvent(mergedConfig.onLoopEvent, {
-            sessionId,
-            phase: 'kernel_event',
-            timestamp: new Date().toISOString(),
-            payload: {
-              id: event.id,
-              type: 'model_round',
-              ...(typeof round.seq === 'number' ? { seq: round.seq } : {}),
-              round: round.round,
-              ...(round.functionCallsCount !== undefined ? { functionCallsCount: round.functionCallsCount } : {}),
-              ...(round.reasoningCount !== undefined ? { reasoningCount: round.reasoningCount } : {}),
-              ...(round.historyItemsCount !== undefined ? { historyItemsCount: round.historyItemsCount } : {}),
-              ...(round.hasOutputText !== undefined ? { hasOutputText: round.hasOutputText } : {}),
-              ...(round.finishReason ? { finishReason: round.finishReason } : {}),
-              ...(round.responseStatus ? { responseStatus: round.responseStatus } : {}),
-              ...(round.responseIncompleteReason ? { responseIncompleteReason: round.responseIncompleteReason } : {}),
-              ...(round.responseId ? { responseId: round.responseId } : {}),
-              ...(round.inputTokens !== undefined ? { inputTokens: round.inputTokens } : {}),
-              ...(round.outputTokens !== undefined ? { outputTokens: round.outputTokens } : {}),
-              ...(round.totalTokens !== undefined ? { totalTokens: round.totalTokens } : {}),
-              ...(round.estimatedTokensInContextWindow !== undefined
-                ? { estimatedTokensInContextWindow: round.estimatedTokensInContextWindow }
-                : {}),
-              ...(round.estimatedTokensCompactable !== undefined
-                ? { estimatedTokensCompactable: round.estimatedTokensCompactable }
-                : {}),
-              ...(round.contextUsagePercent !== undefined ? { contextUsagePercent: round.contextUsagePercent } : {}),
-              ...(round.maxInputTokens !== undefined ? { maxInputTokens: round.maxInputTokens } : {}),
-              ...(round.thresholdPercent !== undefined ? { thresholdPercent: round.thresholdPercent } : {}),
-              ...(contextBreakdownSnapshot ? { contextBreakdown: contextBreakdownSnapshot } : {}),
-            },
-          });
+        if (emitModelRound) {
+          const roundTrace = extractKernelRoundTrace(metadata);
+          for (const round of roundTrace) {
+            emitted = true;
+            safeNotifyLoopEvent(mergedConfig.onLoopEvent, {
+              sessionId,
+              phase: 'kernel_event',
+              timestamp: new Date().toISOString(),
+              payload: {
+                id: event.id,
+                type: 'model_round',
+                ...(typeof round.seq === 'number' ? { seq: round.seq } : {}),
+                round: round.round,
+                ...(round.functionCallsCount !== undefined ? { functionCallsCount: round.functionCallsCount } : {}),
+                ...(round.reasoningCount !== undefined ? { reasoningCount: round.reasoningCount } : {}),
+                ...(round.historyItemsCount !== undefined ? { historyItemsCount: round.historyItemsCount } : {}),
+                ...(round.hasOutputText !== undefined ? { hasOutputText: round.hasOutputText } : {}),
+                ...(round.finishReason ? { finishReason: round.finishReason } : {}),
+                ...(round.responseStatus ? { responseStatus: round.responseStatus } : {}),
+                ...(round.responseIncompleteReason ? { responseIncompleteReason: round.responseIncompleteReason } : {}),
+                ...(round.responseId ? { responseId: round.responseId } : {}),
+                ...(round.inputTokens !== undefined ? { inputTokens: round.inputTokens } : {}),
+                ...(round.outputTokens !== undefined ? { outputTokens: round.outputTokens } : {}),
+                ...(round.totalTokens !== undefined ? { totalTokens: round.totalTokens } : {}),
+                ...(round.estimatedTokensInContextWindow !== undefined
+                  ? { estimatedTokensInContextWindow: round.estimatedTokensInContextWindow }
+                  : {}),
+                ...(round.estimatedTokensCompactable !== undefined
+                  ? { estimatedTokensCompactable: round.estimatedTokensCompactable }
+                  : {}),
+                ...(round.contextUsagePercent !== undefined ? { contextUsagePercent: round.contextUsagePercent } : {}),
+                ...(round.maxInputTokens !== undefined ? { maxInputTokens: round.maxInputTokens } : {}),
+                ...(round.thresholdPercent !== undefined ? { thresholdPercent: round.thresholdPercent } : {}),
+                agentId: contextLedgerAgentId,
+                roleProfile: contextLedgerRole,
+                ...(contextBreakdownSnapshot ? { contextBreakdown: contextBreakdownSnapshot } : {}),
+              },
+            });
+          }
         }
 
-        const toolTrace = extractKernelToolTrace(metadata);
-        for (const trace of toolTrace) {
-          emitted = true;
-          safeNotifyLoopEvent(mergedConfig.onLoopEvent, {
-            sessionId,
-            phase: 'kernel_event',
-            timestamp: new Date().toISOString(),
-            payload: {
-              id: event.id,
-              type: 'tool_call',
-              ...(typeof trace.seq === 'number' ? { seq: trace.seq } : {}),
-              toolName: trace.tool,
-              ...(trace.callId ? { toolId: trace.callId } : {}),
-              ...(trace.input !== undefined ? { input: trace.input } : {}),
-            },
-          });
+        if (emitToolTrace) {
+          const toolTrace = extractKernelToolTrace(metadata);
+          for (const trace of toolTrace) {
+            emitted = true;
+            safeNotifyLoopEvent(mergedConfig.onLoopEvent, {
+              sessionId,
+              phase: 'kernel_event',
+              timestamp: new Date().toISOString(),
+              payload: {
+                id: event.id,
+                type: 'tool_call',
+                ...(typeof trace.seq === 'number' ? { seq: trace.seq } : {}),
+                toolName: trace.tool,
+                ...(trace.callId ? { toolId: trace.callId } : {}),
+                ...(trace.input !== undefined ? { input: trace.input } : {}),
+              },
+            });
 
-          safeNotifyLoopEvent(mergedConfig.onLoopEvent, {
-            sessionId,
-            phase: 'kernel_event',
-            timestamp: new Date().toISOString(),
-            payload: {
-              id: event.id,
-              type: trace.status === 'ok' ? 'tool_result' : 'tool_error',
-              ...(typeof trace.seq === 'number' ? { seq: trace.seq } : {}),
-              toolName: trace.tool,
-              ...(trace.callId ? { toolId: trace.callId } : {}),
-              ...(typeof trace.durationMs === 'number' ? { duration: trace.durationMs } : {}),
-              ...(trace.status === 'ok'
-                ? (trace.output !== undefined ? { output: trace.output } : {})
-                : { error: trace.error ?? `工具执行失败：${trace.tool}` }),
-            },
-         });
-       }
+            safeNotifyLoopEvent(mergedConfig.onLoopEvent, {
+              sessionId,
+              phase: 'kernel_event',
+              timestamp: new Date().toISOString(),
+              payload: {
+                id: event.id,
+                type: trace.status === 'ok' ? 'tool_result' : 'tool_error',
+                ...(typeof trace.seq === 'number' ? { seq: trace.seq } : {}),
+                toolName: trace.tool,
+                ...(trace.callId ? { toolId: trace.callId } : {}),
+                ...(typeof trace.durationMs === 'number' ? { duration: trace.durationMs } : {}),
+                ...(trace.status === 'ok'
+                  ? (trace.output !== undefined ? { output: trace.output } : {})
+                  : { error: trace.error ?? `工具执行失败：${trace.tool}` }),
+              },
+            });
+          }
+        }
 
-        emitted = emitReasoningTraceFromMetadata(event, metadata) || emitted;
+        if (emitReasoning) {
+          emitted = emitReasoningTraceFromMetadata(event, metadata) || emitted;
+        }
 
         return emitted;
       };
@@ -1259,6 +1295,8 @@ export function createChatCodexModule(
           if (event.msg.error) payload.error = event.msg.error;
           if (typeof event.msg.duration_ms === 'number') payload.duration = event.msg.duration_ms;
         } else if (event.msg.type === 'model_round') {
+          payload.agentId = contextLedgerAgentId;
+          payload.roleProfile = contextLedgerRole;
           if (typeof event.msg.round === 'number') payload.round = event.msg.round;
           if (typeof event.msg.function_calls_count === 'number') payload.functionCallsCount = event.msg.function_calls_count;
           if (typeof event.msg.reasoning_count === 'number') payload.reasoningCount = event.msg.reasoning_count;
@@ -1326,6 +1364,7 @@ export function createChatCodexModule(
 
       let streamedKernelEventCount = 0;
       let streamedRealtimeKernelStepCount = 0;
+      let streamedModelRoundCount = 0;
 
       const normalizedTimeoutRetryCount = Number.isFinite(mergedConfig.timeoutRetryCount)
         ? Math.max(0, Math.floor(mergedConfig.timeoutRetryCount))
@@ -1348,6 +1387,9 @@ export function createChatCodexModule(
               if (isRealtimeKernelStepEvent(event.msg.type)) {
                 streamedRealtimeKernelStepCount += 1;
               }
+              if (event.msg.type === 'model_round') {
+                streamedModelRoundCount += 1;
+              }
               emitKernelEvent(event, {
                 markRealtimeToolEvents:
                   event.msg.type === 'task_complete' && streamedRealtimeKernelStepCount > 0,
@@ -1364,6 +1406,8 @@ export function createChatCodexModule(
             ? 'timeout'
             : normalizedError.includes('stalled')
               ? 'stall'
+              : normalizedError.includes('no endpoints found for')
+                ? 'routing_unavailable'
               : normalizedError.includes('completed response payload')
                 || normalizedError.includes('response stream ended prematurely')
                 || normalizedError.includes('stream ended before completed response')
@@ -1446,6 +1490,17 @@ export function createChatCodexModule(
           emitSyntheticKernelEventsFromTaskComplete(event);
         }
       } else {
+        if (streamedModelRoundCount === 0) {
+          // Some streamed providers emit tool_call/tool_result but omit model_round.
+          // Backfill model_round from task_complete metadata to keep context telemetry stable.
+          for (const event of runResult.events) {
+            emitSyntheticKernelEventsFromTaskComplete(event, {
+              emitModelRound: true,
+              emitToolTrace: false,
+              emitReasoning: false,
+            });
+          }
+        }
         // Streaming path may still carry reasoning trace inside metadata_json.
         // Re-scan final events as a fallback; turn-level dedup prevents duplicate pushes.
         for (const event of runResult.events) {
@@ -2135,11 +2190,6 @@ function normalizeKernelInputItems(items: KernelInputItem[] | undefined, fallbac
   }
   if (merged.length > 0) return merged;
   return [{ type: 'text', text: fallbackText }];
-}
-
-function hasImageInputItems(items: KernelInputItem[] | undefined): boolean {
-  if (!items || items.length === 0) return false;
-  return items.some((item) => item.type === 'image' || item.type === 'local_image');
 }
 
 function buildKernelUserTurnOptions(
@@ -3780,6 +3830,85 @@ function normalizeProvidedToolSpecifications(
     });
   }
   return normalized;
+}
+
+function augmentToolSpecificationsWithCompatAliases(
+  specs: ChatCodexToolSpecification[],
+): ChatCodexToolSpecification[] {
+  if (!Array.isArray(specs) || specs.length === 0) return [];
+  const aliasToCanonical = new Map<string, string>();
+  for (const spec of specs) {
+    if (!spec || typeof spec.name !== 'string') continue;
+    const canonical = spec.name.trim();
+    if (!canonical) continue;
+    const aliases = buildToolCompatibilityAliases(canonical);
+    for (const alias of aliases) {
+      if (!aliasToCanonical.has(alias)) {
+        aliasToCanonical.set(alias, canonical);
+      }
+    }
+  }
+
+  if (aliasToCanonical.size === 0) return specs;
+
+  const seen = new Set<string>(specs.map((item) => item.name));
+  const augmented = [...specs];
+  for (const [alias, canonical] of aliasToCanonical.entries()) {
+    if (seen.has(alias)) continue;
+    const canonicalSpec = specs.find((item) => item.name === canonical);
+    augmented.push({
+      name: alias,
+      description: canonicalSpec?.description
+        ? `Compatibility alias for ${canonical}: ${canonicalSpec.description}`
+        : `Compatibility alias for ${canonical}`,
+      inputSchema: canonicalSpec?.inputSchema,
+    });
+    seen.add(alias);
+  }
+  return augmented;
+}
+
+function buildToolCompatibilityAliases(canonicalName: string): string[] {
+  const canonical = canonicalName.trim();
+  if (!canonical) return [];
+  const aliases = new Set<string>();
+  const parts = canonical
+    .split(/[._-]+/g)
+    .map((item) => item.trim())
+    .filter((item) => item.length > 0);
+
+  if (parts.length === 0) return [];
+
+  const normalizedCandidates = [
+    canonical.replace(/[.-]/g, '_'),
+    canonical.replace(/[._]/g, '-'),
+    canonical.replace(/[_-]/g, '.'),
+    parts.join('_'),
+    parts.join('-'),
+    parts.join('.'),
+    parts.join(''),
+    toCamelCase(parts),
+  ];
+
+  for (const candidate of normalizedCandidates) {
+    const alias = candidate.trim();
+    if (!alias || alias === canonical) continue;
+    if (!/^[a-zA-Z0-9_.-]+$/.test(alias)) continue;
+    aliases.add(alias);
+  }
+
+  return Array.from(aliases);
+}
+
+function toCamelCase(parts: string[]): string {
+  if (parts.length === 0) return '';
+  return parts
+    .map((part, index) => {
+      if (!part) return '';
+      if (index === 0) return part;
+      return `${part.charAt(0).toUpperCase()}${part.slice(1)}`;
+    })
+    .join('');
 }
 
 function defaultToolSpecification(name: string): ChatCodexToolSpecification {

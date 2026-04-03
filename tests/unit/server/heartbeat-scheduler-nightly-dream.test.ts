@@ -1,4 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { promises as fs } from 'fs';
+import path from 'path';
 import * as registry from '../../../src/agents/finger-system-agent/registry.js';
 import { SYSTEM_PROJECT_PATH } from '../../../src/agents/finger-system-agent/index.js';
 import { FINGER_PROJECT_AGENT_ID } from '../../../src/agents/finger-general/finger-general-module.js';
@@ -15,6 +17,10 @@ vi.mock('../../../src/core/project-dream-lock.js', () => ({
 }));
 
 describe('HeartbeatScheduler nightly dream dispatch', () => {
+  const fixtureRoot = path.join(process.cwd(), 'test-data', 'heartbeat-nightly-dream');
+  const monitoredPath = path.join(fixtureRoot, 'monitored');
+  const activeOnlyPath = path.join(fixtureRoot, 'active-only');
+
   beforeEach(() => {
     vi.restoreAllMocks();
     vi.useFakeTimers();
@@ -35,18 +41,27 @@ describe('HeartbeatScheduler nightly dream dispatch', () => {
     vi.useRealTimers();
   });
 
+  beforeEach(async () => {
+    await fs.mkdir(monitoredPath, { recursive: true });
+    await fs.mkdir(activeOnlyPath, { recursive: true });
+  });
+
+  afterEach(async () => {
+    await fs.rm(fixtureRoot, { recursive: true, force: true });
+  });
+
   it('builds monitored + today-active project set and dispatches asynchronously', async () => {
     vi.spyOn(registry, 'listAgents').mockResolvedValue([
       {
         projectId: 'project-monitored',
-        projectPath: '/repo/monitored',
+        projectPath: monitoredPath,
         monitored: true,
         agentId: 'project-monitored-agent',
         status: 'idle',
       } as any,
       {
         projectId: 'project-unmonitored',
-        projectPath: '/repo/unmonitored',
+        projectPath: path.join(fixtureRoot, 'unmonitored'),
         monitored: false,
         agentId: 'project-unmonitored-agent',
         status: 'idle',
@@ -59,16 +74,16 @@ describe('HeartbeatScheduler nightly dream dispatch', () => {
     });
 
     const sessionByProject = new Map<string, Array<{ id: string; lastAccessedAt: string }>>([
-      ['/repo/monitored', [{ id: 'session-monitored', lastAccessedAt: '2026-04-01T00:10:00.000+08:00' }]],
-      ['/repo/active-only', [{ id: 'session-active-only', lastAccessedAt: '2026-04-01T00:20:00.000+08:00' }]],
+      [monitoredPath, [{ id: 'session-monitored', lastAccessedAt: '2026-04-01T00:10:00.000+08:00' }]],
+      [activeOnlyPath, [{ id: 'session-active-only', lastAccessedAt: '2026-04-01T00:20:00.000+08:00' }]],
     ]);
 
     const scheduler = new HeartbeatScheduler({
       agentRuntimeBlock: { execute },
       sessionManager: {
         listRootSessions: vi.fn(() => ([
-          { projectPath: '/repo/monitored', lastAccessedAt: '2026-04-01T00:10:00.000+08:00' },
-          { projectPath: '/repo/active-only', lastAccessedAt: '2026-04-01T00:20:00.000+08:00' },
+          { projectPath: monitoredPath, lastAccessedAt: '2026-04-01T00:10:00.000+08:00' },
+          { projectPath: activeOnlyPath, lastAccessedAt: '2026-04-01T00:20:00.000+08:00' },
           { projectPath: SYSTEM_PROJECT_PATH, lastAccessedAt: '2026-04-01T00:21:00.000+08:00' },
         ])),
         findSessionsByProjectPath: vi.fn((projectPath: string) => sessionByProject.get(projectPath) ?? []),
@@ -119,7 +134,7 @@ describe('HeartbeatScheduler nightly dream dispatch', () => {
     vi.spyOn(registry, 'listAgents').mockResolvedValue([
       {
         projectId: 'project-monitored',
-        projectPath: '/repo/monitored',
+        projectPath: monitoredPath,
         monitored: true,
         agentId: 'project-monitored-agent',
         status: 'idle',
@@ -135,7 +150,7 @@ describe('HeartbeatScheduler nightly dream dispatch', () => {
       agentRuntimeBlock: { execute },
       sessionManager: {
         listRootSessions: vi.fn(() => ([
-          { projectPath: '/repo/monitored', lastAccessedAt: '2026-04-01T00:10:00.000+08:00' },
+          { projectPath: monitoredPath, lastAccessedAt: '2026-04-01T00:10:00.000+08:00' },
         ])),
         findSessionsByProjectPath: vi.fn(() => ([
           { id: 'session-monitored', lastAccessedAt: '2026-04-01T00:10:00.000+08:00' },
@@ -169,7 +184,7 @@ describe('HeartbeatScheduler nightly dream dispatch', () => {
     vi.spyOn(registry, 'listAgents').mockResolvedValue([
       {
         projectId: 'project-monitored',
-        projectPath: '/repo/monitored',
+        projectPath: monitoredPath,
         monitored: true,
         agentId: 'project-monitored-agent',
         status: 'idle',
@@ -209,7 +224,7 @@ describe('HeartbeatScheduler nightly dream dispatch', () => {
     vi.spyOn(registry, 'listAgents').mockResolvedValue([
       {
         projectId: 'project-monitored',
-        projectPath: '/repo/monitored',
+        projectPath: monitoredPath,
         monitored: true,
         agentId: 'project-monitored-agent',
         status: 'idle',
@@ -243,7 +258,7 @@ describe('HeartbeatScheduler nightly dream dispatch', () => {
     vi.spyOn(registry, 'listAgents').mockResolvedValue([
       {
         projectId: 'project-monitored',
-        projectPath: '/repo/monitored',
+        projectPath: monitoredPath,
         monitored: true,
         agentId: 'project-monitored-agent',
         status: 'idle',
@@ -280,14 +295,14 @@ describe('HeartbeatScheduler nightly dream dispatch', () => {
     vi.spyOn(registry, 'listAgents').mockResolvedValue([
       {
         projectId: 'project-a',
-        projectPath: '/repo/a',
+        projectPath: path.join(fixtureRoot, 'a'),
         monitored: true,
         agentId: 'project-a-agent',
         status: 'idle',
       } as any,
       {
         projectId: 'project-b',
-        projectPath: '/repo/b',
+        projectPath: path.join(fixtureRoot, 'b'),
         monitored: true,
         agentId: 'project-b-agent',
         status: 'idle',
@@ -363,6 +378,76 @@ describe('HeartbeatScheduler nightly dream dispatch', () => {
     }));
     expect(String(dispatchCalls[0]?.[1]?.task ?? '')).toContain('Daily System Review Task');
     expect(String(dispatchCalls[0]?.[1]?.task ?? '')).toContain('~/.finger/USER.md');
+  });
+
+  it('re-dispatches daily system review when previous same-day queued state is stale', async () => {
+    vi.spyOn(registry, 'listAgents').mockResolvedValue([]);
+    const execute = vi.fn(async (command: string) => {
+      if (command === 'dispatch') return { status: 'queued' };
+      return { ok: true };
+    });
+    const scheduler = new HeartbeatScheduler({
+      agentRuntimeBlock: { execute },
+      sessionManager: {
+        listRootSessions: vi.fn(() => []),
+      },
+      isRuntimeChildSession: vi.fn(() => false),
+    } as any);
+    (scheduler as any).config = {
+      global: { enabled: false },
+      nightlyDream: { enabled: false },
+      dailySystemReview: {
+        enabled: true,
+        windowStartHour: 0,
+        windowEndHour: 7,
+        maxQueueWaitMs: 9_000,
+      },
+    };
+    (scheduler as any).lastDailySystemReviewDate = '2026-04-01';
+    (scheduler as any).dailySystemReviewDispatchState = {
+      date: '2026-04-01',
+      status: 'queued',
+      updatedAt: Date.now() - (11 * 60_000),
+      sessionId: 'hb-session-finger-system-agent-system-daily-review',
+      source: 'system-heartbeat',
+      runId: 'daily-system-review:2026-04-01',
+    };
+
+    await (scheduler as any).dispatchDailySystemReviewTask();
+    const dispatchCalls = execute.mock.calls.filter((call: unknown[]) => call[0] === 'dispatch');
+    expect(dispatchCalls).toHaveLength(1);
+  });
+
+  it('skips today-active nightly dream candidates that are ephemeral tmp paths', async () => {
+    vi.spyOn(registry, 'listAgents').mockResolvedValue([]);
+    const execute = vi.fn(async () => ({ status: 'queued' }));
+    const scheduler = new HeartbeatScheduler({
+      agentRuntimeBlock: { execute },
+      sessionManager: {
+        listRootSessions: vi.fn(() => ([
+          { projectPath: '/tmp/finger-test-session-abc', lastAccessedAt: '2026-04-01T00:20:00.000+08:00' },
+        ])),
+        findSessionsByProjectPath: vi.fn(() => []),
+      },
+      isRuntimeChildSession: vi.fn(() => false),
+    } as any);
+    (scheduler as any).config = {
+      global: { enabled: false },
+      projects: {},
+      nightlyDream: {
+        enabled: true,
+        windowStartHour: 0,
+        windowEndHour: 7,
+        includeMonitoredProjects: false,
+        includeTodayActiveProjects: true,
+        maxProjectsPerRun: 10,
+        maxQueueWaitMs: 12_000,
+      },
+    };
+
+    await (scheduler as any).dispatchNightlyDreamTasks();
+    const dispatchCalls = execute.mock.calls.filter((call: unknown[]) => call[0] === 'dispatch');
+    expect(dispatchCalls).toHaveLength(0);
   });
 
   it('skips daily system review dispatch when outside configured window', async () => {

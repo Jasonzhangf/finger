@@ -216,11 +216,27 @@ export class SessionManager {
   }
 
   private loadSessionsFromDir(dirPath: string): void {
-    const entries = fs.readdirSync(dirPath, { withFileTypes: true });
+    let entries: fs.Dirent[] = [];
+    try {
+      entries = fs.readdirSync(dirPath, { withFileTypes: true });
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException | undefined)?.code;
+      if (code === 'ENOENT' || code === 'ENOTDIR') return;
+      throw error;
+    }
     for (const entry of entries) {
       if (entry.isDirectory()) {
         const sessionDir = path.join(dirPath, entry.name);
-        const sessionEntries = fs.readdirSync(sessionDir, { withFileTypes: true });
+        let sessionEntries: fs.Dirent[] = [];
+        try {
+          sessionEntries = fs.readdirSync(sessionDir, { withFileTypes: true });
+        } catch (error) {
+          const code = (error as NodeJS.ErrnoException | undefined)?.code;
+          if (code === 'ENOENT' || code === 'ENOTDIR') {
+            continue;
+          }
+          throw error;
+        }
         for (const sessionEntry of sessionEntries) {
           if (!sessionEntry.isFile() || !sessionEntry.name.endsWith('.json')) continue;
           if (isCorruptSessionFileName(sessionEntry.name)) continue;

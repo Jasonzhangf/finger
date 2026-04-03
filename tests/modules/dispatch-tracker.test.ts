@@ -4,12 +4,18 @@
 
 import { describe, it, expect, beforeEach } from 'vitest';
 import { DispatchTracker, resetGlobalDispatchTracker } from '../../src/server/modules/agent-runtime/dispatch-tracker.js';
+import { tmpdir } from 'os';
+import path from 'path';
 
 describe('DispatchTracker', () => {
   let tracker: DispatchTracker;
 
   beforeEach(() => {
-    tracker = new DispatchTracker();
+    const testFile = path.join(
+      tmpdir(),
+      `dispatch-tracker-test-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.json`,
+    );
+    tracker = new DispatchTracker(testFile);
     resetGlobalDispatchTracker();
   });
 

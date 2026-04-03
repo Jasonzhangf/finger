@@ -355,6 +355,242 @@ describe('AgentStatusSubscriber', () => {
       dispatchSubscriber.stop();
     });
 
+    it('dispatch 因 SIGTERM 中断时，通道状态应显示 interrupted 而不是 failed', async () => {
+      const mockMessageHub = {
+        routeToOutput: vi.fn().mockResolvedValue(undefined),
+      };
+
+      const dispatchSubscriber = new AgentStatusSubscriber(eventBus, mockAgentRuntimeDeps, mockMessageHub);
+      dispatchSubscriber.setPrimaryAgent('agent-1');
+      dispatchSubscriber.registerSession('session-dispatch-sigterm', {
+        channel: 'qqbot',
+        envelopeId: 'env-dispatch-sigterm',
+      });
+      dispatchSubscriber.start();
+
+      const dispatchEvent: RuntimeEvent = {
+        type: 'agent_runtime_dispatch',
+        sessionId: 'session-dispatch-sigterm',
+        timestamp: new Date().toISOString(),
+        payload: {
+          dispatchId: 'dispatch-sigterm-1',
+          sourceAgentId: 'finger-system-agent',
+          targetAgentId: 'finger-reviewer',
+          status: 'failed',
+          result: {
+            status: 'failed',
+            error: 'chat-codex process exited with signal SIGTERM',
+            summary: 'chat-codex process exited with signal SIGTERM',
+          },
+        },
+      };
+
+      await eventBus.emit(dispatchEvent);
+      await new Promise(resolve => setTimeout(resolve, 80));
+
+      const dispatchCall = mockMessageHub.routeToOutput.mock.calls.find(
+        (call: unknown[]) => call[0] === 'channel-bridge-qqbot',
+      );
+      expect(dispatchCall).toBeDefined();
+      const payload = dispatchCall?.[1] as { statusUpdate?: { status?: { state?: string; summary?: string } } };
+      const summary = payload?.statusUpdate?.status?.summary ?? '';
+      expect(payload?.statusUpdate?.status?.state).toBe('waiting');
+      expect(summary).toContain('状态: interrupted');
+      expect(summary).toContain('运行时重启导致本次派发中断');
+
+      dispatchSubscriber.stop();
+    });
+
+    it('启动恢复来源的 transient dispatch（queued/running/completed）应静默，不推送到通道', async () => {
+      const mockMessageHub = {
+        routeToOutput: vi.fn().mockResolvedValue(undefined),
+      };
+
+      const dispatchSubscriber = new AgentStatusSubscriber(eventBus, mockAgentRuntimeDeps, mockMessageHub);
+      dispatchSubscriber.setPrimaryAgent('finger-system-agent');
+      dispatchSubscriber.registerSession('session-dispatch-startup-noise', {
+        channel: 'qqbot',
+        envelopeId: 'env-dispatch-startup-noise',
+      });
+      dispatchSubscriber.start();
+
+      const dispatchEvent: RuntimeEvent = {
+        type: 'agent_runtime_dispatch',
+        sessionId: 'session-dispatch-startup-noise',
+        timestamp: new Date().toISOString(),
+        payload: {
+          dispatchId: 'dispatch-startup-noise-1',
+          sourceAgentId: 'system-recovery',
+          targetAgentId: 'finger-system-agent',
+          status: 'completed',
+          result: {
+            status: 'completed',
+            summary: 'Startup recovery no-op completed',
+          },
+        },
+      };
+
+      await eventBus.emit(dispatchEvent);
+      await new Promise(resolve => setTimeout(resolve, 80));
+
+      expect(mockMessageHub.routeToOutput).not.toHaveBeenCalled();
+      dispatchSubscriber.stop();
+    });
+
+    it('启动恢复来源的非重启失败 dispatch 仍应推送（保留关键错误信号）', async () => {
+      const mockMessageHub = {
+        routeToOutput: vi.fn().mockResolvedValue(undefined),
+      };
+
+      const dispatchSubscriber = new AgentStatusSubscriber(eventBus, mockAgentRuntimeDeps, mockMessageHub);
+      dispatchSubscriber.setPrimaryAgent('finger-system-agent');
+      dispatchSubscriber.registerSession('session-dispatch-startup-hard-fail', {
+        channel: 'qqbot',
+        envelopeId: 'env-dispatch-startup-hard-fail',
+      });
+      dispatchSubscriber.start();
+
+      const dispatchEvent: RuntimeEvent = {
+        type: 'agent_runtime_dispatch',
+        sessionId: 'session-dispatch-startup-hard-fail',
+        timestamp: new Date().toISOString(),
+        payload: {
+          dispatchId: 'dispatch-startup-hard-fail-1',
+          sourceAgentId: 'system-recovery',
+          targetAgentId: 'finger-system-agent',
+          status: 'failed',
+          result: {
+            status: 'failed',
+            error: 'startup resume failed due to malformed state payload',
+            summary: 'startup resume failed due to malformed state payload',
+          },
+        },
+      };
+
+      await eventBus.emit(dispatchEvent);
+      await new Promise(resolve => setTimeout(resolve, 80));
+
+      expect(mockMessageHub.routeToOutput).toHaveBeenCalled();
+      const dispatchCall = mockMessageHub.routeToOutput.mock.calls.find(
+        (call: unknown[]) => call[0] === 'channel-bridge-qqbot',
+      );
+      expect(dispatchCall).toBeDefined();
+      const payload = dispatchCall?.[1] as { statusUpdate?: { status?: { state?: string; summary?: string } } };
+      expect(payload?.statusUpdate?.status?.state).toBe('failed');
+      expect(payload?.statusUpdate?.status?.summary ?? '').toContain('状态: failed');
+      dispatchSubscriber.stop();
+    });
+
+
+    it('system-heartbeat 派发到 system agent 的 queued 更新应静默', async () => {
+      const mockMessageHub = {
+        routeToOutput: vi.fn().mockResolvedValue(undefined),
+      };
+      const dispatchSubscriber = new AgentStatusSubscriber(eventBus, mockAgentRuntimeDeps, mockMessageHub);
+      dispatchSubscriber.setPrimaryAgent('finger-system-agent');
+      dispatchSubscriber.registerSession('session-dispatch-heartbeat-system-noise', {
+        channel: 'qqbot',
+        envelopeId: 'env-dispatch-heartbeat-system-noise',
+      });
+      dispatchSubscriber.start();
+
+      const dispatchEvent: RuntimeEvent = {
+        type: 'agent_runtime_dispatch',
+        sessionId: 'session-dispatch-heartbeat-system-noise',
+        timestamp: new Date().toISOString(),
+        payload: {
+          dispatchId: 'dispatch-heartbeat-system-noise-1',
+          sourceAgentId: 'system-heartbeat',
+          targetAgentId: 'finger-system-agent',
+          status: 'queued',
+          queuePosition: 1,
+          result: {
+            status: 'queued',
+            summary: '新任务已派发，等待执行',
+          },
+        },
+      };
+
+      await eventBus.emit(dispatchEvent);
+      await new Promise(resolve => setTimeout(resolve, 80));
+
+      expect(mockMessageHub.routeToOutput).not.toHaveBeenCalled();
+      dispatchSubscriber.stop();
+    });
+
+    it('mailbox 协调事件回流到 system agent 时应静默（非失败）', async () => {
+      const mockMessageHub = {
+        routeToOutput: vi.fn().mockResolvedValue(undefined),
+      };
+      const dispatchSubscriber = new AgentStatusSubscriber(eventBus, mockAgentRuntimeDeps, mockMessageHub);
+      dispatchSubscriber.setPrimaryAgent('finger-system-agent');
+      dispatchSubscriber.registerSession('session-dispatch-mailbox-system-noise', {
+        channel: 'qqbot',
+        envelopeId: 'env-dispatch-mailbox-system-noise',
+      });
+      dispatchSubscriber.start();
+
+      const dispatchEvent: RuntimeEvent = {
+        type: 'agent_runtime_dispatch',
+        sessionId: 'session-dispatch-mailbox-system-noise',
+        timestamp: new Date().toISOString(),
+        payload: {
+          dispatchId: 'dispatch-mailbox-system-noise-1',
+          sourceAgentId: 'finger-reviewer',
+          targetAgentId: 'finger-system-agent',
+          status: 'completed',
+          result: {
+            status: 'completed',
+            summary: 'flow-healthcheck-001 PASS',
+            mailboxMessageId: 'msg-abc123',
+          },
+        },
+      };
+
+      await eventBus.emit(dispatchEvent);
+      await new Promise(resolve => setTimeout(resolve, 80));
+
+      expect(mockMessageHub.routeToOutput).not.toHaveBeenCalled();
+      dispatchSubscriber.stop();
+    });
+
+    it('mailbox 协调事件回流到 system agent 时，失败态仍应推送', async () => {
+      const mockMessageHub = {
+        routeToOutput: vi.fn().mockResolvedValue(undefined),
+      };
+      const dispatchSubscriber = new AgentStatusSubscriber(eventBus, mockAgentRuntimeDeps, mockMessageHub);
+      dispatchSubscriber.setPrimaryAgent('finger-system-agent');
+      dispatchSubscriber.registerSession('session-dispatch-mailbox-system-failed', {
+        channel: 'qqbot',
+        envelopeId: 'env-dispatch-mailbox-system-failed',
+      });
+      dispatchSubscriber.start();
+
+      const dispatchEvent: RuntimeEvent = {
+        type: 'agent_runtime_dispatch',
+        sessionId: 'session-dispatch-mailbox-system-failed',
+        timestamp: new Date().toISOString(),
+        payload: {
+          dispatchId: 'dispatch-mailbox-system-failed-1',
+          sourceAgentId: 'finger-reviewer',
+          targetAgentId: 'finger-system-agent',
+          status: 'failed',
+          result: {
+            status: 'failed',
+            summary: 'mailbox coordination failed',
+            error: 'mailbox coordination failed',
+            mailboxMessageId: 'msg-abc456',
+          },
+        },
+      };
+
+      await eventBus.emit(dispatchEvent);
+      await new Promise(resolve => setTimeout(resolve, 80));
+
+      expect(mockMessageHub.routeToOutput).toHaveBeenCalled();
+      dispatchSubscriber.stop();
+    });
+
     it('heartbeat 无动作（No actionable work）不应推送派发更新', async () => {
       const mockMessageHub = {
         routeToOutput: vi.fn().mockResolvedValue(undefined),
@@ -368,6 +604,7 @@ describe('AgentStatusSubscriber', () => {
       dispatchSubscriber.start();
 
       mockSessionManager.getSession.mockReturnValue({
+        projectPath: '/tmp/project-a',
         context: {
           projectTaskState: {
             active: true,
@@ -402,10 +639,7 @@ describe('AgentStatusSubscriber', () => {
       expect(mockSessionManager.updateContext).toHaveBeenCalledWith(
         'session-dispatch-heartbeat-noop',
         expect.objectContaining({
-          projectTaskState: expect.objectContaining({
-            active: false,
-            status: 'closed',
-          }),
+          projectTaskState: null,
         }),
       );
       dispatchSubscriber.stop();

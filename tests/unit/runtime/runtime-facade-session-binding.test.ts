@@ -141,6 +141,39 @@ describe('RuntimeFacade session binding hard guards', () => {
     expect(toolCall?.toolName).toBe('command.exec');
   });
 
+  it('normalizes camelCase/flat alias to canonical tool when uniquely whitelisted', async () => {
+    const emits: Array<Record<string, unknown>> = [];
+    const eventBus = {
+      emit: vi.fn(async (evt: Record<string, unknown>) => {
+        emits.push(evt);
+      }),
+      enablePersistence: vi.fn(),
+    } as any;
+    const sessionManager = createSessionManagerStub();
+    const toolRegistry = createToolRegistryStub() as any;
+    const runtime = new RuntimeFacade(eventBus, sessionManager, toolRegistry);
+    runtime.grantToolToAgent('finger-system-agent', 'agent.list');
+
+    await runtime.callTool('finger-system-agent', 'agentList', {}, { sessionId: 'system-1' });
+    await runtime.callTool('finger-system-agent', 'agentlist', {}, { sessionId: 'system-1' });
+
+    expect(toolRegistry.execute).toHaveBeenNthCalledWith(
+      1,
+      'agent.list',
+      {},
+      expect.objectContaining({ agentId: 'finger-system-agent', sessionId: 'system-1' }),
+    );
+    expect(toolRegistry.execute).toHaveBeenNthCalledWith(
+      2,
+      'agent.list',
+      {},
+      expect.objectContaining({ agentId: 'finger-system-agent', sessionId: 'system-1' }),
+    );
+    const toolCalls = emits.filter((evt) => evt.type === 'tool_call');
+    expect(toolCalls[0]?.toolName).toBe('agent.list');
+    expect(toolCalls[1]?.toolName).toBe('agent.list');
+  });
+
   it('keeps unknown alias denied when no whitelisted target exists', async () => {
     const eventBus = { emit: vi.fn(async () => undefined), enablePersistence: vi.fn() } as any;
     const sessionManager = createSessionManagerStub();

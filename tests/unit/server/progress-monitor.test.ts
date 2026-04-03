@@ -19,6 +19,166 @@ async function flushEventLoop(): Promise<void> {
 }
 
 describe('ProgressMonitor incremental updates', () => {
+  it('reuses turn_start context snapshot when first tracked event is tool-only', async () => {
+    const eventBus = new UnifiedEventBus();
+    const reports: string[] = [];
+    const monitor = new ProgressMonitor(
+      eventBus,
+      createMinimalDeps(),
+      {
+        onProgressReport: (report) => {
+          reports.push(report.summary);
+        },
+      },
+      {
+        enabled: true,
+        progressUpdates: true,
+        intervalMs: 60_000,
+      },
+    );
+
+    monitor.start();
+
+    // Simulate turn_start without explicit agent id in event root, but with context snapshot.
+    await eventBus.emit({
+      type: 'turn_start',
+      sessionId: 'session-tool-only-context',
+      timestamp: new Date().toISOString(),
+      payload: {
+        contextBreakdown: {
+          historyContextTokens: 4200,
+          historyCurrentTokens: 1800,
+          historyTotalTokens: 6000,
+          totalKnownTokens: 25000,
+        },
+      },
+    } as any);
+
+    // Later tool event creates the progress entry.
+    await eventBus.emit({
+      type: 'tool_call',
+      sessionId: 'session-tool-only-context',
+      agentId: 'finger-system-agent',
+      toolId: 'tool-only-1',
+      toolName: 'reasoning.stop',
+      timestamp: new Date().toISOString(),
+      payload: {
+        input: {},
+      },
+    } as any);
+    await eventBus.emit({
+      type: 'tool_result',
+      sessionId: 'session-tool-only-context',
+      agentId: 'finger-system-agent',
+      toolId: 'tool-only-1',
+      toolName: 'reasoning.stop',
+      timestamp: new Date().toISOString(),
+      payload: {
+        input: {},
+        output: 'ok',
+      },
+    } as any);
+
+    await flushEventLoop();
+    await (monitor as any).generateProgressReport();
+
+    expect(reports.length).toBeGreaterThan(0);
+    const latest = reports[reports.length - 1];
+    expect(latest).toContain('🧠 上下文:');
+    expect(latest).not.toContain('当前为工具流，尚未收到本轮 model_round 统计');
+
+    monitor.stop();
+  });
+
+  it('applies session-level context snapshot to existing progress entry even without explicit agentId', async () => {
+    const eventBus = new UnifiedEventBus();
+    const reports: string[] = [];
+    const monitor = new ProgressMonitor(
+      eventBus,
+      createMinimalDeps(),
+      {
+        onProgressReport: (report) => {
+          reports.push(report.summary);
+        },
+      },
+      {
+        enabled: true,
+        progressUpdates: true,
+        intervalMs: 60_000,
+      },
+    );
+
+    monitor.start();
+
+    await eventBus.emit({
+      type: 'tool_call',
+      sessionId: 'session-system-snapshot',
+      agentId: 'finger-system-agent',
+      toolId: 'ss-1',
+      toolName: 'shell.exec',
+      timestamp: new Date().toISOString(),
+      payload: { input: { cmd: 'echo bootstrap' } },
+    } as any);
+    await eventBus.emit({
+      type: 'tool_result',
+      sessionId: 'session-system-snapshot',
+      agentId: 'finger-system-agent',
+      toolId: 'ss-1',
+      toolName: 'shell.exec',
+      timestamp: new Date().toISOString(),
+      payload: { input: { cmd: 'echo bootstrap' }, output: 'ok' },
+    } as any);
+    await flushEventLoop();
+    await (monitor as any).generateProgressReport();
+    expect(reports[0]).toContain('尚未收到本轮 model_round');
+
+    await eventBus.emit({
+      type: 'system_notice',
+      sessionId: 'session-system-snapshot',
+      timestamp: new Date().toISOString(),
+      payload: {
+        source: 'auto_compact_probe',
+        contextUsagePercent: 42,
+        estimatedTokensInContextWindow: 110000,
+        maxInputTokens: 262144,
+        contextBreakdown: {
+          historyContextTokens: 18000,
+          historyCurrentTokens: 12000,
+          historyTotalTokens: 30000,
+          totalKnownTokens: 64000,
+        },
+      },
+    } as any);
+
+    await eventBus.emit({
+      type: 'tool_call',
+      sessionId: 'session-system-snapshot',
+      agentId: 'finger-system-agent',
+      toolId: 'ss-2',
+      toolName: 'shell.exec',
+      timestamp: new Date().toISOString(),
+      payload: { input: { cmd: 'echo follow-up' } },
+    } as any);
+    await eventBus.emit({
+      type: 'tool_result',
+      sessionId: 'session-system-snapshot',
+      agentId: 'finger-system-agent',
+      toolId: 'ss-2',
+      toolName: 'shell.exec',
+      timestamp: new Date().toISOString(),
+      payload: { input: { cmd: 'echo follow-up' }, output: 'ok' },
+    } as any);
+    await flushEventLoop();
+    await (monitor as any).generateProgressReport();
+
+    expect(reports.length).toBeGreaterThanOrEqual(2);
+    const latest = reports[reports.length - 1];
+    expect(latest).toContain('🧠 上下文:');
+    expect(latest).not.toContain('尚未收到本轮 model_round');
+
+    monitor.stop();
+  });
+
   it('does not repeat already-reported task/reasoning in next progress update', async () => {
     const eventBus = new UnifiedEventBus();
     const reports: string[] = [];
@@ -300,7 +460,7 @@ describe('ProgressMonitor incremental updates', () => {
       toolId: 'tool-grow-1',
       toolName: 'shell.exec',
       timestamp: new Date().toISOString(),
-      payload: { input: { cmd: 'rg \"context\" src/server/modules/progress-monitor-event-handlers.ts' } },
+      payload: { input: { cmd: 'rg "context" src/server/modules/progress-monitor-event-handlers.ts' } },
     } as any);
     await flushEventLoop();
 
@@ -401,6 +561,62 @@ describe('ProgressMonitor incremental updates', () => {
     monitor.stop();
   });
 
+  it('emits heartbeat progress every interval for stalled open turn even without pending tool', async () => {
+    const eventBus = new UnifiedEventBus();
+    const reports: string[] = [];
+    const monitor = new ProgressMonitor(
+      eventBus,
+      createMinimalDeps(),
+      {
+        onProgressReport: (report) => {
+          reports.push(report.summary);
+        },
+      },
+      {
+        enabled: true,
+        progressUpdates: true,
+        intervalMs: 60_000,
+      },
+    );
+
+    monitor.start();
+
+    await eventBus.emit({
+      type: 'turn_start',
+      sessionId: 'session-stalled-open-turn-no-tool',
+      agentId: 'finger-system-agent',
+      timestamp: new Date().toISOString(),
+      payload: {
+        prompt: '继续执行任务',
+      },
+    } as any);
+    await flushEventLoop();
+
+    const progress = monitor.getProgress('session-stalled-open-turn-no-tool');
+    expect(progress).toBeTruthy();
+    if (progress) {
+      const now = Date.now();
+      progress.startTime = now - 180_000;
+      progress.lastUpdateTime = now - 65_000;
+      progress.lastReportTime = now - 65_000;
+      progress.status = 'running';
+      progress.hasOpenTurn = true;
+      progress.currentTask = '继续执行任务';
+      progress.contextUsagePercent = 23;
+      progress.estimatedTokensInContextWindow = 62_500;
+      progress.maxInputTokens = 262_144;
+    }
+
+    await (monitor as any).generateProgressReport();
+
+    expect(reports).toHaveLength(1);
+    expect(reports[0]).toContain('无新事件');
+    expect(reports[0]).toContain('当前轮仍在运行');
+    expect(reports[0]).toContain('🧠 上下文: 23%');
+
+    monitor.stop();
+  });
+
   it('auto-demotes tool-only running progress to idle after report to avoid stale waiting state', async () => {
     const eventBus = new UnifiedEventBus();
     const reports: string[] = [];
@@ -449,7 +665,7 @@ describe('ProgressMonitor incremental updates', () => {
     await (monitor as any).generateProgressReport();
 
     expect(reports).toHaveLength(1);
-    expect(reports[0]).toContain('暂无 model_round 上下文统计（工具流）');
+    expect(reports[0]).toContain('当前为工具流，尚未收到本轮 model_round 统计（并非无上下文）');
     expect(reports[0]).not.toContain('未关闭');
     const progress = monitor.getProgress('session-tool-only-idle');
     expect(progress?.status).toBe('idle');
@@ -489,7 +705,7 @@ describe('ProgressMonitor incremental updates', () => {
       toolName: 'command.exec',
       timestamp: new Date().toISOString(),
       payload: {
-        input: 'echo system-first',
+        input: 'git status',
       },
     } as any);
     await eventBus.emit({
@@ -500,7 +716,7 @@ describe('ProgressMonitor incremental updates', () => {
       toolName: 'command.exec',
       timestamp: new Date().toISOString(),
       payload: {
-        input: 'echo system-first',
+        input: 'git status',
         output: 'ok',
       },
     } as any);
@@ -513,7 +729,7 @@ describe('ProgressMonitor incremental updates', () => {
       toolName: 'command.exec',
       timestamp: new Date().toISOString(),
       payload: {
-        input: 'echo project-first',
+        input: 'pnpm build',
       },
     } as any);
     await eventBus.emit({
@@ -524,7 +740,7 @@ describe('ProgressMonitor incremental updates', () => {
       toolName: 'command.exec',
       timestamp: new Date().toISOString(),
       payload: {
-        input: 'echo project-first',
+        input: 'pnpm build',
         output: 'ok',
       },
     } as any);
@@ -533,8 +749,8 @@ describe('ProgressMonitor incremental updates', () => {
     expect(reports).toHaveLength(2);
     const firstSystem = reports.find((item) => item.agentId === 'finger-system-agent');
     const firstProject = reports.find((item) => item.agentId === 'finger-project-agent');
-    expect(firstSystem?.summary).toContain('system-first');
-    expect(firstProject?.summary).toContain('project-first');
+    expect(firstSystem?.summary).toContain('git status');
+    expect(firstProject?.summary).toContain('pnpm build');
 
     await eventBus.emit({
       type: 'tool_call',
@@ -544,7 +760,7 @@ describe('ProgressMonitor incremental updates', () => {
       toolName: 'command.exec',
       timestamp: new Date().toISOString(),
       payload: {
-        input: 'echo system-second',
+        input: 'python -V',
       },
     } as any);
     await eventBus.emit({
@@ -555,7 +771,7 @@ describe('ProgressMonitor incremental updates', () => {
       toolName: 'command.exec',
       timestamp: new Date().toISOString(),
       payload: {
-        input: 'echo system-second',
+        input: 'python -V',
         output: 'ok',
       },
     } as any);
@@ -564,9 +780,9 @@ describe('ProgressMonitor incremental updates', () => {
     expect(reports).toHaveLength(3);
     const latest = reports[2];
     expect(latest.agentId).toBe('finger-system-agent');
-    expect(latest.summary).toContain('system-second');
-    expect(latest.summary).not.toContain('system-first');
-    expect(latest.summary).not.toContain('project-first');
+    expect(latest.summary).toContain('python -V');
+    expect(latest.summary).not.toContain('git status');
+    expect(latest.summary).not.toContain('pnpm build');
 
     monitor.stop();
   });
@@ -615,6 +831,109 @@ describe('ProgressMonitor incremental updates', () => {
     expect(progress).toBeTruthy();
     expect(progress?.status).toBe('completed');
     expect(progress?.currentTask).toContain('派发 finger-reviewer (completed)');
+
+    monitor.stop();
+  });
+
+  it('does not apply heartbeat session context stats into business session progress', async () => {
+    const eventBus = new UnifiedEventBus();
+    const reports: Array<{ sessionId: string; summary: string }> = [];
+    const monitor = new ProgressMonitor(
+      eventBus,
+      createMinimalDeps(),
+      {
+        onProgressReport: (report) => {
+          reports.push({
+            sessionId: report.sessionId,
+            summary: report.summary,
+          });
+        },
+      },
+      {
+        enabled: true,
+        progressUpdates: true,
+        intervalMs: 60_000,
+      },
+    );
+
+    monitor.start();
+
+    const businessSessionId = 'session-business-context-isolated';
+    await eventBus.emit({
+      type: 'tool_call',
+      sessionId: businessSessionId,
+      agentId: 'finger-system-agent',
+      toolId: 't1',
+      toolName: 'shell.exec',
+      timestamp: new Date().toISOString(),
+      payload: {
+        input: { cmd: 'echo phase-1' },
+      },
+    } as any);
+    await eventBus.emit({
+      type: 'tool_result',
+      sessionId: businessSessionId,
+      agentId: 'finger-system-agent',
+      toolId: 't1',
+      toolName: 'shell.exec',
+      timestamp: new Date().toISOString(),
+      payload: {
+        input: { cmd: 'echo phase-1' },
+        output: 'ok',
+      },
+    } as any);
+    await flushEventLoop();
+
+    await (monitor as any).generateProgressReport();
+    expect(reports).toHaveLength(1);
+    expect(reports[0].sessionId).toBe(businessSessionId);
+    expect(reports[0].summary).toContain('尚未收到本轮 model_round');
+
+    // Heartbeat session sends auto compact probe context stats.
+    // Business session progress must stay isolated and MUST NOT inherit heartbeat stats.
+    await eventBus.emit({
+      type: 'system_notice',
+      sessionId: 'hb-session-finger-system-agent-global',
+      timestamp: new Date().toISOString(),
+      payload: {
+        source: 'auto_compact_probe',
+        agentId: 'finger-system-agent',
+        contextUsagePercent: 33,
+        estimatedTokensInContextWindow: 86000,
+        maxInputTokens: 262000,
+      },
+    } as any);
+    await flushEventLoop();
+
+    await eventBus.emit({
+      type: 'tool_call',
+      sessionId: businessSessionId,
+      agentId: 'finger-system-agent',
+      toolId: 't2',
+      toolName: 'shell.exec',
+      timestamp: new Date().toISOString(),
+      payload: {
+        input: { cmd: 'echo phase-2' },
+      },
+    } as any);
+    await eventBus.emit({
+      type: 'tool_result',
+      sessionId: businessSessionId,
+      agentId: 'finger-system-agent',
+      toolId: 't2',
+      toolName: 'shell.exec',
+      timestamp: new Date().toISOString(),
+      payload: {
+        input: { cmd: 'echo phase-2' },
+        output: 'ok',
+      },
+    } as any);
+    await flushEventLoop();
+
+    await (monitor as any).generateProgressReport();
+    expect(reports).toHaveLength(2);
+    expect(reports[1].summary).toContain('尚未收到本轮 model_round');
+    expect(reports[1].summary).not.toContain('/262k');
 
     monitor.stop();
   });

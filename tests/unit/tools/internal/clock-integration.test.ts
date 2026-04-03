@@ -266,7 +266,7 @@ describe('ClockTaskInjector', () => {
     expect(dispatchCall.task.prompt).toBe('execute this task');
     expect(dispatchCall.sessionId).toBe('test-session');
     expect(dispatchCall.metadata.source).toBe('clock');
-    expect(dispatchCall.metadata.progressDelivery).toEqual({ mode: 'result_only' });
+    expect(dispatchCall.metadata.scheduledProgressDelivery).toEqual({ mode: 'result_only' });
   });
 
   it('should not inject task if inject payload is missing', async () => {

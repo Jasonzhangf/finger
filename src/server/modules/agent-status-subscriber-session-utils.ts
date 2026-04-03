@@ -20,8 +20,8 @@ import {
 } from './agent-status-subscriber-mapping-utils.js';
 import {
   parseProjectTaskState,
-  mergeProjectTaskState,
 } from '../../common/project-task-state.js';
+import { applyProjectStatusGatewayPatch } from './project-status-gateway.js';
 
 export {
   resolveEnvelopeMappingForSession,
@@ -382,13 +382,29 @@ export async function finalizeChannelTurnDelivery(params: {
       && (!targetAgentId || currentProjectTaskState.targetAgentId === targetAgentId)
       && allowAutoClose
     ) {
-      params.deps.sessionManager.updateContext(params.sessionId, {
-        projectTaskState: mergeProjectTaskState(currentProjectTaskState, {
+      const nextRevision = typeof currentProjectTaskState.revision === 'number'
+        ? currentProjectTaskState.revision + 1
+        : undefined;
+      applyProjectStatusGatewayPatch({
+        sessionManager: params.deps.sessionManager,
+        sessionIds: [params.sessionId],
+        source: 'agent-status-subscriber.finalizeSessionOutput.no_actionable_watchdog',
+        patch: {
           active: false,
           status: 'closed',
+          ...(typeof nextRevision === 'number' ? { revision: nextRevision } : {}),
           note: 'watchdog_no_actionable_auto_closed',
           summary: typeof params.finalReply === 'string' ? params.finalReply.slice(0, 240) : 'watchdog_no_actionable',
-        }),
+          taskId: currentProjectTaskState.taskId,
+          taskName: currentProjectTaskState.taskName,
+          dispatchId: currentProjectTaskState.dispatchId,
+          boundSessionId: currentProjectTaskState.boundSessionId,
+          sourceAgentId: currentProjectTaskState.sourceAgentId,
+          targetAgentId: currentProjectTaskState.targetAgentId,
+          assigneeWorkerId: currentProjectTaskState.assigneeWorkerId,
+          assigneeWorkerName: currentProjectTaskState.assigneeWorkerName,
+          blockedBy: currentProjectTaskState.blockedBy,
+        },
       });
     }
     clearSessionObservers(params.sessionId, params.state);

@@ -35,11 +35,7 @@ describe('review-runtime', () => {
       },
     } as any);
 
-    expect(execute).toHaveBeenCalledTimes(1);
-    expect(execute).toHaveBeenCalledWith('deploy', expect.objectContaining({
-      targetAgentId: 'finger-reviewer',
-      sessionId: 'session-1',
-    }));
+    expect(execute).not.toHaveBeenCalled();
     expect(upsertReviewRoute).toHaveBeenCalledWith(expect.objectContaining({
       taskId: 'task-123',
       taskName: 'qq-image-delivery',

@@ -21,9 +21,9 @@ describe('finger-role-modules continuity anchors', () => {
     { id: 'u4', role: 'user', content: '继续，不要停', timestamp: '2026-03-28T10:03:00.000Z' },
   ];
 
-  it('extracts the recent two completed task windows from session history', () => {
+  it('extracts recent user-turn windows and keeps continuity with latest user turn', () => {
     const tasks = extractRecentTaskMessages(sessionMessages, 2);
-    expect(tasks.map((item) => item.id)).toEqual(['u2', 'a2', 's2', 'u3', 'a3', 's3']);
+    expect(tasks.map((item) => item.id)).toEqual(['u3', 'a3', 's3', 'u4']);
   });
 
   it('extracts up to the recent ten user inputs from session history', () => {
@@ -54,7 +54,7 @@ describe('finger-role-modules continuity anchors', () => {
       contextBuilderRebuilt: false,
     });
 
-    expect(augmented.map((item) => item.id)).toEqual(['u1', 'a1', 'u2', 'a2', 's2', 'u3', 'a3', 's3', 'u4']);
+    expect(augmented.map((item) => item.id)).toEqual(['u1', 'a1', 'u2', 'u3', 'a3', 's3', 'u4']);
     expect(augmented.find((item) => item.id === 'u3')?.metadata?.continuityAnchor).toBe(true);
     expect(augmented.find((item) => item.id === 'u3')?.metadata?.contextZone).toBe('working_set');
     expect(augmented.find((item) => item.id === 's3')?.metadata?.contextZone).toBe('working_set');

@@ -41,7 +41,12 @@ function sanitizeReplyForChannel(text: string): string {
     ? parsed.humanResponse.trim()
     : '';
   const base = humanResponse || source;
-  return stripControlLikeJsonPayload(base).trim();
+  const stripped = stripControlLikeJsonPayload(base).trim();
+  const withoutToolNotExists = stripped
+    .replace(/Tool\s+[a-zA-Z0-9_.-]+\s+does(?:\s+not)?\s+exist(?:s)?\.?/gi, '')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+  return withoutToolNotExists;
 }
 
 export interface ChannelBridgeHubRouteDeps {

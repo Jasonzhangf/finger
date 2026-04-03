@@ -5,6 +5,15 @@ import { FINGER_PATHS } from '../../core/finger-paths.js';
 
 type DisplaySettingKey = 'ctx' | 'toolcall' | 'progress' | 'heartbeat';
 type ContextDisplayMode = 'on' | 'off' | 'simple' | 'verbose';
+type ExtendedDisplaySettingKey =
+  | DisplaySettingKey
+  | 'reasoning'
+  | 'body'
+  | 'status'
+  | 'step'
+  | 'stepbatch'
+  | 'mode'
+  | 'show';
 
 function normalizeDisplayTargetChannel(channelId: string): string {
   const normalized = (channelId || '').trim().toLowerCase();
@@ -14,34 +23,53 @@ function normalizeDisplayTargetChannel(channelId: string): string {
 
 function parseDisplaySpec(specRaw: string): {
   ok: boolean;
-  key?: DisplaySettingKey;
+  key?: ExtendedDisplaySettingKey;
   value?: string;
   error?: string;
 } {
   const spec = specRaw.trim().toLowerCase();
+  if (spec === 'show' || spec === 'list' || spec === 'status') {
+    return {
+      ok: true,
+      key: 'show',
+      value: '',
+    };
+  }
   const separatorIndex = spec.indexOf(':');
   if (separatorIndex <= 0 || separatorIndex >= spec.length - 1) {
     return {
       ok: false,
-      error: '格式错误。请使用例如 <##display:"ctx:simple"##>',
+      error: '格式错误。请使用例如 <##display:"ctx:simple"##> 或 <##display:"show"##>',
     };
   }
   const keyRaw = spec.slice(0, separatorIndex).trim();
   const valueRaw = spec.slice(separatorIndex + 1).trim();
 
-  const key: DisplaySettingKey | undefined = keyRaw === 'ctx'
+  const key: ExtendedDisplaySettingKey | undefined = keyRaw === 'ctx'
     ? 'ctx'
     : keyRaw === 'toolcall'
       ? 'toolcall'
-      : keyRaw === 'progress'
-        ? 'progress'
-        : keyRaw === 'heartbeat' || keyRaw === 'hearbeat'
-          ? 'heartbeat'
+    : keyRaw === 'progress'
+      ? 'progress'
+    : keyRaw === 'heartbeat' || keyRaw === 'hearbeat'
+      ? 'heartbeat'
+    : keyRaw === 'reasoning'
+      ? 'reasoning'
+    : keyRaw === 'body'
+      ? 'body'
+    : keyRaw === 'status'
+      ? 'status'
+    : keyRaw === 'step'
+      ? 'step'
+    : keyRaw === 'stepbatch' || keyRaw === 'step_batch'
+      ? 'stepbatch'
+    : keyRaw === 'mode' || keyRaw === 'updatemode' || keyRaw === 'update_mode'
+      ? 'mode'
           : undefined;
   if (!key) {
     return {
       ok: false,
-      error: `不支持的 display key：${keyRaw}（支持 ctx/toolcall/progress/heartbeat）`,
+      error: `不支持的 display key：${keyRaw}（支持 ctx/toolcall/progress/heartbeat/reasoning/body/status/step/stepbatch/mode/show）`,
     };
   }
   return {
@@ -96,16 +124,49 @@ function normalizeOnOff(raw: string): boolean | null {
   return null;
 }
 
+function normalizeUpdateMode(raw: string): 'progress' | 'command' | 'both' | null {
+  const normalized = raw.trim().toLowerCase();
+  if (normalized === 'progress' || normalized === 'command' || normalized === 'both') return normalized;
+  return null;
+}
+
+function normalizeStepBatch(raw: string): number | null {
+  const parsed = Number(raw.trim());
+  if (!Number.isFinite(parsed)) return null;
+  const normalized = Math.floor(parsed);
+  if (normalized < 1 || normalized > 50) return null;
+  return normalized;
+}
+
 function summarizeChannelDisplaySettings(channel: Record<string, unknown>): string {
   const options = ensureChannelOptions(channel);
   const pushSettings = ensurePushSettings(options);
   const displaySettings = ensureDisplaySettings(options);
   const contextModeRaw = typeof displaySettings.context === 'string' ? displaySettings.context : 'on';
   const contextMode = normalizeContextDisplayMode(contextModeRaw) ?? 'on';
+  const updateModeRaw = typeof pushSettings.updateMode === 'string' ? pushSettings.updateMode : 'progress';
+  const updateMode = normalizeUpdateMode(updateModeRaw) ?? 'progress';
+  const reasoning = pushSettings.reasoning === true ? 'on' : 'off';
+  const body = pushSettings.bodyUpdates === false ? 'off' : 'on';
+  const status = pushSettings.statusUpdate === false ? 'off' : 'on';
   const toolCalls = pushSettings.toolCalls === false ? 'off' : 'on';
+  const step = pushSettings.stepUpdates === false ? 'off' : 'on';
+  const stepBatchRaw = typeof pushSettings.stepBatch === 'number' ? pushSettings.stepBatch : 5;
+  const stepBatch = Number.isFinite(stepBatchRaw) && stepBatchRaw > 0 ? Math.floor(stepBatchRaw) : 5;
   const progress = pushSettings.progressUpdates === false ? 'off' : 'on';
   const heartbeat = displaySettings.heartbeat === false ? 'off' : 'on';
-  return `ctx=${contextMode} · toolcall=${toolCalls} · progress=${progress} · heartbeat=${heartbeat}`;
+  return [
+    `ctx=${contextMode}`,
+    `mode=${updateMode}`,
+    `reasoning=${reasoning}`,
+    `body=${body}`,
+    `status=${status}`,
+    `toolcall=${toolCalls}`,
+    `step=${step}`,
+    `stepbatch=${stepBatch}`,
+    `progress=${progress}`,
+    `heartbeat=${heartbeat}`,
+  ].join(' · ');
 }
 
 export async function handleDisplayCommand(
@@ -120,7 +181,7 @@ export async function handleDisplayCommand(
   }
 
   const parsed = parseDisplaySpec(specRaw);
-  if (!parsed.ok || !parsed.key || !parsed.value) {
+  if (!parsed.ok || !parsed.key) {
     return `❌ ${parsed.error ?? 'display 命令解析失败'}`;
   }
 
@@ -151,6 +212,15 @@ export async function handleDisplayCommand(
   const pushSettings = ensurePushSettings(channelOptions);
   const displaySettings = ensureDisplaySettings(channelOptions);
 
+  if (parsed.key === 'show') {
+    const effectiveChannelLabel = targetChannel === 'openclaw-weixin' ? 'weixin(openclaw-weixin)' : targetChannel;
+    return `✓ 当前 display 设置\n渠道：${effectiveChannelLabel}\n当前：${summarizeChannelDisplaySettings(target)}`;
+  }
+
+  if (!parsed.value) {
+    return '❌ display 命令缺少 value';
+  }
+
   if (parsed.key === 'ctx') {
     const contextMode = normalizeContextDisplayMode(parsed.value);
     if (!contextMode) {
@@ -169,6 +239,30 @@ export async function handleDisplayCommand(
     const toggle = normalizeOnOff(parsed.value);
     if (toggle === null) return '❌ heartbeat 仅支持 on/off';
     displaySettings.heartbeat = toggle;
+  } else if (parsed.key === 'reasoning') {
+    const toggle = normalizeOnOff(parsed.value);
+    if (toggle === null) return '❌ reasoning 仅支持 on/off';
+    pushSettings.reasoning = toggle;
+  } else if (parsed.key === 'body') {
+    const toggle = normalizeOnOff(parsed.value);
+    if (toggle === null) return '❌ body 仅支持 on/off';
+    pushSettings.bodyUpdates = toggle;
+  } else if (parsed.key === 'status') {
+    const toggle = normalizeOnOff(parsed.value);
+    if (toggle === null) return '❌ status 仅支持 on/off';
+    pushSettings.statusUpdate = toggle;
+  } else if (parsed.key === 'step') {
+    const toggle = normalizeOnOff(parsed.value);
+    if (toggle === null) return '❌ step 仅支持 on/off';
+    pushSettings.stepUpdates = toggle;
+  } else if (parsed.key === 'stepbatch') {
+    const stepBatch = normalizeStepBatch(parsed.value);
+    if (stepBatch === null) return '❌ stepbatch 仅支持 1-50 的整数';
+    pushSettings.stepBatch = stepBatch;
+  } else if (parsed.key === 'mode') {
+    const mode = normalizeUpdateMode(parsed.value);
+    if (!mode) return '❌ mode 仅支持 progress/command/both';
+    pushSettings.updateMode = mode;
   }
 
   root.channels = channels;

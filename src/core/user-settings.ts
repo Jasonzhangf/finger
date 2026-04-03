@@ -28,6 +28,16 @@ const VALID_REASONING_EFFORT = ['high', 'medium', 'low'];
 const VALID_REASONING_SUMMARY = ['detailed', 'medium', 'short'];
 const VALID_WEB_SEARCH = ['live', 'off'];
 const VALID_AUTONOMY_MODE = ['balanced', 'yolo'];
+const AUTONOMY_ROLE_KEYS = ['system', 'project', 'reviewer', 'orchestrator'] as const;
+type AutonomyRoleKey = typeof AUTONOMY_ROLE_KEYS[number];
+type AutonomyMode = 'balanced' | 'yolo';
+type AutonomyByRole = Partial<Record<AutonomyRoleKey, AutonomyMode>>;
+const DEFAULT_AUTONOMY_BY_ROLE: Record<AutonomyRoleKey, AutonomyMode> = {
+  system: 'balanced',
+  project: 'yolo',
+  reviewer: 'balanced',
+  orchestrator: 'balanced',
+};
 
 /**
  * 验证URL格式
@@ -99,7 +109,8 @@ export interface Preferences {
   reasoningSummary: 'detailed' | 'medium' | 'short';
   verbosity: 'high' | 'medium' | 'low';
   webSearch: 'live' | 'off';
-  autonomyMode?: 'balanced' | 'yolo';
+  autonomyMode?: AutonomyMode;
+  autonomyByRole?: AutonomyByRole;
 }
 
 export interface UISettings {
@@ -171,6 +182,7 @@ const DEFAULT_USER_SETTINGS: UserSettings = {
     verbosity: 'medium',
     webSearch: 'live',
     autonomyMode: 'balanced',
+    autonomyByRole: { ...DEFAULT_AUTONOMY_BY_ROLE },
   },
   ui: {
     theme: 'dark',
@@ -206,6 +218,7 @@ export function userSettingsExists(): boolean {
  */
 export function loadUserSettings(): UserSettings {
   try {
+    cleanOldBackups();
     if (!fs.existsSync(USER_SETTINGS_PATH)) {
       log.info('[UserSettings] User settings file not found, using defaults');
       saveUserSettings(DEFAULT_USER_SETTINGS);
@@ -227,7 +240,7 @@ export function loadUserSettings(): UserSettings {
     return settings;
   } catch (err) {
     const error = err instanceof Error ? err : new Error(String(err));
-    log.error('[UserSettings] Failed to load user settings, using defaults', err instanceof Error ? err : new Error(String(err)));
+    log.error('[UserSettings] Failed to load user settings, using defaults', error);
     backupCorruptedSettings();
     return DEFAULT_USER_SETTINGS;
   }
@@ -249,7 +262,7 @@ export function saveUserSettings(settings: UserSettings): void {
     });
   } catch (err) {
     const error = err instanceof Error ? err : new Error(String(err));
-    log.error('[UserSettings] Failed to save user settings', err instanceof Error ? err : new Error(String(err)));
+    log.error('[UserSettings] Failed to save user settings', error);
     throw err;
   }
 }
@@ -309,7 +322,7 @@ export function validateUserSettings(settings: any): void {
 
   if (!settings.preferences || typeof settings.preferences !== 'object') {
     throw new Error('Invalid settings: preferences must be an object');
-
+  }
   // Validate preferences
   if (settings.preferences.defaultModel && typeof settings.preferences.defaultModel !== 'string') {
     throw new Error('Invalid settings: preferences.defaultModel must be a string');
@@ -341,11 +354,29 @@ export function validateUserSettings(settings: any): void {
   if (!settings.preferences.autonomyMode) {
     settings.preferences.autonomyMode = 'balanced';
   }
+  const autonomyByRoleRaw = settings.preferences.autonomyByRole;
+  const normalizedAutonomyByRole: AutonomyByRole = {};
+  if (autonomyByRoleRaw !== undefined) {
+    if (typeof autonomyByRoleRaw !== 'object' || autonomyByRoleRaw === null || Array.isArray(autonomyByRoleRaw)) {
+      throw new Error('Invalid settings: preferences.autonomyByRole must be an object');
+    }
+    for (const role of AUTONOMY_ROLE_KEYS) {
+      const value = (autonomyByRoleRaw as Record<string, unknown>)[role];
+      if (value === undefined || value === null || value === '') continue;
+      if (typeof value !== 'string' || !VALID_AUTONOMY_MODE.includes(value)) {
+        throw new Error(`Invalid settings: preferences.autonomyByRole.${role} must be one of: ${VALID_AUTONOMY_MODE.join(', ')}`);
+      }
+      normalizedAutonomyByRole[role] = value as AutonomyMode;
+    }
   }
+  settings.preferences.autonomyByRole = {
+    ...DEFAULT_AUTONOMY_BY_ROLE,
+    ...normalizedAutonomyByRole,
+  };
 
   if (!settings.ui || typeof settings.ui !== 'object') {
     throw new Error('Invalid settings: ui must be an object');
-
+  }
   // Validate ui
   if (settings.ui.theme && !VALID_THEMES.includes(settings.ui.theme)) {
     throw new Error(`Invalid settings: ui.theme must be one of: ${VALID_THEMES.join(', ')}`);
@@ -355,7 +386,6 @@ export function validateUserSettings(settings: any): void {
   }
   if (settings.ui.timeZone && typeof settings.ui.timeZone !== 'string') {
     throw new Error('Invalid settings: ui.timeZone must be a string');
-  }
   }
 
   // Validate ledger settings (with defaults for missing fields)
@@ -419,6 +449,23 @@ export function validateUserSettings(settings: any): void {
   }
   // MEMORY.md 不能直接注入模型上下文，配置字段仅做兼容保留。
   settings.contextBuilder.includeMemoryMd = false;
+}
+
+export function resolveAutonomyModeForRole(
+  preferences: Preferences | undefined,
+  roleInput: string | undefined,
+): AutonomyMode {
+  const globalMode: AutonomyMode = preferences?.autonomyMode === 'yolo' ? 'yolo' : 'balanced';
+  const normalizedRole = typeof roleInput === 'string' ? roleInput.trim().toLowerCase() : '';
+  const byRole = preferences?.autonomyByRole;
+  if (byRole && normalizedRole) {
+    const roleKey = AUTONOMY_ROLE_KEYS.find((item) => item === normalizedRole);
+    if (roleKey) {
+      const roleValue = byRole[roleKey];
+      if (roleValue === 'yolo' || roleValue === 'balanced') return roleValue;
+    }
+  }
+  return globalMode;
 }
 
 /**

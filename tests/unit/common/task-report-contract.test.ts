@@ -4,6 +4,7 @@ import {
   parseTaskReportContract,
   resolveStructuredDeliveryClaim,
 } from '../../../src/common/task-report-contract.js';
+import { EvidenceType } from '../../../src/common/evidence-schema.js';
 
 describe('task-report-contract', () => {
   it('builds normalized task report contract', () => {
@@ -24,7 +25,10 @@ describe('task-report-contract', () => {
     expect(report.schema).toBe('finger.task-report.v1');
     expect(report.status).toBe('review_ready');
     expect(report.nextAction).toBe('review');
-    expect(report.evidence).toEqual(['file-a.ts', 'file-b.ts']);
+    expect(report.evidence).toHaveLength(2);
+    expect(report.evidence![0].type).toBe(EvidenceType.Log);
+    expect(report.evidence![0].details).toBe('file-a.ts');
+    expect(report.evidence![1].details).toBe('file-b.ts');
     expect(resolveStructuredDeliveryClaim(report)).toBe(true);
   });
 

@@ -1,5 +1,6 @@
 import { ChildProcess } from 'child_process';
 import { lifecycleManager } from '../agents/core/agent-lifecycle.js';
+import { abortCausality, type AbortEvent, type SyntheticToolResult } from './abort-causality.js';
 import fs from 'fs';
 import { FINGER_PATHS, ensureDir } from '../core/finger-paths.js';
 import { logger } from '../core/logger.js';
@@ -172,6 +173,30 @@ export class AgentPool {
     instance.process = null;
     lifecycleManager.killProcess(instanceId, "stopped");
     return true;
+  }
+
+  abortWithSyntheticResult(instanceId: string, sessionId: string, reason: string): SyntheticToolResult | null {
+    const instance = this.agents.get(instanceId);
+    if (!instance) return null;
+
+    const syntheticResult: SyntheticToolResult = {
+      type: 'synthetic_error',
+      error: `Agent ${instanceId} was aborted: ${reason}`,
+      abortReason: reason,
+      sessionId,
+      timestamp: new Date().toISOString(),
+    };
+
+    const abortEvent: AbortEvent = {
+      sessionId,
+      reason,
+      timestamp: syntheticResult.timestamp,
+      syntheticResult,
+    };
+    abortCausality.recordAbortion(abortEvent);
+
+    this.killInstance(instanceId);
+    return syntheticResult;
   }
 
   async stopAll(): Promise<void> {

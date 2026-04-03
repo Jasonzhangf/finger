@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import { unlinkSync, existsSync, readFileSync, mkdirSync } from 'fs';
+import { unlinkSync, existsSync, readFileSync, mkdirSync, realpathSync, readdirSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { SessionManager } from '../../src/orchestration/session-manager.js';
 import { FINGER_PATHS } from '../../src/core/finger-paths.js';
@@ -38,7 +38,7 @@ describe('Session Manager Persistence', () => {
 
     expect(session).toBeDefined();
     expect(session.id).toBeDefined();
-    expect(session.projectPath).toBe(TEST_PROJECT_PATH);
+    expect(normalizePathForAssert(session.projectPath)).toBe(normalizePathForAssert(TEST_PROJECT_PATH));
     
     // 验证文件是否被创建
     const sessionDir = manager.resolveSessionStorageDir(session.id);
@@ -51,7 +51,7 @@ describe('Session Manager Persistence', () => {
     const content = readFileSync(sessionFile, 'utf-8');
     const parsed = JSON.parse(content);
     expect(parsed.id).toBe(session.id);
-    expect(parsed.projectPath).toBe(TEST_PROJECT_PATH);
+    expect(normalizePathForAssert(parsed.projectPath)).toBe(normalizePathForAssert(TEST_PROJECT_PATH));
   });
 
   it('can restore session from disk', () => {
@@ -66,7 +66,7 @@ describe('Session Manager Persistence', () => {
     
     expect(restored).toBeDefined();
     expect(restored?.id).toBe(session.id);
-    expect(restored?.projectPath).toBe(TEST_PROJECT_PATH);
+    expect(normalizePathForAssert(restored?.projectPath ?? '')).toBe(normalizePathForAssert(TEST_PROJECT_PATH));
   });
 
   it('persists session snapshot messages across restart', async () => {
@@ -81,4 +81,62 @@ describe('Session Manager Persistence', () => {
     expect(messages.length).toBeGreaterThan(0);
     expect(messages[messages.length - 1]?.content).toBe('hello snapshot');
   });
+
+  it('writes session json atomically (no lingering .tmp file)', () => {
+    const manager = new SessionManager();
+    const session = manager.createSession(TEST_PROJECT_PATH, 'Atomic Persist Session');
+    manager.updateContext(session.id, {
+      smoke: 'atomic-write',
+    });
+    const sessionDir = manager.resolveSessionStorageDir(session.id);
+    expect(sessionDir).not.toBeNull();
+    const files = readdirSync(sessionDir!);
+    expect(files.some((name) => name.endsWith('.tmp'))).toBe(false);
+    expect(files.some((name) => name === 'main.json')).toBe(true);
+  });
+
+  it('quarantines corrupted session json and continues loading', () => {
+    const manager = new SessionManager();
+    const session = manager.createSession(TEST_PROJECT_PATH, 'Corrupt Session');
+    const sessionDir = manager.resolveSessionStorageDir(session.id);
+    expect(sessionDir).not.toBeNull();
+    const sessionFile = join(sessionDir!, 'main.json');
+    writeFileSync(sessionFile, '{\"id\":\"broken\"', 'utf-8');
+
+    const managerAfterCorrupt = new SessionManager();
+    const files = readdirSync(sessionDir!);
+    expect(files.some((name) => name.includes('.corrupt-'))).toBe(true);
+    // manager should stay functional and create new sessions after quarantine
+    const newSession = managerAfterCorrupt.createSession(TEST_PROJECT_PATH, 'Post Corrupt Session');
+    expect(newSession.id).toBeDefined();
+  });
+
+  it('does not recursively re-quarantine already quarantined files', () => {
+    const manager = new SessionManager();
+    const session = manager.createSession(TEST_PROJECT_PATH, 'Repeat Corrupt Session');
+    const sessionDir = manager.resolveSessionStorageDir(session.id);
+    expect(sessionDir).not.toBeNull();
+    const sessionFile = join(sessionDir!, 'main.json');
+    writeFileSync(sessionFile, '{\"id\":\"broken\"', 'utf-8');
+
+    // First restart: quarantine main.json
+    new SessionManager();
+    const firstPassFiles = readdirSync(sessionDir!);
+    const firstCorrupt = firstPassFiles.filter((name) => name.includes('.corrupt-'));
+    expect(firstCorrupt.length).toBeGreaterThan(0);
+
+    // Second restart: should ignore quarantined files, not keep renaming/growing.
+    new SessionManager();
+    const secondPassFiles = readdirSync(sessionDir!);
+    const secondCorrupt = secondPassFiles.filter((name) => name.includes('.corrupt-'));
+    expect(secondCorrupt.length).toBe(firstCorrupt.length);
+    expect(secondCorrupt.every((name) => name.match(/\.corrupt-/g)?.length === 1)).toBe(true);
+  });
 });
+  const normalizePathForAssert = (input: string): string => {
+    try {
+      return realpathSync(input);
+    } catch {
+      return input;
+    }
+  };

@@ -26,13 +26,13 @@ export function extractToolDetail(
     if (planItems.length === 0) return '';
     const inProgress = planItems.find((item) => item.status === 'in_progress');
     if (inProgress && typeof inProgress.step === 'string') {
-      return `▶ ${truncate(inProgress.step, 80)}`;
+      return `▶ ${inProgress.step.trim()}`;
     }
     for (let i = planItems.length - 1; i >= 0; i -= 1) {
       const step = planItems[i];
       if (typeof step.step === 'string') {
         const statusIcon = step.status === 'completed' ? '✓' : step.status === 'in_progress' ? '▶' : '○';
-        return `${statusIcon} ${truncate(step.step, 60)}`;
+        return `${statusIcon} ${step.step.trim()}`;
       }
     }
     return '';

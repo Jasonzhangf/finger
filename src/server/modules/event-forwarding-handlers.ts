@@ -14,6 +14,7 @@ const log = logger.module('event-forwarding-handlers');
 
 type SessionEventRecord = {
   type: 'tool_call' | 'tool_result' | 'tool_error' | 'agent_step' | 'reasoning';
+  timestamp?: string;
   agentId?: string;
   toolName?: string;
   toolStatus?: 'success' | 'error';
@@ -32,7 +33,7 @@ export interface HandlerDeps {
     content: string,
     detail: SessionEventRecord,
     role?: 'user' | 'assistant' | 'system' | 'orchestrator'
-  ) => void;
+  ) => Promise<void>;
 }
 
 export function attachBroadcastHandlers(deps: HandlerDeps): void {
@@ -100,6 +101,7 @@ export function attachBroadcastHandlers(deps: HandlerDeps): void {
     const content = `调用工具: ${toolEvent.toolName}`;
     persistSessionEventMessage(toolEvent.sessionId, content, {
       type: 'tool_call',
+      timestamp: event.timestamp,
       agentId: toolEvent.agentId,
       toolName: toolEvent.toolName,
       toolInput: toolEvent.payload?.input,
@@ -113,6 +115,7 @@ export function attachBroadcastHandlers(deps: HandlerDeps): void {
     const content = `工具完成: ${toolEvent.toolName}`;
     persistSessionEventMessage(toolEvent.sessionId, content, {
       type: 'tool_result',
+      timestamp: event.timestamp,
       agentId: toolEvent.agentId,
       toolName: toolEvent.toolName,
       toolStatus: 'success',
@@ -129,6 +132,7 @@ export function attachBroadcastHandlers(deps: HandlerDeps): void {
     const content = `工具失败: ${toolEvent.toolName}`;
     persistSessionEventMessage(toolEvent.sessionId, content, {
       type: 'tool_error',
+      timestamp: event.timestamp,
       agentId: toolEvent.agentId,
       toolName: toolEvent.toolName,
       toolStatus: 'error',
@@ -164,6 +168,7 @@ export function attachBroadcastHandlers(deps: HandlerDeps): void {
     const content = buildAgentStepContent(stepEvent.payload);
     persistSessionEventMessage(stepEvent.sessionId, content, {
       type: 'agent_step',
+      timestamp: event.timestamp,
       agentId: stepEvent.agentId,
       metadata: { event: stepEvent },
     });

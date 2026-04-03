@@ -33,6 +33,37 @@ describe('progress-monitor-reporting', () => {
     expect(result).toContain('○ Run tests and verify output');
   });
 
+  it('keeps latest update_plan in summary even when it is older than the last 5 tool calls', () => {
+    const trailingTools = Array.from({ length: 5 }).map((_, idx) => ({
+      toolName: 'shell.exec',
+      params: JSON.stringify({ cmd: `echo trailing-${idx}` }),
+      success: true,
+    }));
+    const data: SessionProgressData = {
+      agentId: 'finger-system-agent',
+      status: 'running',
+      currentTask: '处理中',
+      elapsedMs: 8_000,
+      toolCallHistory: [
+        {
+          toolName: 'update_plan',
+          params: JSON.stringify({
+            plan: [
+              { step: 'Plan root cause fix', status: 'completed' },
+              { step: 'Patch runtime ownership', status: 'in_progress' },
+            ],
+          }),
+          success: true,
+        },
+        ...trailingTools,
+      ],
+    };
+
+    const result = buildCompactSummary(data, formatElapsed, { headerMode: 'minimal' });
+    expect(result).toContain('计划共 2 项');
+    expect(result).toContain('Patch runtime ownership');
+  });
+
   it('shows dispatch task identity and content preview', () => {
     const data: SessionProgressData = {
       agentId: 'finger-system-agent',

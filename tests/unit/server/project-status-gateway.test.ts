@@ -4,6 +4,11 @@ import {
   listStaleProjectStatusSnapshots,
   readProjectStatusSnapshot,
 } from '../../../src/server/modules/project-status-gateway.js';
+import {
+  getUpdatePlanRuntimeView,
+  resetUpdatePlanToolState,
+  updatePlanTool,
+} from '../../../src/tools/internal/codex-update-plan-tool.js';
 
 function createSessionManagerMock(seed?: Record<string, Record<string, unknown>>) {
   const store = new Map<string, { id: string; projectPath: string; context: Record<string, unknown> }>();
@@ -344,5 +349,64 @@ describe('project-status-gateway', () => {
     expect(restored?.taskState?.status).toBe('in_progress');
     expect(restored?.taskState?.taskId).toBe('task-restart');
     expect(restored?.taskState?.revision).toBeGreaterThanOrEqual(3);
+  });
+
+  it('auto-archives update_plan items when task transitions to closed', async () => {
+    resetUpdatePlanToolState();
+    await updatePlanTool.execute({
+      action: 'create',
+      projectPath: '/tmp/project-a',
+      item: {
+        title: 'task-close-me',
+        assigneeWorkerId: 'finger-project-agent-02',
+      },
+    }, {
+      invocationId: 't-gateway-auto-archive',
+      cwd: '/tmp/project-a',
+      timestamp: new Date().toISOString(),
+      agentId: 'finger-system-agent',
+      sessionId: 'system-main',
+    });
+
+    const sessionManager = createSessionManagerMock({
+      'session-9': {
+        projectTaskState: {
+          active: true,
+          status: 'reported',
+          sourceAgentId: 'finger-system-agent',
+          targetAgentId: 'finger-project-agent',
+          updatedAt: '2026-04-03T08:00:00.000Z',
+          taskId: 'task-9',
+          taskName: 'task-close-me',
+          assigneeWorkerId: 'finger-project-agent-02',
+          blockedBy: ['none'],
+          revision: 9,
+        },
+      },
+    }) as any;
+
+    const result = applyProjectStatusGatewayPatch({
+      sessionManager,
+      sessionIds: ['session-9'],
+      source: 'test',
+      patch: {
+        active: false,
+        status: 'closed',
+        taskId: 'task-9',
+        taskName: 'task-close-me',
+        assigneeWorkerId: 'finger-project-agent-02',
+        revision: 10,
+      },
+    });
+    expect(result.ok).toBe(true);
+
+    const projectView = getUpdatePlanRuntimeView({
+      agentId: 'finger-project-agent',
+      projectPath: '/tmp/project-a',
+      cwd: '/tmp/project-a',
+      maxItems: 20,
+      maxEvents: 20,
+    });
+    expect(projectView.items.some((item) => item.title === 'task-close-me')).toBe(false);
   });
 });

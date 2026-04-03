@@ -278,6 +278,31 @@ describe('chat-codex module', () => {
     );
   });
 
+  it('injects compatibility aliases for tool names (snake/camel/flat)', async () => {
+    runTurnMock.mockResolvedValue({
+      reply: 'ALIASES_OK',
+      events: [],
+      usedBinaryPath: '/tmp/finger-kernel-bridge-bin',
+    });
+    const module = createChatCodexModule({}, runner);
+
+    await module.handle({
+      text: 'check tool aliases',
+      metadata: { roleProfile: 'system' },
+    });
+
+    const tools = (runTurnMock.mock.calls[0]?.[2]?.tools ?? []).map((tool) => tool.name);
+    expect(tools).toContain('agent.list');
+    expect(tools).toContain('agent_list');
+    expect(tools).toContain('agentList');
+    expect(tools).toContain('agentlist');
+    expect(tools).toContain('command.exec');
+    expect(tools).toContain('command_exec');
+    expect(tools).toContain('reasoning.stop');
+    expect(tools).toContain('reasoning_stop');
+    expect(tools).toContain('reasoningStop');
+  });
+
   it('emits synthetic tool events and keeps task_complete tool trace payload', async () => {
     const onLoopEvent = vi.fn();
     runTurnMock.mockResolvedValue({
@@ -1227,6 +1252,16 @@ describe('isRetryableRunError', () => {
   it('should identify " 429" as retryable', () => {
     const error = new Error('rate limit  429');
     expect(isRetryableRunError(error)).toBe(true);
+  });
+
+  it('should identify "No endpoints found ... 404" as retryable for route failover', () => {
+    const error = new Error('run_turn failed: responses api returned non-success status: 404; body: No endpoints found for qwen/qwen3.6-plus-preview:free');
+    expect(isRetryableRunError(error)).toBe(true);
+  });
+
+  it('should NOT identify generic 404 as retryable when no failover signal is present', () => {
+    const error = new Error('responses api returned non-success status: 404; body: not found');
+    expect(isRetryableRunError(error)).toBe(false);
   });
 
   it('should NOT identify "error code: 401" as retryable', () => {

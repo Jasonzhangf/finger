@@ -26,7 +26,7 @@ export class WebSocketBlock extends BaseBlock {
   async execute(command: string, args: Record<string, unknown>): Promise<unknown> {
     switch (command) {
       case 'start':
-        return this.startServer(args.port as number || 9998);
+        return this.startServer(this.resolvePort(args.port));
       case 'stop':
         return this.stopServer();
       case 'broadcast':
@@ -36,6 +36,19 @@ export class WebSocketBlock extends BaseBlock {
       default:
         throw new Error(`Unknown command: ${command}`);
     }
+  }
+
+  private resolvePort(rawPort: unknown): number {
+    if (typeof rawPort === 'number' && Number.isFinite(rawPort) && rawPort >= 0) {
+      return Math.floor(rawPort);
+    }
+    if (typeof rawPort === 'string' && rawPort.trim().length > 0) {
+      const parsed = Number(rawPort);
+      if (Number.isFinite(parsed) && parsed >= 0) {
+        return Math.floor(parsed);
+      }
+    }
+    return 9998;
   }
 
   startServer(port = 9998): { started: boolean; port: number } {

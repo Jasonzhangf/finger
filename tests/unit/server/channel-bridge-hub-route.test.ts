@@ -73,7 +73,7 @@ describe('channel-bridge-hub-route user.ask async adaptation', () => {
     }));
   });
 
-  it('sends failure reply when system direct path is unavailable (must not fallback to dispatch)', async () => {
+  it('falls back to runtime dispatch when direct path is unavailable and still sends minimal ack', async () => {
     ChannelContextManager.getInstance().clearContext('qqbot');
     ChannelContextManager.getInstance().updateContext('qqbot', 'system', 'finger-system-agent');
     const askManager = new AskManager(5_000);
@@ -125,7 +125,10 @@ describe('channel-bridge-hub-route user.ask async adaptation', () => {
       targetAgentId: 'finger-system-agent',
       sessionId: 'system-session-1',
     }));
-    expect(sendMessage).not.toHaveBeenCalled();
+    expect(sendMessage).toHaveBeenCalledWith('qqbot', expect.objectContaining({
+      to: 'user-1',
+      text: expect.stringContaining('已收到，处理中'),
+    }));
   });
 
   it('routes direct user input to system module without dispatch queue when directSendToModule is available', async () => {
@@ -196,6 +199,192 @@ describe('channel-bridge-hub-route user.ask async adaptation', () => {
     expect(sendMessage).toHaveBeenCalledWith('qqbot', expect.objectContaining({
       to: 'user-1',
       text: expect.stringContaining('direct ok'),
+    }));
+  });
+
+  it('strips control block payload from direct reply text before sending to channel user', async () => {
+    ChannelContextManager.getInstance().clearContext('qqbot');
+    ChannelContextManager.getInstance().updateContext('qqbot', 'system', 'finger-system-agent');
+    const askManager = new AskManager(5_000);
+    const sendMessage = vi.fn().mockResolvedValue({ messageId: 'reply-control-strip-1' });
+    const addMessage = vi.fn().mockResolvedValue(undefined);
+    const ensureSession = vi.fn();
+    const updateContext = vi.fn();
+    const getSession = vi.fn().mockReturnValue({
+      id: 'system-session-control-strip',
+      context: {},
+    });
+    const getOrCreateSystemSession = vi.fn().mockReturnValue({ id: 'system-session-control-strip' });
+    const dispatchTaskToAgent = vi.fn();
+    const directSendToModule = vi.fn().mockResolvedValue({
+      success: true,
+      response: [
+        'Jason，已定位根因并修复完成。',
+        '',
+        '```json',
+        '{',
+        '  "schema_version": "1.3",',
+        '  "task_completed": true,',
+        '  "evidence_ready": true,',
+        '  "needs_user_input": false',
+        '}',
+        '```',
+      ].join('\n'),
+    });
+
+    const route = createChannelBridgeHubRoute({
+      channelBridgeManager: {
+        sendMessage,
+      } as any,
+      sessionManager: {
+        ensureSession,
+        updateContext,
+        getSession,
+        getOrCreateSystemSession,
+        addMessage,
+        getMessages: vi.fn().mockReturnValue([]),
+      } as any,
+      askManager,
+      dispatchTaskToAgent,
+      directSendToModule,
+      eventBus: new UnifiedEventBus(),
+      runtime: {},
+    });
+
+    await route({
+      payload: {
+        id: 'msg-control-strip-1',
+        channelId: 'qqbot',
+        accountId: 'acc-1',
+        type: 'direct',
+        senderId: 'user-1',
+        senderName: 'User 1',
+        content: '请直接修复',
+        timestamp: Date.now(),
+        metadata: {},
+      },
+    });
+
+    expect(sendMessage).toHaveBeenCalledTimes(1);
+    const sent = sendMessage.mock.calls[0]?.[1] as { text?: string };
+    expect(sent.text ?? '').toContain('已定位根因并修复完成');
+    expect(sent.text ?? '').not.toContain('schema_version');
+    expect(sent.text ?? '').not.toContain('"task_completed"');
+  });
+
+  it('strips inline tool-not-exists noise from direct reply text before sending to channel user', async () => {
+    ChannelContextManager.getInstance().clearContext('qqbot');
+    ChannelContextManager.getInstance().updateContext('qqbot', 'system', 'finger-system-agent');
+    const askManager = new AskManager(5_000);
+    const sendMessage = vi.fn().mockResolvedValue({ messageId: 'reply-tool-not-exists-strip-1' });
+    const addMessage = vi.fn().mockResolvedValue(undefined);
+    const ensureSession = vi.fn();
+    const updateContext = vi.fn();
+    const getSession = vi.fn().mockReturnValue({
+      id: 'system-session-tool-not-exists-strip',
+      context: {},
+    });
+    const getOrCreateSystemSession = vi.fn().mockReturnValue({ id: 'system-session-tool-not-exists-strip' });
+    const dispatchTaskToAgent = vi.fn();
+    const directSendToModule = vi.fn().mockResolvedValue({
+      success: true,
+      response: 'Tool update_plan does not exists.Tool exec_command does not exists.\nJason，已开始修复。',
+    });
+
+    const route = createChannelBridgeHubRoute({
+      channelBridgeManager: {
+        sendMessage,
+      } as any,
+      sessionManager: {
+        ensureSession,
+        updateContext,
+        getSession,
+        getOrCreateSystemSession,
+        addMessage,
+        getMessages: vi.fn().mockReturnValue([]),
+      } as any,
+      askManager,
+      dispatchTaskToAgent,
+      directSendToModule,
+      eventBus: new UnifiedEventBus(),
+      runtime: {},
+    });
+
+    await route({
+      payload: {
+        id: 'msg-tool-not-exists-strip-1',
+        channelId: 'qqbot',
+        accountId: 'acc-1',
+        type: 'direct',
+        senderId: 'user-1',
+        senderName: 'User 1',
+        content: '继续',
+        timestamp: Date.now(),
+        metadata: {},
+      },
+    });
+
+    expect(sendMessage).toHaveBeenCalledTimes(1);
+    const sent = sendMessage.mock.calls[0]?.[1] as { text?: string };
+    expect(sent.text ?? '').toContain('已开始修复');
+    expect(sent.text ?? '').not.toContain('does not exists');
+  });
+
+  it('guarantees an acknowledgement when direct send returns an unrecognized payload shape', async () => {
+    ChannelContextManager.getInstance().clearContext('qqbot');
+    ChannelContextManager.getInstance().updateContext('qqbot', 'system', 'finger-system-agent');
+    const askManager = new AskManager(5_000);
+    const sendMessage = vi.fn().mockResolvedValue({ messageId: 'reply-fallback-ack-1' });
+    const addMessage = vi.fn().mockResolvedValue(undefined);
+    const ensureSession = vi.fn();
+    const updateContext = vi.fn();
+    const getSession = vi.fn().mockReturnValue({
+      id: 'system-session-fallback-ack',
+      context: {},
+    });
+    const getOrCreateSystemSession = vi.fn().mockReturnValue({ id: 'system-session-fallback-ack' });
+    const dispatchTaskToAgent = vi.fn();
+    const directSendToModule = vi.fn().mockResolvedValue({
+      accepted: true,
+      queued: true,
+    });
+
+    const route = createChannelBridgeHubRoute({
+      channelBridgeManager: {
+        sendMessage,
+      } as any,
+      sessionManager: {
+        ensureSession,
+        updateContext,
+        getSession,
+        getOrCreateSystemSession,
+        addMessage,
+        getMessages: vi.fn().mockReturnValue([]),
+      } as any,
+      askManager,
+      dispatchTaskToAgent,
+      directSendToModule,
+      eventBus: new UnifiedEventBus(),
+      runtime: {},
+    });
+
+    await route({
+      payload: {
+        id: 'msg-fallback-ack-1',
+        channelId: 'qqbot',
+        accountId: 'acc-1',
+        type: 'direct',
+        senderId: 'user-1',
+        senderName: 'User 1',
+        content: '继续执行',
+        timestamp: Date.now(),
+        metadata: {},
+      },
+    });
+
+    expect(sendMessage).toHaveBeenCalledWith('qqbot', expect.objectContaining({
+      to: 'user-1',
+      text: expect.stringContaining('已收到，处理中'),
     }));
   });
 

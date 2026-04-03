@@ -570,6 +570,7 @@ describe('HeartbeatScheduler mailbox lifecycle', () => {
         if (sessionId !== 'session-project-a') return null;
         return {
           id: sessionId,
+          projectPath: '/tmp/project-a',
           context: {
             executionLifecycle: {
               stage: 'completed',
@@ -609,10 +610,7 @@ describe('HeartbeatScheduler mailbox lifecycle', () => {
     expect(sessionManager.updateContext).toHaveBeenCalledWith(
       'session-project-a',
       expect.objectContaining({
-        projectTaskState: expect.objectContaining({
-          active: false,
-          status: 'closed',
-        }),
+        projectTaskState: null,
       }),
     );
     expect(dispatchDirectSpy).not.toHaveBeenCalled();

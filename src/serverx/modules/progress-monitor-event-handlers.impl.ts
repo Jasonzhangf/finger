@@ -301,7 +301,8 @@ export function safeSnippet(value: unknown, limit = 200): string | undefined {
  * 获取工具的snippet限制
  */
 export function snippetLimitForTool(toolName?: string): number {
-  if (toolName === 'update_plan') return 12_000;
+  // Jason 要求：update_plan 进度明细不截断（在可控内存上限内尽量保留完整）。
+  if (toolName === 'update_plan') return 200_000;
   return 200;
 }
 
@@ -394,8 +395,9 @@ export function recordToolResult(
       timestamp: Date.now(),
     };
   }
-  record.result = output !== undefined ? safeSnippet(output) : record.result;
-  record.error = error ? safeSnippet(error) : record.error;
+  const snippetLimit = snippetLimitForTool(toolName);
+  record.result = output !== undefined ? safeSnippet(output, snippetLimit) : record.result;
+  record.error = error ? safeSnippet(error, snippetLimit) : record.error;
   record.success = success;
   if (!existing) {
     progress.toolCallHistory.push(record);
@@ -413,6 +415,54 @@ export function recordToolResult(
 export function handleTurnStart(progress: SessionProgress, event: any): void {
   progress.status = 'running';
   progress.hasOpenTurn = true;
+  const payload = event?.payload && typeof event.payload === 'object'
+    ? event.payload as Record<string, unknown>
+    : undefined;
+  if (payload) {
+    const parsedBreakdown = parseContextBreakdown(payload);
+    if (parsedBreakdown) {
+      mergeContextBreakdown(progress, parsedBreakdown);
+      if (
+        typeof progress.estimatedTokensInContextWindow !== 'number'
+        && typeof parsedBreakdown.totalKnownTokens === 'number'
+        && Number.isFinite(parsedBreakdown.totalKnownTokens)
+      ) {
+        progress.estimatedTokensInContextWindow = Math.max(0, Math.floor(parsedBreakdown.totalKnownTokens));
+      }
+    }
+    const contextUsagePercentRaw = typeof payload.contextUsagePercent === 'number'
+      ? payload.contextUsagePercent
+      : typeof payload.context_usage_percent === 'number'
+        ? payload.context_usage_percent
+        : undefined;
+    const estimatedTokensRaw = typeof payload.estimatedTokensInContextWindow === 'number'
+      ? payload.estimatedTokensInContextWindow
+      : typeof payload.estimated_tokens_in_context_window === 'number'
+        ? payload.estimated_tokens_in_context_window
+        : undefined;
+    const maxInputTokensRaw = typeof payload.maxInputTokens === 'number'
+      ? payload.maxInputTokens
+      : typeof payload.max_input_tokens === 'number'
+        ? payload.max_input_tokens
+        : typeof payload.modelContextWindow === 'number'
+          ? payload.modelContextWindow
+          : typeof payload.model_context_window === 'number'
+            ? payload.model_context_window
+            : undefined;
+    if (typeof contextUsagePercentRaw === 'number' && Number.isFinite(contextUsagePercentRaw)) {
+      progress.contextUsagePercent = Math.max(0, Math.floor(contextUsagePercentRaw));
+    }
+    if (typeof estimatedTokensRaw === 'number' && Number.isFinite(estimatedTokensRaw)) {
+      progress.estimatedTokensInContextWindow = Math.max(0, Math.floor(estimatedTokensRaw));
+    }
+    if (typeof maxInputTokensRaw === 'number' && Number.isFinite(maxInputTokensRaw)) {
+      progress.maxInputTokens = Math.max(1, Math.floor(maxInputTokensRaw));
+    }
+    if (typeof progress.estimatedTokensInContextWindow === 'number' && Number.isFinite(progress.estimatedTokensInContextWindow)) {
+      progress.contextUsageBaseTokens = Math.max(0, Math.floor(progress.estimatedTokensInContextWindow));
+      progress.contextUsageAddedTokens = 0;
+    }
+  }
   if (typeof event.payload?.reasoning === 'string' && event.payload.reasoning.length > 0) {
     progress.latestReasoning = event.payload.reasoning.slice(0, 120);
   }

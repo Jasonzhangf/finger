@@ -108,25 +108,34 @@ describe('System Agent Runtime Tests', () => {
   });
 
   it('should verify memory recording mechanism in dispatch code', async () => {
-    // 验证 MEMORY 记录机制的代码路径存在
-    
-    // 检查 dispatch.ts 文件存在
+    // 验证 dispatch shim 文件存在
     const dispatchPath = path.resolve(__dirname, '../../dist/server/modules/agent-runtime/dispatch.js');
     const dispatchExists = await fs.access(dispatchPath).then(() => true).catch(() => false);
     expect(dispatchExists).toBe(true);
-    
-    // 检查 dispatch.ts 内容包含 MEMORY 记录逻辑
+
+    // dispatch 现为 split shim，校验其导向 serverx 实现
     if (dispatchExists) {
       const dispatchContent = await fs.readFile(dispatchPath, 'utf-8');
-      expect(dispatchContent).toContain('MEMORY.md');
-      expect(dispatchContent).toContain('metadata.source');
-      expect(dispatchContent).toContain('metadata.role');
-      
-      // 验证记录条件
-      expect(dispatchContent).toContain('channel');
-      expect(dispatchContent).toContain('webui');
-      expect(dispatchContent).toContain('api');
-      expect(dispatchContent).toContain('role');
+      expect(dispatchContent).toContain('serverx/modules/agent-runtime/dispatch.impl');
+    }
+
+    // MEMORY 写入逻辑位于 dispatch-runtime-helpers.impl.js
+    const dispatchHelpersPath = path.resolve(
+      __dirname,
+      '../../dist/serverx/modules/agent-runtime/dispatch-runtime-helpers.impl.js',
+    );
+    const helpersExist = await fs.access(dispatchHelpersPath).then(() => true).catch(() => false);
+    expect(helpersExist).toBe(true);
+
+    if (helpersExist) {
+      const helpersContent = await fs.readFile(dispatchHelpersPath, 'utf-8');
+      expect(helpersContent).toContain('persistUserMessageToMemory');
+      expect(helpersContent).toContain('MEMORY.md');
+      expect(helpersContent).toContain('metadata.source');
+      expect(helpersContent).toContain('metadata.role');
+      expect(helpersContent).toContain('channel');
+      expect(helpersContent).toContain('webui');
+      expect(helpersContent).toContain('api');
     }
   });
 

@@ -19,8 +19,24 @@ interface MailboxMessage {
   error?: string;
 }
 
+async function fetchWithRetry(url: string, init?: RequestInit, retries = 6, delayMs = 300): Promise<Response> {
+  let lastError: unknown;
+  for (let i = 0; i < retries; i += 1) {
+    try {
+      return await fetch(url, init);
+    } catch (error) {
+      lastError = error;
+      if (i < retries - 1) {
+        await new Promise((r) => setTimeout(r, delayMs));
+        continue;
+      }
+    }
+  }
+  throw lastError instanceof Error ? lastError : new Error(String(lastError));
+}
+
 async function postMessage(target: string, message: unknown, sender = 'mailbox-e2e-test') {
-  const res = await fetch(`${DAEMON_URL}/api/v1/message`, {
+  const res = await fetchWithRetry(`${DAEMON_URL}/api/v1/message`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({
@@ -35,7 +51,7 @@ async function postMessage(target: string, message: unknown, sender = 'mailbox-e
 }
 
 async function getMailboxByTarget(target: string) {
-  const res = await fetch(`${DAEMON_URL}/api/v1/mailbox?target=${encodeURIComponent(target)}&limit=20`);
+  const res = await fetchWithRetry(`${DAEMON_URL}/api/v1/mailbox?target=${encodeURIComponent(target)}&limit=20`);
   const json = await res.json() as { messages?: MailboxMessage[] };
   return { res, messages: json.messages || [] };
 }
@@ -51,10 +67,10 @@ async function waitForMessage(target: string, predicate: (m: MailboxMessage) => 
   throw new Error(`timeout waiting mailbox message target=${target}`);
 }
 
-describe('mailbox two-agent e2e', () => {
+describe.sequential('mailbox two-agent e2e', () => {
   it('project agent mailbox request reaches system agent and can be read/acked', async () => {
     // ensure daemon alive
-    const health = await fetch(`${DAEMON_URL}/health`);
+    const health = await fetchWithRetry(`${DAEMON_URL}/health`);
     expect(health.ok).toBe(true);
 
     const testId = randomUUID();

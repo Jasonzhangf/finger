@@ -23,4 +23,12 @@ describe('super-command-parser @agent behavior', () => {
     expect(parsed.blocks?.[0]?.content).toBe('ctx:verbose');
     expect(parsed.shouldSwitch).toBe(false);
   });
+
+  it('parses display show command tags', () => {
+    const parsed = parseSuperCommand('<##display:"show"##>');
+    expect(parsed.type).toBe('super_command');
+    expect(parsed.blocks?.[0]?.type).toBe('display');
+    expect(parsed.blocks?.[0]?.content).toBe('show');
+    expect(parsed.shouldSwitch).toBe(false);
+  });
 });

@@ -76,7 +76,7 @@ describe('ChannelConfig', () => {
       const config = await loadFingerConfig();
       expect(config.channelAuth?.enabled).toBe(true);
       expect(config.channelAuth?.defaultPolicy).toBe('direct');
-      expect(config.channelAuth?.channels).toHaveLength(4);
+      expect(config.channelAuth?.channels).toHaveLength(5);
       expect(config.systemAuth?.enabled).toBe(true);
       expect(config.systemAuth?.password).toBe(null);
     });

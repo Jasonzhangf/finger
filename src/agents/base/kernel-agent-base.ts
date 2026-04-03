@@ -17,7 +17,6 @@ import {
   type UnifiedAgentRoleProfile,
   type UnifiedHistoryItem,
 } from './unified-agent-types.js';
-import type { MessageHub } from '../../orchestration/message-hub.js';
 import { inferTagsAndTopic } from '../../common/tag-topic-inference.js';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
@@ -795,7 +794,11 @@ export class KernelAgentBase {
 
     const planView = getUpdatePlanRuntimeView({
       agentId: this.config.moduleId,
-      ...(isSystemLike ? {} : { projectPath: sessionProjectPath || undefined }),
+      // Scope rule:
+      // - system agent should only read its own coordinator scope (system session project path),
+      //   not global project workers' private update_plan items.
+      // - project/reviewer agents read the bound project scope.
+      projectPath: sessionProjectPath || undefined,
       cwd: typeof metadata.cwd === 'string' ? metadata.cwd : undefined,
       maxItems: isSystemLike ? 12 : 10,
       maxEvents: 8,

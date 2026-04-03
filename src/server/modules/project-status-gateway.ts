@@ -13,6 +13,7 @@ import {
   upsertDelegatedProjectTaskRegistry,
 } from '../../common/project-task-state.js';
 import { appendClosedProjectTaskArchive } from '../../core/project-task-archive.js';
+import { autoArchiveProjectPlanOnTaskClosed } from '../../tools/internal/codex-update-plan-tool.js';
 
 const log = logger.module('ProjectStatusGateway');
 const BLOCKED_BY_NONE = 'none';
@@ -352,7 +353,39 @@ export function applyProjectStatusGatewayPatch(params: {
       });
       const shouldArchiveAndClear = shouldArchiveAndClearProjectTaskState(next);
       if (shouldArchiveAndClear) {
-        appendClosedProjectTaskArchive(session.projectPath, next);
+        try {
+          if (typeof session.projectPath === 'string' && session.projectPath.trim().length > 0) {
+            appendClosedProjectTaskArchive(session.projectPath, next);
+          }
+        } catch (error) {
+          log.warn('appendClosedProjectTaskArchive failed', {
+            sessionId,
+            projectPath: session.projectPath,
+            taskId: next.taskId,
+            taskName: next.taskName,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+        try {
+          if (typeof session.projectPath === 'string' && session.projectPath.trim().length > 0) {
+            autoArchiveProjectPlanOnTaskClosed({
+              projectPath: session.projectPath,
+              taskId: next.taskId,
+              taskName: next.taskName,
+              assigneeWorkerId: next.assigneeWorkerId,
+              sourceAgentId: next.sourceAgentId,
+              note: 'auto_archive_on_project_task_closed',
+            });
+          }
+        } catch (error) {
+          log.warn('autoArchiveProjectPlanOnTaskClosed failed', {
+            sessionId,
+            projectPath: session.projectPath,
+            taskId: next.taskId,
+            taskName: next.taskName,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
       }
       const contextState = shouldArchiveAndClear ? null : next;
       const contextRegistry = shouldArchiveAndClear

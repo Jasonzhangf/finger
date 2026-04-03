@@ -756,104 +756,8 @@ export class SystemAgentManager {
   }
 
   private async recoverReviewerSessionsIfNeeded(): Promise<void> {
-    const sessionManager = this.deps.sessionManager as {
-      listSessions?: () => Array<{ id: string; projectPath: string; context?: Record<string, unknown> }>;
-    };
-    const listSessions = sessionManager.listSessions;
-    if (typeof listSessions !== 'function') {
-      log.debug('[SystemAgentManager] Session manager has no listSessions(); skip reviewer recovery');
-      return;
-    }
-    const runtimeChildCheck = typeof this.deps.isRuntimeChildSession === 'function'
-      ? this.deps.isRuntimeChildSession.bind(this.deps)
-      : (() => false);
-    const sessions = listSessions.call(sessionManager);
-    const candidates = sessions.filter((session) => {
-      if (!runtimeChildCheck(session)) return false;
-      const context = (session.context && typeof session.context === 'object')
-        ? (session.context as Record<string, unknown>)
-        : {};
-      return typeof context.ownerAgentId === 'string' && context.ownerAgentId.trim() === FINGER_REVIEWER_AGENT_ID;
-    });
-
-    if (candidates.length === 0) {
-      log.info('[SystemAgentManager] No reviewer runtime sessions found for startup recovery');
-      return;
-    }
-
-    for (const session of candidates) {
-      const lifecycle = getExecutionLifecycleState(this.deps.sessionManager, session.id);
-      if (!lifecycle) continue;
-      if (!this.shouldResumeLifecycle(lifecycle)) continue;
-
-      try {
-        const deployResult = await this.deps.agentRuntimeBlock.execute('deploy', {
-          targetAgentId: FINGER_REVIEWER_AGENT_ID,
-          sessionId: session.id,
-          instanceCount: 1,
-          launchMode: 'orchestrator',
-          scope: 'session',
-          config: {
-            enabled: true,
-          },
-        }) as { success?: boolean; deployment?: { id?: string; status?: string }; error?: string };
-
-        if (!deployResult?.success) {
-          log.warn('[SystemAgentManager] Failed to deploy reviewer runtime for recovery', {
-            sessionId: session.id,
-            projectPath: session.projectPath,
-            error: deployResult?.error ?? 'unknown',
-          });
-          continue;
-        }
-
-        const prompt = [
-          '系统重启恢复：检测到 reviewer 会话上一轮未完成。',
-          `会话：${session.id}`,
-          `状态：${lifecycle.stage}${lifecycle.substage ? `/${lifecycle.substage}` : ''}`,
-          '请从当前中断点继续审查流程并给出明确 PASS/REJECT 行动。',
-        ].join('\n');
-
-        const result = await this.deps.agentRuntimeBlock.execute('dispatch', {
-          sourceAgentId: 'system-reviewer-recovery',
-          targetAgentId: FINGER_REVIEWER_AGENT_ID,
-          task: prompt,
-          sessionId: session.id,
-          metadata: {
-            source: 'system-reviewer-recovery',
-            role: 'system',
-            deliveryMode: 'direct',
-            progressDelivery: { mode: 'silent' },
-            recovery: {
-              type: 'resume_reviewer_execution',
-              stage: lifecycle.stage,
-              substage: lifecycle.substage,
-              finishReason: lifecycle.finishReason,
-              lastTransitionAt: lifecycle.lastTransitionAt,
-              turnId: lifecycle.turnId,
-              dispatchId: lifecycle.dispatchId,
-            },
-          },
-          blocking: false,
-        }) as { status?: string; dispatchId?: string; ok?: boolean; error?: string };
-
-        log.info('[SystemAgentManager] Reviewer recovery dispatched', {
-          sessionId: session.id,
-          projectPath: session.projectPath,
-          lifecycleStage: lifecycle.stage,
-          lifecycleSubstage: lifecycle.substage,
-          status: result?.status ?? 'unknown',
-          dispatchId: result?.dispatchId,
-          error: result?.ok === false ? (result.error ?? 'unknown') : undefined,
-        });
-      } catch (error) {
-        log.error(
-          '[SystemAgentManager] Failed to recover reviewer session',
-          error instanceof Error ? error : new Error(String(error)),
-          { sessionId: session.id, projectPath: session.projectPath },
-        );
-      }
-    }
+    log.info('[SystemAgentManager] Reviewer runs in stateless mode; skip reviewer session recovery');
+    return;
   }
 
   private async handleStartupExecutionState(): Promise<void> {
@@ -922,6 +826,7 @@ export class SystemAgentManager {
           source: 'system-recovery',
           role: 'system',
           deliveryMode: 'direct',
+          progressDelivery: { mode: 'silent' },
           recovery: {
             type: 'resume_interrupted_execution',
             stage: lifecycle.stage,
@@ -1076,6 +981,7 @@ export class SystemAgentManager {
           source: 'system-recovery',
           role: 'system',
           deliveryMode: 'direct',
+          progressDelivery: { mode: 'silent' },
           resumeKernelTurnFile: snapshotPath,
           resumeKernelTurnHard: true,
           recovery: {

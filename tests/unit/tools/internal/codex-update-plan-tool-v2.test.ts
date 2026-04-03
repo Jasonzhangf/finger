@@ -6,6 +6,7 @@ import {
   resetUpdatePlanToolState,
   reloadUpdatePlanToolStateFromDiskForTest,
   getUpdatePlanRuntimeView,
+  autoArchiveProjectPlanOnTaskClosed,
   type PlanItemV2,
 } from '../../../../src/tools/internal/codex-update-plan-tool.js';
 
@@ -501,5 +502,106 @@ describe('update_plan v2 contract', () => {
     expect(view.scope).toBe('/repo/a');
     expect(view.items.some((row) => row.title === 'worker-visible')).toBe(true);
     expect(view.items.some((row) => row.title === 'worker-hidden')).toBe(false);
+  });
+
+  it('enforces owner isolation: worker cannot reassign item owner', async () => {
+    const created = await updatePlanTool.execute({
+      action: 'create',
+      projectPath: '/repo/a',
+      item: { title: 'owner-task', assigneeWorkerId: 'finger-worker-01' },
+    }, systemCtx);
+    const item = created.item as PlanItemV2;
+
+    const worker1Ctx = {
+      invocationId: 'owner-w1',
+      cwd: '/repo/a',
+      timestamp: new Date().toISOString(),
+      agentId: 'finger-worker-01',
+      sessionId: 'worker-01-session',
+    };
+    const tryUpdateAssignee = await updatePlanTool.execute({
+      action: 'update',
+      projectPath: '/repo/a',
+      id: item.id,
+      expectedRevision: item.revision,
+      patch: { assigneeWorkerId: 'finger-worker-02' },
+    }, worker1Ctx);
+    expect(tryUpdateAssignee.ok).toBe(false);
+    expect(tryUpdateAssignee.errorCode).toBe('permission_denied');
+
+    const tryReassign = await updatePlanTool.execute({
+      action: 'reassign',
+      projectPath: '/repo/a',
+      id: item.id,
+      expectedRevision: item.revision,
+      assigneeWorkerId: 'finger-worker-02',
+    }, worker1Ctx);
+    expect(tryReassign.ok).toBe(false);
+    expect(tryReassign.errorCode).toBe('permission_denied');
+  });
+
+  it('enforces owner isolation: once claimed, another worker cannot claim takeover', async () => {
+    const created = await updatePlanTool.execute({
+      action: 'create',
+      projectPath: '/repo/a',
+      item: { title: 'claim-owner-task', assigneeWorkerId: 'finger-worker-01' },
+    }, systemCtx);
+    const item = created.item as PlanItemV2;
+
+    const worker2Ctx = {
+      invocationId: 'owner-w2-claim',
+      cwd: '/repo/a',
+      timestamp: new Date().toISOString(),
+      agentId: 'finger-worker-02',
+      sessionId: 'worker-02-session',
+    };
+    const claimByWorker2 = await updatePlanTool.execute({
+      action: 'claim',
+      projectPath: '/repo/a',
+      id: item.id,
+      expectedRevision: item.revision,
+    }, worker2Ctx);
+
+    expect(claimByWorker2.ok).toBe(false);
+    expect(claimByWorker2.errorCode).toBe('permission_denied');
+  });
+
+  it('auto-archives only same-project completed scope without cross-project pollution', async () => {
+    await updatePlanTool.execute({
+      action: 'create',
+      projectPath: '/repo/a',
+      item: { title: 'task A: fix context', assigneeWorkerId: 'finger-worker-01' },
+    }, systemCtx);
+    await updatePlanTool.execute({
+      action: 'create',
+      projectPath: '/repo/b',
+      item: { title: 'task B: keep open', assigneeWorkerId: 'finger-worker-02' },
+    }, { ...systemCtx, cwd: '/repo/b' });
+
+    const archived = autoArchiveProjectPlanOnTaskClosed({
+      projectPath: '/repo/a',
+      taskName: 'fix context',
+      assigneeWorkerId: 'finger-worker-01',
+      sourceAgentId: 'finger-system-agent',
+    });
+    expect(archived.ok).toBe(true);
+    expect(archived.archivedItemIds.length).toBe(1);
+
+    const projectAView = getUpdatePlanRuntimeView({
+      agentId: 'finger-project-agent',
+      projectPath: '/repo/a',
+      cwd: '/repo/a',
+      maxItems: 20,
+      maxEvents: 20,
+    });
+    const projectBView = getUpdatePlanRuntimeView({
+      agentId: 'finger-project-agent',
+      projectPath: '/repo/b',
+      cwd: '/repo/b',
+      maxItems: 20,
+      maxEvents: 20,
+    });
+    expect(projectAView.items.length).toBe(0);
+    expect(projectBView.items.some((item) => item.title.includes('keep open'))).toBe(true);
   });
 });

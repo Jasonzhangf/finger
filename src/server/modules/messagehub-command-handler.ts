@@ -79,10 +79,17 @@ export async function handleCmdList(): Promise<string> {
   <##@agent:delete@session-id##>   - 删除会话
   <##@project:list##>              - 列出所有项目
   <##@project:switch@/path##>      - 切换项目路径（使用最新 session）
-  <##display:"ctx:on|off|simple|verbose"##> - 当前渠道上下文显示策略
-  <##display:"toolcall:on|off"##>  - 当前渠道工具调用显示开关
-  <##display:"progress:on|off"##>  - 当前渠道进度更新显示开关
-  <##display:"heartbeat:on|off"##> - 当前渠道心跳类更新显示开关
+  <##display:"show"##>              - 查看当前渠道 display 完整配置
+  <##display:"ctx:on|off|simple|verbose"##> - 当前渠道上下文显示复杂度
+  <##display:"mode:progress|command|both"##> - 渠道更新模式（进度/命令/两者）
+  <##display:"reasoning:on|off"##> - 推理流显示开关
+  <##display:"body:on|off"##>      - 正文增量显示开关
+  <##display:"status:on|off"##>    - 状态更新显示开关
+  <##display:"toolcall:on|off"##>  - 工具调用显示开关
+  <##display:"step:on|off"##>      - step 更新显示开关
+  <##display:"stepbatch:1-50"##>   - step 批量发送大小
+  <##display:"progress:on|off"##>  - 每分钟进度更新显示开关
+  <##display:"heartbeat:on|off"##> - 心跳类更新显示开关
   发送微博/小红书链接（QQ/微信）        - 自动触发链接解析与详情流程（channel auto detail）
   /resume                           - 列出当前项目会话（等同 <##@agent:list##>）
   /resume session-id                - 直接切换会话（等同 <##@agent:switch@...##>）

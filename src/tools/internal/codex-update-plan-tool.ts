@@ -247,6 +247,127 @@ export function reloadUpdatePlanToolStateFromDiskForTest(): void {
   ensureStoreLoaded();
 }
 
+export interface AutoArchiveProjectPlanParams {
+  projectPath: string;
+  taskId?: string;
+  taskName?: string;
+  assigneeWorkerId?: string;
+  sourceAgentId?: string;
+  note?: string;
+}
+
+export interface AutoArchiveProjectPlanResult {
+  ok: boolean;
+  projectPath: string;
+  archivedItemIds: string[];
+  strategy: 'task_match' | 'worker_latest' | 'single_open' | 'none';
+}
+
+/**
+ * Auto-archive completed plan items for a closed project task.
+ * Scope is strictly limited to the provided projectPath to avoid cross-project pollution.
+ */
+export function autoArchiveProjectPlanOnTaskClosed(
+  params: AutoArchiveProjectPlanParams,
+): AutoArchiveProjectPlanResult {
+  ensureStoreLoaded();
+  const projectPath = resolveProjectPath(params.projectPath, process.cwd());
+  const projectStore = store.byProjectPath.get(projectPath);
+  if (!projectStore || projectStore.size === 0) {
+    return {
+      ok: true,
+      projectPath,
+      archivedItemIds: [],
+      strategy: 'none',
+    };
+  }
+
+  const openItems = Array.from(projectStore.values()).filter((item) => item.status !== 'closed' && !item.archivedAt);
+  if (openItems.length === 0) {
+    return {
+      ok: true,
+      projectPath,
+      archivedItemIds: [],
+      strategy: 'none',
+    };
+  }
+
+  const normalizedTaskName = normalizeComparableText(params.taskName);
+  const normalizedTaskId = normalizeComparableText(params.taskId);
+  const normalizedWorkerId = normalizeComparableText(params.assigneeWorkerId);
+
+  let candidates = openItems.filter((item) => {
+    if (!normalizedTaskName && !normalizedTaskId) return false;
+    const title = normalizeComparableText(item.title);
+    const description = normalizeComparableText(item.description);
+    const id = normalizeComparableText(item.id);
+    return (normalizedTaskId && id === normalizedTaskId)
+      || (normalizedTaskName && (title.includes(normalizedTaskName) || description.includes(normalizedTaskName)));
+  });
+
+  let strategy: AutoArchiveProjectPlanResult['strategy'] = 'none';
+  if (candidates.length > 0) {
+    strategy = 'task_match';
+  } else if (normalizedWorkerId) {
+    const workerItems = openItems
+      .filter((item) => normalizeComparableText(item.assigneeWorkerId) === normalizedWorkerId)
+      .sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt));
+    if (workerItems.length > 0) {
+      candidates = [workerItems[0]];
+      strategy = 'worker_latest';
+    }
+  }
+
+  if (candidates.length === 0 && openItems.length === 1) {
+    candidates = [openItems[0]];
+    strategy = 'single_open';
+  }
+
+  if (candidates.length === 0) {
+    return {
+      ok: true,
+      projectPath,
+      archivedItemIds: [],
+      strategy: 'none',
+    };
+  }
+
+  const now = new Date().toISOString();
+  const eventCtx = createToolExecutionContext({
+    cwd: projectPath,
+    agentId: params.sourceAgentId || 'finger-system-agent',
+  });
+  const archivedItemIds: string[] = [];
+  for (const candidate of candidates) {
+    const next: PlanItemV2 = {
+      ...candidate,
+      status: 'closed',
+      updatedAt: now,
+      revision: candidate.revision + 1,
+      archivedAt: now,
+    };
+    projectStore.set(next.id, next);
+    archivedItemIds.push(next.id);
+    appendPlanEvent({
+      now,
+      action: 'archive',
+      projectPath,
+      context: eventCtx,
+      itemId: next.id,
+      statusFrom: candidate.status,
+      statusTo: 'closed',
+      summary: params.note?.trim() || `auto-archived ${next.id} on task closure`,
+    });
+  }
+  persistStore();
+  return {
+    ok: true,
+    projectPath,
+    archivedItemIds,
+    strategy,
+  };
+}
+
 export interface UpdatePlanRuntimeViewParams {
   agentId?: string;
   cwd?: string;
@@ -639,6 +760,17 @@ function handleUpdate(
     return buildPermissionDenied('update', projectPath, id, now);
   }
   const patch = isRecord(input.patch) ? input.patch : {};
+  const actorRole = resolveActorRole(context.agentId);
+  const patchAssignee = readNonEmptyString(patch.assigneeWorkerId);
+  if (actorRole === 'worker' && patchAssignee && patchAssignee !== current.assigneeWorkerId) {
+    return buildErrorOutput({
+      now,
+      action: 'update',
+      projectPath,
+      code: 'permission_denied',
+      message: 'worker cannot reassign owner of plan item; keep assignee unchanged',
+    });
+  }
   if (Array.isArray(patch.blockedBy) && hasMixedNoneDependency(normalizeDependencyArray(patch.blockedBy, []))) {
     return buildErrorOutput({
       now,
@@ -717,6 +849,30 @@ function handleClaim(
   if (!checkExpectedRevision(input.expectedRevision, current.revision)) {
     return buildRevisionConflict('claim', projectPath, id, current.revision, now);
   }
+  const actorRole = resolveActorRole(context.agentId);
+  const requestedAssignee = readNonEmptyString(input.assigneeWorkerId);
+  if (actorRole === 'worker' && requestedAssignee && requestedAssignee !== context.agentId) {
+    return buildErrorOutput({
+      now,
+      action: 'claim',
+      projectPath,
+      code: 'permission_denied',
+      message: 'worker can only claim item to self',
+    });
+  }
+  if (actorRole === 'worker') {
+    const currentOwner = readNonEmptyString(current.assigneeWorkerId) || 'unassigned';
+    const hasOwner = currentOwner !== 'unassigned';
+    if (hasOwner && currentOwner !== context.agentId) {
+      return buildErrorOutput({
+        now,
+        action: 'claim',
+        projectPath,
+        code: 'permission_denied',
+        message: `owner already claimed by ${currentOwner}; non-owner cannot claim`,
+      });
+    }
+  }
 
   const next: PlanItemV2 = {
     ...current,
@@ -783,6 +939,16 @@ function handleReassign(
   }
   if (!canWriteItem(context, current)) {
     return buildPermissionDenied('reassign', projectPath, id, now);
+  }
+  const actorRole = resolveActorRole(context.agentId);
+  if (actorRole === 'worker') {
+    return buildErrorOutput({
+      now,
+      action: 'reassign',
+      projectPath,
+      code: 'permission_denied',
+      message: 'worker cannot reassign owner; only system/reviewer can reassign',
+    });
   }
 
   const next: PlanItemV2 = {
@@ -1342,6 +1508,11 @@ function readNonEmptyString(value: unknown): string | null {
   if (typeof value !== 'string') return null;
   const trimmed = value.trim();
   return trimmed.length > 0 ? trimmed : null;
+}
+
+function normalizeComparableText(value: unknown): string {
+  if (typeof value !== 'string') return '';
+  return value.trim().toLowerCase();
 }
 
 function isUpdatePlanAction(value: string): value is UpdatePlanAction {

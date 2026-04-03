@@ -35,6 +35,7 @@ import {
   mergeProjectTaskState,
   parseDelegatedProjectTaskRegistry,
 } from '../../common/project-task-state.js';
+import { applyProjectStatusGatewayPatch } from '../../server/modules/project-status-gateway.js';
 
 const log = logger.module('HeartbeatScheduler');
 
@@ -580,6 +581,26 @@ export class HeartbeatScheduler {
     return hour >= startHour || hour <= endHour;
   }
 
+  private isEphemeralProjectPath(projectPath: string): boolean {
+    const normalized = normalizeProjectPath(projectPath);
+    return normalized.startsWith('/tmp/')
+      || normalized === '/tmp'
+      || normalized.startsWith('/private/tmp/')
+      || normalized === '/private/tmp'
+      || normalized.startsWith('/var/folders/');
+  }
+
+  private async hasDirectoryAt(projectPath: string): Promise<boolean> {
+    const trimmed = typeof projectPath === 'string' ? projectPath.trim() : '';
+    if (!trimmed || !path.isAbsolute(trimmed)) return false;
+    try {
+      const stat = await fs.stat(trimmed);
+      return stat.isDirectory();
+    } catch {
+      return false;
+    }
+  }
+
   private stableHash(input: string): string {
     let hash = 0;
     for (let i = 0; i < input.length; i += 1) {
@@ -708,14 +729,33 @@ export class HeartbeatScheduler {
       }
     }
 
-    const candidates = Array.from(byPath.values())
-      .map((item) => ({
+    const candidatesRaw = Array.from(byPath.values())
+      .sort((a, b) => a.projectPath.localeCompare(b.projectPath));
+    const candidates: Array<{
+      projectId: string;
+      projectPath: string;
+      projectSlug: string;
+      sourceList: string[];
+    }> = [];
+    for (const item of candidatesRaw) {
+      const sourceList = Array.from(item.sources.values()).sort();
+      const monitored = item.sources.has('monitored');
+      // 防污染：today-active 只接受“真实项目目录”；监控项目维持高优先级直通。
+      if (!monitored) {
+        if (this.isEphemeralProjectPath(item.projectPath)) {
+          continue;
+        }
+        if (!(await this.hasDirectoryAt(item.projectPath))) {
+          continue;
+        }
+      }
+      candidates.push({
         ...item,
         projectSlug: this.buildProjectSlug(item.projectPath),
-        sourceList: Array.from(item.sources.values()).sort(),
-      }))
-      .sort((a, b) => a.projectPath.localeCompare(b.projectPath))
-      .slice(0, cfg.maxProjectsPerRun);
+        sourceList,
+      });
+      if (candidates.length >= cfg.maxProjectsPerRun) break;
+    }
     let dispatchedCount = 0;
     let failedCount = 0;
     let skippedCount = 0;
@@ -1055,7 +1095,26 @@ export class HeartbeatScheduler {
     const now = new Date();
     if (!this.isHourInWindow(now.getHours(), cfg.windowStartHour, cfg.windowEndHour)) return;
     const dateKey = this.localDateKey(now);
-    if (this.lastDailySystemReviewDate === dateKey) return;
+    const nowMs = Date.now();
+    const currentState = this.dailySystemReviewDispatchState;
+    const stateDate = typeof currentState?.date === 'string' ? currentState.date.trim() : '';
+    const stateStatus = typeof currentState?.status === 'string' ? currentState.status.trim() : '';
+    const stateUpdatedAt = Number.isFinite(currentState?.updatedAt)
+      ? Math.max(0, Math.floor(currentState?.updatedAt ?? 0))
+      : 0;
+    const activeStateForToday = stateDate === dateKey
+      && (stateStatus === 'queued' || stateStatus === 'processing' || stateStatus === 'unknown');
+    const activeStateTtlMs = Math.max(10 * 60_000, cfg.maxQueueWaitMs * 4);
+    if (activeStateForToday && stateUpdatedAt > 0 && (nowMs - stateUpdatedAt) < activeStateTtlMs) {
+      return;
+    }
+    if (stateDate === dateKey && stateStatus === 'completed') {
+      this.lastDailySystemReviewDate = dateKey;
+      return;
+    }
+    if (this.lastDailySystemReviewDate === dateKey && !activeStateForToday) {
+      return;
+    }
 
     const sessionId = await this.ensureHeartbeatControlSession(SYSTEM_AGENT_ID, 'system-daily-review');
     const taskId = `daily-system-review:${dateKey}`;
@@ -1111,7 +1170,9 @@ export class HeartbeatScheduler {
         ? rawStatus
         : 'unknown';
 
-      this.lastDailySystemReviewDate = dateKey;
+      if (status === 'completed') {
+        this.lastDailySystemReviewDate = dateKey;
+      }
       this.dailySystemReviewDispatchState = {
         date: dateKey,
         status,
@@ -1216,9 +1277,7 @@ export class HeartbeatScheduler {
 
     const sessionManager = this.deps.sessionManager as {
       getSession?: (id: string) => { context?: Record<string, unknown> } | undefined;
-      updateContext?: (id: string, patch: Record<string, unknown>) => unknown;
     };
-    if (typeof sessionManager.updateContext !== 'function') return current;
     const session = typeof sessionManager.getSession === 'function'
       ? sessionManager.getSession.call(this.deps.sessionManager, params.sessionId)
       : undefined;
@@ -1253,8 +1312,28 @@ export class HeartbeatScheduler {
         ? 'Auto-closed stale projectTaskState generated by dispatch_suppressed_* after completed stop lifecycle.'
         : 'Auto-closed stale active projectTaskState after completed stop lifecycle.',
     });
-    sessionManager.updateContext(params.sessionId, {
-      projectTaskState: closedState,
+    applyProjectStatusGatewayPatch({
+      sessionManager: this.deps.sessionManager,
+      sessionIds: [params.sessionId],
+      source: 'heartbeat-scheduler.auto_close_stale',
+      patch: {
+        active: false,
+        status: 'closed',
+        ...(typeof current.revision === 'number' ? { revision: current.revision + 1 } : {}),
+        note: closedRegistryNote,
+        summary: closedState.summary,
+        taskId: current.taskId,
+        taskName: current.taskName,
+        dispatchId: current.dispatchId,
+        boundSessionId: current.boundSessionId,
+        sourceAgentId: current.sourceAgentId,
+        targetAgentId: current.targetAgentId,
+        assigneeWorkerId: current.assigneeWorkerId,
+        assigneeWorkerName: current.assigneeWorkerName,
+        blockedBy: current.blockedBy,
+      },
+    });
+    this.deps.sessionManager.updateContext(params.sessionId, {
       projectTaskRegistry: nextRegistry,
     });
     log.info('[HeartbeatScheduler] Auto-closed stale project task state', {

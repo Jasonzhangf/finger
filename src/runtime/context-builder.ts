@@ -16,7 +16,6 @@
  */
 
 import * as fs from 'fs';
-import * as path from 'path';
 import { estimateTokens } from '../utils/token-counter.js';
 import { getContextWindow } from '../core/user-settings.js';
 import {
@@ -120,6 +119,81 @@ function normalizeStringArray(input: unknown, maxItems = 8): string[] {
     .map((item) => item.trim())
     .filter((item, index, arr) => arr.indexOf(item) === index);
   return normalized.slice(0, Math.max(1, maxItems));
+}
+
+type ContextPriorityTier = 'P1.core_dialog' | 'P2.reasoning' | 'P3.tool_events' | 'P4.tool_details';
+
+function resolveContextPriorityTier(
+  role: TaskMessage['role'],
+  metadata: Record<string, unknown> | undefined,
+): ContextPriorityTier {
+  const type = typeof metadata?.type === 'string' ? metadata.type.trim().toLowerCase() : '';
+  const source = typeof metadata?.source === 'string' ? metadata.source.trim().toLowerCase() : '';
+  const hasToolName = typeof metadata?.toolName === 'string' && metadata.toolName.trim().length > 0;
+  const hasToolOutput = metadata?.toolOutput !== undefined;
+
+  if (role === 'user') return 'P1.core_dialog';
+  if (role === 'assistant' && source !== 'kernel_reasoning' && type !== 'reasoning') {
+    return 'P1.core_dialog';
+  }
+  if (type === 'reasoning' || source === 'kernel_reasoning') {
+    return 'P2.reasoning';
+  }
+  if (type === 'tool_call' || type === 'tool_result' || type === 'tool_error' || hasToolName) {
+    return hasToolOutput ? 'P4.tool_details' : 'P3.tool_events';
+  }
+  return role === 'assistant' ? 'P1.core_dialog' : 'P3.tool_events';
+}
+
+function previewUnknown(value: unknown, limit = 320): string {
+  if (value === null || value === undefined) return '';
+  const text = typeof value === 'string'
+    ? value
+    : (() => {
+      try {
+        return JSON.stringify(value);
+      } catch {
+        return String(value);
+      }
+    })();
+  const normalized = text.trim();
+  if (!normalized) return '';
+  return normalized.length > limit ? `${normalized.slice(0, limit)}...` : normalized;
+}
+
+function renderContextContentByPriority(params: {
+  content: string;
+  role: TaskMessage['role'];
+  metadata?: Record<string, unknown>;
+}): string {
+  const base = (params.content ?? '').trim();
+  if (!base) return '';
+  if (base.includes('<context_priority tier=')) return base;
+  const tier = resolveContextPriorityTier(params.role, params.metadata);
+  if (tier === 'P1.core_dialog') return base;
+  if (tier === 'P2.reasoning') {
+    return [
+      '<context_priority tier="P2.reasoning" foldable="true">',
+      base,
+      '</context_priority>',
+    ].join('\n');
+  }
+  const toolName = typeof params.metadata?.toolName === 'string' ? params.metadata.toolName.trim() : '';
+  const status = typeof params.metadata?.toolStatus === 'string' ? params.metadata.toolStatus.trim() : '';
+  const outputPreview = previewUnknown(params.metadata?.toolOutput, 360);
+  const lines: string[] = [
+    `<context_priority tier="${tier}" foldable="true">`,
+    base,
+  ];
+  if (toolName) lines.push(`tool=${toolName}`);
+  if (status) lines.push(`status=${status}`);
+  if (tier === 'P4.tool_details' && outputPreview) {
+    lines.push('<context_fold tier="P4.tool_details">');
+    lines.push(outputPreview);
+    lines.push('</context_fold>');
+  }
+  lines.push('</context_priority>');
+  return lines.join('\n');
 }
 
 function buildCompactDigestContent(item: CompactReplacementHistoryItem): string {
@@ -425,10 +499,14 @@ function groupByTaskBoundary(entries: LedgerEntryFile[]): TaskBlock[] {
   for (const entry of orderedEntries) {
     const payload = entry.payload as Record<string, unknown>;
     const role = normalizeTaskMessageRole(payload.role);
-    const content = typeof payload.content === 'string' ? payload.content : '';
     const metadata = payload.metadata && typeof payload.metadata === 'object' && !Array.isArray(payload.metadata)
       ? payload.metadata as Record<string, unknown>
       : undefined;
+    const content = renderContextContentByPriority({
+      content: typeof payload.content === 'string' ? payload.content : '',
+      role,
+      metadata,
+    });
     const messageId = typeof payload.message_id === 'string' ? payload.message_id : undefined;
     const attachments = compactAttachments(payload.attachments);
     const tokenCount = typeof payload.token_count === 'number'
@@ -494,15 +572,20 @@ function normalizeSessionSnapshotMessages(
         ? item.metadata
         : undefined;
       const role = normalizeTaskMessageRole(item.role);
+      const content = renderContextContentByPriority({
+        content: item.content,
+        role,
+        metadata,
+      });
       return {
         id: typeof item.id === 'string' && item.id.trim().length > 0
           ? item.id
           : `session-msg-${timestampMs}-${index}`,
         role,
-        content: item.content,
+        content,
         timestamp: timestampMs,
         timestampIso: new Date(timestampMs).toISOString(),
-        tokenCount: estimateTokens(item.content),
+        tokenCount: estimateTokens(content),
         messageId: typeof metadata?.messageId === 'string' && metadata.messageId.trim().length > 0
           ? metadata.messageId
           : undefined,
@@ -1443,19 +1526,26 @@ export async function buildContext(
       ? groupByTaskBoundary(messageEntries)
       : messageEntries.map((entry) => {
         const payload = entry.payload as Record<string, unknown>;
+        const role = normalizeTaskMessageRole(payload.role);
+        const metadata = payload.metadata && typeof payload.metadata === 'object' && !Array.isArray(payload.metadata)
+          ? payload.metadata as Record<string, unknown>
+          : undefined;
+        const content = renderContextContentByPriority({
+          content: typeof payload.content === 'string' ? payload.content : '',
+          role,
+          metadata,
+        });
         return finalizeBlock(`task-${entry.timestamp_ms}`, entry.timestamp_ms, [{
       id: entry.id,
-      role: normalizeTaskMessageRole(payload.role),
-      content: payload.content as string,
+      role,
+      content,
       timestamp: entry.timestamp_ms,
       timestampIso: entry.timestamp_iso,
       tokenCount: typeof payload.token_count === 'number'
         ? Math.max(0, Math.floor(payload.token_count))
-        : estimateTokens(payload.content as string),
+        : estimateTokens(content),
       messageId: typeof payload.message_id === 'string' ? payload.message_id : undefined,
-      metadata: payload.metadata && typeof payload.metadata === 'object' && !Array.isArray(payload.metadata)
-        ? payload.metadata as Record<string, unknown>
-        : undefined,
+      metadata,
       attachments: compactAttachments(payload.attachments),
     }]);
       });

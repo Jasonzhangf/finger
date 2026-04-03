@@ -613,3 +613,10 @@ if (!isNonModuleSender) {
 
 - [2026-03-30] Jason 要求补充 ledger 使用规则：复杂任务默认先做 `context_ledger.memory search -> query(detail=true)` 检索，再决定是否 `context_builder.rebuild`；该规则需同时写入 ledger 说明文档与 context-ledger-memory skill，禁止“无证据先重建”。
   Tags: ledger, context-builder, rebuild-gate, skills, complex-task
+
+## Control Hook Memory Patch
+- idempotency_key: session-1775216411994-26x61fzi|turn-1775216804773|hook.project.memory.update
+- updated_at: 2026-04-03T11:46:44.778Z
+- source_session: session-1775216411994-26x61fzi
+- source_turn: turn-1775216804773
+- long_term: apply_patch context lines must match file exactly; use grep first

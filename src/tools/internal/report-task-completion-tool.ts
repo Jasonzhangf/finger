@@ -833,6 +833,17 @@ export function registerReportTaskCompletionTool(
         }
 
         if (reviewRoute?.reviewRequired && !isReviewerCaller) {
+          const reviewProjectPath = (() => {
+            const routeSessionId = typeof reviewRoute.projectSessionId === 'string' && reviewRoute.projectSessionId.trim().length > 0
+              ? reviewRoute.projectSessionId.trim()
+              : '';
+            const fallbackSessionId = typeof params.sessionId === 'string' ? params.sessionId.trim() : '';
+            const routeSession = routeSessionId ? deps.sessionManager.getSession(routeSessionId) : undefined;
+            const fallbackSession = fallbackSessionId ? deps.sessionManager.getSession(fallbackSessionId) : undefined;
+            const routePath = typeof routeSession?.projectPath === 'string' ? routeSession.projectPath.trim() : '';
+            const fallbackPath = typeof fallbackSession?.projectPath === 'string' ? fallbackSession.projectPath.trim() : '';
+            return routePath || fallbackPath || process.cwd();
+          })();
           const normalizedEvidenceForChangedFiles = Array.isArray(taskReport.evidence)
             ? taskReport.evidence
               .map((item) => [item.location, item.source, item.details].filter((part) => typeof part === 'string' && part.trim().length > 0).join(' '))
@@ -877,11 +888,17 @@ export function registerReportTaskCompletionTool(
             sourceAgentId: 'finger-project-agent',
             targetAgentId: reviewRoute.reviewAgentId,
             task: { prompt: reviewPrompt },
-            sessionId: params.sessionId,
+            projectPath: reviewProjectPath,
             blocking: false,
             metadata: {
               source: 'project-delivery-report',
               role: 'system',
+              cwd: reviewProjectPath,
+              projectPath: reviewProjectPath,
+              sessionPersistence: 'none',
+              persistSession: false,
+              transientLedger: true,
+              reviewerStateless: true,
               taskId: effectiveTaskId || params.taskId,
               ...(effectiveTaskName ? { taskName: effectiveTaskName } : {}),
               projectId: params.projectId,

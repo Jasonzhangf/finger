@@ -31,6 +31,7 @@ export enum CommandType {
   // Utility commands
   CMD_LIST = 'cmd_list',
   HELP = 'help',
+  DISPLAY = 'display',
 
   // Clock commands
   CLOCK_CREATE = 'clock_create',
@@ -66,6 +67,7 @@ export interface CommandContext {
     agentId: string,
     projectContext?: { projectId?: string; projectPath?: string; projectAlias?: string },
   ) => void;
+  channelBridgeManager?: unknown;
 }
 
 export interface CommandResult {

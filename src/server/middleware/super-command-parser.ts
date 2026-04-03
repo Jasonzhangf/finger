@@ -17,8 +17,15 @@
  * - <##@agent:delete@id##> -> delete session
  * - <##@project:list##> -> list all projects
  * - <##@project:switch@/path##> -> switch project
+ * - <##display:"show"##> -> show current channel display config
  * - <##display:"ctx:on|off|simple|verbose"##> -> channel context display policy
+ * - <##display:"mode:progress|command|both"##> -> channel update mode
+ * - <##display:"reasoning:on|off"##> -> reasoning display policy
+ * - <##display:"body:on|off"##> -> body updates display policy
+ * - <##display:"status:on|off"##> -> status updates display policy
  * - <##display:"toolcall:on|off"##> -> channel tool-call display policy
+ * - <##display:"step:on|off"##> -> step updates display policy
+ * - <##display:"stepbatch:1-50"##> -> step batch size
  * - <##display:"progress:on|off"##> -> channel progress display policy
  * - <##display:"heartbeat:on|off"##> -> channel heartbeat display policy
  * - <##cmd:list##> or <##help##> -> list all commands

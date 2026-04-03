@@ -70,7 +70,7 @@ function createDeps(overrides?: Partial<EventForwardingDeps>): EventForwardingDe
 }
 
 describe('Event Forwarding - Reasoning Handling', () => {
-  it('should not persist reasoning events into session assistant history', () => {
+  it('persists reasoning events as foldable system history (lower-priority context)', () => {
     const sessionManager = createMockSessionManager();
     const deps = createDeps({ sessionManager });
     const { emitLoopEventToEventBus } = attachEventForwarding(deps);
@@ -89,10 +89,16 @@ describe('Event Forwarding - Reasoning Handling', () => {
       },
     });
 
-    expect(sessionManager.addMessage).not.toHaveBeenCalled();
+    const calls = (sessionManager.addMessage as ReturnType<typeof vi.fn>).mock.calls;
+    expect(calls.length).toBe(1);
+    expect(calls[0][0]).toBe('test-session-1');
+    expect(calls[0][1]).toBe('system');
+    expect(String(calls[0][2])).toContain('<context_priority tier="P2.reasoning"');
+    expect((calls[0][3] as any).type).toBe('reasoning');
+    expect((calls[0][3] as any).metadata?.source).toBe('kernel_reasoning');
   });
 
-  it('should not persist reasoning even when agentId is absent', () => {
+  it('persists reasoning even when agentId is absent (fallback to generalAgentId)', () => {
     const sessionManager = createMockSessionManager();
     const deps = createDeps({ sessionManager, generalAgentId: 'test-default-agent' });
     const { emitLoopEventToEventBus } = attachEventForwarding(deps);
@@ -109,10 +115,12 @@ describe('Event Forwarding - Reasoning Handling', () => {
       },
     });
 
-    expect(sessionManager.addMessage).not.toHaveBeenCalled();
+    const calls = (sessionManager.addMessage as ReturnType<typeof vi.fn>).mock.calls;
+    expect(calls.length).toBe(1);
+    expect((calls[0][3] as any).agentId).toBe('test-default-agent');
   });
 
-  it('should ignore roleProfile for session persistence of reasoning', () => {
+  it('persists reasoning regardless of roleProfile field', () => {
     const sessionManager = createMockSessionManager();
     const deps = createDeps({ sessionManager });
     const { emitLoopEventToEventBus } = attachEventForwarding(deps);
@@ -130,7 +138,9 @@ describe('Event Forwarding - Reasoning Handling', () => {
       },
     });
 
-    expect(sessionManager.addMessage).not.toHaveBeenCalled();
+    const calls = (sessionManager.addMessage as ReturnType<typeof vi.fn>).mock.calls;
+    expect(calls.length).toBe(1);
+    expect((calls[0][3] as any).type).toBe('reasoning');
   });
 
   it('should not persist empty reasoning text', () => {
@@ -302,6 +312,43 @@ describe('Event Forwarding - Reasoning Handling', () => {
     });
 
     expect(runtime.maybeAutoCompact).toHaveBeenCalledWith('test-session-auto-compact', 92, 'resp-1');
+  });
+
+  it('uses session owner agentId for auto_compact_probe when model_round payload omits agentId', async () => {
+    const eventBus = createMockEventBus();
+    const sessionManager = createMockSessionManager();
+    const deps = createDeps({
+      eventBus,
+      sessionManager,
+      generalAgentId: 'finger-project-agent',
+    });
+    (sessionManager.getSession as ReturnType<typeof vi.fn>).mockImplementation((sessionId: string) => ({
+      id: sessionId,
+      context: { ownerAgentId: 'finger-system-agent' },
+      projectPath: process.cwd(),
+    }));
+    const { emitLoopEventToEventBus } = attachEventForwarding(deps);
+
+    emitLoopEventToEventBus({
+      sessionId: 'test-session-owner-agent',
+      phase: 'kernel_event',
+      timestamp: new Date().toISOString(),
+      payload: {
+        id: 'evt-owner-agent-1',
+        type: 'model_round',
+        contextUsagePercent: 45,
+        responseId: 'resp-owner-agent',
+      },
+    });
+
+    expect(eventBus.emit).toHaveBeenCalled();
+    const calls = (eventBus.emit as ReturnType<typeof vi.fn>).mock.calls;
+    const autoProbeCall = calls.find((call) => {
+      const evt = call[0] as any;
+      return evt?.type === 'system_notice' && evt?.payload?.source === 'auto_compact_probe';
+    });
+    expect(autoProbeCall).toBeTruthy();
+    expect((autoProbeCall?.[0] as any).payload.agentId).toBe('finger-system-agent');
   });
 });
 
