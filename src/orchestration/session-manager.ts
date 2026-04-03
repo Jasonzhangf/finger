@@ -10,6 +10,7 @@
 
 import fs from 'fs';
 import path from 'path';
+import { createHash } from 'crypto';
 import { FINGER_PATHS, ensureDir, normalizeSessionDirName } from '../core/finger-paths.js';
 import { Session, SessionMessage, LEDGER_POINTER_DEFAULTS, ensureLedgerPointers } from './session-types.js';
 import type { Attachment } from '../runtime/events.js';
@@ -40,6 +41,14 @@ const ROOT_SESSION_FILE = 'main.json';
 
 const log = logger.module('SessionManager');
 
+function isCorruptSessionFileName(fileName: string): boolean {
+  return /\.corrupt(?:[.-].*)?\.json$/i.test(fileName);
+}
+
+function stripCorruptSuffix(baseName: string): string {
+  return baseName.replace(/\.corrupt(?:[.-].*)?$/i, '');
+}
+
 export class SessionManager {
   private sessions: Map<string, Session> = new Map();
   private sessionFilePaths: Map<string, string> = new Map();
@@ -67,6 +76,16 @@ export class SessionManager {
     if (session.projectPath === SYSTEM_PROJECT_PATH) return true;
     if (typeof ctx.ownerAgentId === 'string' && ctx.ownerAgentId === SYSTEM_AGENT_ID) return true;
     if (session.id.startsWith(SYSTEM_SESSION_PREFIX)) return true;
+    return false;
+  }
+
+  private isHeartbeatControlSession(session: Session): boolean {
+    const context = session.context ?? {};
+    if (session.id.startsWith('hb-session-')) return true;
+    if (context.sessionTier === 'heartbeat-control' || context.sessionTier === 'heartbeat') return true;
+    if (typeof context.controlPath === 'string' && context.controlPath.trim().toLowerCase() === 'heartbeat') return true;
+    if (context.controlSession === true) return true;
+    if (context.userInputAllowed === false) return true;
     return false;
   }
 
@@ -164,7 +183,14 @@ export class SessionManager {
 
   private loadSessionFile(filePath: string): void {
     const content = fs.readFileSync(filePath, 'utf-8');
-    const session = JSON.parse(content) as Session;
+    let session: Session;
+    try {
+      session = JSON.parse(content) as Session;
+    } catch (err) {
+      const error = err instanceof Error ? err : new Error(String(err));
+      this.quarantineCorruptedSessionFile(filePath, error);
+      throw new Error(`Corrupted session file quarantined: ${filePath}`);
+    }
     if (!session.id || !session.projectPath) {
       throw new Error('Invalid session content');
     }
@@ -197,12 +223,14 @@ export class SessionManager {
         const sessionEntries = fs.readdirSync(sessionDir, { withFileTypes: true });
         for (const sessionEntry of sessionEntries) {
           if (!sessionEntry.isFile() || !sessionEntry.name.endsWith('.json')) continue;
+          if (isCorruptSessionFileName(sessionEntry.name)) continue;
           const filePath = path.join(sessionDir, sessionEntry.name);
           try {
             this.loadSessionFile(filePath);
           } catch (err) {
             const error = err instanceof Error ? err : new Error(String(err));
-            if (error.message.includes('Unexpected end of JSON input')) {
+            if (error.message.includes('Unexpected end of JSON input')
+              || error.message.includes('Corrupted session file quarantined')) {
               // Ignore truncated session files during startup
               continue;
             }
@@ -213,12 +241,14 @@ export class SessionManager {
       }
       // Backward compatibility: legacy flat session files.
       if (entry.isFile() && entry.name.endsWith('.json')) {
+        if (isCorruptSessionFileName(entry.name)) continue;
         const filePath = path.join(dirPath, entry.name);
         try {
           this.loadSessionFile(filePath);
         } catch (err) {
           const error = err instanceof Error ? err : new Error(String(err));
-          if (error.message.includes('Unexpected end of JSON input')) {
+          if (error.message.includes('Unexpected end of JSON input')
+            || error.message.includes('Corrupted session file quarantined')) {
             // Ignore truncated session files during startup
             continue;
           }
@@ -238,6 +268,7 @@ export class SessionManager {
         continue;
       }
       if (entry.isFile() && entry.name.endsWith('.json')) {
+        if (isCorruptSessionFileName(entry.name)) continue;
         const legacyFilePath = path.join(SESSIONS_DIR, entry.name);
         try {
           this.loadSessionFile(legacyFilePath);
@@ -291,7 +322,9 @@ export class SessionManager {
     const filePath = this.getSessionPath(session);
     const persistedSession: Session = { ...session };
     delete (persistedSession as Session & { _cachedView?: unknown })._cachedView;
-    fs.writeFileSync(filePath, JSON.stringify(persistedSession, null, 2));
+    const tmpPath = `${filePath}.tmp`;
+    fs.writeFileSync(tmpPath, JSON.stringify(persistedSession, null, 2));
+    fs.renameSync(tmpPath, filePath);
 
     const previousPath = this.sessionFilePaths.get(session.id);
     if (previousPath && previousPath !== filePath && fs.existsSync(previousPath)) {
@@ -302,6 +335,27 @@ export class SessionManager {
       }
     }
     this.sessionFilePaths.set(session.id, filePath);
+  }
+
+  private quarantineCorruptedSessionFile(filePath: string, error: Error): void {
+    try {
+      const originalName = path.basename(filePath);
+      if (isCorruptSessionFileName(originalName)) {
+        clog.error(`[SessionManager] Corrupted quarantined session ignored: ${filePath}`, error);
+        return;
+      }
+      const dir = path.dirname(filePath);
+      const base = stripCorruptSuffix(path.basename(filePath, '.json')).slice(0, 64) || 'session';
+      const pathHash = createHash('sha1').update(filePath).digest('hex').slice(0, 8);
+      const quarantineName = `${base}.corrupt-${pathHash}-${Date.now()}.json`;
+      const quarantinePath = path.join(dir, quarantineName);
+      fs.renameSync(filePath, quarantinePath);
+      clog.error(`[SessionManager] Corrupted session file quarantined: ${filePath} -> ${quarantinePath}`, error);
+      return;
+    } catch (moveErr) {
+      const moveError = moveErr instanceof Error ? moveErr : new Error(String(moveErr));
+      clog.error(`[SessionManager] Failed to quarantine corrupted session file ${filePath}:`, moveError);
+    }
   }
 
   private updateSessionProjectionState(session: Session): void {
@@ -407,7 +461,10 @@ export class SessionManager {
 
  getOrCreateSystemSession(): Session {
    const candidates = this.listSessions()
-     .filter((session) => this.isSystemSession(session) && !this.isRuntimeSession(session))
+     .filter((session) =>
+       this.isSystemSession(session)
+       && !this.isRuntimeSession(session)
+       && !this.isHeartbeatControlSession(session))
      .sort((a, b) => {
        const tierA = a.projectPath === SYSTEM_PROJECT_PATH ? 3 : a.id.startsWith(SYSTEM_SESSION_PREFIX) ? 2 : 1;
        const tierB = b.projectPath === SYSTEM_PROJECT_PATH ? 3 : b.id.startsWith(SYSTEM_SESSION_PREFIX) ? 2 : 1;
@@ -538,7 +595,7 @@ export class SessionManager {
   }
 
   listRootSessions(): Session[] {
-    return this.listSessions().filter((session) => !this.isRuntimeSession(session));
+    return this.listSessions().filter((session) => !this.isRuntimeSession(session) && !this.isHeartbeatControlSession(session));
   }
 
   refreshSessionsFromDisk(options?: { preserveCurrent?: boolean }): void {

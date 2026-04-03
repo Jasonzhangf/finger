@@ -287,9 +287,28 @@ export function buildCompactSummary(
 
 function extractToolDetail(toolName: string, params?: string, result?: string): string {
   if (!params && !result) return '';
+  const p = parsePayload(params ?? '');
+  const r = parsePayload(result ?? '');
+
+  const pickString = (...values: unknown[]): string => {
+    for (const value of values) {
+      if (typeof value === 'string' && value.trim().length > 0) return value.trim();
+    }
+    return '';
+  };
+
+  const pickNumber = (...values: unknown[]): number | null => {
+    for (const value of values) {
+      if (typeof value === 'number' && Number.isFinite(value)) return value;
+      if (typeof value === 'string' && value.trim().length > 0) {
+        const parsed = Number(value.trim());
+        if (Number.isFinite(parsed)) return parsed;
+      }
+    }
+    return null;
+  };
 
   if (toolName === 'update_plan') {
-    const p = parsePayload(params ?? '');
     const planItems = Array.isArray(p.plan) ? p.plan as Array<Record<string, unknown>> : [];
     if (planItems.length === 0) return '';
     const lines = planItems.map((item) => {
@@ -309,33 +328,59 @@ function extractToolDetail(toolName: string, params?: string, result?: string): 
   }
 
   if (toolName === 'web_search' || toolName === 'search_query') {
-    const p = parsePayload(params ?? '');
     const query = typeof p.query === 'string' ? p.query.trim() : typeof p.q === 'string' ? p.q.trim() : '';
     return query ? '\u300c' + truncateInline(query, 50) + '\u300d' : '';
   }
 
   if (toolName === 'agent.dispatch' || toolName === 'dispatch') {
-    const p = parsePayload(params ?? '');
     const target = typeof p.target_agent_id === 'string' ? p.target_agent_id.trim()
       : typeof p.targetAgentId === 'string' ? p.targetAgentId.trim() : '';
     const assignment = typeof p.assignment === 'object' && p.assignment !== null
       ? p.assignment as Record<string, unknown>
       : {};
-    const metadata = typeof p.metadata === 'object' && p.metadata !== null ? p.metadata as Record<string, unknown> : {};
-    const taskId = typeof metadata.taskId === 'string' ? metadata.taskId.trim()
-      : typeof p.task_id === 'string' ? p.task_id.trim()
-      : typeof p.taskId === 'string' ? p.taskId.trim() : '';
-    const taskName = typeof assignment.taskName === 'string'
-      ? assignment.taskName.trim()
-      : typeof p.task_name === 'string'
-        ? p.task_name.trim()
-        : typeof p.taskName === 'string'
-          ? p.taskName.trim()
-          : '';
-    const taskText = typeof p.task === 'string' ? p.task.trim() : '';
-    const source = typeof metadata.source === 'string' ? metadata.source.trim() : '';
+    const metadata = typeof p.metadata === 'object' && p.metadata !== null
+      ? p.metadata as Record<string, unknown>
+      : {};
+    const resultDetails = typeof r.details === 'object' && r.details !== null
+      ? r.details as Record<string, unknown>
+      : {};
+    const resultMetadata = typeof r.metadata === 'object' && r.metadata !== null
+      ? r.metadata as Record<string, unknown>
+      : {};
+
+    const taskId = pickString(metadata.taskId, p.task_id, p.taskId, resultDetails.taskId, resultDetails.task_id);
+    const dispatchId = pickString(r.dispatchId, r.dispatch_id, resultDetails.dispatchId, resultDetails.dispatch_id);
+    const taskName = pickString(
+      assignment.taskName,
+      p.task_name,
+      p.taskName,
+      resultDetails.taskName,
+      resultDetails.task_name,
+    );
+    const taskText = pickString(p.task, assignment.task, resultDetails.task, r.summary);
+    const source = pickString(metadata.source, resultMetadata.source, resultDetails.source);
+    const projectPath = pickString(
+      p.projectPath,
+      p.project_path,
+      assignment.projectPath,
+      assignment.project_path,
+      metadata.projectPath,
+      metadata.project_path,
+      resultDetails.projectPath,
+      resultDetails.project_path,
+    );
+    const assigner = pickString(
+      p.source_agent_id,
+      p.sourceAgentId,
+      metadata.assigner,
+      metadata.sourceAgentName,
+      resultDetails.assigner,
+    );
     const details: string[] = [];
     if (target) details.push(`\u2192 ${target}`);
+    if (assigner) details.push(`from=${truncateInline(assigner, 24)}`);
+    if (dispatchId) details.push(`dispatch=${truncateInline(dispatchId, 28)}`);
+    if (projectPath) details.push(`prj=${truncateInline(projectPath, 34)}`);
     if (taskId.startsWith('watchdog:')) {
       const watchdogLabel = taskId.replace(/^watchdog:/, '').replace(/:/g, ' · ');
       details.push(`watchdog(${truncateInline(watchdogLabel, 48)})`);
@@ -352,16 +397,25 @@ function extractToolDetail(toolName: string, params?: string, result?: string): 
     return details.join(' · ');
   }
 
+  if (toolName === 'agent.query' || toolName === 'agent.progress.ask') {
+    const target = pickString(p.target_agent_id, p.targetAgentId, p.agentId, p.agent_id);
+    const query = pickString(p.query, p.task, p.prompt);
+    const projectPath = pickString(p.projectPath, p.project_path);
+    const details: string[] = [];
+    if (target) details.push(`→ ${target}`);
+    if (projectPath) details.push(`prj=${truncateInline(projectPath, 34)}`);
+    if (query) details.push(truncateInline(query, 72));
+    return details.join(' · ');
+  }
+
   if (toolName === 'command.exec' || toolName === 'shell.exec' || toolName === 'exec_command') {
-    const raw = readExecCommand(parsePayload(params ?? ''));
+    const raw = readExecCommand(p);
     return raw ? describeExecCommand(raw) : '';
   }
 
-  if (toolName === 'write_stdin') return formatWriteStdinDetail(parsePayload(params ?? ''));
+  if (toolName === 'write_stdin') return formatWriteStdinDetail(p);
 
   if (toolName === 'report-task-completion') {
-    const p = parsePayload(params ?? '');
-    const r = parsePayload(result ?? '');
     const taskId = typeof p.task_id === 'string' ? p.task_id.trim() : typeof p.taskId === 'string' ? p.taskId.trim() : '';
     const dispatchId = typeof p.dispatch_id === 'string' ? p.dispatch_id.trim() : typeof p.dispatchId === 'string' ? p.dispatchId.trim() : '';
     const status = typeof p.status === 'string' ? p.status.trim() : typeof r.status === 'string' ? r.status.trim() : '';
@@ -375,12 +429,11 @@ function extractToolDetail(toolName: string, params?: string, result?: string): 
   }
 
   if (toolName === 'view_image') {
-    const path = typeof parsePayload(params ?? '').path === 'string' ? String(parsePayload(params ?? '').path).trim() : '';
+    const path = pickString(p.path);
     return path ? '\ud83d\uddbc ' + truncateInline(path, 80) : '';
   }
 
   if (toolName === 'context_ledger.memory') {
-    const p = parsePayload(params ?? '');
     const action = typeof p.action === 'string' ? p.action.trim() : '';
     const query = typeof p.query === 'string' ? p.query.trim() : '';
     if (action && query) return `${action}: ${truncateInline(query, 50)}`;
@@ -388,43 +441,76 @@ function extractToolDetail(toolName: string, params?: string, result?: string): 
   }
 
   if (toolName === 'context_builder.rebuild') {
-    const mode = typeof parsePayload(params ?? '').mode === 'string' ? String(parsePayload(params ?? '').mode).trim() : '';
+    const mode = pickString(p.mode);
     return mode ? `mode=${mode}` : '';
   }
 
   if (toolName === 'agent.deploy') {
-    const p = parsePayload(params ?? '');
-    const id = typeof p.agentId === 'string' ? p.agentId.trim() : '';
-    const role = typeof p.roleProfile === 'string' ? p.roleProfile.trim() : '';
+    const id = pickString(p.agentId, p.agent_id, r.agentId);
+    const role = pickString(p.roleProfile, p.role_profile, r.roleProfile);
     if (id && role) return `${id} (${role})`;
     return id || role || '';
   }
 
   if (toolName === 'agent.capabilities') {
-    const id = typeof parsePayload(params ?? '').agentId === 'string' ? String(parsePayload(params ?? '').agentId).trim() : '';
+    const id = pickString(p.agentId, p.agent_id);
     return id ? `agent=${id}` : '';
   }
 
   if (toolName === 'agent.control') {
-    const p = parsePayload(params ?? '');
-    const action = typeof p.action === 'string' ? p.action.trim() : '';
-    const id = typeof p.agentId === 'string' ? p.agentId.trim() : '';
+    const action = pickString(p.action, p.command);
+    const id = pickString(p.agentId, p.agent_id);
     if (action && id) return `${action} ${id}`;
     return action || id || '';
   }
 
   if (toolName === 'agent.list') {
-    const status = typeof parsePayload(params ?? '').status === 'string' ? String(parsePayload(params ?? '').status).trim() : '';
-    return status ? `status=${status}` : '';
+    const status = pickString(p.status, p.state);
+    const count = pickNumber(r.count, r.total, p.count, p.total);
+    const details: string[] = [];
+    if (status) details.push(`status=${status}`);
+    if (typeof count === 'number') details.push(`count=${Math.max(0, Math.floor(count))}`);
+    return details.join(' · ');
+  }
+
+  if (toolName === 'project.task.status' || toolName === 'project.task.update') {
+    const action = pickString(p.action, p.status);
+    const taskId = pickString(p.taskId, p.task_id, p.id, r.taskId, r.task_id);
+    const projectPath = pickString(p.projectPath, p.project_path, r.projectPath, r.project_path);
+    const owner = pickString(p.owner, p.assignee, r.owner, r.assignee);
+    const status = pickString(r.status, p.status);
+    const summary = pickString(p.summary, r.summary, p.note, r.note);
+    const details: string[] = [];
+    if (action) details.push(`action=${truncateInline(action, 18)}`);
+    if (taskId) details.push(`task=${truncateInline(taskId, 28)}`);
+    if (owner) details.push(`owner=${truncateInline(owner, 20)}`);
+    if (projectPath) details.push(`prj=${truncateInline(projectPath, 34)}`);
+    if (status) details.push(`status=${truncateInline(status, 14)}`);
+    if (summary) details.push(truncateInline(summary, 48));
+    return details.join(' · ');
   }
 
   if (/^mailbox\./.test(toolName)) {
-    const id = typeof parsePayload(params ?? '').message_id === 'string' ? String(parsePayload(params ?? '').message_id).trim() : '';
-    return id ? `id=${id}` : '';
+    const id = pickString(p.message_id, p.id, p.messageId, r.id, r.message_id);
+    const target = pickString(p.target, p.agentId, p.agent_id, r.target);
+    const category = pickString(p.category, p.source);
+    const unread = pickNumber(r.unread, r.unreadCount, r.unread_count);
+    const pending = pickNumber(r.pending, r.pendingCount, r.pending_count);
+    const total = pickNumber(r.total, r.count, r.total_count);
+    const status = pickString(r.status, p.status);
+    const details: string[] = [];
+    if (target) details.push(`→ ${truncateInline(target, 24)}`);
+    if (id) details.push(`id=${truncateInline(id, 26)}`);
+    if (category) details.push(`cat=${truncateInline(category, 16)}`);
+    if (typeof total === 'number') details.push(`total=${Math.max(0, Math.floor(total))}`);
+    if (typeof unread === 'number') details.push(`unread=${Math.max(0, Math.floor(unread))}`);
+    if (typeof pending === 'number') details.push(`pending=${Math.max(0, Math.floor(pending))}`);
+    if (status) details.push(`status=${truncateInline(status, 12)}`);
+    return details.join(' · ');
   }
 
   if (/^skills\./.test(toolName)) {
-    const name = typeof parsePayload(params ?? '').name === 'string' ? String(parsePayload(params ?? '').name).trim() : '';
+    const name = pickString(p.name);
     return name ? `name=${name}` : '';
   }
 
