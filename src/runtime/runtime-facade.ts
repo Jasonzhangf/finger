@@ -874,6 +874,72 @@ export class RuntimeFacade {
 
   // ==================== 工具调用 ====================
 
+  private resolveToolAliasForAgent(agentId: string, requestedToolName: string): string {
+    const requested = requestedToolName.trim();
+    if (requested.length === 0) return requested;
+
+    // Fast path: exact tool already granted.
+    if (this.toolAccessControl.canUse(agentId, requested).allowed) {
+      return requested;
+    }
+
+    // Compatibility aliasing for unstable model tool names.
+    // Keep this deterministic and fail-closed: only remap when alias target
+    // is both granted for this agent and currently available in tool registry.
+    const aliasMap: Record<string, string[]> = {
+      status: ['mailbox.status', 'heartbeat.status', 'project.task.status'],
+      agent_list: ['agent.list'],
+      agent_dispatch: ['agent.dispatch'],
+      agent_query: ['agent.query'],
+      agent_progress_ask: ['agent.progress.ask'],
+      agent_capabilities: ['agent.capabilities'],
+      agent_control: ['agent.control'],
+      command_exec: ['command.exec', 'exec_command'],
+      project_task_status: ['project.task.status'],
+      project_task_update: ['project.task.update'],
+      context_ledger_memory: ['context_ledger.memory'],
+      context_ledger_expand_task: ['context_ledger.expand_task'],
+      context_builder_rebuild: ['context_builder.rebuild'],
+      reasoning_stop: ['reasoning.stop'],
+      mailbox_status: ['mailbox.status'],
+      mailbox_list: ['mailbox.list'],
+      mailbox_read: ['mailbox.read'],
+      mailbox_read_all: ['mailbox.read_all'],
+      mailbox_ack: ['mailbox.ack'],
+      mailbox_remove: ['mailbox.remove'],
+      mailbox_remove_all: ['mailbox.remove_all'],
+      system_registry_tool: ['system-registry-tool'],
+      update_plan: ['update_plan'],
+      exec_command: ['exec_command'],
+    };
+
+    const lowerRequested = requested.toLowerCase();
+    const aliasCandidates = [
+      ...(aliasMap[lowerRequested] ?? []),
+      ...(requested.includes('_') ? [requested.replace(/_/g, '.')] : []),
+      ...(requested.includes('_') ? [requested.replace(/_/g, '-')] : []),
+      ...(requested.includes('.') || requested.includes('-') ? [requested.replace(/[.-]/g, '_')] : []),
+    ]
+      .map((item) => item.trim())
+      .filter((item, index, list) => item.length > 0 && item !== requested && list.indexOf(item) === index);
+    if (aliasCandidates.length === 0) {
+      return requested;
+    }
+
+    for (const candidate of aliasCandidates) {
+      if (!this.toolAccessControl.canUse(agentId, candidate).allowed) continue;
+      if (!this.toolRegistry.isAvailable(candidate)) continue;
+      log.warn('Normalized tool alias for agent', {
+        agentId,
+        requestedToolName: requested,
+        resolvedToolName: candidate,
+      });
+      return candidate;
+    }
+
+    return requested;
+  }
+
   /**
    * 调用工具
    */
@@ -884,7 +950,9 @@ export class RuntimeFacade {
     options: { authorizationToken?: string; sessionId?: string } = {},
   ): Promise<unknown> {
     const startTime = Date.now();
-    const toolId = `${agentId}-${toolName}-${startTime}`;
+    const requestedToolName = toolName.trim();
+    const resolvedToolName = this.resolveToolAliasForAgent(agentId, requestedToolName);
+    const toolId = `${agentId}-${resolvedToolName}-${startTime}`;
     const optionSessionId = this.sanitizeToolSessionCandidate(
       agentId,
       typeof options.sessionId === 'string' ? options.sessionId : null,
@@ -904,12 +972,12 @@ export class RuntimeFacade {
       this.agentSessionBindings.set(agentId, sessionId);
     }
 
-    const access = this.toolAccessControl.canUse(agentId, toolName);
+    const access = this.toolAccessControl.canUse(agentId, resolvedToolName);
     if (!access.allowed) {
       this.eventBus.emit({
         type: 'tool_error',
         toolId,
-        toolName,
+        toolName: resolvedToolName,
         agentId,
         sessionId,
         timestamp: new Date().toISOString(),
@@ -918,40 +986,42 @@ export class RuntimeFacade {
       return {
         __tool_access_denied: true,
         error: access.reason,
-        toolName,
+        toolName: resolvedToolName,
+        requestedToolName,
         agentId,
         suggestion: '工具访问被拒绝。请检查权限配置或联系管理员。',
       };
     }
 
     // 检查策略
-    const policy = this.toolRegistry.getPolicy(toolName);
+    const policy = this.toolRegistry.getPolicy(resolvedToolName);
     if (policy === 'deny') {
       return {
         __tool_policy_denied: true,
-        error: `Tool ${toolName} is not allowed by policy`,
-        toolName,
+        error: `Tool ${resolvedToolName} is not allowed by policy`,
+        toolName: resolvedToolName,
+        requestedToolName,
         agentId,
         suggestion: '工具被策略禁止。请检查 channels.json 中的工具策略配置。',
       };
     }
 
-    if (this.toolAuthorization.isToolRequired(toolName)) {
+    if (this.toolAuthorization.isToolRequired(resolvedToolName)) {
       let token = options.authorizationToken;
       if (!token || token.trim().length === 0) {
-        const grant = this.toolAuthorization.issue(agentId, toolName, 'system-auto', {
+        const grant = this.toolAuthorization.issue(agentId, resolvedToolName, 'system-auto', {
           ttlMs: 60_000,
           maxUses: 1,
         });
         token = grant.token;
       }
 
-      const auth = this.toolAuthorization.verifyAndConsume(token, agentId, toolName);
+      const auth = this.toolAuthorization.verifyAndConsume(token, agentId, resolvedToolName);
     if (!auth.allowed) {
       this.eventBus.emit({
         type: 'tool_error',
         toolId,
-        toolName,
+        toolName: resolvedToolName,
         agentId,
         sessionId,
         timestamp: new Date().toISOString(),
@@ -960,7 +1030,8 @@ export class RuntimeFacade {
       return {
         __authorization_required: true,
         error: auth.reason,
-        toolName,
+        toolName: resolvedToolName,
+        requestedToolName,
         agentId,
         suggestion: '需要用户授权才能执行此命令。调用 permission.check 检查权限，或让用户回复授权码 <##auth:approvalId##>',
       };
@@ -971,7 +1042,7 @@ export class RuntimeFacade {
     await this.eventBus.emit({
       type: 'tool_call',
       toolId,
-      toolName,
+      toolName: resolvedToolName,
       agentId,
       sessionId,
       timestamp: new Date().toISOString(),
@@ -980,7 +1051,7 @@ export class RuntimeFacade {
 
     try {
       const executionInput = (
-        toolName === 'context_builder.rebuild'
+        resolvedToolName === 'context_builder.rebuild'
         && typeof input === 'object'
         && input !== null
         && !Array.isArray(input)
@@ -1009,7 +1080,7 @@ export class RuntimeFacade {
           })()
         : input;
 
-      const result = await this.toolRegistry.execute(toolName, executionInput, {
+      const result = await this.toolRegistry.execute(resolvedToolName, executionInput, {
         agentId,
         sessionId,
       });
@@ -1019,14 +1090,14 @@ export class RuntimeFacade {
       await this.eventBus.emit({
         type: 'tool_result',
         toolId,
-        toolName,
+        toolName: resolvedToolName,
         agentId,
         sessionId,
         timestamp: new Date().toISOString(),
         payload: { input: executionInput, output: result, duration },
       });
 
-      if (toolName === 'view_image') {
+      if (resolvedToolName === 'view_image') {
         await this.appendViewImageAttachmentEvent(sessionId, result);
       }
 
@@ -1038,7 +1109,7 @@ export class RuntimeFacade {
       await this.eventBus.emit({
         type: 'tool_error',
         toolId,
-        toolName,
+        toolName: resolvedToolName,
         agentId,
         sessionId,
         timestamp: new Date().toISOString(),

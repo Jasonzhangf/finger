@@ -91,4 +91,66 @@ describe('RuntimeFacade session binding hard guards', () => {
     expect(toolCalls[0].sessionId).toBe('default');
     expect(toolCalls[1].sessionId).toBe('system-1');
   });
+
+  it('normalizes bare status tool calls to mailbox.status when alias target is whitelisted', async () => {
+    const emits: Array<Record<string, unknown>> = [];
+    const eventBus = {
+      emit: vi.fn(async (evt: Record<string, unknown>) => {
+        emits.push(evt);
+      }),
+      enablePersistence: vi.fn(),
+    } as any;
+    const sessionManager = createSessionManagerStub();
+    const toolRegistry = createToolRegistryStub() as any;
+    const runtime = new RuntimeFacade(eventBus, sessionManager, toolRegistry);
+    runtime.grantToolToAgent('finger-system-agent', 'mailbox.status');
+
+    await runtime.callTool('finger-system-agent', 'status', { detail: true }, { sessionId: 'system-1' });
+
+    expect(toolRegistry.execute).toHaveBeenCalledWith(
+      'mailbox.status',
+      { detail: true },
+      expect.objectContaining({ agentId: 'finger-system-agent', sessionId: 'system-1' }),
+    );
+    const toolCall = emits.find((evt) => evt.type === 'tool_call');
+    expect(toolCall).toBeTruthy();
+    expect(toolCall?.toolName).toBe('mailbox.status');
+  });
+
+  it('normalizes command_exec alias to command.exec when whitelisted', async () => {
+    const emits: Array<Record<string, unknown>> = [];
+    const eventBus = {
+      emit: vi.fn(async (evt: Record<string, unknown>) => {
+        emits.push(evt);
+      }),
+      enablePersistence: vi.fn(),
+    } as any;
+    const sessionManager = createSessionManagerStub();
+    const toolRegistry = createToolRegistryStub() as any;
+    const runtime = new RuntimeFacade(eventBus, sessionManager, toolRegistry);
+    runtime.grantToolToAgent('finger-system-agent', 'command.exec');
+
+    await runtime.callTool('finger-system-agent', 'command_exec', { command: '<##help##>' }, { sessionId: 'system-1' });
+
+    expect(toolRegistry.execute).toHaveBeenCalledWith(
+      'command.exec',
+      { command: '<##help##>' },
+      expect.objectContaining({ agentId: 'finger-system-agent', sessionId: 'system-1' }),
+    );
+    const toolCall = emits.find((evt) => evt.type === 'tool_call');
+    expect(toolCall?.toolName).toBe('command.exec');
+  });
+
+  it('keeps unknown alias denied when no whitelisted target exists', async () => {
+    const eventBus = { emit: vi.fn(async () => undefined), enablePersistence: vi.fn() } as any;
+    const sessionManager = createSessionManagerStub();
+    const toolRegistry = createToolRegistryStub() as any;
+    const runtime = new RuntimeFacade(eventBus, sessionManager, toolRegistry);
+
+    const result = await runtime.callTool('finger-system-agent', 'agent_list', {}, { sessionId: 'system-1' }) as Record<string, unknown>;
+
+    expect(result.__tool_access_denied).toBe(true);
+    expect(result.toolName).toBe('agent_list');
+    expect(toolRegistry.execute).not.toHaveBeenCalled();
+  });
 });
