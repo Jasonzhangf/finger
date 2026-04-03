@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { mkdtempSync, rmSync, writeFileSync } from 'fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import {
@@ -946,6 +946,93 @@ describe('chat-codex module', () => {
     );
 
     expect(options?.developer_instructions ?? '').not.toContain('# Task Flow Runtime');
+  });
+
+  it('injects project-scoped AGENTS runtime block with directory precedence', () => {
+    const tempDir = mkdtempSync(join(tmpdir(), 'finger-agents-scope-'));
+    const projectRoot = join(tempDir, 'project-a');
+    const nestedDir = join(projectRoot, 'src', 'feature');
+    mkdirSync(nestedDir, { recursive: true });
+    const rootAgentsPath = join(projectRoot, 'AGENTS.md');
+    const nestedAgentsPath = join(projectRoot, 'src', 'AGENTS.md');
+    writeFileSync(rootAgentsPath, '# ROOT AGENTS\n- root rule', 'utf-8');
+    writeFileSync(nestedAgentsPath, '# NESTED AGENTS\n- nested rule', 'utf-8');
+
+    try {
+      const options = __chatCodexInternals.buildKernelUserTurnOptions(
+        {
+          sessionId: 'session-1',
+          metadata: {
+            roleProfile: 'project',
+            kernelMode: 'main',
+            skillsPromptEnabled: false,
+            mailboxPromptEnabled: false,
+            userProfilePromptEnabled: false,
+            memoryRoutingPromptEnabled: false,
+            flowPromptEnabled: false,
+            projectPath: projectRoot,
+            cwd: nestedDir,
+          },
+        },
+        undefined,
+      );
+
+      const instructions = options?.developer_instructions ?? '';
+      expect(instructions).toContain('# Project AGENTS Runtime (scope-aware)');
+      expect(instructions).toContain(`AGENTS.project_root=${projectRoot}`);
+      expect(instructions).toContain(rootAgentsPath);
+      expect(instructions).toContain(nestedAgentsPath);
+      expect(instructions.indexOf(rootAgentsPath)).toBeLessThan(instructions.indexOf(nestedAgentsPath));
+      expect(instructions).toContain('ROOT AGENTS');
+      expect(instructions).toContain('NESTED AGENTS');
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it('loads project-local skills for project-agent context', () => {
+    const tempDir = mkdtempSync(join(tmpdir(), 'finger-project-skills-'));
+    const projectRoot = join(tempDir, 'project-b');
+    const projectSkillsRoot = join(projectRoot, '.codex', 'skills', 'project-debug-skill');
+    mkdirSync(projectSkillsRoot, { recursive: true });
+    writeFileSync(
+      join(projectSkillsRoot, 'SKILL.md'),
+      [
+        '---',
+        'name: project-debug-skill',
+        'description: Project local debug workflow',
+        '---',
+        '',
+        '# project-debug-skill',
+      ].join('\n'),
+      'utf-8',
+    );
+
+    try {
+      const options = __chatCodexInternals.buildKernelUserTurnOptions(
+        {
+          sessionId: 'session-1',
+          metadata: {
+            roleProfile: 'project',
+            kernelMode: 'main',
+            mailboxPromptEnabled: false,
+            userProfilePromptEnabled: false,
+            memoryRoutingPromptEnabled: false,
+            flowPromptEnabled: false,
+            projectPath: projectRoot,
+            cwd: projectRoot,
+          },
+        },
+        undefined,
+      );
+
+      const instructions = options?.developer_instructions ?? '';
+      expect(instructions).toContain('## Skills');
+      expect(instructions).toContain('project-debug-skill: Project local debug workflow');
+      expect(instructions).toContain(`${projectRoot}/.codex/skills/project-debug-skill/SKILL.md`);
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true });
+    }
   });
 
   it('keeps skills/mailbox/flow prompt blocks stable across raw and rebuilt history sources', () => {

@@ -5,6 +5,7 @@
  */
 
 import { getGlobalSkillsManager } from './skill-manager.js';
+import type { SkillsScopeOptions } from './skill-manager.js';
 import { logger } from '../core/logger.js';
 import { createConsoleLikeLogger } from '../core/logger/console-like.js';
 
@@ -39,7 +40,7 @@ function renderSkillsPrompt(skills: Array<{ name: string; description: string; p
  */
 export async function formatSkillsAsPrompt(): Promise<string> {
   try {
-    const skills = await skillsManager.listSkills();
+    const skills = skillsManager.listSkillsScopedSync();
     return renderSkillsPrompt(skills);
   } catch (error) {
     clog.error('[SkillPromptInjector] Failed to load skills:', error);
@@ -68,10 +69,20 @@ export async function injectSkillsIntoPrompt(systemPrompt: string): Promise<stri
  */
 export function formatSkillsAsPromptSync(): string {
   try {
-    const skills = skillsManager.listSkillsSync();
+    const skills = skillsManager.listSkillsScopedSync();
     return renderSkillsPrompt(skills);
   } catch (error) {
     clog.error('[SkillPromptInjector] Failed to load skills sync:', error);
+    return '';
+  }
+}
+
+export function formatSkillsAsPromptScopedSync(options?: SkillsScopeOptions): string {
+  try {
+    const skills = skillsManager.listSkillsScopedSync(options);
+    return renderSkillsPrompt(skills);
+  } catch (error) {
+    clog.error('[SkillPromptInjector] Failed to load scoped skills sync:', error);
     return '';
   }
 }

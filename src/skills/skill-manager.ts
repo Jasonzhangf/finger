@@ -36,6 +36,12 @@ export interface SkillsManagerStatus {
   lastReloadReason?: string;
 }
 
+export interface SkillsScopeOptions {
+  cwd?: string;
+  projectPath?: string;
+  includeProjectSkills?: boolean;
+}
+
 function parseSkillMetadataFromContent(content: string, fallbackName: string): SkillMetadata {
   let name = fallbackName;
   let description = '';
@@ -216,6 +222,36 @@ export class SkillsManager {
     return Array.from(this.skillsCache.values());
   }
 
+  listSkillsScopedSync(options?: SkillsScopeOptions): SkillMetadata[] {
+    const globalSkills = this.listSkillsSync();
+    if (!options?.includeProjectSkills) {
+      return globalSkills;
+    }
+
+    const scopedDirs = resolveScopedSkillDirs(options, this.skillsDir);
+    if (scopedDirs.length === 0) {
+      return globalSkills;
+    }
+
+    const scopedSkills = this.loadScopedSkillsFromDirsSync(scopedDirs);
+    if (scopedSkills.length === 0) {
+      return globalSkills;
+    }
+
+    // Scoped (project-local) skills have precedence over global skills
+    const mergedByName = new Map<string, SkillMetadata>();
+    for (const skill of scopedSkills) {
+      mergedByName.set(skill.name, skill);
+    }
+    for (const skill of globalSkills) {
+      if (!mergedByName.has(skill.name)) {
+        mergedByName.set(skill.name, skill);
+      }
+    }
+
+    return Array.from(mergedByName.values());
+  }
+
   getStatus(): SkillsManagerStatus {
     return {
       skillsDir: this.skillsDir,
@@ -303,6 +339,93 @@ export class SkillsManager {
       log.error('[SkillsManager] Failed to load skills sync:', error instanceof Error ? error : new Error(String(error)));
     }
   }
+
+  private loadScopedSkillsFromDirsSync(dirs: string[]): SkillMetadata[] {
+    const skills: SkillMetadata[] = [];
+    const seenSkillNames = new Set<string>();
+
+    for (const dir of dirs) {
+      try {
+        if (!existsSync(dir)) continue;
+        const entries = readdirSync(dir, { withFileTypes: true });
+        for (const entry of entries) {
+          if (!entry.isDirectory()) continue;
+          const skillPath = path.join(dir, entry.name);
+          const skillMdPath = path.join(skillPath, 'SKILL.md');
+          if (!existsSync(skillMdPath)) continue;
+
+          try {
+            const content = readFileSync(skillMdPath, 'utf-8');
+            const parsed = parseSkillMetadataFromContent(content, entry.name);
+            const normalizedName = parsed.name.trim().length > 0 ? parsed.name.trim() : entry.name;
+            if (seenSkillNames.has(normalizedName)) continue;
+            seenSkillNames.add(normalizedName);
+            skills.push({
+              name: normalizedName,
+              description: parsed.description,
+              path: skillPath,
+              exists: true,
+            });
+          } catch {
+            // Scoped skill unreadable; skip silently to avoid polluting runtime prompt.
+          }
+        }
+      } catch {
+        // Ignore invalid scoped skill directories.
+      }
+    }
+
+    return skills;
+  }
+}
+
+function normalizeDir(rawPath: string | undefined): string | undefined {
+  if (typeof rawPath !== 'string') return undefined;
+  const trimmed = rawPath.trim();
+  if (!trimmed) return undefined;
+  return path.resolve(trimmed);
+}
+
+function isSameOrSubPath(candidate: string, root: string): boolean {
+  const normalizedCandidate = path.resolve(candidate);
+  const normalizedRoot = path.resolve(root);
+  return normalizedCandidate === normalizedRoot
+    || normalizedCandidate.startsWith(`${normalizedRoot}${path.sep}`);
+}
+
+function resolveScopedSkillDirs(options: SkillsScopeOptions, globalSkillsDir: string): string[] {
+  const resolvedGlobal = path.resolve(globalSkillsDir);
+  const resolvedProject = normalizeDir(options.projectPath);
+  const resolvedCwd = normalizeDir(options.cwd) ?? resolvedProject;
+  if (!resolvedCwd && !resolvedProject) return [];
+
+  const dirs: string[] = [];
+  const pushDir = (dir: string) => {
+    const resolved = path.resolve(dir);
+    if (resolved === resolvedGlobal) return;
+    if (!dirs.includes(resolved)) dirs.push(resolved);
+  };
+
+  const upperBound = resolvedProject && resolvedCwd && isSameOrSubPath(resolvedCwd, resolvedProject)
+    ? resolvedProject
+    : undefined;
+
+  let cursor = resolvedCwd;
+  while (cursor) {
+    pushDir(path.join(cursor, '.codex', 'skills'));
+    pushDir(path.join(cursor, 'skills'));
+    if (upperBound && cursor === upperBound) break;
+    const parent = path.dirname(cursor);
+    if (parent === cursor) break;
+    cursor = parent;
+  }
+
+  if (resolvedProject && (!resolvedCwd || !isSameOrSubPath(resolvedCwd, resolvedProject))) {
+    pushDir(path.join(resolvedProject, '.codex', 'skills'));
+    pushDir(path.join(resolvedProject, 'skills'));
+  }
+
+  return dirs;
 }
 
 let globalSkillsManager: SkillsManager | null = null;

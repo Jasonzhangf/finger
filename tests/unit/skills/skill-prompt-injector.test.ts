@@ -4,6 +4,7 @@ const { manager } = vi.hoisted(() => ({
   manager: {
     listSkills: vi.fn(),
     listSkillsSync: vi.fn(),
+    listSkillsScopedSync: vi.fn(),
   },
 }));
 
@@ -34,10 +35,11 @@ describe('skill-prompt-injector', () => {
   beforeEach(() => {
     manager.listSkills.mockReset();
     manager.listSkillsSync.mockReset();
+    manager.listSkillsScopedSync.mockReset();
   });
 
   it('includes ledger-retrieval guidance in skills prompt', () => {
-    manager.listSkillsSync.mockReturnValue([
+    manager.listSkillsScopedSync.mockReturnValue([
       {
         name: 'email-skills',
         description: 'Read and send email.',

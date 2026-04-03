@@ -1,6 +1,6 @@
 import { spawn, type ChildProcessWithoutNullStreams } from 'child_process';
 import { appendFileSync, existsSync, mkdirSync, readFileSync } from 'fs';
-import { basename, dirname, join } from 'path';
+import { basename, dirname, join, resolve, sep } from 'path';
 import { createInterface } from 'readline';
 import type { OutputModule } from '../../orchestration/module-registry.js';
 import { KernelAgentBase, type KernelAgentRunner, type KernelRunContext } from '../base/kernel-agent-base.js';
@@ -20,7 +20,7 @@ import { FINGER_SOURCE_ROOT } from '../../core/source-root.js';
 import { getContextWindow } from '../../core/user-settings.js';
 import type { MailboxSnapshot } from '../../runtime/mailbox-snapshot.js';
 import { hasNewUnreadSinceLastNotified, getNewUnreadEntries } from '../../runtime/mailbox-snapshot.js';
-import { formatSkillsAsPromptSync } from '../../skills/skill-prompt-injector.js';
+import { formatSkillsAsPromptScopedSync } from '../../skills/skill-prompt-injector.js';
 import { logger } from '../../core/logger.js';
 import { estimateTokensWithTiktoken } from '../../utils/tiktoken-estimator.js';
 import {
@@ -52,6 +52,8 @@ const DEFAULT_KERNEL_STALL_TIMEOUT_MS = 600_000;
 const ACTIVE_TURN_STALE_GRACE_MS = 15_000;
 const FLOW_PROMPT_MAX_CHARS = 10_000;
 const USER_PROFILE_PROMPT_MAX_CHARS = 8_000;
+const AGENTS_PROMPT_MAX_FILES = 4;
+const AGENTS_PROMPT_MAX_CHARS_PER_FILE = 4_000;
 const DEFAULT_CONTEXT_WINDOW_TOKENS = 262_144;
 const chatCodexLog = logger.module('ChatCodexModule');
 export const CHAT_CODEX_ORCHESTRATOR_ALLOWED_TOOLS = [
@@ -2190,6 +2192,7 @@ function buildKernelUserTurnOptions(
   const userProfilePromptBlock = buildUserProfilePromptBlock(metadata);
   const memoryRoutingPromptBlock = buildMemoryRetrievalPromptBlock(metadata);
   const flowPromptBlock = buildFlowPromptBlock(metadata);
+  const agentsScopePromptBlock = buildProjectAgentsScopePromptBlock(metadata);
 
   if (isSystemRole) {
     options.system_prompt = appendPromptSection(options.system_prompt, skillsPromptBlock);
@@ -2197,12 +2200,14 @@ function buildKernelUserTurnOptions(
     options.system_prompt = appendPromptSection(options.system_prompt, userProfilePromptBlock);
     options.system_prompt = appendPromptSection(options.system_prompt, memoryRoutingPromptBlock);
     options.system_prompt = appendPromptSection(options.system_prompt, flowPromptBlock);
+    options.system_prompt = appendPromptSection(options.system_prompt, agentsScopePromptBlock);
   } else {
     developerInstructions = appendPromptSection(developerInstructions, skillsPromptBlock);
     developerInstructions = appendPromptSection(developerInstructions, mailboxBaselineBlock);
     developerInstructions = appendPromptSection(developerInstructions, userProfilePromptBlock);
     developerInstructions = appendPromptSection(developerInstructions, memoryRoutingPromptBlock);
     developerInstructions = appendPromptSection(developerInstructions, flowPromptBlock);
+    developerInstructions = appendPromptSection(developerInstructions, agentsScopePromptBlock);
   }
 
   // Inject mailbox pending entries into context (works for all roles including system)
@@ -2410,8 +2415,137 @@ function buildSkillsPromptBlock(metadata: Record<string, unknown> | undefined): 
     ?? parseOptionalBoolean(metadata?.skillsInjectionEnabled)
     ?? true;
   if (!enabled) return undefined;
-  const block = formatSkillsAsPromptSync().trim();
+  const projectPath = parseOptionalString(metadata?.projectPath) ?? parseOptionalString(metadata?.project_path);
+  const cwd = parseOptionalString(metadata?.cwd);
+  const includeProjectSkills = isProjectLikeAgent(metadata);
+  const block = formatSkillsAsPromptScopedSync({
+    includeProjectSkills,
+    projectPath,
+    cwd,
+  }).trim();
   return block.length > 0 ? block : undefined;
+}
+
+function isProjectLikeAgent(metadata: Record<string, unknown> | undefined): boolean {
+  const role = (parseOptionalString(metadata?.roleProfile)
+    ?? parseOptionalString(metadata?.role_profile)
+    ?? parseOptionalString(metadata?.contextLedgerRole)
+    ?? parseOptionalString(metadata?.context_ledger_role)
+    ?? parseOptionalString(metadata?.role)
+    ?? '').trim().toLowerCase();
+  if (role === 'project') return true;
+
+  const agentId = (parseOptionalString(metadata?.contextLedgerAgentId)
+    ?? parseOptionalString(metadata?.context_ledger_agent_id)
+    ?? parseOptionalString(metadata?.agentId)
+    ?? parseOptionalString(metadata?.agent_id)
+    ?? '').trim().toLowerCase();
+  return agentId.includes('project-agent');
+}
+
+function normalizeAbsoluteDir(rawPath: string | undefined): string | undefined {
+  if (typeof rawPath !== 'string') return undefined;
+  const trimmed = rawPath.trim();
+  if (!trimmed) return undefined;
+  return resolve(trimmed);
+}
+
+function isSameOrSubPath(candidate: string, root: string): boolean {
+  const normalizedCandidate = resolve(candidate);
+  const normalizedRoot = resolve(root);
+  return normalizedCandidate === normalizedRoot
+    || normalizedCandidate.startsWith(`${normalizedRoot}${sep}`);
+}
+
+function collectApplicableAgentsFiles(startDir: string, projectRoot?: string): string[] {
+  const files: string[] = [];
+  const addIfExists = (dir: string): void => {
+    const upper = join(dir, 'AGENTS.md');
+    const lower = join(dir, 'agents.md');
+    if (existsSync(upper)) {
+      files.push(upper);
+      return;
+    }
+    if (existsSync(lower)) files.push(lower);
+  };
+
+  const normalizedProjectRoot = projectRoot ? resolve(projectRoot) : undefined;
+  let cursor = resolve(startDir);
+  while (true) {
+    addIfExists(cursor);
+    if (normalizedProjectRoot && cursor === normalizedProjectRoot) break;
+    const parent = dirname(cursor);
+    if (parent === cursor) break;
+    cursor = parent;
+  }
+
+  if (normalizedProjectRoot) {
+    addIfExists(normalizedProjectRoot);
+  }
+
+  return Array.from(new Set(files));
+}
+
+function buildProjectAgentsScopePromptBlock(metadata: Record<string, unknown> | undefined): string | undefined {
+  const enabled = parseOptionalBoolean(metadata?.agentsPromptEnabled)
+    ?? parseOptionalBoolean(metadata?.agentsInjectionEnabled)
+    ?? true;
+  if (!enabled) return undefined;
+  if (!isProjectLikeAgent(metadata)) return undefined;
+
+  const projectPath = normalizeAbsoluteDir(parseOptionalString(metadata?.projectPath) ?? parseOptionalString(metadata?.project_path));
+  const cwd = normalizeAbsoluteDir(parseOptionalString(metadata?.cwd)) ?? projectPath;
+  if (!cwd && !projectPath) return undefined;
+
+  const startDir = cwd ?? projectPath!;
+  const boundedProjectRoot = projectPath && isSameOrSubPath(startDir, projectPath)
+    ? projectPath
+    : undefined;
+  const applicableFiles = collectApplicableAgentsFiles(startDir, boundedProjectRoot);
+  const orderedByPrecedence = applicableFiles.slice().reverse();
+
+  const lines: string[] = [
+    '# Project AGENTS Runtime (scope-aware)',
+    '- This is a project-agent turn: apply directory-scoped AGENTS rules.',
+    '- Scope rule: each AGENTS.md applies to its directory subtree.',
+    '- Precedence rule: deeper/nested AGENTS overrides parent AGENTS on conflicts.',
+    '- Priority rule: system/developer/user instructions override AGENTS.',
+    `AGENTS.cwd=${startDir}`,
+    `AGENTS.project_root=${projectPath ?? '(unset)'}`,
+    `AGENTS.applicable_count=${orderedByPrecedence.length}`,
+  ];
+
+  if (orderedByPrecedence.length === 0) {
+    lines.push('AGENTS.state=none_found');
+    return lines.join('\n');
+  }
+
+  lines.push('AGENTS.precedence_order(low->high):');
+  orderedByPrecedence.forEach((filePath, index) => {
+    lines.push(`${index + 1}. ${filePath}`);
+  });
+
+  const fileContents = applicableFiles.slice(0, AGENTS_PROMPT_MAX_FILES);
+  for (const filePath of fileContents) {
+    try {
+      const raw = readFileSync(filePath, 'utf-8').trim();
+      const rendered = raw.length > AGENTS_PROMPT_MAX_CHARS_PER_FILE
+        ? `${raw.slice(0, AGENTS_PROMPT_MAX_CHARS_PER_FILE)}\n...[TRUNCATED_AT_${AGENTS_PROMPT_MAX_CHARS_PER_FILE}_CHARS]`
+        : raw;
+      lines.push(`AGENTS.content[${filePath}]:`);
+      lines.push('```md');
+      lines.push(rendered);
+      lines.push('```');
+    } catch {
+      lines.push(`AGENTS.content[${filePath}]=unreadable`);
+    }
+  }
+
+  if (applicableFiles.length > AGENTS_PROMPT_MAX_FILES) {
+    lines.push(`AGENTS.content.truncated=true (${applicableFiles.length - AGENTS_PROMPT_MAX_FILES} more files omitted)`);
+  }
+
+  return lines.join('\n');
 }
 
 function buildMailboxBaselineBlock(

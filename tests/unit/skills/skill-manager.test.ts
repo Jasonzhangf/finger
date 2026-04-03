@@ -46,4 +46,32 @@ describe('SkillsManager', () => {
     const afterInstall = manager.listSkillsSync();
     expect(afterInstall.map((skill) => skill.name).sort()).toEqual(['alpha', 'beta']);
   });
+
+  it('listSkillsScopedSync merges project-local skills and gives them precedence over global skills', async () => {
+    const globalRoot = makeTempDir();
+    const projectRoot = makeTempDir();
+    const projectSkillsDir = path.join(projectRoot, '.codex', 'skills');
+
+    writeSkill(globalRoot, 'alpha', 'alpha', 'global alpha');
+    writeSkill(globalRoot, 'shared', 'shared', 'global shared');
+    writeSkill(projectSkillsDir, 'shared-local', 'shared', 'project shared');
+    writeSkill(projectSkillsDir, 'beta', 'beta', 'project beta');
+
+    const manager = new SkillsManager();
+    manager.stopWatching();
+    (manager as any).skillsDir = globalRoot;
+
+    await manager.listSkills();
+    const merged = manager.listSkillsScopedSync({
+      includeProjectSkills: true,
+      projectPath: projectRoot,
+      cwd: projectRoot,
+    });
+
+    const byName = new Map(merged.map((skill) => [skill.name, skill]));
+    expect(byName.get('alpha')?.description).toBe('global alpha');
+    expect(byName.get('beta')?.description).toBe('project beta');
+    expect(byName.get('shared')?.description).toBe('project shared');
+    expect(byName.get('shared')?.path).toContain(`${path.sep}.codex${path.sep}skills${path.sep}`);
+  });
 });

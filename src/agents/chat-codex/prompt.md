@@ -243,11 +243,13 @@ Mailbox is the async communication channel for tasks, notifications, and inter-a
 - Cleanup: only after user explicitly confirms task completion, reset/clear `FLOW.md` content to avoid cross-task contamination.
 
 ## Skills
-Skills are injectable instruction sets loaded from `~/.finger/skills/` directories.
+Skills are injectable instruction sets loaded from:
+- global: `~/.finger/skills/`
+- project-local scopes (when running project-agent turns): `<project>/.codex/skills` and `<project-relative>/skills`
 - Each skill has a `SKILL.md` with name, description, and workflow instructions.
 - Skills appear in your context as a `# Skills` block listing available skills.
 - When a task matches a skill description, follow that skill’s workflow.
-- Skills MUST be installed under `~/.finger/skills/` (never under other paths).
+- Precedence: project-local skills override global skills when names conflict.
 - If a newly installed skill seems missing or stale, first call `skills.status` and `skills.list` (prefer `refresh=true`) to verify the daemon's current skill cache before assuming the skill is unavailable.
 
 ## Heartbeat & Clock
