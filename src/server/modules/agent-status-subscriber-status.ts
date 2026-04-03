@@ -11,32 +11,41 @@ import {
   resolveSessionRelationInfo,
 } from './agent-status-subscriber-session-utils.js';
 import { logger } from '../../core/logger.js';
+import { resolveAgentDisplayIdentity } from './agent-name-resolver.js';
 
 const log = logger.module('AgentStatusSubscriberStatus');
 
 function inferAgentRole(agentId: string): 'system' | 'project' | 'reviewer' | 'agent' {
-  const normalized = agentId.trim().toLowerCase();
+  const normalized = agentId.trim();
   if (!normalized) return 'agent';
-  if (normalized.includes('system-agent')) return 'system';
-  if (normalized.includes('project-agent')) return 'project';
-  if (normalized.includes('review')) return 'reviewer';
-  return 'agent';
+  return resolveAgentDisplayIdentity(normalized).role;
+}
+
+function formatIdentityNameAndId(identity: { id: string; name: string }): string {
+  const normalizedId = identity.id.trim();
+  const normalizedName = identity.name.trim();
+  if (!normalizedName) return normalizedId;
+  if (!normalizedId) return normalizedName;
+  if (normalizedName === normalizedId) return normalizedId;
+  return `${normalizedName}(${normalizedId})`;
 }
 
 function buildAgentIdentityLine(agentId: string, sourceType?: string): string {
-  const role = inferAgentRole(agentId);
+  const identity = resolveAgentDisplayIdentity(agentId);
+  const role = identity.role;
+  const displayName = formatIdentityNameAndId(identity);
   const normalizedSource = typeof sourceType === 'string' ? sourceType.trim().toLowerCase() : '';
   const isHeartbeatLikeSource = normalizedSource === 'heartbeat'
     || normalizedSource === 'mailbox'
     || normalizedSource === 'cron'
     || normalizedSource === 'system-inject';
   if (isHeartbeatLikeSource && role === 'system') {
-    return `👤 [system agent:hb] ${agentId}`;
+    return `👤 [system agent:hb] ${displayName}`;
   }
   if (isHeartbeatLikeSource) {
-    return `👤 [${role}:hb] ${agentId}`;
+    return `👤 [${role}:hb] ${displayName}`;
   }
-  return `👤 [${role}] ${agentId}`;
+  return `👤 [${role}] ${displayName}`;
 }
 
 function buildSessionTitleLine(params: {
@@ -281,7 +290,14 @@ export async function sendProgressUpdateToChannels(params: {
     eventId: `progress-${Date.now()}`,
     timestamp: new Date().toISOString(),
     sessionId: params.report.sessionId,
-    agent: { agentId: params.report.agentId },
+    agent: (() => {
+      const identity = resolveAgentDisplayIdentity(params.report.agentId || 'unknown-agent');
+      return {
+        agentId: params.report.agentId,
+        agentName: identity.name,
+        ...(identity.role === 'agent' ? {} : { agentRole: identity.role }),
+      };
+    })(),
     task: { taskDescription: params.report.summary },
     status: {
       state: params.report.progress.status === 'completed' ? 'completed'

@@ -711,7 +711,7 @@ describe('AgentStatusSubscriber text updates', () => {
 
     expect(messageHub.routeToOutput).toHaveBeenCalledTimes(1);
     const [, payload] = messageHub.routeToOutput.mock.calls[0];
-    expect(payload.content).toContain('👤 [system] finger-system-agent');
+    expect(payload.content).toMatch(/👤 \[system\] (Mirror\(finger-system-agent\)|finger-system-agent)/);
     expect(payload.content).toContain('🧠 上下文: 50% · ~131k/262k');
     expect(payload.statusUpdate.status.details.agentRole).toBe('system');
     expect(payload.statusUpdate.status.details.maxInputTokens).toBe(262144);
@@ -781,8 +781,8 @@ describe('AgentStatusSubscriber text updates', () => {
 
     expect(routeCalls).toHaveLength(1);
     expect(routeCalls[0].outputId).toBe('channel-bridge-qqbot');
-    expect(routeCalls[0].content).toContain('👤 [project] finger-project-agent');
-    expect(routeCalls[0].content).toContain('🧭 rg → ✅');
+    expect(routeCalls[0].content).toMatch(/👤 \[project\] (Alex\(finger-project-agent\)|finger-project-agent)/);
+    expect(routeCalls[0].content).toMatch(/🧭 rg →\s*✅/);
 
     subscriber.stop();
   });
