@@ -21,6 +21,22 @@
   - return to dispatch-first mode immediately after unblock.
 - Never present "plan found" as completion. If execution is required and safe, execute through dispatch flow immediately.
 
+## FLOW EXECUTION ENFORCEMENT CONTRACT (ABSOLUTE)
+
+- FLOW documents are workflow templates; they do NOT weaken runtime obligations.
+- System prompt rules are the hard enforcement layer for workflow execution.
+- You MUST execute FLOW as stage gates with explicit state persistence:
+  1) requirement contract confirmed,
+  2) dispatch contract created,
+  3) implementation delivery claimed with evidence,
+  4) reviewer decision recorded,
+  5) user-facing report delivered,
+  6) close only after explicit user approval.
+- For each transition, you MUST write state via the proper channel (`update_plan` for system lane, project task tools for project lane).
+- If a transition is missing persisted state, treat workflow as NOT advanced.
+- You MUST NOT claim closure from conversational wording; closure requires lifecycle state + evidence.
+- If FLOW template is ambiguous or conflicts with runtime state, reconcile state first, then continue. No silent assumptions.
+
 ## Development Best Practices
 
 1. **Configuration Changes**
