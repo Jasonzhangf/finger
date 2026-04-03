@@ -1,7 +1,10 @@
 import { describe, it, expect, beforeEach } from 'vitest';
+import { tmpdir } from 'os';
+import { join } from 'path';
 import {
   updatePlanTool,
   resetUpdatePlanToolState,
+  reloadUpdatePlanToolStateFromDiskForTest,
   getUpdatePlanRuntimeView,
   type PlanItemV2,
 } from '../../../../src/tools/internal/codex-update-plan-tool.js';
@@ -16,6 +19,7 @@ const systemCtx = {
 
 describe('update_plan v2 contract', () => {
   beforeEach(() => {
+    process.env.FINGER_UPDATE_PLAN_STORE_FILE = join(tmpdir(), `finger-update-plan-store-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.json`);
     resetUpdatePlanToolState();
   });
 
@@ -57,6 +61,35 @@ describe('update_plan v2 contract', () => {
     }, systemCtx);
     expect(searched.ok).toBe(true);
     expect(searched.items).toHaveLength(1);
+  });
+
+  it('persists plan store to disk and can reload after in-memory reset', async () => {
+    const created = await updatePlanTool.execute({
+      action: 'create',
+      projectPath: '/repo/a',
+      item: {
+        title: 'Persisted task',
+        assigneeWorkerId: 'finger-worker-01',
+      },
+    }, systemCtx);
+    expect(created.ok).toBe(true);
+
+    reloadUpdatePlanToolStateFromDiskForTest();
+
+    const listed = await updatePlanTool.execute({
+      action: 'list',
+      projectPath: '/repo/a',
+    }, systemCtx);
+    expect(listed.ok).toBe(true);
+    expect(listed.items?.some((item) => item.title === 'Persisted task')).toBe(true);
+
+    const searched = await updatePlanTool.execute({
+      action: 'search',
+      projectPath: '/repo/a',
+      query: 'Persisted task',
+    }, systemCtx);
+    expect(searched.ok).toBe(true);
+    expect(searched.items?.some((item) => item.title === 'Persisted task')).toBe(true);
   });
 
   it('returns revision_conflict when write action misses expectedRevision', async () => {

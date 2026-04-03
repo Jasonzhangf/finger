@@ -1,6 +1,8 @@
 import path from 'path';
+import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'fs';
 import { InternalTool, createToolExecutionContext, type ToolExecutionContext } from './types.js';
 import { logger } from '../../core/logger.js';
+import { FINGER_PATHS } from '../../core/finger-paths.js';
 
 type LegacyPlanStepStatus = 'pending' | 'in_progress' | 'completed';
 type PlanPriority = 'P0' | 'P1' | 'P2' | 'P3';
@@ -122,6 +124,13 @@ const store: StoredPlanState = {
   byProjectPath: new Map(),
   eventsByProjectPath: new Map(),
 };
+const UPDATE_PLAN_STORE_VERSION = 1;
+let storeLoaded = false;
+
+function resolveUpdatePlanStoreFile(): string {
+  return process.env.FINGER_UPDATE_PLAN_STORE_FILE?.trim()
+    || path.join(FINGER_PATHS.runtime.dir, 'update-plan-store.json');
+}
 
 const STATUS_TRANSITIONS: Record<PlanStatus, PlanStatus[]> = {
   open: ['in_progress', 'blocked'],
@@ -183,6 +192,7 @@ export const updatePlanTool: InternalTool<unknown, UpdatePlanOutput> = {
     additionalProperties: true,
   },
   execute: async (rawInput: unknown, rawContext?: ToolExecutionContext): Promise<UpdatePlanOutput> => {
+    ensureStoreLoaded();
     const context = rawContext ?? createToolExecutionContext();
     const now = new Date().toISOString();
     const parsed = parseInput(rawInput);
@@ -201,6 +211,9 @@ export const updatePlanTool: InternalTool<unknown, UpdatePlanOutput> = {
     }
 
     const result = handleV2Action(parsed.input, context, now);
+    if (result.ok && isWriteV2Action(parsed.input.action)) {
+      persistStore();
+    }
     lastPlanSnapshot = result;
     return result;
   },
@@ -215,6 +228,23 @@ export function resetUpdatePlanToolState(): void {
   store.byProjectPath.clear();
   store.eventsByProjectPath.clear();
   lastPlanSnapshot = null;
+  storeLoaded = true;
+  try {
+    const storeFile = resolveUpdatePlanStoreFile();
+    if (existsSync(storeFile)) {
+      rmSync(storeFile, { force: true });
+    }
+  } catch {
+    // best effort for tests/runtime reset
+  }
+}
+
+export function reloadUpdatePlanToolStateFromDiskForTest(): void {
+  store.byProjectPath.clear();
+  store.eventsByProjectPath.clear();
+  lastPlanSnapshot = null;
+  storeLoaded = false;
+  ensureStoreLoaded();
 }
 
 export interface UpdatePlanRuntimeViewParams {
@@ -1385,6 +1415,87 @@ function appendPlanEvent(params: {
     scoped.splice(0, scoped.length - 500);
   }
   return event;
+}
+
+function isWriteV2Action(action: UpdatePlanAction): boolean {
+  return action === 'create'
+    || action === 'update'
+    || action === 'claim'
+    || action === 'reassign'
+    || action === 'set_status'
+    || action === 'set_dependency'
+    || action === 'append_evidence'
+    || action === 'close'
+    || action === 'archive';
+}
+
+function ensureStoreLoaded(): void {
+  if (storeLoaded) return;
+  storeLoaded = true;
+  const storeFile = resolveUpdatePlanStoreFile();
+  try {
+    if (!existsSync(storeFile)) return;
+    const raw = readFileSync(storeFile, 'utf-8');
+    if (!raw || raw.trim().length === 0) return;
+    const parsed = JSON.parse(raw) as {
+      version?: number;
+      projects?: Array<{
+        projectPath?: string;
+        items?: PlanItemV2[];
+        events?: PlanEvent[];
+      }>;
+    };
+    if (!Array.isArray(parsed.projects)) return;
+
+    for (const project of parsed.projects) {
+      const projectPath = typeof project.projectPath === 'string' ? project.projectPath.trim() : '';
+      if (!projectPath) continue;
+      const scopedItems = new Map<string, PlanItemV2>();
+      for (const item of Array.isArray(project.items) ? project.items : []) {
+        if (!item || typeof item.id !== 'string' || item.id.trim().length === 0) continue;
+        scopedItems.set(item.id, deepClone(item));
+      }
+      if (scopedItems.size > 0) {
+        store.byProjectPath.set(projectPath, scopedItems);
+      }
+      const scopedEvents = (Array.isArray(project.events) ? project.events : [])
+        .filter((event) => event && typeof event.id === 'string' && event.id.trim().length > 0)
+        .map((event) => deepClone(event));
+      if (scopedEvents.length > 0) {
+        store.eventsByProjectPath.set(projectPath, scopedEvents);
+      }
+    }
+  } catch (error) {
+    logger.module('update-plan').warn('[update_plan] Failed to load persisted plan store', {
+      file: storeFile,
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+}
+
+function persistStore(): void {
+  const storeFile = resolveUpdatePlanStoreFile();
+  try {
+    const projects = Array.from(store.byProjectPath.entries()).map(([projectPath, scopedItems]) => ({
+      projectPath,
+      items: Array.from(scopedItems.values()).map((item) => deepClone(item)),
+      events: (store.eventsByProjectPath.get(projectPath) ?? []).map((event) => deepClone(event)),
+    }));
+    const payload = {
+      version: UPDATE_PLAN_STORE_VERSION,
+      updatedAt: new Date().toISOString(),
+      projects,
+    };
+    mkdirSync(path.dirname(storeFile), { recursive: true });
+    const tmpPath = `${storeFile}.tmp`;
+    writeFileSync(tmpPath, `${JSON.stringify(payload, null, 2)}\n`, 'utf-8');
+    renameSync(tmpPath, storeFile);
+  } catch (error) {
+    logger.module('update-plan').warn('[update_plan] Failed to persist plan store', {
+      file: storeFile,
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
 }
 
 function cloneOutput(value: UpdatePlanOutput): UpdatePlanOutput {

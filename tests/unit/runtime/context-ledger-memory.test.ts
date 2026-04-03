@@ -69,6 +69,70 @@ function setupLedgerRoot(tag: string): { rootDir: string; sessionId: string; age
 }
 
 describe('context-ledger-memory', () => {
+  it('search still matches useful entries when metadata contains prompt-like api_history blocks', async () => {
+    const setup = setupLedgerRoot('metadata-prompt-noise');
+    const dir = join(setup.rootDir, setup.sessionId, setup.agentId, setup.mode);
+    const now = Date.now();
+
+    writeFileSync(
+      join(dir, 'context-ledger.jsonl'),
+      [
+        JSON.stringify({
+          id: 'led-a',
+          timestamp_ms: now - 5000,
+          timestamp_iso: new Date(now - 5000).toISOString(),
+          session_id: setup.sessionId,
+          agent_id: setup.agentId,
+          mode: setup.mode,
+          event_type: 'session_message',
+          payload: {
+            role: 'system',
+            content: '工具完成: update_plan',
+            metadata: {
+              event: {
+                type: 'tool_result',
+                toolName: 'update_plan',
+                payload: {
+                  input: { plan: [{ step: 'fix search', status: 'in_progress' }] },
+                  output: { ok: true },
+                },
+              },
+              api_history: [
+                {
+                  role: 'user',
+                  content: [{ type: 'input_text', text: '<system_message>internal</system_message>' }],
+                },
+              ],
+            },
+          },
+        }),
+        '',
+      ].join('\n'),
+      'utf-8',
+    );
+
+    const result = await executeContextLedgerMemory({
+      action: 'search',
+      contains: 'update_plan',
+      fuzzy: false,
+      _runtime_context: {
+        root_dir: setup.rootDir,
+        session_id: setup.sessionId,
+        agent_id: setup.agentId,
+        mode: setup.mode,
+      },
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.action).toBe('search');
+    if (result.action !== 'search') throw new Error('expected search result');
+    expect(result.total).toBeGreaterThan(0);
+    expect(result.slots.length).toBeGreaterThan(0);
+    expect(result.slots[0]?.preview).toContain('update_plan');
+
+    rmSync(setup.rootDir, { recursive: true, force: true });
+  });
+
   it('uses compact-first strategy for fuzzy misses in raw timeline', async () => {
     const setup = setupLedgerRoot('compact-first');
 

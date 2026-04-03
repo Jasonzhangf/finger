@@ -1003,7 +1003,7 @@ function groupLedgerEntriesByTaskBoundary(
 ): LedgerTaskBlockInternal[] {
   const sanitized = entries
     .filter((entry) => {
-      const searchable = `${entry.event_type}\n${JSON.stringify(entry.payload)}`;
+      const searchable = buildLedgerSearchableText(entry);
       return !containsPromptLikeBlock(searchable);
     })
     .sort((a, b) => a.timestamp_ms - b.timestamp_ms);
@@ -1314,7 +1314,7 @@ function finalizeLedgerTaskBlock(entries: LedgerEntryFile[], startSlot: number, 
   const searchText = [
     tags && tags.length > 0 ? `tags: ${tags.join(', ')}` : '',
     topic ? `topic: ${topic}` : '',
-    ...entries.map((entry) => `${entry.event_type} ${JSON.stringify(entry.payload)}`),
+    ...entries.map((entry) => buildLedgerSearchableText(entry)),
   ]
     .filter((item) => item.length > 0)
     .join('\n');
@@ -1391,7 +1391,7 @@ function filterLedgerEntries(
       if (options.untilMs !== undefined && entry.timestamp_ms > options.untilMs) return false;
       if (eventTypeSet.size > 0 && !eventTypeSet.has(entry.event_type.toLowerCase())) return false;
 
-      const searchable = `${entry.event_type}\n${JSON.stringify(entry.payload)}`;
+      const searchable = buildLedgerSearchableText(entry);
       if (containsPromptLikeBlock(searchable)) return false;
 
       if (!needle) return true;
@@ -1400,6 +1400,108 @@ function filterLedgerEntries(
       return options.fuzzy ? fuzzyScore(lowered, needle) >= 0.18 : false;
     })
     .sort((a, b) => a.timestamp_ms - b.timestamp_ms);
+}
+
+function buildLedgerSearchableText(entry: LedgerEntryFile): string {
+  const payload = isRecord(entry.payload) ? entry.payload : {};
+  const parts: string[] = [entry.event_type];
+
+  const pushString = (value: unknown): void => {
+    const normalized = valueAsString(value);
+    if (!normalized) return;
+    const trimmed = normalized.trim();
+    if (!trimmed) return;
+    parts.push(trimmed);
+  };
+
+  const pushSerialized = (value: unknown): void => {
+    if (value === undefined) return;
+    try {
+      const serialized = JSON.stringify(value);
+      if (serialized && serialized.trim().length > 0) parts.push(serialized);
+    } catch {
+      const fallback = String(value);
+      if (fallback.trim().length > 0) parts.push(fallback.trim());
+    }
+  };
+
+  pushString(payload.role);
+  pushString(payload.content);
+  pushString(payload.tool_name);
+  pushString(payload.toolName);
+  pushString(payload.tool);
+  pushString(payload.call_id);
+  pushString(payload.callId);
+  pushString(payload.message_id);
+  pushString(payload.messageId);
+  pushString(payload.summary);
+  pushString(payload.explanation);
+  pushSerialized(payload.input);
+  pushSerialized(payload.output);
+  pushSerialized(payload.error);
+  pushSerialized(payload.plan);
+
+  const metadata = isRecord(payload.metadata) ? payload.metadata : undefined;
+  if (metadata) {
+    pushString(metadata.tool_name);
+    pushString(metadata.toolName);
+    pushString(metadata.tool);
+    const event = isRecord(metadata.event) ? metadata.event : undefined;
+    if (event) {
+      pushString(event.type);
+      pushString(event.tool_name);
+      pushString(event.toolName);
+      pushString(event.tool);
+      const eventPayload = isRecord(event.payload) ? event.payload : undefined;
+      if (eventPayload) {
+        pushSerialized(eventPayload.input);
+        pushSerialized(eventPayload.output);
+        pushSerialized(eventPayload.error);
+        pushSerialized(eventPayload.plan);
+      }
+      pushSerialized(event.input);
+      pushSerialized(event.output);
+      pushSerialized(event.error);
+    }
+  }
+
+  const sanitizedPayload = sanitizeSearchPayload(payload);
+  try {
+    const serialized = JSON.stringify(sanitizedPayload);
+    if (serialized && serialized.trim().length > 0) {
+      parts.push(serialized);
+    }
+  } catch {
+    // ignore serialization failure, explicit extracted parts already included
+  }
+
+  return parts.join('\n');
+}
+
+function sanitizeSearchPayload(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return value.map((item) => sanitizeSearchPayload(item));
+  }
+  if (!isRecord(value)) return value;
+
+  const blockedKeys = new Set([
+    'api_history',
+    'kernelApiHistory',
+    'kernel_api_history',
+    'prompt_injection',
+    'promptInjection',
+    'developer_prompt',
+    'developerPrompt',
+    'system_prompt',
+    'systemPrompt',
+  ]);
+
+  const out: Record<string, unknown> = {};
+  for (const [key, item] of Object.entries(value)) {
+    if (blockedKeys.has(key)) continue;
+    out[key] = sanitizeSearchPayload(item);
+  }
+  return out;
 }
 
 function filterCompactEntries(
