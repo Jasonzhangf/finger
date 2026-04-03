@@ -210,5 +210,30 @@ export function describeExecCommand(rawCommand: string): string {
   if (/^\s*git\s+diff\b/.test(lower)) return '\ud83e\udded 查看 Git 差异';
   if (/^\s*(pnpm|npm|yarn)\s+test\b/.test(lower)) return '\ud83e\uddea 运行测试';
   if (/^\s*(pnpm|npm|yarn)\s+build\b/.test(lower)) return '\ud83d\udee0\ufe0f 执行构建';
-  return truncateInline(raw, 90);
+  if (/^\s*apply_patch\b/.test(lower)) return '🧩 应用补丁';
+  if (/^\s*(python|python3|node|tsx|ts-node)\b/.test(lower)) {
+    const path = extractReadablePath(raw);
+    return path ? `▶ 运行脚本 ${truncateInline(path, 64)}` : '▶ 运行脚本';
+  }
+  if (/^\s*mkdir\b/.test(lower)) {
+    const path = extractReadablePath(raw);
+    return path ? `📁 创建目录 ${truncateInline(path, 64)}` : '📁 创建目录';
+  }
+  if (/^\s*touch\b/.test(lower)) {
+    const path = extractReadablePath(raw);
+    return path ? `📝 创建文件 ${truncateInline(path, 64)}` : '📝 创建文件';
+  }
+  if (/^\s*(mv|cp)\b/.test(lower)) {
+    const path = extractReadablePath(raw);
+    return path ? `🧱 更新文件 ${truncateInline(path, 64)}` : '🧱 更新文件';
+  }
+  if (/^\s*rm\b/.test(lower)) {
+    const path = extractReadablePath(raw);
+    return path ? `🗑️ 删除 ${truncateInline(path, 64)}` : '🗑️ 删除文件';
+  }
+  if (/^\s*echo\b/.test(lower) || /^\s*printf\b/.test(lower) || /\btee\b/.test(lower)) {
+    const path = extractReadablePath(raw);
+    return path ? `📝 输出到 ${truncateInline(path, 64)}` : '📝 输出文本';
+  }
+  return '🛠️ 执行命令';
 }

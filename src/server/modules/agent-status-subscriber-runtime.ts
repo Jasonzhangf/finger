@@ -14,7 +14,7 @@ import type { ChannelBridgeManager } from '../../bridges/manager.js';
 import type { PushSettings } from '../../bridges/types.js';
 import { heartbeatMailbox } from './heartbeat-mailbox.js';
 import { enqueueUpdateStreamDelivery } from './update-stream-delivery-adapter.js';
-import { sanitizeUserFacingStatusText } from './agent-status-subscriber-handler-helpers.js';
+import { sanitizeUserFacingStatusTextWithOptions } from './agent-status-subscriber-handler-helpers.js';
 import type {
   SessionEnvelopeMapping,
   WrappedStatusUpdate,
@@ -41,7 +41,10 @@ function joinUniqueLines(parts: Array<string | undefined>): string {
   const out: string[] = [];
   const seen = new Set<string>();
   for (const raw of parts) {
-    const text = sanitizeUserFacingStatusText(typeof raw === 'string' ? raw : '', 400);
+    const text = sanitizeUserFacingStatusTextWithOptions(typeof raw === 'string' ? raw : '', {
+      max: 12_000,
+      singleLine: false,
+    });
     if (!text) continue;
     const key = normalizeLineForDedup(text);
     if (!key || seen.has(key)) continue;
@@ -113,6 +116,32 @@ function applyContextDisplayMode(text: string, modeRaw: ContextDisplayMode): str
   };
   if (mode === 'off') {
     return segments.filter((line) => !isContextLine(line)).join('\n').trim();
+  }
+  if (mode === 'simple') {
+    const output: string[] = [];
+    let contextHeadlineAdded = false;
+    let historyOnlyAdded = false;
+    const historyRegex = /H\(c=[^)]+,cur=[^)]+\)/;
+    for (const line of segments) {
+      if (!isContextLine(line)) {
+        output.push(line);
+        continue;
+      }
+      const normalized = line.trim();
+      if (normalized.startsWith('🧠 上下文:') && !contextHeadlineAdded) {
+        output.push(line);
+        contextHeadlineAdded = true;
+        continue;
+      }
+      if (!historyOnlyAdded && normalized.startsWith('🧩 构成:') && historyRegex.test(normalized)) {
+        const match = normalized.match(historyRegex);
+        if (match && match[0]) {
+          output.push(`🧩 历史: ${match[0]}`);
+          historyOnlyAdded = true;
+        }
+      }
+    }
+    return output.join('\n').trim();
   }
   const output: string[] = [];
   let contextHeadlineAdded = false;

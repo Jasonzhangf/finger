@@ -42,17 +42,29 @@ function extractStructuredSummaryText(raw: string): string {
 }
 
 export function sanitizeUserFacingStatusText(text: string, max = 120): string {
+  return sanitizeUserFacingStatusTextWithOptions(text, { max, singleLine: true });
+}
+
+export function sanitizeUserFacingStatusTextWithOptions(
+  text: string,
+  options?: { max?: number; singleLine?: boolean },
+): string {
+  const max = typeof options?.max === 'number' && Number.isFinite(options.max) ? Math.max(1, Math.floor(options.max)) : 120;
+  const singleLine = options?.singleLine !== false;
   const source = typeof text === 'string' ? text.trim() : '';
   if (!source) return '';
   const controlParsed = parseControlBlockFromReply(source);
   let sanitized = typeof controlParsed.humanResponse === 'string' ? controlParsed.humanResponse.trim() : source;
   if (!sanitized) return '';
   sanitized = sanitized.replace(/```finger-control[\s\S]*$/giu, '').trim();
-  sanitized = extractStructuredSummaryText(sanitized)
-    .replace(/\s+/g, ' ')
-    .trim();
+  sanitized = extractStructuredSummaryText(sanitized);
+  sanitized = singleLine
+    ? sanitized.replace(/\s+/g, ' ').trim()
+    : sanitized.replace(/\r\n/g, '\n').replace(/\r/g, '\n').trim();
   if (!sanitized) return '';
-  return truncateInline(sanitized, max);
+  if (singleLine) return truncateInline(sanitized, max);
+  if (sanitized.length <= max) return sanitized;
+  return `${sanitized.slice(0, max)}...`;
 }
 
 function pickFileName(token: string): string {

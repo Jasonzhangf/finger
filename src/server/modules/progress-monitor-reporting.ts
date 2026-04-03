@@ -18,6 +18,34 @@ export interface BuildCompactSummaryOptions {
   headerMode?: 'full' | 'minimal';
 }
 
+type ToolHistoryEntry = SessionProgressData['toolCallHistory'][number];
+
+function selectRecentToolsWithPriority(
+  history: ToolHistoryEntry[],
+  baseWindow: number,
+  prioritizedTools: string[] = ['update_plan', 'report-task-completion'],
+): ToolHistoryEntry[] {
+  if (!Array.isArray(history) || history.length === 0) return [];
+  const start = Math.max(0, history.length - Math.max(1, baseWindow));
+  const selectedIndexes = new Set<number>();
+  for (let i = start; i < history.length; i += 1) {
+    selectedIndexes.add(i);
+  }
+  for (const toolName of prioritizedTools) {
+    let index = -1;
+    for (let i = history.length - 1; i >= 0; i -= 1) {
+      if (history[i].toolName === toolName) {
+        index = i;
+        break;
+      }
+    }
+    if (index >= 0) selectedIndexes.add(index);
+  }
+  return Array.from(selectedIndexes)
+    .sort((a, b) => a - b)
+    .map((idx) => history[idx]);
+}
+
 function parsePayload(raw: string): Record<string, unknown> {
   if (!raw) return {};
   try {
@@ -194,7 +222,7 @@ export function buildCompactSummary(
   const now = new Date();
   const localTime = String(now.getHours()).padStart(2, '0') + ':' + String(now.getMinutes()).padStart(2, '0');
   const task = p.currentTask || '';
-  const recentTools = p.toolCallHistory.slice(-5);
+  const recentTools = selectRecentToolsWithPriority(p.toolCallHistory, 5);
 
   const lines: string[] = [];
   lines.push(headerMode === 'minimal'
@@ -212,7 +240,7 @@ export function buildCompactSummary(
   if (contextLine) {
     lines.push(contextLine);
   } else {
-    lines.push('🧠 上下文: 暂无 model_round 上下文统计（工具流）');
+    lines.push('🧠 上下文: 当前为工具流，尚未收到本轮 model_round 统计（并非无上下文）');
   }
   const estimatedContextTokens = resolveEstimatedContextTokens(
     p.contextUsagePercent,
@@ -273,7 +301,8 @@ function extractToolDetail(toolName: string, params?: string, result?: string): 
         : status === 'in_progress'
           ? '\u25b6'
           : '\u25cb';
-      return `\n   ${statusIcon} ${truncateInline(step, 140)}`;
+      // Jason 要求：update_plan 不做截断，保持完整可读。
+      return `\n   ${statusIcon} ${step}`;
     }).filter((item) => item.length > 0);
     if (lines.length === 0) return '';
     return `计划共 ${planItems.length} 项：${lines.join('')}`;
@@ -432,7 +461,12 @@ export function resolveToolDisplayName(toolName: string, input?: unknown): strin
     if (!raw) return 'command.exec';
     const tokenMatch = raw.match(/<##\s*@?([^#>]+?)\s*##>/);
     if (tokenMatch && tokenMatch[1]) return `cmd:${tokenMatch[1].trim()}`;
-    return `cmd:${raw.replace(/\s+/g, ' ').trim().slice(0, 40)}`;
+    const m = raw.match(/^(\S+)(?:\s+(\S+))?/);
+    if (!m) return 'command.exec';
+    const verb = m[1];
+    const sub = m[2] || '';
+    if (['git', 'pnpm', 'npm', 'cargo', 'node', 'python', 'python3'].includes(verb) && sub) return `${verb} ${sub}`;
+    return verb;
   }
 
   if (toolName === 'shell.exec' || toolName === 'exec_command') {
@@ -450,8 +484,7 @@ export function resolveToolDisplayName(toolName: string, input?: unknown): strin
 }
 
 export function buildReportKey(p: SessionProgressData, latestStepSummary: string | undefined): string {
-  const recentTools = p.toolCallHistory
-    .slice(-3)
+  const recentTools = selectRecentToolsWithPriority(p.toolCallHistory, 3)
     .map((t) => `${t.toolName}:${classifyToolCall(t.toolName, t.params)}:${extractTargetFile(t.toolName, t.params)}:${t.success ?? ''}`)
     .join('|');
   const breakdownKey = p.contextBreakdown
