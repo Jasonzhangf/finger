@@ -278,6 +278,59 @@ describe('AgentStatusSubscriber text updates', () => {
     expect(payload.content).not.toContain('schema_version');
   });
 
+  it('strips malformed control-like json fence from user-facing body update', async () => {
+    const eventBus = new UnifiedEventBus();
+    const messageHub = {
+      routeToOutput: vi.fn().mockResolvedValue(undefined),
+    };
+    const channelBridgeManager = {
+      getPushSettings: vi.fn().mockReturnValue({
+        reasoning: true,
+        bodyUpdates: true,
+        statusUpdate: true,
+        toolCalls: false,
+        stepUpdates: true,
+        stepBatch: 5,
+        progressUpdates: true,
+      }),
+    };
+
+    const subscriber = new AgentStatusSubscriber(
+      eventBus,
+      createMinimalDeps(),
+      messageHub as any,
+      channelBridgeManager as any,
+    );
+    subscriber.registerSession('session-control-strip-2', {
+      channel: 'qqbot',
+      envelopeId: 'env-control-strip-2',
+      userId: 'user-control-strip-2',
+    });
+
+    const malformed = [
+      'Jason，根因已定位。',
+      '```json',
+      '{',
+      '  "schema_version": "1.3",',
+      '  "task_completed": false,',
+      '  "needs_user_input": false,',
+      '  "dispatch_required": false,',
+      '  "review_required": false,',
+      '  "self_eval": "ok",',
+      '  "learning": "candidate",',
+      '  // malformed comment should make parser fail',
+      '}',
+      '```',
+    ].join('\n');
+
+    await subscriber.sendBodyUpdate('session-control-strip-2', 'finger-system-agent', malformed);
+    expect(messageHub.routeToOutput).toHaveBeenCalledTimes(1);
+    const payload = messageHub.routeToOutput.mock.calls[0][1];
+    expect(payload.content).toBe('正文：Jason，根因已定位。');
+    expect(payload.content).not.toContain('schema_version');
+    expect(payload.content).not.toContain('task_completed');
+  });
+
   it('bodyUpdates + mirror: qqbot push mirrors to openclaw-weixin only once', async () => {
     const eventBus = new UnifiedEventBus();
     const routeCalls: Array<{ outputId: string; content: string }> = [];

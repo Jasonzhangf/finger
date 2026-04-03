@@ -54,6 +54,53 @@ function writeLedger(rootDir: string): { sessionId: string; agentId: string; tas
   };
 }
 
+function writeLargeLedger(rootDir: string): { sessionId: string; agentId: string; oldestTaskId: string } {
+  const sessionId = 'ctx-expand-large-s1';
+  const agentId = 'finger-system-agent';
+  const mode = 'main';
+  const dir = join(rootDir, sessionId, agentId, mode);
+  mkdirSync(dir, { recursive: true });
+
+  const baseTs = Date.now() - 1_000_000;
+  const entries: Array<Record<string, unknown>> = [];
+  const taskCount = 520;
+  for (let index = 0; index < taskCount; index += 1) {
+    const userTs = baseTs + index * 1_000;
+    const stopTs = userTs + 300;
+    entries.push({
+      id: `u-${index}`,
+      timestamp_ms: userTs,
+      timestamp_iso: new Date(userTs).toISOString(),
+      session_id: sessionId,
+      agent_id: agentId,
+      mode,
+      event_type: 'session_message',
+      payload: { role: 'user', content: `task-${index} user`, token_count: 4 },
+    });
+    entries.push({
+      id: `s-${index}`,
+      timestamp_ms: stopTs,
+      timestamp_iso: new Date(stopTs).toISOString(),
+      session_id: sessionId,
+      agent_id: agentId,
+      mode,
+      event_type: 'session_message',
+      payload: {
+        role: 'assistant',
+        content: '调用工具: reasoning.stop',
+        token_count: 6,
+      },
+    });
+  }
+
+  writeFileSync(join(dir, 'context-ledger.jsonl'), `${entries.map((item) => JSON.stringify(item)).join('\n')}\n`, 'utf-8');
+  return {
+    sessionId,
+    agentId,
+    oldestTaskId: `task-${baseTs}`,
+  };
+}
+
 describe('context_ledger.expand_task tool', () => {
   it('expands with explicit slot_start/slot_end', async () => {
     const rootDir = mkdtempSync(join(tmpdir(), 'finger-expand-task-tool-'));
@@ -119,5 +166,35 @@ describe('context_ledger.expand_task tool', () => {
       rmSync(rootDir, { recursive: true, force: true });
     }
   });
-});
 
+  it('falls back to full-ledger lookup when task_id is outside search limit window', async () => {
+    const rootDir = mkdtempSync(join(tmpdir(), 'finger-expand-task-tool-'));
+    const { sessionId, agentId, oldestTaskId } = writeLargeLedger(rootDir);
+
+    try {
+      const result = await contextLedgerExpandTaskTool.execute(
+        {
+          session_id: sessionId,
+          agent_id: agentId,
+          task_id: oldestTaskId,
+          _runtime_context: { root_dir: rootDir },
+        },
+        {
+          invocationId: 'tool-expand-3',
+          cwd: process.cwd(),
+          timestamp: new Date().toISOString(),
+          sessionId,
+          agentId,
+        },
+      );
+
+      expect(result.ok).toBe(true);
+      expect(result.taskId).toBe(oldestTaskId);
+      expect(result.slotStart).toBe(1);
+      expect(result.slotEnd).toBe(2);
+      expect(result.entries.length).toBeGreaterThan(0);
+    } finally {
+      rmSync(rootDir, { recursive: true, force: true });
+    }
+  });
+});

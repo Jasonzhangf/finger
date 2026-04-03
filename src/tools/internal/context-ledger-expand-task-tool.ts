@@ -1,4 +1,12 @@
 import { executeContextLedgerMemory } from '../../runtime/context-ledger-memory.js';
+import {
+  containsPromptLikeBlock,
+  normalizeRootDir,
+  readJsonLines,
+  resolveLedgerPath,
+  valueAsString,
+} from '../../runtime/context-ledger-memory-helpers.js';
+import type { LedgerEntryFile } from '../../runtime/context-ledger-memory-types.js';
 import type { ContextLedgerMemoryQueryResult } from '../../runtime/context-ledger-memory-types.js';
 import type { InternalTool, ToolExecutionContext } from './types.js';
 
@@ -77,6 +85,111 @@ function isQueryResult(result: unknown): result is ContextLedgerMemoryQueryResul
   return isRecord(result) && (result.action === 'query' || result.action === 'search');
 }
 
+function roleOfLedgerEntry(entry: LedgerEntryFile): string {
+  const payload = isRecord(entry.payload) ? entry.payload : {};
+  return valueAsString(payload.role) ?? 'system';
+}
+
+function isReasoningStopLedgerBoundary(entry: LedgerEntryFile): boolean {
+  const payload = isRecord(entry.payload) ? entry.payload : {};
+  const content = valueAsString(payload.content) ?? '';
+  if (/\breasoning\.stop\b/i.test(content)) return true;
+  const metadata = isRecord(payload.metadata) ? payload.metadata : undefined;
+  if (!metadata) return false;
+  const directTool = valueAsString(metadata.toolName) ?? valueAsString(metadata.tool);
+  if (directTool === 'reasoning.stop') return true;
+  const event = isRecord(metadata.event) ? metadata.event : undefined;
+  const eventTool = event ? (valueAsString(event.toolName) ?? valueAsString(event.tool)) : undefined;
+  return eventTool === 'reasoning.stop';
+}
+
+function extractTaskIdCandidates(rawTaskId: string): string[] {
+  const normalized = rawTaskId.trim();
+  if (!normalized) return [];
+  const candidates = new Set<string>([normalized]);
+  const directTaskMatch = normalized.match(/task-\d{6,}/i)?.[0];
+  if (directTaskMatch) candidates.add(directTaskMatch);
+  if (normalized.startsWith('digest-task-')) {
+    candidates.add(normalized.replace(/^digest-task-/i, 'task-'));
+  }
+  if (normalized.startsWith('compact-task-digest-task-')) {
+    candidates.add(normalized.replace(/^compact-task-digest-/i, ''));
+  }
+  return Array.from(candidates.values());
+}
+
+function parseTaskTimestamp(taskIdCandidates: string[]): number | undefined {
+  for (const candidate of taskIdCandidates) {
+    const matched = candidate.match(/task-(\d{6,})$/i);
+    if (!matched) continue;
+    const parsed = Number(matched[1]);
+    if (Number.isFinite(parsed) && parsed > 0) return parsed;
+  }
+  return undefined;
+}
+
+async function resolveSlotRangeByTaskIdFromFullLedger(params: {
+  taskId: string;
+  sessionId: string;
+  agentId: string;
+  mode: string;
+  rootDir?: string;
+}): Promise<{ slotStart: number; slotEnd: number } | null> {
+  const taskIdCandidates = extractTaskIdCandidates(params.taskId);
+  if (taskIdCandidates.length === 0) return null;
+  const rootDir = normalizeRootDir(params.rootDir);
+  const ledgerPath = resolveLedgerPath(rootDir, params.sessionId, params.agentId, params.mode);
+  const fullEntries = await readJsonLines<LedgerEntryFile>(ledgerPath);
+  const sanitized = fullEntries
+    .filter((entry) => !containsPromptLikeBlock(`${entry.event_type}\n${JSON.stringify(entry.payload)}`))
+    .sort((a, b) => a.timestamp_ms - b.timestamp_ms);
+  if (sanitized.length === 0) return null;
+
+  const ranges: Array<{ startIndex: number; endIndex: number }> = [];
+  let currentStartIndex = 0;
+
+  const flush = (endIndex: number) => {
+    if (endIndex < currentStartIndex) return;
+    ranges.push({ startIndex: currentStartIndex, endIndex });
+  };
+
+  for (let index = 0; index < sanitized.length; index += 1) {
+    const entry = sanitized[index];
+    if (index > currentStartIndex && roleOfLedgerEntry(entry) === 'user') {
+      flush(index - 1);
+      currentStartIndex = index;
+      continue;
+    }
+    if (isReasoningStopLedgerBoundary(entry)) {
+      flush(index);
+      currentStartIndex = index + 1;
+    }
+  }
+  flush(sanitized.length - 1);
+  if (ranges.length === 0) return null;
+
+  for (const range of ranges) {
+    const taskId = `task-${sanitized[range.startIndex]?.timestamp_ms ?? 0}`;
+    if (taskIdCandidates.includes(taskId)) {
+      return {
+        slotStart: range.startIndex + 1,
+        slotEnd: range.endIndex + 1,
+      };
+    }
+  }
+
+  const targetTimestamp = parseTaskTimestamp(taskIdCandidates);
+  if (!targetTimestamp) return null;
+  const targetIndex = sanitized.findIndex((entry) => entry.timestamp_ms === targetTimestamp);
+  if (targetIndex < 0) return null;
+  const range = ranges.find((item) => item.startIndex <= targetIndex && targetIndex <= item.endIndex);
+  if (!range) return null;
+  return {
+    slotStart: range.startIndex + 1,
+    slotEnd: range.endIndex + 1,
+  };
+}
+
 export const contextLedgerExpandTaskTool: InternalTool<unknown, ContextLedgerExpandTaskOutput> = {
   name: 'context_ledger.expand_task',
   executionModel: 'state',
@@ -122,10 +235,24 @@ export const contextLedgerExpandTaskTool: InternalTool<unknown, ContextLedgerExp
       }
       const hit = searchResult.task_blocks.find((block) => block.id === taskId);
       if (!hit) {
-        throw new Error(`context_ledger.expand_task failed: task_id not found (${taskId})`);
+        const fallbackRange = await resolveSlotRangeByTaskIdFromFullLedger({
+          taskId,
+          sessionId,
+          agentId,
+          mode,
+          rootDir: runtimeContext && typeof runtimeContext.root_dir === 'string'
+            ? runtimeContext.root_dir
+            : undefined,
+        });
+        if (!fallbackRange) {
+          throw new Error(`context_ledger.expand_task failed: task_id not found (${taskId})`);
+        }
+        slotStart = fallbackRange.slotStart;
+        slotEnd = fallbackRange.slotEnd;
+      } else {
+        slotStart = hit.start_slot;
+        slotEnd = hit.end_slot;
       }
-      slotStart = hit.start_slot;
-      slotEnd = hit.end_slot;
     }
 
     if (!Number.isFinite(slotStart) || !Number.isFinite(slotEnd)) {

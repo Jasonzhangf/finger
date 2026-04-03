@@ -77,7 +77,47 @@ function stripControlBlockForChannel(text: string): string {
   if (!source) return source;
   const parsed = parseControlBlockFromReply(source);
   const cleaned = typeof parsed.humanResponse === 'string' ? parsed.humanResponse.trim() : '';
-  return cleaned || source;
+  const base = cleaned || source;
+  return stripControlLikeJsonPayload(base).trim();
+}
+
+function looksLikeControlJsonBlock(raw: string): boolean {
+  const source = raw.trim();
+  if (!source) return false;
+  const hints = [
+    'schema_version',
+    'task_completed',
+    'evidence_ready',
+    'needs_user_input',
+    'has_blocker',
+    'dispatch_required',
+    'review_required',
+    'anti_patterns',
+    'self_eval',
+    'learning',
+  ];
+  const lowered = source.toLowerCase();
+  let hit = 0;
+  for (const hint of hints) {
+    if (lowered.includes(hint)) hit += 1;
+  }
+  return hit >= 3;
+}
+
+function stripControlLikeJsonPayload(text: string): string {
+  let output = text;
+  const fencePattern = /```(?:json|finger-control)?\s*([\s\S]*?)```/giu;
+  output = output.replace(fencePattern, (full, block) => {
+    const body = typeof block === 'string' ? block : '';
+    return looksLikeControlJsonBlock(body) ? '' : full;
+  }).trim();
+
+  // Fallback: when model emits a trailing raw JSON control object without code-fence.
+  const trailingMatch = output.match(/\{[\s\S]*\}\s*$/u);
+  if (trailingMatch && looksLikeControlJsonBlock(trailingMatch[0])) {
+    output = output.slice(0, trailingMatch.index).trimEnd();
+  }
+  return output.trim();
 }
 
 export function chunkBodyForChannel(text: string, channelId: string): string[] {
