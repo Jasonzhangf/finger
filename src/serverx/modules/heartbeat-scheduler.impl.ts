@@ -1105,14 +1105,24 @@ export class HeartbeatScheduler {
     const activeStateForToday = stateDate === dateKey
       && (stateStatus === 'queued' || stateStatus === 'processing' || stateStatus === 'unknown');
     const activeStateTtlMs = Math.max(10 * 60_000, cfg.maxQueueWaitMs * 4);
-    if (activeStateForToday && stateUpdatedAt > 0 && (nowMs - stateUpdatedAt) < activeStateTtlMs) {
-      return;
-    }
+    // At-most-once semantics for daily review dispatch:
+    // same-day queued/processing/unknown/completed are treated as already dispatched.
+    // Only failed state is eligible for bounded retry.
     if (stateDate === dateKey && stateStatus === 'completed') {
       this.lastDailySystemReviewDate = dateKey;
       return;
     }
-    if (this.lastDailySystemReviewDate === dateKey && !activeStateForToday) {
+    if (activeStateForToday) {
+      return;
+    }
+    if (stateDate === dateKey && stateStatus === 'failed' && stateUpdatedAt > 0 && (nowMs - stateUpdatedAt) < activeStateTtlMs) {
+      return;
+    }
+    if (
+      this.lastDailySystemReviewDate === dateKey
+      && !activeStateForToday
+      && !(stateDate === dateKey && stateStatus === 'failed')
+    ) {
       return;
     }
 

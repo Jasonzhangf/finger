@@ -380,7 +380,7 @@ describe('HeartbeatScheduler nightly dream dispatch', () => {
     expect(String(dispatchCalls[0]?.[1]?.task ?? '')).toContain('~/.finger/USER.md');
   });
 
-  it('re-dispatches daily system review when previous same-day queued state is stale', async () => {
+  it('does not re-dispatch daily system review when same-day queued state already exists', async () => {
     vi.spyOn(registry, 'listAgents').mockResolvedValue([]);
     const execute = vi.fn(async (command: string) => {
       if (command === 'dispatch') return { status: 'queued' };
@@ -407,6 +407,44 @@ describe('HeartbeatScheduler nightly dream dispatch', () => {
     (scheduler as any).dailySystemReviewDispatchState = {
       date: '2026-04-01',
       status: 'queued',
+      updatedAt: Date.now() - (11 * 60_000),
+      sessionId: 'hb-session-finger-system-agent-system-daily-review',
+      source: 'system-heartbeat',
+      runId: 'daily-system-review:2026-04-01',
+    };
+
+    await (scheduler as any).dispatchDailySystemReviewTask();
+    const dispatchCalls = execute.mock.calls.filter((call: unknown[]) => call[0] === 'dispatch');
+    expect(dispatchCalls).toHaveLength(0);
+  });
+
+  it('retries daily system review when same-day failed state is stale', async () => {
+    vi.spyOn(registry, 'listAgents').mockResolvedValue([]);
+    const execute = vi.fn(async (command: string) => {
+      if (command === 'dispatch') return { status: 'queued' };
+      return { ok: true };
+    });
+    const scheduler = new HeartbeatScheduler({
+      agentRuntimeBlock: { execute },
+      sessionManager: {
+        listRootSessions: vi.fn(() => []),
+      },
+      isRuntimeChildSession: vi.fn(() => false),
+    } as any);
+    (scheduler as any).config = {
+      global: { enabled: false },
+      nightlyDream: { enabled: false },
+      dailySystemReview: {
+        enabled: true,
+        windowStartHour: 0,
+        windowEndHour: 7,
+        maxQueueWaitMs: 9_000,
+      },
+    };
+    (scheduler as any).lastDailySystemReviewDate = '2026-04-01';
+    (scheduler as any).dailySystemReviewDispatchState = {
+      date: '2026-04-01',
+      status: 'failed',
       updatedAt: Date.now() - (11 * 60_000),
       sessionId: 'hb-session-finger-system-agent-system-daily-review',
       source: 'system-heartbeat',
