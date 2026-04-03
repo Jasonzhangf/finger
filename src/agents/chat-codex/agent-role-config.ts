@@ -50,6 +50,8 @@ const ORCHESTRATION_TOOLS = [
   'agent.deploy',
   'agent.dispatch',
   'agent.continue',
+  'agent.query',
+  'agent.progress.ask',
   'agent.control',
   'orchestrator.loop_templates',
   'user.ask',

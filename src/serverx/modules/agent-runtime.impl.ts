@@ -13,6 +13,7 @@ import {
 } from '../../server/modules/agent-runtime/parsers.js';
 import { parseProjectTaskState } from '../../common/project-task-state.js';
 import { normalizeProjectPathCanonical } from '../../common/path-normalize.js';
+import { applyProjectStatusGatewayPatch } from '../../server/modules/project-status-gateway.js';
 
 function resolveAgentCapabilityLayer(value: unknown): AgentCapabilityLayer {
   if (typeof value !== 'string') return 'summary';
@@ -36,6 +37,49 @@ function asTrimmedString(value: unknown): string {
 function isReviewerAgentId(agentId: string): boolean {
   const normalized = agentId.trim().toLowerCase();
   return normalized.includes('reviewer') || normalized.includes('review');
+}
+
+function resolveRuntimeAgentSnapshot(
+  runtimeView: unknown,
+  agentId: string,
+): {
+  found: boolean;
+  status?: string;
+  busy: boolean;
+  lastSummary?: string;
+  lastTaskId?: string;
+  lastDispatchId?: string;
+  updatedAt?: string;
+} {
+  const view = isObjectRecord(runtimeView) ? runtimeView : {};
+  const agents = Array.isArray(view.agents) ? view.agents : [];
+  const target = agents.find((item) => isObjectRecord(item) && asTrimmedString(item.id) === agentId);
+  const record = isObjectRecord(target) ? target : undefined;
+  if (!record) return { found: false, busy: false };
+  const status = asTrimmedString(record.status).toLowerCase();
+  const lastEvent = isObjectRecord(record.lastEvent) ? record.lastEvent : {};
+  const busy = status === 'running' || status === 'queued' || status === 'waiting_input' || status === 'paused';
+  return {
+    found: true,
+    ...(status ? { status } : {}),
+    busy,
+    ...(asTrimmedString(lastEvent.summary) ? { lastSummary: asTrimmedString(lastEvent.summary) } : {}),
+    ...(asTrimmedString(lastEvent.taskId) ? { lastTaskId: asTrimmedString(lastEvent.taskId) } : {}),
+    ...(asTrimmedString(lastEvent.dispatchId) ? { lastDispatchId: asTrimmedString(lastEvent.dispatchId) } : {}),
+    ...(asTrimmedString(lastEvent.timestamp) ? { updatedAt: asTrimmedString(lastEvent.timestamp) } : {}),
+  };
+}
+
+function extractDispatchSummary(dispatchResult: unknown): string {
+  if (!isObjectRecord(dispatchResult)) return '';
+  const result = isObjectRecord(dispatchResult.result) ? dispatchResult.result : {};
+  return (
+    asTrimmedString(result.summary)
+    || asTrimmedString(result.response)
+    || asTrimmedString(result.message)
+    || asTrimmedString(dispatchResult.error)
+    || ''
+  );
 }
 
 function resolveContinueSessionId(
@@ -285,6 +329,223 @@ export function registerAgentRuntimeTools(deps: AgentRuntimeDeps): string[] {
     },
   });
   loaded.push('agent.continue');
+
+  deps.runtime.registerTool({
+    name: 'agent.query',
+    description:
+      'Synchronous cross-agent query with reply closure. Dispatches a question to target agent (blocking) and returns target reply in this turn so caller can continue reasoning.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        target_agent_id: { type: 'string' },
+        query: { type: 'string' },
+        session_id: { type: 'string' },
+        project_path: { type: 'string' },
+        cwd: { type: 'string' },
+        workflow_id: { type: 'string' },
+        timeout_ms: { type: 'number' },
+        queue_on_busy: { type: 'boolean' },
+      },
+      required: ['target_agent_id', 'query'],
+      additionalProperties: true,
+    },
+    handler: async (input: unknown, context?: Record<string, unknown>): Promise<unknown> => {
+      const rawInput = isObjectRecord(input) ? input : {};
+      const callerAgentId = asTrimmedString(context?.agentId) || deps.primaryOrchestratorAgentId;
+      if (isReviewerAgentId(callerAgentId)) {
+        throw new Error('agent.query forbidden for reviewer role');
+      }
+      const targetAgentId = asTrimmedString(rawInput.target_agent_id ?? rawInput.targetAgentId);
+      if (!targetAgentId) throw new Error('agent.query target_agent_id is required');
+      if (targetAgentId === callerAgentId) {
+        throw new Error(`agent.query self-dispatch forbidden: source and target are both ${targetAgentId}`);
+      }
+      const query = asTrimmedString(rawInput.query);
+      if (!query) throw new Error('agent.query query is required');
+      const timeoutMsRaw = Number(rawInput.timeout_ms ?? rawInput.timeoutMs);
+      const timeoutMs = Number.isFinite(timeoutMsRaw)
+        ? Math.max(1_000, Math.min(180_000, Math.floor(timeoutMsRaw)))
+        : 45_000;
+      const queueOnBusy = rawInput.queue_on_busy !== false && rawInput.queueOnBusy !== false;
+      const requestedSessionId = asTrimmedString(rawInput.session_id ?? rawInput.sessionId)
+        || asTrimmedString(context?.sessionId)
+        || asTrimmedString(deps.runtime.getCurrentSession()?.id);
+      const projectPath = asTrimmedString(rawInput.project_path ?? rawInput.projectPath ?? rawInput.cwd);
+      const workflowId = asTrimmedString(rawInput.workflow_id ?? rawInput.workflowId);
+      const requestId = `agent-query-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+      const prompt = [
+        '[AGENT QUERY REQUEST]',
+        `request_id: ${requestId}`,
+        `from_agent: ${callerAgentId}`,
+        `to_agent: ${targetAgentId}`,
+        '',
+        'Question:',
+        query,
+        '',
+        'Response contract:',
+        '- Give a direct answer with evidence.',
+        '- Keep it concise and actionable.',
+      ].join('\n');
+
+      const dispatchResult = await dispatchTaskToAgent(deps, {
+        sourceAgentId: callerAgentId,
+        targetAgentId,
+        ...(requestedSessionId ? { sessionId: requestedSessionId } : {}),
+        ...(workflowId ? { workflowId } : {}),
+        ...(projectPath ? { projectPath } : {}),
+        task: {
+          prompt,
+          metadata: {
+            queryRequest: true,
+            queryRequestId: requestId,
+            sourceAgentId: callerAgentId,
+          },
+        },
+        metadata: {
+          source: 'agent-query',
+          role: 'system',
+          queryRequest: true,
+          queryRequestId: requestId,
+          sourceAgentId: callerAgentId,
+        },
+        blocking: true,
+        queueOnBusy,
+        maxQueueWaitMs: timeoutMs,
+      });
+
+      const answer = extractDispatchSummary(dispatchResult);
+      return {
+        ...dispatchResult,
+        request_id: requestId,
+        target_agent_id: targetAgentId,
+        answered: dispatchResult.status === 'completed' && answer.length > 0,
+        ...(answer ? { answer } : {}),
+      };
+    },
+  });
+  loaded.push('agent.query');
+
+  deps.runtime.registerTool({
+    name: 'agent.progress.ask',
+    description:
+      'Ask target agent progress with reply closure. Returns direct progress reply when available; otherwise falls back to runtime snapshot for deterministic monitoring.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        target_agent_id: { type: 'string' },
+        session_id: { type: 'string' },
+        task_id: { type: 'string' },
+        task_name: { type: 'string' },
+        question: { type: 'string' },
+        timeout_ms: { type: 'number' },
+        queue_on_busy: { type: 'boolean' },
+      },
+      required: ['target_agent_id'],
+      additionalProperties: true,
+    },
+    handler: async (input: unknown, context?: Record<string, unknown>): Promise<unknown> => {
+      const rawInput = isObjectRecord(input) ? input : {};
+      const callerAgentId = asTrimmedString(context?.agentId) || deps.primaryOrchestratorAgentId;
+      if (isReviewerAgentId(callerAgentId)) {
+        throw new Error('agent.progress.ask forbidden for reviewer role');
+      }
+      const targetAgentId = asTrimmedString(rawInput.target_agent_id ?? rawInput.targetAgentId);
+      if (!targetAgentId) throw new Error('agent.progress.ask target_agent_id is required');
+      if (targetAgentId === callerAgentId) {
+        throw new Error(`agent.progress.ask self-dispatch forbidden: source and target are both ${targetAgentId}`);
+      }
+      const requestedSessionId = asTrimmedString(rawInput.session_id ?? rawInput.sessionId)
+        || asTrimmedString(context?.sessionId)
+        || asTrimmedString(deps.runtime.getCurrentSession()?.id);
+      const taskId = asTrimmedString(rawInput.task_id ?? rawInput.taskId);
+      const taskName = asTrimmedString(rawInput.task_name ?? rawInput.taskName);
+      const question = asTrimmedString(rawInput.question)
+        || '请汇报当前进度、阻塞点、下一步动作，并给出关键证据。';
+      const timeoutMsRaw = Number(rawInput.timeout_ms ?? rawInput.timeoutMs);
+      const timeoutMs = Number.isFinite(timeoutMsRaw)
+        ? Math.max(1_000, Math.min(180_000, Math.floor(timeoutMsRaw)))
+        : 30_000;
+      const queueOnBusy = rawInput.queue_on_busy !== false && rawInput.queueOnBusy !== false;
+      const requestId = `agent-progress-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+      const prompt = [
+        '[AGENT PROGRESS REQUEST]',
+        `request_id: ${requestId}`,
+        `from_agent: ${callerAgentId}`,
+        `to_agent: ${targetAgentId}`,
+        taskId ? `task_id: ${taskId}` : '',
+        taskName ? `task_name: ${taskName}` : '',
+        '',
+        '请按以下结构回复：',
+        '- status: queued|in_progress|blocked|review|completed',
+        '- done: 已完成关键步骤（列表）',
+        '- doing: 当前执行中',
+        '- blockers: 阻塞项（若无写 none）',
+        '- next: 下一步动作',
+        '- evidence: 关键证据（工具调用/文件路径/日志）',
+        '',
+        `补充问题: ${question}`,
+      ].filter(Boolean).join('\n');
+
+      const dispatchResult = await dispatchTaskToAgent(deps, {
+        sourceAgentId: callerAgentId,
+        targetAgentId,
+        ...(requestedSessionId ? { sessionId: requestedSessionId } : {}),
+        task: {
+          prompt,
+          metadata: {
+            progressAsk: true,
+            queryRequestId: requestId,
+            ...(taskId ? { taskId } : {}),
+            ...(taskName ? { taskName } : {}),
+          },
+        },
+        metadata: {
+          source: 'agent-progress-ask',
+          role: 'system',
+          progressAsk: true,
+          queryRequestId: requestId,
+          ...(taskId ? { taskId } : {}),
+          ...(taskName ? { taskName } : {}),
+        },
+        blocking: true,
+        queueOnBusy,
+        maxQueueWaitMs: timeoutMs,
+      });
+
+      const answer = extractDispatchSummary(dispatchResult);
+      const runtimeView = await deps.agentRuntimeBlock.execute('runtime_view', {});
+      const snapshot = resolveRuntimeAgentSnapshot(runtimeView, targetAgentId);
+      const canWriteGateway = typeof (deps.sessionManager as { updateContext?: unknown }).updateContext === 'function';
+      if (canWriteGateway && requestedSessionId) {
+        const effectiveTaskId = taskId || snapshot.lastTaskId || '';
+        const gatewaySummary = answer || snapshot.lastSummary || '';
+        if (effectiveTaskId || taskName || gatewaySummary) {
+          void applyProjectStatusGatewayPatch({
+            sessionManager: deps.sessionManager,
+            sessionIds: [requestedSessionId],
+            source: 'agent.progress.ask',
+            patch: {
+              ...(effectiveTaskId ? { taskId: effectiveTaskId } : {}),
+              ...(taskName ? { taskName } : {}),
+              ...(snapshot.lastDispatchId ? { dispatchId: snapshot.lastDispatchId } : {}),
+              ...(gatewaySummary ? { summary: gatewaySummary.slice(0, 2000) } : {}),
+              note: answer ? 'progress_ask_reply' : 'progress_snapshot_only',
+              requestId,
+            },
+          });
+        }
+      }
+      return {
+        ...dispatchResult,
+        request_id: requestId,
+        target_agent_id: targetAgentId,
+        answered: dispatchResult.status === 'completed' && answer.length > 0,
+        ...(answer ? { progress: answer } : {}),
+        status_snapshot: snapshot,
+      };
+    },
+  });
+  loaded.push('agent.progress.ask');
 
   deps.runtime.registerTool({
     name: 'agent.control',

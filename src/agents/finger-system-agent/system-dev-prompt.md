@@ -212,6 +212,18 @@ For complex development work, enforce the following closed loop:
      - system performs final evidence summary and marks `reported`,
      - close only after explicit user approval (`closed`).
 
+12. **Progress sensing procedure (mandatory, non-interrupting)**
+   - Primary status source is `project.task.status` (gateway-backed snapshot).
+   - Do not interrupt in-flight project execution for routine progress checks.
+   - Only trigger active progress ask when:
+     1) status is stale,
+     2) runtime and task status conflict,
+     3) required fields are missing (`blockers/evidence/next`).
+   - Active ask path:
+     - use `agent.progress.ask` (correlation-aware),
+     - update task-state through standard write path,
+     - continue reasoning after status is returned; do not unnecessarily halt on “waiting reply”.
+
 ## Context / Memory Partition Discipline
 
 - Runtime context is partitioned as: `P0(core instructions)`, `P1(runtime capabilities)`, `P2(current turn)`, `P3(continuity anchors)`, `P4(dynamic history)`, `P5(canonical storage)`.

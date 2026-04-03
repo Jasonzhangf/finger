@@ -6,7 +6,6 @@
  */
 
 import type { ToolRegistry } from '../../runtime/tool-registry.js';
-import { writeFileSync } from 'fs';
 import { promises as fs } from 'fs';
 import { homedir } from 'os';
 import path from 'path';
@@ -25,21 +24,16 @@ import {
   removeReviewRoute,
 } from '../../agents/finger-system-agent/review-route-registry.js';
 import {
-  parseDelegatedProjectTaskRegistry,
-  pruneDelegatedRegistryForContextAfterTaskClosed,
-  mergeProjectTaskState,
   parseProjectTaskState,
   PROJECT_AGENT_ID,
   SYSTEM_AGENT_ID,
-  shouldArchiveAndClearProjectTaskState,
-  upsertDelegatedProjectTaskRegistry,
 } from '../../common/project-task-state.js';
 import { buildVerificationPrompt } from '../../agents/prompts/verifier-prompts.js';
-import { appendClosedProjectTaskArchive } from '../../core/project-task-archive.js';
 import { releaseProjectDreamLock } from '../../core/project-dream-lock.js';
 import { writeProjectDreamMemory } from '../../core/project-dream-memory-store.js';
 import { FINGER_PATHS } from '../../core/finger-paths.js';
 import { SYSTEM_PROJECT_PATH } from '../../agents/finger-system-agent/index.js';
+import { applyProjectStatusGatewayPatch } from '../../server/modules/project-status-gateway.js';
 
 const log = logger.module('report-task-completion-tool');
 
@@ -448,117 +442,26 @@ function updateProjectTaskStateForSession(
 ): void {
   const normalizedSessionId = typeof sessionId === 'string' ? sessionId.trim() : '';
   if (!normalizedSessionId) return;
-  try {
-    const session = deps.sessionManager.getSession(normalizedSessionId);
-    if (!session) return;
-    const current = parseProjectTaskState(session.context?.projectTaskState);
-    const next = mergeProjectTaskState(current, {
+  const result = applyProjectStatusGatewayPatch({
+    sessionManager: deps.sessionManager,
+    sessionIds: [normalizedSessionId],
+    source: 'report-task-completion.updateProjectTaskStateForSession',
+    patch: {
       ...patch,
-      sourceAgentId: current?.sourceAgentId ?? SYSTEM_AGENT_ID,
-      targetAgentId: current?.targetAgentId ?? PROJECT_AGENT_ID,
-    });
-    const currentRegistry = parseDelegatedProjectTaskRegistry(session.context?.projectTaskRegistry);
-    const nextRegistry = upsertDelegatedProjectTaskRegistry(currentRegistry, {
-      sourceAgentId: next.sourceAgentId,
-      targetAgentId: next.targetAgentId,
-      taskId: next.taskId,
-      taskName: next.taskName,
-      status: next.status,
-      active: next.active,
-      assigneeWorkerId: next.assigneeWorkerId,
-      deliveryWorkerId: next.deliveryWorkerId,
-      reviewerId: next.reviewerId,
-      reassignReason: next.reassignReason,
-      dispatchId: next.dispatchId,
-      summary: next.summary,
-      note: next.note,
-    });
-    const shouldArchiveAndClear = shouldArchiveAndClearProjectTaskState(next);
-    if (shouldArchiveAndClear) {
-      appendClosedProjectTaskArchive(session.projectPath, next);
-    }
-    const contextState = shouldArchiveAndClear ? null : next;
-    const contextRegistry = shouldArchiveAndClear
-      ? pruneDelegatedRegistryForContextAfterTaskClosed(nextRegistry, next)
-      : nextRegistry;
-    deps.sessionManager.updateContext(normalizedSessionId, {
-      projectTaskState: contextState,
-      projectTaskRegistry: contextRegistry,
-    });
-    writeTaskRouterMarkdown(session.projectPath, next, nextRegistry);
-  } catch (error) {
+      sourceAgentId: SYSTEM_AGENT_ID,
+      targetAgentId: PROJECT_AGENT_ID,
+    },
+  });
+  if (!result.ok && result.errors.length > 0) {
+    for (const item of result.errors) {
     log.warn('[report-task-completion] Failed to update project task state', {
-      sessionId: normalizedSessionId,
+      sessionId: item.sessionId,
       taskId: patch.taskId,
       taskName: patch.taskName,
       status: patch.status,
-      error: error instanceof Error ? error.message : String(error),
+      error: item.error,
     });
-  }
-}
-
-function writeTaskRouterMarkdown(
-  projectPath: string,
-  state: ReturnType<typeof mergeProjectTaskState>,
-  registry: ReturnType<typeof upsertDelegatedProjectTaskRegistry>,
-): void {
-  if (typeof projectPath !== 'string' || projectPath.trim().length === 0) return;
-  const normalized = projectPath.replace(/\/+$/, '');
-  const taskFilePath = `${normalized}/TASK.md`;
-  const lines: string[] = [
-    '# TASK Router',
-    '',
-    `Updated: ${new Date().toISOString()}`,
-    '',
-    '## Current Task State',
-    `- active: ${state.active}`,
-    `- status: ${state.status}`,
-    `- source: ${state.sourceAgentId}`,
-    `- target: ${state.targetAgentId}`,
-    state.assigneeWorkerId ? `- assigneeWorkerId: ${state.assigneeWorkerId}` : '- assigneeWorkerId: N/A',
-    state.deliveryWorkerId ? `- deliveryWorkerId: ${state.deliveryWorkerId}` : '- deliveryWorkerId: N/A',
-    state.reviewerId ? `- reviewerId: ${state.reviewerId}` : '- reviewerId: N/A',
-    state.reassignReason ? `- reassignReason: ${state.reassignReason}` : '- reassignReason: N/A',
-    state.taskId ? `- taskId: ${state.taskId}` : '- taskId: N/A',
-    state.taskName ? `- taskName: ${state.taskName}` : '- taskName: N/A',
-    state.dispatchId ? `- dispatchId: ${state.dispatchId}` : '- dispatchId: N/A',
-    state.note ? `- note: ${state.note}` : '- note: N/A',
-    '',
-    '## Delegated Project List (latest)',
-  ];
-  const ordered = [...registry]
-    .sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt))
-    .slice(0, 20);
-  if (ordered.length === 0) {
-    lines.push('- (empty)');
-  } else {
-    for (const item of ordered) {
-      lines.push(
-        `- [${item.status}] active=${item.active} target=${item.targetAgentId}`
-        + `${item.assigneeWorkerId ? ` assignee=${item.assigneeWorkerId}` : ''}`
-        + `${item.deliveryWorkerId ? ` delivery=${item.deliveryWorkerId}` : ''}`
-        + `${item.reviewerId ? ` reviewer=${item.reviewerId}` : ''}`
-        + `${item.reassignReason ? ` reassign_reason=${item.reassignReason}` : ''}`
-        + `${item.taskId ? ` taskId=${item.taskId}` : ''}`
-        + `${item.taskName ? ` task="${item.taskName}"` : ''}`
-        + `${item.dispatchId ? ` dispatch=${item.dispatchId}` : ''}`
-        + ` updated=${item.updatedAt}`,
-      );
     }
-  }
-  lines.push('');
-  lines.push('## Routing Rule');
-  lines.push('- Context exposes concise status only.');
-  lines.push('- Full task details and progression should be maintained in this TASK.md.');
-  try {
-    writeFileSync(taskFilePath, lines.join('\n') + '\n', 'utf8');
-  } catch (error) {
-    const code = (error as NodeJS.ErrnoException | undefined)?.code;
-    if (code === 'ENOENT') return;
-    log.warn('[report-task-completion] Failed to write TASK.md router snapshot', {
-      taskFilePath,
-      error: error instanceof Error ? error.message : String(error),
-    });
   }
 }
 

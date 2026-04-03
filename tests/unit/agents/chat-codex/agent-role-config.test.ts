@@ -41,6 +41,8 @@ describe('agent-role-config', () => {
       'project.task.status',
       'project.task.update',
       'agent.continue',
+      'agent.query',
+      'agent.progress.ask',
     ]));
     expect(BASE_AGENT_ROLE_CONFIG.project.allowedTools).toContain('report-task-completion');
     expect(BASE_AGENT_ROLE_CONFIG.system.allowedTools).toContain('exec_command');

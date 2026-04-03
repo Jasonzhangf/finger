@@ -1,5 +1,4 @@
 import { logger } from '../../../core/logger.js';
-import { writeFileSync } from 'fs';
 import { isObjectRecord } from '../../../server/common/object.js';
 import { asString, firstNonEmptyString } from '../../../server/common/strings.js';
 import { getGlobalDispatchTracker } from '../../../server/modules/agent-runtime/dispatch-tracker.js';
@@ -18,15 +17,11 @@ import {
   isProjectTaskStateActive,
   normalizeBlockedByForTaskState,
   parseDelegatedProjectTaskRegistry,
-  pruneDelegatedRegistryForContextAfterTaskClosed,
-  mergeProjectTaskState,
   parseProjectTaskState,
-  shouldArchiveAndClearProjectTaskState,
-  upsertDelegatedProjectTaskRegistry,
 } from '../../../common/project-task-state.js';
 import { resolveAgentDisplayName } from '../../../server/modules/agent-name-resolver.js';
-import { appendClosedProjectTaskArchive } from '../../../core/project-task-archive.js';
 import { setupReviewRuntimeForDispatch } from '../../../agents/finger-system-agent/review-runtime.js';
+import { applyProjectStatusGatewayPatch } from '../../../server/modules/project-status-gateway.js';
 import {
   applyExecutionLifecycleTransition,
   getExecutionLifecycleState,
@@ -675,144 +670,24 @@ function persistProjectTaskState(
     targetAgentId?: string;
   },
 ): void {
-  for (const sessionId of sessionIds) {
-    try {
-      const session = deps.sessionManager.getSession(sessionId);
-      if (!session) continue;
-      const current = parseProjectTaskState(session.context?.projectTaskState);
-      const next = mergeProjectTaskState(current, {
-        ...patch,
-        sourceAgentId: patch.sourceAgentId ?? current?.sourceAgentId ?? FINGER_SYSTEM_AGENT_ID,
-        targetAgentId: patch.targetAgentId ?? current?.targetAgentId ?? FINGER_PROJECT_AGENT_ID,
-      });
-      const currentRegistry = parseDelegatedProjectTaskRegistry(session.context?.projectTaskRegistry);
-      const nextRegistry = upsertDelegatedProjectTaskRegistry(currentRegistry, {
-        sourceAgentId: next.sourceAgentId,
-        targetAgentId: next.targetAgentId,
-        taskId: next.taskId,
-        taskName: next.taskName,
-        status: next.status,
-        active: next.active,
-        assignerName: next.assignerName,
-        assigneeWorkerId: next.assigneeWorkerId,
-        assigneeWorkerName: next.assigneeWorkerName,
-        deliveryWorkerId: next.deliveryWorkerId,
-        deliveryWorkerName: next.deliveryWorkerName,
-        reviewerId: next.reviewerId,
-        reviewerName: next.reviewerName,
-        reassignReason: next.reassignReason,
-        dispatchId: next.dispatchId,
-        boundSessionId: next.boundSessionId,
-        revision: next.revision,
-        summary: next.summary,
-        note: next.note,
-        blockedBy: next.blockedBy,
-      });
-      const shouldArchiveAndClear = shouldArchiveAndClearProjectTaskState(next);
-      if (shouldArchiveAndClear) {
-        appendClosedProjectTaskArchive(session.projectPath, next);
-      }
-      const contextState = shouldArchiveAndClear ? null : next;
-      const contextRegistry = shouldArchiveAndClear
-        ? pruneDelegatedRegistryForContextAfterTaskClosed(nextRegistry, next)
-        : nextRegistry;
-      deps.sessionManager.updateContext(sessionId, {
-        projectTaskState: contextState,
-        projectTaskRegistry: contextRegistry,
-      });
-      writeTaskRouterMarkdown(session.projectPath, next, nextRegistry);
-    } catch (error) {
-      logger.module('dispatch').warn('Failed to persist project task state patch', {
-        sessionId,
-        taskId: patch.taskId,
-        taskName: patch.taskName,
-        status: patch.status,
-        note: patch.note,
-        error: error instanceof Error ? error.message : String(error),
-      });
-    }
-  }
-}
-
-function writeTaskRouterMarkdown(
-  projectPath: string,
-  state: ReturnType<typeof mergeProjectTaskState>,
-  registry: ReturnType<typeof upsertDelegatedProjectTaskRegistry>,
-): void {
-  if (typeof projectPath !== 'string' || projectPath.trim().length === 0) return;
-  const normalized = projectPath.replace(/\/+$/, '');
-  const taskFilePath = `${normalized}/TASK.md`;
-  const nowIso = new Date().toISOString();
-  const lines: string[] = [
-    '# TASK Router',
-    '',
-    `Updated: ${nowIso}`,
-    '',
-    '## Current Task State',
-    `- active: ${state.active}`,
-    `- status: ${state.status}`,
-    `- source: ${state.sourceAgentId}`,
-    `- target: ${state.targetAgentId}`,
-    state.assignerName ? `- assignerName: ${state.assignerName}` : '- assignerName: N/A',
-    state.assigneeWorkerId ? `- assigneeWorkerId: ${state.assigneeWorkerId}` : '- assigneeWorkerId: N/A',
-    state.assigneeWorkerName ? `- assigneeWorkerName: ${state.assigneeWorkerName}` : '- assigneeWorkerName: N/A',
-    state.deliveryWorkerId ? `- deliveryWorkerId: ${state.deliveryWorkerId}` : '- deliveryWorkerId: N/A',
-    state.deliveryWorkerName ? `- deliveryWorkerName: ${state.deliveryWorkerName}` : '- deliveryWorkerName: N/A',
-    state.reviewerId ? `- reviewerId: ${state.reviewerId}` : '- reviewerId: N/A',
-    state.reviewerName ? `- reviewerName: ${state.reviewerName}` : '- reviewerName: N/A',
-    state.reassignReason ? `- reassignReason: ${state.reassignReason}` : '- reassignReason: N/A',
-    state.taskId ? `- taskId: ${state.taskId}` : '- taskId: N/A',
-    state.taskName ? `- taskName: ${state.taskName}` : '- taskName: N/A',
-    state.dispatchId ? `- dispatchId: ${state.dispatchId}` : '- dispatchId: N/A',
-    state.boundSessionId ? `- boundSessionId: ${state.boundSessionId}` : '- boundSessionId: N/A',
-    typeof state.revision === 'number' ? `- revision: ${state.revision}` : '- revision: N/A',
-    state.blockedBy && state.blockedBy.length > 0
-      ? `- blocked_by: ${state.blockedBy.join(', ')}`
-      : '- blocked_by: none',
-    state.note ? `- note: ${state.note}` : '- note: N/A',
-    '',
-    '## Delegated Project List (latest)',
-  ];
-
-  const ordered = [...registry]
-    .sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt))
-    .slice(0, 20);
-  if (ordered.length === 0) {
-    lines.push('- (empty)');
-  } else {
-    for (const item of ordered) {
-      lines.push(
-        `- [${item.status}] active=${item.active} target=${item.targetAgentId}`
-        + `${item.assignerName ? ` assigner=${item.assignerName}` : ''}`
-        + `${item.assigneeWorkerId ? ` assignee=${item.assigneeWorkerId}` : ''}`
-        + `${item.assigneeWorkerName ? ` assigneeName=${item.assigneeWorkerName}` : ''}`
-        + `${item.deliveryWorkerId ? ` delivery=${item.deliveryWorkerId}` : ''}`
-        + `${item.deliveryWorkerName ? ` deliveryName=${item.deliveryWorkerName}` : ''}`
-        + `${item.reviewerId ? ` reviewer=${item.reviewerId}` : ''}`
-        + `${item.reviewerName ? ` reviewerName=${item.reviewerName}` : ''}`
-        + `${item.reassignReason ? ` reassign_reason=${item.reassignReason}` : ''}`
-        + `${item.taskId ? ` taskId=${item.taskId}` : ''}`
-        + `${item.taskName ? ` task="${item.taskName}"` : ''}`
-        + `${item.dispatchId ? ` dispatch=${item.dispatchId}` : ''}`
-        + `${item.boundSessionId ? ` boundSession=${item.boundSessionId}` : ''}`
-        + `${typeof item.revision === 'number' ? ` rev=${item.revision}` : ''}`
-        + `${item.blockedBy && item.blockedBy.length > 0 ? ` blocked_by=${item.blockedBy.join('|')}` : ''}`
-        + ` updated=${item.updatedAt}`,
-      );
-    }
-  }
-  lines.push('');
-  lines.push('## Routing Rule');
-  lines.push('- Context exposes concise status only.');
-  lines.push('- Full task details and progression should be maintained in this TASK.md.');
-  try {
-    writeFileSync(taskFilePath, lines.join('\n') + '\n', 'utf8');
-  } catch (error) {
-    const code = (error as NodeJS.ErrnoException | undefined)?.code;
-    if (code === 'ENOENT') return;
-    logger.module('dispatch').warn('Failed to write TASK.md router snapshot', {
-      taskFilePath,
-      error: error instanceof Error ? error.message : String(error),
+  const applyResult = applyProjectStatusGatewayPatch({
+    sessionManager: deps.sessionManager,
+    sessionIds,
+    patch: {
+      ...patch,
+      sourceAgentId: patch.sourceAgentId ?? FINGER_SYSTEM_AGENT_ID,
+      targetAgentId: patch.targetAgentId ?? FINGER_PROJECT_AGENT_ID,
+    },
+    source: 'dispatch.persistProjectTaskState',
+  });
+  for (const item of applyResult.errors) {
+    logger.module('dispatch').warn('Failed to persist project task state patch', {
+      sessionId: item.sessionId,
+      taskId: patch.taskId,
+      taskName: patch.taskName,
+      status: patch.status,
+      note: patch.note,
+      error: item.error,
     });
   }
 }

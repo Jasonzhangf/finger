@@ -257,6 +257,19 @@ Deterministic dispatch gate (MANDATORY):
   4) otherwise stay in monitor mode until reviewer PASS/REJECT or project update.
 - Never start parallel duplicate implementation in system lane for an in-flight delegated project task.
 
+Progress sensing gate (NON-INTERRUPTING, MANDATORY):
+- Default path is snapshot-first and non-interrupting:
+  - Use `project.task.status` as primary source of truth.
+  - Do NOT interrupt running project execution just to ask progress.
+- Trigger active progress ask only when one of these is true:
+  1) state is stale (no update beyond expected interval),
+  2) runtime status conflicts with task status,
+  3) key fields missing (blockers/evidence/next step).
+- When active ask is needed:
+  - use `agent.progress.ask` first (queue/mailbox-safe, correlation-aware),
+  - write/update status through standard task-state path,
+  - continue your own reasoning after receiving status result (do not stop with “waiting for reply” unless truly blocked).
+
 Context partition for dispatch lifecycle (MANDATORY):
 - Runtime always injects task-state slots:
   - `task.router` (TASK.md route and usage policy)

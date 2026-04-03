@@ -5,10 +5,11 @@ import { listReviewRoutes, getReviewRoute, getReviewRouteByTaskName } from '../.
 import { getExecutionLifecycleState } from '../../server/modules/execution-lifecycle.js';
 import {
   parseProjectTaskState,
-  mergeProjectTaskState,
-  parseDelegatedProjectTaskRegistry,
-  upsertDelegatedProjectTaskRegistry,
 } from '../../common/project-task-state.js';
+import {
+  applyProjectStatusGatewayPatch,
+  readProjectStatusSnapshot,
+} from '../../server/modules/project-status-gateway.js';
 
 type ProjectTaskAction = 'status' | 'update';
 
@@ -120,9 +121,11 @@ function buildLifecycleSnapshot(deps: AgentRuntimeDeps, sessionId: string) {
 
 function resolveSessionProjectTaskState(deps: AgentRuntimeDeps, sessionId: string) {
   if (!sessionId) return null;
-  const session = deps.sessionManager.getSession(sessionId);
-  if (!session) return null;
-  return parseProjectTaskState(session.context?.projectTaskState);
+  const snapshot = readProjectStatusSnapshot({
+    sessionManager: deps.sessionManager,
+    sessionId,
+  });
+  return snapshot?.taskState ?? null;
 }
 
 function isProjectExecutingLifecycle(stage: string | undefined): boolean {
@@ -139,9 +142,11 @@ function maybePromoteDispatchedToInProgress(
   lifecycleStage: string | undefined,
   agentBusy: boolean,
 ): ReturnType<typeof parseProjectTaskState> {
-  const session = deps.sessionManager.getSession(sessionId);
-  if (!session) return null;
-  const current = parseProjectTaskState(session.context?.projectTaskState);
+  const snapshot = readProjectStatusSnapshot({
+    sessionManager: deps.sessionManager,
+    sessionId,
+  });
+  const current = snapshot?.taskState ?? null;
   if (!current) return null;
   if (!current.active || (current.status !== 'dispatched' && current.status !== 'accepted')) return current;
   if (!agentBusy && !isProjectExecutingLifecycle(lifecycleStage)) return current;
@@ -150,29 +155,21 @@ function maybePromoteDispatchedToInProgress(
   const nextNote = current.status === 'dispatched'
     ? 'project_dispatch_accepted'
     : 'project_started_execution';
-  const next = mergeProjectTaskState(current, {
+  const applyResult = applyProjectStatusGatewayPatch({
+    sessionManager: deps.sessionManager,
+    sessionIds: [sessionId],
+    source: 'project.task.status.promote',
+    patch: {
     status: nextStatus,
     note: nextNote,
-  });
-  const registry = upsertDelegatedProjectTaskRegistry(
-    parseDelegatedProjectTaskRegistry(session.context?.projectTaskRegistry),
-    {
-      sourceAgentId: next.sourceAgentId,
-      targetAgentId: next.targetAgentId,
-      taskId: next.taskId,
-      taskName: next.taskName,
-      status: next.status,
-      active: next.active,
-      dispatchId: next.dispatchId,
-      summary: next.summary,
-      note: next.note,
     },
-  );
-  deps.sessionManager.updateContext(sessionId, {
-    projectTaskState: next,
-    projectTaskRegistry: registry,
   });
-  return next;
+  if (!applyResult.ok) return current;
+  const nextSnapshot = readProjectStatusSnapshot({
+    sessionManager: deps.sessionManager,
+    sessionId,
+  });
+  return nextSnapshot?.taskState ?? current;
 }
 
 export function registerProjectTaskTool(
@@ -216,6 +213,12 @@ export function registerProjectTaskTool(
       const sessionTaskState = sessionId
         ? maybePromoteDispatchedToInProgress(deps, sessionId, lifecycle?.stage, agentState.busy)
         : null;
+      const gatewaySnapshot = sessionId
+        ? readProjectStatusSnapshot({
+          sessionManager: deps.sessionManager,
+          sessionId,
+        })
+        : null;
       const effectiveStatus = asTrimmedString(sessionTaskState?.status) || agentState.status;
       const effectiveTaskId = asTrimmedString(sessionTaskState?.taskId) || agentState.taskId || taskId;
       const effectiveTaskName = asTrimmedString(sessionTaskState?.taskName) || taskName;
@@ -249,6 +252,13 @@ export function registerProjectTaskTool(
           ...(route?.taskId ? { routeTaskId: route.taskId } : {}),
           ...(route?.taskName ? { routeTaskName: route.taskName } : {}),
         },
+        ...(gatewaySnapshot ? {
+          gateway: {
+            hasState: gatewaySnapshot.hasState,
+            stale: gatewaySnapshot.stale,
+            active: gatewaySnapshot.active,
+          },
+        } : {}),
       };
     },
   });
