@@ -69,8 +69,8 @@ function createDeps(overrides?: Partial<EventForwardingDeps>): EventForwardingDe
   };
 }
 
-describe('Event Forwarding - Reasoning Persistence', () => {
-  it('should persist reasoning events with assistant role and agent/role info', () => {
+describe('Event Forwarding - Reasoning Handling', () => {
+  it('should not persist reasoning events into session assistant history', () => {
     const sessionManager = createMockSessionManager();
     const deps = createDeps({ sessionManager });
     const { emitLoopEventToEventBus } = attachEventForwarding(deps);
@@ -89,19 +89,10 @@ describe('Event Forwarding - Reasoning Persistence', () => {
       },
     });
 
-    expect(sessionManager.addMessage).toHaveBeenCalledTimes(1);
-    const call = (sessionManager.addMessage as ReturnType<typeof vi.fn>).mock.calls[0];
-    expect(call[0]).toBe('test-session-1'); // sessionId
-    expect(call[1]).toBe('assistant'); // role - must be assistant, not system
-    expect(call[2]).toContain('[role=orchestrator agent=finger-orchestrator]');
-    expect(call[2]).toContain('思考: Let me analyze the code structure...');
-    expect((call[3] as any).type).toBe('reasoning');
-    expect((call[3] as any).agentId).toBe('finger-orchestrator');
-    expect((call[3] as any).metadata.role).toBe('orchestrator');
-    expect((call[3] as any).metadata.fullReasoningText).toBe('Let me analyze the code structure...');
+    expect(sessionManager.addMessage).not.toHaveBeenCalled();
   });
 
-  it('should use generalAgentId when agentId is not in payload', () => {
+  it('should not persist reasoning even when agentId is absent', () => {
     const sessionManager = createMockSessionManager();
     const deps = createDeps({ sessionManager, generalAgentId: 'test-default-agent' });
     const { emitLoopEventToEventBus } = attachEventForwarding(deps);
@@ -118,13 +109,10 @@ describe('Event Forwarding - Reasoning Persistence', () => {
       },
     });
 
-    const call = (sessionManager.addMessage as ReturnType<typeof vi.fn>).mock.calls[0];
-    expect(call[1]).toBe('assistant');
-    expect(call[2]).toContain('[role=orchestrator agent=test-default-agent]');
-    expect((call[3] as any).agentId).toBe('test-default-agent');
+    expect(sessionManager.addMessage).not.toHaveBeenCalled();
   });
 
-  it('should use default roleProfile when not in payload', () => {
+  it('should ignore roleProfile for session persistence of reasoning', () => {
     const sessionManager = createMockSessionManager();
     const deps = createDeps({ sessionManager });
     const { emitLoopEventToEventBus } = attachEventForwarding(deps);
@@ -142,8 +130,7 @@ describe('Event Forwarding - Reasoning Persistence', () => {
       },
     });
 
-    const call = (sessionManager.addMessage as ReturnType<typeof vi.fn>).mock.calls[0];
-    expect(call[2]).toContain('[role=orchestrator agent=some-agent]');
+    expect(sessionManager.addMessage).not.toHaveBeenCalled();
   });
 
   it('should not persist empty reasoning text', () => {
@@ -184,6 +171,53 @@ describe('Event Forwarding - Reasoning Persistence', () => {
     });
 
     expect(sessionManager.addMessage).not.toHaveBeenCalled();
+  });
+
+  it('persists final assistant reply on turn_complete for continuity recall', () => {
+    const sessionManager = createMockSessionManager();
+    const deps = createDeps({ sessionManager });
+    const { emitLoopEventToEventBus } = attachEventForwarding(deps);
+
+    emitLoopEventToEventBus({
+      sessionId: 'test-session-final-reply',
+      phase: 'turn_complete',
+      timestamp: new Date().toISOString(),
+      payload: {
+        responseId: 'resp-final-1',
+        finishReason: 'completed',
+        replyPreview: '已完成：SSH 重连参数已更新。',
+      },
+    });
+
+    const calls = (sessionManager.addMessage as ReturnType<typeof vi.fn>).mock.calls;
+    const assistantCalls = calls.filter((call) => call[1] === 'assistant');
+    expect(assistantCalls.length).toBe(1);
+    expect(assistantCalls[0][0]).toBe('test-session-final-reply');
+    expect(assistantCalls[0][2]).toBe('已完成：SSH 重连参数已更新。');
+    expect((assistantCalls[0][3] as any).metadata.source).toBe('turn_final_reply');
+  });
+
+  it('deduplicates persisted final reply when same turn_complete emits repeatedly', () => {
+    const sessionManager = createMockSessionManager();
+    const deps = createDeps({ sessionManager });
+    const { emitLoopEventToEventBus } = attachEventForwarding(deps);
+    const event = {
+      sessionId: 'test-session-final-reply-dedup',
+      phase: 'turn_complete' as const,
+      timestamp: new Date().toISOString(),
+      payload: {
+        responseId: 'resp-final-dedup',
+        finishReason: 'completed',
+        replyPreview: '同一条最终回复',
+      },
+    };
+
+    emitLoopEventToEventBus(event);
+    emitLoopEventToEventBus(event);
+
+    const calls = (sessionManager.addMessage as ReturnType<typeof vi.fn>).mock.calls;
+    const assistantCalls = calls.filter((call) => call[1] === 'assistant' && call[2] === '同一条最终回复');
+    expect(assistantCalls.length).toBe(1);
   });
 
   it('should forward reasoning/body updates to agent status subscriber', () => {

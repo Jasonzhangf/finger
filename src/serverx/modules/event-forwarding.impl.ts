@@ -759,12 +759,41 @@ export function attachEventForwarding(deps: EventForwardingDeps): {
           && finalizeFinishReason === 'stop'
           ? latestStopSummaryBySession.get(event.sessionId)
           : undefined;
+        const finalReply = event.phase === 'turn_complete'
+          ? (stopSummary
+            || latestBody
+            || (typeof event.payload.replyPreview === 'string' ? event.payload.replyPreview : ''))
+          : (typeof event.payload.error === 'string' ? `处理失败：${event.payload.error}` : '处理失败，请稍后再试');
+        const normalizedFinalReply = finalReply.trim();
+        if (normalizedFinalReply.length > 0) {
+          const recentMessages = sessionManager.getMessages(event.sessionId, 8);
+          const duplicated = recentMessages.some((message) => (
+            message.role === 'assistant'
+            && typeof message.content === 'string'
+            && message.content.trim() === normalizedFinalReply
+            && isObjectRecord(message.metadata)
+            && message.metadata.source === 'turn_final_reply'
+          ));
+          if (!duplicated) {
+            persistSessionEventMessage(
+              event.sessionId,
+              normalizedFinalReply,
+              {
+                type: 'agent_step',
+                agentId: generalAgentId,
+                metadata: {
+                  source: 'turn_final_reply',
+                  phase: event.phase,
+                  finishReason: finalizeFinishReason ?? null,
+                  hasStopSummary: Boolean(stopSummary),
+                  hasLatestBody: Boolean(latestBody),
+                },
+              },
+              'assistant',
+            );
+          }
+        }
         if (agentStatusSubscriber) {
-          const finalReply = event.phase === 'turn_complete'
-            ? (stopSummary
-              || latestBody
-              || (typeof event.payload.replyPreview === 'string' ? event.payload.replyPreview : ''))
-            : (typeof event.payload.error === 'string' ? `处理失败：${event.payload.error}` : '处理失败，请稍后再试');
           agentStatusSubscriber.finalizeChannelTurn(
             event.sessionId,
             finalReply,
@@ -816,36 +845,17 @@ export function attachEventForwarding(deps: EventForwardingDeps): {
       addLedgerPointerMessage(event.sessionId, 'main', generalAgentId);
     }
 
-    // Persist reasoning events into session
+    // Reasoning is transient: do not persist it into assistant history.
+    // Persisting raw reasoning pollutes context continuity for follow-up turns.
     if (event.phase === 'kernel_event' && event.payload.type === 'reasoning') {
       const reasoningText = typeof event.payload.text === 'string'
         ? event.payload.text.trim()
         : '';
       if (reasoningText.length > 0) {
-        // Use 'assistant' role so reasoning is included in next-turn context
         const reasoningAgentId = typeof event.payload.agentId === 'string' && event.payload.agentId.trim().length > 0
           ? event.payload.agentId.trim()
           : generalAgentId;
-        const roleProfile = typeof event.payload.roleProfile === 'string' && event.payload.roleProfile.trim().length > 0
-          ? event.payload.roleProfile.trim()
-          : 'orchestrator';
-        const contentPrefix = `[role=${roleProfile} agent=${reasoningAgentId}] `;
-        persistSessionEventMessage(
-          event.sessionId,
-          `${contentPrefix}思考: ${reasoningText}`,
-          {
-            type: 'reasoning',
-            agentId: reasoningAgentId,
-            metadata: {
-              role: roleProfile,
-              agentId: reasoningAgentId,
-              event: event.payload,
-              fullReasoningText: reasoningText,
-            },
-          },
-          'assistant', // Use assistant role so it's included in kernel history
-        );
-        
+
         // Send reasoning to channel bridge (QQBot) based on pushSettings.reasoning config
         if (agentStatusSubscriber) {
           agentStatusSubscriber.sendReasoningUpdate(event.sessionId, reasoningAgentId, reasoningText)
