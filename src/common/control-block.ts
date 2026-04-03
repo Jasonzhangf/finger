@@ -89,6 +89,27 @@ export interface ControlStopDecisionInput {
   yoloMode?: boolean;
 }
 
+const MACHINE_CONTROL_HINTS = [
+  'schema_version',
+  'task_completed',
+  'evidence_ready',
+  'needs_user_input',
+  'has_blocker',
+  'dispatch_required',
+  'review_required',
+  'anti_patterns',
+  'self_eval',
+  'learning',
+  'tool_calls',
+  'reasoning_stop',
+  'reasoning.stop',
+  'finish_reason',
+  'user_signal',
+  'context_review_hint',
+  'hook.',
+  'report-task-completion',
+] as const;
+
 const REQUIRED_BASE_KEYS = [
   'schema_version',
   'task_completed',
@@ -277,6 +298,48 @@ function extractTrailingJsonObject(rawReply: string): { blockText: string; strip
   const suffix = source.slice(end + 1).trim();
   const strippedReply = [prefix, suffix].filter((item) => item.length > 0).join('\n').trim();
   return { blockText, strippedReply };
+}
+
+function looksLikeMachineControlPayload(raw: string): boolean {
+  const source = raw.trim();
+  if (!source) return false;
+  const lowered = source.toLowerCase();
+  let hit = 0;
+  for (const hint of MACHINE_CONTROL_HINTS) {
+    if (lowered.includes(hint)) hit += 1;
+  }
+  if (hit >= 2) return true;
+  // 强信号：工具调用编排块（即使字段较少也应剥离）
+  if (/"tool_calls"\s*:\s*\[/i.test(source)) return true;
+  if (/"name"\s*:\s*"reasoning[_\-.]?stop"/i.test(source)) return true;
+  return false;
+}
+
+export function stripControlLikeJsonPayload(text: string): string {
+  let output = typeof text === 'string' ? text : '';
+  if (!output.trim()) return '';
+
+  const fencePattern = /```(?:json|finger-control)?\s*([\s\S]*?)```/giu;
+  output = output.replace(fencePattern, (full, block) => {
+    const body = typeof block === 'string' ? block : '';
+    return looksLikeMachineControlPayload(body) ? '' : full;
+  }).trim();
+
+  // 处理未闭合 fence：```json{... 或 ```finger-control{...
+  const danglingFence = output.match(/```(?:json|finger-control)\s*([\s\S]*)$/iu);
+  if (danglingFence && typeof danglingFence.index === 'number') {
+    const body = danglingFence[1] ?? '';
+    if (looksLikeMachineControlPayload(body)) {
+      output = output.slice(0, danglingFence.index).trimEnd();
+    }
+  }
+
+  // 兜底：尾部裸 JSON 控制对象
+  const trailing = extractTrailingJsonObject(output);
+  if (trailing && looksLikeMachineControlPayload(trailing.blockText)) {
+    output = trailing.strippedReply;
+  }
+  return output.trim();
 }
 
 function looksLikeControlBlockCandidate(parsedObject: Record<string, unknown>): boolean {

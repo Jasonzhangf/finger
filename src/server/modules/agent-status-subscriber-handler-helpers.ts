@@ -1,7 +1,7 @@
 import { heartbeatMailbox } from './heartbeat-mailbox.js';
 import type { PushSettings } from '../../bridges/types.js';
 import type { SessionEnvelopeMapping } from './agent-status-subscriber-types.js';
-import { parseControlBlockFromReply } from '../../common/control-block.js';
+import { parseControlBlockFromReply, stripControlLikeJsonPayload } from '../../common/control-block.js';
 import { tryParseStructuredJson } from '../../common/structured-output.js';
 import {
   classifyExecCommand,
@@ -57,6 +57,8 @@ export function sanitizeUserFacingStatusTextWithOptions(
   let sanitized = typeof controlParsed.humanResponse === 'string' ? controlParsed.humanResponse.trim() : source;
   if (!sanitized) return '';
   sanitized = sanitized.replace(/```finger-control[\s\S]*$/giu, '').trim();
+  sanitized = stripControlLikeJsonPayload(sanitized);
+  if (!sanitized) return '';
   sanitized = extractStructuredSummaryText(sanitized);
   sanitized = singleLine
     ? sanitized.replace(/\s+/g, ' ').trim()

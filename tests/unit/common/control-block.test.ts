@@ -4,6 +4,7 @@ import {
   normalizeControlBlock,
   parseControlBlockFromReply,
   resolveControlBlockPolicy,
+  stripControlLikeJsonPayload,
   shouldHoldStopByControlBlock,
 } from '../../../src/common/control-block.js';
 
@@ -50,6 +51,26 @@ describe('control-block', () => {
     expect(parsed.present).toBe(false);
     expect(parsed.valid).toBe(false);
     expect(parsed.issues).toContain('control_block_missing');
+  });
+
+  it('strips tool_calls orchestration json fence from user-facing text', () => {
+    const raw = [
+      'Jason，处理中。',
+      '```json{"tool_calls":[{"name":"mailbox.status","input":{"target":"finger-system-agent"}}]}```',
+    ].join('\n');
+    const cleaned = stripControlLikeJsonPayload(raw);
+    expect(cleaned).toBe('Jason，处理中。');
+    expect(cleaned).not.toContain('tool_calls');
+  });
+
+  it('strips trailing raw tool_calls json object when it is machine payload', () => {
+    const raw = [
+      'Jason，处理中。',
+      '{"tool_calls":[{"name":"mailbox.list","input":{"target":"finger-system-agent","unreadOnly":true}}]}',
+    ].join('\n');
+    const cleaned = stripControlLikeJsonPayload(raw);
+    expect(cleaned).toBe('Jason，处理中。');
+    expect(cleaned).not.toContain('mailbox.list');
   });
 
   it('parses generic json fence control block and strips it from user-facing text', () => {

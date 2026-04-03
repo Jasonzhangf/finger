@@ -17,6 +17,7 @@ import { logger } from '../../core/logger.js';
 import { SYSTEM_AGENT_CONFIG } from '../../agents/finger-system-agent/index.js';
 import type { AgentStatusSubscriber } from '../../server/modules/agent-status-subscriber.js';
 import { SYSTEM_PROJECT_PATH } from '../../agents/finger-system-agent/index.js';
+import { parseControlBlockFromReply, stripControlLikeJsonPayload } from '../../common/control-block.js';
 import {
   addAgentPrefix,
   isAttachmentMarkerText,
@@ -31,6 +32,17 @@ import {
 import { triggerChannelLinkAutoDetail } from '../../server/modules/channel-link-auto-detail.js';
 
 const log = logger.module('ChannelBridgeHubRoute');
+
+function sanitizeReplyForChannel(text: string): string {
+  const source = text.trim();
+  if (!source) return source;
+  const parsed = parseControlBlockFromReply(source);
+  const humanResponse = typeof parsed.humanResponse === 'string'
+    ? parsed.humanResponse.trim()
+    : '';
+  const base = humanResponse || source;
+  return stripControlLikeJsonPayload(base).trim();
+}
 
 export interface ChannelBridgeHubRouteDeps {
   channelBridgeManager: ChannelBridgeManager;
@@ -122,8 +134,13 @@ export function createChannelBridgeHubRoute(deps: ChannelBridgeHubRouteDeps) {
       }
     }
 
-    const sendReply = async (text: string, agentId?: string) => {
-      if (!text || !text.trim()) return;
+    const sendReply = async (
+      text: string,
+      agentId?: string,
+      options?: { bypassRecentBodyGate?: boolean },
+    ): Promise<boolean> => {
+      const sanitized = sanitizeReplyForChannel(text);
+      if (!sanitized || !sanitized.trim()) return false;
       const routeRef = {
         channelId: channelMsg.channelId,
         userId: channelMsg.senderId,
@@ -133,11 +150,12 @@ export function createChannelBridgeHubRoute(deps: ChannelBridgeHubRouteDeps) {
       };
       const routeDedupHit = agentStatusSubscriber?.wasBodyUpdateRecentlySentForRoute(
         routeRef,
-        text,
+        sanitized,
       );
-      const sessionDedupHit = agentStatusSubscriber?.wasBodyUpdateRecentlySent(fixedSessionId, text);
+      const sessionDedupHit = agentStatusSubscriber?.wasBodyUpdateRecentlySent(fixedSessionId, sanitized);
       const routeRecentBodyHit = agentStatusSubscriber?.wasAnyBodyUpdateRecentlySentForRoute(routeRef);
-      if (routeDedupHit || sessionDedupHit || routeRecentBodyHit) {
+      const shouldBypassRecentBodyGate = options?.bypassRecentBodyGate === true;
+      if (routeDedupHit || sessionDedupHit || (!shouldBypassRecentBodyGate && routeRecentBodyHit)) {
         log.info('Skip direct sendReply because same body update was already pushed', {
           sessionId: fixedSessionId,
           channelId: channelMsg.channelId,
@@ -145,16 +163,17 @@ export function createChannelBridgeHubRoute(deps: ChannelBridgeHubRouteDeps) {
           routeDedupHit: Boolean(routeDedupHit),
           sessionDedupHit: Boolean(sessionDedupHit),
           routeRecentBodyHit: Boolean(routeRecentBodyHit),
+          bypassRecentBodyGate: shouldBypassRecentBodyGate,
         });
-        return;
+        return false;
       }
       try {
         // Pre-mark final reply before channel IO so concurrent bodyUpdates can
         // dedup against this reply and avoid double delivery.
         if (agentStatusSubscriber) {
-          agentStatusSubscriber.markFinalReplySent(fixedSessionId, text);
+          agentStatusSubscriber.markFinalReplySent(fixedSessionId, sanitized);
         }
-        const replyWithPrefix = addAgentPrefix(text, agentId);
+        const replyWithPrefix = addAgentPrefix(sanitized, agentId);
         const sendResult = await channelBridgeManager.sendMessage(channelMsg.channelId, {
           to: target,
           text: replyWithPrefix,
@@ -166,8 +185,9 @@ export function createChannelBridgeHubRoute(deps: ChannelBridgeHubRouteDeps) {
           agentStatusSubscriber.clearFinalReplySent(fixedSessionId);
         }
         log.error('Failed to send reply (hub route)', sendErr instanceof Error ? sendErr : undefined);
+        return false;
       }
-
+      return true;
     };
 
     if (ASYNC_USER_ASK_CHANNELS.has(channelMsg.channelId)) {
@@ -196,7 +216,9 @@ export function createChannelBridgeHubRoute(deps: ChannelBridgeHubRouteDeps) {
             askResponse: true,
           },
         });
-        await sendReply('已收到你的回复，继续处理中…', targetAgentId);
+        await sendReply('已收到你的回复，继续处理中…', targetAgentId, {
+          bypassRecentBodyGate: true,
+        });
         return;
       }
     }
@@ -214,12 +236,12 @@ export function createChannelBridgeHubRoute(deps: ChannelBridgeHubRouteDeps) {
     const parsed = parseCommands(commandSource);
     if (parsed.commands.length > 0) {
       const commandHub = getCommandHub();
-      const command = parsed.commands[0];
 
       const ctx = {
         channelId: channelMsg.channelId,
         sessionManager,
         eventBus,
+        channelBridgeManager,
         configPath: `${process.env.HOME || ''}/.finger/config/config.json`,
         updateContext: (
           id: string,
@@ -231,17 +253,32 @@ export function createChannelBridgeHubRoute(deps: ChannelBridgeHubRouteDeps) {
         }
       };
 
-      const result = await commandHub.execute(command, ctx);
-      const hasFollowupContent = parsed.effectiveContent.trim().length > 0;
-      const shouldContinueAfterSwitch = result.success
+      const results = await commandHub.executeAll(parsed.commands, ctx);
+      const allSucceeded = results.length > 0 && results.every((item) => item.success);
+      const lastResult = results[results.length - 1];
+      const commandOutput = results
+        .map((item) => (item.output || item.error || '').trim())
+        .filter((item) => item.length > 0)
+        .join('\n');
+
+      const followupCandidate = parsed.effectiveContent
+        .replace(/^[\s\-•·]+/gmu, '')
+        .trim();
+      const hasFollowupContent = /[\p{L}\p{N}\u4e00-\u9fff]/u.test(followupCandidate);
+      const allCommandsAreSwitch = parsed.commands.every(
+        (command) => command.type === CommandType.AGENT || command.type === CommandType.SYSTEM,
+      );
+      const shouldContinueAfterSwitch = allSucceeded
         && hasFollowupContent
-        && (command.type === CommandType.AGENT || command.type === CommandType.SYSTEM);
+        && allCommandsAreSwitch;
       if (!shouldContinueAfterSwitch) {
-        await sendReply(result.output || result.error || 'CommandHub 执行失败', 'messagehub');
+        await sendReply(commandOutput || lastResult?.error || 'CommandHub 执行失败', 'messagehub', {
+          bypassRecentBodyGate: true,
+        });
         return;
       }
       log.info('Command switch applied, continuing with effective content in same turn', {
-        commandType: command.type,
+        commandType: parsed.commands[parsed.commands.length - 1]?.type,
         channelId: channelMsg.channelId,
       });
     }
@@ -483,7 +520,9 @@ export function createChannelBridgeHubRoute(deps: ChannelBridgeHubRouteDeps) {
           targetAgentId,
           error: errorText,
         });
-        await sendReply(`处理失败：${errorText}`, targetAgentId);
+        await sendReply(`处理失败：${errorText}`, targetAgentId, {
+          bypassRecentBodyGate: true,
+        });
         return;
       }
 
@@ -512,16 +551,26 @@ export function createChannelBridgeHubRoute(deps: ChannelBridgeHubRouteDeps) {
           targetAgentId,
           error: errorText,
         });
-        await sendReply(`处理失败：${errorText}`, targetAgentId);
+        await sendReply(`处理失败：${errorText}`, targetAgentId, {
+          bypassRecentBodyGate: true,
+        });
         return;
       }
 
       if (typeof result === 'string' && result.trim().length > 0) {
         await sendReply(result, targetAgentId);
+        return;
       }
+      // 闭环保障：当 directSend/dispatch 返回了未识别结构（无 response/summary），
+      // 仍必须给用户一次最小确认，避免“已接收但完全静默”。
+      await sendReply('已收到，处理中…', targetAgentId, {
+        bypassRecentBodyGate: true,
+      });
     } catch (err) {
       log.error('Hub route dispatch error', err instanceof Error ? err : undefined);
-      await sendReply('处理失败，请稍后再试', 'messagehub');
+      await sendReply('处理失败，请稍后再试', 'messagehub', {
+        bypassRecentBodyGate: true,
+      });
     } finally {
       // 会话级 channel observers 由 turn_complete / turn_error 统一收敛。
     }

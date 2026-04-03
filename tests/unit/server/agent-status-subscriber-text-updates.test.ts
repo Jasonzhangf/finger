@@ -331,6 +331,82 @@ describe('AgentStatusSubscriber text updates', () => {
     expect(payload.content).not.toContain('task_completed');
   });
 
+  it('strips tool_calls json payload and keeps only human body', async () => {
+    const eventBus = new UnifiedEventBus();
+    const messageHub = {
+      routeToOutput: vi.fn().mockResolvedValue(undefined),
+    };
+    const channelBridgeManager = {
+      getPushSettings: vi.fn().mockReturnValue({
+        reasoning: true,
+        bodyUpdates: true,
+        statusUpdate: true,
+        toolCalls: false,
+        stepUpdates: true,
+        stepBatch: 5,
+        progressUpdates: true,
+      }),
+    };
+
+    const subscriber = new AgentStatusSubscriber(
+      eventBus,
+      createMinimalDeps(),
+      messageHub as any,
+      channelBridgeManager as any,
+    );
+    subscriber.registerSession('session-control-strip-tool-calls', {
+      channel: 'qqbot',
+      envelopeId: 'env-control-strip-tool-calls',
+      userId: 'user-control-strip-tool-calls',
+    });
+
+    const body = [
+      'Jason，重启恢复确认。',
+      '```json{"tool_calls":[{"name":"mailbox.status","input":{"target":"finger-system-agent"}},{"name":"mailbox.list","input":{"target":"finger-system-agent","unreadOnly":true}}]}```',
+    ].join('\n');
+
+    await subscriber.sendBodyUpdate('session-control-strip-tool-calls', 'finger-system-agent', body);
+    expect(messageHub.routeToOutput).toHaveBeenCalledTimes(1);
+    const payload = messageHub.routeToOutput.mock.calls[0][1];
+    expect(payload.content).toBe('正文：Jason，重启恢复确认。');
+    expect(payload.content).not.toContain('tool_calls');
+    expect(payload.content).not.toContain('mailbox.status');
+  });
+
+  it('drops pure tool_calls json body with no human text', async () => {
+    const eventBus = new UnifiedEventBus();
+    const messageHub = {
+      routeToOutput: vi.fn().mockResolvedValue(undefined),
+    };
+    const channelBridgeManager = {
+      getPushSettings: vi.fn().mockReturnValue({
+        reasoning: true,
+        bodyUpdates: true,
+        statusUpdate: true,
+        toolCalls: false,
+        stepUpdates: true,
+        stepBatch: 5,
+        progressUpdates: true,
+      }),
+    };
+
+    const subscriber = new AgentStatusSubscriber(
+      eventBus,
+      createMinimalDeps(),
+      messageHub as any,
+      channelBridgeManager as any,
+    );
+    subscriber.registerSession('session-control-strip-tool-calls-only', {
+      channel: 'qqbot',
+      envelopeId: 'env-control-strip-tool-calls-only',
+      userId: 'user-control-strip-tool-calls-only',
+    });
+
+    const body = '{"tool_calls":[{"name":"mailbox.status","input":{"target":"finger-system-agent"}},{"name":"mailbox.list","input":{"target":"finger-system-agent","unreadOnly":true}}]}';
+    await subscriber.sendBodyUpdate('session-control-strip-tool-calls-only', 'finger-system-agent', body);
+    expect(messageHub.routeToOutput).toHaveBeenCalledTimes(0);
+  });
+
   it('bodyUpdates + mirror: qqbot push mirrors to openclaw-weixin only once', async () => {
     const eventBus = new UnifiedEventBus();
     const routeCalls: Array<{ outputId: string; content: string }> = [];
