@@ -32,12 +32,11 @@ export function parseCommands(input: string): ParseResult {
 
   for (const match of matches) {
     const [fullMatch, category, actionRaw, param, simpleCommand] = match;
-    const matchIndex = match.index!;
     
     const command = parseSingleCommand(fullMatch, category, actionRaw, param, simpleCommand, effectiveContent);
     if (command) {
       commands.push(command);
-      effectiveContent = `${effectiveContent.slice(0, matchIndex)}${effectiveContent.slice(matchIndex + fullMatch.length)}`.trim();
+      effectiveContent = effectiveContent.replace(fullMatch, '').trim();
     }
   }
 
@@ -189,6 +188,16 @@ function parseSingleCommand(
      type = CommandType.AUTH_GRANT;
      params.approvalId = action || '';
    }
+ } else if (category === 'display') {
+   type = CommandType.DISPLAY;
+   const rawSpec = typeof actionRaw === 'string'
+     ? actionRaw.trim()
+     : (typeof param === 'string' ? param.trim() : '');
+   const normalizedSpec = rawSpec
+     .replace(/\\"/g, '"')
+     .replace(/^"+|"+$/g, '')
+     .trim();
+   params.spec = normalizedSpec;
  } else {
    type = CommandType.INVALID;
  }

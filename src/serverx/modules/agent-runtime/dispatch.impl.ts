@@ -11,6 +11,7 @@ import {
 import { normalizeDispatchTargetAgentId } from '../../../server/modules/agent-runtime/dispatch-target-normalization.js';
 import {
   FINGER_PROJECT_AGENT_ID,
+  FINGER_REVIEWER_AGENT_ID,
   FINGER_SYSTEM_AGENT_ID,
 } from '../../../agents/finger-general/finger-general-module.js';
 import {
@@ -22,6 +23,7 @@ import {
 import { resolveAgentDisplayName } from '../../../server/modules/agent-name-resolver.js';
 import { setupReviewRuntimeForDispatch } from '../../../agents/finger-system-agent/review-runtime.js';
 import { applyProjectStatusGatewayPatch } from '../../../server/modules/project-status-gateway.js';
+import { listAgents, setMonitorStatus } from '../../../agents/finger-system-agent/registry.js';
 import {
   applyExecutionLifecycleTransition,
   getExecutionLifecycleState,
@@ -42,7 +44,8 @@ import {
   syncBdDispatchLifecycle,
   withDispatchWorkspaceDefaults,
 } from '../../../server/modules/agent-runtime/dispatch-runtime-helpers.js';
-import { setMonitorStatus } from '../../../agents/finger-system-agent/registry.js';
+import { loadUserSettings, resolveAutonomyModeForRole } from '../../../core/user-settings.js';
+import { loadOrchestrationConfig } from '../../../orchestration/orchestration-config.js';
 
 const DISPATCH_ERROR_MAX_RETRIES = Number.isFinite(Number(process.env.FINGER_DISPATCH_ERROR_MAX_RETRIES))
   ? Math.max(0, Math.floor(Number(process.env.FINGER_DISPATCH_ERROR_MAX_RETRIES)))
@@ -74,6 +77,300 @@ function asTrimmedString(value: unknown): string {
   return typeof value === 'string' ? value.trim() : '';
 }
 
+function parseBooleanFlag(value: unknown): boolean | undefined {
+  if (typeof value === 'boolean') return value;
+  if (typeof value === 'number') return value === 1 ? true : value === 0 ? false : undefined;
+  if (typeof value !== 'string') return undefined;
+  const normalized = value.trim().toLowerCase();
+  if (normalized === 'true' || normalized === '1' || normalized === 'yes' || normalized === 'y') return true;
+  if (normalized === 'false' || normalized === '0' || normalized === 'no' || normalized === 'n') return false;
+  return undefined;
+}
+
+function isProjectScopedDispatchTargetId(targetAgentId: string): boolean {
+  return targetAgentId === FINGER_PROJECT_AGENT_ID || targetAgentId === FINGER_REVIEWER_AGENT_ID;
+}
+
+function shouldGuaranteeDispatchToTasklist(input: AgentDispatchRequest): boolean {
+  const source = asTrimmedString(input.sourceAgentId);
+  const target = asTrimmedString(input.targetAgentId);
+  if (!source || !target) return false;
+  if (source === target) return false;
+  return source.startsWith('finger-') && target.startsWith('finger-');
+}
+
+function buildGuaranteedQueuedDispatchResult(params: {
+  dispatchId: string;
+  reason: string;
+  originalStatus?: string;
+}): {
+  ok: boolean;
+  dispatchId: string;
+  status: 'queued';
+  result: DispatchSummaryResult;
+} {
+  const summary = [
+    'Dispatch accepted and appended to target tasklist.',
+    params.reason,
+  ].filter(Boolean).join(' ');
+  return {
+    ok: true,
+    dispatchId: params.dispatchId,
+    status: 'queued',
+    result: sanitizeDispatchResult({
+      success: true,
+      status: 'queued_tasklist',
+      summary,
+      recoveryAction: 'tasklist_queue',
+      delivery: 'queue',
+      ...(params.originalStatus ? { nextAction: `normalized_from_${params.originalStatus}` } : {}),
+    }),
+  };
+}
+
+function isSystemOwnedSession(deps: AgentRuntimeDeps, sessionId: string): boolean {
+  const session = deps.sessionManager.getSession(sessionId);
+  if (!session) return false;
+  const context = isObjectRecord(session.context) ? session.context : {};
+  const ownerAgentId = asString(context.ownerAgentId);
+  const sessionTier = asString(context.sessionTier);
+  return (
+    sessionId.startsWith('system-')
+    || sessionTier === 'system'
+    || ownerAgentId === FINGER_SYSTEM_AGENT_ID
+  );
+}
+
+function resolveAutonomyRoleFromTargetAgent(targetAgentId: string): 'system' | 'project' | 'reviewer' {
+  const normalized = asTrimmedString(targetAgentId).toLowerCase();
+  if (normalized === FINGER_SYSTEM_AGENT_ID || normalized.includes('system')) return 'system';
+  if (normalized.includes('review')) return 'reviewer';
+  return 'project';
+}
+
+interface ProjectWorkerCandidate {
+  id: string;
+  name: string;
+  order: number;
+}
+
+interface WorkerLoadSnapshot {
+  runningCount: number;
+  queuedCount: number;
+}
+
+const PROJECT_WORKER_ROUND_ROBIN_CURSOR = new Map<string, number>();
+
+export function __resetProjectWorkerRoundRobinCursorForTest(): void {
+  PROJECT_WORKER_ROUND_ROBIN_CURSOR.clear();
+}
+
+function listEnabledProjectWorkers(): ProjectWorkerCandidate[] {
+  try {
+    const loaded = loadOrchestrationConfig();
+    const workers = loaded.config.runtime?.projectWorkers?.workers ?? [];
+    const candidates = workers
+      .map((worker, index) => ({
+        id: asTrimmedString(worker.id),
+        name: asTrimmedString(worker.name) || asTrimmedString(worker.id) || 'project-worker',
+        enabled: worker.enabled !== false,
+        order: index,
+      }))
+      .filter((worker) => worker.enabled && worker.id.length > 0)
+      .map((worker) => ({ id: worker.id, name: worker.name, order: worker.order }));
+    if (candidates.length > 0) return candidates;
+  } catch {
+    // best effort: fallback below.
+  }
+  return [{ id: FINGER_PROJECT_AGENT_ID, name: resolveAgentDisplayName(FINGER_PROJECT_AGENT_ID), order: 0 }];
+}
+
+function resolveExplicitAssigneeWorkerId(input: AgentDispatchRequest): string {
+  const assignment: Record<string, unknown> = isObjectRecord(input.assignment) ? input.assignment : {};
+  const metadata: Record<string, unknown> = isObjectRecord(input.metadata) ? input.metadata : {};
+  const taskRecord: Record<string, unknown> = isObjectRecord(input.task) ? input.task : {};
+  const taskMetadata: Record<string, unknown> = isObjectRecord(taskRecord.metadata) ? taskRecord.metadata : {};
+  return firstNonEmptyString(
+    asString(assignment.assigneeWorkerId),
+    asString(assignment.assignee_worker_id),
+    asString(assignment.assigneeAgentId),
+    asString(metadata.assigneeWorkerId),
+    asString(metadata.assignee_worker_id),
+    asString(metadata.workerId),
+    asString(metadata.worker_id),
+    asString(taskMetadata.assigneeWorkerId),
+    asString(taskMetadata.assignee_worker_id),
+    asString(taskMetadata.workerId),
+    asString(taskMetadata.worker_id),
+  ) ?? '';
+}
+
+function addWorkerLoad(
+  map: Map<string, WorkerLoadSnapshot>,
+  workerId: string,
+  running: number,
+  queued: number,
+): void {
+  if (!workerId) return;
+  const current = map.get(workerId) ?? { runningCount: 0, queuedCount: 0 };
+  const nextRunning = Number.isFinite(running) ? Math.max(0, Math.floor(running)) : 0;
+  const nextQueued = Number.isFinite(queued) ? Math.max(0, Math.floor(queued)) : 0;
+  map.set(workerId, {
+    runningCount: current.runningCount + nextRunning,
+    queuedCount: current.queuedCount + nextQueued,
+  });
+}
+
+function readWorkerLoadFromRuntimeView(
+  runtimeView: unknown,
+  candidateWorkerIds: Set<string>,
+): Map<string, WorkerLoadSnapshot> {
+  const loads = new Map<string, WorkerLoadSnapshot>();
+  if (!isObjectRecord(runtimeView)) return loads;
+  const lanes = Array.isArray(runtimeView.lanes) ? runtimeView.lanes : [];
+  for (const lane of lanes) {
+    if (!isObjectRecord(lane)) continue;
+    const agentId = asTrimmedString(lane.agentId);
+    if (agentId && agentId !== FINGER_PROJECT_AGENT_ID) continue;
+    const workerId = asTrimmedString(lane.workerId);
+    if (!workerId || !candidateWorkerIds.has(workerId)) continue;
+    const runningCount = typeof lane.runningCount === 'number' ? lane.runningCount : Number(lane.runningCount);
+    const queuedCount = typeof lane.queuedCount === 'number' ? lane.queuedCount : Number(lane.queuedCount);
+    addWorkerLoad(loads, workerId, runningCount, queuedCount);
+  }
+  return loads;
+}
+
+function selectLeastLoadedProjectWorker(
+  candidates: ProjectWorkerCandidate[],
+  loads: Map<string, WorkerLoadSnapshot>,
+  roundRobinKey: string,
+): ProjectWorkerCandidate {
+  const withLoad = candidates.map((candidate) => {
+    const load = loads.get(candidate.id) ?? { runningCount: 0, queuedCount: 0 };
+    return {
+      candidate,
+      runningCount: load.runningCount,
+      queuedCount: load.queuedCount,
+      total: load.runningCount + load.queuedCount,
+    };
+  });
+  const available = withLoad.filter((item) => item.total === 0);
+  const pool = available.length > 0 ? available : withLoad;
+  const ordered = [...pool].sort((a, b) => a.candidate.order - b.candidate.order);
+  const rrKey = `${roundRobinKey}::${candidates.map((item) => item.id).join(',')}`;
+  const currentCursor = PROJECT_WORKER_ROUND_ROBIN_CURSOR.get(rrKey) ?? 0;
+  const selectedIndex = ordered.length > 0 ? (Math.max(0, currentCursor) % ordered.length) : 0;
+  const selected = ordered[selectedIndex]?.candidate ?? candidates[0] ?? { id: FINGER_PROJECT_AGENT_ID, name: 'project-worker', order: 0 };
+  if (ordered.length > 0) {
+    PROJECT_WORKER_ROUND_ROBIN_CURSOR.set(rrKey, (selectedIndex + 1) % ordered.length);
+  }
+  return selected;
+}
+
+function applyWorkerSelectionToDispatchInput(
+  input: AgentDispatchRequest,
+  selectedWorker: ProjectWorkerCandidate,
+  reason: 'explicit' | 'availability',
+): AgentDispatchRequest {
+  const assignment: Record<string, unknown> = isObjectRecord(input.assignment) ? { ...input.assignment } : {};
+  const metadata: Record<string, unknown> = isObjectRecord(input.metadata) ? { ...input.metadata } : {};
+  const taskRecord: Record<string, unknown> = isObjectRecord(input.task) ? { ...input.task } : {};
+  const taskMetadata: Record<string, unknown> = isObjectRecord(taskRecord.metadata) ? { ...taskRecord.metadata } : {};
+
+  assignment.assigneeWorkerId = selectedWorker.id;
+  assignment.assigneeAgentId = selectedWorker.id;
+  assignment.assigneeName = selectedWorker.name;
+  assignment.assigneeWorkerName = selectedWorker.name;
+  metadata.workerId = selectedWorker.id;
+  metadata.assigneeWorkerId = selectedWorker.id;
+  metadata.assigneeWorkerName = selectedWorker.name;
+  metadata.workerPoolSelectionReason = reason;
+  taskMetadata.workerId = selectedWorker.id;
+  taskMetadata.assigneeWorkerId = selectedWorker.id;
+
+  const nextTask = Object.keys(taskRecord).length === 0
+    ? input.task
+    : {
+      ...taskRecord,
+      metadata: taskMetadata,
+    };
+
+  return {
+    ...input,
+    assignment,
+    metadata,
+    task: nextTask,
+  };
+}
+
+async function resolveSystemProjectDispatchWorker(
+  deps: AgentRuntimeDeps,
+  input: AgentDispatchRequest,
+): Promise<{ input: AgentDispatchRequest; workerId?: string; workerName?: string; reason?: 'explicit' | 'availability' }> {
+  if (!(input.sourceAgentId === FINGER_SYSTEM_AGENT_ID && input.targetAgentId === FINGER_PROJECT_AGENT_ID)) {
+    return { input };
+  }
+  const explicitWorkerId = resolveExplicitAssigneeWorkerId(input);
+  const candidates = listEnabledProjectWorkers();
+  if (candidates.length === 0) return { input };
+  if (explicitWorkerId) {
+    const matched = candidates.find((worker) => worker.id === explicitWorkerId);
+    const selected = matched ?? { id: explicitWorkerId, name: resolveAgentDisplayName(explicitWorkerId), order: candidates.length };
+    return {
+      input: applyWorkerSelectionToDispatchInput(input, selected, 'explicit'),
+      workerId: selected.id,
+      workerName: selected.name,
+      reason: 'explicit',
+    };
+  }
+  const candidateIds = new Set(candidates.map((item) => item.id));
+  let workerLoads = new Map<string, WorkerLoadSnapshot>();
+  try {
+    const runtimeView = await deps.agentRuntimeBlock.execute('runtime_view', {});
+    workerLoads = readWorkerLoadFromRuntimeView(runtimeView, candidateIds);
+  } catch {
+    workerLoads = new Map<string, WorkerLoadSnapshot>();
+  }
+  const projectPathHint = resolveDispatchProjectPathHint(input);
+  const roundRobinKey = projectPathHint || 'global-project-dispatch';
+  const selected = selectLeastLoadedProjectWorker(candidates, workerLoads, roundRobinKey);
+  return {
+    input: applyWorkerSelectionToDispatchInput(input, selected, 'availability'),
+    workerId: selected.id,
+    workerName: selected.name,
+    reason: 'availability',
+  };
+}
+
+function applyDispatchAutonomyDefaults(input: AgentDispatchRequest): AgentDispatchRequest {
+  const metadata = isObjectRecord(input.metadata) ? { ...input.metadata } : {};
+  if (typeof metadata.autonomyMode === 'string' || typeof metadata.yoloMode === 'boolean') {
+    return {
+      ...input,
+      metadata,
+    };
+  }
+  try {
+    const settings = loadUserSettings();
+    const role = resolveAutonomyRoleFromTargetAgent(input.targetAgentId);
+    const mode = resolveAutonomyModeForRole(settings.preferences, role);
+    metadata.autonomyMode = mode;
+    metadata.yoloMode = mode === 'yolo';
+    return {
+      ...input,
+      metadata,
+    };
+  } catch {
+    metadata.autonomyMode = 'balanced';
+    metadata.yoloMode = false;
+    return {
+      ...input,
+      metadata,
+    };
+  }
+}
+
 function validateDispatchSessionScope(
   deps: AgentRuntimeDeps,
   input: AgentDispatchRequest,
@@ -98,7 +395,7 @@ function validateDispatchSessionScope(
     };
   }
 
-  if (targetAgentId === FINGER_PROJECT_AGENT_ID) {
+  if (isProjectScopedDispatchTargetId(targetAgentId)) {
     const context = isObjectRecord(session.context) ? session.context : {};
     const ownerAgentId = asString(context.ownerAgentId);
     const sessionTier = asString(context.sessionTier);
@@ -107,9 +404,10 @@ function validateDispatchSessionScope(
       || sessionTier === 'system'
       || ownerAgentId === FINGER_SYSTEM_AGENT_ID
     ) {
+      const roleLabel = targetAgentId === FINGER_REVIEWER_AGENT_ID ? 'reviewer agent' : 'project agent';
       return {
         ok: false,
-        error: `dispatch session/project scope mismatch: project agent cannot run on system-owned session ${sessionId}`,
+        error: `dispatch session/project scope mismatch: ${roleLabel} cannot run on system-owned session ${sessionId}`,
       };
     }
   }
@@ -781,35 +1079,149 @@ export async function dispatchTaskToAgent(deps: AgentRuntimeDeps, input: AgentDi
     };
   }
 
+  if (sourceAgentId === FINGER_SYSTEM_AGENT_ID && targetAgentId === FINGER_PROJECT_AGENT_ID) {
+    const workerSelection = await resolveSystemProjectDispatchWorker(deps, input);
+    input = workerSelection.input;
+    if (workerSelection.workerId) {
+      logger.module('dispatch').info('Resolved project worker for system dispatch', {
+        sourceAgentId,
+        targetAgentId,
+        sessionId: callerSessionId || undefined,
+        workerId: workerSelection.workerId,
+        workerName: workerSelection.workerName,
+        reason: workerSelection.reason,
+      });
+    }
+  }
+
   let normalizedInput: AgentDispatchRequest;
   try {
     const sessionSelectedInput = resolveDispatchSessionSelection(deps, input);
     const boundInput = bindDispatchSessionToRuntime(deps, sessionSelectedInput);
     normalizedInput = withDispatchWorkspaceDefaults(deps, boundInput);
-    if (normalizedInput.targetAgentId === FINGER_PROJECT_AGENT_ID) {
+    if (
+      normalizedInput.sourceAgentId === FINGER_SYSTEM_AGENT_ID
+      && isProjectScopedDispatchTargetId(normalizedInput.targetAgentId)
+    ) {
       const sessionId = typeof normalizedInput.sessionId === 'string' ? normalizedInput.sessionId.trim() : '';
       const boundSession = sessionId ? deps.sessionManager.getSession(sessionId) : null;
-      const projectPathHint = resolveDispatchProjectPathHint(normalizedInput, boundSession?.projectPath);
+      const boundSessionSystemOwned = sessionId ? isSystemOwnedSession(deps, sessionId) : false;
+      const explicitProjectPathHint = resolveDispatchProjectPathHint(normalizedInput);
+      const projectPathHint = explicitProjectPathHint || resolveDispatchProjectPathHint(normalizedInput, boundSession?.projectPath);
       if (projectPathHint) {
-        try {
-          const monitoredAgent = await setMonitorStatus(projectPathHint, true);
-          const nextMetadata = { ...(isObjectRecord(normalizedInput.metadata) ? normalizedInput.metadata : {}) };
-          nextMetadata.projectId = monitoredAgent.projectId;
-          nextMetadata.projectPath = monitoredAgent.projectPath;
-          nextMetadata.projectAgentId = monitoredAgent.agentId;
-          nextMetadata.projectMonitored = monitoredAgent.monitored === true;
-          normalizedInput = {
-            ...normalizedInput,
-            projectPath: monitoredAgent.projectPath,
-            metadata: nextMetadata,
+        const metadata = isObjectRecord(normalizedInput.metadata) ? normalizedInput.metadata : {};
+        const taskRecord = isObjectRecord(normalizedInput.task) ? normalizedInput.task : {};
+        const taskMetadata = isObjectRecord(taskRecord.metadata) ? taskRecord.metadata : {};
+        const autoRegisterProject = parseBooleanFlag(
+          metadata.autoRegisterProject
+          ?? metadata.auto_register_project
+          ?? metadata.confirmRegisterProject
+          ?? metadata.confirm_register_project
+          ?? metadata.registerProjectConfirmed
+          ?? metadata.register_project_confirmed
+          ?? taskMetadata.autoRegisterProject
+          ?? taskMetadata.auto_register_project
+          ?? taskMetadata.confirmRegisterProject
+          ?? taskMetadata.confirm_register_project,
+        ) === true;
+
+        let existingAgent = null as Awaited<ReturnType<typeof listAgents>>[number] | null;
+        if (!boundSessionSystemOwned && explicitProjectPathHint) {
+          const registeredAgents = await listAgents();
+          existingAgent = registeredAgents.find((item) => {
+            const normalizedPath = normalizeProjectPathHint(typeof item.projectPath === 'string' ? item.projectPath : '');
+            return normalizedPath === projectPathHint;
+          }) ?? null;
+        }
+
+        if (!boundSessionSystemOwned && explicitProjectPathHint && !existingAgent && !autoRegisterProject) {
+          const error = [
+            `project path is not registered: ${projectPathHint}`,
+            'ACTION REQUIRED: ask user "该项目尚未注册，是否自动注册并继续派发？"',
+            'If user confirms, retry same dispatch with metadata.autoRegisterProject=true.',
+          ].join(' ');
+          logger.module('dispatch').warn('Rejected dispatch: project path not registered (confirmation required)', {
+            sourceAgentId: normalizedInput.sourceAgentId,
+            targetAgentId: normalizedInput.targetAgentId,
+            sessionId: sessionId || undefined,
+            projectPathHint,
+          });
+          const failedSessionId = firstNonEmptyString(
+            sessionId,
+            callerSessionId,
+          );
+          if (failedSessionId) {
+            applyExecutionLifecycleTransition(deps.sessionManager, failedSessionId, {
+              stage: 'failed',
+              substage: 'dispatch_project_registration_confirmation_required',
+              updatedBy: 'dispatch',
+              targetAgentId: normalizedInput.targetAgentId,
+              lastError: error,
+            });
+          }
+          return {
+            ok: false,
+            dispatchId: fallbackDispatchId,
+            status: 'failed',
+            error,
           };
+        }
+
+        let resolvedAgent = existingAgent;
+        try {
+          if (!resolvedAgent && explicitProjectPathHint) {
+            resolvedAgent = await setMonitorStatus(projectPathHint, true);
+            logger.module('dispatch').info('Auto-registered project path before dispatch (user confirmed)', {
+              sourceAgentId: normalizedInput.sourceAgentId,
+              targetAgentId: normalizedInput.targetAgentId,
+              sessionId: sessionId || undefined,
+              projectPathHint,
+              projectId: resolvedAgent.projectId,
+              projectAgentId: resolvedAgent.agentId,
+            });
+          }
+          if (resolvedAgent) {
+            const nextMetadata = { ...(isObjectRecord(normalizedInput.metadata) ? normalizedInput.metadata : {}) };
+            nextMetadata.projectId = resolvedAgent.projectId;
+            nextMetadata.projectPath = resolvedAgent.projectPath;
+            nextMetadata.projectAgentId = resolvedAgent.agentId;
+            nextMetadata.projectMonitored = resolvedAgent.monitored === true;
+            if (!existingAgent && autoRegisterProject) {
+              nextMetadata.projectAutoRegistered = true;
+            }
+            normalizedInput = {
+              ...normalizedInput,
+              projectPath: resolvedAgent.projectPath,
+              metadata: nextMetadata,
+            };
+          }
         } catch (registerError) {
-          logger.module('dispatch').warn('Auto monitor registration failed for project dispatch', {
+          const error = registerError instanceof Error ? registerError.message : String(registerError);
+          logger.module('dispatch').warn('Project registration resolution failed for dispatch', {
             targetAgentId: normalizedInput.targetAgentId,
             sessionId,
             projectPathHint,
-            error: registerError instanceof Error ? registerError.message : String(registerError),
+            error,
           });
+          const failedSessionId = firstNonEmptyString(
+            sessionId,
+            callerSessionId,
+          );
+          if (failedSessionId) {
+            applyExecutionLifecycleTransition(deps.sessionManager, failedSessionId, {
+              stage: 'failed',
+              substage: 'dispatch_project_registration_resolve_failed',
+              updatedBy: 'dispatch',
+              targetAgentId: normalizedInput.targetAgentId,
+              lastError: error,
+            });
+          }
+          return {
+            ok: false,
+            dispatchId: fallbackDispatchId,
+            status: 'failed',
+            error: `project registration resolve failed: ${error}`,
+          };
         }
       }
     }
@@ -969,7 +1381,32 @@ export async function dispatchTaskToAgent(deps: AgentRuntimeDeps, input: AgentDi
         sessionId: resolvedSessionId,
       };
     }
-    const scopeValidation = validateDispatchSessionScope(deps, normalizedInput);
+    let scopeValidation = validateDispatchSessionScope(deps, normalizedInput);
+    if (!scopeValidation.ok && isProjectScopedDispatchTargetId(asTrimmedString(normalizedInput.targetAgentId))) {
+      const repairedInput = resolveDispatchSessionSelection(deps, {
+        ...normalizedInput,
+        sessionId: undefined,
+      });
+      const repairedSessionId = asTrimmedString(repairedInput.sessionId);
+      if (repairedSessionId) {
+        normalizedInput = {
+          ...repairedInput,
+          metadata: {
+            ...(isObjectRecord(repairedInput.metadata) ? repairedInput.metadata : {}),
+            dispatchSessionScopeRepaired: true,
+          },
+        };
+        scopeValidation = validateDispatchSessionScope(deps, normalizedInput);
+        if (scopeValidation.ok) {
+          logger.module('dispatch').warn('Auto-repaired dispatch session/project scope mismatch before dispatch', {
+            sourceAgentId: normalizedInput.sourceAgentId,
+            targetAgentId: normalizedInput.targetAgentId,
+            repairedSessionId,
+            projectPath: resolveDispatchProjectPathHint(normalizedInput) || undefined,
+          });
+        }
+      }
+    }
     if (!scopeValidation.ok) {
       const failedSessionId = firstNonEmptyString(
         asTrimmedString(normalizedInput.sessionId),
@@ -1026,6 +1463,7 @@ export async function dispatchTaskToAgent(deps: AgentRuntimeDeps, input: AgentDi
         }
       }
     }
+    normalizedInput = applyDispatchAutonomyDefaults(normalizedInput);
     applySessionProgressDeliveryFromDispatch(deps, normalizedInput);
     if (typeof normalizedInput.sessionId === 'string' && normalizedInput.sessionId.trim().length > 0) {
       const sessionForSnapshot = deps.sessionManager.getSession(normalizedInput.sessionId.trim());
@@ -1729,6 +2167,15 @@ export async function dispatchTaskToAgent(deps: AgentRuntimeDeps, input: AgentDi
   if (finalExecuteError) {
     const executeError = finalExecuteError;
     const message = executeError instanceof Error ? executeError.message : String(executeError);
+    if (shouldGuaranteeDispatchToTasklist(normalizedInput)) {
+      const softQueued = buildGuaranteedQueuedDispatchResult({
+        dispatchId: fallbackDispatchId,
+        reason: `runtime execute error converted to queued tasklist: ${message}`,
+        originalStatus: 'failed',
+      });
+      result = softQueued;
+      finalExecuteError = undefined;
+    } else {
     logger.module('dispatch').error('AgentRuntimeBlock.execute failed', executeError instanceof Error ? executeError : undefined, {
       dispatchId: fallbackDispatchId,
       targetAgentId: normalizedInput.targetAgentId,
@@ -1764,8 +2211,16 @@ export async function dispatchTaskToAgent(deps: AgentRuntimeDeps, input: AgentDi
       });
     }
     return { ok: false, dispatchId: fallbackDispatchId, status: 'failed', error: message };
+    }
   }
   if (!result) {
+    if (shouldGuaranteeDispatchToTasklist(normalizedInput)) {
+      result = buildGuaranteedQueuedDispatchResult({
+        dispatchId: fallbackDispatchId,
+        reason: 'runtime returned empty result after retries; normalized to queued tasklist',
+        originalStatus: 'failed',
+      });
+    } else {
     if (typeof normalizedInput.sessionId === 'string' && normalizedInput.sessionId.trim().length > 0) {
       applyExecutionLifecycleTransition(deps.sessionManager, normalizedInput.sessionId, {
         stage: 'failed',
@@ -1787,6 +2242,16 @@ export async function dispatchTaskToAgent(deps: AgentRuntimeDeps, input: AgentDi
       });
     }
     return { ok: false, dispatchId: fallbackDispatchId, status: 'failed', error: 'dispatch result is empty after retries' };
+    }
+  }
+
+  if (result.status === 'failed' && shouldGuaranteeDispatchToTasklist(normalizedInput)) {
+    const reason = asTrimmedString(result.error) || 'runtime returned failed status';
+    result = buildGuaranteedQueuedDispatchResult({
+      dispatchId: result.dispatchId || fallbackDispatchId,
+      reason: `${reason}; normalized to queued tasklist`,
+      originalStatus: 'failed',
+    });
   }
 
   if (

@@ -323,6 +323,8 @@ interface QueuedDispatchItem {
   assignment?: AgentAssignmentLifecycle;
   resolve: (result: DispatchResult) => void;
   timeoutHandle?: NodeJS.Timeout;
+  enqueuedAtMs: number;
+  priorityScore: number;
 }
 
 interface DispatchLaneMeta {
@@ -341,6 +343,40 @@ interface DispatchResult {
   error?: string;
   targetModuleId?: string;
   queuePosition?: number;
+}
+
+function normalizeDispatchPriorityScore(raw: unknown): number {
+  if (typeof raw === 'number' && Number.isFinite(raw)) {
+    return Math.max(-100, Math.min(100, Math.floor(raw)));
+  }
+  if (typeof raw === 'string') {
+    const normalized = raw.trim().toLowerCase();
+    if (!normalized) return 0;
+    if (normalized === 'urgent' || normalized === 'p0' || normalized === 'critical') return 100;
+    if (normalized === 'high' || normalized === 'p1') return 70;
+    if (normalized === 'medium' || normalized === 'normal' || normalized === 'p2') return 40;
+    if (normalized === 'low' || normalized === 'p3') return 10;
+    const parsed = Number(normalized);
+    if (Number.isFinite(parsed)) return Math.max(-100, Math.min(100, Math.floor(parsed)));
+  }
+  return 0;
+}
+
+function resolveDispatchPriorityScore(input: AgentDispatchRequest): number {
+  const metadata = isObjectRecord(input.metadata) ? input.metadata : {};
+  const assignment = isObjectRecord(input.assignment) ? input.assignment : {};
+  const taskRecord = isObjectRecord(input.task) ? input.task : {};
+  const taskMetadata = isObjectRecord(taskRecord.metadata) ? taskRecord.metadata : {};
+  return normalizeDispatchPriorityScore(
+    metadata.priority
+    ?? metadata.urgent
+    ?? metadata.priorityScore
+    ?? assignment.priority
+    ?? assignment.urgent
+    ?? taskRecord.priority
+    ?? taskMetadata.priority
+    ?? 0,
+  );
 }
 
 function resolveTerminalAssignmentPhase(
@@ -1824,8 +1860,13 @@ export class AgentRuntimeBlock extends BaseBlock {
     this.dispatchLaneMetaByKey.set(lane.laneKey, lane);
     const queue = this.dispatchQueueByLane.get(lane.laneKey) ?? [];
     queue.push(item);
+    queue.sort((a, b) => {
+      if (a.priorityScore !== b.priorityScore) return b.priorityScore - a.priorityScore;
+      return a.enqueuedAtMs - b.enqueuedAtMs;
+    });
     this.dispatchQueueByLane.set(lane.laneKey, queue);
-    return queue.length;
+    const index = queue.findIndex((entry) => entry.dispatchId === item.dispatchId);
+    return index >= 0 ? index + 1 : queue.length;
   }
 
   private async executeDispatch(
@@ -2269,6 +2310,8 @@ export class AgentRuntimeBlock extends BaseBlock {
           targetModuleId,
           assignment,
           resolve,
+          enqueuedAtMs: Date.now(),
+          priorityScore: resolveDispatchPriorityScore(normalizedInput),
         };
         const isSelfDispatch = normalizedInput.sourceAgentId === target;
         // Self-dispatch should always wait for next runnable slot (same semantic as

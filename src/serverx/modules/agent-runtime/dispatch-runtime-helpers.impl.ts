@@ -9,6 +9,7 @@ import {
 } from '../../../agents/finger-general/finger-general-module.js';
 import { promises as fs } from 'fs';
 import * as path from 'path';
+import { createHash } from 'crypto';
 import {
   formatDispatchTaskContent,
   formatLocalTimestamp,
@@ -114,11 +115,144 @@ function resolveDispatchProjectPath(input: AgentDispatchRequest, deps: AgentRunt
   return normalizeProjectPathHint(hint ?? process.cwd());
 }
 
+function resolveDispatchProjectPathHintOnly(input: AgentDispatchRequest): string {
+  const metadata = isObjectRecord(input.metadata) ? input.metadata : {};
+  const taskRecord = isObjectRecord(input.task) ? input.task : {};
+  const taskMetadata = isObjectRecord(taskRecord.metadata) ? taskRecord.metadata : {};
+  const hint = firstNonEmptyString(
+    input.projectPath,
+    asString(metadata.projectPath),
+    asString(metadata.project_path),
+    asString(metadata.cwd),
+    asString(taskRecord.projectPath),
+    asString(taskRecord.project_path),
+    asString(taskRecord.cwd),
+    asString(taskMetadata.projectPath),
+    asString(taskMetadata.project_path),
+    asString(taskMetadata.cwd),
+  );
+  return normalizeProjectPathHint(hint ?? '');
+}
+
 function resolveLatestProjectRootSession(deps: AgentRuntimeDeps, projectPath: string) {
   const sessions = deps.sessionManager.findSessionsByProjectPath(projectPath)
     .filter((session) => !deps.isRuntimeChildSession(session))
     .sort((a, b) => new Date(b.lastAccessedAt).getTime() - new Date(a.lastAccessedAt).getTime());
   return sessions[0] ?? null;
+}
+
+function isProjectScopedDispatchTarget(targetAgentId: string): boolean {
+  return targetAgentId === FINGER_PROJECT_AGENT_ID || targetAgentId === FINGER_REVIEWER_AGENT_ID;
+}
+
+function resolveDispatchWorkerHint(input: AgentDispatchRequest): string {
+  const assignment: Record<string, unknown> = isObjectRecord(input.assignment) ? input.assignment : {};
+  const metadata: Record<string, unknown> = isObjectRecord(input.metadata) ? input.metadata : {};
+  const taskRecord: Record<string, unknown> = isObjectRecord(input.task) ? input.task : {};
+  const taskMetadata: Record<string, unknown> = isObjectRecord(taskRecord.metadata) ? taskRecord.metadata : {};
+  return (
+    asString(assignment.assigneeWorkerId)
+    || asString(assignment.assignee_worker_id)
+    || asString(metadata.workerId)
+    || asString(metadata.worker_id)
+    || asString(metadata.assigneeWorkerId)
+    || asString(metadata.assignee_worker_id)
+    || asString(taskMetadata.workerId)
+    || asString(taskMetadata.worker_id)
+    || asString(taskMetadata.assigneeWorkerId)
+    || asString(taskMetadata.assignee_worker_id)
+    || ''
+  ).trim();
+}
+
+function toDispatchScopeKey(targetAgentId: string, normalizedProjectPath: string, workerId?: string): string {
+  const normalizedWorkerId = typeof workerId === 'string' ? workerId.trim() : '';
+  return `${targetAgentId}::${normalizedProjectPath}::${normalizedWorkerId || 'default'}`;
+}
+
+function toDeterministicProjectSessionId(targetAgentId: string, normalizedProjectPath: string, workerId?: string): string {
+  const safeAgent = targetAgentId.trim().replace(/[^a-zA-Z0-9._-]/g, '_') || 'agent';
+  const normalizedWorkerId = typeof workerId === 'string' ? workerId.trim() : '';
+  const digest = createHash('sha1')
+    .update(`${targetAgentId}|${normalizedProjectPath}|${normalizedWorkerId || 'default'}`)
+    .digest('hex')
+    .slice(0, 16);
+  return `dispatch-${safeAgent}-${digest}`;
+}
+
+function shouldUseStatelessReviewerSession(input: AgentDispatchRequest, targetAgentId: string): boolean {
+  if (targetAgentId !== FINGER_REVIEWER_AGENT_ID) return false;
+  const metadata = isObjectRecord(input.metadata) ? input.metadata : {};
+  const taskRecord = isObjectRecord(input.task) ? input.task : {};
+  const taskMetadata = isObjectRecord(taskRecord.metadata) ? taskRecord.metadata : {};
+  const explicit = parseBooleanFlag(
+    metadata.reviewerStateless
+    ?? metadata.reviewer_stateless
+    ?? taskMetadata.reviewerStateless
+    ?? taskMetadata.reviewer_stateless,
+  );
+  if (explicit === false) return false;
+  return true;
+}
+
+function createStatelessReviewerSessionId(normalizedProjectPath: string): string {
+  const digest = createHash('sha1').update(`reviewer|${normalizedProjectPath}|${Date.now()}|${Math.random()}`).digest('hex').slice(0, 12);
+  return `review-${digest}`;
+}
+
+function tryCreateStatelessReviewerSession(
+  deps: AgentRuntimeDeps,
+  input: AgentDispatchRequest,
+  sourceSessionId?: string,
+): string | undefined {
+  const targetAgentId = typeof input.targetAgentId === 'string' ? input.targetAgentId.trim() : '';
+  if (!shouldUseStatelessReviewerSession(input, targetAgentId)) return undefined;
+  const normalizedProjectPath = normalizeProjectPathHint(resolveDispatchProjectPath(input, deps));
+  if (!normalizedProjectPath) return undefined;
+  const ensureSession = (deps.sessionManager as {
+    ensureSession?: (sessionId: string, projectPath: string, name?: string) => { id?: string; projectPath?: string; context?: Record<string, unknown> };
+  }).ensureSession;
+  if (typeof ensureSession !== 'function') return undefined;
+
+  const sessionId = createStatelessReviewerSessionId(normalizedProjectPath);
+  const created = ensureSession.call(
+    deps.sessionManager,
+    sessionId,
+    normalizedProjectPath,
+    'reviewer-stateless',
+  );
+  const resolvedSessionId = typeof created?.id === 'string' ? created.id.trim() : '';
+  if (!resolvedSessionId) return undefined;
+
+  deps.sessionManager.updateContext(resolvedSessionId, {
+    sessionTier: 'orchestrator-root',
+    dispatchTargetAgentId: targetAgentId,
+    dispatchProjectPath: normalizedProjectPath,
+    dispatchScopeKey: toDispatchScopeKey(targetAgentId, normalizedProjectPath),
+    reviewerStateless: true,
+    reviewerEphemeralSession: true,
+  });
+  if (sourceSessionId) {
+    bindDispatchRouteContext(deps, resolvedSessionId, sourceSessionId);
+  }
+  logger.module('dispatch').info('Created stateless reviewer dispatch session', {
+    sessionId: resolvedSessionId,
+    targetAgentId,
+    projectPath: normalizedProjectPath,
+  });
+  return resolvedSessionId;
+}
+
+function isSystemOwnedSession(deps: AgentRuntimeDeps, sessionId: string): boolean {
+  const session = deps.sessionManager.getSession(sessionId);
+  if (!session) return false;
+  const context = isObjectRecord(session.context) ? session.context : {};
+  return (
+    session.id.startsWith('system-')
+    || normalizeProjectPathHint(session.projectPath) === normalizeProjectPathHint(SYSTEM_AGENT_CONFIG.projectPath)
+    || asString(context.sessionTier) === 'system'
+    || asString(context.ownerAgentId) === SYSTEM_AGENT_CONFIG.id
+  );
 }
 
 function asTrimmed(value: unknown): string {
@@ -174,45 +308,235 @@ function bindDispatchRouteContext(
   deps.sessionManager.updateContext(selected.id, patch);
 }
 
+function tryResolveProjectScopedSessionId(
+  deps: AgentRuntimeDeps,
+  input: AgentDispatchRequest,
+  targetAgentId: string,
+  sourceSessionId?: string,
+): string | undefined {
+  if (!isProjectScopedDispatchTarget(targetAgentId)) return undefined;
+  const projectPath = resolveDispatchProjectPath(input, deps);
+  if (!projectPath) return undefined;
+  const normalizedProjectPath = normalizeProjectPathHint(projectPath);
+  if (!normalizedProjectPath) return undefined;
+  const dispatchWorkerId = targetAgentId === FINGER_PROJECT_AGENT_ID
+    ? resolveDispatchWorkerHint(input)
+    : '';
+  const scopeKey = toDispatchScopeKey(targetAgentId, normalizedProjectPath, dispatchWorkerId);
+
+  const latest = resolveLatestProjectRootSession(deps, normalizedProjectPath);
+  const scopedExisting = deps.sessionManager.findSessionsByProjectPath(normalizedProjectPath)
+    .filter((session) => !deps.isRuntimeChildSession(session))
+    .sort((a, b) => new Date(b.lastAccessedAt).getTime() - new Date(a.lastAccessedAt).getTime())
+    .find((session) => {
+      const context = isObjectRecord(session.context) ? session.context : {};
+      const contextWorkerId = asTrimmed(context.dispatchWorkerId);
+      return (
+        asTrimmed(context.dispatchScopeKey) === scopeKey
+        || (
+          asTrimmed(context.dispatchTargetAgentId) === targetAgentId
+          && normalizeProjectPathHint(asTrimmed(context.dispatchProjectPath) || session.projectPath) === normalizedProjectPath
+          && (
+            dispatchWorkerId.length === 0
+            || contextWorkerId === dispatchWorkerId
+          )
+        )
+      );
+    });
+  const preferred = scopedExisting ?? (dispatchWorkerId.length === 0 ? latest : null);
+  if (preferred?.id) {
+    deps.sessionManager.updateContext(preferred.id, {
+      sessionTier: 'orchestrator-root',
+      dispatchTargetAgentId: targetAgentId,
+      dispatchProjectPath: normalizedProjectPath,
+      dispatchScopeKey: scopeKey,
+      ...(dispatchWorkerId ? { dispatchWorkerId } : {}),
+    });
+    if (sourceSessionId) {
+      bindDispatchRouteContext(deps, preferred.id, sourceSessionId);
+    }
+    return preferred.id;
+  }
+
+  const ensureSession = (deps.sessionManager as {
+    ensureSession?: (sessionId: string, projectPath: string, name?: string) => { id?: string; projectPath?: string; context?: Record<string, unknown> };
+  }).ensureSession;
+  if (typeof ensureSession === 'function') {
+    const createdId = toDeterministicProjectSessionId(targetAgentId, normalizedProjectPath, dispatchWorkerId);
+    const created = ensureSession.call(
+      deps.sessionManager,
+      createdId,
+      normalizedProjectPath,
+      `${targetAgentId}${dispatchWorkerId ? `:${dispatchWorkerId}` : ''} dispatch`,
+    );
+    const sessionId = typeof created?.id === 'string' ? created.id.trim() : '';
+    if (sessionId) {
+      deps.sessionManager.updateContext(sessionId, {
+        sessionTier: 'orchestrator-root',
+        dispatchTargetAgentId: targetAgentId,
+        dispatchProjectPath: normalizedProjectPath,
+        dispatchScopeKey: scopeKey,
+        ...(dispatchWorkerId ? { dispatchWorkerId } : {}),
+      });
+      if (sourceSessionId) {
+        bindDispatchRouteContext(deps, sessionId, sourceSessionId);
+      }
+      logger.module('dispatch').info('Created project-scoped dispatch session', {
+        sessionId,
+        targetAgentId,
+        projectPath: normalizedProjectPath,
+      });
+      return sessionId;
+    }
+  }
+
+  return undefined;
+}
+
 export function resolveDispatchSessionSelection(deps: AgentRuntimeDeps, input: AgentDispatchRequest): AgentDispatchRequest {
   const explicitSessionId = typeof input.sessionId === 'string' ? input.sessionId.trim() : '';
+  const targetAgentId = typeof input.targetAgentId === 'string' ? input.targetAgentId.trim() : '';
+  const requestedProjectPath = resolveDispatchProjectPathHintOnly(input);
+  const targetIsProjectScoped = isProjectScopedDispatchTarget(targetAgentId);
+  if (targetAgentId === FINGER_REVIEWER_AGENT_ID && shouldUseStatelessReviewerSession(input, targetAgentId)) {
+    const sourceSessionId = explicitSessionId
+      || deps.runtime.getCurrentSession()?.id
+      || deps.sessionManager.getCurrentSession()?.id
+      || '';
+    const statelessSessionId = tryCreateStatelessReviewerSession(deps, input, sourceSessionId || undefined);
+    if (statelessSessionId) {
+      return {
+        ...input,
+        sessionId: statelessSessionId,
+        sessionStrategy: 'current',
+        metadata: {
+          ...(isObjectRecord(input.metadata) ? input.metadata : {}),
+          dispatchSessionScopeRebound: true,
+          reviewerStateless: true,
+          reviewerEphemeralSession: true,
+        },
+      };
+    }
+  }
   if (explicitSessionId.length > 0) {
+    if (targetIsProjectScoped) {
+      const explicitSession = deps.sessionManager.getSession(explicitSessionId);
+      const explicitProjectPath = normalizeProjectPathHint(explicitSession?.projectPath ?? '');
+      const explicitContext = isObjectRecord(explicitSession?.context) ? explicitSession.context : {};
+      const explicitWorkerId = asTrimmed(explicitContext.dispatchWorkerId);
+      const requestedWorkerId = targetAgentId === FINGER_PROJECT_AGENT_ID
+        ? resolveDispatchWorkerHint(input)
+        : '';
+      const scopeMismatch = !!requestedProjectPath && !!explicitProjectPath && requestedProjectPath !== explicitProjectPath;
+      const explicitSystemOwned = isSystemOwnedSession(deps, explicitSessionId);
+      const workerMismatch = !!requestedWorkerId && !!explicitWorkerId && requestedWorkerId !== explicitWorkerId;
+      if (scopeMismatch || explicitSystemOwned || workerMismatch) {
+        const projectScopedSessionId = tryResolveProjectScopedSessionId(deps, input, targetAgentId, explicitSessionId);
+        if (projectScopedSessionId) {
+          logger.module('dispatch').warn('Rebound explicit dispatch session to project-scoped session', {
+            targetAgentId,
+            fromSessionId: explicitSessionId,
+            toSessionId: projectScopedSessionId,
+            requestedProjectPath,
+            explicitProjectPath: explicitProjectPath || undefined,
+            requestedWorkerId: requestedWorkerId || undefined,
+            explicitWorkerId: explicitWorkerId || undefined,
+            reason: scopeMismatch
+              ? 'project_scope_mismatch'
+              : explicitSystemOwned
+                ? 'system_owned_explicit_session'
+                : 'worker_scope_mismatch',
+          });
+          return {
+            ...input,
+            sessionId: projectScopedSessionId,
+            sessionStrategy: 'current',
+            metadata: {
+              ...(isObjectRecord(input.metadata) ? input.metadata : {}),
+              dispatchSessionScopeRebound: true,
+            },
+          };
+        }
+      }
+    }
     return {
       ...input,
       sessionId: explicitSessionId,
     };
   }
 
-  const targetAgentId = typeof input.targetAgentId === 'string' ? input.targetAgentId.trim() : '';
   if (targetAgentId) {
     const boundSessionId = typeof deps.runtime.getBoundSessionId === 'function'
       ? deps.runtime.getBoundSessionId(targetAgentId)
       : null;
     if (boundSessionId) {
       const boundSession = deps.sessionManager.getSession(boundSessionId);
-      const requestedProjectPath = resolveDispatchProjectPath(input, deps);
       const boundProjectPath = normalizeProjectPathHint(boundSession?.projectPath ?? '');
-      const requestProjectPath = normalizeProjectPathHint(requestedProjectPath);
+      const boundContext = isObjectRecord(boundSession?.context) ? boundSession.context : {};
+      const boundWorkerId = asTrimmed(boundContext.dispatchWorkerId);
+      const requestedWorkerId = targetAgentId === FINGER_PROJECT_AGENT_ID
+        ? resolveDispatchWorkerHint(input)
+        : '';
       const allowBoundSession = !(
-        targetAgentId === FINGER_PROJECT_AGENT_ID
-        && requestProjectPath
+        targetIsProjectScoped
+        && requestedProjectPath
         && boundProjectPath
-        && requestProjectPath !== boundProjectPath
+        && requestedProjectPath !== boundProjectPath
       );
-      if (!allowBoundSession) {
+      const boundSystemOwned = targetIsProjectScoped && isSystemOwnedSession(deps, boundSessionId);
+      const boundWorkerMismatch = !!requestedWorkerId && !!boundWorkerId && requestedWorkerId !== boundWorkerId;
+      if (!allowBoundSession || boundSystemOwned || boundWorkerMismatch) {
         logger.module('dispatch').warn('Ignoring mismatched bound session for project dispatch; selecting session by project path', {
           targetAgentId,
           boundSessionId,
           boundProjectPath,
-          requestedProjectPath: requestProjectPath,
+          requestedProjectPath,
+          boundSystemOwned,
+          requestedWorkerId: requestedWorkerId || undefined,
+          boundWorkerId: boundWorkerId || undefined,
+          boundWorkerMismatch,
         });
       } else {
+        return {
+          ...input,
+          sessionId: boundSessionId,
+          sessionStrategy: 'current',
+        };
+      }
+    }
+  }
+
+  if (targetIsProjectScoped && requestedProjectPath) {
+    const currentSessionId = deps.runtime.getCurrentSession()?.id ?? deps.sessionManager.getCurrentSession()?.id ?? '';
+    if (currentSessionId) {
+      const currentSession = deps.sessionManager.getSession(currentSessionId);
+      const currentProjectPath = normalizeProjectPathHint(currentSession?.projectPath ?? '');
+      const currentContext = isObjectRecord(currentSession?.context) ? currentSession.context : {};
+      const currentWorkerId = asTrimmed(currentContext.dispatchWorkerId);
+      const requestedWorkerId = targetAgentId === FINGER_PROJECT_AGENT_ID
+        ? resolveDispatchWorkerHint(input)
+        : '';
+      const workerMismatch = !!requestedWorkerId && !!currentWorkerId && requestedWorkerId !== currentWorkerId;
+      if (currentProjectPath === requestedProjectPath && !isSystemOwnedSession(deps, currentSessionId) && !workerMismatch) {
+        return {
+          ...input,
+          sessionId: currentSessionId,
+          sessionStrategy: 'current',
+        };
+      }
+    }
+    const sourceSessionId = deps.runtime.getCurrentSession()?.id ?? deps.sessionManager.getCurrentSession()?.id ?? '';
+    const projectScopedSessionId = tryResolveProjectScopedSessionId(deps, input, targetAgentId, sourceSessionId || undefined);
+    if (projectScopedSessionId) {
       return {
         ...input,
-        sessionId: boundSessionId,
+        sessionId: projectScopedSessionId,
         sessionStrategy: 'current',
+        metadata: {
+          ...(isObjectRecord(input.metadata) ? input.metadata : {}),
+          dispatchSessionScopeRebound: true,
+        },
       };
-      }
     }
   }
 

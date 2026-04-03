@@ -81,7 +81,8 @@ describe('AgentRuntimeBlock', () => {
   it('lists startup templates', async () => {
     const block = new AgentRuntimeBlock('agent-runtime', deps);
     const templates = await block.execute('list_startup_templates', {});
-    expect((templates as Array<{ id: string }>).some(t => t.id === 'finger-orchestrator')).toBe(true);
+    expect((templates as Array<{ id: string }>).some(t => t.id === 'finger-system-agent')).toBe(true);
+    expect((templates as Array<{ id: string }>).some(t => t.id === 'finger-project-agent')).toBe(true);
   });
 
   it('fails deploy without target', async () => {

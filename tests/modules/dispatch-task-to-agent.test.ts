@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
-const { setMonitorStatusMock } = vi.hoisted(() => ({
+const { setMonitorStatusMock, listAgentsMock, loadOrchestrationConfigMock } = vi.hoisted(() => ({
   setMonitorStatusMock: vi.fn(async (projectPath: string, enabled: boolean) => ({
     projectId: 'project-test',
     projectPath,
@@ -16,11 +16,79 @@ const { setMonitorStatusMock } = vi.hoisted(() => ({
       uptime: 0,
     },
   })),
+  listAgentsMock: vi.fn(async () => ([
+    {
+      projectId: '/tmp/project-a',
+      projectPath: '/tmp/project-a',
+      projectName: 'project-a',
+      agentId: 'project-a-agent',
+      status: 'idle',
+      lastHeartbeat: new Date().toISOString(),
+      monitored: true,
+      stats: {
+        tasksCompleted: 0,
+        tasksFailed: 0,
+        uptime: 0,
+      },
+    },
+    {
+      projectId: '/tmp/project-b',
+      projectPath: '/tmp/project-b',
+      projectName: 'project-b',
+      agentId: 'project-b-agent',
+      status: 'idle',
+      lastHeartbeat: new Date().toISOString(),
+      monitored: true,
+      stats: {
+        tasksCompleted: 0,
+        tasksFailed: 0,
+        uptime: 0,
+      },
+    },
+  ])),
+  loadOrchestrationConfigMock: vi.fn(() => ({
+    path: '/tmp/orchestration.json',
+    created: false,
+    config: {
+      version: 1,
+      activeProfileId: 'default',
+      profiles: [],
+      runtime: {
+        systemAgent: { id: 'finger-system-agent', name: 'Mirror', maxInstances: 1 },
+        projectWorkers: {
+          maxWorkers: 6,
+          autoNameOnFirstAssign: true,
+          nameCandidates: [],
+          workers: [
+            { id: 'finger-project-agent', name: 'Alex', enabled: true },
+            { id: 'finger-project-agent-02', name: 'James', enabled: true },
+            { id: 'finger-project-agent-03', name: 'Robin', enabled: true },
+          ],
+        },
+        reviewers: {
+          maxInstances: 2,
+          reviewerName: 'Lisa',
+          agents: [{ id: 'finger-reviewer', name: 'Lisa', enabled: true }],
+        },
+      },
+    },
+  })),
 }));
 
 vi.mock('../../src/agents/finger-system-agent/registry.js', () => ({
   setMonitorStatus: setMonitorStatusMock,
+  listAgents: listAgentsMock,
 }));
+
+vi.mock('../../src/orchestration/orchestration-config.js', async () => {
+  const actual = await vi.importActual<typeof import('../../src/orchestration/orchestration-config.js')>(
+    '../../src/orchestration/orchestration-config.js',
+  );
+  return {
+    ...actual,
+    loadOrchestrationConfig: loadOrchestrationConfigMock,
+  };
+});
 
 function createDeps(executeImpl?: ReturnType<typeof vi.fn>) {
   const calls: Array<{ sessionId: string; role: string; content: string; type?: string }> = [];
@@ -34,10 +102,10 @@ function createDeps(executeImpl?: ReturnType<typeof vi.fn>) {
     'child-session-1': '/tmp/project-a',
     'new-session-project-a': '/tmp/project-a',
     'new-session-project-b': '/tmp/project-b',
-    'runtime-current': '/tmp/runtime-current',
+    'runtime-current': '/tmp/project-a',
     'session-manager-current': '/tmp/session-manager-current',
   };
-  const runtimeCurrentSession = { id: 'runtime-current', projectPath: '/tmp/runtime-current' };
+  const runtimeCurrentSession = { id: 'root-session-2', projectPath: '/tmp/project-a' };
   const sessionManager = {
     addMessage: vi.fn(async (sessionId: string, role: string, content: string, detail?: Record<string, unknown>) => {
       calls.push({ sessionId, role, content, type: (detail as any)?.type });
@@ -50,7 +118,7 @@ function createDeps(executeImpl?: ReturnType<typeof vi.fn>) {
       projectPath: sessionProjectPathById[id] ?? '/tmp',
       messages: [],
     })),
-    getCurrentSession: vi.fn(() => ({ id: 'session-manager-current', projectPath: '/tmp/session-manager-current' })),
+    getCurrentSession: vi.fn(() => ({ id: 'root-session-2', projectPath: '/tmp/project-a' })),
     findSessionsByProjectPath: vi.fn((projectPath: string) => rootSessions.filter((item) => item.projectPath === projectPath)),
     createSession: vi.fn((projectPath: string) => ({ id: `new-session-${projectPath.split('/').pop()}`, context: {}, projectPath, messages: [] })),
     setCurrentSession: vi.fn(() => true),
@@ -131,8 +199,67 @@ describe('dispatchTaskToAgent', () => {
         uptime: 0,
       },
     }));
+    listAgentsMock.mockImplementation(async () => ([
+      {
+        projectId: '/tmp/project-a',
+        projectPath: '/tmp/project-a',
+        projectName: 'project-a',
+        agentId: 'project-a-agent',
+        status: 'idle',
+        lastHeartbeat: new Date().toISOString(),
+        monitored: true,
+        stats: {
+          tasksCompleted: 0,
+          tasksFailed: 0,
+          uptime: 0,
+        },
+      },
+      {
+        projectId: '/tmp/project-b',
+        projectPath: '/tmp/project-b',
+        projectName: 'project-b',
+        agentId: 'project-b-agent',
+        status: 'idle',
+        lastHeartbeat: new Date().toISOString(),
+        monitored: true,
+        stats: {
+          tasksCompleted: 0,
+          tasksFailed: 0,
+          uptime: 0,
+        },
+      },
+    ]));
+    loadOrchestrationConfigMock.mockImplementation(() => ({
+      path: '/tmp/orchestration.json',
+      created: false,
+      config: {
+        version: 1,
+        activeProfileId: 'default',
+        profiles: [],
+        runtime: {
+          systemAgent: { id: 'finger-system-agent', name: 'Mirror', maxInstances: 1 },
+          projectWorkers: {
+            maxWorkers: 6,
+            autoNameOnFirstAssign: true,
+            nameCandidates: [],
+            workers: [
+              { id: 'finger-project-agent', name: 'Alex', enabled: true },
+              { id: 'finger-project-agent-02', name: 'James', enabled: true },
+              { id: 'finger-project-agent-03', name: 'Robin', enabled: true },
+            ],
+          },
+          reviewers: {
+            maxInstances: 2,
+            reviewerName: 'Lisa',
+            agents: [{ id: 'finger-reviewer', name: 'Lisa', enabled: true }],
+          },
+        },
+      },
+    }));
     process.env.FINGER_DISPATCH_ERROR_MAX_RETRIES = '0';
     mod = await import('../../src/server/modules/agent-runtime/dispatch.js');
+    const resetRoundRobin = (mod as any).__resetProjectWorkerRoundRobinCursorForTest;
+    if (typeof resetRoundRobin === 'function') resetRoundRobin();
   });
 
   it('returns completed result and records dispatch user message', async () => {
@@ -169,7 +296,7 @@ describe('dispatchTaskToAgent', () => {
     expect(res.ok).toBe(false);
     expect(res.status).toBe('failed');
     expect(String(res.error)).toContain('self-dispatch forbidden');
-    expect((deps as any).agentRuntimeBlock.execute).not.toHaveBeenCalled();
+    expect((deps as any).agentRuntimeBlock.execute).not.toHaveBeenCalledWith('dispatch', expect.anything());
     expect(sessionManager.updateContext).toHaveBeenCalledWith('session-1', expect.objectContaining({
       executionLifecycle: expect.objectContaining({
         stage: 'failed',
@@ -211,7 +338,7 @@ describe('dispatchTaskToAgent', () => {
     expect(res.ok).toBe(false);
     expect(res.status).toBe('failed');
     expect(String(res.error)).toContain('gateway module id is not dispatchable');
-    expect((deps as any).agentRuntimeBlock.execute).not.toHaveBeenCalled();
+    expect((deps as any).agentRuntimeBlock.execute).not.toHaveBeenCalledWith('dispatch', expect.anything());
     expect(sessionManager.updateContext).toHaveBeenCalledWith('session-1', expect.objectContaining({
       executionLifecycle: expect.objectContaining({
         stage: 'failed',
@@ -310,7 +437,7 @@ describe('dispatchTaskToAgent', () => {
     expect(execute.mock.calls.filter((c) => c[0] === 'dispatch')).toHaveLength(2);
   });
 
-  it('resolves latest project session when sessionStrategy=latest', async () => {
+  it('keeps current session binding when sessionStrategy=latest (no auto switch)', async () => {
     const { deps, sessionManager } = createDeps();
     const execute = (deps as any).agentRuntimeBlock.execute as ReturnType<typeof vi.fn>;
     const res = await mod.dispatchTaskToAgent(deps as any, {
@@ -325,13 +452,13 @@ describe('dispatchTaskToAgent', () => {
     } as any);
 
     expect(res.ok).toBe(true);
-    expect(sessionManager.findSessionsByProjectPath).toHaveBeenCalledWith('/tmp/project-a');
+    expect(sessionManager.findSessionsByProjectPath).not.toHaveBeenCalled();
     expect(sessionManager.createSession).not.toHaveBeenCalled();
     expect(execute).toHaveBeenCalledWith('dispatch', expect.objectContaining({ sessionId: 'root-session-2' }));
     expect((deps as any).ensureRuntimeChildSession).not.toHaveBeenCalled();
   });
 
-  it('defaults to latest existing session when no session/sessionStrategy is provided', async () => {
+  it('defaults to current bound session when no session/sessionStrategy is provided', async () => {
     const { deps, sessionManager } = createDeps();
     const execute = (deps as any).agentRuntimeBlock.execute as ReturnType<typeof vi.fn>;
     const res = await mod.dispatchTaskToAgent(deps as any, {
@@ -345,13 +472,13 @@ describe('dispatchTaskToAgent', () => {
     } as any);
 
     expect(res.ok).toBe(true);
-    expect(sessionManager.findSessionsByProjectPath).toHaveBeenCalledWith('/tmp/project-a');
+    expect(sessionManager.findSessionsByProjectPath).not.toHaveBeenCalled();
     expect(sessionManager.createSession).not.toHaveBeenCalled();
     expect(execute).toHaveBeenCalledWith('dispatch', expect.objectContaining({ sessionId: 'root-session-2' }));
     expect((deps as any).ensureRuntimeChildSession).not.toHaveBeenCalled();
   });
 
-  it('creates a new root session when sessionStrategy=new', async () => {
+  it('rejects sessionStrategy=new when no explicit bound session for requested project', async () => {
     const { deps, sessionManager } = createDeps();
     const res = await mod.dispatchTaskToAgent(deps as any, {
       sourceAgentId: 'finger-system-agent',
@@ -364,9 +491,10 @@ describe('dispatchTaskToAgent', () => {
       },
     } as any);
 
-    expect(res.ok).toBe(true);
-    expect(sessionManager.createSession).toHaveBeenCalledWith('/tmp/project-b', undefined, { allowReuse: false });
-    expect(sessionManager.setCurrentSession).toHaveBeenCalledWith('session-manager-current');
+    expect(res.ok).toBe(false);
+    expect(res.status).toBe('failed');
+    expect(String(res.error)).toContain('scope mismatch');
+    expect(sessionManager.createSession).not.toHaveBeenCalled();
     expect((deps as any).ensureRuntimeChildSession).not.toHaveBeenCalled();
   });
 
@@ -418,7 +546,7 @@ describe('dispatchTaskToAgent', () => {
     expect(res.ok).toBe(false);
     expect(res.status).toBe('failed');
     expect(String(res.error)).toContain('assignment.blocked_by');
-    expect((deps as any).agentRuntimeBlock.execute).not.toHaveBeenCalled();
+    expect((deps as any).agentRuntimeBlock.execute).not.toHaveBeenCalledWith('dispatch', expect.anything());
     expect(sessionManager.updateContext).toHaveBeenCalledWith('session-1', expect.objectContaining({
       executionLifecycle: expect.objectContaining({
         stage: 'failed',
@@ -443,7 +571,7 @@ describe('dispatchTaskToAgent', () => {
     expect(res.ok).toBe(false);
     expect(res.status).toBe('failed');
     expect(String(res.error)).toContain('cannot mix "none"');
-    expect((deps as any).agentRuntimeBlock.execute).not.toHaveBeenCalled();
+    expect((deps as any).agentRuntimeBlock.execute).not.toHaveBeenCalledWith('dispatch', expect.anything());
   });
 
   it('uses runtime child session only for reviewer target', async () => {
@@ -596,7 +724,7 @@ describe('dispatchTaskToAgent', () => {
     } as any);
 
     expect(res.ok).toBe(true);
-    expect(sessionManager.updateContext).toHaveBeenCalledWith('runtime-current', expect.objectContaining({
+    expect(sessionManager.updateContext).toHaveBeenCalledWith('root-session-2', expect.objectContaining({
       projectTaskState: expect.objectContaining({
         taskId: 'task-sync-1',
         targetAgentId: 'finger-project-agent',
@@ -621,12 +749,140 @@ describe('dispatchTaskToAgent', () => {
     } as any);
 
     expect(res.ok).toBe(true);
-    expect(sessionManager.updateContext).toHaveBeenCalledWith('runtime-current', expect.objectContaining({
+    expect(sessionManager.updateContext).toHaveBeenCalledWith('root-session-2', expect.objectContaining({
       projectTaskState: expect.objectContaining({
         taskId: 'task-assignee-sync-1',
         assigneeWorkerId: 'Lisa',
       }),
     }));
+  });
+
+  it('auto-selects least-loaded worker from worker pool when assignee is not explicitly provided', async () => {
+    const execute = vi.fn(async (command: string) => {
+      if (command === 'runtime_view') {
+        return {
+          lanes: [
+            {
+              laneKey: 'project-test:finger-project-agent:dispatch-finger-project-agent-a',
+              agentId: 'finger-project-agent',
+              workerId: 'finger-project-agent',
+              runningCount: 1,
+              queuedCount: 1,
+            },
+            {
+              laneKey: 'project-test:finger-project-agent-03:dispatch-finger-project-agent-c',
+              agentId: 'finger-project-agent',
+              workerId: 'finger-project-agent-03',
+              runningCount: 1,
+              queuedCount: 0,
+            },
+          ],
+        };
+      }
+      return {
+        ok: true,
+        dispatchId: 'dispatch-pool-1',
+        status: 'completed',
+        result: { summary: 'ok' },
+      };
+    });
+    const { deps } = createDeps(execute);
+    const res = await mod.dispatchTaskToAgent(deps as any, {
+      sourceAgentId: 'finger-system-agent',
+      targetAgentId: 'finger-project-agent',
+      task: { prompt: 'dispatch with auto worker select' },
+      assignment: {
+        taskId: 'task-worker-auto-1',
+        taskName: 'worker-auto',
+        blocked_by: ['none'],
+      },
+      sessionStrategy: 'latest',
+      projectPath: '/tmp/project-a',
+    } as any);
+
+    expect(res.ok).toBe(true);
+    expect(execute).toHaveBeenCalledWith('dispatch', expect.objectContaining({
+      assignment: expect.objectContaining({
+        assigneeWorkerId: 'finger-project-agent-02',
+        assigneeAgentId: 'finger-project-agent-02',
+      }),
+      metadata: expect.objectContaining({
+        workerId: 'finger-project-agent-02',
+        assigneeWorkerId: 'finger-project-agent-02',
+        workerPoolSelectionReason: 'availability',
+      }),
+    }));
+  });
+
+  it('uses round-robin among available workers for same project path', async () => {
+    const dispatchCalls: Array<Record<string, unknown>> = [];
+    const execute = vi.fn(async (command: string, args: any) => {
+      if (command === 'runtime_view') {
+        return { lanes: [] };
+      }
+      if (command === 'dispatch') {
+        dispatchCalls.push(args as Record<string, unknown>);
+        return {
+          ok: true,
+          dispatchId: `dispatch-rr-${dispatchCalls.length}`,
+          status: 'completed',
+          result: { summary: 'ok' },
+        };
+      }
+      return { ok: true };
+    });
+    const { deps } = createDeps(execute);
+
+    const first = await mod.dispatchTaskToAgent(deps as any, {
+      sourceAgentId: 'finger-system-agent',
+      targetAgentId: 'finger-project-agent',
+      task: { prompt: 'rr-1' },
+      assignment: { taskId: 'task-rr-1', blocked_by: ['none'] },
+      metadata: { autoRegisterProject: true },
+    } as any);
+    const second = await mod.dispatchTaskToAgent(deps as any, {
+      sourceAgentId: 'finger-system-agent',
+      targetAgentId: 'finger-project-agent',
+      task: { prompt: 'rr-2' },
+      assignment: { taskId: 'task-rr-2', blocked_by: ['none'] },
+      metadata: { autoRegisterProject: true },
+    } as any);
+
+    expect(first.ok).toBe(true);
+    expect(second.ok).toBe(true);
+    expect(dispatchCalls.length).toBe(2);
+    expect((dispatchCalls[0]?.assignment as Record<string, unknown>)?.assigneeWorkerId).toBe('finger-project-agent');
+    expect((dispatchCalls[1]?.assignment as Record<string, unknown>)?.assigneeWorkerId).toBe('finger-project-agent-02');
+  });
+
+  it('normalizes failed runtime dispatch to queued tasklist for finger agents', async () => {
+    const execute = vi.fn(async (command: string) => {
+      if (command === 'runtime_view') {
+        return { lanes: [] };
+      }
+      if (command === 'dispatch') {
+        return {
+          ok: false,
+          dispatchId: 'dispatch-soft-fail',
+          status: 'failed',
+          error: 'target agent busy',
+        };
+      }
+      return { ok: true };
+    });
+    const { deps } = createDeps(execute);
+    const res = await mod.dispatchTaskToAgent(deps as any, {
+      sourceAgentId: 'finger-system-agent',
+      targetAgentId: 'finger-project-agent',
+      task: { prompt: 'should queue even when runtime failed' },
+      assignment: { taskId: 'task-soft-fail-1', blocked_by: ['none'] },
+      metadata: { autoRegisterProject: true },
+    } as any);
+
+    expect(res.ok).toBe(true);
+    expect(res.status).toBe('queued');
+    expect(res.result?.status).toBe('queued_tasklist');
+    expect(String(res.result?.summary || '')).toContain('Dispatch accepted and appended to target tasklist');
   });
 
   it('keeps async dispatch for active source task context (no hard suppression)', async () => {
@@ -650,7 +906,7 @@ describe('dispatchTaskToAgent', () => {
     });
     const { deps, sessionManager } = createDeps(execute);
     sessionManager.getSession.mockImplementation((id: string) => {
-      if (id === 'runtime-current') {
+      if (id === 'root-session-2') {
         return {
           id,
           context: {
@@ -665,7 +921,7 @@ describe('dispatchTaskToAgent', () => {
               dispatchId: 'dispatch-active-source-1',
             },
           },
-          projectPath: '/tmp/system',
+          projectPath: '/tmp/project-a',
           messages: [],
         };
       }
@@ -683,7 +939,7 @@ describe('dispatchTaskToAgent', () => {
       sessionStrategy: 'latest',
       projectPath: '/tmp/project-a',
       task: { prompt: 'duplicate dispatch should be blocked' },
-      assignment: { taskId: 'task-active-source-1', taskName: 'task-active-source' },
+      assignment: { taskId: 'task-active-source-1', taskName: 'task-active-source', blocked_by: ['none'] },
     } as any);
 
     expect(res.ok).toBe(true);
@@ -906,7 +1162,7 @@ describe('dispatchTaskToAgent', () => {
     expect(res.ok).toBe(false);
     expect(res.status).toBe('failed');
     expect(String(res.error)).toContain('dispatch session/project scope mismatch');
-    expect((deps as any).agentRuntimeBlock.execute).not.toHaveBeenCalled();
+    expect((deps as any).agentRuntimeBlock.execute).not.toHaveBeenCalledWith('dispatch', expect.anything());
   });
 
   it('allows async dispatch when active task identity differs', async () => {
@@ -1032,6 +1288,6 @@ describe('dispatchTaskToAgent', () => {
     expect(res.ok).toBe(false);
     expect(res.status).toBe('failed');
     expect(String(res.error)).toContain('project agent cannot run on system-owned session');
-    expect((deps as any).agentRuntimeBlock.execute).not.toHaveBeenCalled();
+    expect((deps as any).agentRuntimeBlock.execute).not.toHaveBeenCalledWith('dispatch', expect.anything());
   });
 });
