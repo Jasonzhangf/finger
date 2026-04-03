@@ -833,10 +833,15 @@ export function registerReportTaskCompletionTool(
         }
 
         if (reviewRoute?.reviewRequired && !isReviewerCaller) {
+          const normalizedEvidenceForChangedFiles = Array.isArray(taskReport.evidence)
+            ? taskReport.evidence
+              .map((item) => [item.location, item.source, item.details].filter((part) => typeof part === 'string' && part.trim().length > 0).join(' '))
+              .filter((line) => line.length > 0)
+            : undefined;
           const changedFiles = extractChangedFilesFromReportPayload({
             summary: normalizedSummary,
             artifacts: deliveryArtifacts,
-            evidence: taskReport.evidence,
+            evidence: normalizedEvidenceForChangedFiles,
           });
           const acceptanceCriteria = reviewRoute.acceptanceCriteria
             ? reviewRoute.acceptanceCriteria

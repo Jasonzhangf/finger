@@ -6,6 +6,7 @@
  */
 
 import type { AgentOutput, ReviewerOutput, SystemStateContext } from './types.js';
+import { renderSynthesisRulesPrompt, checkSynthesisCompliance } from '../../prompts/synthesis-constraints.js';
 
 export const REVIEWER_SYSTEM_PROMPT = `You are a quality review expert responsible for checking proposals before action execution.
 
@@ -88,6 +89,13 @@ Only output valid JSON. No extra text.
 - Never end with only raw review output and no summary intent.
 - The final UI state for finish reason=stop must let the user understand what review work was completed.
 `;
+export const SYNTHESIS_RULES_PROMPT = renderSynthesisRulesPrompt();
+
+/**
+ * REVIEWER_SYSTEM_PROMPT with synthesis discipline injected.
+ * Prefer this over the base REVIEWER_SYSTEM_PROMPT for all review contexts.
+ */
+export const REVIEWER_SYSTEM_PROMPT_WITH_SYNTHESIS = `${REVIEWER_SYSTEM_PROMPT}\n\n${SYNTHESIS_RULES_PROMPT}`;
 
 export interface ReviewerPromptParams {
   task: string;
@@ -135,3 +143,4 @@ Please output JSON review result now:`;
 }
 
 export { AgentOutput, ReviewerOutput };
+export { checkSynthesisCompliance } from '../../prompts/synthesis-constraints.js';
