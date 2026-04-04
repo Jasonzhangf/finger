@@ -7,6 +7,7 @@ import * as path from 'path';
 import { Command, CommandType, CommandContext, CommandResult, CommandHandler } from './types.js';
 import { logger } from '../../core/logger.js';
 import { createConsoleLikeLogger } from '../../core/logger/console-like.js';
+import { loadUserSettings, saveUserSettings, type AIProvider } from '../../core/user-settings.js';
 
 const clog = createConsoleLikeLogger('Executor');
 
@@ -61,33 +62,30 @@ export class CommandExecutor {
 /**
  * Provider config utilities
  */
-export function loadProviderConfig(configPath: string): { providers: Record<string, any>; current: string | null } {
+export function loadProviderConfig(_configPath?: string): { providers: Record<string, AIProvider>; current: string | null } {
   try {
-    if (!fs.existsSync(configPath)) {
-      return { providers: {}, current: null };
-    }
-    const content = fs.readFileSync(configPath, 'utf-8');
-    const config = JSON.parse(content) as any;
-    const kernel = config?.kernel || {};
+    const settings = loadUserSettings();
     return {
-      providers: kernel.providers || {},
-      current: kernel.provider || null,
+      providers: settings.aiProviders.providers || {},
+      current: settings.aiProviders.default || null,
     };
-  } catch {
+  } catch (err) {
+    log.warn('Failed to load provider config from user settings; fallback to empty providers', {
+      error: err instanceof Error ? err.message : String(err),
+    });
     return { providers: {}, current: null };
   }
 }
 
-export function saveProviderConfig(configPath: string, providerId: string): boolean {
+export function saveProviderConfig(_configPath: string | undefined, providerId: string): boolean {
   try {
-    let config: any = {};
-    if (fs.existsSync(configPath)) {
-      const content = fs.readFileSync(configPath, 'utf-8');
-      config = JSON.parse(content);
+    const settings = loadUserSettings();
+    if (!settings.aiProviders.providers?.[providerId]) {
+      return false;
     }
-    if (!config.kernel) config.kernel = {};
-    config.kernel.provider = providerId;
-    fs.writeFileSync(configPath, JSON.stringify(config, null, 2), 'utf-8');
+    settings.aiProviders.default = providerId;
+    settings.updated_at = new Date().toISOString();
+    saveUserSettings(settings);
     return true;
   } catch (err) {
     clog.error('[CommandHub] Failed to save provider config:', err);

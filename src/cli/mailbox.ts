@@ -110,6 +110,166 @@ function listMailboxTargets(): string[] {
   }
 }
 
+function readJsonFileSafe(filePath: string): Record<string, unknown> | null {
+  try {
+    if (!fs.existsSync(filePath)) return null;
+    const raw = fs.readFileSync(filePath, 'utf-8').trim();
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null;
+    return parsed as Record<string, unknown>;
+  } catch {
+    return null;
+  }
+}
+
+function listKnownMailboxTargets(): Set<string> {
+  const known = new Set<string>([
+    'finger-system-agent',
+    'finger-project-agent',
+    'finger-reviewer',
+  ]);
+
+  try {
+    const agentsRoot = path.join(FINGER_HOME, 'runtime', 'agents');
+    if (fs.existsSync(agentsRoot)) {
+      for (const entry of fs.readdirSync(agentsRoot, { withFileTypes: true })) {
+        if (entry.isDirectory()) known.add(entry.name);
+      }
+    }
+  } catch {
+    // best effort
+  }
+
+  try {
+    const registryPath = path.join(FINGER_HOME, 'system', 'registry.json');
+    const registry = readJsonFileSafe(registryPath);
+    const agents = registry?.agents;
+    if (agents && typeof agents === 'object' && !Array.isArray(agents)) {
+      for (const value of Object.values(agents)) {
+        if (!value || typeof value !== 'object' || Array.isArray(value)) continue;
+        const agentId = (value as Record<string, unknown>).agentId;
+        if (typeof agentId === 'string' && agentId.trim().length > 0) known.add(agentId.trim());
+      }
+    }
+  } catch {
+    // best effort
+  }
+
+  return known;
+}
+
+type MailboxDoctorEntry = {
+  target: string;
+  hasInbox: boolean;
+  inboxBytes: number;
+  testNamespace: boolean;
+  knownTarget: boolean;
+  empty: boolean;
+};
+
+function scanMailboxDoctor(): {
+  mailboxRoot: string;
+  entries: MailboxDoctorEntry[];
+  knownTargets: string[];
+  summary: {
+    totalTargets: number;
+    emptyTargets: number;
+    testNamespaceTargets: number;
+    unknownTargets: number;
+    candidatePruneTargets: number;
+  };
+} {
+  const mailboxRoot = path.join(FINGER_HOME, 'mailbox');
+  const knownTargets = listKnownMailboxTargets();
+  const targets = listMailboxTargets();
+  const entries: MailboxDoctorEntry[] = targets.map((target) => {
+    const inboxPath = path.join(mailboxRoot, target, 'inbox.jsonl');
+    const hasInbox = fs.existsSync(inboxPath);
+    const inboxBytes = hasInbox ? fs.statSync(inboxPath).size : 0;
+    const testNamespace = /^agent-(progress|mailbox-dedup)-/.test(target);
+    const knownTarget = knownTargets.has(target);
+    const empty = inboxBytes === 0;
+    return {
+      target,
+      hasInbox,
+      inboxBytes,
+      testNamespace,
+      knownTarget,
+      empty,
+    };
+  });
+
+  const summary = {
+    totalTargets: entries.length,
+    emptyTargets: entries.filter((entry) => entry.empty).length,
+    testNamespaceTargets: entries.filter((entry) => entry.testNamespace).length,
+    unknownTargets: entries.filter((entry) => !entry.knownTarget).length,
+    candidatePruneTargets: entries.filter((entry) => entry.empty && (entry.testNamespace || !entry.knownTarget)).length,
+  };
+
+  return {
+    mailboxRoot,
+    entries,
+    knownTargets: Array.from(knownTargets).sort(),
+    summary,
+  };
+}
+
+function backupMailboxRoot(timestamp: string): string | null {
+  const mailboxRoot = path.join(FINGER_HOME, 'mailbox');
+  if (!fs.existsSync(mailboxRoot)) return null;
+  const backupRoot = path.join(FINGER_HOME, 'backups', `mailbox-${timestamp}`);
+  const snapshotPath = path.join(backupRoot, 'snapshot');
+  fs.mkdirSync(backupRoot, { recursive: true });
+  fs.cpSync(mailboxRoot, snapshotPath, { recursive: true, force: true, errorOnExist: false });
+  return backupRoot;
+}
+
+function applyMailboxDoctorFix(
+  report: ReturnType<typeof scanMailboxDoctor>,
+  options: { backup: boolean },
+): {
+  backupPath: string | null;
+  quarantinePath: string;
+  movedTargets: string[];
+  prunedTargets: string[];
+} {
+  const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+  const backupPath = options.backup ? backupMailboxRoot(timestamp) : null;
+  const quarantinePath = path.join(FINGER_HOME, 'mailbox-quarantine', timestamp);
+  fs.mkdirSync(quarantinePath, { recursive: true });
+
+  const movedTargets: string[] = [];
+  const prunedTargets: string[] = [];
+
+  for (const entry of report.entries) {
+    const targetDir = path.join(report.mailboxRoot, entry.target);
+    if (!fs.existsSync(targetDir)) continue;
+
+    if (entry.testNamespace) {
+      const destination = path.join(quarantinePath, entry.target);
+      fs.rmSync(destination, { recursive: true, force: true });
+      fs.renameSync(targetDir, destination);
+      movedTargets.push(entry.target);
+      continue;
+    }
+
+    const shouldPrune = entry.empty && !entry.knownTarget;
+    if (shouldPrune) {
+      fs.rmSync(targetDir, { recursive: true, force: true });
+      prunedTargets.push(entry.target);
+    }
+  }
+
+  return {
+    backupPath,
+    quarantinePath,
+    movedTargets,
+    prunedTargets,
+  };
+}
+
 function readMessagesFromPath(filePath: string): MailboxMessage[] {
   try {
     if (!fs.existsSync(filePath)) return [];
@@ -531,6 +691,59 @@ export function registerMailboxCommand(program: Command): void {
 
       await checkStatus();
       process.exit(0);
+    });
+
+  mailbox
+    .command('doctor')
+    .description('Audit mailbox targets and optionally fix polluted/empty test namespaces')
+    .option('--fix', 'Apply fix actions (quarantine test namespaces + prune empty unknown targets)')
+    .option('--no-backup', 'Skip snapshot backup before fix')
+    .action(async (options: { fix?: boolean; backup?: boolean }) => {
+      try {
+        const report = scanMailboxDoctor();
+        if (!options.fix) {
+          const topUnknown = report.entries
+            .filter((entry) => !entry.knownTarget)
+            .map((entry) => ({
+              target: entry.target,
+              inboxBytes: entry.inboxBytes,
+              testNamespace: entry.testNamespace,
+            }))
+            .slice(0, 50);
+
+          clog.log(JSON.stringify({
+            success: true,
+            mode: 'scan',
+            mailboxRoot: report.mailboxRoot,
+            summary: report.summary,
+            unknownTargetsSample: topUnknown,
+            hint: 'Re-run with --fix to quarantine test namespaces and prune empty unknown targets.',
+          }, null, 2));
+          process.exit(0);
+          return;
+        }
+
+        const fixed = applyMailboxDoctorFix(report, {
+          backup: options.backup !== false,
+        });
+
+        const after = scanMailboxDoctor();
+        clog.log(JSON.stringify({
+          success: true,
+          mode: 'fix',
+          mailboxRoot: report.mailboxRoot,
+          before: report.summary,
+          after: after.summary,
+          backupPath: fixed.backupPath,
+          quarantinePath: fixed.quarantinePath,
+          movedTargets: fixed.movedTargets,
+          prunedTargets: fixed.prunedTargets,
+        }, null, 2));
+        process.exit(0);
+      } catch (err) {
+        clog.error('Failed to run mailbox doctor:', err);
+        process.exit(1);
+      }
     });
 
   mailbox

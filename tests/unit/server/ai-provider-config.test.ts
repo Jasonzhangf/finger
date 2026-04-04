@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from 'fs';
+import { mkdtempSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
 import path from 'path';
 
@@ -19,60 +19,39 @@ describe('AIProviderConfig', () => {
     rmSync(tempHome, { recursive: true, force: true });
   });
 
-  it('throws when config.json is missing', async () => {
+  it('passes when user-settings is missing (bootstrap defaults)', async () => {
     const { checkAIProviderConfig } = await import('../../../src/server/modules/ai-provider-config.js');
-    await expect(checkAIProviderConfig()).rejects.toThrow('AI provider config not found');
+    await expect(checkAIProviderConfig()).resolves.toBeUndefined();
   });
 
-  it('passes when valid config.json is present', async () => {
-    const configDir = path.join(tempHome, 'config');
-    mkdirSync(configDir, { recursive: true });
-    const configPath = path.join(configDir, 'config.json');
-
-    const config = {
-      kernel: {
-        provider: 'tcm',
-        providers: {
-          tcm: {
-            name: 'tcm',
-            base_url: 'http://127.0.0.1:5555/v1',
-            wire_api: 'responses',
-            env_key: 'ROUTECODEX_HTTP_APIKEY',
-            model: 'gpt-5.4',
-          },
-        },
-      },
+  it('passes when valid user-settings is present', async () => {
+    const { loadUserSettings, saveUserSettings } = await import('../../../src/core/user-settings.js');
+    const settings = loadUserSettings();
+    settings.aiProviders.default = 'tcm';
+    settings.aiProviders.providers.tcm = {
+      name: 'tcm',
+      base_url: 'http://127.0.0.1:5555/v1',
+      wire_api: 'responses',
+      env_key: 'ROUTECODEX_HTTP_APIKEY',
+      model: 'gpt-5.4',
+      enabled: true,
     };
-
-    writeFileSync(configPath, JSON.stringify(config, null, 2), 'utf-8');
+    saveUserSettings(settings);
 
     const { checkAIProviderConfig } = await import('../../../src/server/modules/ai-provider-config.js');
     await expect(checkAIProviderConfig()).resolves.toBeUndefined();
   });
 
-  it('throws when default provider missing', async () => {
-    const configDir = path.join(tempHome, 'config');
-    mkdirSync(configDir, { recursive: true });
-    const configPath = path.join(configDir, 'config.json');
-
-    const config = {
-      kernel: {
-        provider: 'missing',
-        providers: {
-          tcm: {
-            name: 'tcm',
-            base_url: 'http://127.0.0.1:5555/v1',
-            wire_api: 'responses',
-            env_key: 'ROUTECODEX_HTTP_APIKEY',
-            model: 'gpt-5.4',
-          },
-        },
-      },
+  it('throws when provider config is invalid in user-settings', async () => {
+    const { loadUserSettings, saveUserSettings } = await import('../../../src/core/user-settings.js');
+    const settings = loadUserSettings();
+    settings.aiProviders.providers.tcm = {
+      ...settings.aiProviders.providers.tcm,
+      base_url: 'not-a-valid-url',
     };
-
-    writeFileSync(configPath, JSON.stringify(config, null, 2), 'utf-8');
+    saveUserSettings(settings);
 
     const { checkAIProviderConfig } = await import('../../../src/server/modules/ai-provider-config.js');
-    await expect(checkAIProviderConfig()).rejects.toThrow('Default AI provider not configured or invalid');
+    await expect(checkAIProviderConfig()).rejects.toThrow('Invalid AI provider config in user-settings.json');
   });
 });

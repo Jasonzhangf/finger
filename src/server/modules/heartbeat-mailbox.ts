@@ -25,6 +25,31 @@ interface MailboxListOptions {
 }
 
 export class HeartbeatMailboxManager {
+  private isTestRuntime(): boolean {
+    return process.env.VITEST === 'true'
+      || process.env.NODE_ENV === 'test'
+      || typeof process.env.VITEST_WORKER_ID === 'string';
+  }
+
+  private assertValidMailboxTarget(agentId: string): void {
+    const target = agentId.trim();
+    if (target.length === 0) {
+      throw new Error('Mailbox target agentId is required');
+    }
+    if (target.includes('/') || target.includes('\\') || target.includes('..')) {
+      throw new Error(`Invalid mailbox target: path-like target is forbidden (${target})`);
+    }
+    if (!/^[a-zA-Z0-9._:-]+$/.test(target)) {
+      throw new Error(`Invalid mailbox target: unsupported characters (${target})`);
+    }
+
+    if (!this.isTestRuntime()) {
+      if (target.startsWith('agent-progress-') || target.startsWith('agent-mailbox-dedup-')) {
+        throw new Error(`Invalid mailbox target in runtime: synthetic test namespace (${target})`);
+      }
+    }
+  }
+
   private normalizeAgentId(agentId: string): string {
     const normalized = agentId.trim();
     return normalized.length > 0 ? normalized : 'finger-system-agent';
@@ -32,6 +57,7 @@ export class HeartbeatMailboxManager {
 
   private resolveMailboxPath(agentId: string): string {
     const normalized = this.normalizeAgentId(agentId);
+    this.assertValidMailboxTarget(normalized);
     return path.join(FINGER_HOME, 'mailbox', normalized, 'inbox.jsonl');
   }
 
@@ -59,11 +85,27 @@ export class HeartbeatMailboxManager {
   private writeMessages(agentId: string, messages: HeartbeatMailboxMessage[]): void {
     const mailboxPath = this.resolveMailboxPath(agentId);
     try {
-      fs.mkdirSync(path.dirname(mailboxPath), { recursive: true });
-      const payload = messages.length > 0
-        ? messages.map((message) => JSON.stringify(message)).join('\n') + '\n'
-        : '';
-      fs.writeFileSync(mailboxPath, payload, 'utf-8');
+      const mailboxDir = path.dirname(mailboxPath);
+      if (messages.length > 0) {
+        fs.mkdirSync(mailboxDir, { recursive: true });
+        const payload = messages.map((message) => JSON.stringify(message)).join('\n') + '\n';
+        fs.writeFileSync(mailboxPath, payload, 'utf-8');
+        return;
+      }
+
+      if (fs.existsSync(mailboxPath)) {
+        fs.rmSync(mailboxPath, { force: true });
+      }
+      if (fs.existsSync(mailboxDir)) {
+        const remaining = fs.readdirSync(mailboxDir).filter((entry) => {
+          if (entry === '.DS_Store') return false;
+          if (entry.endsWith('.lock')) return false;
+          return true;
+        });
+        if (remaining.length === 0) {
+          fs.rmSync(mailboxDir, { recursive: true, force: true });
+        }
+      }
     } catch (error) {
       log.error('Failed to write mailbox file', error instanceof Error ? error : undefined, { agentId, mailboxPath });
       throw error;

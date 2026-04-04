@@ -131,7 +131,11 @@ export class OpenClawOutput extends BaseOutput {
             if (res.statusCode && res.statusCode >= 200 && res.statusCode < 300) {
               try {
                 resolve(JSON.parse(data));
-              } catch {
+              } catch (err) {
+                log.debug('[OpenClawOutput] Callback response is not JSON, returning raw text', {
+                  error: err instanceof Error ? err.message : String(err),
+                  responsePreview: data.slice(0, 160),
+                });
                 resolve(data);
               }
             } else {

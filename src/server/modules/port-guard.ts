@@ -56,7 +56,10 @@ function loadProcessSnapshot(): PortProcessSnapshotRow[] {
       rows.push({ pid, ppid, command: parts.slice(2).join(' ') });
     }
     return rows;
-  } catch {
+  } catch (err) {
+    log.warn('Failed to load process snapshot from ps command', {
+      error: err instanceof Error ? err.message : String(err),
+    });
     return [];
   }
 }
@@ -114,8 +117,12 @@ function collectDescendants(rootPid: number, childrenMap: Map<number, number[]>)
 function terminatePid(pid: number, signal: NodeJS.Signals): void {
   try {
     process.kill(pid, signal);
-  } catch {
-    // ignore dead / inaccessible pid
+  } catch (err) {
+    log.debug('Failed to terminate pid (may already be dead or inaccessible)', {
+      pid,
+      signal,
+      error: err instanceof Error ? err.message : String(err),
+    });
   }
 }
 

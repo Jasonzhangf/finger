@@ -195,10 +195,13 @@ export function cleanupOrphanProcesses(): { killed: string[]; errors: string[] }
           try {
             process.kill(pid, 0);
             process.kill(pid, 'SIGKILL');
-          } catch { /* Already dead */ }
+          } catch (killErr) {
+            clog.warn(`[LifecycleManager] SIGKILL skipped for ${agentId} (PID ${pid}): ${killErr instanceof Error ? killErr.message : String(killErr)}`);
+          }
         }, 5000);
         killed.push(agentId);
-      } catch {
+      } catch (probeErr) {
+        clog.warn(`[LifecycleManager] Stale PID file for ${agentId}, removing: ${probeErr instanceof Error ? probeErr.message : String(probeErr)}`);
         fs.unlinkSync(filePath);
       }
     } catch (err) {
@@ -213,11 +216,14 @@ export function cleanupOrphanProcesses(): { killed: string[]; errors: string[] }
       if (Number.isFinite(pid)) {
         try {
           process.kill(pid, 0);
-        } catch {
+        } catch (probeErr) {
+          clog.warn(`[LifecycleManager] Daemon PID file is stale, removing: ${probeErr instanceof Error ? probeErr.message : String(probeErr)}`);
           fs.unlinkSync(daemonPidFile);
         }
       }
-    } catch { /* Ignore */ }
+    } catch (err) {
+      errors.push(`daemonPid: ${err instanceof Error ? err.message : String(err)}`);
+    }
   }
 
   return { killed, errors };

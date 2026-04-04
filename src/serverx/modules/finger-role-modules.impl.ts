@@ -554,6 +554,25 @@ export async function registerFingerRoleModules(
         finalSchema.additionalProperties = schema.additionalProperties;
       }
 
+      // Provider strict compatibility: ensure user.ask schema is explicit and closed.
+      if (tool.name === 'user.ask') {
+        finalSchema.type = 'object';
+        finalSchema.properties = {
+          question: { type: 'string' },
+          options: { type: 'array', items: { type: 'string' } },
+          context: { type: 'string' },
+          blocking_reason: { type: 'string' },
+          decision_impact: { type: 'string', enum: ['critical', 'major', 'normal'] },
+          timeout_ms: { type: 'number' },
+          session_id: { type: 'string' },
+          workflow_id: { type: 'string' },
+          epic_id: { type: 'string' },
+          agent_id: { type: 'string' },
+        };
+        finalSchema.required = ['question'];
+        finalSchema.additionalProperties = false;
+      }
+
       resolved.push({
         name: tool.name,
         description: tool.description,

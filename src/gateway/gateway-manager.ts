@@ -265,8 +265,11 @@ export class GatewayManager {
         type: 'callback',
         payload: result,
       });
-    } catch {
-      // ignore callback failures
+    } catch (err) {
+      log.warn('Failed to send gateway callback to module', {
+        sender,
+        error: err instanceof Error ? err.message : String(err),
+      });
     }
   }
 

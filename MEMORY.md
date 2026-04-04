@@ -104,6 +104,8 @@
   Tags: memory, cache, review
 - [2026-03-25] Jason 明确：Finger 项目的 Skills 目录唯一真源是 `~/.finger/skills`；不要写到 `~/.openclaw/skills`、`~/.codex/skills` 或仓库内临时 `skills/` 目录。  
   Tags: skills, finger, ssot, directory
+- [2026-04-04] Jason 新增强约束：默认禁止“先回退再说”的处理方式。出现错误时优先做根因诊断与正向修复；回退仅在用户明确授权时作为例外。  
+  Tags: rollback, root-cause-fix, execution-policy, no-rollback-default
 
 ## Architecture & Runtime
 - [2026-03-11] 三层架构：blocks（唯一真源）/ orchestration（编排）/ ui（展示），保持层间解耦。  

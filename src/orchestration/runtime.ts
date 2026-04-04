@@ -13,6 +13,7 @@ import fs from 'fs';
 import path from 'path';
 import { FINGER_PATHS, ensureDir } from '../core/finger-paths.js';
 import { lifecycleManager } from '../agents/core/agent-lifecycle.js';
+import { logger } from '../core/logger.js';
 
 export type AgentLifecycleState =
   | 'REGISTERED'
@@ -96,11 +97,18 @@ class DefaultHealthChecker implements HealthChecker {
         signal: AbortSignal.timeout(timeoutMs),
       });
       return res.ok;
-    } catch {
+    } catch (err) {
+      log.debug('Health check request failed', {
+        port,
+        timeoutMs,
+        error: err instanceof Error ? err.message : String(err),
+      });
       return false;
     }
   }
 }
+
+const log = logger.module('AgentRuntime');
 
 export class AgentRuntime {
   private agents = new Map<string, AgentRuntimeState>();
@@ -248,8 +256,12 @@ export class AgentRuntime {
         if (state.pid) {
           try {
             process.kill(state.pid, 'SIGKILL');
-          } catch {
-            // Ignore
+          } catch (err) {
+            log.warn('Failed to SIGKILL agent process on stop timeout', {
+              agentId,
+              pid: state.pid,
+              error: err instanceof Error ? err.message : String(err),
+            });
           }
         }
         finish();
@@ -262,7 +274,12 @@ export class AgentRuntime {
 
       try {
         state.process?.kill('SIGTERM');
-      } catch {
+      } catch (err) {
+        log.warn('Failed to SIGTERM agent process', {
+          agentId,
+          pid: state.pid,
+          error: err instanceof Error ? err.message : String(err),
+        });
         clearTimeout(timer);
         finish();
       }
@@ -423,7 +440,11 @@ export class AgentRuntime {
       if (!fs.existsSync(this.historyFile)) return;
       const raw = fs.readFileSync(this.historyFile, 'utf-8');
       this.history = JSON.parse(raw) as AgentHistoryEntry[];
-    } catch {
+    } catch (err) {
+      log.warn('Failed to load agent runtime history, reset to empty', {
+        historyFile: this.historyFile,
+        error: err instanceof Error ? err.message : String(err),
+      });
       this.history = [];
     }
   }
@@ -434,8 +455,10 @@ export class AgentRuntime {
       if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
       const trimmed = this.history.slice(-1000);
       fs.writeFileSync(this.historyFile, JSON.stringify(trimmed, null, 2));
-    } catch {
-      // Ignore persistence errors.
+    } catch (err) {
+      log.error('Failed to persist agent runtime history', err instanceof Error ? err : new Error(String(err)), {
+        historyFile: this.historyFile,
+      });
     }
   }
 }

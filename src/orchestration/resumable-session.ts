@@ -377,8 +377,12 @@ export class ResumableSessionManager {
       try {
         fs.unlinkSync(path.join(checkpointDir, file));
         deleted++;
-      } catch {
-        // Ignore errors
+      } catch (err) {
+        log.warn('[ResumableSession] Failed to remove old checkpoint', {
+          sessionId,
+          checkpointFile: file,
+          error: err instanceof Error ? err.message : String(err),
+        });
       }
     }
 

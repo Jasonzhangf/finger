@@ -232,7 +232,11 @@ function parseOutboundEnvelope(raw: string): GatewayOutboundEnvelope | null {
   let parsed: unknown;
   try {
     parsed = JSON.parse(raw);
-  } catch {
+  } catch (err) {
+    log.debug('Failed to parse gateway outbound envelope', {
+      error: err instanceof Error ? err.message : String(err),
+      rawPreview: raw.slice(0, 160),
+    });
     return null;
   }
   if (!isRecord(parsed) || typeof parsed.type !== 'string') {

@@ -162,7 +162,11 @@ export class FingerLogger {
     if (files.length > this.config.maxFiles) {
       const toDelete = files.slice(0, files.length - this.config.maxFiles);
       for (const file of toDelete) {
-        try { unlinkSync(file); } catch {}
+        try {
+          unlinkSync(file);
+        } catch (err) {
+          console.error('[Logger] Failed to delete old log file:', file, err);
+        }
       }
     }
   }
@@ -213,14 +217,20 @@ export class FingerLogger {
         entries: ctx.entries,
       };
       writeFileSync(snapshotFile, JSON.stringify(snapshot, null, 2), 'utf-8');
-    } catch {}
+    } catch (err) {
+      console.error('[Logger] Failed to write snapshot file:', snapshotFile, err);
+    }
   }
 
   private rotateLog(): void {
     if (!existsSync(this.currentLogFile)) return;
     const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
     const rotatedName = this.currentLogFile.replace('.log', `-${timestamp}.log`);
-    try { renameSync(this.currentLogFile, rotatedName); } catch {}
+    try {
+      renameSync(this.currentLogFile, rotatedName);
+    } catch (err) {
+      console.error('[Logger] Failed to rotate log file:', this.currentLogFile, err);
+    }
   }
 
   private logToConsole(entry: LogEntry): void {

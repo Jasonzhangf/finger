@@ -76,8 +76,8 @@ export class AgentPool {
       try {
         const content = fs.readFileSync(AGENT_CONFIG_FILE, 'utf-8');
         return JSON.parse(content) as AgentPoolConfig;
-      } catch {
-        log.error('Failed to load config, fallback to default');
+      } catch (err) {
+        log.error('Failed to load config, fallback to default', err instanceof Error ? err : new Error(String(err)));
       }
     }
 

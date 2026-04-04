@@ -85,12 +85,17 @@ export class CoreDaemon {
           clog.log('[Daemon] Already running with PID', stalePid);
           return;
         }
-      } catch {
+      } catch (err) {
         // Stale PID file - process is dead, clean it up
         log.info('Cleaning up stale PID file');
         try {
           fs.unlinkSync(PID_FILE);
-        } catch {}
+        } catch (unlinkErr) {
+          log.warn('Failed to remove stale PID file', {
+            pidFile: PID_FILE,
+            error: unlinkErr instanceof Error ? unlinkErr.message : String(unlinkErr),
+          });
+        }
       }
     }
 
@@ -262,7 +267,12 @@ export class CoreDaemon {
     if (this.channelsConfigWatcherPath) {
       try {
         fs.unwatchFile(this.channelsConfigWatcherPath);
-      } catch {}
+      } catch (err) {
+        log.warn('Failed to unwatch channels config file', {
+          watcherPath: this.channelsConfigWatcherPath,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
       this.channelsConfigWatcherPath = null;
     }
     if (this.channelsConfigReloadTimer) {
@@ -308,7 +318,12 @@ export class CoreDaemon {
 
     try {
       fs.unlinkSync(PID_FILE);
-    } catch {}
+    } catch (err) {
+      log.warn('Failed to remove PID file on stop', {
+        pidFile: PID_FILE,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
 
     if (this.stopTimeout) {
       clearTimeout(this.stopTimeout);
@@ -374,10 +389,19 @@ export class CoreDaemon {
       }
       process.kill(pid, 0);
       return true;
-    } catch {
+    } catch (err) {
       try {
         fs.unlinkSync(PID_FILE);
-      } catch {}
+      } catch (unlinkErr) {
+        log.warn('Failed to remove invalid PID file in isRunning', {
+          pidFile: PID_FILE,
+          error: unlinkErr instanceof Error ? unlinkErr.message : String(unlinkErr),
+        });
+      }
+      log.debug('PID liveness check failed', {
+        pidFile: PID_FILE,
+        error: err instanceof Error ? err.message : String(err),
+      });
       return false;
     }
   }

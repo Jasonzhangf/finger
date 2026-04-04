@@ -1,9 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs';
-import { FINGER_PATHS, ensureDir } from '../core/finger-paths.js';
-
-const CONFIG_PATH = FINGER_PATHS.config.file.main;
-const DEFAULT_BASE_URL = 'https://codex.funai.vip/openai';
-const DEFAULT_WIRE_API = 'responses';
+import { loadUserSettings, saveUserSettings, type AIProvider } from '../core/user-settings.js';
 
 export interface ProviderConfigRecord {
   id: string;
@@ -18,23 +13,6 @@ export interface ProviderConfigRecord {
   status: 'connected' | 'disconnected' | 'error';
 }
 
-interface KernelProviderJson {
-  name?: string;
-  base_url?: string;
-  wire_api?: string;
-  env_key?: string;
-  model?: string;
-}
-
-interface KernelConfigJson {
-  provider?: string;
-  providers?: Record<string, KernelProviderJson>;
-}
-
-interface FingerConfigJson {
-  kernel?: KernelConfigJson;
-}
-
 export interface UpsertProviderInput {
   id: string;
   name?: string;
@@ -45,116 +23,40 @@ export interface UpsertProviderInput {
   select?: boolean;
 }
 
-const DEFAULT_PROVIDERS: Record<string, Required<KernelProviderJson>> = {
-  crsa: {
-    name: 'crsa',
-    base_url: DEFAULT_BASE_URL,
-    wire_api: DEFAULT_WIRE_API,
-    env_key: 'CRS_OAI_KEY1',
-    model: 'gpt-5.3-codex',
-  },
-  crsb: {
-    name: 'crsb',
-    base_url: DEFAULT_BASE_URL,
-    wire_api: DEFAULT_WIRE_API,
-    env_key: 'CRS_OAI_KEY2',
-    model: 'gpt-5.3-codex',
-  },
-  'routecodex-5520': {
-    name: 'routecodex-local-5520',
-    base_url: 'http://127.0.0.1:5520',
-    wire_api: DEFAULT_WIRE_API,
-    env_key: 'CRS_OAI_KEY2',
-    model: 'gpt-5.3-codex',
-  },
-};
-
-function ensureFingerHomeDir(): void {
-  ensureDir(FINGER_PATHS.config.dir);
-}
-
-function readConfigFile(): FingerConfigJson {
-  try {
-    if (!existsSync(CONFIG_PATH)) return {};
-    const raw = readFileSync(CONFIG_PATH, 'utf-8');
-    if (raw.trim().length === 0) return {};
-    const parsed = JSON.parse(raw) as FingerConfigJson;
-    return parsed && typeof parsed === 'object' ? parsed : {};
-  } catch {
-    return {};
-  }
-}
-
-function writeConfigFile(config: FingerConfigJson): void {
-  ensureFingerHomeDir();
-  writeFileSync(CONFIG_PATH, `${JSON.stringify(config, null, 2)}\n`, 'utf-8');
-}
-
-function toKernelProviderJson(input: UpsertProviderInput, fallback: KernelProviderJson): KernelProviderJson {
-  return {
-    name: input.name?.trim() || fallback.name || input.id,
-    base_url: input.baseUrl?.trim() || fallback.base_url || DEFAULT_BASE_URL,
-    wire_api: input.wireApi?.trim() || fallback.wire_api || DEFAULT_WIRE_API,
-    env_key: input.envKey?.trim() || fallback.env_key || 'CRS_OAI_KEY2',
-    model: input.model?.trim() || fallback.model || 'gpt-5.3-codex',
-  };
-}
-
-function ensureKernelConfig(config: FingerConfigJson): Required<Pick<FingerConfigJson, 'kernel'>>['kernel'] {
-  if (!config.kernel || typeof config.kernel !== 'object') {
-    config.kernel = {};
-  }
-  if (!config.kernel.providers || typeof config.kernel.providers !== 'object') {
-    config.kernel.providers = {};
-  }
-  for (const [id, defaults] of Object.entries(DEFAULT_PROVIDERS)) {
-    const existing = config.kernel.providers[id];
-    config.kernel.providers[id] = {
-      name: existing?.name || defaults.name,
-      base_url: existing?.base_url || defaults.base_url,
-      wire_api: existing?.wire_api || defaults.wire_api,
-      env_key: existing?.env_key || defaults.env_key,
-      model: existing?.model || defaults.model,
-    };
-  }
-  if (!config.kernel.provider || config.kernel.provider.trim().length === 0) {
-    config.kernel.provider = 'crsb';
-  }
-  return config.kernel;
-}
-
 export function listKernelProviders(): ProviderConfigRecord[] {
-  const config = readConfigFile();
-  const kernel = ensureKernelConfig(config);
-  const active = (kernel.provider || 'crsb').trim();
-  const providers = kernel.providers || {};
+  const settings = loadUserSettings();
+  const active = (settings.aiProviders.default || '').trim();
+  const providers = settings.aiProviders.providers || {};
   const result: ProviderConfigRecord[] = [];
   for (const [id, provider] of Object.entries(providers)) {
-    const baseUrl = provider.base_url?.trim() || DEFAULT_BASE_URL;
+    const typedProvider = provider as AIProvider;
+    const baseUrl = typedProvider.base_url?.trim() || '';
+    const wireApi = typedProvider.wire_api?.trim() || 'responses';
+    const envKey = typedProvider.env_key?.trim() || '';
+    const model = typedProvider.model?.trim() || '';
     const record: ProviderConfigRecord = {
       id,
-      name: provider.name?.trim() || id,
+      name: typedProvider.name?.trim() || id,
       type: 'custom',
       baseUrl,
-      wireApi: provider.wire_api?.trim() || DEFAULT_WIRE_API,
-      envKey: provider.env_key?.trim() || 'CRS_OAI_KEY2',
-      model: provider.model?.trim() || 'gpt-5.3-codex',
-      defaultModel: provider.model?.trim() || 'gpt-5.3-codex',
+      wireApi,
+      envKey,
+      model,
+      defaultModel: model,
       isActive: id === active,
-      status: id === active ? 'connected' : 'disconnected',
+      status: id === active && typedProvider.enabled !== false ? 'connected' : 'disconnected',
     };
     result.push(record);
   }
-  writeConfigFile(config);
   return result.sort((a, b) => a.id.localeCompare(b.id));
 }
 
 export function resolveActiveKernelProviderId(): string {
-  const config = readConfigFile();
-  const kernel = ensureKernelConfig(config);
-  writeConfigFile(config);
-  const active = (kernel.provider || 'crsb').trim();
-  return active.length > 0 ? active : 'crsb';
+  const settings = loadUserSettings();
+  const active = (settings.aiProviders.default || '').trim();
+  if (active.length > 0) return active;
+  const first = Object.keys(settings.aiProviders.providers || {})[0];
+  return typeof first === 'string' ? first : '';
 }
 
 export function selectKernelProvider(providerId: string): ProviderConfigRecord {
@@ -162,13 +64,14 @@ export function selectKernelProvider(providerId: string): ProviderConfigRecord {
   if (!normalized) {
     throw new Error('providerId is required');
   }
-  const config = readConfigFile();
-  const kernel = ensureKernelConfig(config);
-  if (!kernel.providers?.[normalized]) {
+  const settings = loadUserSettings();
+  if (!settings.aiProviders.providers?.[normalized]) {
     throw new Error(`provider '${normalized}' is not configured`);
   }
-  kernel.provider = normalized;
-  writeConfigFile(config);
+  settings.aiProviders.default = normalized;
+  settings.updated_at = new Date().toISOString();
+  saveUserSettings(settings);
+
   const selected = listKernelProviders().find((item) => item.id === normalized);
   if (!selected) {
     throw new Error(`provider '${normalized}' is not available`);
@@ -181,15 +84,29 @@ export function upsertKernelProvider(input: UpsertProviderInput): ProviderConfig
   if (!id) {
     throw new Error('provider id is required');
   }
-  const config = readConfigFile();
-  const kernel = ensureKernelConfig(config);
-  const existing = kernel.providers?.[id] ?? {};
-  const next = toKernelProviderJson(input, existing);
-  kernel.providers![id] = next;
+
+  const settings = loadUserSettings();
+  const existing = settings.aiProviders.providers?.[id];
+  const next: AIProvider = {
+    name: input.name?.trim() || existing?.name || id,
+    base_url: input.baseUrl?.trim() || existing?.base_url || '',
+    wire_api: (input.wireApi?.trim() as AIProvider['wire_api']) || existing?.wire_api || 'responses',
+    env_key: input.envKey?.trim() || existing?.env_key || '',
+    model: input.model?.trim() || existing?.model || '',
+    enabled: existing?.enabled ?? true,
+  };
+
+  if (!next.base_url) throw new Error(`provider '${id}' requires baseUrl`);
+  if (!next.env_key) throw new Error(`provider '${id}' requires envKey`);
+  if (!next.model) throw new Error(`provider '${id}' requires model`);
+
+  settings.aiProviders.providers[id] = next;
   if (input.select === true) {
-    kernel.provider = id;
+    settings.aiProviders.default = id;
   }
-  writeConfigFile(config);
+  settings.updated_at = new Date().toISOString();
+  saveUserSettings(settings);
+
   const selected = listKernelProviders().find((item) => item.id === id);
   if (!selected) {
     throw new Error(`provider '${id}' upsert failed`);

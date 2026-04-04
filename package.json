@@ -53,6 +53,9 @@
     "digest:backfill:all": "tsx scripts/digest-backfill-all.ts",
     "logs:cleanup": "node scripts/log-cleanup.cjs",
     "logs:cleanup:all": "node scripts/log-cleanup.cjs --all",
+    "test:context-rebuild:interleaved": "vitest run tests/unit/runtime/context-builder-interleaved-topics.test.ts",
+    "evidence:context-rebuild:interleaved": "tsx scripts/context-rebuild/generate-interleaved-evidence.ts",
+    "evidence:context-rebuild:real-runtime": "tsx scripts/context-rebuild/run-real-runtime-interleaved-e2e.ts",
     "test:update-plan-v2-gate": "vitest run tests/unit/tools/internal/codex-update-plan-tool.test.ts tests/unit/tools/internal/codex-update-plan-tool-v2.test.ts tests/integration/update-plan-v2-workflow.test.ts && npm run build:backend:raw",
     "test:session-regression": "vitest run tests/unit/server/message-helpers-session.test.ts tests/unit/server/dispatch-session-selection.test.ts tests/unit/server/channel-session-selection.test.ts tests/unit/server/channel-bridge-hub-route.test.ts tests/unit/server/agent-runtime-dispatch-guard.test.ts tests/unit/server/finger-role-modules-bootstrap-gating.test.ts tests/modules/agent-status-subscriber-sanitization.test.ts tests/modules/agent-dispatch-tags.test.ts"
   },
@@ -81,7 +84,7 @@
     "typescript-eslint": "^8.56.1",
     "vitest": "^1.6.0"
   },
-  "fingerBuildVersion": "0.1.0152",
+  "fingerBuildVersion": "0.1.0156",
   "pnpm": {
     "packageExtensions": {
       "vitest@*": {

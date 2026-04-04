@@ -111,8 +111,11 @@ export class HeartbeatMonitor extends EventEmitter {
           this.lastSequence = data.sequence;
           this.emit('heartbeat', data);
         }
-      } catch {
-        // Ignore invalid messages
+      } catch (err) {
+        log.warn('Received invalid heartbeat payload; ignored', {
+          error: err instanceof Error ? err.message : String(err),
+          payloadPreview: msg.toString().slice(0, 120),
+        });
       }
     });
 

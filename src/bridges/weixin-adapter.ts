@@ -460,7 +460,14 @@ export class WeixinBridgeAdapter implements ChannelBridge {
           const filePath = att.url.startsWith('file://')
             ? decodeURIComponent(att.url.replace(/^file:\/\//, ''))
             : att.url;
-          try { imageBuffer = await readFile(filePath); } catch {}
+          try {
+            imageBuffer = await readFile(filePath);
+          } catch (err) {
+            log.warn(`[${this.id}] Failed to read local image file`, {
+              filePath,
+              error: err instanceof Error ? err.message : String(err),
+            });
+          }
         }
 
         if (!imageBuffer) {

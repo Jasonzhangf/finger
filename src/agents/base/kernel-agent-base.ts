@@ -38,6 +38,7 @@ import {
 } from '../../common/stop-reasoning-policy.js';
 import { estimateTokensWithTiktoken } from '../../utils/tiktoken-estimator.js';
 import {
+  type ControlBlockParseResult,
   evaluateControlHooks,
   parseControlBlockFromReply,
   resolveControlBlockPolicy,
@@ -1291,6 +1292,9 @@ export class KernelAgentBase {
       '- Required baseline fields: schema_version, task_completed, evidence_ready, needs_user_input, has_blocker, dispatch_required, review_required, wait, user_signal, tags, self_eval, anti_patterns, learning.',
       '- `needs_user_input=true` is STRICT: only set when execution is truly blocked by missing external facts/credentials the runtime cannot infer.',
       '- NEVER use `needs_user_input=true` for approval-only yes/no prompts (e.g., “要我修吗？” / “是否继续？”).',
+      '- `user.ask` is a BLOCKING state-machine tool: call it only for CRITICAL blockers (irreversible/destructive risk, missing credentials/secrets, legal/compliance decision, conflicting goals).',
+      '- Before `user.ask`, finish all reversible investigation/execution steps first; do not ask prematurely.',
+      '- If `user.ask` is called, include concise blocker reason + options and wait for user response; do not speculate past the blocker.',
       '- If user asked to fix/debug/implement, execute directly and deliver evidence; do not pause for redundant confirmation.',
       '- `tags` are free-form (no fixed enum).',
       '- Primary target is runtime/model control; keep machine control fields complete and deterministic.',
@@ -1301,6 +1305,7 @@ export class KernelAgentBase {
       baseLines.push(
         '- YOLO mode is ON (HARD): default to immediate execution of the best path aligned to user goal.',
         '- In YOLO mode, asking user to choose among solutions BEFORE execution is a policy violation unless there is destructive risk.',
+        '- In YOLO mode, `user.ask` remains allowed ONLY for critical blockers; otherwise continue execution without asking.',
         '- If multiple valid solutions exist, execute the most canonical/root-cause fix first, then summarize alternatives.',
         '- If user intent is explicit (debug/fix/ship), do first, report after. Do not wait for approval-style responses.',
       );
@@ -1815,7 +1820,8 @@ export class KernelAgentBase {
       };
     }
     const policy = resolveControlBlockPolicy(metadata);
-    const parsed = parseControlBlockFromReply(result.reply);
+    const parsedRaw = parseControlBlockFromReply(result.reply);
+    const parsed = normalizeControlBlockGateResult(parsedRaw, metadata);
     const hooks = parsed.controlBlock ? evaluateControlHooks(parsed.controlBlock) : { hooks: [], holdStop: false };
     const controlGateHold = shouldHoldStopByControlBlock({
       finishReasonStop: isFinishReasonStop(metadata),
@@ -2170,6 +2176,42 @@ function hasStopReasoningToolEvidence(
   const lastToolName = typeof metadata.toolName === 'string' ? metadata.toolName : '';
   if (isStopReasoningStopTool(lastToolName, names)) return true;
   return false;
+}
+
+function isUserAskToolName(toolName: string): boolean {
+  const normalized = toolName.trim().toLowerCase().replace(/[^a-z0-9]/g, '');
+  return normalized === 'userask';
+}
+
+function hasUserAskToolEvidence(metadata?: Record<string, unknown>): boolean {
+  if (!metadata) return false;
+  const traces = Array.isArray(metadata.tool_trace) ? metadata.tool_trace : [];
+  for (const trace of traces) {
+    if (!isRecord(trace)) continue;
+    const toolName = typeof trace.tool === 'string' ? trace.tool : '';
+    if (isUserAskToolName(toolName)) return true;
+  }
+  const lastToolName = typeof metadata.toolName === 'string' ? metadata.toolName : '';
+  if (isUserAskToolName(lastToolName)) return true;
+  return false;
+}
+
+function normalizeControlBlockGateResult(
+  parsed: ControlBlockParseResult,
+  metadata?: Record<string, unknown>,
+): ControlBlockParseResult {
+  const control = parsed.controlBlock;
+  if (!control) return parsed;
+  const issues = Array.from(new Set(parsed.issues));
+  if (control.needs_user_input) {
+    if (!control.has_blocker) issues.push('needs_user_input_requires_has_blocker');
+    if (!hasUserAskToolEvidence(metadata)) issues.push('needs_user_input_without_user.ask');
+  }
+  return {
+    ...parsed,
+    valid: parsed.valid && issues.length === 0,
+    issues,
+  };
 }
 
 function isFinishReasonStop(metadata?: Record<string, unknown>): boolean {

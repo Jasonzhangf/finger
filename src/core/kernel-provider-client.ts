@@ -1,5 +1,4 @@
-import * as fs from 'fs';
-import { FINGER_PATHS } from './finger-paths.js';
+import { loadAIProviders } from './user-settings.js';
 
 export interface KernelProviderConfig {
   id: string;
@@ -11,45 +10,24 @@ export interface KernelProviderConfig {
   enabled?: boolean;
 }
 
-interface KernelConfigFile {
-  kernel?: {
-    provider?: string;
-    providers?: Record<string, {
-      name?: string;
-      base_url?: string;
-      wire_api?: 'responses' | 'http' | string;
-      env_key?: string;
-      model?: string;
-      enabled?: boolean;
-    }>;
-  };
-}
-
 export function resolveKernelProvider(providerId?: string): {
   provider?: KernelProviderConfig;
   reason?: string;
 } {
   try {
-    const configPath = FINGER_PATHS.config.file.main;
-    if (!fs.existsSync(configPath)) {
-      return { reason: 'config_not_found' };
-    }
-    const raw = fs.readFileSync(configPath, 'utf-8');
-    if (raw.trim().length === 0) return { reason: 'config_empty' };
-    const parsed = JSON.parse(raw) as KernelConfigFile;
-    const kernel = parsed?.kernel;
-    if (!kernel || typeof kernel !== 'object') {
-      return { reason: 'kernel_config_missing' };
-    }
-    const providers = kernel.providers;
+    const aiProviders = loadAIProviders();
+    const providers = aiProviders?.providers;
     if (!providers || typeof providers !== 'object') {
       return { reason: 'providers_missing' };
     }
-    const selectedId = (providerId || kernel.provider || '').trim();
+    const selectedId = (providerId || aiProviders.default || '').trim();
     if (!selectedId) return { reason: 'provider_id_missing' };
     const found = providers[selectedId];
     if (!found || typeof found !== 'object') {
       return { reason: 'provider_not_found' };
+    }
+    if (typeof found.enabled === 'boolean' && found.enabled === false) {
+      return { reason: 'provider_disabled' };
     }
     const baseUrl = typeof found.base_url === 'string' ? found.base_url.trim() : '';
     const envKey = typeof found.env_key === 'string' ? found.env_key.trim() : '';
@@ -73,7 +51,7 @@ export function resolveKernelProvider(providerId?: string): {
       },
     };
   } catch {
-    return { reason: 'config_parse_error' };
+    return { reason: 'user_settings_error' };
   }
 }
 

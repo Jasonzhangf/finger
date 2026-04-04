@@ -2,20 +2,41 @@ import { existsSync, readFileSync, readdirSync, statSync } from 'fs';
 import { basename, dirname, join } from 'path';
 import type { SessionManager } from '../../orchestration/session-manager.js';
 import { FINGER_PATHS } from '../../core/finger-paths.js';
+import { logger } from '../../core/logger.js';
+
+const log = logger.module('LedgerRoutesStorage');
 
 function safeParseJsonLines(filePath: string): Array<Record<string, unknown>> {
   try {
     if (!existsSync(filePath)) return [];
     const raw = readFileSync(filePath, 'utf-8').trim();
     if (!raw) return [];
-    return raw.split('\n').filter(Boolean).map((line) => {
+    let parseFailures = 0;
+    const parsed = raw.split('\n').filter(Boolean).map((line) => {
       try {
         return JSON.parse(line) as Record<string, unknown>;
-      } catch {
+      } catch (err) {
+        parseFailures += 1;
+        log.debug('Failed to parse JSONL line, keeping placeholder', {
+          filePath,
+          error: err instanceof Error ? err.message : String(err),
+          linePreview: line.slice(0, 120),
+        });
         return {};
       }
     });
-  } catch {
+    if (parseFailures > 0) {
+      log.warn('JSONL parse had failures', {
+        filePath,
+        parseFailures,
+      });
+    }
+    return parsed;
+  } catch (err) {
+    log.warn('Failed to read JSONL file, fallback to empty list', {
+      filePath,
+      error: err instanceof Error ? err.message : String(err),
+    });
     return [];
   }
 }
@@ -27,7 +48,11 @@ function safeParseJsonFile(filePath: string): Record<string, unknown> | null {
     if (!raw.trim()) return null;
     const parsed = JSON.parse(raw);
     return typeof parsed === 'object' && parsed !== null ? parsed as Record<string, unknown> : null;
-  } catch {
+  } catch (err) {
+    log.warn('Failed to parse JSON file, fallback to null', {
+      filePath,
+      error: err instanceof Error ? err.message : String(err),
+    });
     return null;
   }
 }
@@ -114,7 +139,11 @@ function collectLedgerSourceCandidates(storageDir: string): LedgerSourceCandidat
       });
     }
     return candidates;
-  } catch {
+  } catch (err) {
+    log.warn('Failed to collect ledger source candidates', {
+      storageDir,
+      error: err instanceof Error ? err.message : String(err),
+    });
     return [];
   }
 }
@@ -169,7 +198,11 @@ function pickBestLedgerSource(sessionId: string, storageDir: string | null, pref
       if (!existsSync(candidateDir) || !statSync(candidateDir).isDirectory()) continue;
       if (!fallbackStorageDir) fallbackStorageDir = candidateDir;
       sources.push(...collectLedgerSourceCandidates(candidateDir));
-    } catch {
+    } catch (err) {
+      log.debug('Skip invalid storage candidate directory', {
+        candidateDir,
+        error: err instanceof Error ? err.message : String(err),
+      });
       continue;
     }
   }
@@ -347,7 +380,11 @@ function summarizeLedgerSessionDir(dirPath: string): LedgerSessionSummary | null
       ...(previewSummary ? { previewSummary } : {}),
       ...(previewMessages.length > 0 ? { previewMessages } : {}),
     };
-  } catch {
+  } catch (err) {
+    log.warn('Failed to summarize ledger session directory', {
+      dirPath,
+      error: err instanceof Error ? err.message : String(err),
+    });
     return null;
   }
 }
@@ -368,11 +405,19 @@ export function listLedgerSessionsSnapshot(): Array<Record<string, unknown>> {
         .filter((p) => {
           try {
             return statSync(p).isDirectory();
-          } catch {
+          } catch (err) {
+            log.debug('Skip invalid session entry path', {
+              sessionPath: p,
+              error: err instanceof Error ? err.message : String(err),
+            });
             return false;
           }
         });
-    } catch {
+    } catch (err) {
+      log.warn('Failed to enumerate session root directory', {
+        root,
+        error: err instanceof Error ? err.message : String(err),
+      });
       continue;
     }
 

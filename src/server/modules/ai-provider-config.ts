@@ -1,70 +1,29 @@
 /**
  * AI Provider Configuration Module
- * 
- * Validates and loads AI provider configuration from config.json
+ *
+ * Validates and loads AI provider configuration from user-settings.json
  */
 
-import * as fs from 'fs';
-import * as path from 'path';
-import { FINGER_PATHS } from '../../core/finger-paths.js';
+import { checkAIProviderConfigValidity, loadAIProviders } from '../../core/user-settings.js';
 import { logger } from '../../core/logger.js';
 
 const log = logger.module('AIProviderConfig');
 
 /**
  * Check AI provider configuration
- * Validates that config.json exists and contains valid provider configuration
- * 
+ * Validates that user-settings.json contains valid provider configuration
+ *
  * @throws {Error} If configuration is invalid or missing
  */
 export async function checkAIProviderConfig(): Promise<void> {
-  const configPath = path.join(FINGER_PATHS.config.dir, 'config.json');
-
   try {
-    if (!fs.existsSync(configPath)) {
-      log.error('[Server] AI provider config not found', undefined, { configPath });
-      log.error('[Server] Please create config.json with kernel providers configuration');
-      log.error('[Server] Example config:', undefined, {
-        example: {
-          kernel: {
-            providers: {
-              tcm: {
-                name: "tcm",
-                base_url: "http://127.0.0.1:5555/v1",
-                wire_api: "responses",
-                env_key: "ROUTECODEX_HTTP_APIKEY",
-                model: "gpt-5.4"
-              }
-            },
-            provider: "tcm"
-          }
-        }
-      });
-      throw new Error('AI provider config not found');
+    const valid = checkAIProviderConfigValidity();
+    if (!valid) {
+      throw new Error('Invalid AI provider config in user-settings.json');
     }
-
-    const raw = fs.readFileSync(configPath, 'utf-8');
-    const config = JSON.parse(raw);
-
-    if (!config.kernel || !config.kernel.providers) {
-      log.error('[Server] Invalid AI provider config: missing kernel.providers');
-      throw new Error('Invalid AI provider config: missing kernel.providers');
-    }
-
-    const providers = Object.keys(config.kernel.providers);
-    if (providers.length === 0) {
-      log.error('[Server] No AI providers configured in config.json');
-      throw new Error('No AI providers configured');
-    }
-
-    const defaultProvider = config.kernel.provider;
-    if (!defaultProvider || !config.kernel.providers[defaultProvider]) {
-      log.error('[Server] Default AI provider not configured or invalid', undefined, { 
-        defaultProvider, 
-        availableProviders: providers.join(', ') 
-      });
-      throw new Error(`Default AI provider not configured or invalid: ${defaultProvider}`);
-    }
+    const providersConfig = loadAIProviders();
+    const providers = Object.keys(providersConfig.providers || {});
+    const defaultProvider = providersConfig.default;
 
     log.info('[Server] AI provider config loaded successfully');
     log.info('[Server] Default provider', { defaultProvider });

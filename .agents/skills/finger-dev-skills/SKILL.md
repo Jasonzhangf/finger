@@ -31,6 +31,18 @@ Use this skill whenever you touch architecture, core runtime, orchestration, dis
 5. **Layer contracts are hard constraints.**
    - Put behavior in the correct layer; do not leak business logic upward/downward.
 
+6. **Feature-level failures must be observable and non-blocking by default.**
+   - For optional features and auxiliary paths (skill loading, parsing helpers, side-channel callbacks, preview/index helpers), failure handling must be:
+     1) log structured error context,
+     2) skip/degrade safely,
+     3) keep core flow progressing.
+   - Do not convert feature-level read/parse failures into hard-stop unless explicitly required by product semantics.
+
+7. **No rollback-first debugging.**
+   - Default strategy is forward root-cause fix with evidence.
+   - Never use rollback/revert as the first-line “solution” for unknown behavior.
+   - Rollback is an explicit exception path requiring user approval and clear risk statement.
+
 ## 2) Layer model and ownership
 
 Reference: `references/layer-boundaries.md`.
@@ -131,3 +143,6 @@ Required pass criteria:
 - Overwriting terminal lifecycle with stale event updates.
 - Dispatch failure hidden as success or no-op.
 - “Fixing” by adding fallback branches that bypass real constraints.
+- Swallowing errors with empty `catch {}` / silent ignore on critical or semi-critical paths.
+- Treating feature-level failures as either silent no-op or global hard-fail (both are wrong); use “log + skip + continue” unless the feature is mandatory.
+- Rollback-first handling without completed diagnosis and explicit user approval.

@@ -44,10 +44,22 @@ async function readConfig(): Promise<HeartbeatConfig> {
       try {
         const r = JSON.parse(lines[i]) as HeartbeatConfigRecord;
         if (r?.type === 'heartbeat_config' && typeof r.config === 'object') return r.config ?? {};
-      } catch { /* skip */ }
+      } catch (err) {
+        log.debug('[heartbeat.readConfig] Invalid config line skipped', {
+          lineIndex: i,
+          error: err instanceof Error ? err.message : String(err),
+          linePreview: lines[i]?.slice(0, 120) ?? '',
+        });
+      }
     }
     return {};
-  } catch { return {}; }
+  } catch (err) {
+    log.warn('[heartbeat.readConfig] Failed to read config file, fallback to empty config', {
+      path: CONFIG_PATH,
+      error: err instanceof Error ? err.message : String(err),
+    });
+    return {};
+  }
 }
 
 async function writeConfig(config: HeartbeatConfig): Promise<void> {
@@ -71,7 +83,13 @@ async function readTaskRecords(): Promise<HeartbeatTaskRecord[]> {
   try {
     const raw = await fs.readFile(TASK_PATH, 'utf-8');
     return raw.split('\n').map((l) => l.trim()).filter((l) => l.length > 0).map((l) => JSON.parse(l) as HeartbeatTaskRecord);
-  } catch { return []; }
+  } catch (err) {
+    log.warn('[heartbeat.readTaskRecords] Failed to read task records, fallback to empty list', {
+      path: TASK_PATH,
+      error: err instanceof Error ? err.message : String(err),
+    });
+    return [];
+  }
 }
 
 async function appendTaskRecord(record: HeartbeatTaskRecord): Promise<void> {

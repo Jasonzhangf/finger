@@ -2,6 +2,7 @@ import { existsSync, readFileSync } from 'fs';
 import { promises as fs } from 'fs';
 import path from 'path';
 import { FINGER_PATHS } from '../core/finger-paths.js';
+import { logger } from '../core/logger.js';
 
 export interface StopReasoningPolicyFile {
   requireToolForStop?: boolean;
@@ -28,6 +29,7 @@ const DEFAULT_POLICY: StopReasoningPolicy = {
   maxAutoContinueTurns: 2,
   source: 'default',
 };
+const log = logger.module('StopReasoningPolicy');
 
 let cachedPolicy: StopReasoningPolicy | null = null;
 let cachedAt = 0;
@@ -101,7 +103,11 @@ function loadPolicyFromFileSync(base: StopReasoningPolicy): StopReasoningPolicy 
     const raw = readFileSync(STOP_REASONING_POLICY_PATH, 'utf8');
     const parsed = JSON.parse(raw) as StopReasoningPolicyFile;
     return buildPolicyFromUnknown(parsed, base, 'file');
-  } catch {
+  } catch (err) {
+    log.warn('Failed to load stop-reasoning policy file; fallback to env/default policy', {
+      policyPath: STOP_REASONING_POLICY_PATH,
+      error: err instanceof Error ? err.message : String(err),
+    });
     return base;
   }
 }
@@ -159,7 +165,11 @@ export async function readStopReasoningPolicyFile(): Promise<StopReasoningPolicy
     const parsed = JSON.parse(raw) as StopReasoningPolicyFile;
     if (!parsed || typeof parsed !== 'object') return {};
     return parsed;
-  } catch {
+  } catch (err) {
+    log.warn('Failed to read stop-reasoning policy file; return empty object', {
+      policyPath: STOP_REASONING_POLICY_PATH,
+      error: err instanceof Error ? err.message : String(err),
+    });
     return {};
   }
 }

@@ -5,6 +5,7 @@
  */
 
 import type { AgentRuntimeDeps } from '../../server/modules/agent-runtime/types.js';
+import { logger } from '../../core/logger.js';
 import {
   buildTaskReportContract,
   parseTaskReportContract,
@@ -40,6 +41,7 @@ export interface TaskReportDispatchResult {
 
 const SYSTEM_AGENT_ID = 'finger-system-agent';
 const BUSY_STATUSES = new Set(['running', 'queued', 'waiting_input', 'paused']);
+const log = logger.module('TaskReportDispatcher');
 
 function asRecord(value: unknown): Record<string, unknown> | null {
   if (typeof value !== 'object' || value === null) return null;
@@ -94,7 +96,10 @@ async function isSystemAgentBusy(deps: AgentRuntimeDeps): Promise<boolean> {
     )) as { status?: unknown } | undefined;
     if (!agent) return true;
     return isBusyStatus(agent.status);
-  } catch {
+  } catch (err) {
+    log.warn('Failed to query system agent busy status; fallback to busy=true for safety', {
+      error: err instanceof Error ? err.message : String(err),
+    });
     return true;
   }
 }

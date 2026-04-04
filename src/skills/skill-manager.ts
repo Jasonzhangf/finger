@@ -132,6 +132,7 @@ export class SkillsManager {
     try {
       const entries = await fs.readdir(this.skillsDir, { withFileTypes: true });
       const skills: SkillMetadata[] = [];
+      const skippedSkills: Array<{ path: string; error: string }> = [];
 
       for (const entry of entries) {
         if (!entry.isDirectory()) continue;
@@ -149,8 +150,11 @@ export class SkillsManager {
             exists: parsed.exists,
           });
           continue;
-        } catch {
-          // SKILL.md 不存在或读取失败
+        } catch (err) {
+          skippedSkills.push({
+            path: skillPath,
+            error: err instanceof Error ? err.message : String(err),
+          });
         }
 
         skills.push({
@@ -164,6 +168,12 @@ export class SkillsManager {
       this.skillsCache.clear();
       for (const skill of skills) {
         this.skillsCache.set(skill.name, skill);
+      }
+      if (skippedSkills.length > 0) {
+        log.warn('[SkillsManager] SKILL.md unreadable, skipped without affecting runtime', {
+          count: skippedSkills.length,
+          samples: skippedSkills.slice(0, 5).map((item) => `${item.path}: ${item.error}`),
+        });
       }
       this.markReload('listSkills');
 
@@ -301,6 +311,7 @@ export class SkillsManager {
     try {
       const entries = readdirSync(this.skillsDir, { withFileTypes: true });
       const skills: SkillMetadata[] = [];
+      const skippedSkills: Array<{ path: string; error: string }> = [];
 
       for (const entry of entries) {
         if (!entry.isDirectory()) continue;
@@ -318,8 +329,11 @@ export class SkillsManager {
             exists: parsed.exists,
           });
           continue;
-        } catch {
-          // SKILL.md 不存在或读取失败
+        } catch (err) {
+          skippedSkills.push({
+            path: skillPath,
+            error: err instanceof Error ? err.message : String(err),
+          });
         }
 
         skills.push({
@@ -334,6 +348,12 @@ export class SkillsManager {
       for (const skill of skills) {
         this.skillsCache.set(skill.name, skill);
       }
+      if (skippedSkills.length > 0) {
+        log.warn('[SkillsManager] SKILL.md unreadable, skipped without affecting runtime', {
+          count: skippedSkills.length,
+          samples: skippedSkills.slice(0, 5).map((item) => `${item.path}: ${item.error}`),
+        });
+      }
       this.markReload('loadSkillsFromDiskSync');
     } catch (error) {
       log.error('[SkillsManager] Failed to load skills sync:', error instanceof Error ? error : new Error(String(error)));
@@ -343,6 +363,7 @@ export class SkillsManager {
   private loadScopedSkillsFromDirsSync(dirs: string[]): SkillMetadata[] {
     const skills: SkillMetadata[] = [];
     const seenSkillNames = new Set<string>();
+    const skippedScopedSkills: Array<{ path: string; error: string }> = [];
 
     for (const dir of dirs) {
       try {
@@ -366,13 +387,26 @@ export class SkillsManager {
               path: skillPath,
               exists: true,
             });
-          } catch {
-            // Scoped skill unreadable; skip silently to avoid polluting runtime prompt.
+          } catch (err) {
+            skippedScopedSkills.push({
+              path: skillPath,
+              error: err instanceof Error ? err.message : String(err),
+            });
           }
         }
-      } catch {
-        // Ignore invalid scoped skill directories.
+      } catch (err) {
+        log.warn('[SkillsManager] Ignore invalid scoped skill directory', {
+          dir,
+          error: err instanceof Error ? err.message : String(err),
+        });
       }
+    }
+
+    if (skippedScopedSkills.length > 0) {
+      log.warn('[SkillsManager] Scoped SKILL.md unreadable, skipped without affecting runtime', {
+        count: skippedScopedSkills.length,
+        samples: skippedScopedSkills.slice(0, 5).map((item) => `${item.path}: ${item.error}`),
+      });
     }
 
     return skills;

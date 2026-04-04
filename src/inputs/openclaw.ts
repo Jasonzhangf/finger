@@ -39,7 +39,11 @@ export class OpenClawInput extends BaseInput {
       let payload: unknown;
       try {
         payload = JSON.parse(body);
-      } catch {
+      } catch (err) {
+        log.warn('[OpenClawInput] Invalid JSON payload received', {
+          error: err instanceof Error ? err.message : String(err),
+          bodyPreview: body.slice(0, 160),
+        });
         res.writeHead(400).end('Invalid JSON');
         return;
       }

@@ -40,6 +40,8 @@ import {
   handleToolResultEvent,
   handleTurnComplete,
   handleTurnStart,
+  handleUserDecisionReceivedEvent,
+  handleWaitingForUserEvent,
   snippetLimitForTool,
 } from '../../server/modules/progress-monitor-event-handlers.js';
 
@@ -470,7 +472,21 @@ export class ProgressMonitor {
 
   private subscribeToEvents(): void {
     const unsubscribe = this.eventBus.subscribeMultiple(
-      ['turn_start', 'turn_complete', 'tool_call', 'tool_result', 'tool_error', 'model_round', 'system_notice', 'session_compressed', 'agent_runtime_status', 'agent_step_completed', 'agent_runtime_dispatch'],
+      [
+        'turn_start',
+        'turn_complete',
+        'tool_call',
+        'tool_result',
+        'tool_error',
+        'model_round',
+        'system_notice',
+        'session_compressed',
+        'agent_runtime_status',
+        'agent_step_completed',
+        'agent_runtime_dispatch',
+        'waiting_for_user',
+        'user_decision_received',
+      ],
       (event: any) => {
         this.handleEvent(event).catch(err => {
           log.error('[ProgressMonitor] Error handling event:', err);
@@ -561,6 +577,26 @@ export class ProgressMonitor {
           entry.elapsedMs = now - entry.startTime;
           this.cacheProgressContextSnapshot(entry);
         }
+        return;
+      }
+
+      if (eventType === 'waiting_for_user') {
+        for (const [, entry] of sessionEntries) {
+          entry.lastUpdateTime = now;
+          handleWaitingForUserEvent(entry, event);
+          entry.elapsedMs = now - entry.startTime;
+          this.cacheProgressContextSnapshot(entry);
+        }
+        return;
+      }
+
+      if (eventType === 'user_decision_received') {
+        for (const [, entry] of sessionEntries) {
+          entry.lastUpdateTime = now;
+          handleUserDecisionReceivedEvent(entry, event);
+          entry.elapsedMs = now - entry.startTime;
+          this.cacheProgressContextSnapshot(entry);
+        }
       }
       return;
     }
@@ -630,6 +666,12 @@ export class ProgressMonitor {
         break;
       case 'agent_step_completed':
         handleAgentStepCompleted(progress, event, this.latestStepSummary);
+        break;
+      case 'waiting_for_user':
+        handleWaitingForUserEvent(progress, event);
+        break;
+      case 'user_decision_received':
+        handleUserDecisionReceivedEvent(progress, event);
         break;
     }
 

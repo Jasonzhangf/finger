@@ -69,6 +69,8 @@ export interface AskToolRequest {
   question: string;
   options?: string[];
   context?: string;
+  blockingReason?: string;
+  decisionImpact?: 'critical' | 'major' | 'normal';
   agentId?: string;
   sessionId?: string;
   workflowId?: string;

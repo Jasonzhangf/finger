@@ -8,6 +8,9 @@ import { Command, CommandContext, CommandResult, CommandType, CommandHandler } f
 import { loadProviderConfig, saveProviderConfig } from '../executor.js';
 import { clockTool } from '../../../tools/internal/codex-clock-tool.js';
 import { FINGER_PATHS } from '../../../core/finger-paths.js';
+import { logger } from '../../../core/logger.js';
+
+const log = logger.module('SystemCommandHandler');
 
 export class SystemRestartHandler implements CommandHandler {
   canHandle(cmd: Command): boolean {
@@ -61,7 +64,11 @@ function loadJsonObject(filePath: string): Record<string, unknown> {
     const raw = fs.readFileSync(filePath, 'utf-8');
     const parsed = JSON.parse(raw);
     return typeof parsed === 'object' && parsed !== null ? parsed as Record<string, unknown> : {};
-  } catch {
+  } catch (err) {
+    log.warn('Failed to load json object, fallback to empty object', {
+      filePath,
+      error: err instanceof Error ? err.message : String(err),
+    });
     return {};
   }
 }
@@ -154,8 +161,7 @@ export class ProviderListHandler implements CommandHandler {
   }
 
   async execute(cmd: Command, ctx: CommandContext): Promise<CommandResult> {
-    const configPath = ctx.configPath || path.join(process.env.HOME || '', '.finger/config/config.json');
-    const { providers, current } = loadProviderConfig(configPath);
+    const { providers, current } = loadProviderConfig();
     
     const lines = ['可用 AI Provider：\n'];
     
@@ -192,8 +198,7 @@ export class ProviderSwitchHandler implements CommandHandler {
       };
     }
     
-    const configPath = ctx.configPath || path.join(process.env.HOME || '', '.finger/config/config.json');
-    const { providers } = loadProviderConfig(configPath);
+    const { providers } = loadProviderConfig();
     
     if (!providers[providerId]) {
       return {
@@ -202,7 +207,7 @@ export class ProviderSwitchHandler implements CommandHandler {
       };
     }
     
-    const success = saveProviderConfig(configPath, providerId);
+    const success = saveProviderConfig(undefined, providerId);
     if (!success) {
       return {
         success: false,

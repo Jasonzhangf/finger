@@ -2,36 +2,32 @@ import { logger } from '../../core/logger.js';
 import * as fs from 'fs';
 import * as path from 'path';
 import { FINGER_PATHS } from '../../core/finger-paths.js';
+import { loadUserSettings, saveUserSettings, type AIProvider } from '../../core/user-settings.js';
 
-function loadProviderConfig(): { providers: Record<string, any>; current: string | null } {
-  const configPath = path.join(FINGER_PATHS.config.dir, 'config.json');
+function loadProviderConfig(): { providers: Record<string, AIProvider>; current: string | null } {
   try {
-    if (!fs.existsSync(configPath)) {
-      return { providers: {}, current: null };
-    }
-    const content = fs.readFileSync(configPath, 'utf-8');
-    const config = JSON.parse(content) as any;
-    const kernel = config?.kernel || {};
+    const settings = loadUserSettings();
     return {
-      providers: kernel.providers || {},
-      current: kernel.provider || null,
+      providers: settings.aiProviders.providers || {},
+      current: settings.aiProviders.default || null,
     };
-  } catch {
+  } catch (err) {
+    logger.module('messagehub-command-handler').warn('Failed to load provider config from user settings; fallback to empty providers', {
+      error: err instanceof Error ? err.message : String(err),
+    });
     return { providers: {}, current: null };
   }
 }
 
 function saveProviderConfig(providerId: string): boolean {
-  const configPath = path.join(FINGER_PATHS.config.dir, 'config.json');
   try {
-    let config: any = {};
-    if (fs.existsSync(configPath)) {
-      const content = fs.readFileSync(configPath, 'utf-8');
-      config = JSON.parse(content);
+    const settings = loadUserSettings();
+    if (!settings.aiProviders.providers?.[providerId]) {
+      return false;
     }
-    if (!config.kernel) config.kernel = {};
-    config.kernel.provider = providerId;
-    fs.writeFileSync(configPath, JSON.stringify(config, null, 2), 'utf-8');
+    settings.aiProviders.default = providerId;
+    settings.updated_at = new Date().toISOString();
+    saveUserSettings(settings);
     return true;
   } catch (err) {
     logger.module('messagehub-command-handler').error('Failed to save provider config', err instanceof Error ? err : undefined);

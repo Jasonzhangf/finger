@@ -195,6 +195,32 @@ export function createChannelBridgeHubRoute(deps: ChannelBridgeHubRouteDeps) {
       return true;
     };
 
+    const markSessionFailed = (errorText: string): void => {
+      try {
+        const existing = sessionManager.getSession(fixedSessionId)?.context;
+        const previous = existing && typeof existing === 'object'
+          ? (existing.executionLifecycle as Record<string, unknown> | undefined)
+          : undefined;
+        sessionManager.updateContext(fixedSessionId, {
+          executionLifecycle: {
+            ...(previous && typeof previous === 'object' ? previous : {}),
+            stage: 'failed',
+            substage: 'channel_route_error',
+            updatedBy: 'channel-bridge-hub-route',
+            targetAgentId,
+            lastError: errorText.slice(0, 500),
+            lastTransitionAt: new Date().toISOString(),
+          },
+        });
+      } catch (error) {
+        log.warn('Failed to mark session executionLifecycle as failed', {
+          sessionId: fixedSessionId,
+          targetAgentId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    };
+
     if (ASYNC_USER_ASK_CHANNELS.has(channelMsg.channelId)) {
       const askScope = {
         channelId: channelMsg.channelId,
@@ -525,6 +551,7 @@ export function createChannelBridgeHubRoute(deps: ChannelBridgeHubRouteDeps) {
           targetAgentId,
           error: errorText,
         });
+        markSessionFailed(errorText);
         await sendReply(`处理失败：${errorText}`, targetAgentId, {
           bypassRecentBodyGate: true,
         });
@@ -556,6 +583,7 @@ export function createChannelBridgeHubRoute(deps: ChannelBridgeHubRouteDeps) {
           targetAgentId,
           error: errorText,
         });
+        markSessionFailed(errorText);
         await sendReply(`处理失败：${errorText}`, targetAgentId, {
           bypassRecentBodyGate: true,
         });
@@ -573,6 +601,7 @@ export function createChannelBridgeHubRoute(deps: ChannelBridgeHubRouteDeps) {
       });
     } catch (err) {
       log.error('Hub route dispatch error', err instanceof Error ? err : undefined);
+      markSessionFailed(err instanceof Error ? err.message : String(err));
       await sendReply('处理失败，请稍后再试', 'messagehub', {
         bypassRecentBodyGate: true,
       });

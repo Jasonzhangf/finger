@@ -523,7 +523,12 @@ async function summarizeCompactionWithProvider(
       summary: normalizedSummary,
       reason: 'ok',
     };
-  } catch {
+  } catch (err) {
+    log.warn('Compaction summarizer request failed', {
+      providerId,
+      providerModel: provider.model,
+      error: err instanceof Error ? err.message : String(err),
+    });
     return {
       providerId,
       providerModel: provider.model,

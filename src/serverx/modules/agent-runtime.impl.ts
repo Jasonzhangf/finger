@@ -5,6 +5,7 @@ import type { AgentCapabilityLayer, AgentRuntimeDeps } from '../../server/module
 import { dispatchTaskToAgent } from '../../server/modules/agent-runtime/dispatch.js';
 import { controlAgentRuntime } from '../../server/modules/agent-runtime/control.js';
 import { registerMailboxRuntimeTools } from '../../server/modules/agent-runtime/mailbox.js';
+import { parseAskToolInput, runBlockingAsk } from '../../server/modules/agent-runtime/ask.js';
 import { SYSTEM_PROJECT_PATH } from '../../agents/finger-system-agent/index.js';
 import {
   parseAgentControlToolInput,
@@ -633,6 +634,43 @@ export function registerAgentRuntimeTools(deps: AgentRuntimeDeps): string[] {
     },
   });
   loaded.push('orchestrator.loop_templates');
+
+  deps.runtime.registerTool({
+    name: 'user.ask',
+    description:
+      'Blocking user decision gate. Use ONLY when execution is truly blocked by a critical decision, missing credentials, or irreversible-risk confirmation. This tool blocks until user response or timeout.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        question: { type: 'string', description: 'Question shown to user. Must be specific and actionable.' },
+        options: { type: 'array', items: { type: 'string' }, description: 'Optional choices presented to user.' },
+        context: { type: 'string', description: 'Optional context for the user.' },
+        blocking_reason: { type: 'string', description: 'Why execution is blocked and must wait user decision.' },
+        decision_impact: { type: 'string', enum: ['critical', 'major', 'normal'] },
+        timeout_ms: { type: 'number', description: 'Optional timeout in milliseconds.' },
+        session_id: { type: 'string' },
+        workflow_id: { type: 'string' },
+        epic_id: { type: 'string' },
+        agent_id: { type: 'string' },
+        channel_id: { type: 'string' },
+        user_id: { type: 'string' },
+        group_id: { type: 'string' },
+      },
+      required: ['question'],
+      additionalProperties: false,
+    },
+    handler: async (input: unknown, context?: Record<string, unknown>): Promise<unknown> => {
+      const request = parseAskToolInput(input);
+      const fallbackAgentId = asTrimmedString(context?.agentId);
+      const fallbackSessionId = asTrimmedString(context?.sessionId);
+      return runBlockingAsk(deps, {
+        ...request,
+        ...(request.agentId ? {} : (fallbackAgentId ? { agentId: fallbackAgentId } : {})),
+        ...(request.sessionId ? {} : (fallbackSessionId ? { sessionId: fallbackSessionId } : {})),
+      });
+    },
+  });
+  loaded.push('user.ask');
 
   // Progress update tool - lets agent inject progress text without breaking execution flow
   deps.runtime.registerTool({

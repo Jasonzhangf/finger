@@ -7,6 +7,7 @@ import fs from 'fs';
 import path from 'path';
 import { FINGER_PATHS } from '../core/finger-paths.js';
 import { loadOrchestrationConfig } from './orchestration-config.js';
+import { logger } from '../core/logger.js';
 
 export interface ChannelContext {
   channelId: string;
@@ -29,6 +30,7 @@ export interface ChannelContext {
 }
 
 const CONTEXT_FILE = path.join(FINGER_PATHS.config.dir, 'channel-contexts.json');
+const log = logger.module('ChannelContextManager');
 
 export class ChannelContextManager {
   private contexts: Map<string, ChannelContext> = new Map();
@@ -150,7 +152,10 @@ export class ChannelContextManager {
       for (const [key, value] of Object.entries(parsed)) {
         this.contexts.set(key, value);
       }
-    } catch {
+    } catch (err) {
+      log.error('Failed to load channel contexts; fallback to empty contexts', err instanceof Error ? err : new Error(String(err)), {
+        contextFile: CONTEXT_FILE,
+      });
       this.contexts.clear();
     }
   }
@@ -164,8 +169,11 @@ export class ChannelContextManager {
       );
       const resolved = orchestrator?.targetAgentId?.trim();
       if (resolved) return resolved;
-    } catch {
-      // keep default
+    } catch (err) {
+      log.warn('Failed to resolve orchestrator default target agent; keep built-in default', {
+        defaultTargetAgentId: 'finger-system-agent',
+        error: err instanceof Error ? err.message : String(err),
+      });
     }
     return 'finger-system-agent';
   }
@@ -183,8 +191,10 @@ export class ChannelContextManager {
       }
 
       fs.writeFileSync(CONTEXT_FILE, JSON.stringify(data, null, 2), 'utf-8');
-    } catch {
-      // ignore persistence failures
+    } catch (err) {
+      log.error('Failed to persist channel contexts', err instanceof Error ? err : new Error(String(err)), {
+        contextFile: CONTEXT_FILE,
+      });
     }
   }
 }
