@@ -1459,8 +1459,11 @@ function readMemoryMd(memoryMdPath?: string): { content: string; tokenCount: num
           return { content, tokenCount: estimateTokens(content) };
         }
       }
-    } catch {
-      // Ignore read errors
+    } catch (error) {
+      log.warn('[ContextBuilder] Failed to read MEMORY.md candidate, skip this source', {
+        memoryPath: candidate,
+        error: error instanceof Error ? error.message : String(error),
+      });
     }
   }
 
