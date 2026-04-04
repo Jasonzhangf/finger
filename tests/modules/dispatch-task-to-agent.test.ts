@@ -885,6 +885,37 @@ describe('dispatchTaskToAgent', () => {
     expect(String(res.result?.summary || '')).toContain('Dispatch accepted and appended to target tasklist');
   });
 
+  it('does not retry non-retriable session binding failures and normalizes to queued tasklist', async () => {
+    const execute = vi.fn(async (command: string) => {
+      if (command === 'runtime_view') {
+        return { lanes: [] };
+      }
+      if (command === 'dispatch') {
+        return {
+          ok: false,
+          dispatchId: 'dispatch-non-retriable',
+          status: 'failed',
+          error: 'session_binding_scope_violation: session session-1 already owned by project::worker-a, rejected project::worker-b',
+        };
+      }
+      return { ok: true };
+    });
+    const { deps } = createDeps(execute);
+    const res = await mod.dispatchTaskToAgent(deps as any, {
+      sourceAgentId: 'finger-system-agent',
+      targetAgentId: 'finger-project-agent',
+      task: { prompt: 'non-retriable session binding failure should not block orchestrator' },
+      assignment: { taskId: 'task-non-retriable-1', blocked_by: ['none'] },
+      metadata: { autoRegisterProject: true },
+    } as any);
+
+    expect(res.ok).toBe(true);
+    expect(res.status).toBe('queued');
+    expect(res.result?.status).toBe('queued_tasklist');
+    const dispatchCalls = execute.mock.calls.filter(([cmd]) => cmd === 'dispatch');
+    expect(dispatchCalls.length).toBe(1);
+  });
+
   it('keeps async dispatch for active source task context (no hard suppression)', async () => {
     const execute = vi.fn(async (command: string) => {
       if (command === 'runtime_view') {

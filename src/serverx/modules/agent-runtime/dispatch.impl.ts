@@ -128,6 +128,21 @@ function buildGuaranteedQueuedDispatchResult(params: {
   };
 }
 
+function isNonRetriableDispatchFailure(error: unknown): boolean {
+  const text = typeof error === 'string'
+    ? error
+    : error instanceof Error
+      ? error.message
+      : String(error ?? '');
+  const normalized = text.toLowerCase();
+  return (
+    normalized.includes('session_binding_scope_violation')
+    || normalized.includes('session_binding_mismatch')
+    || normalized.includes('dispatch session/project scope mismatch')
+    || normalized.includes('project agent cannot run on system-owned session')
+  );
+}
+
 function isSystemOwnedSession(deps: AgentRuntimeDeps, sessionId: string): boolean {
   const session = deps.sessionManager.getSession(sessionId);
   if (!session) return false;
@@ -2055,6 +2070,25 @@ export async function dispatchTaskToAgent(deps: AgentRuntimeDeps, input: AgentDi
       result = await deps.agentRuntimeBlock.execute('dispatch', normalizedInput as unknown as Record<string, unknown>) as Exclude<typeof result, undefined>;
       finalExecuteError = undefined;
     } catch (executeError) {
+      if (isNonRetriableDispatchFailure(executeError)) {
+        const message = executeError instanceof Error ? executeError.message : String(executeError);
+        if (shouldGuaranteeDispatchToTasklist(normalizedInput)) {
+          result = buildGuaranteedQueuedDispatchResult({
+            dispatchId: fallbackDispatchId,
+            reason: `non-retriable dispatch error normalized to queued tasklist: ${message}`,
+            originalStatus: 'failed',
+          });
+          finalExecuteError = undefined;
+          logger.module('dispatch').warn('Non-retriable dispatch execute error; normalized to queued tasklist without retry', {
+            targetAgentId: normalizedInput.targetAgentId,
+            sessionId: normalizedInput.sessionId,
+            error: message,
+          });
+          break;
+        }
+        finalExecuteError = executeError;
+        break;
+      }
       finalExecuteError = executeError;
       if (attempt >= DISPATCH_ERROR_MAX_RETRIES) break;
       const retryDelayMs = resolveRetryBackoffMs(attempt + 1);
@@ -2136,6 +2170,17 @@ export async function dispatchTaskToAgent(deps: AgentRuntimeDeps, input: AgentDi
     }
 
     if (result.ok || result.status !== 'failed') {
+      break;
+    }
+
+    if (isNonRetriableDispatchFailure(result.error)) {
+      if (shouldGuaranteeDispatchToTasklist(normalizedInput)) {
+        result = buildGuaranteedQueuedDispatchResult({
+          dispatchId: result.dispatchId || fallbackDispatchId,
+          reason: `non-retriable dispatch failure normalized to queued tasklist: ${result.error || 'dispatch failed'}`,
+          originalStatus: result.status,
+        });
+      }
       break;
     }
 
