@@ -752,6 +752,8 @@ export class ProgressMonitor {
       toolCallHistory: toolsToShow.map(t => ({
         toolName: t.toolName,
         params: t.params,
+        result: t.result,
+        error: t.error,
         success: t.success,
       })),
       latestReasoning: p.latestReasoning,
@@ -793,6 +795,8 @@ export class ProgressMonitor {
       toolCallHistory: p.toolCallHistory.map(t => ({
         toolName: t.toolName,
         params: t.params,
+        result: t.result,
+        error: t.error,
         success: t.success,
       })),
       latestReasoning: p.latestReasoning,

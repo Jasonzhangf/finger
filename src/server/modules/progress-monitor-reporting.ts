@@ -56,6 +56,10 @@ function parsePayload(raw: string): Record<string, unknown> {
   }
 }
 
+function isObjectRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null;
+}
+
 function truncateInline(text: string, max = 60): string {
   const trimmed = text.replace(/\s+/g, ' ').trim();
   return trimmed.length > max ? trimmed.slice(0, max - 1) + '\u2026' : trimmed;
@@ -273,7 +277,7 @@ export function buildCompactSummary(
       const cat = classifyToolCall(t.toolName, t.params);
       const resolvedName = resolveToolDisplayName(t.toolName, t.params);
       const file = extractTargetFile(t.toolName, t.params);
-      const detail = extractToolDetail(t.toolName, t.params, t.result);
+      const detail = extractToolDetail(t.toolName, t.params, t.result, t.error);
       const filePart = file ? ` | ${file}` : '';
       const detailPart = detail ? ` ${detail}` : '';
       const line = `${icon} [${cat}] ${resolvedName}${filePart}${detailPart}`;
@@ -285,8 +289,8 @@ export function buildCompactSummary(
   return lines.join('\n');
 }
 
-function extractToolDetail(toolName: string, params?: string, result?: string): string {
-  if (!params && !result) return '';
+function extractToolDetail(toolName: string, params?: string, result?: string, error?: string): string {
+  if (!params && !result && !error) return '';
   const p = parsePayload(params ?? '');
   const r = parsePayload(result ?? '');
 
@@ -308,6 +312,36 @@ function extractToolDetail(toolName: string, params?: string, result?: string): 
     return null;
   };
 
+  const extractNestedErrorText = (value: unknown): string => {
+    if (typeof value === 'string' && value.trim().length > 0) return value.trim();
+    if (typeof value === 'number' && Number.isFinite(value)) return String(value);
+    if (!value || typeof value !== 'object') return '';
+    const obj = value as Record<string, unknown>;
+    const direct = pickString(obj.error, obj.message, obj.reason, obj.detail, obj.details);
+    if (direct) return direct;
+    const nested = isObjectRecord(obj.error) ? extractNestedErrorText(obj.error) : '';
+    if (nested) return nested;
+    return '';
+  };
+
+  const parsedErrorText = pickString(
+    error,
+    r.error,
+    r.message,
+    r.reason,
+    extractNestedErrorText(r.details),
+    extractNestedErrorText(r.metadata),
+  );
+
+  const attachError = (baseDetail: string): string => {
+    const normalized = baseDetail.trim();
+    if (!parsedErrorText) return normalized;
+    const errorPart = `错误=${truncateInline(parsedErrorText, 140)}`;
+    if (!normalized) return errorPart;
+    if (/\b(错误=|error=|错误:|error:)/i.test(normalized)) return normalized;
+    return `${normalized} · ${errorPart}`;
+  };
+
   if (toolName === 'update_plan') {
     const planItems = Array.isArray(p.plan) ? p.plan as Array<Record<string, unknown>> : [];
     if (planItems.length === 0) return '';
@@ -324,12 +358,12 @@ function extractToolDetail(toolName: string, params?: string, result?: string): 
       return `\n   ${statusIcon} ${step}`;
     }).filter((item) => item.length > 0);
     if (lines.length === 0) return '';
-    return `计划共 ${planItems.length} 项：${lines.join('')}`;
+    return attachError(`计划共 ${planItems.length} 项：${lines.join('')}`);
   }
 
   if (toolName === 'web_search' || toolName === 'search_query') {
     const query = typeof p.query === 'string' ? p.query.trim() : typeof p.q === 'string' ? p.q.trim() : '';
-    return query ? '\u300c' + truncateInline(query, 50) + '\u300d' : '';
+    return attachError(query ? '\u300c' + truncateInline(query, 50) + '\u300d' : '');
   }
 
   if (toolName === 'agent.dispatch' || toolName === 'dispatch') {
@@ -384,17 +418,17 @@ function extractToolDetail(toolName: string, params?: string, result?: string): 
     if (taskId.startsWith('watchdog:')) {
       const watchdogLabel = taskId.replace(/^watchdog:/, '').replace(/:/g, ' · ');
       details.push(`watchdog(${truncateInline(watchdogLabel, 48)})`);
-      return details.join(' ');
+      return attachError(details.join(' '));
     }
     if (source === 'system-heartbeat' && taskId) {
       details.push(`task=${truncateInline(taskId, 36)}`);
       if (taskName) details.push(`name=${truncateInline(taskName, 48)}`);
-      return details.join(' · ');
+      return attachError(details.join(' · '));
     }
     if (taskId) details.push(`task=${truncateInline(taskId, 42)}`);
     if (taskName) details.push(`name=${truncateInline(taskName, 64)}`);
     if (taskText) details.push(`内容=${truncateInline(taskText, 140)}`);
-    return details.join(' · ');
+    return attachError(details.join(' · '));
   }
 
   if (toolName === 'agent.query' || toolName === 'agent.progress.ask') {
@@ -405,15 +439,15 @@ function extractToolDetail(toolName: string, params?: string, result?: string): 
     if (target) details.push(`→ ${target}`);
     if (projectPath) details.push(`prj=${truncateInline(projectPath, 34)}`);
     if (query) details.push(truncateInline(query, 72));
-    return details.join(' · ');
+    return attachError(details.join(' · '));
   }
 
   if (toolName === 'command.exec' || toolName === 'shell.exec' || toolName === 'exec_command') {
     const raw = readExecCommand(p);
-    return raw ? describeExecCommand(raw) : '';
+    return attachError(raw ? describeExecCommand(raw) : '');
   }
 
-  if (toolName === 'write_stdin') return formatWriteStdinDetail(p);
+  if (toolName === 'write_stdin') return attachError(formatWriteStdinDetail(p));
 
   if (toolName === 'report-task-completion') {
     const taskId = typeof p.task_id === 'string' ? p.task_id.trim() : typeof p.taskId === 'string' ? p.taskId.trim() : '';
@@ -425,43 +459,43 @@ function extractToolDetail(toolName: string, params?: string, result?: string): 
     if (dispatchId) details.push(`dispatch=${truncateInline(dispatchId, 24)}`);
     if (status) details.push(`status=${truncateInline(status, 18)}`);
     if (summary) details.push(truncateInline(summary, 40));
-    return details.join(' · ');
+    return attachError(details.join(' · '));
   }
 
   if (toolName === 'view_image') {
     const path = pickString(p.path);
-    return path ? '\ud83d\uddbc ' + truncateInline(path, 80) : '';
+    return attachError(path ? '\ud83d\uddbc ' + truncateInline(path, 80) : '');
   }
 
   if (toolName === 'context_ledger.memory') {
     const action = typeof p.action === 'string' ? p.action.trim() : '';
     const query = typeof p.query === 'string' ? p.query.trim() : '';
-    if (action && query) return `${action}: ${truncateInline(query, 50)}`;
-    return action;
+    if (action && query) return attachError(`${action}: ${truncateInline(query, 50)}`);
+    return attachError(action);
   }
 
   if (toolName === 'context_builder.rebuild') {
     const mode = pickString(p.mode);
-    return mode ? `mode=${mode}` : '';
+    return attachError(mode ? `mode=${mode}` : '');
   }
 
   if (toolName === 'agent.deploy') {
     const id = pickString(p.agentId, p.agent_id, r.agentId);
     const role = pickString(p.roleProfile, p.role_profile, r.roleProfile);
-    if (id && role) return `${id} (${role})`;
-    return id || role || '';
+    if (id && role) return attachError(`${id} (${role})`);
+    return attachError(id || role || '');
   }
 
   if (toolName === 'agent.capabilities') {
     const id = pickString(p.agentId, p.agent_id);
-    return id ? `agent=${id}` : '';
+    return attachError(id ? `agent=${id}` : '');
   }
 
   if (toolName === 'agent.control') {
     const action = pickString(p.action, p.command);
     const id = pickString(p.agentId, p.agent_id);
-    if (action && id) return `${action} ${id}`;
-    return action || id || '';
+    if (action && id) return attachError(`${action} ${id}`);
+    return attachError(action || id || '');
   }
 
   if (toolName === 'agent.list') {
@@ -470,7 +504,7 @@ function extractToolDetail(toolName: string, params?: string, result?: string): 
     const details: string[] = [];
     if (status) details.push(`status=${status}`);
     if (typeof count === 'number') details.push(`count=${Math.max(0, Math.floor(count))}`);
-    return details.join(' · ');
+    return attachError(details.join(' · '));
   }
 
   if (toolName === 'project.task.status' || toolName === 'project.task.update') {
@@ -487,7 +521,7 @@ function extractToolDetail(toolName: string, params?: string, result?: string): 
     if (projectPath) details.push(`prj=${truncateInline(projectPath, 34)}`);
     if (status) details.push(`status=${truncateInline(status, 14)}`);
     if (summary) details.push(truncateInline(summary, 48));
-    return details.join(' · ');
+    return attachError(details.join(' · '));
   }
 
   if (/^mailbox\./.test(toolName)) {
@@ -506,15 +540,15 @@ function extractToolDetail(toolName: string, params?: string, result?: string): 
     if (typeof unread === 'number') details.push(`unread=${Math.max(0, Math.floor(unread))}`);
     if (typeof pending === 'number') details.push(`pending=${Math.max(0, Math.floor(pending))}`);
     if (status) details.push(`status=${truncateInline(status, 12)}`);
-    return details.join(' · ');
+    return attachError(details.join(' · '));
   }
 
   if (/^skills\./.test(toolName)) {
     const name = pickString(p.name);
-    return name ? `name=${name}` : '';
+    return attachError(name ? `name=${name}` : '');
   }
 
-  return '';
+  return attachError('');
 }
 
 export function resolveToolDisplayName(toolName: string, input?: unknown): string {

@@ -17,6 +17,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { FINGER_PATHS } from '../../core/finger-paths.js';
 import { normalizeProjectPathCanonical } from '../../common/path-normalize.js';
+import type { RuntimeFacade } from '../../runtime/runtime-facade.js';
 export { handleDisplayCommand } from './messagehub-display-command.js';
 
 /**
@@ -69,6 +70,7 @@ async function emitSessionChanged(
 export async function handleCmdList(): Promise<string> {
   return `可用命令：
   <##@system##>                    - 切换到系统代理（project=~/.finger，最新 session）
+  <##@system:stopall##>            - 强制停止所有 Agent 当前推理（中断所有 active turns）
   <##@system:progress:mode@dev##>  - 切换进度上下文显示为 DEV（详细分解）
   <##@system:progress:mode@release##> - 切换进度上下文显示为 RELEASE（精简）
   <##@agent:list##>                 - 列出当前项目的会话
@@ -94,6 +96,130 @@ export async function handleCmdList(): Promise<string> {
   /resume                           - 列出当前项目会话（等同 <##@agent:list##>）
   /resume session-id                - 直接切换会话（等同 <##@agent:switch@...##>）
   <##@cmd:list##>                  - 显示此帮助`;
+}
+
+function isObjectRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null;
+}
+
+function asNonEmptyString(value: unknown): string | undefined {
+  return typeof value === 'string' && value.trim().length > 0 ? value.trim() : undefined;
+}
+
+interface RuntimeSessionState {
+  sessionId: string;
+  providerId?: string;
+  hasActiveTurn: boolean;
+  activeTurnId?: string;
+}
+
+function parseRuntimeSessionsFromControlStatus(raw: unknown): RuntimeSessionState[] {
+  const payload = isObjectRecord(raw) ? raw : {};
+  const result = isObjectRecord(payload.result) ? payload.result : {};
+  const runtimeView = isObjectRecord(result.result) ? result.result : result;
+  const candidates = Array.isArray(runtimeView.chatCodexSessions)
+    ? runtimeView.chatCodexSessions
+    : Array.isArray(result.chatCodexSessions)
+      ? result.chatCodexSessions
+      : Array.isArray(payload.chatCodexSessions)
+        ? payload.chatCodexSessions
+        : [];
+
+  const dedup = new Map<string, RuntimeSessionState>();
+  for (const item of candidates) {
+    if (!isObjectRecord(item)) continue;
+    const sessionId = asNonEmptyString(item.sessionId);
+    if (!sessionId) continue;
+    const providerId = asNonEmptyString(item.providerId);
+    const hasActiveTurn = item.hasActiveTurn === true;
+    const activeTurnId = asNonEmptyString(item.activeTurnId);
+    const key = `${sessionId}::${providerId ?? ''}`;
+    dedup.set(key, {
+      sessionId,
+      ...(providerId ? { providerId } : {}),
+      hasActiveTurn,
+      ...(activeTurnId ? { activeTurnId } : {}),
+    });
+  }
+  return Array.from(dedup.values());
+}
+
+function parseInterruptCount(raw: unknown): number {
+  if (!isObjectRecord(raw)) return 0;
+  const result = isObjectRecord(raw.result) ? raw.result : {};
+  const nested = isObjectRecord(result.result) ? result.result : result;
+  const directCount = nested.interruptedCount;
+  if (typeof directCount === 'number' && Number.isFinite(directCount)) {
+    return Math.max(0, Math.floor(directCount));
+  }
+  const sessions = Array.isArray(nested.sessions) ? nested.sessions : [];
+  const count = sessions.reduce((sum, item) => {
+    if (!isObjectRecord(item)) return sum;
+    return sum + (item.interrupted === true ? 1 : 0);
+  }, 0);
+  return Math.max(0, count);
+}
+
+export async function handleSystemStopAllReasoning(runtime: RuntimeFacade): Promise<string> {
+  const systemAgentId = 'finger-system-agent';
+  let statusResult: unknown;
+  try {
+    statusResult = await runtime.callTool(systemAgentId, 'agent.control', { action: 'status' });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return `❌ 强制停止失败：无法读取运行中会话状态（${message}）`;
+  }
+
+  const sessions = parseRuntimeSessionsFromControlStatus(statusResult);
+  const activeSessions = sessions.filter((item) => item.hasActiveTurn);
+  if (activeSessions.length === 0) {
+    return '✅ 已执行强制停止：当前没有运行中的 Agent 推理（0 active turns）。';
+  }
+
+  let interruptedTurns = 0;
+  const stoppedSessions: string[] = [];
+  const failedSessions: Array<{ sessionId: string; providerId?: string; error: string }> = [];
+  for (const item of activeSessions) {
+    try {
+      const interruptResult = await runtime.callTool(systemAgentId, 'agent.control', {
+        action: 'interrupt',
+        session_id: item.sessionId,
+        ...(item.providerId ? { provider_id: item.providerId } : {}),
+      });
+      const interrupted = parseInterruptCount(interruptResult);
+      interruptedTurns += interrupted;
+      if (interrupted > 0) {
+        stoppedSessions.push(item.providerId ? `${item.sessionId}@${item.providerId}` : item.sessionId);
+      } else {
+        failedSessions.push({
+          sessionId: item.sessionId,
+          ...(item.providerId ? { providerId: item.providerId } : {}),
+          error: 'no active turn interrupted',
+        });
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      failedSessions.push({
+        sessionId: item.sessionId,
+        ...(item.providerId ? { providerId: item.providerId } : {}),
+        error: message,
+      });
+    }
+  }
+
+  const lines: string[] = [];
+  lines.push(`🛑 已执行强制停止：扫描 ${activeSessions.length} 个 active session，成功中断 ${interruptedTurns} 个推理回合。`);
+  if (stoppedSessions.length > 0) {
+    lines.push(`✅ 已中断: ${stoppedSessions.slice(0, 12).join(', ')}${stoppedSessions.length > 12 ? ' …' : ''}`);
+  }
+  if (failedSessions.length > 0) {
+    const failedDetail = failedSessions
+      .slice(0, 8)
+      .map((item) => `${item.providerId ? `${item.sessionId}@${item.providerId}` : item.sessionId}: ${item.error}`)
+      .join(' | ');
+    lines.push(`⚠️ 未中断: ${failedSessions.length} 个 (${failedDetail})`);
+  }
+  return lines.join('\n');
 }
 
 /**

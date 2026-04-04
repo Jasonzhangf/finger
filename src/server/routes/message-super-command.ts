@@ -7,6 +7,7 @@ import {
   handleAgentSwitch,
   handleAgentDelete,
   handleSystemCommand,
+  handleSystemStopAllReasoning,
   handleSystemProgressMode,
   handleDisplayCommand,
   handleProjectList,
@@ -58,6 +59,9 @@ export async function handleSuperCommand(
       if (typeof firstBlock.content === 'string' && firstBlock.content.startsWith('progress_mode:')) {
         const mode = firstBlock.content.slice('progress_mode:'.length);
         return handleSystemProgressMode(mode);
+      }
+      if (firstBlock.content === 'stop_all_reasoning') {
+        return handleSystemStopAllReasoning(deps.runtime);
       }
       return handleSystemCommand(deps.sessionManager, deps.eventBus);
     },

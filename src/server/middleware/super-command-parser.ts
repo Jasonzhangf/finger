@@ -6,6 +6,7 @@
  * - <##@system##>message -> switch to system agent
  * - <##@system:pwd=xxx##>message -> switch to system agent with password
  * - <##@system:restart##> -> trigger daemon restart (MessageHub handled)
+ * - <##@system:stopall##> -> force-stop all active agent reasoning turns
  * - <##@system:progress:mode@dev##> -> set progress context mode to dev
  * - <##@system:progress:mode@release##> -> set progress context mode to release
  * - <##@agent##>message -> switch back to business agent
@@ -196,13 +197,26 @@ export function parseSuperCommand(content: string): ParsedMessage {
   if (category === 'system') {
     // <##@system##> or <##@system:pwd=xxx##> or <##@system:restart##>
     // <##@system:provider:list##> or <##@system:provider:switch@id##>
-    if (action === 'restart') {
+    const normalizedAction = typeof action === 'string' ? action.trim().toLowerCase() : '';
+    const normalizedParam = typeof param === 'string' ? param.trim().toLowerCase() : '';
+    if (normalizedAction === 'restart') {
       block = {
         type: 'system' as const,
         password: undefined,
         content: 'restart',
       };
-    } else if (action === 'progress:mode') {
+    } else if (
+      normalizedAction === 'stopall'
+      || normalizedAction === 'stop_all'
+      || normalizedAction === 'stop-all'
+      || (normalizedAction === 'stop' && normalizedParam === 'all')
+    ) {
+      block = {
+        type: 'system' as const,
+        password: undefined,
+        content: 'stop_all_reasoning',
+      };
+    } else if (normalizedAction === 'progress:mode') {
       const mode = typeof param === 'string' ? param.trim().toLowerCase() : '';
       block = {
         type: 'system' as const,
@@ -211,14 +225,15 @@ export function parseSuperCommand(content: string): ParsedMessage {
           ? `progress_mode:${mode}`
           : 'progress_mode:invalid',
       };
-    } else if (action === 'provider:list') {
+    } else if (normalizedAction === 'provider:list') {
       block = {
         type: 'system' as const,
         password: undefined,
         content: 'provider_list',
       };
-    } else if (action?.startsWith('provider:switch@')) {
-      const providerId = action.replace('provider:switch@', '');
+    } else if (normalizedAction.startsWith('provider:switch@')) {
+      const providerActionRaw = typeof action === 'string' ? action : normalizedAction;
+      const providerId = providerActionRaw.replace(/^provider:switch@/i, '');
       block = {
         type: 'system' as const,
         password: undefined,

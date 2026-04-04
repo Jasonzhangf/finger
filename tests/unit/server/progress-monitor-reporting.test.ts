@@ -208,6 +208,30 @@ describe('progress-monitor-reporting', () => {
     expect(result).toContain('daemon.log');
   });
 
+  it('shows tool error reason in progress lines', () => {
+    const data: SessionProgressData = {
+      agentId: 'finger-system-agent',
+      status: 'running',
+      currentTask: 'agent.dispatch → ❌',
+      elapsedMs: 8_000,
+      toolCallHistory: [
+        {
+          toolName: 'agent.dispatch',
+          params: JSON.stringify({
+            target_agent_id: 'finger-project-agent',
+            task: 'Implement scoped dispatch fix',
+          }),
+          success: false,
+          error: 'session_binding_scope_violation: source and target project scope mismatch',
+        },
+      ],
+    };
+
+    const result = buildCompactSummary(data, formatElapsed, { headerMode: 'minimal' });
+    expect(result).toContain('❌ [工具] agent.dispatch');
+    expect(result).toContain('错误=session_binding_scope_violation');
+  });
+
   it('folds repeated search actions and keeps latest keyword hints', () => {
     const data: SessionProgressData = {
       agentId: 'finger-system-agent',

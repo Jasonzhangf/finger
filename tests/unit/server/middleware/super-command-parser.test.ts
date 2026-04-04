@@ -31,4 +31,13 @@ describe('super-command-parser @agent behavior', () => {
     expect(parsed.blocks?.[0]?.content).toBe('show');
     expect(parsed.shouldSwitch).toBe(false);
   });
+
+  it('parses system stop-all command', () => {
+    const parsed = parseSuperCommand('<##@system:stopall##>');
+    expect(parsed.type).toBe('super_command');
+    expect(parsed.blocks?.[0]?.type).toBe('system');
+    expect(parsed.blocks?.[0]?.content).toBe('stop_all_reasoning');
+    expect(parsed.shouldSwitch).toBe(true);
+    expect(parsed.targetAgent).toBe('finger-system-agent');
+  });
 });

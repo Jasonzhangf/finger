@@ -176,6 +176,7 @@ export interface SessionProgressData {
     toolName: string;
     params?: string;
     result?: string;
+    error?: string;
     success?: boolean;
   }>;
   latestReasoning?: string;
