@@ -266,7 +266,7 @@ describe('SystemAgentManager - Session Reuse', () => {
     );
   });
 
-  it('should resume startup execution when stop-tool gate is pending even with finish_reason=stop', async () => {
+  it('should reset stop-tool pending lifecycle after restart and not dispatch recovery', async () => {
     const session = {
       id: 'system-session-stop-tool-pending',
       name: 'finger-system-agent runtime',
@@ -294,9 +294,17 @@ describe('SystemAgentManager - Session Reuse', () => {
       (call: unknown[]) => call[0] === 'dispatch' && (call[1] as Record<string, unknown>)?.metadata
         && ((call[1] as { metadata?: { source?: string } }).metadata?.source === 'system-recovery'),
     );
-    expect(recoveryDispatchCall).toBeDefined();
-    expect((recoveryDispatchCall?.[1] as { metadata?: { progressDelivery?: unknown } })?.metadata?.progressDelivery)
-      .toEqual({ mode: 'silent' });
+    expect(recoveryDispatchCall).toBeUndefined();
+    expect(mockSessionManager.updateContext).toHaveBeenCalledWith(
+      session.id,
+      expect.objectContaining({
+        executionLifecycle: expect.objectContaining({
+          stage: 'completed',
+          substage: 'startup_reset_after_stop',
+          finishReason: 'stop',
+        }),
+      }),
+    );
   });
 
   it('should not dispatch duplicate startup review after restart when same stopped task only changed turn metadata', async () => {

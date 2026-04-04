@@ -15,6 +15,7 @@ import { FINGER_PATHS } from '../../core/finger-paths.js';
 import { promises as fs } from 'fs';
 import path from 'path';
 import {
+  applyExecutionLifecycleTransition,
   getExecutionLifecycleState,
   type ExecutionLifecycleState,
 } from '../../server/modules/execution-lifecycle.js';
@@ -319,7 +320,28 @@ export class SystemAgentManager {
   }
 
   private async resumeProjectSessionIfNeeded(agent: AgentInfo, sessionId: string): Promise<void> {
-    const lifecycle = getExecutionLifecycleState(this.deps.sessionManager, sessionId);
+    let lifecycle = getExecutionLifecycleState(this.deps.sessionManager, sessionId);
+    if (lifecycle && this.shouldResetLifecycleAfterRestart(lifecycle)) {
+      applyExecutionLifecycleTransition(this.deps.sessionManager, sessionId, {
+        stage: 'completed',
+        substage: 'startup_reset_after_stop',
+        updatedBy: 'system-agent-manager',
+        targetAgentId: FINGER_PROJECT_AGENT_ID,
+        finishReason: 'stop',
+        turnId: lifecycle.turnId,
+        dispatchId: lifecycle.dispatchId,
+        detail: 'startup reset: project runtime stop was already reached before restart',
+      });
+      log.info('[SystemAgentManager] Startup reset stale stop lifecycle for monitored project', {
+        projectId: agent.projectId,
+        projectPath: agent.projectPath,
+        sessionId,
+        previousStage: lifecycle.stage,
+        previousSubstage: lifecycle.substage ?? 'none',
+        finishReason: lifecycle.finishReason ?? 'none',
+      });
+      lifecycle = getExecutionLifecycleState(this.deps.sessionManager, sessionId);
+    }
     const inflight = await this.detectInFlightKernelTurn(sessionId);
     const actionableTaskState = this.resolveActionableProjectTaskStateForRecovery(sessionId);
     const taskStateNeedsResume = actionableTaskState !== null;
@@ -772,6 +794,25 @@ export class SystemAgentManager {
       return;
     }
 
+    if (this.shouldResetLifecycleAfterRestart(lifecycle)) {
+      applyExecutionLifecycleTransition(this.deps.sessionManager, this.systemSessionId, {
+        stage: 'completed',
+        substage: 'startup_reset_after_stop',
+        updatedBy: 'system-agent-manager',
+        finishReason: 'stop',
+        turnId: lifecycle.turnId,
+        dispatchId: lifecycle.dispatchId,
+        detail: 'startup reset: runtime stop was already reached before restart',
+      });
+      log.info('[SystemAgentManager] Startup reset stale stop lifecycle to completed', {
+        sessionId: this.systemSessionId,
+        previousStage: lifecycle.stage,
+        previousSubstage: lifecycle.substage ?? 'none',
+        finishReason: lifecycle.finishReason ?? 'none',
+      });
+      return;
+    }
+
     if (this.shouldResumeLifecycle(lifecycle)) {
       await this.resumeInterruptedExecution(lifecycle);
       return;
@@ -796,11 +837,23 @@ export class SystemAgentManager {
     const substage = typeof lifecycle.substage === 'string'
       ? lifecycle.substage.trim().toLowerCase()
       : '';
+    if (finishReason === 'stop') return false;
     if (lifecycle.stage === 'completed') return false;
     if (substage === 'turn_stop_tool_pending') return true;
-    if (finishReason === 'stop') return true;
     if (ACTIVE_LIFECYCLE_STAGES.has(lifecycle.stage)) return true;
     return lifecycle.stage === 'failed';
+  }
+
+  private shouldResetLifecycleAfterRestart(lifecycle: ExecutionLifecycleState): boolean {
+    const finishReason = typeof lifecycle.finishReason === 'string'
+      ? lifecycle.finishReason.trim().toLowerCase()
+      : '';
+    if (finishReason !== 'stop') return false;
+    if (lifecycle.stage !== 'completed') return true;
+    const substage = typeof lifecycle.substage === 'string'
+      ? lifecycle.substage.trim().toLowerCase()
+      : '';
+    return substage === 'turn_stop_tool_pending';
   }
 
   private shouldReviewCompletedLifecycle(lifecycle: ExecutionLifecycleState): boolean {

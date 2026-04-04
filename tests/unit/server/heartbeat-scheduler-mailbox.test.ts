@@ -616,7 +616,7 @@ describe('HeartbeatScheduler mailbox lifecycle', () => {
     expect(dispatchDirectSpy).not.toHaveBeenCalled();
   });
 
-  it('resumes watchdog when lifecycle is turn_stop_tool_pending with finish_reason=stop', async () => {
+  it('resets stop-tool pending lifecycle on watchdog and does not dispatch lifecycle resume', async () => {
     vi.spyOn(heartbeatHelpers, 'resolveProjectPath').mockResolvedValue('/repo/project-a');
     const sessionManager = {
       getSession: vi.fn((sessionId: string) => {
@@ -650,14 +650,16 @@ describe('HeartbeatScheduler mailbox lifecycle', () => {
       'session-project-a',
     );
 
-    expect(dispatchDirectSpy).toHaveBeenCalledTimes(1);
-    expect(dispatchDirectSpy).toHaveBeenCalledWith(
-      'finger-project-agent',
-      expect.stringContaining('watchdog:lifecycle_resume'),
-      'project-a',
-      expect.stringContaining('检测到上一轮执行未 finish_reason=stop'),
-      expect.any(Object),
+    expect(dispatchDirectSpy).not.toHaveBeenCalled();
+    expect(sessionManager.updateContext).toHaveBeenCalledWith(
       'session-project-a',
+      expect.objectContaining({
+        executionLifecycle: expect.objectContaining({
+          stage: 'completed',
+          substage: 'watchdog_reset_after_stop',
+          finishReason: 'stop',
+        }),
+      }),
     );
   });
 });

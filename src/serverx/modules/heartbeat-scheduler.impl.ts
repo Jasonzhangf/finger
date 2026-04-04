@@ -1230,11 +1230,23 @@ export class HeartbeatScheduler {
     const substage = typeof lifecycle.substage === 'string'
       ? lifecycle.substage.trim().toLowerCase()
       : '';
+    if (finishReason === 'stop') return false;
     if (lifecycle.stage === 'completed') return false;
     if (substage === 'turn_stop_tool_pending') return true;
-    if (finishReason === 'stop') return true;
     if (ACTIVE_LIFECYCLE_STAGES.has(lifecycle.stage)) return true;
     return lifecycle.stage === 'failed';
+  }
+
+  private shouldResetLifecycleAfterRestart(lifecycle: ExecutionLifecycleState): boolean {
+    const finishReason = typeof lifecycle.finishReason === 'string'
+      ? lifecycle.finishReason.trim().toLowerCase()
+      : '';
+    if (finishReason !== 'stop') return false;
+    if (lifecycle.stage !== 'completed') return true;
+    const substage = typeof lifecycle.substage === 'string'
+      ? lifecycle.substage.trim().toLowerCase()
+      : '';
+    return substage === 'turn_stop_tool_pending';
   }
 
   private resolveProjectTaskStateFromSession(sessionId: string): ReturnType<typeof parseProjectTaskState> {
@@ -1545,7 +1557,28 @@ export class HeartbeatScheduler {
       ? preferred
       : this.resolveLatestBoundSessionId(agentId, preferredSessionId);
     if (!sessionId) return;
-    const lifecycle = getExecutionLifecycleState(this.deps.sessionManager, sessionId);
+    let lifecycle = getExecutionLifecycleState(this.deps.sessionManager, sessionId);
+    if (lifecycle && this.shouldResetLifecycleAfterRestart(lifecycle)) {
+      applyExecutionLifecycleTransition(this.deps.sessionManager, sessionId, {
+        stage: 'completed',
+        substage: 'watchdog_reset_after_stop',
+        updatedBy: 'heartbeat-scheduler',
+        targetAgentId: agentId,
+        finishReason: 'stop',
+        turnId: lifecycle.turnId,
+        dispatchId: lifecycle.dispatchId,
+        detail: 'watchdog reset: runtime stop was already reached before restart',
+      });
+      log.info('[HeartbeatScheduler] Watchdog reset stale stop lifecycle to completed', {
+        sessionId,
+        projectId,
+        agentId,
+        previousStage: lifecycle.stage,
+        previousSubstage: lifecycle.substage ?? 'none',
+        finishReason: lifecycle.finishReason ?? 'none',
+      });
+      lifecycle = getExecutionLifecycleState(this.deps.sessionManager, sessionId);
+    }
     const lifecycleNeedsResume = lifecycle ? this.shouldResumeLifecycle(lifecycle) : false;
     let projectTaskState = this.resolveProjectTaskStateFromSession(sessionId);
     projectTaskState = this.tryAutoCloseStaleProjectTaskState({
