@@ -81,7 +81,7 @@
     "typescript-eslint": "^8.56.1",
     "vitest": "^1.6.0"
   },
-  "fingerBuildVersion": "0.1.0146",
+  "fingerBuildVersion": "0.1.0148",
   "pnpm": {
     "packageExtensions": {
       "vitest@*": {

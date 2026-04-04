@@ -649,45 +649,45 @@ export class ProgressMonitor {
 
       // 没有真实信号时，仅在 stall 且存在挂起工具时发送心跳。
       if (!hasMeaningfulSignal) {
-        // Tool-only flows may end without turn_complete/model_round.
-        // Auto-demote to idle to avoid stale "running" records.
         const pendingTool = this.findPendingMeaningfulTool(p);
-        if (stalled && p.hasOpenTurn !== true && !this.hasPendingToolCalls(p) && !pendingTool) {
+        if (stalled && this.shouldEmitHeartbeat(p, now)) {
+          const report: ProgressReport = {
+            type: 'progress_report',
+            timestamp: new Date().toISOString(),
+            sessionId: p.sessionId,
+            agentId: p.agentId,
+            progress: p,
+            summary: this.buildHeartbeatSummary(p, now, pendingTool),
+          };
+          if (this.callbacks?.onProgressReport) {
+            await this.callbacks.onProgressReport(report);
+          }
+          p.lastReportTime = now;
+          p.lastReportedCurrentTask = p.currentTask;
+          p.lastReportedReasoning = p.latestReasoning;
+          p.lastReportedContextUsagePercent = p.contextUsagePercent;
+          p.lastReportedEstimatedTokensInContextWindow = p.estimatedTokensInContextWindow;
+          p.lastReportedMaxInputTokens = p.maxInputTokens;
+          p.lastReportedContextEventAt = p.lastContextEventAt;
+          p.lastReportedContextBreakdownKey = contextBreakdownKey;
+        }
+
+        // Avoid stale running records forever, but keep enough window for minute-level heartbeat updates.
+        const staleIdleThresholdMs = Math.max(5 * this.config.intervalMs, 5 * 60_000);
+        const inactivityMs = Math.max(0, now - p.lastUpdateTime);
+        const hasRunningHints = p.hasOpenTurn === true
+          || p.modelRoundsCount > 0
+          || Boolean((p.currentTask ?? '').trim())
+          || Boolean((p.latestReasoning ?? '').trim());
+        if (
+          inactivityMs >= staleIdleThresholdMs
+          && p.hasOpenTurn !== true
+          && !this.hasPendingToolCalls(p)
+          && !pendingTool
+          && !hasRunningHints
+        ) {
           p.status = 'idle';
           p.lastUpdateTime = now;
-          continue;
-        }
-        if (stalled && this.shouldEmitHeartbeat(p, now)) {
-          const shouldEmitStalledHeartbeatWithoutPendingTool = (
-            !pendingTool
-            && (
-              p.hasOpenTurn === true
-              || p.modelRoundsCount > 0
-              || Boolean((p.currentTask ?? '').trim())
-              || Boolean((p.latestReasoning ?? '').trim())
-            )
-          );
-          if (pendingTool || shouldEmitStalledHeartbeatWithoutPendingTool) {
-            const report: ProgressReport = {
-              type: 'progress_report',
-              timestamp: new Date().toISOString(),
-              sessionId: p.sessionId,
-              agentId: p.agentId,
-              progress: p,
-              summary: this.buildHeartbeatSummary(p, now, pendingTool),
-            };
-            if (this.callbacks?.onProgressReport) {
-              await this.callbacks.onProgressReport(report);
-            }
-            p.lastReportTime = now;
-            p.lastReportedCurrentTask = p.currentTask;
-            p.lastReportedReasoning = p.latestReasoning;
-            p.lastReportedContextUsagePercent = p.contextUsagePercent;
-            p.lastReportedEstimatedTokensInContextWindow = p.estimatedTokensInContextWindow;
-            p.lastReportedMaxInputTokens = p.maxInputTokens;
-            p.lastReportedContextEventAt = p.lastContextEventAt;
-            p.lastReportedContextBreakdownKey = contextBreakdownKey;
-          }
         }
         continue;
       }
@@ -728,9 +728,6 @@ export class ProgressMonitor {
       p.lastReportedMaxInputTokens = p.maxInputTokens;
       p.lastReportedContextEventAt = p.lastContextEventAt;
       p.lastReportedContextBreakdownKey = contextBreakdownKey;
-      if (p.hasOpenTurn !== true && !this.hasPendingToolCalls(p) && p.status === 'running') {
-        p.status = 'idle';
-      }
     }
   }
 

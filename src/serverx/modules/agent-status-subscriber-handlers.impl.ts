@@ -202,7 +202,8 @@ export async function handleToolError(
     agentId,
   })) return;
 
-  if (mappings.every((mapping) => shouldSuppressRawToolError(mapping.envelope.channel))) {
+  const suppressRawToolError = mappings.every((mapping) => shouldSuppressRawToolError(mapping.envelope.channel));
+  if (suppressRawToolError) {
     log.info('[AgentStatusSubscriber] Suppressed raw tool_error push for external channel', {
       channel: mappings.map((mapping) => mapping.envelope.channel).join(','),
       sessionId,
@@ -210,16 +211,20 @@ export async function handleToolError(
       toolName: event.toolName,
       error: event.payload?.error,
     });
-    return;
   }
 
   const agentInfo = await ctx.getAgentInfo(agentId);
   const parsed = parseToolSummary(event.toolName || 'unknown-tool', event.payload?.input);
   const signalText = parsed.signals && parsed.signals.length > 0 ? ` · ${parsed.signals.join(' · ')}` : '';
+  const rawErrorText = asTrimmedString(event.payload?.error);
+  const sanitizedErrorText = sanitizeUserFacingStatusText(rawErrorText, 160);
+  const detailError = suppressRawToolError
+    ? (sanitizedErrorText || undefined)
+    : (rawErrorText || undefined);
   const baseTaskDescription = `[${parsed.verb}] ${parsed.target ?? (event.toolName || 'unknown-tool')} · failed${signalText}`;
   const relationInfo = ctx.deps ? resolveSessionRelationInfo(ctx.deps, sessionId) : undefined;
   const relationLine = relationInfo ? buildSessionRelationLine(relationInfo) : undefined;
-  const taskDescription = [baseTaskDescription, relationLine]
+  const taskDescription = [baseTaskDescription, relationLine, suppressRawToolError ? sanitizedErrorText : undefined]
     .filter((item): item is string => typeof item === 'string' && item.trim().length > 0)
     .join('\n');
   const wrappedUpdate: WrappedStatusUpdate = {
@@ -236,7 +241,7 @@ export async function handleToolError(
       state: 'failed',
       summary: taskDescription,
       details: {
-        error: event.payload?.error,
+        error: detailError,
         toolName: event.toolName,
         ...(parsed.signals && parsed.signals.length > 0 ? { signals: parsed.signals } : {}),
         ...(parsed.details ? parsed.details : {}),
@@ -245,7 +250,7 @@ export async function handleToolError(
     },
     display: {
       title: `${getAgentIcon(agentInfo.agentRole)} ${agentInfo.agentName || agentId}`,
-      subtitle: event.payload?.error,
+      subtitle: detailError,
       icon: getAgentIcon(agentInfo.agentRole),
       level: 'detailed',
     },

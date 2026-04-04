@@ -910,7 +910,7 @@ describe('AgentStatusSubscriber', () => {
       fallbackSubscriber.stop();
     });
 
-    it('应该抑制 qqbot/openclaw-weixin 的原始 tool_error 透传', async () => {
+    it('应该在 qqbot/openclaw-weixin 上发送脱敏后的 tool_error 状态', async () => {
       const mockMessageHub = {
         routeToOutput: vi.fn().mockResolvedValue(undefined),
       };
@@ -939,7 +939,17 @@ describe('AgentStatusSubscriber', () => {
       await eventBus.emit(event);
       await new Promise(resolve => setTimeout(resolve, 80));
 
-      expect(mockMessageHub.routeToOutput).not.toHaveBeenCalled();
+      expect(mockMessageHub.routeToOutput).toHaveBeenCalledWith(
+        'channel-bridge-qqbot',
+        expect.objectContaining({
+          statusUpdate: expect.objectContaining({
+            status: expect.objectContaining({
+              state: 'failed',
+              summary: expect.stringContaining('failed'),
+            }),
+          }),
+        }),
+      );
       toolErrorSubscriber.stop();
     });
 

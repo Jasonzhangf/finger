@@ -121,4 +121,21 @@ describe('update-stream policy', () => {
     expect(resolved.toolCalls).toBe(true);
     expect(resolved.statusUpdate).toBe(true);
   });
+
+  it('forces error updates to bypass result_only source policy', async () => {
+    const home = await mkdtemp(path.join(os.tmpdir(), 'finger-update-stream-'));
+    tmpDirs.push(home);
+    const mod = await loadPolicyModuleWithHome(home);
+
+    const policy = mod.resolveUpdateStreamPolicy({
+      channelId: 'qqbot',
+      role: 'system',
+      sourceType: 'heartbeat',
+      phase: 'execution',
+      kind: 'error',
+    });
+
+    expect(policy?.mode).toBe('all');
+    expect(policy?.fields?.statusUpdate).toBe(true);
+  });
 });

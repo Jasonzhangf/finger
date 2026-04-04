@@ -617,7 +617,7 @@ describe('ProgressMonitor incremental updates', () => {
     monitor.stop();
   });
 
-  it('auto-demotes tool-only running progress to idle after report to avoid stale waiting state', async () => {
+  it('keeps tool-only running progress alive for heartbeat window, then auto-demotes to idle after prolonged inactivity', async () => {
     const eventBus = new UnifiedEventBus();
     const reports: string[] = [];
     const monitor = new ProgressMonitor(
@@ -663,12 +663,27 @@ describe('ProgressMonitor incremental updates', () => {
     await flushEventLoop();
 
     await (monitor as any).generateProgressReport();
-
     expect(reports).toHaveLength(1);
     expect(reports[0]).toContain('当前为工具流，尚未收到本轮 model_round 统计（并非无上下文）');
     expect(reports[0]).not.toContain('未关闭');
+
     const progress = monitor.getProgress('session-tool-only-idle');
-    expect(progress?.status).toBe('idle');
+    expect(progress?.status).toBe('running');
+
+    if (progress) {
+      const now = Date.now();
+      progress.lastUpdateTime = now - (5 * 60_000 + 1_000);
+      progress.lastReportTime = now - 65_000;
+      progress.hasOpenTurn = false;
+      progress.modelRoundsCount = 0;
+      progress.currentTask = undefined;
+      progress.latestReasoning = undefined;
+    }
+
+    await (monitor as any).generateProgressReport();
+    expect(reports.length).toBeGreaterThanOrEqual(2);
+    const latest = monitor.getProgress('session-tool-only-idle');
+    expect(latest?.status).toBe('idle');
 
     monitor.stop();
   });

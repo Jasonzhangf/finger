@@ -390,6 +390,9 @@ export function resolveUpdateStreamPolicy(input: {
     };
   }
   const kindHint = typeof input.kind === 'string' ? input.kind.trim().toLowerCase() : '';
+  const effectiveSourceMode: UpdateStreamSourceMode | undefined = kindHint === 'error'
+    ? 'all'
+    : sourcePolicy.mode;
   if (applyRoleFilters && kindHint && roleKinds.length > 0 && !roleKinds.includes(kindHint)) {
     return {
       mode: 'silent',
@@ -411,7 +414,7 @@ export function resolveUpdateStreamPolicy(input: {
     : (fieldsFromGranularity?.reasoning ?? false);
 
   const policy: ProgressDeliveryPolicy = {
-    ...(sourcePolicy.mode ? { mode: sourcePolicy.mode } : {}),
+    ...(effectiveSourceMode ? { mode: effectiveSourceMode } : {}),
     fields: {
       ...fieldsFromGranularity,
       reasoning: baseReasoning && allowsReasoning,
