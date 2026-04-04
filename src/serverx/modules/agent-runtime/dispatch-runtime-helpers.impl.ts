@@ -259,24 +259,6 @@ function asTrimmed(value: unknown): string {
   return typeof value === 'string' && value.trim().length > 0 ? value.trim() : '';
 }
 
-function stampProjectDispatchScopeContext(params: {
-  deps: AgentRuntimeDeps;
-  sessionId: string;
-  targetAgentId: string;
-  projectPath: string;
-  workerId?: string;
-}): void {
-  const normalizedProjectPath = normalizeProjectPathHint(params.projectPath);
-  if (!params.sessionId || !params.targetAgentId || !normalizedProjectPath) return;
-  params.deps.sessionManager.updateContext(params.sessionId, {
-    sessionTier: 'orchestrator-root',
-    dispatchTargetAgentId: params.targetAgentId,
-    dispatchProjectPath: normalizedProjectPath,
-    dispatchScopeKey: toDispatchScopeKey(params.targetAgentId, normalizedProjectPath, params.workerId),
-    ...(params.workerId ? { dispatchWorkerId: params.workerId } : {}),
-  });
-}
-
 function bindDispatchRouteContext(
   deps: AgentRuntimeDeps,
   selectedSessionId: string,
@@ -504,7 +486,7 @@ export function resolveDispatchSessionSelection(deps: AgentRuntimeDeps, input: A
         && requestedProjectPath !== boundProjectPath
       );
       const boundSystemOwned = targetIsProjectScoped && isSystemOwnedSession(deps, boundSessionId);
-      const boundWorkerMismatch = !!requestedWorkerId && !!boundWorkerId && requestedWorkerId !== boundWorkerId;
+      const boundWorkerMismatch = !!requestedWorkerId && requestedWorkerId !== boundWorkerId;
       if (!allowBoundSession || boundSystemOwned || boundWorkerMismatch) {
         logger.module('dispatch').warn('Ignoring mismatched bound session for project dispatch; selecting session by project path', {
           targetAgentId,
@@ -517,15 +499,6 @@ export function resolveDispatchSessionSelection(deps: AgentRuntimeDeps, input: A
           boundWorkerMismatch,
         });
       } else {
-        if (targetIsProjectScoped && requestedWorkerId && !boundWorkerId && (requestedProjectPath || boundProjectPath)) {
-          stampProjectDispatchScopeContext({
-            deps,
-            sessionId: boundSessionId,
-            targetAgentId,
-            projectPath: requestedProjectPath || boundProjectPath,
-            workerId: requestedWorkerId,
-          });
-        }
         return {
           ...input,
           sessionId: boundSessionId,
@@ -545,17 +518,8 @@ export function resolveDispatchSessionSelection(deps: AgentRuntimeDeps, input: A
       const requestedWorkerId = targetAgentId === FINGER_PROJECT_AGENT_ID
         ? resolveDispatchWorkerHint(input)
         : '';
-      const workerMismatch = !!requestedWorkerId && !!currentWorkerId && requestedWorkerId !== currentWorkerId;
+      const workerMismatch = !!requestedWorkerId && requestedWorkerId !== currentWorkerId;
       if (currentProjectPath === requestedProjectPath && !isSystemOwnedSession(deps, currentSessionId) && !workerMismatch) {
-        if (requestedWorkerId && !currentWorkerId) {
-          stampProjectDispatchScopeContext({
-            deps,
-            sessionId: currentSessionId,
-            targetAgentId,
-            projectPath: requestedProjectPath || currentProjectPath,
-            workerId: requestedWorkerId,
-          });
-        }
         return {
           ...input,
           sessionId: currentSessionId,

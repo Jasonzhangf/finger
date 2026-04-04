@@ -260,6 +260,124 @@ describe('resolveDispatchSessionSelection strict lifecycle', () => {
     );
   });
 
+  it('does not reuse bound project session when bound worker scope is unbound and dispatch requests a concrete worker', () => {
+    const sessions = {
+      'session-bound-unbound': {
+        id: 'session-bound-unbound',
+        projectPath: '/Volumes/extension/code/finger',
+        context: {
+          sessionTier: 'orchestrator-root',
+          dispatchTargetAgentId: 'finger-project-agent',
+          dispatchProjectPath: '/Volumes/extension/code/finger',
+          // legacy/unbound: no dispatchWorkerId
+        },
+      },
+      'session-current': {
+        id: 'session-current',
+        projectPath: '/Users/fanzhang/.finger/system',
+        context: { sessionTier: 'system', ownerAgentId: 'finger-system-agent' },
+      },
+    };
+    const { deps, sessionManager, runtime } = createDeps({
+      sessions,
+      boundSessionId: 'session-bound-unbound',
+      runtimeCurrentSessionId: 'session-current',
+      managerCurrentSessionId: 'session-current',
+      findSessionsByProjectPathResult: [
+        {
+          id: 'session-bound-unbound',
+          projectPath: '/Volumes/extension/code/finger',
+          context: sessions['session-bound-unbound'].context,
+          lastAccessedAt: new Date().toISOString(),
+        } as any,
+      ],
+    });
+
+    const result = resolveDispatchSessionSelection(deps, {
+      sourceAgentId: 'finger-system-agent',
+      targetAgentId: 'finger-project-agent',
+      metadata: {
+        projectPath: '/Volumes/extension/code/finger',
+        workerId: 'finger-project-agent-02',
+      },
+      assignment: {
+        assigneeWorkerId: 'finger-project-agent-02',
+      },
+      task: {
+        cwd: '/Volumes/extension/code/finger',
+        prompt: 'dispatch to james',
+      },
+    } as any);
+
+    expect(runtime.getBoundSessionId).toHaveBeenCalledWith('finger-project-agent');
+    expect(result.sessionId).toMatch(/^dispatch-finger-project-agent-/);
+    expect(result.sessionId).not.toBe('session-bound-unbound');
+    expect((result as any).metadata?.dispatchSessionScopeRebound).toBe(true);
+    expect(sessionManager.ensureSession).toHaveBeenCalledTimes(1);
+    expect(sessionManager.updateContext).toHaveBeenCalledWith(
+      expect.stringMatching(/^dispatch-finger-project-agent-/),
+      expect.objectContaining({
+        dispatchWorkerId: 'finger-project-agent-02',
+      }),
+    );
+  });
+
+  it('does not reuse current project session when current worker scope is unbound and dispatch requests a concrete worker', () => {
+    const sessions = {
+      'session-current-unbound': {
+        id: 'session-current-unbound',
+        projectPath: '/Volumes/extension/code/finger',
+        context: {
+          sessionTier: 'orchestrator-root',
+          dispatchTargetAgentId: 'finger-project-agent',
+          dispatchProjectPath: '/Volumes/extension/code/finger',
+          // legacy/unbound: no dispatchWorkerId
+        },
+      },
+    };
+    const { deps, sessionManager } = createDeps({
+      sessions,
+      boundSessionId: null,
+      runtimeCurrentSessionId: 'session-current-unbound',
+      managerCurrentSessionId: 'session-current-unbound',
+      findSessionsByProjectPathResult: [
+        {
+          id: 'session-current-unbound',
+          projectPath: '/Volumes/extension/code/finger',
+          context: sessions['session-current-unbound'].context,
+          lastAccessedAt: new Date().toISOString(),
+        } as any,
+      ],
+    });
+
+    const result = resolveDispatchSessionSelection(deps, {
+      sourceAgentId: 'finger-system-agent',
+      targetAgentId: 'finger-project-agent',
+      metadata: {
+        projectPath: '/Volumes/extension/code/finger',
+        workerId: 'finger-project-agent-03',
+      },
+      assignment: {
+        assigneeWorkerId: 'finger-project-agent-03',
+      },
+      task: {
+        cwd: '/Volumes/extension/code/finger',
+        prompt: 'dispatch to robin',
+      },
+    } as any);
+
+    expect(result.sessionId).toMatch(/^dispatch-finger-project-agent-/);
+    expect(result.sessionId).not.toBe('session-current-unbound');
+    expect((result as any).metadata?.dispatchSessionScopeRebound).toBe(true);
+    expect(sessionManager.ensureSession).toHaveBeenCalledTimes(1);
+    expect(sessionManager.updateContext).toHaveBeenCalledWith(
+      expect.stringMatching(/^dispatch-finger-project-agent-/),
+      expect.objectContaining({
+        dispatchWorkerId: 'finger-project-agent-03',
+      }),
+    );
+  });
+
   it('rebinds explicit project session when worker scope is unbound but dispatch requests a concrete worker', () => {
     const sessions = {
       'session-project-unbound': {
