@@ -32,6 +32,10 @@ import {
   resolveKernelProvider,
 } from '../core/kernel-provider-client.js';
 import { loadContextBuilderSettings } from '../core/user-settings.js';
+import {
+  buildToolResolutionCandidates,
+  normalizeToolAliasLookupKey,
+} from './tool-compat-aliases.js';
 
 import { logger } from '../core/logger.js';
 
@@ -895,40 +899,7 @@ export class RuntimeFacade {
     // Compatibility aliasing for unstable model tool names.
     // Keep this deterministic and fail-closed: only remap when alias target
     // is both granted for this agent and currently available in tool registry.
-    const aliasMap: Record<string, string[]> = {
-      status: ['mailbox.status', 'heartbeat.status', 'project.task.status'],
-      agent_list: ['agent.list'],
-      agent_dispatch: ['agent.dispatch'],
-      agent_query: ['agent.query'],
-      agent_progress_ask: ['agent.progress.ask'],
-      agent_capabilities: ['agent.capabilities'],
-      agent_control: ['agent.control'],
-      command_exec: ['command.exec', 'exec_command'],
-      project_task_status: ['project.task.status'],
-      project_task_update: ['project.task.update'],
-      context_ledger_memory: ['context_ledger.memory'],
-      context_ledger_expand_task: ['context_ledger.expand_task'],
-      context_builder_rebuild: ['context_builder.rebuild'],
-      reasoning_stop: ['reasoning.stop'],
-      mailbox_status: ['mailbox.status'],
-      mailbox_list: ['mailbox.list'],
-      mailbox_read: ['mailbox.read'],
-      mailbox_read_all: ['mailbox.read_all'],
-      mailbox_ack: ['mailbox.ack'],
-      mailbox_remove: ['mailbox.remove'],
-      mailbox_remove_all: ['mailbox.remove_all'],
-      system_registry_tool: ['system-registry-tool'],
-      update_plan: ['update_plan'],
-      exec_command: ['exec_command'],
-    };
-
-    const lowerRequested = requested.toLowerCase();
-    const aliasCandidates = [
-      ...(aliasMap[lowerRequested] ?? []),
-      ...(requested.includes('_') ? [requested.replace(/_/g, '.')] : []),
-      ...(requested.includes('_') ? [requested.replace(/_/g, '-')] : []),
-      ...(requested.includes('.') || requested.includes('-') ? [requested.replace(/[.-]/g, '_')] : []),
-    ]
+    const aliasCandidates = buildToolResolutionCandidates(requested)
       .map((item) => item.trim())
       .filter((item, index, list) => item.length > 0 && item !== requested && list.indexOf(item) === index);
     if (aliasCandidates.length > 0) {
@@ -1810,10 +1781,6 @@ export class RuntimeFacade {
     }
     return this.eventBus.getHistory(limit);
   }
-}
-
-function normalizeToolAliasLookupKey(rawToolName: string): string {
-  return rawToolName.trim().toLowerCase().replace(/[^a-z0-9]/g, '');
 }
 
 function collectToolNameSeparators(toolName: string): Set<string> {

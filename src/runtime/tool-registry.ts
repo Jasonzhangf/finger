@@ -30,7 +30,16 @@ export class ToolRegistry {
    * 注册工具
    */
   register(tool: ToolDefinition): void {
-    if (this.tools.has(tool.name)) {
+    const existing = this.tools.get(tool.name);
+    if (existing) {
+      const sameHandler = existing.handler === tool.handler;
+      const samePolicy = existing.policy === tool.policy;
+      const sameDescription = existing.description === tool.description;
+      const sameSchema = stableSerializeToolValue(existing.inputSchema ?? {}) === stableSerializeToolValue(tool.inputSchema ?? {});
+      if (sameHandler && samePolicy && sameDescription && sameSchema) {
+        clog.debug?.(`[ToolRegistry] Tool ${tool.name} already registered with identical definition, skipping`);
+        return;
+      }
       clog.warn(`[ToolRegistry] Tool ${tool.name} already registered, overwriting`);
     }
     this.tools.set(tool.name, { ...tool });
@@ -163,3 +172,20 @@ export class ToolRegistry {
 
 // 全局单例
 export const globalToolRegistry = new ToolRegistry();
+
+function stableSerializeToolValue(value: unknown): string {
+  return JSON.stringify(stableNormalizeToolValue(value));
+}
+
+function stableNormalizeToolValue(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return value.map((item) => stableNormalizeToolValue(item));
+  }
+  if (value && typeof value === 'object') {
+    const normalizedEntries = Object.entries(value as Record<string, unknown>)
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([key, item]) => [key, stableNormalizeToolValue(item)]);
+    return Object.fromEntries(normalizedEntries);
+  }
+  return value;
+}

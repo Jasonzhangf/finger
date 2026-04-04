@@ -35,6 +35,7 @@ import {
 } from '../../server/modules/finger-role-modules-helpers.js';
 import { normalizeProjectPathCanonical } from '../../common/path-normalize.js';
 import { resolveAgentDisplayName } from '../../server/modules/agent-name-resolver.js';
+import { augmentToolSpecificationsWithCompatAliases } from '../../runtime/tool-compat-aliases.js';
 
 export type FingerRoleProfile = 'project' | 'reviewer' | 'system';
 
@@ -579,7 +580,7 @@ export async function registerFingerRoleModules(
         inputSchema: finalSchema,
       });
     }
-    return resolved;
+    return augmentToolSpecificationsWithCompatAliases(resolved);
   };
 
   const registerFingerRoleModule = async (role: FingerRoleSpec): Promise<void> => {

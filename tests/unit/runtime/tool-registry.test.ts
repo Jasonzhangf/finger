@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { ToolRegistry } from '../../../src/runtime/tool-registry.js';
 
 describe('ToolRegistry', () => {
@@ -142,5 +142,36 @@ describe('ToolRegistry', () => {
       handler: vi.fn(),
     });
     expect(registry.size).toBe(2);
+  });
+
+  it('skips duplicate registration when definition is identical', () => {
+    const handler = vi.fn(async () => null);
+    registry.register({
+      name: 'dup-tool',
+      description: 'dup',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          cmd: { type: 'string' },
+        },
+        required: ['cmd'],
+      },
+      policy: 'allow',
+      handler,
+    });
+    registry.register({
+      name: 'dup-tool',
+      description: 'dup',
+      inputSchema: {
+        required: ['cmd'],
+        properties: {
+          cmd: { type: 'string' },
+        },
+        type: 'object',
+      },
+      policy: 'allow',
+      handler,
+    });
+    expect(registry.size).toBe(1);
   });
 });

@@ -40,6 +40,7 @@ import {
   filterSections,
   type GuardedSection,
 } from '../prompts/conditional-injector.js';
+import { augmentToolSpecificationsWithCompatAliases } from '../../runtime/tool-compat-aliases.js';
 
 const DEFAULT_KERNEL_TIMEOUT_MS = 600_000;
 const DEFAULT_KERNEL_TIMEOUT_RETRY_COUNT = 5;
@@ -3848,85 +3849,6 @@ function normalizeProvidedToolSpecifications(
     });
   }
   return normalized;
-}
-
-function augmentToolSpecificationsWithCompatAliases(
-  specs: ChatCodexToolSpecification[],
-): ChatCodexToolSpecification[] {
-  if (!Array.isArray(specs) || specs.length === 0) return [];
-  const aliasToCanonical = new Map<string, string>();
-  for (const spec of specs) {
-    if (!spec || typeof spec.name !== 'string') continue;
-    const canonical = spec.name.trim();
-    if (!canonical) continue;
-    const aliases = buildToolCompatibilityAliases(canonical);
-    for (const alias of aliases) {
-      if (!aliasToCanonical.has(alias)) {
-        aliasToCanonical.set(alias, canonical);
-      }
-    }
-  }
-
-  if (aliasToCanonical.size === 0) return specs;
-
-  const seen = new Set<string>(specs.map((item) => item.name));
-  const augmented = [...specs];
-  for (const [alias, canonical] of aliasToCanonical.entries()) {
-    if (seen.has(alias)) continue;
-    const canonicalSpec = specs.find((item) => item.name === canonical);
-    augmented.push({
-      name: alias,
-      description: canonicalSpec?.description
-        ? `Compatibility alias for ${canonical}: ${canonicalSpec.description}`
-        : `Compatibility alias for ${canonical}`,
-      inputSchema: canonicalSpec?.inputSchema,
-    });
-    seen.add(alias);
-  }
-  return augmented;
-}
-
-function buildToolCompatibilityAliases(canonicalName: string): string[] {
-  const canonical = canonicalName.trim();
-  if (!canonical) return [];
-  const aliases = new Set<string>();
-  const parts = canonical
-    .split(/[._-]+/g)
-    .map((item) => item.trim())
-    .filter((item) => item.length > 0);
-
-  if (parts.length === 0) return [];
-
-  const normalizedCandidates = [
-    canonical.replace(/[.-]/g, '_'),
-    canonical.replace(/[._]/g, '-'),
-    canonical.replace(/[_-]/g, '.'),
-    parts.join('_'),
-    parts.join('-'),
-    parts.join('.'),
-    parts.join(''),
-    toCamelCase(parts),
-  ];
-
-  for (const candidate of normalizedCandidates) {
-    const alias = candidate.trim();
-    if (!alias || alias === canonical) continue;
-    if (!/^[a-zA-Z0-9_.-]+$/.test(alias)) continue;
-    aliases.add(alias);
-  }
-
-  return Array.from(aliases);
-}
-
-function toCamelCase(parts: string[]): string {
-  if (parts.length === 0) return '';
-  return parts
-    .map((part, index) => {
-      if (!part) return '';
-      if (index === 0) return part;
-      return `${part.charAt(0).toUpperCase()}${part.slice(1)}`;
-    })
-    .join('');
 }
 
 function defaultToolSpecification(name: string): ChatCodexToolSpecification {

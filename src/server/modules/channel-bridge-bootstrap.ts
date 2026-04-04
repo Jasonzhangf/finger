@@ -49,15 +49,21 @@ export async function loadChannelBridgeConfigs(configDir?: string): Promise<void
     for (const config of configs) {
       channelBridgeManager.addConfig(config);
       if (config.enabled) {
-        try {
-          await channelBridgeManager.startBridge(config.id);
-          logger.module('channel-bridge-bootstrap').info('Started bridge for channel', { channelId: config.channelId });
-        } catch (bridgeErr) {
-          // Log but continue - webui may not have a bridge module, but qqbot should still work
-          logger.module('channel-bridge-bootstrap').warn('Failed to start bridge for channel (output still registered)', {
+        if (config.type === 'webui' || config.channelId === 'webui') {
+          logger.module('channel-bridge-bootstrap').info('Skip bridge start for webui channel; output-only delivery path is used', {
             channelId: config.channelId,
-            error: bridgeErr instanceof Error ? bridgeErr.message : String(bridgeErr),
+            type: config.type,
           });
+        } else {
+          try {
+            await channelBridgeManager.startBridge(config.id);
+            logger.module('channel-bridge-bootstrap').info('Started bridge for channel', { channelId: config.channelId });
+          } catch (bridgeErr) {
+            logger.module('channel-bridge-bootstrap').warn('Failed to start bridge for channel (output still registered)', {
+              channelId: config.channelId,
+              error: bridgeErr instanceof Error ? bridgeErr.message : String(bridgeErr),
+            });
+          }
         }
       }
     }
