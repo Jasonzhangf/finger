@@ -4,6 +4,14 @@ import { InternalTool, createToolExecutionContext, type ToolExecutionContext } f
 import { logger } from '../../core/logger.js';
 import { FINGER_PATHS } from '../../core/finger-paths.js';
 import { writeFileAtomicSync } from '../../core/atomic-write.js';
+import {
+  collectMaskedToolInputRecords,
+  readMaskedArray,
+  readMaskedNumber,
+  readMaskedRecord,
+  readMaskedString,
+  readMaskedStringArray,
+} from '../../common/tool-input-mask.js';
 
 type LegacyPlanStepStatus = 'pending' | 'in_progress' | 'completed';
 type PlanPriority = 'P0' | 'P1' | 'P2' | 'P3';
@@ -431,19 +439,22 @@ export function getUpdatePlanRuntimeView(params: UpdatePlanRuntimeViewParams = {
 }
 
 function parseInput(rawInput: unknown): { mode: 'legacy'; input: UpdatePlanLegacyInput } | { mode: 'v2'; input: UpdatePlanV2Input } {
-  if (!isRecord(rawInput)) {
+  const records = collectMaskedToolInputRecords(rawInput);
+  const primary = records[0];
+  if (!primary) {
     throw new Error('update_plan input must be an object');
   }
 
-  if (typeof rawInput.action === 'string' && rawInput.action.trim().length > 0) {
+  if (readMaskedString(rawInput, ['action'])) {
     return { mode: 'v2', input: parseV2Input(rawInput) };
   }
 
-  return { mode: 'legacy', input: parseLegacyInput(rawInput) };
+  return { mode: 'legacy', input: parseLegacyInput(rawInput, primary) };
 }
 
-function parseLegacyInput(rawInput: Record<string, unknown>): UpdatePlanLegacyInput {
-  if (!Array.isArray(rawInput.plan)) {
+function parseLegacyInput(rawInput: unknown, primary: Record<string, unknown>): UpdatePlanLegacyInput {
+  const rawPlan = readMaskedArray(rawInput, ['plan', 'steps', 'items', 'tasks']) ?? primary.plan;
+  if (!Array.isArray(rawPlan)) {
     throw new Error('update_plan input.plan must be an array');
   }
 
@@ -451,7 +462,7 @@ function parseLegacyInput(rawInput: Record<string, unknown>): UpdatePlanLegacyIn
   let inProgressCount = 0;
   const log = logger.module('update-plan');
 
-  for (const item of rawInput.plan) {
+  for (const item of rawPlan) {
     if (!isRecord(item)) {
       throw new Error('update_plan input.plan items must be objects');
     }
@@ -494,39 +505,54 @@ function parseLegacyInput(rawInput: Record<string, unknown>): UpdatePlanLegacyIn
   }
 
   const parsed: UpdatePlanLegacyInput = { plan };
-  if (typeof rawInput.explanation === 'string' && rawInput.explanation.trim().length > 0) {
-    parsed.explanation = rawInput.explanation.trim();
+  const explanation = readMaskedString(rawInput, ['explanation', 'summary', 'note']);
+  if (explanation) {
+    parsed.explanation = explanation;
   }
   return parsed;
 }
 
-function parseV2Input(rawInput: Record<string, unknown>): UpdatePlanV2Input {
-  const action = typeof rawInput.action === 'string' ? rawInput.action.trim() as UpdatePlanAction : '';
+function parseV2Input(rawInput: unknown): UpdatePlanV2Input {
+  const action = (readMaskedString(rawInput, ['action']) ?? '') as UpdatePlanAction;
   if (!isUpdatePlanAction(action)) {
     throw new Error('update_plan action must be create|update|list|search|claim|reassign|set_status|set_dependency|append_evidence|close|archive');
   }
 
   const parsed: UpdatePlanV2Input = { action };
-  if (typeof rawInput.projectPath === 'string' && rawInput.projectPath.trim().length > 0) parsed.projectPath = rawInput.projectPath.trim();
-  if (typeof rawInput.id === 'string' && rawInput.id.trim().length > 0) parsed.id = rawInput.id.trim();
-  if (typeof rawInput.query === 'string' && rawInput.query.trim().length > 0) parsed.query = rawInput.query.trim();
-  if (Number.isFinite(rawInput.expectedRevision)) parsed.expectedRevision = Math.max(1, Math.floor(rawInput.expectedRevision as number));
-  if (isRecord(rawInput.item)) parsed.item = rawInput.item;
-  if (isRecord(rawInput.patch)) parsed.patch = rawInput.patch;
-  if (typeof rawInput.status === 'string' && rawInput.status.trim().length > 0) parsed.status = rawInput.status.trim();
-  if (Array.isArray(rawInput.blockedBy)) parsed.blockedBy = rawInput.blockedBy.filter((v): v is string => typeof v === 'string').map((v) => v.trim()).filter(Boolean);
-  if (Array.isArray(rawInput.dependsOn)) parsed.dependsOn = rawInput.dependsOn.filter((v): v is string => typeof v === 'string').map((v) => v.trim()).filter(Boolean);
-  if (typeof rawInput.assigneeWorkerId === 'string' && rawInput.assigneeWorkerId.trim().length > 0) parsed.assigneeWorkerId = rawInput.assigneeWorkerId.trim();
-  if (isRecord(rawInput.evidence)) {
+  const projectPath = readMaskedString(rawInput, ['projectPath', 'project_path', 'cwd']);
+  const id = readMaskedString(rawInput, ['id', 'item_id', 'itemId']);
+  const query = readMaskedString(rawInput, ['query', 'search']);
+  const expectedRevision = readMaskedNumber(rawInput, ['expectedRevision', 'expected_revision', 'revision']);
+  const status = readMaskedString(rawInput, ['status']);
+  const blockedBy = readMaskedStringArray(rawInput, ['blockedBy', 'blocked_by']);
+  const dependsOn = readMaskedStringArray(rawInput, ['dependsOn', 'depends_on']);
+  const assigneeWorkerId = readMaskedString(rawInput, ['assigneeWorkerId', 'assignee_worker_id', 'workerId', 'worker_id']);
+  if (projectPath) parsed.projectPath = projectPath;
+  if (id) parsed.id = id;
+  if (query) parsed.query = query;
+  if (typeof expectedRevision === 'number' && Number.isFinite(expectedRevision)) {
+    parsed.expectedRevision = Math.max(1, Math.floor(expectedRevision));
+  }
+  const item = readMaskedRecord(rawInput, ['item']);
+  const patch = readMaskedRecord(rawInput, ['patch']);
+  const evidence = readMaskedRecord(rawInput, ['evidence']);
+  if (item) parsed.item = item;
+  if (patch) parsed.patch = patch;
+  if (status) parsed.status = status;
+  if (blockedBy) parsed.blockedBy = blockedBy;
+  if (dependsOn) parsed.dependsOn = dependsOn;
+  if (assigneeWorkerId) parsed.assigneeWorkerId = assigneeWorkerId;
+  if (evidence) {
     parsed.evidence = {
-      type: typeof rawInput.evidence.type === 'string' ? rawInput.evidence.type.trim() : '',
-      content: typeof rawInput.evidence.content === 'string' ? rawInput.evidence.content.trim() : '',
-      ...(typeof rawInput.evidence.ref === 'string' && rawInput.evidence.ref.trim().length > 0
-        ? { ref: rawInput.evidence.ref.trim() }
+      type: typeof evidence.type === 'string' ? evidence.type.trim() : '',
+      content: typeof evidence.content === 'string' ? evidence.content.trim() : '',
+      ...(typeof evidence.ref === 'string' && evidence.ref.trim().length > 0
+        ? { ref: evidence.ref.trim() }
         : {}),
     };
   }
-  if (typeof rawInput.explanation === 'string' && rawInput.explanation.trim().length > 0) parsed.explanation = rawInput.explanation.trim();
+  const explanation = readMaskedString(rawInput, ['explanation', 'summary', 'note']);
+  if (explanation) parsed.explanation = explanation;
   return parsed;
 }
 

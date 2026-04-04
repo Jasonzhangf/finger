@@ -24,6 +24,22 @@ describe('codex exec tools', () => {
     expect(result.text).toContain('Wall time:');
   });
 
+  it('normalizes wrapped/aliased exec_command input shape', async () => {
+    const result = await execCommandTool.execute(
+      {
+        arguments: {
+          command: 'echo exec_alias_ok',
+          yieldTimeMs: '1000',
+          login: 'false',
+        },
+      },
+      TEST_CONTEXT,
+    );
+
+    expect(result.termination.type).toBe('exited');
+    expect(result.output).toContain('exec_alias_ok');
+  });
+
   it('supports session-based stdin write roundtrip', async () => {
     const initial = await execCommandTool.execute(
       {
@@ -56,6 +72,31 @@ describe('codex exec tools', () => {
         chars: '',
       }),
     ).rejects.toThrow('unknown session id');
+  });
+
+  it('normalizes wrapped write_stdin shape and preserves empty poll chars', async () => {
+    const initial = await execCommandTool.execute(
+      {
+        cmd: 'sleep 0.1; echo poll-ok',
+        shell: '/bin/bash',
+        login: false,
+        yield_time_ms: 20,
+      },
+      TEST_CONTEXT,
+    );
+
+    expect(initial.termination.type).toBe('ongoing');
+    if (initial.termination.type !== 'ongoing') return;
+
+    const result = await writeStdinTool.execute({
+      input: {
+        sessionId: String(initial.termination.sessionId),
+        chars: '',
+        yieldTimeMs: '1000',
+      },
+    });
+
+    expect(result.text).toContain('Wall time:');
   });
 
   it('treats late stdin write after process exit as exited polling (no hard failure)', async () => {

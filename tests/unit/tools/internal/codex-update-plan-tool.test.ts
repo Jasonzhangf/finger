@@ -23,6 +23,18 @@ describe('update_plan tool', () => {
       await expect(updatePlanTool.execute({ plan: 'not-array' })).rejects.toThrow('update_plan input.plan must be an array');
     });
 
+    it('accepts wrapped steps alias as legacy plan input', async () => {
+      const result = await updatePlanTool.execute({
+        payload: {
+          steps: [
+            { title: 'Wrapped step', status: 'doing' },
+          ],
+        },
+      });
+      expect(result.ok).toBe(true);
+      expect(result.plan).toEqual([{ step: 'Wrapped step', status: 'in_progress' }]);
+    });
+
     it('rejects invalid plan items (non-object)', async () => {
       await expect(updatePlanTool.execute({ plan: [42] })).rejects.toThrow('update_plan input.plan items must be objects');
     });

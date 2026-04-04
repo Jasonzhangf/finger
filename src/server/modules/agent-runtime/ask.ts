@@ -1,4 +1,10 @@
 import { isObjectRecord } from '../../common/object.js';
+import {
+  collectMaskedToolInputRecords,
+  readMaskedNumber,
+  readMaskedString,
+  readMaskedStringArray,
+} from '../../../common/tool-input-mask.js';
 import type { AgentRuntimeDeps, AskToolRequest } from './types.js';
 
 type AskDecisionImpact = 'critical' | 'major' | 'normal';
@@ -64,87 +70,56 @@ function isLikelyApprovalOnlyAsk(question: string, options?: string[]): boolean 
 }
 
 export function parseAskToolInput(rawInput: unknown): AskToolRequest {
-  if (!isObjectRecord(rawInput)) {
+  const records = collectMaskedToolInputRecords(rawInput);
+  if (records.length === 0) {
     throw new Error('user.ask input must be object');
   }
-  const question = typeof rawInput.question === 'string' ? rawInput.question.trim() : '';
+  const primary = records[0] ?? {};
+  const question = readMaskedString(rawInput, ['question', 'prompt', 'message', 'ask']) ?? '';
   if (!question) {
     throw new Error('user.ask question is required');
   }
-  const options = Array.isArray(rawInput.options)
-    ? rawInput.options
-      .filter((item): item is string => typeof item === 'string')
-      .map((item) => item.trim())
-      .filter((item) => item.length > 0)
-    : undefined;
-  const timeoutMs = typeof rawInput.timeout_ms === 'number'
-    ? rawInput.timeout_ms
-    : typeof rawInput.timeoutMs === 'number'
-      ? rawInput.timeoutMs
-      : undefined;
+  const options = readMaskedStringArray(rawInput, ['options', 'choices', 'selections']);
+  const timeoutMs = readMaskedNumber(rawInput, ['timeout_ms', 'timeoutMs', 'timeout']);
   const decisionImpact = normalizeDecisionImpact(
-    rawInput.decision_impact
-      ?? rawInput.decisionImpact
-      ?? rawInput.importance
-      ?? rawInput.blocker_level
-      ?? rawInput.blockerLevel,
+    readMaskedString(rawInput, ['decision_impact', 'decisionImpact', 'importance', 'blocker_level', 'blockerLevel']),
   );
-  const blockingReason = normalizeBlockingReason(rawInput);
-  const runtimeContext = isObjectRecord(rawInput._runtime_context) ? rawInput._runtime_context : {};
-  const agentId = typeof rawInput.agent_id === 'string'
-    ? rawInput.agent_id
-    : typeof rawInput.agentId === 'string'
-      ? rawInput.agentId
-      : typeof runtimeContext.agent_id === 'string'
-        ? runtimeContext.agent_id
-        : undefined;
+  const blockingReason = readMaskedString(rawInput, ['blocking_reason', 'blockingReason', 'reason'])
+    ?? normalizeBlockingReason(primary);
+  const runtimeContextRecord = records.find((record) => isObjectRecord(record._runtime_context));
+  const runtimeContext = isObjectRecord(runtimeContextRecord?._runtime_context) ? runtimeContextRecord._runtime_context : {};
+  const agentId = readMaskedString(rawInput, ['agent_id', 'agentId'])
+    ?? (typeof runtimeContext.agent_id === 'string' ? runtimeContext.agent_id.trim() : undefined);
+  const contextText = readMaskedString(rawInput, ['context', 'details', 'background']);
+  const sessionId = readMaskedString(rawInput, ['session_id', 'sessionId']);
+  const workflowId = readMaskedString(rawInput, ['workflow_id', 'workflowId']);
+  const epicId = readMaskedString(rawInput, ['epic_id', 'epicId']);
+  const channelId = normalizeOptionalScopeId(readMaskedString(rawInput, ['channel_id', 'channelId']))
+    ?? normalizeOptionalScopeId(runtimeContext.channel_id)
+    ?? normalizeOptionalScopeId(runtimeContext.channelId);
+  const userId = normalizeOptionalScopeId(readMaskedString(rawInput, ['user_id', 'userId']))
+    ?? normalizeOptionalScopeId(runtimeContext.user_id)
+    ?? normalizeOptionalScopeId(runtimeContext.userId)
+    ?? normalizeOptionalScopeId(runtimeContext.channel_user_id)
+    ?? normalizeOptionalScopeId(runtimeContext.channelUserId);
+  const groupId = normalizeOptionalScopeId(readMaskedString(rawInput, ['group_id', 'groupId']))
+    ?? normalizeOptionalScopeId(runtimeContext.group_id)
+    ?? normalizeOptionalScopeId(runtimeContext.groupId)
+    ?? normalizeOptionalScopeId(runtimeContext.channel_group_id)
+    ?? normalizeOptionalScopeId(runtimeContext.channelGroupId);
   return {
     question,
     ...(options && options.length > 0 ? { options } : {}),
-    ...(typeof rawInput.context === 'string' && rawInput.context.trim().length > 0 ? { context: rawInput.context.trim() } : {}),
+    ...(contextText ? { context: contextText } : {}),
     ...(blockingReason ? { blockingReason } : {}),
     decisionImpact,
     ...(typeof agentId === 'string' && agentId.trim().length > 0 ? { agentId: agentId.trim() } : {}),
-    ...(typeof rawInput.session_id === 'string' && rawInput.session_id.trim().length > 0
-      ? { sessionId: rawInput.session_id.trim() }
-      : typeof rawInput.sessionId === 'string' && rawInput.sessionId.trim().length > 0
-        ? { sessionId: rawInput.sessionId.trim() }
-        : {}),
-    ...(typeof rawInput.workflow_id === 'string' && rawInput.workflow_id.trim().length > 0
-      ? { workflowId: rawInput.workflow_id.trim() }
-      : typeof rawInput.workflowId === 'string' && rawInput.workflowId.trim().length > 0
-        ? { workflowId: rawInput.workflowId.trim() }
-        : {}),
-    ...(typeof rawInput.epic_id === 'string' && rawInput.epic_id.trim().length > 0
-      ? { epicId: rawInput.epic_id.trim() }
-      : typeof rawInput.epicId === 'string' && rawInput.epicId.trim().length > 0
-        ? { epicId: rawInput.epicId.trim() }
-        : {}),
-    ...(normalizeOptionalScopeId(rawInput.channel_id)
-      ? { channelId: normalizeOptionalScopeId(rawInput.channel_id) }
-      : normalizeOptionalScopeId(rawInput.channelId)
-        ? { channelId: normalizeOptionalScopeId(rawInput.channelId) }
-        : normalizeOptionalScopeId(runtimeContext.channel_id)
-          ? { channelId: normalizeOptionalScopeId(runtimeContext.channel_id) }
-          : {}),
-    ...(normalizeOptionalScopeId(rawInput.user_id)
-      ? { userId: normalizeOptionalScopeId(rawInput.user_id) }
-      : normalizeOptionalScopeId(rawInput.userId)
-        ? { userId: normalizeOptionalScopeId(rawInput.userId) }
-        : normalizeOptionalScopeId(runtimeContext.user_id)
-          ? { userId: normalizeOptionalScopeId(runtimeContext.user_id) }
-          : normalizeOptionalScopeId(runtimeContext.channel_user_id)
-            ? { userId: normalizeOptionalScopeId(runtimeContext.channel_user_id) }
-            : {}),
-    ...(normalizeOptionalScopeId(rawInput.group_id)
-      ? { groupId: normalizeOptionalScopeId(rawInput.group_id) }
-      : normalizeOptionalScopeId(rawInput.groupId)
-        ? { groupId: normalizeOptionalScopeId(rawInput.groupId) }
-        : normalizeOptionalScopeId(runtimeContext.group_id)
-          ? { groupId: normalizeOptionalScopeId(runtimeContext.group_id) }
-          : normalizeOptionalScopeId(runtimeContext.channel_group_id)
-            ? { groupId: normalizeOptionalScopeId(runtimeContext.channel_group_id) }
-            : {}),
+    ...(sessionId ? { sessionId } : {}),
+    ...(workflowId ? { workflowId } : {}),
+    ...(epicId ? { epicId } : {}),
+    ...(channelId ? { channelId } : {}),
+    ...(userId ? { userId } : {}),
+    ...(groupId ? { groupId } : {}),
     ...(typeof timeoutMs === 'number' && Number.isFinite(timeoutMs)
       ? { timeoutMs: Math.max(1_000, Math.floor(timeoutMs)) }
       : {}),

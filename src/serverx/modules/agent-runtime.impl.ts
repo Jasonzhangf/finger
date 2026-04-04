@@ -15,6 +15,7 @@ import {
 import { parseProjectTaskState } from '../../common/project-task-state.js';
 import { normalizeProjectPathCanonical } from '../../common/path-normalize.js';
 import { applyProjectStatusGatewayPatch } from '../../server/modules/project-status-gateway.js';
+import { readMaskedString } from '../../common/tool-input-mask.js';
 
 function resolveAgentCapabilityLayer(value: unknown): AgentCapabilityLayer {
   if (typeof value !== 'string') return 'summary';
@@ -803,11 +804,12 @@ export function registerAgentRuntimeTools(deps: AgentRuntimeDeps): string[] {
       additionalProperties: false,
     },
     handler: async (input: unknown): Promise<unknown> => {
-      if (!isObjectRecord(input) || typeof input.input !== 'string') {
+      const commandInput = readMaskedString(input, ['input', 'command', 'cmd', 'text']);
+      if (!commandInput) {
         throw new Error('command.exec input must be { input: string }');
       }
       const { parseCommands, getCommandHub } = await import('../../blocks/command-hub/index.js');
-      const parsed = parseCommands(input.input);
+      const parsed = parseCommands(commandInput);
       if (parsed.commands.length === 0) {
         return { success: false, output: '未检测到命令' };
       }

@@ -159,4 +159,36 @@ describe('agent-runtime user.ask tool', () => {
       groupId: 'group-xyz',
     }));
   });
+
+  it('normalizes wrapped alias fields for user.ask', async () => {
+    const { tool, askManager } = createDeps({
+      channelId: 'qqbot',
+      channelUserId: 'user-123',
+      channelGroupId: 'group-xyz',
+    });
+    if (!tool) throw new Error('user.ask tool missing');
+
+    await expect(tool.handler({
+      arguments: {
+        prompt: '请选择部署窗口',
+        choices: '今晚,明天',
+        blockingReason: '需要用户选择窗口',
+        importance: 'p1',
+        timeout: '5000',
+      },
+      _runtime_context: {
+        agent_id: 'finger-system-agent',
+      },
+    }, {
+      sessionId: 'session-main',
+    })).resolves.toEqual(expect.objectContaining({ ok: true }));
+
+    expect(askManager.open).toHaveBeenCalledWith(expect.objectContaining({
+      question: '请选择部署窗口',
+      options: ['今晚', '明天'],
+      agentId: 'finger-system-agent',
+      timeoutMs: 5000,
+      channelId: 'qqbot',
+    }));
+  });
 });

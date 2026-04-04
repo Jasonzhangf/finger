@@ -64,6 +64,36 @@ describe('update_plan v2 contract', () => {
     expect(searched.items).toHaveLength(1);
   });
 
+  it('normalizes wrapped v2 input aliases', async () => {
+    const created = await updatePlanTool.execute({
+      input: {
+        action: 'create',
+        project_path: '/repo/a',
+        item: {
+          title: 'Wrapped create',
+          assigneeWorkerId: 'finger-worker-01',
+        },
+      },
+    }, systemCtx);
+
+    expect(created.ok).toBe(true);
+    const item = created.item as PlanItemV2;
+    expect(item.projectPath).toBe('/repo/a');
+
+    const updated = await updatePlanTool.execute({
+      params: {
+        action: 'update',
+        project_path: '/repo/a',
+        item_id: item.id,
+        expected_revision: String(item.revision),
+        patch: { description: 'wrapped patch' },
+      },
+    }, systemCtx);
+
+    expect(updated.ok).toBe(true);
+    expect(updated.item?.description).toBe('wrapped patch');
+  });
+
   it('persists plan store to disk and can reload after in-memory reset', async () => {
     const created = await updatePlanTool.execute({
       action: 'create',

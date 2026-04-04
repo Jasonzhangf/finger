@@ -5,6 +5,11 @@ import {
   type ExecCommandRuntimeInput,
   type WriteStdinRuntimeInput,
 } from './codex-exec-session-manager.js';
+import {
+  readMaskedBoolean,
+  readMaskedNumber,
+  readMaskedString,
+} from '../../common/tool-input-mask.js';
 
 const DEFAULT_EXEC_YIELD_TIME_MS = 10_000;
 const DEFAULT_WRITE_STDIN_YIELD_TIME_MS = 250;
@@ -92,42 +97,48 @@ export const writeStdinTool: InternalTool<unknown, ExecCommandToolOutput> = {
 };
 
 function parseExecCommandInput(rawInput: unknown): ExecCommandInput {
-  if (!isRecord(rawInput)) {
-    throw new Error('exec_command input must be an object');
-  }
-
-  if (typeof rawInput.cmd !== 'string' || rawInput.cmd.trim().length === 0) {
+  const cmd = readMaskedString(rawInput, ['cmd', 'command', 'input', 'text']);
+  if (!cmd) {
     throw new Error('exec_command input.cmd must be a non-empty string');
   }
 
   return {
-    cmd: rawInput.cmd,
-    yield_time_ms: parseNumberWithDefault(rawInput.yield_time_ms, DEFAULT_EXEC_YIELD_TIME_MS),
-    max_output_tokens: parseNumberWithDefault(rawInput.max_output_tokens, DEFAULT_MAX_OUTPUT_TOKENS),
-    shell: parseStringWithDefault(rawInput.shell, DEFAULT_SHELL),
-    login: typeof rawInput.login === 'boolean' ? rawInput.login : DEFAULT_LOGIN,
+    cmd,
+    yield_time_ms: parseNumberWithDefault(
+      readMaskedNumber(rawInput, ['yield_time_ms', 'yieldTimeMs', 'yield_ms']),
+      DEFAULT_EXEC_YIELD_TIME_MS,
+    ),
+    max_output_tokens: parseNumberWithDefault(
+      readMaskedNumber(rawInput, ['max_output_tokens', 'maxOutputTokens']),
+      DEFAULT_MAX_OUTPUT_TOKENS,
+    ),
+    shell: parseStringWithDefault(readMaskedString(rawInput, ['shell']), DEFAULT_SHELL),
+    login: readMaskedBoolean(rawInput, ['login']) ?? DEFAULT_LOGIN,
   };
 }
 
 function parseWriteStdinInput(rawInput: unknown): WriteStdinInput {
-  if (!isRecord(rawInput)) {
-    throw new Error('write_stdin input must be an object');
-  }
-
-  const sessionId = rawInput.session_id;
+  const sessionId = readMaskedNumber(rawInput, ['session_id', 'sessionId', 'id']);
   if (typeof sessionId !== 'number' || !Number.isInteger(sessionId) || sessionId < 0) {
     throw new Error('write_stdin input.session_id must be a non-negative integer');
   }
 
-  if (typeof rawInput.chars !== 'string') {
+  const chars = readMaskedString(rawInput, ['chars', 'input', 'text', 'data'], { allowEmpty: true });
+  if (typeof chars !== 'string') {
     throw new Error('write_stdin input.chars must be a string');
   }
 
   return {
     session_id: sessionId,
-    chars: rawInput.chars,
-    yield_time_ms: parseNumberWithDefault(rawInput.yield_time_ms, DEFAULT_WRITE_STDIN_YIELD_TIME_MS),
-    max_output_tokens: parseNumberWithDefault(rawInput.max_output_tokens, DEFAULT_MAX_OUTPUT_TOKENS),
+    chars,
+    yield_time_ms: parseNumberWithDefault(
+      readMaskedNumber(rawInput, ['yield_time_ms', 'yieldTimeMs', 'yield_ms']),
+      DEFAULT_WRITE_STDIN_YIELD_TIME_MS,
+    ),
+    max_output_tokens: parseNumberWithDefault(
+      readMaskedNumber(rawInput, ['max_output_tokens', 'maxOutputTokens']),
+      DEFAULT_MAX_OUTPUT_TOKENS,
+    ),
   };
 }
 
@@ -147,8 +158,4 @@ function parseStringWithDefault(raw: unknown, defaultValue: string): string {
     return defaultValue;
   }
   return raw.trim();
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null;
 }
