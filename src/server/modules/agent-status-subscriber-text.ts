@@ -78,7 +78,11 @@ function stripControlBlockForChannel(text: string): string {
   const parsed = parseControlBlockFromReply(source);
   const cleaned = typeof parsed.humanResponse === 'string' ? parsed.humanResponse.trim() : '';
   const base = cleaned || source;
-  return stripControlLikeJsonPayload(base).trim();
+  const stripped = stripControlLikeJsonPayload(base).trim();
+  return stripped
+    .replace(/Tool\s+[a-zA-Z0-9_.-]+\s+does(?:\s+not)?\s+exist(?:s)?\.?/gi, '')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
 }
 
 export function chunkBodyForChannel(text: string, channelId: string): string[] {

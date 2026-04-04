@@ -684,7 +684,10 @@ export function handleModelRound(progress: SessionProgress, event: any): void {
  * 处理 system_notice 事件
  */
 export function handleSystemNoticeEvent(progress: SessionProgress, event: any): void {
-  if (progress.status !== 'completed' && progress.status !== 'failed') {
+  const shouldKeepIdle =
+    progress.status === 'idle'
+    && progress.hasOpenTurn !== true;
+  if (!shouldKeepIdle && progress.status !== 'completed' && progress.status !== 'failed') {
     progress.status = 'running';
   }
   const payload = event?.payload ?? {};
@@ -834,6 +837,45 @@ export function handleAgentRuntimeStatus(progress: SessionProgress, event: any):
   if (event.payload?.summary) {
     progress.currentTask = event.payload.summary;
   }
+}
+
+/**
+ * 处理 waiting_for_user 事件
+ *
+ * 设计原则：
+ * - waiting_for_user 属于“等待外部输入”的阻塞态，不应继续被进度监控当作 running 心跳。
+ * - 这里将状态切到 idle（当前 ProgressMonitor 仅对 running 生成每分钟心跳），
+ *   避免出现“已等待用户，但仍持续输出 无新事件/仍在运行”的假活跃噪音。
+ */
+export function handleWaitingForUserEvent(progress: SessionProgress, event: any): void {
+  progress.hasOpenTurn = false;
+  progress.status = 'idle';
+  const payload = event?.payload && typeof event.payload === 'object'
+    ? event.payload as Record<string, unknown>
+    : undefined;
+  const context = payload?.context && typeof payload.context === 'object'
+    ? payload.context as Record<string, unknown>
+    : undefined;
+  const question = typeof context?.question === 'string' ? context.question.trim() : '';
+  progress.currentTask = question || '等待用户回复';
+}
+
+/**
+ * 处理 user_decision_received 事件
+ *
+ * 用户已给出决策后，恢复为 running，等待后续 turn/tool 事件推进。
+ */
+export function handleUserDecisionReceivedEvent(progress: SessionProgress, event: any): void {
+  if (progress.status !== 'completed' && progress.status !== 'failed') {
+    progress.status = 'running';
+  }
+  const payload = event?.payload && typeof event.payload === 'object'
+    ? event.payload as Record<string, unknown>
+    : undefined;
+  const decision = typeof payload?.decision === 'string' ? payload.decision.trim() : '';
+  progress.currentTask = decision
+    ? `已收到用户回复：${decision}`
+    : '已收到用户回复，继续执行';
 }
 
 /**

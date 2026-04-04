@@ -58,6 +58,10 @@ export function sanitizeUserFacingStatusTextWithOptions(
   if (!sanitized) return '';
   sanitized = sanitized.replace(/```finger-control[\s\S]*$/giu, '').trim();
   sanitized = stripControlLikeJsonPayload(sanitized);
+  sanitized = sanitized
+    .replace(/Tool\s+[a-zA-Z0-9_.-]+\s+does(?:\s+not)?\s+exist(?:s)?\.?/gi, '')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
   if (!sanitized) return '';
   sanitized = extractStructuredSummaryText(sanitized);
   sanitized = singleLine

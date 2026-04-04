@@ -1009,4 +1009,154 @@ describe('ProgressMonitor incremental updates', () => {
 
     monitor.stop();
   });
+
+  it('stops heartbeat spam when waiting_for_user is emitted', async () => {
+    const eventBus = new UnifiedEventBus();
+    const reports: string[] = [];
+    const monitor = new ProgressMonitor(
+      eventBus,
+      createMinimalDeps(),
+      {
+        onProgressReport: (report) => {
+          reports.push(report.summary);
+        },
+      },
+      {
+        enabled: true,
+        progressUpdates: true,
+        intervalMs: 60_000,
+      },
+    );
+
+    monitor.start();
+
+    const sessionId = 'session-waiting-user-no-heartbeat';
+    await eventBus.emit({
+      type: 'tool_call',
+      sessionId,
+      agentId: 'finger-system-agent',
+      toolId: 'pending-1',
+      toolName: 'exec_command',
+      timestamp: new Date().toISOString(),
+      payload: {
+        input: { cmd: 'long-running-op' },
+      },
+    } as any);
+    await flushEventLoop();
+
+    const beforeWaiting = monitor.getProgress(sessionId);
+    expect(beforeWaiting?.status).toBe('running');
+    if (beforeWaiting) {
+      beforeWaiting.lastUpdateTime = Date.now() - 61_000;
+      beforeWaiting.lastReportTime = Date.now() - 61_000;
+    }
+    await (monitor as any).generateProgressReport();
+    expect(reports.length).toBeGreaterThan(0);
+
+    await eventBus.emit({
+      type: 'waiting_for_user',
+      sessionId,
+      workflowId: sessionId,
+      timestamp: new Date().toISOString(),
+      payload: {
+        reason: 'confirmation_required',
+        options: [],
+        context: {
+          question: '需要用户回复后继续',
+        },
+      },
+    } as any);
+    await flushEventLoop();
+
+    const afterWaiting = monitor.getProgress(sessionId);
+    expect(afterWaiting?.status).toBe('idle');
+    expect(afterWaiting?.currentTask).toContain('需要用户回复后继续');
+
+    if (afterWaiting) {
+      afterWaiting.lastUpdateTime = Date.now() - 61_000;
+      afterWaiting.lastReportTime = Date.now() - 61_000;
+    }
+    const reportCountBefore = reports.length;
+    await (monitor as any).generateProgressReport();
+    expect(reports.length).toBe(reportCountBefore);
+
+    monitor.stop();
+  });
+
+  it('does not resume running heartbeat after turn_complete + stop_gate system_notice', async () => {
+    const eventBus = new UnifiedEventBus();
+    const reports: string[] = [];
+    const monitor = new ProgressMonitor(
+      eventBus,
+      createMinimalDeps(),
+      {
+        onProgressReport: (report) => {
+          reports.push(report.summary);
+        },
+      },
+      {
+        enabled: true,
+        progressUpdates: true,
+        intervalMs: 60_000,
+      },
+    );
+
+    monitor.start();
+
+    const sessionId = 'session-stop-gate-no-heartbeat-resume';
+    await eventBus.emit({
+      type: 'turn_start',
+      sessionId,
+      agentId: 'finger-system-agent',
+      timestamp: new Date().toISOString(),
+      payload: {
+        prompt: '继续执行任务',
+      },
+    } as any);
+    await flushEventLoop();
+
+    const runningProgress = monitor.getProgress(sessionId);
+    expect(runningProgress?.status).toBe('running');
+    if (runningProgress) {
+      const now = Date.now();
+      runningProgress.startTime = now - 180_000;
+      runningProgress.lastUpdateTime = now - 65_000;
+      runningProgress.lastReportTime = now - 65_000;
+      runningProgress.hasOpenTurn = true;
+    }
+    await (monitor as any).generateProgressReport();
+    expect(reports.length).toBeGreaterThan(0);
+
+    await eventBus.emit({
+      type: 'turn_complete',
+      sessionId,
+      timestamp: new Date().toISOString(),
+      payload: {
+        finishReason: 'stop',
+        replyPreview: 'done',
+      },
+    } as any);
+    await eventBus.emit({
+      type: 'system_notice',
+      sessionId,
+      timestamp: new Date().toISOString(),
+      payload: {
+        source: 'stop_gate',
+        hold: true,
+      },
+    } as any);
+    await flushEventLoop();
+
+    const afterComplete = monitor.getProgress(sessionId);
+    expect(afterComplete?.status).toBe('idle');
+    if (afterComplete) {
+      afterComplete.lastUpdateTime = Date.now() - 65_000;
+      afterComplete.lastReportTime = Date.now() - 65_000;
+    }
+    const reportCountBefore = reports.length;
+    await (monitor as any).generateProgressReport();
+    expect(reports.length).toBe(reportCountBefore);
+
+    monitor.stop();
+  });
 });

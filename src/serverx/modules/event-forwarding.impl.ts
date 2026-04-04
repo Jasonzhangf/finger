@@ -142,6 +142,14 @@ function parseBoolean(value: unknown, fallback = false): boolean {
   return fallback;
 }
 
+function hasToolRegistryUnavailableSignal(text: unknown): boolean {
+  if (typeof text !== 'string') return false;
+  const normalized = text.trim();
+  if (!normalized) return false;
+  const matches = normalized.match(/Tool\s+[a-zA-Z0-9_.-]+\s+does(?:\s+not)?\s+exist(?:s)?\.?/gi);
+  return Array.isArray(matches) && matches.length >= 1;
+}
+
 function toUniqueStringArray(value: unknown, limit: number): string[] {
   if (!Array.isArray(value)) return [];
   const normalized = value
@@ -254,6 +262,7 @@ export function attachEventForwarding(deps: EventForwardingDeps): {
   const latestBodyBySession = new Map<string, string>();
   const latestStopSummaryBySession = new Map<string, string>();
   const stopToolSeenBySession = new Map<string, boolean>();
+  const turnToolCallSeenBySession = new Map<string, boolean>();
   const sessionPersistQueue = new Map<string, Promise<void>>();
   const finalReplyDedupKeys = new Map<string, string>();
   const dispatchLedgerDedup = new Map<string, number>();
@@ -745,6 +754,7 @@ export function attachEventForwarding(deps: EventForwardingDeps): {
     if (!event.sessionId || event.sessionId === 'unknown') return;
     if (event.phase === 'turn_start') {
       stopToolSeenBySession.set(event.sessionId, false);
+      turnToolCallSeenBySession.set(event.sessionId, false);
       latestStopSummaryBySession.delete(event.sessionId);
       applyExecutionLifecycleTransition(sessionManager, event.sessionId, {
         stage: 'running',
@@ -760,14 +770,21 @@ export function attachEventForwarding(deps: EventForwardingDeps): {
         : undefined;
       const isFinishedStop = finishReason === 'stop';
       const stopGateState = resolveStopGateState(event);
+      const toolCallSeenInTurn = turnToolCallSeenBySession.get(event.sessionId) === true;
+      const toolRegistryUnavailable = !toolCallSeenInTurn
+        && hasToolRegistryUnavailableSignal(event.payload.replyPreview);
       applyExecutionLifecycleTransition(sessionManager, event.sessionId, {
         stage: pendingInputAccepted
           ? 'running'
+          : toolRegistryUnavailable
+            ? 'failed'
           : isFinishedStop
             ? 'completed'
             : 'interrupted',
         substage: pendingInputAccepted
           ? 'pending_input_queued'
+          : toolRegistryUnavailable
+            ? 'tool_registry_unavailable'
           : isFinishedStop
             ? stopGateState.holding
               ? 'turn_complete_gate_warning'
@@ -778,11 +795,23 @@ export function attachEventForwarding(deps: EventForwardingDeps): {
         finishReason: finishReason ?? null,
         detail: pendingInputAccepted
           ? (typeof event.payload.pendingTurnId === 'string' ? `pendingTurn=${event.payload.pendingTurnId}` : 'pending input accepted')
+          : toolRegistryUnavailable
+            ? 'model output indicates runtime tool registry mismatch'
           : typeof event.payload.replyPreview === 'string'
             ? event.payload.replyPreview.slice(0, 120)
             : stopGateState.holdReason,
-        lastError: null,
+        lastError: toolRegistryUnavailable
+          ? (typeof event.payload.replyPreview === 'string' ? event.payload.replyPreview.slice(0, 200) : 'tool registry unavailable')
+          : null,
       });
+      if (toolRegistryUnavailable) {
+        logger.module('event-forwarding').warn('[EventForwarding] Detected runtime tool registry unavailable signal from model output', {
+          sessionId: event.sessionId,
+          replyPreview: typeof event.payload.replyPreview === 'string'
+            ? event.payload.replyPreview.slice(0, 200)
+            : undefined,
+        });
+      }
     } else if (event.phase === 'turn_error') {
       const errorMessage = typeof event.payload.error === 'string' ? event.payload.error : 'turn_error';
       const normalizedError = errorMessage.toLowerCase();
@@ -811,6 +840,7 @@ export function attachEventForwarding(deps: EventForwardingDeps): {
       }
       if (event.payload.type === 'tool_call') {
         const toolName = typeof event.payload.toolName === 'string' ? event.payload.toolName.trim() : '';
+        turnToolCallSeenBySession.set(event.sessionId, true);
         const policy = resolveStopReasoningPolicy();
         if (isStopReasoningStopTool(toolName, policy.stopToolNames)) {
           stopToolSeenBySession.set(event.sessionId, true);
@@ -1016,6 +1046,7 @@ export function attachEventForwarding(deps: EventForwardingDeps): {
         latestBodyBySession.delete(event.sessionId);
         latestStopSummaryBySession.delete(event.sessionId);
         stopToolSeenBySession.delete(event.sessionId);
+        turnToolCallSeenBySession.delete(event.sessionId);
       }
     }
     // TODO: implement emitToolStepEventsFromLoopEvent
