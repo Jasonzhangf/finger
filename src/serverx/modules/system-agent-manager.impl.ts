@@ -52,6 +52,7 @@ const ACTIVE_LIFECYCLE_STAGES = new Set([
 const ACTIVE_PROJECT_TASK_RECOVERY_MAX_AGE_MS = 45 * 60_000;
 const STARTUP_RECOVERY_IN_FLIGHT = new Set<string>();
 const STARTUP_RECOVERY_STEP_TIMEOUT_MS = 45_000;
+const SYSTEM_RUNTIME_EXEC_TIMEOUT_MS = 45_000;
 
 interface SystemAgentManagerFileConfig {
   periodicCheck?: {
@@ -141,7 +142,7 @@ export class SystemAgentManager {
 
   private async deploySystemAgent(): Promise<void> {
     try {
-      const deployResult = await this.deps.agentRuntimeBlock.execute('deploy', {
+      const deployResult = await this.executeRuntimeWithTimeout('deploy', {
         targetAgentId: SYSTEM_AGENT_CONFIG.id,
         sessionId: this.systemSessionId,
         instanceCount: 1,
@@ -239,7 +240,7 @@ export class SystemAgentManager {
 
     log.info(`Starting Project Agent ${agentId} for ${projectId} at ${projectPath}`);
     const sessionId = this.resolveProjectSessionIdForRecovery(agent);
-    const deployResult = await this.deps.agentRuntimeBlock.execute('deploy', {
+    const deployResult = await this.executeRuntimeWithTimeout('deploy', {
       targetAgentId: FINGER_PROJECT_AGENT_ID,
       sessionId,
       instanceCount: 1,
@@ -424,7 +425,7 @@ export class SystemAgentManager {
       '请从当前中断点继续执行，直到任务真正完成（finish_reason=stop）。',
     ].join('\n');
 
-    const result = await this.deps.agentRuntimeBlock.execute('dispatch', {
+    const result = await this.executeRuntimeWithTimeout('dispatch', {
       sourceAgentId: 'system-project-recovery',
       targetAgentId: FINGER_PROJECT_AGENT_ID,
       task: prompt,
@@ -527,8 +528,11 @@ export class SystemAgentManager {
         const systemSession = sessionManager.getOrCreateSystemSession();
         const systemSessionId = typeof systemSession?.id === 'string' ? systemSession.id.trim() : '';
         if (systemSessionId) candidates.push(systemSessionId);
-      } catch {
-        // best effort only
+      } catch (error) {
+        log.warn('[SystemAgentManager] Failed to resolve system session while collecting recovery candidates', {
+          primarySessionId,
+          error: error instanceof Error ? error.message : String(error),
+        });
       }
     }
 
@@ -643,7 +647,7 @@ export class SystemAgentManager {
 
   private async detectInFlightKernelTurn(sessionId: string): Promise<InflightKernelTurnState> {
     try {
-      const result = await this.deps.agentRuntimeBlock.execute('control', {
+      const result = await this.executeRuntimeWithTimeout('control', {
         action: 'status',
         sessionId,
         targetAgentId: FINGER_PROJECT_AGENT_ID,
@@ -747,7 +751,15 @@ export class SystemAgentManager {
     let content = '';
     try {
       content = await fs.readFile(diagnosticsPath, 'utf-8');
-    } catch {
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException | undefined)?.code;
+      if (code !== 'ENOENT') {
+        log.warn('[SystemAgentManager] Failed to read loop diagnostics for terminal event', {
+          sessionId,
+          diagnosticsPath,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
       return null;
     }
 
@@ -945,7 +957,7 @@ export class SystemAgentManager {
 
     const prompt = buildInterruptedExecutionResumePrompt(lifecycle);
     try {
-      const result = await this.deps.agentRuntimeBlock.execute('dispatch', {
+      const result = await this.executeRuntimeWithTimeout('dispatch', {
         sourceAgentId: 'system-recovery',
         targetAgentId: SYSTEM_AGENT_CONFIG.id,
         task: prompt,
@@ -1046,7 +1058,7 @@ export class SystemAgentManager {
 
     const prompt = buildCompletedExecutionReviewPrompt(lifecycle);
     try {
-      const result = await this.deps.agentRuntimeBlock.execute('dispatch', {
+      const result = await this.executeRuntimeWithTimeout('dispatch', {
         sourceAgentId: 'system-startup-review',
         targetAgentId: SYSTEM_AGENT_CONFIG.id,
         task: prompt,
@@ -1129,7 +1141,7 @@ export class SystemAgentManager {
     }
 
     try {
-      const result = await this.deps.agentRuntimeBlock.execute('dispatch', {
+      const result = await this.executeRuntimeWithTimeout('dispatch', {
         sourceAgentId: 'system-recovery',
         targetAgentId: SYSTEM_AGENT_CONFIG.id,
         task: '[INTERNAL RECOVERY] Resume previous unfinished kernel turn from persisted snapshot.',
@@ -1175,6 +1187,29 @@ export class SystemAgentManager {
         },
       );
       return false;
+    }
+  }
+
+  private async executeRuntimeWithTimeout<T>(
+    action: string,
+    payload: Record<string, unknown>,
+    timeoutMs = SYSTEM_RUNTIME_EXEC_TIMEOUT_MS,
+  ): Promise<T> {
+    let timer: NodeJS.Timeout | null = null;
+    const timeoutPromise = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => {
+        const timeoutError = new Error(`[SystemAgentManager] runtime execute timeout: ${action} after ${timeoutMs}ms`);
+        (timeoutError as NodeJS.ErrnoException).code = 'SYSTEM_RUNTIME_EXEC_TIMEOUT';
+        reject(timeoutError);
+      }, timeoutMs);
+    });
+    try {
+      return await Promise.race([
+        this.deps.agentRuntimeBlock.execute(action, payload) as Promise<T>,
+        timeoutPromise,
+      ]);
+    } finally {
+      if (timer) clearTimeout(timer);
     }
   }
 

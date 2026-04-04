@@ -693,4 +693,12 @@ describe('SystemAgentManager - Session Reuse', () => {
       }),
     );
   });
+
+  it('times out unresolved runtime execute calls in timeout helper', async () => {
+    mockAgentRuntimeBlock.execute.mockImplementation(() => new Promise(() => {}));
+    const manager = new SystemAgentManager(deps);
+    await expect((manager as any).executeRuntimeWithTimeout('dispatch', {}, 1))
+      .rejects
+      .toThrow(/runtime execute timeout/i);
+  });
 });
