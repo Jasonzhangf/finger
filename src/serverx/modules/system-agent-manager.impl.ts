@@ -796,8 +796,8 @@ export class SystemAgentManager {
     const substage = typeof lifecycle.substage === 'string'
       ? lifecycle.substage.trim().toLowerCase()
       : '';
+    if (lifecycle.stage === 'completed') return false;
     if (substage === 'turn_stop_tool_pending') return true;
-    if (lifecycle.stage === 'completed') return finishReason !== 'stop';
     if (finishReason === 'stop') return true;
     if (ACTIVE_LIFECYCLE_STAGES.has(lifecycle.stage)) return true;
     return lifecycle.stage === 'failed';

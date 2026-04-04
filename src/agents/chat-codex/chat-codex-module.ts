@@ -1534,6 +1534,29 @@ export function createChatCodexModule(
           hooks: controlHooks,
           yoloMode: controlPolicy.autonomyMode === 'yolo',
         });
+      const kernelMetadata = isRecord(runResult.kernelMetadata) ? runResult.kernelMetadata : {};
+      const stopToolGateApplied = kernelMetadata.stopToolGateApplied === true;
+      const stopToolGateAttempt = typeof kernelMetadata.stopToolGateAttempt === 'number'
+        && Number.isFinite(kernelMetadata.stopToolGateAttempt)
+        && kernelMetadata.stopToolGateAttempt >= 0
+        ? Math.floor(kernelMetadata.stopToolGateAttempt)
+        : undefined;
+      const stopToolMaxAutoContinueTurns = typeof kernelMetadata.stopToolMaxAutoContinueTurns === 'number'
+        && Number.isFinite(kernelMetadata.stopToolMaxAutoContinueTurns)
+        && kernelMetadata.stopToolMaxAutoContinueTurns >= 0
+        ? Math.floor(kernelMetadata.stopToolMaxAutoContinueTurns)
+        : undefined;
+      const controlBlockGateApplied = kernelMetadata.controlBlockGateApplied === true;
+      const controlBlockGateAttempt = typeof kernelMetadata.controlBlockGateAttempt === 'number'
+        && Number.isFinite(kernelMetadata.controlBlockGateAttempt)
+        && kernelMetadata.controlBlockGateAttempt >= 0
+        ? Math.floor(kernelMetadata.controlBlockGateAttempt)
+        : undefined;
+      const controlBlockMaxAutoContinueTurns = typeof kernelMetadata.controlBlockMaxAutoContinueTurns === 'number'
+        && Number.isFinite(kernelMetadata.controlBlockMaxAutoContinueTurns)
+        && kernelMetadata.controlBlockMaxAutoContinueTurns >= 0
+        ? Math.floor(kernelMetadata.controlBlockMaxAutoContinueTurns)
+        : undefined;
 
       safeNotifyLoopEvent(mergedConfig.onLoopEvent, {
         sessionId,
@@ -1552,6 +1575,24 @@ export function createChatCodexModule(
           controlBlockIssues: controlParsed.issues.slice(0, 8),
           controlHookNames: controlHooks.hooks.slice(0, 32),
           controlGateHold,
+          ...(typeof stopToolMaxAutoContinueTurns === 'number'
+            ? { stopToolMaxAutoContinueTurns }
+            : {}),
+          ...(stopToolGateApplied || typeof stopToolGateAttempt === 'number'
+            ? { stopToolGateApplied }
+            : {}),
+          ...(typeof stopToolGateAttempt === 'number'
+            ? { stopToolGateAttempt }
+            : {}),
+          ...(typeof controlBlockMaxAutoContinueTurns === 'number'
+            ? { controlBlockMaxAutoContinueTurns }
+            : {}),
+          ...(controlBlockGateApplied || typeof controlBlockGateAttempt === 'number'
+            ? { controlBlockGateApplied }
+            : {}),
+          ...(typeof controlBlockGateAttempt === 'number'
+            ? { controlBlockGateAttempt }
+            : {}),
           ...(controlParsed.controlBlock ? { controlBlock: controlParsed.controlBlock } : {}),
           ...(runResult.kernelMetadata?.pendingInputAccepted === true ? { pendingInputAccepted: true } : {}),
           ...(typeof runResult.kernelMetadata?.activeTurnId === 'string'

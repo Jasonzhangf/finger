@@ -650,6 +650,51 @@ describe('chat-codex module', () => {
     expect(asRecord(turnComplete?.payload).activeTurnId).toBe('active-1');
   });
 
+  it('forwards stop/control gate metadata to turn_complete payload for deadlock-safe finalization', async () => {
+    const onLoopEvent = vi.fn();
+    const gateRunner: ChatCodexRunner = {
+      runTurn: async () => ({
+        reply: 'DONE',
+        events: [
+          {
+            id: 'gate-1',
+            msg: {
+              type: 'task_complete',
+              last_agent_message: 'DONE',
+            },
+          },
+        ],
+        usedBinaryPath: '/tmp/finger-kernel-bridge-bin',
+        kernelMetadata: {
+          stopToolGateApplied: true,
+          stopToolGateAttempt: 2,
+          stopToolMaxAutoContinueTurns: 2,
+          controlBlockGateApplied: true,
+          controlBlockGateAttempt: 2,
+          controlBlockMaxAutoContinueTurns: 2,
+        },
+      }),
+    };
+    const module = createChatCodexModule({ onLoopEvent }, gateRunner);
+
+    await module.handle({
+      text: 'gate metadata forwarding',
+      metadata: { stopToolMaxAutoContinueTurns: 2 },
+    });
+
+    const turnComplete = onLoopEvent.mock.calls
+      .map((call) => call[0] as Record<string, unknown>)
+      .find((event) => event.phase === 'turn_complete');
+    expect(turnComplete).toBeDefined();
+    const payload = asRecord(turnComplete?.payload);
+    expect(payload.stopToolGateApplied).toBe(true);
+    expect(payload.stopToolGateAttempt).toBe(2);
+    expect(payload.stopToolMaxAutoContinueTurns).toBe(2);
+    expect(payload.controlBlockGateApplied).toBe(true);
+    expect(payload.controlBlockGateAttempt).toBe(2);
+    expect(payload.controlBlockMaxAutoContinueTurns).toBe(2);
+  });
+
   it('keeps system prompt stable across orchestrator and reviewer roles', async () => {
     runTurnMock.mockResolvedValue({
       reply: 'OK',

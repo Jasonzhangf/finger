@@ -20,6 +20,7 @@ import {
   isStopReasoningStopTool,
   resolveStopReasoningPolicy,
 } from '../../common/stop-reasoning-policy.js';
+import { resolveControlBlockPolicy } from '../../common/control-block.js';
 import { attachBroadcastHandlers } from '../../server/modules/event-forwarding-handlers.js';
 import { buildDispatchResultEnvelope } from '../../server/modules/mailbox-envelope.js';
 import { heartbeatMailbox } from '../../server/modules/heartbeat-mailbox.js';
@@ -128,6 +129,16 @@ function parseInteger(value: unknown, fallback = 0): number {
       : Number.NaN;
   if (!Number.isFinite(parsed)) return fallback;
   return Math.floor(parsed);
+}
+
+function parseBoolean(value: unknown, fallback = false): boolean {
+  if (typeof value === 'boolean') return value;
+  if (typeof value === 'string') {
+    const normalized = value.trim().toLowerCase();
+    if (normalized === 'true' || normalized === '1' || normalized === 'yes' || normalized === 'on') return true;
+    if (normalized === 'false' || normalized === '0' || normalized === 'no' || normalized === 'off') return false;
+  }
+  return fallback;
 }
 
 function toUniqueStringArray(value: unknown, limit: number): string[] {
@@ -614,33 +625,88 @@ export function attachEventForwarding(deps: EventForwardingDeps): {
   const resolveStopGateState = (event: ChatCodexLoopEvent): {
     requiresStopTool: boolean;
     stopToolSeen: boolean;
+    stopToolGateApplied: boolean;
+    stopToolGateAttempt: number;
+    stopToolMaxAutoContinueTurns: number;
+    stopToolGateDisabled: boolean;
+    stopToolGateExhausted: boolean;
     controlGateHold: boolean;
+    controlBlockGateApplied: boolean;
+    controlBlockGateAttempt: number;
+    controlBlockMaxAutoContinueTurns: number;
+    controlGateDisabled: boolean;
+    controlGateExhausted: boolean;
     holding: boolean;
     holdReason?: string;
   } => {
-    const policy = resolveStopReasoningPolicy();
+    const policy = resolveStopReasoningPolicy(event.payload);
     const requiresStopTool = policy.requireToolForStop;
     const stopToolSeen = stopToolSeenBySession.get(event.sessionId) === true;
+    const stopToolMaxAutoContinueTurns = Math.max(
+      0,
+      parseInteger(event.payload.stopToolMaxAutoContinueTurns, policy.maxAutoContinueTurns),
+    );
+    const stopToolGateAttempt = Math.max(0, parseInteger(event.payload.stopToolGateAttempt, 0));
+    const stopToolGateApplied = event.payload.stopToolGateApplied === true || stopToolGateAttempt > 0;
+    const stopToolGateDisabled = stopToolMaxAutoContinueTurns <= 0;
+    const stopToolGateExhausted = stopToolGateApplied
+      && stopToolMaxAutoContinueTurns > 0
+      && stopToolGateAttempt >= stopToolMaxAutoContinueTurns;
+
+    const controlPolicy = resolveControlBlockPolicy(event.payload);
+    const controlBlockMaxAutoContinueTurns = Math.max(
+      0,
+      parseInteger(event.payload.controlBlockMaxAutoContinueTurns, controlPolicy.maxAutoContinueTurns),
+    );
+    const controlBlockGateAttempt = Math.max(0, parseInteger(event.payload.controlBlockGateAttempt, 0));
+    const controlBlockGateApplied = event.payload.controlBlockGateApplied === true || controlBlockGateAttempt > 0;
+    const controlGateDisabled = controlBlockMaxAutoContinueTurns <= 0;
+    const controlGateExhausted = controlBlockGateApplied
+      && controlBlockMaxAutoContinueTurns > 0
+      && controlBlockGateAttempt >= controlBlockMaxAutoContinueTurns;
+
     const finishReason = event.phase === 'turn_complete' && typeof event.payload.finishReason === 'string'
       ? event.payload.finishReason.trim().toLowerCase()
       : '';
     const pendingInputAccepted = event.phase === 'turn_complete' && event.payload.pendingInputAccepted === true;
-    const stopToolHolding = event.phase === 'turn_complete'
+    const stopToolHoldingCandidate = event.phase === 'turn_complete'
       && finishReason === 'stop'
       && !pendingInputAccepted
       && requiresStopTool
       && !stopToolSeen;
-    const controlGateHold = event.phase === 'turn_complete'
+    const stopToolHolding = stopToolHoldingCandidate
+      && !stopToolGateDisabled
+      && !stopToolGateExhausted;
+    const controlGateHoldCandidate = event.phase === 'turn_complete'
       && finishReason === 'stop'
       && !pendingInputAccepted
-      && event.payload.controlGateHold === true;
+      && parseBoolean(event.payload.controlGateHold, false);
+    const controlGateHold = controlGateHoldCandidate
+      && !controlGateDisabled
+      && !controlGateExhausted;
     const holding = stopToolHolding || controlGateHold;
     const holdReason = stopToolHolding
       ? 'finish_reason=stop but reasoning.stop was not called'
       : controlGateHold
         ? 'finish_reason=stop but control block is missing/invalid or evidence is not ready'
         : undefined;
-    return { requiresStopTool, stopToolSeen, controlGateHold, holding, holdReason };
+    return {
+      requiresStopTool,
+      stopToolSeen,
+      stopToolGateApplied,
+      stopToolGateAttempt,
+      stopToolMaxAutoContinueTurns,
+      stopToolGateDisabled,
+      stopToolGateExhausted,
+      controlGateHold,
+      controlBlockGateApplied,
+      controlBlockGateAttempt,
+      controlBlockMaxAutoContinueTurns,
+      controlGateDisabled,
+      controlGateExhausted,
+      holding,
+      holdReason,
+    };
   };
   const emitLoopEventToEventBus = (event: ChatCodexLoopEvent): void => {
     if (!event.sessionId || event.sessionId === 'unknown') return;
@@ -663,28 +729,24 @@ export function attachEventForwarding(deps: EventForwardingDeps): {
       applyExecutionLifecycleTransition(sessionManager, event.sessionId, {
         stage: pendingInputAccepted
           ? 'running'
-          : stopGateState.holding
-            ? 'interrupted'
-            : isFinishedStop
+          : isFinishedStop
             ? 'completed'
             : 'interrupted',
         substage: pendingInputAccepted
           ? 'pending_input_queued'
-          : stopGateState.holding
-            ? 'turn_stop_tool_pending'
           : isFinishedStop
-            ? 'turn_complete'
+            ? stopGateState.holding
+              ? 'turn_complete_gate_warning'
+              : 'turn_complete'
             : 'turn_incomplete',
         updatedBy: 'event-forwarding',
         turnId: typeof event.payload.responseId === 'string' ? event.payload.responseId : undefined,
         finishReason: finishReason ?? null,
         detail: pendingInputAccepted
           ? (typeof event.payload.pendingTurnId === 'string' ? `pendingTurn=${event.payload.pendingTurnId}` : 'pending input accepted')
-          : stopGateState.holding
-            ? stopGateState.holdReason
           : typeof event.payload.replyPreview === 'string'
             ? event.payload.replyPreview.slice(0, 120)
-            : undefined,
+            : stopGateState.holdReason,
         lastError: null,
       });
     } else if (event.phase === 'turn_error') {
@@ -777,7 +839,7 @@ export function attachEventForwarding(deps: EventForwardingDeps): {
         }
       }
       const stopGateState = resolveStopGateState(event);
-      const shouldFinalizeTurn = event.phase === 'turn_error' || !stopGateState.holding;
+      const shouldFinalizeTurn = event.phase === 'turn_error' || event.phase === 'turn_complete';
       const finalizeFinishReason = event.phase === 'turn_complete'
         && typeof event.payload.finishReason === 'string'
         ? event.payload.finishReason
@@ -787,6 +849,33 @@ export function attachEventForwarding(deps: EventForwardingDeps): {
         && event.payload.responseId.trim().length > 0
         ? event.payload.responseId.trim()
         : undefined;
+      if (event.phase === 'turn_complete' && stopGateState.holding) {
+        void eventBus.emit({
+          type: 'system_notice',
+          sessionId: event.sessionId,
+          timestamp: event.timestamp,
+          payload: {
+            source: 'stop_gate',
+            hold: true,
+            nonBlocking: true,
+            holdReason: stopGateState.holdReason ?? null,
+            controlGateHold: stopGateState.controlGateHold,
+            requiresStopTool: stopGateState.requiresStopTool,
+            stopToolSeen: stopGateState.stopToolSeen,
+            stopToolGateApplied: stopGateState.stopToolGateApplied,
+            stopToolGateAttempt: stopGateState.stopToolGateAttempt,
+            stopToolMaxAutoContinueTurns: stopGateState.stopToolMaxAutoContinueTurns,
+            stopToolGateDisabled: stopGateState.stopToolGateDisabled,
+            stopToolGateExhausted: stopGateState.stopToolGateExhausted,
+            controlBlockGateApplied: stopGateState.controlBlockGateApplied,
+            controlBlockGateAttempt: stopGateState.controlBlockGateAttempt,
+            controlBlockMaxAutoContinueTurns: stopGateState.controlBlockMaxAutoContinueTurns,
+            controlGateDisabled: stopGateState.controlGateDisabled,
+            controlGateExhausted: stopGateState.controlGateExhausted,
+          },
+        });
+      }
+
       if (shouldFinalizeTurn) {
         if (event.phase === 'turn_complete' && finalizeFinishReason === 'stop' && runtime?.maybeAutoDigestOnStop) {
           void runtime.maybeAutoDigestOnStop(event.sessionId, finalizeTurnId).catch((error) => {
@@ -881,20 +970,6 @@ export function attachEventForwarding(deps: EventForwardingDeps): {
         latestBodyBySession.delete(event.sessionId);
         latestStopSummaryBySession.delete(event.sessionId);
         stopToolSeenBySession.delete(event.sessionId);
-      } else {
-        void eventBus.emit({
-          type: 'system_notice',
-          sessionId: event.sessionId,
-          timestamp: event.timestamp,
-          payload: {
-            source: 'stop_gate',
-            hold: true,
-            holdReason: stopGateState.holdReason ?? null,
-            controlGateHold: stopGateState.controlGateHold,
-            requiresStopTool: stopGateState.requiresStopTool,
-            stopToolSeen: stopGateState.stopToolSeen,
-          },
-        });
       }
     }
     // TODO: implement emitToolStepEventsFromLoopEvent

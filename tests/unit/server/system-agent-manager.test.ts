@@ -199,7 +199,7 @@ describe('SystemAgentManager - Session Reuse', () => {
     expect(dispatchCall?.[1]?.metadata?.progressDelivery).toEqual({ mode: 'silent' });
   });
 
-  it('should treat completed lifecycle without finish_reason=stop as interrupted and resume on startup', async () => {
+  it('should not resume startup execution when lifecycle is already completed without finish_reason=stop', async () => {
     const session = {
       id: 'system-session-completed-without-stop',
       name: 'finger-system-agent runtime',
@@ -225,9 +225,7 @@ describe('SystemAgentManager - Session Reuse', () => {
       (call: unknown[]) => call[0] === 'dispatch' && (call[1] as Record<string, unknown>)?.metadata
         && ((call[1] as { metadata?: { source?: string } }).metadata?.source === 'system-recovery'),
     );
-    expect(recoveryDispatchCall).toBeDefined();
-    expect((recoveryDispatchCall?.[1] as { metadata?: { progressDelivery?: unknown } })?.metadata?.progressDelivery)
-      .toEqual({ mode: 'silent' });
+    expect(recoveryDispatchCall).toBeUndefined();
   });
 
   it('should dispatch silent startup delivery review on startup when previous turn stopped', async () => {

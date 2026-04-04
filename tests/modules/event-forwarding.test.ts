@@ -436,11 +436,11 @@ describe('Event Forwarding - Execution Lifecycle', () => {
       payload: { finishReason: 'stop', responseId: 'resp-stop-1', replyPreview: 'done' },
     });
 
-    await Promise.resolve();
+    await new Promise((resolve) => setTimeout(resolve, 20));
     expect(runtime.maybeAutoDigestOnStop).toHaveBeenCalledWith('auto-stop-digest-session-1', 'resp-stop-1');
   });
 
-  it('holds finalization when control gate requests continue on stop', async () => {
+  it('emits non-blocking stop_gate notice and still finalizes when control gate requests continue on stop', async () => {
     const sessionManager = createMockSessionManager();
     const runtime = {
       maybeAutoDigestOnStop: vi.fn(async () => true),
@@ -475,13 +475,13 @@ describe('Event Forwarding - Execution Lifecycle', () => {
 
     const session = (sessionManager.getSession as ReturnType<typeof vi.fn>)('control-gate-hold-session-1');
     expect(session.context.executionLifecycle).toEqual(expect.objectContaining({
-      stage: 'interrupted',
-      substage: 'turn_stop_tool_pending',
+      stage: 'completed',
+      substage: 'turn_complete_gate_warning',
       updatedBy: 'event-forwarding',
     }));
-    await Promise.resolve();
-    expect(runtime.maybeAutoDigestOnStop).not.toHaveBeenCalled();
-    expect(statusSubscriber.finalizeChannelTurn).not.toHaveBeenCalled();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(runtime.maybeAutoDigestOnStop).toHaveBeenCalledWith('control-gate-hold-session-1', undefined);
+    expect(statusSubscriber.finalizeChannelTurn).toHaveBeenCalledTimes(1);
     expect(statusSubscriber.sendBodyUpdate).not.toHaveBeenCalled();
     expect(eventBus.emit).toHaveBeenCalledWith(expect.objectContaining({
       type: 'system_notice',
@@ -489,8 +489,125 @@ describe('Event Forwarding - Execution Lifecycle', () => {
       payload: expect.objectContaining({
         source: 'stop_gate',
         hold: true,
+        nonBlocking: true,
       }),
     }));
+  });
+
+  it('does not hold finalization when stop-tool auto-continue budget is disabled', async () => {
+    const sessionManager = createMockSessionManager();
+    const runtime = {
+      maybeAutoDigestOnStop: vi.fn(async () => true),
+    };
+    const eventBus = createMockEventBus();
+    const statusSubscriber = {
+      sendBodyUpdate: vi.fn(async () => undefined),
+      sendReasoningUpdate: vi.fn(async () => undefined),
+      finalizeChannelTurn: vi.fn(async () => undefined),
+    } as any;
+    const deps = createDeps({ sessionManager, runtime, eventBus, agentStatusSubscriber: statusSubscriber });
+    const { emitLoopEventToEventBus } = attachEventForwarding(deps);
+
+    emitLoopEventToEventBus({
+      sessionId: 'stop-gate-disabled-session-1',
+      phase: 'turn_complete',
+      timestamp: new Date().toISOString(),
+      payload: {
+        finishReason: 'stop',
+        replyPreview: 'done',
+        stopToolMaxAutoContinueTurns: 0,
+      },
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(runtime.maybeAutoDigestOnStop).toHaveBeenCalledWith('stop-gate-disabled-session-1', undefined);
+    expect(statusSubscriber.finalizeChannelTurn).toHaveBeenCalledTimes(1);
+    const holdCall = (eventBus.emit as ReturnType<typeof vi.fn>).mock.calls.find((call) => {
+      const evt = call[0] as Record<string, unknown>;
+      return evt?.type === 'system_notice'
+        && (evt.payload as Record<string, unknown> | undefined)?.source === 'stop_gate'
+        && (evt.payload as Record<string, unknown> | undefined)?.hold === true;
+    });
+    expect(holdCall).toBeUndefined();
+  });
+
+  it('does not hold finalization when stop-tool gate budget is exhausted', async () => {
+    const sessionManager = createMockSessionManager();
+    const runtime = {
+      maybeAutoDigestOnStop: vi.fn(async () => true),
+    };
+    const eventBus = createMockEventBus();
+    const statusSubscriber = {
+      sendBodyUpdate: vi.fn(async () => undefined),
+      sendReasoningUpdate: vi.fn(async () => undefined),
+      finalizeChannelTurn: vi.fn(async () => undefined),
+    } as any;
+    const deps = createDeps({ sessionManager, runtime, eventBus, agentStatusSubscriber: statusSubscriber });
+    const { emitLoopEventToEventBus } = attachEventForwarding(deps);
+
+    emitLoopEventToEventBus({
+      sessionId: 'stop-gate-exhausted-session-1',
+      phase: 'turn_complete',
+      timestamp: new Date().toISOString(),
+      payload: {
+        finishReason: 'stop',
+        replyPreview: 'done',
+        stopToolGateApplied: true,
+        stopToolGateAttempt: 2,
+        stopToolMaxAutoContinueTurns: 2,
+      },
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(runtime.maybeAutoDigestOnStop).toHaveBeenCalledWith('stop-gate-exhausted-session-1', undefined);
+    expect(statusSubscriber.finalizeChannelTurn).toHaveBeenCalledTimes(1);
+    const holdCall = (eventBus.emit as ReturnType<typeof vi.fn>).mock.calls.find((call) => {
+      const evt = call[0] as Record<string, unknown>;
+      return evt?.type === 'system_notice'
+        && (evt.payload as Record<string, unknown> | undefined)?.source === 'stop_gate'
+        && (evt.payload as Record<string, unknown> | undefined)?.hold === true;
+    });
+    expect(holdCall).toBeUndefined();
+  });
+
+  it('does not hold finalization when control-block gate budget is exhausted', async () => {
+    const sessionManager = createMockSessionManager();
+    const runtime = {
+      maybeAutoDigestOnStop: vi.fn(async () => true),
+    };
+    const eventBus = createMockEventBus();
+    const statusSubscriber = {
+      sendBodyUpdate: vi.fn(async () => undefined),
+      sendReasoningUpdate: vi.fn(async () => undefined),
+      finalizeChannelTurn: vi.fn(async () => undefined),
+    } as any;
+    const deps = createDeps({ sessionManager, runtime, eventBus, agentStatusSubscriber: statusSubscriber });
+    const { emitLoopEventToEventBus } = attachEventForwarding(deps);
+
+    emitLoopEventToEventBus({
+      sessionId: 'control-gate-exhausted-session-1',
+      phase: 'turn_complete',
+      timestamp: new Date().toISOString(),
+      payload: {
+        finishReason: 'stop',
+        replyPreview: 'done',
+        controlGateHold: true,
+        controlBlockGateApplied: true,
+        controlBlockGateAttempt: 2,
+        controlBlockMaxAutoContinueTurns: 2,
+      },
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(runtime.maybeAutoDigestOnStop).toHaveBeenCalledWith('control-gate-exhausted-session-1', undefined);
+    expect(statusSubscriber.finalizeChannelTurn).toHaveBeenCalledTimes(1);
+    const holdCall = (eventBus.emit as ReturnType<typeof vi.fn>).mock.calls.find((call) => {
+      const evt = call[0] as Record<string, unknown>;
+      return evt?.type === 'system_notice'
+        && (evt.payload as Record<string, unknown> | undefined)?.source === 'stop_gate'
+        && (evt.payload as Record<string, unknown> | undefined)?.hold === true;
+    });
+    expect(holdCall).toBeUndefined();
   });
 
   it('executes hook.scheduler.wait by creating a clock timer with inject payload', async () => {
