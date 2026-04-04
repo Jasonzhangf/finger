@@ -85,18 +85,28 @@ describe('runtime hygiene', () => {
     expect(result.removed).toEqual(['server.pid']);
   });
 
-  it('removes top-level orphan session roots without metadata json', () => {
+  it('does not remove non-empty session roots (protect active writes)', () => {
     const root = mkdtempSync(join(tmpdir(), 'finger-session-hygiene-'));
     cleanupPaths.push(root);
     const orphan = join(root, 'session-123');
-    mkdirSync(join(orphan, 'finger-system-agent', 'main'), { recursive: true });
-    writeFileSync(join(orphan, 'finger-system-agent', 'main', 'context-ledger.jsonl'), 'orphan', 'utf8');
+    mkdirSync(orphan, { recursive: true });
+    writeFileSync(join(orphan, 'main.json.tmp-1234'), '{"id":"tmp"}', 'utf8');
 
     const valid = join(root, 'session-456');
     mkdirSync(valid, { recursive: true });
     writeFileSync(join(valid, 'main.json'), '{"id":"session-456","projectPath":"/tmp/x"}', 'utf8');
 
     const result = pruneOrphanSessionRootDirs(root);
-    expect(result.removed).toEqual([orphan]);
+    expect(result.removed).toEqual([]);
+  });
+
+  it('removes only truly empty top-level session roots', () => {
+    const root = mkdtempSync(join(tmpdir(), 'finger-session-hygiene-empty-'));
+    cleanupPaths.push(root);
+    const emptySessionRoot = join(root, 'session-empty');
+    mkdirSync(emptySessionRoot, { recursive: true });
+
+    const result = pruneOrphanSessionRootDirs(root);
+    expect(result.removed).toEqual([emptySessionRoot]);
   });
 });

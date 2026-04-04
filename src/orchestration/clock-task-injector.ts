@@ -12,6 +12,7 @@ import { computeNextClockRunForTimer } from '../tools/internal/codex-clock-tool.
 import { isClockTimer } from '../tools/internal/codex-clock-schema.js';
 import type { ProgressDeliveryPolicy } from '../common/progress-delivery-policy.js';
 import { normalizeProgressDeliveryPolicy } from '../common/progress-delivery-policy.js';
+import { writeFileAtomicSync } from '../core/atomic-write.js';
 
 export interface ClockInjectPayload {
   agentId: string;
@@ -276,9 +277,7 @@ export class ClockTaskInjector {
     if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
     const lines = store.timers.map((t) => JSON.stringify(t));
     const data = `${lines.join('\n')}${lines.length > 0 ? '\n' : ''}`;
-    const tempPath = `${this.storePath}.tmp`;
-    fs.writeFileSync(tempPath, data, 'utf-8');
-    fs.renameSync(tempPath, this.storePath);
+    writeFileAtomicSync(this.storePath, data);
   }
 
   private armTimer(delayMs: number): void {

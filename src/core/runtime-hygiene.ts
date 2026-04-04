@@ -144,14 +144,14 @@ export function pruneOrphanSessionRootDirs(baseDir: string): { removed: string[]
     if (!entry.isDirectory()) continue;
     if (!isSessionRootArtifact(entry.name)) continue;
     const sessionRoot = path.join(baseDir, entry.name);
-    let hasMetadata = false;
+    let childCount = 0;
     try {
       const children = fs.readdirSync(sessionRoot, { withFileTypes: true });
-      hasMetadata = children.some((child) => child.isFile() && child.name.endsWith('.json'));
+      childCount = children.length;
     } catch {
       continue;
     }
-    if (hasMetadata) continue;
+    if (childCount > 0) continue;
 
     fs.rmSync(sessionRoot, { recursive: true, force: true });
     removed.push(sessionRoot);

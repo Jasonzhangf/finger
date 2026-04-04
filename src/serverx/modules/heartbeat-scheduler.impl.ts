@@ -36,6 +36,7 @@ import {
   parseDelegatedProjectTaskRegistry,
 } from '../../common/project-task-state.js';
 import { applyProjectStatusGatewayPatch } from '../../server/modules/project-status-gateway.js';
+import { writeFileAtomic } from '../../core/atomic-write.js';
 
 const log = logger.module('HeartbeatScheduler');
 
@@ -1893,8 +1894,6 @@ export class HeartbeatScheduler {
       ...(this.lastDailySystemReviewDate ? { lastDailySystemReviewDate: this.lastDailySystemReviewDate } : {}),
       ...(this.dailySystemReviewDispatchState ? { dailySystemReviewDispatchState: this.dailySystemReviewDispatchState } : {}),
     };
-    const tempPath = `${RUNTIME_STATE_PATH}.tmp`;
-    await fs.writeFile(tempPath, JSON.stringify(state, null, 2), 'utf-8');
-    await fs.rename(tempPath, RUNTIME_STATE_PATH);
+    await writeFileAtomic(RUNTIME_STATE_PATH, JSON.stringify(state, null, 2));
   }
 }

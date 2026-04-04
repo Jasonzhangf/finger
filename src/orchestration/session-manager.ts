@@ -27,6 +27,7 @@ import { createConsoleLikeLogger } from '../core/logger/console-like.js';
 import { inferTagsAndTopic } from '../common/tag-topic-inference.js';
 import { pruneOrphanSessionRootDirs } from '../core/runtime-hygiene.js';
 import { normalizeProjectPathCanonical } from '../common/path-normalize.js';
+import { writeFileAtomicSync } from '../core/atomic-write.js';
 
 const clog = createConsoleLikeLogger('SessionManager');
 
@@ -338,9 +339,7 @@ export class SessionManager {
     const filePath = this.getSessionPath(session);
     const persistedSession: Session = { ...session };
     delete (persistedSession as Session & { _cachedView?: unknown })._cachedView;
-    const tmpPath = `${filePath}.tmp`;
-    fs.writeFileSync(tmpPath, JSON.stringify(persistedSession, null, 2));
-    fs.renameSync(tmpPath, filePath);
+    writeFileAtomicSync(filePath, JSON.stringify(persistedSession, null, 2));
 
     const previousPath = this.sessionFilePaths.get(session.id);
     if (previousPath && previousPath !== filePath && fs.existsSync(previousPath)) {

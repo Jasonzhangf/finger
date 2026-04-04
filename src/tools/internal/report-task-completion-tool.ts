@@ -34,6 +34,7 @@ import { writeProjectDreamMemory } from '../../core/project-dream-memory-store.j
 import { FINGER_PATHS } from '../../core/finger-paths.js';
 import { SYSTEM_PROJECT_PATH } from '../../agents/finger-system-agent/index.js';
 import { applyProjectStatusGatewayPatch } from '../../server/modules/project-status-gateway.js';
+import { writeFileAtomic } from '../../core/atomic-write.js';
 
 const log = logger.module('report-task-completion-tool');
 
@@ -318,10 +319,7 @@ async function persistDailySystemReviewDispatchState(
     ...runtimeState,
     dailySystemReviewDispatchState: next,
   };
-  await fs.mkdir(path.dirname(HEARTBEAT_RUNTIME_STATE_PATH), { recursive: true });
-  const tempPath = `${HEARTBEAT_RUNTIME_STATE_PATH}.tmp`;
-  await fs.writeFile(tempPath, JSON.stringify(updated, null, 2), 'utf-8');
-  await fs.rename(tempPath, HEARTBEAT_RUNTIME_STATE_PATH);
+  await writeFileAtomic(HEARTBEAT_RUNTIME_STATE_PATH, JSON.stringify(updated, null, 2));
 }
 
 async function verifyDailySystemReviewAppendOnly(

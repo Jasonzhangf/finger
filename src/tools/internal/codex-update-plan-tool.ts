@@ -1,8 +1,9 @@
 import path from 'path';
-import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'fs';
+import { existsSync, mkdirSync, readFileSync, rmSync } from 'fs';
 import { InternalTool, createToolExecutionContext, type ToolExecutionContext } from './types.js';
 import { logger } from '../../core/logger.js';
 import { FINGER_PATHS } from '../../core/finger-paths.js';
+import { writeFileAtomicSync } from '../../core/atomic-write.js';
 
 type LegacyPlanStepStatus = 'pending' | 'in_progress' | 'completed';
 type PlanPriority = 'P0' | 'P1' | 'P2' | 'P3';
@@ -1658,9 +1659,7 @@ function persistStore(): void {
       projects,
     };
     mkdirSync(path.dirname(storeFile), { recursive: true });
-    const tmpPath = `${storeFile}.tmp`;
-    writeFileSync(tmpPath, `${JSON.stringify(payload, null, 2)}\n`, 'utf-8');
-    renameSync(tmpPath, storeFile);
+    writeFileAtomicSync(storeFile, `${JSON.stringify(payload, null, 2)}\n`);
   } catch (error) {
     logger.module('update-plan').warn('[update_plan] Failed to persist plan store', {
       file: storeFile,
