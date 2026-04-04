@@ -15,6 +15,7 @@ import { removeReviewRoute } from '../../agents/finger-system-agent/review-route
 import {
   applyExecutionLifecycleTransition,
   getExecutionLifecycleState,
+  parseExecutionLifecycleState,
   type ExecutionLifecycleState,
 } from '../../server/modules/execution-lifecycle.js';
 import {
@@ -23,7 +24,7 @@ import {
 } from '../../server/modules/heartbeat-helpers.js';
 import type { ProgressDeliveryPolicy } from '../../common/progress-delivery-policy.js';
 import { normalizeProgressDeliveryPolicy } from '../../common/progress-delivery-policy.js';
-import { FINGER_PROJECT_AGENT_ID } from '../../agents/finger-general/finger-general-module.js';
+import { FINGER_PROJECT_AGENT_ID, FINGER_REVIEWER_AGENT_ID } from '../../agents/finger-general/finger-general-module.js';
 import {
   acquireProjectDreamLock,
   releaseProjectDreamLock,
@@ -136,6 +137,12 @@ const ACTIVE_LIFECYCLE_STAGES = new Set([
   'retrying',
   'interrupted',
 ]);
+const HEARTBEAT_IDLE_GUARD_AGENT_IDS = [
+  SYSTEM_AGENT_ID,
+  FINGER_PROJECT_AGENT_ID,
+  FINGER_REVIEWER_AGENT_ID,
+];
+const HEARTBEAT_IDLE_GUARD_LOG_THROTTLE_MS = 60_000;
 
 function normalizeProjectPath(value: string): string {
   return value.trim().replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
@@ -322,6 +329,9 @@ export class HeartbeatScheduler {
   private lastDailySystemReviewDate: string | null = null;
   private dailySystemReviewDispatchState: DailySystemReviewDispatchState | null = null;
   private ticking = false;
+  private idleGuardBlocked = false;
+  private idleGuardLastLoggedAt = 0;
+  private idleGuardLastReason = '';
 
   constructor(private deps: AgentRuntimeDeps) {}
 
@@ -472,6 +482,32 @@ export class HeartbeatScheduler {
       return;
     }
     this.ticking = true;
+    const idleGate = await this.evaluateIdleMaintenanceGate();
+    if (!idleGate.idle) {
+      const now = Date.now();
+      const shouldLog = !this.idleGuardBlocked
+        || now - this.idleGuardLastLoggedAt >= HEARTBEAT_IDLE_GUARD_LOG_THROTTLE_MS
+        || this.idleGuardLastReason !== idleGate.reason;
+      if (shouldLog) {
+        log.info('[HeartbeatScheduler] Skip tick: non-idle runtime/recovery in progress', {
+          reason: idleGate.reason,
+          ...(idleGate.details ? { details: idleGate.details } : {}),
+        });
+        this.idleGuardLastLoggedAt = now;
+        this.idleGuardLastReason = idleGate.reason;
+      }
+      this.idleGuardBlocked = true;
+      try { await this.persistRuntimeState(); }
+      catch (error) { log.error('[HeartbeatScheduler] persistRuntimeState error', error instanceof Error ? error : undefined); }
+      this.ticking = false;
+      this.armTick(DEFAULT_TICK_MS);
+      return;
+    }
+    if (this.idleGuardBlocked) {
+      log.info('[HeartbeatScheduler] Runtime idle restored; resume scheduled heartbeat/mailbox tasks');
+      this.idleGuardBlocked = false;
+      this.idleGuardLastReason = '';
+    }
     try { await this.dispatchDueTasks(); }
     catch (error) { log.error('[HeartbeatScheduler] dispatchDueTasks error', error instanceof Error ? error : undefined); }
     try { await this.dispatchNightlyDreamTasks(); }
@@ -484,6 +520,93 @@ export class HeartbeatScheduler {
     catch (error) { log.error('[HeartbeatScheduler] persistRuntimeState error', error instanceof Error ? error : undefined); }
     this.ticking = false;
     this.armTick(DEFAULT_TICK_MS);
+  }
+
+  private async evaluateIdleMaintenanceGate(): Promise<{
+    idle: boolean;
+    reason: string;
+    details?: Record<string, unknown>;
+  }> {
+    const recovery = this.detectActiveProjectRecoverySessions();
+    if (recovery.active) {
+      return {
+        idle: false,
+        reason: 'project_recovery_active',
+        details: {
+          sessionIds: recovery.sessionIds,
+          taskSessionIds: recovery.taskSessionIds,
+          lifecycleSessionIds: recovery.lifecycleSessionIds,
+        },
+      };
+    }
+
+    try {
+      const snapshot = await this.deps.agentRuntimeBlock.execute('runtime_view', {});
+      const busyAgents = HEARTBEAT_IDLE_GUARD_AGENT_IDS
+        .map((agentId) => {
+          const state = extractAgentStatusFromRuntimeView(snapshot, agentId);
+          if (state.busy !== true) return null;
+          return {
+            agentId,
+            status: state.status ?? 'busy',
+          };
+        })
+        .filter((item): item is { agentId: string; status: string } => item !== null);
+      if (busyAgents.length > 0) {
+        return {
+          idle: false,
+          reason: 'runtime_busy',
+          details: { busyAgents },
+        };
+      }
+    } catch (error) {
+      log.warn('[HeartbeatScheduler] runtime_view failed in idle gate; proceed tick to avoid starvation', {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+
+    return { idle: true, reason: 'idle' };
+  }
+
+  private detectActiveProjectRecoverySessions(): {
+    active: boolean;
+    sessionIds: string[];
+    taskSessionIds: string[];
+    lifecycleSessionIds: string[];
+  } {
+    const listSessions = (this.deps.sessionManager as {
+      listSessions?: () => Array<{ id: string; context?: Record<string, unknown> }>;
+    }).listSessions;
+    if (typeof listSessions !== 'function') {
+      return { active: false, sessionIds: [], taskSessionIds: [], lifecycleSessionIds: [] };
+    }
+    const sessions = listSessions.call(this.deps.sessionManager) ?? [];
+    const taskSessionIds: string[] = [];
+    const lifecycleSessionIds: string[] = [];
+    for (const session of sessions) {
+      const context = session && typeof session.context === 'object' && session.context !== null
+        ? session.context as Record<string, unknown>
+        : {};
+      const sessionTier = typeof context.sessionTier === 'string' ? context.sessionTier.trim() : '';
+      if (sessionTier === 'heartbeat-control') continue;
+
+      const taskState = parseProjectTaskState(context.projectTaskState);
+      if (taskState && isProjectTaskStateActive(taskState)) {
+        taskSessionIds.push(session.id);
+      }
+
+      const lifecycle = parseExecutionLifecycleState(context.executionLifecycle);
+      if (lifecycle && lifecycle.targetAgentId === FINGER_PROJECT_AGENT_ID && this.shouldResumeLifecycle(lifecycle)) {
+        lifecycleSessionIds.push(session.id);
+      }
+    }
+    const sessionIds = Array.from(new Set([...taskSessionIds, ...lifecycleSessionIds]));
+    return {
+      active: sessionIds.length > 0,
+      sessionIds,
+      taskSessionIds,
+      lifecycleSessionIds,
+    };
   }
 
   private async dispatchDueTasks(): Promise<void> {

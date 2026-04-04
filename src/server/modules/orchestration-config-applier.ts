@@ -58,6 +58,12 @@ export function createOrchestrationConfigApplier(deps: OrchestrationConfigApplie
 
     for (const entry of profile.agents) {
       if (entry.enabled === false) continue;
+      if (entry.targetAgentId === FINGER_SYSTEM_AGENT_ID) {
+        // Single owner rule: System Agent deployment is managed exclusively
+        // by SystemAgentManager to avoid duplicate deploy/session drift.
+        appliedAgents.push(entry.targetAgentId);
+        continue;
+      }
       const targetSessionId = entry.role === 'orchestrator' || entry.role !== 'reviewer'
         ? rootSession.id
         : sessionWorkspaces.ensureRuntimeChildSession(rootSession, entry.targetAgentId).id;

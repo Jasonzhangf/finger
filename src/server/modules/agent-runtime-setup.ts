@@ -55,31 +55,9 @@ export async function setupAgentRuntime(deps: {
   await agentRuntimeBlock.initialize();
   await agentRuntimeBlock.start();
 
-  log.info('Attempting to deploy System Agent globally...', {
+  log.info('Skip system deployment in setupAgentRuntime: managed by SystemAgentManager', {
     agentId: deps.systemAgentId,
-    scope: 'global',
-    instanceCount: 1,
   });
-  try {
-    const deployResult = await agentRuntimeBlock.execute('deploy', {
-      targetAgentId: deps.systemAgentId,
-      scope: 'global',
-      instanceCount: 1,
-    }) as unknown as { success: boolean };
-    if (deployResult?.success) {
-      log.info('System Agent deployed successfully', {
-        agentId: deps.systemAgentId,
-        result: deployResult,
-      });
-    } else {
-      log.error('System Agent deployment failed', undefined, {
-        agentId: deps.systemAgentId,
-        result: deployResult,
-      });
-    }
-  } catch (err) {
-    log.error('Failed to deploy System Agent', err instanceof Error ? err : undefined);
-  }
 
   const applyOrchestrationConfig = createOrchestrationConfigApplier({
     agentRuntimeBlock,

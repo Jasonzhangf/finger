@@ -340,7 +340,7 @@ logger.module('server').info('Clock Task Injector started');
 
 // Start System Agent periodic checks
 const systemAgentManager = new SystemAgentManager(getAgentRuntimeDeps());
-systemAgentManager.start();
+await systemAgentManager.start();
 logger.module('server').info('System Agent Manager started');
 
 // Start Agent Status Subscriber
