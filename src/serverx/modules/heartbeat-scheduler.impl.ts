@@ -483,44 +483,47 @@ export class HeartbeatScheduler {
       return;
     }
     this.ticking = true;
-    const idleGate = await this.evaluateIdleMaintenanceGate();
-    if (!idleGate.idle) {
-      const now = Date.now();
-      const shouldLog = !this.idleGuardBlocked
-        || now - this.idleGuardLastLoggedAt >= HEARTBEAT_IDLE_GUARD_LOG_THROTTLE_MS
-        || this.idleGuardLastReason !== idleGate.reason;
-      if (shouldLog) {
-        log.info('[HeartbeatScheduler] Skip tick: non-idle runtime/recovery in progress', {
-          reason: idleGate.reason,
-          ...(idleGate.details ? { details: idleGate.details } : {}),
-        });
-        this.idleGuardLastLoggedAt = now;
-        this.idleGuardLastReason = idleGate.reason;
+    try {
+      const idleGate = await this.evaluateIdleMaintenanceGate();
+      if (!idleGate.idle) {
+        const now = Date.now();
+        const shouldLog = !this.idleGuardBlocked
+          || now - this.idleGuardLastLoggedAt >= HEARTBEAT_IDLE_GUARD_LOG_THROTTLE_MS
+          || this.idleGuardLastReason !== idleGate.reason;
+        if (shouldLog) {
+          log.info('[HeartbeatScheduler] Skip tick: non-idle runtime/recovery in progress', {
+            reason: idleGate.reason,
+            ...(idleGate.details ? { details: idleGate.details } : {}),
+          });
+          this.idleGuardLastLoggedAt = now;
+          this.idleGuardLastReason = idleGate.reason;
+        }
+        this.idleGuardBlocked = true;
+        try { await this.persistRuntimeState(); }
+        catch (error) { log.error('[HeartbeatScheduler] persistRuntimeState error', error instanceof Error ? error : undefined); }
+        return;
       }
-      this.idleGuardBlocked = true;
+      if (this.idleGuardBlocked) {
+        log.info('[HeartbeatScheduler] Runtime idle restored; resume scheduled heartbeat/mailbox tasks');
+        this.idleGuardBlocked = false;
+        this.idleGuardLastReason = '';
+      }
+      try { await this.dispatchDueTasks(); }
+      catch (error) { log.error('[HeartbeatScheduler] dispatchDueTasks error', error instanceof Error ? error : undefined); }
+      try { await this.dispatchNightlyDreamTasks(); }
+      catch (error) { log.error('[HeartbeatScheduler] dispatchNightlyDreamTasks error', error instanceof Error ? error : undefined); }
+      try { await this.dispatchDailySystemReviewTask(); }
+      catch (error) { log.error('[HeartbeatScheduler] dispatchDailySystemReviewTask error', error instanceof Error ? error : undefined); }
+      try { await this.promptMailboxChecks(); }
+      catch (error) { log.error('[HeartbeatScheduler] promptMailboxChecks error', error instanceof Error ? error : undefined); }
       try { await this.persistRuntimeState(); }
       catch (error) { log.error('[HeartbeatScheduler] persistRuntimeState error', error instanceof Error ? error : undefined); }
+    } catch (error) {
+      log.error('[HeartbeatScheduler] Unexpected tick failure', error instanceof Error ? error : undefined);
+    } finally {
       this.ticking = false;
       this.armTick(DEFAULT_TICK_MS);
-      return;
     }
-    if (this.idleGuardBlocked) {
-      log.info('[HeartbeatScheduler] Runtime idle restored; resume scheduled heartbeat/mailbox tasks');
-      this.idleGuardBlocked = false;
-      this.idleGuardLastReason = '';
-    }
-    try { await this.dispatchDueTasks(); }
-    catch (error) { log.error('[HeartbeatScheduler] dispatchDueTasks error', error instanceof Error ? error : undefined); }
-    try { await this.dispatchNightlyDreamTasks(); }
-    catch (error) { log.error('[HeartbeatScheduler] dispatchNightlyDreamTasks error', error instanceof Error ? error : undefined); }
-    try { await this.dispatchDailySystemReviewTask(); }
-    catch (error) { log.error('[HeartbeatScheduler] dispatchDailySystemReviewTask error', error instanceof Error ? error : undefined); }
-    try { await this.promptMailboxChecks(); }
-    catch (error) { log.error('[HeartbeatScheduler] promptMailboxChecks error', error instanceof Error ? error : undefined); }
-    try { await this.persistRuntimeState(); }
-    catch (error) { log.error('[HeartbeatScheduler] persistRuntimeState error', error instanceof Error ? error : undefined); }
-    this.ticking = false;
-    this.armTick(DEFAULT_TICK_MS);
   }
 
   private async evaluateIdleMaintenanceGate(): Promise<{

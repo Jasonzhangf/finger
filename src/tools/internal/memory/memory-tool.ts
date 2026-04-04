@@ -424,7 +424,9 @@ export const memoryTool: InternalTool<unknown, MemoryOutput> = {
             await milvusAdapter.close();
             resetMilvusAdapter();
           } catch (error) {
-            // Ignore
+            clog.warn('[Memory] Failed to close/reset vector adapter before reindex, continue reindex', {
+              error: error instanceof Error ? error.message : String(error),
+            });
           }
 
           for (const entry of entries) {

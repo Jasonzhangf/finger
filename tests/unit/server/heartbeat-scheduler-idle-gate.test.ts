@@ -150,4 +150,19 @@ describe('HeartbeatScheduler idle gate', () => {
     expect(promptMailboxSpy).toHaveBeenCalledTimes(1);
     expect(execute).toHaveBeenCalledWith('runtime_view', {});
   });
+
+  it('resets ticking state and rearms timer on unexpected tick exception', async () => {
+    const scheduler = new HeartbeatScheduler({
+      agentRuntimeBlock: { execute: vi.fn(async () => ({ agents: [] })) },
+      sessionManager: { listSessions: vi.fn(() => []) },
+    } as any);
+
+    vi.spyOn(scheduler as any, 'evaluateIdleMaintenanceGate').mockRejectedValue(new Error('boom'));
+    const armTickSpy = vi.spyOn(scheduler as any, 'armTick').mockImplementation(() => undefined);
+
+    await (scheduler as any).tick();
+
+    expect((scheduler as any).ticking).toBe(false);
+    expect(armTickSpy).toHaveBeenCalledTimes(1);
+  });
 });

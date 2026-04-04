@@ -78,7 +78,11 @@ export class DualDaemonSupervisor {
       const raw = readFileSync(file, 'utf-8').trim();
       const pid = Number.parseInt(raw, 10);
       return Number.isFinite(pid) && pid > 0 ? pid : undefined;
-    } catch {
+    } catch (error) {
+      log.warn('[DualDaemon] Failed to read pid file', {
+        file,
+        error: error instanceof Error ? error.message : String(error),
+      });
       return undefined;
     }
   }
@@ -330,8 +334,12 @@ export class DualDaemonSupervisor {
             pid: heartbeat.pid
           });
         }
-      } catch (err) {
-        // Ignore parse errors
+      } catch (error) {
+        log.warn('[DualDaemon] Failed to parse peer heartbeat payload', {
+          daemonId: daemon.id,
+          port,
+          error: error instanceof Error ? error.message : String(error),
+        });
       }
     });
 
