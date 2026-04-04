@@ -144,6 +144,7 @@ const HEARTBEAT_IDLE_GUARD_AGENT_IDS = [
 ];
 const HEARTBEAT_IDLE_GUARD_LOG_THROTTLE_MS = 60_000;
 const PROJECT_RECOVERY_ACTIVE_MAX_AGE_MS = 45 * 60_000;
+const HEARTBEAT_STEP_TIMEOUT_MS = 45_000;
 
 function normalizeProjectPath(value: string): string {
   return value.trim().replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
@@ -484,7 +485,10 @@ export class HeartbeatScheduler {
     }
     this.ticking = true;
     try {
-      const idleGate = await this.evaluateIdleMaintenanceGate();
+      const idleGate = await this.awaitTickStepWithTimeout(
+        'evaluateIdleMaintenanceGate',
+        this.evaluateIdleMaintenanceGate(),
+      );
       if (!idleGate.idle) {
         const now = Date.now();
         const shouldLog = !this.idleGuardBlocked
@@ -499,7 +503,9 @@ export class HeartbeatScheduler {
           this.idleGuardLastReason = idleGate.reason;
         }
         this.idleGuardBlocked = true;
-        try { await this.persistRuntimeState(); }
+        try {
+          await this.awaitTickStepWithTimeout('persistRuntimeState(non_idle)', this.persistRuntimeState());
+        }
         catch (error) { log.error('[HeartbeatScheduler] persistRuntimeState error', error instanceof Error ? error : undefined); }
         return;
       }
@@ -508,21 +514,41 @@ export class HeartbeatScheduler {
         this.idleGuardBlocked = false;
         this.idleGuardLastReason = '';
       }
-      try { await this.dispatchDueTasks(); }
+      try { await this.awaitTickStepWithTimeout('dispatchDueTasks', this.dispatchDueTasks()); }
       catch (error) { log.error('[HeartbeatScheduler] dispatchDueTasks error', error instanceof Error ? error : undefined); }
-      try { await this.dispatchNightlyDreamTasks(); }
+      try { await this.awaitTickStepWithTimeout('dispatchNightlyDreamTasks', this.dispatchNightlyDreamTasks()); }
       catch (error) { log.error('[HeartbeatScheduler] dispatchNightlyDreamTasks error', error instanceof Error ? error : undefined); }
-      try { await this.dispatchDailySystemReviewTask(); }
+      try { await this.awaitTickStepWithTimeout('dispatchDailySystemReviewTask', this.dispatchDailySystemReviewTask()); }
       catch (error) { log.error('[HeartbeatScheduler] dispatchDailySystemReviewTask error', error instanceof Error ? error : undefined); }
-      try { await this.promptMailboxChecks(); }
+      try { await this.awaitTickStepWithTimeout('promptMailboxChecks', this.promptMailboxChecks()); }
       catch (error) { log.error('[HeartbeatScheduler] promptMailboxChecks error', error instanceof Error ? error : undefined); }
-      try { await this.persistRuntimeState(); }
+      try { await this.awaitTickStepWithTimeout('persistRuntimeState(final)', this.persistRuntimeState()); }
       catch (error) { log.error('[HeartbeatScheduler] persistRuntimeState error', error instanceof Error ? error : undefined); }
     } catch (error) {
       log.error('[HeartbeatScheduler] Unexpected tick failure', error instanceof Error ? error : undefined);
     } finally {
       this.ticking = false;
       this.armTick(DEFAULT_TICK_MS);
+    }
+  }
+
+  private async awaitTickStepWithTimeout<T>(
+    step: string,
+    promise: Promise<T>,
+    timeoutMs = HEARTBEAT_STEP_TIMEOUT_MS,
+  ): Promise<T> {
+    let timer: NodeJS.Timeout | null = null;
+    const timeoutPromise = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => {
+        const timeoutError = new Error(`[HeartbeatScheduler] step timeout: ${step} after ${timeoutMs}ms`);
+        (timeoutError as NodeJS.ErrnoException).code = 'HEARTBEAT_STEP_TIMEOUT';
+        reject(timeoutError);
+      }, timeoutMs);
+    });
+    try {
+      return await Promise.race([promise, timeoutPromise]);
+    } finally {
+      if (timer) clearTimeout(timer);
     }
   }
 

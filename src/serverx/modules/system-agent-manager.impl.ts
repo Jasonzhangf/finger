@@ -51,6 +51,7 @@ const ACTIVE_LIFECYCLE_STAGES = new Set([
 ]);
 const ACTIVE_PROJECT_TASK_RECOVERY_MAX_AGE_MS = 45 * 60_000;
 const STARTUP_RECOVERY_IN_FLIGHT = new Set<string>();
+const STARTUP_RECOVERY_STEP_TIMEOUT_MS = 45_000;
 
 interface SystemAgentManagerFileConfig {
   periodicCheck?: {
@@ -826,12 +827,34 @@ export class SystemAgentManager {
       }
 
       if (this.shouldResumeLifecycle(lifecycle)) {
-        await this.resumeInterruptedExecution(lifecycle);
+        try {
+          await this.runStartupStepWithTimeout(
+            'resumeInterruptedExecution',
+            () => this.resumeInterruptedExecution(lifecycle),
+          );
+        } catch (error) {
+          log.error(
+            '[SystemAgentManager] Startup resume step failed or timed out',
+            error instanceof Error ? error : new Error(String(error)),
+            { sessionId, lifecycleStage: lifecycle.stage, lifecycleSubstage: lifecycle.substage ?? 'none' },
+          );
+        }
         return;
       }
 
       if (this.shouldReviewCompletedLifecycle(lifecycle)) {
-        await this.reviewCompletedExecution(lifecycle);
+        try {
+          await this.runStartupStepWithTimeout(
+            'reviewCompletedExecution',
+            () => this.reviewCompletedExecution(lifecycle),
+          );
+        } catch (error) {
+          log.error(
+            '[SystemAgentManager] Startup review step failed or timed out',
+            error instanceof Error ? error : new Error(String(error)),
+            { sessionId, lifecycleStage: lifecycle.stage, lifecycleSubstage: lifecycle.substage ?? 'none' },
+          );
+        }
         return;
       }
 
@@ -842,6 +865,26 @@ export class SystemAgentManager {
       });
     } finally {
       STARTUP_RECOVERY_IN_FLIGHT.delete(sessionId);
+    }
+  }
+
+  private async runStartupStepWithTimeout(
+    stepName: string,
+    runner: () => Promise<void>,
+    timeoutMs = STARTUP_RECOVERY_STEP_TIMEOUT_MS,
+  ): Promise<void> {
+    let timer: NodeJS.Timeout | null = null;
+    const timeoutPromise = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => {
+        const timeoutError = new Error(`[SystemAgentManager] startup step timeout: ${stepName} after ${timeoutMs}ms`);
+        (timeoutError as NodeJS.ErrnoException).code = 'SYSTEM_STARTUP_STEP_TIMEOUT';
+        reject(timeoutError);
+      }, timeoutMs);
+    });
+    try {
+      await Promise.race([runner(), timeoutPromise]);
+    } finally {
+      if (timer) clearTimeout(timer);
     }
   }
 

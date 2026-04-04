@@ -272,6 +272,35 @@ describe('SystemAgentManager - Session Reuse', () => {
     expect(resumeSpy).toHaveBeenCalledTimes(1);
   });
 
+  it('releases startup recovery lock when startup step times out', async () => {
+    const session = {
+      id: 'system-session-recover-timeout',
+      name: 'finger-system-agent runtime',
+      projectPath: '/tmp/system',
+      createdAt: '2026-03-28T00:00:00Z',
+      context: {
+        executionLifecycle: {
+          stage: 'running',
+          startedAt: '2026-03-28T00:00:00Z',
+          lastTransitionAt: '2026-03-28T00:01:00Z',
+          retryCount: 0,
+          substage: 'turn_start',
+        },
+      },
+    };
+    mockSessionManager.getSession.mockReturnValue(session);
+    const manager = new SystemAgentManager(deps);
+    (manager as any).systemSessionId = session.id;
+
+    const timeoutError = new Error('startup step timeout');
+    vi.spyOn(manager as any, 'runStartupStepWithTimeout').mockRejectedValue(timeoutError);
+
+    await (manager as any).handleStartupExecutionState();
+    await (manager as any).handleStartupExecutionState();
+
+    expect((manager as any).runStartupStepWithTimeout).toHaveBeenCalledTimes(2);
+  });
+
   it('should not resume startup execution when lifecycle is already completed without finish_reason=stop', async () => {
     const session = {
       id: 'system-session-completed-without-stop',
