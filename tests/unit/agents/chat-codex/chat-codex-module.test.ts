@@ -79,3 +79,11 @@ describe('chat-codex mailbox pending notice injection', () => {
     expect(options?.developer_instructions ?? '').not.toContain('## Mailbox Pending Notice');
   });
 });
+
+describe('chat-codex runtime/session identity', () => {
+  it('uses session identity as runtime key instead of binding provider into session key', () => {
+    expect(__chatCodexInternals.normalizeRunnerSessionId(' session-a ')).toBe('session-a');
+    expect(__chatCodexInternals.resolveRunnerRuntimeKey('session-a')).toBe('session-a');
+    expect(__chatCodexInternals.resolveRunnerRuntimeKey(undefined)).toBe('default');
+  });
+});

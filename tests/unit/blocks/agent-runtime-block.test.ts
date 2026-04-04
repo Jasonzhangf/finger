@@ -444,7 +444,7 @@ describe('AgentRuntimeBlock', () => {
 
     ctx.chatCodexListSessionStates.mockReturnValue([
       {
-        sessionKey: 'session-runtime-active::provider=mock',
+        sessionKey: 'session-runtime-active',
         sessionId: 'session-runtime-active',
         providerId: 'mock',
         hasActiveTurn: true,

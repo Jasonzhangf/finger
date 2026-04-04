@@ -17,7 +17,7 @@ import {
 } from './agent-role-config.js';
 import { FINGER_PATHS, ensureDir, normalizeSessionDirName } from '../../core/finger-paths.js';
 import { FINGER_SOURCE_ROOT } from '../../core/source-root.js';
-import { getContextWindow } from '../../core/user-settings.js';
+import { getContextWindow, loadAIProviders } from '../../core/user-settings.js';
 import type { MailboxSnapshot } from '../../runtime/mailbox-snapshot.js';
 import { hasNewUnreadSinceLastNotified, getNewUnreadEntries } from '../../runtime/mailbox-snapshot.js';
 import { formatSkillsAsPromptScopedSync } from '../../skills/skill-prompt-injector.js';
@@ -341,6 +341,7 @@ interface ActiveKernelTurn {
 
 interface KernelSessionProcess {
   key: string;
+  sessionId: string;
   child: ChildProcessWithoutNullStreams;
   resolvedBinaryPath: string;
   providerId: string;
@@ -510,8 +511,11 @@ export class ProcessChatCodexRunner implements ChatCodexRunner {
     }
 
     const providerId = resolveRunnerProviderId(context);
-    const sessionKey = resolveRunnerSessionKey(context?.sessionId, providerId);
-    let session = this.ensureSession(sessionKey, resolvedPath, providerId);
+    if (!providerId || providerId.trim().length === 0) {
+      throw new Error('AI provider is not configured. Please set aiProviders.default in ~/.finger/config/user-settings.json');
+    }
+    const sessionId = normalizeRunnerSessionId(context?.sessionId);
+    let session = this.ensureSession(sessionId, resolvedPath, providerId);
     const normalizedItems = normalizeKernelInputItems(items, text);
     const options = isRecord(context?.prebuiltOptions)
       ? hydratePrebuiltKernelUserTurnOptions(
@@ -533,7 +537,7 @@ export class ProcessChatCodexRunner implements ChatCodexRunner {
         || !session.child.stdin.writable;
       if (childUnavailable) {
         chatCodexLog.warn('Active turn session process is not writable/alive; evicting stale turn immediately', {
-          sessionKey,
+          sessionKey: session.key,
           activeTurnId: session.activeTurn.id,
           killed: session.child.killed,
           exitCode: session.child.exitCode,
@@ -552,7 +556,7 @@ export class ProcessChatCodexRunner implements ChatCodexRunner {
       const staleCheck = this.inspectActiveTurnStaleness(session.activeTurn);
       if (staleCheck.stale) {
         chatCodexLog.warn('Detected stale active turn while new input arrived; evicting stale turn', {
-          sessionKey,
+          sessionKey: session.key,
           activeTurnId: session.activeTurn.id,
           idleMs: staleCheck.idleMs,
           ageMs: staleCheck.ageMs,
@@ -574,7 +578,7 @@ export class ProcessChatCodexRunner implements ChatCodexRunner {
         // Supersede immediately instead of waiting for timeout.
         const supersededTurnId = session.activeTurn.id;
         chatCodexLog.warn('Active turn superseded by newer input after pending queue already existed', {
-          sessionKey,
+          sessionKey: session.key,
           activeTurnId: supersededTurnId,
           pendingTurnId: session.activeTurn.pendingTurnId,
         });
@@ -587,7 +591,7 @@ export class ProcessChatCodexRunner implements ChatCodexRunner {
       }
     }
     if (mustRefreshSession) {
-      session = this.ensureSession(sessionKey, resolvedPath, providerId);
+      session = this.ensureSession(sessionId, resolvedPath, providerId);
     }
     if (session.activeTurn) {
       const pendingTurnId = this.nextSubmissionId(session, 'pending');
@@ -644,14 +648,12 @@ export class ProcessChatCodexRunner implements ChatCodexRunner {
     const normalizedProviderId = typeof providerId === 'string' ? providerId.trim() : '';
     const states: ChatCodexRunnerSessionState[] = [];
     for (const [sessionKey, session] of this.sessions.entries()) {
-      const parsed = parseRunnerSessionKey(sessionKey);
-      if (!parsed) continue;
-      if (normalizedSessionId.length > 0 && parsed.sessionId !== normalizedSessionId) continue;
-      if (normalizedProviderId.length > 0 && parsed.providerId !== normalizedProviderId) continue;
+      if (normalizedSessionId.length > 0 && session.sessionId !== normalizedSessionId) continue;
+      if (normalizedProviderId.length > 0 && session.providerId !== normalizedProviderId) continue;
       states.push({
         sessionKey,
-        sessionId: parsed.sessionId,
-        providerId: parsed.providerId,
+        sessionId: session.sessionId,
+        providerId: session.providerId,
         hasActiveTurn: session.activeTurn !== null,
         ...(session.activeTurn?.id ? { activeTurnId: session.activeTurn.id } : {}),
       });
@@ -665,10 +667,8 @@ export class ProcessChatCodexRunner implements ChatCodexRunner {
     const normalizedProviderId = typeof providerId === 'string' ? providerId.trim() : '';
     const results: ChatCodexRunnerInterruptResult[] = [];
     for (const [sessionKey, session] of this.sessions.entries()) {
-      const parsed = parseRunnerSessionKey(sessionKey);
-      if (!parsed) continue;
-      if (parsed.sessionId !== normalizedSessionId) continue;
-      if (normalizedProviderId.length > 0 && parsed.providerId !== normalizedProviderId) continue;
+      if (session.sessionId !== normalizedSessionId) continue;
+      if (normalizedProviderId.length > 0 && session.providerId !== normalizedProviderId) continue;
       const hadActiveTurn = session.activeTurn !== null;
       const activeTurnId = session.activeTurn?.id;
       if (hadActiveTurn) {
@@ -678,8 +678,8 @@ export class ProcessChatCodexRunner implements ChatCodexRunner {
       }
       results.push({
         sessionKey,
-        sessionId: parsed.sessionId,
-        providerId: parsed.providerId,
+        sessionId: session.sessionId,
+        providerId: session.providerId,
         hadActiveTurn,
         interrupted: hadActiveTurn,
         ...(activeTurnId ? { activeTurnId } : {}),
@@ -688,8 +688,9 @@ export class ProcessChatCodexRunner implements ChatCodexRunner {
     return results;
   }
 
-  private ensureSession(sessionKey: string, resolvedBinaryPath: string, providerId: string): KernelSessionProcess {
-    const existing = this.sessions.get(sessionKey);
+  private ensureSession(sessionId: string, resolvedBinaryPath: string, providerId: string): KernelSessionProcess {
+    const runtimeKey = resolveRunnerRuntimeKey(sessionId);
+    const existing = this.sessions.get(runtimeKey);
     if (
       existing
       && !existing.child.killed
@@ -700,6 +701,13 @@ export class ProcessChatCodexRunner implements ChatCodexRunner {
     }
 
     if (existing) {
+      chatCodexLog.info('Refreshing kernel runtime for session due to runtime config change', {
+        sessionId: existing.sessionId,
+        previousProviderId: existing.providerId,
+        nextProviderId: providerId,
+        previousBinaryPath: existing.resolvedBinaryPath,
+        nextBinaryPath: resolvedBinaryPath,
+      });
       this.disposeSession(existing);
     }
 
@@ -714,7 +722,8 @@ export class ProcessChatCodexRunner implements ChatCodexRunner {
     }) as ChildProcessWithoutNullStreams;
 
     const session: KernelSessionProcess = {
-      key: sessionKey,
+      key: runtimeKey,
+      sessionId,
       child,
       resolvedBinaryPath,
       providerId,
@@ -722,7 +731,7 @@ export class ProcessChatCodexRunner implements ChatCodexRunner {
       submissionSeq: 0,
       activeTurn: null,
     };
-    this.sessions.set(sessionKey, session);
+    this.sessions.set(runtimeKey, session);
     this.bindSessionEvents(session);
     return session;
   }
@@ -2131,22 +2140,14 @@ function resolveStopReasonFromKernelMetadata(metadata?: Record<string, unknown>)
   return 'model_stop';
 }
 
-function resolveRunnerSessionKey(sessionId: string | undefined, providerId: string): string {
-  const normalizedSessionId =
-    typeof sessionId === 'string' && sessionId.trim().length > 0
-      ? sessionId.trim()
-      : 'default';
-  return `${normalizedSessionId}::provider=${providerId}`;
+function normalizeRunnerSessionId(sessionId: string | undefined): string {
+  return typeof sessionId === 'string' && sessionId.trim().length > 0
+    ? sessionId.trim()
+    : 'default';
 }
 
-function parseRunnerSessionKey(sessionKey: string): { sessionId: string; providerId: string } | null {
-  const marker = '::provider=';
-  const markerIndex = sessionKey.indexOf(marker);
-  if (markerIndex <= 0) return null;
-  const sessionId = sessionKey.slice(0, markerIndex).trim();
-  const providerId = sessionKey.slice(markerIndex + marker.length).trim();
-  if (sessionId.length === 0 || providerId.length === 0) return null;
-  return { sessionId, providerId };
+function resolveRunnerRuntimeKey(sessionId: string | undefined): string {
+  return normalizeRunnerSessionId(sessionId);
 }
 
 function resolveRunnerProviderId(context?: ChatCodexRunContext): string {
@@ -2159,25 +2160,20 @@ function resolveRunnerProviderId(context?: ChatCodexRunContext): string {
     const fromProvider = parseOptionalString(metadata.provider);
     if (fromProvider) return fromProvider;
   }
-  const fromConfig = resolveActiveProviderIdFromFingerConfig();
-  if (fromConfig) return fromConfig;
+  const fromSettings = resolveActiveProviderIdFromUserSettings();
+  if (fromSettings) return fromSettings;
   const fromEnv = parseOptionalString(process.env.FINGER_KERNEL_PROVIDER);
   if (fromEnv) return fromEnv;
-  return 'crsb';
+  return '';
 }
 
-function resolveActiveProviderIdFromFingerConfig(): string | undefined {
+function resolveActiveProviderIdFromUserSettings(): string | undefined {
   try {
-    const configPath = FINGER_PATHS.config.file.main;
-    if (!existsSync(configPath)) return undefined;
-    const raw = readFileSync(configPath, 'utf-8');
-    if (raw.trim().length === 0) return undefined;
-    const parsed = JSON.parse(raw) as Record<string, unknown>;
-    if (!isRecord(parsed.kernel)) return undefined;
-    const kernel = parsed.kernel;
-    if (typeof kernel.provider !== 'string') return undefined;
-    const normalized = kernel.provider.trim();
-    return normalized.length > 0 ? normalized : undefined;
+    const aiProviders = loadAIProviders();
+    const normalized = typeof aiProviders.default === 'string' ? aiProviders.default.trim() : '';
+    if (normalized.length > 0) return normalized;
+    const first = Object.keys(aiProviders.providers || {})[0];
+    return typeof first === 'string' && first.trim().length > 0 ? first.trim() : undefined;
   } catch {
     return undefined;
   }
@@ -3625,7 +3621,7 @@ function resolveProviderIdForContextWindow(
   const fromProvider = parseOptionalString(metadata?.provider);
   if (fromProvider) return fromProvider;
   if (fallbackProviderId) return fallbackProviderId;
-  return resolveActiveProviderIdFromFingerConfig();
+  return resolveActiveProviderIdFromUserSettings();
 }
 
 function inferModelContextWindowFromMetadata(metadata: Record<string, unknown> | undefined): number | undefined {
@@ -3671,42 +3667,23 @@ interface FingerKernelConfigSnapshot {
 
 function readFingerKernelConfigSnapshot(): FingerKernelConfigSnapshot | undefined {
   try {
-    const configPath = FINGER_PATHS.config.file.main;
-    if (!existsSync(configPath)) return undefined;
-    const raw = readFileSync(configPath, 'utf-8');
-    if (raw.trim().length === 0) return undefined;
-    const parsed = JSON.parse(raw);
-    if (!isRecord(parsed) || !isRecord(parsed.kernel)) return undefined;
-
-    const kernel = parsed.kernel;
-    const activeProviderId = parseOptionalString(kernel.provider);
+    const aiProviders = loadAIProviders();
+    const activeProviderId = parseOptionalString(aiProviders.default);
     const providers: Record<string, FingerKernelProviderSnapshot> = {};
 
-    if (isRecord(kernel.providers)) {
-      for (const [providerId, value] of Object.entries(kernel.providers)) {
-        if (!isRecord(value)) continue;
-        const maxInputTokens =
-          parseOptionalNumber(value.max_input_tokens)
-          ?? parseOptionalNumber(value.maxInputTokens)
-          ?? (isRecord(value.context_window) ? parseOptionalNumber(value.context_window.max_input_tokens) : undefined)
-          ?? (isRecord(value.contextWindow) ? parseOptionalNumber(value.contextWindow.maxInputTokens) : undefined);
-        providers[providerId] = {
-          ...(parseOptionalString(value.model) ? { model: parseOptionalString(value.model) } : {}),
-          ...(maxInputTokens !== undefined ? { maxInputTokens } : {}),
-        };
-      }
+    const providerEntries = aiProviders.providers && isRecord(aiProviders.providers)
+      ? Object.entries(aiProviders.providers)
+      : [];
+    for (const [providerId, value] of providerEntries) {
+      if (!isRecord(value)) continue;
+      providers[providerId] = {
+        ...(parseOptionalString(value.model) ? { model: parseOptionalString(value.model) } : {}),
+      };
     }
-
-    const globalMaxInputTokens =
-      parseOptionalNumber(kernel.max_input_tokens)
-      ?? parseOptionalNumber(kernel.maxInputTokens)
-      ?? (isRecord(kernel.context_window) ? parseOptionalNumber(kernel.context_window.max_input_tokens) : undefined)
-      ?? (isRecord(kernel.contextWindow) ? parseOptionalNumber(kernel.contextWindow.maxInputTokens) : undefined);
 
     return {
       ...(activeProviderId ? { activeProviderId } : {}),
       providers,
-      ...(globalMaxInputTokens !== undefined ? { globalMaxInputTokens } : {}),
     };
   } catch {
     return undefined;
@@ -3953,6 +3930,31 @@ function toCamelCase(parts: string[]): string {
 }
 
 function defaultToolSpecification(name: string): ChatCodexToolSpecification {
+  if (name === 'user.ask') {
+    return {
+      name,
+      description:
+        'Blocking user decision gate. Use only when execution is truly blocked by critical decision or missing credentials.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          question: { type: 'string' },
+          options: { type: 'array', items: { type: 'string' } },
+          context: { type: 'string' },
+          blocking_reason: { type: 'string' },
+          decision_impact: { type: 'string', enum: ['critical', 'major', 'normal'] },
+          timeout_ms: { type: 'number' },
+          session_id: { type: 'string' },
+          workflow_id: { type: 'string' },
+          epic_id: { type: 'string' },
+          agent_id: { type: 'string' },
+        },
+        required: ['question'],
+        additionalProperties: false,
+      },
+    };
+  }
+
   if (name === 'context_ledger.memory') {
     return {
       name,
@@ -4047,4 +4049,6 @@ export const __chatCodexInternals = {
   resolveTurnContext,
   resolveEnvironmentContext,
   inferModelContextWindow,
+  normalizeRunnerSessionId,
+  resolveRunnerRuntimeKey,
 };
