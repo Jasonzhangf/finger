@@ -11,15 +11,9 @@ import {
   resolveSessionRelationInfo,
 } from './agent-status-subscriber-session-utils.js';
 import { logger } from '../../core/logger.js';
-import { resolveAgentDisplayIdentity } from './agent-name-resolver.js';
+import { resolveAgentDisplayIdentity, type AgentDisplayIdentity } from './agent-name-resolver.js';
 
 const log = logger.module('AgentStatusSubscriberStatus');
-
-function inferAgentRole(agentId: string): 'system' | 'project' | 'reviewer' | 'agent' {
-  const normalized = agentId.trim();
-  if (!normalized) return 'agent';
-  return resolveAgentDisplayIdentity(normalized).role;
-}
 
 function formatIdentityNameAndId(identity: { id: string; name: string }): string {
   const normalizedId = identity.id.trim();
@@ -30,8 +24,32 @@ function formatIdentityNameAndId(identity: { id: string; name: string }): string
   return `${normalizedName}(${normalizedId})`;
 }
 
-function buildAgentIdentityLine(agentId: string, sourceType?: string): string {
-  const identity = resolveAgentDisplayIdentity(agentId);
+function resolveDisplayIdentityForSession(params: {
+  deps: AgentRuntimeDeps;
+  sessionId: string;
+  agentId: string;
+}): AgentDisplayIdentity {
+  const fallback = resolveAgentDisplayIdentity(params.agentId);
+  const session = params.deps.sessionManager.getSession(params.sessionId);
+  const context = (session?.context && typeof session.context === 'object')
+    ? (session.context as Record<string, unknown>)
+    : {};
+  const dispatchWorkerId = typeof context.dispatchWorkerId === 'string'
+    ? context.dispatchWorkerId.trim()
+    : '';
+  if (fallback.role === 'project' && dispatchWorkerId.length > 0) {
+    return resolveAgentDisplayIdentity(dispatchWorkerId);
+  }
+  const ownerAgentId = typeof context.ownerAgentId === 'string'
+    ? context.ownerAgentId.trim()
+    : '';
+  if (fallback.role === 'reviewer' && ownerAgentId.length > 0) {
+    return resolveAgentDisplayIdentity(ownerAgentId);
+  }
+  return fallback;
+}
+
+function buildAgentIdentityLine(identity: AgentDisplayIdentity, sourceType?: string): string {
   const role = identity.role;
   const displayName = formatIdentityNameAndId(identity);
   const normalizedSource = typeof sourceType === 'string' ? sourceType.trim().toLowerCase() : '';
@@ -279,7 +297,12 @@ export async function sendProgressUpdateToChannels(params: {
     sessionId: params.report.sessionId,
     deps: params.deps,
   });
-  const agentIdentityLine = buildAgentIdentityLine(params.report.agentId || 'unknown-agent', sourceType);
+  const displayIdentity = resolveDisplayIdentityForSession({
+    deps: params.deps,
+    sessionId: params.report.sessionId,
+    agentId: params.report.agentId || 'unknown-agent',
+  });
+  const agentIdentityLine = buildAgentIdentityLine(displayIdentity, sourceType);
   const summary = [agentIdentityLine, sessionTitleLine, params.report.summary, relationLine, appendContextSummary, mailboxSummary]
     .filter((item): item is string => typeof item === 'string' && item.trim().length > 0)
     .join('\n');
@@ -290,14 +313,11 @@ export async function sendProgressUpdateToChannels(params: {
     eventId: `progress-${Date.now()}`,
     timestamp: new Date().toISOString(),
     sessionId: params.report.sessionId,
-    agent: (() => {
-      const identity = resolveAgentDisplayIdentity(params.report.agentId || 'unknown-agent');
-      return {
-        agentId: params.report.agentId,
-        agentName: identity.name,
-        ...(identity.role === 'agent' ? {} : { agentRole: identity.role }),
-      };
-    })(),
+    agent: {
+      agentId: params.report.agentId,
+      agentName: displayIdentity.name,
+      ...(displayIdentity.role === 'agent' ? {} : { agentRole: displayIdentity.role }),
+    },
     task: { taskDescription: params.report.summary },
     status: {
       state: params.report.progress.status === 'completed' ? 'completed'
@@ -305,7 +325,7 @@ export async function sendProgressUpdateToChannels(params: {
         : 'running',
       summary,
       details: {
-        agentRole: inferAgentRole(params.report.agentId || 'unknown-agent'),
+        agentRole: displayIdentity.role,
         toolCalls: params.report.progress.toolCallsCount,
         modelRounds: params.report.progress.modelRoundsCount,
         elapsedMs: params.report.progress.elapsedMs,

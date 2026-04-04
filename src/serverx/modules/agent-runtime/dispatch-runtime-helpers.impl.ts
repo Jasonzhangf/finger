@@ -259,6 +259,24 @@ function asTrimmed(value: unknown): string {
   return typeof value === 'string' && value.trim().length > 0 ? value.trim() : '';
 }
 
+function stampProjectDispatchScopeContext(params: {
+  deps: AgentRuntimeDeps;
+  sessionId: string;
+  targetAgentId: string;
+  projectPath: string;
+  workerId?: string;
+}): void {
+  const normalizedProjectPath = normalizeProjectPathHint(params.projectPath);
+  if (!params.sessionId || !params.targetAgentId || !normalizedProjectPath) return;
+  params.deps.sessionManager.updateContext(params.sessionId, {
+    sessionTier: 'orchestrator-root',
+    dispatchTargetAgentId: params.targetAgentId,
+    dispatchProjectPath: normalizedProjectPath,
+    dispatchScopeKey: toDispatchScopeKey(params.targetAgentId, normalizedProjectPath, params.workerId),
+    ...(params.workerId ? { dispatchWorkerId: params.workerId } : {}),
+  });
+}
+
 function bindDispatchRouteContext(
   deps: AgentRuntimeDeps,
   selectedSessionId: string,
@@ -429,7 +447,7 @@ export function resolveDispatchSessionSelection(deps: AgentRuntimeDeps, input: A
         : '';
       const scopeMismatch = !!requestedProjectPath && !!explicitProjectPath && requestedProjectPath !== explicitProjectPath;
       const explicitSystemOwned = isSystemOwnedSession(deps, explicitSessionId);
-      const workerMismatch = !!requestedWorkerId && !!explicitWorkerId && requestedWorkerId !== explicitWorkerId;
+      const workerMismatch = !!requestedWorkerId && requestedWorkerId !== explicitWorkerId;
       if (scopeMismatch || explicitSystemOwned || workerMismatch) {
         const projectScopedSessionId = tryResolveProjectScopedSessionId(deps, input, targetAgentId, explicitSessionId);
         if (projectScopedSessionId) {
@@ -445,7 +463,9 @@ export function resolveDispatchSessionSelection(deps: AgentRuntimeDeps, input: A
               ? 'project_scope_mismatch'
               : explicitSystemOwned
                 ? 'system_owned_explicit_session'
-                : 'worker_scope_mismatch',
+                : explicitWorkerId
+                  ? 'worker_scope_mismatch'
+                  : 'worker_scope_unbound',
           });
           return {
             ...input,
@@ -497,6 +517,15 @@ export function resolveDispatchSessionSelection(deps: AgentRuntimeDeps, input: A
           boundWorkerMismatch,
         });
       } else {
+        if (targetIsProjectScoped && requestedWorkerId && !boundWorkerId && (requestedProjectPath || boundProjectPath)) {
+          stampProjectDispatchScopeContext({
+            deps,
+            sessionId: boundSessionId,
+            targetAgentId,
+            projectPath: requestedProjectPath || boundProjectPath,
+            workerId: requestedWorkerId,
+          });
+        }
         return {
           ...input,
           sessionId: boundSessionId,
@@ -518,6 +547,15 @@ export function resolveDispatchSessionSelection(deps: AgentRuntimeDeps, input: A
         : '';
       const workerMismatch = !!requestedWorkerId && !!currentWorkerId && requestedWorkerId !== currentWorkerId;
       if (currentProjectPath === requestedProjectPath && !isSystemOwnedSession(deps, currentSessionId) && !workerMismatch) {
+        if (requestedWorkerId && !currentWorkerId) {
+          stampProjectDispatchScopeContext({
+            deps,
+            sessionId: currentSessionId,
+            targetAgentId,
+            projectPath: requestedProjectPath || currentProjectPath,
+            workerId: requestedWorkerId,
+          });
+        }
         return {
           ...input,
           sessionId: currentSessionId,

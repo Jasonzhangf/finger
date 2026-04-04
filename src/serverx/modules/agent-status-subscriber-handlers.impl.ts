@@ -369,7 +369,6 @@ export async function handleDispatch(
   if (mappings.length === 0 || !ctx.messageHub) return;
 
 
-  const agentInfo = await ctx.getAgentInfo(targetAgentId);
   const dispatchStatus = typeof payload.status === 'string' ? payload.status : 'queued';
   const queuePosition = typeof payload.queuePosition === 'number' ? payload.queuePosition : undefined;
   const resultStatus = asTrimmedString(resultRecord?.status);
@@ -390,6 +389,8 @@ export async function handleDispatch(
     || resolveAgentDisplayName(assignerAgentId || payload.sourceAgentId || 'unknown');
   const assigneeName = asTrimmedString(assignmentRecord?.assigneeName ?? assignmentRecord?.assignee_name)
     || resolveAgentDisplayName(assigneeAgentId || targetAgentId);
+  const displayAgentId = assigneeAgentId || targetAgentId;
+  const agentInfo = await ctx.getAgentInfo(displayAgentId);
   const assignmentTaskId = asTrimmedString(assignmentRecord?.taskId);
   const explicitMailboxMessageId = asTrimmedString(resultRecord?.mailboxMessageId);
   const candidateMessageId = asTrimmedString(resultRecord?.messageId);

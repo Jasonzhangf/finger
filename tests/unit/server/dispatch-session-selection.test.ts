@@ -260,6 +260,62 @@ describe('resolveDispatchSessionSelection strict lifecycle', () => {
     );
   });
 
+  it('rebinds explicit project session when worker scope is unbound but dispatch requests a concrete worker', () => {
+    const sessions = {
+      'session-project-unbound': {
+        id: 'session-project-unbound',
+        projectPath: '/Volumes/extension/code/finger',
+        context: {
+          sessionTier: 'orchestrator-root',
+          dispatchTargetAgentId: 'finger-project-agent',
+          dispatchProjectPath: '/Volumes/extension/code/finger',
+          // legacy/unbound session: no dispatchWorkerId
+        },
+      },
+    };
+    const { deps, sessionManager } = createDeps({
+      sessions,
+      runtimeCurrentSessionId: 'session-project-unbound',
+      managerCurrentSessionId: 'session-project-unbound',
+      findSessionsByProjectPathResult: [
+        {
+          id: 'session-project-unbound',
+          projectPath: '/Volumes/extension/code/finger',
+          context: sessions['session-project-unbound'].context,
+          lastAccessedAt: new Date().toISOString(),
+        } as any,
+      ],
+    });
+
+    const result = resolveDispatchSessionSelection(deps, {
+      sourceAgentId: 'finger-system-agent',
+      targetAgentId: 'finger-project-agent',
+      sessionId: 'session-project-unbound',
+      metadata: {
+        projectPath: '/Volumes/extension/code/finger',
+        workerId: 'finger-project-agent-02',
+      },
+      assignment: {
+        assigneeWorkerId: 'finger-project-agent-02',
+      },
+      task: {
+        cwd: '/Volumes/extension/code/finger',
+        prompt: 'use james worker',
+      },
+    } as any);
+
+    expect(result.sessionId).toMatch(/^dispatch-finger-project-agent-/);
+    expect(result.sessionId).not.toBe('session-project-unbound');
+    expect((result as any).metadata?.dispatchSessionScopeRebound).toBe(true);
+    expect(sessionManager.ensureSession).toHaveBeenCalledTimes(1);
+    expect(sessionManager.updateContext).toHaveBeenCalledWith(
+      expect.stringMatching(/^dispatch-finger-project-agent-/),
+      expect.objectContaining({
+        dispatchWorkerId: 'finger-project-agent-02',
+      }),
+    );
+  });
+
   it('creates stateless reviewer session for reviewer dispatch by default', () => {
     const sessions = {
       'session-reviewer-webauto': {
