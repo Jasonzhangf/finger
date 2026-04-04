@@ -492,12 +492,3 @@ export function filterStatusMappings(
     return settings.statusUpdate;
   });
 }
-
-export function buildDispatchMailboxPreviewFromResult(params: {
-  targetAgentId: string;
-  mailboxMessageId: string;
-  resultSummary: string;
-  nextAction: string;
-}): string {
-  return buildDispatchMailboxPreview(params);
-}

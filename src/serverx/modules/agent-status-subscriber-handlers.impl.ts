@@ -22,7 +22,6 @@ import {
   buildDispatchReasonSummary,
   buildDispatchMailboxPreview,
   buildDispatchSourceSummary,
-  buildDispatchMailboxPreviewFromResult,
   filterStatusMappings,
   isMailboxDispatchStatus,
   parseToolSummary,
