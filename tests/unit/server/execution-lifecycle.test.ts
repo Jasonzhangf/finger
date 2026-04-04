@@ -59,6 +59,57 @@ describe('execution-lifecycle', () => {
     expect(running.lastError).toBeUndefined();
   });
 
+  it('prevents terminal lifecycle regression by default', () => {
+    const completed = transitionExecutionLifecycle(null, {
+      stage: 'completed',
+      updatedBy: 'test',
+    }, '2026-03-28T08:00:00.000Z');
+
+    const regressed = transitionExecutionLifecycle(completed, {
+      stage: 'running',
+      updatedBy: 'stale-event',
+    }, '2026-03-28T08:00:01.000Z');
+
+    expect(regressed).toBe(completed);
+    expect(regressed.stage).toBe('completed');
+  });
+
+  it('allows explicit terminal-to-waiting_user transition when flagged', () => {
+    const completed = transitionExecutionLifecycle(null, {
+      stage: 'completed',
+      updatedBy: 'test',
+    }, '2026-03-28T08:00:00.000Z');
+
+    const waiting = transitionExecutionLifecycle(completed, {
+      stage: 'waiting_user',
+      substage: 'waiting_for_user',
+      updatedBy: 'event-forwarding',
+      allowFromTerminal: true,
+    }, '2026-03-28T08:00:02.000Z');
+
+    expect(waiting.stage).toBe('waiting_user');
+    expect(waiting.substage).toBe('waiting_for_user');
+  });
+
+  it('allows terminal-to-terminal normalization transitions', () => {
+    const interrupted = transitionExecutionLifecycle(null, {
+      stage: 'interrupted',
+      substage: 'turn_stop_tool_pending',
+      finishReason: 'stop',
+      updatedBy: 'test',
+    }, '2026-03-28T08:00:00.000Z');
+
+    const normalized = transitionExecutionLifecycle(interrupted, {
+      stage: 'completed',
+      substage: 'startup_reset_after_stop',
+      finishReason: 'stop',
+      updatedBy: 'system-agent-manager',
+    }, '2026-03-28T08:00:02.000Z');
+
+    expect(normalized.stage).toBe('completed');
+    expect(normalized.substage).toBe('startup_reset_after_stop');
+  });
+
   it('persists lifecycle state into session context', () => {
     const sessionManager = createSessionManager();
 

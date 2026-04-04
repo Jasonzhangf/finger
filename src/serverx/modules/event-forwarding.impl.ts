@@ -325,6 +325,8 @@ export function attachEventForwarding(deps: EventForwardingDeps): {
     const payload = event.payload as Record<string, unknown>;
     const hooks = extractControlHookNames(payload);
     if (hooks.length === 0) return;
+    const hookSet = new Set(hooks);
+    const waitingUserHookActive = hookSet.has('hook.waiting_user');
     const controlBlock = asControlBlockRecord(payload);
     const turnId = asTrimmedString(payload.responseId) ?? `turn-${Date.now()}`;
     const session = sessionManager.getSession(event.sessionId);
@@ -489,6 +491,10 @@ export function attachEventForwarding(deps: EventForwardingDeps): {
         }
 
         if (hook === 'hook.dispatch' || hook === 'hook.reviewer') {
+          if (waitingUserHookActive) {
+            emitControlHookActionNotice(event, hook, 'skipped_due_to_waiting_user');
+            continue;
+          }
           if (typeof dispatchTaskToAgent !== 'function') {
             emitControlHookActionNotice(event, hook, 'skipped_dispatch_bridge_unavailable');
             continue;
@@ -745,6 +751,7 @@ export function attachEventForwarding(deps: EventForwardingDeps): {
         substage: 'turn_start',
         updatedBy: 'event-forwarding',
         finishReason: null,
+        allowFromTerminal: true,
       });
     } else if (event.phase === 'turn_complete') {
       const pendingInputAccepted = event.payload.pendingInputAccepted === true;

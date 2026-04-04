@@ -50,6 +50,7 @@ const ACTIVE_LIFECYCLE_STAGES = new Set([
   'interrupted',
 ]);
 const ACTIVE_PROJECT_TASK_RECOVERY_MAX_AGE_MS = 45 * 60_000;
+const STARTUP_RECOVERY_IN_FLIGHT = new Set<string>();
 
 interface SystemAgentManagerFileConfig {
   periodicCheck?: {
@@ -787,50 +788,61 @@ export class SystemAgentManager {
 
   private async handleStartupExecutionState(): Promise<void> {
     if (!this.systemSessionId) return;
-
-    const lifecycle = getExecutionLifecycleState(this.deps.sessionManager, this.systemSessionId);
-    if (!lifecycle) {
-      log.info('[SystemAgentManager] No startup execution lifecycle found', {
-        sessionId: this.systemSessionId,
-        stage: 'none',
+    const sessionId = this.systemSessionId;
+    if (STARTUP_RECOVERY_IN_FLIGHT.has(sessionId)) {
+      log.warn('[SystemAgentManager] Startup recovery already in progress, skip duplicated invocation', {
+        sessionId,
       });
       return;
     }
+    STARTUP_RECOVERY_IN_FLIGHT.add(sessionId);
+    try {
+      const lifecycle = getExecutionLifecycleState(this.deps.sessionManager, sessionId);
+      if (!lifecycle) {
+        log.info('[SystemAgentManager] No startup execution lifecycle found', {
+          sessionId,
+          stage: 'none',
+        });
+        return;
+      }
 
-    if (this.shouldResetLifecycleAfterRestart(lifecycle)) {
-      applyExecutionLifecycleTransition(this.deps.sessionManager, this.systemSessionId, {
-        stage: 'completed',
-        substage: 'startup_reset_after_stop',
-        updatedBy: 'system-agent-manager',
-        finishReason: 'stop',
-        turnId: lifecycle.turnId,
-        dispatchId: lifecycle.dispatchId,
-        detail: 'startup reset: runtime stop was already reached before restart',
-      });
-      log.info('[SystemAgentManager] Startup reset stale stop lifecycle to completed', {
-        sessionId: this.systemSessionId,
-        previousStage: lifecycle.stage,
-        previousSubstage: lifecycle.substage ?? 'none',
+      if (this.shouldResetLifecycleAfterRestart(lifecycle)) {
+        applyExecutionLifecycleTransition(this.deps.sessionManager, sessionId, {
+          stage: 'completed',
+          substage: 'startup_reset_after_stop',
+          updatedBy: 'system-agent-manager',
+          finishReason: 'stop',
+          turnId: lifecycle.turnId,
+          dispatchId: lifecycle.dispatchId,
+          detail: 'startup reset: runtime stop was already reached before restart',
+        });
+        log.info('[SystemAgentManager] Startup reset stale stop lifecycle to completed', {
+          sessionId,
+          previousStage: lifecycle.stage,
+          previousSubstage: lifecycle.substage ?? 'none',
+          finishReason: lifecycle.finishReason ?? 'none',
+        });
+        return;
+      }
+
+      if (this.shouldResumeLifecycle(lifecycle)) {
+        await this.resumeInterruptedExecution(lifecycle);
+        return;
+      }
+
+      if (this.shouldReviewCompletedLifecycle(lifecycle)) {
+        await this.reviewCompletedExecution(lifecycle);
+        return;
+      }
+
+      log.info('[SystemAgentManager] Startup execution state requires no action', {
+        sessionId,
+        stage: lifecycle.stage,
         finishReason: lifecycle.finishReason ?? 'none',
       });
-      return;
+    } finally {
+      STARTUP_RECOVERY_IN_FLIGHT.delete(sessionId);
     }
-
-    if (this.shouldResumeLifecycle(lifecycle)) {
-      await this.resumeInterruptedExecution(lifecycle);
-      return;
-    }
-
-    if (this.shouldReviewCompletedLifecycle(lifecycle)) {
-      await this.reviewCompletedExecution(lifecycle);
-      return;
-    }
-
-    log.info('[SystemAgentManager] Startup execution state requires no action', {
-      sessionId: this.systemSessionId,
-      stage: lifecycle.stage,
-      finishReason: lifecycle.finishReason ?? 'none',
-    });
   }
 
   private shouldResumeLifecycle(lifecycle: ExecutionLifecycleState): boolean {
@@ -868,9 +880,18 @@ export class SystemAgentManager {
 
   private async resumeInterruptedExecution(lifecycle: ExecutionLifecycleState): Promise<void> {
     if (!this.systemSessionId) return;
+    const checkpoint = this.buildStartupResumeCheckpoint(lifecycle);
+    if (this.hasCompletedStartupResume(checkpoint)) {
+      log.info('[SystemAgentManager] Startup interrupted-execution resume already processed', {
+        sessionId: this.systemSessionId,
+        checkpoint,
+      });
+      return;
+    }
 
     const hardRecovered = await this.tryResumeInterruptedKernelTurn(lifecycle);
     if (hardRecovered) {
+      this.markStartupResumeScheduled(checkpoint);
       return;
     }
 
@@ -905,6 +926,7 @@ export class SystemAgentManager {
         status: result?.status ?? 'unknown',
         dispatchId: result?.dispatchId,
       });
+      this.markStartupResumeScheduled(checkpoint);
     } catch (error) {
       log.error(
         '[SystemAgentManager] Failed to dispatch interrupted execution recovery',
@@ -916,6 +938,34 @@ export class SystemAgentManager {
         },
       );
     }
+  }
+
+  private buildStartupResumeCheckpoint(lifecycle: ExecutionLifecycleState): string {
+    return [
+      lifecycle.stage,
+      lifecycle.substage ?? '',
+      lifecycle.finishReason ?? '',
+      lifecycle.turnId ?? '',
+      lifecycle.dispatchId ?? '',
+      lifecycle.lastTransitionAt,
+    ].join('|');
+  }
+
+  private hasCompletedStartupResume(checkpoint: string): boolean {
+    if (!this.systemSessionId) return false;
+    const session = this.deps.sessionManager.getSession(this.systemSessionId);
+    const context = (session?.context && typeof session.context === 'object')
+      ? (session.context as Record<string, unknown>)
+      : {};
+    return context.startupResumeCheckpoint === checkpoint;
+  }
+
+  private markStartupResumeScheduled(checkpoint: string): void {
+    if (!this.systemSessionId) return;
+    this.deps.sessionManager.updateContext(this.systemSessionId, {
+      startupResumeCheckpoint: checkpoint,
+      startupResumeAt: new Date().toISOString(),
+    });
   }
 
   private hasCompletedStartupReview(checkpoint: string): boolean {

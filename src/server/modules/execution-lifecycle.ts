@@ -9,6 +9,7 @@ export type ExecutionLifecycleStage =
   | 'session_bound'
   | 'dispatching'
   | 'running'
+  | 'waiting_user'
   | 'waiting_tool'
   | 'waiting_model'
   | 'retrying'
@@ -40,6 +41,11 @@ export interface ExecutionLifecycleState {
 export interface ExecutionLifecycleTransition {
   stage: ExecutionLifecycleStage;
   substage?: string;
+  /**
+   * Allow transition from terminal lifecycle stages to non-terminal stages.
+   * Use sparingly for explicit state handoff events (e.g. waiting_for_user).
+   */
+  allowFromTerminal?: boolean;
   finishReason?: string | null;
   lastError?: string | null;
   updatedBy?: string;
@@ -61,9 +67,16 @@ const STAGES = new Set<ExecutionLifecycleStage>([
   'session_bound',
   'dispatching',
   'running',
+  'waiting_user',
   'waiting_tool',
   'waiting_model',
   'retrying',
+  'completed',
+  'failed',
+  'interrupted',
+]);
+
+const TERMINAL_STAGES = new Set<ExecutionLifecycleStage>([
   'completed',
   'failed',
   'interrupted',
@@ -123,6 +136,23 @@ export function transitionExecutionLifecycle(
   transition: ExecutionLifecycleTransition,
   nowIso = new Date().toISOString(),
 ): ExecutionLifecycleState {
+  if (
+    current
+    && TERMINAL_STAGES.has(current.stage)
+    && !TERMINAL_STAGES.has(transition.stage)
+    && transition.stage !== 'received'
+    && transition.allowFromTerminal !== true
+  ) {
+    log.warn('Skip lifecycle regression transition from terminal stage', {
+      fromStage: current.stage,
+      toStage: transition.stage,
+      substage: transition.substage,
+      updatedBy: transition.updatedBy,
+      sessionMessageId: transition.messageId,
+    });
+    return current;
+  }
+
   const startedAt = transition.stage === 'received' || !current
     ? nowIso
     : current.startedAt;
@@ -211,6 +241,9 @@ export function applyExecutionLifecycleTransition(
 
   const current = getExecutionLifecycleState(sessionManager, resolvedSessionId);
   const next = transitionExecutionLifecycle(current, transition);
+  if (current && next === current) {
+    return current;
+  }
   const updated = sessionManager.updateContext(resolvedSessionId, {
     executionLifecycle: next,
   });

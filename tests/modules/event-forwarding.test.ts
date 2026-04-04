@@ -847,6 +847,40 @@ describe('Event Forwarding - Execution Lifecycle', () => {
     }));
   });
 
+  it('skips hook.dispatch when hook.waiting_user is present in the same control block', async () => {
+    const sessionManager = createMockSessionManager();
+    const session = (sessionManager.getSession as ReturnType<typeof vi.fn>)('hook-dispatch-waiting-user-session-1');
+    session.context.ownerAgentId = 'finger-system-agent';
+    const dispatchTaskToAgent = vi.fn(async () => ({ ok: true, status: 'queued' }));
+    const eventBus = createMockEventBus();
+    const deps = createDeps({ sessionManager, eventBus, dispatchTaskToAgent });
+    const { emitLoopEventToEventBus } = attachEventForwarding(deps);
+
+    emitLoopEventToEventBus({
+      sessionId: 'hook-dispatch-waiting-user-session-1',
+      phase: 'turn_complete',
+      timestamp: new Date().toISOString(),
+      payload: {
+        finishReason: 'stop',
+        responseId: 'resp-hook-dispatch-waiting-user-1',
+        controlHookNames: ['hook.waiting_user', 'hook.dispatch'],
+        controlBlockValid: true,
+      },
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(dispatchTaskToAgent).not.toHaveBeenCalled();
+    expect(eventBus.emit).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'system_notice',
+      sessionId: 'hook-dispatch-waiting-user-session-1',
+      payload: expect.objectContaining({
+        source: 'control_hook_action',
+        hook: 'hook.dispatch',
+        action: 'skipped_due_to_waiting_user',
+      }),
+    }));
+  });
+
   it('marks dispatch queue events as dispatching in execution lifecycle', () => {
     const sessionManager = createMockSessionManager();
     const captured: { eventName: string; handler: (event: any) => void }[] = [];
@@ -977,6 +1011,51 @@ describe('Event Forwarding - Execution Lifecycle', () => {
     expect(session.context.executionLifecycle).toEqual(expect.objectContaining({
       stage: 'interrupted',
       substage: 'control_interrupt',
+      updatedBy: 'event-forwarding',
+    }));
+  });
+
+  it('maps waiting_for_user and user_decision_received to lifecycle transitions', () => {
+    const sessionManager = createMockSessionManager();
+    const captured: { eventName: string; handler: (event: any) => void }[] = [];
+    const eventBus = {
+      subscribe: vi.fn((eventName: string, handler: (event: any) => void) => captured.push({ eventName, handler })),
+      subscribeMultiple: vi.fn(),
+      emit: vi.fn(async () => {}),
+    } as unknown as UnifiedEventBus;
+
+    attachEventForwarding(createDeps({ sessionManager, eventBus }));
+    const waitingHandler = captured.find((entry) => entry.eventName === 'waiting_for_user')?.handler;
+    const decisionHandler = captured.find((entry) => entry.eventName === 'user_decision_received')?.handler;
+    expect(waitingHandler).toBeDefined();
+    expect(decisionHandler).toBeDefined();
+
+    waitingHandler?.({
+      type: 'waiting_for_user',
+      sessionId: 'waiting-session-1',
+      payload: {
+        reason: 'confirmation_required',
+        context: { question: '需要确认是否继续' },
+      },
+    });
+
+    let session = (sessionManager.getSession as ReturnType<typeof vi.fn>)('waiting-session-1');
+    expect(session.context.executionLifecycle).toEqual(expect.objectContaining({
+      stage: 'waiting_user',
+      substage: 'waiting_for_user',
+      updatedBy: 'event-forwarding',
+    }));
+
+    decisionHandler?.({
+      type: 'user_decision_received',
+      sessionId: 'waiting-session-1',
+      payload: { decision: '继续' },
+    });
+
+    session = (sessionManager.getSession as ReturnType<typeof vi.fn>)('waiting-session-1');
+    expect(session.context.executionLifecycle).toEqual(expect.objectContaining({
+      stage: 'running',
+      substage: 'user_decision_received',
       updatedBy: 'event-forwarding',
     }));
   });

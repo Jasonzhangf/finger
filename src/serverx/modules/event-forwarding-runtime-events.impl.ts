@@ -589,4 +589,42 @@ export function attachControlLifecycleForwarding(options: {
       });
     },
   );
+
+  eventBus.subscribe(
+    'waiting_for_user',
+    (event) => {
+      const payload: Record<string, unknown> = isObjectRecord(event.payload) ? event.payload : {};
+      const context: Record<string, unknown> = isObjectRecord(payload.context) ? payload.context : {};
+      const sessionId = asString(payload.sessionId) ?? asString(event.sessionId);
+      if (!sessionId) return;
+      const detail = asString(context.question)
+        ?? asString(payload.reason)
+        ?? 'waiting_for_user';
+      applyExecutionLifecycleTransition(sessionManager, sessionId, {
+        stage: 'waiting_user',
+        substage: 'waiting_for_user',
+        updatedBy: 'event-forwarding',
+        detail,
+        allowFromTerminal: true,
+      });
+    },
+  );
+
+  eventBus.subscribe(
+    'user_decision_received',
+    (event) => {
+      const payload: Record<string, unknown> = isObjectRecord(event.payload) ? event.payload : {};
+      const sessionId = asString(payload.sessionId) ?? asString(event.sessionId);
+      if (!sessionId) return;
+      const detail = asString(payload.decision) ?? 'user_decision_received';
+      applyExecutionLifecycleTransition(sessionManager, sessionId, {
+        stage: 'running',
+        substage: 'user_decision_received',
+        updatedBy: 'event-forwarding',
+        detail,
+        allowFromTerminal: true,
+        lastError: null,
+      });
+    },
+  );
 }

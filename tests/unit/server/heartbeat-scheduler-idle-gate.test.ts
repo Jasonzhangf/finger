@@ -71,5 +71,83 @@ describe('HeartbeatScheduler idle gate', () => {
     expect(promptMailboxSpy).not.toHaveBeenCalled();
     expect(execute).toHaveBeenCalledWith('runtime_view', {});
   });
-});
 
+  it('does not treat stale project recovery sessions as active blockers', async () => {
+    const staleIso = new Date(Date.now() - (46 * 60_000)).toISOString();
+    const scheduler = new HeartbeatScheduler({
+      agentRuntimeBlock: { execute: vi.fn(async () => ({ agents: [] })) },
+      sessionManager: {
+        listSessions: vi.fn(() => [
+          {
+            id: 'project-session-stale-1',
+            context: {
+              projectTaskState: {
+                active: true,
+                status: 'in_progress',
+                sourceAgentId: 'finger-system-agent',
+                targetAgentId: 'finger-project-agent',
+                updatedAt: staleIso,
+              },
+            },
+          },
+          {
+            id: 'project-session-stale-2',
+            context: {
+              executionLifecycle: {
+                stage: 'running',
+                substage: 'turn_start',
+                targetAgentId: 'finger-project-agent',
+                startedAt: staleIso,
+                lastTransitionAt: staleIso,
+                retryCount: 0,
+              },
+            },
+          },
+        ]),
+      },
+    } as any);
+
+    const recovery = (scheduler as any).detectActiveProjectRecoverySessions();
+    expect(recovery.active).toBe(false);
+    expect(recovery.sessionIds).toEqual([]);
+    expect(recovery.staleTaskSessionIds).toContain('project-session-stale-1');
+    expect(recovery.staleLifecycleSessionIds).toContain('project-session-stale-2');
+  });
+
+  it('continues scheduled maintenance tick when only stale recovery sessions exist', async () => {
+    const staleIso = new Date(Date.now() - (46 * 60_000)).toISOString();
+    const execute = vi.fn(async () => ({ agents: [] }));
+    const scheduler = new HeartbeatScheduler({
+      agentRuntimeBlock: { execute },
+      sessionManager: {
+        listSessions: vi.fn(() => [
+          {
+            id: 'project-session-stale-3',
+            context: {
+              projectTaskState: {
+                active: true,
+                status: 'in_progress',
+                sourceAgentId: 'finger-system-agent',
+                targetAgentId: 'finger-project-agent',
+                updatedAt: staleIso,
+              },
+            },
+          },
+        ]),
+      },
+    } as any);
+
+    const dispatchDueTasksSpy = vi.spyOn(scheduler as any, 'dispatchDueTasks').mockResolvedValue(undefined);
+    const promptMailboxSpy = vi.spyOn(scheduler as any, 'promptMailboxChecks').mockResolvedValue(undefined);
+    vi.spyOn(scheduler as any, 'dispatchNightlyDreamTasks').mockResolvedValue(undefined);
+    vi.spyOn(scheduler as any, 'dispatchDailySystemReviewTask').mockResolvedValue(undefined);
+    vi.spyOn(scheduler as any, 'persistRuntimeState').mockResolvedValue(undefined);
+    vi.spyOn(scheduler as any, 'armTick').mockImplementation(() => undefined);
+
+    await (scheduler as any).tick();
+
+    expect(dispatchDueTasksSpy).toHaveBeenCalledTimes(1);
+    expect(promptMailboxSpy).toHaveBeenCalledTimes(1);
+    expect(execute).toHaveBeenCalledWith('runtime_view', {});
+  });
+});

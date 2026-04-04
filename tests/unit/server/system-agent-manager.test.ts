@@ -199,6 +199,79 @@ describe('SystemAgentManager - Session Reuse', () => {
     expect(dispatchCall?.[1]?.metadata?.progressDelivery).toEqual({ mode: 'silent' });
   });
 
+  it('should skip duplicate startup interrupted recovery when checkpoint already persisted', async () => {
+    const transitionAt = '2026-03-28T00:01:00Z';
+    const checkpoint = [
+      'running',
+      'turn_start',
+      '',
+      'turn-recover-1',
+      'dispatch-recover-1',
+      transitionAt,
+    ].join('|');
+    const session = {
+      id: 'system-session-recover-dedupe',
+      name: 'finger-system-agent runtime',
+      projectPath: '/tmp/system',
+      createdAt: '2026-03-28T00:00:00Z',
+      context: {
+        executionLifecycle: {
+          stage: 'running',
+          startedAt: '2026-03-28T00:00:00Z',
+          lastTransitionAt: transitionAt,
+          retryCount: 0,
+          substage: 'turn_start',
+          turnId: 'turn-recover-1',
+          dispatchId: 'dispatch-recover-1',
+        },
+        startupResumeCheckpoint: checkpoint,
+      },
+    };
+    mockSessionManager.getOrCreateSystemSession.mockReturnValue(session);
+    mockSessionManager.getSession.mockReturnValue(session);
+
+    const manager = new SystemAgentManager(deps);
+    await manager.start();
+
+    const recoveryDispatchCall = mockAgentRuntimeBlock.execute.mock.calls.find(
+      (call: unknown[]) => call[0] === 'dispatch' && (call[1] as Record<string, unknown>)?.metadata
+        && ((call[1] as { metadata?: { source?: string } }).metadata?.source === 'system-recovery'),
+    );
+    expect(recoveryDispatchCall).toBeUndefined();
+  });
+
+  it('guards startup recovery against concurrent duplicate execution', async () => {
+    const session = {
+      id: 'system-session-recover-concurrent',
+      name: 'finger-system-agent runtime',
+      projectPath: '/tmp/system',
+      createdAt: '2026-03-28T00:00:00Z',
+      context: {
+        executionLifecycle: {
+          stage: 'running',
+          startedAt: '2026-03-28T00:00:00Z',
+          lastTransitionAt: '2026-03-28T00:01:00Z',
+          retryCount: 0,
+          substage: 'turn_start',
+        },
+      },
+    };
+    mockSessionManager.getSession.mockReturnValue(session);
+    const manager = new SystemAgentManager(deps);
+    (manager as any).systemSessionId = session.id;
+
+    const resumeSpy = vi.spyOn(manager as any, 'resumeInterruptedExecution').mockImplementation(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    });
+
+    await Promise.all([
+      (manager as any).handleStartupExecutionState(),
+      (manager as any).handleStartupExecutionState(),
+    ]);
+
+    expect(resumeSpy).toHaveBeenCalledTimes(1);
+  });
+
   it('should not resume startup execution when lifecycle is already completed without finish_reason=stop', async () => {
     const session = {
       id: 'system-session-completed-without-stop',

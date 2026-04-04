@@ -143,6 +143,7 @@ const HEARTBEAT_IDLE_GUARD_AGENT_IDS = [
   FINGER_REVIEWER_AGENT_ID,
 ];
 const HEARTBEAT_IDLE_GUARD_LOG_THROTTLE_MS = 60_000;
+const PROJECT_RECOVERY_ACTIVE_MAX_AGE_MS = 45 * 60_000;
 
 function normalizeProjectPath(value: string): string {
   return value.trim().replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
@@ -536,6 +537,8 @@ export class HeartbeatScheduler {
           sessionIds: recovery.sessionIds,
           taskSessionIds: recovery.taskSessionIds,
           lifecycleSessionIds: recovery.lifecycleSessionIds,
+          staleTaskSessionIds: recovery.staleTaskSessionIds,
+          staleLifecycleSessionIds: recovery.staleLifecycleSessionIds,
         },
       };
     }
@@ -573,16 +576,28 @@ export class HeartbeatScheduler {
     sessionIds: string[];
     taskSessionIds: string[];
     lifecycleSessionIds: string[];
+    staleTaskSessionIds: string[];
+    staleLifecycleSessionIds: string[];
   } {
     const listSessions = (this.deps.sessionManager as {
       listSessions?: () => Array<{ id: string; context?: Record<string, unknown> }>;
     }).listSessions;
     if (typeof listSessions !== 'function') {
-      return { active: false, sessionIds: [], taskSessionIds: [], lifecycleSessionIds: [] };
+      return {
+        active: false,
+        sessionIds: [],
+        taskSessionIds: [],
+        lifecycleSessionIds: [],
+        staleTaskSessionIds: [],
+        staleLifecycleSessionIds: [],
+      };
     }
     const sessions = listSessions.call(this.deps.sessionManager) ?? [];
     const taskSessionIds: string[] = [];
     const lifecycleSessionIds: string[] = [];
+    const staleTaskSessionIds: string[] = [];
+    const staleLifecycleSessionIds: string[] = [];
+    const nowMs = Date.now();
     for (const session of sessions) {
       const context = session && typeof session.context === 'object' && session.context !== null
         ? session.context as Record<string, unknown>
@@ -592,12 +607,24 @@ export class HeartbeatScheduler {
 
       const taskState = parseProjectTaskState(context.projectTaskState);
       if (taskState && isProjectTaskStateActive(taskState)) {
-        taskSessionIds.push(session.id);
+        const updatedAtMs = Date.parse(taskState.updatedAt);
+        const ageMs = Number.isFinite(updatedAtMs) ? Math.max(0, nowMs - updatedAtMs) : Number.POSITIVE_INFINITY;
+        if (ageMs <= PROJECT_RECOVERY_ACTIVE_MAX_AGE_MS) {
+          taskSessionIds.push(session.id);
+        } else {
+          staleTaskSessionIds.push(session.id);
+        }
       }
 
       const lifecycle = parseExecutionLifecycleState(context.executionLifecycle);
       if (lifecycle && lifecycle.targetAgentId === FINGER_PROJECT_AGENT_ID && this.shouldResumeLifecycle(lifecycle)) {
-        lifecycleSessionIds.push(session.id);
+        const lastTransitionMs = Date.parse(lifecycle.lastTransitionAt);
+        const ageMs = Number.isFinite(lastTransitionMs) ? Math.max(0, nowMs - lastTransitionMs) : Number.POSITIVE_INFINITY;
+        if (ageMs <= PROJECT_RECOVERY_ACTIVE_MAX_AGE_MS) {
+          lifecycleSessionIds.push(session.id);
+        } else {
+          staleLifecycleSessionIds.push(session.id);
+        }
       }
     }
     const sessionIds = Array.from(new Set([...taskSessionIds, ...lifecycleSessionIds]));
@@ -606,6 +633,8 @@ export class HeartbeatScheduler {
       sessionIds,
       taskSessionIds,
       lifecycleSessionIds,
+      staleTaskSessionIds: Array.from(new Set(staleTaskSessionIds)),
+      staleLifecycleSessionIds: Array.from(new Set(staleLifecycleSessionIds)),
     };
   }
 

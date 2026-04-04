@@ -699,14 +699,28 @@ export class SessionManager {
       : {};
     const messageType = typeof metadata?.type === 'string' ? metadata.type : undefined;
     const resolvedLedgerMode = this.resolveLedgerModeForWrite(session, metadata);
-    const codexAlignedContext: Record<string, unknown> = {
-      ...baseCodexAlignedContext,
-      role,
-      session_id: session.id,
-      agent_id: agentId,
-      mode: resolvedLedgerMode,
-      ...(messageType ? { message_type: messageType } : {}),
-      ...(role === 'user' ? { user_input: content } : {}),
+    const buildLedgerMetadata = (mode: string): Record<string, unknown> => {
+      const codexAlignedContext: Record<string, unknown> = {
+        ...baseCodexAlignedContext,
+        role,
+        session_id: session.id,
+        agent_id: agentId,
+        mode,
+        ...(messageType ? { message_type: messageType } : {}),
+        ...(role === 'user' ? { user_input: content } : {}),
+      };
+      return {
+        ...mergedLedgerMetadata,
+        codexAlignedContext,
+        _fingerLedger: {
+          schema: 'finger.session_message.v1',
+          role,
+          session_id: session.id,
+          agent_id: agentId,
+          mode,
+          ...(messageType ? { message_type: messageType } : {}),
+        },
+      };
     };
     // 默认对 user/assistant 文本写入做 tag/topic 推断（若调用方未显式提供）
     if (role === 'user' || role === 'assistant') {
@@ -734,32 +748,39 @@ export class SessionManager {
       }
     }
 
-    const ledgerMetadata: Record<string, unknown> = {
-      ...mergedLedgerMetadata,
-      codexAlignedContext,
-      _fingerLedger: {
-        schema: 'finger.session_message.v1',
-        role,
-        session_id: session.id,
-        agent_id: agentId,
-        mode: resolvedLedgerMode,
-        ...(messageType ? { message_type: messageType } : {}),
-      },
-    };
-    try {
+    const writeMessageToLedger = async (mode: string): Promise<void> => {
       await appendSessionMessage(
-        { rootDir, sessionId: session.id, agentId, mode: resolvedLedgerMode },
+        { rootDir, sessionId: session.id, agentId, mode },
         {
           role,
           content,
           messageId,
           tokenCount: estimateTokens(content),
-          metadata: ledgerMetadata,
+          metadata: buildLedgerMetadata(mode),
         },
       );
+    };
+    try {
+      await writeMessageToLedger(resolvedLedgerMode);
     } catch (err) {
-      clog.error('[SessionManager] Ledger write failed, message append aborted:', err);
-      return null;
+      const code = (err as NodeJS.ErrnoException | undefined)?.code;
+      const shouldRetryOnMain = code === 'ENOENT' && resolvedLedgerMode !== 'main';
+      if (shouldRetryOnMain) {
+        clog.warn('[SessionManager] Ledger write ENOENT on transient mode, retrying on main mode', {
+          sessionId: session.id,
+          agentId,
+          failedMode: resolvedLedgerMode,
+        });
+        try {
+          await writeMessageToLedger('main');
+        } catch (retryErr) {
+          clog.error('[SessionManager] Ledger write retry on main mode failed, message append aborted:', retryErr);
+          return null;
+        }
+      } else {
+        clog.error('[SessionManager] Ledger write failed, message append aborted:', err);
+        return null;
+      }
     }
 
     session.lastAccessedAt = new Date().toISOString();
@@ -864,18 +885,33 @@ export class SessionManager {
     const shouldDelete = autoDeleteOnStop && finishedStop && options.keepOnFailure !== true;
     let deleted = false;
     if (shouldDelete) {
+      // Persist mode clear first so subsequent writes fall back to main ledger
+      // and do not race on deleted transient paths.
+      this.clearTransientLedgerMode(sessionId);
       try {
         const ownerAgentId = typeof context.ownerAgentId === 'string' && context.ownerAgentId.trim().length > 0
           ? context.ownerAgentId.trim()
           : SYSTEM_AGENT_ID;
         const rootDir = this.resolveSessionsRoot(session);
         const dir = resolveBaseDir(rootDir, session.id, ownerAgentId, mode);
-        await fs.promises.rm(dir, { recursive: true, force: true });
-        deleted = true;
+        const maxAttempts = 3;
+        for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+          try {
+            await fs.promises.rm(dir, { recursive: true, force: true });
+            deleted = true;
+            break;
+          } catch (error) {
+            const code = (error as NodeJS.ErrnoException | undefined)?.code;
+            const retryable = code === 'ENOTEMPTY' || code === 'EBUSY' || code === 'EPERM';
+            if (!retryable || attempt >= maxAttempts) throw error;
+            await new Promise((resolve) => setTimeout(resolve, 50 * attempt));
+          }
+        }
         log.info('[SessionManager] transient ledger removed on successful completion', {
           sessionId: session.id,
           agentId: ownerAgentId,
           mode,
+          deleted,
         });
       } catch (error) {
         log.warn('[SessionManager] failed to remove transient ledger mode', {
@@ -884,7 +920,6 @@ export class SessionManager {
           error: error instanceof Error ? error.message : String(error),
         });
       }
-      this.clearTransientLedgerMode(sessionId);
       return { active: true, deleted, mode };
     }
     return { active: true, deleted: false, mode };
