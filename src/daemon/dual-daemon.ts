@@ -448,8 +448,11 @@ export class DualDaemonSupervisor {
         if (existsSync(file)) {
           unlinkSync(file);
         }
-      } catch {
-        // Ignore
+      } catch (error) {
+        log.warn('[DualDaemon] Failed to cleanup pid file', {
+          file,
+          error: error instanceof Error ? error.message : String(error),
+        });
       }
     });
   }

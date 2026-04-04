@@ -72,13 +72,19 @@ export class OrchestrationDaemon {
             process.kill(pid, 0);
             process.kill(pid, 'SIGTERM');
             log.info('Killed old daemon', { pid });
-          } catch {
-            // Already dead
+          } catch (error) {
+            log.warn('Failed to terminate stale daemon pid; continue cleanup', {
+              pid,
+              error: error instanceof Error ? error.message : String(error),
+            });
           }
         }
         unlinkSync(this.config.pidFile);
-      } catch {
-        // Ignore
+      } catch (error) {
+        log.warn('Failed to cleanup pid file during orphan cleanup', {
+          pidFile: this.config.pidFile,
+          error: error instanceof Error ? error.message : String(error),
+        });
       }
     }
   }

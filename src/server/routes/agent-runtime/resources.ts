@@ -3,6 +3,9 @@ import { existsSync, readFileSync } from 'fs';
 import { join } from 'path';
 import { FINGER_PATHS } from '../../../core/finger-paths.js';
 import type { AgentRuntimeRouteDeps } from './types.js';
+import { logger } from '../../../core/logger.js';
+
+const log = logger.module('agent-runtime-resources-route');
 
 export function registerResourceRoutes(app: Express, deps: AgentRuntimeRouteDeps): void {
   app.get('/api/v1/agent/:agentId/progress', (req, res) => {
@@ -24,8 +27,12 @@ export function registerResourceRoutes(app: Express, deps: AgentRuntimeRouteDeps
           .map((line) => JSON.parse(line))
           .slice(-50);
       }
-    } catch {
-      // Ignore errors
+    } catch (error) {
+      log.warn('[agent-runtime-resources-route] Failed to read execution log, returning empty iterations', {
+        agentId: req.params.agentId,
+        executionLogPath,
+        error: error instanceof Error ? error.message : String(error),
+      });
     }
 
     res.json({
