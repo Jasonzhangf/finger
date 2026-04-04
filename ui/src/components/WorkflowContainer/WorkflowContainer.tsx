@@ -8,7 +8,6 @@ import { AgentConfigDrawer } from '../AgentConfigDrawer/AgentConfigDrawer.js';
 import { SessionResumeDialog } from '../SessionResumeDialog/SessionResumeDialog.js';
 import { useSessionResume } from '../../hooks/useSessionResume.js';
 import { SYSTEM_PROJECT_PATH } from '../../hooks/useWorkflowExecution.constants.js';
-import { pickProjectDirectory } from '../../api/client.js';
 import { useSessions } from '../../hooks/useSessions.js';
 import { useWorkflowExecution } from '../../hooks/useWorkflowExecution.js';
 import { useAgents } from '../../hooks/useAgents.js';
@@ -18,22 +17,8 @@ import LedgerMonitor from '../LedgerMonitor/LedgerMonitor.js';
 import { AgentPromptStrip } from '../BottomPanel/AgentPromptStrip.js';
 import { findConfigForAgent, matchInstanceToAgent } from '../BottomPanel/agentRuntimeUtils.js';
 import ContextMonitor from '../ContextMonitor/ContextMonitor.js';
-import type { AgentConfig, AgentRuntime, SessionInfo } from '../../api/types.js';
+import type { AgentConfig, AgentRuntime } from '../../api/types.js';
 import type { AgentRuntimeInstance } from '../../hooks/useAgentRuntimePanel.js';
-import type { SystemRegistryEntry } from '../../api/types.js';
-
-type MonitorPanel = {
-  id: string;
-  projectPath: string;
-  sessions: Array<{ id: string; name: string }>;
-  scheduledTasks: Array<{ id: string; title: string; status: 'active' | 'pending' | 'completed' | 'failed' }>;
-  selectedSessionId?: string;
-  onOpenProject?: () => void;
-  onSelectSession?: (sessionId: string) => void;
-  onCreateSession?: (projectPath: string) => Promise<SessionInfo>;
-  onSwitchSession?: (sessionId: string) => Promise<void>;
-  onDeleteSession?: (sessionId: string) => Promise<void>;
-};
 
 interface ResumeCheckResult {
   sessionId: string;
@@ -173,6 +158,26 @@ function isSystemSession(s: { projectPath?: string; sessionTier?: string; id?: s
 
 function normalizeProjectPath(value: string): string {
   return value.trim().replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
+}
+
+function isActiveRuntimeStatus(status: string): boolean {
+  const normalized = status.trim().toLowerCase().replace(/\s+/g, '_');
+  return normalized === 'running'
+    || normalized === 'queued'
+    || normalized === 'waiting_input'
+    || normalized === 'processing'
+    || normalized === 'dispatching'
+    || normalized === 'busy';
+}
+
+function isTeamMemberAgent(agentId: string): boolean {
+  const id = agentId.trim().toLowerCase();
+  if (!id) return false;
+  if (id === 'finger-system-agent') return false;
+  if (id.includes('orchestrator')) return false;
+  if (id.includes('gateway')) return false;
+  if (id.includes('context-agent')) return false;
+  return true;
 }
 
 export const WorkflowContainer: React.FC = () => {
@@ -391,19 +396,6 @@ export const WorkflowContainer: React.FC = () => {
   );
   const frozenDrawerAgentIdForLeft = useFrozenValue(drawerAgentId, panelFreeze.left);
 
-  const handleCreateNewSession = useCallback(async (): Promise<void> => {
-    const fromStorage = localStorage.getItem(WORKDIR_STORAGE_KEY)?.trim();
-    const projectPath = currentSession?.projectPath?.trim() || fromStorage || '/';
-    const created = await createSession(projectPath);
-    await switchSession(created.id);
-    setSessionBinding({
-      context: 'orchestrator',
-      sessionId: created.id,
-    });
-    setDrawerAgentId(null);
-    setSelectedAgentId(null);
-  }, [createSession, currentSession?.projectPath, switchSession]);
-
   const handleSwitchSessionFromSidebar = useCallback(async (sessionId: string): Promise<void> => {
     await switchSession(sessionId);
     setSessionBinding({
@@ -415,17 +407,6 @@ export const WorkflowContainer: React.FC = () => {
   }, [switchSession, setSelectedAgentId]);
 
 
-  const handleOpenProject = useCallback(async (_projectPath: string): Promise<void> => {
-    try {
-      const result = await pickProjectDirectory('选择工作目录');
-      if (result.canceled) return;
-      if (!result.path) return;
-      const created = await createSession(result.path);
-      await handleSwitchSessionFromSidebar(created.id);
-    } catch (error) {
-      console.error('打开目录失败', error);
-    }
-  }, [createSession, handleSwitchSessionFromSidebar]);
   const { agents: agentModules } = useAgents();
   const chatInputCapability = useMemo(
     () => resolveChatInputCapability(agentModules),
@@ -486,6 +467,13 @@ export const WorkflowContainer: React.FC = () => {
     [runtimePanelAgents],
   );
 
+  const mirrorDisplayName = React.useMemo(
+    () => runtimePanelAgents.find((agent) => agent.id === 'finger-system-agent')?.name
+      || systemChatAgents[0]?.name
+      || 'Mirror',
+    [runtimePanelAgents, systemChatAgents],
+  );
+
   // Phase 3: Auto-switch back to orchestrator when runtime finishes
   // 基于 RuntimeEvent 显式字段：runtimeEventType/runtimeStatus/runtimeInstanceId/runtimeSessionId
   useEffect(() => {
@@ -521,22 +509,6 @@ export const WorkflowContainer: React.FC = () => {
       setSelectedAgentId(null);
     }
   }, [runtimeEvents, sessionBinding, orchestratorSessionId, setSelectedAgentId]);
-
-  const frozenRightPayload = useFrozenValue({
-    executionState: systemAgentExecution.executionState,
-    runtimeEvents: systemAgentExecution.runtimeEvents,
-    contextEditableEventIds: systemAgentExecution.contextEditableEventIds,
-    agentRunStatus: systemAgentExecution.agentRunStatus,
-    runtimeOverview: systemAgentExecution.runtimeOverview,
-    toolPanelOverview: systemAgentExecution.toolPanelOverview,
-    debugSnapshotsEnabled: systemAgentExecution.debugSnapshotsEnabled,
-    debugSnapshots: systemAgentExecution.debugSnapshots,
-    orchestratorRuntimeMode: systemAgentExecution.orchestratorRuntimeMode,
-    selectedAgentId: systemAgentExecution.selectedAgentId,
-  }, panelFreeze.right);
-
-  const frozenActiveSessionId = useFrozenValue(activeSessionId, panelFreeze.right);
-  const frozenChatAgents = useFrozenValue(chatAgents, panelFreeze.right);
 
   const selectedDrawerAgent = useMemo(
     () => configPanelAgents.find((agent) => agent.id === effectiveDrawerAgentId) ?? null,
@@ -694,44 +666,93 @@ export const WorkflowContainer: React.FC = () => {
   }, []);
 
   const canvasElement = useMemo(() => {
-    // 去重：每个 projectPath 只显示一个窗口
-    const uniqueEntries = new Map<string, SystemRegistryEntry>();
-    for (const entry of systemMonitor.entries.filter((entry) => entry.monitored)) {
-      const key = normalizeProjectPath(entry.projectPath);
-      if (!uniqueEntries.has(key)) {
-        uniqueEntries.set(key, entry);
-      }
-    }
-    const sortedMonitored = Array.from(uniqueEntries.values())
+    const sessionMap = new Map(sessions.map((session) => [session.id, session]));
+    const runtimeMembers = runtimeInstances
+      .filter((instance) => isTeamMemberAgent(instance.agentId))
       .sort((a, b) => {
-        const aTime = a.monitorUpdatedAt ? new Date(a.monitorUpdatedAt).getTime() : 0;
-        const bTime = b.monitorUpdatedAt ? new Date(b.monitorUpdatedAt).getTime() : 0;
-        if (aTime !== bTime) return bTime - aTime;
-        return a.projectPath.localeCompare(b.projectPath);
-      })
-      .slice(0, 4);
+        const aActive = isActiveRuntimeStatus(a.status) ? 1 : 0;
+        const bActive = isActiveRuntimeStatus(b.status) ? 1 : 0;
+        if (aActive !== bActive) return bActive - aActive;
+        return a.name.localeCompare(b.name);
+      });
 
-    const monitorPanels: MonitorPanel[] = sortedMonitored.map((entry) => {
-      const normalizedProject = normalizeProjectPath(entry.projectPath);
+    const runtimeMemberAgentIds = new Set(runtimeMembers.map((instance) => instance.agentId));
+    const standbyMembers = runtimePanelAgents
+      .filter((agent) => isTeamMemberAgent(agent.id) && !runtimeMemberAgentIds.has(agent.id))
+      .sort((a, b) => {
+        const aActive = isActiveRuntimeStatus(a.status) ? 1 : 0;
+        const bActive = isActiveRuntimeStatus(b.status) ? 1 : 0;
+        if (aActive !== bActive) return bActive - aActive;
+        return a.name.localeCompare(b.name);
+      });
+
+    type TeamCard =
+      | {
+          kind: 'runtime';
+          key: string;
+          name: string;
+          status: string;
+          sessionId: string;
+          projectPath: string;
+          sessions: Array<{ id: string; name: string }>;
+        }
+      | {
+          kind: 'standby';
+          key: string;
+          name: string;
+          status: string;
+        };
+
+    const teamCards: TeamCard[] = [];
+    for (const member of runtimeMembers) {
+      const sessionId = member.sessionId;
+      if (!sessionId) {
+        teamCards.push({
+          kind: 'standby',
+          key: `standby-runtime-${member.id}`,
+          name: member.name,
+          status: member.status,
+        });
+        continue;
+      }
+      const boundSession = sessionMap.get(sessionId);
+      if (!boundSession) {
+        teamCards.push({
+          kind: 'standby',
+          key: `standby-unbound-${member.id}`,
+          name: member.name,
+          status: `${member.status} · session pending`,
+        });
+        continue;
+      }
+      const projectPath = boundSession.projectPath || currentSession?.projectPath || SYSTEM_PROJECT_PATH;
+      const normalizedProject = normalizeProjectPath(projectPath);
       const projectSessions = sessions
         .filter((s) => normalizeProjectPath(s.projectPath) === normalizedProject)
-        .sort((a, b) => new Date(b.lastAccessedAt).getTime() - new Date(a.lastAccessedAt).getTime());
-      const selectedSessionId = projectSessions[0]?.id;
-      return {
-        id: entry.projectId,
-        projectPath: entry.projectPath,
-        sessions: projectSessions.map((s) => ({ id: s.id, name: s.name })),
-        scheduledTasks: [],
-        selectedSessionId,
-        onOpenProject: () => { void handleOpenProject(entry.projectPath); },
-        onSelectSession: (sessionId: string) => { void handleSwitchSessionFromSidebar(sessionId); },
-        onClose: () => { void systemMonitor.toggle(entry.projectPath, false); },
-      } as MonitorPanel;
-    });
+        .sort((a, b) => new Date(b.lastAccessedAt).getTime() - new Date(a.lastAccessedAt).getTime())
+        .map((s) => ({ id: s.id, name: s.name }));
+      teamCards.push({
+        kind: 'runtime',
+        key: member.id,
+        name: member.name,
+        status: member.status,
+        sessionId,
+        projectPath,
+        sessions: projectSessions.length > 0
+          ? projectSessions
+          : [{ id: sessionId, name: boundSession?.name || member.name }],
+      });
+    }
+    for (const member of standbyMembers) {
+      teamCards.push({
+        kind: 'standby',
+        key: `standby-${member.id}`,
+        name: member.name,
+        status: member.status,
+      });
+    }
 
-    const contextAgent = projectChatAgents.find((a) => a.id.includes('context'));
-    const primaryProject = monitorPanels[0];
-    const secondaryProject = monitorPanels[1];
+    const visibleCards = teamCards.slice(0, 4);
     return (
       <div className="canvas-shell">
         <PerformanceCard
@@ -740,62 +761,49 @@ export const WorkflowContainer: React.FC = () => {
           onContextAction={handleContextCommand}
         />
         <div className="canvas-body">
-          <div className="session-grid-2x2">
-            <div className="session-grid-cell">
-              {primaryProject ? (
-                <AgentSessionPanel
-                  projectPath={primaryProject.projectPath}
-                  sessionId={primaryProject.selectedSessionId ?? primaryProject.sessions[0]?.id}
-                  sessions={primaryProject.sessions}
-                  scheduledTasks={primaryProject.scheduledTasks}
-                  selectedSessionId={primaryProject.selectedSessionId ?? primaryProject.sessions[0]?.id}
-                  onOpenProject={primaryProject.onOpenProject}
-                  onSelectSession={primaryProject.onSelectSession}
-                  onCreateSession={primaryProject.onCreateSession}
-                  onSwitchSession={primaryProject.onSwitchSession}
-                  onDeleteSession={primaryProject.onDeleteSession}
-                  chatAgents={projectChatAgents}
-                  inputCapability={chatInputCapability}
-                />
-              ) : <div className="grid-placeholder">project agent</div>}
-            </div>
-            <div className="session-grid-cell">
-              {secondaryProject ? (
-                <AgentSessionPanel
-                  projectPath={secondaryProject.projectPath}
-                  sessionId={secondaryProject.selectedSessionId ?? secondaryProject.sessions[0]?.id}
-                  sessions={secondaryProject.sessions}
-                  scheduledTasks={secondaryProject.scheduledTasks}
-                  selectedSessionId={secondaryProject.selectedSessionId ?? secondaryProject.sessions[0]?.id}
-                  onOpenProject={secondaryProject.onOpenProject}
-                  onSelectSession={secondaryProject.onSelectSession}
-                  onCreateSession={secondaryProject.onCreateSession}
-                  onSwitchSession={secondaryProject.onSwitchSession}
-                  onDeleteSession={secondaryProject.onDeleteSession}
-                  chatAgents={projectChatAgents}
-                  inputCapability={chatInputCapability}
-                />
-              ) : <div className="grid-placeholder">project agent (2)</div>}
-            </div>
-            <div className="session-grid-cell">
-              <div className="context-card">
-                <div className="context-card-title">Context Agent</div>
-                <div className="context-card-body">{contextAgent?.name || 'finger-context-agent'} · {contextAgent?.status || 'idle'}</div>
+          <div className="team-section-header">
+            <span>Team Members</span>
+            <strong>Active Runtime Sessions</strong>
+          </div>
+          <div className="session-grid-2x2" data-testid="multi-agent-monitor-grid">
+            {visibleCards.map((card) => (
+              <div className="session-grid-cell" key={card.key}>
+                {card.kind === 'runtime' ? (
+                  <div className="team-member-panel">
+                    <div className="team-member-panel-header">
+                      <span className="team-member-name">{card.name}</span>
+                      <span className={`team-member-status ${isActiveRuntimeStatus(card.status) ? 'active' : ''}`}>
+                        {card.status}
+                      </span>
+                    </div>
+                    <AgentSessionPanel
+                      projectPath={card.projectPath}
+                      sessionId={card.sessionId}
+                      sessions={card.sessions}
+                      scheduledTasks={[]}
+                      selectedSessionId={card.sessionId}
+                      chatAgents={projectChatAgents}
+                      inputCapability={chatInputCapability}
+                    />
+                  </div>
+                ) : (
+                  <div className="team-member-standby">
+                    <div className="team-member-name">{card.name}</div>
+                    <div className="team-member-status">{card.status}</div>
+                  </div>
+                )}
               </div>
-            </div>
-            <div className="session-grid-cell">
-              <ContextMonitor
-                sessionId={systemAgentSessionId}
-                label="Context Builder Monitor"
-                liveUpdatesEnabled={monitorLiveUpdatesEnabled}
-                externalCommand={contextMonitorCommand}
-              />
-            </div>
+            ))}
+            {Array.from({ length: Math.max(0, 4 - visibleCards.length) }).map((_, idx) => (
+              <div className="session-grid-cell" key={`team-placeholder-${idx}`}>
+                <div className="grid-placeholder">等待 Team Member 任务...</div>
+              </div>
+            ))}
           </div>
         </div>
       </div>
     );
-  }, [panelFreeze.performance, uiDisable.performance, sessions, handleOpenProject, handleSwitchSessionFromSidebar, projectChatAgents, chatInputCapability, systemMonitor.entries, monitorLiveUpdatesEnabled, systemAgentSessionId]);
+  }, [panelFreeze.performance, uiDisable.performance, systemAgentExecution.runtimeOverview, handleContextCommand, runtimeInstances, runtimePanelAgents, sessions, currentSession?.projectPath, projectChatAgents, chatInputCapability]);
 
  const rightPanelElement = useMemo(() => {
    const systemSessions = sessions.filter(s => isSystemSession(s)).sort(
@@ -804,21 +812,27 @@ export const WorkflowContainer: React.FC = () => {
    const selectedSystemSessionId = systemSessions.length > 0 ? systemSessions[0].id : undefined;
 
    return (
-     <AgentSessionPanel
-       projectPath={SYSTEM_PROJECT_PATH}
-       sessionId={selectedSystemSessionId ?? systemAgentSessionId}
-       sessions={systemSessions.map(s => ({ id: s.id, name: s.name }))}
-       scheduledTasks={[]}
-       selectedSessionId={selectedSystemSessionId}
-       onSelectSession={(sessionId) => { void handleSwitchSessionFromSidebar(sessionId); }}
-       onCreateSession={(projectPath) => createSession(projectPath)}
-       onSwitchSession={handleSwitchSessionFromSidebar}
-       onDeleteSession={removeSession}
-       chatAgents={systemChatAgents}
-       inputCapability={chatInputCapability}
-     />
+    <div className="team-bridge-shell">
+      <div className="team-section-header bridge-header">
+        <span>Team Bridge</span>
+        <strong>{mirrorDisplayName}</strong>
+      </div>
+      <AgentSessionPanel
+        projectPath={SYSTEM_PROJECT_PATH}
+        sessionId={selectedSystemSessionId ?? systemAgentSessionId}
+        sessions={systemSessions.map(s => ({ id: s.id, name: s.name }))}
+        scheduledTasks={[]}
+        selectedSessionId={selectedSystemSessionId}
+        onSelectSession={(sessionId) => { void handleSwitchSessionFromSidebar(sessionId); }}
+        onCreateSession={(projectPath) => createSession(projectPath)}
+        onSwitchSession={handleSwitchSessionFromSidebar}
+        onDeleteSession={removeSession}
+        chatAgents={systemChatAgents}
+        inputCapability={chatInputCapability}
+      />
+    </div>
   );
- }, [frozenActiveSessionId, frozenChatAgents, frozenRightPayload, handleCreateNewSession, systemAgentExecution, chatInputCapability, sessions, systemChatAgents]);
+ }, [sessions, systemAgentSessionId, handleSwitchSessionFromSidebar, createSession, removeSession, systemChatAgents, chatInputCapability, mirrorDisplayName]);
 
   const leftSidebarElement = useMemo(() => (
     <LeftSidebar
@@ -853,6 +867,10 @@ export const WorkflowContainer: React.FC = () => {
 
   const bottomPanelElement = useMemo(() => (
     <div className="ledger-bottom-panel">
+      <div className="team-section-header bottom-board-header">
+        <span>Context & Config</span>
+        <strong>Observation Boards</strong>
+      </div>
       <AgentPromptStrip
         configAgents={frozenBottomPayload.configAgents}
         runtimeAgents={frozenBottomPayload.runtimeAgents}
@@ -861,12 +879,18 @@ export const WorkflowContainer: React.FC = () => {
         onSelectAgentConfig={handleSelectAgentConfig}
       />
       <div className="ledger-monitor-row">
+        <ContextMonitor
+          sessionId={systemAgentSessionId}
+          label="Context Builder Monitor"
+          liveUpdatesEnabled={monitorLiveUpdatesEnabled}
+          externalCommand={contextMonitorCommand}
+        />
         <LedgerMonitor
           sessionId={systemAgentSessionId}
-          label="System Agent Ledger"
+          label="Mirror Ledger"
           liveUpdatesEnabled={monitorLiveUpdatesEnabled}
         />
-        {systemMonitor.entries.filter((entry) => entry.monitored).slice(0, 3).map((entry) => {
+        {systemMonitor.entries.filter((entry) => entry.monitored).slice(0, 2).map((entry) => {
           const projectSessions = sessions
             .filter((s) => normalizeProjectPath(s.projectPath) === normalizeProjectPath(entry.projectPath))
             .sort((a, b) => new Date(b.lastAccessedAt).getTime() - new Date(a.lastAccessedAt).getTime());
@@ -882,7 +906,7 @@ export const WorkflowContainer: React.FC = () => {
         })}
       </div>
     </div>
-  ), [frozenBottomPayload, handleSelectAgentConfig, monitorLiveUpdatesEnabled, systemAgentSessionId, systemMonitor.entries, sessions]);
+  ), [frozenBottomPayload, handleSelectAgentConfig, monitorLiveUpdatesEnabled, systemAgentSessionId, contextMonitorCommand, systemMonitor.entries, sessions]);
 
   const renderedLeftSidebar = useFrozenValue(leftSidebarElement, panelFreeze.left);
   const renderedCanvas = useFrozenValue(

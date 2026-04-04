@@ -168,6 +168,26 @@ vi.mock('../BottomPanel/BottomPanel.tsx', () => ({
   ),
 }));
 
+vi.mock('../BottomPanel/AgentPromptStrip.tsx', () => ({
+  AgentPromptStrip: ({
+    onSelectAgentConfig,
+  }: {
+    onSelectAgentConfig?: (agentId: string) => void;
+  }) => (
+    <button type="button" data-testid="select-orchestrator" onClick={() => onSelectAgentConfig?.('finger-orchestrator')}>
+      select orchestrator
+    </button>
+  ),
+}));
+
+vi.mock('../ContextMonitor/ContextMonitor.tsx', () => ({
+  default: () => <div data-testid="context-monitor" />,
+}));
+
+vi.mock('../LedgerMonitor/LedgerMonitor.tsx', () => ({
+  default: () => <div data-testid="ledger-monitor" />,
+}));
+
 vi.mock('../AgentConfigDrawer/AgentConfigDrawer.tsx', () => ({
   AgentConfigDrawer: () => null,
 }));
@@ -293,7 +313,7 @@ describe('WorkflowContainer session binding', () => {
  it('keeps runtime session focused after runtime finishes so history remains inspectable', async () => {
    const { rerender } = render(<WorkflowContainer />);
 
-    fireEvent.click(screen.getByTestId('switch-runtime'));
+    fireEvent.click(screen.getByTestId('sidebar-switch-runtime'));
     await waitFor(() => {
       expect(screen.getByTestId('agent-session-id').textContent).toBe('system-orch-session');
     });
@@ -309,7 +329,7 @@ describe('WorkflowContainer session binding', () => {
  it('keeps runtime session focus when runtime is idle', async () => {
    const { rerender } = render(<WorkflowContainer />);
 
-    fireEvent.click(screen.getByTestId('switch-runtime'));
+    fireEvent.click(screen.getByTestId('sidebar-switch-runtime'));
     await waitFor(() => {
       expect(screen.getByTestId('agent-session-id').textContent).toBe('system-orch-session');
     });
@@ -325,7 +345,7 @@ describe('WorkflowContainer session binding', () => {
  it('does not switch session when selecting orchestrator config', async () => {
    render(<WorkflowContainer />);
 
-    fireEvent.click(screen.getByTestId('switch-runtime'));
+    fireEvent.click(screen.getByTestId('sidebar-switch-runtime'));
     await waitFor(() => {
       expect(screen.getByTestId('agent-session-id').textContent).toBe('system-orch-session');
     });
@@ -340,7 +360,7 @@ describe('WorkflowContainer session binding', () => {
  it('uses bound runtime session agent for panel title and context', async () => {
    render(<WorkflowContainer />);
 
-    fireEvent.click(screen.getByTestId('switch-runtime'));
+    fireEvent.click(screen.getByTestId('sidebar-switch-runtime'));
 
 
     await waitFor(() => {
@@ -351,7 +371,7 @@ describe('WorkflowContainer session binding', () => {
  it('keeps completed runtime session title/context after execution completes', async () => {
    const { rerender } = render(<WorkflowContainer />);
 
-    fireEvent.click(screen.getByTestId('switch-runtime'));
+    fireEvent.click(screen.getByTestId('sidebar-switch-runtime'));
 
 
     runtimePanelState.instances = [{ ...runtimePanelState.instances[0], status: 'completed' }];
