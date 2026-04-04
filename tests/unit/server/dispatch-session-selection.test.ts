@@ -79,6 +79,58 @@ describe('resolveDispatchSessionSelection strict lifecycle', () => {
     expect(sessionManager.createSession).not.toHaveBeenCalled();
   });
 
+  it('keeps bound project session when requested worker matches bound worker scope', () => {
+    const sessions = {
+      'session-bound-james': {
+        id: 'session-bound-james',
+        projectPath: '/Volumes/extension/code/finger',
+        context: {
+          sessionTier: 'orchestrator-root',
+          dispatchTargetAgentId: 'finger-project-agent',
+          dispatchProjectPath: '/Volumes/extension/code/finger',
+          dispatchScopeKey: 'finger-project-agent::/Volumes/extension/code/finger::finger-project-agent-02',
+          dispatchWorkerId: 'finger-project-agent-02',
+        },
+      },
+      'session-current': { id: 'session-current', projectPath: '/Users/fanzhang/.finger/system', context: { sessionTier: 'system' } },
+    };
+    const { deps, sessionManager, runtime } = createDeps({
+      sessions,
+      boundSessionId: 'session-bound-james',
+      runtimeCurrentSessionId: 'session-current',
+      managerCurrentSessionId: 'session-current',
+      findSessionsByProjectPathResult: [
+        {
+          id: 'session-bound-james',
+          projectPath: '/Volumes/extension/code/finger',
+          context: sessions['session-bound-james'].context,
+          lastAccessedAt: new Date().toISOString(),
+        } as any,
+      ],
+    });
+
+    const result = resolveDispatchSessionSelection(deps, {
+      sourceAgentId: 'finger-system-agent',
+      targetAgentId: 'finger-project-agent',
+      metadata: {
+        projectPath: '/Volumes/extension/code/finger',
+        workerId: 'finger-project-agent-02',
+      },
+      assignment: {
+        assigneeWorkerId: 'finger-project-agent-02',
+      },
+      task: {
+        cwd: '/Volumes/extension/code/finger',
+        prompt: 'dispatch to james',
+      },
+    } as any);
+
+    expect(runtime.getBoundSessionId).toHaveBeenCalledWith('finger-project-agent');
+    expect(result.sessionId).toBe('session-bound-james');
+    expect(result.sessionStrategy).toBe('current');
+    expect(sessionManager.ensureSession).not.toHaveBeenCalled();
+  });
+
   it('falls back to current session and never auto-creates for latest/new strategy', () => {
     const { deps, sessionManager } = createDeps({
       boundSessionId: null,
@@ -258,6 +310,53 @@ describe('resolveDispatchSessionSelection strict lifecycle', () => {
         dispatchWorkerId: 'finger-project-agent-02',
       }),
     );
+  });
+
+  it('creates deterministic worker-scoped sessions: stable per worker and different across workers', () => {
+    const sessions = {
+      'system-main': {
+        id: 'system-main',
+        projectPath: '/Users/fanzhang/.finger/system',
+        context: { sessionTier: 'system', ownerAgentId: 'finger-system-agent' },
+      },
+    };
+    const { deps, sessionManager } = createDeps({
+      sessions,
+      runtimeCurrentSessionId: 'system-main',
+      managerCurrentSessionId: 'system-main',
+      findSessionsByProjectPathResult: [],
+    });
+
+    const commonInput = {
+      sourceAgentId: 'finger-system-agent',
+      targetAgentId: 'finger-project-agent',
+      sessionId: 'system-main',
+      metadata: { projectPath: '/Volumes/extension/code/finger' },
+      task: { cwd: '/Volumes/extension/code/finger', prompt: 'parallel dispatch' },
+    } as any;
+
+    const james = resolveDispatchSessionSelection(deps, {
+      ...commonInput,
+      metadata: { ...commonInput.metadata, workerId: 'finger-project-agent-02' },
+      assignment: { assigneeWorkerId: 'finger-project-agent-02' },
+    });
+    const robin = resolveDispatchSessionSelection(deps, {
+      ...commonInput,
+      metadata: { ...commonInput.metadata, workerId: 'finger-project-agent-03' },
+      assignment: { assigneeWorkerId: 'finger-project-agent-03' },
+    });
+    const jamesAgain = resolveDispatchSessionSelection(deps, {
+      ...commonInput,
+      metadata: { ...commonInput.metadata, workerId: 'finger-project-agent-02' },
+      assignment: { assigneeWorkerId: 'finger-project-agent-02' },
+    });
+
+    expect(james.sessionId).toMatch(/^dispatch-finger-project-agent-/);
+    expect(robin.sessionId).toMatch(/^dispatch-finger-project-agent-/);
+    expect(jamesAgain.sessionId).toMatch(/^dispatch-finger-project-agent-/);
+    expect(james.sessionId).not.toBe(robin.sessionId);
+    expect(jamesAgain.sessionId).toBe(james.sessionId);
+    expect(sessionManager.ensureSession).toHaveBeenCalled();
   });
 
   it('does not reuse bound project session when bound worker scope is unbound and dispatch requests a concrete worker', () => {

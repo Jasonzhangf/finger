@@ -452,7 +452,7 @@ describe('dispatchTaskToAgent', () => {
     } as any);
 
     expect(res.ok).toBe(true);
-    expect(sessionManager.findSessionsByProjectPath).not.toHaveBeenCalled();
+    expect(sessionManager.findSessionsByProjectPath).toHaveBeenCalledWith('/tmp/project-a');
     expect(sessionManager.createSession).not.toHaveBeenCalled();
     expect(execute).toHaveBeenCalledWith('dispatch', expect.objectContaining({ sessionId: 'root-session-2' }));
     expect((deps as any).ensureRuntimeChildSession).not.toHaveBeenCalled();
@@ -472,7 +472,7 @@ describe('dispatchTaskToAgent', () => {
     } as any);
 
     expect(res.ok).toBe(true);
-    expect(sessionManager.findSessionsByProjectPath).not.toHaveBeenCalled();
+    expect(sessionManager.findSessionsByProjectPath).toHaveBeenCalledWith('/tmp/project-a');
     expect(sessionManager.createSession).not.toHaveBeenCalled();
     expect(execute).toHaveBeenCalledWith('dispatch', expect.objectContaining({ sessionId: 'root-session-2' }));
     expect((deps as any).ensureRuntimeChildSession).not.toHaveBeenCalled();
