@@ -52,18 +52,27 @@ export function startServer(
       for (const session of sessions) {
         try {
           deps.chatCodexRunner.interruptSession(session.sessionId, session.providerId);
-    } catch (err) {
-      log.warn('Failed to interrupt session: ' + (err instanceof Error ? err.message : String(err)));
-    }
+        } catch (err) {
+          log.warn('Failed to interrupt session during shutdown', {
+            sessionId: session.sessionId,
+            providerId: session.providerId,
+            error: err instanceof Error ? err.message : String(err),
+          });
+        }
       }
-  } catch (err) {
-    log.warn('Failed to enumerate sessions during shutdown: ' + (err instanceof Error ? err.message : String(err)));
-  }
+    } catch (err) {
+      log.warn('Failed to enumerate sessions during shutdown', {
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
     try {
       server.close(() => {
         process.exit(0);
       });
-    } catch {
+    } catch (err) {
+      log.warn('Failed to close HTTP server during shutdown', {
+        error: err instanceof Error ? err.message : String(err),
+      });
       process.exit(0);
     }
     setTimeout(() => process.exit(1), 10_000).unref();
@@ -105,9 +114,19 @@ export function startServer(
       for (const session of sessions) {
         try {
           deps.chatCodexRunner.interruptSession(session.sessionId, session.providerId);
-        } catch {}
+        } catch (interruptError) {
+          log.warn('Failed to interrupt session after uncaught exception', {
+            sessionId: session.sessionId,
+            providerId: session.providerId,
+            error: interruptError instanceof Error ? interruptError.message : String(interruptError),
+          });
+        }
       }
-    } catch {}
+    } catch (enumerateError) {
+      log.warn('Failed to enumerate sessions after uncaught exception', {
+        error: enumerateError instanceof Error ? enumerateError.message : String(enumerateError),
+      });
+    }
     process.exit(1);
   });
 

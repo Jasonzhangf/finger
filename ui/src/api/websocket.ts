@@ -7,6 +7,70 @@ import type { WsMessage } from './types.js';
 type MessageHandler = (msg: WsMessage) => void;
 type ErrorHandler = (err: Event) => void;
 
+function readWsUrlOverrideFromLocation(): string | null {
+  if (typeof window === 'undefined') return null;
+  try {
+    const params = new URLSearchParams(window.location.search);
+    const value = params.get('ws') ?? params.get('ws_url') ?? params.get('wsUrl');
+    if (!value) return null;
+    const trimmed = value.trim();
+    return trimmed.length > 0 ? trimmed : null;
+  } catch {
+    return null;
+  }
+}
+
+function readWsUrlOverrideFromStorage(): string | null {
+  if (typeof window === 'undefined') return null;
+  try {
+    const value = window.localStorage?.getItem('finger-ui-ws-url');
+    if (!value) return null;
+    const trimmed = value.trim();
+    return trimmed.length > 0 ? trimmed : null;
+  } catch {
+    return null;
+  }
+}
+
+function readWsUrlOverrideFromGlobal(): string | null {
+  if (typeof window === 'undefined') return null;
+  try {
+    const value = (window as unknown as { __FINGER_WS_URL?: unknown }).__FINGER_WS_URL;
+    if (typeof value !== 'string') return null;
+    const trimmed = value.trim();
+    return trimmed.length > 0 ? trimmed : null;
+  } catch {
+    return null;
+  }
+}
+
+function resolveDefaultWebSocketUrl(): string {
+  const fallback = 'ws://127.0.0.1:9998';
+  if (typeof window === 'undefined') return fallback;
+
+  const explicitOverride = readWsUrlOverrideFromLocation()
+    ?? readWsUrlOverrideFromStorage()
+    ?? readWsUrlOverrideFromGlobal();
+  if (explicitOverride) return explicitOverride;
+
+  const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+  const hostname = window.location.hostname || '127.0.0.1';
+  const pagePort = window.location.port;
+
+  // Local dev: HTTP UI on :9999, WS daemon on :9998.
+  if (pagePort === '9999') {
+    return `${protocol}//${hostname}:9998`;
+  }
+
+  // Remote/proxied deployments usually expose a single port.
+  // Prefer same-origin websocket to avoid fixed-port failures.
+  if (window.location.host && window.location.host.trim().length > 0) {
+    return `${protocol}//${window.location.host}`;
+  }
+
+  return `${protocol}//${hostname}${pagePort ? `:${pagePort}` : ''}`;
+}
+
 export class WebSocketClient {
   private ws: WebSocket | null = null;
   private url: string;
@@ -199,10 +263,7 @@ let wsInstance: WebSocketClient | null = null;
 
 export function getWebSocket(): WebSocketClient {
   if (!wsInstance) {
-    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const host = window.location.hostname;
-    const port = 9998;
-    wsInstance = new WebSocketClient(`${protocol}//${host}:${port}`);
+    wsInstance = new WebSocketClient(resolveDefaultWebSocketUrl());
   }
   return wsInstance;
 }

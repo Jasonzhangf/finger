@@ -290,6 +290,63 @@ describe('ProgressMonitor incremental updates', () => {
     monitor.stop();
   });
 
+  it('does not advance progress dedup cursor when progress callback fails', async () => {
+    const eventBus = new UnifiedEventBus();
+    const reports: string[] = [];
+    let shouldFail = true;
+    const monitor = new ProgressMonitor(
+      eventBus,
+      createMinimalDeps(),
+      {
+        onProgressReport: async (report) => {
+          if (shouldFail) {
+            throw new Error('simulated progress delivery failure');
+          }
+          reports.push(report.summary);
+        },
+      },
+      {
+        enabled: true,
+        progressUpdates: true,
+        intervalMs: 60_000,
+      },
+    );
+
+    monitor.start();
+
+    await eventBus.emit({
+      type: 'tool_call',
+      sessionId: 'session-progress-failure-retry',
+      agentId: 'finger-system-agent',
+      toolId: 'tool-fail-1',
+      toolName: 'shell.exec',
+      timestamp: new Date().toISOString(),
+      payload: { input: { cmd: 'echo first' } },
+    } as any);
+    await eventBus.emit({
+      type: 'tool_result',
+      sessionId: 'session-progress-failure-retry',
+      agentId: 'finger-system-agent',
+      toolId: 'tool-fail-1',
+      toolName: 'shell.exec',
+      timestamp: new Date().toISOString(),
+      payload: { input: { cmd: 'echo first' }, output: 'ok' },
+    } as any);
+    await flushEventLoop();
+
+    await (monitor as any).generateProgressReport();
+    const afterFailed = monitor.getProgress('session-progress-failure-retry');
+    expect(afterFailed?.lastReportedToolSeq).toBeUndefined();
+
+    shouldFail = false;
+    await (monitor as any).generateProgressReport();
+    const afterSuccess = monitor.getProgress('session-progress-failure-retry');
+    expect((afterSuccess?.lastReportedToolSeq ?? 0)).toBeGreaterThan(0);
+    expect(reports.length).toBeGreaterThan(0);
+
+    monitor.stop();
+  });
+
   it('does not push progress update when only context usage changes (no tool calls)', async () => {
     const eventBus = new UnifiedEventBus();
     const reports: string[] = [];

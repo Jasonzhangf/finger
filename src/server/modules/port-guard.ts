@@ -11,6 +11,17 @@ export interface PortProcessSnapshotRow {
   command: string;
 }
 
+function buildLsofListenCommand(port: number): string {
+  return `lsof -nP -tiTCP:${port} -sTCP:LISTEN 2>/dev/null || true`;
+}
+
+function parsePidList(raw: string): number[] {
+  return raw
+    .split(/\s+/)
+    .map((entry) => Number.parseInt(entry, 10))
+    .filter((pid) => Number.isFinite(pid) && pid > 0);
+}
+
 function isPortInUse(port: number): Promise<boolean> {
   return new Promise((resolve) => {
     const server = createServer();
@@ -52,14 +63,11 @@ function loadProcessSnapshot(): PortProcessSnapshotRow[] {
 
 function listPidsOnPort(port: number): number[] {
   try {
-    const output = execSync(`lsof -ti:${port} 2>/dev/null || true`, {
+    const output = execSync(buildLsofListenCommand(port), {
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'ignore'],
     });
-    return output
-      .split(/\s+/)
-      .map((entry) => Number.parseInt(entry, 10))
-      .filter((pid) => Number.isFinite(pid) && pid > 0);
+    return parsePidList(output);
   } catch (err) {
     log.warn('Failed to check port', { port, message: err instanceof Error ? err.message : String(err) });
     return [];
@@ -172,6 +180,8 @@ export async function ensureSingleInstance(port: number): Promise<void> {
 }
 
 export const __test__ = {
+  buildLsofListenCommand,
+  parsePidList,
   listPidsOnPort,
   loadProcessSnapshot,
   buildChildrenMap,

@@ -34,4 +34,12 @@ describe('port-guard', () => {
     expect(__test__.collectDescendants(10, map).sort((a, b) => a - b)).toEqual([11, 12, 13]);
     expect(__test__.collectDescendants(20, map)).toEqual([]);
   });
+
+  it('resolves port owner pids from TCP LISTEN only to avoid false positives', () => {
+    const command = __test__.buildLsofListenCommand(9998);
+    expect(command).toContain('lsof -nP -tiTCP:9998 -sTCP:LISTEN');
+
+    const pids = __test__.parsePidList('123\n 456 \ninvalid\n0\n-1\n');
+    expect(pids).toEqual([123, 456]);
+  });
 });

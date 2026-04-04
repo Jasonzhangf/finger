@@ -13,6 +13,9 @@ import path from 'path';
 import os from 'os';
 import { BaseBlock, type BlockCapabilities } from '../../core/block.js';
 import { createPluginManager, type PluginManager } from '../openclaw-plugin-manager/index.js';
+import { logger } from '../../core/logger.js';
+
+const log = logger.module('OpenClawGate');
 
 export interface OpenClawPlugin {
   id: string;
@@ -368,7 +371,12 @@ export class OpenClawGateBlock extends BaseBlock {
     for (const listener of this.eventListeners) {
       try {
         listener(event);
-      } catch {}
+      } catch (error) {
+        log.warn('[OpenClawGate] Event listener failed', {
+          eventType: event.type,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
     }
   }
 }

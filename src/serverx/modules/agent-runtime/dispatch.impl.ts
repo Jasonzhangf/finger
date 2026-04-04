@@ -701,7 +701,10 @@ function resolveActiveProjectLifecycleState(
   if (!sessionId) return { active: false };
   const lifecycle = getExecutionLifecycleState(deps.sessionManager, sessionId);
   if (!lifecycle) return { active: false };
-  if (lifecycle.finishReason === 'stop') {
+  const finishReason = typeof lifecycle.finishReason === 'string'
+    ? lifecycle.finishReason.trim().toLowerCase()
+    : '';
+  if (finishReason === 'stop') {
     return {
       active: false,
       stage: lifecycle.stage,

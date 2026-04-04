@@ -705,7 +705,10 @@ export class SystemAgentManager {
     lifecycle: ExecutionLifecycleState,
   ): Promise<string | null> {
     if (lifecycle.stage !== 'completed') return null;
-    if (lifecycle.finishReason === 'stop') return null;
+    const finishReason = typeof lifecycle.finishReason === 'string'
+      ? lifecycle.finishReason.trim().toLowerCase()
+      : '';
+    if (finishReason === 'stop') return null;
 
     const terminal = await this.readLatestLoopTerminalEvent(sessionId, FINGER_PROJECT_AGENT_ID);
     if (!terminal) return null;
@@ -857,7 +860,10 @@ export class SystemAgentManager {
   }
 
   private shouldReviewCompletedLifecycle(lifecycle: ExecutionLifecycleState): boolean {
-    return lifecycle.finishReason === 'stop';
+    const finishReason = typeof lifecycle.finishReason === 'string'
+      ? lifecycle.finishReason.trim().toLowerCase()
+      : '';
+    return finishReason === 'stop';
   }
 
   private async resumeInterruptedExecution(lifecycle: ExecutionLifecycleState): Promise<void> {

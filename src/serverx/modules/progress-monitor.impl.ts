@@ -54,6 +54,7 @@ export type {
 
 export class ProgressMonitor {
   private timer: NodeJS.Timeout | null = null;
+  private reportGenerationInFlight: Promise<void> | null = null;
   private config: Required<ProgressMonitorConfig>;
   private lastConfigReloadAt = 0;
   private configReloadInFlight: Promise<void> | null = null;
@@ -80,6 +81,7 @@ export class ProgressMonitor {
     'mailbox.read',
     'mailbox.ack',
   ]);
+  private static readonly REPORT_DELIVERY_TIMEOUT_MS = 15_000;
 
   private buildProgressKey(sessionId: string, agentId: string): string {
     return `${sessionId}::${agentId}`;
@@ -358,9 +360,7 @@ export class ProgressMonitor {
 
     // 定期生成进度报告
     this.timer = setInterval(() => {
-      this.generateProgressReport().catch(err => {
-        log.error('[ProgressMonitor] Error generating progress report:', err);
-      });
+      this.scheduleProgressReportGeneration();
     }, this.config.intervalMs);
   }
 
@@ -370,10 +370,47 @@ export class ProgressMonitor {
       this.timer = null;
     }
     this.timer = setInterval(() => {
-      this.generateProgressReport().catch(err => {
-        log.error('[ProgressMonitor] Error generating progress report:', err);
-      });
+      this.scheduleProgressReportGeneration();
     }, this.config.intervalMs);
+  }
+
+  private scheduleProgressReportGeneration(): void {
+    if (this.reportGenerationInFlight) return;
+    this.reportGenerationInFlight = this.generateProgressReport()
+      .catch((err) => {
+        log.error('[ProgressMonitor] Error generating progress report:', err);
+      })
+      .finally(() => {
+        this.reportGenerationInFlight = null;
+      });
+  }
+
+  private async deliverProgressReport(report: ProgressReport): Promise<boolean> {
+    if (!this.callbacks?.onProgressReport) return true;
+
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const timeoutPromise = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => {
+        reject(new Error(`progress callback timeout after ${ProgressMonitor.REPORT_DELIVERY_TIMEOUT_MS}ms`));
+      }, ProgressMonitor.REPORT_DELIVERY_TIMEOUT_MS);
+    });
+
+    try {
+      await Promise.race([
+        Promise.resolve(this.callbacks.onProgressReport(report)),
+        timeoutPromise,
+      ]);
+      return true;
+    } catch (error) {
+      log.warn('[ProgressMonitor] Failed to deliver progress report', {
+        sessionId: report.sessionId,
+        agentId: report.agentId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return false;
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
   }
 
   private async refreshConfigIfNeeded(force = false): Promise<void> {
@@ -659,9 +696,8 @@ export class ProgressMonitor {
             progress: p,
             summary: this.buildHeartbeatSummary(p, now, pendingTool),
           };
-          if (this.callbacks?.onProgressReport) {
-            await this.callbacks.onProgressReport(report);
-          }
+          const delivered = await this.deliverProgressReport(report);
+          if (!delivered) continue;
           p.lastReportTime = now;
           p.lastReportedCurrentTask = p.currentTask;
           p.lastReportedReasoning = p.latestReasoning;
@@ -706,9 +742,8 @@ export class ProgressMonitor {
         ),
       };
 
-      if (this.callbacks?.onProgressReport) {
-        await this.callbacks.onProgressReport(report);
-      }
+      const delivered = await this.deliverProgressReport(report);
+      if (!delivered) continue;
 
       // Move dedup cursor only after report delivery succeeds.
       // This avoids dropping updates when callback throws.
