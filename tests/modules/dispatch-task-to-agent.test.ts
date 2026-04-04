@@ -950,6 +950,15 @@ describe('dispatchTaskToAgent', () => {
       queueOnBusy: true,
       maxQueueWaitMs: 0,
     }));
+    expect(sessionManager.updateContext).not.toHaveBeenCalledWith(
+      'root-session-2',
+      expect.objectContaining({
+        projectTaskState: expect.objectContaining({
+          taskId: 'task-active-source-1',
+          status: 'dispatched',
+        }),
+      }),
+    );
     expect(sessionManager.updateContext).toHaveBeenCalledWith('root-session-2', expect.objectContaining({
       executionLifecycle: expect.objectContaining({
         substage: 'dispatch_completed',

@@ -877,7 +877,7 @@ function validateProjectTaskBindingGuard(params: {
     const nextRevisionBase = typeof sourceTaskState?.revision === 'number' && Number.isFinite(sourceTaskState.revision)
       ? Math.max(1, Math.floor(sourceTaskState.revision))
       : 1;
-    const nextRevision = updateDispatch ? nextRevisionBase + 1 : nextRevisionBase;
+    const nextRevision = nextRevisionBase + 1;
     return {
       ok: true,
       boundSessionId: activeBoundSessionId || incomingSessionId,
@@ -1644,6 +1644,9 @@ export async function dispatchTaskToAgent(deps: AgentRuntimeDeps, input: AgentDi
   }
   if (projectTaskStateSessionIds.length > 0) {
     const isNewTaskLifecycle = !sourceTaskStateActive || !sameTaskIdentity;
+    const dispatchStateStatus = sourceTaskState?.status === 'in_progress'
+      ? 'in_progress'
+      : 'dispatched';
     if (isNewTaskLifecycle) {
       persistProjectTaskState(deps, projectTaskStateSessionIds, {
         active: true,
@@ -1663,7 +1666,7 @@ export async function dispatchTaskToAgent(deps: AgentRuntimeDeps, input: AgentDi
     }
     persistProjectTaskState(deps, projectTaskStateSessionIds, {
       active: true,
-      status: 'dispatched',
+      status: dispatchStateStatus,
       assignerName,
       assigneeWorkerId,
       assigneeWorkerName,
@@ -1672,7 +1675,7 @@ export async function dispatchTaskToAgent(deps: AgentRuntimeDeps, input: AgentDi
       sourceAgentId: normalizedInput.sourceAgentId,
       targetAgentId: normalizedInput.targetAgentId,
       boundSessionId: bindingGuard.boundSessionId || requestedTaskSessionId,
-      revision: bindingGuard.revision,
+      revision: isNewTaskLifecycle ? bindingGuard.revision + 1 : bindingGuard.revision,
       blockedBy,
       note: 'system_dispatched_project_task',
     });
@@ -2355,7 +2358,11 @@ export async function dispatchTaskToAgent(deps: AgentRuntimeDeps, input: AgentDi
   }
   await syncBdDispatchLifecycle(deps, normalizedInput, result);
   if (projectTaskStateSessionIds.length > 0) {
-    const mappedStatus = result.status === 'failed' ? 'failed' : 'accepted';
+    const mappedStatus = result.status === 'failed'
+      ? 'failed'
+      : sourceTaskState?.status === 'in_progress'
+        ? 'in_progress'
+        : 'accepted';
     const shouldStayActive = result.status !== 'failed';
     persistProjectTaskState(deps, projectTaskStateSessionIds, {
       active: shouldStayActive,

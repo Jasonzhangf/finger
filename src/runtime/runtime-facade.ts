@@ -609,7 +609,11 @@ export class RuntimeFacade {
   }
 
   private isEphemeralDispatchSessionId(sessionId: string): boolean {
-    return /^dispatch-/i.test(sessionId.trim());
+    // Only treat runtime-generated transient dispatch ids as ephemeral:
+    // dispatch-<timestamp-or-number>-...
+    // Keep deterministic project-scoped session ids (e.g. dispatch-finger-project-agent-*)
+    // bindable so worker/session routing can persist correctly.
+    return /^dispatch-\d/i.test(sessionId.trim());
   }
 
   private isSystemAgent(agentId: string): boolean {
