@@ -775,8 +775,13 @@ export class SystemAgentManager {
             ...(typeof parsed.payload?.finishReason === 'string' ? { finishReason: parsed.payload.finishReason } : {}),
           };
         }
-      } catch {
-        // ignore malformed line
+      } catch (error) {
+        log.warn('[SystemAgentManager] Ignore malformed loop event line while scanning terminal event', {
+          sessionId,
+          diagnosticsPath,
+          line: rawLine.slice(0, 160),
+          error: error instanceof Error ? error.message : String(error),
+        });
       }
     }
     return null;

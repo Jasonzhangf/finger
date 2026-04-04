@@ -248,7 +248,10 @@ export class SessionManager {
             const error = err instanceof Error ? err : new Error(String(err));
             if (error.message.includes('Unexpected end of JSON input')
               || error.message.includes('Corrupted session file quarantined')) {
-              // Ignore truncated session files during startup
+              clog.warn('[SessionManager] Skipped truncated/corrupted session file during startup', {
+                filePath,
+                reason: error.message,
+              });
               continue;
             }
             clog.error(`[SessionManager] Failed to load session ${filePath}:`, error);
@@ -266,7 +269,10 @@ export class SessionManager {
           const error = err instanceof Error ? err : new Error(String(err));
           if (error.message.includes('Unexpected end of JSON input')
             || error.message.includes('Corrupted session file quarantined')) {
-            // Ignore truncated session files during startup
+            clog.warn('[SessionManager] Skipped truncated/corrupted legacy session file during startup', {
+              filePath,
+              reason: error.message,
+            });
             continue;
           }
           clog.error(`[SessionManager] Failed to load session ${filePath}:`, error);
