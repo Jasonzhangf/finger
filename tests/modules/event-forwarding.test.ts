@@ -409,6 +409,102 @@ describe('Event Forwarding - Execution Lifecycle', () => {
     ]);
   });
 
+  it('does not regress lifecycle when stale kernel_event arrives after turn_complete(stop)', () => {
+    const sessionManager = createMockSessionManager();
+    const deps = createDeps({ sessionManager });
+    const { emitLoopEventToEventBus } = attachEventForwarding(deps);
+
+    emitLoopEventToEventBus({
+      sessionId: 'lifecycle-stale-session-1',
+      phase: 'turn_start',
+      timestamp: new Date().toISOString(),
+      payload: { text: 'start' },
+    });
+    emitLoopEventToEventBus({
+      sessionId: 'lifecycle-stale-session-1',
+      phase: 'turn_complete',
+      timestamp: new Date().toISOString(),
+      payload: {
+        replyPreview: 'done',
+        finishReason: 'stop',
+        responseId: 'resp-stop-terminal-1',
+      },
+    });
+    emitLoopEventToEventBus({
+      sessionId: 'lifecycle-stale-session-1',
+      phase: 'kernel_event',
+      timestamp: new Date().toISOString(),
+      payload: {
+        type: 'tool_result',
+        toolName: 'agent.dispatch',
+      },
+    });
+
+    const session = (sessionManager.getSession as ReturnType<typeof vi.fn>)('lifecycle-stale-session-1');
+    expect(session.context.executionLifecycle).toEqual(expect.objectContaining({
+      stage: 'completed',
+      substage: 'turn_complete',
+      finishReason: 'stop',
+    }));
+
+    const lifecycleWrites = (sessionManager.updateContext as ReturnType<typeof vi.fn>).mock.calls.map((call) => (
+      (call[1] as Record<string, unknown>).executionLifecycle as Record<string, unknown>
+    ));
+    expect(lifecycleWrites.map((item) => item.stage)).toEqual([
+      'running',
+      'completed',
+    ]);
+  });
+
+  it('still transitions normally when a new turn starts after previous turn completed', () => {
+    const sessionManager = createMockSessionManager();
+    const deps = createDeps({ sessionManager });
+    const { emitLoopEventToEventBus } = attachEventForwarding(deps);
+
+    emitLoopEventToEventBus({
+      sessionId: 'lifecycle-new-turn-session-1',
+      phase: 'turn_start',
+      timestamp: new Date().toISOString(),
+      payload: { text: 'first turn' },
+    });
+    emitLoopEventToEventBus({
+      sessionId: 'lifecycle-new-turn-session-1',
+      phase: 'turn_complete',
+      timestamp: new Date().toISOString(),
+      payload: { replyPreview: 'first done', finishReason: 'stop', responseId: 'resp-first-1' },
+    });
+
+    emitLoopEventToEventBus({
+      sessionId: 'lifecycle-new-turn-session-1',
+      phase: 'turn_start',
+      timestamp: new Date().toISOString(),
+      payload: { text: 'second turn' },
+    });
+    emitLoopEventToEventBus({
+      sessionId: 'lifecycle-new-turn-session-1',
+      phase: 'kernel_event',
+      timestamp: new Date().toISOString(),
+      payload: { type: 'tool_call', toolName: 'agent.dispatch', toolId: 'call-second-1' },
+    });
+
+    const session = (sessionManager.getSession as ReturnType<typeof vi.fn>)('lifecycle-new-turn-session-1');
+    expect(session.context.executionLifecycle).toEqual(expect.objectContaining({
+      stage: 'waiting_tool',
+      substage: 'tool_call',
+      toolName: 'agent.dispatch',
+    }));
+
+    const lifecycleWrites = (sessionManager.updateContext as ReturnType<typeof vi.fn>).mock.calls.map((call) => (
+      (call[1] as Record<string, unknown>).executionLifecycle as Record<string, unknown>
+    ));
+    expect(lifecycleWrites.map((item) => item.stage)).toEqual([
+      'running',
+      'completed',
+      'running',
+      'waiting_tool',
+    ]);
+  });
+
   it('triggers runtime auto stop digest when turn completes with stop and reasoning.stop tool was called', async () => {
     const sessionManager = createMockSessionManager();
     const runtime = {

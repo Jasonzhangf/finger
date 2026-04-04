@@ -26,6 +26,7 @@ import { buildDispatchResultEnvelope } from '../../server/modules/mailbox-envelo
 import { heartbeatMailbox } from '../../server/modules/heartbeat-mailbox.js';
 import { normalizeDispatchLedgerSessionId as _normalizeDispatchLedgerSessionId } from '../../server/modules/event-forwarding-session-utils.js';
 import { applyExecutionLifecycleTransition } from '../../server/modules/execution-lifecycle.js';
+import { getExecutionLifecycleState } from '../../server/modules/execution-lifecycle.js';
 import {
   attachControlLifecycleForwarding,
   attachDispatchLifecycleForwarding,
@@ -162,6 +163,32 @@ function normalizeReasoningForHistory(text: string): string {
     clipped,
     '</context_priority>',
   ].join('\n');
+}
+
+function isTerminalLifecycleStage(stage: unknown): stage is 'completed' | 'failed' | 'interrupted' {
+  return stage === 'completed' || stage === 'failed' || stage === 'interrupted';
+}
+
+function shouldIgnoreStaleKernelEventAfterTerminal(params: {
+  sessionManager: SessionManager;
+  sessionId: string;
+  payload: Record<string, unknown>;
+}): boolean {
+  const lifecycle = getExecutionLifecycleState(params.sessionManager, params.sessionId);
+  if (!lifecycle || !isTerminalLifecycleStage(lifecycle.stage)) return false;
+
+  const payloadTurnId = asTrimmedString(params.payload.responseId)
+    ?? asTrimmedString(params.payload.turnId)
+    ?? undefined;
+  const lifecycleTurnId = asTrimmedString(lifecycle.turnId);
+
+  // Guard against out-of-order kernel events arriving after terminal turn closure.
+  // We only allow through when payload explicitly carries a different turn id
+  // (possible new turn telemetry). Missing/identical turn id is treated as stale.
+  if (!payloadTurnId || !lifecycleTurnId || payloadTurnId === lifecycleTurnId) {
+    return true;
+  }
+  return false;
 }
 
 function asControlBlockRecord(payload: Record<string, unknown>): Record<string, unknown> | undefined {
@@ -763,6 +790,18 @@ export function attachEventForwarding(deps: EventForwardingDeps): {
           ?? (normalizedError.includes('interrupt') ? 'interrupted' : 'failed'),
       });
     } else if (event.phase === 'kernel_event' && isObjectRecord(event.payload)) {
+      if (shouldIgnoreStaleKernelEventAfterTerminal({
+        sessionManager,
+        sessionId: event.sessionId,
+        payload: event.payload,
+      })) {
+        logger.module('event-forwarding').debug('[EventForwarding] Ignore stale kernel_event after terminal lifecycle', {
+          sessionId: event.sessionId,
+          payloadType: asTrimmedString(event.payload.type) ?? 'unknown',
+          payloadTurnId: asTrimmedString(event.payload.responseId) ?? asTrimmedString(event.payload.turnId),
+        });
+        return;
+      }
       if (event.payload.type === 'tool_call') {
         const toolName = typeof event.payload.toolName === 'string' ? event.payload.toolName.trim() : '';
         const policy = resolveStopReasoningPolicy();
