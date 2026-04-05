@@ -393,7 +393,15 @@ function selectLeastLoadedProjectWorker(
     };
   });
   const available = withLoad.filter((item) => item.total === 0);
-  const pool = available.length > 0 ? available : withLoad;
+  let pool = available;
+  if (pool.length === 0) {
+    const minTotal = Math.min(...withLoad.map((item) => item.total));
+    pool = withLoad.filter((item) => item.total === minTotal);
+    if (pool.length > 1) {
+      const minRunning = Math.min(...pool.map((item) => item.runningCount));
+      pool = pool.filter((item) => item.runningCount === minRunning);
+    }
+  }
   const ordered = [...pool].sort((a, b) => a.candidate.order - b.candidate.order);
   const rrKey = `${roundRobinKey}::${candidates.map((item) => item.id).join(',')}`;
   const currentCursor = PROJECT_WORKER_ROUND_ROBIN_CURSOR.get(rrKey) ?? 0;

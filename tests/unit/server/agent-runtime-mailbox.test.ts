@@ -285,4 +285,67 @@ describe('agent runtime mailbox tools', () => {
     expect(removed.removedId).toBe(appended.id);
     expect(heartbeatMailbox.get(targetAgentId, appended.id)).toBeUndefined();
   });
+
+  it('returns mailbox.list ordered by priority then recency', async () => {
+    const { tools } = createDeps();
+    const targetAgentId = `test-mailbox-agent-${Date.now()}-ordered-list`;
+    cleanupTargets.add(targetAgentId);
+
+    heartbeatMailbox.append(targetAgentId, {
+      type: 'dispatch-result',
+      dispatchId: 'dispatch-notify-low',
+      sourceAgentId: 'finger-project-agent',
+      targetAgentId,
+    }, {
+      sender: 'finger-project-agent',
+      category: 'notification',
+      priority: 2,
+    });
+    heartbeatMailbox.append(targetAgentId, {
+      type: 'dispatch-task',
+      dispatchId: 'dispatch-task-high-old',
+      sourceAgentId: 'finger-system-agent',
+      targetAgentId,
+    }, {
+      sender: 'finger-system-agent',
+      category: 'dispatch-task',
+      priority: 0,
+    });
+    heartbeatMailbox.append(targetAgentId, {
+      type: 'dispatch-result',
+      dispatchId: 'dispatch-notify-medium',
+      sourceAgentId: 'finger-project-agent',
+      targetAgentId,
+    }, {
+      sender: 'finger-project-agent',
+      category: 'notification',
+      priority: 1,
+    });
+    heartbeatMailbox.append(targetAgentId, {
+      type: 'dispatch-task',
+      dispatchId: 'dispatch-task-high-new',
+      sourceAgentId: 'finger-system-agent',
+      targetAgentId,
+    }, {
+      sender: 'finger-system-agent',
+      category: 'dispatch-task',
+      priority: 0,
+    });
+
+    const listed = await getTool(tools, 'mailbox.list').handler(
+      {},
+      { agentId: targetAgentId },
+    ) as {
+      success: boolean;
+      messages: Array<{ priority?: number; seq: number }>;
+    };
+
+    expect(listed.success).toBe(true);
+    expect(listed.messages).toHaveLength(4);
+    expect(listed.messages[0]?.priority).toBe(0);
+    expect(listed.messages[1]?.priority).toBe(0);
+    expect(listed.messages[0]?.seq).toBeGreaterThan(listed.messages[1]?.seq);
+    expect(listed.messages[2]?.priority).toBe(1);
+    expect(listed.messages[3]?.priority).toBe(2);
+  });
 });

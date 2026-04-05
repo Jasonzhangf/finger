@@ -58,8 +58,9 @@ async function handleMailboxList(input: unknown, context: MailboxToolContext): P
       ? Math.max(1, Math.floor(parsed.limit))
       : undefined,
   });
-
-  messages = [...messages].sort((a, b) => b.seq - a.seq);
+  // Preserve mailbox manager ordering (priority first, then recency) so runtime
+  // worklist consumption keeps priority semantics.
+  messages = [...messages];
 
   return {
     success: true,

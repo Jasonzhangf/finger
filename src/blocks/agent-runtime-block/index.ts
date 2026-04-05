@@ -1519,16 +1519,24 @@ export class AgentRuntimeBlock extends BaseBlock {
       };
     }
 
-    if (projectId || workerId) {
-      const resolvedProjectId = projectId || 'project-unknown';
-      const resolvedWorkerId = workerId || input.targetAgentId;
-      const resolvedSessionId = sessionId || 'session-default';
+    if (workerId) {
+      // Worker worklist is global for this worker: session switches should not create
+      // parallel queues for the same worker.
       return {
-        laneKey: `${resolvedProjectId}:${resolvedWorkerId}:${resolvedSessionId}`,
+        laneKey: `worker:${input.targetAgentId}:${workerId}`,
         targetAgentId: input.targetAgentId,
-        projectId: resolvedProjectId,
-        workerId: resolvedWorkerId,
-        sessionId: resolvedSessionId,
+        ...(projectId ? { projectId } : {}),
+        workerId,
+        ...(sessionId ? { sessionId } : {}),
+      };
+    }
+
+    if (projectId) {
+      return {
+        laneKey: `project:${input.targetAgentId}:${projectId}`,
+        targetAgentId: input.targetAgentId,
+        projectId,
+        ...(sessionId ? { sessionId } : {}),
       };
     }
 

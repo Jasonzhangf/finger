@@ -937,6 +937,70 @@ describe('dispatchTaskToAgent', () => {
     }));
   });
 
+  it('selects least-loaded worker when all workers are busy', async () => {
+    const execute = vi.fn(async (command: string) => {
+      if (command === 'runtime_view') {
+        return {
+          lanes: [
+            {
+              laneKey: 'worker:finger-project-agent:finger-project-agent',
+              agentId: 'finger-project-agent',
+              workerId: 'finger-project-agent',
+              runningCount: 2,
+              queuedCount: 3,
+            },
+            {
+              laneKey: 'worker:finger-project-agent:finger-project-agent-02',
+              agentId: 'finger-project-agent',
+              workerId: 'finger-project-agent-02',
+              runningCount: 1,
+              queuedCount: 1,
+            },
+            {
+              laneKey: 'worker:finger-project-agent:finger-project-agent-03',
+              agentId: 'finger-project-agent',
+              workerId: 'finger-project-agent-03',
+              runningCount: 1,
+              queuedCount: 2,
+            },
+          ],
+        };
+      }
+      return {
+        ok: true,
+        dispatchId: 'dispatch-pool-busy-1',
+        status: 'completed',
+        result: { summary: 'ok' },
+      };
+    });
+    const { deps } = createDeps(execute);
+    const res = await mod.dispatchTaskToAgent(deps as any, {
+      sourceAgentId: 'finger-system-agent',
+      targetAgentId: 'finger-project-agent',
+      task: { prompt: 'dispatch with all workers busy' },
+      assignment: {
+        taskId: 'task-worker-auto-busy-1',
+        taskName: 'worker-auto-busy',
+        blocked_by: ['none'],
+      },
+      sessionStrategy: 'latest',
+      projectPath: '/tmp/project-a',
+    } as any);
+
+    expect(res.ok).toBe(true);
+    expect(execute).toHaveBeenCalledWith('dispatch', expect.objectContaining({
+      assignment: expect.objectContaining({
+        assigneeWorkerId: 'finger-project-agent-02',
+        assigneeAgentId: 'finger-project-agent-02',
+      }),
+      metadata: expect.objectContaining({
+        workerId: 'finger-project-agent-02',
+        assigneeWorkerId: 'finger-project-agent-02',
+        workerPoolSelectionReason: 'availability',
+      }),
+    }));
+  });
+
   it('uses round-robin among available workers for same project path', async () => {
     const dispatchCalls: Array<Record<string, unknown>> = [];
     const execute = vi.fn(async (command: string, args: any) => {

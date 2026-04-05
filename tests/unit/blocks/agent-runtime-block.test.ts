@@ -737,12 +737,12 @@ describe('AgentRuntimeBlock', () => {
     expect(agent?.queuedCount).toBe(0);
     expect(view.lanes).toEqual(expect.arrayContaining([
       expect.objectContaining({
-        laneKey: 'project-a:Lisa:session-worker-lisa',
+        laneKey: 'worker:executor-a:Lisa',
         agentId: 'executor-a',
         runningCount: 1,
       }),
       expect.objectContaining({
-        laneKey: 'project-b:Robert:session-worker-robert',
+        laneKey: 'worker:executor-a:Robert',
         agentId: 'executor-a',
         runningCount: 1,
       }),
@@ -804,17 +804,17 @@ describe('AgentRuntimeBlock', () => {
     expect(agent?.queuedCount).toBe(0);
     expect(view.lanes).toEqual(expect.arrayContaining([
       expect.objectContaining({
-        laneKey: 'project-a:Lisa:session-project-a-lisa',
+        laneKey: 'worker:executor-a:Lisa',
         runningCount: 1,
         queuedCount: 0,
       }),
       expect.objectContaining({
-        laneKey: 'project-b:Robert:session-project-b-robert',
+        laneKey: 'worker:executor-a:Robert',
         runningCount: 1,
         queuedCount: 0,
       }),
       expect.objectContaining({
-        laneKey: 'project-a:Kelvin:session-project-a-kelvin',
+        laneKey: 'worker:executor-a:Kelvin',
         runningCount: 1,
         queuedCount: 0,
       }),
@@ -865,6 +865,85 @@ describe('AgentRuntimeBlock', () => {
     }) as { ok: boolean; error?: string };
     expect(crossWorkerReuse.ok).toBe(false);
     expect(crossWorkerReuse.error).toContain('session_binding_scope_violation');
+  });
+
+  it('queues same-worker tasks across different sessions and drains by priority then time', async () => {
+    const first = createDeferred<{ ok: boolean }>();
+    const second = createDeferred<{ ok: boolean }>();
+    const third = createDeferred<{ ok: boolean }>();
+    const sentTaskText: string[] = [];
+    ctx.hubSendToModule.mockImplementationOnce(async (_moduleId: string, payload: Record<string, unknown>) => {
+      sentTaskText.push(typeof payload.text === 'string' ? payload.text : '');
+      return first.promise;
+    });
+    ctx.hubSendToModule.mockImplementationOnce(async (_moduleId: string, payload: Record<string, unknown>) => {
+      sentTaskText.push(typeof payload.text === 'string' ? payload.text : '');
+      return second.promise;
+    });
+    ctx.hubSendToModule.mockImplementationOnce(async (_moduleId: string, payload: Record<string, unknown>) => {
+      sentTaskText.push(typeof payload.text === 'string' ? payload.text : '');
+      return third.promise;
+    });
+
+    await ctx.block.execute('deploy', {
+      targetAgentId: 'executor-a',
+      targetImplementationId: 'native-main',
+      sessionId: 'session-1',
+      instanceCount: 1,
+      launchMode: 'orchestrator',
+    });
+
+    await ctx.block.execute('dispatch', {
+      sourceAgentId: 'finger-system-agent',
+      targetAgentId: 'executor-a',
+      sessionId: 'session-worker-lisa-a',
+      task: { text: 't1-first', projectId: 'project-a' },
+      metadata: { projectId: 'project-a', workerId: 'Lisa' },
+      blocking: false,
+    });
+    await ctx.block.execute('dispatch', {
+      sourceAgentId: 'finger-system-agent',
+      targetAgentId: 'executor-a',
+      sessionId: 'session-worker-lisa-b',
+      task: { text: 't2-low', projectId: 'project-b', priority: 'low' },
+      metadata: { projectId: 'project-b', workerId: 'Lisa', priority: 'low' },
+      blocking: false,
+      queueOnBusy: true,
+    });
+    await ctx.block.execute('dispatch', {
+      sourceAgentId: 'finger-system-agent',
+      targetAgentId: 'executor-a',
+      sessionId: 'session-worker-lisa-c',
+      task: { text: 't3-high', projectId: 'project-c', priority: 'urgent' },
+      metadata: { projectId: 'project-c', workerId: 'Lisa', priority: 'urgent' },
+      blocking: false,
+      queueOnBusy: true,
+    });
+
+    expect(ctx.hubSendToModule).toHaveBeenCalledTimes(1);
+
+    const view = await ctx.block.execute('runtime_view', {}) as {
+      lanes: Array<{ laneKey: string; runningCount: number; queuedCount: number }>;
+    };
+    expect(view.lanes).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        laneKey: 'worker:executor-a:Lisa',
+        runningCount: 1,
+        queuedCount: 2,
+      }),
+    ]));
+
+    first.resolve({ ok: true });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(ctx.hubSendToModule).toHaveBeenCalledTimes(2);
+    expect(sentTaskText[1] || '').toContain('t3-high');
+
+    second.resolve({ ok: true });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(ctx.hubSendToModule).toHaveBeenCalledTimes(3);
+    expect(sentTaskText[2] || '').toContain('t2-low');
+
+    third.resolve({ ok: true });
   });
 
   it('treats symlinked project paths as the same binding scope', async () => {
