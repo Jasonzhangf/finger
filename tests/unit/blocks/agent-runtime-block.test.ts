@@ -136,6 +136,29 @@ async function createContext(): Promise<TestContext> {
 }
 
 async function createContextWithLoadedConfigs(loadedAgentConfigs: LoadedAgentConfig[]): Promise<TestContext> {
+  return createContextWithLoadedConfigsAndOptions(loadedAgentConfigs);
+}
+
+async function createContextWithLoadedConfigsAndOptions(
+  loadedAgentConfigs: LoadedAgentConfig[],
+  options?: {
+    onDispatchQueueTimeout?: (params: {
+      dispatchId: string;
+      sourceAgentId: string;
+      targetAgentId: string;
+      sessionId?: string;
+      workflowId?: string;
+      assignment?: unknown;
+      task: unknown;
+      metadata?: Record<string, unknown>;
+    }) => {
+      delivery: 'mailbox';
+      mailboxMessageId: string;
+      summary?: string;
+      nextAction?: string;
+    } | null;
+  },
+): Promise<TestContext> {
   const modules = new Map<string, Record<string, unknown>>();
   modules.set('executor-a-loop', {
     id: 'executor-a-loop',
@@ -200,6 +223,7 @@ async function createContextWithLoadedConfigs(loadedAgentConfigs: LoadedAgentCon
     } as never,
     getLoadedAgentConfigs: () => loadedAgentConfigs,
     primaryOrchestratorAgentId: 'chat-codex',
+    ...(options?.onDispatchQueueTimeout ? { onDispatchQueueTimeout: options.onDispatchQueueTimeout } : {}),
   });
 
   await block.initialize();
@@ -431,6 +455,81 @@ describe('AgentRuntimeBlock', () => {
     first.resolve({ ok: true });
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(ctx.hubSendToModule).toHaveBeenCalledTimes(2);
+  });
+
+  it('persists busy finger-agent dispatches to mailbox instead of volatile in-memory queue', async () => {
+    const fallbackToMailbox = vi.fn(() => ({
+      delivery: 'mailbox' as const,
+      mailboxMessageId: 'msg-busy-persist-1',
+      summary: 'busy fallback persisted',
+      nextAction: 'mailbox.read + mailbox.ack',
+    }));
+
+    const custom = await createContextWithLoadedConfigsAndOptions([
+      {
+        filePath: '/tmp/finger-project-agent.agent.json',
+        config: {
+          id: 'finger-project-agent',
+          name: 'Project Agent',
+          role: 'project',
+          implementations: [
+            { id: 'native-main', kind: 'native', moduleId: 'executor-a-loop', enabled: true },
+          ],
+          tools: {
+            whitelist: ['agent.list', 'agent.capabilities', 'agent.deploy', 'agent.dispatch', 'agent.control'],
+          },
+        },
+      },
+    ], {
+      onDispatchQueueTimeout: fallbackToMailbox,
+    });
+
+    const first = createDeferred<{ ok: boolean }>();
+    custom.hubSendToModule.mockImplementationOnce(() => first.promise);
+
+    await custom.block.execute('deploy', {
+      targetAgentId: 'finger-project-agent',
+      targetImplementationId: 'native-main',
+      sessionId: 'session-1',
+      instanceCount: 1,
+      launchMode: 'orchestrator',
+    });
+
+    await custom.block.execute('dispatch', {
+      sourceAgentId: 'finger-system-agent',
+      targetAgentId: 'finger-project-agent',
+      task: { text: 't1-running' },
+      blocking: false,
+    });
+
+    const secondDispatch = await custom.block.execute('dispatch', {
+      sourceAgentId: 'finger-system-agent',
+      targetAgentId: 'finger-project-agent',
+      task: { text: 't2-should-persist' },
+      blocking: false,
+      queueOnBusy: true,
+      maxQueueWaitMs: 0,
+    }) as { ok: boolean; status: string; result?: Record<string, unknown> };
+
+    expect(secondDispatch.ok).toBe(true);
+    expect(secondDispatch.status).toBe('queued');
+    expect(secondDispatch.result?.status).toBe('queued_mailbox');
+    expect(secondDispatch.result?.messageId).toBe('msg-busy-persist-1');
+    expect(fallbackToMailbox).toHaveBeenCalledTimes(1);
+    expect(custom.hubSendToModule).toHaveBeenCalledTimes(1);
+
+    const view = await custom.block.execute('runtime_view', {}) as {
+      lanes: Array<{ laneKey: string; runningCount: number; queuedCount: number }>;
+    };
+    expect(view.lanes).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        laneKey: 'agent:finger-project-agent',
+        runningCount: 1,
+        queuedCount: 0,
+      }),
+    ]));
+
+    first.resolve({ ok: true });
   });
 
   it('marks runtime instance as running when runner reports active turn for its session', async () => {

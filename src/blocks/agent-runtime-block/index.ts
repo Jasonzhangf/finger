@@ -2098,6 +2098,16 @@ export class AgentRuntimeBlock extends BaseBlock {
     return !this.isSystemDirectInjectDispatch(input);
   }
 
+  private shouldGuaranteeBusyDispatchToMailbox(input: AgentDispatchRequest): boolean {
+    const sourceAgentId = (input.sourceAgentId || '').trim();
+    const targetAgentId = (input.targetAgentId || '').trim();
+    if (!sourceAgentId || !targetAgentId) return false;
+    if (sourceAgentId === targetAgentId) return false;
+    // Finger multi-agent dispatches must survive runtime restarts.
+    // When target lane is busy, persist immediately to mailbox instead of in-memory queue only.
+    return sourceAgentId.startsWith('finger-') && targetAgentId.startsWith('finger-');
+  }
+
   private buildMailboxFallbackDispatchResult(params: {
     dispatchId: string;
     input: AgentDispatchRequest;
@@ -2308,6 +2318,26 @@ export class AgentRuntimeBlock extends BaseBlock {
           targetModuleId,
           error: `target agent busy: ${target}`,
         };
+      }
+
+      if (this.shouldGuaranteeBusyDispatchToMailbox(normalizedInput)) {
+        const mailboxFallback = this.buildMailboxFallbackDispatchResult({
+          dispatchId,
+          input: normalizedInput,
+          targetAgentId: target,
+          targetModuleId,
+          assignment,
+          blocking,
+        });
+        if (mailboxFallback) {
+          log.info('[AgentRuntimeBlock] Persisted busy dispatch to mailbox', {
+            dispatchId,
+            laneKey: lane.laneKey,
+            sourceAgentId: normalizedInput.sourceAgentId,
+            targetAgentId: target,
+          });
+          return mailboxFallback;
+        }
       }
 
       const pendingResult = new Promise<DispatchResult>((resolve) => {
