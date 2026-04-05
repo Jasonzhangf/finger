@@ -753,6 +753,147 @@ describe('ProgressMonitor incremental updates', () => {
     monitor.stop();
   });
 
+  it('treats lifecycle retrying as external provider wait before timeout watchdog', async () => {
+    const eventBus = new UnifiedEventBus();
+    const reports: string[] = [];
+    const sessionState = new Map<string, any>();
+    sessionState.set('session-retrying-provider-wait', {
+      id: 'session-retrying-provider-wait',
+      context: {
+        executionLifecycle: {
+          stage: 'retrying',
+          substage: 'turn_retry',
+          startedAt: new Date(Date.now() - 3 * 60_000).toISOString(),
+          lastTransitionAt: new Date(Date.now() - 90_000).toISOString(),
+          retryCount: 1,
+          timeoutMs: 600_000,
+          recoveryAction: 'retry',
+          detail: 'attempt=2',
+        },
+      },
+    });
+    const deps = createMinimalDeps();
+    (deps.sessionManager as any).getSession = vi.fn((sessionId: string) => sessionState.get(sessionId) ?? null);
+    const monitor = new ProgressMonitor(
+      eventBus,
+      deps,
+      {
+        onProgressReport: (report) => {
+          reports.push(report.summary);
+        },
+      },
+      {
+        enabled: true,
+        progressUpdates: true,
+        intervalMs: 60_000,
+      },
+    );
+
+    monitor.start();
+
+    await eventBus.emit({
+      type: 'turn_start',
+      sessionId: 'session-retrying-provider-wait',
+      agentId: 'finger-system-agent',
+      timestamp: new Date().toISOString(),
+      payload: {
+        prompt: '重试中，等待 provider',
+      },
+    } as any);
+    await flushEventLoop();
+
+    const progress = monitor.getProgress('session-retrying-provider-wait');
+    expect(progress).toBeTruthy();
+    if (progress) {
+      const now = Date.now();
+      progress.startTime = now - 180_000;
+      progress.lastUpdateTime = now - 190_000;
+      progress.lastReportTime = now - 190_000;
+      progress.status = 'running';
+      progress.hasOpenTurn = true;
+    }
+
+    await (monitor as any).generateProgressReport();
+
+    expect(reports).toHaveLength(1);
+    expect(reports[0]).toContain('分层状态: 外部等待 · provider');
+    expect(reports[0]).toContain('retrying');
+    expect(reports[0]).not.toContain('分层状态: 内部等待');
+    expect(reports[0]).not.toContain('<##@system:progress:reset##>');
+
+    monitor.stop();
+  });
+
+  it('escalates stale retrying lifecycle to internal wait with reset hint after watchdog threshold', async () => {
+    const eventBus = new UnifiedEventBus();
+    const reports: string[] = [];
+    const sessionState = new Map<string, any>();
+    sessionState.set('session-retrying-watchdog-exceeded', {
+      id: 'session-retrying-watchdog-exceeded',
+      context: {
+        executionLifecycle: {
+          stage: 'retrying',
+          substage: 'turn_retry',
+          startedAt: new Date(Date.now() - 30 * 60_000).toISOString(),
+          lastTransitionAt: new Date(Date.now() - (12 * 60_000 + 5_000)).toISOString(),
+          retryCount: 2,
+          timeoutMs: 600_000,
+          recoveryAction: 'retry',
+          detail: 'attempt=3',
+        },
+      },
+    });
+    const deps = createMinimalDeps();
+    (deps.sessionManager as any).getSession = vi.fn((sessionId: string) => sessionState.get(sessionId) ?? null);
+    const monitor = new ProgressMonitor(
+      eventBus,
+      deps,
+      {
+        onProgressReport: (report) => {
+          reports.push(report.summary);
+        },
+      },
+      {
+        enabled: true,
+        progressUpdates: true,
+        intervalMs: 60_000,
+      },
+    );
+
+    monitor.start();
+
+    await eventBus.emit({
+      type: 'turn_start',
+      sessionId: 'session-retrying-watchdog-exceeded',
+      agentId: 'finger-system-agent',
+      timestamp: new Date().toISOString(),
+      payload: {
+        prompt: '重试超时',
+      },
+    } as any);
+    await flushEventLoop();
+
+    const progress = monitor.getProgress('session-retrying-watchdog-exceeded');
+    expect(progress).toBeTruthy();
+    if (progress) {
+      const now = Date.now();
+      progress.startTime = now - 1_800_000;
+      progress.lastUpdateTime = now - 190_000;
+      progress.lastReportTime = now - 190_000;
+      progress.status = 'running';
+      progress.hasOpenTurn = true;
+    }
+
+    await (monitor as any).generateProgressReport();
+
+    expect(reports).toHaveLength(1);
+    expect(reports[0]).toContain('分层状态: 内部等待');
+    expect(reports[0]).toContain('retry watchdog exceeded');
+    expect(reports[0]).toContain('<##@system:progress:reset##>');
+
+    monitor.stop();
+  });
+
   it('keeps tool-only running progress alive for heartbeat window, then auto-demotes to idle after prolonged inactivity', async () => {
     const eventBus = new UnifiedEventBus();
     const reports: string[] = [];

@@ -125,7 +125,7 @@ export function buildHeartbeatSummary(
       lines.push(`🌐 分层状态: 外部等待${options.waitDetail ? ` (${options.waitDetail})` : ''}`);
     }
   } else if (options?.waitLayer === 'internal') {
-    lines.push(`⚠️ 分层状态: 内部等待 · 未检测到外部阻塞信号`);
+    lines.push(`⚠️ 分层状态: 内部等待 · 未检测到外部阻塞信号${options.waitDetail ? ` (${options.waitDetail})` : ''}`);
     if (options.resetHintCommand && options.resetHintCommand.trim().length > 0) {
       lines.push(`🔁 重置命令: ${options.resetHintCommand.trim()}`);
     }

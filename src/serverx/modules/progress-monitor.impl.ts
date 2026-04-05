@@ -115,6 +115,7 @@ export class ProgressMonitor {
     p: SessionProgress,
     pendingTool: ToolCallRecord | undefined,
     stalled: boolean,
+    now: number,
   ): {
     waitLayer?: 'external' | 'internal';
     waitKind?: 'provider' | 'tool' | 'user' | 'unknown';
@@ -123,6 +124,15 @@ export class ProgressMonitor {
     const lifecycle = this.resolveExecutionLifecycle(p.sessionId);
     const stage = lifecycle?.stage;
     const detail = lifecycle?.substage || lifecycle?.detail;
+    const lifecycleTransitionMs = lifecycle?.lastTransitionAt
+      ? Date.parse(lifecycle.lastTransitionAt)
+      : Number.NaN;
+    const lifecycleAgeMs = Number.isFinite(lifecycleTransitionMs)
+      ? Math.max(0, now - lifecycleTransitionMs)
+      : undefined;
+    const lifecycleTimeoutMs = typeof lifecycle?.timeoutMs === 'number' && Number.isFinite(lifecycle.timeoutMs)
+      ? Math.max(0, Math.floor(lifecycle.timeoutMs))
+      : undefined;
 
     if (stage === 'waiting_model') {
       return { waitLayer: 'external', waitKind: 'provider', ...(detail ? { waitDetail: detail } : {}) };
@@ -132,6 +142,34 @@ export class ProgressMonitor {
     }
     if (stage === 'waiting_user') {
       return { waitLayer: 'external', waitKind: 'user', ...(detail ? { waitDetail: detail } : {}) };
+    }
+    if (stage === 'retrying') {
+      const retryCount = typeof lifecycle?.retryCount === 'number' && Number.isFinite(lifecycle.retryCount)
+        ? Math.max(0, Math.floor(lifecycle.retryCount))
+        : 0;
+      const retryLabel = `attempt=${retryCount + 1}`;
+      const timeoutLabel = lifecycleTimeoutMs && lifecycleTimeoutMs > 0
+        ? `timeout=${Math.floor(lifecycleTimeoutMs / 1000)}s`
+        : '';
+      const ageLabel = typeof lifecycleAgeMs === 'number' ? `age=${formatElapsed(lifecycleAgeMs)}` : '';
+      const baseDetail = [detail, retryLabel, timeoutLabel, ageLabel]
+        .filter((item) => typeof item === 'string' && item.trim().length > 0)
+        .join(' · ');
+      const staleBeyondTimeout = lifecycleTimeoutMs !== undefined
+        && typeof lifecycleAgeMs === 'number'
+        && lifecycleAgeMs > lifecycleTimeoutMs + 2 * this.config.intervalMs;
+      if (staleBeyondTimeout) {
+        return {
+          waitLayer: 'internal',
+          waitKind: 'unknown',
+          waitDetail: baseDetail.length > 0 ? `retry watchdog exceeded (${baseDetail})` : 'retry watchdog exceeded',
+        };
+      }
+      return {
+        waitLayer: 'external',
+        waitKind: 'provider',
+        ...(baseDetail.length > 0 ? { waitDetail: `retrying (${baseDetail})` } : {}),
+      };
     }
     if (pendingTool) {
       const toolName = resolveToolDisplayName(pendingTool.toolName?.trim() || '工具', pendingTool.params);
@@ -755,7 +793,7 @@ export class ProgressMonitor {
         ? this.config.intervalMs
         : this.config.intervalMs * ProgressMonitor.STALL_HEARTBEAT_FACTOR_NO_PENDING;
       const stalled = now - p.lastUpdateTime >= heartbeatIntervalMs;
-      const waitLayerInfo = this.resolveWaitLayer(p, pendingTool, stalled);
+      const waitLayerInfo = this.resolveWaitLayer(p, pendingTool, stalled, now);
       if (p.lastReportKey === reportKey) {
         // Even when summary key is stable, if tools keep flowing we still emit
         // one periodic update per interval to avoid long "silent running" windows.
