@@ -15,6 +15,7 @@ const clog = createConsoleLikeLogger('UserSettings');
 const log = logger.module('UserSettings');
 
 const USER_SETTINGS_PATH = path.join(FINGER_PATHS.config.dir, 'user-settings.json');
+const MAIN_CONFIG_PATH = FINGER_PATHS.config.file.main;
 
 
 const USER_SETTINGS_BACKUP_PATH = path.join(FINGER_PATHS.config.dir, 'user-settings.backup.json');
@@ -156,6 +157,14 @@ export interface UserSettings {
   contextBuilder: ContextBuilderSettings;
 }
 
+interface KernelConfigShape {
+  kernel?: {
+    provider?: string;
+    providers?: Record<string, unknown>;
+  };
+  [key: string]: unknown;
+}
+
 const DEFAULT_USER_SETTINGS: UserSettings = {
   version: '1.0',
   updated_at: new Date().toISOString(),
@@ -206,6 +215,103 @@ const DEFAULT_USER_SETTINGS: UserSettings = {
   }
 };
 
+function deepCloneDefaultSettings(): UserSettings {
+  return JSON.parse(JSON.stringify(DEFAULT_USER_SETTINGS)) as UserSettings;
+}
+
+function parseProviderRecord(providerId: string, raw: unknown): AIProvider | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const record = raw as Record<string, unknown>;
+  const name = typeof record.name === 'string' && record.name.trim().length > 0
+    ? record.name.trim()
+    : providerId;
+  const baseUrl = typeof record.base_url === 'string' ? record.base_url.trim() : '';
+  const model = typeof record.model === 'string' ? record.model.trim() : '';
+  const envKey = typeof record.env_key === 'string' ? record.env_key.trim() : '';
+  const wireApiRaw = typeof record.wire_api === 'string' ? record.wire_api.trim() : '';
+  const wireApi: 'responses' | 'http' = wireApiRaw === 'http' ? 'http' : 'responses';
+  const enabled = typeof record.enabled === 'boolean' ? record.enabled : true;
+  if (!baseUrl || !model || !envKey) return null;
+  return {
+    name,
+    base_url: baseUrl,
+    wire_api: wireApi,
+    env_key: envKey,
+    model,
+    enabled,
+  };
+}
+
+function loadAIProvidersFromMainConfig(): AIProviders | undefined {
+  try {
+    if (!fs.existsSync(MAIN_CONFIG_PATH)) return undefined;
+    const raw = fs.readFileSync(MAIN_CONFIG_PATH, 'utf-8');
+    const parsed = JSON.parse(raw) as KernelConfigShape;
+    const kernelProvidersRaw = parsed?.kernel?.providers;
+    if (!kernelProvidersRaw || typeof kernelProvidersRaw !== 'object') return undefined;
+
+    const providers: Record<string, AIProvider> = {};
+    for (const [providerId, value] of Object.entries(kernelProvidersRaw)) {
+      if (!providerId || typeof providerId !== 'string') continue;
+      const parsedProvider = parseProviderRecord(providerId, value);
+      if (!parsedProvider) continue;
+      providers[providerId] = parsedProvider;
+    }
+    const providerIds = Object.keys(providers);
+    if (providerIds.length === 0) return undefined;
+
+    const defaultFromKernel = typeof parsed?.kernel?.provider === 'string'
+      ? parsed.kernel.provider.trim()
+      : '';
+    const defaultProvider = defaultFromKernel && providers[defaultFromKernel]
+      ? defaultFromKernel
+      : providerIds[0];
+    return {
+      default: defaultProvider,
+      providers,
+    };
+  } catch (error) {
+    log.warn('[UserSettings] Failed to load AI providers from config.json', {
+      path: MAIN_CONFIG_PATH,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return undefined;
+  }
+}
+
+function persistAIProvidersToMainConfig(aiProviders: AIProviders): void {
+  ensureDir(FINGER_PATHS.config.dir);
+  let config: KernelConfigShape = {};
+  if (fs.existsSync(MAIN_CONFIG_PATH)) {
+    try {
+      const raw = fs.readFileSync(MAIN_CONFIG_PATH, 'utf-8');
+      config = JSON.parse(raw) as KernelConfigShape;
+    } catch (error) {
+      log.warn('[UserSettings] Failed to parse existing config.json, rewriting kernel provider section', {
+        path: MAIN_CONFIG_PATH,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      config = {};
+    }
+  }
+  const next: KernelConfigShape = {
+    ...config,
+    kernel: {
+      ...(config.kernel ?? {}),
+      provider: aiProviders.default,
+      providers: aiProviders.providers,
+    },
+  };
+  fs.writeFileSync(MAIN_CONFIG_PATH, JSON.stringify(next, null, 2), 'utf-8');
+}
+
+function applyProviderSource(settings: UserSettings): UserSettings {
+  const fromConfig = loadAIProvidersFromMainConfig();
+  if (!fromConfig) return settings;
+  settings.aiProviders = fromConfig;
+  return settings;
+}
+
 /**
  * 检查用户配置文件是否存在
  */
@@ -221,12 +327,14 @@ export function loadUserSettings(): UserSettings {
     cleanOldBackups();
     if (!fs.existsSync(USER_SETTINGS_PATH)) {
       log.info('[UserSettings] User settings file not found, using defaults');
-      saveUserSettings(DEFAULT_USER_SETTINGS);
-      return DEFAULT_USER_SETTINGS;
+      const initialized = applyProviderSource(deepCloneDefaultSettings());
+      saveUserSettings(initialized);
+      return initialized;
     }
 
     const raw = fs.readFileSync(USER_SETTINGS_PATH, 'utf-8');
-    const settings = JSON.parse(raw);
+    const parsed = JSON.parse(raw);
+    const settings = applyProviderSource(parsed as UserSettings);
 
     // 验证配置格式
     validateUserSettings(settings);
@@ -251,8 +359,10 @@ export function loadUserSettings(): UserSettings {
  */
 export function saveUserSettings(settings: UserSettings): void {
   try {
+    validateUserSettings(settings);
     settings.updated_at = new Date().toISOString();
     ensureDir(FINGER_PATHS.config.dir);
+    persistAIProvidersToMainConfig(settings.aiProviders);
     const content = JSON.stringify(settings, null, 2);
     fs.writeFileSync(USER_SETTINGS_PATH, content, 'utf-8');
     
@@ -622,7 +732,7 @@ export function getCompressTokenThreshold(): number {
  */
 
 /**
- * 加载 AI provider 配置（用户配置唯一真源）
+ * 加载 AI provider 配置（唯一真源：~/.finger/config/config.json）
  * 
  * @returns {AIProviders} AI provider 配置
  */
