@@ -6,6 +6,7 @@ import type { SessionEnvelopeMapping } from './agent-status-subscriber-types.js'
 import type { ProgressDeliveryPolicy } from '../../common/progress-delivery-policy.js';
 import { enqueueUpdateStreamDelivery } from './update-stream-delivery-adapter.js';
 import { isNoActionableWatchdogText, isScheduledSourceType } from './agent-status-subscriber-noop.js';
+import { parseControlBlockFromReply, stripControlLikeJsonPayload } from '../../common/control-block.js';
 import {
   inferUpdateStreamRole,
   inferUpdateStreamSourceType,
@@ -69,6 +70,18 @@ function shortSessionId(sessionId: string): string {
   const trimmed = sessionId.trim();
   if (trimmed.length <= 18) return trimmed;
   return `${trimmed.slice(0, 8)}...${trimmed.slice(-6)}`;
+}
+
+function sanitizeFinalReplyPreviewForStopNotice(text: string): string {
+  const source = text.trim();
+  if (!source) return '';
+  const parsed = parseControlBlockFromReply(source);
+  const humanText = typeof parsed.humanResponse === 'string' ? parsed.humanResponse.trim() : source;
+  const stripped = stripControlLikeJsonPayload(humanText);
+  return stripped
+    .replace(/Tool\s+[a-zA-Z0-9_.-]+\s+does(?:\s+not)?\s+exist(?:s)?\.?/gi, '')
+    .replace(/\s+/g, ' ')
+    .trim();
 }
 
 export function resolveSessionRelationInfo(
@@ -475,7 +488,7 @@ export async function finalizeChannelTurnDelivery(params: {
       .filter((envelope) => envelope.channel === 'qqbot' || envelope.channel === 'openclaw-weixin');
     if (noticeTargets.length > 0) {
       const finalReplyPreview = typeof params.finalReply === 'string'
-        ? params.finalReply.trim().replace(/\s+/g, ' ').slice(0, 140)
+        ? sanitizeFinalReplyPreviewForStopNotice(params.finalReply).slice(0, 140)
         : '';
       const stopNotice = finalReplyPreview.length > 0
         ? `本轮推理已结束：${finalReplyPreview}`

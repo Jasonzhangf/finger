@@ -150,6 +150,16 @@ function hasToolRegistryUnavailableSignal(text: unknown): boolean {
   return Array.isArray(matches) && matches.length >= 1;
 }
 
+function hasToolRegistryUnavailableToolError(text: unknown): boolean {
+  if (typeof text !== 'string') return false;
+  const normalized = text.trim();
+  if (!normalized) return false;
+  return hasToolRegistryUnavailableSignal(normalized)
+    || /unknown tool/iu.test(normalized)
+    || /tool not found/iu.test(normalized)
+    || /not registered/iu.test(normalized);
+}
+
 function toUniqueStringArray(value: unknown, limit: number): string[] {
   if (!Array.isArray(value)) return [];
   const normalized = value
@@ -263,6 +273,7 @@ export function attachEventForwarding(deps: EventForwardingDeps): {
   const latestStopSummaryBySession = new Map<string, string>();
   const stopToolSeenBySession = new Map<string, boolean>();
   const turnToolCallSeenBySession = new Map<string, boolean>();
+  const turnToolRegistryUnavailableBySession = new Map<string, boolean>();
   const sessionPersistQueue = new Map<string, Promise<void>>();
   const finalReplyDedupKeys = new Map<string, string>();
   const dispatchLedgerDedup = new Map<string, number>();
@@ -755,6 +766,7 @@ export function attachEventForwarding(deps: EventForwardingDeps): {
     if (event.phase === 'turn_start') {
       stopToolSeenBySession.set(event.sessionId, false);
       turnToolCallSeenBySession.set(event.sessionId, false);
+      turnToolRegistryUnavailableBySession.set(event.sessionId, false);
       latestStopSummaryBySession.delete(event.sessionId);
       applyExecutionLifecycleTransition(sessionManager, event.sessionId, {
         stage: 'running',
@@ -770,9 +782,7 @@ export function attachEventForwarding(deps: EventForwardingDeps): {
         : undefined;
       const isFinishedStop = finishReason === 'stop';
       const stopGateState = resolveStopGateState(event);
-      const toolCallSeenInTurn = turnToolCallSeenBySession.get(event.sessionId) === true;
-      const toolRegistryUnavailable = !toolCallSeenInTurn
-        && hasToolRegistryUnavailableSignal(event.payload.replyPreview);
+      const toolRegistryUnavailable = turnToolRegistryUnavailableBySession.get(event.sessionId) === true;
       applyExecutionLifecycleTransition(sessionManager, event.sessionId, {
         stage: pendingInputAccepted
           ? 'running'
@@ -881,6 +891,9 @@ export function attachEventForwarding(deps: EventForwardingDeps): {
               : undefined,
           lastError: event.payload.type === 'tool_error' ? asString(event.payload.error) : null,
         });
+        if (event.payload.type === 'tool_error' && hasToolRegistryUnavailableToolError(asString(event.payload.error))) {
+          turnToolRegistryUnavailableBySession.set(event.sessionId, true);
+        }
       } else if (event.payload.type === 'turn_retry') {
         applyExecutionLifecycleTransition(sessionManager, event.sessionId, {
           stage: 'retrying',

@@ -456,7 +456,7 @@ describe('Event Forwarding - Execution Lifecycle', () => {
     ]);
   });
 
-  it('marks lifecycle failed when turn completes with tool-registry-unavailable signal and no tool_call happened', () => {
+  it('does not mark lifecycle failed from reply text alone when no tool_error evidence exists', () => {
     const sessionManager = createMockSessionManager();
     const deps = createDeps({ sessionManager });
     const { emitLoopEventToEventBus } = attachEventForwarding(deps);
@@ -479,8 +479,7 @@ describe('Event Forwarding - Execution Lifecycle', () => {
 
     const session = (sessionManager.getSession as ReturnType<typeof vi.fn>)('lifecycle-tool-registry-unavailable-1');
     expect(session.context.executionLifecycle).toEqual(expect.objectContaining({
-      stage: 'failed',
-      substage: 'tool_registry_unavailable',
+      stage: 'completed',
       updatedBy: 'event-forwarding',
     }));
   });
@@ -518,6 +517,45 @@ describe('Event Forwarding - Execution Lifecycle', () => {
       updatedBy: 'event-forwarding',
     }));
     expect(session.context.executionLifecycle.substage).not.toBe('tool_registry_unavailable');
+  });
+
+  it('marks lifecycle failed when a tool_error explicitly reports missing/unregistered tool', () => {
+    const sessionManager = createMockSessionManager();
+    const deps = createDeps({ sessionManager });
+    const { emitLoopEventToEventBus } = attachEventForwarding(deps);
+
+    emitLoopEventToEventBus({
+      sessionId: 'lifecycle-tool-registry-unavailable-3',
+      phase: 'turn_start',
+      timestamp: new Date().toISOString(),
+      payload: { text: 'start' },
+    });
+    emitLoopEventToEventBus({
+      sessionId: 'lifecycle-tool-registry-unavailable-3',
+      phase: 'kernel_event',
+      timestamp: new Date().toISOString(),
+      payload: {
+        type: 'tool_error',
+        toolName: 'exec_command',
+        error: 'Tool exec_command does not exists.',
+      },
+    });
+    emitLoopEventToEventBus({
+      sessionId: 'lifecycle-tool-registry-unavailable-3',
+      phase: 'turn_complete',
+      timestamp: new Date().toISOString(),
+      payload: {
+        finishReason: 'stop',
+        replyPreview: 'Tool exec_command does not exists.',
+      },
+    });
+
+    const session = (sessionManager.getSession as ReturnType<typeof vi.fn>)('lifecycle-tool-registry-unavailable-3');
+    expect(session.context.executionLifecycle).toEqual(expect.objectContaining({
+      stage: 'failed',
+      substage: 'tool_registry_unavailable',
+      updatedBy: 'event-forwarding',
+    }));
   });
 
   it('still transitions normally when a new turn starts after previous turn completed', () => {
