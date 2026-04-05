@@ -191,6 +191,32 @@ function resolveEstimatedContextTokens(
   return undefined;
 }
 
+function resolveContextUsageFromBreakdown(params: {
+  breakdown?: ContextBreakdownSnapshot;
+  maxInputTokens?: number;
+}): string | undefined {
+  const { breakdown, maxInputTokens } = params;
+  if (!breakdown) return undefined;
+  const historyContext = typeof breakdown.historyContextTokens === 'number' && Number.isFinite(breakdown.historyContextTokens)
+    ? Math.max(0, Math.floor(breakdown.historyContextTokens))
+    : undefined;
+  const historyCurrent = typeof breakdown.historyCurrentTokens === 'number' && Number.isFinite(breakdown.historyCurrentTokens)
+    ? Math.max(0, Math.floor(breakdown.historyCurrentTokens))
+    : undefined;
+  const historyTotal = typeof breakdown.historyTotalTokens === 'number' && Number.isFinite(breakdown.historyTotalTokens)
+    ? Math.max(0, Math.floor(breakdown.historyTotalTokens))
+    : (
+      historyContext !== undefined || historyCurrent !== undefined
+        ? (historyContext ?? 0) + (historyCurrent ?? 0)
+        : undefined
+    );
+  if (historyTotal === undefined) return undefined;
+  return buildContextUsageLine({
+    estimatedTokensInContextWindow: historyTotal,
+    maxInputTokens,
+  });
+}
+
 export function buildCompactSummary(
   p: SessionProgressData,
   formatElapsed: (ms: number) => string,
@@ -221,7 +247,15 @@ export function buildCompactSummary(
   if (contextLine) {
     lines.push(contextLine);
   } else {
-    lines.push('🧠 上下文: 当前为工具流，尚未收到本轮 model_round 统计（并非无上下文）');
+    const fallbackContextLine = resolveContextUsageFromBreakdown({
+      breakdown: p.contextBreakdown,
+      maxInputTokens: p.maxInputTokens,
+    });
+    if (fallbackContextLine) {
+      lines.push(`${fallbackContextLine} · 来自历史快照`);
+    } else {
+      lines.push('🧠 上下文: 当前为工具流，尚未收到本轮 model_round 统计（并非无上下文）');
+    }
   }
   const estimatedContextTokens = resolveEstimatedContextTokens(
     p.contextUsagePercent,

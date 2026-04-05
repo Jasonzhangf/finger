@@ -101,4 +101,37 @@ fs.writeFileSync(path.join(process.cwd(), fileName), output, 'utf8');
       rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  it('repairs loose update-file patch shape and replaces file content', async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'finger-apply-patch-loose-update-'));
+    try {
+      const file = path.join(dir, 'daily.md');
+      writeFileSync(file, 'old-line-1\nold-line-2\n', 'utf-8');
+      delete process.env.FINGER_CODEX_APPLY_PATCH_BIN;
+
+      const patch = [
+        '*** Begin Patch',
+        '*** Update File: daily.md',
+        '@@',
+        '# Finger 每日系统复盘 - 2026-04-06',
+        '',
+        '- 任务一',
+        '- 任务二',
+        '*** End Patch',
+      ].join('\n');
+
+      const result = await applyPatchTool.execute(
+        { input: patch },
+        {
+          ...TEST_CONTEXT_BASE,
+          cwd: dir,
+        },
+      );
+
+      expect(result.ok).toBe(true);
+      expect(readFileSync(file, 'utf-8')).toBe('# Finger 每日系统复盘 - 2026-04-06\n\n- 任务一\n- 任务二\n');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });

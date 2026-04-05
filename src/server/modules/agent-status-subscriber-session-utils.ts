@@ -1,4 +1,5 @@
 import type { PushSettings } from '../../bridges/types.js';
+import type { ChannelBridgeManager } from '../../bridges/manager.js';
 import type { ChannelBridgeEnvelope } from '../../bridges/envelope.js';
 import type { MessageHub } from '../../orchestration/message-hub.js';
 import type { AgentRuntimeDeps } from './agent-runtime/types.js';
@@ -22,6 +23,7 @@ import {
 } from './agent-status-subscriber-mapping-utils.js';
 import { parseProjectTaskState } from '../../common/project-task-state.js';
 import { applyProjectStatusGatewayPatch } from './project-status-gateway.js';
+import { routeToOutputWithRecovery } from './channel-delivery-recovery.js';
 
 export {
   resolveEnvelopeMappingForSession,
@@ -315,6 +317,7 @@ export async function finalizeChannelTurnDelivery(params: {
   deps: AgentRuntimeDeps;
   state: SubscriberRouteState;
   messageHub?: MessageHub;
+  channelBridgeManager?: ChannelBridgeManager;
   resolveEnvelopeMapping: (sessionId: string) => SessionEnvelopeMapping | null;
   resolvePushSettings?: (
     sessionId: string,
@@ -442,11 +445,20 @@ export async function finalizeChannelTurnDelivery(params: {
         routeKey,
         dedupSignature: `${params.sessionId}|${params.agentId ?? 'unknown'}|finalize|${setting}|${content}`,
         send: async () => {
-          await params.messageHub!.routeToOutput(outputId, {
+          await routeToOutputWithRecovery({
+            messageHub: params.messageHub,
+            channelBridgeManager: params.channelBridgeManager,
+            outputId,
             channelId: envelope.channel,
-            target: envelope.groupId ? `group:${envelope.groupId}` : (envelope.userId || 'unknown'),
-            content,
-            originalEnvelope,
+            directTarget: envelope.groupId ? `group:${envelope.groupId}` : (envelope.userId || 'unknown'),
+            text: content,
+            ...(envelope.envelopeId ? { replyTo: envelope.envelopeId } : {}),
+            messageFactory: () => ({
+              channelId: envelope.channel,
+              target: envelope.groupId ? `group:${envelope.groupId}` : (envelope.userId || 'unknown'),
+              content,
+              originalEnvelope,
+            }),
           });
         },
         meta: {

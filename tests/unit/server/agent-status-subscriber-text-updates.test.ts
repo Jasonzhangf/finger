@@ -16,6 +16,20 @@ function createMinimalDeps(): AgentRuntimeDeps {
   } as AgentRuntimeDeps;
 }
 
+async function waitForCondition(
+  predicate: () => boolean,
+  timeoutMs = 1_000,
+  intervalMs = 10,
+): Promise<void> {
+  const startedAt = Date.now();
+  while (!predicate()) {
+    if (Date.now() - startedAt > timeoutMs) {
+      throw new Error('waitForCondition timeout');
+    }
+    await new Promise((resolve) => setTimeout(resolve, intervalMs));
+  }
+}
+
 describe('AgentStatusSubscriber text updates', () => {
   it('qqbot 下 reasoning 后正文应有缓冲间隔，不应与思考同刻推送', async () => {
     vi.useFakeTimers();
@@ -120,6 +134,51 @@ describe('AgentStatusSubscriber text updates', () => {
       'channel-bridge-qqbot',
       expect.objectContaining({ content: '正文：正文增量' }),
     );
+  });
+
+  it('falls back to direct bridge send when channel output is not registered', async () => {
+    const eventBus = new UnifiedEventBus();
+    const messageHub = {
+      getOutputs: vi.fn(() => []),
+      routeToOutput: vi.fn().mockRejectedValue(new Error('Output channel-bridge-qqbot not registered')),
+    };
+    const sendMessage = vi.fn().mockResolvedValue({ messageId: 'm-fallback-text' });
+    const channelBridgeManager = {
+      getPushSettings: vi.fn().mockReturnValue({
+        reasoning: true,
+        bodyUpdates: true,
+        statusUpdate: true,
+        toolCalls: false,
+        stepUpdates: true,
+        stepBatch: 5,
+        progressUpdates: true,
+      }),
+      getConfig: vi.fn().mockReturnValue({ id: 'qqbot', enabled: true }),
+      sendMessage,
+      startBridge: vi.fn().mockResolvedValue(undefined),
+    };
+
+    const subscriber = new AgentStatusSubscriber(
+      eventBus,
+      createMinimalDeps(),
+      messageHub as any,
+      channelBridgeManager as any,
+    );
+    subscriber.registerSession('session-direct-fallback', {
+      channel: 'qqbot',
+      envelopeId: 'env-direct-fallback',
+      userId: 'user-direct-fallback',
+    });
+
+    await subscriber.sendBodyUpdate('session-direct-fallback', 'finger-system-agent', '正文增量');
+
+    expect(sendMessage).toHaveBeenCalledTimes(1);
+    expect(sendMessage).toHaveBeenCalledWith('qqbot', expect.objectContaining({
+      to: 'user-direct-fallback',
+      replyTo: 'env-direct-fallback',
+      text: '正文：正文增量',
+    }));
+    expect(messageHub.routeToOutput).not.toHaveBeenCalled();
   });
 
   it('applies update-stream policy before channel pushSettings for webui', async () => {
@@ -976,6 +1035,7 @@ describe('AgentStatusSubscriber text updates', () => {
       },
     });
 
+    await waitForCondition(() => routeCalls.length >= 2);
     expect(routeCalls).toHaveLength(2);
     expect(routeCalls[0].content).toContain('📬 mailbox.status(');
     expect(routeCalls[1].content).toContain('第二次进度');

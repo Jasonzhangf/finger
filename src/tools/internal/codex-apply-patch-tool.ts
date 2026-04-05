@@ -44,6 +44,7 @@ interface PatchOpUpdate {
   filePath: string;
   moveTo?: string;
   bodyLines: string[];
+  repairedLooseContent?: boolean;
 }
 
 type PatchOp = PatchOpAdd | PatchOpDelete | PatchOpUpdate;
@@ -188,20 +189,43 @@ function parseApplyPatchOps(input: string): PatchOp[] {
         i += 1;
       }
       const bodyLines: string[] = [];
+      let sawHunkHeader = false;
+      let repairedLooseContent = false;
       while (i < endIndex && !isPatchHeader(lines[i])) {
         const body = lines[i];
         if (body === '*** End of File') {
           i += 1;
           continue;
         }
-        if (body.startsWith('@@') || body.startsWith(' ') || body.startsWith('+') || body.startsWith('-')) {
+        if (body.startsWith('@@')) {
+          sawHunkHeader = true;
           bodyLines.push(body);
           i += 1;
           continue;
         }
-        throw new Error(`Invalid update-file line: ${body}`);
+        if (repairedLooseContent) {
+          bodyLines.push(`+${body}`);
+          i += 1;
+          continue;
+        }
+        if (body.startsWith(' ') || body.startsWith('+') || body.startsWith('-')) {
+          bodyLines.push(body);
+          i += 1;
+          continue;
+        }
+
+        // Compatibility repair for loose model output:
+        // some models emit raw lines after "@@" without patch prefixes.
+        // We only repair shape (prefix '+' as add lines), preserving textual content.
+        repairedLooseContent = true;
+        if (!sawHunkHeader) {
+          bodyLines.push('@@');
+          sawHunkHeader = true;
+        }
+        bodyLines.push(`+${body}`);
+        i += 1;
       }
-      ops.push({ kind: 'update', filePath, moveTo, bodyLines });
+      ops.push({ kind: 'update', filePath, moveTo, bodyLines, repairedLooseContent });
       continue;
     }
     throw new Error(`Invalid apply_patch payload header: ${line}`);
@@ -249,7 +273,16 @@ function applyPatchOps(ops: PatchOp[], cwd: string): void {
     let lines = splitFileLines(original);
     const blocks = parseUpdateBlocks(op.bodyLines);
     let searchStart = 0;
+    const shouldReplaceWholeFile =
+      op.repairedLooseContent === true
+      && blocks.length > 0
+      && blocks.every((block) => block.every((entry) => entry.kind !== '-'))
+      && blocks.every((block) => block.filter((entry) => entry.kind !== '+').length === 0);
+    if (shouldReplaceWholeFile) {
+      lines = blocks.flatMap((block) => block.filter((entry) => entry.kind === '+').map((entry) => entry.text));
+    }
     for (const block of blocks) {
+      if (shouldReplaceWholeFile) break;
       const oldSeq = block.filter((entry) => entry.kind !== '+').map((entry) => entry.text);
       const newSeq = block.filter((entry) => entry.kind !== '-').map((entry) => entry.text);
       let idx = findSubsequence(lines, oldSeq, searchStart);

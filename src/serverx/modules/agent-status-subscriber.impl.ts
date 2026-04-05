@@ -178,6 +178,7 @@ export class AgentStatusSubscriber {
       resolvePushSettings: (targetSessionId, channelId, options) => this.resolvePushSettings(targetSessionId, channelId, options),
       resolveSourceType: (targetSessionId, sourceTypeHint) => this.resolveSourceType(targetSessionId, sourceTypeHint),
       messageHub: this.messageHub,
+      channelBridgeManager: this.channelBridgeManager,
       state: this.getRouteState(),
       reasoningBodyBufferMs: this.reasoningBodyBufferMs,
     });
@@ -192,6 +193,7 @@ export class AgentStatusSubscriber {
       resolvePushSettings: (targetSessionId, channelId, options) => this.resolvePushSettings(targetSessionId, channelId, options),
       resolveSourceType: (targetSessionId, sourceTypeHint) => this.resolveSourceType(targetSessionId, sourceTypeHint),
       messageHub: this.messageHub,
+      channelBridgeManager: this.channelBridgeManager,
       state: this.getRouteState(),
       reasoningBodyBufferMs: this.reasoningBodyBufferMs,
       finalReplyBySession: this.finalReplyBySession,
@@ -379,6 +381,7 @@ export class AgentStatusSubscriber {
       deps: this.deps,
       state: this.getRouteState(),
       messageHub: this.messageHub,
+      channelBridgeManager: this.channelBridgeManager,
       resolveEnvelopeMapping: (targetSessionId) => this.resolveEnvelopeMapping(targetSessionId),
       resolvePushSettings: (targetSessionId, channelId, options) => this.resolvePushSettings(targetSessionId, channelId, options),
       resolveSourceType: (targetSessionId, sourceTypeHint) => this.resolveSourceType(targetSessionId, sourceTypeHint),

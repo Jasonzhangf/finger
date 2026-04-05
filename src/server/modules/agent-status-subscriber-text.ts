@@ -1,5 +1,6 @@
 import type { PushSettings } from '../../bridges/types.js';
 import type { MessageHub } from '../../orchestration/message-hub.js';
+import type { ChannelBridgeManager } from '../../bridges/manager.js';
 import type { ChannelBridgeEnvelope } from '../../bridges/envelope.js';
 import type { SessionEnvelopeMapping } from './agent-status-subscriber-types.js';
 import type { SubscriberRouteState } from './agent-status-subscriber-session-utils.js';
@@ -9,6 +10,7 @@ import { isNoActionableWatchdogText, isScheduledSourceType } from './agent-statu
 import { enqueueUpdateStreamDelivery } from './update-stream-delivery-adapter.js';
 import { logger } from '../../core/logger.js';
 import { parseControlBlockFromReply, stripControlLikeJsonPayload } from '../../common/control-block.js';
+import { routeToOutputWithRecovery } from './channel-delivery-recovery.js';
 
 const log = logger.module('AgentStatusSubscriberText');
 
@@ -138,6 +140,7 @@ async function sendTextUpdate(params: {
   ) => UpdateStreamSourceType;
   sourceTypeHint?: string;
   messageHub?: MessageHub;
+  channelBridgeManager?: ChannelBridgeManager;
   state: SubscriberRouteState;
   reasoningBodyBufferMs: number;
 }): Promise<void> {
@@ -231,7 +234,18 @@ async function sendTextUpdate(params: {
         routeKey: deliveryRouteKey,
         dedupSignature: `${params.sessionId}|${params.agentId}|${params.label}|${content}`,
         send: async () => {
-          await params.messageHub!.routeToOutput(outputId, message);
+          await routeToOutputWithRecovery({
+            messageHub: params.messageHub,
+            channelBridgeManager: params.channelBridgeManager,
+            outputId,
+            channelId: mapping.envelope.channel,
+            directTarget: mapping.envelope.groupId
+              ? `group:${mapping.envelope.groupId}`
+              : (mapping.envelope.userId || 'unknown'),
+            text: content,
+            ...(mapping.envelope.envelopeId ? { replyTo: mapping.envelope.envelopeId } : {}),
+            messageFactory: () => message,
+          });
         },
         meta: {
           channelId: mapping.envelope.channel,
@@ -272,6 +286,7 @@ export async function sendReasoningUpdate(params: {
     sourceTypeHint?: string,
   ) => UpdateStreamSourceType;
   messageHub?: MessageHub;
+  channelBridgeManager?: ChannelBridgeManager;
   state: SubscriberRouteState;
   reasoningBodyBufferMs: number;
 }): Promise<void> {
@@ -306,6 +321,7 @@ export async function sendBodyUpdate(params: {
     sourceTypeHint?: string,
   ) => UpdateStreamSourceType;
   messageHub?: MessageHub;
+  channelBridgeManager?: ChannelBridgeManager;
   state: SubscriberRouteState;
   reasoningBodyBufferMs: number;
   finalReplyBySession: Map<string, { normalized: string; at: number }>;
@@ -364,6 +380,7 @@ export async function sendBodyUpdate(params: {
     resolvePushSettings: params.resolvePushSettings,
     resolveSourceType: params.resolveSourceType,
     messageHub: params.messageHub,
+    channelBridgeManager: params.channelBridgeManager,
     state: params.state,
     reasoningBodyBufferMs: params.reasoningBodyBufferMs,
   });

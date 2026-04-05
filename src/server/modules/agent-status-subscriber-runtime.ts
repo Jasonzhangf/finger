@@ -13,13 +13,17 @@ import type { MessageHub } from '../../orchestration/message-hub.js';
 import type { ChannelBridgeManager } from '../../bridges/manager.js';
 import type { PushSettings } from '../../bridges/types.js';
 import { heartbeatMailbox } from './heartbeat-mailbox.js';
-import { enqueueUpdateStreamDelivery } from './update-stream-delivery-adapter.js';
+import {
+  enqueueUpdateStreamDelivery,
+  enqueueUpdateStreamDeliveryNonBlocking,
+} from './update-stream-delivery-adapter.js';
 import { sanitizeUserFacingStatusTextWithOptions } from './agent-status-subscriber-handler-helpers.js';
 import type {
   SessionEnvelopeMapping,
   WrappedStatusUpdate,
 } from './agent-status-subscriber-types.js';
 import { logger } from '../../core/logger.js';
+import { routeToOutputWithRecovery } from './channel-delivery-recovery.js';
 
 const log = logger.module('AgentStatusSubscriber');
 
@@ -197,6 +201,9 @@ export async function sendStatusUpdate(
   statusUpdate: WrappedStatusUpdate,
   messageHub: MessageHub,
   channelBridgeManager?: ChannelBridgeManager,
+  options?: {
+    nonBlocking?: boolean;
+  },
 ): Promise<void> {
   const envelopes = Array.isArray(envelope) ? envelope : [envelope];
   if (envelopes.length === 0) return;
@@ -265,52 +272,38 @@ export async function sendStatusUpdate(
         originalEnvelope,
         statusUpdate,
       };
+      const directTarget = item.groupId ? `group:${item.groupId}` : (item.userId || 'unknown');
 
-      const outputRegistered = typeof (messageHub as { getOutputs?: unknown }).getOutputs === 'function'
-        ? messageHub.getOutputs().some((output) => output.id === outputId)
-        : true;
       const deliveryRouteKey = `${channel}::${item.groupId ?? ''}::${item.userId ?? ''}`;
       const dedupSignature = `${statusUpdate.sessionId}|${statusUpdate.agent.agentId}|status|${displayText}|${statusUpdate.status.state}|${statusUpdate.task.taskDescription}`;
-      if (!outputRegistered) {
-        if (!channelBridgeManager) {
-          log.warn(`[AgentStatusSubscriber] Output ${outputId} not registered and no bridge manager fallback`);
-          continue;
-        }
-        const directTarget = item.groupId ? `group:${item.groupId}` : (item.userId || 'unknown');
-        await enqueueUpdateStreamDelivery({
-          routeKey: deliveryRouteKey,
-          dedupSignature,
-          send: async () => {
-            await channelBridgeManager.sendMessage(channel, {
-              to: directTarget,
-              text: displayText,
-              ...(item.envelopeId ? { replyTo: item.envelopeId } : {}),
-            });
-          },
-          meta: {
-            channelId: channel,
-            sessionId: statusUpdate.sessionId,
-            agentId: statusUpdate.agent.agentId,
-            updateType: 'status-direct',
-          },
-        });
-        log.info(`[AgentStatusSubscriber] Sent status update via direct bridge fallback: ${channel}`);
-        continue;
-      }
 
-      await enqueueUpdateStreamDelivery({
+      const request = {
         routeKey: deliveryRouteKey,
         dedupSignature,
         send: async () => {
-          await messageHub.routeToOutput(outputId, message);
+          await routeToOutputWithRecovery({
+            messageHub,
+            channelBridgeManager,
+            outputId,
+            channelId: channel,
+            directTarget,
+            text: displayText,
+            ...(item.envelopeId ? { replyTo: item.envelopeId } : {}),
+            messageFactory: () => message,
+          });
         },
         meta: {
           channelId: channel,
           sessionId: statusUpdate.sessionId,
           agentId: statusUpdate.agent.agentId,
-          updateType: 'status',
+          updateType: channelBridgeManager ? 'status' : 'status-output-only',
         },
-      });
+      };
+      if (options?.nonBlocking) {
+        enqueueUpdateStreamDeliveryNonBlocking(request);
+      } else {
+        await enqueueUpdateStreamDelivery(request);
+      }
       log.debug('[AgentStatusSubscriber] Sent status update via MessageHub: ' + outputId);
     } catch (error) {
       log.error('[AgentStatusSubscriber] Failed to send status update:', error instanceof Error ? error : new Error(String(error)));

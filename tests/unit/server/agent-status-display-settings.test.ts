@@ -93,4 +93,86 @@ describe('agent status display settings', () => {
     expect(payload.content).toContain('current history=');
     expect(payload.content).not.toContain('🧩 构成: I(');
   });
+
+  it('falls back to direct bridge send when output is missing', async () => {
+    const routeToOutput = vi.fn();
+    const sendMessage = vi.fn().mockResolvedValue({ messageId: 'm-1' });
+    const messageHub = {
+      getOutputs: () => [],
+      routeToOutput,
+    } as any;
+    const channelBridgeManager = {
+      getPushSettings: () => ({ statusUpdate: true }),
+      getConfig: () => ({ id: 'qqbot', enabled: true }),
+      sendMessage,
+      startBridge: vi.fn().mockResolvedValue(undefined),
+    } as any;
+
+    await sendStatusUpdate({
+      channel: 'qqbot',
+      envelopeId: 'env-fallback-1',
+      userId: 'u-fallback-1',
+    } as any, makeStatusUpdate('👤 [system] finger-system-agent\n✅ fallback'), messageHub, channelBridgeManager);
+
+    expect(routeToOutput).not.toHaveBeenCalled();
+    expect(sendMessage).toHaveBeenCalledTimes(1);
+    expect(sendMessage).toHaveBeenCalledWith('qqbot', expect.objectContaining({
+      to: 'u-fallback-1',
+      replyTo: 'env-fallback-1',
+    }));
+  });
+
+  it('falls back to direct bridge send when routeToOutput reports output not registered', async () => {
+    const routeToOutput = vi.fn().mockRejectedValue(new Error('Output channel-bridge-qqbot not registered'));
+    const sendMessage = vi.fn().mockResolvedValue({ messageId: 'm-2' });
+    const messageHub = {
+      getOutputs: () => [{ id: 'channel-bridge-qqbot' }],
+      routeToOutput,
+    } as any;
+    const channelBridgeManager = {
+      getPushSettings: () => ({ statusUpdate: true }),
+      getConfig: () => ({ id: 'qqbot', enabled: true }),
+      sendMessage,
+      startBridge: vi.fn().mockResolvedValue(undefined),
+    } as any;
+
+    await sendStatusUpdate({
+      channel: 'qqbot',
+      envelopeId: 'env-fallback-2',
+      userId: 'u-fallback-2',
+    } as any, makeStatusUpdate('👤 [system] finger-system-agent\n✅ fallback'), messageHub, channelBridgeManager);
+
+    expect(routeToOutput).toHaveBeenCalledTimes(1);
+    expect(sendMessage).toHaveBeenCalledTimes(1);
+  });
+
+  it('progress mode supports non-blocking status delivery', async () => {
+    const routeToOutput = vi.fn(() => new Promise(() => undefined));
+    const messageHub = {
+      getOutputs: () => [{ id: 'channel-bridge-qqbot' }],
+      routeToOutput,
+    } as any;
+    const channelBridgeManager = {
+      getPushSettings: () => ({ statusUpdate: true }),
+      getConfig: () => ({ options: { displaySettings: { context: 'simple', heartbeat: true } } }),
+    } as any;
+
+    const result = await Promise.race([
+      sendStatusUpdate(
+        {
+          channel: 'qqbot',
+          envelopeId: 'env-non-blocking',
+          userId: 'u-non-blocking',
+        } as any,
+        makeStatusUpdate('👤 [system] finger-system-agent\n✅ non-blocking'),
+        messageHub,
+        channelBridgeManager,
+        { nonBlocking: true },
+      ).then(() => 'done'),
+      new Promise<string>((resolve) => setTimeout(() => resolve('timeout'), 30)),
+    ]);
+
+    expect(result).toBe('done');
+    expect(routeToOutput).toHaveBeenCalledTimes(1);
+  });
 });

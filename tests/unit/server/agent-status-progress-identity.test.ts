@@ -1,6 +1,20 @@
 import { describe, expect, it, vi } from 'vitest';
 import { sendProgressUpdateToChannels } from '../../../src/server/modules/agent-status-subscriber-status.js';
 
+async function waitForCondition(
+  predicate: () => boolean,
+  timeoutMs = 1000,
+  intervalMs = 10,
+): Promise<void> {
+  const startedAt = Date.now();
+  while (!predicate()) {
+    if (Date.now() - startedAt > timeoutMs) {
+      throw new Error('waitForCondition timeout');
+    }
+    await new Promise((resolve) => setTimeout(resolve, intervalMs));
+  }
+}
+
 describe('agent status progress identity', () => {
   it('renders worker display identity from session dispatchWorkerId for project progress updates', async () => {
     const routeToOutput = vi.fn().mockResolvedValue(undefined);
@@ -63,10 +77,10 @@ describe('agent status progress identity', () => {
       messageHub,
     });
 
+    await waitForCondition(() => routeToOutput.mock.calls.length >= 1);
     expect(routeToOutput).toHaveBeenCalledTimes(1);
     const payload = routeToOutput.mock.calls[0]?.[1] as { content?: string };
     expect(payload.content).toContain('👤 [project] James(finger-project-agent-02)');
     expect(payload.content).not.toContain('👤 [project] Alex(');
   });
 });
-

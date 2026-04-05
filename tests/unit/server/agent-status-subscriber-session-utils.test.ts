@@ -208,4 +208,63 @@ describe('agent-status-subscriber-session-utils finalizeChannelTurnDelivery', ()
 
     expect(updateContext).not.toHaveBeenCalled();
   });
+
+  it('falls back to direct bridge send when finalize output is not registered', async () => {
+    const state = createRouteState();
+    state.sessionEnvelopeMap.set('session-fallback-finalize', {
+      sessionId: 'session-fallback-finalize',
+      envelope: {
+        channel: 'qqbot',
+        envelopeId: 'env-fallback-finalize',
+        userId: 'u-fallback-finalize',
+      },
+      timestamp: Date.now(),
+    });
+    state.sessionObserverMap.set('session-fallback-finalize', [
+      {
+        channel: 'qqbot',
+        envelopeId: 'env-fallback-finalize-observer',
+        userId: 'u-fallback-finalize',
+      },
+    ]);
+    const sendMessage = vi.fn().mockResolvedValue({ messageId: 'm-finalize-fallback' });
+    const routeToOutput = vi.fn();
+    await finalizeChannelTurnDelivery({
+      sessionId: 'session-fallback-finalize',
+      finalReply: 'done',
+      finishReason: 'stop',
+      agentId: 'finger-system-agent',
+      deps: { sessionManager: { getSession: () => null } } as any,
+      state,
+      messageHub: {
+        getOutputs: () => [],
+        routeToOutput,
+      } as any,
+      channelBridgeManager: {
+        getConfig: () => ({ id: 'qqbot', enabled: true }),
+        sendMessage,
+        startBridge: vi.fn().mockResolvedValue(undefined),
+      } as any,
+      resolveEnvelopeMapping: () => ({
+        sessionId: 'session-fallback-finalize',
+        envelope: {
+          channel: 'qqbot',
+          envelopeId: 'env-fallback-finalize',
+          userId: 'u-fallback-finalize',
+        },
+        timestamp: Date.now(),
+      }),
+      resolvePushSettings: () => createPushSettings({
+        bodyUpdates: true,
+        statusUpdate: false,
+      }),
+    });
+
+    expect(routeToOutput).not.toHaveBeenCalled();
+    expect(sendMessage).toHaveBeenCalledTimes(1);
+    expect(sendMessage).toHaveBeenCalledWith('qqbot', expect.objectContaining({
+      to: 'u-fallback-finalize',
+      replyTo: 'env-fallback-finalize-observer',
+    }));
+  });
 });

@@ -377,5 +377,6 @@ export async function sendProgressUpdateToChannels(params: {
     wrappedUpdate,
     params.messageHub,
     params.channelBridgeManager,
+    { nonBlocking: true },
   );
 }

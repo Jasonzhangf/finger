@@ -117,3 +117,9 @@ const sharedAdapter = new UpdateStreamDeliveryAdapter();
 export async function enqueueUpdateStreamDelivery(request: DeliveryRequest): Promise<void> {
   await sharedAdapter.enqueue(request);
 }
+
+export function enqueueUpdateStreamDeliveryNonBlocking(request: DeliveryRequest): void {
+  void sharedAdapter.enqueue(request).catch((error) => {
+    log.error('Non-blocking delivery failed', error instanceof Error ? error : new Error(String(error)));
+  });
+}
