@@ -1,10 +1,14 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { randomUUID } from 'crypto';
 import path from 'path';
 import os from 'os';
 import fs from 'fs';
+import { spawn, type ChildProcess } from 'child_process';
+import net from 'net';
 
-const DAEMON_URL = process.env.FINGER_HUB_URL || 'http://127.0.0.1:9999';
+const EXTERNAL_DAEMON_URL = process.env.FINGER_HUB_URL?.trim() || '';
+let DAEMON_URL = EXTERNAL_DAEMON_URL || 'http://127.0.0.1:9999';
+let ownedDaemon: ChildProcess | null = null;
 
 interface MailboxMessage {
   id: string;
@@ -33,6 +37,96 @@ async function fetchWithRetry(url: string, init?: RequestInit, retries = 6, dela
     }
   }
   throw lastError instanceof Error ? lastError : new Error(String(lastError));
+}
+
+async function isHealthy(url: string): Promise<boolean> {
+  try {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 1500);
+    const res = await fetch(`${url}/health`, { signal: controller.signal });
+    clearTimeout(timeout);
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
+function reservePort(): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const server = net.createServer();
+    server.unref();
+    server.on('error', reject);
+    server.listen(0, '127.0.0.1', () => {
+      const address = server.address();
+      if (!address || typeof address === 'string') {
+        server.close(() => reject(new Error('failed to reserve local port')));
+        return;
+      }
+      const port = address.port;
+      server.close((closeErr) => {
+        if (closeErr) {
+          reject(closeErr);
+          return;
+        }
+        resolve(port);
+      });
+    });
+  });
+}
+
+async function startOwnedDaemonIfNeeded(): Promise<void> {
+  if (EXTERNAL_DAEMON_URL) {
+    DAEMON_URL = EXTERNAL_DAEMON_URL;
+    return;
+  }
+  if (await isHealthy(DAEMON_URL)) {
+    return;
+  }
+
+  const port = await reservePort();
+  DAEMON_URL = `http://127.0.0.1:${port}`;
+  const daemonPath = path.join(process.cwd(), 'dist/server/index.js');
+  ownedDaemon = spawn(process.execPath, [daemonPath], {
+    env: {
+      ...process.env,
+      PORT: String(port),
+      NODE_ENV: 'test',
+    },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+
+  let startupError = '';
+  ownedDaemon.stdout?.on('data', (chunk) => {
+    startupError += chunk.toString();
+  });
+  ownedDaemon.stderr?.on('data', (chunk) => {
+    startupError += chunk.toString();
+  });
+
+  const deadline = Date.now() + 20_000;
+  while (Date.now() < deadline) {
+    if (await isHealthy(DAEMON_URL)) return;
+    await new Promise((r) => setTimeout(r, 200));
+  }
+  throw new Error(`mailbox-two-agent.e2e failed to start daemon at ${DAEMON_URL}\n${startupError}`);
+}
+
+async function stopOwnedDaemon(): Promise<void> {
+  if (!ownedDaemon) return;
+  const daemon = ownedDaemon;
+  ownedDaemon = null;
+
+  if (daemon.exitCode !== null || daemon.killed) return;
+
+  daemon.kill('SIGTERM');
+  await Promise.race([
+    new Promise<void>((resolve) => daemon.once('exit', () => resolve())),
+    new Promise<void>((resolve) => setTimeout(resolve, 3000)),
+  ]);
+
+  if (daemon.exitCode === null && !daemon.killed) {
+    daemon.kill('SIGKILL');
+  }
 }
 
 async function postMessage(target: string, message: unknown, sender = 'mailbox-e2e-test') {
@@ -68,6 +162,14 @@ async function waitForMessage(target: string, predicate: (m: MailboxMessage) => 
 }
 
 describe.sequential('mailbox two-agent e2e', () => {
+  beforeAll(async () => {
+    await startOwnedDaemonIfNeeded();
+  }, 30_000);
+
+  afterAll(async () => {
+    await stopOwnedDaemon();
+  }, 10_000);
+
   it('project agent mailbox request reaches system agent and can be read/acked', async () => {
     // ensure daemon alive
     const health = await fetchWithRetry(`${DAEMON_URL}/health`);

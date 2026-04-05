@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, rmSync } from 'fs';
+import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import path from 'path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -24,14 +24,30 @@ describe('codex apply_patch tool', () => {
   });
 
   it('applies add-file patch when apply_patch command is available', async () => {
-    const resolved = resolveApplyPatchCommand(process.cwd());
-    if (!resolved) {
-      expect(true).toBe(true);
-      return;
-    }
-
     const dir = mkdtempSync(path.join(tmpdir(), 'finger-apply-patch-'));
     try {
+      const fakeApplyPatchBin = path.join(dir, 'fake-apply-patch.cjs');
+      writeFileSync(
+        fakeApplyPatchBin,
+        `#!/usr/bin/env node
+const fs = require('fs');
+const path = require('path');
+const patch = process.argv[2] || '';
+const addFileMatch = patch.match(/\\*\\*\\* Add File: (.+)/);
+if (!addFileMatch) {
+  process.stderr.write('unsupported patch');
+  process.exit(1);
+}
+const fileName = addFileMatch[1].trim();
+const lines = patch.split('\\n').filter((line) => line.startsWith('+')).map((line) => line.slice(1));
+const output = lines.join('\\n') + '\\n';
+fs.writeFileSync(path.join(process.cwd(), fileName), output, 'utf8');
+`,
+        'utf-8',
+      );
+      chmodSync(fakeApplyPatchBin, 0o755);
+      process.env.FINGER_CODEX_APPLY_PATCH_BIN = fakeApplyPatchBin;
+
       const patch = [
         '*** Begin Patch',
         '*** Add File: hello.txt',

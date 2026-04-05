@@ -14,13 +14,15 @@
  * - 指数退避重启延迟
  */
 
-import { spawn, execSync } from 'child_process';
+import { spawn, execFileSync } from 'child_process';
 import { existsSync, readFileSync, writeFileSync, unlinkSync, mkdirSync } from 'fs';
-import { join } from 'path';
+import { dirname, join, resolve } from 'path';
 import { FINGER_PATHS } from '../core/finger-paths.js';
 import { logger } from '../core/logger.js';
 import dgram from 'dgram';
 import { createConsoleLikeLogger } from '../core/logger/console-like.js';
+import { fileURLToPath } from 'url';
+import { homedir } from 'os';
 
 const clog = createConsoleLikeLogger('DualDaemon');
 
@@ -42,6 +44,10 @@ interface DaemonHeartbeat {
 const DUAL_DAEMON_PID_FILE = join(FINGER_PATHS.runtime.dir, 'dual-daemon.pid');
 const DAEMON_1_PID_FILE = join(FINGER_PATHS.runtime.dir, 'daemon-1.pid');
 const DAEMON_2_PID_FILE = join(FINGER_PATHS.runtime.dir, 'daemon-2.pid');
+const DUAL_DAEMON_LAUNCHD_LABEL = 'com.finger.dual-daemon';
+const LEGACY_LAUNCHD_PLIST_PATH = join(FINGER_PATHS.runtime.dir, `${DUAL_DAEMON_LAUNCHD_LABEL}.plist`);
+const LAUNCH_AGENTS_DIR = join(homedir(), 'Library', 'LaunchAgents');
+const LAUNCH_AGENTS_PLIST_PATH = join(LAUNCH_AGENTS_DIR, `${DUAL_DAEMON_LAUNCHD_LABEL}.plist`);
 
 const MAX_RESTART_ATTEMPTS = 3;
 const START_COOLDOWN_MS = 5000;
@@ -491,54 +497,151 @@ export class DualDaemonSupervisor {
 
 // 开机自启：创建 launchd plist
 export function createLaunchdPlist(): string {
+  const projectRoot = resolveProjectRoot();
+  const daemonEntry = join(projectRoot, 'dist', 'daemon', 'dual-daemon.js');
+  const nodeBinary = process.execPath;
+  const launchdPath = process.env.PATH?.trim() || '/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin';
+  mkdirSync(FINGER_PATHS.logs.dir, { recursive: true });
+  mkdirSync(LAUNCH_AGENTS_DIR, { recursive: true });
+
   const plist = `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
   <key>Label</key>
-  <string>com.finger.dual-daemon</string>
+  <string>${xmlEscape(DUAL_DAEMON_LAUNCHD_LABEL)}</string>
   <key>ProgramArguments</key>
   <array>
-    <string>node</string>
-    <string>${join(process.cwd(), 'dist', 'daemon', 'dual-daemon.js')}</string>
+    <string>${xmlEscape(nodeBinary)}</string>
+    <string>${xmlEscape(daemonEntry)}</string>
     <string>--start</string>
   </array>
+  <key>WorkingDirectory</key>
+  <string>${xmlEscape(projectRoot)}</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>${xmlEscape(launchdPath)}</string>
+  </dict>
   <key>RunAtLoad</key>
   <true/>
   <key>KeepAlive</key>
   <true/>
   <key>StandardOutPath</key>
-  <string>${join(FINGER_PATHS.logs.dir, 'dual-daemon.log')}</string>
+  <string>${xmlEscape(join(FINGER_PATHS.logs.dir, 'dual-daemon.log'))}</string>
   <key>StandardErrorPath</key>
-  <string>${join(FINGER_PATHS.logs.dir, 'dual-daemon-error.log')}</string>
+  <string>${xmlEscape(join(FINGER_PATHS.logs.dir, 'dual-daemon-error.log'))}</string>
 </dict>
 </plist>`;
 
-  const plistPath = join(FINGER_PATHS.runtime.dir, 'com.finger.dual-daemon.plist');
-  writeFileSync(plistPath, plist);
+  writeFileSync(LAUNCH_AGENTS_PLIST_PATH, plist);
+  if (existsSync(LEGACY_LAUNCHD_PLIST_PATH)) {
+    try {
+      unlinkSync(LEGACY_LAUNCHD_PLIST_PATH);
+    } catch (error) {
+      log.warn('[DualDaemon] Failed to remove legacy launchd plist', {
+        file: LEGACY_LAUNCHD_PLIST_PATH,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+  const plistPath = LAUNCH_AGENTS_PLIST_PATH;
   log.info('Created launchd plist: ' + plistPath);
   return plistPath;
 }
 
 export function enableAutoStart(): void {
   const plistPath = createLaunchdPlist();
+  const domains = getLaunchdDomains();
+  let enabled = false;
+  let lastError: unknown;
   try {
-    execSync(`launchctl load -w "${plistPath}"`);
+    for (const domain of domains) {
+      const serviceName = `${domain}/${DUAL_DAEMON_LAUNCHD_LABEL}`;
+      try {
+        runLaunchctl(['bootout', serviceName], { allowFailure: true });
+        runLaunchctl(['bootstrap', domain, plistPath]);
+        runLaunchctl(['enable', serviceName], { allowFailure: true });
+        runLaunchctl(['kickstart', '-k', serviceName], { allowFailure: true });
+        enabled = true;
+        log.info('[DualDaemon] Auto-start bootstrap succeeded', { domain, serviceName, plistPath });
+        break;
+      } catch (error) {
+        lastError = error;
+        log.warn('[DualDaemon] launchctl bootstrap failed for domain', {
+          domain,
+          serviceName,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+
+    if (!enabled) {
+      runLaunchctl(['load', '-w', plistPath]);
+      enabled = true;
+      log.info('[DualDaemon] Auto-start enabled via legacy launchctl load', { plistPath });
+    }
+
     log.info('Enabled auto-start via launchd');
   } catch (err) {
     log.error('Failed to enable auto-start:', err instanceof Error ? err : new Error(String(err)));
+    throw err ?? lastError;
   }
 }
 
 export function disableAutoStart(): void {
-  const plistPath = join(FINGER_PATHS.runtime.dir, 'com.finger.dual-daemon.plist');
+  const domains = getLaunchdDomains();
   try {
-    if (existsSync(plistPath)) {
-      execSync(`launchctl unload -w "${plistPath}"`);
-      log.info('Disabled auto-start');
+    for (const domain of domains) {
+      const serviceName = `${domain}/${DUAL_DAEMON_LAUNCHD_LABEL}`;
+      runLaunchctl(['disable', serviceName], { allowFailure: true });
+      runLaunchctl(['bootout', serviceName], { allowFailure: true });
+      runLaunchctl(['bootout', domain, LAUNCH_AGENTS_PLIST_PATH], { allowFailure: true });
+      runLaunchctl(['bootout', domain, LEGACY_LAUNCHD_PLIST_PATH], { allowFailure: true });
     }
+    runLaunchctl(['unload', '-w', LAUNCH_AGENTS_PLIST_PATH], { allowFailure: true });
+    runLaunchctl(['unload', '-w', LEGACY_LAUNCHD_PLIST_PATH], { allowFailure: true });
+    if (existsSync(LAUNCH_AGENTS_PLIST_PATH)) unlinkSync(LAUNCH_AGENTS_PLIST_PATH);
+    if (existsSync(LEGACY_LAUNCHD_PLIST_PATH)) unlinkSync(LEGACY_LAUNCHD_PLIST_PATH);
+    log.info('Disabled auto-start');
   } catch (err) {
     log.error('Failed to disable auto-start:', err instanceof Error ? err : new Error(String(err)));
+    throw err;
+  }
+}
+
+function resolveProjectRoot(): string {
+  const moduleFile = fileURLToPath(import.meta.url);
+  return resolve(dirname(moduleFile), '..', '..');
+}
+
+function getLaunchdDomains(): string[] {
+  const uid = typeof process.getuid === 'function' ? process.getuid() : undefined;
+  if (uid === undefined) return ['gui/501', 'user/501'];
+  return [`gui/${uid}`, `user/${uid}`];
+}
+
+function xmlEscape(value: string): string {
+  return value
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;')
+    .replaceAll("'", '&apos;');
+}
+
+function runLaunchctl(args: string[], options?: { allowFailure?: boolean }): void {
+  try {
+    execFileSync('launchctl', args, { stdio: 'pipe' });
+  } catch (error) {
+    if (options?.allowFailure) {
+      log.warn('[DualDaemon] launchctl command failed (ignored)', {
+        args,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return;
+    }
+    throw error;
   }
 }
 
