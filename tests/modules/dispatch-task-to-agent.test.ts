@@ -1,6 +1,11 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
-const { setMonitorStatusMock, listAgentsMock, loadOrchestrationConfigMock } = vi.hoisted(() => ({
+const {
+  setMonitorStatusMock,
+  listAgentsMock,
+  loadOrchestrationConfigMock,
+  fallbackDispatchQueueTimeoutToMailboxMock,
+} = vi.hoisted(() => ({
   setMonitorStatusMock: vi.fn(async (projectPath: string, enabled: boolean) => ({
     projectId: 'project-test',
     projectPath,
@@ -73,6 +78,12 @@ const { setMonitorStatusMock, listAgentsMock, loadOrchestrationConfigMock } = vi
       },
     },
   })),
+  fallbackDispatchQueueTimeoutToMailboxMock: vi.fn((params: Record<string, unknown>) => ({
+    delivery: 'mailbox',
+    mailboxMessageId: `msg-${String(params.dispatchId ?? 'dispatch')}`,
+    summary: `queued in mailbox for ${String(params.targetAgentId ?? 'target')}`,
+    nextAction: 'mailbox',
+  })),
 }));
 
 vi.mock('../../src/agents/finger-system-agent/registry.js', () => ({
@@ -89,6 +100,10 @@ vi.mock('../../src/orchestration/orchestration-config.js', async () => {
     loadOrchestrationConfig: loadOrchestrationConfigMock,
   };
 });
+
+vi.mock('../../src/server/modules/dispatch-queue-timeout-mailbox.js', () => ({
+  fallbackDispatchQueueTimeoutToMailbox: fallbackDispatchQueueTimeoutToMailboxMock,
+}));
 
 function createDeps(executeImpl?: ReturnType<typeof vi.fn>) {
   const calls: Array<{ sessionId: string; role: string; content: string; type?: string }> = [];
@@ -184,6 +199,12 @@ describe('dispatchTaskToAgent', () => {
   beforeEach(async () => {
     vi.clearAllMocks();
     vi.resetModules();
+    fallbackDispatchQueueTimeoutToMailboxMock.mockImplementation((params: Record<string, unknown>) => ({
+      delivery: 'mailbox',
+      mailboxMessageId: `msg-${String(params.dispatchId ?? 'dispatch')}`,
+      summary: `queued in mailbox for ${String(params.targetAgentId ?? 'target')}`,
+      nextAction: 'mailbox',
+    }));
     setMonitorStatusMock.mockImplementation(async (projectPath: string, enabled: boolean) => ({
       projectId: 'project-test',
       projectPath,
@@ -478,7 +499,7 @@ describe('dispatchTaskToAgent', () => {
     expect((deps as any).ensureRuntimeChildSession).not.toHaveBeenCalled();
   });
 
-  it('rejects sessionStrategy=new when no explicit bound session for requested project', async () => {
+  it('normalizes sessionStrategy=new scope mismatch to queued mailbox for finger agent dispatch', async () => {
     const { deps, sessionManager } = createDeps();
     const res = await mod.dispatchTaskToAgent(deps as any, {
       sourceAgentId: 'finger-system-agent',
@@ -491,11 +512,113 @@ describe('dispatchTaskToAgent', () => {
       },
     } as any);
 
-    expect(res.ok).toBe(false);
-    expect(res.status).toBe('failed');
-    expect(String(res.error)).toContain('scope mismatch');
+    expect(res.ok).toBe(true);
+    expect(res.status).toBe('queued');
+    expect(res.result?.status).toBe('queued_mailbox');
+    expect(typeof res.result?.messageId).toBe('string');
+    expect(String(res.result?.summary ?? '')).toContain('session scope mismatch');
     expect(sessionManager.createSession).not.toHaveBeenCalled();
     expect((deps as any).ensureRuntimeChildSession).not.toHaveBeenCalled();
+    expect(fallbackDispatchQueueTimeoutToMailboxMock).toHaveBeenCalled();
+  });
+
+  it('queues to mailbox when project registration confirmation is required', async () => {
+    const { deps } = createDeps();
+    const res = await mod.dispatchTaskToAgent(deps as any, {
+      sourceAgentId: 'finger-system-agent',
+      targetAgentId: 'finger-project-agent',
+      task: 'need registration confirmation',
+      projectPath: '/tmp/project-c',
+      assignment: {
+        blocked_by: ['none'],
+      },
+    } as any);
+
+    expect(res.ok).toBe(true);
+    expect(res.status).toBe('queued');
+    expect(res.result?.status).toBe('queued_mailbox');
+    expect(typeof res.result?.messageId).toBe('string');
+    expect(String(res.result?.summary ?? '')).toContain('project registration confirmation required');
+    expect((deps as any).agentRuntimeBlock.execute).toHaveBeenCalledWith('dispatch', expect.objectContaining({
+      metadata: expect.objectContaining({
+        mailboxHighPriority: true,
+        mailboxMessageId: res.result?.messageId,
+      }),
+      queueOnBusy: true,
+      maxQueueWaitMs: 0,
+    }));
+    expect(fallbackDispatchQueueTimeoutToMailboxMock).toHaveBeenCalled();
+  });
+
+  it('queues to mailbox when project registration resolution fails', async () => {
+    setMonitorStatusMock.mockImplementationOnce(async () => {
+      throw new Error('registry unavailable');
+    });
+    const { deps } = createDeps();
+    const res = await mod.dispatchTaskToAgent(deps as any, {
+      sourceAgentId: 'finger-system-agent',
+      targetAgentId: 'finger-project-agent',
+      task: 'registration resolve failed',
+      projectPath: '/tmp/project-c',
+      metadata: {
+        autoRegisterProject: true,
+      },
+      assignment: {
+        blocked_by: ['none'],
+      },
+    } as any);
+
+    expect(res.ok).toBe(true);
+    expect(res.status).toBe('queued');
+    expect(res.result?.status).toBe('queued_mailbox');
+    expect(typeof res.result?.messageId).toBe('string');
+    expect(String(res.result?.summary ?? '')).toContain('project registration resolve failed');
+    expect((deps as any).agentRuntimeBlock.execute).toHaveBeenCalledWith('dispatch', expect.objectContaining({
+      metadata: expect.objectContaining({
+        mailboxHighPriority: true,
+        mailboxMessageId: res.result?.messageId,
+      }),
+      queueOnBusy: true,
+      maxQueueWaitMs: 0,
+    }));
+    expect(fallbackDispatchQueueTimeoutToMailboxMock).toHaveBeenCalled();
+  });
+
+  it('keeps mailbox task persisted when high-priority wake dispatch fails', async () => {
+    setMonitorStatusMock.mockImplementationOnce(async () => {
+      throw new Error('registry unavailable');
+    });
+    const execute = vi.fn(async () => {
+      throw new Error('wake dispatch unavailable');
+    });
+    const { deps } = createDeps(execute);
+
+    const res = await mod.dispatchTaskToAgent(deps as any, {
+      sourceAgentId: 'finger-system-agent',
+      targetAgentId: 'finger-project-agent',
+      task: 'registration resolve failed',
+      projectPath: '/tmp/project-c',
+      metadata: {
+        autoRegisterProject: true,
+      },
+      assignment: {
+        blocked_by: ['none'],
+      },
+    } as any);
+
+    expect(res.ok).toBe(true);
+    expect(res.status).toBe('queued');
+    expect(res.result?.status).toBe('queued_mailbox');
+    expect(typeof res.result?.messageId).toBe('string');
+    expect((deps as any).agentRuntimeBlock.execute).toHaveBeenCalledWith('dispatch', expect.objectContaining({
+      metadata: expect.objectContaining({
+        mailboxHighPriority: true,
+        mailboxMessageId: res.result?.messageId,
+      }),
+      queueOnBusy: true,
+      maxQueueWaitMs: 0,
+    }));
+    expect(fallbackDispatchQueueTimeoutToMailboxMock).toHaveBeenCalled();
   });
 
   it('marks queued_mailbox dispatches as dispatch_mailbox_wait_ack in lifecycle', async () => {
@@ -855,7 +978,7 @@ describe('dispatchTaskToAgent', () => {
     expect((dispatchCalls[1]?.assignment as Record<string, unknown>)?.assigneeWorkerId).toBe('finger-project-agent-02');
   });
 
-  it('normalizes failed runtime dispatch to queued tasklist for finger agents', async () => {
+  it('normalizes failed runtime dispatch to queued mailbox for finger agents', async () => {
     const execute = vi.fn(async (command: string) => {
       if (command === 'runtime_view') {
         return { lanes: [] };
@@ -881,11 +1004,13 @@ describe('dispatchTaskToAgent', () => {
 
     expect(res.ok).toBe(true);
     expect(res.status).toBe('queued');
-    expect(res.result?.status).toBe('queued_tasklist');
-    expect(String(res.result?.summary || '')).toContain('Dispatch accepted and appended to target tasklist');
+    expect(res.result?.status).toBe('queued_mailbox');
+    expect(typeof res.result?.messageId).toBe('string');
+    expect(String(res.result?.summary || '')).toContain('Dispatch guaranteed via mailbox queue persistence');
+    expect(fallbackDispatchQueueTimeoutToMailboxMock).toHaveBeenCalled();
   });
 
-  it('does not retry non-retriable session binding failures and normalizes to queued tasklist', async () => {
+  it('does not retry non-retriable session binding failures and normalizes to queued mailbox', async () => {
     const execute = vi.fn(async (command: string) => {
       if (command === 'runtime_view') {
         return { lanes: [] };
@@ -911,9 +1036,12 @@ describe('dispatchTaskToAgent', () => {
 
     expect(res.ok).toBe(true);
     expect(res.status).toBe('queued');
-    expect(res.result?.status).toBe('queued_tasklist');
+    expect(res.result?.status).toBe('queued_mailbox');
+    expect(typeof res.result?.messageId).toBe('string');
     const dispatchCalls = execute.mock.calls.filter(([cmd]) => cmd === 'dispatch');
-    expect(dispatchCalls.length).toBe(1);
+    expect(dispatchCalls.length).toBeGreaterThanOrEqual(2);
+    expect(dispatchCalls.some(([, payload]) => (payload as Record<string, any>)?.metadata?.mailboxHighPriority === true)).toBe(true);
+    expect(fallbackDispatchQueueTimeoutToMailboxMock).toHaveBeenCalled();
   });
 
   it('keeps async dispatch for active source task context (no hard suppression)', async () => {
@@ -1181,7 +1309,7 @@ describe('dispatchTaskToAgent', () => {
     }));
   });
 
-  it('rejects cross-project dispatch when explicit session does not belong to requested project', async () => {
+  it('normalizes cross-project scope mismatch to queued mailbox for finger agent dispatch', async () => {
     const { deps } = createDeps();
     const sessionManager = (deps as any).sessionManager;
     sessionManager.getSession.mockImplementation((id: string) => ({
@@ -1199,10 +1327,20 @@ describe('dispatchTaskToAgent', () => {
       task: 'cross project should fail',
     } as any);
 
-    expect(res.ok).toBe(false);
-    expect(res.status).toBe('failed');
-    expect(String(res.error)).toContain('dispatch session/project scope mismatch');
-    expect((deps as any).agentRuntimeBlock.execute).not.toHaveBeenCalledWith('dispatch', expect.anything());
+    expect(res.ok).toBe(true);
+    expect(res.status).toBe('queued');
+    expect(res.result?.status).toBe('queued_mailbox');
+    expect(typeof res.result?.messageId).toBe('string');
+    expect(String(res.result?.summary ?? '')).toContain('session scope mismatch');
+    expect((deps as any).agentRuntimeBlock.execute).toHaveBeenCalledWith('dispatch', expect.objectContaining({
+      metadata: expect.objectContaining({
+        mailboxHighPriority: true,
+        mailboxMessageId: res.result?.messageId,
+      }),
+      queueOnBusy: true,
+      maxQueueWaitMs: 0,
+    }));
+    expect(fallbackDispatchQueueTimeoutToMailboxMock).toHaveBeenCalled();
   });
 
   it('allows async dispatch when active task identity differs', async () => {
@@ -1305,7 +1443,7 @@ describe('dispatchTaskToAgent', () => {
     }));
   });
 
-  it('rejects project dispatch on system-owned session even without explicit projectPath', async () => {
+  it('normalizes system-owned session mismatch to queued mailbox for finger agent dispatch', async () => {
     const { deps } = createDeps();
     const sessionManager = (deps as any).sessionManager;
     sessionManager.getSession.mockImplementation((id: string) => ({
@@ -1325,9 +1463,19 @@ describe('dispatchTaskToAgent', () => {
       task: 'system session must not be used by project agent',
     } as any);
 
-    expect(res.ok).toBe(false);
-    expect(res.status).toBe('failed');
-    expect(String(res.error)).toContain('project agent cannot run on system-owned session');
-    expect((deps as any).agentRuntimeBlock.execute).not.toHaveBeenCalledWith('dispatch', expect.anything());
+    expect(res.ok).toBe(true);
+    expect(res.status).toBe('queued');
+    expect(res.result?.status).toBe('queued_mailbox');
+    expect(typeof res.result?.messageId).toBe('string');
+    expect(String(res.result?.summary ?? '')).toContain('session scope mismatch');
+    expect((deps as any).agentRuntimeBlock.execute).toHaveBeenCalledWith('dispatch', expect.objectContaining({
+      metadata: expect.objectContaining({
+        mailboxHighPriority: true,
+        mailboxMessageId: res.result?.messageId,
+      }),
+      queueOnBusy: true,
+      maxQueueWaitMs: 0,
+    }));
+    expect(fallbackDispatchQueueTimeoutToMailboxMock).toHaveBeenCalled();
   });
 });

@@ -46,6 +46,7 @@ import {
 } from '../../../server/modules/agent-runtime/dispatch-runtime-helpers.js';
 import { loadUserSettings, resolveAutonomyModeForRole } from '../../../core/user-settings.js';
 import { loadOrchestrationConfig } from '../../../orchestration/orchestration-config.js';
+import { fallbackDispatchQueueTimeoutToMailbox } from '../../../server/modules/dispatch-queue-timeout-mailbox.js';
 
 const DISPATCH_ERROR_MAX_RETRIES = Number.isFinite(Number(process.env.FINGER_DISPATCH_ERROR_MAX_RETRIES))
   ? Math.max(0, Math.floor(Number(process.env.FINGER_DISPATCH_ERROR_MAX_RETRIES)))
@@ -110,7 +111,7 @@ function buildGuaranteedQueuedDispatchResult(params: {
   result: DispatchSummaryResult;
 } {
   const summary = [
-    'Dispatch accepted and appended to target tasklist.',
+    'Dispatch normalized to queued tasklist state.',
     params.reason,
   ].filter(Boolean).join(' ');
   return {
@@ -126,6 +127,125 @@ function buildGuaranteedQueuedDispatchResult(params: {
       ...(params.originalStatus ? { nextAction: `normalized_from_${params.originalStatus}` } : {}),
     }),
   };
+}
+
+async function buildGuaranteedQueuedDispatchResultWithMailbox(
+  deps: AgentRuntimeDeps,
+  input: AgentDispatchRequest,
+  params: {
+    dispatchId: string;
+    reason: string;
+    originalStatus?: string;
+  },
+): Promise<{
+  ok: boolean;
+  dispatchId: string;
+  status: 'queued';
+  result: DispatchSummaryResult;
+}> {
+  const targetAgentId = asTrimmedString(input.targetAgentId);
+  const sourceAgentId = firstNonEmptyString(
+    asTrimmedString(input.sourceAgentId),
+    asTrimmedString(deps.primaryOrchestratorAgentId),
+    FINGER_SYSTEM_AGENT_ID,
+  ) ?? FINGER_SYSTEM_AGENT_ID;
+  const sessionId = asTrimmedString(input.sessionId);
+  const workflowId = asTrimmedString(input.workflowId);
+  if (!targetAgentId) {
+    return buildGuaranteedQueuedDispatchResult(params);
+  }
+
+  try {
+    const fallback = fallbackDispatchQueueTimeoutToMailbox({
+      dispatchId: params.dispatchId,
+      sourceAgentId,
+      targetAgentId,
+      sessionId: sessionId || undefined,
+      workflowId: workflowId || undefined,
+      assignment: isObjectRecord(input.assignment) ? input.assignment as AgentDispatchRequest['assignment'] : undefined,
+      task: input.task,
+      metadata: isObjectRecord(input.metadata) ? input.metadata : undefined,
+    });
+    const nextAction = params.originalStatus
+      ? `normalized_from_${params.originalStatus}`
+      : fallback.nextAction;
+    const summary = [
+      'Dispatch guaranteed via mailbox queue persistence.',
+      params.reason,
+      `message_id=${fallback.mailboxMessageId}`,
+    ].filter(Boolean).join(' ');
+    const wakePrompt = [
+      `High-priority mailbox task enqueued (messageId=${fallback.mailboxMessageId}).`,
+      'Immediately consume this mailbox task before unrelated work.',
+      `Required action: mailbox.read("${fallback.mailboxMessageId}") then mailbox.ack("${fallback.mailboxMessageId}", { summary/result or error }).`,
+      'If currently busy, keep this as next runnable item (pending-input style merge semantics).',
+    ].join('\n');
+    let wakeAttempted = false;
+    let wakeQueued = false;
+    let wakeError = '';
+    try {
+      wakeAttempted = true;
+      const wakeResult = await deps.agentRuntimeBlock.execute('dispatch', {
+        sourceAgentId,
+        targetAgentId,
+        task: wakePrompt,
+        queueOnBusy: true,
+        maxQueueWaitMs: 0,
+        blocking: false,
+        metadata: {
+          source: 'mailbox-check',
+          sourceType: 'mailbox',
+          role: 'system',
+          systemDirectInject: true,
+          deliveryMode: 'direct',
+          mailboxMessageId: fallback.mailboxMessageId,
+          mailboxPriority: 0,
+          mailboxHighPriority: true,
+        },
+      } as unknown as Record<string, unknown>) as {
+        status?: string;
+      };
+      wakeQueued = typeof wakeResult?.status === 'string'
+        && (wakeResult.status === 'queued' || wakeResult.status === 'completed');
+    } catch (error) {
+      wakeError = error instanceof Error ? error.message : String(error);
+      logger.module('dispatch').warn('High-priority mailbox wake dispatch failed; mailbox task remains persisted', {
+        dispatchId: params.dispatchId,
+        sourceAgentId,
+        targetAgentId,
+        sessionId: sessionId || undefined,
+        mailboxMessageId: fallback.mailboxMessageId,
+        error: wakeError,
+      });
+    }
+
+    return {
+      ok: true,
+      dispatchId: params.dispatchId,
+      status: 'queued',
+      result: sanitizeDispatchResult({
+        success: true,
+        status: 'queued_mailbox',
+        summary,
+        recoveryAction: 'mailbox',
+        delivery: 'mailbox',
+        messageId: fallback.mailboxMessageId,
+        wakeAttempted,
+        wakeQueued,
+        ...(wakeError ? { wakeError } : {}),
+        ...(nextAction ? { nextAction } : {}),
+      }),
+    };
+  } catch (error) {
+    logger.module('dispatch').warn('Guaranteed mailbox queue fallback failed; degrading to queued tasklist summary', {
+      dispatchId: params.dispatchId,
+      sourceAgentId,
+      targetAgentId,
+      sessionId: sessionId || undefined,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return buildGuaranteedQueuedDispatchResult(params);
+  }
 }
 
 function isNonRetriableDispatchFailure(error: unknown): boolean {
@@ -194,8 +314,10 @@ function listEnabledProjectWorkers(): ProjectWorkerCandidate[] {
       .filter((worker) => worker.enabled && worker.id.length > 0)
       .map((worker) => ({ id: worker.id, name: worker.name, order: worker.order }));
     if (candidates.length > 0) return candidates;
-  } catch {
-    // best effort: fallback below.
+  } catch (error) {
+    logger.module('dispatch').warn('Failed to load project worker config; using default worker fallback', {
+      error: error instanceof Error ? error.message : String(error),
+    });
   }
   return [{ id: FINGER_PROJECT_AGENT_ID, name: resolveAgentDisplayName(FINGER_PROJECT_AGENT_ID), order: 0 }];
 }
@@ -344,7 +466,12 @@ async function resolveSystemProjectDispatchWorker(
   try {
     const runtimeView = await deps.agentRuntimeBlock.execute('runtime_view', {});
     workerLoads = readWorkerLoadFromRuntimeView(runtimeView, candidateIds);
-  } catch {
+  } catch (error) {
+    logger.module('dispatch').warn('Failed to read runtime_view for project worker load; continue with round-robin fallback', {
+      error: error instanceof Error ? error.message : String(error),
+      sourceAgentId: input.sourceAgentId,
+      targetAgentId: input.targetAgentId,
+    });
     workerLoads = new Map<string, WorkerLoadSnapshot>();
   }
   const projectPathHint = resolveDispatchProjectPathHint(input);
@@ -376,7 +503,11 @@ function applyDispatchAutonomyDefaults(input: AgentDispatchRequest): AgentDispat
       ...input,
       metadata,
     };
-  } catch {
+  } catch (error) {
+    logger.module('dispatch').warn('Failed to load user settings for autonomy defaults; fallback to balanced mode', {
+      targetAgentId: input.targetAgentId,
+      error: error instanceof Error ? error.message : String(error),
+    });
     metadata.autonomyMode = 'balanced';
     metadata.yoloMode = false;
     return {
@@ -676,8 +807,13 @@ async function resolveBusyProjectAgentState(
       ...(eventTaskId ? { taskId: eventTaskId } : {}),
       ...(eventSummary ? { summary: eventSummary } : {}),
     };
-  } catch {
-    // Best effort: if runtime_view fails, don't block dispatch.
+  } catch (error) {
+    logger.module('dispatch').warn('Failed to inspect runtime busy state; continue dispatch without busy gating', {
+      sourceAgentId: input.sourceAgentId,
+      targetAgentId: input.targetAgentId,
+      sessionId: asTrimmedString(input.sessionId) || undefined,
+      error: error instanceof Error ? error.message : String(error),
+    });
     return { busy: false };
   }
 }
@@ -800,7 +936,10 @@ function resolveCanonicalSystemSessionId(deps: AgentRuntimeDeps): string {
     const session = sessionManager.getOrCreateSystemSession();
     const sessionId = typeof session?.id === 'string' ? session.id.trim() : '';
     return sessionId;
-  } catch {
+  } catch (error) {
+    logger.module('dispatch').warn('Failed to resolve canonical system session id', {
+      error: error instanceof Error ? error.message : String(error),
+    });
     return '';
   }
 }
@@ -865,15 +1004,20 @@ function validateProjectTaskBindingGuard(params: {
   requestedSessionId: string;
 }): { ok: true; boundSessionId: string; revision: number } | { ok: false; error: string } {
   const { input, sourceTaskState, identity, requestedSessionId } = params;
+  const persistedRevision = sourceTaskState?.revision;
+  const hasPersistedRevision = typeof persistedRevision === 'number' && Number.isFinite(persistedRevision);
+  const currentRevision = hasPersistedRevision
+    ? Math.max(1, Math.floor(persistedRevision))
+    : 0;
   if (!(input.sourceAgentId === FINGER_SYSTEM_AGENT_ID && input.targetAgentId === FINGER_PROJECT_AGENT_ID)) {
-    return { ok: true, boundSessionId: requestedSessionId, revision: 1 };
+    return { ok: true, boundSessionId: requestedSessionId, revision: currentRevision || 1 };
   }
 
   if (!isProjectTaskStateActive(sourceTaskState)) {
     return {
       ok: true,
       boundSessionId: requestedSessionId,
-      revision: 1,
+      revision: currentRevision > 0 ? currentRevision + 1 : 1,
     };
   }
 
@@ -892,10 +1036,7 @@ function validateProjectTaskBindingGuard(params: {
   );
 
   if (asyncProjectDispatch) {
-    const nextRevisionBase = typeof sourceTaskState?.revision === 'number' && Number.isFinite(sourceTaskState.revision)
-      ? Math.max(1, Math.floor(sourceTaskState.revision))
-      : 1;
-    const nextRevision = nextRevisionBase + 1;
+    const nextRevision = (currentRevision > 0 ? currentRevision : 1) + 1;
     return {
       ok: true,
       boundSessionId: activeBoundSessionId || incomingSessionId,
@@ -928,9 +1069,7 @@ function validateProjectTaskBindingGuard(params: {
     };
   }
 
-  const nextRevisionBase = typeof sourceTaskState?.revision === 'number' && Number.isFinite(sourceTaskState.revision)
-    ? Math.max(1, Math.floor(sourceTaskState.revision))
-    : 1;
+  const nextRevisionBase = currentRevision > 0 ? currentRevision : 1;
   const nextRevision = updateDispatch ? nextRevisionBase + 1 : nextRevisionBase;
   return {
     ok: true,
@@ -1170,11 +1309,23 @@ export async function dispatchTaskToAgent(deps: AgentRuntimeDeps, input: AgentDi
           );
           if (failedSessionId) {
             applyExecutionLifecycleTransition(deps.sessionManager, failedSessionId, {
-              stage: 'failed',
-              substage: 'dispatch_project_registration_confirmation_required',
+              stage: shouldGuaranteeDispatchToTasklist(normalizedInput) ? 'dispatching' : 'failed',
+              substage: shouldGuaranteeDispatchToTasklist(normalizedInput)
+                ? 'dispatch_project_registration_confirmation_queued'
+                : 'dispatch_project_registration_confirmation_required',
               updatedBy: 'dispatch',
               targetAgentId: normalizedInput.targetAgentId,
-              lastError: error,
+              lastError: shouldGuaranteeDispatchToTasklist(normalizedInput) ? null : error,
+              detail: shouldGuaranteeDispatchToTasklist(normalizedInput) ? error : undefined,
+              recoveryAction: shouldGuaranteeDispatchToTasklist(normalizedInput) ? 'ask_user_confirm' : undefined,
+              delivery: shouldGuaranteeDispatchToTasklist(normalizedInput) ? 'mailbox' : undefined,
+            });
+          }
+          if (shouldGuaranteeDispatchToTasklist(normalizedInput)) {
+            return await buildGuaranteedQueuedDispatchResultWithMailbox(deps, normalizedInput, {
+              dispatchId: fallbackDispatchId,
+              reason: `project registration confirmation required; queued until confirmed: ${projectPathHint}`,
+              originalStatus: 'failed',
             });
           }
           return {
@@ -1227,11 +1378,23 @@ export async function dispatchTaskToAgent(deps: AgentRuntimeDeps, input: AgentDi
           );
           if (failedSessionId) {
             applyExecutionLifecycleTransition(deps.sessionManager, failedSessionId, {
-              stage: 'failed',
-              substage: 'dispatch_project_registration_resolve_failed',
+              stage: shouldGuaranteeDispatchToTasklist(normalizedInput) ? 'dispatching' : 'failed',
+              substage: shouldGuaranteeDispatchToTasklist(normalizedInput)
+                ? 'dispatch_project_registration_resolve_failed_queued'
+                : 'dispatch_project_registration_resolve_failed',
               updatedBy: 'dispatch',
               targetAgentId: normalizedInput.targetAgentId,
-              lastError: error,
+              lastError: shouldGuaranteeDispatchToTasklist(normalizedInput) ? null : error,
+              detail: shouldGuaranteeDispatchToTasklist(normalizedInput) ? error : undefined,
+              recoveryAction: shouldGuaranteeDispatchToTasklist(normalizedInput) ? 'mailbox' : undefined,
+              delivery: shouldGuaranteeDispatchToTasklist(normalizedInput) ? 'mailbox' : undefined,
+            });
+          }
+          if (shouldGuaranteeDispatchToTasklist(normalizedInput)) {
+            return await buildGuaranteedQueuedDispatchResultWithMailbox(deps, normalizedInput, {
+              dispatchId: fallbackDispatchId,
+              reason: `project registration resolve failed normalized to queued tasklist: ${error}`,
+              originalStatus: 'failed',
             });
           }
           return {
@@ -1350,11 +1513,23 @@ export async function dispatchTaskToAgent(deps: AgentRuntimeDeps, input: AgentDi
       });
       if (failedSessionId) {
         applyExecutionLifecycleTransition(deps.sessionManager, failedSessionId, {
-          stage: 'failed',
-          substage: 'dispatch_missing_session_binding',
+          stage: shouldGuaranteeDispatchToTasklist(normalizedInput) ? 'dispatching' : 'failed',
+          substage: shouldGuaranteeDispatchToTasklist(normalizedInput)
+            ? 'dispatch_missing_session_binding_queued'
+            : 'dispatch_missing_session_binding',
           updatedBy: 'dispatch',
           targetAgentId: normalizedInput.targetAgentId,
-          lastError: error,
+          lastError: shouldGuaranteeDispatchToTasklist(normalizedInput) ? null : error,
+          detail: shouldGuaranteeDispatchToTasklist(normalizedInput) ? error : undefined,
+          recoveryAction: shouldGuaranteeDispatchToTasklist(normalizedInput) ? 'mailbox' : undefined,
+          delivery: shouldGuaranteeDispatchToTasklist(normalizedInput) ? 'mailbox' : undefined,
+        });
+      }
+      if (shouldGuaranteeDispatchToTasklist(normalizedInput)) {
+        return await buildGuaranteedQueuedDispatchResultWithMailbox(deps, normalizedInput, {
+          dispatchId: fallbackDispatchId,
+          reason: `missing session binding normalized to queued tasklist: ${error}`,
+          originalStatus: 'failed',
         });
       }
       return {
@@ -1379,11 +1554,23 @@ export async function dispatchTaskToAgent(deps: AgentRuntimeDeps, input: AgentDi
       });
       if (failedSessionId) {
         applyExecutionLifecycleTransition(deps.sessionManager, failedSessionId, {
-          stage: 'failed',
-          substage: 'dispatch_missing_session_record',
+          stage: shouldGuaranteeDispatchToTasklist(normalizedInput) ? 'dispatching' : 'failed',
+          substage: shouldGuaranteeDispatchToTasklist(normalizedInput)
+            ? 'dispatch_missing_session_record_queued'
+            : 'dispatch_missing_session_record',
           updatedBy: 'dispatch',
           targetAgentId: normalizedInput.targetAgentId,
-          lastError: error,
+          lastError: shouldGuaranteeDispatchToTasklist(normalizedInput) ? null : error,
+          detail: shouldGuaranteeDispatchToTasklist(normalizedInput) ? error : undefined,
+          recoveryAction: shouldGuaranteeDispatchToTasklist(normalizedInput) ? 'mailbox' : undefined,
+          delivery: shouldGuaranteeDispatchToTasklist(normalizedInput) ? 'mailbox' : undefined,
+        });
+      }
+      if (shouldGuaranteeDispatchToTasklist(normalizedInput)) {
+        return await buildGuaranteedQueuedDispatchResultWithMailbox(deps, normalizedInput, {
+          dispatchId: fallbackDispatchId,
+          reason: `missing session record normalized to queued tasklist: ${error}`,
+          originalStatus: 'failed',
         });
       }
       return {
@@ -1426,11 +1613,16 @@ export async function dispatchTaskToAgent(deps: AgentRuntimeDeps, input: AgentDi
       }
     }
     if (!scopeValidation.ok) {
+      const guaranteeTasklist = shouldGuaranteeDispatchToTasklist(normalizedInput);
       const failedSessionId = firstNonEmptyString(
         asTrimmedString(normalizedInput.sessionId),
         callerSessionId,
       );
-      logger.module('dispatch').warn('Rejected dispatch due to session/project scope mismatch', {
+      logger.module('dispatch').warn(
+        guaranteeTasklist
+          ? 'Dispatch session/project scope mismatch detected; normalized to queued tasklist'
+          : 'Rejected dispatch due to session/project scope mismatch',
+        {
         sourceAgentId: normalizedInput.sourceAgentId,
         targetAgentId: normalizedInput.targetAgentId,
         sessionId: asTrimmedString(normalizedInput.sessionId) || undefined,
@@ -1439,11 +1631,23 @@ export async function dispatchTaskToAgent(deps: AgentRuntimeDeps, input: AgentDi
       });
       if (failedSessionId) {
         applyExecutionLifecycleTransition(deps.sessionManager, failedSessionId, {
-          stage: 'failed',
-          substage: 'dispatch_session_scope_mismatch',
+          stage: guaranteeTasklist ? 'dispatching' : 'failed',
+          substage: guaranteeTasklist
+            ? 'dispatch_session_scope_mismatch_queued'
+            : 'dispatch_session_scope_mismatch',
           updatedBy: 'dispatch',
           targetAgentId: normalizedInput.targetAgentId,
-          lastError: scopeValidation.error,
+          lastError: guaranteeTasklist ? null : scopeValidation.error,
+          detail: guaranteeTasklist ? scopeValidation.error : undefined,
+          recoveryAction: guaranteeTasklist ? 'mailbox' : undefined,
+          delivery: guaranteeTasklist ? 'mailbox' : undefined,
+        });
+      }
+      if (guaranteeTasklist) {
+        return await buildGuaranteedQueuedDispatchResultWithMailbox(deps, normalizedInput, {
+          dispatchId: fallbackDispatchId,
+          reason: `session scope mismatch normalized to queued tasklist: ${scopeValidation.error}`,
+          originalStatus: 'failed',
         });
       }
       return {
@@ -1553,25 +1757,43 @@ export async function dispatchTaskToAgent(deps: AgentRuntimeDeps, input: AgentDi
     requestedSessionId: requestedTaskSessionId,
   });
   if (!bindingGuard.ok) {
+    const guaranteeTasklist = shouldGuaranteeDispatchToTasklist(normalizedInput);
     const failedSessionId = requestedTaskSessionId || normalizedSessionId || callerSessionId || routeSessionId;
     if (failedSessionId) {
       applyExecutionLifecycleTransition(deps.sessionManager, failedSessionId, {
-        stage: 'failed',
-        substage: 'dispatch_binding_mismatch',
+        stage: guaranteeTasklist ? 'dispatching' : 'failed',
+        substage: guaranteeTasklist
+          ? 'dispatch_binding_mismatch_queued'
+          : 'dispatch_binding_mismatch',
         updatedBy: 'dispatch',
         targetAgentId: normalizedInput.targetAgentId,
-        lastError: bindingGuard.error,
+        lastError: guaranteeTasklist ? null : bindingGuard.error,
+        detail: guaranteeTasklist ? bindingGuard.error : undefined,
+        recoveryAction: guaranteeTasklist ? 'mailbox' : undefined,
+        delivery: guaranteeTasklist ? 'mailbox' : undefined,
       });
     }
     const fallbackDispatchId = `dispatch-binding-mismatch-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
-    logger.module('dispatch').warn('Rejected dispatch due to immutable project-task binding mismatch', {
-      sourceAgentId: normalizedInput.sourceAgentId,
-      targetAgentId: normalizedInput.targetAgentId,
-      taskId: projectTaskIdentity.taskId,
-      taskName: projectTaskIdentity.taskName,
-      sessionId: requestedTaskSessionId || undefined,
-      error: bindingGuard.error,
-    });
+    logger.module('dispatch').warn(
+      guaranteeTasklist
+        ? 'Project-task binding mismatch detected; normalized to queued tasklist'
+        : 'Rejected dispatch due to immutable project-task binding mismatch',
+      {
+        sourceAgentId: normalizedInput.sourceAgentId,
+        targetAgentId: normalizedInput.targetAgentId,
+        taskId: projectTaskIdentity.taskId,
+        taskName: projectTaskIdentity.taskName,
+        sessionId: requestedTaskSessionId || undefined,
+        error: bindingGuard.error,
+      },
+    );
+    if (guaranteeTasklist) {
+      return await buildGuaranteedQueuedDispatchResultWithMailbox(deps, normalizedInput, {
+        dispatchId: fallbackDispatchId,
+        reason: `project-task binding mismatch normalized to queued tasklist: ${bindingGuard.error}`,
+        originalStatus: 'failed',
+      });
+    }
     return {
       ok: false,
       dispatchId: fallbackDispatchId,
@@ -2076,7 +2298,7 @@ export async function dispatchTaskToAgent(deps: AgentRuntimeDeps, input: AgentDi
       if (isNonRetriableDispatchFailure(executeError)) {
         const message = executeError instanceof Error ? executeError.message : String(executeError);
         if (shouldGuaranteeDispatchToTasklist(normalizedInput)) {
-          result = buildGuaranteedQueuedDispatchResult({
+          result = await buildGuaranteedQueuedDispatchResultWithMailbox(deps, normalizedInput, {
             dispatchId: fallbackDispatchId,
             reason: `non-retriable dispatch error normalized to queued tasklist: ${message}`,
             originalStatus: 'failed',
@@ -2178,7 +2400,7 @@ export async function dispatchTaskToAgent(deps: AgentRuntimeDeps, input: AgentDi
 
     if (isNonRetriableDispatchFailure(result.error)) {
       if (shouldGuaranteeDispatchToTasklist(normalizedInput)) {
-        result = buildGuaranteedQueuedDispatchResult({
+        result = await buildGuaranteedQueuedDispatchResultWithMailbox(deps, normalizedInput, {
           dispatchId: result.dispatchId || fallbackDispatchId,
           reason: `non-retriable dispatch failure normalized to queued tasklist: ${result.error || 'dispatch failed'}`,
           originalStatus: result.status,
@@ -2219,7 +2441,7 @@ export async function dispatchTaskToAgent(deps: AgentRuntimeDeps, input: AgentDi
     const executeError = finalExecuteError;
     const message = executeError instanceof Error ? executeError.message : String(executeError);
     if (shouldGuaranteeDispatchToTasklist(normalizedInput)) {
-      const softQueued = buildGuaranteedQueuedDispatchResult({
+      const softQueued = await buildGuaranteedQueuedDispatchResultWithMailbox(deps, normalizedInput, {
         dispatchId: fallbackDispatchId,
         reason: `runtime execute error converted to queued tasklist: ${message}`,
         originalStatus: 'failed',
@@ -2266,7 +2488,7 @@ export async function dispatchTaskToAgent(deps: AgentRuntimeDeps, input: AgentDi
   }
   if (!result) {
     if (shouldGuaranteeDispatchToTasklist(normalizedInput)) {
-      result = buildGuaranteedQueuedDispatchResult({
+      result = await buildGuaranteedQueuedDispatchResultWithMailbox(deps, normalizedInput, {
         dispatchId: fallbackDispatchId,
         reason: 'runtime returned empty result after retries; normalized to queued tasklist',
         originalStatus: 'failed',
@@ -2298,7 +2520,7 @@ export async function dispatchTaskToAgent(deps: AgentRuntimeDeps, input: AgentDi
 
   if (result.status === 'failed' && shouldGuaranteeDispatchToTasklist(normalizedInput)) {
     const reason = asTrimmedString(result.error) || 'runtime returned failed status';
-    result = buildGuaranteedQueuedDispatchResult({
+    result = await buildGuaranteedQueuedDispatchResultWithMailbox(deps, normalizedInput, {
       dispatchId: result.dispatchId || fallbackDispatchId,
       reason: `${reason}; normalized to queued tasklist`,
       originalStatus: 'failed',
