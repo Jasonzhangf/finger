@@ -26,10 +26,12 @@ import { registerTestCommand } from './test-command.js';
 import { registerCommandHubCommand } from './command-hub.js';
 import { registerMailboxCommand } from './mailbox.js';
 import { ensureFingerLayout } from '../core/finger-paths.js';
+import { getFingerAppVersion } from '../core/app-version.js';
 import { DualDaemonSupervisor, enableAutoStart, disableAutoStart } from '../daemon/dual-daemon.js';
 import { createConsoleLikeLogger } from '../core/logger/console-like.js';
 
 const clog = createConsoleLikeLogger('Index');
+const CLI_VERSION = getFingerAppVersion();
 
 const DEFAULT_HTTP_BASE_URL = process.env.FINGER_HTTP_URL || process.env.FINGER_HUB_URL || 'http://localhost:9999';
 const DEFAULT_WS_URL = process.env.FINGER_WS_URL || 'ws://localhost:9998';
@@ -73,7 +75,7 @@ async function main(): Promise<void> {
   program
     .name('myfinger')
     .description('AI Agent 编排系统 CLI')
-    .version('0.1.0')
+    .version(CLI_VERSION)
     .option('--base-url <url>', 'Message Hub base URL', DEFAULT_HTTP_BASE_URL)
     .option('--ws-url <url>', 'WebSocket base URL', DEFAULT_WS_URL);
 
@@ -235,7 +237,7 @@ async function main(): Promise<void> {
   await loadDynamicCliPlugins(program, {
     defaultHttpBaseUrl: DEFAULT_HTTP_BASE_URL,
     defaultWsUrl: DEFAULT_WS_URL,
-    cliVersion: '0.1.0',
+    cliVersion: CLI_VERSION,
   });
 
   // ========== Register CLI Capability Aliases ==========

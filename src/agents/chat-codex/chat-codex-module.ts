@@ -17,6 +17,7 @@ import {
 } from './agent-role-config.js';
 import { FINGER_PATHS, ensureDir, normalizeSessionDirName } from '../../core/finger-paths.js';
 import { FINGER_SOURCE_ROOT } from '../../core/source-root.js';
+import { getFingerAppVersion } from '../../core/app-version.js';
 import { getContextWindow, loadAIProviders } from '../../core/user-settings.js';
 import type { MailboxSnapshot } from '../../runtime/mailbox-snapshot.js';
 import { hasNewUnreadSinceLastNotified, getNewUnreadEntries } from '../../runtime/mailbox-snapshot.js';
@@ -389,7 +390,7 @@ interface ChatCodexResponse {
 const DEFAULT_CONFIG: ChatCodexModuleConfig = {
   id: 'chat-codex',
   name: 'Chat Codex Bridge',
-  version: '0.1.0',
+  version: getFingerAppVersion(),
   timeoutMs: DEFAULT_KERNEL_TIMEOUT_MS,
   timeoutRetryCount: DEFAULT_KERNEL_TIMEOUT_RETRY_COUNT,
 };

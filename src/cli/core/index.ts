@@ -6,6 +6,7 @@ import { Command } from "commander";
 import { daemonCommand } from "./daemon.js";
 import { sendCommand } from "./send.js";
 import { listCommand } from "./list.js";
+import { getFingerAppVersion } from "../../core/app-version.js";
 
 export function createCoreCLI(): Command {
   const program = new Command();
@@ -13,7 +14,7 @@ export function createCoreCLI(): Command {
   program
     .name("finger-core")
     .description("Finger Core Daemon - Simple message routing system")
-    .version("0.1.0");
+    .version(getFingerAppVersion());
 
   program.addCommand(daemonCommand());
   program.addCommand(sendCommand());

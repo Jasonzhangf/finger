@@ -17,15 +17,24 @@ if (!semverMatch) {
 
 const major = semverMatch[1];
 const minor = semverMatch[2];
-const currentBuild = typeof pkg[BUILD_FIELD] === 'string' ? pkg[BUILD_FIELD].trim() : '';
-const buildMatch = currentBuild.match(/^(\d+)\.(\d+)\.(\d{4,})$/);
-
-let nextBuildCounter = 1;
-if (buildMatch && buildMatch[1] === major && buildMatch[2] === minor) {
-  nextBuildCounter = Number.parseInt(buildMatch[3], 10) + 1;
+const currentPatch = Number.parseInt(semverMatch[3], 10);
+if (!Number.isFinite(currentPatch) || currentPatch < 0) {
+  throw new Error(`invalid patch version: ${semverMatch[3]}`);
 }
 
-pkg[BUILD_FIELD] = `${major}.${minor}.${String(nextBuildCounter).padStart(4, '0')}`;
+let baselinePatch = currentPatch;
+const currentBuild = typeof pkg[BUILD_FIELD] === 'string' ? pkg[BUILD_FIELD].trim() : '';
+const buildMatch = currentBuild.match(/^(\d+)\.(\d+)\.(\d+)$/);
+if (buildMatch && buildMatch[1] === major && buildMatch[2] === minor) {
+  const buildPatch = Number.parseInt(buildMatch[3], 10);
+  if (Number.isFinite(buildPatch) && buildPatch > baselinePatch) {
+    baselinePatch = buildPatch;
+  }
+}
+
+const nextVersion = `${major}.${minor}.${baselinePatch + 1}`;
+pkg.version = nextVersion;
+pkg[BUILD_FIELD] = nextVersion;
 
 writeFileSync(packageJsonPath, `${JSON.stringify(pkg, null, 2)}\n`, 'utf8');
-console.log(`[build] ${BUILD_FIELD} -> ${pkg[BUILD_FIELD]}`);
+console.log(`[build] version -> ${pkg.version}`);

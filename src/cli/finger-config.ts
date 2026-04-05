@@ -16,6 +16,7 @@ import {
 import { syncUserSettingsToKernelConfig } from '../core/user-settings-sync.js';
 import { logger } from '../core/logger.js';
 import { createConsoleLikeLogger } from '../core/logger/console-like.js';
+import { getFingerAppVersion } from '../core/app-version.js';
 
 const clog = createConsoleLikeLogger('FingerConfig');
 
@@ -25,7 +26,7 @@ const program = new Command();
 program
   .name('finger-config')
   .description('Manage user settings for Finger')
-  .version('0.1.0');
+  .version(getFingerAppVersion());
 
 // 获取配置
 program.command('get [key]')

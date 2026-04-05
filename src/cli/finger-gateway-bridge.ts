@@ -7,12 +7,13 @@
 
 import { Command } from 'commander';
 import { registerOpenClawGatewayBridgeCommand } from './openclaw-gateway-bridge.js';
+import { getFingerAppVersion } from '../core/app-version.js';
 
 const program = new Command();
 program
   .name('finger-gateway-bridge')
   .description('Finger Gateway Bridge - Manage OpenClaw gateway bridge services')
-  .version('0.1.0');
+  .version(getFingerAppVersion());
 
 // 注册gateway-bridge命令
 registerOpenClawGatewayBridgeCommand(program);
