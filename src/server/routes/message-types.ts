@@ -7,6 +7,18 @@ import type { SessionWorkspaceManager } from '../modules/session-workspaces.js';
 import type { ChannelBridgeManager } from '../../bridges/manager.js';
 import type { ChannelAttachment } from '../../bridges/types.js';
 
+export interface ProgressMonitorControl {
+  resetProgressState(options?: {
+    sessionId?: string;
+    reason?: string;
+  }): {
+    scope: 'all' | 'session';
+    sessionId?: string;
+    clearedEntries: number;
+    clearedSessions: number;
+  };
+}
+
 export interface MessageRouteDeps {
   hub: MessageHub;
   mailbox: Mailbox;
@@ -27,6 +39,7 @@ export interface MessageRouteDeps {
   primaryOrchestratorGatewayId: string;
   legacyOrchestratorAgentId: string;
   legacyOrchestratorGatewayId: string;
+  progressMonitor?: ProgressMonitorControl;
 }
 
 export interface DisplayChannelRequest {

@@ -1,5 +1,8 @@
 import { describe, expect, it, vi } from 'vitest';
-import { handleSystemStopAllReasoning } from '../../../src/server/modules/messagehub-command-handler.js';
+import {
+  handleSystemProgressReset,
+  handleSystemStopAllReasoning,
+} from '../../../src/server/modules/messagehub-command-handler.js';
 
 describe('handleSystemStopAllReasoning', () => {
   it('interrupts all active turns and reports summary', async () => {
@@ -74,3 +77,28 @@ describe('handleSystemStopAllReasoning', () => {
   });
 });
 
+describe('handleSystemProgressReset', () => {
+  it('resets progress state for current session when monitor is available', async () => {
+    const resetProgressState = vi.fn(() => ({
+      scope: 'session' as const,
+      sessionId: 'session-1',
+      clearedEntries: 2,
+      clearedSessions: 1,
+    }));
+    const result = await handleSystemProgressReset(
+      { resetProgressState },
+      'session-1',
+    );
+    expect(result).toContain('已重置进度状态');
+    expect(result).toContain('session=session-1');
+    expect(resetProgressState).toHaveBeenCalledWith({
+      sessionId: 'session-1',
+      reason: 'system_progress_reset',
+    });
+  });
+
+  it('returns explicit error when progress monitor is unavailable', async () => {
+    const result = await handleSystemProgressReset(undefined, 'session-1');
+    expect(result).toContain('进度重置失败');
+  });
+});

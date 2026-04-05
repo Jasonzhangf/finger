@@ -20,6 +20,7 @@ import type { AgentRuntimeDeps } from '../modules/agent-runtime/types.js';
 import type { ResourcePool } from '../../orchestration/resource-pool.js';
 import type { MockAgentRole, MockOutcome } from '../modules/mock-runtime.js';
 import type { UpsertProviderInput, ProviderConfigRecord } from '../provider-config.js';
+import type { ProgressMonitorControl } from './message-types.js';
 import { registerSessionRoutes } from './session.js';
 import { registerSystemRoutes } from './system.js';
 import { registerMessageRoutes } from './message.js';
@@ -66,6 +67,7 @@ export interface RegisterAllRoutesDeps {
   primaryOrchestratorGatewayId: string;
   legacyOrchestratorAgentId: string;
   legacyOrchestratorGatewayId: string;
+  progressMonitor?: ProgressMonitorControl;
   workflowManager: WorkflowManager;
   askManager: AskManager;
   runtimeInstructionBus: typeof import('../../orchestration/runtime-instruction-bus.js').runtimeInstructionBus;
@@ -151,6 +153,7 @@ export function registerAllRoutes(app: Express, deps: RegisterAllRoutesDeps): vo
     primaryOrchestratorGatewayId: deps.primaryOrchestratorGatewayId,
     legacyOrchestratorAgentId: deps.legacyOrchestratorAgentId,
     legacyOrchestratorGatewayId: deps.legacyOrchestratorGatewayId,
+    progressMonitor: deps.progressMonitor,
   });
 
   registerAgentCliRoutes(app);

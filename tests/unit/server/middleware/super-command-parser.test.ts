@@ -40,4 +40,13 @@ describe('super-command-parser @agent behavior', () => {
     expect(parsed.shouldSwitch).toBe(true);
     expect(parsed.targetAgent).toBe('finger-system-agent');
   });
+
+  it('parses system progress-reset command', () => {
+    const parsed = parseSuperCommand('<##@system:progress:reset##>');
+    expect(parsed.type).toBe('super_command');
+    expect(parsed.blocks?.[0]?.type).toBe('system');
+    expect(parsed.blocks?.[0]?.content).toBe('progress_reset');
+    expect(parsed.shouldSwitch).toBe(true);
+    expect(parsed.targetAgent).toBe('finger-system-agent');
+  });
 });

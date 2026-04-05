@@ -92,6 +92,13 @@ export function buildHeartbeatSummary(
   p: SessionProgress,
   now: number,
   pendingTool?: ToolCallRecord,
+  options?: {
+    suspectedStall?: boolean;
+    waitLayer?: 'external' | 'internal';
+    waitKind?: 'provider' | 'tool' | 'user' | 'unknown';
+    waitDetail?: string;
+    resetHintCommand?: string;
+  },
 ): string {
   const waitingMs = Math.max(0, now - p.lastUpdateTime);
   const localTime = new Date();
@@ -101,8 +108,27 @@ export function buildHeartbeatSummary(
   if (pendingTool) {
     const toolName = resolveToolDisplayName(pendingTool.toolName?.trim() || '工具', pendingTool.params);
     lines.push(`⏳ ${formatElapsed(waitingMs)} 无新事件，当前等待工具 ${toolName} 返回`);
+  } else if (options?.suspectedStall) {
+    lines.push(`⚠️ ${formatElapsed(waitingMs)} 无关键进展，疑似卡住`);
   } else {
     lines.push(`⏳ ${formatElapsed(waitingMs)} 无新事件，当前轮仍在运行`);
+  }
+
+  if (options?.waitLayer === 'external') {
+    if (options.waitKind === 'provider') {
+      lines.push(`🌐 分层状态: 外部等待 · provider 响应中${options.waitDetail ? ` (${options.waitDetail})` : ''}`);
+    } else if (options.waitKind === 'tool') {
+      lines.push(`🧩 分层状态: 外部等待 · 工具执行中${options.waitDetail ? ` (${options.waitDetail})` : ''}`);
+    } else if (options.waitKind === 'user') {
+      lines.push(`👤 分层状态: 外部等待 · 等待用户输入${options.waitDetail ? ` (${options.waitDetail})` : ''}`);
+    } else {
+      lines.push(`🌐 分层状态: 外部等待${options.waitDetail ? ` (${options.waitDetail})` : ''}`);
+    }
+  } else if (options?.waitLayer === 'internal') {
+    lines.push(`⚠️ 分层状态: 内部等待 · 未检测到外部阻塞信号`);
+    if (options.resetHintCommand && options.resetHintCommand.trim().length > 0) {
+      lines.push(`🔁 重置命令: ${options.resetHintCommand.trim()}`);
+    }
   }
 
   const contextLine = buildContextUsageLine({

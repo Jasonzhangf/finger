@@ -618,7 +618,7 @@ describe('ProgressMonitor incremental updates', () => {
     monitor.stop();
   });
 
-  it('emits heartbeat progress every interval for stalled open turn even without pending tool', async () => {
+  it('throttles heartbeat for stalled open turn without pending tool and marks internal wait layer', async () => {
     const eventBus = new UnifiedEventBus();
     const reports: string[] = [];
     const monitor = new ProgressMonitor(
@@ -666,10 +666,89 @@ describe('ProgressMonitor incremental updates', () => {
 
     await (monitor as any).generateProgressReport();
 
+    // no pending tool: heartbeat is throttled to reduce no-value noise
+    expect(reports).toHaveLength(0);
+
+    if (progress) {
+      const now = Date.now();
+      progress.lastUpdateTime = now - 190_000;
+      progress.lastReportTime = now - 190_000;
+    }
+
+    await (monitor as any).generateProgressReport();
+
     expect(reports).toHaveLength(1);
-    expect(reports[0]).toContain('无新事件');
-    expect(reports[0]).toContain('当前轮仍在运行');
+    expect(reports[0]).toContain('疑似卡住');
+    expect(reports[0]).toContain('分层状态: 内部等待');
+    expect(reports[0]).toContain('<##@system:progress:reset##>');
     expect(reports[0]).toContain('🧠 上下文: 23%');
+
+    monitor.stop();
+  });
+
+  it('marks provider waiting as external layer instead of internal stall', async () => {
+    const eventBus = new UnifiedEventBus();
+    const reports: string[] = [];
+    const sessionState = new Map<string, any>();
+    sessionState.set('session-provider-wait', {
+      id: 'session-provider-wait',
+      context: {
+        executionLifecycle: {
+          stage: 'waiting_model',
+          substage: 'model_round',
+          startedAt: new Date().toISOString(),
+          lastTransitionAt: new Date().toISOString(),
+          retryCount: 0,
+        },
+      },
+    });
+    const deps = createMinimalDeps();
+    (deps.sessionManager as any).getSession = vi.fn((sessionId: string) => sessionState.get(sessionId) ?? null);
+    const monitor = new ProgressMonitor(
+      eventBus,
+      deps,
+      {
+        onProgressReport: (report) => {
+          reports.push(report.summary);
+        },
+      },
+      {
+        enabled: true,
+        progressUpdates: true,
+        intervalMs: 60_000,
+      },
+    );
+
+    monitor.start();
+
+    await eventBus.emit({
+      type: 'turn_start',
+      sessionId: 'session-provider-wait',
+      agentId: 'finger-system-agent',
+      timestamp: new Date().toISOString(),
+      payload: {
+        prompt: '等待 provider 返回',
+      },
+    } as any);
+    await flushEventLoop();
+
+    const progress = monitor.getProgress('session-provider-wait');
+    expect(progress).toBeTruthy();
+    if (progress) {
+      const now = Date.now();
+      progress.startTime = now - 180_000;
+      progress.lastUpdateTime = now - 190_000;
+      progress.lastReportTime = now - 190_000;
+      progress.status = 'running';
+      progress.hasOpenTurn = true;
+    }
+
+    await (monitor as any).generateProgressReport();
+
+    expect(reports).toHaveLength(1);
+    expect(reports[0]).toContain('分层状态: 外部等待 · provider');
+    expect(reports[0]).not.toContain('分层状态: 内部等待');
+    expect(reports[0]).not.toContain('<##@system:progress:reset##>');
 
     monitor.stop();
   });
@@ -730,7 +809,7 @@ describe('ProgressMonitor incremental updates', () => {
     if (progress) {
       const now = Date.now();
       progress.lastUpdateTime = now - (5 * 60_000 + 1_000);
-      progress.lastReportTime = now - 65_000;
+      progress.lastReportTime = now - 190_000;
       progress.hasOpenTurn = false;
       progress.modelRoundsCount = 0;
       progress.currentTask = undefined;
@@ -1120,8 +1199,8 @@ describe('ProgressMonitor incremental updates', () => {
     if (runningProgress) {
       const now = Date.now();
       runningProgress.startTime = now - 180_000;
-      runningProgress.lastUpdateTime = now - 65_000;
-      runningProgress.lastReportTime = now - 65_000;
+      runningProgress.lastUpdateTime = now - 190_000;
+      runningProgress.lastReportTime = now - 190_000;
       runningProgress.hasOpenTurn = true;
     }
     await (monitor as any).generateProgressReport();

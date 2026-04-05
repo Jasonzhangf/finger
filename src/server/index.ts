@@ -410,6 +410,7 @@ const registerAllRoutesDeps = {
   blockingTimeoutMs: BLOCKING_MESSAGE_TIMEOUT_MS, blockingMaxRetries: BLOCKING_MESSAGE_MAX_RETRIES, blockingRetryBaseMs: BLOCKING_MESSAGE_RETRY_BASE_MS,
   allowDirectAgentRoute: ALLOW_DIRECT_AGENT_ROUTE, primaryOrchestratorTarget: PRIMARY_ORCHESTRATOR_TARGET, primaryOrchestratorAgentId: PRIMARY_ORCHESTRATOR_AGENT_ID,
   primaryOrchestratorGatewayId: PRIMARY_ORCHESTRATOR_GATEWAY_ID, legacyOrchestratorAgentId: LEGACY_ORCHESTRATOR_AGENT_ID, legacyOrchestratorGatewayId: LEGACY_ORCHESTRATOR_GATEWAY_ID,
+  progressMonitor,
   workflowManager, askManager, runtimeInstructionBus, moduleRegistry, gatewayManager, channelBridgeManager, inputLockManager, toolRegistry: globalToolRegistry,
   resumableSessionManager, wsClients, applyOrchestrationConfig, getChatCodexRunnerMode: () => (shouldUseMockChatCodexRunner(runtimeFlags) ? 'mock' : 'real'),
   getLoadedAgentConfigDir, getLoadedAgentConfigs, agentJsonSchema: AGENT_JSON_SCHEMA, reloadAgentJsonConfigs, wss, registry, getAgentRuntimeDeps, resourcePool,

@@ -72,6 +72,7 @@ export async function handleCmdList(): Promise<string> {
   return `可用命令：
   <##@system##>                    - 切换到系统代理（project=~/.finger，最新 session）
   <##@system:stopall##>            - 强制停止所有 Agent 当前推理（中断所有 active turns）
+  <##@system:progress:reset##>     - 重置当前会话的进度监控状态（清除疑似卡住态）
   <##@system:progress:mode@dev##>  - 切换进度上下文显示为 DEV（详细分解）
   <##@system:progress:mode@release##> - 切换进度上下文显示为 RELEASE（精简）
   <##@agent:list##>                 - 列出当前项目的会话
@@ -221,6 +222,33 @@ export async function handleSystemStopAllReasoning(runtime: RuntimeFacade): Prom
     lines.push(`⚠️ 未中断: ${failedSessions.length} 个 (${failedDetail})`);
   }
   return lines.join('\n');
+}
+
+export async function handleSystemProgressReset(
+  progressMonitor: {
+    resetProgressState: (options?: { sessionId?: string; reason?: string }) => {
+      scope: 'all' | 'session';
+      sessionId?: string;
+      clearedEntries: number;
+      clearedSessions: number;
+    };
+  } | undefined,
+  sessionId?: string,
+): Promise<string> {
+  if (!progressMonitor || typeof progressMonitor.resetProgressState !== 'function') {
+    return '❌ 进度重置失败：progress monitor 不可用。';
+  }
+  const normalizedSessionId = typeof sessionId === 'string' && sessionId.trim().length > 0
+    ? sessionId.trim()
+    : undefined;
+  const result = progressMonitor.resetProgressState({
+    ...(normalizedSessionId ? { sessionId: normalizedSessionId } : {}),
+    reason: 'system_progress_reset',
+  });
+  if (result.scope === 'session') {
+    return `✅ 已重置进度状态（session=${result.sessionId ?? normalizedSessionId ?? 'unknown'}，清理 ${result.clearedEntries} 条运行记录）。`;
+  }
+  return `✅ 已重置全局进度状态（清理 ${result.clearedEntries} 条运行记录，${result.clearedSessions} 个会话）。`;
 }
 
 /**

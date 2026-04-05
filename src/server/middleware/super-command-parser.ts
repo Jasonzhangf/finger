@@ -7,6 +7,7 @@
  * - <##@system:pwd=xxx##>message -> switch to system agent with password
  * - <##@system:restart##> -> trigger daemon restart (MessageHub handled)
  * - <##@system:stopall##> -> force-stop all active agent reasoning turns
+ * - <##@system:progress:reset##> -> reset progress monitor state for current session
  * - <##@system:progress:mode@dev##> -> set progress context mode to dev
  * - <##@system:progress:mode@release##> -> set progress context mode to release
  * - <##@agent##>message -> switch back to business agent
@@ -224,6 +225,12 @@ export function parseSuperCommand(content: string): ParsedMessage {
         content: mode === 'dev' || mode === 'release'
           ? `progress_mode:${mode}`
           : 'progress_mode:invalid',
+      };
+    } else if (normalizedAction === 'progress:reset') {
+      block = {
+        type: 'system' as const,
+        password: undefined,
+        content: 'progress_reset',
       };
     } else if (normalizedAction === 'provider:list') {
       block = {

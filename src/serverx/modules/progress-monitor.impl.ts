@@ -44,6 +44,7 @@ import {
   handleWaitingForUserEvent,
   snippetLimitForTool,
 } from '../../server/modules/progress-monitor-event-handlers.js';
+import { getExecutionLifecycleState, type ExecutionLifecycleState } from '../../server/modules/execution-lifecycle.js';
 
 const log = logger.module('ProgressMonitor');
 export type {
@@ -84,6 +85,7 @@ export class ProgressMonitor {
     'mailbox.ack',
   ]);
   private static readonly REPORT_DELIVERY_TIMEOUT_MS = 15_000;
+  private static readonly STALL_HEARTBEAT_FACTOR_NO_PENDING = 3;
 
   private buildProgressKey(sessionId: string, agentId: string): string {
     return `${sessionId}::${agentId}`;
@@ -95,6 +97,50 @@ export class ProgressMonitor {
       if (tool.result || tool.error) return false;
       return true;
     });
+  }
+
+  private resolveExecutionLifecycle(sessionId: string): ExecutionLifecycleState | null {
+    try {
+      return getExecutionLifecycleState(this.deps.sessionManager, sessionId);
+    } catch (error) {
+      log.debug('[ProgressMonitor] Failed to resolve execution lifecycle', {
+        sessionId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return null;
+    }
+  }
+
+  private resolveWaitLayer(
+    p: SessionProgress,
+    pendingTool: ToolCallRecord | undefined,
+    stalled: boolean,
+  ): {
+    waitLayer?: 'external' | 'internal';
+    waitKind?: 'provider' | 'tool' | 'user' | 'unknown';
+    waitDetail?: string;
+  } {
+    const lifecycle = this.resolveExecutionLifecycle(p.sessionId);
+    const stage = lifecycle?.stage;
+    const detail = lifecycle?.substage || lifecycle?.detail;
+
+    if (stage === 'waiting_model') {
+      return { waitLayer: 'external', waitKind: 'provider', ...(detail ? { waitDetail: detail } : {}) };
+    }
+    if (stage === 'waiting_tool') {
+      return { waitLayer: 'external', waitKind: 'tool', ...(detail ? { waitDetail: detail } : {}) };
+    }
+    if (stage === 'waiting_user') {
+      return { waitLayer: 'external', waitKind: 'user', ...(detail ? { waitDetail: detail } : {}) };
+    }
+    if (pendingTool) {
+      const toolName = resolveToolDisplayName(pendingTool.toolName?.trim() || '工具', pendingTool.params);
+      return { waitLayer: 'external', waitKind: 'tool', waitDetail: toolName };
+    }
+    if (stalled) {
+      return { waitLayer: 'internal', waitKind: 'unknown' };
+    }
+    return {};
   }
 
   private parseEventAgentId(event: any): string | undefined {
@@ -704,14 +750,19 @@ export class ProgressMonitor {
       const lastReportedSeq = p.lastReportedToolSeq ?? 0;
       const hasUnreportedTools = p.toolCallHistory.some((tool) => (tool.seq ?? 0) > lastReportedSeq);
       const enoughSinceLastReport = now - (p.lastReportTime ?? 0) >= this.config.intervalMs;
-      const stalled = now - p.lastUpdateTime >= this.config.intervalMs;
+      const pendingTool = this.findPendingMeaningfulTool(p);
+      const heartbeatIntervalMs = pendingTool
+        ? this.config.intervalMs
+        : this.config.intervalMs * ProgressMonitor.STALL_HEARTBEAT_FACTOR_NO_PENDING;
+      const stalled = now - p.lastUpdateTime >= heartbeatIntervalMs;
+      const waitLayerInfo = this.resolveWaitLayer(p, pendingTool, stalled);
       if (p.lastReportKey === reportKey) {
         // Even when summary key is stable, if tools keep flowing we still emit
         // one periodic update per interval to avoid long "silent running" windows.
         if (hasUnreportedTools && enoughSinceLastReport) {
           // continue below and send a compact batch update
         } else
-        if (!stalled || !this.shouldEmitHeartbeat(p, now)) {
+        if (!stalled || !this.shouldEmitHeartbeat(p, now, heartbeatIntervalMs)) {
           continue;
         }
       }
@@ -728,15 +779,20 @@ export class ProgressMonitor {
 
       // 没有真实信号时，仅在 stall 且存在挂起工具时发送心跳。
       if (!hasMeaningfulSignal) {
-        const pendingTool = this.findPendingMeaningfulTool(p);
-        if (stalled && this.shouldEmitHeartbeat(p, now)) {
+        if (stalled && this.shouldEmitHeartbeat(p, now, heartbeatIntervalMs)) {
           const report: ProgressReport = {
             type: 'progress_report',
             timestamp: new Date().toISOString(),
             sessionId: p.sessionId,
             agentId: p.agentId,
             progress: p,
-            summary: this.buildHeartbeatSummary(p, now, pendingTool),
+            summary: this.buildHeartbeatSummary(p, now, pendingTool, {
+              suspectedStall: !pendingTool,
+              waitLayer: waitLayerInfo.waitLayer,
+              waitKind: waitLayerInfo.waitKind,
+              waitDetail: waitLayerInfo.waitDetail,
+              resetHintCommand: '<##@system:progress:reset##> 或 <##@system:stopall##>',
+            }),
           };
           const delivered = await this.deliverProgressReport(report);
           if (!delivered) continue;
@@ -888,16 +944,27 @@ export class ProgressMonitor {
     return buildReportKeyUtil(data, this.latestStepSummary.get(progressKey));
   }
 
-  private shouldEmitHeartbeat(p: SessionProgress, now: number): boolean {
-    return shouldEmitHeartbeat(p, now, this.config.intervalMs);
+  private shouldEmitHeartbeat(p: SessionProgress, now: number, intervalMs = this.config.intervalMs): boolean {
+    return shouldEmitHeartbeat(p, now, intervalMs);
   }
 
   private findPendingMeaningfulTool(p: SessionProgress): ToolCallRecord | undefined {
     return findPendingMeaningfulTool(p, ProgressMonitor.LOW_VALUE_TOOLS);
   }
 
-  private buildHeartbeatSummary(p: SessionProgress, now: number, pendingTool?: ToolCallRecord): string {
-    return buildHeartbeatSummary(p, now, pendingTool);
+  private buildHeartbeatSummary(
+    p: SessionProgress,
+    now: number,
+    pendingTool?: ToolCallRecord,
+    options?: {
+      suspectedStall?: boolean;
+      waitLayer?: 'external' | 'internal';
+      waitKind?: 'provider' | 'tool' | 'user' | 'unknown';
+      waitDetail?: string;
+      resetHintCommand?: string;
+    },
+  ): string {
+    return buildHeartbeatSummary(p, now, pendingTool, options);
   }
 
   getProgress(sessionId: string): SessionProgress | undefined {
@@ -910,6 +977,61 @@ export class ProgressMonitor {
     if (running.length > 0) return running[0];
 
     return entries.sort((a, b) => b.lastUpdateTime - a.lastUpdateTime)[0];
+  }
+
+  resetProgressState(options?: {
+    sessionId?: string;
+    reason?: string;
+  }): {
+    scope: 'all' | 'session';
+    sessionId?: string;
+    clearedEntries: number;
+    clearedSessions: number;
+  } {
+    const sessionId = typeof options?.sessionId === 'string' && options.sessionId.trim().length > 0
+      ? options.sessionId.trim()
+      : undefined;
+    const reason = typeof options?.reason === 'string' && options.reason.trim().length > 0
+      ? options.reason.trim()
+      : 'manual';
+
+    if (sessionId) {
+      let clearedEntries = 0;
+      for (const [key, progress] of this.sessionProgress.entries()) {
+        if (progress.sessionId !== sessionId) continue;
+        this.sessionProgress.delete(key);
+        this.latestStepSummary.delete(key);
+        clearedEntries += 1;
+      }
+      this.sessionContextSnapshot.delete(sessionId);
+      log.info('[ProgressMonitor] Progress state reset for session', {
+        sessionId,
+        clearedEntries,
+        reason,
+      });
+      return {
+        scope: 'session',
+        sessionId,
+        clearedEntries,
+        clearedSessions: clearedEntries > 0 ? 1 : 0,
+      };
+    }
+
+    const clearedEntries = this.sessionProgress.size;
+    const clearedSessions = this.sessionContextSnapshot.size;
+    this.sessionProgress.clear();
+    this.latestStepSummary.clear();
+    this.sessionContextSnapshot.clear();
+    log.info('[ProgressMonitor] Progress state reset globally', {
+      clearedEntries,
+      clearedSessions,
+      reason,
+    });
+    return {
+      scope: 'all',
+      clearedEntries,
+      clearedSessions,
+    };
   }
 
   cleanupCompleted(): void {
