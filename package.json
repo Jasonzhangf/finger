@@ -26,7 +26,7 @@
     "dev": "tsx watch src/cli/index.ts",
     "start": "node dist/server/index.js",
     "cli": "node dist/cli/index.js",
-    "install:global": "npm install -g .",
+    "install:global": "bash -lc 'PKG=$(npm pack --silent) && npm install -g \"$PKG\" && rm -f \"$PKG\"'",
     "server:dev": "tsx watch src/server/index.ts",
     "test": "vitest run",
     "start:services": "./scripts/start-services.sh",
