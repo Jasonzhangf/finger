@@ -28,6 +28,7 @@ import { inferTagsAndTopic } from '../common/tag-topic-inference.js';
 import { pruneOrphanSessionRootDirs } from '../core/runtime-hygiene.js';
 import { normalizeProjectPathCanonical } from '../common/path-normalize.js';
 import { writeFileAtomicSync } from '../core/atomic-write.js';
+import { isObjectRecord } from '../server/common/object.js';
 
 const clog = createConsoleLikeLogger('SessionManager');
 
@@ -37,8 +38,11 @@ const SESSIONS_DIR = FINGER_PATHS.sessions.dir;
 const SYSTEM_SESSIONS_DIR = path.join(FINGER_PATHS.home, 'system', 'sessions');
 const SYSTEM_PROJECT_PATH = path.join(FINGER_PATHS.home, 'system');
 const SYSTEM_AGENT_ID = 'finger-system-agent';
+const REVIEWER_AGENT_ID = 'finger-reviewer';
 const SYSTEM_SESSION_PREFIX = 'system-';
 const ROOT_SESSION_FILE = 'main.json';
+const MEMORY_OWNERSHIP_VERSION = 1;
+const MEMORY_ACCESS_POLICY = 'owner_write_shared_read';
 
 const log = logger.module('SessionManager');
 
@@ -182,6 +186,13 @@ export class SessionManager {
     return path.join(this.getSessionDir(session), this.getSessionFileName(session));
   }
 
+  private inferOwnerFromSessionFilePath(filePath: string): string {
+    const base = path.basename(filePath);
+    const match = base.match(/^agent-(.+)\.json$/);
+    if (!match) return '';
+    return match[1]?.trim() ?? '';
+  }
+
   private loadSessionFile(filePath: string): void {
     const content = fs.readFileSync(filePath, 'utf-8');
     let session: Session;
@@ -199,10 +210,123 @@ export class SessionManager {
     // Ensure ledger pointer fields exist for backward compatibility
     ensureLedgerPointers(session);
     session.messages = Array.isArray(session.messages) ? session.messages : [];
+    const ownershipNormalized = this.normalizeSessionOwnershipContext(session, session.context, {
+      sourceFilePath: filePath,
+    });
+    session.context = ownershipNormalized.context;
     this.updateSessionProjectionState(session);
     delete (session as Session & { _cachedView?: unknown })._cachedView;
     this.sessions.set(session.id, session);
     this.sessionFilePaths.set(session.id, filePath);
+    if (ownershipNormalized.migrated) {
+      this.persistMigratedSessionFile(filePath, session);
+    }
+  }
+
+  private asContextString(context: Record<string, unknown>, key: string): string {
+    const value = context[key];
+    return typeof value === 'string' ? value.trim() : '';
+  }
+
+  private resolveSessionMemoryOwner(
+    session: Session,
+    context: Record<string, unknown>,
+    options?: { sourceFilePath?: string },
+  ): string {
+    const explicitOwner = this.asContextString(context, 'memoryOwnerWorkerId')
+      || this.asContextString(context, 'memory_owner_worker_id');
+    if (explicitOwner) return explicitOwner;
+
+    const ownerFromFile = this.inferOwnerFromSessionFilePath(options?.sourceFilePath ?? '');
+    if (ownerFromFile) return ownerFromFile;
+
+    const ownerAgentId = this.asContextString(context, 'ownerAgentId');
+    if (ownerAgentId) return ownerAgentId;
+
+    const dispatchWorkerId = this.asContextString(context, 'dispatchWorkerId');
+    if (dispatchWorkerId) return dispatchWorkerId;
+
+    const dispatchTargetAgentId = this.asContextString(context, 'dispatchTargetAgentId');
+    if (dispatchTargetAgentId) return dispatchTargetAgentId;
+
+    const sessionTier = this.asContextString(context, 'sessionTier').toLowerCase();
+    if (
+      session.id.startsWith('review-')
+      || sessionTier === 'reviewer'
+      || context.reviewerStateless === true
+    ) {
+      return REVIEWER_AGENT_ID;
+    }
+
+    if (
+      session.id.startsWith(SYSTEM_SESSION_PREFIX)
+      || sessionTier === 'system'
+      || sessionTier === 'orchestrator-root'
+      || sessionTier === 'orchestrator'
+      || session.projectPath === SYSTEM_PROJECT_PATH
+    ) {
+      return SYSTEM_AGENT_ID;
+    }
+
+    return SYSTEM_AGENT_ID;
+  }
+
+  private normalizeSessionOwnershipContext(
+    session: Session,
+    rawContext: Record<string, unknown> | undefined,
+    options?: { sourceFilePath?: string },
+  ): { context: Record<string, unknown>; migrated: boolean } {
+    const context = isObjectRecord(rawContext) ? { ...rawContext } : {};
+    let migrated = false;
+
+    const owner = this.resolveSessionMemoryOwner(session, context, options);
+    const currentOwner = this.asContextString(context, 'memoryOwnerWorkerId');
+    if (owner && currentOwner !== owner) {
+      context.memoryOwnerWorkerId = owner;
+      migrated = true;
+    }
+
+    const currentOwnerAgentId = this.asContextString(context, 'ownerAgentId');
+    if (owner && !currentOwnerAgentId) {
+      context.ownerAgentId = owner;
+      migrated = true;
+    }
+
+    if (!('memoryAccessPolicy' in context)) {
+      context.memoryAccessPolicy = MEMORY_ACCESS_POLICY;
+      migrated = true;
+    }
+
+    const schemaVersion = context.memoryOwnershipVersion;
+    if (schemaVersion !== MEMORY_OWNERSHIP_VERSION) {
+      context.memoryOwnershipVersion = MEMORY_OWNERSHIP_VERSION;
+      migrated = true;
+    }
+
+    if (migrated) {
+      context.memoryOwnershipUpdatedAt = new Date().toISOString();
+    }
+
+    return { context, migrated };
+  }
+
+  private persistMigratedSessionFile(filePath: string, session: Session): void {
+    try {
+      const persistedSession: Session = { ...session };
+      delete (persistedSession as Session & { _cachedView?: unknown })._cachedView;
+      writeFileAtomicSync(filePath, JSON.stringify(persistedSession, null, 2));
+      log.debug('Backfilled session ownership metadata during load', {
+        sessionId: session.id,
+        filePath,
+        memoryOwnerWorkerId: this.asContextString(session.context, 'memoryOwnerWorkerId') || undefined,
+      });
+    } catch (error) {
+      log.warn('Failed to persist session ownership migration', {
+        sessionId: session.id,
+        filePath,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
   }
 
   private normalizeProjectPath(projectPath: string): string {
@@ -434,6 +558,7 @@ export class SessionManager {
       context: {},
       ...LEDGER_POINTER_DEFAULTS,
     };
+    session.context = this.normalizeSessionOwnershipContext(session, session.context).context;
 
     this.sessions.set(id, session);
     this.saveSession(session);
@@ -473,6 +598,7 @@ export class SessionManager {
       },
       ...LEDGER_POINTER_DEFAULTS,
     };
+    session.context = this.normalizeSessionOwnershipContext(session, session.context).context;
 
     this.sessions.set(systemSessionId, session);
     this.saveSession(session);
@@ -495,6 +621,26 @@ export class SessionManager {
 
    const existing = candidates[0];
    if (existing) {
+     const context = (existing.context && typeof existing.context === 'object')
+       ? (existing.context as Record<string, unknown>)
+       : {};
+     const ownerAgentId = typeof context.ownerAgentId === 'string' ? context.ownerAgentId.trim() : '';
+     const memoryOwnerWorkerId = typeof context.memoryOwnerWorkerId === 'string'
+       ? context.memoryOwnerWorkerId.trim()
+       : '';
+     if (ownerAgentId !== SYSTEM_AGENT_ID || memoryOwnerWorkerId !== SYSTEM_AGENT_ID) {
+       existing.context = {
+         ...context,
+         ownerAgentId: SYSTEM_AGENT_ID,
+         memoryOwnerWorkerId: SYSTEM_AGENT_ID,
+         memoryOwnershipUpdatedAt: new Date().toISOString(),
+       };
+       log.warn('Repaired system session ownership mismatch during getOrCreateSystemSession', {
+         sessionId: existing.id,
+         previousOwnerAgentId: ownerAgentId || undefined,
+         previousMemoryOwnerWorkerId: memoryOwnerWorkerId || undefined,
+       });
+     }
      existing.lastAccessedAt = new Date().toISOString();
      this.saveSession(existing);
      return existing;
@@ -531,6 +677,7 @@ export class SessionManager {
       context: {},
       ...LEDGER_POINTER_DEFAULTS,
     };
+    session.context = this.normalizeSessionOwnershipContext(session, session.context).context;
 
     this.sessions.set(sessionId, session);
     this.saveSession(session);
@@ -846,14 +993,14 @@ export class SessionManager {
     if (!session) return false;
     const normalizedMode = mode.trim();
     if (!normalizedMode) return false;
-    session.context = {
+    session.context = this.normalizeSessionOwnershipContext(session, {
       ...session.context,
       activeLedgerMode: normalizedMode,
       transientLedgerMode: normalizedMode,
       transientLedgerSource: options?.source ?? session.context.transientLedgerSource,
       transientLedgerAutoDeleteOnStop: options?.autoDeleteOnStop !== false,
       transientLedgerSetAt: new Date().toISOString(),
-    };
+    }).context;
     this.saveSession(session);
     return true;
   }
@@ -867,7 +1014,7 @@ export class SessionManager {
     delete nextContext.transientLedgerSource;
     delete nextContext.transientLedgerAutoDeleteOnStop;
     delete nextContext.transientLedgerSetAt;
-    session.context = nextContext;
+    session.context = this.normalizeSessionOwnershipContext(session, nextContext).context;
     this.saveSession(session);
     return true;
   }
@@ -1156,14 +1303,14 @@ export class SessionManager {
     session.totalTokens = result.pointers.totalTokens;
     session._cachedView = undefined;
 
-    session.context = {
+    session.context = this.normalizeSessionOwnershipContext(session, {
       ...session.context,
       compressedHistory: {
         timestamp: new Date().toISOString(),
         originalCount: result.result?.tokenCount || 0,
         summary: result.result?.summary || '',
       },
-    };
+    }).context;
 
     this.saveSession(session);
     log.info('Compressed session ${sessionId}: ${result.result?.summary?.slice(0, 100)}...', { "sessionId": sessionId, "result.result?.summary?.slice(0, 100)": result.result?.summary?.slice(0, 100) });
@@ -1181,7 +1328,11 @@ export class SessionManager {
   pauseSession(sessionId: string): boolean {
     const session = this.sessions.get(sessionId);
     if (!session) return false;
-    session.context = { ...session.context, paused: true, pausedAt: new Date().toISOString() };
+    session.context = this.normalizeSessionOwnershipContext(session, {
+      ...session.context,
+      paused: true,
+      pausedAt: new Date().toISOString(),
+    }).context;
     this.saveSession(session);
     return true;
   }
@@ -1189,7 +1340,11 @@ export class SessionManager {
   resumeSession(sessionId: string): boolean {
     const session = this.sessions.get(sessionId);
     if (!session) return false;
-    session.context = { ...session.context, paused: false, resumedAt: new Date().toISOString() };
+    session.context = this.normalizeSessionOwnershipContext(session, {
+      ...session.context,
+      paused: false,
+      resumedAt: new Date().toISOString(),
+    }).context;
     this.saveSession(session);
     return true;
   }
@@ -1202,7 +1357,11 @@ export class SessionManager {
   updateContext(sessionId: string, context: Record<string, unknown>): boolean {
     const session = this.sessions.get(sessionId);
     if (!session) return false;
-    session.context = { ...session.context, ...context };
+    const mergedContext = {
+      ...(isObjectRecord(session.context) ? session.context : {}),
+      ...context,
+    };
+    session.context = this.normalizeSessionOwnershipContext(session, mergedContext).context;
     this.saveSession(session);
     return true;
   }

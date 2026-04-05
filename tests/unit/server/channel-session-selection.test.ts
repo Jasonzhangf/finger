@@ -49,6 +49,49 @@ describe('resolveSessionForChannelTarget', () => {
     expect(channelContextManager.pinSession).not.toHaveBeenCalled();
   });
 
+  it('ignores pinned session with owner mismatch and repins to owned target session', () => {
+    const ensureSession = vi.fn();
+    const sessionManager = {
+      getSession: vi.fn((id: string) => {
+        if (id === 'pinned-bad') {
+          return {
+            id: 'pinned-bad',
+            projectPath: '/repo/a',
+            context: { ownerAgentId: 'finger-system-agent' },
+          };
+        }
+        return null;
+      }),
+      listSessions: vi.fn(() => [
+        {
+          id: 'owned-project-1',
+          projectPath: '/repo/a',
+          lastAccessedAt: '2026-04-05T10:00:00.000Z',
+          context: { ownerAgentId: 'finger-project-agent' },
+        },
+      ]),
+      ensureSession,
+      getOrCreateSystemSession: vi.fn(() => ({ id: 'system-main' })),
+    } as any;
+    const channelContextManager = {
+      getPinnedSession: vi.fn(() => 'pinned-bad'),
+      pinSession: vi.fn(),
+    } as any;
+
+    const result = resolveSessionForChannelTarget({
+      sessionManager,
+      channelContextManager,
+      targetAgentId: 'finger-project-agent',
+      channelId: 'qqbot',
+      channelContext: { projectPath: '/repo/a' },
+    });
+
+    expect(result).toEqual({ sessionId: 'owned-project-1', projectPath: '/repo/a' });
+    expect(sessionManager.getSession).toHaveBeenCalledWith('pinned-bad');
+    expect(ensureSession).toHaveBeenCalledWith('owned-project-1', '/repo/a', 'channel:qqbot');
+    expect(channelContextManager.pinSession).toHaveBeenCalledWith('qqbot', 'finger-project-agent', 'owned-project-1');
+  });
+
   it('creates deterministic stable session id via ensureSession when no pinned/owned session exists', () => {
     const sessionStore = new Map<string, { id: string }>();
     const ensureSession = vi.fn((sessionId: string) => {

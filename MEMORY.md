@@ -37,10 +37,10 @@
 状态: completed
 
 ### 用户要求（Jason）
-1. 进度更新中 `update_plan` 需展示完整计划清单；  
-2. `dispatch` 需展示派发任务身份与内容；  
-3. `write_stdin` 需展示实际写入内容；  
-4. context rebuild 优先使用 compact digest 历史；  
+1. 进度更新中 `update_plan` 需展示完整计划清单；
+2. `dispatch` 需展示派发任务身份与内容；
+3. `write_stdin` 需展示实际写入内容；
+4. context rebuild 优先使用 compact digest 历史；
 5. context builder 专用排序模型不可用时，不中断，降级到 digest 历史继续执行。
 
 ### 关键实现
@@ -100,79 +100,81 @@
 # MEMORY.md
 
 ## General Memory
-- [2026-03-14] 长期记忆仅写入本文件；短期记忆写入 `CACHE.md`，review 通过后汇总写入本文件并清空 `CACHE.md`（保留头部）。  
+- [2026-03-14] 长期记忆仅写入本文件；短期记忆写入 `CACHE.md`，review 通过后汇总写入本文件并清空 `CACHE.md`（保留头部）。
   Tags: memory, cache, review
-- [2026-03-25] Jason 明确：Finger 项目的 Skills 目录唯一真源是 `~/.finger/skills`；不要写到 `~/.openclaw/skills`、`~/.codex/skills` 或仓库内临时 `skills/` 目录。  
+- [2026-03-25] Jason 明确：Finger 项目的 Skills 目录唯一真源是 `~/.finger/skills`；不要写到 `~/.openclaw/skills`、`~/.codex/skills` 或仓库内临时 `skills/` 目录。
   Tags: skills, finger, ssot, directory
-- [2026-04-04] Jason 新增强约束：默认禁止“先回退再说”的处理方式。出现错误时优先做根因诊断与正向修复；回退仅在用户明确授权时作为例外。  
+- [2026-04-04] Jason 新增强约束：默认禁止“先回退再说”的处理方式。出现错误时优先做根因诊断与正向修复；回退仅在用户明确授权时作为例外。
   Tags: rollback, root-cause-fix, execution-policy, no-rollback-default
 
 ## Architecture & Runtime
-- [2026-03-11] 三层架构：blocks（唯一真源）/ orchestration（编排）/ ui（展示），保持层间解耦。  
+- [2026-03-11] 三层架构：blocks（唯一真源）/ orchestration（编排）/ ui（展示），保持层间解耦。
   Tags: architecture, blocks, orchestration, ui
-- [2026-03-28] Jason 明确要求：每次编译都必须自动 bump 一个可读 build 版本（当前用 `package.json.fingerBuildVersion`，格式如 `0.1.0001`），并且每次交付安装后都必须明确重启 daemon 并校验 `/health`；不能靠人工口头确认“应该已经重启”。  
+- [2026-03-28] Jason 明确要求：每次编译都必须自动 bump 一个可读 build 版本（当前用 `package.json.fingerBuildVersion`，格式如 `0.1.0001`），并且每次交付安装后都必须明确重启 daemon 并校验 `/health`；不能靠人工口头确认“应该已经重启”。
   Tags: build-version, daemon, release, automation, runtime
-- [2026-03-11] 标准化 Channel Bridge：统一 types/manager/openclaw-adapter，消息闭环为 `channel-message -> handleChannelMessage -> hub.route -> outputs`。  
+- [2026-03-11] 标准化 Channel Bridge：统一 types/manager/openclaw-adapter，消息闭环为 `channel-message -> handleChannelMessage -> hub.route -> outputs`。
   Tags: channel-bridge, openclaw, messagehub
-- [2026-03-11] 双 daemon 架构：两组端口（9999/9998 & 9997/9996），5s 健康检查，故障自动重启；CLI 提供 start/stop/restart/status/enable-autostart。  
+- [2026-03-11] 双 daemon 架构：两组端口（9999/9998 & 9997/9996），5s 健康检查，故障自动重启；CLI 提供 start/stop/restart/status/enable-autostart。
   Tags: daemon, dual-daemon, runtime
-- [2026-03-12] ChannelBridge 全部统一进入 MessageHub：ChannelBridge 只做 IO，不做 routing；消息 envelope 统一 `id/messageId/replyTo` 语义。  
+- [2026-03-12] ChannelBridge 全部统一进入 MessageHub：ChannelBridge 只做 IO，不做 routing；消息 envelope 统一 `id/messageId/replyTo` 语义。
   Tags: channel-bridge, messagehub, envelope
-- [2026-03-12] 动态接入开关：`FINGER_CHANNEL_BRIDGE_USE_HUB` 控制是否走 MessageHub；通道按 `channel.<channelId>` 自动注册路由。  
+- [2026-03-12] 动态接入开关：`FINGER_CHANNEL_BRIDGE_USE_HUB` 控制是否走 MessageHub；通道按 `channel.<channelId>` 自动注册路由。
   Tags: channel-bridge, config, routing
-- [2026-03-12] QQ Bot 通道：`msg_id` 必须保留为原始 MessageSid；`replyTo` 必须使用 `metadata.messageId`。  
+- [2026-03-12] QQ Bot 通道：`msg_id` 必须保留为原始 MessageSid；`replyTo` 必须使用 `metadata.messageId`。
   Tags: qqbot, messagehub, replyTo
 
 ## System Agent & Super Commands
-- [2026-03-11] System Agent 仅允许操作 `~/.finger/system`，独立 session 与 cwd，响应需自报家门 `SystemBot:`。  
+- [2026-03-11] System Agent 仅允许操作 `~/.finger/system`，独立 session 与 cwd，响应需自报家门 `SystemBot:`。
   Tags: system-agent, isolation, sessions
-- [2026-03-11] 超级命令语法 `<##@system##>` / `<##@agent##>` / `<##@system:pwd=...##>`；系统命令有通道白名单与可选密码鉴权。  
+- [2026-03-11] 超级命令语法 `<##@system##>` / `<##@agent##>` / `<##@system:pwd=...##>`；系统命令有通道白名单与可选密码鉴权。
   Tags: super-command, system-auth, channel-auth
-- [2026-03-17] CLI `execute --task` 载荷兼容修复：为 `EXECUTE` 同时发送 `task/text/content`，并在 `parseUnifiedAgentInput` 支持 `task/description` 文本别名，避免 gateway/agent 路径出现 `No input text provided`。  
+- [2026-03-17] CLI `execute --task` 载荷兼容修复：为 `EXECUTE` 同时发送 `task/text/content`，并在 `parseUnifiedAgentInput` 支持 `task/description` 文本别名，避免 gateway/agent 路径出现 `No input text provided`。
   Tags: cli, execute, message-payload, system-agent, agent-runtime
-- [2026-03-13] ChannelContextManager 作为上下文真源：system/agent/project 切换命令必须更新上下文；provider 切换不影响 agent 上下文。  
+- [2026-03-13] ChannelContextManager 作为上下文真源：system/agent/project 切换命令必须更新上下文；provider 切换不影响 agent 上下文。
   Tags: channel-context, persistence
-- [2026-03-13] MessageHub 指令集：Project -> Session -> Agent 关系为单一真源；通道策略 `direct`/`mailbox` 决定是否可直达 agent。  
+- [2026-03-13] MessageHub 指令集：Project -> Session -> Agent 关系为单一真源；通道策略 `direct`/`mailbox` 决定是否可直达 agent。
   Tags: messagehub, commands, auth, session
 
 ## Session Management & Agent Runtime SSOT
-- [2026-03-29] Jason 新增约束：`mailbox/news-cron/email-cron/clock/systemDirectInject` 等后台推理链路默认写入 **transient ledger**（非 main ledger）；当该轮 `finishReason=stop` 成功闭环时自动删除对应 transient ledger，未完成/失败必须保留以便恢复与排查。实现上通过 `SessionManager.setTransientLedgerMode()/finalizeTransientLedgerMode()` 与 message/dispatch 路由的 source 策略联动。  
+- [2026-04-05] Jason 明确新的会话记忆原则：Session 等同于 worker 的活跃记忆，ownership 必须绑定到 worker（`memoryOwnerWorkerId`）；scope 仅用于可见性筛选，不可作为 ownership 迁移机制。允许跨 agent 只读共享，但禁止跨 worker 写入/执行。reviewer 为无历史特例，每次按当前 CWD 使用干净审查上下文。旧 session 数据需启动时自动迁移补齐 ownership 字段并持久化。
+  Tags: session, memory, worker-ownership, scope, reviewer-stateless, migration
+- [2026-03-29] Jason 新增约束：`mailbox/news-cron/email-cron/clock/systemDirectInject` 等后台推理链路默认写入 **transient ledger**（非 main ledger）；当该轮 `finishReason=stop` 成功闭环时自动删除对应 transient ledger，未完成/失败必须保留以便恢复与排查。实现上通过 `SessionManager.setTransientLedgerMode()/finalizeTransientLedgerMode()` 与 message/dispatch 路由的 source 策略联动。
   Tags: transient-ledger, mailbox, news-cron, recovery, session-manager
-- [2026-03-29] Jason 确认 reviewer gate 必须可配置：`orchestration.reviewPolicy.dispatchReviewMode` 支持 `off|always`（默认 `off`），仅在 `enabled=true && dispatchReviewMode=always` 时，对 `system -> project` 完成态自动派发 reviewer；review 不通过可按 attempt 回传重派 project。  
+- [2026-03-29] Jason 确认 reviewer gate 必须可配置：`orchestration.reviewPolicy.dispatchReviewMode` 支持 `off|always`（默认 `off`），仅在 `enabled=true && dispatchReviewMode=always` 时，对 `system -> project` 完成态自动派发 reviewer；review 不通过可按 attempt 回传重派 project。
   Tags: reviewer-gate, dispatch-review-mode, orchestration-config, optional
-- [2026-03-28] Jason 明确新增硬约束：Context Builder 的最小历史单位必须是“完整 task block”，禁止 task 内编辑。也就是每个被选中的 task 必须保留从 `role=user` 到该轮结束（含 assistant/tool_call/tool_result/tool_error/reasoning，直到 `finish_reason=stop`）的完整链路；允许做的只有 task 级别选择/重排/整块剔除，禁止在 task 内删消息、改顺序或用摘要片段替代事件链。该规则已同步到 `docs/design/context-builder-design.md`。  
+- [2026-03-28] Jason 明确新增硬约束：Context Builder 的最小历史单位必须是“完整 task block”，禁止 task 内编辑。也就是每个被选中的 task 必须保留从 `role=user` 到该轮结束（含 assistant/tool_call/tool_result/tool_error/reasoning，直到 `finish_reason=stop`）的完整链路；允许做的只有 task 级别选择/重排/整块剔除，禁止在 task 内删消息、改顺序或用摘要片段替代事件链。该规则已同步到 `docs/design/context-builder-design.md`。
   Tags: context-builder, task-granularity, history, invariant, ledger
-- [2026-03-28] Jason 确认当前 System Agent 收敛策略采用两阶段路线：**第一阶段先靠 prompt 约束收敛行为**（长时自运行、停止前复盘目标、伪完成转真完成、真完成后再看 heartbeat）；若后续实测 prompt 约束仍不稳定，则进入 **第二阶段 reviewer gate**：在 `finish_reason=stop` 时强制走 reviewer/审查环节，未通过则直接打回进入下一轮继续执行，而不是把 stop 视为最终完成。  
+- [2026-03-28] Jason 确认当前 System Agent 收敛策略采用两阶段路线：**第一阶段先靠 prompt 约束收敛行为**（长时自运行、停止前复盘目标、伪完成转真完成、真完成后再看 heartbeat）；若后续实测 prompt 约束仍不稳定，则进入 **第二阶段 reviewer gate**：在 `finish_reason=stop` 时强制走 reviewer/审查环节，未通过则直接打回进入下一轮继续执行，而不是把 stop 视为最终完成。
   Tags: system-agent, prompt, reviewer-gate, stop-review, closure, roadmap
-- [2026-03-28] Jason 明确收敛 System Agent/heartbeat 启动顺序：**先收上一轮任务，再处理 heartbeat**。具体规则：daemon/heartbeat 启动后先检查上一轮执行状态；若上一轮未到 `finish_reason=stop`，必须直接从中断处继续；若已 `stop`，也必须先审查是否只是“伪完成”，若未真正完成则继续执行直到真完成；只有上一轮任务真正闭环后，才允许查看/处理 heartbeat 文件。System prompt / developer prompt / `SystemAgentManager` 启动恢复逻辑已同步到该规则。  
+- [2026-03-28] Jason 明确收敛 System Agent/heartbeat 启动顺序：**先收上一轮任务，再处理 heartbeat**。具体规则：daemon/heartbeat 启动后先检查上一轮执行状态；若上一轮未到 `finish_reason=stop`，必须直接从中断处继续；若已 `stop`，也必须先审查是否只是“伪完成”，若未真正完成则继续执行直到真完成；只有上一轮任务真正闭环后，才允许查看/处理 heartbeat 文件。System prompt / developer prompt / `SystemAgentManager` 启动恢复逻辑已同步到该规则。
   Tags: system-agent, heartbeat, recovery, stop-review, startup-order, closure
-- [2026-03-28] Daemon 守护链路进一步收敛：`daemon-restart/guard/stop/cleanup` 脚本已统一改为读取 `FINGER_HOME`（默认 `~/.finger`）下的 `runtime/logs`，不再错误使用仓库内 `.finger/runtime`。同时 `port-guard.ensureSingleInstance()` 改为“只回收 finger 自己的占口进程”：先用 `lsof + ps` 校验 cmdline 命中当前 `FINGER_SOURCE_ROOT` 的 `dist/server/index.js / dist/daemon/dual-daemon / daemon-guard.cjs`，再按显式 PID 树发送 `SIGTERM -> SIGKILL`；若端口被无关进程占用则直接报错，不误杀。`src/orchestration/daemon.ts` 也已切到复用这套安全守卫，不再保留旧的按端口直接 kill 逻辑。  
+- [2026-03-28] Daemon 守护链路进一步收敛：`daemon-restart/guard/stop/cleanup` 脚本已统一改为读取 `FINGER_HOME`（默认 `~/.finger`）下的 `runtime/logs`，不再错误使用仓库内 `.finger/runtime`。同时 `port-guard.ensureSingleInstance()` 改为“只回收 finger 自己的占口进程”：先用 `lsof + ps` 校验 cmdline 命中当前 `FINGER_SOURCE_ROOT` 的 `dist/server/index.js / dist/daemon/dual-daemon / daemon-guard.cjs`，再按显式 PID 树发送 `SIGTERM -> SIGKILL`；若端口被无关进程占用则直接报错，不误杀。`src/orchestration/daemon.ts` 也已切到复用这套安全守卫，不再保留旧的按端口直接 kill 逻辑。
   Tags: daemon, self-heal, single-instance, runtime-hygiene, port-guard, ssot
-- [2026-03-28] `finger-263.2` 阶段性收敛：执行生命周期现在不只记录 `stage/substage`，还会透传结构化恢复字段 `timeoutMs / retryDelayMs / recoveryAction / delivery`。本轮已把这些字段从 `message-route` 的 blocking timeout/retry、`dispatch.ts` 的 execute-throw/result-failed/auto-deploy retry、`queued_mailbox` fallback、以及 `event-forwarding` 的 `turn_retry/turn_error` 全链路写入 `executionLifecycle`。另外修复了 `message-route` blocking `Promise.race` 的 timeout timer 未清理问题，避免旧 timer 在后续轮次里残留触发。  
+- [2026-03-28] `finger-263.2` 阶段性收敛：执行生命周期现在不只记录 `stage/substage`，还会透传结构化恢复字段 `timeoutMs / retryDelayMs / recoveryAction / delivery`。本轮已把这些字段从 `message-route` 的 blocking timeout/retry、`dispatch.ts` 的 execute-throw/result-failed/auto-deploy retry、`queued_mailbox` fallback、以及 `event-forwarding` 的 `turn_retry/turn_error` 全链路写入 `executionLifecycle`。另外修复了 `message-route` blocking `Promise.race` 的 timeout timer 未清理问题，避免旧 timer 在后续轮次里残留触发。
   Tags: execution-lifecycle, watchdog, retry, timeout, mailbox, dispatch, pending-input
-- [2026-03-28] Jason 明确要求：内部工具必须统一分为两类——`state`（结构化真源/状态工具，必须进程内直连，禁止依赖 CLI stdout 解析）与 `execution`（命令/PTTY/外部执行器，可使用 subprocess）。已将 `context_ledger.memory` 从 CLI/stdout 协议改为直接调用 `executeContextLedgerMemory(...)`，并新增 `docs/design/internal-tool-execution-model.md` 作为规则说明。  
+- [2026-03-28] Jason 明确要求：内部工具必须统一分为两类——`state`（结构化真源/状态工具，必须进程内直连，禁止依赖 CLI stdout 解析）与 `execution`（命令/PTTY/外部执行器，可使用 subprocess）。已将 `context_ledger.memory` 从 CLI/stdout 协议改为直接调用 `executeContextLedgerMemory(...)`，并新增 `docs/design/internal-tool-execution-model.md` 作为规则说明。
   Tags: internal-tools, ledger, state-tool, execution-tool, ssot
-- [2026-03-26] Jason 确认切换语义：`<##@agent##>` / `<##@agent:alias##>` / `<##@system##>` 采用**持久化 channel context**，未显式切换就保持当前目标；默认使用 latest（固定续写）而不是自动 `new`。`<##...##>` 是唯一有效切换语法（不使用 `<**...**>`）。  
+- [2026-03-26] Jason 确认切换语义：`<##@agent##>` / `<##@agent:alias##>` / `<##@system##>` 采用**持久化 channel context**，未显式切换就保持当前目标；默认使用 latest（固定续写）而不是自动 `new`。`<##...##>` 是唯一有效切换语法（不使用 `<**...**>`）。
   Tags: channel-context, super-command, agent-switch, latest-session, ledger
 - [2026-03-24] 约束更新（Jason 明确）：旧的 `new / resume / session` 语义是基于旧 session 文件模型；新架构中这些操作必须以 **ledger 为唯一真源** 解释与实现。UI 的会话切换/新建/恢复都要对应 ledger（持久化），动态 session 只是按 ledger slots 拼接的上下文视图。
   Tags: session, ledger, ssot, ui
-- [2026-03-25] Jason 明确补充：要对齐 codex 的模型可见性。`ledger` 只负责重建历史消息；`system prompt / developer instructions / skills / mailbox baseline / user input` 必须稳定注入，不得因 context builder 重建历史而丢失。`system agent` 与 `project agent` 各自维护独立 session/ledger；派发与回报要写入各自 ledger 流水。  
+- [2026-03-25] Jason 明确补充：要对齐 codex 的模型可见性。`ledger` 只负责重建历史消息；`system prompt / developer instructions / skills / mailbox baseline / user input` 必须稳定注入，不得因 context builder 重建历史而丢失。`system agent` 与 `project agent` 各自维护独立 session/ledger；派发与回报要写入各自 ledger 流水。
   Tags: session, ledger, codex-alignment, prompt-injection, mailbox, user-input
-- [2026-03-26] ChatCodex reasoning 实时推送修复：`src/agents/chat-codex/chat-codex-module.ts` 不再只在 `task_complete.metadata_json.reasoning_trace` 阶段补发 reasoning，而是在 streaming `model_round` 等 kernel event 携带 `metadata_json.reasoning_trace` 时立即抽取并转成 `kernel_event(type=reasoning)`；同一 turn 内按 `agentId + roleProfile + index + text` 去重，避免结尾重复批量推送。相关验证已覆盖 `tests/unit/agents/chat-codex-module.test.ts`，并联通 `event-forwarding` / `agent-status-subscriber` 定向测试。  
+- [2026-03-26] ChatCodex reasoning 实时推送修复：`src/agents/chat-codex/chat-codex-module.ts` 不再只在 `task_complete.metadata_json.reasoning_trace` 阶段补发 reasoning，而是在 streaming `model_round` 等 kernel event 携带 `metadata_json.reasoning_trace` 时立即抽取并转成 `kernel_event(type=reasoning)`；同一 turn 内按 `agentId + roleProfile + index + text` 去重，避免结尾重复批量推送。相关验证已覆盖 `tests/unit/agents/chat-codex-module.test.ts`，并联通 `event-forwarding` / `agent-status-subscriber` 定向测试。
   Tags: reasoning, streaming, chat-codex, event-forwarding, progress-update
-- [2026-03-26] Jason 明确要求 ledger/context builder 必须开始使用 embedding recall，而不是只靠 tags/topic 的精确或 fuzzy 文本匹配。已在 `src/runtime/context-builder.ts` 前置接入 session-local hybrid recall：对历史 task block 建立 `task-embedding-index.json`（保存在 ledger 目录），embedding 文本由 `tags + topic + 首条 user + 最后一条 assistant` 组成；当前 prompt 先做语义召回，再进入 build mode / 可选模型 rerank。当前 task 不参与历史重排，始终保留在尾部。  
+- [2026-03-26] Jason 明确要求 ledger/context builder 必须开始使用 embedding recall，而不是只靠 tags/topic 的精确或 fuzzy 文本匹配。已在 `src/runtime/context-builder.ts` 前置接入 session-local hybrid recall：对历史 task block 建立 `task-embedding-index.json`（保存在 ledger 目录），embedding 文本由 `tags + topic + 首条 user + 最后一条 assistant` 组成；当前 prompt 先做语义召回，再进入 build mode / 可选模型 rerank。当前 task 不参与历史重排，始终保留在尾部。
   Tags: ledger, context-builder, embedding, hybrid-recall, tag-recall
-- [2026-03-26] Jason 提出新的长期收敛方向：废弃“session 文件=持久化会话真源”的概念，收敛到 **Ledger-only persistence + dynamic session views**。新的上下文结构应明确拆分为：`本轮推理区(working set)` 与 `历史记忆区(history memory zone)`；超出预算的历史不再强行注入，而是通过 `context_ledger.memory search/query` 按需检索。该方向已落盘设计文档 `docs/design/ledger-only-dynamic-session-views.md`，并要求后续提示词明确告诉模型：当前上下文不是完整历史，证据不足时必须主动检索 ledger。  
+- [2026-03-26] Jason 提出新的长期收敛方向：废弃“session 文件=持久化会话真源”的概念，收敛到 **Ledger-only persistence + dynamic session views**。新的上下文结构应明确拆分为：`本轮推理区(working set)` 与 `历史记忆区(history memory zone)`；超出预算的历史不再强行注入，而是通过 `context_ledger.memory search/query` 按需检索。该方向已落盘设计文档 `docs/design/ledger-only-dynamic-session-views.md`，并要求后续提示词明确告诉模型：当前上下文不是完整历史，证据不足时必须主动检索 ledger。
   Tags: ledger, session, dynamic-view, context-builder, prompt, history-zone
-- [2026-03-26] `finger-262.3` 已实现第一步：context builder 显式区分 `working_set` 与 `historical_memory`。当前 task block 不再参与历史 recall 竞争，始终保留在尾部；`buildContext()` 的 messages 会标记 `contextZone`，metadata 追加 `workingSetTaskBlockCount / historicalTaskBlockCount / workingSetMessageCount / historicalMessageCount / workingSetTokens / historicalTokens`。Context Monitor / session view 映射链路已透出这些分区信息，验证通过：context-builder 定向测试 + TypeScript 编译。  
+- [2026-03-26] `finger-262.3` 已实现第一步：context builder 显式区分 `working_set` 与 `historical_memory`。当前 task block 不再参与历史 recall 竞争，始终保留在尾部；`buildContext()` 的 messages 会标记 `contextZone`，metadata 追加 `workingSetTaskBlockCount / historicalTaskBlockCount / workingSetMessageCount / historicalMessageCount / workingSetTokens / historicalTokens`。Context Monitor / session view 映射链路已透出这些分区信息，验证通过：context-builder 定向测试 + TypeScript 编译。
   Tags: context-builder, working-set, history-zone, ledger, observability
-- [2026-03-28] Context Builder 连续性修复：新增 `contextBuilderHistoryIndex` 持久化索引（history/current/pinned/anchor），并在 `finger-role-modules` 中改为“先走 persisted indexed history，再按需 bootstrap”，避免重启后每次首轮都重建导致历史顺序反复抖动。`chat-codex-module` 同步加保护：当 `contextHistorySource=context_builder_*` 时，不再优先使用 `metadata.kernelApiHistory` 覆盖 builder 结果。新增测试 `tests/unit/server/context-builder-history-index.test.ts`。  
+- [2026-03-28] Context Builder 连续性修复：新增 `contextBuilderHistoryIndex` 持久化索引（history/current/pinned/anchor），并在 `finger-role-modules` 中改为“先走 persisted indexed history，再按需 bootstrap”，避免重启后每次首轮都重建导致历史顺序反复抖动。`chat-codex-module` 同步加保护：当 `contextHistorySource=context_builder_*` 时，不再优先使用 `metadata.kernelApiHistory` 覆盖 builder 结果。新增测试 `tests/unit/server/context-builder-history-index.test.ts`。
   Tags: context-builder, indexed-history, bootstrap, kernelApiHistory, ledger
-- [2026-03-28] QQ/Weixin 重复回复修复：根因是 direct send (`[HH:mm] ...`) 与 bodyUpdates (`正文：...`) 存在并发竞态，body 已在发送中但去重标记尚未落盘，导致两路都发。修复：`AgentStatusSubscriber.sendBodyUpdate` 在实际 IO 前预写 route/session 去重标记；`channel-bridge-hub-route.sendReply` 在发送前先 `markFinalReplySent`，发送失败再 `clearFinalReplySent` 回滚。新增单测覆盖失败回滚。  
+- [2026-03-28] QQ/Weixin 重复回复修复：根因是 direct send (`[HH:mm] ...`) 与 bodyUpdates (`正文：...`) 存在并发竞态，body 已在发送中但去重标记尚未落盘，导致两路都发。修复：`AgentStatusSubscriber.sendBodyUpdate` 在实际 IO 前预写 route/session 去重标记；`channel-bridge-hub-route.sendReply` 在发送前先 `markFinalReplySent`，发送失败再 `clearFinalReplySent` 回滚。新增单测覆盖失败回滚。
   Tags: channel, qqbot, dedup, bodyUpdates, direct-reply, race
-- [2026-03-26] `finger-262.2` 已完成：prompt 层正式教会模型“当前上下文不是完整历史”。`src/agents/chat-codex/prompt.md`、`coding-cli-system-prompt.ts`、各角色 developer prompt、`skill-prompt-injector.ts` 与 `context_ledger.memory` 工具描述都已统一强调：`working_set` / `historical_memory` 只是 budgeted dynamic view，缺失历史证据时必须先 `context_ledger.memory search`，再 `query(detail=true, slot_start, slot_end)`，不能把 prompt 中缺失当成历史不存在。  
+- [2026-03-26] `finger-262.2` 已完成：prompt 层正式教会模型“当前上下文不是完整历史”。`src/agents/chat-codex/prompt.md`、`coding-cli-system-prompt.ts`、各角色 developer prompt、`skill-prompt-injector.ts` 与 `context_ledger.memory` 工具描述都已统一强调：`working_set` / `historical_memory` 只是 budgeted dynamic view，缺失历史证据时必须先 `context_ledger.memory search`，再 `query(detail=true, slot_start, slot_end)`，不能把 prompt 中缺失当成历史不存在。
   Tags: ledger, prompt, dynamic-view, context-builder, skills, tool-contract
-- [2026-03-26] `finger-262.1` 已完成：`context_ledger.memory` 现在会把 search 结果提升到 **overflow-history retrieval path**。除了原有 compact hits / slot summaries 外，`search` 会返回 task-block candidates（含 `start_slot/end_slot`、`detail_query_hint`、`match_reason`、`visibility`），并附带 `context_bridge` 明确说明本次检索扫描的是 full ledger、结果可能位于当前 prompt budget 之外。内部 tool wrapper 还会自动补齐 `session_id / agent_id` 到 `_runtime_context`，减少模型手填作用域参数。  
+- [2026-03-26] `finger-262.1` 已完成：`context_ledger.memory` 现在会把 search 结果提升到 **overflow-history retrieval path**。除了原有 compact hits / slot summaries 外，`search` 会返回 task-block candidates（含 `start_slot/end_slot`、`detail_query_hint`、`match_reason`、`visibility`），并附带 `context_bridge` 明确说明本次检索扫描的是 full ledger、结果可能位于当前 prompt budget 之外。内部 tool wrapper 还会自动补齐 `session_id / agent_id` 到 `_runtime_context`，减少模型手填作用域参数。
   Tags: ledger, overflow-history, context-ledger, task-blocks, retrieval, runtime-context
 - [2026-03-13] Session 管理迁移到 Agent 层：移除 MessageHub `/resume`；新增 `session.list` / `session.switch` 工具；System Agent 可跨 agent 切换。
   Tags: session-management, agent-tools
@@ -186,31 +188,31 @@
   Tags: session, ledger, tool-call, memory, context
 
 ## OpenClaw Gate & Mailbox
-- [2026-03-10] OpenClaw gate 保持通用；finger 自行实现 thread binding、权限策略、消息分类。  
+- [2026-03-10] OpenClaw gate 保持通用；finger 自行实现 thread binding、权限策略、消息分类。
   Tags: openclaw, mailbox, thread-binding
-- [2026-03-10] Mailbox 是异步消息唯一真源：控制渠道可进主会话，非控制渠道只入 mailbox；agent 接收 mailbox notice，必要时调用 read/ack。  
+- [2026-03-10] Mailbox 是异步消息唯一真源：控制渠道可进主会话，非控制渠道只入 mailbox；agent 接收 mailbox notice，必要时调用 read/ack。
   Tags: mailbox, async, permissions
-- [2026-03-10] OpenClaw Gate 实施进度：Block 层 + 配置 schema/loader + openclaw input/output 适配完成；orchestration adapter 可注册 OpenClaw 工具，仍待接入 runtime 启动链路。  
+- [2026-03-10] OpenClaw Gate 实施进度：Block 层 + 配置 schema/loader + openclaw input/output 适配完成；orchestration adapter 可注册 OpenClaw 工具，仍待接入 runtime 启动链路。
   Tags: openclaw, block-layer, orchestration, config
-- [2026-03-23] `user.ask` 在纯文本渠道（当前先收敛到 `qqbot`、`weixin`）采用异步握手：agent 发起 ask 后，`waiting_for_user` 事件必须主动推送问题到渠道；用户下一条文本回复先按 `channelId + userId + groupId + sessionId + agentId` 作用域匹配 pending ask，命中则直接 resolve 原 ask promise、记录 session user message，并回复“已收到你的回复，继续处理中…”，不得重新 dispatch 新任务。三类 agent（system/project/reviewer）都需要白名单放行 `user.ask`。  
+- [2026-03-23] `user.ask` 在纯文本渠道（当前先收敛到 `qqbot`、`weixin`）采用异步握手：agent 发起 ask 后，`waiting_for_user` 事件必须主动推送问题到渠道；用户下一条文本回复先按 `channelId + userId + groupId + sessionId + agentId` 作用域匹配 pending ask，命中则直接 resolve 原 ask promise、记录 session user message，并回复“已收到你的回复，继续处理中…”，不得重新 dispatch 新任务。三类 agent（system/project/reviewer）都需要白名单放行 `user.ask`。
   Tags: user.ask, qqbot, weixin, async, channel-bridge, waiting-for-user, ask-scope, whitelist
-- [2026-03-23] 当目标 agent 忙且 dispatch queue 超时，不应直接标记失败；应转入目标 agent 的 mailbox 作为待处理任务。通道/UI 文案应显示“邮箱等待 ACK”而不是“失败”。目标 agent 空闲后通过 mailbox-check 提示逐条处理：先 `mailbox.read(id)` 读取完整任务，真正处理完成后再 `mailbox.ack(id)`；未处理完成不得 ack。  
+- [2026-03-23] 当目标 agent 忙且 dispatch queue 超时，不应直接标记失败；应转入目标 agent 的 mailbox 作为待处理任务。通道/UI 文案应显示“邮箱等待 ACK”而不是“失败”。目标 agent 空闲后通过 mailbox-check 提示逐条处理：先 `mailbox.read(id)` 读取完整任务，真正处理完成后再 `mailbox.ack(id)`；未处理完成不得 ack。
   Tags: mailbox, dispatch, queue-timeout, ack, busy-agent
-- [2026-03-23] Mailbox 生命周期统一为 `pending -> processing -> completed|failed`：`mailbox.read(id)` 是领取动作，普通 task 首次读取会把 `pending` 切到 `processing`；`notification` 首次读取只记录 `readAt`，仍保持 `pending`，仅在 agent 空闲且没有 actionable mailbox work 时提示阅读。`mailbox.ack(id, { summary/result | status:\"failed\", error })` 必须在 read 之后调用，用于提交终态；dispatch-task 的 ack 完成后，结果通知要回流到 source agent 的 mailbox，而不是硬编码 system agent。  
+- [2026-03-23] Mailbox 生命周期统一为 `pending -> processing -> completed|failed`：`mailbox.read(id)` 是领取动作，普通 task 首次读取会把 `pending` 切到 `processing`；`notification` 首次读取只记录 `readAt`，仍保持 `pending`，仅在 agent 空闲且没有 actionable mailbox work 时提示阅读。`mailbox.ack(id, { summary/result | status:\"failed\", error })` 必须在 read 之后调用，用于提交终态；dispatch-task 的 ack 完成后，结果通知要回流到 source agent 的 mailbox，而不是硬编码 system agent。
   Tags: mailbox, lifecycle, notification, idle-only, ack, source-agent, runtime-tools
-- [2026-03-23] Agent mailbox 工具补齐批量操作：新增 `mailbox.read_all` 与 `mailbox.remove_all`，三类 agent（system/project/reviewer）白名单都要放行。`read_all` 默认批量读取未读消息，task 会批量进入 `processing`，notification 仍只标记已读；`remove_all` 支持按 `status/category/unreadOnly/ids/limit` 批量清理 mailbox。  
+- [2026-03-23] Agent mailbox 工具补齐批量操作：新增 `mailbox.read_all` 与 `mailbox.remove_all`，三类 agent（system/project/reviewer）白名单都要放行。`read_all` 默认批量读取未读消息，task 会批量进入 `processing`，notification 仍只标记已读；`remove_all` 支持按 `status/category/unreadOnly/ids/limit` 批量清理 mailbox。
   Tags: mailbox, batch, read-all, remove-all, whitelist, runtime-tools
-- [2026-03-23] Mailbox 生命周期收敛为“纯消息传递、非持久化”：`HeartbeatMailboxManager` 改为内存态（不再写 `~/.finger/mailbox/<agent>/inbox.jsonl`），并在 `mailbox.ack(...)` 成功后自动 `remove` 清理消息；`get/list/markRead/ack/remove` 对不存在 mailbox 返回空结果，不再隐式创建空 mailbox。  
+- [2026-03-23] Mailbox 生命周期收敛为“纯消息传递、非持久化”：`HeartbeatMailboxManager` 改为内存态（不再写 `~/.finger/mailbox/<agent>/inbox.jsonl`），并在 `mailbox.ack(...)` 成功后自动 `remove` 清理消息；`get/list/markRead/ack/remove` 对不存在 mailbox 返回空结果，不再隐式创建空 mailbox。
   Tags: mailbox, lifecycle, ephemeral, non-persistent, ack, auto-clean
-- [2026-03-23] QQBot 正文增量补齐结构化 `ask` 可见性：当 `lastAgentMessage` 为结构化 orchestrator 输出（含 `summary/status/nextAction/ask`）时，正文会格式化出“下一步 / 需要(可选)回复 / 可选项 / 直接回复提示”，避免只显示 summary 导致用户看不到 `user.ask`。  
+- [2026-03-23] QQBot 正文增量补齐结构化 `ask` 可见性：当 `lastAgentMessage` 为结构化 orchestrator 输出（含 `summary/status/nextAction/ask`）时，正文会格式化出“下一步 / 需要(可选)回复 / 可选项 / 直接回复提示”，避免只显示 summary 导致用户看不到 `user.ask`。
   Tags: qqbot, body-updates, user.ask, structured-output, event-forwarding
-- [2026-03-23] 进度更新通道文本新增 mailbox 状态快照：`sendProgressUpdate` 在 summary 中附加 `mailbox.status(target): unread/pending/processing`，并在 details 挂 `mailboxStatus.counts/recentUnread`，用于“不是简单通知”的进度可观测性。  
+- [2026-03-23] 进度更新通道文本新增 mailbox 状态快照：`sendProgressUpdate` 在 summary 中附加 `mailbox.status(target): unread/pending/processing`，并在 details 挂 `mailboxStatus.counts/recentUnread`，用于“不是简单通知”的进度可观测性。
   Tags: progress-update, mailbox.status, observability, qqbot
 
 ## Compact & Ledger
-- [2026-03-09] 自动 compact 阈值 85%；Ledger 支持 search/index/compact；系统通知触发 `maybeAutoCompact`。  
+- [2026-03-09] 自动 compact 阈值 85%；Ledger 支持 search/index/compact；系统通知触发 `maybeAutoCompact`。
   Tags: compact, ledger, memory
-- [2026-03-23] `context_ledger.memory` 查询接口改为三段式：`index` 只负责索引维护，`search` 默认返回 slot-indexed 命中摘要，`query` 通过 `slot_start/slot_end` + `detail=true` 拉取小范围明细；同时 `memory-ledger` CLI 写 stdout/stderr 后不再立刻 `process.exit()`，避免大 JSON 输出在 pipe 中被截断。  
+- [2026-03-23] `context_ledger.memory` 查询接口改为三段式：`index` 只负责索引维护，`search` 默认返回 slot-indexed 命中摘要，`query` 通过 `slot_start/slot_end` + `detail=true` 拉取小范围明细；同时 `memory-ledger` CLI 写 stdout/stderr 后不再立刻 `process.exit()`，避免大 JSON 输出在 pipe 中被截断。
   Tags: context-ledger, search, slot, query, cli, truncation
 
 ## Long-term Memory
@@ -459,7 +461,7 @@ Tags: permission, reject-config, codex-alignment
 - [2026-03-23] 非阻塞 vs 阻塞 dispatch：非阻塞 dispatch（void sendToModule.then）走 AgentRuntimeBlock，结果通过 EventBus 回来；阻塞 dispatch（await sendToModule）走 message route 的 Promise.race，直接等结果。两者都能正常工作但走不同的代码路径。
   Tags: dispatch, blocking, non-blocking, agent-runtime
 
-- [2026-03-23] 新增 repo-local skill `.opencode/skills/context-ledger-memory`，把 `context_ledger.memory` 的 index/search/query(detail) 三段式、slot 输出约定、返回结构与示例固化为可复用说明。  
+- [2026-03-23] 新增 repo-local skill `.opencode/skills/context-ledger-memory`，把 `context_ledger.memory` 的 index/search/query(detail) 三段式、slot 输出约定、返回结构与示例固化为可复用说明。
   Tags: skill, context-ledger, slot, search, query
 
 - [2026-03-23] Mailbox 工具补完单条删除与批量清理：`mailbox.remove` / `mailbox.remove_all` / `mailbox.read_all` 都已进入 runtime tool list 与 `finger-system-agent` / `finger-project-agent` / `finger-reviewer` 白名单；notification 维持 idle-only 读取规则，单条已消费消息可 `mailbox.remove(id)`，批量通知清理可 `mailbox.remove_all(...)`。为通过 500 行门禁，internal 删除工具拆分到 `src/tools/internal/mailbox-tool-remove.ts`。已验证 `pnpm build`、`npm install -g .`、`npm run daemon:restart`、`/health`、`/api/v1/tools`、三类 agent policy，以及 live `mailbox.remove`（证据：`~/.finger/logs/mailbox-remove-live-1774263379.json`）。
@@ -482,13 +484,13 @@ Tags: permission, reject-config, codex-alignment
 
 - [2026-03-24] **Context Builder UI Monitor**：`ui/src/components/ContextMonitor/` 组件，集成在 WorkflowContainer 2x2 grid 右下角。左侧显示 Context Rounds（可折叠），右侧显示 Ledger Events 对比面板，底部显示详情。API: `/api/v1/sessions/:sessionId/context-monitor`。
   Tags: context-monitor, ui, context-builder
-- [2026-03-24] Context Builder 三模式与 dryrun 规范落地：`contextBuilder.mode` 支持 `minimal|moderate|aggressive`；`enableModelRanking` 支持 `false|true|'dryrun'`。moderate 以 task 为最小颗粒，补充历史时允许“单个 task 超过移除量但总预算内仍补入”；current task 必须保持尾部。UI Settings 新增 mode/ranking 选择并持久化到 `~/.finger/config/user-settings.json`；后端新增 `/api/v1/context-builder/settings` GET/PUT。  
+- [2026-03-24] Context Builder 三模式与 dryrun 规范落地：`contextBuilder.mode` 支持 `minimal|moderate|aggressive`；`enableModelRanking` 支持 `false|true|'dryrun'`。moderate 以 task 为最小颗粒，补充历史时允许“单个 task 超过移除量但总预算内仍补入”；current task 必须保持尾部。UI Settings 新增 mode/ranking 选择并持久化到 `~/.finger/config/user-settings.json`；后端新增 `/api/v1/context-builder/settings` GET/PUT。
   Tags: context-builder, mode, dryrun, moderate, ui-settings, user-settings, api
-- [2026-03-24] Context Monitor 调整为“只观测”面板：移除面板内 CB 开关/模式下拉/ranking 下拉（避免和 Settings 双入口冲突），配置入口统一在 LeftSidebar → Settings。Context Monitor 仅展示 build 元数据（mode/ranking/history-only）与 round 对照；通过 websocket 订阅触发刷新。  
+- [2026-03-24] Context Monitor 调整为“只观测”面板：移除面板内 CB 开关/模式下拉/ranking 下拉（避免和 Settings 双入口冲突），配置入口统一在 LeftSidebar → Settings。Context Monitor 仅展示 build 元数据（mode/ranking/history-only）与 round 对照；通过 websocket 订阅触发刷新。
   Tags: context-monitor, ui, observer-only, settings, context-builder
-- [2026-03-25] Context Monitor 新增“展开大视图”能力：小卡片右上角 `展开` 按钮可打开全屏 overlay，完整显示 Round 列表 / Selected Context / Ledger 对照 / 详情四区；支持遮罩点击与 `Esc` 关闭。该能力只影响 UI 展示层，不改变 context builder 逻辑与数据源。  
+- [2026-03-25] Context Monitor 新增“展开大视图”能力：小卡片右上角 `展开` 按钮可打开全屏 overlay，完整显示 Round 列表 / Selected Context / Ledger 对照 / 详情四区；支持遮罩点击与 `Esc` 关闭。该能力只影响 UI 展示层，不改变 context builder 逻辑与数据源。
   Tags: context-monitor, ui, modal, overlay, esc, observability
-- [2026-03-25] 修复 UI 实时刷新滞后：Ledger/Context Monitor 的 WS 触发类型补齐 `chat_codex_turn`、`user_message`、`tool_call`、`messageCreated/messageCompleted`；并放宽会话相关性判断（无 session hints 的全局事件也允许触发刷新）。同时 `useWorkflowExecution` 将 `chat_codex_turn/assistant_complete/session_changed/session_compressed` 纳入消息刷新触发，避免“必须手动刷新页面才看到新事件”。  
+- [2026-03-25] 修复 UI 实时刷新滞后：Ledger/Context Monitor 的 WS 触发类型补齐 `chat_codex_turn`、`user_message`、`tool_call`、`messageCreated/messageCompleted`；并放宽会话相关性判断（无 session hints 的全局事件也允许触发刷新）。同时 `useWorkflowExecution` 将 `chat_codex_turn/assistant_complete/session_changed/session_compressed` 纳入消息刷新触发，避免“必须手动刷新页面才看到新事件”。
   Tags: websocket, live-update, ledger-monitor, context-monitor, workflow-execution, session
 
 - [2026-03-25] 修复渠道消息重复推送：删除 `AgentStatusSubscriber.isVerboseTextChannel()` 硬编码绕过（之前 qqbot/openclaw-weixin 无条件绕过 pushSettings），所有渠道严格遵循 `channels.json` 的 `pushSettings` 配置（唯一真源）。`sendBodyUpdate()` 新增去重：相同 sessionId + 相同内容不重复推送；新增 `markFinalReplySent()` 记录主回复链路发送时间，`sendBodyUpdate` 在 10s 内检测到相同归一化内容则跳过。`channel-bridge-hub-route.ts` 的 `sendReply()` 成功后调用 `markFinalReplySent()` 联动去重。commit: c6d549c, 636f7ac。
@@ -552,28 +554,28 @@ if (!isNonModuleSender) {
 ## 2026-03-27 定时可靠性改造（对齐 OpenClaw 方案）
 
 ### 目标
-把“定时触发可靠性”从外部 `sleep/at` 依赖，收敛到 Finger 进程内持久调度（OpenClaw 风格）：  
+把“定时触发可靠性”从外部 `sleep/at` 依赖，收敛到 Finger 进程内持久调度（OpenClaw 风格）：
 `daemon 常驻 + 持久任务文件 + 启动补偿 + 调度防重入/防热循环`。
 
 ### 本次改动
-1. `ClockTaskInjector` 重构为 **self-rearm setTimeout**（不再 setInterval 叠加）  
-   - 启动立即 `tick`（0ms）执行 missed catch-up。  
-   - 每轮 `finally` 重置下一轮定时，避免卡死后不再调度。  
+1. `ClockTaskInjector` 重构为 **self-rearm setTimeout**（不再 setInterval 叠加）
+   - 启动立即 `tick`（0ms）执行 missed catch-up。
+   - 每轮 `finally` 重置下一轮定时，避免卡死后不再调度。
    - 自动按最近 `next_fire_at` 计算下一次 wake，空闲时按 poll 间隔巡检。
-2. `ClockTaskInjector` 执行语义修复  
-   - repeat 定时按 `computeNextClockRunForTimer()` 正确推进下一次触发。  
-   - dispatch 失败不吞，记录错误并指数退避重试（30s 起，最高 30min）。  
+2. `ClockTaskInjector` 执行语义修复
+   - repeat 定时按 `computeNextClockRunForTimer()` 正确推进下一次触发。
+   - dispatch 失败不吞，记录错误并指数退避重试（30s 起，最高 30min）。
    - 写盘改为 `tmp + rename` 原子落盘，降低中断损坏风险。
-3. `clockTool` 去副作用修复  
-   - 移除 `create/list/cancel/update` 里“读取即消费 due timer”逻辑。  
+3. `clockTool` 去副作用修复
+   - 移除 `create/list/cancel/update` 里“读取即消费 due timer”逻辑。
    - `list` 不再提前把到期任务标记 completed，避免“定时未执行但被查询吞掉”。
-4. `HeartbeatScheduler` 调度可靠性增强  
-   - 改为 one-shot rearm（避免重入）。  
-   - 增加运行态持久化：`~/.finger/schedules/heartbeat-runtime-state.json`。  
+4. `HeartbeatScheduler` 调度可靠性增强
+   - 改为 one-shot rearm（避免重入）。
+   - 增加运行态持久化：`~/.finger/schedules/heartbeat-runtime-state.json`。
    - 重启后恢复 `lastRun/lastMailboxPromptAt`，并在首轮立即调度。
 
 ### 验证
-- `pnpm -s tsc --noEmit` ✅  
+- `pnpm -s tsc --noEmit` ✅
 - `pnpm -s vitest tests/unit/tools/internal/clock-integration.test.ts --run` ✅（9/9）
 
 ## 2026-03-29 Context Consumption Rule (User Confirmed)

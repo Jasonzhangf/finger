@@ -165,6 +165,21 @@ function resolveDispatchWorkerHint(input: AgentDispatchRequest): string {
   ).trim();
 }
 
+function resolveDispatchMemoryOwnerWorker(targetAgentId: string, dispatchWorkerId?: string): string {
+  const workerId = typeof dispatchWorkerId === 'string' ? dispatchWorkerId.trim() : '';
+  if (workerId) return workerId;
+  return targetAgentId.trim();
+}
+
+function resolveSessionWorkerScope(context: Record<string, unknown>): string {
+  return (
+    asTrimmed(context.dispatchWorkerId)
+    || asTrimmed(context.memoryOwnerWorkerId)
+    || asTrimmed(context.ownerAgentId)
+    || ''
+  );
+}
+
 function toDispatchScopeKey(targetAgentId: string, normalizedProjectPath: string, workerId?: string): string {
   const normalizedWorkerId = typeof workerId === 'string' ? workerId.trim() : '';
   return `${targetAgentId}::${normalizedProjectPath}::${normalizedWorkerId || 'default'}`;
@@ -229,6 +244,8 @@ function tryCreateStatelessReviewerSession(
     dispatchTargetAgentId: targetAgentId,
     dispatchProjectPath: normalizedProjectPath,
     dispatchScopeKey: toDispatchScopeKey(targetAgentId, normalizedProjectPath),
+    ownerAgentId: FINGER_REVIEWER_AGENT_ID,
+    memoryOwnerWorkerId: FINGER_REVIEWER_AGENT_ID,
     reviewerStateless: true,
     reviewerEphemeralSession: true,
   });
@@ -322,6 +339,7 @@ function tryResolveProjectScopedSessionId(
   const dispatchWorkerId = targetAgentId === FINGER_PROJECT_AGENT_ID
     ? resolveDispatchWorkerHint(input)
     : '';
+  const memoryOwnerWorkerId = resolveDispatchMemoryOwnerWorker(targetAgentId, dispatchWorkerId);
   const scopeKey = toDispatchScopeKey(targetAgentId, normalizedProjectPath, dispatchWorkerId);
 
   const latest = resolveLatestProjectRootSession(deps, normalizedProjectPath);
@@ -330,7 +348,7 @@ function tryResolveProjectScopedSessionId(
     .sort((a, b) => new Date(b.lastAccessedAt).getTime() - new Date(a.lastAccessedAt).getTime())
     .find((session) => {
       const context = isObjectRecord(session.context) ? session.context : {};
-      const contextWorkerId = asTrimmed(context.dispatchWorkerId);
+      const contextWorkerId = resolveSessionWorkerScope(context);
       return (
         asTrimmed(context.dispatchScopeKey) === scopeKey
         || (
@@ -350,6 +368,8 @@ function tryResolveProjectScopedSessionId(
       dispatchTargetAgentId: targetAgentId,
       dispatchProjectPath: normalizedProjectPath,
       dispatchScopeKey: scopeKey,
+      ownerAgentId: memoryOwnerWorkerId,
+      memoryOwnerWorkerId,
       ...(dispatchWorkerId ? { dispatchWorkerId } : {}),
     });
     if (sourceSessionId) {
@@ -376,6 +396,8 @@ function tryResolveProjectScopedSessionId(
         dispatchTargetAgentId: targetAgentId,
         dispatchProjectPath: normalizedProjectPath,
         dispatchScopeKey: scopeKey,
+        ownerAgentId: memoryOwnerWorkerId,
+        memoryOwnerWorkerId,
         ...(dispatchWorkerId ? { dispatchWorkerId } : {}),
       });
       if (sourceSessionId) {
@@ -423,7 +445,7 @@ export function resolveDispatchSessionSelection(deps: AgentRuntimeDeps, input: A
       const explicitSession = deps.sessionManager.getSession(explicitSessionId);
       const explicitProjectPath = normalizeProjectPathHint(explicitSession?.projectPath ?? '');
       const explicitContext = isObjectRecord(explicitSession?.context) ? explicitSession.context : {};
-      const explicitWorkerId = asTrimmed(explicitContext.dispatchWorkerId);
+      const explicitWorkerId = resolveSessionWorkerScope(explicitContext);
       const requestedWorkerId = targetAgentId === FINGER_PROJECT_AGENT_ID
         ? resolveDispatchWorkerHint(input)
         : '';
@@ -475,7 +497,7 @@ export function resolveDispatchSessionSelection(deps: AgentRuntimeDeps, input: A
       const boundSession = deps.sessionManager.getSession(boundSessionId);
       const boundProjectPath = normalizeProjectPathHint(boundSession?.projectPath ?? '');
       const boundContext = isObjectRecord(boundSession?.context) ? boundSession.context : {};
-      const boundWorkerId = asTrimmed(boundContext.dispatchWorkerId);
+      const boundWorkerId = resolveSessionWorkerScope(boundContext);
       const requestedWorkerId = targetAgentId === FINGER_PROJECT_AGENT_ID
         ? resolveDispatchWorkerHint(input)
         : '';
@@ -514,7 +536,7 @@ export function resolveDispatchSessionSelection(deps: AgentRuntimeDeps, input: A
       const currentSession = deps.sessionManager.getSession(currentSessionId);
       const currentProjectPath = normalizeProjectPathHint(currentSession?.projectPath ?? '');
       const currentContext = isObjectRecord(currentSession?.context) ? currentSession.context : {};
-      const currentWorkerId = asTrimmed(currentContext.dispatchWorkerId);
+      const currentWorkerId = resolveSessionWorkerScope(currentContext);
       const requestedWorkerId = targetAgentId === FINGER_PROJECT_AGENT_ID
         ? resolveDispatchWorkerHint(input)
         : '';
@@ -794,8 +816,31 @@ export async function syncBdDispatchLifecycle(deps: AgentRuntimeDeps, input: Age
       bdTaskId,
       `[dispatch failed] dispatch=${result.dispatchId} assigner=${assigner} assignee=${assignee} attempt=${attempt} error=${result.error ?? 'unknown'}`,
     );
-  } catch {
-    // Best-effort only.
+  } catch (error) {
+    logger.module('dispatch').warn('Failed to sync bd dispatch lifecycle (best-effort)', {
+      bdTaskId,
+      dispatchId: result.dispatchId,
+      status: result.status,
+      sourceAgentId: input.sourceAgentId,
+      targetAgentId: input.targetAgentId,
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+}
+
+async function readFileUtf8OrEmpty(filePath: string, context: Record<string, unknown>): Promise<string> {
+  try {
+    return await fs.readFile(filePath, 'utf8');
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException | undefined)?.code;
+    if (code !== 'ENOENT') {
+      logger.module('dispatch').warn('Failed reading memory file, fallback to empty content', {
+        filePath,
+        ...context,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+    return '';
   }
 }
 
@@ -841,7 +886,11 @@ ${content}
 Tags: input, user, ${source}
 ---`;
 
-    const existingContent = await fs.readFile(memoryPath, 'utf8').catch(() => '');
+    const existingContent = await readFileUtf8OrEmpty(memoryPath, {
+      action: 'persistUserMessageToMemory',
+      sessionId,
+      targetAgentId: input.targetAgentId,
+    });
     await fs.writeFile(memoryPath, `${entry}\n\n${existingContent}`);
   } catch (err) {
     logger.module('dispatch').error('Failed to record user message', err instanceof Error ? err : undefined);
@@ -878,7 +927,11 @@ ${result.summary}
 Tags: output, agent, ${status}
 ---`;
 
-    const existingContent = await fs.readFile(memoryPath, 'utf8').catch(() => '');
+    const existingContent = await readFileUtf8OrEmpty(memoryPath, {
+      action: 'persistAgentSummaryToMemory',
+      sessionId,
+      targetAgentId: input.targetAgentId,
+    });
     await fs.writeFile(memoryPath, `${entry}\n\n${existingContent}`);
   } catch (err) {
     logger.module('dispatch').error('Failed to record agent summary', err instanceof Error ? err : undefined);

@@ -82,6 +82,71 @@ describe('Session Manager Persistence', () => {
     expect(messages[messages.length - 1]?.content).toBe('hello snapshot');
   });
 
+  it('backfills worker-owned memory fields for legacy session data on startup', () => {
+    const manager = new SessionManager();
+    const session = manager.createSession(TEST_PROJECT_PATH, 'Legacy Ownership Session');
+    manager.updateContext(session.id, {
+      sessionTier: 'runtime',
+      ownerAgentId: 'finger-project-agent-02',
+    });
+
+    const sessionDir = manager.resolveSessionStorageDir(session.id);
+    expect(sessionDir).not.toBeNull();
+    const runtimeFile = join(sessionDir!, 'agent-finger-project-agent-02.json');
+    expect(existsSync(runtimeFile)).toBe(true);
+
+    const legacy = JSON.parse(readFileSync(runtimeFile, 'utf-8'));
+    if (legacy.context && typeof legacy.context === 'object') {
+      delete legacy.context.ownerAgentId;
+      delete legacy.context.memoryOwnerWorkerId;
+      delete legacy.context.memoryOwnershipVersion;
+      delete legacy.context.memoryAccessPolicy;
+      delete legacy.context.memoryOwnershipUpdatedAt;
+    }
+    writeFileSync(runtimeFile, JSON.stringify(legacy, null, 2), 'utf-8');
+
+    const managerReloaded = new SessionManager();
+    const restored = managerReloaded.getSession(session.id);
+    expect(restored).toBeDefined();
+    expect((restored?.context as Record<string, unknown>).memoryOwnerWorkerId).toBe('finger-project-agent-02');
+    expect((restored?.context as Record<string, unknown>).memoryOwnershipVersion).toBe(1);
+    expect((restored?.context as Record<string, unknown>).memoryAccessPolicy).toBe('owner_write_shared_read');
+
+    const migrated = JSON.parse(readFileSync(runtimeFile, 'utf-8'));
+    expect(migrated.context.memoryOwnerWorkerId).toBe('finger-project-agent-02');
+    expect(migrated.context.memoryOwnershipVersion).toBe(1);
+    expect(migrated.context.memoryAccessPolicy).toBe('owner_write_shared_read');
+  });
+
+  it('backfills missing owner for legacy root session main.json to system owner', () => {
+    const manager = new SessionManager();
+    const session = manager.createSession(TEST_PROJECT_PATH, 'Legacy Root Ownership Session');
+
+    const sessionDir = manager.resolveSessionStorageDir(session.id);
+    expect(sessionDir).not.toBeNull();
+    const mainFile = join(sessionDir!, 'main.json');
+    expect(existsSync(mainFile)).toBe(true);
+
+    const legacy = JSON.parse(readFileSync(mainFile, 'utf-8'));
+    if (legacy.context && typeof legacy.context === 'object') {
+      delete legacy.context.ownerAgentId;
+      delete legacy.context.memoryOwnerWorkerId;
+      delete legacy.context.memoryOwnershipVersion;
+      delete legacy.context.memoryAccessPolicy;
+      delete legacy.context.memoryOwnershipUpdatedAt;
+      delete legacy.context.sessionTier;
+    }
+    writeFileSync(mainFile, JSON.stringify(legacy, null, 2), 'utf-8');
+
+    const managerReloaded = new SessionManager();
+    const restored = managerReloaded.getSession(session.id);
+    expect(restored).toBeDefined();
+    expect((restored?.context as Record<string, unknown>).memoryOwnerWorkerId).toBe('finger-system-agent');
+    expect((restored?.context as Record<string, unknown>).ownerAgentId).toBe('finger-system-agent');
+    expect((restored?.context as Record<string, unknown>).memoryOwnershipVersion).toBe(1);
+    expect((restored?.context as Record<string, unknown>).memoryAccessPolicy).toBe('owner_write_shared_read');
+  });
+
   it('writes session json atomically (no lingering .tmp file)', () => {
     const manager = new SessionManager();
     const session = manager.createSession(TEST_PROJECT_PATH, 'Atomic Persist Session');

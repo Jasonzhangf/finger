@@ -308,6 +308,8 @@ describe('resolveDispatchSessionSelection strict lifecycle', () => {
       expect.stringMatching(/^dispatch-finger-project-agent-/),
       expect.objectContaining({
         dispatchWorkerId: 'finger-project-agent-02',
+        memoryOwnerWorkerId: 'finger-project-agent-02',
+        ownerAgentId: 'finger-project-agent-02',
       }),
     );
   });
@@ -417,6 +419,8 @@ describe('resolveDispatchSessionSelection strict lifecycle', () => {
       expect.stringMatching(/^dispatch-finger-project-agent-/),
       expect.objectContaining({
         dispatchWorkerId: 'finger-project-agent-02',
+        memoryOwnerWorkerId: 'finger-project-agent-02',
+        ownerAgentId: 'finger-project-agent-02',
       }),
     );
   });
@@ -473,6 +477,8 @@ describe('resolveDispatchSessionSelection strict lifecycle', () => {
       expect.stringMatching(/^dispatch-finger-project-agent-/),
       expect.objectContaining({
         dispatchWorkerId: 'finger-project-agent-03',
+        memoryOwnerWorkerId: 'finger-project-agent-03',
+        ownerAgentId: 'finger-project-agent-03',
       }),
     );
   });
@@ -529,6 +535,8 @@ describe('resolveDispatchSessionSelection strict lifecycle', () => {
       expect.stringMatching(/^dispatch-finger-project-agent-/),
       expect.objectContaining({
         dispatchWorkerId: 'finger-project-agent-02',
+        memoryOwnerWorkerId: 'finger-project-agent-02',
+        ownerAgentId: 'finger-project-agent-02',
       }),
     );
   });
@@ -546,7 +554,7 @@ describe('resolveDispatchSessionSelection strict lifecycle', () => {
         context: { sessionTier: 'orchestrator-root' },
       },
     };
-    const { deps, runtime } = createDeps({
+    const { deps, runtime, sessionManager } = createDeps({
       sessions,
       boundSessionId: 'session-reviewer-webauto',
       runtimeCurrentSessionId: 'session-reviewer-webauto',
@@ -579,5 +587,12 @@ describe('resolveDispatchSessionSelection strict lifecycle', () => {
     expect((result as any).metadata?.dispatchSessionScopeRebound).toBe(true);
     expect((result as any).metadata?.reviewerStateless).toBe(true);
     expect((result as any).metadata?.reviewerEphemeralSession).toBe(true);
+    expect(sessionManager.updateContext).toHaveBeenCalledWith(
+      expect.stringMatching(/^review-/),
+      expect.objectContaining({
+        ownerAgentId: 'finger-reviewer',
+        memoryOwnerWorkerId: 'finger-reviewer',
+      }),
+    );
   });
 });

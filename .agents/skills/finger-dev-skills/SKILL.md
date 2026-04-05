@@ -43,6 +43,12 @@ Use this skill whenever you touch architecture, core runtime, orchestration, dis
    - Never use rollback/revert as the first-line “solution” for unknown behavior.
    - Rollback is an explicit exception path requiring user approval and clear risk statement.
 
+8. **Worker-owned session/memory model is mandatory.**
+   - Session ownership must be explicit (`memoryOwnerWorkerId`) and deterministic.
+   - Scope keys are visibility filters, not ownership transfer.
+   - Cross-agent read is allowed; cross-worker write/execute is forbidden.
+   - Legacy session data must be backfilled/migrated idempotently.
+
 ## 2) Layer model and ownership
 
 Reference: `references/layer-boundaries.md`.
@@ -81,6 +87,7 @@ Reference: `references/layer-boundaries.md`.
 3. Session mapping must be deterministic by scope (system/project/reviewer).
 4. Heartbeat/control sessions are isolated from normal user sessions.
 5. Persist-before-consume for critical state transitions.
+6. Session ownership must survive restart/reload (ownership migration is startup-safe and idempotent).
 
 ## 4) Mandatory change workflow
 

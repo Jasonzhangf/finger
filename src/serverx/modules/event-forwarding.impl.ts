@@ -25,8 +25,12 @@ import { attachBroadcastHandlers } from '../../server/modules/event-forwarding-h
 import { buildDispatchResultEnvelope } from '../../server/modules/mailbox-envelope.js';
 import { heartbeatMailbox } from '../../server/modules/heartbeat-mailbox.js';
 import { normalizeDispatchLedgerSessionId as _normalizeDispatchLedgerSessionId } from '../../server/modules/event-forwarding-session-utils.js';
-import { applyExecutionLifecycleTransition } from '../../server/modules/execution-lifecycle.js';
-import { getExecutionLifecycleState } from '../../server/modules/execution-lifecycle.js';
+import {
+  applyExecutionLifecycleTransition,
+  classifyExecutionErrorDisposition,
+  formatUserFacingExecutionError,
+  getExecutionLifecycleState,
+} from '../../server/modules/execution-lifecycle.js';
 import {
   attachControlLifecycleForwarding,
   attachDispatchLifecycleForwarding,
@@ -110,6 +114,15 @@ function extractStopSummaryFromToolPayload(
     ?? extractStopSummaryText(payload.result)
     ?? extractStopSummaryText(payload.response)
     ?? extractStopSummaryText(payload.message);
+}
+
+function isDispatchLikeToolName(toolName: string): boolean {
+  const normalized = toolName.trim().toLowerCase();
+  if (!normalized) return false;
+  return normalized === 'agent.dispatch'
+    || normalized === 'dispatch'
+    || normalized === 'agent_dispatch'
+    || normalized === 'project.task.dispatch';
 }
 
 function extractControlHookNames(payload: Record<string, unknown>): string[] {
@@ -231,7 +244,14 @@ async function appendMarkdownEntry(params: {
   let existing = '';
   try {
     existing = await readFile(params.filePath, 'utf-8');
-  } catch {
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException | undefined)?.code;
+    if (code !== 'ENOENT') {
+      logger.module('event-forwarding').warn('Failed to read markdown append target, fallback to empty content', {
+        filePath: params.filePath,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
     existing = '';
   }
   if (existing.includes(`idempotency_key: ${params.idempotencyKey}`)) {
@@ -273,6 +293,7 @@ export function attachEventForwarding(deps: EventForwardingDeps): {
   const latestStopSummaryBySession = new Map<string, string>();
   const stopToolSeenBySession = new Map<string, boolean>();
   const turnToolCallSeenBySession = new Map<string, boolean>();
+  const dispatchToolSeenBySession = new Map<string, boolean>();
   const turnToolRegistryUnavailableBySession = new Map<string, boolean>();
   const sessionPersistQueue = new Map<string, Promise<void>>();
   const finalReplyDedupKeys = new Map<string, string>();
@@ -351,9 +372,15 @@ export function attachEventForwarding(deps: EventForwardingDeps): {
     const turnId = asTrimmedString(payload.responseId) ?? `turn-${Date.now()}`;
     const session = sessionManager.getSession(event.sessionId);
     const projectPath = session?.projectPath || process.cwd();
-    const ownerAgentId = session && isObjectRecord(session.context) && typeof session.context.ownerAgentId === 'string'
-      ? session.context.ownerAgentId.trim() || generalAgentId
-      : generalAgentId;
+    const sessionOwnerAgentId = (
+      session
+      && isObjectRecord(session.context)
+      && typeof session.context.ownerAgentId === 'string'
+    )
+      ? session.context.ownerAgentId.trim()
+      : '';
+    const ownerAgentId = sessionOwnerAgentId || generalAgentId;
+    const controlHookDispatchTargetAgentId = sessionOwnerAgentId || SYSTEM_AGENT_ID;
     const controlHint = controlBlock && typeof controlBlock.context_review_hint === 'string'
       ? controlBlock.context_review_hint.trim().toLowerCase()
       : 'none';
@@ -515,6 +542,10 @@ export function attachEventForwarding(deps: EventForwardingDeps): {
             emitControlHookActionNotice(event, hook, 'skipped_due_to_waiting_user');
             continue;
           }
+          if (dispatchToolSeenBySession.get(event.sessionId) === true) {
+            emitControlHookActionNotice(event, hook, 'skipped_dispatch_tool_seen');
+            continue;
+          }
           if (typeof dispatchTaskToAgent !== 'function') {
             emitControlHookActionNotice(event, hook, 'skipped_dispatch_bridge_unavailable');
             continue;
@@ -531,7 +562,7 @@ export function attachEventForwarding(deps: EventForwardingDeps): {
           ].join('\n');
           const dispatchResult = await dispatchTaskToAgent({
             sourceAgentId: 'control-hook-enforcer',
-            targetAgentId: ownerAgentId,
+            targetAgentId: controlHookDispatchTargetAgentId,
             task: { prompt: enforcePrompt },
             sessionId: event.sessionId,
             metadata: {
@@ -546,7 +577,7 @@ export function attachEventForwarding(deps: EventForwardingDeps): {
             maxQueueWaitMs: 60_000,
           });
           emitControlHookActionNotice(event, hook, 'enforcement_dispatched', {
-            targetAgentId: ownerAgentId,
+            targetAgentId: controlHookDispatchTargetAgentId,
             result: isObjectRecord(dispatchResult) ? dispatchResult.status ?? dispatchResult.ok : undefined,
           });
           continue;
@@ -612,7 +643,15 @@ export function attachEventForwarding(deps: EventForwardingDeps): {
     const previous = sessionPersistQueue.get(sessionId);
     const runTask = () => task();
     const chained = (previous
-      ? previous.catch(() => undefined).then(runTask)
+      ? previous
+        .catch((error) => {
+          logger.module('event-forwarding').warn('Previous session persist step failed; continue chained persistence', {
+            sessionId,
+            error: error instanceof Error ? error.message : String(error),
+          });
+          return undefined;
+        })
+        .then(runTask)
       : (() => {
         try {
           return Promise.resolve(runTask());
@@ -766,6 +805,7 @@ export function attachEventForwarding(deps: EventForwardingDeps): {
     if (event.phase === 'turn_start') {
       stopToolSeenBySession.set(event.sessionId, false);
       turnToolCallSeenBySession.set(event.sessionId, false);
+      dispatchToolSeenBySession.set(event.sessionId, false);
       turnToolRegistryUnavailableBySession.set(event.sessionId, false);
       latestStopSummaryBySession.delete(event.sessionId);
       applyExecutionLifecycleTransition(sessionManager, event.sessionId, {
@@ -824,16 +864,16 @@ export function attachEventForwarding(deps: EventForwardingDeps): {
       }
     } else if (event.phase === 'turn_error') {
       const errorMessage = typeof event.payload.error === 'string' ? event.payload.error : 'turn_error';
-      const normalizedError = errorMessage.toLowerCase();
+      const disposition = classifyExecutionErrorDisposition(errorMessage);
       applyExecutionLifecycleTransition(sessionManager, event.sessionId, {
-        stage: normalizedError.includes('interrupt') ? 'interrupted' : 'failed',
-        substage: normalizedError.includes('interrupt') ? 'turn_interrupted' : 'turn_error',
+        stage: disposition.stage,
+        substage: disposition.stage === 'interrupted' ? 'turn_interrupted' : 'turn_error',
         updatedBy: 'event-forwarding',
-        lastError: normalizedError.includes('interrupt') ? null : errorMessage,
+        lastError: disposition.stage === 'interrupted' ? null : errorMessage,
         detail: errorMessage,
         timeoutMs: typeof event.payload.timeoutMs === 'number' ? event.payload.timeoutMs : undefined,
         recoveryAction: asString(event.payload.recoveryAction)
-          ?? (normalizedError.includes('interrupt') ? 'interrupted' : 'failed'),
+          ?? (disposition.stage === 'interrupted' ? 'interrupted' : 'failed'),
       });
     } else if (event.phase === 'kernel_event' && isObjectRecord(event.payload)) {
       if (shouldIgnoreStaleKernelEventAfterTerminal({
@@ -851,6 +891,9 @@ export function attachEventForwarding(deps: EventForwardingDeps): {
       if (event.payload.type === 'tool_call') {
         const toolName = typeof event.payload.toolName === 'string' ? event.payload.toolName.trim() : '';
         turnToolCallSeenBySession.set(event.sessionId, true);
+        if (isDispatchLikeToolName(toolName)) {
+          dispatchToolSeenBySession.set(event.sessionId, true);
+        }
         const policy = resolveStopReasoningPolicy();
         if (isStopReasoningStopTool(toolName, policy.stopToolNames)) {
           stopToolSeenBySession.set(event.sessionId, true);
@@ -1002,7 +1045,7 @@ export function attachEventForwarding(deps: EventForwardingDeps): {
           ? (stopSummary
             || latestBody
             || (typeof event.payload.replyPreview === 'string' ? event.payload.replyPreview : ''))
-          : (typeof event.payload.error === 'string' ? `处理失败：${event.payload.error}` : '处理失败，请稍后再试');
+          : formatUserFacingExecutionError(event.payload.error, '处理失败，请稍后再试');
         const normalizedFinalReply = finalReply.trim();
         const finalizeAgentId = asString(event.payload.agentId) ?? resolveSessionOwnerAgentId(event.sessionId);
         let finalReplyPersistPromise: Promise<void> = Promise.resolve();
@@ -1060,6 +1103,7 @@ export function attachEventForwarding(deps: EventForwardingDeps): {
         latestStopSummaryBySession.delete(event.sessionId);
         stopToolSeenBySession.delete(event.sessionId);
         turnToolCallSeenBySession.delete(event.sessionId);
+        dispatchToolSeenBySession.delete(event.sessionId);
       }
     }
     // TODO: implement emitToolStepEventsFromLoopEvent

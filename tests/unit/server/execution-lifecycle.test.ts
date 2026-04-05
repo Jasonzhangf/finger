@@ -1,6 +1,8 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
   applyExecutionLifecycleTransition,
+  classifyExecutionErrorDisposition,
+  formatUserFacingExecutionError,
   getExecutionLifecycleState,
   resolveLifecycleStageFromResultStatus,
   transitionExecutionLifecycle,
@@ -156,6 +158,27 @@ describe('execution-lifecycle', () => {
     expect(resolveLifecycleStageFromResultStatus('completed')).toBe('completed');
     expect(resolveLifecycleStageFromResultStatus('failed')).toBe('failed');
     expect(resolveLifecycleStageFromResultStatus('weird-status')).toBeNull();
+  });
+
+  it('classifies interrupted/cancelled errors as interrupted lifecycle', () => {
+    expect(classifyExecutionErrorDisposition('chat-codex turn interrupted by user')).toEqual(expect.objectContaining({
+      stage: 'interrupted',
+      reason: 'interrupted',
+    }));
+    expect(classifyExecutionErrorDisposition('active turn superseded by newer user input')).toEqual(expect.objectContaining({
+      stage: 'interrupted',
+      reason: 'interrupted',
+    }));
+    expect(classifyExecutionErrorDisposition('request canceled by operator')).toEqual(expect.objectContaining({
+      stage: 'interrupted',
+      reason: 'cancelled',
+    }));
+  });
+
+  it('formats user-facing error text with accurate status prefix', () => {
+    expect(formatUserFacingExecutionError('chat-codex turn interrupted by user')).toContain('已中断');
+    expect(formatUserFacingExecutionError('request canceled by operator')).toContain('已取消');
+    expect(formatUserFacingExecutionError('provider unavailable')).toContain('处理失败');
   });
 
   it('self-heals stale system alias session ids by remapping to current system session', () => {

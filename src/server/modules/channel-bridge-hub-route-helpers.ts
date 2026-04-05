@@ -245,7 +245,27 @@ export function resolveSessionForChannelTarget(params: {
   if (pinnedSessionId) {
     const pinned = sessionManager.getSession(pinnedSessionId);
     if (pinned) {
-      return { sessionId: pinned.id, projectPath: pinned.projectPath };
+      const pinnedContext = (pinned.context ?? {}) as Record<string, unknown>;
+      const pinnedOwner = typeof pinnedContext.ownerAgentId === 'string'
+        ? pinnedContext.ownerAgentId.trim()
+        : '';
+      const pinnedMemoryOwner = typeof pinnedContext.memoryOwnerWorkerId === 'string'
+        ? pinnedContext.memoryOwnerWorkerId.trim()
+        : '';
+      const ownerMismatch = (
+        (pinnedOwner.length > 0 && pinnedOwner !== targetAgentId)
+        || (pinnedMemoryOwner.length > 0 && pinnedMemoryOwner !== targetAgentId)
+      );
+      if (!ownerMismatch) {
+        return { sessionId: pinned.id, projectPath: pinned.projectPath };
+      }
+      log.warn('Ignoring pinned session with ownership mismatch; resolving fresh target session', {
+        channelId,
+        targetAgentId,
+        pinnedSessionId: pinned.id,
+        pinnedOwner: pinnedOwner || undefined,
+        pinnedMemoryOwner: pinnedMemoryOwner || undefined,
+      });
     }
   }
 

@@ -635,12 +635,19 @@ export class RuntimeFacade {
       ? (session.context as Record<string, unknown>)
       : {};
     const ownerAgentId = typeof context.ownerAgentId === 'string' ? context.ownerAgentId.trim() : '';
+    const memoryOwnerWorkerId = typeof context.memoryOwnerWorkerId === 'string'
+      ? context.memoryOwnerWorkerId.trim()
+      : '';
     const sessionTier = typeof context.sessionTier === 'string' ? context.sessionTier.trim().toLowerCase() : '';
     const isSystemSession = session.projectPath === SYSTEM_PROJECT_PATH
       || sessionTier === 'system'
       || ownerAgentId === 'finger-system-agent'
+      || memoryOwnerWorkerId === 'finger-system-agent'
       || session.id.startsWith('system-');
 
+    if (memoryOwnerWorkerId && memoryOwnerWorkerId !== normalizedAgentId) {
+      return false;
+    }
     if (ownerAgentId && ownerAgentId !== normalizedAgentId) {
       return false;
     }

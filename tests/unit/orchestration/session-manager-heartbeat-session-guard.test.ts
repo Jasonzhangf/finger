@@ -44,5 +44,25 @@ describe('SessionManager heartbeat/session isolation guards', () => {
 
     reloaded.deleteSession(heartbeatSessionId);
   });
-});
 
+  it('repairs system session ownership mismatch on getOrCreateSystemSession', () => {
+    const manager = new SessionManager();
+    const brokenSessionId = `session-system-broken-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    manager.ensureSession(brokenSessionId, SYSTEM_PROJECT_PATH, 'system-broken');
+    manager.updateContext(brokenSessionId, {
+      sessionTier: 'orchestrator-root',
+      ownerAgentId: 'finger-project-agent',
+      memoryOwnerWorkerId: 'finger-project-agent',
+    });
+
+    const selected = manager.getOrCreateSystemSession();
+    const repaired = manager.getSession(selected.id);
+    const context = (repaired?.context ?? {}) as Record<string, unknown>;
+
+    expect(repaired).toBeTruthy();
+    expect(context.ownerAgentId).toBe('finger-system-agent');
+    expect(context.memoryOwnerWorkerId).toBe('finger-system-agent');
+
+    manager.deleteSession(brokenSessionId);
+  });
+});

@@ -117,6 +117,15 @@ It intentionally avoids project-specific architecture, API, roadmap, and busines
 - `ui` 只负责展示与交互，不承载业务编排逻辑；必须与业务实现解耦。
 - 任何新增需求都应优先下沉到 `blocks` 抽象，避免在编排层或 UI 层复制业务语义。
 
+## Worker-Owned Session / Memory（强制）
+- Session 是 Worker 的活跃记忆，不是 channel/provider 的附属物。
+- Session ownership 的唯一真源是 `context.memoryOwnerWorkerId`（兼容旧字段 `ownerAgentId`）。
+- scope（project/sessionTier/dispatchScopeKey）只做可见性筛选，不代表 ownership 转移。
+- 允许跨 agent 查看（read-only），禁止跨 worker 写入/执行（owner-only write/execute）。
+- dispatch 必须按 `target_agent + project_path (+ worker_id)` 做确定性会话映射，禁止写入错误 owner 的 session。
+- reviewer 为特例：默认无历史，每次按当前 CWD 使用干净审查会话（stateless review）。
+- 旧 session 数据必须自动迁移补齐 ownership 字段；迁移逻辑必须幂等、可回放、不可静默失败。
+
 ## 生命周期管理（强制）
 
 ### 设计原则

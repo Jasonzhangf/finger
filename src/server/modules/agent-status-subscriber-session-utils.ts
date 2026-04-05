@@ -20,9 +20,7 @@ import {
   sameDeliveryRoute,
   sameEnvelope,
 } from './agent-status-subscriber-mapping-utils.js';
-import {
-  parseProjectTaskState,
-} from '../../common/project-task-state.js';
+import { parseProjectTaskState } from '../../common/project-task-state.js';
 import { applyProjectStatusGatewayPatch } from './project-status-gateway.js';
 
 export {

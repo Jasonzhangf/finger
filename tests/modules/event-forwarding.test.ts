@@ -949,6 +949,90 @@ describe('Event Forwarding - Execution Lifecycle', () => {
     }));
   });
 
+  it('uses system agent as enforcement target when session owner is missing', async () => {
+    const sessionManager = createMockSessionManager();
+    (sessionManager.getSession as ReturnType<typeof vi.fn>)('hook-dispatch-fallback-session-1');
+    const dispatchTaskToAgent = vi.fn(async () => ({ ok: true, status: 'queued' }));
+    const eventBus = createMockEventBus();
+    const deps = createDeps({
+      sessionManager,
+      eventBus,
+      dispatchTaskToAgent,
+      generalAgentId: 'finger-project-agent',
+    });
+    const { emitLoopEventToEventBus } = attachEventForwarding(deps);
+
+    emitLoopEventToEventBus({
+      sessionId: 'hook-dispatch-fallback-session-1',
+      phase: 'turn_complete',
+      timestamp: new Date().toISOString(),
+      payload: {
+        finishReason: 'stop',
+        responseId: 'resp-hook-dispatch-fallback-1',
+        controlHookNames: ['hook.dispatch'],
+        controlBlockValid: true,
+      },
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(dispatchTaskToAgent).toHaveBeenCalledWith(expect.objectContaining({
+      sourceAgentId: 'control-hook-enforcer',
+      targetAgentId: 'finger-system-agent',
+      sessionId: 'hook-dispatch-fallback-session-1',
+    }));
+  });
+
+  it('skips hook.dispatch enforcement when dispatch tool was already called in this turn', async () => {
+    const sessionManager = createMockSessionManager();
+    const session = (sessionManager.getSession as ReturnType<typeof vi.fn>)('hook-dispatch-seen-session-1');
+    session.context.ownerAgentId = 'finger-system-agent';
+    const dispatchTaskToAgent = vi.fn(async () => ({ ok: true, status: 'queued' }));
+    const eventBus = createMockEventBus();
+    const deps = createDeps({ sessionManager, eventBus, dispatchTaskToAgent });
+    const { emitLoopEventToEventBus } = attachEventForwarding(deps);
+
+    emitLoopEventToEventBus({
+      sessionId: 'hook-dispatch-seen-session-1',
+      phase: 'turn_start',
+      timestamp: new Date().toISOString(),
+      payload: {},
+    });
+
+    emitLoopEventToEventBus({
+      sessionId: 'hook-dispatch-seen-session-1',
+      phase: 'kernel_event',
+      timestamp: new Date().toISOString(),
+      payload: {
+        type: 'tool_call',
+        toolName: 'agent.dispatch',
+      },
+    });
+
+    emitLoopEventToEventBus({
+      sessionId: 'hook-dispatch-seen-session-1',
+      phase: 'turn_complete',
+      timestamp: new Date().toISOString(),
+      payload: {
+        finishReason: 'stop',
+        responseId: 'resp-hook-dispatch-seen-1',
+        controlHookNames: ['hook.dispatch'],
+        controlBlockValid: true,
+      },
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(dispatchTaskToAgent).not.toHaveBeenCalled();
+    expect(eventBus.emit).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'system_notice',
+      sessionId: 'hook-dispatch-seen-session-1',
+      payload: expect.objectContaining({
+        source: 'control_hook_action',
+        hook: 'hook.dispatch',
+        action: 'skipped_dispatch_tool_seen',
+      }),
+    }));
+  });
+
   it('skips hook.dispatch when hook.waiting_user is present in the same control block', async () => {
     const sessionManager = createMockSessionManager();
     const session = (sessionManager.getSession as ReturnType<typeof vi.fn>)('hook-dispatch-waiting-user-session-1');
@@ -1115,6 +1199,74 @@ describe('Event Forwarding - Execution Lifecycle', () => {
       substage: 'control_interrupt',
       updatedBy: 'event-forwarding',
     }));
+  });
+
+  it('maps turn_error interruption text to interrupted lifecycle and interrupted final reply', async () => {
+    const sessionManager = createMockSessionManager();
+    const statusSubscriber = {
+      sendBodyUpdate: vi.fn(async () => undefined),
+      sendReasoningUpdate: vi.fn(async () => undefined),
+      finalizeChannelTurn: vi.fn(async () => undefined),
+    } as any;
+    const deps = createDeps({ sessionManager, agentStatusSubscriber: statusSubscriber });
+    const { emitLoopEventToEventBus } = attachEventForwarding(deps);
+
+    emitLoopEventToEventBus({
+      sessionId: 'turn-error-interrupted-session-1',
+      phase: 'turn_error',
+      timestamp: new Date().toISOString(),
+      payload: {
+        error: 'chat-codex turn interrupted by user',
+      },
+    });
+
+    const session = (sessionManager.getSession as ReturnType<typeof vi.fn>)('turn-error-interrupted-session-1');
+    expect(session.context.executionLifecycle).toEqual(expect.objectContaining({
+      stage: 'interrupted',
+      substage: 'turn_interrupted',
+      updatedBy: 'event-forwarding',
+    }));
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(statusSubscriber.finalizeChannelTurn).toHaveBeenCalledWith(
+      'turn-error-interrupted-session-1',
+      expect.stringContaining('已中断：chat-codex turn interrupted by user'),
+      expect.any(String),
+      undefined,
+    );
+  });
+
+  it('maps turn_error superseded text to interrupted lifecycle and interrupted final reply', async () => {
+    const sessionManager = createMockSessionManager();
+    const statusSubscriber = {
+      sendBodyUpdate: vi.fn(async () => undefined),
+      sendReasoningUpdate: vi.fn(async () => undefined),
+      finalizeChannelTurn: vi.fn(async () => undefined),
+    } as any;
+    const deps = createDeps({ sessionManager, agentStatusSubscriber: statusSubscriber });
+    const { emitLoopEventToEventBus } = attachEventForwarding(deps);
+
+    emitLoopEventToEventBus({
+      sessionId: 'turn-error-superseded-session-1',
+      phase: 'turn_error',
+      timestamp: new Date().toISOString(),
+      payload: {
+        error: 'chat-codex active turn superseded by newer user input',
+      },
+    });
+
+    const session = (sessionManager.getSession as ReturnType<typeof vi.fn>)('turn-error-superseded-session-1');
+    expect(session.context.executionLifecycle).toEqual(expect.objectContaining({
+      stage: 'interrupted',
+      substage: 'turn_interrupted',
+      updatedBy: 'event-forwarding',
+    }));
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(statusSubscriber.finalizeChannelTurn).toHaveBeenCalledWith(
+      'turn-error-superseded-session-1',
+      expect.stringContaining('已中断：chat-codex active turn superseded by newer user input'),
+      expect.any(String),
+      undefined,
+    );
   });
 
   it('maps waiting_for_user and user_decision_received to lifecycle transitions', () => {

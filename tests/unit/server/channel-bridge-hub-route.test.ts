@@ -748,6 +748,74 @@ describe('channel-bridge-hub-route user.ask async adaptation', () => {
     }));
   });
 
+  it('reports interrupted instead of failed when direct send returns interruption-like error', async () => {
+    ChannelContextManager.getInstance().clearContext('qqbot');
+    ChannelContextManager.getInstance().updateContext('qqbot', 'system', 'finger-system-agent');
+    const askManager = new AskManager(5_000);
+    const sendMessage = vi.fn().mockResolvedValue({ messageId: 'reply-interrupted-1' });
+    const addMessage = vi.fn().mockResolvedValue(undefined);
+    const ensureSession = vi.fn();
+    const updateContext = vi.fn();
+    const getSession = vi.fn().mockReturnValue({
+      id: 'system-session-interrupted-route',
+      context: {},
+    });
+    const getOrCreateSystemSession = vi.fn().mockReturnValue({ id: 'system-session-interrupted-route' });
+    const dispatchTaskToAgent = vi.fn();
+    const directSendToModule = vi.fn().mockResolvedValue({
+      success: false,
+      error: 'chat-codex turn interrupted by user',
+    });
+
+    const route = createChannelBridgeHubRoute({
+      channelBridgeManager: {
+        sendMessage,
+      } as any,
+      sessionManager: {
+        ensureSession,
+        updateContext,
+        getSession,
+        getOrCreateSystemSession,
+        addMessage,
+        getMessages: vi.fn().mockReturnValue([]),
+      } as any,
+      askManager,
+      dispatchTaskToAgent,
+      directSendToModule,
+      eventBus: new UnifiedEventBus(),
+      runtime: {},
+    });
+
+    await route({
+      payload: {
+        id: 'msg-interrupted-route-1',
+        channelId: 'qqbot',
+        accountId: 'acc-1',
+        type: 'direct',
+        senderId: 'user-1',
+        senderName: 'User 1',
+        content: 'interrupted please',
+        timestamp: Date.now(),
+        metadata: {},
+      },
+    });
+
+    expect(directSendToModule).toHaveBeenCalledTimes(1);
+    expect(addMessage).not.toHaveBeenCalled();
+    expect(sendMessage).toHaveBeenCalledWith('qqbot', expect.objectContaining({
+      text: expect.stringContaining('已中断：chat-codex turn interrupted by user'),
+    }));
+    const lifecycleCall = updateContext.mock.calls.find((call) => {
+      const payload = call[1] as Record<string, unknown>;
+      return payload
+        && typeof payload === 'object'
+        && 'executionLifecycle' in payload;
+    });
+    expect(lifecycleCall).toBeDefined();
+    const lifecycle = (lifecycleCall?.[1] as Record<string, unknown>).executionLifecycle as Record<string, unknown>;
+    expect(lifecycle.stage).toBe('interrupted');
+  });
+
   it('converts local image attachment to data-url image inputItem', async () => {
     const localImagePath = `/tmp/fake-image-${Date.now()}.png`;
     writeFileSync(localImagePath, 'fake-image');

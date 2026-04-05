@@ -31,6 +31,19 @@ function createSessionManagerStub(): ISessionManager {
         },
       },
     ],
+    [
+      'proj-owned-james',
+      {
+        id: 'proj-owned-james',
+        name: 'project-james',
+        projectPath: '/tmp/project-a',
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        context: {
+          memoryOwnerWorkerId: 'finger-project-agent-02',
+        },
+      },
+    ],
   ]);
 
   return {
@@ -90,6 +103,31 @@ describe('RuntimeFacade session binding hard guards', () => {
     expect(toolCalls).toHaveLength(2);
     expect(toolCalls[0].sessionId).toBe('default');
     expect(toolCalls[1].sessionId).toBe('system-1');
+  });
+
+  it('blocks tool execution on session owned by another worker (memoryOwnerWorkerId)', async () => {
+    const emits: Array<Record<string, unknown>> = [];
+    const eventBus = {
+      emit: vi.fn(async (evt: Record<string, unknown>) => {
+        emits.push(evt);
+      }),
+      enablePersistence: vi.fn(),
+    } as any;
+    const sessionManager = createSessionManagerStub();
+    const toolRegistry = createToolRegistryStub() as any;
+    const runtime = new RuntimeFacade(eventBus, sessionManager, toolRegistry);
+    runtime.grantToolToAgent('finger-project-agent', 'echo.test');
+
+    await runtime.callTool('finger-project-agent', 'echo.test', { ok: true }, { sessionId: 'proj-owned-james' });
+
+    const toolCalls = emits.filter((evt) => evt.type === 'tool_call');
+    expect(toolCalls).toHaveLength(1);
+    expect(toolCalls[0].sessionId).toBe('default');
+    expect(toolRegistry.execute).toHaveBeenCalledWith(
+      'echo.test',
+      { ok: true },
+      expect.objectContaining({ sessionId: 'default' }),
+    );
   });
 
   it('normalizes bare status tool calls to mailbox.status when alias target is whitelisted', async () => {

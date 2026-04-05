@@ -82,8 +82,82 @@ const TERMINAL_STAGES = new Set<ExecutionLifecycleStage>([
   'interrupted',
 ]);
 
+const INTERRUPTION_KEYWORDS = [
+  'interrupt',
+  'interrupted',
+  'superseded',
+  'aborted',
+  'abort',
+  'sigterm',
+  'terminated',
+];
+
+const CANCELLATION_KEYWORDS = [
+  'cancelled',
+  'canceled',
+  'cancel',
+];
+
 function asOptionalString(value: unknown): string | undefined {
   return typeof value === 'string' && value.trim().length > 0 ? value.trim() : undefined;
+}
+
+function normalizeErrorMessage(error: unknown): string {
+  if (typeof error === 'string') return error.trim();
+  if (error instanceof Error) return error.message.trim();
+  return String(error ?? '').trim();
+}
+
+function containsAnyKeyword(text: string, keywords: string[]): boolean {
+  for (const keyword of keywords) {
+    if (text.includes(keyword)) return true;
+  }
+  return false;
+}
+
+export type ExecutionErrorDisposition = {
+  stage: 'failed' | 'interrupted';
+  reason: 'failed' | 'interrupted' | 'cancelled';
+  message: string;
+};
+
+export function classifyExecutionErrorDisposition(error: unknown): ExecutionErrorDisposition {
+  const message = normalizeErrorMessage(error);
+  const normalized = message.toLowerCase();
+  if (containsAnyKeyword(normalized, CANCELLATION_KEYWORDS)) {
+    return {
+      stage: 'interrupted',
+      reason: 'cancelled',
+      message,
+    };
+  }
+  if (containsAnyKeyword(normalized, INTERRUPTION_KEYWORDS)) {
+    return {
+      stage: 'interrupted',
+      reason: 'interrupted',
+      message,
+    };
+  }
+  return {
+    stage: 'failed',
+    reason: 'failed',
+    message,
+  };
+}
+
+export function formatUserFacingExecutionError(
+  error: unknown,
+  fallbackFailureText = '处理失败，请稍后再试',
+): string {
+  const disposition = classifyExecutionErrorDisposition(error);
+  const message = disposition.message;
+  if (disposition.reason === 'cancelled') {
+    return message.length > 0 ? `已取消：${message}` : '已取消，请重试。';
+  }
+  if (disposition.reason === 'interrupted') {
+    return message.length > 0 ? `已中断：${message}` : '已中断，请重试。';
+  }
+  return message.length > 0 ? `处理失败：${message}` : fallbackFailureText;
 }
 
 export function parseExecutionLifecycleState(value: unknown): ExecutionLifecycleState | null {

@@ -30,6 +30,11 @@ import {
   toKernelInputItemsFromAttachments,
 } from '../../server/modules/channel-bridge-hub-route-helpers.js';
 import { triggerChannelLinkAutoDetail } from '../../server/modules/channel-link-auto-detail.js';
+import {
+  applyExecutionLifecycleTransition,
+  classifyExecutionErrorDisposition,
+  formatUserFacingExecutionError,
+} from '../../server/modules/execution-lifecycle.js';
 
 const log = logger.module('ChannelBridgeHubRoute');
 
@@ -195,8 +200,19 @@ export function createChannelBridgeHubRoute(deps: ChannelBridgeHubRouteDeps) {
       return true;
     };
 
-    const markSessionFailed = (errorText: string): void => {
+    const markSessionError = (errorText: string): void => {
+      const disposition = classifyExecutionErrorDisposition(errorText);
       try {
+        const applied = applyExecutionLifecycleTransition(sessionManager, fixedSessionId, {
+          stage: disposition.stage,
+          substage: disposition.stage === 'interrupted' ? 'channel_route_interrupted' : 'channel_route_error',
+          updatedBy: 'channel-bridge-hub-route',
+          targetAgentId,
+          detail: disposition.message.slice(0, 500),
+          lastError: disposition.stage === 'failed' ? disposition.message.slice(0, 500) : null,
+          recoveryAction: disposition.stage === 'interrupted' ? 'interrupted' : 'failed',
+        });
+        if (applied) return;
         const existing = sessionManager.getSession(fixedSessionId)?.context;
         const previous = existing && typeof existing === 'object'
           ? (existing.executionLifecycle as Record<string, unknown> | undefined)
@@ -204,18 +220,20 @@ export function createChannelBridgeHubRoute(deps: ChannelBridgeHubRouteDeps) {
         sessionManager.updateContext(fixedSessionId, {
           executionLifecycle: {
             ...(previous && typeof previous === 'object' ? previous : {}),
-            stage: 'failed',
-            substage: 'channel_route_error',
+            stage: disposition.stage,
+            substage: disposition.stage === 'interrupted' ? 'channel_route_interrupted' : 'channel_route_error',
             updatedBy: 'channel-bridge-hub-route',
             targetAgentId,
-            lastError: errorText.slice(0, 500),
+            detail: disposition.message.slice(0, 500),
+            ...(disposition.stage === 'failed' ? { lastError: disposition.message.slice(0, 500) } : {}),
             lastTransitionAt: new Date().toISOString(),
           },
         });
       } catch (error) {
-        log.warn('Failed to mark session executionLifecycle as failed', {
+        log.warn('Failed to mark session executionLifecycle from channel route error', {
           sessionId: fixedSessionId,
           targetAgentId,
+          stage: disposition.stage,
           error: error instanceof Error ? error.message : String(error),
         });
       }
@@ -551,8 +569,8 @@ export function createChannelBridgeHubRoute(deps: ChannelBridgeHubRouteDeps) {
           targetAgentId,
           error: errorText,
         });
-        markSessionFailed(errorText);
-        await sendReply(`处理失败：${errorText}`, targetAgentId, {
+        markSessionError(errorText);
+        await sendReply(formatUserFacingExecutionError(errorText), targetAgentId, {
           bypassRecentBodyGate: true,
         });
         return;
@@ -583,8 +601,8 @@ export function createChannelBridgeHubRoute(deps: ChannelBridgeHubRouteDeps) {
           targetAgentId,
           error: errorText,
         });
-        markSessionFailed(errorText);
-        await sendReply(`处理失败：${errorText}`, targetAgentId, {
+        markSessionError(errorText);
+        await sendReply(formatUserFacingExecutionError(errorText), targetAgentId, {
           bypassRecentBodyGate: true,
         });
         return;
@@ -601,8 +619,9 @@ export function createChannelBridgeHubRoute(deps: ChannelBridgeHubRouteDeps) {
       });
     } catch (err) {
       log.error('Hub route dispatch error', err instanceof Error ? err : undefined);
-      markSessionFailed(err instanceof Error ? err.message : String(err));
-      await sendReply('处理失败，请稍后再试', 'messagehub', {
+      const errorText = err instanceof Error ? err.message : String(err);
+      markSessionError(errorText);
+      await sendReply(formatUserFacingExecutionError(errorText, '处理失败，请稍后再试'), 'messagehub', {
         bypassRecentBodyGate: true,
       });
     } finally {

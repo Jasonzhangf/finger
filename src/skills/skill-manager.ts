@@ -11,6 +11,28 @@ import { logger } from '../core/logger.js';
 import { FINGER_PATHS } from '../core/finger-paths.js';
 
 const log = logger.module('SkillsManager');
+const SKILLS_WATCHER_RUNTIME_GUARD_KEY = '__finger_skills_watcher_runtime_guard__';
+
+interface SkillsWatcherRuntimeGuard {
+  disabledByResourceLimit: boolean;
+  disabledReason?: string;
+}
+
+function getSkillsWatcherRuntimeGuard(): SkillsWatcherRuntimeGuard {
+  const holder = globalThis as Record<string, unknown>;
+  const existing = holder[SKILLS_WATCHER_RUNTIME_GUARD_KEY];
+  if (existing && typeof existing === 'object') {
+    const record = existing as Partial<SkillsWatcherRuntimeGuard>;
+    if (typeof record.disabledByResourceLimit === 'boolean') {
+      return existing as SkillsWatcherRuntimeGuard;
+    }
+  }
+  const initialized: SkillsWatcherRuntimeGuard = {
+    disabledByResourceLimit: false,
+  };
+  holder[SKILLS_WATCHER_RUNTIME_GUARD_KEY] = initialized;
+  return initialized;
+}
 
 function describeWatcherError(error: unknown): { message: string; code?: string } {
   if (error instanceof Error) {
@@ -97,6 +119,10 @@ export class SkillsManager {
   }
 
   private startWatching(): void {
+    const runtimeGuard = getSkillsWatcherRuntimeGuard();
+    if (runtimeGuard.disabledByResourceLimit) {
+      return;
+    }
     try {
       if (!existsSync(this.skillsDir)) {
         log.info(`[SkillsManager] Skills directory does not exist, creating: ${this.skillsDir}`);
@@ -116,6 +142,11 @@ export class SkillsManager {
       this.watcher.on('error', (error) => {
         const detail = describeWatcherError(error);
         log.warn('[SkillsManager] Skills watcher error, disabling watcher', detail);
+        if (detail.code === 'EMFILE' || detail.code === 'ENOSPC') {
+          const guard = getSkillsWatcherRuntimeGuard();
+          guard.disabledByResourceLimit = true;
+          guard.disabledReason = detail.code;
+        }
         this.stopWatching();
       });
 
