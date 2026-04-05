@@ -6,7 +6,8 @@
   "bin": {
     "myfinger": "./dist/cli/index.js",
     "finger-gateway-bridge": "./dist/cli/finger-gateway-bridge.js",
-    "finger-config": "./dist/cli/finger-config.js"
+    "finger-config": "./dist/cli/finger-config.js",
+    "apply_patch": "./dist/cli/apply-patch.js"
   },
   "type": "module",
   "scripts": {
@@ -84,7 +85,7 @@
     "typescript-eslint": "^8.56.1",
     "vitest": "^1.6.0"
   },
-  "fingerBuildVersion": "0.1.0183",
+  "fingerBuildVersion": "0.1.0186",
   "pnpm": {
     "packageExtensions": {
       "vitest@*": {

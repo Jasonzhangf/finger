@@ -16,10 +16,10 @@ describe('codex apply_patch tool', () => {
     process.env = { ...envBackup };
   });
 
-  it('resolves command from env override first', () => {
+  it('ignores invalid env override and never returns unavailable custom path', () => {
     process.env.FINGER_CODEX_APPLY_PATCH_BIN = '/tmp/custom-apply-patch';
     const resolved = resolveApplyPatchCommand(process.cwd());
-    expect(resolved).toBeNull();
+    expect(resolved?.commandArrayPrefix[0]).not.toBe('/tmp/custom-apply-patch');
   });
 
   it('applies add-file patch when apply_patch command is available', async () => {
