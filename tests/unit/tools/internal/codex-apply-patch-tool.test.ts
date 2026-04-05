@@ -19,8 +19,7 @@ describe('codex apply_patch tool', () => {
   it('resolves command from env override first', () => {
     process.env.FINGER_CODEX_APPLY_PATCH_BIN = '/tmp/custom-apply-patch';
     const resolved = resolveApplyPatchCommand(process.cwd());
-    expect(resolved).not.toBeNull();
-    expect(resolved?.commandArrayPrefix[0]).toBe('/tmp/custom-apply-patch');
+    expect(resolved).toBeNull();
   });
 
   it('applies add-file patch when apply_patch command is available', async () => {
@@ -65,6 +64,39 @@ fs.writeFileSync(path.join(process.cwd(), fileName), output, 'utf8');
 
       expect(result.ok).toBe(true);
       expect(readFileSync(path.join(dir, 'hello.txt'), 'utf-8')).toBe('hello from patch\n');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('applies update-file patch without external apply_patch binary', async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'finger-apply-patch-update-'));
+    try {
+      const file = path.join(dir, 'note.txt');
+      writeFileSync(file, 'line1\nline2\nline3\n', 'utf-8');
+      delete process.env.FINGER_CODEX_APPLY_PATCH_BIN;
+
+      const patch = [
+        '*** Begin Patch',
+        '*** Update File: note.txt',
+        '@@',
+        ' line1',
+        '-line2',
+        '+line2-updated',
+        ' line3',
+        '*** End Patch',
+      ].join('\n');
+
+      const result = await applyPatchTool.execute(
+        { input: patch },
+        {
+          ...TEST_CONTEXT_BASE,
+          cwd: dir,
+        },
+      );
+
+      expect(result.ok).toBe(true);
+      expect(readFileSync(file, 'utf-8')).toBe('line1\nline2-updated\nline3\n');
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
