@@ -122,6 +122,7 @@ function applyContextDisplayMode(text: string, modeRaw: ContextDisplayMode): str
     let contextHeadlineAdded = false;
     let historyOnlyAdded = false;
     const historyRegex = /H\(c=[^)]+,cur=[^)]+\)/;
+    const historySplitRegex = /H\(c=([^,]+),cur=([^)]+)\)/;
     for (const line of segments) {
       if (!isContextLine(line)) {
         output.push(line);
@@ -134,6 +135,14 @@ function applyContextDisplayMode(text: string, modeRaw: ContextDisplayMode): str
         continue;
       }
       if (!historyOnlyAdded && normalized.startsWith('🧩 构成:') && historyRegex.test(normalized)) {
+        const splitMatch = normalized.match(historySplitRegex);
+        if (splitMatch && splitMatch[1] && splitMatch[2]) {
+          const contextHistory = splitMatch[1].trim();
+          const currentHistory = splitMatch[2].trim();
+          output.push(`🧩 历史: context history=${contextHistory} · current history=${currentHistory}`);
+          historyOnlyAdded = true;
+          continue;
+        }
         const match = normalized.match(historyRegex);
         if (match && match[0]) {
           output.push(`🧩 历史: ${match[0]}`);

@@ -89,7 +89,8 @@ describe('agent status display settings', () => {
 
     const payload = routeToOutput.mock.calls[0]?.[1] as { content?: string };
     expect(payload.content).toContain('🧠 上下文');
-    expect(payload.content).toContain('🧩 历史: H(');
+    expect(payload.content).toContain('🧩 历史: context history=');
+    expect(payload.content).toContain('current history=');
     expect(payload.content).not.toContain('🧩 构成: I(');
   });
 });
