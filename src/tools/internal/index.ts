@@ -22,6 +22,7 @@ import { contextBuilderRebuildTool } from './context-builder-rebuild-tool.js';
 import { noopTool } from './codex-noop-tool.js';
 import { permissionTools } from './permission-tools.js';
 import { heartbeatEnableTool, heartbeatDisableTool, heartbeatStatusTool, heartbeatAddTaskTool, heartbeatCompleteTaskTool, heartbeatRemoveTaskTool, heartbeatListTasksTool, heartbeatBatchAddTool, heartbeatBatchCompleteTool, heartbeatBatchRemoveTool } from './heartbeat-control-tool.js';
+import { heartbeatStateTool, heartbeatStopTool, heartbeatResumeTool, mailboxHealthTool, mailboxClearTool, mailboxMarkSkipTool } from './heartbeat-state-tool.js';
 import {
   mailboxListTool,
   mailboxReadTool,
@@ -55,6 +56,7 @@ export * from './context-ledger-expand-task-tool.js';
 export * from './context-builder-rebuild-tool.js';
 export * from './permission-tools.js';
 export * from './heartbeat-control-tool.js';
+export * from './heartbeat-state-tool.js';
 export * from './mailbox-tool.js';
 export * from './mailbox-tool-remove.js';
 export * from './send-local-image-tool.js';
@@ -66,6 +68,12 @@ export * from './codex-sleep-tool.js';
 export function createDefaultInternalToolRegistry(): InternalToolRegistry {
   const registry = new InternalToolRegistry();
   registry.register(shellExecTool);
+  registry.register(heartbeatStateTool);
+  registry.register(heartbeatStopTool);
+  registry.register(heartbeatResumeTool);
+  registry.register(mailboxHealthTool);
+  registry.register(mailboxClearTool);
+  registry.register(mailboxMarkSkipTool);
   registry.register(clockTool);
   registry.register(execCommandTool);
   registry.register(writeStdinTool);
