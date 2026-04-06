@@ -351,7 +351,7 @@ agentStatusSubscriber.setPrimaryAgent(SYSTEM_AGENT_CONFIG.id);
 logger.module('server').info('Agent Status Subscriber started');
 
 // Start Heartbeat Scheduler
-const heartbeatScheduler = new HeartbeatScheduler(getAgentRuntimeDeps());
+export const heartbeatScheduler = new HeartbeatScheduler(getAgentRuntimeDeps());
 await heartbeatScheduler.start();
 logger.module('server').info('Heartbeat Scheduler started');
 

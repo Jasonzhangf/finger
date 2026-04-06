@@ -30,6 +30,8 @@ export interface CompressOptions {
   mode?: string;
   /** Override compress threshold (reads from user-settings.json by default) */
   compressTokenThreshold?: number;
+  /** Force compression (ignore threshold check, for manual compact) */
+  force?: boolean;
   /**
    * External summarizer function.
    * When provided, called with ledger entries to produce summary + userPreferencePatch.
@@ -195,7 +197,9 @@ export async function compressSession(
   const threshold = options.compressTokenThreshold ?? getCompressTokenThreshold();
 
   // Step 1: Check if compression is needed
-  if (session.totalTokens <= threshold) {
+  const force = options.force ?? false;
+  // 只有非强制模式才检查 threshold（manual compact 强制压缩）
+  if (!force && session.totalTokens <= threshold) {
     return {
       compressed: false,
       reason: `totalTokens (${session.totalTokens}) <= threshold (${threshold})`,
@@ -263,15 +267,26 @@ export async function compressSession(
   const existingCompact = await readJsonLines<CompactMemoryEntryFile>(compactPath);
   const newCompactIndex = existingCompact.length; // 0-based index of the new entry
 
-  await fs.appendFile(compactPath, `${JSON.stringify(compactEntry)}\n`, 'utf-8');
+  try {
+    await fs.appendFile(compactPath, `${JSON.stringify(compactEntry)}\n`, 'utf-8');
+    console.log('[compressSession] ✅ Wrote compact_block to', compactPath);
+  } catch (writeError) {
+    console.error('[compressSession] ❌ Write compact_block failed:', writeError.message);
+    throw writeError;
+  }
 
   // Step 5: Calculate new pointers
   const newOriginalStartIndex = session.originalEndIndex + 1;
 
+  // ✅ 读取 ledger 最新位置（压缩后 originalEndIndex 应更新为 ledger 最新行）
+  const ledgerPath = resolveLedgerPath(rootDir, session.id, agentId, mode);
+  const allEntries = await readJsonLines<LedgerEntryFile>(ledgerPath);
+  const newOriginalEndIndex = allEntries.length - 1;  // ledger 最新位置
+
   // Count remaining tokens after compression
   const remainingEntries = await readLedgerRange(
     rootDir, session.id, agentId, mode,
-    newOriginalStartIndex, session.originalEndIndex + 10000, // generous upper bound
+    newOriginalStartIndex, newOriginalEndIndex,
   );
   let remainingTokens = result.tokenCount; // compact block tokens
   for (const entry of remainingEntries) {
@@ -288,7 +303,7 @@ export async function compressSession(
     pointers: {
       latestCompactIndex: newCompactIndex,
       originalStartIndex: newOriginalStartIndex,
-      originalEndIndex: session.originalEndIndex,
+      originalEndIndex: newOriginalEndIndex,
       totalTokens: remainingTokens,
     },
     result,

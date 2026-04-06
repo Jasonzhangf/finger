@@ -78,7 +78,7 @@ main() {
   echo "PID: $pid"
 
   # 等待启动
-  sleep 5
+  sleep 10
 
   # 健康检查
   if health_check "$pid"; then

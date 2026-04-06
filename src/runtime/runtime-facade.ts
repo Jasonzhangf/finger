@@ -83,7 +83,7 @@ export interface ISessionManager {
   pauseSession?(sessionId: string): boolean;
   resumeSession?(sessionId: string): boolean;
   updateContext?(sessionId: string, context: Record<string, unknown>): boolean;
-  compressContext?(sessionId: string, summarizer?: unknown): Promise<string>;
+  compressContext?(sessionId: string, options?: { summarizer?: unknown; force?: boolean }): Promise<string>;
   getCompressionStatus?(sessionId: string): { compressed: boolean; summary?: string; originalCount?: number };
   isPaused?(sessionId: string): boolean;
 }
@@ -1602,7 +1602,8 @@ export class RuntimeFacade {
       trigger: options?.trigger,
       contextUsagePercent: options?.contextUsagePercent,
     });
-    const summary = await this.sessionManager.compressContext(sessionId, summarizer);
+    const force = options?.trigger === 'manual';
+    const summary = await this.sessionManager.compressContext(sessionId, { summarizer, force });
     const compressedSize = summary.length;
     const nowIso = new Date().toISOString();
 

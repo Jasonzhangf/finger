@@ -1259,11 +1259,13 @@ export class SessionManager {
     };
   }
 
-  async compressContext(sessionId: string, summarizer?: (messages: SessionMessage[]) => Promise<string>): Promise<string> {
+  async compressContext(sessionId: string, options?: { summarizer?: (messages: SessionMessage[]) => Promise<string>; force?: boolean }): Promise<string> {
     const session = this.sessions.get(sessionId);
     if (!session) throw new Error(`Session not found: ${sessionId}`);
 
-    if (!needsCompression(session)) {
+    // 只有非强制模式才检查 threshold（manual compact 应该强制压缩）
+    const force = options?.force ?? false;
+    if (!force && !needsCompression(session)) {
       return 'No compression needed';
     }
 
@@ -1271,6 +1273,7 @@ export class SessionManager {
     const agentId = typeof ctx.ownerAgentId === 'string' ? ctx.ownerAgentId : SYSTEM_AGENT_ID;
     const rootDir = this.resolveSessionsRoot(session);
 
+    const summarizer = options?.summarizer;
     const summarizerAdapter = summarizer
       ? async (entries: Array<{ payload: unknown }>): Promise<CompressResult> => {
           const messages: SessionMessage[] = entries.map((entry, idx) => {
@@ -1292,6 +1295,7 @@ export class SessionManager {
       agentId,
       mode: 'main',
       summarizer: summarizerAdapter,
+      force: force,
     });
 
     if (!result.compressed) {
