@@ -481,3 +481,55 @@ When investigating cross-module issues:
 - `src/cli/init.ts`: acceptable (user-facing CLI)
 - `src/core/logger/index.ts`: acceptable (logger fallback)
 - `src/server/routes/session.ts`: MUST use FingerLogger (already fixed)
+
+---
+
+## 日志 Trace 覆盖（2026-04-06）
+
+### Trace 链路完整覆盖
+
+关键路径已全部接入 trace 模式：
+
+```
+dispatchTask → executeDispatch → sendToModule → callTool
+```
+
+- `AgentRuntimeBlock.dispatchTask`: `startTrace()` + `endTrace()` 包裹
+- `AgentRuntimeBlock.executeDispatch`: `traceId` 参数传递
+- `AgentRuntimeBlock.toDispatchPayload`: `metadata.traceId` 写入 payload
+- `AgentRuntimeBlock.drainDispatchQueue`: 独立 `startTrace()`（queued dispatch）
+- `MessageHub.sendToModule`: 从 `metadata.traceId` 提取 + debug log
+- `RuntimeFacade.callTool`: 从 `metadata.traceId` 提取 + tool_call/result/error log
+
+### 配置位置
+
+`~/.finger/config/logging.json`:
+```json
+{
+  "globalLevel": "info",
+  "moduleLevels": {
+    "AgentRuntimeBlock": "debug",
+    "MessageHub": "debug",
+    "RuntimeFacade": "debug"
+  },
+  "snapshotMode": true,
+  "snapshotModules": ["AgentRuntimeBlock", "MessageHub", "RuntimeFacade"]
+}
+```
+
+### Trace 输出
+
+- **实时日志**: `~/.finger/logs/daemon.log`（含 `traceId` 字段）
+- **快照文件**: `~/.finger/logs/snapshots/<traceId>.json`
+
+### 使用方式
+
+问题回溯时：
+1. 从 `daemon.log` 搜索 `[traceId=xxx]`
+2. 查找对应 `snapshots/xxx.json`（完整 trace 生命周期）
+
+### Scheduler 窗口行为优化
+
+- **DailySummaryScheduler**: `start()` 检查 `isHourInWindow()`，非窗口期不触发 `tick()`
+- **HeartbeatScheduler**: 同样逻辑，避免非窗口期重复启动
+
