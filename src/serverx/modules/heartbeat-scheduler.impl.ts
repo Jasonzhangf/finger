@@ -2,6 +2,7 @@ import { promises as fs, watch, type FSWatcher } from 'fs';
 import { homedir } from 'os';
 import path from 'path';
 import { logger } from '../../core/logger.js';
+import { appendHeartbeatEventSync, type HeartbeatEventType, type HeartbeatEventSeverity } from './heartbeat-ledger.js';
 import { extractAgentStatusFromRuntimeView } from '../../core/agent-runtime-status.js';
 import { FINGER_PATHS } from '../../core/finger-paths.js';
 import { heartbeatMailbox } from '../../server/modules/heartbeat-mailbox.js';
@@ -597,13 +598,20 @@ constructor(private deps: AgentRuntimeDeps) {}
     }
   }
   private evaluateHeartbeatState(): HeartbeatState {
-    // 使用 heartbeatMailbox.getSystemHealth() 获取系统 mailbox 健康数据
-    const health = heartbeatMailbox.getSystemHealth();
-    if (!health) {
-      return this.heartbeatState;
-    }
+    // 使用 heartbeatMailbox.list() 计算系统 mailbox 健康数据
+    const systemMessages = heartbeatMailbox.list("finger-system-agent");
+    const pending = systemMessages.filter(m => m.status === "pending");
+    const processing = systemMessages.filter(m => m.status === "processing");
+    const oldestPending = pending.length > 0 ? pending.reduce((a, b) => 
+      (new Date(a.createdAt).getTime() < new Date(b.createdAt).getTime()) ? a : b) : null;
     
     const now = Date.now();
+    
+    const health = {
+      pending: pending.length,
+      processing: processing.length,
+      oldestPendingAgeMs: oldestPending ? now - new Date(oldestPending.createdAt).getTime() : undefined,
+    };
     const cfg = HEARTBEAT_STATE_CONFIG;
     
     // 检查 DEGRADED → PAUSED（持续恶化）
@@ -658,19 +666,22 @@ constructor(private deps: AgentRuntimeDeps) {}
       this.heartbeatStateContext.degradedAt = now;
       this.heartbeatStateContext.degradedReason = reason;
       log.warn('[HeartbeatScheduler] State transition: RUNNING -> DEGRADED', { reason });
-      // TODO: Write to Ledger (heartbeat_degraded)
+      appendHeartbeatEventSync('heartbeat_degraded', 'warn', { prevState, newState, reason, degradedAt: now });
     } else if (newState === 'PAUSED') {
       this.heartbeatStateContext.pausedAt = now;
       this.heartbeatStateContext.pausedReason = reason;
       log.error('[HeartbeatScheduler] State transition: DEGRADED/RUNNING -> PAUSED', undefined, { reason, prevState });
-      // TODO: Write to Ledger (heartbeat_degraded_to_paused or heartbeat_stopped)
+      const eventType: HeartbeatEventType = prevState === 'DEGRADED' ? 'heartbeat_degraded_to_paused' : 'heartbeat_stopped';
+      const severity: HeartbeatEventSeverity = prevState === 'DEGRADED' ? 'error' : 'critical';
+      appendHeartbeatEventSync(eventType, severity, { prevState, newState, reason, pausedAt: now });
     } else if (newState === 'RUNNING') {
       this.heartbeatStateContext.degradedAt = undefined;
       this.heartbeatStateContext.degradedReason = undefined;
       this.heartbeatStateContext.pausedAt = undefined;
       this.heartbeatStateContext.pausedReason = undefined;
       log.info('[HeartbeatScheduler] State transition: DEGRADED/PAUSED -> RUNNING', { reason, prevState });
-      // TODO: Write to Ledger (heartbeat_resumed or heartbeat_auto_resume)
+      const eventType2: HeartbeatEventType = reason.includes('auto') ? 'heartbeat_auto_resume' : 'heartbeat_resumed';
+      appendHeartbeatEventSync(eventType2, 'info', { prevState, newState, reason });
     }
   }
 
@@ -2247,6 +2258,37 @@ constructor(private deps: AgentRuntimeDeps) {}
       // No state file yet.
     }
   }
+
+  // === 公开方法（供 Kernel Tools 调用） ===
+  public getState(): HeartbeatState {
+    return this.heartbeatState;
+  }
+
+  public getStateContext(): HeartbeatStateContext {
+    return { ...this.heartbeatStateContext }; // 返回副本，防止外部修改
+  }
+
+  public requestStop(reason: string, permanent: boolean = false, resumeAfterMinutes?: number): void {
+    const newState = permanent ? 'STOPPED' : 'PAUSED';
+    this.transitionHeartbeatState(newState, reason);
+    // TODO: 如果 resumeAfterMinutes 有值，设置自动恢复定时器（预留 278.6 实现）
+    if (resumeAfterMinutes && !permanent) {
+      log.info('[HeartbeatScheduler] Auto-resume scheduled', { resumeAfterMinutes, reason });
+    }
+  }
+
+  public requestResume(reason: string): void {
+    if (this.heartbeatState === 'PAUSED' || this.heartbeatState === 'STOPPED') {
+      this.transitionHeartbeatState('RUNNING', reason);
+    } else {
+      log.warn('[HeartbeatScheduler] Resume requested but state is not PAUSED/STOPPED', {
+        currentState: this.heartbeatState,
+        reason,
+      });
+    }
+  }
+
+  // === 私有方法 ===
 
   private async persistRuntimeState(): Promise<void> {
     const state: HeartbeatRuntimeState = {
