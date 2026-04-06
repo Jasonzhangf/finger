@@ -138,6 +138,9 @@ const AUTO_CONTEXT_COMPACT_THRESHOLD_PERCENT = Number.isFinite(Number(process.en
 const AUTO_CONTEXT_COMPACT_COOLDOWN_MS = Number.isFinite(Number(process.env.FINGER_CONTEXT_AUTO_COMPACT_COOLDOWN_MS))
   ? Math.max(1_000, Math.floor(Number(process.env.FINGER_CONTEXT_AUTO_COMPACT_COOLDOWN_MS)))
   : 60_000;
+const AUTO_CONTEXT_COMPACT_TIMEOUT_MS = Number.isFinite(Number(process.env.FINGER_CONTEXT_AUTO_COMPACT_TIMEOUT_MS))
+  ? Math.max(5_000, Math.floor(Number(process.env.FINGER_CONTEXT_AUTO_COMPACT_TIMEOUT_MS)))
+  : 30_000; // compact 超时 30 秒
 const autoCompactStateBySession = new Map<string, { lastAttemptAt: number; lastTurnId?: string }>();
 const autoCompactInFlightBySession = new Map<string, Promise<boolean>>();
 const autoDigestStopStateBySession = new Map<string, { lastAttemptAt: number; lastTurnId?: string }>();
@@ -1702,25 +1705,38 @@ export class RuntimeFacade {
         lastAttemptAt: now,
         ...(normalizedTurnId ? { lastTurnId: normalizedTurnId } : {}),
       });
+      // timeout wrapper
+      const timeoutPromise = new Promise<never>((_, reject) => {
+        setTimeout(() => reject(new Error(`Auto compact timeout after ${AUTO_CONTEXT_COMPACT_TIMEOUT_MS}ms`)), AUTO_CONTEXT_COMPACT_TIMEOUT_MS);
+      });
+
 
       try {
-        await this.compressContext(normalizedSessionId, {
+        await Promise.race([
+          this.compressContext(normalizedSessionId, {
           trigger: 'auto',
           contextUsagePercent: normalizedPercent,
-        });
+          }),
+          timeoutPromise,
+        ]);
         log.info('Auto context compact triggered', {
           sessionId: normalizedSessionId,
           contextUsagePercent: normalizedPercent,
           thresholdPercent: AUTO_CONTEXT_COMPACT_THRESHOLD_PERCENT,
           turnId: normalizedTurnId,
+          timeoutMs: AUTO_CONTEXT_COMPACT_TIMEOUT_MS,
         });
         return true;
       } catch (error) {
+        const isTimeout = error instanceof Error && error.message.includes('Auto compact timeout');
         log.warn('Auto context compact failed', {
+
           sessionId: normalizedSessionId,
           contextUsagePercent: normalizedPercent,
           turnId: normalizedTurnId,
           error: error instanceof Error ? error.message : String(error),
+          isTimeout,
+          timeoutMs: AUTO_CONTEXT_COMPACT_TIMEOUT_MS,
         });
         return false;
       }
