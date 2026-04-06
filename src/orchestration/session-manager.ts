@@ -17,7 +17,8 @@ import type { Attachment } from '../runtime/events.js';
 import { appendSessionMessage } from '../runtime/ledger-writer.js';
 import { resolveBaseDir } from '../runtime/context-ledger-memory-helpers.js';
 import { buildSessionView, type SessionView, type SessionViewMessage } from '../runtime/ledger-reader.js';
-import { needsCompression, compressSession, type CompressResult } from '../runtime/session-compressor.js';
+import { needsCompression } from '../runtime/session-compressor.js';
+import { compactSessionHistory, updateContextHistoryPointers, type CompactResult } from '../runtime/context-history-compact.js';
 import { estimateTokens } from '../utils/token-counter.js';
 import { getContextWindow } from '../core/user-settings.js';
 import { loadContextBuilderSettings } from '../core/user-settings.js';
@@ -1258,68 +1259,41 @@ export class SessionManager {
       compressedSummary: compressed?.summary,
     };
   }
-
-  async compressContext(sessionId: string, options?: { summarizer?: (messages: SessionMessage[]) => Promise<string>; force?: boolean }): Promise<string> {
+  async compressContext(sessionId: string, options?: { force?: boolean }): Promise<string> {
     const session = this.sessions.get(sessionId);
     if (!session) throw new Error(`Session not found: ${sessionId}`);
 
-    // 只有非强制模式才检查 threshold（manual compact 应该强制压缩）
     const force = options?.force ?? false;
-    if (!force && !needsCompression(session)) {
-      return 'No compression needed';
-    }
 
     const ctx = session.context ?? {};
-    const agentId = typeof ctx.ownerAgentId === 'string' ? ctx.ownerAgentId : SYSTEM_AGENT_ID;
+    const agentId = typeof ctx.ownerAgentId === "string" ? ctx.ownerAgentId : SYSTEM_AGENT_ID;
     const rootDir = this.resolveSessionsRoot(session);
 
-    const summarizer = options?.summarizer;
-    const summarizerAdapter = summarizer
-      ? async (entries: Array<{ payload: unknown }>): Promise<CompressResult> => {
-          const messages: SessionMessage[] = entries.map((entry, idx) => {
-            const pl = entry.payload as Record<string, unknown>;
-            return {
-              id: `ledger-${idx}`,
-              role: (pl.role as SessionMessage['role']) || 'user',
-              content: typeof pl.content === 'string' ? pl.content : '',
-              timestamp: new Date().toISOString(),
-            };
-          });
-          const summary = await summarizer(messages);
-          return { summary, userPreferencePatch: '', tokenCount: estimateTokens(summary) };
-        }
-      : undefined;
-
-    const result = await compressSession(session, {
+    // 使用新的确定性压缩（不需要 LLM）
+    const result = await compactSessionHistory(session, {
       rootDir,
       agentId,
-      mode: 'main',
-      summarizer: summarizerAdapter,
-      force: force,
+      mode: "main",
+      force,
     });
 
     if (!result.compressed) {
-      return result.reason || 'Compression skipped';
+      return result.reason || "Compression skipped";
     }
 
-    session.latestCompactIndex = result.pointers.latestCompactIndex;
-    session.originalStartIndex = result.pointers.originalStartIndex;
-    session.totalTokens = result.pointers.totalTokens;
+    // 更新指针（包含兼容旧字段）
+    updateContextHistoryPointers(session, result.pointers);
     session._cachedView = undefined;
 
-    session.context = this.normalizeSessionOwnershipContext(session, {
-      ...session.context,
-      compressedHistory: {
-        timestamp: new Date().toISOString(),
-        originalCount: result.result?.tokenCount || 0,
-        summary: result.result?.summary || '',
-      },
-    }).context;
-
     this.saveSession(session);
-    log.info('Compressed session ${sessionId}: ${result.result?.summary?.slice(0, 100)}...', { "sessionId": sessionId, "result.result?.summary?.slice(0, 100)": result.result?.summary?.slice(0, 100) });
+    log.info("Compressed session (deterministic)", {
+      sessionId,
+      digestId: result.digestBlock?.id,
+      messageCount: result.digestBlock?.payload.messages?.length,
+      totalTokens: result.pointers.totalTokens,
+    });
 
-    return result.result?.summary || 'Compression completed';
+    return `Compression completed: ${result.digestBlock?.payload.messages?.length ?? 0} messages compacted`;
   }
 
   getCompressionStatus(sessionId: string): { compressed: boolean; summary?: string; originalCount?: number } {

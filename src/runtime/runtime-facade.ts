@@ -1582,13 +1582,12 @@ export class RuntimeFacade {
   }
 
   // ==================== 上下文压缩 ====================
-
   /**
-   * 压缩上下文
+   * 压缩上下文（使用确定性压缩，不需要 LLM）
    */
-  async compressContext(sessionId: string, options?: { trigger?: 'manual' | 'auto'; contextUsagePercent?: number }): Promise<string> {
+  async compressContext(sessionId: string, options?: { trigger?: "manual" | "auto"; contextUsagePercent?: number }): Promise<string> {
     if (!this.sessionManager.compressContext) {
-      throw new Error('Context compression not supported by session manager');
+      throw new Error("Context compression not supported by session manager");
     }
 
     const session = this.sessionManager.getSession(sessionId);
@@ -1597,90 +1596,28 @@ export class RuntimeFacade {
     }
 
     const originalSize = session.messageCount ?? 0;
-    const summarizer = createCompactionSummarizer({
-      sessionId,
-      trigger: options?.trigger,
-      contextUsagePercent: options?.contextUsagePercent,
-    });
-    // auto compact 时强制压缩（kernel 已报告 contextUsagePercent >= 85%）
-    // manual compact 时强制压缩（用户主动触发）
+
+    // 直接调用 SessionManager.compressContext（已使用确定性压缩）
     const force = true;  // 所有触发都强制压缩
-    const summary = await this.sessionManager.compressContext(sessionId, { summarizer, force });
-    const compressedSize = summary.length;
-    const nowIso = new Date().toISOString();
+    const result = await this.sessionManager.compressContext(sessionId, { force });
 
-    const messages = this.sessionManager.getMessages(sessionId);
-    const replacementHistory = buildCompactReplacementHistory(
-      messages.map((message) => message as Record<string, unknown>),
-    );
-    const sessionContext = session.context ?? {};
-    const ownerAgentId = typeof sessionContext.ownerAgentId === 'string' && sessionContext.ownerAgentId.trim().length > 0
-      ? sessionContext.ownerAgentId.trim()
-      : 'finger-project-agent';
-    const mode = typeof sessionContext.sessionTier === 'string' && sessionContext.sessionTier.trim().length > 0
-      ? sessionContext.sessionTier.trim()
-      : 'main';
-    const sourceEventIds = messages.map((message) => message.id);
-    const sourceMessageIds = messages.map((message) => message.id);
-    const sourceTimeStart = messages.length > 0 ? messages[0].timestamp : nowIso;
-    const sourceTimeEnd = messages.length > 0 ? messages[messages.length - 1].timestamp : nowIso;
-
-    let compactResult: Awaited<ReturnType<typeof executeContextLedgerMemory>> | undefined;
-    try {
-      compactResult = await executeContextLedgerMemory({
-        action: 'compact',
-        session_id: sessionId,
-        agent_id: ownerAgentId,
-        mode,
-        trigger: options?.trigger === 'auto' ? 'auto' : 'manual',
-        summary,
-        source_event_ids: sourceEventIds,
-        source_message_ids: sourceMessageIds,
-        source_time_start: sourceTimeStart,
-        source_time_end: sourceTimeEnd,
-        source_slot_start: messages.length > 0 ? 1 : undefined,
-        source_slot_end: messages.length > 0 ? messages.length : undefined,
-        replacement_history: replacementHistory,
-        _runtime_context: {
-          session_id: sessionId,
-          agent_id: ownerAgentId,
-          mode,
-        },
-      });
-    } catch (error) {
-      // Keep session compression successful even if ledger compact persistence fails.
-      log.warn('ledger compact persistence failed', { sessionId, error: error instanceof Error ? error.message : String(error) });
-    }
-
-    if (replacementHistory.length > 0) {
-      this.updateSessionContext(sessionId, {
-        contextCompactReplacementHistory: replacementHistory,
-        contextCompactReplacementUpdatedAt: new Date().toISOString(),
-      });
-    }
-
+    // 发送压缩完成事件
     this.eventBus.emit({
-      type: 'session_compressed',
+      type: "session_compressed",
       sessionId,
       timestamp: new Date().toISOString(),
       payload: {
         originalSize,
-        compressedSize,
-        summary,
-        trigger: options?.trigger === 'auto' ? 'auto' : 'manual',
-        ...(typeof options?.contextUsagePercent === 'number' ? { contextUsagePercent: options.contextUsagePercent } : {}),
-        ...(compactResult && compactResult.action === 'compact' ? {
-          compactionId: compactResult.compaction_id,
-          sourceTimeStart: compactResult.source_time_start,
-          sourceTimeEnd: compactResult.source_time_end,
-          sourceSlotStart: compactResult.source_slot_start,
-          sourceSlotEnd: compactResult.source_slot_end,
-        } : {}),
+        compressedSize: 0,  // 确定性压缩不再产生 summary
+        summary: result,
+        trigger: options?.trigger === "auto" ? "auto" : "manual",
+        ...(typeof options?.contextUsagePercent === "number" ? { contextUsagePercent: options.contextUsagePercent } : {}),
       },
     });
 
-    return summary;
+    return result;
   }
+
 
   async maybeAutoCompact(sessionId: string, contextUsagePercent?: number, turnId?: string): Promise<boolean> {
     const normalizedSessionId = typeof sessionId === 'string' ? sessionId.trim() : '';
