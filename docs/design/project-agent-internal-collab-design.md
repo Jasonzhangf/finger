@@ -2,7 +2,7 @@
 
 > Epic: finger-276
 > 创建时间: 2026-04-06
-> 状态: 设计中
+> 状态: 实施中
 > 参考: ~/code/codex 多 Agent 协同架构（Codex Rust）
 
 ## 1. 概述
@@ -37,6 +37,28 @@
 | Completion Watcher | 需要 | 子 agent 完成后自动通知父 mailbox |
 | 并发控制 | max_threads=10, max_depth=3 | 可配置 |
 
+
+### 1.3 已完成状态（finger-276）
+
+| 组件 | 文件 | 状态 |
+|------|------|------|
+| AgentPath | `src/common/agent-path.ts` | ✅ 完成 (105 测试全通过) |
+| AgentRegistry | `src/orchestration/agent-registry.ts` | ✅ 完成 (覆盖率 99.68%) |
+| Mailbox 增强 | `src/blocks/mailbox-block/index.ts` | ✅ 完成 (17 测试全通过) |
+| Fork 历史继承 | `src/orchestration/session-fork.ts` | ✅ 完成 (26 测试全通过) |
+| 设计文档 | `docs/design/project-agent-internal-collab-design.md` | ✅ 完成 |
+| Completion Watcher | `src/orchestration/agent-collab-watcher.ts` | ✅ 完成 (16 测试全通过) |
+| 6 个 LLM 工具 | `src/tools/internal/agent-collab-tools.ts` | ✅ 完成 (28 测试全通过) |
+
+### 1.4 Epic 追踪
+
+- **finger-277**: Project Agent 内部多 Agent 协同增强（Epic）
+- **finger-277.1**: Completion Watcher 实现
+- **finger-277.2**: 6 个 LLM Collab 工具实现
+- **finger-277.3**: 单元测试补全
+- **finger-277.4**: 集成测试
+- **finger-277.5**: E2E 测试
+- **finger-277.6**: 设计文档更新
 ## 2. 核心组件
 
 ### 2.1 Agent 层级路径系统（AgentPath）
