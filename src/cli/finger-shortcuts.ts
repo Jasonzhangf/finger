@@ -34,8 +34,8 @@ export function registerFingerShortcuts(program: Command): void {
         process.exit(0);
         return;
       }
-      clog.log('daemon:status script not found or failed, fallback to CLI daemon status');
-      const fallback = spawn('node', ['dist/cli/index.js', 'daemon', 'status'], {
+      clog.log('daemon:status script not found or failed, fallback to legacy --status (composite runtime status)');
+      const fallback = spawn(process.execPath, [process.argv[1] ?? 'dist/cli/index.js', '--status'], {
         cwd: process.cwd(),
         stdio: 'inherit',
         shell: true,

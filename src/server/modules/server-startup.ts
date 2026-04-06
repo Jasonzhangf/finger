@@ -26,6 +26,7 @@ export interface ServerLifecycleDeps {
   heartbeatScheduler?: { stop(): void } | null;
   progressMonitor?: { stop(): void } | null;
   executionUpdatePipeline?: { stop(): void } | null;
+  dailySummaryScheduler?: { stop(): void } | null;
 }
 
 export function startServer(
@@ -87,6 +88,7 @@ export function startServer(
     if (deps.heartbeatScheduler) deps.heartbeatScheduler.stop();
     if (deps.progressMonitor) deps.progressMonitor.stop();
     if (deps.executionUpdatePipeline) deps.executionUpdatePipeline.stop();
+    if (deps.dailySummaryScheduler) deps.dailySummaryScheduler.stop();
     cleanupPidFile();
   });
 

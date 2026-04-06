@@ -25,10 +25,12 @@ import { registerMemoryLedgerCommand } from './memory-ledger.js';
 import { registerTestCommand } from './test-command.js';
 import { registerCommandHubCommand } from './command-hub.js';
 import { registerMailboxCommand } from './mailbox.js';
-import { ensureFingerLayout } from '../core/finger-paths.js';
+import { ensureFingerLayout, FINGER_PATHS } from '../core/finger-paths.js';
 import { getFingerAppVersion } from '../core/app-version.js';
 import { DualDaemonSupervisor, enableAutoStart, disableAutoStart } from '../daemon/dual-daemon.js';
 import { createConsoleLikeLogger } from '../core/logger/console-like.js';
+import { existsSync, readFileSync } from 'fs';
+import { join } from 'path';
 
 const clog = createConsoleLikeLogger('Index');
 const CLI_VERSION = getFingerAppVersion();
@@ -38,6 +40,61 @@ const DEFAULT_WS_URL = process.env.FINGER_WS_URL || 'ws://localhost:9998';
 
 // Ensure Finger layout exists
 ensureFingerLayout();
+
+function readPidFromRuntimeFile(fileName: string): number | null {
+  const filePath = join(FINGER_PATHS.runtime.dir, fileName);
+  if (!existsSync(filePath)) return null;
+  try {
+    const raw = readFileSync(filePath, 'utf8').trim();
+    const pid = Number.parseInt(raw, 10);
+    if (!Number.isFinite(pid) || pid <= 0) return null;
+    return pid;
+  } catch {
+    return null;
+  }
+}
+
+function isPidAlive(pid: number | null): boolean {
+  if (!pid || !Number.isFinite(pid) || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function probePrimaryRuntimeHealth(): Promise<{
+  url: string;
+  ok: boolean;
+  status?: number;
+  payload?: unknown;
+  error?: string;
+}> {
+  const url = process.env.FINGER_PRIMARY_HEALTH_URL || 'http://127.0.0.1:5520/health';
+  try {
+    const response = await fetch(url, { signal: AbortSignal.timeout(2500) });
+    const status = response.status;
+    let payload: unknown = undefined;
+    try {
+      payload = await response.json();
+    } catch {
+      // keep payload undefined
+    }
+    return {
+      url,
+      ok: response.ok,
+      status,
+      payload,
+    };
+  } catch (error) {
+    return {
+      url,
+      ok: false,
+      error: error instanceof Error ? error.message : String(error),
+    };
+  }
+}
 
 async function main(): Promise<void> {
   // Backward-compatible fingerdaemon flags:
@@ -57,7 +114,30 @@ async function main(): Promise<void> {
       return;
     }
     if (cmd === '--status') {
-      clog.log(JSON.stringify(supervisor.getStatus(), null, 2));
+      const dual = supervisor.getStatus();
+      const guardPid = readPidFromRuntimeFile('guard.pid');
+      const serverPid = readPidFromRuntimeFile('server.pid');
+      const guardAlive = isPidAlive(guardPid);
+      const serverAlive = isPidAlive(serverPid);
+      const primaryHealth = await probePrimaryRuntimeHealth();
+      const primaryRunning = guardAlive || serverAlive || primaryHealth.ok;
+      const merged = {
+        ...dual,
+        running: dual.running || primaryRunning,
+        primaryRuntime: {
+          running: primaryRunning,
+          guard: {
+            pid: guardPid,
+            alive: guardAlive,
+          },
+          server: {
+            pid: serverPid,
+            alive: serverAlive,
+          },
+          health: primaryHealth,
+        },
+      };
+      clog.log(JSON.stringify(merged, null, 2));
       return;
     }
     if (cmd === '--enable-autostart') {

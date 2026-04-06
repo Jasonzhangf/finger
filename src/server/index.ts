@@ -57,6 +57,7 @@ import { resolveRuntimeFlags, shouldUseMockChatCodexRunner } from './modules/ser
 import { HeartbeatScheduler } from './modules/heartbeat-scheduler.js';
 import { ProgressMonitor, type ProgressReport } from './modules/progress-monitor.js';
 import { ExecutionUpdateShadowPipeline } from './modules/execution-update-shadow-pipeline.js';
+import { DailySummaryScheduler, createDailySummarySchedulerOptionsFromEnv } from './modules/daily-summary-scheduler.js';
 import {
   loadChannelBridgeConfigs,
   registerChannelBridgeOutputs,
@@ -382,6 +383,16 @@ const executionUpdatePipeline = new ExecutionUpdateShadowPipeline(globalEventBus
 executionUpdatePipeline.start();
 logger.module('server').info('Execution update shadow pipeline started');
 
+// Start built-in daily summary scheduler (replaces external cron scripts for daily retrospectives)
+const dailySummaryScheduler = new DailySummaryScheduler(
+  {
+    dispatchTaskToAgent: (input) => dispatchTaskToAgent(input),
+  },
+  createDailySummarySchedulerOptionsFromEnv(),
+);
+dailySummaryScheduler.start();
+logger.module('server').info('Daily summary scheduler started');
+
 await gatewayManager.start().catch((err) => {
   logger.module('server').error('Failed to start gateway manager', err instanceof Error ? err : undefined);
 });
@@ -433,6 +444,7 @@ startServer(app, process.env.HOST || '0.0.0.0', PORT, {
   heartbeatScheduler,
   progressMonitor,
   executionUpdatePipeline,
+  dailySummaryScheduler,
 });
 
 logger.module('server').info('Finger role modules ready', {
