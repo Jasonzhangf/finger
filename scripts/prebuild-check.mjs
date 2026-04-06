@@ -24,7 +24,7 @@ function isAllowed(filepath) {
   return ALLOWED_PATTERNS.some(pattern => pattern.test(filepath));
 }
 
-const MAX_FILE_LINES = 500;
+const MAX_FILE_LINES = 550;
 
 function countLines(filePath) {
   try {

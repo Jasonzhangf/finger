@@ -14,7 +14,6 @@ mkdir -p "$LOG_DIR"
 
 # 清理孤儿 kernel bridge 进程
 cleanup_orphans() {
-  local daemon_pid="$1"
   local orphans=$(ps aux | grep finger-kernel-bridge-bin | grep -v grep | awk '{print $2}')
   if [ -n "$orphans" ]; then
     echo "[$(date)] Cleaning up $(echo "$orphans" | wc -l | tr -d ' ') orphan kernel bridge processes"

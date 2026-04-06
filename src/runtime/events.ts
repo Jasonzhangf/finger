@@ -440,7 +440,7 @@ export interface AgentRuntimeDispatchEvent extends BaseEvent {
     dispatchId: string;
     sourceAgentId: string;
     targetAgentId: string;
-    status: 'queued' | 'processing' | 'completed' | 'failed';
+    status: 'queued' | 'processing' | 'completed' | 'failed' | 'timeout';
     blocking: boolean;
     sessionId?: string;
     workflowId?: string;

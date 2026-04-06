@@ -242,6 +242,7 @@ export interface AgentDispatchRequest {
   blocking?: boolean;
   queueOnBusy?: boolean;
   maxQueueWaitMs?: number;
+  executeTimeoutMs?: number;  // Execute timeout (separate from queue timeout)
   assignment?: AgentAssignmentLifecycle;
   metadata?: Record<string, unknown>;
 }
@@ -338,7 +339,7 @@ interface DispatchLaneMeta {
 interface DispatchResult {
   ok: boolean;
   dispatchId: string;
-  status: 'queued' | 'completed' | 'failed';
+  status: 'queued' | 'completed' | 'failed' | 'timeout';
   result?: DispatchSummaryResult;
   error?: string;
   targetModuleId?: string;
@@ -1712,7 +1713,7 @@ export class AgentRuntimeBlock extends BaseBlock {
     laneKey?: string;
     sourceAgentId: string;
     targetAgentId: string;
-    status: 'queued' | 'completed' | 'failed';
+    status: 'queued' | 'completed' | 'failed' | 'timeout';
     blocking: boolean;
     sessionId?: string;
     workflowId?: string;
@@ -1886,6 +1887,9 @@ export class AgentRuntimeBlock extends BaseBlock {
     assignment?: AgentAssignmentLifecycle,
     traceId?: string,
   ): Promise<DispatchResult> {
+    // Execute timeout configuration (separate from queue timeout)
+    const EXECUTE_TIMEOUT_MS = input.executeTimeoutMs ?? 600_000; // 10 minutes default
+    
     const blocking = input.blocking === true;
     const payload = this.toDispatchPayload({
       ...input,
@@ -1952,9 +1956,19 @@ export class AgentRuntimeBlock extends BaseBlock {
       return { ok: true, dispatchId, status: 'queued', targetModuleId };
     }
 
+    // Wrap blocking execute with timeout detection
+    const timeoutPromise = new Promise<never>((_, reject) => {
+      setTimeout(() => {
+        reject(new Error(`executeDispatch timeout after ${EXECUTE_TIMEOUT_MS}ms`));
+      }, EXECUTE_TIMEOUT_MS);
+    });
+    
     try {
       log.info('[AgentRuntimeBlock] Sending to module (blocking)', { dispatchId, targetModuleId, ...(traceId ? { traceId } : {}) });
-      const result = await this.deps.hub.sendToModule(targetModuleId, payload);
+      const result = await Promise.race([
+        this.deps.hub.sendToModule(targetModuleId, payload),
+        timeoutPromise,
+      ]);
       const summarized = this.summarizeDispatchResult(result);
       const completion = resolveDispatchCompletionStatus(summarized);
       log.info('[AgentRuntimeBlock] Module result (blocking)', {
@@ -1987,20 +2001,31 @@ export class AgentRuntimeBlock extends BaseBlock {
       };
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      log.error('[AgentRuntimeBlock] Module error (blocking)', undefined, { dispatchId, targetModuleId, error: message, ...(traceId ? { traceId } : {}) });
+      
+      // Detect timeout vs other errors
+      const isTimeout = message.includes('executeDispatch timeout');
+      const finalStatus = isTimeout ? 'timeout' : 'failed';
+      
+      log.error('[AgentRuntimeBlock] Module error (blocking)', undefined, {
+        dispatchId,
+        targetModuleId,
+        error: message,
+        status: finalStatus,
+        ...(traceId ? { traceId } : {}),
+      });
       this.emitDispatchEvent({
         dispatchId,
         laneKey: lane.laneKey,
         sourceAgentId: input.sourceAgentId,
         targetAgentId: input.targetAgentId,
-        status: 'failed',
+        status: finalStatus,
         blocking,
         sessionId: input.sessionId,
         workflowId: input.workflowId,
         assignment: this.withAssignmentPhase(assignment, 'failed'),
         error: message,
       });
-      return { ok: false, dispatchId, status: 'failed', error: message, targetModuleId };
+      return { ok: false, dispatchId, status: finalStatus, error: message, targetModuleId };
     } finally {
       this.decreaseActiveDispatch(lane.laneKey);
       this.drainDispatchQueue(lane);

@@ -103,6 +103,29 @@ interface LoadConfigResult {
 const DEFAULT_TICK_MS = 5 * 60_000;
 const DEFAULT_TASK_INTERVAL_MS = 5 * 60_000;
 const DEFAULT_MAILBOX_CHECK_INTERVAL_MS = 5 * 60_000;
+
+// Heartbeat state machine configuration
+const HEARTBEAT_STATE_CONFIG = {
+  mailboxPendingThreshold: 50,           // DEGRADED threshold
+  mailboxPendingAgeMs: 3600000,           // DEGRADED threshold (1 hour)
+  mailboxPendingRecoveryThreshold: 20,    // RUNNING recovery threshold
+  mailboxProcessingAgeMs: 1800000,        // Stuck threshold (30 minutes)
+  degradedToPausedThreshold: 100,         // PAUSED threshold
+  degradedDurationThresholdMs: 1800000,   // PAUSED threshold (30 minutes)
+  autoResumeAfterMs: 600000,              // PAUSED auto-resume (10 minutes, optional)
+};
+
+type HeartbeatState = 'RUNNING' | 'DEGRADED' | 'PAUSED' | 'STOPPED';
+
+interface HeartbeatStateContext {
+  state: HeartbeatState;
+  degradedAt?: number;           // Timestamp when entered DEGRADED
+  degradedReason?: string;       // Reason for DEGRADED
+  pausedAt?: number;             // Timestamp when entered PAUSED
+  pausedReason?: string;         // Reason for PAUSED
+  stoppedAt?: number;            // Timestamp when entered STOPPED
+  stoppedReason?: string;        // Reason for STOPPED
+}
 const DEFAULT_NIGHTLY_DREAM_WINDOW_START_HOUR = 0;
 const DEFAULT_NIGHTLY_DREAM_WINDOW_END_HOUR = 7;
 const DEFAULT_NIGHTLY_DREAM_MAX_PROJECTS_PER_RUN = 20;
