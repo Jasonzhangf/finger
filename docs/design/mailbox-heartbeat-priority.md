@@ -210,12 +210,21 @@ const HEARTBEAT_DEGRADATION_CONFIG = {
     │  - 记录堆积      │   │  - 可 resume    │   │  - 记录停止原因  │
     │  - 可自动恢复    │◄──┤  - 记录暂停原因 │   └──────────────────┘
     └──────────────────┘   └──────────────────┘
-              │                       │
-              │ mailbox 健康恢复      │ Agent 调用 resume
-              │ (pending <= 20)       │
-              │ (age < 30min)         │
-              │ 或 mailbox_clear      │
-              ▼                       ▼
+         │     │                    │
+         │     │ 持续恶化            │ 用户消息触发
+         │     │ (pending>100       │ resume_heartbeat()
+         │     │  age>2h, dur>30m)  │
+         │     ▼                    │
+         │  ┌───────────────────────┤
+         │  │  PAUSED (从DEGRADED)  │
+         │  │  - 同上 PAUSED 行为   │
+         │  └───────────────────────┤
+         │                          │
+         │ mailbox 健康恢复         │
+         │ (pending <= 20)          │
+         │ (age < 30min)            │
+         │ 或 mailbox_clear         │
+         ▼                          ▼
     ┌──────────────────────────────────────┐
     │        RUNNING (恢复正常)            │
     │  - 写入 Ledger heartbeat_auto_resume │
@@ -621,6 +630,13 @@ Agent 在以下场景应主动决策，避免系统进入死循环或浪费 toke
 
 ### Inject Prompt 时机
 
+**⚠️ 重要：Inject Prompt 仅在 RUNNING 或 DEGRADED 状态注入**
+- **PAUSED/STOPPED 状态不注入**（Agent 无法自动感知，会陷入死锁）
+- **PAUSED/STOPPED 状态恢复方式**：用户消息触发 + Agent 调用 resume_heartbeat()
+- 参见 L500-568 "PAUSED 状态恢复机制（防止死锁）" 和 L569-582 "Agent 状态感知方式"
+
+---
+
 **注入时机**：
 - **每轮心跳写入 mailbox 时**：自动注入控制说明
 - **Agent 读取 mailbox 时**：控制说明在消息头部可见
@@ -684,14 +700,15 @@ type HeartbeatEventType =
   | 'heartbeat_mailbox_write_failed'
   | 'mailbox_backlog_detected'
   | 'mailbox_stale_detected'
-  | 'heartbeat_degraded'
-  | 'heartbeat_resumed'
-  | 'heartbeat_stopped'
-  | 'heartbeat_degraded'
-  | 'agent_resume_request'
-  | 'mailbox_cleared'
-  | 'mailbox_marked_skip'
-  | 'agent_stop_request';
+  | 'heartbeat_degraded'              // RUNNING → DEGRADED
+  | 'heartbeat_degraded_to_paused'    // DEGRADED → PAUSED (持续恶化)
+  | 'heartbeat_auto_resume'           // DEGRADED → RUNNING (自动恢复)
+  | 'heartbeat_resumed'               // PAUSED → RUNNING (手动恢复)
+  | 'heartbeat_stopped'               // 任意 → STOPPED
+  | 'agent_resume_request'            // Agent 调用 resume_heartbeat()
+  | 'agent_stop_request'              // Agent 调用 stop_heartbeat()
+  | 'mailbox_cleared'                 // mailbox_clear() 成功
+  | 'mailbox_marked_skip';            // mailbox_mark_skip() 成功
 
 interface HeartbeatLedgerEntry {
   eventId: string;
@@ -924,6 +941,9 @@ read mailbox.read(msg-1) + mailbox.read(msg-2)
 | 2026-04-06 | P1: 补充 autoResumeAfterMs 配置说明（自动恢复触发机制） |
 | 2026-04-06 | P2: 补充 Scheduler vs Agent 职责边界（窗口场景） |
 | 2026-04-06 | P2: 简化内容相似度去重（改为完全相同比较） |
+| 2026-04-06 | **Final Review**: 状态转换图补充 DEGRADED → PAUSED 路径 |
+| 2026-04-06 | **Final Review**: Ledger Event Types 清理重复 + 补充缺失事件 |
+| 2026-04-06 | **Final Review**: Inject Prompt 添加醒目警告提示 |
 | 2026-03-23 | 新增 `mailbox.read_all` / `mailbox.remove_all`，补充 notification idle-only 与批量处理规则 |
 | 2026-03-23 | Mailbox 改为内存态不持久化；`mailbox.ack` 成功后自动清理消息 |
 | 2026-04-06 | **重大修正**：基于 Agent-driven 异步执行模式重新设计 |
