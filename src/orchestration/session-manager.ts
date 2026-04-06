@@ -18,7 +18,7 @@ import { appendSessionMessage } from '../runtime/ledger-writer.js';
 import { resolveBaseDir } from '../runtime/context-ledger-memory-helpers.js';
 import { buildSessionView, type SessionView, type SessionViewMessage } from '../runtime/ledger-reader.js';
 import { needsCompression } from '../runtime/session-compressor.js';
-import { compactSessionHistory, updateContextHistoryPointers, type CompactResult } from '../runtime/context-history-compact.js';
+import { compactSessionHistory, updateContextHistoryPointers, appendDigestForTurn, type CompactResult } from '../runtime/context-history-compact.js';
 import { estimateTokens } from '../utils/token-counter.js';
 import { getContextWindow } from '../core/user-settings.js';
 import { loadContextBuilderSettings } from '../core/user-settings.js';
@@ -1294,6 +1294,42 @@ export class SessionManager {
     });
 
     return `Compression completed: ${result.digestBlock?.payload.messages?.length ?? 0} messages compacted`;
+  }
+
+  /**
+   * finish_reason = stop 时自动生成 digest + 保存 tags
+   */
+  async appendDigest(
+    sessionId: string,
+    message: SessionMessage,
+    tags: string[],
+    agentId?: string,
+    mode?: string,
+  ): Promise<void> {
+    const session = this.sessions.get(sessionId);
+    if (!session) {
+      log.warn("[SessionManager.appendDigest] Session not found", { sessionId });
+      return;
+    }
+
+    const ctx = session.context ?? {};
+    const resolvedAgentId = agentId || (typeof ctx.ownerAgentId === "string" ? ctx.ownerAgentId : SYSTEM_AGENT_ID);
+    const resolvedMode = mode || "main";
+    const rootDir = this.resolveSessionsRoot(session);
+
+    await appendDigestForTurn(sessionId, rootDir, {
+      tags,
+      currentMessage: message,
+      agentId: resolvedAgentId,
+      mode: resolvedMode,
+    });
+
+    log.info("[SessionManager.appendDigest] Digest appended", {
+      sessionId,
+      agentId: resolvedAgentId,
+      messageId: message.id,
+      tags,
+    });
   }
 
   getCompressionStatus(sessionId: string): { compressed: boolean; summary?: string; originalCount?: number } {

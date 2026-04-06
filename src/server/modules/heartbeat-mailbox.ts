@@ -373,6 +373,41 @@ export class HeartbeatMailboxManager {
       };
     });
   }
+  /**
+   * Clear messages by status
+   */
+  clear(agentId: string, status: 'pending' | 'processing' | 'completed' | 'failed' | 'all'): number {
+    const normalized = this.normalizeAgentId(agentId);
+    return withFileMutexSync(this.resolveMailboxLockPath(normalized), () => {
+      const messages = this.readMessages(normalized);
+      const before = messages.length;
+      
+      const filtered = status === 'all' 
+        ? [] 
+        : messages.filter((m) => m.status !== status);
+      
+      this.writeMessages(normalized, filtered);
+      return before - filtered.length;
+    });
+  }
+
+  /**
+   * Mark a message as skipped
+   */
+  markSkip(agentId: string, messageId: string): boolean {
+    const normalized = this.normalizeAgentId(agentId);
+    return withFileMutexSync(this.resolveMailboxLockPath(normalized), () => {
+      const messages = this.readMessages(normalized);
+      const message = messages.find((m) => m.id === messageId);
+      
+      if (!message) return false;
+      
+      message.status = 'failed';
+      (message as any).skip = true;
+      this.writeMessages(normalized, messages);
+      return true;
+    });
+  }
 }
 
 export const heartbeatMailbox = new HeartbeatMailboxManager();

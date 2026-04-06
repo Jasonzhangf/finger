@@ -86,6 +86,13 @@ export interface ISessionManager {
   compressContext?(sessionId: string, options?: { summarizer?: unknown; force?: boolean }): Promise<string>;
   getCompressionStatus?(sessionId: string): { compressed: boolean; summary?: string; originalCount?: number };
   isPaused?(sessionId: string): boolean;
+  /** Append turn digest with tags when finish_reason=stop */
+  appendDigest?(sessionId: string, message: {
+    id: string;
+    role: string;
+    content: string;
+    timestamp: string;
+  }, tags: string[], agentId?: string, mode?: string): Promise<void>;
 }
 
 export interface AgentProviderRuntimeConfig {
@@ -1616,6 +1623,26 @@ export class RuntimeFacade {
     });
 
     return result;
+  }
+
+  /**
+   * Append turn digest with tags when finish_reason=stop
+   */
+  async appendDigest(
+    sessionId: string,
+    message: { id: string; role: string; content: string; timestamp: string },
+    tags: string[],
+    agentId?: string,
+    mode?: string,
+  ): Promise<void> {
+    const normalized = sessionId.trim();
+    if (normalized.length === 0) {
+      return;
+    }
+    if (typeof this.sessionManager.appendDigest !== "function") {
+      return;
+    }
+    await this.sessionManager.appendDigest(normalized, message, tags, agentId, mode);
   }
 
 

@@ -396,3 +396,103 @@ export function updateContextHistoryPointers(session: Session, pointers: Context
   session.originalStartIndex = pointers.currentHistoryStart;
   session.originalEndIndex = pointers.currentHistoryEnd;
 }
+
+// ─── Turn-level Digest（finish_reason = stop 时触发）───────────────────────────────────
+
+/**
+ * Turn-level Digest Block（单条消息摘要 + tags）
+ */
+export interface TurnDigestBlock {
+  id: string;
+  timestamp_ms: number;
+  timestamp_iso: string;
+  session_id: string;
+  agent_id: string;
+  mode: string;
+  event_type: 'digest_block';
+  payload: {
+    messages: DigestMessage[];
+    tags: string[];
+    total_tokens: number;
+    /** Turn-level digest 不需要 source_range */
+    turn_digest: true;
+  };
+}
+
+/**
+ * Turn-level digest 选项
+ */
+export interface AppendDigestForTurnOptions {
+  /** 来自 controlBlock.tags */
+  tags: string[];
+  /** 当前轮的消息 */
+  currentMessage: SessionMessage;
+  /** agentId */
+  agentId: string;
+  /** mode */
+  mode?: string;
+}
+
+/**
+ * finish_reason = stop 时自动生成 digest + 保存 tags
+ *
+ * 流程：
+ * 1. 生成 DigestMessage（截断内容 + 提取工具调用）
+ * 2. 写入 compact-memory.jsonl（带 tags）
+ *
+ * @param sessionId - Session ID
+ * @param rootDir - Sessions root directory
+ * @param options - Turn digest options
+ */
+export async function appendDigestForTurn(
+  sessionId: string,
+  rootDir: string,
+  options: AppendDigestForTurnOptions,
+): Promise<void> {
+  const normalizedRootDir = normalizeRootDir(rootDir);
+  const agentId = options.agentId || 'finger-system-agent';
+  const mode = options.mode || 'main';
+
+  // Step 1: 生成 DigestMessage
+  const digestMessage = toDigestMessage(options.currentMessage);
+
+  // Step 2: 构建 TurnDigestBlock
+  const now = Date.now();
+  const digestBlock: TurnDigestBlock = {
+    id: `digest-${now}-${Math.floor(Math.random() * 1_000_000)}`,
+    timestamp_ms: now,
+    timestamp_iso: new Date(now).toISOString(),
+    session_id: sessionId,
+    agent_id: agentId,
+    mode,
+    event_type: 'digest_block',
+    payload: {
+      messages: [digestMessage],
+      tags: options.tags,
+      total_tokens: digestMessage.token_count,
+      turn_digest: true,
+    },
+  };
+
+  // Step 3: 确保 baseDir 存在
+  const compactPath = resolveCompactMemoryPath(normalizedRootDir, sessionId, agentId, mode);
+  const baseDir = resolveBaseDir(normalizedRootDir, sessionId, agentId, mode);
+  await fs.mkdir(baseDir, { recursive: true });
+
+  // Step 4: 写入 compact-memory.jsonl
+  await appendLedgerEvent(compactPath, {
+    session_id: sessionId,
+    agent_id: agentId,
+    mode,
+    event_type: 'digest_block',
+    payload: digestBlock.payload as Record<string, unknown>,
+  });
+
+  log.info('[appendDigestForTurn] Turn digest appended', {
+    sessionId,
+    agentId,
+    digestId: digestBlock.id,
+    tags: options.tags,
+    tokenCount: digestMessage.token_count,
+  });
+}

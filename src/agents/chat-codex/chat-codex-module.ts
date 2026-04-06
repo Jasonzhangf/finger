@@ -126,6 +126,15 @@ export interface ChatCodexModuleConfig {
     timestamp?: string;
     metadata?: Record<string, unknown>;
   }> | null>;
+
+  /** Optional digest provider for finish_reason=stop digest generation. */
+  digestProvider?: (
+    sessionId: string,
+    message: { id: string; role: string; content: string; timestamp: string },
+    tags: string[],
+    agentId?: string,
+    mode?: string,
+  ) => Promise<void>;
 }
 
 export interface ChatCodexRunResult {
@@ -1616,6 +1625,32 @@ export function createChatCodexModule(
           ...(typeof reviewIteration === 'number' ? { reviewIteration } : {}),
         },
       });
+
+      // finish_reason = stop 时自动生成 digest + 保存 tags
+      if (stopReason === "stop" && mergedConfig.digestProvider) {
+        const tags = controlParsed.controlBlock?.tags || [];
+        const agentIdForDigest = parseOptionalString(context?.metadata?.contextLedgerAgentId)
+          ?? parseOptionalString(context?.metadata?.agentId)
+          ?? "finger-system-agent";
+        const modeForDigest = mode;
+        
+        // 构建当前轮的 digest message
+        const digestMessage = {
+          id: `msg-${Date.now()}-${Math.floor(Math.random() * 1_000_000)}`,
+          role: "assistant" as const,
+          content: normalizedReply.slice(0, 500),
+          timestamp: new Date().toISOString(),
+        };
+        
+        try {
+          await mergedConfig.digestProvider(sessionId, digestMessage, tags, agentIdForDigest, modeForDigest);
+        } catch (digestError) {
+          chatCodexLog.warn("[digestProvider] Failed to append digest", {
+            sessionId,
+            error: digestError instanceof Error ? digestError.message : String(digestError),
+          });
+        }
+      }
 
       return {
         reply: normalizedReply,

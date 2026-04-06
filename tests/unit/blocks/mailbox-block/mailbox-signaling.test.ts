@@ -8,7 +8,7 @@ import type { InterAgentCommunication, AgentCompletionNotification } from '../..
  * 本测试文件只验证 mailbox 的信令传递能力：
  * - triggerTurn 控制执行触发
  * - sender/receiver 地址传递
- * - completion status 通知
+ * - completion status 信令传递（系统级状态同步）
  * 
  * 不涉及 agent/worker 等业务概念，只使用抽象的路径标识符。
  */
@@ -44,7 +44,7 @@ describe('MailboxBlock - Signaling Layer', () => {
       const signal: InterAgentCommunication = {
         author: '/path/sender',
         recipient: '/path/receiver',
-        content: 'notification-only',
+        content: 'signal-only',
         triggerTurn: false,
         timestamp: new Date().toISOString(),
       };
@@ -68,8 +68,8 @@ describe('MailboxBlock - Signaling Layer', () => {
     });
   });
 
-  describe('completion notification signaling', () => {
-    it('should create completion notification signal', () => {
+  describe('completion status signaling', () => {
+    it('should create completion status signal', () => {
       const notif: AgentCompletionNotification = {
         author: '/path/sender',
         recipient: '/path/parent',

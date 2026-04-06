@@ -1165,6 +1165,16 @@ export async function registerFingerRoleModules(
       });
     };
 
+    const digestProvider = async (
+      sessionId: string,
+      message: { id: string; role: string; content: string; timestamp: string },
+      tags: string[],
+      agentId?: string,
+      mode?: string,
+    ) => {
+      await runtime.appendDigest(sessionId, message, tags, agentId, mode);
+    };
+
     const roleModule = createFingerGeneralModule({
       id: role.id,
       name: resolveAgentDisplayName(role.id),
@@ -1178,6 +1188,7 @@ export async function registerFingerRoleModules(
       },
       onLoopEvent,
       contextHistoryProvider,
+      digestProvider,
     }, chatCodexRunner);
     await moduleRegistry.register(roleModule);
     const policy = runtime.setAgentToolWhitelist(role.id, role.allowedTools);
