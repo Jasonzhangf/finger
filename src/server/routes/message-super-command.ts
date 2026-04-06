@@ -10,6 +10,7 @@ import {
   handleSystemStopAllReasoning,
   handleSystemProgressReset,
   handleSystemProgressMode,
+  handleSystemCompact,
   handleDisplayCommand,
   handleProjectList,
   handleProjectSwitch,
@@ -61,11 +62,18 @@ export async function handleSuperCommand(
         const mode = firstBlock.content.slice('progress_mode:'.length);
         return handleSystemProgressMode(mode);
       }
-      if (firstBlock.content === 'progress_reset') {
-        const currentSessionId = deps.sessionManager.getCurrentSession()?.id;
-        return handleSystemProgressReset(deps.progressMonitor, currentSessionId);
-      }
-      if (firstBlock.content === 'stop_all_reasoning') {
+     if (firstBlock.content === 'progress_reset') {
+       const currentSessionId = deps.sessionManager.getCurrentSession()?.id;
+       return handleSystemProgressReset(deps.progressMonitor, currentSessionId);
+     }
+     if (firstBlock.content === 'compact') {
+       const currentSessionId = deps.sessionManager.getCurrentSession()?.id;
+       if (!currentSessionId) {
+         return Promise.resolve('❌ 当前没有活跃会话，无法执行压缩');
+       }
+       return handleSystemCompact(deps.runtime, currentSessionId);
+     }
+     if (firstBlock.content === 'stop_all_reasoning') {
         return handleSystemStopAllReasoning(deps.runtime);
       }
       return handleSystemCommand(deps.sessionManager, deps.eventBus);

@@ -620,38 +620,92 @@ export function resolveToolResultStatus(output: unknown): 'success' | 'error' {
 }
 
 export function buildHumanToolResultOutput(toolName: string, output: unknown): string | undefined {
-  if (
-    toolName !== 'shell.exec'
-    && toolName !== 'exec_command'
-    && toolName !== 'write_stdin'
-    && toolName !== 'shell'
-    && toolName !== 'shell_command'
-  ) {
-    return stringifyToolPayload(output, 1200);
+  // 优先提取语义字段，不平铺整个 JSON
+  if (output === null || output === undefined) return undefined;
+  
+  // 字符串直接返回
+  if (typeof output === 'string') {
+    const text = output.trim();
+    if (text.length === 0) return undefined;
+    return text.length > 1200 ? `${text.slice(0, 1200)}...` : text;
   }
-
-  if (!isRecord(output)) return stringifyToolPayload(output, 1200);
-  const result = isRecord(output.result) ? output.result : output;
-  const stdout = typeof result.stdout === 'string'
-    ? result.stdout
-    : typeof result.output === 'string'
-      ? result.output
-      : typeof result.text === 'string'
-        ? result.text
-        : '';
-  const stderr = typeof result.stderr === 'string' ? cleanTechnicalErrorText(result.stderr) : '';
-
-  const parts: string[] = [];
-  if (stdout.trim().length > 0) {
-    parts.push(`输出:\n${stdout.trim().slice(0, 2000)}`);
+  
+  // 对象：优先提取 summary / text / message 字段
+  if (typeof output === 'object' && isRecord(output)) {
+    // 优先级：summary > text > message > result.text/result.output > stdout
+    const summary = typeof output.summary === 'string' ? output.summary.trim() : '';
+    if (summary.length > 0) {
+      return summary.length > 1200 ? `${summary.slice(0, 1200)}...` : summary;
+    }
+    
+    const text = typeof output.text === 'string' ? output.text.trim() : '';
+    if (text.length > 0) {
+      return text.length > 1200 ? `${text.slice(0, 1200)}...` : text;
+    }
+    
+    const message = typeof output.message === 'string' ? output.message.trim() : '';
+    if (message.length > 0) {
+      return message.length > 1200 ? `${message.slice(0, 1200)}...` : message;
+    }
+    
+    // shell 类工具特殊处理：提取 stdout/stderr
+    if (
+      toolName === 'shell.exec'
+      || toolName === 'exec_command'
+      || toolName === 'write_stdin'
+      || toolName === 'shell'
+      || toolName === 'shell_command'
+    ) {
+      const result = isRecord(output.result) ? output.result : output;
+      const stdout = typeof result.stdout === 'string' ? result.stdout.trim() : '';
+      const stderr = typeof result.stderr === 'string' ? cleanTechnicalErrorText(result.stderr) : '';
+      
+      const parts: string[] = [];
+      if (stdout.length > 0) {
+        parts.push(`输出:\n${stdout.slice(0, 2000)}`);
+      }
+      if (stderr.length > 0) {
+        parts.push(`提示:\n${stderr.slice(0, 800)}`);
+      }
+      if (parts.length === 0) {
+        return '命令已执行，无可展示输出。';
+      }
+      return parts.join('\n\n');
+    }
+    
+    // 其他对象：尝试提取 result 层的语义字段
+    if (isRecord(output.result)) {
+      const result = output.result;
+      const resultText = typeof result.text === 'string' ? result.text.trim() : '';
+      if (resultText.length > 0) {
+        return resultText.length > 1200 ? `${resultText.slice(0, 1200)}...` : resultText;
+      }
+      const resultOutput = typeof result.output === 'string' ? result.output.trim() : '';
+      if (resultOutput.length > 0) {
+        return resultOutput.length > 1200 ? `${resultOutput.slice(0, 1200)}...` : resultOutput;
+      }
+    }
+    
+    // 最后 fallback：只 stringify 关键字段（排除内部 debug 字段）
+    const displayFields: Record<string, unknown> = {};
+    const internalKeys = new Set(['debug', 'trace', 'snapshot', 'log', 'raw', '_meta', 'context', 'evidence']);
+    for (const key of Object.keys(output)) {
+      if (!internalKeys.has(key) && !key.startsWith('_')) {
+        displayFields[key] = output[key];
+      }
+    }
+    if (Object.keys(displayFields).length === 0) {
+      return undefined;
+    }
+    try {
+      const json = JSON.stringify(displayFields, null, 2);
+      return json.length > 1200 ? `${json.slice(0, 1200)}...` : json;
+    } catch {
+      return undefined;
+    }
   }
-  if (stderr.trim().length > 0) {
-    parts.push(`提示:\n${stderr.trim().slice(0, 800)}`);
-  }
-  if (parts.length === 0) {
-    return '命令已执行，无可展示输出。';
-  }
-  return parts.join('\n\n');
+  
+  return undefined;
 }
 
 export function buildToolResultContent(

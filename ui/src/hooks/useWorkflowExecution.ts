@@ -469,7 +469,9 @@ export function useWorkflowExecution(
           const effectiveContextUsagePercent = contextUsagePercent
             ?? computeContextUsagePercent(estimatedTokensInContextWindow, maxInputTokens);
           const fragments: string[] = [];
-          if (finishReason.length > 0) {
+          // finishReason=stop 时不显示 finish=stop，改用统一的"推理结束"
+          const isStop = finishReason === 'stop';
+          if (finishReason.length > 0 && !isStop) {
             fragments.push(`finish=${finishReason}`);
           }
           if (effectiveContextUsagePercent !== undefined) {
@@ -492,7 +494,9 @@ export function useWorkflowExecution(
           }
           setAgentRunStatus({
             phase: 'running',
-            text: `${label}内部循环第 ${round} 轮${fragments.length > 0 ? ` · ${fragments.join(' · ')}` : ''}`,
+            text: isStop
+              ? `${label}推理结束`
+              : `${label}内部循环第 ${round} 轮${fragments.length > 0 ? ` · ${fragments.join(' · ')}` : ''}`,
             updatedAt: new Date().toISOString(),
           });
 

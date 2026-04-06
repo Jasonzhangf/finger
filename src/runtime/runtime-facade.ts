@@ -1602,7 +1602,9 @@ export class RuntimeFacade {
       trigger: options?.trigger,
       contextUsagePercent: options?.contextUsagePercent,
     });
-    const force = options?.trigger === 'manual';
+    // auto compact 时强制压缩（kernel 已报告 contextUsagePercent >= 85%）
+    // manual compact 时强制压缩（用户主动触发）
+    const force = true;  // 所有触发都强制压缩
     const summary = await this.sessionManager.compressContext(sessionId, { summarizer, force });
     const compressedSize = summary.length;
     const nowIso = new Date().toISOString();

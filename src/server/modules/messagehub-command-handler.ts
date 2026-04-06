@@ -14,6 +14,7 @@ import {
 } from '../../core/config/channel-config.js';
 import { normalizeProjectPathCanonical } from '../../common/path-normalize.js';
 import type { RuntimeFacade } from '../../runtime/runtime-facade.js';
+import { logger } from '../../core/logger.js';
 export { handleDisplayCommand } from './messagehub-display-command.js';
 export {
   handleSystemProgressMode,
@@ -73,6 +74,7 @@ export async function handleCmdList(): Promise<string> {
   <##@system##>                    - 切换到系统代理（project=~/.finger，最新 session）
   <##@system:stopall##>            - 强制停止所有 Agent 当前推理（中断所有 active turns）
   <##@system:progress:reset##>     - 重置当前会话的进度监控状态（清除疑似卡住态）
+  <##@system:compact##>            - 手动触发当前会话的上下文压缩
   <##@system:progress:mode@dev##>  - 切换进度上下文显示为 DEV（详细分解）
   <##@system:progress:mode@release##> - 切换进度上下文显示为 RELEASE（精简）
   <##@agent:list##>                 - 列出当前项目的会话
@@ -249,6 +251,29 @@ export async function handleSystemProgressReset(
     return `✅ 已重置进度状态（session=${result.sessionId ?? normalizedSessionId ?? 'unknown'}，清理 ${result.clearedEntries} 条运行记录）。`;
   }
   return `✅ 已重置全局进度状态（清理 ${result.clearedEntries} 条运行记录，${result.clearedSessions} 个会话）。`;
+}
+
+
+/**
+ * <##@system:compact##> - 手动触发上下文压缩
+ */
+export async function handleSystemCompact(
+  runtime: RuntimeFacade | undefined,
+  sessionId: string,
+): Promise<string> {
+  if (!runtime || typeof runtime.compressContext !== 'function') {
+    return '❌ 上下文压缩失败：runtime facade 不可用。';
+  }
+  try {
+    const log = logger.module('messagehub-command-handler');
+    log.info('[handleSystemCompact] Manually triggering compact', { sessionId });
+    const result = await runtime.compressContext(sessionId, { trigger: 'manual' });
+    log.info('[handleSystemCompact] Compact completed', { sessionId, result });
+    return `✅ 上下文压缩完成：${result}`;
+  } catch (error) {
+    const errorMsg = error instanceof Error ? error.message : String(error);
+    return `❌ 上下文压缩失败：${errorMsg}`;
+  }
 }
 
 /**
