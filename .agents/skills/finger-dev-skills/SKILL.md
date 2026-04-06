@@ -352,3 +352,47 @@ Required pass criteria:
 - missing triggerTurn distinction
 - CompletionWatcher not started after spawn
 - AgentPath relative resolution errors
+
+## 8) Experience Lessons (2026-04-06)
+
+### API Response Parsing: Don't Use Serialized Text Fields
+
+**Problem**: OpenAI Responses API returns both `output_text` (serialized summary) and `output` (structured array). The `output_text` field includes ALL content types serialized as text, including tool calls formatted as `[tool_use id=...] name=...]`.
+
+**Wrong approach**:
+```rust
+// ❌ Using output_text directly
+let output_text = payload.get("output_text").as_str();  // Contains tool syntax!
+```
+
+**Correct approach** (参考 Codex upstream):
+```rust
+// ✅ Parse structured output array, filter by type
+for item in payload.get("output").as_array() {
+    if item.type == "message" {
+        output_text = item.content
+            .filter(c => c.type == "output_text")
+            .map(c => c.text)
+            .join("\n");
+    }
+    // function_call handled separately, not mixed into text
+}
+```
+
+**Lesson**: 
+- API convenience fields (`output_text`, `summary`, etc.) often serialize ALL content including control blocks
+- Always parse structured arrays and filter by `type` field
+- Tool call syntax should NEVER appear in user-facing channel output
+- Defense-in-depth: fix at kernel layer + filter at channel layer
+
+**Related files**:
+- `rust/kernel-model/src/lib.rs`: `parse_responses_payload`
+- `src/server/modules/agent-status-subscriber-text.ts`: `stripControlBlockForChannel`
+
+### Defensive Filtering at Multiple Layers
+
+When a bug affects user-facing output, apply fixes at BOTH:
+1. **Root cause layer** (kernel/parser) - fix the actual parsing logic
+2. **Output layer** (channel/delivery) - defensive regex filter as safety net
+
+This ensures even if root cause slips through, the final output is clean.
