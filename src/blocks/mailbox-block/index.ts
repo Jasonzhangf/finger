@@ -534,8 +534,70 @@ export class MailboxBlock extends BaseBlock {
       this.subscribers.get(messageId)?.delete(callback);
     };
   }
+  getHealth(options?: MailboxHealthOptions): MailboxHealth {
+    const now = options?.currentTime ?? new Date();
+    const nowMs = now.getTime();
+    
+    const messages = Array.from(this.messages.values());
+    
+    const pendingMessages = messages.filter(m => m.status === 'pending');
+    const processingMessages = messages.filter(m => m.status === 'processing');
+    const completedMessages = messages.filter(m => m.status === 'completed');
+    const failedMessages = messages.filter(m => m.status === 'failed');
+    
+    let oldestPendingAgeMs: number | undefined;
+    let oldestPendingId: string | undefined;
+    for (const msg of pendingMessages) {
+      const createdAt = new Date(msg.createdAt).getTime();
+      const ageMs = nowMs - createdAt;
+      if (oldestPendingAgeMs === undefined || ageMs > oldestPendingAgeMs) {
+        oldestPendingAgeMs = ageMs;
+        oldestPendingId = msg.id;
+      }
+    }
+    
+    let oldestProcessingAgeMs: number | undefined;
+    let oldestProcessingId: string | undefined;
+    for (const msg of processingMessages) {
+      const updatedAt = new Date(msg.updatedAt).getTime();
+      const ageMs = nowMs - updatedAt;
+      if (oldestProcessingAgeMs === undefined || ageMs > oldestProcessingAgeMs) {
+        oldestProcessingAgeMs = ageMs;
+        oldestProcessingId = msg.id;
+      }
+    }
+    
+    return {
+      pending: pendingMessages.length,
+      processing: processingMessages.length,
+      completed: completedMessages.length,
+      failed: failedMessages.length,
+      total: messages.length,
+      oldestPendingAgeMs,
+      oldestProcessingAgeMs,
+      oldestPendingId,
+      oldestProcessingId,
+    };
+  }
+
 }
 
+
+export interface MailboxHealth {
+  pending: number;
+  processing: number;
+  completed: number;
+  failed: number;
+  total: number;
+  oldestPendingAgeMs?: number;
+  oldestProcessingAgeMs?: number;
+  oldestPendingId?: string;
+  oldestProcessingId?: string;
+}
+
+export interface MailboxHealthOptions {
+  currentTime?: Date;
+}
 interface ListOptions {
   target?: string;
   status?: MailboxMessage['status'];
