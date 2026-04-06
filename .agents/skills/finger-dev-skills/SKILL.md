@@ -538,3 +538,82 @@ dispatchTask → executeDispatch → sendToModule → callTool
 - `cli/init.ts`: 22 处（用户 CLI 输出，允许）
 - 其他 runtime 文件: 0 处（已全部清理）
 
+
+---
+
+## Section 10: Context Compact 设计（2026-04-07）
+
+### 核心原则
+
+1. **Deterministic Digest**：不调用 LLM，直接截断 + 提取工具调用
+2. **预算管理**：contextHistory > 20K 时移除最旧的 digest
+3. **两层分离**：
+   - Turn-level Digest（finish_reason=stop 触发）
+   - Context Compact（85% 触发 或 手动触发）
+
+### Compact 完整流程
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│ 1. Turn-level Digest（finish_reason = stop）                             │
+├─────────────────────────────────────────────────────────────────────────┤
+│   chat-codex-module.ts                                                   │
+│   ├── finishReason === 'stop'                                            │
+│   ├── controlBlock.tags → 模型打的 tags                                  │
+│   ├── digestProvider(sessionId, digestMessage, tags, agentId, mode)      │
+│   │   └── appendDigestForTurn → 写入 compact-memory.jsonl               │
+│   └── digest_block { turn_digest: true, tags: [...] }                   │
+└─────────────────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────────────┐
+│ 2. Context Compact（85% 触发 或 手动触发）                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│   RuntimeFacade.maybeAutoCompact / compressContext({ force: true })      │
+│   ├── 读取 currentHistory（context-ledger.jsonl 窗口）                   │
+│   ├── 生成 compact_block（多条消息压缩）                                  │
+│   ├── 清空 currentHistory                                                 │
+│   └── 预算管理（contextHistory > 20K 时移除最旧的）                       │
+���─────────────────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────────────┐
+│ 3. Context Rebuild（Kernel 启动时）                                       │
+├─────────────────────────────────────────────────────────────────────────┤
+│   Kernel 读取：                                                           │
+│   ├── compact-memory.jsonl [contextHistoryStart..End]                    │
+│   ├── context-ledger.jsonl [currentHistoryStart..End]                    │
+│   └── 合并 → 完整上下文（在预算内）                                        │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+### 关键文件
+
+| 文件 | 作用 |
+|------|------|
+| `context-history-compact.ts` | `appendDigestForTurn` / `compactSessionHistory` |
+| `session-manager.ts` | `appendDigest` / `compressContext` |
+| `runtime-facade.ts` | `maybeAutoCompact` / `compressContext` |
+| `chat-codex-module.ts` | `digestProvider` 调用（finish_reason=stop） |
+
+### 预算参数
+
+| 参数 | 默认值 | 说明 |
+|------|--------|------|
+| `CONTEXT_HISTORY_BUDGET` | 20000 | contextHistory 最大 tokens |
+| `AUTO_CONTEXT_COMPACT_THRESHOLD_PERCENT` | 85 | 自动压缩触发阈值 |
+| `AUTO_CONTEXT_COMPACT_COOLDOWN_MS` | 60000 | 自动压缩冷却时间 |
+| `AUTO_CONTEXT_COMPACT_TIMEOUT_MS` | 30000 | 压缩超时时间 |
+
+### 强制压缩
+
+```typescript
+// 手动触发强制压缩（忽略 threshold）
+await runtime.compressContext(sessionId, { trigger: 'manual' });
+
+// force=true 时跳过 threshold 检查
+```
+
+### 反模式
+
+1. ❌ **不要在 compact 时调用 LLM**：使用 deterministic digest
+2. ❌ **不要忘记 force 参数**：手动压缩时必须 force=true
+3. ❌ **不要在 turn_digest 中包含 source_range**：只有 compact_block 才有
