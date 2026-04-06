@@ -1,6 +1,6 @@
 ---
 name: finger dev skills
-description: Project development guardrails for Finger. Defines layered architecture, module ownership, core-priority invariants, and mandatory change/testing workflow. Use for any design, refactor, debug, or feature work in this repo.
+description: Project development guardrails for Finger. Defines layered architecture, module ownership, core-priority invariants, mandatory change/testing workflow, and multi-agent collaboration patterns. Use for any design, refactor, debug, or feature work in this repo.
 ---
 
 # Finger Dev Skills
@@ -306,3 +306,49 @@ Required pass criteria:
 - Swallowing errors with empty `catch {}` / silent ignore on critical or semi-critical paths.
 - Treating feature-level failures as either silent no-op or global hard-fail (both are wrong); use “log + skip + continue” unless the feature is mandatory.
 - Rollback-first handling without completed diagnosis and explicit user approval.
+
+## 7) Multi-Agent Collaboration Patterns (2026-04-06)
+
+### Architecture
+- **Two-level hierarchy**: System Agent → Project Agent (dispatch unchanged)
+- **Project Agent internal**: LLM tool-driven collaboration (借鉴 Codex Rust)
+- **AgentPath**: Layered paths `/root/project/explorer/worker-1`, supports relative `./child`, `../sibling`
+
+### LLM Tools (6 tools)
+- `agent.spawn`: Create child with role/history fork (FullHistory/LastNTurns/None)
+- `agent.wait`: Block until child completes
+- `agent.send_message`: Queue-only message (triggerTurn=false)
+- `agent.followup_task`: Message with triggerTurn=true (immediate execution)
+- `agent.close`: Release agent from registry
+- `agent.list`: List agents with path_prefix filter
+
+### Fork History Inheritance
+- `FullHistory`: Copy entire conversation
+- `LastNTurns`: Keep last N turns (default 5), truncate mid-turn not allowed
+- `None`: Fresh start, no history
+
+### CompletionWatcher Pattern
+- Background polling of child status
+- Auto-notify parent mailbox via `sendAgentCompletion`
+- Trigger on final status: completed/errored/shutdown
+
+### Key Files
+- `src/common/agent-path.ts`: Layered path system
+- `src/orchestration/agent-registry.ts`: Concurrency control + nickname allocation
+- `src/orchestration/session-fork.ts`: History inheritance
+- `src/orchestration/agent-collab-watcher.ts`: Completion watcher
+- `src/tools/internal/agent-collab-tools.ts`: 6 LLM tools
+- `src/blocks/mailbox-block/index.ts`: InterAgentCommunication + triggerTurn
+
+### Testing Requirements
+- Unit tests for each component (≥90% coverage)
+- Integration tests for cross-module flows
+- Orchestration tests for lifecycle/state transitions
+- E2E tests for full collaboration scenarios
+
+### Anti-patterns (FORBIDDEN)
+- Cross-worker session write (must use owner-only)
+- spawn without proper history fork mode
+- missing triggerTurn distinction
+- CompletionWatcher not started after spawn
+- AgentPath relative resolution errors
