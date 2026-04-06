@@ -442,51 +442,38 @@ start(): void {
 - `src/server/modules/daily-summary-scheduler.ts`: start()
 - `src/serverx/modules/heartbeat-scheduler.impl.ts`: start()
 
-## 9) Log Instrumentation Standards (2026-04-06)
+## 9) 日志系统规范（强制）
 
-### Mandatory Logging Points
+### 核心原则
 
-All critical paths MUST have structured logging with sufficient context for debugging.
+- **所有模块必须接入日志系统**：禁止使用 `console.log`、`console.error` 等直接输出
+- **唯一真源**：所有日志必须通过 `src/core/logger` 的 `FingerLogger` 输出
+- **结构化日志**：日志必须是结构化的 JSON 格式，便于查询和分析
+- **Trace 模式**：关键流程支持 trace，记录完整执行上下文
 
-**Required Modules** (already instrumented):
-- `AgentRuntimeBlock`: dispatch lifecycle (start/result/error)
-- `MessageHub`: routing decisions
-- `RuntimeFacade`: kernel request/response
-- `HeartbeatScheduler`: tick/skipped/window
-- `DailySummaryScheduler`: start/tick/process
+### 日志系统使用
 
-**Required Fields** per log entry:
-- `timestamp`: NTP-corrected time
-- `level`: debug/info/warn/error/fatal
-- `module`: module name from `logger.module('Name')`
-- `message`: human-readable event description
-- `data`: structured context (dispatchId, sessionId, etc.)
-- `error`: (optional) Error object with stack trace
+```typescript
+import { logger } from '../core/logger.js';
 
-### Trace Mode (for debugging complex flows)
+// 每个模块创建独立的 ModuleLogger
+const log = logger.module('ModuleName');
 
-When investigating cross-module issues:
-1. Enable `snapshotMode` in `~/.finger/config/logging.json`
-2. Use `log.startTrace()` / `log.endTrace()` to capture full flow
-3. Snapshots written to `~/.finger/logs/snapshots/<traceId>.json`
+// 日志级别
+log.debug('详细调试信息', { key: 'value' });
+log.info('正常业务流程', { userId: 'xxx', action: 'login' });
+log.warn('潜在问题', { reason: 'retry', attempt: 2 });
+log.error('错误信息', error, { context: 'additional data' });
+log.fatal('致命错误', error, { critical: true });
 
-### Anti-patterns (FORBIDDEN)
+// Trace 模式（关键流程）
+const traceId = log.startTrace();
+log.info('开始处理请求', { traceId });
+// ... 执行逻辑 ...
+log.endTrace(traceId);  // 自动写入快照文件
+```
 
-- Using `console.log/error/warn` in runtime code (only allowed in CLI init scripts)
-- Missing `data` context in critical path logs
-- High-frequency logs without sampling/aggregation
-- Sensitive data (passwords, tokens) in log entries
-
-**Files to review for console.* cleanup**:
-- `src/cli/init.ts`: acceptable (user-facing CLI)
-- `src/core/logger/index.ts`: acceptable (logger fallback)
-- `src/server/routes/session.ts`: MUST use FingerLogger (already fixed)
-
----
-
-## 日志 Trace 覆盖（2026-04-06）
-
-### Trace 链路完整覆盖
+### Trace 链路完整覆盖（2026-04-06）
 
 关键路径已全部接入 trace 模式：
 
@@ -494,12 +481,14 @@ When investigating cross-module issues:
 dispatchTask → executeDispatch → sendToModule → callTool
 ```
 
-- `AgentRuntimeBlock.dispatchTask`: `startTrace()` + `endTrace()` 包裹
-- `AgentRuntimeBlock.executeDispatch`: `traceId` 参数传递
-- `AgentRuntimeBlock.toDispatchPayload`: `metadata.traceId` 写入 payload
-- `AgentRuntimeBlock.drainDispatchQueue`: 独立 `startTrace()`（queued dispatch）
-- `MessageHub.sendToModule`: 从 `metadata.traceId` 提取 + debug log
-- `RuntimeFacade.callTool`: 从 `metadata.traceId` 提取 + tool_call/result/error log
+| 模块 | Trace 功能 | 关键日志点 |
+|------|-----------|-----------|
+| `AgentRuntimeBlock.dispatchTask` | ✅ startTrace + endTrace 包裹 | dispatch 入口 + 早期返回 |
+| `AgentRuntimeBlock.executeDispatch` | ✅ traceId 参数传递 | blocking/non-blocking 分支 |
+| `AgentRuntimeBlock.toDispatchPayload` | ✅ metadata.traceId | payload 写入 traceId |
+| `AgentRuntimeBlock.drainDispatchQueue` | ✅ 独立 trace | queued dispatch 独立上下文 |
+| `MessageHub.sendToModule` | ✅ 提取 traceId + debug log | routing to output/input |
+| `RuntimeFacade.callTool` | ✅ 提取 traceId + info/error log | tool_call/result/error |
 
 ### 配置位置
 
@@ -510,26 +499,42 @@ dispatchTask → executeDispatch → sendToModule → callTool
   "moduleLevels": {
     "AgentRuntimeBlock": "debug",
     "MessageHub": "debug",
-    "RuntimeFacade": "debug"
+    "RuntimeFacade": "debug",
+    "CompletionWatcher": "debug"
   },
   "snapshotMode": true,
   "snapshotModules": ["AgentRuntimeBlock", "MessageHub", "RuntimeFacade"]
 }
 ```
 
-### Trace 输出
+### Trace 输出路径
 
-- **实时日志**: `~/.finger/logs/daemon.log`（含 `traceId` 字段）
-- **快照文件**: `~/.finger/logs/snapshots/<traceId>.json`
+- **实时日志**: `~/.finger/logs/daemon.log`（搜索 `[traceId=xxx]`）
+- **快照文件**: `~/.finger/logs/snapshots/<traceId>.json`（完整生命周期）
 
-### 使用方式
+### 使用方式（问题回溯）
 
-问题回溯时：
 1. 从 `daemon.log` 搜索 `[traceId=xxx]`
 2. 查找对应 `snapshots/xxx.json`（完整 trace 生命周期）
+3. Trace 覆盖完整 dispatch → execute → sendToModule → callTool 链路
 
 ### Scheduler 窗口行为优化
 
 - **DailySummaryScheduler**: `start()` 检查 `isHourInWindow()`，非窗口期不触发 `tick()`
 - **HeartbeatScheduler**: 同样逻辑，避免非窗口期重复启动
+- **防止**: 非窗口期重复启动浪费 token
+
+### 禁止事项（强制）
+
+- **禁止**使用 `console.log`、`console.error`、`console.warn`（仅 `cli/init.ts` 和 `logger/index.ts` 允许）
+- **禁止**在生产代码中直接写入文件输出日志
+- **禁止**在日志中记录敏感信息（密码、token等）
+- **禁止**在循环中高频打日志（使用采样或聚合）
+- **禁止**缺失 `data` context 在关键路径日志
+
+### Console.* 检查结果（合规）
+
+- `logger/index.ts`: 8 处（logger 失败时的 fallback，允许）
+- `cli/init.ts`: 22 处（用户 CLI 输出，允许）
+- 其他 runtime 文件: 0 处（已全部清理）
 
