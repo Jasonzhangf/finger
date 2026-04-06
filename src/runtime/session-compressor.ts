@@ -267,13 +267,7 @@ export async function compressSession(
   const existingCompact = await readJsonLines<CompactMemoryEntryFile>(compactPath);
   const newCompactIndex = existingCompact.length; // 0-based index of the new entry
 
-  try {
-    await fs.appendFile(compactPath, `${JSON.stringify(compactEntry)}\n`, 'utf-8');
-    console.log('[compressSession] ✅ Wrote compact_block to', compactPath);
-  } catch (writeError) {
-    console.error('[compressSession] ❌ Write compact_block failed:', writeError.message);
-    throw writeError;
-  }
+  await fs.appendFile(compactPath, `${JSON.stringify(compactEntry)}\n`, 'utf-8');
 
   // Step 5: Calculate new pointers
   const newOriginalStartIndex = session.originalEndIndex + 1;
