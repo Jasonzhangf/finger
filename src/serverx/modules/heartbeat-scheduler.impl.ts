@@ -347,6 +347,7 @@ function buildHeartbeatPrompt(pendingTasks: string[]): string {
 
 export class HeartbeatScheduler {
   private timer: NodeJS.Timeout | null = null;
+  private autoResumeTimer: NodeJS.Timeout | null = null;
   private configWatcher: FSWatcher | null = null;
   private config: HeartbeatConfig = {};
   private lastConfigReloadAt = 0;
@@ -2271,13 +2272,16 @@ constructor(private deps: AgentRuntimeDeps) {}
   public requestStop(reason: string, permanent: boolean = false, resumeAfterMinutes?: number): void {
     const newState = permanent ? 'STOPPED' : 'PAUSED';
     this.transitionHeartbeatState(newState, reason);
-    // TODO: 如果 resumeAfterMinutes 有值，设置自动恢复定时器（预留 278.6 实现）
+    // 如果 resumeAfterMinutes 有值，设置自动恢复定时器
     if (resumeAfterMinutes && !permanent) {
-      log.info('[HeartbeatScheduler] Auto-resume scheduled', { resumeAfterMinutes, reason });
+      this.setAutoResumeTimer(resumeAfterMinutes, reason);
     }
   }
 
   public requestResume(reason: string): void {
+    // 清理自动恢复定时器（如果手动恢复）
+    this.clearAutoResumeTimer();
+    
     if (this.heartbeatState === 'PAUSED' || this.heartbeatState === 'STOPPED') {
       this.transitionHeartbeatState('RUNNING', reason);
     } else {
@@ -2285,6 +2289,29 @@ constructor(private deps: AgentRuntimeDeps) {}
         currentState: this.heartbeatState,
         reason,
       });
+    }
+  }
+
+  // === 自动恢复定时器 helper === 
+  private setAutoResumeTimer(minutes: number, originalReason: string): void {
+    this.clearAutoResumeTimer(); // 先清理已有定时器
+    
+    const resumeAfterMs = minutes * 60 * 1000;
+    log.info('[HeartbeatScheduler] Setting auto-resume timer', { minutes, resumeAfterMs });
+    
+    this.autoResumeTimer = setTimeout(() => {
+      if (this.heartbeatState === 'PAUSED') {
+        log.info('[HeartbeatScheduler] Auto-resume triggered', { originalReason });
+        this.requestResume('auto_resume_after_timeout: ' + originalReason);
+      }
+    }, resumeAfterMs);
+  }
+
+  private clearAutoResumeTimer(): void {
+    if (this.autoResumeTimer) {
+      clearTimeout(this.autoResumeTimer);
+      this.autoResumeTimer = null;
+      log.debug('[HeartbeatScheduler] Auto-resume timer cleared');
     }
   }
 
