@@ -157,7 +157,7 @@ describe('MailboxBlock - Signaling Layer', () => {
       expect(signalingMsgs[0].messageType).toBe('inter_agent');
     });
 
-    it('should filter by recipient path', () => {
+    it('should filter by target path (recipient maps to target)', () => {
       const s1: InterAgentCommunication = {
         author: '/path/a',
         recipient: '/path/b',
@@ -175,9 +175,10 @@ describe('MailboxBlock - Signaling Layer', () => {
       mailbox.sendInterAgent(s1);
       mailbox.sendInterAgent(s2);
 
-    const toB = mailbox.list({ recipient: '/path/b' });
-      // recipient is stored in content/metadata, use target filter instead
-      expect(toB.filter(m => m.recipient === '/path/b')).toHaveLength(1);
+      // recipient maps to target field in sendInterAgent
+      const toB = mailbox.list({ target: '/path/b' });
+      expect(toB).toHaveLength(1);
+      expect(toB[0].target).toBe('/path/b');
     });
   });
 });

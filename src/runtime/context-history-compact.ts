@@ -86,7 +86,7 @@ export interface ContextHistoryPointers {
 }
 
 /** 默认 token 预算：100k tokens */
-const DEFAULT_TOKEN_BUDGET = 100_000;
+const CONTEXT_HISTORY_BUDGET = 20_000;
 
 /** 内容截断长度 */
 const MAX_CONTENT_SUMMARY_LENGTH = 500;
@@ -212,7 +212,7 @@ export async function compactSessionHistory(
   const agentId = options.agentId || 'finger-system-agent';
   const mode = options.mode || 'main';
   const rootDir = normalizeRootDir(options.rootDir);
-  const tokenBudget = options.tokenBudget ?? DEFAULT_TOKEN_BUDGET;
+  const tokenBudget = options.tokenBudget ?? CONTEXT_HISTORY_BUDGET;
 
   // 读取当前 Session 的指针（兼容旧 session）
   const pointers = extractContextHistoryPointers(session, tokenBudget);
@@ -374,7 +374,7 @@ export function extractContextHistoryPointers(session: Session, tokenBudget?: nu
       ? context.contextHistoryTokens
       : 0,
     totalTokens: session.totalTokens ?? 0,
-    tokenBudget: tokenBudget ?? DEFAULT_TOKEN_BUDGET,
+    tokenBudget: tokenBudget ?? CONTEXT_HISTORY_BUDGET,
   };
 }
 
