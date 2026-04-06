@@ -32,6 +32,7 @@ import {
 import { mailboxRemoveTool, mailboxRemoveAllTool } from './mailbox-tool-remove.js';
 import { skillsListTool, skillsStatusTool } from './skills-tool.js';
 import { stopReasoningPolicyTool, stopReasoningTool } from './stop-reasoning-tool.js';
+import { sleepTool } from './codex-sleep-tool.js';
 
 export * from './types.js';
 export * from './registry.js';
@@ -60,6 +61,7 @@ export * from './send-local-image-tool.js';
 export * from './skills-tool.js';
 export * from './project-task-tool.js';
 export * from './stop-reasoning-tool.js';
+export * from './codex-sleep-tool.js';
 
 export function createDefaultInternalToolRegistry(): InternalToolRegistry {
   const registry = new InternalToolRegistry();
@@ -98,6 +100,7 @@ export function createDefaultInternalToolRegistry(): InternalToolRegistry {
   registry.register(skillsStatusTool);
   registry.register(stopReasoningTool);
   registry.register(stopReasoningPolicyTool);
+  registry.register(sleepTool);
   for (const tool of permissionTools) {
     registry.register(tool);
   }

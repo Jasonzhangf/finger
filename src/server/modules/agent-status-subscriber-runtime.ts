@@ -138,6 +138,11 @@ function applyContextDisplayMode(text: string, modeRaw: ContextDisplayMode): str
         contextHeadlineAdded = true;
         continue;
       }
+      if (!historyOnlyAdded && normalized.startsWith('🧩 历史:')) {
+        output.push(line);
+        historyOnlyAdded = true;
+        continue;
+      }
       if (!historyOnlyAdded && normalized.startsWith('🧩 构成:') && historyRegex.test(normalized)) {
         const splitMatch = normalized.match(historySplitRegex);
         if (splitMatch && splitMatch[1] && splitMatch[2]) {

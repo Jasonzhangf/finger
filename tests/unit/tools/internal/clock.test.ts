@@ -91,6 +91,25 @@ describe('create payload parsing', () => {
     expect(result.max_runs).toBe(5);
   });
 
+  it('should parse hook payload in create', () => {
+    const payload = {
+      message: 'hook task',
+      schedule_type: 'delay',
+      delay_seconds: 30,
+      hook: {
+        command: 'echo ok',
+        timeout_ms: 5000,
+        include_output_in_prompt: true,
+      },
+    };
+    const result = parseCreatePayload(payload);
+    expect(result.hook).toEqual({
+      command: 'echo ok',
+      timeout_ms: 5000,
+      include_output_in_prompt: true,
+    });
+  });
+
   it('should reject missing inject.agentId', () => {
     const payload = {
       message: 'test',
@@ -144,6 +163,21 @@ describe('update payload parsing', () => {
     expect(result.timer_id).toBe('test-timer-id');
     expect(result.message).toBe('updated message');
     expect(result.inject).toBeUndefined();
+  });
+
+  it('should parse update with hook payload', () => {
+    const payload = {
+      timer_id: 'test-timer-id',
+      hook: {
+        command: 'echo update',
+        cwd: '/tmp',
+      },
+    };
+    const result = parseUpdatePayload(payload);
+    expect(result.hook).toEqual({
+      command: 'echo update',
+      cwd: '/tmp',
+    });
   });
 });
 

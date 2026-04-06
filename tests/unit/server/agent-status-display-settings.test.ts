@@ -94,6 +94,29 @@ describe('agent status display settings', () => {
     expect(payload.content).not.toContain('🧩 构成: I(');
   });
 
+  it('keeps explicit history line when ctx is simple', async () => {
+    const routeToOutput = vi.fn();
+    const messageHub = {
+      getOutputs: () => [{ id: 'channel-bridge-qqbot' }],
+      routeToOutput,
+    } as any;
+    const channelBridgeManager = {
+      getPushSettings: () => ({ statusUpdate: true }),
+      getConfig: () => ({ options: { displaySettings: { context: 'simple', heartbeat: true } } }),
+    } as any;
+
+    await sendStatusUpdate({
+      channel: 'qqbot',
+      envelopeId: 'env-3b',
+      userId: 'u1',
+    } as any, makeStatusUpdate('👤 [system] finger-system-agent\n🧠 上下文: 30%\n🧩 历史: context history=10k(3.8%) · current history=5k(1.9%)\n✅ done'), messageHub, channelBridgeManager);
+
+    const payload = routeToOutput.mock.calls[0]?.[1] as { content?: string };
+    expect(payload.content).toContain('🧠 上下文');
+    expect(payload.content).toContain('🧩 历史: context history=');
+    expect(payload.content).toContain('current history=');
+  });
+
   it('falls back to direct bridge send when output is missing', async () => {
     const routeToOutput = vi.fn();
     const sendMessage = vi.fn().mockResolvedValue({ messageId: 'm-1' });

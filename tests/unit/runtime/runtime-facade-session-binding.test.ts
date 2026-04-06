@@ -155,6 +155,26 @@ describe('RuntimeFacade session binding hard guards', () => {
     expect(toolCall?.toolName).toBe('mailbox.status');
   });
 
+  it('passes session projectPath as cwd into tool execution context', async () => {
+    const eventBus = { emit: vi.fn(async () => undefined), enablePersistence: vi.fn() } as any;
+    const sessionManager = createSessionManagerStub();
+    const toolRegistry = createToolRegistryStub() as any;
+    const runtime = new RuntimeFacade(eventBus, sessionManager, toolRegistry);
+    runtime.grantToolToAgent('finger-project-agent', 'echo.test');
+
+    await runtime.callTool('finger-project-agent', 'echo.test', { ok: true }, { sessionId: 'proj-1' });
+
+    expect(toolRegistry.execute).toHaveBeenCalledWith(
+      'echo.test',
+      { ok: true },
+      expect.objectContaining({
+        agentId: 'finger-project-agent',
+        sessionId: 'proj-1',
+        cwd: '/tmp/project-a',
+      }),
+    );
+  });
+
   it('normalizes command_exec alias to command.exec when whitelisted', async () => {
     const emits: Array<Record<string, unknown>> = [];
     const eventBus = {

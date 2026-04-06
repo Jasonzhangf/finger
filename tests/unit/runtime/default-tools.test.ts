@@ -20,6 +20,7 @@ describe('registerDefaultRuntimeTools', () => {
     expect(loaded).toContain('permission.list');
     expect(loaded).toContain('view_image');
     expect(loaded).toContain('clock');
+    expect(loaded).toContain('sleep');
     expect(loaded).toContain('no-op');
     expect(loaded).toContain('web_search');
     expect(loaded).toContain('context_builder.rebuild');

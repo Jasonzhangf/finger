@@ -90,7 +90,7 @@ function buildContextBreakdownLines(
   estimatedContextTokens: number | undefined,
 ): string[] {
   if (!breakdown) {
-    return ['🧩 构成统计: 等待模型回传模块占用'];
+    return [];
   }
   const lines: string[] = [];
   const historyContext = shareLabel(breakdown?.historyContextTokens, maxInputTokens);
@@ -152,9 +152,10 @@ function buildContextBreakdownLines(
   ]
     .every((value) => value === '?');
   if (allUnknown) {
-    return ['🧩 构成统计: 等待模型回传模块占用'];
+    return [];
   }
   if (mode !== 'dev') {
+    lines.push(`🧩 历史: context history=${historyContext} · current history=${historyCurrent}`);
     lines.push(
       `🧩 构成: H(c=${historyContext},cur=${historyCurrent}) · P(sys=${systemPrompt},dev=${developerPrompt}) · C(sk=${skills},mb=${mailbox},prj=${project},flow=${flow},slot=${contextSlots})`,
     );
@@ -254,7 +255,7 @@ export function buildCompactSummary(
     if (fallbackContextLine) {
       lines.push(`${fallbackContextLine} · 来自历史快照`);
     } else {
-      lines.push('🧠 上下文: 当前为工具流，尚未收到本轮 model_round 统计（并非无上下文）');
+      lines.push('🧠 上下文: 工具执行阶段，等待模型回传上下文统计');
     }
   }
   const estimatedContextTokens = resolveEstimatedContextTokens(

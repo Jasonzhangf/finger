@@ -114,3 +114,20 @@ export function applyMailboxAckTransition<T extends MailboxLifecycleMessageLike>
     message: next,
   };
 }
+
+
+// InterAgentCommunication 结构（用于 agent-to-agent 消息传递）
+export interface InterAgentCommunication {
+  author: string;           // 发送方 agent 路径（如 "/root/explorer/worker-1"）
+  recipient: string;        // 主要接收方 agent 路径
+  otherRecipients?: string[]; // 广播目标（可选）
+  content: string;          // 消息内容（JSON string 或 plain text）
+  triggerTurn: boolean;     // 是否触发执行（关键！）
+  timestamp: string;        // ISO timestamp
+}
+
+// Agent 完成通知（用于 Completion Watcher）
+export interface AgentCompletionNotification extends InterAgentCommunication {
+  completionStatus: 'completed' | 'errored' | 'shutdown';
+  finalMessage?: string;    // agent 最后的输出
+}

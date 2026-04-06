@@ -5,6 +5,16 @@ export type ClockTimerStatus = 'active' | 'completed' | 'canceled';
 export type ClockScheduleType = 'delay' | 'at' | 'cron';
 export type ClockAction = 'create' | 'list' | 'cancel' | 'update';
 
+export interface ClockHookPayload {
+  command: string;
+  cwd?: string;
+  shell?: string;
+  timeout_ms?: number;
+  max_output_chars?: number;
+  include_output_in_prompt?: boolean;
+  prompt_header?: string;
+}
+
 export interface ClockTimer {
   timer_id: string;
   message: string;
@@ -18,9 +28,10 @@ export interface ClockTimer {
   run_count: number;
   next_fire_at: string | null;
   status: ClockTimerStatus;
- created_at: string;
+  created_at: string;
   updated_at: string;
   inject?: ClockInjectPayload;
+  hook?: ClockHookPayload;
   last_injected_at?: string;
 }
 
@@ -56,8 +67,10 @@ export interface ClockCreatePayload {
     sessionId?: string;
     projectPath?: string;
     prompt: string;
+    channelId?: string;
     progressDelivery?: ProgressDeliveryPolicy;
   };
+  hook?: ClockHookPayload;
 }
 
 export interface ClockListPayload {
@@ -80,6 +93,7 @@ export interface ClockUpdatePayload {
   repeat?: boolean;
   max_runs?: number;
   inject?: ClockInjectPayload;
+  hook?: ClockHookPayload;
 }
 
 export interface ClockOutput {
@@ -127,9 +141,11 @@ export function parseCreatePayload(payload: Record<string, unknown>): ClockCreat
       prompt,
       ...(typeof payload.inject.sessionId === 'string' ? { sessionId: payload.inject.sessionId } : {}),
       ...(typeof payload.inject.projectPath === 'string' ? { projectPath: payload.inject.projectPath } : {}),
+      ...(typeof payload.inject.channelId === 'string' ? { channelId: payload.inject.channelId } : {}),
       ...(progressDelivery ? { progressDelivery } : {}),
     };
   }
+  const hook = parseHookPayload(payload.hook, 'create');
   return {
     message: payload.message,
     schedule_type: payload.schedule_type,
@@ -140,6 +156,7 @@ export function parseCreatePayload(payload: Record<string, unknown>): ClockCreat
     repeat: typeof payload.repeat === 'boolean' ? payload.repeat : undefined,
     max_runs: toOptionalPositiveInteger(payload.max_runs),
     ...(inject ? { inject } : {}),
+    ...(hook ? { hook } : {}),
   };
 }
 
@@ -171,6 +188,7 @@ export function parseUpdatePayload(payload: Record<string, unknown>): ClockUpdat
       ...(progressDelivery ? { progressDelivery } : {}),
     };
   }
+  const hook = parseHookPayload(payload.hook, 'update');
   return {
     timer_id: requireNonEmptyString(payload.timer_id, 'failed to parse clock update payload: timer_id is required'),
     message: typeof payload.message === 'string' ? payload.message : undefined,
@@ -182,6 +200,7 @@ export function parseUpdatePayload(payload: Record<string, unknown>): ClockUpdat
     repeat: typeof payload.repeat === 'boolean' ? payload.repeat : undefined,
     max_runs: toOptionalPositiveInteger(payload.max_runs),
     ...(inject ? { inject } : {}),
+    ...(hook ? { hook } : {}),
   };
 }
 
@@ -252,6 +271,41 @@ export function isClockTimer(value: unknown): value is ClockTimer {
     typeof value.created_at === 'string' &&
     typeof value.updated_at === 'string'
   );
+}
+
+function parseHookPayload(
+  raw: unknown,
+  mode: 'create' | 'update',
+): ClockHookPayload | undefined {
+  if (raw === undefined || raw === null) return undefined;
+  if (!isRecord(raw)) throw new Error(`failed to parse clock ${mode} payload: hook must be an object`);
+
+  const command = requireNonEmptyString(raw.command, `failed to parse clock ${mode} payload: hook.command is required`);
+  const timeoutMs = toOptionalPositiveIntegerLoose(raw.timeout_ms);
+  const maxOutputChars = toOptionalPositiveIntegerLoose(raw.max_output_chars);
+
+  return {
+    command,
+    ...(typeof raw.cwd === 'string' && raw.cwd.trim().length > 0 ? { cwd: raw.cwd.trim() } : {}),
+    ...(typeof raw.shell === 'string' && raw.shell.trim().length > 0 ? { shell: raw.shell.trim() } : {}),
+    ...(typeof timeoutMs === 'number' ? { timeout_ms: timeoutMs } : {}),
+    ...(typeof maxOutputChars === 'number' ? { max_output_chars: maxOutputChars } : {}),
+    ...(typeof raw.include_output_in_prompt === 'boolean'
+      ? { include_output_in_prompt: raw.include_output_in_prompt }
+      : {}),
+    ...(typeof raw.prompt_header === 'string' && raw.prompt_header.trim().length > 0
+      ? { prompt_header: raw.prompt_header.trim() }
+      : {}),
+  };
+}
+
+function toOptionalPositiveIntegerLoose(value: unknown): number | undefined {
+  if (typeof value === 'number') return toOptionalPositiveInteger(value);
+  if (typeof value === 'string' && value.trim().length > 0) {
+    const parsed = Number(value.trim());
+    if (Number.isFinite(parsed)) return toOptionalPositiveInteger(parsed);
+  }
+  return undefined;
 }
 
 export function isRecord(value: unknown): value is Record<string, unknown> {

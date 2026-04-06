@@ -1,7 +1,9 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs';
+import { existsSync, mkdirSync, readFileSync } from 'fs';
 import { randomUUID } from 'crypto';
 import path from 'path';
 import { FINGER_PATHS, ensureDir } from '../../core/finger-paths.js';
+import { logger } from '../../core/logger.js';
+import { writeFileAtomicSync } from '../../core/atomic-write.js';
 import { InternalTool } from './types.js';
 import { computeNextCronFireAt, validateTimezone } from './codex-clock-cron.js';
 import {
@@ -30,6 +32,7 @@ import {
 
 const CLOCK_MAX_ACTIVE_TIMERS = 3;
 const CLOCK_DEFAULT_LIST_LIMIT = 50;
+const log = logger.module('ClockTool');
 
 class ClockStoreManager {
   private readonly timers = new Map<string, ClockTimer>();
@@ -46,7 +49,7 @@ class ClockStoreManager {
     const now = new Date();
     const schedule = normalizeCreateSchedule(payload, now);
     const timer: ClockTimer = {
- timer_id: randomUUID(),
+      timer_id: randomUUID(),
       message: payload.message.trim(),
       schedule_type: schedule.schedule_type,
       delay_seconds: schedule.delay_seconds,
@@ -61,6 +64,7 @@ class ClockStoreManager {
       created_at: now.toISOString(),
       updated_at: now.toISOString(),
       inject: payload.inject,
+      hook: payload.hook,
     };
     this.timers.set(timer.timer_id, timer);
     this.persist();
@@ -98,11 +102,14 @@ class ClockStoreManager {
     if (!timer) throw new Error(`timer not found: ${payload.timer_id}`);
 
     const now = new Date();
-  if (typeof payload.message === 'string' && payload.message.trim().length > 0) {
+    if (typeof payload.message === 'string' && payload.message.trim().length > 0) {
       timer.message = payload.message.trim();
     }
     if (payload.inject !== undefined) {
       timer.inject = payload.inject;
+    }
+    if (payload.hook !== undefined) {
+      timer.hook = payload.hook;
     }
 
     const schedule = normalizeUpdateSchedule(timer, payload, now);
@@ -143,12 +150,16 @@ class ClockStoreManager {
         try {
           const timer = JSON.parse(line) as ClockTimer;
           if (isClockTimer(timer)) this.timers.set(timer.timer_id, timer);
-        } catch {
-          // ignore invalid jsonl line
+        } catch (error) {
+          log.warn('Ignoring invalid clock timer line', {
+            storePath: this.storePath,
+            linePreview: line.slice(0, 160),
+            error: error instanceof Error ? error.message : String(error),
+          });
         }
       }
-    } catch {
-      // ignore invalid persisted store
+    } catch (error) {
+      log.error('Failed to read clock timer store', error as Error, { storePath: this.storePath });
     }
   }
 
@@ -159,7 +170,7 @@ class ClockStoreManager {
     const lines = Array.from(this.timers.values())
       .sort((left, right) => left.timer_id.localeCompare(right.timer_id))
       .map((timer) => JSON.stringify(timer));
-    writeFileSync(this.storePath, `${lines.join('\n')}${lines.length > 0 ? '\n' : ''}`, 'utf-8');
+    writeFileAtomicSync(this.storePath, `${lines.join('\n')}${lines.length > 0 ? '\n' : ''}`);
   }
 }
 
@@ -172,7 +183,11 @@ export const clockTool: InternalTool<unknown, ClockOutput> = {
     type: 'object',
     properties: {
       action: { type: 'string', description: 'One of: create, list, cancel, update.' },
-      payload: { type: 'object', additionalProperties: true },
+      payload: {
+        type: 'object',
+        description: 'Clock payload. Supports schedule fields, inject payload, and optional hook command runner.',
+        additionalProperties: true,
+      },
     },
     required: ['action', 'payload'],
     additionalProperties: false,
@@ -334,6 +349,15 @@ function compactSchedule(timer: ClockTimer): Record<string, unknown> {
     repeat: timer.repeat,
     max_runs: timer.max_runs,
     run_count: timer.run_count,
+    ...(timer.hook
+      ? {
+          hook: {
+            command: timer.hook.command,
+            timeout_ms: timer.hook.timeout_ms,
+            include_output_in_prompt: timer.hook.include_output_in_prompt,
+          },
+        }
+      : {}),
   };
 }
 

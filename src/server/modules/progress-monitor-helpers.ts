@@ -98,6 +98,9 @@ export function buildHeartbeatSummary(
     waitKind?: 'provider' | 'tool' | 'user' | 'unknown';
     waitDetail?: string;
     resetHintCommand?: string;
+    lifecycleStage?: string;
+    lifecycleDetail?: string;
+    lifecycleAgeMs?: number;
   },
 ): string {
   const waitingMs = Math.max(0, now - p.lastUpdateTime);
@@ -105,6 +108,14 @@ export function buildHeartbeatSummary(
   const hh = String(localTime.getHours()).padStart(2, '0');
   const mm = String(localTime.getMinutes()).padStart(2, '0');
   const lines = [`📊 ${hh}:${mm} | 执行中`];
+  if (options?.lifecycleStage) {
+    const stage = options.lifecycleStage.trim();
+    const detail = typeof options.lifecycleDetail === 'string' ? options.lifecycleDetail.trim() : '';
+    const age = typeof options.lifecycleAgeMs === 'number' && Number.isFinite(options.lifecycleAgeMs) && options.lifecycleAgeMs >= 0
+      ? ` · 持续 ${formatElapsed(options.lifecycleAgeMs)}`
+      : '';
+    lines.push(`🧠 内部阶段: ${stage}${detail ? ` · ${detail}` : ''}${age}`);
+  }
   if (pendingTool) {
     const toolName = resolveToolDisplayName(pendingTool.toolName?.trim() || '工具', pendingTool.params);
     lines.push(`⏳ ${formatElapsed(waitingMs)} 无新事件，当前等待工具 ${toolName} 返回`);

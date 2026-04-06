@@ -6,6 +6,8 @@ import {
   applyMailboxAckTransition,
   applyMailboxReadTransition,
   type MailboxAckOptions,
+  type InterAgentCommunication,
+  type AgentCompletionNotification,
 } from './protocol.js';
 
 const clog = createConsoleLikeLogger('Index');
@@ -33,6 +35,11 @@ export interface MailboxMessage {
   deliveryPolicy?: 'realtime' | 'batched' | 'passive';
   readAt?: string;
   ackAt?: string;
+  // 新增字段（用于 InterAgentCommunication）
+  author?: string;
+  recipient?: string;
+  triggerTurn?: boolean;
+  messageType?: 'inter_agent' | 'user' | 'system' | 'callback';
 }
 
 const log = logger.module('MailboxBlock');
@@ -57,6 +64,7 @@ export class MailboxBlock extends BaseBlock {
   private messages: Map<string, MailboxMessage> = new Map();
   private nextSeq: number = 1;
   private subscribers: Map<string, Set<(msg: MailboxMessage) => void>> = new Map();
+  private globalListeners: Set<() => void> = new Set();
   private callbackIndex: Map<string, string> = new Map();
   private seqIndex: Map<number, string> = new Map();
   private storagePath?: string;
@@ -135,6 +143,11 @@ export class MailboxBlock extends BaseBlock {
       category: options?.category as string | undefined,
       priority: options?.priority as MailboxMessage['priority'],
       deliveryPolicy: options?.deliveryPolicy as MailboxMessage['deliveryPolicy'],
+      // InterAgentCommunication fields from options
+      author: options?.author as string | undefined,
+      recipient: options?.recipient as string | undefined,
+      triggerTurn: options?.triggerTurn as boolean | undefined,
+      messageType: options?.messageType as MailboxMessage['messageType'],
     };
 
     this.messages.set(id, message);
@@ -181,6 +194,15 @@ export class MailboxBlock extends BaseBlock {
     if (Array.isArray(options?.ids) && options.ids.length > 0) {
       const allowedIds = new Set(options.ids);
       messages = messages.filter(m => allowedIds.has(m.id));
+    }
+    if (options?.triggerTurn !== undefined) {
+      messages = messages.filter(m => m.triggerTurn === options.triggerTurn);
+    }
+    if (options?.author) {
+      messages = messages.filter(m => m.author === options.author);
+    }
+    if (options?.messageType) {
+      messages = messages.filter(m => m.messageType === options.messageType);
     }
 
     messages.sort((a, b) => {
@@ -356,6 +378,87 @@ export class MailboxBlock extends BaseBlock {
     };
   }
 
+  sendInterAgent(comm: InterAgentCommunication): { id: string; seq: number } {
+    return this.append(comm.recipient, comm.content, {
+      sourceType: 'agent-callable',
+      author: comm.author,
+      recipient: comm.recipient,
+      triggerTurn: comm.triggerTurn,
+      messageType: 'inter_agent',
+    });
+  }
+
+  sendAgentCompletion(notification: AgentCompletionNotification): { id: string; seq: number } {
+    return this.append(notification.recipient, notification.content, {
+      sourceType: 'agent-callable',
+      author: notification.author,
+      recipient: notification.recipient,
+      triggerTurn: notification.triggerTurn,
+      messageType: 'inter_agent',
+    });
+  }
+
+  hasPendingTriggerTurn(): boolean {
+    const values = Array.from(this.messages.values());
+    for (const msg of values) {
+      if (msg.status === 'pending' && msg.triggerTurn === true) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  getPendingTriggerTurnMessages(): MailboxMessage[] {
+    return this.list({ status: 'pending', triggerTurn: true });
+  }
+
+  subscribeToSeq(): {
+    currentSeq: number;
+    waitForChange: (timeoutMs?: number) => Promise<boolean>;
+    unsubscribe: () => void;
+  } {
+    const currentSeq = this.nextSeq - 1;
+    let resolveFn: ((changed: boolean) => void) | null = null;
+    let timeoutId: ReturnType<typeof setTimeout> | null = null;
+
+    const listener = () => {
+      if (resolveFn) {
+        resolveFn(true);
+        resolveFn = null;
+        if (timeoutId) {
+          clearTimeout(timeoutId);
+          timeoutId = null;
+        }
+      }
+    };
+
+    this.globalListeners.add(listener);
+
+    return {
+      currentSeq,
+      waitForChange: (timeoutMs = 30000): Promise<boolean> => {
+        if (this.nextSeq - 1 > currentSeq) {
+          return Promise.resolve(true);
+        }
+        return new Promise<boolean>((resolve) => {
+          resolveFn = resolve;
+          timeoutId = setTimeout(() => {
+            if (resolveFn) {
+              resolve(false);
+              resolveFn = null;
+            }
+          }, timeoutMs);
+        });
+      },
+      unsubscribe: () => {
+        this.globalListeners.delete(listener);
+        if (timeoutId) {
+          clearTimeout(timeoutId);
+        }
+      },
+    };
+  }
+
   private loadFromStorage(): void {
     if (!this.storagePath) return;
 
@@ -401,6 +504,11 @@ export class MailboxBlock extends BaseBlock {
   }
 
   private notifySubscribers(messageId: string, message: MailboxMessage): void {
+    // Call global listeners first
+    const listenerList = Array.from(this.globalListeners);
+    for (const listener of listenerList) {
+      try { listener(); } catch (e) { log.error('Global listener error', e instanceof Error ? e : undefined); }
+    }
     const callbacks = this.subscribers.get(messageId);
     if (callbacks) {
       for (const cb of callbacks) {
@@ -438,6 +546,9 @@ interface ListOptions {
   limit?: number;
   offset?: number;
   ids?: string[];
+  triggerTurn?: boolean;
+  author?: string;
+  messageType?: string;
 }
 
 type BatchMailboxOptions = ListOptions;

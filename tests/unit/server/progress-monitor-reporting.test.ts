@@ -390,7 +390,7 @@ describe('progress-monitor-reporting', () => {
     expect(result).not.toContain('构成[overhead说明]');
   });
 
-  it('shows waiting hint when breakdown is unavailable', () => {
+  it('omits breakdown lines when breakdown is unavailable', () => {
     const data: SessionProgressData = {
       agentId: 'finger-system-agent',
       status: 'running',
@@ -403,7 +403,8 @@ describe('progress-monitor-reporting', () => {
     };
 
     const result = buildCompactSummary(data, formatElapsed, { headerMode: 'minimal' });
-    expect(result).toContain('🧩 构成统计: 等待模型回传模块占用');
+    expect(result).not.toContain('🧩 构成:');
+    expect(result).not.toContain('🧩 构成统计:');
   });
 
   it('shows control tags/hooks in dev mode when available', () => {

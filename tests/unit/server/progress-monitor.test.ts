@@ -130,7 +130,7 @@ describe('ProgressMonitor incremental updates', () => {
     } as any);
     await flushEventLoop();
     await (monitor as any).generateProgressReport();
-    expect(reports[0]).toContain('尚未收到本轮 model_round');
+    expect(reports[0]).toContain('工具执行阶段，等待模型回传上下文统计');
 
     await eventBus.emit({
       type: 'system_notice',
@@ -746,9 +746,91 @@ describe('ProgressMonitor incremental updates', () => {
     await (monitor as any).generateProgressReport();
 
     expect(reports).toHaveLength(1);
+    expect(reports[0]).toContain('🧠 内部阶段: waiting_model');
     expect(reports[0]).toContain('分层状态: 外部等待 · provider');
     expect(reports[0]).not.toContain('分层状态: 内部等待');
     expect(reports[0]).not.toContain('<##@system:progress:reset##>');
+
+    monitor.stop();
+  });
+
+  it('includes recent round digest with tool and file evidence', async () => {
+    const eventBus = new UnifiedEventBus();
+    const reports: string[] = [];
+    const monitor = new ProgressMonitor(
+      eventBus,
+      createMinimalDeps(),
+      {
+        onProgressReport: (report) => {
+          reports.push(report.summary);
+        },
+      },
+      {
+        enabled: true,
+        progressUpdates: true,
+        intervalMs: 60_000,
+      },
+    );
+
+    monitor.start();
+    const sessionId = 'session-round-digest';
+
+    await eventBus.emit({
+      type: 'tool_call',
+      sessionId,
+      agentId: 'finger-system-agent',
+      toolId: 'rd-1',
+      toolName: 'shell.exec',
+      timestamp: new Date().toISOString(),
+      payload: {
+        input: { cmd: 'cat src/server/modules/progress-monitor.ts' },
+      },
+    } as any);
+    await eventBus.emit({
+      type: 'tool_result',
+      sessionId,
+      agentId: 'finger-system-agent',
+      toolId: 'rd-1',
+      toolName: 'shell.exec',
+      timestamp: new Date().toISOString(),
+      payload: {
+        input: { cmd: 'cat src/server/modules/progress-monitor.ts' },
+        output: 'ok',
+      },
+    } as any);
+    await flushEventLoop();
+    await (monitor as any).generateProgressReport();
+
+    await eventBus.emit({
+      type: 'tool_call',
+      sessionId,
+      agentId: 'finger-system-agent',
+      toolId: 'rd-2',
+      toolName: 'shell.exec',
+      timestamp: new Date().toISOString(),
+      payload: {
+        input: { cmd: 'rg \"waitLayer\" src/serverx/modules/progress-monitor.impl.ts' },
+      },
+    } as any);
+    await eventBus.emit({
+      type: 'tool_result',
+      sessionId,
+      agentId: 'finger-system-agent',
+      toolId: 'rd-2',
+      toolName: 'shell.exec',
+      timestamp: new Date().toISOString(),
+      payload: {
+        input: { cmd: 'rg \"waitLayer\" src/serverx/modules/progress-monitor.impl.ts' },
+        output: 'match',
+      },
+    } as any);
+    await flushEventLoop();
+    await (monitor as any).generateProgressReport();
+
+    expect(reports.length).toBeGreaterThanOrEqual(2);
+    const latest = reports[reports.length - 1];
+    expect(latest).toContain('🕘 最近轮次:');
+    expect(latest).toContain('src/serverx/modules/progress-monitor.impl.ts');
 
     monitor.stop();
   });
@@ -941,7 +1023,7 @@ describe('ProgressMonitor incremental updates', () => {
 
     await (monitor as any).generateProgressReport();
     expect(reports).toHaveLength(1);
-    expect(reports[0]).toContain('当前为工具流，尚未收到本轮 model_round 统计（并非无上下文）');
+    expect(reports[0]).toContain('工具执行阶段，等待模型回传上下文统计');
     expect(reports[0]).not.toContain('未关闭');
 
     const progress = monitor.getProgress('session-tool-only-idle');
@@ -1073,7 +1155,7 @@ describe('ProgressMonitor incremental updates', () => {
     const latest = reports[2];
     expect(latest.agentId).toBe('finger-system-agent');
     expect(latest.summary).toContain('python -V');
-    expect(latest.summary).not.toContain('git status');
+    expect(latest.summary).toContain('🕘 最近轮次');
     expect(latest.summary).not.toContain('pnpm build');
 
     monitor.stop();
@@ -1179,7 +1261,7 @@ describe('ProgressMonitor incremental updates', () => {
     await (monitor as any).generateProgressReport();
     expect(reports).toHaveLength(1);
     expect(reports[0].sessionId).toBe(businessSessionId);
-    expect(reports[0].summary).toContain('尚未收到本轮 model_round');
+    expect(reports[0].summary).toContain('工具执行阶段，等待模型回传上下文统计');
 
     // Heartbeat session sends auto compact probe context stats.
     // Business session progress must stay isolated and MUST NOT inherit heartbeat stats.
@@ -1224,7 +1306,7 @@ describe('ProgressMonitor incremental updates', () => {
 
     await (monitor as any).generateProgressReport();
     expect(reports).toHaveLength(2);
-    expect(reports[1].summary).toContain('尚未收到本轮 model_round');
+    expect(reports[1].summary).toContain('工具执行阶段，等待模型回传上下文统计');
     expect(reports[1].summary).not.toContain('/262k');
 
     monitor.stop();

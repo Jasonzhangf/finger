@@ -2,7 +2,8 @@ import type { AgentRuntimeDeps } from '../../server/modules/agent-runtime/types.
 import type { UnifiedEventBus } from '../../runtime/event-bus.js';
 import { logger } from '../../core/logger.js';
 import {
-  buildContextUsageLine,
+  classifyToolCall,
+  extractTargetFile,
   type SessionProgressData,
 } from '../../server/modules/progress-monitor-utils.js';
 import {
@@ -22,6 +23,8 @@ import {
   loadProgressMonitorConfig,
 } from '../../server/modules/progress-monitor-config.js';
 import type {
+  ProgressRoundDigest,
+  ProgressRoundDigestItem,
   ProgressMonitorCallbacks,
   ProgressMonitorConfig,
   ProgressReport,
@@ -85,7 +88,8 @@ export class ProgressMonitor {
     'mailbox.ack',
   ]);
   private static readonly REPORT_DELIVERY_TIMEOUT_MS = 15_000;
-  private static readonly STALL_HEARTBEAT_FACTOR_NO_PENDING = 3;
+  private static readonly STALL_HEARTBEAT_FACTOR_NO_PENDING = 2;
+  private static readonly MAX_RECENT_ROUNDS = 6;
 
   private buildProgressKey(sessionId: string, agentId: string): string {
     return `${sessionId}::${agentId}`;
@@ -97,6 +101,35 @@ export class ProgressMonitor {
       if (tool.result || tool.error) return false;
       return true;
     });
+  }
+
+  private isToolRecordCompleted(tool: ToolCallRecord): boolean {
+    return tool.success === true
+      || tool.success === false
+      || Boolean(tool.result)
+      || Boolean(tool.error);
+  }
+
+  private advanceReportedToolCursor(progress: SessionProgress, newToolCalls: ToolCallRecord[]): void {
+    if (!Array.isArray(newToolCalls) || newToolCalls.length === 0) return;
+    const currentCursor = progress.lastReportedToolSeq ?? 0;
+    const unresolvedSeqs = progress.toolCallHistory
+      .filter((tool) => !this.isToolRecordCompleted(tool))
+      .map((tool) => (typeof tool.seq === 'number' && Number.isFinite(tool.seq) ? tool.seq : 0))
+      .filter((seq) => seq > currentCursor)
+      .sort((a, b) => a - b);
+
+    let barrier = Number.POSITIVE_INFINITY;
+    if (unresolvedSeqs.length > 0) {
+      barrier = unresolvedSeqs[0] - 1;
+    }
+    const candidate = newToolCalls
+      .map((tool) => (typeof tool.seq === 'number' && Number.isFinite(tool.seq) ? tool.seq : 0))
+      .filter((seq) => seq > currentCursor && seq <= barrier)
+      .reduce((max, seq) => (seq > max ? seq : max), currentCursor);
+    if (candidate > currentCursor) {
+      progress.lastReportedToolSeq = candidate;
+    }
   }
 
   private resolveExecutionLifecycle(sessionId: string): ExecutionLifecycleState | null {
@@ -120,6 +153,9 @@ export class ProgressMonitor {
     waitLayer?: 'external' | 'internal';
     waitKind?: 'provider' | 'tool' | 'user' | 'unknown';
     waitDetail?: string;
+    lifecycleStage?: string;
+    lifecycleDetail?: string;
+    lifecycleAgeMs?: number;
   } {
     const lifecycle = this.resolveExecutionLifecycle(p.sessionId);
     const stage = lifecycle?.stage;
@@ -134,14 +170,35 @@ export class ProgressMonitor {
       ? Math.max(0, Math.floor(lifecycle.timeoutMs))
       : undefined;
 
+    const baseLifecycle = {
+      ...(stage ? { lifecycleStage: stage } : {}),
+      ...(detail ? { lifecycleDetail: detail } : {}),
+      ...(typeof lifecycleAgeMs === 'number' ? { lifecycleAgeMs } : {}),
+    };
+
     if (stage === 'waiting_model') {
-      return { waitLayer: 'external', waitKind: 'provider', ...(detail ? { waitDetail: detail } : {}) };
+      return {
+        ...baseLifecycle,
+        waitLayer: 'external',
+        waitKind: 'provider',
+        ...(detail ? { waitDetail: detail } : {}),
+      };
     }
     if (stage === 'waiting_tool') {
-      return { waitLayer: 'external', waitKind: 'tool', ...(detail ? { waitDetail: detail } : {}) };
+      return {
+        ...baseLifecycle,
+        waitLayer: 'external',
+        waitKind: 'tool',
+        ...(detail ? { waitDetail: detail } : {}),
+      };
     }
     if (stage === 'waiting_user') {
-      return { waitLayer: 'external', waitKind: 'user', ...(detail ? { waitDetail: detail } : {}) };
+      return {
+        ...baseLifecycle,
+        waitLayer: 'external',
+        waitKind: 'user',
+        ...(detail ? { waitDetail: detail } : {}),
+      };
     }
     if (stage === 'retrying') {
       const retryCount = typeof lifecycle?.retryCount === 'number' && Number.isFinite(lifecycle.retryCount)
@@ -160,12 +217,14 @@ export class ProgressMonitor {
         && lifecycleAgeMs > lifecycleTimeoutMs + 2 * this.config.intervalMs;
       if (staleBeyondTimeout) {
         return {
+          ...baseLifecycle,
           waitLayer: 'internal',
           waitKind: 'unknown',
           waitDetail: baseDetail.length > 0 ? `retry watchdog exceeded (${baseDetail})` : 'retry watchdog exceeded',
         };
       }
       return {
+        ...baseLifecycle,
         waitLayer: 'external',
         waitKind: 'provider',
         ...(baseDetail.length > 0 ? { waitDetail: `retrying (${baseDetail})` } : {}),
@@ -173,12 +232,118 @@ export class ProgressMonitor {
     }
     if (pendingTool) {
       const toolName = resolveToolDisplayName(pendingTool.toolName?.trim() || '工具', pendingTool.params);
-      return { waitLayer: 'external', waitKind: 'tool', waitDetail: toolName };
+      return {
+        ...baseLifecycle,
+        waitLayer: 'external',
+        waitKind: 'tool',
+        waitDetail: toolName,
+      };
     }
     if (stalled) {
-      return { waitLayer: 'internal', waitKind: 'unknown' };
+      return {
+        ...baseLifecycle,
+        waitLayer: 'internal',
+        waitKind: 'unknown',
+      };
     }
-    return {};
+    return baseLifecycle;
+  }
+
+  private summarizeRoundTool(tool: ToolCallRecord): ProgressRoundDigestItem {
+    const displayName = resolveToolDisplayName(tool.toolName, tool.params);
+    const category = classifyToolCall(tool.toolName, tool.params);
+    const file = extractTargetFile(tool.toolName, tool.params) || undefined;
+    return {
+      toolName: tool.toolName,
+      displayName,
+      category,
+      ...(file ? { file } : {}),
+      ...(typeof tool.success === 'boolean' ? { success: tool.success } : {}),
+    };
+  }
+
+  private buildRoundSummary(items: ProgressRoundDigestItem[]): string {
+    if (!Array.isArray(items) || items.length === 0) return '无工具明细';
+    return items
+      .slice(0, 4)
+      .map((item) => {
+        const status = item.success === false ? '❌' : item.success === true ? '✅' : '⏳';
+        const filePart = item.file ? ` @${item.file}` : '';
+        return `${status} ${item.displayName}${filePart}`;
+      })
+      .join('；');
+  }
+
+  private recordRoundDigest(progress: SessionProgress, tools: ToolCallRecord[]): void {
+    if (!Array.isArray(tools) || tools.length === 0) return;
+    const items = tools.map((tool) => this.summarizeRoundTool(tool));
+    const successCount = tools.filter((tool) => tool.success === true).length;
+    const failureCount = tools.filter((tool) => tool.success === false).length;
+    const seq = (progress.progressRoundSeq ?? 0) + 1;
+    progress.progressRoundSeq = seq;
+    const digest: ProgressRoundDigest = {
+      seq,
+      timestamp: Date.now(),
+      successCount,
+      failureCount,
+      summary: this.buildRoundSummary(items),
+      items: items.slice(0, 8),
+    };
+    const rounds = Array.isArray(progress.recentRounds) ? [...progress.recentRounds] : [];
+    rounds.push(digest);
+    if (rounds.length > ProgressMonitor.MAX_RECENT_ROUNDS) {
+      rounds.splice(0, rounds.length - ProgressMonitor.MAX_RECENT_ROUNDS);
+    }
+    progress.recentRounds = rounds;
+  }
+
+  private buildRecentRoundsSection(progress: SessionProgress): string[] {
+    const rounds = Array.isArray(progress.recentRounds) ? progress.recentRounds : [];
+    if (rounds.length === 0) return [];
+    const lines: string[] = ['🕘 最近轮次:'];
+    for (const round of rounds.slice(-3)) {
+      const status = round.failureCount > 0 ? '❌' : '✅';
+      lines.push(`  ${status} #${round.seq} ${round.summary}`);
+    }
+    return lines;
+  }
+
+  private buildStateLines(
+    p: SessionProgress,
+    now: number,
+    waitInfo: {
+      waitLayer?: 'external' | 'internal';
+      waitKind?: 'provider' | 'tool' | 'user' | 'unknown';
+      waitDetail?: string;
+      lifecycleStage?: string;
+      lifecycleDetail?: string;
+      lifecycleAgeMs?: number;
+    },
+  ): string[] {
+    const lines: string[] = [];
+    if (waitInfo.lifecycleStage) {
+      const age = typeof waitInfo.lifecycleAgeMs === 'number' && Number.isFinite(waitInfo.lifecycleAgeMs)
+        ? ` · 持续 ${formatElapsed(waitInfo.lifecycleAgeMs)}`
+        : '';
+      lines.push(`🧠 内部状态: ${waitInfo.lifecycleStage}${waitInfo.lifecycleDetail ? ` · ${waitInfo.lifecycleDetail}` : ''}${age}`);
+    }
+    if (waitInfo.waitLayer === 'external') {
+      const kind = waitInfo.waitKind ?? 'unknown';
+      const zhKind = kind === 'provider'
+        ? 'provider'
+        : kind === 'tool'
+          ? '工具'
+          : kind === 'user'
+            ? '用户'
+            : '外部';
+      lines.push(`🌐 外部状态: 等待${zhKind}${waitInfo.waitDetail ? ` · ${waitInfo.waitDetail}` : ''}`);
+    } else if (waitInfo.waitLayer === 'internal') {
+      lines.push(`⚙️ 内部状态: 等待内部推进${waitInfo.waitDetail ? ` · ${waitInfo.waitDetail}` : ''}`);
+    } else {
+      const idleFor = Math.max(0, now - p.lastUpdateTime);
+      lines.push(`⚙️ 内部状态: 执行循环中 · 最近事件 ${formatElapsed(idleFor)} 前`);
+    }
+    return lines;
   }
 
   private parseEventAgentId(event: any): string | undefined {
@@ -709,6 +874,8 @@ export class ProgressMonitor {
         toolCallHistory: [],
         toolSeqCounter: 0,
         contextUsageAddedTokens: 0,
+        recentRounds: [],
+        progressRoundSeq: 0,
       };
       this.applySessionContextSnapshot(progress);
       this.sessionProgress.set(progressKey, progress);
@@ -807,30 +974,36 @@ export class ProgressMonitor {
 
       // 仅发送新增工具调用（避免重复）
       const newToolCalls = p.toolCallHistory.filter((tool) => (tool.seq ?? 0) > lastReportedSeq);
-      const meaningfulToolCalls = newToolCalls.filter((tool) => !this.isLowValueToolCall(tool));
+      const completedToolCalls = newToolCalls.filter((tool) => this.isToolRecordCompleted(tool));
+      const meaningfulToolCalls = completedToolCalls.filter((tool) => !this.isLowValueToolCall(tool));
       const contextBreakdownKey = p.contextBreakdown ? JSON.stringify(p.contextBreakdown) : '';
       const contextEventChanged =
         (p.lastContextEventAt ?? undefined) !== (p.lastReportedContextEventAt ?? undefined);
       // 硬约束：没有工具调用就不推送常规进度更新。
       // 任务/reasoning/上下文变化仅用于补充已存在工具更新的摘要，不单独触发推送。
-      const hasMeaningfulSignal = newToolCalls.length > 0;
+      const hasMeaningfulSignal = completedToolCalls.length > 0;
 
-      // 没有真实信号时，仅在 stall 且存在挂起工具时发送心跳。
+      // 没有真实信号时，仅在 stall 条件满足时发送心跳（携带内外层等待状态）。
       if (!hasMeaningfulSignal) {
         if (stalled && this.shouldEmitHeartbeat(p, now, heartbeatIntervalMs)) {
+          const heartbeatSummary = this.buildHeartbeatSummary(p, now, pendingTool, {
+            suspectedStall: !pendingTool,
+            waitLayer: waitLayerInfo.waitLayer,
+            waitKind: waitLayerInfo.waitKind,
+            waitDetail: waitLayerInfo.waitDetail,
+            resetHintCommand: '<##@system:progress:reset##> 或 <##@system:stopall##>',
+            lifecycleStage: waitLayerInfo.lifecycleStage,
+            lifecycleDetail: waitLayerInfo.lifecycleDetail,
+            lifecycleAgeMs: waitLayerInfo.lifecycleAgeMs,
+          });
+          const roundLines = this.buildRecentRoundsSection(p);
           const report: ProgressReport = {
             type: 'progress_report',
             timestamp: new Date().toISOString(),
             sessionId: p.sessionId,
             agentId: p.agentId,
             progress: p,
-            summary: this.buildHeartbeatSummary(p, now, pendingTool, {
-              suspectedStall: !pendingTool,
-              waitLayer: waitLayerInfo.waitLayer,
-              waitKind: waitLayerInfo.waitKind,
-              waitDetail: waitLayerInfo.waitDetail,
-              resetHintCommand: '<##@system:progress:reset##> 或 <##@system:stopall##>',
-            }),
+            summary: [heartbeatSummary, ...roundLines].join('\n'),
           };
           const delivered = await this.deliverProgressReport(report);
           if (!delivered) continue;
@@ -864,7 +1037,7 @@ export class ProgressMonitor {
         continue;
       }
 
-      const reportToolCalls = meaningfulToolCalls.length > 0 ? meaningfulToolCalls : newToolCalls.slice(-1);
+      const reportToolCalls = meaningfulToolCalls.length > 0 ? meaningfulToolCalls : completedToolCalls.slice(-1);
       const report: ProgressReport = {
         type: 'progress_report',
         timestamp: new Date().toISOString(),
@@ -875,20 +1048,19 @@ export class ProgressMonitor {
           p,
           reportToolCalls,
           contextEventChanged,
+          now,
+          waitLayerInfo,
         ),
       };
 
       const delivered = await this.deliverProgressReport(report);
       if (!delivered) continue;
+      this.recordRoundDigest(p, reportToolCalls);
 
       // Move dedup cursor only after report delivery succeeds.
       // This avoids dropping updates when callback throws.
       if (newToolCalls.length > 0) {
-        const maxSeqInBatch = newToolCalls.reduce((max, tool) => {
-          const seq = typeof tool.seq === 'number' && Number.isFinite(tool.seq) ? tool.seq : 0;
-          return seq > max ? seq : max;
-        }, p.lastReportedToolSeq ?? 0);
-        p.lastReportedToolSeq = maxSeqInBatch;
+        this.advanceReportedToolCursor(p, newToolCalls);
       }
       p.lastReportKey = reportKey;
       p.lastReportTime = now;
@@ -906,6 +1078,15 @@ export class ProgressMonitor {
     p: SessionProgress,
     newToolCalls?: ToolCallRecord[],
     includeContextEvent = false,
+    now = Date.now(),
+    waitInfo?: {
+      waitLayer?: 'external' | 'internal';
+      waitKind?: 'provider' | 'tool' | 'user' | 'unknown';
+      waitDetail?: string;
+      lifecycleStage?: string;
+      lifecycleDetail?: string;
+      lifecycleAgeMs?: number;
+    },
   ): string {
     const toolsToShow = (newToolCalls && newToolCalls.length > 0) ? newToolCalls : [];
     const firstReport = !p.lastReportTime;
@@ -936,7 +1117,7 @@ export class ProgressMonitor {
       controlBlockValid: p.controlBlockValid,
       controlIssues: p.controlIssues,
     };
-    return buildCompactSummary(
+    const summary = buildCompactSummary(
       data,
       (ms) => formatElapsed(ms),
       {
@@ -945,6 +1126,19 @@ export class ProgressMonitor {
         headerMode: 'minimal',
       },
     );
+    const inferredStalled = Math.max(0, now - p.lastUpdateTime) >= this.config.intervalMs;
+    const stateLines = this.buildStateLines(
+      p,
+      now,
+      waitInfo ?? this.resolveWaitLayer(
+        p,
+        this.findPendingMeaningfulTool(p),
+        inferredStalled,
+        now,
+      ),
+    );
+    const roundLines = this.buildRecentRoundsSection(p);
+    return [summary, ...stateLines, ...roundLines].join('\n');
   }
 
   private isLowValueToolCall(tool: ToolCallRecord): boolean {
@@ -1000,6 +1194,9 @@ export class ProgressMonitor {
       waitKind?: 'provider' | 'tool' | 'user' | 'unknown';
       waitDetail?: string;
       resetHintCommand?: string;
+      lifecycleStage?: string;
+      lifecycleDetail?: string;
+      lifecycleAgeMs?: number;
     },
   ): string {
     return buildHeartbeatSummary(p, now, pendingTool, options);

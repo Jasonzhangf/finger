@@ -44,6 +44,23 @@ export interface ToolCallRecord {
   timestamp: number;
 }
 
+export interface ProgressRoundDigestItem {
+  toolName: string;
+  displayName: string;
+  category: string;
+  file?: string;
+  success?: boolean;
+}
+
+export interface ProgressRoundDigest {
+  seq: number;
+  timestamp: number;
+  successCount: number;
+  failureCount: number;
+  summary: string;
+  items: ProgressRoundDigestItem[];
+}
+
 export interface SessionProgress {
   sessionId: string;
   agentId: string;
@@ -98,6 +115,11 @@ export interface SessionProgress {
    * Tool-only execution paths may not emit turn_start/turn_complete.
    */
   hasOpenTurn?: boolean;
+  /**
+   * Rolling digest for recent progress rounds (tool-window batches delivered to user).
+   */
+  recentRounds?: ProgressRoundDigest[];
+  progressRoundSeq?: number;
 }
 
 export interface ProgressReport {

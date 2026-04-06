@@ -2,10 +2,13 @@
  * Clock Task Injector
  *
  * Polls clock timers and injects tasks into agents when due.
+ * Supports hook execution before injection for pre-condition checks.
  */
 
 import fs from 'fs';
 import path from 'path';
+import { execFile } from 'child_process';
+import { promisify } from 'util';
 import { FINGER_PATHS } from '../core/finger-paths.js';
 import { AgentDispatchRequest } from '../server/modules/agent-runtime/types.js';
 import { computeNextClockRunForTimer } from '../tools/internal/codex-clock-tool.js';
@@ -13,6 +16,11 @@ import { isClockTimer } from '../tools/internal/codex-clock-schema.js';
 import type { ProgressDeliveryPolicy } from '../common/progress-delivery-policy.js';
 import { normalizeProgressDeliveryPolicy } from '../common/progress-delivery-policy.js';
 import { writeFileAtomicSync } from '../core/atomic-write.js';
+import { logger } from '../core/logger.js';
+import type { ClockHookPayload } from '../tools/internal/codex-clock-schema.js';
+
+const execFileAsync = promisify(execFile);
+const log = logger.module('ClockInjector');
 
 export interface ClockInjectPayload {
   agentId: string;
@@ -21,6 +29,16 @@ export interface ClockInjectPayload {
   prompt: string;
   channelId?: string;
   progressDelivery?: ProgressDeliveryPolicy;
+}
+
+export interface ClockHookExecutionResult {
+  ok: boolean;
+  command: string;
+  exitCode: number | null;
+  stdout: string;
+  stderr: string;
+  timedOut: boolean;
+  durationMs: number;
 }
 
 export interface ClockInjectTimer {
@@ -40,6 +58,7 @@ export interface ClockInjectTimer {
   updated_at: string;
   // new fields
   inject?: ClockInjectPayload;
+  hook?: ClockHookPayload;
   last_injected_at?: string;
 }
 
@@ -59,6 +78,11 @@ const MAX_TIMER_DELAY_MS = 60_000;
 const RETRY_BACKOFF_BASE_MS = 30_000;
 const RETRY_BACKOFF_MAX_MS = 30 * 60_000;
 const DEFAULT_SCHEDULED_PROGRESS_DELIVERY = normalizeProgressDeliveryPolicy({ mode: 'result_only' });
+const DEFAULT_HOOK_TIMEOUT_MS = 300_000; // 5 min
+const MAX_HOOK_TIMEOUT_MS = 600_000; // 10 min
+const DEFAULT_HOOK_MAX_OUTPUT_CHARS = 20_000;
+const DEFAULT_HOOK_INCLUDE_OUTPUT = true;
+const DEFAULT_HOOK_HEADER = '[CLOCK HOOK RESULT]';
 
 export class ClockTaskInjector {
   private timer: NodeJS.Timeout | null = null;
@@ -130,15 +154,32 @@ export class ClockTaskInjector {
   }
 
   private async handleDueTimer(timer: ClockInjectTimer, dueAtMs: number, nowMs: number): Promise<boolean> {
+    let hookResult: ClockHookExecutionResult | undefined;
+    if (timer.hook) {
+      hookResult = await this.executeHook(timer.hook, timer.inject?.projectPath || process.cwd(), timer.timer_id);
+    }
+
+    // Hook-only timer (no inject): hook success marks completed, hook failure marks failed_attempts
     if (!timer.inject) {
-      this.markRunSuccess(timer, dueAtMs, false);
-      this.deps.log?.('[ClockInjector] due timer without inject payload, marked as completed/advanced', {
-        timerId: timer.timer_id,
-      });
+      if (hookResult && !hookResult.ok) {
+        this.markRunFailure(timer, nowMs, new Error(`clock hook failed: ${hookResult.command}`));
+        this.deps.log?.('[ClockInjector] hook-only failed', {
+          timerId: timer.timer_id,
+          timedOut: hookResult.timedOut,
+          exitCode: hookResult.exitCode,
+        });
+      } else {
+        this.markRunSuccess(timer, dueAtMs, false);
+        this.deps.log?.('[ClockInjector] hook-only success, marked completed', {
+          timerId: timer.timer_id,
+        });
+      }
       return true;
     }
+
+    // With inject: always inject (soft-fail mode), agent receives hookStatus in prompt
     try {
-      await this.inject(timer);
+      await this.inject(timer, hookResult);
       this.markRunSuccess(timer, dueAtMs, true);
       return true;
     } catch (err) {
@@ -197,7 +238,126 @@ export class ClockTaskInjector {
     });
   }
 
-  private async inject(timer: ClockInjectTimer): Promise<void> {
+  private async executeHook(
+    hook: ClockHookPayload,
+    projectPath: string,
+    timerId: string,
+  ): Promise<ClockHookExecutionResult> {
+    const command = hook.command;
+    const cwd = hook.cwd ?? projectPath;
+    const shell = hook.shell ?? '/bin/bash';
+    const timeoutMs = Math.min(MAX_HOOK_TIMEOUT_MS, hook.timeout_ms ?? DEFAULT_HOOK_TIMEOUT_MS);
+    const maxOutputChars = hook.max_output_chars ?? DEFAULT_HOOK_MAX_OUTPUT_CHARS;
+    const startMs = Date.now();
+
+    log.info('[ClockInjector] executing hook', { timerId, command, cwd, shell, timeoutMs });
+
+    try {
+      // Use execFile with shell for safer execution
+      const result = await execFileAsync(shell, ['-c', command], {
+        cwd,
+        timeout: timeoutMs,
+        maxBuffer: Math.min(1024 * 1024, maxOutputChars * 2), // Allow slightly more buffer
+        killSignal: 'SIGKILL',
+      });
+
+      const stdout = this.truncateOutput(result.stdout, maxOutputChars);
+      const stderr = this.truncateOutput(result.stderr, maxOutputChars);
+      const durationMs = Date.now() - startMs;
+
+      log.info('[ClockInjector] hook finished', {
+        timerId,
+        ok: true,
+        exitCode: 0,
+        timedOut: false,
+        durationMs,
+        stdoutLen: stdout.length,
+        stderrLen: stderr.length,
+      });
+
+      return {
+        ok: true,
+        command,
+        exitCode: 0,
+        stdout,
+        stderr,
+        timedOut: false,
+        durationMs,
+      };
+    } catch (err: unknown) {
+      const durationMs = Date.now() - startMs;
+      const execErr = err as { killed?: boolean; code?: number; stdout?: string; stderr?: string; signal?: string };
+      const timedOut = execErr.killed === true && execErr.signal === 'SIGKILL';
+      const exitCode = execErr.code ?? null;
+      const stdout = this.truncateOutput(execErr.stdout ?? '', maxOutputChars);
+      const stderr = this.truncateOutput(execErr.stderr ?? '', maxOutputChars);
+
+      log.warn('[ClockInjector] hook finished', {
+        timerId,
+        ok: false,
+        exitCode,
+        timedOut,
+        durationMs,
+        stdoutLen: stdout.length,
+        stderrLen: stderr.length,
+      });
+
+      return {
+        ok: timedOut || exitCode !== 0 ? false : true,
+        command,
+        exitCode,
+        stdout,
+        stderr,
+        timedOut,
+        durationMs,
+      };
+    }
+  }
+
+  private truncateOutput(output: string, maxChars: number): string {
+    if (output.length <= maxChars) return output;
+    return output.slice(0, maxChars) + '[truncated]';
+  }
+
+  private composeInjectPrompt(
+    originalPrompt: string,
+    hookResult: ClockHookExecutionResult,
+    hook: ClockHookPayload,
+  ): string {
+    const header = hook.prompt_header ?? DEFAULT_HOOK_HEADER;
+    const includeOutput = hook.include_output_in_prompt ?? DEFAULT_HOOK_INCLUDE_OUTPUT;
+    const cwd = hook.cwd ?? '';
+
+    const lines: string[] = [
+      header,
+      `status=${hookResult.ok ? 'success' : 'failed'}`,
+      `command=${hookResult.command}`,
+      `exit_code=${hookResult.exitCode ?? 'null'}`,
+      `timedOut=${hookResult.timedOut}`,
+      `durationMs=${hookResult.durationMs}`,
+    ];
+
+    if (cwd) {
+      lines.push(`cwd=${cwd}`);
+    }
+
+    if (includeOutput) {
+      if (hookResult.stdout) {
+        lines.push(`stdout=${hookResult.stdout}`);
+      }
+      if (hookResult.stderr) {
+        lines.push(`stderr=${hookResult.stderr}`);
+      }
+    }
+
+    lines.push('');
+    lines.push('[ORIGINAL PROMPT]');
+    lines.push(originalPrompt);
+
+    return lines.join('\n');
+  }
+
+  private async inject(timer: ClockInjectTimer, hookResult?: ClockHookExecutionResult): Promise<void> {
     if (!timer.inject) return;
     const inject = timer.inject;
     const agentId = inject.agentId;
@@ -208,10 +368,24 @@ export class ClockTaskInjector {
     // ensure session exists
     this.deps.ensureSession(sessionId, projectPath);
 
+    let prompt = inject.prompt;
+    let hookMetadata: Record<string, unknown> = {};
+
+    if (hookResult && timer.hook) {
+      prompt = this.composeInjectPrompt(inject.prompt, hookResult, timer.hook);
+      hookMetadata = {
+        hookStatus: hookResult.timedOut ? 'timeout' : hookResult.ok ? 'success' : 'failed',
+        hookCommand: hookResult.command,
+        hookExitCode: hookResult.exitCode,
+        hookTimedOut: hookResult.timedOut,
+        hookDurationMs: hookResult.durationMs,
+      };
+    }
+
     const request: AgentDispatchRequest = {
       sourceAgentId: 'clock-injector',
       targetAgentId: agentId,
-      task: { prompt: inject.prompt },
+      task: { prompt },
       sessionId,
       metadata: {
         source: 'clock',
@@ -219,6 +393,7 @@ export class ClockTaskInjector {
         timerId: timer.timer_id,
         message: timer.message,
         channelId,
+        ...hookMetadata,
         ...((inject.progressDelivery ?? DEFAULT_SCHEDULED_PROGRESS_DELIVERY)
           ? { scheduledProgressDelivery: inject.progressDelivery ?? DEFAULT_SCHEDULED_PROGRESS_DELIVERY }
           : {}),

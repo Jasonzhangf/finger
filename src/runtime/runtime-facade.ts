@@ -1106,9 +1106,24 @@ export class RuntimeFacade {
           })()
         : input;
 
+      const session = this.sessionManager.getSession(sessionId);
+      const contextProjectPath = session?.projectPath;
+      const sessionContext = (session?.context && typeof session.context === 'object')
+        ? session.context as Record<string, unknown>
+        : undefined;
+      const contextChannelId = sessionContext && typeof sessionContext.channelId === 'string'
+        ? sessionContext.channelId
+        : undefined;
+
       const result = await this.toolRegistry.execute(resolvedToolName, executionInput, {
         agentId,
         sessionId,
+        ...(typeof contextProjectPath === 'string' && contextProjectPath.trim().length > 0
+          ? { cwd: contextProjectPath }
+          : {}),
+        ...(typeof contextChannelId === 'string' && contextChannelId.trim().length > 0
+          ? { channelId: contextChannelId }
+          : {}),
       });
       const duration = Date.now() - startTime;
 
