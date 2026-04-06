@@ -2161,16 +2161,19 @@ export class AgentRuntimeBlock extends BaseBlock {
   }
 
   private async dispatchTask(input: AgentDispatchRequest): Promise<DispatchResult> {
+    const traceId = log.startTrace();
     log.info('[AgentRuntimeBlock] Dispatching task', {
       sourceAgentId: input.sourceAgentId,
       targetAgentId: input.targetAgentId,
       sessionId: input.sessionId,
-      taskType: typeof input.task
+      taskType: typeof input.task,
+      traceId,
     });
 
     const targetAgentId = input.targetAgentId;
     if (!targetAgentId || typeof targetAgentId !== 'string') {
       log.info(`[AgentRuntimeBlock] Dispatch failed: invalid targetAgentId=${JSON.stringify(input)}`);
+      log.endTrace(traceId);
       return {
         ok: false,
         dispatchId: `dispatch-${Date.now()}-invalid-target`,
@@ -2180,6 +2183,7 @@ export class AgentRuntimeBlock extends BaseBlock {
     }
     const target = targetAgentId.trim();
     if (!target) {
+      log.endTrace(traceId);
       return {
         ok: false,
         dispatchId: `dispatch-${Date.now()}-invalid`,
@@ -2195,6 +2199,7 @@ export class AgentRuntimeBlock extends BaseBlock {
         targetAgentId: target,
         sessionId: input.sessionId,
       });
+      log.endTrace(traceId);
       return {
         ok: false,
         dispatchId,
@@ -2211,6 +2216,7 @@ export class AgentRuntimeBlock extends BaseBlock {
       log.warn('[AgentRuntimeBlock] Deployment not found', {
         targetAgentId: target,
       });
+      log.endTrace(traceId);
       return {
         ok: false,
         dispatchId: `dispatch-${Date.now()}-not-started`,
@@ -2221,6 +2227,7 @@ export class AgentRuntimeBlock extends BaseBlock {
 
     const runtimeProfile = this.resolveRuntimeConfigProfile(target);
     if (runtimeProfile.enabled === false) {
+      log.endTrace(traceId);
       return {
         ok: false,
         dispatchId: `dispatch-${Date.now()}-disabled`,
@@ -2268,6 +2275,7 @@ export class AgentRuntimeBlock extends BaseBlock {
         targetAgentId: target,
         error: sessionBindingCheck.error,
       });
+      log.endTrace(traceId);
       return {
         ok: false,
         dispatchId,
@@ -2300,6 +2308,7 @@ export class AgentRuntimeBlock extends BaseBlock {
     }
 
     if (blocking && normalizedInput.sourceAgentId === target && activeCount >= capacity) {
+      log.endTrace(traceId);
       return {
         ok: false,
         dispatchId,
@@ -2432,13 +2441,15 @@ export class AgentRuntimeBlock extends BaseBlock {
       workflowId: normalizedInput.workflowId,
       assignment: this.withAssignmentPhase(assignment, 'started'),
     });
-    return this.executeDispatch(
+    const result = await this.executeDispatch(
       normalizedInput,
       dispatchId,
       targetModuleId,
       lane,
       this.withAssignmentPhase(assignment, 'started'),
     );
+    log.endTrace(traceId);
+    return result;
   }
 
   private async controlRuntime(input: AgentControlRequest): Promise<AgentControlResult> {
