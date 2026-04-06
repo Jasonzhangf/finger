@@ -342,8 +342,31 @@ export class HeartbeatScheduler {
     await this.loadRuntimeState();
     this.watchConfig();
     if (!this.timer) {
-      this.armTick(0);
-      log.info(`[HeartbeatScheduler] Started (tick=${DEFAULT_TICK_MS}ms)`);
+      // Check if any nightly/daily tasks are in window before immediate tick
+      const now = new Date();
+      const hour = now.getHours();
+      const nightlyCfg = this.resolveNightlyDreamConfig();
+      const dailyCfg = this.resolveDailySystemReviewConfig();
+      const inNightlyWindow = nightlyCfg.enabled && this.isHourInWindow(hour, nightlyCfg.windowStartHour, nightlyCfg.windowEndHour);
+      const inDailyWindow = dailyCfg.enabled && this.isHourInWindow(hour, dailyCfg.windowStartHour, dailyCfg.windowEndHour);
+      
+      if (inNightlyWindow || inDailyWindow) {
+        log.info('[HeartbeatScheduler] Started (in task window)', {
+          tickMs: DEFAULT_TICK_MS,
+          currentHour: hour,
+          inNightlyWindow,
+          inDailyWindow,
+        });
+        this.armTick(0); // Immediate tick when in window
+      } else {
+        log.debug('[HeartbeatScheduler] Ready (outside task windows)', {
+          tickMs: DEFAULT_TICK_MS,
+          currentHour: hour,
+          nightlyWindow: `${nightlyCfg.windowStartHour}-${nightlyCfg.windowEndHour}`,
+          dailyWindow: `${dailyCfg.windowStartHour}-${dailyCfg.windowEndHour}`,
+        });
+        this.armTick(DEFAULT_TICK_MS); // Normal tick delay
+      }
     }
   }
 

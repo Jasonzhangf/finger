@@ -228,17 +228,35 @@ export class DailySummaryScheduler {
       return;
     }
     if (this.timer) return;
-    this.logRuntime('Daily summary scheduler started', {
-      tickMs: this.options.tickMs,
-      windowStartHour: this.options.windowStartHour,
-      windowEndHour: this.options.windowEndHour,
-      taskCount: this.taskSpecs.length,
-    });
+
+    // Check if current time is within the execution window
+    const now = new Date();
+    const hour = now.getHours();
+    const inWindow = isHourInWindow(hour, this.options.windowStartHour, this.options.windowEndHour);
+
+    // Only log and run immediate tick when in window
+    if (inWindow) {
+      this.logRuntime('Daily summary scheduler started (in window)', {
+        tickMs: this.options.tickMs,
+        windowStartHour: this.options.windowStartHour,
+        windowEndHour: this.options.windowEndHour,
+        taskCount: this.taskSpecs.length,
+        currentHour: hour,
+      });
+      void this.tick();
+    } else {
+      // Outside window: silent startup, wait for next window entry
+      log.debug('Daily summary scheduler ready (outside window)', {
+        currentHour: hour,
+        windowStartHour: this.options.windowStartHour,
+        windowEndHour: this.options.windowEndHour,
+      });
+    }
+
     this.timer = setInterval(() => {
       void this.tick();
     }, this.options.tickMs);
     this.timer.unref?.();
-    void this.tick();
   }
 
   stop(): void {

@@ -82,6 +82,10 @@ function stripControlBlockForChannel(text: string): string {
   const base = cleaned || source;
   const stripped = stripControlLikeJsonPayload(base).trim();
   return stripped
+    // 过滤模型输出的 tool 语法（防御性）
+    .replace(/\[tool_use\s+id=[^\]]+\s+name=[^\]]+]/gi, '' )
+    .replace(/\[tool_result\s+id=[^\]]+]/gi, '' )
+    .replace(/\[function_call(?:_output)?\s+[^\]]+]/gi, '' )
     .replace(/Tool\s+[a-zA-Z0-9_.-]+\s+does(?:\s+not)?\s+exist(?:s)?\.?/gi, '')
     .replace(/\n{3,}/g, '\n\n')
     .trim();
