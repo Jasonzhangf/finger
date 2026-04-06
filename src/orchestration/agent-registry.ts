@@ -112,7 +112,7 @@ export class AgentRegistry {
 
         const fullMetadata: AgentMetadata = {
           agentId: metadata.agentId,
-          agentPath: agentPath ?? `/root/${reservedNickname.toLowerCase()}`,
+          agentPath: metadata.agentPath ?? agentPath ?? `/root/${reservedNickname.toLowerCase()}`,
           agentNickname: reservedNickname,
           agentRole: metadata.agentRole ?? agentRole,
           lastTaskMessage: metadata.lastTaskMessage,

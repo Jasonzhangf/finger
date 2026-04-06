@@ -1156,10 +1156,9 @@ fn parse_responses_payload(payload: &Value) -> Result<ParsedResponse, ModelError
         )));
     }
 
-    let mut output_text = payload
-        .get("output_text")
-        .and_then(Value::as_str)
-        .map(|value| value.to_string());
+
+    // 不使用 API 的 output_text 字段（包含工具调用语法），只从结构化 output 中提取纯文本
+    let mut output_text: Option<String> = None;
     let mut function_calls = Vec::new();
     let mut history_items = Vec::new();
     let mut reasoning = Vec::new();
@@ -1204,8 +1203,12 @@ fn parse_responses_payload(payload: &Value) -> Result<ParsedResponse, ModelError
                     }
                 }
                 "message" => {
-                    if output_text.is_none() {
-                        output_text = parse_output_text_from_message(item);
+                    // 累积所有 message item 中的 output_text（工具调用前后可能有多个 message）
+                    if let Some(text) = parse_output_text_from_message(item) {
+                        match output_text {
+                            Some(ref existing) => output_text = Some(format!("{}\n{}", existing, text)),
+                            None => output_text = Some(text),
+                        }
                     }
                 }
                 "reasoning" => {
@@ -1327,26 +1330,36 @@ fn parse_function_call_item(item: &Value) -> Option<FunctionCallItem> {
     })
 }
 
+
 fn parse_output_text_from_message(item: &Value) -> Option<String> {
     let content_items = item.get("content").and_then(Value::as_array)?;
-    for content_item in content_items {
-        let content_type = content_item
-            .get("type")
-            .and_then(Value::as_str)
-            .unwrap_or_default();
-        if content_type != "output_text" && content_type != "text" {
-            continue;
-        }
-        if let Some(text) = content_item.get("text").and_then(Value::as_str) {
-            let trimmed = text.trim();
-            if !trimmed.is_empty() {
-                return Some(trimmed.to_string());
+    // 收集所有 output_text 类型的内容（一个 message 可能包含多个 content block）
+    let text_parts: Vec<String> = content_items
+        .iter()
+        .filter_map(|content_item| {
+            let content_type = content_item
+                .get("type")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            // 只提取 output_text 和 text 类型（排除 function_call 等其他类型）
+            if content_type != "output_text" && content_type != "text" {
+                return None;
             }
-        }
+            content_item
+                .get("text")
+                .and_then(Value::as_str)
+                .map(|text| text.trim())
+                .filter(|trimmed| !trimmed.is_empty())
+                .map(|s| s.to_string())
+        })
+        .collect();
+    
+    if text_parts.is_empty() {
+        None
+    } else {
+        Some(text_parts.join("\n"))
     }
-    None
 }
-
 fn parse_function_arguments(arguments: &str) -> Value {
     let trimmed = arguments.trim();
     if trimmed.is_empty() {
@@ -3078,5 +3091,137 @@ mod tests {
             EventMsg::ToolError(tool_error) => Some(tool_error.seq),
             _ => None,
         }
+    }
+
+    // ==================== output_text 过滤测试 ====================
+    
+    #[test]
+    fn parse_output_text_excludes_function_call_content() {
+        // 测试：output_text 字段包含 tool 语法时，不应被使用
+        let payload = json!({
+            "id": "resp_test",
+            "output_text": "好的，我来执行。\n[tool_use id=call_xxx name=exec_command]\n{\"cmd\":\"ls\"}",
+            "output": [
+                {
+                    "type": "message",
+                    "content": [
+                        { "type": "output_text", "text": "好的，我来执行。" }
+                    ]
+                },
+                {
+                    "type": "function_call",
+                    "call_id": "call_xxx",
+                    "name": "exec_command",
+                    "arguments": "{\"cmd\":\"ls\"}"
+                }
+            ]
+        });
+        
+        let parsed = parse_responses_payload(&payload).expect("parse payload");
+        // output_text 应只包含纯文本，不包含 tool 语法
+        assert_eq!(parsed.output_text, Some("好的，我来执行。".to_string()));
+        // function_calls 应正确解析
+        assert_eq!(parsed.function_calls.len(), 1);
+        assert_eq!(parsed.function_calls[0].name, "exec_command");
+    }
+    
+    #[test]
+    fn parse_output_text_accumulates_multiple_messages() {
+        // 测试：工具调用前后可能有多个 message，应累积所有 output_text
+        let payload = json!({
+            "id": "resp_multi",
+            "output": [
+                {
+                    "type": "message",
+                    "content": [
+                        { "type": "output_text", "text": "开始执行。" }
+                    ]
+                },
+                {
+                    "type": "function_call",
+                    "call_id": "call_1",
+                    "name": "exec_command",
+                    "arguments": "{\"cmd\":\"pwd\"}"
+                },
+                {
+                    "type": "function_call_output",
+                    "call_id": "call_1",
+                    "output": "/home/user"
+                },
+                {
+                    "type": "message",
+                    "content": [
+                        { "type": "output_text", "text": "执行完成。" }
+                    ]
+                }
+            ]
+        });
+        
+        let parsed = parse_responses_payload(&payload).expect("parse payload");
+        // 应累积两个 message 的 output_text
+        assert_eq!(parsed.output_text, Some("开始执行。\n执行完成。".to_string()));
+    }
+    
+    #[test]
+    fn parse_output_text_filters_other_content_types() {
+        // 测试：message 中的其他 content type（如 refusal）不应混入 output_text
+        let payload = json!({
+            "id": "resp_filter",
+            "output": [
+                {
+                    "type": "message",
+                    "content": [
+                        { "type": "output_text", "text": "这是正文。" },
+                        { "type": "refusal", "refusal": "拒绝执行敏感操作" },
+                        { "type": "output_text", "text": "继续处理。" }
+                    ]
+                }
+            ]
+        });
+        
+        let parsed = parse_responses_payload(&payload).expect("parse payload");
+        // 只提取 output_text 和 text 类型
+        assert_eq!(parsed.output_text, Some("这是正文。\n继续处理。".to_string()));
+    }
+    
+    #[test]
+    fn parse_output_text_empty_when_no_message_items() {
+        // 测试：只有 function_call 没有 message 时，output_text 应为 None
+        let payload = json!({
+            "id": "resp_only_tools",
+            "output": [
+                {
+                    "type": "function_call",
+                    "call_id": "call_1",
+                    "name": "exec_command",
+                    "arguments": "{\"cmd\":\"ls\"}"
+                }
+            ]
+        });
+        
+        let parsed = parse_responses_payload(&payload).expect("parse payload");
+        assert_eq!(parsed.output_text, None);
+        assert_eq!(parsed.function_calls.len(), 1);
+    }
+    
+    #[test]
+    fn parse_output_text_trims_empty_parts() {
+        // 测试：空文本或纯空白不应被保留
+        let payload = json!({
+            "id": "resp_trim",
+            "output": [
+                {
+                    "type": "message",
+                    "content": [
+                        { "type": "output_text", "text": "" },
+                        { "type": "output_text", "text": "   " },
+                        { "type": "output_text", "text": "有效文本" }
+                    ]
+                }
+            ]
+        });
+        
+        let parsed = parse_responses_payload(&payload).expect("parse payload");
+        assert_eq!(parsed.output_text, Some("有效文本".to_string()));
     }
 }
