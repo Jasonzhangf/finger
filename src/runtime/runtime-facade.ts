@@ -973,9 +973,18 @@ export class RuntimeFacade {
     agentId: string,
     toolName: string,
     input: unknown,
-    options: { authorizationToken?: string; sessionId?: string } = {},
+    options: { authorizationToken?: string; sessionId?: string; traceId?: string } = {},
   ): Promise<unknown> {
     const startTime = Date.now();
+    const inputObj = input as Record<string, unknown> | undefined;
+    const inputMetadata = inputObj && typeof inputObj === 'object' && 'metadata' in inputObj
+      ? (inputObj.metadata as Record<string, unknown> | undefined)
+      : undefined;
+    const traceId = options.traceId ?? (
+      inputMetadata && typeof inputMetadata === 'object' && 'traceId' in inputMetadata
+        ? String(inputMetadata.traceId)
+        : undefined
+    );
     const requestedToolName = toolName.trim();
     const resolvedToolName = this.resolveToolAliasForAgent(agentId, requestedToolName);
     const toolId = `${agentId}-${resolvedToolName}-${startTime}`;
@@ -1065,6 +1074,13 @@ export class RuntimeFacade {
     }
 
     // 发送 tool_call 事件
+    log.info('[RuntimeFacade] Tool call start', {
+      toolId,
+      toolName: resolvedToolName,
+      agentId,
+      sessionId,
+      traceId,
+    });
     await this.eventBus.emit({
       type: 'tool_call',
       toolId,
@@ -1072,7 +1088,7 @@ export class RuntimeFacade {
       agentId,
       sessionId,
       timestamp: new Date().toISOString(),
-      payload: { input },
+      payload: { input, ...(traceId ? { traceId } : {}) },
     });
 
     try {
@@ -1128,6 +1144,14 @@ export class RuntimeFacade {
       const duration = Date.now() - startTime;
 
       // 发送 tool_result 事件
+      log.info('[RuntimeFacade] Tool call complete', {
+        toolId,
+        toolName: resolvedToolName,
+        agentId,
+        sessionId,
+        duration,
+        traceId,
+      });
       await this.eventBus.emit({
         type: 'tool_result',
         toolId,
@@ -1135,7 +1159,7 @@ export class RuntimeFacade {
         agentId,
         sessionId,
         timestamp: new Date().toISOString(),
-        payload: { input: executionInput, output: result, duration },
+        payload: { input: executionInput, output: result, duration, ...(traceId ? { traceId } : {}) },
       });
 
       if (resolvedToolName === 'view_image') {
@@ -1145,8 +1169,17 @@ export class RuntimeFacade {
       return result;
     } catch (error) {
       const duration = Date.now() - startTime;
+      const errorMessage = error instanceof Error ? error.message : String(error);
 
       // 发送 tool_error 事件
+      log.error('[RuntimeFacade] Tool call failed', error instanceof Error ? error : new Error(errorMessage), {
+        toolId,
+        toolName: resolvedToolName,
+        agentId,
+        sessionId,
+        duration,
+        traceId,
+      });
       await this.eventBus.emit({
         type: 'tool_error',
         toolId,
@@ -1154,7 +1187,7 @@ export class RuntimeFacade {
         agentId,
         sessionId,
         timestamp: new Date().toISOString(),
-        payload: { input, error: String(error), duration },
+        payload: { input, error: errorMessage, duration, ...(traceId ? { traceId } : {}) },
       });
 
       throw error;

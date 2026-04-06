@@ -1661,7 +1661,7 @@ export class AgentRuntimeBlock extends BaseBlock {
     };
   }
 
-  private toDispatchPayload(input: AgentDispatchRequest, dispatchId: string): Record<string, unknown> {
+  private toDispatchPayload(input: AgentDispatchRequest, dispatchId: string, traceId?: string): Record<string, unknown> {
     const assignment = this.normalizeAssignment(input);
     const targetRole = this.buildDefinitions().get(input.targetAgentId)?.role ?? normalizeAgentType(input.targetAgentId);
     
@@ -1676,6 +1676,7 @@ export class AgentRuntimeBlock extends BaseBlock {
       responsesStructuredOutput: !isSystemRole,
       responsesOutputSchemaPreset: isSystemRole ? 'none' : (targetRole === 'reviewer' ? 'reviewer' : 'orchestrator'),
       ...(assignment ? { assignment } : {}),
+      ...(traceId ? { traceId } : {}),
       orchestration: true,
     };
 
@@ -1883,12 +1884,13 @@ export class AgentRuntimeBlock extends BaseBlock {
     targetModuleId: string,
     lane: DispatchLaneMeta,
     assignment?: AgentAssignmentLifecycle,
+    traceId?: string,
   ): Promise<DispatchResult> {
     const blocking = input.blocking === true;
     const payload = this.toDispatchPayload({
       ...input,
       ...(assignment ? { assignment } : {}),
-    }, dispatchId);
+    }, dispatchId, traceId);
     this.increaseActiveDispatch(lane);
 
     log.info('[AgentRuntimeBlock] Execute dispatch start', {
@@ -1897,10 +1899,11 @@ export class AgentRuntimeBlock extends BaseBlock {
       targetAgentId: input.targetAgentId,
       blocking,
       sessionId: input.sessionId,
+      ...(traceId ? { traceId } : {}),
     });
 
     if (!blocking) {
-      log.info('[AgentRuntimeBlock] Sending to module (non-blocking)', { dispatchId, targetModuleId });
+      log.info('[AgentRuntimeBlock] Sending to module (non-blocking)', { dispatchId, targetModuleId, ...(traceId ? { traceId } : {}) });
       void this.deps.hub.sendToModule(targetModuleId, payload)
         .then((result) => {
           const summarized = this.summarizeDispatchResult(result);
@@ -1910,6 +1913,7 @@ export class AgentRuntimeBlock extends BaseBlock {
             targetModuleId,
             status: completion.status,
             ...(completion.error ? { error: completion.error } : {}),
+            ...(traceId ? { traceId } : {}),
           });
           this.emitDispatchEvent({
             dispatchId,
@@ -1927,7 +1931,7 @@ export class AgentRuntimeBlock extends BaseBlock {
         })
         .catch((error: unknown) => {
           const message = error instanceof Error ? error.message : String(error);
-          log.error('[AgentRuntimeBlock] Module error (non-blocking)', undefined, { dispatchId, targetModuleId, error: message });
+          log.error('[AgentRuntimeBlock] Module error (non-blocking)', undefined, { dispatchId, targetModuleId, error: message, ...(traceId ? { traceId } : {}) });
           this.emitDispatchEvent({
             dispatchId,
             laneKey: lane.laneKey,
@@ -1949,7 +1953,7 @@ export class AgentRuntimeBlock extends BaseBlock {
     }
 
     try {
-      log.info('[AgentRuntimeBlock] Sending to module (blocking)', { dispatchId, targetModuleId });
+      log.info('[AgentRuntimeBlock] Sending to module (blocking)', { dispatchId, targetModuleId, ...(traceId ? { traceId } : {}) });
       const result = await this.deps.hub.sendToModule(targetModuleId, payload);
       const summarized = this.summarizeDispatchResult(result);
       const completion = resolveDispatchCompletionStatus(summarized);
@@ -1958,6 +1962,7 @@ export class AgentRuntimeBlock extends BaseBlock {
         targetModuleId,
         status: completion.status,
         ...(completion.error ? { error: completion.error } : {}),
+        ...(traceId ? { traceId } : {}),
       });
       this.emitDispatchEvent({
         dispatchId,
@@ -1982,7 +1987,7 @@ export class AgentRuntimeBlock extends BaseBlock {
       };
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      log.error('[AgentRuntimeBlock] Module error (blocking)', undefined, { dispatchId, targetModuleId, error: message });
+      log.error('[AgentRuntimeBlock] Module error (blocking)', undefined, { dispatchId, targetModuleId, error: message, ...(traceId ? { traceId } : {}) });
       this.emitDispatchEvent({
         dispatchId,
         laneKey: lane.laneKey,
@@ -2034,16 +2039,32 @@ export class AgentRuntimeBlock extends BaseBlock {
         assignment: this.withAssignmentPhase(next.assignment, 'started'),
       });
 
+      const drainTraceId = log.startTrace();
+      log.info('[AgentRuntimeBlock] Draining queued dispatch', {
+        dispatchId: next.dispatchId,
+        targetModuleId: next.targetModuleId,
+        laneKey: lane.laneKey,
+        traceId: drainTraceId,
+      });
       void this.executeDispatch(
         next.input,
         next.dispatchId,
         next.targetModuleId,
         lane,
         this.withAssignmentPhase(next.assignment, 'started'),
+        drainTraceId,
       ).then((result) => {
+        log.endTrace(drainTraceId);
         next.resolve(result);
       }).catch((error: unknown) => {
         const message = error instanceof Error ? error.message : String(error);
+        log.error('[AgentRuntimeBlock] Queued dispatch failed', undefined, {
+          dispatchId: next.dispatchId,
+          targetModuleId: next.targetModuleId,
+          error: message,
+          traceId: drainTraceId,
+        });
+        log.endTrace(drainTraceId);
         next.resolve({
           ok: false,
           dispatchId: next.dispatchId,
@@ -2447,6 +2468,7 @@ export class AgentRuntimeBlock extends BaseBlock {
       targetModuleId,
       lane,
       this.withAssignmentPhase(assignment, 'started'),
+      traceId,
     );
     log.endTrace(traceId);
     return result;

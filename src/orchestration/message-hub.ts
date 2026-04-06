@@ -236,26 +236,36 @@ export class MessageHub {
   }
 
   async sendToModule(moduleId: string, message: Message, callback?: MessageCallback): Promise<unknown> {
+    const msgObj = message as Record<string, unknown> | undefined;
+    const metadata = msgObj && typeof msgObj === 'object' && 'metadata' in msgObj
+      ? (msgObj.metadata as Record<string, unknown> | undefined)
+      : undefined;
+    const traceId = metadata && typeof metadata === 'object' && 'traceId' in metadata
+      ? String(metadata.traceId)
+      : undefined;
+    
     const output = this.outputs.get(moduleId);
     if (output) {
+      this.log.debug('Routing to output', { moduleId, traceId });
       return this.routeToOutput(moduleId, message, callback);
     }
     
     const input = this.inputs.get(moduleId);
     if (input) {
+      this.log.debug('Routing to input handler', { moduleId, traceId });
       try {
         const result = await input.handler(message);
         if (callback) callback(result);
         return result;
       } catch (err) {
         const error = err instanceof Error ? err : new Error(String(err));
-        this.log.error('Input handler error', error, { moduleId });
+        this.log.error('Input handler error', error, { moduleId, traceId });
         throw error;
       }
     }
     
     const error = new Error('Module ' + moduleId + ' not registered as input or output');
-    this.log.error('Send to module failed', error, { moduleId });
+    this.log.error('Send to module failed', error, { moduleId, traceId });
     throw error;
   }
 
