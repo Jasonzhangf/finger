@@ -66,10 +66,36 @@
 
 ## 心跳任务约束
 - 最大间隔 **5 分钟**（可配置）
-- agent 忏碌时跳过本次心跳
+- agent 忙碌时跳过本次心跳
 - 提供 `heartbeat.enable` / `heartbeat.disable` 工具
 - 停止标记：`HEARTBEAT.md` 头部 `heartbeat: off`
 - 状态仍广播到 WebUI/QQBot（用户可见，但不会抢占主会话）
+
+### Scheduler 窗口行为（防止浪费 token）
+
+**启动时检查**：
+- `start()` 先调用 `isHourInWindow(currentHour)`
+- 非窗口期 → 不触发 `tick()` → 等待 DEFAULT_TICK_MS 后再检查
+- 防止非窗口期重复启动浪费 token
+
+**窗口定义**：
+```typescript
+// DailySummaryScheduler
+const NIGHTLY_SUMMARY_WINDOW = { start: 0, end: 6 };   // 0:00-6:00
+const DAILY_SUMMARY_WINDOW = { start: 20, end: 23 };   // 20:00-23:00
+
+// HeartbeatScheduler（全天运行，但非窗口期降低频率）
+const HEARTBEAT_ACTIVE_WINDOW = { start: 8, end: 22 }; // 8:00-22:00 高频
+const HEARTBEAT_LOW_FREQ_WINDOW = { start: 0, end: 8 }; // 0:00-8:00 低频
+```
+
+**实现位置**：
+- `src/server/modules/daily-summary-scheduler.ts`: `start()` 检查窗口
+- `src/serverx/modules/heartbeat-scheduler.impl.ts`: `start()` 检查窗口
+
+**Agent 决策支持**：
+- 若非窗口期频繁触发 → Agent 可调用 `stop_heartbeat(reason="非窗口期", permanent=false, resume_after_minutes=60)`
+- 避免无效心跳消耗 token
 
 ---
 
@@ -83,6 +109,34 @@
 | **PAUSED** | 暂停 | 连续失败或 agent 主动暂停 | ✅ 可 resume |
 | **DEGRADED** | 降级运行 | 单次失败但未达暂停阈值 | ✅ 自动恢复 |
 | **STOPPED** | 停止 | agent 主动停止或致命错误 | ❌ 需手动重启 |
+
+### DEGRADED 自动恢复机制
+
+**触发条件**（系统自动检测）：
+- mailbox pendingCount 从 > 50 降到 <= 20
+- 或 mailbox pending age 从 > 1h 降到 < 30min
+- 或 Agent 调用 `mailbox_clear()` 清理堆积后 mailbox 健康恢复
+
+**恢复方式**：
+- **系统自动检测**：每轮心跳检查 mailbox 健康
+- 若恢复 → 状态转为 RUNNING + 写入 Ledger `heartbeat_auto_resume`
+- 若未恢复 → 保持 DEGRADED + 继续降低频率（10 分钟间隔）
+
+**恢复阈值**（可配置）：
+```typescript
+const HEARTBEAT_RECOVERY_CONFIG = {
+  mailboxRecoveryThreshold: 20,      // pending <= 20 触发恢复
+  mailboxRecoveryAgeMs: 1800000,     // pending age < 30min 触发恢复
+};
+```
+
+**Agent 主动恢复**：
+- Agent 可调用 `mailbox_clear(status="read")` 清理堆积
+- 清理后系统自动检测 mailbox 健康 → 触发恢复
+
+**注意**：
+- PAUSED 状态无法自动恢复，需 Agent 调用 `resume_heartbeat()`
+- STOPPED 状态无法恢复，需人工干预
 
 ### 状态转换图
 
@@ -111,8 +165,19 @@
     │  - 降低心跳频率   │   │  - 暂停写入      │   │  - 永久停止      │
     │  - 10分钟间隔    │   │  - 等待清理      │   │  - 需手动重启    │
     │  - 记录堆积      │   │  - 可 resume    │   │  - 记录停止原因  │
-    │  - 可自动恢复    │   │  - 记录暂停原因 │   └──────────────────┘
+    │  - 可自动恢复    │◄──┤  - 记录暂停原因 │   └──────────────────┘
     └──────────────────┘   └──────────────────┘
+              │                       │
+              │ mailbox 健康恢复      │ Agent 调用 resume
+              │ (pending <= 20)       │
+              │ (age < 30min)         │
+              │ 或 mailbox_clear      │
+              ▼                       ▼
+    ┌──────────────────────────────────────┐
+    │        RUNNING (恢复正常)            │
+    │  - 写入 Ledger heartbeat_auto_resume │
+    │  - 恢复 5 分钟间隔                   │
+    └──────────────────────────────────────┘
 ```
 
 ---
@@ -436,6 +501,23 @@ Agent 在以下场景应主动决策，避免系统进入死循环或浪费 toke
 
 ## 心跳 Prompt 注入设计
 
+### Inject Prompt 时机
+
+**注入时机**：
+- **每轮心跳写入 mailbox 时**：自动注入控制说明
+- **Agent 读取 mailbox 时**：控制说明在消息头部可见
+
+**注入位置**：
+- 消息格式：`[System][Heartbeat] <inject_prompt> + <task_description>`
+- Agent 读取消息时能同时看到：
+  1. 当前心跳状态（RUNNING/DEGRADED/PAUSED）
+  2. 可用控制工具（stop_heartbeat/resume_heartbeat/mailbox_clear）
+  3. 具体任务内容（健康检查步骤）
+
+**注入条件**：
+- 仅当心跳状态为 RUNNING 或 DEGRADED 时注入
+- PAUSED/STOPPED 状态不注入（避免无效触发）
+
 ### Inject Prompt 内容
 
 当心跳触发时，注入以下控制说明：
@@ -675,6 +757,12 @@ read mailbox.read(msg-1) + mailbox.read(msg-2)
 | 日期 | 变更 |
 |------|------|
 | 2026-03-22 | 初版设计，定义优先级与三段式格式 |
+| 2026-04-06 | 补充 Agent 决策触发条件（7 种场景 + 判断逻辑示例） |
+| 2026-04-06 | 补充去重判断标准（精确/近似/序号/内容相似度） |
+| 2026-04-06 | 补充 DEGRADED 自动恢复机制（触发条件 + 恢复阈值） |
+| 2026-04-06 | 补充 Inject Prompt 时机与位置说明 |
+| 2026-04-06 | 补充 Scheduler 窗口行为（防止非窗口期浪费 token） |
+| 2026-04-06 | 修正 typo "agent 忏碌" → "agent 忙碌" |
 | 2026-03-23 | 新增 `mailbox.read_all` / `mailbox.remove_all`，补充 notification idle-only 与批量处理规则 |
 | 2026-03-23 | Mailbox 改为内存态不持久化；`mailbox.ack` 成功后自动清理消息 |
 | 2026-04-06 | **重大修正**：基于 Agent-driven 异步执行模式重新设计 |
