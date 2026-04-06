@@ -97,6 +97,22 @@ const HEARTBEAT_LOW_FREQ_WINDOW = { start: 0, end: 8 }; // 0:00-8:00 低频
 - 若非窗口期频繁触发 → Agent 可调用 `stop_heartbeat(reason="非窗口期", permanent=false, resume_after_minutes=60)`
 - 避免无效心跳消耗 token
 
+### Scheduler vs Agent 职责边界（窗口场景）
+
+**Scheduler 自动降频**：
+- 正常场景：非窗口期 → Scheduler 自动降低频率到 10 分钟间隔
+- Agent 无需干预，系统已自动优化
+
+**Agent 手动干预场景**：
+- 异常场景：Scheduler 在非窗口期仍频繁触发（配置错误或 bug）
+- Agent 检测：收到多次心跳消息且间隔 < 5min（非窗口期异常）
+- Agent 决策：调用 `stop_heartbeat(reason="非窗口期异常频繁", permanent=false, resume_after_minutes=60)`
+- 修复后：用户或系统干预恢复 Scheduler 配置
+
+**职责分工**：
+- Scheduler 负责自动降频（默认行为）
+- Agent 负责异常检测与手动干预（兜底机制）
+
 ---
 
 ## 心跳状态机设计
@@ -127,6 +143,8 @@ const HEARTBEAT_LOW_FREQ_WINDOW = { start: 0, end: 8 }; // 0:00-8:00 低频
 const HEARTBEAT_RECOVERY_CONFIG = {
   mailboxRecoveryThreshold: 20,      // pending <= 20 触发恢复
   mailboxRecoveryAgeMs: 1800000,     // pending age < 30min 触发恢复
+  mailboxCriticalThreshold: 100,     // pending > 100 触发退化到 PAUSED
+  degradedMaxDurationMs: 1800000,    // DEGRADED 持续 > 30min 触发退化
 };
 ```
 
@@ -135,8 +153,33 @@ const HEARTBEAT_RECOVERY_CONFIG = {
 - 清理后系统自动检测 mailbox 健康 → 触发恢复
 
 **注意**：
-- PAUSED 状态无法自动恢复，需 Agent 调用 `resume_heartbeat()`
+- PAUSED 状态无法自动恢复，需 Agent 调用 `resume_heartbeat()`（用户触发）
 - STOPPED 状态无法恢复，需人工干预
+
+### DEGRADED → PAUSED 退化路径（持续恶化）
+
+**触发条件**（系统自动检测）：
+- DEGRADED 状态下，mailbox pending 持续增加到 > 100（`mailboxCriticalThreshold`）
+- 或 mailbox pending age > 2h（`mailboxPendingAgeMs * 2`）
+- 或 DEGRADED 持续时间 > 30min（`degradedMaxDurationMs`）
+
+**退化方式**：
+- 系统自动检测 → 状态转为 PAUSED + 写入 Ledger `heartbeat_degraded_to_paused`
+- Agent 需通过用户消息触发恢复（参见"PAUSED 状态恢复机制"）
+
+**防止死锁**：
+- DEGRADED → PAUSED 后，Inject Prompt 不再注入
+- Agent 无法自动恢复，需用户发送消息 `[User] resume heartbeat`
+- 或启用 `autoResumeAfterMs` 自动恢复（可选）
+
+**退化阈值**（可配置）：
+```typescript
+const HEARTBEAT_DEGRADATION_CONFIG = {
+  mailboxCriticalThreshold: 100,     // pending > 100 触发退化
+  mailboxCriticalAgeMs: 7200000,     // pending age > 2h 触发退化
+  degradedMaxDurationMs: 1800000,    // DEGRADED 持续 > 30min 触发退化
+};
+```
 
 ### 状态转换图
 
@@ -199,6 +242,13 @@ const HEARTBEAT_CONFIG = {
   intervalMs: 300000,              // 5 分钟写入 mailbox
   mailboxPendingThreshold: 50,     // pending 消息堆积阈值
   mailboxPendingAgeMs: 3600000,    // pending 消息超时阈值（1 小时）
+  mailboxProcessingAgeMs: 1800000, // processing 消息卡死阈值（30 分钟）
+  
+  // PAUSED 自动恢复配置（可选）
+  autoResumeAfterMs: 0,            // 0=不自动恢复；600000=10分钟后自动恢复
+  
+  // DEGRADED 配置
+  degradedIntervalMs: 600000,      // DEGRADED 状态下 10 分钟间隔
   mailboxProcessingAgeMs: 1800000, // processing 消息卡死阈值（30 分钟）
   degradedIntervalMs: 600000,      // 降级后 10 分钟间隔
   autoResumeAfterMs: 600000,       // 暂停后 10 分钟自动恢复（可选）
@@ -450,15 +500,80 @@ interface MailboxAckAllResult {
 - 系统可能拒绝请求（如：STOPPED 状态无法 resume）
 - Agent 只能操作自己的 mailbox，不能干预其他 agent
 
+### PAUSED 状态恢复机制（防止死锁）
+
+PAUSED 状态下，Agent 无法通过 Inject Prompt 收到心跳消息，需通过以下方式恢复：
+
+#### 1. 用户输入触发恢复（推荐）
+
+**触发方式**：
+- 用户发送消息 `[User] resume heartbeat` 或 `[User] 恢复心跳`
+- Agent 收到用户消息 → 调用 `get_heartbeat_status()` 查询状态
+- 发现 PAUSED → 调用 `resume_heartbeat()`
+- 系统状态转为 RUNNING + 写入 Ledger
+
+**适用场景**：
+- Agent 主动暂停后，用户确认可恢复
+- 系统检测异常暂停，用户干预恢复
+
+#### 2. 自动恢复（可选配置）
+
+**配置**：
+```typescript
+const HEARTBEAT_CONFIG = {
+  autoResumeAfterMs: 600000,  // PAUSED 后 10 分钟自动恢复（可选）
+};
+```
+
+**触发机制**：
+- `autoResumeAfterMs: 0` → 不自动恢复（需用户或 Agent 手动）
+- `autoResumeAfterMs > 0` → HeartbeatScheduler 启动定时器，自动恢复
+
+**适用场景**：
+- 临时故障（网络抖动、短暂堆积）
+- Agent 无法响应时的兜底机制
+
+**不适用场景**：
+- 致命错误（Agent 崩溃、系统异常）→ 使用 STOPPED 状态
+- Agent 主动永久停止 → `permanent=true`
+
+#### 3. 系统干预恢复
+
+**触发方式**：
+- 外部监控脚本检测 PAUSED 状态
+- 调用 `HeartbeatScheduler.resumeHeartbeat()`
+- 或通过 API `/heartbeat/resume`
+
+**适用场景**：
+- 自动化运维场景
+- 批量管理多个 agent
+
+### Agent 状态感知方式（解决 Inject Prompt 矛盾）
+
+Agent 在不同状态下通过不同方式感知状态：
+
+| 状态 | 感知方式 | 说明 |
+|------|----------|------|
+| **RUNNING** | Inject Prompt | 每轮心跳消息包含状态 + 控制工具说明 |
+| **DEGRADED** | Inject Prompt | 同 RUNNING，状态标记为 DEGRADED |
+| **PAUSED** | 用户消息触发 | 用户发送消息 → Agent 唤醒 → 调用 `get_heartbeat_status()` |
+| **STOPPED** | 用户消息触发 | 同 PAUSED，但无法恢复（需人工干预） |
+| **所有状态** | Ledger 查询 | Agent 调用 `get_heartbeat_status()` 主动查询 |
+
+**关键设计**：
+- Inject Prompt 仅注入 RUNNING/DEGRADED（避免无效触发）
+- PAUSED/STOPPED 依赖用户消息或主动查询
+- Ledger 记录所有状态转换事件，供 Agent 查询
+
 ---
 
 ## Agent 决策触发条件（关键）
 
 Agent 在以下场景应主动决策，避免系统进入死循环或浪费 token：
 
-| 检测信号 | 推荐操作 | 判断依据 | 优先级 |
+| 检测信号 | 推荐操作（分步执行） | 判断依据 | 优先级 |
 |----------|----------|----------|--------|
-| **mailbox pending > 50** | `stop_heartbeat(reason="mailbox堆积", permanent=false, resume_after_minutes=30)` | `mailbox_get_status()` 显示 pending > 50 | P0 |
+| **mailbox pending > 50** | 1. `mailbox_clear(status="read")` 清理已读<br>2. 检查清理后 pending<br>3. 若 <= 20 → 继续<br>4. 若仍 > 50 → `stop_heartbeat(...)` | `mailbox_get_status()` 显示 pending > 50 | P0 |
 | **同一消息 processing > 10min** | `mailbox_mark_skip(ids=[...], reason="消息卡死")` | 单条消息处理时间过长 | P0 |
 | **连续 3 次相同错误** | `stop_heartbeat(reason="循环错误", permanent=false)` | Ledger 显示相同 error 重复 3 次 | P0 |
 | **重复心跳消息（间隔 < 5min）** | `mailbox_mark_skip(ids=[...], reason="重复心跳")` | mailbox.list() 发现相��� title + 时间差 < 5min | P0 |
@@ -468,13 +583,16 @@ Agent 在以下场景应主动决策，避免系统进入死循环或浪费 toke
 
 ### Agent 判断逻辑示例
 
-**场景：mailbox 堆积检测**
+**场景：mailbox 堆积检测（分步处理）**
 ```
 1. Agent 收到心跳消息
 2. 调用 mailbox_get_status()
 3. 发现 pending = 62 (> 50)
-4. 调用 stop_heartbeat(reason="mailbox堆积62条", permanent=false, resume_after_minutes=30)
-5. 系统状态转为 PAUSED + 写入 Ledger
+4. 先调用 mailbox_clear(status="read") 清理已读消息
+5. 再次检查 mailbox_get_status()
+6. 若 pending <= 20 → 清理成功，继续运行
+7. 若仍 > 50 → 调用 stop_heartbeat(reason="mailbox堆积仍62条", permanent=false, resume_after_minutes=30)
+8. 系统状态转为 PAUSED + 写入 Ledger
 ```
 
 **场景：重复消息去重**
@@ -673,6 +791,37 @@ interface HeartbeatLedgerEntry {
 
 ---
 
+## Mailbox 消息结构（去重依赖字段）
+
+每条 mailbox 消息包含以下字段：
+
+```typescript
+interface MailboxMessage {
+  id: string;                    // 消息唯一标识
+  title: string;                 // 消息标题（用于去重）
+  category: string;              // Heartbeat / DispatchResult / AgentReport
+  timestamp: Date;               // 创建时间（精确去重 + 近似去重）
+  status: 'unread' | 'read' | 'processing' | 'skipped' | 'failed';
+  payload?: {
+    seq?: number;                // 心跳序号（序号去重）
+    content?: object;            // 消息内容（内容相似度去重）
+  };
+}
+```
+
+**去重依赖字段**：
+- `title`: 消息标题（精确/近似去重）
+- `timestamp`: 创建时间（精确去重：< 1s；近似去重：< 5min）
+- `payload.seq`: 心跳序号（序号去重）
+- `payload.content`: 消息内容（内容相似度去重）
+
+**实现确认**：
+- Mailbox 改为内存态后，`timestamp` 字段已实现（创建时自动设置）
+- `mailbox.list()` 返回完整消息结构（含 timestamp）
+- `mailbox.read()` 返回单条消息详情（含 payload）
+
+---
+
 ## 去重判断标准（Agent 参考）
 
 Agent 检测重复消息时，使用以下判断标准：
@@ -726,21 +875,25 @@ scan mailbox.list()
 - msg-2: `[System][Heartbeat] seq=123` @ 2026-03-22T10:02:00Z
 - 判断：序号重复 → `mailbox_mark_skip(ids=["msg-2"], reason="心跳序号123重复")`
 
-### 4. 内容相似度去重（可选）
+### 4. 内容完全相同去重（简化版）
 
-**定义**：payload 内容相似度 > 90%
+**定义**：payload 内容完全相同（不计算相似度）
 
 **检测逻辑**：
 ```
 read mailbox.read(msg-1) + mailbox.read(msg-2)
-→ 比较 payload 内容
-→ 若相似度 > 90% → 标记为内容重复
+→ 比较 payload.content 是否完全相同
+→ 若相同 → 标记为内容重复
 ```
 
 **示例**：
 - msg-1 payload: `{"task": "health_check", "seq": 123, "status": "running"}`
 - msg-2 payload: `{"task": "health_check", "seq": 123, "status": "running"}`
-- 判断：内容相似度 100% → `mailbox_mark_skip(ids=["msg-2"], reason="内容完全相同")`
+- 判断：内容完全相同 → `mailbox_mark_skip(ids=["msg-2"], reason="payload完全相同")`
+
+**适用场景**：
+- payload 完全相同的重复写入（系统 bug）
+- 不适用于 payload 有微小差异的场景
 
 ### 去重优先级
 
@@ -758,11 +911,19 @@ read mailbox.read(msg-1) + mailbox.read(msg-2)
 |------|------|
 | 2026-03-22 | 初版设计，定义优先级与三段式格式 |
 | 2026-04-06 | 补充 Agent 决策触发条件（7 种场景 + 判断逻辑示例） |
-| 2026-04-06 | 补充去重判断标准（精确/近似/序号/内容相似度） |
+| 2026-04-06 | 补充去重判断标准（精确/近似/序号/内容完全相同） |
 | 2026-04-06 | 补充 DEGRADED 自动恢复机制（触发条件 + 恢复阈值） |
 | 2026-04-06 | 补充 Inject Prompt 时机与位置说明 |
 | 2026-04-06 | 补充 Scheduler 窗口行为（防止非窗口期浪费 token） |
 | 2026-04-06 | 修正 typo "agent 忏碌" → "agent 忙碌" |
+| 2026-04-06 | P0: 修复 PAUSED 死锁问题（用户触发恢复 + 自动恢复配置） |
+| 2026-04-06 | P0: 修复 Agent 决策执行时机（先清理 → 再停止） |
+| 2026-04-06 | P0: 补充 Agent 状态感知方式（Inject Prompt vs 用户消息） |
+| 2026-04-06 | P1: 补充 DEGRADED → PAUSED 退化路径（持续恶化阈值） |
+| 2026-04-06 | P1: 补充 Mailbox 消息结构（timestamp 字段确认） |
+| 2026-04-06 | P1: 补充 autoResumeAfterMs 配置说明（自动恢复触发机制） |
+| 2026-04-06 | P2: 补充 Scheduler vs Agent 职责边界（窗口场景） |
+| 2026-04-06 | P2: 简化内容相似度去重（改为完全相同比较） |
 | 2026-03-23 | 新增 `mailbox.read_all` / `mailbox.remove_all`，补充 notification idle-only 与批量处理规则 |
 | 2026-03-23 | Mailbox 改为内存态不持久化；`mailbox.ack` 成功后自动清理消息 |
 | 2026-04-06 | **重大修正**：基于 Agent-driven 异步执行模式重新设计 |
