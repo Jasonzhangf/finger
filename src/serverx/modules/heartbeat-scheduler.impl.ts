@@ -257,6 +257,9 @@ interface HeartbeatRuntimeState {
   nightlyDreamDispatchState?: Record<string, NightlyDreamDispatchState>;
   lastDailySystemReviewDate?: string;
   dailySystemReviewDispatchState?: DailySystemReviewDispatchState;
+  heartbeatState?: HeartbeatState;
+  heartbeatStateContext?: HeartbeatStateContext;
+  heartbeatStateChangedAt?: number;
 }
 
 interface NightlyDreamDispatchState {
@@ -570,8 +573,20 @@ constructor(private deps: AgentRuntimeDeps) {}
       catch (error) { log.error('[HeartbeatScheduler] dispatchNightlyDreamTasks error', error instanceof Error ? error : undefined); }
       try { await this.awaitTickStepWithTimeout('dispatchDailySystemReviewTask', this.dispatchDailySystemReviewTask()); }
       catch (error) { log.error('[HeartbeatScheduler] dispatchDailySystemReviewTask error', error instanceof Error ? error : undefined); }
-      try { await this.awaitTickStepWithTimeout('promptMailboxChecks', this.promptMailboxChecks()); }
-      catch (error) { log.error('[HeartbeatScheduler] promptMailboxChecks error', error instanceof Error ? error : undefined); }
+      
+      // 评估心跳状态
+      const newState = this.evaluateHeartbeatState();
+      if (newState !== this.heartbeatState) {
+        this.transitionHeartbeatState(newState, 'mailbox_health_evaluation');
+      }
+      
+      // 根据状态决定是否继续 mailbox prompt
+      if (this.heartbeatState === 'PAUSED' || this.heartbeatState === 'STOPPED') {
+        log.info('[HeartbeatScheduler] Skip mailbox prompt: paused/stopped state', { state: this.heartbeatState });
+      } else {
+        try { await this.awaitTickStepWithTimeout('promptMailboxChecks', this.promptMailboxChecks()); }
+        catch (error) { log.error('[HeartbeatScheduler] promptMailboxChecks error', error instanceof Error ? error : undefined); }
+      }
       try { await this.awaitTickStepWithTimeout('persistRuntimeState(final)', this.persistRuntimeState()); }
       catch (error) { log.error('[HeartbeatScheduler] persistRuntimeState error', error instanceof Error ? error : undefined); }
     } catch (error) {
@@ -581,6 +596,85 @@ constructor(private deps: AgentRuntimeDeps) {}
       this.armTick(DEFAULT_TICK_MS);
     }
   }
+  private evaluateHeartbeatState(): HeartbeatState {
+    // 使用 heartbeatMailbox.getSystemHealth() 获取系统 mailbox 健康数据
+    const health = heartbeatMailbox.getSystemHealth();
+    if (!health) {
+      return this.heartbeatState;
+    }
+    
+    const now = Date.now();
+    const cfg = HEARTBEAT_STATE_CONFIG;
+    
+    // 检查 DEGRADED → PAUSED（持续恶化）
+    if (this.heartbeatState === 'DEGRADED') {
+      if (health.pending > cfg.degradedToPausedThreshold) {
+        return 'PAUSED';
+      }
+      const degradedDuration = now - (this.heartbeatStateContext.degradedAt || now);
+      if (degradedDuration > cfg.degradedDurationThresholdMs) {
+        return 'PAUSED';
+      }
+    }
+    
+    // 检查 RUNNING → DEGRADED
+    if (this.heartbeatState === 'RUNNING') {
+      if (health.pending > cfg.mailboxPendingThreshold) {
+        return 'DEGRADED';
+      }
+      if (health.oldestPendingAgeMs && health.oldestPendingAgeMs > cfg.mailboxPendingAgeMs) {
+        return 'DEGRADED';
+      }
+    }
+    
+    // 检查 DEGRADED → RUNNING（自动恢复）
+    if (this.heartbeatState === 'DEGRADED') {
+      if (health.pending <= cfg.mailboxPendingRecoveryThreshold) {
+        const ageOk = !health.oldestPendingAgeMs || health.oldestPendingAgeMs < cfg.mailboxProcessingAgeMs;
+        if (ageOk) {
+          return 'RUNNING';
+        }
+      }
+    }
+    
+    return this.heartbeatState;
+  }
+
+  private transitionHeartbeatState(newState: HeartbeatState, reason: string): void {
+    const now = Date.now();
+    const prevState = this.heartbeatState;
+    
+    if (newState === prevState) {
+      return;
+    }
+    
+    this.heartbeatState = newState;
+    this.heartbeatStateChangedAt = now;
+    
+    // 更新 context
+    this.heartbeatStateContext.state = newState;
+    
+    if (newState === 'DEGRADED') {
+      this.heartbeatStateContext.degradedAt = now;
+      this.heartbeatStateContext.degradedReason = reason;
+      log.warn('[HeartbeatScheduler] State transition: RUNNING -> DEGRADED', { reason });
+      // TODO: Write to Ledger (heartbeat_degraded)
+    } else if (newState === 'PAUSED') {
+      this.heartbeatStateContext.pausedAt = now;
+      this.heartbeatStateContext.pausedReason = reason;
+      log.error('[HeartbeatScheduler] State transition: DEGRADED/RUNNING -> PAUSED', undefined, { reason, prevState });
+      // TODO: Write to Ledger (heartbeat_degraded_to_paused or heartbeat_stopped)
+    } else if (newState === 'RUNNING') {
+      this.heartbeatStateContext.degradedAt = undefined;
+      this.heartbeatStateContext.degradedReason = undefined;
+      this.heartbeatStateContext.pausedAt = undefined;
+      this.heartbeatStateContext.pausedReason = undefined;
+      log.info('[HeartbeatScheduler] State transition: DEGRADED/PAUSED -> RUNNING', { reason, prevState });
+      // TODO: Write to Ledger (heartbeat_resumed or heartbeat_auto_resume)
+    }
+  }
+
+
 
   private async awaitTickStepWithTimeout<T>(
     step: string,
@@ -2134,6 +2228,15 @@ constructor(private deps: AgentRuntimeDeps) {}
       if (parsed.dailySystemReviewDispatchState && typeof parsed.dailySystemReviewDispatchState === 'object') {
         this.dailySystemReviewDispatchState = parsed.dailySystemReviewDispatchState;
       }
+      if (parsed.heartbeatState === 'RUNNING' || parsed.heartbeatState === 'DEGRADED' || parsed.heartbeatState === 'PAUSED' || parsed.heartbeatState === 'STOPPED') {
+        this.heartbeatState = parsed.heartbeatState;
+      }
+      if (parsed.heartbeatStateContext && typeof parsed.heartbeatStateContext === 'object') {
+        this.heartbeatStateContext = parsed.heartbeatStateContext;
+      }
+      if (typeof parsed.heartbeatStateChangedAt === 'number' && Number.isFinite(parsed.heartbeatStateChangedAt)) {
+        this.heartbeatStateChangedAt = parsed.heartbeatStateChangedAt;
+      }
       log.info('[HeartbeatScheduler] Runtime state loaded', {
         runKeys: this.lastRun.size,
         mailboxPromptKeys: this.lastMailboxPromptAt.size,
@@ -2154,6 +2257,9 @@ constructor(private deps: AgentRuntimeDeps) {}
       nightlyDreamDispatchState: Object.fromEntries(this.nightlyDreamDispatchState.entries()),
       ...(this.lastDailySystemReviewDate ? { lastDailySystemReviewDate: this.lastDailySystemReviewDate } : {}),
       ...(this.dailySystemReviewDispatchState ? { dailySystemReviewDispatchState: this.dailySystemReviewDispatchState } : {}),
+      heartbeatState: this.heartbeatState,
+      heartbeatStateContext: this.heartbeatStateContext,
+      heartbeatStateChangedAt: this.heartbeatStateChangedAt,
     };
     await writeFileAtomic(RUNTIME_STATE_PATH, JSON.stringify(state, null, 2));
   }
