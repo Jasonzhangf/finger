@@ -358,7 +358,11 @@ export class HeartbeatScheduler {
   private idleGuardLastLoggedAt = 0;
   private idleGuardLastReason = '';
 
-  constructor(private deps: AgentRuntimeDeps) {}
+    private heartbeatState: HeartbeatState = 'RUNNING';
+  private heartbeatStateContext: HeartbeatStateContext = { state: 'RUNNING' };
+  private heartbeatStateChangedAt = 0;
+
+constructor(private deps: AgentRuntimeDeps) {}
 
   async start(): Promise<void> {
     await this.loadConfig();
