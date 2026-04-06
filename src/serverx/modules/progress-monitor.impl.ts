@@ -156,6 +156,7 @@ export class ProgressMonitor {
     lifecycleStage?: string;
     lifecycleDetail?: string;
     lifecycleAgeMs?: number;
+    lifecycleFinalState?: boolean;
   } {
     const lifecycle = this.resolveExecutionLifecycle(p.sessionId);
     const stage = lifecycle?.stage;
@@ -175,6 +176,17 @@ export class ProgressMonitor {
       ...(detail ? { lifecycleDetail: detail } : {}),
       ...(typeof lifecycleAgeMs === 'number' ? { lifecycleAgeMs } : {}),
     };
+
+    // 终态处理：completed/failed/interrupted 不应该报告"疑似卡住"
+    if (stage === 'completed' || stage === 'failed' || stage === 'interrupted') {
+      return {
+        ...baseLifecycle,
+        waitLayer: 'internal',
+        waitKind: 'unknown',
+        waitDetail: detail || stage,
+        lifecycleFinalState: true,
+      };
+    }
 
     if (stage === 'waiting_model') {
       return {
@@ -961,6 +973,12 @@ export class ProgressMonitor {
         : this.config.intervalMs * ProgressMonitor.STALL_HEARTBEAT_FACTOR_NO_PENDING;
       const stalled = now - p.lastUpdateTime >= heartbeatIntervalMs;
       const waitLayerInfo = this.resolveWaitLayer(p, pendingTool, stalled, now);
+      
+      // 终态跳过：lifecycleFinalState=true 时不再报告心跳
+      if (waitLayerInfo.lifecycleFinalState) {
+        continue;
+      }
+      
       if (p.lastReportKey === reportKey) {
         // Even when summary key is stable, if tools keep flowing we still emit
         // one periodic update per interval to avoid long "silent running" windows.
