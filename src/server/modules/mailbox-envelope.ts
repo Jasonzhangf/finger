@@ -277,3 +277,96 @@ export function buildUserNotificationEnvelope(
     },
   });
 }
+
+/**
+ * 构建 Inject Prompt（心跳控制说明）
+ * 仅在 RUNNING 或 DEGRADED 状态注入，PAUSED/STOPPED 不注入
+ */
+export function buildHeartbeatInjectPrompt(
+  heartbeatState: 'RUNNING' | 'DEGRADED' | 'PAUSED' | 'STOPPED',
+  mailboxHealth?: {
+    pending: number;
+    processing: number;
+    oldestPendingAgeMs?: number;
+  },
+): string {
+  // PAUSED/STOPPED 状态不注入控制说明
+  if (heartbeatState === 'PAUSED' || heartbeatState === 'STOPPED') {
+    return '';
+  }
+
+  const stateEmoji = heartbeatState === 'RUNNING' ? '✅' : '⚠️';
+  const stateLabel = heartbeatState === 'RUNNING' ? '正常运行' : '降级运行';
+
+  let inject = `
+---
+## 心跳控制说明
+
+当前状态: ${stateEmoji} ${heartbeatState} (${stateLabel})
+`;
+
+  // 如果有 mailbox 健康 data，添加状态说明
+  if (mailboxHealth) {
+    inject += `Mailbox 健康: ${mailboxHealth.pending} pending / ${mailboxHealth.processing} processing
+`;
+    if (mailboxHealth.oldestPendingAgeMs && mailboxHealth.oldestPendingAgeMs > 300000) {
+      inject += `⚠️ 最老 pending 消息已等待 ${Math.round(mailboxHealth.oldestPendingAgeMs / 60000)} 分钟
+`;
+    }
+  }
+
+  inject += `
+### 你有以下控制能力（通过 Kernel Tools）
+
+| 工具 | 用途 | 推荐触发条件 |
+|------|------|--------------|
+| heartbeat.stop | 停止心跳（PAUSED/STOPPED） | mailbox pending > 50 或持续错误 |
+| heartbeat.resume | 恢复心跳（PAUSED → RUNNING） | 任务阻塞已清理，可恢复 |
+| mailbox.health | 检查 mailbox 健康 | 每轮心跳开始时检查 |
+| mailbox.clear | 清理 mailbox 消息 | 堆积消息需要清理 |
+| mailbox.mark_skip | 标记重复消息为跳过 | 发现重复消息需要去重 |
+
+### Agent 决策建议
+
+- **发现堆积**: 先调用 mailbox.clear 清理 → 若清理成功继续，若失败调用 heartbeat.stop
+- **发现重复**: 调用 mailbox.mark_skip(ids=[...], reason="重复通知无需处理")
+- **任务阻塞**: 调用 heartbeat.stop(resume_after_minutes=60) → 60 分钟后自动恢复
+- **恢复正常**: 调用 heartbeat.resume("任务阻塞已清理")
+
+---
+`;
+
+  return inject;
+}
+
+/**
+ * 构建心跳 Envelope（带 Inject Prompt）
+ */
+export function buildHeartbeatEnvelopeWithInject(
+  heartbeatContent: string,
+  heartbeatState: 'RUNNING' | 'DEGRADED' | 'PAUSED' | 'STOPPED',
+  mailboxHealth?: {
+    pending: number;
+    processing: number;
+    oldestPendingAgeMs?: number;
+  },
+  projectId?: string,
+): MailboxEnvelope {
+  const injectPrompt = buildHeartbeatInjectPrompt(heartbeatState, mailboxHealth);
+  const fullText = injectPrompt + heartbeatContent;
+
+  return buildMailboxEnvelope({
+    category: 'System',
+    title: 'Heartbeat Task',
+    shortDescription: '定时系统巡检任务，需要检查并处理。',
+    fullText,
+    source: 'heartbeat',
+    priority: 'low',
+    expectedReply: {
+      format: 'text',
+      description: '完成任务后简短汇报结果，或说明跳过原因',
+      optional: true,
+    },
+    relatedTaskId: projectId,
+  });
+}

@@ -10,7 +10,7 @@ import { listAgents } from '../../agents/finger-system-agent/registry.js';
 import type { AgentRuntimeDeps } from '../../server/modules/agent-runtime/types.js';
 import { SessionControlPlaneStore } from '../../runtime/session-control-plane.js';
 import { SYSTEM_PROJECT_PATH } from '../../agents/finger-system-agent/index.js';
-import { buildHeartbeatEnvelope, type MailboxEnvelope } from '../../server/modules/mailbox-envelope.js';
+import { buildHeartbeatEnvelopeWithInject, type MailboxEnvelope } from '../../server/modules/mailbox-envelope.js';
 import { listReviewRoutes } from '../../agents/finger-system-agent/review-route-registry.js';
 import { removeReviewRoute } from '../../agents/finger-system-agent/review-route-registry.js';
 import {
@@ -2085,7 +2085,20 @@ constructor(private deps: AgentRuntimeDeps) {}
       return;
     }
 
-    const envelope = buildHeartbeatEnvelope(prompt, projectId);
+    // 计算 mailbox 健康（用于 inject prompt）
+    const now = Date.now();
+    const systemMessages = heartbeatMailbox.list("finger-system-agent");
+    const pending = systemMessages.filter(m => m.status === "pending");
+    const processing = systemMessages.filter(m => m.status === "processing");
+    const oldestPending = pending.length > 0 ? pending.reduce((a, b) => 
+      (new Date(a.createdAt).getTime() < new Date(b.createdAt).getTime()) ? a : b) : null;
+    const mailboxHealth = {
+      pending: pending.length,
+      processing: processing.length,
+      oldestPendingAgeMs: oldestPending ? now - new Date(oldestPending.createdAt).getTime() : undefined,
+    };
+    
+    const envelope = buildHeartbeatEnvelopeWithInject(prompt, this.heartbeatState, mailboxHealth, projectId);
     heartbeatMailbox.append(targetAgentId, {
       type: 'heartbeat-task', taskId, projectId, prompt, envelope, envelopeId: envelope.id, requiresFeedback: true,
     }, {
