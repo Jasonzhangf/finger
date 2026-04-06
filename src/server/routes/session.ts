@@ -1,3 +1,4 @@
+import { logger } from '../../core/logger.js';
 import type { Express } from 'express';
 import { existsSync, readFileSync } from 'fs';
 import type { SessionManager } from '../../orchestration/session-manager.js';
@@ -225,7 +226,8 @@ export function registerSessionRoutes(app: Express, deps: SessionRouteDeps): voi
         res.json({ success: true, messages });
       })
       .catch((err) => {
-        console.error('[SessionRoute] getMessagesAsync failed:', err instanceof Error ? err.message : String(err));
+        const sessionLog = logger.module('SessionRoute');
+        sessionLog.error('getMessagesAsync failed', err instanceof Error ? err : undefined, { sessionId: req.params.sessionId });
         // Fallback to sync getMessages if ledger read fails
         const fallback = sessionManager.getMessages(resolveSystemSessionId(req.params.sessionId), limit);
         res.json({ success: true, messages: fallback });

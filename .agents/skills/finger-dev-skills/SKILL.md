@@ -396,3 +396,88 @@ When a bug affects user-facing output, apply fixes at BOTH:
 2. **Output layer** (channel/delivery) - defensive regex filter as safety net
 
 This ensures even if root cause slips through, the final output is clean.
+
+### Scheduler Window Behavior: Don't Wake on Restart Outside Window
+
+**Problem**: HeartbeatScheduler and DailySummaryScheduler were logging "started" and triggering immediate ticks on every server restart, even when outside the configured execution window (e.g., 0:00-7:00). This caused wasteful idle checks and log noise.
+
+**Symptoms**:
+- `Daily summary scheduler started` logged multiple times per restart
+- Unnecessary tick() calls when no work exists
+- Log spam: 808 duplicate "started" entries in one day
+
+**Wrong approach**:
+```typescript
+// ❌ Always log "started" and run immediate tick
+start(): void {
+  this.logRuntime('Daily summary scheduler started', { ... });
+  void this.tick(); // Runs even outside window!
+}
+```
+
+**Correct approach**:
+```typescript
+// ✅ Check window first, only tick when in window
+start(): void {
+  const hour = new Date().getHours();
+  const inWindow = isHourInWindow(hour, this.windowStartHour, this.windowEndHour);
+  
+  if (inWindow) {
+    this.logRuntime('Scheduler started (in window)', { currentHour: hour });
+    void this.tick();
+  } else {
+    log.debug('Scheduler ready (outside window)', { currentHour: hour });
+    // No immediate tick, wait for window entry
+  }
+}
+```
+
+**Lesson**:
+- Windowed schedulers should check `isHourInWindow()` before startup actions
+- Immediate `tick()` only when actually in the execution window
+- Outside window: silent startup, debug-level log only
+- Prevents wasteful "no work to do" cycles on every restart
+
+**Related files**:
+- `src/server/modules/daily-summary-scheduler.ts`: start()
+- `src/serverx/modules/heartbeat-scheduler.impl.ts`: start()
+
+## 9) Log Instrumentation Standards (2026-04-06)
+
+### Mandatory Logging Points
+
+All critical paths MUST have structured logging with sufficient context for debugging.
+
+**Required Modules** (already instrumented):
+- `AgentRuntimeBlock`: dispatch lifecycle (start/result/error)
+- `MessageHub`: routing decisions
+- `RuntimeFacade`: kernel request/response
+- `HeartbeatScheduler`: tick/skipped/window
+- `DailySummaryScheduler`: start/tick/process
+
+**Required Fields** per log entry:
+- `timestamp`: NTP-corrected time
+- `level`: debug/info/warn/error/fatal
+- `module`: module name from `logger.module('Name')`
+- `message`: human-readable event description
+- `data`: structured context (dispatchId, sessionId, etc.)
+- `error`: (optional) Error object with stack trace
+
+### Trace Mode (for debugging complex flows)
+
+When investigating cross-module issues:
+1. Enable `snapshotMode` in `~/.finger/config/logging.json`
+2. Use `log.startTrace()` / `log.endTrace()` to capture full flow
+3. Snapshots written to `~/.finger/logs/snapshots/<traceId>.json`
+
+### Anti-patterns (FORBIDDEN)
+
+- Using `console.log/error/warn` in runtime code (only allowed in CLI init scripts)
+- Missing `data` context in critical path logs
+- High-frequency logs without sampling/aggregation
+- Sensitive data (passwords, tokens) in log entries
+
+**Files to review for console.* cleanup**:
+- `src/cli/init.ts`: acceptable (user-facing CLI)
+- `src/core/logger/index.ts`: acceptable (logger fallback)
+- `src/server/routes/session.ts`: MUST use FingerLogger (already fixed)
