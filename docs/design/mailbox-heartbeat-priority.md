@@ -123,44 +123,47 @@
 
 | 错误级别 | 定义 | 处理方式 | 示例 |
 |----------|------|----------|------|
-| **Minor (轻微)** | 不影响下一轮心跳 | 记录 Ledger + 继续 | 单条消息 ack 失败 |
-| **Major (严重)** | 需要降级处理 | 记录 Ledger + 跳过失败项 + 降级 | dispatch 超时（1-2 次） |
-| **Critical (致命)** | 必须停止心跳 | 记录 Ledger + 暂停 + 告警 | agent crash、连续 3 次超时 |
+| **Minor (轻微)** | mailbox status=failed | 记录 Ledger + 继续 | Agent 处理失败但 ack 了 |
+| **Major (严重)** | pendingCount > 50 或 age > 1h | 记录 Ledger + 降级 + 继续心跳 | mailbox 堆积 |
+| **Critical (致命)** | processing age > 30min | 记录 Ledger + 暂停 + 告警 | 消息卡死 |
 
-### 连续失败阈值
+### 连续失败阈值（改为 Mailbox 健康检测参数）
 
 ```typescript
 const HEARTBEAT_CONFIG = {
-  intervalMs: 300000,           // 5 分钟
-  dispatchTimeoutMs: 120000,    // 2 分钟
-  maxConsecutiveFailures: 3,    // 连续失败 3 次后暂停
-  degradedThreshold: 1,         // 单次失败后进入降级
-  autoResumeAfterMs: 600000,    // 暂停后 10 分钟自动恢复（可选）
+  intervalMs: 300000,              // 5 分钟写入 mailbox
+  mailboxPendingThreshold: 50,     // pending 消息堆积阈值
+  mailboxPendingAgeMs: 3600000,    // pending 消息超时阈值（1 小时）
+  mailboxProcessingAgeMs: 1800000, // processing 消息卡死阈值（30 分钟）
+  degradedIntervalMs: 600000,      // 降级后 10 分钟间隔
+  autoResumeAfterMs: 600000,       // 暂停后 10 分钟自动恢复（可选）
 };
 ```
 
-### 错误处理流程
+### 错误处理流程（基于 Mailbox 健康）
 
 ```
-心跳触发
+心跳写入 mailbox
     │
-    ├──► dispatch 创建成功 ──► 等待完成
-    │                              │
-    │                              ├──► 完成 ──► 重置失败计数 ──► RUNNING
-    │                              │
-    │                              └──► 超时/失败
-    │                                      │
-    │                                      ├──► 失败计数++
-    │                                      │
-    │                                      ├──► 失败计数 < 3 ──► DEGRADED（继续心跳）
-    │                                      │
-    │                                      └──► 失败计数 >= 3 ──► PAUSED（暂停）
-    │                                              │
-    │                                              └──► 写入 Ledger（critical）
-    │                                              └──► 告警（可选）
-    │                                              └──► 等待 resume
+    ├──► 写入成功 ──► 不等待响应 ──► 继续下一轮
     │
-    └──► dispatch 创建失败 ──► 记录 Ledger（major）──► DEGRADED
+    └──► 写入失败
+            │
+            └──► 记录 Ledger ──► Minor 错误（继续下一轮）
+
+Mailbox 健康检测（每轮心跳时检查）
+    │
+    ├──► pendingCount <= 50 且 age < 1h
+    │       │
+    │       └──► 正常 ──► RUNNING
+    │
+    ├──► pendingCount > 50 或 pending age > 1h
+    │       │
+    │       └──► 堆积 ──► 记录 Ledger ──► Major ──► DEGRADED
+    │
+    └──► processing age > 30min 或 Agent 无响应
+            │
+            └──► 卡死 ──► 记录 Ledger ──► Critical ──► PAUSED
 ```
 
 ---
@@ -365,6 +368,72 @@ interface MailboxAckAllResult {
 
 ---
 
+## Agent 能力边界
+
+**Agent 可请求的操作（通过 Kernel Tool）**：
+
+| Agent 能做什么 | Agent 不能做什么 |
+|----------------|------------------|
+| ✅ 调用 stop_heartbeat 停止心跳 | ❌ 强制清理其他 agent 的 mailbox |
+| ✅ 调用 mailbox_clear 清理自己的 mailbox | ❌ 重启 daemon |
+| ✅ 调用 mailbox_mark_skip 标记跳过 | ❌ 强制恢复心跳（需系统干预） |
+| ✅ 调用 resume_heartbeat 恢复心跳（如果 paused） | ❌ 修改系统配置 |
+| ✅ 调用 get_heartbeat_status 查询状态 | ❌ 删除其他 agent 的 ledger |
+
+**关键原则**：
+- Agent 的请求是**意图表达**，系统决定是否执行
+- 系统可能拒绝请求（如：STOPPED 状态无法 resume）
+- Agent 只能操作自己的 mailbox，不能干预其他 agent
+
+---
+
+## Agent 决策触发条件（关键）
+
+Agent 在以下场景应主动决策，避免系统进入死循环或浪费 token：
+
+| 检测信号 | 推荐操作 | 判断依据 | 优先级 |
+|----------|----------|----------|--------|
+| **mailbox pending > 50** | `stop_heartbeat(reason="mailbox堆积", permanent=false, resume_after_minutes=30)` | `mailbox_get_status()` 显示 pending > 50 | P0 |
+| **同一消息 processing > 10min** | `mailbox_mark_skip(ids=[...], reason="消息卡死")` | 单条消息处理时间过长 | P0 |
+| **连续 3 次相同错误** | `stop_heartbeat(reason="循环错误", permanent=false)` | Ledger 显示相同 error 重复 3 次 | P0 |
+| **重复心跳消息（间隔 < 5min）** | `mailbox_mark_skip(ids=[...], reason="重复心跳")` | mailbox.list() 发现相��� title + 时间差 < 5min | P0 |
+| **任务阻塞且无进展** | `mailbox_clear(status="read")` + `resume_heartbeat()` | mailbox 堆积已清理，可恢复 | P1 |
+| **非窗口期重复启动** | `stop_heartbeat(reason="非窗口期", permanent=false, resume_after_minutes=60)` | 当前时间不在 nightly/daily 窗口 | P1 |
+| **系统维护** | `stop_heartbeat(reason="维护", permanent=true)` | 人工明确指示停止 | P2 |
+
+### Agent 判断逻辑示例
+
+**场景：mailbox 堆积检测**
+```
+1. Agent 收到心跳消息
+2. 调用 mailbox_get_status()
+3. 发现 pending = 62 (> 50)
+4. 调用 stop_heartbeat(reason="mailbox堆积62条", permanent=false, resume_after_minutes=30)
+5. 系统状态转为 PAUSED + 写入 Ledger
+```
+
+**场景：重复消息去重**
+```
+1. Agent 收到心跳消息
+2. 调用 mailbox.list()
+3. 发现 3 条相同 title "[System][Heartbeat] Periodic Health Check"
+4. 检查时间戳：相差 < 5min
+5. 调用 mailbox_mark_skip(ids=["msg-2", "msg-3"], reason="重复心跳，间隔<5min")
+6. Ledger 记录 mailbox_marked_skip + skipped=2
+```
+
+**场景：循环错误检测**
+```
+1. Agent 收到心跳消息
+2. 调用 get_heartbeat_status()
+3. 发现 lastFailure.reason = "dispatch_failed" + consecutiveFailures = 3
+4. 检查 Ledger：连续 3 次 error.code = "E_TIMEOUT"
+5. 调用 stop_heartbeat(reason="连续3次dispatch超时", permanent=false)
+6. 系统状态转为 PAUSED + 写入 Ledger
+```
+
+---
+
 ## 心跳 Prompt 注入设计
 
 ### Inject Prompt 内容
@@ -411,18 +480,18 @@ interface MailboxAckAllResult {
 
 ```typescript
 type HeartbeatEventType =
-  | 'heartbeat_dispatch_start'
-  | 'heartbeat_dispatch_complete'
-  | 'heartbeat_dispatch_timeout'
-  | 'heartbeat_dispatch_failed'
-  | 'heartbeat_paused'
+  | 'heartbeat_mailbox_write'
+  | 'heartbeat_mailbox_write_failed'
+  | 'mailbox_backlog_detected'
+  | 'mailbox_stale_detected'
+  | 'heartbeat_degraded'
   | 'heartbeat_resumed'
   | 'heartbeat_stopped'
   | 'heartbeat_degraded'
-  | 'heartbeat_auto_resume'
+  | 'agent_resume_request'
   | 'mailbox_cleared'
   | 'mailbox_marked_skip'
-  | 'mailbox_ack_failed';
+  | 'agent_stop_request';
 
 interface HeartbeatLedgerEntry {
   eventId: string;
@@ -431,15 +500,23 @@ interface HeartbeatLedgerEntry {
   
   payload: {
     seq: number;
-    dispatchId?: string;
+    mailboxStats?: {
+      pending: number;
+      processing: number;
+      oldestPendingAgeMs: number;
+      oldestProcessingAgeMs: number;
+    };
     messageId?: string;
+    messageIds?: string[];
+    clearedCount?: number;
+    skippedCount?: number;
+    previousStatus?: string;
+    newStatus?: string;
     error?: { code: string; message: string; stack?: string };
     reason?: string;  // 人工操作原因
     stats?: {
-      duration_ms: number;
-      messagesProcessed: number;
-      messagesAcked: number;
-      messagesSkipped: number;
+      intervalMs: number;
+      pendingThreshold: number;
     };
   };
   
@@ -451,46 +528,55 @@ interface HeartbeatLedgerEntry {
 
 | 事件 | severity | 必写字段 |
 |------|----------|----------|
-| dispatch_start | info | seq, dispatchId |
-| dispatch_complete | info | seq, dispatchId, stats |
-| dispatch_timeout | warn | seq, dispatchId, error, duration_ms |
-| dispatch_failed | error | seq, dispatchId, error |
-| paused | warn | reason, consecutiveFailures |
-| resumed | info | reason |
-| stopped | critical | reason |
-| mailbox_cleared | info | cleared count |
-| mailbox_marked_skip | info | skipped count, reason |
+| heartbeat_mailbox_write | info | seq, mailboxStats |
+| heartbeat_mailbox_write_failed | error | seq, error |
+| heartbeat_status_change | warn | previousStatus, newStatus, reason |
+| heartbeat_degraded | warn | seq, mailboxStats |
+| heartbeat_resumed | info | reason |
+| heartbeat_stopped | critical | reason |
+| mailbox_health_check | info | seq, mailboxStats |
+| mailbox_backlog_detected | warn | seq, mailboxStats |
+| mailbox_stale_detected | error | seq, mailboxStats |
+| mailbox_cleared | info | clearedCount |
+| mailbox_marked_skip | info | skippedCount, reason |
+| agent_stop_request | warn | reason |
+| agent_resume_request | info | reason |
 
 ---
 
 ## 实施计划
 
+**按顺序实施，每步完成后运行对应测试**：
+
 | 步骤 | 任务 | 文件 | 预计时间 |
 |------|------|------|----------|
-| 1 | HeartbeatScheduler 添加状态机 | `src/server/modules/heartbeat-scheduler.ts` | 30min |
-| 2 | 实现 stop/pause/resume | `src/server/modules/heartbeat-scheduler.impl.ts` | 30min |
-| 3 | MailboxBlock 添加 clear/markSkip | `src/blocks/mailbox-block/index.ts` | 20min |
-| 4 | 创建 heartbeat control tools | `src/tools/internal/heartbeat-control-tools.ts` | 20min |
-| 5 | 创建 mailbox control tools | `src/tools/internal/mailbox-control-tools.ts` | 20min |
+| 1 | Mailbox 健康检测逻辑 | `src/serverx/modules/heartbeat-scheduler.impl.ts` | 20min |
+| 2 | Heartbeat 状态机实现 | `src/serverx/modules/heartbeat-scheduler.impl.ts` | 30min |
+| 3 | Mailbox clear/markSkip 实现 | `src/blocks/mailbox-block/index.ts` | 20min |
+| 4 | Kernel Tools 创建 | `src/tools/internal/heartbeat-control-tools.ts` | 30min |
+| 5 | Kernel Tools 创建 | `src/tools/internal/mailbox-control-tools.ts` | 20min |
 | 6 | Ledger 事件记录 | `src/orchestration/heartbeat-ledger.ts` | 20min |
-| 7 | Heartbeat inject prompt 更新 | `src/server/modules/heartbeat-scheduler.impl.ts` | 15min |
-| 8 | 单元测试 | `tests/unit/server/heartbeat-control.test.ts` | 30min |
-| 9 | 集成测试 | `tests/integration/heartbeat-lifecycle.test.ts` | 30min |
-| 10 | E2E 测试 | `tests/e2e/heartbeat-error-recovery.test.ts` | 30min |
+| 7 | Prompt 注入更新 | `src/serverx/modules/heartbeat-scheduler.impl.ts` | 15min |
+| 8 | 单元测试 | `tests/unit/server/heartbeat-health.test.ts` | 30min |
+| 9 | 集成测试 | `tests/integration/heartbeat-state-machine.test.ts` | 30min |
+| 10 | E2E 测试 | `tests/e2e/mailbox-control-flow.test.ts` | 30min |
 
 ---
 
 ## 验收标准
 
+**每个场景必须有测试覆盖**：
+
 | 场景 | 验收标准 |
 |------|----------|
-| **dispatch 超时** | 连续 3 次后自动暂停，写入 Ledger（critical），可手动 resume |
-| **消息处理失败** | 标记 failed 状态，跳过，记录 Ledger（minor），不阻塞下一轮 |
-| **mailbox 清理** | clear() 返回清理数量，已读消息可保留审计 |
-| **心跳停止** | stopHeartbeat() 后不再 dispatch，状态查询正确 |
-| **错误记录** | 所有错误写入 Ledger，severity 正确 |
-| **模型感知** | inject prompt 包含控制说明，模型可调用 tools |
-| **降级运行** | 单次失败后继续心跳，但标记 degraded 状态 |
+| **mailbox 堆积** | pending > 50 时进入 DEGRADED，写入 Ledger，降低心跳频率 |
+| **mailbox 卡死** | processing age > 30min 时进入 PAUSED，写入 Ledger，停止写入 |
+| **Agent 停止请求** | stop_heartbeat() 后状态变 STOPPED，写入 Ledger，不再写入 mailbox |
+| **mailbox 清理** | mailbox_clear(completed) 清理已完成消息，返回清理数量 |
+| **状态恢复** | resume_heartbeat() 恢复 PAUSED → RUNNING，写入 Ledger |
+| **健康检测** | 每轮心跳检测 mailbox 健康，写入 Ledger |
+| **错误记录** | 所有事件写入 Ledger，severity 正确 |
+| **Agent 感知** | inject prompt 包含 mailbox 健康和可用工具说明 |
 
 ---
 
@@ -505,10 +591,95 @@ interface HeartbeatLedgerEntry {
 
 ---
 
+## 去重判断标准（Agent 参考）
+
+Agent 检测重复消息时，使用以下判断标准：
+
+### 1. 精确去重
+
+**定义**：title + timestamp 完全相同
+
+**检测逻辑**：
+```
+scan mailbox.list()
+→ 发现两条消息 title 相同 + timestamp 相差 < 1s
+→ 标记为精确重复
+```
+
+**示例**：
+- msg-1: `[System][Heartbeat] Periodic Health Check` @ 2026-03-22T10:00:00Z
+- msg-2: `[System][Heartbeat] Periodic Health Check` @ 2026-03-22T10:00:01Z
+- 判断：精确重复 → `mailbox_mark_skip(ids=["msg-2"], reason="精确重复")`
+
+### 2. 近似去重
+
+**定义**：title 相同 + 时间间隔 < 5min
+
+**检测逻辑**：
+```
+scan mailbox.list()
+→ 发现两条消息 title 相同 + timestamp 相差 < 5min
+→ 标记为近似重复（可能是系统重复写入）
+```
+
+**示例**：
+- msg-1: `[System][Heartbeat] Periodic Health Check` @ 2026-03-22T10:00:00Z
+- msg-2: `[System][Heartbeat] Periodic Health Check` @ 2026-03-22T10:03:00Z
+- 判断：近似重复 → `mailbox_mark_skip(ids=["msg-2"], reason="近似重复，间隔3min")`
+
+### 3. 心跳序号去重
+
+**定义**：`[System][Heartbeat] seq=123` 多次出现
+
+**检测逻辑**：
+```
+scan mailbox.list()
+→ 发现多条消息包含相同 seq number
+→ 提取 seq from title/payload
+→ 标记序号重复
+```
+
+**示例**：
+- msg-1: `[System][Heartbeat] seq=123` @ 2026-03-22T10:00:00Z
+- msg-2: `[System][Heartbeat] seq=123` @ 2026-03-22T10:02:00Z
+- 判断：序号重复 → `mailbox_mark_skip(ids=["msg-2"], reason="心跳序号123重复")`
+
+### 4. 内容相似度去重（可选）
+
+**定义**：payload 内容相似度 > 90%
+
+**检测逻辑**：
+```
+read mailbox.read(msg-1) + mailbox.read(msg-2)
+→ 比较 payload 内容
+→ 若相似度 > 90% → 标记为内容重复
+```
+
+**示例**：
+- msg-1 payload: `{"task": "health_check", "seq": 123, "status": "running"}`
+- msg-2 payload: `{"task": "health_check", "seq": 123, "status": "running"}`
+- 判断：内容相似度 100% → `mailbox_mark_skip(ids=["msg-2"], reason="内容完全相同")`
+
+### 去重优先级
+
+| 去重类型 | 优先级 | 适用场景 |
+|----------|--------|----------|
+| **精确去重** | P0 | 系统重复写入同一消息 |
+| **近似去重** | P0 | 心跳间隔内重复触发 |
+| **序号去重** | P1 | 心跳序号重复写入 |
+| **内容相似度** | P2 | 复杂场景辅助判断 |
+
+---
+
 ## 变更记录
 | 日期 | 变更 |
 |------|------|
 | 2026-03-22 | 初版设计，定义优先级与三段式格式 |
 | 2026-03-23 | 新增 `mailbox.read_all` / `mailbox.remove_all`，补充 notification idle-only 与批量处理规则 |
 | 2026-03-23 | Mailbox 改为内存态不持久化；`mailbox.ack` 成功后自动清理消息 |
+| 2026-04-06 | **重大修正**：基于 Agent-driven 异步执行模式重新设计 |
 | 2026-04-06 | 新增心跳状态机、错误分级、容错设计、控制接口、Kernel Tools、Ledger 审计追踪 |
+| 2026-04-06 | 超时检测改为 mailbox 状态健康检测（堆积/卡死） |
+| 2026-04-06 | 状态机基于 mailbox 健康而非 dispatch timeout |
+| 2026-04-06 | 明确 Agent 能力边界：请求而非强制干预 |
+| 2026-04-06 | 新增 Agent 能力边界表、执行模式说明、健康检测参数 |
