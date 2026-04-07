@@ -289,7 +289,8 @@ export function buildCompactSummary(
       const cat = classifyToolCall(t.toolName, t.params);
       const resolvedName = resolveToolDisplayName(t.toolName, t.params);
       const file = extractTargetFile(t.toolName, t.params);
-      const detail = extractToolDetail(t.toolName, t.params, t.result, t.error);
+      const detailRaw = extractToolDetail(t.toolName, t.params, t.result, t.error);
+      const detail = detailRaw ? truncateInline(detailRaw, 80) : '';
       const filePart = file ? ` | ${file}` : '';
       const detailPart = detail ? ` ${detail}` : '';
       const line = `${icon} [${cat}] ${resolvedName}${filePart}${detailPart}`;
@@ -303,7 +304,7 @@ export function buildCompactSummary(
 
 export function buildReportKey(p: SessionProgressData, latestStepSummary: string | undefined): string {
   const recentTools = selectRecentToolsWithPriority(p.toolCallHistory, 3)
-    .map((t) => `${t.toolName}:${classifyToolCall(t.toolName, t.params)}:${extractTargetFile(t.toolName, t.params)}:${t.success ?? ''}`)
+    .map((t) => `${t.toolName}:${classifyToolCall(t.toolName, t.params)}:${t.success ?? ''}`)
     .join('|');
   const breakdownKey = p.contextBreakdown
     ? JSON.stringify(p.contextBreakdown)

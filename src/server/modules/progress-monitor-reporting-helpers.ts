@@ -107,7 +107,6 @@ export function foldToolLines(items: FoldableToolLineItem[]): string[] {
     item.icon,
     item.cat,
     item.resolvedName,
-    item.file,
   ].join('|');
 
   for (const item of items) {
