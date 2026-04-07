@@ -55,7 +55,6 @@ pub async fn send_anthropic_http(
             .header(ACCEPT, accept_header)
             .header(X_API_KEY_HEADER, api_key)
             .header(ANTHROPIC_VERSION_HEADER, ANTHROPIC_VERSION_VALUE)
-            .header("User-Agent", "curl/8.7.1")
 
             .json(payload)
             .send()

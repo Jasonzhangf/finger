@@ -106,6 +106,7 @@ impl AnthropicChatEngine {
     fn parse_anthropic_sse(&self, sse_text: &str) -> Result<ParsedResponse, ModelError> {
         let mut output_text = String::new();
         let mut function_calls = Vec::new();
+        let mut reasoning: Vec<String> = Vec::new();
         let mut usage = ParsedUsage::default();
         let mut finish_reason = None;
         let mut response_id: Option<String> = None;
@@ -194,7 +195,7 @@ impl AnthropicChatEngine {
                         output_text.push_str(text);
                     } else if delta_type == "thinking_delta" {
                         let thinking = delta.get("thinking").and_then(|t| t.as_str()).unwrap_or("");
-                        output_text.push_str(thinking);
+                        reasoning.push(thinking.to_string());
                     } else if delta_type == "input_json_delta" {
                         let partial_json = delta
                             .get("partial_json")
