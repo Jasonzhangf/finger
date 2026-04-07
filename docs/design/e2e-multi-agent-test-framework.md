@@ -368,3 +368,223 @@ tests/e2e/
 2. 分析失败原因（Hook 记录 + Observer 数据）
 3. 调整框架（Observer 精度、Hook 注入策略、Prompt 模板）
 4. 重新执行验证
+
+---
+
+## 9. 核心原则修正（2026-04-07）
+
+### 9.1 错误的做法（之前做的）
+
+```typescript
+// 假的。我自己造数据，自己验证。没经过 Agent，没经过推理。
+registry.register({ id: 'worker-001', ... });
+expect(registryObs.getActiveAgents()).toHaveLength(1);
+```
+
+**这种测试验证的是我自己写的代码，不是 Agent 的行为。毫无意义。**
+
+---
+
+### 9.2 正确的做法
+
+**核心理念：Prompt 是输入，锚点是观测，Agent 是黑盒**
+
+Agent 是不可控的大模型推理链路。我们不能假设它会调什么函数、走什么路径。我们能做的只有：
+
+1. **发 Prompt**（我们可控）
+2. **设锚点**（我们可观测）
+3. **等 Agent 自己走完**（黑盒）
+4. **检查锚点是否被触发**（验证结果）
+5. **根据结果调整 Prompt**（迭代优化）
+
+---
+
+### 9.3 完整流程
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│ Step 1: 设计 Prompt + 预期锚点                                   │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                  │
+│ Prompt: "帮我对 finger 项目进行代码审查：                          │
+│         1. 分析 src/blocks/ 测试覆盖率                            │
+│         2. 检查 src/orchestration/ 内存泄露                       │
+│         请同时开始这两项审查"                                      │
+│                                                                  │
+│ 预期锚点（不是刚性断言，是观测信号）：                              │
+│   A1: daemon.log 出现 "agent.spawn" 或类似 spawn 行为             │
+│   A2: daemon.log 出现 2 个不同的 dispatch（并发）                 │
+│   A3: mailbox 收到 completion notification                       │
+│   A4: 最终回复包含 2 个子任务的结果                                │
+│   A5: 整体耗时 < 5 分钟                                          │
+└─────────────────────────────────────────────────────────────────┘
+                            │
+                            ▼
+┌─────────────────────────────────────────────────────────────────┐
+│ Step 2: 发送 Prompt 到真实 Daemon                                 │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                  │
+│ POST http://localhost:9999/api/v1/channels/send                  │
+│ { channel: 'qqbot', message: prompt }                            │
+│                                                                  │
+│ 然后等待。不干预 Agent 的推理过程。                                │
+└─────────────────────────────────────────────────────────────────┘
+                            │
+                            ▼
+┌─────────────────────────────────────────────────────────────────┐
+│ Step 3: 实时观测锚点（轮询 daemon.log / ledger / mailbox）        │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                  │
+│ Observer 轮询（不是 Mock）：                                      │
+│   LedgerObserver:                                               │
+│     tail -f ~/.finger/sessions/.../context-ledger.jsonl          │
+│     → 检查是否出现 dispatch/spawn/tool_call 事件                 │
+│                                                                  │
+│   MailboxObserver:                                               │
+│     GET http://localhost:9999/api/v1/mailbox/finger-system-agent │
+│     → 检查是否有 inter_agent/completion 消息                     │
+│                                                                  │
+│   InteractionObserver:                                           │
+│     pnpm exec tsx scripts/observe-interactions.ts <sessionId>   │
+│     → 生成交互流程图，查看 Agent 行为                             │
+└─────────────────────────────────────────────────────────────────┘
+                            │
+                            ▼
+┌─────────────────────────────────────────────────────────────────┐
+│ Step 3.5: Agent 没有按预期走？                                    │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                  │
+│ 场景：Agent 没有选择 spawn 子 agent，而是自己串行执行了           │
+│                                                                  │
+│ 可能原因：                                                        │
+│   - Prompt 不够明确（没有说"同时开始"）                           │
+│   - System prompt 没有引导 spawn 行为                             │
+│   - Agent 觉得任务不够复杂不需要 spawn                            │
+│                                                                  │
+│ 解决：调整 Prompt                                                 │
+│   - 更明确的指示："请派 2 个 agent 分别负责"                      │
+│   - 或调整 System Prompt 引导 spawn 行为                         │
+└─────────────────────────────────────────────────────────────────┘
+                            │
+                            ▼
+┌─────────────────────────────────────────────────────────────────┐
+│ Step 4: 生成测试报告                                              │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                  │
+│ 报告内容：                                                        │
+│   - Prompt 原文                                                  │
+│   - Agent 实际行为（从日志提取）                                   │
+│   - 锚点命中情况（哪些触发了，哪些没触发）                        │
+│   - 耗时、token 消耗                                             │
+│   - Prompt 改进建议                                              │
+│                                                                  │
+│ 示例：                                                            │
+│   ┌──────────────────────────────────────────────────────┐      │
+│   │ Test Report: scenario-2-parallel-agents              │      │
+│   │ Prompt: "帮我对 finger 项目进行代码审查..."            │      │
+│   │                                                       │      │
+│   │ Anchors:                                              │      │
+│   │   A1 (spawn detected): ✅ HIT                         │      │
+│   │   A2 (concurrent dispatch): ✅ HIT (2 dispatches)    │      │
+│   │   A3 (completion notification): ✅ HIT               │      │
+│   │   A4 (aggregated result): ❌ MISS - Agent 自行完成了  │      │
+│   │   A5 (duration < 5min): ✅ HIT (3m 22s)              │      │
+│   │                                                       │      │
+│   │ Agent actual behavior:                                │      │
+│   │   - Did NOT spawn child agents                        │      │
+│   │   - Executed tasks sequentially                       │      │
+│   │   - Used grep/cat tools directly                      │      │
+│   │                                                       │      │
+│   │ Prompt improvement:                                   │      │
+│   │   - Add "请派 2 个 agent 并行执行"                    │      │
+│   │   - Add "不要自己执行，必须委派"                       │      │
+│   └──────────────────────────────────────────────────────┘      │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+### 9.4 InteractionObserver - 真实 E2E 观测工具
+
+**不是 Mock，是从真实 ledger 文件提取事件**。
+
+#### 用法
+
+```bash
+# 自动找最新 session
+pnpm exec tsx scripts/observe-interactions.ts
+
+# 指定 session
+pnpm exec tsx scripts/observe-interactions.ts hb-session-finger-system-agent-global
+
+# 持续观测模式
+pnpm exec tsx scripts/observe-interactions.ts --watch
+```
+
+#### 输出示例
+
+```
+Session: hb-session-finger-system-agent-global
+Agents found: 1
+  finger-system-agent (5.94 MB)
+
+┌──────────────────────────────────────────────────────────────────────┐
+│                Agent Interaction Flow Diagram                        │
+├──────────────────────────────────────────────────────────────────────┤
+│ Session: hb-session-finger-system-agent-global
+│ Agents:  finger-system-agent
+│ Total Events:  2775
+│ Key Events:    2009
+│ Interactions:  0
+│ Duration:      398733.1s
+├──────────────────────────────────────────────────────────────────────┤
+│ INTERACTIONS:
+│ +0.5s   system_agent ──spawn────► worker-1
+│ +0.6s   system_agent ──spawn────► worker-2
+│ +12.3s  worker-1 ◄──done────── system_agent
+│ +15.7s  worker-2 ◄──done────── system_agent
+├──────────────────────────────────────────────────────────────────────┤
+│ KEY EVENTS:
+│ +0.0s      turn_start           (finger-system-agent)
+│ +12.7s     tool_call            [mailbox.read] (finger-system-agent)
+│ +36.5s     tool_call            [reasoning.stop] (finger-system-agent)
+│ ...
+└──────────────────────────────────────────────────────────────────────┘
+```
+
+#### 支持的事件类型
+
+| 事件类型 | 说明 | 提取字段 |
+|---------|------|---------|
+| `spawn` | agent.spawn 工具调用 | from, to (target) |
+| `dispatch` | AgentRuntimeBlock dispatch | from, to (target) |
+| `send_message` | agent.send_message 工具调用 | from, to, triggerTurn |
+| `followup_task` | agent.followup_task 工具调用 | from, to, triggerTurn |
+| `completion` | AgentCompletionNotification | from (child), to (parent) |
+| `mailbox` | InterAgentCommunication | from, to, triggerTurn |
+| `tool_call` | 通用工具调用 | toolName, agentId |
+| `turn_start` | 推理开始 | agentId |
+| `turn_complete` | 推理结束 | agentId |
+
+---
+
+### 9.5 关键区别总结
+
+| | 错误做法（之前） | 正确做法（修正后） |
+|---|---|---|
+| **数据来源** | 手动造 Mock 数据 | Agent 真实推理产生 |
+| **验证对象** | Mock 对象 | daemon.log / ledger / mailbox |
+| **Agent 参与** | 无 | 完整推理链路 |
+| **可发现的问题** | 框架代码 bug | Prompt 不够引导、Agent 不按预期走 |
+| **迭代方向** | 无 | 调整 Prompt + 锚点 |
+| **测试工具** | Mock Registry/Mailbox | InteractionObserver（真实 ledger） |
+
+---
+
+## 10. 变更记录
+
+| 日期 | 变更 | 说明 |
+|------|------|------|
+| 2026-04-07 | Section 9 核心原则修正 | 从 Mock 测试 → 真实 E2E 观测 |
+| 2026-04-07 | Section 9.4 InteractionObserver | 新增真实 ledger 观测工具 |
+| 2026-04-07 | 脚本 observe-interactions.ts | 新增交互流程图生成工具 |
