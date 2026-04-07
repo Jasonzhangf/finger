@@ -22,6 +22,8 @@ import {
   handleStepCompleted as handleStepCompletedEvent,
   flushStepBuffer as flushStepBufferEvent,
   type HandlerContext,
+  startLastQueuedDispatchCleanup,
+  stopLastQueuedDispatchCleanup,
 } from '../../server/modules/agent-status-subscriber-handlers.js';
 import {
   applyProgressDeliveryPolicy,
@@ -166,6 +168,9 @@ export class AgentStatusSubscriber {
     // 启动定期清理
     this._stopCleanup = startCleanup(this.sessionEnvelopeMap, this.cleanupIntervalMs);
 
+    // Start cleanup for queued dispatch push tracking
+    startLastQueuedDispatchCleanup();
+
     log.info('[AgentStatusSubscriber] Started');
   }
 
@@ -271,6 +276,7 @@ export class AgentStatusSubscriber {
     }
     this._stopCleanup?.();
     this._stopCleanup = null;
+    stopLastQueuedDispatchCleanup();
     log.info('[AgentStatusSubscriber] Stopped');
   }
 

@@ -1,6 +1,6 @@
 {
   "name": "fingerdaemon",
-  "version": "0.1.232",
+  "version": "0.1.235",
   "description": "Finger - AI Agent Orchestrator with bd project management",
   "main": "dist/cli/index.js",
   "bin": {
@@ -63,6 +63,7 @@
   "dependencies": {
     "@anthropic-ai/sdk": "^0.40.1",
     "@zilliz/milvus2-sdk-node": "^2.5.9",
+    "axios": "^1.14.0",
     "chalk": "^5.4.0",
     "commander": "^11.1.0",
     "express": "^5.2.1",
@@ -86,7 +87,7 @@
     "typescript-eslint": "^8.56.1",
     "vitest": "^1.6.0"
   },
-  "fingerBuildVersion": "0.1.232",
+  "fingerBuildVersion": "0.1.235",
   "pnpm": {
     "packageExtensions": {
       "vitest@*": {

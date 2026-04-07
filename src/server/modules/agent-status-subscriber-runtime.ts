@@ -336,6 +336,16 @@ export function startCleanup(
 
     expired.forEach(sessionId => sessionEnvelopeMap.delete(sessionId));
 
+    // Hard limit: evict oldest 10% if map exceeds MAX_ENTRIES
+    const MAX_ENTRIES = 1000;
+    if (sessionEnvelopeMap.size > MAX_ENTRIES) {
+      const entries = Array.from(sessionEnvelopeMap.entries());
+      const toRemove = Math.floor(entries.length * 0.1);
+      for (let i = 0; i < toRemove; i++) {
+        sessionEnvelopeMap.delete(entries[i][0]);
+      }
+    }
+
     if (expired.length > 0) {
       log.info(`[AgentStatusSubscriber] Cleaned up ${expired.length} expired session mappings`);
     }

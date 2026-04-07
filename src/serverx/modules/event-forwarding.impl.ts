@@ -41,6 +41,7 @@ import { contextBuilderRebuildTool } from '../../tools/internal/context-builder-
 
 const SYSTEM_AGENT_ID = 'finger-system-agent';
 const CONTROL_HOOK_DEDUP_TTL_MS = 60 * 60_000;
+const MAX_DEDUP_ENTRIES = 10_000;
 
 type SessionEventRecord = {
   type: 'tool_call' | 'tool_result' | 'tool_error' | 'agent_step' | 'reasoning';
@@ -307,6 +308,15 @@ export function attachEventForwarding(deps: EventForwardingDeps): {
   const resolveSessionOwnerAgentId = (sessionId: string): string => {
     if (typeof (sessionManager as SessionManager & { getSession?: unknown }).getSession !== 'function') {
       return generalAgentId;
+
+  const enforceMaxEntries = (map: Map<string, number>) => {
+    if (map.size >= MAX_DEDUP_ENTRIES) {
+      const keysToDelete = Array.from(map.keys()).slice(0, Math.floor(MAX_DEDUP_ENTRIES * 0.1));
+      for (const k of keysToDelete) {
+        map.delete(k);
+      }
+    }
+  };
     }
     const session = sessionManager.getSession(sessionId);
     if (session && isObjectRecord(session.context)) {
@@ -325,6 +335,7 @@ export function attachEventForwarding(deps: EventForwardingDeps): {
       }
     }
     if (dispatchLedgerDedup.has(key)) return true;
+    enforceMaxEntries(dispatchLedgerDedup);
     dispatchLedgerDedup.set(key, now);
     return false;
   };
@@ -337,6 +348,7 @@ export function attachEventForwarding(deps: EventForwardingDeps): {
       }
     }
     if (controlHookActionDedup.has(key)) return true;
+    enforceMaxEntries(controlHookActionDedup);
     controlHookActionDedup.set(key, now);
     return false;
   };

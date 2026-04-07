@@ -4,6 +4,8 @@
  * 导出所有 provider 类型、registry、factory
  */
 
+export { createOpenAICompatibleProvider, OpenAICompatibleProvider } from './protocols/openai-compatible.js';
+
 export {
   // Types
   LLMProviderType,

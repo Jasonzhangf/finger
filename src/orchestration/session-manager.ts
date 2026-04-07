@@ -561,6 +561,17 @@ export class SessionManager {
     };
     session.context = this.normalizeSessionOwnershipContext(session, session.context).context;
 
+    // Hard limit: evict oldest session if at capacity
+    const MAX_SESSIONS = 100;
+    if (this.sessions.size >= MAX_SESSIONS) {
+      const entries = Array.from(this.sessions.entries());
+      const oldest = entries
+        .sort((a, b) => new Date(a[1].lastAccessedAt).getTime() - new Date(b[1].lastAccessedAt).getTime())[0];
+      if (oldest) {
+        this.sessions.delete(oldest[0]);
+      }
+    }
+
     this.sessions.set(id, session);
     this.saveSession(session);
     if (!this.setCurrentSession(id)) {
@@ -600,6 +611,17 @@ export class SessionManager {
       ...LEDGER_POINTER_DEFAULTS,
     };
     session.context = this.normalizeSessionOwnershipContext(session, session.context).context;
+
+    // Hard limit: evict oldest session if at capacity
+    const MAX_SESSIONS = 100;
+    if (this.sessions.size >= MAX_SESSIONS) {
+      const entries = Array.from(this.sessions.entries());
+      const oldest = entries
+        .sort((a, b) => new Date(a[1].lastAccessedAt).getTime() - new Date(b[1].lastAccessedAt).getTime())[0];
+      if (oldest) {
+        this.sessions.delete(oldest[0]);
+      }
+    }
 
     this.sessions.set(systemSessionId, session);
     this.saveSession(session);

@@ -6,6 +6,7 @@
  */
 
 import type { LLMProvider, LLMProviderConfig, LLMProviderType } from './provider-types.js';
+import { createOpenAICompatibleProvider } from './protocols/openai-compatible.js';
 import { logger } from '../core/logger.js';
 
 const log = logger.module('ProviderFactory');
@@ -18,17 +19,15 @@ export function createProvider(config: LLMProviderConfig): LLMProvider {
 
   switch (config.type) {
     case 'openai-compatible':
-      // Phase 2 会实现完整的 OpenAI-compatible adapter
-      // 这里先用 stub，等待 Phase 2 实现
-      return createOpenAICompatibleProviderStub(config);
+      return createOpenAICompatibleProvider(config);
     
     case 'anthropic-wire':
       // Phase 3 会实现完整的 Anthropic Wire adapter
       return createAnthropicWireProviderStub(config);
     
     case 'openai-native':
-      // Phase 2 会实现
-      return createOpenAINativeProviderStub(config);
+      // OpenAI Native 与 OpenAI-compatible 类似，暂时复用
+      return createOpenAICompatibleProvider(config);
     
     case 'custom':
       throw new Error('Custom provider requires plugin registration');
@@ -36,55 +35,6 @@ export function createProvider(config: LLMProviderConfig): LLMProvider {
     default:
       throw new Error(`Unknown provider type: ${config.type}`);
   }
-}
-
-/**
- * OpenAI-compatible provider stub (Phase 2 会实现完整版本)
- */
-function createOpenAICompatibleProviderStub(config: LLMProviderConfig): LLMProvider {
-  return {
-    id: config.id,
-    type: 'openai-compatible',
-
-    async chat(request) {
-      // Phase 2 会实现完整的 HTTP 调用
-      throw new Error('OpenAI-compatible provider not implemented yet. Wait for Phase 2.');
-    },
-
-    formatRequest(request) {
-      // OpenAI-compatible 请求格式
-      return {
-        model: request.model,
-        messages: request.messages.map(m => ({
-          role: m.role,
-          content: typeof m.content === 'string' ? m.content : m.content,
-        })),
-        temperature: request.temperature,
-        max_tokens: request.maxTokens,
-        stop: request.stopSequences,
-        tools: request.tools,
-        tool_choice: request.toolChoice,
-      };
-    },
-
-    parseResponse(response: unknown) {
-      // OpenAI-compatible 响应解析
-      const resp = response as any;
-      const choice = resp.choices?.[0];
-      return {
-        id: resp.id || 'unknown',
-        model: resp.model || request.model,
-        content: choice?.message?.content || '',
-        finishReason: mapOpenAIFinishReason(choice?.finish_reason),
-        toolCalls: choice?.message?.tool_calls,
-        usage: {
-          inputTokens: resp.usage?.prompt_tokens || 0,
-          outputTokens: resp.usage?.completion_tokens || 0,
-          totalTokens: resp.usage?.total_tokens || 0,
-        },
-      };
-    },
-  };
 }
 
 /**
@@ -142,30 +92,6 @@ function createAnthropicWireProviderStub(config: LLMProviderConfig): LLMProvider
       };
     },
   };
-}
-
-/**
- * OpenAI Native provider stub (Phase 2 会实现完整版本)
- */
-function createOpenAINativeProviderStub(config: LLMProviderConfig): LLMProvider {
-  // OpenAI Native 与 OpenAI-compatible 类似，但可能有特殊处理（如 o1/o3 的 reasoning tokens）
-  return createOpenAICompatibleProviderStub(config);
-}
-
-/**
- * OpenAI finish_reason 映射
- */
-function mapOpenAIFinishReason(reason: string | undefined): 'stop' | 'tool_use' | 'length' | 'error' {
-  switch (reason) {
-    case 'stop':
-      return 'stop';
-    case 'tool_calls':
-      return 'tool_use';
-    case 'length':
-      return 'length';
-    default:
-      return 'error';
-  }
 }
 
 /**

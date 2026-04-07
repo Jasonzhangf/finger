@@ -50,6 +50,29 @@ const log = logger.module('AgentStatusSubscriberHandlers');
 const DISPATCH_QUEUED_SYSTEM_PUSH_COOLDOWN_MS = 10 * 60 * 1000;
 const lastQueuedSystemDispatchPushByKey = new Map<string, number>();
 const SYSTEM_AGENT_ID = 'finger-system-agent';
+// Cleanup timer for lastQueuedSystemDispatchPushByKey
+let lastQueuedSystemDispatchCleanupTimer: ReturnType<typeof setInterval> | null = null;
+const LAST_QUEUED_DISPATCH_TTL_MS = 10 * 60 * 1000; // 10 minutes
+
+export function startLastQueuedDispatchCleanup(): void {
+  if (lastQueuedSystemDispatchCleanupTimer) return;
+  lastQueuedSystemDispatchCleanupTimer = setInterval(() => {
+    const now = Date.now();
+    for (const [key, ts] of lastQueuedSystemDispatchPushByKey.entries()) {
+      if (now - ts > LAST_QUEUED_DISPATCH_TTL_MS) {
+        lastQueuedSystemDispatchPushByKey.delete(key);
+      }
+    }
+  }, LAST_QUEUED_DISPATCH_TTL_MS);
+}
+
+export function stopLastQueuedDispatchCleanup(): void {
+  if (lastQueuedSystemDispatchCleanupTimer) {
+    clearInterval(lastQueuedSystemDispatchCleanupTimer);
+    lastQueuedSystemDispatchCleanupTimer = null;
+  }
+}
+
 const STARTUP_NOISE_SOURCE_AGENTS = new Set([
   'system-recovery',
   'system-project-recovery',
