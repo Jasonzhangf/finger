@@ -876,6 +876,20 @@ export function attachEventForwarding(deps: EventForwardingDeps): {
       const isFinishedStop = finishReason === 'stop';
       const stopGateState = resolveStopGateState(event);
       const toolRegistryUnavailable = turnToolRegistryUnavailableBySession.get(event.sessionId) === true;
+      // Auto-compact on turn_complete (fallback when model_round not sent)
+      const contextUsagePercent = typeof event.payload.contextUsagePercent === 'number'
+        ? event.payload.contextUsagePercent
+        : undefined;
+      if (contextUsagePercent !== undefined && runtime?.maybeAutoCompact) {
+        const threshold = 85;
+        if (contextUsagePercent >= threshold) {
+          void runtime.maybeAutoCompact(event.sessionId, contextUsagePercent, undefined)
+            .catch((err: Error) => {
+              logger.module('event-forwarding').error('[EventForwarding] maybeAutoCompact failed on turn_complete', err);
+            });
+        }
+      }
+
       applyExecutionLifecycleTransition(sessionManager, event.sessionId, {
         stage: pendingInputAccepted
           ? 'running'
