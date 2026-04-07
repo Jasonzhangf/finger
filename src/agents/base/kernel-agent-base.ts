@@ -44,6 +44,8 @@ import {
   resolveControlBlockPolicy,
   shouldHoldStopByControlBlock,
 } from '../../common/control-block.js';
+import { getContextWindow } from '../../core/user-settings.js';
+
 
 export interface KernelRunContext {
   sessionId: string;
@@ -728,6 +730,15 @@ export class KernelAgentBase {
       metadata.kernelApiHistoryBypassed = true;
       metadata.kernelApiHistoryBypassedReason = 'media_input';
     }
+
+
+    // Add context_window config for kernel auto-compact
+    const contextWindow = getContextWindow();
+    metadata.context_window = {
+      max_input_tokens: contextWindow,
+      baseline_tokens: 0,
+      auto_compact_threshold_ratio: 0.85,
+    };
 
     return metadata;
   }
