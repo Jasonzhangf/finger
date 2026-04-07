@@ -237,7 +237,6 @@ export const WorkflowContainer: React.FC = () => {
   });
 
   const activeSessionId = sessionBinding.context === 'runtime' ? sessionBinding.sessionId : orchestratorSessionId;
-  const systemProjectPath = SYSTEM_PROJECT_PATH;
 
 
   // Check for resumeable session on mount
@@ -343,15 +342,11 @@ export const WorkflowContainer: React.FC = () => {
   const {
     executionState,
     runtimeEvents,
+    runtimeOverview,
     setSelectedAgentId,
     isLoading,
     error,
   } = useWorkflowExecution(activeSessionId, currentSession?.projectPath, {
-    disableRealtime: uiDisable.realtime,
-    disablePolling: uiDisable.polling,
-  });
-
-  const systemAgentExecution = useWorkflowExecution(systemAgentSessionId, systemProjectPath, {
     disableRealtime: uiDisable.realtime,
     disablePolling: uiDisable.polling,
   });
@@ -757,7 +752,7 @@ export const WorkflowContainer: React.FC = () => {
       <div className="canvas-shell">
         <PerformanceCard
           paused={panelFreeze.performance || uiDisable.performance}
-          runtimeOverview={systemAgentExecution.runtimeOverview}
+          runtimeOverview={runtimeOverview}
           onContextAction={handleContextCommand}
         />
         <div className="canvas-body">
@@ -803,7 +798,7 @@ export const WorkflowContainer: React.FC = () => {
         </div>
       </div>
     );
-  }, [panelFreeze.performance, uiDisable.performance, systemAgentExecution.runtimeOverview, handleContextCommand, runtimeInstances, runtimePanelAgents, sessions, currentSession?.projectPath, projectChatAgents, chatInputCapability]);
+  }, [panelFreeze.performance, uiDisable.performance, runtimeOverview, handleContextCommand, runtimeInstances, runtimePanelAgents, sessions, currentSession?.projectPath, projectChatAgents, chatInputCapability]);
 
  const rightPanelElement = useMemo(() => {
    const systemSessions = sessions.filter(s => isSystemSession(s)).sort(

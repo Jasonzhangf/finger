@@ -529,23 +529,6 @@ export function resolveToolActionLabel(toolName: string, input?: unknown): strin
   return `run ${toolName}`;
 }
 
-function stringifyToolPayload(value: unknown, maxChars = 260): string | undefined {
-  if (value === null || value === undefined) return undefined;
-  let raw = '';
-  if (typeof value === 'string') {
-    raw = value;
-  } else {
-    try {
-      raw = JSON.stringify(value, null, 2);
-    } catch {
-      raw = String(value);
-    }
-  }
-  const trimmed = raw.trim();
-  if (trimmed.length === 0) return undefined;
-  return trimmed.length > maxChars ? `${trimmed.slice(0, maxChars)}...` : trimmed;
-}
-
 function cleanTechnicalErrorText(raw: string): string {
   const normalized = raw
     .replace(/tool execution failed for [^:]+:\s*/ig, '')
