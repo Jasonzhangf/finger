@@ -24,6 +24,7 @@ export interface ProjectTaskState {
   status: ProjectTaskLifecycleStatus;
   sourceAgentId: string;
   targetAgentId: string;
+  priority?: number;
   updatedAt: string;
   assignerName?: string;
   assigneeWorkerId?: string;
@@ -56,6 +57,7 @@ export interface DelegatedProjectTaskRecord {
   deliveryWorkerId?: string;
   deliveryWorkerName?: string;
   reviewerId?: string;
+  priority?: number;
   reviewerName?: string;
   reassignReason?: string;
   taskId?: string;
@@ -453,4 +455,78 @@ export function pruneDelegatedRegistryForContextAfterTaskClosed(
     })
     .sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt))
     .slice(0, 64);
+}
+
+/**
+ * Project Agent Task Queue (V3)
+ * 
+ * Project Agent 可以接收多个任务，按优先级执行
+ * idle 标准：所有任务都被 System Agent close（activeTasks 为空）
+ */
+export interface ProjectAgentTaskQueue {
+  /** 所有派发给 Project Agent 的任务 */
+  registry: DelegatedProjectTaskRecord[];
+  /** 当前正在执行的任务（active=true, status!=closed） */
+  activeTasks: DelegatedProjectTaskRecord[];
+  /** 当前优先执行的 taskId */
+  currentTaskId?: string;
+  /** 上一次任务关闭时间 */
+  lastTaskClosedAt?: string;
+}
+
+/**
+ * 判断 Project Agent 是否处于 idle 状态
+ * 
+ * idle 标准：所有任务都被 System Agent close（activeTasks 为空）
+ */
+export function isProjectAgentIdle(queue: ProjectAgentTaskQueue): boolean {
+  if (queue.activeTasks.length === 0) return true;
+  const allClosed = queue.activeTasks.every(task => task.status === 'closed');
+  return allClosed;
+}
+
+/**
+ * 按优先级排序任务
+ * 
+ * 优先级高的先执行，默认按 updatedAt（早的任务先执行）
+ */
+export function sortTasksByPriority(tasks: DelegatedProjectTaskRecord[]): DelegatedProjectTaskRecord[] {
+  return [...tasks].sort((a, b) => {
+    if (a.priority !== undefined && b.priority !== undefined) {
+      return b.priority - a.priority;
+    }
+    if (a.priority !== undefined) return -1;
+    if (b.priority !== undefined) return 1;
+    return Date.parse(a.updatedAt) - Date.parse(b.updatedAt);
+  });
+}
+
+/**
+ * 选择下一个要执行的任务
+ * 
+ * 从 activeTasks 中按优先级选第一个非 closed 的任务
+ */
+export function pickNextTaskForProjectAgent(queue: ProjectAgentTaskQueue): DelegatedProjectTaskRecord | null {
+  const sorted = sortTasksByPriority(queue.activeTasks);
+  const nextTask = sorted.find(task => task.status !== 'closed');
+  return nextTask ?? null;
+}
+
+/**
+ * 从 registry 构建 Project Agent Task Queue
+ */
+export function buildProjectAgentTaskQueue(
+  registry: DelegatedProjectTaskRecord[],
+  currentTaskId?: string,
+  lastTaskClosedAt?: string,
+): ProjectAgentTaskQueue {
+  const activeTasks = registry.filter(task => 
+    task.active === true && task.status !== 'closed' && task.status !== 'failed' && task.status !== 'cancelled'
+  );
+  return {
+    registry,
+    activeTasks,
+    currentTaskId,
+    lastTaskClosedAt,
+  };
 }
