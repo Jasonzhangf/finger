@@ -7,6 +7,10 @@ export type ProjectTaskLifecycleStatus =
   | 'dispatched'
   | 'accepted'
   | 'in_progress'
+  | 'claimed_done'
+  | 'pending_review'
+  | 'approved'
+  | 'rejected'
   | 'claiming_finished'
   | 'reviewed'
   | 'reported'
@@ -120,6 +124,10 @@ function normalizeStatus(value: unknown): ProjectTaskLifecycleStatus | null {
     || normalized === 'started'
     || normalized === 'executing'
   ) return 'in_progress';
+  if (normalized === 'claimed_done' || normalized === 'claimed-done') return 'claimed_done';
+  if (normalized === 'pending_review' || normalized === 'pending-review') return 'pending_review';
+  if (normalized === 'approved') return 'approved';
+  if (normalized === 'rejected') return 'rejected';
   if (
     normalized === 'claiming_finished'
     || normalized === 'claiming-finished'

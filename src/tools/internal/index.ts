@@ -35,6 +35,11 @@ import { skillsListTool, skillsStatusTool } from './skills-tool.js';
 import { stopReasoningPolicyTool, stopReasoningTool } from './stop-reasoning-tool.js';
 import { sleepTool } from './codex-sleep-tool.js';
 
+// V3 Claim Tools
+import { registerProjectClaimCompletionTool } from './project-claim-completion-tool.js';
+import { registerProjectReviewClaimTool } from './project-review-claim-tool.js';
+import { registerProjectApproveTaskTool } from './project-approve-task-tool.js';
+import { registerProjectRejectTaskTool } from './project-reject-task-tool.js';
 export * from './types.js';
 export * from './registry.js';
 export * from './shell-tool.js';
@@ -64,6 +69,12 @@ export * from './skills-tool.js';
 export * from './project-task-tool.js';
 export * from './stop-reasoning-tool.js';
 export * from './codex-sleep-tool.js';
+
+// V3 Claim Tools
+export * from './project-claim-completion-tool.js';
+export * from './project-review-claim-tool.js';
+export * from './project-approve-task-tool.js';
+export * from './project-reject-task-tool.js';
 
 export function createDefaultInternalToolRegistry(): InternalToolRegistry {
   const registry = new InternalToolRegistry();
@@ -165,4 +176,38 @@ export function registerSendLocalImageToolInRuntime(
   getAgentRuntimeDeps: () => AgentRuntimeDeps,
 ): void {
   registerSendLocalImageTool(toolRegistry, getAgentRuntimeDeps);
+}
+
+// V3 Claim Tools
+export * from './project-claim-completion-tool.js';
+export * from './project-review-claim-tool.js';
+export * from './project-approve-task-tool.js';
+export * from './project-reject-task-tool.js';
+
+/**
+ * 在运行时注册 project.claim_completion（Project Agent 提交完成声明）
+ */
+export function registerProjectClaimCompletionToolInRuntime(toolRegistry: ToolRegistry): void {
+  registerProjectClaimCompletionTool(toolRegistry);
+}
+
+/**
+ * 在运行时注册 project.review_claim（System Agent 审核 Claim）
+ */
+export function registerProjectReviewClaimToolInRuntime(toolRegistry: ToolRegistry): void {
+  registerProjectReviewClaimTool(toolRegistry);
+}
+
+/**
+ * 在运行时注册 project.approve_task（System Agent 验收通过）
+ */
+export function registerProjectApproveTaskToolInRuntime(toolRegistry: ToolRegistry): void {
+  registerProjectApproveTaskTool(toolRegistry);
+}
+
+/**
+ * 在运行时注册 project.reject_task（System Agent 拒绝重做）
+ */
+export function registerProjectRejectTaskToolInRuntime(toolRegistry: ToolRegistry): void {
+  registerProjectRejectTaskTool(toolRegistry);
 }

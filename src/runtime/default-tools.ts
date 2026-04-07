@@ -5,6 +5,10 @@ import {
   registerReportTaskCompletionToolInRuntime,
   registerProjectTaskToolInRuntime,
   registerSendLocalImageToolInRuntime,
+  registerProjectClaimCompletionToolInRuntime,
+  registerProjectReviewClaimToolInRuntime,
+  registerProjectApproveTaskToolInRuntime,
+  registerProjectRejectTaskToolInRuntime,
 } from '../tools/internal/index.js';
 import { ToolRegistry } from './tool-registry.js';
 import type { AgentRuntimeDeps } from '../server/modules/agent-runtime/types.js';
@@ -41,6 +45,16 @@ export function registerDefaultRuntimeTools(
     loadedToolNames.push('project.task.update');
     registerSendLocalImageToolInRuntime(runtimeToolRegistry, getAgentRuntimeDeps);
     loadedToolNames.push('send_local_image');
+
+    // V3 Claim Tools
+    registerProjectClaimCompletionToolInRuntime(runtimeToolRegistry);
+    loadedToolNames.push('project.claim_completion');
+    registerProjectReviewClaimToolInRuntime(runtimeToolRegistry);
+    loadedToolNames.push('project.review_claim');
+    registerProjectApproveTaskToolInRuntime(runtimeToolRegistry);
+    loadedToolNames.push('project.approve_task');
+    registerProjectRejectTaskToolInRuntime(runtimeToolRegistry);
+    loadedToolNames.push('project.reject_task');
   }
 
   return loadedToolNames;

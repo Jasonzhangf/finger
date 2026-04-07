@@ -26,6 +26,10 @@ const ACTIVE_STATUSES: Set<ProjectTaskLifecycleStatus> = new Set([
   'dispatched',
   'accepted',
   'in_progress',
+  'claimed_done',
+  'pending_review',
+  'approved',
+  'rejected',
   'claiming_finished',
   'reviewed',
   'reported',
@@ -36,10 +40,14 @@ const TRANSITION_MAP: Record<ProjectTaskLifecycleStatus, Set<ProjectTaskLifecycl
   create: new Set(['dispatched', 'accepted', 'in_progress', 'blocked', 'failed', 'cancelled', 'closed', 'create']),
   dispatched: new Set(['accepted', 'in_progress', 'blocked', 'failed', 'cancelled', 'closed', 'dispatched']),
   accepted: new Set(['in_progress', 'blocked', 'failed', 'cancelled', 'closed', 'accepted']),
-  in_progress: new Set(['claiming_finished', 'blocked', 'failed', 'cancelled', 'closed', 'in_progress']),
-  claiming_finished: new Set(['reviewed', 'in_progress', 'blocked', 'failed', 'cancelled', 'closed', 'claiming_finished']),
-  reviewed: new Set(['reported', 'in_progress', 'blocked', 'failed', 'cancelled', 'closed', 'reviewed']),
-  reported: new Set(['closed', 'in_progress', 'blocked', 'failed', 'cancelled', 'reported']),
+  in_progress: new Set(['claimed_done', 'pending_review', 'approved', 'rejected', 'claiming_finished', 'blocked', 'failed', 'cancelled', 'closed', 'in_progress']),
+  claimed_done: new Set(['pending_review', 'approved', 'rejected', 'in_progress', 'blocked', 'failed', 'cancelled', 'closed', 'claimed_done']),
+  pending_review: new Set(['approved', 'rejected', 'in_progress', 'blocked', 'failed', 'cancelled', 'closed', 'pending_review']),
+  approved: new Set(['reported', 'closed', 'approved']),
+  rejected: new Set(['in_progress', 'claimed_done', 'pending_review', 'blocked', 'failed', 'cancelled', 'rejected']),
+  claiming_finished: new Set(['reviewed', 'approved', 'rejected', 'in_progress', 'blocked', 'failed', 'cancelled', 'closed', 'claiming_finished']),
+  reviewed: new Set(['reported', 'approved', 'rejected', 'in_progress', 'blocked', 'failed', 'cancelled', 'closed', 'reviewed']),
+  reported: new Set(['closed', 'approved', 'rejected', 'in_progress', 'blocked', 'failed', 'cancelled', 'reported']),
   closed: new Set(['closed']),
   blocked: new Set(['in_progress', 'dispatched', 'accepted', 'failed', 'cancelled', 'closed', 'blocked']),
   failed: new Set(['in_progress', 'cancelled', 'closed', 'failed']),
@@ -236,6 +244,10 @@ export interface ProjectStatusGatewayPatch {
   summary?: string;
   note?: string;
   blockedBy?: string[];
+  updatedAt?: string;
+  approvedAt?: string;
+  rejectedAt?: string;
+  feedback?: string;
   requestId?: string;
 }
 
