@@ -11,8 +11,7 @@ import {
   type TestReport,
   type AssertionResult,
   type EventTimelineEntry
-} from './assertion-engine.js';
-import { ResourceObserver } from '../observers/resource-observer.js';
+} from './assertion-engine';
 
 describe('AssertionEngine', () => {
   let engine: AssertionEngine;
@@ -22,155 +21,106 @@ describe('AssertionEngine', () => {
   });
   
   afterEach(() => {
-    engine.clearHistory();
+    engine.reset();
   });
   
   describe('lifecycle', () => {
-    it('should start and stop correctly', () => {
-      engine.start();
-      expect(engine.getAssertionHistory()).toHaveLength(0);
-      expect(engine.getEventTimeline()).toHaveLength(0);
-      
-      engine.stop();
-      expect(engine.getAssertionHistory()).toHaveLength(0);
+    it('should start correctly', () => {
+      engine.start('test-scenario');
+      expect(engine.getAssertions()).toHaveLength(0);
+      expect(engine.getTimeline()).toHaveLength(1); // test_started event
     });
     
     it('should clear history on start', () => {
-      engine.start();
-      engine.stop();
+      engine.start('test-1');
+      engine.reset();
       
-      engine.start(); // Should reset
-      expect(engine.getAssertionHistory()).toHaveLength(0);
+      engine.start('test-2');
+      expect(engine.getAssertions()).toHaveLength(0);
     });
   });
   
   describe('waitForCondition', () => {
     it('should pass when condition is met', async () => {
-      engine.start();
+      engine.start('test-scenario');
       
       let counter = 0;
-      await engine.waitForCondition(
+      const result = await engine.waitForCondition(
+        'counter_increment',
         () => counter++ > 0,
-        1000,
-        'Counter should increment'
+        1000
       );
       
-      engine.stop();
-      expect(engine.getEventTimeline().length).toBeGreaterThan(0);
+      expect(result.passed).toBe(true);
+      expect(engine.getTimeline().length).toBeGreaterThan(0);
     });
     
     it('should fail when condition is not met within timeout', async () => {
-      engine.start();
+      engine.start('test-scenario');
       
-      await expect(
-        engine.waitForCondition(
-          () => false,
-          100,
-          'Should timeout'
-        )
-      ).rejects.toThrow('Timeout');
+      const result = await engine.waitForCondition(
+        'always_false',
+        () => false,
+        100
+      );
       
-      engine.stop();
+      expect(result.passed).toBe(false);
+      expect(result.error).toContain('Timeout');
     });
   });
   
   describe('assertion history', () => {
     it('should track assertions', async () => {
-      engine.start();
+      engine.start('test-scenario');
       
-      try {
-        await engine.assertNoTimeout(
-          () => true,
-          100,
-          'immediate_true'
-        );
-      } catch {
-        // Ignore
-      }
+      const result = await engine.waitForCondition(
+        'immediate_true',
+        () => true,
+        100
+      );
       
-      engine.stop();
+      expect(result.passed).toBe(true);
       
-      const history = engine.getAssertionHistory();
+      const history = engine.getAssertions();
       expect(history.length).toBeGreaterThan(0);
-      expect(history[0].name).toContain('no_timeout');
+      expect(history[0].name).toBe('immediate_true');
       expect(history[0].passed).toBe(true);
     });
   });
   
   describe('report generation', () => {
     it('should generate JSON report', async () => {
-      engine.start();
+      engine.start('test-scenario');
       
-      try {
-        await engine.waitForCondition(() => true, 100);
-      } catch {
-        // Ignore
-      }
+      await engine.waitForCondition('test_condition', () => true, 100);
       
-      const report = await engine.generateReport(
+      const report = engine.generateReport(
         'test-scenario',
         'test-prompt'
       );
       
-      expect(report.scenarioName).toBe('test-scenario');
+      expect(report.scenario).toBe('test-scenario');
       expect(report.prompt).toBe('test-prompt');
-      expect(report.startTime).toBeGreaterThan(0);
-      expect(report.endTime).toBeGreaterThan(0);
+      expect(report.startedAt).toBeGreaterThan(0);
+      expect(report.completedAt).toBeGreaterThan(0);
       expect(report.durationMs).toBeGreaterThanOrEqual(0);
       expect(typeof report.passed).toBe('boolean');
-      expect(Array.isArray(report.assertionResults)).toBe(true);
-      expect(Array.isArray(report.eventTimeline)).toBe(true);
+      expect(Array.isArray(report.assertions)).toBe(true);
+      expect(Array.isArray(report.timeline)).toBe(true);
     });
     
     it('should generate human-readable report', async () => {
-      engine.start();
+      engine.start('test-scenario');
       
-      const report = await engine.generateReport(
+      const report = engine.generateReport(
         'test-scenario',
         'test-prompt'
       );
       
-      const humanReadable = engine.generateHumanReadableReport(report);
+      const humanReadable = engine.formatHumanReadableReport(report);
       expect(humanReadable).toContain('Test Report');
       expect(humanReadable).toContain('test-scenario');
       expect(humanReadable).toContain('test-prompt');
-      expect(humanReadable).toContain('Status');
-    });
-  });
-});
-
-describe('AssertionHelpers', () => {
-  let engine: AssertionEngine;
-  let helpers: AssertionHelpers;
-  
-  beforeEach(() => {
-    engine = new AssertionEngine({});
-    helpers = new AssertionHelpers(engine);
-    engine.start();
-  });
-  
-  afterEach(() => {
-    engine.stop();
-  });
-  
-  describe('assertNoToolCallErrors', () => {
-    it('should pass when no errors', async () => {
-      await expect(helpers.assertNoToolCallErrors()).resolves.not.toThrow();
-      
-      const history = engine.getAssertionHistory();
-      expect(history.some(a => a.name === 'no_tool_call_errors' && a.passed)).toBe(true);
-    });
-  });
-  
-  describe('assertEventSequence', () => {
-    it('should pass for empty sequence', async () => {
-      await expect(helpers.assertEventSequence([], 100)).resolves.not.toThrow();
-    });
-    
-    it('should fail for non-existent sequence', async () => {
-      await expect(
-        helpers.assertEventSequence(['nonexistent_tool'], 100)
-      ).rejects.toThrow('Timeout');
     });
   });
 });

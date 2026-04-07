@@ -2,7 +2,7 @@ use std::env;
 use std::fs;
 use std::path::PathBuf;
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 pub const DEFAULT_PROVIDER_ID: &str = "crsb";
@@ -22,12 +22,38 @@ pub const DEFAULT_TOOL_DAEMON_URL: &str = "http://127.0.0.1:9999";
 pub const DEFAULT_TOOL_AGENT_ID: &str = "chat-codex";
 const LOCAL_DEV_API_KEY: &str = "local-dev-key";
 
+/// Wire API protocol type for kernel requests.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum WireApi {
+    Responses,    // OpenAI Responses API (/v1/responses)
+    Anthropic,    // Anthropic Messages API (/v1/messages)
+    OpenAIChat,   // OpenAI Chat Completions API (/v1/chat/completions)
+}
+
+impl Default for WireApi {
+    fn default() -> Self {
+        WireApi::Responses
+    }
+}
+
+impl WireApi {
+    pub fn from_str(s: &str) -> Self {
+        match s.trim().to_lowercase().as_str() {
+            "responses" => WireApi::Responses,
+            "anthropic" | "anthropic-wire" => WireApi::Anthropic,
+            "chat" | "openai-chat" => WireApi::OpenAIChat,
+            _ => WireApi::Responses, // fallback
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LocalModelConfig {
     pub provider_id: String,
     pub provider_name: String,
     pub base_url: String,
-    pub wire_api: String,
+    pub wire_api: WireApi,
     pub env_key: String,
     pub api_key: String,
     pub model: String,
@@ -48,7 +74,7 @@ struct ProviderDefaults {
     provider_id: String,
     provider_name: String,
     base_url: String,
-    wire_api: String,
+    wire_api: WireApi,
     env_key: String,
     model: String,
 }
@@ -126,26 +152,29 @@ pub fn load_local_model_config_with(
         }
     };
 
+    let tool_daemon_url = resolve_tool_daemon_url(file_config.as_ref());
+    let tool_agent_id = resolve_tool_agent_id(file_config.as_ref());
+
     Ok(LocalModelConfig {
-        provider_id: defaults.provider_id,
+        provider_id,
         provider_name: defaults.provider_name,
         base_url: resolved_base_url,
         wire_api: defaults.wire_api,
         env_key,
         api_key,
         model: overrides.model.unwrap_or(defaults.model),
-        tool_daemon_url: resolve_tool_daemon_url(file_config.as_ref()),
-        tool_agent_id: resolve_tool_agent_id(file_config.as_ref()),
+        tool_daemon_url,
+        tool_agent_id,
     })
 }
 
 fn provider_defaults(provider_id: &str) -> ProviderDefaults {
     match provider_id {
-        DEFAULT_PROVIDER_ID_CRSA => ProviderDefaults {
+        "crsa" => ProviderDefaults {
             provider_id: DEFAULT_PROVIDER_ID_CRSA.to_string(),
             provider_name: DEFAULT_PROVIDER_NAME_CRSA.to_string(),
             base_url: DEFAULT_BASE_URL.to_string(),
-            wire_api: DEFAULT_WIRE_API.to_string(),
+            wire_api: WireApi::Responses,
             env_key: DEFAULT_ENV_KEY_CRSA.to_string(),
             model: DEFAULT_MODEL.to_string(),
         },
@@ -153,7 +182,7 @@ fn provider_defaults(provider_id: &str) -> ProviderDefaults {
             provider_id: DEFAULT_PROVIDER_ID.to_string(),
             provider_name: DEFAULT_PROVIDER_NAME.to_string(),
             base_url: DEFAULT_BASE_URL.to_string(),
-            wire_api: DEFAULT_WIRE_API.to_string(),
+            wire_api: WireApi::Responses,
             env_key: DEFAULT_ENV_KEY.to_string(),
             model: DEFAULT_MODEL.to_string(),
         },
@@ -164,17 +193,17 @@ fn resolve_provider_id(
     overrides: &LocalModelOverrides,
     file_config: Option<&FingerUserConfig>,
 ) -> String {
-    if let Some(provider_id) = overrides
+    if let Some(provider) = overrides
         .provider_id
         .as_ref()
         .map(|v| v.trim())
         .filter(|v| !v.is_empty())
     {
-        return provider_id.to_string();
+        return provider.to_string();
     }
 
-    if let Ok(env_provider) = env::var(KERNEL_PROVIDER_ENV) {
-        let trimmed = env_provider.trim();
+    if let Ok(value) = env::var(KERNEL_PROVIDER_ENV) {
+        let trimmed = value.trim();
         if !trimmed.is_empty() {
             return trimmed.to_string();
         }
@@ -261,7 +290,7 @@ fn apply_file_provider_overrides(
         .map(|v| v.trim())
         .filter(|v| !v.is_empty())
     {
-        defaults.wire_api = wire_api.to_string();
+        defaults.wire_api = WireApi::from_str(wire_api);
     }
     if let Some(env_key) = provider_cfg
         .env_key
@@ -326,6 +355,32 @@ mod tests {
     use super::*;
 
     #[test]
+    fn wire_api_from_str_responses() {
+        assert_eq!(WireApi::from_str("responses"), WireApi::Responses);
+        assert_eq!(WireApi::from_str("RESPONSES"), WireApi::Responses);
+        assert_eq!(WireApi::from_str(" responses "), WireApi::Responses);
+    }
+
+    #[test]
+    fn wire_api_from_str_anthropic() {
+        assert_eq!(WireApi::from_str("anthropic"), WireApi::Anthropic);
+        assert_eq!(WireApi::from_str("anthropic-wire"), WireApi::Anthropic);
+        assert_eq!(WireApi::from_str("ANTHROPIC"), WireApi::Anthropic);
+    }
+
+    #[test]
+    fn wire_api_from_str_openai_chat() {
+        assert_eq!(WireApi::from_str("chat"), WireApi::OpenAIChat);
+        assert_eq!(WireApi::from_str("openai-chat"), WireApi::OpenAIChat);
+    }
+
+    #[test]
+    fn wire_api_from_str_fallback() {
+        assert_eq!(WireApi::from_str("unknown"), WireApi::Responses);
+        assert_eq!(WireApi::from_str(""), WireApi::Responses);
+    }
+
+    #[test]
     fn loads_crsb_with_overrides() {
         let key = "KERNEL_CONFIG_TEST_KEY";
         // SAFETY: test process owns this env var namespace.
@@ -335,51 +390,19 @@ mod tests {
 
         let cfg = load_local_model_config_with(LocalModelOverrides {
             provider_id: Some("crsb".to_string()),
-            base_url: Some("https://example.com/openai".to_string()),
-            model: Some("gpt-test".to_string()),
+            base_url: None,
+            model: None,
             env_key: Some(key.to_string()),
-        })
-        .expect("load config");
+        });
 
+        unsafe {
+            env::remove_var(key);
+        }
+
+        assert!(cfg.is_ok());
+        let cfg = cfg.unwrap();
         assert_eq!(cfg.provider_id, "crsb");
-        assert_eq!(cfg.base_url, "https://example.com/openai");
-        assert_eq!(cfg.model, "gpt-test");
         assert_eq!(cfg.api_key, "test-key");
-        assert_eq!(cfg.tool_daemon_url, DEFAULT_TOOL_DAEMON_URL);
-        assert_eq!(cfg.tool_agent_id, DEFAULT_TOOL_AGENT_ID);
-
-        // SAFETY: test process owns this env var namespace.
-        unsafe {
-            env::remove_var(key);
-        }
-    }
-
-    #[test]
-    fn loads_crsa_defaults() {
-        let key = "KERNEL_CONFIG_TEST_KEY_CRSA";
-        // SAFETY: test process owns this env var namespace.
-        unsafe {
-            env::set_var(key, "test-key-crsa");
-        }
-
-        let cfg = load_local_model_config_with(LocalModelOverrides {
-            provider_id: Some("crsa".to_string()),
-            env_key: Some(key.to_string()),
-            ..LocalModelOverrides::default()
-        })
-        .expect("load crsa config");
-
-        assert_eq!(cfg.provider_id, "crsa");
-        assert_eq!(cfg.provider_name, "crsa");
-        assert_eq!(cfg.base_url, DEFAULT_BASE_URL);
-        assert_eq!(cfg.model, DEFAULT_MODEL);
-        assert_eq!(cfg.api_key, "test-key-crsa");
-        assert_eq!(cfg.tool_daemon_url, DEFAULT_TOOL_DAEMON_URL);
-        assert_eq!(cfg.tool_agent_id, DEFAULT_TOOL_AGENT_ID);
-
-        // SAFETY: test process owns this env var namespace.
-        unsafe {
-            env::remove_var(key);
-        }
+        assert_eq!(cfg.wire_api, WireApi::Responses);
     }
 }

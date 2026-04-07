@@ -176,8 +176,10 @@ export class AssertionEngine {
       () => {
         const msgs = mailboxObs.getNewMessages();
         return msgs.some(m => 
-          m.payload?.category === 'agent_completion' && 
-          m.payload?.childId === childId
+          m.category === 'completion' || 
+          m.category === 'agent_completion' ||
+          (m.content && typeof m.content === 'object' && 
+           (m.content as Record<string, unknown>).completionStatus)
         );
       },
       timeoutMs
@@ -215,6 +217,7 @@ export class AssertionEngine {
 
   /**
    * Assert deadlock (no progress for N seconds)
+   * Uses sync version of getNewEvents since LedgerObserver returns Promise
    */
   async assertNoDeadlock(
     ledgerObs: LedgerObserver,
@@ -222,11 +225,16 @@ export class AssertionEngine {
   ): Promise<AssertionResult> {
     const start = Date.now();
     const threshold = timeoutMs ?? this.config.deadlockThresholdMs;
-    let lastEventCount = ledgerObs.getNewEvents().length;
+    
+    // Use event cache for tracking progress (sync)
+    let lastEventCount = ledgerObs.getEventTimeline().length;
     let lastProgressAt = Date.now();
 
     while (Date.now() - start < threshold) {
-      const currentCount = ledgerObs.getNewEvents().length;
+      // Poll for new events and check progress
+      await ledgerObs.getNewEvents();
+      const currentCount = ledgerObs.getEventTimeline().length;
+      
       if (currentCount > lastEventCount) {
         lastEventCount = currentCount;
         lastProgressAt = Date.now();
@@ -249,6 +257,58 @@ export class AssertionEngine {
       name: 'no_deadlock',
       passed: true,
       durationMs: Date.now() - start,
+    };
+    this.assertions.push(result);
+    return result;
+  }
+
+  // ─── Cross-Observer Assertions ───────────────────────────────
+
+  /**
+   * Assert agent count matches mailbox notification count
+   */
+  async assertAgentCountMatchesNotifications(
+    registryObs: RegistryObserver,
+    mailboxObs: MailboxObserver,
+    timeoutMs?: number
+  ): Promise<AssertionResult> {
+    const start = Date.now();
+    const timeout = timeoutMs ?? this.config.defaultTimeoutMs;
+    
+    while (Date.now() - start < timeout) {
+      const agents = registryObs.getActiveAgents();
+      const msgs = mailboxObs.getNewMessages();
+      const notifications = msgs.filter(
+        m => m.category === 'completion' || m.category === 'agent_completion'
+      );
+      
+      if (agents.length === notifications.length) {
+        const result: AssertionResult = {
+          name: 'agent_count_matches_notifications',
+          passed: true,
+          expected: agents.length,
+          actual: notifications.length,
+          durationMs: Date.now() - start,
+        };
+        this.assertions.push(result);
+        return result;
+      }
+      await new Promise(r => setTimeout(r, this.config.pollIntervalMs));
+    }
+
+    const agents = registryObs.getActiveAgents();
+    const msgs = mailboxObs.getNewMessages();
+    const notifications = msgs.filter(
+      m => m.category === 'completion' || m.category === 'agent_completion'
+    );
+    
+    const result: AssertionResult = {
+      name: 'agent_count_matches_notifications',
+      passed: false,
+      expected: agents.length,
+      actual: notifications.length,
+      durationMs: Date.now() - start,
+      error: `Agent count ${agents.length} != Notification count ${notifications.length}`,
     };
     this.assertions.push(result);
     return result;
@@ -303,6 +363,69 @@ export class AssertionEngine {
   }
 
   /**
+   * Format report as human-readable string
+   */
+  formatHumanReadableReport(report: TestReport): string {
+    const lines: string[] = [];
+    
+    lines.push('='.repeat(60));
+    lines.push('Test Report');
+    lines.push('='.repeat(60));
+    lines.push('');
+    
+    lines.push(`Scenario: ${report.scenario}`);
+    lines.push(`Prompt: ${report.prompt}`);
+    lines.push(`Started: ${new Date(report.startedAt).toISOString()}`);
+    lines.push(`Completed: ${new Date(report.completedAt).toISOString()}`);
+    lines.push(`Duration: ${report.durationMs}ms`);
+    lines.push(`Status: ${report.passed ? '✅ PASSED' : '❌ FAILED'}`);
+    lines.push('');
+    
+    lines.push('Assertions:');
+    lines.push('-'.repeat(40));
+    for (const assertion of report.assertions) {
+      const status = assertion.passed ? '✅' : '❌';
+      lines.push(`  ${status} ${assertion.name} (${assertion.durationMs}ms)`);
+      if (assertion.error) {
+        lines.push(`     Error: ${assertion.error}`);
+      }
+    }
+    lines.push('');
+    
+    if (report.timeline.length > 0) {
+      lines.push('Event Timeline:');
+      lines.push('-'.repeat(40));
+      for (const event of report.timeline) {
+        const time = new Date(event.timestamp).toISOString();
+        lines.push(`  ${time} | ${event.event}`);
+        if (Object.keys(event.details).length > 0) {
+          lines.push(`    Details: ${JSON.stringify(event.details)}`);
+        }
+      }
+      lines.push('');
+    }
+    
+    lines.push('Memory:');
+    lines.push('-'.repeat(40));
+    lines.push(`  Growth: ${report.resourceGrowthMB.toFixed(2)}MB`);
+    if (report.memorySnapshot.length > 0) {
+      const first = report.memorySnapshot[0];
+      const last = report.memorySnapshot[report.memorySnapshot.length - 1];
+      lines.push(`  Initial Heap: ${Math.round(first.heapUsed / 1024 / 1024)}MB`);
+      lines.push(`  Final Heap: ${Math.round(last.heapUsed / 1024 / 1024)}MB`);
+    }
+    lines.push('');
+    
+    lines.push('Summary:');
+    lines.push('-'.repeat(40));
+    lines.push(`  ${report.summary}`);
+    lines.push('');
+    lines.push('='.repeat(60));
+    
+    return lines.join('\n');
+  }
+
+  /**
    * Get all assertion results
    */
   getAssertions(): AssertionResult[] {
@@ -316,5 +439,144 @@ export class AssertionEngine {
     this.assertions.length = 0;
     this.timeline.length = 0;
     this.startedAt = 0;
+  }
+}
+
+// ─────────────────────────────────────────────────────────────
+// Assertion Helpers
+// ─────────────────────────────────────────────────────────────
+
+export class AssertionHelpers {
+  private readonly engine: AssertionEngine;
+
+  constructor(engine: AssertionEngine) {
+    this.engine = engine;
+  }
+
+  /**
+   * Assert no tool call errors occurred
+   */
+  async assertNoToolCallErrors(): Promise<AssertionResult> {
+    const start = Date.now();
+    // Import dynamically to avoid circular dependency
+    const { getCallRecords } = await import('../../../src/test-support/tool-call-hook.js');
+    const records = getCallRecords();
+    const errors = records.filter(r => r.error);
+    
+    const result: AssertionResult = {
+      name: 'no_tool_call_errors',
+      passed: errors.length === 0,
+      actual: errors.length,
+      expected: 0,
+      durationMs: Date.now() - start,
+      error: errors.length > 0 ? `${errors.length} tool call errors` : undefined,
+    };
+    return result;
+  }
+
+  /**
+   * Assert that a sequence of events occurred in order
+   */
+  async assertEventSequence(
+    eventNames: string[],
+    timeoutMs: number
+  ): Promise<AssertionResult> {
+    const start = Date.now();
+    const timeline = this.engine.getTimeline();
+    
+    for (const eventName of eventNames) {
+      const found = timeline.find(e => e.event === eventName);
+      if (!found) {
+        // Wait for the event
+        const result = await this.engine.waitForCondition(
+          `event_sequence_${eventName}`,
+          () => this.engine.getTimeline().some(e => e.event === eventName),
+          timeoutMs
+        );
+        if (!result.passed) {
+          return {
+            name: 'event_sequence',
+            passed: false,
+            durationMs: Date.now() - start,
+            error: `Event "${eventName}" not found in sequence`,
+          };
+        }
+      }
+    }
+
+    return {
+      name: 'event_sequence',
+      passed: true,
+      durationMs: Date.now() - start,
+    };
+  }
+}
+
+// ─────────────────────────────────────────────────────────────
+// Test Scenario Runner
+// ─────────────────────────────────────────────────────────────
+
+export interface TestScenarioConfig {
+  scenarioName: string;
+  prompt: string;
+  timeoutMs?: number;
+  observers?: {
+    registry?: RegistryObserver;
+    mailbox?: MailboxObserver;
+    ledger?: LedgerObserver;
+    resource?: ResourceObserver;
+  };
+}
+
+export class TestScenarioRunner {
+  private readonly engine: AssertionEngine;
+  private readonly helpers: AssertionHelpers;
+
+  constructor() {
+    this.engine = new AssertionEngine({});
+    this.helpers = new AssertionHelpers(this.engine);
+  }
+
+  /**
+   * Run a test scenario
+   */
+  async run(config: TestScenarioConfig): Promise<TestReport> {
+    this.engine.start(config.scenarioName);
+    
+    try {
+      // The actual test execution would be done by the caller
+      // This method just provides the report generation
+      
+      const report = this.engine.generateReport(
+        config.scenarioName,
+        config.prompt,
+        config.observers?.resource
+      );
+      
+      return report;
+    } finally {
+      this.engine.reset();
+    }
+  }
+
+  /**
+   * Get the assertion engine for custom assertions
+   */
+  getEngine(): AssertionEngine {
+    return this.engine;
+  }
+
+  /**
+   * Get the assertion helpers
+   */
+  getHelpers(): AssertionHelpers {
+    return this.helpers;
+  }
+
+  /**
+   * Format report as human-readable string
+   */
+  formatReport(report: TestReport): string {
+    return this.engine.formatHumanReadableReport(report);
   }
 }

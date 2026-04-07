@@ -21,7 +21,10 @@ use time::OffsetDateTime;
 use tokio::sync::mpsc::UnboundedSender;
 use tokio::time::{sleep, Duration};
 
+pub mod anthropic_engine;
+pub use anthropic_engine::AnthropicChatEngine;
 mod protocol;
+
 
 use protocol::request::build_responses_request_payload;
 use protocol::response::parse_wire_response;
@@ -826,7 +829,7 @@ impl ChatEngine for ResponsesChatEngine {
 }
 
 #[derive(Debug, Clone)]
-struct ParsedResponse {
+pub(crate) struct ParsedResponse {
     output_text: Option<String>,
     function_calls: Vec<FunctionCallItem>,
     history_items: Vec<Value>,
@@ -839,14 +842,14 @@ struct ParsedResponse {
 }
 
 #[derive(Debug, Clone, Default)]
-struct ParsedUsage {
+pub(crate) struct ParsedUsage {
     input_tokens: Option<u64>,
     output_tokens: Option<u64>,
     total_tokens: Option<u64>,
 }
 
 #[derive(Debug, Clone)]
-struct FunctionCallItem {
+pub(crate) struct FunctionCallItem {
     call_id: String,
     name: String,
     arguments: String,

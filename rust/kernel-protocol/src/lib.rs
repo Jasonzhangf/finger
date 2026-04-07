@@ -59,6 +59,8 @@ pub struct UserTurnOptions {
     pub context_ledger: Option<ContextLedgerOptions>,
     #[serde(default)]
     pub responses: Option<ResponsesRequestOptions>,
+    #[serde(default)]
+    pub anthropic: Option<AnthropicRequestOptions>,
 }
 
 impl UserTurnOptions {
@@ -71,6 +73,7 @@ impl UserTurnOptions {
             && options.history_items.is_empty()
             && options.developer_instructions.is_none()
             && options.user_instructions.is_none()
+            && options.anthropic.is_none()
             && options.environment_context.is_none()
             && options.turn_context.is_none()
             && options.context_window.is_none()
@@ -115,6 +118,34 @@ pub struct ResponsesTextOptions {
     pub verbosity: Option<String>,
     #[serde(default)]
     pub output_schema: Option<Value>,
+}
+
+/// Anthropic Messages API-specific request options.
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq)]
+pub struct AnthropicRequestOptions {
+    /// Maximum tokens to generate (required for Anthropic API).
+    #[serde(default)]
+    pub max_tokens: Option<u64>,
+    /// Sampling temperature (0.0-1.0).
+    #[serde(default)]
+    pub temperature: Option<f64>,
+    /// Custom stop sequences.
+    #[serde(default)]
+    pub stop_sequences: Option<Vec<String>>,
+    /// Disable parallel tool use (inverse of Responses parallel_tool_calls).
+    #[serde(default)]
+    pub disable_parallel_tool_use: Option<bool>,
+    /// Enable extended thinking mode (Claude 3.7+).
+    #[serde(default)]
+    pub thinking: Option<AnthropicThinkingOptions>,
+}
+
+/// Anthropic extended thinking options.
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Eq)]
+pub struct AnthropicThinkingOptions {
+    /// Budget for thinking tokens.
+    #[serde(default)]
+    pub budget_tokens: Option<u64>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Eq)]
