@@ -305,8 +305,9 @@ export function attachEventForwarding(deps: EventForwardingDeps): {
   const normalizeDispatchLedgerSessionId = (rawSessionId: string | undefined) =>
     _normalizeDispatchLedgerSessionId(sessionManager, rawSessionId);
 
-  const MAX_DEDUP_ENTRIES = 1000;
-  const CONTROL_HOOK_DEDUP_TTL_MS = 10 * 60_000;
+  const resolveSessionOwnerAgentId = (sessionId: string): string => {
+    if (typeof (sessionManager as SessionManager & { getSession?: unknown }).getSession !== 'function') {
+      return generalAgentId;
 
   const enforceMaxEntries = (map: Map<string, number>) => {
     if (map.size >= MAX_DEDUP_ENTRIES) {
@@ -316,11 +317,6 @@ export function attachEventForwarding(deps: EventForwardingDeps): {
       }
     }
   };
-
-  const resolveSessionOwnerAgentId = (sessionId: string): string => {
-    if (typeof (sessionManager as SessionManager & { getSession?: unknown }).getSession !== 'function') {
-      return generalAgentId;
-
     }
     const session = sessionManager.getSession(sessionId);
     if (session && isObjectRecord(session.context)) {
