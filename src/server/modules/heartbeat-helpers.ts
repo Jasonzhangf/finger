@@ -3,6 +3,11 @@
  *
  * Extracted from heartbeat-scheduler.ts to stay under 500-line limit.
  * Contains mailbox prompt formatting, mailbox check dispatch, and project resolution utilities.
+ * 
+ * 设计原则（2026-04-07 更新）：
+ * 1. 链路层 Ping (Dry-Run) - 每轮心跳，agent 无感知，底层自动完成
+ * 2. 真实 Mailbox Check - 有待处理任务 + agent 空闲时，dispatch 给 agent
+ * 3. E2E 测试 - 定期（每周），真实业务验证
  */
 
 import { isObjectRecord } from '../common/object.js';
@@ -13,6 +18,7 @@ import { buildHeartbeatEnvelope, formatEnvelopesForContext, type MailboxEnvelope
 import { logger } from '../../core/logger.js';
 import type { ProgressDeliveryPolicy } from '../../common/progress-delivery-policy.js';
 import { normalizeProgressDeliveryPolicy } from '../../common/progress-delivery-policy.js';
+import { mailboxPing, mailboxPingBatch, type MailboxPingResult, shouldRunE2ETest, DEFAULT_E2E_TEST_INTERVAL_MS } from './heartbeat-mailbox-ping.js';
 
 const log = logger.module('HeartbeatHelpers');
 
@@ -114,14 +120,58 @@ export interface MailboxCheckContext {
 }
 
 /**
- * Build and dispatch mailbox check prompts for all agents with pending messages.
- * Extracted from HeartbeatScheduler to keep under 500-line limit.
+ * 链路层 Ping (Dry-Run) - 底层连通性测试
+ * 
+ * 类似 TCP keepalive，系统内部自动响应
+ * 不需要 dispatch 给 agent，不需要模型推理
+ * 
+ * @param targets - 目标 agent 列表
+ * @returns Ping 结果列表
+ */
+export function performMailboxPingDryRun(
+  targets: MailboxCheckTarget[],
+): MailboxPingResult[] {
+  const results: MailboxPingResult[] = [];
+  for (const target of targets) {
+    const result = mailboxPing(target.agentId);
+    results.push(result);
+  }
+  return results;
+}
+
+/**
+ * 真实 Mailbox Check - 有待处理任务时 dispatch 给 agent
+ * 
+ * 条件：
+ * 1. agent 有 pending 消息
+ * 2. 到了检查时间（mailboxCheckIntervalMs）
+ * 3. agent 不在 busy 状态（或 busy 但标记为 deferred）
+ * 
+ * @param ctx - Mailbox check 上下文
  */
 export async function promptMailboxChecks(
   ctx: MailboxCheckContext,
 ): Promise<void> {
   const projectAgents = await listAgents();
   const agents = buildMailboxCheckTargets(projectAgents);
+  
+  // 先执行链路层 Ping（agent 无感知）
+  const pingResults = performMailboxPingDryRun(agents);
+  
+  // Debug 日志记录 ping 结果
+  for (const pingResult of pingResults) {
+    if (pingResult.pending > 0 || !pingResult.ok) {
+      log.debug('[HeartbeatScheduler] Mailbox ping result', {
+        agentId: pingResult.agentId,
+        ok: pingResult.ok,
+        pending: pingResult.pending,
+        unread: pingResult.unread,
+        latency: pingResult.latencyMs,
+      });
+    }
+  }
+  
+  // 然后检查是否需要 dispatch 真实的 mailbox-check 任务
   for (const agent of agents) {
     const now = Date.now();
     const mailboxCheckIntervalMs = ctx.resolveMailboxCheckIntervalMs(agent.projectId);
@@ -209,20 +259,18 @@ export async function promptMailboxChecks(
 
     const mailboxContext = envelopes.length > 0
       ? formatEnvelopesForContext(envelopes)
-      : pending.map((m) => `- ${m.id}: ${typeof m.content === 'string' ? m.content.slice(0, 80) : JSON.stringify(m.content).slice(0, 80)}`).join('\n');
+      : messageRefs.map((r) => `- ${r}`).join('\n');
 
     const prompt = [
+      '# Mailbox Check',
+      '你有待处理的系统任务，请逐条执行。',
+      '',
+      '待办任务列表：',
       mailboxContext,
       '',
-      ...(deferredNotificationCount > 0
-        ? [`还有 ${deferredNotificationCount} 条 notification 已延后，等当前待办清空后再读。`, '']
-        : []),
-      '待确认消息：',
-      ...(messageRefs.length > 0 ? messageRefs : ['- (none)']),
-      '',
       '处理规则：',
-      '1. 少量任务可逐条 mailbox.read(id)；如果同类待办很多，可先用 mailbox.read_all({ unreadOnly: true, category: "<category>" }) 批量读取。',
-      '2. 只有真正处理完成后才能调用 mailbox.ack(id, { summary/result })；失败时用 mailbox.ack(id, { status: "failed", error })。',
+      '1. 每次只处理一条任务，完成后再处理下一条。',
+      '2. 调用 mailbox.read(messageId) 读取详情，执行任务，然后调用 mailbox.ack(messageId) 标记完成。',
       '3. 如果暂时无法处理，不要 ack；未读取的保持 pending，已读取的保持 processing。',
       '',
       '每个任务完成后必须调用 report-task-completion 工具提交 summary。',
@@ -253,3 +301,7 @@ export function formatMailboxCheckPrompt(envelopes: MailboxEnvelope[], messageRe
     : messageRefs.map((r) => `- ${r}`).join('\n');
   return mailboxContext;
 }
+
+// Re-export mailbox ping utilities
+export { mailboxPing, mailboxPingBatch, shouldRunE2ETest, DEFAULT_E2E_TEST_INTERVAL_MS };
+export type { MailboxPingResult };
