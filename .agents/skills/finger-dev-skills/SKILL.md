@@ -543,13 +543,16 @@ dispatchTask → executeDispatch → sendToModule → callTool
 
 ## Section 10: Context Compact 设计（2026-04-07）
 
-### 核心原则
+### 核心原则（认知修正 2026-04-07）
 
 1. **Deterministic Digest**：不调用 LLM，直接截断 + 提取工具调用
 2. **预算管理**：contextHistory > 20K 时移除最旧的 digest
-3. **两层分离**：
-   - Turn-level Digest（finish_reason=stop 触发）
-   - Context Compact（85% 触发 或 手动触发）
+3. **Compact 与 Rebuild 是同一操作**（关键认知修正）:
+   - ❌ 错误理解：compact 和 context rebuild 是两件事，先 compact 再想办法触发 rebuild
+   - ✅ 正确理解：compact 的目的就是为了 rebuild context，它们是一个原子操作
+   - compact：将 currentHistory 压缩成 digest，写入 compact-memory.jsonl
+   - rebuild：基于新指针（contextHistory + currentHistory）重建上下文窗口
+   - **必须在同一函数内完成**，确保 Kernel 拿到重建后的上下文
 
 ### Compact 完整流程
 
@@ -617,6 +620,8 @@ await runtime.compressContext(sessionId, { trigger: 'manual' });
 1. ❌ **不要在 compact 时调用 LLM**：使用 deterministic digest
 2. ❌ **不要忘记 force 参数**：手动压缩时必须 force=true
 3. ❌ **不要在 turn_digest 中包含 source_range**：只有 compact_block 才有
+4. ❌ **不要把 compact 和 rebuild 分开**：compact 完成后必须立即 rebuild，它们是同一操作的两个阶段
+5. ❌ **不要期望 Kernel 自动获取新上下文**：compact 后必须主动调用 context_builder.rebuild 或返回新上下文给 Kernel
 
 ---
 

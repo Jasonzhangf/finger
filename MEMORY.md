@@ -215,6 +215,14 @@
 - [2026-03-23] `context_ledger.memory` 查询接口改为三段式：`index` 只负责索引维护，`search` 默认返回 slot-indexed 命中摘要，`query` 通过 `slot_start/slot_end` + `detail=true` 拉取小范围明细；同时 `memory-ledger` CLI 写 stdout/stderr 后不再立刻 `process.exit()`，避免大 JSON 输出在 pipe 中被截断。
   Tags: context-ledger, search, slot, query, cli, truncation
 
+- [2026-04-07] **关键认知修正**：compact 和 context rebuild 是同一操作的不同阶段，不是两件事。
+  - ❌ 错误理解：先 compact（压缩），再想办法触发 rebuild（重建）
+  - ✅ 正确理解：compact 的目的就是为了 rebuild context，它们是一个原子操作
+  - compact：将 currentHistory 压缩成 digest，写入 compact-memory.jsonl
+  - rebuild：基于新指针（contextHistory + currentHistory）重建上下文窗口
+  - **必须在同一函数内完成**，确保 Kernel 拿到重建后的上下文
+  Tags: compact, rebuild, context, cognitive-correction
+
 ## Long-term Memory
 - [2026-03-14 15:27:58] role=user
   summary: "完成 CACHE.md + MEMORY.md 双层记忆管理与 Reviewer 流程联动，测试通过，任务已闭环"
