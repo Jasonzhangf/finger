@@ -354,26 +354,68 @@ export async function compactSessionHistory(
 export function extractContextHistoryPointers(session: Session, tokenBudget?: number): ContextHistoryPointers {
   const context = session.context || {};
   
-  return {
-    currentHistoryStart: typeof context.currentHistoryStart === 'number' 
+  // 优先使用 pointers 新架构
+  const ptr = session.pointers;
+  
+  let currentHistoryStart: number;
+  let currentHistoryEnd: number;
+  let currentHistoryTokens: number;
+  let contextHistoryStart: number;
+  let contextHistoryEnd: number;
+  let contextHistoryTokens: number;
+  
+  if (ptr) {
+    currentHistoryStart = ptr.currentHistory.startLine;
+    currentHistoryEnd = ptr.currentHistory.endLine;
+    currentHistoryTokens = ptr.currentHistory.estimatedTokens;
+    contextHistoryStart = ptr.contextHistory.startLine;
+    contextHistoryEnd = ptr.contextHistory.endLine;
+    contextHistoryTokens = ptr.contextHistory.estimatedTokens;
+  } else {
+    currentHistoryStart = typeof context.currentHistoryStart === 'number' 
       ? context.currentHistoryStart 
-      : session.originalStartIndex ?? 0,
-    currentHistoryEnd: typeof context.currentHistoryEnd === 'number'
+      : session.originalStartIndex ?? 0;
+    currentHistoryEnd = typeof context.currentHistoryEnd === 'number'
       ? context.currentHistoryEnd
-      : session.originalEndIndex ?? 0,
-    currentHistoryTokens: typeof context.currentHistoryTokens === 'number'
+      : session.originalEndIndex ?? 0;
+    currentHistoryTokens = typeof context.currentHistoryTokens === 'number'
       ? context.currentHistoryTokens
-      : session.totalTokens ?? 0,
-    contextHistoryStart: typeof context.contextHistoryStart === 'number'
+      : session.totalTokens ?? 0;
+    contextHistoryStart = typeof context.contextHistoryStart === 'number'
       ? context.contextHistoryStart
-      : 0,
-    contextHistoryEnd: typeof context.contextHistoryEnd === 'number'
+      : 0;
+    contextHistoryEnd = typeof context.contextHistoryEnd === 'number'
       ? context.contextHistoryEnd
-      : session.latestCompactIndex ?? -1,
-    contextHistoryTokens: typeof context.contextHistoryTokens === 'number'
+      : session.latestCompactIndex ?? -1;
+    contextHistoryTokens = typeof context.contextHistoryTokens === 'number'
       ? context.contextHistoryTokens
-      : 0,
-    totalTokens: session.totalTokens ?? 0,
+      : 0;
+  }
+  
+  // 指针倒置检测与修复
+  // 如果 currentHistoryStart > currentHistoryEnd，说明之前压缩后指针没正确更新
+  // 此时应该将 currentHistoryEnd 重置为 currentHistoryStart（空窗口）
+  if (currentHistoryStart > currentHistoryEnd) {
+    log.warn('[extractContextHistoryPointers] Pointer inversion detected, resetting', {
+      sessionId: session.id,
+      currentHistoryStart,
+      currentHistoryEnd,
+      action: 'reset currentHistoryEnd to currentHistoryStart',
+    });
+    currentHistoryEnd = currentHistoryStart;
+    currentHistoryTokens = 0;
+  }
+  
+  const totalTokens = currentHistoryTokens + contextHistoryTokens;
+  
+  return {
+    currentHistoryStart,
+    currentHistoryEnd,
+    currentHistoryTokens,
+    contextHistoryStart,
+    contextHistoryEnd,
+    contextHistoryTokens,
+    totalTokens,
     tokenBudget: tokenBudget ?? CONTEXT_HISTORY_BUDGET,
   };
 }
@@ -382,6 +424,7 @@ export function extractContextHistoryPointers(session: Session, tokenBudget?: nu
  * 更新 Session 的 ContextHistoryPointers
  */
 export function updateContextHistoryPointers(session: Session, pointers: ContextHistoryPointers): void {
+  // 更新 context（旧方式）
   session.context = session.context || {};
   session.context.currentHistoryStart = pointers.currentHistoryStart;
   session.context.currentHistoryEnd = pointers.currentHistoryEnd;
@@ -390,6 +433,20 @@ export function updateContextHistoryPointers(session: Session, pointers: Context
   session.context.contextHistoryEnd = pointers.contextHistoryEnd;
   session.context.contextHistoryTokens = pointers.contextHistoryTokens;
   session.totalTokens = pointers.totalTokens;
+  
+  // 更新 pointers（新架构）
+  session.pointers = {
+    contextHistory: {
+      startLine: pointers.contextHistoryStart,
+      endLine: pointers.contextHistoryEnd,
+      estimatedTokens: pointers.contextHistoryTokens,
+    },
+    currentHistory: {
+      startLine: pointers.currentHistoryStart,
+      endLine: pointers.currentHistoryEnd,
+      estimatedTokens: pointers.currentHistoryTokens,
+    },
+  };
   
   // 兼容旧字段
   session.latestCompactIndex = pointers.contextHistoryEnd;
