@@ -670,6 +670,16 @@ export function evaluateControlHooks(controlBlock: FingerControlBlock): ControlH
   if (controlBlock.learning.flow_patch.required) hooks.add('hook.project.flow.update');
   if (controlBlock.learning.memory_patch.required) hooks.add('hook.project.memory.update');
   if (controlBlock.learning.user_profile_patch.required) hooks.add('hook.user.profile.update');
+
+  // Write learning experiences to CACHE.md
+  if (
+    controlBlock.learning.did_right.length > 0 ||
+    controlBlock.learning.did_wrong.length > 0 ||
+    controlBlock.learning.repeated_wrong.length > 0
+  ) {
+    hooks.add('hook.cache.write_learning');
+  }
+
   return {
     hooks: Array.from(hooks),
     holdStop: hooks.has('hook.task.continue'),

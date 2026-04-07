@@ -623,6 +623,30 @@ export function attachEventForwarding(deps: EventForwardingDeps): {
           continue;
         }
 
+        // Write learning experiences to CACHE.md
+        if (hook === 'hook.cache.write_learning') {
+          const didRight = toUniqueStringArray(learning?.did_right, 32);
+          const didWrong = toUniqueStringArray(learning?.did_wrong, 32);
+          const repeatedWrong = toUniqueStringArray(learning?.repeated_wrong, 32);
+          const lines = [
+            `source_session: ${event.sessionId}`,
+            `source_turn: ${turnId}`,
+            ...didRight.map((item) => `did_right: ${item}`),
+            ...didWrong.map((item) => `did_wrong: ${item}`),
+            ...repeatedWrong.map((item) => `repeated_wrong: ${item}`),
+          ];
+          const writeResult = await appendMarkdownEntry({
+            filePath: join(projectPath, 'CACHE.md'),
+            title: 'Turn Learning',
+            idempotencyKey: dedupeKey,
+            lines,
+          });
+          emitControlHookActionNotice(event, hook, writeResult.written ? 'cache_learning_appended' : 'cache_learning_skipped', {
+            filePath: writeResult.filePath,
+          });
+          continue;
+        }
+
         // For remaining hooks, emit explicit action notice to make it auditable.
         emitControlHookActionNotice(event, hook, 'acknowledged_noop');
       } catch (error) {
