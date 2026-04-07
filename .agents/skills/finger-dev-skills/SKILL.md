@@ -731,3 +731,81 @@ Compact 触发时机：
 **关键文件**：
 - `src/runtime/context-history-compact.ts` - 确定性 digest 生成
 - `src/server/modules/heartbeat-mailbox-ping.ts` - 链路层 ping
+
+## Section 11: 内存管理红线（Memory Redlines）
+
+### 核心原则
+
+**所有内存中的数据结构必须有硬上限**。防止内存泄露导致进程OOM。
+
+---
+
+### 禁止事项
+
+1. **禁止无上限的 Map/Set**
+   ```typescript
+   // ❌ 错误：无限增长的 Map
+   const cache = new Map<string, Data>();
+   
+   // ✅ 正确：有硬上限 + TTL 清理
+   const cache = new Map<string, { data: Data; ts: number }>();
+   const MAX_ENTRIES = 1000;
+   const TTL_MS = 10 * 60 * 1000; // 10 分钟
+   
+   // 定期清理
+   setInterval(() => {
+     for (const [k, v] of cache.entries()) {
+       if (Date.now() - v.ts > TTL_MS) cache.delete(k);
+     }
+     // 硬上限：超过 MAX_ENTRIES 删除最旧的 10%
+     if (cache.size > MAX_ENTRIES) {
+       const keys = Array.from(cache.keys()).slice(0, Math.floor(MAX_ENTRIES * 0.1));
+       for (const k of keys) cache.delete(k);
+     }
+   }, TTL_MS);
+   ```
+
+2. **禁止全量读取大文件**
+   ```typescript
+   // ❌ 错误：50MB 文件全量加载
+   const content = await fs.readFile(ledgerPath, 'utf-8');
+   const entries = content.split('\n').map(JSON.parse);
+   
+   // ✅ 正确：流式读取或按需读取
+   // 方案 A：tail -n 读取最后 N 行
+   // 方案 B：使用 readline 逐行读取
+   ```
+
+3. **禁止在内存中持有完整的上下文历史**
+   - Session.messages 必须是快照（projection），不是全量历史
+   - 全量历史存储在 Ledger（磁盘）
+   - 内存中的 Session 只保留指针或最近 N 条
+
+---
+
+### 硬上限参数
+
+| 数据结构 | 文件 | 上限 | TTL |
+|---------|------|------|-----|
+| `lastQueuedSystemDispatchPushByKey` | agent-status-subscriber-handlers.impl.ts | 无上限（TTL清理） | 10min |
+| `dispatchLedgerDedup` | event-forwarding.impl.ts | 1000 | 10min |
+| `controlHookActionDedup` | event-forwarding.impl.ts | 1000 | 10min |
+| `sessionEnvelopeMap` | agent-status-subscriber.impl.ts | 无上限（TTL清理） | 配置项 |
+| `sessions` Map | session-manager.ts | 无上限 | 需要添加 |
+
+---
+
+### 必须实施的清理机制
+
+1. **TTL 清理**：定期删除过期的 key
+2. **硬上限**：超过上限时删除最旧的 10%
+3. **手动清理**：session 结束时主动 delete
+
+---
+
+### 相关文件
+
+- `src/serverx/modules/agent-status-subscriber-handlers.impl.ts`
+- `src/serverx/modules/event-forwarding.impl.ts`
+- `src/orchestration/session-manager.ts`
+- `src/serverx/modules/progress-monitor.impl.ts`

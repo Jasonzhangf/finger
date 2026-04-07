@@ -73,11 +73,11 @@ export interface LLMChatResponse {
 }
 
 export interface LLMStreamEvent {
-  type: 'content_block_start' | 'content_block_delta' | 'content_block_stop' | 'message_start' | 'message_delta' | 'message_stop';
-  index?: number;
-  delta?: { type: 'text_delta'; text: string } | { type: 'input_json_delta'; partial_json: string };
-  contentBlock?: ContentBlock;
-  message?: { id: string; model: string; usage?: { inputTokens: number; outputTokens: number } };
+  type: 'text' | 'finish' | 'tool_use' | 'error';
+  text?: string;
+  finishReason?: 'stop' | 'tool_use' | 'length';
+  toolCall?: ToolCall;
+  error?: string;
 }
 
 export interface LLMProvider {
@@ -88,9 +88,71 @@ export interface LLMProvider {
   stream?(request: LLMChatRequest): AsyncIterable<LLMStreamEvent>;
   listModels?(): Promise<string[]>;
   
-  // 协议适配
+  // 协议适配（调试用）
   formatRequest(request: LLMChatRequest): unknown;
   parseResponse(response: unknown): LLMChatResponse;
+}
+
+// ============================================================================
+// Anthropic Wire Protocol 类型定义
+// ============================================================================
+
+export interface AnthropicMessagesRequest {
+  model: string;
+  max_tokens: number;
+  system?: string;
+  messages: Array<{
+    role: 'user' | 'assistant';
+    content: string | AnthropicContentBlock[];
+  }>;
+  temperature?: number;
+  tools?: AnthropicToolDefinition[];
+  tool_choice?: { type: 'auto' } | { type: 'any' } | { type: 'none' } | { type: 'tool'; name: string };
+  stop_sequences?: string[];
+  stream?: boolean;
+}
+
+export interface AnthropicToolDefinition {
+  name: string;
+  description: string;
+  input_schema: object;
+}
+
+export interface AnthropicContentBlock {
+  type: 'text' | 'tool_use' | 'tool_result';
+  text?: string;
+  id?: string;
+  name?: string;
+  input?: Record<string, unknown>;
+  tool_use_id?: string;
+  content?: string;
+  is_error?: boolean;
+}
+
+export interface AnthropicTextBlock {
+  type: 'text';
+  text: string;
+}
+
+export interface AnthropicToolUseBlock {
+  type: 'tool_use';
+  id: string;
+  name: string;
+  input: Record<string, unknown>;
+}
+
+export interface AnthropicMessagesResponse {
+  id: string;
+  type: 'message';
+  role: 'assistant';
+  model: string;
+  content: AnthropicContentBlock[];
+  stop_reason: 'end_turn' | 'max_tokens' | 'stop_sequence' | 'tool_use' | null;
+  stop_sequence: string | null;
+  usage: {
+    input_tokens: number;
+    output_tokens: number;
+  };
 }
 
 /**
@@ -136,13 +198,21 @@ export function detectProtocolType(config: { baseURL: string; defaultModel?: str
   const baseURL = config.baseURL.toLowerCase();
   const model = (config.defaultModel || '').toLowerCase();
   
-  // Anthropic Wire: baseURL 包含 anthropic.com 或 model 以 claude- 开头
-  if (baseURL.includes('anthropic.com') || model.startsWith('claude-')) {
+  // Anthropic Wire: baseURL 包含 anthropic 或 dashscope.aliyuncs.com/apps/anthropic
+  if (
+    baseURL.includes('anthropic') ||
+    baseURL.includes('dashscope.aliyuncs.com/apps/anthropic')
+  ) {
     return 'anthropic-wire';
   }
   
-  // OpenAI Native: baseURL 包含 api.openai.com 或 model 以 o1/o3 开头
-  if (baseURL.includes('api.openai.com') || model.startsWith('o1') || model.startsWith('o3') || model.startsWith('gpt-')) {
+  // 或 model 以 claude- 开头
+  if (model.startsWith('claude-')) {
+    return 'anthropic-wire';
+  }
+  
+  // OpenAI Native: baseURL 包含 api.openai.com
+  if (baseURL.includes('api.openai.com')) {
     return 'openai-native';
   }
   
