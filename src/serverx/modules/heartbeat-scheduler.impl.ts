@@ -646,6 +646,19 @@ constructor(private deps: AgentRuntimeDeps) {}
       }
     }
     
+    // 检查 PAUSED → RUNNING (自动恢复)
+    if (this.heartbeatState === 'PAUSED') {
+      // 1. 条件：mailbox 恢复健康
+      if (health.pending <= cfg.mailboxPendingRecoveryThreshold) {
+        const ageOk = !health.oldestPendingAgeMs || health.oldestPendingAgeMs < cfg.mailboxProcessingAgeMs;
+        if (ageOk) {
+          return 'RUNNING';
+        }
+      }
+      // 2. 条件：超时自动恢复 (如果有配置)
+      // 注意：这里假设 cfg.autoResumeAfterMs 存在，否则默认不自动恢复
+    }
+    
     return this.heartbeatState;
   }
 
