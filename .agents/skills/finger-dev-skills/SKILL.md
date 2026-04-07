@@ -617,3 +617,117 @@ await runtime.compressContext(sessionId, { trigger: 'manual' });
 1. ❌ **不要在 compact 时调用 LLM**：使用 deterministic digest
 2. ❌ **不要忘记 force 参数**：手动压缩时必须 force=true
 3. ❌ **不要在 turn_digest 中包含 source_range**：只有 compact_block 才有
+
+---
+
+## Section 11: 铁律与强制规范
+
+### 1. 全局编译安装（强制）
+
+**每次修改代码后必须执行全局编译安装，不能用本地版本**：
+
+```bash
+npm run build:install
+npm run daemon:start
+```
+
+**禁止**：
+- ❌ 直接运行 `node dist/server/index.js`（本地版本）
+- ❌ 跳过 `build:install` 步骤
+
+**原因**：全局安装的版本才是生产环境使用的版本，本地 dist 可能与全局版本不一致。
+
+---
+
+### 2. 系统消息前缀规范
+
+**通知来源区分**：
+
+| 来源 | 前缀 | 示例 |
+|------|------|------|
+| **系统自动发送** | `[system]` | `[system] Daemon 已启动` |
+| **Agent 推理回复** | `{AgentName}:` | `SystemBot: E2E mailbox ping 已收到` |
+
+**判断标准**：
+- 系统自动发送：不需要 agent 推理，代码直接执行
+- Agent 推理回复：需要 agent 调用 kernel 推理后生成
+
+**示例**：
+```
+[system] HeartbeatScheduler 已启动
+[system] Mailbox ping 成功：latency=2ms
+SystemBot: 收到，处理中…
+SystemBot: E2E mailbox ping 已收到。通路正常，无待办。
+```
+
+---
+
+### 3. Mailbox Ping 两层机制
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│ 1. 链路层 Ping (Dry-Run) - 肌肉记忆                          │
+├─────────────────────────────────────────────────────────────┤
+│ - 频率：每轮心跳                                              │
+│ - 方式：底层直接读取 mailbox 状态                             │
+│ - Agent 无感知：不 dispatch，不通知                           │
+│ - 日志：Debug 级别，避免打爆日志                              │
+│ - 前缀：无（用户看不到）                                      │
+└─────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────┐
+│ 2. 真实 Mailbox Check - 有任务才 dispatch                     │
+├─────────────────────────────────────────────────────────────┤
+│ - 条件：pending > 0 + agent 空闲 + 到了检查时间               │
+│ - 方式：dispatch 真实任务给 agent                            │
+│ - 前缀：`SystemBot:` (agent 推理回复)                        │
+└─────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────┐
+│ 3. E2E 测试 - 定期验证（每周）                                │
+├─────────────────────────────────────────────────────────────┤
+│ - 条件：距离上次 E2E 测试 >= 7 天                            │
+│ - 方式：dispatch 真实业务任务给 agent                        │
+│ - 前缀：`SystemBot:` (agent 推理回复)                        │
+└─────────────────────────────────────────────────────────────┘
+```
+
+**关键文件**：
+- `src/server/modules/heartbeat-mailbox-ping.ts` - 底层 ping 函数
+- `src/server/modules/heartbeat-helpers.ts` - 集成 ping dry-run
+
+---
+
+### 4. 进度更新去重优化
+
+**改进点**：
+- `buildReportKey` 移除文件路径（避免相同类型的工具调用被认为是不同的）
+- `extractToolDetail` 截断到 80 字符（避免过长导致视觉重复）
+- `LOW_VALUE_TOOLS` 包含 `mailbox.status/list/read/ack`（不在进度更新中显示）
+
+---
+
+### 5. Context Compact 设计（完整）
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│ Session 结构                                                 │
+├─────────────────────────────────────────────────────────────┤
+│ contextHistory (compact-memory.jsonl)                       │
+│ - 预算：20,000 tokens                                       │
+│ - 移除策略：超过 20K 时移除最旧的 digest                     │
+│                                                              │
+│ currentHistory (context-ledger.jsonl)                       │
+│ - 无限制（可以无限增长）                                      │
+│ - 触发压缩条件：contextUsagePercent >= 85%                  │
+└────────────────��────────────────────────────────────────────┘
+
+Compact 触发时机：
+1. finish_reason=stop 时自动生成 digest（每轮）
+2. contextUsagePercent >= 85% 时自动压缩
+3. 手动命令：<##@system:compact##>
+```
+
+**关键文件**：
+- `src/runtime/context-history-compact.ts` - 确定性 digest 生成
+- `src/server/modules/heartbeat-mailbox-ping.ts` - 链路层 ping

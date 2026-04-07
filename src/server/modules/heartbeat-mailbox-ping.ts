@@ -6,7 +6,7 @@
  * 
  * 设计原则：
  * 1. 链路层 Ping (Dry-Run) - 每轮心跳，agent 无感知
- * 2. E2E 测试 - 定期（每周），真实业务验证
+ * 2. E2E 测试 - 需要显式启用，定期（每周）真实业务验证
  */
 
 import { heartbeatMailbox } from './heartbeat-mailbox.js';
@@ -114,14 +114,19 @@ export function mailboxPingBatch(agentIds: string[]): MailboxPingResult[] {
 /**
  * 判断是否需要 E2E 测试
  * 
+ * 默认不启用，需要显式配置 e2eEnabled=true
+ * 
  * @param lastE2ETestAt - 上次 E2E 测试时间戳
  * @param e2eIntervalMs - E2E 测试间隔（默认 7 天）
+ * @param e2eEnabled - 是否启用 E2E 测试（默认 false）
  * @returns 是否需要 E2E 测试
  */
 export function shouldRunE2ETest(
   lastE2ETestAt: number | undefined,
-  e2eIntervalMs: number = 7 * 24 * 60 * 60 * 1000, // 默认 7 天
+  e2eIntervalMs: number = 7 * 24 * 60 * 60 * 1000,
+  e2eEnabled: boolean = false,
 ): boolean {
+  if (!e2eEnabled) return false; // 未启用则不触发
   if (!lastE2ETestAt) return true; // 从未测试过
   const now = Date.now();
   return now - lastE2ETestAt >= e2eIntervalMs;
