@@ -737,6 +737,53 @@ Compact 触发时机：
 - `src/runtime/context-history-compact.ts` - 确定性 digest 生成
 - `src/server/modules/heartbeat-mailbox-ping.ts` - 链路层 ping
 
+## Section 11: MemPalace 记忆管理流程（2026-04-07）
+
+### 核心原则
+
+1. **写入路径**：
+   - 新记忆/经验 → 直接写入 `MEMORY.md`（仓库根目录）
+   - 设计文档 → 直接落盘 `docs/design/` 或 `docs/reference/`
+   - MemPalace 自动挖掘 `MEMORY.md` + `docs/` 到知识库
+
+2. **查询路径**：
+   - 架构查询 → 使用 `mempalace search "关键词"`
+   - 上下文唤醒 → 使用 `mempalace wake-up`
+   - 禁止手动 grep 大量文件查找知识（效率低）
+
+3. **MemPalace 常用命令**：
+   ```bash
+   # 初始化/挖掘（首次）
+   mempalace --palace ~/.mempalace/finger init /Volumes/extension/code/finger --yes
+   mempalace --palace ~/.mempalace/finger mine /Volumes/extension/code/finger
+   
+   # 查询架构知识
+   mempalace --palace ~/.mempalace/finger search "FingerChatEngine"
+   mempalace --palace ~/.mempalace/finger search "multi-protocol"
+   
+   # 上下文唤醒（L0 + L1，约 600-900 tokens）
+   mempalace --palace ~/.mempalace/finger wake-up
+   
+   # 压缩记忆（AAAK Dialect，约 30x 压缩）
+   mempalace --palace ~/.mempalace/finger compress
+   
+   # 状态检查
+   mempalace --palace ~/.mempalace/finger status
+   ```
+
+4. **记忆更新触发点**：
+   - Epic 完成 → 写入 MEMORY.md + `mempalace mine`
+   - 关键架构决策 → 写入 `docs/design/` + `mempalace mine`
+   - Bug 修复经验 → 写入 MEMORY.md Experience Lessons 部分
+   - 反模式发现 → 写入 MEMORY.md Anti-patterns 部分
+
+5. **禁止事项**：
+   - 禁止记忆写入 `memory/` 目录（已废弃，MemPalace 自动管理）
+   - 禁止重复写入同一知识点（先 search 确认是否已有）
+   - 禁止跳过 `mempalace mine`（新文档不会自动入库）
+
+---
+
 ## Section 11: 内存管理红线（Memory Redlines）
 
 ### 核心原则
