@@ -337,6 +337,28 @@ export async function compactSessionHistory(
     tokenBudget,
   };
 
+  // Step 5: 重建上下文（compact + rebuild 是一体的）
+  // 更新 session 指针并触发 context rebuild
+  updateContextHistoryPointers(session, newPointers);
+  
+  try {
+    const rebuiltContext = await buildContext({
+      sessionId: session.id,
+      agentId,
+      mode,
+      rootDir,
+    });
+    log.info('[compactSessionHistory] Context rebuilt', {
+      sessionId: session.id,
+      messageCount: rebuiltContext.messages?.length || 0,
+      tokenCount: rebuiltContext.totalTokens || 0,
+    });
+  } catch (rebuildError) {
+    log.error('[compactSessionHistory] Context rebuild failed', rebuildError as Error, {
+      sessionId: session.id,
+    });
+  }
+
   log.info('[compactSessionHistory] Compact completed', {
     newPointers,
   });
