@@ -104,10 +104,10 @@ export class OpenAICompatibleProvider implements LLMProvider {
 
     try {
       const response = await this.http.post<OpenAIChatResponse>('/v1/chat/completions', payload);
-      return this.parseResponse(response.data, request);
+      return this.parseResponse(response.data);
     } catch (error) {
       const axiosError = error as AxiosError;
-      log.error('Chat request failed', {
+      log.error('Chat request failed', axiosError, {
         status: axiosError.response?.status,
         data: axiosError.response?.data,
         model: request.model,
@@ -170,8 +170,9 @@ export class OpenAICompatibleProvider implements LLMProvider {
     return payload;
   }
 
-  parseResponse(response: OpenAIChatResponse, request: LLMChatRequest): LLMChatResponse {
-    const choice = response.choices[0];
+  parseResponse(response: unknown): LLMChatResponse {
+    const resp = response as OpenAIChatResponse;
+    const choice = resp.choices[0];
     const content = choice.message.content ?? '';
     
     // Parse tool calls
@@ -196,15 +197,15 @@ export class OpenAICompatibleProvider implements LLMProvider {
     }
 
     return {
-      id: response.id,
-      model: response.model,
+      id: resp.id,
+      model: resp.model,
       content,
       finishReason,
       toolCalls,
-      usage: response.usage ? {
-        inputTokens: response.usage.prompt_tokens,
-        outputTokens: response.usage.completion_tokens,
-        totalTokens: response.usage.total_tokens,
+      usage: resp.usage ? {
+        inputTokens: resp.usage.prompt_tokens,
+        outputTokens: resp.usage.completion_tokens,
+        totalTokens: resp.usage.total_tokens,
       } : undefined,
     };
   }

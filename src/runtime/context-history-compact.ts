@@ -22,7 +22,9 @@ import {
   resolveLedgerPath,
   resolveCompactMemoryPath,
   resolveBaseDir,
+  
 } from './context-ledger-memory-helpers.js';
+import { buildContext } from './context-builder.js';
 import { estimateTokens } from '../utils/token-counter.js';
 import { logger } from '../core/logger.js';
 import { promises as fs } from 'fs';

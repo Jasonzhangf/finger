@@ -294,6 +294,19 @@ export function attachEventForwarding(deps: EventForwardingDeps): {
   const latestStopSummaryBySession = new Map<string, string>();
   const stopToolSeenBySession = new Map<string, boolean>();
   const turnToolCallSeenBySession = new Map<string, boolean>();
+  /**
+   * Check if reasoning.stop summary contains evidence (changedFiles, verification, test outputs)
+   */
+  function checkReasoningStopHasEvidence(summary: string): boolean {
+    if (summary.length < 20) return false;
+    const lower = summary.toLowerCase();
+    const hasFilePaths = /(src\/|tests\/|[\w-]+\.ts|[\w-]+\.js|[\w-]+\.py|[\w-]+\.md)/i.test(summary);
+    const hasTestResults = /(passed|failed|\d+\s*(tests|passed|failed)|test\s*(passed|run))/i.test(lower);
+    const hasVerification = /(verification|verified|验证|测试|编译)/i.test(lower);
+    const hasCommands = /(npm\s+(test|run|build)|cargo\s+(test|build)|pytest|bash)/i.test(lower);
+    return hasFilePaths || hasTestResults || hasVerification || hasCommands;
+  }
+
   const dispatchToolSeenBySession = new Map<string, boolean>();
   const turnToolRegistryUnavailableBySession = new Map<string, boolean>();
   const sessionPersistQueue = new Map<string, Promise<void>>();
@@ -943,6 +956,25 @@ export function attachEventForwarding(deps: EventForwardingDeps): {
         const stopSummary = extractStopSummaryFromToolPayload(event.payload, policy.stopToolNames);
         if (typeof stopSummary === 'string' && stopSummary.trim().length > 0) {
           latestStopSummaryBySession.set(event.sessionId, stopSummary.trim());
+        }
+        // When reasoning.stop succeeds, check if it has evidence and update session context
+        const resultToolName = asString(event.payload.toolName) ?? '';
+        if (isStopReasoningStopTool(resultToolName, policy.stopToolNames) && isObjectRecord(event.payload.output)) {
+          const output = event.payload.output;
+          const stopRequested = output.stopRequested === true;
+          const summary = typeof output.summary === 'string' ? output.summary.trim() : '';
+          const hasEvidence = checkReasoningStopHasEvidence(summary);
+          if (stopRequested) {
+            const session = sessionManager.getSession(event.sessionId);
+            if (session) {
+              session.context = {
+                ...session.context,
+                stopToolCalled: true,
+                stopToolHasEvidence: hasEvidence,
+                stopToolSummary: summary.slice(0, 200),
+              };
+            }
+          }
         }
       }
       if (event.payload.type === 'tool_call') {

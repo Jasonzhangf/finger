@@ -160,7 +160,7 @@ export async function executeWithHooks<T>(
     
     // Phase 3: afterCall - hooks can transform result
     for (const hook of hooks) {
-      result = hook.afterCall(toolName, result);
+      result = hook.afterCall(toolName, result) as Awaited<T>;
     }
     
     // Record success

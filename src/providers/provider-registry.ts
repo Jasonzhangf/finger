@@ -210,7 +210,8 @@ export class ProviderRegistry {
         log.warn('No aiProviders section in user settings');
       }
     } catch (error) {
-      log.error('Failed to load user settings', { error: String(error), path: userSettingsPath });
+      const err = error as Error;
+      log.error('Failed to load user settings', err, { path: userSettingsPath });
     }
   }
 }
