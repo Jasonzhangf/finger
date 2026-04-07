@@ -1,8 +1,8 @@
-# Unified Task Lifecycle & Session Control (Canonical Spec)
+# Unified Task Lifecycle & Session Control (Canonical Spec V3)
 
-> Status: **Authoritative / Single Source of Truth**  
-> Scope: System Agent ↔ Project Agent ↔ Reviewer Agent, heartbeat recovery, session routing, context policy  
-> Last updated: 2026-03-31
+> **Status**: Authoritative / Single Source of Truth  
+> **Scope**: System Agent (Manager+Reviewer) ↔ Project Agent (Worker), heartbeat recovery, session routing, context policy  
+> **Last updated**: 2026-04-07
 
 ---
 
@@ -10,11 +10,17 @@
 
 This document is the **only canonical design** for:
 
-1. task lifecycle state machine;
-2. system/project/reviewer interaction contract;
+1. task lifecycle state machine (simplified 2-agent model);
+2. system/project interaction contract (review merged into System Agent);
 3. heartbeat/watchdog recovery policy;
 4. session routing and anti-contamination rules;
 5. context rebuild/compaction boundaries.
+
+**V3 Changes (2026-04-07)**:
+- Removed independent Reviewer Agent role.
+- Review responsibility merged into System Agent ("who dispatches who reviews").
+- Simplified state machine: `claimed_done -> system_review -> approved/rejected`.
+- Removed `review_pending`, `review_rejected`, `pending_approval` states.
 
 Any older design doc that overlaps these topics is superseded by this document.
 
@@ -37,63 +43,84 @@ All events are persisted in one ledger with explicit `track`:
 
 ---
 
-## 2) Role contract
+## 2) Role contract (Simplified)
 
-### 2.1 System agent (manager)
+### 2.1 System Agent (Manager + Reviewer)
 
-- owns requirement clarification and planning.
-- dispatches execution tasks to project agent.
-- monitors state and reports final outcome to user.
-- must not implement the same in-flight project task after dispatch.
+**Primary Identity**: Orchestrator. Responsible for understanding user intent, dispatching tasks, **reviewing results**, and delivering final outcomes to user.
 
-### 2.2 Project agent (executor)
+**Core Responsibilities**:
+1. **Requirement clarification**: Understand user request, define acceptance criteria.
+2. **Dispatch**: Delegate implementation tasks to Project Agent via `agent.dispatch`.
+3. **Monitor**: Track task progress without interference.
+4. **Review**: Audit Project Agent's completion claim with evidence.
+   - Check: changed files, verification output, acceptance checklist.
+   - Decision: `PASS` → approve and report to user; `REJECT` → feedback for rework.
+5. **Deliver**: Only after review PASS, summarize result to user.
 
-- owns implementation and verification evidence.
-- can iterate until completion.
-- must submit explicit completion claim (with evidence) to enter review.
+**Hard Rules**:
+- Must NOT implement the same in-flight project task after dispatch.
+- Must NOT skip review and directly forward Project Agent output to user.
+- Must NOT play "pass-through proxy" role; must actively audit evidence.
 
-### 2.3 Reviewer agent (validator)
+### 2.2 Project Agent (Worker)
 
-- only validates against acceptance criteria.
-- outputs `PASS` or `REJECT` + evidence.
-- **must not dispatch tasks to other agents**.
-- `REJECT` returns to project loop directly; no system execution handoff.
+**Primary Identity**: Executor. Responsible for implementing tasks and producing verifiable evidence.
+
+**Core Responsibilities**:
+1. **Execute**: Implement according to System Agent's task specification.
+2. **Self-verify**: Run tests, build, or validation commands before claiming completion.
+3. **Claim**: Submit structured completion claim via `project.claim_completion`:
+   - `taskId`: Task identifier from dispatch.
+   - `summary`: Concise completion summary.
+   - `changedFiles`: List of modified files.
+   - `verification`: Test results, command outputs, logs.
+   - `acceptanceChecklist`: Status of each acceptance criterion.
+4. **Rework**: If System Agent REJECTs claim, fix issues and resubmit under same taskId.
+
+**Hard Rules**:
+- Must NOT submit claim without verification evidence.
+- Must NOT skip claim and directly end session.
+- Must NOT respond to user directly (System Agent owns user interaction).
 
 ---
 
-## 3) Canonical task state machine
+## 3) Canonical task state machine (Simplified)
 
-## 3.1 States
+### 3.1 States
 
-- `planned`
-- `dispatched`
-- `accepted`
-- `running`
-- `claimed_done`
-- `review_pending`
-- `review_rejected`
-- `pending_approval`
-- `completed`
-- `failed`
-- `cancelled`
-- `stalled` (timeout/interrupted, recoverable)
+| State | Owner | Description |
+|-------|-------|-------------|
+| `planned` | System Agent | Task identified, awaiting dispatch |
+| `dispatched` | System Agent → Project Agent | Task delegated, awaiting acceptance |
+| `accepted` | Project Agent | Project Agent acknowledged task |
+| `running` | Project Agent | Implementation in progress |
+| `claimed_done` | Project Agent | Claim submitted with evidence |
+| `system_review` | System Agent | System Agent auditing claim |
+| `approved` | System Agent | Review PASS, ready to report |
+| `rejected` | System Agent | Review REJECT, feedback sent |
+| `completed` | System Agent | Task done, reported to user |
+| `failed` | System Agent | Task failed, reported to user |
+| `cancelled` | System Agent | Task cancelled by user or system |
+| `stalled` | System Agent | Timeout/interrupted, recoverable |
 
-## 3.2 Allowed transitions
+### 3.2 Allowed transitions
 
 ```text
-planned -> dispatched -> accepted -> running -> claimed_done -> review_pending
-review_pending -> review_rejected -> running
-review_pending -> pending_approval -> completed
+planned -> dispatched -> accepted -> running -> claimed_done -> system_review
+system_review -> approved -> completed
+system_review -> rejected -> running
 
 running -> stalled -> running            (resume path)
 any active state -> failed|cancelled     (terminal path)
 ```
 
-### Transition guards
+### 3.3 Transition guards
 
-1. `dispatched|accepted|running|review_pending` means ownership is project/reviewer path.
-2. while state in the set above, system cannot execute same implementation task.
-3. `pending_approval` can only be entered by reviewer PASS.
+1. `dispatched|accepted|running|claimed_done|system_review` means ownership is in System↔Project interaction path.
+2. While state in the set above, System Agent cannot execute same implementation task.
+3. `approved` can only be entered by System Agent review PASS.
+4. `rejected` triggers Project Agent rework loop (same taskId).
 
 ---
 
@@ -105,18 +132,21 @@ User request
    v
 System Agent (clarify + plan + acceptance contract)
    |
-   | dispatch(taskId, revision, owner=project)
+   | dispatch(taskId, owner=project)
    v
 [dispatched] -> [accepted] -> [running]
                                |
-                               | completion claim + evidence
+                               | project.claim_completion(evidence)
                                v
-                          [review_pending]
+                          [claimed_done]
+                               |
+                               v
+                          [system_review]
                           /            \
                      REJECT              PASS
                         |                  |
                         v                  v
-                 [review_rejected]   [pending_approval]
+                 [rejected]            [approved]
                         |                  |
                         +-------> [running]|
                                            v
@@ -128,153 +158,94 @@ System Agent (clarify + plan + acceptance contract)
 
 ---
 
-## 5) Heartbeat/watchdog and recovery
+## 5) Structured completion claim contract
 
-## 5.1 Execution lane isolation
+### 5.1 Claim payload schema
+
+```typescript
+interface CompletionClaim {
+  taskId: string;
+  summary: string;              // Concise description of what was done
+  changedFiles: string[];       // Absolute paths of modified files
+  verification: {
+    commands: string[];         // Commands run for verification
+    outputs: string[];          // Key outputs (test pass, build success)
+    status: 'pass' | 'fail' | 'partial';
+  };
+  acceptanceChecklist: {
+    criterion: string;
+    status: 'met' | 'partial' | 'not_met';
+    evidence?: string;
+  }[];
+  claimedAt: string;            // ISO timestamp
+}
+```
+
+### 5.2 Review decision schema
+
+```typescript
+interface ReviewDecision {
+  taskId: string;
+  decision: 'PASS' | 'REJECT';
+  evidenceCheck: {
+    changedFilesVerified: boolean;
+    verificationPassed: boolean;
+    acceptanceCriteriaMet: boolean;
+  };
+  feedback?: string;            // REJECT reason, specific issues
+  missingItems?: string[];      // What's missing for PASS
+  reviewedAt: string;
+}
+```
+
+---
+
+## 6) Heartbeat/watchdog and recovery
+
+### 6.1 Execution lane isolation
 
 - heartbeat/watchdog run in **control lane**.
 - no-op checks do not append reasoning history.
 - no-op checks do not push user-facing progress noise.
 
-## 5.2 Recovery algorithm (every heartbeat tick)
+### 6.2 Recovery algorithm (every heartbeat tick)
 
-1. scan open tasks from `control` track.
-2. for each monitored agent:
-   - if state is active and runtime is idle/interrupted -> resume bound session.
-   - if state is `completed|failed|cancelled` -> skip.
-3. never create duplicate execution for same `taskId`.
+1. scan open tasks (state in `dispatched|accepted|running|claimed_done|system_review|stalled`).
+2. for each task:
+   - if `stalled` and last activity > timeout → resume or fail.
+   - if `running` and no heartbeat from Project Agent → mark `stalled`, trigger recovery dispatch.
+   - if `claimed_done` and no System Agent review within timeout → flag for immediate review.
 
-## 5.3 Tick cadence
+### 6.3 Session binding anti-contamination
 
-- default heartbeat cadence: **5 minutes**.
-- no actionable work => no wake-up dispatch.
-
----
-
-## 6) Session routing and continuity
-
-## 6.1 Binding model
-
-Each active task stores stable bindings in control state:
-
-- `taskId`
-- `ownerAgentId`
-- `boundSessionId`
-- `flowId`
-- `revision`
-- `status`
-
-## 6.2 Resume-first policy
-
-When task not completed:
-
-1. resume `boundSessionId`;
-2. do not create new session;
-3. do not rebuild history.
-
-Only create a new session when:
-
-- new task without reusable binding; or
-- explicit user/requested new-session mode.
+- each task binds to immutable tuple: `(taskId, sessionId, projectPath, ownerAgentId)`.
+- resume dispatch must reuse same tuple; no duplicate lane creation.
+- reasoning history must not be contaminated by control-track events.
 
 ---
 
-## 7) Context policy (strict)
+## 7) Context rebuild/compaction boundaries
 
-Runtime context is split into two sections:
+### 7.1 When to rebuild
 
-1. `context_history` (rebuilt/compacted history view)
-2. `current_session_context` (append-only live turns)
+- topic switch detected (different project or unrelated task).
+- user explicitly requests context cleanup.
+- System Agent detects history noise from multiple interleaved threads.
 
-### Hard invariants
+### 7.2 When to compact
 
-1. no implicit rebuild on new turn.
-2. no rebuild from heartbeat/mailbox/control events.
-3. rebuild is allowed only when:
-   - explicit rebuild tool call;
-   - context overflow threshold reached;
-   - bootstrap with empty history.
-
-### Compaction retention (must keep)
-
-- user request summary;
-- task completion summary;
-- `update_plan` key steps;
-- dispatch/update-task/review result calls;
-- report-task-completion evidence pointer.
+- context usage exceeds threshold (e.g., 80%).
+- compact only reasoning track; never compact control track.
+- keep recent N turns + important landmarks (dispatch, claim, review decisions).
 
 ---
 
-## 8) Anti-duplication and anti-conflict rules
+## 8) Summary of changes from V2
 
-1. dispatch precheck: if same target project has open matching task -> reject new dispatch, require `update_task`.
-2. self-dispatch (`sourceAgentId == targetAgentId`) -> hard error.
-3. reviewer dispatch ability -> forbidden by policy and tool permissions.
-4. stale watchdog no-op must close obsolete active flags where applicable.
-
----
-
-## 9) Progress update contract
-
-Every progress emission must include:
-
-- `role` (`system|project|reviewer`)
-- `agentId`
-- `sessionId`
-- `taskId` + state
-- actionable step summary
-- context usage + reason for changes (`growth|compaction|rebuild|session_switch`)
-
-No actionable work => no progress update.
-
----
-
-## 10) Failure handling
-
-## 10.1 Timeout or provider stall
-
-When execution timeout occurs (e.g. `chat-codex timed out after 600000ms`):
-
-1. write control event `stalled` with reason;
-2. preserve task/session binding;
-3. heartbeat resumes from same bound session;
-4. do not reset/rebuild reasoning context automatically.
-
-## 10.2 Review failure
-
-- review reject returns to project running state.
-- system is not asked to execute rejected implementation directly.
-
----
-
-## 11) Acceptance checklist
-
-- [ ] System does not re-implement dispatched in-flight project task.
-- [ ] Reviewer cannot dispatch tasks.
-- [ ] REJECT loops project -> reviewer without system execution takeover.
-- [ ] PASS transitions to `pending_approval`, then system closes.
-- [ ] Heartbeat runs in control lane and does not pollute reasoning history.
-- [ ] No implicit rebuild on normal new turns.
-- [ ] Active tasks resume from bound sessions after restart.
-
----
-
-## 12) Superseded docs
-
-The following documents are kept only as historical references and must not define runtime behavior:
-
-- `docs/design/system-project-ledger-lifecycle.md`
-- `docs/design/cross-agent-update-framework.md`
-- `docs/design/agent-recovery-design.md`
-- `docs/design/ledger-only-dynamic-session-views.md` (for historical rationale only)
-
----
-
-## 13) Active execution plan (prompt + collaboration hardening)
-
-For current execution details of prompt constraints and multi-agent collaboration hardening, see:
-
-- `docs/design/multi-agent-prompt-collaboration-hardening-epic.md`
-
-This section is an execution companion to this canonical lifecycle spec.
-If conflicts occur, lifecycle/state-machine rules in this document remain authoritative.
+| Item | V2 (Old) | V3 (New) |
+|------|----------|----------|
+| Roles | 3 (System, Project, Reviewer) | 2 (System+Reviewer, Project) |
+| Review owner | Independent Reviewer Agent | System Agent |
+| States | `review_pending`, `review_rejected`, `pending_approval` | `system_review`, `rejected`, `approved` |
+| Claim contract | Free-form text | Structured `CompletionClaim` schema |
+| Review contract | Reviewer output | System Agent `ReviewDecision` |

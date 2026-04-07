@@ -182,7 +182,7 @@ Reference: `references/layer-boundaries.md`.
 1. Every task must have explicit lifecycle:
    - `received -> dispatching/running -> waiting_* -> completed|failed|interrupted`
 2. Terminal state cannot be regressed by stale/out-of-order events.
-3. Session mapping must be deterministic by scope (system/project/reviewer).
+3. Session mapping must be deterministic by scope (system/project). V3: reviewer scope merged into system.
 4. Heartbeat/control sessions are isolated from normal user sessions.
 5. Persist-before-consume for critical state transitions.
 6. Session ownership must survive restart/reload (ownership migration is startup-safe and idempotent).
