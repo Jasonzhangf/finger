@@ -1,27 +1,21 @@
 use std::io;
 use std::sync::Arc;
 
-use finger_kernel_config::{load_local_model_config, WireApi};
-use finger_kernel_core::{ChatEngine, EchoChatEngine, KernelConfig, KernelRuntime};
-use finger_kernel_model::{AnthropicChatEngine, ResponsesChatEngine};
+use finger_kernel_config::load_local_model_config;
+use finger_kernel_core::{ChatEngine as ChatEngineTrait, EchoChatEngine, KernelConfig, KernelRuntime};
+use finger_kernel_model::FingerChatEngine;
 use finger_kernel_protocol::{EventMsg, Submission};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
 #[tokio::main]
 async fn main() -> io::Result<()> {
-    let chat_engine: Arc<dyn ChatEngine> = match load_local_model_config() {
+    let chat_engine: Arc<dyn ChatEngineTrait> = match load_local_model_config() {
         Ok(model_config) => {
-            match model_config.wire_api {
-                WireApi::Anthropic => Arc::new(AnthropicChatEngine::new(model_config)),
-                WireApi::Responses => Arc::new(ResponsesChatEngine::new(model_config)),
-                WireApi::OpenAIChat => {
-                    // TODO: implement OpenAIChatEngine
-                    let _ = tokio::io::stderr()
-                        .write_all(b"OpenAIChat protocol not implemented, fallback to Responses\n")
-                        .await;
-                    Arc::new(ResponsesChatEngine::new(model_config))
-                }
-            }
+            eprintln!(
+                "wire_api: {:?}, model: {}, base_url: {}",
+                model_config.wire_api, model_config.model, model_config.base_url
+            );
+            Arc::new(FingerChatEngine::new(model_config))
         }
         Err(err) => {
             let _ = tokio::io::stderr()

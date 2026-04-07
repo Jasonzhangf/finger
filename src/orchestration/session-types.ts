@@ -45,6 +45,27 @@ export interface Session {
   /** 当前 session 窗口的 token 总数估算 */
   totalTokens: number;
 
+  // ─── 双层指针（新架构）────────────────────────────────
+
+  /**
+   * 双层指针：Context History（已压缩） + Current History（活跃）
+   * 用于支持 Kernel 重建上下文
+   */
+  pointers?: {
+    /** 已压缩历史（compact-memory.jsonl） */
+    contextHistory: {
+      startLine: number;
+      endLine: number;
+      estimatedTokens: number;
+    };
+    /** 当前活跃消息（context-ledger.jsonl） */
+    currentHistory: {
+      startLine: number;
+      endLine: number;
+      estimatedTokens: number;
+    };
+  };
+
   // ─── 内存缓存（不持久化） ────────────────────────────────
 
   /**
@@ -99,6 +120,21 @@ export function ensureLedgerPointers(session: Session): Session {
   }
   if (session.totalTokens === undefined || session.totalTokens === null) {
     session.totalTokens = LEDGER_POINTER_DEFAULTS.totalTokens;
+  }
+  // 初始化新指针结构（如果不存在）
+  if (!session.pointers) {
+    session.pointers = {
+      contextHistory: {
+        startLine: 0,
+        endLine: session.latestCompactIndex >= 0 ? session.latestCompactIndex : -1,
+        estimatedTokens: 0,
+      },
+      currentHistory: {
+        startLine: session.originalStartIndex,
+        endLine: session.originalEndIndex,
+        estimatedTokens: session.totalTokens,
+      },
+    };
   }
   return session;
 }

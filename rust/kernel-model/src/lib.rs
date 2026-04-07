@@ -21,8 +21,11 @@ use time::OffsetDateTime;
 use tokio::sync::mpsc::UnboundedSender;
 use tokio::time::{sleep, Duration};
 
-pub mod anthropic_engine;
-pub use anthropic_engine::AnthropicChatEngine;
+
+use crate::protocol::anthropic::request::build_anthropic_request_payload;
+use crate::protocol::anthropic::transport::{send_anthropic_http, AnthropicResponseBody};
+use crate::protocol::anthropic::response::{parse_anthropic_event_type, parse_anthropic_sse_data, AnthropicEventType};
+use finger_kernel_config::WireApi;
 mod protocol;
 
 
@@ -56,12 +59,12 @@ pub enum ModelError {
 }
 
 #[derive(Clone)]
-pub struct ResponsesChatEngine {
+pub struct FingerChatEngine {
     config: LocalModelConfig,
     client: reqwest::Client,
 }
 
-impl ResponsesChatEngine {
+impl FingerChatEngine {
     pub fn new(config: LocalModelConfig) -> Self {
         Self {
             config,
@@ -160,9 +163,9 @@ impl ResponsesChatEngine {
         let output_text = loop {
             round = round.saturating_add(1);
             let response = self
-                .send_responses_request(&rolling_input, options, &tool_bindings)
+                .send_protocol_request(&rolling_input, options, &tool_bindings)
                 .await?;
-            let parsed = parse_responses_payload(&response)?;
+            let parsed = parse_protocol_payload(&response)?;
             let replay_history_items =
                 filter_history_items_for_replay(&parsed.history_items, include_reasoning_items);
             if !replay_history_items.is_empty() {
@@ -412,7 +415,7 @@ impl ResponsesChatEngine {
         })
     }
 
-    async fn send_responses_request(
+    async fn send_protocol_request(
         &self,
         input: &[Value],
         options: &UserTurnOptions,
@@ -786,7 +789,7 @@ fn inject_context_ledger_runtime_context(
 }
 
 #[async_trait]
-impl ChatEngine for ResponsesChatEngine {
+impl ChatEngine for FingerChatEngine {
     async fn run_turn(
         &self,
         request: &TurnRequest,
@@ -1149,7 +1152,7 @@ fn extract_string_array(value: &Value, field: &str) -> Option<Vec<String>> {
     })
 }
 
-fn parse_responses_payload(payload: &Value) -> Result<ParsedResponse, ModelError> {
+fn parse_protocol_payload(payload: &Value) -> Result<ParsedResponse, ModelError> {
     if !payload.is_object() {
         return Err(ModelError::ParsePayload(serde_json::Error::io(
             std::io::Error::new(
@@ -2030,7 +2033,7 @@ mod tests {
             ]
         });
 
-        let parsed = parse_responses_payload(&payload).expect("parse payload");
+        let parsed = parse_protocol_payload(&payload).expect("parse payload");
         assert_eq!(parsed.output_text, Some("done".to_string()));
         assert_eq!(parsed.function_calls.len(), 1);
         assert_eq!(parsed.function_calls[0].name, "shell.exec");
@@ -2050,7 +2053,7 @@ mod tests {
             ]
         });
 
-        let parsed = parse_responses_payload(&payload).expect("parse payload");
+        let parsed = parse_protocol_payload(&payload).expect("parse payload");
         assert_eq!(parsed.output_text, Some("final from text type".to_string()));
         assert_eq!(parsed.function_calls.len(), 0);
     }
@@ -2109,7 +2112,7 @@ mod tests {
         );
         let parsed_ok =
             super::protocol::response::parse_sse_response(ok_stream).expect("parse sse");
-        let payload_ok = parse_responses_payload(&parsed_ok).expect("parse payload from sse");
+        let payload_ok = parse_protocol_payload(&parsed_ok).expect("parse payload from sse");
         assert_eq!(
             payload_ok.output_text,
             Some("final from stream item".to_string())
@@ -2439,7 +2442,7 @@ mod tests {
             .create_async()
             .await;
 
-        let engine = ResponsesChatEngine::new(LocalModelConfig {
+        let engine = FingerChatEngine::new(LocalModelConfig {
             provider_id: "test".to_string(),
             provider_name: "test".to_string(),
             base_url: server.url(),
@@ -2526,7 +2529,7 @@ mod tests {
             .create_async()
             .await;
 
-        let engine = ResponsesChatEngine::new(LocalModelConfig {
+        let engine = FingerChatEngine::new(LocalModelConfig {
             provider_id: "test".to_string(),
             provider_name: "test".to_string(),
             base_url: server.url(),
@@ -2576,7 +2579,7 @@ mod tests {
             .create_async()
             .await;
 
-        let engine = ResponsesChatEngine::new(LocalModelConfig {
+        let engine = FingerChatEngine::new(LocalModelConfig {
             provider_id: "test".to_string(),
             provider_name: "test".to_string(),
             base_url: server.url(),
@@ -2630,7 +2633,7 @@ mod tests {
             .create_async()
             .await;
 
-        let engine = ResponsesChatEngine::new(LocalModelConfig {
+        let engine = FingerChatEngine::new(LocalModelConfig {
             provider_id: "test".to_string(),
             provider_name: "test".to_string(),
             base_url: server.url(),
@@ -2688,7 +2691,7 @@ mod tests {
             .create_async()
             .await;
 
-        let engine = ResponsesChatEngine::new(LocalModelConfig {
+        let engine = FingerChatEngine::new(LocalModelConfig {
             provider_id: "test".to_string(),
             provider_name: "test".to_string(),
             base_url: server.url(),
@@ -2792,7 +2795,7 @@ mod tests {
             .create_async()
             .await;
 
-        let engine = ResponsesChatEngine::new(LocalModelConfig {
+        let engine = FingerChatEngine::new(LocalModelConfig {
             provider_id: "test".to_string(),
             provider_name: "test".to_string(),
             base_url: server.url(),
@@ -2909,7 +2912,7 @@ mod tests {
             .create_async()
             .await;
 
-        let engine = ResponsesChatEngine::new(LocalModelConfig {
+        let engine = FingerChatEngine::new(LocalModelConfig {
             provider_id: "test".to_string(),
             provider_name: "test".to_string(),
             base_url: server.url(),
@@ -3012,7 +3015,7 @@ mod tests {
             .create_async()
             .await;
 
-        let engine = ResponsesChatEngine::new(LocalModelConfig {
+        let engine = FingerChatEngine::new(LocalModelConfig {
             provider_id: "test".to_string(),
             provider_name: "test".to_string(),
             base_url: server.url(),
@@ -3120,7 +3123,7 @@ mod tests {
             ]
         });
         
-        let parsed = parse_responses_payload(&payload).expect("parse payload");
+        let parsed = parse_protocol_payload(&payload).expect("parse payload");
         // output_text 应只包含纯文本，不包含 tool 语法
         assert_eq!(parsed.output_text, Some("好的，我来执行。".to_string()));
         // function_calls 应正确解析
@@ -3160,7 +3163,7 @@ mod tests {
             ]
         });
         
-        let parsed = parse_responses_payload(&payload).expect("parse payload");
+        let parsed = parse_protocol_payload(&payload).expect("parse payload");
         // 应累积两个 message 的 output_text
         assert_eq!(parsed.output_text, Some("开始执行。\n执行完成。".to_string()));
     }
@@ -3182,7 +3185,7 @@ mod tests {
             ]
         });
         
-        let parsed = parse_responses_payload(&payload).expect("parse payload");
+        let parsed = parse_protocol_payload(&payload).expect("parse payload");
         // 只提取 output_text 和 text 类型
         assert_eq!(parsed.output_text, Some("这是正文。\n继续处理。".to_string()));
     }
@@ -3202,7 +3205,7 @@ mod tests {
             ]
         });
         
-        let parsed = parse_responses_payload(&payload).expect("parse payload");
+        let parsed = parse_protocol_payload(&payload).expect("parse payload");
         assert_eq!(parsed.output_text, None);
         assert_eq!(parsed.function_calls.len(), 1);
     }
@@ -3224,7 +3227,7 @@ mod tests {
             ]
         });
         
-        let parsed = parse_responses_payload(&payload).expect("parse payload");
+        let parsed = parse_protocol_payload(&payload).expect("parse payload");
         assert_eq!(parsed.output_text, Some("有效文本".to_string()));
     }
 }
