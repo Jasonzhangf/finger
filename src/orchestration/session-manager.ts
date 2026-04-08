@@ -1344,6 +1344,7 @@ export class SessionManager {
       throw error;
     }
   }
+  /**
    * finish_reason = stop 时自动生成 digest + 保存 tags
    */
   async appendDigest(
