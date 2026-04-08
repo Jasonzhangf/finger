@@ -177,6 +177,7 @@ export class OrchestrationDaemon {
       env: {
         ...process.env,
         FINGER_DAEMON: '1',
+        FINGER_SOURCE_ROOT: FINGER_SOURCE_ROOT,
         PORT: this.config.port.toString(),
         WS_PORT: this.config.wsPort.toString(),
         HOST: this.config.host,

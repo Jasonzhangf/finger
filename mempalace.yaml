@@ -1,30 +1,10 @@
 wing: finger
 rooms:
-- name: frontend
-  description: Files from ui/
-- name: memory
-  description: Files from memory/
-- name: agents_prompts_md
-  description: Files from agents-prompts-md/
-- name: test_data
-  description: Files from test-data/
-- name: rust
-  description: Files from rust/
-- name: testing
-  description: Files from tests/
-- name: documentation
-  description: Files from docs/
-- name: scripts
-  description: Files from scripts/
-- name: channel_message_routing.test.ts
-  description: Files from channel-message-routing.test.ts/
-- name: skills
-  description: Files from skills/
-- name: src
-  description: Files from src/
-- name: backend
-  description: Files from api/
-- name: design
-  description: Files from design/
-- name: general
-  description: Files that don't fit other rooms
+  - name: src
+    description: Source code - core implementation
+  - name: docs
+    description: Documentation - design and reference
+  - name: rust
+    description: Rust kernel implementation
+  - name: general
+    description: Files that don't fit other rooms

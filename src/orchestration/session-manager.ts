@@ -9,6 +9,7 @@
  */
 
 import fs from 'fs';
+import { execFile } from 'child_process';
 import path from 'path';
 import { createHash } from 'crypto';
 import { FINGER_PATHS, ensureDir, normalizeSessionDirName } from '../core/finger-paths.js';
@@ -1285,37 +1286,69 @@ export class SessionManager {
     const session = this.sessions.get(sessionId);
     if (!session) throw new Error(`Session not found: ${sessionId}`);
 
-    const force = options?.force ?? false;
-
     const ctx = session.context ?? {};
     const agentId = typeof ctx.ownerAgentId === "string" ? ctx.ownerAgentId : SYSTEM_AGENT_ID;
     const rootDir = this.resolveSessionsRoot(session);
+    const ledgerPath = path.join(rootDir, sessionId, agentId, "main", "context-ledger.jsonl");
+    
+    try {
+      // 使用 Rust ledger-cli 进行 task-level digest 压缩
+      const cliPath = process.env.FINGER_SOURCE_ROOT
+        ? path.join(process.env.FINGER_SOURCE_ROOT, "rust", "target", "release", "ledger-cli")
+        : path.join("/opt", "homebrew", "lib", "node_modules", "fingerdaemon", "rust", "target", "release", "ledger-cli");
 
-    // 使用新的确定性压缩（不需要 LLM）
-    const result = await compactSessionHistory(session, {
-      rootDir,
-      agentId,
-      mode: "main",
-      force,
-    });
+      const stdout = await new Promise<string>((resolve, reject) => {
+        execFile(cliPath, ["rebuild", ledgerPath, "context compact", "20000"], { timeout: 30000 }, (err, stdout, stderr) => {
+          if (err) reject(err);
+          else resolve(stdout);
+        });
+      });
 
-    if (!result.compressed) {
-      return result.reason || "Compression skipped";
+      // Parse output
+      const tokensMatch = stdout.match(/Tokens used:\s*(\d+)/);
+      const tasksMatch = stdout.match(/Selected:\s*(\d+)/);
+      const tokensUsed = tokensMatch ? parseInt(tokensMatch[1]) : 0;
+      const taskCount = tasksMatch ? parseInt(tasksMatch[1]) : 0;
+
+      // Update session pointers
+      if (!session.context) session.context = {};
+      session.context.contextHistoryTokens = tokensUsed;
+      session.context.currentHistoryTokens = 0;
+      session.context.totalTokens = tokensUsed;
+      session._cachedView = undefined;
+
+      this.saveSession(session);
+      
+      log.info("Compressed session with Rust ledger-cli", {
+        sessionId,
+        tokensUsed,
+        taskCount,
+      });
+
+      return `Compression completed: ${taskCount} task digests selected, ${tokensUsed} tokens`;
+    } catch (error) {
+      log.warn("Rust ledger-cli failed, falling back to TS implementation", {
+        sessionId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      
+      // Fallback to old TS implementation
+      const force = options?.force ?? false;
+      const result = await compactSessionHistory(session, {
+        rootDir,
+        agentId,
+        mode: "main",
+        force,
+      });
+
+      if (!result.compressed) {
+        return result.reason || "Compression skipped";
+      }
+      updateContextHistoryPointers(session, result.pointers);
+      session._cachedView = undefined;
+      this.saveSession(session);
+      return `Compression completed: ${result.digestBlock?.payload.messages?.length ?? 0} messages compacted`;
     }
-
-    // 更新指针（包含兼容旧字段）
-    updateContextHistoryPointers(session, result.pointers);
-    session._cachedView = undefined;
-
-    this.saveSession(session);
-    log.info("Compressed session (deterministic)", {
-      sessionId,
-      digestId: result.digestBlock?.id,
-      messageCount: result.digestBlock?.payload.messages?.length,
-      totalTokens: result.pointers.totalTokens,
-    });
-
-    return `Compression completed: ${result.digestBlock?.payload.messages?.length ?? 0} messages compacted`;
   }
 
   /**
