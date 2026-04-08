@@ -1,8 +1,9 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { RuntimeFacade } from '../../../src/runtime/runtime-facade.js';
-import { SessionManager } from '../../../src/orchestration/session-manager.js';
-import { EventBus } from '../../../src/runtime/event-bus.js';
-import { readJsonLines } from '../../../src/runtime/context-ledger-memory-helpers.js';
+ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+ import { RuntimeFacade } from '../../../src/runtime/runtime-facade.js';
+ import { SessionManager } from '../../../src/orchestration/session-manager.js';
+ import { EventBus } from '../../../src/runtime/event-bus.js';
+ import { globalToolRegistry } from '../../../src/runtime/tool-registry.js';
+ import { readJsonLines } from '../../../src/runtime/context-ledger-memory-helpers.js';
 import { resolveLedgerPath, resolveBaseDir, resolveCompactMemoryPath } from '../../../src/runtime/context-ledger-memory-helpers.js';
 import fs from 'fs/promises';
 import path from 'path';
@@ -48,10 +49,10 @@ describe('Compact Integration', () => {
     const lines = mockEntries.map(e => JSON.stringify(e)).join('\n') + '\n';
     await fs.writeFile(ledgerPath, lines, 'utf-8');
 
-    // Create SessionManager with test rootDir
-    sessionManager = new SessionManager({ rootDir: testRootDir });
-    eventBus = new EventBus();
-    runtimeFacade = new RuntimeFacade({ sessionManager, eventBus });
+   // Create SessionManager with test rootDir
+   sessionManager = new SessionManager({ rootDir: testRootDir });
+   eventBus = new EventBus();
+   runtimeFacade = new RuntimeFacade(eventBus, sessionManager, globalToolRegistry);
 
     // Create test session with high token count (trigger compression)
     sessionManager.createSession(testSessionId, 'finger-project-agent');
