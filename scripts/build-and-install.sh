@@ -18,17 +18,27 @@ echo "=== Copying autostart agents ==="
 mkdir -p ~/.finger/autostart
 cp dist/agents/router-chat/router-chat-agent.js ~/.finger/autostart/ 2>/dev/null || echo "Warning: router-chat-agent.js not found"
 
-echo "=== Installing globally as 'myfinger' ==="
-# IMPORTANT:
-# Use tarball install instead of `npm install -g .` to avoid creating a global
-# symlink to the current workspace (which can break cron/background jobs when
-# the workspace path is not accessible).
-PKG_TGZ=$(npm pack --silent)
-npm install -g "$PKG_TGZ"
-rm -f "$PKG_TGZ"
-
-echo "=== Restarting daemon ==="
-npm run daemon:restart
+ echo "=== Installing globally as 'myfinger' ==="
+ # IMPORTANT:
+ # Use tarball install instead of `npm install -g .` to avoid creating a global
+ # symlink to the current workspace (which can break cron/background jobs when
+ # the workspace path is not accessible).
+ PKG_TGZ=$(npm pack --silent)
+ npm install -g "$PKG_TGZ"
+ rm -f "$PKG_TGZ"
+ 
+ echo "=== Building Rust binaries for global installation ==="
+ GLOBAL_INSTALL_DIR=$(npm root -g)/fingerdaemon
+ if [ -d "$GLOBAL_INSTALL_DIR/rust" ]; then
+   echo "Global install dir: $GLOBAL_INSTALL_DIR"
+   cargo build --release --manifest-path "$GLOBAL_INSTALL_DIR/rust/Cargo.toml"
+   echo "Rust binaries built successfully"
+ else
+   echo "Warning: Global install rust directory not found at $GLOBAL_INSTALL_DIR/rust"
+ fi
+ 
+ echo "=== Restarting daemon ==="
+ npm run daemon:restart
 
 echo "=== Verifying daemon health ==="
 curl --fail --silent http://127.0.0.1:9999/health >/dev/null

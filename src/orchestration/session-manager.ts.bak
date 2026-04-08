@@ -1296,14 +1296,9 @@ export class SessionManager {
    try {
      // 使用 ledger-cli backfill 进行 task-level digest 压缩
      // Resolve ledger-cli from FINGER_SOURCE_ROOT with release/debug fallback
-     // Resolve ledger-cli from FINGER_SOURCE_ROOT: dist/bin first (global install), then rust/target (local dev)
-     const distBinPath = path.join(FINGER_SOURCE_ROOT, "dist", "bin", "ledger-cli");
      const releaseCliPath = path.join(FINGER_SOURCE_ROOT, "rust", "target", "release", "ledger-cli");
      const debugCliPath = path.join(FINGER_SOURCE_ROOT, "rust", "target", "debug", "ledger-cli");
-     let cliPath: string;
-     if (fs.existsSync(distBinPath)) cliPath = distBinPath;
-     else if (fs.existsSync(releaseCliPath)) cliPath = releaseCliPath;
-     else cliPath = debugCliPath;
+     const cliPath = fs.existsSync(releaseCliPath) ? releaseCliPath : debugCliPath;
 
       // Step 1: Backfill ledger → compact-memory.jsonl
       const stdout = await new Promise<string>((resolve, reject) => {

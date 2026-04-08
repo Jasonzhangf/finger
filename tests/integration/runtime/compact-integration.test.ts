@@ -1,12 +1,25 @@
- import { describe, it, expect, beforeEach, afterEach } from 'vitest';
- import { RuntimeFacade } from '../../../src/runtime/runtime-facade.js';
- import { SessionManager } from '../../../src/orchestration/session-manager.js';
- import { EventBus } from '../../../src/runtime/event-bus.js';
- import { globalToolRegistry } from '../../../src/runtime/tool-registry.js';
- import { readJsonLines } from '../../../src/runtime/context-ledger-memory-helpers.js';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { RuntimeFacade } from '../../../src/runtime/runtime-facade.js';
+import { SessionManager } from '../../../src/orchestration/session-manager.js';
+import { UnifiedEventBus } from '../../../src/runtime/event-bus.js';
+import type { EventBus } from '../../../src/runtime/event-bus.js';
+import { globalToolRegistry } from '../../../src/runtime/tool-registry.js';
+import { readJsonLines } from '../../../src/runtime/context-ledger-memory-helpers.js';
 import { resolveLedgerPath, resolveBaseDir, resolveCompactMemoryPath } from '../../../src/runtime/context-ledger-memory-helpers.js';
 import fs from 'fs/promises';
 import path from 'path';
+
+// Mock ledger-cli to avoid timeout waiting for real binary
+vi.mock('../../../src/runtime/context-ledger-memory-helpers.js', async (importOriginal) => {
+  const original = await importOriginal() as any;
+  return {
+    ...original,
+    runLedgerCliCompact: vi.fn().mockResolvedValue({
+      tasks: [{ id: 'task-1', summary: 'Mocked compact task' }],
+      tokensUsed: 1000,
+    }),
+  };
+});
 
 /**
  * Compact 集成测试
@@ -18,21 +31,43 @@ import path from 'path';
  * 4. EventBus emit session_compressed 事件
  */
 describe('Compact Integration', () => {
-  const testRootDir = path.join(process.env.HOME || '/tmp', '.finger', 'sessions', '_test_compress_integration');
-  const testSessionId = 'test-integration-session';
+  const testRootDir = path.join(process.env.HOME || '/tmp', '.finger', 'sessions', '_test_compact_int_' + Date.now());
   const testAgentId = 'finger-project-agent';
   const testMode = 'main';
 
+  let testSessionId: string;
   let sessionManager: SessionManager;
   let runtimeFacade: RuntimeFacade;
   let eventBus: EventBus;
 
   beforeEach(async () => {
-    // Setup test directory
-    const baseDir = resolveBaseDir(testRootDir, testSessionId, testAgentId, testMode);
-    await fs.mkdir(baseDir, { recursive: true });
+    // Clean up test directory first
+    try { await fs.rm(testRootDir, { recursive: true, force: true }); } catch {}
+    
+    // Create fresh test directory
+    await fs.mkdir(testRootDir, { recursive: true });
+
+    // Create SessionManager with test rootDir (no existing sessions to reuse)
+    sessionManager = new SessionManager({ rootDir: testRootDir });
+    eventBus = new UnifiedEventBus();
+    runtimeFacade = new RuntimeFacade(eventBus, sessionManager, globalToolRegistry);
+
+    // Create test session - use unique project path to avoid reuse
+    const uniqueProjectPath = `/test-project-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const session = sessionManager.createSession(uniqueProjectPath, 'test-compact-session', { allowReuse: false });
+    testSessionId = session.id;
+    
+    // Set high token count to trigger compression
+    session.totalTokens = 50000;
+    session.originalStartIndex = 0;
+    session.originalEndIndex = 49;
+    session.latestCompactIndex = -1;
+    sessionManager.saveSession(session);
 
     // Create mock ledger with session_message entries
+    const baseDir = resolveBaseDir(testRootDir, testSessionId, testAgentId, testMode);
+    await fs.mkdir(baseDir, { recursive: true });
+    
     const ledgerPath = resolveLedgerPath(testRootDir, testSessionId, testAgentId, testMode);
     const mockEntries = [];
     for (let i = 0; i < 50; i++) {
@@ -48,20 +83,6 @@ describe('Compact Integration', () => {
     }
     const lines = mockEntries.map(e => JSON.stringify(e)).join('\n') + '\n';
     await fs.writeFile(ledgerPath, lines, 'utf-8');
-
-   // Create SessionManager with test rootDir
-   sessionManager = new SessionManager({ rootDir: testRootDir });
-   eventBus = new EventBus();
-   runtimeFacade = new RuntimeFacade(eventBus, sessionManager, globalToolRegistry);
-
-    // Create test session with high token count (trigger compression)
-    sessionManager.createSession(testSessionId, 'finger-project-agent');
-    const session = sessionManager.getSession(testSessionId)!;
-    session.totalTokens = 50000; // High enough to trigger compression
-    session.originalStartIndex = 0;
-    session.originalEndIndex = 49;
-    session.latestCompactIndex = -1;
-    sessionManager.saveSession(session);
   });
 
   afterEach(async () => {

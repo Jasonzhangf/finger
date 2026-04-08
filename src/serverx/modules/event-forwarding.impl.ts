@@ -1297,6 +1297,7 @@ export function attachEventForwarding(deps: EventForwardingDeps): {
         || typeof estimatedTokensInContextWindow === 'number'
         || typeof maxInputTokens === 'number'
         || !!contextBreakdown;
+      logger.module('event-forwarding').info('[COMPACT-DEBUG] model_round event', { sessionId: event.sessionId, contextUsagePercent, runtimeExists: !!runtime, maybeAutoCompactExists: !!runtime?.maybeAutoCompact });
       if (hasModelRoundContextStats) {
         void deps.eventBus.emit({
           type: 'system_notice',
@@ -1314,6 +1315,7 @@ export function attachEventForwarding(deps: EventForwardingDeps): {
             turnId,
           },
         });
+        logger.module('event-forwarding').info('[COMPACT-DEBUG] checking runtime.maybeAutoCompact');
         if (runtime?.maybeAutoCompact) {
           void runtime.maybeAutoCompact(event.sessionId, contextUsagePercent, turnId)
             .catch((error) => {

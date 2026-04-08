@@ -1647,12 +1647,14 @@ export class RuntimeFacade {
 
 
   async maybeAutoCompact(sessionId: string, contextUsagePercent?: number, turnId?: string): Promise<boolean> {
+    log.info('[COMPACT-DEBUG] maybeAutoCompact called', { sessionId, contextUsagePercent, turnId });
     const normalizedSessionId = typeof sessionId === 'string' ? sessionId.trim() : '';
     if (!normalizedSessionId) return false;
     if (typeof contextUsagePercent !== 'number' || !Number.isFinite(contextUsagePercent)) return false;
 
     const normalizedPercent = Math.max(0, Math.floor(contextUsagePercent));
-    if (normalizedPercent < AUTO_CONTEXT_COMPACT_THRESHOLD_PERCENT) return false;
+    log.info('[COMPACT-DEBUG] threshold check', { normalizedPercent, threshold: AUTO_CONTEXT_COMPACT_THRESHOLD_PERCENT });
+    if (normalizedPercent < AUTO_CONTEXT_COMPACT_THRESHOLD_PERCENT) { log.info('[COMPACT-DEBUG] below threshold, returning false'); return false; }
 
     const existing = autoCompactInFlightBySession.get(normalizedSessionId);
     if (existing) return existing;

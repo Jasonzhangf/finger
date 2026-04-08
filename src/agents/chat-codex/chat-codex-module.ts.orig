@@ -2221,9 +2221,7 @@ function resolveActiveProviderIdFromUserSettings(): string | undefined {
    if (process.env.FINGER_KERNEL_BRIDGE_BIN && process.env.FINGER_KERNEL_BRIDGE_BIN.length > 0) {
      return process.env.FINGER_KERNEL_BRIDGE_BIN;
    }
-   // Check dist/bin first (global installation), then rust/target (local development)
-  const distBinPath = join(FINGER_SOURCE_ROOT, 'dist', 'bin', 'finger-kernel-bridge-bin');
-  if (existsSync(distBinPath)) return distBinPath;
+   // Prefer release for global installation, fallback to debug for local development
    const releasePath = join(FINGER_SOURCE_ROOT, 'rust', 'target', 'release', 'finger-kernel-bridge-bin');
    const debugPath = join(FINGER_SOURCE_ROOT, 'rust', 'target', 'debug', 'finger-kernel-bridge-bin');
    if (existsSync(releasePath)) return releasePath;
