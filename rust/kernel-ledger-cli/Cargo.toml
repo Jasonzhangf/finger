@@ -1,0 +1,13 @@
+[package]
+name = "kernel-ledger-cli"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "ledger-cli"
+path = "src/main.rs"
+
+[dependencies]
+kernel-ledger = { path = "../kernel-ledger" }
+serde_json = "1.0"
+itertools = "0.12"
