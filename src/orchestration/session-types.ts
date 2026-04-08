@@ -130,9 +130,9 @@ export function ensureLedgerPointers(session: Session): Session {
         estimatedTokens: 0,
       },
       currentHistory: {
-        startLine: session.originalStartIndex,
-        endLine: session.originalEndIndex,
-        estimatedTokens: session.totalTokens,
+        startLine: 0,
+        endLine: 0,
+        estimatedTokens: 0,
       },
     };
   }
