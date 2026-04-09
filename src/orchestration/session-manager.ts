@@ -80,7 +80,6 @@ export class SessionManager {
     const ctx = session.context ?? {};
     if (ctx.sessionTier === 'system') return true;
     if (session.projectPath === SYSTEM_PROJECT_PATH) return true;
-    if (typeof ctx.ownerAgentId === 'string' && ctx.ownerAgentId === SYSTEM_AGENT_ID) return true;
     if (session.id.startsWith(SYSTEM_SESSION_PREFIX)) return true;
     return false;
   }
@@ -211,15 +210,29 @@ export class SessionManager {
     // Ensure ledger pointer fields exist for backward compatibility
     ensureLedgerPointers(session);
     session.messages = Array.isArray(session.messages) ? session.messages : [];
+    const activeWorkflowsNormalized = this.normalizeActiveWorkflows(session);
     const ownershipNormalized = this.normalizeSessionOwnershipContext(session, session.context, {
       sourceFilePath: filePath,
     });
     session.context = ownershipNormalized.context;
+    const staleProjectionRepaired = this.repairStaleCompactedProjectionOnLoad(session);
+    const compactedProjectionRepaired = this.repairCompactedProjectionStructureOnLoad(session);
     this.updateSessionProjectionState(session);
     delete (session as Session & { _cachedView?: unknown })._cachedView;
     this.sessions.set(session.id, session);
     this.sessionFilePaths.set(session.id, filePath);
-    if (ownershipNormalized.migrated) {
+    const expectedPath = this.getSessionPath(session);
+    const storagePathChanged = path.resolve(expectedPath) !== path.resolve(filePath);
+    if (storagePathChanged) {
+      this.saveSession(session);
+      log.info('[SessionManager] Migrated session file to canonical storage path during load', {
+        sessionId: session.id,
+        previousPath: filePath,
+        nextPath: expectedPath,
+      });
+      return;
+    }
+    if (ownershipNormalized.migrated || activeWorkflowsNormalized || staleProjectionRepaired || compactedProjectionRepaired) {
       this.persistMigratedSessionFile(filePath, session);
     }
   }
@@ -461,6 +474,7 @@ export class SessionManager {
     if (!Array.isArray(session.messages)) {
       session.messages = [];
     }
+    this.normalizeActiveWorkflows(session);
     this.updateSessionProjectionState(session);
     const sessionDir = this.getSessionDir(session);
     if (!fs.existsSync(sessionDir)) {
@@ -518,6 +532,118 @@ export class SessionManager {
         updatedAt: new Date().toISOString(),
       },
     };
+  }
+
+  private normalizeActiveWorkflows(session: Session): boolean {
+    const normalized = Array.isArray(session.activeWorkflows)
+      ? session.activeWorkflows.filter((item): item is string => typeof item === 'string' && item.trim().length > 0)
+      : [];
+    const previous = session.activeWorkflows;
+    const changed = !Array.isArray(previous)
+      || previous.length !== normalized.length
+      || previous.some((item, index) => item !== normalized[index]);
+    session.activeWorkflows = normalized;
+    return changed;
+  }
+
+  private repairStaleCompactedProjectionOnLoad(session: Session): boolean {
+    if (session.latestCompactIndex >= 0) return false;
+
+    const sessionContext = isObjectRecord(session.context) ? session.context : {};
+    const resolvedAgentId = typeof sessionContext.ownerAgentId === 'string' && sessionContext.ownerAgentId.trim().length > 0
+      ? sessionContext.ownerAgentId.trim()
+      : SYSTEM_AGENT_ID;
+    const compactLineCount = this.readCompactMemoryLineCountSync(session, resolvedAgentId, 'main');
+    if (compactLineCount <= 0) return false;
+
+    const compactSummary = this.readLatestCompactSummarySync(session, resolvedAgentId, 'main');
+    const ledgerMessages = this.readLedgerSessionMessagesSync(session, 0, resolvedAgentId);
+    const projectedMessages: SessionMessage[] = [];
+
+    if (compactSummary.length > 0) {
+      projectedMessages.push({
+        id: `startup-compact-${Date.now()}`,
+        role: 'assistant',
+        content: compactSummary,
+        timestamp: new Date().toISOString(),
+        metadata: buildKernelProjectionMessageMetadata(compactSummary),
+      });
+    }
+
+    projectedMessages.push(
+      ...ledgerMessages.map((message) => ({
+        ...message,
+        metadata: {
+          ...buildKernelProjectionMessageMetadata(message.content),
+          ...(isObjectRecord(message.metadata) ? message.metadata : {}),
+        },
+      })),
+    );
+
+    if (projectedMessages.length === 0) return false;
+
+    const normalizedProjection = normalizeProjectionMessages(projectedMessages);
+    const pointerState = buildProjectionPointerState(normalizedProjection.messages);
+    const syncedAt = new Date().toISOString();
+    session.messages = normalizedProjection.messages;
+    session.latestCompactIndex = compactLineCount - 1;
+    session.originalStartIndex = 0;
+    session.originalEndIndex = normalizedProjection.messages.length > 0 ? normalizedProjection.messages.length - 1 : 0;
+    session.totalTokens = pointerState.totalTokens;
+    session.pointers = pointerState.pointers;
+    session.lastAccessedAt = syncedAt;
+    session.context = this.normalizeSessionOwnershipContext(session, {
+      ...sessionContext,
+      kernelProjection: {
+        version: 1,
+        source: 'startup_ledger_projection_repair',
+        compactApplied: true,
+        syncedAt,
+        agentId: resolvedAgentId,
+        mode: 'main',
+        projectedMessageCount: projectedMessages.length,
+        latestCompactIndex: compactLineCount - 1,
+        ...(compactSummary.length > 0 ? { compactSummary } : {}),
+      },
+    }).context;
+    session._cachedView = undefined;
+    return true;
+  }
+
+  private repairCompactedProjectionStructureOnLoad(session: Session): boolean {
+    const kernelProjection = isObjectRecord(session.context)
+      ? isObjectRecord(session.context.kernelProjection)
+        ? session.context.kernelProjection
+        : {}
+      : {};
+    const compactApplied = kernelProjection.compactApplied === true || session.latestCompactIndex >= 0;
+    const hasHistoricalMessages = Array.isArray(session.messages) && session.messages.some((message) => isHistoricalProjectionMessage(message));
+    if (!compactApplied && !hasHistoricalMessages) {
+      return false;
+    }
+
+    const normalizedProjection = normalizeProjectionMessages(Array.isArray(session.messages) ? session.messages : []);
+    const pointerState = buildProjectionPointerState(normalizedProjection.messages);
+    const pointersChanged = JSON.stringify(session.pointers ?? null) !== JSON.stringify(pointerState.pointers);
+    const totalTokensChanged = session.totalTokens !== pointerState.totalTokens;
+    const originalEndIndex = normalizedProjection.messages.length > 0 ? normalizedProjection.messages.length - 1 : 0;
+    const originalWindowChanged = session.originalStartIndex !== 0 || session.originalEndIndex !== originalEndIndex;
+    if (!normalizedProjection.changed && !pointersChanged && !totalTokensChanged && !originalWindowChanged) {
+      return false;
+    }
+
+    session.messages = normalizedProjection.messages;
+    session.originalStartIndex = 0;
+    session.originalEndIndex = originalEndIndex;
+    session.totalTokens = pointerState.totalTokens;
+    session.pointers = pointerState.pointers;
+    session._cachedView = undefined;
+    return true;
+  }
+
+  private getActiveWorkflowCount(session: Session): number {
+    this.normalizeActiveWorkflows(session);
+    return session.activeWorkflows.length;
   }
 
   createSession(projectPath: string, name?: string, options?: { allowReuse?: boolean }): Session {
@@ -708,7 +834,7 @@ export class SessionManager {
   }
 
   private isEmptySession(session: Session): boolean {
-    return this.getLedgerMessageCountSync(session) === 0 && session.activeWorkflows.length === 0;
+    return this.getLedgerMessageCountSync(session) === 0 && this.getActiveWorkflowCount(session) === 0;
   }
 
   private findReusableEmptySession(projectPath: string): Session | null {
@@ -1334,6 +1460,208 @@ export class SessionManager {
     return { compressed: !!compressed, summary: compressed?.summary, originalCount: compressed?.originalCount };
   }
 
+  syncProjectionFromKernelMetadata(
+    sessionId: string,
+    metadata: Record<string, unknown> | undefined,
+    options?: {
+      agentId?: string;
+      mode?: string;
+      assistantReply?: string;
+    },
+  ): {
+    applied: boolean;
+    reason: string;
+    messageCount?: number;
+    latestCompactIndex?: number;
+  } {
+    const session = this.sessions.get(sessionId);
+    if (!session) {
+      return { applied: false, reason: 'session_not_found' };
+    }
+    if (!isObjectRecord(metadata)) {
+      return { applied: false, reason: 'metadata_missing' };
+    }
+
+    const rawApiHistory = Array.isArray(metadata.api_history)
+      ? metadata.api_history.filter((item): item is Record<string, unknown> => isObjectRecord(item))
+      : [];
+    const compactMetadata = isObjectRecord(metadata.compact) ? metadata.compact : {};
+    const compactApplied = compactMetadata.applied === true || historyContainsCompactDigest(rawApiHistory);
+    if (!compactApplied) {
+      return { applied: false, reason: 'compact_not_applied' };
+    }
+    if (rawApiHistory.length === 0) {
+      return { applied: false, reason: 'api_history_empty' };
+    }
+
+    const projectedMessages = normalizeProjectionMessages(
+      this.buildSessionMessagesFromKernelApiHistory(session, rawApiHistory, options?.assistantReply),
+    ).messages;
+    if (projectedMessages.length === 0) {
+      return { applied: false, reason: 'projection_empty' };
+    }
+
+    const sessionContext = isObjectRecord(session.context) ? session.context : {};
+    const resolvedAgentId = typeof options?.agentId === 'string' && options.agentId.trim().length > 0
+      ? options.agentId.trim()
+      : typeof sessionContext.ownerAgentId === 'string' && sessionContext.ownerAgentId.trim().length > 0
+        ? sessionContext.ownerAgentId.trim()
+        : SYSTEM_AGENT_ID;
+    const resolvedMode = typeof options?.mode === 'string' && options.mode.trim().length > 0
+      ? options.mode.trim()
+      : typeof metadata.kernelMode === 'string' && metadata.kernelMode.trim().length > 0
+        ? metadata.kernelMode.trim()
+        : typeof metadata.mode === 'string' && metadata.mode.trim().length > 0
+          ? metadata.mode.trim()
+          : 'main';
+
+    const compactLineCount = this.readCompactMemoryLineCountSync(session, resolvedAgentId, resolvedMode);
+    const latestCompactIndex = compactLineCount > 0 ? compactLineCount - 1 : -1;
+    const pointerState = buildProjectionPointerState(projectedMessages);
+    const syncedAt = new Date().toISOString();
+
+    session.messages = projectedMessages;
+    session.latestCompactIndex = latestCompactIndex;
+    session.originalStartIndex = 0;
+    session.originalEndIndex = projectedMessages.length > 0 ? projectedMessages.length - 1 : 0;
+    session.totalTokens = pointerState.totalTokens;
+    session.pointers = pointerState.pointers;
+    session.lastAccessedAt = syncedAt;
+    session.context = this.normalizeSessionOwnershipContext(session, {
+      ...sessionContext,
+      kernelProjection: {
+        version: 1,
+        source: 'rust_kernel_api_history',
+        compactApplied: true,
+        syncedAt,
+        agentId: resolvedAgentId,
+        mode: resolvedMode,
+        projectedMessageCount: projectedMessages.length,
+        latestCompactIndex,
+        ...(typeof compactMetadata.summary === 'string' && compactMetadata.summary.trim().length > 0
+          ? { compactSummary: compactMetadata.summary.trim() }
+          : {}),
+        ...(typeof compactMetadata.source_time_start === 'string' && compactMetadata.source_time_start.trim().length > 0
+          ? { sourceTimeStart: compactMetadata.source_time_start.trim() }
+          : {}),
+        ...(typeof compactMetadata.source_time_end === 'string' && compactMetadata.source_time_end.trim().length > 0
+          ? { sourceTimeEnd: compactMetadata.source_time_end.trim() }
+          : {}),
+      },
+    }).context;
+    session._cachedView = undefined;
+    this.saveSession(session);
+
+    return {
+      applied: true,
+      reason: 'compact_projection_synced',
+      messageCount: projectedMessages.length,
+      latestCompactIndex,
+    };
+  }
+
+  async syncProjectionFromLedger(
+    sessionId: string,
+    options?: {
+      agentId?: string;
+      mode?: string;
+      source?: string;
+    },
+  ): Promise<{
+    applied: boolean;
+    reason: string;
+    messageCount?: number;
+    latestCompactIndex?: number;
+    totalTokens?: number;
+  }> {
+    const session = this.sessions.get(sessionId);
+    if (!session) {
+      return { applied: false, reason: 'session_not_found' };
+    }
+
+    const sessionContext = isObjectRecord(session.context) ? session.context : {};
+    const resolvedAgentId = typeof options?.agentId === 'string' && options.agentId.trim().length > 0
+      ? options.agentId.trim()
+      : typeof sessionContext.ownerAgentId === 'string' && sessionContext.ownerAgentId.trim().length > 0
+        ? sessionContext.ownerAgentId.trim()
+        : SYSTEM_AGENT_ID;
+    const resolvedMode = typeof options?.mode === 'string' && options.mode.trim().length > 0
+      ? options.mode.trim()
+      : 'main';
+    const rootDir = this.resolveSessionsRoot(session);
+
+    const view = await buildSessionView(
+      { rootDir, sessionId: session.id, agentId: resolvedAgentId, mode: resolvedMode },
+      { includeSummary: true },
+    );
+
+    const projectedMessages: SessionMessage[] = [];
+    const compactSummary = typeof view.compressedSummary === 'string' ? view.compressedSummary.trim() : '';
+    if (compactSummary.length > 0) {
+      projectedMessages.push({
+        id: `ledger-compact-${Date.now()}`,
+        role: 'assistant',
+        content: compactSummary,
+        timestamp: new Date().toISOString(),
+        metadata: buildKernelProjectionMessageMetadata(compactSummary),
+      });
+    }
+
+    projectedMessages.push(
+      ...view.messages.map((msg, index) => ({
+        id: msg.messageId || `ledger-${Date.now()}-${index}`,
+        role: msg.role,
+        content: msg.content,
+        timestamp: msg.timestamp || new Date().toISOString(),
+        metadata: { ...buildKernelProjectionMessageMetadata(msg.content), ...(msg.metadata ?? {}) },
+      })),
+    );
+
+    const compactLineCount = this.readCompactMemoryLineCountSync(session, resolvedAgentId, resolvedMode);
+    if (compactLineCount <= 0 && compactSummary.length === 0) {
+      return { applied: false, reason: 'compact_memory_empty' };
+    }
+
+    const normalizedProjection = normalizeProjectionMessages(projectedMessages);
+    const latestCompactIndex = compactLineCount > 0 ? compactLineCount - 1 : -1;
+    const pointerState = buildProjectionPointerState(normalizedProjection.messages);
+    const syncedAt = new Date().toISOString();
+
+    session.messages = normalizedProjection.messages;
+    session.latestCompactIndex = latestCompactIndex;
+    session.originalStartIndex = 0;
+    session.originalEndIndex = normalizedProjection.messages.length > 0 ? normalizedProjection.messages.length - 1 : 0;
+    session.totalTokens = pointerState.totalTokens;
+    session.pointers = pointerState.pointers;
+    session.lastAccessedAt = syncedAt;
+    session.context = this.normalizeSessionOwnershipContext(session, {
+      ...sessionContext,
+      kernelProjection: {
+        version: 1,
+        source: typeof options?.source === 'string' && options.source.trim().length > 0
+          ? options.source.trim()
+          : 'runtime_ledger_projection',
+        compactApplied: latestCompactIndex >= 0 || compactSummary.length > 0,
+        syncedAt,
+        agentId: resolvedAgentId,
+        mode: resolvedMode,
+        projectedMessageCount: normalizedProjection.messages.length,
+        latestCompactIndex,
+        ...(compactSummary.length > 0 ? { compactSummary } : {}),
+      },
+    }).context;
+    session._cachedView = undefined;
+    this.saveSession(session);
+
+    return {
+      applied: true,
+      reason: 'ledger_projection_synced',
+      messageCount: normalizedProjection.messages.length,
+      latestCompactIndex,
+      totalTokens: pointerState.totalTokens,
+    };
+  }
+
   pauseSession(sessionId: string): boolean {
     const session = this.sessions.get(sessionId);
     if (!session) return false;
@@ -1378,6 +1706,7 @@ export class SessionManager {
   addWorkflowToSession(sessionId: string, workflowId: string): boolean {
     const session = this.sessions.get(sessionId);
     if (!session) return false;
+    this.normalizeActiveWorkflows(session);
     if (!session.activeWorkflows.includes(workflowId)) {
       session.activeWorkflows.push(workflowId);
       this.saveSession(session);
@@ -1429,7 +1758,7 @@ export class SessionManager {
     const candidates = Array.from(this.sessions.values()).filter(
       (session) => session.projectPath === normalized,
     );
-    const hasActive = candidates.some((session) => session.activeWorkflows.length > 0);
+    const hasActive = candidates.some((session) => this.getActiveWorkflowCount(session) > 0);
     if (hasActive && options?.allowActive !== true) {
       return { removed: [], projectDir, hadActive: true };
     }
@@ -1601,4 +1930,348 @@ export class SessionManager {
       return [];
     }
   }
+
+  private buildSessionMessagesFromKernelApiHistory(
+    session: Session,
+    apiHistory: Record<string, unknown>[],
+    assistantReply?: string,
+  ): SessionMessage[] {
+    const existingBySignature = indexSessionMessagesBySignature(Array.isArray(session.messages) ? session.messages : []);
+    const projected: SessionMessage[] = [];
+
+    for (const [index, item] of apiHistory.entries()) {
+      const content = extractKernelHistoryContent(item);
+      if (!content) continue;
+      const timestamp = extractKernelHistoryTimestamp(item) ?? new Date().toISOString();
+      const role = normalizeKernelHistoryRole(item);
+      const metadata = buildKernelProjectionMessageMetadata(content);
+      const signature = buildMessageSignature(role, content, timestamp);
+      const reused = existingBySignature.get(signature)?.shift();
+      const itemId = typeof item.id === 'string' && item.id.trim().length > 0 ? item.id.trim() : '';
+      const resolvedId = typeof reused?.id === 'string' && reused.id.trim().length > 0
+        ? reused.id.trim()
+        : itemId || `kernel-${Date.now()}-${index}`;
+      projected.push({
+        id: resolvedId,
+        role,
+        content,
+        timestamp,
+        ...(Object.keys(metadata).length > 0 ? { metadata } : {}),
+      });
+    }
+
+    const fallbackReply = typeof assistantReply === 'string' ? assistantReply.trim() : '';
+    if (fallbackReply.length > 0) {
+      const lastMessage = projected.length > 0 ? projected[projected.length - 1] : undefined;
+      if (!lastMessage || lastMessage.role !== 'assistant' || lastMessage.content.trim() !== fallbackReply) {
+        projected.push({
+          id: `kernel-reply-${Date.now()}`,
+          role: 'assistant',
+          content: fallbackReply,
+          timestamp: new Date().toISOString(),
+          metadata: {
+            kernelApiHistory: true,
+            contextZone: 'current_history',
+          },
+        });
+      }
+    }
+
+    return projected;
+  }
+
+  private readCompactMemoryLineCountSync(session: Session, agentId: string, mode: string): number {
+    const rootDir = this.resolveSessionsRoot(session);
+    const compactPath = path.join(resolveBaseDir(rootDir, session.id, agentId, mode), 'compact-memory.jsonl');
+    if (!fs.existsSync(compactPath)) return 0;
+    try {
+      return fs.readFileSync(compactPath, 'utf-8')
+        .split('\n')
+        .map((line) => line.trim())
+        .filter((line) => line.length > 0)
+        .length;
+    } catch (error) {
+      clog.error('[SessionManager] Failed to read compact-memory for projection sync:', error);
+      return 0;
+    }
+  }
+
+  private readLatestCompactSummarySync(session: Session, agentId: string, mode: string): string {
+    const rootDir = this.resolveSessionsRoot(session);
+    const compactPath = path.join(resolveBaseDir(rootDir, session.id, agentId, mode), 'compact-memory.jsonl');
+    if (!fs.existsSync(compactPath)) return '';
+    try {
+      const lines = fs.readFileSync(compactPath, 'utf-8')
+        .split('\n')
+        .map((line) => line.trim())
+        .filter((line) => line.length > 0);
+      for (let index = lines.length - 1; index >= 0; index -= 1) {
+        try {
+          const parsed = JSON.parse(lines[index]) as Record<string, unknown>;
+          const payload = isObjectRecord(parsed.payload) ? parsed.payload : {};
+          const summary = typeof payload.summary === 'string' && payload.summary.trim().length > 0
+            ? payload.summary.trim()
+            : typeof parsed.summary === 'string' && parsed.summary.trim().length > 0
+              ? parsed.summary.trim()
+              : '';
+          if (summary.length > 0) return summary;
+        } catch {
+          continue;
+        }
+      }
+      return '';
+    } catch (error) {
+      clog.error('[SessionManager] Failed to read compact-memory summary for startup repair:', error);
+      return '';
+    }
+  }
+}
+
+function buildMessageSignature(role: SessionMessage['role'], content: string, timestamp: string): string {
+  return `${role}\u0000${timestamp}\u0000${content}`;
+}
+
+function indexSessionMessagesBySignature(messages: SessionMessage[]): Map<string, SessionMessage[]> {
+  const indexed = new Map<string, SessionMessage[]>();
+  for (const message of messages) {
+    const signature = buildMessageSignature(message.role, message.content, message.timestamp);
+    const bucket = indexed.get(signature);
+    if (bucket) {
+      bucket.push(message);
+    } else {
+      indexed.set(signature, [message]);
+    }
+  }
+  return indexed;
+}
+
+function normalizeKernelHistoryRole(item: Record<string, unknown>): SessionMessage['role'] {
+  const role = typeof item.role === 'string' ? item.role.trim().toLowerCase() : '';
+  if (role === 'assistant' || role === 'system') return role;
+  return 'user';
+}
+
+function extractKernelHistoryTimestamp(item: Record<string, unknown>): string | undefined {
+  const candidates = [
+    item.timestamp_iso,
+    item.timestampIso,
+    item.timestamp,
+  ];
+  for (const candidate of candidates) {
+    if (typeof candidate === 'string' && candidate.trim().length > 0) {
+      return candidate.trim();
+    }
+  }
+  return undefined;
+}
+
+function extractKernelHistoryContent(item: Record<string, unknown>): string {
+  const direct = typeof item.output_text === 'string' && item.output_text.trim().length > 0
+    ? item.output_text
+    : typeof item.content === 'string' && item.content.trim().length > 0
+      ? item.content
+      : '';
+  if (direct) return direct;
+
+  const content = item.content;
+  if (!Array.isArray(content)) return '';
+  const parts = content
+    .flatMap((entry) => {
+      if (!isObjectRecord(entry)) return [];
+      const text = typeof entry.text === 'string' && entry.text.trim().length > 0
+        ? entry.text
+        : typeof entry.content === 'string' && entry.content.trim().length > 0
+          ? entry.content
+          : '';
+      return text ? [text] : [];
+    })
+    .map((part) => part.trim())
+    .filter((part) => part.length > 0);
+  return parts.join('\n').trim();
+}
+
+function historyContainsCompactDigest(history: Record<string, unknown>[]): boolean {
+  return history.some((item) => {
+    const content = extractKernelHistoryContent(item);
+    return isCompactDigestContent(content);
+  });
+}
+
+function isCompactDigestContent(content: string): boolean {
+  const normalized = content.trim().toLowerCase();
+  return normalized.includes('<task_digest>') || normalized.includes('<history_summary>');
+}
+
+function isHistoricalProjectionMessage(message: SessionMessage): boolean {
+  const metadata = isObjectRecord(message.metadata) ? message.metadata : {};
+  const zone = typeof metadata.contextZone === 'string' ? metadata.contextZone.trim() : '';
+  return metadata.compactDigest === true || zone === 'historical_memory' || isCompactDigestContent(message.content);
+}
+
+function normalizeProjectionMessages(
+  messages: SessionMessage[],
+): {
+  messages: SessionMessage[];
+  changed: boolean;
+} {
+  if (!Array.isArray(messages) || messages.length === 0) {
+    return { messages: [], changed: false };
+  }
+
+  const shouldNormalizeZones = messages.some((message) => {
+    const metadata = isObjectRecord(message.metadata) ? message.metadata : {};
+    const zone = typeof metadata.contextZone === 'string' ? metadata.contextZone.trim() : '';
+    return metadata.compactDigest === true
+      || zone === 'historical_memory'
+      || zone === 'current_history'
+      || isCompactDigestContent(message.content);
+  });
+
+  const historical: SessionMessage[] = [];
+  const current: SessionMessage[] = [];
+  let changed = false;
+
+  for (const [index, message] of messages.entries()) {
+    const historicalMessage = isHistoricalProjectionMessage(message);
+    const contentIsDigest = isCompactDigestContent(message.content);
+    const rawMetadata = isObjectRecord(message.metadata) ? message.metadata : {};
+    let normalizedMessage = message;
+
+    if (shouldNormalizeZones) {
+      const metadata = { ...rawMetadata };
+      const targetZone = historicalMessage ? 'historical_memory' : 'current_history';
+      if (metadata.contextZone !== targetZone) {
+        metadata.contextZone = targetZone;
+        changed = true;
+      }
+      if (contentIsDigest && metadata.compactDigest !== true) {
+        metadata.compactDigest = true;
+        changed = true;
+      }
+      normalizedMessage = {
+        ...message,
+        metadata,
+      };
+    }
+
+    if (typeof normalizedMessage.id !== 'string' || normalizedMessage.id.trim().length === 0) {
+      normalizedMessage = {
+        ...normalizedMessage,
+        id: buildProjectionFallbackId(normalizedMessage, index),
+      };
+      changed = true;
+    }
+
+    if (historicalMessage) {
+      historical.push(normalizedMessage);
+    } else {
+      current.push(normalizedMessage);
+    }
+  }
+
+  const normalized = [...historical, ...current];
+  if (!changed && normalized.length === messages.length) {
+    for (let index = 0; index < normalized.length; index += 1) {
+      if (normalized[index] !== messages[index]) {
+        changed = true;
+        break;
+      }
+    }
+  }
+
+  return {
+    messages: changed ? normalized : messages,
+    changed,
+  };
+}
+
+function buildProjectionFallbackId(message: SessionMessage, index: number): string {
+  const timestamp = typeof message.timestamp === 'string' ? message.timestamp : '';
+  const digest = createHash('sha1')
+    .update(`${message.role}\u0000${timestamp}\u0000${message.content}\u0000${index}`)
+    .digest('hex')
+    .slice(0, 12);
+  return `projection-${digest}`;
+}
+
+function buildKernelProjectionMessageMetadata(content: string): Record<string, unknown> {
+  const metadata: Record<string, unknown> = {
+    kernelApiHistory: true,
+  };
+  if (isCompactDigestContent(content)) {
+    metadata.compactDigest = true;
+    metadata.contextZone = 'historical_memory';
+  } else {
+    metadata.contextZone = 'current_history';
+  }
+  const digestJson = extractTaggedJson(content, 'task_digest');
+  if (digestJson && isObjectRecord(digestJson)) {
+    if (typeof digestJson.task_id === 'string' && digestJson.task_id.trim().length > 0) {
+      metadata.taskId = digestJson.task_id.trim();
+    }
+    if (typeof digestJson.topic === 'string' && digestJson.topic.trim().length > 0) {
+      metadata.topic = digestJson.topic.trim();
+    }
+    if (Array.isArray(digestJson.tags)) {
+      const tags = digestJson.tags.filter((item): item is string => typeof item === 'string' && item.trim().length > 0);
+      if (tags.length > 0) metadata.tags = tags;
+    }
+  }
+  return metadata;
+}
+
+function extractTaggedJson(content: string, tagName: string): Record<string, unknown> | undefined {
+  const pattern = new RegExp(`<${tagName}>\\s*([\\s\\S]*?)\\s*</${tagName}>`, 'i');
+  const match = content.match(pattern);
+  if (!match || typeof match[1] !== 'string') return undefined;
+  try {
+    const parsed = JSON.parse(match[1]);
+    return isObjectRecord(parsed) ? parsed : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function buildProjectionPointerState(
+  messages: SessionMessage[],
+): {
+  totalTokens: number;
+  pointers: NonNullable<Session['pointers']>;
+} {
+  const normalizedProjection = normalizeProjectionMessages(messages);
+  let historicalTokens = 0;
+  let currentTokens = 0;
+  let historicalPrefixCount = 0;
+
+  for (const message of normalizedProjection.messages) {
+    const tokens = estimateTokens(message.content);
+    if (isHistoricalProjectionMessage(message)) {
+      historicalPrefixCount += 1;
+      historicalTokens += tokens;
+      continue;
+    }
+    currentTokens += tokens;
+  }
+
+  const totalTokens = historicalTokens + currentTokens;
+  const currentStart = historicalPrefixCount < normalizedProjection.messages.length
+    ? historicalPrefixCount
+    : Math.max(0, normalizedProjection.messages.length - 1);
+  const currentEnd = normalizedProjection.messages.length > 0 ? normalizedProjection.messages.length - 1 : 0;
+
+  return {
+    totalTokens,
+    pointers: {
+      contextHistory: {
+        startLine: historicalPrefixCount > 0 ? 0 : 0,
+        endLine: historicalPrefixCount > 0 ? historicalPrefixCount - 1 : -1,
+        estimatedTokens: historicalTokens,
+      },
+      currentHistory: {
+        startLine: currentStart,
+        endLine: currentEnd,
+        estimatedTokens: currentTokens,
+      },
+    },
+  };
 }
