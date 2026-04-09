@@ -25,18 +25,110 @@ import * as path from 'path';
 import * as os from 'os';
 import { spawn, ChildProcess } from 'child_process';
 import { fileURLToPath } from 'url';
+import net from 'net';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const CLI_PATH = path.join(process.cwd(), 'dist/cli/index.js');
-const WS_PORT = 19999;
 const CHANNEL_ID = 'qqbot';
 const PID_FILE = path.join(os.homedir(), '.finger', 'run', `gateway-bridge-${CHANNEL_ID}.pid`);
+
+function reservePort(): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const server = net.createServer();
+    server.unref();
+    server.on('error', reject);
+    server.listen(0, '127.0.0.1', () => {
+      const address = server.address();
+      if (!address || typeof address === 'string') {
+        server.close(() => reject(new Error('failed to reserve local port')));
+        return;
+      }
+      const port = address.port;
+      server.close((closeErr) => {
+        if (closeErr) {
+          reject(closeErr);
+          return;
+        }
+        resolve(port);
+      });
+    });
+  });
+}
+
+async function waitForCondition(
+  predicate: () => boolean | Promise<boolean>,
+  timeoutMs: number,
+  failureMessage: () => string,
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (await predicate()) {
+      return;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  throw new Error(failureMessage());
+}
+
+async function waitForWsPort(wsPort: number): Promise<void> {
+  await waitForCondition(() => new Promise<boolean>((resolve) => {
+    const socket = net.connect({ host: '127.0.0.1', port: wsPort });
+    socket.once('connect', () => {
+      socket.destroy();
+      resolve(true);
+    });
+    socket.once('error', () => {
+      socket.destroy();
+      resolve(false);
+    });
+  }), 10_000, () => `WebSocket server on port ${wsPort} did not become reachable`);
+}
 
 describe('Gateway Bridge QQBot E2E', () => {
   let ws: WebSocket | null = null;
   let child: ChildProcess | null = null;
+  let wsPort = 0;
+  let gatewayOutput = '';
+
+  async function waitForMessage(
+    predicate: (message: Record<string, any>) => boolean,
+    timeoutMs: number,
+  ): Promise<Record<string, any>> {
+    if (!ws) {
+      throw new Error('WebSocket not connected');
+    }
+
+    return new Promise<Record<string, any>>((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        ws?.off('message', onMessage);
+        reject(new Error(`Timed out waiting for gateway response\n${gatewayOutput}`));
+      }, timeoutMs);
+
+      const onMessage = (data: Buffer) => {
+        try {
+          const message = JSON.parse(data.toString()) as Record<string, any>;
+          console.log('[Test] Received message:', message);
+          if (!predicate(message)) {
+            return;
+          }
+          clearTimeout(timeout);
+          ws?.off('message', onMessage);
+          resolve(message);
+        } catch (error) {
+          clearTimeout(timeout);
+          ws?.off('message', onMessage);
+          reject(error);
+        }
+      };
+
+      ws.on('message', onMessage);
+    });
+  }
 
   beforeAll(async () => {
+    wsPort = await reservePort();
+    gatewayOutput = '';
+
     // 确保旧的 PID 文件被清理
     if (fs.existsSync(PID_FILE)) {
       fs.unlinkSync(PID_FILE);
@@ -44,10 +136,18 @@ describe('Gateway Bridge QQBot E2E', () => {
   });
 
   afterAll(async () => {
+    if (ws) {
+      ws.close();
+      ws = null;
+    }
+
     // 停止服务
     if (child && child.pid) {
       child.kill('SIGTERM');
-      await new Promise(resolve => setTimeout(resolve, 2000));
+      await Promise.race([
+        new Promise<void>((resolve) => child?.once('exit', () => resolve())),
+        new Promise<void>((resolve) => setTimeout(resolve, 2000)),
+      ]);
     }
     
     // 清理 PID 文件
@@ -56,25 +156,36 @@ describe('Gateway Bridge QQBot E2E', () => {
     }
   });
 
-  it('should start gateway bridge service', async () => {
+it('should start gateway bridge service', async () => {
     // 启动服务（前台模式）
-    child = spawn('node', [CLI_PATH, 'gateway-bridge', 'start', CHANNEL_ID, '--ws-port', String(WS_PORT)], {
-      stdio: 'ignore',
+    child = spawn(process.execPath, [CLI_PATH, 'gateway-bridge', 'start', CHANNEL_ID, '--ws-port', String(wsPort)], {
+      stdio: ['ignore', 'pipe', 'pipe'],
     });
 
-    // 等待服务启动
-    await new Promise(resolve => setTimeout(resolve, 3000));
+    child.stdout?.on('data', (data) => {
+      gatewayOutput += data.toString();
+    });
+    child.stderr?.on('data', (data) => {
+      gatewayOutput += data.toString();
+    });
+
+    await waitForCondition(
+      () => fs.existsSync(PID_FILE),
+      10_000,
+      () => `PID file was not created\n${gatewayOutput}`,
+    );
+    await waitForWsPort(wsPort);
 
     // 验证 PID 文件被创建
     expect(fs.existsSync(PID_FILE)).toBe(true);
     
     const pid = parseInt(fs.readFileSync(PID_FILE, 'utf-8'), 10);
     expect(pid).toBeGreaterThan(0);
-  });
+  }, 30_000);
 
   it('should connect to WebSocket server', async () => {
     return new Promise<void>((resolve, reject) => {
-      ws = new WebSocket(`ws://localhost:${WS_PORT}`);
+      ws = new WebSocket(`ws://127.0.0.1:${wsPort}`);
 
       const timeout = setTimeout(() => {
         reject(new Error('WebSocket connection timeout'));
@@ -94,123 +205,87 @@ describe('Gateway Bridge QQBot E2E', () => {
   });
 
   it('should send start command and receive ready event', async () => {
-    return new Promise<void>((resolve, reject) => {
-      if (!ws) {
-        reject(new Error('WebSocket not connected'));
-        return;
-      }
+    if (!ws) {
+      throw new Error('WebSocket not connected');
+    }
 
-      const timeout = setTimeout(() => {
-        reject(new Error('Start command timeout'));
-      }, 30000);
+    const requestId = `start-${Date.now()}`;
+    const waiter = waitForMessage((message) => (
+      message.event === 'ready'
+      || (
+        message.requestId === requestId
+        && message.ok === true
+        && message.result?.starting === true
+        && message.result?.channelId === CHANNEL_ID
+      )
+    ), 30_000);
 
-      ws.on('message', (data: Buffer) => {
-        try {
-          const message = JSON.parse(data.toString()) as { event: string; data: unknown };
-          console.log('[Test] Received event:', message.event);
-          
-          if (message.event === 'ready') {
-            clearTimeout(timeout);
-            expect(message.data).toBeDefined();
-            resolve();
-          }
-        } catch (error) {
-          clearTimeout(timeout);
-          reject(error);
-        }
-      });
+    ws.send(JSON.stringify({
+      action: 'start',
+      requestId,
+      payload: {
+        appId: '1903323793',
+        clientSecret: 'woVyDF3dz72jCRRE',
+      },
+    }));
 
-      // 发送 start 命令
-      const startMessage = {
-        action: 'start',
-        payload: {
-          appId: '1903323793',
-          clientSecret: 'woVyDF3dz72jCRRE',
-        },
-      };
+    const message = await waiter;
+    if (message.event === 'ready') {
+      expect(message.data).toBeDefined();
+      return;
+    }
 
-      ws.send(JSON.stringify(startMessage));
-    });
+    expect(message.requestId).toBe(requestId);
+    expect(message.ok).toBe(true);
+    expect(message.result?.starting).toBe(true);
+    expect(message.result?.channelId).toBe(CHANNEL_ID);
   });
 
   it('should send message command and receive response', async () => {
-    return new Promise<void>((resolve) => {
-      if (!ws) {
-        resolve();
-        return;
-      }
+    if (!ws) {
+      throw new Error('WebSocket not connected');
+    }
 
-      const timeout = setTimeout(() => {
-        // 30 秒后超时，但记录已收到的响应
-        console.log('[Test] Message command timeout (expected for E2E test)');
-        resolve();
-      }, 30000);
+    const requestId = `send-${Date.now()}`;
+    const waiter = waitForMessage(
+      (message) => message.requestId === requestId && typeof message.ok === 'boolean',
+      30_000,
+    );
 
-      let receivedResponse = false;
+    ws.send(JSON.stringify({
+      action: 'send',
+      requestId,
+      payload: {
+        to: '123456',
+        text: 'Hello from E2E test',
+      },
+    }));
 
-      ws.on('message', (data: Buffer) => {
-        try {
-          const message = JSON.parse(data.toString()) as { ok?: boolean; requestId?: string };
-          console.log('[Test] Received message:', message);
-          
-          if (message.ok === true || message.ok === false) {
-            if (!receivedResponse) {
-              receivedResponse = true;
-              clearTimeout(timeout);
-              resolve();
-            }
-          }
-        } catch (error) {
-          // JSON parse error，忽略
-        }
-      });
-
-      // 发送消息命令（使用一个测试用户）
-      const messageCommand = {
-        action: 'send',
-        payload: {
-          to: '123456',  // 测试用户 ID
-          text: 'Hello from E2E test',
-        },
-      };
-
-      ws.send(JSON.stringify(messageCommand));
-    });
+    const message = await waiter;
+    expect(message.requestId).toBe(requestId);
+    expect(typeof message.ok).toBe('boolean');
   });
 
   it('should send ping command and receive pong', async () => {
-    return new Promise<void>((resolve, reject) => {
-      if (!ws) {
-        reject(new Error('WebSocket not connected'));
-        return;
-      }
+    if (!ws) {
+      throw new Error('WebSocket not connected');
+    }
 
-      const timeout = setTimeout(() => {
-        reject(new Error('Ping command timeout'));
-      }, 10000);
+    const requestId = `ping-${Date.now()}`;
+    const waiter = waitForMessage(
+      (message) => message.requestId === requestId && message.ok === true && message.result?.pong === true,
+      10_000,
+    );
 
-      ws.on('message', (data: Buffer) => {
-        try {
-          const message = JSON.parse(data.toString()) as { ok?: boolean; result?: { pong?: boolean } };
-          console.log('[Test] Received response:', message);
-          
-          if (message.ok === true && message.result?.pong === true) {
-            clearTimeout(timeout);
-            resolve();
-          }
-        } catch (error) {
-          clearTimeout(timeout);
-          reject(error);
-        }
-      });
+    ws.send(JSON.stringify({
+      action: 'ping',
+      requestId,
+    }));
 
-      // 发送 ping 命令
-      const pingMessage = {
-        action: 'ping',
-      };
-
-      ws.send(JSON.stringify(pingMessage));
-    });
+    const message = await waiter;
+    expect(message.requestId).toBe(requestId);
+    expect(message.ok).toBe(true);
+    expect(message.result?.pong).toBe(true);
   });
 
   it('should stop gateway bridge service', async () => {
