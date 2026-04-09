@@ -86,7 +86,8 @@ export function isManagedFingerPortProcess(
   if (!cmd.includes(sourceRoot)) return false;
   return cmd.includes('dist/server/index.js')
     || cmd.includes('dist/daemon/dual-daemon')
-    || cmd.includes('scripts/daemon-guard.cjs');
+    || cmd.includes('scripts/daemon-guard.cjs')
+    || cmd.includes('dist/bin/finger-kernel-bridge-bin');
 }
 
 function buildChildrenMap(rows: PortProcessSnapshotRow[]): Map<number, number[]> {

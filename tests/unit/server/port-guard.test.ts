@@ -18,8 +18,21 @@ describe('port-guard', () => {
     expect(isManagedFingerPortProcess({
       pid: 102,
       ppid: 1,
-      command: 'python -m http.server 9999',
     }, '/Volumes/extension/code/finger')).toBe(false);
+
+    expect(isManagedFingerPortProcess({
+      pid: 103,
+      ppid: 100,
+      command: '/Volumes/extension/code/finger/dist/bin/finger-kernel-bridge-bin',
+    }, '/Volumes/extension/code/finger')).toBe(true);
+
+    expect(isManagedFingerPortProcess({
+      pid: 104,
+      ppid: 1,
+      command: '/other/path/finger-kernel-bridge-bin',
+    }, '/Volumes/extension/code/finger')).toBe(false);
+  });
+
   });
 
   it('collects descendants from explicit process tree only', () => {
