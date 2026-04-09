@@ -74,7 +74,7 @@ export async function handleCmdList(): Promise<string> {
   <##@system##>                    - 切换到系统代理（project=~/.finger，最新 session）
   <##@system:stopall##>            - 强制停止所有 Agent 当前推理（中断所有 active turns）
   <##@system:progress:reset##>     - 重置当前会话的进度监控状态（清除疑似卡住态）
-  <##@system:compact##>            - 手动触发当前会话的上下文压缩
+  <##@system:compact##>            - 返回 Rust kernel-owned compact 提示（TS 手动 compact 已移除）
   <##@system:progress:mode@dev##>  - 切换进度上下文显示为 DEV（详细分解）
   <##@system:progress:mode@release##> - 切换进度上下文显示为 RELEASE（精简）
   <##@agent:list##>                 - 列出当前项目的会话
@@ -266,10 +266,9 @@ export async function handleSystemCompact(
   }
   try {
     const log = logger.module('messagehub-command-handler');
-    log.info('[handleSystemCompact] Manually triggering compact', { sessionId });
-    const result = await runtime.compressContext(sessionId, { trigger: 'manual' });
-    log.info('[handleSystemCompact] Compact completed', { sessionId, result });
-    return `✅ 上下文压缩完成：${result}`;
+    log.info('[handleSystemCompact] Manual compact rejected: kernel-owned', { sessionId });
+    await runtime.compressContext(sessionId, { trigger: 'manual' });
+    return '❌ 上下文压缩失败：unexpected manual compact success';
   } catch (error) {
     const errorMsg = error instanceof Error ? error.message : String(error);
     return `❌ 上下文压缩失败：${errorMsg}`;

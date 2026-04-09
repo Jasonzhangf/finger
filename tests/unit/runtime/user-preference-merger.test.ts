@@ -8,32 +8,7 @@ import {
   readUserMd,
   writeUserMdWithHistory,
 } from '../../../src/runtime/user-preference-merger.js';
-import { appendSessionMessage } from '../../../src/runtime/ledger-writer.js';
 import { resolveCompactMemoryPath } from '../../../src/runtime/context-ledger-memory-helpers.js';
-import { compressSession } from '../../../src/runtime/session-compressor.js';
-import type { Session } from '../../../src/orchestration/session-types.js';
-import type { CompressResult } from '../../../src/runtime/session-compressor.js';
-import type { LedgerEntryFile } from '../../../src/runtime/context-ledger-memory-types.js';
-
-function makeSession(overrides: Partial<Session> = {}): Session {
-  return {
-    id: 'test-session-merge',
-    name: 'Test',
-    projectPath: '/test',
-    createdAt: '2026-01-01T00:00:00Z',
-    updatedAt: '2026-01-01T00:00:00Z',
-    lastAccessedAt: '2026-01-01T00:00:00Z',
-    messages: [],
-    activeWorkflows: [],
-    context: {},
-    ledgerPath: '',
-    latestCompactIndex: -1,
-    originalStartIndex: 0,
-    originalEndIndex: 3,
-    totalTokens: 300000,
-    ...overrides,
-  };
-}
 
 describe('user-preference-merger', () => {
   let tmpDir: string;
@@ -50,29 +25,18 @@ describe('user-preference-merger', () => {
 
   describe('extractUserPreferencePatches', () => {
     it('should extract patches from compact-memory.jsonl', async () => {
-      // Seed ledger with messages
-      for (let i = 0; i < 4; i++) {
-        await appendSessionMessage(
-          { rootDir: tmpDir, sessionId: 'test-session-merge', agentId: 'test-agent', mode: 'main' },
-          { role: i % 2 === 0 ? 'user' : 'assistant', content: `Message ${i}` },
-        );
-      }
-
-      // Compress with custom summarizer that includes user_preference_patch
-      const session = makeSession();
-      const customSummarizer = async (_entries: LedgerEntryFile[]): Promise<CompressResult> => ({
-        summary: 'Test summary',
-        userPreferencePatch: '用户偏好：简洁回复',
-        tokenCount: 50,
-      });
-
-      await compressSession(session, {
-        rootDir: tmpDir,
-        agentId: 'test-agent',
-        mode: 'main',
-        compressTokenThreshold: 200000,
-        summarizer: customSummarizer,
-      });
+      const compactPath = resolveCompactMemoryPath(tmpDir, 'test-session-merge', 'test-agent', 'main');
+      fs.mkdirSync(path.dirname(compactPath), { recursive: true });
+      fs.appendFileSync(compactPath, JSON.stringify({
+        id: 'compact-rust-only-1',
+        timestamp_ms: Date.now(),
+        timestamp_iso: new Date().toISOString(),
+        event_type: 'compact_block',
+        payload: {
+          summary: 'Test summary',
+          user_preference_patch: '用户偏好：简洁回复',
+        },
+      }) + '\n');
 
       // Extract patches
       const patches = await extractUserPreferencePatches(tmpDir, 'test-session-merge', 'test-agent', 'main');

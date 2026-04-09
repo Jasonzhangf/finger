@@ -292,11 +292,12 @@ describe('Event Forwarding - Reasoning Handling', () => {
     );
   });
 
-  it('forwards model_round context usage to runtime auto-compact probe', () => {
+  it('keeps auto_compact_probe notice but does not call runtime auto-compact fallback anymore', () => {
     const runtime = {
       maybeAutoCompact: vi.fn(async () => true),
     };
-    const deps = createDeps({ runtime });
+    const eventBus = createMockEventBus();
+    const deps = createDeps({ runtime, eventBus });
     const { emitLoopEventToEventBus } = attachEventForwarding(deps);
 
     emitLoopEventToEventBus({
@@ -311,7 +312,16 @@ describe('Event Forwarding - Reasoning Handling', () => {
       },
     });
 
-    expect(runtime.maybeAutoCompact).toHaveBeenCalledWith('test-session-auto-compact', 92, 'resp-1');
+    expect(runtime.maybeAutoCompact).not.toHaveBeenCalled();
+    expect(eventBus.emit).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'system_notice',
+      sessionId: 'test-session-auto-compact',
+      payload: expect.objectContaining({
+        source: 'auto_compact_probe',
+        contextUsagePercent: 92,
+        turnId: 'resp-1',
+      }),
+    }));
   });
 
   it('uses session owner agentId for auto_compact_probe when model_round payload omits agentId', async () => {

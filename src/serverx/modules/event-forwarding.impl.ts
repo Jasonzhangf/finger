@@ -876,20 +876,6 @@ export function attachEventForwarding(deps: EventForwardingDeps): {
       const isFinishedStop = finishReason === 'stop';
       const stopGateState = resolveStopGateState(event);
       const toolRegistryUnavailable = turnToolRegistryUnavailableBySession.get(event.sessionId) === true;
-      // Auto-compact on turn_complete (fallback when model_round not sent)
-      const contextUsagePercent = typeof event.payload.contextUsagePercent === 'number'
-        ? event.payload.contextUsagePercent
-        : undefined;
-      if (contextUsagePercent !== undefined && runtime?.maybeAutoCompact) {
-        const threshold = 85;
-        if (contextUsagePercent >= threshold) {
-          void runtime.maybeAutoCompact(event.sessionId, contextUsagePercent, undefined)
-            .catch((err: Error) => {
-              logger.module('event-forwarding').error('[EventForwarding] maybeAutoCompact failed on turn_complete', err);
-            });
-        }
-      }
-
       applyExecutionLifecycleTransition(sessionManager, event.sessionId, {
         stage: pendingInputAccepted
           ? 'running'
@@ -1297,7 +1283,6 @@ export function attachEventForwarding(deps: EventForwardingDeps): {
         || typeof estimatedTokensInContextWindow === 'number'
         || typeof maxInputTokens === 'number'
         || !!contextBreakdown;
-      logger.module('event-forwarding').info('[COMPACT-DEBUG] model_round event', { sessionId: event.sessionId, contextUsagePercent, runtimeExists: !!runtime, maybeAutoCompactExists: !!runtime?.maybeAutoCompact });
       if (hasModelRoundContextStats) {
         void deps.eventBus.emit({
           type: 'system_notice',
@@ -1315,18 +1300,6 @@ export function attachEventForwarding(deps: EventForwardingDeps): {
             turnId,
           },
         });
-        logger.module('event-forwarding').info('[COMPACT-DEBUG] checking runtime.maybeAutoCompact');
-        if (runtime?.maybeAutoCompact) {
-          void runtime.maybeAutoCompact(event.sessionId, contextUsagePercent, turnId)
-            .catch((error) => {
-              logger.module('event-forwarding').warn('Failed to run auto compact probe', {
-                sessionId: event.sessionId,
-                contextUsagePercent,
-                turnId,
-                error: error instanceof Error ? error.message : String(error),
-              });
-            });
-        }
       }
     }
 

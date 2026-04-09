@@ -203,8 +203,12 @@ async function handleCommand(commandLine: string): Promise<void> {
 
     case 'compress':
       if (currentSessionId && sessionManager) {
-        const result = await sessionManager.compressContext(currentSessionId);
-        clog.log(`[App] Context compressed: ${result.slice(0, 100)}...`);
+        try {
+          const result = await sessionManager.compressContext(currentSessionId);
+          clog.log(`[App] Context compressed: ${result.slice(0, 100)}...`);
+        } catch (error) {
+          clog.log(`[App] Context compression unavailable: ${error instanceof Error ? error.message : String(error)}`);
+        }
       }
       break;
 
@@ -270,7 +274,7 @@ Commands:
   /session list      List all sessions
   /session new [name] Create new session
   /session switch <id> Switch to session
-  /compress          Compress context
+  /compress          Show Rust kernel-owned compact notice
   /clear             Clear screen
   /exit              Exit interactive mode
 `);

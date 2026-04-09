@@ -9,18 +9,16 @@
  */
 
 import fs from 'fs';
-import { execFile } from 'child_process';
 import path from 'path';
 import { createHash } from 'crypto';
  import { FINGER_PATHS, ensureDir, normalizeSessionDirName } from '../core/finger-paths.js';
- import { FINGER_SOURCE_ROOT } from '../core/source-root.js';
  import { Session, SessionMessage, LEDGER_POINTER_DEFAULTS, ensureLedgerPointers } from './session-types.js';
 import type { Attachment } from '../runtime/events.js';
 import { appendSessionMessage } from '../runtime/ledger-writer.js';
 import { resolveBaseDir } from '../runtime/context-ledger-memory-helpers.js';
 import { buildSessionView, type SessionView, type SessionViewMessage } from '../runtime/ledger-reader.js';
-import { needsCompression } from '../runtime/session-compressor.js';
-import { compactSessionHistory, updateContextHistoryPointers, appendDigestForTurn, type CompactResult } from '../runtime/context-history-compact.js';
+import { appendDigestForTurn } from '../runtime/context-history-compact.js';
+import { createRustKernelCompactionError } from '../runtime/kernel-owned-compaction.js';
 import { estimateTokens } from '../utils/token-counter.js';
 import { getContextWindow } from '../core/user-settings.js';
 import { loadContextBuilderSettings } from '../core/user-settings.js';
@@ -1286,72 +1284,12 @@ export class SessionManager {
   async compressContext(sessionId: string, options?: { force?: boolean }): Promise<string> {
     const session = this.sessions.get(sessionId);
     if (!session) throw new Error(`Session not found: ${sessionId}`);
-
-    const ctx = session.context ?? {};
-    const agentId = typeof ctx.ownerAgentId === "string" ? ctx.ownerAgentId : SYSTEM_AGENT_ID;
-    const rootDir = this.resolveSessionsRoot(session);
-    const ledgerPath = path.join(rootDir, sessionId, agentId, "main", "context-ledger.jsonl");
-    const compactPath = path.join(rootDir, sessionId, agentId, "main", "compact-memory.jsonl");
-    
-   try {
-     // 使用 ledger-cli backfill 进行 task-level digest 压缩
-     // Resolve ledger-cli from FINGER_SOURCE_ROOT with release/debug fallback
-     // Resolve ledger-cli from FINGER_SOURCE_ROOT: dist/bin first (global install), then rust/target (local dev)
-     const distBinPath = path.join(FINGER_SOURCE_ROOT, "dist", "bin", "ledger-cli");
-     const releaseCliPath = path.join(FINGER_SOURCE_ROOT, "rust", "target", "release", "ledger-cli");
-     const debugCliPath = path.join(FINGER_SOURCE_ROOT, "rust", "target", "debug", "ledger-cli");
-     let cliPath: string;
-     if (fs.existsSync(distBinPath)) cliPath = distBinPath;
-     else if (fs.existsSync(releaseCliPath)) cliPath = releaseCliPath;
-     else cliPath = debugCliPath;
-
-      // Step 1: Backfill ledger → compact-memory.jsonl
-      const stdout = await new Promise<string>((resolve, reject) => {
-        execFile(cliPath, [
-          "backfill",
-          ledgerPath,
-          compactPath,
-        ], { timeout: 30000 }, (err, stdout, stderr) => {
-          if (err) reject(err);
-          else resolve(stdout);
-        });
-      });
-
-      // Parse output
-      const tasksMatch = stdout.match(/Generated (\d+) task digests/);
-      const taskCount = tasksMatch ? parseInt(tasksMatch[1]) : 0;
-
-      // Read compact-memory.jsonl to estimate tokens
-      let tokensUsed = 0;
-      try {
-        const compactContent = await fs.promises.readFile(compactPath, 'utf-8');
-        const lines = compactContent.trim().split('\n').filter(l => l.trim());
-        // Estimate: ~4 chars per token
-        tokensUsed = Math.ceil(compactContent.length / 4);
-      } catch {
-        tokensUsed = taskCount * 800; // fallback estimate
-      }
-
-      // Update session pointers
-      if (!session.context) session.context = {};
-      session.context.contextHistoryTokens = tokensUsed;
-      session.context.currentHistoryTokens = 0;
-      session.context.totalTokens = tokensUsed;
-      session._cachedView = undefined;
-
-      this.saveSession(session);
-      
-      log.info("Compressed session with ledger-cli backfill", {
-        sessionId,
-        tokensUsed,
-        taskCount,
-      });
-
-      return `Compression completed: ${taskCount} task digests generated, ~${tokensUsed} tokens`;
-    } catch (error) {
-      log.error(`ledger-cli backfill failed for session ${sessionId}:`, error instanceof Error ? error : new Error(String(error)));
-      throw error;
-    }
+    log.warn('[SessionManager] TS compact path rejected: compaction is kernel-owned', {
+      sessionId,
+      force: options?.force === true,
+      ownerAgentId: typeof session.context?.ownerAgentId === 'string' ? session.context.ownerAgentId : SYSTEM_AGENT_ID,
+    });
+    throw createRustKernelCompactionError();
   }
   /**
    * finish_reason = stop 时自动生成 digest + 保存 tags
