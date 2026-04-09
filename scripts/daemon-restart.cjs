@@ -11,6 +11,7 @@ const fs = require('fs');
 const http = require('http');
 const os = require('os');
 const { spawn, execFileSync } = require('child_process');
+const { matchesManagedFingerProcess, resolveManagedMatchers } = require('./daemon-process-matchers.cjs');
 
 const PROJECT_ROOT = path.resolve(__dirname, '..');
 function resolveFingerHome() {
@@ -93,9 +94,9 @@ function sanitizePidFiles() {
   const processRows = loadProcessSnapshot();
   const cmdByPid = new Map(processRows.map((row) => [row.pid, row.command]));
   const checks = [
-    { file: GUARD_PID_FILE, tag: 'guard.pid', matchers: [PROJECT_ROOT, 'scripts/daemon-guard.cjs'] },
-    { file: SERVER_PID_FILE, tag: 'server.pid', matchers: [PROJECT_ROOT, 'dist/server/index.js'] },
-    { file: DUAL_DAEMON_PID_FILE, tag: 'dual-daemon.pid', matchers: [PROJECT_ROOT, 'dist/daemon/dual-daemon'] },
+    { file: GUARD_PID_FILE, tag: 'guard.pid', matchers: resolveManagedMatchers(PROJECT_ROOT, 'scripts/daemon-guard.cjs') },
+    { file: SERVER_PID_FILE, tag: 'server.pid', matchers: resolveManagedMatchers(PROJECT_ROOT, 'dist/server/index.js') },
+    { file: DUAL_DAEMON_PID_FILE, tag: 'dual-daemon.pid', matchers: resolveManagedMatchers(PROJECT_ROOT, 'dist/daemon/dual-daemon') },
   ];
   for (const check of checks) {
     const pid = readPid(check.file);
@@ -106,7 +107,7 @@ function sanitizePidFiles() {
       console.warn(`[DaemonRestart] Removed stale ${check.tag}: pid ${pid} not alive`);
       continue;
     }
-    const matched = check.matchers.every((token) => cmdline.includes(token));
+    const matched = check.matchers.some((tokens) => tokens.every((token) => cmdline.includes(token)));
     if (!matched) {
       try { fs.unlinkSync(check.file); } catch {}
       console.warn(`[DaemonRestart] Removed dirty ${check.tag}: pid ${pid} cmdline mismatch`);
@@ -119,7 +120,7 @@ function sanitizePidFiles() {
       continue;
     }
     const cmdline = cmdByPid.get(pid);
-    if (!cmdline || !cmdline.includes(PROJECT_ROOT) || !cmdline.includes('dist/server/index.js')) {
+    if (!matchesManagedFingerProcess(cmdline, PROJECT_ROOT, 'dist/server/index.js')) {
       try { fs.unlinkSync(file); } catch {}
       console.warn(`[DaemonRestart] Removed stale compat pid: ${path.basename(file)} pid=${pid}`);
     }
@@ -165,8 +166,8 @@ function listDaemonFamilyProcesses() {
   const processRows = loadProcessSnapshot();
   return processRows.filter(({ command }) => {
     const cmd = command || '';
-    if (cmd.includes(PROJECT_ROOT) && cmd.includes('scripts/daemon-guard.cjs')) return true;
-    if (cmd.includes(PROJECT_ROOT) && cmd.includes('dist/server/index.js')) return true;
+    if (matchesManagedFingerProcess(cmd, PROJECT_ROOT, 'scripts/daemon-guard.cjs')) return true;
+    if (matchesManagedFingerProcess(cmd, PROJECT_ROOT, 'dist/server/index.js')) return true;
     // flock fallback runner that holds guard.lock and spawns daemon-guard
     if (cmd.includes('guard-lock-runner.py') && cmd.includes(GUARD_SCRIPT)) return true;
     return false;

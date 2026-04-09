@@ -10,6 +10,7 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const { spawn, execSync } = require('child_process');
+const { matchesManagedFingerProcess } = require('./daemon-process-matchers.cjs');
 const net = require('net');
 
 const FINGER_ROOT = path.resolve(__dirname, '..');
@@ -328,8 +329,6 @@ class DaemonGuard {
     cleanupOldProcesses() {
         const rows = this.snapshotProcesses();
         const cmdByPid = new Map(rows.map((row) => [row.pid, row.cmd]));
-        const matches = (cmdline, requiredTokens) =>
-            typeof cmdline === 'string' && requiredTokens.every((token) => cmdline.includes(token));
 
         // 1. Read previous PID files
         if (fs.existsSync(PID_FILE)) {
@@ -337,7 +336,7 @@ class DaemonGuard {
                 const oldPid = parseInt(fs.readFileSync(PID_FILE, 'utf8').trim());
                 if (oldPid && !isNaN(oldPid)) {
                     const cmdline = cmdByPid.get(oldPid);
-                    if (matches(cmdline, [FINGER_ROOT, 'dist/server/index.js'])) {
+                    if (matchesManagedFingerProcess(cmdline, FINGER_ROOT, 'dist/server/index.js')) {
                         this.killProcessTree(oldPid, 'old daemon');
                     } else {
                         console.warn(`[DaemonGuard] Dirty server.pid, pid=${oldPid}, skip unrelated process`);
@@ -352,7 +351,7 @@ class DaemonGuard {
                 const oldGuardPid = parseInt(fs.readFileSync(GUARD_PID_FILE, 'utf8').trim());
                 if (oldGuardPid && !isNaN(oldGuardPid) && oldGuardPid !== process.pid) {
                     const cmdline = cmdByPid.get(oldGuardPid);
-                    if (matches(cmdline, [FINGER_ROOT, 'scripts/daemon-guard.cjs'])) {
+                    if (matchesManagedFingerProcess(cmdline, FINGER_ROOT, 'scripts/daemon-guard.cjs')) {
                         this.killProcessTree(oldGuardPid, 'old guard');
                     } else {
                         console.warn(`[DaemonGuard] Dirty guard.pid, pid=${oldGuardPid}, skip unrelated process`);
@@ -380,14 +379,13 @@ class DaemonGuard {
                     this.killProcessTree(pid, 'orphan heartbeat writer');
                 }
                 // Orphan daemons: dist/server/index.js with ppid=1
-                if (ppid === 1 && cmd.includes('dist/server/index.js') && cmd.includes(FINGER_ROOT)) {
+                if (ppid === 1 && matchesManagedFingerProcess(cmd, FINGER_ROOT, 'dist/server/index.js')) {
                     this.killProcessTree(pid, 'orphan daemon');
                 }
                 // Orphan guards: daemon-guard.cjs with ppid=1 (except current guard)
                 if (
                     ppid === 1 &&
-                    cmd.includes('scripts/daemon-guard.cjs') &&
-                    cmd.includes(FINGER_ROOT) &&
+                    matchesManagedFingerProcess(cmd, FINGER_ROOT, 'scripts/daemon-guard.cjs') &&
                     pid !== process.pid
                 ) {
                     this.killProcessTree(pid, 'orphan guard');

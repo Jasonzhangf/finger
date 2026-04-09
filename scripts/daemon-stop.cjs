@@ -3,6 +3,7 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const { execSync } = require('child_process');
+const { matchesManagedFingerProcess, resolveManagedMatchers } = require('./daemon-process-matchers.cjs');
 
 const FINGER_ROOT = path.resolve(__dirname, '..');
 function resolveFingerHome() {
@@ -107,9 +108,9 @@ const childrenMap = buildChildrenMap(processRows);
 
 // 1. Kill processes from PID files
 const pidFileChecks = [
-  { file: PID_FILE, tag: 'server.pid', requiredTokens: [FINGER_ROOT, 'dist/server/index.js'] },
-  { file: GUARD_PID_FILE, tag: 'guard.pid', requiredTokens: [FINGER_ROOT, 'scripts/daemon-guard.cjs'] },
-  { file: DUAL_DAEMON_PID_FILE, tag: 'dual-daemon.pid', requiredTokens: [FINGER_ROOT, 'dist/daemon/dual-daemon'] },
+  { file: PID_FILE, tag: 'server.pid', matchers: resolveManagedMatchers(FINGER_ROOT, 'dist/server/index.js') },
+  { file: GUARD_PID_FILE, tag: 'guard.pid', matchers: resolveManagedMatchers(FINGER_ROOT, 'scripts/daemon-guard.cjs') },
+  { file: DUAL_DAEMON_PID_FILE, tag: 'dual-daemon.pid', matchers: resolveManagedMatchers(FINGER_ROOT, 'dist/daemon/dual-daemon') },
 ];
 const cmdByPid = new Map(processRows.map((row) => [row.pid, row.cmd]));
 for (const check of pidFileChecks) {
@@ -125,7 +126,7 @@ for (const check of pidFileChecks) {
     try { fs.unlinkSync(check.file); } catch (_) {}
     continue;
   }
-  if (!cmdlineMatches(cmdline, check.requiredTokens)) {
+  if (!check.matchers.some((tokens) => cmdlineMatches(cmdline, tokens))) {
     console.warn(`[DaemonStop] Dirty ${check.tag}: pid ${pid} cmdline mismatch, skip killing unrelated process`);
     try { fs.unlinkSync(check.file); } catch (_) {}
     continue;
@@ -142,11 +143,11 @@ for (const row of processRows) {
     killProcessTree(pid, 'orphan heartbeat', childrenMap);
     continue;
   }
-  if (cmd.includes('dist/server/index.js') && cmd.includes(FINGER_ROOT)) {
+  if (matchesManagedFingerProcess(cmd, FINGER_ROOT, 'dist/server/index.js')) {
     killProcessTree(pid, 'orphan daemon', childrenMap);
     continue;
   }
-  if (cmd.includes('scripts/daemon-guard.cjs') && cmd.includes(FINGER_ROOT)) {
+  if (matchesManagedFingerProcess(cmd, FINGER_ROOT, 'scripts/daemon-guard.cjs')) {
     killProcessTree(pid, 'orphan guard', childrenMap);
     continue;
   }
