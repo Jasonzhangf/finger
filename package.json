@@ -1,6 +1,6 @@
 {
   "name": "fingerdaemon",
-  "version": "0.1.300",
+  "version": "0.1.306",
   "description": "Finger - AI Agent Orchestrator with bd project management",
   "main": "dist/cli/index.js",
   "bin": {
@@ -12,13 +12,13 @@
   "type": "module",
   "scripts": {
     "build:precheck": "node scripts/prebuild-check.mjs",
-    "build": "bash scripts/run-build-step.sh bash -lc 'npm run build:precheck && npm run build:backend:raw && npm run build:ui:raw && npm run build:rust:raw'",
+    "build": "bash scripts/run-build-step.sh bash -lc 'npm run build:precheck && npm run build:backend:raw && npm run build:ui:raw'",
     "build:backend": "bash scripts/run-build-step.sh bash -lc 'npm run build:backend:raw'",
-    "build:backend:raw": "npm run test:session-regression && tsc --noEmit false && chmod +x dist/cli/index.js && bash scripts/copy-rust-binaries.sh && npm run test:regression:full",
+    "build:backend:raw": "npm run test:session-regression && tsc --noEmit false && chmod +x dist/cli/index.js && npm run build:rust:raw && npm run test:regression:full",
     "build:ui": "bash scripts/run-build-step.sh bash -lc 'npm run build:ui:raw'",
     "build:ui:raw": "npm --prefix ui run build",
     "build:rust": "bash scripts/run-build-step.sh bash -lc 'npm run build:rust:raw'",
-    "build:rust:raw": "cargo build --workspace --manifest-path rust/Cargo.toml",
+    "build:rust:raw": "cargo build --release --workspace --manifest-path rust/Cargo.toml && bash scripts/copy-rust-binaries.sh && npm run test:rust:compact-regression",
     "build:bump-version": "node scripts/bump-build-version.mjs",
     "build:dev": "node scripts/set-progress-context-mode.mjs dev && npm run build",
     "build:release": "node scripts/set-progress-context-mode.mjs release && npm run build",
@@ -33,6 +33,7 @@
     "start:iflow": "tsx scripts/start-iflow.ts",
     "test:watch": "vitest",
     "test:regression:full": "vitest run",
+    "test:rust:compact-regression": "cargo test -p finger-kernel-model compact --manifest-path rust/Cargo.toml",
     "lint": "eslint src tests",
     "lint:fix": "eslint src tests --fix",
     "bd:init": "bd init --no-db",
@@ -87,7 +88,7 @@
     "typescript-eslint": "^8.56.1",
     "vitest": "^1.6.0"
   },
-  "fingerBuildVersion": "0.1.300",
+  "fingerBuildVersion": "0.1.306",
   "pnpm": {
     "packageExtensions": {
       "vitest@*": {

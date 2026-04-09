@@ -105,6 +105,7 @@ When a new testing pattern/requirement emerges from debugging or review:
 1. Document the failure mode and test gap
 2. Add test case to appropriate test file
 3. Update this skill checklist if pattern is reusable
+4. For any context compact / rebuild change, add a simulated-trigger regression that verifies all three together: `compact` metadata, rebuilt `api_history`, and persisted `compact-memory` output. Log inspection alone is not sufficient.
 
 
 Use this skill whenever you touch architecture, core runtime, orchestration, dispatch/recovery, context rebuild, progress/reporting, or cross-agent collaboration logic.

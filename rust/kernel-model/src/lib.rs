@@ -2312,7 +2312,7 @@ fn infer_image_mime_type(path: &str) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use finger_kernel_protocol::ResponsesReasoningOptions;
+    use finger_kernel_protocol::{ContextWindowConfig, ResponsesReasoningOptions};
     use mockito::{Matcher, Server};
     use std::fs;
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -3205,6 +3205,150 @@ mod tests {
         tool_execute_pwd_mock.assert_async().await;
         tool_execute_ls_mock.assert_async().await;
         second_response_mock.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn run_turn_auto_compact_writes_task_digest_metadata_and_compact_memory() {
+        let mut server = Server::new_async().await;
+
+        let response_mock = server
+            .mock("POST", "/v1/responses")
+            .match_header("authorization", "Bearer test-key")
+            .with_status(200)
+            .with_header("content-type", "text/event-stream")
+            .with_body(concat!(
+                "event: response.completed\n",
+                "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_compact\",\"output\":[{\"type\":\"message\",\"content\":[{\"type\":\"output_text\",\"text\":\"final after compact\"}]}]}}\n\n",
+                "data: [DONE]\n\n"
+            ))
+            .expect(1)
+            .create_async()
+            .await;
+
+        let engine = FingerChatEngine::new(LocalModelConfig {
+            provider_id: "test".to_string(),
+            provider_name: "test".to_string(),
+            base_url: server.url(),
+            wire_api: WireApi::Responses,
+            env_key: "TEST_KEY".to_string(),
+            api_key: "test-key".to_string(),
+            model: "gpt-test".to_string(),
+            tool_daemon_url: server.url(),
+            tool_agent_id: "chat-codex".to_string(),
+        });
+
+        let ts = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("duration since epoch")
+            .as_millis();
+        let root = std::env::temp_dir().join(format!("finger-kernel-model-compact-{ts}"));
+        let session_id = "session-compact-regression";
+        let agent_id = "chat-codex";
+        let mode = "main";
+
+        let mut history_items = Vec::new();
+        for index in 0..10 {
+            history_items.push(json!({
+                "role": "user",
+                "timestamp_iso": format!("2026-02-01T10:{index:02}:00Z"),
+                "content": [{
+                    "type": "input_text",
+                    "text": format!("user request {index}: {}", "X".repeat(240))
+                }],
+            }));
+            history_items.push(json!({
+                "role": "assistant",
+                "timestamp_iso": format!("2026-02-01T10:{index:02}:30Z"),
+                "content": [{
+                    "type": "output_text",
+                    "text": format!("assistant result {index}: {}", "Y".repeat(260))
+                }],
+            }));
+        }
+
+        let result = engine
+            .run_turn(
+                &TurnRequest {
+                    items: vec![InputItem::Text {
+                        text: "continue with the latest task".to_string(),
+                    }],
+                    options: UserTurnOptions {
+                        session_id: Some(session_id.to_string()),
+                        mode: Some(mode.to_string()),
+                        history_items,
+                        context_window: Some(ContextWindowConfig {
+                            max_input_tokens: Some(600),
+                            baseline_tokens: Some(0),
+                            auto_compact_threshold_ratio: Some(0.2),
+                        }),
+                        context_ledger: Some(finger_kernel_protocol::ContextLedgerOptions {
+                            enabled: true,
+                            root_dir: Some(root.to_string_lossy().to_string()),
+                            agent_id: Some(agent_id.to_string()),
+                            role: Some("coding".to_string()),
+                            mode: Some(mode.to_string()),
+                            can_read_all: true,
+                            readable_agents: vec![],
+                            focus_enabled: true,
+                            focus_max_chars: Some(20_000),
+                        }),
+                        ..UserTurnOptions::default()
+                    },
+                },
+                None,
+            )
+            .await
+            .expect("run turn should auto compact");
+
+        assert_eq!(
+            result.last_agent_message.as_deref(),
+            Some("final after compact")
+        );
+
+        let metadata_json = result.metadata_json.expect("metadata json");
+        let metadata: Value = serde_json::from_str(&metadata_json).expect("parse metadata json");
+        assert_eq!(metadata["compact"]["requested_auto"], true);
+        assert_eq!(metadata["compact"]["applied"], true);
+
+        let compact_summary = metadata["compact"]["summary"]
+            .as_str()
+            .expect("compact summary");
+        assert!(compact_summary.contains("algorithm=task_digest_v2"));
+
+        let api_history = metadata["api_history"].as_array().expect("api history");
+        let api_history_text = api_history
+            .iter()
+            .filter_map(extract_text_from_history_item)
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(api_history_text.contains("<task_digest>"));
+        assert!(!api_history_text.contains("<history_summary>"));
+
+        let compact_memory_path = root
+            .join(session_id)
+            .join(agent_id)
+            .join(mode)
+            .join("compact-memory.jsonl");
+        let compact_memory_raw =
+            fs::read_to_string(&compact_memory_path).expect("read compact-memory.jsonl");
+        let latest_line = compact_memory_raw
+            .lines()
+            .rev()
+            .find(|line| !line.trim().is_empty())
+            .expect("latest compact memory line");
+        let compact_entry: Value =
+            serde_json::from_str(latest_line).expect("parse compact memory entry");
+        assert_eq!(compact_entry["payload"]["algorithm"], "task_digest_v2");
+        let replacement_history = compact_entry["payload"]["replacement_history"]
+            .as_array()
+            .expect("replacement history");
+        assert!(!replacement_history.is_empty());
+        assert!(replacement_history.iter().all(|item| item.get("task_id").is_some()));
+        assert!(replacement_history.iter().all(|item| item.get("request").is_some()));
+        assert!(replacement_history.iter().all(|item| item.get("summary").is_some()));
+
+        response_mock.assert_async().await;
+        let _ = fs::remove_dir_all(root);
     }
 
     #[tokio::test]
