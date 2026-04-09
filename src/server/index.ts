@@ -276,6 +276,29 @@ const { chatCodexRunner, mockRuntimeKit } = setupChatCodexRunner({
   primaryOrchestratorAgentId: PRIMARY_ORCHESTRATOR_AGENT_ID,
   runtimeFlags,
 });
+
+// Initialize event forwarding BEFORE registerFingerRoleModules
+// so that onLoopEvent can correctly emit kernel events to event-forwarding
+const earlyForwarding = attachEventForwarding({
+  eventBus: globalEventBus,
+  broadcast: (message) => hub.sendToAll("broadcast", message),
+  sessionManager: sharedSessionManager,
+  agentStatusSubscriber,
+  runtimeInstructionBus,
+  inferAgentRoleLabel,
+  formatDispatchResultContent,
+  asString,
+  generalAgentId: PRIMARY_ORCHESTRATOR_AGENT_ID,
+  dispatchTaskToAgent,
+  runtime,
+  resolveReviewPolicy: () => getActiveReviewPolicy(),
+  isAgentBusy: (agentId) => {
+    return false; // Early init: assume not busy
+  },
+});
+setLoopEventEmitter(earlyForwarding.emitLoopEventToEventBus);
+logger.module("server").info("Event forwarding initialized early for kernel events");
+
 await registerFingerRoleModules({
   moduleRegistry,
   runtime,

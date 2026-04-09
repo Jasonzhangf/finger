@@ -14,6 +14,7 @@ use finger_kernel_protocol::{
     CompactConfig, EventMsg, InputItem, ModelRoundEvent, ResponsesRequestOptions, ToolCallEvent,
     ToolErrorEvent, ToolExecutionConfig, ToolResultEvent, ToolSpec, TurnContext, UserTurnOptions,
 };
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use thiserror::Error;
 use time::format_description::well_known::Rfc3339;
@@ -320,7 +321,8 @@ impl FingerChatEngine {
         let mut compacted_source_start: Option<String> = None;
         let mut compacted_source_end: Option<String> = None;
         if compact_required {
-            let compact_result = compact_history(&rolling_input, options.compact.as_ref());
+            let compact_result =
+                compact_history(&rolling_input, options.compact.as_ref(), max_input_tokens);
             rolling_input = compact_result.history;
             compact_summary = compact_result.summary;
             compacted_at_ms = Some(compact_result.compressed_at_ms);
@@ -351,9 +353,11 @@ impl FingerChatEngine {
                     }),
                 );
                 let _ = ledger.append_compact_memory(json!({
+                    "algorithm": compact_result.algorithm,
                     "manual": manual_compact,
                     "auto": auto_compact_triggered,
                     "summary": compact_summary_for_cache,
+                    "replacement_history": compact_result.replacement_history,
                     "compressed_at_ms": compacted_at_ms,
                     "compressed_at_iso": compacted_at_iso,
                     "source_time_start": compacted_source_start,
@@ -1684,9 +1688,56 @@ struct CompactResult {
     compressed_at_iso: String,
     source_time_start: Option<String>,
     source_time_end: Option<String>,
+    replacement_history: Vec<Value>,
+    algorithm: String,
 }
 
-fn compact_history(history: &[Value], compact_cfg: Option<&CompactConfig>) -> CompactResult {
+#[derive(Debug, Clone)]
+struct CompactHistoryItem {
+    role: String,
+    text: String,
+    timestamp_iso: Option<String>,
+    original: Value,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct CompactTaskDigest {
+    id: String,
+    task_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    start_time_iso: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    end_time_iso: Option<String>,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    request: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    summary: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    key_tools: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    tool_calls: Vec<CompactToolCallDigest>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    tags: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    topic: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct CompactToolCallDigest {
+    tool: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    input: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    status: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    output: Option<String>,
+}
+
+fn compact_history(
+    history: &[Value],
+    compact_cfg: Option<&CompactConfig>,
+    max_input_tokens: Option<u64>,
+) -> CompactResult {
     let preserve_user_messages = compact_cfg
         .map(|cfg| cfg.preserve_user_messages)
         .unwrap_or(true);
@@ -1697,9 +1748,8 @@ fn compact_history(history: &[Value], compact_cfg: Option<&CompactConfig>) -> Co
         .map(|text| text.to_string());
 
     let mut initial_context_blocks: Vec<Value> = Vec::new();
-    let mut user_messages: Vec<Value> = Vec::new();
-    let mut narrative_lines: Vec<String> = Vec::new();
-    let mut previous_summary: Option<String> = None;
+    let mut conversation_items: Vec<CompactHistoryItem> = Vec::new();
+    let mut historical_digests: Vec<CompactTaskDigest> = Vec::new();
     let (compressed_at_ms, compressed_at_iso) = now_timestamp_local();
     let (source_time_start, source_time_end) = extract_history_time_bounds(history);
 
@@ -1722,12 +1772,18 @@ fn compact_history(history: &[Value], compact_cfg: Option<&CompactConfig>) -> Co
             continue;
         }
 
-        if text
-            .as_deref()
-            .map(is_filtered_compact_text)
-            .unwrap_or(false)
-        {
+        if text.as_deref().map(is_filtered_compact_text).unwrap_or(false) {
             continue;
+        }
+
+        if let Some(task_digest_raw) = text
+            .as_deref()
+            .and_then(|raw| extract_context_block(raw, "task_digest"))
+        {
+            if let Ok(parsed) = serde_json::from_str::<CompactTaskDigest>(task_digest_raw) {
+                historical_digests.push(parsed);
+                continue;
+            }
         }
 
         if let Some(summary_text) = text
@@ -1736,57 +1792,95 @@ fn compact_history(history: &[Value], compact_cfg: Option<&CompactConfig>) -> Co
         {
             let normalized = sanitize_compact_cache_summary(Some(summary_text)).unwrap_or_default();
             if !normalized.trim().is_empty() {
-                previous_summary = Some(normalized);
+                historical_digests.push(build_legacy_summary_digest(
+                    normalized,
+                    historical_digests.len(),
+                    compressed_at_ms,
+                    source_time_start.as_deref(),
+                    source_time_end.as_deref(),
+                ));
             }
             continue;
         }
 
-        if role == "user" {
-            user_messages.push(item.clone());
-        }
-
         if let Some(content) = text {
-            let normalized = content.replace('\n', " ").trim().to_string();
-            if !normalized.is_empty() {
-                narrative_lines.push(format!("[{role}] {normalized}"));
-            }
+            conversation_items.push(CompactHistoryItem {
+                role: role.to_string(),
+                text: content,
+                timestamp_iso: extract_time_label_from_history_item(item),
+                original: item.clone(),
+            });
         }
     }
 
-    let kept_user_messages = if preserve_user_messages {
-        user_messages
-    } else {
-        user_messages
-            .into_iter()
-            .rev()
-            .take(12)
-            .collect::<Vec<_>>()
-            .into_iter()
-            .rev()
-            .collect()
-    };
+    let grouped_tasks = group_compact_history_tasks(&conversation_items);
+    let split_index = grouped_tasks.len().saturating_sub(1);
+    for (index, task) in grouped_tasks.iter().take(split_index).enumerate() {
+        historical_digests.push(build_task_digest_from_items(
+            task,
+            index,
+            compressed_at_ms,
+            preserve_user_messages,
+        ));
+    }
 
-    let summary_text = build_compact_summary(
-        previous_summary.as_deref(),
-        &narrative_lines,
+    let mut recent_items: Vec<CompactHistoryItem> = grouped_tasks
+        .last()
+        .cloned()
+        .unwrap_or_else(|| conversation_items.clone());
+
+    let target_tokens = compact_target_tokens(max_input_tokens);
+    if historical_digests.is_empty() && !recent_items.is_empty() {
+        let synthetic = maybe_extract_synthetic_digest_from_recent(
+            &mut recent_items,
+            compressed_at_ms,
+            preserve_user_messages,
+            target_tokens,
+        );
+        if let Some(digest) = synthetic {
+            historical_digests.push(digest);
+        }
+    }
+
+    let mut compacted_history = rebuild_compacted_history(
+        &initial_context_blocks,
+        &historical_digests,
+        &recent_items,
+    );
+
+    if let Some(target) = target_tokens {
+        while estimate_tokens_in_history(&compacted_history) > target && historical_digests.len() > 1 {
+            historical_digests.remove(0);
+            compacted_history = rebuild_compacted_history(
+                &initial_context_blocks,
+                &historical_digests,
+                &recent_items,
+            );
+        }
+
+        while estimate_tokens_in_history(&compacted_history) > target && recent_items.len() > 2 {
+            recent_items.remove(0);
+            compacted_history = rebuild_compacted_history(
+                &initial_context_blocks,
+                &historical_digests,
+                &recent_items,
+            );
+        }
+    }
+
+    let summary_text = build_task_digest_compact_summary(
+        &historical_digests,
+        &recent_items,
         summary_hint.as_deref(),
         compressed_at_ms,
         compressed_at_iso.as_str(),
         source_time_start.as_deref(),
         source_time_end.as_deref(),
     );
-    let mut compacted_history = Vec::new();
-    compacted_history.extend(initial_context_blocks);
-    compacted_history.extend(kept_user_messages);
-    compacted_history.push(json!({
-        "role": "assistant",
-        "content": [
-            {
-                "type": "output_text",
-                "text": wrap_context_block("history_summary", summary_text.as_str()),
-            }
-        ],
-    }));
+    let replacement_history = historical_digests
+        .iter()
+        .filter_map(|item| serde_json::to_value(item).ok())
+        .collect::<Vec<_>>();
 
     CompactResult {
         history: compacted_history,
@@ -1795,7 +1889,218 @@ fn compact_history(history: &[Value], compact_cfg: Option<&CompactConfig>) -> Co
         compressed_at_iso,
         source_time_start,
         source_time_end,
+        replacement_history,
+        algorithm: "task_digest_v2".to_string(),
     }
+}
+
+fn compact_target_tokens(max_input_tokens: Option<u64>) -> Option<u64> {
+    match max_input_tokens {
+        Some(max) if max > 0 => Some(((max as f64) * 0.55).round() as u64),
+        _ => Some(12_000),
+    }
+}
+
+fn group_compact_history_tasks(items: &[CompactHistoryItem]) -> Vec<Vec<CompactHistoryItem>> {
+    let mut tasks: Vec<Vec<CompactHistoryItem>> = Vec::new();
+    let mut current: Vec<CompactHistoryItem> = Vec::new();
+
+    for item in items {
+        if item.role == "user" && !current.is_empty() {
+            tasks.push(current);
+            current = Vec::new();
+        }
+        current.push(item.clone());
+    }
+
+    if !current.is_empty() {
+        tasks.push(current);
+    }
+
+    tasks
+}
+
+fn build_legacy_summary_digest(
+    summary: String,
+    index: usize,
+    compressed_at_ms: u64,
+    source_time_start: Option<&str>,
+    source_time_end: Option<&str>,
+) -> CompactTaskDigest {
+    CompactTaskDigest {
+        id: format!("legacy-summary-{compressed_at_ms}-{index}"),
+        task_id: format!("legacy-summary-{compressed_at_ms}-{index}"),
+        start_time_iso: source_time_start.map(|value| value.to_string()),
+        end_time_iso: source_time_end.map(|value| value.to_string()),
+        request: "legacy_history_summary".to_string(),
+        summary,
+        key_tools: Vec::new(),
+        tool_calls: Vec::new(),
+        tags: vec!["legacy_compact".to_string()],
+        topic: Some("legacy_compact".to_string()),
+    }
+}
+
+fn maybe_extract_synthetic_digest_from_recent(
+    recent_items: &mut Vec<CompactHistoryItem>,
+    compressed_at_ms: u64,
+    preserve_user_messages: bool,
+    target_tokens: Option<u64>,
+) -> Option<CompactTaskDigest> {
+    let Some(target) = target_tokens else {
+        return None;
+    };
+    let recent_history = recent_items
+        .iter()
+        .map(|item| item.original.clone())
+        .collect::<Vec<_>>();
+    if estimate_tokens_in_history(&recent_history) <= target {
+        return None;
+    }
+    if recent_items.len() <= 4 {
+        return None;
+    }
+    let split_at = recent_items.len().saturating_sub(4);
+    let prefix = recent_items[..split_at].to_vec();
+    let suffix = recent_items[split_at..].to_vec();
+    if prefix.is_empty() {
+        return None;
+    }
+    *recent_items = suffix;
+    Some(build_task_digest_from_items(
+        &prefix,
+        0,
+        compressed_at_ms,
+        preserve_user_messages,
+    ))
+}
+
+fn build_task_digest_from_items(
+    items: &[CompactHistoryItem],
+    index: usize,
+    compressed_at_ms: u64,
+    preserve_user_messages: bool,
+) -> CompactTaskDigest {
+    let start_time_iso = items.iter().find_map(|item| item.timestamp_iso.clone());
+    let end_time_iso = items.iter().rev().find_map(|item| item.timestamp_iso.clone());
+    let mut request = items
+        .iter()
+        .find(|item| item.role == "user")
+        .map(|item| sanitize_compact_line(item.text.as_str(), 240))
+        .unwrap_or_default();
+    if !preserve_user_messages && request.len() > 120 {
+        request = sanitize_compact_line(request.as_str(), 120);
+    }
+    let summary = items
+        .iter()
+        .rev()
+        .find(|item| item.role == "assistant")
+        .map(|item| sanitize_compact_line(item.text.as_str(), 320))
+        .or_else(|| items.last().map(|item| sanitize_compact_line(item.text.as_str(), 320)))
+        .unwrap_or_else(|| "(task digest)".to_string());
+
+    CompactTaskDigest {
+        id: format!("task-digest-{compressed_at_ms}-{index}"),
+        task_id: format!("task-digest-{compressed_at_ms}-{index}"),
+        start_time_iso,
+        end_time_iso,
+        request,
+        summary,
+        key_tools: Vec::new(),
+        tool_calls: Vec::new(),
+        tags: Vec::new(),
+        topic: None,
+    }
+}
+
+fn sanitize_compact_line(text: &str, max_chars: usize) -> String {
+    let collapsed = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    if collapsed.chars().count() <= max_chars {
+        return collapsed;
+    }
+    collapsed.chars().take(max_chars).collect::<String>() + "..."
+}
+
+fn build_task_digest_history_item(item: &CompactTaskDigest) -> Value {
+    let digest_json = serde_json::to_string(item).unwrap_or_else(|_| "{}".to_string());
+    json!({
+        "role": "assistant",
+        "content": [
+            {
+                "type": "output_text",
+                "text": wrap_context_block("task_digest", digest_json.as_str()),
+            }
+        ],
+    })
+}
+
+fn rebuild_compacted_history(
+    initial_context_blocks: &[Value],
+    historical_digests: &[CompactTaskDigest],
+    recent_items: &[CompactHistoryItem],
+) -> Vec<Value> {
+    let mut compacted_history = Vec::new();
+    compacted_history.extend(initial_context_blocks.iter().cloned());
+    for digest in historical_digests {
+        compacted_history.push(build_task_digest_history_item(digest));
+    }
+    compacted_history.extend(recent_items.iter().map(|item| item.original.clone()));
+    compacted_history
+}
+
+fn build_task_digest_compact_summary(
+    digests: &[CompactTaskDigest],
+    recent_items: &[CompactHistoryItem],
+    summary_hint: Option<&str>,
+    compressed_at_ms: u64,
+    compressed_at_iso: &str,
+    source_time_start: Option<&str>,
+    source_time_end: Option<&str>,
+) -> String {
+    let mut pieces: Vec<String> = Vec::new();
+    pieces.push("algorithm=task_digest_v2".to_string());
+    pieces.push(format!("compressed_at_ms={compressed_at_ms}"));
+    pieces.push(format!("compressed_at_iso={compressed_at_iso}"));
+    pieces.push(format!(
+        "source_time_start={}",
+        source_time_start.unwrap_or("unknown")
+    ));
+    pieces.push(format!(
+        "source_time_end={}",
+        source_time_end.unwrap_or("unknown")
+    ));
+    pieces.push(format!("digest_count={}", digests.len()));
+    pieces.push(format!("recent_raw_items={}", recent_items.len()));
+    pieces.push("timeline_order=ascending".to_string());
+    pieces.push(
+        "note=Compacted context uses task digests for historical tasks and keeps only the recent working set raw."
+            .to_string(),
+    );
+    if let Some(hint) = summary_hint {
+        pieces.push(format!("hint: {hint}"));
+    }
+    for digest in digests.iter().rev().take(12).rev() {
+        let request = if digest.request.trim().is_empty() {
+            "(no request)".to_string()
+        } else {
+            digest.request.clone()
+        };
+        let summary = if digest.summary.trim().is_empty() {
+            "(no summary)".to_string()
+        } else {
+            digest.summary.clone()
+        };
+        pieces.push(format!("[task] request={request}"));
+        pieces.push(format!("[task] summary={summary}"));
+    }
+    for item in recent_items.iter().rev().take(4).rev() {
+        pieces.push(format!(
+            "[recent:{}] {}",
+            item.role,
+            sanitize_compact_line(item.text.as_str(), 200)
+        ));
+    }
+    pieces.join("\n")
 }
 
 fn is_initial_context_block(text: &str) -> bool {
@@ -2294,20 +2599,37 @@ mod tests {
                 "timestamp_iso": "2026-02-01T10:00:30Z",
                 "content": [{ "type": "output_text", "text": "收到，开始执行。" }]
             }),
+            json!({
+                "role": "user",
+                "timestamp_iso": "2026-02-01T10:01:00Z",
+                "content": [{ "type": "input_text", "text": "继续检查 compact 逻辑" }]
+            }),
+            json!({
+                "role": "assistant",
+                "timestamp_iso": "2026-02-01T10:01:10Z",
+                "content": [{ "type": "output_text", "text": "已继续检查 compact 逻辑。" }]
+            }),
         ];
 
-        let result = compact_history(&history, None);
+        let result = compact_history(&history, None, Some(512));
         let summary = result.summary.unwrap_or_default();
 
         assert!(summary.contains("timeline_order=ascending"));
         assert!(summary.contains("source_time_start=2026-02-01T10:00:00Z"));
-        assert!(summary.contains("source_time_end=2026-02-01T10:00:30Z"));
+        assert!(summary.contains("source_time_end=2026-02-01T10:01:10Z"));
+        assert!(summary.contains("algorithm=task_digest_v2"));
         assert!(!summary.contains("<user_instructions>"));
         assert!(!summary.contains("<system_message>"));
         assert!(summary.contains("请列出本地文件并写入 README"));
 
         let compacted = result.history;
-        assert!(compacted.len() >= 2);
+        let digest_text = compacted
+            .iter()
+            .filter_map(extract_text_from_history_item)
+            .find(|text| text.contains("<task_digest>"))
+            .unwrap_or_default();
+        assert!(digest_text.contains("<task_digest>"));
+        assert!(!result.replacement_history.is_empty());
     }
 
     #[test]
@@ -2373,12 +2695,39 @@ mod tests {
             }),
         ];
 
-        let result = compact_history(&history, None);
+        let result = compact_history(&history, None, Some(512));
         let summary = result.summary.unwrap_or_default();
-        assert!(summary.contains("previous_summary="));
+        assert!(summary.contains("legacy_history_summary"));
         assert!(summary.contains("old summary line"));
         assert!(summary.contains("new user work item"));
         assert!(!summary.contains("<history_summary>"));
+    }
+
+    #[test]
+    fn compact_history_keeps_recent_raw_items_and_drops_oldest_digests_under_budget() {
+        let mut history = Vec::new();
+        for index in 0..12 {
+            history.push(json!({
+                "role": "user",
+                "timestamp_iso": format!("2026-02-01T10:{index:02}:00Z"),
+                "content": [{ "type": "input_text", "text": format!("user request {index} {}", "X".repeat(180)) }]
+            }));
+            history.push(json!({
+                "role": "assistant",
+                "timestamp_iso": format!("2026-02-01T10:{index:02}:30Z"),
+                "content": [{ "type": "output_text", "text": format!("assistant result {index} {}", "Y".repeat(220)) }]
+            }));
+        }
+
+        let result = compact_history(&history, None, Some(1200));
+        let compacted = result.history;
+        let compacted_tokens = estimate_tokens_in_history(&compacted);
+
+        assert!(compacted_tokens <= 1200);
+        let last_text = extract_text_from_history_item(compacted.last().expect("last item")).unwrap_or_default();
+        assert!(last_text.contains("assistant result 11"));
+        assert!(!result.replacement_history.is_empty());
+        assert!(result.replacement_history.len() < 12);
     }
 
     #[tokio::test]
@@ -2446,7 +2795,7 @@ mod tests {
             provider_id: "test".to_string(),
             provider_name: "test".to_string(),
             base_url: server.url(),
-            wire_api: "responses".to_string(),
+            wire_api: WireApi::Responses,
             env_key: "TEST_KEY".to_string(),
             api_key: "test-key".to_string(),
             model: "gpt-test".to_string(),
@@ -2533,7 +2882,7 @@ mod tests {
             provider_id: "test".to_string(),
             provider_name: "test".to_string(),
             base_url: server.url(),
-            wire_api: "responses".to_string(),
+            wire_api: WireApi::Responses,
             env_key: "TEST_KEY".to_string(),
             api_key: "test-key".to_string(),
             model: "gpt-test".to_string(),
@@ -2583,7 +2932,7 @@ mod tests {
             provider_id: "test".to_string(),
             provider_name: "test".to_string(),
             base_url: server.url(),
-            wire_api: "responses".to_string(),
+            wire_api: WireApi::Responses,
             env_key: "TEST_KEY".to_string(),
             api_key: "test-key".to_string(),
             model: "gpt-test".to_string(),
@@ -2637,7 +2986,7 @@ mod tests {
             provider_id: "test".to_string(),
             provider_name: "test".to_string(),
             base_url: server.url(),
-            wire_api: "responses".to_string(),
+            wire_api: WireApi::Responses,
             env_key: "TEST_KEY".to_string(),
             api_key: "test-key".to_string(),
             model: "gpt-test".to_string(),
@@ -2695,7 +3044,7 @@ mod tests {
             provider_id: "test".to_string(),
             provider_name: "test".to_string(),
             base_url: server.url(),
-            wire_api: "responses".to_string(),
+            wire_api: WireApi::Responses,
             env_key: "TEST_KEY".to_string(),
             api_key: "test-key".to_string(),
             model: "gpt-test".to_string(),
@@ -2799,7 +3148,7 @@ mod tests {
             provider_id: "test".to_string(),
             provider_name: "test".to_string(),
             base_url: server.url(),
-            wire_api: "responses".to_string(),
+            wire_api: WireApi::Responses,
             env_key: "TEST_KEY".to_string(),
             api_key: "test-key".to_string(),
             model: "gpt-test".to_string(),
@@ -2916,7 +3265,7 @@ mod tests {
             provider_id: "test".to_string(),
             provider_name: "test".to_string(),
             base_url: server.url(),
-            wire_api: "responses".to_string(),
+            wire_api: WireApi::Responses,
             env_key: "TEST_KEY".to_string(),
             api_key: "test-key".to_string(),
             model: "gpt-test".to_string(),
@@ -3019,7 +3368,7 @@ mod tests {
             provider_id: "test".to_string(),
             provider_name: "test".to_string(),
             base_url: server.url(),
-            wire_api: "responses".to_string(),
+            wire_api: WireApi::Responses,
             env_key: "TEST_KEY".to_string(),
             api_key: "test-key".to_string(),
             model: "gpt-test".to_string(),
