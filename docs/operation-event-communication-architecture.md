@@ -214,6 +214,96 @@ dedupKey = eventType + dispatchId + taskId + attempt + turnId
 - Operation queue 满时返回 `rejected: true`（不阻塞）
 
 ## 模块设计
+## 双通道分工（MessageHub vs EventBus）
+
+Finger 采用双通道架构，分离命令执行与状态通知：
+
+### MessageHub（同步命令通道）
+
+**本质**：RPC 式同步调用
+
+| 维度 | 说明 |
+|------|------|
+| **语义** | Operation 的传输层，"A 让 B 执行 X" |
+| **用法** | `send(message)` → 匹配路由 pattern → 调 handler → 阻塞返回结果 |
+| **返回值** | 有（同步/异步结果） |
+| **模式** | 1对1，有回调，阻塞/非阻塞可选 |
+| **例子** | dispatch 任务 → 查 module → `module.run()` → 返回结果 |
+
+**改造方向**：
+1. 从"pattern matching"改为"Operation-aware routing"
+2. 路由决策基于 `operation.to`（AgentPath）而非 message.type
+3. 校验 `operation.ownerWorkerId` 与目标 module 的 ownership
+
+```typescript
+// 改造后的 MessageHub 路由逻辑
+class MessageHub {
+  async routeOperation(op: Operation): Promise<OperationResult> {
+    const targetModule = this.resolveAgent(op.to);
+    if (!targetModule) throw new Error(`Unknown agent: ${op.to}`);
+    
+    // Ownership 校验
+    if (!this.validateOwnership(op, targetModule)) {
+      return { rejected: true, reason: 'ownership_mismatch' };
+    }
+    
+    // 执行
+    return targetModule.handleOperation(op);
+  }
+}
+```
+
+### EventBus（异步通知通道）
+
+**本质**：发布订阅广播
+
+| 维度 | 说明 |
+|------|------|
+| **语义** | Event 的传输层，"B 完成了 X" |
+| **用法** | `emit(event)` → 所有订阅者收到 |
+| **返回值** | 无（单向广播） |
+| **模式** | 1对多，无回调，纯订阅 |
+| **例子** | dispatch 完成通知、progress 报告 |
+
+**约束**：
+1. Event 必须有完整的 schema（schemaVersion, eventId, correlationId, causationId, ownerWorkerId）
+2. 订阅方只消费，不反向改写 Operation
+3. 跨 worker 只读不写（ownership 唯一真源）
+
+### 双通道协作流程
+
+```
+Operation 负责驱动动作（MessageHub），Event 负责广播事实（EventBus）。
+
+Agent A ──(1) Operation: dispatch_task ──► MessageHub (同步)
+                                          │
+                                          ▼
+                                    Agent B module.run()
+                                          │
+                                          ▼
+                        (2) 返回结果 ◄─────┘
+                                          │
+                                          ▼
+                        (3) Event: agent_dispatch_complete ──► EventBus (异步广播)
+                                          │
+                    ┌─────────────────────┼─────────────────────┐
+                    ▼                     ▼                     ▼
+              Progress Monitor      Frontend WebSocket     Log/Trace System
+```
+
+### 迁移策略
+
+| Phase | MessageHub 状态 | EventBus 状态 |
+|-------|-----------------|---------------|
+| Phase 1-2 | 保持现有逻辑 | 增强 schema + 去重 |
+| Phase 3 | dispatch 接入 OperationRouter | dispatch 状态改为 Protocol Event |
+| Phase 4 | 移除旧 pattern matching | 旧事件监听器迁移到新 Event schema |
+
+**关键原则**：
+- MessageHub 不废，改造为 Operation-aware
+- EventBus 保持纯订阅，不承载命令语义
+- 两者分工明确，不混用
+
 
 ### 1. OperationRouter
 
