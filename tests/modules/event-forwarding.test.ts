@@ -803,6 +803,9 @@ describe('Event Forwarding - Execution Lifecycle', () => {
         controlBlockGateApplied: true,
         controlBlockGateAttempt: 2,
         controlBlockMaxAutoContinueTurns: 2,
+        stopToolGateApplied: true,
+        stopToolGateAttempt: 2,
+        stopToolMaxAutoContinueTurns: 2,
       },
     });
 

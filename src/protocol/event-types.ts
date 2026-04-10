@@ -215,33 +215,54 @@ export interface AgentStatusChangedPayload {
 
 export interface AgentDispatchQueuedPayload {
   dispatchId: string;
+  sourceAgentId: string;
+  targetAgentId: string;
   taskId: string;
   queuePosition: number;
+  blocking?: boolean;
   sessionId?: string;
+  workflowId?: string;
 }
 
 export interface AgentDispatchStartedPayload {
   dispatchId: string;
+  sourceAgentId: string;
+  targetAgentId: string;
   taskId: string;
   attempt: number;
+  blocking?: boolean;
   sessionId?: string;
+  workflowId?: string;
 }
 
 export interface AgentDispatchCompletePayload {
   dispatchId: string;
+  sourceAgentId: string;
+  targetAgentId: string;
   taskId: string;
   attempt: number;
   status: 'success';
+  phase?: 'assigned' | 'queued' | 'started' | 'reviewing' | 'retry' | 'passed' | 'failed' | 'closed';
+  blocking?: boolean;
   evidence?: unknown;
   exploredPaths?: string[];
   durationMs?: number;
+  sessionId?: string;
+  workflowId?: string;
+  result?: unknown;
 }
 
 export interface AgentDispatchFailedPayload {
   dispatchId: string;
+  sourceAgentId: string;
+  targetAgentId: string;
   taskId: string;
   attempt: number;
+  phase?: 'assigned' | 'queued' | 'started' | 'reviewing' | 'retry' | 'passed' | 'failed' | 'closed';
   error: string;
+  blocking?: boolean;
+  sessionId?: string;
+  workflowId?: string;
   retryPolicy?: {
     maxRetries: number;
     currentRetry: number;
@@ -251,8 +272,13 @@ export interface AgentDispatchFailedPayload {
 
 export interface AgentDispatchPartialPayload {
   dispatchId: string;
+  sourceAgentId: string;
+  targetAgentId: string;
   taskId: string;
   attempt: number;
+  blocking?: boolean;
+  sessionId?: string;
+  workflowId?: string;
   /** 缺失的证据类型 */
   missingEvidence: ('execution_result' | 'file_change' | 'test_result' | 'user_confirmation')[];
   /** 缺失的探索路径 */

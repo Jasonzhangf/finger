@@ -1759,22 +1759,6 @@ export class AgentRuntimeBlock extends BaseBlock {
     const resolvedSessionId = typeof params.sessionId === 'string' && params.sessionId.trim().length > 0
       ? params.sessionId.trim()
       : undefined;
-    const resolvedRootSessionId = (() => {
-      if (!resolvedSessionId) return undefined;
-      const getSession = (this.deps.sessionManager as unknown as { getSession?: (sessionId: string) => unknown }).getSession;
-      if (typeof getSession !== 'function') return undefined;
-      const session = getSession.call(this.deps.sessionManager, resolvedSessionId) as { context?: unknown } | null;
-      if (!session || typeof session.context !== 'object' || session.context === null) return undefined;
-      const context = session.context as Record<string, unknown>;
-      const rootSessionId = typeof context.rootSessionId === 'string'
-        ? context.rootSessionId.trim()
-        : '';
-      if (rootSessionId.length > 0) return rootSessionId;
-      const parentSessionId = typeof context.parentSessionId === 'string'
-        ? context.parentSessionId.trim()
-        : '';
-      return parentSessionId.length > 0 ? parentSessionId : undefined;
-    })();
     const queueSuffix = typeof params.queuePosition === 'number' ? ` (queue #${params.queuePosition})` : '';
     const summary = params.status === 'failed'
       ? `Dispatch failed${params.error ? `: ${params.error}` : ''}`
@@ -1795,31 +1779,8 @@ export class AgentRuntimeBlock extends BaseBlock {
       ...(params.workflowId ? { workflowId: params.workflowId } : {}),
       dispatchId: params.dispatchId,
     });
-    void this.deps.eventBus.emit({
-      type: 'agent_runtime_dispatch',
-      sessionId: resolvedSessionId ?? this.deps.sessionManager.getCurrentSession()?.id ?? 'default',
-      agentId: params.targetAgentId,
-      timestamp,
-      payload: {
-        dispatchId: params.dispatchId,
-        ...(params.laneKey ? { laneKey: params.laneKey } : {}),
-        sourceAgentId: params.sourceAgentId,
-        targetAgentId: params.targetAgentId,
-        status: params.status,
-        blocking: params.blocking,
-        ...(resolvedSessionId ? { sessionId: resolvedSessionId } : {}),
-        ...(resolvedRootSessionId && resolvedRootSessionId !== resolvedSessionId
-          ? { rootSessionId: resolvedRootSessionId }
-          : {}),
-        ...(params.workflowId ? { workflowId: params.workflowId } : {}),
-        ...(typeof params.queuePosition === 'number' ? { queuePosition: params.queuePosition } : {}),
-        ...(params.assignment ? { assignment: params.assignment } : {}),
-        ...(params.result !== undefined ? { result: params.result } : {}),
-        ...(params.error ? { error: params.error } : {}),
-      },
-    });
 
-    // ─── Protocol Event 双写（Phase 3.2）────────────────────────
+    // ─── Protocol Event (唯一真源)（Phase 3.2）────────────────────────
     const protocolEventType = (() => {
       switch (params.status) {
         case 'queued': return 'agent_dispatch_queued';
@@ -1841,11 +1802,13 @@ export class AgentRuntimeBlock extends BaseBlock {
         sourceAgentId: params.sourceAgentId,
         targetAgentId: params.targetAgentId,
         status: mapStatusToDispatchStatus(params.status),
+        blocking: params.blocking,
         sessionId: resolvedSessionId,
         workflowId: params.workflowId,
         ...(params.queuePosition ? { queuePosition: params.queuePosition } : {}),
         ...(params.assignment?.taskId ? { taskId: params.assignment.taskId } : {}),
         ...(params.assignment?.attempt ? { attempt: params.assignment.attempt } : {}),
+        ...(params.assignment?.phase ? { phase: params.assignment.phase } : {}),
         ...(params.error ? { error: params.error } : {}),
         ...(params.result ? { result: params.result } : {}),
       });

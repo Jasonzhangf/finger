@@ -697,20 +697,6 @@ describe('dispatchTaskToAgent', () => {
     expect((deps as any).agentRuntimeBlock.execute).not.toHaveBeenCalledWith('dispatch', expect.anything());
   });
 
-  it('uses runtime child session only for reviewer target', async () => {
-    const { deps, sessionManager } = createDeps();
-    const res = await mod.dispatchTaskToAgent(deps as any, {
-      sourceAgentId: 'finger-system-agent',
-      targetAgentId: 'finger-system-agent',
-      task: 'review this',
-      sessionStrategy: 'latest',
-      projectPath: '/tmp/project-a',
-    } as any);
-
-    expect(res.ok).toBe(true);
-    expect((deps as any).ensureRuntimeChildSession).toHaveBeenCalledWith(expect.objectContaining({ id: 'root-session-2' }), 'finger-system-agent');
-  });
-
   it('keeps system->project dispatch async (non-blocking) when project agent is busy', async () => {
     const execute = vi.fn(async (command: string) => {
       if (command === 'runtime_view') {

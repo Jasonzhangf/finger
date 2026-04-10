@@ -155,7 +155,7 @@ describe('Report Task Completion Tool Integration', () => {
       sessionId: 'session-456',
       result: 'success',
       projectId: 'project-789',
-    }, { agentId: 'finger-reviewer' });
+    }, { agentId: "finger-system-agent" });
 
     expect((result as any).ok).toBe(true);
     expect((result as any).action).toBe('report');
@@ -169,7 +169,7 @@ describe('Report Task Completion Tool Integration', () => {
       sessionId: 'session-789',
       result: 'failure',
       projectId: 'project-123',
-    }, { agentId: 'finger-reviewer' });
+    }, { agentId: "finger-system-agent" });
 
     expect((result as any).ok).toBe(true);
     expect((result as any).action).toBe('report');

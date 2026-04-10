@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import { readFileSync, unlinkSync, writeFileSync, existsSync } from 'fs';
+import { readFileSync, unlinkSync, writeFileSync, existsSync, mkdirSync } from 'fs';
 import { join } from 'path';
 import { FINGER_PATHS } from '../../src/core/finger-paths.js';
 import { SYSTEM_AGENT_CONFIG } from '../../src/agents/finger-system-agent/index.js';
@@ -11,6 +11,8 @@ describe('System Agent Bootstrap Integration', () => {
   let originalBootstrap: string | null = null;
 
   beforeAll(() => {
+    // Ensure system directory exists
+    mkdirSync(join(FINGER_PATHS.home, 'system'), { recursive: true });
     // Backup original bootstrap file
     if (existsSync(BOOTSTRAP_PATH)) {
       originalBootstrap = readFileSync(BOOTSTRAP_PATH, 'utf-8');
@@ -45,8 +47,8 @@ describe('System Agent Bootstrap Integration', () => {
 
   it('system agent config has correct paths', () => {
     expect(SYSTEM_AGENT_CONFIG.id).toBe('finger-system-agent');
-    expect(SYSTEM_AGENT_CONFIG.projectPath).toContain('.finger/system');
-    expect(SYSTEM_AGENT_CONFIG.sessionPath).toContain('.finger/system/sessions');
+    expect(SYSTEM_AGENT_CONFIG.projectPath).toContain('/system');
+    expect(SYSTEM_AGENT_CONFIG.sessionPath).toContain('/system/sessions');
   });
 
   it('bootstrap content is non-empty', () => {

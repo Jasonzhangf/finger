@@ -128,6 +128,7 @@ describe('createDispatchEvent factory', () => {
       sourceAgentId: 'finger-system-agent',
       targetAgentId: 'finger-project-agent',
       status: 'started' as DispatchStatus,
+      blocking: true,
       sessionId: 'session-1',
       workflowId: 'workflow-1',
     });
@@ -137,6 +138,7 @@ describe('createDispatchEvent factory', () => {
     expect(event.causationId).toBe('d1');
     expect(event.payload.dispatchId).toBe('d1');
     expect(event.payload.status).toBe('started');
+    expect(event.payload.blocking).toBe(true);
   });
 
   it('should include optional fields', () => {

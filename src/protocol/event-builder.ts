@@ -216,9 +216,13 @@ export function createDispatchEvent(
     sourceAgentId: string;
     targetAgentId: string;
     status: DispatchStatus;
+    blocking?: boolean;
     sessionId?: string;
     workflowId?: string;
     queuePosition?: number;
+    taskId?: string;
+    attempt?: number;
+    phase?: string;
     error?: string;
     result?: unknown;
     closureGate?: DispatchClosureGate;
@@ -240,8 +244,12 @@ export function createDispatchEvent(
     sourceAgentId: params.sourceAgentId,
     targetAgentId: params.targetAgentId,
     status: params.status,
+    blocking: params.blocking,
     sessionId: params.sessionId,
     workflowId: params.workflowId,
+    taskId: params.taskId,
+    attempt: params.attempt,
+    phase: params.phase,
   };
 
   if (params.queuePosition !== undefined) {

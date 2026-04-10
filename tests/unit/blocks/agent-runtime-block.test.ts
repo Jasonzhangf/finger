@@ -373,7 +373,10 @@ describe('AgentRuntimeBlock', () => {
 
     const dispatchEvents = ctx.emittedEvents.mock.calls
       .map((call) => call[0])
-      .filter((event: any) => event?.type === 'agent_runtime_dispatch' && event?.payload?.dispatchId === dispatchResult.dispatchId);
+      .filter((event: any) =>
+        (event?.type === 'agent_dispatch_queued' || event?.type === 'agent_dispatch_failed' || event?.type === 'agent_dispatch_complete')
+        && event?.payload?.dispatchId === dispatchResult.dispatchId,
+      );
 
     const failedEvent = dispatchEvents.find((event: any) => event?.payload?.status === 'failed');
     expect(failedEvent).toBeDefined();
@@ -624,9 +627,9 @@ describe('AgentRuntimeBlock', () => {
 
     const completedEvent = ctx.emittedEvents.mock.calls
       .map((call) => call[0])
-      .find((event: any) => event?.type === 'agent_runtime_dispatch' && event?.payload?.status === 'completed');
+      .find((event: any) => event?.type === 'agent_dispatch_complete');
     expect(completedEvent).toBeDefined();
-    expect(completedEvent.payload.assignment).toEqual(expect.objectContaining({
+    expect(completedEvent.payload).toEqual(expect.objectContaining({
       taskId: 'task-42',
       phase: 'closed',
       attempt: 2,
@@ -713,6 +716,7 @@ describe('AgentRuntimeBlock', () => {
   it('maps reviewer decision to assignment terminal phase', async () => {
     ctx.hubSendToModule.mockResolvedValueOnce({
       success: true,
+      status: 'completed',
       reviewDecision: 'retry',
     });
 
@@ -738,9 +742,9 @@ describe('AgentRuntimeBlock', () => {
 
     const completedEvent = ctx.emittedEvents.mock.calls
       .map((call) => call[0])
-      .find((event: any) => event?.type === 'agent_runtime_dispatch' && event?.payload?.status === 'completed');
+      .find((event: any) => event?.type === 'agent_dispatch_complete');
     expect(completedEvent).toBeDefined();
-    expect(completedEvent.payload.assignment).toEqual(expect.objectContaining({
+    expect(completedEvent.payload).toEqual(expect.objectContaining({
       taskId: 'task-r1',
       phase: 'retry',
     }));

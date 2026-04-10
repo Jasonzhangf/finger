@@ -142,7 +142,7 @@ describe('AgentRuntimeBlock queue timeout fallback', () => {
 
       const mailboxEvent = emittedEvents.mock.calls
         .map(([event]) => event)
-        .filter((event) => event?.type === 'agent_runtime_dispatch')
+        .filter((event) => event?.type === 'agent_dispatch_queued')
         .at(-1);
       expect(mailboxEvent).toEqual(expect.objectContaining({
         payload: expect.objectContaining({
