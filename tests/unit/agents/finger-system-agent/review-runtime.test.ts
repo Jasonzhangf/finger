@@ -41,7 +41,7 @@ describe('review-runtime', () => {
       taskName: 'qq-image-delivery',
       reviewRequired: true,
       acceptanceCriteria: 'Image attachments must route by attachment metadata.',
-      reviewAgentId: 'finger-reviewer',
+      reviewAgentId: 'finger-system-agent',
     }));
   });
 

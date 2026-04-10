@@ -12,7 +12,7 @@ import fs from 'fs';
 import path from 'path';
 import { createHash } from 'crypto';
  import { FINGER_PATHS, ensureDir, normalizeSessionDirName } from '../core/finger-paths.js';
-import { Session, SessionMessage, LEDGER_POINTER_DEFAULTS, ensureLedgerPointers, ISessionManager, SessionStatus } from './session-types.js';
+import { Session, SessionMessage, LEDGER_POINTER_DEFAULTS, SessionStatus } from './session-types.js';
 import type { Attachment } from '../runtime/events.js';
 import type { UpdateSessionParams, SessionQuery, SessionStats } from './session-types.js';
 import { appendSessionMessage } from '../runtime/ledger-writer.js';
@@ -55,7 +55,7 @@ function stripCorruptSuffix(baseName: string): string {
   return baseName.replace(/\.corrupt(?:[.-].*)?$/i, '');
 }
 
-export class SessionManager implements ISessionManager {
+export class SessionManager  {
   private sessions: Map<string, Session> = new Map();
   private sessionFilePaths: Map<string, string> = new Map();
   private currentSessionId: string | null = null;
@@ -207,14 +207,9 @@ export class SessionManager implements ISessionManager {
       throw new Error('Invalid session content');
     }
     session.projectPath = this.normalizeProjectPath(session.projectPath);
-    // Ensure ledger pointer fields exist for backward compatibility
-    ensureLedgerPointers(session);
     session.messages = Array.isArray(session.messages) ? session.messages : [];
     const activeWorkflowsNormalized = this.normalizeActiveWorkflows(session);
-    const ownershipNormalized = this.normalizeSessionOwnershipContext(session, session.context, {
-      sourceFilePath: filePath,
-    });
-    session.context = ownershipNormalized.context;
+    this.ensureSessionOwnershipContext(session);
     const staleProjectionRepaired = this.repairStaleCompactedProjectionOnLoad(session);
     const compactedProjectionRepaired = this.repairCompactedProjectionStructureOnLoad(session);
     this.updateSessionProjectionState(session);
@@ -231,9 +226,6 @@ export class SessionManager implements ISessionManager {
         nextPath: expectedPath,
       });
       return;
-    }
-    if (ownershipNormalized.migrated || activeWorkflowsNormalized || staleProjectionRepaired || compactedProjectionRepaired) {
-      this.persistMigratedSessionFile(filePath, session);
     }
   }
 
@@ -284,61 +276,22 @@ export class SessionManager implements ISessionManager {
     return SYSTEM_AGENT_ID;
   }
 
-  private normalizeSessionOwnershipContext(
-    session: Session,
-    rawContext: Record<string, unknown> | undefined,
-    options?: { sourceFilePath?: string },
-  ): { context: Record<string, unknown>; migrated: boolean } {
-    const context = isObjectRecord(rawContext) ? { ...rawContext } : {};
-    let migrated = false;
 
-    const owner = this.resolveSessionMemoryOwner(session, context, options);
-    const currentOwner = this.asContextString(context, 'memoryOwnerWorkerId');
-    if (owner && currentOwner !== owner) {
-      context.memoryOwnerWorkerId = owner;
-      migrated = true;
-    }
 
-    const currentOwnerAgentId = this.asContextString(context, 'ownerAgentId');
-    if (owner && !currentOwnerAgentId) {
-      context.ownerAgentId = owner;
-      migrated = true;
-    }
 
-    if (!('memoryAccessPolicy' in context)) {
-      context.memoryAccessPolicy = MEMORY_ACCESS_POLICY;
-      migrated = true;
-    }
-
-    const schemaVersion = context.memoryOwnershipVersion;
-    if (schemaVersion !== MEMORY_OWNERSHIP_VERSION) {
-      context.memoryOwnershipVersion = MEMORY_OWNERSHIP_VERSION;
-      migrated = true;
-    }
-
-    if (migrated) {
-      context.memoryOwnershipUpdatedAt = new Date().toISOString();
-    }
-
-    return { context, migrated };
-  }
-
-  private persistMigratedSessionFile(filePath: string, session: Session): void {
-    try {
-      const persistedSession: Session = { ...session };
-      delete (persistedSession as Session & { _cachedView?: unknown })._cachedView;
-      writeFileAtomicSync(filePath, JSON.stringify(persistedSession, null, 2));
-      log.debug('Backfilled session ownership metadata during load', {
-        sessionId: session.id,
-        filePath,
-        memoryOwnerWorkerId: this.asContextString(session.context, 'memoryOwnerWorkerId') || undefined,
-      });
-    } catch (error) {
-      log.warn('Failed to persist session ownership migration', {
-        sessionId: session.id,
-        filePath,
-        error: error instanceof Error ? error.message : String(error),
-      });
+  private ensureSessionOwnershipContext(session: Session): void {
+    const context = isObjectRecord(session.context) ? session.context : {};
+    // Session data is now guaranteed to have ownership fields after migration
+    // Only verify minimal required fields exist for safety
+    if (!('memoryOwnerWorkerId' in context) || !('ownerAgentId' in context)) {
+      const owner = this.resolveSessionMemoryOwner(session, context);
+      session.context = {
+        ...context,
+        memoryOwnerWorkerId: owner,
+        ownerAgentId: owner,
+        memoryAccessPolicy: MEMORY_ACCESS_POLICY,
+        memoryOwnershipVersion: MEMORY_OWNERSHIP_VERSION,
+      };
     }
   }
 
@@ -591,7 +544,7 @@ export class SessionManager implements ISessionManager {
     session.totalTokens = pointerState.totalTokens;
     session.pointers = pointerState.pointers;
     session.lastAccessedAt = syncedAt;
-    session.context = this.normalizeSessionOwnershipContext(session, {
+session.context = {
       ...sessionContext,
       kernelProjection: {
         version: 1,
@@ -604,7 +557,8 @@ export class SessionManager implements ISessionManager {
         latestCompactIndex: compactLineCount - 1,
         ...(compactSummary.length > 0 ? { compactSummary } : {}),
       },
-    }).context;
+    }
+    this.ensureSessionOwnershipContext(session);
     session._cachedView = undefined;
     return true;
   }
@@ -684,7 +638,7 @@ export class SessionManager implements ISessionManager {
       context: {},
       ...LEDGER_POINTER_DEFAULTS,
     };
-    session.context = this.normalizeSessionOwnershipContext(session, session.context).context;
+    this.ensureSessionOwnershipContext(session);
 
     // Hard limit: evict oldest session if at capacity
     const MAX_SESSIONS = 100;
@@ -735,7 +689,7 @@ export class SessionManager implements ISessionManager {
       },
       ...LEDGER_POINTER_DEFAULTS,
     };
-    session.context = this.normalizeSessionOwnershipContext(session, session.context).context;
+    this.ensureSessionOwnershipContext(session);
 
     // Hard limit: evict oldest session if at capacity
     const MAX_SESSIONS = 100;
@@ -825,7 +779,7 @@ export class SessionManager implements ISessionManager {
       context: {},
       ...LEDGER_POINTER_DEFAULTS,
     };
-    session.context = this.normalizeSessionOwnershipContext(session, session.context).context;
+    this.ensureSessionOwnershipContext(session);
 
     this.sessions.set(sessionId, session);
     this.saveSession(session);
@@ -1141,14 +1095,15 @@ export class SessionManager implements ISessionManager {
     if (!session) return false;
     const normalizedMode = mode.trim();
     if (!normalizedMode) return false;
-    session.context = this.normalizeSessionOwnershipContext(session, {
+session.context = {
       ...session.context,
       activeLedgerMode: normalizedMode,
       transientLedgerMode: normalizedMode,
       transientLedgerSource: options?.source ?? session.context.transientLedgerSource,
       transientLedgerAutoDeleteOnStop: options?.autoDeleteOnStop !== false,
       transientLedgerSetAt: new Date().toISOString(),
-    }).context;
+    }
+    this.ensureSessionOwnershipContext(session);
     this.saveSession(session);
     return true;
   }
@@ -1162,7 +1117,8 @@ export class SessionManager implements ISessionManager {
     delete nextContext.transientLedgerSource;
     delete nextContext.transientLedgerAutoDeleteOnStop;
     delete nextContext.transientLedgerSetAt;
-    session.context = this.normalizeSessionOwnershipContext(session, nextContext).context;
+    session.context = nextContext;
+    this.ensureSessionOwnershipContext(session);
     this.saveSession(session);
     return true;
   }
@@ -1526,7 +1482,7 @@ export class SessionManager implements ISessionManager {
     session.totalTokens = pointerState.totalTokens;
     session.pointers = pointerState.pointers;
     session.lastAccessedAt = syncedAt;
-    session.context = this.normalizeSessionOwnershipContext(session, {
+session.context = {
       ...sessionContext,
       kernelProjection: {
         version: 1,
@@ -1547,7 +1503,8 @@ export class SessionManager implements ISessionManager {
           ? { sourceTimeEnd: compactMetadata.source_time_end.trim() }
           : {}),
       },
-    }).context;
+    }
+    this.ensureSessionOwnershipContext(session);
     session._cachedView = undefined;
     this.saveSession(session);
 
@@ -1633,7 +1590,7 @@ export class SessionManager implements ISessionManager {
     session.totalTokens = pointerState.totalTokens;
     session.pointers = pointerState.pointers;
     session.lastAccessedAt = syncedAt;
-    session.context = this.normalizeSessionOwnershipContext(session, {
+session.context = {
       ...sessionContext,
       kernelProjection: {
         version: 1,
@@ -1648,7 +1605,8 @@ export class SessionManager implements ISessionManager {
         latestCompactIndex,
         ...(compactSummary.length > 0 ? { compactSummary } : {}),
       },
-    }).context;
+    }
+    this.ensureSessionOwnershipContext(session);
     session._cachedView = undefined;
     this.saveSession(session);
 
@@ -1664,11 +1622,12 @@ export class SessionManager implements ISessionManager {
   pauseSession(sessionId: string): boolean {
     const session = this.sessions.get(sessionId);
     if (!session) return false;
-    session.context = this.normalizeSessionOwnershipContext(session, {
+session.context = {
       ...session.context,
       paused: true,
       pausedAt: new Date().toISOString(),
-    }).context;
+    }
+    this.ensureSessionOwnershipContext(session);
     this.saveSession(session);
     return true;
   }
@@ -1676,11 +1635,12 @@ export class SessionManager implements ISessionManager {
   resumeSession(sessionId: string): boolean {
     const session = this.sessions.get(sessionId);
     if (!session) return false;
-    session.context = this.normalizeSessionOwnershipContext(session, {
+session.context = {
       ...session.context,
       paused: false,
       resumedAt: new Date().toISOString(),
-    }).context;
+    }
+    this.ensureSessionOwnershipContext(session);
     this.saveSession(session);
     return true;
   }
@@ -1697,7 +1657,8 @@ export class SessionManager implements ISessionManager {
       ...(isObjectRecord(session.context) ? session.context : {}),
       ...context,
     };
-    session.context = this.normalizeSessionOwnershipContext(session, mergedContext).context;
+    session.context = mergedContext;
+    this.ensureSessionOwnershipContext(session);
     this.saveSession(session);
     return true;
   }
@@ -2025,7 +1986,7 @@ export class SessionManager implements ISessionManager {
     }
   }
 
-  // ─── ISessionManager interface methods ──────────────────────────────
+  // ─── Public interface methods ──────────────────────────────
 
   async initialize(): Promise<unknown> {
     // Already initialized in constructor

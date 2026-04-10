@@ -704,7 +704,7 @@ describe('AgentRuntimeBlock', () => {
         text: expect.stringContaining('[DISPATCH CONTRACT]'),
         metadata: expect.objectContaining({
           responsesStructuredOutput: true,
-          responsesOutputSchemaPreset: 'orchestrator',
+          responsesOutputSchemaPreset: 'project',
         }),
       }),
     );

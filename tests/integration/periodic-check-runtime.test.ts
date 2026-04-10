@@ -26,7 +26,7 @@ describe('Periodic Check Runtime', () => {
           projectId: 'finger-orchestrator-project',
           projectPath: '/test/finger-project',
           projectName: 'finger-project',
-          agentId: 'finger-orchestrator',  // Matches runtime_view agent.id
+          agentId: 'finger-system-agent',  // Matches runtime_view agent.id
           status: 'idle',
           lastHeartbeat: new Date().toISOString(),
           monitored: true,
@@ -43,7 +43,7 @@ describe('Periodic Check Runtime', () => {
           if (command === 'runtime_view') {
             return {
               agents: [
-                { id: 'finger-orchestrator', status: 'idle' },
+                { id: 'finger-system-agent', status: 'idle' },
               ],
             };
           }

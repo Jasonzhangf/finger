@@ -61,6 +61,7 @@ export class Scheduler {
 
     const rolePriority: Record<string, string[]> = {
       'project': ['project', 'system'],
+      'executor': ['project', 'system'],
       'architect': ['architect', 'system'],
       'tester': ['tester', 'executor'],
       'docwriter': ['docwriter', 'executor'],
@@ -87,6 +88,6 @@ export class Scheduler {
     if (title.includes('design') || title.includes('architect')) return ['architect'];
     if (title.includes('doc')) return ['docwriter'];
 
-    return ['executor'];
+    return ['project'];
   }
 }

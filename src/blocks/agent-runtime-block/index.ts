@@ -12,6 +12,12 @@ import { buildDispatchTaskText, extractTaskText, sanitizeDispatchResult, type Di
 import { resolveSystemDispatchPolicy } from '../../core/system-dispatch-policy.js';
 import { normalizeProjectPathCanonical } from '../../common/path-normalize.js';
 
+import { createDispatchEvent, type DispatchStatus } from '../../protocol/index.js';
+import type { RuntimeEvent } from '../../runtime/events.js';
+import { OperationRouter, type OperationRouterDeps } from '../../runtime/operation-router.js';
+import type { Operation } from '../../protocol/operation-types.js';
+import { AgentPathUtils } from '../../protocol/operation-types.js';
+
 import { logger } from '../../core/logger.js';
 
 const log = logger.module('AgentRuntimeBlock');
@@ -476,6 +482,7 @@ interface AgentRuntimeConfigProfile {
 }
 
 export interface AgentRuntimeBlockDeps {
+  operationRouter?: OperationRouter;
   moduleRegistry: ModuleRegistry;
   hub: MessageHub;
   runtime: RuntimeFacade;
@@ -613,6 +620,29 @@ function moduleHasAgentRuntimeIdentity(module: OrchestrationModule): boolean {
   return moduleId.includes('chat-codex') || moduleId.includes('finger-');
 }
 
+// ─── Protocol Event helpers (Phase 3.2) ───────────────────────────────
+
+function mapStatusToDispatchStatus(status: 'queued' | 'completed' | 'failed' | 'timeout'): DispatchStatus {
+  switch (status) {
+    case 'queued': return 'queued';
+    case 'completed': return 'success';
+    case 'failed': return 'failed';
+    case 'timeout': return 'failed';
+  }
+}
+
+function resolveActorPath(targetAgentId: string): `/root/${string}` {
+  return `/root/${targetAgentId}` as `/root/${string}`;
+}
+
+function extractWorkerIdFromLaneKey(laneKey: string): string | undefined {
+  const parts = laneKey.split(':');
+  if (parts.length >= 3 && parts[0] === 'worker') {
+    return parts[2];
+  }
+  return undefined;
+}
+
 export class AgentRuntimeBlock extends BaseBlock {
   readonly type = 'agent_runtime';
   readonly capabilities: BlockCapabilities = {
@@ -643,6 +673,8 @@ export class AgentRuntimeBlock extends BaseBlock {
   private readonly sessionOwnerKeyBySession = new Map<string, string>();
   private readonly runtimeConfigByAgent = new Map<string, AgentRuntimeConfigProfile>();
   private readonly lastEventByAgent = new Map<string, AgentLastEventView>();
+
+  private operationRouter: OperationRouter | undefined;
 
   constructor(id: string, private readonly deps: AgentRuntimeBlockDeps) {
     super(id, 'agent_runtime');
@@ -1786,6 +1818,42 @@ export class AgentRuntimeBlock extends BaseBlock {
         ...(params.error ? { error: params.error } : {}),
       },
     });
+
+    // ─── Protocol Event 双写（Phase 3.2）────────────────────────
+    const protocolEventType = (() => {
+      switch (params.status) {
+        case 'queued': return 'agent_dispatch_queued';
+        case 'completed': return 'agent_dispatch_complete';
+        case 'failed': return 'agent_dispatch_failed';
+        case 'timeout': return 'agent_dispatch_failed';
+      }
+    })();
+
+    const ownerWorkerId = params.laneKey
+      ? extractWorkerIdFromLaneKey(params.laneKey) ?? 'default-worker'
+      : 'default-worker';
+
+    try {
+      const protocolEvent = createDispatchEvent(protocolEventType, {
+        dispatchId: params.dispatchId,
+        actor: resolveActorPath(params.targetAgentId),
+        ownerWorkerId,
+        sourceAgentId: params.sourceAgentId,
+        targetAgentId: params.targetAgentId,
+        status: mapStatusToDispatchStatus(params.status),
+        sessionId: resolvedSessionId,
+        workflowId: params.workflowId,
+        ...(params.queuePosition ? { queuePosition: params.queuePosition } : {}),
+        ...(params.assignment?.taskId ? { taskId: params.assignment.taskId } : {}),
+        ...(params.assignment?.attempt ? { attempt: params.assignment.attempt } : {}),
+        ...(params.error ? { error: params.error } : {}),
+        ...(params.result ? { result: params.result } : {}),
+      });
+      void this.deps.eventBus.emit(protocolEvent as unknown as RuntimeEvent);
+      log.debug('[AgentRuntimeBlock] Protocol event emitted', { eventId: protocolEvent.eventId, type: protocolEvent.type });
+    } catch (err) {
+      log.warn('[AgentRuntimeBlock] Protocol event creation failed', { error: err instanceof Error ? err.message : String(err) });
+    }
   }
 
   private emitControlEvent(result: AgentControlResult): void {

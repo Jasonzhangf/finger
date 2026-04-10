@@ -695,7 +695,7 @@ describe('chat-codex module', () => {
     expect(payload.controlBlockMaxAutoContinueTurns).toBe(2);
   });
 
-  it('keeps system prompt stable across orchestrator and reviewer roles', async () => {
+  it('keeps system prompt stable across system and project roles', async () => {
     runTurnMock.mockResolvedValue({
       reply: 'OK',
       events: [],
@@ -704,13 +704,13 @@ describe('chat-codex module', () => {
     const module = createChatCodexModule({}, runner);
 
     await module.handle({
-      text: 'orchestrate this',
-      roleProfile: 'orchestrator',
+      text: 'system task',
+      roleProfile: 'system',
       metadata: { stopToolMaxAutoContinueTurns: 0 },
     });
     await module.handle({
-      text: 'review this',
-      roleProfile: 'reviewer',
+      text: 'project task',
+      roleProfile: 'project',
       metadata: { stopToolMaxAutoContinueTurns: 0 },
     });
 
@@ -722,41 +722,41 @@ describe('chat-codex module', () => {
   });
 
   it('builds role-specific developer instructions with ledger block in developer zone', () => {
-    const orchestrator = __chatCodexInternals.buildKernelUserTurnOptions(
+    const system = __chatCodexInternals.buildKernelUserTurnOptions(
       {
         sessionId: 'session-1',
         metadata: {
-          roleProfile: 'orchestrator',
+          roleProfile: 'system',
           contextLedgerEnabled: true,
           contextLedgerAgentId: 'chat-codex',
-          contextLedgerRole: 'orchestrator',
+          contextLedgerRole: 'system',
           kernelMode: 'main',
         },
       },
       undefined,
     );
-    const reviewer = __chatCodexInternals.buildKernelUserTurnOptions(
+    const project = __chatCodexInternals.buildKernelUserTurnOptions(
       {
         sessionId: 'session-1',
         metadata: {
-          roleProfile: 'reviewer',
+          roleProfile: 'project',
           contextLedgerEnabled: true,
           contextLedgerAgentId: 'chat-codex',
-          contextLedgerRole: 'reviewer',
+          contextLedgerRole: 'project',
           kernelMode: 'main',
         },
       },
       undefined,
     );
 
-    expect(orchestrator?.developer_instructions).toContain('role=orchestrator');
-    expect(orchestrator?.developer_instructions).toContain('[context_ledger]');
-    expect(reviewer?.developer_instructions).toContain('role=reviewer');
-    expect(reviewer?.developer_instructions).toContain('[context_ledger]');
-    expect(orchestrator?.developer_instructions).not.toBe(reviewer?.developer_instructions);
+    expect(system?.developer_instructions).toContain('role=system');
+    expect(system?.developer_instructions).toContain('[context_ledger]');
+    expect(project?.developer_instructions).toContain('role=project');
+    expect(project?.developer_instructions).toContain('[context_ledger]');
+    expect(system?.developer_instructions).not.toBe(project?.developer_instructions);
   });
 
-  it('maps project-like roles onto orchestrator developer instructions', () => {
+  it('maps project-like roles onto project developer instructions', () => {
     const executor = __chatCodexInternals.resolveDeveloperInstructions({
       roleProfile: 'executor',
       contextLedgerEnabled: true,
@@ -768,8 +768,8 @@ describe('chat-codex module', () => {
       kernelMode: 'main',
     });
 
-    expect(executor).toContain('role=orchestrator');
-    expect(searcher).toContain('role=orchestrator');
+    expect(executor).toContain('role=project');
+    expect(searcher).toContain('role=project');
     expect(executor).toContain('[context_ledger]');
     expect(searcher).toContain('[context_ledger]');
     expect(executor).toBe(searcher);
@@ -777,7 +777,7 @@ describe('chat-codex module', () => {
 
   it('injects prompt optimization runtime section with agent contract and output style', () => {
     const instructions = __chatCodexInternals.resolveDeveloperInstructions({
-      roleProfile: 'reviewer',
+      roleProfile: 'project',
       promptOptimizationEnabled: true,
       promptOptAgentDefinitionEnabled: true,
       promptOptFunctionResultClearingEnabled: true,
@@ -788,14 +788,14 @@ describe('chat-codex module', () => {
     });
 
     expect(instructions).toContain('# Prompt Optimization Runtime');
-    expect(instructions).toContain('agent_type=reviewer');
+    expect(instructions).toContain('agent_type=project');
     expect(instructions).toContain('Function Result Clearing');
     expect(instructions).toContain('Output Style: Technical');
   });
 
   it('can disable prompt optimization runtime section', () => {
     const instructions = __chatCodexInternals.resolveDeveloperInstructions({
-      roleProfile: 'reviewer',
+      roleProfile: 'project',
       promptOptimizationEnabled: false,
       contextLedgerEnabled: true,
       kernelMode: 'main',
@@ -843,7 +843,7 @@ describe('chat-codex module', () => {
           { role: 'user', content: '继续处理，不要中断。' },
         ],
         metadata: {
-          roleProfile: 'orchestrator',
+          roleProfile: 'system',
           kernelMode: 'main',
           contextLedgerEnabled: true,
           contextHistorySource: 'context_builder_indexed',
@@ -860,7 +860,7 @@ describe('chat-codex module', () => {
     expect(instructions).toContain('If the current request is clearly discontinuous with these anchors');
   });
 
-  it('grants orchestrator documentation write tool and keeps reviewer read-only', async () => {
+  it('grants project agent full tool access', async () => {
     runTurnMock.mockResolvedValue({
       reply: 'OK',
       events: [],
@@ -869,22 +869,13 @@ describe('chat-codex module', () => {
     const module = createChatCodexModule({}, runner);
 
     await module.handle({
-      text: 'write plan doc',
-      roleProfile: 'orchestrator',
-      metadata: { stopToolMaxAutoContinueTurns: 0 },
-    });
-    await module.handle({
-      text: 'review only',
-      roleProfile: 'reviewer',
+      text: 'develop task',
+      roleProfile: 'project',
       metadata: { stopToolMaxAutoContinueTurns: 0 },
     });
 
-    const orchestratorTools = (runTurnMock.mock.calls[0][2]?.tools ?? []).map((item) => item.name);
-    const reviewerTools = (runTurnMock.mock.calls[1][2]?.tools ?? []).map((item) => item.name);
-
-    expect(orchestratorTools).toContain('apply_patch');
-    expect(orchestratorTools).toContain('update_plan');
-    expect(reviewerTools).not.toContain('apply_patch');
+    const tools = (runTurnMock.mock.calls[0][2]?.tools ?? []).map((item) => item.name);
+    expect(tools).toContain('apply_patch');
   });
 
   it('keeps structured output schema disabled by default', () => {
@@ -892,7 +883,7 @@ describe('chat-codex module', () => {
       {
         sessionId: 'session-1',
         metadata: {
-          roleProfile: 'orchestrator',
+          roleProfile: 'system',
           kernelMode: 'main',
         },
       },
@@ -907,7 +898,7 @@ describe('chat-codex module', () => {
       {
         sessionId: 'session-1',
         metadata: {
-          roleProfile: 'reviewer',
+          roleProfile: 'project',
           kernelMode: 'main',
           responsesStructuredOutput: true,
         },
@@ -919,9 +910,11 @@ describe('chat-codex module', () => {
     expect(schema).toBeDefined();
     expect(schema?.type).toBe('object');
     expect(schema?.properties).toMatchObject({
-      role: { type: 'string', const: 'reviewer' },
-      reviewLevel: { type: 'string', enum: ['feedback', 'soft_gate', 'hard_gate'] },
-      target: { type: 'string', enum: ['project', 'reviewer', 'system'] },
+      role: { type: 'string', const: 'project' },
+      summary: { type: 'string' },
+      status: { type: 'string', enum: ['completed', 'failed', 'retry'] },
+      evidence: { type: 'string' },
+      nextAction: { type: 'string' },
     });
   });
 
@@ -964,7 +957,7 @@ describe('chat-codex module', () => {
         {
           sessionId: 'session-1',
           metadata: {
-            roleProfile: 'orchestrator',
+            roleProfile: 'system',
             kernelMode: 'main',
             skillsPromptEnabled: false,
             mailboxPromptEnabled: false,
@@ -1005,7 +998,7 @@ describe('chat-codex module', () => {
       {
         sessionId: 'session-1',
         metadata: {
-          roleProfile: 'orchestrator',
+          roleProfile: 'system',
           kernelMode: 'main',
           flowPromptEnabled: false,
           skillsPromptEnabled: false,
@@ -1116,7 +1109,7 @@ describe('chat-codex module', () => {
       const baseContext = {
         sessionId: 'session-1',
         metadata: {
-          roleProfile: 'orchestrator',
+          roleProfile: 'system',
           kernelMode: 'main',
           globalFlowFilePath: globalFlowPath,
           flowFilePath: localFlowPath,

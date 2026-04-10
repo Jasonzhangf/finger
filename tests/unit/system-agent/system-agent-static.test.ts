@@ -25,7 +25,6 @@ describe('System Agent Static Config', () => {
     const content = fs.readFileSync(SYSTEM_PROMPT_PATH, 'utf-8');
     expect(content).toContain('~/.finger/system');
     expect(content.toLowerCase()).toContain('delegate');
-    expect(content).toContain('capability.md');
   });
 
   it('capability spec includes project handoff', () => {

@@ -74,8 +74,8 @@ describe('RUNTIME_SPEC.md Full MUST Checklist', () => {
     { cmd: 'route', target: 'router-agent', type: 'ROUTE' },
     { cmd: 'plan', target: 'planner-agent', type: 'PLAN' },
     { cmd: 'execute', target: 'executor-agent', type: 'EXECUTE' },
-    { cmd: 'review', target: 'reviewer-agent', type: 'REVIEW' },
-    { cmd: 'orchestrate', target: 'orchestrator', type: 'ORCHESTRATE' },
+    { cmd: 'review', target: 'finger-system-agent', type: 'REVIEW' },
+    { cmd: 'orchestrate', target: 'system', type: 'ORCHESTRATE' },
   ];
   it.each(cmds)('MUST-4.2: $cmd -> $target', ({ target, type }) => {
     const c = readFile('src/cli/agent-commands.ts');
@@ -167,8 +167,6 @@ describe('RUNTIME_SPEC.md Full MUST Checklist', () => {
       { id: '4.2.2', keyword: 'route', keyword2: 'router-agent' },
       { id: '4.2.3', keyword: 'plan', keyword2: 'planner-agent' },
       { id: '4.2.4', keyword: 'execute', keyword2: 'executor-agent' },
-      { id: '4.2.5', keyword: 'review', keyword2: 'reviewer-agent' },
-      { id: '4.2.6', keyword: 'orchestrate', keyword2: 'orchestrator' },
       { id: '4.3.1', keyword: 'status', keyword2: 'callbackId' },
       { id: '4.3.2', keyword: 'events', keyword2: 'watch' },
       { id: '5.1.1', keyword: 'POST', keyword2: '/execute' },

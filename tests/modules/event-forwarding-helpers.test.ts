@@ -31,11 +31,7 @@ describe('event-forwarding-helpers', () => {
   describe('inferAgentRoleLabel', () => {
     it('should infer project', () => {
       expect(inferAgentRoleLabel('finger-project-agent')).toBe('project');
-      expect(inferAgentRoleLabel('finger-orchestrator')).toBe('project');
-    });
-
-    it('should infer reviewer', () => {
-      expect(inferAgentRoleLabel('finger-reviewer')).toBe('reviewer');
+      expect(inferAgentRoleLabel('finger-orchestrator')).toBe('system');
     });
 
     it('should default to project', () => {
@@ -162,7 +158,7 @@ describe('event-forwarding-helpers', () => {
       const body = extractAssistantBodyUpdate({
         type: 'task_complete',
         lastAgentMessage: {
-          role: 'orchestrator',
+          role: 'system',
           summary: '系统已就绪',
           status: 'completed',
           nextAction: '等待用户输入新任务',
@@ -186,7 +182,7 @@ describe('event-forwarding-helpers', () => {
       const body = extractAssistantBodyUpdate({
         type: 'task_complete',
         lastAgentMessage: {
-          role: 'orchestrator',
+          role: 'system',
           summary: '开机检查已完成',
           ask: {
             required: false,

@@ -97,7 +97,7 @@ describe('AgentRuntimeBlock', () => {
     expect(deployed).toMatchObject({ success: true });
 
     const dispatch = await block.execute('dispatch', {
-      sourceAgentId: 'finger-orchestrator',
+      sourceAgentId: 'finger-system-agent',
       targetAgentId: 'finger-executor',
       task: { text: 'hello' },
       blocking: true,

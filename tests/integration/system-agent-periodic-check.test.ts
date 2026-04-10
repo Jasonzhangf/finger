@@ -16,7 +16,7 @@ describe('System Agent Periodic Check', () => {
         execute: vi.fn().mockResolvedValue({
           agents: [
             { id: 'finger-system-agent', status: 'idle' },
-            { id: 'finger-orchestrator', status: 'busy' },
+            { id: 'finger-system-agent', status: 'busy' },
           ],
         }),
       },

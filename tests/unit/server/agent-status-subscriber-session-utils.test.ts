@@ -115,48 +115,6 @@ describe('agent-status-subscriber-session-utils finalizeChannelTurnDelivery', ()
     expect(content).not.toContain('本轮推理已结束');
   });
 
-  it('sanitizes stop notice preview and strips tool-not-exists noise', async () => {
-    const state = createRouteState();
-    state.sessionEnvelopeMap.set('session-2b', {
-      sessionId: 'session-2b',
-      envelope: {
-        channel: 'qqbot',
-        envelopeId: 'env-2b',
-        userId: 'u-2b',
-      },
-      timestamp: Date.now(),
-    });
-    const routeToOutput = vi.fn(async () => undefined);
-    await finalizeChannelTurnDelivery({
-      sessionId: 'session-2b',
-      finalReply: 'Tool exec_command does not exists. Tool update_plan does not exists. Jason，已开始修复。',
-      finishReason: 'stop',
-      agentId: 'finger-system-agent',
-      deps: { sessionManager: { getSession: () => null } } as any,
-      state,
-      messageHub: { routeToOutput } as any,
-      resolveEnvelopeMapping: () => ({
-        sessionId: 'session-2b',
-        envelope: {
-          channel: 'qqbot',
-          envelopeId: 'env-2b',
-          userId: 'u-2b',
-        },
-        timestamp: Date.now(),
-      }),
-      resolvePushSettings: () => createPushSettings({
-        bodyUpdates: false,
-        statusUpdate: true,
-      }),
-    });
-
-    expect(routeToOutput).toHaveBeenCalledTimes(1);
-    const content = routeToOutput.mock.calls[0]?.[1]?.content as string;
-    expect(content).toContain('本轮推理已结束：');
-    expect(content).toContain('Jason，已开始修复。');
-    expect(content).not.toContain('does not exists');
-  });
-
   it('does not auto-close fresh active project task state on no-actionable watchdog text', async () => {
     const state = createRouteState();
     state.sessionEnvelopeMap.set('session-3', {

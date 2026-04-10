@@ -221,7 +221,7 @@ describe('review command - Message Hub', () => {
     });
     await reviewCommand('{"proposal": "test plan"}');
     const callBody = JSON.parse(mockFetch.mock.calls[0][1].body);
-    expect(callBody.target).toBe('reviewer-agent');
+    expect(callBody.target).toBe('finger-system-agent');
     expect(callBody.message.type).toBe('REVIEW');
   });
 });
@@ -242,7 +242,7 @@ describe('orchestrate command - Message Hub', () => {
       watch: true,
     });
     const callBody = JSON.parse(mockFetch.mock.calls[0][1].body);
-    expect(callBody.target).toBe('orchestrator');
+    expect(callBody.target).toBe('system');
     expect(callBody.message.type).toBe('ORCHESTRATE');
   });
 

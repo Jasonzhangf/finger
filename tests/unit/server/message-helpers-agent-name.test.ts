@@ -35,8 +35,8 @@ describe('message-helpers agent naming', () => {
             id: 'default',
             name: 'Default',
             agents: [
-              { targetAgentId: 'finger-system-agent', role: 'orchestrator', enabled: true },
-              { targetAgentId: 'finger-project-agent', role: 'executor', enabled: true },
+              { targetAgentId: 'finger-system-agent', role: 'system', enabled: true },
+              { targetAgentId: 'finger-project-agent', role: 'project', enabled: true },
             ],
           },
         ],
@@ -77,9 +77,9 @@ describe('message-helpers agent naming', () => {
             id: 'default',
             name: 'Default',
             agents: [
-              { targetAgentId: 'finger-system-agent', role: 'orchestrator', enabled: true },
-              { targetAgentId: 'finger-project-agent', role: 'executor', enabled: true },
-              { targetAgentId: 'finger-reviewer', role: 'reviewer', enabled: true },
+              { targetAgentId: 'finger-system-agent', role: 'system', enabled: true },
+              { targetAgentId: 'finger-project-agent', role: 'project', enabled: true },
+              { targetAgentId: 'finger-reviewer', role: 'project', enabled: true },
             ],
           },
         ],

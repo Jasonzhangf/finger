@@ -73,7 +73,7 @@ const {
         reviewers: {
           maxInstances: 2,
           reviewerName: 'Lisa',
-          agents: [{ id: 'finger-reviewer', name: 'Lisa', enabled: true }],
+          agents: [{ id: 'finger-system-agent', name: 'Lisa', enabled: true }],
         },
       },
     },
@@ -158,7 +158,7 @@ function createDeps(executeImpl?: ReturnType<typeof vi.fn>) {
           result: { summary: 'ok' },
         })),
       },
-      primaryOrchestratorAgentId: 'finger-orchestrator',
+      primaryOrchestratorAgentId: 'finger-system-agent',
       isRuntimeChildSession: vi.fn(() => false),
       isPrimaryOrchestratorTarget: vi.fn(() => false),
       ensureRuntimeChildSession: vi.fn(() => ({ id: 'child-session-1', projectPath: '/tmp/project-a' })),
@@ -272,7 +272,7 @@ describe('dispatchTaskToAgent', () => {
           reviewers: {
             maxInstances: 2,
             reviewerName: 'Lisa',
-            agents: [{ id: 'finger-reviewer', name: 'Lisa', enabled: true }],
+            agents: [{ id: 'finger-system-agent', name: 'Lisa', enabled: true }],
           },
         },
       },
@@ -701,14 +701,14 @@ describe('dispatchTaskToAgent', () => {
     const { deps, sessionManager } = createDeps();
     const res = await mod.dispatchTaskToAgent(deps as any, {
       sourceAgentId: 'finger-system-agent',
-      targetAgentId: 'finger-reviewer',
+      targetAgentId: 'finger-system-agent',
       task: 'review this',
       sessionStrategy: 'latest',
       projectPath: '/tmp/project-a',
     } as any);
 
     expect(res.ok).toBe(true);
-    expect((deps as any).ensureRuntimeChildSession).toHaveBeenCalledWith(expect.objectContaining({ id: 'root-session-2' }), 'finger-reviewer');
+    expect((deps as any).ensureRuntimeChildSession).toHaveBeenCalledWith(expect.objectContaining({ id: 'root-session-2' }), 'finger-system-agent');
   });
 
   it('keeps system->project dispatch async (non-blocking) when project agent is busy', async () => {

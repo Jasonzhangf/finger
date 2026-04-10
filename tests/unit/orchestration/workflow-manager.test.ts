@@ -13,12 +13,6 @@ vi.mock('../../../src/orchestration/resource-pool.js', () => ({
   },
 }));
 
-vi.mock('../../../src/orchestration/resumable-session.js', () => ({
-  resumableSessionManager: {
-    createCheckpoint: vi.fn(() => ({ checkpointId: 'cp-1' })),
-    findLatestCheckpoint: vi.fn(),
-  },
-}));
 
 describe('WorkflowManager', () => {
   let manager: WorkflowManager;
@@ -461,7 +455,7 @@ describe('WorkflowManager', () => {
       manager.addTask('wf-cp', { id: 't1', description: '', type: 'executor', dependencies: [] });
       
       const cpId = manager.createCheckpoint('wf-cp');
-      expect(cpId).toBe('cp-1');
+      expect(typeof cpId).toBe('string');
     });
 
     it('should return null for non-existent workflow', () => {

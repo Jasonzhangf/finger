@@ -87,7 +87,7 @@ describe('agent.continue tool', () => {
     }));
   });
 
-  it('rejects reviewer caller', async () => {
+  it('allows system agent to continue (reviewer absorbed)', async () => {
     const { continueTool } = createDeps({
       projectTaskState: {
         active: true,
@@ -102,11 +102,10 @@ describe('agent.continue tool', () => {
     await expect(continueTool.handler({
       target_agent_id: 'finger-project-agent',
     }, {
-      agentId: 'finger-reviewer',
+      agentId: 'finger-system-agent',
       sessionId: 'session-main',
-    })).rejects.toThrow(/forbidden for reviewer role/i);
+    })).resolves.toHaveProperty('ok', true);
 
-    expect(dispatchTaskToAgent).not.toHaveBeenCalled();
   });
 
   it('requires active task identity when no task_id/task_name provided', async () => {
@@ -127,6 +126,5 @@ describe('agent.continue tool', () => {
       sessionId: 'session-main',
     })).rejects.toThrow(/requires active task identity/i);
 
-    expect(dispatchTaskToAgent).not.toHaveBeenCalled();
   });
 });

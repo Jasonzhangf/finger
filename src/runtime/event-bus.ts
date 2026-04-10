@@ -137,9 +137,9 @@ export class UnifiedEventBus {
       try {
         if (ws.readyState === WebSocket.OPEN) {
           // 检查客户端订阅过滤
-          const filter = (ws as WebSocket & { eventFilter?: { types?: string[]; groups?: string[] } }).eventFilter;
+          const filter = (ws as WebSocket & { eventFilter?: { types?: string[]; groups?: string[]; relatedOpIds?: string[] } }).eventFilter;
           if (filter) {
-            const { types, groups } = filter;
+            const { types, groups, relatedOpIds } = filter;
             let shouldSend = false;
             
             // 如果订阅了特定类型
@@ -155,6 +155,15 @@ export class UnifiedEventBus {
                   shouldSend = true;
                   break;
                 }
+              }
+            }
+
+            // 如果订阅了特定 relatedOpId
+            if (relatedOpIds && !shouldSend) {
+              const eventAny = event as unknown as Record<string, unknown>;
+              const eventOpId = eventAny['relatedOpId'];
+              if (typeof eventOpId === 'string' && relatedOpIds.includes(eventOpId)) {
+                shouldSend = true;
               }
             }
             
@@ -188,8 +197,8 @@ export class UnifiedEventBus {
   /**
    * 设置 WebSocket 客户端的事件过滤
    */
-  setWsClientFilter(ws: WebSocket, filter: { types?: string[]; groups?: string[] }): void {
-    (ws as WebSocket & { eventFilter?: { types?: string[]; groups?: string[] } }).eventFilter = filter;
+  setWsClientFilter(ws: WebSocket, filter: { types?: string[]; groups?: string[]; relatedOpIds?: string[] }): void {
+    (ws as WebSocket & { eventFilter?: { types?: string[]; groups?: string[]; relatedOpIds?: string[] } }).eventFilter = filter;
   }
 
   /**

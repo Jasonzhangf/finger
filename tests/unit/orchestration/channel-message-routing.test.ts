@@ -57,7 +57,7 @@ describe('Channel Message Routing', () => {
 
       const dispatchRequest: AgentDispatchRequest = {
         sourceAgentId: 'channel-bridge',
-        targetAgentId: 'finger-orchestrator',
+        targetAgentId: 'finger-system-agent',
         task: { prompt: channelMessage.content },
         sessionId: `qqbot-${channelMessage.senderId}`,
         metadata: {
@@ -73,7 +73,7 @@ describe('Channel Message Routing', () => {
       const result = await mockDispatchTaskToAgent({}, dispatchRequest);
 
       expect(mockDispatchTaskToAgent).toHaveBeenCalledWith({}, dispatchRequest);
-      expect(dispatchRequest.targetAgentId).toBe('finger-orchestrator');
+      expect(dispatchRequest.targetAgentId).toBe('finger-system-agent');
 
       if (result.ok && result.result) {
         const target = channelMessage.senderId;
@@ -115,7 +115,7 @@ describe('Channel Message Routing', () => {
 
       const dispatchRequest: AgentDispatchRequest = {
         sourceAgentId: 'channel-bridge',
-        targetAgentId: 'finger-orchestrator',
+        targetAgentId: 'finger-system-agent',
         task: { prompt: groupMessage.content },
         sessionId: `qqbot-${groupMessage.senderId}`,
         metadata: {
@@ -169,7 +169,7 @@ describe('Channel Message Routing', () => {
 
       const dispatchRequest: AgentDispatchRequest = {
         sourceAgentId: 'channel-bridge',
-        targetAgentId: 'finger-orchestrator',
+        targetAgentId: 'finger-system-agent',
         task: { prompt: channelMessage.content },
         sessionId: `qqbot-${channelMessage.senderId}`,
         metadata: {
@@ -207,7 +207,7 @@ describe('Channel Message Routing', () => {
 
       const dispatchRequest: AgentDispatchRequest = {
         sourceAgentId: 'channel-bridge',
-        targetAgentId: 'finger-orchestrator',
+        targetAgentId: 'finger-system-agent',
         task: { prompt: channelMessage.content },
         sessionId: `qqbot-${channelMessage.senderId}`,
         metadata: {

@@ -1,5 +1,10 @@
 # System Agent Developer Instructions
 
+Routing precedence (MANDATORY):
+- Complexity gate defined in `system-prompt.md` is the primary routing policy.
+- If any rule in this file conflicts with complexity-based routing, follow `system-prompt.md` gate first.
+
+
 ## NON-NEGOTIABLE COORDINATION CONTRACT (ABSOLUTE)
 
 - THIS IS A HARD RUNTIME CONTRACT. DO NOT VIOLATE IT.
@@ -29,7 +34,7 @@
   1) requirement contract confirmed,
   2) dispatch contract created,
   3) implementation delivery claimed with evidence,
-  4) reviewer decision recorded,
+  4) system review decision recorded,
   5) user-facing report delivered,
   6) close only after explicit user approval.
 - For each transition, you MUST write state via the proper channel (`update_plan` for system lane, project task tools for project lane).
@@ -122,8 +127,16 @@
     - recurring complaint topics,
     - explicit “avoid list” and “must-do list”.
 
-10. **Mandatory pre-dispatch requirement gate**
-   - For project/development requests, never rush to `agent.dispatch`.
+10. **Mandatory pre-dispatch requirement gate (conditional)**
+   - This full execution contract is REQUIRED only when:
+     1) complexity score >= 3, and
+     2) task is new feature / multi-step development work.
+   - For complexity 0-2 tasks:
+     - system agent may execute directly without full contract packaging.
+   - For debug/fix tasks:
+     - if complexity 0-2 and path is clear, direct fix is allowed;
+     - if complexity >= 3, package requirements + dispatch.
+   - For project/development requests (score >= 3), never rush to `agent.dispatch`.
    - You must first produce a complete user-confirmed execution contract containing:
      - requirement understanding (intent, target outcome, scope boundaries),
      - detailed development requirements (functional + technical constraints),
@@ -162,7 +175,7 @@ For complex development work, enforce the following closed loop:
 
 3. **Split implementation vs review contract**
    - Project agent: receives executable task package.
-   - Reviewer: receives acceptance contract through review-route linkage (same `taskId/taskName`), not a pre-queued waiting task.
+   - System Agent reviews delivery against acceptance criteria (same `taskId/taskName`).
 
 4. **Dispatch payload requirements when review is needed**
    - `agent.dispatch` must include assignment fields:
@@ -178,13 +191,13 @@ For complex development work, enforce the following closed loop:
    - Project should call `report-task-completion` only when it has a clean delivery claim
      (what was completed + evidence/artifacts + acceptance status).
    - If report is not a real delivery claim, route must continue project execution (no true review yet).
-   - Reviewer validates claimed delivery against contract:
-     - PASS → escalate completion to system.
+   - System Agent validates claimed delivery against contract:
+     - PASS → summarize evidence to user and mark `reviewed`.
      - REJECT → dispatch actionable fix list back to project with same task identity.
 
 6. **No queue poisoning**
-   - Do not dispatch “wait for delivery” long-lived tasks to reviewer before project delivery exists.
-   - Reviewer should be activated for review only when delivery report is available.
+   - Do not dispatch "wait for delivery" long-lived review tasks before project delivery exists.
+   - System Agent performs review only when delivery report is available.
 
 7. **Project task update discipline (mandatory)**
    - Project-first execution policy:
@@ -198,8 +211,8 @@ For complex development work, enforce the following closed loop:
    - Enforce lifecycle state machine:
      - `dispatched`: system has delegated and must wait/monitor only.
      - `accepted|in_progress|claiming_finished`: system must not re-execute or re-dispatch same task.
-     - reviewer REJECT: reviewer sends rework directly back to project (no reject notification dispatch to system).
-     - reviewer PASS: hand off to system and mark `reviewed`.
+     - system review REJECT: rework loops back to project agent (system stays coordinator).
+     - system review PASS: mark `reviewed`.
      - system then summarizes evidence to user and marks `reported`; only explicit user approval can move to `closed`.
    - Before any further project dispatch, call `project.task.status` first.
    - If project is still running/busy, do not dispatch again.
@@ -215,7 +228,7 @@ For complex development work, enforce the following closed loop:
 9. **System task context zones (mandatory)**
    - System agent must separate task context into two zones:
      1) `dispatched_tasks` (monitor zone):
-        - delegated tasks owned by project/reviewer execution path,
+        - delegated tasks owned by project execution path,
         - source of truth: `task.project_registry` + `project.task.status`,
         - objective: lifecycle tracking, duplicate-dispatch prevention, delivery closure.
      2) `current_system_task` (self zone):
@@ -241,10 +254,10 @@ For complex development work, enforce the following closed loop:
      - no new dispatch for same task identity,
      - no system-side duplicate implementation,
      - either monitor/wait, or `project.task.update` only when user explicitly requested change.
-   - If reviewer rejects:
+   - If system review rejects:
      - rework loop stays in project lane,
      - system only monitors and reports status.
-   - If reviewer passes:
+   - If system review passes:
      - transition to `reviewed`,
      - system performs final evidence summary and marks `reported`,
      - close only after explicit user approval (`closed`).

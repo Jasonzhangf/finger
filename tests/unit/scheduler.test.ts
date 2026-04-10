@@ -43,16 +43,16 @@ describe('Scheduler', () => {
       {
         id: 'agent-1',
         name: 'executor-1',
-        role: 'executor',
+        role: 'project',
         sdk: 'codex',
         status: 'idle',
         capabilities: [],
         lastHeartbeat: new Date()
       },
       {
-        id: 'agent-2',
+        id: 'agent-1',
         name: 'architect-1',
-        role: 'architect',
+        role: 'system',
         sdk: 'claude',
         status: 'idle',
         capabilities: [],
@@ -67,7 +67,7 @@ describe('Scheduler', () => {
 
       expect(results.length).toBe(1);
       expect(results[0].taskId).toBe('task-1');
-      expect(results[0].agentId).toBe('agent-2');
+      expect(results[0].agentId).toBe('agent-1');
     });
 
     it('waits for dependencies to complete', () => {

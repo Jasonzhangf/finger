@@ -40,7 +40,7 @@ describe('ChannelContextManager', () => {
   it('prefers super command target over persisted context', () => {
     const manager = new ChannelContextManager();
     manager.updateContext('unit-test-override', 'system', 'finger-system-agent');
-    expect(manager.getTargetAgent('unit-test-override', { type: 'super_command', targetAgent: 'finger-orchestrator' })).toBe('finger-orchestrator');
+    expect(manager.getTargetAgent('unit-test-override', { type: 'super_command', targetAgent: 'finger-system-agent' })).toBe('finger-system-agent');
     manager.clearContext('unit-test-override');
   });
 });

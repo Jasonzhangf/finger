@@ -10,7 +10,7 @@ describe('Memory permission guard', () => {
       scope: 'system',
       entry_id: 'dummy',
       updates: { title: 'x' },
-      caller_agent_id: 'finger-orchestrator',
+      caller_agent_id: 'finger-project-agent',
       is_system_agent: false,
     });
     expect(res.ok).toBe(false);

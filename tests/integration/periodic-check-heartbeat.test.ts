@@ -30,7 +30,7 @@ describe('Periodic Check Heartbeat Integration', () => {
           projectId: 'finger-orchestrator-project',
           projectPath: '/test/finger-project',
           projectName: 'finger-project',
-          agentId: 'finger-orchestrator',  // 匹配 runtime_view 返回的 agent id
+          agentId: 'finger-system-agent',  // 匹配 runtime_view 返回的 agent id
           status: 'idle',
           lastHeartbeat: new Date().toISOString(),
           monitored: true,
@@ -54,7 +54,7 @@ describe('Periodic Check Heartbeat Integration', () => {
     
     expect(registry.agents).toBeDefined();
     expect(Object.keys(registry.agents)).toHaveLength(1);
-    expect(registry.agents['finger-orchestrator-project'].agentId).toBe('finger-orchestrator');
+    expect(registry.agents['finger-orchestrator-project'].agentId).toBe('finger-system-agent');
   });
 
   it('should list agents', async () => {
@@ -62,7 +62,7 @@ describe('Periodic Check Heartbeat Integration', () => {
     const agents = await listAgents();
     
     expect(agents).toHaveLength(1);
-    expect(agents[0].agentId).toBe('finger-orchestrator');
+    expect(agents[0].agentId).toBe('finger-system-agent');
   });
 
   it('should update agent status', async () => {

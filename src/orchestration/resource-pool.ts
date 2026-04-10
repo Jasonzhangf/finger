@@ -38,6 +38,7 @@ export interface ResourceInstance {
 export interface ResourceRequirement {
   type: ResourceType;
   minLevel?: number;
+  count?: number; // Number of resources required (default: 1)
   capabilities?: string[];
   optional?: boolean; // 是否可选资源
 }
@@ -190,7 +191,7 @@ export class ResourcePool {
         return true;
       });
 
-      if (matchingResources.length === 0) {
+      const requiredCount = req.count ?? 1; if (matchingResources.length < requiredCount) {
         if (!req.optional) {
           missingResources.push(req);
         }

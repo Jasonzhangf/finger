@@ -1,12 +1,9 @@
 import { describe, it, expect } from 'vitest'
 import {
   type AgentPromptDefinition,
-  type ReviewVerdict,
   explorerAgentDefinition,
   plannerAgentDefinition,
   executorAgentDefinition,
-  reviewerAgentDefinition,
-  orchestratorAgentDefinition,
   agentDefinitions,
   getAgentDefinition,
   getRegisteredAgentTypes,
@@ -14,15 +11,13 @@ import {
 } from '../../src/agents/prompts/agent-definitions.js'
 
 describe('AgentPromptDefinition interface', () => {
-  it('all 6 agents are defined in registry', () => {
+  it('all 4 agents are defined in registry', () => {
     const types = getRegisteredAgentTypes()
     expect(types).toContain('explorer')
     expect(types).toContain('planner')
     expect(types).toContain('executor')
-    expect(types).toContain('reviewer')
-    expect(types).toContain('orchestrator')
     expect(types).toContain('verifier')
-    expect(types).toHaveLength(6)
+    expect(types).toHaveLength(4)
   })
 
   it('each agent has a non-empty whenToUse in Chinese', () => {
@@ -78,34 +73,6 @@ describe('Executor agent', () => {
   })
 })
 
-describe('Reviewer agent', () => {
-  it('system prompt contains PASS/FAIL/PARTIAL verdict format', () => {
-    const prompt = reviewerAgentDefinition.getSystemPrompt()
-    expect(prompt).toContain('PASS')
-    expect(prompt).toContain('FAIL')
-    expect(prompt).toContain('PARTIAL')
-    expect(prompt).toContain('VERDICT')
-  })
-
-  it('has maxTurns set', () => {
-    expect(reviewerAgentDefinition.maxTurns).toBe(10)
-  })
-})
-
-describe('Orchestrator agent', () => {
-  it('has no disallowedTools', () => {
-    expect(orchestratorAgentDefinition.disallowedTools).toBeUndefined()
-  })
-
-  it('system prompt mentions all 4 agent types', () => {
-    const prompt = orchestratorAgentDefinition.getSystemPrompt()
-    expect(prompt).toContain('Explorer')
-    expect(prompt).toContain('Planner')
-    expect(prompt).toContain('Executor')
-    expect(prompt).toContain('Reviewer')
-  })
-})
-
 describe('getAgentDefinition', () => {
   it('returns definition for known agent type', () => {
     const def = getAgentDefinition('explorer')
@@ -122,10 +89,5 @@ describe('getAgentDefinition', () => {
 describe('isToolDisallowed', () => {
   it('returns false for agent without disallowedTools', () => {
     expect(isToolDisallowed('executor', 'apply_patch')).toBe(false)
-    expect(isToolDisallowed('orchestrator', 'anything')).toBe(false)
-  })
-
-  it('returns false for unknown agent', () => {
-    expect(isToolDisallowed('nonexistent', 'apply_patch')).toBe(false)
   })
 })

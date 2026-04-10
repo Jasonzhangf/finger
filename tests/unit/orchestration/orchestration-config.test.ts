@@ -24,14 +24,12 @@ describe('orchestration-config', () => {
       expect(loaded.path).toBe(join(resolveHome(process.env.FINGER_HOME), 'config', 'orchestration.json'));
       expect(loaded.config.activeProfileId).toBe('default');
       const active = loaded.config.profiles.find((item) => item.id === loaded.config.activeProfileId);
-      expect(active?.agents.some((item) => item.role === 'orchestrator' && item.enabled !== false)).toBe(true);
-      expect(active?.agents.some((item) => item.role === 'reviewer' && item.enabled !== false)).toBe(false);
-      expect(active?.agents.some((item) => item.role === 'searcher' && item.enabled !== false)).toBe(true);
+      expect(active?.agents.some((item) => item.role === 'system' && item.enabled !== false)).toBe(true);
+      expect(active?.agents.some((item) => item.role === 'project' && item.enabled !== false)).toBe(true);
       expect(loaded.config.profiles.some((item) => item.id === 'full_mock')).toBe(true);
       expect(loaded.config.runtime?.systemAgent.maxInstances).toBe(1);
       expect(loaded.config.runtime?.systemAgent.name).toBe('Mirror');
       expect(loaded.config.runtime?.projectWorkers.maxWorkers).toBeGreaterThanOrEqual(1);
-      expect(loaded.config.runtime?.reviewers.maxInstances).toBe(2);
     } finally {
       if (previousHome === undefined) {
         delete process.env.FINGER_HOME;
@@ -50,10 +48,10 @@ describe('orchestration-config', () => {
         {
           id: 'default',
           name: 'Default',
-          agents: [{ targetAgentId: 'executor-loop', role: 'executor', enabled: true }],
+          agents: [{ targetAgentId: 'executor-loop', role: 'project', enabled: true }],
         },
       ],
-    })).toThrow('exactly one enabled orchestrator');
+    })).toThrow('exactly one enabled system agent');
   });
 
   it('rejects config with multiple enabled orchestrators', () => {
@@ -65,12 +63,12 @@ describe('orchestration-config', () => {
           id: 'default',
           name: 'Default',
           agents: [
-            { targetAgentId: 'orchestrator-loop', role: 'orchestrator', enabled: true },
-            { targetAgentId: 'orchestrator-b', role: 'orchestrator', enabled: true },
+            { targetAgentId: 'orchestrator-loop', role: 'system', enabled: true },
+            { targetAgentId: 'orchestrator-b', role: 'system', enabled: true },
           ],
         },
       ],
-    })).toThrow('exactly one enabled orchestrator');
+    })).toThrow('exactly one enabled system agent');
   });
 
   it('saves and loads valid config', () => {
@@ -87,16 +85,16 @@ describe('orchestration-config', () => {
             id: 'default',
             name: 'Default',
             agents: [
-              { targetAgentId: 'orchestrator-loop', role: 'orchestrator', enabled: true, instanceCount: 1 },
-              { targetAgentId: 'executor-loop', role: 'executor', enabled: true, instanceCount: 1 },
+              { targetAgentId: 'orchestrator-loop', role: 'system', enabled: true, instanceCount: 1 },
+              { targetAgentId: 'executor-loop', role: 'project', enabled: true, instanceCount: 1 },
             ],
           },
           {
             id: 'mock',
             name: 'Mock',
             agents: [
-              { targetAgentId: 'orchestrator-loop', role: 'orchestrator', enabled: true, instanceCount: 1 },
-              { targetAgentId: 'executor-debug-loop', role: 'executor', enabled: true, instanceCount: 1 },
+              { targetAgentId: 'orchestrator-loop', role: 'system', enabled: true, instanceCount: 1 },
+              { targetAgentId: 'executor-debug-loop', role: 'project', enabled: true, instanceCount: 1 },
             ],
           },
         ],
@@ -110,7 +108,6 @@ describe('orchestration-config', () => {
       expect(loaded.config.runtime?.systemAgent.name).toBe('Mirror');
       expect(loaded.config.runtime?.projectWorkers.workers[0].id).toBe('executor-debug-loop');
       expect(loaded.config.runtime?.projectWorkers.workers[0].name.length).toBeGreaterThan(0);
-      expect(loaded.config.runtime?.reviewers.maxInstances).toBe(2);
     } finally {
       if (previousHome === undefined) {
         delete process.env.FINGER_HOME;
@@ -137,9 +134,9 @@ describe('orchestration-config', () => {
             id: 'default',
             name: 'Default',
             agents: [
-              { targetAgentId: 'finger-system-agent', role: 'orchestrator', enabled: true },
-              { targetAgentId: 'finger-project-agent', role: 'executor', enabled: true },
-              { targetAgentId: 'finger-reviewer', role: 'reviewer', enabled: true },
+              { targetAgentId: 'finger-system-agent', role: 'system', enabled: true },
+              { targetAgentId: 'finger-project-agent', role: 'project', enabled: true },
+              { targetAgentId: 'finger-reviewer', role: 'project', enabled: true },
             ],
           },
         ],
@@ -160,7 +157,6 @@ describe('orchestration-config', () => {
       const loaded = loadOrchestrationConfig();
       expect(loaded.config.runtime?.projectWorkers.workers[0].name).toBe('Lisa');
       expect(loaded.config.runtime?.projectWorkers.workers[1].name).toBe('Robert');
-      expect(loaded.config.runtime?.reviewers.maxInstances).toBe(2);
 
       const persisted = JSON.parse(readFileSync(configPath, 'utf-8')) as {
         runtime?: { projectWorkers?: { workers?: Array<{ name?: string }> } };

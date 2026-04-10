@@ -38,7 +38,7 @@ describe('review closure pipeline (project -> reviewer -> system)', () => {
       taskId: 'task-100',
       taskName: 'context-builder-rebuild-guard',
       reviewRequired: true,
-      reviewAgentId: 'finger-reviewer',
+      reviewAgentId: 'finger-system-agent',
       acceptanceCriteria: 'No implicit rebuild during continuation turns.',
       createdAt: Date.now(),
       updatedAt: Date.now(),
@@ -78,7 +78,7 @@ describe('review closure pipeline (project -> reviewer -> system)', () => {
     expect((projectResult as any).ok).toBe(true);
     expect(runtimeExecute).toHaveBeenCalledWith('dispatch', expect.objectContaining({
       sourceAgentId: 'finger-project-agent',
-      targetAgentId: 'finger-reviewer',
+      targetAgentId: 'finger-system-agent',
       queueOnBusy: true,
       maxQueueWaitMs: 0,
       metadata: expect.objectContaining({
@@ -96,17 +96,17 @@ describe('review closure pipeline (project -> reviewer -> system)', () => {
       sessionId: 'session-project-1',
       result: 'success',
       projectId: 'finger',
-    }, { agentId: 'finger-reviewer' });
+    }, { agentId: 'finger-system-agent' });
 
     expect((reviewerResult as any).ok).toBe(true);
     expect(dispatchTaskToSystemAgent).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
       taskId: 'task-100',
-      sourceAgentId: 'finger-reviewer',
+      sourceAgentId: 'finger-system-agent',
       sessionId: 'session-project-1',
       taskReport: expect.objectContaining({
         schema: 'finger.task-report.v1',
         taskId: 'task-100',
-        sourceAgentId: 'finger-reviewer',
+        sourceAgentId: 'finger-system-agent',
       }),
     }));
     expect(removeReviewRoute).toHaveBeenCalledWith('task-100');
@@ -146,7 +146,7 @@ describe('review closure pipeline (project -> reviewer -> system)', () => {
           taskId: 'task-a',
           taskName: 'worker-a-task',
           reviewRequired: true,
-          reviewAgentId: 'finger-reviewer',
+          reviewAgentId: 'finger-system-agent',
           acceptanceCriteria: 'A criteria',
           createdAt: Date.now(),
           updatedAt: Date.now(),
@@ -157,7 +157,7 @@ describe('review closure pipeline (project -> reviewer -> system)', () => {
           taskId: 'task-b',
           taskName: 'worker-b-task',
           reviewRequired: true,
-          reviewAgentId: 'finger-reviewer',
+          reviewAgentId: 'finger-system-agent',
           acceptanceCriteria: 'B criteria',
           createdAt: Date.now(),
           updatedAt: Date.now(),
@@ -196,12 +196,12 @@ describe('review closure pipeline (project -> reviewer -> system)', () => {
     expect((projectB as any).ok).toBe(true);
     expect(runtimeExecute).toHaveBeenNthCalledWith(1, 'dispatch', expect.objectContaining({
       sourceAgentId: 'finger-project-agent',
-      targetAgentId: 'finger-reviewer',
+      targetAgentId: 'finger-system-agent',
       metadata: expect.objectContaining({ taskId: 'task-a', taskName: 'worker-a-task' }),
     }));
     expect(runtimeExecute).toHaveBeenNthCalledWith(2, 'dispatch', expect.objectContaining({
       sourceAgentId: 'finger-project-agent',
-      targetAgentId: 'finger-reviewer',
+      targetAgentId: 'finger-system-agent',
       metadata: expect.objectContaining({ taskId: 'task-b', taskName: 'worker-b-task' }),
     }));
 
@@ -212,7 +212,7 @@ describe('review closure pipeline (project -> reviewer -> system)', () => {
       sessionId: 'session-project-a',
       result: 'success',
       projectId: 'finger',
-    }, { agentId: 'finger-reviewer' });
+    }, { agentId: 'finger-system-agent' });
     const reviewerB = await registry.execute('report-task-completion', {
       action: 'report',
       taskId: 'task-b',
@@ -220,19 +220,19 @@ describe('review closure pipeline (project -> reviewer -> system)', () => {
       sessionId: 'session-project-b',
       result: 'success',
       projectId: 'finger',
-    }, { agentId: 'finger-reviewer' });
+    }, { agentId: 'finger-system-agent' });
 
     expect((reviewerA as any).ok).toBe(true);
     expect((reviewerB as any).ok).toBe(true);
     expect(dispatchTaskToSystemAgent).toHaveBeenCalledTimes(2);
     expect(dispatchTaskToSystemAgent).toHaveBeenNthCalledWith(1, expect.anything(), expect.objectContaining({
       taskId: 'task-a',
-      sourceAgentId: 'finger-reviewer',
+      sourceAgentId: 'finger-system-agent',
       sessionId: 'session-project-a',
     }));
     expect(dispatchTaskToSystemAgent).toHaveBeenNthCalledWith(2, expect.anything(), expect.objectContaining({
       taskId: 'task-b',
-      sourceAgentId: 'finger-reviewer',
+      sourceAgentId: 'finger-system-agent',
       sessionId: 'session-project-b',
     }));
     expect(removeReviewRoute).toHaveBeenCalledWith('task-a');

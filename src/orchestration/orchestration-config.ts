@@ -544,7 +544,7 @@ export function validateOrchestrationConfig(raw: unknown): OrchestrationConfigV1
     const enabledAgents = agents.filter((item) => item.enabled !== false);
     const orchestrators = enabledAgents.filter((item) => item.role === 'system');
     if (orchestrators.length !== 1) {
-      throw new Error(`orchestration profile ${id} requires exactly one enabled orchestrator agent`);
+      throw new Error(`orchestration profile ${id} requires exactly one enabled system agent`);
     }
     profiles.push({
       id,

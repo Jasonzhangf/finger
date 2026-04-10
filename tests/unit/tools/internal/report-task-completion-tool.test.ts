@@ -62,7 +62,7 @@ describe('report-task-completion tool', () => {
     vi.mocked(getReviewRoute).mockReturnValue({
       taskId: 'task-0',
       reviewRequired: false,
-      reviewAgentId: 'finger-reviewer',
+      reviewAgentId: 'finger-system-agent',
       createdAt: Date.now(),
       updatedAt: Date.now(),
     } as any);
@@ -107,7 +107,7 @@ describe('report-task-completion tool', () => {
     vi.mocked(getReviewRoute).mockReturnValue({
       taskId: 'task-1',
       reviewRequired: false,
-      reviewAgentId: 'finger-reviewer',
+      reviewAgentId: 'finger-system-agent',
       createdAt: Date.now(),
       updatedAt: Date.now(),
     } as any);
@@ -153,7 +153,7 @@ describe('report-task-completion tool', () => {
     vi.mocked(getReviewRoute).mockReturnValue({
       taskId: 'task-continue-1',
       reviewRequired: true,
-      reviewAgentId: 'finger-reviewer',
+      reviewAgentId: 'finger-system-agent',
       createdAt: Date.now(),
       updatedAt: Date.now(),
     } as any);
@@ -170,7 +170,7 @@ describe('report-task-completion tool', () => {
     expect((result as any).ok).toBe(true);
     expect((result as any).action).toBe('continue');
     expect(runtimeExecute).toHaveBeenCalledWith('dispatch', expect.objectContaining({
-      sourceAgentId: 'finger-reviewer',
+      sourceAgentId: 'finger-system-agent',
       targetAgentId: 'finger-project-agent',
       metadata: expect.objectContaining({
         taskId: 'task-continue-1',
@@ -198,7 +198,7 @@ describe('report-task-completion tool', () => {
     vi.mocked(getReviewRoute).mockReturnValue({
       taskId: 'task-continue-structured',
       reviewRequired: true,
-      reviewAgentId: 'finger-reviewer',
+      reviewAgentId: 'finger-system-agent',
       createdAt: Date.now(),
       updatedAt: Date.now(),
     } as any);
@@ -249,7 +249,7 @@ describe('report-task-completion tool', () => {
       taskId: 'task-reject-1',
       taskName: 'weibo-detail-refactor',
       reviewRequired: true,
-      reviewAgentId: 'finger-reviewer',
+      reviewAgentId: 'finger-system-agent',
       createdAt: Date.now(),
       updatedAt: Date.now(),
     } as any);
@@ -262,12 +262,12 @@ describe('report-task-completion tool', () => {
       result: 'failure',
       projectId: 'webauto',
       delivery_artifacts: 'dist missing common.mjs',
-    }, { agentId: 'finger-reviewer' });
+    }, { agentId: 'finger-system-agent' });
 
     expect((result as any).ok).toBe(true);
     expect((result as any).action).toBe('continue');
     expect(runtimeExecute).toHaveBeenCalledWith('dispatch', expect.objectContaining({
-      sourceAgentId: 'finger-reviewer',
+      sourceAgentId: 'finger-system-agent',
       targetAgentId: 'finger-project-agent',
       metadata: expect.objectContaining({
         source: 'review-reject-redispatch',
@@ -301,7 +301,7 @@ describe('report-task-completion tool', () => {
       taskId: 'task-pass-1',
       taskName: 'weibo-detail-refactor',
       reviewRequired: true,
-      reviewAgentId: 'finger-reviewer',
+      reviewAgentId: 'finger-system-agent',
       parentSessionId: 'system-session-1',
       projectSessionId: 'project-session-1',
       createdAt: Date.now(),
@@ -316,7 +316,7 @@ describe('report-task-completion tool', () => {
       result: 'success',
       projectId: 'webauto',
       delivery_artifacts: 'tests passed + screenshots',
-    }, { agentId: 'finger-reviewer' });
+    }, { agentId: 'finger-system-agent' });
 
     expect((result as any).ok).toBe(true);
     expect(dispatchTaskToSystemAgent).toHaveBeenCalled();
