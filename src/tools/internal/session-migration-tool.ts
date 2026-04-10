@@ -423,6 +423,133 @@ function planCleanup(sessionDirs: SessionDirectoryInfo[], ttlDays = 30): Cleanup
 }
 
 // ───────────────────────────────────────────────────────────────
+// Phase 4: 数据修复
+// ───────────────────────────────────────────────────────────────
+
+interface FixAction {
+  type: 'fix_ledger_pointer' | 'fix_memory_owner' | 'create_project_main' | 'cleanup_invalid_json';
+  path: string;
+  details: string;
+  applied: boolean;
+  error?: string;
+}
+
+function fixSessionData(sessionDir: SessionDirectoryInfo, options?: { dryRun?: boolean }): FixAction[] {
+  const actions: FixAction[] = [];
+  
+  if (sessionDir.isTemporary || sessionDir.isSystem) return actions;
+  
+  // Fix 1: Create project-level main.json if missing but has session subdirs
+  if (!sessionDir.mainJsonPath) {
+    try {
+      const subdirs = fs.readdirSync(sessionDir.originalPath, { withFileTypes: true })
+        .filter(e => e.isDirectory() && e.name.startsWith('session-'));
+      
+      if (subdirs.length > 0) {
+        let latestSession: string | undefined;
+        let latestTime = 0;
+        
+        for (const sub of subdirs) {
+          const subMain = path.join(sessionDir.originalPath, sub.name, 'main.json');
+          if (fs.existsSync(subMain)) {
+            try {
+              const c = fs.readFileSync(subMain, 'utf-8');
+              const session = JSON.parse(c);
+              const time = session.createdAt ? new Date(session.createdAt).getTime() : 0;
+              if (time > latestTime) {
+                latestTime = time;
+                latestSession = subMain;
+              }
+            } catch {}
+          }
+        }
+        
+        if (latestSession) {
+          const projectMainPath = path.join(sessionDir.originalPath, 'main.json');
+          
+          actions.push({
+            type: 'create_project_main',
+            path: projectMainPath,
+            details: 'Create project main.json',
+            applied: false,
+          });
+          
+          if (!options?.dryRun) {
+            try {
+              const projectSession = {
+                id: sessionDir.sessionId,
+                createdAt: new Date().toISOString(),
+                updatedAt: new Date().toISOString(),
+                status: 'active',
+                messages: [],
+                context: {
+                  memoryOwnerWorkerId: 'finger-system-agent',
+                  ownerAgentId: 'finger-system-agent',
+                  memoryOwnershipVersion: 1,
+                  memoryAccessPolicy: 'owner_only',
+                },
+                ledgerPointers: { ledgerPath: [], compactPath: [], indices: {} },
+              };
+              fs.writeFileSync(projectMainPath, JSON.stringify(projectSession, null, 2));
+              actions[actions.length - 1].applied = true;
+            } catch (err) {
+              actions[actions.length - 1].error = err instanceof Error ? err.message : String(err);
+            }
+          }
+        }
+      }
+    } catch {}
+  }
+  
+  // Fix 2: Repair existing main.json
+  if (sessionDir.mainJsonPath) {
+    try {
+      const content = fs.readFileSync(sessionDir.mainJsonPath, 'utf-8');
+      const session = JSON.parse(content);
+      let modified = false;
+      
+      const ctx = session.context || {};
+      if (!ctx.memoryOwnerWorkerId) {
+        ctx.memoryOwnerWorkerId = 'finger-system-agent';
+        ctx.ownerAgentId = 'finger-system-agent';
+        ctx.memoryOwnershipVersion = 1;
+        ctx.memoryAccessPolicy = 'owner_only';
+        session.context = ctx;
+        modified = true;
+        actions.push({ type: 'fix_memory_owner', path: sessionDir.mainJsonPath, details: 'Added memoryOwnerWorkerId', applied: false });
+      }
+      
+      const ptrs = session.ledgerPointers || {};
+      if (!ptrs.ledgerPath || ptrs.ledgerPath.length === 0) {
+        const ledgerFiles = sessionDir.ledgerPaths;
+        if (ledgerFiles.length > 0) {
+          ptrs.ledgerPath = ledgerFiles;
+          ptrs.compactPath = ledgerFiles.map(p => p.replace('context-ledger.jsonl', 'compact-memory.jsonl'));
+          ptrs.indices = {};
+          session.ledgerPointers = ptrs;
+          modified = true;
+          actions.push({ type: 'fix_ledger_pointer', path: sessionDir.mainJsonPath, details: 'Added ledgerPath pointers', applied: false });
+        }
+      }
+      
+      if (modified && !options?.dryRun) {
+        try {
+          fs.writeFileSync(sessionDir.mainJsonPath, JSON.stringify(session, null, 2));
+          for (const a of actions) if (a.path === sessionDir.mainJsonPath) a.applied = true;
+        } catch (err) {
+          for (const a of actions) if (a.path === sessionDir.mainJsonPath) a.error = err instanceof Error ? err.message : String(err);
+        }
+      }
+    } catch (err) {
+      actions.push({ type: 'cleanup_invalid_json', path: sessionDir.mainJsonPath, details: 'Invalid JSON', applied: false, error: err instanceof Error ? err.message : String(err) });
+    }
+  }
+  
+  return actions;
+}
+
+
+// ───────────────────────────────────────────────────────────────
 // 执行迁移
 // ───────────────────────────────────────────────────────────────
 
@@ -468,6 +595,17 @@ export async function runMigration(options?: { dryRun?: boolean; cleanup?: boole
     if (status.issues.length > 0) {
       report.dataIssues++;
       report.details.push('[' + dir.sessionId + '] Issues: ' + status.issues.join(', '));
+    }
+    
+    // Phase 2.5: Apply fixes
+    const fixes = fixSessionData(dir, options);
+    for (const fix of fixes) {
+      if (fix.applied) {
+        report.fixesApplied++;
+        report.details.push('[Fix] ' + fix.type + ': ' + fix.details + ' on ' + fix.path);
+      } else if (fix.error) {
+        report.errors.push('Fix failed: ' + fix.type + ' on ' + fix.path + ' - ' + fix.error);
+      }
     }
   }
   
@@ -534,6 +672,7 @@ export async function runMigration(options?: { dryRun?: boolean; cleanup?: boole
   console.log('\n[Migration] Migration report:');
   console.log('  Scanned: ' + report.scanned);
   console.log('  Data issues: ' + report.dataIssues);
+  console.log('  Fixes applied: ' + report.fixesApplied);
   console.log('  Duplicates: ' + report.duplicatesFound);
   if (options && options.cleanup) {
     console.log('  Temporary deleted: ' + report.temporaryDeleted);
