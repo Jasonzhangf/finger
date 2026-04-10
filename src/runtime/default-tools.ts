@@ -6,7 +6,6 @@ import {
   registerProjectTaskToolInRuntime,
   registerSendLocalImageToolInRuntime,
   registerProjectClaimCompletionToolInRuntime,
-  registerProjectReviewClaimToolInRuntime,
   registerProjectApproveTaskToolInRuntime,
   registerProjectRejectTaskToolInRuntime,
 } from '../tools/internal/index.js';
@@ -49,8 +48,6 @@ export function registerDefaultRuntimeTools(
     // V3 Claim Tools
     registerProjectClaimCompletionToolInRuntime(runtimeToolRegistry);
     loadedToolNames.push('project.claim_completion');
-    registerProjectReviewClaimToolInRuntime(runtimeToolRegistry);
-    loadedToolNames.push('project.review_claim');
     registerProjectApproveTaskToolInRuntime(runtimeToolRegistry);
     loadedToolNames.push('project.approve_task');
     registerProjectRejectTaskToolInRuntime(runtimeToolRegistry);

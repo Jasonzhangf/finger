@@ -18,6 +18,7 @@ import { viewImageTool } from './codex-view-image-tool.js';
 import { webSearchTool } from './codex-web-search-tool.js';
 import { contextLedgerMemoryTool } from './context-ledger-memory-tool.js';
 import { contextLedgerExpandTaskTool } from './context-ledger-expand-task-tool.js';
+import { contextLedgerDigestTool } from './context-ledger-digest-tool.js';
 import { contextBuilderRebuildTool } from './context-builder-rebuild-tool.js';
 import { noopTool } from './codex-noop-tool.js';
 import { permissionTools } from './permission-tools.js';
@@ -37,7 +38,6 @@ import { sleepTool } from './codex-sleep-tool.js';
 
 // V3 Claim Tools
 import { registerProjectClaimCompletionTool } from './project-claim-completion-tool.js';
-import { registerProjectReviewClaimTool } from './project-review-claim-tool.js';
 import { registerProjectApproveTaskTool } from './project-approve-task-tool.js';
 import { registerProjectRejectTaskTool } from './project-reject-task-tool.js';
 export * from './types.js';
@@ -58,6 +58,7 @@ export * from './codex-noop-tool.js';
 export * from './codex-web-search-tool.js';
 export * from './context-ledger-memory-tool.js';
 export * from './context-ledger-expand-task-tool.js';
+export * from './context-ledger-digest-tool.js';
 export * from './context-builder-rebuild-tool.js';
 export * from './permission-tools.js';
 export * from './heartbeat-control-tool.js';
@@ -72,7 +73,6 @@ export * from './codex-sleep-tool.js';
 
 // V3 Claim Tools
 export * from './project-claim-completion-tool.js';
-export * from './project-review-claim-tool.js';
 export * from './project-approve-task-tool.js';
 export * from './project-reject-task-tool.js';
 
@@ -97,6 +97,7 @@ export function createDefaultInternalToolRegistry(): InternalToolRegistry {
   registry.register(contextLedgerMemoryTool);
   registry.register(contextLedgerExpandTaskTool);
   registry.register(contextBuilderRebuildTool);
+  registry.register(contextLedgerDigestTool);
   registry.register(noopTool);
   registry.register(heartbeatEnableTool);
   registry.register(heartbeatDisableTool);
@@ -180,7 +181,6 @@ export function registerSendLocalImageToolInRuntime(
 
 // V3 Claim Tools
 export * from './project-claim-completion-tool.js';
-export * from './project-review-claim-tool.js';
 export * from './project-approve-task-tool.js';
 export * from './project-reject-task-tool.js';
 
@@ -190,14 +190,6 @@ export * from './project-reject-task-tool.js';
 export function registerProjectClaimCompletionToolInRuntime(toolRegistry: ToolRegistry): void {
   registerProjectClaimCompletionTool(toolRegistry);
 }
-
-/**
- * 在运行时注册 project.review_claim（System Agent 审核 Claim）
- */
-export function registerProjectReviewClaimToolInRuntime(toolRegistry: ToolRegistry): void {
-  registerProjectReviewClaimTool(toolRegistry);
-}
-
 /**
  * 在运行时注册 project.approve_task（System Agent 验收通过）
  */

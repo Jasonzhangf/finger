@@ -5,7 +5,7 @@ import type { AgentDispatchRequest, AgentRuntimeDeps } from '../../../server/mod
 import { SYSTEM_AGENT_CONFIG } from '../../../agents/finger-system-agent/index.js';
 import {
   FINGER_PROJECT_AGENT_ID,
-  FINGER_REVIEWER_AGENT_ID,
+  FINGER_SYSTEM_AGENT_ID,
 } from '../../../agents/finger-general/finger-general-module.js';
 import { promises as fs } from 'fs';
 import * as path from 'path';
@@ -142,7 +142,7 @@ function resolveLatestProjectRootSession(deps: AgentRuntimeDeps, projectPath: st
 }
 
 function isProjectScopedDispatchTarget(targetAgentId: string): boolean {
-  return targetAgentId === FINGER_PROJECT_AGENT_ID || targetAgentId === FINGER_REVIEWER_AGENT_ID;
+  return targetAgentId === FINGER_PROJECT_AGENT_ID || targetAgentId === FINGER_SYSTEM_AGENT_ID;
 }
 
 function resolveDispatchWorkerHint(input: AgentDispatchRequest): string {
@@ -195,69 +195,22 @@ function toDeterministicProjectSessionId(targetAgentId: string, normalizedProjec
   return `dispatch-${safeAgent}-${digest}`;
 }
 
-function shouldUseStatelessReviewerSession(input: AgentDispatchRequest, targetAgentId: string): boolean {
-  if (targetAgentId !== FINGER_REVIEWER_AGENT_ID) return false;
-  const metadata = isObjectRecord(input.metadata) ? input.metadata : {};
-  const taskRecord = isObjectRecord(input.task) ? input.task : {};
-  const taskMetadata = isObjectRecord(taskRecord.metadata) ? taskRecord.metadata : {};
-  const explicit = parseBooleanFlag(
-    metadata.reviewerStateless
-    ?? metadata.reviewer_stateless
-    ?? taskMetadata.reviewerStateless
-    ?? taskMetadata.reviewer_stateless,
-  );
-  if (explicit === false) return false;
-  return true;
+function shouldUseStatelessReviewerSession(_input: AgentDispatchRequest, _targetAgentId: string): boolean {
+  // Reviewer absorbed into system agent - no special stateless session needed
+  return false;
 }
 
-function createStatelessReviewerSessionId(normalizedProjectPath: string): string {
-  const digest = createHash('sha1').update(`reviewer|${normalizedProjectPath}|${Date.now()}|${Math.random()}`).digest('hex').slice(0, 12);
-  return `review-${digest}`;
+function createStatelessReviewerSessionId(_normalizedProjectPath: string): string {
+  return ""; // Not used - reviewer removed
 }
 
 function tryCreateStatelessReviewerSession(
-  deps: AgentRuntimeDeps,
-  input: AgentDispatchRequest,
-  sourceSessionId?: string,
+  _deps: AgentRuntimeDeps,
+  _input: AgentDispatchRequest,
+  _sourceSessionId?: string,
 ): string | undefined {
-  const targetAgentId = typeof input.targetAgentId === 'string' ? input.targetAgentId.trim() : '';
-  if (!shouldUseStatelessReviewerSession(input, targetAgentId)) return undefined;
-  const normalizedProjectPath = normalizeProjectPathHint(resolveDispatchProjectPath(input, deps));
-  if (!normalizedProjectPath) return undefined;
-  const ensureSession = (deps.sessionManager as {
-    ensureSession?: (sessionId: string, projectPath: string, name?: string) => { id?: string; projectPath?: string; context?: Record<string, unknown> };
-  }).ensureSession;
-  if (typeof ensureSession !== 'function') return undefined;
-
-  const sessionId = createStatelessReviewerSessionId(normalizedProjectPath);
-  const created = ensureSession.call(
-    deps.sessionManager,
-    sessionId,
-    normalizedProjectPath,
-    'reviewer-stateless',
-  );
-  const resolvedSessionId = typeof created?.id === 'string' ? created.id.trim() : '';
-  if (!resolvedSessionId) return undefined;
-
-  deps.sessionManager.updateContext(resolvedSessionId, {
-    sessionTier: 'orchestrator-root',
-    dispatchTargetAgentId: targetAgentId,
-    dispatchProjectPath: normalizedProjectPath,
-    dispatchScopeKey: toDispatchScopeKey(targetAgentId, normalizedProjectPath),
-    ownerAgentId: FINGER_REVIEWER_AGENT_ID,
-    memoryOwnerWorkerId: FINGER_REVIEWER_AGENT_ID,
-    reviewerStateless: true,
-    reviewerEphemeralSession: true,
-  });
-  if (sourceSessionId) {
-    bindDispatchRouteContext(deps, resolvedSessionId, sourceSessionId);
-  }
-  logger.module('dispatch').info('Created stateless reviewer dispatch session', {
-    sessionId: resolvedSessionId,
-    targetAgentId,
-    projectPath: normalizedProjectPath,
-  });
-  return resolvedSessionId;
+  // Reviewer absorbed into system agent - not used
+  return undefined;
 }
 
 function isSystemOwnedSession(deps: AgentRuntimeDeps, sessionId: string): boolean {
@@ -266,6 +219,8 @@ function isSystemOwnedSession(deps: AgentRuntimeDeps, sessionId: string): boolea
   const context = isObjectRecord(session.context) ? session.context : {};
   return (
     session.id.startsWith('system-')
+    || session.id.startsWith('review-')
+    || session.id.startsWith('hb-')
     || normalizeProjectPathHint(session.projectPath) === normalizeProjectPathHint(SYSTEM_AGENT_CONFIG.projectPath)
     || asString(context.sessionTier) === 'system'
     || asString(context.ownerAgentId) === SYSTEM_AGENT_CONFIG.id
@@ -420,7 +375,7 @@ export function resolveDispatchSessionSelection(deps: AgentRuntimeDeps, input: A
   const targetAgentId = typeof input.targetAgentId === 'string' ? input.targetAgentId.trim() : '';
   const requestedProjectPath = resolveDispatchProjectPathHintOnly(input);
   const targetIsProjectScoped = isProjectScopedDispatchTarget(targetAgentId);
-  if (targetAgentId === FINGER_REVIEWER_AGENT_ID && shouldUseStatelessReviewerSession(input, targetAgentId)) {
+  if (targetAgentId === FINGER_SYSTEM_AGENT_ID && shouldUseStatelessReviewerSession(input, targetAgentId)) {
     const sourceSessionId = explicitSessionId
       || deps.runtime.getCurrentSession()?.id
       || deps.sessionManager.getCurrentSession()?.id
@@ -729,7 +684,7 @@ export function bindDispatchSessionToRuntime(deps: AgentRuntimeDeps, input: Agen
     };
   }
   if (!targetAgentId || deps.isPrimaryOrchestratorTarget(targetAgentId)) return input;
-  const allowRuntimeChildSession = targetAgentId === FINGER_REVIEWER_AGENT_ID;
+  const allowRuntimeChildSession = targetAgentId === FINGER_SYSTEM_AGENT_ID;
 
   const requestedSessionId = typeof input.sessionId === 'string' ? input.sessionId.trim() : '';
   if (!allowRuntimeChildSession && requestedSessionId) {
@@ -753,7 +708,7 @@ export function bindDispatchSessionToRuntime(deps: AgentRuntimeDeps, input: Agen
     if (session) {
       const context = isObjectRecord(session.context) ? session.context : {};
       if ((context.sessionTier === 'runtime' || typeof context.parentSessionId === 'string')
-        && asString(context.ownerAgentId) === FINGER_REVIEWER_AGENT_ID) {
+        && asString(context.ownerAgentId) === FINGER_SYSTEM_AGENT_ID) {
         return input;
       }
     }

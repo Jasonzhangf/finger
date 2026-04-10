@@ -33,8 +33,6 @@ describe('port-guard', () => {
     }, '/Volumes/extension/code/finger')).toBe(false);
   });
 
-  });
-
   it('collects descendants from explicit process tree only', () => {
     const map = __test__.buildChildrenMap([
       { pid: 10, ppid: 1, command: 'root' },

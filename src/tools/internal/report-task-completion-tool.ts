@@ -1,9 +1,8 @@
 /**
- * Report Task Completion Tool
- *
  * Project Agent 报告任务完成，附交付标的。
- * 默认先路由到 reviewer；reviewer 通过后再上报给 system。
+ * V3: 直接上报给 System Agent（无独立 Reviewer）。
  */
+
 
 import type { ToolRegistry } from '../../runtime/tool-registry.js';
 import { promises as fs } from 'fs';
@@ -429,8 +428,7 @@ function updateProjectTaskStateForSession(
     status?: 'create' | 'dispatched' | 'accepted' | 'in_progress' | 'claiming_finished' | 'reviewed' | 'reported' | 'closed' | 'blocked' | 'failed' | 'cancelled';
     assigneeWorkerId?: string;
     deliveryWorkerId?: string;
-    reviewerId?: string;
-    reassignReason?: string;
+        reassignReason?: string;
     taskId?: string;
     taskName?: string;
     dispatchId?: string;
@@ -546,7 +544,7 @@ export function registerReportTaskCompletionTool(
         );
         const evidence = resolveEvidence(raw, params);
         const callerAgentId = typeof context?.agentId === 'string' ? context.agentId.trim() : '';
-        const isReviewerCaller = callerAgentId.toLowerCase().includes('review');
+        const isSystemAgentCaller = callerAgentId.toLowerCase().includes('system');
         const reviewRoute = taskId
           ? getReviewRoute(taskId) ?? (taskName ? getReviewRouteByTaskName(taskName) : undefined)
           : (taskName ? getReviewRouteByTaskName(taskName) : undefined);
@@ -562,7 +560,7 @@ export function registerReportTaskCompletionTool(
           taskName: effectiveTaskName || taskName || undefined,
           sessionId: params.sessionId,
           projectId: params.projectId,
-          sourceAgentId: isReviewerCaller ? (callerAgentId || 'finger-reviewer') : 'finger-project-agent',
+          sourceAgentId: isSystemAgentCaller ? (callerAgentId || 'finger-system-agent') : 'finger-project-agent',
           result: params.result,
           summary: normalizedSummary,
           status: structuredStatus,
@@ -624,7 +622,7 @@ export function registerReportTaskCompletionTool(
             result: params.result,
             projectId: params.projectId,
             deliveryArtifacts: enrichedArtifacts,
-            sourceAgentId: isReviewerCaller ? (callerAgentId || 'finger-reviewer') : 'finger-project-agent',
+            sourceAgentId: isSystemAgentCaller ? (callerAgentId || 'finger-system-agent') : 'finger-project-agent',
             taskName: effectiveTaskName || taskName || undefined,
             taskReport,
             evidence,
@@ -747,7 +745,7 @@ export function registerReportTaskCompletionTool(
         }
 
         // Project -> Reviewer
-        if (!isReviewerCaller && !reviewRoute) {
+        if (!isSystemAgentCaller && !reviewRoute) {
           return {
             ok: false,
             action: 'report',
@@ -755,7 +753,7 @@ export function registerReportTaskCompletionTool(
           };
         }
 
-        if (reviewRoute?.reviewRequired && !isReviewerCaller && !hasClaim) {
+        if (reviewRoute?.reviewRequired && !isSystemAgentCaller && !hasClaim) {
           const continuePrompt = [
             '[Project Delivery Continue]',
             `任务ID: ${effectiveTaskId || params.taskId}`,
@@ -769,7 +767,7 @@ export function registerReportTaskCompletionTool(
           ].filter(Boolean).join('\n');
 
           const continueDispatch = await deps.agentRuntimeBlock.execute('dispatch', {
-            sourceAgentId: 'finger-reviewer',
+            sourceAgentId: 'finger-system-agent',
             targetAgentId: 'finger-project-agent',
             task: { prompt: continuePrompt },
             sessionId: params.sessionId,
@@ -830,7 +828,7 @@ export function registerReportTaskCompletionTool(
           };
         }
 
-        if (reviewRoute?.reviewRequired && !isReviewerCaller) {
+        if (reviewRoute?.reviewRequired && !isSystemAgentCaller) {
           const reviewProjectPath = (() => {
             const routeSessionId = typeof reviewRoute.projectSessionId === 'string' && reviewRoute.projectSessionId.trim().length > 0
               ? reviewRoute.projectSessionId.trim()
@@ -879,12 +877,12 @@ export function registerReportTaskCompletionTool(
             'PASS -> pass; PARTIAL/FAIL -> retry (or block if truly blocked).',
             'Then call report-task-completion:',
             '- pass => result=success',
-            '- retry/block => result=failure and include reviewer summary/evidence',
+            '- retry/block => result=failure and include system agent review summary/evidence',
           ].filter(Boolean).join('\n');
 
           const reviewDispatch = await deps.agentRuntimeBlock.execute('dispatch', {
             sourceAgentId: 'finger-project-agent',
-            targetAgentId: reviewRoute.reviewAgentId,
+            targetAgentId: 'finger-system-agent',
             task: { prompt: reviewPrompt },
             projectPath: reviewProjectPath,
             blocking: false,
@@ -896,8 +894,7 @@ export function registerReportTaskCompletionTool(
               sessionPersistence: 'none',
               persistSession: false,
               transientLedger: true,
-              reviewerStateless: true,
-              taskId: effectiveTaskId || params.taskId,
+                            taskId: effectiveTaskId || params.taskId,
               ...(effectiveTaskName ? { taskName: effectiveTaskName } : {}),
               projectId: params.projectId,
               result: params.result,
@@ -936,8 +933,8 @@ export function registerReportTaskCompletionTool(
             taskId: effectiveTaskId || params.taskId,
             taskName: effectiveTaskName || taskName || undefined,
             dispatchId: reviewDispatch.dispatchId,
-            summary: 'delivery submitted to reviewer',
-            note: 'claiming_finished_waiting_reviewer',
+            summary: 'delivery submitted to system agent for review',
+            note: 'claiming_finished_waiting_system_review',
           });
           updateProjectTaskStateForSession(deps, reviewRoute.parentSessionId, {
             active: true,
@@ -945,8 +942,8 @@ export function registerReportTaskCompletionTool(
             taskId: effectiveTaskId || params.taskId,
             taskName: effectiveTaskName || taskName || undefined,
             dispatchId: reviewDispatch.dispatchId,
-            summary: 'project delivery under reviewer validation',
-            note: 'claiming_finished_waiting_reviewer',
+            summary: 'project delivery under system agent review',
+            note: 'claiming_finished_waiting_system_review',
           });
 
           return {
@@ -958,7 +955,7 @@ export function registerReportTaskCompletionTool(
         }
 
         // Reviewer reject -> Project redispatch (do not notify system on reject path)
-        if (reviewRoute?.reviewRequired && isReviewerCaller && params.result === 'failure') {
+        if (reviewRoute?.reviewRequired && isSystemAgentCaller && params.result === 'failure') {
           const rejectPrompt = [
             '[REVIEW REJECTED — REWORK REQUIRED]',
             `任务ID: ${effectiveTaskId || params.taskId}`,
@@ -966,7 +963,7 @@ export function registerReportTaskCompletionTool(
             `项目: ${params.projectId}`,
             reviewRoute.acceptanceCriteria ? `验收标准: ${reviewRoute.acceptanceCriteria}` : '',
             '',
-            'reviewer 已拒绝当前交付，请基于以下反馈继续修复：',
+            'system agent 已拒绝当前交付，请基于以下反馈继续修复：',
             normalizedSummary || '(no summary)',
             deliveryArtifacts ? `交付线索: ${deliveryArtifacts}` : '',
             '',
@@ -977,7 +974,7 @@ export function registerReportTaskCompletionTool(
           ].filter(Boolean).join('\n');
 
           const rejectDispatch = await deps.agentRuntimeBlock.execute('dispatch', {
-            sourceAgentId: callerAgentId || 'finger-reviewer',
+            sourceAgentId: callerAgentId || 'finger-system-agent',
             targetAgentId: 'finger-project-agent',
             task: { prompt: rejectPrompt },
             sessionId: reviewRoute.projectSessionId ?? params.sessionId,
@@ -990,8 +987,7 @@ export function registerReportTaskCompletionTool(
               projectId: params.projectId,
               reviewRequired: true,
               reviewDecision: 'reject',
-              reviewerFeedback: normalizedSummary,
-              deliveryArtifacts,
+                            deliveryArtifacts,
               taskReport: {
                 ...taskReport,
                 status: 'needs_rework',
@@ -1054,7 +1050,7 @@ export function registerReportTaskCompletionTool(
           result: params.result,
           projectId: params.projectId,
           deliveryArtifacts,
-          sourceAgentId: isReviewerCaller ? (callerAgentId || 'finger-reviewer') : 'finger-project-agent',
+          sourceAgentId: isSystemAgentCaller ? (callerAgentId || 'finger-system-agent') : 'finger-project-agent',
           taskName: effectiveTaskName || taskName || undefined,
           taskReport,
           evidence,
@@ -1064,7 +1060,7 @@ export function registerReportTaskCompletionTool(
           deliveryClaim: taskReport.deliveryClaim,
         });
 
-        if (isReviewerCaller && dispatch.ok && dispatch.status !== 'failed') {
+        if (isSystemAgentCaller && dispatch.ok && dispatch.status !== 'failed') {
           removeReviewRoute(effectiveTaskId || params.taskId);
           updateProjectTaskStateForSession(deps, reviewRoute?.projectSessionId ?? params.sessionId, {
             active: true,

@@ -11,7 +11,6 @@ import type { SessionWorkspaceManager } from '../modules/session-workspaces.js';
 import type { Mailbox } from '../mailbox.js';
 import type { InputLockManager } from '../../runtime/input-lock.js';
 import type { ToolRegistry } from '../../runtime/tool-registry.js';
-import type { ResumableSessionManager } from '../../orchestration/resumable-session.js';
 import type { OrchestrationConfigV1 } from '../../orchestration/orchestration-config.js';
 import type { LoadedAgentConfig } from '../../runtime/agent-json-config.js';
 import type { BlockRegistry } from '../../core/registry.js';
@@ -31,7 +30,6 @@ import { registerGatewayRoutes } from './gateway.js';
 import { registerChannelRoutes } from './channels.js';
 import { registerRuntimeEventRoutes } from './runtime-events.js';
 import { registerToolRoutes } from './tools.js';
-import { registerResumableSessionRoutes } from './resumable-session.js';
 import { registerOrchestrationRoutes } from './orchestration.js';
 import { registerAgentConfigRoutes } from './agent-configs.js';
 import { registerModuleRegistryRoutes } from './module-registry.js';
@@ -76,7 +74,6 @@ export interface RegisterAllRoutesDeps {
   channelBridgeManager: import('../../bridges/manager.js').ChannelBridgeManager;
   inputLockManager: InputLockManager;
   toolRegistry: ToolRegistry;
-  resumableSessionManager: ResumableSessionManager;
   wsClients: Set<WebSocket>;
   applyOrchestrationConfig: (config: OrchestrationConfigV1) => Promise<{
     applied: number;
@@ -187,10 +184,6 @@ export function registerAllRoutes(app: Express, deps: RegisterAllRoutesDeps): vo
     runtime: deps.runtime,
   });
 
-  registerResumableSessionRoutes(app, {
-    resumableSessionManager: deps.resumableSessionManager,
-    wsClients: deps.wsClients,
-  });
 
   registerOrchestrationRoutes(app, {
     applyOrchestrationConfig: deps.applyOrchestrationConfig,

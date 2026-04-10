@@ -1251,6 +1251,37 @@ describe('chat-codex module', () => {
     expect(JSON.stringify(historyItems)).not.toContain('metadata history user');
   });
 
+  it('maps preflight compact metadata into kernel compact.manual options', () => {
+    const options = __chatCodexInternals.buildKernelUserTurnOptions(
+      {
+        sessionId: 'session-preflight-compact',
+        history: [
+          { role: 'user', content: 'legacy raw history' },
+          { role: 'assistant', content: 'legacy raw reply' },
+        ],
+        metadata: {
+          roleProfile: 'system',
+          role: 'user',
+          source: 'channel',
+          kernelMode: 'main',
+          compactManual: true,
+          preflightCompact: {
+            trigger: 'session_projection_threshold',
+            sessionTokens: 300_000,
+            projectedTokens: 300_010,
+          },
+        },
+      },
+      undefined,
+    );
+
+    expect(options?.compact).toEqual(
+      expect.objectContaining({
+        manual: true,
+      }),
+    );
+  });
+
 });
 
 describe('isRetryableRunError', () => {

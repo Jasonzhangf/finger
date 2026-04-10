@@ -29,15 +29,13 @@ const VALID_REASONING_EFFORT = ['high', 'medium', 'low'];
 const VALID_REASONING_SUMMARY = ['detailed', 'medium', 'short'];
 const VALID_WEB_SEARCH = ['live', 'off'];
 const VALID_AUTONOMY_MODE = ['balanced', 'yolo'];
-const AUTONOMY_ROLE_KEYS = ['system', 'project', 'reviewer', 'orchestrator'] as const;
+const AUTONOMY_ROLE_KEYS = ['system', 'project'] as const;
 type AutonomyRoleKey = typeof AUTONOMY_ROLE_KEYS[number];
 type AutonomyMode = 'balanced' | 'yolo';
 type AutonomyByRole = Partial<Record<AutonomyRoleKey, AutonomyMode>>;
 const DEFAULT_AUTONOMY_BY_ROLE: Record<AutonomyRoleKey, AutonomyMode> = {
   system: 'balanced',
   project: 'yolo',
-  reviewer: 'balanced',
-  orchestrator: 'balanced',
 };
 
 /**

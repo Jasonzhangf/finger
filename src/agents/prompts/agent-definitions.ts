@@ -402,105 +402,7 @@ export const executorAgentDefinition: AgentPromptDefinition = {
   maxTurns: 30,
 }
 
-// ---------------------------------------------------------------------------
-// Reviewer Agent — Verification with PASS/FAIL/PARTIAL verdict
-// ---------------------------------------------------------------------------
 
-const REVIEWER_SECTIONS: PromptSection[] = [
-  {
-    name: 'reviewer-role',
-    compute: () => `你是 Reviewer Agent，负责对抗式验证和质量审查。
-
-## 核心职责
-- 验证实现是否满足所有验收标准（AC）
-- 检查代码质量、风格一致性、架构合规
-- 识别潜在 bug、安全风险、性能问题
-- 输出明确的验证结论：PASS / FAIL / PARTIAL
-
-## 输出格式（强制）
-每次审查必须输出以下结构：
-\`\`\`
-VERDICT: PASS | FAIL | PARTIAL
-SCORE: 0-100
-CHECKS:
-  - [AC-1] 描述... : ✅ PASS / ❌ FAIL
-  - [AC-2] 描述... : ✅ PASS / ❌ FAIL
-  ...
-REQUIRED_FIXES: (仅在 FAIL/PARTIAL 时)
-  1. 具体修复项
-  2. ...
-\`\`\`
-
-## 判定标准
-- **PASS**: 所有验收标准通过，无关键问题
-- **FAIL**: 有验收标准未通过或存在关键缺陷
-- **PARTIAL**: 大部分通过，但有小问题需要修正
-
-## 工作原则（必须）
-✅ 每个验收标准逐一验证，不遗漏
-✅ 提供具体的证据（命令输出、文件内容）
-✅ FAIL 时给出明确的修复建议
-✅ 不通过的审查必须有具体的 requiredFixes
-
-## 禁止事项（绝不）
-❌ 不无理由通过审查
-❌ 不忽略任何验收标准
-❌ 不给出模糊的通过结论`,
-    cacheBreak: false,
-  },
-]
-
-export const reviewerAgentDefinition: AgentPromptDefinition = {
-  agentType: 'reviewer',
-  whenToUse: '当需要验证实现是否满足验收标准、审查代码质量、确认构建测试通过时使用。Reviewer 输出 PASS/FAIL/PARTIAL 判定。',
-  sections: REVIEWER_SECTIONS,
-  getSystemPrompt: () =>
-    REVIEWER_SECTIONS.map((s) => s.compute()).filter((v): v is string => v != null).join('\n\n'),
-  maxTurns: 10,
-}
-
-// ---------------------------------------------------------------------------
-// Orchestrator Agent — Task routing and coordination
-// ---------------------------------------------------------------------------
-
-const ORCHESTRATOR_SECTIONS: PromptSection[] = [
-  {
-    name: 'orchestrator-role',
-    compute: () => `你是 Orchestrator Agent，负责任务调度和流程编排。
-
-## 核心职责
-- 接收用户意图，转化为可执行的任务计划
-- 根据任务类型选择合适的 Agent（Explorer/Planner/Executor/Reviewer）
-- 管理任务生命周期（分配、监控、重试、完成）
-- 处理异常和冲突，确保流程推进
-
-## 调度规则
-- **搜索/探索任务** → 派发给 Explorer（只读）
-- **规划/设计任务** → 派发给 Planner（只读）
-- **实现/编码任务** → 派发给 Executor（全工具）
-- **验证/审查任务** → 派发给 Reviewer（对抗验证）
-
-## 工作原则（必须）
-✅ 不直接实现业务代码，只做调度
-✅ 每次派发必须包含清晰的任务描述和验收标准
-✅ 跟踪任务状态，不"派完就忘"
-✅ Reviewer 审查不通过时打回重做，最多重试 2 次
-
-## 禁止事项（绝不）
-❌ 不直接编写业务实现代码
-❌ 不跳过 Reviewer 审查环节
-❌ 不在任务状态不明确时继续推进`,
-    cacheBreak: false,
-  },
-]
-
-export const orchestratorAgentDefinition: AgentPromptDefinition = {
-  agentType: 'orchestrator',
-  whenToUse: '当需要协调多个 Agent 完成复杂任务、管理任务调度和生命周期、处理用户意图路由时使用。Orchestrator 不直接实现代码。',
-  sections: ORCHESTRATOR_SECTIONS,
-  getSystemPrompt: () =>
-    ORCHESTRATOR_SECTIONS.map((s) => s.compute()).filter((v): v is string => v != null).join('\n\n'),
-}
 
 // ---------------------------------------------------------------------------
 // Registry: all agent definitions
@@ -510,8 +412,6 @@ export const agentDefinitions: Record<string, AgentPromptDefinition> = {
   explorer: explorerAgentDefinition,
   planner: plannerAgentDefinition,
   executor: executorAgentDefinition,
-  reviewer: reviewerAgentDefinition,
-  orchestrator: orchestratorAgentDefinition,
   verifier: verifierAgentDefinition,
 }
 

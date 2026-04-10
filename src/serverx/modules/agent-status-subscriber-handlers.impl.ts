@@ -76,7 +76,7 @@ export function stopLastQueuedDispatchCleanup(): void {
 const STARTUP_NOISE_SOURCE_AGENTS = new Set([
   'system-recovery',
   'system-project-recovery',
-  'system-reviewer-recovery',
+  
   'system-startup-review',
 ]);
 

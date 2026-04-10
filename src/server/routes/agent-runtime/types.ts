@@ -3,7 +3,7 @@ import type { ResourcePool } from '../../../orchestration/resource-pool.js';
 import type { AgentRuntimeDeps } from '../../modules/agent-runtime/types.js';
 
 type MockOutcome = 'success' | 'failure';
-type MockRole = 'executor' | 'reviewer' | 'searcher';
+type MockRole = 'executor' | 'searcher';
 
 export interface AgentRuntimeRouteDeps {
   getAgentRuntimeDeps: () => AgentRuntimeDeps;

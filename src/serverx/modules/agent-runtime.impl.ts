@@ -36,10 +36,7 @@ function asTrimmedString(value: unknown): string {
   return typeof value === 'string' ? value.trim() : '';
 }
 
-function isReviewerAgentId(agentId: string): boolean {
-  const normalized = agentId.trim().toLowerCase();
-  return normalized.includes('reviewer') || normalized.includes('review');
-}
+// Reviewer role absorbed into system agent - no separate reviewer restriction
 
 function resolveRuntimeAgentSnapshot(
   runtimeView: unknown,
@@ -164,7 +161,7 @@ export function registerAgentRuntimeTools(deps: AgentRuntimeDeps): string[] {
         provider: { type: 'string' },
         instance_count: { type: 'number' },
         scope: { type: 'string', enum: ['session', 'global'] },
-        launch_mode: { type: 'string', enum: ['manual', 'orchestrator'] },
+        launch_mode: { type: 'string', enum: ['manual', 'system'] },
         session_id: { type: 'string' },
         config: { type: 'object' },
       },
@@ -217,10 +214,7 @@ export function registerAgentRuntimeTools(deps: AgentRuntimeDeps): string[] {
     },
     handler: async (input: unknown, context?: Record<string, unknown>): Promise<unknown> => {
       const callerAgentId = asTrimmedString(context?.agentId);
-      if (callerAgentId && isReviewerAgentId(callerAgentId)) {
-        throw new Error('agent.dispatch forbidden for reviewer role; reviewer must use report-task-completion');
-      }
-      const rawInput = isObjectRecord(input) ? input : {};
+            const rawInput = isObjectRecord(input) ? input : {};
       const explicitSourceAgentId = asTrimmedString(rawInput.source_agent_id ?? rawInput.sourceAgentId);
       if (callerAgentId && explicitSourceAgentId && explicitSourceAgentId !== callerAgentId) {
         throw new Error(`agent.dispatch forbidden: source_agent_id must match caller agent (${callerAgentId})`);
@@ -254,10 +248,7 @@ export function registerAgentRuntimeTools(deps: AgentRuntimeDeps): string[] {
     handler: async (input: unknown, context?: Record<string, unknown>): Promise<unknown> => {
       const rawInput = isObjectRecord(input) ? input : {};
       const callerAgentId = asTrimmedString(context?.agentId) || deps.primaryOrchestratorAgentId;
-      if (isReviewerAgentId(callerAgentId)) {
-        throw new Error('agent.continue forbidden for reviewer role');
-      }
-
+      
       const targetAgentId = asTrimmedString(rawInput.target_agent_id ?? rawInput.targetAgentId);
       if (!targetAgentId) throw new Error('agent.continue target_agent_id is required');
       if (targetAgentId === callerAgentId) {
@@ -354,10 +345,7 @@ export function registerAgentRuntimeTools(deps: AgentRuntimeDeps): string[] {
     handler: async (input: unknown, context?: Record<string, unknown>): Promise<unknown> => {
       const rawInput = isObjectRecord(input) ? input : {};
       const callerAgentId = asTrimmedString(context?.agentId) || deps.primaryOrchestratorAgentId;
-      if (isReviewerAgentId(callerAgentId)) {
-        throw new Error('agent.query forbidden for reviewer role');
-      }
-      const targetAgentId = asTrimmedString(rawInput.target_agent_id ?? rawInput.targetAgentId);
+            const targetAgentId = asTrimmedString(rawInput.target_agent_id ?? rawInput.targetAgentId);
       if (!targetAgentId) throw new Error('agent.query target_agent_id is required');
       if (targetAgentId === callerAgentId) {
         throw new Error(`agent.query self-dispatch forbidden: source and target are both ${targetAgentId}`);
@@ -448,10 +436,7 @@ export function registerAgentRuntimeTools(deps: AgentRuntimeDeps): string[] {
     handler: async (input: unknown, context?: Record<string, unknown>): Promise<unknown> => {
       const rawInput = isObjectRecord(input) ? input : {};
       const callerAgentId = asTrimmedString(context?.agentId) || deps.primaryOrchestratorAgentId;
-      if (isReviewerAgentId(callerAgentId)) {
-        throw new Error('agent.progress.ask forbidden for reviewer role');
-      }
-      const targetAgentId = asTrimmedString(rawInput.target_agent_id ?? rawInput.targetAgentId);
+            const targetAgentId = asTrimmedString(rawInput.target_agent_id ?? rawInput.targetAgentId);
       if (!targetAgentId) throw new Error('agent.progress.ask target_agent_id is required');
       if (targetAgentId === callerAgentId) {
         throw new Error(`agent.progress.ask self-dispatch forbidden: source and target are both ${targetAgentId}`);

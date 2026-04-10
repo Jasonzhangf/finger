@@ -160,9 +160,19 @@ impl FingerChatEngine {
             .and_then(|cfg| cfg.max_input_tokens);
         let threshold_percent = Some((threshold_ratio * 100.0).round() as u64);
         let include_reasoning_items = should_replay_reasoning_items(options.responses.as_ref());
+        let mut compact_state = CompactExecutionState::default();
 
         let output_text = loop {
             round = round.saturating_add(1);
+            let _ = maybe_apply_compaction(
+                &mut rolling_input,
+                options,
+                context_ledger.as_ref(),
+                baseline_tokens,
+                threshold_ratio,
+                max_input_tokens,
+                &mut compact_state,
+            );
             let response = self
                 .send_protocol_request(&rolling_input, options, &tool_bindings)
                 .await?;
@@ -299,74 +309,22 @@ impl FingerChatEngine {
             }
         };
 
-        let mut estimated_tokens_in_window = estimate_tokens_in_history(&rolling_input);
-        let mut estimated_tokens_compactable =
-            estimate_tokens_excluding_ledger_focus(&rolling_input);
-        estimated_tokens_in_window = estimated_tokens_in_window.saturating_sub(baseline_tokens);
-        estimated_tokens_compactable = estimated_tokens_compactable.saturating_sub(baseline_tokens);
-        let auto_compact_triggered = max_input_tokens
-            .map(|max| (estimated_tokens_in_window as f64) > (max as f64) * threshold_ratio)
-            .unwrap_or(false);
-        let manual_compact = options
-            .compact
-            .as_ref()
-            .map(|cfg| cfg.manual)
-            .unwrap_or(false);
-        let compact_required = manual_compact || auto_compact_triggered;
-
-        let mut compact_applied = false;
-        let mut compact_summary: Option<String> = None;
-        let mut compacted_at_ms: Option<u64> = None;
-        let mut compacted_at_iso: Option<String> = None;
-        let mut compacted_source_start: Option<String> = None;
-        let mut compacted_source_end: Option<String> = None;
-        if compact_required {
-            let compact_result =
-                compact_history(&rolling_input, options.compact.as_ref(), max_input_tokens);
-            rolling_input = compact_result.history;
-            compact_summary = compact_result.summary;
-            compacted_at_ms = Some(compact_result.compressed_at_ms);
-            compacted_at_iso = Some(compact_result.compressed_at_iso);
-            compacted_source_start = compact_result.source_time_start;
-            compacted_source_end = compact_result.source_time_end;
-            let compact_summary_for_cache =
-                sanitize_compact_cache_summary(compact_summary.as_deref());
-            compact_applied = true;
-            estimated_tokens_in_window =
-                estimate_tokens_in_history(&rolling_input).saturating_sub(baseline_tokens);
-            estimated_tokens_compactable = estimate_tokens_excluding_ledger_focus(&rolling_input)
-                .saturating_sub(baseline_tokens);
-            if let Some(ledger) = context_ledger.as_ref() {
-                safe_append_ledger(
-                    ledger,
-                    "context_compact",
-                    json!({
-                        "manual": manual_compact,
-                        "auto": auto_compact_triggered,
-                        "summary": compact_summary,
-                        "compressed_at_ms": compacted_at_ms,
-                        "compressed_at_iso": compacted_at_iso,
-                        "source_time_start": compacted_source_start,
-                        "source_time_end": compacted_source_end,
-                        "estimated_tokens_in_context_window": estimated_tokens_in_window,
-                        "estimated_tokens_compactable": estimated_tokens_compactable,
-                    }),
-                );
-                let _ = ledger.append_compact_memory(json!({
-                    "algorithm": compact_result.algorithm,
-                    "manual": manual_compact,
-                    "auto": auto_compact_triggered,
-                    "summary": compact_summary_for_cache,
-                    "replacement_history": compact_result.replacement_history,
-                    "compressed_at_ms": compacted_at_ms,
-                    "compressed_at_iso": compacted_at_iso,
-                    "source_time_start": compacted_source_start,
-                    "source_time_end": compacted_source_end,
-                    "timeline_order": "ascending",
-                    "note": "Compacted context is a time-ordered copy. Original ledger remains immutable append-only.",
-                }));
-            }
-        }
+        let budget_snapshot = snapshot_compact_budget(
+            &rolling_input,
+            baseline_tokens,
+            threshold_ratio,
+            max_input_tokens,
+        );
+        let estimated_tokens_in_window = budget_snapshot.estimated_tokens_in_window;
+        let estimated_tokens_compactable = budget_snapshot.estimated_tokens_compactable;
+        let manual_compact = compact_state.requested_manual;
+        let auto_compact_triggered = compact_state.requested_auto;
+        let compact_applied = compact_state.applied;
+        let compact_summary = compact_state.summary.clone();
+        let compacted_at_ms = compact_state.compressed_at_ms;
+        let compacted_at_iso = compact_state.compressed_at_iso.clone();
+        let compacted_source_start = compact_state.source_time_start.clone();
+        let compacted_source_end = compact_state.source_time_end.clone();
 
         let metadata_value = json!({
             "session_id": options.session_id,
@@ -1692,6 +1650,25 @@ struct CompactResult {
     algorithm: String,
 }
 
+#[derive(Debug, Default, Clone)]
+struct CompactExecutionState {
+    requested_manual: bool,
+    requested_auto: bool,
+    applied: bool,
+    summary: Option<String>,
+    compressed_at_ms: Option<u64>,
+    compressed_at_iso: Option<String>,
+    source_time_start: Option<String>,
+    source_time_end: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct CompactBudgetSnapshot {
+    estimated_tokens_in_window: u64,
+    estimated_tokens_compactable: u64,
+    auto_compact_triggered: bool,
+}
+
 #[derive(Debug, Clone)]
 struct CompactHistoryItem {
     role: String,
@@ -1892,6 +1869,109 @@ fn compact_history(
         replacement_history,
         algorithm: "task_digest_v2".to_string(),
     }
+}
+
+fn snapshot_compact_budget(
+    history: &[Value],
+    baseline_tokens: u64,
+    threshold_ratio: f64,
+    max_input_tokens: Option<u64>,
+) -> CompactBudgetSnapshot {
+    let estimated_tokens_in_window =
+        estimate_tokens_in_history(history).saturating_sub(baseline_tokens);
+    let estimated_tokens_compactable =
+        estimate_tokens_excluding_ledger_focus(history).saturating_sub(baseline_tokens);
+    let auto_compact_triggered = max_input_tokens
+        .map(|max| (estimated_tokens_in_window as f64) > (max as f64) * threshold_ratio)
+        .unwrap_or(false);
+
+    CompactBudgetSnapshot {
+        estimated_tokens_in_window,
+        estimated_tokens_compactable,
+        auto_compact_triggered,
+    }
+}
+
+fn maybe_apply_compaction(
+    rolling_input: &mut Vec<Value>,
+    options: &UserTurnOptions,
+    context_ledger: Option<&ContextLedger>,
+    baseline_tokens: u64,
+    threshold_ratio: f64,
+    max_input_tokens: Option<u64>,
+    compact_state: &mut CompactExecutionState,
+) -> CompactBudgetSnapshot {
+    let manual_compact = options
+        .compact
+        .as_ref()
+        .map(|cfg| cfg.manual)
+        .unwrap_or(false);
+    let budget_before = snapshot_compact_budget(
+        rolling_input,
+        baseline_tokens,
+        threshold_ratio,
+        max_input_tokens,
+    );
+
+    compact_state.requested_manual = manual_compact;
+    compact_state.requested_auto =
+        compact_state.requested_auto || budget_before.auto_compact_triggered;
+
+    let compact_required = budget_before.auto_compact_triggered
+        || (manual_compact && !compact_state.applied);
+    if !compact_required {
+        return budget_before;
+    }
+
+    let compact_result = compact_history(rolling_input, options.compact.as_ref(), max_input_tokens);
+    *rolling_input = compact_result.history;
+    compact_state.applied = true;
+    compact_state.summary = compact_result.summary;
+    compact_state.compressed_at_ms = Some(compact_result.compressed_at_ms);
+    compact_state.compressed_at_iso = Some(compact_result.compressed_at_iso);
+    compact_state.source_time_start = compact_result.source_time_start;
+    compact_state.source_time_end = compact_result.source_time_end;
+
+    let budget_after = snapshot_compact_budget(
+        rolling_input,
+        baseline_tokens,
+        threshold_ratio,
+        max_input_tokens,
+    );
+    if let Some(ledger) = context_ledger {
+        safe_append_ledger(
+            ledger,
+            "context_compact",
+            json!({
+                "manual": manual_compact,
+                "auto": budget_before.auto_compact_triggered,
+                "summary": compact_state.summary,
+                "compressed_at_ms": compact_state.compressed_at_ms,
+                "compressed_at_iso": compact_state.compressed_at_iso,
+                "source_time_start": compact_state.source_time_start,
+                "source_time_end": compact_state.source_time_end,
+                "estimated_tokens_in_context_window": budget_after.estimated_tokens_in_window,
+                "estimated_tokens_compactable": budget_after.estimated_tokens_compactable,
+            }),
+        );
+        let compact_summary_for_cache =
+            sanitize_compact_cache_summary(compact_state.summary.as_deref());
+        let _ = ledger.append_compact_memory(json!({
+            "algorithm": compact_result.algorithm,
+            "manual": manual_compact,
+            "auto": budget_before.auto_compact_triggered,
+            "summary": compact_summary_for_cache,
+            "replacement_history": compact_result.replacement_history,
+            "compressed_at_ms": compact_state.compressed_at_ms,
+            "compressed_at_iso": compact_state.compressed_at_iso,
+            "source_time_start": compact_state.source_time_start,
+            "source_time_end": compact_state.source_time_end,
+            "timeline_order": "ascending",
+            "note": "Compacted context is a time-ordered copy. Original ledger remains immutable append-only.",
+        }));
+    }
+
+    budget_after
 }
 
 fn compact_target_tokens(max_input_tokens: Option<u64>) -> Option<u64> {
@@ -3214,6 +3294,7 @@ mod tests {
         let response_mock = server
             .mock("POST", "/v1/responses")
             .match_header("authorization", "Bearer test-key")
+            .match_body(Matcher::Regex(r#"<task_digest>"#.to_string()))
             .with_status(200)
             .with_header("content-type", "text/event-stream")
             .with_body(concat!(

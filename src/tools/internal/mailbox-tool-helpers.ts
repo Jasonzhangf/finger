@@ -42,10 +42,19 @@ export function resolveMailboxTarget(
   context: ToolExecutionContext,
 ): string {
   const explicitTarget = typeof params.target === 'string' ? params.target.trim() : '';
-  if (explicitTarget.length > 0) return explicitTarget;
   const agentTarget = typeof context.agentId === 'string' ? context.agentId.trim() : '';
-  if (agentTarget.length > 0) return agentTarget;
-  return 'finger-system-agent';
+  const selfTarget = agentTarget.length > 0 ? agentTarget : 'finger-system-agent';
+
+  // Owner-only enforcement: agents can only access their own mailbox
+  // Exception: system agent may access other targets for orchestration
+  if (explicitTarget.length > 0 && explicitTarget !== selfTarget) {
+    const isSystemAgent = selfTarget === 'finger-system-agent';
+    if (!isSystemAgent) {
+      throw new Error(`Mailbox ownership violation: agent '${selfTarget}' cannot access mailbox of '${explicitTarget}'`);
+    }
+  }
+
+  return explicitTarget.length > 0 ? explicitTarget : selfTarget;
 }
 
 export function getMailboxPath(target: string): string {

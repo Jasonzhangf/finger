@@ -1,6 +1,5 @@
-import type { Session, SessionMessage } from '../chat/session-types.js';
+import type { Session, SessionMessage, ISessionManager } from '../../orchestration/session-types.js';
 import { composeTurnContextSlots } from './context-slots.js';
-import { MemorySessionManager } from './memory-session-manager.js';
 import {
   formatStructuredOutputIssues,
   normalizeStructuredJsonText,
@@ -144,7 +143,7 @@ const DEFAULT_STRUCTURED_OUTPUT_RETRY_MAX_ATTEMPTS = 1;
 export class KernelAgentBase {
   private readonly config: KernelAgentBaseConfig;
   private readonly runner: KernelAgentRunner;
-  private readonly sessionManager: MemorySessionManager;
+  private readonly sessionManager: ISessionManager;
   private readonly apiHistoryByThread = new Map<string, unknown[]>();
   private readonly lockedHistoryByThread = new Map<string, {
     history: SessionMessage[];
@@ -157,7 +156,7 @@ export class KernelAgentBase {
   constructor(
     config: Partial<KernelAgentBaseConfig> & Pick<KernelAgentBaseConfig, 'moduleId'>,
     runner: KernelAgentRunner,
-    sessionManager = new MemorySessionManager(),
+    sessionManager: ISessionManager,
   ) {
     this.config = {
       ...DEFAULT_KERNEL_AGENT_CONFIG,
@@ -200,11 +199,7 @@ export class KernelAgentBase {
         || input.metadata?.session_persistence === 'client'
         || input.metadata?.persistSession === false;
       if (input.sessionId && !clientPersist && !isRecoveryReplay) {
-        await this.sessionManager.addMessage(session.id, {
-          role: 'user',
-          content: input.text,
-          metadata: input.metadata,
-        });
+        await this.sessionManager.addMessage(session.id, 'user', input.text, { metadata: input.metadata });
       }
 
       const roleProfile = this.resolveRoleProfile(input.roleProfile);
@@ -398,7 +393,7 @@ export class KernelAgentBase {
       });
 
       // Kernel-level inline review loop is disabled.
-      // Review must be executed by explicit reviewer agent nodes in orchestration flow.
+      // Review absorbed into system agent internal flow.
 
       const reply = runResult.reply?.trim();
       if (!reply) {
@@ -416,16 +411,19 @@ export class KernelAgentBase {
           ].filter((item) => item.trim().length > 0),
           maxTags: 8,
         });
-        assistantMessage = await this.sessionManager.addMessage(session.id, {
-          role: 'assistant',
-          content: reply,
-          metadata: {
-            roleProfile: roleProfile?.id,
-            tools,
-            ...(inferred.tags ? { tags: inferred.tags } : {}),
-            ...(inferred.topic ? { topic: inferred.topic } : {}),
-          },
-        });
+        assistantMessage = await this.sessionManager.addMessage(
+          session.id,
+          'assistant',
+          reply,
+          {
+            metadata: {
+              roleProfile: roleProfile?.id,
+              tools,
+              ...(inferred.tags ? { tags: inferred.tags } : {}),
+              ...(inferred.topic ? { topic: inferred.topic } : {}),
+            },
+          }
+        );
       }
 
       const output = {
@@ -459,16 +457,19 @@ export class KernelAgentBase {
       if (input.sessionId) {
         try {
           const { session } = await this.resolveSession(input);
-          await this.sessionManager.addMessage(session.id, {
-            role: 'assistant',
-            content: `[执行失败] ${errorMessage}`,
-            metadata: {
-              error: true,
-              finish_reason: 'error',
-              roleProfile: input.roleProfile,
-              tools: input.tools,
-            },
-          });
+          await this.sessionManager.addMessage(
+            session.id,
+            'assistant',
+            `[执行失败] ${errorMessage}`,
+            {
+              metadata: {
+                error: true,
+                finish_reason: 'error',
+                roleProfile: input.roleProfile,
+                tools: input.tools,
+              },
+            }
+          );
         } catch {
           // Best-effort: do not throw from failure recording
         }
@@ -505,10 +506,8 @@ export class KernelAgentBase {
 
   private async resolveSession(input: UnifiedAgentInput): Promise<{ session: Session; responseSessionId: string }> {
     if (input.createNewSession || !input.sessionId) {
-      const created = await this.sessionManager.createSession({
-        title: input.text.substring(0, 50) || '新对话',
-        metadata: input.metadata,
-      });
+      const projectPath = (input.metadata?.projectPath as string) || process.cwd();
+      const created = this.sessionManager.createSession(projectPath, input.text.substring(0, 50) || '新对话');
       const responseSessionId = input.sessionId ?? created.id;
       if (input.sessionId) {
         this.externalSessionBindings.set(input.sessionId, created.id);
@@ -526,10 +525,8 @@ export class KernelAgentBase {
       return { session: existing, responseSessionId: externalSessionId };
     }
 
-    const created = await this.sessionManager.createSession({
-      title: input.text.substring(0, 50) || '新对话',
-      metadata: input.metadata,
-    });
+    const projectPath = (input.metadata?.projectPath as string) || process.cwd();
+    const created = this.sessionManager.createSession(projectPath, input.text.substring(0, 50) || '新对话');
     this.externalSessionBindings.set(externalSessionId, created.id);
     return { session: created, responseSessionId: externalSessionId };
   }
@@ -676,7 +673,7 @@ export class KernelAgentBase {
         params.inputMetadata?.contextLedgerCanReadAll === true
         || params.roleProfileId === 'project'
         || params.roleProfileId === 'system'
-        || params.roleProfileId === 'orchestrator',
+        || params.roleProfileId === 'system',
       contextLedgerFocusMaxChars:
         typeof params.inputMetadata?.contextLedgerFocusMaxChars === 'number'
           ? params.inputMetadata.contextLedgerFocusMaxChars
@@ -745,7 +742,7 @@ export class KernelAgentBase {
     roleProfileId?: string;
   }): Record<string, unknown> | undefined {
     const roleProfileId = (params.roleProfileId ?? '').trim().toLowerCase();
-    const isSystemLike = roleProfileId === 'system' || roleProfileId === 'orchestrator' || this.config.moduleId === 'finger-system-agent';
+    const isSystemLike = roleProfileId === 'system' || this.config.moduleId === 'finger-system-agent';
     const isProjectLike = roleProfileId === 'project' || this.config.moduleId === 'finger-project-agent';
     if (!isSystemLike && !isProjectLike) return params.inputMetadata;
 
@@ -806,7 +803,7 @@ export class KernelAgentBase {
       // Scope rule:
       // - system agent should only read its own coordinator scope (system session project path),
       //   not global project workers' private update_plan items.
-      // - project/reviewer agents read the bound project scope.
+      // - project agents read the bound project scope.
       projectPath: sessionProjectPath || undefined,
       cwd: typeof metadata.cwd === 'string' ? metadata.cwd : undefined,
       maxItems: isSystemLike ? 12 : 10,
@@ -1859,13 +1856,12 @@ export class KernelAgentBase {
     };
   }
 
-  private resolveSchemaRole(roleProfileId?: string): 'orchestrator' | 'reviewer' | 'executor' | 'searcher' | 'router' {
+  private resolveSchemaRole(roleProfileId?: string): 'system' | 'project' {
     const normalized = (roleProfileId ?? '').trim().toLowerCase();
-    if (normalized.includes('review')) return 'reviewer';
-    if (normalized.includes('search') || normalized.includes('research')) return 'searcher';
-    if (normalized.includes('execut') || normalized.includes('coder') || normalized.includes('coding')) return 'executor';
-    if (normalized === 'router') return 'router';
-    return 'orchestrator';
+    // System agent handles review internally, so 'review' maps to 'system'
+    if (normalized.includes('review') || normalized.includes('system')) return 'system';
+    // Everything else (including executor, searcher, router, orchestrator) maps to 'project'
+    return 'project';
   }
 
   private shouldRequestExecutionFollowUp(
@@ -2332,7 +2328,7 @@ function resolveReviewTools(tools: string[]): string[] {
 
 function buildReviewModePrompt(): string {
   return [
-    '你是独立的审核代理（reviewer），运行在隔离上下文中。',
+    '你是独立的审核代理，运行在系统代理的隔离上下文中。',
     '审核目标：验证“主模型声明”是否有可复现证据支撑，不能凭主模型自述直接放行。',
     '你必须优先使用只读工具在当前 cwd 做核验（读文件、执行只读 shell、查看图片、必要时网络检索）。',
     '禁止任何写入、修改、删除类操作。',

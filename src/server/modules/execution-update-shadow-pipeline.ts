@@ -368,7 +368,7 @@ export class ExecutionUpdateShadowPipeline {
     await this.correlation.bindSessionAgentFlow(sessionId, agentId, flowId);
     const next = await this.correlation.nextSeq(flowId);
     const role = inferUpdateStreamRole(agentId);
-    const phase = role === 'reviewer' ? 'review' : 'execution';
+    const phase = role === 'system' ? 'review' : 'execution';
     const level = type === 'plan_updated' ? 'milestone' : 'info';
     const output: ExecutionUpdateEvent = {
       id: `exeupd-${Date.now().toString(36)}-${randomId(8)}`,

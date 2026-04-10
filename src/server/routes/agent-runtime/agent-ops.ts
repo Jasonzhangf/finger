@@ -56,7 +56,7 @@ export function registerAgentOpsRoutes(app: Express, deps: AgentRuntimeRouteDeps
         id: string;
         agentId: string;
         name: string;
-        type: 'system' | 'project' | 'reviewer';
+        type: 'system' | 'project';
         status: 'idle' | 'running' | 'error' | 'paused' | 'queued' | 'waiting_input' | 'completed' | 'failed' | 'interrupted';
         sessionId?: string;
         workflowId?: string;
@@ -85,7 +85,7 @@ export function registerAgentOpsRoutes(app: Express, deps: AgentRuntimeRouteDeps
       instanceCount?: number;
       targetAgentId?: string;
       targetImplementationId?: string;
-      launchMode?: 'manual' | 'orchestrator';
+      launchMode?: 'manual' | 'system';
     };
 
     try {

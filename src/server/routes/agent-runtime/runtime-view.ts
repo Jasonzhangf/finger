@@ -88,10 +88,10 @@ export function registerRuntimeViewRoutes(app: Express, deps: AgentRuntimeRouteD
   });
 
   app.post('/api/v1/agents/mock/policy', (req, res) => {
-    const body = req.body as { executor?: string; reviewer?: string; searcher?: string };
+    const body = req.body as { executor?: string; searcher?: string };
     const policy = deps.mockRuntime.rolePolicy;
     if (body.executor === 'success' || body.executor === 'failure') policy.executor = body.executor;
-    if (body.reviewer === 'success' || body.reviewer === 'failure') policy.reviewer = body.reviewer;
+    
     if (body.searcher === 'success' || body.searcher === 'failure') policy.searcher = body.searcher;
     res.json({ success: true, policy });
   });

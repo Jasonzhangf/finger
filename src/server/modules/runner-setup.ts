@@ -10,7 +10,7 @@ import { createMockRuntimeKit, type ChatCodexRunnerController } from './mock-run
 import type { DispatchTaskLike } from './mock-runtime/index.js';
 import type { RuntimeFacade } from '../../runtime/runtime-facade.js';
 import type { SessionManager } from '../../orchestration/session-manager.js';
-import { FINGER_PROJECT_AGENT_ID, FINGER_REVIEWER_AGENT_ID } from '../../agents/finger-general/finger-general-module.js';
+import { FINGER_PROJECT_AGENT_ID } from '../../agents/finger-general/finger-general-module.js';
 import { resolveRuntimeFlags, shouldUseMockChatCodexRunner } from './server-flags.js';
 import type { AgentDispatchRequest } from './agent-runtime/types.js';
 
@@ -44,7 +44,7 @@ export function setupChatCodexRunner(deps: {
     agentIds: {
       researcher: FINGER_PROJECT_AGENT_ID,
       executor: FINGER_PROJECT_AGENT_ID,
-      reviewer: FINGER_REVIEWER_AGENT_ID,
+      
     },
   });
 

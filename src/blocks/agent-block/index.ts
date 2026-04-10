@@ -1,12 +1,11 @@
 import { spawn, type ChildProcess } from 'child_process';
 import { lifecycleManager } from '../../agents/core/agent-lifecycle.js';
 import { BaseBlock, type BlockCapabilities } from '../../core/block.js';
-import type { Agent, AgentRole, SpecialistType } from '../../core/types.js';
+import type { Agent, AgentRole } from '../../core/types.js';
 
 interface SpawnArgs {
   role: AgentRole;
   sdk: 'iflow' | 'codex' | 'claude';
-  specialistType?: SpecialistType;
   capabilities?: string[];
 }
 
@@ -66,7 +65,6 @@ export class AgentBlock extends BaseBlock {
       id,
       name: `${args.role}-${args.sdk}`,
       role: args.role,
-      specialistType: args.specialistType,
       sdk: args.sdk,
       status: 'idle',
       capabilities: args.capabilities || [],

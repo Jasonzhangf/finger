@@ -11,7 +11,7 @@ export interface LedgerWriterContext {
 }
 
 export interface LedgerMessageInput {
-  role: 'user' | 'assistant' | 'system' | 'orchestrator';
+  role: 'user' | 'assistant' | 'system';
   content: string;
   messageId?: string;
   tokenCount?: number;

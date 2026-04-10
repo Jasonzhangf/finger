@@ -164,15 +164,21 @@ export function registerDaemonCommand(program: Command): void {
       fetch(`http://localhost:${config.port}/api/v1/modules`, { signal: AbortSignal.timeout(5000) })
         .then(res => res.json())
         .then(data => {
+          const modules = (data && typeof data === 'object' ? data : {}) as {
+            inputs?: Array<{ id: string }>;
+            outputs?: Array<{ id: string }>;
+          };
           if (options.json) {
-            clog.log(JSON.stringify({ running: true, port: config.port, ...data }, null, 2));
+            clog.log(JSON.stringify({ running: true, port: config.port, ...modules }, null, 2));
           } else {
+            const inputs = Array.isArray(modules.inputs) ? modules.inputs : [];
+            const outputs = Array.isArray(modules.outputs) ? modules.outputs : [];
             clog.log(`Daemon: running on port ${config.port}`);
             clog.log(`WebSocket: port ${config.wsPort}`);
-            clog.log(`\nInputs: ${(data as { inputs: { id: string }[] }).inputs.length}`);
-            (data as { inputs: { id: string }[] }).inputs.forEach((i) => clog.log(`  - ${i.id}`));
-            clog.log(`\nOutputs: ${(data as { outputs: { id: string }[] }).outputs.length}`);
-            (data as { outputs: { id: string }[] }).outputs.forEach((o) => clog.log(`  - ${o.id}`));
+            clog.log(`\nInputs: ${inputs.length}`);
+            inputs.forEach((i) => clog.log(`  - ${i.id}`));
+            clog.log(`\nOutputs: ${outputs.length}`);
+            outputs.forEach((o) => clog.log(`  - ${o.id}`));
           }
           process.exit(0);
         })

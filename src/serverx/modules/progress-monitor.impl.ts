@@ -313,9 +313,9 @@ export class ProgressMonitor {
     const rounds = Array.isArray(progress.recentRounds) ? progress.recentRounds : [];
     if (rounds.length === 0) return [];
     const lines: string[] = ['🕘 最近轮次:'];
-    for (const round of rounds.slice(-3)) {
-      const status = round.failureCount > 0 ? '❌' : '✅';
-      lines.push(`  ${status} #${round.seq} ${round.summary}`);
+for (const round of rounds.slice(-3)) {
+      const statusIcon = round.failureCount > 0 ? '❌' : round.successCount > 0 ? '✅' : '⏳';
+      lines.push(`  ${statusIcon} ${round.summary}`);
     }
     return lines;
   }
@@ -946,16 +946,24 @@ export class ProgressMonitor {
     await this.refreshConfigIfNeeded();
     if (!this.config.progressUpdates) return;
 
-    const now = Date.now();
-    // 获取所有活跃的 session；先按 startTime 刷新 elapsed，避免运行中但尚未回填 elapsedMs 的 session 被漏掉。
-    const activeProgress = Array.from(this.sessionProgress.values())
-      .filter((p) => {
-        if (p.status !== 'running') return false;
-        p.elapsedMs = Math.max(0, now - p.startTime);
-        return true;
-      });
+   const now = Date.now();
+   // 获取所有活跃的 session；先按 startTime 刷新 elapsed，避免运行中但尚未回填 elapsedMs 的 session 被漏掉。
+   const activeProgress = Array.from(this.sessionProgress.values())
+     .filter((p) => {
+        // 状态过滤：running/queued 且有活跃工具调用，或者有未完成的工具调用
+        const hasActiveTools = p.toolCallHistory.some(t => !this.isToolRecordCompleted(t));
+        const recentlyActiveTools = p.toolCallHistory.some(t => {
+          const age = now - (t.timestamp ?? 0);
+          return age < this.config.intervalMs * 2;
+        });
+        const isQueuedWithPending = false; // SessionProgress.status does not have 'queued' state
+        const isRunningOrRecentlyActive = p.status === 'running' || (p.status === 'idle' && recentlyActiveTools);
+        if (!isRunningOrRecentlyActive) return false;
+       p.elapsedMs = Math.max(0, now - p.startTime);
+       return true;
+     });
 
-    if (activeProgress.length === 0) return;
+   if (activeProgress.length === 0) return;
 
     log.debug(`[ProgressMonitor] Generating progress report for ${activeProgress.length} active entries`);
 

@@ -1,5 +1,5 @@
 /**
- * Session Types - 会话相关类型定义
+ * Session Types - 会话相关类型定义（唯一真源）
  *
  * Ledger-Session 一体化架构：
  * - Ledger 负责 append-only 持久化流水
@@ -9,14 +9,29 @@
 
 import type { Attachment } from '../runtime/events.js';
 
+// ─── SessionStatus 枚举 ────────────────────────────────────
+
+export enum SessionStatus {
+  ACTIVE = 'active',
+  PAUSED = 'paused',
+  ARCHIVED = 'archived',
+  CLOSED = 'closed',
+}
+
+// ─── Session 接口（唯一真源）───────────────────────────────
+
 /** Session 元数据 + Ledger 指针 */
 export interface Session {
   id: string;
   name: string;
+  title?: string; // 兼容旧版（name 的别名）
   projectPath: string;
   createdAt: string;
   updatedAt: string;
   lastAccessedAt: string;
+  lastActivityAt?: string; // 兼容旧版
+  status?: SessionStatus; // 兼容旧版
+  messageCount?: number; // 兼容旧版
 
   /**
    * Runtime session snapshot (projection).
@@ -77,7 +92,7 @@ export interface Session {
 
 export interface SessionMessage {
   id: string;
-  role: 'user' | 'assistant' | 'system' | 'orchestrator';
+  role: 'user' | 'assistant' | 'system';
   content: string;
   timestamp: string;
   workflowId?: string;
@@ -92,6 +107,125 @@ export interface SessionMessage {
   toolOutput?: unknown;
   metadata?: Record<string, unknown>;
 }
+
+// ─── ISessionManager 接口（唯一真源）──────────────────────
+
+export interface CreateSessionParams {
+  title?: string;
+  projectPath?: string;
+  metadata?: Record<string, unknown>;
+  initialMessages?: SessionMessage[];
+}
+
+export interface UpdateSessionParams {
+  title?: string;
+  name?: string;
+  status?: SessionStatus;
+  metadata?: Record<string, unknown>;
+}
+
+export interface SessionQuery {
+  status?: SessionStatus;
+  projectPath?: string;
+  limit?: number;
+  offset?: number;
+  sortBy?: 'createdAt' | 'updatedAt' | 'lastAccessedAt' | 'lastActivityAt';
+  sortOrder?: 'asc' | 'desc';
+}
+
+export interface SessionStats {
+  totalSessions: number;
+  activeSessions: number;
+  totalMessages: number;
+  oldestSession?: string;
+  newestSession?: string;
+}
+
+/**
+ * ISessionManager - Session 管理唯一接口
+ * 
+ * 实现类：SessionManager (src/orchestration/session-manager.ts)
+ */
+export interface ISessionManager {
+  initialize(): Promise<unknown>;
+  createSession(projectPath: string, name?: string, options?: { allowReuse?: boolean }): Session;
+  getSession(sessionId: string): Session | undefined;
+  getCurrentSession(): Session | null;
+  setCurrentSession(sessionId: string): boolean;
+  listSessions(): Session[];
+  getSessionSnapshot(sessionId: string): Session | undefined;
+  getSessionMessageSnapshot(sessionId: string, previewLimit?: number): { messageCount: number; previewMessages: SessionMessage[]; lastMessageAt?: string };
+  updateSession(sessionId: string, params: UpdateSessionParams): Session | undefined;
+  deleteSession(sessionId: string): boolean;
+  querySessions(query?: SessionQuery): Session[];
+  addMessage(
+    sessionId: string,
+    role: SessionMessage['role'],
+    content: string,
+    metadata?: {
+      workflowId?: string;
+      taskId?: string;
+      attachments?: unknown[];
+      type?: SessionMessage['type'];
+      agentId?: string;
+      toolName?: string;
+      toolStatus?: SessionMessage['toolStatus'];
+      toolDurationMs?: number;
+      toolInput?: unknown;
+      toolOutput?: unknown;
+      tags?: string[];
+      topic?: string;
+      timestamp?: string;
+      metadata?: Record<string, unknown>;
+    }
+  ): Promise<SessionMessage | null>;
+  getMessages(sessionId: string, limit?: number): SessionMessage[];
+  getMessageHistory(sessionId: string, limit?: number): SessionMessage[];
+  deleteMessage(sessionId: string, messageId: string): boolean;
+  restoreSession(sessionId: string): Session | null;
+  restoreAllSessions(): number;
+  cleanupExpiredSessions(ttlDays?: number): number;
+  getStats(): SessionStats;
+  destroy(): void;
+  pauseSession?(sessionId: string): boolean;
+  resumeSession?(sessionId: string): boolean;
+  isPaused?(sessionId: string): boolean;
+  updateContext?(sessionId: string, context: Record<string, unknown>): boolean;
+  compressContext?(sessionId: string, options?: { force?: boolean }): Promise<string>;
+  getCompressionStatus?(sessionId: string): { compressed: boolean; summary?: string; originalCount?: number };
+  appendDigest?(
+    sessionId: string,
+    message: {
+      role: SessionMessage['role'];
+      content: string;
+      timestamp: string;
+    },
+    tags?: string[],
+    agentId?: string,
+    mode?: string,
+  ): Promise<void>;
+  syncProjectionFromLedger?(
+    sessionId: string,
+    options?: {
+      agentId?: string;
+      mode?: string;
+      source?: string;
+      maxTokens?: number;
+      includeSummary?: boolean;
+      force?: boolean;
+    },
+  ): Promise<{
+    applied: boolean;
+    reason: string;
+    messageCount?: number;
+    latestCompactIndex?: number;
+    totalTokens?: number;
+    success?: boolean;
+    error?: string;
+  }>;
+}
+
+// ─── Ledger 指针默认值 ────────────────────────────────────
 
 /** Ledger 指针的默认初始值 */
 export const LEDGER_POINTER_DEFAULTS = {

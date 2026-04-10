@@ -41,4 +41,4 @@ export function pickMessageContext(
   };
 }
 
-export const DEFAULT_DEBUG_RUNTIME_MODULE_IDS: readonly string[] = ['executor-debug-agent', 'reviewer-debug-agent', 'searcher-debug-agent'];
+export const DEFAULT_DEBUG_RUNTIME_MODULE_IDS: readonly string[] = ['executor-debug-agent',  'searcher-debug-agent'];

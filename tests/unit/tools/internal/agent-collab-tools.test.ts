@@ -87,6 +87,18 @@ describe('Agent Collab Tools', () => {
       expect(agents[0].status).toBe('active');
     });
 
+    it('enforces default max_threads=10 when not explicitly provided', async () => {
+      await Promise.all(
+        Array.from({ length: 10 }, (_, index) =>
+          handleAgentSpawn({ message: `task-${index}` }, ctx),
+        ),
+      );
+
+      await expect(handleAgentSpawn({ message: 'task-over-limit' }, ctx)).rejects.toThrow(
+        'Agent limit reached: max_threads=10',
+      );
+    });
+
     it('rollbacks reservation on spawn failure', async () => {
       spawnAgentMock.mockRejectedValue(new Error('spawn failed'));
 
@@ -145,6 +157,19 @@ it('resolves relative recipient paths', async () => {
       expect(msgs[0].recipient).toBe('/root/project_agent/worker_1');
     });
 
+it('resolves recipient by spawned agent_id', async () => {
+      await handleAgentSpawn({ message: 'task1' }, ctx);
+
+      await handleAgentSendMessage({
+        recipient: 'child-001',
+        content: 'hello',
+      }, ctx);
+
+      const msgs = mailbox.list({ status: 'pending' });
+      expect(msgs).toHaveLength(1);
+      expect(msgs[0].recipient).toBe('/root/project_agent/explorer');
+    });
+
 it('supports other_recipients broadcast', async () => {
       await handleAgentSendMessage({
         ...baseParams,
@@ -187,6 +212,19 @@ it('serializes object content', async () => {
       }, ctx);
       const msgs = mailbox.list({ status: 'pending' });
       expect(msgs[0].content).toBe('{"action":"review","target":"src/main.ts"}');
+    });
+
+it('resolves followup recipient by spawned agent_id', async () => {
+      await handleAgentSpawn({ message: 'task1' }, ctx);
+
+      await handleAgentFollowupTask({
+        recipient: 'child-001',
+        content: 'continue',
+      }, ctx);
+
+      const msgs = mailbox.list({ status: 'pending', triggerTurn: true });
+      expect(msgs).toHaveLength(1);
+      expect(msgs[0].recipient).toBe('/root/project_agent/explorer');
     });
   });
 

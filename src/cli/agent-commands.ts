@@ -75,7 +75,7 @@ async function sendMessageToHub(
     throw new Error(`Message Hub error: ${res.statusText}`);
   }
 
-  return res.json();
+  return await res.json() as { messageId: string; status: string; result?: unknown; error?: string };
 }
 
 /**
@@ -161,7 +161,7 @@ export async function executeCommand(task: string, options: { agent?: string; bl
 /**
  * 质量审查命令
  * CLI: finger review --proposal <json>
- * Target: reviewer-agent
+ * Target: system-agent (review absorbed internally)
  */
 export interface ReviewOptions {
   json?: boolean;
@@ -170,7 +170,7 @@ export interface ReviewOptions {
 export async function reviewCommand(proposal: string, options: ReviewOptions = {}): Promise<void> {
   const callbackId = generateCallbackId();
   
-  const result = await sendMessageToHub('reviewer-agent', 'REVIEW', {
+  const result = await sendMessageToHub('finger-system-agent', 'REVIEW', {
     proposal: JSON.parse(proposal),
   }, { callbackId });
 
@@ -185,7 +185,7 @@ export async function reviewCommand(proposal: string, options: ReviewOptions = {
 export async function orchestrateCommand(task: string, options: { sessionId?: string; watch?: boolean; json?: boolean } = {}): Promise<void> {
   const callbackId = generateCallbackId();
   
-  const result = await sendMessageToHub('orchestrator', 'ORCHESTRATE', {
+  const result = await sendMessageToHub('system', 'ORCHESTRATE', {
     task,
     sessionId: options.sessionId,
   }, { callbackId });

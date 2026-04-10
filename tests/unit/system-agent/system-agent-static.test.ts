@@ -8,6 +8,7 @@ import {
 } from '../../../src/agents/finger-general/finger-general-module.js';
 
 const ROOT = path.resolve(process.cwd());
+const FINGER_HOME = process.env.FINGER_HOME || '';
 
 const SYSTEM_PROMPT_PATH = path.join(ROOT, 'src/agents/finger-system-agent/system-prompt.md');
 const SYSTEM_DEV_PATH = path.join(ROOT, 'src/agents/finger-system-agent/system-dev-prompt.md');
@@ -41,8 +42,11 @@ describe('System Agent Static Config', () => {
     expect(FINGER_PROJECT_ALLOWED_TOOLS).toContain('report-task-completion');
   });
 
-  it('system agent cwd/session path fixed', () => {
-    expect(SYSTEM_AGENT_CONFIG.projectPath).toContain('.finger/system');
-    expect(SYSTEM_AGENT_CONFIG.sessionPath).toContain('.finger/system/sessions');
+  it('system agent cwd/session path uses FINGER_HOME', () => {
+    expect(SYSTEM_AGENT_CONFIG.projectPath).toContain('system');
+    expect(SYSTEM_AGENT_CONFIG.sessionPath).toContain('system/sessions');
+    if (FINGER_HOME) {
+      expect(SYSTEM_AGENT_CONFIG.projectPath).toContain(FINGER_HOME);
+    }
   });
 });

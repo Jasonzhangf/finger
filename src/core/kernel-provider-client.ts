@@ -69,7 +69,9 @@ export function buildResponsesEndpoints(baseUrl: string): string[] {
   return endpoints.filter((item, index, arr) => arr.indexOf(item) === index);
 }
 
-export function buildProviderHeaders(provider: KernelProviderConfig): HeadersInit {
+export type HeadersInitLike = Record<string, string>;
+
+export function buildProviderHeaders(provider: KernelProviderConfig): HeadersInitLike {
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
   };

@@ -29,7 +29,7 @@ export interface TaskContext {
 export interface AgentInfo {
   agentId: string;
   agentName?: string;
-  agentRole?: 'system' | 'project' | 'reviewer';
+  agentRole?: 'system' | 'project';
 }
 
 export interface WrappedStatusUpdate {

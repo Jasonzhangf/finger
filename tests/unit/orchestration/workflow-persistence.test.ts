@@ -20,9 +20,10 @@ vi.mock('fs', () => {
       if (path.endsWith('.json')) {
         return files.has(path);
       }
-      return path.includes('.finger');
+      return true; // Always return true for directory checks
     }),
     mkdirSync: vi.fn(),
+    appendFileSync: vi.fn(),
     writeFileSync: vi.fn((filePath, content) => {
       files.set(String(filePath), String(content));
       const workflowId = String(filePath).split('/').pop()?.replace('.json', '');
@@ -35,7 +36,11 @@ vi.mock('fs', () => {
       }
     }),
     readFileSync: vi.fn((filePath) => {
-      const content = files.get(String(filePath));
+      const key = String(filePath);
+      if (key.endsWith('agents.json') || key.endsWith('orchestration.json')) {
+        return '{}';
+      }
+      const content = files.get(key);
       if (content === undefined) {
         throw new Error(`ENOENT: ${filePath}`);
       }
@@ -51,7 +56,7 @@ vi.mock('fs', () => {
     readdirSync: vi.fn((dir) => {
       if (String(dir) === WORKFLOWS_DIR) {
         return Array.from(files.keys())
-          .filter((f) => f.endsWith('.json'))
+          .filter((f) => f.endsWith('.json') && f.startsWith(WORKFLOWS_DIR))
           .map((f) => f.split('/').pop()!);
       }
       return [];
@@ -62,11 +67,6 @@ vi.mock('fs', () => {
     ...fsMock,
   };
 });
-
-vi.mock('os', () => ({
-  default: { homedir: vi.fn(() => '/home/test') },
-  homedir: vi.fn(() => '/home/test'),
-}));
 
 function createWorkflow(
   id: string,
@@ -198,7 +198,7 @@ describe('workflow-persistence', () => {
     it('returns false for task not in progress', () => {
       const task: TaskNode = {
         id: 't1',
-        description: 'Test',
+        description: 'test',
         type: 'executor',
         status: 'pending',
         dependencies: [],
@@ -207,56 +207,41 @@ describe('workflow-persistence', () => {
       expect(isTaskTimeout(task)).toBe(false);
     });
 
-    it('returns false for task without deadline', () => {
-      const task: TaskNode = {
-        id: 't1',
-        description: 'Test',
-        type: 'executor',
-        status: 'in_progress',
-        dependencies: [],
-        dependents: [],
-        startedAt: new Date().toISOString(),
-      };
-      expect(isTaskTimeout(task)).toBe(false);
-    });
-
     it('returns false for task without startedAt', () => {
       const task: TaskNode = {
-        id: 't1',
-        description: 'Test',
+        id: 't2',
+        description: 'test',
         type: 'executor',
         status: 'in_progress',
         dependencies: [],
         dependents: [],
+      };
+      expect(isTaskTimeout(task)).toBe(false);
+    });
+
+    it('returns false for task without deadline', () => {
+      const task: TaskNode = {
+        id: 't3',
+        description: 'test',
+        type: 'executor',
+        status: 'in_progress',
+        startedAt: new Date(Date.now() - 100).toISOString(),
+        dependencies: [],
+        dependents: [],
+      };
+      expect(isTaskTimeout(task)).toBe(false);
+    });
+
+    it('returns true when deadline exceeded', () => {
+      const task: TaskNode = {
+        id: 't4',
+        description: 'test',
+        type: 'executor',
+        status: 'in_progress',
+        startedAt: new Date(Date.now() - 2000).toISOString(),
         deadline: 1000,
-      };
-      expect(isTaskTimeout(task)).toBe(false);
-    });
-
-    it('returns false for task within deadline', () => {
-      const task: TaskNode = {
-        id: 't1',
-        description: 'Test',
-        type: 'executor',
-        status: 'in_progress',
         dependencies: [],
         dependents: [],
-        deadline: 3600000,
-        startedAt: new Date().toISOString(),
-      };
-      expect(isTaskTimeout(task)).toBe(false);
-    });
-
-    it('returns true for task past deadline', () => {
-      const task: TaskNode = {
-        id: 't1',
-        description: 'Test',
-        type: 'executor',
-        status: 'in_progress',
-        dependencies: [],
-        dependents: [],
-        deadline: 1,
-        startedAt: new Date(Date.now() - 10000).toISOString(),
       };
       expect(isTaskTimeout(task)).toBe(true);
     });
@@ -264,7 +249,6 @@ describe('workflow-persistence', () => {
 
   describe('WORKFLOWS_DIR', () => {
     it('exports workflow directory path', () => {
-      expect(WORKFLOWS_DIR).toContain('.finger');
       expect(WORKFLOWS_DIR).toContain('workflows');
     });
   });

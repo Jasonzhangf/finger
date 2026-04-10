@@ -37,7 +37,6 @@ export interface Agent {
   id: string;
   name: string;
   role: AgentRole;
-  specialistType?: SpecialistType;
   sdk: 'iflow' | 'codex' | 'claude';
   status: AgentStatus;
   capabilities: string[];
@@ -45,8 +44,7 @@ export interface Agent {
   lastHeartbeat?: Date;
 }
 
-export type AgentRole = 'orchestrator' | 'executor' | 'reviewer' | 'specialist';
-export type SpecialistType = 'architect' | 'tester' | 'docwriter' | 'security';
+export type AgentRole = 'system' | 'project';
 export type AgentStatus = 'idle' | 'busy' | 'error' | 'offline';
 
 // Project-related types

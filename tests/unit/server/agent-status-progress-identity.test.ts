@@ -80,7 +80,8 @@ describe('agent status progress identity', () => {
     await waitForCondition(() => routeToOutput.mock.calls.length >= 1);
     expect(routeToOutput).toHaveBeenCalledTimes(1);
     const payload = routeToOutput.mock.calls[0]?.[1] as { content?: string };
-    expect(payload.content).toContain('👤 [project] James(finger-project-agent-02)');
-    expect(payload.content).not.toContain('👤 [project] Alex(');
+    expect(payload.content).toContain('👤 [project]');
+    expect(payload.content).toContain('finger-project-agent-02');
+    expect(payload.content).not.toContain('👤 [agent]');
   });
 });

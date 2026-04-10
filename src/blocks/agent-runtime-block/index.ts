@@ -6,6 +6,7 @@ import type { MessageHub } from '../../orchestration/message-hub.js';
 import type { ModuleRegistry, OrchestrationModule } from '../../orchestration/module-registry.js';
 import type { LoadedAgentConfig } from '../../runtime/agent-json-config.js';
 import type { ResourcePool } from '../../orchestration/resource-pool.js';
+import { ResourceType } from '../../orchestration/resource-pool.js';
 
 import { buildDispatchTaskText, extractTaskText, sanitizeDispatchResult, type DispatchSummaryResult } from '../../common/agent-dispatch.js';
 import { resolveSystemDispatchPolicy } from '../../core/system-dispatch-policy.js';
@@ -16,7 +17,7 @@ import { logger } from '../../core/logger.js';
 const log = logger.module('AgentRuntimeBlock');
 const SYSTEM_AGENT_ID = 'finger-system-agent';
 
-export type AgentRoleType = 'system' | 'project' | 'reviewer';
+export type AgentRoleType = 'system' | 'project';
 
 export type AgentCapabilityLayer = 'summary' | 'execution' | 'governance' | 'full';
 
@@ -72,7 +73,7 @@ export interface AgentStartupTemplate {
   defaultImplementationId: string;
   defaultModuleId: string;
   defaultInstanceCount: number;
-  launchMode: 'manual' | 'orchestrator';
+  launchMode: 'manual' | 'system';
 }
 
 export interface AgentDeploymentRecord {
@@ -83,7 +84,7 @@ export interface AgentDeploymentRecord {
   sessionId: string;
   scope: 'session' | 'global';
   instanceCount: number;
-  launchMode: 'manual' | 'orchestrator';
+  launchMode: 'manual' | 'system';
   status: 'idle' | 'running' | 'error' | 'paused';
   createdAt: string;
 }
@@ -164,7 +165,7 @@ const BASE_STARTUP_TEMPLATES: AgentStartupTemplate[] = [
     defaultImplementationId: 'native:finger-project-agent',
     defaultModuleId: 'finger-project-agent',
     defaultInstanceCount: 1,
-    launchMode: 'orchestrator',
+    launchMode: 'system',
   },
   {
     id: 'finger-system-agent',
@@ -289,7 +290,7 @@ export interface AgentDeployRequest {
   sessionId?: string;
   scope?: 'session' | 'global';
   instanceCount?: number;
-  launchMode?: 'manual' | 'orchestrator';
+  launchMode?: 'manual' | 'system';
   config?: {
     id?: string;
     name?: string;
@@ -368,16 +369,16 @@ function resolveDispatchPriorityScore(input: AgentDispatchRequest): number {
   const assignment = isObjectRecord(input.assignment) ? input.assignment : {};
   const taskRecord = isObjectRecord(input.task) ? input.task : {};
   const taskMetadata = isObjectRecord(taskRecord.metadata) ? taskRecord.metadata : {};
-  return normalizeDispatchPriorityScore(
-    metadata.priority
-    ?? metadata.urgent
-    ?? metadata.priorityScore
-    ?? assignment.priority
+
+  // Security: Only allow explicit 'assignment' or trusted metadata to set high priority.
+  // Reject priority inflation from untrusted task payloads or generic metadata.
+  const safeSource = assignment.priority
     ?? assignment.urgent
-    ?? taskRecord.priority
-    ?? taskMetadata.priority
-    ?? 0,
-  );
+    ?? metadata.priority
+    ?? metadata.priorityScore
+    ?? 0;
+
+  return normalizeDispatchPriorityScore(safeSource);
 }
 
 function resolveTerminalAssignmentPhase(
@@ -518,7 +519,6 @@ function normalizeAgentType(value: unknown): AgentRoleType {
   if (typeof value !== 'string') return 'project';
   const normalized = value.trim().toLowerCase();
   if (normalized.includes('system')) return 'system';
-  if (normalized.includes('review')) return 'reviewer';
   return 'project';
 }
 
@@ -1551,8 +1551,9 @@ export class AgentRuntimeBlock extends BaseBlock {
   private validateAndRememberWorkerProjectSessionBinding(
     lane: DispatchLaneMeta,
   ): { ok: true } | { ok: false; error: string } {
-    const targetAgentId = typeof lane.targetAgentId === 'string' ? lane.targetAgentId.trim().toLowerCase() : '';
-    if (targetAgentId.includes('reviewer')) return { ok: true };
+   const targetAgentId = typeof lane.targetAgentId === 'string' ? lane.targetAgentId.trim().toLowerCase() : '';
+    // System agent can dispatch across projects without lane binding
+    if (targetAgentId.includes('system')) return { ok: true };
     const projectId = typeof lane.projectId === 'string' ? lane.projectId.trim() : '';
     const workerId = typeof lane.workerId === 'string' ? lane.workerId.trim() : '';
     const sessionId = typeof lane.sessionId === 'string' ? lane.sessionId.trim() : '';
@@ -1675,7 +1676,7 @@ export class AgentRuntimeBlock extends BaseBlock {
       sourceAgentId: input.sourceAgentId,
       targetAgentId: input.targetAgentId,
       responsesStructuredOutput: !isSystemRole,
-      responsesOutputSchemaPreset: isSystemRole ? 'none' : (targetRole === 'reviewer' ? 'reviewer' : 'orchestrator'),
+      responsesOutputSchemaPreset: isSystemRole ? 'none' : 'project',
       ...(assignment ? { assignment } : {}),
       ...(traceId ? { traceId } : {}),
       orchestration: true,
@@ -2698,7 +2699,7 @@ export class AgentRuntimeBlock extends BaseBlock {
       this.deps.resourcePool.addResource({
         id: resourceId,
         name: `${definition.name} (${deployment.implementationId}) #${i + 1}`,
-        type: type === 'reviewer' ? 'reviewer' : 'orchestrator',
+        type: (type === 'system' ? 'system' : 'project') as ResourceType,
         capabilities,
         status: 'available',
       });
@@ -2752,7 +2753,7 @@ export class AgentRuntimeBlock extends BaseBlock {
         : this.deps.sessionManager.getCurrentSession()?.id ?? 'default',
       scope: request.scope === 'global' ? 'global' : 'session',
       instanceCount: Number.isFinite(request.instanceCount) ? Math.max(1, Math.floor(request.instanceCount!)) : (previous?.instanceCount ?? 1),
-      launchMode: request.launchMode === 'orchestrator' ? 'orchestrator' : 'manual',
+      launchMode: request.launchMode === 'system' ? 'system' : 'manual',
       status: previous?.status ?? 'idle',
       createdAt: previous?.createdAt ?? new Date().toISOString(),
     };
@@ -2842,17 +2843,15 @@ export class AgentRuntimeBlock extends BaseBlock {
       const moduleId = typeof module.id === 'string' ? module.id.trim() : '';
       if (!moduleId || existingIds.has(moduleId)) continue;
       const inferredRole = normalizeAgentType(module.metadata?.role ?? module.metadata?.type ?? moduleId);
-      if (
-        inferredRole !== 'project'
-        && inferredRole !== 'system'
-        && inferredRole !== 'reviewer'
-      ) continue;
-      if (
-        !moduleId.includes('project')
-        && !moduleId.includes('orchestr')
-        && !moduleId.includes('system')
-        && !moduleId.includes('review')
-      ) continue;
+     if (
+       inferredRole !== 'project'
+       && inferredRole !== 'system'
+     ) continue;
+     if (
+       !moduleId.includes('project')
+       && !moduleId.includes('orchestr')
+       && !moduleId.includes('system')
+     ) continue;
       templates.push({
         id: moduleId,
         name: module.name ?? moduleId,
@@ -2860,7 +2859,7 @@ export class AgentRuntimeBlock extends BaseBlock {
         defaultImplementationId: `native:${moduleId}`,
         defaultModuleId: moduleId,
         defaultInstanceCount: 1,
-        launchMode: inferredRole === 'project' ? 'orchestrator' : 'manual',
+        launchMode: inferredRole === 'project' ? 'system' : 'manual',
       });
       existingIds.add(moduleId);
     }

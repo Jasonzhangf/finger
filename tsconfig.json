@@ -2,8 +2,8 @@
   "compilerOptions": {
     "target": "ES2022",
     "module": "ESNext",
-    "moduleResolution": "bundler",
-  "lib": ["ES2022", "DOM"],
+    "moduleResolution": "node",
+    "lib": ["ES2022"],
     "outDir": "./dist",
     "rootDir": "./src",
     "strict": true,
@@ -13,7 +13,8 @@
     "resolveJsonModule": true,
     "declaration": true,
     "declarationMap": true,
-    "sourceMap": true
+    "sourceMap": true,
+    "downlevelIteration": true
   },
   "include": ["src/**/*"],
   "exclude": ["node_modules", "dist"]

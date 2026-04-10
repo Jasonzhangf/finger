@@ -24,7 +24,7 @@ const ROLE_NICKNAME_MAP: Record<string, string[]> = {
   'explorer': ['Explorer', 'Scanner', 'Seeker', 'Hunter', 'Finder'],
   'worker': ['Worker', 'Builder', 'Maker', 'Craftsman', 'Producer'],
   'coder': ['Coder', 'Developer', 'Hacker', 'Programmer', 'Engineer'],
-  'reviewer': ['Reviewer', 'Auditor', 'Inspector', 'Critic', 'Judge'],
+  // reviewer role absorbed into system agent
   'awaiter': ['Watcher', 'Monitor', 'Observer', 'Guard', 'Sentinel'],
 };
 

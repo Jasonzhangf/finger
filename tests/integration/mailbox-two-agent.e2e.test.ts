@@ -84,12 +84,14 @@ async function startOwnedDaemonIfNeeded(): Promise<void> {
   }
 
   const port = await reservePort();
+  const wsPort = await reservePort();
   DAEMON_URL = `http://127.0.0.1:${port}`;
   const daemonPath = path.join(process.cwd(), 'dist/server/index.js');
   ownedDaemon = spawn(process.execPath, [daemonPath], {
     env: {
       ...process.env,
       PORT: String(port),
+      WS_PORT: String(wsPort),
       NODE_ENV: 'test',
     },
     stdio: ['ignore', 'pipe', 'pipe'],

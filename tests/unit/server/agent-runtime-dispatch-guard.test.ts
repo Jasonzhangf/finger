@@ -54,19 +54,7 @@ function createDeps() {
 }
 
 describe('agent.dispatch runtime guards', () => {
-  it('rejects reviewer agent dispatch attempts with explicit forbidden error', async () => {
-    const { dispatchTool, execute } = createDeps();
 
-    await expect(dispatchTool.handler({
-      target_agent_id: 'finger-project-agent',
-      task: 'should not run',
-    }, {
-      agentId: 'finger-reviewer',
-      sessionId: 'session-review-1',
-    })).rejects.toThrow(/forbidden for reviewer role/i);
-
-    expect(execute).not.toHaveBeenCalled();
-  });
 
   it('rejects source_agent_id spoofing from caller context', async () => {
     const { dispatchTool, execute } = createDeps();

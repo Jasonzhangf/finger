@@ -21,7 +21,7 @@ export interface TaskReportPayload {
   projectId: string;
   /** 交付标的 */
   deliveryArtifacts?: string;
-  /** 上报来源，默认 finger-project-agent；review 通过上报时会改为 finger-reviewer */
+  /** 上报来源，默认 finger-project-agent；review absorbed into system agent */
   sourceAgentId?: string;
   /** Structured report payload (preferred). */
   taskReport?: TaskReportContract;

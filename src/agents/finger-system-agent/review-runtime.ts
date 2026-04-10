@@ -1,6 +1,6 @@
 import { logger } from '../../core/logger.js';
 import type { AgentRuntimeDeps, AgentDispatchRequest } from '../../server/modules/agent-runtime/types.js';
-import { FINGER_REVIEWER_AGENT_ID } from '../finger-general/finger-general-module.js';
+import { FINGER_SYSTEM_AGENT_ID } from '../finger-general/finger-general-module.js';
 import { upsertReviewRoute } from './review-route-registry.js';
 
 const log = logger.module('review-runtime');
@@ -46,7 +46,7 @@ export async function setupReviewRuntimeForDispatch(
     taskId,
     ...(taskName ? { taskName } : {}),
     reviewRequired: true,
-    reviewAgentId: FINGER_REVIEWER_AGENT_ID,
+    reviewAgentId: FINGER_SYSTEM_AGENT_ID,
     acceptanceCriteria: acceptanceCriteria || undefined,
     projectId: typeof input.metadata?.projectId === 'string' ? input.metadata.projectId : undefined,
     parentSessionId: input.metadata?.dispatchParentSessionId as string | undefined,
@@ -55,8 +55,8 @@ export async function setupReviewRuntimeForDispatch(
   log.info('Registered review contract for project task', {
     taskId,
     taskName,
-    reviewer: FINGER_REVIEWER_AGENT_ID,
-    reviewerStateless: true,
+    reviewer: FINGER_SYSTEM_AGENT_ID,
+    
     hasAcceptanceCriteria: acceptanceCriteria.length > 0,
   });
 }

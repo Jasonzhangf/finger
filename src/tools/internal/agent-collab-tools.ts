@@ -20,6 +20,7 @@ import { AgentPath } from '../../common/agent-path.js';
 import type { InternalTool } from './types.js';
 
 const log = logger.module('AgentCollabTools');
+const DEFAULT_MAX_THREADS = 10;
 
 // ─────────────────────────────────────────────────────────────
 // Types
@@ -27,7 +28,7 @@ const log = logger.module('AgentCollabTools');
 
 export interface AgentSpawnParams {
   message: string;
-  role?: 'default' | 'explorer' | 'worker' | 'reviewer';
+  role?: 'default' | 'explorer' | 'worker';
   fork_history?: 'FullHistory' | 'LastNTurns' | 'None';
   max_threads?: number;
 }
@@ -69,6 +70,29 @@ export interface AgentCollabContext {
   closeAgent: (agentId: string) => Promise<void>;
 }
 
+function resolveRecipientPath(recipient: string, ctx: AgentCollabContext): AgentPath {
+  const trimmed = recipient.trim();
+  if (trimmed.length === 0) {
+    throw new Error('recipient is required');
+  }
+
+  const looksLikePath =
+    trimmed.startsWith('/') ||
+    trimmed.startsWith('./') ||
+    trimmed.startsWith('../');
+
+  if (looksLikePath) {
+    return ctx.currentPath.resolve(trimmed);
+  }
+
+  const registryAgent = ctx.registry.listAgents().find((agent) => agent.agentId === trimmed);
+  if (registryAgent) {
+    return AgentPath.fromString(registryAgent.agentPath);
+  }
+
+  return ctx.currentPath.resolve(trimmed);
+}
+
 // ─────────────────────────────────────────────────────────────
 // Handlers
 // ─────────────────────────────────────────────────────────────
@@ -89,6 +113,7 @@ export async function handleAgentSpawn(
 
   // 1. Reserve spawn slot
   const reservationOpts: SpawnReservationOptions = {
+    maxThreads: params.max_threads ?? DEFAULT_MAX_THREADS,
     agentRole: params.role ?? 'default',
     spawnDepth: ctx.currentPath.depth() + 1,
     agentPath: undefined, // Will be set after nickname is determined
@@ -198,7 +223,7 @@ export function handleAgentSendMessage(
 ): Promise<{ sent: boolean; seq: number }> {
   log.info('agent.send_message called', { params });
 
-  const recipientPath = ctx.currentPath.resolve(params.recipient);
+  const recipientPath = resolveRecipientPath(params.recipient, ctx);
   const contentStr = typeof params.content === 'string'
     ? params.content
     : JSON.stringify(params.content);
@@ -214,7 +239,7 @@ export function handleAgentSendMessage(
   // Handle other_recipients if provided
   if (params.other_recipients) {
     for (const other of params.other_recipients) {
-      const otherPath = ctx.currentPath.resolve(other);
+      const otherPath = resolveRecipientPath(other, ctx);
       ctx.mailbox.sendInterAgent({
         author: ctx.currentPath.toString(),
         recipient: otherPath.toString(),
@@ -237,7 +262,7 @@ export function handleAgentFollowupTask(
 ): Promise<{ sent: boolean; seq: number; interrupt: boolean }> {
   log.info('agent.followup_task called', { params });
 
-  const recipientPath = ctx.currentPath.resolve(params.recipient);
+  const recipientPath = resolveRecipientPath(params.recipient, ctx);
   const contentStr = typeof params.content === 'string'
     ? params.content
     : JSON.stringify(params.content);
@@ -342,7 +367,7 @@ export const agentCollabToolDefinitions = [
       type: 'object',
       properties: {
         message: { type: 'string', description: 'Task message for the child agent' },
-        role: { type: 'string', enum: ['default', 'explorer', 'worker', 'reviewer'], description: 'Role for the child agent' },
+        role: { type: 'string', enum: ['default', 'explorer', 'worker'], description: 'Role for the child agent' },
         fork_history: { type: 'string', enum: ['FullHistory', 'LastNTurns', 'None'], description: 'History inheritance mode' },
         max_threads: { type: 'number', description: 'Max concurrent threads for child' },
       },

@@ -72,6 +72,7 @@ describe('Multi-Agent Collaboration E2E', () => {
         statusProvider: statusProvider.getStatus as () => Promise<'pending' | 'running' | 'completed' | 'errored' | 'shutdown'>,
         triggerTurn: false,
       });
+      watcher.start();
       
       spawnedAgents.set(id, { path: childPath.toString(), watcher, status: 'running' });
       
@@ -193,10 +194,11 @@ describe('Multi-Agent Collaboration E2E', () => {
         content: { type: 'progress', data: '50%' },
       }, ctx);
       
-      expect(sendResult.status).toBe('queued');
+      expect(sendResult.sent).toBe(true);
+      expect(sendResult.seq).toBeGreaterThan(0);
       
       // 3. Verify in mailbox
-      const messages = mailbox.list({ target: spawnResult.agent_id });
+      const messages = mailbox.list({ target: spawnResult.agent_path });
       expect(messages.length).toBeGreaterThan(0);
     });
 
@@ -213,8 +215,12 @@ describe('Multi-Agent Collaboration E2E', () => {
         interrupt: false,
       }, ctx);
       
-      expect(followupResult.status).toBe('queued');
-      expect(followupResult.trigger_turn).toBe(true);
+      expect(followupResult.sent).toBe(true);
+      expect(followupResult.seq).toBeGreaterThan(0);
+      expect(followupResult.interrupt).toBe(false);
+
+      const messages = mailbox.list({ target: spawnResult.agent_path, triggerTurn: true });
+      expect(messages.length).toBeGreaterThan(0);
     });
   });
 
@@ -236,7 +242,10 @@ describe('Multi-Agent Collaboration E2E', () => {
       }, ctx);
       
       // 3. Should timeout
-      await expect(waitPromise).rejects.toThrow('timeout');
+      await expect(waitPromise).resolves.toMatchObject({
+        completed: false,
+        message: 'Timeout after 100ms',
+      });
     });
 
     it('close agent removes from registry', async () => {

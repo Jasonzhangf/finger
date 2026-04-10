@@ -1209,7 +1209,7 @@ function buildReplacementHistoryFromTaskBlocks(blocks: LedgerTaskBlockInternal[]
     const firstUser = block.taskBlock.messages.find((message) => message.role === 'user')?.content ?? '';
     const lastAssistant = [...block.taskBlock.messages]
       .reverse()
-      .find((message) => message.role === 'assistant' || message.role === 'orchestrator')
+      .find((message) => message.role === 'assistant')
       ?.content ?? '';
     const toolCalls = buildToolCallsDigest(block.entries);
     const fallbackKeyTools = block.taskBlock.messages

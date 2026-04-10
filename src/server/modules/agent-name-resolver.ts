@@ -1,6 +1,6 @@
 import { loadOrchestrationConfig } from '../../orchestration/orchestration-config.js';
 
-export type AgentDisplayRole = 'system' | 'project' | 'reviewer' | 'agent';
+export type AgentDisplayRole = 'system' | 'project' | 'agent';
 
 export interface AgentDisplayIdentity {
   id: string;
@@ -17,10 +17,15 @@ function fallbackIdentity(agentId: string): AgentDisplayIdentity {
   if (normalized === 'finger-system-agent') {
     return { id: normalized, name: 'Mirror', role: 'system' };
   }
-  if (normalized === 'finger-project-agent' || normalized === 'finger-orchestrator' || normalized === 'finger-general') {
+  // 精确匹配或前缀匹配 project agent 变体
+  if (normalized === 'finger-project-agent'
+    || normalized === 'finger-orchestrator'
+    || normalized === 'finger-general'
+    || normalized.startsWith('finger-project-agent-')
+    || normalized.startsWith('finger-orchestrator-')
+    || normalized.startsWith('finger-general-')) {
     return { id: normalized, name: normalized, role: 'project' };
   }
-  if (normalized === 'finger-reviewer') return { id: normalized, name: normalized, role: 'reviewer' };
   return { id: normalized, name: normalized || 'unknown-agent', role: 'agent' };
 }
 
@@ -52,6 +57,31 @@ export function resolveAgentDisplayIdentity(agentId: string): AgentDisplayIdenti
       };
     }
 
+    // 前缀匹配: finger-project-agent-02 → finger-project-agent (具体 worker ID)
+    const prefixMatchedWorker = runtime.projectWorkers.workers.find((worker) => {
+      if (!worker.id || worker.id === 'finger-project-agent') return false;
+      return normalized.startsWith(worker.id);
+    });
+    if (prefixMatchedWorker) {
+      return {
+        id: normalized,
+        name: prefixMatchedWorker.name || normalized,
+        role: 'project',
+      };
+    }
+
+    // Generic prefix match: finger-project-agent-02 → finger-project-agent
+    const genericPrefixWorker = runtime.projectWorkers.workers.find(
+      (worker) => worker.id && normalized.startsWith(worker.id) && worker.id !== 'finger-project-agent'
+    );
+    if (genericPrefixWorker) {
+      return {
+        id: normalized,
+        name: genericPrefixWorker.name || normalized,
+        role: 'project',
+      };
+    }
+
     if (normalized === 'finger-project-agent') {
       const firstEnabledWorker = runtime.projectWorkers.workers.find((worker) => worker.enabled !== false);
       if (firstEnabledWorker?.name) {
@@ -59,34 +89,6 @@ export function resolveAgentDisplayIdentity(agentId: string): AgentDisplayIdenti
           id: normalized,
           name: firstEnabledWorker.name,
           role: 'project',
-        };
-      }
-      return fallbackIdentity(normalized);
-    }
-
-    const matchedReviewer = runtime.reviewers.agents.find((reviewer) => reviewer.id === normalized);
-    if (matchedReviewer) {
-      return {
-        id: normalized,
-        name: matchedReviewer.name || normalized,
-        role: 'reviewer',
-      };
-    }
-
-    if (normalized === 'finger-reviewer') {
-      const firstEnabledReviewer = runtime.reviewers.agents.find((reviewer) => reviewer.enabled !== false);
-      if (firstEnabledReviewer?.name) {
-        return {
-          id: normalized,
-          name: firstEnabledReviewer.name,
-          role: 'reviewer',
-        };
-      }
-      if (runtime.reviewers.reviewerName) {
-        return {
-          id: normalized,
-          name: runtime.reviewers.reviewerName,
-          role: 'reviewer',
         };
       }
       return fallbackIdentity(normalized);
@@ -99,4 +101,8 @@ export function resolveAgentDisplayIdentity(agentId: string): AgentDisplayIdenti
 
 export function resolveAgentDisplayName(agentId: string): string {
   return resolveAgentDisplayIdentity(agentId).name;
+}
+
+export function normalizeAgentDisplayName(agentId: string): string {
+  return resolveAgentDisplayName(agentId);
 }

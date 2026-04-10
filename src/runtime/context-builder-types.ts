@@ -48,7 +48,7 @@ export type ContextMessageZone = 'working_set' | 'historical_memory';
 
 export interface TaskMessage {
   id: string;
-  role: 'user' | 'assistant' | 'system' | 'orchestrator';
+  role: 'user' | 'assistant' | 'system';
   content: string;
   timestamp: number;
   timestampIso: string;

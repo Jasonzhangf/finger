@@ -32,7 +32,7 @@ export interface HandlerDeps {
     sessionId: string,
     content: string,
     detail: SessionEventRecord,
-    role?: 'user' | 'assistant' | 'system' | 'orchestrator'
+    role?: 'user' | 'assistant' | 'system'
   ) => Promise<void>;
 }
 
@@ -74,7 +74,7 @@ export function attachBroadcastHandlers(deps: HandlerDeps): void {
         type: 'agent_update',
         sessionId: event.sessionId,
         payload: {
-          agentId: (payload?.agentId as string | undefined) || event.sessionId,
+          agentId: (event as any).agentId || event.sessionId,
           status: event.type === 'task_completed' ? 'idle' : event.type === 'task_failed' ? 'error' : 'running',
           currentTaskId: payload?.taskId as string | undefined,
           load: ((payload?.progress as number | undefined) ?? 0),
@@ -180,7 +180,7 @@ export function attachBroadcastHandlers(deps: HandlerDeps): void {
       type: 'agent_update',
       sessionId: event.sessionId,
       payload: {
-        agentId: ('agentId' in event ? (event as { agentId?: string }).agentId : undefined) || event.sessionId,
+        agentId: (event as any).agentId || event.sessionId,
         status: (payload?.success as boolean) !== false ? 'running' : 'error',
         currentTaskId: payload?.taskId as string | undefined,
         load: 50,

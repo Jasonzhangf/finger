@@ -11,7 +11,6 @@ import {
 import { normalizeDispatchTargetAgentId } from '../../../server/modules/agent-runtime/dispatch-target-normalization.js';
 import {
   FINGER_PROJECT_AGENT_ID,
-  FINGER_REVIEWER_AGENT_ID,
   FINGER_SYSTEM_AGENT_ID,
 } from '../../../agents/finger-general/finger-general-module.js';
 import {
@@ -21,7 +20,6 @@ import {
   parseProjectTaskState,
 } from '../../../common/project-task-state.js';
 import { resolveAgentDisplayName } from '../../../server/modules/agent-name-resolver.js';
-import { setupReviewRuntimeForDispatch } from '../../../agents/finger-system-agent/review-runtime.js';
 import { applyProjectStatusGatewayPatch } from '../../../server/modules/project-status-gateway.js';
 import { listAgents, setMonitorStatus } from '../../../agents/finger-system-agent/registry.js';
 import {
@@ -47,10 +45,15 @@ import {
 import { loadUserSettings, resolveAutonomyModeForRole } from '../../../core/user-settings.js';
 import { loadOrchestrationConfig } from '../../../orchestration/orchestration-config.js';
 import { fallbackDispatchQueueTimeoutToMailbox } from '../../../server/modules/dispatch-queue-timeout-mailbox.js';
+import {
+  extractKernelMetadataFromAgentResult,
+  extractResultTextForSession,
+  kernelMetadataHasCompactedProjection,
+} from '../../../server/modules/message-session.js';
 
 const DISPATCH_ERROR_MAX_RETRIES = Number.isFinite(Number(process.env.FINGER_DISPATCH_ERROR_MAX_RETRIES))
   ? Math.max(0, Math.floor(Number(process.env.FINGER_DISPATCH_ERROR_MAX_RETRIES)))
-  : 10;
+  : 2; // Reduced from 10: prevents retry amplification under provider timeout storms
 const HEARTBEAT_SOURCE_AGENT_ID = 'system-heartbeat';
 const BLOCKED_BY_NONE = 'none';
 const BUSY_RUNTIME_STATUSES = new Set(['running', 'queued', 'waiting_input', 'paused']);
@@ -89,7 +92,8 @@ function parseBooleanFlag(value: unknown): boolean | undefined {
 }
 
 function isProjectScopedDispatchTargetId(targetAgentId: string): boolean {
-  return targetAgentId === FINGER_PROJECT_AGENT_ID || targetAgentId === FINGER_REVIEWER_AGENT_ID;
+  const id = asTrimmedString(targetAgentId).toLowerCase();
+  return id.includes('project') || id.includes('agent') || id.includes('general') || id.includes('orchestr');
 }
 
 function shouldGuaranteeDispatchToTasklist(input: AgentDispatchRequest): boolean {
@@ -271,15 +275,16 @@ function isSystemOwnedSession(deps: AgentRuntimeDeps, sessionId: string): boolea
   const sessionTier = asString(context.sessionTier);
   return (
     sessionId.startsWith('system-')
+    || sessionId.startsWith('review-')
+    || sessionId.startsWith('hb-')
     || sessionTier === 'system'
     || ownerAgentId === FINGER_SYSTEM_AGENT_ID
   );
 }
 
-function resolveAutonomyRoleFromTargetAgent(targetAgentId: string): 'system' | 'project' | 'reviewer' {
+function resolveAutonomyRoleFromTargetAgent(targetAgentId: string): 'system' | 'project' {
   const normalized = asTrimmedString(targetAgentId).toLowerCase();
   if (normalized === FINGER_SYSTEM_AGENT_ID || normalized.includes('system')) return 'system';
-  if (normalized.includes('review')) return 'reviewer';
   return 'project';
 }
 
@@ -555,13 +560,14 @@ function validateDispatchSessionScope(
     const sessionTier = asString(context.sessionTier);
     if (
       sessionId.startsWith('system-')
+      || sessionId.startsWith('review-')
+      || sessionId.startsWith('hb-')
       || sessionTier === 'system'
       || ownerAgentId === FINGER_SYSTEM_AGENT_ID
     ) {
-      const roleLabel = targetAgentId === FINGER_REVIEWER_AGENT_ID ? 'reviewer agent' : 'project agent';
       return {
         ok: false,
-        error: `dispatch session/project scope mismatch: ${roleLabel} cannot run on system-owned session ${sessionId}`,
+        error: `dispatch session/project scope mismatch: project agent cannot run on system-owned session ${sessionId}`,
       };
     }
   }
@@ -1452,7 +1458,6 @@ export async function dispatchTaskToAgent(deps: AgentRuntimeDeps, input: AgentDi
         ...normalizedInput,
         assignment,
       };
-      await setupReviewRuntimeForDispatch(deps, normalizedInput);
     }
     if (normalizedInput.targetAgentId === FINGER_SYSTEM_AGENT_ID) {
       const getSystemSession = (deps.sessionManager as {
@@ -2355,7 +2360,7 @@ export async function dispatchTaskToAgent(deps: AgentRuntimeDeps, input: AgentDi
         targetAgentId: normalizedInput.targetAgentId,
         sessionId: normalizedInput.sessionId,
         scope: 'session' as const,
-        launchMode: 'orchestrator' as const,
+        launchMode: 'system' as const,
         instanceCount: resolveAutoDeployInstanceCount(normalizedInput),
       };
       try {
@@ -2547,6 +2552,21 @@ export async function dispatchTaskToAgent(deps: AgentRuntimeDeps, input: AgentDi
       dispatchId: result.dispatchId,
       sourceSessionId: callerSessionId || routeSessionId || normalizedSessionId,
     });
+  }
+
+  if (typeof normalizedInput.sessionId === 'string' && normalizedInput.sessionId.trim().length > 0) {
+    const rawProjectionResult = result.result?.rawPayload ?? result.result;
+    const kernelMetadata = extractKernelMetadataFromAgentResult(rawProjectionResult);
+    if (kernelMetadataHasCompactedProjection(kernelMetadata)) {
+      deps.sessionManager.syncProjectionFromKernelMetadata(
+        normalizedInput.sessionId,
+        kernelMetadata,
+        {
+          agentId: normalizedInput.targetAgentId,
+          assistantReply: extractResultTextForSession(rawProjectionResult) ?? undefined,
+        },
+      );
+    }
   }
 
   if (typeof normalizedInput.sessionId === 'string' && normalizedInput.sessionId.trim().length > 0) {

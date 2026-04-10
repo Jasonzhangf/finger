@@ -541,58 +541,5 @@ describe('resolveDispatchSessionSelection strict lifecycle', () => {
     );
   });
 
-  it('creates stateless reviewer session for reviewer dispatch by default', () => {
-    const sessions = {
-      'session-reviewer-webauto': {
-        id: 'session-reviewer-webauto',
-        projectPath: '/Users/fanzhang/github/webauto',
-        context: { sessionTier: 'runtime', ownerAgentId: 'finger-reviewer', rootSessionId: 'root-webauto' },
-      },
-      'session-finger-root': {
-        id: 'session-finger-root',
-        projectPath: '/Volumes/extension/code/finger',
-        context: { sessionTier: 'orchestrator-root' },
-      },
-    };
-    const { deps, runtime, sessionManager } = createDeps({
-      sessions,
-      boundSessionId: 'session-reviewer-webauto',
-      runtimeCurrentSessionId: 'session-reviewer-webauto',
-      managerCurrentSessionId: 'session-reviewer-webauto',
-      findSessionsByProjectPathResult: [
-        {
-          id: 'session-finger-root',
-          projectPath: '/Volumes/extension/code/finger',
-          context: { sessionTier: 'orchestrator-root' },
-          lastAccessedAt: new Date().toISOString(),
-        } as any,
-      ],
-    });
 
-    const result = resolveDispatchSessionSelection(deps, {
-      sourceAgentId: 'finger-system-agent',
-      targetAgentId: 'finger-reviewer',
-      metadata: {
-        projectPath: '/Volumes/extension/code/finger',
-      },
-      task: {
-        cwd: '/Volumes/extension/code/finger',
-        prompt: 'review changes',
-      },
-    } as any);
-
-    expect(runtime.getBoundSessionId).not.toHaveBeenCalled();
-    expect(result.sessionId).toMatch(/^review-/);
-    expect(result.sessionStrategy).toBe('current');
-    expect((result as any).metadata?.dispatchSessionScopeRebound).toBe(true);
-    expect((result as any).metadata?.reviewerStateless).toBe(true);
-    expect((result as any).metadata?.reviewerEphemeralSession).toBe(true);
-    expect(sessionManager.updateContext).toHaveBeenCalledWith(
-      expect.stringMatching(/^review-/),
-      expect.objectContaining({
-        ownerAgentId: 'finger-reviewer',
-        memoryOwnerWorkerId: 'finger-reviewer',
-      }),
-    );
-  });
 });

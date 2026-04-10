@@ -277,12 +277,12 @@ export function registerSessionRoutes(app: Express, deps: SessionRouteDeps): voi
 
   app.post('/api/v1/sessions/:sessionId/messages/append', async (req, res) => {
     const { role, content, attachments, metadata } = req.body as {
-      role?: 'user' | 'assistant' | 'system' | 'orchestrator';
+      role?: 'user' | 'assistant' | 'system';
       content?: string;
       attachments?: unknown;
       metadata?: Record<string, unknown>;
     };
-    if (!role || (role !== 'user' && role !== 'assistant' && role !== 'system' && role !== 'orchestrator')) {
+    if (!role || (role !== 'user' && role !== 'assistant' && role !== 'system')) {
       res.status(400).json({ error: 'Invalid role' });
       return;
     }

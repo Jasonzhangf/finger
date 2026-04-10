@@ -3,14 +3,11 @@ import { FINGER_SOURCE_ROOT } from '../../core/source-root.js';
 import { resolveHotPrompt, type HotPromptResolveResult } from '../base/prompt-template-loader.js';
 import { FINGER_PATHS } from '../../core/finger-paths.js';
 
-export type ChatCodexDeveloperRole = 'orchestrator' | 'reviewer' | 'executor' | 'searcher' | 'router';
+export type ChatCodexDeveloperRole = 'system' | 'project';
 
 const INLINE_TEMPLATE_FALLBACK: Record<ChatCodexDeveloperRole, string> = {
-  orchestrator: 'role=orchestrator\nYou have full tools for orchestration and experiment checks, but do not implement production code directly; dispatch coding work to executor.',
-  reviewer: 'role=reviewer\nFocus on verified findings, risks, regressions, and missing validation.',
-  executor: 'role=executor\nExecute assigned tasks and return verifiable evidence.',
-  searcher: 'role=searcher\nPrioritize retrieval quality, source quality, and evidence traceability.',
-  router: 'role=router\nOnly route tasks. Do not execute heavy operations.',
+  system: 'role=system\nYou are the system agent. You dispatch tasks to project agents, review their deliverables, and decide whether to close or retry.',
+  project: 'role=project\nExecute assigned tasks and return verifiable evidence.',
 };
 
 function envKeyByRole(role: ChatCodexDeveloperRole): string {

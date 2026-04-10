@@ -7,6 +7,43 @@ import { logger } from '../../core/logger.js';
 import { heartbeatMailbox } from '../../server/modules/heartbeat-mailbox.js';
 
 const log = logger.module('HeartbeatStateTool');
+const DEFAULT_MAILBOX_AGENT_ID = 'finger-system-agent';
+
+function asRecord(params: unknown): Record<string, unknown> {
+  return typeof params === 'object' && params !== null
+    ? params as Record<string, unknown>
+    : {};
+}
+
+function pickStringParam(payload: Record<string, unknown>, ...keys: string[]): string | undefined {
+  for (const key of keys) {
+    const value = payload[key];
+    if (typeof value === 'string' && value.trim().length > 0) {
+      return value.trim();
+    }
+  }
+  return undefined;
+}
+
+function pickNumberParam(payload: Record<string, unknown>, ...keys: string[]): number | undefined {
+  for (const key of keys) {
+    const value = payload[key];
+    if (typeof value === 'number' && Number.isFinite(value)) {
+      return value;
+    }
+  }
+  return undefined;
+}
+
+function pickBooleanParam(payload: Record<string, unknown>, ...keys: string[]): boolean | undefined {
+  for (const key of keys) {
+    const value = payload[key];
+    if (typeof value === 'boolean') {
+      return value;
+    }
+  }
+  return undefined;
+}
 
 /**
  * heartbeat.state - Get current heartbeat scheduler state (RUNNING/DEGRADED/PAUSED/STOPPED)
@@ -90,12 +127,10 @@ export const heartbeatStopTool: InternalTool = {
   async execute(params: unknown, context: ToolExecutionContext) {
     // 动态导入避免循环依赖
     const { heartbeatScheduler } = await import('../../server/index.js');
-    
-    const { reason, permanent = false, resume_after_minutes } = params as {
-      reason: string;
-      permanent?: boolean;
-      resume_after_minutes?: number;
-    };
+    const payload = asRecord(params);
+    const reason = pickStringParam(payload, 'reason');
+    const permanent = pickBooleanParam(payload, 'permanent') ?? false;
+    const resume_after_minutes = pickNumberParam(payload, 'resume_after_minutes', 'resumeAfterMinutes');
     
     if (!reason || typeof reason !== 'string') {
       return {
@@ -150,8 +185,8 @@ export const heartbeatResumeTool: InternalTool = {
   async execute(params: unknown, context: ToolExecutionContext) {
     // 动态导入避免循环依赖
     const { heartbeatScheduler } = await import('../../server/index.js');
-    
-    const { reason } = params as { reason?: string };
+    const payload = asRecord(params);
+    const reason = pickStringParam(payload, 'reason');
     
     const prevState = heartbeatScheduler.getState();
     
@@ -204,15 +239,8 @@ export const mailboxHealthTool: InternalTool = {
     required: ['agent_id'],
   },
   async execute(params: unknown, context: ToolExecutionContext) {
-    const { agent_id } = params as { agent_id: string };
-    
-    if (!agent_id) {
-      return {
-        success: false,
-        error: 'agent_id is required',
-        message: 'Missing required parameter: agent_id',
-      };
-    }
+    const payload = asRecord(params);
+    const agent_id = pickStringParam(payload, 'agent_id', 'agentId') ?? DEFAULT_MAILBOX_AGENT_ID;
     
     const messages = heartbeatMailbox.list(agent_id);
     const now = Date.now();
@@ -265,24 +293,18 @@ export const mailboxClearTool: InternalTool = {
     required: ['agent_id'],
   },
   async execute(params: unknown, context: ToolExecutionContext) {
-    const { agent_id, status = 'all' } = params as { agent_id: string; status?: string };
-    
-    if (!agent_id) {
-      return {
-        success: false,
-        error: 'agent_id is required',
-        message: 'Missing required parameter: agent_id',
-      };
-    }
-    
-    // 使用 removeAll 来清空 mailbox（status=all 时清空所有，否则按状态过滤）
-    const options = status !== 'all' ? { status: status as 'pending' | 'processing' | 'completed' | 'failed' } : undefined;
-    const result = heartbeatMailbox.removeAll(agent_id, options);
+    const payload = asRecord(params);
+    const agent_id = pickStringParam(payload, 'agent_id', 'agentId') ?? DEFAULT_MAILBOX_AGENT_ID;
+    const status = pickStringParam(payload, 'status') ?? 'all';
+    const cleared = heartbeatMailbox.clear(
+      agent_id,
+      status as 'pending' | 'processing' | 'completed' | 'failed' | 'all',
+    );
     
     log.info('[HeartbeatStateTool] Mailbox cleared', {
       agent_id,
       status,
-      removedCount: result.removed,
+      removedCount: cleared,
       contextAgentId: context.agentId,
     });
     
@@ -291,10 +313,10 @@ export const mailboxClearTool: InternalTool = {
       data: {
         agent_id,
         status,
-        clearedCount: result.removed,
-        matchedCount: result.matched,
+        cleared,
+        clearedCount: cleared,
       },
-      message: `Cleared ${result.removed} messages from ${agent_id} mailbox (status: ${status})`,
+      message: `cleared ${cleared} messages from ${agent_id} mailbox (status: ${status})`,
     };
   },
 };
@@ -313,45 +335,73 @@ export const mailboxMarkSkipTool: InternalTool = {
         type: 'string',
         description: 'Message ID to mark as skip',
       },
+      ids: {
+        type: 'array',
+        items: { type: 'string' },
+        description: 'Batch message IDs to mark as skip',
+      },
       agent_id: {
         type: 'string',
         description: 'Agent ID that owns the mailbox (required for lookup)',
       },
+      reason: {
+        type: 'string',
+        description: 'Optional reason for marking messages as skip',
+      },
     },
-    required: ['message_id', 'agent_id'],
+    anyOf: [
+      { required: ['message_id'] },
+      { required: ['ids'] },
+    ],
   },
   async execute(params: unknown, context: ToolExecutionContext) {
-    const { message_id, agent_id } = params as { message_id: string; agent_id: string };
-    
-    if (!message_id || !agent_id) {
+    const payload = asRecord(params);
+    const agent_id = pickStringParam(payload, 'agent_id', 'agentId') ?? DEFAULT_MAILBOX_AGENT_ID;
+    const singleMessageId = pickStringParam(payload, 'message_id', 'messageId');
+    const batchIds = Array.isArray(payload.ids)
+      ? payload.ids.filter((value): value is string => typeof value === 'string' && value.trim().length > 0).map((value) => value.trim())
+      : [];
+    const ids = singleMessageId ? [singleMessageId] : batchIds;
+    const reason = pickStringParam(payload, 'reason');
+
+    if (ids.length === 0) {
       return {
         success: false,
-        error: 'message_id and agent_id are required',
-        message: 'Missing required parameters: message_id, agent_id',
+        error: 'message_id or ids is required',
+        message: 'Missing required parameters: message_id or ids',
       };
     }
-    
-    // 将消息标记为 completed（会被 heartbeat 忽略）
-    const result = heartbeatMailbox.updateStatus(agent_id, message_id, 'completed', { result: { skipped: true } });
-    
-    if (!result) {
+
+    const markedIds = ids.filter((messageId) => heartbeatMailbox.markSkip(agent_id, messageId));
+    const marked = markedIds.length;
+
+    if (marked === 0) {
       return {
         success: false,
         error: 'message_not_found',
-        message: `Message ${message_id} not found or already processed`,
+        message: ids.length === 1
+          ? `Message ${ids[0]} not found or already processed`
+          : `Messages not found or already processed: ${ids.join(', ')}`,
       };
     }
     
     log.info('[HeartbeatStateTool] Message marked as skip', {
-      message_id,
+      message_ids: markedIds,
       agent_id,
+      reason,
       contextAgentId: context.agentId,
     });
     
     return {
       success: true,
-      data: { message_id, agent_id },
-      message: `Message ${message_id} marked as skip (completed)`,
+      data: {
+        agent_id,
+        reason,
+        ids: markedIds,
+        marked,
+        message_id: markedIds[0],
+      },
+      message: `marked ${marked} message(s) as skip for ${agent_id}`,
     };
   },
 };

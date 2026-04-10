@@ -7,15 +7,50 @@ import { saveWorkflow } from './workflow-persistence.js';
 import { MessageHub } from './message-hub.js';
 import type { SessionManager } from './session-manager.js';
 import { resourcePool } from './resource-pool.js';
-import { resumableSessionManager } from './resumable-session.js';
-import type { TaskProgress, SessionCheckpoint } from './resumable-session.js';
+// Stub: resumable-session not implemented yet
+interface TaskProgress {
+  taskId: string;
+  description: string;
+  status: 'pending' | 'in_progress' | 'completed' | 'failed';
+  assignedAgent?: string;
+  startedAt?: string;
+  completedAt?: string;
+  result?: string;
+  iterationCount: number;
+  maxIterations: number;
+}
+interface SessionCheckpoint {
+  checkpointId: string;
+  sessionId: string;
+  timestamp: string;
+  userTask: string;
+  taskProgress: TaskProgress[];
+  agentStates: Record<string, unknown>;
+  context?: Record<string, unknown>;
+  completedTaskIds?: string[];
+  pendingTaskIds?: string[];
+}
+const resumableSessionManager = {
+  findLatestCheckpoint: (_sessionId: string): SessionCheckpoint | null => null,
+  createCheckpoint: (_sessionId: string, _userTask: string, _taskProgress: TaskProgress[], _agentStates: Record<string, unknown>, _context?: Record<string, unknown>): SessionCheckpoint => ({
+    checkpointId: `stub-${Date.now()}`,
+    sessionId: _sessionId,
+    timestamp: new Date().toISOString(),
+    userTask: _userTask,
+    taskProgress: _taskProgress,
+    agentStates: _agentStates,
+    context: _context,
+    completedTaskIds: _taskProgress.filter(t => t.status === 'completed').map(t => t.taskId),
+    pendingTaskIds: _taskProgress.filter(t => t.status === 'pending').map(t => t.taskId),
+  }),
+};
 import { logger } from '../core/logger.js';
 export type TaskStatus = 'pending' | 'blocked' | 'ready' | 'in_progress' | 'completed' | 'failed';
 
 export interface TaskNode {
   id: string;
   description: string;
-  type: 'executor' | 'reviewer';
+  type: 'executor' | 'system';
   status: TaskStatus;
   dependencies: string[];
   dependents: string[];
@@ -65,7 +100,7 @@ export class WorkflowManager {
     };
   }
 
-  registerAgent(agentId: string, type: 'executor' | 'reviewer'): void {
+  registerAgent(agentId: string, type: 'executor' | 'system'): void {
     if (type === 'executor') {
       this.resourcePool.executors.push(agentId);
     } else {
@@ -206,7 +241,7 @@ export class WorkflowManager {
     );
   }
 
-  getAvailableAgents(type: 'executor' | 'reviewer'): string[] {
+  getAvailableAgents(type: 'executor' | 'system'): string[] {
     const agents = type === 'executor' ? this.resourcePool.executors : this.resourcePool.reviewers;
     return agents.filter(id => !this.resourcePool.busyAgents.has(id));
   }
@@ -298,7 +333,7 @@ export class WorkflowManager {
     log.info('Restoring workflow ${workflow.id} from checkpoint ${checkpoint.checkpointId}', { "workflow.id": workflow.id, "checkpoint.checkpointId": checkpoint.checkpointId });
     
     // Restore completed tasks
-    for (const taskId of checkpoint.completedTaskIds) {
+    for (const taskId of checkpoint.completedTaskIds ?? []) {
       const checkpointTask = checkpoint.taskProgress.find(t => t.taskId === taskId);
       if (checkpointTask) {
         const task = workflow.tasks.get(taskId);
@@ -311,7 +346,7 @@ export class WorkflowManager {
     }
 
     // Mark pending tasks
-    for (const taskId of checkpoint.pendingTaskIds) {
+    for (const taskId of checkpoint.pendingTaskIds ?? []) {
       const task = workflow.tasks.get(taskId);
       if (task && task.status !== 'completed') {
         task.status = 'pending';

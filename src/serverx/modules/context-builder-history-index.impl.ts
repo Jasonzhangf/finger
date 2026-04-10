@@ -10,7 +10,7 @@ interface SessionMessageLike {
 
 interface ContextBuildMessageLike {
   id: string;
-  role: 'user' | 'assistant' | 'system' | 'orchestrator';
+  role: 'user' | 'assistant' | 'system';
   content: string;
   timestampIso: string;
   messageId?: string;

@@ -12,8 +12,9 @@ import fs from 'fs';
 import path from 'path';
 import { createHash } from 'crypto';
  import { FINGER_PATHS, ensureDir, normalizeSessionDirName } from '../core/finger-paths.js';
- import { Session, SessionMessage, LEDGER_POINTER_DEFAULTS, ensureLedgerPointers } from './session-types.js';
+import { Session, SessionMessage, LEDGER_POINTER_DEFAULTS, ensureLedgerPointers, ISessionManager, SessionStatus } from './session-types.js';
 import type { Attachment } from '../runtime/events.js';
+import type { UpdateSessionParams, SessionQuery, SessionStats } from './session-types.js';
 import { appendSessionMessage } from '../runtime/ledger-writer.js';
 import { resolveBaseDir } from '../runtime/context-ledger-memory-helpers.js';
 import { buildSessionView, type SessionView, type SessionViewMessage } from '../runtime/ledger-reader.js';
@@ -39,7 +40,6 @@ const SESSIONS_DIR = FINGER_PATHS.sessions.dir;
 const SYSTEM_SESSIONS_DIR = path.join(FINGER_PATHS.home, 'system', 'sessions');
 const SYSTEM_PROJECT_PATH = path.join(FINGER_PATHS.home, 'system');
 const SYSTEM_AGENT_ID = 'finger-system-agent';
-const REVIEWER_AGENT_ID = 'finger-reviewer';
 const SYSTEM_SESSION_PREFIX = 'system-';
 const ROOT_SESSION_FILE = 'main.json';
 const MEMORY_OWNERSHIP_VERSION = 1;
@@ -55,7 +55,7 @@ function stripCorruptSuffix(baseName: string): string {
   return baseName.replace(/\.corrupt(?:[.-].*)?$/i, '');
 }
 
-export class SessionManager {
+export class SessionManager implements ISessionManager {
   private sessions: Map<string, Session> = new Map();
   private sessionFilePaths: Map<string, string> = new Map();
   private currentSessionId: string | null = null;
@@ -266,10 +266,9 @@ export class SessionManager {
     const sessionTier = this.asContextString(context, 'sessionTier').toLowerCase();
     if (
       session.id.startsWith('review-')
-      || sessionTier === 'reviewer'
-      || context.reviewerStateless === true
+      || sessionTier === 'system'
     ) {
-      return REVIEWER_AGENT_ID;
+      return SYSTEM_AGENT_ID;
     }
 
     if (
@@ -2025,6 +2024,118 @@ export class SessionManager {
       return '';
     }
   }
+
+  // ─── ISessionManager interface methods ──────────────────────────────
+
+  async initialize(): Promise<unknown> {
+    // Already initialized in constructor
+    return { initialized: true };
+  }
+
+  getSessionSnapshot(sessionId: string): Session | undefined {
+    return this.getSession(sessionId);
+  }
+
+  updateSession(sessionId: string, params: UpdateSessionParams): Session | undefined {
+    const session = this.sessions.get(sessionId);
+    if (!session) return undefined;
+    if (params.title) session.name = params.title;
+    if (params.name) session.name = params.name;
+    if (params.status) session.status = params.status;
+    if (params.metadata) {
+      session.context = { ...session.context, ...params.metadata };
+    }
+    session.updatedAt = new Date().toISOString();
+    return session;
+  }
+
+  querySessions(query?: SessionQuery): Session[] {
+    const sessions = Array.from(this.sessions.values());
+    if (!query) return sessions;
+
+    let filtered = sessions;
+    if (query.status) {
+      filtered = filtered.filter(s => s.status === query.status);
+    }
+    if (query.projectPath) {
+      filtered = filtered.filter(s => s.projectPath === query.projectPath);
+    }
+
+    const sortBy = query.sortBy || 'updatedAt';
+    const sortOrder = query.sortOrder || 'desc';
+    filtered.sort((a, b) => {
+      const aVal = String(a[sortBy as keyof Session] || '');
+      const bVal = String(b[sortBy as keyof Session] || '');
+      return sortOrder === 'desc' ? bVal.localeCompare(aVal) : aVal.localeCompare(bVal);
+    });
+
+    if (query.limit) {
+      filtered = filtered.slice(0, query.limit);
+    }
+    if (query.offset) {
+      filtered = filtered.slice(query.offset);
+    }
+
+    return filtered;
+  }
+
+  getMessageHistory(sessionId: string, limit?: number): SessionMessage[] {
+    return this.getMessages(sessionId, limit || 50);
+  }
+
+  restoreSession(sessionId: string): Session | null {
+    const session = this.sessions.get(sessionId);
+    if (!session) return null;
+    if (session.status === SessionStatus.ARCHIVED) {
+      session.status = SessionStatus.ACTIVE;
+      session.updatedAt = new Date().toISOString();
+    }
+    return session;
+  }
+
+  restoreAllSessions(): number {
+    let count = 0;
+    for (const session of this.sessions.values()) {
+      if (session.status === SessionStatus.ARCHIVED) {
+        session.status = SessionStatus.ACTIVE;
+        session.updatedAt = new Date().toISOString();
+        count++;
+      }
+    }
+    return count;
+  }
+
+  cleanupExpiredSessions(ttlDays?: number): number {
+    const days = ttlDays || 30;
+    const threshold = Date.now() - days * 24 * 60 * 60 * 1000;
+    let count = 0;
+    for (const [id, session] of this.sessions.entries()) {
+      const lastAccessed = new Date(session.lastAccessedAt).getTime();
+      if (lastAccessed < threshold) {
+        this.sessions.delete(id);
+        count++;
+      }
+    }
+    return count;
+  }
+
+  getStats(): SessionStats {
+    const sessions = Array.from(this.sessions.values());
+    return {
+      totalSessions: sessions.length,
+      activeSessions: sessions.filter(s => s.status === SessionStatus.ACTIVE).length,
+      totalMessages: sessions.reduce((sum, s) => sum + (s.messageCount || 0), 0),
+      oldestSession: sessions.length > 0 ? sessions[sessions.length - 1]?.id : undefined,
+      newestSession: sessions.length > 0 ? sessions[0]?.id : undefined,
+    };
+  }
+
+  destroy(): void {
+    this.sessions.clear();
+    this.sessionFilePaths.clear();
+    this.currentSessionId = null;
+  }
+
 }
 
 function buildMessageSignature(role: SessionMessage['role'], content: string, timestamp: string): string {

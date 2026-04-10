@@ -5,10 +5,12 @@
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { heartbeatStateTool, heartbeatStopTool, heartbeatResumeTool, mailboxHealthTool, mailboxClearTool, mailboxMarkSkipTool } from '../../../../src/tools/internal/heartbeat-state-tool.ts';
-import type { ToolExecutionContext } from '../../../src/tools/internal/types.js';
+import type { ToolExecutionContext } from '../../../../src/tools/internal/types.js';
+import { heartbeatScheduler } from '../../../../src/server/index.js';
+import { heartbeatMailbox } from '../../../../src/server/modules/heartbeat-mailbox.js';
 
 // Mock heartbeatScheduler
-vi.mock('../../../src/server/index.js', () => ({
+vi.mock('../../../../src/server/index.js', () => ({
   heartbeatScheduler: {
     getState: vi.fn().mockReturnValue('RUNNING'),
     getStateContext: vi.fn().mockReturnValue({}),
@@ -18,14 +20,14 @@ vi.mock('../../../src/server/index.js', () => ({
 }));
 
 // Mock heartbeatMailbox
-vi.mock('../../../src/server/modules/heartbeat-mailbox.js', () => ({
+vi.mock('../../../../src/server/modules/heartbeat-mailbox.js', () => ({
   heartbeatMailbox: {
     list: vi.fn().mockReturnValue([
       { id: 'msg-1', status: 'pending', createdAt: '2026-04-06T10:00:00.000Z' },
       { id: 'msg-2', status: 'processing', createdAt: '2026-04-06T10:01:00.000Z' },
     ]),
     clear: vi.fn().mockReturnValue({ cleared: 5 }),
-    markSkip: vi.fn().mockReturnValue({ marked: 3 }),
+    markSkip: vi.fn().mockReturnValue(true),
   },
 }));
 
@@ -34,9 +36,30 @@ const mockContext: ToolExecutionContext = {
   agentId: 'test-agent',
 };
 
+const scheduler = heartbeatScheduler as unknown as {
+  getState: ReturnType<typeof vi.fn>;
+  getStateContext: ReturnType<typeof vi.fn>;
+  requestStop: ReturnType<typeof vi.fn>;
+  requestResume: ReturnType<typeof vi.fn>;
+};
+
+const mailbox = heartbeatMailbox as unknown as {
+  list: ReturnType<typeof vi.fn>;
+  clear: ReturnType<typeof vi.fn>;
+  markSkip: ReturnType<typeof vi.fn>;
+};
+
 describe('Heartbeat State Tools', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    scheduler.getState.mockReturnValue('RUNNING');
+    scheduler.getStateContext.mockReturnValue({});
+    mailbox.list.mockReturnValue([
+      { id: 'msg-1', status: 'pending', createdAt: '2026-04-06T10:00:00.000Z' },
+      { id: 'msg-2', status: 'processing', createdAt: '2026-04-06T10:01:00.000Z' },
+    ]);
+    mailbox.clear.mockReturnValue(5);
+    mailbox.markSkip.mockReturnValue(true);
   });
 
   describe('heartbeat.state', () => {
@@ -77,7 +100,6 @@ describe('Heartbeat State Tools', () => {
         reason: 'fatal error',
       }, mockContext);
       
-      const scheduler = require('../../../src/server/index.js').heartbeatScheduler;
       expect(scheduler.requestStop).toHaveBeenCalledWith('fatal error', true, undefined);
       expect(result.success).toBe(true);
     });
@@ -88,7 +110,6 @@ describe('Heartbeat State Tools', () => {
         reason: 'mailbox backlog',
       }, mockContext);
       
-      const scheduler = require('../../../src/server/index.js').heartbeatScheduler;
       expect(scheduler.requestStop).toHaveBeenCalledWith('mailbox backlog', false, undefined);
       expect(result.success).toBe(true);
     });
@@ -100,7 +121,6 @@ describe('Heartbeat State Tools', () => {
         resume_after_minutes: 10,
       }, mockContext);
       
-      const scheduler = require('../../../src/server/index.js').heartbeatScheduler;
       expect(scheduler.requestStop).toHaveBeenCalledWith('temporary block', false, 10);
     });
 
@@ -112,16 +132,17 @@ describe('Heartbeat State Tools', () => {
 
   describe('heartbeat.resume', () => {
     it('should request resume with reason', async () => {
+      scheduler.getState.mockReturnValue('PAUSED');
       const result = await heartbeatResumeTool.execute({
         reason: 'block cleared',
       }, mockContext);
       
-      const scheduler = require('../../../src/server/index.js').heartbeatScheduler;
       expect(scheduler.requestResume).toHaveBeenCalledWith('block cleared');
       expect(result.success).toBe(true);
     });
 
     it('should return success message', async () => {
+      scheduler.getState.mockReturnValue('PAUSED');
       const result = await heartbeatResumeTool.execute({ reason: 'test' }, mockContext);
       expect(result.message).toContain('resumed');
     });

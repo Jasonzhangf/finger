@@ -2,6 +2,7 @@ import { describe, expect, it, beforeEach, vi } from 'vitest';
 import { SystemAgentManager } from '../../../src/server/modules/system-agent-manager.js';
 import type { AgentRuntimeDeps } from '../../../src/server/modules/agent-runtime/types.js';
 import { PeriodicCheckRunner } from '../../../src/agents/finger-system-agent/periodic-check.js';
+import { resolveFingerHome } from '../../../src/core/finger-paths.js';
 
 describe('SystemAgentManager - Session Reuse', () => {
   let mockSessionManager: any;
@@ -543,7 +544,7 @@ describe('SystemAgentManager - Session Reuse', () => {
     const manager = new SystemAgentManager(deps);
     const systemSession = {
       id: 'system-1774838274317-jkpzq4',
-      projectPath: '/Users/fanzhang/.finger/system',
+      projectPath: resolveFingerHome() + '/system',
       context: {
         sessionTier: 'system',
         ownerAgentId: 'finger-system-agent',
@@ -568,10 +569,11 @@ describe('SystemAgentManager - Session Reuse', () => {
   });
 
   it('should skip starting monitored project when project path is system workspace', async () => {
+    const systemPath = resolveFingerHome() + '/system';
     const manager = new SystemAgentManager(deps);
     await (manager as any).startProjectAgent({
-      projectPath: '/Users/fanzhang/.finger/system',
-      projectId: '/users/fanzhang/.finger/system',
+      projectPath: systemPath,
+      projectId: systemPath.toLowerCase(),
       projectName: 'system',
       agentId: 'system-01',
       status: 'idle',

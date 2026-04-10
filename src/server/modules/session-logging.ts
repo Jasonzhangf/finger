@@ -20,6 +20,7 @@ export interface LoopEventEmitter {
 export function createSessionLoggingHelpers(deps: SessionLoggingDeps) {
   const { sessionWorkspaces, primaryOrchestratorAgentId, errorSampleDir, systemAgentId = 'finger-system-agent' } = deps;
   let loopEventEmitter: (event: ChatCodexLoopEvent) => void = () => {};
+  let earlyAutoCompactHandler: ((event: ChatCodexLoopEvent) => void) | null = null;
 
   const resolveSessionLoopLogPath = (sessionId: string): string => {
     const dirs = sessionWorkspaces.resolveSessionWorkspaceDirsForMessage(sessionId);
@@ -59,7 +60,14 @@ export function createSessionLoggingHelpers(deps: SessionLoggingDeps) {
   };
 
   const emitLoopEventToEventBus = (event: ChatCodexLoopEvent): void => {
+    if (earlyAutoCompactHandler && event.phase === 'kernel_event' && event.payload?.type === 'model_round') {
+      earlyAutoCompactHandler(event);
+    }
     loopEventEmitter(event);
+  };
+
+  const setEarlyAutoCompactHandler = (handler: (event: ChatCodexLoopEvent) => void): void => {
+    earlyAutoCompactHandler = handler;
   };
 
   const setLoopEventEmitter = (emitter: (event: ChatCodexLoopEvent) => void): void => {
@@ -70,6 +78,7 @@ export function createSessionLoggingHelpers(deps: SessionLoggingDeps) {
     resolveSessionLoopLogPath,
     appendSessionLoopLog,
     writeMessageErrorSample,
+    setEarlyAutoCompactHandler,
     emitLoopEventToEventBus,
     setLoopEventEmitter,
   };

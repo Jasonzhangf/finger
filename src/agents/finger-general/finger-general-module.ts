@@ -3,7 +3,6 @@ import {
   ProcessChatCodexRunner,
   CHAT_CODEX_PROJECT_ALLOWED_TOOLS,
   CHAT_CODEX_SYSTEM_ALLOWED_TOOLS,
-  CHAT_CODEX_REVIEWER_ALLOWED_TOOLS,
   type ChatCodexLoopEvent,
   type ChatCodexKernelEvent,
   type ChatCodexModuleConfig,
@@ -16,21 +15,18 @@ import {
 } from '../chat-codex/chat-codex-module.js';
 
 export const FINGER_PROJECT_AGENT_ID = 'finger-project-agent';
-export const FINGER_REVIEWER_AGENT_ID = 'finger-reviewer';
 export const FINGER_SYSTEM_AGENT_ID = 'finger-system-agent';
 export const FINGER_GENERAL_AGENT_ID = FINGER_PROJECT_AGENT_ID;
+/** @deprecated Use FINGER_PROJECT_AGENT_ID - orchestrator role collapsed into project */
 export const FINGER_ORCHESTRATOR_AGENT_ID = FINGER_PROJECT_AGENT_ID;
+/** @deprecated Reviewer agent removed - review is now system internal */
 
 export const FINGER_PROJECT_ALLOWED_TOOLS = [...CHAT_CODEX_PROJECT_ALLOWED_TOOLS, 'report-task-completion'];
-export const FINGER_REVIEWER_ALLOWED_TOOLS = [...CHAT_CODEX_REVIEWER_ALLOWED_TOOLS];
 export const FINGER_SYSTEM_ALLOWED_TOOLS = [...CHAT_CODEX_SYSTEM_ALLOWED_TOOLS, 'project_tool', 'system-registry-tool'];
 export const FINGER_GENERAL_ALLOWED_TOOLS = [...FINGER_PROJECT_ALLOWED_TOOLS];
 export const FINGER_ORCHESTRATOR_ALLOWED_TOOLS = [...FINGER_PROJECT_ALLOWED_TOOLS];
 
-export type FingerRoleProfile =
-  | 'project'
-  | 'reviewer'
-  | 'system';
+export type FingerRoleProfile = 'project' | 'system';
 
 export type FingerGeneralModuleConfig = Partial<ChatCodexModuleConfig> & {
   roleProfile?: FingerRoleProfile;
@@ -39,7 +35,6 @@ export type FingerGeneralModuleConfig = Partial<ChatCodexModuleConfig> & {
 function inferRoleProfile(moduleId: string | undefined, explicitRoleProfile: FingerRoleProfile | undefined): FingerRoleProfile {
   if (explicitRoleProfile) return explicitRoleProfile;
   const normalized = (moduleId ?? '').trim().toLowerCase();
-  if (normalized.includes('review')) return 'reviewer';
   if (normalized.includes('system')) return 'system';
   return 'project';
 }

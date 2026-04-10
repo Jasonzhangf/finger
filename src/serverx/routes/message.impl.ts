@@ -44,6 +44,7 @@ import {
 import { inferInboundRole, ensureMessageMetadataRole } from '../../server/routes/message-role-utils.js';
 import { normalizeProgressDeliveryPolicy } from '../../common/progress-delivery-policy.js';
 import { applyExecutionLifecycleTransition } from '../../server/modules/execution-lifecycle.js';
+import { applyPreflightCompactToRequest } from '../../server/modules/message-preflight-compact.js';
 import { mergeSystemTaskState, parseSystemTaskState } from '../../common/system-task-state.js';
 import {
   parseProjectTaskState,
@@ -136,14 +137,14 @@ function isExplicitTaskCloseApproval(text: string): boolean {
 function resolveAutonomyRoleForTarget(
   targetId: string,
   metadata: Record<string, unknown>,
-): 'system' | 'project' | 'reviewer' | 'orchestrator' {
+): 'system' | 'project' {
   const normalizedTarget = targetId.trim().toLowerCase();
   if (normalizedTarget === 'finger-system-agent') return 'system';
-  if (normalizedTarget.includes('review')) return 'reviewer';
+  if (normalizedTarget.includes('review')) return 'system';
   const roleProfile = typeof metadata.roleProfile === 'string' ? metadata.roleProfile.trim().toLowerCase() : '';
   if (roleProfile === 'system') return 'system';
-  if (roleProfile === 'reviewer') return 'reviewer';
-  if (roleProfile === 'orchestrator') return 'orchestrator';
+  
+  
   return 'project';
 }
 
@@ -270,7 +271,7 @@ export function registerMessageRoutes(app: Express, deps: MessageRouteDeps): voi
         contextLedgerCanReadAll:
           typeof metadata.contextLedgerCanReadAll === 'boolean'
             ? metadata.contextLedgerCanReadAll
-            : roleProfile === 'project' || roleProfile === 'system' || roleProfile === 'orchestrator',
+            : roleProfile === 'project' || roleProfile === 'system',
         contextLedgerFocusEnabled:
           typeof metadata.contextLedgerFocusEnabled === 'boolean'
             ? metadata.contextLedgerFocusEnabled
@@ -546,6 +547,14 @@ export function registerMessageRoutes(app: Express, deps: MessageRouteDeps): voi
       deps.sessionManager.updateContext(requestSessionId, {
         systemTaskState: nextSystemTaskState,
       });
+    }
+    if (requestSessionId && inferredRole === 'user') {
+      const preflightCompact = applyPreflightCompactToRequest({
+        session: deps.sessionManager.getSession(requestSessionId),
+        requestMessage,
+        targetAgentId: targetId,
+      });
+      requestMessage = preflightCompact.requestMessage;
     }
     if (requestSessionId && isObjectRecord(requestMessage)) {
       const session = deps.sessionManager.getSession(requestSessionId);

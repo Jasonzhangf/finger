@@ -20,7 +20,7 @@ interface ContextBuilderRebuildInput {
 
 interface RuntimeContextSessionMessage {
   id?: string;
-  role: 'user' | 'assistant' | 'system' | 'orchestrator';
+  role: 'user' | 'assistant' | 'system';
   content: string;
   timestamp: string;
   metadata?: Record<string, unknown>;
@@ -92,7 +92,7 @@ function parseRuntimeSessionMessages(
     .map((item, index) => {
       const roleRaw = typeof item.role === 'string' ? item.role.trim() : '';
       const role: RuntimeContextSessionMessage['role'] =
-        roleRaw === 'assistant' || roleRaw === 'system' || roleRaw === 'orchestrator'
+        roleRaw === 'assistant' || roleRaw === 'system'
           ? roleRaw
           : 'user';
       const content = typeof item.content === 'string' ? item.content : '';

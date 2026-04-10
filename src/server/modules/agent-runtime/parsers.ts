@@ -274,9 +274,9 @@ export function parseAgentDeployToolInput(rawInput: unknown): Record<string, unk
     ...(typeof rawInput.scope === 'string' && (rawInput.scope === 'session' || rawInput.scope === 'global')
       ? { scope: rawInput.scope }
       : {}),
-    ...(typeof rawInput.launch_mode === 'string' && (rawInput.launch_mode === 'manual' || rawInput.launch_mode === 'orchestrator')
+    ...(typeof rawInput.launch_mode === 'string' && (rawInput.launch_mode === 'manual' || rawInput.launch_mode === 'system')
       ? { launchMode: rawInput.launch_mode }
-      : typeof rawInput.launchMode === 'string' && (rawInput.launchMode === 'manual' || rawInput.launchMode === 'orchestrator')
+      : typeof rawInput.launchMode === 'string' && (rawInput.launchMode === 'manual' || rawInput.launchMode === 'system')
         ? { launchMode: rawInput.launchMode }
         : {}),
     ...(typeof rawInput.target_implementation_id === 'string'

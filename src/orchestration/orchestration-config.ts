@@ -1,7 +1,7 @@
 import { existsSync, readFileSync, renameSync, writeFileSync } from 'fs';
 import { ensureFingerLayout, getFingerPaths, resolveFingerHome, FINGER_PATHS } from '../core/finger-paths.js';
 
-export type OrchestrationAgentRole = 'orchestrator' | 'executor' | 'reviewer' | 'searcher';
+export type OrchestrationAgentRole = 'system' | 'project';
 
 export interface OrchestrationReviewPolicy {
   enabled: boolean;
@@ -21,7 +21,7 @@ export interface OrchestrationAgentEntry {
   enabled?: boolean;
   visible?: boolean;
   instanceCount?: number;
-  launchMode?: 'manual' | 'orchestrator';
+  launchMode?: 'manual' | 'system';
   targetImplementationId?: string;
   defaultQuota?: number;
   quotaPolicy?: {
@@ -63,22 +63,9 @@ export interface RuntimeProjectWorkersConfig {
   workers: RuntimeWorkerConfig[];
 }
 
-export interface RuntimeReviewerAgentConfig {
-  id: string;
-  name: string;
-  enabled: boolean;
-}
-
-export interface RuntimeReviewersConfig {
-  maxInstances: number;
-  reviewerName: string;
-  agents: RuntimeReviewerAgentConfig[];
-}
-
 export interface OrchestrationRuntimeConfig {
   systemAgent: RuntimeSystemAgentConfig;
   projectWorkers: RuntimeProjectWorkersConfig;
-  reviewers: RuntimeReviewersConfig;
 }
 
 export interface LoadedOrchestrationConfig {
@@ -97,7 +84,6 @@ const DEFAULT_WORKER_NAME_CANDIDATES = [
 const DEFAULT_SYSTEM_AGENT_ID = 'finger-system-agent';
 const DEFAULT_SYSTEM_AGENT_NAME = 'Mirror';
 const DEFAULT_PROJECT_WORKER_ID = 'finger-project-agent';
-const DEFAULT_REVIEWER_AGENT_ID = 'finger-reviewer';
 
 export const DEFAULT_ORCHESTRATION_CONFIG: OrchestrationConfigV1 = {
   version: 1,
@@ -119,18 +105,7 @@ export const DEFAULT_ORCHESTRATION_CONFIG: OrchestrationConfigV1 = {
           enabled: true,
         },
       ],
-    },
-    reviewers: {
-      maxInstances: 2,
-      reviewerName: 'Sentinel',
-      agents: [
-        {
-          id: DEFAULT_REVIEWER_AGENT_ID,
-          name: 'Sentinel-A',
-          enabled: true,
-        },
-      ],
-    },
+    }
   },
   profiles: [
     {
@@ -144,16 +119,16 @@ export const DEFAULT_ORCHESTRATION_CONFIG: OrchestrationConfigV1 = {
       agents: [
         {
           targetAgentId: 'finger-project-agent',
-          role: 'orchestrator',
+          role: 'system',
           enabled: true,
           visible: true,
           instanceCount: 1,
-          launchMode: 'orchestrator',
+          launchMode: 'system',
           defaultQuota: 1,
         },
         {
           targetAgentId: 'finger-researcher',
-          role: 'searcher',
+          role: 'project',
           enabled: true,
           visible: true,
           instanceCount: 1,
@@ -162,7 +137,7 @@ export const DEFAULT_ORCHESTRATION_CONFIG: OrchestrationConfigV1 = {
         },
         {
           targetAgentId: 'finger-executor',
-          role: 'executor',
+          role: 'project',
           enabled: true,
           visible: false,
           instanceCount: 1,
@@ -171,16 +146,7 @@ export const DEFAULT_ORCHESTRATION_CONFIG: OrchestrationConfigV1 = {
         },
         {
           targetAgentId: 'finger-coder',
-          role: 'executor',
-          enabled: false,
-          visible: false,
-          instanceCount: 1,
-          launchMode: 'manual',
-          defaultQuota: 0,
-        },
-        {
-          targetAgentId: 'finger-reviewer',
-          role: 'reviewer',
+          role: 'project',
           enabled: false,
           visible: false,
           instanceCount: 1,
@@ -200,16 +166,16 @@ export const DEFAULT_ORCHESTRATION_CONFIG: OrchestrationConfigV1 = {
       agents: [
         {
           targetAgentId: 'finger-project-agent',
-          role: 'orchestrator',
+          role: 'system',
           enabled: true,
           visible: true,
           instanceCount: 1,
-          launchMode: 'orchestrator',
+          launchMode: 'system',
           defaultQuota: 1,
         },
         {
           targetAgentId: 'finger-researcher',
-          role: 'searcher',
+          role: 'project',
           enabled: true,
           visible: true,
           instanceCount: 1,
@@ -218,7 +184,7 @@ export const DEFAULT_ORCHESTRATION_CONFIG: OrchestrationConfigV1 = {
         },
         {
           targetAgentId: 'finger-executor',
-          role: 'executor',
+          role: 'project',
           enabled: true,
           visible: false,
           instanceCount: 1,
@@ -227,16 +193,7 @@ export const DEFAULT_ORCHESTRATION_CONFIG: OrchestrationConfigV1 = {
         },
         {
           targetAgentId: 'finger-coder',
-          role: 'executor',
-          enabled: false,
-          visible: false,
-          instanceCount: 1,
-          launchMode: 'manual',
-          defaultQuota: 0,
-        },
-        {
-          targetAgentId: 'finger-reviewer',
-          role: 'reviewer',
+          role: 'project',
           enabled: false,
           visible: false,
           instanceCount: 1,
@@ -279,12 +236,13 @@ export function normalizeReviewPolicy(raw: unknown): OrchestrationReviewPolicy {
 }
 
 function normalizeRole(raw: unknown, targetAgentId: string): OrchestrationAgentRole {
-  if (raw === 'orchestrator' || raw === 'reviewer' || raw === 'executor' || raw === 'searcher') return raw;
+  if (raw === 'system' || raw === 'project') return raw;
   const normalized = targetAgentId.toLowerCase();
-  if (normalized.includes('orchestr')) return 'orchestrator';
-  if (normalized.includes('review')) return 'reviewer';
-  if (normalized.includes('search')) return 'searcher';
-  return 'executor';
+  if (normalized.includes('system')) return 'system';
+  if (normalized.includes('review')) return 'system';
+  if (normalized.includes('orchestr')) return 'system';
+  if (normalized.includes('project')) return 'project';
+  return 'project';
 }
 
 function normalizeEntry(raw: unknown): OrchestrationAgentEntry {
@@ -300,10 +258,10 @@ function normalizeEntry(raw: unknown): OrchestrationAgentEntry {
   const instanceCount = typeof record.instanceCount === 'number' && Number.isFinite(record.instanceCount)
     ? Math.max(1, Math.floor(record.instanceCount))
     : 1;
-  const launchMode: 'manual' | 'orchestrator' = record.launchMode === 'orchestrator'
-    ? 'orchestrator'
-    : role === 'orchestrator'
-      ? 'orchestrator'
+  const launchMode: 'manual' | 'system' = record.launchMode === 'system'
+    ? 'system'
+    : role === 'system'
+      ? 'system'
       : 'manual';
   const enabled = record.enabled !== false;
   const visible = typeof record.visible === 'boolean' ? record.visible : true;
@@ -421,20 +379,19 @@ function inferRuntimeAnchorIds(
 ): {
   systemAgentId: string;
   workerAgentId: string;
-  reviewerAgentId: string;
+  reviewerAgentId?: string;
 } {
   const active = profiles.find((item) => item.id === activeProfileId);
   const enabledAgents = active?.agents?.filter((item) => item.enabled !== false) ?? [];
-  const orchestrator = enabledAgents.find((item) => item.role === 'orchestrator');
-  const worker = enabledAgents.find((item) => item.role === 'executor')
+  const orchestrator = enabledAgents.find((item) => item.role === 'system');
+  const worker = enabledAgents.find((item) => item.role === 'project')
     ?? enabledAgents.find((item) => item.targetAgentId.toLowerCase().includes('project'));
-  const reviewer = enabledAgents.find((item) => item.role === 'reviewer')
-    ?? active?.agents.find((item) => item.role === 'reviewer');
+  // Reviewer absorbed into system agent - no separate reviewer role
 
   return {
     systemAgentId: orchestrator?.targetAgentId || DEFAULT_SYSTEM_AGENT_ID,
     workerAgentId: worker?.targetAgentId || DEFAULT_PROJECT_WORKER_ID,
-    reviewerAgentId: reviewer?.targetAgentId || DEFAULT_REVIEWER_AGENT_ID,
+    reviewerAgentId: undefined,
   };
 }
 
@@ -512,40 +469,6 @@ function normalizeRuntimeConfig(
   const nonEmptyWorkerNames = workers.map((item) => item.name.trim()).filter((item) => item.length > 0);
   ensureUniqueCaseInsensitive(nonEmptyWorkerNames, 'worker name');
 
-  const reviewersRecord = typeof runtimeRecord.reviewers === 'object' && runtimeRecord.reviewers !== null
-    ? runtimeRecord.reviewers as Record<string, unknown>
-    : {};
-  const reviewerMaxInstances = normalizePositiveInteger(reviewersRecord.maxInstances, 2, 1);
-  const reviewerName = normalizeNonEmptyString(reviewersRecord.reviewerName) || 'Sentinel';
-  const reviewerAgentsRaw = Array.isArray(reviewersRecord.agents) ? reviewersRecord.agents : [];
-  const reviewerAgents = reviewerAgentsRaw.length > 0
-    ? reviewerAgentsRaw.map((item, index): RuntimeReviewerAgentConfig => {
-      if (typeof item !== 'object' || item === null) {
-        throw new Error(`runtime.reviewers.agents[${index}] must be object`);
-      }
-      const record = item as Record<string, unknown>;
-      const id = normalizeNonEmptyString(record.id);
-      if (!id) throw new Error(`runtime.reviewers.agents[${index}].id is required`);
-      return {
-        id,
-        name: normalizeNonEmptyString(record.name) || `${reviewerName}-${String(index + 1).padStart(2, '0')}`,
-        enabled: record.enabled !== false,
-      };
-    })
-    : [
-      {
-        id: anchors.reviewerAgentId,
-        name: `${reviewerName}-A`,
-        enabled: true,
-      },
-    ];
-  ensureUniqueCaseInsensitive(reviewerAgents.map((item) => item.id), 'reviewer id');
-  ensureUniqueCaseInsensitive(reviewerAgents.map((item) => item.name), 'reviewer name');
-  const enabledReviewers = reviewerAgents.filter((item) => item.enabled);
-  if (enabledReviewers.length > reviewerMaxInstances) {
-    throw new Error(`runtime.reviewers enabled agents exceeds maxInstances=${reviewerMaxInstances}`);
-  }
-
   return {
     systemAgent,
     projectWorkers: {
@@ -553,11 +476,6 @@ function normalizeRuntimeConfig(
       autoNameOnFirstAssign,
       nameCandidates: normalizedCandidates,
       workers,
-    },
-    reviewers: {
-      maxInstances: reviewerMaxInstances,
-      reviewerName,
-      agents: reviewerAgents,
     },
   };
 }
@@ -624,7 +542,7 @@ export function validateOrchestrationConfig(raw: unknown): OrchestrationConfigV1
     }
     const agents = agentsRaw.map(normalizeEntry);
     const enabledAgents = agents.filter((item) => item.enabled !== false);
-    const orchestrators = enabledAgents.filter((item) => item.role === 'orchestrator');
+    const orchestrators = enabledAgents.filter((item) => item.role === 'system');
     if (orchestrators.length !== 1) {
       throw new Error(`orchestration profile ${id} requires exactly one enabled orchestrator agent`);
     }

@@ -65,16 +65,6 @@ planning -> execution:
 - Resources allocated
 - User confirmed
 
-execution -> review:
-- A task batch completed
-- Quality review is needed
-
-review -> execution:
-- Review passed, continue execution
-
-review -> planning:
-- Review failed, replan is required
-
 execution -> completed:
 - All tasks completed
 - Final review passed
@@ -128,9 +118,7 @@ Coding tasks:
 - Do not write production code yourself; delegate through dispatch
 
 Review tasks:
-- You may dispatch planning or task arrangement proposals to the reviewer agent
 - Provide clear goals, plan steps, and risks
-- Adjust the plan using reviewer feedback before formal execution dispatch
 
 Important principles:
 - Never bypass the orchestrator-owned dispatch path

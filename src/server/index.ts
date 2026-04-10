@@ -25,15 +25,11 @@ import {
   loadOrchestrationConfig,
   type OrchestrationConfigV1,
 } from '../orchestration/orchestration-config.js';
-import { resumableSessionManager } from '../orchestration/resumable-session.js';
 import { echoInput, echoOutput } from '../agents/test/mock-echo-agent.js';
-import { memoryOutput } from '../outputs/memory.js';
 import { createWebUIOutput } from '../outputs/webui.js';
 import {
   FINGER_PROJECT_AGENT_ID,
   FINGER_PROJECT_ALLOWED_TOOLS,
-  FINGER_REVIEWER_AGENT_ID,
-  FINGER_REVIEWER_ALLOWED_TOOLS,
   FINGER_SYSTEM_AGENT_ID,
   FINGER_SYSTEM_ALLOWED_TOOLS,
 } from '../agents/finger-general/finger-general-module.js';
@@ -271,7 +267,6 @@ const activeKernelProviderId = resolveActiveKernelProviderId();
 logger.module('server').info('Active kernel provider', { provider: activeKernelProviderId });
 await moduleRegistry.register(echoInput);
 await moduleRegistry.register(echoOutput);
-await moduleRegistry.register(memoryOutput);
 
 const { chatCodexRunner, mockRuntimeKit } = setupChatCodexRunner({
   PORT,
@@ -296,7 +291,6 @@ await registerFingerRoleModules({
   },
 }, [
   { id: FINGER_PROJECT_AGENT_ID, roleProfile: 'project', allowedTools: FINGER_PROJECT_ALLOWED_TOOLS },
-  { id: FINGER_REVIEWER_AGENT_ID, roleProfile: 'reviewer', allowedTools: FINGER_REVIEWER_ALLOWED_TOOLS },
   { id: FINGER_SYSTEM_AGENT_ID, roleProfile: 'system', allowedTools: FINGER_SYSTEM_ALLOWED_TOOLS },
 ], {
   enableLegacyChatCodexAlias: ENABLE_LEGACY_CHAT_CODEX_ALIAS,
@@ -430,7 +424,7 @@ const registerAllRoutesDeps = {
   primaryOrchestratorGatewayId: PRIMARY_ORCHESTRATOR_GATEWAY_ID, legacyOrchestratorAgentId: LEGACY_ORCHESTRATOR_AGENT_ID, legacyOrchestratorGatewayId: LEGACY_ORCHESTRATOR_GATEWAY_ID,
   progressMonitor,
   workflowManager, askManager, runtimeInstructionBus, moduleRegistry, gatewayManager, channelBridgeManager, inputLockManager, toolRegistry: globalToolRegistry,
-  resumableSessionManager, wsClients, applyOrchestrationConfig, getChatCodexRunnerMode: () => (shouldUseMockChatCodexRunner(runtimeFlags) ? 'mock' : 'real'),
+  wsClients, applyOrchestrationConfig, getChatCodexRunnerMode: () => (shouldUseMockChatCodexRunner(runtimeFlags) ? 'mock' : 'real'),
   getLoadedAgentConfigDir, getLoadedAgentConfigs, agentJsonSchema: AGENT_JSON_SCHEMA, reloadAgentJsonConfigs, wss, registry, getAgentRuntimeDeps, resourcePool,
   runtimeDebug: { get: () => runtimeDebugMode, set: async (enabled: boolean) => { runtimeDebugMode = enabled; await ensureDebugRuntimeModules(runtimeDebugMode); }, moduleIds: DEBUG_RUNTIME_MODULE_IDS },
   mockRuntime: { rolePolicy: mockRolePolicy, clearAssertions: () => mockRuntimeKit.clearMockDispatchAssertions(), listAssertions: (filters: any) => mockRuntimeKit.listMockDispatchAssertions(filters) },
@@ -455,7 +449,7 @@ startServer(app, process.env.HOST || '0.0.0.0', PORT, {
 });
 
 logger.module('server').info('Finger role modules ready', {
-  agents: [FINGER_PROJECT_AGENT_ID, FINGER_REVIEWER_AGENT_ID, FINGER_SYSTEM_AGENT_ID].join(', '),
+  agents: [FINGER_PROJECT_AGENT_ID, FINGER_SYSTEM_AGENT_ID].join(', '),
 });
 try {
   const loadedOrchestrationConfig = loadOrchestrationConfig();

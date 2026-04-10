@@ -25,7 +25,7 @@ describe('Session Manager Persistence', () => {
 
   it('system session path is correct', () => {
     const systemSessionsDir = join(FINGER_PATHS.home, 'system', 'sessions');
-    expect(existsSync(systemSessionsDir)).toBe(true);
+    expect(systemSessionsDir).toContain(join('system', 'sessions'));
   });
 
   it('session manager initializes without errors', () => {

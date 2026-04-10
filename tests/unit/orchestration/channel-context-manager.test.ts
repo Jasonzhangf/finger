@@ -1,5 +1,27 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { ChannelContextManager } from '../../../src/orchestration/channel-context-manager.js';
+
+vi.mock('../../../src/orchestration/orchestration-config.js', () => ({
+  loadOrchestrationConfig: vi.fn(() => ({
+    config: {
+      activeProfileId: 'default',
+      profiles: [{
+        id: 'default',
+        name: 'Default',
+        agents: [{
+          id: 'system-agent',
+          targetAgentId: 'finger-system-agent',
+          role: 'orchestrator',
+          enabled: true,
+        }],
+      }],
+    },
+  })),
+}));
+
+beforeEach(() => {
+  vi.clearAllMocks();
+});
 
 describe('ChannelContextManager', () => {
   it('returns default system agent for unknown channel', () => {

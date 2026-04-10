@@ -144,7 +144,7 @@ export function getToolsForRole(role: string): Tool[] {
   switch (role) {
     case 'executor':
       return [FileReadTool, FileWriteTool, FileListTool, ShellExecTool];
-    case 'reviewer':
+    case 'system': // reviewer absorbed into system
       return [FileReadTool, BdQueryTool];
     case 'tester':
       return [FileReadTool, ShellExecTool, BdQueryTool];

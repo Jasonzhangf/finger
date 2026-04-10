@@ -9,9 +9,9 @@ import { PeriodicCheckRunner } from '../../agents/finger-system-agent/periodic-c
 import { loadRegistry } from '../../agents/finger-system-agent/registry.js';
 import type { AgentInfo } from '../../agents/finger-system-agent/registry.js';
 import { SYSTEM_AGENT_CONFIG } from '../../agents/finger-system-agent/index.js';
-import { FINGER_PROJECT_AGENT_ID, FINGER_REVIEWER_AGENT_ID } from '../../agents/finger-general/finger-general-module.js';
+import { FINGER_PROJECT_AGENT_ID, FINGER_SYSTEM_AGENT_ID } from '../../agents/finger-general/finger-general-module.js';
 import { logger } from '../../core/logger.js';
-import { FINGER_PATHS } from '../../core/finger-paths.js';
+import { FINGER_PATHS, resolveFingerHome } from '../../core/finger-paths.js';
 import { promises as fs } from 'fs';
 import path from 'path';
 import {
@@ -36,7 +36,7 @@ import {
 const log = logger.module('SystemAgentManager');
 const DEFAULT_PERIODIC_CHECK_INTERVAL_MS = 5 * 60_000;
 const SYSTEM_AGENT_MANAGER_CONFIG_PATH = path.join(FINGER_PATHS.config.dir, 'system-agent-manager.json');
-const SYSTEM_PROJECT_PATH = path.join(FINGER_PATHS.home, 'system');
+const getSystemProjectPath = (): string => path.join(resolveFingerHome(), 'system');
 const SYSTEM_SESSION_PREFIX = 'system-';
 const SYSTEM_AGENT_ID = 'finger-system-agent';
 const ACTIVE_LIFECYCLE_STAGES = new Set([
@@ -132,7 +132,7 @@ export class SystemAgentManager {
     // 4. 启动监控中的 Project Agents
     await this.startMonitoredProjects();
 
-    // 4.5 恢复中断的 reviewer runtime sessions（若存在）
+    // 4.5 Reviewer absorbed into system agent - no separate recovery
     await this.recoverReviewerSessionsIfNeeded();
 
     // 5. 启动后不再自动注入 bootstrap 开机检查（避免无意义负载与忙态干扰）。
@@ -146,7 +146,7 @@ export class SystemAgentManager {
         targetAgentId: SYSTEM_AGENT_CONFIG.id,
         sessionId: this.systemSessionId,
         instanceCount: 1,
-        launchMode: 'orchestrator',
+        launchMode: 'system',
         scope: 'global',
         config: {
           enabled: true,
@@ -229,7 +229,7 @@ export class SystemAgentManager {
   private async startProjectAgent(agent: AgentInfo): Promise<void> {
     const { projectPath, projectId, agentId } = agent;
     const normalizedProjectPath = path.resolve(projectPath);
-    if (normalizedProjectPath === path.resolve(SYSTEM_PROJECT_PATH)) {
+    if (normalizedProjectPath === path.resolve(getSystemProjectPath())) {
       log.warn('[SystemAgentManager] Skip monitored project start for system workspace path', {
         projectPath,
         projectId,
@@ -694,9 +694,10 @@ export class SystemAgentManager {
     if (!session || typeof session !== 'object') return false;
     const sessionId = typeof session.id === 'string' ? session.id.trim() : '';
     if (sessionId.startsWith(SYSTEM_SESSION_PREFIX)) return true;
+    if (sessionId.startsWith('review-') || sessionId.startsWith('hb-')) return true;
 
     const projectPath = typeof session.projectPath === 'string' ? session.projectPath.trim() : '';
-    if (projectPath.length > 0 && path.resolve(projectPath) === path.resolve(SYSTEM_PROJECT_PATH)) return true;
+    if (projectPath.length > 0 && path.resolve(projectPath) === path.resolve(getSystemProjectPath())) return true;
 
     const context = (session.context && typeof session.context === 'object')
       ? (session.context as Record<string, unknown>)
@@ -800,7 +801,7 @@ export class SystemAgentManager {
   }
 
   private async recoverReviewerSessionsIfNeeded(): Promise<void> {
-    log.info('[SystemAgentManager] Reviewer runs in stateless mode; skip reviewer session recovery');
+    log.info('[SystemAgentManager] Review absorbed into system agent stateless mode');
     return;
   }
 

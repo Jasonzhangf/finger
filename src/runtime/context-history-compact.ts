@@ -15,7 +15,7 @@ const MAX_CONTENT_SUMMARY_LENGTH = 500;
 export interface DigestMessage {
   id: string;
   timestamp: string;
-  role: 'user' | 'assistant' | 'system' | 'orchestrator';
+  role: 'user' | 'assistant' | 'system';
   content_summary: string;
   tool_calls?: string[];
   key_entities?: string[];

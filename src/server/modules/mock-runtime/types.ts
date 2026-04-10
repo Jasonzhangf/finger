@@ -6,7 +6,7 @@ import type {
   ChatCodexRunnerSessionState,
 } from '../../../agents/finger-general/finger-general-module.js';
 
-export type MockAgentRole = 'executor' | 'reviewer' | 'searcher';
+export type MockAgentRole = 'executor' | 'searcher' | 'system';
 export type MockOutcome = 'success' | 'failure';
 
 export interface MockDispatchAssertion {
@@ -57,7 +57,7 @@ export interface MockRuntimeDeps {
   agentIds: {
     researcher: string;
     executor: string;
-    reviewer: string;
+    system?: string; reviewer?: string;
   };
   maxAssertions?: number;
 }

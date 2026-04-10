@@ -1,3 +1,4 @@
+// reviewer handling removed - absorbed into system agent
 export type OrchestratorV2State =
   | 'boot'
   | 'idle_probe_bd'
@@ -129,7 +130,7 @@ export type OrchestratorV2Event =
   | { type: 'coder_handoff_ready' }
   | { type: 'schedule_decided'; resourceBusy: boolean; confidence: number }
   | { type: 'resource_available' }
-  | { type: 'dispatch_result'; ok: boolean; reviewerOptions?: DispatchReviewerOptions }
+  | { type: 'dispatch_result'; ok: boolean }
   | { type: 'coder_result'; claimCount: number; evidenceCount: number }
   | { type: 'review_result'; decision: ReviewDecision; claimsWithoutEvidence?: number; feedback?: string }
   | { type: 'replan_applied'; confidence: number }
@@ -707,26 +708,8 @@ export function transitionOrchestratorV2(
         );
       }
       
-      // Check if reviewer is configured
-      const reviewerOptions = event.reviewerOptions;
-      if (reviewerOptions?.reviewerAgentId) {
-        return withTransition(
-          snapshot,
-          'executor_review',
-          {},
-          [{
-            type: 'run_reviewer_executor_mode',
-            payload: {
-              reviewerAgentId: reviewerOptions.reviewerAgentId,
-              reviewGoal: reviewerOptions.reviewGoal || 'Review executor output',
-              reviewCriteria: reviewerOptions.reviewCriteria,
-            },
-          }],
-          'dispatch_with_reviewer'
-        );
-      }
-      
-      return withTransition(
+      // Reviewer absorbed into system agent - no separate reviewer dispatch
+            return withTransition(
         snapshot,
         'coder_exec',
         {},

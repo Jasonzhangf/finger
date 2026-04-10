@@ -21,7 +21,7 @@ export interface LedgerReaderContext {
 }
 
 export interface SessionViewMessage {
-  role: 'user' | 'assistant' | 'system' | 'orchestrator';
+  role: 'user' | 'assistant' | 'system';
   content: string;
   tokenCount: number;
   messageId?: string;

@@ -10,7 +10,7 @@ import { createConsoleLikeLogger } from '../core/logger/console-like.js';
 
 const clog = createConsoleLikeLogger('ResourcePool');
 
-export type ResourceType = 'executor' | 'orchestrator' | 'reviewer' | 'searcher' | 'tool' | 'api' | 'database';
+export type ResourceType = 'system' | 'project';
 export type ResourceStatus = 'available' | 'deployed' | 'busy' | 'blocked' | 'error' | 'released';
 
 export interface ResourceCapability {
@@ -107,22 +107,22 @@ export class ResourcePool {
   }
 
   private initDefaultPool(): void {
-    // Default orchestrator
-    this.resources.set('orchestrator-default', {
-      id: 'orchestrator-default',
-      name: 'Default Orchestrator',
-      type: 'orchestrator',
+    // Default system
+    this.resources.set('system-default', {
+      id: 'system-default',
+      name: 'Default System',
+      type: 'system',
       capabilities: [{ type: 'planning', level: 8 }, { type: 'coordination', level: 9 }],
       status: 'available',
       totalDeployments: 0,
       errorCount: 0,
     });
 
-    // Default executors with different capabilities
-    this.resources.set('executor-general', {
-      id: 'executor-general',
-      name: 'General Executor',
-      type: 'executor',
+    // Default projects with different capabilities
+    this.resources.set('project-general', {
+      id: 'project-general',
+      name: 'General Project',
+      type: 'project',
       capabilities: [
         { type: 'web_search', level: 8 },
         { type: 'file_ops', level: 9 },
@@ -133,10 +133,10 @@ export class ResourcePool {
       errorCount: 0,
     });
 
-    this.resources.set('executor-research', {
-      id: 'executor-research',
-      name: 'Research Executor',
-      type: 'executor',
+    this.resources.set('project-research', {
+      id: 'project-research',
+      name: 'Research Project',
+      type: 'project',
       capabilities: [
         { type: 'web_search', level: 10 },
         { type: 'data_analysis', level: 8 },
@@ -147,10 +147,10 @@ export class ResourcePool {
       errorCount: 0,
     });
 
-    this.resources.set('executor-coding', {
-      id: 'executor-coding',
-      name: 'Coding Executor',
-      type: 'executor',
+    this.resources.set('project-coding', {
+      id: 'project-coding',
+      name: 'Coding Project',
+      type: 'project',
       capabilities: [
         { type: 'code_generation', level: 9 },
         { type: 'file_ops', level: 10 },
@@ -161,29 +161,7 @@ export class ResourcePool {
       errorCount: 0,
     });
 
-    // Default reviewer
-    this.resources.set('reviewer-default', {
-      id: 'reviewer-default',
-      name: 'Default Reviewer',
-      type: 'reviewer',
-      capabilities: [{ type: 'code_review', level: 8 }, { type: 'quality_check', level: 9 }],
-      status: 'available',
-      totalDeployments: 0,
-      errorCount: 0,
-    });
-
     // Default searcher
-    this.resources.set('searcher-default', {
-      id: 'searcher-default',
-      name: 'Default Searcher',
-      type: 'searcher',
-      capabilities: [{ type: 'web_search', level: 10 }, { type: 'evidence_trace', level: 8 }],
-      status: 'available',
-      totalDeployments: 0,
-      errorCount: 0,
-    });
-
-    this.savePool();
     log.info('Initialized with ${this.resources.size} default resources', { "this.resources.size": this.resources.size });
   }
 

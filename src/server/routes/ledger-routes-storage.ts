@@ -108,7 +108,7 @@ interface LedgerSessionSummary {
   lastMessageAt?: string;
   previewSummary?: string;
   previewMessages?: Array<{
-    role: 'user' | 'assistant' | 'system' | 'orchestrator';
+    role: 'user' | 'assistant' | 'system';
     timestamp: string;
     summary: string;
   }>;
@@ -344,7 +344,7 @@ function summarizeLedgerSessionDir(dirPath: string): LedgerSessionSummary | null
         const content = typeof payload.content === 'string' ? payload.content : '';
         const timestamp = typeof entry.timestamp_iso === 'string' ? entry.timestamp_iso : '';
         return {
-          role: role as 'user' | 'assistant' | 'system' | 'orchestrator',
+          role: role as 'user' | 'assistant' | 'system',
           timestamp,
           summary: summarizePreviewContent(content),
         };

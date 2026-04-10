@@ -16,12 +16,7 @@ vi.mock('fs', () => {
   };
 });
 
-vi.mock('os', () => ({
-  default: {
-    homedir: vi.fn(() => '/home/tester'),
-  },
-  homedir: vi.fn(() => '/home/tester'),
-}));
+
 
 vi.mock('../../../src/agents/core/agent-lifecycle.js', () => ({
   lifecycleManager: {
@@ -29,7 +24,7 @@ vi.mock('../../../src/agents/core/agent-lifecycle.js', () => ({
   },
 }));
 
-const HOME = '/home/tester/.finger';
+const HOME = process.env.FINGER_HOME!;
 const CONFIG_DIR = `${HOME}/config`;
 const CONFIG = `${CONFIG_DIR}/agents.json`;
 const AGENT_DIR = `${HOME}/runtime/agents`;

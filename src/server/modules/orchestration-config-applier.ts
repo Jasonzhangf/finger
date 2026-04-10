@@ -64,7 +64,7 @@ export function createOrchestrationConfigApplier(deps: OrchestrationConfigApplie
         appliedAgents.push(entry.targetAgentId);
         continue;
       }
-      const targetSessionId = entry.role === 'orchestrator' || entry.role !== 'reviewer'
+      const targetSessionId = entry.role === 'system' || entry.role === 'project'
         ? rootSession.id
         : sessionWorkspaces.ensureRuntimeChildSession(rootSession, entry.targetAgentId).id;
       await agentRuntimeBlock.execute('deploy', {
@@ -75,7 +75,7 @@ export function createOrchestrationConfigApplier(deps: OrchestrationConfigApplie
           ? { targetImplementationId: entry.targetImplementationId }
           : {}),
         instanceCount: entry.instanceCount ?? 1,
-        launchMode: entry.launchMode ?? (entry.role === 'orchestrator' ? 'orchestrator' : 'manual'),
+        launchMode: entry.launchMode ?? (entry.role === 'system' ? 'system' : 'manual'),
         config: {
           id: entry.targetAgentId,
           name: entry.targetAgentId,

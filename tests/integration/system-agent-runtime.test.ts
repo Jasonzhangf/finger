@@ -12,54 +12,116 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { spawn, ChildProcess } from 'child_process';
 import { promises as fs } from 'fs';
+import net from 'net';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const DAEMON_PORT = 5523;
 let daemonProcess: ChildProcess | null = null;
 let daemonOutput = '';
+let daemonPort = 0;
+let daemonWsPort = 0;
+
+function reservePort(): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const server = net.createServer();
+    server.unref();
+    server.on('error', reject);
+    server.listen(0, '127.0.0.1', () => {
+      const address = server.address();
+      if (!address || typeof address === 'string') {
+        server.close(() => reject(new Error('failed to reserve local port')));
+        return;
+      }
+      const port = address.port;
+      server.close((closeErr) => {
+        if (closeErr) {
+          reject(closeErr);
+          return;
+        }
+        resolve(port);
+      });
+    });
+  });
+}
+
+async function isDaemonHealthy(port: number): Promise<boolean> {
+  try {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 1500);
+    const res = await fetch(`http://127.0.0.1:${port}/health`, { signal: controller.signal });
+    clearTimeout(timeout);
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
+async function waitForOutput(fragment: string, timeoutMs = 5000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (daemonOutput.includes(fragment)) {
+      return;
+    }
+    if (daemonProcess?.exitCode !== null) {
+      throw new Error(`Daemon exited before output "${fragment}" appeared\n${daemonOutput}`);
+    }
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  throw new Error(`Timed out waiting for daemon output "${fragment}"\n${daemonOutput}`);
+}
 
 async function startDaemon(): Promise<void> {
-  return new Promise((resolve, reject) => {
-    const env = { ...process.env, PORT: String(DAEMON_PORT) };
-    const daemonPath = path.resolve(__dirname, '../../dist/server/index.js');
-    
-    daemonProcess = spawn('node', [daemonPath], { env, stdio: ['pipe', 'pipe', 'pipe'] });
-    
-    let started = false;
-    
-    daemonProcess.stdout?.on('data', (data) => {
-      const output = data.toString();
-      daemonOutput += output;
-      if ((output.includes('running at') || output.includes('listening')) && !started) {
-        started = true;
-        setTimeout(resolve, 500);
-      }
-    });
-    
-    daemonProcess.stderr?.on('data', (data) => {
-      daemonOutput += data.toString();
-    });
-    
-    daemonProcess.on('error', (err) => {
-      if (!started) reject(err);
-    });
-    
-    setTimeout(() => {
-      if (!started) reject(new Error('Daemon startup timeout'));
-    }, 15000);
+  daemonPort = await reservePort();
+  daemonWsPort = await reservePort();
+
+  const env = {
+    ...process.env,
+    PORT: String(daemonPort),
+    WS_PORT: String(daemonWsPort),
+    NODE_ENV: 'test',
+  };
+  const daemonPath = path.resolve(__dirname, '../../dist/server/index.js');
+
+  daemonProcess = spawn(process.execPath, [daemonPath], { env, stdio: ['ignore', 'pipe', 'pipe'] });
+  daemonProcess.stdout?.on('data', (data) => {
+    daemonOutput += data.toString();
   });
+  daemonProcess.stderr?.on('data', (data) => {
+    daemonOutput += data.toString();
+  });
+
+  const deadline = Date.now() + 20_000;
+  while (Date.now() < deadline) {
+    if (daemonProcess.exitCode !== null) {
+      throw new Error(`Daemon exited during startup (code=${daemonProcess.exitCode})\n${daemonOutput}`);
+    }
+    if (await isDaemonHealthy(daemonPort)) {
+      return;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 200));
+  }
+
+  throw new Error(`Daemon startup timeout on http://127.0.0.1:${daemonPort} (ws ${daemonWsPort})\n${daemonOutput}`);
 }
 
 async function stopDaemon(): Promise<void> {
   if (!daemonProcess) return;
-  
-  return new Promise((resolve) => {
-    daemonProcess?.kill('SIGTERM');
-    setTimeout(() => {
-      daemonProcess?.kill('SIGKILL');
-      resolve();
-    }, 3000);
-  });
+
+  const daemon = daemonProcess;
+  daemonProcess = null;
+
+  if (daemon.exitCode !== null || daemon.killed) {
+    return;
+  }
+
+  daemon.kill('SIGTERM');
+  await Promise.race([
+    new Promise<void>((resolve) => daemon.once('exit', () => resolve())),
+    new Promise<void>((resolve) => setTimeout(resolve, 3000)),
+  ]);
+
+  if (daemon.exitCode === null && !daemon.killed) {
+    daemon.kill('SIGKILL');
+  }
 }
 
 describe('System Agent Runtime Tests', () => {
@@ -76,9 +138,13 @@ describe('System Agent Runtime Tests', () => {
     // 验证 daemon 进程存在
     expect(daemonProcess?.pid).toBeDefined();
     expect(daemonProcess?.killed).toBe(false);
+    expect(await isDaemonHealthy(daemonPort)).toBe(true);
   });
 
   it('should verify system agent module registered with project_tool', async () => {
+    await waitForOutput('finger-system-agent');
+    await waitForOutput('shell.exec');
+
     // 验证 finger-system-agent 模块已注册
     expect(daemonOutput).toContain('finger-system-agent');
 
@@ -100,8 +166,6 @@ describe('System Agent Runtime Tests', () => {
     } catch {
       // Directory may not exist yet
     }
-    
-    console.log(`System dir exists: ${systemDirExists}`);
     
     // 至少系统目录应该存在（由 daemon 创建）
     expect(systemDirExists).toBe(true);

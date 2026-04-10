@@ -41,18 +41,20 @@ export class FingerLogger {
     if (!ctx) return null;
     this.activeTraces.delete(traceId);
 
-    // 从日志文件读取该 traceId 的所有 entries
-    const fileEntries = this.readLogs({ traceId });
-    fileEntries.forEach((e, i) => {
-      if (e.seq === undefined) e.seq = i + 1;
-    });
+    // Use in-memory trace entries directly instead of re-reading from disk.
+    // The previous readLogs({ traceId }) was O(total log size) and caused
+    // massive IO amplification under high-frequency dispatch retries.
+    const entries = ctx.entries.length > 0
+      ? [...ctx.entries]
+      : [];
 
-    // 快照模式：写入独立文件
-    if (this.moduleConfig.snapshotMode) {
-      this.writeSnapshot({ ...ctx, entries: fileEntries });
+    // Snapshot mode: only write when there's meaningful content.
+    // Empty snapshots provide zero diagnostic value but consume IO/inodes.
+    if (this.moduleConfig.snapshotMode && entries.length > 0) {
+      this.writeSnapshot({ ...ctx, entries });
     }
 
-    return fileEntries;
+    return entries;
   }
 
   log(

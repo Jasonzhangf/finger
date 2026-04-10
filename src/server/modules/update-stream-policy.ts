@@ -8,7 +8,7 @@ const log = logger.module('UpdateStreamPolicy');
 
 export type UpdateStreamGranularity = 'off' | 'milestone' | 'tool' | 'reasoning' | 'full';
 export type UpdateStreamSourceType = 'user' | 'heartbeat' | 'mailbox' | 'cron' | 'system-inject';
-export type UpdateStreamRole = 'system' | 'project' | 'reviewer';
+export type UpdateStreamRole = 'system' | 'project';
 export type UpdateStreamSourceMode = 'all' | 'result_only' | 'silent';
 
 export interface UpdateStreamSourcePolicy {
@@ -88,10 +88,6 @@ const DEFAULT_UPDATE_STREAM_CONFIG: UpdateStreamConfigResolved = {
       phases: ['dispatch', 'execution', 'review', 'delivery', 'completion'],
       kinds: ['status', 'tool', 'reasoning', 'artifact', 'decision', 'error'],
     },
-    reviewer: {
-      phases: ['dispatch', 'execution', 'review', 'delivery', 'completion'],
-      kinds: ['status', 'tool', 'reasoning', 'artifact', 'decision', 'error'],
-    },
   },
   delivery: {
     dedupWindowMs: 12_000,
@@ -165,7 +161,7 @@ function normalizeConfig(raw: unknown): UpdateStreamConfigResolved {
   }
 
   const normalizedRoles: Partial<Record<UpdateStreamRole, UpdateStreamRolePolicy>> = {};
-  for (const role of ['system', 'project', 'reviewer'] as const) {
+  for (const role of ['system', 'project'] as const) {
     const roleObj = asRecord(rolesRaw[role]);
     if (!roleObj) continue;
     normalizedRoles[role] = {
@@ -273,7 +269,7 @@ export function loadUpdateStreamConfigSync(force = false): UpdateStreamConfigRes
 export function inferUpdateStreamRole(agentId?: string): UpdateStreamRole {
   const normalized = typeof agentId === 'string' ? agentId.trim().toLowerCase() : '';
   if (!normalized) return 'project';
-  if (normalized.includes('review')) return 'reviewer';
+  if (normalized.includes('review')) return 'system';
   if (normalized.includes('system')) return 'system';
   return 'project';
 }

@@ -37,7 +37,7 @@ import { normalizeProjectPathCanonical } from '../../common/path-normalize.js';
 import { resolveAgentDisplayName } from '../../server/modules/agent-name-resolver.js';
 import { augmentToolSpecificationsWithCompatAliases } from '../../runtime/tool-compat-aliases.js';
 
-export type FingerRoleProfile = 'project' | 'reviewer' | 'system';
+export type FingerRoleProfile = 'project' | 'system';
 
 export interface FingerRoleSpec {
   id: string;
@@ -516,8 +516,8 @@ export async function registerFingerRoleModules(
   const { moduleRegistry, runtime, toolRegistry, chatCodexRunner, daemonUrl, onLoopEvent } = deps;
 
   const resolveDeveloperRole = (role: FingerRoleSpec): ChatCodexDeveloperRole => {
-    if (role.roleProfile === 'reviewer') return 'reviewer';
-    return 'orchestrator';
+    if (role.roleProfile === 'system') return 'system';
+    return 'project';
   };
 
   const resolvePromptOverrides = (agentId: string, role: FingerRoleSpec) => {
@@ -924,7 +924,7 @@ export async function registerFingerRoleModules(
             : bootstrapped.messages;
           const bootstrappedMapped = bootstrappedSliced.map((message) => ({
             id: message.messageId || message.id,
-            role: message.role === 'orchestrator' ? 'assistant' as const : message.role,
+            role: message.role,
             content: message.content,
             timestamp: message.timestampIso,
             metadata: {
@@ -1101,7 +1101,7 @@ export async function registerFingerRoleModules(
 
       const mapped = sliced.map((message) => ({
         id: message.messageId || message.id,
-        role: message.role === 'orchestrator' ? 'assistant' as const : message.role,
+        role: message.role,
         content: message.content,
         timestamp: message.timestampIso,
         metadata: {

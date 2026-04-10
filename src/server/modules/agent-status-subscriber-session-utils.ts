@@ -487,25 +487,9 @@ export async function finalizeChannelTurnDelivery(params: {
     const formattedTimestamp = `${year}-${month}-${day} ${hours}:${minutes}:${seconds}.${ms} ${offsetSign}${offsetHours}:${offsetMinutes}`;
     const agentName = params.agentId?.replace(/^finger-/, '').replace(/-/g, ' ') || 'system agent';
     const content = `[${agentName}] [${formattedTimestamp}] ${params.finalReply.trim()}`;
-    await deliverText(observers, content, 'bodyUpdates');
-  }
+ await deliverText(observers, content, 'bodyUpdates');
+ }
 
-  const shouldEmitStopNotice = params.finishReason === 'stop'
-    && !isScheduledSourceType(sourceType)
-    && !noopWatchdogReply;
-  if (shouldEmitStopNotice) {
-    const noticeTargets = Array.from(dedupedEnvelopes.values())
-      .filter((envelope) => envelope.channel === 'qqbot' || envelope.channel === 'openclaw-weixin');
-    if (noticeTargets.length > 0) {
-      const finalReplyPreview = typeof params.finalReply === 'string'
-        ? sanitizeFinalReplyPreviewForStopNotice(params.finalReply).slice(0, 140)
-        : '';
-      const stopNotice = finalReplyPreview.length > 0
-        ? `本轮推理已结束：${finalReplyPreview}`
-        : '本轮推理已结束。';
-      await deliverText(noticeTargets, stopNotice, 'statusUpdate');
-    }
-  }
 
-  clearSessionObservers(params.sessionId, params.state);
+ clearSessionObservers(params.sessionId, params.state);
 }

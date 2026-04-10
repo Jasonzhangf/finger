@@ -4,7 +4,9 @@ export default defineConfig({
   test: {
     globals: true,
     environment: 'node',
+    globalSetup: ["./tests/setup/test-isolation.ts"],
     include: [
+      'src/**/__tests__/**/*.test.ts',
       'tests/unit/**/*.test.ts',
       'tests/unit/**/*.test.tsx',
       'tests/api/**/*.test.ts',

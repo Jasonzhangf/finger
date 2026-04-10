@@ -60,12 +60,11 @@ export class Scheduler {
     const idleAgents = agents.filter(a => a.status === 'idle');
 
     const rolePriority: Record<string, string[]> = {
-      'executor': ['executor', 'orchestrator'],
-      'architect': ['architect', 'orchestrator'],
+      'project': ['project', 'system'],
+      'architect': ['architect', 'system'],
       'tester': ['tester', 'executor'],
       'docwriter': ['docwriter', 'executor'],
-      'reviewer': ['reviewer', 'orchestrator'],
-      'orchestrator': ['orchestrator']
+            'system': ['system']
     };
 
     const taskRoles = this.inferTaskRole(task);
@@ -83,7 +82,7 @@ export class Scheduler {
   private inferTaskRole(task: Task): string[] {
     const title = task.title.toLowerCase();
 
-    if (title.includes('review')) return ['reviewer'];
+    if (title.includes('review')) return ['system'];
     if (title.includes('test')) return ['tester'];
     if (title.includes('design') || title.includes('architect')) return ['architect'];
     if (title.includes('doc')) return ['docwriter'];

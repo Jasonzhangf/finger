@@ -25,7 +25,7 @@ import {
 } from '../../server/modules/heartbeat-helpers.js';
 import type { ProgressDeliveryPolicy } from '../../common/progress-delivery-policy.js';
 import { normalizeProgressDeliveryPolicy } from '../../common/progress-delivery-policy.js';
-import { FINGER_PROJECT_AGENT_ID, FINGER_REVIEWER_AGENT_ID } from '../../agents/finger-general/finger-general-module.js';
+import { FINGER_PROJECT_AGENT_ID, FINGER_SYSTEM_AGENT_ID } from '../../agents/finger-general/finger-general-module.js';
 import {
   acquireProjectDreamLock,
   releaseProjectDreamLock,
@@ -164,7 +164,7 @@ const ACTIVE_LIFECYCLE_STAGES = new Set([
 const HEARTBEAT_IDLE_GUARD_AGENT_IDS = [
   SYSTEM_AGENT_ID,
   FINGER_PROJECT_AGENT_ID,
-  FINGER_REVIEWER_AGENT_ID,
+  FINGER_SYSTEM_AGENT_ID,
 ];
 const HEARTBEAT_IDLE_GUARD_LOG_THROTTLE_MS = 60_000;
 const PROJECT_RECOVERY_ACTIVE_MAX_AGE_MS = 45 * 60_000;

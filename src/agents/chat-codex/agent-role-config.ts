@@ -1,4 +1,4 @@
-export type BaseAgentRole = 'system' | 'project' | 'reviewer';
+export type BaseAgentRole = 'system' | 'project';
 
 const CORE_EXECUTION_TOOLS = [
   'exec_command',
@@ -109,32 +109,11 @@ export const BASE_AGENT_ROLE_CONFIG: Record<BaseAgentRole, BaseAgentRoleConfig> 
     allowedTools: dedupeTools([...ORCHESTRATOR_FULL_TOOLS], [...MAILBOX_TOOLS], [...SKILLS_TOOLS], ['report-task-completion']),
     defaultLedgerCanReadAll: true,
   },
-  reviewer: {
-    role: 'reviewer',
-    description: 'Reviewer agent. Focuses on evidence, risk, regression checks, and mailbox-driven review tasks.',
-    allowedTools: dedupeTools(
-      [
-        'exec_command',
-        'view_image',
-        'web_search',
-        'context_ledger.memory',
-        'context_ledger.expand_task',
-        'context_builder.rebuild',
-        'reasoning.stop',
-        'user.ask',
-        'report-task-completion',
-      ],
-      [...MAILBOX_TOOLS],
-      [...SKILLS_TOOLS],
-    ),
-    defaultLedgerCanReadAll: false,
-  },
 };
 
 export function resolveBaseAgentRole(roleProfile: string | undefined): BaseAgentRole {
   const normalized = (roleProfile ?? '').trim().toLowerCase();
   if (!normalized) return 'project';
   if (normalized === 'system' || normalized.includes('finger-system')) return 'system';
-  if (normalized === 'reviewer' || normalized.includes('review')) return 'reviewer';
   return 'project';
 }

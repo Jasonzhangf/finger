@@ -33,7 +33,7 @@ const SCHEDULED_SOURCE_TYPES = new Set<UpdateStreamSourceType>([
 const SYSTEM_RECOVERY_SOURCES = new Set<string>([
   'system-recovery',
   'system-project-recovery',
-  'system-reviewer-recovery',
+  
 ]);
 
 export function isNoActionableWatchdogText(raw: string | undefined): boolean {

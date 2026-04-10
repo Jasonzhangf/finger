@@ -274,7 +274,7 @@ export function createOrchestratorActions(): ActionDefinition[] {
         tasks: { type: 'array', required: true, description: '子任务列表' },
       },
       riskLevel: 'low',
-      category: 'orchestrator',
+      category: 'system',
       handler: async (params) => ({
         success: true,
         observation: `已拆解 ${(params.tasks as unknown[]).length} 个子任务`,

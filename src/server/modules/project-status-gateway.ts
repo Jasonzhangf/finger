@@ -105,9 +105,7 @@ function isSemanticNoopPatch(current: ProjectTaskState | null, next: ProjectTask
     && (current.assigneeWorkerName ?? '') === (next.assigneeWorkerName ?? '')
     && (current.deliveryWorkerId ?? '') === (next.deliveryWorkerId ?? '')
     && (current.deliveryWorkerName ?? '') === (next.deliveryWorkerName ?? '')
-    && (current.reviewerId ?? '') === (next.reviewerId ?? '')
-    && (current.reviewerName ?? '') === (next.reviewerName ?? '')
-    && (current.reassignReason ?? '') === (next.reassignReason ?? '')
+            && (current.reassignReason ?? '') === (next.reassignReason ?? '')
     && JSON.stringify(current.blockedBy ?? []) === JSON.stringify(next.blockedBy ?? [])
   );
 }
@@ -165,9 +163,7 @@ function writeTaskRouterMarkdown(
     state.assigneeWorkerName ? `- assigneeWorkerName: ${state.assigneeWorkerName}` : '- assigneeWorkerName: N/A',
     state.deliveryWorkerId ? `- deliveryWorkerId: ${state.deliveryWorkerId}` : '- deliveryWorkerId: N/A',
     state.deliveryWorkerName ? `- deliveryWorkerName: ${state.deliveryWorkerName}` : '- deliveryWorkerName: N/A',
-    state.reviewerId ? `- reviewerId: ${state.reviewerId}` : '- reviewerId: N/A',
-    state.reviewerName ? `- reviewerName: ${state.reviewerName}` : '- reviewerName: N/A',
-    state.reassignReason ? `- reassignReason: ${state.reassignReason}` : '- reassignReason: N/A',
+            state.reassignReason ? `- reassignReason: ${state.reassignReason}` : '- reassignReason: N/A',
     state.taskId ? `- taskId: ${state.taskId}` : '- taskId: N/A',
     state.taskName ? `- taskName: ${state.taskName}` : '- taskName: N/A',
     state.dispatchId ? `- dispatchId: ${state.dispatchId}` : '- dispatchId: N/A',
@@ -194,8 +190,8 @@ function writeTaskRouterMarkdown(
         + `${item.assigneeWorkerName ? ` assigneeName=${item.assigneeWorkerName}` : ''}`
         + `${item.deliveryWorkerId ? ` delivery=${item.deliveryWorkerId}` : ''}`
         + `${item.deliveryWorkerName ? ` deliveryName=${item.deliveryWorkerName}` : ''}`
-        + `${item.reviewerId ? ` reviewer=${item.reviewerId}` : ''}`
-        + `${item.reviewerName ? ` reviewerName=${item.reviewerName}` : ''}`
+        + ``
+        + ``
         + `${item.reassignReason ? ` reassign_reason=${item.reassignReason}` : ''}`
         + `${item.taskId ? ` taskId=${item.taskId}` : ''}`
         + `${item.taskName ? ` task="${item.taskName}"` : ''}`
@@ -233,9 +229,7 @@ export interface ProjectStatusGatewayPatch {
   assigneeWorkerName?: string;
   deliveryWorkerId?: string;
   deliveryWorkerName?: string;
-  reviewerId?: string;
-  reviewerName?: string;
-  reassignReason?: string;
+      reassignReason?: string;
   taskId?: string;
   taskName?: string;
   dispatchId?: string;
@@ -349,9 +343,7 @@ export function applyProjectStatusGatewayPatch(params: {
         assigneeWorkerName: next.assigneeWorkerName,
         deliveryWorkerId: next.deliveryWorkerId,
         deliveryWorkerName: next.deliveryWorkerName,
-        reviewerId: next.reviewerId,
-        reviewerName: next.reviewerName,
-        reassignReason: next.reassignReason,
+                        reassignReason: next.reassignReason,
         taskId: next.taskId,
         taskName: next.taskName,
         status: next.status,

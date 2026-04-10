@@ -1,39 +1,16 @@
 import type { ChatCodexDeveloperRole } from './developer-prompt-templates.js';
 
-export type ChatCodexResponseSchemaPreset =
-  | 'orchestrator'
-  | 'reviewer'
-  | 'executor'
-  | 'searcher'
-  | 'none';
+export type ChatCodexResponseSchemaPreset = 'system' | 'project' | 'none';
 
-const ORCHESTRATOR_RESPONSE_SCHEMA: Record<string, unknown> = {
+const SYSTEM_RESPONSE_SCHEMA: Record<string, unknown> = {
   type: 'object',
   additionalProperties: false,
   properties: {
-    role: { type: 'string', const: 'orchestrator' },
+    role: { type: 'string', const: 'system' },
     summary: { type: 'string' },
     status: {
       type: 'string',
-      enum: ['planning', 'dispatching', 'waiting_input', 'completed', 'failed'],
-    },
-    loopTemplate: { type: 'string' },
-    plan: {
-      type: 'array',
-      items: {
-        type: 'object',
-        additionalProperties: false,
-        properties: {
-          id: { type: 'string' },
-          title: { type: 'string' },
-          blocking: { type: 'boolean' },
-          assigneeRole: {
-            type: 'string',
-            enum: ['orchestrator', 'reviewer', 'executor', 'searcher'],
-          },
-        },
-        required: ['id', 'title', 'blocking', 'assigneeRole'],
-      },
+      enum: ['dispatching', 'reviewing', 'waiting_input', 'completed', 'failed'],
     },
     dispatches: {
       type: 'array',
@@ -48,134 +25,48 @@ const ORCHESTRATOR_RESPONSE_SCHEMA: Record<string, unknown> = {
         required: ['targetAgentId', 'task', 'blocking'],
       },
     },
-    ask: {
+    review: {
       type: 'object',
       additionalProperties: false,
       properties: {
-        required: { type: 'boolean' },
-        question: { type: 'string' },
+        decision: { type: 'string', enum: ['pass', 'retry', 'block'] },
+        findings: {
+          type: 'array',
+          items: {
+            type: 'object',
+            additionalProperties: false,
+            properties: {
+              severity: { type: 'string', enum: ['low', 'medium', 'high', 'critical'] },
+              issue: { type: 'string' },
+              evidence: { type: 'string' },
+            },
+            required: ['severity', 'issue'],
+          },
+        },
       },
-      required: ['required'],
+      required: ['decision'],
     },
     nextAction: { type: 'string' },
   },
-  required: ['role', 'summary', 'status', 'plan', 'dispatches', 'nextAction'],
+  required: ['role', 'summary', 'status', 'nextAction'],
 };
 
-const REVIEWER_RESPONSE_SCHEMA: Record<string, unknown> = {
+const PROJECT_RESPONSE_SCHEMA: Record<string, unknown> = {
   type: 'object',
   additionalProperties: false,
   properties: {
-    role: { type: 'string', const: 'reviewer' },
+    role: { type: 'string', const: 'project' },
     summary: { type: 'string' },
-    target: { type: 'string', enum: ['project', 'reviewer', 'system'] },
-    reviewLevel: { type: 'string', enum: ['feedback', 'soft_gate', 'hard_gate'] },
-    decision: { type: 'string', enum: ['pass', 'retry', 'block', 'feedback'] },
-    feedbackRound: { type: 'number' },
-    maxFeedbackRounds: { type: 'number' },
-    claims: {
-      type: 'array',
-      items: {
-        type: 'object',
-        additionalProperties: false,
-        properties: {
-          claim: { type: 'string' },
-          evidenceStatus: { type: 'string', enum: ['supported', 'unsupported', 'missing'] },
-          verdict: { type: 'string', enum: ['accepted', 'rejected'] },
-        },
-        required: ['claim', 'evidenceStatus', 'verdict'],
-      },
-    },
-    findings: {
-      type: 'array',
-      items: {
-        type: 'object',
-        additionalProperties: false,
-        properties: {
-          severity: { type: 'string', enum: ['low', 'medium', 'high', 'critical'] },
-          issue: { type: 'string' },
-          evidence: { type: 'string' },
-          file: { type: 'string' },
-        },
-        required: ['severity', 'issue'],
-      },
-    },
+    status: { type: 'string', enum: ['completed', 'failed', 'retry'] },
+    evidence: { type: 'string' },
     nextAction: { type: 'string' },
   },
-  required: ['role', 'summary', 'target', 'reviewLevel', 'decision', 'findings', 'nextAction'],
+  required: ['role', 'summary', 'status', 'nextAction'],
 };
 
-const EXECUTOR_RESPONSE_SCHEMA: Record<string, unknown> = {
-  type: 'object',
-  additionalProperties: false,
-  properties: {
-    role: { type: 'string', const: 'executor' },
-    summary: { type: 'string' },
-    status: { type: 'string', enum: ['completed', 'failed', 'blocked'] },
-    outputs: {
-      type: 'array',
-      items: {
-        type: 'object',
-        additionalProperties: false,
-        properties: {
-          type: { type: 'string' },
-          path: { type: 'string' },
-          description: { type: 'string' },
-        },
-        required: ['type', 'description'],
-      },
-    },
-    evidence: {
-      type: 'array',
-      items: {
-        type: 'object',
-        additionalProperties: false,
-        properties: {
-          tool: { type: 'string' },
-          detail: { type: 'string' },
-        },
-        required: ['tool', 'detail'],
-      },
-    },
-    nextAction: { type: 'string' },
-  },
-  required: ['role', 'summary', 'status', 'outputs', 'evidence', 'nextAction'],
-};
-
-const SEARCHER_RESPONSE_SCHEMA: Record<string, unknown> = {
-  type: 'object',
-  additionalProperties: false,
-  properties: {
-    role: { type: 'string', const: 'searcher' },
-    summary: { type: 'string' },
-    status: { type: 'string', enum: ['completed', 'partial', 'failed'] },
-    sources: {
-      type: 'array',
-      items: {
-        type: 'object',
-        additionalProperties: false,
-        properties: {
-          title: { type: 'string' },
-          url: { type: 'string' },
-          relevance: { type: 'string' },
-        },
-        required: ['title', 'url', 'relevance'],
-      },
-    },
-    keyFindings: {
-      type: 'array',
-      items: { type: 'string' },
-    },
-    nextAction: { type: 'string' },
-  },
-  required: ['role', 'summary', 'status', 'sources', 'keyFindings', 'nextAction'],
-};
-
-const SCHEMA_BY_ROLE: Record<Exclude<ChatCodexDeveloperRole, 'router'>, Record<string, unknown>> = {
-  orchestrator: ORCHESTRATOR_RESPONSE_SCHEMA,
-  reviewer: REVIEWER_RESPONSE_SCHEMA,
-  executor: EXECUTOR_RESPONSE_SCHEMA,
-  searcher: SEARCHER_RESPONSE_SCHEMA,
+const SCHEMA_BY_ROLE: Record<ChatCodexDeveloperRole, Record<string, unknown>> = {
+  system: SYSTEM_RESPONSE_SCHEMA,
+  project: PROJECT_RESPONSE_SCHEMA,
 };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -195,13 +86,7 @@ function parseOptionalBoolean(value: unknown): boolean | undefined {
 function parseSchemaPreset(value: unknown): ChatCodexResponseSchemaPreset | undefined {
   if (typeof value !== 'string') return undefined;
   const normalized = value.trim().toLowerCase();
-  if (
-    normalized === 'orchestrator'
-    || normalized === 'reviewer'
-    || normalized === 'executor'
-    || normalized === 'searcher'
-    || normalized === 'none'
-  ) {
+  if (normalized === 'system' || normalized === 'project' || normalized === 'none') {
     return normalized;
   }
   return undefined;
@@ -214,7 +99,6 @@ function cloneSchema(schema: Record<string, unknown>): Record<string, unknown> {
 export function resolveRoleDefaultResponseSchema(
   role: ChatCodexDeveloperRole,
 ): Record<string, unknown> | undefined {
-  if (role === 'router') return undefined;
   return cloneSchema(SCHEMA_BY_ROLE[role]);
 }
 

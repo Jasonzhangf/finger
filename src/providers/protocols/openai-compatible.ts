@@ -68,6 +68,103 @@ interface OpenAIChatResponse {
   usage?: OpenAIUsage;
 }
 
+function normalizeString(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined;
+  const normalized = value.trim();
+  return normalized.length > 0 ? normalized : undefined;
+}
+
+function stringifyUnknown(value: unknown): string | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (typeof value === 'string') return value;
+  if (typeof value === 'number' || typeof value === 'boolean' || typeof value === 'bigint') {
+    return String(value);
+  }
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return String(value);
+  }
+}
+
+function contentBlockToText(block: ContentBlock, depth = 0): string[] {
+  if (!block || typeof block !== 'object') return [];
+  if (depth > 4) {
+    const fallback = stringifyUnknown(block);
+    return fallback ? [fallback] : [];
+  }
+
+  switch (block.type) {
+    case 'text': {
+      const text = normalizeString(block.text);
+      return text ? [text] : [];
+    }
+    case 'image': {
+      const mediaType = normalizeString(block.source?.media_type);
+      return [mediaType ? `[image:${mediaType}]` : '[image]'];
+    }
+    case 'tool_use': {
+      const parts: string[] = [];
+      const name = normalizeString(block.name);
+      if (name) {
+        parts.push(`[tool_use:${name}]`);
+      } else {
+        parts.push('[tool_use]');
+      }
+      const input = stringifyUnknown(block.input);
+      if (input) parts.push(input);
+      return parts;
+    }
+    case 'tool_result': {
+      const parts: string[] = [];
+      const toolUseId = normalizeString(block.tool_use_id);
+      parts.push(toolUseId ? `[tool_result:${toolUseId}]` : '[tool_result]');
+      if (typeof block.content === 'string') {
+        const text = normalizeString(block.content);
+        if (text) parts.push(text);
+        return parts;
+      }
+      if (Array.isArray(block.content)) {
+        for (const child of block.content) {
+          if (child && typeof child === 'object' && !Array.isArray(child)) {
+            parts.push(...contentBlockToText(child as ContentBlock, depth + 1));
+          } else {
+            const text = stringifyUnknown(child);
+            if (text) parts.push(text);
+          }
+        }
+        return parts;
+      }
+      const fallback = stringifyUnknown(block.content);
+      if (fallback) parts.push(fallback);
+      return parts;
+    }
+    default: {
+      const fallback = stringifyUnknown(block);
+      return fallback ? [fallback] : [];
+    }
+  }
+}
+
+function normalizeMessageContent(content: ChatMessage['content']): string {
+  if (typeof content === 'string') {
+    return content;
+  }
+  if (!Array.isArray(content)) {
+    return stringifyUnknown(content) ?? '';
+  }
+  const parts: string[] = [];
+  for (const block of content) {
+    if (block && typeof block === 'object' && !Array.isArray(block)) {
+      parts.push(...contentBlockToText(block as ContentBlock));
+      continue;
+    }
+    const text = stringifyUnknown(block);
+    if (text) parts.push(text);
+  }
+  return parts.join('\n');
+}
+
 export class OpenAICompatibleProvider implements LLMProvider {
   readonly id: string;
   readonly type = 'openai-compatible';
@@ -126,16 +223,7 @@ export class OpenAICompatibleProvider implements LLMProvider {
 
     // User/assistant messages
     for (const msg of request.messages) {
-      if (typeof msg.content === 'string') {
-        messages.push({ role: msg.role, content: msg.content });
-      } else {
-        // ContentBlock 数组，提取 text
-        const text = msg.content
-          .filter(block => block.type === 'text')
-          .map(block => block.text ?? '')
-          .join('\n');
-        messages.push({ role: msg.role, content: text });
-      }
+      messages.push({ role: msg.role, content: normalizeMessageContent(msg.content) });
     }
 
     const payload: OpenAIChatRequest = {

@@ -165,7 +165,7 @@ export class ChannelContextManager {
       const loaded = loadOrchestrationConfig();
       const profile = loaded.config.profiles.find((item) => item.id === loaded.config.activeProfileId);
       const orchestrator = profile?.agents.find(
-        (item) => item.enabled !== false && item.role === 'orchestrator'
+        (item) => item.enabled !== false && item.role === 'system'
       );
       const resolved = orchestrator?.targetAgentId?.trim();
       if (resolved) return resolved;

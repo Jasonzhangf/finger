@@ -23,7 +23,7 @@ export interface AgentConfigV1 {
   // === 核心标识 ===
   id: string;
   name: string;
-  role: 'executor' | 'orchestrator' | 'reviewer' | 'tool';
+  role: 'executor' | 'system' | 'tool';
   
   // === 配额 ===
   defaultQuota: number;      // 默认并发上限（>=1）

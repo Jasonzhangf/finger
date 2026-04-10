@@ -38,6 +38,9 @@ import {
 import { FINGER_PATHS } from '../../core/finger-paths.js';
 import { clockTool } from '../../tools/internal/codex-clock-tool.js';
 import { contextBuilderRebuildTool } from '../../tools/internal/context-builder-rebuild-tool.js';
+import { TopicShiftWindowGate, type TopicShiftWindowEntry } from '../../blocks/topic-shift-window-gate.js';
+import { topicShiftRecheckTool } from '../../tools/internal/topic-shift-recheck-tool.js';
+import { buildRecheckInputFromWindow } from '../../common/topic-shift-gate.js';
 
 const SYSTEM_AGENT_ID = 'finger-system-agent';
 const CONTROL_HOOK_DEDUP_TTL_MS = 60 * 60_000;
@@ -294,6 +297,7 @@ export function attachEventForwarding(deps: EventForwardingDeps): {
   const latestStopSummaryBySession = new Map<string, string>();
   const stopToolSeenBySession = new Map<string, boolean>();
   const turnToolCallSeenBySession = new Map<string, boolean>();
+  const topicShiftWindowGate = new TopicShiftWindowGate();
   /**
    * Check if reasoning.stop summary contains evidence (changedFiles, verification, test outputs)
    */
@@ -566,7 +570,7 @@ export function attachEventForwarding(deps: EventForwardingDeps): {
           continue;
         }
 
-        if (hook === 'hook.dispatch' || hook === 'hook.reviewer') {
+        if (hook === 'hook.dispatch' || hook === 'hook.system_review') {
           if (waitingUserHookActive) {
             emitControlHookActionNotice(event, hook, 'skipped_due_to_waiting_user');
             continue;
@@ -587,7 +591,7 @@ export function attachEventForwarding(deps: EventForwardingDeps): {
             'The previous turn indicates mandatory control action is still pending.',
             hook === 'hook.dispatch'
               ? 'You must perform required task dispatch now and keep task identity/ownership consistent.'
-              : 'You must trigger required reviewer path now with explicit review payload and evidence.',
+              : 'You must trigger required system review path now with explicit review payload and evidence.',
           ].join('\n');
           const dispatchResult = await dispatchTaskToAgent({
             sourceAgentId: 'control-hook-enforcer',
@@ -652,29 +656,6 @@ export function attachEventForwarding(deps: EventForwardingDeps): {
           continue;
         }
 
-        // Write learning experiences to CACHE.md
-        if (hook === 'hook.cache.write_learning') {
-          const didRight = toUniqueStringArray(learning?.did_right, 32);
-          const didWrong = toUniqueStringArray(learning?.did_wrong, 32);
-          const repeatedWrong = toUniqueStringArray(learning?.repeated_wrong, 32);
-          const lines = [
-            `source_session: ${event.sessionId}`,
-            `source_turn: ${turnId}`,
-            ...didRight.map((item) => `did_right: ${item}`),
-            ...didWrong.map((item) => `did_wrong: ${item}`),
-            ...repeatedWrong.map((item) => `repeated_wrong: ${item}`),
-          ];
-          const writeResult = await appendMarkdownEntry({
-            filePath: join(projectPath, 'CACHE.md'),
-            title: 'Turn Learning',
-            idempotencyKey: dedupeKey,
-            lines,
-          });
-          emitControlHookActionNotice(event, hook, writeResult.written ? 'cache_learning_appended' : 'cache_learning_skipped', {
-            filePath: writeResult.filePath,
-          });
-          continue;
-        }
 
         // For remaining hooks, emit explicit action notice to make it auditable.
         emitControlHookActionNotice(event, hook, 'acknowledged_noop');
@@ -731,7 +712,7 @@ export function attachEventForwarding(deps: EventForwardingDeps): {
     sessionId: string,
     content: string,
     detail: SessionEventRecord,
-    role: 'user' | 'assistant' | 'system' | 'orchestrator' = 'system',
+    role: 'user' | 'assistant' | 'system' = 'system',
   ): Promise<void> => {
     if (!sessionId || sessionId.trim().length === 0) return Promise.resolve();
     return enqueueSessionPersist(sessionId, async () => {
@@ -1343,7 +1324,7 @@ export function attachEventForwarding(deps: EventForwardingDeps): {
     asString,
   });
 
-  logger.module('event-forwarding').info('EventBus orchestrator feedback forwarding enabled: agent_runtime_dispatch');
+  logger.module('event-forwarding').info('EventBus system feedback forwarding enabled: agent_runtime_dispatch');
 
   return { emitLoopEventToEventBus };
 }

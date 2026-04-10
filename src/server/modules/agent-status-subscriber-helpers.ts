@@ -5,7 +5,7 @@ export function getAgentIcon(role?: string): string {
   const icons: Record<string, string> = {
     orchestrator: '🎯',
     executor: '⚡',
-    reviewer: '🔍',
+    
     searcher: '🔎',
   };
   return icons[role || ''] || '🤖';

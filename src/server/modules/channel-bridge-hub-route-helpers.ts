@@ -201,7 +201,7 @@ export function isDuplicateMessage(msgId: string): boolean {
 
 export function addAgentPrefix(content: string, agentId?: string): string {
   const time = String(new Date().getHours()).padStart(2, '0') + ':' + String(new Date().getMinutes()).padStart(2, '0');
-  const agentName = agentId?.replace(/^finger-/, '').replace(/-/g, ' ') || 'orchestrator';
+  const agentName = agentId?.replace(/^finger-/, '').replace(/-/g, ' ') || 'system';
   return `[${time}] ${content}`;
 }
 

@@ -6,7 +6,7 @@ export interface DecomposedTask {
   priority: number;
   isMainPath: boolean;
   dependencies: string[];
-  assignedRole: 'orchestrator' | 'executor' | 'reviewer' | 'architect' | 'tester' | 'docwriter';
+  assignedRole: 'system' | 'project' | 'architect' | 'tester' | 'docwriter';
   acceptanceCriteria: string[];
 }
 
@@ -37,7 +37,7 @@ export class TaskDecomposer {
       priority: 0,
       isMainPath: true,
       dependencies: [archTask.title],
-      assignedRole: 'executor',
+      assignedRole: 'project',
       acceptanceCriteria: ['Code implemented', 'Tests passing']
     };
     tasks.push(implTask);
@@ -59,7 +59,7 @@ export class TaskDecomposer {
       priority: 1,
       isMainPath: false,
       dependencies: [implTask.title, testTask.title],
-      assignedRole: 'reviewer',
+      assignedRole: 'system',
       acceptanceCriteria: ['Code reviewed', 'Issues addressed']
     };
     tasks.push(reviewTask);

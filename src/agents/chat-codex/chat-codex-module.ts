@@ -3,6 +3,8 @@ import { appendFileSync, existsSync, mkdirSync, readFileSync } from 'fs';
 import { basename, dirname, join, resolve, sep } from 'path';
 import { createInterface } from 'readline';
 import type { OutputModule } from '../../orchestration/module-registry.js';
+import type { ISessionManager } from '../../orchestration/session-types.js';
+import { SessionManager } from '../../orchestration/session-manager.js';
 import { KernelAgentBase, type KernelAgentRunner, type KernelRunContext } from '../base/kernel-agent-base.js';
 import type { MessageHub } from '../../orchestration/message-hub.js';
 import { resolveCodingCliSystemPrompt } from './coding-cli-system-prompt.js';
@@ -64,9 +66,6 @@ export const CHAT_CODEX_ORCHESTRATOR_ALLOWED_TOOLS = [
 export const CHAT_CODEX_EXECUTOR_ALLOWED_TOOLS = [
   ...BASE_AGENT_ROLE_CONFIG.project.allowedTools,
 ];
-export const CHAT_CODEX_REVIEWER_ALLOWED_TOOLS = [
-  ...BASE_AGENT_ROLE_CONFIG.reviewer.allowedTools,
-];
 export const CHAT_CODEX_SEARCHER_ALLOWED_TOOLS = [
   ...BASE_AGENT_ROLE_CONFIG.project.allowedTools,
 ];
@@ -76,18 +75,7 @@ export const CHAT_CODEX_CODING_CLI_ALLOWED_TOOLS = CHAT_CODEX_ORCHESTRATOR_ALLOW
 export const CHAT_CODEX_PROJECT_ALLOWED_TOOLS = CHAT_CODEX_ORCHESTRATOR_ALLOWED_TOOLS;
 export const CHAT_CODEX_SYSTEM_ALLOWED_TOOLS = [...BASE_AGENT_ROLE_CONFIG.system.allowedTools];
 
-type ChatCodexRoleProfileId =
-  | 'project'
-  | 'system'
-  | 'orchestrator'
-  | 'executor'
-  | 'reviewer'
-  | 'searcher'
-  | 'researcher'
-  | 'coder'
-  | 'coding-cli'
-  | 'router'
-  | 'general';
+type ChatCodexRoleProfileId = 'project' | 'system' | 'general';
 
 export interface ChatCodexToolSpecification {
   name: string;
@@ -135,6 +123,9 @@ export interface ChatCodexModuleConfig {
     agentId?: string,
     mode?: string,
   ) => Promise<void>;
+  
+  /** Optional session manager. If not provided, a default SessionManager will be created. */
+  sessionManager?: ISessionManager;
 }
 
 export interface ChatCodexRunResult {
@@ -1023,7 +1014,7 @@ export function createChatCodexModule(
         ?? 'unknown-agent';
       const contextLedgerRole = parseOptionalString(context?.metadata?.contextLedgerRole)
         ?? parseOptionalString(context?.metadata?.roleProfile)
-        ?? 'orchestrator';
+        ?? 'system';
       const reviewMeta = isRecord(context?.metadata?.review) ? context.metadata.review : undefined;
       const reviewIteration = parseOptionalNumber(reviewMeta?.iteration);
       const reviewPhase = parseOptionalString(reviewMeta?.phase);
@@ -1103,7 +1094,7 @@ export function createChatCodexModule(
         const roleProfile = parseOptionalString(context?.metadata?.roleProfile)
           ?? parseOptionalString(context?.metadata?.contextLedgerRole)
           ?? parseOptionalString(metadataInput?.roleProfile)
-          ?? 'orchestrator';
+          ?? 'system';
         return { agentId, roleProfile };
       };
       const markReasoningDedup = (agentId: string, roleProfile: string, text: string, index?: number): void => {
@@ -1694,45 +1685,16 @@ export function createChatCodexModule(
           id: 'system',
           allowedTools: CHAT_CODEX_SYSTEM_ALLOWED_TOOLS,
         },
-        orchestrator: {
-          id: 'orchestrator',
-          allowedTools: CHAT_CODEX_PROJECT_ALLOWED_TOOLS,
-        },
-        executor: {
-          id: 'executor',
-          allowedTools: CHAT_CODEX_PROJECT_ALLOWED_TOOLS,
-        },
-        reviewer: {
-          id: 'reviewer',
-          allowedTools: CHAT_CODEX_REVIEWER_ALLOWED_TOOLS,
-        },
-        searcher: {
-          id: 'searcher',
-          allowedTools: CHAT_CODEX_PROJECT_ALLOWED_TOOLS,
-        },
-        researcher: {
-          id: 'researcher',
-          allowedTools: CHAT_CODEX_PROJECT_ALLOWED_TOOLS,
-        },
-        coder: {
-          id: 'coder',
-          allowedTools: CHAT_CODEX_PROJECT_ALLOWED_TOOLS,
-        },
-        'coding-cli': {
-          id: 'coding-cli',
-          allowedTools: CHAT_CODEX_PROJECT_ALLOWED_TOOLS,
-        },
-        router: {
-          id: 'router',
-          systemPrompt: ROUTER_SYSTEM_PROMPT,
-          allowedTools: ['noop'],
-        },
       },
       messageHub: mergedConfig.messageHub,
       contextHistoryProvider: mergedConfig.contextHistoryProvider,
-    },
-    kernelRunner,
-  );
+  },
+  kernelRunner,
+  mergedConfig.sessionManager ?? (() => {
+    const sm = new SessionManager();
+    return sm as unknown as ISessionManager;
+  })(),
+);
 
   return {
     id: mergedConfig.id,
@@ -1986,22 +1948,7 @@ function sanitizePathPart(value: string): string {
 
 function normalizeDefaultRoleProfileId(role?: string): string {
   const normalized = (role ?? '').trim().toLowerCase();
-  if (normalized === 'general') return 'project';
-  if (normalized === 'project') return 'project';
   if (normalized === 'system') return 'system';
-  if (normalized === 'researcher') return 'project';
-  if (normalized === 'coder') return 'project';
-  if (
-    normalized === 'orchestrator'
-    || normalized === 'executor'
-    || normalized === 'reviewer'
-    || normalized === 'searcher'
-    || normalized === 'coding-cli'
-    || normalized === 'router'
-  ) {
-    if (normalized === 'reviewer' || normalized === 'router') return normalized;
-    return 'project';
-  }
   return 'project';
 }
 
@@ -3369,19 +3316,7 @@ function parseOutputStyle(metadata: Record<string, unknown> | undefined): Output
 }
 
 function mapDeveloperRoleToPromptAgentType(role: ChatCodexDeveloperRole): string {
-  switch (role) {
-    case 'reviewer':
-      return 'reviewer';
-    case 'router':
-      return 'planner';
-    case 'searcher':
-      return 'explorer';
-    case 'executor':
-      return 'executor';
-    case 'orchestrator':
-    default:
-      return 'orchestrator';
-  }
+  return role === 'system' ? 'system' : 'project';
 }
 
 function buildContinuityDeveloperInstructions(
@@ -3461,15 +3396,13 @@ function resolveDeveloperRoleFromMetadata(
     if (!candidate) continue;
     return normalizeDeveloperRole(candidate);
   }
-  return 'orchestrator';
+  return 'project';
 }
 
 function normalizeDeveloperRole(role: string): ChatCodexDeveloperRole {
   const normalized = role.trim().toLowerCase();
-  if (normalized === 'router') return 'router';
-  const baseRole = resolveBaseAgentRole(normalized);
-  if (baseRole === 'reviewer') return 'reviewer';
-  return 'orchestrator';
+  if (normalized === 'system') return 'system';
+  return 'project';
 }
 
 function buildLedgerDeveloperInstructions(
@@ -3480,10 +3413,8 @@ function buildLedgerDeveloperInstructions(
   const agentId = parseOptionalString(metadata?.contextLedgerAgentId) ?? 'chat-codex';
   const ledgerRole = parseOptionalString(metadata?.contextLedgerRole) ?? role;
   const mode = parseOptionalString(metadata?.kernelMode) ?? parseOptionalString(metadata?.mode) ?? 'main';
-  const defaultCanReadAll = role === 'router'
+  const defaultCanReadAll = role === 'project'
     ? BASE_AGENT_ROLE_CONFIG.project.defaultLedgerCanReadAll
-    : role === 'reviewer'
-      ? BASE_AGENT_ROLE_CONFIG.reviewer.defaultLedgerCanReadAll
       : BASE_AGENT_ROLE_CONFIG.project.defaultLedgerCanReadAll;
   const canReadAll = parseOptionalBoolean(metadata?.contextLedgerCanReadAll) ?? defaultCanReadAll;
   const readableAgents = Array.isArray(metadata?.contextLedgerReadableAgents)

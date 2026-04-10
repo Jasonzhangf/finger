@@ -1,75 +1,86 @@
 /**
- * E2E test for ali-coding-plan via Rust Anthropic Wire implementation.
- * Tests the Rust kernel-bridge-bin with Anthropic Messages API.
+ * Live E2E test for the Rust kernel bridge using the current ~/.finger kernel provider.
+ *
+ * This test intentionally validates the real bridge stdin/stdout contract instead of
+ * assuming a hard-coded ali-coding-plan / anthropic-wire config that may no longer exist.
  */
 
-import { describe, it, expect, beforeAll } from 'vitest';
-import { exec } from 'child_process';
-import { promisify } from 'util';
-import { writeFileSync } from 'fs';
-import { tmpdir } from 'os';
+import { afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { join } from 'path';
+import {
+  buildKernelBridgeBinary,
+  RUN_LIVE_MODEL_ROUND_E2E,
+  startLiveKernelBridge,
+  type LiveKernelBridge,
+} from './kernel-bridge-live-helpers.js';
 
-const execAsync = promisify(exec);
-
-describe('ali-coding-plan via Rust Anthropic Wire', () => {
+describe('Rust kernel bridge live provider smoke', () => {
   const configPath = join(process.env.HOME || '~', '.finger', 'config', 'config.json');
-  
+  const itLiveModelRound = RUN_LIVE_MODEL_ROUND_E2E ? it : it.skip;
+  let bridge: LiveKernelBridge | null = null;
+
   beforeAll(() => {
-    // Ensure Rust binary is built
-    const rustBinary = './rust/target/release/finger-kernel-bridge-bin';
-    // Note: Assumes cargo build --release has been run
+    buildKernelBridgeBinary();
+  }, 60_000);
+
+  afterEach(async () => {
+    if (bridge) {
+      await bridge.shutdown();
+      bridge = null;
+    }
   });
 
-  it('should respond to simple math question', async () => {
-    const input = JSON.stringify({
-      id: 'test-math',
-      op: {
-        type: 'user_turn',
-        items: [{ type: 'text', text: '2+2' }]
-      }
-    });
-    
-    const inputFile = join(tmpdir(), `kernel-input-${Date.now()}.json`);
-    writeFileSync(inputFile, input);
-    
-    const { stdout, stderr } = await execAsync(
-      `timeout 30 cat ${inputFile} | FINGER_CONFIG_PATH=${configPath} ./rust/target/release/finger-kernel-bridge-bin`,
-      { cwd: process.cwd() }
-    );
-    
-    // Check for task_complete event
-    expect(stdout).toContain('task_complete');
-    
-    // Extract last_agent_message from JSON output
-    const lines = stdout.split('\n').filter(l => l.trim().startsWith('{'));
-    const completeEvent = lines.find(l => l.includes('task_complete'));
-    
-    if (completeEvent) {
-      const parsed = JSON.parse(completeEvent);
-      expect(parsed.msg.type).toBe('task_complete');
-      // Note: last_agent_message should contain '4'
-      // But may be empty due to thinking blocks
-    }
-  }, 35000);
+  itLiveModelRound('responds to a simple math prompt with a model round', async () => {
+    bridge = await startLiveKernelBridge(configPath);
+    expect(bridge.provider.providerId).toBeTruthy();
+    expect(bridge.provider.model).toBeTruthy();
 
-  it('should respond to greeting', async () => {
-    const input = JSON.stringify({
-      id: 'test-greeting',
+    const startIndex = bridge.events.length;
+    bridge.submit({
+      id: 'math-turn',
       op: {
         type: 'user_turn',
-        items: [{ type: 'text', text: 'Hello' }]
-      }
+        items: [{ type: 'text', text: '2+2，只回答数字。' }],
+      },
     });
-    
-    const inputFile = join(tmpdir(), `kernel-input-${Date.now()}.json`);
-    writeFileSync(inputFile, input);
-    
-    const { stdout } = await execAsync(
-      `timeout 30 cat ${inputFile} | FINGER_CONFIG_PATH=${configPath} ./rust/target/release/finger-kernel-bridge-bin`,
-      { cwd: process.cwd() }
+
+    const taskStarted = await bridge.waitForEvent(
+      (event) => event.id === 'math-turn' && event.msg.type === 'task_started',
+      30_000,
+      startIndex,
     );
-    
-    expect(stdout).toContain('task_complete');
-  }, 35000);
+    expect(taskStarted.msg.type).toBe('task_started');
+
+    const modelRound = await bridge.waitForEvent(
+      (event) => event.id === 'math-turn' && event.msg.type === 'model_round',
+      30_000,
+      startIndex,
+    );
+    expect(modelRound.msg.type).toBe('model_round');
+    expect(modelRound.msg.has_output_text).toBe(true);
+    expect(modelRound.msg.response_status).toBe('completed');
+  }, 65_000);
+
+  itLiveModelRound('responds to a greeting with output text', async () => {
+    bridge = await startLiveKernelBridge(configPath);
+
+    const startIndex = bridge.events.length;
+    bridge.submit({
+      id: 'greeting-turn',
+      op: {
+        type: 'user_turn',
+        items: [{ type: 'text', text: 'Hello' }],
+      },
+    });
+
+    const modelRound = await bridge.waitForEvent(
+      (event) => event.id === 'greeting-turn' && event.msg.type === 'model_round',
+      30_000,
+      startIndex,
+    );
+
+    expect(modelRound.msg.type).toBe('model_round');
+    expect(modelRound.msg.has_output_text).toBe(true);
+    expect(modelRound.msg.total_tokens).toBeGreaterThan(0);
+  }, 65_000);
 });

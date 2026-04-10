@@ -61,9 +61,9 @@ export function registerAgentConfigRoutes(app: Express, deps: AgentConfigRouteDe
       ? loaded.config.role.trim()
       : agentId;
     const normalized = roleHint.trim().toLowerCase();
-    if (normalized.includes('router')) return 'router';
-    const baseRole = resolveBaseAgentRole(roleHint);
-    return baseRole === 'reviewer' ? 'reviewer' : 'orchestrator';
+    if (normalized.includes('project')) return 'project';
+    if (normalized.includes('system')) return 'system';
+    return 'project';
   };
 
   const resolveAgentConfigFilePath = (agentId: string, loaded?: LoadedAgentConfig | null): string => {
@@ -245,7 +245,7 @@ export function registerAgentConfigRoutes(app: Express, deps: AgentConfigRouteDe
     }
 
     const role = requestedRole
-      ? (resolveBaseAgentRole(requestedRole) === 'reviewer' ? 'reviewer' : 'orchestrator')
+      ? (requestedRole.includes('system') ? 'system' : 'project')
       : resolvePromptRole(agentId, found);
     const systemPath = resolvePromptOverridePath(agentId, 'system', role, found);
     const developerPath = resolvePromptOverridePath(agentId, 'developer', role, found);

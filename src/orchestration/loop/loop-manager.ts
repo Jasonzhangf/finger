@@ -248,7 +248,7 @@ export class LoopManager implements ILoopManager {
     error?: string;
   } {
     const result = resourcePool.allocateResources(taskId, requirements.map(r => ({
-      type: r.type as 'executor' | 'orchestrator' | 'reviewer',
+      type: r.type as 'system' | 'project',
       capabilities: r.capabilities,
     })));
 

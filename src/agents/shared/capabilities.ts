@@ -332,11 +332,11 @@ export function generateAgentCapabilityList(
       return baseCaps
         .filter(c => ['file', 'shell', 'bd'].includes(c.category))
         .map(c => c.id);
-    case 'orchestrator':
+    case 'system':
       return baseCaps
         .filter(c => c.category === 'bd')
         .map(c => c.id);
-    case 'reviewer':
+    case 'system': // reviewer absorbed into system
       return baseCaps
         .filter(c => c.category === 'file' || c.id === 'bd.query')
         .map(c => c.id);

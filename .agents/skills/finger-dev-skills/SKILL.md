@@ -106,6 +106,7 @@ When a new testing pattern/requirement emerges from debugging or review:
 2. Add test case to appropriate test file
 3. Update this skill checklist if pattern is reusable
 4. For any context compact / rebuild change, add a simulated-trigger regression that verifies all three together: `compact` metadata, rebuilt `api_history`, and persisted `compact-memory` output. Log inspection alone is not sufficient.
+5. For daemon / gateway / lifecycle E2E tests, reserve every runtime port they touch (HTTP / WS / bridge) and wait on real health, pid, or protocol-ready evidence. Fixed sleeps and hard-coded ports are not acceptable full-suite stability evidence.
 
 
 Use this skill whenever you touch architecture, core runtime, orchestration, dispatch/recovery, context rebuild, progress/reporting, or cross-agent collaboration logic.
@@ -554,6 +555,9 @@ dispatchTask → executeDispatch → sendToModule → callTool
    - compact：将 currentHistory 压缩成 digest，写入 compact-memory.jsonl
    - rebuild：基于新指针（contextHistory + currentHistory）重建上下文窗口
    - **必须在同一函数内完成**，确保 Kernel 拿到重建后的上下文
+4. **Projection 必须是两段连续区**（2026-04-09 回归修正）:
+   - `historical_memory/compactDigest=true` 必须整理成前缀连续段，`current_history` 必须是后缀连续段
+   - 不能直接信任 Kernel `api_history` 或旧 session 的自然顺序；projection 持久化前、startup load 时都要做顺序归一化并重算 pointers
 
 ### Compact 完整流程
 

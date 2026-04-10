@@ -43,9 +43,7 @@ function resolveDisplayIdentityForSession(params: {
   const ownerAgentId = typeof context.ownerAgentId === 'string'
     ? context.ownerAgentId.trim()
     : '';
-  if (fallback.role === 'reviewer' && ownerAgentId.length > 0) {
-    return resolveAgentDisplayIdentity(ownerAgentId);
-  }
+
   return fallback;
 }
 
@@ -82,7 +80,7 @@ export async function handleAgentRuntimeStatus(params: {
   primaryAgentId: string | null;
   agentSubscriptions: Map<string, { agentId: string; level: 'detailed' | 'summary'; parentAgentId?: string }>;
   stepBuffer: Map<string, Array<{ index: number; summary: string; timestamp: string }>>;
-  getAgentInfo: (agentId: string) => Promise<{ agentId: string; agentName?: string; agentRole?: 'system' | 'project' | 'reviewer' }>;
+  getAgentInfo: (agentId: string) => Promise<{ agentId: string; agentName?: string; agentRole?: 'system' | 'project' }>;
   resolveEnvelopeMappings: (sessionId: string) => SessionEnvelopeMapping[];
   resolvePushSettings: (
     sessionId: string,

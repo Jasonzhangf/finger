@@ -99,6 +99,45 @@ describe('OpenAICompatibleProvider', () => {
         { role: 'user', content: 'Line 1\nLine 2' },
       ]);
     });
+
+    it('flattens nested tool_result and tool_use blocks into string content', () => {
+      const provider = new OpenAICompatibleProvider(config);
+      const request: LLMChatRequest = {
+        model: 'test-model',
+        messages: [
+          {
+            role: 'user',
+            content: [
+              { type: 'text', text: '先分析' },
+              {
+                type: 'tool_use',
+                id: 'tool-1',
+                name: 'exec_command',
+                input: { cmd: 'pwd', workdir: '/tmp' },
+              },
+              {
+                type: 'tool_result',
+                tool_use_id: 'tool-1',
+                content: [
+                  { type: 'text', text: '输出如下' },
+                  { type: 'text', text: '/tmp' },
+                ],
+              },
+            ],
+          },
+        ],
+      };
+
+      const formatted = provider.formatRequest(request);
+
+      expect(formatted.messages).toEqual([
+        {
+          role: 'user',
+          content:
+            '先分析\n[tool_use:exec_command]\n{"cmd":"pwd","workdir":"/tmp"}\n[tool_result:tool-1]\n输出如下\n/tmp',
+        },
+      ]);
+    });
   });
 
   describe('parseResponse', () => {

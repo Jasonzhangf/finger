@@ -632,3 +632,71 @@ if (!isNonModuleSender) {
 - source_session: session-1775216411994-26x61fzi
 - source_turn: turn-1775216804773
 - long_term: apply_patch context lines must match file exactly; use grep first
+
+## [task] Session 管理唯一真源整顿 {#mem-session-single-source-20260409}
+时间: 2026-04-09 23:45
+状态: in_progress
+关联: finger-285 (Epic)
+
+### 问题诊断
+用户发现上下文断裂、session 漂移、类型冲突问题，根源是 Session 管理散乱：
+
+**4 个 Manager 实现**：
+- `SessionManager` (orchestration/session-manager.ts, 2277行) — 真源实现（Ledger + Context Builder + 压缩）
+- `MemorySessionManager` (agents/base/memory-session-manager.ts, ~120行) — 简化版，无 Ledger
+- `ResumableSessionManager` (orchestration/resumable-session.ts, ~394行) — 可恢复 session
+- `CodexExecSessionManager` (tools/internal/codex-exec-session-manager.ts) — codex exec 专用
+
+**2 个 Session 类型冲突**：
+- `chat/session-types.ts` — 旧版（无 projectPath、无 Ledger 指针）
+- `orchestration/session-types.ts` — 新版（完整 Ledger 指针）
+
+**类型引用散乱**：
+- kernel-agent-base、memory-session-manager 用旧的 chat/session-types
+- session-manager、message-preflight-compact、projects route 用新的 orchestration/session-types
+
+### 整顿方案
+
+**唯一真源**：
+- **唯一 Session 类型**: `orchestration/session-types.ts`
+- **唯一 ISessionManager 接口**: 从 `orchestration/session-types.ts` 导出
+- **唯一 Manager 实现**: `SessionManager` (orchestration/session-manager.ts)
+
+**要删除的**：
+1. `src/agents/base/memory-session-manager.ts` — 功能被 SessionManager 覆盖
+2. `src/agents/chat/session-types.ts` — 类型合并到 orchestration/session-types.ts
+3. `src/orchestration/resumable-session.ts` — 功能合并到 SessionManager
+4. `src/tools/internal/codex-exec-session-manager.ts` — 功能合并到 SessionManager
+5. `runtime/runtime-facade.ts` 中的 ISessionManager — 合并到统一类型
+
+**kernel-agent-base.ts 修复**：
+- 改用 `orchestration/session-types.ts` 的 Session/SessionMessage
+- 移除 MemorySessionManager 默认 fallback，改用统一 SessionManager
+- `tryBuildContextBuilderHistory` 方法接入 Context Builder
+
+### Session 设计原则（用户定义）
+
+**Session 管理**：
+1. 默认一个 project 就是一个 session，除非 `new`，否则就是原来的 session
+2. Ledger 只有一个，按时间顺序管理
+3. Session new 和 switch 都是一个 dynamic view
+4. Heartbeat 和定时任务都是 stateless session（只有内存中存在，不做状态管理）
+5. Heartbeat 任务需要 system/project agent assign，带所有必要参数
+
+**多窗口问题**：
+- 一个 project 下开两个窗口，各自独立 session + ledger track
+- 基于 MemPalace 索引做合并
+- Context rebuild 自动整合
+
+**Reviewer 移除**：
+- 移除 finger-reviewer-agent（只剩 system + project agent）
+- System agent 用原 session 进行 review（复用 review thread）
+
+### Epic 结构
+- finger-285 (Epic): Session Manager Single Source 整顿
+- finger-285.1: Phase 1 - 类型统一
+- finger-285.2: Phase 2 - 移除冗余 Manager
+- finger-285.3: Phase 3 - kernel-agent-base.ts 修复
+- finger-285.4: Phase 4 - 清理与验证
+
+---

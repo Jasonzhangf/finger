@@ -1,5 +1,20 @@
 import { tryParseStructuredJson } from './structured-output.js';
 
+export interface TopicShiftSignal {
+  detected: boolean;
+  confidence: number;
+  reason: string;
+  from_topic?: string;
+  to_topic?: string;
+  previous_goal?: string;
+  current_goal?: string;
+  shift_confidence?: number;
+  rationale?: string;
+  evidence?: string[];
+  window_turn_index?: number;
+  [key: string]: unknown;
+}
+
 export interface FingerControlBlock {
   schema_version: string;
   task_completed: boolean;
@@ -9,6 +24,7 @@ export interface FingerControlBlock {
   dispatch_required: boolean;
   review_required: boolean;
   context_review_hint: 'none' | 'light' | 'aggressive';
+  topic_shift?: TopicShiftSignal;
   wait: {
     enabled: boolean;
     seconds: number;
@@ -451,6 +467,18 @@ export function normalizeControlBlock(rawValue: unknown): { controlBlock: Finger
     contextReviewHintRaw === 'light' || contextReviewHintRaw === 'aggressive'
   ) ? contextReviewHintRaw : 'none';
 
+  const topicShiftInput = asRecord(root.topic_shift);
+  const topic_shift: TopicShiftSignal | undefined = topicShiftInput
+    ? {
+        detected: asBoolean(topicShiftInput.detected, false),
+        confidence: asInt(topicShiftInput.confidence, 0, 0, 100),
+        reason: asString(topicShiftInput.reason, ''),
+        ...(typeof topicShiftInput.from_topic === 'string' ? { from_topic: topicShiftInput.from_topic } : {}),
+        ...(typeof topicShiftInput.to_topic === 'string' ? { to_topic: topicShiftInput.to_topic } : {}),
+        ...topicShiftInput,
+      }
+    : undefined;
+
   const selfEvalInput = asRecord(root.self_eval) ?? {};
   const selfEvalScalar = root.self_eval;
   const selfEvalScoreFromScalar = asInt(selfEvalScalar, 0, -100, 100);
@@ -641,6 +669,7 @@ export function normalizeControlBlock(rawValue: unknown): { controlBlock: Finger
     dispatch_required: asBoolean(root.dispatch_required, false),
     review_required: asBoolean(root.review_required, false),
     context_review_hint,
+    ...(topic_shift ? { topic_shift } : {}),
     wait,
     user_signal: userSignal,
     tags,
@@ -670,15 +699,11 @@ export function evaluateControlHooks(controlBlock: FingerControlBlock): ControlH
   if (controlBlock.learning.flow_patch.required) hooks.add('hook.project.flow.update');
   if (controlBlock.learning.memory_patch.required) hooks.add('hook.project.memory.update');
   if (controlBlock.learning.user_profile_patch.required) hooks.add('hook.user.profile.update');
-
-  // Write learning experiences to CACHE.md
-  if (
-    controlBlock.learning.did_right.length > 0 ||
-    controlBlock.learning.did_wrong.length > 0 ||
-    controlBlock.learning.repeated_wrong.length > 0
-  ) {
-    hooks.add('hook.cache.write_learning');
+  if (controlBlock.topic_shift?.detected && controlBlock.topic_shift.confidence >= 60) {
+    hooks.add('hook.topic_shift.candidate');
   }
+
+  // Learning experiences recorded via context ledger digest, not CACHE.md
 
   return {
     hooks: Array.from(hooks),

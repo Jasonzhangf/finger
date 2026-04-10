@@ -1,7 +1,9 @@
 import { logger } from '../../core/logger.js';
 import { isObjectRecord } from '../common/object.js';
 import {
+  extractKernelMetadataFromAgentResult,
   extractResultTextForSession,
+  kernelMetadataHasCompactedProjection,
   resolveBlockingErrorStatus,
   shouldRetryBlockingMessage,
 } from '../modules/message-session.js';
@@ -57,9 +59,25 @@ function maybePersistAssistantMessage(params: {
   requestSessionId: string | null;
   channelId: string;
   agentTarget: string;
+  rawResult: unknown;
   responsePayload: ReturnType<typeof buildResponsePayload>;
 }): void {
   if (!params.shouldPersistSession || !params.requestSessionId) return;
+  const kernelMetadata = extractKernelMetadataFromAgentResult(params.rawResult);
+  if (kernelMetadataHasCompactedProjection(kernelMetadata)) {
+    const rawAssistantContent = extractResultTextForSession(params.rawResult) ?? '';
+    const syncResult = params.deps.sessionManager.syncProjectionFromKernelMetadata(
+      params.requestSessionId,
+      kernelMetadata,
+      {
+        agentId: params.agentTarget,
+        assistantReply: rawAssistantContent,
+      },
+    );
+    if (syncResult.applied) {
+      return;
+    }
+  }
   const assistantContent = params.responsePayload.__assistantContent;
   const agentInfo = params.responsePayload.__agentInfo;
   if (assistantContent && assistantContent.trim().length > 0) {
@@ -237,6 +255,7 @@ export async function executeBlockingMessageRoute(params: {
     requestSessionId: params.requestSessionId,
     channelId: params.channelId,
     agentTarget,
+    rawResult: primaryResult,
     responsePayload,
   });
 
@@ -306,6 +325,7 @@ export function executeAsyncMessageRoute(params: {
         requestSessionId: params.requestSessionId,
         channelId: params.channelId,
         agentTarget,
+        rawResult: result,
         responsePayload,
       });
 

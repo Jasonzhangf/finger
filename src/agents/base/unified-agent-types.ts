@@ -1,4 +1,4 @@
-import type { SessionMessage } from '../chat/session-types.js';
+import type { SessionMessage } from '../../orchestration/session-types.js';
 
 export interface UnifiedAgentSender {
   id?: string;

@@ -10,7 +10,7 @@ export function asString(value: unknown): string | undefined {
 export function inferAgentRoleLabel(agentId: string): string {
   const normalized = agentId.trim().toLowerCase();
   if (normalized.includes('system')) return 'system';
-  if (normalized.includes('review')) return 'reviewer';
+  if (normalized.includes('review')) return 'system';
   return 'project';
 }
 

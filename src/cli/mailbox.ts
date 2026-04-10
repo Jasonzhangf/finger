@@ -127,7 +127,7 @@ function listKnownMailboxTargets(): Set<string> {
   const known = new Set<string>([
     'finger-system-agent',
     'finger-project-agent',
-    'finger-reviewer',
+    
   ]);
 
   try {
@@ -494,15 +494,15 @@ async function wakeAgent(options: {
     }),
   });
 
-  const wakeData = await wakeRes.json();
+  const wakeData = await wakeRes.json() as { error?: unknown } & Record<string, unknown>;
   if (!wakeRes.ok) {
     throw new Error(
-      typeof wakeData?.error === 'string'
+      typeof wakeData.error === 'string'
         ? wakeData.error
         : `wake dispatch failed with status ${wakeRes.status}`,
     );
   }
-  return wakeData as Record<string, unknown>;
+  return wakeData;
 }
 
 export function registerMailboxCommand(program: Command): void {

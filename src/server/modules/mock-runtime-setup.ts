@@ -33,13 +33,7 @@ export async function registerMockRuntimeModules(params: {
   }
 
   if (flags.enableMockReviewer) {
-    const reviewerMock = createMockRuntimeRoleModule({
-      id: 'reviewer-mock',
-      name: 'Mock Reviewer',
-      role: 'reviewer',
-    });
-    await moduleRegistry.register(reviewerMock);
-    logger.module('mock-runtime-setup').info('Mock Reviewer module registered: reviewer-mock');
+    
   }
 
   if (flags.enableMockSearcher) {

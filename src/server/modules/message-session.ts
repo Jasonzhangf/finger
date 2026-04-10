@@ -136,6 +136,42 @@ export function extractResultTextForSession(result: unknown): string | null {
   return JSON.stringify(result);
 }
 
+export function extractKernelMetadataFromAgentResult(result: unknown): Record<string, unknown> | undefined {
+  const candidates: unknown[] = [result];
+  if (isObjectRecord(result)) {
+    candidates.push(result.rawPayload);
+    if (isObjectRecord(result.result)) {
+      candidates.push(result.result);
+      candidates.push(result.result.rawPayload);
+      if (isObjectRecord(result.result.result)) {
+        candidates.push(result.result.result);
+        candidates.push(result.result.result.rawPayload);
+      }
+    }
+  }
+  for (const candidate of candidates) {
+    if (!isObjectRecord(candidate)) continue;
+    if (isObjectRecord(candidate.metadata)) {
+      return candidate.metadata;
+    }
+  }
+  return undefined;
+}
+
+export function kernelMetadataHasCompactedProjection(metadata: Record<string, unknown> | undefined): boolean {
+  if (!isObjectRecord(metadata)) return false;
+  const compact = isObjectRecord(metadata.compact) ? metadata.compact : {};
+  if (compact.applied === true) return true;
+  const apiHistory = Array.isArray(metadata.api_history) ? metadata.api_history : [];
+  return apiHistory.some((item) => {
+    if (!isObjectRecord(item)) return false;
+    const content = extractKernelHistoryContent(item);
+    if (!content) return false;
+    const normalized = content.trim().toLowerCase();
+    return normalized.includes('<task_digest>') || normalized.includes('<history_summary>');
+  });
+}
+
 export function withSessionWorkspaceDefaults(
   message: unknown,
   sessionId: string | null,
@@ -162,6 +198,22 @@ export function withSessionWorkspaceDefaults(
         : { exchangeDir: dirs.exchangeDir }),
     },
   };
+}
+
+function extractKernelHistoryContent(item: Record<string, unknown>): string {
+  const direct = asString(item.output_text)
+    ?? (typeof item.content === 'string' ? item.content : null);
+  if (direct) return direct;
+  if (!Array.isArray(item.content)) return '';
+  return item.content
+    .flatMap((entry) => {
+      if (!isObjectRecord(entry)) return [];
+      const text = asString(entry.text) ?? asString(entry.content);
+      return text ? [text] : [];
+    })
+    .map((part) => part.trim())
+    .filter((part) => part.length > 0)
+    .join('\n');
 }
 
 function inferLedgerRootDir(memoryDir: string): string {

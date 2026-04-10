@@ -215,6 +215,16 @@ export function detectProtocolType(config: { baseURL: string; defaultModel?: str
   if (baseURL.includes('api.openai.com')) {
     return 'openai-native';
   }
+
+  // OpenAI Native: model 命名族（即使走兼容网关，也应按 native 语义处理）
+  if (
+    model.startsWith('gpt-')
+    || model.startsWith('o1')
+    || model.startsWith('o3')
+    || model.startsWith('o4')
+  ) {
+    return 'openai-native';
+  }
   
   // 默认：OpenAI-compatible（兼容 Iflow/RouteCodex）
   return 'openai-compatible';

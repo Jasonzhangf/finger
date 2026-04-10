@@ -8,6 +8,7 @@ members = [
   "kernel-model",
   "kernel-core",
   "kernel-bridge-bin",
+  "kernel-evolution",
 ]
 resolver = "2"
 

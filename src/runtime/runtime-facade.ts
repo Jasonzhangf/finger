@@ -28,18 +28,7 @@ import {
 } from './tool-compat-aliases.js';
 
 import { logger } from '../core/logger.js';
-
-// Session 类型 (简化版，完整定义在 session-manager.ts)
-export interface SessionInfo {
-  id: string;
-  name: string;
-  projectPath: string;
-  status?: 'active' | 'paused' | 'completed' | 'error';
-  messageCount?: number;
-  createdAt: string;
-  updatedAt: string;
-  context?: Record<string, unknown>;
-}
+import type { Session, SessionMessage, ISessionManager } from '../orchestration/session-types.js';
 
 // 进度报告
 export interface ProgressReport {
@@ -50,13 +39,24 @@ export interface ProgressReport {
   failed: number;
 }
 
-// 会话管理器接口
-export interface ISessionManager {
-  createSession(projectPath: string, name?: string): SessionInfo | Promise<SessionInfo>;
-  getSession(sessionId: string): SessionInfo | undefined;
-  getCurrentSession(): SessionInfo | null;
+// ─── Session alias for backward compatibility ─────────────────────────────
+/** @deprecated Use Session from session-types.ts directly */
+export type SessionInfo = Session;
+
+// ─── Extended ISessionManager for runtime-specific needs ─────────────────────────────
+export interface IRuntimeSessionManager extends ISessionManager {
+  // Inherited from ISessionManager, no additional methods needed
+  // This is just a type alias to make the intent clearer
+}
+
+// ─── Legacy ISessionManager interface (deprecated) ─────────────────────────────
+/** @deprecated Use ISessionManager from session-types.ts */
+export interface ISessionManagerLegacy {
+  createSession(projectPath: string, name?: string): Session | Promise<Session>;
+  getSession(sessionId: string): Session | undefined;
+  getCurrentSession(): Session | null;
   setCurrentSession(sessionId: string): boolean;
-  listSessions(): SessionInfo[];
+  listSessions(): Session[];
   addMessage(sessionId: string, role: string, content: string, metadata?: { attachments?: Attachment[] }): Promise<{ id: string; timestamp: string } | null>;
   getMessages(
     sessionId: string,
@@ -83,6 +83,17 @@ export interface ISessionManager {
     content: string;
     timestamp: string;
   }, tags: string[], agentId?: string, mode?: string): Promise<void>;
+  syncProjectionFromLedger?(sessionId: string, options?: {
+    agentId?: string;
+    mode?: string;
+    source?: string;
+  }): Promise<{
+    applied: boolean;
+    reason: string;
+    messageCount?: number;
+    latestCompactIndex?: number;
+    totalTokens?: number;
+  }>;
 }
 
 export interface AgentProviderRuntimeConfig {
@@ -1149,7 +1160,13 @@ export class RuntimeFacade {
     if (typeof this.sessionManager.appendDigest !== "function") {
       return;
     }
-    await this.sessionManager.appendDigest(normalized, message, tags, agentId, mode);
+    // Cast role to match ISessionManager.appendDigest signature
+    const normalizedMessage = {
+      role: message.role as SessionMessage['role'],
+      content: message.content,
+      timestamp: message.timestamp,
+    };
+    await this.sessionManager.appendDigest(normalized, normalizedMessage, tags, agentId, mode);
   }
 
 
@@ -1222,6 +1239,18 @@ export class RuntimeFacade {
           contextDigestLastSourceSlotEnd: digestResult.source_slot_end,
           contextDigestLastUpdatedAt: new Date().toISOString(),
         });
+        if (typeof this.sessionManager.syncProjectionFromLedger === 'function') {
+          const syncResult = await this.sessionManager.syncProjectionFromLedger(normalizedSessionId, {
+            agentId: ownerAgentId,
+            mode,
+            source: 'runtime_auto_digest',
+          });
+          log.info('Auto stop digest projection sync completed', {
+            sessionId: normalizedSessionId,
+            turnId: normalizedTurnId,
+            syncResult,
+          });
+        }
         log.info('Auto stop digest completed', {
           sessionId: normalizedSessionId,
           turnId: normalizedTurnId,

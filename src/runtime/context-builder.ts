@@ -100,7 +100,7 @@ const DEFAULT_SYSTEM_ONLY_TASK_GAP_MS = 3 * 60 * 1000; // 无 user 边界时，�
 const log = logger.module('ContextBuilder');
 
 function normalizeTaskMessageRole(input: unknown): TaskMessage['role'] {
-  if (input === 'assistant' || input === 'system' || input === 'orchestrator' || input === 'user') {
+  if (input === 'assistant' || input === 'system' || input === 'user') {
     return input;
   }
   return 'user';
@@ -1290,7 +1290,7 @@ function summarizeTaskBlock(block: TaskBlock): string | undefined {
 
 function toCompactTaskDigestBlock(block: TaskBlock): TaskBlock {
   const firstUser = block.messages.find((message) => message.role === 'user')?.content?.trim() ?? '';
-  const lastAssistant = [...block.messages].reverse().find((message) => message.role === 'assistant' || message.role === 'orchestrator')?.content?.trim() ?? '';
+  const lastAssistant = [...block.messages].reverse().find((message) => message.role === 'assistant')?.content?.trim() ?? '';
   const toolNames = Array.from(new Set(
     block.messages
       .map((message) => {

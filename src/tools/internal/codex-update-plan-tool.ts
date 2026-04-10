@@ -974,7 +974,7 @@ function handleReassign(
       action: 'reassign',
       projectPath,
       code: 'permission_denied',
-      message: 'worker cannot reassign owner; only system/reviewer can reassign',
+      message: 'worker cannot reassign owner; only system can reassign',
     });
   }
 
@@ -1399,8 +1399,7 @@ function canWriteItem(context: ToolExecutionContext, item: PlanItemV2): boolean 
   const agentId = (context.agentId || '').trim();
   const actorRole = resolveActorRole(agentId);
   if (actorRole === 'system') return true;
-  if (actorRole === 'reviewer') return true;
-  return item.assigneeWorkerId === agentId;
+    return item.assigneeWorkerId === agentId;
 }
 
 function checkExpectedRevision(expectedRevision: number | undefined, currentRevision: number): boolean {
@@ -1577,13 +1576,12 @@ function filterReadableItems(items: PlanItemV2[], actorRole: ActorRole): PlanIte
   return items.filter((item) => item.status !== 'closed' && !item.archivedAt);
 }
 
-type ActorRole = 'system' | 'reviewer' | 'worker';
+type ActorRole = 'system' | 'worker';
 
 function resolveActorRole(agentId: string | undefined): ActorRole {
   const normalized = (agentId || '').trim().toLowerCase();
   if (!normalized || normalized === 'finger-system-agent') return 'system';
-  if (normalized.includes('reviewer')) return 'reviewer';
-  return 'worker';
+    return 'worker';
 }
 
 function appendPlanEvent(params: {

@@ -55,7 +55,7 @@ export interface AgentNode {
   id: string;
   type: 'start' | 'end' | 'agent' | 'tool';
   name: string;
-  role: 'orchestrator' | 'executor' | 'reviewer' | 'searcher' | 'summary';
+  role: 'system' | 'project';
   position: { x: number; y: number };
   status: AgentStatus['status'];
   config: AgentConfig;

@@ -30,7 +30,7 @@ export function createMockRuntimeKit(deps: MockRuntimeDeps): MockRuntimeKit {
   const mockDispatchAssertions: MockDispatchAssertion[] = [];
   const mockRolePolicy: Record<MockAgentRole, MockOutcome> = {
     executor: parseMockOutcome(process.env.FINGER_MOCK_EXECUTOR_OUTCOME),
-    reviewer: parseMockOutcome(process.env.FINGER_MOCK_REVIEWER_OUTCOME),
+    system: parseMockOutcome(process.env.FINGER_MOCK_SYSTEM_OUTCOME),
     searcher: parseMockOutcome(process.env.FINGER_MOCK_SEARCHER_OUTCOME),
   };
 
@@ -97,7 +97,7 @@ export function createMockRuntimeKit(deps: MockRuntimeDeps): MockRuntimeKit {
       for (const moduleId of DEFAULT_DEBUG_RUNTIME_MODULE_IDS) {
         const existing = moduleRegistry.getModule(moduleId);
         if (enabled && !existing) {
-          const role = moduleId.includes('executor') ? 'executor' : moduleId.includes('reviewer') ? 'reviewer' : 'searcher';
+          const role = moduleId.includes('executor') ? 'executor' : moduleId.includes('system') ? 'system' : moduleId.includes('executor') ? 'executor' : 'searcher';
           const mod = this.createMockRuntimeRoleModule({ id: moduleId, name: `Debug ${role}`, role });
           moduleRegistry.register(mod);
         } else if (!enabled && existing) {

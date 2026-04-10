@@ -15,7 +15,6 @@ import {
 } from '../../server/modules/event-forwarding-helpers.js';
 import {
   FINGER_PROJECT_AGENT_ID,
-  FINGER_REVIEWER_AGENT_ID,
   FINGER_SYSTEM_AGENT_ID,
 } from '../../agents/finger-general/finger-general-module.js';
 import { buildVerificationPrompt } from '../../agents/prompts/verifier-prompts.js';
@@ -402,7 +401,7 @@ export function attachDispatchLifecycleForwarding(options: AttachDispatchForward
         ? Math.max(1, Math.floor(assignment.attempt))
         : 1;
 
-      // Stage 1: system -> project completed => dispatch reviewer gate
+      // Stage 1: system -> project completed => internal review gate
       if (
         status === 'completed'
         && sourceAgentId === FINGER_SYSTEM_AGENT_ID
@@ -438,12 +437,12 @@ export function attachDispatchLifecycleForwarding(options: AttachDispatchForward
           'Mapping rule: PASS -> pass, PARTIAL/FAIL -> retry (or block if truly blocked).',
           'After review, report via report-task-completion:',
           '- pass => result=success',
-          '- retry/block => result=failure with clear reviewer feedback',
+          '- retry/block => result=failure with clear system review feedback',
         ].join('\n');
 
         const reviewRequest: AgentDispatchRequest = {
           sourceAgentId: FINGER_SYSTEM_AGENT_ID,
-          targetAgentId: FINGER_REVIEWER_AGENT_ID,
+          targetAgentId: FINGER_SYSTEM_AGENT_ID,
           task: { prompt: reviewPrompt },
           ...(sessionId ? { sessionId } : {}),
           assignment: {
@@ -451,7 +450,7 @@ export function attachDispatchLifecycleForwarding(options: AttachDispatchForward
             taskId: assignmentTaskId,
             ...(typeof assignment.bdTaskId === 'string' ? { bdTaskId: assignment.bdTaskId } : {}),
             assignerAgentId: FINGER_SYSTEM_AGENT_ID,
-            assigneeAgentId: FINGER_REVIEWER_AGENT_ID,
+            assigneeAgentId: FINGER_SYSTEM_AGENT_ID,
             phase: 'reviewing',
             attempt: assignmentAttempt,
           },
@@ -466,7 +465,7 @@ export function attachDispatchLifecycleForwarding(options: AttachDispatchForward
           queueOnBusy: true,
         };
         void dispatchTaskToAgent(reviewRequest).catch((reviewDispatchError) => {
-          logger.module('event-forwarding').warn('Failed to dispatch reviewer gate task', {
+          logger.module('event-forwarding').warn('Failed to dispatch system review gate task', {
             dispatchId,
             taskId: assignmentTaskId,
             error: reviewDispatchError instanceof Error ? reviewDispatchError.message : String(reviewDispatchError),
@@ -475,11 +474,11 @@ export function attachDispatchLifecycleForwarding(options: AttachDispatchForward
         return;
       }
 
-      // Stage 2: reviewer completed => pass or re-dispatch to project
+      // Stage 2: system review completed => pass or re-dispatch to project
       if (
         status === 'completed'
         && sourceAgentId === FINGER_SYSTEM_AGENT_ID
-        && targetAgentId === FINGER_REVIEWER_AGENT_ID
+        && targetAgentId === FINGER_SYSTEM_AGENT_ID
       ) {
         const decision = extractReviewDecision(payload.result);
         if (decision === 'pass') return;
@@ -510,7 +509,7 @@ export function attachDispatchLifecycleForwarding(options: AttachDispatchForward
           `taskId: ${assignmentTaskId}`,
           `retryAttempt: ${retryAttempt}`,
           '',
-          '上轮交付未通过 reviewer 审查。请基于以下反馈继续修复并完成闭环交付：',
+          '上轮交付未通过系统审查。请基于以下反馈继续修复并完成闭环交付：',
           reviewFeedback,
           '',
           '要求：',
@@ -545,7 +544,7 @@ export function attachDispatchLifecycleForwarding(options: AttachDispatchForward
           queueOnBusy: true,
         };
         void dispatchTaskToAgent(reworkRequest).catch((redispatchError) => {
-          logger.module('event-forwarding').warn('Failed to redispatch project task after reviewer rejection', {
+          logger.module('event-forwarding').warn('Failed to redispatch project task after system review rejection', {
             dispatchId,
             taskId: assignmentTaskId,
             retryAttempt,

@@ -32,7 +32,7 @@ export class MockChatCodexRunner implements ChatCodexRunnerController {
       metadata.contextLedgerRole,
       metadata.context_ledger_role,
       metadata.role,
-    ) ?? 'orchestrator';
+    ) ?? 'system';
     const workflowId = firstNonEmptyString(metadata.workflowId, metadata.workflow_id) ?? `wf-mock-${Date.now()}`;
     const content = text.trim().length > 0 ? text.trim() : '[empty input]';
     const providerId = 'mock';
@@ -78,7 +78,7 @@ export class MockChatCodexRunner implements ChatCodexRunnerController {
   private resolveAgentId(role: MockAgentRole): string {
     switch (role) {
       case 'executor': return this.deps.agentIds.executor;
-      case 'reviewer': return this.deps.agentIds.reviewer;
+      case 'system': return this.deps.agentIds.system ?? this.deps.agentIds.executor;
       case 'searcher': return this.deps.agentIds.researcher;
     }
   }
@@ -110,7 +110,7 @@ export class MockChatCodexRunner implements ChatCodexRunnerController {
   private inferRoleFromProfile(profile: string): MockAgentRole {
     const p = profile.toLowerCase();
     if (p.includes('exec')) return 'executor';
-    if (p.includes('review')) return 'reviewer';
+    if (p.includes('review')) return 'system';
     if (p.includes('search') || p.includes('research')) return 'searcher';
     return 'executor';
   }
