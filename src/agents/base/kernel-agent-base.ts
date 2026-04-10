@@ -7,7 +7,6 @@ import {
   tryParseStructuredJson,
   validateStructuredOutput,
 } from '../../common/structured-output.js';
-import { CacheMemoryInterceptor } from './cache-memory-interceptor.js';
 import { resolveResponsesOutputSchema } from '../chat-codex/response-output-schemas.js';
 import {
   mergeHistory,
@@ -153,7 +152,6 @@ export class KernelAgentBase {
   }>();
   private readonly unfinishedTurnByThread = new Map<string, boolean>();
   private readonly externalSessionBindings = new Map<string, string>();
-  private readonly cacheMemoryInterceptor: CacheMemoryInterceptor;
   private initialized = false;
 
   constructor(
@@ -168,11 +166,6 @@ export class KernelAgentBase {
     };
     this.runner = runner;
     this.sessionManager = sessionManager;
-    this.cacheMemoryInterceptor = new CacheMemoryInterceptor({
-      agentId: this.config.moduleId,
-      projectPath: process.cwd(),
-      messageHub: this.config.messageHub,
-    });
   }
 
   async handle(message: unknown): Promise<UnifiedAgentOutput> {
@@ -181,6 +174,8 @@ export class KernelAgentBase {
     let activeThreadKey: string | null = null;
     let activeHistoryForLock: SessionMessage[] | null = null;
     let activeHistoryMetadataForLock: Record<string, unknown> | undefined;
+    let lastKernelMessageId: string | undefined;
+    let lastKernelMetadata: Record<string, unknown> | undefined;
 
     if (!input) {
       return {
@@ -198,10 +193,6 @@ export class KernelAgentBase {
     const resumeSnapshotPath = this.resolveResumeKernelTurnSnapshotPath(input.metadata);
     const isRecoveryReplay = typeof resumeSnapshotPath === 'string' && resumeSnapshotPath.length > 0;
 
-    // Intercept user request and write to CACHE.md
-    if (!isRecoveryReplay) {
-      await this.cacheMemoryInterceptor.interceptRequest(input);
-    }
 
     try {
       const { session, responseSessionId } = await this.resolveSession(input);
@@ -316,6 +307,8 @@ export class KernelAgentBase {
         recoverySnapshot?.inputItems ?? inputItems,
         runnerContext,
       );
+      lastKernelMessageId = runResult.messageId;
+      lastKernelMetadata = runResult.metadata;
 
       this.captureApiHistory(runnerSessionId, threadKey, runResult.metadata);
       const pendingInputAccepted = runResult.metadata?.pendingInputAccepted === true;
@@ -354,6 +347,8 @@ export class KernelAgentBase {
         threadKey,
         current: runResult,
       });
+      lastKernelMessageId = runResult.messageId;
+      lastKernelMetadata = runResult.metadata;
 
       runResult = await this.applyStructuredOutputRecoveryIfNeeded({
         inputText: input.text,
@@ -367,6 +362,8 @@ export class KernelAgentBase {
         threadKey,
         current: runResult,
       });
+      lastKernelMessageId = runResult.messageId;
+      lastKernelMetadata = runResult.metadata;
       runResult = await this.applyStopReasoningGateIfNeeded({
         mode: threadMode,
         inputText: input.text,
@@ -378,6 +375,8 @@ export class KernelAgentBase {
         threadKey,
         current: runResult,
       });
+      lastKernelMessageId = runResult.messageId;
+      lastKernelMetadata = runResult.metadata;
       runResult = await this.applyControlBlockGateIfNeeded({
         mode: threadMode,
         inputText: input.text,
@@ -389,6 +388,8 @@ export class KernelAgentBase {
         threadKey,
         current: runResult,
       });
+      lastKernelMessageId = runResult.messageId;
+      lastKernelMetadata = runResult.metadata;
       this.updateHistoryLockState({
         threadKey,
         history: mergedHistory,
@@ -427,7 +428,6 @@ export class KernelAgentBase {
         });
       }
 
-      // Intercept assistant response and write to CACHE.md
       const output = {
         success: true,
         response: reply,
@@ -443,8 +443,6 @@ export class KernelAgentBase {
           ...(runResult.metadata ?? {}),
         },
       };
-      
-      await this.cacheMemoryInterceptor.interceptResponse(output, input);
       
       return output;
     } catch (error) {
@@ -476,18 +474,15 @@ export class KernelAgentBase {
         }
       }
 
-      // Record failure to CACHE.md for persistence
-      await this.cacheMemoryInterceptor.interceptResponse(
-        {
-          success: false,
-          error: errorMessage,
-          module: this.config.moduleId,
-          provider: this.config.provider,
-          sessionId: input.sessionId ?? 'unknown',
-          latencyMs: Date.now() - startedAt,
-        },
-        input,
-      );
+      // Record failure in session for persistence
+      const failureOutput = {
+        success: false,
+        error: errorMessage,
+        module: this.config.moduleId,
+        provider: this.config.provider,
+        sessionId: input.sessionId ?? 'unknown',
+        latencyMs: Date.now() - startedAt,
+      };
 
       return {
         success: false,
@@ -496,6 +491,8 @@ export class KernelAgentBase {
         provider: this.config.provider,
         sessionId: input.sessionId ?? 'unknown',
         latencyMs: Date.now() - startedAt,
+        ...(lastKernelMessageId ? { messageId: lastKernelMessageId } : {}),
+        ...(lastKernelMetadata ? { metadata: lastKernelMetadata } : {}),
       };
     }
   }
@@ -1290,7 +1287,7 @@ export class KernelAgentBase {
       '- The summary payload is machine-oriented for runtime/model continuity, not user-facing narration.',
       '- Prefer compact, structured, evidence-linked fields that can be replayed by downstream agents.',
       '- If the task is NOT complete, do NOT call stop tool; continue execution/reasoning.',
-      '- If you return finish_reason=stop without stop tool, runtime will continue this task automatically.',
+      '- If finish_reason=stop without stop tool, runtime will auto-continue.',
     ].join('\n');
   }
 
@@ -1743,8 +1740,15 @@ export class KernelAgentBase {
       };
       const followUpInput = [
         '[STOP TOOL GATE CONTINUATION REQUEST]',
-        '上一轮 finish_reason=stop，但你没有调用 stop 工具。',
-        `如果任务已完成：先调用 ${policy.stopToolNames.join(' / ')} 工具，并完整填写 summary/goal/assumptions/tags/toolsUsed/successes/failures 再结束。`,
+        'Finish reason = stop detected.',
+        `如果任务已完成：调用 ${policy.stopToolNames.join(' / ')}，提供 completionEvidence（修改的文件、测试结果）。`,
+        `如果任务阻塞：调用 ${policy.stopToolNames.join(' / ')}，提供 blockedEvidence（阻塞类型、原因、已尝试方案）和 nextDirection。`,
+        `用户决策级别 (userDecisionRequired):`,
+        `  - none: 自动继续或结束`,
+        `  - light: 显示提示但不阻塞`,
+        `  - medium: 你有把握自己完成，只需确认`,
+        `  - heavy: 必须用户明确授权才能继续`,
+        `如果级别不是 heavy，可提供 promptForContinuation 作为续轮提示推动继续推理。`,
         '如果任务未完成：继续执行，不要结束。',
         '',
         '[Original User Input]',
@@ -1799,7 +1803,7 @@ export class KernelAgentBase {
         : [];
       const followUpInput = [
         '[CONTROL BLOCK GATE CONTINUATION REQUEST]',
-        '上一轮 finish_reason=stop，但 control block 缺失/无效或与收口条件冲突。',
+        'Finish reason = stop detected, control block missing/invalid or conflicts with stop condition.',
         '请继续执行并在回复末尾补齐 ```finger-control JSON```。',
         '若 task_completed=true，则 evidence_ready 必须与证据状态一致；证据不足时保持未收口。',
         issues.length > 0 ? `Known issues: ${issues.slice(0, 6).join('; ')}` : '',

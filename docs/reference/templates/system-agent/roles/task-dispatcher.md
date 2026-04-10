@@ -18,6 +18,19 @@ updated_at: "2026-03-15T11:57:00Z"
 - EVERY DISPATCH MUST BE TRACEABLE TO ONE STABLE TASK IDENTITY.
 - NO QUEUE POISONING: DO NOT OCCUPY REVIEWER WITH LONG-WAIT PLACEHOLDER WORK.
 
+## PARALLEL DISPATCH PRINCIPLES (MANDATORY)
+
+- **Parallel dispatch is the default**: When multiple tasks need dispatching, dispatch ALL of them in a single turn using multiple `agent.dispatch` calls.
+- **Do NOT wait for task completion**: After dispatching, immediately check `update_plan` to see if there are more tasks to dispatch.
+- **Check task list after every dispatch batch**: After dispatching a batch of tasks, call `project.task.status` to verify dispatch state, then check `update_plan` for remaining tasks.
+- **No sequential waiting**: Never dispatch one task, wait for it to complete, then dispatch the next. This wastes time and blocks parallel progress.
+- **Task queue awareness**: Project agents have their own task queue and can handle multiple tasks. System agent should dispatch all available tasks and let project agents manage their own execution order based on blocker dependencies.
+- **Self-check loop**: After dispatching all current tasks:
+  1. Check `update_plan` for remaining `pending` steps
+  2. Check `project.task.status` for dispatched task states
+  3. If more tasks can be dispatched (no blockers), dispatch them immediately
+  4. Only switch to monitor mode when ALL tasks are dispatched and NONE can be dispatched further
+
 ## 职责
 
 - 向 Project Agent 分配任务

@@ -211,7 +211,21 @@ function resolveContextUsageFromBreakdown(params: {
         ? (historyContext ?? 0) + (historyCurrent ?? 0)
         : undefined
     );
-  if (historyTotal === undefined) return undefined;
+    if (historyTotal === undefined) return undefined;
+  // Build detailed line with history/current breakdown when available
+  const maxInput = typeof maxInputTokens === 'number' && Number.isFinite(maxInputTokens) && maxInputTokens > 0
+    ? Math.max(1, Math.floor(maxInputTokens))
+    : undefined;
+  if (historyContext !== undefined || historyCurrent !== undefined) {
+    const historyLabel = compactToken(historyContext ?? 0) ?? '?';
+    const currentLabel = compactToken(historyCurrent ?? 0) ?? '?';
+    const totalLabel = compactToken(historyTotal) ?? '?';
+    const percentLabel = maxInput !== undefined
+      ? `${Math.max(0, Math.floor((historyTotal / maxInput) * 100))}%`
+      : undefined;
+    const percentPart = percentLabel !== undefined ? ` / ${percentLabel}` : '';
+    return `🧠 上下文: 历史: ${historyLabel} / 当前: ${currentLabel} / 共 ${totalLabel}${percentPart}`;
+  }
   return buildContextUsageLine({
     estimatedTokensInContextWindow: historyTotal,
     maxInputTokens,
@@ -290,7 +304,7 @@ export function buildCompactSummary(
       const resolvedName = resolveToolDisplayName(t.toolName, t.params);
       const file = extractTargetFile(t.toolName, t.params);
       const detailRaw = extractToolDetail(t.toolName, t.params, t.result, t.error);
-      const detail = detailRaw ? truncateInline(detailRaw, 80) : '';
+      const detail = detailRaw ? detailRaw.trim() : '';
       const filePart = file ? ` | ${file}` : '';
       const detailPart = detail ? ` ${detail}` : '';
       const line = `${icon} [${cat}] ${resolvedName}${filePart}${detailPart}`;

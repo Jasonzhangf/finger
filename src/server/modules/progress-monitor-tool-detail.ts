@@ -87,18 +87,20 @@ export function extractToolDetail(toolName: string, params?: string, result?: st
   if (toolName === 'update_plan') {
     const planItems = Array.isArray(p.plan) ? p.plan as Array<Record<string, unknown>> : [];
     if (planItems.length === 0) return '';
-    const lines = planItems.map((item) => {
-      const step = typeof item.step === 'string' ? item.step.trim() : '';
-      if (!step) return '';
-      const status = typeof item.status === 'string' ? item.status.trim() : '';
-      const statusIcon = status === 'completed'
-        ? '\u2713'
-        : status === 'in_progress'
-          ? '\u25b6'
-          : '\u25cb';
-      // Jason 要求：update_plan 不做截断，保持完整可读。
-      return `\n   ${statusIcon} ${step}`;
-    }).filter((item) => item.length > 0);
+   const lines = planItems.map((item) => {
+     const step = typeof item.step === 'string' ? item.step.trim() : '';
+     if (!step) return '';
+      // Strip leading "#N " numbering from step text (e.g. "#1 do X" → "do X")
+      const cleanStep = step.replace(/^#\d+\s+/, '');
+     const status = typeof item.status === 'string' ? item.status.trim() : '';
+     const statusIcon = status === 'completed'
+       ? '\u2713'
+       : status === 'in_progress'
+         ? '\u25b6'
+         : '\u25cb';
+     // Jason 要求：update_plan 不做截断，保持完整可读。
+      return `\n   ${statusIcon} ${cleanStep}`;
+   }).filter((item) => item.length > 0);
     if (lines.length === 0) return '';
     return attachError(`计划共 ${planItems.length} 项：${lines.join('')}`);
   }
@@ -284,11 +286,39 @@ export function extractToolDetail(toolName: string, params?: string, result?: st
     if (status) details.push(`status=${truncateInline(status, 12)}`);
     return attachError(details.join(' · '));
   }
-
-  if (/^skills\./.test(toolName)) {
-    const name = pickString(p.name);
-    return attachError(name ? `name=${name}` : '');
-  }
+ if (toolName === 'apply_patch' || toolName === 'internal_apply_patch') {
+   const operations: string[] = [];
+   const raw = pickString(p.input, p.patch, params);
+    let hunkCount = 0;
+    let addedLines = 0;
+    let removedLines = 0;
+   if (raw) {
+     const addMatch = raw.match(/\*\*\* Add File:\s*(.+)/m);
+     const updateMatch = raw.match(/\*\*\* Update File:\s*(.+)/m);
+     const deleteMatch = raw.match(/\*\*\* Delete File:\s*(.+)/m);
+     if (addMatch) operations.push(`add:${truncateInline(addMatch[1].trim(), 60)}`);
+     if (updateMatch) operations.push(`update:${truncateInline(updateMatch[1].trim(), 60)}`);
+     if (deleteMatch) operations.push(`delete:${truncateInline(deleteMatch[1].trim(), 60)}`);
+      // Count hunks (lines starting with @@)
+      const hunkMatches = raw.match(/@@.*@@/g);
+      hunkCount = hunkMatches ? hunkMatches.length : 0;
+      // Count added/removed lines (lines starting with + or -)
+      const lineMatches = raw.match(/^[\+\-].*$/gm);
+      if (lineMatches) {
+        for (const line of lineMatches) {
+          if (line.startsWith('+') && !line.startsWith('+++')) addedLines++;
+          if (line.startsWith('-') && !line.startsWith('---')) removedLines++;
+        }
+      }
+   }
+    const changeSummary = hunkCount > 0 ? `${hunkCount}hunk` : '';
+    const lineSummary = addedLines > 0 || removedLines > 0 ? `+${addedLines}/-${removedLines}` : '';
+    const detailParts = [operations.join(' · '), changeSummary, lineSummary].filter(Boolean);
+    if (detailParts.length > 0) return attachError(detailParts.join(' · '));
+   const filePath = pickString(p.path, p.file_path, p.filePath);
+   if (filePath) return attachError(`file=${truncateInline(filePath, 80)}`);
+   return attachError('');
+ }
 
   return attachError('');
 }

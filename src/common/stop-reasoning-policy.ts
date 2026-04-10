@@ -26,7 +26,7 @@ const DEFAULT_POLICY: StopReasoningPolicy = {
   requireToolForStop: true,
   promptInjectionEnabled: true,
   stopToolNames: [DEFAULT_STOP_REASONING_TOOL_NAME],
-  maxAutoContinueTurns: 2,
+  maxAutoContinueTurns: 10,
   source: 'default',
 };
 const log = logger.module('StopReasoningPolicy');

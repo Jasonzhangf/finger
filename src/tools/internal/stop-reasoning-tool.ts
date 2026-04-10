@@ -21,6 +21,34 @@ interface StopReasoningInput {
   }>;
   successes?: string[];
   failures?: string[];
+  // 新增：结构化完成证据
+  completionEvidence?: {
+    changedFiles?: string[];
+    testsRun?: boolean;
+    testsPassed?: boolean;
+    verificationCommands?: string[];
+    artifacts?: string[];
+  };
+  // 新增：结构化阻塞证据
+  blockedEvidence?: {
+    blockerType: 'permission' | 'dependency' | 'ambiguity' | 'resource' | 'external' | 'unknown';
+    blockerDescription: string;
+    attemptedSolutions?: string[];
+    requiredAction?: string;
+    timeout?: number;
+  };
+  // 新增：下一步方向（结构化）
+  nextDirection?: {
+    action: 'retry' | 'escalate' | 'handoff' | 'abort' | 'wait' | 'replan' | 'continue';
+    target?: string;
+    estimatedTime?: number;
+    prerequisites?: string[];
+    context?: string;
+    promptForContinuation?: string;
+  };
+  // 新增：用户决策重要程度
+  userDecisionRequired?: 'none' | 'light' | 'medium' | 'heavy';
+  userDecisionReason?: string;
 }
 
 interface StopReasoningPolicyInput {
@@ -86,14 +114,59 @@ export const stopReasoningTool: InternalTool = {
         items: { type: 'string' },
         description: 'Successful execution experiences learned in this turn.',
       },
-      failures: {
-        type: 'array',
-        items: { type: 'string' },
-        description: 'Failed attempts / lessons in this turn.',
+     failures: {
+       type: 'array',
+       items: { type: 'string' },
+       description: 'Failed attempts / lessons in this turn.',
+     },
+      completionEvidence: {
+        type: 'object',
+        description: 'Structured completion evidence for successful tasks.',
+        properties: {
+          changedFiles: { type: 'array', items: { type: 'string' } },
+          testsRun: { type: 'boolean' },
+          testsPassed: { type: 'boolean' },
+          verificationCommands: { type: 'array', items: { type: 'string' } },
+          artifacts: { type: 'array', items: { type: 'string' } },
+        },
       },
-    },
-    required: ['summary', 'goal', 'assumptions', 'tags', 'toolsUsed', 'successes', 'failures'],
-  },
+      blockedEvidence: {
+        type: 'object',
+        description: 'Structured blocked evidence for blocked tasks.',
+        properties: {
+          blockerType: { type: 'string', enum: ['permission', 'dependency', 'ambiguity', 'resource', 'external', 'unknown'] },
+          blockerDescription: { type: 'string' },
+          attemptedSolutions: { type: 'array', items: { type: 'string' } },
+          requiredAction: { type: 'string' },
+          timeout: { type: 'number' },
+        },
+        required: ['blockerType', 'blockerDescription'],
+      },
+      nextDirection: {
+        type: 'object',
+        description: 'Structured next action direction.',
+        properties: {
+          action: { type: 'string', enum: ['retry', 'escalate', 'handoff', 'abort', 'wait', 'replan', 'continue'] },
+          target: { type: 'string' },
+          estimatedTime: { type: 'number' },
+          prerequisites: { type: 'array', items: { type: 'string' } },
+          context: { type: 'string' },
+          promptForContinuation: { type: 'string', description: 'Prompt for continuation when decisionLevel is not heavy' },
+        },
+        required: ['action'],
+      },
+      userDecisionRequired: {
+        type: 'string',
+        enum: ['none', 'light', 'medium', 'heavy'],
+        description: 'User decision importance level: none (auto), light (optional), medium (self-contained), heavy (blocking).',
+      },
+      userDecisionReason: {
+        type: 'string',
+        description: 'Reason why user decision is required.',
+      },
+   },
+   required: ['summary', 'goal', 'assumptions', 'tags', 'toolsUsed', 'successes', 'failures'],
+ },
   async execute(rawInput: unknown, context) {
     const input = (rawInput ?? {}) as StopReasoningInput;
     const summary = typeof input?.summary === 'string' ? input.summary.trim() : '';
@@ -178,26 +251,41 @@ export const stopReasoningTool: InternalTool = {
     const status = input?.status && ['completed', 'blocked', 'handoff'].includes(input.status)
       ? input.status
       : 'completed';
-    return {
-      ok: true,
-      stopRequested: true,
-      stopTool: DEFAULT_STOP_REASONING_TOOL_NAME,
-      status,
-      summary,
-      ...(typeof input?.task === 'string' && input.task.trim().length > 0 ? { task: input.task.trim() } : {}),
-      ...(typeof input?.nextAction === 'string' && input.nextAction.trim().length > 0
-        ? { nextAction: input.nextAction.trim() }
+   return {
+     ok: true,
+     stopRequested: true,
+     stopTool: DEFAULT_STOP_REASONING_TOOL_NAME,
+     status,
+     summary,
+     ...(typeof input?.task === 'string' && input.task.trim().length > 0 ? { task: input.task.trim() } : {}),
+     ...(typeof input?.nextAction === 'string' && input.nextAction.trim().length > 0
+       ? { nextAction: input.nextAction.trim() }
+       : {}),
+     goal,
+     assumptions,
+     tags,
+     toolsUsed,
+     successes,
+     failures,
+      ...(input?.completionEvidence && typeof input.completionEvidence === 'object'
+        ? { completionEvidence: input.completionEvidence }
         : {}),
-      goal,
-      assumptions,
-      tags,
-      toolsUsed,
-      successes,
-      failures,
-      sessionId: context.sessionId,
-      agentId: context.agentId,
-      timestamp: new Date().toISOString(),
-    };
+      ...(input?.blockedEvidence && typeof input.blockedEvidence === 'object'
+        ? { blockedEvidence: input.blockedEvidence }
+        : {}),
+      ...(input?.nextDirection && typeof input.nextDirection === 'object'
+        ? { nextDirection: input.nextDirection }
+        : {}),
+      ...(input?.userDecisionRequired && ['none', 'light', 'medium', 'heavy'].includes(input.userDecisionRequired)
+        ? { userDecisionRequired: input.userDecisionRequired }
+        : {}),
+      ...(typeof input?.userDecisionReason === 'string' && input.userDecisionReason.trim().length > 0
+        ? { userDecisionReason: input.userDecisionReason.trim() }
+        : {}),
+     sessionId: context.sessionId,
+     agentId: context.agentId,
+     timestamp: new Date().toISOString(),
+   };
   },
 };
 
