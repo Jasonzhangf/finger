@@ -148,20 +148,39 @@ export async function emitDispatchMailboxEvent(
 ): Promise<void> {
   const dispatch = extractDispatchPayload(message);
   if (!dispatch) return;
+
+  // Map legacy status to protocol event status
+  const protocolStatus: 'started' | 'success' | 'failed' = status === 'processing' ? 'started' : status === 'completed' ? 'success' : 'failed';
+  const eventType = protocolStatus === 'started' ? 'agent_dispatch_started' : protocolStatus === 'success' ? 'agent_dispatch_complete' : 'agent_dispatch_failed';
+
+  // Extract taskId from assignment if present
+  const taskId = typeof dispatch.assignment?.taskId === 'string' ? dispatch.assignment.taskId : undefined;
+
   await deps.eventBus.emit({
-    type: 'agent_runtime_dispatch',
-    agentId: dispatch.targetAgentId,
+    type: eventType,
+    schemaVersion: 'v1',
+    eventId: `dispatch-${dispatch.dispatchId}-${Date.now().toString(36)}`,
+    correlationId: dispatch.dispatchId,
+    causationId: message.id,
+    ownerWorkerId: 'mailbox-handler',  // mailbox is stateless
+    actor: `/root/${dispatch.targetAgentId}`,
     sessionId: dispatch.sessionId ?? 'unknown',
     timestamp: new Date().toISOString(),
     payload: {
       dispatchId: dispatch.dispatchId,
       sourceAgentId: dispatch.sourceAgentId,
       targetAgentId: dispatch.targetAgentId,
-      status,
+      status: protocolStatus,
+      ...(taskId ? { taskId } : {}),
       blocking: false,
       ...(dispatch.sessionId ? { sessionId: dispatch.sessionId } : {}),
       ...(dispatch.workflowId ? { workflowId: dispatch.workflowId } : {}),
-      ...(dispatch.assignment ? { assignment: dispatch.assignment } : {}),
+      ...(dispatch.assignment ? {
+        ...(typeof dispatch.assignment.phase === 'string' &&
+          ['assigned','queued','started','reviewing','retry','passed','failed','closed'].includes(dispatch.assignment.phase)
+          ? { phase: dispatch.assignment.phase as 'assigned' | 'queued' | 'started' | 'reviewing' | 'retry' | 'passed' | 'failed' | 'closed' } : {}),
+        ...(typeof dispatch.assignment.attempt === 'number' ? { attempt: dispatch.assignment.attempt } : {}),
+      } : {}),
       ...(detail?.result !== undefined ? { result: detail.result } : {}),
       ...(detail?.error ? { error: detail.error } : {}),
     },
