@@ -171,11 +171,19 @@ export function attachDispatchLifecycleForwarding(options: AttachDispatchForward
     resolveReviewPolicy,
   } = options;
 
-  eventBus.subscribe(
-    'agent_runtime_dispatch',
+  eventBus.subscribeMultiple(
+    [
+      'agent_runtime_dispatch',  // deprecated: use agent_dispatch_* instead
+      'agent_dispatch_queued',
+      'agent_dispatch_complete',
+      'agent_dispatch_failed',
+      'agent_dispatch_partial',
+    ],
     (event) => {
       const payload = event.payload as Record<string, unknown>;
       const status = typeof payload.status === 'string' ? payload.status : '';
+      // Normalize protocol event status: 'success' -> 'completed', 'started' -> 'processing'
+      const normalizedStatus = status === 'success' ? 'completed' : status === 'started' ? 'processing' : status;
       const dispatchId = asString(payload.dispatchId) ?? 'unknown-dispatch';
       const requestedSessionId = asString(event.sessionId) || asString(payload.sessionId);
       const sessionResolution = normalizeDispatchLedgerSessionId(requestedSessionId);
@@ -187,19 +195,21 @@ export function attachDispatchLifecycleForwarding(options: AttachDispatchForward
       const queuePosition = typeof payload.queuePosition === 'number' ? payload.queuePosition : undefined;
       const dispatchResult = isObjectRecord(payload.result) ? payload.result : null;
       const mailboxMessageId = asString(dispatchResult?.messageId);
-      const isMailboxQueued = status === 'queued'
+      const isMailboxQueued = normalizedStatus === 'queued'
         && (asString(dispatchResult?.status) === 'queued_mailbox' || Boolean(mailboxMessageId));
-      const taskId = assignment && typeof assignment.taskId === 'string' ? assignment.taskId.trim() : '';
+      // Protocol events have flat taskId, legacy events have assignment.taskId
+      const taskId = (typeof payload.taskId === 'string' ? payload.taskId.trim() : '') ||
+                     (assignment && typeof assignment.taskId === 'string' ? assignment.taskId.trim() : '');
       const bdTaskId = assignment && typeof assignment.bdTaskId === 'string' ? assignment.bdTaskId.trim() : '';
       const statusLabel = isMailboxQueued
         ? '邮箱等待 ACK'
-        : status === 'queued'
+        : normalizedStatus === 'queued'
           ? '排队'
-          : status === 'processing'
+          : normalizedStatus === 'processing'
             ? '处理中'
-            : status === 'completed'
+            : normalizedStatus === 'completed'
               ? '完成'
-              : status === 'failed'
+              : normalizedStatus === 'failed'
                 ? '失败'
                 : status;
       const dispatchParts = [
@@ -215,31 +225,31 @@ export function attachDispatchLifecycleForwarding(options: AttachDispatchForward
 
       if (sessionId) {
         applyExecutionLifecycleTransition(sessionManager, sessionId, {
-          stage: status === 'completed'
+          stage: normalizedStatus === 'completed'
             ? 'completed'
-            : status === 'failed'
+            : normalizedStatus === 'failed'
               ? 'failed'
               : 'dispatching',
-          substage: status === 'queued'
+          substage: normalizedStatus === 'queued'
             ? (isMailboxQueued ? 'dispatch_mailbox_wait_ack' : 'dispatch_queued')
-            : status === 'processing'
+            : normalizedStatus === 'processing'
               ? 'dispatch_processing'
-              : status === 'completed'
+              : normalizedStatus === 'completed'
                 ? 'dispatch_completed'
-                : status === 'failed'
+                : normalizedStatus === 'failed'
                   ? 'dispatch_failed'
                   : 'dispatch_update',
           updatedBy: 'event-forwarding',
           dispatchId,
           targetAgentId,
           detail: dispatchContent.slice(0, 120),
-          lastError: status === 'failed' ? asString(payload.error) : null,
+          lastError: normalizedStatus === 'failed' ? asString(payload.error) : null,
           timeoutMs: typeof dispatchResult?.timeoutMs === 'number' ? dispatchResult.timeoutMs : undefined,
           retryDelayMs: typeof dispatchResult?.retryDelayMs === 'number' ? dispatchResult.retryDelayMs : undefined,
           recoveryAction: asString(dispatchResult?.recoveryAction)
-            ?? (isMailboxQueued ? 'mailbox' : status === 'failed' ? 'failed' : status === 'completed' ? 'completed' : 'queue'),
+            ?? (isMailboxQueued ? 'mailbox' : normalizedStatus === 'failed' ? 'failed' : normalizedStatus === 'completed' ? 'completed' : 'queue'),
           delivery: asString(dispatchResult?.delivery)
-            ?? (isMailboxQueued ? 'mailbox' : status === 'queued' ? 'queue' : null),
+            ?? (isMailboxQueued ? 'mailbox' : normalizedStatus === 'queued' ? 'queue' : null),
         });
       }
 
@@ -275,7 +285,7 @@ export function attachDispatchLifecycleForwarding(options: AttachDispatchForward
             },
           });
         }
-        if (status === 'completed' || status === 'failed') {
+        if (normalizedStatus === 'completed' || normalizedStatus === 'failed') {
           const resultContent = formatDispatchResultContent(payload.result, asString(payload.error));
           if (resultContent.trim().length > 0) {
             const resultDedupeKey = [
@@ -311,7 +321,7 @@ export function attachDispatchLifecycleForwarding(options: AttachDispatchForward
         }
       }
 
-      if ((status === 'completed' || status === 'failed') && sessionId) {
+      if ((normalizedStatus === 'completed' || normalizedStatus === 'failed') && sessionId) {
         const childSessionId = asString(payload.childSessionId)
           ?? (isObjectRecord(payload.result)
             ? asString((payload.result as Record<string, unknown>).childSessionId)
@@ -350,7 +360,7 @@ export function attachDispatchLifecycleForwarding(options: AttachDispatchForward
               sender: asString(payload.targetAgentId) ?? 'system-dispatch',
               sourceType: 'control',
               category: 'notification',
-              priority: status === 'failed' ? 0 : 2,
+              priority: normalizedStatus === 'failed' ? 0 : 2,
               ...(sessionId ? { sessionId } : {}),
             });
           } catch (mailErr) {
@@ -403,7 +413,7 @@ export function attachDispatchLifecycleForwarding(options: AttachDispatchForward
 
       // Stage 1: system -> project completed => internal review gate
       if (
-        status === 'completed'
+        normalizedStatus === 'completed'
         && sourceAgentId === FINGER_SYSTEM_AGENT_ID
         && targetAgentId === FINGER_PROJECT_AGENT_ID
       ) {
@@ -476,7 +486,7 @@ export function attachDispatchLifecycleForwarding(options: AttachDispatchForward
 
       // Stage 2: system review completed => pass or re-dispatch to project
       if (
-        status === 'completed'
+        normalizedStatus === 'completed'
         && sourceAgentId === FINGER_SYSTEM_AGENT_ID
         && targetAgentId === FINGER_SYSTEM_AGENT_ID
       ) {

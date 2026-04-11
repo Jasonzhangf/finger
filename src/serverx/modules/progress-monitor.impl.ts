@@ -744,7 +744,11 @@ for (const round of rounds.slice(-3)) {
         'session_compressed',
         'agent_runtime_status',
         'agent_step_completed',
-        'agent_runtime_dispatch',
+        'agent_runtime_dispatch',  // deprecated: use agent_dispatch_* instead
+        'agent_dispatch_queued',
+        'agent_dispatch_complete',
+        'agent_dispatch_failed',
+        'agent_dispatch_partial',
         'waiting_for_user',
         'user_decision_received',
       ],
@@ -924,7 +928,11 @@ for (const round of rounds.slice(-3)) {
       case 'agent_runtime_status':
         handleAgentRuntimeStatus(progress, event);
         break;
-      case 'agent_runtime_dispatch':
+      case 'agent_runtime_dispatch':  // deprecated
+      case 'agent_dispatch_queued':
+      case 'agent_dispatch_complete':
+      case 'agent_dispatch_failed':
+      case 'agent_dispatch_partial':
         handleAgentRuntimeDispatch(progress, event);
         break;
       case 'agent_step_completed':

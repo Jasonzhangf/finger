@@ -64,7 +64,11 @@ export class ExecutionUpdateShadowPipeline {
 
     this.unsubscribeMain = this.eventBus.subscribeMultiple(
       [
-        'agent_runtime_dispatch',
+        'agent_runtime_dispatch',  // deprecated: use agent_dispatch_* instead
+        'agent_dispatch_queued',
+        'agent_dispatch_complete',
+        'agent_dispatch_failed',
+        'agent_dispatch_partial',
         'agent_runtime_control',
         'agent_runtime_status',
         'tool_call',
@@ -115,7 +119,11 @@ export class ExecutionUpdateShadowPipeline {
     if (!type) return;
     try {
       switch (type) {
-        case 'agent_runtime_dispatch':
+        case 'agent_runtime_dispatch':  // deprecated
+        case 'agent_dispatch_queued':
+        case 'agent_dispatch_complete':
+        case 'agent_dispatch_failed':
+        case 'agent_dispatch_partial':
           await this.handleDispatch(event);
           break;
         case 'agent_runtime_control':
@@ -162,7 +170,8 @@ export class ExecutionUpdateShadowPipeline {
     const sessionId = asString(event.sessionId) || asString(payload.sessionId) || 'default';
     const dispatchId = asString(payload.dispatchId) || `dispatch-${Date.now().toString(36)}-${randomId(6)}`;
     const assignment = sanitizePayload(payload.assignment);
-    const taskId = asString(assignment.taskId);
+    // Protocol events have flat taskId, legacy events have assignment.taskId
+    const taskId = asString(payload.taskId) || asString(assignment.taskId);
     const flowId = taskId || dispatchId;
     const sourceAgentId = asString(payload.sourceAgentId) || asString(event.agentId) || 'unknown-agent';
     const targetAgentId = asString(payload.targetAgentId) || undefined;
