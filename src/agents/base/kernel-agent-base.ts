@@ -24,8 +24,13 @@ import {
   isProjectTaskStateActive,
   parseDelegatedProjectTaskRegistry,
   parseProjectTaskState,
+  resolveBeadsStorePath,
   PROJECT_AGENT_ID,
 } from '../../common/project-task-state.js';
+import {
+  getCurrentEpic,
+  getCandidateEpics,
+} from '../../serverx/modules/bd-epic-view.js';
 import {
   parseSystemTaskState,
 } from '../../common/system-task-state.js';
