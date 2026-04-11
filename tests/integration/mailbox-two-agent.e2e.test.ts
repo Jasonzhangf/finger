@@ -6,8 +6,8 @@ import fs from 'fs';
 import { spawn, type ChildProcess } from 'child_process';
 import net from 'net';
 
-const EXTERNAL_DAEMON_URL = process.env.FINGER_HUB_URL?.trim() || '';
-let DAEMON_URL = EXTERNAL_DAEMON_URL || 'http://127.0.0.1:9999';
+const EXTERNAL_DAEMON_URL = process.env.FINGER_HUB_URL?.trim();
+let DAEMON_URL = EXTERNAL_DAEMON_URL;
 let ownedDaemon: ChildProcess | null = null;
 
 interface MailboxMessage {
@@ -77,9 +77,6 @@ function reservePort(): Promise<number> {
 async function startOwnedDaemonIfNeeded(): Promise<void> {
   if (EXTERNAL_DAEMON_URL) {
     DAEMON_URL = EXTERNAL_DAEMON_URL;
-    return;
-  }
-  if (await isHealthy(DAEMON_URL)) {
     return;
   }
 
