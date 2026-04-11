@@ -311,7 +311,7 @@ describe('AgentStatusSubscriber', () => {
       dispatchSubscriber.start();
 
       const dispatchEvent: RuntimeEvent = {
-        type: 'agent_runtime_dispatch',
+        type: 'agent_dispatch_queued',
         sessionId: 'session-dispatch',
         timestamp: new Date().toISOString(),
         payload: {
@@ -369,7 +369,7 @@ describe('AgentStatusSubscriber', () => {
       dispatchSubscriber.start();
 
       const dispatchEvent: RuntimeEvent = {
-        type: 'agent_runtime_dispatch',
+        type: 'agent_dispatch_failed',
         sessionId: 'session-dispatch-sigterm',
         timestamp: new Date().toISOString(),
         payload: {
@@ -415,16 +415,16 @@ describe('AgentStatusSubscriber', () => {
       dispatchSubscriber.start();
 
       const dispatchEvent: RuntimeEvent = {
-        type: 'agent_runtime_dispatch',
+        type: 'agent_dispatch_complete',
         sessionId: 'session-dispatch-startup-noise',
         timestamp: new Date().toISOString(),
         payload: {
           dispatchId: 'dispatch-startup-noise-1',
           sourceAgentId: 'system-recovery',
           targetAgentId: 'finger-system-agent',
-          status: 'completed',
+          status: 'success',
           result: {
-            status: 'completed',
+            status: 'success',
             summary: 'Startup recovery no-op completed',
           },
         },
@@ -451,7 +451,7 @@ describe('AgentStatusSubscriber', () => {
       dispatchSubscriber.start();
 
       const dispatchEvent: RuntimeEvent = {
-        type: 'agent_runtime_dispatch',
+        type: 'agent_dispatch_failed',
         sessionId: 'session-dispatch-startup-hard-fail',
         timestamp: new Date().toISOString(),
         payload: {
@@ -495,7 +495,7 @@ describe('AgentStatusSubscriber', () => {
       dispatchSubscriber.start();
 
       const dispatchEvent: RuntimeEvent = {
-        type: 'agent_runtime_dispatch',
+        type: 'agent_dispatch_queued',
         sessionId: 'session-dispatch-heartbeat-system-noise',
         timestamp: new Date().toISOString(),
         payload: {
@@ -531,16 +531,16 @@ describe('AgentStatusSubscriber', () => {
       dispatchSubscriber.start();
 
       const dispatchEvent: RuntimeEvent = {
-        type: 'agent_runtime_dispatch',
+        type: 'agent_dispatch_complete',
         sessionId: 'session-dispatch-mailbox-system-noise',
         timestamp: new Date().toISOString(),
         payload: {
           dispatchId: 'dispatch-mailbox-system-noise-1',
           sourceAgentId: 'finger-reviewer',
           targetAgentId: 'finger-system-agent',
-          status: 'completed',
+          status: 'success',
           result: {
-            status: 'completed',
+            status: 'success',
             summary: 'flow-healthcheck-001 PASS',
             mailboxMessageId: 'msg-abc123',
           },
@@ -567,7 +567,7 @@ describe('AgentStatusSubscriber', () => {
       dispatchSubscriber.start();
 
       const dispatchEvent: RuntimeEvent = {
-        type: 'agent_runtime_dispatch',
+        type: 'agent_dispatch_failed',
         sessionId: 'session-dispatch-mailbox-system-failed',
         timestamp: new Date().toISOString(),
         payload: {
@@ -617,16 +617,16 @@ describe('AgentStatusSubscriber', () => {
         },
       });
       const dispatchEvent: RuntimeEvent = {
-        type: 'agent_runtime_dispatch',
+        type: 'agent_dispatch_complete',
         sessionId: 'session-dispatch-heartbeat-noop',
         timestamp: new Date().toISOString(),
         payload: {
           dispatchId: 'dispatch-heartbeat-noop-1',
           sourceAgentId: 'system-heartbeat',
           targetAgentId: 'finger-project-agent',
-          status: 'completed',
+          status: 'success',
           result: {
-            status: 'completed',
+            status: 'success',
             summary: 'No actionable work. stale watchdog phantom entries already complete.',
           },
         },
@@ -658,7 +658,7 @@ describe('AgentStatusSubscriber', () => {
       dispatchSubscriber.start();
 
       const dispatchEvent: RuntimeEvent = {
-        type: 'agent_runtime_dispatch',
+        type: 'agent_dispatch_queued',
         sessionId: 'session-dispatch-heartbeat-active',
         timestamp: '2026-03-30T13:08:00.000Z',
         payload: {
@@ -713,7 +713,7 @@ describe('AgentStatusSubscriber', () => {
       });
 
       const dispatchEvent: RuntimeEvent = {
-        type: 'agent_runtime_dispatch',
+        type: 'agent_dispatch_queued',
         sessionId: 'session-dispatch-mailbox',
         timestamp: new Date().toISOString(),
         payload: {
@@ -763,16 +763,16 @@ describe('AgentStatusSubscriber', () => {
 
       const externalMessageId = 'ROBOT1.0_RfEjr0m4Gkchob94UGP.rBgrInWXSDk2G3yXlkKGQs7EL3SmZjNW7ZjW4ULCIXyI';
       const dispatchEvent: RuntimeEvent = {
-        type: 'agent_runtime_dispatch',
+        type: 'agent_dispatch_complete',
         sessionId: 'session-dispatch-normal',
         timestamp: new Date().toISOString(),
         payload: {
           dispatchId: 'dispatch-normal-1',
           sourceAgentId: 'agent-1',
           targetAgentId: 'agent-2',
-          status: 'completed',
+          status: 'success',
           result: {
-            status: 'completed',
+            status: 'success',
             messageId: externalMessageId,
             summary: '任务已完成并返回结果',
           },
@@ -813,18 +813,18 @@ describe('AgentStatusSubscriber', () => {
       dispatchSubscriber.start();
 
       const dispatchEvent: RuntimeEvent = {
-        type: 'agent_runtime_dispatch',
+        type: 'agent_dispatch_complete',
         sessionId: 'session-dispatch-relation',
         timestamp: new Date().toISOString(),
         payload: {
           dispatchId: 'dispatch-relation-1',
           sourceAgentId: 'agent-1',
           targetAgentId: 'finger-system-agent',
-          status: 'completed',
+          status: 'success',
           childSessionId: 'session-dispatch-relation',
           parentSessionId: 'session-dispatch-relation',
           result: {
-            status: 'completed',
+            status: 'success',
             summary: 'ok',
           },
         },

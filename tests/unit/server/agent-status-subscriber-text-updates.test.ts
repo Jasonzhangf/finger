@@ -941,7 +941,7 @@ describe('AgentStatusSubscriber text updates', () => {
     subscriber.start();
 
     await eventBus.emit({
-      type: 'agent_runtime_dispatch',
+      type: 'agent_dispatch_queued',
       sessionId: 'session-root',
       timestamp: new Date().toISOString(),
       payload: {

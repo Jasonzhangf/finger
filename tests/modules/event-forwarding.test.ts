@@ -45,7 +45,7 @@ function createMockSessionManager(): SessionManager {
 function createMockEventBus(): UnifiedEventBus {
   return {
     subscribe: vi.fn(),
-    subscribeMultiple: vi.fn(),
+    subscribeMultiple: vi.fn((events: string[], handler: (event: any) => void) => {}),
     emit: vi.fn(async () => {}),
   } as unknown as UnifiedEventBus;
 }
@@ -1085,16 +1085,18 @@ describe('Event Forwarding - Execution Lifecycle', () => {
     const captured: { eventName: string; handler: (event: any) => void }[] = [];
     const eventBus = {
       subscribe: vi.fn((eventName: string, handler: (event: any) => void) => captured.push({ eventName, handler })),
-      subscribeMultiple: vi.fn(),
+      subscribeMultiple: vi.fn((events: string[], handler: (event: any) => void) => {
+        for (const e of events) captured.push({ eventName: e, handler });
+      }),
       emit: vi.fn(async () => {}),
     } as unknown as UnifiedEventBus;
 
     attachEventForwarding(createDeps({ sessionManager, eventBus }));
-    const handler = captured.find((entry) => entry.eventName === 'agent_runtime_dispatch')?.handler;
+    const handler = captured.find((entry) => ['agent_dispatch_queued','agent_dispatch_complete','agent_dispatch_failed','agent_dispatch_partial','agent_dispatch_started'].includes(entry.eventName))?.handler;
     expect(handler).toBeDefined();
 
     handler?.({
-      type: 'agent_runtime_dispatch',
+      type: 'agent_dispatch_queued',
       sessionId: 'dispatch-session-1',
       timestamp: new Date().toISOString(),
       payload: {
@@ -1149,16 +1151,18 @@ describe('Event Forwarding - Execution Lifecycle', () => {
     const captured: { eventName: string; handler: (event: any) => void }[] = [];
     const eventBus = {
       subscribe: vi.fn((eventName: string, handler: (event: any) => void) => captured.push({ eventName, handler })),
-      subscribeMultiple: vi.fn(),
+      subscribeMultiple: vi.fn((events: string[], handler: (event: any) => void) => {
+        for (const e of events) captured.push({ eventName: e, handler });
+      }),
       emit: vi.fn(async () => {}),
     } as unknown as UnifiedEventBus;
 
     attachEventForwarding(createDeps({ sessionManager, eventBus }));
-    const handler = captured.find((entry) => entry.eventName === 'agent_runtime_dispatch')?.handler;
+    const handler = captured.find((entry) => ['agent_dispatch_queued','agent_dispatch_complete','agent_dispatch_failed','agent_dispatch_partial','agent_dispatch_started'].includes(entry.eventName))?.handler;
     expect(handler).toBeDefined();
 
     handler?.({
-      type: 'agent_runtime_dispatch',
+      type: 'agent_dispatch_queued',
       sessionId: 'dispatch-session-mailbox-1',
       timestamp: new Date().toISOString(),
       payload: {
@@ -1187,7 +1191,9 @@ describe('Event Forwarding - Execution Lifecycle', () => {
     const captured: { eventName: string; handler: (event: any) => void }[] = [];
     const eventBus = {
       subscribe: vi.fn((eventName: string, handler: (event: any) => void) => captured.push({ eventName, handler })),
-      subscribeMultiple: vi.fn(),
+      subscribeMultiple: vi.fn((events: string[], handler: (event: any) => void) => {
+        for (const e of events) captured.push({ eventName: e, handler });
+      }),
       emit: vi.fn(async () => {}),
     } as unknown as UnifiedEventBus;
 
@@ -1287,7 +1293,9 @@ describe('Event Forwarding - Execution Lifecycle', () => {
     const captured: { eventName: string; handler: (event: any) => void }[] = [];
     const eventBus = {
       subscribe: vi.fn((eventName: string, handler: (event: any) => void) => captured.push({ eventName, handler })),
-      subscribeMultiple: vi.fn(),
+      subscribeMultiple: vi.fn((events: string[], handler: (event: any) => void) => {
+        for (const e of events) captured.push({ eventName: e, handler });
+      }),
       emit: vi.fn(async () => {}),
     } as unknown as UnifiedEventBus;
 
@@ -1457,7 +1465,9 @@ describe('Event Forwarding - Dispatch Child Ledger Pointer', () => {
       subscribe: vi.fn((eventName: string, handler: (event: any) => void) => {
         capturedSubscribe.push({ eventName, handler });
       }),
-      subscribeMultiple: vi.fn(),
+      subscribeMultiple: vi.fn((events: string[], handler: (event: any) => void) => {
+        for (const e of events) capturedSubscribe.push({ eventName: e, handler });
+      }),
       emit: vi.fn(async () => {}),
     } as unknown as UnifiedEventBus;
 
@@ -1474,8 +1484,8 @@ describe('Event Forwarding - Dispatch Child Ledger Pointer', () => {
   }
 
   function getDispatchHandler(captured: { eventName: string; handler: (event: any) => void }[]) {
-    const entry = captured.find(e => e.eventName === 'agent_runtime_dispatch');
-    if (!entry) throw new Error('agent_runtime_dispatch handler not registered');
+    const entry = captured.find(e => ['agent_dispatch_queued','agent_dispatch_complete','agent_dispatch_failed','agent_dispatch_partial','agent_dispatch_started'].includes(e.eventName));
+    if (!entry) throw new Error('agent_dispatch_* handler not registered');
     return entry.handler;
   }
 
@@ -1484,7 +1494,7 @@ describe('Event Forwarding - Dispatch Child Ledger Pointer', () => {
     const handler = getDispatchHandler(capturedSubscribe);
 
     handler({
-      type: 'agent_runtime_dispatch',
+      type: 'agent_dispatch_queued',
       sessionId: 'parent-session',
       timestamp: new Date().toISOString(),
       payload: {
@@ -1512,7 +1522,9 @@ describe('Event Forwarding - Dispatch Child Ledger Pointer', () => {
       subscribe: vi.fn((eventName: string, handler: (event: any) => void) => {
         captured2.push({ eventName, handler });
       }),
-      subscribeMultiple: vi.fn(),
+      subscribeMultiple: vi.fn((events: string[], handler: (event: any) => void) => {
+        for (const e of events) captured2.push({ eventName: e, handler });
+      }),
       emit: vi.fn(async () => {}),
     } as unknown as UnifiedEventBus;
 
@@ -1520,7 +1532,7 @@ describe('Event Forwarding - Dispatch Child Ledger Pointer', () => {
     const handler2 = captured2.find(e => e.eventName === 'agent_runtime_dispatch')!.handler;
 
     handler2({
-      type: 'agent_runtime_dispatch',
+      type: 'agent_dispatch_queued',
       sessionId: 'parent-session',
       timestamp: new Date().toISOString(),
       payload: {
@@ -1555,15 +1567,17 @@ describe('Event Forwarding - Dispatch Child Ledger Pointer', () => {
       subscribe: vi.fn((eventName: string, handler: (event: any) => void) => {
         captured.push({ eventName, handler });
       }),
-      subscribeMultiple: vi.fn(),
+      subscribeMultiple: vi.fn((events: string[], handler: (event: any) => void) => {
+        for (const e of events) captured.push({ eventName: e, handler });
+      }),
       emit: vi.fn(async () => {}),
     } as unknown as UnifiedEventBus;
 
     attachEventForwarding(createDeps({ sessionManager: trackableSessionManager, eventBus }));
-    const handler = captured.find(e => e.eventName === 'agent_runtime_dispatch')!.handler;
+    const handler = captured.find(e => ['agent_dispatch_queued','agent_dispatch_complete','agent_dispatch_failed','agent_dispatch_partial','agent_dispatch_started'].includes(e.eventName))!.handler;
 
     handler({
-      type: 'agent_runtime_dispatch',
+      type: 'agent_dispatch_queued',
       sessionId: 'parent-session-2',
       timestamp: new Date().toISOString(),
       payload: {
@@ -1599,15 +1613,17 @@ describe('Event Forwarding - Dispatch Child Ledger Pointer', () => {
       subscribe: vi.fn((eventName: string, handler: (event: any) => void) => {
         captured.push({ eventName, handler });
       }),
-      subscribeMultiple: vi.fn(),
+      subscribeMultiple: vi.fn((events: string[], handler: (event: any) => void) => {
+        for (const e of events) captured.push({ eventName: e, handler });
+      }),
       emit: vi.fn(async () => {}),
     } as unknown as UnifiedEventBus;
 
     attachEventForwarding(createDeps({ sessionManager: trackableSessionManager, eventBus }));
-    const handler = captured.find(e => e.eventName === 'agent_runtime_dispatch')!.handler;
+    const handler = captured.find(e => ['agent_dispatch_queued','agent_dispatch_complete','agent_dispatch_failed','agent_dispatch_partial','agent_dispatch_started'].includes(e.eventName))!.handler;
 
     handler({
-      type: 'agent_runtime_dispatch',
+      type: 'agent_dispatch_queued',
       sessionId: 'parent-session-2b',
       timestamp: new Date().toISOString(),
       payload: {
@@ -1645,15 +1661,17 @@ describe('Event Forwarding - Dispatch Child Ledger Pointer', () => {
       subscribe: vi.fn((eventName: string, handler: (event: any) => void) => {
         captured.push({ eventName, handler });
       }),
-      subscribeMultiple: vi.fn(),
+      subscribeMultiple: vi.fn((events: string[], handler: (event: any) => void) => {
+        for (const e of events) captured.push({ eventName: e, handler });
+      }),
       emit: vi.fn(async () => {}),
     } as unknown as UnifiedEventBus;
 
     attachEventForwarding(createDeps({ sessionManager: trackableSessionManager, eventBus }));
-    const handler = captured.find(e => e.eventName === 'agent_runtime_dispatch')!.handler;
+    const handler = captured.find(e => ['agent_dispatch_queued','agent_dispatch_complete','agent_dispatch_failed','agent_dispatch_partial','agent_dispatch_started'].includes(e.eventName))!.handler;
 
     handler({
-      type: 'agent_runtime_dispatch',
+      type: 'agent_dispatch_queued',
       sessionId: 'parent-session-3',
       timestamp: new Date().toISOString(),
       payload: {
@@ -1686,15 +1704,17 @@ describe('Event Forwarding - Dispatch Child Ledger Pointer', () => {
       subscribe: vi.fn((eventName: string, handler: (event: any) => void) => {
         captured.push({ eventName, handler });
       }),
-      subscribeMultiple: vi.fn(),
+      subscribeMultiple: vi.fn((events: string[], handler: (event: any) => void) => {
+        for (const e of events) captured.push({ eventName: e, handler });
+      }),
       emit: vi.fn(async () => {}),
     } as unknown as UnifiedEventBus;
 
     attachEventForwarding(createDeps({ sessionManager: trackableSessionManager, eventBus }));
-    const handler = captured.find(e => e.eventName === 'agent_runtime_dispatch')!.handler;
+    const handler = captured.find(e => ['agent_dispatch_queued','agent_dispatch_complete','agent_dispatch_failed','agent_dispatch_partial','agent_dispatch_started'].includes(e.eventName))!.handler;
 
     handler({
-      type: 'agent_runtime_dispatch',
+      type: 'agent_dispatch_queued',
       sessionId: 'parent-session-4',
       timestamp: new Date().toISOString(),
       payload: {
@@ -1734,15 +1754,17 @@ describe('Event Forwarding - Dispatch Child Ledger Pointer', () => {
       subscribe: vi.fn((eventName: string, handler: (event: any) => void) => {
         captured.push({ eventName, handler });
       }),
-      subscribeMultiple: vi.fn(),
+      subscribeMultiple: vi.fn((events: string[], handler: (event: any) => void) => {
+        for (const e of events) captured.push({ eventName: e, handler });
+      }),
       emit: vi.fn(async () => {}),
     } as unknown as UnifiedEventBus;
 
     attachEventForwarding(createDeps({ sessionManager: trackableSessionManager, eventBus }));
-    const handler = captured.find(e => e.eventName === 'agent_runtime_dispatch')!.handler;
+    const handler = captured.find(e => ['agent_dispatch_queued','agent_dispatch_complete','agent_dispatch_failed','agent_dispatch_partial','agent_dispatch_started'].includes(e.eventName))!.handler;
 
     handler({
-      type: 'agent_runtime_dispatch',
+      type: 'agent_dispatch_queued',
       sessionId: 'parent-session-5',
       timestamp: new Date().toISOString(),
       payload: {
@@ -1777,15 +1799,18 @@ describe('Event Forwarding - Dispatch Result Mailbox Routing', () => {
     (eventBus.subscribe as ReturnType<typeof vi.fn>).mockImplementation((eventName: string, handler: (event: any) => void) => {
       captured.push({ eventName, handler });
     });
+    (eventBus.subscribeMultiple as ReturnType<typeof vi.fn>).mockImplementation((events: string[], handler: (event: any) => void) => {
+      for (const e of events) captured.push({ eventName: e, handler });
+    });
 
     attachEventForwarding(deps);
-    const handler = captured.find((entry) => entry.eventName === 'agent_runtime_dispatch')?.handler;
+    const handler = captured.find((entry) => ['agent_dispatch_queued','agent_dispatch_complete','agent_dispatch_failed','agent_dispatch_partial','agent_dispatch_started'].includes(entry.eventName))?.handler;
     expect(handler).toBeDefined();
 
     const sourceAgentId = 'finger-system-agent';
     const dispatchId = `dispatch-${Date.now()}`;
     handler?.({
-      type: 'agent_runtime_dispatch',
+      type: 'agent_dispatch_queued',
       sessionId: 'session-source-mailbox',
       timestamp: new Date().toISOString(),
       payload: {
@@ -1826,15 +1851,18 @@ describe('Event Forwarding - Dispatch Result Mailbox Routing', () => {
     (eventBus.subscribe as ReturnType<typeof vi.fn>).mockImplementation((eventName: string, handler: (event: any) => void) => {
       captured.push({ eventName, handler });
     });
+    (eventBus.subscribeMultiple as ReturnType<typeof vi.fn>).mockImplementation((events: string[], handler: (event: any) => void) => {
+      for (const e of events) captured.push({ eventName: e, handler });
+    });
 
     attachEventForwarding(deps);
-    const handler = captured.find((entry) => entry.eventName === 'agent_runtime_dispatch')?.handler;
+    const handler = captured.find((entry) => ['agent_dispatch_queued','agent_dispatch_complete','agent_dispatch_failed','agent_dispatch_partial','agent_dispatch_started'].includes(entry.eventName))?.handler;
     expect(handler).toBeDefined();
 
     const sourceAgentId = 'finger-system-agent';
     const dispatchId = `dispatch-idle-${Date.now()}`;
     handler?.({
-      type: 'agent_runtime_dispatch',
+      type: 'agent_dispatch_queued',
       sessionId: 'session-source-idle',
       timestamp: new Date().toISOString(),
       payload: {
@@ -1869,16 +1897,19 @@ describe('Event Forwarding - Dispatch Result Mailbox Routing', () => {
     const captured: { eventName: string; handler: (event: any) => void }[] = [];
     (eventBus.subscribe as ReturnType<typeof vi.fn>).mockImplementation((eventName: string, handler: (event: any) => void) => {
       captured.push({ eventName, handler });
+    (eventBus.subscribeMultiple as ReturnType<typeof vi.fn>).mockImplementation((events: string[], handler: (event: any) => void) => {
+      for (const e of events) captured.push({ eventName: e, handler });
+    });
     });
 
     attachEventForwarding(deps);
-    const handler = captured.find((entry) => entry.eventName === 'agent_runtime_dispatch')?.handler;
+    const handler = captured.find((entry) => ['agent_dispatch_queued','agent_dispatch_complete','agent_dispatch_failed','agent_dispatch_partial','agent_dispatch_started'].includes(entry.eventName))?.handler;
     expect(handler).toBeDefined();
 
     const sourceAgentId = `finger-project-agent-${Date.now()}`;
     const dispatchId = `dispatch-skip-source-${Date.now()}`;
     handler?.({
-      type: 'agent_runtime_dispatch',
+      type: 'agent_dispatch_queued',
       sessionId: 'session-non-system-source',
       timestamp: new Date().toISOString(),
       payload: {
@@ -1927,15 +1958,17 @@ describe('Event Forwarding - Dispatch Ledger Session Lifecycle', () => {
     const captured: { eventName: string; handler: (event: any) => void }[] = [];
     const eventBus = {
       subscribe: vi.fn((eventName: string, handler: (event: any) => void) => captured.push({ eventName, handler })),
-      subscribeMultiple: vi.fn(),
+      subscribeMultiple: vi.fn((events: string[], handler: (event: any) => void) => {
+        for (const e of events) captured.push({ eventName: e, handler });
+      }),
       emit: vi.fn(async () => {}),
     } as unknown as UnifiedEventBus;
     attachEventForwarding(createDeps({ eventBus, sessionManager }));
-    const handler = captured.find((entry) => entry.eventName === 'agent_runtime_dispatch')?.handler;
+    const handler = captured.find((entry) => ['agent_dispatch_queued','agent_dispatch_complete','agent_dispatch_failed','agent_dispatch_partial','agent_dispatch_started'].includes(entry.eventName))?.handler;
     expect(handler).toBeDefined();
 
     handler?.({
-      type: 'agent_runtime_dispatch',
+      type: 'agent_dispatch_queued',
       sessionId: 'runtime-child-1',
       timestamp: new Date().toISOString(),
       payload: {
@@ -1967,15 +2000,17 @@ describe('Event Forwarding - Dispatch Ledger Session Lifecycle', () => {
     const captured: { eventName: string; handler: (event: any) => void }[] = [];
     const eventBus = {
       subscribe: vi.fn((eventName: string, handler: (event: any) => void) => captured.push({ eventName, handler })),
-      subscribeMultiple: vi.fn(),
+      subscribeMultiple: vi.fn((events: string[], handler: (event: any) => void) => {
+        for (const e of events) captured.push({ eventName: e, handler });
+      }),
       emit: vi.fn(async () => {}),
     } as unknown as UnifiedEventBus;
     attachEventForwarding(createDeps({ eventBus, sessionManager }));
-    const handler = captured.find((entry) => entry.eventName === 'agent_runtime_dispatch')?.handler;
+    const handler = captured.find((entry) => ['agent_dispatch_queued','agent_dispatch_complete','agent_dispatch_failed','agent_dispatch_partial','agent_dispatch_started'].includes(entry.eventName))?.handler;
     expect(handler).toBeDefined();
 
     const event = {
-      type: 'agent_runtime_dispatch',
+      type: 'agent_dispatch_queued',
       sessionId: 'root-dedup-1',
       timestamp: new Date().toISOString(),
       payload: {
@@ -2006,7 +2041,9 @@ describe('Event Forwarding - Auto Review Prompt Integration', () => {
     const captured: { eventName: string; handler: (event: any) => void }[] = [];
     const eventBus = {
       subscribe: vi.fn((eventName: string, handler: (event: any) => void) => captured.push({ eventName, handler })),
-      subscribeMultiple: vi.fn(),
+      subscribeMultiple: vi.fn((events: string[], handler: (event: any) => void) => {
+        for (const e of events) captured.push({ eventName: e, handler });
+      }),
       emit: vi.fn(async () => {}),
     } as unknown as UnifiedEventBus;
     attachEventForwarding(createDeps({
@@ -2015,11 +2052,11 @@ describe('Event Forwarding - Auto Review Prompt Integration', () => {
       dispatchTaskToAgent,
       resolveReviewPolicy: () => ({ enabled: true, dispatchReviewMode: 'always' }),
     }));
-    const handler = captured.find((entry) => entry.eventName === 'agent_runtime_dispatch')?.handler;
+    const handler = captured.find((entry) => ['agent_dispatch_queued','agent_dispatch_complete','agent_dispatch_failed','agent_dispatch_partial','agent_dispatch_started'].includes(entry.eventName))?.handler;
     expect(handler).toBeDefined();
 
     handler?.({
-      type: 'agent_runtime_dispatch',
+      type: 'agent_dispatch_queued',
       sessionId: 'system-main',
       timestamp: new Date().toISOString(),
       payload: {
@@ -2061,7 +2098,9 @@ describe('Event Forwarding - Auto Review Prompt Integration', () => {
     const captured: { eventName: string; handler: (event: any) => void }[] = [];
     const eventBus = {
       subscribe: vi.fn((eventName: string, handler: (event: any) => void) => captured.push({ eventName, handler })),
-      subscribeMultiple: vi.fn(),
+      subscribeMultiple: vi.fn((events: string[], handler: (event: any) => void) => {
+        for (const e of events) captured.push({ eventName: e, handler });
+      }),
       emit: vi.fn(async () => {}),
     } as unknown as UnifiedEventBus;
     attachEventForwarding(createDeps({
@@ -2070,11 +2109,11 @@ describe('Event Forwarding - Auto Review Prompt Integration', () => {
       dispatchTaskToAgent,
       resolveReviewPolicy: () => ({ enabled: true, dispatchReviewMode: 'always' }),
     }));
-    const handler = captured.find((entry) => entry.eventName === 'agent_runtime_dispatch')?.handler;
+    const handler = captured.find((entry) => ['agent_dispatch_queued','agent_dispatch_complete','agent_dispatch_failed','agent_dispatch_partial','agent_dispatch_started'].includes(entry.eventName))?.handler;
     expect(handler).toBeDefined();
 
     handler?.({
-      type: 'agent_runtime_dispatch',
+      type: 'agent_dispatch_queued',
       sessionId: 'system-main',
       timestamp: new Date().toISOString(),
       payload: {

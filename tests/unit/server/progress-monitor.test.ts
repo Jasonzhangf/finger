@@ -1188,14 +1188,14 @@ describe('ProgressMonitor incremental updates', () => {
     } as any);
 
     await eventBus.emit({
-      type: 'agent_runtime_dispatch',
+      type: 'agent_dispatch_complete',
       sessionId: 'session-reviewer-close',
       agentId: 'finger-reviewer',
       timestamp: new Date().toISOString(),
       payload: {
         sourceAgentId: 'finger-system-agent',
         targetAgentId: 'finger-reviewer',
-        status: 'completed',
+        status: 'success',
       },
     } as any);
 

@@ -490,6 +490,7 @@ export async function handleDispatch(
   const isStartupTransientStatus = dispatchStatus === 'queued'
     || dispatchStatus === 'running'
     || dispatchStatus === 'completed'
+    || dispatchStatus === 'success'
     || restartInterrupted;
   if (isStartupNoiseSource && isStartupTransientStatus && !mailboxFlow) {
     log.debug('[AgentStatusSubscriber] Suppress startup/recovery dispatch noise', {

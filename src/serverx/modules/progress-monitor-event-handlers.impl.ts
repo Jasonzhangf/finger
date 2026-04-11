@@ -883,7 +883,9 @@ export function handleUserDecisionReceivedEvent(progress: SessionProgress, event
  */
 export function handleAgentRuntimeDispatch(progress: SessionProgress, event: any): void {
   const target = event.payload?.targetAgentId;
-  const status = typeof event.payload?.status === 'string' ? event.payload.status : 'queued';
+  const rawStatus = typeof event.payload?.status === 'string' ? event.payload.status : 'queued';
+  // Normalize protocol event status: 'success' -> 'completed', 'started' -> 'running'
+  const status = rawStatus === 'success' ? 'completed' : rawStatus === 'started' ? 'running' : rawStatus;
   const isTerminal = status === 'completed' || status === 'failed' || status === 'idle';
 
   // Self-target dispatch updates are authoritative for turn closure.

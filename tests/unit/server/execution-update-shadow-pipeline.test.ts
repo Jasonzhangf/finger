@@ -37,7 +37,7 @@ describe('ExecutionUpdateShadowPipeline', () => {
     pipeline.start();
     const ts = new Date().toISOString();
     await eventBus.emit({
-      type: 'agent_runtime_dispatch',
+      type: 'agent_dispatch_queued',
       sessionId: 'session-test',
       timestamp: ts,
       payload: {
@@ -109,7 +109,7 @@ describe('ExecutionUpdateShadowPipeline', () => {
       pipeline.start();
       const ts = new Date().toISOString();
       await eventBus.emit({
-        type: 'agent_runtime_dispatch',
+        type: 'agent_dispatch_queued',
         sessionId: 'session-restart',
         timestamp: ts,
         payload: {
