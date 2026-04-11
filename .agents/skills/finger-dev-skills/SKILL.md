@@ -866,3 +866,159 @@ Compact 触发时机：
 - `src/serverx/modules/event-forwarding.impl.ts`
 - `src/orchestration/session-manager.ts`
 - `src/serverx/modules/progress-monitor.impl.ts`
+
+## Task Mode (Task-Driven Execution)
+
+When implementing features related to task-driven execution:
+- **Stop gate logic**: `finish_reason=stop` alone is not sufficient to stop reasoning when there's an active non-blocked task
+- **Task modes**:
+  - `default`: Normal stop behavior
+  - `light`: Current epic must complete before stopping (non-blocked tasks prevent stop)
+  - `forever`: Continue as long as there are any active tasks
+- **bd integration**: Complex tasks must use bd epic as the source of truth; session context is only a read-only view of current epic
+- **Periodic tasks**: Use `periodicKey` for uniqueness; on trigger, replace previous unfinished task with new one
+- **Epic selection**: When current epic closes, auto-pick next by priority ASC then updatedAt DESC
+
+## Session Recovery Anti-patterns
+
+- Never recover sessions based on `projectTaskState` string alone → always validate against bd epic state
+- Clean up test-polluted sessions on startup to prevent ghost session storms
+- Remove completed tasks from session context immediately → prevents context poisoning
+- `update_plan` is internal non-persistent view → never use for recovery decisions
+
+## Section 12: Always-On 模块化架构与热升级（2026-04-11）
+
+### 核心架构原则
+
+#### 1. Core/Extension 分层（强制）
+
+**Core 层**（完整升级，重启生效）：
+- `runtime-facade`, `session-manager`, `protocol-event-builder`, `message-hub`
+- `agent-runtime-block`, `websocket-block`, `logger`, `event-bus`
+- `gateway-manager`, `tool-registry`, `core-registry`
+
+**Extension 层**（热升级，无需重启）：
+- `finger-*-agent`（所有 Agent 业务模块）
+- `channel-bridge-*`（渠道适配）
+- `inputs`, `outputs`, 可选工具扩展
+
+#### 2. 双槽位机制（强制）
+
+每个 Extension 模块维护两个槽位：
+- **Active 槽位**：当前运行版本
+- **Standby 槽位**：备用版本（升级目标或降级来源）
+
+升级流程：
+```
+1. 新版本安装到 standby 槽位
+2. 健康检查验证 standby 版本
+3. 验证通过 → 槽位切换（standby → active）
+4. 旧版本保留在 standby（可降级）
+```
+
+#### 3. Runtime 主备规则（强制）
+
+- Runtime 只有一个实例（单进程）
+- 本地切主/切备 → 写入 `~/.finger/runtime/runtime-role.json` → 重启生效
+- 默认启动为 `active`
+- 切备后重启保持 `standby`（不自动变 active）
+
+### 升级测试要求（MANDATORY）
+
+#### 测试层次（强制）
+
+| 升级类型 | 必须通过的测试 |
+|----------|----------------|
+| Extension 热升级 | 单元 + 集成 + 真实升级演练 |
+| Core 完整升级 | 全量回归 + daemon 重启验证 |
+| 降级/回滚 | 回滚点恢复 + 功能验证 |
+
+#### 真实演练必须包含
+
+1. **升级包准备**：两个版本号不同的包（内容相同，验证流程）
+2. **升级执行**：`myfinger upgrade run <module> --source <dist-dir> --version <target>`
+3. **槽位切换验证**：`ActiveStandbyManager` 日志显示 `Module slots switched`
+4. **Daemon 稳定性**：全程保持 `running on port 9999`
+5. **回滚验证**：`myfinger upgrade rollback <module> -y` + 文件恢复确认
+6. **回滚点管理**：`list` 显示正确，rollback 后数量减少
+
+#### 反模式（FORBIDDEN）
+
+- ❌ Mock 测试替代真实升级演练（不能验证文件系统、进程、daemon 交互）
+- ❌ `--source` 指向 .tgz 文件（必须是解压后的 dist 目录）
+- ❌ 跳过健康检查直接 commit
+- ❌ 升级失败后不回滚（必须自动回滚或保留回滚点）
+
+### CLI 命令标准流程
+
+```bash
+# 1. 状态检查
+myfinger upgrade status
+myfinger daemon status
+
+# 2. Extension 热升级
+myfinger upgrade run finger-project-agent \
+  --source /path/to/v0.1.362-extracted/package/dist \
+  --version 0.1.362
+
+# 3. 验证升级结果
+myfinger upgrade list finger-project-agent
+
+# 4. 回滚（如需要）
+myfinger upgrade rollback finger-project-agent -y
+
+# 5. Core 完整升级（需确认）
+myfinger upgrade core --yes  # 会重启 daemon
+```
+
+### 关键文件位置
+
+```
+~/.finger/runtime/
+├── runtime-role.json              # Runtime 角色
+├── module-slots/*.json            # 模块槽位状态
+└── rollback/extension/*/          # 回滚点
+
+src/orchestration/
+├── active-standby-manager.ts      # 槽位管理
+├── upgrade-engine.ts              # 升级事务引擎
+├── upgrade-package-manager.ts     # 包获取与校验
+├── pre-upgrade-health-check.ts    # 升级前检查
+├── rollback-manager.ts            # 回滚点管理
+└── module-layers.ts               # 分层声明
+
+tests/integration/full-upgrade-pipeline.test.ts  # 集成测试
+```
+
+### 常见问题与修复
+
+| 问题 | 原因 | 解决 |
+|------|------|------|
+| `ENOTDIR: not a directory` | `--source` 指向 .tgz | 解压后指向 dist 目录 |
+| `-v` 参数被覆盖 | commander 全局 `-v` 冲突 | 使用 `--version` 长格式 |
+| 回滚点数量不减少 | rollback 消耗最新点 | 正常行为，检查剩余数量 |
+| Daemon 重启后不在线 | Core 升级未完成 | 检查 `myfinger daemon status` |
+
+### 升级失败处理
+
+```bash
+# 升级失败 → 自动回滚（UpgradeEngine 默认行为）
+# 如手动干预：
+
+# 1. 查看回滚点
+myfinger upgrade list <module>
+
+# 2. 手动回滚到指定版本
+myfinger upgrade rollback <module> -y
+
+# 3. 清理失败的升级缓存
+rm -rf ~/.finger/upgrade-cache/<module>/failed-*
+```
+
+### 下一步扩展（Phase 3+）
+
+- Worker 进程级隔离（VM 沙箱）
+- npm registry 自动拉取
+- 心跳计数器重置机制
+- 升级进度 UI 可视化
+

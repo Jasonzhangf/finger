@@ -700,3 +700,177 @@ if (!isNonModuleSender) {
 - finger-285.4: Phase 4 - 清理与验证
 
 ---
+
+## [task] Session 上下文与任务真源统一改造 (finger-288) {#mem-session-task-truth-20260411}
+时间: 2026-04-11
+状态: completed
+
+### 用户核心诉求
+1. **bd epic 为复杂任务唯一真源**，session context 是当前执行 epic 的只读视图
+2. **update_plan 降级**为非持久化内部小进度，不参与恢复
+3. **周期任务**用 periodicKey 做唯一键，触发时替换上一次未完成的任务
+4. **Task Mode**：非阻塞 in_progress 任务不允许停止推理
+
+### 根因分析
+- session 恢复依赖 `projectTaskState` 字符串而非 bd 状态 → ghost session 风暴
+- 多 session 目录污染 → 重启时加载到错误 session
+- update-plan-store.json 被当作恢复依据 → 与实际执行脱节
+- `finish_reason=stop` 可单独停止 → 任务未完成就停了
+
+### 关键实现
+1. **bd-epic-view 模块** (`src/serverx/modules/bd-epic-view.ts`)
+   - `getCurrentEpic`, `getCandidateEpics`, `getNextEpic`, `getEpicTaskState`
+   - `isBdAvailable` 检查 bd CLI 可用性
+   - 候选排序：priority 升序 → updatedAt 降序
+
+2. **projectTaskState 数据结构** (`src/common/project-task-state.ts`)
+   - 新增 `epicId`, `bdStorePath`, `periodicKey` 字段
+   - `resolveBeadsStorePath(agentId, projectPath)`：system→`~/.finger/beads/`，project→`.beads`
+   - `validateBdIssue(taskId, bdStorePath)` 验证 taskId 有效性
+   - `parseProjectTaskState`, `isProjectTaskStateActive`
+
+3. **heartbeat 恢复** (`src/serverx/modules/heartbeat-scheduler.impl.ts`)
+   - `detectActiveProjectRecoverySessions()` 改为检查 bd epic 状态
+   - 移除 `staleTaskSessionIds` 模糊判定
+
+4. **上下文构建** (`src/agents/base/kernel-agent-base.ts`)
+   - 新增 `task.bd_epic` slot，注入当前 epic + 候选 epic
+   - 启动恢复时从 bd 重新读取
+
+5. **Task Mode** (`src/common/stop-reasoning-policy.ts` + `event-forwarding.impl.ts`)
+   - `taskMode`: default / light（当前 epic 必须完成）/ forever（永远不停）
+   - event-forwarding 在 stop gate 中新增 taskMode gate
+   - 有活跃非阻塞任务时阻止 `finish_reason=stop`
+
+6. **session 清理** (`src/serverx/modules/system-agent-manager.impl.ts`)
+   - `resumeProjectSessionIfNeeded()` 从 bd 读取 epic 状态
+   - 任务完成后自动清除 projectTaskState
+
+### 教训
+- 测试污染 session 是反复风暴的根因 → 启动时清理无关 session
+- 已完成任务必须移除 → 避免毒害后续 session 上下文
+- bd 工具是外部依赖 → 启动检查 + 优雅降级
+
+### Epic
+关联: finger-288
+
+## [task] Always-On 模块化架构与热升级系统 {#mem-always-on-20260411}
+时间: 2026-04-11 15:00
+状态: completed
+关联: finger-287
+
+### 背景
+用户提出 `finger:always-on` 目标：
+1. Daemon 永远在线 + 可控关闭（不死循环）
+2. 基础能力完备 + 自检
+3. 模块隔离 + 局部热升级
+
+### 核心架构决策
+
+#### 1. Core/Extension 分层
+- **Core 层**（完整升级）：runtime、session、protocol、message-hub、agent-runtime-block、websocket-block、logger、event-bus、gateway-manager、tool-registry
+- **Extension 层**（热升级）：finger-*-agent、channel-bridge-*、inputs、outputs、可选工具
+
+#### 2. 双槽位机制
+- 每个模块有 active/standby 两个槽位
+- 升级 → 新版本安装到 standby → 釕证通过 → 槽位切换
+- 降级 → standby 切回 active
+- 允许跳过版本（v1.0.0 → v3.0.0）
+
+#### 3. Runtime 主备规则
+- Runtime 只有一个实例
+- 本地切主/切备 → 写入角色文件 → 重启生效
+- 默认启动为 active
+- 切备后重启保持 standby（不自动变 active）
+
+### 实现组件
+
+| 组件 | 文件 | 测试 | 说明 |
+|------|------|------|------|
+| ActiveStandbyManager | `src/orchestration/active-standby-manager.ts` | 24 tests | Runtime 角色 + 模块槽位管理 |
+| UpgradePackageManager | `src/orchestration/upgrade-package-manager.ts` | 23 tests | npm/tarball/URL 获取 + checksum |
+| PreUpgradeHealthCheck | `src/orchestration/pre-upgrade-health-check.ts` | 19 tests | daemon/provider/disk/sessions |
+| UpgradeEngine | `src/orchestration/upgrade-engine.ts` | 19 tests | 事务升级 + 失败回滚 |
+| ModuleLayers | `src/orchestration/module-layers.ts` | 26 tests | 分层声明 + 依赖图 |
+| RollbackManager | `src/orchestration/rollback-manager.ts` | 21 tests | 回滚点创建/恢复/清理 |
+| CLI upgrade | `src/cli/upgrade.ts` | 20 tests | run/all/core/list/rollback/status |
+| 集成测试 | `tests/integration/full-upgrade-pipeline.test.ts` | 10 tests | 热升级/降级/跳版本/回滚 |
+
+**总计**: 138 单元测试 + 10 集成测试 = 148 tests
+
+### 真实升级验证
+
+```
+myfinger upgrade run finger-project-agent \
+  --source /tmp/finger-upgrade-pkg/v0.1.362-extracted/package/dist \
+  -v 0.1.362
+
+Upgrade Steps:
+  ✓ validate (0ms)
+  ✓ backup (301ms) → 2318 files backed up
+  ✓ stop (0ms)
+  ✓ replace (0ms)
+  ✓ start (0ms)
+  ✓ verify (0ms)
+  ✓ commit (0ms) → Slots switched
+
+Upgrade completed successfully
+
+myfinger upgrade rollback finger-project-agent -y
+  → Restored 2318 files from rollback point
+
+myfinger upgrade list finger-project-agent
+  → 显示所有回滚点（版本、时间、文件数、��径）
+
+Daemon 状态: 全程保持 running on port 9999
+```
+
+### 关键学习
+
+#### 升级包来源处理
+- **错误**: `--source` 指向 .tgz 文件 → `ENOTDIR: not a directory, scandir`
+- **正确**: `--source` 必须指向解压后的 dist 目录
+
+#### 版本参数
+- CLI `-v` 被 commander 解析为全局 `--version`，覆盖子命令参数
+- 使用长格式 `--version` 可绕过此问题
+
+#### 回滚点消耗
+- 执行 rollback 会消耗最新回滚点（删除后恢复）
+- 回滚点保留最近 3 个（自动清理最旧）
+
+### 目录结构
+
+```
+~/.finger/runtime/
+├── runtime-role.json              # Runtime 角色（active/standby）
+├── module-slots/                  # 模块槽位状态
+│   ├── finger-project-agent.json
+│   └── finger-executor-agent.json
+├── upgrade-cache/                 # 升级包缓存
+│   └── finger-executor-agent/
+│       ├── v2.0.0.tar.gz
+│       └── v2.0.0.sha256
+└── rollback/                      # 回滚点
+    ├── core/
+    └── extension/
+        └── finger-project-agent/
+            └── 0.1.362.bak.1775890997321/
+```
+
+### CLI 命令清单
+
+```bash
+myfinger upgrade status                    # 状态概览
+myfinger upgrade run <module> --version X  # 升级指定模块
+myfinger upgrade all --yes                 # 升级所有 Extension
+myfinger upgrade core --yes                # Core 完整升级
+myfinger upgrade list <module>             # 查看回滚点
+myfinger upgrade rollback <module> -y      # 回滚到最新
+```
+
+### 下一步
+- Worker 进程级隔离（Phase 3）
+- npm registry 集成（自动拉取）
+- 心跳计数器重置机制（防永久死亡）
+
