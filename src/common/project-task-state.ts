@@ -40,6 +40,9 @@ export interface ProjectTaskState {
   reviewerName?: string;
   reassignReason?: string;
   taskId?: string;
+  epicId?: string;                // Epic ID (bd issue)
+  bdStorePath?: string;           // BD store path for this project
+  periodicKey?: string;           // Periodic task unique key (e.g., hb:project:jobName)
   taskName?: string;
   dispatchId?: string;
   boundSessionId?: string;
