@@ -459,6 +459,34 @@ export interface AgentRuntimeDispatchEvent extends BaseEvent {
   };
 }
 
+/** Protocol Dispatch Event (Phase 3+) */
+export interface ProtocolDispatchEvent extends BaseEvent {
+  type: 'agent_dispatch_queued' | 'agent_dispatch_started' | 'agent_dispatch_complete' | 'agent_dispatch_failed' | 'agent_dispatch_partial';
+  schemaVersion: 'v1';
+  eventId: string;
+  correlationId: string;
+  causationId: string;
+  ownerWorkerId: string;
+  actor: string;
+  payload: {
+    dispatchId: string;
+    sourceAgentId: string;
+    targetAgentId: string;
+    status: 'queued' | 'started' | 'success' | 'failed' | 'partial';
+    taskId?: string;
+    attempt?: number;
+    phase?: 'assigned' | 'queued' | 'started' | 'reviewing' | 'retry' | 'passed' | 'failed' | 'closed';
+    blocking?: boolean;
+    sessionId?: string;
+    workflowId?: string;
+    queuePosition?: number;
+    error?: string;
+    result?: unknown;
+    evidence?: unknown;
+    exploredPaths?: string[];
+  };
+}
+
 export interface AgentRuntimeControlEvent extends BaseEvent {
   type: 'agent_runtime_control';
   agentId?: string;
@@ -506,6 +534,7 @@ export type RuntimeEvent =
   | SystemEvent
   | InputLockEvent
   | AgentRuntimeEvent
+  | ProtocolDispatchEvent
   | LoopEvent
   | EpicEvent
   | ContextEvent;
@@ -592,6 +621,16 @@ export const AGENT_RUNTIME_EVENT_TYPES = [
   'agent_runtime_status',
 ] as const;
 
+/** Protocol Dispatch 事件类型集合 (Phase 3+) */
+export const PROTOCOL_DISPATCH_EVENT_TYPES = [
+  'agent_dispatch_queued',
+  'agent_dispatch_started',
+  'agent_dispatch_complete',
+  'agent_dispatch_failed',
+  'agent_dispatch_partial',
+] as const;
+
+
 /** 事件分组 - UI 可按组订阅 */
 export const EVENT_GROUPS = {
   SESSION: SESSION_EVENT_TYPES,
@@ -605,6 +644,7 @@ export const EVENT_GROUPS = {
   SYSTEM: SYSTEM_EVENT_TYPES,
   INPUT_LOCK: INPUT_LOCK_EVENT_TYPES,
   AGENT_RUNTIME: AGENT_RUNTIME_EVENT_TYPES,
+  PROTOCOL_DISPATCH: PROTOCOL_DISPATCH_EVENT_TYPES,
   ALL: [
     ...SESSION_EVENT_TYPES,
     ...TASK_EVENT_TYPES,
