@@ -56,6 +56,10 @@ export function getFingerPaths(homeOverride?: string) {
     sessions: {
       dir: join(home, 'sessions'),
     },
+    beads: {
+      dir: join(home, 'beads'),
+      issuesFile: join(home, 'beads', 'issues.jsonl'),
+    },
     tmp: {
       dir: join(home, 'tmp'),
       legacyDir: join(home, 'tmp', 'legacy'),
@@ -87,6 +91,7 @@ export function ensureFingerLayout(): void {
   ensureDir(paths.runtime.schedulesDir);
   ensureDir(paths.logs.dir);
   ensureDir(paths.sessions.dir);
+  ensureDir(paths.beads.dir);
   ensureDir(paths.tmp.dir);
   migrateLegacyFingerHome(paths);
 }

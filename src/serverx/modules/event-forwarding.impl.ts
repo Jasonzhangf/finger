@@ -1324,7 +1324,7 @@ export function attachEventForwarding(deps: EventForwardingDeps): {
     asString,
   });
 
-  logger.module('event-forwarding').info('EventBus system feedback forwarding enabled: agent_runtime_dispatch');
+  logger.module('event-forwarding').info('EventBus system feedback forwarding enabled: Protocol Dispatch events (agent_dispatch_queued|started|complete|failed|partial)');
 
   return { emitLoopEventToEventBus };
 }

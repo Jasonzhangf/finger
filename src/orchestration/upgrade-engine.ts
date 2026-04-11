@@ -13,6 +13,7 @@ import { homedir } from 'os';
 import { logger } from '../core/logger.js';
 import { moduleLayers, type UpgradePolicyType, type ModuleTier } from './module-layers.js';
 import { RollbackManager, type RollbackPoint } from './rollback-manager.js';
+import { ActiveStandbyManager } from './active-standby-manager.js';
 
 const log = logger.module('UpgradeEngine');
 
@@ -70,9 +71,14 @@ function isHotUpgradeConfig(config: UpgradeConfig): config is HotUpgradeConfig {
 
 export class UpgradeEngine {
   private rollbackManager: RollbackManager;
+  private activeStandbyManager: ActiveStandbyManager;
 
-  constructor(rollbackManager?: RollbackManager) {
+  constructor(
+    rollbackManager?: RollbackManager,
+    activeStandbyManager?: ActiveStandbyManager,
+  ) {
     this.rollbackManager = rollbackManager ?? new RollbackManager();
+    this.activeStandbyManager = activeStandbyManager ?? new ActiveStandbyManager();
   }
 
   /**
@@ -183,13 +189,13 @@ export class UpgradeEngine {
       case 'stop':
         return await this.stepStop(moduleId, config);
       case 'replace':
-        return await this.stepReplace(moduleId, config);
+        return await this.stepReplace(moduleId, config, plan);
       case 'start':
         return await this.stepStart(moduleId, config);
       case 'verify':
         return await this.stepVerify(moduleId, config);
       case 'commit':
-        return await this.stepCommit(moduleId, targetVersion, plan);
+        return await this.stepCommit(moduleId, targetVersion, config, plan);
       default:
         throw new Error(`Unknown step action: ${action}`);
     }
@@ -255,8 +261,14 @@ export class UpgradeEngine {
     return `No stop action needed for ${moduleId}`;
   }
 
-  private async stepReplace(moduleId: string, config: UpgradeConfig): Promise<string> {
+  private async stepReplace(moduleId: string, config: UpgradeConfig, plan: Awaited<ReturnType<UpgradeEngine['planUpgrade']>>): Promise<string> {
     if (isHotUpgradeConfig(config)) {
+      // Dual-slot pattern for extension modules
+      if (plan.tier === 'extension') {
+        // Install new version to standby slot
+        this.activeStandbyManager.setStandbySlot(moduleId, config.version, config.sourcePath);
+        return `Module ${moduleId} v${config.version} installed to standby slot`;
+      }
       return `Module ${moduleId} replaced (handled by WorkerManager)`;
     } else {
       this.copyDirectory(config.sourceDistDir, config.targetDistDir);
@@ -286,8 +298,17 @@ export class UpgradeEngine {
   private async stepCommit(
     moduleId: string,
     targetVersion: string,
+    config: UpgradeConfig,
     plan: Awaited<ReturnType<UpgradeEngine['planUpgrade']>>,
   ): Promise<string> {
+    // For extension modules, switch slots after successful verification
+    if (plan.tier === 'extension' && isHotUpgradeConfig(config)) {
+      const slotState = this.activeStandbyManager.getModuleSlotState(moduleId);
+      if (slotState.standbyVersion === targetVersion) {
+        this.activeStandbyManager.switchModuleSlots(moduleId, `upgrade to v${targetVersion}`);
+        log.info('Slots switched after upgrade', { moduleId, targetVersion });
+      }
+    }
     log.info('Upgrade committed', { moduleId, targetVersion, upgradeType: plan.upgradeType });
     return `Upgrade committed: ${moduleId}@${targetVersion}`;
   }

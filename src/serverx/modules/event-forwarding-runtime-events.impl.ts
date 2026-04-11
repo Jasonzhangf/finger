@@ -173,8 +173,8 @@ export function attachDispatchLifecycleForwarding(options: AttachDispatchForward
 
   eventBus.subscribeMultiple(
     [
-      'agent_runtime_dispatch',  // deprecated: use agent_dispatch_* instead
       'agent_dispatch_queued',
+      'agent_dispatch_started',
       'agent_dispatch_complete',
       'agent_dispatch_failed',
       'agent_dispatch_partial',

@@ -18,6 +18,7 @@ import {
   normalizeBlockedByForTaskState,
   parseDelegatedProjectTaskRegistry,
   parseProjectTaskState,
+  resolveBeadsStorePath,
 } from '../../../common/project-task-state.js';
 import { resolveAgentDisplayName } from '../../../server/modules/agent-name-resolver.js';
 import { applyProjectStatusGatewayPatch } from '../../../server/modules/project-status-gateway.js';
@@ -1137,6 +1138,9 @@ function persistProjectTaskState(
     blockedBy?: string[];
     sourceAgentId?: string;
     targetAgentId?: string;
+    epicId?: string;
+    bdStorePath?: string;
+    periodicKey?: string;
   },
 ): void {
   const applyResult = applyProjectStatusGatewayPatch({

@@ -879,7 +879,7 @@ export function handleUserDecisionReceivedEvent(progress: SessionProgress, event
 }
 
 /**
- * 处理 agent_runtime_dispatch 事件
+ * 处理 Protocol Dispatch 事件（agent_dispatch_queued|started|complete|failed|partial）
  */
 export function handleAgentRuntimeDispatch(progress: SessionProgress, event: any): void {
   const target = event.payload?.targetAgentId;

@@ -1529,7 +1529,7 @@ describe('Event Forwarding - Dispatch Child Ledger Pointer', () => {
     } as unknown as UnifiedEventBus;
 
     attachEventForwarding(createDeps({ sessionManager: trackableSessionManager, eventBus: eventBus2 }));
-    const handler2 = captured2.find(e => e.eventName === 'agent_runtime_dispatch')!.handler;
+    const handler2 = captured2.find(e => e.eventName === 'agent_dispatch_queued')!.handler;
 
     handler2({
       type: 'agent_dispatch_queued',

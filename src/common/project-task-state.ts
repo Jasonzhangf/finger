@@ -1,3 +1,8 @@
+import { existsSync } from 'fs';
+import { spawnSync } from 'child_process';
+import { homedir } from 'os';
+import { dirname, join } from 'path';
+
 export const SYSTEM_AGENT_ID = 'finger-system-agent';
 export const PROJECT_AGENT_ID = 'finger-project-agent';
 const BLOCKED_BY_NONE = 'none';
@@ -529,4 +534,76 @@ export function buildProjectAgentTaskQueue(
     currentTaskId,
     lastTaskClosedAt,
   };
+}
+
+/**
+ * 获取 agent 的 bd 存储路径
+ */
+export function resolveBeadsStorePath(
+  agentId: string,
+  projectPath?: string,
+): string {
+  if (agentId === SYSTEM_AGENT_ID) {
+    const fingerHome = process.env.FINGER_HOME ?? join(homedir(), '.finger');
+    return join(fingerHome, 'beads', 'issues.jsonl');
+  }
+  // project agent: use project's .beads/issues.jsonl
+  if (projectPath) {
+    return join(projectPath, '.beads', 'issues.jsonl');
+  }
+  // fallback
+  return '.beads/issues.jsonl';
+}
+
+/**
+ * 验证 bd issue 是否存在且有效
+ */
+export function validateBdIssue(
+  taskId: string,
+  bdStorePath: string,
+): { valid: boolean; status?: string; error?: string } {
+  try {
+    if (!existsSync(bdStorePath)) {
+      return { valid: false, error: `bd store not found: ${bdStorePath}` };
+    }
+    
+    const beadsDir = dirname(bdStorePath);
+    const result = spawnSync('bd', ['--no-db', 'show', taskId, '--json'], {
+      cwd: beadsDir,
+      encoding: 'utf8',
+      timeout: 5000,
+    });
+    
+    if (result.error) {
+      return { valid: false, error: result.error.message };
+    }
+    
+    if (result.status !== 0) {
+      if (result.stderr?.includes('not found') || result.stderr?.includes('No issue')) {
+        return { valid: false, error: `bd issue ${taskId} not found` };
+      }
+      return { valid: false, error: `bd show failed: ${result.stderr}` };
+    }
+    
+    try {
+      const issue = JSON.parse(result.stdout);
+      return { valid: true, status: issue.status };
+    } catch {
+      return { valid: true, status: 'unknown' };
+    }
+  } catch (err) {
+    return {
+      valid: false,
+      error: err instanceof Error ? err.message : String(err),
+    };
+  }
+}
+
+/**
+ * 检查 bd issue 是否处于活跃状态（未完成）
+ */
+export function isBdIssueActive(status?: string): boolean {
+  if (!status) return false;
+  const activeStatuses = ['open', 'in_progress', 'blocked', 'started', 'pending'];
+  return activeStatuses.includes(status.toLowerCase());
 }

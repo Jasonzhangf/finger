@@ -59,8 +59,8 @@ import { resolveAgentDisplayIdentity } from '../../server/modules/agent-name-res
  */
 const DEFAULT_SUBSCRIBED_EVENTS = [
   'agent_runtime_status',
-  'agent_runtime_dispatch',  // deprecated: use agent_dispatch_* instead
   'agent_dispatch_queued',
+  'agent_dispatch_started',
   'agent_dispatch_complete',
   'agent_dispatch_failed',
   'agent_dispatch_partial',
@@ -403,9 +403,9 @@ export class AgentStatusSubscriber {
    */
   private async handleEvent(event: RuntimeEvent): Promise<void> {
     const ctx = this.getHandlerContext();
-    if (event.type === 'agent_runtime_dispatch' ||
-        event.type === 'agent_dispatch_queued' ||
-        event.type === 'agent_dispatch_complete' ||
+   if (event.type === 'agent_dispatch_queued' ||
+       event.type === 'agent_dispatch_started' ||
+       event.type === 'agent_dispatch_complete' ||
         event.type === 'agent_dispatch_failed' ||
         event.type === 'agent_dispatch_partial') {
       await handleDispatchEvent(event, ctx);

@@ -242,6 +242,9 @@ export interface ProjectStatusGatewayPatch {
   approvedAt?: string;
   rejectedAt?: string;
   feedback?: string;
+  epicId?: string;
+  bdStorePath?: string;
+  periodicKey?: string;
   requestId?: string;
 }
 

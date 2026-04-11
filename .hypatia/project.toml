@@ -1,0 +1,5 @@
+name = "finger"
+skip_patterns = []
+extensions = []
+max_file_size = 1048576
+chunk_size = 512

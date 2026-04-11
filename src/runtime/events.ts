@@ -433,32 +433,6 @@ export interface AgentRuntimeCatalogEvent extends BaseEvent {
   };
 }
 
-export interface AgentRuntimeDispatchEvent extends BaseEvent {
-  type: 'agent_runtime_dispatch';
-  agentId?: string;
-  payload: {
-    dispatchId: string;
-    sourceAgentId: string;
-    targetAgentId: string;
-    status: 'queued' | 'processing' | 'completed' | 'failed' | 'timeout';
-    blocking: boolean;
-    sessionId?: string;
-    workflowId?: string;
-    queuePosition?: number;
-    assignment?: {
-      epicId?: string;
-      taskId?: string;
-      bdTaskId?: string;
-      assignerAgentId?: string;
-      assigneeAgentId?: string;
-      phase?: 'assigned' | 'queued' | 'started' | 'reviewing' | 'retry' | 'passed' | 'failed' | 'closed';
-      attempt?: number;
-    };
-    result?: unknown;
-    error?: string;
-  };
-}
-
 /** Protocol Dispatch Event (Phase 3+) */
 export interface ProtocolDispatchEvent extends BaseEvent {
   type: 'agent_dispatch_queued' | 'agent_dispatch_started' | 'agent_dispatch_complete' | 'agent_dispatch_failed' | 'agent_dispatch_partial';
@@ -514,7 +488,6 @@ export interface AgentRuntimeStatusEvent extends BaseEvent {
 
 export type AgentRuntimeEvent =
   | AgentRuntimeCatalogEvent
-  | AgentRuntimeDispatchEvent
   | AgentRuntimeControlEvent
   | AgentRuntimeStatusEvent;
 
@@ -616,7 +589,6 @@ export const INPUT_LOCK_EVENT_TYPES = [
 /** Agent Runtime 事件类型集合 */
 export const AGENT_RUNTIME_EVENT_TYPES = [
   'agent_runtime_catalog',
-  'agent_runtime_dispatch',
   'agent_runtime_control',
   'agent_runtime_status',
 ] as const;

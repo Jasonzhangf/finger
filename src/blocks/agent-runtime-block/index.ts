@@ -662,7 +662,7 @@ export class AgentRuntimeBlock extends BaseBlock {
       definitions: { type: 'number', readonly: true, description: 'logical agent definition count' },
       deployments: { type: 'number', readonly: true, description: 'active deployment count' },
     },
-    events: ['agent_runtime_catalog', 'agent_runtime_dispatch', 'agent_runtime_control', 'agent_runtime_status'],
+   events: ['agent_runtime_catalog', 'agent_dispatch_queued', 'agent_dispatch_started', 'agent_dispatch_complete', 'agent_dispatch_failed', 'agent_dispatch_partial', 'agent_runtime_control', 'agent_runtime_status'],
   };
 
   private readonly deployments = new Map<string, AgentDeploymentRecord>();

@@ -201,6 +201,7 @@ export function runAllHealthChecks(): HealthCheckResult[] {
     checkDiskSpace(),
     checkMemoryUsage(),
     checkCPUUsage(),
+    checkBdCliAvailable(),
   ];
 }
 
@@ -221,4 +222,46 @@ export function getSystemResourceStatus(): SystemResourceStatus {
     cpu: { usagePercent: cpuUsage },
     uptime: os.uptime(),
   };
+}
+
+/**
+ * 检查 bd CLI 工具是否可用
+ */
+export function checkBdCliAvailable(): HealthCheckResult {
+  try {
+    const { execSync } = require('child_process');
+    const result = execSync('which bd', { encoding: 'utf8', timeout: 5000 }).trim();
+    const bdPath = result || '';
+    
+    if (!bdPath) {
+      return {
+        name: 'bd_cli',
+        status: 'critical',
+        message: 'bd CLI not found in PATH. Task management unavailable.',
+        details: { bdPath: '' },
+        timestamp: new Date().toISOString(),
+      };
+    }
+    
+    const versionResult = execSync('bd --version', { encoding: 'utf8', timeout: 5000 }).trim();
+    const versionMatch = versionResult.match(/bd version ([\d.]+)/);
+    const version = versionMatch ? versionMatch[1] : 'unknown';
+    
+    return {
+      name: 'bd_cli',
+      status: 'healthy',
+      message: `bd CLI available: ${bdPath} (v${version})`,
+      details: { bdPath, version },
+      timestamp: new Date().toISOString(),
+    };
+  } catch (err) {
+    const error = err instanceof Error ? err : new Error(String(err));
+    log.error('Failed to check bd CLI', error);
+    return {
+      name: 'bd_cli',
+      status: 'critical',
+      message: `bd CLI check failed: ${error.message}`,
+      timestamp: new Date().toISOString(),
+    };
+  }
 }

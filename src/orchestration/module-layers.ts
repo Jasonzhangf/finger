@@ -60,7 +60,7 @@ export interface UpgradePlan {
   dependencyOrder: string[];
 }
 
-class ModuleLayersManager {
+export class ModuleLayersManager {
   private config: ModuleLayersConfig | null = null;
   private loaded = false;
   private moduleTierCache = new Map<string, ModuleTier>();

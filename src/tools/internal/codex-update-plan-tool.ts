@@ -156,6 +156,7 @@ export const updatePlanTool: InternalTool<unknown, UpdatePlanOutput> = {
   name: 'update_plan',
   executionModel: 'state',
   description: [
+      '⚠️ 非持久化内部进度视图，不作为恢复依据。Session recovery 应基于 bd epic。',
     'Unified project plan manager (BD-aligned).',
     'Supports actions:',
     'create/update/list/search/claim/reassign/set_status/set_dependency/append_evidence/close/archive.',
