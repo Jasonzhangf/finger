@@ -1030,7 +1030,7 @@ for (const round of rounds.slice(-3)) {
             lifecycleDetail: waitLayerInfo.lifecycleDetail,
             lifecycleAgeMs: waitLayerInfo.lifecycleAgeMs,
           });
-          const roundLines: string[] = [];
+          const roundLines = this.buildRecentRoundsSection(p);
           const report: ProgressReport = {
             type: 'progress_report',
             timestamp: new Date().toISOString(),
@@ -1171,7 +1171,7 @@ for (const round of rounds.slice(-3)) {
         now,
       ),
     );
-    const roundLines: string[] = [];
+    const roundLines = this.buildRecentRoundsSection(p);
     return [summary, ...stateLines, ...roundLines].join('\n');
   }
 
