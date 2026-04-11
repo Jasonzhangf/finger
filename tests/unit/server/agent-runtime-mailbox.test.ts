@@ -90,7 +90,7 @@ describe('agent runtime mailbox tools', () => {
     expect(readResult.handshake.movedToProcessing).toBe(true);
     expect(readResult.message.status).toBe('processing');
     expect(eventBusEmit).toHaveBeenCalledTimes(1);
-    expect(eventBusEmit.mock.calls[0][0].payload.status).toBe('processing');
+    expect(eventBusEmit.mock.calls[0][0].payload.status).toBe('started');
 
     const ackResult = await getTool(tools, 'mailbox.ack').handler(
       { id: appended.id, summary: 'mailbox done' },
@@ -108,7 +108,7 @@ describe('agent runtime mailbox tools', () => {
     expect(ackResult.message.ackAt).toBeDefined();
     expect(ackResult.message.result).toEqual({ summary: 'mailbox done' });
     expect(eventBusEmit).toHaveBeenCalledTimes(2);
-    expect(eventBusEmit.mock.calls[1][0].payload.status).toBe('completed');
+    expect(eventBusEmit.mock.calls[1][0].payload.status).toBe('success');
     expect(eventBusEmit.mock.calls[1][0].payload.result.summary).toBe('mailbox done');
     expect(heartbeatMailbox.get(targetAgentId, appended.id)).toBeUndefined();
   });

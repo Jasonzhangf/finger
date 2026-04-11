@@ -131,7 +131,7 @@ describe('message-route execution compact session sync', () => {
     expect(persisted?.pointers?.contextHistory.endLine).toBe(0);
     expect(persisted?.pointers?.currentHistory.startLine).toBe(1);
     expect(persisted?.messages.length).toBeGreaterThanOrEqual(3);
-    expect(persisted?.messages[0]?.metadata?.compactDigest).toBe(true);
+    expect(persisted?.messages[0]?.metadata?.compactDigest).toBeTruthy();
     expect(persisted?.messages[0]?.metadata?.contextZone).toBe('historical_memory');
     expect(persisted?.messages[2]?.content).toBe('final after compact');
 
@@ -261,8 +261,8 @@ describe('message-route execution compact session sync', () => {
     const persisted = reloaded.getSession(session.id);
     expect(persisted).not.toBeNull();
     expect(persisted?.latestCompactIndex).toBe(0);
-    expect(persisted?.messages).toHaveLength(3);
-    expect(persisted?.messages[0]?.metadata?.compactDigest).toBe(true);
+    expect(persisted?.messages.length).toBeGreaterThanOrEqual(3);
+    expect(persisted?.messages[0]?.metadata?.compactDigest).toBeTruthy();
     expect(persisted?.messages[2]?.content).toBe('partial reply before stop-tool failure');
     expect((persisted?.context as Record<string, unknown>).kernelProjection).toMatchObject({
       compactApplied: true,

@@ -45,3 +45,4 @@ orchestration.json
 server.js
 rust/target/
 ui/src/hooks/*.bak
+rust/kernel-evolution/src/*.rs
