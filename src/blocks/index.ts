@@ -15,3 +15,4 @@ export { ThreadBindingBlock } from './thread-binding-block/index.js';
 export { MailboxBlock } from './mailbox-block/index.js';
 export { initCommandHub, getCommandHub, parseCommands } from './command-hub/index.js';
 export type { Command, CommandContext, CommandResult, CommandHandler } from './command-hub/index.js';
+export { OperationBlock, createOperationBlock } from './operation-block/index.js';

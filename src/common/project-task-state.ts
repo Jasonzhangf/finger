@@ -69,6 +69,9 @@ export interface DelegatedProjectTaskRecord {
   reviewerName?: string;
   reassignReason?: string;
   taskId?: string;
+  epicId?: string;
+  bdStorePath?: string;
+  periodicKey?: string;
   taskName?: string;
   dispatchId?: string;
   boundSessionId?: string;
@@ -341,6 +344,9 @@ export function upsertDelegatedProjectTaskRegistry(
   current: DelegatedProjectTaskRecord[],
   patch: {
     sourceAgentId?: string;
+  epicId?: string;
+  bdStorePath?: string;
+  periodicKey?: string;
     targetAgentId?: string;
     assignerName?: string;
     taskId?: string;
