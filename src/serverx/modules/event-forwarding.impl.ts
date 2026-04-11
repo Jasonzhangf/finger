@@ -20,6 +20,12 @@ import {
   isStopReasoningStopTool,
   resolveStopReasoningPolicy,
 } from '../../common/stop-reasoning-policy.js';
+import {
+  parseProjectTaskState,
+  isProjectTaskStateActive,
+  resolveBeadsStorePath,
+  validateBdIssue,
+} from '../../common/project-task-state.js';
 import { resolveControlBlockPolicy } from '../../common/control-block.js';
 import { attachBroadcastHandlers } from '../../server/modules/event-forwarding-handlers.js';
 import { buildDispatchResultEnvelope } from '../../server/modules/mailbox-envelope.js';
@@ -762,10 +768,13 @@ export function attachEventForwarding(deps: EventForwardingDeps): {
     controlBlockMaxAutoContinueTurns: number;
     controlGateDisabled: boolean;
     controlGateExhausted: boolean;
+    taskModeGateHold: boolean;
+    taskMode: 'default' | 'light' | 'forever';
     holding: boolean;
     holdReason?: string;
   } => {
     const policy = resolveStopReasoningPolicy(event.payload);
+    const taskMode = policy.taskMode;
     const requiresStopTool = policy.requireToolForStop;
     const stopToolSeen = stopToolSeenBySession.get(event.sessionId) === true;
     const stopToolMaxAutoContinueTurns = Math.max(
@@ -810,12 +819,36 @@ export function attachEventForwarding(deps: EventForwardingDeps): {
     const controlGateHold = controlGateHoldCandidate
       && !controlGateDisabled
       && !controlGateExhausted;
-    const holding = stopToolHolding || controlGateHold;
+    
+    // Task Mode Gate: check if there's an active task that should prevent stop
+    let taskModeGateHold = false;
+    if (event.phase === 'turn_complete' && finishReason === 'stop' && !pendingInputAccepted) {
+      const session = sessionManager.getSession(event.sessionId);
+      if (session && isObjectRecord(session.context)) {
+        const projectTaskState = parseProjectTaskState(session.context.projectTaskState);
+        if (projectTaskState && isProjectTaskStateActive(projectTaskState)) {
+          // Task is active and not blocked
+          if (taskMode === 'light') {
+            // Light mode: task must be completed before stopping
+            if (projectTaskState.status !== 'blocked') {
+              taskModeGateHold = true;
+            }
+          } else if (taskMode === 'forever') {
+            // Forever mode: always continue if there's any active task
+            taskModeGateHold = true;
+          }
+        }
+      }
+    }
+    
+    const holding = stopToolHolding || controlGateHold || taskModeGateHold;
     const holdReason = stopToolHolding
       ? 'finish_reason=stop but reasoning.stop was not called'
       : controlGateHold
         ? 'finish_reason=stop but control block is missing/invalid or evidence is not ready'
-        : undefined;
+        : taskModeGateHold
+          ? `finish_reason=stop but taskMode=${taskMode} and active task exists (not blocked)`
+          : undefined;
     return {
       requiresStopTool,
       stopToolSeen,
@@ -830,6 +863,8 @@ export function attachEventForwarding(deps: EventForwardingDeps): {
       controlBlockMaxAutoContinueTurns,
       controlGateDisabled,
       controlGateExhausted,
+      taskModeGateHold,
+      taskMode,
       holding,
       holdReason,
     };
@@ -1045,6 +1080,8 @@ export function attachEventForwarding(deps: EventForwardingDeps): {
             nonBlocking: true,
             holdReason: stopGateState.holdReason ?? null,
             controlGateHold: stopGateState.controlGateHold,
+            taskModeGateHold: stopGateState.taskModeGateHold,
+            taskMode: stopGateState.taskMode,
             requiresStopTool: stopGateState.requiresStopTool,
             stopToolSeen: stopGateState.stopToolSeen,
             stopToolGateApplied: stopGateState.stopToolGateApplied,

@@ -9,6 +9,8 @@ export interface StopReasoningPolicyFile {
   promptInjectionEnabled?: boolean;
   stopToolNames?: string[];
   maxAutoContinueTurns?: number;
+  /** Task Mode: 'default' | 'light' | 'forever' */
+  taskMode?: 'default' | 'light' | 'forever';
 }
 
 export interface StopReasoningPolicy {
@@ -16,6 +18,7 @@ export interface StopReasoningPolicy {
   promptInjectionEnabled: boolean;
   stopToolNames: string[];
   maxAutoContinueTurns: number;
+  taskMode: 'default' | 'light' | 'forever';
   source: 'default' | 'env' | 'file' | 'metadata';
 }
 
@@ -27,6 +30,7 @@ const DEFAULT_POLICY: StopReasoningPolicy = {
   promptInjectionEnabled: true,
   stopToolNames: [DEFAULT_STOP_REASONING_TOOL_NAME],
   maxAutoContinueTurns: 10,
+  taskMode: 'default',
   source: 'default',
 };
 const log = logger.module('StopReasoningPolicy');
@@ -65,6 +69,14 @@ function normalizeStopToolNames(value: unknown): string[] {
   return Array.from(new Set(names));
 }
 
+function normalizeTaskMode(value: unknown, fallback: StopReasoningPolicy['taskMode']): StopReasoningPolicy['taskMode'] {
+  if (typeof value === 'string') {
+    const normalized = value.trim().toLowerCase();
+    if (normalized === 'default' || normalized === 'light' || normalized === 'forever') return normalized;
+  }
+  return fallback;
+}
+
 function buildPolicyFromUnknown(
   value: unknown,
   fallback: StopReasoningPolicy,
@@ -75,11 +87,13 @@ function buildPolicyFromUnknown(
   const promptInjectionEnabled = normalizeBoolean(record.promptInjectionEnabled) ?? fallback.promptInjectionEnabled;
   const stopToolNames = normalizeStopToolNames(record.stopToolNames);
   const maxAutoContinueTurns = normalizePositiveInt(record.maxAutoContinueTurns, fallback.maxAutoContinueTurns);
+  const taskMode = normalizeTaskMode(record.taskMode, fallback.taskMode);
   return {
     requireToolForStop: true,
     promptInjectionEnabled,
     stopToolNames: stopToolNames.length > 0 ? stopToolNames : fallback.stopToolNames,
     maxAutoContinueTurns,
+    taskMode,
     source,
   };
 }
@@ -88,11 +102,13 @@ function resolveFromEnv(base: StopReasoningPolicy): StopReasoningPolicy {
   const promptInjectionEnabled = normalizeBoolean(process.env.FINGER_STOP_TOOL_PROMPT_ENABLED)
     ?? base.promptInjectionEnabled;
   const maxAutoContinueTurns = normalizePositiveInt(process.env.FINGER_STOP_TOOL_MAX_AUTO_CONTINUE, base.maxAutoContinueTurns);
+  const taskMode = normalizeTaskMode(process.env.FINGER_TASK_MODE, base.taskMode);
   return {
     ...base,
     requireToolForStop: true,
     promptInjectionEnabled,
     maxAutoContinueTurns,
+    taskMode,
     source: 'env',
   };
 }
@@ -141,11 +157,13 @@ export function resolveStopReasoningPolicy(metadata?: Record<string, unknown>): 
     cachedPolicy.maxAutoContinueTurns,
   );
 
+  const taskMode = normalizeTaskMode(metadata.taskMode, cachedPolicy.taskMode);
   return {
     requireToolForStop: true,
     promptInjectionEnabled,
     stopToolNames: stopToolNames.length > 0 ? stopToolNames : cachedPolicy.stopToolNames,
     maxAutoContinueTurns,
+    taskMode,
     source: 'metadata',
   };
 }
