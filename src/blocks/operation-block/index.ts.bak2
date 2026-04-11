@@ -150,23 +150,6 @@ export class OperationBlock extends BaseBlock {
   /**
    * 确认 Operation（目标 Agent 已收到）
    */
-
-  /**
-   * 异步执行 handler
-   */
-  private async executeHandlerAsync(opId: string, op: Operation, handler: OperationHandler): Promise<void> {
-    try {
-      op.status = 'sent';
-      const result = await handler(op);
-      if (result.success) {
-        await this.completeOperation(opId, result.result);
-      } else {
-        await this.failOperation(opId, result.error ?? 'handler execution failed');
-      }
-    } catch (err) {
-      await this.failOperation(opId, String((err as Error)?.message ?? err));
-    }
-  }
   async acknowledgeOperation(opId: string): Promise<{ acknowledged: boolean }> {
     const op = this.findOperation(opId);
     if (!op) {
@@ -356,7 +339,7 @@ export class OperationBlock extends BaseBlock {
             this.failOperation(opId, result.error ?? 'recovery handler failed');
           }
         }).catch(err => {
-          this.failOperation(opId, String((err as Error)?.message ?? err));
+          this.failOperation(opId, String(err?.message ?? err));
         });
       }
     }

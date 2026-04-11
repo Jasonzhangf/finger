@@ -337,3 +337,147 @@ System Agent 的 session context 需要注入以下信息：
 6. `Op.agent.preempt` -> Agent 立即停止当前，切换新任务
 7. Chat 消息不阻塞任务执行
 8. 周期任务：同 key 未完成时替换，完成后自动清理
+
+---
+
+## 10. 配置唯一真源设计
+
+### 10.1 问题现状
+
+当前存在多个配置文件互相覆盖、打架：
+
+| 配置文件 | 当前职责 | 问题 |
+|----------|----------|------|
+| `agents.json` | Agent 定义（instanceCount, namePool, autoStart） | 被 orchestration.json 覆盖 |
+| `orchestration.json` | 系统拓扑 + Agent 配置（instanceCount, role） | 重复定义 Agent 属性，覆盖 agents.json |
+| `channels.json` | Gateway 通道配置 | 独立，无冲突 |
+| `user-settings.json` | AI Provider + 用户偏好 | 独立，无冲突 |
+
+**根因**：`orchestration.json` 在启动时读取 `instanceCount`，覆盖 `agents.json` 的同名属性。
+
+### 10.2 唯一真源原则
+
+**核心原则**：每个配置属性只在一个文件中定义，其他文件只能引用，不得重复定义。
+
+### 10.3 配置职责分层
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│  user-settings.json（用户级配置，不可被系统覆盖）              │
+│  - AI Provider（kernel.providers）                           │
+│  - 用户偏好（称呼、语言、timezone）                           │
+│  - 读取路径：src/core/user-settings.ts                       │
+└─────────────────────────────────────────────────────────────┘
+                              ↓ 只读，不写
+┌─────────────────────────────────────────────────────────────┐
+│  system.json（系统级单一配置文件，合并后）                     │
+│  ┌─────────────────────────────────────────────────────┐    │
+│  │  agents 定义（唯一真源）                              │    │
+│  │  - id, name, role, instanceCount, namePool           │    │
+│  │  - autoStart, launchMode                             │    │
+│  │  - capabilities, defaultQuota                        │    │
+│  └─────────────────────────────────────────────────────┘    │
+│  ┌─────────────────────────────────────────────────────┐    │
+│  │  orchestration 策略                                  │    │
+│  │  - profiles（仅引用 agent.id，不重复定义属性）         │    │
+│  │  - reviewPolicy                                      │    │
+│  │  - runtime.systemAgent.maxInstances                  │    │
+│  │  - runtime.projectWorkers 配置                       │    │
+│  └─────────────────────────────────────────────────────┘    │
+│  ┌─────────────────────────────────────────────────────┐    │
+│  │  channels 定义                                       │    │
+│  │  - gateway 通道配置                                   │    │
+│  └─────────────────────────────────────────────────────┘    │
+└─────────────────────────────────────────────────────────────┘
+```
+
+### 10.4 合并方案：单一 `system.json`
+
+**目标**：将 `agents.json` + `orchestration.json` + `channels.json` 合并为一个 `system.json`，消除歧义。
+
+**合并后的结构**：
+
+```json
+{
+  "version": 1,
+  "agents": [
+    {
+      "id": "finger-system-agent",
+      "name": "Mirror",
+      "role": "system",
+      "instanceCount": 1,
+      "launchMode": "system",
+      "autoStart": true,
+      "capabilities": ["dispatch", "review", "bd_manage"],
+      "defaultQuota": 10
+    },
+    {
+      "id": "finger-project-agent",
+      "name": "Project Agent Pool",
+      "role": "project",
+      "instanceCount": 5,
+      "launchMode": "manual",
+      "autoStart": true,
+      "namePool": ["Alex", "James", "Marcus", ...],
+      "capabilities": ["exec", "code", "test"],
+      "defaultQuota": 5
+    }
+  ],
+  "profiles": [
+    {
+      "id": "default",
+      "name": "Default",
+      "agentIds": ["finger-system-agent", "finger-project-agent"],
+      "reviewPolicy": { "enabled": false }
+    }
+  ],
+  "activeProfileId": "default",
+  "runtime": {
+    "systemAgent": { "maxInstances": 1 },
+    "projectWorkers": {
+      "maxWorkers": 6,
+      "autoNameOnFirstAssign": true,
+      "nameCandidates": ["Alex", "Maya", ...]
+    }
+  },
+  "channels": [
+    { "id": "qqbot", "type": "websocket", "url": "ws://...", "enabled": true }
+  ]
+}
+```
+
+### 10.5 读取路径唯一真源
+
+| 配置类型 | 唯一真源路径 | 读取函数 | 写入规则 |
+|----------|--------------|----------|----------|
+| AI Provider | `user-settings.json` | `getUserSettings()` | 用户手动编辑 |
+| Agent 定义 | `system.json` → `agents` | `loadSystemConfig().agents` | 启动时加载，运行时不可改 |
+| Profile 策略 | `system.json` → `profiles` | `loadSystemConfig().profiles` | 用户可切换 activeProfileId |
+| Channels | `system.json` → `channels` | `loadSystemConfig().channels` | 启动时加载 |
+
+**禁止行为**：
+- ❌ 在多个文件中定义同一属性（如 `instanceCount`）
+- ❌ 代码中硬编码默认值覆盖配置文件（如 `instanceCount: 1`）
+- ❌ 运行时动态写入系统配置（只能读）
+
+### 10.6 迁移路径
+
+**Phase 1（立即止血）**：
+- 修改 `orchestration-config-applier.ts`，不再从 `orchestration.json` 读取 `instanceCount`
+- 改为从 `agents.json` 读取（通过 `getLoadedAgentConfigs()`）
+
+**Phase 2（合并配置）**：
+- 创建 `system.json` 合并三个文件
+- 废弃 `agents.json`, `orchestration.json`, `channels.json`
+- 所有读取路径改为 `loadSystemConfig()`
+
+**Phase 3（清理代码）**：
+- 移除所有硬编码默认值
+- 统一配置读取入口
+
+### 10.7 验收标准
+
+1. ✅ `instanceCount` 只在 `agents` 中定义，`profiles` 只引用 `agentIds`
+2. ✅ 启动后 Agent 实例数与配置一致（改 agents.json 后重启生效）
+3. ✅ 无配置覆盖警告日志
+4. ✅ 配置文件数量减少（从 3 个合并为 1 个）

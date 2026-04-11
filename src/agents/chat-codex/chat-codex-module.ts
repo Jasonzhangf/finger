@@ -1303,7 +1303,23 @@ export function createChatCodexModule(
         } else if (event.msg.type === 'tool_error') {
           if (event.msg.tool_name) payload.toolName = event.msg.tool_name;
           if (event.msg.call_id) payload.toolId = event.msg.call_id;
-          if (event.msg.error) payload.error = event.msg.error;
+          if (event.msg.error) {
+            const rawError = event.msg.error;
+            // 检测工具不存在错误，替换成引导性消息避免 LLM 重试错误工具
+            if (typeof rawError === 'string' && /Tool\s+[a-zA-Z0-9_.-]+\s+does(?:\s+not)?\s+exist/i.test(rawError)) {
+              // 提取尝试调用的工具名
+              const toolMatch = rawError.match(/Tool\s+([a-zA-Z0-9_.-]+)/);
+              const attemptedTool = toolMatch ? toolMatch[1] : 'unknown';
+              // 替换为引导性消息：明确告知可用工具列表格式
+              payload.error = `工具 '${attemptedTool}' 不在当前可用工具列表中。请检查工具名称是否正确（使用点分隔格式如 'command.exec' 或 'mailbox.status'），或使用 'agent.capabilities' 查看当前可用工具。`;
+              chatCodexLog.warn('[chat-codex] Tool registry unavailable error detected, replacing error message', {
+                attemptedTool,
+                rawError: rawError.slice(0, 200),
+              });
+            } else {
+              payload.error = rawError;
+            }
+          }
           if (typeof event.msg.duration_ms === 'number') payload.duration = event.msg.duration_ms;
         } else if (event.msg.type === 'model_round') {
           payload.agentId = contextLedgerAgentId;

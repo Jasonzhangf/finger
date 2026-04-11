@@ -214,6 +214,19 @@ export class RuntimeFacade {
     return this.isSessionAllowedForAgent(agentId, session);
   }
 
+  /**
+   * Sanitize tool error messages to prevent LLM from hallucinating tool calls.
+   * Replaces provider error messages like "Tool xxx does not exist" with
+   * actionable guidance to avoid retry loops.
+   */
+  private sanitizeToolError(toolName: string, rawError: string): string {
+    // Detect provider-side "tool does not exist" errors
+    if (/Tool\s+[a-zA-Z0-9_.-]+\s+does(?:\s+not)?\s+exist/i.test(rawError)) {
+      return `工具 '${toolName}' 不在当前可用工具列表中。请使用 agent.capabilities 查看当前可用工具。`;
+    }
+    return rawError;
+  }
+
   private sanitizeToolSessionCandidate(
     agentId: string,
     candidate: string | null | undefined,
@@ -734,7 +747,7 @@ export class RuntimeFacade {
         agentId,
         sessionId,
         timestamp: new Date().toISOString(),
-        payload: { input, error: errorMessage, duration, ...(traceId ? { traceId } : {}) },
+        payload: { input, error: this.sanitizeToolError(resolvedToolName, errorMessage), duration, ...(traceId ? { traceId } : {}) },
       });
 
       throw error;
