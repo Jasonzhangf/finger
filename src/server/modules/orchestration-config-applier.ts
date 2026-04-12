@@ -10,10 +10,11 @@ export interface OrchestrationConfigApplierDeps {
   agentRuntimeBlock: AgentRuntimeBlock;
   sessionManager: SessionManager;
   sessionWorkspaces: SessionWorkspaceManager;
+  getLoadedAgentConfigs: () => Array<{ id: string; instanceCount?: number; launchMode?: string }>;
 }
 
 export function createOrchestrationConfigApplier(deps: OrchestrationConfigApplierDeps) {
-  const { agentRuntimeBlock, sessionManager, sessionWorkspaces } = deps;
+  const { agentRuntimeBlock, sessionManager, sessionWorkspaces, getLoadedAgentConfigs } = deps;
 
   return async function applyOrchestrationConfig(config: OrchestrationConfigV1): Promise<{
     applied: number;
@@ -64,6 +65,13 @@ export function createOrchestrationConfigApplier(deps: OrchestrationConfigApplie
         appliedAgents.push(entry.targetAgentId);
         continue;
       }
+
+      // Unique source of truth: agents.json instanceCount > orchestration.json > 1
+      const agentConfigs = getLoadedAgentConfigs();
+      const agentConfig = agentConfigs.find(c => c.id === entry.targetAgentId);
+      const instanceCount = agentConfig?.instanceCount ?? entry.instanceCount ?? 1;
+      const launchMode = agentConfig?.launchMode ?? entry.launchMode ?? (entry.role === 'system' ? 'system' : 'manual');
+
       const targetSessionId = entry.role === 'system' || entry.role === 'project'
         ? rootSession.id
         : sessionWorkspaces.ensureRuntimeChildSession(rootSession, entry.targetAgentId).id;
@@ -74,8 +82,8 @@ export function createOrchestrationConfigApplier(deps: OrchestrationConfigApplie
         ...(typeof entry.targetImplementationId === 'string'
           ? { targetImplementationId: entry.targetImplementationId }
           : {}),
-        instanceCount: entry.instanceCount ?? 1,
-        launchMode: entry.launchMode ?? (entry.role === 'system' ? 'system' : 'manual'),
+        instanceCount,
+        launchMode,
         config: {
           id: entry.targetAgentId,
           name: entry.targetAgentId,

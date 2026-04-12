@@ -39,6 +39,7 @@ export interface DailySummarySchedulerOptions {
   windowStartHour: number;
   windowEndHour: number;
   runtimeLogFile: string;
+  maxSlotPerChunk: number;
 }
 
 const DEFAULT_OPTIONS: DailySummarySchedulerOptions = {
@@ -47,6 +48,7 @@ const DEFAULT_OPTIONS: DailySummarySchedulerOptions = {
   windowStartHour: 0,
   windowEndHour: 7,
   runtimeLogFile: path.join(FINGER_PATHS.logs.dir, 'daily_summary_builtin.log'),
+  maxSlotPerChunk: 200,
 };
 
 function parseBooleanEnv(raw: string | undefined, fallback: boolean): boolean {
@@ -71,6 +73,7 @@ export function createDailySummarySchedulerOptionsFromEnv(): DailySummarySchedul
     windowStartHour: parseIntegerEnv(process.env.FINGER_DAILY_SUMMARY_WINDOW_START_HOUR, DEFAULT_OPTIONS.windowStartHour, 0, 23),
     windowEndHour: parseIntegerEnv(process.env.FINGER_DAILY_SUMMARY_WINDOW_END_HOUR, DEFAULT_OPTIONS.windowEndHour, 0, 23),
     runtimeLogFile: process.env.FINGER_DAILY_SUMMARY_LOG_FILE?.trim() || DEFAULT_OPTIONS.runtimeLogFile,
+    maxSlotPerChunk: parseIntegerEnv(process.env.FINGER_DAILY_SUMMARY_MAX_SLOT_CHUNK, DEFAULT_OPTIONS.maxSlotPerChunk, 50, 1000),
   };
 }
 
@@ -83,17 +86,9 @@ export function calculateDeltaSlots(totalSlots: number, lastSummarySlot: number)
   if (!Number.isFinite(totalSlots) || totalSlots < 0) return { lastSummarySlot: 0, deltaSlots: 0, reset: true };
   const normalizedLast = Number.isFinite(lastSummarySlot) && lastSummarySlot > 0 ? Math.floor(lastSummarySlot) : 0;
   if (totalSlots < normalizedLast) {
-    return {
-      lastSummarySlot: 0,
-      deltaSlots: totalSlots,
-      reset: true,
-    };
+    return { lastSummarySlot: 0, deltaSlots: totalSlots, reset: true };
   }
-  return {
-    lastSummarySlot: normalizedLast,
-    deltaSlots: totalSlots - normalizedLast,
-    reset: false,
-  };
+  return { lastSummarySlot: normalizedLast, deltaSlots: totalSlots - normalizedLast, reset: false };
 }
 
 function countJsonlLines(filePath: string): number {
@@ -113,30 +108,24 @@ function safeReadJson<T>(filePath: string, fallback: T): T {
     const raw = fs.readFileSync(filePath, 'utf8');
     if (!raw.trim()) return fallback;
     return JSON.parse(raw) as T;
-  } catch (error) {
-    log.warn('Failed to parse daily summary state JSON, using fallback', {
-      filePath,
-      error: error instanceof Error ? error.message : String(error),
-    });
+  } catch {
     return fallback;
   }
 }
 
-function safeWriteJson(filePath: string, value: unknown): void {
-  ensureDir(path.dirname(filePath));
-  fs.writeFileSync(filePath, `${JSON.stringify(value, null, 2)}\n`, 'utf8');
+function safeWriteJson(filePath: string, data: unknown): boolean {
+  try {
+    const dir = path.dirname(filePath);
+    ensureDir(dir);
+    fs.writeFileSync(filePath, JSON.stringify(data, null, 2), 'utf8');
+    return true;
+  } catch {
+    return false;
+  }
 }
 
-function formatDateLocal(date = new Date()): string {
-  const y = date.getFullYear();
-  const m = String(date.getMonth() + 1).padStart(2, '0');
-  const d = String(date.getDate()).padStart(2, '0');
-  return `${y}-${m}-${d}`;
-}
-
-function appendRuntimeLog(filePath: string, line: string): void {
-  ensureDir(path.dirname(filePath));
-  fs.appendFileSync(filePath, `${line}\n`, 'utf8');
+function formatDateLocal(date: Date): string {
+  return date.toISOString().slice(0, 10);
 }
 
 function createLatestLedgerResolver(agentId: string): () => string | null {
@@ -173,10 +162,10 @@ function createLatestLedgerResolver(agentId: string): () => string | null {
           latestPath = candidate;
         }
       } catch {
-        // ignore bad candidate
+        // skip
       }
     }
-    cachedPath = latestPath;
+    if (latestPath) cachedPath = latestPath;
     return latestPath || null;
   };
 }
@@ -189,7 +178,7 @@ function createTaskSpecs(): DailySummaryTaskSpec[] {
       targetAgentId: 'finger-system-agent',
       source: 'daily-analysis-builtin',
       title: '每日系统分析',
-      outputFileBuilder: (date) => path.join(FINGER_PATHS.home, 'system', 'daily', `${date}.md`),
+      outputFileBuilder: (date) => path.join(FINGER_PATHS.home, 'system', 'daily', `\${date}.md`),
       stateFile: path.join(runtimeStateDir, 'system-state.json'),
       resolveLedgerPath: createLatestLedgerResolver('finger-system-agent'),
     },
@@ -198,11 +187,42 @@ function createTaskSpecs(): DailySummaryTaskSpec[] {
       targetAgentId: 'finger-project-agent',
       source: 'daily-project-analysis-builtin',
       title: '每日项目分析',
-      outputFileBuilder: (date) => path.join(FINGER_PATHS.home, 'projects', '_meta', 'daily', `${date}-project.md`),
+      outputFileBuilder: (date) => path.join(FINGER_PATHS.home, 'projects', '_meta', 'daily', `\${date}-project.md`),
       stateFile: path.join(runtimeStateDir, 'project-state.json'),
       resolveLedgerPath: createLatestLedgerResolver('finger-project-agent'),
     },
   ];
+}
+
+function buildChunkedTaskMessage(
+  spec: DailySummaryTaskSpec,
+  currentDate: string,
+  slotStart: number,
+  slotEnd: number,
+  chunkIndex: number,
+  totalChunks: number,
+  outputPath: string,
+): string {
+  const lines = [
+    `\${spec.title}（分段读取，第 \${chunkIndex}/\${totalChunks} 块）`,
+    `date=\${currentDate}`,
+    `ledger=\${spec.resolveLedgerPath()}`,
+    `slot_start=\${slotStart}`,
+    `slot_end=\${slotEnd}`,
+    `chunk=\${chunkIndex}/\${totalChunks}`,
+    `output_file=\${outputPath}`,
+    '',
+    '请读取上述 ledger 指定区间并完成总结：',
+    '1) 先用 context_ledger.digest 读摘要（action=query, slot_start/slot_end=xxx）',
+    '2) 摘要不足时再用 context_ledger.memory 读原文（action=query, slot_start/slot_end=xxx, detail=true）',
+    '3) 过滤噪声（heartbeat/no-op/repeated wake lines）',
+    '4) 提炼真实任务、交付、失败根因、下一步动作',
+    '5) 结果追加写入 output_file（不要覆盖历史）',
+  ];
+  if (totalChunks > 1) {
+    lines.push(`6) 这是第 \${chunkIndex}/\${totalChunks} 块，完成后报告 "Chunk \${chunkIndex}/\${totalChunks} done"`);
+  }
+  return lines.join('\n');
 }
 
 export class DailySummaryScheduler {
@@ -229,12 +249,10 @@ export class DailySummaryScheduler {
     }
     if (this.timer) return;
 
-    // Check if current time is within the execution window
     const now = new Date();
     const hour = now.getHours();
     const inWindow = isHourInWindow(hour, this.options.windowStartHour, this.options.windowEndHour);
 
-    // Only log and run immediate tick when in window
     if (inWindow) {
       this.logRuntime('Daily summary scheduler started (in window)', {
         tickMs: this.options.tickMs,
@@ -245,7 +263,6 @@ export class DailySummaryScheduler {
       });
       void this.tick();
     } else {
-      // Outside window: silent startup, wait for next window entry
       log.debug('Daily summary scheduler ready (outside window)', {
         currentHour: hour,
         windowStartHour: this.options.windowStartHour,
@@ -329,60 +346,82 @@ export class DailySummaryScheduler {
       return;
     }
 
-    const slotStart = baseline.lastSummarySlot + 1;
-    const slotEnd = totalSlots;
     const outputPath = spec.outputFileBuilder(currentDate);
     ensureDir(path.dirname(outputPath));
 
-    const taskMessage = [
-      `${spec.title}（内置调度）`,
-      `date=${currentDate}`,
-      `ledger=${ledgerPath}`,
-      `slot_start=${slotStart}`,
-      `slot_end=${slotEnd}`,
-      `delta_slots=${baseline.deltaSlots}`,
-      `output_file=${outputPath}`,
-      '',
-      '请读取上述 ledger 增量并完成总结：',
-      '1) 过滤噪声（heartbeat/no-op/repeated wake lines）',
-      '2) 提炼真实任务、交付、失败根因、下一步动作',
-      '3) 追加写入 output_file（不要覆盖历史）',
-      '4) 无证据不得宣称完成；证据不足要明确写出',
-    ].join('\n');
+    const maxPerChunk = this.options.maxSlotPerChunk;
+    const totalChunks = Math.ceil(baseline.deltaSlots / maxPerChunk);
+    const dispatchedChunks: number[] = [];
 
-    try {
-      const dispatchResult = await this.deps.dispatchTaskToAgent({
-        sourceAgentId: 'system-daily-summary',
-        targetAgentId: spec.targetAgentId,
-        task: taskMessage,
-        blocking: false,
-        queueOnBusy: true,
-        maxQueueWaitMs: 0,
-        metadata: {
-          source: spec.source,
-          sourceType: 'cron',
-          category: 'task',
-          dailySummary: true,
-          slotStart,
-          slotEnd,
-          deltaSlots: baseline.deltaSlots,
-          ledgerPath,
-          outputFile: outputPath,
-        },
-      });
+    for (let chunkIdx = 0; chunkIdx < totalChunks; chunkIdx++) {
+      const chunkStart = prior.lastSummarySlot + 1 + chunkIdx * maxPerChunk;
+      const chunkEnd = Math.min(chunkStart + maxPerChunk - 1, totalSlots);
 
-      const accepted = ['queued', 'completed', 'accepted', 'running', 'processing'].includes(dispatchResult.status);
-      if (!accepted) {
-        this.logRuntime('Daily summary dispatch returned non-accepted status', {
-          task: spec.key,
-          target: spec.targetAgentId,
-          status: dispatchResult.status,
-          error: dispatchResult.error,
-          dispatchId: dispatchResult.dispatchId,
+      const taskMessage = buildChunkedTaskMessage(
+        spec,
+        currentDate,
+        chunkStart,
+        chunkEnd,
+        chunkIdx + 1,
+        totalChunks,
+        outputPath,
+      );
+
+      try {
+        const dispatchResult = await this.deps.dispatchTaskToAgent({
+          sourceAgentId: 'system-daily-summary',
+          targetAgentId: spec.targetAgentId,
+          task: taskMessage,
+          blocking: false,
+          queueOnBusy: true,
+          maxQueueWaitMs: 0,
+          metadata: {
+            source: spec.source,
+            sourceType: 'cron',
+            category: 'task',
+            dailySummary: true,
+            chunkIndex: chunkIdx + 1,
+            totalChunks,
+            slotStart: chunkStart,
+            slotEnd: chunkEnd,
+            ledgerPath,
+            outputFile: outputPath,
+          },
         });
-        return;
-      }
 
+        const accepted = ['queued', 'completed', 'accepted', 'running', 'processing'].includes(dispatchResult.status);
+        if (!accepted) {
+          this.logRuntime('Daily summary chunk dispatch failed', {
+            task: spec.key,
+            chunk: `\${chunkIdx + 1}/\${totalChunks}`,
+            target: spec.targetAgentId,
+            status: dispatchResult.status,
+            error: dispatchResult.error,
+          });
+          continue;
+        }
+
+        dispatchedChunks.push(chunkIdx + 1);
+        this.logRuntime('Daily summary chunk dispatched', {
+          task: spec.key,
+          chunk: `\${chunkIdx + 1}/\${totalChunks}`,
+          target: spec.targetAgentId,
+          dispatchId: dispatchResult.dispatchId,
+          status: dispatchResult.status,
+          slotStart: chunkStart,
+          slotEnd: chunkEnd,
+        });
+      } catch (error) {
+        this.logRuntime('Daily summary chunk dispatch exception', {
+          task: spec.key,
+          chunk: `\${chunkIdx + 1}/\${totalChunks}`,
+          target: spec.targetAgentId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+
+    if (dispatchedChunks.length > 0) {
       const nextState: DailySummaryTaskState = {
         ...prior,
         lastSummarySlot: totalSlots,
@@ -391,31 +430,26 @@ export class DailySummaryScheduler {
         lastLedgerPath: ledgerPath,
       };
       safeWriteJson(spec.stateFile, nextState);
-      this.logRuntime('Daily summary dispatched', {
+      this.logRuntime('Daily summary all chunks dispatched', {
         task: spec.key,
         target: spec.targetAgentId,
-        dispatchId: dispatchResult.dispatchId,
-        status: dispatchResult.status,
-        slotStart,
-        slotEnd,
-        deltaSlots: baseline.deltaSlots,
-      });
-    } catch (error) {
-      this.logRuntime('Daily summary dispatch failed', {
-        task: spec.key,
-        target: spec.targetAgentId,
-        error: error instanceof Error ? error.message : String(error),
+        dispatchedChunks: dispatchedChunks.length,
+        totalChunks,
+        totalSlots,
       });
     }
   }
 
   private logRuntime(message: string, data?: Record<string, unknown>): void {
-    const line = `[${new Date().toISOString()}] ${message}${data ? ` ${JSON.stringify(data)}` : ''}`;
-    appendRuntimeLog(this.options.runtimeLogFile, line);
-    if (data) {
-      log.info(message, data);
-      return;
+    const logPath = this.options.runtimeLogFile;
+    const line = `[\${new Date().toISOString()}] \${message}\${data ? ' | ' + JSON.stringify(data) : ''}\n`;
+    try {
+      const dir = path.dirname(logPath);
+      ensureDir(dir);
+      fs.appendFileSync(logPath, line);
+    } catch {
+      // best effort
     }
-    log.info(message);
+    log.info(message, data);
   }
 }

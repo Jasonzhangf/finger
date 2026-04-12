@@ -63,6 +63,7 @@ export async function setupAgentRuntime(deps: {
     agentRuntimeBlock,
     sessionManager: deps.sessionManager,
     sessionWorkspaces: deps.sessionWorkspaces,
+    getLoadedAgentConfigs: deps.getLoadedAgentConfigs,
   });
   const { mockRolePolicy, debugRuntimeModuleIds: DEBUG_RUNTIME_MODULE_IDS, ensureDebugRuntimeModules } =
     await registerMockRuntimeModules({
