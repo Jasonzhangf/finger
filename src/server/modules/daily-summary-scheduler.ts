@@ -43,10 +43,10 @@ export interface DailySummarySchedulerOptions {
 }
 
 const DEFAULT_OPTIONS: DailySummarySchedulerOptions = {
-  enabled: true,
+  enabled: false,
   tickMs: 60_000,
-  windowStartHour: 0,
-  windowEndHour: 7,
+  windowStartHour: 23,
+  windowEndHour: 23,
   runtimeLogFile: path.join(FINGER_PATHS.logs.dir, 'daily_summary_builtin.log'),
   maxSlotPerChunk: 200,
 };
@@ -442,7 +442,8 @@ export class DailySummaryScheduler {
 
   private logRuntime(message: string, data?: Record<string, unknown>): void {
     const logPath = this.options.runtimeLogFile;
-    const line = `[\${new Date().toISOString()}] \${message}\${data ? ' | ' + JSON.stringify(data) : ''}\n`;
+    const line = `[${new Date().toISOString()}] ${message}${data ? " | " + JSON.stringify(data) : ""}
+`;
     try {
       const dir = path.dirname(logPath);
       ensureDir(dir);

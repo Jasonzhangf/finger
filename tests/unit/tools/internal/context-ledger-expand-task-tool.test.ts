@@ -14,10 +14,21 @@ function writeLedger(rootDir: string): { sessionId: string; agentId: string; tas
   const now = Date.now();
   const taskStartTs = now - 20_000;
   const entries = [
+    // Task A: turn_start -> session_message(user) -> session_message(assistant) -> turn_complete
     {
-      id: 'm1',
+      id: 'ts1',
       timestamp_ms: taskStartTs,
       timestamp_iso: new Date(taskStartTs).toISOString(),
+      session_id: sessionId,
+      agent_id: agentId,
+      mode,
+      event_type: 'turn_start',
+      payload: { history_items_count: 0, items_count: 1 },
+    },
+    {
+      id: 'm1',
+      timestamp_ms: taskStartTs + 100,
+      timestamp_iso: new Date(taskStartTs + 100).toISOString(),
       session_id: sessionId,
       agent_id: agentId,
       mode,
@@ -35,9 +46,30 @@ function writeLedger(rootDir: string): { sessionId: string; agentId: string; tas
       payload: { role: 'assistant', content: '任务A完成', token_count: 6 },
     },
     {
-      id: 'm3',
+      id: 'tc1',
+      timestamp_ms: taskStartTs + 800,
+      timestamp_iso: new Date(taskStartTs + 800).toISOString(),
+      session_id: sessionId,
+      agent_id: agentId,
+      mode,
+      event_type: 'turn_complete',
+      payload: { finish_reason: 'stop' },
+    },
+    // Task B: turn_start -> session_message(user) (incomplete)
+    {
+      id: 'ts2',
       timestamp_ms: taskStartTs + 5_000,
       timestamp_iso: new Date(taskStartTs + 5_000).toISOString(),
+      session_id: sessionId,
+      agent_id: agentId,
+      mode,
+      event_type: 'turn_start',
+      payload: { history_items_count: 2, items_count: 1 },
+    },
+    {
+      id: 'm3',
+      timestamp_ms: taskStartTs + 5_100,
+      timestamp_iso: new Date(taskStartTs + 5_100).toISOString(),
       session_id: sessionId,
       agent_id: agentId,
       mode,
@@ -50,7 +82,7 @@ function writeLedger(rootDir: string): { sessionId: string; agentId: string; tas
   return {
     sessionId,
     agentId,
-    taskId: `task-${taskStartTs}`,
+    taskId: `task-${taskStartTs}`, // Task A's turn_start timestamp
   };
 }
 
@@ -160,8 +192,8 @@ describe('context_ledger.expand_task tool', () => {
       expect(result.action).toBe('expand_task');
       expect(result.taskId).toBe(taskId);
       expect(result.slotStart).toBe(1);
-      expect(result.slotEnd).toBe(2);
-      expect(result.entries.length).toBe(2);
+      expect(result.slotEnd).toBe(4); // turn_start + m1 + m2 + turn_complete
+      expect(result.entries.length).toBe(4);
     } finally {
       rmSync(rootDir, { recursive: true, force: true });
     }

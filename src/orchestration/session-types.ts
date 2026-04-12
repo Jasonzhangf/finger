@@ -60,6 +60,12 @@ export interface Session {
   /** 当前 session 窗口的 token 总数估算 */
   totalTokens: number;
 
+  /**
+   * 多轨（Multi-Track）支持
+   * 默认 "track0"，兼容旧 session
+   */
+  track?: string;
+
   // ─── 双层指针（新架构）────────────────────────────────
 
   /**

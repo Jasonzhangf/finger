@@ -124,7 +124,7 @@ describe('chat-codex module', () => {
         usedBinaryPath: '/tmp/finger-kernel-bridge-bin',
       });
     const onLoopEvent = vi.fn();
-    const module = createChatCodexModule({ onLoopEvent }, runner);
+    const module = createChatCodexModule({ onLoopEvent, timeoutRetryCount: 5 }, runner);
 
     const result = await module.handle({
       text: 'retry timeout',
@@ -145,7 +145,7 @@ describe('chat-codex module', () => {
 
   it('stops after retry limit is exhausted', async () => {
     runTurnMock.mockRejectedValue(new Error('chat-codex timed out after 600000ms'));
-    const module = createChatCodexModule({}, runner);
+    const module = createChatCodexModule({ timeoutRetryCount: 5 }, runner);
 
     const result = await module.handle({ text: 'retry timeout fail' });
     const payload = asRecord(result);

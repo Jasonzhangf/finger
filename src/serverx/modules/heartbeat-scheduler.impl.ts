@@ -371,9 +371,11 @@ constructor(private deps: AgentRuntimeDeps) {}
 
   async start(): Promise<void> {
     await this.loadConfig();
+    this.ensureDefaultConfig();
     await this.loadRuntimeState();
     this.watchConfig();
     if (!this.timer) {
+
       // Check if any nightly/daily tasks are in window before immediate tick
       const now = new Date();
       const hour = now.getHours();
@@ -480,9 +482,43 @@ constructor(private deps: AgentRuntimeDeps) {}
       log.warn('[HeartbeatScheduler] Failed to load config', { message });
       return { ok: false, error: message };
     }
+    // unreachable - handled above
+    return { ok: false, error: 'unknown' };
+  }
+
+  private ensureDefaultConfig(): void {
+    if (this.config && Object.keys(this.config).length > 0) return;
+    this.config = {
+      global: { intervalMs: DEFAULT_TASK_INTERVAL_MS, enabled: true, dispatch: 'mailbox' },
+      projects: {},
+      nightlyDream: {
+        enabled: true,
+        windowStartHour: DEFAULT_NIGHTLY_DREAM_WINDOW_START_HOUR,
+        windowEndHour: DEFAULT_NIGHTLY_DREAM_WINDOW_END_HOUR,
+        includeMonitoredProjects: true,
+        includeTodayActiveProjects: true,
+        maxProjectsPerRun: DEFAULT_NIGHTLY_DREAM_MAX_PROJECTS_PER_RUN,
+        maxQueueWaitMs: DEFAULT_NIGHTLY_DREAM_MAX_QUEUE_WAIT_MS,
+        progressDelivery: DEFAULT_NIGHTLY_DREAM_PROGRESS_DELIVERY ?? undefined,
+      },
+      dailySystemReview: {
+        enabled: true,
+        windowStartHour: DEFAULT_DAILY_SYSTEM_REVIEW_WINDOW_START_HOUR,
+        windowEndHour: DEFAULT_DAILY_SYSTEM_REVIEW_WINDOW_END_HOUR,
+        maxQueueWaitMs: DEFAULT_DAILY_SYSTEM_REVIEW_MAX_QUEUE_WAIT_MS,
+        appendOnly: true,
+        backup: {
+          enabled: false,
+          localDir: DEFAULT_DAILY_SYSTEM_REVIEW_BACKUP_LOCAL_DIR,
+        },
+        progressDelivery: DEFAULT_SCHEDULED_PROGRESS_DELIVERY ?? undefined,
+      },
+    };
+    log.info('[HeartbeatScheduler] Default config applied (config was empty or failed to load)');
   }
 
   private async migrateLegacyDailyReviewBackupPathIfNeeded(): Promise<void> {
+
     const current = this.config.dailySystemReview?.backup?.obsidianDir;
     const normalized = normalizeDailyReviewObsidianDir(current);
     if (!normalized.value || normalized.value === current) return;

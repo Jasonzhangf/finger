@@ -177,7 +177,16 @@ const channelBridgeManager = getChannelBridgeManager({
     logger.module('channel-bridge').debug('Message sent to MessageHub');
   },
   onError: (err: Error) => {
-    logger.module('channel-bridge').error('Channel bridge error', err instanceof Error ? err : undefined);
+    const errMsg = err.message || String(err);
+    // 渠道 session 过期（如微信/QQ 需要重新登录） ≠ 系统 session 失效
+    // 渠道状态和系统 session 完全解耦，渠道过期只提醒用户，不影响任何 pinned session
+    if (errMsg.toLowerCase().includes('session timeout') || errMsg.toLowerCase().includes('need qr')) {
+      logger.module('channel-bridge').warn('Channel session expired, user needs re-login (system sessions unaffected)', {
+        error: errMsg,
+      });
+    } else {
+      logger.module('channel-bridge').error('Channel bridge error', err instanceof Error ? err : undefined);
+    }
   },
   onReady: () => {
     logger.module('channel-bridge').info('Channel bridge ready');

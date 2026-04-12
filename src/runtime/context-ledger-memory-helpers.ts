@@ -153,18 +153,35 @@ export async function appendLedgerEvent(
     mode: string;
     event_type: string;
     payload: Record<string, unknown>;
+    slot_number?: number;  // 显式 slot 编号
+    track?: string;         // 多轨：该条目所属轨道
   },
 ): Promise<void> {
   const now = Date.now();
-  const entry = {
+  let slotNumber = event.slot_number;
+  
+  // 如果未指定 slot_number，自动计算（读取当前文件行数 + 1）
+  if (slotNumber === undefined) {
+    try {
+      const existing = await fs.readFile(ledgerPath, 'utf-8');
+      const lineCount = existing.split('\n').filter(line => line.trim().length > 0).length;
+      slotNumber = lineCount + 1;
+    } catch {
+      slotNumber = 1; // 文件不存在，从 1 开始
+    }
+  }
+
+  const entry: Record<string, unknown> = {
     id: `led-${now}-${Math.floor(Math.random() * 1_000_000)}`,
     timestamp_ms: now,
     timestamp_iso: new Date(now).toISOString(),
     session_id: event.session_id,
     agent_id: event.agent_id,
     mode: event.mode,
+    track: event.track,  // 多轨：写入 track 字段
     event_type: event.event_type,
     payload: event.payload,
+    slot_number: slotNumber,  // 显式 slot 字段
   };
   await fs.appendFile(ledgerPath, `${JSON.stringify(entry)}\n`, 'utf-8');
 }

@@ -54,6 +54,8 @@ export type {
   LedgerEntryFile,
 } from './context-ledger-memory-types.js';
 
+export { resolveLedgerPath } from './context-ledger-memory-helpers.js';
+
 export async function executeContextLedgerMemory(rawInput: unknown): Promise<ContextLedgerMemoryResult> {
   const input = parseInput(rawInput);
   const runtime = parseRuntimeContext(input._runtime_context);
@@ -154,6 +156,7 @@ async function executeDigestBackfillAction(
   const compactPath = resolveCompactMemoryPath(context.rootDir, context.sessionId, context.currentAgentId, context.mode);
   const fullLedgerEntries = await readJsonLines<LedgerEntryFile>(ledgerPath);
   const candidateEntries = fullLedgerEntries.filter((entry) => entry.event_type !== 'context_compact');
+  // 多轨：支持按 track 过滤（未来扩展）
   const grouped = groupLedgerEntriesByTaskBoundary(candidateEntries, { slotOffset: 0 });
   const replacementHistory = buildReplacementHistoryFromTaskBlocks(grouped);
 
@@ -207,6 +210,7 @@ async function executeDigestIncrementalAction(
   const compactIndexPath = resolveCompactMemoryIndexPath(context.rootDir, context.sessionId, context.currentAgentId, context.mode);
   const fullLedgerEntries = await readJsonLines<LedgerEntryFile>(ledgerPath);
   const candidateEntries = fullLedgerEntries.filter((entry) => entry.event_type !== 'context_compact');
+  // 多轨：支持按 track 过滤（未来扩展）
   const compactEntries = await readCompactSearchEntries(compactPath, compactIndexPath);
 
   const previousCompactedSlotEnd = compactEntries
@@ -307,6 +311,7 @@ async function executeQueryAction(
     limit: normalizePositiveInt(input.limit) ?? DEFAULT_QUERY_LIMIT,
     slotStart: normalizePositiveInt(input.slot_start),
     slotEnd: normalizePositiveInt(input.slot_end),
+    track: normalizeText(input.track), // 多轨：按轨道过滤
   };
 
   const ledgerPath = resolveLedgerPath(context.rootDir, context.sessionId, context.targetAgentId, context.mode);
@@ -329,8 +334,8 @@ async function executeQueryAction(
     limit: query.limit,
     runtimeContext: input._runtime_context,
   });
-  const preciseHits = filterLedgerEntries(allEntries, { ...query, fuzzy: false });
-  const directHits = filterLedgerEntries(allEntries, query);
+  const preciseHits = filterLedgerEntries(allEntries, { ...query, fuzzy: false, track: query.track });
+  const directHits = filterLedgerEntries(allEntries, { ...query, track: query.track });
   const hasPreciseHits = query.contains ? preciseHits.length > 0 : directHits.length > 0;
 
   const shouldUseCompactFirst = Boolean(query.fuzzy && query.contains && !hasPreciseHits);
@@ -607,6 +612,7 @@ async function executeCompactAction(
 
   const fullLedgerEntries = await readJsonLines<LedgerEntryFile>(ledgerPath);
   const candidateEntries = fullLedgerEntries.filter((entry) => entry.event_type !== 'context_compact');
+  // 多轨：支持按 track 过滤（未来扩展）
   const linkedEventIds = input.source_event_ids && input.source_event_ids.length > 0
     ? input.source_event_ids
     : candidateEntries.map((entry) => entry.id);
@@ -630,6 +636,7 @@ async function executeCompactAction(
     session_id: context.sessionId,
     agent_id: context.currentAgentId,
     mode: context.mode,
+    track: linkedEntries.length > 0 ? (linkedEntries[0].track ?? 'track0') : undefined,
     payload: {
       summary,
       trigger,
@@ -1084,20 +1091,40 @@ function groupLedgerEntriesByTaskBoundary(
     blocks.push(finalizeLedgerTaskBlock(currentEntries, currentStartSlot, currentStartSlot + currentEntries.length - 1));
   };
 
+  /**
+   * Task boundary detection using event_type (correct approach for Finger ledger format):
+   * - turn_start: new turn begins → flush previous block, start new block
+   * - turn_complete: turn ends → flush current block (if not already flushed by reasoning.stop)
+   * - reasoning.stop: explicit stop → flush current block
+   * 
+   * OLD BUG: previous logic used payload.role === 'user' which never matched
+   * because Finger ledger uses event_type structure, not role-based messages.
+   */
   for (let index = 0; index < sanitized.length; index += 1) {
     const entry = sanitized[index];
-    const payload = isRecord(entry.payload) ? entry.payload : {};
-    const role = valueAsString(payload.role) ?? 'system';
-    if (role === 'user' && currentEntries.length > 0) {
+    const eventType = entry.event_type ?? '';
+
+    // turn_start signals a new task/turn boundary
+    if (eventType === 'turn_start' && currentEntries.length > 0) {
       flush();
-      currentEntries = [entry];
+      currentEntries = [];
       currentStartSlot = slotOffset + index + 1;
-      continue;
     }
+
     if (currentEntries.length === 0) {
       currentStartSlot = slotOffset + index + 1;
     }
     currentEntries.push(entry);
+
+    // turn_complete signals end of turn
+    if (eventType === 'turn_complete') {
+      flush();
+      currentEntries = [];
+      currentStartSlot = slotOffset + index + 2;
+      continue;
+    }
+
+    // reasoning.stop is explicit stop boundary
     if (isReasoningStopLedgerBoundary(entry)) {
       flush();
       currentEntries = [];
@@ -1448,7 +1475,7 @@ function buildContextBridge(
 
 function filterLedgerEntries(
   entries: LedgerEntryFile[],
-  options: { sinceMs?: number; untilMs?: number; contains?: string; fuzzy: boolean; eventTypes: string[] },
+  options: { sinceMs?: number; untilMs?: number; contains?: string; fuzzy: boolean; eventTypes: string[]; track?: string },
 ): LedgerEntryFile[] {
   const eventTypeSet = new Set(options.eventTypes.map((item) => item.toLowerCase()));
   const needle = options.contains?.toLowerCase();
@@ -1458,6 +1485,11 @@ function filterLedgerEntries(
       if (options.sinceMs !== undefined && entry.timestamp_ms < options.sinceMs) return false;
       if (options.untilMs !== undefined && entry.timestamp_ms > options.untilMs) return false;
       if (eventTypeSet.size > 0 && !eventTypeSet.has(entry.event_type.toLowerCase())) return false;
+      // 多轨：按 track 过滤（默认 track0，兼容旧数据）
+      if (options.track) {
+        const entryTrack = entry.track ?? 'track0';
+        if (entryTrack !== options.track) return false;
+      }
 
       const searchable = buildLedgerSearchableText(entry);
       if (containsPromptLikeBlock(searchable)) return false;

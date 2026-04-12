@@ -28,10 +28,3 @@ rooms:
   description: Files from design/
 - name: general
   description: Files that don't fit other rooms
-skip_dirs:
-- node_modules
-- target
-- .git
-- dist
-- build
-- coverage

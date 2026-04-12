@@ -576,14 +576,15 @@ describe('context-ledger-memory', () => {
     expect(typeof updatePlanCall?.output).toBe('string');
     expect(updatePlanCall?.output).toContain('Plan updated');
 
+    // exec_command is NOT an important tool (not in DIGEST_IMPORTANT_TOOLS)
+    // so it should NOT appear in the digest tool_calls array
     const execCall = toolCalls.find((item) => item.tool === 'exec_command');
-    expect(execCall).toBeDefined();
-    expect(execCall?.status).toBe('failure');
-    expect(typeof execCall?.input).toBe('string');
-    // non-key tools should not keep full output/error payload
-    expect(execCall?.output).toBeUndefined();
+    expect(execCall).toBeUndefined(); // filtered out because not important
 
-    rmSync(setup.rootDir, { recursive: true, force: true });
+    // Only important tools like update_plan should be in the digest
+    expect(toolCalls.length).toBeGreaterThan(0);
+    expect(toolCalls.every((item) => item.tool !== 'exec_command')).toBe(true);
+
   });
 
   it('inserts text into focus slot with append mode', async () => {

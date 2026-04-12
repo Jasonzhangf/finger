@@ -8,6 +8,9 @@ export interface LedgerWriterContext {
   sessionId: string;
   agentId: string;
   mode?: string;
+  sessionTier?: string;  // 'heartbeat' | 'heartbeat-control' → skip ledger
+  skipLedger?: boolean;  // explicitly skip ledger write
+  track?: string;         // Multi-track: which track this entry belongs to
 }
 
 export interface LedgerMessageInput {
@@ -20,6 +23,14 @@ export interface LedgerMessageInput {
 }
 
 export async function appendSessionMessage(context: LedgerWriterContext, message: LedgerMessageInput): Promise<void> {
+  // Skip ledger write for heartbeat sessions (per design doc section 3.1)
+  const sessionTier = context.sessionTier?.trim().toLowerCase() || '';
+  if (context.skipLedger === true
+      || sessionTier === 'heartbeat'
+      || sessionTier === 'heartbeat-control') {
+    return; // Heartbeat sessions do NOT write ledger
+  }
+
   const mode = context.mode?.trim() || 'main';
   const rootDir = normalizeRootDir(context.rootDir);
   const ledgerPath = resolveLedgerPath(rootDir, context.sessionId, context.agentId, mode);
@@ -36,6 +47,7 @@ export async function appendSessionMessage(context: LedgerWriterContext, message
     session_id: context.sessionId,
     agent_id: context.agentId,
     mode,
+    track: context.track,
     event_type: 'session_message',
     payload: {
       role: message.role,
@@ -53,6 +65,14 @@ export async function appendLedgerEventEntry(
   eventType: string,
   payload: Record<string, unknown>,
 ): Promise<void> {
+  // Skip ledger write for heartbeat sessions (per design doc section 3.1)
+  const sessionTier = context.sessionTier?.trim().toLowerCase() || '';
+  if (context.skipLedger === true
+      || sessionTier === 'heartbeat'
+      || sessionTier === 'heartbeat-control') {
+    return; // Heartbeat sessions do NOT write ledger
+  }
+
   const mode = context.mode?.trim() || 'main';
   const rootDir = normalizeRootDir(context.rootDir);
   const ledgerPath = resolveLedgerPath(rootDir, context.sessionId, context.agentId, mode);
@@ -63,6 +83,7 @@ export async function appendLedgerEventEntry(
     session_id: context.sessionId,
     agent_id: context.agentId,
     mode,
+    track: context.track,
     event_type: eventType,
     payload,
   });

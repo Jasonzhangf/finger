@@ -155,7 +155,16 @@ async function resolveSlotRangeByTaskIdFromFullLedger(params: {
 
   for (let index = 0; index < sanitized.length; index += 1) {
     const entry = sanitized[index];
-    if (index > currentStartIndex && roleOfLedgerEntry(entry) === 'user') {
+    const role = roleOfLedgerEntry(entry);
+    const eventType = entry.event_type ?? '';
+    /**
+     * Task boundary detection (dual-approach):
+     * - session_message with role='user' starts a new task (legacy/test fixture support)
+     * - turn_start also starts a new task (production ledger support)
+     */
+    const isUserBoundary = eventType === 'session_message' && role === 'user' && index > currentStartIndex;
+    const isTurnBoundary = eventType === 'turn_start' && index > currentStartIndex;
+    if (isUserBoundary || isTurnBoundary) {
       flush(index - 1);
       currentStartIndex = index;
       continue;

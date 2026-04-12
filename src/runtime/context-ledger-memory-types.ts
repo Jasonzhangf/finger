@@ -13,6 +13,7 @@ export interface ContextLedgerMemoryRuntimeContext {
   session_id?: string;
   agent_id?: string;
   mode?: string;
+  track?: string;        // 多轨：运行时 track 信息
   can_read_all?: boolean;
   readable_agents?: string[];
   focus_max_chars?: number;
@@ -30,6 +31,7 @@ export interface ContextLedgerMemoryInput {
   session_id?: string;
   agent_id?: string;
   mode?: string;
+  track?: string;        // 多轨：按轨道过滤
   since_ms?: number;
   until_ms?: number;
   limit?: number;
@@ -45,8 +47,8 @@ export interface ContextLedgerMemoryInput {
   summary?: string;
   slot_start?: number;
   slot_end?: number;
-  source_event_ids?: string[];
   source_message_ids?: string[];
+  source_event_ids?: string[];
   source_time_start?: string;
   source_time_end?: string;
   source_slot_start?: number;
@@ -69,6 +71,7 @@ export interface LedgerEntryFile {
   session_id: string;
   agent_id: string;
   mode: string;
+  track?: string;        // 多轨：该条目所属轨道（默认 track0）
   role?: string;
   event_type: string;
   payload: unknown;
@@ -81,6 +84,7 @@ export interface CompactMemoryEntryFile {
   session_id?: string;
   agent_id?: string;
   mode?: string;
+  track?: string;        // 多轨：压缩条目所属轨道
   payload: Record<string, unknown>;
 }
 
@@ -89,6 +93,7 @@ export interface CompactMemorySearchEntry {
   timestamp_ms: number;
   timestamp_iso: string;
   summary: string;
+  track?: string;        // 多轨：该摘要所属轨道
   source_time_start?: string;
   source_time_end?: string;
   source_slot_start?: number;
@@ -137,6 +142,7 @@ export interface ContextLedgerMemoryQueryResult {
     source_time_end?: string;
     source_slot_start?: number;
     source_slot_end?: number;
+    track?: string;
     trigger?: 'manual' | 'auto';
     preview: string;
   }>;
@@ -204,6 +210,7 @@ export interface ContextLedgerMemoryCompactResult {
   source_time_end?: string;
   source_slot_start?: number;
   source_slot_end?: number;
+  track?: string;
   linked_event_ids: string[];
   linked_message_ids: string[];
   indexed: boolean;

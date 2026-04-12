@@ -27,6 +27,7 @@ describe('orchestration-config-applier', () => {
     const apply = createOrchestrationConfigApplier({
       agentRuntimeBlock: { execute } as any,
       sessionManager: { setCurrentSession } as any,
+      getLoadedAgentConfigs: vi.fn(() => [{ id: "finger-system-agent", instanceCount: 1 }, { id: "finger-project-agent", instanceCount: 2 }]),
       sessionWorkspaces: {
         ensureOrchestratorRootSession,
         ensureRuntimeChildSession,

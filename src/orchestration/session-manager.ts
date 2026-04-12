@@ -31,6 +31,7 @@ import { pruneOrphanSessionRootDirs } from '../core/runtime-hygiene.js';
 import { normalizeProjectPathCanonical } from '../common/path-normalize.js';
 import { writeFileAtomicSync } from '../core/atomic-write.js';
 import { isObjectRecord } from '../server/common/object.js';
+import { allocateTrack, allocateTrackSync, updateTrackMetadata, readTracksMetadata, getAvailableTracks } from '../runtime/track-metadata.js';
 
 const clog = createConsoleLikeLogger('SessionManager');
 
@@ -210,6 +211,31 @@ export class SessionManager  {
     session.messages = Array.isArray(session.messages) ? session.messages : [];
     const activeWorkflowsNormalized = this.normalizeActiveWorkflows(session);
     this.ensureSessionOwnershipContext(session);
+    // Multi-track backward compatibility: assign track0 to legacy sessions without track
+    if (!session.track) {
+      session.track = 'track0';
+      // Also save the session to persist the track field
+      this.saveSession(session);
+      // Update tracks.json so allocateTrack knows track0 is taken
+      void updateTrackMetadata(session.projectPath, 'track0', {
+        lastActiveAt: session.lastAccessedAt,
+        preview: session.name,
+      }).catch((err) => {
+        log.warn('[SessionManager] Failed to write track metadata during legacy migration', {
+          sessionId: session.id,
+          projectPath: session.projectPath,
+        });
+      });
+      const context = isObjectRecord(session.context) ? session.context : {};
+      const owner = this.asContextString(context, 'memoryOwnerWorkerId')
+        || this.asContextString(context, 'ownerAgentId')
+        || SYSTEM_AGENT_ID;
+      log.info('[SessionManager] Migrated legacy session to track0', {
+        sessionId: session.id,
+        projectPath: session.projectPath,
+        owner,
+      });
+    }
     const staleProjectionRepaired = this.repairStaleCompactedProjectionOnLoad(session);
     const compactedProjectionRepaired = this.repairCompactedProjectionStructureOnLoad(session);
     this.updateSessionProjectionState(session);
@@ -626,6 +652,15 @@ session.context = {
     }
 
     const id = `session-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    // Allocate track for this session
+    const activeTracks = new Set<string>();
+    for (const [, s] of this.sessions) {
+      if (s.projectPath === normalizedPath && s.track) {
+        activeTracks.add(s.track);
+      }
+    }
+    const track = allocateTrackSync(normalizedPath, activeTracks);
+
     const session: Session = {
       id,
       name: name || path.basename(normalizedPath),
@@ -636,9 +671,16 @@ session.context = {
       messages: [],
       activeWorkflows: [],
       context: {},
+      track,
       ...LEDGER_POINTER_DEFAULTS,
     };
     this.ensureSessionOwnershipContext(session);
+
+    // Update track metadata
+    void updateTrackMetadata(normalizedPath, track, {
+      lastActiveAt: now,
+      preview: name || path.basename(normalizedPath),
+    }).catch(() => {});
 
     // Hard limit: evict oldest session if at capacity
     const MAX_SESSIONS = 100;
@@ -687,6 +729,7 @@ session.context = {
         sessionTier: 'system',
         ownerAgentId: SYSTEM_AGENT_ID,
       },
+      track: 'track0', // system session uses default track
       ...LEDGER_POINTER_DEFAULTS,
     };
     this.ensureSessionOwnershipContext(session);
@@ -767,6 +810,15 @@ session.context = {
     const normalizedPath = this.normalizeProjectPath(projectPath);
     const now = new Date().toISOString();
     const resolvedName = name && name.trim().length > 0 ? name.trim() : (path.basename(normalizedPath) || sessionId);
+    // Allocate track for this session
+    const activeTracks = new Set<string>();
+    for (const [, s] of this.sessions) {
+      if (s.projectPath === normalizedPath && s.track) {
+        activeTracks.add(s.track);
+      }
+    }
+    const track = allocateTrackSync(normalizedPath, activeTracks);
+
     const session: Session = {
       id: sessionId,
       name: resolvedName,
@@ -777,6 +829,7 @@ session.context = {
       messages: [],
       activeWorkflows: [],
       context: {},
+      track,
       ...LEDGER_POINTER_DEFAULTS,
     };
     this.ensureSessionOwnershipContext(session);
@@ -931,6 +984,7 @@ session.context = {
     const ctx = session.context ?? {};
     const agentId = metadata?.agentId || (typeof ctx.ownerAgentId === 'string' ? ctx.ownerAgentId : '') || 'unknown';
     const rootDir = this.resolveSessionsRoot(session);
+    const sessionTier = typeof ctx.sessionTier === 'string' ? ctx.sessionTier.trim().toLowerCase() : '';
     const rawLedgerMetadata = metadata?.metadata;
     const baseLedgerMetadata = rawLedgerMetadata && typeof rawLedgerMetadata === 'object'
       ? (rawLedgerMetadata as Record<string, unknown>)
@@ -1005,7 +1059,7 @@ session.context = {
 
     const writeMessageToLedger = async (mode: string): Promise<void> => {
       await appendSessionMessage(
-        { rootDir, sessionId: session.id, agentId, mode },
+        { rootDir, sessionId: session.id, agentId, mode, sessionTier, track: session.track },
         {
           role,
           content,
@@ -1389,6 +1443,11 @@ session.context = {
     }
 
     const ctx = session.context ?? {};
+    // Skip digest for heartbeat sessions (per design doc section 3.1)
+    const sessionTier = typeof ctx.sessionTier === 'string' ? ctx.sessionTier.trim().toLowerCase() : '';
+    if (sessionTier === 'heartbeat' || sessionTier === 'heartbeat-control') {
+      return; // Heartbeat sessions do NOT write digest
+    }
     const resolvedAgentId = agentId || (typeof ctx.ownerAgentId === "string" ? ctx.ownerAgentId : SYSTEM_AGENT_ID);
     const resolvedMode = mode || "main";
     const rootDir = this.resolveSessionsRoot(session);
