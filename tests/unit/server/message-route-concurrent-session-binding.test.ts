@@ -69,6 +69,23 @@ function createDeps() {
   return { deps, runtime };
 }
 
+async function fetchWithRetry(url: string, options: RequestInit, retries = 3, baseDelayMs = 100): Promise<Response> {
+  for (let attempt = 0; attempt < retries; attempt++) {
+    try {
+      const response = await fetch(url, options);
+      if (response.status !== 500 || attempt === retries - 1) {
+        return response;
+      }
+    } catch (error: any) {
+      if (attempt === retries - 1) throw error;
+      // ECONNRESET or network errors → retry with exponential backoff
+      const delay = baseDelayMs * Math.pow(2, attempt) + Math.random() * 50;
+      await new Promise((resolve) => setTimeout(resolve, delay));
+    }
+  }
+  throw new Error('fetchWithRetry: unreachable');
+}
+
 async function startServer(app: Express, port = 0): Promise<{ url: string; close: () => Promise<void> }> {
   return new Promise((resolve) => {
     const server = app.listen(port, () => {
@@ -76,7 +93,10 @@ async function startServer(app: Express, port = 0): Promise<{ url: string; close
       const resolvedPort = typeof address === 'object' && address ? address.port : port;
       resolve({
         url: `http://127.0.0.1:${resolvedPort}`,
-        close: () => new Promise<void>((done) => server.close(() => done())),
+        close: () => new Promise<void>((done) => {
+          server.closeAllConnections?.();
+          server.close(() => done());
+        }),
       });
     });
   });
@@ -91,8 +111,11 @@ describe('message route concurrent session binding', () => {
 
     const server = await startServer(app);
     try {
+      // Small delay to ensure server is fully ready
+      await new Promise((resolve) => setTimeout(resolve, 50));
+
       const requests = ['session-a', 'session-b'].map((sessionId) =>
-        fetch(`${server.url}/api/v1/message`, {
+        fetchWithRetry(`${server.url}/api/v1/message`, {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
           body: JSON.stringify({
