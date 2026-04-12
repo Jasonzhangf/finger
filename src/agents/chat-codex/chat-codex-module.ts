@@ -44,9 +44,14 @@ import {
   type GuardedSection,
 } from '../prompts/conditional-injector.js';
 import { augmentToolSpecificationsWithCompatAliases } from '../../runtime/tool-compat-aliases.js';
+import {
+  executeContextLedgerMemory,
+  resolveLedgerPath,
+} from '../../runtime/context-ledger-memory.js';
 
 const DEFAULT_KERNEL_TIMEOUT_MS = 600_000;
-const DEFAULT_KERNEL_TIMEOUT_RETRY_COUNT = 5;
+const DEFAULT_KERNEL_TIMEOUT_RETRY_COUNT = 2;
+
 // NOTE:
 // 180s stall timeout is too aggressive when context is large (50k+ tokens) or provider
 // has high queue latency. It caused false-positive "stalled" retries while the upstream
@@ -506,6 +511,35 @@ export class ProcessChatCodexRunner implements ChatCodexRunner {
     this.developerPromptPaths = options.developerPromptPaths;
   }
 
+  private estimateSubmissionPayloadSize(
+    items: KernelInputItem[],
+    options: KernelUserTurnOptions | undefined,
+  ): number {
+    const sampleSubmission = {
+      id: 'sample',
+      op: { type: 'user_turn', items, ...(options ? { options } : {}) },
+    };
+    return JSON.stringify(sampleSubmission).length;
+  }
+
+  private truncateHistoryItemsForPayloadLimit(
+    options: KernelUserTurnOptions | undefined,
+    maxPayloadChars: number,
+  ): KernelUserTurnOptions | undefined {
+    if (!options || !Array.isArray(options.history_items) || options.history_items.length <= 1) {
+      return options;
+    }
+    let truncatedOptions = { ...options, history_items: [...options.history_items] };
+    while (truncatedOptions.history_items.length > 1) {
+      const estimatedSize = this.estimateSubmissionPayloadSize([], truncatedOptions);
+      if (estimatedSize <= maxPayloadChars) {
+        break;
+      }
+      truncatedOptions.history_items.shift();
+    }
+    return truncatedOptions;
+  }
+
   async runTurn(text: string, items?: KernelInputItem[], context?: ChatCodexRunContext): Promise<ChatCodexRunResult> {
     const resolvedPath = resolveKernelBinaryPath(this.binaryPath);
     if (!existsSync(resolvedPath)) {
@@ -597,7 +631,23 @@ export class ProcessChatCodexRunner implements ChatCodexRunner {
     }
     if (session.activeTurn) {
       const pendingTurnId = this.nextSubmissionId(session, 'pending');
-      this.sendUserTurnSubmission(session, pendingTurnId, normalizedItems, options);
+      const maxPayloadChars = Math.floor(getContextWindow() * 0.9);
+      let protectedOptions = options;
+      const estimatedSize = this.estimateSubmissionPayloadSize(normalizedItems, options);
+      if (estimatedSize > maxPayloadChars) {
+        chatCodexLog.warn('Submission payload exceeds limit, truncating history', {
+          estimatedSize,
+          maxPayloadChars,
+          historyItemsCount: Array.isArray(options?.history_items) ? options.history_items.length : 0,
+        });
+        protectedOptions = this.truncateHistoryItemsForPayloadLimit(options, maxPayloadChars);
+        const newSize = this.estimateSubmissionPayloadSize(normalizedItems, protectedOptions);
+        chatCodexLog.info('History truncated to fit payload limit', {
+          newHistoryItemsCount: Array.isArray(protectedOptions?.history_items) ? protectedOptions.history_items.length : 0,
+          newEstimatedSize: newSize,
+        });
+      }
+      this.sendUserTurnSubmission(session, pendingTurnId, normalizedItems, protectedOptions);
       session.activeTurn.pendingInputQueued = true;
       session.activeTurn.pendingTurnId = pendingTurnId;
       return {
@@ -641,7 +691,23 @@ export class ProcessChatCodexRunner implements ChatCodexRunner {
         onKernelEvent: context?.onKernelEvent,
       };
 
-      this.sendUserTurnSubmission(session, turnId, normalizedItems, options);
+      const maxPayloadChars = Math.floor(getContextWindow() * 0.9);
+      let protectedOptions = options;
+      const estimatedSize = this.estimateSubmissionPayloadSize(normalizedItems, options);
+      if (estimatedSize > maxPayloadChars) {
+        chatCodexLog.warn('Submission payload exceeds limit, truncating history', {
+          estimatedSize,
+          maxPayloadChars,
+          historyItemsCount: Array.isArray(options?.history_items) ? options.history_items.length : 0,
+        });
+        protectedOptions = this.truncateHistoryItemsForPayloadLimit(options, maxPayloadChars);
+        const newSize = this.estimateSubmissionPayloadSize(normalizedItems, protectedOptions);
+        chatCodexLog.info('History truncated to fit payload limit', {
+          newHistoryItemsCount: Array.isArray(protectedOptions?.history_items) ? protectedOptions.history_items.length : 0,
+          newEstimatedSize: newSize,
+        });
+      }
+      this.sendUserTurnSubmission(session, turnId, normalizedItems, protectedOptions);
     });
   }
 

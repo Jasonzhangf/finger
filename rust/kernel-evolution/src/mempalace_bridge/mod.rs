@@ -11,6 +11,7 @@
 //! All public types are `Send + Sync` and safe to share across threads.
 
 pub mod sync;
+pub mod cli;
 pub mod query;
 
 // Re-export key sync types for ergonomic access
@@ -18,6 +19,9 @@ pub use sync::{BridgeSync, BridgeEntry, BridgeSnapshot, SyncError, OperationCoun
 
 // Re-export key query types for ergonomic access
 pub use query::{MempalaceQuery, QueryFilter, QueryResult, QueryError, DataRecord};
+
+// Re-export key cli types for ergonomic access
+pub use cli::{MempalaceCli, CliError};
 
 /// Public module version
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");

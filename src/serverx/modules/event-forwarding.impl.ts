@@ -1,4 +1,7 @@
 import { logger } from '../../core/logger.js';
+import { syncLearningToMempalace } from '../../evolution/insights/mempalace-bridge.js';
+import { syncLearningToMemory } from '../../evolution/insights/memory-writer.js';
+import type { LearningEntry } from '../../evolution/insights/types.js';
 import { appendFile, mkdir, readFile } from 'fs/promises';
 import { dirname, join } from 'path';
 import type { SessionManager } from '../../orchestration/session-manager.js';
@@ -990,6 +993,33 @@ export function attachEventForwarding(deps: EventForwardingDeps): {
                 stopToolSummary: summary.slice(0, 200),
               };
             }
+              // Auto-sync learning to mempalace when reasoning.stop succeeds with evidence
+              if (hasEvidence && (typeof output.successes === 'string' || Array.isArray(output.successes))) {
+                const learningEntry: LearningEntry = {
+                  timestamp: new Date(event.timestamp ?? Date.now()),
+                  sessionId: event.sessionId,
+                  successes: Array.isArray(output.successes) ? output.successes : typeof output.successes === 'string' ? [output.successes] : [],
+                  failures: Array.isArray(output.failures) ? output.failures : typeof output.failures === 'string' ? [output.failures] : [],
+                  tags: Array.isArray(output.tags) ? output.tags : [],
+                  toolUsage: [],
+                };
+                void syncLearningToMempalace(learningEntry, 'finger-evolution', 'learnings').catch((err) => {
+                  logger.module('event-forwarding').warn('Failed to sync learning to mempalace', {
+                    sessionId: event.sessionId,
+                    error: err instanceof Error ? err.message : String(err),
+                  });
+                });
+                // Also sync to project MEMORY.md for persistent learning
+                const session = sessionManager.getSession(event.sessionId);
+                const projectPath = session?.projectPath;
+                void syncLearningToMemory(learningEntry, projectPath).catch((err) => {
+                  logger.module('event-forwarding').warn('Failed to sync learning to MEMORY.md', {
+                    sessionId: event.sessionId,
+                    projectPath,
+                    error: err instanceof Error ? err.message : String(err),
+                  });
+                });
+              }
           }
         }
       }

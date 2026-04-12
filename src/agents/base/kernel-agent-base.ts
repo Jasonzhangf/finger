@@ -47,7 +47,7 @@ import {
   resolveControlBlockPolicy,
   shouldHoldStopByControlBlock,
 } from '../../common/control-block.js';
-import { getContextWindow } from '../../core/user-settings.js';
+import { getContextWindow, getCompressTokenThreshold } from '../../core/user-settings.js';
 
 
 export interface KernelRunContext {
@@ -208,7 +208,7 @@ export class KernelAgentBase {
       }
 
       const roleProfile = this.resolveRoleProfile(input.roleProfile);
-      const effectiveInputMetadata = this.injectProjectTaskContextSlots({
+      let effectiveInputMetadata = this.injectProjectTaskContextSlots({
         inputMetadata: input.metadata,
         roleProfileId: roleProfile?.id,
       });
@@ -277,6 +277,8 @@ export class KernelAgentBase {
         stopReasoningPrompt,
         controlBlockPrompt,
       );
+      // Preflight compact 已下沉到 ProcessChatCodexRunner（唯一真源）
+      // 此处不再做重复检查
 
       const inputItems = this.parseInputItems(input.metadata);
       const mailboxSnapshot = this.parseMailboxSnapshot(input.metadata?.mailboxSnapshot);
@@ -337,7 +339,7 @@ export class KernelAgentBase {
       }
 
       runResult = await this.applyExecutionNudgeIfNeeded({
-        inputText: input.text,
+        inputText: input.text ?? '',
         mode: threadMode,
         sessionId: runnerSessionId,
         systemPrompt,
@@ -351,7 +353,7 @@ export class KernelAgentBase {
       lastKernelMetadata = runResult.metadata;
 
       runResult = await this.applyStructuredOutputRecoveryIfNeeded({
-        inputText: input.text,
+        inputText: input.text ?? '',
         sessionId: runnerSessionId,
         systemPrompt,
         history: toUnifiedHistory(mergedHistory),
@@ -366,7 +368,7 @@ export class KernelAgentBase {
       lastKernelMetadata = runResult.metadata;
       runResult = await this.applyStopReasoningGateIfNeeded({
         mode: threadMode,
-        inputText: input.text,
+        inputText: input.text ?? '',
         sessionId: runnerSessionId,
         systemPrompt,
         history: toUnifiedHistory(mergedHistory),
@@ -379,7 +381,7 @@ export class KernelAgentBase {
       lastKernelMetadata = runResult.metadata;
       runResult = await this.applyControlBlockGateIfNeeded({
         mode: threadMode,
-        inputText: input.text,
+        inputText: input.text ?? '',
         sessionId: runnerSessionId,
         systemPrompt,
         history: toUnifiedHistory(mergedHistory),
@@ -1881,6 +1883,52 @@ export class KernelAgentBase {
     if (!looksLikeExecutionRequest(inputText)) return false;
     if (containsExecutionEvidence(replyText)) return false;
     return looksLikePromiseOnlyReply(replyText);
+  }
+
+  private estimateContextTokensBeforeTurn(params: {
+    session: Session;
+    mergedHistory: SessionMessage[];
+    systemPrompt: string;
+    inputText: string;
+  }): number {
+    const { session, mergedHistory, systemPrompt, inputText } = params;
+
+    const sessionTokens = typeof session.totalTokens === 'number' && Number.isFinite(session.totalTokens)
+      ? Math.max(0, Math.floor(session.totalTokens))
+      : 0;
+
+    const historyTokens = mergedHistory.reduce((sum, msg) => {
+      const content = typeof msg.content === 'string' ? msg.content : '';
+      return sum + estimateTokensWithTiktoken(content);
+    }, 0);
+
+    const systemPromptTokens = estimateTokensWithTiktoken(systemPrompt);
+    const inputTokens = estimateTokensWithTiktoken(inputText);
+
+    return sessionTokens + historyTokens + systemPromptTokens + inputTokens;
+  }
+
+  private checkPreflightCompact(params: {
+    estimatedContextTokens: number;
+    thresholdTokens: number;
+    contextWindowTokens: number;
+    existingMetadata: Record<string, unknown> | undefined;
+  }): { needCompact: boolean; thresholdTokens: number; contextWindowTokens: number; reason: string } {
+    const { estimatedContextTokens, thresholdTokens, contextWindowTokens, existingMetadata } = params;
+
+    if (existingMetadata?.compactManual === false || existingMetadata?.preflightCompactDisabled === true) {
+      return { needCompact: false, thresholdTokens, contextWindowTokens, reason: 'explicitly_disabled' };
+    }
+
+    if (existingMetadata?.compactManual === true) {
+      return { needCompact: false, thresholdTokens, contextWindowTokens, reason: 'already_requested' };
+    }
+
+    if (estimatedContextTokens >= thresholdTokens) {
+      return { needCompact: true, thresholdTokens, contextWindowTokens, reason: 'exceed_threshold' };
+    }
+
+    return { needCompact: false, thresholdTokens, contextWindowTokens, reason: 'below_threshold' };
   }
 }
 

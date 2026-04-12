@@ -1,3 +1,30 @@
+## [task] Daily Summary 分段读取 + 配置唯一真源 + finger-289 Phase 1 {#mem-daily-summary-chunk-20260412}
+时间: 2026-04-12 09:08
+状态: completed
+
+### 用户核心诉求
+1. Daily Summary 任务上下文超限导致 400 错误
+2. agents.json 配置 instanceCount: 5 被 orchestration.json 覆盖为 1
+3. 配置文件打架，缺乏唯一真源
+
+### 根因分析
+1. DailySummaryScheduler 一次派发整个 ledger delta，上下文爆炸
+2. orchestration-config-applier 覆盖 agents.json 配置
+3. 任务提示词没有 digest-first 要求
+
+### 关键实现
+1. maxSlotPerChunk=200 分段派发
+2. digest-first 读取指导
+3. 配置唯一真源修复
+
+### 教训
+1. 大数据量任务必须分段
+2. 配置职责明确划分
+3. 检查上下文长度
+
+### Epic
+关联: finger-289
+
 ## [task] Tag-Aware Context Builder Enhancement {#mem-tag-aware-cb-20260326}
 时间: 2026-03-26 08:30
 状态: completed
@@ -874,3 +901,17 @@ myfinger upgrade rollback <module> -y      # 回滚到最新
 - npm registry 集成（自动拉取）
 - 心跳计数器重置机制（防永久死亡）
 
+
+## Control Hook Memory Patch
+- idempotency_key: session-1775960587844-lurbk2|turn-1775965405917|hook.project.memory.update
+- updated_at: 2026-04-12T03:43:26.132Z
+- source_session: session-1775960587844-lurbk2
+- source_turn: turn-1775965405917
+- long_term: mailbox tasks can be auto-cleaned or already processed before this turn arrives
+
+## Control Hook Memory Patch
+- idempotency_key: session-1775904475591-q6yhf8|turn-1775965743921|hook.project.memory.update
+- updated_at: 2026-04-12T03:49:04.035Z
+- source_session: session-1775904475591-q6yhf8
+- source_turn: turn-1775965743921
+- long_term: 高优先级消息可能在大间隔后被清理，需更快消费

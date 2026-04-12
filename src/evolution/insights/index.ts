@@ -1,6 +1,14 @@
 export { InsightsEngine, streamLedgerEvents } from './engine.js';
 export { formatInsightsReport, formatInsightsJson } from './report.js';
 export {
+  appendLearningsToMemory,
+  syncLearningToMemory,
+  computeDedupKey,
+  extractExistingKeys,
+  extractLearningsSection,
+  formatLearningEntry,
+} from './memory-writer.js';
+export {
   clusterFailures,
   clusterSuccesses,
   extractUserPreferences,

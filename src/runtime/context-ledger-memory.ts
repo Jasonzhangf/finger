@@ -883,6 +883,71 @@ const DIGEST_VERBOSE_OUTPUT_TOOLS = new Set([
   'report-task-completion',
 ]);
 
+// Digest 只保留"重要"的工具调用，过滤掉无意义的查询/读取等操作
+// 这样可以避免 Compact 后的历史包含无效工具调用（如 cat /dev/null）导致循环
+const DIGEST_IMPORTANT_TOOLS = new Set([
+  // 任务派发与协调
+  'agent.dispatch',
+  'agent.capabilities',
+
+  // 任务规划与完成
+  'update_plan',
+  'reasoning.stop',
+  'report-task-completion',
+
+  // 代码修改
+  'apply_patch',
+
+  // 邮箱与消息
+  'mailbox.status',
+  'mailbox.dequeue',
+  'mailbox.enqueue',
+
+  // 上下文与Ledger
+  'context_builder.rebuild',
+  'context_ledger.digest',
+  'context_ledger.query',
+
+  // 项目管理
+  'project.task.status',
+  'project.task.update',
+
+  // Agent协作
+  'agent.collab.ask',
+  'agent.collab.tell',
+  'agent.collab.broadcast',
+]);
+
+// 判断工具是否重要（应该保留在 digest 中）
+function isImportantToolForDigest(toolName: string): boolean {
+  if (!toolName || toolName.trim().length === 0) return false;
+
+  // 1. Exact match whitelist
+  if (DIGEST_IMPORTANT_TOOLS.has(toolName)) return true;
+
+  // 2. Prefix match for wildcard patterns (e.g., mailbox.*, context_ledger.*)
+  const importantPrefixes = ['mailbox.', 'context_ledger.', 'project.', 'agent.collab.', 'agent.', 'context_builder.'];
+  for (const prefix of importantPrefixes) {
+    if (toolName.startsWith(prefix)) return true;
+  }
+
+  // 3. Compatibility aliases
+  const compatAliases: Record<string, string> = {
+    'exec': 'command.exec',
+    'shell': 'command.exec',
+    'patch': 'apply_patch',
+    'dispatch': 'agent.dispatch',
+    'capabilities': 'agent.capabilities',
+    'rebuild': 'context_builder.rebuild',
+    'digest': 'context_ledger.digest',
+    'query': 'context_ledger.query',
+  };
+  const canonicalName = compatAliases[toolName];
+  if (canonicalName && DIGEST_IMPORTANT_TOOLS.has(canonicalName)) return true;
+
+  return false;
+}
+
 type TaskBlockMatchReason = LedgerTaskBlockSearchResult['match_reason'];
 
 async function buildLedgerTaskBlocks(
@@ -1169,6 +1234,9 @@ function buildToolCallsDigest(entries: LedgerEntryFile[]): ToolDigestCall[] {
   for (const entry of entries) {
     const event = extractToolDigestEventFromEntry(entry);
     if (!event || !event.toolName) continue;
+
+    // 过滤：只保留重要工具，丢弃无意义的查询/读取操作
+    if (!isImportantToolForDigest(event.toolName)) continue;
     const key = allocateKey(event.toolName, event.callId);
     const status = normalizeToolDigestStatus(event.eventType, event.output, event.error);
     const inputText = serializeUnknown(event.input, 1200);

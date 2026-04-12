@@ -44,7 +44,6 @@ import {
 import { inferInboundRole, ensureMessageMetadataRole } from '../../server/routes/message-role-utils.js';
 import { normalizeProgressDeliveryPolicy } from '../../common/progress-delivery-policy.js';
 import { applyExecutionLifecycleTransition } from '../../server/modules/execution-lifecycle.js';
-import { applyPreflightCompactToRequest } from '../../server/modules/message-preflight-compact.js';
 import { mergeSystemTaskState, parseSystemTaskState } from '../../common/system-task-state.js';
 import {
   parseProjectTaskState,
@@ -547,14 +546,6 @@ export function registerMessageRoutes(app: Express, deps: MessageRouteDeps): voi
       deps.sessionManager.updateContext(requestSessionId, {
         systemTaskState: nextSystemTaskState,
       });
-    }
-    if (requestSessionId && inferredRole === 'user') {
-      const preflightCompact = applyPreflightCompactToRequest({
-        session: deps.sessionManager.getSession(requestSessionId),
-        requestMessage,
-        targetAgentId: targetId,
-      });
-      requestMessage = preflightCompact.requestMessage;
     }
     if (requestSessionId && isObjectRecord(requestMessage)) {
       const session = deps.sessionManager.getSession(requestSessionId);
