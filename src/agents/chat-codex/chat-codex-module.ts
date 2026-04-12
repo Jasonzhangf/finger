@@ -3440,6 +3440,26 @@ function buildContinuityDeveloperInstructions(
   ].filter((line) => line.length > 0).join('\n');
 }
 
+// 新增：判断文本是否为工具调用（应该过滤掉，避免 /dev/null 死循环）
+function isToolCallText(content: string): boolean {
+  if (!content || typeof content !== 'string') return false;
+
+  // 工具调用特征文本（cat /dev/null 等无效调用）
+  const toolCallPatterns = [
+    '调用工具:',
+    '工具完成:',
+    'exec_command',
+    'grep',
+    'cat @',
+    'ls @',
+    'head @',
+    'tail @',
+    '/dev/null',
+  ];
+
+  return toolCallPatterns.some(pattern => content.includes(pattern));
+}
+
 function extractRecentTaskTurnsFromHistory(
   history: Array<{ role: 'user' | 'assistant' | 'system'; content: string }> | undefined,
   taskCount = 2,
@@ -3452,13 +3472,20 @@ function extractRecentTaskTurnsFromHistory(
       turns.push(current);
       current = [];
     }
-    current.push(item);
+    // 过滤掉工具调用文本
+    if (!isToolCallText(item.content)) {
+      current.push(item);
+    }
   }
   if (current.length > 0) turns.push(current);
   return turns.slice(-Math.max(1, Math.floor(taskCount)));
 }
 
 function truncateInlineText(value: string, maxChars: number): string {
+  // 先过滤掉工具调用文本
+  if (isToolCallText(value)) {
+    return '[已过滤]'; // 完全过滤，避免模型看到 /dev/null 等无效操作
+  }
   const flattened = value.replace(/\s+/g, ' ').trim();
   if (flattened.length <= maxChars) return flattened;
   return `${flattened.slice(0, Math.max(0, maxChars - 3))}...`;
