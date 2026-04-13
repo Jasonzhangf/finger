@@ -754,3 +754,28 @@ function estimateHistoryItemsTokens(items: Array<Record<string, unknown>> | unde
   return total;
 }
 
+
+function estimateTaskContextSlotTokensFromMetadata(metadata: Record<string, unknown> | undefined): number {
+  if (!metadata || !Array.isArray(metadata.contextSlots)) return 0;
+  let total = 0;
+  for (const item of metadata.contextSlots) {
+    if (!isRecord(item)) continue;
+    const id = typeof item.id === 'string' ? item.id.trim() : '';
+    if (!id.startsWith('task.')) continue;
+    const content = typeof item.content === 'string' ? item.content : '';
+    total += estimateTextTokens(content);
+  }
+  return total;
+}
+
+function estimateTaskContextSlotTokensFromRendered(rendered: string | undefined): number {
+  if (typeof rendered !== 'string' || rendered.trim().length === 0) return 0;
+  const pattern = /<slot id="(task\.[^"]+)">\n([\s\S]*?)\n<\/slot>/g;
+  let match: RegExpExecArray | null = pattern.exec(rendered);
+  let total = 0;
+  while (match) {
+    total += estimateTextTokens(match[2]);
+    match = pattern.exec(rendered);
+  }
+  return total;
+}
