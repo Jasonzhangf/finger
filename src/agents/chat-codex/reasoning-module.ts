@@ -20,6 +20,8 @@ import type {
   ReasoningInputItem,
   ReasoningSessionState,
   ReasoningInterruptResult,
+  ReasoningToolTrace,
+  ReasoningRoundTrace,
 } from './reasoning-types.js';
 import { BASE_AGENT_ROLE_CONFIG } from './agent-role-config.js';
 import { getFingerAppVersion } from '../../core/app-version.js';
@@ -227,4 +229,147 @@ function parseKernelMetadata(raw: string): Record<string, unknown> | undefined {
   } catch {
     return undefined;
   }
+}
+
+// ==================== Kernel Trace 提取函数 ====================
+
+function extractKernelToolTrace(metadata: Record<string, unknown>): ReasoningToolTrace[] {
+  const raw = metadata.tool_trace;
+  if (!Array.isArray(raw)) return [];
+
+  const result: ReasoningToolTrace[] = [];
+  for (const item of raw) {
+    if (!isRecord(item)) continue;
+    const tool = typeof item.tool === 'string' ? item.tool.trim() : '';
+    if (!tool) continue;
+    const status: ReasoningToolTrace['status'] = item.status === 'error' ? 'error' : 'ok';
+    const callId = typeof item.call_id === 'string' && item.call_id.trim().length > 0 ? item.call_id.trim() : undefined;
+    const error = typeof item.error === 'string' && item.error.trim().length > 0 ? item.error.trim() : undefined;
+    const durationMs = typeof item.duration_ms === 'number' && Number.isFinite(item.duration_ms) && item.duration_ms >= 0
+      ? Math.round(item.duration_ms)
+      : undefined;
+    const seq = typeof item.seq === 'number' && Number.isFinite(item.seq) && item.seq >= 0
+      ? Math.floor(item.seq)
+      : undefined;
+
+    result.push({
+      ...(seq !== undefined ? { seq } : {}),
+      ...(callId ? { callId } : {}),
+      tool,
+      status,
+      ...(item.input !== undefined ? { input: item.input } : {}),
+      ...(item.output !== undefined ? { output: item.output } : {}),
+      ...(error ? { error } : {}),
+      ...(durationMs !== undefined ? { durationMs } : {}),
+    });
+  }
+
+  return result;
+}
+
+function extractKernelRoundTrace(metadata: Record<string, unknown>): ReasoningRoundTrace[] {
+  const raw = metadata.round_trace;
+  if (!Array.isArray(raw)) return [];
+
+  const result: ReasoningRoundTrace[] = [];
+  for (const item of raw) {
+    if (!isRecord(item)) continue;
+    const round = typeof item.round === 'number' && Number.isFinite(item.round) ? Math.floor(item.round) : NaN;
+    if (!Number.isFinite(round) || round <= 0) continue;
+    const functionCallsCount =
+      typeof item.function_calls_count === 'number' && Number.isFinite(item.function_calls_count)
+        ? Math.max(0, Math.floor(item.function_calls_count))
+        : undefined;
+    const reasoningCount =
+      typeof item.reasoning_count === 'number' && Number.isFinite(item.reasoning_count)
+        ? Math.max(0, Math.floor(item.reasoning_count))
+        : undefined;
+    const historyItemsCount =
+      typeof item.history_items_count === 'number' && Number.isFinite(item.history_items_count)
+        ? Math.max(0, Math.floor(item.history_items_count))
+        : undefined;
+    const hasOutputText = typeof item.has_output_text === 'boolean' ? item.has_output_text : undefined;
+    const finishReason =
+      typeof item.finish_reason === 'string' && item.finish_reason.trim().length > 0
+        ? item.finish_reason.trim()
+        : undefined;
+    const responseStatus =
+      typeof item.response_status === 'string' && item.response_status.trim().length > 0
+        ? item.response_status.trim()
+        : undefined;
+    const responseIncompleteReason =
+      typeof item.response_incomplete_reason === 'string' && item.response_incomplete_reason.trim().length > 0
+        ? item.response_incomplete_reason.trim()
+        : undefined;
+    const responseId =
+      typeof item.response_id === 'string' && item.response_id.trim().length > 0
+        ? item.response_id.trim()
+        : undefined;
+    const inputTokens =
+      typeof item.input_tokens === 'number' && Number.isFinite(item.input_tokens) && item.input_tokens >= 0
+        ? Math.floor(item.input_tokens)
+        : undefined;
+    const outputTokens =
+      typeof item.output_tokens === 'number' && Number.isFinite(item.output_tokens) && item.output_tokens >= 0
+        ? Math.floor(item.output_tokens)
+        : undefined;
+    const totalTokens =
+      typeof item.total_tokens === 'number' && Number.isFinite(item.total_tokens) && item.total_tokens >= 0
+        ? Math.floor(item.total_tokens)
+        : undefined;
+    const estimatedTokensInContextWindow =
+      typeof item.estimated_tokens_in_context_window === 'number'
+      && Number.isFinite(item.estimated_tokens_in_context_window)
+      && item.estimated_tokens_in_context_window >= 0
+        ? Math.floor(item.estimated_tokens_in_context_window)
+        : undefined;
+    const estimatedTokensCompactable =
+      typeof item.estimated_tokens_compactable === 'number'
+      && Number.isFinite(item.estimated_tokens_compactable)
+      && item.estimated_tokens_compactable >= 0
+        ? Math.floor(item.estimated_tokens_compactable)
+        : undefined;
+    const contextUsagePercent =
+      typeof item.context_usage_percent === 'number'
+      && Number.isFinite(item.context_usage_percent)
+      && item.context_usage_percent >= 0
+      && item.context_usage_percent <= 100
+        ? Math.round(item.context_usage_percent * 10) / 10
+        : undefined;
+    const maxInputTokens =
+      typeof item.max_input_tokens === 'number'
+      && Number.isFinite(item.max_input_tokens)
+      && item.max_input_tokens >= 0
+        ? Math.floor(item.max_input_tokens)
+        : undefined;
+    const thresholdPercent =
+      typeof item.threshold_percent === 'number'
+      && Number.isFinite(item.threshold_percent)
+      && item.threshold_percent >= 0
+      && item.threshold_percent <= 100
+        ? Math.round(item.threshold_percent * 10) / 10
+        : undefined;
+
+    result.push({
+      round,
+      ...(functionCallsCount !== undefined ? { functionCallsCount } : {}),
+      ...(reasoningCount !== undefined ? { reasoningCount } : {}),
+      ...(historyItemsCount !== undefined ? { historyItemsCount } : {}),
+      ...(hasOutputText !== undefined ? { hasOutputText } : {}),
+      ...(finishReason ? { finishReason } : {}),
+      ...(responseStatus ? { responseStatus } : {}),
+      ...(responseIncompleteReason ? { responseIncompleteReason } : {}),
+      ...(responseId ? { responseId } : {}),
+      ...(inputTokens !== undefined ? { inputTokens } : {}),
+      ...(outputTokens !== undefined ? { outputTokens } : {}),
+      ...(totalTokens !== undefined ? { totalTokens } : {}),
+      ...(estimatedTokensInContextWindow !== undefined ? { estimatedTokensInContextWindow } : {}),
+      ...(estimatedTokensCompactable !== undefined ? { estimatedTokensCompactable } : {}),
+      ...(contextUsagePercent !== undefined ? { contextUsagePercent } : {}),
+      ...(maxInputTokens !== undefined ? { maxInputTokens } : {}),
+      ...(thresholdPercent !== undefined ? { thresholdPercent } : {}),
+    });
+  }
+
+  return result;
 }
