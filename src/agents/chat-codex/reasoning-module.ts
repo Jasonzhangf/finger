@@ -969,3 +969,17 @@ function normalizeProvidedToolSpecifications(
   }
   return normalized;
 }
+function resolveUserInstructions(
+  metadata: Record<string, unknown> | undefined,
+): string | undefined {
+  const candidates = [
+    parseOptionalString(metadata?.agentsInstructions),
+    parseOptionalString(metadata?.agents_instructions),
+    parseOptionalString(metadata?.userInstructions),
+    parseOptionalString(metadata?.user_instructions),
+  ].filter((item): item is string => typeof item === 'string' && item.trim().length > 0);
+  if (candidates.length === 0) return undefined;
+  const merged = Array.from(new Set(candidates.map((item) => item.trim())));
+  return merged.join('\n\n');
+}
+
