@@ -2886,16 +2886,11 @@ function buildProjectAgentsScopePromptBlock(metadata: Record<string, unknown> | 
   const applicableFiles = collectApplicableAgentsFiles(startDir, boundedProjectRoot);
   const orderedByPrecedence = applicableFiles.slice().reverse();
 
-  const lines: string[] = [
-    '# Project AGENTS Runtime (scope-aware)',
-    '- This is a project-agent turn: apply directory-scoped AGENTS rules.',
-    '- Scope rule: each AGENTS.md applies to its directory subtree.',
-    '- Precedence rule: deeper/nested AGENTS overrides parent AGENTS on conflicts.',
-    '- Priority rule: system/developer/user instructions override AGENTS.',
-    `AGENTS.cwd=${startDir}`,
-    `AGENTS.project_root=${projectPath ?? '(unset)'}`,
-    `AGENTS.applicable_count=${orderedByPrecedence.length}`,
-  ];
+  // 只保留路径和内容，规范说明在 system_prompt 里已有
+  const lines: string[] = [];
+  lines.push(`AGENTS.cwd=${startDir}`);
+  lines.push(`AGENTS.project_root=${projectPath ?? '(unset)'}`);
+  lines.push(`AGENTS.applicable_count=${orderedByPrecedence.length}`);
 
   if (orderedByPrecedence.length === 0) {
     lines.push('AGENTS.state=none_found');
@@ -2911,12 +2906,10 @@ function buildProjectAgentsScopePromptBlock(metadata: Record<string, unknown> | 
   for (const filePath of fileContents) {
     try {
       const raw = readFileSync(filePath, 'utf-8').trim();
-      const rendered = raw.length > AGENTS_PROMPT_MAX_CHARS_PER_FILE
-        ? `${raw.slice(0, AGENTS_PROMPT_MAX_CHARS_PER_FILE)}\n...[TRUNCATED_AT_${AGENTS_PROMPT_MAX_CHARS_PER_FILE}_CHARS]`
-        : raw;
+      // 不截断 AGENTS.md 文件
       lines.push(`AGENTS.content[${filePath}]:`);
       lines.push('```md');
-      lines.push(rendered);
+      lines.push(raw);
       lines.push('```');
     } catch {
       lines.push(`AGENTS.content[${filePath}]=unreadable`);
@@ -3041,36 +3034,21 @@ function buildFlowPromptBlock(metadata: Record<string, unknown> | undefined): st
     }
   };
 
-  const renderTruncatedFlow = (raw: string | undefined): string | undefined => {
+  // 不截断 FLOW.md 文件
+  const renderFlowContent = (raw: string | undefined): string | undefined => {
     if (!raw || raw.trim().length === 0) return undefined;
-    return raw.length > FLOW_PROMPT_MAX_CHARS
-      ? `${raw.slice(0, FLOW_PROMPT_MAX_CHARS)}\n...[TRUNCATED_AT_10000_CHARS]`
-      : raw;
+    return raw;
   };
 
   const globalFlowPath = resolveGlobalFlowPath();
   const localFlowPath = resolveLocalFlowPath();
-  const globalFlow = renderTruncatedFlow(readFlowContent(globalFlowPath));
-  const localFlow = renderTruncatedFlow(readFlowContent(localFlowPath));
+  const globalFlow = renderFlowContent(readFlowContent(globalFlowPath));
+  const localFlow = renderFlowContent(readFlowContent(localFlowPath));
 
-  const lines = [
-    '# Task Flow Runtime',
-    '- Flow context uses two layers: Global FLOW + Local FLOW.',
-    '- Load order is fixed: Global first, Local second.',
-    '- Conflict rule: Local FLOW has higher priority than Global FLOW.',
-    '- Each FLOW file has strict 10,000-char truncation in prompt (hard cap).',
-    '- Mode split is mandatory: Development mode vs Debug mode.',
-    '- Development mode: propose a comprehensive implementation plan, ask user confirmation once, then write/update FLOW.md and execute by flow state-machine progression.',
-    '- Debug mode: reproduce/validate issue -> root-cause analysis -> compare options -> choose the best root fix -> implement directly (no redundant confirmation before fix).',
-    '- In debug mode, only ask before fix when action is dangerous, irreversible, permission-gated, or materially ambiguous.',
-    '- Root-fix quality bar: prefer rigorous root-cause solutions; avoid workaround-only/patch-around fixes unless explicitly requested.',
-    '- Simple tasks (e.g. quick search/read/single-step lookup) can execute directly without creating a flow.',
-    '- If new sub-flow appears during current task, update FLOW.md to reflect latest plan/state.',
-    '- Cleanup rule: only after user explicitly confirms task completion, reset FLOW.md content to avoid contaminating next task.',
-    '- Do not clear FLOW.md before explicit user completion confirmation.',
-    `FLOW.global.path=${globalFlowPath}`,
-    `FLOW.local.path=${localFlowPath}`,
-  ];
+  // 只保留路径和内容，规范说明在 system_prompt 里已有
+  const lines: string[] = [];
+  lines.push(`FLOW.global.path=${globalFlowPath}`);
+  lines.push(`FLOW.local.path=${localFlowPath}`);
 
   if (!globalFlow && !localFlow) {
     lines.push('FLOW.state=empty(global+local)');
@@ -3798,24 +3776,6 @@ function buildLedgerDeveloperInstructions(
     historicalMessageCount !== undefined ? `historical_messages=${historicalMessageCount}` : '',
     workingSetTokens !== undefined ? `working_set_tokens=${workingSetTokens}` : '',
     historicalTokens !== undefined ? `historical_tokens=${historicalTokens}` : '',
-    '[context_partitions]',
-    'P0.core_instructions=system+developer prompts (stable, never rewritten by history rebuild)',
-    'P1.runtime_capabilities=skills+mailbox+flow runtime blocks (stable, injected independently from history)',
-    'P2.current_turn=current user input + current-turn attachments/input items (highest priority for this turn)',
-    'P3.continuity_anchors=recent task turns + recent user inputs for continuity judgment',
-    'P4.dynamic_history=working_set + historical_memory (ledger-selected, budgeted, mutable)',
-    'P5.canonical_storage=context ledger raw records + MEMORY.md (not fully injected)',
-    'rebuild_scope=P4 only',
-    'Current prompt history is a budgeted dynamic view, not the full ledger.',
-    'working_set contains the active task block at higher fidelity; historical_memory contains relevance-selected prior blocks.',
-    'Stable layers such as system/developer prompts, skills, mailbox summaries, and current user input are injected separately from historical recall.',
-    'Query order: MEMORY.md (durable facts) -> context_ledger.memory search -> context_ledger.memory query(detail=true,slot_start,slot_end) -> context_ledger.expand_task(task_id or slot range).',
-    'Absence from the visible prompt does not prove the event never happened.',
-    enabled
-      ? 'When historical context is missing, first call `context_ledger.memory` with action="search", then inspect raw entries with action="query", detail=true, slot_start, and slot_end.'
-      : 'Do not call `context_ledger.memory` because ledger is disabled for this turn.',
-    'Treat compact/focus hits as retrieval hints and verify important claims with detailed ledger query before relying on them.',
-    'Do not guess hidden history; retrieve evidence from ledger first.',
   ];
   return lines.filter((line) => line.length > 0).join('\n');
 }

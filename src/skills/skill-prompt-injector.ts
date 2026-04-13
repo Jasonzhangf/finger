@@ -19,19 +19,11 @@ function renderSkillsPrompt(skills: Array<{ name: string; description: string; p
   if (skills.length === 0) return '';
 
   const lines: string[] = [];
-  lines.push('## Skills');
-  lines.push('A skill is a set of local instructions stored in a `SKILL.md` file.');
-  lines.push('### Available skills');
+  // 只保留 skills 列表，规范说明在 system_prompt 里已有
   for (const skill of skills) {
     const desc = skill.description?.trim().length > 0 ? skill.description.trim() : 'No description provided.';
     lines.push(`- ${skill.name}: ${desc} (file: ${skill.path}/SKILL.md)`);
   }
-  lines.push('### How to use skills');
-  lines.push('- If the task clearly matches a listed skill, prefer following that skill workflow.');
-  lines.push('- Open the target `SKILL.md` and follow only the relevant sections; avoid bulk loading unrelated references.');
-  lines.push('- Skills are workflows, not the canonical history store. If a skill depends on prior decisions that are not visible, retrieve them via `context_ledger.memory` instead of guessing.');
-  lines.push('- The visible prompt history can be budgeted/partial; absence from prompt does not prove the event never happened.');
-  lines.push('- When a skill cannot be applied (missing files/unclear instructions), state the issue and continue with best fallback.');
   return `\n\n${lines.join('\n')}`;
 }
 
