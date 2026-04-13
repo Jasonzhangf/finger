@@ -521,3 +521,35 @@ function appendPromptSection(base: string | undefined, section: string | undefin
   if (!base || base.trim().length === 0) return section;
   return `${base}\n\n${section}`;
 }
+
+function parseOptionalBoolean(value: unknown): boolean | undefined {
+  if (typeof value === 'boolean') return value;
+  if (typeof value === 'string') {
+    const normalized = value.trim().toLowerCase();
+    if (normalized === 'true') return true;
+    if (normalized === 'false') return false;
+  }
+  return undefined;
+}
+
+function isProjectLikeAgent(metadata: Record<string, unknown> | undefined): boolean {
+  if (!isRecord(metadata)) return false;
+  const agentId = parseOptionalString(metadata.agentId);
+  if (!agentId) return false;
+  const normalized = agentId.toLowerCase();
+  return normalized.includes('project') || normalized.includes('general');
+}
+
+function normalizeAbsoluteDir(rawPath: string | undefined): string | undefined {
+  if (!rawPath || rawPath.trim().length === 0) return undefined;
+  return rawPath.trim();
+}
+
+function isSameOrSubPath(candidate: string, root: string): boolean {
+  if (!candidate || !root) return false;
+  const normalizedCandidate = candidate.replace(/\/+/g, '/');
+  const normalizedRoot = root.replace(/\/+/g, '/');
+  if (normalizedCandidate === normalizedRoot) return true;
+  if (normalizedCandidate.startsWith(normalizedRoot + '/')) return true;
+  return false;
+}
