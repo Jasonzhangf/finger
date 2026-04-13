@@ -39,9 +39,11 @@ export interface ConversationRound {
 
 /** 触发决策 */
 export interface TriggerDecision {
-  action: 'rebuild' | 'compact' | 'compact_then_rebuild' | 'none';
+  shouldAct: boolean;
+  actionType: 'rebuild' | 'compact' | 'mixed' | 'none';
   reason: string;
-  confidence: number;
+  confidence?: number;
+  details: Record<string, unknown>;
 }
 
 /** Rebuild 选项 */
@@ -90,4 +92,13 @@ export interface PendingMarker {
 export interface TopicShiftRecord {
   confidence: number;
   timestamp: number;
+}
+
+
+/** Decision 选项 */
+export interface DecisionOptions {
+  maxTokens?: number;
+  topicShiftThreshold?: number;
+  topicShiftConsecutiveHits?: number;
+  overflowThresholdRatio?: number;
 }
