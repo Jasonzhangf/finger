@@ -28,7 +28,7 @@ export interface DailySummaryTaskSpec {
   targetAgentId: string;
   source: string;
   title: string;
-  outputFileBuilder: (date: string) => string;
+  outputFileBuilder: () => string;
   stateFile: string;
   resolveLedgerPath: () => string | null;
 }
@@ -178,7 +178,7 @@ function createTaskSpecs(): DailySummaryTaskSpec[] {
       targetAgentId: 'finger-system-agent',
       source: 'daily-analysis-builtin',
       title: '每日系统分析',
-      outputFileBuilder: (date) => path.join(FINGER_PATHS.home, 'system', 'daily', `\${date}.md`),
+      outputFileBuilder: () => path.join(FINGER_PATHS.home, 'system', 'MEMORY.md'),
       stateFile: path.join(runtimeStateDir, 'system-state.json'),
       resolveLedgerPath: createLatestLedgerResolver('finger-system-agent'),
     },
@@ -187,7 +187,7 @@ function createTaskSpecs(): DailySummaryTaskSpec[] {
       targetAgentId: 'finger-project-agent',
       source: 'daily-project-analysis-builtin',
       title: '每日项目分析',
-      outputFileBuilder: (date) => path.join(FINGER_PATHS.home, 'projects', '_meta', 'daily', `\${date}-project.md`),
+      outputFileBuilder: () => path.join(FINGER_PATHS.home, 'USER.md'),
       stateFile: path.join(runtimeStateDir, 'project-state.json'),
       resolveLedgerPath: createLatestLedgerResolver('finger-project-agent'),
     },
@@ -204,20 +204,25 @@ function buildChunkedTaskMessage(
   outputPath: string,
 ): string {
   const lines = [
-    `\${spec.title}（分段读取，第 \${chunkIndex}/\${totalChunks} 块）`,
+    `\${spec.title}（记忆进化，第 \${chunkIndex}/\${totalChunks} 块）`,
     `date=\${currentDate}`,
     `ledger=\${spec.resolveLedgerPath()}`,
     `slot_start=\${slotStart}`,
     `slot_end=\${slotEnd}`,
     `chunk=\${chunkIndex}/\${totalChunks}`,
-    `output_file=\${outputPath}`,
+    `memory_file=\${outputPath}`,
     '',
-    '请读取上述 ledger 指定区间并完成总结：',
-    '1) 先用 context_ledger.digest 读摘要（action=query, slot_start/slot_end=xxx）',
-    '2) 摘要不足时再用 context_ledger.memory 读原文（action=query, slot_start/slot_end=xxx, detail=true）',
-    '3) 过滤噪声（heartbeat/no-op/repeated wake lines）',
-    '4) 提炼真实任务、交付、失败根因、下一步动作',
-    '5) 结果追加写入 output_file（不要覆盖历史）',
+    '【记忆进化任务】',
+    '目标：基于当日 ledger 行为，渐进式更新记忆文件内容',
+    '',
+    '步骤：',
+    '1) 先读取 memory_file 现有全部内容（必须先读）',
+    '2) 用 context_ledger.digest 读当日 ledger 指定区间摘要',
+    '3) 分析当日行为中的新发现/错误模式/成功经验/过时信息',
+    '4) 对 memory_file 进行渐进式修改：修正过时信息、添加新发现、强化重复规则',
+    '5) 写入修改后的完整内容（覆盖式写入，保留历史精华）',
+    '',
+    '注意：禁止简单追加日志，必须进行内容进化',
   ];
   if (totalChunks > 1) {
     lines.push(`6) 这是第 \${chunkIndex}/\${totalChunks} 块，完成后报告 "Chunk \${chunkIndex}/\${totalChunks} done"`);
@@ -346,7 +351,7 @@ export class DailySummaryScheduler {
       return;
     }
 
-    const outputPath = spec.outputFileBuilder(currentDate);
+    const outputPath = spec.outputFileBuilder();
     ensureDir(path.dirname(outputPath));
 
     const maxPerChunk = this.options.maxSlotPerChunk;
