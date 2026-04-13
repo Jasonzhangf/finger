@@ -916,3 +916,15 @@ function resolveProviderIdForContextWindow(
   if (fallbackProviderId) return fallbackProviderId;
   return resolveActiveProviderIdFromUserSettings();
 }
+
+function parseOptionalNumber(value: unknown): number | undefined {
+  if (typeof value === 'number' && Number.isFinite(value) && value > 0) {
+    return value;
+  }
+  if (typeof value === 'string') {
+    const parsed = Number(value);
+    if (Number.isFinite(parsed) && parsed > 0) return parsed;
+  }
+  return undefined;
+}
+
