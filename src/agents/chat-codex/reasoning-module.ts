@@ -665,3 +665,47 @@ function buildMailboxBaselineBlock(
   }
   return lines.join('\n');
 }
+
+function buildUserProfilePromptBlock(metadata: Record<string, unknown> | undefined): string | undefined {
+  const enabled = parseOptionalBoolean(metadata?.userProfilePromptEnabled)
+    ?? parseOptionalBoolean(metadata?.userProfileInjectionEnabled)
+    ?? true;
+  if (!enabled) return undefined;
+
+  const explicitPath = parseOptionalString(metadata?.userProfileFilePath)
+    ?? parseOptionalString(metadata?.user_profile_file_path)
+    ?? parseOptionalString(metadata?.userProfilePath)
+    ?? parseOptionalString(metadata?.user_profile_path);
+  const profilePath = explicitPath && explicitPath.trim().length > 0
+    ? explicitPath.trim()
+    : join(FINGER_PATHS.home, 'USER.md');
+
+  let profileContent = '';
+  if (existsSync(profilePath)) {
+    try {
+      profileContent = readFileSync(profilePath, 'utf-8').trim();
+    } catch {
+      profileContent = '';
+    }
+  }
+
+  const lines = [
+    '# User Profile Runtime (USER.md)',
+    `USER.path=${profilePath}`,
+    '- USER.md is injected as runtime profile context for this turn; follow it strictly.',
+    '- If user gives repeated corrections / strong negative feedback, update USER.md immediately (append-only, evidence-based).',
+  ];
+
+  if (profileContent.length === 0) {
+    lines.push('USER.state=empty');
+    return lines.join('\n');
+  }
+
+  const rendered = profileContent.length > USER_PROFILE_PROMPT_MAX_CHARS
+    ? `${profileContent.slice(0, USER_PROFILE_PROMPT_MAX_CHARS)}\n...[TRUNCATED_AT_8000_CHARS]`
+    : profileContent;
+  lines.push('USER.content.begin');
+  lines.push(rendered);
+  lines.push('USER.content.end');
+  return lines.join('\n');
+}
