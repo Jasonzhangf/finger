@@ -2562,11 +2562,10 @@ function buildKernelUserTurnOptions(
       .map((tool) => (tool && typeof tool.name === 'string' ? tool.name.trim() : ''))
       .filter((name) => name.length > 0)
     : undefined;
-  let developerInstructions = resolveDeveloperInstructions(
+let developerInstructions = resolveDeveloperInstructions(
     metadata,
     developerPromptPaths,
     role,
-    context?.history,
     availableToolNames,
   );
   const skillsPromptBlock = buildSkillsPromptBlock(metadata);
@@ -3429,37 +3428,22 @@ function resolveDeveloperInstructions(
   metadata: Record<string, unknown> | undefined,
   developerPromptPaths?: Partial<Record<ChatCodexDeveloperRole, string>>,
   resolvedRole?: ChatCodexDeveloperRole,
-  history?: Array<{ role: 'user' | 'assistant' | 'system'; content: string }>,
   availableToolNames?: string[],
 ): string | undefined {
-  const explicit = parseOptionalString(metadata?.developerInstructions)
-    ?? parseOptionalString(metadata?.developer_instructions);
-  const collaborationMode = parseOptionalString(metadata?.collaborationMode)
-    ?? parseOptionalString(metadata?.collaboration_mode);
-  const modelSwitchHint = parseOptionalString(metadata?.modelSwitchHint)
-    ?? parseOptionalString(metadata?.model_switch_hint);
   const role = resolvedRole ?? resolveDeveloperRoleFromMetadata(metadata);
   const rolePrompt = resolveDeveloperPromptTemplate(role, developerPromptPaths?.[role]);
   const ledgerBlock = buildLedgerDeveloperInstructions(metadata, role);
-  const continuityBlock = buildContinuityDeveloperInstructions(history, metadata);
   const promptOptimizationBlock = buildPromptOptimizationDeveloperInstructions(
     metadata,
     role,
     availableToolNames,
   );
-  const contextSlotsRendered = parseOptionalString(metadata?.contextSlotsRendered)
-    ?? parseOptionalString(metadata?.context_slots_rendered);
 
-  const hints: string[] = [];
-  if (collaborationMode) hints.push(`collaboration_mode=${collaborationMode}`);
-  if (modelSwitchHint) hints.push(`model_switch_hint=${modelSwitchHint}`);
 
 const sections = [
     rolePrompt,
     promptOptimizationBlock,
     ledgerBlock,
-    hints.join('\n'),
-    explicit,
   ]
     .map((item) => item?.trim() ?? '')
     .filter((item) => item.length > 0);
@@ -3469,24 +3453,7 @@ const sections = [
   for (const section of sections) {
     if (!deduped.includes(section)) deduped.push(section);
   }
-  const result = deduped.join('\n\n');
-  
-  // Log breakdown if developerInstructions is large
-  if (result.length > 10000) {
-    chatCodexLog.warn('developerInstructions breakdown', {
-      totalSize: result.length,
-      rolePromptSize: rolePrompt?.length ?? 0,
-      promptOptimizationBlockSize: promptOptimizationBlock?.length ?? 0,
-      ledgerBlockSize: ledgerBlock?.length ?? 0,
-      continuityBlockSize: continuityBlock?.length ?? 0,
-      contextSlotsRenderedSize: contextSlotsRendered?.length ?? 0,
-      hintsSize: hints.join('\n').length,
-      explicitSize: explicit?.length ?? 0,
-      role,
-    });
-  }
-  
-  return result;
+  return deduped.join('\n\n');
 }
 
 function buildPromptOptimizationDeveloperInstructions(
