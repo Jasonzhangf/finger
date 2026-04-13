@@ -238,6 +238,7 @@ export class SessionManager  {
     }
     const staleProjectionRepaired = this.repairStaleCompactedProjectionOnLoad(session);
     const compactedProjectionRepaired = this.repairCompactedProjectionStructureOnLoad(session);
+    const ledgerInconsistencyRepaired = this.repairLedgerInconsistencyOnLoad(session);
     this.updateSessionProjectionState(session);
     delete (session as Session & { _cachedView?: unknown })._cachedView;
     this.sessions.set(session.id, session);
@@ -620,6 +621,115 @@ session.context = {
     return true;
   }
 
+  /**
+   * Repair ledger inconsistency on load.
+   * If session.ledgerEndLine is less than actual ledger line count,
+   * messages were lost due to crash between ledger write and saveSession.
+   * This function reads missing messages from ledger and appends them.
+   */
+  private repairLedgerInconsistencyOnLoad(session: Session): boolean {
+    if (session.ledgerEndLine === undefined || session.ledgerEndLine <= 0) {
+      return false; // No tracking, skip repair
+    }
+    
+    const context = session.context ?? {};
+    const rootDir = this.resolveSessionsRoot(session);
+    const ownerAgentId = typeof context.ownerAgentId === 'string' && context.ownerAgentId.trim().length > 0
+      ? context.ownerAgentId.trim()
+      : SYSTEM_AGENT_ID;
+    
+    const ledgerPath = path.join(rootDir, session.id, ownerAgentId, 'main', 'context-ledger.jsonl');
+    if (!fs.existsSync(ledgerPath)) {
+      return false;
+    }
+    
+    try {
+      const lines = fs.readFileSync(ledgerPath, 'utf-8')
+        .split('\n')
+        .filter((line) => line.trim().length > 0);
+      
+      const actualLineCount = lines.length;
+      const expectedLineCount = session.ledgerEndLine;
+      
+      if (actualLineCount <= expectedLineCount) {
+        return false; // No inconsistency
+      }
+      
+      // There are more ledger entries than session knows about
+      log.info('[SessionManager] Ledger inconsistency detected, repairing', {
+        sessionId: session.id,
+        expectedLineCount,
+        actualLineCount,
+        missingCount: actualLineCount - expectedLineCount,
+      });
+      
+      // Read missing entries (from expectedLineCount onwards, 1-based)
+      const missingEntries = lines.slice(expectedLineCount)
+        .map((line, index) => {
+          try {
+            const entry = JSON.parse(line) as Record<string, unknown>;
+            const payload = typeof entry.payload === 'object' && entry.payload !== null
+              ? entry.payload as Record<string, unknown>
+              : {};
+            const slotNumber = typeof entry.slot_number === 'number' ? entry.slot_number : expectedLineCount + index + 1;
+            return {
+              id: typeof payload.message_id === 'string' ? payload.message_id : `ledger-repair-${slotNumber}`,
+              ledgerLine: slotNumber - 1, // 0-based
+              role: typeof payload.role === 'string' ? payload.role as SessionMessage['role'] : 'user',
+              content: typeof payload.content === 'string' ? payload.content : '',
+              timestamp: typeof entry.timestamp_iso === 'string' ? entry.timestamp_iso : new Date().toISOString(),
+              ...(Array.isArray(payload.attachments) ? { attachments: payload.attachments as Attachment[] } : {}),
+              ...(typeof payload.metadata === 'object' && payload.metadata !== null ? { metadata: payload.metadata as Record<string, unknown> } : {}),
+            } as SessionMessage;
+          } catch {
+            return null;
+          }
+        })
+        .filter((msg): msg is SessionMessage => msg !== null);
+      
+      if (missingEntries.length === 0) {
+        return false;
+      }
+      
+      // Append missing messages to session
+      session.messages = Array.isArray(session.messages) ? session.messages : [];
+      for (const msg of missingEntries) {
+        // Check if message already exists (by id or ledgerLine)
+        const exists = session.messages.some(
+          (existing) => existing.id === msg.id || (existing.ledgerLine !== undefined && existing.ledgerLine === msg.ledgerLine)
+        );
+        if (!exists) {
+          session.messages.push(msg);
+        }
+      }
+      
+      // Update ledgerEndLine
+      session.ledgerEndLine = actualLineCount;
+      session.originalEndIndex = session.messages.length > 0 ? session.messages.length - 1 : 0;
+      
+      // Re-sort messages by timestamp
+      session.messages.sort((a, b) => {
+        const aTime = typeof a.timestamp === 'string' ? a.timestamp : '';
+        const bTime = typeof b.timestamp === 'string' ? b.timestamp : '';
+        return aTime.localeCompare(bTime);
+      });
+      
+      log.info('[SessionManager] Ledger inconsistency repaired', {
+        sessionId: session.id,
+        repairedCount: missingEntries.length,
+        newLedgerEndLine: session.ledgerEndLine,
+      });
+      
+      return true;
+    } catch (error) {
+      log.warn('[SessionManager] Failed to repair ledger inconsistency', {
+        sessionId: session.id,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return false;
+    }
+  }
+
   private getActiveWorkflowCount(session: Session): number {
     this.normalizeActiveWorkflows(session);
     return session.activeWorkflows.length;
@@ -973,6 +1083,7 @@ session.context = {
 
     const message: SessionMessage = {
       id: messageId,
+      ledgerLine: undefined,
       role,
       content,
       timestamp: normalizedTimestamp,
@@ -1057,8 +1168,8 @@ session.context = {
       }
     }
 
-    const writeMessageToLedger = async (mode: string): Promise<void> => {
-      await appendSessionMessage(
+    const writeMessageToLedger = async (mode: string): Promise<number | undefined> => {
+      const result = await appendSessionMessage(
         { rootDir, sessionId: session.id, agentId, mode, sessionTier, track: session.track },
         {
           role,
@@ -1068,9 +1179,12 @@ session.context = {
           metadata: buildLedgerMetadata(mode),
         },
       );
+      return result?.slotNumber;
     };
+    
+    let ledgerLine: number | undefined;
     try {
-      await writeMessageToLedger(resolvedLedgerMode);
+      ledgerLine = await writeMessageToLedger(resolvedLedgerMode);
     } catch (err) {
       const code = (err as NodeJS.ErrnoException | undefined)?.code;
       const shouldRetryOnMain = code === 'ENOENT' && resolvedLedgerMode !== 'main';
@@ -1081,7 +1195,7 @@ session.context = {
           failedMode: resolvedLedgerMode,
         });
         try {
-          await writeMessageToLedger('main');
+          ledgerLine = await writeMessageToLedger('main');
         } catch (retryErr) {
           clog.error('[SessionManager] Ledger write retry on main mode failed, message append aborted:', retryErr);
           return null;
@@ -1090,6 +1204,12 @@ session.context = {
         clog.error('[SessionManager] Ledger write failed, message append aborted:', err);
         return null;
       }
+    }
+
+    // Attach ledger line to message for consistency tracking
+    if (ledgerLine !== undefined) {
+      message.ledgerLine = ledgerLine - 1; // 0-based (slot_number is 1-based)
+      session.ledgerEndLine = ledgerLine;
     }
 
     session.lastAccessedAt = new Date().toISOString();

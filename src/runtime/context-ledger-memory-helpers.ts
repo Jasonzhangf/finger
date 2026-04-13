@@ -157,7 +157,7 @@ export async function appendLedgerEvent(
     slot_number?: number;  // 显式 slot 编号
     track?: string;         // 多轨：该条目所属轨道
   },
-): Promise<void> {
+): Promise<{ slotNumber: number }> {
   const now = Date.now();
   let slotNumber = event.slot_number;
   
@@ -185,6 +185,7 @@ export async function appendLedgerEvent(
     slot_number: slotNumber,  // 显式 slot 字段
   };
   await fs.appendFile(ledgerPath, `${JSON.stringify(entry)}\n`, 'utf-8');
+  return { slotNumber: slotNumber as number };
 }
 
 export async function safeReadText(filePath: string): Promise<string> {

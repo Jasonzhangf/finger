@@ -60,6 +60,9 @@ export interface Session {
   /** 当前 session 窗口的 token 总数估算 */
   totalTokens: number;
 
+  /** Ledger 最后写入的行号（用于一致性检测和崩溃恢复） */
+  ledgerEndLine?: number;
+
   /**
    * 多轨（Multi-Track）支持
    * 默认 "track0"，兼容旧 session
@@ -98,6 +101,7 @@ export interface Session {
 
 export interface SessionMessage {
   id: string;
+  ledgerLine?: number;  // Ledger slot_number for consistency check (0-based index in ledger file)
   role: 'user' | 'assistant' | 'system';
   content: string;
   timestamp: string;

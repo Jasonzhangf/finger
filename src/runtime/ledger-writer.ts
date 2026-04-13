@@ -22,7 +22,7 @@ export interface LedgerMessageInput {
   metadata?: Record<string, unknown>;
 }
 
-export async function appendSessionMessage(context: LedgerWriterContext, message: LedgerMessageInput): Promise<void> {
+export async function appendSessionMessage(context: LedgerWriterContext, message: LedgerMessageInput): Promise<{ slotNumber: number } | void> {
   // Skip ledger write for heartbeat sessions (per design doc section 3.1)
   const sessionTier = context.sessionTier?.trim().toLowerCase() || '';
   if (context.skipLedger === true
@@ -43,7 +43,7 @@ export async function appendSessionMessage(context: LedgerWriterContext, message
     ? Math.max(0, Math.floor(message.tokenCount))
     : estimateTokens(message.content);
 
-  await appendLedgerEvent(ledgerPath, {
+  return await appendLedgerEvent(ledgerPath, {
     session_id: context.sessionId,
     agent_id: context.agentId,
     mode,
@@ -64,7 +64,7 @@ export async function appendLedgerEventEntry(
   context: LedgerWriterContext,
   eventType: string,
   payload: Record<string, unknown>,
-): Promise<void> {
+): Promise<{ slotNumber: number } | void> {
   // Skip ledger write for heartbeat sessions (per design doc section 3.1)
   const sessionTier = context.sessionTier?.trim().toLowerCase() || '';
   if (context.skipLedger === true
@@ -79,7 +79,7 @@ export async function appendLedgerEventEntry(
   const baseDir = resolveBaseDir(rootDir, context.sessionId, context.agentId, mode);
   await fs.mkdir(baseDir, { recursive: true });
 
-  await appendLedgerEvent(ledgerPath, {
+  return await appendLedgerEvent(ledgerPath, {
     session_id: context.sessionId,
     agent_id: context.agentId,
     mode,
