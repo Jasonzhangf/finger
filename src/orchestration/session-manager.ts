@@ -790,7 +790,9 @@ session.context = {
     void updateTrackMetadata(normalizedPath, track, {
       lastActiveAt: now,
       preview: name || path.basename(normalizedPath),
-    }).catch(() => {});
+    }).catch((err) => {
+        log.warn('[SessionManager] Failed to update track metadata', { err, track, path: normalizedPath });
+      });
 
     // Hard limit: evict oldest session if at capacity
     const MAX_SESSIONS = 100;

@@ -9,6 +9,9 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
+import { logger } from '../../core/logger.js';
+
+const log = logger.module('SessionMigration');
 import { FINGER_PATHS } from '../../core/finger-paths.js';
 
 const SESSIONS_DIR = FINGER_PATHS.sessions.dir;
@@ -148,7 +151,9 @@ function findMainJson(dirPath: string): string | undefined {
         if (fs.existsSync(deepNested)) return deepNested;
       }
     }
-  } catch {}
+  } catch (err: unknown) {
+   log.warn('[SessionMigration] Operation failed but continuing', { err });
+ }
   
   return undefined;
 }
@@ -170,7 +175,9 @@ function findLedgerFiles(dirPath: string): string[] {
           results.push(p);
         }
       }
-    } catch {}
+    } catch (err: unknown) {
+   log.warn('[SessionMigration] Operation failed but continuing', { err });
+ }
   }
   
   scan(dirPath);
@@ -313,7 +320,9 @@ function findCompactMemory(dirPath: string): string | undefined {
           return p;
         }
       }
-    } catch {}
+    } catch (err: unknown) {
+   log.warn('[SessionMigration] Operation failed but continuing', { err });
+ }
     return undefined;
   }
   
@@ -336,7 +345,9 @@ function findTaskDigests(dirPath: string): string | undefined {
           return p;
         }
       }
-    } catch {}
+    } catch (err: unknown) {
+   log.warn('[SessionMigration] Operation failed but continuing', { err });
+ }
     return undefined;
   }
   
@@ -460,7 +471,9 @@ function fixSessionData(sessionDir: SessionDirectoryInfo, options?: { dryRun?: b
                 latestTime = time;
                 latestSession = subMain;
               }
-            } catch {}
+            } catch (err: unknown) {
+   log.warn('[SessionMigration] Operation failed but continuing', { err });
+ }
           }
         }
         
@@ -498,7 +511,9 @@ function fixSessionData(sessionDir: SessionDirectoryInfo, options?: { dryRun?: b
           }
         }
       }
-    } catch {}
+    } catch (err: unknown) {
+   log.warn('[SessionMigration] Operation failed but continuing', { err });
+ }
   }
   
   // Fix 2: Repair existing main.json

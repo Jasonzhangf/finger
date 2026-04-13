@@ -303,7 +303,10 @@ export const memoryTool: InternalTool<unknown, MemoryOutput> = {
 
           entries.unshift(entry);
           await fs.writeFile(memoryPath, serializeMemoryFile(entries), 'utf-8');
-          indexEntry(entry, scope, input.project_path).catch(() => {});
+          indexEntry(entry, scope, input.project_path).catch((err) => {
+            log.warn('[MemoryTool] Index entry failed after insert', { err, entryId: entry.id, scope });
+            clog.warn('Index entry failed:', entry.id);
+          });
 
           return { ok: true, action: 'insert', entry };
         }
@@ -371,7 +374,10 @@ export const memoryTool: InternalTool<unknown, MemoryOutput> = {
 
           entries.push(summaryEntry);
           await fs.writeFile(memoryPath, serializeMemoryFile(entries), 'utf-8');
-          indexEntry(summaryEntry, scope, input.project_path).catch(() => {});
+          indexEntry(summaryEntry, scope, input.project_path).catch((err) => {
+          log.warn('[MemoryTool] Index entry failed after compact summary', { err, scope });
+          clog.warn('Index summary failed:', summaryEntry.id);
+        });
 
           return { ok: true, action: 'compact', entry: summaryEntry, entries };
         }
@@ -387,7 +393,10 @@ export const memoryTool: InternalTool<unknown, MemoryOutput> = {
 
           entries[index] = { ...entries[index], ...input.updates, id: entries[index].id, timestamp: new Date().toISOString() };
           await fs.writeFile(memoryPath, serializeMemoryFile(entries), 'utf-8');
-          indexEntry(entries[index], scope, input.project_path).catch(() => {});
+          indexEntry(entries[index], scope, input.project_path).catch((err) => {
+          log.warn('[MemoryTool] Index entry failed during reindex', { err, index, scope });
+          clog.warn('Reindex entry failed at index:', index);
+        });
 
           return { ok: true, action: 'edit', entry: entries[index] };
         }

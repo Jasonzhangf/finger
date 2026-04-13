@@ -15,6 +15,9 @@ import type {
   LedgerEntryFile,
 } from './context-ledger-memory-types.js';
 import type { TaskBlock, TaskMessage } from './context-builder-types.js';
+import { logger } from '../core/logger.js';
+
+const log = logger.module('ContextLedgerMemory');
 import {
   appendLedgerEvent,
   buildPreview,
@@ -717,7 +720,9 @@ async function executeCompactAction(
   });
 
   // Remove pending marker after successful compaction
-  await fs.unlink(pendingMarkerPath).catch(() => {});
+  await fs.unlink(pendingMarkerPath).catch((err) => {
+    log.warn('[ContextLedgerMemory] Failed to remove pending marker after compaction', { err, pendingMarkerPath });
+  });
 
   return {
     ok: true,
