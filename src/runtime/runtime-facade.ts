@@ -207,30 +207,6 @@ export class RuntimeFacade {
     return null;
   }
 
-  private resolvePersistedAgentSessionBinding(agentId: string): string | null {
-    const normalizedAgentId = agentId.trim();
-    if (!normalizedAgentId) return null;
-    try {
-      const records = this.sessionControlPlaneStore.list({ agentId: normalizedAgentId, provider: 'finger' });
-      for (const record of records) {
-        const candidate = sanitizeToolSessionCandidate(
-          normalizedAgentId,
-          record.fingerSessionId,
-          'callTool.persistedAgentBinding',
-          this.sessionManager,
-          { suppressWarn: true },
-        );
-        if (candidate) return candidate;
-      }
-    } catch (error) {
-      log.warn('Failed to resolve persisted agent-session binding', {
-        agentId: normalizedAgentId,
-        error: error instanceof Error ? error.message : String(error),
-      });
-    }
-    return null;
-  }
-
   // ==================== Session 管理 ====================
 
   /**
