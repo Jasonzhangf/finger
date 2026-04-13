@@ -510,17 +510,19 @@ export class RuntimeFacade {
     const requestedToolName = toolName.trim();
     const resolvedToolName = this.resolveToolAliasForAgent(agentId, requestedToolName);
     const toolId = `${agentId}-${resolvedToolName}-${startTime}`;
-    const optionSessionId = this.sanitizeToolSessionCandidate(
+    const optionSessionId = sanitizeToolSessionCandidate(
       agentId,
       typeof options.sessionId === 'string' ? options.sessionId : null,
       'callTool.options.sessionId',
+      this.sessionManager,
     );
-    const boundSessionId = this.sanitizeToolSessionCandidate(
+    const boundSessionId = sanitizeToolSessionCandidate(
       agentId,
       this.agentSessionBindings.get(agentId) ?? null,
       'callTool.boundAgentSession',
+      this.sessionManager,
     );
-    const persistedSessionId = this.resolvePersistedAgentSessionBinding(agentId);
+    const persistedSessionId = resolvePersistedAgentSessionBinding(agentId, this.sessionControlPlaneStore, this.sessionManager);
     const sessionId = optionSessionId
       ?? boundSessionId
       ?? persistedSessionId
