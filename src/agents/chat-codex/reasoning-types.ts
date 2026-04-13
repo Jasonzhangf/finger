@@ -141,6 +141,7 @@ export interface ReasoningContext {
   autoContextRebuild?: boolean;
   autoDigest?: boolean;
   digestMode?: string;
+  metadata?: Record<string, unknown>;
 }
 
 // ==================== Runner 接口 ====================

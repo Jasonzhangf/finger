@@ -7,6 +7,9 @@
 import { join } from 'path';
 import { FINGER_PATHS, ensureDir, normalizeSessionDirName } from '../../core/finger-paths.js';
 
+import { existsSync } from 'fs';
+import { FINGER_SOURCE_ROOT } from '../../core/source-root.js';
+import { loadAIProviders } from '../../core/user-settings.js';
 import type {
   ReasoningRoleProfile,
   ReasoningToolSpec,
@@ -372,4 +375,74 @@ function extractKernelRoundTrace(metadata: Record<string, unknown>): ReasoningRo
   }
 
   return result;
+}
+
+// ==================== Runner 辅助函数 ====================
+
+function resolveStopReasonFromKernelMetadata(metadata?: Record<string, unknown>): string {
+  if (!metadata) return 'model_stop';
+  const rounds = extractKernelRoundTrace(metadata);
+  const lastRound = rounds.length > 0 ? rounds[rounds.length - 1] : undefined;
+  if (lastRound?.finishReason && lastRound.finishReason.length > 0) return lastRound.finishReason;
+  if (lastRound?.responseStatus && lastRound.responseStatus !== 'completed') {
+    return `response_${lastRound.responseStatus}`;
+  }
+  return 'model_stop';
+}
+
+function normalizeRunnerSessionId(sessionId: string | undefined): string {
+  return typeof sessionId === 'string' && sessionId.trim().length > 0
+    ? sessionId.trim()
+    : 'default';
+}
+
+function resolveRunnerRuntimeKey(sessionId: string | undefined): string {
+  return normalizeRunnerSessionId(sessionId);
+}
+
+function parseOptionalString(value: unknown): string | undefined {
+  return typeof value === 'string' && value.trim().length > 0 ? value.trim() : undefined;
+}
+
+function resolveRunnerProviderId(context?: ReasoningContext): string {
+  const metadata = context?.metadata;
+  if (isRecord(metadata)) {
+    const fromKernelProviderId = parseOptionalString(metadata.kernelProviderId);
+    if (fromKernelProviderId) return fromKernelProviderId;
+    const fromProviderId = parseOptionalString(metadata.providerId);
+    if (fromProviderId) return fromProviderId;
+    const fromProvider = parseOptionalString(metadata.provider);
+    if (fromProvider) return fromProvider;
+  }
+  const fromSettings = resolveActiveProviderIdFromUserSettings();
+  if (fromSettings) return fromSettings;
+  const fromEnv = parseOptionalString(process.env.FINGER_KERNEL_PROVIDER);
+  if (fromEnv) return fromEnv;
+  return '';
+}
+
+function resolveActiveProviderIdFromUserSettings(): string | undefined {
+  try {
+    const aiProviders = loadAIProviders();
+    const normalized = typeof aiProviders.default === 'string' ? aiProviders.default.trim() : '';
+    if (normalized.length > 0) return normalized;
+    const first = Object.keys(aiProviders.providers || {})[0];
+    return typeof first === 'string' && first.trim().length > 0 ? first.trim() : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function resolveKernelBinaryPath(configuredPath?: string): string {
+  if (configuredPath && configuredPath.length > 0) return configuredPath;
+  if (process.env.FINGER_KERNEL_BRIDGE_BIN && process.env.FINGER_KERNEL_BRIDGE_BIN.length > 0) {
+    return process.env.FINGER_KERNEL_BRIDGE_BIN;
+  }
+  // Check dist/bin first (global installation), then rust/target (local development)
+  const distBin = join(FINGER_SOURCE_ROOT, 'dist', 'bin', 'kernel-bridge');
+  if (existsSync(distBin)) return distBin;
+  const rustTarget = join(FINGER_SOURCE_ROOT, 'rust', 'target', 'release', 'kernel-bridge');
+  if (existsSync(rustTarget)) return rustTarget;
+  // Fallback to relative path
+  return join(FINGER_SOURCE_ROOT, 'dist', 'bin', 'kernel-bridge');
 }
