@@ -688,14 +688,11 @@ export class RuntimeFacade {
             // === Context Rebuild Decision ===
             // 核心原则：最近 3 轮永远保留在 session_messages（current），不依赖索引
             // Rebuild 只补充历史上下文（ledger 搜索），作为 supplement
+            // 默认：最近 3 轮保持原始格式（不压缩）
+            // Rebuild 时：才压缩 + 搜索历史补充
             const ALWAYS_KEEP_RECENT_ROUNDS = 3;
-            const rawMessages = this.sessionManager.getMessages(sessionId, ALWAYS_KEEP_RECENT_ROUNDS);
-            // 压缩原始消息为轻量级 Digest（去掉大体积的 tool_output）
-            const recentDigests = rawMessages.length > 0
-              ? [compressCurrentHistory(rawMessages)]
-              : [];
-            runtimeContextRaw.session_messages = recentDigests;
-            runtimeContextRaw.working_set_mode = 'recent_digest_plus_rebuild';
+            runtimeContextRaw.session_messages = this.sessionManager.getMessages(sessionId, ALWAYS_KEEP_RECENT_ROUNDS);
+            runtimeContextRaw.working_set_mode = 'recent_raw';
 
             const rebuildSession = this.sessionManager.getSession(sessionId);
             const rebuildMessages = this.sessionManager.getMessages(sessionId, 0);
@@ -784,6 +781,13 @@ export class RuntimeFacade {
                 isHeartbeatOrCron,
                 indexReady,
               });
+              
+              // Rebuild 时压缩最近 3 轮为轻量 digest
+              const rawMessages = this.sessionManager.getMessages(sessionId, ALWAYS_KEEP_RECENT_ROUNDS);
+              if (rawMessages.length > 0) {
+                runtimeContextRaw.session_messages = [compressCurrentHistory(rawMessages)];
+                runtimeContextRaw.working_set_mode = 'recent_digest_plus_rebuild';
+              }
               
               const rebuildResult = await executeContextRebuild(
                 sessionId,
