@@ -832,3 +832,25 @@ function parseOptionalNonNegativeNumber(value: unknown): number | undefined {
   return undefined;
 }
 
+
+function shouldPreferContextBuilderHistory(metadata: Record<string, unknown> | undefined): boolean {
+  if (!metadata) return false;
+  const source = parseOptionalString(metadata.contextHistorySource)?.trim().toLowerCase() ?? '';
+  if (source === 'raw_session' || source === 'raw_session_fallback') return true;
+  if (source === 'session_view_passthrough' || source === 'session_view_fallback') return true;
+  if (source.startsWith('context_builder')) return true;
+  if (parseOptionalBoolean(metadata.contextBuilderIndexed) === true) return true;
+  if (parseOptionalBoolean(metadata.contextBuilderRebuilt) === true) return true;
+  if (parseOptionalBoolean(metadata.contextBuilderBypassed) === false) return true;
+  return false;
+}
+
+function hasMediaInputItemsInMetadata(metadata: Record<string, unknown> | undefined): boolean {
+  if (!metadata) return false;
+  const raw = metadata.inputItems;
+  if (!Array.isArray(raw)) return false;
+  return raw.some((item) => {
+    if (!isRecord(item) || typeof item.type !== 'string') return false;
+    return item.type === 'image' || item.type === 'local_image';
+  });
+}
