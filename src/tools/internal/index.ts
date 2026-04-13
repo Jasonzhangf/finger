@@ -2,6 +2,7 @@ import { InternalToolRegistry } from './registry.js';
 import { shellExecTool } from './shell-tool.js';
 import { runSpawnCommand } from './spawn-runner.js';
 import type { ToolRegistry } from '../../runtime/tool-registry.js';
+import { RuntimeContext } from '../../runtime/runtime-context.js';
 import type { AgentRuntimeDeps } from '../../server/modules/agent-runtime/types.js';
 import { registerProjectTool } from './project-tool/project-tool.js';
 import { registerSystemRegistryTool } from './system-registry-tool.js';
@@ -132,51 +133,36 @@ export function createDefaultInternalToolRegistry(): InternalToolRegistry {
 /**
  * 在运行时注册 project_tool（需要完整的 AgentRuntimeDeps）
  */
-export function registerProjectToolInRuntime(
-  toolRegistry: ToolRegistry,
-  getAgentRuntimeDeps: () => AgentRuntimeDeps
-): void {
-  registerProjectTool(toolRegistry, getAgentRuntimeDeps);
+export function registerProjectToolInRuntime(toolRegistry: ToolRegistry): void {
+  registerProjectTool(toolRegistry, () => RuntimeContext.getInstance().getDeps());
 }
 
 /**
  * 在运行时注册 system-registry-tool（仅 System Agent 可用）
  */
-export function registerSystemRegistryToolInRuntime(
-  toolRegistry: ToolRegistry,
-  getAgentRuntimeDeps: () => AgentRuntimeDeps
-): void {
-  registerSystemRegistryTool(toolRegistry, getAgentRuntimeDeps);
+export function registerSystemRegistryToolInRuntime(toolRegistry: ToolRegistry): void {
+  registerSystemRegistryTool(toolRegistry, () => RuntimeContext.getInstance().getDeps());
 }
 
 /**
  * 在运行时注册 report-task-completion-tool（Project Agent 报告任务完成）
  */
-export function registerReportTaskCompletionToolInRuntime(
-  toolRegistry: ToolRegistry,
-  getAgentRuntimeDeps: () => AgentRuntimeDeps
-): void {
-  registerReportTaskCompletionTool(toolRegistry, getAgentRuntimeDeps);
+export function registerReportTaskCompletionToolInRuntime(toolRegistry: ToolRegistry): void {
+  registerReportTaskCompletionTool(toolRegistry, () => RuntimeContext.getInstance().getDeps());
 }
 
 /**
  * 在运行时注册 project.task.status / project.task.update（项目任务状态与更新）
  */
-export function registerProjectTaskToolInRuntime(
-  toolRegistry: ToolRegistry,
-  getAgentRuntimeDeps: () => AgentRuntimeDeps,
-): void {
-  registerProjectTaskTool(toolRegistry, getAgentRuntimeDeps);
+export function registerProjectTaskToolInRuntime(toolRegistry: ToolRegistry): void {
+  registerProjectTaskTool(toolRegistry, () => RuntimeContext.getInstance().getDeps());
 }
 
 /**
  * 在运行时注册 send_local_image 工具（发送本地图片到当前渠道）
  */
-export function registerSendLocalImageToolInRuntime(
-  toolRegistry: ToolRegistry,
-  getAgentRuntimeDeps: () => AgentRuntimeDeps,
-): void {
-  registerSendLocalImageTool(toolRegistry, getAgentRuntimeDeps);
+export function registerSendLocalImageToolInRuntime(toolRegistry: ToolRegistry): void {
+  registerSendLocalImageTool(toolRegistry, () => RuntimeContext.getInstance().getDeps());
 }
 
 // V3 Claim Tools
@@ -187,19 +173,19 @@ export * from './project-reject-task-tool.js';
 /**
  * 在运行时注册 project.claim_completion（Project Agent 提交完成声明）
  */
-export function registerProjectClaimCompletionToolInRuntime(toolRegistry: ToolRegistry, getAgentRuntimeDeps: () => AgentRuntimeDeps): void {
-  registerProjectClaimCompletionTool(toolRegistry, getAgentRuntimeDeps);
+export function registerProjectClaimCompletionToolInRuntime(toolRegistry: ToolRegistry): void {
+  registerProjectClaimCompletionTool(toolRegistry);
 }
 /**
  * 在运行时注册 project.approve_task（System Agent 验收通过）
  */
-export function registerProjectApproveTaskToolInRuntime(toolRegistry: ToolRegistry, getAgentRuntimeDeps: () => AgentRuntimeDeps): void {
-  registerProjectApproveTaskTool(toolRegistry, getAgentRuntimeDeps);
+export function registerProjectApproveTaskToolInRuntime(toolRegistry: ToolRegistry): void {
+  registerProjectApproveTaskTool(toolRegistry);
 }
 
 /**
  * 在运行时注册 project.reject_task（System Agent 拒绝重做）
  */
-export function registerProjectRejectTaskToolInRuntime(toolRegistry: ToolRegistry, getAgentRuntimeDeps: () => AgentRuntimeDeps): void {
-  registerProjectRejectTaskTool(toolRegistry, getAgentRuntimeDeps);
+export function registerProjectRejectTaskToolInRuntime(toolRegistry: ToolRegistry): void {
+  registerProjectRejectTaskTool(toolRegistry);
 }

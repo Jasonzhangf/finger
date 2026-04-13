@@ -6,6 +6,7 @@
  */
 
 import type { ToolRegistry } from '../../runtime/tool-registry.js';
+import { RuntimeContext } from '../../runtime/runtime-context.js';
 import type { AgentRuntimeDeps } from '../../server/modules/agent-runtime/types.js';
 import { logger } from '../../core/logger.js';
 import { FINGER_SYSTEM_AGENT_ID, FINGER_PROJECT_AGENT_ID } from '../../agents/finger-general/finger-general-module.js';
@@ -67,7 +68,8 @@ function validateClaim(input: Partial<ProjectClaimCompletionInput>): { valid: bo
   return { valid: errors.length === 0, errors };
 }
 
-export function registerProjectClaimCompletionTool(toolRegistry: ToolRegistry, getAgentRuntimeDeps: () => AgentRuntimeDeps): void {
+export function registerProjectClaimCompletionTool(toolRegistry: ToolRegistry): void {
+  const getAgentRuntimeDeps = () => RuntimeContext.getInstance().getDeps();
   toolRegistry.register({
     name: 'project.claim_completion',
     description: 'Project Agent submits structured completion claim for System Agent review. Must include taskId, summary, changedFiles, and verification evidence. Self-check must pass before claiming.',

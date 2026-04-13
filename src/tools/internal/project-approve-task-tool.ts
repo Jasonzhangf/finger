@@ -5,6 +5,7 @@
  */
 
 import type { ToolRegistry } from '../../runtime/tool-registry.js';
+import { RuntimeContext } from '../../runtime/runtime-context.js';
 import type { AgentRuntimeDeps } from '../../server/modules/agent-runtime/types.js';
 import { logger } from '../../core/logger.js';
 import { getClaimRecordByTaskId } from '../../common/claim-registry.js';
@@ -29,7 +30,8 @@ export interface ApproveTaskOutput {
 
 
 
-export function registerProjectApproveTaskTool(toolRegistry: ToolRegistry, getAgentRuntimeDeps: () => AgentRuntimeDeps): void {
+export function registerProjectApproveTaskTool(toolRegistry: ToolRegistry): void {
+  const getAgentRuntimeDeps = () => RuntimeContext.getInstance().getDeps();
   toolRegistry.register({
     name: 'project.approve_task',
     description: 'System Agent approves task after review_claim PASS. Marks task as approved, releases locks, and prepares summary for user reporting.',

@@ -68,6 +68,7 @@ import {
   registerAgentRuntimeTools,
   createGetAgentRuntimeDeps,
 } from './modules/agent-runtime/index.js';
+import { RuntimeContext } from '../runtime/runtime-context.js';
 import type { AgentDispatchRequest } from './modules/agent-runtime/types.js';
 import { createChannelBridgeHubRoute } from './modules/channel-bridge-hub-route.js';
 import { checkAIProviderConfig } from './modules/ai-provider-config.js';
@@ -257,6 +258,9 @@ const getAgentRuntimeDeps = createGetAgentRuntimeDeps(
     isPrimaryOrchestratorTarget,
   },
 );
+
+// Initialize RuntimeContext - 统一依赖注入入口
+RuntimeContext.initialize(getAgentRuntimeDeps);
 
 const dispatchTaskToAgent = (input: AgentDispatchRequest) =>
   dispatchTaskToAgentModule(getAgentRuntimeDeps(), input);

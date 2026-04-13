@@ -33,24 +33,24 @@ export function registerDefaultRuntimeTools(
 
   // 注册 project_tool（需要 AgentRuntimeDeps）
   if (getAgentRuntimeDeps) {
-    registerProjectToolInRuntime(runtimeToolRegistry, getAgentRuntimeDeps);
+    registerProjectToolInRuntime(runtimeToolRegistry);
     loadedToolNames.push('project_tool');
-    registerSystemRegistryToolInRuntime(runtimeToolRegistry, getAgentRuntimeDeps);
+    registerSystemRegistryToolInRuntime(runtimeToolRegistry);
     loadedToolNames.push('system-registry-tool');
-    registerReportTaskCompletionToolInRuntime(runtimeToolRegistry, getAgentRuntimeDeps);
+    registerReportTaskCompletionToolInRuntime(runtimeToolRegistry);
     loadedToolNames.push('report-task-completion');
-    registerProjectTaskToolInRuntime(runtimeToolRegistry, getAgentRuntimeDeps);
+    registerProjectTaskToolInRuntime(runtimeToolRegistry);
     loadedToolNames.push('project.task.status');
     loadedToolNames.push('project.task.update');
-    registerSendLocalImageToolInRuntime(runtimeToolRegistry, getAgentRuntimeDeps);
+    registerSendLocalImageToolInRuntime(runtimeToolRegistry);
     loadedToolNames.push('send_local_image');
 
     // V3 Claim Tools
-    registerProjectClaimCompletionToolInRuntime(runtimeToolRegistry, getAgentRuntimeDeps);
+    registerProjectClaimCompletionToolInRuntime(runtimeToolRegistry);
     loadedToolNames.push('project.claim_completion');
-    registerProjectApproveTaskToolInRuntime(runtimeToolRegistry, getAgentRuntimeDeps);
+    registerProjectApproveTaskToolInRuntime(runtimeToolRegistry);
     loadedToolNames.push('project.approve_task');
-    registerProjectRejectTaskToolInRuntime(runtimeToolRegistry, getAgentRuntimeDeps);
+    registerProjectRejectTaskToolInRuntime(runtimeToolRegistry);
     loadedToolNames.push('project.reject_task');
   }
 
