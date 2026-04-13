@@ -854,3 +854,28 @@ function hasMediaInputItemsInMetadata(metadata: Record<string, unknown> | undefi
     return item.type === 'image' || item.type === 'local_image';
   });
 }
+
+function inferModelContextWindowFromMetadata(metadata: Record<string, unknown> | undefined): number | undefined {
+  const modelFromMetadata =
+    parseOptionalString(metadata?.model)
+    ?? parseOptionalString(metadata?.kernelModel)
+    ?? parseOptionalString(metadata?.model_name);
+  if (modelFromMetadata) {
+    const inferred = inferModelContextWindow(modelFromMetadata);
+    if (inferred !== undefined) return inferred;
+  }
+  return undefined;
+}
+
+function inferModelContextWindow(model: string | undefined): number | undefined {
+  if (!model) return undefined;
+  const normalized = model.trim().toLowerCase();
+  if (!normalized) return undefined;
+  if (/^gpt-5(\.\d+)?-codex(?:-(?:mini|max))?$/.test(normalized)) {
+    return 272_000;
+  }
+  if (normalized === 'gpt-5-codex' || normalized === 'gpt-5-codex-mini' || normalized === 'gpt-5-codex-max') {
+    return 272_000;
+  }
+  return undefined;
+}
