@@ -860,11 +860,11 @@ export class RuntimeFacade {
     const normalizedAgentId = agentId.trim();
     const normalizedSessionId = sessionId.trim();
     if (normalizedAgentId.length === 0 || normalizedSessionId.length === 0) return;
-    if (!this.isBindableSessionId(normalizedAgentId, normalizedSessionId)) {
+    if (!isBindableSessionId(normalizedAgentId, normalizedSessionId, this.sessionManager)) {
       log.warn('Rejected agent-session binding', {
         agentId: normalizedAgentId,
         sessionId: normalizedSessionId,
-        reason: this.isEphemeralDispatchSessionId(normalizedSessionId)
+        reason: isEphemeralDispatchSessionId(normalizedSessionId)
           ? 'ephemeral_dispatch_id_forbidden'
           : 'session_not_found_or_agent_scope_forbidden',
       });
