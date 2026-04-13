@@ -19,6 +19,7 @@ import type {
   ReasoningLoopEvent,
   ReasoningKernelEvent,
   ReasoningKernelRawEvent,
+  ReasoningKernelInputItem,
   ReasoningContext,
   ReasoningRunner,
   ReasoningInputItem,
@@ -471,4 +472,40 @@ function parseKernelEvent(line: string): ReasoningKernelRawEvent | null {
   };
 
   return event;
+}
+
+function extractKernelReasoningTrace(metadata: Record<string, unknown>): string[] {
+  const raw = metadata.reasoning_trace;
+  if (!Array.isArray(raw)) return [];
+  const result: string[] = [];
+  for (const item of raw) {
+    if (typeof item === 'string' && item.trim().length > 0) {
+      result.push(item.trim());
+    }
+  }
+  return result;
+}
+
+function parseKernelInputItems(metadata?: Record<string, unknown>): ReasoningKernelInputItem[] | undefined {
+  if (!metadata) return undefined;
+  const raw = metadata.input_items;
+  if (!Array.isArray(raw)) return undefined;
+  const result: ReasoningKernelInputItem[] = [];
+  for (const item of raw) {
+    if (!isRecord(item)) continue;
+    const type = parseOptionalString(item.type);
+    if (type === 'text') {
+      const text = parseOptionalString(item.text);
+      if (text) result.push({ type: 'text', text });
+    } else if (type === 'image') {
+      const imageUrl = parseOptionalString(item.image_url);
+      if (imageUrl) result.push({ type: 'image', image_url: imageUrl });
+    }
+  }
+  return result.length > 0 ? result : undefined;
+}
+
+function normalizeKernelInputItems(items: ReasoningKernelInputItem[] | undefined, fallbackText: string): ReasoningKernelInputItem[] {
+  if (items && items.length > 0) return items;
+  return [{ type: 'text', text: fallbackText }];
 }

@@ -314,3 +314,12 @@ export interface ReasoningKernelRawEvent {
 
 // 兼容性别名
 export type ChatCodexKernelEvent = ReasoningKernelRawEvent;
+
+// ==================== Kernel 输入项类型 ====================
+
+export type ReasoningKernelInputItem =
+  | { type: 'text'; text: string }
+  | { type: 'image'; image_url: string };
+
+// 兼容性别名
+export type KernelInputItem = ReasoningKernelInputItem;
