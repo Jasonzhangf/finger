@@ -1011,3 +1011,19 @@ function truncateInlineText(value: string, maxChars: number): string {
   if (flattened.length <= maxChars) return flattened;
   return `${flattened.slice(0, Math.max(0, maxChars - 3))}...`;
 }
+function resolveDeveloperRoleFromMetadata(
+  metadata: Record<string, unknown> | undefined,
+): DeveloperRole {
+  const candidates = [
+    parseOptionalString(metadata?.roleProfile),
+    parseOptionalString(metadata?.role_profile),
+    parseOptionalString(metadata?.contextLedgerRole),
+    parseOptionalString(metadata?.context_ledger_role),
+    parseOptionalString(metadata?.role),
+  ];
+  for (const candidate of candidates) {
+    if (!candidate) continue;
+    return normalizeDeveloperRole(candidate);
+  }
+  return 'project';
+}
