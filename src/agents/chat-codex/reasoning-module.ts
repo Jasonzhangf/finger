@@ -788,3 +788,36 @@ function estimateStructuredTokens(value: unknown): number {
   }
 }
 
+function estimateInputItemsBreakdown(
+  inputItems: ReasoningKernelInputItem[] | undefined,
+  fallbackUserText?: string,
+): { inputTextTokens: number; inputMediaTokens: number; inputMediaCount: number; inputTotalTokens: number } {
+  if (!Array.isArray(inputItems) || inputItems.length === 0) {
+    const fallback = estimateTextTokens(fallbackUserText);
+    return { inputTextTokens: fallback, inputMediaTokens: 0, inputMediaCount: 0, inputTotalTokens: fallback };
+  }
+
+  let inputTextTokens = 0;
+  let inputMediaTokens = 0;
+  let inputMediaCount = 0;
+  for (const item of inputItems) {
+    if (!item || typeof item !== 'object') continue;
+    if (item.type === 'text') {
+      inputTextTokens += estimateTextTokens(item.text);
+      continue;
+    }
+    if (item.type === 'image') {
+      inputMediaCount += 1;
+      continue;
+    }
+    if (item.type === 'local_image') {
+      inputMediaCount += 1;
+    }
+  }
+
+  // Media attachments are not counted into model context token budget in our policy.
+  inputMediaTokens = 0;
+  const inputTotalTokens = inputTextTokens + inputMediaTokens;
+  return { inputTextTokens, inputMediaTokens, inputMediaCount, inputTotalTokens };
+}
+

@@ -319,7 +319,5 @@ export type ChatCodexKernelEvent = ReasoningKernelRawEvent;
 
 export type ReasoningKernelInputItem =
   | { type: 'text'; text: string }
-  | { type: 'image'; image_url: string };
-
-// 兼容性别名
-export type KernelInputItem = ReasoningKernelInputItem;
+  | { type: 'image'; image_url: string }
+  | { type: 'local_image'; path: string };
