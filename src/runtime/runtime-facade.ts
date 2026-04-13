@@ -213,10 +213,11 @@ export class RuntimeFacade {
     try {
       const records = this.sessionControlPlaneStore.list({ agentId: normalizedAgentId, provider: 'finger' });
       for (const record of records) {
-        const candidate = this.sanitizeToolSessionCandidate(
+        const candidate = sanitizeToolSessionCandidate(
           normalizedAgentId,
           record.fingerSessionId,
           'callTool.persistedAgentBinding',
+          this.sessionManager,
           { suppressWarn: true },
         );
         if (candidate) return candidate;
@@ -904,13 +905,14 @@ export class RuntimeFacade {
   getBoundSessionId(agentId: string): string | null {
     const normalizedAgentId = agentId.trim();
     if (!normalizedAgentId) return null;
-    const bound = this.sanitizeToolSessionCandidate(
+    const bound = sanitizeToolSessionCandidate(
       normalizedAgentId,
       this.agentSessionBindings.get(normalizedAgentId) ?? null,
       'runtime.getBoundSessionId.bound',
+      this.sessionManager,
     );
     if (bound) return bound;
-    const persisted = this.resolvePersistedAgentSessionBinding(normalizedAgentId);
+    const persisted = resolvePersistedAgentSessionBinding(normalizedAgentId, this.sessionControlPlaneStore, this.sessionManager);
     if (!persisted) return null;
     this.agentSessionBindings.set(normalizedAgentId, persisted);
     return persisted;
