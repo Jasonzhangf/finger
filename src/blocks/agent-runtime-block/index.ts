@@ -788,7 +788,10 @@ export class AgentRuntimeBlock extends BaseBlock {
 
   private readRuntimeProfileFromLoadedConfig(agentId: string): AgentRuntimeConfigProfile | null {
     const loaded = this.deps.getLoadedAgentConfigs().find((item) => item.config.id === agentId);
-    if (!loaded) return null;
+    if (!loaded) {
+      log.warn('[AgentRuntimeBlock] Runtime profile not found for agent', { agentId });
+      return null;
+    }
     const runtime = isObjectRecord(loaded.config.runtime) ? loaded.config.runtime : {};
     const metadata = isObjectRecord(loaded.config.metadata) ? loaded.config.metadata : {};
 
@@ -1469,7 +1472,10 @@ export class AgentRuntimeBlock extends BaseBlock {
       deploymentsSize: this.deployments.size,
     });
     const candidates = Array.from(this.deployments.values()).filter((item) => item.agentId === agentId);
-    if (candidates.length === 0) return null;
+    if (candidates.length === 0) {
+      log.warn('[AgentRuntimeBlock] No deployment found for agent', { agentId, deploymentsSize: this.deployments.size });
+      return null;
+    }
     candidates.sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt));
     return candidates[0];
   }
@@ -1913,9 +1919,15 @@ export class AgentRuntimeBlock extends BaseBlock {
 
   private removeQueuedDispatch(laneKey: string, dispatchId: string): QueuedDispatchItem | null {
     const queue = this.dispatchQueueByLane.get(laneKey);
-    if (!queue || queue.length === 0) return null;
+    if (!queue || queue.length === 0) {
+      log.warn('[AgentRuntimeBlock] Queue empty when removing dispatch', { laneKey, dispatchId });
+      return null;
+    }
     const idx = queue.findIndex((item) => item.dispatchId === dispatchId);
-    if (idx < 0) return null;
+    if (idx < 0) {
+      log.warn('[AgentRuntimeBlock] Dispatch not found in queue', { laneKey, dispatchId, queueLength: queue?.length });
+      return null;
+    }
     const [removed] = queue.splice(idx, 1);
     if (queue.length === 0) {
       this.dispatchQueueByLane.delete(laneKey);
@@ -2235,7 +2247,10 @@ export class AgentRuntimeBlock extends BaseBlock {
       task: params.input.task,
       metadata: params.input.metadata,
     });
-    if (!fallback) return null;
+    if (!fallback) {
+      log.warn('[AgentRuntimeBlock] No fallback dispatch available', { targetAgentId: params.targetAgentId, dispatchId: params.dispatchId });
+      return null;
+    }
 
     const fallbackResult: DispatchSummaryResult = {
       success: true,
