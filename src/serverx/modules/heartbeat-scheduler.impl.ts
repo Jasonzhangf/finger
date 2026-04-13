@@ -362,6 +362,7 @@ export class HeartbeatScheduler {
   private idleGuardBlocked = false;
   private idleGuardLastLoggedAt = 0;
   private idleGuardLastReason = '';
+  private readonly dispatchInProgressByAgent = new Map<string, string>(); // agentId -> taskId (heartbeat dispatch mutex)
 
     private heartbeatState: HeartbeatState = 'RUNNING';
   private heartbeatStateContext: HeartbeatStateContext = { state: 'RUNNING' };
@@ -2164,6 +2165,18 @@ constructor(private deps: AgentRuntimeDeps) {}
     config?: HeartbeatTaskConfig | { progressDelivery?: ProgressDeliveryPolicy },
     preferredSessionId?: string,
   ): Promise<boolean> {
+    // P0 #2: Heartbeat dispatch mutex - prevent concurrent dispatch to same agent
+    const existingTaskId = this.dispatchInProgressByAgent.get(targetAgentId);
+    if (existingTaskId) {
+      log.debug('[HeartbeatScheduler] Skip dispatchDirect: dispatch already in progress', {
+        targetAgentId,
+        taskId,
+        existingTaskId,
+        projectId,
+      });
+      return false;
+    }
+    
     const controlSessionId = await this.ensureHeartbeatControlSession(targetAgentId, projectId);
     const sessionId = typeof controlSessionId === 'string' ? controlSessionId.trim() : '';
     if (!sessionId) {
@@ -2183,10 +2196,15 @@ constructor(private deps: AgentRuntimeDeps) {}
       });
       return false;
     }
+    
+    // Mark dispatch in progress before runtime_view check
+    this.dispatchInProgressByAgent.set(targetAgentId, taskId);
+    
     try {
       const snapshot = await this.deps.agentRuntimeBlock.execute('runtime_view', {});
       const busyState = extractAgentStatusFromRuntimeView(snapshot, targetAgentId);
       if (busyState.busy !== false) {
+        this.dispatchInProgressByAgent.delete(targetAgentId);
         log.debug('[HeartbeatScheduler] Skip dispatchDirect: target busy or unknown', {
           targetAgentId,
           taskId,
@@ -2196,6 +2214,7 @@ constructor(private deps: AgentRuntimeDeps) {}
         return false;
       }
     } catch (error) {
+      this.dispatchInProgressByAgent.delete(targetAgentId);
       log.warn('[HeartbeatScheduler] runtime_view lookup failed; skip dispatchDirect', {
         targetAgentId,
         taskId,
@@ -2204,6 +2223,7 @@ constructor(private deps: AgentRuntimeDeps) {}
       });
       return false;
     }
+    
     const resolvedProgressDelivery = config?.progressDelivery ?? DEFAULT_SCHEDULED_PROGRESS_DELIVERY;
     try {
       await this.deps.agentRuntimeBlock.execute('dispatch', {
@@ -2222,8 +2242,12 @@ constructor(private deps: AgentRuntimeDeps) {}
         },
         blocking: false,
       });
+      // Keep mutex locked until dispatch completes (non-blocking, so we release immediately)
+      // For blocking dispatch, we would release after await
+      this.dispatchInProgressByAgent.delete(targetAgentId);
       return true;
     } catch (error) {
+      this.dispatchInProgressByAgent.delete(targetAgentId);
       log.warn('[HeartbeatScheduler] dispatchDirect execute failed', {
         targetAgentId,
         taskId,
