@@ -252,9 +252,11 @@ export function shouldRetryBlockingMessage(errorMessage: string): boolean {
   if (normalized.includes('daily_cost_limit_exceeded')) return false;
   if (normalized.includes('insufficient_quota')) return false;
   if (normalized.includes('unauthorized')) return false;
-  if (normalized.includes('forbidden')) return false;
+ if (normalized.includes('forbidden')) return false;
+  // context overflow / need rebuild: 触发 rebuild 后 retry
+  if (normalized.includes('context_overflow') || normalized.includes('need context rebuild')) return true;
 
-  const inferredStatus = extractHttpStatusFromError(errorMessage);
+ const inferredStatus = extractHttpStatusFromError(errorMessage);
   if (inferredStatus !== undefined) {
     return inferredStatus === 408
       || inferredStatus === 409

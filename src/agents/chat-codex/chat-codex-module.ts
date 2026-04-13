@@ -637,20 +637,28 @@ export class ProcessChatCodexRunner implements ChatCodexRunner {
       const pendingTurnId = this.nextSubmissionId(session, 'pending');
       const maxPayloadChars = Math.floor(getContextWindow() * 0.9);
       let protectedOptions = options;
-      const estimatedSize = this.estimateSubmissionPayloadSize(normalizedItems, options);
-      if (estimatedSize > maxPayloadChars) {
-        chatCodexLog.warn('Submission payload exceeds limit, truncating history', {
-          estimatedSize,
-          maxPayloadChars,
-          historyItemsCount: Array.isArray(options?.history_items) ? options.history_items.length : 0,
-        });
-        protectedOptions = this.truncateHistoryItemsForPayloadLimit(options, maxPayloadChars);
-        const newSize = this.estimateSubmissionPayloadSize(normalizedItems, protectedOptions);
-        chatCodexLog.info('History truncated to fit payload limit', {
-          newHistoryItemsCount: Array.isArray(protectedOptions?.history_items) ? protectedOptions.history_items.length : 0,
-          newEstimatedSize: newSize,
-        });
-      }
+     const estimatedSize = this.estimateSubmissionPayloadSize(normalizedItems, options);
+     if (estimatedSize > maxPayloadChars) {
+       // Payload 超限不应该 truncate，应该触发 context rebuild
+       // 返回错误让上层触发 rebuild 后 retry
+       chatCodexLog.warn('Submission payload exceeds limit, need context rebuild', {
+         estimatedSize,
+         maxPayloadChars,
+         historyItemsCount: Array.isArray(options?.history_items) ? options.history_items.length : 0,
+         sessionId,
+       });
+       return {
+         reply: '上下文超限，需要触发 context rebuild 后重试。',
+         events: [],
+         usedBinaryPath: resolvedPath,
+         kernelMetadata: {
+           context_overflow: true,
+           estimatedSize,
+           maxPayloadChars,
+           needRebuild: true,
+         },
+       };
+     }
       this.sendUserTurnSubmission(session, pendingTurnId, normalizedItems, protectedOptions);
       session.activeTurn.pendingInputQueued = true;
       session.activeTurn.pendingTurnId = pendingTurnId;
@@ -695,22 +703,21 @@ export class ProcessChatCodexRunner implements ChatCodexRunner {
         onKernelEvent: context?.onKernelEvent,
       };
 
-      const maxPayloadChars = Math.floor(getContextWindow() * 0.9);
-      let protectedOptions = options;
-      const estimatedSize = this.estimateSubmissionPayloadSize(normalizedItems, options);
-      if (estimatedSize > maxPayloadChars) {
-        chatCodexLog.warn('Submission payload exceeds limit, truncating history', {
-          estimatedSize,
-          maxPayloadChars,
-          historyItemsCount: Array.isArray(options?.history_items) ? options.history_items.length : 0,
-        });
-        protectedOptions = this.truncateHistoryItemsForPayloadLimit(options, maxPayloadChars);
-        const newSize = this.estimateSubmissionPayloadSize(normalizedItems, protectedOptions);
-        chatCodexLog.info('History truncated to fit payload limit', {
-          newHistoryItemsCount: Array.isArray(protectedOptions?.history_items) ? protectedOptions.history_items.length : 0,
-          newEstimatedSize: newSize,
-        });
-      }
+     const maxPayloadChars = Math.floor(getContextWindow() * 0.9);
+     let protectedOptions = options;
+     const estimatedSize = this.estimateSubmissionPayloadSize(normalizedItems, options);
+     if (estimatedSize > maxPayloadChars) {
+       // Payload 超限不应该 truncate，应该触发 context rebuild
+       // Reject Promise 让上层触发 rebuild 后 retry
+       chatCodexLog.warn('Submission payload exceeds limit, need context rebuild', {
+         estimatedSize,
+         maxPayloadChars,
+         historyItemsCount: Array.isArray(options?.history_items) ? options.history_items.length : 0,
+         sessionId,
+       });
+       reject(new Error('chat-codex submission payload exceeds limit, need context rebuild'));
+       return;
+     }
       try {
         this.sendUserTurnSubmission(session, turnId, normalizedItems, protectedOptions);
       } catch (sendError) {

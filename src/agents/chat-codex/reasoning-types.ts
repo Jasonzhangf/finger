@@ -274,3 +274,43 @@ export interface ReasoningParsedEvent {
   error?: string;
   response?: ReasoningKernelResponse;
 }
+
+// ==================== Kernel 原始事件类型 ====================
+
+export interface ReasoningKernelRawEvent {
+  id: string;
+  msg: {
+    type: string;
+    last_agent_message?: string;
+    message?: string;
+    metadata_json?: string;
+    call_id?: string;
+    tool_name?: string;
+    input?: unknown;
+    output?: unknown;
+    error?: string;
+    duration_ms?: number;
+    round?: number;
+    function_calls_count?: number;
+    reasoning_count?: number;
+    history_items_count?: number;
+    has_output_text?: boolean;
+    seq?: number;
+    finish_reason?: string;
+    response_status?: string;
+    response_incomplete_reason?: string;
+    response_id?: string;
+    input_tokens?: number;
+    output_tokens?: number;
+    total_tokens?: number;
+    estimated_tokens_in_context_window?: number;
+    estimated_tokens_compactable?: number;
+    context_usage_percent?: number;
+    max_input_tokens?: number;
+    threshold_percent?: number;
+    model_context_window?: number;
+  };
+}
+
+// 兼容性别名
+export type ChatCodexKernelEvent = ReasoningKernelRawEvent;

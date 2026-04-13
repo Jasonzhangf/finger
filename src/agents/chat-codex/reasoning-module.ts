@@ -18,6 +18,7 @@ import type {
   ReasoningResult,
   ReasoningLoopEvent,
   ReasoningKernelEvent,
+  ReasoningKernelRawEvent,
   ReasoningContext,
   ReasoningRunner,
   ReasoningInputItem,
@@ -445,4 +446,30 @@ function resolveKernelBinaryPath(configuredPath?: string): string {
   if (existsSync(rustTarget)) return rustTarget;
   // Fallback to relative path
   return join(FINGER_SOURCE_ROOT, 'dist', 'bin', 'kernel-bridge');
+}
+
+// ==================== Kernel Event 解析 ====================
+
+function parseKernelEvent(line: string): ReasoningKernelRawEvent | null {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(line);
+  } catch {
+    return null;
+  }
+
+  if (!isRecord(parsed)) return null;
+  if (typeof parsed.type !== 'string') return null;
+  if (typeof parsed.timestamp !== 'string') return null;
+  if (typeof parsed.sessionId !== 'string') return null;
+  if (!isRecord(parsed.payload)) return null;
+
+  const event: ReasoningKernelRawEvent = {
+    type: parsed.type,
+    timestamp: parsed.timestamp,
+    sessionId: parsed.sessionId,
+    payload: parsed.payload,
+  };
+
+  return event;
 }

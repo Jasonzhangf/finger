@@ -7,6 +7,9 @@ import {
   resolveBlockingErrorStatus,
   shouldRetryBlockingMessage,
 } from '../modules/message-session.js';
+import { executeContextRebuild, estimateMessageTokens, compressCurrentHistory, extractPromptFromPayload } from '../../runtime/context-rebuild-executor.js';
+import { FINGER_PATHS } from '../../core/finger-paths.js';
+import path from 'path';
 import { sendDisplayFanout } from './message-display.js';
 import {
   buildAgentEnvelope,
@@ -158,10 +161,73 @@ export async function executeBlockingMessageRoute(params: {
       lastError = null;
       break;
     } catch (err) {
-      const errorMessage = err instanceof Error ? err.message : String(err);
-      lastError = err instanceof Error ? err : new Error(errorMessage);
-      const canRetry = shouldRetryBlockingMessage(errorMessage) && attempt < params.deps.blockingMaxRetries;
-      if (!canRetry) break;
+     const errorMessage = err instanceof Error ? err.message : String(err);
+     lastError = err instanceof Error ? err : new Error(errorMessage);
+     const canRetry = shouldRetryBlockingMessage(errorMessage) && attempt < params.deps.blockingMaxRetries;
+      
+     // Payload 超限需要触发 context rebuild
+     if (errorMessage.includes('need context rebuild') && params.requestSessionId) {
+       log.info('Payload exceeds limit, triggering context rebuild before retry', {
+         sessionId: params.requestSessionId,
+         targetId: params.targetId,
+         attempt,
+       });
+       try {
+          // 从 requestMessage 提取 prompt
+          const prompt = extractPromptFromPayload(params.requestMessage as Record<string, unknown>) || '';
+          
+          // 执行 context rebuild
+          const rebuildResult = await executeContextRebuild(
+            params.requestSessionId,
+            params.targetId,
+            prompt,
+            {
+              topK: 20,
+              maxTokens: 50000,
+            }
+          );
+         
+         if (rebuildResult.ok && rebuildResult.rankedBlocks.length > 0) {
+           // 用 rebuild 结果更新 requestMessage 的 history_items
+            const rebuiltHistory = rebuildResult.rankedBlocks.map(block => ({
+              role: 'assistant',
+              content: block.messages.map(m => m.content).join('\n'),
+              timestamp: block.startTimeIso,
+              tokenCount: block.tokenCount,
+            }));
+            
+            // 更新 requestMessage
+            if (isObjectRecord(params.requestMessage)) {
+              const metadata = isObjectRecord(params.requestMessage.metadata) ? params.requestMessage.metadata : {};
+              params.requestMessage = {
+                ...params.requestMessage,
+                metadata: {
+                  ...metadata,
+                  rebuiltHistory,
+                  contextRebuildTriggered: true,
+                },
+              };
+              log.info('Context rebuild completed, history updated', {
+                sessionId: params.requestSessionId,
+                blocksCount: rebuildResult.rankedBlocks.length,
+                tokensUsed: rebuildResult.tokensUsed,
+              });
+            }
+          } else {
+            log.warn('Context rebuild failed or returned empty results', {
+              sessionId: params.requestSessionId,
+              ok: rebuildResult.ok,
+              error: rebuildResult.error,
+            });
+          }
+        } catch (rebuildError) {
+          log.error('Context rebuild threw error', rebuildError instanceof Error ? rebuildError : undefined, {
+            sessionId: params.requestSessionId,
+          });
+        }
+      }
+      
+     if (!canRetry) break;
       const backoffMs = Math.min(30_000, Math.floor(params.deps.blockingRetryBaseMs * Math.pow(2, attempt)));
       attempt += 1;
       if (params.requestSessionId) {
