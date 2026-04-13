@@ -12,7 +12,7 @@ import { FINGER_PATHS, ensureDir, normalizeSessionDirName } from '../../core/fin
 
 import { existsSync, readdirSync, readFileSync } from 'fs';
 import { FINGER_SOURCE_ROOT } from '../../core/source-root.js';
-import { loadAIProviders } from '../../core/user-settings.js';
+import { loadAIProviders, getContextWindow } from '../../core/user-settings.js';
 import type {
   ReasoningRoleProfile,
   ReasoningToolSpec,
@@ -889,4 +889,30 @@ function normalizeDeveloperRole(role: string): DeveloperRole {
 
 function mapDeveloperRoleToPromptAgentType(role: DeveloperRole): string {
   return role;
+}
+
+function readDefaultContextWindow(): number {
+  try {
+    const value = getContextWindow();
+    if (typeof value === 'number' && Number.isFinite(value) && value > 0) {
+      return Math.floor(value);
+    }
+  } catch {
+    // ignore and fallback to built-in default
+  }
+  return DEFAULT_CONTEXT_WINDOW_TOKENS;
+}
+
+function resolveProviderIdForContextWindow(
+  metadata: Record<string, unknown> | undefined,
+  fallbackProviderId: string | undefined,
+): string | undefined {
+  const fromKernelProviderId = parseOptionalString(metadata?.kernelProviderId);
+  if (fromKernelProviderId) return fromKernelProviderId;
+  const fromProviderId = parseOptionalString(metadata?.providerId);
+  if (fromProviderId) return fromProviderId;
+  const fromProvider = parseOptionalString(metadata?.provider);
+  if (fromProvider) return fromProvider;
+  if (fallbackProviderId) return fallbackProviderId;
+  return resolveActiveProviderIdFromUserSettings();
 }
