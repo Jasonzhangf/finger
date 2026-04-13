@@ -459,16 +459,15 @@ function parseKernelEvent(line: string): ReasoningKernelRawEvent | null {
   }
 
   if (!isRecord(parsed)) return null;
-  if (typeof parsed.type !== 'string') return null;
-  if (typeof parsed.timestamp !== 'string') return null;
-  if (typeof parsed.sessionId !== 'string') return null;
-  if (!isRecord(parsed.payload)) return null;
+  if (typeof parsed.id !== 'string') return null;
+  if (!isRecord(parsed.msg)) return null;
+  if (typeof parsed.msg.type !== 'string') return null;
 
   const event: ReasoningKernelRawEvent = {
-    type: parsed.type,
-    timestamp: parsed.timestamp,
-    sessionId: parsed.sessionId,
-    payload: parsed.payload,
+    id: parsed.id,
+    msg: {
+      type: parsed.msg.type,
+    },
   };
 
   return event;
