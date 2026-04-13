@@ -133,34 +133,6 @@ export class RuntimeFacade {
     return agentId.trim() === 'finger-system-agent';
   }
 
-  private isSessionAllowedForAgent(agentId: string, session: SessionInfo): boolean {
-    const normalizedAgentId = agentId.trim();
-    const context = (session.context && typeof session.context === 'object')
-      ? (session.context as Record<string, unknown>)
-      : {};
-    const ownerAgentId = typeof context.ownerAgentId === 'string' ? context.ownerAgentId.trim() : '';
-    const memoryOwnerWorkerId = typeof context.memoryOwnerWorkerId === 'string'
-      ? context.memoryOwnerWorkerId.trim()
-      : '';
-    const sessionTier = typeof context.sessionTier === 'string' ? context.sessionTier.trim().toLowerCase() : '';
-    const isSystemSession = session.projectPath === SYSTEM_PROJECT_PATH
-      || sessionTier === 'system'
-      || ownerAgentId === 'finger-system-agent'
-      || memoryOwnerWorkerId === 'finger-system-agent'
-      || session.id.startsWith('system-');
-
-    if (memoryOwnerWorkerId && memoryOwnerWorkerId !== normalizedAgentId) {
-      return false;
-    }
-    if (ownerAgentId && ownerAgentId !== normalizedAgentId) {
-      return false;
-    }
-    if (this.isSystemAgent(normalizedAgentId)) {
-      return isSystemSession;
-    }
-    return !isSystemSession;
-  }
-
 
   /**
    * Sanitize tool error messages to prevent LLM from hallucinating tool calls.
