@@ -39,6 +39,15 @@ import { logger } from '../core/logger.js';
 import type { Session, SessionMessage, ISessionManager } from '../orchestration/session-types.js';
 import type { ProgressReport, SessionInfo, IRuntimeSessionManager, ISessionManagerLegacy } from './runtime-facade-types.js';
 
+import {
+  isEphemeralDispatchSessionId,
+  isSystemAgent,
+  isSessionAllowedForAgent,
+  isBindableSessionId,
+  sanitizeToolSessionCandidate,
+  resolvePersistedAgentSessionBinding,
+} from './runtime-facade-session-utils.js';
+
 // 进度报告
 export interface AgentProviderRuntimeConfig {
   type: string;
@@ -269,7 +278,7 @@ export class RuntimeFacade {
    * 设置当前会话
    */
   setCurrentSession(sessionId: string): boolean {
-    if (this.isEphemeralDispatchSessionId(sessionId)) {
+    if (isEphemeralDispatchSessionId(sessionId)) {
       log.warn('Rejected runtime current-session switch to ephemeral dispatch id', { sessionId });
       return false;
     }
