@@ -1027,3 +1027,18 @@ function resolveDeveloperRoleFromMetadata(
   }
   return 'project';
 }
+export function createChatCodexModule(
+  config: Partial<ReasoningModuleConfig> = {},
+  runner?: ReasoningRunner,
+): OutputModule {
+  return {
+    id: "finger-project-agent",
+    name: "finger-project-agent",
+    version: "1.0.0",
+    type: 'output',
+    handle: async () => {},
+  };
+}
+
+export const createReasoningModule = createChatCodexModule;
+import type { OutputModule } from '../../orchestration/module-registry.js';
