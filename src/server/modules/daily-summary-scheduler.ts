@@ -204,13 +204,13 @@ function buildChunkedTaskMessage(
   outputPath: string,
 ): string {
   const lines = [
-    `\${spec.title}（记忆进化，第 \${chunkIndex}/\${totalChunks} 块）`,
-    `date=\${currentDate}`,
-    `ledger=\${spec.resolveLedgerPath()}`,
-    `slot_start=\${slotStart}`,
-    `slot_end=\${slotEnd}`,
-    `chunk=\${chunkIndex}/\${totalChunks}`,
-    `memory_file=\${outputPath}`,
+    `${spec.title}（记忆进化，第 ${chunkIndex}/${totalChunks} 块）`,
+    `date=${currentDate}`,
+    `ledger=${spec.resolveLedgerPath()}`,
+    `slot_start=${slotStart}`,
+    `slot_end=${slotEnd}`,
+    `chunk=${chunkIndex}/${totalChunks}`,
+    `memory_file=${outputPath}`,
     '',
     '【记忆进化任务】',
     '目标：基于当日 ledger 行为，渐进式更新记忆文件内容',
@@ -225,7 +225,7 @@ function buildChunkedTaskMessage(
     '注意：禁止简单追加日志，必须进行内容进化',
   ];
   if (totalChunks > 1) {
-    lines.push(`6) 这是第 \${chunkIndex}/\${totalChunks} 块，完成后报告 "Chunk \${chunkIndex}/\${totalChunks} done"`);
+    lines.push(`6) 这是第 ${chunkIndex}/${totalChunks} 块，完成后报告 "Chunk ${chunkIndex}/${totalChunks} done"`);
   }
   return lines.join('\n');
 }
@@ -398,7 +398,7 @@ export class DailySummaryScheduler {
         if (!accepted) {
           this.logRuntime('Daily summary chunk dispatch failed', {
             task: spec.key,
-            chunk: `\${chunkIdx + 1}/\${totalChunks}`,
+            chunk: `${chunkIdx + 1}/${totalChunks}`,
             target: spec.targetAgentId,
             status: dispatchResult.status,
             error: dispatchResult.error,
@@ -409,7 +409,7 @@ export class DailySummaryScheduler {
         dispatchedChunks.push(chunkIdx + 1);
         this.logRuntime('Daily summary chunk dispatched', {
           task: spec.key,
-          chunk: `\${chunkIdx + 1}/\${totalChunks}`,
+          chunk: `${chunkIdx + 1}/${totalChunks}`,
           target: spec.targetAgentId,
           dispatchId: dispatchResult.dispatchId,
           status: dispatchResult.status,
@@ -419,7 +419,7 @@ export class DailySummaryScheduler {
       } catch (error) {
         this.logRuntime('Daily summary chunk dispatch exception', {
           task: spec.key,
-          chunk: `\${chunkIdx + 1}/\${totalChunks}`,
+          chunk: `${chunkIdx + 1}/${totalChunks}`,
           target: spec.targetAgentId,
           error: error instanceof Error ? error.message : String(error),
         });
