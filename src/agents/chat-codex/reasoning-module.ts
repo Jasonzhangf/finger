@@ -6,6 +6,7 @@
  */
 import type { MailboxSnapshot } from '../../runtime/mailbox-snapshot.js';
 import { join } from 'path';
+import { estimateTokensWithTiktoken } from '../../utils/tiktoken-estimator.js';
 import { FINGER_PATHS, ensureDir, normalizeSessionDirName } from '../../core/finger-paths.js';
 
 import { existsSync, readdirSync, readFileSync } from 'fs';
@@ -723,4 +724,11 @@ function buildMemoryRetrievalPromptBlock(metadata: Record<string, unknown> | und
     '- Need broader relevant history in prompt: use context_builder.rebuild (P4 dynamic_history only).',
     '- Do not treat visible prompt history as complete truth when historical evidence is required.',
   ].join('\n');
+}
+
+function estimateTextTokens(text: string | undefined): number {
+  if (typeof text !== 'string') return 0;
+  const normalized = text.trim();
+  if (!normalized) return 0;
+  return estimateTokensWithTiktoken(normalized);
 }
