@@ -523,7 +523,44 @@ export class ProcessChatCodexRunner implements ChatCodexRunner {
       id: 'sample',
       op: { type: 'user_turn', items, ...(options ? { options } : {}) },
     };
-    return JSON.stringify(sampleSubmission).length;
+    const totalSize = JSON.stringify(sampleSubmission).length;
+    
+    // Detailed breakdown - further decompose otherOptions
+    const itemsSize = JSON.stringify(items).length;
+    const historyItemsSize = Array.isArray(options?.history_items) 
+      ? JSON.stringify(options.history_items).length 
+      : 0;
+    
+    // Decompose otherOptions
+    const systemPromptSize = options?.system_prompt ? JSON.stringify(options.system_prompt).length : 0;
+    const developerInstructionsSize = options?.developer_instructions ? JSON.stringify(options.developer_instructions).length : 0;
+    const userInstructionsSize = options?.user_instructions ? JSON.stringify(options.user_instructions).length : 0;
+    const environmentContextSize = options?.environment_context ? JSON.stringify(options.environment_context).length : 0;
+    const contextLedgerSize = options?.context_ledger ? JSON.stringify(options.context_ledger).length : 0;
+    const turnContextSize = options?.turn_context ? JSON.stringify(options.turn_context).length : 0;
+    const contextWindowSize = options?.context_window ? JSON.stringify(options.context_window).length : 0;
+    const compactSize = options?.compact ? JSON.stringify(options.compact).length : 0;
+    const otherOptionsSize = systemPromptSize + developerInstructionsSize + userInstructionsSize + 
+      environmentContextSize + contextLedgerSize + turnContextSize + contextWindowSize + compactSize;
+    
+    // Log breakdown when size is large
+    if (totalSize > 100000) {
+      chatCodexLog.warn('Payload size breakdown', {
+        totalSize,
+        itemsSize,
+        historyItemsSize,
+        otherOptionsSize,
+        systemPromptSize,
+        developerInstructionsSize,
+        userInstructionsSize,
+        environmentContextSize,
+        contextLedgerSize,
+        turnContextSize,
+        historyItemsCount: Array.isArray(options?.history_items) ? options.history_items.length : 0,
+      });
+    }
+    
+    return totalSize;
   }
 
   private truncateHistoryItemsForPayloadLimit(
@@ -647,26 +684,27 @@ export class ProcessChatCodexRunner implements ChatCodexRunner {
          sessionId,
        });
        
-       // 压缩 history_items（保留最近3轮，其余转为 digest）
-       if (Array.isArray(options?.history_items) && options.history_items.length > 6) {
-         const recentItems = options.history_items.slice(-6); // 最近3轮（user+assistant）
-         const olderItems = options.history_items.slice(0, -6);
+       // 压缩 history_items：删除大部分历史，只保留最近几条
+       if (Array.isArray(options?.history_items) && options.history_items.length > 4) {
+         // 直接删除大部分历史，只保留最近 4 条（2轮对话）
+         const recentItems = options.history_items.slice(-4);
+         const olderItems = options.history_items.slice(0, -4);
          
-         // 将 olderItems 转为轻量级 digest
-         const compressedDigests = olderItems.map((item: any) => {
-           if (item.role === 'assistant' && item.content) {
-             // 保留 assistant 的摘要，截断长内容
-             const content = typeof item.content === 'string' ? item.content : JSON.stringify(item.content);
-             return {
-               role: 'assistant',
-               content: content.length > 500 ? content.substring(0, 500) + '...[compressed]' : content,
-               _compressed: true,
-             };
-           }
-           return item;
-         });
+         // 将 olderItems 合并为一条 digest（而不是保留所有）
+         const digestContent = olderItems.slice(-10).map((item: any) => {
+           const role = item.role || 'unknown';
+           const content = typeof item.content === 'string' ? item.content : JSON.stringify(item.content || item.arguments || item.output || '');
+           return `[${role}]: ${content.substring(0, 100)}`;
+         }).join('\n');
          
-         options.history_items = [...compressedDigests, ...recentItems];
+         const compressedDigest = {
+           role: 'assistant',
+           content: `[历史摘要]: ${digestContent.substring(0, 1500)}...`,
+           _compressed: true,
+         };
+         
+         options.history_items = [compressedDigest, ...recentItems];
+         
          estimatedSize = this.estimateSubmissionPayloadSize(normalizedItems, options);
          
          chatCodexLog.info('History compressed', {
@@ -739,40 +777,65 @@ export class ProcessChatCodexRunner implements ChatCodexRunner {
       };
 
      const maxPayloadChars = Math.floor(getContextWindow() * 0.9);
+     const HISTORY_BUDGET_TOKENS = 20000; // history 预算 20K tokens（刚性）
+     const CURRENT_KEEP_ROUNDS = 6; // 最近 3 轮 = 6 条消息（user + assistant）
+     
      let protectedOptions = options;
      let estimatedSize = this.estimateSubmissionPayloadSize(normalizedItems, options);
+     
      if (estimatedSize > maxPayloadChars) {
-       // Payload 超限：立即压缩 history_items
-       chatCodexLog.warn('Payload exceeds limit, triggering immediate compression', {
+       // Payload 超限：按正确逻辑压缩（基于 Token 预算）
+       chatCodexLog.warn('Payload exceeds limit, triggering compression', {
          estimatedSize,
          maxPayloadChars,
          historyItemsCount: Array.isArray(options?.history_items) ? options.history_items.length : 0,
          sessionId,
        });
        
-       // 压缩 history_items（保留最近3轮，其余转为 digest）
-       if (Array.isArray(options?.history_items) && options.history_items.length > 6) {
-         const recentItems = options.history_items.slice(-6);
-         const olderItems = options.history_items.slice(0, -6);
+       if (Array.isArray(options?.history_items) && options.history_items.length > CURRENT_KEEP_ROUNDS) {
+         // 1. 最近 CURRENT_KEEP_ROUNDS 条保留完整（current）
+         const currentItems = options.history_items.slice(-CURRENT_KEEP_ROUNDS);
          
-         const compressedDigests = olderItems.map((item: any) => {
-           if (item.role === 'assistant' && item.content) {
-             const content = typeof item.content === 'string' ? item.content : JSON.stringify(item.content);
-             return {
-               role: 'assistant',
-               content: content.length > 500 ? content.substring(0, 500) + '...[compressed]' : content,
-               _compressed: true,
-             };
+         // 2. 其余转为 digest（压缩为简短摘要）
+         const olderItems = options.history_items.slice(0, -CURRENT_KEEP_ROUNDS);
+         const digestItems = olderItems.map((item: any) => {
+           const role = item.role || 'unknown';
+           let content = '';
+           if (item.content) {
+             content = typeof item.content === 'string' ? item.content : JSON.stringify(item.content);
+             // digest 每条最多 100 字（约 25-50 tokens）
+             content = content.length > 100 ? content.substring(0, 100) + '...[digest]' : content;
+           } else if (item.tool_call) {
+             content = `[tool_call: ${item.tool_call.name || 'unknown'}]`;
+           } else if (item.tool_result) {
+             content = `[tool_result]`;
+           } else {
+             content = `[${role}]`;
            }
-           return item;
+           return { role, content, _digest: true };
          });
          
-         options.history_items = [...compressedDigests, ...recentItems];
+         // 3. history = digest，用 20K Token 窗口滑动
+         let historyItems = digestItems;
+         let historyTokens = estimateHistoryItemsTokens(historyItems);
+         
+         while (historyTokens > HISTORY_BUDGET_TOKENS && historyItems.length > 0) {
+           // 从最旧的开始删除
+           historyItems.shift();
+           historyTokens = estimateHistoryItemsTokens(historyItems);
+         }
+         
+         // 4. 最终 history_items = history（digest） + current（完整）
+         options.history_items = [...historyItems, ...currentItems];
+         
+         // 5. 重新计算 payload
          estimatedSize = this.estimateSubmissionPayloadSize(normalizedItems, options);
          
-         chatCodexLog.info('History compressed', {
+         chatCodexLog.info('History compressed correctly', {
            newEstimatedSize: estimatedSize,
-           newHistoryItemsCount: options.history_items.length,
+           historyDigestCount: historyItems.length,
+           historyDigestTokens: historyTokens,
+           currentFullCount: currentItems.length,
          });
        }
        
@@ -780,6 +843,7 @@ export class ProcessChatCodexRunner implements ChatCodexRunner {
          chatCodexLog.warn('Payload still exceeds limit after compression', {
            estimatedSize,
            maxPayloadChars,
+           suggestion: '需要减少 system_prompt 或 developer_instructions 大小',
          });
          reject(new Error('chat-codex payload exceeds limit even after compression'));
          return;
@@ -3443,7 +3507,24 @@ function resolveDeveloperInstructions(
   for (const section of sections) {
     if (!deduped.includes(section)) deduped.push(section);
   }
-  return deduped.join('\n\n');
+  const result = deduped.join('\n\n');
+  
+  // Log breakdown if developerInstructions is large
+  if (result.length > 10000) {
+    chatCodexLog.warn('developerInstructions breakdown', {
+      totalSize: result.length,
+      rolePromptSize: rolePrompt?.length ?? 0,
+      promptOptimizationBlockSize: promptOptimizationBlock?.length ?? 0,
+      ledgerBlockSize: ledgerBlock?.length ?? 0,
+      continuityBlockSize: continuityBlock?.length ?? 0,
+      contextSlotsRenderedSize: contextSlotsRendered?.length ?? 0,
+      hintsSize: hints.join('\n').length,
+      explicitSize: explicit?.length ?? 0,
+      role,
+    });
+  }
+  
+  return result;
 }
 
 function buildPromptOptimizationDeveloperInstructions(
@@ -3565,11 +3646,30 @@ function buildContinuityDeveloperInstructions(
   metadata: Record<string, unknown> | undefined,
 ): string {
   const source = parseOptionalString(metadata?.contextHistorySource) ?? 'unknown';
-  const recentUsers = (history ?? [])
+  
+  // 只使用最近 20 条 history（避免大历史导致 developerInstructions 过大）
+  const MAX_HISTORY_ITEMS = 20;
+  const recentHistory = Array.isArray(history) && history.length > MAX_HISTORY_ITEMS 
+    ? history.slice(-MAX_HISTORY_ITEMS) 
+    : history ?? [];
+  
+  // Log history size to understand the input
+  const originalHistoryLength = Array.isArray(history) ? history.length : 0;
+  if (originalHistoryLength > 20) {
+    chatCodexLog.warn('buildContinuityDeveloperInstructions truncated', {
+      originalHistoryLength,
+      usedHistoryLength: recentHistory.length,
+      source,
+      originalTotalChars: Array.isArray(history) ? history.reduce((sum, item) => sum + (item.content?.length ?? 0), 0) : 0,
+      usedTotalChars: recentHistory.reduce((sum, item) => sum + (item.content?.length ?? 0), 0),
+    });
+  }
+  
+  const recentUsers = recentHistory
     .filter((item) => item.role === 'user' && typeof item.content === 'string' && item.content.trim().length > 0)
     .slice(-10)
     .map((item, index) => `${index + 1}. ${truncateInlineText(item.content, 180)}`);
-  const recentTaskTurns = extractRecentTaskTurnsFromHistory(history, 2)
+  const recentTaskTurns = extractRecentTaskTurnsFromHistory(recentHistory, 2)
     .map((task, index) => {
       const preview = task
         .map((item) => `${item.role}: ${truncateInlineText(item.content, 120)}`)
