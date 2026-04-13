@@ -161,15 +161,6 @@ export class RuntimeFacade {
     return !isSystemSession;
   }
 
-  private isBindableSessionId(agentId: string, sessionId: string): boolean {
-    const normalized = sessionId.trim();
-    if (normalized.length === 0) return false;
-    if (normalized === 'default') return false;
-    if (isEphemeralDispatchSessionId(normalized)) return false;
-    const session = this.sessionManager.getSession(normalized);
-    if (!session) return false;
-    return this.isSessionAllowedForAgent(agentId, session);
-  }
 
   /**
    * Sanitize tool error messages to prevent LLM from hallucinating tool calls.
