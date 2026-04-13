@@ -983,3 +983,9 @@ function resolveUserInstructions(
   return merged.join('\n\n');
 }
 
+function resolveForkUserMessageIndex(metadata: Record<string, unknown> | undefined): number | undefined {
+  const raw = metadata?.forkUserMessageIndex;
+  if (typeof raw !== 'number' || !Number.isFinite(raw) || raw < 0) return undefined;
+  return Math.floor(raw);
+}
+
