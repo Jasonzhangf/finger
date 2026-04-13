@@ -378,7 +378,7 @@ export interface ChatCodexRunnerInterruptResult {
   activeTurnId?: string;
 }
 
-interface ChatCodexResponse {
+interface ChatCodexApiResponse {
   success: boolean;
   response?: string;
   error?: string;
@@ -1874,7 +1874,7 @@ export function createChatCodexModule(
       role: normalizeDefaultRoleProfileId(mergedConfig.defaultRoleProfileId),
     },
     handle: async (message: unknown, callback?: (result: unknown) => void): Promise<unknown> => {
-      const response = (await kernelAgent.handle(message)) as ChatCodexResponse;
+      const response = (await kernelAgent.handle(message)) as ChatCodexApiResponse;
       if (callback) callback(response);
       return response;
     },
