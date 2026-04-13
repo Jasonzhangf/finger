@@ -7,7 +7,7 @@
 import { join } from 'path';
 import { FINGER_PATHS, ensureDir, normalizeSessionDirName } from '../../core/finger-paths.js';
 
-import { existsSync } from 'fs';
+import { existsSync, readdirSync } from 'fs';
 import { FINGER_SOURCE_ROOT } from '../../core/source-root.js';
 import { loadAIProviders } from '../../core/user-settings.js';
 import type {
@@ -552,4 +552,29 @@ function isSameOrSubPath(candidate: string, root: string): boolean {
   if (normalizedCandidate === normalizedRoot) return true;
   if (normalizedCandidate.startsWith(normalizedRoot + '/')) return true;
   return false;
+}
+
+function collectApplicableAgentsFiles(startDir: string, projectRoot?: string): string[] {
+  const result: string[] = [];
+  try {
+    const entries = readdirSync(startDir, { withFileTypes: true });
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue;
+      const subDir = join(startDir, entry.name);
+      const agentsFile = join(subDir, 'AGENTS.md');
+      if (existsSync(agentsFile)) {
+        if (!projectRoot || isSameOrSubPath(subDir, projectRoot)) {
+          result.push(agentsFile);
+        }
+      }
+      // Recursively search subdirectories
+      const subResult = collectApplicableAgentsFiles(subDir, projectRoot);
+      if (subResult.length > 0) {
+        result.push(...subResult);
+      }
+    }
+  } catch {
+    // Ignore errors
+  }
+  return result;
 }
