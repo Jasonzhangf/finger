@@ -2937,19 +2937,17 @@ function buildMailboxBaselineBlock(
   const enabled = parseOptionalBoolean(metadata?.mailboxPromptEnabled)
     ?? parseOptionalBoolean(metadata?.mailboxInjectionEnabled)
     ?? true;
-  if (!enabled) return undefined;
 
-  const lines = [
-    '# Mailbox Runtime',
-    'Use mailbox tools for async task and notification handling.',
-    '- Tools: mailbox.status / mailbox.list / mailbox.read / mailbox.read_all / mailbox.ack / mailbox.remove / mailbox.remove_all',
-    '- For low-priority notifications, title + short description may be enough; you can ack/remove directly when no further action is required.',
-  ];
+if (!enabled) return undefined;
+
+  // 只保留运行时数据，规范说明在 system_prompt 里已有
+  const lines: string[] = [];
   if (snapshot) {
     const unread = Array.isArray(snapshot.entries) ? snapshot.entries.length : 0;
-    lines.push(`snapshot.currentSeq=${snapshot.currentSeq}`);
-    lines.push(`snapshot.unread=${unread}`);
+    lines.push(`MAILBOX.currentSeq=${snapshot.currentSeq}`);
+    lines.push(`MAILBOX.unread=${unread}`);
   }
+  if (lines.length === 0) return undefined;
   return lines.join('\n');
 }
 
@@ -2976,23 +2974,18 @@ function buildUserProfilePromptBlock(metadata: Record<string, unknown> | undefin
     }
   }
 
-  const lines = [
-    '# User Profile Runtime (USER.md)',
-    `USER.path=${profilePath}`,
-    '- USER.md is injected as runtime profile context for this turn; follow it strictly.',
-    '- If user gives repeated corrections / strong negative feedback, update USER.md immediately (append-only, evidence-based).',
-  ];
+  // 只保留路径和内容，规范说明在 system_prompt 里已有
+  const lines: string[] = [];
+  lines.push(`USER.path=${profilePath}`);
 
   if (profileContent.length === 0) {
     lines.push('USER.state=empty');
     return lines.join('\n');
   }
 
-  const rendered = profileContent.length > USER_PROFILE_PROMPT_MAX_CHARS
-    ? `${profileContent.slice(0, USER_PROFILE_PROMPT_MAX_CHARS)}\n...[TRUNCATED_AT_8000_CHARS]`
-    : profileContent;
+  // 不截断用户配置文件
   lines.push('USER.content.begin');
-  lines.push(rendered);
+  lines.push(profileContent);
   lines.push('USER.content.end');
   return lines.join('\n');
 }
@@ -3001,15 +2994,8 @@ function buildMemoryRetrievalPromptBlock(metadata: Record<string, unknown> | und
   const enabled = parseOptionalBoolean(metadata?.memoryRoutingPromptEnabled)
     ?? parseOptionalBoolean(metadata?.memoryRoutingInjectionEnabled)
     ?? true;
-  if (!enabled) return undefined;
-  return [
-    '# Memory Retrieval Routing (mandatory)',
-    '- Long-term durable facts/constraints: read MEMORY.md.',
-    '- Timeline/history/tool traces: use context_ledger.memory (search -> query detail=true with slot_start/slot_end).',
-    '- Need full details from a compact digest/task block: use context_ledger.expand_task.',
-    '- Need broader relevant history in prompt: use context_builder.rebuild (P4 dynamic_history only).',
-    '- Do not treat visible prompt history as complete truth when historical evidence is required.',
-  ].join('\n');
+  // 规范说明在 system_prompt 里已有，此块不再追加
+  return undefined;
 }
 
 function buildFlowPromptBlock(metadata: Record<string, unknown> | undefined): string | undefined {
