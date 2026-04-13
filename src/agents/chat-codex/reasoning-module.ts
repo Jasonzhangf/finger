@@ -928,3 +928,22 @@ function parseOptionalNumber(value: unknown): number | undefined {
   return undefined;
 }
 
+function isToolCallText(content: string): boolean {
+  if (!content || typeof content !== 'string') return false;
+
+  // 工具调用特征文本（cat /dev/null 等无效调用）
+  const toolCallPatterns = [
+    '调用工具:',
+    '工具完成:',
+    'exec_command',
+    'grep',
+    'cat @',
+    'ls @',
+    'head @',
+    'tail @',
+    '/dev/null',
+  ];
+
+  return toolCallPatterns.some(pattern => content.includes(pattern));
+}
+
