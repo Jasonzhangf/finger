@@ -732,3 +732,25 @@ function estimateTextTokens(text: string | undefined): number {
   if (!normalized) return 0;
   return estimateTokensWithTiktoken(normalized);
 }
+function estimateHistoryItemsTokens(items: Array<Record<string, unknown>> | undefined): number {
+  if (!Array.isArray(items) || items.length === 0) return 0;
+  let total = 0;
+  for (const item of items) {
+    if (!isRecord(item)) continue;
+    const role = typeof item.role === 'string' ? item.role : '';
+    const content = Array.isArray(item.content) ? item.content : [];
+    const contentText = content
+      .filter((entry): entry is Record<string, unknown> => isRecord(entry))
+      .map((entry) => {
+        if (typeof entry.text === 'string') return entry.text;
+        if (typeof entry.image_url === 'string') return `[image] ${entry.image_url}`;
+        if (typeof entry.path === 'string') return `[local_image] ${entry.path}`;
+        return '';
+      })
+      .filter((entry) => entry.length > 0)
+      .join('\n');
+    total += estimateTokensWithTiktoken(`${role}\n${contentText}`);
+  }
+  return total;
+}
+
