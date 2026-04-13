@@ -1,4 +1,5 @@
 import type { ChatCodexDeveloperRole as DeveloperRole } from './developer-prompt-templates.js';
+import type { ReasoningOutputStyle } from './reasoning-types.js';
 /**
  * Reasoning Module - 模块主文件（新文件）
  * 
@@ -989,3 +990,15 @@ function resolveForkUserMessageIndex(metadata: Record<string, unknown> | undefin
   return Math.floor(raw);
 }
 
+function parseReasoningOutputStyle(metadata: Record<string, unknown> | undefined): ReasoningOutputStyle | undefined {
+  const raw = parseOptionalString(metadata?.outputStyle)
+    ?? parseOptionalString(metadata?.output_style)
+    ?? parseOptionalString(metadata?.responseStyle)
+    ?? parseOptionalString(metadata?.response_style);
+  if (!raw) return undefined;
+  const normalized = raw.trim().toLowerCase();
+  if (normalized === 'concise' || normalized === 'detailed' || normalized === 'technical') {
+    return normalized;
+  }
+  return undefined;
+}

@@ -321,3 +321,4 @@ export type ReasoningKernelInputItem =
   | { type: 'text'; text: string }
   | { type: 'image'; image_url: string }
   | { type: 'local_image'; path: string };
+export type ReasoningOutputStyle = 'concise' | 'detailed' | 'technical';
