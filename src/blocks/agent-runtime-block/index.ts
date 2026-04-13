@@ -673,105 +673,31 @@ export class AgentRuntimeBlock extends BaseBlock {
   private readonly sessionOwnerKeyBySession = new Map<string, string>();
   private readonly runtimeConfigByAgent = new Map<string, AgentRuntimeConfigProfile>();
   private readonly lastEventByAgent = new Map<string, AgentLastEventView>();
+
   // Deadlock detection: track blocking dispatch waits
-  private readonly blockingDispatchWaitingFor = new Map<string, string>(); // sourceAgentId -> targetAgentId
-  
-  /**
-   * Check for circular dispatch dependency that could cause deadlock.
-   * Example: A blocks on B, B blocks on A => deadlock.
-   * Returns true if dispatch would create a circular wait.
-   */
+  private readonly blockingDispatchWaitingFor = new Map<string, string>();
+
   private wouldCreateDispatchDeadlock(sourceAgentId: string, targetAgentId: string): boolean {
-    if (!sourceAgentId || sourceAgentId === targetAgentId) {
-      return false; // Self-dispatch is handled separately
-    }
-    
-    // Check if target is already waiting for source (direct cycle)
+    if (!sourceAgentId || sourceAgentId === targetAgentId) return false;
     const targetWaitingFor = this.blockingDispatchWaitingFor.get(targetAgentId);
-    if (targetWaitingFor === sourceAgentId) {
-      return true; // Direct cycle: A→B and B→A
-    }
-    
-    // Check for indirect cycles (transitive)
+    if (targetWaitingFor === sourceAgentId) return true;
     const visited = new Set<string>();
     let current: string | undefined = targetAgentId;
     while (current && !visited.has(current)) {
       visited.add(current);
       const waitingFor = this.blockingDispatchWaitingFor.get(current);
-      if (waitingFor === sourceAgentId) {
-        return true; // Transitive cycle found
-      }
+      if (waitingFor === sourceAgentId) return true;
       current = waitingFor;
     }
-    
     return false;
   }
-  
-  /**
-   * Register a blocking dispatch wait relationship.
-   * Called when a blocking dispatch starts.
-   */
+
   private registerBlockingDispatchWait(sourceAgentId: string, targetAgentId: string): void {
     if (sourceAgentId && sourceAgentId !== targetAgentId) {
       this.blockingDispatchWaitingFor.set(sourceAgentId, targetAgentId);
     }
   }
-  
-  /**
-   * Clear a blocking dispatch wait relationship.
-   * Called when a blocking dispatch completes (success or failure).
-   */
-  private clearBlockingDispatchWait(sourceAgentId: string): void {
-    this.blockingDispatchWaitingFor.delete(sourceAgentId);
-  }
-  // Deadlock detection: track blocking dispatch waits
-  private readonly blockingDispatchWaitingFor = new Map<string, string>(); // sourceAgentId -> targetAgentId
-  
-  /**
-   * Check for circular dispatch dependency that could cause deadlock.
-   * Example: A blocks on B, B blocks on A => deadlock.
-   * Returns true if dispatch would create a circular wait.
-   */
-  private wouldCreateDispatchDeadlock(sourceAgentId: string, targetAgentId: string): boolean {
-    if (!sourceAgentId || sourceAgentId === targetAgentId) {
-      return false; // Self-dispatch is handled separately
-    }
-    
-    // Check if target is already waiting for source (direct cycle)
-    const targetWaitingFor = this.blockingDispatchWaitingFor.get(targetAgentId);
-    if (targetWaitingFor === sourceAgentId) {
-      return true; // Direct cycle: A→B and B→A
-    }
-    
-    // Check for indirect cycles (transitive)
-    const visited = new Set<string>();
-    let current: string | undefined = targetAgentId;
-    while (current && !visited.has(current)) {
-      visited.add(current);
-      const waitingFor = this.blockingDispatchWaitingFor.get(current);
-      if (waitingFor === sourceAgentId) {
-        return true; // Transitive cycle found
-      }
-      current = waitingFor;
-    }
-    
-    return false;
-  }
-  
-  /**
-   * Register a blocking dispatch wait relationship.
-   * Called when a blocking dispatch starts.
-   */
-  private registerBlockingDispatchWait(sourceAgentId: string, targetAgentId: string): void {
-    if (sourceAgentId && sourceAgentId !== targetAgentId) {
-      this.blockingDispatchWaitingFor.set(sourceAgentId, targetAgentId);
-    }
-  }
-  
-  /**
-   * Clear a blocking dispatch wait relationship.
-   * Called when a blocking dispatch completes (success or failure).
-   */
+
   private clearBlockingDispatchWait(sourceAgentId: string): void {
     this.blockingDispatchWaitingFor.delete(sourceAgentId);
   }
@@ -2098,6 +2024,7 @@ export class AgentRuntimeBlock extends BaseBlock {
     });
     
     try {
+      this.registerBlockingDispatchWait(input.sourceAgentId, input.targetAgentId);
       log.info('[AgentRuntimeBlock] Sending to module (blocking)', { dispatchId, targetModuleId, ...(traceId ? { traceId } : {}) });
       const result = await Promise.race([
         this.deps.hub.sendToModule(targetModuleId, payload),
@@ -2105,6 +2032,7 @@ export class AgentRuntimeBlock extends BaseBlock {
       ]);
       const summarized = this.summarizeDispatchResult(result);
       const completion = resolveDispatchCompletionStatus(summarized);
+      this.clearBlockingDispatchWait(input.sourceAgentId);
       log.info('[AgentRuntimeBlock] Module result (blocking)', {
         dispatchId,
         targetModuleId,
@@ -2140,6 +2068,7 @@ export class AgentRuntimeBlock extends BaseBlock {
       const isTimeout = message.includes('executeDispatch timeout');
       const finalStatus = isTimeout ? 'timeout' : 'failed';
       
+      this.clearBlockingDispatchWait(input.sourceAgentId);
       log.error('[AgentRuntimeBlock] Module error (blocking)', undefined, {
         dispatchId,
         targetModuleId,
@@ -2484,45 +2413,22 @@ export class AgentRuntimeBlock extends BaseBlock {
           targetAgentId: target,
         });
         return mailboxFallback;
-
-    // P0 #1: Deadlock detection - check for circular dispatch dependency
-    if (blocking && this.wouldCreateDispatchDeadlock(normalizedInput.sourceAgentId, target)) {
-      log.warn('[AgentRuntimeBlock] Circular dispatch dependency detected, rejecting', {
-        dispatchId,
-        sourceAgentId: normalizedInput.sourceAgentId,
-        targetAgentId: target,
-        blocking,
-      });
-      log.endTrace(traceId);
-      return {
-        ok: false,
-        dispatchId,
-        status: 'failed',
-        targetModuleId,
-        error: `dispatch deadlock: circular dependency detected between ${normalizedInput.sourceAgentId} and ${target}`,
-      };
-    }
       }
     }
 
-
-    // P0 #1: Deadlock detection - check for circular dispatch dependency
+    
+    // P0 #1: Deadlock detection
     if (blocking && this.wouldCreateDispatchDeadlock(normalizedInput.sourceAgentId, target)) {
-      log.warn('[AgentRuntimeBlock] Circular dispatch dependency detected, rejecting', {
-        dispatchId,
-        sourceAgentId: normalizedInput.sourceAgentId,
-        targetAgentId: target,
-        blocking,
+      log.warn('[AgentRuntimeBlock] Circular dispatch dependency detected', {
+        dispatchId, sourceAgentId: normalizedInput.sourceAgentId, targetAgentId: target,
       });
       log.endTrace(traceId);
       return {
-        ok: false,
-        dispatchId,
-        status: 'failed',
-        targetModuleId,
-        error: `dispatch deadlock: circular dependency detected between ${normalizedInput.sourceAgentId} and ${target}`,
+        ok: false, dispatchId, status: 'failed', targetModuleId,
+        error: `dispatch deadlock: circular dependency between ${normalizedInput.sourceAgentId} and ${target}`,
       };
     }
+
     if (blocking && normalizedInput.sourceAgentId === target && activeCount >= capacity) {
       log.endTrace(traceId);
       return {
@@ -2562,24 +2468,6 @@ export class AgentRuntimeBlock extends BaseBlock {
             targetAgentId: target,
           });
           return mailboxFallback;
-
-    // P0 #1: Deadlock detection - check for circular dispatch dependency
-    if (blocking && this.wouldCreateDispatchDeadlock(normalizedInput.sourceAgentId, target)) {
-      log.warn('[AgentRuntimeBlock] Circular dispatch dependency detected, rejecting', {
-        dispatchId,
-        sourceAgentId: normalizedInput.sourceAgentId,
-        targetAgentId: target,
-        blocking,
-      });
-      log.endTrace(traceId);
-      return {
-        ok: false,
-        dispatchId,
-        status: 'failed',
-        targetModuleId,
-        error: `dispatch deadlock: circular dependency detected between ${normalizedInput.sourceAgentId} and ${target}`,
-      };
-    }
         }
       }
 
