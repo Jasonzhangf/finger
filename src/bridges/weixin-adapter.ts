@@ -207,11 +207,12 @@ async function uploadImageToCdn(
 
 export class WeixinBridgeAdapter implements ChannelBridge {
   readonly id: string;
-  readonly channelId: string;
+readonly channelId: string;
   private static readonly GET_UPDATES_TIMEOUT_MS = 70_000;
   private config: ChannelBridgeConfig;
   private callbacks: ChannelBridgeCallbacks;
   private running = false;
+  private sessionTimeout = false;
   private abortController: AbortController | null = null;
   private account: WeixinAccount | null = null;
   private updateBuffer = '';
@@ -301,9 +302,19 @@ export class WeixinBridgeAdapter implements ChannelBridge {
     const data = (await response.json()) as GetUpdatesResponse;
 
     if (data.errcode === -14) {
-      log.error(`[${this.id}] Session timeout, need QR login`);
-      this.callbacks.onError(new Error('Weixin session timeout'));
+      if (!this.sessionTimeout) {
+        // 只在首次 timeout 时报错，避免重复
+        log.error(`[${this.id}] Session timeout, need QR login`);
+        this.callbacks.onError(new Error('Weixin session timeout'));
+        this.sessionTimeout = true;
+      }
       return;
+    }
+    
+    // 如果之前 timeout，现在恢复了，重置标志
+    if (this.sessionTimeout && data.errcode !== -14) {
+      log.info(`[${this.id}] Session recovered, resuming normal operation`);
+      this.sessionTimeout = false;
     }
 
     if (data.get_updates_buf) this.updateBuffer = data.get_updates_buf;

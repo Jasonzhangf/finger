@@ -60,9 +60,9 @@ const DEFAULT_KERNEL_TIMEOUT_RETRY_COUNT = 2;
 const DEFAULT_KERNEL_STALL_TIMEOUT_MS = 600_000;
 const ACTIVE_TURN_STALE_GRACE_MS = 15_000;
 const FLOW_PROMPT_MAX_CHARS = 10_000;
-const USER_PROFILE_PROMPT_MAX_CHARS = 8_000;
+const USER_PROFILE_PROMPT_MAX_CHARS = 4_000;
 const AGENTS_PROMPT_MAX_FILES = 4;
-const AGENTS_PROMPT_MAX_CHARS_PER_FILE = 4_000;
+const AGENTS_PROMPT_MAX_CHARS_PER_FILE = 2_000;
 const DEFAULT_CONTEXT_WINDOW_TOKENS = 262_144;
 const chatCodexLog = logger.module('ChatCodexModule');
 export const CHAT_CODEX_ORCHESTRATOR_ALLOWED_TOOLS = [
@@ -3490,12 +3490,10 @@ function resolveDeveloperInstructions(
   if (collaborationMode) hints.push(`collaboration_mode=${collaborationMode}`);
   if (modelSwitchHint) hints.push(`model_switch_hint=${modelSwitchHint}`);
 
-  const sections = [
+const sections = [
     rolePrompt,
     promptOptimizationBlock,
     ledgerBlock,
-    continuityBlock,
-    contextSlotsRendered,
     hints.join('\n'),
     explicit,
   ]
@@ -3647,8 +3645,8 @@ function buildContinuityDeveloperInstructions(
 ): string {
   const source = parseOptionalString(metadata?.contextHistorySource) ?? 'unknown';
   
-  // 只使用最近 20 条 history（避免大历史导致 developerInstructions 过大）
-  const MAX_HISTORY_ITEMS = 20;
+// 只使用最近 20 条 history（避免大历史导致 developerInstructions 过大）
+  const MAX_HISTORY_ITEMS = 10;
   const recentHistory = Array.isArray(history) && history.length > MAX_HISTORY_ITEMS 
     ? history.slice(-MAX_HISTORY_ITEMS) 
     : history ?? [];
@@ -3665,14 +3663,14 @@ function buildContinuityDeveloperInstructions(
     });
   }
   
-  const recentUsers = recentHistory
+const recentUsers = recentHistory
     .filter((item) => item.role === 'user' && typeof item.content === 'string' && item.content.trim().length > 0)
-    .slice(-10)
-    .map((item, index) => `${index + 1}. ${truncateInlineText(item.content, 180)}`);
+    .slice(-5)
+    .map((item, index) => `${index + 1}. ${truncateInlineText(item.content, 80)}`);
   const recentTaskTurns = extractRecentTaskTurnsFromHistory(recentHistory, 2)
     .map((task, index) => {
       const preview = task
-        .map((item) => `${item.role}: ${truncateInlineText(item.content, 120)}`)
+        .map((item) => `${item.role}: ${truncateInlineText(item.content, 60)}`)
         .join(' | ');
       return `${index + 1}. ${preview}`;
     });
@@ -3689,9 +3687,7 @@ function buildContinuityDeveloperInstructions(
   return [
     '[conversation_continuity]',
     `history_source=${source}`,
-    'Visible history keeps continuity anchors on purpose even after rebuild: recent task turns and recent user inputs are preserved to help you judge whether the thread is continuous.',
-    'Use these anchors to decide whether the user is continuing the same topic, switching topics, or resuming interrupted work.',
-    'If the current request is clearly discontinuous with these anchors, call `context_builder.rebuild` with `current_prompt` before proceeding.',
+    'Use these anchors to decide if the thread is continuous. If discontinuous, call context_builder.rebuild.',
     recentTaskTurns.length > 0 ? 'recent_task_turns=' : '',
     ...recentTaskTurns,
     recentUsers.length > 0 ? 'recent_user_inputs=' : '',
