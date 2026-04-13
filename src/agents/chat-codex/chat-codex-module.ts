@@ -1014,7 +1014,19 @@ export class ProcessChatCodexRunner implements ChatCodexRunner {
     if (session.child.killed) {
       throw new Error(`chat-codex kernel process already killed for session ${session.key}`);
     }
-    session.child.stdin.write(`${JSON.stringify(submission)}\n`);
+    try {
+          session.child.stdin.write(`${JSON.stringify(submission)}\n`);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (message.includes('EPIPE') || message.includes('write after end')) {
+        // Child process exited between our check and write — this is a race
+        // Mark as exited and throw a retryable error
+        session.exitCode = session.child.exitCode ?? 1;
+        session.exitSignal = null;
+        throw new Error(`chat-codex kernel process exited unexpectedly for session ${session.key}`);
+      }
+      throw error;
+    }
   }
 
   private disposeSession(session: KernelSessionProcess): void {
