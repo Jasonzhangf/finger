@@ -779,3 +779,12 @@ function estimateTaskContextSlotTokensFromRendered(rendered: string | undefined)
   }
   return total;
 }
+function estimateStructuredTokens(value: unknown): number {
+  if (value === undefined || value === null) return 0;
+  try {
+    return estimateTokensWithTiktoken(JSON.stringify(value));
+  } catch {
+    return estimateTextTokens(String(value));
+  }
+}
+
