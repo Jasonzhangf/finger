@@ -1,3 +1,4 @@
+import type { ChatCodexDeveloperRole as DeveloperRole } from './developer-prompt-templates.js';
 /**
  * Reasoning Module - 模块主文件（新文件）
  * 
@@ -878,4 +879,14 @@ function inferModelContextWindow(model: string | undefined): number | undefined 
     return 272_000;
   }
   return undefined;
+}
+
+function normalizeDeveloperRole(role: string): DeveloperRole {
+  const normalized = role.trim().toLowerCase();
+  if (normalized === 'system') return 'system';
+  return 'project';
+}
+
+function mapDeveloperRoleToPromptAgentType(role: DeveloperRole): string {
+  return role;
 }
