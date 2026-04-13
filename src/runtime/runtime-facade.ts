@@ -165,7 +165,7 @@ export class RuntimeFacade {
     const normalized = sessionId.trim();
     if (normalized.length === 0) return false;
     if (normalized === 'default') return false;
-    if (this.isEphemeralDispatchSessionId(normalized)) return false;
+    if (isEphemeralDispatchSessionId(normalized)) return false;
     const session = this.sessionManager.getSession(normalized);
     if (!session) return false;
     return this.isSessionAllowedForAgent(agentId, session);
@@ -182,29 +182,6 @@ export class RuntimeFacade {
       return `工具 '${toolName}' 不在当前可用工具列表中。请使用 agent.capabilities 查看当前可用工具。`;
     }
     return rawError;
-  }
-
-  private sanitizeToolSessionCandidate(
-    agentId: string,
-    candidate: string | null | undefined,
-    source: string,
-    options?: { suppressWarn?: boolean },
-  ): string | null {
-    if (!candidate) return null;
-    const normalized = candidate.trim();
-    if (!normalized) return null;
-    if (this.isBindableSessionId(agentId, normalized)) return normalized;
-    if (!options?.suppressWarn) {
-      log.warn('Ignored invalid tool session candidate', {
-        agentId,
-        source,
-        sessionId: normalized,
-        reason: this.isEphemeralDispatchSessionId(normalized)
-          ? 'ephemeral_dispatch_id_forbidden'
-          : 'session_not_found_or_agent_scope_forbidden',
-      });
-    }
-    return null;
   }
 
   // ==================== Session 管理 ====================
