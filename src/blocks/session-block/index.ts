@@ -1,5 +1,19 @@
 import { BaseBlock, type BlockCapabilities } from '../../core/block.js';
 
+
+/**
+ * @deprecated SessionBlock is a legacy stub. All session operations must go through
+ * SessionManager (`src/orchestration/session-manager.ts`), which provides:
+ * - Ledger-backed persistence (append-only JSONL)
+ * - Owner-only write enforcement + system agent privileges
+ * - Track-based concurrency isolation (slot.track)
+ * - Compaction with crash recovery
+ * - Memory access policy (owner_write_shared_read)
+ *
+ * SessionBlock only offers an in-memory Map with no persistence, no ownership,
+ * and no ledger integration. It remains registered in block-registry-bootstrap
+ * for backward compatibility but should not be used in new code.
+ */
 interface Session {
   id: string;
   taskId: string;

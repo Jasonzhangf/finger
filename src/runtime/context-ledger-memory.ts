@@ -1,4 +1,5 @@
 import { promises as fs } from 'fs';
+import { randomUUID } from 'crypto';
 import type {
   CompactMemoryEntryFile,
   CompactMemorySearchEntry,
@@ -8,6 +9,7 @@ import type {
   ContextLedgerMemoryDigestIncrementalResult,
   ContextLedgerMemoryIndexResult,
   ContextLedgerMemoryInput,
+  ContextLedgerMemoryRuntimeContext,
   ContextLedgerMemoryQueryResult,
   ContextLedgerMemoryResult,
   LedgerEntryFile,
@@ -71,6 +73,7 @@ export async function executeContextLedgerMemory(rawInput: unknown): Promise<Con
   }
 
   if (input.action === 'insert') {
+    ensureWriteOwner(currentAgentId, runtime);
     return executeInsertAction(input, {
       rootDir,
       sessionId,
@@ -94,6 +97,7 @@ export async function executeContextLedgerMemory(rawInput: unknown): Promise<Con
   }
 
   if (input.action === 'compact') {
+    ensureWriteOwner(currentAgentId, runtime);
     return executeCompactAction(input, {
       rootDir,
       sessionId,
@@ -115,6 +119,7 @@ export async function executeContextLedgerMemory(rawInput: unknown): Promise<Con
   }
 
   if (input.action === 'digest_backfill') {
+    ensureWriteOwner(currentAgentId, runtime);
     return executeDigestBackfillAction({
       rootDir,
       sessionId,
@@ -124,6 +129,7 @@ export async function executeContextLedgerMemory(rawInput: unknown): Promise<Con
   }
 
   if (input.action === 'digest_incremental') {
+    ensureWriteOwner(currentAgentId, runtime);
     return executeDigestIncrementalAction({
       rootDir,
       sessionId,
@@ -510,6 +516,13 @@ async function executeInsertAction(
 
   await fs.mkdir(baseDir, { recursive: true });
 
+  // Check for pending compaction marker - reject writes during compaction
+  const pendingMarkerPath = `${baseDir}/.compact-pending.json`;
+  const pendingMarker = await fs.readFile(pendingMarkerPath, 'utf-8').catch(() => null);
+  if (pendingMarker) {
+    throw new Error(`session '${context.sessionId}' has pending compaction, writes are paused. Wait for compaction to complete or run recovery.`);
+  }
+
   const explicitText = normalizeText(input.text);
   const synthesizedText = explicitText ?? await synthesizeInsertTextFromRange(ledgerPath, input);
   if (!synthesizedText) {
@@ -608,7 +621,7 @@ async function executeCompactAction(
   const compactPath = resolveCompactMemoryPath(context.rootDir, context.sessionId, context.currentAgentId, context.mode);
   const fullMemoryPath = resolveFullMemoryPath(context.rootDir, context.sessionId, context.currentAgentId, context.mode);
 
-  await fs.mkdir(baseDir, { recursive: true });
+ await fs.mkdir(baseDir, { recursive: true });
 
   const fullLedgerEntries = await readJsonLines<LedgerEntryFile>(ledgerPath);
   const candidateEntries = fullLedgerEntries.filter((entry) => entry.event_type !== 'context_compact');
@@ -628,7 +641,19 @@ async function executeCompactAction(
   const summary = normalizeText(input.summary)
     ?? buildCompactSummaryFromEntries(linkedEntries);
 
-  const compactionId = `cpt-${Date.now()}-${Math.floor(Math.random() * 1_000_000)}`;
+ const compactionId = `cpt-${randomUUID()}`;
+  // Write pending marker before compaction starts (for crash recovery)
+  const pendingMarkerPath = `${baseDir}/.compact-pending.json`;
+  const pendingMarker = {
+    compaction_id: compactionId,
+    session_id: context.sessionId,
+    agent_id: context.currentAgentId,
+    mode: context.mode,
+    started_at: new Date().toISOString(),
+    source_event_ids: linkedEventIds,
+  };
+  await fs.writeFile(pendingMarkerPath, JSON.stringify(pendingMarker), 'utf-8');
+
   const compactEntry: CompactMemoryEntryFile = {
     id: compactionId,
     timestamp_ms: Date.now(),
@@ -690,6 +715,9 @@ async function executeCompactAction(
     mode: context.mode,
     fullReindex: false,
   });
+
+  // Remove pending marker after successful compaction
+  await fs.unlink(pendingMarkerPath).catch(() => {});
 
   return {
     ok: true,
@@ -1733,6 +1761,29 @@ function ensureReadableAgent(
   if (canReadAll) return;
   if (readableAgents.map(normalize).includes(target)) return;
   throw new Error(`permission denied to read ledger for agent '${targetAgentId}'`);
+}
+
+/**
+ * Ensure the current agent has write permission for the ledger.
+ * Owner-only write policy: only the session owner can insert/compact/digest.
+ * System agent has special privileges to write system sessions.
+ */
+function ensureWriteOwner(
+  currentAgentId: string,
+  runtime: ContextLedgerMemoryRuntimeContext,
+): void {
+  const normalize = (raw: string): string => raw.trim().replaceAll('\\', '_').replaceAll('/', '_').replaceAll(':', '_');
+  const current = normalize(currentAgentId);
+
+  // System agent can always write (special privilege)
+  if (current === 'finger-system-agent') return;
+
+  // Check if runtime context provides ownerAgentId for comparison
+  const ownerAgentId = runtime.agent_id ? normalize(runtime.agent_id) : null;
+  if (ownerAgentId && current === ownerAgentId) return;
+
+  // Strict owner-only write policy
+  throw new Error(`permission denied: agent '${currentAgentId}' is not the owner of this session's ledger`);
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

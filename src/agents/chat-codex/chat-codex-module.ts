@@ -355,6 +355,10 @@ interface KernelSessionProcess {
   stderrBuffer: string;
   submissionSeq: number;
   activeTurn: ActiveKernelTurn | null;
+  /** Exit code if child process has exited, null otherwise */
+  exitCode: number | null;
+  /** Exit signal if child process was killed, null otherwise */
+  exitSignal: NodeJS.Signals | null;
 }
 
 export interface ChatCodexRunnerSessionState {
@@ -798,6 +802,8 @@ export class ProcessChatCodexRunner implements ChatCodexRunner {
       stderrBuffer: '',
       submissionSeq: 0,
       activeTurn: null,
+      exitCode: null,
+      exitSignal: null,
     };
     this.sessions.set(runtimeKey, session);
     this.bindSessionEvents(session);
@@ -833,6 +839,9 @@ export class ProcessChatCodexRunner implements ChatCodexRunner {
     });
 
     session.child.on('exit', (code: number | null, signal: NodeJS.Signals | null) => {
+      // Mark session as exited BEFORE rejecting turn to prevent sendSubmission race
+      session.exitCode = code;
+      session.exitSignal = signal;
       const status = code === null ? `signal ${signal ?? 'unknown'}` : `code ${code}`;
       const stderrMessage = session.stderrBuffer.trim();
       const detail = stderrMessage.length > 0 ? `; stderr: ${stderrMessage}` : '';
@@ -993,8 +1002,17 @@ export class ProcessChatCodexRunner implements ChatCodexRunner {
   }
 
   private sendSubmission(session: KernelSessionProcess, submission: unknown): void {
+    // Check if child process has already exited (exitCode/signal set by exit handler)
+    if (session.exitCode !== null || session.exitSignal !== null) {
+      throw new Error(`chat-codex kernel process already exited for session ${session.key}`);
+    }
+    // Check stdin stream state
     if (!session.child.stdin.writable) {
       throw new Error(`chat-codex kernel stdin is not writable for session ${session.key}`);
+    }
+    // Additional safety: check child.killed flag
+    if (session.child.killed) {
+      throw new Error(`chat-codex kernel process already killed for session ${session.key}`);
     }
     session.child.stdin.write(`${JSON.stringify(submission)}\n`);
   }

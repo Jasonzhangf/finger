@@ -164,14 +164,100 @@ export function pruneOrphanSessionRootDirs(baseDir: string): { removed: string[]
 export function sanitizeFingerRuntimeState(): {
   removedPidFiles: string[];
   removedSessionRoots: string[];
+  cleanedCompactionMarkers: string[];
 } {
   const pidCleanup = sanitizeRuntimePidFiles();
   const removedSessionRoots = [
     ...pruneOrphanSessionRootDirs(FINGER_PATHS.sessions.dir).removed,
     ...pruneOrphanSessionRootDirs(path.join(FINGER_PATHS.home, 'system', 'sessions')).removed,
   ];
+  const compactionCleanup = sanitizePendingCompactionMarkers();
   return {
     removedPidFiles: pidCleanup.removed,
     removedSessionRoots,
+    cleanedCompactionMarkers: compactionCleanup.cleaned,
   };
+}
+
+/**
+ * Scan for pending compaction markers across all sessions and clean them up.
+ * Pending markers indicate interrupted compactions from crash/exit.
+ * These can be safely removed because compaction is deterministic (no LLM involved).
+ * The next compaction will rebuild from ledger data.
+ */
+export function sanitizePendingCompactionMarkers(): { cleaned: string[] } {
+  const cleaned: string[] = [];
+  const sessionsDir = FINGER_PATHS.sessions.dir;
+  const systemSessionsDir = path.join(FINGER_PATHS.home, 'system', 'sessions');
+
+  const scanDir = (baseDir: string): void => {
+    if (!fs.existsSync(baseDir)) return;
+    const entries = fs.readdirSync(baseDir, { withFileTypes: true });
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue;
+      if (!entry.name.startsWith('session-') && !entry.name.startsWith('system-')) continue;
+
+      const sessionRoot = path.join(baseDir, entry.name);
+      // Look for agent subdirectories within session
+      try {
+        const agentEntries = fs.readdirSync(sessionRoot, { withFileTypes: true });
+        for (const agentEntry of agentEntries) {
+          if (!agentEntry.isDirectory()) continue;
+          const agentDir = path.join(sessionRoot, agentEntry.name);
+          // Check for .compact-pending.json in agent directory or mode subdirs
+          const pendingPath = path.join(agentDir, '.compact-pending.json');
+          if (fs.existsSync(pendingPath)) {
+            try {
+              fs.unlinkSync(pendingPath);
+              cleaned.push(pendingPath);
+              log.warn('Removed pending compaction marker from interrupted compaction', {
+                path: pendingPath,
+                session: entry.name,
+                agent: agentEntry.name,
+              });
+            } catch (err) {
+              log.warn('Failed to remove pending compaction marker', {
+                path: pendingPath,
+                error: err instanceof Error ? err.message : String(err),
+              });
+            }
+          }
+          // Also check mode subdirectories (track0, track1, etc.)
+          try {
+            const modeEntries = fs.readdirSync(agentDir, { withFileTypes: true });
+            for (const modeEntry of modeEntries) {
+              if (!modeEntry.isDirectory()) continue;
+              const modePendingPath = path.join(agentDir, modeEntry.name, '.compact-pending.json');
+              if (fs.existsSync(modePendingPath)) {
+                try {
+                  fs.unlinkSync(modePendingPath);
+                  cleaned.push(modePendingPath);
+                  log.warn('Removed pending compaction marker from mode subdir', {
+                    path: modePendingPath,
+                    session: entry.name,
+                    agent: agentEntry.name,
+                    mode: modeEntry.name,
+                  });
+                } catch (err) {
+                  log.warn('Failed to remove pending compaction marker', {
+                    path: modePendingPath,
+                    error: err instanceof Error ? err.message : String(err),
+                  });
+                }
+              }
+            }
+          } catch {
+            // Ignore errors reading mode subdirs
+          }
+        }
+      } catch {
+        // Ignore errors reading agent subdirs
+      }
+    }
+  };
+
+  scanDir(sessionsDir);
+  scanDir(systemSessionsDir);
+
+  return { cleaned };
 }

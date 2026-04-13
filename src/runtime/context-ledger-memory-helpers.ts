@@ -1,5 +1,6 @@
 import { promises as fs } from 'fs';
 import { join } from 'path';
+import { randomUUID } from 'crypto';
 import { FINGER_PATHS } from '../core/finger-paths.js';
 import type {
   ContextLedgerMemoryInput,
@@ -172,7 +173,7 @@ export async function appendLedgerEvent(
   }
 
   const entry: Record<string, unknown> = {
-    id: `led-${now}-${Math.floor(Math.random() * 1_000_000)}`,
+    id: `led-${randomUUID()}`,
     timestamp_ms: now,
     timestamp_iso: new Date(now).toISOString(),
     session_id: event.session_id,

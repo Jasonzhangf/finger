@@ -19,6 +19,14 @@ import {
   type ToolAuthorizationGrant,
 } from './tool-authorization.js';
 import { executeContextLedgerMemory } from './context-ledger-memory.js';
+import {
+  TopicShiftDetector,
+  decideContextRebuild,
+  extractTopicShiftControl,
+  isHeartbeatSession,
+  isCronTask,
+} from './topic-shift-detector.js';
+import { executeContextRebuild, extractPromptFromPayload, estimateMessageTokens } from './context-rebuild-executor.js';
 import { createRustKernelCompactionError } from './kernel-owned-compaction.js';
 import { SessionControlPlaneStore } from './session-control-plane.js';
 import { SYSTEM_PROJECT_PATH } from '../agents/finger-system-agent/index.js';
@@ -144,6 +152,10 @@ const autoDigestStopStateBySession = new Map<string, { lastAttemptAt: number; la
 const autoDigestStopInFlightBySession = new Map<string, Promise<boolean>>();
 
 export class RuntimeFacade {
+  // Topic shift detector per session
+  private readonly topicShiftDetectors = new Map<string, TopicShiftDetector>();
+  // Last response metadata per session (for topic shift detection)
+  private readonly lastResponseMetadata = new Map<string, Record<string, unknown>>();
   private currentSessionId: string | null = null;
   private readonly agentSessionBindings = new Map<string, string>();
   private readonly sessionControlPlaneStore = new SessionControlPlaneStore();
@@ -374,6 +386,11 @@ export class RuntimeFacade {
    */
   deleteSession(sessionId: string): boolean {
     const result = this.sessionManager.deleteSession(sessionId);
+    if (result) {
+      // C1: 清理 TopicShiftDetector 和 lastResponseMetadata 避免内存泄漏
+      this.topicShiftDetectors.delete(sessionId);
+      this.lastResponseMetadata.delete(sessionId);
+    }
     if (result && this.currentSessionId === sessionId) {
       this.currentSessionId = null;
     }
@@ -658,7 +675,7 @@ export class RuntimeFacade {
         && input !== null
         && !Array.isArray(input)
       )
-        ? (() => {
+        ? await(async () => {
             const payload = { ...(input as Record<string, unknown>) };
             const runtimeContextRaw = (
               typeof payload._runtime_context === 'object'
@@ -667,9 +684,99 @@ export class RuntimeFacade {
             )
               ? (payload._runtime_context as Record<string, unknown>)
               : {};
+            
+            // === Context Rebuild Decision ===
+            const rebuildSession = this.sessionManager.getSession(sessionId);
+            const rebuildMessages = this.sessionManager.getMessages(sessionId, 0);
+            const currentTokens = rebuildMessages.reduce((sum, m) => sum + estimateMessageTokens(m), 0);
+            const maxTokens = 8000;
+            
+            // Get last response metadata for topic shift detection
+            const lastMeta = this.lastResponseMetadata.get(sessionId);
+            const control = extractTopicShiftControl(lastMeta);
+            
+            // Get or create TopicShiftDetector for this session
+            let detector = this.topicShiftDetectors.get(sessionId);
+            if (!detector) {
+              detector = new TopicShiftDetector();
+              this.topicShiftDetectors.set(sessionId, detector);
+            }
+            
+            // Determine source type from session context
+            const rebuildSessionContext = (rebuildSession?.context && typeof rebuildSession.context === 'object')
+              ? rebuildSession.context as Record<string, unknown>
+              : undefined;
+            const sourceType = (typeof rebuildSessionContext?.sourceType === 'string')
+              ? rebuildSessionContext.sourceType
+              : 'user';
+            
+            // Decide if context rebuild should be triggered
+            const prompt = extractPromptFromPayload(payload);
+            const decision = decideContextRebuild(
+              sessionId,
+              sourceType,
+              prompt || '',
+              currentTokens,
+              maxTokens,
+              control,
+              detector,
+            );
+            
+            // === Determine if heartbeat/cron task ===
+            const isHeartbeatOrCron = isHeartbeatSession(sessionId) || sourceType === 'cron';
+            
+            // Execute context rebuild if decision is positive
+            if (decision.shouldRebuild) {
+              log.info('[RuntimeFacade] Context rebuild triggered', {
+                sessionId,
+                agentId,
+                reason: decision.reason,
+                confidence: decision.confidence,
+                isHeartbeatOrCron,
+              });
+              
+              const rebuildResult = await executeContextRebuild(
+                sessionId,
+                agentId,
+                prompt || 'system heartbeat task',
+                {
+                  mode: 'embed',
+                  topK: isHeartbeatSession(sessionId) ? 15 : 12,
+                  excludeSystemPrompt: isHeartbeatSession(sessionId),
+                  maxTokens: isHeartbeatSession(sessionId) ? 4000 : maxTokens,
+                },
+              );
+              
+              if (rebuildResult.ok && rebuildResult.rankedBlocks.length > 0) {
+                runtimeContextRaw.rebuild_blocks = rebuildResult.rankedBlocks;
+                runtimeContextRaw.rebuild_tokens = rebuildResult.tokensUsed;
+                runtimeContextRaw.rebuild_latency_ms = rebuildResult.latencyMs;
+                runtimeContextRaw.rebuild_status = 'ok';
+              } else {
+                // C2 Fallback: rebuild 失败时降级到 session messages
+                log.warn('[RuntimeFacade] Context rebuild failed or empty, falling back', {
+                  sessionId,
+                  ok: rebuildResult.ok,
+                  blocksCount: rebuildResult.rankedBlocks.length,
+                  error: rebuildResult.error,
+                });
+                runtimeContextRaw.rebuild_blocks = [];
+                runtimeContextRaw.rebuild_status = 'failed_fallback';
+              }
+            }
+            
             const hasSessionMessages = Array.isArray(runtimeContextRaw.session_messages);
             if (!hasSessionMessages) {
-              runtimeContextRaw.session_messages = this.sessionManager.getMessages(sessionId, 0);
+              if (typeof isHeartbeatOrCron !== 'undefined' && isHeartbeatOrCron) {
+                // 心跳/循环任务：不注入 session_messages，只依赖 rebuild_blocks
+                runtimeContextRaw.session_messages = [];
+                runtimeContextRaw.working_set_mode = 'rebuild_only';
+              } else {
+                // 普通用户请求：注入最近三轮 task.digest
+                const recentDigests = this.sessionManager.getMessages(sessionId, 3);
+                runtimeContextRaw.session_messages = recentDigests;
+                runtimeContextRaw.working_set_mode = 'recent_digest';
+              }
             }
             if (typeof runtimeContextRaw.session_id !== 'string' || runtimeContextRaw.session_id.trim().length === 0) {
               runtimeContextRaw.session_id = sessionId;
