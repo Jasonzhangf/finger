@@ -4,6 +4,7 @@
  * 这是 reasoning 模块的主入口文件。
  * 逐步从 chat-codex-module.ts 迁移内容。
  */
+import type { MailboxSnapshot } from '../../runtime/mailbox-snapshot.js';
 import { join } from 'path';
 import { FINGER_PATHS, ensureDir, normalizeSessionDirName } from '../../core/finger-paths.js';
 
@@ -639,5 +640,28 @@ function buildProjectAgentsScopePromptBlock(metadata: Record<string, unknown> | 
     lines.push(`AGENTS.content.truncated=true (${applicableFiles.length - AGENTS_PROMPT_MAX_FILES} more files omitted)`);
   }
 
+  return lines.join('\n');
+}
+
+function buildMailboxBaselineBlock(
+  snapshot: MailboxSnapshot | undefined,
+  metadata: Record<string, unknown> | undefined,
+): string | undefined {
+  const enabled = parseOptionalBoolean(metadata?.mailboxPromptEnabled)
+    ?? parseOptionalBoolean(metadata?.mailboxInjectionEnabled)
+    ?? true;
+  if (!enabled) return undefined;
+
+  const lines = [
+    '# Mailbox Runtime',
+    'Use mailbox tools for async task and notification handling.',
+    '- Tools: mailbox.status / mailbox.list / mailbox.read / mailbox.read_all / mailbox.ack / mailbox.remove / mailbox.remove_all',
+    '- For low-priority notifications, title + short description may be enough; you can ack/remove directly when no further action is required.',
+  ];
+  if (snapshot) {
+    const unread = Array.isArray(snapshot.entries) ? snapshot.entries.length : 0;
+    lines.push(`snapshot.currentSeq=${snapshot.currentSeq}`);
+    lines.push(`snapshot.unread=${unread}`);
+  }
   return lines.join('\n');
 }
