@@ -1002,3 +1002,12 @@ function parseReasoningOutputStyle(metadata: Record<string, unknown> | undefined
   }
   return undefined;
 }
+function truncateInlineText(value: string, maxChars: number): string {
+  // 先过滤掉工具调用文本
+  if (isToolCallText(value)) {
+    return '[已过滤]'; // 完全过滤，避免模型看到 /dev/null 等无效操作
+  }
+  const flattened = value.replace(/\s+/g, ' ').trim();
+  if (flattened.length <= maxChars) return flattened;
+  return `${flattened.slice(0, Math.max(0, maxChars - 3))}...`;
+}
