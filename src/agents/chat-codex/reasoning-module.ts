@@ -509,3 +509,15 @@ function normalizeKernelInputItems(items: ReasoningKernelInputItem[] | undefined
   if (items && items.length > 0) return items;
   return [{ type: 'text', text: fallbackText }];
 }
+
+function isSystemControlTurn(metadata: Record<string, unknown> | undefined): boolean {
+  if (!isRecord(metadata)) return false;
+  const turnType = parseOptionalString(metadata.turn_type);
+  return turnType === 'system_control';
+}
+
+function appendPromptSection(base: string | undefined, section: string | undefined): string | undefined {
+  if (!section || section.trim().length === 0) return base;
+  if (!base || base.trim().length === 0) return section;
+  return `${base}\n\n${section}`;
+}
