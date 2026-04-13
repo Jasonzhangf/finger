@@ -709,3 +709,18 @@ function buildUserProfilePromptBlock(metadata: Record<string, unknown> | undefin
   lines.push('USER.content.end');
   return lines.join('\n');
 }
+
+function buildMemoryRetrievalPromptBlock(metadata: Record<string, unknown> | undefined): string | undefined {
+  const enabled = parseOptionalBoolean(metadata?.memoryRoutingPromptEnabled)
+    ?? parseOptionalBoolean(metadata?.memoryRoutingInjectionEnabled)
+    ?? true;
+  if (!enabled) return undefined;
+  return [
+    '# Memory Retrieval Routing (mandatory)',
+    '- Long-term durable facts/constraints: read MEMORY.md.',
+    '- Timeline/history/tool traces: use context_ledger.memory (search -> query detail=true with slot_start/slot_end).',
+    '- Need full details from a compact digest/task block: use context_ledger.expand_task.',
+    '- Need broader relevant history in prompt: use context_builder.rebuild (P4 dynamic_history only).',
+    '- Do not treat visible prompt history as complete truth when historical evidence is required.',
+  ].join('\n');
+}
