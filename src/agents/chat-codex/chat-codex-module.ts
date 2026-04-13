@@ -711,7 +711,19 @@ export class ProcessChatCodexRunner implements ChatCodexRunner {
           newEstimatedSize: newSize,
         });
       }
-      this.sendUserTurnSubmission(session, turnId, normalizedItems, protectedOptions);
+      try {
+        this.sendUserTurnSubmission(session, turnId, normalizedItems, protectedOptions);
+      } catch (sendError) {
+        // EPIPE race: child exited between Promise setup and stdin write
+        // Reject the Promise immediately so caller can retry
+        chatCodexLog.error('sendUserTurnSubmission failed during Promise setup', sendError instanceof Error ? sendError : undefined, {
+          sessionKey: session.key,
+          turnId,
+          error: sendError instanceof Error ? sendError.message : String(sendError),
+        });
+        reject(sendError);
+        return;
+      }
     });
   }
 
