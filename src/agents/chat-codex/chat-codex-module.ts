@@ -772,17 +772,60 @@ export class ProcessChatCodexRunner implements ChatCodexRunner {
     return results;
   }
 
-  private ensureSession(sessionId: string, resolvedBinaryPath: string, providerId: string): KernelSessionProcess {
-    const runtimeKey = resolveRunnerRuntimeKey(sessionId);
-    const existing = this.sessions.get(runtimeKey);
-    if (
-      existing
-      && !existing.child.killed
-      && existing.resolvedBinaryPath === resolvedBinaryPath
-      && existing.providerId === providerId
-    ) {
-      return existing;
+ private ensureSession(sessionId: string, resolvedBinaryPath: string, providerId: string): KernelSessionProcess {
+   const runtimeKey = resolveRunnerRuntimeKey(sessionId);
+   let existing = this.sessions.get(runtimeKey);
+
+   // Check if child process is orphan (PPID=1 means daemon respawned, parent died)
+   // Orphan processes have stdin closed and will cause EPIPE
+   if (existing && existing.child.pid && !existing.child.killed) {
+     try {
+       // Check if stdin is writable - orphan processes have stdin destroyed
+       if (!existing.child.stdin.writable || existing.child.stdin.destroyed) {
+         chatCodexLog.warn('Kernel stdin destroyed (orphan/zombie process), will dispose and respawn', {
+           sessionKey: runtimeKey,
+           childPid: existing.child.pid,
+           stdinWritable: existing.child.stdin.writable,
+           stdinDestroyed: existing.child.stdin.destroyed,
+         });
+         this.disposeSession(existing);
+         this.sessions.delete(runtimeKey);
+         existing = undefined;
+       }
+       // Also check if process has exited (exitCode set by exit handler)
+       // This catches processes that exited but stdin state hasn't updated yet
+       if (existing && existing.exitCode !== null) {
+         chatCodexLog.warn('Kernel process already exited (exitCode set), will dispose and respawn', {
+           sessionKey: runtimeKey,
+           childPid: existing.child.pid,
+           exitCode: existing.exitCode,
+           exitSignal: existing.exitSignal,
+         });
+         this.disposeSession(existing);
+         this.sessions.delete(runtimeKey);
+         existing = undefined;
+       }
+     } catch (checkError) {
+      chatCodexLog.warn('Error checking kernel stdin state, will dispose and respawn', {
+        sessionKey: runtimeKey,
+        error: checkError instanceof Error ? checkError.message : String(checkError),
+      });
+      if (existing) {
+        this.disposeSession(existing);
+      }
+      this.sessions.delete(runtimeKey);
+      existing = undefined;
     }
+   }
+
+   if (
+     existing
+     && !existing.child.killed
+     && existing.resolvedBinaryPath === resolvedBinaryPath
+     && existing.providerId === providerId
+   ) {
+     return existing;
+   }
 
     if (existing) {
       chatCodexLog.info('Refreshing kernel runtime for session due to runtime config change', {
