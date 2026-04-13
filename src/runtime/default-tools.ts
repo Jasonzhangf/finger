@@ -46,11 +46,11 @@ export function registerDefaultRuntimeTools(
     loadedToolNames.push('send_local_image');
 
     // V3 Claim Tools
-    registerProjectClaimCompletionToolInRuntime(runtimeToolRegistry);
+    registerProjectClaimCompletionToolInRuntime(runtimeToolRegistry, getAgentRuntimeDeps);
     loadedToolNames.push('project.claim_completion');
-    registerProjectApproveTaskToolInRuntime(runtimeToolRegistry);
+    registerProjectApproveTaskToolInRuntime(runtimeToolRegistry, getAgentRuntimeDeps);
     loadedToolNames.push('project.approve_task');
-    registerProjectRejectTaskToolInRuntime(runtimeToolRegistry);
+    registerProjectRejectTaskToolInRuntime(runtimeToolRegistry, getAgentRuntimeDeps);
     loadedToolNames.push('project.reject_task');
   }
 

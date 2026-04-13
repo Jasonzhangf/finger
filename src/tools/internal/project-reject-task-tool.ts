@@ -28,15 +28,9 @@ export interface RejectTaskOutput {
   message: string;
 }
 
-function getAgentRuntimeDeps(): AgentRuntimeDeps {
-  const globalScope = globalThis as unknown as { __FINGER_AGENT_RUNTIME_DEPS__: AgentRuntimeDeps };
-  if (!globalScope.__FINGER_AGENT_RUNTIME_DEPS__) {
-    throw new Error('AgentRuntimeDeps not initialized in global scope');
-  }
-  return globalScope.__FINGER_AGENT_RUNTIME_DEPS__;
-}
 
-export function registerProjectRejectTaskTool(toolRegistry: ToolRegistry): void {
+
+export function registerProjectRejectTaskTool(toolRegistry: ToolRegistry, getAgentRuntimeDeps: () => AgentRuntimeDeps): void {
   toolRegistry.register({
     name: 'project.reject_task',
     description: 'System Agent rejects task after review_claim REJECT. Dispatches rework to Project Agent with specific feedback.',

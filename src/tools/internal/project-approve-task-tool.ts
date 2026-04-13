@@ -27,15 +27,9 @@ export interface ApproveTaskOutput {
   message: string;
 }
 
-function getAgentRuntimeDeps(): AgentRuntimeDeps {
-  const globalScope = globalThis as unknown as { __FINGER_AGENT_RUNTIME_DEPS__: AgentRuntimeDeps };
-  if (!globalScope.__FINGER_AGENT_RUNTIME_DEPS__) {
-    throw new Error('AgentRuntimeDeps not initialized in global scope');
-  }
-  return globalScope.__FINGER_AGENT_RUNTIME_DEPS__;
-}
 
-export function registerProjectApproveTaskTool(toolRegistry: ToolRegistry): void {
+
+export function registerProjectApproveTaskTool(toolRegistry: ToolRegistry, getAgentRuntimeDeps: () => AgentRuntimeDeps): void {
   toolRegistry.register({
     name: 'project.approve_task',
     description: 'System Agent approves task after review_claim PASS. Marks task as approved, releases locks, and prepares summary for user reporting.',

@@ -41,13 +41,7 @@ export interface ProjectClaimCompletionOutput {
   warnings?: string[];
 }
 
-function getAgentRuntimeDeps(): AgentRuntimeDeps {
-  const globalScope = globalThis as unknown as { __FINGER_AGENT_RUNTIME_DEPS__: AgentRuntimeDeps };
-  if (!globalScope.__FINGER_AGENT_RUNTIME_DEPS__) {
-    throw new Error('AgentRuntimeDeps not initialized in global scope');
-  }
-  return globalScope.__FINGER_AGENT_RUNTIME_DEPS__;
-}
+
 
 function validateClaim(input: Partial<ProjectClaimCompletionInput>): { valid: boolean; errors: string[] } {
   const errors: string[] = [];
@@ -73,7 +67,7 @@ function validateClaim(input: Partial<ProjectClaimCompletionInput>): { valid: bo
   return { valid: errors.length === 0, errors };
 }
 
-export function registerProjectClaimCompletionTool(toolRegistry: ToolRegistry): void {
+export function registerProjectClaimCompletionTool(toolRegistry: ToolRegistry, getAgentRuntimeDeps: () => AgentRuntimeDeps): void {
   toolRegistry.register({
     name: 'project.claim_completion',
     description: 'Project Agent submits structured completion claim for System Agent review. Must include taskId, summary, changedFiles, and verification evidence. Self-check must pass before claiming.',

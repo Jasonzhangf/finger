@@ -187,19 +187,19 @@ export * from './project-reject-task-tool.js';
 /**
  * 在运行时注册 project.claim_completion（Project Agent 提交完成声明）
  */
-export function registerProjectClaimCompletionToolInRuntime(toolRegistry: ToolRegistry): void {
-  registerProjectClaimCompletionTool(toolRegistry);
+export function registerProjectClaimCompletionToolInRuntime(toolRegistry: ToolRegistry, getAgentRuntimeDeps: () => AgentRuntimeDeps): void {
+  registerProjectClaimCompletionTool(toolRegistry, getAgentRuntimeDeps);
 }
 /**
  * 在运行时注册 project.approve_task（System Agent 验收通过）
  */
-export function registerProjectApproveTaskToolInRuntime(toolRegistry: ToolRegistry): void {
-  registerProjectApproveTaskTool(toolRegistry);
+export function registerProjectApproveTaskToolInRuntime(toolRegistry: ToolRegistry, getAgentRuntimeDeps: () => AgentRuntimeDeps): void {
+  registerProjectApproveTaskTool(toolRegistry, getAgentRuntimeDeps);
 }
 
 /**
  * 在运行时注册 project.reject_task（System Agent 拒绝重做）
  */
-export function registerProjectRejectTaskToolInRuntime(toolRegistry: ToolRegistry): void {
-  registerProjectRejectTaskTool(toolRegistry);
+export function registerProjectRejectTaskToolInRuntime(toolRegistry: ToolRegistry, getAgentRuntimeDeps: () => AgentRuntimeDeps): void {
+  registerProjectRejectTaskTool(toolRegistry, getAgentRuntimeDeps);
 }
