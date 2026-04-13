@@ -4,6 +4,8 @@
  * 这是 reasoning 模块的主入口文件。
  * 逐步从 chat-codex-module.ts 迁移内容。
  */
+import { join } from 'path';
+import { FINGER_PATHS, ensureDir, normalizeSessionDirName } from '../../core/finger-paths.js';
 
 import type {
   ReasoningRoleProfile,
@@ -183,3 +185,46 @@ const DEFAULT_CONFIG: ReasoningModuleConfig = {
   timeoutMs: DEFAULT_KERNEL_TIMEOUT_MS,
   timeoutRetryCount: DEFAULT_KERNEL_TIMEOUT_RETRY_COUNT,
 };
+
+// ==================== 类型辅助函数 ====================
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null;
+}
+
+// ==================== 路径处理函数 ====================
+
+function resolveFallbackSessionRoot(sessionId: string): string {
+  const projectBucket = '_unknown';
+  const dir = join(
+    FINGER_PATHS.sessions.dir,
+    projectBucket,
+    normalizeSessionDirName(sanitizePathPart(sessionId)),
+  );
+  ensureDir(dir);
+  return dir;
+}
+
+function sanitizePathPart(value: string): string {
+  const normalized = value.trim();
+  if (!normalized) return 'unknown';
+  return normalized.replace(/[^a-zA-Z0-9._-]/g, '_');
+}
+
+function normalizeDefaultRoleProfileId(role?: string): string {
+  const normalized = (role ?? '').trim().toLowerCase();
+  if (normalized === 'system') return 'system';
+  return 'project';
+}
+
+// ==================== Kernel Metadata 解析 ====================
+
+function parseKernelMetadata(raw: string): Record<string, unknown> | undefined {
+  try {
+    const parsed = JSON.parse(raw);
+    if (!isRecord(parsed)) return undefined;
+    return parsed;
+  } catch {
+    return undefined;
+  }
+}
