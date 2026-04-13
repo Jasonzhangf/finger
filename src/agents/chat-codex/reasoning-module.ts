@@ -947,3 +947,25 @@ function isToolCallText(content: string): boolean {
   return toolCallPatterns.some(pattern => content.includes(pattern));
 }
 
+function isToolSpecificationLike(value: unknown): value is ReasoningToolSpec {
+  return isRecord(value) && typeof value.name === 'string' && value.name.trim().length > 0;
+}
+
+function normalizeProvidedToolSpecifications(
+  specs: ReasoningToolSpec[],
+): ReasoningToolSpec[] {
+  const seen = new Set<string>();
+  const normalized: ReasoningToolSpec[] = [];
+  for (const spec of specs) {
+    if (!isToolSpecificationLike(spec)) continue;
+    const name = spec.name.trim();
+    if (seen.has(name)) continue;
+    seen.add(name);
+    normalized.push({
+      name,
+      ...(typeof spec.description === 'string' ? { description: spec.description } : {}),
+      ...(isRecord(spec.inputSchema) ? { inputSchema: spec.inputSchema } : {}),
+    });
+  }
+  return normalized;
+}
