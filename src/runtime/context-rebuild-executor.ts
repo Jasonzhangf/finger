@@ -316,3 +316,67 @@ export function extractRecentTaskDigests(
   const recentRounds = rounds.slice(-roundCount);
   return recentRounds.flat();
 }
+
+// ============================================
+// 压缩当前 session_messages 为 task digest
+// ============================================
+
+interface SessionMessage {
+  id?: string;
+  role: string;
+  content: string;
+  timestamp?: string;
+  metadata?: Record<string, unknown>;
+}
+
+interface CompressedDigest {
+  role: 'assistant';
+  content: string;
+  timestamp: string;
+  tokenCount: number;
+  metadata: {
+    compactDigest: true;
+    compressedFromCurrentHistory: true;
+    originalMessageCount: number;
+    toolsUsed: string[];
+  };
+}
+
+/**
+ * 将一组 session messages 压缩为 task digest
+ */
+export function compressCurrentHistory(messages: SessionMessage[]): CompressedDigest {
+  const firstUser = messages.find((m) => m.role === 'user')?.content?.trim() ?? '';
+  const lastAssistant = [...messages].reverse().find((m) => m.role === 'assistant')?.content?.trim() ?? '';
+  const toolNames = Array.from(new Set(
+    messages
+      .map((m) => {
+        const raw = m.metadata?.toolName;
+        return typeof raw === 'string' && raw.trim().length > 0 ? raw.trim() : '';
+      })
+      .filter((t) => t.length > 0),
+  )).slice(0, 8);
+
+  const digestParts = [
+    firstUser ? `请求: ${firstUser.replace(/\s+/g, ' ').slice(0, 220)}` : '',
+    lastAssistant ? `结果: ${lastAssistant.replace(/\s+/g, ' ').slice(0, 260)}` : '',
+    toolNames.length > 0 ? `工具: ${toolNames.join(', ')}` : '',
+  ].filter(Boolean);
+
+  const digestContent = digestParts.length > 0
+    ? digestParts.join('\n')
+    : `(compressed task digest from ${messages.length} messages)`;
+
+  return {
+    role: 'assistant',
+    content: digestContent,
+    timestamp: new Date().toISOString(),
+    tokenCount: Math.ceil(digestContent.length / 4),
+    metadata: {
+      compactDigest: true,
+      compressedFromCurrentHistory: true,
+      originalMessageCount: messages.length,
+      toolsUsed: toolNames,
+    },
+  };
+}

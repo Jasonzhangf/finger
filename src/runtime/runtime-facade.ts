@@ -26,7 +26,7 @@ import {
   isHeartbeatSession,
   isCronTask,
 } from './topic-shift-detector.js';
-import { executeContextRebuild, extractPromptFromPayload, estimateMessageTokens } from './context-rebuild-executor.js';
+import { executeContextRebuild, extractPromptFromPayload, estimateMessageTokens, compressCurrentHistory } from './context-rebuild-executor.js';
 import { createRustKernelCompactionError } from './kernel-owned-compaction.js';
 import { SessionControlPlaneStore } from './session-control-plane.js';
 import { SYSTEM_PROJECT_PATH } from '../agents/finger-system-agent/index.js';
@@ -686,6 +686,17 @@ export class RuntimeFacade {
               : {};
             
             // === Context Rebuild Decision ===
+            // 核心原则：最近 3 轮永远保留在 session_messages（current），不依赖索引
+            // Rebuild 只补充历史上下文（ledger 搜索），作为 supplement
+            const ALWAYS_KEEP_RECENT_ROUNDS = 3;
+            const rawMessages = this.sessionManager.getMessages(sessionId, ALWAYS_KEEP_RECENT_ROUNDS);
+            // 压缩原始消息为轻量级 Digest（去掉大体积的 tool_output）
+            const recentDigests = rawMessages.length > 0
+              ? [compressCurrentHistory(rawMessages)]
+              : [];
+            runtimeContextRaw.session_messages = recentDigests;
+            runtimeContextRaw.working_set_mode = 'recent_digest_plus_rebuild';
+
             const rebuildSession = this.sessionManager.getSession(sessionId);
             const rebuildMessages = this.sessionManager.getMessages(sessionId, 0);
             const currentTokens = rebuildMessages.reduce((sum, m) => sum + estimateMessageTokens(m), 0);
@@ -725,14 +736,53 @@ export class RuntimeFacade {
             // === Determine if heartbeat/cron task ===
             const isHeartbeatOrCron = isHeartbeatSession(sessionId) || sourceType === 'cron';
             
-            // Execute context rebuild if decision is positive
-            if (decision.shouldRebuild) {
+            // === 检查索引是否就绪 ===
+            // 索引未完成 → 不触发 rebuild，只使用 recentDigests
+            // 如果上下文超限触发 rebuild 但 index 未完成，返回特殊状态通知用户
+            let indexReady = true;
+            let indexWaitMs = 0;
+            try {
+              const fsPromises = await import('fs/promises');
+              const lPath = path.join(FINGER_PATHS.sessions.dir, sessionId, agentId, 'main', 'context-ledger.jsonl');
+              const ledgerStat = await fsPromises.stat(lPath).catch(() => null);
+              if (ledgerStat) {
+                // 如果 ledger 在最近 30 秒内被修改，认为索引可能未完成（留足时间）
+                const threeSecondsAgo = Date.now() - 3000;
+                if (ledgerStat.mtimeMs > threeSecondsAgo) {
+                  indexReady = false;
+                  indexWaitMs = Math.max(0, 3000 - (Date.now() - ledgerStat.mtimeMs));
+                  log.info('[RuntimeFacade] Ledger recently modified, index may not be ready', {
+                    sessionId,
+                    ledgerMtime: ledgerStat.mtimeMs,
+                    indexWaitMs,
+                  });
+                }
+              }
+            } catch (_e) {
+              // ignore stat errors
+            }
+            
+            // 如果上下文超限触发 rebuild 但 index 未完成，通知用户等待
+            if (decision.reason === 'context_overflow' && !indexReady) {
+              runtimeContextRaw.rebuild_status = 'waiting_for_index';
+              runtimeContextRaw.rebuild_wait_ms = indexWaitMs;
+              log.warn('[RuntimeFacade] Context overflow but index not ready, user should wait', {
+                sessionId,
+                currentTokens,
+                maxTokens,
+                indexWaitMs,
+              });
+            }
+            
+            // Execute context rebuild if decision is positive AND index is ready
+            if (decision.shouldRebuild && indexReady) {
               log.info('[RuntimeFacade] Context rebuild triggered', {
                 sessionId,
                 agentId,
                 reason: decision.reason,
                 confidence: decision.confidence,
                 isHeartbeatOrCron,
+                indexReady,
               });
               
               const rebuildResult = await executeContextRebuild(
@@ -767,16 +817,8 @@ export class RuntimeFacade {
             
             const hasSessionMessages = Array.isArray(runtimeContextRaw.session_messages);
             if (!hasSessionMessages) {
-              if (typeof isHeartbeatOrCron !== 'undefined' && isHeartbeatOrCron) {
-                // 心跳/循环任务：不注入 session_messages，只依赖 rebuild_blocks
-                runtimeContextRaw.session_messages = [];
-                runtimeContextRaw.working_set_mode = 'rebuild_only';
-              } else {
-                // 普通用户请求：注入最近三轮 task.digest
-                const recentDigests = this.sessionManager.getMessages(sessionId, 3);
-                runtimeContextRaw.session_messages = recentDigests;
-                runtimeContextRaw.working_set_mode = 'recent_digest';
-              }
+              // Fallback: 已经在上面设置了 recentDigests，这里只做兜底
+              runtimeContextRaw.session_messages = this.sessionManager.getMessages(sessionId, ALWAYS_KEEP_RECENT_ROUNDS);
             }
             if (typeof runtimeContextRaw.session_id !== 'string' || runtimeContextRaw.session_id.trim().length === 0) {
               runtimeContextRaw.session_id = sessionId;
