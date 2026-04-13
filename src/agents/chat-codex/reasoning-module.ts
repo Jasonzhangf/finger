@@ -86,3 +86,100 @@ export class ProcessReasoningRunner implements ReasoningRunner {
 
 // 临时导出旧模块别名（兼容性）
 export { ProcessReasoningRunner as ProcessChatCodexRunner };
+
+// ==================== 辅助函数 ====================
+
+function safeNotifyLoopEvent(
+  callback: ReasoningModuleConfig['onLoopEvent'],
+  event: ReasoningLoopEvent,
+): void {
+  if (!callback) return;
+  void Promise.resolve(callback(event)).catch((error) => {
+    reasoningLog.warn('Loop event callback failed', {
+      sessionId: event.sessionId,
+      phase: event.phase,
+      error: error instanceof Error ? error.message : String(error),
+    });
+  });
+}
+
+function isTimeoutError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  const normalized = message.toLowerCase();
+  return normalized.includes('timed out') || normalized.includes('timeout');
+}
+
+export function isRetryableReasoningError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  const normalized = message.toLowerCase();
+  if (normalized.includes('daily_cost_limit_exceeded')) return false;
+  if (normalized.includes('insufficient_quota')) return false;
+  if (normalized.includes('unauthorized')) return false;
+  if (normalized.includes('forbidden')) return false;
+  if (normalized.includes(' 401') || normalized.includes('_401') || normalized.includes('error code: 401')) return false;
+  if (normalized.includes(' 402') || normalized.includes('_402') || normalized.includes('error code: 402')) return false;
+  if (normalized.includes(' 403') || normalized.includes('_403') || normalized.includes('error code: 403')) return false;
+  const noEndpoint404 = (
+    normalized.includes('no endpoints found for')
+    && (
+      normalized.includes('status: 404')
+      || normalized.includes('http 404')
+      || normalized.includes('code":"http_404')
+      || normalized.includes("code:'http_404")
+    )
+  );
+
+  return isTimeoutError(error)
+    || noEndpoint404
+    || normalized.includes('stalled without kernel events')
+    || normalized.includes('stale active turn evicted')
+    || normalized.includes('active turn superseded')
+    || normalized.includes('kernel stdin stream error')
+    || normalized.includes('write epipe')
+    || normalized.includes('did not contain a completed response payload')
+    || normalized.includes('completed response payload')
+    || normalized.includes('stream ended before completed response')
+    || normalized.includes('response stream ended prematurely')
+    || normalized.includes('fetch failed')
+    || normalized.includes('gateway')
+    || normalized.includes('result timeout')
+    || normalized.includes('ack timeout')
+    || normalized.includes('econnreset')
+    || normalized.includes('econnrefused')
+    || normalized.includes('socket hang up')
+    || normalized.includes(' 408')
+    || normalized.includes('_408')
+    || normalized.includes(' 409')
+    || normalized.includes('_409')
+    || normalized.includes(' 425')
+    || normalized.includes('_425')
+    || normalized.includes(' 429')
+    || normalized.includes('_429')
+    || normalized.includes(' 500')    || normalized.includes('_500')
+    || normalized.includes(' 502')    || normalized.includes('_502')
+    || normalized.includes(' 503')    || normalized.includes('_503')
+    || normalized.includes(' 504')    || normalized.includes('_504')
+    || normalized.includes('error code: 502')
+    || normalized.includes('error code: 500')
+    || normalized.includes('error code: 503')
+    || normalized.includes('error code: 504');
+}
+
+// 兼容性别名
+export const isRetryableRunError = isRetryableReasoningError;
+
+function retryDelayMs(attempt: number): number {
+  if (process.env.NODE_ENV === 'test') return 0;
+  const clampedAttempt = Math.max(1, attempt);
+  return Math.min(30_000, Math.floor(750 * Math.pow(2, clampedAttempt - 1)));
+}
+
+// ==================== 默认配置 ====================
+
+const DEFAULT_CONFIG: ReasoningModuleConfig = {
+  id: 'reasoning',
+  name: 'Reasoning Bridge',
+  version: getFingerAppVersion(),
+  timeoutMs: DEFAULT_KERNEL_TIMEOUT_MS,
+  timeoutRetryCount: DEFAULT_KERNEL_TIMEOUT_RETRY_COUNT,
+};
