@@ -121,19 +121,6 @@ export class RuntimeFacade {
     }
   }
 
-  private isEphemeralDispatchSessionId(sessionId: string): boolean {
-    // Only treat runtime-generated transient dispatch ids as ephemeral:
-    // dispatch-<timestamp-or-number>-...
-    // Keep deterministic project-scoped session ids (e.g. dispatch-finger-project-agent-*)
-    // bindable so worker/session routing can persist correctly.
-    return /^dispatch-\d/i.test(sessionId.trim());
-  }
-
-  private isSystemAgent(agentId: string): boolean {
-    return agentId.trim() === 'finger-system-agent';
-  }
-
-
   /**
    * Sanitize tool error messages to prevent LLM from hallucinating tool calls.
    * Replaces provider error messages like "Tool xxx does not exist" with
