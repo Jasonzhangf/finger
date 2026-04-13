@@ -7,7 +7,7 @@
 import { join } from 'path';
 import { FINGER_PATHS, ensureDir, normalizeSessionDirName } from '../../core/finger-paths.js';
 
-import { existsSync, readdirSync } from 'fs';
+import { existsSync, readdirSync, readFileSync } from 'fs';
 import { FINGER_SOURCE_ROOT } from '../../core/source-root.js';
 import { loadAIProviders } from '../../core/user-settings.js';
 import type {
@@ -577,4 +577,67 @@ function collectApplicableAgentsFiles(startDir: string, projectRoot?: string): s
     // Ignore errors
   }
   return result;
+}
+
+
+function buildProjectAgentsScopePromptBlock(metadata: Record<string, unknown> | undefined): string | undefined {
+  const enabled = parseOptionalBoolean(metadata?.agentsPromptEnabled)
+    ?? parseOptionalBoolean(metadata?.agentsInjectionEnabled)
+    ?? true;
+  if (!enabled) return undefined;
+  if (!isProjectLikeAgent(metadata)) return undefined;
+
+  const projectPath = normalizeAbsoluteDir(parseOptionalString(metadata?.projectPath) ?? parseOptionalString(metadata?.project_path));
+  const cwd = normalizeAbsoluteDir(parseOptionalString(metadata?.cwd)) ?? projectPath;
+  if (!cwd && !projectPath) return undefined;
+
+  const startDir = cwd ?? projectPath!;
+  const boundedProjectRoot = projectPath && isSameOrSubPath(startDir, projectPath)
+    ? projectPath
+    : undefined;
+  const applicableFiles = collectApplicableAgentsFiles(startDir, boundedProjectRoot);
+  const orderedByPrecedence = applicableFiles.slice().reverse();
+
+  const lines: string[] = [
+    '# Project AGENTS Runtime (scope-aware)',
+    '- This is a project-agent turn: apply directory-scoped AGENTS rules.',
+    '- Scope rule: each AGENTS.md applies to its directory subtree.',
+    '- Precedence rule: deeper/nested AGENTS overrides parent AGENTS on conflicts.',
+    '- Priority rule: system/developer/user instructions override AGENTS.',
+    `AGENTS.cwd=${startDir}`,
+    `AGENTS.project_root=${projectPath ?? '(unset)'}`,
+    `AGENTS.applicable_count=${orderedByPrecedence.length}`,
+  ];
+
+  if (orderedByPrecedence.length === 0) {
+    lines.push('AGENTS.state=none_found');
+    return lines.join('\n');
+  }
+
+  lines.push('AGENTS.precedence_order(low->high):');
+  orderedByPrecedence.forEach((filePath, index) => {
+    lines.push(`${index + 1}. ${filePath}`);
+  });
+
+  const fileContents = applicableFiles.slice(0, AGENTS_PROMPT_MAX_FILES);
+  for (const filePath of fileContents) {
+    try {
+      const raw = readFileSync(filePath, 'utf-8').trim();
+      const rendered = raw.length > AGENTS_PROMPT_MAX_CHARS_PER_FILE
+        ? `${raw.slice(0, AGENTS_PROMPT_MAX_CHARS_PER_FILE)}\n...[TRUNCATED_AT_${AGENTS_PROMPT_MAX_CHARS_PER_FILE}_CHARS]`
+        : raw;
+      lines.push(`AGENTS.content[${filePath}]:`);
+      lines.push('```md');
+      lines.push(rendered);
+      lines.push('```');
+    } catch {
+      lines.push(`AGENTS.content[${filePath}]=unreadable`);
+    }
+  }
+
+  if (applicableFiles.length > AGENTS_PROMPT_MAX_FILES) {
+    lines.push(`AGENTS.content.truncated=true (${applicableFiles.length - AGENTS_PROMPT_MAX_FILES} more files omitted)`);
+  }
+
+  return lines.join('\n');
 }
