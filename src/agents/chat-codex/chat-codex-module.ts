@@ -637,27 +637,62 @@ export class ProcessChatCodexRunner implements ChatCodexRunner {
       const pendingTurnId = this.nextSubmissionId(session, 'pending');
       const maxPayloadChars = Math.floor(getContextWindow() * 0.9);
       let protectedOptions = options;
-     const estimatedSize = this.estimateSubmissionPayloadSize(normalizedItems, options);
+     let estimatedSize = this.estimateSubmissionPayloadSize(normalizedItems, options);
      if (estimatedSize > maxPayloadChars) {
-       // Payload 超限不应该 truncate，应该触发 context rebuild
-       // 返回错误让上层触发 rebuild 后 retry
-       chatCodexLog.warn('Submission payload exceeds limit, need context rebuild', {
+       // Payload 超限：立即压缩 history_items
+       chatCodexLog.warn('Payload exceeds limit, triggering immediate compression', {
          estimatedSize,
          maxPayloadChars,
          historyItemsCount: Array.isArray(options?.history_items) ? options.history_items.length : 0,
          sessionId,
        });
-       return {
-         reply: '上下文超限，需要触发 context rebuild 后重试。',
-         events: [],
-         usedBinaryPath: resolvedPath,
-         kernelMetadata: {
-           context_overflow: true,
+       
+       // 压缩 history_items（保留最近3轮，其余转为 digest）
+       if (Array.isArray(options?.history_items) && options.history_items.length > 6) {
+         const recentItems = options.history_items.slice(-6); // 最近3轮（user+assistant）
+         const olderItems = options.history_items.slice(0, -6);
+         
+         // 将 olderItems 转为轻量级 digest
+         const compressedDigests = olderItems.map((item: any) => {
+           if (item.role === 'assistant' && item.content) {
+             // 保留 assistant 的摘要，截断长内容
+             const content = typeof item.content === 'string' ? item.content : JSON.stringify(item.content);
+             return {
+               role: 'assistant',
+               content: content.length > 500 ? content.substring(0, 500) + '...[compressed]' : content,
+               _compressed: true,
+             };
+           }
+           return item;
+         });
+         
+         options.history_items = [...compressedDigests, ...recentItems];
+         estimatedSize = this.estimateSubmissionPayloadSize(normalizedItems, options);
+         
+         chatCodexLog.info('History compressed', {
+           newEstimatedSize: estimatedSize,
+           newHistoryItemsCount: options.history_items.length,
+         });
+       }
+       
+       // 如果压缩后仍然超限，报错
+       if (estimatedSize > maxPayloadChars) {
+         chatCodexLog.warn('Payload still exceeds limit after compression', {
            estimatedSize,
            maxPayloadChars,
-           needRebuild: true,
-         },
-       };
+         });
+         return {
+           reply: '上下文过大，即使压缩后仍超限。请手动清理历史或开启新会话。',
+           events: [],
+           usedBinaryPath: resolvedPath,
+           kernelMetadata: {
+             context_overflow: true,
+             estimatedSize,
+             maxPayloadChars,
+             needRebuild: true,
+           },
+         };
+       }
      }
       this.sendUserTurnSubmission(session, pendingTurnId, normalizedItems, protectedOptions);
       session.activeTurn.pendingInputQueued = true;
@@ -705,18 +740,50 @@ export class ProcessChatCodexRunner implements ChatCodexRunner {
 
      const maxPayloadChars = Math.floor(getContextWindow() * 0.9);
      let protectedOptions = options;
-     const estimatedSize = this.estimateSubmissionPayloadSize(normalizedItems, options);
+     let estimatedSize = this.estimateSubmissionPayloadSize(normalizedItems, options);
      if (estimatedSize > maxPayloadChars) {
-       // Payload 超限不应该 truncate，应该触发 context rebuild
-       // Reject Promise 让上层触发 rebuild 后 retry
-       chatCodexLog.warn('Submission payload exceeds limit, need context rebuild', {
+       // Payload 超限：立即压缩 history_items
+       chatCodexLog.warn('Payload exceeds limit, triggering immediate compression', {
          estimatedSize,
          maxPayloadChars,
          historyItemsCount: Array.isArray(options?.history_items) ? options.history_items.length : 0,
          sessionId,
        });
-       reject(new Error('chat-codex submission payload exceeds limit, need context rebuild'));
-       return;
+       
+       // 压缩 history_items（保留最近3轮，其余转为 digest）
+       if (Array.isArray(options?.history_items) && options.history_items.length > 6) {
+         const recentItems = options.history_items.slice(-6);
+         const olderItems = options.history_items.slice(0, -6);
+         
+         const compressedDigests = olderItems.map((item: any) => {
+           if (item.role === 'assistant' && item.content) {
+             const content = typeof item.content === 'string' ? item.content : JSON.stringify(item.content);
+             return {
+               role: 'assistant',
+               content: content.length > 500 ? content.substring(0, 500) + '...[compressed]' : content,
+               _compressed: true,
+             };
+           }
+           return item;
+         });
+         
+         options.history_items = [...compressedDigests, ...recentItems];
+         estimatedSize = this.estimateSubmissionPayloadSize(normalizedItems, options);
+         
+         chatCodexLog.info('History compressed', {
+           newEstimatedSize: estimatedSize,
+           newHistoryItemsCount: options.history_items.length,
+         });
+       }
+       
+       if (estimatedSize > maxPayloadChars) {
+         chatCodexLog.warn('Payload still exceeds limit after compression', {
+           estimatedSize,
+           maxPayloadChars,
+         });
+         reject(new Error('chat-codex payload exceeds limit even after compression'));
+         return;
+       }
      }
       try {
         this.sendUserTurnSubmission(session, turnId, normalizedItems, protectedOptions);
