@@ -27,6 +27,7 @@ import {
   buildPreview,
   readJsonLines,
   normalizeRootDir,
+  normalizeRootDirForAgent,
   resolveLedgerPath,
   resolveCompactMemoryPath,
 } from './context-ledger-memory-helpers.js';
@@ -1500,8 +1501,8 @@ export async function buildContext(
   input: ContextBuilderInput,
   options?: Partial<ContextBuildOptions>,
 ): Promise<ContextBuildResult> {
-  const rootDir = normalizeRootDir(input.rootDir);
   const agentId = input.agentId || 'finger-system-agent';
+  const rootDir = normalizeRootDirForAgent(input.rootDir, agentId);
   const mode = input.mode || 'main';
   const ledgerPath = resolveLedgerPath(rootDir, input.sessionId, agentId, mode);
 

@@ -327,9 +327,22 @@ export class ProgressMonitor {
     const rounds = Array.isArray(progress.recentRounds) ? progress.recentRounds : [];
     if (rounds.length === 0) return [];
     const lines: string[] = ['🕘 最近轮次:'];
-for (const round of rounds.slice(-3)) {
+    
+    // 去重：相邻两轮如果 summary 相同，只显示一次
+    const uniqueRounds: ProgressRoundDigest[] = [];
+    for (const round of rounds.slice(-3)) {
+      const lastRound = uniqueRounds[uniqueRounds.length - 1];
+      if (!lastRound || lastRound.summary !== round.summary) {
+        uniqueRounds.push(round);
+      }
+    }
+    
+    for (const round of uniqueRounds) {
       const statusIcon = round.failureCount > 0 ? '❌' : round.successCount > 0 ? '✅' : '⏳';
-      lines.push(`  ${statusIcon} ${round.summary}`);
+      const truncatedSummary = round.summary.length > 60 
+        ? round.summary.slice(0, 57) + '...' 
+        : round.summary;
+      lines.push(`  ${statusIcon} ${truncatedSummary}`);
     }
     return lines;
   }

@@ -127,6 +127,16 @@ export function normalizeRootDir(rootDir?: string): string {
   return FINGER_PATHS.sessions.dir;
 }
 
+
+export function normalizeRootDirForAgent(rootDir?: string, agentId?: string): string {
+  const normalized = normalizeText(rootDir);
+  if (normalized) return normalized;
+  // System agent uses system.sessionsDir
+  if (agentId === 'finger-system-agent') {
+    return FINGER_PATHS.system.sessionsDir;
+  }
+  return FINGER_PATHS.sessions.dir;
+}
 export async function readJsonLines<T>(filePath: string): Promise<T[]> {
   try {
     const content = await fs.readFile(filePath, 'utf-8');

@@ -2,6 +2,7 @@ import type { SessionMessage } from '../orchestration/session-types.js';
 import {
   appendLedgerEvent,
   normalizeRootDir,
+  normalizeRootDirForAgent,
   resolveBaseDir,
   resolveCompactMemoryPath,
 } from './context-ledger-memory-helpers.js';
@@ -120,7 +121,7 @@ export async function appendDigestForTurn(
   rootDir: string,
   options: AppendDigestForTurnOptions,
 ): Promise<void> {
-  const normalizedRootDir = normalizeRootDir(rootDir);
+  const normalizedRootDir = normalizeRootDirForAgent(rootDir, options.agentId);
   const agentId = options.agentId || 'finger-system-agent';
   const mode = options.mode || 'main';
   const digestMessage = toDigestMessage(options.currentMessage);

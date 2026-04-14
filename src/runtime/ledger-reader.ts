@@ -1,5 +1,5 @@
 import type { LedgerEntryFile, CompactMemoryEntryFile } from './context-ledger-memory-types.js';
-import { normalizeRootDir, readJsonLines, resolveCompactMemoryPath, resolveLedgerPath, resolveBaseDir } from './context-ledger-memory-helpers.js';
+import { normalizeRootDir, normalizeRootDirForAgent, readJsonLines, resolveCompactMemoryPath, resolveLedgerPath, resolveBaseDir } from './context-ledger-memory-helpers.js';
 import { estimateTokens } from '../utils/token-counter.js';
 import { promises as fs } from 'fs';
 
@@ -83,7 +83,7 @@ export async function buildSessionView(
   options: BuildSessionViewOptions = {},
 ): Promise<SessionView> {
   const mode = context.mode?.trim() || 'main';
-  const rootDir = normalizeRootDir(context.rootDir);
+  const rootDir = normalizeRootDirForAgent(context.rootDir, context.agentId);
   const ledgerPath = resolveLedgerPath(rootDir, context.sessionId, context.agentId, mode);
   const compactPath = resolveCompactMemoryPath(rootDir, context.sessionId, context.agentId, mode);
 

@@ -2,6 +2,7 @@ import { executeContextLedgerMemory } from '../../runtime/context-ledger-memory.
 import {
   containsPromptLikeBlock,
   normalizeRootDir,
+  normalizeRootDirForAgent,
   readJsonLines,
   resolveLedgerPath,
   valueAsString,
@@ -135,10 +136,10 @@ async function resolveSlotRangeByTaskIdFromFullLedger(params: {
   mode: string;
   rootDir?: string;
 }): Promise<{ slotStart: number; slotEnd: number } | null> {
-  const taskIdCandidates = extractTaskIdCandidates(params.taskId);
-  if (taskIdCandidates.length === 0) return null;
-  const rootDir = normalizeRootDir(params.rootDir);
-  const ledgerPath = resolveLedgerPath(rootDir, params.sessionId, params.agentId, params.mode);
+ const taskIdCandidates = extractTaskIdCandidates(params.taskId);
+ if (taskIdCandidates.length === 0) return null;
+  const rootDir = normalizeRootDirForAgent(params.rootDir, params.agentId);
+ const ledgerPath = resolveLedgerPath(rootDir, params.sessionId, params.agentId, params.mode);
   const fullEntries = await readJsonLines<LedgerEntryFile>(ledgerPath);
   const sanitized = fullEntries
     .filter((entry) => !containsPromptLikeBlock(`${entry.event_type}\n${JSON.stringify(entry.payload)}`))

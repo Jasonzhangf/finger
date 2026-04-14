@@ -103,7 +103,10 @@ export function buildHeartbeatSummary(
     lifecycleAgeMs?: number;
   },
 ): string {
-  const waitingMs = Math.max(0, now - p.lastUpdateTime);
+  // pendingTool 等待时间从工具开始时间算，避免与 session 更新时间混淆
+  const waitingMs = pendingTool?.timestamp
+    ? Math.max(0, now - pendingTool.timestamp)
+    : Math.max(0, now - p.lastUpdateTime);
   const localTime = new Date();
   const hh = String(localTime.getHours()).padStart(2, '0');
   const mm = String(localTime.getMinutes()).padStart(2, '0');

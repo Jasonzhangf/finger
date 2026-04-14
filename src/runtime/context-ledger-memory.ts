@@ -28,6 +28,7 @@ import {
   keepTailChars,
   normalizePositiveInt,
   normalizeRootDir,
+  normalizeRootDirForAgent,
   normalizeStringArray,
   normalizeText,
   paginate,
@@ -65,12 +66,12 @@ export async function executeContextLedgerMemory(rawInput: unknown): Promise<Con
   const input = parseInput(rawInput);
   const runtime = parseRuntimeContext(input._runtime_context);
 
-  const sessionId = pickString(input.session_id, runtime.session_id);
-  const currentAgentId = pickString(runtime.agent_id, input.agent_id);
-  const mode = pickString(input.mode, runtime.mode, 'main') ?? 'main';
-  const rootDir = normalizeRootDir(runtime.root_dir);
+ const sessionId = pickString(input.session_id, runtime.session_id);
+ const currentAgentId = pickString(runtime.agent_id, input.agent_id);
+ const mode = pickString(input.mode, runtime.mode, 'main') ?? 'main';
+  const rootDir = normalizeRootDirForAgent(runtime.root_dir, currentAgentId);
 
-  if (!sessionId) throw new Error('context_ledger.memory requires session_id');
+ if (!sessionId) throw new Error('context_ledger.memory requires session_id');
   if (!currentAgentId) {
     throw new Error('context_ledger.memory requires agent_id (or _runtime_context.agent_id)');
   }

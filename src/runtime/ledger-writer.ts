@@ -1,7 +1,7 @@
 import { promises as fs } from 'fs';
 import type { Attachment } from '../bridges/types.js';
 import { estimateTokens } from '../utils/token-counter.js';
-import { normalizeRootDir, resolveLedgerPath, resolveBaseDir, appendLedgerEvent } from './context-ledger-memory-helpers.js';
+import { normalizeRootDir, normalizeRootDirForAgent, resolveLedgerPath, resolveBaseDir, appendLedgerEvent } from './context-ledger-memory-helpers.js';
 
 export interface LedgerWriterContext {
   rootDir?: string;
@@ -32,7 +32,7 @@ export async function appendSessionMessage(context: LedgerWriterContext, message
   }
 
   const mode = context.mode?.trim() || 'main';
-  const rootDir = normalizeRootDir(context.rootDir);
+  const rootDir = normalizeRootDirForAgent(context.rootDir, context.agentId);
   const ledgerPath = resolveLedgerPath(rootDir, context.sessionId, context.agentId, mode);
 
   // Ensure ledger directory exists
@@ -74,7 +74,7 @@ export async function appendLedgerEventEntry(
   }
 
   const mode = context.mode?.trim() || 'main';
-  const rootDir = normalizeRootDir(context.rootDir);
+  const rootDir = normalizeRootDirForAgent(context.rootDir, context.agentId);
   const ledgerPath = resolveLedgerPath(rootDir, context.sessionId, context.agentId, mode);
   const baseDir = resolveBaseDir(rootDir, context.sessionId, context.agentId, mode);
   await fs.mkdir(baseDir, { recursive: true });
