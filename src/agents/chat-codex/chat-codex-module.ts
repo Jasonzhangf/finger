@@ -3499,22 +3499,13 @@ const recentUsers = recentHistory
     ...recentUsers,
   ].filter((line) => line.length > 0).join('\n');
 }
-
-// 新增：判断文本是否为工具调用（应该过滤掉，避免 /dev/null 死循环）
+// 判断文本是否为工具调用（非对话内容，如日志输出、状态报告等），用于过滤历史
 function isToolCallText(content: string): boolean {
   if (!content || typeof content !== 'string') return false;
 
-  // 工具调用特征文本（cat /dev/null 等无效调用）
   const toolCallPatterns = [
     '调用工具:',
     '工具完成:',
-    'exec_command',
-    'grep',
-    'cat @',
-    'ls @',
-    'head @',
-    'tail @',
-    '/dev/null',
   ];
 
   return toolCallPatterns.some(pattern => content.includes(pattern));
