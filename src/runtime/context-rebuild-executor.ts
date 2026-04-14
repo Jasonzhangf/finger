@@ -5,6 +5,11 @@
  */
 
 import { mempalaceSearch, MemPalaceSearchResult } from '../tools/internal/memory/mempalace-search-adapter.js';
+import {
+  resolveCompactMemoryPath,
+  readJsonLines,
+  normalizeRootDir,
+} from './context-ledger-memory-helpers.js';
 import { logger } from '../core/logger.js';
 import { isHeartbeatSession } from './topic-shift-detector.js';
 
@@ -139,6 +144,54 @@ function searchResultsToBlocks(
 /**
  * 执行上下文重建
  */
+
+/**
+ * 从最近 digest 中提取 key_entities 用于查询增强
+ */
+async function extractRecentEntities(
+  sessionId: string,
+  agentId: string,
+  limit: number = 5,
+): Promise<string[]> {
+  try {
+    const rootDir = normalizeRootDir('~/.finger/sessions');
+    const compactPath = resolveCompactMemoryPath(rootDir, sessionId, agentId, 'main');
+    
+    const entries = await readJsonLines<{ 
+      payload?: { 
+        messages?: Array<{ key_entities?: string[] }> 
+      } 
+    }>(compactPath);
+    
+    // 从最近的 entries 提取 key_entities
+    const entities: string[] = [];
+    const recentEntries = entries.slice(-limit);
+    
+    for (const entry of recentEntries) {
+      if (entry.payload?.messages) {
+        for (const msg of entry.payload.messages) {
+          if (msg.key_entities && Array.isArray(msg.key_entities)) {
+            entities.push(...msg.key_entities);
+          }
+        }
+      }
+    }
+    
+    // 去重 + 取前 8 个
+    const uniqueEntities = [...new Set(entities)].slice(0, 8);
+    log.debug('Extracted entities from recent digests', { 
+      sessionId, 
+      entityCount: uniqueEntities.length,
+      entities: uniqueEntities.slice(0, 3),
+    });
+    
+    return uniqueEntities;
+  } catch (err) {
+    log.warn('Failed to extract recent entities', { sessionId, error: String(err) });
+    return [];
+  }
+}
+
 export async function executeContextRebuild(
   sessionId: string,
   agentId: string,
@@ -162,12 +215,26 @@ export async function executeContextRebuild(
       excludeSystemPrompt,
     });
 
-    // 1. 执行 mempalace 搜索（直接 tokenize，无需 LLM）
-    const searchResult = await mempalaceSearch(prompt, {
+    // 查询增强：从最近 digest 提取实体
+    const recentEntities = await extractRecentEntities(sessionId, agentId, 5);
+    let enhancedPrompt = prompt;
+    if (recentEntities.length > 0) {
+      enhancedPrompt = `${prompt} ${recentEntities.join(' ')}`;
+      log.info('Query enhanced with entities', {
+        sessionId,
+        originalPromptLength: prompt.length,
+        entitiesAdded: recentEntities.length,
+        entities: recentEntities.slice(0, 3),
+      });
+    }
+
+    // 1. 执行 mempalace 搜索（使用增强后的 prompt）
+    const searchResult = await mempalaceSearch(enhancedPrompt, {
       wing: 'finger-ledger',
       mode,
       topK,
     });
+
 
     // 2. 搜索失败处理
     if (!searchResult.ok || searchResult.results.length === 0) {

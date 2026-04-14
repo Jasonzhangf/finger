@@ -915,3 +915,85 @@ myfinger upgrade rollback <module> -y      # 回滚到最新
 - source_session: session-1775904475591-q6yhf8
 - source_turn: turn-1775965743921
 - long_term: 高优先级消息可能在大间隔后被清理，需更快消费
+
+## [task] Context Rebuild 漏洞修复 + 实体提取增强 {#mem-context-rebuild-fix-20260414}
+时间: 2026-04-14 10:30
+状态: in_progress
+
+### 漏洞分析
+
+#### P1-2: 相对指代无法匹配（核心问题）
+
+**现象**：用户说"刚才写的函数有问题"，context rebuild 无法找到相关上下文。
+
+**根因**：
+1. digest 生成时 `key_entities` 只提取路径/URL，没有提取函数名、类名、变量名
+2. context rebuild 时只用原始 prompt 搜索，没有利用 working set 的实体
+3. mempalace 搜索无法理解"刚才"这类相对指代
+
+**当前实体提取规则**（context-history-compact.ts:69-77）：
+```typescript
+const entityPatterns = [
+  /\/[\w\-./]+/g,      // 文件路径
+  /https?:\/\/[^\s]+/g, // URL
+  /~\/[\w\-./]+/g,     // 用户目录路径
+];
+```
+**缺失**：函数名、类名、变量名、常量名
+
+### 解决方案
+
+#### 方案 1：增强 entity 提取（生成时）
+扩展 `toDigestMessage()` 的正则规则：
+
+```typescript
+const entityPatterns = [
+  // 原有：路径/URL
+  /\/[\w\-./]+/g,
+  /https?:\/\/[^\s]+/g,
+  /~\/[\w\-./]+/g,
+  // 新增：代码符号
+  /function\s+(\w+)/g,           // function foo
+  /const\s+(\w+)/g,              // const bar
+  /let\s+(\w+)/g,                // let baz
+  /var\s+(\w+)/g,                // var qux
+  /class\s+(\w+)/g,              // class Foo
+  /interface\s+(\w+)/g,          // interface Bar
+  /type\s+(\w+)/g,              // type Baz
+  /def\s+(\w+)/g,                // def foo (Python)
+  /\b([A-Z][a-zA-Z0-9]+)\b/g,    // PascalCase（类名/类型）
+];
+```
+
+#### 方案 2：查询增强（搜索时）
+修改 `executeContextRebuild()`：
+1. 从当前 session 的最近 N 个 digest 中提取 `key_entities`
+2. 取前 K 个实体拼接到 prompt 后面
+3. 用增强后的查询执行 mempalaceSearch
+
+### 数据流
+
+```
+[对话消息] 
+    ↓ toDigestMessage()
+[digest block + key_entities] → compact-memory.jsonl
+    ↓ 
+[context rebuild 触发]
+    ↓ executeContextRebuild()
+[读取最近 digest 的 key_entities]
+    ↓ 查询增强
+[enhanced prompt] → mempalaceSearch
+    ↓
+[相关上下文块]
+```
+
+### 关键代码位置
+
+1. **实体提取**：`src/runtime/context-history-compact.ts:toDigestMessage()`
+2. **Context Rebuild**：`src/runtime/context-rebuild-executor.ts:executeContextRebuild()`
+3. **Digest 查询**：`src/tools/internal/context-ledger-digest-tool.ts`
+4. **MemPalace 搜索**：`src/tools/internal/memory/mempalace-search-adapter.ts`
+
+### Epic
+关联: finger-301
+

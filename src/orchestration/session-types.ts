@@ -233,6 +233,14 @@ export interface ISessionManager {
     success?: boolean;
     error?: string;
   }>;
+  
+  /**
+   * Replace all messages in a session (for rebuild).
+   * This is the ONLY way to update session history after rebuild.
+   * Updates both memory snapshot AND main.json.
+   * @returns true if session exists and messages were replaced
+   */
+  replaceMessages(sessionId: string, messages: SessionMessage[]): boolean;
 }
 
 // ─── Ledger 指针默认值 ────────────────────────────────────

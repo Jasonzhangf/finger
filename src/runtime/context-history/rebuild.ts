@@ -13,7 +13,8 @@
 import fs from 'fs';
 import path from 'path';
 import type { SessionMessage } from '../../orchestration/session-types.js';
-import type { TaskDigest, RebuildMode, RebuildResult, TopicSearchOptions, DEFAULT_CONFIG } from './types.js';
+import type { TaskDigest, RebuildMode, RebuildResult, TopicSearchOptions } from './types.js';
+import { DEFAULT_CONFIG } from './types.js';
 import {
   tokenizeUserInput,
   sortByRelevanceDescending,
@@ -297,9 +298,9 @@ function readLedgerMessages(ledgerPath: string): SessionMessage[] {
       const payload = entry.payload as { role: string; content: string };
       return {
         id: `msg-${entry.timestamp_ms}-${idx}`,
-        role: payload.role,
+        role: payload.role as 'user' | 'assistant' | 'system',
         content: payload.content,
-        timestamp: entry.timestamp_iso || new Date(entry.timestamp_ms).toISOString(),
+        timestamp: String(entry.timestamp_iso || new Date(entry.timestamp_ms).toISOString()),
         metadata: { ledgerLine: entry.ledgerLine },
       };
     });

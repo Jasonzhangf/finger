@@ -66,15 +66,43 @@ function toDigestMessage(msg: SessionMessage): DigestMessage {
   }
 
   const keyEntities: string[] = [];
-  const entityPatterns = [
+  
+  // Phase 1: 路径/URL 提取（原有逻辑）
+  const pathPatterns = [
     /\/[\w\-./]+/g,
     /https?:\/\/[^\s]+/g,
     /~\/[\w\-./]+/g,
   ];
-  for (const pattern of entityPatterns) {
+  for (const pattern of pathPatterns) {
     const matches = contentSummary.match(pattern);
     if (matches) keyEntities.push(...matches.slice(0, 5));
   }
+  
+  // Phase 2: 代码符号提取（新增）
+  const codeSymbolPatterns: Array<{ pattern: RegExp; maxCount: number }> = [
+    { pattern: /function\s+(\w+)/g, maxCount: 3 },
+    { pattern: /const\s+(\w+)/g, maxCount: 3 },
+    { pattern: /let\s+(\w+)/g, maxCount: 2 },
+    { pattern: /class\s+(\w+)/g, maxCount: 2 },
+    { pattern: /interface\s+(\w+)/g, maxCount: 2 },
+    { pattern: /type\s+(\w+)/g, maxCount: 2 },
+    { pattern: /def\s+(\w+)/g, maxCount: 3 },
+    { pattern: /fn\s+(\w+)/g, maxCount: 2 },
+  ];
+  for (const { pattern, maxCount } of codeSymbolPatterns) {
+    let match: RegExpExecArray | null;
+    let count = 0;
+    pattern.lastIndex = 0;
+    while ((match = pattern.exec(contentSummary)) !== null && count < maxCount) {
+      keyEntities.push(match[1]);
+      count++;
+    }
+  }
+  
+  // Phase 3: 去重 + 限制总量
+  const uniqueEntities = [...new Set(keyEntities)].slice(0, 15);
+  keyEntities.length = 0;
+  keyEntities.push(...uniqueEntities);
 
   return {
     id: msg.id,

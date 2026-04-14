@@ -543,12 +543,10 @@ export class RuntimeFacade {
               : {};
             
             // === Context Rebuild Decision ===
-            // 核心原则：最近 3 轮永远保留在 session_messages（current），不依赖索引
-            // Rebuild 只补充历史上下文（ledger 搜索），作为 supplement
-            // 默认：最近 3 轮保持原始格式（不压缩）
-            // Rebuild 时：才压缩 + 搜索历史补充
+            // 唯一真源：Session.messages（内存）+ main.json（持久化）
+            // 消费者通过 contextHistoryProvider 读 Session.messages
+            // 不再使用 _runtime_context.session_messages 临时态
             const ALWAYS_KEEP_RECENT_ROUNDS = 3;
-            runtimeContextRaw.session_messages = this.sessionManager.getMessages(sessionId, ALWAYS_KEEP_RECENT_ROUNDS);
             runtimeContextRaw.working_set_mode = 'recent_raw';
 
             const rebuildSession = this.sessionManager.getSession(sessionId);
@@ -587,12 +585,11 @@ export class RuntimeFacade {
             
           // 转换为 SessionMessage 格式
             // 转换为 context-history 模块的 SessionMessage 格式
-            const sessionMessages = currentHistoryMessages.map(msg => ({
+            const sessionMessages: SessionMessage[] = currentHistoryMessages.map(msg => ({
               id: msg.id || `${Date.now()}-${Math.random().toString(36).slice(2)}`,
               role: msg.role,
               content: typeof msg.content === 'string' ? msg.content : JSON.stringify(msg.content),
-              timestamp: Date.now(),
-              timestampIso: new Date().toISOString(),
+              timestamp: msg.timestamp || new Date().toISOString(),
               metadata: msg.metadata as Record<string, unknown> | undefined,
             }));
             
@@ -658,31 +655,40 @@ export class RuntimeFacade {
               });
               
               try {
-                const memoryDir = path.join(FINGER_PATHS.sessions.dir, sessionId, agentId, 'main');
-                const compactResult = await executeCompact(
+                const ledgerPath = path.join(FINGER_PATHS.sessions.dir, sessionId, agentId, 'main', 'context-ledger.jsonl');
+                const { decision: rebuildDecision, result: rebuildResult } = await executeRebuild(
                   sessionId,
-                  memoryDir,
+                  ledgerPath,
                   sessionMessages,
-                  { maxTokens: 20000, keepRecentRounds: 6 },
+                  prompt || '',
+                  undefined, // currentTopic
+                  undefined, // topicShiftConfidence
                 );
                 
-                if (compactResult.ok) {
-                  log.info('[RuntimeFacade] Context compact succeeded', {
+                if (rebuildResult && rebuildResult.ok) {
+                  log.info('[RuntimeFacade] Context compact completed', {
                     sessionId,
-                    newDigests: compactResult.newDigests.length,
-                    tokensUsed: compactResult.tokensUsed,
+                    trigger: rebuildDecision.trigger,
+                    mode: rebuildDecision.mode,
+                    digestCount: rebuildResult.digestCount,
+                    totalTokens: rebuildResult.totalTokens,
                   });
+                  // 唯一真源：更新 Session.messages + 持久化 main.json
+                  const replaced = this.sessionManager.replaceMessages(sessionId, rebuildResult.messages);
+                  if (!replaced) {
+                    log.warn('[RuntimeFacade] replaceMessages failed, session may not exist', { sessionId });
+                  }
                   
-                  // 压缩后只保留最近 3 轮
-                  const recentMessages = this.sessionManager.getMessages(sessionId, ALWAYS_KEEP_RECENT_ROUNDS);
-                  runtimeContextRaw.session_messages = recentMessages;
+                  // 删除临时态 session_messages，不再使用
                   runtimeContextRaw.working_set_mode = 'recent_after_compact';
                   runtimeContextRaw.compact_status = 'ok';
-                  runtimeContextRaw.compact_digests = compactResult.newDigests.length;
-               } else {
-                  log.error('[RuntimeFacade] Context compact failed', new Error(compactResult.error || 'unknown'), { sessionId });
+                  runtimeContextRaw.compact_digests = rebuildResult.digestCount;
+               } else if (rebuildResult) {
+                  log.error('[RuntimeFacade] Context rebuild failed', new Error(rebuildResult.error || 'unknown'), { sessionId });
                   runtimeContextRaw.compact_status = 'failed';
-                  runtimeContextRaw.compact_error = compactResult.error;
+                  runtimeContextRaw.compact_error = rebuildResult.error;
+                } else {
+                  log.warn('[RuntimeFacade] No rebuild result', { sessionId, decision: rebuildDecision });
                 }
               } catch (compactErr) {
                 log.error('[RuntimeFacade] Context compact exception', compactErr as Error, { sessionId });
@@ -708,10 +714,7 @@ export class RuntimeFacade {
               
               // Rebuild 时压缩最近 3 轮为轻量 digest
               const rawMessages = this.sessionManager.getMessages(sessionId, ALWAYS_KEEP_RECENT_ROUNDS);
-              if (rawMessages.length > 0) {
-                runtimeContextRaw.session_messages = [compressCurrentHistory(rawMessages)];
-                runtimeContextRaw.working_set_mode = 'recent_digest_plus_rebuild';
-              }
+              // rebuild 时不设置 session_messages，唯一真源是 Session.messages
               
               const rebuildResult = await executeContextRebuild(
                 sessionId,
@@ -743,11 +746,7 @@ export class RuntimeFacade {
               }
             }
             
-            const hasSessionMessages = Array.isArray(runtimeContextRaw.session_messages);
-            if (!hasSessionMessages) {
-              // Fallback: 已经在上面设置了 recentDigests，这里只做兜底
-              runtimeContextRaw.session_messages = this.sessionManager.getMessages(sessionId, ALWAYS_KEEP_RECENT_ROUNDS);
-            }
+            // session_messages 已删除，唯一真源是 Session.messages
             if (typeof runtimeContextRaw.session_id !== 'string' || runtimeContextRaw.session_id.trim().length === 0) {
               runtimeContextRaw.session_id = sessionId;
             }

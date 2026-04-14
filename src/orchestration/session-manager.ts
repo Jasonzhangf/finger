@@ -2225,6 +2225,46 @@ session.context = {
     return this.getMessages(sessionId, limit || 50);
   }
 
+  /**
+   * Replace all messages in a session (for rebuild).
+   * This is the ONLY way to update session history after rebuild.
+   * Updates both memory snapshot AND main.json.
+   * @param sessionId - Target session ID
+   * @param messages - New messages array (digest + recent 3 rounds)
+   * @returns true if session exists and messages were replaced
+   */
+  replaceMessages(sessionId: string, messages: SessionMessage[]): boolean {
+    const session = this.sessions.get(sessionId);
+    if (!session) {
+      log.warn('replaceMessages: session not found', { sessionId });
+      return false;
+    }
+
+    // Validate messages
+    if (!Array.isArray(messages)) {
+      log.warn('replaceMessages: invalid messages array', { sessionId });
+      return false;
+    }
+
+    // Update memory snapshot
+    session.messages = messages.map(msg => ({
+      ...msg,
+      timestamp: msg.timestamp || new Date().toISOString(),
+    }));
+    session.updatedAt = new Date().toISOString();
+
+    // Persist to main.json (唯一真源)
+    this.saveSession(session);
+
+    log.info('Session messages replaced', {
+      sessionId,
+      messageCount: messages.length,
+      digestCount: messages.filter(m => m.metadata?.compactDigest).length,
+    });
+
+    return true;
+  }
+
   restoreSession(sessionId: string): Session | null {
     const session = this.sessions.get(sessionId);
     if (!session) return null;

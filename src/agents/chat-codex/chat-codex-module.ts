@@ -672,67 +672,11 @@ export class ProcessChatCodexRunner implements ChatCodexRunner {
     }
     if (session.activeTurn) {
       const pendingTurnId = this.nextSubmissionId(session, 'pending');
-      const maxPayloadChars = Math.floor(getContextWindow() * 0.9);
-      let protectedOptions = options;
-     let estimatedSize = this.estimateSubmissionPayloadSize(normalizedItems, options);
-     if (estimatedSize > maxPayloadChars) {
-       // Payload 超限：立即压缩 history_items
-       chatCodexLog.warn('Payload exceeds limit, triggering immediate compression', {
-         estimatedSize,
-         maxPayloadChars,
-         historyItemsCount: Array.isArray(options?.history_items) ? options.history_items.length : 0,
-         sessionId,
-       });
-       
-       // 压缩 history_items：删除大部分历史，只保留最近几条
-       if (Array.isArray(options?.history_items) && options.history_items.length > 4) {
-         // 直接删除大部分历史，只保留最近 4 条（2轮对话）
-         const recentItems = options.history_items.slice(-4);
-         const olderItems = options.history_items.slice(0, -4);
-         
-         // 将 olderItems 合并为一条 digest（而不是保留所有）
-         const digestContent = olderItems.slice(-10).map((item: any) => {
-           const role = item.role || 'unknown';
-           const content = typeof item.content === 'string' ? item.content : JSON.stringify(item.content || item.arguments || item.output || '');
-           return `[${role}]: ${content.substring(0, 100)}`;
-         }).join('\n');
-         
-         const compressedDigest = {
-           role: 'assistant',
-           content: `[历史摘要]: ${digestContent.substring(0, 1500)}...`,
-           _compressed: true,
-         };
-         
-         options.history_items = [compressedDigest, ...recentItems];
-         
-         estimatedSize = this.estimateSubmissionPayloadSize(normalizedItems, options);
-         
-         chatCodexLog.info('History compressed', {
-           newEstimatedSize: estimatedSize,
-           newHistoryItemsCount: options.history_items.length,
-         });
-       }
-       
-       // 如果压缩后仍然超限，报错
-       if (estimatedSize > maxPayloadChars) {
-         chatCodexLog.warn('Payload still exceeds limit after compression', {
-           estimatedSize,
-           maxPayloadChars,
-         });
-         return {
-           reply: '上下文过大，即使压缩后仍超限。请手动清理历史或开启新会话。',
-           events: [],
-           usedBinaryPath: resolvedPath,
-           kernelMetadata: {
-             context_overflow: true,
-             estimatedSize,
-             maxPayloadChars,
-             needRebuild: true,
-           },
-         };
-       }
-     }
-      this.sendUserTurnSubmission(session, pendingTurnId, normalizedItems, protectedOptions);
+      // 唯一判断点在 runtime-facade.ts，这里不做判断、不压缩
+      // payload 已经在 runtime-facade 通过 rebuild 处理过
+      // 如果仍然超限是设计问题（system_prompt 或 developer_instructions 太大）
+      
+            this.sendUserTurnSubmission(session, pendingTurnId, normalizedItems, options);
       session.activeTurn.pendingInputQueued = true;
       session.activeTurn.pendingTurnId = pendingTurnId;
       return {
@@ -776,85 +720,15 @@ export class ProcessChatCodexRunner implements ChatCodexRunner {
         onKernelEvent: context?.onKernelEvent,
       };
 
-     const maxPayloadChars = Math.floor(getContextWindow() * 0.9);
-     const HISTORY_BUDGET_TOKENS = 20000; // history 预算 20K tokens（刚性）
-     const CURRENT_KEEP_ROUNDS = 6; // 最近 3 轮 = 6 条消息（user + assistant）
-     
-     let protectedOptions = options;
-     let estimatedSize = this.estimateSubmissionPayloadSize(normalizedItems, options);
-     
-     if (estimatedSize > maxPayloadChars) {
-       // Payload 超限：按正确逻辑压缩（基于 Token 预算）
-       chatCodexLog.warn('Payload exceeds limit, triggering compression', {
-         estimatedSize,
-         maxPayloadChars,
-         historyItemsCount: Array.isArray(options?.history_items) ? options.history_items.length : 0,
-         sessionId,
-       });
-       
-       if (Array.isArray(options?.history_items) && options.history_items.length > CURRENT_KEEP_ROUNDS) {
-         // 1. 最近 CURRENT_KEEP_ROUNDS 条保留完整（current）
-         const currentItems = options.history_items.slice(-CURRENT_KEEP_ROUNDS);
-         
-         // 2. 其余转为 digest（压缩为简短摘要）
-         const olderItems = options.history_items.slice(0, -CURRENT_KEEP_ROUNDS);
-         const digestItems = olderItems.map((item: any) => {
-           const role = item.role || 'unknown';
-           let content = '';
-           if (item.content) {
-             content = typeof item.content === 'string' ? item.content : JSON.stringify(item.content);
-             // digest 每条最多 100 字（约 25-50 tokens）
-             content = content.length > 100 ? content.substring(0, 100) + '...[digest]' : content;
-           } else if (item.tool_call) {
-             content = `[tool_call: ${item.tool_call.name || 'unknown'}]`;
-           } else if (item.tool_result) {
-             content = `[tool_result]`;
-           } else {
-             content = `[${role}]`;
-           }
-           return { role, content, _digest: true };
-         });
-         
-         // 3. history = digest，用 20K Token 窗口滑动
-         let historyItems = digestItems;
-         let historyTokens = estimateHistoryItemsTokens(historyItems);
-         
-         while (historyTokens > HISTORY_BUDGET_TOKENS && historyItems.length > 0) {
-           // 从最旧的开始删除
-           historyItems.shift();
-           historyTokens = estimateHistoryItemsTokens(historyItems);
-         }
-         
-         // 4. 最终 history_items = history（digest） + current（完整）
-         options.history_items = [...historyItems, ...currentItems];
-         
-         // 5. 重新计算 payload
-         estimatedSize = this.estimateSubmissionPayloadSize(normalizedItems, options);
-         
-         chatCodexLog.info('History compressed correctly', {
-           newEstimatedSize: estimatedSize,
-           historyDigestCount: historyItems.length,
-           historyDigestTokens: historyTokens,
-           currentFullCount: currentItems.length,
-         });
-       }
-       
-       if (estimatedSize > maxPayloadChars) {
-         chatCodexLog.warn('Payload still exceeds limit after compression', {
-           estimatedSize,
-           maxPayloadChars,
-           suggestion: '需要减少 system_prompt 或 developer_instructions 大小',
-         });
-         reject(new Error('chat-codex payload exceeds limit even after compression'));
-         return;
-       }
-     }
-      try {
-        this.sendUserTurnSubmission(session, turnId, normalizedItems, protectedOptions);
-      } catch (sendError) {
-        // EPIPE race: child exited between Promise setup and stdin write
-        // Reject the Promise immediately so caller can retry
-        chatCodexLog.error('sendUserTurnSubmission failed during Promise setup', sendError instanceof Error ? sendError : undefined, {
+      // 唯一判断点在 runtime-facade.ts，这里不做判断、不压缩
+      // payload 已经在 runtime-facade 通过 rebuild 处理过
+      
+            try {
+         this.sendUserTurnSubmission(session, turnId, normalizedItems, options);
+       } catch (sendError) {
+         // EPIPE race: child exited between Promise setup and stdin write
+         // Reject the Promise immediately so caller can retry
+         chatCodexLog.error('sendUserTurnSubmission failed during Promise setup', sendError instanceof Error ? sendError : undefined, {
           sessionKey: session.key,
           turnId,
           error: sendError instanceof Error ? sendError.message : String(sendError),

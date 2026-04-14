@@ -21,7 +21,7 @@ export type {
 } from './types.js';
 
 // 兼容旧命名
-export type TriggerDecision = RebuildDecision;
+export type { RebuildDecision as TriggerDecision } from './types.js';
 
 export { DEFAULT_CONFIG } from './types.js';
 
