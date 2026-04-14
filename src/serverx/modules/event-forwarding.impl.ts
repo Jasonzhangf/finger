@@ -1331,7 +1331,11 @@ export function attachEventForwarding(deps: EventForwardingDeps): {
         || typeof estimatedTokensInContextWindow === 'number'
         || typeof maxInputTokens === 'number'
         || !!contextBreakdown;
-      if (hasModelRoundContextStats) {
+      
+      // 只在 contextUsagePercent > 85% 时才触发 auto_compact_probe（真的需要 compact）
+      const needsCompact = typeof contextUsagePercent === 'number' && contextUsagePercent > 85;
+      
+      if (hasModelRoundContextStats && needsCompact) {
         void deps.eventBus.emit({
           type: 'system_notice',
           sessionId: event.sessionId,
