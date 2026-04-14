@@ -8,7 +8,8 @@ import type { AgentRuntimeDeps } from '../../server/modules/agent-runtime/types.
 import { PeriodicCheckRunner } from '../../agents/finger-system-agent/periodic-check.js';
 import { loadRegistry } from '../../agents/finger-system-agent/registry.js';
 import type { AgentInfo } from '../../agents/finger-system-agent/registry.js';
-import { SYSTEM_AGENT_CONFIG } from '../../agents/finger-system-agent/index.js';
+import { updateTeamAgentStatus, updateRuntimeStatus } from '../../common/team-status-state.js';
+import { SYSTEM_AGENT_CONFIG, SYSTEM_PROJECT_PATH } from '../../agents/finger-system-agent/index.js';
 import { FINGER_PROJECT_AGENT_ID, FINGER_SYSTEM_AGENT_ID } from '../../agents/finger-general/finger-general-module.js';
 import { logger } from '../../core/logger.js';
 import { FINGER_PATHS, resolveFingerHome } from '../../core/finger-paths.js';
@@ -104,6 +105,15 @@ export class SystemAgentManager {
     
     // 2. 部署 System Agent（确保它持续运行）
     await this.deploySystemAgent();
+
+    // 2.1 注册 System Agent 到 team.status（启动时立即注册）
+    updateTeamAgentStatus('finger-system-agent', {
+      agentId: 'finger-system-agent',
+      projectPath: SYSTEM_PROJECT_PATH,
+      projectId: 'system',
+      role: 'system' as const,
+    });
+    updateRuntimeStatus({ agentId: 'finger-system-agent', runtimeStatus: 'idle' as const });
 
     // 2.5 daemon 重启后，优先处理上一轮执行状态：
     // - 未 stop：直接从中断处继续
