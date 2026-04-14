@@ -146,6 +146,78 @@ export async function readJsonLines<T>(filePath: string): Promise<T[]> {
   }
 }
 
+
+/**
+ * 检查目录中是否存在旧的 ledger 文件（非标准命名）
+ *
+ * 标准命名：context-ledger.jsonl
+ * 旧命名：ledger.jsonl, compact-memory.jsonl（需要 archive）
+ *
+ * @returns 旧文件列表，需要 archive 提示
+ */
+export async function detectLegacyLedgerFiles(
+  rootDir: string,
+  sessionId: string,
+  agentId: string,
+  mode: string,
+): Promise<string[]> {
+  const baseDir = resolveBaseDir(rootDir, sessionId, agentId, mode);
+  const legacyFiles: string[] = [];
+
+  try {
+    const entries = await fs.readdir(baseDir);
+
+    // 检查旧命名的 ledger 文件
+    const legacyNames = ['ledger.jsonl', 'compact-memory.jsonl'];
+
+    for (const name of entries) {
+      if (legacyNames.includes(name)) {
+        const filePath = join(baseDir, name);
+        // 检查文件是否非空
+        try {
+          const content = await fs.readFile(filePath, 'utf-8');
+          if (content.trim().length > 0) {
+            legacyFiles.push(filePath);
+          }
+        } catch {
+          // 读取失败，跳过
+        }
+      }
+    }
+  } catch {
+    // 目录不存在，无需检查
+  }
+
+  return legacyFiles;
+}
+
+/**
+ * Archive 旧的 ledger 文件（移动到 archive 子目录）
+ */
+export async function archiveLegacyLedgerFiles(
+  rootDir: string,
+  sessionId: string,
+  agentId: string,
+  mode: string,
+): Promise<{ archivedFiles: string[]; archiveDir: string }> {
+  const baseDir = resolveBaseDir(rootDir, sessionId, agentId, mode);
+  const archiveDir = join(baseDir, 'archive');
+  const archivedFiles: string[] = [];
+
+  await fs.mkdir(archiveDir, { recursive: true });
+
+  const legacyFiles = await detectLegacyLedgerFiles(rootDir, sessionId, agentId, mode);
+
+  for (const filePath of legacyFiles) {
+    const fileName = filePath.split('/').pop() || 'unknown';
+    const archivePath = join(archiveDir, `${fileName}.archived-${Date.now()}`);
+    await fs.rename(filePath, archivePath);
+    archivedFiles.push(archivePath);
+  }
+
+  return { archivedFiles, archiveDir };
+}
+
 export async function appendLedgerEvent(
   ledgerPath: string,
   event: {
