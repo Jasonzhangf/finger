@@ -157,6 +157,7 @@ export async function appendDigestForTurn(
   });
 
   log.info('[appendDigestForTurn] Turn digest appended', {
+    ledgerPath,
     sessionId,
     agentId,
     digestId: digestBlock.id,
