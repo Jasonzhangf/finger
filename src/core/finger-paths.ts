@@ -56,6 +56,12 @@ export function getFingerPaths(homeOverride?: string) {
     sessions: {
       dir: join(home, 'sessions'),
     },
+    system: {
+      dir: join(home, 'system'),
+      registryFile: join(home, 'system', 'registry.json'),
+      teamStatusFile: join(home, 'system', 'team-status.json'),
+      sessionsDir: join(home, 'system', 'sessions'),
+    },
     beads: {
       dir: join(home, 'beads'),
       issuesFile: join(home, 'beads', 'issues.jsonl'),

@@ -36,6 +36,7 @@ import { mailboxRemoveTool, mailboxRemoveAllTool } from './mailbox-tool-remove.j
 import { skillsListTool, skillsStatusTool } from './skills-tool.js';
 import { stopReasoningPolicyTool, stopReasoningTool } from './stop-reasoning-tool.js';
 import { sleepTool } from './codex-sleep-tool.js';
+import { teamStatusTool } from './team-status-tool.js';
 
 // V3 Claim Tools
 import { registerProjectClaimCompletionTool } from './project-claim-completion-tool.js';
@@ -71,6 +72,7 @@ export * from './skills-tool.js';
 export * from './project-task-tool.js';
 export * from './stop-reasoning-tool.js';
 export * from './codex-sleep-tool.js';
+export * from './team-status-tool.js';
 
 // V3 Claim Tools
 export * from './project-claim-completion-tool.js';
@@ -181,6 +183,8 @@ export function registerProjectClaimCompletionToolInRuntime(toolRegistry: ToolRe
  */
 export function registerProjectApproveTaskToolInRuntime(toolRegistry: ToolRegistry): void {
   registerProjectApproveTaskTool(toolRegistry);
+export function registerProjectApproveTaskToolInRuntime(toolRegistry: ToolRegistry): void {
+  registerProjectApproveTaskTool(toolRegistry);
 }
 
 /**
@@ -188,4 +192,11 @@ export function registerProjectApproveTaskToolInRuntime(toolRegistry: ToolRegist
  */
 export function registerProjectRejectTaskToolInRuntime(toolRegistry: ToolRegistry): void {
   registerProjectRejectTaskTool(toolRegistry);
+}
+
+/**
+ * 在运行时注册 team.status 工具（团队状态查询与更新）
+ */
+export function registerTeamStatusToolInRuntime(toolRegistry: ToolRegistry): void {
+  registerTeamStatusTool(toolRegistry);
 }

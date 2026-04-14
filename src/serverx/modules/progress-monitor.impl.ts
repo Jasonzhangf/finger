@@ -91,6 +91,18 @@ export class ProgressMonitor {
   private static readonly STALL_HEARTBEAT_FACTOR_NO_PENDING = 2;
   private static readonly MAX_RECENT_ROUNDS = 6;
 
+
+  /**
+   * 清除指定 session 的 recentRounds（用于话题切换时清理旧 digest）
+   */
+  clearRecentRounds(sessionId: string): void {
+    const entries = this.getProgressEntriesBySession(sessionId);
+    for (const [, progress] of entries) {
+      progress.recentRounds = [];
+      progress.progressRoundSeq = 0;
+    }
+    log.info('[ProgressMonitor] Cleared recentRounds for session', { sessionId });
+  }
   private buildProgressKey(sessionId: string, agentId: string): string {
     return `${sessionId}::${agentId}`;
   }
