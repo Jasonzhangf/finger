@@ -1332,7 +1332,7 @@ function buildReplacementHistoryFromTaskBlocks(blocks: LedgerTaskBlockInternal[]
       .map((message) => extractToolNameFromTaskMessage(message))
       .filter((name) => name.length > 0 && isImportantToolForDigest(name));
     const keyTools = Array.from(new Set([
-      ...toolCalls.map((item) => item.tool).filter((name) => name.length > 0),
+      ...toolCalls.map((item) => item.tool).filter((name) => name.length > 0 && isImportantToolForDigest(name)),
       ...fallbackKeyTools,
     ]));
     const taskId = block.id.startsWith('task-') ? block.id : `task-${block.startTime}`;

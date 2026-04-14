@@ -67,7 +67,8 @@ export interface TeamStatusStore {
 
 // === Constants ===
 
-const TEAM_STATUS_FILE = join(FINGER_HOME, 'system', 'team-status.json');
+const TEAM_STATUS_FILE = process.env.FINGER_TEAM_STATUS_STORE_FILE?.trim()
+  || join(FINGER_HOME, 'system', 'team-status.json');
 const DEFAULT_RUNTIME_STATUS: RuntimeStatus = 'idle';
 
 // === Load & Save ===

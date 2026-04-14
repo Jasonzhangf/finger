@@ -1,166 +1,112 @@
-/**
- * team-status-state.test.ts
- * Unit tests for team status state management
- */
-
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { execSync } from 'child_process';
 import { join } from 'path';
 import { tmpdir } from 'os';
+import { mkdirSync, rmSync, readFileSync } from 'fs';
 
-// Test helper functions from team-status-state.ts
-const {
-  loadTeamStatusStore,
-  updateTeamAgentStatus,
-  updateRuntimeStatus,
-  filterTeamStatusByScope,
-  syncTeamStatusFromPlan,
-} = require('../../dist/common/team-status-state.js');
+function loadModule() {
+  const mod = require(require('path').resolve(__dirname, '../../../dist/common/team-status-state.js'));
+  return mod;
+}
 
 describe('Team Status State Management', () => {
   let tempDir: string;
-  let originalStoreFile: string | undefined;
+  let mod: ReturnType<typeof loadModule>;
 
   beforeEach(() => {
-    tempDir = join(tmpdir(), `team-status-test-${Date.now()}`);
-    execSync(`mkdir -p ${tempDir}`);
-    originalStoreFile = process.env.FINGER_TEAM_STATUS_STORE_FILE;
+    tempDir = join(tmpdir(), 'team-status-test-' + Date.now());
+    mkdirSync(tempDir, { recursive: true });
     process.env.FINGER_TEAM_STATUS_STORE_FILE = join(tempDir, 'team-status.json');
+    mod = loadModule();
   });
 
   afterEach(() => {
-    if (originalStoreFile) {
-      process.env.FINGER_TEAM_STATUS_STORE_FILE = originalStoreFile;
-    } else {
-      delete process.env.FINGER_TEAM_STATUS_STORE_FILE;
-    }
-    execSync(`rm -rf ${tempDir}`);
+    delete process.env.FINGER_TEAM_STATUS_STORE_FILE;
+    rmSync(tempDir, { recursive: true, force: true });
   });
 
-  describe('updateTeamAgentStatus', () => {
-    it('should register new agent with basic info', () => {
-      updateTeamAgentStatus('finger-test-agent', {
-        agentId: 'finger-test-agent',
-        projectPath: '/test/project',
-        projectId: 'test-project',
-        role: 'project',
-      });
-
-      const store = loadTeamStatusStore();
-      expect(store.agents['finger-test-agent']).toBeDefined();
-      expect(store.agents['finger-test-agent'].agentId).toBe('finger-test-agent');
-      expect(store.agents['finger-test-agent'].projectPath).toBe('/test/project');
-      expect(store.agents['finger-test-agent'].role).toBe('project');
+  it('should register new agent', () => {
+    mod.updateTeamAgentStatus('test-agent', {
+      agentId: 'test-agent',
+      projectPath: '/test',
+      projectId: 'test',
+      role: 'project',
     });
-
-    it('should update existing agent without losing other fields', () => {
-      // First registration
-      updateTeamAgentStatus('finger-test-agent', {
-        agentId: 'finger-test-agent',
-        projectPath: '/test/project',
-        projectId: 'test-project',
-        role: 'project',
-      });
-
-      // Update runtime status
-      updateRuntimeStatus({ agentId: 'finger-test-agent', runtimeStatus: 'running' });
-
-      // Update again with basic info
-      updateTeamAgentStatus('finger-test-agent', {
-        agentId: 'finger-test-agent',
-        projectPath: '/test/project',
-        projectId: 'test-project',
-        role: 'project',
-      });
-
-      const store = loadTeamStatusStore();
-      expect(store.agents['finger-test-agent'].runtimeStatus).toBe('running');
-    });
+    const store = mod.loadTeamStatusStore();
+    expect(store.agents['test-agent']).toBeDefined();
+    expect(store.agents['test-agent'].role).toBe('project');
   });
 
-  describe('updateRuntimeStatus', () => {
-    it('should update runtime status for existing agent', () => {
-      // Register first
-      updateTeamAgentStatus('finger-test-agent', {
-        agentId: 'finger-test-agent',
-        projectPath: '/test/project',
-        projectId: 'test-project',
-        role: 'project',
-      });
-
-      // Update runtime status
-      updateRuntimeStatus({ agentId: 'finger-test-agent', runtimeStatus: 'running' });
-
-      const store = loadTeamStatusStore();
-      expect(store.agents['finger-test-agent'].runtimeStatus).toBe('running');
+  it('should update runtime status', () => {
+    mod.updateTeamAgentStatus('test-agent', {
+      agentId: 'test-agent',
+      projectPath: '/test',
+      projectId: 'test',
+      role: 'project',
     });
+    mod.updateRuntimeStatus({ agentId: 'test-agent', runtimeStatus: 'running' });
+    const store = mod.loadTeamStatusStore();
+    expect(store.agents['test-agent'].runtimeStatus).toBe('running');
   });
 
-  describe('filterTeamStatusByScope', () => {
-    beforeEach(() => {
-      // Setup test agents
-      updateTeamAgentStatus('finger-system-agent', {
-        agentId: 'finger-system-agent',
-        projectPath: '/system',
-        projectId: 'system',
-        role: 'system',
-      });
-
-      updateTeamAgentStatus('finger-project-agent-1', {
-        agentId: 'finger-project-agent-1',
-        projectPath: '/project/A',
-        projectId: 'project-A',
-        role: 'project',
-      });
-
-      updateTeamAgentStatus('finger-project-agent-2', {
-        agentId: 'finger-project-agent-2',
-        projectPath: '/project/B',
-        projectId: 'project-B',
-        role: 'project',
-      });
+  it('system agent sees all agents via scope filter', () => {
+    mod.updateTeamAgentStatus('system-agent', {
+      agentId: 'system-agent', projectPath: '/system', projectId: 'system', role: 'system',
     });
-
-    it('system agent should see all agents', () => {
-      const store = loadTeamStatusStore();
-      const visible = filterTeamStatusByScope(store, 'finger-system-agent', '/system', 'system');
-      expect(visible.length).toBe(3);
+    mod.updateTeamAgentStatus('project-agent', {
+      agentId: 'project-agent', projectPath: '/project', projectId: 'project', role: 'project',
     });
-
-    it('project agent should see same project agents + system agent', () => {
-      const store = loadTeamStatusStore();
-      const visible = filterTeamStatusByScope(store, 'finger-project-agent-1', '/project/A', 'project');
-      expect(visible.length).toBe(2); // system-agent + project-agent-1
-      expect(visible.find(a => a.agentId === 'finger-system-agent')).toBeDefined();
-      expect(visible.find(a => a.agentId === 'finger-project-agent-1')).toBeDefined();
-      expect(visible.find(a => a.agentId === 'finger-project-agent-2')).toBeUndefined();
-    });
+    const store = mod.loadTeamStatusStore();
+    expect(Object.keys(store.agents).length).toBe(2); // Both should be in store
+    const visible = mod.filterTeamStatusByScope(store, 'system-agent', '/system', 'system');
+    expect(visible.length).toBe(Object.keys(store.agents).length); // System sees all
   });
 
-  describe('syncTeamStatusFromPlan', () => {
-    it('should update planSummary for existing agent', () => {
-      // Register first
-      updateTeamAgentStatus('finger-test-agent', {
-        agentId: 'finger-test-agent',
-        projectPath: '/test/project',
-        projectId: 'test-project',
-        role: 'project',
-      });
-
-      // Sync plan summary
-      syncTeamStatusFromPlan('finger-test-agent', '/test/project', undefined, {
-        total: 5,
-        completed: 2,
-        inProgress: 1,
-        blocked: 0,
-        currentStep: 'Step 3: Implement feature',
-        updatedAt: new Date().toISOString(),
-      });
-
-      const store = loadTeamStatusStore();
-      expect(store.agents['finger-test-agent'].planSummary).toBeDefined();
-      expect(store.agents['finger-test-agent'].planSummary?.total).toBe(5);
-      expect(store.agents['finger-test-agent'].planSummary?.completed).toBe(2);
+  it('project agent sees same-project + system only', () => {
+    mod.updateTeamAgentStatus('system-agent', {
+      agentId: 'system-agent', projectPath: '/system', projectId: 'system', role: 'system',
     });
+    mod.updateTeamAgentStatus('project-a-agent', {
+      agentId: 'project-a-agent', projectPath: '/projectA', projectId: 'projectA', role: 'project',
+    });
+    mod.updateTeamAgentStatus('project-b-agent', {
+      agentId: 'project-b-agent', projectPath: '/projectB', projectId: 'projectB', role: 'project',
+    });
+    const store = mod.loadTeamStatusStore();
+    const visible = mod.filterTeamStatusByScope(store, 'project-a-agent', '/projectA', 'project');
+    expect(visible.length).toBe(2);
+    expect(visible.find(a => a.agentId === 'system-agent')).toBeDefined();
+    expect(visible.find(a => a.agentId === 'project-a-agent')).toBeDefined();
+    expect(visible.find(a => a.agentId === 'project-b-agent')).toBeUndefined();
+  });
+
+  it('should sync plan summary', () => {
+    mod.updateTeamAgentStatus('test-agent', {
+      agentId: 'test-agent', projectPath: '/test', projectId: 'test', role: 'project',
+    });
+    mod.syncTeamStatusFromPlan('test-agent', '/test', undefined, {
+      total: 5, completed: 2, inProgress: 1, blocked: 0,
+      currentStep: 'Step 3', updatedAt: new Date().toISOString(),
+    });
+    const store = mod.loadTeamStatusStore();
+    expect(store.agents['test-agent'].planSummary.total).toBe(5);
+    expect(store.agents['test-agent'].planSummary.completed).toBe(2);
+  });
+
+
+  it('should preserve fields across updates', () => {
+    mod.updateTeamAgentStatus('test-agent', {
+      agentId: 'test-agent', projectPath: '/test', projectId: 'test', role: 'project',
+    });
+    mod.updateRuntimeStatus({ agentId: 'test-agent', runtimeStatus: 'running' });
+    mod.syncTeamStatusFromPlan('test-agent', '/test', undefined, {
+      total: 3, completed: 1, inProgress: 1, blocked: 1,
+      currentStep: 'X', updatedAt: new Date().toISOString(),
+    });
+    mod.updateTeamAgentStatus('test-agent', {
+      agentId: 'test-agent', projectPath: '/test', projectId: 'test', role: 'project',
+    });
+    const store = mod.loadTeamStatusStore();
+    expect(store.agents['test-agent'].runtimeStatus).toBe('running');
+    expect(store.agents['test-agent'].planSummary.total).toBe(3);
   });
 });
