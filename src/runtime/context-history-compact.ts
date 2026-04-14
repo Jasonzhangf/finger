@@ -5,6 +5,7 @@ import {
   normalizeRootDirForAgent,
   resolveBaseDir,
   resolveCompactMemoryPath,
+  resolveLedgerPath,
 } from './context-ledger-memory-helpers.js';
 import { estimateTokens } from '../utils/token-counter.js';
 import { logger } from '../core/logger.js';
