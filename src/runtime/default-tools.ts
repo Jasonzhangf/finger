@@ -2,6 +2,7 @@ import {
   createDefaultInternalToolRegistry,
   registerProjectToolInRuntime,
   registerSystemRegistryToolInRuntime,
+  registerTeamStatusToolInRuntime,
   registerReportTaskCompletionToolInRuntime,
   registerProjectTaskToolInRuntime,
   registerSendLocalImageToolInRuntime,
@@ -37,6 +38,8 @@ export function registerDefaultRuntimeTools(
     loadedToolNames.push('project_tool');
     registerSystemRegistryToolInRuntime(runtimeToolRegistry);
     loadedToolNames.push('system-registry-tool');
+    registerTeamStatusToolInRuntime(runtimeToolRegistry);
+    loadedToolNames.push('team.status');
     registerReportTaskCompletionToolInRuntime(runtimeToolRegistry);
     loadedToolNames.push('report-task-completion');
     registerProjectTaskToolInRuntime(runtimeToolRegistry);
