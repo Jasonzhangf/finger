@@ -39,13 +39,14 @@ interface RuntimeContextSessionMessage {
 interface ContextBuilderRebuildOutput {
   ok: boolean;
   action: 'rebuild' | 'skipped';
-  reason?: 'rebuild_already_in_progress' | 'lock_acquisition_failed';
+  reason?: 'rate_limited' | 'rebuild_already_in_progress' | 'lock_acquisition_failed';
   sessionId: string;
   agentId: string;
   buildMode?: 'minimal' | 'moderate' | 'aggressive';
   targetBudget: number;
   metadata?: Record<string, unknown>;
   selectedBlockIds: string[];
+  rateLimitSeconds?: number;
   appliesNextTurn?: boolean;
   messages?: Array<{
     id: string;
@@ -196,11 +197,11 @@ export const contextBuilderRebuildTool: InternalTool<unknown, ContextBuilderRebu
     // 检查是否已有 rebuild 锁
     if (hasSessionLock(sessionId)) {
       log.warn('Rebuild already in progress, skipping', { sessionId });
+      sessionRebuildTimestamps.set(sessionId, Date.now());
       return {
         ok: false,
         action: 'skipped',
         reason: 'rebuild_already_in_progress',
-    sessionRebuildTimestamps.set(sessionId, Date.now());
         sessionId,
         agentId: context.agentId ?? 'finger-system-agent',
         targetBudget: 0,
