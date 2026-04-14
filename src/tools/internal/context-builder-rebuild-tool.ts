@@ -148,6 +148,36 @@ export const contextBuilderRebuildTool: InternalTool<unknown, ContextBuilderRebu
       throw new Error('context_builder.rebuild requires session_id (or active tool context sessionId)');
     }
 
+    // 检查是否已有 rebuild 锁
+    if (hasSessionLock(sessionId)) {
+      log.warn('Rebuild already in progress, skipping', { sessionId });
+      return {
+        ok: false,
+        action: 'skipped',
+        reason: 'rebuild_already_in_progress',
+        sessionId,
+        agentId: context.agentId ?? 'finger-system-agent',
+        targetBudget: 0,
+        selectedBlockIds: [],
+      };
+    }
+
+    // 获取 rebuild 锁（阻塞直到获取成功）
+    try {
+      await acquireSessionLock(sessionId, 'rebuild');
+    } catch (lockError) {
+      log.error('Failed to acquire rebuild lock', { sessionId, error: String(lockError) });
+      return {
+        ok: false,
+        action: 'skipped',
+        reason: 'lock_acquisition_failed',
+        sessionId,
+        agentId: context.agentId ?? 'finger-system-agent',
+        targetBudget: 0,
+        selectedBlockIds: [],
+      };
+    }
+
     const agentId = (input.agent_id ?? context.agentId ?? 'finger-system-agent').trim();
     const settings = loadContextBuilderSettings();
     const contextWindow = getContextWindow();
@@ -199,7 +229,7 @@ export const contextBuilderRebuildTool: InternalTool<unknown, ContextBuilderRebu
       ? Math.max(1, Math.min(120, Math.floor(input.message_limit as number)))
       : 40;
 
-    return {
+    try {
       ok: true,
       action: 'rebuild',
       sessionId,
@@ -221,5 +251,10 @@ export const contextBuilderRebuildTool: InternalTool<unknown, ContextBuilderRebu
         }
         : {}),
     };
+    } finally {
+      // 释放 rebuild 锁
+      releaseSessionLock(sessionId);
+      log.info('Rebuild lock released', { sessionId });
+    }
   },
 };
