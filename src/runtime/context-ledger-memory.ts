@@ -925,7 +925,7 @@ const DIGEST_VERBOSE_OUTPUT_TOOLS = new Set([
 ]);
 
 // Digest 只保留"重要"的工具调用，过滤掉无意义的查询/读取等操作
-// 这样可以避免 Compact 后的历史包含无效工具调用（如 cat /dev/null）导致循环
+// 只保留重要工具的 digest，避免无关工具调用污染压缩历史
 // 精简原则：只保留对项目有帮助的高价值信息
 const DIGEST_IMPORTANT_TOOLS = new Set([
   // 任务派发与协调

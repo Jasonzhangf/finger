@@ -10,6 +10,10 @@ import { logger } from '../../core/logger.js';
 
 const log = logger.module('ContextBuilderRebuild');
 
+const REBUILD_RATE_LIMIT_MS = 5 * 60 * 1000; // 5 minutes
+const sessionRebuildTimestamps = new Map<string, number>();
+
+
 interface ContextBuilderRebuildInput {
   session_id?: string;
   agent_id?: string;
@@ -172,6 +176,23 @@ export const contextBuilderRebuildTool: InternalTool<unknown, ContextBuilderRebu
       throw new Error('context_builder.rebuild requires session_id (or active tool context sessionId)');
     }
 
+
+    // Rate limit: 5 minutes per session
+    const lastRebuildTime = sessionRebuildTimestamps.get(sessionId) || 0;
+    const elapsedSinceLastRebuild = Date.now() - lastRebuildTime;
+    if (elapsedSinceLastRebuild < REBUILD_RATE_LIMIT_MS) {
+      log.warn('Rebuild rate limited', { sessionId, elapsedSeconds: Math.floor(elapsedSinceLastRebuild / 1000) });
+      return {
+        ok: false,
+        action: 'skipped',
+        reason: 'rate_limited',
+        sessionId,
+        agentId: context.agentId ?? 'finger-system-agent',
+        targetBudget: 0,
+        selectedBlockIds: [],
+        rateLimitSeconds: Math.floor((REBUILD_RATE_LIMIT_MS - elapsedSinceLastRebuild) / 1000),
+      };
+    }
     // 检查是否已有 rebuild 锁
     if (hasSessionLock(sessionId)) {
       log.warn('Rebuild already in progress, skipping', { sessionId });
@@ -179,6 +200,7 @@ export const contextBuilderRebuildTool: InternalTool<unknown, ContextBuilderRebu
         ok: false,
         action: 'skipped',
         reason: 'rebuild_already_in_progress',
+    sessionRebuildTimestamps.set(sessionId, Date.now());
         sessionId,
         agentId: context.agentId ?? 'finger-system-agent',
         targetBudget: 0,
