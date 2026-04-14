@@ -20,6 +20,9 @@ export type {
   SessionLock,
 } from './types.js';
 
+// 兼容旧命名
+export type TriggerDecision = RebuildDecision;
+
 export { DEFAULT_CONFIG } from './types.js';
 
 // Utils
@@ -41,6 +44,7 @@ export {
 // Decision
 export {
   makeRebuildDecision,
+  makeTriggerDecision,
   clearTopicShiftState,
   getActiveTopicShiftStates,
 } from './decision.js';
@@ -58,6 +62,15 @@ export {
   checkRebuildNeeded,
   forceRebuild,
 } from './executor.js';
+
+// 兼容旧命名
+export { executeRebuild as executeContextHistoryManagement } from './executor.js';
+
+// executeCompact 已删除（不再需要单独压缩）
+// 如果有旧代码调用，返回空结果
+export async function executeCompact(): Promise<{ ok: boolean; error: string }> {
+  return { ok: false, error: 'executeCompact removed - use executeRebuild instead' };
+}
 
 // Lock
 export {

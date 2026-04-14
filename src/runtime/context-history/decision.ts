@@ -28,14 +28,14 @@ const topicShiftState = new Map<string, {
 }>();
 
 /**
- * 判断是否需要 Rebuild
+ * 判断是否需要 Rebuild（新接口）
  */
 export function makeRebuildDecision(
   sessionId: string,
   messages: SessionMessage[],
   userInput: string,
-  currentTopic: string | undefined,
-  topicShiftConfidence: number | undefined
+  currentTopic?: string,
+  topicShiftConfidence?: number
 ): RebuildDecision {
   const budgetTokens = DEFAULT_CONFIG.budgetTokens;
   const currentTokens = messages.reduce((sum, m) => sum + estimateMessageTokens(m), 0);
@@ -143,6 +143,62 @@ export function makeRebuildDecision(
     mode: null,
     currentTokens,
     budgetTokens,
+  };
+}
+
+/**
+ * 兼容旧接口 makeTriggerDecision
+ * 
+ * 旧接口参数：sessionId, prompt, messages, { maxTokens }
+ * 新接口参数：sessionId, messages, userInput, currentTopic?, topicShiftConfidence?
+ */
+export function makeTriggerDecision(
+  sessionId: string,
+  prompt: string,
+  messages: SessionMessage[],
+  options?: { maxTokens?: number }
+): { 
+  shouldAct: boolean; 
+  actionType: 'rebuild' | 'compact' | 'mixed' | null;
+  reason: string;
+  confidence?: number;
+} {
+  const budgetTokens = options?.maxTokens || DEFAULT_CONFIG.budgetTokens;
+  const currentTokens = messages.reduce((sum, m) => sum + estimateMessageTokens(m), 0);
+  
+  // 1. 检查是否新 session
+  if (messages.length === 0) {
+    return {
+      shouldAct: true,
+      actionType: 'rebuild',
+      reason: 'new_session',
+    };
+  }
+  
+  // 2. 检查是否心跳任务
+  if (sessionId.startsWith('hb-session-')) {
+    return {
+      shouldAct: true,
+      actionType: 'rebuild',
+      reason: 'heartbeat',
+    };
+  }
+  
+  // 3. 检查是否上下文超限
+  if (currentTokens > budgetTokens * 2) {
+    return {
+      shouldAct: true,
+      actionType: 'compact',
+      reason: 'overflow',
+      confidence: currentTokens / budgetTokens,
+    };
+  }
+  
+  // 4. 不需要 action
+  return {
+    shouldAct: false,
+    actionType: null,
+    reason: 'normal',
   };
 }
 
