@@ -1022,3 +1022,148 @@ rm -rf ~/.finger/upgrade-cache/<module>/failed-*
 - 心跳计数器重置机制
 - 升级进度 UI 可视化
 
+
+### Channel/External Interface Testing: Inside-Out Methodology (MANDATORY)
+
+For any channel (QQBot, WebSocket, API endpoint) or external interface, testing MUST follow inside-out layers:
+
+#### Layer 1: Internal Route Logic (Unit Tests)
+**Purpose**: Validate internal routing, dispatch, and response logic WITHOUT external service dependency.
+
+**What to test**:
+- Channel message routing to correct targetAgent
+- Dispatch target normalization (alias removal, moduleId mapping)
+- Session context resolution (channelId → projectPath → targetAgent)
+- Error handling and fallback paths
+- Input validation and payload transformation
+- Progress/reply message construction
+
+**Test location**: `tests/unit/server/channel-*.test.ts`, `tests/unit/server/routes/*.test.ts`
+
+**Mock strategy**:
+- Mock external channel adapter (sendMessage, WebSocket)
+- Mock MessageHub/dispatch (return controlled results)
+- Mock session manager (return known sessions)
+- Use in-memory event bus
+
+**Validation**:
+```bash
+pnpm vitest run tests/unit/server/channel-*.test.ts --reporter=verbose
+```
+
+**Required assertions**:
+- Correct targetAgentId is resolved (no legacy aliases like "finger-orchestrator")
+- Correct moduleId is used for dispatch
+- Session context is correctly applied
+- Error cases return proper error messages
+- No dispatch to unregistered modules
+
+#### Layer 2: Module Integration (Integration Tests)
+**Purpose**: Validate module-to-module interaction with real internal services but mocked external channels.
+
+**What to test**:
+- ChannelBridgeHub + MessageHub + AgentRuntimeBlock coordination
+- Session persistence across dispatch lifecycle
+- Progress update propagation through event bus
+- Dispatch queue and retry logic
+- Recovery from partial failures
+
+**Test location**: `tests/integration/bridges/*.test.ts`, `tests/integration/server/*.test.ts`
+
+**Mock strategy**:
+- Mock external channel (QQBot WebSocket, API client)
+- Use real MessageHub, SessionManager, EventBus
+- Use real AgentRuntimeBlock with mock kernel
+
+**Validation**:
+```bash
+pnpm vitest run tests/integration/bridges/channel-*.test.ts --reporter=verbose
+```
+
+#### Layer 3: End-to-End with Real External Service (E2E Tests)
+**Purpose**: Validate complete message flow through real channel service.
+
+**What to test**:
+- Gateway bridge startup and WebSocket connection
+- Message send → dispatch → kernel → response → reply cycle
+- Progress updates delivered to channel
+- Timeout and retry with real network conditions
+- Service restart and recovery
+
+**Test location**: `tests/e2e/gateway-bridge-*.test.ts`
+
+**Prerequisites**:
+- External service available (QQBot appId/clientSecret valid)
+- Gateway bridge process running
+- Daemon healthy
+
+**Validation**:
+```bash
+pnpm vitest run tests/e2e/gateway-bridge-*.test.ts --reporter=verbose
+```
+
+#### Inside-Out Validation Sequence (MANDATORY)
+
+For any channel-related change or bug fix:
+
+1. **FIRST**: Run Layer 1 unit tests
+   - If failed → fix internal routing logic first
+   - Do NOT proceed to E2E until Layer 1 passes
+
+2. **SECOND**: Run Layer 2 integration tests
+   - If failed → fix module coordination logic
+   - Do NOT proceed to E2E until Layer 2 passes
+
+3. **THIRD**: Run Layer 3 E2E tests
+   - Only after Layer 1 + 2 both pass
+   - E2E failures indicate external service or deployment issues
+
+4. **Report**: Include ALL THREE layers' test results in completion report
+
+#### Required Test Evidence for Channel Bugs
+
+When fixing a channel bug (e.g., "QQBot message not routed correctly"), provide:
+
+```
+=== Layer 1: Unit Tests ===
+pnpm vitest run tests/unit/server/channel-bridge-hub-route.test.ts
+Result: X passed / Y failed
+
+=== Layer 2: Integration Tests ===
+pnpm vitest run tests/integration/bridges/channel-*.test.ts
+Result: X passed / Y failed
+
+=== Layer 3: E2E Tests ===
+pnpm vitest run tests/e2e/gateway-bridge-qqbot.test.ts
+Result: X passed / Y failed
+```
+
+If Layer 1 fails, the bug is internal routing logic.
+If Layer 2 fails, the bug is module coordination.
+If Layer 3 fails, the bug is external service or deployment.
+
+#### Test File Structure Example
+
+```
+tests/
+├── unit/
+│   └── server/
+│       ├── channel-bridge-hub-route.test.ts      # Layer 1: routing logic
+│       ├── channel-context-manager.test.ts        # Layer 1: context resolution
+│       └── routes/message-*.test.ts               # Layer 1: message handling
+├── integration/
+│   └── bridges/
+│       ├── channel-bridge-hub-integration.test.ts # Layer 2: module coordination
+│       └── session-persistence.test.ts            # Layer 2: session lifecycle
+├── e2e/
+│   └── gateway-bridge-qqbot.test.ts               # Layer 3: real QQBot flow
+```
+
+#### Anti-patterns (FORBIDDEN)
+
+- **"Skip unit tests, just test with real QQBot"** → External service hides internal bugs
+- **"Unit tests passed, must be external issue"** → Must also pass integration tests
+- **"E2E is too hard, unit tests are enough"** → E2E validates deployment reality
+- **"Fix first, add tests later"** → Tests FIRST, then claim fix
+- **"Report without test evidence"** → No verbal claim; show test output
+
