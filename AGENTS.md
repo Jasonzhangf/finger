@@ -15,6 +15,34 @@ It intentionally avoids project-specific architecture, API, roadmap, and busines
 - Do not revert user changes you did not make.
 - Fix root causes directly; do not use rollback/patching as a substitute for diagnosis.
 
+### Karpathy Coding Principles（强制）
+
+1. **Think Before Coding（先想再写）**
+   - 不要默默选一种理解就跑
+   - 明确说出假设，提出多种解读（至少 2 种）
+   - confused 时停下来问清楚，不是跑完再来道歉
+
+2. **Simplicity First（能少写就少写）**
+   - 最少的代码解决问题，不写多余的
+   - 判断标准：一个高级工程师看到会觉得过度复杂吗？会的话，重写
+   - 没人要的 feature 不加，单次使用的代码不抽象
+
+3. **Surgical Changes（只动该动的）**
+   - 改代码只改要求改的部分
+   - 不顺手「优化」边上的代码，不重构没坏的东西
+   - 如果发现了问题，提出来，不要擅自删
+   - 每一行改动都能追溯到用户的请求
+
+4. **Goal-Driven Execution（用目标驱动）**
+   - 给 LLM 成功标准，让它自己循环到达
+   - 「修 bug」→「先写复现测试，再让它通过」
+   - 目标清晰，LLM 可以自己跑完整个循环
+
+5. **Explore and Note（边探索边记笔记）**
+   - 探索时创建 `note.md` 记录发现：文件路径、关键函数、假设
+   - **执行前必须检查 `note.md`**，确认理解正确
+   - 执行完成后删除或归档 `note.md`
+
 ## Code Quality
 - Prefer clear names and straightforward logic over cleverness.
 - Avoid duplicate implementations; reuse existing abstractions where practical.
