@@ -8,11 +8,15 @@
  * - 自动加载 autostart 目录模块
  */
 
+import { execSync } from 'child_process';
+import { readdirSync } from 'fs';
+import { join } from 'path';
+import { FINGER_PATHS, FINGER_HOME } from '../core/finger-paths.js';
+
 import { spawn } from 'child_process';
 import { existsSync, readFileSync, writeFileSync, unlinkSync, openSync, mkdirSync, readdirSync } from 'fs';
 import { join } from 'path';
 import { FINGER_SOURCE_ROOT } from '../core/source-root.js';
-import { FINGER_PATHS, ensureDir } from '../core/finger-paths.js';
 import { logger } from '../core/logger.js';
 import { loadModuleManifest } from './module-manifest.js';
 import { createConsoleLikeLogger } from '../core/logger/console-like.js';
@@ -64,6 +68,9 @@ export class OrchestrationDaemon {
     await ensureSingleInstance(this.config.port);
     await ensureSingleInstance(this.config.wsPort);
     
+    // 清理残留的 kernel 进程（防止 EPIPE）
+    this.cleanupKernelProcesses();
+    
     if (existsSync(this.config.pidFile)) {
       try {
         const pid = parseInt(readFileSync(this.config.pidFile, 'utf-8'), 10);
@@ -86,6 +93,51 @@ export class OrchestrationDaemon {
           error: error instanceof Error ? error.message : String(error),
         });
       }
+    }
+  }
+  
+  private cleanupKernelProcesses(): void {
+    // 清理所有 chat-codex kernel 进程
+    try {
+      const result = execSync('pgrep -f "chat-codex" || true', { encoding: 'utf-8' });
+      const pids = result.trim().split('
+').filter(p => p && p !== '');
+      
+      if (pids.length > 0) {
+        log.info('Cleaning up orphan kernel processes', { pids });
+        for (const pid of pids) {
+          try {
+            process.kill(parseInt(pid, 10), 'SIGKILL');
+            log.info('Killed orphan kernel process', { pid });
+          } catch (error) {
+            log.warn('Failed to kill orphan kernel process', {
+              pid,
+              error: error instanceof Error ? error.message : String(error),
+            });
+          }
+        }
+      }
+      
+      // 清理 kernel session pid 文件
+      const kernelSessionDir = join(FINGER_HOME, 'runtime', 'kernel-sessions');
+      if (existsSync(kernelSessionDir)) {
+        const pidFiles = readdirSync(kernelSessionDir).filter(f => f.endsWith('.pid'));
+        for (const pidFile of pidFiles) {
+          try {
+            unlinkSync(join(kernelSessionDir, pidFile));
+            log.info('Removed stale kernel session pid file', { pidFile });
+          } catch (error) {
+            log.warn('Failed to remove stale kernel session pid file', {
+              pidFile,
+              error: error instanceof Error ? error.message : String(error),
+            });
+          }
+        }
+      }
+    } catch (error) {
+      log.warn('Failed to cleanup kernel processes', {
+        error: error instanceof Error ? error.message : String(error),
+      });
     }
   }
 
