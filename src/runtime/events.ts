@@ -86,7 +86,7 @@ export interface SessionCompressedEvent extends BaseEvent {
 export interface SessionTopicShiftEvent extends BaseEvent {
   type: 'session_topic_shift';
   payload: {
-    trigger: 'topic_shift' | 'new_session' | 'overflow';
+    trigger: 'topic_shift' | 'new_session' | 'overflow' | 'heartbeat';
     confidence: number;
     previousTopic?: string;
     newTopic?: string;

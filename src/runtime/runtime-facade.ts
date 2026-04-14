@@ -682,11 +682,10 @@ export class RuntimeFacade {
                   void this.eventBus.emit({
                     type: 'session_topic_shift',
                     sessionId,
-                    agentId,
                     timestamp: new Date().toISOString(),
                     payload: {
-                      trigger: rebuildDecision.trigger,
-                      confidence: rebuildDecision.confidence || 0,
+                      trigger: rebuildDecision.trigger as 'topic_shift' | 'new_session' | 'overflow' | 'heartbeat',
+                      confidence: 1,
                       digestCount: rebuildResult.digestCount,
                       totalTokens: rebuildResult.totalTokens,
                     },
