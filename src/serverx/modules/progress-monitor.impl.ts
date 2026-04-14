@@ -1089,7 +1089,10 @@ for (const round of rounds.slice(-3)) {
 
       const delivered = await this.deliverProgressReport(report);
       if (!delivered) continue;
-      this.recordRoundDigest(p, reportToolCalls);
+      // recordRoundDigest 只记录高价值工具（meaningful），不记录 cat/ls 等低价值命令
+      if (meaningfulToolCalls.length > 0) {
+        this.recordRoundDigest(p, meaningfulToolCalls);
+      }
 
       // Move dedup cursor only after report delivery succeeds.
       // This avoids dropping updates when callback throws.
