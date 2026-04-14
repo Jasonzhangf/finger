@@ -197,16 +197,29 @@ export const teamStatusToolInfo = {
 /**
  * 注册 team.status 工具到 ToolRegistry
  */
-export function registerTeamStatusTool(toolRegistry: ToolRegistry): void {
+export function registerTeamStatusTool(
+  toolRegistry: ToolRegistry,
+  contextFactory?: () => Partial<ToolExecutionContext>
+): void {
   toolRegistry.register({
     name: teamStatusTool.name,
     description: teamStatusTool.description,
     inputSchema: teamStatusTool.inputSchema,
     policy: 'allow',
-    handler: async (input: unknown): Promise<TeamStatusToolOutput> => {
+    handler: async (input: unknown, context?: Record<string, unknown>): Promise<TeamStatusToolOutput> => {
+      // 如果提供了 contextFactory，使用它并转换为 ToolExecutionContext
+      const rawContext = contextFactory ? contextFactory() : context || {};
+      const executionContext: Partial<ToolExecutionContext> = {
+        agentId: (rawContext as any).agentId,
+        cwd: (rawContext as any).projectPath || (rawContext as any).cwd || '',
+        invocationId: (rawContext as any).invocationId || `team-status-${Date.now()}`,
+        timestamp: (rawContext as any).timestamp || new Date().toISOString(),
+        sessionId: (rawContext as any).sessionId,
+        channelId: (rawContext as any).channelId,
+      };
       const registry = new InternalToolRegistry();
       registry.register(teamStatusTool as InternalTool<unknown, unknown>);
-      return registry.execute(teamStatusTool.name, input) as Promise<TeamStatusToolOutput>;
+      return registry.execute(teamStatusTool.name, input, executionContext) as Promise<TeamStatusToolOutput>;
     },
   });
 }

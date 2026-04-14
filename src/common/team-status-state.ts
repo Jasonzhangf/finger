@@ -126,7 +126,7 @@ export function updateTeamAgentStatus(
   const existing = store.agents[agentId] || {
     agentId,
     projectPath: input.projectPath,
-    role: inferRole(agentId),
+    role: input.role || inferRole(agentId),  // 优先使用 input.role
     runtimeStatus: DEFAULT_RUNTIME_STATUS,
     updatedAt: new Date().toISOString(),
   };
