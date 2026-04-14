@@ -79,3 +79,63 @@
 - Progress 报告 recentRounds 是否还有旧数据
 - 新 session 是否干净（没有 heartbeat 命令）
 
+
+---
+
+## 2026-04-14: /dev/null 问题完整分析结论
+
+### 问题回顾
+
+用户发现 `/dev/null` 命令出现在正常会话的 progress 报告中，质疑：
+1. `/dev/null` 是什么？为何要执行？
+2. hb session 为何会混入正常 session？
+3. 修复后是否清理了旧的污染？
+
+### 完整分析
+
+**Q1: `/dev/null` 是什么？为何要执行？**
+
+`/dev/null` 不是被执行的文件，而是 shell 命令语法的一部分：
+- `rg pattern file 2>/dev/null` → ripgrep 搜索，错误重定向
+- `crontab -l >/dev/null` → 查看 crontab，输出重定向
+- `cat file 2>/dev/null` → 读取文件，错误不显示
+- `launchctl list 2>/dev/null` → 查看服务，错误重定向
+
+这些命令是 finger-system-agent 执行的用户请求，不是心跳任务。
+
+**Q2: hb session 为何会混入正常 session？**
+
+根因：`isSystemSession()` 判断错误
+- 使用 `projectPath === SYSTEM_PROJECT_PATH` 判断
+- `dispatch-finger-project-agent-*` 的 projectPath 可能是 SYSTEM_PROJECT_PATH
+- 导致 dispatch session 被错误识别为 System Session
+- finger-system-agent 的所有操作（包括用户请求）都用这个错误的 session
+
+**Q3: 修复后是否清理了旧的污染？**
+
+修复内容：
+1. 删除 `projectPath === SYSTEM_PROJECT_PATH` 的判断条件
+2. 只依赖 `sessionTier === 'system'` 和 `sessionId.startsWith('system-')`
+3. 删除旧的错误 session 目录
+
+验证结果：
+- ✅ System Session ID 格式正确：`system-*`（不再出现 `dispatch-*`）
+- ✅ hb-session 没有 ledger（心跳任务隔离）
+- ✅ 新 session 的命令来自用户请求（不是心跳任务）
+
+### 最终结论
+
+| 问题 | 状态 | 说明 |
+|------|------|------|
+| `/dev/null` 是什么 | ✅ 正常 | shell 命令语法，用户请求 |
+| hb session 混入正常 session | ✅ 已修复 | `isSystemSession()` 判断正确 |
+| dispatch session 被当作 System Session | ✅ 已修复 | 不再出现 `System session: dispatch-*` |
+| Progress 报告显示 `/dev/null` | ✅ 正常 | digest 的 key_tools 摘要 |
+
+### 规则总结
+
+1. **System Session 判断**：只依赖 `sessionTier` 和 `sessionId`，禁止用 `projectPath`
+2. **Session 类型隔离**：`system-*`、`hb-*`、`dispatch-*` 完全独立
+3. **唯一真源原则**：Ledger 是唯一源，Session 是动态视图
+4. **Progress 报告**：消费数据，不参与数据产生
+

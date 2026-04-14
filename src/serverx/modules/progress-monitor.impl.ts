@@ -1,3 +1,4 @@
+ import { loadTeamStatusStore } from '../../common/team-status-state.js';
 import type { AgentRuntimeDeps } from '../../server/modules/agent-runtime/types.js';
 import type { UnifiedEventBus } from '../../runtime/event-bus.js';
 import { logger } from '../../core/logger.js';
@@ -976,6 +977,10 @@ for (const round of rounds.slice(-3)) {
     await this.refreshConfigIfNeeded();
     if (!this.config.progressUpdates) return;
 
+
+   // Get global team status for observability
+   const teamStatusStore = loadTeamStatusStore();
+   const teamStatus = Object.values(teamStatusStore.agents);
    const now = Date.now();
    // 获取所有活跃的 session；先按 startTime 刷新 elapsed，避免运行中但尚未回填 elapsedMs 的 session 被漏掉。
    const activeProgress = Array.from(this.sessionProgress.values())
@@ -1053,14 +1058,15 @@ for (const round of rounds.slice(-3)) {
             lifecycleAgeMs: waitLayerInfo.lifecycleAgeMs,
           });
           const roundLines = this.buildRecentRoundsSection(p);
-          const report: ProgressReport = {
-            type: 'progress_report',
-            timestamp: new Date().toISOString(),
-            sessionId: p.sessionId,
-            agentId: p.agentId,
-            progress: p,
-            summary: [heartbeatSummary, ...roundLines].join('\n'),
-          };
+         const report: ProgressReport = {
+           type: 'progress_report',
+           timestamp: new Date().toISOString(),
+           sessionId: p.sessionId,
+           agentId: p.agentId,
+           progress: p,
+           summary: [heartbeatSummary, ...roundLines].join('\n'),
+           teamStatus,
+         };
           const delivered = await this.deliverProgressReport(report);
           if (!delivered) continue;
           p.lastReportTime = now;
@@ -1094,20 +1100,21 @@ for (const round of rounds.slice(-3)) {
       }
 
       const reportToolCalls = meaningfulToolCalls.length > 0 ? meaningfulToolCalls : completedToolCalls.slice(-1);
-      const report: ProgressReport = {
-        type: 'progress_report',
-        timestamp: new Date().toISOString(),
-        sessionId: p.sessionId,
-        agentId: p.agentId,
-        progress: p,
-        summary: this.buildSingleProgressSummary(
-          p,
-          reportToolCalls,
-          contextEventChanged,
-          now,
-          waitLayerInfo,
-        ),
-      };
+     const report: ProgressReport = {
+       type: 'progress_report',
+       timestamp: new Date().toISOString(),
+       sessionId: p.sessionId,
+       agentId: p.agentId,
+       progress: p,
+       summary: this.buildSingleProgressSummary(
+         p,
+         reportToolCalls,
+         contextEventChanged,
+         now,
+         waitLayerInfo,
+       ),
+       teamStatus,
+     };
 
       const delivered = await this.deliverProgressReport(report);
       if (!delivered) continue;

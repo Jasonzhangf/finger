@@ -13,6 +13,8 @@ import { updateAgentStatus, listAgents } from './registry.js';
 import {
   updateTeamAgentStatus,
   updateRuntimeStatus,
+  loadTeamStatusStore,
+
   type RuntimeStatus,
 } from '../../common/team-status-state.js';
 import { emitAgentStatusChanged } from './system-events.js';
@@ -172,8 +174,20 @@ export class PeriodicCheckRunner {
         } catch (error) {
           clog.error('[PeriodicCheckRunner] Failed to persist system session binding:', error);
         }
-        const prompt = `# Heartbeat Check\n\n请检查项目根目录的 HEARTBEAT.md 并执行待办任务。\n\n项目路径: ${projectPath}`;
-        await this.deps.agentRuntimeBlock.execute('dispatch', {
+       let prompt = `# Heartbeat Check\n\n请检查项目根目录的 HEARTBEAT.md 并执行待办任务。\n\n项目路径: ${projectPath}`;
+       // 添加 team.status 汇报（仅对 system agent）
+       if (agentId === 'finger-system-agent') {
+         const teamStatusStore = loadTeamStatusStore();
+         const teamStatus = Object.values(teamStatusStore.agents);
+         if (teamStatus.length > 0) {
+           const statusLines = teamStatus.map(s => {
+             const planInfo = s.planSummary ? ` | Plan: ${s.planSummary.currentStep || 'none'}` : '';
+             return `- ${s.agentId}: ${s.runtimeStatus}${planInfo}`;
+           }).join('\n');
+           prompt += `\n\n## Team Status\n\n${statusLines}`;
+         }
+       }
+       await this.deps.agentRuntimeBlock.execute('dispatch', {
           sourceAgentId: 'system-heartbeat',
           targetAgentId: agentId,
           task: prompt,

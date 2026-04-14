@@ -121,6 +121,7 @@ export interface SessionProgress {
   recentRounds?: ProgressRoundDigest[];
   progressRoundSeq?: number;
 }
+ import type { TeamAgentStatus } from '../../common/team-status-state.js';
 
 export interface ProgressReport {
   type: 'progress_report';
@@ -129,6 +130,7 @@ export interface ProgressReport {
   agentId: string;
   progress: SessionProgress;
   summary: string;
+  teamStatus?: TeamAgentStatus[]; // Optional: team status for observability
 }
 
 export interface ProgressMonitorCallbacks {
