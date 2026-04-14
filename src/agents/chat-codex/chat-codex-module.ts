@@ -3523,7 +3523,6 @@ function extractRecentTaskTurnsFromHistory(
       turns.push(current);
       current = [];
     }
-    // 过滤掉工具调用文本
     if (!isToolCallText(item.content)) {
       current.push(item);
     }
@@ -3535,7 +3534,7 @@ function extractRecentTaskTurnsFromHistory(
 function truncateInlineText(value: string, maxChars: number): string {
   // 先过滤掉工具调用文本
   if (isToolCallText(value)) {
-    return '[已过滤]'; // 完全过滤，避免模型看到 /dev/null 等无效操作
+    return '[已过滤]'; // 工具调用内容不参与截断计算
   }
   const flattened = value.replace(/\s+/g, ' ').trim();
   if (flattened.length <= maxChars) return flattened;

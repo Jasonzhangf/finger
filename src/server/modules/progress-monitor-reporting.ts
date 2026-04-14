@@ -267,9 +267,9 @@ export function buildCompactSummary(
       maxInputTokens: p.maxInputTokens,
     });
     if (fallbackContextLine) {
-      lines.push(`${fallbackContextLine} · 来自历史快照`);
+      lines.push(fallbackContextLine);
     } else {
-      lines.push('🧠 上下文: 工具执行阶段，等待模型回传上下文统计');
+      lines.push('🧠 上下文: 启动中');
     }
   }
   const estimatedContextTokens = resolveEstimatedContextTokens(
