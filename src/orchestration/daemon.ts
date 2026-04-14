@@ -8,19 +8,16 @@
  * - 自动加载 autostart 目录模块
  */
 
-import { execSync } from 'child_process';
-import { readdirSync } from 'fs';
-import { join } from 'path';
-import { FINGER_PATHS, FINGER_HOME } from '../core/finger-paths.js';
 
-import { spawn } from 'child_process';
+import { spawn, execSync } from 'child_process';
 import { existsSync, readFileSync, writeFileSync, unlinkSync, openSync, mkdirSync, readdirSync } from 'fs';
 import { join } from 'path';
+import { FINGER_PATHS, FINGER_HOME, ensureDir } from '../core/finger-paths.js';
 import { FINGER_SOURCE_ROOT } from '../core/source-root.js';
 import { logger } from '../core/logger.js';
 import { loadModuleManifest } from './module-manifest.js';
-import { createConsoleLikeLogger } from '../core/logger/console-like.js';
 import { ensureSingleInstance } from '../server/modules/port-guard.js';
+import { createConsoleLikeLogger } from '../core/logger/console-like.js';
 
 const clog = createConsoleLikeLogger('Daemon');
 
@@ -100,8 +97,7 @@ export class OrchestrationDaemon {
     // 清理所有 chat-codex kernel 进程
     try {
       const result = execSync('pgrep -f "chat-codex" || true', { encoding: 'utf-8' });
-      const pids = result.trim().split('
-').filter(p => p && p !== '');
+      const pids = result.trim().split("\n").filter(p => p && p !== "");
       
       if (pids.length > 0) {
         log.info('Cleaning up orphan kernel processes', { pids });
