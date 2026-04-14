@@ -1,139 +1,352 @@
 /**
- * Context History Management - 重建上下文流程
+ * Context History Rebuild - Session 重建
+ * 
+ * 两种 Rebuild 模式：
+ * 1. 话题 Rebuild：搜索 digest → 相关性筛选 → 预算框选 → 时间排序
+ * 2. 超限 Rebuild：直接读 ledger → 时间排序 → 预算框选
+ * 
+ * 核心：
+ * - digest 已存在于 Ledger，不生成新 digest
+ * - 只重建 Session.messages
  */
 
-import { logger } from '../../core/logger.js';
-import type { TaskDigest, RebuildOptions, RebuildResult } from './types.js';
-import { sortByTime, validateTokenBudget } from './utils.js';
+import fs from 'fs';
+import path from 'path';
+import type { SessionMessage } from '../../orchestration/session-types.js';
+import type { TaskDigest, RebuildMode, RebuildResult, TopicSearchOptions, DEFAULT_CONFIG } from './types.js';
+import {
+  tokenizeUserInput,
+  sortByRelevanceDescending,
+  filterByRelevanceThreshold,
+  takeTopPercent,
+  budgetSelectByRelevance,
+  budgetSelectByTime,
+  sortByTimeAscending,
+  digestToSessionMessage,
+  validateTokenBudget,
+  getRecentRounds,
+  estimateDigestTokens,
+} from './utils.js';
 import { acquireSessionLock, releaseSessionLock } from './lock.js';
-import { promises as fs } from 'fs';
-import * as path from 'path';
+import { logger } from '../../core/logger.js';
 
 const log = logger.module('ContextHistoryRebuild');
 
-const DEFAULT_REBUILD_OPTIONS: Partial<RebuildOptions> = {
-  maxTokens: 20000,
-  topK: 20,
-  relevanceThreshold: 0.3,
-  searchTimeoutMs: 2000,
-};
-
-interface SearchResult {
-  digest: TaskDigest;
-  relevance: number;
-}
-
-export async function checkIndexReady(ledgerPath: string): Promise<boolean> {
-  try {
-    const stat = await fs.stat(ledgerPath);
-    return stat.mtimeMs < Date.now() - 3000;
-  } catch {
-    return false;
-  }
-}
-
-export function tokenizePrompt(prompt: string): string[] {
-  return prompt.toLowerCase().replace(/[^\w\u4e00-\u9fa5]/g, ' ').split(' ').filter(t => t.length > 1).slice(0, 10);
-}
-
-export async function searchHistoryDigests(query: string[], memoryDir: string, topK: number, timeoutMs: number): Promise<{ ok: boolean; results: SearchResult[]; error?: 'timeout' | 'unavailable' | 'no_results' }> {
-  const compactPath = path.join(memoryDir, 'compact-memory.jsonl');
-  const timeoutPromise = new Promise<{ ok: false; results: never[]; error: 'timeout' }>(resolve => setTimeout(() => resolve({ ok: false, results: [], error: 'timeout' }), timeoutMs));
-  
-  const searchPromise = async (): Promise<{ ok: boolean; results: SearchResult[]; error?: 'unavailable' | 'no_results' }> => {
-    try {
-      const content = await fs.readFile(compactPath, 'utf-8');
-      const lines = content.trim().split('\n');
-      if (lines.length === 0) return { ok: true, results: [], error: 'no_results' };
-      
-      const digests: TaskDigest[] = lines.map(line => JSON.parse(line) as TaskDigest);
-      const results: SearchResult[] = digests.map(digest => {
-        let score = 0;
-        for (const tag of digest.tags) if (query.some(q => tag.toLowerCase().includes(q))) score += 0.2;
-        const summaryLower = digest.summary.toLowerCase();
-        for (const q of query) if (summaryLower.includes(q)) score += 0.1;
-        return { digest, relevance: Math.min(score, 1) };
-      });
-      
-      const filtered = results.filter(r => r.relevance > 0);
-      const sorted = filtered.sort((a, b) => b.relevance - a.relevance);
-      return { ok: true, results: sorted.slice(0, topK) };
-    } catch {
-      return { ok: false, results: [], error: 'unavailable' };
-    }
-  };
-  
-  return Promise.race([timeoutPromise, searchPromise()]);
-}
-
-export function filterByRelevance(results: SearchResult[], threshold: number): SearchResult[] {
-  return results.filter(r => r.relevance >= threshold).sort((a, b) => b.relevance - a.relevance);
-}
-
-export function selectByBudget(results: SearchResult[], maxTokens: number): TaskDigest[] {
-  const selected: TaskDigest[] = [];
-  let totalTokens = 0;
-  for (const result of results) {
-    if (totalTokens + result.digest.tokenCount <= maxTokens) {
-      selected.push(result.digest);
-      totalTokens += result.digest.tokenCount;
-    } else break;
-  }
-  return selected;
-}
-
-export function secondaryValidation(history: TaskDigest[], maxTokens: number): TaskDigest[] {
-  const validation = validateTokenBudget(history, maxTokens);
-  if (validation.ok) return history;
-  
-  log.warn('Token budget overflow, dropping earliest digest', { overflow: validation.overflow });
-  const sorted = sortByTime(history);
-  const adjusted: TaskDigest[] = [];
-  let totalTokens = 0;
-  for (let i = sorted.length - 1; i >= 0; i--) {
-    const digest = sorted[i];
-    if (totalTokens + digest.tokenCount <= maxTokens) {
-      adjusted.unshift(digest);
-      totalTokens += digest.tokenCount;
-    } else break;
-  }
-  return adjusted;
-}
-
-export async function executeRebuild(sessionId: string, memoryDir: string, options: RebuildOptions): Promise<RebuildResult> {
-  const startTime = Date.now();
-  const mergedOptions = { ...DEFAULT_REBUILD_OPTIONS, ...options };
+/**
+ * 话题 Rebuild
+ * 流程：Tokenize → 搜索 → 相关性排序 → top 30% → 预算框选 → 时间排序
+ */
+export async function rebuildByTopic(
+  sessionId: string,
+  ledgerPath: string,
+  userInput: string,
+  options: TopicSearchOptions
+): Promise<RebuildResult> {
+  const { keywords, topK, relevanceThreshold, budgetTokens, timeoutMs } = options;
   
   await acquireSessionLock(sessionId, 'rebuild');
   
   try {
-    const query = tokenizePrompt(mergedOptions.prompt!);
-    log.debug('Tokenize result', { query });
+    log.info('Starting topic rebuild', { sessionId, keywords, budgetTokens });
     
-    const searchResult = await searchHistoryDigests(query, memoryDir, mergedOptions.topK!, mergedOptions.searchTimeoutMs!);
+    // 1. Tokenize 用户输入
+    const searchKeywords = keywords.length > 0 ? keywords : tokenizeUserInput(userInput);
     
-    if (!searchResult.ok) {
-      return { ok: false, history: [], tokensUsed: 0, latencyMs: Date.now() - startTime, error: searchResult.error === 'timeout' ? 'search_timeout' : searchResult.error === 'unavailable' ? 'search_unavailable' : 'waiting_for_index' };
+    if (searchKeywords.length === 0) {
+      log.warn('No search keywords', { sessionId });
+      return {
+        ok: false,
+        messages: [],
+        digestCount: 0,
+        totalTokens: 0,
+        error: 'no_keywords',
+        mode: 'topic',
+      };
     }
     
-    if (searchResult.results.length === 0) {
-      return { ok: true, history: [], tokensUsed: 0, latencyMs: Date.now() - startTime, error: 'search_no_results' };
+    // 2. 搜索 digest
+    const searchResults = await searchDigests(ledgerPath, searchKeywords, topK, timeoutMs);
+    
+    if (searchResults.length === 0) {
+      log.warn('No search results', { sessionId, keywords: searchKeywords });
+      return {
+        ok: true,
+        messages: [],
+        digestCount: 0,
+        totalTokens: 0,
+        mode: 'topic',
+      };
     }
     
-    const filtered = filterByRelevance(searchResult.results, mergedOptions.relevanceThreshold!);
-    if (filtered.length === 0) {
-      return { ok: true, history: [], tokensUsed: 0, latencyMs: Date.now() - startTime, error: 'all_filtered' };
+    // 3. 按相关性排序
+    const sortedByRelevance = sortByRelevanceDescending(searchResults);
+    
+    // 4. 取 top 30%
+    const topResults = takeTopPercent(sortedByRelevance, 0.3);
+    
+    // 5. 预算框选
+    const budgetedResults = budgetSelectByRelevance(topResults, budgetTokens);
+    
+    // 6. 按时间排序（从早到晚）
+    const finalDigests = sortByTimeAscending(budgetedResults.map(r => r.digest));
+    
+    // 7. 转换为 SessionMessage
+    const digestMessages = finalDigests.map(digestToSessionMessage);
+    
+    // 8. 添加最近 3 轮
+    const allMessages = readLedgerMessages(ledgerPath);
+    const recentMessages = getRecentRounds(allMessages, 3);
+    
+    // 9. 组建最终 messages
+    const finalMessages = [...digestMessages, ...recentMessages];
+    
+    // 10. 二次校验
+    const validation = validateTokenBudget(finalMessages, budgetTokens + 5000); // digest 20K + recent 5K
+    if (!validation.ok) {
+      log.warn('Token budget overflow after rebuild', {
+        actualTokens: validation.actualTokens,
+        overflow: validation.overflow,
+      });
     }
     
-    const selected = selectByBudget(filtered, mergedOptions.maxTokens!);
-    const timeSorted = sortByTime(selected);
-    const validated = secondaryValidation(timeSorted, mergedOptions.maxTokens!);
+    log.info('Topic rebuild completed', {
+      sessionId,
+      digestCount: digestMessages.length,
+      recentCount: recentMessages.length,
+      totalTokens: validation.actualTokens,
+    });
     
-    const tokensUsed = validated.reduce((sum, d) => sum + d.tokenCount, 0);
-    log.info('Rebuild completed', { sessionId, resultCount: validated.length, tokensUsed });
-    
-    return { ok: true, history: validated, tokensUsed, latencyMs: Date.now() - startTime };
+    return {
+      ok: true,
+      messages: finalMessages,
+      digestCount: digestMessages.length,
+      totalTokens: validation.actualTokens,
+      mode: 'topic',
+    };
   } finally {
     releaseSessionLock(sessionId);
+  }
+}
+
+/**
+ * 超限 Rebuild
+ * 流程：直接读 ledger → 时间排序 → 预算框选
+ */
+export async function rebuildByOverflow(
+  sessionId: string,
+  ledgerPath: string,
+  budgetTokens: number
+): Promise<RebuildResult> {
+  await acquireSessionLock(sessionId, 'rebuild');
+  
+  try {
+    log.info('Starting overflow rebuild', { sessionId, budgetTokens });
+    
+    // 1. 直接读 ledger digest
+    const digests = readLedgerDigests(ledgerPath);
+    
+    if (digests.length === 0) {
+      log.warn('No digests in ledger', { sessionId });
+      // 没有 digest，只保留最近 3 轮
+      const allMessages = readLedgerMessages(ledgerPath);
+      const recentMessages = getRecentRounds(allMessages, 3);
+      return {
+        ok: true,
+        messages: recentMessages,
+        digestCount: 0,
+        totalTokens: 0,
+        mode: 'overflow',
+      };
+    }
+    
+    // 2. 预算框选（时间从新到旧）
+    const budgetedDigests = budgetSelectByTime(digests, budgetTokens);
+    
+    // 3. 按时间排序（从早到晚）
+    const finalDigests = sortByTimeAscending(budgetedDigests);
+    
+    // 4. 转换为 SessionMessage
+    const digestMessages = finalDigests.map(digestToSessionMessage);
+    
+    // 5. 添加最近 3 轮
+    const allMessages = readLedgerMessages(ledgerPath);
+    const recentMessages = getRecentRounds(allMessages, 3);
+    
+    // 6. 组建最终 messages
+    const finalMessages = [...digestMessages, ...recentMessages];
+    
+    // 7. 二次校验
+    const validation = validateTokenBudget(finalMessages, budgetTokens + 5000);
+    if (!validation.ok) {
+      log.warn('Token budget overflow after overflow rebuild', {
+        actualTokens: validation.actualTokens,
+        overflow: validation.overflow,
+      });
+    }
+    
+    log.info('Overflow rebuild completed', {
+      sessionId,
+      digestCount: digestMessages.length,
+      recentCount: recentMessages.length,
+      totalTokens: validation.actualTokens,
+    });
+    
+    return {
+      ok: true,
+      messages: finalMessages,
+      digestCount: digestMessages.length,
+      totalTokens: validation.actualTokens,
+      mode: 'overflow',
+    };
+  } finally {
+    releaseSessionLock(sessionId);
+  }
+}
+
+/**
+ * 搜索 digest（使用 mempalace 或 fts）
+ */
+async function searchDigests(
+  ledgerPath: string,
+  keywords: string[],
+  topK: number,
+  timeoutMs: number
+): Promise<{ digest: TaskDigest; relevance: number }[]> {
+  // TODO: 实现真正的搜索（mempalace/fts）
+  // 当前先用简单的文本匹配作为 fallback
+  try {
+    const entries = readLedgerEntries(ledgerPath);
+    const compactEntries = entries.filter(e => e.event_type === 'context_compact');
+    
+    const results: { digest: TaskDigest; relevance: number }[] = [];
+    
+    for (const entry of compactEntries) {
+      const payload = entry.payload as { replacement_history?: TaskDigest[] };
+      if (!payload.replacement_history || payload.replacement_history.length === 0) continue;
+      
+      for (const digest of payload.replacement_history) {
+        // 简单相关性计算：关键词匹配
+        const text = [digest.topic, ...digest.tags, digest.request, digest.summary].join(' ');
+        const matchedKeywords = keywords.filter(k => text.toLowerCase().includes(k.toLowerCase()));
+        const relevance = matchedKeywords.length / keywords.length;
+        
+        if (relevance > 0) {
+          digest.timestamp = entry.timestamp_iso || new Date(entry.timestamp_ms).toISOString();
+          digest.ledgerLine = entry.ledgerLine;
+          results.push({ digest, relevance });
+        }
+      }
+      
+      if (results.length >= topK) break;
+    }
+    
+    return results;
+  } catch (error) {
+    log.error('Search digests failed', error as Error, { ledgerPath, keywords });
+    return [];
+  }
+}
+
+/**
+ * 读 ledger digest（直接读 context_compact 事件）
+ */
+function readLedgerDigests(ledgerPath: string): TaskDigest[] {
+  if (!fs.existsSync(ledgerPath)) {
+    log.warn('Ledger not found', { ledgerPath });
+    return [];
+  }
+  
+  try {
+    const entries = readLedgerEntries(ledgerPath);
+    const compactEntries = entries.filter(e => e.event_type === 'context_compact');
+    
+    const digests: TaskDigest[] = [];
+    
+    for (const entry of compactEntries) {
+      const payload = entry.payload as { replacement_history?: TaskDigest[] };
+      if (!payload.replacement_history) continue;
+      
+      for (const digest of payload.replacement_history) {
+        digest.timestamp = entry.timestamp_iso || new Date(entry.timestamp_ms).toISOString();
+        digest.ledgerLine = entry.ledgerLine;
+        digest.tokenCount = estimateDigestTokens(digest);
+        digests.push(digest);
+      }
+    }
+    
+    return digests;
+  } catch (error) {
+    log.error('Read ledger digests failed', error as Error, { ledgerPath });
+    return [];
+  }
+}
+
+/**
+ * 读 ledger 所有消息
+ */
+function readLedgerMessages(ledgerPath: string): SessionMessage[] {
+  if (!fs.existsSync(ledgerPath)) {
+    return [];
+  }
+  
+  try {
+    const entries = readLedgerEntries(ledgerPath);
+    const messageEntries = entries.filter(e => e.event_type === 'session_message');
+    
+    return messageEntries.map((entry, idx) => {
+      const payload = entry.payload as { role: string; content: string };
+      return {
+        id: `msg-${entry.timestamp_ms}-${idx}`,
+        role: payload.role,
+        content: payload.content,
+        timestamp: entry.timestamp_iso || new Date(entry.timestamp_ms).toISOString(),
+        metadata: { ledgerLine: entry.ledgerLine },
+      };
+    });
+  } catch (error) {
+    log.error('Read ledger messages failed', error as Error, { ledgerPath });
+    return [];
+  }
+}
+
+/**
+ * 读 ledger entries
+ */
+function readLedgerEntries(ledgerPath: string): any[] {
+  const content = fs.readFileSync(ledgerPath, 'utf-8');
+  const lines = content.trim().split('\n');
+  
+  return lines.map((line, idx) => {
+    try {
+      const entry = JSON.parse(line);
+      entry.ledgerLine = idx;
+      return entry;
+    } catch {
+      return null;
+    }
+  }).filter(e => e !== null);
+}
+
+/**
+ * 统一 Rebuild 入口
+ */
+export async function rebuildSession(
+  sessionId: string,
+  ledgerPath: string,
+  mode: RebuildMode,
+  userInput?: string,
+  keywords?: string[],
+  budgetTokens: number = DEFAULT_CONFIG.budgetTokens
+): Promise<RebuildResult> {
+  if (mode === 'topic') {
+    return rebuildByTopic(sessionId, ledgerPath, userInput || '', {
+      keywords: keywords || [],
+      topK: DEFAULT_CONFIG.searchTopK,
+      relevanceThreshold: DEFAULT_CONFIG.relevanceThreshold,
+      budgetTokens,
+      timeoutMs: DEFAULT_CONFIG.searchTimeoutMs,
+    });
+  } else {
+    return rebuildByOverflow(sessionId, ledgerPath, budgetTokens);
   }
 }

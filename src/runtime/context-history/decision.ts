@@ -1,123 +1,184 @@
 /**
- * Context History Management - 触发判断
+ * Context History Decision - 触发判断
+ * 
+ * 判断是否需要 Rebuild Session.messages
+ * 
+ * 触发场景：
+ * - topic_shift: 换话题（多轮命中）
+ * - overflow: 上下文超限
+ * - new_session: 新 session
+ * - heartbeat: 心跳任务
  */
 
+import type { SessionMessage } from '../../orchestration/session-types.js';
+import type { RebuildDecision, RebuildTrigger, RebuildMode } from './types.js';
+import { DEFAULT_CONFIG } from './types.js';
+import { estimateMessageTokens } from './utils.js';
 import { logger } from '../../core/logger.js';
-import type { TriggerDecision, DecisionOptions, SessionMessage } from './types.js';
-import { estimateTokens } from './utils.js';
 
 const log = logger.module('ContextHistoryDecision');
 
-const DEFAULT_DECISION_OPTIONS: Partial<DecisionOptions> = {
-  maxTokens: 20000,
-  topicShiftThreshold: 0.7,
-  topicShiftConsecutiveHits: 3,
-  overflowThresholdRatio: 0.9,
-};
+/**
+ * Session 的换话题状态追踪
+ */
+const topicShiftState = new Map<string, {
+  hitCount: number;
+  lastConfidence: number;
+  lastTopic: string;
+}>();
 
-interface TopicShiftTracker {
-  sessionId: string;
-  consecutiveHits: number;
-  lastTopicKeywords: string[];
-  currentTopicKeywords: string[];
-}
-
-const topicTrackers: Map<string, TopicShiftTracker> = new Map();
-
-export function extractTopicKeywords(prompt: string): string[] {
-  return prompt.toLowerCase().replace(/[^\w\u4e00-\u9fa5]/g, ' ').split(' ').filter(w => w.length > 2).slice(0, 5);
-}
-
-export function calculateTopicSimilarity(prev: string[], curr: string[]): number {
-  if (prev.length === 0 || curr.length === 0) return 0;
-  const intersection = prev.filter(p => curr.some(c => c.includes(p) || p.includes(c)));
-  const union = [...new Set([...prev, ...curr])];
-  return intersection.length / union.length;
-}
-
-export function detectTopicShift(sessionId: string, prompt: string, options: DecisionOptions): { shifted: boolean; confidence: number; tracker: TopicShiftTracker } {
-  const mergedOptions = { ...DEFAULT_DECISION_OPTIONS, ...options };
+/**
+ * 判断是否需要 Rebuild
+ */
+export function makeRebuildDecision(
+  sessionId: string,
+  messages: SessionMessage[],
+  userInput: string,
+  currentTopic: string | undefined,
+  topicShiftConfidence: number | undefined
+): RebuildDecision {
+  const budgetTokens = DEFAULT_CONFIG.budgetTokens;
+  const currentTokens = messages.reduce((sum, m) => sum + estimateMessageTokens(m), 0);
   
-  let tracker = topicTrackers.get(sessionId);
-  if (!tracker) {
-    tracker = { sessionId, consecutiveHits: 0, lastTopicKeywords: [], currentTopicKeywords: [] };
-    topicTrackers.set(sessionId, tracker);
-  }
-  
-  const currentKeywords = extractTopicKeywords(prompt);
-  const similarity = calculateTopicSimilarity(tracker.lastTopicKeywords, currentKeywords);
-  const confidence = 1 - similarity;
-  
-  const hitThreshold = confidence >= mergedOptions.topicShiftThreshold!;
-  
-  if (hitThreshold) tracker.consecutiveHits++;
-  else tracker.consecutiveHits = 0;
-  
-  tracker.currentTopicKeywords = currentKeywords;
-  
-  const shifted = tracker.consecutiveHits >= mergedOptions.topicShiftConsecutiveHits!;
-  
-  if (shifted) {
-    log.info('Topic shift detected', { sessionId, consecutiveHits: tracker.consecutiveHits, confidence });
-    tracker.lastTopicKeywords = currentKeywords;
-    tracker.consecutiveHits = 0;
-  }
-  
-  return { shifted, confidence, tracker };
-}
-
-export function detectEmptyContext(currentHistory: SessionMessage[]): boolean {
-  return currentHistory.length === 0;
-}
-
-export function detectOverflow(currentHistory: SessionMessage[], maxTokens: number, thresholdRatio: number): { overflow: boolean; currentTokens: number; thresholdTokens: number } {
-  const currentTokens = currentHistory.reduce((sum, msg) => sum + estimateTokens(msg.content || ''), 0);
-  const thresholdTokens = Math.floor(maxTokens * thresholdRatio);
-  const overflow = currentTokens >= thresholdTokens;
-  
-  if (overflow) log.warn('Context overflow detected', { currentTokens, thresholdTokens, maxTokens });
-  
-  return { overflow, currentTokens, thresholdTokens };
-}
-
-export function makeTriggerDecision(sessionId: string, prompt: string, currentHistory: SessionMessage[], options: DecisionOptions): TriggerDecision {
-  const mergedOptions = { ...DEFAULT_DECISION_OPTIONS, ...options };
-  
-  const isEmpty = detectEmptyContext(currentHistory);
-  const topicShift = detectTopicShift(sessionId, prompt, mergedOptions);
-  const overflowCheck = detectOverflow(currentHistory, mergedOptions.maxTokens!, mergedOptions.overflowThresholdRatio!);
-  
-  if (topicShift.shifted && overflowCheck.overflow) {
+  // 1. 检查是否新 session
+  if (messages.length === 0) {
+    log.info('New session detected', { sessionId });
     return {
-      shouldAct: true,
-      actionType: 'mixed',
-      reason: 'topic_shift_with_overflow',
-      details: { topicConfidence: topicShift.confidence, currentTokens: overflowCheck.currentTokens, thresholdTokens: overflowCheck.thresholdTokens },
+      shouldRebuild: true,
+      trigger: 'new_session',
+      mode: 'topic',
+      currentTokens: 0,
+      budgetTokens,
     };
   }
   
-  if (isEmpty || topicShift.shifted) {
+  // 2. 检查是否心跳任务
+  if (sessionId.startsWith('hb-session-')) {
+    log.info('Heartbeat session detected', { sessionId });
     return {
-      shouldAct: true,
-      actionType: 'rebuild',
-      reason: isEmpty ? 'empty_context' : 'topic_shift',
-      details: { isEmpty, topicConfidence: topicShift.confidence },
+      shouldRebuild: true,
+      trigger: 'heartbeat',
+      mode: 'topic',
+      currentTokens,
+      budgetTokens,
     };
   }
   
-  if (overflowCheck.overflow) {
+  // 3. 检查是否上下文超限
+  if (currentTokens > budgetTokens * 2) { // 超过 40K 才触发
+    log.info('Overflow detected', { sessionId, currentTokens, budgetTokens });
     return {
-      shouldAct: true,
-      actionType: 'compact',
-      reason: 'context_overflow',
-      details: { currentTokens: overflowCheck.currentTokens, thresholdTokens: overflowCheck.thresholdTokens },
+      shouldRebuild: true,
+      trigger: 'overflow',
+      mode: 'overflow',
+      currentTokens,
+      budgetTokens,
     };
   }
   
-  return { shouldAct: false, actionType: 'none', reason: 'no_trigger', details: {} };
+  // 4. 检查是否换话题（多轮命中）
+  if (topicShiftConfidence !== undefined && topicShiftConfidence > DEFAULT_CONFIG.topicShiftThreshold) {
+    const state = topicShiftState.get(sessionId) || {
+      hitCount: 0,
+      lastConfidence: 0,
+      lastTopic: '',
+    };
+    
+    // 如果话题真的变了（不是连续同一话题的高置信度）
+    if (currentTopic && currentTopic !== state.lastTopic) {
+      state.hitCount++;
+      state.lastConfidence = topicShiftConfidence;
+      state.lastTopic = currentTopic;
+      topicShiftState.set(sessionId, state);
+      
+      log.debug('Topic shift hit', {
+        sessionId,
+        hitCount: state.hitCount,
+        confidence: topicShiftConfidence,
+        topic: currentTopic,
+      });
+      
+      // 连续 N 次命中才触发
+      if (state.hitCount >= DEFAULT_CONFIG.topicShiftHitCount) {
+        log.info('Topic shift confirmed', {
+          sessionId,
+          hitCount: state.hitCount,
+          confidence: topicShiftConfidence,
+          topic: currentTopic,
+        });
+        
+        // 清除状态
+        topicShiftState.delete(sessionId);
+        
+        return {
+          shouldRebuild: true,
+          trigger: 'topic_shift',
+          mode: 'topic',
+          currentTokens,
+          budgetTokens,
+          searchKeywords: extractKeywords(currentTopic, userInput),
+        };
+      }
+    } else {
+      // 同一话题，不累加
+      state.lastConfidence = topicShiftConfidence;
+      topicShiftState.set(sessionId, state);
+    }
+  } else {
+    // 低置信度，清除状态
+    if (topicShiftState.has(sessionId)) {
+      const state = topicShiftState.get(sessionId)!;
+      if (topicShiftConfidence === undefined || topicShiftConfidence < DEFAULT_CONFIG.topicShiftThreshold * 0.5) {
+        // 大幅降低才清除
+        topicShiftState.delete(sessionId);
+        log.debug('Topic shift state cleared', { sessionId });
+      }
+    }
+  }
+  
+  // 5. 不需要 rebuild
+  return {
+    shouldRebuild: false,
+    trigger: null,
+    mode: null,
+    currentTokens,
+    budgetTokens,
+  };
 }
 
-export function cleanupTopicTracker(sessionId: string): void {
-  topicTrackers.delete(sessionId);
-  log.debug('Topic tracker cleaned up', { sessionId });
+/**
+ * 从话题和用户输入提取关键词
+ */
+function extractKeywords(topic: string | undefined, userInput: string): string[] {
+  const keywords: string[] = [];
+  
+  if (topic) {
+    // 话题分割成关键词
+    keywords.push(...topic.split(/[\s,，、]+/).filter(k => k.length >= 2));
+  }
+  
+  // 用户输入的关键词
+  const inputKeywords = userInput
+    .toLowerCase()
+    .split(/[\s,，。！？、；：""''（）【】《》\n\r\t]+/)
+    .filter(k => k.length >= 3);
+  
+  keywords.push(...inputKeywords);
+  
+  // 去重
+  return [...new Set(keywords)];
+}
+
+/**
+ * 清除 session 的换话题状态
+ */
+export function clearTopicShiftState(sessionId: string): void {
+  topicShiftState.delete(sessionId);
+}
+
+/**
+ * 获取所有活跃的换话题状态
+ */
+export function getActiveTopicShiftStates(): Map<string, { hitCount: number; lastConfidence: number; lastTopic: string }> {
+  return new Map(topicShiftState);
 }

@@ -1,6 +1,6 @@
 {
   "name": "fingerdaemon",
-  "version": "0.1.535",
+  "version": "0.1.542",
   "description": "Finger - AI Agent Orchestrator with bd project management",
   "main": "dist/cli/index.js",
   "bin": {
@@ -89,7 +89,7 @@
     "typescript-eslint": "^8.56.1",
     "vitest": "^1.6.0"
   },
-  "fingerBuildVersion": "0.1.535",
+  "fingerBuildVersion": "0.1.542",
   "pnpm": {
     "packageExtensions": {
       "vitest@*": {
