@@ -21,12 +21,18 @@ import {
 import { executeContextLedgerMemory } from './context-ledger-memory.js';
 import {
   TopicShiftDetector,
-  decideContextRebuild,
   extractTopicShiftControl,
   isHeartbeatSession,
   isCronTask,
 } from './topic-shift-detector.js';
 import { executeContextRebuild, extractPromptFromPayload, estimateMessageTokens, compressCurrentHistory } from './context-rebuild-executor.js';
+import {
+  makeTriggerDecision,
+  executeContextHistoryManagement,
+  executeCompact,
+  executeRebuild,
+  type TriggerDecision,
+} from './context-history/index.js';
 import { createRustKernelCompactionError } from './kernel-owned-compaction.js';
 import { SessionControlPlaneStore } from './session-control-plane.js';
 import { SYSTEM_PROJECT_PATH } from '../agents/finger-system-agent/index.js';
@@ -569,17 +575,36 @@ export class RuntimeFacade {
               ? rebuildSessionContext.sourceType
               : 'user';
             
-            // Decide if context rebuild should be triggered
+           // Decide if context rebuild should be triggered
             const prompt = extractPromptFromPayload(payload);
-            const decision = decideContextRebuild(
-              sessionId,
-              sourceType,
-              prompt || '',
-              currentTokens,
-              maxTokens,
-              control,
-              detector,
-            );
+            
+            // === 新的 Context History Management 逻辑 ===
+            // 1. 使用 makeTriggerDecision 判断触发类型
+            // 2. 使用 executeContextHistoryManagement 执行
+            
+            // 获取 currentHistory（最近的消息）
+            const currentHistoryMessages = this.sessionManager.getMessages(sessionId, 0);
+            
+          // 转换为 SessionMessage 格式
+            // 转换为 context-history 模块的 SessionMessage 格式
+            const sessionMessages = currentHistoryMessages.map(msg => ({
+              id: msg.id || `${Date.now()}-${Math.random().toString(36).slice(2)}`,
+              role: msg.role,
+              content: typeof msg.content === 'string' ? msg.content : JSON.stringify(msg.content),
+              timestamp: Date.now(),
+              timestampIso: new Date().toISOString(),
+              metadata: msg.metadata as Record<string, unknown> | undefined,
+            }));
+            
+            // 判断触发决策
+            const historyDecision = makeTriggerDecision(sessionId, prompt || '', sessionMessages, { maxTokens });
+            
+            const decision = {
+              shouldRebuild: historyDecision.shouldAct && historyDecision.actionType !== 'compact',
+              reason: historyDecision.reason,
+              confidence: historyDecision.confidence || 0,
+              actionType: historyDecision.actionType,
+            };
             
             // === Determine if heartbeat/cron task ===
             const isHeartbeatOrCron = isHeartbeatSession(sessionId) || sourceType === 'cron';
@@ -610,20 +635,68 @@ export class RuntimeFacade {
               // ignore stat errors
             }
             
-            // 如果上下文超限触发 rebuild 但 index 未完成，通知用户等待
-            if (decision.reason === 'context_overflow' && !indexReady) {
-              runtimeContextRaw.rebuild_status = 'waiting_for_index';
-              runtimeContextRaw.rebuild_wait_ms = indexWaitMs;
-              log.warn('[RuntimeFacade] Context overflow but index not ready, user should wait', {
+           // 如果上下文超限触发 rebuild 但 index 未完成，通知用户等待
+            if ((decision.actionType === 'compact' || decision.actionType === 'mixed') && !indexReady) {
+             runtimeContextRaw.rebuild_status = 'waiting_for_index';
+             runtimeContextRaw.rebuild_wait_ms = indexWaitMs;
+              log.warn('[RuntimeFacade] Context overflow/mixed but index not ready, user should wait', {
+               sessionId,
+               currentTokens,
+               maxTokens,
+               indexWaitMs,
+             });
+            }
+            
+            // === 压缩场景：超限压缩（不依赖索引） ===
+            if (decision.actionType === 'compact' || (decision.actionType === 'mixed' && !indexReady)) {
+              log.info('[RuntimeFacade] Context compact triggered', {
                 sessionId,
+                agentId,
+                reason: decision.reason,
                 currentTokens,
                 maxTokens,
-                indexWaitMs,
               });
+              
+              try {
+                const memoryDir = path.join(FINGER_PATHS.sessions.dir, sessionId, agentId, 'main');
+                const compactResult = await executeCompact(
+                  sessionId,
+                  memoryDir,
+                  sessionMessages,
+                  { maxTokens: 20000, keepRecentRounds: 6 },
+                );
+                
+                if (compactResult.ok) {
+                  log.info('[RuntimeFacade] Context compact succeeded', {
+                    sessionId,
+                    newDigests: compactResult.newDigests.length,
+                    tokensUsed: compactResult.tokensUsed,
+                  });
+                  
+                  // 压缩后只保留最近 3 轮
+                  const recentMessages = this.sessionManager.getMessages(sessionId, ALWAYS_KEEP_RECENT_ROUNDS);
+                  runtimeContextRaw.session_messages = recentMessages;
+                  runtimeContextRaw.working_set_mode = 'recent_after_compact';
+                  runtimeContextRaw.compact_status = 'ok';
+                  runtimeContextRaw.compact_digests = compactResult.newDigests.length;
+               } else {
+                  log.error('[RuntimeFacade] Context compact failed', new Error(compactResult.error || 'unknown'), { sessionId });
+                  runtimeContextRaw.compact_status = 'failed';
+                  runtimeContextRaw.compact_error = compactResult.error;
+                }
+              } catch (compactErr) {
+                log.error('[RuntimeFacade] Context compact exception', compactErr as Error, { sessionId });
+                runtimeContextRaw.compact_status = 'exception';
+              }
+              
+              // compact-only 场景直接返回
+              if (decision.actionType === 'compact' && !decision.shouldRebuild) {
+                // 已完成压缩，不需要 rebuild
+              }
             }
             
             // Execute context rebuild if decision is positive AND index is ready
-            if (decision.shouldRebuild && indexReady) {
+            if (decision.shouldRebuild && indexReady && decision.actionType !== 'compact') {
               log.info('[RuntimeFacade] Context rebuild triggered', {
                 sessionId,
                 agentId,
