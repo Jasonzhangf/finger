@@ -12,6 +12,7 @@ import { SessionControlPlaneStore } from '../../runtime/session-control-plane.js
 import { updateAgentStatus, listAgents } from './registry.js';
 import {
   updateTeamAgentStatus,
+  updateRuntimeStatus,
   type RuntimeStatus,
 } from '../../common/team-status-state.js';
 import { emitAgentStatusChanged } from './system-events.js';
@@ -79,10 +80,21 @@ export class PeriodicCheckRunner {
       await updateAgentStatus(registryEntry.projectId, nextStatus);
 
       // 同步 runtimeStatus 到 team.status
+      // 先确保 agent 存在于 team.status store
       updateTeamAgentStatus(agentId, {
         agentId,
         projectPath: registryEntry.projectPath,
         projectId: registryEntry.projectId,
+      });
+      // 更新 runtimeStatus（从 runtime_view 获取）
+      const runtimeStatus = status as RuntimeStatus;
+      const lastEvent = agent.lastEvent;
+      updateRuntimeStatus({
+        agentId,
+        runtimeStatus,
+        lastDispatchId: lastEvent?.dispatchId,
+        lastTaskId: lastEvent?.taskId,
+        lastTaskName: lastEvent?.summary,
       });
       emitAgentStatusChanged(this.deps, { agentId, status: nextStatus, projectId: registryEntry.projectId });
 
