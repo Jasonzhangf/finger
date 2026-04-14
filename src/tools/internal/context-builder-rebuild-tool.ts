@@ -5,6 +5,11 @@ import { FINGER_PATHS } from '../../core/finger-paths.js';
 import { setContextBuilderOnDemandView } from '../../runtime/context-builder-on-demand-state.js';
 import type { InternalTool, ToolExecutionContext } from './types.js';
 
+import { acquireSessionLock, releaseSessionLock, hasSessionLock } from '../../runtime/context-history/lock.js';
+import { logger } from '../../core/logger.js';
+
+const log = logger.module('ContextBuilderRebuild');
+
 interface ContextBuilderRebuildInput {
   session_id?: string;
   agent_id?: string;
@@ -29,14 +34,15 @@ interface RuntimeContextSessionMessage {
 
 interface ContextBuilderRebuildOutput {
   ok: boolean;
-  action: 'rebuild';
+  action: 'rebuild' | 'skipped';
+  reason?: 'rebuild_already_in_progress' | 'lock_acquisition_failed';
   sessionId: string;
   agentId: string;
-  buildMode: 'minimal' | 'moderate' | 'aggressive';
+  buildMode?: 'minimal' | 'moderate' | 'aggressive';
   targetBudget: number;
-  metadata: Record<string, unknown>;
+  metadata?: Record<string, unknown>;
   selectedBlockIds: string[];
-  appliesNextTurn: boolean;
+  appliesNextTurn?: boolean;
   messages?: Array<{
     id: string;
     role: string;
@@ -148,6 +154,23 @@ export const contextBuilderRebuildTool: InternalTool<unknown, ContextBuilderRebu
       throw new Error('context_builder.rebuild requires session_id (or active tool context sessionId)');
     }
 
+    // 检查是否已有 rebuild 锁
+    if (hasSessionLock(sessionId)) {
+      log.warn('Rebuild already in progress, skipping', { sessionId });
+      return {
+        ok: false,
+        action: 'skipped',
+        reason: 'rebuild_already_in_progress',
+        sessionId,
+        agentId: context.agentId ?? 'finger-system-agent',
+        targetBudget: 0,
+        selectedBlockIds: [],
+      };
+    }
+
+    // 获取 rebuild 锁
+    await acquireSessionLock(sessionId, 'rebuild');
+
     const agentId = (input.agent_id ?? context.agentId ?? 'finger-system-agent').trim();
     const settings = loadContextBuilderSettings();
     const contextWindow = getContextWindow();
@@ -199,27 +222,33 @@ export const contextBuilderRebuildTool: InternalTool<unknown, ContextBuilderRebu
       ? Math.max(1, Math.min(120, Math.floor(input.message_limit as number)))
       : 40;
 
-    return {
-      ok: true,
-      action: 'rebuild',
-      sessionId,
-      agentId,
-      buildMode,
-      targetBudget,
-      metadata: built.metadata,
-      selectedBlockIds: built.rankedTaskBlocks.map((block) => block.id),
-      appliesNextTurn: true,
-      ...(includeMessages
-        ? {
-          messages: built.messages.slice(-messageLimit).map((message) => ({
-            id: message.id,
-            role: message.role,
-            tokenCount: message.tokenCount,
-            ...(message.contextZone ? { contextZone: message.contextZone } : {}),
-            contentPreview: message.content.length > 180 ? `${message.content.slice(0, 180)}...` : message.content,
-          })),
-        }
-        : {}),
-    };
+    try {
+      return {
+        ok: true,
+        action: 'rebuild',
+        sessionId,
+        agentId,
+        buildMode,
+        targetBudget,
+        metadata: built.metadata,
+        selectedBlockIds: built.rankedTaskBlocks.map((block) => block.id),
+        appliesNextTurn: true,
+        ...(includeMessages
+          ? {
+            messages: built.messages.slice(-messageLimit).map((message) => ({
+              id: message.id,
+              role: message.role,
+              tokenCount: message.tokenCount,
+              ...(message.contextZone ? { contextZone: message.contextZone } : {}),
+              contentPreview: message.content.length > 180 ? `${message.content.slice(0, 180)}...` : message.content,
+            })),
+          }
+          : {}),
+      };
+    } finally {
+      // 释放 rebuild 锁
+      releaseSessionLock(sessionId);
+      log.info('Rebuild lock released', { sessionId });
+    }
   },
 };
