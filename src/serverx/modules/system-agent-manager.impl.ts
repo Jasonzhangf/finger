@@ -1237,7 +1237,7 @@ export class SystemAgentManager {
   private async resolvePeriodicCheckConfig(): Promise<{ enabled: boolean; intervalMs: number }> {
     const defaults = {
       // 默认关闭：避免与 HeartbeatScheduler 重复触发、导致空转与无意义唤醒。
-      enabled: false,
+      enabled: true,
       intervalMs: DEFAULT_PERIODIC_CHECK_INTERVAL_MS,
     };
 

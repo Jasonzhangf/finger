@@ -709,6 +709,7 @@ async function executeCompactAction(
       source_slot_end: sourceSlotEnd,
       linked_event_ids: linkedEventIds,
       linked_message_ids: input.source_message_ids ?? [],
+      replacement_history: input.replacement_history ?? [],
     },
   });
 
