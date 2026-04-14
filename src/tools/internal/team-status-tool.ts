@@ -205,7 +205,7 @@ export function registerTeamStatusTool(toolRegistry: ToolRegistry): void {
     policy: 'allow',
     handler: async (input: unknown): Promise<TeamStatusToolOutput> => {
       const registry = new InternalToolRegistry();
-      registry.register(teamStatusTool);
+      registry.register(teamStatusTool as InternalTool<unknown, unknown>);
       return registry.execute(teamStatusTool.name, input) as Promise<TeamStatusToolOutput>;
     },
   });

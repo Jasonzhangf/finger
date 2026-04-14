@@ -36,7 +36,8 @@ import { mailboxRemoveTool, mailboxRemoveAllTool } from './mailbox-tool-remove.j
 import { skillsListTool, skillsStatusTool } from './skills-tool.js';
 import { stopReasoningPolicyTool, stopReasoningTool } from './stop-reasoning-tool.js';
 import { sleepTool } from './codex-sleep-tool.js';
-import { teamStatusTool } from './team-status-tool.js';
+import { teamStatusTool, registerTeamStatusTool } from './team-status-tool.js';
+
 
 // V3 Claim Tools
 import { registerProjectClaimCompletionTool } from './project-claim-completion-tool.js';
@@ -181,8 +182,10 @@ export function registerProjectClaimCompletionToolInRuntime(toolRegistry: ToolRe
 /**
  * 在运行时注册 project.approve_task（System Agent 验收通过）
  */
-export function registerProjectApproveTaskToolInRuntime(toolRegistry: ToolRegistry): void {
-  registerProjectApproveTaskTool(toolRegistry);
+
+/**
+ * 在运行时注册 project.approve_task（System Agent 验收通过）
+ */
 export function registerProjectApproveTaskToolInRuntime(toolRegistry: ToolRegistry): void {
   registerProjectApproveTaskTool(toolRegistry);
 }
