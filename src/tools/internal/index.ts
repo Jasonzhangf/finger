@@ -125,6 +125,7 @@ export function createDefaultInternalToolRegistry(): InternalToolRegistry {
   registry.register(stopReasoningTool);
   registry.register(stopReasoningPolicyTool);
   registry.register(sleepTool);
+  registry.register(teamStatusTool);
   for (const tool of permissionTools) {
     registry.register(tool);
   }

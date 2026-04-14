@@ -45,7 +45,7 @@ export interface TeamStatusToolOutput {
  * - status: 查询可见范围内的 team status
  * - update: 更新自己的 planSummary（需校验 agentId === context.agentId）
  */
-export const teamStatusTool: InternalTool<TeamStatusToolInput, TeamStatusToolOutput> = {
+ export const teamStatusTool: InternalTool<unknown, TeamStatusToolOutput> = {
   name: 'team.status',
   description: 'Query or update team agent status. System agents see all; project agents see scope.',
   executionModel: 'state',
@@ -69,9 +69,13 @@ export const teamStatusTool: InternalTool<TeamStatusToolInput, TeamStatusToolOut
   },
 
   async execute(
-    input: TeamStatusToolInput,
+    rawInput: unknown,
     context: ToolExecutionContext
   ): Promise<TeamStatusToolOutput> {
+    const input = rawInput as TeamStatusToolInput;
+    if (!input || !input.action) {
+      return { ok: false, action: 'status', scope: 'system', viewerAgentId: 'unknown', error: 'Invalid input: missing action' };
+    }
     const viewerAgentId = context.agentId || 'unknown';
     const viewerProjectPath = context.cwd || '';
     const viewerRole: AgentRole = context.agentId === 'finger-system-agent' ? 'system' : 'project';
@@ -127,11 +131,15 @@ function executeStatus(
  * 权限校验：input.agentId 必须等于 context.agentId
  */
 function executeUpdate(
-  input: TeamStatusToolInput,
+  rawInput: unknown,
   _context: ToolExecutionContext,
   viewerAgentId: string,
   viewerProjectPath: string
 ): TeamStatusToolOutput {
+  const input = rawInput as TeamStatusToolInput;
+  if (!input) {
+    return { ok: false, action: 'update', scope: 'system', viewerAgentId, error: 'Invalid input' };
+  }
   // 权限校验：只能更新自己
   const targetAgentId = input.agentId || viewerAgentId;
   if (targetAgentId !== viewerAgentId) {

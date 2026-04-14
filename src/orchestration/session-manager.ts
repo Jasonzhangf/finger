@@ -80,7 +80,8 @@ export class SessionManager  {
   private isSystemSession(session: Session): boolean {
     const ctx = session.context ?? {};
     if (ctx.sessionTier === 'system') return true;
-    if (session.projectPath === SYSTEM_PROJECT_PATH) return true;
+    // projectPath check removed: dispatch sessions may also use SYSTEM_PROJECT_PATH
+    // Only sessionTier and sessionId prefix reliably identify a System Session
     if (session.id.startsWith(SYSTEM_SESSION_PREFIX)) return true;
     return false;
   }
