@@ -25,7 +25,7 @@ class SessionProgressStore {
       externalStateDuration: existing?.externalStateDuration ?? 0,
       mailboxStatus: existing?.mailboxStatus ?? { unread: 0, pending: 0, processing: 0 },
       teamStatus: existing?.teamStatus ?? { agents: [] },
-      contextUsagePercent: this.calculateContextUsage(event.kernelMetadata ?? existing?.kernelMetadata),
+      contextUsagePercent: this.calculateContextUsage(event.kernelMetadata ?? existing?.kernelMetadata ?? null),
     };
     this.snapshots.set(sessionId, snapshot);
     if (event.kernelMetadata) {
