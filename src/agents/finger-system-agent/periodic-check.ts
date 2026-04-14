@@ -55,6 +55,44 @@ export class PeriodicCheckRunner {
       this.timer = null;
     }
   }
+  
+  /**
+   * 立即执行一次 periodic check（用于启动时立即启动 monitored agents）
+   */
+  runOnceImmediately(): Promise<void> {
+    return this.runOnce();
+  }
+  
+  /**
+   * 启动 Project Agent（用于 monitored agents 启动）
+   */
+  private async startProjectAgent(agent: { agentId: string; projectPath: string; projectId: string }): Promise<void> {
+    try {
+      const deployResult = await this.deps.agentRuntimeBlock.execute('deploy', {
+        targetAgentId: 'finger-project-agent',
+        sessionId: `hb-session-${agent.agentId}-${agent.projectPath.replace(/[^a-zA-Z0-9]/g, '-')}`,
+        instanceCount: 1,
+        launchMode: 'orchestrator',
+        scope: 'session',
+        config: {
+          enabled: true,
+        },
+      }) as { success?: boolean; deployment?: { id?: string; status?: string }; error?: string };
+      
+      if (deployResult?.success) {
+        clog.log(`[PeriodicCheckRunner] Project Agent deployed: ${agent.agentId}`, {
+          deploymentId: deployResult.deployment?.id,
+          deploymentStatus: deployResult.deployment?.status,
+        });
+      } else {
+        clog.error(`[PeriodicCheckRunner] Failed to deploy Project Agent: ${agent.agentId}`, {
+          error: deployResult?.error,
+        });
+      }
+    } catch (error) {
+      clog.error(`[PeriodicCheckRunner] Error starting Project Agent: ${agent.agentId}`, error);
+    }
+  }
 
   async runOnce(): Promise<void> {
     clog.log(`[PeriodicCheckRunner] Running periodic check...`);
@@ -65,6 +103,17 @@ export class PeriodicCheckRunner {
 
     const registryAgents = await listAgents();
     const registryByAgentId = new Map(registryAgents.map(a => [a.agentId, a]));
+    
+    // 1. 启动未运行的 monitored agents
+    const runningAgentIds = new Set(agents.map((a: any) => a.id as string));
+    const monitoredAgents = registryAgents.filter(a => a.monitored === true);
+    
+    for (const agent of monitoredAgents) {
+      if (!runningAgentIds.has(agent.agentId)) {
+        clog.log(`[PeriodicCheckRunner] Starting monitored agent: ${agent.agentId}`);
+        await this.startProjectAgent(agent);
+      }
+    }
 
     for (const agent of agents) {
       const agentId = agent.id as string;

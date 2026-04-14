@@ -129,8 +129,10 @@ export class SystemAgentManager {
       });
     }
 
-    // 4. 启动监控中的 Project Agents
-    await this.startMonitoredProjects();
+    // 4. 立即执行 periodic check（由 PeriodicCheckRunner 启动 monitored agents）
+    if (this.runner) {
+      await this.runner.runOnceImmediately();
+    }
 
     // 4.5 Reviewer absorbed into system agent - no separate recovery
     await this.recoverReviewerSessionsIfNeeded();
