@@ -386,6 +386,7 @@ const progressMonitor = new ProgressMonitor(globalEventBus, getAgentRuntimeDeps(
         maxInputTokens: report.progress.maxInputTokens,
         contextBreakdown: report.progress.contextBreakdown,
       },
+      teamStatus: report.teamStatus,
     });
   },
 });

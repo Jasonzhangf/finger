@@ -1,4 +1,5 @@
 import type { AgentRuntimeDeps } from './agent-runtime/types.js';
+import type { TeamAgentStatus } from '../../common/team-status-state.js';
 import type { RuntimeEvent } from '../../runtime/events.js';
 import type { SessionEnvelopeMapping, TaskContext, WrappedStatusUpdate } from './agent-status-subscriber-types.js';
 import { wrapStatusUpdate } from './agent-status-subscriber-helpers.js';
@@ -222,6 +223,7 @@ export async function sendProgressUpdateToChannels(params: {
       contextBreakdown?: ContextBreakdownSnapshot;
       contextBreakdownMode?: 'release' | 'dev';
     };
+    teamStatus?: TeamAgentStatus[];
   };
   primaryAgentId: string | null;
   lastProgressMailboxSummaryBySession: Map<string, string>;
@@ -368,6 +370,9 @@ export async function sendProgressUpdateToChannels(params: {
       icon: '🔄',
       level: 'detailed',
     },
+    ...(params.report.teamStatus
+      ? { teamStatus: params.report.teamStatus }
+      : {}),
   };
 
   await sendStatusUpdate(

@@ -1,3 +1,5 @@
+import { logger } from '../../../core/logger/index.js';
+
 /**
  * Progress Store - 唯一数据存储
  * 
@@ -9,6 +11,7 @@ import type { ProgressSnapshot, ProgressUpdateEvent } from './progress-types.js'
 
 class ProgressStore {
   private sessionProgress: Map<string, ProgressSnapshot> = new Map();
+  private log = logger.module('ProgressStore');
   
   /**
    * 更新 progress（只接受 kernel_response 来源）
@@ -16,7 +19,7 @@ class ProgressStore {
   update(event: ProgressUpdateEvent): void {
     // 唯一真源：只接受 kernel_response
     if (event.source !== 'kernel_response') {
-      console.warn('[ProgressStore] Rejected non-kernel_response event:', event.source);
+      this.log.warn('Rejected non-kernel_response event:', { source: event.source });
       return;
     }
     

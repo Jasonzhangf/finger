@@ -1,4 +1,5 @@
 import type { ChannelBridgeEnvelope } from '../../bridges/envelope.js';
+import type { TeamAgentStatus } from '../../common/team-status-state.js';
 
 export type SubscriptionLevel = 'detailed' | 'summary';
 
@@ -51,6 +52,8 @@ export interface WrappedStatusUpdate {
     subtitle?: string;
     icon?: string;
     level: SubscriptionLevel;
+  teamStatus?: TeamAgentStatus[];  // Optional: team status for observability
+
   };
 }
 

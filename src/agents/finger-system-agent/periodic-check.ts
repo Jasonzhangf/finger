@@ -97,7 +97,7 @@ export class PeriodicCheckRunner {
   }
 
   async runOnce(): Promise<void> {
-    clog.log(`[PeriodicCheckRunner] Running periodic check...`);
+    clog.log('[PeriodicCheckRunner] Running periodic check...');
     const runtimeView = await this.deps.agentRuntimeBlock.execute('runtime_view', {});
     const agents = Array.isArray((runtimeView as any).agents)
       ? (runtimeView as any).agents
@@ -107,51 +107,85 @@ export class PeriodicCheckRunner {
     const registryByAgentId = new Map(registryAgents.map(a => [a.agentId, a]));
     
     // 1. 启动未运行的 monitored agents
-    const runningAgentIds = new Set(agents.map((a: any) => a.id as string));
-    const monitoredAgents = registryAgents.filter(a => a.monitored === true);
+    // runtime_view.agents[].id 是模块 ID（如 finger-project-agent）
+    // registry.agents[].agentId 是项目实例 ID（如 finger-01）
+    // 需要通过 instances 数组的 sessionId 来关联
+    const instances = Array.isArray((runtimeView as any).instances)
+      ? (runtimeView as any).instances
+      : [];
     
+    // 建立 sessionId -> registry.agentId 的映射
+    const sessionIdToRegistryAgent = new Map<string, { agentId: string; projectPath: string; projectId: string; monitored: boolean }>();
+    for (const registryAgent of registryAgents) {
+      // 根据 sessionId 前缀匹配（hb-session-{agentId}-...）
+      const prefix = 'hb-session-' + registryAgent.agentId + '-';
+      for (const instance of instances) {
+        if (typeof instance.sessionId === 'string' && instance.sessionId.startsWith(prefix)) {
+          sessionIdToRegistryAgent.set(instance.sessionId, {
+            agentId: registryAgent.agentId,
+            projectPath: registryAgent.projectPath,
+            projectId: registryAgent.projectId,
+            monitored: registryAgent.monitored ?? false,
+          });
+          break;  // 一个 registry agent 只映射一次
+        }
+      }
+    }
+    
+    // 检查哪些 monitored agents 没有对应的 instance（未运行）
+    const runningRegistryAgentIds = new Set(
+      instances
+        .map((i: any) => sessionIdToRegistryAgent.get(i.sessionId)?.agentId)
+        .filter((id: string | undefined) => id !== undefined)
+    );
+    
+    const monitoredAgents = registryAgents.filter(a => a.monitored === true);
     for (const agent of monitoredAgents) {
-      if (!runningAgentIds.has(agent.agentId)) {
-        clog.log(`[PeriodicCheckRunner] Starting monitored agent: ${agent.agentId}`);
+      if (!runningRegistryAgentIds.has(agent.agentId)) {
+        clog.log('[PeriodicCheckRunner] Starting monitored agent: ' + agent.agentId);
         await this.startProjectAgent(agent);
       }
     }
 
-    for (const agent of agents) {
-      const agentId = agent.id as string;
-      const status = agent.status as string;
+    // 2. 遍历 instances（而不是 agents），通过 sessionId 关联 registry
+    for (const instance of instances) {
+      const sessionId = instance.sessionId as string;
+      const status = instance.status as string;
 
-      const registryEntry = registryByAgentId.get(agentId);
+      // 通过 sessionId 找到 registry entry
+      const registryEntry = sessionIdToRegistryAgent.get(sessionId);
       if (!registryEntry) {
+        // System Agent 或其他非 monitored agent，跳过
         continue;
       }
+
+      const registryAgentId = registryEntry.agentId;
 
       // 更新 registry 状态
       const nextStatus = status === 'idle' ? 'idle' : 'busy';
       await updateAgentStatus(registryEntry.projectId, nextStatus);
 
-      // 同步 runtimeStatus 到 team.status
+      // 同步 runtimeStatus 到 team.status（使用 registryAgentId 作为 key）
       // 先确保 agent 存在于 team.status store
-      updateTeamAgentStatus(agentId, {
-        agentId,
+      updateTeamAgentStatus(registryAgentId, {
+        agentId: registryAgentId,
         projectPath: registryEntry.projectPath,
         projectId: registryEntry.projectId,
       });
       // 更新 runtimeStatus（从 runtime_view 获取）
       const runtimeStatus = status as RuntimeStatus;
-      const lastEvent = agent.lastEvent;
       updateRuntimeStatus({
-        agentId,
+        agentId: registryAgentId,
         runtimeStatus,
-        lastDispatchId: lastEvent?.dispatchId,
-        lastTaskId: lastEvent?.taskId,
-        lastTaskName: lastEvent?.summary,
+        lastDispatchId: instance.deploymentId,  // 使用 deploymentId 作为 lastDispatchId
+        lastTaskId: undefined,  // instance 没有 taskId 信息
+        lastTaskName: undefined,
       });
-      emitAgentStatusChanged(this.deps, { agentId, status: nextStatus, projectId: registryEntry.projectId });
+      emitAgentStatusChanged(this.deps, { agentId: registryAgentId, status: nextStatus, projectId: registryEntry.projectId });
 
       // 仅对 idle + monitored agent 发送心跳提示词（监控路径以 registry 为真源）
       if (status === 'idle' && registryEntry.monitored === true) {
-        await this.sendHeartbeatPrompt(agentId, registryEntry.projectPath);
+        await this.sendHeartbeatPrompt(registryAgentId, registryEntry.projectPath);
       }
     }
   }

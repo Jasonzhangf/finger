@@ -1,4 +1,5 @@
 import { spawn, type ChildProcessWithoutNullStreams } from 'child_process';
+import { progressStore, type ProgressUpdateEvent } from '../../server/modules/progress/index.js';
 import { appendFileSync, existsSync, mkdirSync, readFileSync } from 'fs';
 import { basename, dirname, join, resolve, sep } from 'path';
 import { createInterface } from 'readline';
@@ -994,6 +995,32 @@ export class ProcessChatCodexRunner implements ChatCodexRunner {
     clearTimeout(activeTurn.stallTimeout);
     session.activeTurn = null;
     activeTurn.resolve(result);
+
+    // 发送 ProgressUpdateEvent 到 ProgressStore（唯一真源）
+    chatCodexLog.info('resolveActiveTurn called', { sessionId: session.sessionId, hasKernelMetadata: !!result.kernelMetadata, input_tokens: result.kernelMetadata?.input_tokens });
+    if (result.kernelMetadata && session.sessionId) {
+      const agentId = typeof result.kernelMetadata.contextLedgerAgentId === 'string'
+        ? result.kernelMetadata.contextLedgerAgentId
+        : 'unknown-agent';
+      const event: ProgressUpdateEvent = {
+        type: 'progress_update',
+        source: 'kernel_response',
+        sessionId: session.sessionId,
+        agentId,
+        timestamp: new Date(),
+        kernelMetadata: {
+          input_tokens: typeof result.kernelMetadata.input_tokens === 'number' ? result.kernelMetadata.input_tokens : 0,
+          output_tokens: typeof result.kernelMetadata.output_tokens === 'number' ? result.kernelMetadata.output_tokens : 0,
+          total_tokens: typeof result.kernelMetadata.total_tokens === 'number' ? result.kernelMetadata.total_tokens : 0,
+          context_window: typeof result.kernelMetadata.context_window === 'number' ? result.kernelMetadata.context_window : 262144,
+          history_items_count: typeof result.kernelMetadata.history_items_count === 'number' ? result.kernelMetadata.history_items_count : 0,
+          round: typeof result.kernelMetadata.round === 'number' ? result.kernelMetadata.round : 0,
+          seq: typeof result.kernelMetadata.seq === 'number' ? result.kernelMetadata.seq : 0,
+        },
+        status: 'idle',
+      };
+      progressStore.update(event);
+    }
   }
 
   private rejectActiveTurn(

@@ -1,4 +1,5 @@
 import type { AgentRuntimeDeps } from '../../server/modules/agent-runtime/types.js';
+import type { TeamAgentStatus } from '../../common/team-status-state.js';
 import type { UnifiedEventBus } from '../../runtime/event-bus.js';
 import type { RuntimeEvent, ToolErrorEvent, SystemErrorEvent } from '../../runtime/events.js';
 import type { PushSettings } from '../../bridges/types.js';
@@ -494,6 +495,7 @@ export class AgentStatusSubscriber {
       };
       contextBreakdownMode?: 'release' | 'dev';
     };
+    teamStatus?: TeamAgentStatus[];
   }): Promise<void> {
     await sendProgressUpdateToChannels({
       deps: this.deps,
