@@ -143,11 +143,11 @@ export async function appendDigestForTurn(
     },
   };
 
-  const compactPath = resolveCompactMemoryPath(normalizedRootDir, sessionId, agentId, mode);
+  const ledgerPath = resolveLedgerPath(normalizedRootDir, sessionId, agentId, mode);
   const baseDir = resolveBaseDir(normalizedRootDir, sessionId, agentId, mode);
   await fs.mkdir(baseDir, { recursive: true });
 
-  await appendLedgerEvent(compactPath, {
+  await appendLedgerEvent(ledgerPath, {
     session_id: sessionId,
     agent_id: agentId,
     mode,

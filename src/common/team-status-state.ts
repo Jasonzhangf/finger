@@ -67,22 +67,24 @@ export interface TeamStatusStore {
 
 // === Constants ===
 
-const TEAM_STATUS_FILE = process.env.FINGER_TEAM_STATUS_STORE_FILE?.trim()
-  || join(FINGER_HOME, 'system', 'team-status.json');
+function getTeamStatusFile(): string {
+  return process.env.FINGER_TEAM_STATUS_STORE_FILE?.trim()
+    || join(FINGER_HOME, 'system', 'team-status.json');
+}
 const DEFAULT_RUNTIME_STATUS: RuntimeStatus = 'idle';
 
 // === Load & Save ===
 
 export function loadTeamStatusStore(): TeamStatusStore {
   try {
-    if (!existsSync(TEAM_STATUS_FILE)) {
+    if (!existsSync(getTeamStatusFile())) {
       return {
         version: 1,
         lastUpdate: new Date().toISOString(),
         agents: {},
       };
     }
-    const content = readFileSync(TEAM_STATUS_FILE, 'utf-8');
+    const content = readFileSync(getTeamStatusFile(), 'utf-8');
     const data = JSON.parse(content) as TeamStatusStore;
     return data;
   } catch (error) {
@@ -98,7 +100,7 @@ export function loadTeamStatusStore(): TeamStatusStore {
 export function saveTeamStatusStore(store: TeamStatusStore): void {
   try {
     store.lastUpdate = new Date().toISOString();
-    writeFileAtomicSync(TEAM_STATUS_FILE, JSON.stringify(store, null, 2));
+    writeFileAtomicSync(getTeamStatusFile(), JSON.stringify(store, null, 2));
     log.debug('[saveTeamStatusStore] Saved', { agentCount: Object.keys(store.agents).length });
   } catch (error) {
     log.error('[saveTeamStatusStore] Failed to save', error as Error);
