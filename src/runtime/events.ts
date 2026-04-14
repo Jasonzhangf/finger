@@ -80,6 +80,21 @@ export interface SessionCompressedEvent extends BaseEvent {
   };
 }
 
+/**
+ * Session 话题切换事件（用于清除旧 digest）
+ */
+export interface SessionTopicShiftEvent extends BaseEvent {
+  type: 'session_topic_shift';
+  payload: {
+    trigger: 'topic_shift' | 'new_session' | 'overflow';
+    confidence: number;
+    previousTopic?: string;
+    newTopic?: string;
+    digestCount: number;
+    totalTokens: number;
+  };
+}
+
 export interface SessionChangedEvent extends BaseEvent {
   type: 'session_changed';
   payload: {
@@ -93,7 +108,8 @@ export type SessionEvent =
   | SessionResumedEvent
   | SessionPausedEvent
   | SessionCompressedEvent
-  | SessionChangedEvent;
+  | SessionChangedEvent
+  | SessionTopicShiftEvent;
 
 // =============================================================================
 // Task 事件

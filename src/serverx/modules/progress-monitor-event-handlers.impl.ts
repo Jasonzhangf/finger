@@ -819,6 +819,32 @@ export function handleSessionCompressedEvent(progress: SessionProgress, event?: 
   setContextEvent(progress, `${triggerLabel}${percentLabel}${sizeLabel}`);
 }
 
+
+/**
+ * 处理 session_topic_shift 事件（话题切换时清除旧 digest）
+ */
+export function handleSessionTopicShiftEvent(progress: SessionProgress, event?: any): void {
+  const payload = event?.payload ?? {};
+  const trigger = typeof payload.trigger === 'string' ? payload.trigger : 'unknown';
+  const confidence = typeof payload.confidence === 'number' ? payload.confidence : 0;
+  const digestCount = typeof payload.digestCount === 'number' ? payload.digestCount : 0;
+  const totalTokens = typeof payload.totalTokens === 'number' ? payload.totalTokens : 0;
+  
+  // 清除旧 digest（recentRounds）
+  progress.recentRounds = [];
+  progress.progressRoundSeq = 0;
+  
+  // 设置 context event
+  const triggerLabel = trigger === 'topic_shift' ? '话题切换'
+    : trigger === 'new_session' ? '新 session'
+    : trigger === 'overflow' ? '上下文超限'
+    : '未知触发';
+  setContextEvent(progress, `Session 重建(${triggerLabel})，置信度 ${confidence.toFixed(2)}，${digestCount} digest，${totalTokens} tokens`);
+  
+  // 允许 context breakdown drop
+  progress.allowContextDropOnce = true;
+}
+
 /**
  * 处理 agent_runtime_status 事件
  */

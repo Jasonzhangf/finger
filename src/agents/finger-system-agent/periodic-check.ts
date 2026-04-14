@@ -10,6 +10,10 @@
 import type { AgentRuntimeDeps } from '../../server/modules/agent-runtime/types.js';
 import { SessionControlPlaneStore } from '../../runtime/session-control-plane.js';
 import { updateAgentStatus, listAgents } from './registry.js';
+import {
+  updateTeamAgentStatus,
+  type RuntimeStatus,
+} from '../../common/team-status-state.js';
 import { emitAgentStatusChanged } from './system-events.js';
 import { createConsoleLikeLogger } from '../../core/logger/console-like.js';
 
@@ -73,6 +77,13 @@ export class PeriodicCheckRunner {
       // 更新 registry 状态
       const nextStatus = status === 'idle' ? 'idle' : 'busy';
       await updateAgentStatus(registryEntry.projectId, nextStatus);
+
+      // 同步 runtimeStatus 到 team.status
+      updateTeamAgentStatus(agentId, {
+        agentId,
+        projectPath: registryEntry.projectPath,
+        projectId: registryEntry.projectId,
+      });
       emitAgentStatusChanged(this.deps, { agentId, status: nextStatus, projectId: registryEntry.projectId });
 
       // 仅对 idle + monitored agent 发送心跳提示词（监控路径以 registry 为真源）

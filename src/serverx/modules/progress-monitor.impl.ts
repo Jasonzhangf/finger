@@ -37,6 +37,7 @@ import {
   handleAgentStepCompleted,
   handleModelRound,
   handleSessionCompressedEvent,
+  handleSessionTopicShiftEvent,
   handleSystemNoticeEvent,
   handleToolCallEvent,
   handleToolErrorEvent,
@@ -857,6 +858,15 @@ for (const round of rounds.slice(-3)) {
         return;
       }
 
+      if (eventType === 'session_topic_shift') {
+        for (const [, entry] of sessionEntries) {
+          entry.lastUpdateTime = now;
+          handleSessionTopicShiftEvent(entry, event);
+          entry.elapsedMs = now - entry.startTime;
+          this.cacheProgressContextSnapshot(entry);
+        }
+        return;
+      }
       if (eventType === 'waiting_for_user') {
         for (const [, entry] of sessionEntries) {
           entry.lastUpdateTime = now;

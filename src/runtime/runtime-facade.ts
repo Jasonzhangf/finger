@@ -678,6 +678,19 @@ export class RuntimeFacade {
                   if (!replaced) {
                     log.warn('[RuntimeFacade] replaceMessages failed, session may not exist', { sessionId });
                   }
+                  // 发送 session_topic_shift 事件（用于清除旧 digest）
+                  void this.eventBus.emit({
+                    type: 'session_topic_shift',
+                    sessionId,
+                    agentId,
+                    timestamp: new Date().toISOString(),
+                    payload: {
+                      trigger: rebuildDecision.trigger,
+                      confidence: rebuildDecision.confidence || 0,
+                      digestCount: rebuildResult.digestCount,
+                      totalTokens: rebuildResult.totalTokens,
+                    },
+                  });
                   
                   // 删除临时态 session_messages，不再使用
                   runtimeContextRaw.working_set_mode = 'recent_after_compact';

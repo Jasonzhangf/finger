@@ -4,6 +4,7 @@ import { InternalTool, createToolExecutionContext, type ToolExecutionContext } f
 import { logger } from '../../core/logger.js';
 import { FINGER_PATHS } from '../../core/finger-paths.js';
 import { writeFileAtomicSync } from '../../core/atomic-write.js';
+import { syncTeamStatusFromPlan, type PlanSummary } from '../../common/team-status-state.js';
 import {
   collectMaskedToolInputRecords,
   readMaskedArray,
