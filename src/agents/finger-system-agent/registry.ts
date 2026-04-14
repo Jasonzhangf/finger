@@ -10,6 +10,7 @@ import { FINGER_PATHS } from '../../core/finger-paths.js';
 import { logger } from '../../core/logger.js';
 import { createConsoleLikeLogger } from '../../core/logger/console-like.js';
 import { normalizeProjectPathCanonical } from '../../common/path-normalize.js';
+import { removeTeamAgentStatus } from '../../common/team-status-state.js';
 
 const clog = createConsoleLikeLogger('Registry');
 
@@ -193,8 +194,14 @@ export async function registerAgent(agentInfo: AgentInfo): Promise<void> {
  */
 export async function unregisterAgent(projectId: string): Promise<void> {
   const registry = await loadRegistry();
+  const agentInfo = registry.agents[projectId];
   delete registry.agents[projectId];
   await saveRegistry(registry);
+  
+  // 清理 team.status 中的记录
+  if (agentInfo?.agentId) {
+    removeTeamAgentStatus(agentInfo.agentId);
+  }
 }
 
 /**
