@@ -926,28 +926,19 @@ const DIGEST_VERBOSE_OUTPUT_TOOLS = new Set([
 
 // Digest 只保留"重要"的工具调用，过滤掉无意义的查询/读取等操作
 // 这样可以避免 Compact 后的历史包含无效工具调用（如 cat /dev/null）导致循环
+// 精简原则：只保留对项目有帮助的高价值信息
 const DIGEST_IMPORTANT_TOOLS = new Set([
   // 任务派发与协调
   'agent.dispatch',
   'agent.capabilities',
 
-  // 任务规划与完成
+  // 任务规划与完成（高价值）
   'update_plan',
   'reasoning.stop',
   'report-task-completion',
 
   // 代码修改
   'apply_patch',
-
-  // 邮箱与消息
-  'mailbox.status',
-  'mailbox.dequeue',
-  'mailbox.enqueue',
-
-  // 上下文与Ledger
-  'context_builder.rebuild',
-  'context_ledger.digest',
-  'context_ledger.query',
 
   // 项目管理
   'project.task.status',
@@ -966,22 +957,17 @@ function isImportantToolForDigest(toolName: string): boolean {
   // 1. Exact match whitelist
   if (DIGEST_IMPORTANT_TOOLS.has(toolName)) return true;
 
-  // 2. Prefix match for wildcard patterns (e.g., mailbox.*, context_ledger.*)
-  const importantPrefixes = ['mailbox.', 'context_ledger.', 'project.', 'agent.collab.', 'agent.', 'context_builder.'];
+  // 2. Prefix match for wildcard patterns
+  const importantPrefixes = ['project.', 'agent.collab.', 'agent.dispatch'];
   for (const prefix of importantPrefixes) {
     if (toolName.startsWith(prefix)) return true;
   }
 
   // 3. Compatibility aliases
   const compatAliases: Record<string, string> = {
-    'exec': 'command.exec',
-    'shell': 'command.exec',
     'patch': 'apply_patch',
     'dispatch': 'agent.dispatch',
     'capabilities': 'agent.capabilities',
-    'rebuild': 'context_builder.rebuild',
-    'digest': 'context_ledger.digest',
-    'query': 'context_ledger.query',
   };
   const canonicalName = compatAliases[toolName];
   if (canonicalName && DIGEST_IMPORTANT_TOOLS.has(canonicalName)) return true;
