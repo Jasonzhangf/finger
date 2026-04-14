@@ -224,6 +224,13 @@ export const updatePlanTool: InternalTool<unknown, UpdatePlanOutput> = {
     const result = handleV2Action(parsed.input, context, now);
     if (result.ok && isWriteV2Action(parsed.input.action)) {
       persistStore();
+
+      // Sync planSummary to team.status
+      if (result.projectPath && result.items) {
+        const planSummary = computePlanSummary(result.items);
+        const agentId = context.agentId || 'finger-system-agent';
+        syncTeamStatusFromPlan(agentId, result.projectPath, undefined, planSummary);
+      }
     }
     lastPlanSnapshot = result;
     return result;
@@ -1704,4 +1711,34 @@ function deepClone<T>(value: T): T {
 
 function isRecord(value: unknown): value is Record<string, any> {
   return typeof value === 'object' && value !== null;
+}
+
+/**
+ * Compute planSummary from items for team.status sync
+ */
+function computePlanSummary(items: import('./codex-update-plan-tool.js').PlanItemV2[] | undefined): import('../../common/team-status-state.js').PlanSummary {
+  if (!items || items.length === 0) {
+    return {
+      total: 0,
+      completed: 0,
+      inProgress: 0,
+      blocked: 0,
+      updatedAt: new Date().toISOString(),
+    };
+  }
+
+  const total = items.length;
+  const completed = items.filter(i => i.status === 'done' || i.status === 'closed').length;
+  const inProgress = items.filter(i => i.status === 'in_progress').length;
+  const blocked = items.filter(i => i.status === 'blocked').length;
+  const currentStep = items.find(i => i.status === 'in_progress')?.title;
+
+  return {
+    total,
+    completed,
+    inProgress,
+    blocked,
+    currentStep,
+    updatedAt: new Date().toISOString(),
+  };
 }
