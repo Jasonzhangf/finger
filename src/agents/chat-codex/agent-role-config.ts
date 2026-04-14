@@ -69,6 +69,7 @@ const PROJECT_TASK_MANAGEMENT_TOOLS = [
 ] as const;
 
 const SYSTEM_ONLY_CONTROL_TOOLS = [
+  'team.status',
   'reasoning.stop_policy',
 ] as const;
 
