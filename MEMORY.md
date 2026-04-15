@@ -216,3 +216,10 @@
 - 本地 skill 必须是 execution adapter，不得扩张成 handbook
 - 不得在 skill 中保存易过期静态事实（计数、临时路径、旧命名）
 - context-history 对外唯一名保持 `context_history.rebuild`
+
+### 2026-04-15: 本地测试必须闭环，自内而外直到上线验证
+
+**规则**：
+- 每次功能开发和修复都必须按 **自内而外分层测试** 执行：unit → integration → orchestration/regression → local E2E → 真实运行/上线验证
+- 只通过本地测试不算结束；必须通过最高适用层级的真实运行路径验证
+- 对渠道、runtime、部署链路、外部接口相关修改，最终必须补一轮真实环境/上线验证证据

@@ -148,6 +148,19 @@ Choose the smallest set that proves the change.
 
 ## 4) Minimal validation matrix
 
+### Closure rule: local testing must be closed-loop
+
+For every feature and bug fix, testing must proceed **inside-out** and end with a real final verification:
+
+1. inner logic / unit
+2. module coordination / integration
+3. workflow / orchestration regression
+4. user-facing local E2E when applicable
+5. **final online / deployed / real-runtime verification**
+
+Work is **not done** when only local unit/integration tests pass.  
+It is done only after the highest applicable real execution path is verified successfully.
+
 ### A. Localized logic change
 Run targeted unit tests first:
 
@@ -193,6 +206,8 @@ pnpm vitest run tests/unit/server/channel-*.test.ts tests/unit/server/dispatch-s
 pnpm vitest run tests/integration/bridges/*.test.ts
 pnpm vitest run tests/e2e/gateway-bridge-*.test.ts
 ```
+
+If the change will be deployed or affects a real runtime path, add the final deployed/online verification step before declaring completion.
 
 ### F. Type gate
 Use the smallest suitable TS gate for the change. If backend build is already run, do not duplicate a weaker TS-only gate.
@@ -255,6 +270,7 @@ Forbidden patterns for this repo:
 - duplicating persistence truth in orchestration or bridges
 - adding fallback branches to hide a real lifecycle / dispatch error
 - claiming “done” with only happy-path tests
+- stopping at local verification without final real-runtime / online validation
 - reporting completion without command output or direct evidence
 - introducing a second compact / rebuild / session-recovery implementation
 - keeping obsolete names or commands in the skill after the codebase has moved on
