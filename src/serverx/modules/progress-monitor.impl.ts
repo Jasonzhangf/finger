@@ -1025,6 +1025,21 @@ export class ProgressMonitor {
 
     // 为每个活跃 session 生成并推送进度报告
     for (const p of activeProgress) {
+      // 仅在 progressStore 缺失或上下文占用率不一致时输出诊断，避免在循环中高频打 info。
+      const psEntry = progressStore.get(p.sessionId, p.agentId);
+      const psContextUsagePercent = psEntry?.latestKernelMetadata?.context_usage_percent;
+      const hasContextUsageMismatch = psEntry && psContextUsagePercent !== p.contextUsagePercent;
+      if (p.sessionId && (!psEntry || hasContextUsageMismatch)) {
+        log.debug('[ProgressMonitor] progressStore context diagnostic', {
+          sessionId: p.sessionId,
+          agentId: p.agentId,
+          hasPsEntry: !!psEntry,
+          psContextUsagePercent,
+          pContextUsagePercent: p.contextUsagePercent,
+          pEstimatedTokens: p.estimatedTokensInContextWindow,
+          pMaxInputTokens: p.maxInputTokens,
+        });
+      }
       // Keep elapsed clock moving even when no new events are emitted.
       p.elapsedMs = Math.max(0, now - p.startTime);
       const reportKey = this.buildReportKey(p);
