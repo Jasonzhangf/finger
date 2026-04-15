@@ -33,6 +33,7 @@ import {
   resolveControlBlockPolicy,
   shouldHoldStopByControlBlock,
 } from '../../common/control-block.js';
+import { updateRuntimeStatus } from '../../common/team-status-state.js';
 import {
   AUTONOMOUS_WORK_SECTION,
   FUNCTION_RESULT_CLEARING_SECTION,
@@ -998,6 +999,16 @@ export class ProcessChatCodexRunner implements ChatCodexRunner {
     session.activeTurn = null;
     activeTurn.resolve(result);
 
+    // 更新 team status 为 idle
+    const resolveAgentId = typeof result.kernelMetadata?.contextLedgerAgentId === 'string'
+      ? result.kernelMetadata.contextLedgerAgentId
+      : 'finger-project-agent';
+    try {
+      updateRuntimeStatus({ agentId: resolveAgentId, runtimeStatus: 'idle' });
+    } catch (e) {
+      chatCodexLog.warn('Failed to update team status to idle', { agentId: resolveAgentId, error: e });
+    }
+
     // 发送 ProgressUpdateEvent 到 ProgressStore（唯一真源）
     chatCodexLog.info('resolveActiveTurn called', { sessionId: session.sessionId, hasKernelMetadata: !!result.kernelMetadata, input_tokens: result.kernelMetadata?.input_tokens, context_usage_percent: result.kernelMetadata?.context_usage_percent });
     if (result.kernelMetadata && session.sessionId) {
@@ -1186,6 +1197,16 @@ export function createChatCodexModule(
   const kernelRunner: KernelAgentRunner = {
     runTurn: async (text: string, inputItems?: KernelInputItem[], context?: KernelRunContext) => {
       const resolvedInputItems = inputItems ?? parseKernelInputItems(context?.metadata);
+
+      // 更新 team status 为 running
+      const runTurnAgentId = parseOptionalString(context?.metadata?.contextLedgerAgentId)
+        ?? parseOptionalString(context?.metadata?.agentId)
+        ?? 'finger-project-agent';
+      try {
+        updateRuntimeStatus({ agentId: runTurnAgentId, runtimeStatus: 'running' });
+      } catch (e) {
+        chatCodexLog.warn('Failed to update team status to running', { agentId: runTurnAgentId, error: e });
+      }
       const normalizedInputItems = normalizeKernelInputItems(resolvedInputItems, text);
       const sessionId = context?.sessionId ?? 'unknown';
       const toolSpecifications = Array.isArray(context?.tools) && context.tools.every((item) => isToolSpecificationLike(item))
