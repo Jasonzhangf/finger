@@ -52,11 +52,11 @@ export interface WrappedStatusUpdate {
     subtitle?: string;
     icon?: string;
     level: SubscriptionLevel;
-  teamStatus?: TeamAgentStatus[];  // Optional: team status for observability
-
   };
+  teamStatus?: TeamAgentStatus[];  // Optional: team status for observability
 }
 
 export const KEY_STATE_CHANGES = ['completed', 'failed', 'paused', 'waiting'];
 
 export type { ChannelBridgeEnvelope };
+export type { TeamAgentStatus } from '../../common/team-status-state.js';

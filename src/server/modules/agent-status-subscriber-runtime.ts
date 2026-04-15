@@ -21,6 +21,7 @@ import { sanitizeUserFacingStatusTextWithOptions } from './agent-status-subscrib
 import type {
   SessionEnvelopeMapping,
   WrappedStatusUpdate,
+  TeamAgentStatus,
 } from './agent-status-subscriber-types.js';
 import { logger } from '../../core/logger.js';
 import { routeToOutputWithRecovery } from './channel-delivery-recovery.js';
@@ -56,6 +57,23 @@ function joinUniqueLines(parts: Array<string | undefined>): string {
     out.push(text);
   }
   return out.join('\n');
+}
+
+
+/**
+ * Build team status summary for display
+ */
+function buildTeamStatusSummary(teamStatus?: TeamAgentStatus[]): string | undefined {
+  if (!teamStatus || teamStatus.length === 0) return undefined;
+  
+  const statusLines: string[] = ['👥 Team Status'];
+  for (const agent of teamStatus) {
+    const statusIcon = agent.runtimeStatus === 'running' ? '🔄' 
+      : agent.runtimeStatus === 'idle' ? '💤' 
+      : '⏸️';
+    statusLines.push(`${statusIcon} ${agent.agentId} ${agent.runtimeStatus}`);
+  }
+  return statusLines.join('\n');
 }
 
 function resolveChannelDisplaySettings(
@@ -259,9 +277,12 @@ export async function sendStatusUpdate(
         },
       };
 
+      const teamStatusSummary = buildTeamStatusSummary(statusUpdate.teamStatus);
+
       const text = joinUniqueLines([
         statusUpdate.display.title,
         statusUpdate.status.summary,
+        teamStatusSummary,
         statusUpdate.display.subtitle,
       ]);
       const displayText = applyContextDisplayMode(text, displaySettings.context);
