@@ -125,7 +125,7 @@ function isHeartbeatLikeStatusUpdate(statusUpdate: WrappedStatusUpdate): boolean
 
 function applyContextDisplayMode(text: string, modeRaw: ContextDisplayMode): string {
   const segments = text
-    .split(/(?=📊|👤|🗂|🤖|📬|✅|❌|⏳|🧠|🧩|🧪)/g)
+    .split(/(?=📊|👤|👥|🗂|🤖|📬|✅|❌|⏳|🧠|🧩|🧪)/g)
     .map((item) => item.trim())
     .filter((item) => item.length > 0);
   const mode: ContextDisplayMode = modeRaw === 'on' ? 'simple' : modeRaw;

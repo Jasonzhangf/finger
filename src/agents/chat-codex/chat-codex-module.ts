@@ -219,6 +219,7 @@ export interface ChatCodexRunContext {
   tools?: ChatCodexToolSpecification[];
   toolExecution?: ChatCodexToolExecutionConfig;
   onKernelEvent?: (event: ChatCodexKernelEvent) => void;
+  contextBreakdownSnapshot?: ContextBreakdownSnapshot;
 }
 
 export type KernelInputItem =
@@ -345,6 +346,7 @@ interface ActiveKernelTurn {
   settled: boolean;
   seenSessionConfigured: boolean;
   onKernelEvent?: (event: ChatCodexKernelEvent) => void;
+  contextBreakdownSnapshot?: ContextBreakdownSnapshot;
 }
 
 interface KernelSessionProcess {
