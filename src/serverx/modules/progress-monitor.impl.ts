@@ -52,6 +52,7 @@ import {
 import { getExecutionLifecycleState, type ExecutionLifecycleState } from '../../server/modules/execution-lifecycle.js';
 
 const log = logger.module('ProgressMonitor');
+import { progressStore } from '../../server/modules/progress/index.js';
 export type {
   ProgressMonitorCallbacks,
   ProgressMonitorConfig,
@@ -1189,7 +1190,7 @@ export class ProgressMonitor {
       estimatedTokensInContextWindow: p.estimatedTokensInContextWindow,
       maxInputTokens: p.maxInputTokens,
       lastContextEvent: includeContextEvent ? p.lastContextEvent : undefined,
-      contextBreakdown: p.contextBreakdown,
+      contextBreakdown: progressStore.get(p.sessionId, p.agentId)?.contextBreakdown ?? p.contextBreakdown,
       contextBreakdownMode: this.config.contextBreakdownMode,
       controlTags: p.controlTags,
       controlHookNames: p.controlHookNames,
