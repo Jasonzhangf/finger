@@ -38,9 +38,8 @@ describe('tool compatibility aliases', () => {
     expect(candidates).toContain('project.task.status');
   });
 
-  it('resolves patch legacy aliases without exposing them as canonical specs', () => {
-    const candidates = buildToolResolutionCandidates('apply_patch');
-    expect(candidates).toContain('apply_patch');
+  it('keeps canonical patch tool spec unchanged', () => {
+    const candidates = buildToolResolutionCandidates('patch');
     expect(candidates).toContain('patch');
 
     const specs = augmentToolSpecificationsWithCompatAliases([

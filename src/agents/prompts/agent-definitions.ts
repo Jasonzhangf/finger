@@ -52,7 +52,6 @@ export const verifierAgentDefinition: AgentPromptDefinition = {
   whenToUse: '当需要独立验证实现变更的正确性时使用。Verifier 与实现者 session 隔离，以对抗心态审查代码。适用于 3+ 文件变更、后端/API 变更、基础设施变更。',
   disallowedTools: [
     'patch',
-    'apply_patch',
     'write',
     'writeFile',
     'exec_command_sudo',
@@ -289,7 +288,7 @@ const EXPLORER_SECTIONS: PromptSection[] = [
   {
     name: 'explorer-tools',
     compute: () => `可用工具：只读工具（grep, rg, find, cat, head, ls, 文件搜索）
-禁止工具：所有写操作（patch/apply_patch, write, sed -i, 等）`,
+禁止工具：所有写操作（patch, write, sed -i, 等）`,
     cacheBreak: false,
   },
 ]
@@ -299,7 +298,6 @@ export const explorerAgentDefinition: AgentPromptDefinition = {
   whenToUse: '当代码需要搜索文件、查找符号定义、分析引用关系、理解代码结构时使用。Explorer 只做只读操作，不修改任何文件。',
   disallowedTools: [
     'patch',
-    'apply_patch',
     'write',
     'writeFile',
     'exec_command_sudo',
@@ -343,7 +341,7 @@ const PLANNER_SECTIONS: PromptSection[] = [
   {
     name: 'planner-tools',
     compute: () => `可用工具：只读工具（grep, rg, find, cat, head, ls, 文件搜索）
-禁止工具：所有写操作（patch/apply_patch, write, sed -i, 等）`,
+禁止工具：所有写操作（patch, write, sed -i, 等）`,
     cacheBreak: false,
   },
 ]
@@ -353,7 +351,6 @@ export const plannerAgentDefinition: AgentPromptDefinition = {
   whenToUse: '当需要将复杂任务拆解为可执行步骤、设计实现方案、评估技术风险时使用。Planner 只做规划，不直接实现代码。',
   disallowedTools: [
     'patch',
-    'apply_patch',
     'write',
     'writeFile',
     'exec_command_sudo',

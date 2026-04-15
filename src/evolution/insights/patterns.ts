@@ -203,7 +203,7 @@ function generateFailureRecommendation(text: string): string {
   if (/timeout|timed?\s*out/i.test(text)) {
     return 'Add timeout guards and fallback logic for long-running operations';
   }
-  if (/apply_patch|patch.*fail/i.test(text)) {
+  if (/patch.*fail/i.test(text)) {
     return 'Verify file exists and content matches before patching';
   }
   return `Review and add guard for: ${text.slice(0, 80)}`;

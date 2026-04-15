@@ -966,9 +966,8 @@ function isImportantToolForDigest(toolName: string): boolean {
 
   // 3. Compatibility aliases
   const compatAliases: Record<string, string> = {
-    'apply_patch': 'patch',
-    'dispatch': 'agent.dispatch',
-    'capabilities': 'agent.capabilities',
+    dispatch: 'agent.dispatch',
+    capabilities: 'agent.capabilities',
   };
   const canonicalName = compatAliases[toolName];
   if (canonicalName && DIGEST_IMPORTANT_TOOLS.has(canonicalName)) return true;

@@ -1,18 +1,15 @@
-import { existsSync, accessSync, constants as fsConstants, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'fs';
+import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'fs';
 import path from 'path';
-import { spawnSync } from 'child_process';
 import { InternalTool, ToolExecutionContext } from './types.js';
 
 const DEFAULT_TIMEOUT_MS = 30_000;
-const PATCH_TOOL_NAME = 'patch';
-const LEGACY_APPLY_PATCH_TOOL_NAME = 'apply_patch';
 
-interface ApplyPatchInput {
-  input: string;
+interface PatchInput {
+  patch: string;
   timeout_ms?: number;
 }
 
-export interface ApplyPatchOutput {
+export interface PatchOutput {
   ok: boolean;
   exitCode: number;
   signal: NodeJS.Signals | null;
@@ -23,11 +20,6 @@ export interface ApplyPatchOutput {
   cwd: string;
   timedOut: boolean;
   durationMs: number;
-}
-
-interface ApplyPatchCommandDescriptor {
-  commandArrayPrefix: string[];
-  cwd: string;
 }
 
 interface PatchOpAdd {
@@ -51,29 +43,28 @@ interface PatchOpUpdate {
 
 type PatchOp = PatchOpAdd | PatchOpDelete | PatchOpUpdate;
 
-export const applyPatchTool: InternalTool<unknown, ApplyPatchOutput> = {
-  name: PATCH_TOOL_NAME,
+export const patchTool: InternalTool<unknown, PatchOutput> = {
+  name: 'patch',
   executionModel: 'execution',
   description:
-    'Use the patch tool to edit files. Legacy apply_patch is accepted as a compatibility alias. Do not call patch through exec_command for file modifications.',
+    'Use the patch tool to edit files. Do not call patch through exec_command for file modifications.',
   inputSchema: {
     type: 'object',
     properties: {
-      input: { type: 'string', description: 'Patch text in Finger patch format.' },
-      patch: { type: 'string', description: 'Compatibility alias for input. Patch text in Finger patch format.' },
+      patch: { type: 'string', description: 'Patch text in Finger patch format.' },
       timeout_ms: { type: 'number' },
     },
-    anyOf: [{ required: ['input'] }, { required: ['patch'] }],
+    required: ['patch'],
     additionalProperties: false,
   },
-  execute: async (rawInput: unknown, context: ToolExecutionContext): Promise<ApplyPatchOutput> => {
-    const input = parseApplyPatchInput(rawInput);
+  execute: async (rawInput: unknown, context: ToolExecutionContext): Promise<PatchOutput> => {
+    const input = parsePatchInput(rawInput);
     const timeoutMs = typeof input.timeout_ms === 'number' && input.timeout_ms > 0
       ? Math.floor(input.timeout_ms)
       : DEFAULT_TIMEOUT_MS;
     const startedAt = Date.now();
     const timedOut = false;
-    const ops = parseApplyPatchOps(input.input);
+    const ops = parsePatchOps(input.patch);
     applyPatchOps(ops, context.cwd);
     const durationMs = Date.now() - startedAt;
     const summary = formatPatchSummary(ops);
@@ -93,49 +84,17 @@ export const applyPatchTool: InternalTool<unknown, ApplyPatchOutput> = {
   },
 };
 
-export function resolveApplyPatchCommand(defaultCwd: string): ApplyPatchCommandDescriptor | null {
-  const envBin = process.env.FINGER_CODEX_PATCH_BIN || process.env.FINGER_CODEX_APPLY_PATCH_BIN;
-  if (envBin && envBin.trim().length > 0) {
-    const resolved = envBin.trim();
-    if (isExecutableFile(resolved) || isCommandAvailable(resolved)) {
-      return {
-        commandArrayPrefix: [resolved],
-        cwd: defaultCwd,
-      };
-    }
-  }
-
-  if (isCommandAvailable(LEGACY_APPLY_PATCH_TOOL_NAME)) {
-    return {
-      commandArrayPrefix: [LEGACY_APPLY_PATCH_TOOL_NAME],
-      cwd: defaultCwd,
-    };
-  }
-
-  return null;
-}
-
-function parseApplyPatchInput(rawInput: unknown): ApplyPatchInput {
-  if (typeof rawInput === 'string' && rawInput.trim().length > 0) {
-    return { input: rawInput };
-  }
-
+function parsePatchInput(rawInput: unknown): PatchInput {
   if (!isRecord(rawInput)) {
-    throw new Error('patch input must be an object or non-empty string');
+    throw new Error('patch input must be an object');
   }
 
-  const patchText = typeof rawInput.input === 'string' && rawInput.input.trim().length > 0
-    ? rawInput.input
-    : typeof rawInput.patch === 'string' && rawInput.patch.trim().length > 0
-      ? rawInput.patch
-      : '';
-
-  if (!patchText) {
-    throw new Error('patch input must provide a non-empty input or patch string');
+  if (typeof rawInput.patch !== 'string' || rawInput.patch.trim().length === 0) {
+    throw new Error('patch input.patch must be a non-empty string');
   }
 
-  const parsed: ApplyPatchInput = {
-    input: patchText,
+  const parsed: PatchInput = {
+    patch: rawInput.patch,
   };
 
   if (typeof rawInput.timeout_ms === 'number' && Number.isFinite(rawInput.timeout_ms)) {
@@ -145,7 +104,7 @@ function parseApplyPatchInput(rawInput: unknown): ApplyPatchInput {
   return parsed;
 }
 
-function parseApplyPatchOps(input: string): PatchOp[] {
+function parsePatchOps(input: string): PatchOp[] {
   const normalized = input.replace(/\r\n/g, '\n');
   const lines = normalized.split('\n');
   if (lines.length === 0 || lines[0].trim() !== '*** Begin Patch') {
@@ -227,9 +186,6 @@ function parseApplyPatchOps(input: string): PatchOp[] {
           continue;
         }
 
-        // Compatibility repair for loose model output:
-        // some models emit raw lines after "@@" without patch prefixes.
-        // We only repair shape (prefix '+' as add lines), preserving textual content.
         repairedLooseContent = true;
         if (!sawHunkHeader) {
           bodyLines.push('@@');
@@ -325,13 +281,11 @@ function applyPatchOps(ops: PatchOp[], cwd: string): void {
 }
 
 function resolvePatchPath(cwd: string, filePath: string): string {
-  const resolved = path.resolve(cwd, filePath);
-  return resolved;
+  return path.resolve(cwd, filePath);
 }
 
 function ensureParentDir(filePath: string): void {
-  const parent = path.dirname(filePath);
-  mkdirSync(parent, { recursive: true });
+  mkdirSync(path.dirname(filePath), { recursive: true });
 }
 
 function splitFileLines(content: string): string[] {
@@ -390,26 +344,6 @@ function formatPatchSummary(ops: PatchOp[]): string {
   return rows.join('\n');
 }
 
-function isCommandAvailable(command: string): boolean {
-  if (path.isAbsolute(command)) {
-    return isExecutableFile(command);
-  }
-  const result = spawnSync('which', [command], { stdio: 'ignore' });
-  return result.status === 0;
-}
-
-function isExecutableFile(filePath: string): boolean {
-  try {
-    if (!existsSync(filePath)) return false;
-    accessSync(filePath, fsConstants.X_OK);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null;
 }
-
-export const patchTool = applyPatchTool;

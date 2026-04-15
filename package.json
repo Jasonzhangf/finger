@@ -7,7 +7,7 @@
     "myfinger": "./dist/cli/index.js",
     "finger-gateway-bridge": "./dist/cli/finger-gateway-bridge.js",
     "finger-config": "./dist/cli/finger-config.js",
-    "apply_patch": "./dist/cli/apply-patch.js"
+    "patch": "./dist/cli/patch.js"
   },
   "type": "module",
   "scripts": {

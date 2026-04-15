@@ -2,15 +2,15 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import path from 'path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { parseApplyPatchCliArgs, runApplyPatchCli } from '../../../src/cli/apply-patch.js';
+import { parsePatchCliArgs, runPatchCli } from '../../../src/cli/patch.js';
 
-describe('apply_patch CLI', () => {
+describe('patch CLI', () => {
   afterEach(() => {
     vi.restoreAllMocks();
   });
 
   it('parses cli args with cwd and timeout', () => {
-    const parsed = parseApplyPatchCliArgs([
+    const parsed = parsePatchCliArgs([
       '--cwd',
       './tmp',
       '--timeout-ms',
@@ -24,7 +24,7 @@ describe('apply_patch CLI', () => {
   });
 
   it('applies patch from argument text', async () => {
-    const dir = mkdtempSync(path.join(tmpdir(), 'finger-apply-patch-cli-arg-'));
+    const dir = mkdtempSync(path.join(tmpdir(), 'finger-patch-cli-arg-'));
     try {
       const stdoutSpy = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
       const stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
@@ -35,7 +35,7 @@ describe('apply_patch CLI', () => {
         '*** End Patch',
       ].join('\n');
 
-      const code = await runApplyPatchCli(['--cwd', dir, patch]);
+      const code = await runPatchCli(['--cwd', dir, patch]);
 
       expect(code).toBe(0);
       expect(stderrSpy).not.toHaveBeenCalled();
@@ -47,7 +47,7 @@ describe('apply_patch CLI', () => {
   });
 
   it('applies patch from stdin text when no patch arg is provided', async () => {
-    const dir = mkdtempSync(path.join(tmpdir(), 'finger-apply-patch-cli-stdin-'));
+    const dir = mkdtempSync(path.join(tmpdir(), 'finger-patch-cli-stdin-'));
     try {
       writeFileSync(path.join(dir, 'note.txt'), 'line1\nline2\n', 'utf-8');
       vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
@@ -62,7 +62,7 @@ describe('apply_patch CLI', () => {
         '*** End Patch',
       ].join('\n');
 
-      const code = await runApplyPatchCli(['--cwd', dir], patch);
+      const code = await runPatchCli(['--cwd', dir], patch);
 
       expect(code).toBe(0);
       expect(stderrSpy).not.toHaveBeenCalled();
@@ -76,9 +76,9 @@ describe('apply_patch CLI', () => {
     vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
     const stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
 
-    const code = await runApplyPatchCli([]);
+    const code = await runPatchCli([]);
 
     expect(code).toBe(2);
-    expect(stderrSpy).toHaveBeenCalled();
+    expect(stderrSpy).toHaveBeenCalledWith('patch: patch text is required (argument or stdin)\n');
   });
 });

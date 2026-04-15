@@ -35,7 +35,7 @@ const mockEntries: LearningEntry[] = [
   },
   {
     timestamp: new Date('2026-04-04T10:00:00Z'),
-    successes: ['Used apply_patch directly'],
+    successes: ['Used patch directly'],
     failures: ['Tool exec_command missing'],
     tags: ['patch', 'tool-availability'],
     toolUsage: [],
@@ -222,7 +222,7 @@ describe('extractToolUsageFromEvents', () => {
       { id: 'e1', timestamp: new Date().toISOString(), type: 'tool_call', sessionId: 's1', agentId: 'a1', data: { tool: 'exec_command', status: 'success' } },
       { id: 'e2', timestamp: new Date().toISOString(), type: 'tool_call', sessionId: 's1', agentId: 'a1', data: { tool: 'exec_command', status: 'success' } },
       { id: 'e3', timestamp: new Date().toISOString(), type: 'tool_call', sessionId: 's1', agentId: 'a1', data: { tool: 'exec_command', status: 'failure' } },
-      { id: 'e4', timestamp: new Date().toISOString(), type: 'tool_call', sessionId: 's1', agentId: 'a1', data: { tool: 'apply_patch', status: 'success' } },
+      { id: 'e4', timestamp: new Date().toISOString(), type: 'tool_call', sessionId: 's1', agentId: 'a1', data: { tool: 'patch', status: 'success' } },
     ];
 
     const result = extractToolUsageFromEvents(events);
@@ -230,7 +230,7 @@ describe('extractToolUsageFromEvents', () => {
     expect(result.get('exec_command')?.total).toBe(3);
     expect(result.get('exec_command')?.success).toBe(2);
     expect(result.get('exec_command')?.fail).toBe(1);
-    expect(result.get('apply_patch')?.total).toBe(1);
+    expect(result.get('patch')?.total).toBe(1);
   });
 
   it('ignores non-tool events', () => {

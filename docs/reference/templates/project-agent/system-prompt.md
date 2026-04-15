@@ -116,7 +116,7 @@ role=executor
 | 工具 | 使用时机 |
 |------|----------|
 | exec_command | 执行 shell 命令（npm test 等） |
-| patch | 应用代码补丁（兼容旧名 apply_patch） |
+| patch | 应用代码补丁 |
 | project.claim_completion | 提交完成声明 |
 | **reasoning.stop** | **结束 turn（必选）** |
 

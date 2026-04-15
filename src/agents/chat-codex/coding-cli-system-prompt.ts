@@ -135,7 +135,7 @@ const CODEX_BASE_PROMPT = [
   "- Working on the repo(s) in the current environment is allowed, even if they are proprietary.",
   "- Analyzing code for vulnerabilities is allowed.",
   "- Showing user code and tool call details is allowed.",
-  "- Use the `patch` tool to edit files (legacy aliases `apply_patch` / `apply-patch` may be accepted for compatibility, but always prefer `patch`): {\"patch\":\"*** Begin Patch\\n*** Update File: path/to/file.py\\n@@ def example():\\n- pass\\n+ return 123\\n*** End Patch\"}",
+  "- Use the `patch` tool to edit files: {\"patch\":\"*** Begin Patch\\n*** Update File: path/to/file.py\\n@@ def example():\\n- pass\\n+ return 123\\n*** End Patch\"}",
   "",
   "If completing the user's task requires writing or modifying files, your code and final answer should follow these coding guidelines, though user instructions (i.e. AGENTS.md) may override these guidelines:",
   "",

@@ -286,19 +286,19 @@ export function extractToolDetail(toolName: string, params?: string, result?: st
     if (status) details.push(`status=${truncateInline(status, 12)}`);
     return attachError(details.join(' · '));
   }
- if (toolName === 'patch' || toolName === 'apply_patch' || toolName === 'internal_patch' || toolName === 'internal_apply_patch') {
-   const operations: string[] = [];
-   const raw = pickString(p.input, p.patch, params);
+  if (toolName === 'patch' || toolName === 'internal_patch') {
+    const operations: string[] = [];
+    const raw = pickString(p.input, p.patch, params);
     let hunkCount = 0;
     let addedLines = 0;
     let removedLines = 0;
-   if (raw) {
-     const addMatch = raw.match(/\*\*\* Add File:\s*(.+)/m);
-     const updateMatch = raw.match(/\*\*\* Update File:\s*(.+)/m);
-     const deleteMatch = raw.match(/\*\*\* Delete File:\s*(.+)/m);
-     if (addMatch) operations.push(`add:${truncateInline(addMatch[1].trim(), 60)}`);
-     if (updateMatch) operations.push(`update:${truncateInline(updateMatch[1].trim(), 60)}`);
-     if (deleteMatch) operations.push(`delete:${truncateInline(deleteMatch[1].trim(), 60)}`);
+    if (raw) {
+      const addMatch = raw.match(/\*\*\* Add File:\s*(.+)/m);
+      const updateMatch = raw.match(/\*\*\* Update File:\s*(.+)/m);
+      const deleteMatch = raw.match(/\*\*\* Delete File:\s*(.+)/m);
+      if (addMatch) operations.push(`add:${truncateInline(addMatch[1].trim(), 60)}`);
+      if (updateMatch) operations.push(`update:${truncateInline(updateMatch[1].trim(), 60)}`);
+      if (deleteMatch) operations.push(`delete:${truncateInline(deleteMatch[1].trim(), 60)}`);
       // Count hunks (lines starting with @@)
       const hunkMatches = raw.match(/@@.*@@/g);
       hunkCount = hunkMatches ? hunkMatches.length : 0;
@@ -310,14 +310,14 @@ export function extractToolDetail(toolName: string, params?: string, result?: st
           if (line.startsWith('-') && !line.startsWith('---')) removedLines++;
         }
       }
-   }
+    }
     const changeSummary = hunkCount > 0 ? `${hunkCount}hunk` : '';
     const lineSummary = addedLines > 0 || removedLines > 0 ? `+${addedLines}/-${removedLines}` : '';
     const detailParts = [operations.join(' · '), changeSummary, lineSummary].filter(Boolean);
     if (detailParts.length > 0) return attachError(detailParts.join(' · '));
-   const filePath = pickString(p.path, p.file_path, p.filePath);
-   if (filePath) return attachError(`file=${truncateInline(filePath, 80)}`);
-   return attachError('');
+    const filePath = pickString(p.path, p.file_path, p.filePath);
+    if (filePath) return attachError(`file=${truncateInline(filePath, 80)}`);
+    return attachError('');
  }
 
   return attachError('');

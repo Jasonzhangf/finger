@@ -259,7 +259,7 @@ export function parseToolSummary(toolName: string, input: unknown, output?: unkn
 } {
   const normalizedToolName = typeof toolName === 'string' ? toolName.trim().toLowerCase() : 'unknown';
   const payload = typeof input === 'object' && input !== null ? input as Record<string, unknown> : {};
-  if (normalizedToolName === 'patch' || normalizedToolName === 'apply_patch') {
+  if (normalizedToolName === 'patch') {
     const patchText = typeof payload.patch === 'string'
       ? payload.patch
       : typeof payload.input === 'string'

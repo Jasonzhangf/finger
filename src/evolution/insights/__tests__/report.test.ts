@@ -24,7 +24,7 @@ const mockInsights: UsageInsights = {
   ],
   toolUsageStats: [
     { tool: 'exec_command', totalCalls: 50, successRate: 0.9 },
-    { tool: 'apply_patch', totalCalls: 30, successRate: 0.8 },
+    { tool: 'patch', totalCalls: 30, successRate: 0.8 },
   ],
   userPreferences: [
     { pattern: 'tool-optimization', frequency: 10, confidence: 0.8 },

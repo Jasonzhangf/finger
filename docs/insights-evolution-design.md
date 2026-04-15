@@ -192,7 +192,7 @@ export class LearningExtractor {
     "使用 exec_command 并行查询多个文件 → 减少 60% 等待时间"
   ],
   "failures": [
-    "apply_patch 失败 → 文件路径不存在 → 先检查 file.exists() 再 patch"
+    "patch 失败 → 文件路径不存在 → 先检查 file.exists() 再 patch"
   ],
   "tags": ["tool-optimization", "error-pattern"]
 }

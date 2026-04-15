@@ -70,7 +70,7 @@ Examples:
 - `exec_command`
 - `write_stdin`
 - `unified_exec`
-- `patch` (legacy alias: `apply_patch`)
+- `patch`
 - `capability.*`
 
 ## Ledger-specific rule

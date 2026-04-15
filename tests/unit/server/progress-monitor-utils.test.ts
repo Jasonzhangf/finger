@@ -35,9 +35,8 @@ describe('progress-monitor-utils', () => {
       expect(classifyToolCall('web_search')).toBe('搜索');
     });
 
-    it('classifies patch/apply_patch as 读写', () => {
+    it('classifies patch as 读写', () => {
       expect(classifyToolCall('patch', { patch: '--- a/file.ts' })).toBe('读写');
-      expect(classifyToolCall('apply_patch', { patch: '--- a/file.ts' })).toBe('读写');
     });
 
     it('classifies agent.* as 工具', () => {
@@ -67,9 +66,8 @@ describe('progress-monitor-utils', () => {
   });
 
   describe('extractTargetFile', () => {
-    it('extracts file from patch/apply_patch', () => {
+    it('extracts file from patch', () => {
       expect(extractTargetFile('patch', { patch: '--- a/src/server/index.ts' })).toBe('src/server/index.ts');
-      expect(extractTargetFile('apply_patch', { patch: '--- a/src/server/index.ts' })).toBe('src/server/index.ts');
     });
 
     it('extracts file from cat command', () => {

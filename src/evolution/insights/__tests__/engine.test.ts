@@ -68,7 +68,7 @@ describe('InsightsEngine', () => {
     // Mock internal method by extracting learnings
     const events: LedgerEvent[] = [
       { id: 'e1', timestamp: new Date().toISOString(), type: 'tool_call', sessionId: 's1', agentId: 'a1', data: { tool: 'exec_command', status: 'success' } },
-      { id: 'e2', timestamp: new Date().toISOString(), type: 'tool_call', sessionId: 's1', agentId: 'a1', data: { tool: 'apply_patch', status: 'failure' } },
+      { id: 'e2', timestamp: new Date().toISOString(), type: 'tool_call', sessionId: 's1', agentId: 'a1', data: { tool: 'patch', status: 'failure' } },
     ];
 
     // Test analyze with empty ledger

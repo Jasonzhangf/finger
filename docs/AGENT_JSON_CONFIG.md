@@ -37,7 +37,7 @@
   },
   "tools": {
     "whitelist": ["file.read", "file.list", "bd.query"],
-    "blacklist": ["file.write", "shell.exec", "patch", "apply_patch"],
+    "blacklist": ["file.write", "shell.exec", "patch"],
     "authorizationRequired": ["shell.exec"]
   },
   "model": {

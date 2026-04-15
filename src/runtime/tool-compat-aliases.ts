@@ -37,7 +37,6 @@ const SPEC_SAFE_ALIAS_GROUPS = [
 
 const RESOLUTION_ONLY_ALIAS_GROUPS = [
   ['status', 'mailbox.status', 'heartbeat.status', 'project.task.status'],
-  ['patch', 'apply_patch', 'apply-patch', 'applypatch'],
 ] as const;
 
 const SPEC_SAFE_ALIAS_LOOKUP = buildExplicitAliasLookup(SPEC_SAFE_ALIAS_GROUPS);

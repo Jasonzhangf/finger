@@ -18,11 +18,11 @@ describe('Mempalace Bridge', () => {
     timestamp: new Date('2026-04-12T00:00:00Z'),
     sessionId: 'test-session-1',
     successes: ['Compiled successfully', 'Tests passed'],
-    failures: ['Initial apply_patch context mismatch'],
+    failures: ['Initial patch context mismatch'],
     tags: ['rust', 'evolution', 'mempalace'],
     toolUsage: [
       { tool: 'exec_command', status: 'success', args: '' },
-      { tool: 'apply_patch', status: 'failure', args: '' },
+      { tool: 'patch', status: 'failure', args: '' },
     ],
   };
 

@@ -3,18 +3,18 @@
 import { readFileSync, realpathSync } from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { applyPatchTool } from '../tools/internal/codex-apply-patch-tool.js';
+import { patchTool } from '../tools/internal/codex-patch-tool.js';
 import { createToolExecutionContext } from '../tools/internal/types.js';
 
-export interface ApplyPatchCliOptions {
+export interface PatchCliOptions {
   cwd: string;
   timeoutMs?: number;
   patchText?: string;
   help: boolean;
 }
 
-export function parseApplyPatchCliArgs(argv: string[]): ApplyPatchCliOptions {
-  const options: ApplyPatchCliOptions = {
+export function parsePatchCliArgs(argv: string[]): PatchCliOptions {
+  const options: PatchCliOptions = {
     cwd: process.cwd(),
     help: false,
   };
@@ -56,11 +56,11 @@ export function parseApplyPatchCliArgs(argv: string[]): ApplyPatchCliOptions {
 function printUsage(): void {
   process.stdout.write(
     [
-      'Usage: apply_patch [options] "<patch>"',
+      'Usage: patch [options] "<patch>"',
       '',
       'Options:',
       '  --cwd <path>         Apply patch relative to this directory (default: current cwd)',
-      '  --timeout-ms <ms>    Timeout passed to internal apply_patch tool',
+      '  --timeout-ms <ms>    Timeout passed to internal patch tool',
       '  -h, --help           Show this help',
       '',
       'You can also pipe patch text through stdin when no "<patch>" argument is provided.',
@@ -77,13 +77,13 @@ function readPatchFromStdin(): string {
   }
 }
 
-export async function runApplyPatchCli(
+export async function runPatchCli(
   argv: string[],
   stdinText?: string,
 ): Promise<number> {
-  let options: ApplyPatchCliOptions;
+  let options: PatchCliOptions;
   try {
-    options = parseApplyPatchCliArgs(argv);
+    options = parsePatchCliArgs(argv);
   } catch (error) {
     process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
     return 2;
@@ -97,14 +97,14 @@ export async function runApplyPatchCli(
   const patchText = options.patchText
     ?? (typeof stdinText === 'string' ? stdinText : readPatchFromStdin());
   if (!patchText || patchText.trim().length === 0) {
-    process.stderr.write('apply_patch: patch text is required (argument or stdin)\n');
+    process.stderr.write('patch: patch text is required (argument or stdin)\n');
     return 2;
   }
 
   try {
-    const result = await applyPatchTool.execute(
+    const result = await patchTool.execute(
       {
-        input: patchText,
+        patch: patchText,
         ...(typeof options.timeoutMs === 'number' ? { timeout_ms: options.timeoutMs } : {}),
       },
       createToolExecutionContext({ cwd: options.cwd }),
@@ -133,7 +133,7 @@ function isDirectExecution(): boolean {
 }
 
 if (isDirectExecution()) {
-  runApplyPatchCli(process.argv.slice(2)).then((code) => {
+  runPatchCli(process.argv.slice(2)).then((code) => {
     process.exit(code);
   }).catch((error) => {
     process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
