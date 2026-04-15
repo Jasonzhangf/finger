@@ -230,12 +230,7 @@ async function searchDigests(
       const allDigests = [...digestMessages, ...replacementHistory];
       for (const digest of allDigests) {
         // 简单相关性计算：关键词匹配
-        // 适配两种 digest 格式：digest_block messages 和 replacement_history
-        const topic = digest.topic || (digest.content_summary ? digest.content_summary.split('\n')[0] : '');
-        const tags = Array.isArray(digest.tags) ? digest.tags : [];
-        const request = digest.request || '';
-        const summary = digest.summary || digest.content_summary || '';
-        const text = [topic, ...tags, request, summary].join(' ');
+        const text = [digest.topic, ...digest.tags, digest.request, digest.summary].join(' ');
         const matchedKeywords = keywords.filter(k => text.toLowerCase().includes(k.toLowerCase()));
         const relevance = matchedKeywords.length / keywords.length;
         
