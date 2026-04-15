@@ -63,11 +63,12 @@ export class MailboxBlock extends BaseBlock {
 
   private messages: Map<string, MailboxMessage> = new Map();
   private nextSeq: number = 1;
-  private subscribers: Map<string, Set<(msg: MailboxMessage) => void>> = new Map();
-  private globalListeners: Set<() => void> = new Set();
-  private callbackIndex: Map<string, string> = new Map();
-  private seqIndex: Map<number, string> = new Map();
-  private storagePath?: string;
+ private subscribers: Map<string, Set<(msg: MailboxMessage) => void>> = new Map();
+ private globalListeners: Set<() => void> = new Set();
+ private callbackIndex: Map<string, string> = new Map();
+ private seqIndex: Map<number, string> = new Map();
+  private dispatchIdIndex: Map<string, string> = new Map();
+ private storagePath?: string;
 
   constructor(id: string, storagePath?: string) {
     super(id, 'mailbox');
@@ -119,8 +120,21 @@ export class MailboxBlock extends BaseBlock {
     }
   }
 
-  append(target: string, content: unknown, options?: Record<string, unknown>): { id: string; seq: number } {
-    const id = `msg-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+ append(target: string, content: unknown, options?: Record<string, unknown>): { id: string; seq: number } {
+    // 幂等检查：如果 content 中有 dispatchId，检查是否已存在
+    const dispatchId = (content as Record<string, unknown>)?.dispatchId as string | undefined;
+    if (dispatchId) {
+      const existingId = this.dispatchIdIndex.get(dispatchId);
+      if (existingId) {
+        const existing = this.messages.get(existingId);
+        if (existing) {
+          log.debug('[MailboxBlock] Duplicate dispatchId, returning existing message', { dispatchId, existingId });
+          return { id: existingId, seq: existing.seq };
+        }
+      }
+    }
+
+   const id = `msg-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     const seq = this.nextSeq++;
     const now = new Date().toISOString();
 
@@ -152,11 +166,16 @@ export class MailboxBlock extends BaseBlock {
 
     this.messages.set(id, message);
     this.seqIndex.set(seq, id);
-    if (message.callbackId) {
-      this.callbackIndex.set(message.callbackId, id);
+   if (message.callbackId) {
+     this.callbackIndex.set(message.callbackId, id);
+   }
+    // dispatchId 索引（用于幂等）
+    const dispatchId = (content as Record<string, unknown>)?.dispatchId as string | undefined;
+    if (dispatchId) {
+      this.dispatchIdIndex.set(dispatchId, id);
     }
 
-    this.updateState({
+   this.updateState({
       data: {
         messageCount: this.messages.size,
         currentSeq: this.nextSeq - 1,

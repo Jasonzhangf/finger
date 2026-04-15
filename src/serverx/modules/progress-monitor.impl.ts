@@ -276,7 +276,26 @@ export class ProgressMonitor {
         waitDetail: toolName,
       };
     }
+    // stalled 但仍有活动：区分低价值活动和真正的卡住
     if (stalled) {
+      // 检测是否有未完成的工具调用（即使是低价值的）
+      const hasAnyPendingTool = p.toolCallHistory.some((tool) => {
+        if (tool.success === true || tool.success === false) return false;
+        if (tool.result || tool.error) return false;
+        return true;
+      });
+
+      // 如果有任何 pending 工具，说明是外部等待（工具执行中），不是卡住
+      if (hasAnyPendingTool) {
+        return {
+          ...baseLifecycle,
+          waitLayer: 'external',
+          waitKind: 'tool',
+          waitDetail: '低价值工具执行中',
+        };
+      }
+
+      // 真正的 stalled：无 pending tool，无外部信号
       return {
         ...baseLifecycle,
         waitLayer: 'internal',

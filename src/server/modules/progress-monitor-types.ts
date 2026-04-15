@@ -134,5 +134,5 @@ export interface ProgressReport {
 }
 
 export interface ProgressMonitorCallbacks {
-  onProgressReport?: (report: ProgressReport) => Promise<void> | void;
+  onProgressReport?: (report: ProgressReport | ProgressReport[]) => Promise<void> | void;
 }

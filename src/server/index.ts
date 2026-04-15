@@ -370,23 +370,28 @@ logger.module('server').info('Heartbeat Scheduler started');
 
 // Start Progress Monitor
 const progressMonitor = new ProgressMonitor(globalEventBus, getAgentRuntimeDeps(), {
-  onProgressReport: async (report: ProgressReport) => {
-    await agentStatusSubscriber.sendProgressUpdate({
-      sessionId: report.sessionId,
-      agentId: report.agentId,
-      summary: report.summary,
-      progress: {
-        status: report.progress.status,
-        toolCallsCount: report.progress.toolCallsCount,
-        modelRoundsCount: report.progress.modelRoundsCount,
-        elapsedMs: report.progress.elapsedMs,
-        contextUsagePercent: report.progress.contextUsagePercent,
-        estimatedTokensInContextWindow: report.progress.estimatedTokensInContextWindow,
-        maxInputTokens: report.progress.maxInputTokens,
-        contextBreakdown: report.progress.contextBreakdown,
-      },
-      teamStatus: report.teamStatus,
-    });
+  onProgressReport: async (report: ProgressReport | ProgressReport[]) => {
+    // 处理多 worker 场景：report 可能是数组
+    const reports = Array.isArray(report) ? report : [report];
+    
+    for (const r of reports) {
+      await agentStatusSubscriber.sendProgressUpdate({
+        sessionId: r.sessionId,
+        agentId: r.agentId,
+        summary: r.summary,
+        progress: {
+          status: r.progress.status,
+          toolCallsCount: r.progress.toolCallsCount,
+          modelRoundsCount: r.progress.modelRoundsCount,
+          elapsedMs: r.progress.elapsedMs,
+          contextUsagePercent: r.progress.contextUsagePercent,
+          estimatedTokensInContextWindow: r.progress.estimatedTokensInContextWindow,
+          maxInputTokens: r.progress.maxInputTokens,
+          contextBreakdown: r.progress.contextBreakdown,
+        },
+        teamStatus: r.teamStatus,
+      });
+    }
   },
 });
 progressMonitor.start();
