@@ -1,7 +1,6 @@
 import { join } from 'path';
-import { getContextWindow, loadContextHistorySettings } from '../../core/user-settings.js';
 import { FINGER_PATHS } from '../../core/finger-paths.js';
-import { forceRebuild, tokenizeUserInput } from '../../runtime/context-history/index.js';
+import { forceRebuild, resolveContextHistoryBudgetInfo, tokenizeUserInput } from '../../runtime/context-history/index.js';
 import { hasSessionLock } from '../../runtime/context-history/lock.js';
 import { normalizeRootDirForAgent, resolveLedgerPath } from '../../runtime/context-ledger-memory-helpers.js';
 import type { SessionMessage } from '../../orchestration/session-types.js';
@@ -169,15 +168,11 @@ export const contextHistoryRebuildTool: InternalTool<unknown, ContextHistoryRebu
     }
 
     const agentId = (input.agent_id ?? context.agentId ?? 'finger-system-agent').trim();
-    const settings = loadContextHistorySettings();
-    const contextWindow = getContextWindow();
     const requestedBudget = [input.rebuild_budget, input.budget_tokens, input.target_budget]
       .find((value) => Number.isFinite(value) && (value as number) > 0);
-    const targetBudget = Number.isFinite(requestedBudget)
-      ? Math.max(1, Math.min(contextWindow, Math.floor(requestedBudget as number)))
-      : Number.isFinite(settings.historyBudgetTokens) && settings.historyBudgetTokens > 0
-        ? Math.floor(settings.historyBudgetTokens)
-        : Math.floor(contextWindow * settings.budgetRatio);
+    const targetBudget = resolveContextHistoryBudgetInfo(
+      typeof requestedBudget === 'number' ? requestedBudget : undefined,
+    ).targetBudget;
     const rootDir = normalizeRootDirForAgent(resolveRootDir(input, agentId, context), agentId);
     const sessionMessages = parseRuntimeSessionMessages(input._runtime_context);
     const prompt = resolvePrompt(input, sessionMessages);

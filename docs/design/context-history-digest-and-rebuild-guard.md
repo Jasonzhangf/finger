@@ -7,10 +7,11 @@
 
 1. **唯一出发点**：运行时历史只从 `Session.messages` 读取
 2. **唯一实现点**：`src/runtime/context-history/*`
-3. **唯一覆盖点**：`sessionManager.replaceMessages()`
-4. **唯一两种模式**：`overflow` / `topic`
-5. **禁止双实现**：任何模块不得再维护并行的 compact/rebuild/history builder 逻辑
-6. **禁止运行时 fallback 历史源**：`_cachedView` / indexed / on-demand / mempalace rebuild 都不得再充当 prompt 历史来源
+3. **唯一 runtime apply owner**：`src/runtime/context-history/runtime-integration.ts`
+4. **唯一底层覆盖点**：`sessionManager.replaceMessages()`
+5. **唯一两种模式**：`overflow` / `topic`
+6. **禁止双实现**：任何模块不得再维护并行的 compact/rebuild/history builder 逻辑
+7. **禁止运行时 fallback 历史源**：`_cachedView` / indexed / on-demand / mempalace rebuild 都不得再充当 prompt 历史来源
 
 ---
 
@@ -89,14 +90,14 @@ digest corpus
 - 判断是否要调用 rebuild
 - 传入参数
 - 接收结果
-- 覆盖 `Session.messages`
+- 调用统一 apply helper
 
 ---
 
 ## 7. 排障检查单
 
 若再次出现“上下文超限但没压缩”，优先检查：
-1. 是否命中了 `forceRebuild(..., 'overflow')`
-2. `replaceMessages()` 是否成功
+1. 是否命中了 `executeAndApplyContextHistoryRebuild(..., { mode: 'overflow' })`
+2. `runtime-integration.ts` 内部 `replaceMessages()` 是否成功
 3. rebuild 后是否重新生成 runtime metadata / prompt
 4. provider retry 是否消费了新 session snapshot

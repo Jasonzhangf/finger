@@ -5,7 +5,8 @@
 
 import type { Express } from 'express';
 import type { SessionManager } from '../../orchestration/session-manager.js';
-import { getContextWindow, loadContextHistorySettings } from '../../core/user-settings.js';
+import { loadContextHistorySettings } from '../../core/user-settings.js';
+import { resolveContextHistoryBudgetInfo } from '../../runtime/context-history/index.js';
 import { listLedgerSessionsSnapshot, resolveLedgerSource } from './ledger-routes-storage.js';
 import {
   buildContextMonitorRounds,
@@ -101,12 +102,7 @@ export function registerLedgerRoutes(app: Express, deps: LedgerRouteDeps): void 
       const rounds = buildContextMonitorRounds(slotEntries);
 
       const contextHistorySettings = loadContextHistorySettings();
-      const contextWindow = getContextWindow();
-      const configuredBudget = Number.isFinite(contextHistorySettings.historyBudgetTokens)
-        && contextHistorySettings.historyBudgetTokens > 0
-        ? Math.floor(contextHistorySettings.historyBudgetTokens)
-        : Math.floor(contextWindow * contextHistorySettings.budgetRatio);
-      const targetBudget = Math.max(1, Math.min(contextWindow, configuredBudget));
+      const targetBudget = resolveContextHistoryBudgetInfo().targetBudget;
 
       const contextBuild = buildSnapshotContextBuild(session?.messages, { targetBudget });
 

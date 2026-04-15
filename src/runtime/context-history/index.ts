@@ -45,6 +45,13 @@ export {
 } from './rebuild.js';
 
 export {
+  resolveContextHistoryBudget,
+  resolveContextHistoryBudgetInfo,
+  executeAndApplyContextHistoryRebuild,
+  applyPrecomputedContextHistoryRebuild,
+} from './runtime-integration.js';
+
+export {
   executeRebuild,
   checkRebuildNeeded,
   forceRebuild,

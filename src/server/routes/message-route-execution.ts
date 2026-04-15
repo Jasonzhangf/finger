@@ -7,10 +7,7 @@ import {
   resolveBlockingErrorStatus,
   shouldRetryBlockingMessage,
 } from '../modules/message-session.js';
-import { forceRebuild } from '../../runtime/context-history/index.js';
-import { resolveLedgerPath } from '../../runtime/context-ledger-memory-helpers.js';
-import { FINGER_PATHS } from '../../core/finger-paths.js';
-import path from 'path';
+import { executeAndApplyContextHistoryRebuild } from '../../runtime/context-history/index.js';
 import { sendDisplayFanout } from './message-display.js';
 import {
   buildAgentEnvelope,
@@ -196,34 +193,28 @@ export async function executeBlockingMessageRoute(params: {
           const prompt = isObjectRecord(params.requestMessage)
             ? extractPromptFromPayload(params.requestMessage)
             : '';
-          const ledgerRoot = params.deps.sessionManager.resolveLedgerRootForSession(params.requestSessionId)
-            ?? (params.targetId === 'finger-system-agent'
-              ? path.join(FINGER_PATHS.home, 'system', 'sessions')
-              : FINGER_PATHS.sessions.dir);
-          const ledgerPath = resolveLedgerPath(ledgerRoot, params.requestSessionId, params.targetId, 'main');
-          const currentMessages = params.deps.sessionManager.getMessages(params.requestSessionId, 0);
-          const rebuildResult = await forceRebuild(
-            params.requestSessionId,
-            ledgerPath,
-            'overflow',
-            prompt,
-            undefined,
-            20000,
-            currentMessages,
-          );
+          const appliedRebuild = await executeAndApplyContextHistoryRebuild({
+            sessionManager: params.deps.sessionManager,
+            sessionId: params.requestSessionId,
+            agentId: params.targetId,
+            mode: 'overflow',
+            source: 'retry_overflow',
+            userInput: prompt,
+          });
 
-          if (rebuildResult.ok) {
-            params.deps.sessionManager.replaceMessages(params.requestSessionId, rebuildResult.messages);
+          if (appliedRebuild.applied) {
             log.info('Context rebuild completed and persisted to session snapshot', {
               sessionId: params.requestSessionId,
-              digestCount: rebuildResult.digestCount,
-              rawMessageCount: rebuildResult.rawMessageCount,
-              totalTokens: rebuildResult.totalTokens,
+              digestCount: appliedRebuild.result.digestCount,
+              rawMessageCount: appliedRebuild.result.rawMessageCount,
+              totalTokens: appliedRebuild.result.totalTokens,
+              targetBudget: appliedRebuild.targetBudget,
             });
           } else {
             log.warn('Context rebuild failed during blocking retry path', {
               sessionId: params.requestSessionId,
-              error: rebuildResult.error,
+              error: appliedRebuild.result.error,
+              targetBudget: appliedRebuild.targetBudget,
             });
           }
         } catch (rebuildError) {

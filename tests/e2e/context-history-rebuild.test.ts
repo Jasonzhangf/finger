@@ -68,6 +68,7 @@ describe('context-history rebuild e2e', () => {
     expect(result.mode).toBe('overflow');
     expect(result.messages.some((message) => message.metadata?.compactDigest === true)).toBe(true);
     expect(result.messages.some((message) => message.metadata?.contextZone === 'working_set')).toBe(true);
+    expect(result.totalTokens).toBeLessThanOrEqual(DEFAULT_CONFIG.budgetTokens);
   });
 
   it('topic rebuild recalls matched digest history and keeps time order', async () => {

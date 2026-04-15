@@ -26,6 +26,7 @@ import {
   buildToolResolutionCandidates,
   normalizeToolAliasLookupKey,
 } from './tool-compat-aliases.js';
+import { applyPrecomputedContextHistoryRebuild } from './context-history/runtime-integration.js';
 
 import { logger } from '../core/logger.js';
 import type { Session, SessionMessage, ISessionManager } from '../orchestration/session-types.js';
@@ -593,6 +594,7 @@ export class RuntimeFacade {
         && isRecord(result)
         && Array.isArray(result.__rebuiltMessages)
       ) {
+        const currentMessagesBeforeReplace = this.sessionManager.getMessages(sessionId, 0);
         const rebuiltMessages = result.__rebuiltMessages
           .filter((item): item is SessionMessage => isRecord(item) && typeof item.id === 'string' && typeof item.role === 'string' && typeof item.content === 'string' && typeof item.timestamp === 'string')
           .map((item) => ({
@@ -604,8 +606,37 @@ export class RuntimeFacade {
             ...(Array.isArray(item.attachments) ? { attachments: item.attachments as Attachment[] } : {}),
           }));
         if (rebuiltMessages.length > 0) {
-          const replaced = this.sessionManager.replaceMessages(sessionId, rebuiltMessages);
-          if (!replaced) {
+          const rebuildMode = result.buildMode === 'overflow' ? 'overflow' : 'topic';
+          const rebuildMetadata = isRecord(result.metadata) ? result.metadata : {};
+          const applied = await applyPrecomputedContextHistoryRebuild({
+            sessionManager: this.sessionManager as ISessionManager & {
+              updateContext?: (sessionId: string, context: Record<string, unknown>) => boolean;
+            },
+            sessionId,
+            source: 'manual_topic',
+            currentMessages: currentMessagesBeforeReplace,
+            targetBudget: typeof rebuildMetadata.targetBudget === 'number'
+              ? rebuildMetadata.targetBudget
+              : undefined,
+            result: {
+              ok: true,
+              mode: rebuildMode,
+              messages: rebuiltMessages,
+              digestCount: typeof rebuildMetadata.digestCount === 'number'
+                ? Math.max(0, Math.floor(rebuildMetadata.digestCount))
+                : rebuiltMessages.filter((message) => message.metadata?.compactDigest === true).length,
+              rawMessageCount: typeof rebuildMetadata.rawMessageCount === 'number'
+                ? Math.max(0, Math.floor(rebuildMetadata.rawMessageCount))
+                : rebuiltMessages.filter((message) => message.metadata?.compactDigest !== true).length,
+              totalTokens: typeof rebuildMetadata.totalTokens === 'number'
+                ? Math.max(0, Math.floor(rebuildMetadata.totalTokens))
+                : rebuiltMessages.reduce((sum, message) => sum + (typeof message.metadata?.tokenCount === 'number'
+                  ? Math.floor(message.metadata.tokenCount)
+                  : 0), 0),
+              metadata: rebuildMetadata,
+            },
+          });
+          if (!applied.applied) {
             log.warn('[RuntimeFacade] Failed to apply rebuilt session messages', { sessionId, toolName: resolvedToolName });
           }
         }

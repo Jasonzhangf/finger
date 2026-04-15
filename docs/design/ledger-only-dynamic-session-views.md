@@ -298,6 +298,6 @@ Context Builder 从“history 重排器”升级为：
 - 本文是对 `docs/design/ledger-session-integration.md` 的进一步收敛：
   - 保留“ledger 是唯一真源”的原则
   - 进一步弱化 session 文件的持久化地位
-- 本文与 `docs/design/context-history-rebuild-design.md` 配套：
-  - `context-history-rebuild-design.md` 说明构建策略和模式
+- 本文与 `docs/design/context-rebuild-design.md` 配套：
+  - `context-rebuild-design.md` 说明唯一 rebuild / budget / apply 设计
   - 本文说明为什么 session 应退化为动态视图，以及预算外历史如何通过 ledger tool 检索

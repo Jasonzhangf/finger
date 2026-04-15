@@ -47,7 +47,7 @@ import {
   shouldHoldStopByControlBlock,
 } from '../../common/control-block.js';
 import { getContextWindow } from '../../core/user-settings.js';
-import { forceRebuild } from '../../runtime/context-history/index.js';
+import { executeAndApplyContextHistoryRebuild } from '../../runtime/context-history/index.js';
 
 
 export interface KernelRunContext {
@@ -320,26 +320,31 @@ export class KernelAgentBase {
             : FINGER_PATHS.sessions.dir;
         if (typeof ledgerRoot === 'string' && ledgerRoot.trim().length > 0) {
           const ledgerPath = path.join(ledgerRoot, session.id, this.config.moduleId, threadMode, 'context-ledger.jsonl');
-          const rebuildResult = await forceRebuild(
-            session.id,
+          const appliedRebuild = await executeAndApplyContextHistoryRebuild({
+            sessionManager: this.sessionManager as ISessionManager & {
+              resolveLedgerRootForSession?: (sessionId: string) => string | null;
+              updateContext?: (sessionId: string, context: Record<string, unknown>) => boolean;
+            },
+            sessionId: session.id,
+            agentId: this.config.moduleId,
+            mode: 'overflow',
+            source: 'preflight_overflow',
+            userInput: input.text,
+            currentMessages: history,
             ledgerPath,
-            'overflow',
-            input.text,
-            undefined,
-            20000,
-            history,
-          );
-          if (rebuildResult.ok) {
-            this.sessionManager.replaceMessages(session.id, rebuildResult.messages);
-            history = rebuildResult.messages;
+            threadMode,
+          });
+          if (appliedRebuild.applied) {
+            history = appliedRebuild.result.messages;
             mergedHistory = mergeHistory(history, input.history, this.config.maxContextMessages);
             historyBreakdown = summarizeHistoryBreakdown(mergedHistory);
             contextHistoryMetadata = {
               ...(contextHistoryMetadata ?? {}),
               contextHistorySource: 'context_history_single_source',
               contextHistoryMode: 'overflow',
-              contextHistoryDigestCount: rebuildResult.digestCount,
-              contextHistoryRawMessageCount: rebuildResult.rawMessageCount,
+              contextHistoryDigestCount: appliedRebuild.result.digestCount,
+              contextHistoryRawMessageCount: appliedRebuild.result.rawMessageCount,
+              contextHistoryLastBudget: appliedRebuild.targetBudget,
             };
             activeHistoryForLock = mergedHistory;
             activeHistoryMetadataForLock = contextHistoryMetadata;

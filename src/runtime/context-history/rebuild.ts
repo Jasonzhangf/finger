@@ -265,18 +265,20 @@ export async function rebuildByOverflow(
 ): Promise<RebuildResult> {
   await acquireSessionLock(sessionId, 'rebuild');
   try {
+    const digestBudget = Math.max(1, Math.min(DEFAULT_CONFIG.historicalDigestBudgetTokens, Math.max(1, budgetTokens - 1)));
+    const rawBudget = Math.max(1, budgetTokens - digestBudget);
     const existingDigestCandidates = currentMessages
       .map((message) => sessionDigestMessageToTaskDigest(message))
       .filter((item): item is TaskDigest => item !== null);
     const rawMessages = currentMessages.filter((message) => message.metadata?.compactDigest !== true);
-    const rawWindow = selectTailMessagesWithinBudget(rawMessages, budgetTokens);
+    const rawWindow = selectTailMessagesWithinBudget(rawMessages, rawBudget);
     const olderRawMessages = rawMessages.slice(0, rawWindow.startIndex);
     const historicalDigests = dedupeDigestsBySignature(
       readLedgerDigests(ledgerPath)
         .concat(existingDigestCandidates)
         .concat(buildDigestsFromMessages(olderRawMessages)),
     );
-    const selectedDigests = selectNewestDigestsWithinBudget(historicalDigests, DEFAULT_CONFIG.historicalDigestBudgetTokens);
+    const selectedDigests = selectNewestDigestsWithinBudget(historicalDigests, digestBudget);
 
     const digestMessages = selectedDigests.map((digest) => withContextZone(
       digestToSessionMessage(digest),
@@ -285,7 +287,7 @@ export async function rebuildByOverflow(
     ));
     const workingSetMessages = rawWindow.messages.map((message) => withContextZone(message, 'working_set', 'overflow'));
     const messages = digestMessages.concat(workingSetMessages);
-    const validation = validateTokenBudget(messages, budgetTokens + DEFAULT_CONFIG.historicalDigestBudgetTokens);
+    const validation = validateTokenBudget(messages, budgetTokens);
 
     return {
       ok: true,
@@ -297,8 +299,8 @@ export async function rebuildByOverflow(
       metadata: {
         rebuildMode: 'overflow',
         targetBudget: budgetTokens,
-        recentRawBudget: budgetTokens,
-        historicalDigestBudget: DEFAULT_CONFIG.historicalDigestBudgetTokens,
+        recentRawBudget: rawBudget,
+        historicalDigestBudget: digestBudget,
         rawWindowStartIndex: rawWindow.startIndex,
       },
     };

@@ -5,7 +5,7 @@ import type { ToolRegistry } from '../../runtime/tool-registry.js';
 import type { ChatCodexRunnerController } from '../../server/modules/mock-runtime.js';
 import { createFingerGeneralModule, type ChatCodexLoopEvent } from '../../agents/finger-general/finger-general-module.js';
 import type { ChatCodexDeveloperRole } from '../../agents/chat-codex/developer-prompt-templates.js';
-import { loadContextHistorySettings } from '../../core/user-settings.js';
+import { resolveContextHistoryBudget } from '../../runtime/context-history/index.js';
 import { estimateTokens } from '../../utils/token-counter.js';
 import {
   augmentHistoryWithContinuityAnchors,
@@ -242,7 +242,6 @@ export async function registerFingerRoleModules(
 
   const registerFingerRoleModule = async (role: FingerRoleSpec): Promise<void> => {
     const contextHistoryProvider = async (sessionId: string, limit: number) => {
-      const settings = loadContextHistorySettings();
       const session = runtime.getSession(sessionId);
       if (!session) {
         logger.module('finger-role-modules').warn('Context history session not found, fallback to session history', {
@@ -277,9 +276,7 @@ export async function registerFingerRoleModules(
         });
         return mapped;
       }
-      const historyBudgetTokens = Number.isFinite(settings.historyBudgetTokens) && settings.historyBudgetTokens > 0
-        ? Math.floor(settings.historyBudgetTokens)
-        : 20000;
+      const historyBudgetTokens = resolveContextHistoryBudget();
 
       const sessionSnapshotRebuilt = sessionMessages.some((message) => message.metadata?.compactDigest === true);
       const mappedSessionHistory = augmentHistoryWithContinuityAnchors(mapRawSessionMessages(sessionMessages, limit, {

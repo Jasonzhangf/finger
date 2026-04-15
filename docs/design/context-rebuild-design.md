@@ -22,15 +22,34 @@
 - 决策：`src/runtime/context-history/decision.ts`
 - 执行入口：`src/runtime/context-history/executor.ts`
 - 两种 rebuild：`src/runtime/context-history/rebuild.ts`
+- 运行时接入 / budget owner / apply owner：`src/runtime/context-history/runtime-integration.ts`
 - 类型与预算：`src/runtime/context-history/types.ts`
 - digest / budget 工具：`src/runtime/context-history/utils.ts`
 
 ### 2.2 运行时数据真源
 - **唯一可消费历史快照**：`Session.messages`
-- **唯一切换点**：`sessionManager.replaceMessages(sessionId, rebuiltMessages)`
+- **唯一 runtime apply 路径**：
+  - 自动 rebuild：`executeAndApplyContextHistoryRebuild(...)`
+  - tool 预计算结果：`applyPrecomputedContextHistoryRebuild(...)`
+- **唯一底层覆盖点**：`sessionManager.replaceMessages(sessionId, rebuiltMessages)`
 - **持久化原始事实**：ledger（append-only）
 
-### 2.3 唯一显式工具入口
+### 2.3 预算真源
+- **唯一 budget owner**：`resolveContextHistoryBudgetInfo()` / `resolveContextHistoryBudget()`
+- 预算来源顺序：
+  1. 显式 `requestedBudget`
+  2. `contextHistory.historyBudgetTokens`
+  3. `contextWindow * budgetRatio`
+  4. clamp 到 `contextWindow`
+
+### 2.4 可观测真源
+- rebuild 成功后的统一事件发射只允许在 `runtime-integration.ts`
+- 统一事件：
+  - `system_notice`
+  - `session_topic_shift`
+  - overflow 额外发 `session_compressed`
+
+### 2.5 唯一显式工具入口
 - `context_history.rebuild`
 - 工具本身不再实现 rebuild，只调用 `forceRebuild(..., 'topic')`
 
@@ -77,23 +96,24 @@
 ## 4.1 自动 overflow
 - `src/agents/base/kernel-agent-base.ts`
   - 模型调用前做 preflight
-  - 若超限，调用 `forceRebuild(..., 'overflow')`
-  - rebuild 成功后重新生成 context slots / runtime metadata / system prompt
+  - 若超限，调用 `executeAndApplyContextHistoryRebuild(..., { mode: 'overflow', source: 'preflight_overflow' })`
+  - 由统一 helper 完成 budget 解析、`replaceMessages()`、context patch、事件发射
+  - 完成后重新生成 context slots / runtime metadata / system prompt
 
 - `src/server/routes/message-route-execution.ts`
   - provider / route 返回 overflow 错误时
-  - 使用同一 `forceRebuild(..., 'overflow')`
-  - `replaceMessages()` 后 retry
+  - 使用同一 `executeAndApplyContextHistoryRebuild(..., { mode: 'overflow', source: 'retry_overflow' })`
+  - 统一 apply 后 retry
 
 ## 4.2 显式 topic rebuild
 - `src/tools/internal/context-history-rebuild-tool.ts`
   - 固定走 `forceRebuild(..., 'topic')`
-  - 返回 `__rebuiltMessages`
+  - 只负责生成预计算结果与 `__rebuiltMessages`
 
 - `src/runtime/runtime-facade.ts`
-  - 仅负责把 tool 结果里的 `__rebuiltMessages`
-    应用到 `sessionManager.replaceMessages()`
-  - 不再自行决策 / 自行 compact / 自行 rebuild
+  - 不再直接 `replaceMessages()`
+  - 统一走 `applyPrecomputedContextHistoryRebuild(..., { source: 'manual_topic' })`
+  - 不再自行决策 / 自行 compact / 自行 rebuild / 自行发 rebuild 事件
 
 ## 4.3 runtime 历史消费
 - `src/serverx/modules/finger-role-modules.impl.ts`
@@ -129,7 +149,8 @@
 3. **唯一实现点**：`src/runtime/context-history/*`
 4. ledger 是原始事实，不直接充当运行时拼装逻辑的第二实现
 5. rebuild 只改变动态 history，不改 system / skills / mailbox / FLOW 注入层
-6. runtime / monitor / prompt 注入统一使用 `contextHistorySource` / `contextHistoryRebuilt` / `contextHistoryBypassed` / `contextHistoryBypassReason`；旧 `contextBuilder*` 仅允许作为兼容读字段
+6. 预算读取方（route / role module / tool / monitor）不得再自行拼 `historyBudgetTokens` + `budgetRatio` 逻辑，统一走 `resolveContextHistoryBudgetInfo`
+7. runtime / monitor / prompt 注入统一使用 `contextHistorySource` / `contextHistoryRebuilt` / `contextHistoryBypassed` / `contextHistoryBypassReason`；旧 `contextBuilder*` 仅允许作为兼容读字段
 
 ---
 
