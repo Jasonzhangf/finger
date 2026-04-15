@@ -970,9 +970,9 @@ export class ProcessChatCodexRunner implements ChatCodexRunner {
       hasModelContextWindow: typeof parsed.msg.model_context_window === 'number',
       modelContextWindow: parsed.msg.model_context_window,
       hasMetadataJson: typeof parsed.msg.metadata_json === 'string' && parsed.msg.metadata_json.length > 0,
-     msgKeys: Object.keys(parsed.msg).join(','),
-   });
-    // 仅在 top-level 未携带 context 统计、但 metadata_json 中存在 fallback 统计时输出诊断。
+    msgKeys: Object.keys(parsed.msg).join(','),
+  });
+   // 仅在 top-level 未携带 context 统计、但 metadata_json 中存在 fallback 统计时输出诊断。
     if (parsed.msg.metadata_json) {
       try {
         const meta = JSON.parse(parsed.msg.metadata_json);
@@ -1405,16 +1405,17 @@ export function createChatCodexModule(
           ...(resolveContextUsagePercent(payload) !== undefined
             ? { context_usage_percent: resolveContextUsagePercent(payload) }
             : {}),
-        };
-        progressStore.update({
-          type: 'progress_update',
-          source: 'kernel_response',
-          sessionId,
-          agentId,
-          timestamp: new Date(),
-          kernelMetadata,
-        });
-      };
+       };
+       progressStore.update({
+         type: 'progress_update',
+         source: 'kernel_response',
+         sessionId,
+         agentId,
+         timestamp: new Date(),
+         kernelMetadata,
+       });
+        chatCodexLog.info('progressStore updated from model_round', { sessionId, agentId, context_usage_percent: kernelMetadata.context_usage_percent, input_tokens: kernelMetadata.input_tokens, context_window: kernelMetadata.context_window });
+     };
       const emitModelRoundPayload = (payload: Record<string, unknown>): boolean => {
         const dedupKey = resolveModelRoundDedupKey(payload);
         if (dedupKey && emittedModelRoundKeys.has(dedupKey)) return false;
