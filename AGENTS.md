@@ -254,6 +254,23 @@ It intentionally avoids project-specific architecture, API, roadmap, and busines
 - `it()` 作为测试用例（Case）名称来源。
 - 不在测试文件中执行副作用初始化（启动服务等），此类逻辑应由测试运行器负责。
 
+### Session 测试数据隔离
+
+- **Session 隔离**：测试使用 `FINGER_HOME` 环境变量指向临时目录
+- **禁止污染**：每个 beforeEach 创建独立 tmpHome，afterEach 清理
+- **Mock 外围**：外部 API（QQBot/WebSocket）使用 mocked response，不走真实网络
+- **示例模式**：
+  ```typescript
+  beforeEach(() => {
+    tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'finger-test-'));
+    process.env.FINGER_HOME = tmpHome;
+  });
+  afterEach(() => {
+    delete process.env.FINGER_HOME;
+    fs.rmSync(tmpHome, { recursive: true, force: true });
+  });
+  ```
+
 ## 新增安全与架构原则（2026-03-09）
 
 ### 文件操作安全

@@ -452,22 +452,9 @@ Stop and fix before moving outward if:
 
 ## 5) Repo-specific invariants worth remembering
 
-### 5.1 Core must never be blocked by delivery failures
-If a bridge / channel / presentation path fails:
-1. persist core result first
-2. expose failure explicitly
-3. do not block core completion or recovery
+> ⚠️ 以下规则如有冲突，以 `AGENTS.md` 为准。仅记录本项目的**额外约束**，不在此处重复 AGENTS 中的通用规则。
 
-### 5.2 Worker-owned session model is strict
-Follow `AGENTS.md` as the hard truth.
-
-Practical rule:
-- session ownership is not transferred by visibility scope
-- cross-agent read is allowed
-- cross-worker write / execute is not
-- fixes must preserve deterministic session mapping
-
-### 5.3 Context history has one canonical implementation
+### 5.1 Context history has one canonical implementation
 For context-history work, the canonical paths are:
 - runtime core: `src/runtime/context-history/**`
 - digest write path: `src/runtime/context-history-compact.ts`
@@ -501,15 +488,13 @@ Those facts expire quickly and corrupt the skill.
 
 ## 6) High-value anti-patterns
 
-Forbidden patterns for this repo:
-- fixing a Layer A truth problem in Layer C presentation code
-- duplicating persistence truth in orchestration or bridges
-- adding fallback branches to hide a real lifecycle / dispatch error
-- claiming “done” with only happy-path tests
-- stopping at local verification without final real-runtime / online validation
-- reporting completion without command output or direct evidence
+> ⚠️ 以下是本项目的额外反模式。通用规则见 `AGENTS.md`。
+
+**项目特有：**
 - introducing a second compact / rebuild / session-recovery implementation
 - keeping obsolete names or commands in the skill after the codebase has moved on
+
+> ⚠️ 通用反模式见 `AGENTS.md`：`禁止静默失败`、`非授权不破坏`、`禁止 broad kill`。
 
 ---
 
