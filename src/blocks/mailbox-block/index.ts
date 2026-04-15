@@ -166,16 +166,14 @@ export class MailboxBlock extends BaseBlock {
 
     this.messages.set(id, message);
     this.seqIndex.set(seq, id);
-   if (message.callbackId) {
+    if (message.callbackId) {
      this.callbackIndex.set(message.callbackId, id);
    }
-    // dispatchId 索引（用于幂等）
-    const dispatchId = (content as Record<string, unknown>)?.dispatchId as string | undefined;
     if (dispatchId) {
       this.dispatchIdIndex.set(dispatchId, id);
     }
 
-   this.updateState({
+    this.updateState({
       data: {
         messageCount: this.messages.size,
         currentSeq: this.nextSeq - 1,

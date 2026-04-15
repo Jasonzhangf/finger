@@ -91,7 +91,7 @@ export class ProgressMonitor {
     'mailbox.ack',
   ]);
   private static readonly REPORT_DELIVERY_TIMEOUT_MS = 15_000;
-  private static readonly STALL_HEARTBEAT_FACTOR_NO_PENDING = 5;
+  private static readonly STALL_HEARTBEAT_FACTOR_NO_PENDING = 2;
   private static readonly MAX_RECENT_ROUNDS = 6;
 
 
@@ -201,16 +201,6 @@ export class ProgressMonitor {
         waitDetail: detail || stage,
         lifecycleFinalState: true,
       };
-   }
-
-    // running 阶段：模型正在推理中，属于外部 provider 等待，不应报告"疑似卡住"
-    if (stage === 'running') {
-      return {
-        ...baseLifecycle,
-        waitLayer: 'external',
-        waitKind: 'provider',
-        ...(detail ? { waitDetail: detail } : {}),
-      };
     }
 
     if (stage === 'waiting_model') {
@@ -276,26 +266,7 @@ export class ProgressMonitor {
         waitDetail: toolName,
       };
     }
-    // stalled 但仍有活动：区分低价值活动和真正的卡住
     if (stalled) {
-      // 检测是否有未完成的工具调用（即使是低价值的）
-      const hasAnyPendingTool = p.toolCallHistory.some((tool) => {
-        if (tool.success === true || tool.success === false) return false;
-        if (tool.result || tool.error) return false;
-        return true;
-      });
-
-      // 如果有任何 pending 工具，说明是外部等待（工具执行中），不是卡住
-      if (hasAnyPendingTool) {
-        return {
-          ...baseLifecycle,
-          waitLayer: 'external',
-          waitKind: 'tool',
-          waitDetail: '低价值工具执行中',
-        };
-      }
-
-      // 真正的 stalled：无 pending tool，无外部信号
       return {
         ...baseLifecycle,
         waitLayer: 'internal',
@@ -1381,7 +1352,7 @@ export class ProgressMonitor {
   getProgressAll(sessionId: string): SessionProgress[] {
     const entries = this.getProgressEntriesBySession(sessionId)
       .map(([, progress]) => progress)
-      .filter((p) => p.status === 'running' || p.status === 'queued');
+      .filter((p) => p.status === 'running');
     
     // 按最后更新时间排序，最新的在前
     return entries.sort((a, b) => b.lastUpdateTime - a.lastUpdateTime);
@@ -1401,13 +1372,16 @@ export class ProgressMonitor {
       progresses.map(async (progress) => {
         const pendingTool = this.findPendingMeaningfulTool(progress);
         const now = Date.now();
-        const contextBreakdownKey = this.buildContextBreakdownKey(progress);
-        const contextEventChanged = this.detectContextEventChanged(progress, contextBreakdownKey);
-        const reportKey = this.buildReportKey(progress, contextBreakdownKey);
-        const stalled = this.detectStalled(progress, now, pendingTool);
+        const contextBreakdownKey = progress.contextBreakdown ? JSON.stringify(progress.contextBreakdown) : '';
+        const contextEventChanged =
+          (progress.lastContextEventAt ?? undefined) !== (progress.lastReportedContextEventAt ?? undefined);
+        const reportKey = this.buildReportKey(progress);
+        const stalled = now - progress.lastUpdateTime >= (pendingTool
+          ? this.config.intervalMs
+          : this.config.intervalMs * ProgressMonitor.STALL_HEARTBEAT_FACTOR_NO_PENDING);
         const waitLayerInfo = this.resolveWaitLayer(progress, pendingTool, stalled, now);
         const meaningfulToolCalls = progress.toolCallHistory.filter(
-          (tool) => !this.isToolRecordCompleted(tool) && !isLowValueToolCall(tool.toolName),
+          (tool) => !this.isToolRecordCompleted(tool) && !this.isLowValueToolCall(tool),
         );
         const completedToolCalls = progress.toolCallHistory.filter((tool) =>
           this.isToolRecordCompleted(tool),
