@@ -166,7 +166,12 @@ export async function executeBlockingMessageRoute(params: {
      const canRetry = shouldRetryBlockingMessage(errorMessage) && attempt < params.deps.blockingMaxRetries;
       
      // Payload 超限需要触发 context rebuild
-     if (errorMessage.includes('need context rebuild') && params.requestSessionId) {
+     // HTTP 400 InvalidParameter 或 payload 超限错误
+     const isPayloadOverflow = errorMessage.includes('need context rebuild')
+       || errorMessage.includes('HTTP 400')
+       || errorMessage.includes('InvalidParameter')
+       || errorMessage.includes('Range of input');
+     if (isPayloadOverflow && params.requestSessionId) {
        log.info('Payload exceeds limit, triggering context rebuild before retry', {
          sessionId: params.requestSessionId,
          targetId: params.targetId,
