@@ -17,7 +17,7 @@ import type { Attachment } from '../runtime/events.js';
 import type { UpdateSessionParams, SessionQuery, SessionStats } from './session-types.js';
 import { appendSessionMessage } from '../runtime/ledger-writer.js';
 import { resolveBaseDir } from '../runtime/context-ledger-memory-helpers.js';
-import { buildSessionView, type SessionViewMessage } from '../runtime/ledger-reader.js';
+import { buildSessionView } from '../runtime/ledger-reader.js';
 import { appendDigestForTurn } from '../runtime/context-history-compact.js';
 import { createRustKernelCompactionError } from '../runtime/kernel-owned-compaction.js';
 import { estimateTokens } from '../utils/token-counter.js';
@@ -208,7 +208,7 @@ export class SessionManager {
     session.projectPath = this.normalizeProjectPath(session.projectPath);
     session.messages = Array.isArray(session.messages) ? session.messages : [];
     const activeWorkflowsNormalized = this.normalizeActiveWorkflows(session);
-    this.ensureSessionOwnershipContext(session);
+    const ownershipBackfilled = this.ensureSessionOwnershipContext(session);
     // Multi-track backward compatibility: assign track0 to legacy sessions without track
     if (!session.track) {
       session.track = 'track0';
@@ -237,8 +237,12 @@ export class SessionManager {
     const staleProjectionRepaired = this.repairStaleCompactedProjectionOnLoad(session);
     const compactedProjectionRepaired = this.repairCompactedProjectionStructureOnLoad(session);
     const ledgerInconsistencyRepaired = this.repairLedgerInconsistencyOnLoad(session);
+    const emptyProjectionHydrated = this.repairEmptyProjectionOnLoad(session);
+    void staleProjectionRepaired;
+    void compactedProjectionRepaired;
+    void ledgerInconsistencyRepaired;
+    void emptyProjectionHydrated;
     this.updateSessionProjectionState(session);
-    delete (session as Session & { _cachedView?: unknown })._cachedView;
     this.sessions.set(session.id, session);
     this.sessionFilePaths.set(session.id, filePath);
     const expectedPath = this.getSessionPath(session);
@@ -251,6 +255,9 @@ export class SessionManager {
         nextPath: expectedPath,
       });
       return;
+    }
+    if (ownershipBackfilled) {
+      this.saveSession(session);
     }
   }
 
@@ -304,7 +311,7 @@ export class SessionManager {
 
 
 
-  private ensureSessionOwnershipContext(session: Session): void {
+  private ensureSessionOwnershipContext(session: Session): boolean {
     const context = isObjectRecord(session.context) ? session.context : {};
     // Session data is now guaranteed to have ownership fields after migration
     // Only verify minimal required fields exist for safety
@@ -317,7 +324,9 @@ export class SessionManager {
         memoryAccessPolicy: MEMORY_ACCESS_POLICY,
         memoryOwnershipVersion: MEMORY_OWNERSHIP_VERSION,
       };
+      return true;
     }
+    return false;
   }
 
   private normalizeProjectPath(projectPath: string): string {
@@ -460,7 +469,6 @@ export class SessionManager {
 
     const filePath = this.getSessionPath(session);
     const persistedSession: Session = { ...session };
-    delete (persistedSession as Session & { _cachedView?: unknown })._cachedView;
     writeFileAtomicSync(filePath, JSON.stringify(persistedSession, null, 2));
 
     const previousPath = this.sessionFilePaths.get(session.id);
@@ -509,6 +517,37 @@ export class SessionManager {
         updatedAt: new Date().toISOString(),
       },
     };
+  }
+
+  private applyProjectionMessages(
+    session: Session,
+    messages: SessionMessage[],
+    options?: {
+      latestCompactIndex?: number;
+      context?: Record<string, unknown>;
+      updateLastAccessedAt?: boolean;
+      emptyEndIndex?: number;
+    },
+  ): void {
+    const normalizedProjection = normalizeProjectionMessages(Array.isArray(messages) ? messages : []);
+    const pointerState = buildProjectionPointerState(normalizedProjection.messages);
+    session.messages = normalizedProjection.messages;
+    if (typeof options?.latestCompactIndex === 'number') {
+      session.latestCompactIndex = options.latestCompactIndex;
+    }
+    session.originalStartIndex = normalizedProjection.messages.length > 0 ? 0 : -1;
+    session.originalEndIndex = normalizedProjection.messages.length > 0
+      ? normalizedProjection.messages.length - 1
+      : (options?.emptyEndIndex ?? -1);
+    session.totalTokens = pointerState.totalTokens;
+    session.pointers = pointerState.pointers;
+    if (options?.updateLastAccessedAt === true) {
+      session.lastAccessedAt = new Date().toISOString();
+    }
+    if (options?.context) {
+      session.context = options.context;
+    }
+    this.ensureSessionOwnershipContext(session);
   }
 
   private normalizeActiveWorkflows(session: Session): boolean {
@@ -561,17 +600,13 @@ export class SessionManager {
     if (projectedMessages.length === 0) return false;
 
     const normalizedProjection = normalizeProjectionMessages(projectedMessages);
-    const pointerState = buildProjectionPointerState(normalizedProjection.messages);
     const historicalPrefixCount = countHistoricalPrefixMessages(normalizedProjection.messages);
     const syncedAt = new Date().toISOString();
-    session.messages = normalizedProjection.messages;
-    session.latestCompactIndex = compactLineCount > 0 ? compactLineCount - 1 : historicalPrefixCount - 1;
-    session.originalStartIndex = 0;
-    session.originalEndIndex = normalizedProjection.messages.length > 0 ? normalizedProjection.messages.length - 1 : 0;
-    session.totalTokens = pointerState.totalTokens;
-    session.pointers = pointerState.pointers;
-    session.lastAccessedAt = syncedAt;
-session.context = {
+    this.applyProjectionMessages(session, normalizedProjection.messages, {
+      latestCompactIndex: compactLineCount > 0 ? compactLineCount - 1 : historicalPrefixCount - 1,
+      updateLastAccessedAt: true,
+      emptyEndIndex: 0,
+      context: {
       ...sessionContext,
       kernelProjection: {
         version: 1,
@@ -581,12 +616,12 @@ session.context = {
         agentId: resolvedAgentId,
         mode: 'main',
         projectedMessageCount: projectedMessages.length,
-        latestCompactIndex: session.latestCompactIndex,
+        latestCompactIndex: compactLineCount > 0 ? compactLineCount - 1 : historicalPrefixCount - 1,
         ...(compactSummary.length > 0 ? { compactSummary } : {}),
       },
-    }
-    this.ensureSessionOwnershipContext(session);
-    session._cachedView = undefined;
+    },
+    });
+    session.lastAccessedAt = syncedAt;
     return true;
   }
 
@@ -612,12 +647,20 @@ session.context = {
       return false;
     }
 
-    session.messages = normalizedProjection.messages;
-    session.originalStartIndex = 0;
-    session.originalEndIndex = originalEndIndex;
-    session.totalTokens = pointerState.totalTokens;
-    session.pointers = pointerState.pointers;
-    session._cachedView = undefined;
+    this.applyProjectionMessages(session, normalizedProjection.messages, {
+      latestCompactIndex: session.latestCompactIndex,
+      emptyEndIndex: originalEndIndex,
+    });
+    return true;
+  }
+
+  private repairEmptyProjectionOnLoad(session: Session): boolean {
+    if (Array.isArray(session.messages) && session.messages.length > 0) return false;
+    const hydrated = this.readLedgerSessionMessagesSync(session, 0);
+    if (hydrated.length === 0) return false;
+    this.applyProjectionMessages(session, hydrated, {
+      latestCompactIndex: session.latestCompactIndex,
+    });
     return true;
   }
 
@@ -692,26 +735,29 @@ session.context = {
       }
       
       // Append missing messages to session
-      session.messages = Array.isArray(session.messages) ? session.messages : [];
+      const nextMessages = Array.isArray(session.messages) ? [...session.messages] : [];
       for (const msg of missingEntries) {
         // Check if message already exists (by id or ledgerLine)
-        const exists = session.messages.some(
+        const exists = nextMessages.some(
           (existing) => existing.id === msg.id || (existing.ledgerLine !== undefined && existing.ledgerLine === msg.ledgerLine)
         );
         if (!exists) {
-          session.messages.push(msg);
+          nextMessages.push(msg);
         }
       }
       
       // Update ledgerEndLine
       session.ledgerEndLine = actualLineCount;
-      session.originalEndIndex = session.messages.length > 0 ? session.messages.length - 1 : 0;
       
       // Re-sort messages by timestamp
-      session.messages.sort((a, b) => {
+      nextMessages.sort((a, b) => {
         const aTime = typeof a.timestamp === 'string' ? a.timestamp : '';
         const bTime = typeof b.timestamp === 'string' ? b.timestamp : '';
         return aTime.localeCompare(bTime);
+      });
+      this.applyProjectionMessages(session, nextMessages, {
+        latestCompactIndex: session.latestCompactIndex,
+        emptyEndIndex: 0,
       });
       
       log.info('[SessionManager] Ledger inconsistency repaired', {
@@ -1235,9 +1281,6 @@ session.context = {
     session.originalEndIndex = (session.originalEndIndex || 0) + 1;
     session.totalTokens = (session.totalTokens || 0) + estimateTokens(content);
 
-    // Invalidate cached view (will be rebuilt on next read)
-    session._cachedView = undefined;
-
     this.saveSession(session);
     return message;
   }
@@ -1361,34 +1404,11 @@ session.context = {
   getMessages(sessionId: string, limit = 50): SessionMessage[] {
     const session = this.sessions.get(sessionId);
     if (!session) return [];
-
-    return this.getMessagesFromLedger(session, limit);
-  }
-
-  private getMessagesFromLedger(session: Session, limit: number): SessionMessage[] {
     const snapshot = Array.isArray(session.messages) ? session.messages : [];
-    if (snapshot.length > 0) {
-      if (!Number.isFinite(limit) || limit <= 0) {
-        return [...snapshot];
-      }
-      return snapshot.slice(-limit);
+    if (!Number.isFinite(limit) || limit <= 0) {
+      return [...snapshot];
     }
-
-    const view = session._cachedView;
-    if (view) {
-      const msgs = view.messages;
-      if (!Number.isFinite(limit) || limit <= 0) {
-        return this.viewMessagesToSessionMessages(msgs);
-      }
-      return this.viewMessagesToSessionMessages(msgs.slice(-limit));
-    }
-
-    const hydrated = this.readLedgerSessionMessagesSync(session, limit);
-    if (hydrated.length > 0) {
-      return hydrated;
-    }
-
-    return [];
+    return snapshot.slice(-limit);
   }
 
   /**
@@ -1400,37 +1420,10 @@ session.context = {
     if (!session) return [];
 
     const snapshot = Array.isArray(session.messages) ? session.messages : [];
-    if (snapshot.length > 0) {
-      if (!Number.isFinite(limit) || limit <= 0) {
-        return [...snapshot];
-      }
-      return snapshot.slice(-limit);
+    if (!Number.isFinite(limit) || limit <= 0) {
+      return [...snapshot];
     }
-
-    const view = session._cachedView;
-    if (view) {
-      const msgs = view.messages;
-      if (!Number.isFinite(limit) || limit <= 0) {
-        return this.viewMessagesToSessionMessages(msgs);
-      }
-      return this.viewMessagesToSessionMessages(msgs.slice(-limit));
-    }
-
-    const hydrated = this.readLedgerSessionMessagesSync(session, limit);
-    if (hydrated.length > 0) {
-      return hydrated;
-    }
-    return [];
-  }
-
-  private viewMessagesToSessionMessages(msgs: SessionViewMessage[]): SessionMessage[] {
-    return msgs.map((msg) => ({
-      id: msg.messageId || `ledger-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-      role: msg.role,
-      content: msg.content,
-      timestamp: msg.timestamp || new Date().toISOString(),
-      ...(msg.metadata ? { metadata: msg.metadata } : {}),
-    }));
+    return snapshot.slice(-limit);
   }
 
   updateMessage(sessionId: string, messageId: string, content: string): SessionMessage | null {
@@ -1576,17 +1569,13 @@ session.context = {
 
     const compactLineCount = this.readCompactMemoryLineCountSync(session, resolvedAgentId, resolvedMode);
     const latestCompactIndex = compactLineCount > 0 ? compactLineCount - 1 : -1;
-    const pointerState = buildProjectionPointerState(projectedMessages);
     const syncedAt = new Date().toISOString();
 
-    session.messages = projectedMessages;
-    session.latestCompactIndex = latestCompactIndex;
-    session.originalStartIndex = 0;
-    session.originalEndIndex = projectedMessages.length > 0 ? projectedMessages.length - 1 : 0;
-    session.totalTokens = pointerState.totalTokens;
-    session.pointers = pointerState.pointers;
-    session.lastAccessedAt = syncedAt;
-session.context = {
+    this.applyProjectionMessages(session, projectedMessages, {
+      latestCompactIndex,
+      updateLastAccessedAt: true,
+      emptyEndIndex: 0,
+      context: {
       ...sessionContext,
       kernelProjection: {
         version: 1,
@@ -1607,9 +1596,8 @@ session.context = {
           ? { sourceTimeEnd: compactMetadata.source_time_end.trim() }
           : {}),
       },
-    }
-    this.ensureSessionOwnershipContext(session);
-    session._cachedView = undefined;
+    },
+    });
     this.saveSession(session);
 
     return {
@@ -1687,34 +1675,29 @@ session.context = {
     }
 
     const latestCompactIndex = compactLineCount > 0 ? compactLineCount - 1 : historicalPrefixCount - 1;
-    const pointerState = buildProjectionPointerState(normalizedProjection.messages);
     const syncedAt = new Date().toISOString();
 
-    session.messages = normalizedProjection.messages;
-    session.latestCompactIndex = latestCompactIndex;
-    session.originalStartIndex = 0;
-    session.originalEndIndex = normalizedProjection.messages.length > 0 ? normalizedProjection.messages.length - 1 : 0;
-    session.totalTokens = pointerState.totalTokens;
-    session.pointers = pointerState.pointers;
-    session.lastAccessedAt = syncedAt;
-session.context = {
-      ...sessionContext,
-      kernelProjection: {
-        version: 1,
-        source: typeof options?.source === 'string' && options.source.trim().length > 0
-          ? options.source.trim()
-          : 'runtime_ledger_projection',
-        compactApplied: latestCompactIndex >= 0 || compactSummary.length > 0,
-        syncedAt,
-        agentId: resolvedAgentId,
-        mode: resolvedMode,
-        projectedMessageCount: normalizedProjection.messages.length,
-        latestCompactIndex,
-        ...(compactSummary.length > 0 ? { compactSummary } : {}),
+    this.applyProjectionMessages(session, normalizedProjection.messages, {
+      latestCompactIndex,
+      updateLastAccessedAt: true,
+      emptyEndIndex: 0,
+      context: {
+        ...sessionContext,
+        kernelProjection: {
+          version: 1,
+          source: typeof options?.source === 'string' && options.source.trim().length > 0
+            ? options.source.trim()
+            : 'runtime_ledger_projection',
+          compactApplied: latestCompactIndex >= 0 || compactSummary.length > 0,
+          syncedAt,
+          agentId: resolvedAgentId,
+          mode: resolvedMode,
+          projectedMessageCount: normalizedProjection.messages.length,
+          latestCompactIndex,
+          ...(compactSummary.length > 0 ? { compactSummary } : {}),
+        },
       },
-    }
-    this.ensureSessionOwnershipContext(session);
-    session._cachedView = undefined;
+    });
     this.saveSession(session);
 
     return {
@@ -1722,7 +1705,7 @@ session.context = {
       reason: 'ledger_projection_synced',
       messageCount: normalizedProjection.messages.length,
       latestCompactIndex,
-      totalTokens: pointerState.totalTokens,
+      totalTokens: session.totalTokens,
     };
   }
 
@@ -2227,14 +2210,16 @@ session.context = {
       return false;
     }
 
-    // Update memory snapshot
-    session.messages = messages.map(msg => ({
-      ...msg,
-      timestamp: msg.timestamp || new Date().toISOString(),
-    }));
-    session.totalTokens = session.messages.reduce((sum, message) => sum + estimateTokens(typeof message.content === 'string' ? message.content : JSON.stringify(message.content)), 0);
-    session.originalStartIndex = session.messages.length > 0 ? 0 : -1;
-    session.originalEndIndex = session.messages.length > 0 ? session.messages.length - 1 : -1;
+    this.applyProjectionMessages(
+      session,
+      messages.map((msg) => ({
+        ...msg,
+        timestamp: msg.timestamp || new Date().toISOString(),
+      })),
+      {
+        latestCompactIndex: session.latestCompactIndex,
+      },
+    );
     session.updatedAt = new Date().toISOString();
 
     // Persist to main.json (唯一真源)

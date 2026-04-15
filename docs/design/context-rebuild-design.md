@@ -99,6 +99,9 @@
 - `src/serverx/modules/finger-role-modules.impl.ts`
   - 只消费当前 `Session.messages`
   - 不再额外 bootstrap / indexed / on-demand 组装历史
+- `src/orchestration/session-manager.ts`
+  - `getMessages()` / `getMessagesAsync()` 只返回当前 `Session.messages`
+  - 不再把 `_cachedView` / on-demand/indexed 结果当作运行时历史 fallback
 
 ---
 
@@ -108,6 +111,9 @@
 - TS 侧独立 compact 流程
 - runtime-facade 内部重复 rebuild 决策
 - finger-role-modules 的 bootstrap / indexed / on-demand 历史拼装链
+- `context-builder-on-demand-state.ts`
+- `context-builder-history-index.ts`
+- `context-rebuild-mempalace.ts`
 - “超限仅报错不自动 rebuild”的行为
 - “先 compact，再走另一套 rebuild” 的双语义路径
 

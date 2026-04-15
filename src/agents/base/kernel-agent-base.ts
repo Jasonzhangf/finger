@@ -19,7 +19,6 @@ import { inferTagsAndTopic } from '../../common/tag-topic-inference.js';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { FINGER_PATHS } from '../../core/finger-paths.js';
-import { peekContextBuilderOnDemandView } from '../../runtime/context-builder-on-demand-state.js';
 import {
   isProjectTaskStateActive,
   parseDelegatedProjectTaskRegistry,
@@ -673,10 +672,6 @@ export class KernelAgentBase {
     if (!this.lockedHistoryByThread.has(params.threadKey)) return false;
     if (this.unfinishedTurnByThread.get(params.threadKey) !== true) return false;
     if (isExplicitContextRebuildRequested(params.inputMetadata)) return false;
-    const pendingOnDemandView = peekContextBuilderOnDemandView(params.sessionId, this.config.moduleId);
-    if (pendingOnDemandView && pendingOnDemandView.mode === params.threadMode) {
-      return false;
-    }
     return true;
   }
 

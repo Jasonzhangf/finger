@@ -10,6 +10,7 @@
 3. **唯一覆盖点**：`sessionManager.replaceMessages()`
 4. **唯一两种模式**：`overflow` / `topic`
 5. **禁止双实现**：任何模块不得再维护并行的 compact/rebuild/history builder 逻辑
+6. **禁止运行时 fallback 历史源**：`_cachedView` / indexed / on-demand / mempalace rebuild 都不得再充当 prompt 历史来源
 
 ---
 

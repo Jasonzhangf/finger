@@ -89,14 +89,6 @@ export interface Session {
       estimatedTokens: number;
     };
   };
-
-  // ─── 内存缓存（不持久化） ────────────────────────────────
-
-  /**
-   * 缓存的 session 视图，由 LedgerReader.buildSessionView() 构建。
-   * 仅存在于内存中，不序列化到 JSON。
-   */
-  _cachedView?: import('../runtime/ledger-reader.js').SessionView;
 }
 
 export interface SessionMessage {

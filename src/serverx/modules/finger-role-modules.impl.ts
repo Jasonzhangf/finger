@@ -8,19 +8,6 @@ import type { ChatCodexDeveloperRole } from '../../agents/chat-codex/developer-p
 import { loadContextBuilderSettings } from '../../core/user-settings.js';
 import { estimateTokens } from '../../utils/token-counter.js';
 import {
-  consumeContextBuilderOnDemandView,
-  resetContextBuilderBootstrapOnce,
-  shouldRunContextBuilderBootstrapOnce,
-} from '../../runtime/context-builder-on-demand-state.js';
-import {
-  buildContextBuilderHistoryIndex,
-  buildIndexedHistoryFromSnapshot,
-  buildNextIndexedHistoryIndex,
-  extractPinnedMessageIdsFromSessionContext,
-  persistContextBuilderHistoryIndex,
-  readPersistedContextBuilderHistoryIndex,
-} from '../../server/modules/context-builder-history-index.js';
-import {
   augmentHistoryWithContinuityAnchors,
   extractRecentTaskMessages,
   extractRecentUserInputs,
@@ -626,7 +613,6 @@ export async function registerFingerRoleModules(
         });
         return mapped;
       }
-      const pinnedMessageIds = extractPinnedMessageIdsFromSessionContext(sessionContext);
       const historyBudgetTokens = Number.isFinite(settings.historyBudgetTokens) && settings.historyBudgetTokens > 0
         ? Math.floor(settings.historyBudgetTokens)
         : 20000;
@@ -644,7 +630,6 @@ export async function registerFingerRoleModules(
         roleId: role.id,
         sessionId,
         selectedCount: mappedSessionHistory.length,
-        pinnedMessageCount: pinnedMessageIds.length,
       });
       return topUpHistoryToBudget(mappedSessionHistory, sessionMessages, historyBudgetTokens, {
         contextBuilderHistorySource: 'raw_session',
